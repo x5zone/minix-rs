@@ -12,7 +12,7 @@
 //!   available (dev/test build); when `xtask image` runs, its build.rs
 //!   discovers the generated imgrd and `include_bytes!` fills `BOOT_IMGRD`
 //!   with real bytes, switching `BootBlockSource` to the imgrd RAM disk
-//!   (`minix_fs_rt::source::ImgrdBlockSource`). (E-IMGPKG landed B11.);
+//!   (`minix_fs_rt::source::ImgrdBlockSource`). (E-IMGPKG has landed.);
 //! - the signal hook ignores notifications for now — the C handler
 //!   terminates on `SIGTERM` (`main.c:70-78`), but process signals reach
 //!   it through the signal-manager pull whose kernel wrappers are not
@@ -21,16 +21,18 @@
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
-// 无须也不应再调。
+// The freestanding side holds a link reference to minix-rt: the bin code
+// itself uses no symbol from rt, and an unreferenced rlib is dropped whole,
+// taking `_start`/`#[panic_handler]`/`#[global_allocator]` with it (the
+// keep semantics of `extern crate` in panic-halt mode). The birth chain
+// `_start` has already completed rt initialization before main
+// (`lib.rs:86` init contract: called automatically and idempotently in
+// no_std mode), so there is no need — and no reason — to call it again.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
-// hooks 的 Box::new 裸用：none 侧由 alloc 供给（宿主/测试走 std prelude）。
+// `Box::new` is used bare by the hooks: the none side gets it from alloc
+// (host/test builds use the std prelude).
 #[cfg(all(not(test), target_os = "none"))]
 extern crate alloc;
 
@@ -59,14 +61,16 @@ static BOOT_IMGRD: &[u8] = BOOT_IMGRD_DATA;
 #[cfg(not(test))]
 const BOOT_BLOCK_SIZE: usize = 4096;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
-// E0277（docker minix-ci:1.94 实测）。
+// The entry point splits by target: the none side satisfies the crt0
+// Consumer contract (name + Rust ABI + `-> i32`,
+// os/libs/minix-rt/src/crt0.rs:38); host/test sides keep `()`, because since
+// rustc 1.94 Termination is no longer implemented for i32, so a hosted i32
+// main is E0277 (observed on docker minix-ci:1.94).
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
-    // real_main 原地消费返回 ()；0 即进程退出码（crt0 Consumer contract）。
+    // real_main consumes its return value in place and yields (); 0 is the
+    // process exit code (crt0 Consumer contract).
     real_main();
     0
 }
@@ -85,10 +89,12 @@ fn real_main() {
             minix_fs_rt::source::BootBlockSource::from_boot_image(BOOT_IMGRD, BOOT_BLOCK_SIZE),
         );
 
-        // SD-11 U-5 对照读数②（迁移前出生段池峰值）：安装点之前读一次全局
-        // 分配器诊断，把「出生到安装点」这段仍走固定池的消耗页数与池总量打到
-        // 串口。U-5 执行清单第 2 项要求量化这段峰值，这一行就是它的机器读数；
-        // 格式沿用 nk4a 探针族前缀，便于真机日志抓取。
+        // Control reading for the migration (pre-birth pool high-water): read
+        // the global allocator diagnostics once before the install point and
+        // print the pages the fixed pool consumed from birth to install, plus
+        // the pool total, to the serial console. This line is the machine
+        // reading that quantifies that high-water mark; the format keeps the
+        // probe-family prefix so on-target logs are easy to scrape.
         #[cfg(target_os = "none")]
         {
             let diag = minix_rt::global_alloc_diag();
@@ -105,35 +111,41 @@ fn real_main() {
             line[at] = b'\n';
             at += 1;
             use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兜底（panic.c:66）
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] when the report channel itself breaks, park is the fallback (panic.c:66)
             let _ = sys_diagctl_write(
                 &DirectKernelCallTransport,
                 core::str::from_utf8(&line[..at]).unwrap_or(""),
             );
         }
 
-        // SD-11 U-5 迁移（第九台，首个文件服务器）：MFS 是缓存大头（块缓存与
-        // inode 表，src/ 内 Vec/Box 工作集），也是 x86 2048 页档的运行时理由
-        // 所在。把全局堆供给从焊死固定池切到 VM_BRK 增长堆。安装点在 server
-        // 构造（fresh 体已建表与缓存，仍在固定池）之后、`serve` 主循环之前——
-        // 此刻 VM（boot 序第 2 位，早于 MFS 第 11 位）主循环已在收请求，
-        // `install_vm_supplier` 内的 VM_BRK 直连有应答；EINVAL fail-fast；与
-        // DS(T3)/SCHED(T3b)/MIB/VFS/PM/PFS/TTY/memory 同法，整块
-        // #[cfg(target_os="none")] 不影响宿主测试。
+        // Migration (the ninth server, the first file server): MFS is the big
+        // cache consumer (block cache and inode table, the Vec/Box working set
+        // inside src/) and the reason the x86 build runs the 2048-page
+        // profile. Switch the global heap supply from the hardwired fixed
+        // pool to the VM_BRK growth heap. The install point sits after server
+        // construction (the fresh body has already built tables and caches,
+        // still on the fixed pool) and before `serve`'s main loop — by then
+        // VM (boot order position 2, ahead of MFS at 11) is already serving
+        // requests, so the VM_BRK direct link inside `install_vm_supplier`
+        // gets an answer; EINVAL fail-fast; the same method as
+        // DS(T3)/SCHED(T3b)/MIB/VFS/PM/PFS/TTY/memory, and the whole
+        // #[cfg(target_os="none")] block leaves hosted tests untouched.
         #[cfg(target_os = "none")]
         minix_rt::install_vm_supplier(minix_rt::image_end())
             .expect("mfs: install_vm_supplier(镜像尾) 不得失败");
 
-        // SD-11 真机取证探针：安装后立即从 VM 腿取一页（8 字节 slab 请求触发
-        // add_slab → supply_page → VM_BRK），失败即 fail-fast；成功打一行串口
-        // 标记作 VM_BRK 增长腿端到端贯通的 L1 证据（与 VFS 同款）。
+        // On-target evidence probe: immediately after install, take one page
+        // through the VM leg (an 8-byte slab request triggers add_slab →
+        // supply_page → VM_BRK); fail fast on failure. On success, print one
+        // serial marker line as the end-to-end proof that the VM_BRK growth
+        // leg works (the same probe as VFS).
         #[cfg(target_os = "none")]
         {
             let probe = minix_rt::alloc(8);
             assert!(!probe.is_null(), "mfs: vm-brk probe 分配失败");
             minix_rt::free(probe);
             use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兜底（panic.c:66）
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] when the report channel itself breaks, park is the fallback (panic.c:66)
             let _ = sys_diagctl_write(
                 &DirectKernelCallTransport,
                 "nk4a: mfs-vmbrk probe ok pages=1 via=VM_BRK\n",

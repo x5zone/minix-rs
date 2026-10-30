@@ -43,24 +43,31 @@ pub fn filter_column(input: &[u8], start: usize, stop: usize) -> Vec<u8> {
     out
 }
 
-/// 操作数段的三种拒收，交回给壳去印各自的句子。
+/// The three operand-level rejections, handed back to the shell so it can print
+/// each message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColrmOperand<'a> {
-    /// `colrm.c:90-91`：操作数多于两个，落 `default: usage()`（一行、退 1、没有别的句子）。
+    /// `colrm.c:90-91`: more than two operands, falling into `default: usage()`
+    /// (one line, exit 1, no other message).
     TooManyOperands,
-    /// `colrm.c:94-95`：`err(1, "illegal start and stop columns")`。`err` 而不是 `errx`，
-    /// 所以那一行还缀一句 `strerror(errno)`，而此刻 `errno` 是 0。
+    /// `colrm.c:94-95`: `err(1, "illegal start and stop columns")`.  It is `err`
+    /// rather than `errx`, so that line also appends a `strerror(errno)` sentence,
+    /// and `errno` is 0 at that point.
     StartAfterStop,
-    /// `colrm.c:80-86`：`errx(1, "illegal column -- %s", <操作数原文>)`。`errx` 不缀
-    /// `strerror`，报的是操作数原文（参照件量过：`colrm: illegal column -- 3x`）。
+    /// `colrm.c:80-86`: `errx(1, "illegal column -- %s", <operand text>)`.  `errx`
+    /// appends no `strerror` and reports the operand text as given (a reference
+    /// binary measured `colrm: illegal column -- 3x`).
     IllegalColumn(&'a [u8]),
 }
 
-/// C `colrm.c:76-92` 的操作数段：交回 `(start, stop)`，`stop` 为 0 表示「到行末」。
+/// The operand section of C `colrm.c:76-92`: returns `(start, stop)`, where a
+/// `stop` of 0 means "through end of line".
 ///
-/// 两支都坏时报的是**后**写的那支：C 的 `case 2:` 先对 `argv[1]` 做 `strtol` 并检查，
-/// 然后 `/* FALLTHROUGH */` 才轮到 `argv[0]`（`:78-87`），所以 `colrm abc def` 印的是
-/// `def`。这一条是本函数最容易写反的地方，参照件逐形量过。
+/// When both operands are bad, the **later** one is reported: C's `case 2:`
+/// first runs `strtol` on `argv[1]` and validates it, and only then does
+/// `/* FALLTHROUGH */` reach `argv[0]` (`:78-87`), so `colrm abc def` prints
+/// `def`.  This is the easiest place in this function to get backwards, and a
+/// reference binary was measured for every shape.
 pub fn parse_columns<'a>(argv: &[&'a [u8]]) -> Result<(usize, usize), ColrmOperand<'a>> {
     match argv.len() {
         0 => Ok((0, 0)),
@@ -77,8 +84,9 @@ pub fn parse_columns<'a>(argv: &[&'a [u8]]) -> Result<(usize, usize), ColrmOpera
                 Some(start) => start,
                 None => return Err(ColrmOperand::IllegalColumn(argv[0])),
             };
-            // C 写的是 `if (stop && start > stop)`（`:94`）：`stop` 为 0 时不比，
-            // 而本节里 `stop` 只可能来自两个操作数，`column_value` 已经排除了 0。
+            // C writes `if (stop && start > stop)` (`:94`): no comparison when
+            // `stop` is 0, and in this arm `stop` can only come from two operands,
+            // with `column_value` having already excluded 0.
             if start > stop {
                 Err(ColrmOperand::StartAfterStop)
             } else {
@@ -89,15 +97,20 @@ pub fn parse_columns<'a>(argv: &[&'a [u8]]) -> Result<(usize, usize), ColrmOpera
     }
 }
 
-/// C 的 `strtol(word, &p, 10)` 加一句 `if (<值> <= 0 || *p)` 的合并判定。
+/// The combined judgement of C's `strtol(word, &p, 10)` plus `if (<value> <= 0 || *p)`.
 ///
-/// 接受面比「一串数字」宽，也比它窄，两头都得照 C：
-/// ① 前导空白跳过、可带 `+`/`-` 号、至少一位十进制数字（`colrm " 3"`、`colrm +3` 都收，
-/// 参照件量过）；② 数字之后不许剩字符（`3x`、`0x10`、`1e2`、`3 ` 全部拒收，因为 `*p`
-/// 非零）；③ 溢出饱和到 `long` 的范围而不是报错（`99999999999999999999999` 被接受）；
-/// ④ `colrm.c:63` 把结果存进 `u_long`，所以 C 的 `<= 0` 实际只挡得住 0——负数回绕成
-/// 极大值后被接受，并且因为列号远小于它而整行透传（`colrm -- -5` 退 0，参照件量过）。
-/// 本函数把这条回绕如实搬过来，不替 C「修正」。
+/// The accepted set is both wider and narrower than "a string of digits", and
+/// both ends must follow C: (1) leading whitespace is skipped, one `+`/`-` sign
+/// is allowed, and at least one decimal digit is required (`colrm " 3"` and
+/// `colrm +3` are both accepted — measured against a reference binary); (2) no
+/// characters may remain after the digits (`3x`, `0x10`, `1e2`, `3 ` are all
+/// rejected because `*p` is non-zero); (3) an overflow saturates to the `long`
+/// range instead of erroring (`99999999999999999999999` is accepted); (4)
+/// `colrm.c:63` stores the result in a `u_long`, so C's `<= 0` really only
+/// rejects 0 — a negative value wraps to a huge number and is accepted, and
+/// because no column number comes close to it the whole line passes through
+/// (`colrm -- -5` exits 0 — measured against a reference binary).  This function
+/// reproduces that wrap faithfully instead of "fixing" C.
 fn column_value(word: &[u8]) -> Option<usize> {
     let bytes = word;
     let mut cursor = 0;
@@ -126,13 +139,16 @@ fn column_value(word: &[u8]) -> Option<usize> {
             .saturating_add(u64::from(bytes[cursor] - b'0'));
         cursor += 1;
     }
-    // 一位数字都没有、或数字之后还剩别的字符，都落 C 的 `*p` 非零那一支。
+    // No digit at all, or characters left after the digits, both land in C's
+    // "`*p` is non-zero" branch.
     if cursor == digits_begin || cursor != bytes.len() {
         return None;
     }
-    // `long` 的饱和范围：溢出时 `strtol` 交回 `LONG_MAX`/`LONG_MIN`（绝对值差一，
-    // 两边各自封顶），随后 C 把它存进 `u_long` 就是这张二补码脸。取这些极大值后，
-    // 列号判断一律「比任何真实列号都大」，与参照件的整行透传一致。
+    // The saturating range of `long`: on overflow `strtol` returns
+    // `LONG_MAX`/`LONG_MIN` (the magnitudes differ by one, each capped on its own
+    // side), and storing that in C's `u_long` yields this two's-complement face.
+    // With these huge values, every column comparison comes out "larger than any
+    // real column", matching the reference binary's whole-line passthrough.
     let saturated: u64 = if negative {
         magnitude.min(1u64 << 63)
     } else {
@@ -143,7 +159,7 @@ fn column_value(word: &[u8]) -> Option<usize> {
     } else {
         saturated
     };
-    // 三块目标板与宿主都是 64 位，所以 `u_long` 的宽度就是 `usize` 的宽度。
+    // All three target boards and the host are 64-bit, so `u_long` is as wide as `usize`.
     let as_ulong = bits as usize;
     if as_ulong == 0 {
         return None;
@@ -173,7 +189,8 @@ mod tests {
         );
     }
 
-    /// 字节形入口的测试适配器：夹具仍写文本，只在进解析口前折一次。
+    /// Test adapter for the byte-shaped entry point: fixtures are still written as
+    /// text and are folded once right before entering the parser.
     fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
         list.iter().map(|word| word.as_bytes()).collect()
     }
@@ -227,8 +244,10 @@ mod tests {
         assert!(filter_column(b"", 1, 4).is_empty());
     }
 
-    /// 操作数的形状逐个钉死：零拒收、空白与 `+` 号接受、尾巴有字符拒收、
-    /// 溢出饱和后被接受，负数经 `u_long` 回绕后也被接受（C 的怪癖，如实搬）。
+    /// Pin each operand shape: zero is rejected, whitespace and a `+` sign are
+    /// accepted, trailing characters are rejected, an overflowing value is accepted
+    /// after saturation, and a negative value is accepted after wrapping through
+    /// `u_long` (a C quirk reproduced faithfully).
     #[test]
     fn column_operands_follow_strtol_rather_than_a_digit_string() {
         assert_eq!(column_value(b"3".as_slice()), Some(3));
@@ -249,19 +268,22 @@ mod tests {
             "显式正号 strtol 收"
         );
         assert_eq!(column_value(b"100".as_slice()), Some(100));
-        // 溢出饱和：strtol 交回 LONG_MAX 而 errno=ERANGE，C 的两个检查都不拦。
+        // Overflow saturation: strtol returns LONG_MAX with errno=ERANGE, and
+        // neither of C's two checks stops it.
         assert_eq!(
             column_value(b"99999999999999999999999".as_slice()),
             Some(i64::MAX as usize)
         );
-        // 负数回绕成 u_long 的极大值——`<= 0` 挡不住它（参照件 `colrm -- -5` 退 0）。
+        // A negative value wraps into a huge u_long — `<= 0` cannot stop it (a
+        // reference binary exits 0 for `colrm -- -5`).
         assert_eq!(column_value(b"-5".as_slice()), Some(-5i64 as usize));
         assert_eq!(
             column_value(b"-99999999999999999999999".as_slice()),
             Some(i64::MAX as usize + 1),
             "饱和到 LONG_MIN 后回绕"
         );
-        // 拒收的四形：零、什么都没有、尾巴有字符、数字之后跟的不是结尾。
+        // The rejected shapes: zero, nothing at all, trailing characters, and a
+        // non-terminating byte after the digits.
         assert_eq!(column_value(b"0".as_slice()), None);
         assert_eq!(column_value(b"+0".as_slice()), None);
         assert_eq!(column_value(b"-0".as_slice()), None);
@@ -279,8 +301,10 @@ mod tests {
         assert_eq!(column_value(b"-Z".as_slice()), None);
     }
 
-    /// 两个操作数都坏时报后写的那支（C 先算 `argv[1]` 再 FALLTHROUGH 到 `argv[0]`），
-    /// 以及三个出口各自的归类：多于两个是 usage，起始列大于结束列是 `err(1,...)`。
+    /// When both operands are bad the later one is reported (C evaluates `argv[1]`
+    /// first and then FALLTHROUGHs to `argv[0]`), and the three exits are kept
+    /// apart: more than two operands is usage, start greater than stop is
+    /// `err(1,...)`.
     #[test]
     fn the_operand_face_reports_the_stop_column_first_and_the_three_exits_apart() {
         assert_eq!(parse_columns(&[]), Ok((0, 0)));

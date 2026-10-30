@@ -27,17 +27,19 @@ pub struct Range {
     pub high: u32,
 }
 
-/// 一份列表里两个端点之外还会招到的两种错，对位 C `get_list()` 的两句 `errx`。
+/// The two errors a list can still raise beyond its two endpoints, matching the
+/// two `errx` calls of C `get_list()`.
 ///
-/// C 只有这两个名字（`cut.c:196`、`:198`），而且两句都不带值：那句里没有 `%s`，
-/// 所以调用方不能把出错的那一段拼回句子。区别只在：残留字符算前一句
-///（`if (*p) errx(...)`，`cut.c:195-196`），算出一个零算后一句
-///（`if (!stop || !start)`，`:197-198`）。
+/// C has only these two names (`cut.c:196`, `:198`), and neither sentence takes
+/// a value: there is no `%s` in it, so the caller cannot splice the offending
+/// span back into the sentence. The only difference is: leftover characters get
+/// the first sentence (`if (*p) errx(...)`, `cut.c:195-196`), a parsed zero gets
+/// the second (`if (!stop || !start)`, `:197-198`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListError {
-    /// 这一项读不完（残留字符、非数字）。
+    /// This item cannot be read to the end (leftover characters, not a number).
     IllegalValue,
-    /// 这一项里出现了零（孤立一个 `0`、`0-5`、`5-0`）。
+    /// A zero appeared in this item (a lone `0`, `0-5`, `5-0`).
     IncludesZero,
 }
 
@@ -45,37 +47,47 @@ pub enum ListError {
 /// kept (overlapping output is deduplicated at selection time, matching the C
 /// tool printing each byte once).
 ///
-/// 四个形状是本轮（批次二百八十六）按 C 重定的，旧写法把它们都拒了：
-/// **分隔符集是 `,`、空格、制表符三个**，而且空项被折叠（`cut.c:175` 用的是
-/// `strtok(list, ", \t")`），所以 `1,,2` 与 `1 2` 都是两项；**空列表不是错**
-/// （`strtok` 直接交 NULL，循环体一次也跑不到，于是一个位置也不选）；
-/// `5-2` 不查大小关系（`:209-210` 只是 `start++ <= stop` 地置位，倒序就一个也不置）；
-/// 项数也不封顶（`:163-164` 初次分配、`:199-206` 按 `ALLOC_CHUNK = _POSIX2_LINE_MAX`
-/// 长大，`:153`）。`-3-5` 那类的 autostart/autostop 是跨项、跨行的全局量
-///（`:183-184`、`:191-192`、`:213-219`），本树只建模到单项可解析、单区间可选择的
-/// 程度，剩下的记为下一项。
+/// The four shapes below were re-derived from C, and the old spelling rejected
+/// all of them: the **delimiter set is exactly `,`, space and tab**, and empty
+/// items collapse (`cut.c:175` uses `strtok(list, ", \t")`), so `1,,2` and
+/// `1 2` are both two items; **an empty list is not an error** (`strtok` hands
+/// back NULL, the loop body never runs, so no position is selected); `5-2` does
+/// not check the ordering (`:209-210` just sets positions while
+/// `start++ <= stop`, so a reversed range sets nothing); and the item count has
+/// no cap (`:163-164` first allocation, `:199-206` grows by
+/// `ALLOC_CHUNK = _POSIX2_LINE_MAX`, `:153`). The autostart/autostop of forms
+/// like `-3-5` are global quantities spanning items and lines (`:183-184`,
+/// `:191-192`, `:213-219`); this tree models only as far as single-item parsing
+/// and single-range selection, and the rest is left for a later item.
 pub fn parse_list(text: &[u8]) -> Result<Vec<Range>, ListError> {
     let mut ranges: Vec<Range> = Vec::new();
     for token in text.split(|byte| matches!(byte, b' ' | b'\t' | b',')) {
         if token.is_empty() {
-            // strtok 的空项折叠：`1,,2` 与 ` 1 ` 都不报错。
+            // strtok's empty-item collapse: neither `1,,2` nor ` 1 ` is an error.
             continue;
         }
         ranges.push(parse_token(token)?);
     }
-    // 插入排序语义不变（C 的 positions 位图天然有序）；列表本来就小。
+    // Insertion-sort semantics unchanged (C's `positions` bitmap is naturally
+    // ordered); the list is small anyway.
     ranges.sort_by_key(|range| range.low);
     Ok(ranges)
 }
 
-/// 一项，逐字对位 `cut.c:176-198` 的那三段：前置一个 `-` 是 C 的 setautostart 形，
-/// `N-` 是靠 autostop 打到行尾。C 在 `*p == '-'` 上写了**两个**判据（`:186`、`:189`），
-/// 第二个测的是同一个位置——只有 `isdigit(p[1])` 成立、`strtol` 真的跑了，指针才前进
-///（`:187-188`）；否则指针原地不动，于是第二个判据又命中同一个 `-` 并 `++p`（`:190`）。
-/// 把这个双层结构压成「跨过 `-` 再读一个数」就会反：`5--` 在 C 是残留字符（
-/// `illegal list value`），压平后却会读成零那句；`1-2-` 在 C 是**接受**的（autostop
-/// 那一支把行尾整段照打），压平后会误报残留。leftover 与零两句的先后也不许换：
-/// 残留先判（`:195-196`），零后判（`:197-198`），所以 `0-` 走零那句、`x` 走残留那句。
+/// One item, matching the three stages of `cut.c:176-198` literally: a leading
+/// `-` is C's setautostart form, and `N-` reaches the end of the line through
+/// autostop. C has **two** tests on `*p == '-'` (`:186`, `:189`), and the second
+/// examines the same position — the pointer advances only when `isdigit(p[1])`
+/// holds and `strtol` actually ran (`:187-188`); otherwise the pointer stays
+/// put, so the second test hits the same `-` again and does `++p` (`:190`).
+/// Flattening this two-level structure into "skip the `-` and read a number"
+/// reverses the outcomes: `5--` is leftover characters in C (`illegal list
+/// value`), while the flattened form reads it as the zero sentence; `1-2-` is
+/// **accepted** in C (the autostop arm prints everything to the end of the
+/// line), while the flattened form reports a false leftover. The order of the
+/// leftover and zero sentences may not swap either: leftover first (`:195-196`),
+/// zero second (`:197-198`), so `0-` takes the zero sentence and `x` takes the
+/// leftover one.
 fn parse_token(token: &[u8]) -> Result<Range, ListError> {
     let bytes = token;
     let mut cursor = 0usize;
@@ -83,24 +95,28 @@ fn parse_token(token: &[u8]) -> Result<Range, ListError> {
     if auto_start {
         cursor = 1;
     }
-    // `if (isdigit((unsigned char)*p)) start = stop = strtol(p, &p, 10)`（`:181-182`）：
-    // 一个数字也没有时两个端点都留在 0，指针也不动。
+    // `if (isdigit((unsigned char)*p)) start = stop = strtol(p, &p, 10)`
+    // (`:181-182`): with no digit at all both endpoints stay 0 and the pointer
+    // does not move.
     let (start, next) = scan_number(token, cursor);
     cursor = next;
     let mut stop = start;
     let mut open_ended = false;
     if bytes.get(cursor) == Some(&b'-') {
         let after = cursor + 1;
-        // 里层第一判据 `if (isdigit(p[1])) stop = strtol(p + 1, &p, 10)`（`:187-188`）。
-        // 注意它**无条件覆盖** stop，包括把它写成 0（`5-0` 因此落进零那句）。
+        // Inner first test `if (isdigit(p[1])) stop = strtol(p + 1, &p, 10)`
+        // (`:187-188`). Note it **overwrites** stop unconditionally, including
+        // writing it to 0 (`5-0` therefore lands in the zero sentence).
         let (value, scanned) = scan_number(token, after);
         if scanned > after {
             stop = value;
             cursor = scanned;
         }
-        // 里层第二判据 `if (*p == '-') { ++p; … }`（`:189-193`）：`strtol` 没跑时它命中
-        // 的还是同一个 `-`。走到行尾就是 C 的 autostop，本树用 high 到顶来表示「打到行尾」
-        // 的效果（`x_cut.c:80-82` 那句「把 maxval 之后的原样打出」等价于此）。
+        // Inner second test `if (*p == '-') { ++p; … }` (`:189-193`): when
+        // `strtol` did not run, this hits the same `-` again. Reaching the end of
+        // the line is C's autostop; this tree represents the effect ("print
+        // everything after maxval as is", `x_cut.c:80-82`) by letting high go to
+        // the top.
         if bytes.get(cursor) == Some(&b'-') {
             cursor += 1;
             if cursor == bytes.len() {
@@ -120,10 +136,12 @@ fn parse_token(token: &[u8]) -> Result<Range, ListError> {
     })
 }
 
-/// C 那句 `strtol(p, &p, 10)`（`:182`、`:188`）：一个数字也没转出来时值为 0 且
-/// 指针不动（对应 C 的 `if (isdigit(…))` 不成立）。转得出来但超出 `u32` 时本树
-/// 饱和到最大值，而 C 会拿到 `LONG_MAX` 并把 `positions` 重开到那个尺寸（`:199-206`）
-/// 直到分配失败——那一形不建模，饱和与 C 同为「不报句子」。
+/// C's `strtol(p, &p, 10)` (`:182`, `:188`): when no digit converts, the value
+/// is 0 and the pointer does not move (matching C's `if (isdigit(…))` being
+/// false). When digits convert but overflow `u32`, this tree saturates to the
+/// maximum, while C gets `LONG_MAX` and reallocates `positions` to that size
+/// (`:199-206`) until allocation fails — that shape is not modelled; saturation
+/// and C agree on "no sentence reported".
 fn scan_number(token: &[u8], from: usize) -> (u32, usize) {
     let bytes = token;
     let mut cursor = from;
@@ -172,7 +190,8 @@ pub fn select_bytes(line: &[u8], ranges: &[Range], out: &mut [u8]) -> Result<usi
 /// `putchar('\n')` at `:279`, so the line contributes **zero bytes**, not an
 /// empty line. A line
 /// that does carry the delimiter but selects nothing is the opposite case and
-/// stays `Some(0)` (参照件对 `-f 9 -s` 的 `a\tb\tc` 交回一枚换行).
+/// stays `Some(0)` (a reference run of `-f 9 -s` on `a\tb\tc` returns one
+/// newline).
 pub fn select_fields(
     line: &[u8],
     ranges: &[Range],
@@ -180,10 +199,14 @@ pub fn select_fields(
     suppress: bool,
     out: &mut [u8],
 ) -> Result<Option<usize>, TextError> {
-    // 分隔符恰好是换行时，C 眼里每一行都「带着分隔符」：它交给扫描的那一串**总是以换行结尾**
-    // （`minix3/usr.bin/cut/cut.c:235-241`——末行没有换行就 `malloc(len + 1)` 补一枚），扫描里
-    // `if (ch == sep)` 于是总在这一格命中（`cut.c:242-251`），`isdelim` 成立，`-s` 抹不掉这一行，
-    // 「整行原样搬运」那一腿也不走。本库的行体里没有那枚字节是**切行**的结果，不是 C 看到的内容。
+    // When the delimiter happens to be a newline, every line "carries the
+    // delimiter" from C's point of view: the string handed to the scanner
+    // **always ends with a newline** (`minix3/usr.bin/cut/cut.c:235-241` — a last
+    // line without one gets `malloc(len + 1)` and a patched byte), so the
+    // scanner's `if (ch == sep)` always hits at that cell (`cut.c:242-251`),
+    // `isdelim` holds, `-s` cannot erase the line, and the "copy the whole line
+    // as is" leg is not taken either. That the line body here lacks that byte is
+    // the result of **line splitting**, not what C sees.
     let carries_delimiter = delimiter == b'\n' || line.contains(&delimiter);
     if !carries_delimiter {
         if suppress {
@@ -243,20 +266,25 @@ pub struct CutArgs<'a> {
     pub bytes_list: Option<&'a [u8]>,
     pub fields_list: Option<&'a [u8]>,
     pub delimiter: u8,
-    /// `-d` 是否真被给过。C 把它单独记在 `dflag` 里，而 `cut.c:124` 的那道
-    /// post-check 问的是旗标而不是值：给了字节列表又给 `-d` 就是用法错。
+    /// Whether `-d` was actually given. C records it separately in `dflag`, and
+    /// the post-check at `cut.c:124` asks about the flag rather than the value:
+    /// a byte list together with `-d` is a usage error.
     pub delimiter_given: bool,
     pub suppress: bool,
-    /// `-s` 是否真被给过（`sflag`，同一道 post-check 的另一半）。
+    /// Whether `-s` was actually given (`sflag`, the other half of the same
+    /// post-check).
     pub suppress_given: bool,
     pub operands: Vec<&'a [u8]>,
 }
 
-/// `cut` 参数错。每个臂对应 C 的一条真出路（调用者负责渲染），而不是「都是用法错」：
-/// - [`CutError::Usage`]：C 的四道 post-check（`cut.c:120-128`），全部直走 `usage()`，
-///   **前面没有 getopt 那一行**。
-/// - [`CutError::Getopt`]：集外字母与缺值，getopt 先印一行再走 usage。
-/// - [`CutError::IllegalList`] / [`CutError::ZeroInList`]：C `get_list()` 的两句 `errx`。
+/// `cut` argument errors. Each arm corresponds to one real exit of C (the caller
+/// renders it), instead of "everything is a usage error":
+/// - [`CutError::Usage`]: C's four post-checks (`cut.c:120-128`); all go
+///   straight to `usage()`, **with no getopt line in front**.
+/// - [`CutError::Getopt`]: a letter outside the set or a missing value; getopt
+///   prints one line first and usage follows.
+/// - [`CutError::IllegalList`] / [`CutError::ZeroInList`]: the two `errx` calls
+///   of C `get_list()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CutError {
     Usage,
@@ -265,8 +293,9 @@ pub enum CutError {
     ZeroInList,
 }
 
-/// 把列表解析的错归到 C 的那两句上。壳在取范围时也会走一次（那里已不可达，
-/// 但句子只住在这里与 `arg_error`，不重复写）。
+/// Attribute a list-parse error to one of C's two sentences. The shell also
+/// takes this path when fetching ranges (unreachable there any more, but the
+/// sentences live only here and in `arg_error`, so they are not written twice).
 impl From<ListError> for CutError {
     fn from(error: ListError) -> Self {
         match error {
@@ -283,10 +312,12 @@ impl From<ListError> for CutError {
 /// libc report, never a leaked operand. `-b`/`-c` set the byte list (they
 /// coincide here — the selection is byte-grained).
 ///
-/// 两个时刻不能合并：列表的**合法性**在选项环里就地查（C 的 `get_list(optarg)` 就在
-/// `case 'b'`/`case 'c'`/`case 'f'` 里，`cut.c:90-108`），所以一个非法列表抢在后面的
-/// 集外字母之前报错；而**选哪一类**的冲突到环外才查（`:120-128`），所以
-/// `cut -b 1 -f 2 -x` 报的是 `-x` 而不是冲突。
+/// The two moments cannot be merged: a list's **validity** is checked on the
+/// spot inside the option ring (C's `get_list(optarg)` sits in the
+/// `case 'b'`/`case 'c'`/`case 'f'` arms, `cut.c:90-108`), so an invalid list
+/// reports before a later unknown letter; while the **mode conflict** is only
+/// checked outside the ring (`:120-128`), so `cut -b 1 -f 2 -x` reports `-x`
+/// rather than the conflict.
 pub fn parse_cut_args<'a>(args: &'a [&'a [u8]]) -> Result<CutArgs<'a>, CutError> {
     let mut bytes_list: Option<&'a [u8]> = None;
     let mut fields_list: Option<&'a [u8]> = None;
@@ -316,8 +347,9 @@ pub fn parse_cut_args<'a>(args: &'a [&'a [u8]]) -> Result<CutArgs<'a>, CutError>
                             index += 1;
                             match args.get(index) {
                                 Some(v) => *v,
-                                // C：optstring 不以 `:` 开头，所以缺值时 getopt 先印
-                                // 一句再返回 `'?'`（`getopt.c:132-136`）。
+                                // C: the optstring does not start with `:`, so on a
+                                // missing value getopt prints one line first and then
+                                // returns `'?'` (`getopt.c:132-136`).
                                 None => {
                                     return Err(CutError::Getopt(GetoptReport::MissingValue(
                                         char::from(letter),
@@ -325,8 +357,9 @@ pub fn parse_cut_args<'a>(args: &'a [&'a [u8]]) -> Result<CutArgs<'a>, CutError>
                                 }
                             }
                         };
-                        // C 的 `get_list(optarg)` 就在这个 case 里跑（`cut.c:91/96/105`），
-                        // 所以下面那两道 post-check 之前先有可能报错。
+                        // C's `get_list(optarg)` runs inside this case
+                        // (`cut.c:91/96/105`), so an error may be reported before
+                        // the two post-checks below.
                         parse_list(value).map_err(CutError::from)?;
                         if letter == b'f' {
                             fields_list = Some(value);
@@ -347,8 +380,9 @@ pub fn parse_cut_args<'a>(args: &'a [&'a [u8]]) -> Result<CutArgs<'a>, CutError>
                                 }
                             }
                         };
-                        // C `cut.c:101-102` 只有一句 `dchar = *optarg`：取首字节，
-                        // 多了不用也不报错，空串就取到那个 `\0`。
+                        // C `cut.c:101-102` is a single `dchar = *optarg`: take
+                        // the first byte; extra bytes are ignored without an
+                        // error, and an empty string yields that `\0`.
                         delimiter = *value.first().unwrap_or(&0);
                         delimiter_given = true;
                         pos = bytes.len();
@@ -374,12 +408,16 @@ pub fn parse_cut_args<'a>(args: &'a [&'a [u8]]) -> Result<CutArgs<'a>, CutError>
         operands.push(arg);
         index += 1;
     }
-    // C `cut.c:120-128` 的四道 post-check，四支都走同一个 `usage()`（没有 getopt 前置行）：
+    // C `cut.c:120-128`'s four post-checks; all four arms go through the same
+    // `usage()` (no getopt line in front):
     //   if (fflag) { if (cflag || bflag) usage(); }
     //   else if ((!cflag && !bflag) || dflag || sflag) usage();
     //   else if (bflag && cflag) usage();
-    // 本实现里 `-b` 与 `-c` 同义（选择按字节粒度），所以第三道不可达：
-    // 它需要的「bflag 与 cflag 各自成立」在本树没法表达，差异记在 07 篇的 cut 行。
+    // In this implementation `-b` and `-c` are synonyms (selection is
+    // byte-grained), so the third check is unreachable: the "bflag and cflag both
+    // set" state it needs cannot be expressed in this tree, and the difference is
+    // recorded in the cut row of
+    // `rewrite-notes/18-stage-commands/07-text-filter.md`.
     if fields_list.is_some() {
         if bytes_list.is_some() {
             return Err(CutError::Usage);
@@ -409,16 +447,19 @@ mod tests {
         String::from_utf8_lossy(&out[..len]).into_owned()
     }
 
-    /// 取列的腿数的是字节：C 把 `-b` 单独编成一份 `b_cut`，它的取放宏就是 `getc`/`putchar`
-    /// （`minix3/usr.bin/cut/x_cut.c:45-50`；同一文件的 `c_cut` 腿才是 `getwc`/`putwchar`，
-    /// `:52-57`）。所以一枚解不出 UTF-8 的字节与任何别的字节一样占一格，也必须原样交回。
+    /// The byte leg counts bytes: C compiles `-b` into its own `b_cut`, whose
+    /// get/put macros are `getc`/`putchar` (`minix3/usr.bin/cut/x_cut.c:45-50`;
+    /// only the `c_cut` leg of the same file uses `getwc`/`putwchar`, `:52-57`).
+    /// So a byte that does not decode as UTF-8 occupies one cell like any other
+    /// byte and must be handed back unchanged.
     #[test]
     fn a_byte_that_is_not_utf8_occupies_one_position() {
         let ranges = [Range { low: 2, high: 2 }];
         let mut out = [0u8; 8];
         let len = select_bytes(b"a\xffb", &ranges, &mut out).unwrap();
         assert_eq!(&out[..len], b"\xff");
-        // 行里没有分隔符且 `-s` 关着：整行搬运，那枚字节照原样带着走。
+        // The line has no delimiter and `-s` is off: the whole line is copied,
+        // and that byte travels along unchanged.
         let mut copied = [0u8; 8];
         let whole = select_fields(b"a\xffb", &ranges, b'\t', false, &mut copied)
             .unwrap()
@@ -426,9 +467,11 @@ mod tests {
         assert_eq!(&copied[..whole], b"a\xffb");
     }
 
-    /// 分隔符恰好是换行：每一行都算「带着分隔符」，于是走字段腿、第二格是空的一格，
-    /// 而 `-s` 没有可抹的行。参照件对 `a\nb c\n` 的 `-f 2` 与 `-f 2 -s` 都交回 `\n\n`
-    /// （每行一枚换行、字段为空），逐字节读数见 `tmp/cut-432/ab.log`。
+    /// The delimiter is exactly a newline: every line counts as "carrying the
+    /// delimiter", so the field leg runs and the second cell is an empty one,
+    /// while `-s` has no line to erase. A reference run of `-f 2` and `-f 2 -s`
+    /// on `a\nb c\n` returns `\n\n` for both (one newline per line, empty
+    /// field).
     #[test]
     fn a_newline_delimiter_makes_every_line_a_fielded_line() {
         let second = [Range { low: 2, high: 2 }];
@@ -443,14 +486,16 @@ mod tests {
             Some(0),
             "这里没有「整行不带分隔符」可供 `-s` 抹掉"
         );
-        // 换成别的面分隔符，行体里找不到它，才回到「整行没有分隔符」那一形。
+        // Only with a different delimiter, which the line body does not contain,
+        // does the shape return to "the whole line has no delimiter".
         assert_eq!(
             select_fields(b"a", &second, b';', true, &mut out).unwrap(),
             None
         );
     }
 
-    /// `None` 交回的是「这一行整行没写」，与空串（写了、但选不出字段）不是同一件事。
+    /// `None` means "this line was not written at all", which is not the same
+    /// thing as an empty string (written, but no field could be selected).
     fn fields_of(line: &str, list: &[u8], delimiter: u8, suppress: bool) -> Option<String> {
         let ranges = parse_list(list).unwrap();
         let mut out = [0u8; 64];
@@ -488,12 +533,14 @@ mod tests {
     #[test]
     fn test_missing_delimiter_policy() {
         assert_eq!(fields_of("abc", b"1", b':', false).as_deref(), Some("abc"));
-        // `-s` 且这一行没有分隔符：整行跳过，一个字节都不交（`cut.c:248`/`:253-254`）。
+        // `-s` with no delimiter in this line: skip the whole line, not one byte
+        // is emitted (`cut.c:248`/`:253-254`).
         assert_eq!(fields_of("abc", b"1", b':', true), None);
     }
 
-    /// 参照件读数 `tmp/cut-428/ref-s.log`：`-s` 吞的是「没有分隔符的那一行」，
-    /// 「有分隔符而选不出字段」那一行仍交一枚换行——两形在库里必须是两个值。
+    /// A reference reading: `-s` swallows "the line without the delimiter",
+    /// while the line that "has the delimiter but selects no field" still returns
+    /// one newline — the two shapes must be two distinct values in the library.
     #[test]
     fn a_suppressed_line_is_absent_rather_than_empty() {
         let ranges = parse_list(b"9").unwrap();
@@ -517,30 +564,35 @@ mod tests {
 
     #[test]
     fn test_bad_lists_rejected() {
-        // 只有两类形报错，而且各对应 C 自己那一句：零（`:197-198`）与残留（`:195-196`）。
+        // Only two shapes raise an error, each corresponding to C's own sentence:
+        // zero (`:197-198`) and leftover (`:195-196`).
         assert_eq!(parse_list(b"0").err(), Some(ListError::IncludesZero));
         assert_eq!(parse_list(b"a").err(), Some(ListError::IllegalValue));
         assert_eq!(parse_list(b"1-x").err(), Some(ListError::IllegalValue));
         assert_eq!(parse_list(b"1-2-3").err(), Some(ListError::IllegalValue));
-        // 孤一个减号：start 与 stop 都是零（C 的 setautostart 不产生数字），走零那句。
+        // A lone minus: both start and stop are zero (C's setautostart produces
+        // no number), so the zero sentence applies.
         assert_eq!(parse_list(b"-").err(), Some(ListError::IncludesZero));
     }
 
-    /// 列表语法的四形按 C 的 `get_list` 定形（批次二百八十六）：这四形在旧写法里
-    /// 都被拒，而 C 接受。
+    /// The four shapes of the list grammar are derived from C's `get_list`: the
+    /// old spelling rejected all four, while C accepts them.
     #[test]
     fn list_grammar_matches_the_strtok_rule() {
-        // ① 空列表不是错：`strtok` 直接交 NULL（`cut.c:175`），一个位置也不选。
+        // (1) An empty list is not an error: `strtok` hands back NULL
+        // (`cut.c:175`), so no position is selected.
         assert_eq!(parse_list(b"").unwrap().len(), 0);
         assert_eq!(bytes_of("abc", b""), "");
-        // ② 空项折叠与空白分隔：`cut.c:175` 的分隔符集是 `,`、空格、制表符。
+        // (2) Empty items collapse and blanks separate: `cut.c:175`'s delimiter
+        // set is `,`, space and tab.
         assert_eq!(bytes_of("abcde", b"1,,2"), "ab");
         assert_eq!(bytes_of("abcde", b"1 2"), "ab");
         assert_eq!(bytes_of("abcde", b"1\t3"), "ac");
-        // ③ 倒序区间不查大小关系，只是选不中任何东西（`:209-210` 那个
-        // `start++ <= stop` 的循环一次也不跑）。
+        // (3) A reversed range does not check the ordering; it simply selects
+        // nothing (the `start++ <= stop` loop at `:209-210` never runs).
         assert_eq!(bytes_of("abcde", b"5-2"), "");
-        // ④ 项数不封顶（C 按 `ALLOC_CHUNK` 长大）：20 项照接。
+        // (4) No cap on the item count (C grows by `ALLOC_CHUNK`): 20 items are
+        // accepted.
         let many = (1..=20)
             .map(|n| n.to_string())
             .collect::<Vec<String>>()
@@ -549,19 +601,23 @@ mod tests {
         assert_eq!(parse_list(&many).unwrap().len(), 20);
     }
 
-    /// C 在 `*p == '-'` 上的两个判据（`:186`、`:189`）不能被压平成一件事：
-    /// `strtol` 没跑时指针不动，第二个判据又命中同一个 `-`。这两形的报错句子
-    /// 在压平写法下正好互换。
+    /// C's two tests on `*p == '-'` (`:186`, `:189`) must not be flattened into
+    /// one thing: when `strtol` did not run the pointer stays put and the second
+    /// test hits the same `-`. Under the flattened spelling the two error
+    /// sentences come out exactly swapped.
     #[test]
     fn the_two_dash_tests_are_not_merged() {
-        // `5--`：第一个判据的 `isdigit(p[1])` 不成立（`:187`），于是第二个判据跨过
-        // 索引 1 的 `-` 后停在索引 2 的 `-` 上 → 残留那句（`:195-196`）。
+        // `5--`: the first test's `isdigit(p[1])` fails (`:187`), so the second
+        // test steps over the `-` at index 1 and stops at the `-` at index 2 →
+        // the leftover sentence (`:195-196`).
         assert_eq!(parse_list(b"5--").err(), Some(ListError::IllegalValue));
-        // `1-2-` 却是 C 接受的：跨过尾部那个 `-` 正好走到行尾（`:189-193`），
-        // autostop 那一支把 maxval 之后的内容原样打出（`x_cut.c:80-82`），
-        // 等价于从 1 打到行尾。
+        // `1-2-` is accepted by C: stepping over the trailing `-` lands exactly
+        // at the end of the line (`:189-193`), and the autostop arm prints what
+        // follows maxval as is (`x_cut.c:80-82`), equivalent to printing from 1
+        // to the end of the line.
         assert_eq!(bytes_of("abcde", b"1-2-"), "abcde");
-        // `0-` 也是接受的形，但走零那句：残留判据在前、零判据在后（`:195-198`）。
+        // `0-` is an accepted shape too, but takes the zero sentence: the
+        // leftover test comes first, the zero test after (`:195-198`).
         assert_eq!(parse_list(b"0-").err(), Some(ListError::IncludesZero));
     }
 
@@ -603,7 +659,8 @@ mod tests {
             parse_cut_args(&[b"-f1", b"-"]).unwrap().operands,
             vec![&b"-"[..]]
         );
-        // 集外字母与缺值带的是 libc 那一行（句子单源在 `GetoptReport`）。
+        // An unknown letter or a missing value carries libc's line (the sentence
+        // has a single home in `GetoptReport`).
         assert_eq!(
             parse_cut_args(&[b"-x", b"file"]).err(),
             Some(CutError::Getopt(GetoptReport::UnknownOption('x')))
@@ -616,9 +673,10 @@ mod tests {
             parse_cut_args(&[b"-d"]).err(),
             Some(CutError::Getopt(GetoptReport::MissingValue('d')))
         );
-        // 两类列表并存是**环外**的 post-check（`cut.c:120-122`），报的是裸 usage：
-        // 前面没有 libc 那一行。旧写法把这个当环内的 `Conflict` 抢先报，所以
-        // `cut -b 1 -f 2 -x` 会报冲突而不是报 `-x`。
+        // Two list kinds at once is an **outside-the-ring** post-check
+        // (`cut.c:120-122`) and reports bare usage: no libc line in front. The
+        // old spelling treated it as an in-ring `Conflict` reported first, so
+        // `cut -b 1 -f 2 -x` reported the conflict instead of `-x`.
         assert_eq!(
             parse_cut_args(&[b"-b1", b"-f1"]).err(),
             Some(CutError::Usage)
@@ -627,8 +685,9 @@ mod tests {
             parse_cut_args(&[b"-f1", b"-b1"]).err(),
             Some(CutError::Usage)
         );
-        // `-d`/`-s` 只能配 `-f`（`cut.c:124` 的 `dflag || sflag`）：给字节列表
-        // 再给它们也是用法错。旧写法两条都静默接受。
+        // `-d`/`-s` only pair with `-f` (`dflag || sflag` at `cut.c:124`):
+        // giving them alongside a byte list is a usage error too. The old
+        // spelling accepted both silently.
         assert_eq!(
             parse_cut_args(&[b"-c1", b"-d,"]).err(),
             Some(CutError::Usage)
@@ -637,14 +696,16 @@ mod tests {
             parse_cut_args(&[b"-c1", b"-s"]).err(),
             Some(CutError::Usage)
         );
-        // 一个列表也没有 → `(!cflag && !bflag)` 那一支。
+        // No list at all → the `(!cflag && !bflag)` arm.
         assert_eq!(parse_cut_args(&[b"-s"]).err(), Some(CutError::Usage));
-        // C 的 `dchar = *optarg` 只取首字节，多了不用也不报错（`cut.c:101-102`）；
-        // 旧写法把多字节当成一个专门的错。
+        // C's `dchar = *optarg` takes only the first byte; extra bytes are
+        // ignored without an error (`cut.c:101-102`), whereas the old spelling
+        // treated the multi-byte case as a dedicated error.
         assert_eq!(parse_cut_args(&[b"-dab", b"-f1"]).unwrap().delimiter, b'a');
         assert_eq!(parse_cut_args(&[b"-d", b"", b"-f1"]).unwrap().delimiter, 0);
-        // 列表合法性在选项环里就地查（C 的 `get_list` 就坐在那个 case 里），所以
-        // 非法列表抢在后面的集外字母之前报错。
+        // List validity is checked on the spot inside the option ring (C's
+        // `get_list` sits in that case), so an invalid list reports before a
+        // later unknown letter.
         assert_eq!(
             parse_cut_args(&[b"-f", b"0", b"-x"]).err(),
             Some(CutError::ZeroInList)
@@ -655,14 +716,20 @@ mod tests {
         );
     }
 
-    /// argv 那串字节进到库里不许被折过（批次四百六十一）：`cut` 的 `-d` 与 `column` 的 `-s`
-    /// 同族——值不是回显位而是拿去切**输出内容**的（C 一句 `dchar = *optarg`，
-    /// `minix3/usr.bin/cut/cut.c:101-102`，取首字节）。文本缝之下 `-d<ff>` 先折成
-    /// `ef bf bd` 三枚，分隔符就成了 `ef`：同一份输入上「该切的切不开、不该切的反倒被切」。
-    /// 参照件 `tmp/cut-406/cut` 现量四形：`-d<ff> -f1` 对 `a<ff>b<TAB>z` 交回 `a`、`-f2` 交回
-    /// `b<TAB>z`；`-d<ff>` 对只含 U+FFFD 三字节的行原样交回；值附形 `-d<ff>` 同第一形。
-    /// 操作数那一腿在本支只走去开档与 `warn` 的 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`），
-    /// 所以这里钉的是**库里能不能表达原字节档名**——旧签名 `&[&str]` 让那一形写不出来。
+    /// The argv byte string must reach the library unfolded: `cut`'s `-d` and
+    /// `column`'s `-s` are the same family — the value is not an echo slot but is
+    /// used to split the **output content** (C's one-liner `dchar = *optarg`,
+    /// `minix3/usr.bin/cut/cut.c:101-102`, takes the first byte). Under the text
+    /// seam `-d<ff>` folds to the three bytes `ef bf bd` first, making the
+    /// delimiter `ef`: on the same input "what should split does not, and what
+    /// should not gets split". A reference build measured four shapes:
+    /// `-d<ff> -f1` on `a<ff>b<TAB>z` returns `a`, `-f2` returns `b<TAB>z`;
+    /// `-d<ff>` returns a line containing only the three U+FFFD bytes unchanged;
+    /// the attached-value form `-d<ff>` matches the first. The operand leg here
+    /// only reaches the `&str` mouths of opening the file and `warn` (registered
+    /// as `ARGV-BYTE-PATH-IN-LIBS`), so what is pinned here is **whether the
+    /// library can express a raw-byte file name** — the old `&[&str]` signature
+    /// made that shape impossible to write.
     #[test]
     fn the_delimiter_and_the_operand_reach_the_library_as_raw_bytes() {
         let argv: &[&[u8]] = &[b"-d", b"\xff", b"-f", b"1", b"a\xffb"];
@@ -699,13 +766,17 @@ mod tests {
         );
     }
 
-    /// 字母位的**取法**在库里就得按字节（批次四百六十一补）：`getopt.c:79` 的
-    /// `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出，所以 `-é`
-    /// （`c3 a9`）交回的是 `char::from(0xc3)` 而不是整个字符。这一枚与 `cut_face` 那枚
-    /// 各钉一半——**只改一半也必须红**：取法退回按字符取整簇时只有这里先红，报文渲染退回
-    /// 按 `char` 走时只有面侧红（同 `comm`/`cmp` 那两笔的两半分钉）。
-    /// 参照件 `tmp/cut-406/cut` 现量 `-é` 与 `-sé` 都交回单个 `c3`（`s` 是 `"b:c:d:f:sn"`
-    /// 里唯一不带值的字母之一，聚簇继续吃到 `é` 的第一字节）。
+    /// The letter slot must be taken **bytewise** in the library:
+    /// `getopt.c:79`'s `optopt = *place++` takes one byte at a time and `:103`
+    /// writes it back with `%c`, so `-é` (`c3 a9`) yields `char::from(0xc3)`
+    /// rather than the whole character. This test and the one in `cut_face` pin
+    /// one half each — **changing only one of them must still go red**: if the
+    /// take reverts to whole characters per cluster only this one goes red first,
+    /// and if message rendering reverts to per-`char` only the face side does
+    /// (the same two-half pinning as the `comm`/`cmp` pairs). A reference build
+    /// measured both `-é` and `-sé` as returning a single `c3` (`s` is one of the
+    /// value-less letters in `"b:c:d:f:sn"`, so the cluster keeps eating into the
+    /// first byte of `é`).
     #[test]
     fn the_unknown_letter_is_taken_bytewise_in_the_ring() {
         assert_eq!(
@@ -713,13 +784,14 @@ mod tests {
             Some(CutError::Getopt(GetoptReport::UnknownOption('\u{00c3}'))),
             "`é` 是 c3 a9 两字节，libc 报第一字节"
         );
-        // 聚簇里合法字母先被吃掉，报的仍是其后第一枚字节。
+        // The legal letter inside the cluster is consumed first, and the report
+        // is still the first byte after it.
         assert_eq!(
             parse_cut_args(&[b"-s\xc3\xa9", b"a", b"b"]).err(),
             Some(CutError::Getopt(GetoptReport::UnknownOption('\u{00c3}'))),
             "-s 后紧跟多字节字母"
         );
-        // ASCII 那一半不许被波及。
+        // The ASCII half must not be affected.
         assert_eq!(
             parse_cut_args(&[b"-Z", b"a", b"b"]).err(),
             Some(CutError::Getopt(GetoptReport::UnknownOption('Z'))),

@@ -38,19 +38,21 @@ pub const S_IFIFO: Mode = 0o010000;
 /// See [`S_IFMT`].
 pub const S_IFLNK: Mode = 0o120000;
 
-/// `S_ISVTX` (`sys/stat.h:145,159` = `_S_ISVTX` `0001000`)——粘滞位：目录上
-/// 置位时，只有受害者属主或超级用户能删/改名其中的条目（`do_unlink:132`）。
+/// `S_ISVTX` (`sys/stat.h:145,159` = `_S_ISVTX` `0001000`) — the sticky bit: when
+/// set on a directory, only the victim's owner or the superuser may delete or
+/// rename entries in it (`do_unlink:132`).
 pub const S_ISVTX: Mode = 0o1000;
 /// See [`S_IFMT`].
 pub const S_IFSOCK: Mode = 0o140000;
 
-/// `UTIME_NOW` (`sys/stat.h:235` = `(1 << 30) - 1`)——`utimens` 的"用当前
-/// 时间"哨兵值（放在 `tv_nsec` 里）。
+/// `UTIME_NOW` (`sys/stat.h:235` = `(1 << 30) - 1`) — the "use the current time"
+/// sentinel for `utimens` (placed in `tv_nsec`).
 pub const UTIME_NOW: i64 = (1 << 30) - 1;
-/// `UTIME_OMIT` (`sys/stat.h:236` = `(1 << 30) - 2`)——"这一项不动"。
+/// `UTIME_OMIT` (`sys/stat.h:236` = `(1 << 30) - 2`) — "leave this entry alone".
 pub const UTIME_OMIT: i64 = (1 << 30) - 2;
-/// `AT_SYMLINK_NOFOLLOW` (`sys/fcntl.h:299`)——`utimensat` 不跟进末组件
-/// 符号链接（对应遍历的 `PATH_RET_SYMLINK`）。
+/// `AT_SYMLINK_NOFOLLOW` (`sys/fcntl.h:299`) — `utimensat` does not follow a
+/// symlink in the final component (corresponding to the walk's
+/// `PATH_RET_SYMLINK`).
 pub const AT_SYMLINK_NOFOLLOW: u32 = 0x200;
 
 /// `O_ACCMODE` mask (`minix3/sys/sys/fcntl.h:67`): bottom two bits.

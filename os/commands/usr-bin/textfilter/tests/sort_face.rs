@@ -50,12 +50,15 @@ fn clean(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
-/// 本进程的**有效** uid（`/proc/self/status` 里 `Uid:` 那行的第二列）。
-/// 拿不准就返 `None`，让调用方按普通用户那一支走。
+/// This process's **effective** uid (the second column of the `Uid:` line in
+/// `/proc/self/status`). Returns `None` when unsure, letting the caller take the
+/// ordinary-user branch.
 ///
-/// 这一探针不是可有可无的：本仓的权威编译门跑在 docker `minix-ci:1.94` 里，而那个镜像
-/// 默认以 root 执行（`docker run --rm minix-ci:1.94 id` → `uid=0(root)`）。root 无视
-/// 权限位，所以下面那枚「只读目标」门在容器内与在宿主上看到的是**两种都合法**的行为。
+/// This probe is not optional: the repository's authoritative compilation gate
+/// runs inside docker `minix-ci:1.94`, and that image executes as root by
+/// default (`docker run --rm minix-ci:1.94 id` → `uid=0(root)`). Root ignores
+/// permission bits, so the "read-only target" gate below sees **two equally
+/// valid** behaviors in the container and on the host.
 fn effective_uid() -> Option<u32> {
     let status = fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
@@ -160,21 +163,25 @@ fn sorting_a_file_over_itself_works() {
 
 #[test]
 fn an_unwritable_target_is_refused_before_anything_changes() {
-    // `access(outpath, W_OK)`（`sort.c:336-337`）那一支在 C 是 `err(2, "%s", outpath)`：
-    // 程序名、路径、`strerror` 句子三件齐备（旧写法只印到路径为止），且退 2。
-    // 旧内容必须还在。
+    // The `access(outpath, W_OK)` (`sort.c:336-337`) branch is
+    // `err(2, "%s", outpath)` in C: program name, path, and `strerror` sentence
+    // all three present (the old spelling printed only up to the path), exiting
+    // 2. The old content must still be there.
     //
-    // **这一判据只在非 root 成立**：带 `CAP_DAC_OVERRIDE` 的进程（root 默认有）走
-    // `access(2)`/`open` 时不看权限位，只受只读挂载这类文件系统级限制约束。所以同一句
-    // C 命令以 root 跑就会写出结果并退 0。权威容器门正是 root，故两支各自钉住自己的
-    // 形——而不是把其中一支跳过。
+    // **This expectation only holds for non-root**: a process with
+    // `CAP_DAC_OVERRIDE` (root has it by default) ignores permission bits in
+    // `access(2)`/`open` and is constrained only by file-system-level limits such
+    // as read-only mounts. So the same C command run as root writes the result
+    // and exits 0. The authoritative container gate runs as root, so both
+    // branches pin their own shape—rather than skipping one of them.
     let target = written("read-only", b"keep me\n");
     fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).expect("chmod");
     let input = written("read-only-input", b"b\na\n");
     let (out, status, err) = run(&["-o", &text(&target), &text(&input)], b"");
     assert_eq!(out, Vec::<u8>::new());
     if effective_uid() == Some(0) {
-        // root：`access` 放行 → 写成功，目标内容变成排好的结果。
+        // root: `access` admits → the write succeeds and the target content
+        // becomes the sorted result.
         assert_eq!(status, 0, "root 下 access 放行，stderr 是 {err:?}");
         assert_eq!(err, "", "root 那一支不该发任何句子");
         assert_eq!(fs::read(&target).expect("written"), b"a\nb\n");
@@ -201,8 +208,9 @@ fn the_check_mode_never_opens_the_output() {
     let (out, status, err) = run(&["-c", "-o", &text(&target), &text(&input)], b"");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 1, "stderr was {err:?}");
-    // 逐字而非 `contains`：这一枚之前只写 `contains("disorder")`，所以壳把那句自创成
-    // `sort: disorder: ` 的时候它照样绿（批次二百九十二收严）。
+    // Verbatim rather than `contains`: this one used to assert only
+    // `contains("disorder")`, so it stayed green even when the shell invented its
+    // own sentence `sort: disorder: `. Now tightened to the exact bytes.
     assert_eq!(
         err, "sort: found disorder: a\n",
         "那句得逐字对位 `msort.c:403`"
@@ -243,20 +251,23 @@ fn a_lone_dash_names_standard_input() {
     let (out, status, err) = run(&["-o"], b"a\n");
     assert_eq!(out, Vec::<u8>::new(), "stderr was {err:?}");
     assert_eq!(status, 2, "stderr was {err:?}");
-    // 两行：libc 的那一句在前（`getopt.c:132-136`，字母不带引号），整个 usage 块在后。
-    // 旧壳只印一句自创的 `sort: bad option`。
+    // Two lines: libc's sentence first (`getopt.c:132-136`, the letter
+    // unquoted), the whole usage block after. The old shell printed only an
+    // invented `sort: bad option`.
     assert_eq!(
         err,
         format!("sort: option requires an argument -- o\n{USAGE}")
     );
 }
 
-/// C `usage()` 的那一行（`sort.c:405-410`）：两条 `fprintf` 拼成**一行**，第二条以
-/// 十三个空格开头（从 `sort.o` 的 `.rodata` 数出来的）。这里逐字钉住，间距也算。
+/// The one line of C `usage()` (`sort.c:405-410`): two `fprintf`s joined into
+/// **one line**, the second starting with thirteen spaces (counted from
+/// `sort.o`'s `.rodata`). Pinned verbatim here, spacing included.
 const USAGE: &str = "usage: sort [-bcdfHilmnrSsu] [-k field1[,field2]] [-o output] [-R char] [-T dir]             [-t char] [file ...]\n";
 
-/// 与 `run` 同一条命令缝，但标准错误也**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
-/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+/// The same command seam as `run`, but handing standard error back **byte for
+/// byte** too: `from_utf8_lossy` renders a bare `c3` as the three-byte U+FFFD,
+/// and the textual form cannot tell "one byte" from "two bytes".
 fn run_streams(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(SORT)
         .args(args)
@@ -274,13 +285,19 @@ fn run_streams(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**。这一支的绝对读数有两处来源：机制层是本轮编的
-/// Minix `getopt.c` 探针（`tmp/sort-411/probe.c`，按 `sort.c:148` 的选项串跑，交回
-/// `optopt=303` 即 `c3`，且它把 `é` 的**两个字节各报一次**——真实 `sort.c:250-252` 的
-/// `case '?': default: usage(NULL);` 在第一个就退出，所以报文只有一行），同族十五支参照件
-/// （`tmp/rev-309/rev_ref`、`tmp/paste-321/paste_ref`、`tmp/cmp-410/cmp_ref` 等）对 `-é`
-/// 一致交回单个 `c3`。`l` 是选项串里合法且不带值的字母，聚簇继续吃到第一字节；`-Zé` 停在 `Z`。
-/// ASCII 那一形既有门已钉（`an_unknown_letter_prints_the_libc_line_then_the_usage`），不重复承载。
+/// The letter slot of the out-of-set line is **one raw byte**. This branch has
+/// two sources of absolute readings: at the mechanism level, a Minix `getopt.c`
+/// probe compiled for this work (`tmp/sort-411/probe.c`, run with the option
+/// string from `sort.c:148`, returns `optopt=303`, i.e. `c3`, and it reports
+/// **each of é's two bytes once**—the real `sort.c:250-252`
+/// `case '?': default: usage(NULL);` exits on the first, so the message is only
+/// one line); and fifteen reference builds of the same family
+/// (`tmp/rev-309/rev_ref`, `tmp/paste-321/paste_ref`, `tmp/cmp-410/cmp_ref`,
+/// etc.) return a single `c3` for `-é` consistently. `l` is a legal, value-less
+/// letter in the option string, so the cluster keeps consuming and eats the
+/// first byte; `-Zé` stops at `Z`. The ASCII shape already has its own gate
+/// (`an_unknown_letter_prints_the_libc_line_then_the_usage`), so this test does
+/// not carry it twice.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_sort() {
     let want: Vec<u8> = [
@@ -315,11 +332,15 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
 
 #[test]
 fn a_bad_key_gets_its_own_sentence_without_the_usage() {
-    // `setfield`/`setcolumn` 那五支 `errx` 都**不接 usage**（`init.c:160-216`），与上面
-    // 那两支正好相反；把退码与「有没有 usage 块」一起钉住才分得开。五句文本单源在
-    // `sort.rs:KeySpecError::sentence`，而每一句用哪些形都是拿参照件
-    //（`tmp/family-diag-ref/sort_ref`，由 `minix3/usr.bin/sort/` 真源链成）逐形量过的：
-    // 旧写法把五句挤成一句 `illegal field descriptor`，所以四句都在拿别人的句子签字。
+    // The five `errx` arms of `setfield`/`setcolumn` **do not append usage**
+    // (`init.c:160-216`), the exact opposite of the two above; only pinning the
+    // exit status together with "is there a usage block" tells them apart. The
+    // five sentences have a single source in `sort.rs:KeySpecError::sentence`,
+    // and which shapes use which sentence was measured shape by shape against
+    // the reference build (`tmp/family-diag-ref/sort_ref`, linked from the real
+    // `minix3/usr.bin/sort/` sources): the old spelling squeezed the five into
+    // one `illegal field descriptor`, so four of them signed with someone else's
+    // sentence.
     for (spec, sentence) in [
         ("x", "field numbers must be positive"),
         ("0", "field numbers must be positive"),
@@ -339,10 +360,13 @@ fn a_bad_key_gets_its_own_sentence_without_the_usage() {
             "键形 {spec:?} 该走那一句，而且不接 usage"
         );
     }
-    // 反方向也要钉：C 接受的那些形不能报任何句子。`-k 2,1` 不报 `fields out of order`
-    //（结束列没给 `.C` 时缩进是 0，`:214` 那个 `tcol.indent != 0` 不成立）；`-k 1,2.0`
-    // 不报 `illegal offset`（减一只发生在开始列，`:166-167`）。旧台账把 `-k 2,1` 登记成
-    // 「在 C 是 fields out of order」，本轮拿参照件推翻了那一句。
+    // The reverse direction must be pinned too: the shapes C accepts must not
+    // report any sentence. `-k 2,1` does not report `fields out of order` (with
+    // no `.C` on the end column the indent is 0, so the `tcol.indent != 0` test
+    // at `:214` does not hold); `-k 1,2.0` does not report `illegal offset` (the
+    // decrement happens only on the start column, `:166-167`). The old ledger
+    // recorded `-k 2,1` as "fields out of order in C"; this pass overturned that
+    // with the reference build.
     for spec in ["2,1", "1,2.0", "1,2.", "1,0", "1b", "+1", "01"] {
         let (out, status, err) = run(&["-k", spec], b"a\n");
         assert_eq!(status, 0, "键形 {spec:?} 的 stderr 是 {err:?}");
@@ -353,22 +377,27 @@ fn a_bad_key_gets_its_own_sentence_without_the_usage() {
 
 #[test]
 fn the_length_flag_sorts_by_span_length() {
-    // `-l` 排的是跳完前导空白后的「跨度字节数」（C `fields.c` 的 `length()`），不是内容。
-    // 下面四行读数是拿参照件 `tmp/family-diag-ref/sort_ref` 在同一输入上量出来的：
-    // 空行（0）、`b 2`（1）、`cc 3`（2）、`aaa 1`（3）。字典序与数值序都给不出这个序。
+    // `-l` sorts by the "span byte count" after skipping leading blanks (C
+    // `fields.c`'s `length()`), not by content. The four readings below were
+    // measured on the same input with the reference build
+    // `tmp/family-diag-ref/sort_ref`: empty line (0), `b 2` (1), `cc 3` (2),
+    // `aaa 1` (3). Neither lexicographic nor numeric order yields this sequence.
     let input = b"aaa 1\nb 2\ncc 3\n\n";
     let (out, status, err) = run(&["-l"], input);
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(out, b"\nb 2\ncc 3\naaa 1\n");
-    // 局部 `-k 1l` 与全局 `-l` 同序；`-l` 配 `-r` 就是它的倒序。
+    // The local `-k 1l` and the global `-l` give the same order; `-l` with `-r`
+    // is its reverse.
     assert_eq!(run(&["-k", "1l"], input).0, out);
     assert_eq!(run(&["-l", "-r"], input).0, b"aaa 1\ncc 3\nb 2\n\n");
-    // `l` 与 `n` 同时给时按长度走（`enterfield` 先查 `L` 再查 `N`）：参照件上
-    // `-k 1ln` 与 `-k 1nl` 的读数与 `-k 1l` 逐字节相同。
+    // When `l` and `n` are both given, length wins (`enterfield` checks `L`
+    // before `N`): on the reference build, `-k 1ln` and `-k 1nl` read exactly the
+    // same as `-k 1l`.
     assert_eq!(run(&["-k", "1ln"], input).0, out);
     assert_eq!(run(&["-k", "1nl"], input).0, out);
-    // 补白不计入长度：`-t:` 下第一行「  aa:1」的字段一是 `  aa`，跳完两个空白是 2，
-    // 所以它排在长度为 1 的 `b:2` 之后。
+    // Padding does not count toward length: under `-t:`, the first field of the
+    // first line `  aa:1` is `  aa`, which is 2 after skipping the two blanks, so
+    // it sorts after `b:2`, whose length is 1.
     let delimited = b"  aa:1\nb:2\nccc:3\n";
     let (out, status, err) = run(&["-t:", "-k", "1l"], delimited);
     assert_eq!(status, 0, "stderr 是 {err:?}");
@@ -376,17 +405,22 @@ fn the_length_flag_sorts_by_span_length() {
         out, b"b:2\n  aa:1\nccc:3\n",
         "参照件给的序就是 b:2、  aa:1、ccc:3"
     );
-    // 反方向的一枚：不带 `-l` 时同一输入走字典序，带补白的 `  aa:1` 反而排在第一位。
+    // The reverse case: without `-l` the same input sorts lexicographically, and
+    // the padded `  aa:1` comes first instead.
     assert_eq!(run(&["-t:", "-k", "1"], delimited).0, delimited);
 }
 
 #[test]
 fn numeric_sort_normalizes_signs_and_zeros_the_way_c_does() {
-    // C 的 `number()` 把前导零吃掉、正号只跨过、小数尾零随 terminator 一起回退，
-    // 所以这些形**同值**——同值就意味着并列键，而并列键保持输入序（批次二百九十的
-    // 规则）。读数拿参照件 `sort_ref -n` 逐对量过（两向输入都原序输出）。
-    // 旧写法只认负号且不归一小数尾零，`+7` 会被当成「一个数字也没转出来」而落到零，
-    // 于是 `007`/`7`/`+7` 三行被拆成两个键——那时这里回退整行，看着像对的。
+    // C's `number()` eats leading zeros, only steps over a leading plus, and
+    // backs up trailing fraction zeros together with the terminator, so these
+    // shapes are **equal-valued**—equal value means tied keys, and tied keys
+    // keep input order. The readings were measured pair by pair with the
+    // reference build `sort_ref -n` (both input directions come out in input
+    // order). The old spelling recognized only a minus sign and did not
+    // normalize trailing fraction zeros, so `+7` looked like "no number was
+    // converted" and fell to zero, splitting the `007`/`7`/`+7` lines into two
+    // keys—at that time the whole-line fallback made it look right.
     for input in [
         b"007\n7\n".to_vec(),
         b"7\n007\n".to_vec(),
@@ -402,7 +436,8 @@ fn numeric_sort_normalizes_signs_and_zeros_the_way_c_does() {
         assert_eq!(status, 0, "stderr 是 {err:?}");
         assert_eq!(out, input, "{input:?} 两行同值，必须保持输入序");
     }
-    // 归一不能把量级弄丢：去零之后仍按位数与逐位比。
+    // Normalization must not lose magnitude: after dropping zeros it still
+    // compares by digit count and digit by digit.
     let (out, _, err) = run(&["-n"], b"7\n6\n");
     assert_eq!(out, b"6\n7\n", "stderr 是 {err:?}");
     let (out, _, err) = run(&["-n"], b"0007\n0006\n");
@@ -410,10 +445,12 @@ fn numeric_sort_normalizes_signs_and_zeros_the_way_c_does() {
         out, b"0006\n0007\n",
         "前导零归一后仍要比出量级，stderr 是 {err:?}"
     );
-    // C 不认指数：`1e3` 的键是 1（在 `e` 处停住），所以排在 `1000` 前。
+    // C does not recognize exponents: the key of `1e3` is 1 (it stops at `e`),
+    // so it sorts before `1000`.
     let (out, _, err) = run(&["-n"], b"1000\n1e3\n");
     assert_eq!(out, b"1e3\n1000\n", "参照件同读数，stderr 是 {err:?}");
-    // 一个数字也没有的形按零算（C 的注释明写“\"0\", \"0.00\", \"000\" or \"fubar\" but sorts as 0”）。
+    // A shape with no digit at all counts as zero (C's comment says so
+    // explicitly: "\"0\", \"0.00\", \"000\" or \"fubar\" but sorts as 0").
     let (out, _, err) = run(&["-n"], b"abc\n0\n");
     assert_eq!(
         out, b"abc\n0\n",
@@ -423,25 +460,33 @@ fn numeric_sort_normalizes_signs_and_zeros_the_way_c_does() {
 
 #[test]
 fn equal_keys_keep_input_order_and_capital_s_switches_to_the_record() {
-    // 并列键的规则（批次二百九十按参照件 `sort_ref` 逐形量过）。输入四行的键（第二列）
-    // 全部相等，所以四种写法给的是四种读数，每一枚都只对得上自己那一支：
+    // The tie rule (measured shape by shape against the reference build
+    // `sort_ref`). All four input lines have equal keys (the second column), so
+    // the four spellings give four readings, each matching only its own branch:
     let input = b"b 1\na 1\nc 1\nd 1\n";
-    // 默认：C 不拿整条记录再排（`fields.c:168` 在 `posix_sort` 为零时把 `keylen` 收到
-    // 只含键），所以并列键保持输入序——旧写法在这里回退到整行，给出的是 a b c d。
+    // Default: C does not re-sort by the whole record (`fields.c:168` trims
+    // `keylen` to the key alone when `posix_sort` is zero), so tied keys keep
+    // input order—the old spelling fell back to the whole line here and printed
+    // a b c d.
     assert_eq!(run(&["-k", "2,2"], input).0, input.to_vec());
-    // `-S` 才是「按键排完再按整条记录排」（`sort.c:202-212`）。
+    // `-S` is what "sort by key, then by the whole record" means
+    // (`sort.c:202-212`).
     assert_eq!(run(&["-S", "-k", "2,2"], input).0, b"a 1\nb 1\nc 1\nd 1\n");
-    // 全局 `-r` 连稳定序一起倒装（参照件 `-r -k 2,2` 给出 d c a b）。
+    // A global `-r` reverses the stable order along with everything else (the
+    // reference build's `-r -k 2,2` gives d c a b).
     assert_eq!(run(&["-r", "-k", "2,2"], input).0, b"d 1\nc 1\na 1\nb 1\n");
-    // `-u` 在选项环**之后**撤掉 `-S`（`:256-258`），所以两形都只留首行；旧写法因为总
-    // 按整行拆平行，会把四行全留下——那是 `sort -u` 的反面。
+    // `-u` clears `-S` **after** the option loop (`:256-258`), so both shapes
+    // keep only the first line; the old spelling always broke ties by the whole
+    // line and kept all four—the opposite of `sort -u`.
     assert_eq!(run(&["-u", "-k", "2,2"], input).0, b"b 1\n");
     assert_eq!(run(&["-S", "-u", "-k", "2,2"], input).0, b"b 1\n");
     assert_eq!(run(&["-u", "-S", "-k", "2,2"], input).0, b"b 1\n");
-    // `-c` 看的是同一把尺：默认四行不算失序（退 0、不打任何东西），开了 `-S` 之后
-    // `a 1` 排在 `b 1` 之后就是失序（参照件 `errx(1, "found disorder: %s", …)`，
-    // `msort.c:403`，退 1）。文案本轮（批次二百九十二）已按参照件逐字钉住，
-    // 精确到「哪个程序名前缀 + 哪一个词」，见下面那枚独立门。
+    // `-c` uses the same measuring stick: by default the four lines are not out
+    // of order (exit 0, nothing printed), while with `-S` enabled `a 1` after
+    // `b 1` is disorder (the reference build does
+    // `errx(1, "found disorder: %s", …)`, `msort.c:403`, exit 1). The wording is
+    // now pinned verbatim against the reference build, down to "which
+    // program-name prefix + which word"; see the dedicated gate below.
     let (out, status, err) = run(&["-c", "-k", "2,2"], input);
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 0, "stderr 是 {err:?}");
@@ -454,28 +499,33 @@ fn equal_keys_keep_input_order_and_capital_s_switches_to_the_record() {
 
 #[test]
 fn the_two_check_reports_use_c_sentences_and_one_line_each() {
-    // `-c` 那两句话逐字对位 C 的 `msort.c:order()`（参照件 `sort_ref` 同读数）：
-    // 失序 `found disorder: <后一条>`（`:403`），`-u` 下键相等 `found non-uniqueness:
-    // <后一条>`（`:405-407`）。两句都退 1、都不接 usage、都只打**一行**（C 在打印前把
-    // 记录尾部的分隔符写成 `\0`，所以句尾那个换行是 `errx` 自己加的）。
+    // The two `-c` sentences are verbatim C's `msort.c:order()` (the reference
+    // build `sort_ref` reads the same): disorder is `found disorder: <the later
+    // one>` (`:403`), and an equal key under `-u` is `found non-uniqueness: <the
+    // later one>` (`:405-407`). Both exit 1, both append no usage, and both
+    // print **one line** only (C writes the record's trailing separator as `\0`
+    // before printing, so the closing newline is `errx`'s own).
     let (out, status, err) = run(&["-c"], b"b\na\n");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 1, "stderr 是 {err:?}");
     assert_eq!(err, "sort: found disorder: a\n");
-    // 这两句都不是 usage 错：整个 stderr 就那一句，usage 块一个字也不许跟出来。
+    // Neither sentence is a usage error: the whole stderr is that one sentence,
+    // and not a single word of the usage block may follow.
     assert_eq!(err.matches('\n').count(), 1, "stderr 是 {err:?}");
     let (out, status, err) = run(&["-c", "-u"], b"a\na\nb\n");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 1, "stderr 是 {err:?}");
     assert_eq!(err, "sort: found non-uniqueness: a\n");
-    // 先后：C 在同一趟比较里先看失序再看重复，所以 `b b a` 报的是先撞上的那对
-    //（重复的 `b`），而不是后面那次失序——参照件同读数。
+    // Order: C checks disorder before duplication within the same comparison, so
+    // `b b a` reports the pair it hits first (the duplicate `b`), not the later
+    // disorder—the reference build reads the same.
     let (_, status, err) = run(&["-c", "-u"], b"b\nb\na\n");
     assert_eq!(
         (status, err.as_str()),
         (1, "sort: found non-uniqueness: b\n")
     );
-    // 反方向的一枚：没有 `-u` 时同样的输入不该冒出「non-uniqueness」那句话（退 0）。
+    // The reverse case: without `-u`, the same input must not emit the
+    // "non-uniqueness" sentence (exit 0).
     let (out, status, err) = run(&["-c"], b"a\na\nb\n");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(
@@ -487,8 +537,9 @@ fn the_two_check_reports_use_c_sentences_and_one_line_each() {
 
 #[test]
 fn a_second_delimiter_option_takes_the_message_plus_the_usage_block() {
-    // `usage("multiple field delimiters")`（`sort.c:214-215`）：先 `%s: %s` 那一句，
-    // 再接整个 usage 行。而多字节本身不是错（C 只取首字节）。
+    // `usage("multiple field delimiters")` (`sort.c:214-215`): the `%s: %s`
+    // sentence first, then the whole usage line. A multibyte delimiter is not an
+    // error by itself (C takes only the first byte).
     let (out, status, err) = run(&["-t,", "-t;"], b"a\n");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 2);
@@ -498,12 +549,16 @@ fn a_second_delimiter_option_takes_the_message_plus_the_usage_block() {
     assert_eq!(status, 0);
 }
 
-// —— 以下六枚钉 `-R`（记录分隔符）与它和 `-t` 的相互判据（批次三百零四）。金样逐形
-// 从参照件 `tmp/family-diag-ref/sort_ref`（`minix3/usr.bin/sort/` 真源 + 垫片链成）
-// 现测抄回：`-R ,` 把输入按逗号切成记录，最后一段保留它自己的换行；输出是
-// 「每条记录 + 一个分隔符」，所以**以分隔符收尾**（`files.c:194`/`:215` 的 `putrec`）。
+// —— The following six gates pin `-R` (record delimiter) and its mutual
+// exclusion with `-t`. The goldens were copied shape by shape from current
+// measurements of the reference build `tmp/family-diag-ref/sort_ref` (the real
+// `minix3/usr.bin/sort/` sources + shims): `-R ,` splits the input into records
+// at commas, and the last segment keeps its own newline; the output is "one
+// delimiter per record", so it **ends with a delimiter** (`putrec` at
+// `files.c:194`/`:215`).
 
-/// 记录切分与收尾形状：`b,a,d,c\n` 切成 `b`/`a`/`d`/`c\n`，排序后逐条补逗号。
+/// Record splitting and tail shape: `b,a,d,c\n` splits into `b`/`a`/`d`/`c\n`,
+/// and after sorting each record gets a comma appended.
 #[test]
 fn dash_r_splits_records_on_the_given_byte_and_ends_the_output_with_it() {
     let (out, status, err) = run(&["-R", ","], b"b,a,d,c\n");
@@ -511,7 +566,8 @@ fn dash_r_splits_records_on_the_given_byte_and_ends_the_output_with_it() {
     assert_eq!(out, b"a,b,c\n,d,", "最后一条记录带着它内部的换行");
 }
 
-/// 尾随分隔符不留空记录（C 的 `getrec` 在 EOF 前读到零字节就返回 0）。
+/// A trailing delimiter does not leave an empty record (C's `getrec` returns 0
+/// when it reads zero bytes before EOF).
 #[test]
 fn a_trailing_record_delimiter_does_not_make_an_extra_record() {
     let (out, status, err) = run(&["-R", ","], b"b,a,d,");
@@ -525,7 +581,8 @@ fn a_trailing_record_delimiter_does_not_make_an_extra_record() {
     );
 }
 
-/// 单字节值是**字面字节**：`-R 0` 按字符 `0` 切，不是零字节；而 `\NNN` 形走八进制。
+/// A single-byte value is a **literal byte**: `-R 0` splits on the character
+/// `0`, not a zero byte; the `\NNN` form goes octal.
 #[test]
 fn dash_r_single_byte_is_literal_while_the_backslash_form_is_octal() {
     let (out, status, err) = run(&["-R", "0"], b"a0b0c\n");
@@ -539,7 +596,8 @@ fn dash_r_single_byte_is_literal_while_the_backslash_form_is_octal() {
     );
 }
 
-/// `-u` 与 `-c` 走的都是同一批记录，所以去重也按切分后的记录算。
+/// `-u` and `-c` both operate on the same records, so de-duplication also works
+/// on split records.
 #[test]
 fn dash_u_dedups_records_not_lines() {
     let (out, status, err) = run(&["-R", ",", "-u"], b"a,a,b\n");
@@ -547,17 +605,21 @@ fn dash_u_dedups_records_not_lines() {
     assert_eq!(out, b"a,b\n,");
 }
 
-/// 两句 `errx`（`sort.c:217-218`、`:233-238`）：**只有这一行**、不接 usage、退 2。
-/// `invalid` 那支带的是 C 当时手里的 `optarg`——反斜缀已被跳过。
+/// Two `errx` sentences (`sort.c:217-218`, `:233-238`): **only that one line**,
+/// no usage appended, exit 2. The `invalid` arm carries the `optarg` C holds at
+/// that moment—the backslash prefix has already been skipped.
 #[test]
 fn the_clash_and_invalid_legs_print_one_line_and_skip_the_usage_block() {
     let (out, status, err) = run(&["-R", ",", "-t", ","], b"a\n");
     assert_eq!(out.as_slice(), b"");
     assert_eq!(status, 2);
     assert_eq!(err, "sort: record/field delimiter clash\n");
-    // 反向不查：只有 `-t` 那一支读掩码。参照件对这一形给 `a\n,b,`：换行在这一形里只是
-    // 普通字节，所以它**留在记录内容里**，而输出以记录分隔符收尾。第一版把期望按「逗号
-    // 分开两行」的直觉写成 `a,b,\n`，被本枚门与参照件一起挡下。
+    // No reverse check: only the `-t` arm reads the mask. The reference build
+    // gives `a\n,b,` for this shape: the newline is just an ordinary byte here,
+    // so it **stays in the record content**, and the output ends with the record
+    // delimiter. The first version wrote the expectation as `a,b,\n` from the
+    // intuition of "commas separate two lines", and both this gate and the
+    // reference build rejected it.
     let (out, status, err) = run(&["-t", ",", "-R", ","], b"b,a\n");
     assert_eq!(
         (out.as_slice(), status),
@@ -575,10 +637,12 @@ fn the_clash_and_invalid_legs_print_one_line_and_skip_the_usage_block() {
     assert_eq!(err, "sort: record/field delimiter clash\n");
 }
 
-/// `multiple record delimiters` 走 `usage()`，所以是**两行**（一句带程名的话 +
-/// 那个 usage 块）。参照件在宿主走到这一步会崩（它自己那份 `usage()` 依赖的垫片在
-/// 宿主段错误，同 `join_ref` 那一坑），所以这一枚的形状按 C 源码文本钉：
-/// `sort.c:399-412` 的第一条 `fprintf` 不带换行、第二条以十三个空格开头。
+/// `multiple record delimiters` goes through `usage()`, so it is **two lines**
+/// (one sentence with the program name + the usage block). The reference build
+/// crashes when it reaches this point on the host (its own `usage()` depends on
+/// a shim that segfaults on the host, the same trap as `join_ref`), so this
+/// gate's shape is pinned from the C source text: the first `fprintf` at
+/// `sort.c:399-412` has no newline, and the second starts with thirteen spaces.
 #[test]
 fn a_second_stuck_dash_r_lands_on_the_usage_leg() {
     let (out, status, err) = run(&["-R", ",", "-R", "x"], b"a\n");
@@ -594,8 +658,10 @@ fn a_second_stuck_dash_r_lands_on_the_usage_leg() {
     );
 }
 
-/// 字节形 argv 的命令缝：`&str` 递不出裸 `ff`。本壳的 `run_streams` 走的是 `&[&str]`，
-/// 所以「一枚裸字节当字母」「一枚裸字节当值」这两形从来没法端到端钉过——本轮补上。
+/// A command seam with byte-form argv: `&str` cannot pass a bare `ff`. This
+/// shell's `run_streams` takes `&[&str]`, so the two shapes "a bare byte as a
+/// letter" and "a bare byte as a value" could never be pinned end to end—this
+/// pass adds them.
 fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::os::unix::ffi::OsStrExt as _;
     let mut child = Command::new(SORT)
@@ -614,54 +680,67 @@ fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// `sort` 的参数缝改到的全是**取值本身**：`-t` 只取首字节（`sort.c:219` 的
-/// `d_mask[(u_char)*optarg]`）、`-R` 先取首字节当记录分隔符（`:226`）再看剩余决定数值形或
-/// 报错（`:228-238`），报错那句带的是 `optarg` 的原字节；而 `-t` 那一支紧接着查
-/// `d_mask[byte] & REC_D_F`（`:217-218`）。文本缝之下裸 `ff` 先折成 `ef bf bd`，四处一起走偏，
-/// 最坏的是**假冲突**：`-R\xef -t\xff` 在 C 里是两个不同字节（参照件退 0），折过一次两边都变成
-/// `ef`，那句 `record/field delimiter clash` 会被凭空触发。逐字节读数与参照件同形见
-/// `tmp/sort-467/ab.log`。
+/// Everything `sort`'s argument seam changed is **the value itself**: `-t`
+/// takes only the first byte (`d_mask[(u_char)*optarg]` at `sort.c:219`), `-R`
+/// takes the first byte as the record delimiter (`:226`) and then looks at the
+/// rest to decide the numeric form or an error (`:228-238`), the error sentence
+/// carrying `optarg`'s original bytes; and the `-t` arm immediately checks
+/// `d_mask[byte] & REC_D_F` (`:217-218`). Below the text seam, a bare `ff` first
+/// folds to `ef bf bd`, and all four places go wrong together—the worst being a
+/// **false clash**: `-R\xef -t\xff` are two different bytes in C (the reference
+/// build exits 0), but after one fold both sides become `ef` and the
+/// `record/field delimiter clash` sentence is triggered out of thin air.
+/// Byte-for-byte readings match the reference build; see `tmp/sort-467/ab.log`.
 #[test]
 fn the_delimiter_and_record_delimiter_values_are_argv_bytes() {
-    // ① 同一枚裸字节走 `-R` 的**字符路径**时 C 得到的是 -1（带符号 `char` 交给 `int REC_D`），
-    //    既不与 `-t` 撞掩码槽也永不命中输入字节 ⇒ 接受，收尾补的还是那一枚 `ff`
-    //    （`putchar(-1)` 写 `0xff`）。参照件同形，见 `tmp/sort-467/ab.log`。
+    // ① The same raw byte on `-R`'s **character path** gives C -1 (a signed
+    //    `char` handed to `int REC_D`), which neither collides with `-t`'s mask
+    //    slot nor ever matches an input byte ⇒ accepted, and the tail still adds
+    //    that `ff` (`putchar(-1)` writes `0xff`). The reference build has the
+    //    same shape; see `tmp/sort-467/ab.log`.
     let (out, status, err) = run_argv(&[b"-R\xff", b"-t\xff"], b"x\n");
     assert_eq!(status, 0, "字符路径的 ff 不算冲突：stderr 是 {err:?}");
     assert_eq!(out, b"x\n\xff");
-    // ① 同一枚 255 改走**数值路径**（`-R\377` 经 `strtol` 得正数 255）就落进 `d_mask[255]`，
-    //    与 `-t` 那枚裸字节撞在一起 ⇒ 冲突那一句（一行、不接 usage、退 2）。
+    // ① The same 255 on the **numeric path** (`-R\377` through `strtol` yields
+    //    the positive 255) lands in `d_mask[255]`, colliding with `-t`'s raw byte
+    //    ⇒ the clash sentence (one line, no usage, exit 2).
     let (out, status, err) = run_argv(&[b"-R\\377", b"-t\xff"], b"x\n");
     assert_eq!(out, Vec::new(), "冲突发生在任何输出之前");
     assert_eq!(status, 2, "stderr 是 {err:?}");
     assert_eq!(err, b"sort: record/field delimiter clash\n");
-    // ① 控制形：ASCII 的同一枚字节仍是冲突（`-R,` 与 `-t,`）。
+    // ① Control shape: the same ASCII byte still clashes (`-R,` and `-t,`).
     let (_out, status, err) = run_argv(&[b"-R,", b"-t,"], b"x\n");
     assert_eq!(status, 2, "stderr 是 {err:?}");
     assert_eq!(err, b"sort: record/field delimiter clash\n");
 
-    // ② 判别形：两枚不同字节不该冲突——折过一次就会相等，所以这一形钉的是「没放宽也没收紧」。
+    // ② Discriminating shape: two different bytes must not clash—one fold would
+    //    make them equal, so this shape pins "neither loosened nor tightened".
     let (out, status, err) = run_argv(&[b"-R\xef", b"-t\xff"], b"x\n");
     assert_eq!(status, 0, "两枚不同的字节各自成立：stderr 是 {err:?}");
     assert_eq!(out, b"x\n\xef", "记录按 ef 切，收尾补的也是那一枚 ef");
 
-    // ③ 数值形失败的回显位：`q\xff` 两枚都是 argv 原字节（反斜缀那支才先跳过一位）。
+    // ③ The echo slot of a numeric-form failure: both bytes of `q\xff` are argv
+    //    originals (only the backslash-prefix arm skips one first).
     let (out, status, err) = run_argv(&[b"-Rq\xff"], b"");
     assert_eq!(out, Vec::new());
     assert_eq!(status, 2, "stderr 是 {err:?}");
     assert_eq!(err, b"sort: invalid record delimiter q\xff\n");
 
-    // ④ 永不命中的记录分隔符：整份输入是**一条**记录，输出仍以那一枚字节收尾
-    //    （`putrec`，`files.c:194`/`:215`）。内容里带裸字节的那一形（`-R<ff>` 配 `a\xffb`）
-    //    本壳交回 `a\xef\xbf\xbdb\n\xff` 而参照件交回 `a\xffb\n\xff`——差在**记录内容是
-    //    `String`**（`split_records` 过 `from_utf8_lossy`），属另一条射程，
-    //    已登记 `SORT-RECORD-CONTENT-TEXTSEAM` 并留在差分里按已知分叉计数。
+    // ④ A record delimiter that never matches: the whole input is **one**
+    //    record, and the output still ends with that byte (`putrec`,
+    //    `files.c:194`/`:215`). The shape whose content carries a raw byte
+    //    (`-R<ff>` with `a\xffb`) is handed back as `a\xef\xbf\xbdb\n\xff` by
+    //    this shell while the reference build returns `a\xffb\n\xff`—the
+    //    difference is that **record content is a `String`** (`split_records`
+    //    goes through `from_utf8_lossy`); that is a different scope, logged and
+    //    counted as a known divergence in the diff.
     let (out, status, err) = run_argv(&[b"-R\xff", b"-"], b"a\nb\n");
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(out, b"a\nb\n\xff", "不切分，只在末尾补那一枚分隔符");
 
-    // ⑤ 字母位是一枚**无法用 &str 递进来**的裸字节：libc 那一行报的就是它自己，
-    //    后面接 `usage()` 那一行（`sort.c:250-252` + `getopt.c:101-104`），退 2。
+    // ⑤ The letter slot is a raw byte that **cannot be passed through &str**:
+    //    the libc line reports itself, followed by the `usage()` line
+    //    (`sort.c:250-252` + `getopt.c:101-104`), exit 2.
     let (_out, status, err) = run_argv(&[b"-\xff"], b"a\n");
     assert_eq!(status, 2);
     assert_eq!(
@@ -670,13 +749,18 @@ fn the_delimiter_and_record_delimiter_values_are_argv_bytes() {
     );
 }
 
-/// 操作数的**名字位**在这里是原字节：C 那一支是 `err(2, "%s", argv[i])`（`sort.c:285`），
-/// 走的是 `err(3)` 的三段形（程序名、操作数、`strerror` 句子）。本壳以前把它交给
-/// `support::warn_line` → `minix_sys::err_line(&str, …)`，裸字节先被折成 U+FFFD，于是
-/// `sort: /tmp/nosuch-…\xef\xbf\xbd: No such file or directory`；本轮自己拼那三件，
-/// 与参照件逐字节同形（`tmp/sort-467/ab.log` 的 `裸字节档名` 那一形）。
-/// 开档那一步仍然要先折（`minix_sys::open` 的 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`），
-/// 所以「真实存在的裸字节档名」本壳打不开——那一形是已知分叉，不在本枚门里钉。
+/// The operand's **name slot** is raw bytes here: that C arm is
+/// `err(2, "%s", argv[i])` (`sort.c:285`), taking `err(3)`'s three-part form
+/// (program name, operand, `strerror` sentence). This shell used to hand it to
+/// `support::warn_line` → `minix_sys::err_line(&str, …)`, which folded the raw
+/// byte to U+FFFD and printed
+/// `sort: /tmp/nosuch-…\xef\xbf\xbd: No such file or directory`; this pass
+/// assembles the three parts itself, matching the reference build byte for byte
+/// (the raw-byte file-name shape in `tmp/sort-467/ab.log`).
+/// The open step still has to fold first (`minix_sys::open`'s `&str` door, a
+/// registered follow-up), so "an actually existing raw-byte file name" cannot
+/// be opened by this shell—that shape is a known divergence and is not pinned
+/// by this gate.
 #[test]
 fn the_operand_message_names_the_operand_bytes_and_exits_two() {
     let (out, status, err) = run_argv(&[b"/tmp/nosuch-sort-\xff"], b"a\n");
@@ -686,7 +770,8 @@ fn the_operand_message_names_the_operand_bytes_and_exits_two() {
         err, b"sort: /tmp/nosuch-sort-\xff: No such file or directory\n",
         "三段齐备、名字位是原字节，且不接 usage"
     );
-    // 控制形：ASCII 档名同一条腿，句子一字未变。
+    // Control shape: an ASCII file name goes through the same leg, sentence
+    // unchanged.
     let (out, status, err) = run_argv(&[b"/tmp/nosuch-sort-ok.txt"], b"a\n");
     assert_eq!(out, Vec::new());
     assert_eq!(status, 2);
@@ -694,8 +779,10 @@ fn the_operand_message_names_the_operand_bytes_and_exits_two() {
         err,
         b"sort: /tmp/nosuch-sort-ok.txt: No such file or directory\n"
     );
-    // 两枚开不了的档名只出**第一枚那一句**：C 是 `err(2, "%s", argv[i])`，`err` 自己就终止
-    // 进程，不是「逐枚报完再退」。参照件同形现量一致（第二枚的名字根本不出现）。
+    // Two unopenable file names emit **only the first one's sentence**: C does
+    // `err(2, "%s", argv[i])`, and `err` terminates the process itself—it does
+    // not report each and then exit. The reference build's current measurement
+    // agrees (the second name never appears).
     let (out, status, err) = run_argv(&[b"/tmp/nosuch-a\xff", b"/tmp/nosuch-b\xff"], b"a\n");
     assert_eq!(out, Vec::new());
     assert_eq!(status, 2);

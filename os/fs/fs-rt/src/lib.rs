@@ -29,9 +29,11 @@
 //!   real block driver is the separately tracked full half of E-FSBDEV.
 
 #![no_std]
-// SD-19 静默吞错家族机械化门（第六家 crate）：本 runtime 的 `let _ =` 均为
-// 发后即忘的 send（出生报告/终回复/错误回复）与尽力而为的 lookup 重写 copy_to，
-// 失败对端会自行重启或无从重投。新开无理由 `let _ =` 当场多报一条。
+// Mechanized gate for the silent-error-swallowing family (sixth crate): every
+// `let _ =` in this runtime is a fire-and-forget send (birth report / final
+// reply / error reply) or a best-effort lookup rewrite copy_to; on failure the
+// peer restarts itself or there is no way to retry. A newly introduced
+// unjustified `let _ =` reports one extra finding on the spot.
 #![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;

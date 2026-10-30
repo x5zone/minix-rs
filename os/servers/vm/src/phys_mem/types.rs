@@ -40,7 +40,7 @@ impl AlignedPhysBytes {
         self.0
     }
 
-    // V10-P2-1: test-only convenience (parity tests index via usize).
+    // Test-only convenience (parity tests index via usize).
     #[cfg_attr(not(test), allow(dead_code))]
     pub const fn as_usize(&self) -> usize {
         self.0 as usize
@@ -54,7 +54,7 @@ impl AlignedPhysBytes {
         (self.0 as usize) / CLICK_SIZE
     }
 
-    // V10-P2-1: no callers yet; kept as the documented checked-offset API.
+    // No callers yet; kept as the documented checked-offset API.
     #[allow(dead_code)]
     pub fn add(&self, offset: usize) -> Self {
         let new_addr = self.0 + offset as u64;

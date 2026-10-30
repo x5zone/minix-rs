@@ -759,7 +759,9 @@ impl<H: AudioHooks, A: DmaAlloc> AudioService<H, A> {
                 4,
             );
         }
-        //[SD19-gate] 回复发送尽力而为：C 的 send 失败即 panic；单线程泵按文档丢弃而不是卡死。
+        //[SD19-gate] Reply sending is best-effort: C panics when send fails;
+        // the single-threaded pump drops per the documentation instead of
+        // wedging.
         #[allow(clippy::let_underscore_must_use)]
         let _ = transport.asynsend(caller, &mut reply);
     }

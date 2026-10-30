@@ -113,11 +113,11 @@ impl Filp {
 /// `tll_access_t` gate for `get_filp2` (`filedes.c:162-203`) — the three
 /// behaviors callers can ask for, replacing a loose `bool`:
 ///
-/// - `Opcl`（close(2) 专用）: the only mode that passes a `FILP_CLOSED` filp
+/// - `Opcl` (close(2) only): the only mode that passes a `FILP_CLOSED` filp
 ///   ("disallow all use except close(2)", `filedes.c:186-188`).
-/// - `None`（`VNODE_NONE` 探测）: no lock taken, but `FILP_CLOSED` still
+/// - `None` (`VNODE_NONE` probe): no lock taken, but `FILP_CLOSED` still
 ///   rejects — C's gate covers every `locktype != VNODE_OPCL`.
-/// - `ReadWrite`（`VNODE_READ`/`VNODE_WRITE` 数据访问）: rejects `FILP_CLOSED`
+/// - `ReadWrite` (`VNODE_READ`/`VNODE_WRITE` data access): rejects `FILP_CLOSED`
 ///   and takes the filp lock; both C lock kinds share this gate behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilpLockMode {

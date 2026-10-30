@@ -1,27 +1,42 @@
 //! End-to-end face for the `unexpand` binary, checked against
-//! `minix3/usr.bin/unexpand/unexpand.c`（选项环 `:86-120`、档位回显 `:124-125`、
-//! 操作数循环 `:127-135`、`tabify` `:141-215`、`usage()` `:69-73`）与它驱动的 libc
-//! `getopt`（`minix3/lib/libc/stdlib/getopt.c:74-78`、`:81-92`、`:95-104`、`:132-136`）。
+//! `minix3/usr.bin/unexpand/unexpand.c` (option ring `:86-120`, tabstop echo
+//! `:124-125`, operand loop `:127-135`, `tabify` `:141-215`, `usage()`
+//! `:69-73`) and the libc `getopt` it drives
+//! (`minix3/lib/libc/stdlib/getopt.c:74-78`, `:81-92`, `:95-104`, `:132-136`).
 //!
-//! `unexpand.c:86` 的 optstring 是 `"at:"`：一个无值字母加一个带值字母，两支互斥。
-//! 参照件 `tmp/unexpand-312/unexpand_ref`（`unexpand.c` 真源 + Minix 的 `getopt.c` +
-//! 程序名与 `fgetln`/`erealloc` 垫片，宿主现链）逐形量出的形状是：
-//! ① 集外字母 = libc 一行 + usage 一行，退 1（`-Z`、`-Za` 报 `Z`、`--x` 报 `-`）；
-//! ② `-t` 缺值 = libc 的 `option requires an argument -- t` + usage 一行，退 1；
-//! ③ 档位表在选项环之后被**打到标准错误**（`unexpand.c:124-125` 那圈 `fprintf(stderr,
-//!    "%lu %zu\n", i, tabstops[i])`）——真源里留着的一行调试输出，但它就在外部行为里；
-//! ④ 档位的数字是 `strtoul(..., 0)`：`010` 是 8、`0x10` 是 16；坏档位有两支不同的句子
-//!    （`Invalid tabstop`与 `Bad tabstop spec …, must be greater than the previous …`）；
-//! ⑤ `-a` 与 `-t` 冲突只印 usage 一行（**首字母大写**、程序名跟着 `getprogname()`、
-//!    带 `[file ...]`），退 1；
-//! ⑥ 不重排：非选项 token 一到选项环就结束，所以 `unexpand -t 4 8` 的 `8` 是**第二支档名**
-//!    而不是档位表的续写（参照件：先 `0 4`，再 `Cannot open `8'`）；
-//! ⑦ 打不开的档名是 `err(EXIT_FAILURE, "Cannot open `%s'")` 三段形；裸 `-` 不是 stdin 的
-//!    别名，它被送去 `freopen` 而报错；
-//! ⑧ 末行没有换行时**不补**换行（C 的 `putchar` 只写输入里有的字节）。
+//! The optstring at `unexpand.c:86` is `"at:"`: one value-less letter plus one
+//! value-taking letter, two mutually exclusive arms.
+//! The reference binary (`unexpand.c` ground truth + Minix's `getopt.c` + a
+//! program-name and `fgetln`/`erealloc` shim, linked on the host) measures
+//! these shapes form by form:
+//! (1) unknown letter = one libc line + one usage line, exit 1 (`-Z`, `-Za`
+//!     reports `Z`, `--x` reports `-`);
+//! (2) a missing `-t` value = libc's `option requires an argument -- t` plus
+//!     one usage line, exit 1;
+//! (3) the tabstop table is **printed to standard error** after the option
+//!     ring (the `fprintf(stderr, "%lu %zu\n", i, tabstops[i])` loop at
+//!     `unexpand.c:124-125`) — a debug line left in the ground truth, but it is
+//!     part of the external behavior;
+//! (4) tabstop numbers go through `strtoul(..., 0)`: `010` is 8 and `0x10` is
+//!     16; a bad tabstop has two different sentences (`Invalid tabstop` and
+//!     `Bad tabstop spec …, must be greater than the previous …`);
+//! (5) `-a` and `-t` conflicting prints the usage line only (first letter
+//!     **capitalized**, program name from `getprogname()`, with `[file ...]`),
+//!     exit 1;
+//! (6) no permutation: a non-option token ends the option ring on arrival, so
+//!     the `8` in `unexpand -t 4 8` is the **second file name** rather than a
+//!     continuation of the tabstop table (reference: first `0 4`, then
+//!     `Cannot open `8'`);
+//! (7) an unopenable file name is the three-part
+//!     `err(EXIT_FAILURE, "Cannot open `%s'")` shape; a bare `-` is not a
+//!     stdin alias — it is handed to `freopen` and reports an error;
+//! (8) a last line without a newline gets **no** newline added (C's `putchar`
+//!     writes only the bytes present in the input).
 //!
-//! 这扇门前不存在：`unexpand` 的读缝直接拿裸 `open`/`read`，宿主上读不到任何输入
-//! （同族第六例），所以它的输出以前只能靠库测。
+//! None of this exists in front of this gate: `unexpand`'s read seam calls
+//! bare `open`/`read` directly, so on the host no input can be read at all (the
+//! sixth case in this family), which is why its output used to be covered only
+//! by library tests.
 
 mod face_support;
 
@@ -30,9 +45,11 @@ use std::fs;
 use std::process::{Command, Stdio};
 
 const UNEXPAND: &str = env!("CARGO_BIN_EXE_unexpand");
-/// C `unexpand.c:70-71` 的那一行：首字母大写、程序名跟着 `getprogname()`、带 `[file ...]`。
+/// The line at C `unexpand.c:70-71`: first letter capitalized, program name
+/// from `getprogname()`, with `[file ...]`.
 const USAGE: &str = "Usage: unexpand [-a] [-t tabstop] [file ...]\n";
-/// 参照件用的输入（`tmp/unexpand-312/lead.txt` 同料）：八空格一行、四空格一行。
+/// The input the reference binary used (the same bytes as its lead fixture):
+/// one line of eight spaces, one line of four.
 const INPUT: &[u8] = b"        x\n    y\n";
 
 fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
@@ -52,8 +69,9 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
-/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
-/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+/// The same command seam as `run`, but standard error comes back **byte by
+/// byte**: `from_utf8_lossy` renders a raw `c3` as the three-byte U+FFFD, and
+/// the text form cannot tell "one byte" from "two bytes" in these mistakes.
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(UNEXPAND)
         .args(args)
@@ -71,13 +89,18 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**。期望逐形取自参照件 `tmp/unexpand-312/unexpand_ref`
-/// （本轮按批次四百零七那条规矩先打 `-Z` 验过归属：它交回 `unknown option -- Z`，是 Minix 的
-/// `getopt.c` 而不是 glibc 那句带引号的 `invalid option -- 'Z'`）：`-é` 与 `-aé` 都是
-/// `unexpand: unknown option -- ` + 单个 `303` + 换行再跟那一行 usage、退 **1**；`-Zé` 停在
-/// `Z`（环不越过第一个坏字母）；反面的 `-té` 里 `é` 是**值**而不是字母，走命令自己的
-/// `unexpand: Invalid tabstop `303 251'` **单独一行、不接 usage**（`unexpand.c:101-103`）。
-/// ASCII 那几形（`-Z`、`-Za`、`--x`、`-t` 缺值）本文件已有主人，不重复承载。
+/// In the unknown-letter line, the letter slot is **one raw byte**. The
+/// expected value per form comes from the reference binary (probing `-Z` first
+/// to confirm the owner: it returns `unknown option -- Z`, which is Minix's
+/// `getopt.c`, not glibc's quoted `invalid option -- 'Z'`): `-é` and `-aé` both
+/// print `unexpand: unknown option -- ` + a single `303` + newline followed by
+/// that usage line, exit **1**; `-Zé` stops on `Z` (the ring does not pass the
+/// first bad letter); conversely, in `-té` the `é` is a **value** rather than a
+/// letter and goes through the command's own
+/// `unexpand: Invalid tabstop `303 251'` **on a single line, with no usage**
+/// (`unexpand.c:101-103`).
+/// The ASCII forms (`-Z`, `-Za`, `--x`, a missing `-t` value) already have
+/// owners elsewhere in this file and are not carried twice.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_unexpand() {
     let want: Vec<u8> = [
@@ -114,7 +137,8 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_unexpand() {
     );
 }
 
-/// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`unexpand.c:116-118` 的 `default:`）。
+/// Unknown letter: the libc line first, `usage()` after, exit 1
+/// (`unexpand.c:116-118`'s `default:`).
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     let (out, status, err) = run(&["-Z"], INPUT);
@@ -123,7 +147,8 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     assert_eq!(err, format!("unexpand: unknown option -- Z\n{USAGE}"));
 }
 
-/// 聚簇只报第一个字符（参照件：`-Za` → `unknown option -- Z`）。
+/// A cluster reports only the first character (reference: `-Za` →
+/// `unknown option -- Z`).
 #[test]
 fn a_cluster_reports_only_its_first_letter() {
     let (out, status, err) = run(&["-Za"], INPUT);
@@ -131,7 +156,8 @@ fn a_cluster_reports_only_its_first_letter() {
     assert_eq!(err, format!("unexpand: unknown option -- Z\n{USAGE}"));
 }
 
-/// `--x` 报的字母是第二个连字符：optstring 里没有 `-`（参照件：`unknown option -- -`）。
+/// `--x` reports the second hyphen: the optstring has no `-` (reference:
+/// `unknown option -- -`).
 #[test]
 fn a_dash_followed_by_a_word_is_an_unknown_option_named_by_the_dash() {
     let (_, status, err) = run(&["--x"], INPUT);
@@ -139,7 +165,7 @@ fn a_dash_followed_by_a_word_is_an_unknown_option_named_by_the_dash() {
     assert_eq!(err, format!("unexpand: unknown option -- -\n{USAGE}"));
 }
 
-/// `-t` 后面没有那一段值是 libc 的**另一句**，不是 usage 自己那一行。
+/// No value after `-t` is libc's **other** sentence, not usage's own line.
 #[test]
 fn a_missing_tabstop_value_prints_the_other_libc_line() {
     let (out, status, err) = run(&["-t"], INPUT);
@@ -150,12 +176,15 @@ fn a_missing_tabstop_value_prints_the_other_libc_line() {
     );
 }
 
-/// 档位表在选项环之后、读输入之前打到 stderr（`unexpand.c:124-125`）。
-/// 这一形容易被当成「真源里的噪声」而省掉，但参照件就是把它印出来，退码还是 0。
+/// The tabstop table goes to stderr after the option ring and before reading
+/// input (`unexpand.c:124-125`). This shape is easy to dismiss as "noise in the
+/// ground truth", but the reference binary does print it, and the exit code is
+/// still 0.
 #[test]
 fn the_stop_list_is_echoed_to_stderr_before_any_output() {
     let (out, status, err) = run(&["-t", "4"], INPUT);
-    // 档位在 4 时，行首四个空格也跨一档，所以第二行同样折成制表符（参照件同形）。
+    // With a tabstop at 4, the four leading spaces also cross a stop, so the
+    // second line folds to a tab as well (same shape in the reference).
     assert_eq!(
         (out.as_str(), status),
         ("\tx\n\ty\n", 0),
@@ -167,7 +196,8 @@ fn the_stop_list_is_echoed_to_stderr_before_any_output() {
     assert_eq!((out.as_str(), status), ("\t\tx\n\ty\n", 0));
     assert_eq!(err, "0 4\n1 8\n");
 
-    // 一支档位都没有时那圈一次都不进，所以 stderr 是空的（参照件：`-t \"\"`）。
+    // With no tabstop at all the loop never runs, so stderr is empty
+    // (reference: `-t \"\"`).
     let (out, status, err) = run(&["-t", ""], INPUT);
     assert_eq!(
         (out.as_str(), status),
@@ -177,7 +207,8 @@ fn the_stop_list_is_echoed_to_stderr_before_any_output() {
     assert_eq!(err, "");
 }
 
-/// 两支坏档位的句子逐字不同，也不能与 usage 混成一句。
+/// The two bad-tabstop sentences differ word for word and must not merge with
+/// usage into one line.
 #[test]
 fn the_two_stop_sentences_are_distinct_and_carry_the_offending_piece() {
     let (out, status, err) = run(&["-t", "x"], INPUT);
@@ -197,7 +228,8 @@ fn the_two_stop_sentences_are_distinct_and_carry_the_offending_piece() {
     assert!(!err.contains("Usage"), "这两句都不接 usage：{err:?}");
 }
 
-/// 档位的数字是 base 0：`010` 是八进制的 8、`0x10` 是十六进制的 16（参照件的回显为证）。
+/// Tabstop numbers are base 0: `010` is the octal 8 and `0x10` is the hex 16
+/// (witnessed by the reference binary's echo).
 #[test]
 fn the_stop_numbers_are_base_zero() {
     let (out, status, err) = run(&["-t", "010"], INPUT);
@@ -216,7 +248,8 @@ fn the_stop_numbers_are_base_zero() {
     );
 }
 
-/// `-a` 与 `-t` 互斥：两支冲突都只印 usage 一行（没有 libc 那一行），退 1。
+/// `-a` and `-t` are mutually exclusive: either conflict prints the usage line
+/// alone (no libc line), exit 1.
 #[test]
 fn the_a_and_t_conflict_prints_only_the_usage() {
     for args in [
@@ -230,8 +263,10 @@ fn the_a_and_t_conflict_prints_only_the_usage() {
     }
 }
 
-/// 不重排：非选项 token 一到选项环就结束。`unexpand -t 4 8` 的 `8` 是**第二支档名**，
-/// 参照件先在 stderr 回显 `0 4`，再去开那支不存在的档而报三段形。
+/// No permutation: a non-option token ends the option ring. The `8` in
+/// `unexpand -t 4 8` is the **second file name**; the reference binary first
+/// echoes `0 4` to stderr, then tries to open that nonexistent file and reports
+/// the three-part shape.
 #[test]
 fn a_non_option_token_ends_the_ring() {
     let missing = std::env::temp_dir().join(format!("ue312-eight-{}", std::process::id()));
@@ -246,7 +281,8 @@ fn a_non_option_token_ends_the_ring() {
     let dir = scratch();
     let file = dir.join("in");
     fs::write(&file, INPUT).expect("write operand");
-    // `unexpand <file> -a`：`-a` 被当第二支档名，参照件报 `Cannot open `-a'`。
+    // `unexpand <file> -a`: `-a` is taken as the second file name; the
+    // reference reports `Cannot open `-a'`.
     let (_, status, err) = run(&[file.to_str().unwrap(), "-a"], b"");
     assert_eq!(status, 1);
     assert!(
@@ -256,9 +292,11 @@ fn a_non_option_token_ends_the_ring() {
     let _ = fs::remove_dir_all(dir);
 }
 
-/// 打不开的档名是 `err(EXIT_FAILURE, "Cannot open `%s'")` 三段形：程序名、带反引号的
-/// 档名、`strerror` 句子，一行、不接 usage、退 1。裸 `-` 也走这里——`unexpand` 不给
-/// 它开 stdin 的特例（C 直接拿去 `freopen`）。
+/// An unopenable file name is the three-part
+/// `err(EXIT_FAILURE, "Cannot open `%s'")` shape: program name, the backquoted
+/// file name, the `strerror` sentence, one line, no usage, exit 1. A bare `-`
+/// goes here too — `unexpand` makes no stdin exception for it (C hands it
+/// straight to `freopen`).
 #[test]
 fn an_unopenable_operand_prints_the_err_shape_in_three_parts() {
     let missing = std::env::temp_dir().join(format!("ue312-absent-{}", std::process::id()));
@@ -282,20 +320,24 @@ fn an_unopenable_operand_prints_the_err_shape_in_three_parts() {
     );
 }
 
-/// 输出腿（本闸门存在的另一半）：以前 `unexpand` 用裸 `open`/`read`，宿主上读不到输入，
-/// 所以转换从来没有被进程级测过。金样逐形取自参照件读数（`tmp/unexpand-312/golden.log`）。
+/// The output leg (the other half this gate exists for): previously `unexpand`
+/// used bare `open`/`read`, so no input could be read on the host and the
+/// conversion was never tested at process level. The golden values are taken
+/// form by form from the reference binary's readings.
 #[test]
 fn the_tabify_reaches_the_output_end_to_end() {
-    // 默认八列档：八个空格折一个制表符，四个空格留原样。
+    // Default eight-column stop: eight spaces fold into one tab, four spaces
+    // stay as they are.
     let (out, status, err) = run(&[], INPUT);
     assert_eq!(
         (out.as_str(), err.as_str(), status),
         ("\tx\n    y\n", "", 0)
     );
-    // `--` 结束选项环且自身不是操作数。
+    // `--` ends the option ring and is not an operand itself.
     let (out, status, _) = run(&["--"], INPUT);
     assert_eq!((out.as_str(), status), ("\tx\n    y\n", 0));
-    // 无 `-a` 时行中的空白不动；`-a` 才折行中的空白段。
+    // Without `-a`, whitespace inside a line is untouched; only `-a` folds
+    // mid-line whitespace runs.
     let (out, status, _) = run(&["-a"], b"   a   b   c\n");
     assert_eq!(
         (out.as_str(), status),
@@ -304,10 +346,12 @@ fn the_tabify_reaches_the_output_end_to_end() {
     );
     let (out, _, _) = run(&["-a"], b"ab        c\n");
     assert_eq!(out, "ab\t  c\n");
-    // 末行没有换行也不补（参照件：输入 `   ab` 出去仍是无换行的一行）。
+    // A last line without a newline gets none added (reference: the input
+    // `   ab` comes out as one line still without a newline).
     let (out, status, err) = run(&[], b"   ab");
     assert_eq!((out.as_str(), err.as_str(), status), ("   ab", "", 0));
-    // 多支档名依次处理并重置行游标（参照件：两档合一输出）。
+    // Multiple file names are processed in order and reset the line cursor
+    // (reference: two files produce one combined output).
     let dir = scratch();
     let first = dir.join("a");
     let second = dir.join("b");
@@ -331,10 +375,12 @@ fn scratch() -> std::path::PathBuf {
     dir
 }
 
-/// 参照件 `tmp/unexpand-312/unexpand_ref` 现量（矩阵 `tmp/unexpand-425/ref-matrix.log`）：
-/// 档位为 `0` 不是一支「坏档位」，C 的 `strtoul` 收下它，`limit` 与两处 `tabstops[n] - 1`
-/// 都是 `size_t` 回绕，于是整行原样交回、退 0，而档位表照 `unexpand.c:124-125` 打到
-/// 标准错误。本壳以前在这里崩掉（`src/unexpand.rs` 里三处无符号减法在回绕前先触 trap）。
+/// Measured against the reference binary: tabstop `0` is not a "bad tabstop" —
+/// C's `strtoul` accepts it, `limit` and both `tabstops[n] - 1` sites wrap as
+/// `size_t`, so the whole line comes back untouched with exit 0, while the
+/// tabstop table still goes to standard error per `unexpand.c:124-125`. This
+/// shell used to crash here (three unsigned subtractions in `src/unexpand.rs`
+/// trapped before they could wrap).
 #[test]
 fn a_zero_tabstop_reaches_the_line_unchanged() {
     let (out, status, err) = run(&["-t", "0"], b"a\tb\tc\n");
@@ -347,7 +393,8 @@ fn a_zero_tabstop_reaches_the_line_unchanged() {
         (out.as_str(), status, err.as_str()),
         ("    abc\n", 0, "0 0\n1 8\n")
     );
-    // 无尾换行的输入也照 C 交回（`fgetln` 只给输入里有的字节）。
+    // Input without a trailing newline comes back as C does (`fgetln` gives
+    // only the bytes present in the input).
     let (out, status, err) = run_bytes(&["-t", "0"], b"x\t y");
     assert_eq!(
         (out, status, err),
@@ -355,11 +402,12 @@ fn a_zero_tabstop_reaches_the_line_unchanged() {
     );
 }
 
-/// 参照件 `tmp/unexpand-312/unexpand_ref` 现量（读数 `tmp/unexpand-426/ref-shapes.log`
-/// 与 `tmp/unexpand-426/eol.log`）：制表符够不着下一档时它被原样交回；末行只剩空白且
-/// 输入没有换行时参照件交出**零字节**（C 的循环走到缓冲区末尾直接 `return`）。
-/// 带换行的那一半（`b"    \n"` 对 `\t\n`）属已登记的
-/// `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`，本轮不钉。
+/// Measured against the reference binary: a tab that cannot reach the next
+/// stop comes back as it was; when the last line is all whitespace and the
+/// input has no newline, the reference hands back **zero bytes** (C's loop
+/// reaches the end of the buffer and returns directly).
+/// The half that has a newline (`b"    \n"` against `\t\n`) belongs to a known
+/// gap — the blank-line-end flush needs a terminator — and is not pinned here.
 #[test]
 fn a_tab_past_the_last_stop_and_a_blank_final_line_reach_stdout() {
     let (out, status, err) = run(&["-t", "8"], b"  \tx\n");
@@ -385,10 +433,12 @@ fn a_tab_past_the_last_stop_and_a_blank_final_line_reach_stdout() {
     assert_eq!((out, status, err), (b"\t".to_vec(), 0, b"0 8\n".to_vec()));
 }
 
-/// 与 `run_bytes` 同一条命令缝，但 **argv 交的是原始字节**：一枚裸 `0xff` 进不了 `&str`，
-/// 所以这一腿不能借道任何按 `str` 收参数的夹具。在临时目录里跑，目录中摆一枚
-/// **档名本身带裸字节**的真档与一枚普通 `in.txt`，让「操作数既进 `freopen` 又进报文」
-/// 这两件事都能摆上台面。
+/// The same command seam as `run_bytes`, but **argv carries raw bytes**: a raw
+/// `0xff` cannot enter a `&str`, so this leg cannot go through any fixture that
+/// takes `str` arguments. It runs in a temporary directory holding a real file
+/// whose **name itself carries a raw byte** plus an ordinary `in.txt`, so that
+/// both "the operand reaches `freopen`" and "the operand reaches the message"
+/// can be put on the table.
 fn run_raw(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt as _;
@@ -418,15 +468,20 @@ fn run_raw(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     read
 }
 
-/// 参数缝的字节判据（三侧现量 `tmp/unexpand-470/measure.log` 十八形：改前壳 9/18 与参照件
-/// 逐字节同，改后 17/18）。翻正的八形是字母位与六形 tabstop 回声（附值、分词、数字尾巴、
-/// 混合表、空格分隔、逗号分隔），外加操作数那句 `Cannot open \`%s'` 的档名位。
-/// C 那两句的回声位都是 `strsep(&optarg, ", \t")` 切出来的那一支词
-///（`unexpand.c:96-112`），而 `err(EXIT_FAILURE, "Cannot open \`%s'", argv[0])`
-///（`:129-130`）打的是操作数本身。最后钉的是**仍留在册**的那条腿：一枚档名带裸字节的
-/// 真档，参照件开得了（`freopen` 拿的是 argv 的原字节）而本壳开不了——档名进的是
-/// `os/libs` 那条 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`），所以这里按当前形状钉住：
-/// 报文里的名字是原字节，成败却仍是「没有这个档」。
+/// The byte criterion of the argument seam (eighteen forms measured on three
+/// sides: the shell before the change matched the reference byte for byte in
+/// 9/18, after the change in 17/18). The eight forms that flipped are the
+/// letter slot, the six tabstop echoes (attached value, word splitting,
+/// numeric tail, mixed table, space-separated, comma-separated), and the
+/// file-name slot of the operand's `Cannot open \`%s'` sentence.
+/// C's two echo slots both print the word `strsep(&optarg, ", \t")` cut out
+/// (`unexpand.c:96-112`), while `err(EXIT_FAILURE, "Cannot open \`%s'",
+/// argv[0])` (`:129-130`) prints the operand itself. The last thing pinned is
+/// the leg that is **still on the books**: for a real file whose name carries a
+/// raw byte, the reference binary can open it (`freopen` gets argv's raw bytes)
+/// while this shell cannot — the file name goes through `os/libs`'s `&str`
+/// interface, so this test pins the current shape: the name in the message is
+/// raw bytes, but the outcome is still "no such file".
 #[test]
 fn the_tabstop_echoes_and_the_operand_name_carry_the_argv_bytes() {
     let (out, status, err) = run_raw(&[b"-\xff"], b"  a\n");
@@ -442,7 +497,8 @@ fn the_tabstop_echoes_and_the_operand_name_carry_the_argv_bytes() {
         "字母该是那一枚字节本身，不是折过的第一字节 ef"
     );
 
-    // 六形回声：同一枚 ff 落在值的哪个位置都照原样打出来。
+    // Six echo forms: the same raw ff prints as itself wherever it lands in
+    // the value.
     for (args, want) in [
         (
             vec![b"-t\xff".as_slice()],
@@ -475,7 +531,8 @@ fn the_tabstop_echoes_and_the_operand_name_carry_the_argv_bytes() {
         assert!(_out.is_empty(), "{args:?} 报错时不写标准输出");
     }
 
-    // 打不开的档名：`err()` 那句里的名字是原字节，三段形（程序名、带反引号的词、句子）。
+    // Unopenable file name: the name inside the `err()` sentence is raw
+    // bytes, in the three-part shape (program name, backquoted word, sentence).
     let (_out, status, err) = run_raw(&[b"no\xff/such"], b"  a\n");
     assert_eq!(status, 1);
     assert_eq!(
@@ -487,7 +544,8 @@ fn the_tabstop_echoes_and_the_operand_name_carry_the_argv_bytes() {
         .concat()
     );
 
-    // 在册那条形：档名带裸字节的**真档**在本壳开不了，参照件开得了。
+    // The registered shape: a **real** file whose name carries a raw byte
+    // cannot be opened by this shell, while the reference binary opens it.
     let (out, status, err) = run_raw(&[b"-t", b"4", b"a\xff.txt"], b"");
     assert_eq!(
         status, 1,

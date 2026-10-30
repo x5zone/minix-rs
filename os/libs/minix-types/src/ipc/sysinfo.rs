@@ -17,7 +17,8 @@
 //! acquisition.md` §2 is the doc counterpart; 05~10 import from here.
 
 /// PM table request. C: `PM_GETSYSINFO (PM_BASE + 47)` — callnr.h:60.
-/// 值由 [`crate::ipc::pm::PmCall::GetSysInfo`] 判别值派生（PD-23 单一真源）。
+/// The value derives from the [`crate::ipc::pm::PmCall::GetSysInfo`]
+/// discriminant (single source of truth).
 pub const PM_GETSYSINFO: i32 = crate::ipc::pm::PmCall::GetSysInfo as i32;
 
 /// VFS table request. C: `VFS_GETSYSINFO (VFS_BASE + 48)` — callnr.h:120.
@@ -39,9 +40,10 @@ pub const GET_MONPARAMS: i32 = 4;
 pub const GET_KENV: i32 = 5;
 /// C: `GET_IRQHOOKS 6` — com.h:322.
 pub const GET_IRQHOOKS: i32 = 6;
-// 7: E-ISKMESS A-3 决策的 `GET_KMESSAGES` 新臂(04 篇 §4.1;C 头未
-// 分配此孔,minix-rs 以孔 7 作内核消息环形缓冲快照的请求号)。
-#[allow(dead_code)] // IS 生产 KerninfoTransport（real-trap 构建）消费
+// 7: the `GET_KMESSAGES` arm (04 §4.1; C's header leaves this slot
+// unassigned — minix-rs uses slot 7 as the request number for the kernel
+// message ring-buffer snapshot).
+#[allow(dead_code)] // consumed by IS's production KerninfoTransport (real-trap build)
 pub const GET_KMESSAGES: i32 = 7;
 /// C: `GET_PRIVTAB 8` — com.h:323.
 pub const GET_PRIVTAB: i32 = 8;

@@ -4,27 +4,29 @@
 //! The snapshot carries the **used-field subset** per the A-4 deviation
 //! ruling (E-MIBPROD/E-ISPROD): pointer arrays (`fp_filp[255]`, vnode
 //! pointers) carry no meaning across the wire — the producer ships the
-//! derived descriptor count instead (V1-P1-3).
+//! derived descriptor count instead.
 //!
 //! This is a memory-table snapshot, not a message payload: the 56-byte
-//! message判例 does not apply (slot size ≈ 96 bytes, see `layout` test).
+//! message precedent does not apply (slot size ≈ 96 bytes, see `layout` test).
 
 /// Light per-process row — `SI_PROCLIGHT_TAB` wire contract.
 ///
-/// C: `struct fproc_light`（vfs/fproc.h:111-115：`dev_t fpl_tty` +
-/// `int fpl_blocked_on` + `endpoint_t fpl_task` = 16 字节/槽）。C 的
-/// 填充面在 `do_getsysinfo` 的 `SI_PROCLIGHT_TAB` 支（misc.c:81-95），
-/// 消费方是 MIB 的 `get_lwp_stat`（wchan/wmesg 的 cdev/sdev 车道）。
-/// `fpl_blocked_on` 取 vfs/const.h:19-25 的 `FP_BLOCKED_ON_*` 原值。
+/// C: `struct fproc_light` (vfs/fproc.h:111-115: `dev_t fpl_tty` +
+/// `int fpl_blocked_on` + `endpoint_t fpl_task` = 16 bytes per slot). The
+/// C fill side is the `SI_PROCLIGHT_TAB` arm of `do_getsysinfo`
+/// (misc.c:81-95); the consumer is MIB's `get_lwp_stat` (the cdev/sdev
+/// lane of wchan/wmesg). `fpl_blocked_on` takes the `FP_BLOCKED_ON_*`
+/// raw value from vfs/const.h:19-25.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FprocLightSnap {
-    /// C: `fpl_tty` — `fproc.fp_tty` 的副本（控制终端设备号）。
+    /// C: `fpl_tty` — copy of `fproc.fp_tty` (controlling terminal device
+    /// number).
     pub fpl_tty: u64,
-    /// C: `fpl_blocked_on` — `fproc.fp_blocked_on` 的副本。
+    /// C: `fpl_blocked_on` — copy of `fproc.fp_blocked_on`.
     pub fpl_blocked_on: u32,
-    /// C: `fpl_task` — 阻塞的驱动端点（cdev 直取，sdev 经 smap 查询；
-    /// 其余 `NONE`）。
+    /// C: `fpl_task` — the blocking driver endpoint (taken directly for
+    /// cdev, looked up through smap for sdev; `NONE` otherwise).
     pub fpl_task: i32,
 }
 
@@ -63,7 +65,7 @@ pub struct FProcSnap {
 mod fproc_snap_tests {
     use super::*;
 
-    /// 布局见证：11 个 i32/u32 域（44 字节）+ 保留 8 字节 = 52。
+    /// Layout witness: 11 i32/u32 fields (44 bytes) + 8 reserved bytes = 52.
     #[test]
     fn test_fproc_snap_layout() {
         assert_eq!(core::mem::size_of::<FProcSnap>(), 52);
@@ -80,7 +82,7 @@ mod fproc_snap_tests {
         assert_eq!(core::mem::offset_of!(FProcSnap, fp_cdev_endpt), 40);
     }
 
-    /// C-22 后半：light 行 16 字节布局见证（tty@0/blocked_on@8/task@12）。
+    /// Light row layout witness: 16 bytes (tty@0/blocked_on@8/task@12).
     #[test]
     fn test_fproc_light_snap_layout() {
         use core::mem::{offset_of, size_of};

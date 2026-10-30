@@ -418,9 +418,9 @@ mod tests {
         assert!(matches!(cmds[1], Command::Delete));
         assert!(matches!(cmds[2], Command::Print));
         assert!(matches!(cmds[3], Command::PrintLineNum));
-        // 行分隔与尾随分隔：空段跳过。
+        // Line separators and a trailing separator: empty segments are skipped.
         assert_eq!(parse_script("p;\n", &mut cmds).unwrap(), 1);
-        // 前导空白不算地址（trim_start 后再判）。
+        // Leading whitespace is not an address (judged after trim_start).
         assert_eq!(parse_script("  d", &mut cmds).unwrap(), 1);
     }
 

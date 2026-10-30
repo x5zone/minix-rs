@@ -12,7 +12,7 @@
 //! [`minix_fileops::mkdir`]; this shell owns the system calls and the exit code.
 //!
 //! A write command: creating directories needs a writable root, so the real
-//! run is gated with the rest of the write-class commands (`C-57`/E5). The
+//! run is gated with the rest of the write-class commands (`E5`). The
 //! decision half and the operand walk are host/compile verified here.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]

@@ -73,7 +73,8 @@ pub fn compare_bytes(a: &[u8], b: &[u8], list_all: bool) -> CmpOutcome {
 pub fn format_list_entry(entry: (u64, u8, u8), out: &mut String) {
     use core::fmt::Write;
     let (byte, left, right) = entry;
-    //[SD19-gate] String 格式化仅内存分配可失败；C regular.c:98 对应 printf 亦不分支处理
+    //[SD19-gate] String formatting can only fail on memory allocation; the
+    // corresponding printf in C regular.c:98 does not branch on it either
     #[allow(clippy::let_underscore_must_use)]
     let _ = write!(out, "{:6} {:3o} {:3o}\n", byte, left, right);
 }
@@ -108,41 +109,53 @@ pub fn report_eof(file: &[u8], byte: u64, line: u64, list_all: bool) -> Vec<u8> 
     out
 }
 
-/// `cmp` 选项环的读数：两面旗标加**环之后剩下的全部 token**。
+/// What `cmp`'s option loop reports: the two flags plus **every token left
+/// after the loop**.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CmpFlags<'a> {
-    /// `-l`：把每一处差异逐字节列出来。
+    /// `-l`: list every difference byte by byte.
     pub list_all: bool,
-    /// `-s`：什么都不打，只把结论放在退出码上。
+    /// `-s`: print nothing and put the verdict in the exit status only.
     pub silent: bool,
-    /// 选项环交回的 token 序列：`file1 file2 [skip1 [skip2]]`，个数由调用者判。
+    /// The token sequence the option loop hands back:
+    /// `file1 file2 [skip1 [skip2]]`; the caller decides the count.
     pub operands: Vec<&'a [u8]>,
 }
 
-/// 选项环的失败形状。`cmp.c:74` 的 optstring 是 `"ls"`——**两个字母都不带值**，
-/// 所以 libc 那句 `option requires an argument` 在本支到不了，只可能交回集外字母。
+/// The failure shape of the option loop. `cmp.c:74`'s optstring is `"ls"` —
+/// **neither letter takes a value**, so libc's `option requires an argument`
+/// message is unreachable on this branch; only unknown option letters can come
+/// back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpArgError {
-    /// `getopt.c:95-104`：集外字母（libc 那一行由调用者经 [`crate::GetoptReport`] 渲染）。
+    /// `getopt.c:95-104`: unknown option letter (the caller renders libc's
+    /// line through [`crate::GetoptReport`]).
     UnknownOption(char),
 }
 
-/// 把 `cmp` 的 argv 尾部按 `getopt(argc, argv, "ls")`（`cmp.c:74`）拆成 [`CmpFlags`]。
+/// Split the tail of `cmp`'s argv into [`CmpFlags`] the way
+/// `getopt(argc, argv, "ls")` (`cmp.c:74`) does.
 ///
-/// 逐字母聚簇：`-ls` 与 `-sl` 都是两面旗标同时立起（C 接着用
-/// `if (lflag && sflag) errx(...)` 报**一行**、不接 usage，`cmp.c:87-88`），
-/// 而 `-lq` 在第二个字母上就落集外一支。旧前门只比整个 token
-/// （`arg == "-l"`），所以 `-ls` 掉进「未知选项」并打出 usage——两出口的行数与
-/// 句子都不同。`-l -l` 重复给同一面旗标是合法的（C 只是再赋一次 1）。
+/// Cluster letters: `-ls` and `-sl` both raise both flags (C then reports
+/// them with `if (lflag && sflag) errx(...)` as **one line**, not via usage,
+/// `cmp.c:87-88`), while `-lq` falls into the unknown-letter branch on the
+/// second letter. The old front end compared whole tokens only
+/// (`arg == "-l"`), so `-ls` fell into "unknown option" and printed usage —
+/// two exits with different line counts and different sentences. Repeating the
+/// same flag (`-l -l`) is legal (C just assigns 1 again).
 ///
-/// **不重排**（`getopt.c:74-78`）：非选项 token 一到就返回 -1 且不推进 `optind`，
-/// 它和后面的 token 整个交回当操作数，所以 `cmp 档1 -l 档2` 是**三个操作数**，
-/// 那个 `-l` 是第二个档名（参照件现量 `cmp: -l: No such file or directory`、退 2）。
-/// `--` 结束环而自身不是操作数；裸 `-` 长度为一，是操作数（`cmp.c:95-113` 认它作标准输入）。
+/// **No permutation** (`getopt.c:74-78`): the first non-option token returns
+/// -1 without advancing `optind`, and it plus everything after it comes back
+/// as operands; so `cmp file1 -l file2` is **three operands** and that `-l` is
+/// the second file name (measured against the reference: `cmp: -l: No such
+/// file or directory`, exit 2). `--` ends the loop and is not itself an
+/// operand; a bare `-` has length one and is an operand (`cmp.c:95-113` treats
+/// it as standard input).
 ///
-/// 操作数个数（`< 2 || > 4`）与 `-l`/`-s` 互斥这一判留在调用者手里：C 的次序是
-/// 「选项环 → 互斥 → 个数 → 开档」，句子各归各的出口，换序会把一行的 `errx`
-/// 支与两行的 usage 支弄混。
+/// The operand count test (`< 2 || > 4`) and the `-l`/`-s` mutual exclusion
+/// stay with the caller: C's order is "option loop → exclusion → count → open
+/// files", and each sentence belongs to its own exit; changing the order
+/// would mix the one-line `errx` branch with the two-line usage branch.
 pub fn parse_cmp_flags<'a>(args: &'a [&'a [u8]]) -> Result<CmpFlags<'a>, CmpArgError> {
     let mut flags = CmpFlags {
         list_all: false,
@@ -155,16 +168,21 @@ pub fn parse_cmp_flags<'a>(args: &'a [&'a [u8]]) -> Result<CmpFlags<'a>, CmpArgE
             break Vec::new();
         };
         if arg == b"--" {
-            // `getopt.c:81-85`：先 `++optind` 才返回 -1，所以 `--` 自身不是操作数。
+            // `getopt.c:81-85`: `++optind` happens before returning -1, so
+            // `--` itself is not an operand.
             break args[index + 1..].to_vec();
         }
         if arg.len() < 2 || !arg.starts_with(b"-") {
-            // 包括裸 `-`：`getopt.c:87-92` 在 optstring 没有 `-` 时结束环而**不推进**。
+            // This includes a bare `-`: `getopt.c:87-92` ends the loop
+            // **without advancing** when the optstring has no `-`.
             break args[index..].to_vec();
         }
-        // 环走**字节**：C 的 `optopt` 是一枚 `char`（`getopt.c:79` 的 `optopt = *place++` 一次进
-        // 一个字节），所以 `-é`（`c3 a9`）报的是 `c3` 而不是整个字符。之前过 `chars()` 时把一
-        // 个字符的两字节当成一枚字母交回，报文再经 UTF-8 渲染就成了两个字节。
+        // The loop works on **bytes**: C's `optopt` is a single `char`
+        // (`getopt.c:79`'s `optopt = *place++` consumes one byte at a time),
+        // so `-é` (`c3 a9`) reports `c3`, not the whole character. The
+        // earlier `chars()` pass handed back both bytes of one character as a
+        // single letter, and rendering that report as UTF-8 produced two
+        // bytes.
         for &byte in &arg[1..] {
             match byte {
                 b'l' => flags.list_all = true,
@@ -181,8 +199,10 @@ pub fn parse_cmp_flags<'a>(args: &'a [&'a [u8]]) -> Result<CmpFlags<'a>, CmpArgE
 mod tests {
     use super::*;
 
-    /// 集外字母交回的是短横后的**第一个字节**，不是第一个字符：`-\u{e9}`（`c3 a9`）落在
-    /// `char` 域里是 U+00C3。参照件 `tmp/cmp-410/cmp_ref` 现量那一行的字母位是单个 `c3`。
+    /// An unknown option letter comes back as the **first byte** after the
+    /// dash, not the first character: `-\u{e9}` (`c3 a9`) lands in the `char`
+    /// domain as U+00C3. Measured against the reference binary, the letter
+    /// position in that line is the single byte `c3`.
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
@@ -190,13 +210,14 @@ mod tests {
             Err(CmpArgError::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
-        // 聚簇同理：`l` 合法先吃掉，报的是其后第一个字节。
+        // Same with clusters: the legal `l` is consumed first, and the first
+        // byte after it is what gets reported.
         assert_eq!(
             parse_cmp_flags(&[b"-l\xc3\xa9", b"a", b"b"]),
             Err(CmpArgError::UnknownOption('\u{00c3}')),
             "-l\u{e9}"
         );
-        // ASCII 那一形不许被这次改动波及。
+        // The ASCII form must not be affected by this change.
         assert_eq!(
             parse_cmp_flags(&[b"-q", b"a", b"b"]),
             Err(CmpArgError::UnknownOption('q')),
@@ -263,8 +284,10 @@ mod tests {
         assert_eq!(outcome.eof_on, Some((1, 6, 3)));
     }
 
-    /// 聚簇逐字母：`-ls` 与 `-sl` 都立起两面旗标（调用者据此走 `errx` 那一行），
-    /// `-lq` 在第二个字母上报集外；`-l -l` 重复给同一面旗标合法。
+    /// Clusters are read letter by letter: `-ls` and `-sl` raise both flags
+    /// (the caller then takes the `errx` line), `-lq` reports an unknown
+    /// letter on the second one, and repeating the same flag (`-l -l`) is
+    /// legal.
     #[test]
     fn parse_flags_cluster_letter_by_letter() {
         let both = parse_cmp_flags(&[b"-ls", b"a", b"b"]).unwrap();
@@ -286,10 +309,12 @@ mod tests {
         assert!(twice.list_all && !twice.silent);
     }
 
-    /// 环不重排，`--` 结束环而自身不是操作数，裸 `-` 是操作数。
+    /// The loop does not permute, `--` ends it without being an operand, and
+    /// a bare `-` is an operand.
     #[test]
     fn parse_ring_stops_at_the_first_operand() {
-        // 参照件：`cmp 档1 -l 档2` 是三个操作数，`-l` 是第二个档名。
+        // Reference behavior: `cmp f1 -l f2` has three operands, with `-l` as
+        // the second file name.
         assert_eq!(
             parse_cmp_flags(&[b"f1", b"-l", b"f2"]).unwrap().operands,
             [b"f1".as_slice(), b"-l".as_slice(), b"f2".as_slice()]

@@ -33,9 +33,9 @@ pub const ISO9660_VOLUME_OFFSET: i64 = 0x8000;
 
 /// MFS v1 magic (`minix3/minix/fs/mfs/const.h:22`, `SUPER_MAGIC`).
 const SUPER_MAGIC_V1: u16 = 0x137f;
-/// MFS v2 magic (`minix3/minix/fs/mfs/const.h:24`, `SUPER_V2`).
+/// MFS version 2 magic (`minix3/minix/fs/mfs/const.h:24`).
 const SUPER_MAGIC_V2: u16 = 0x2468;
-/// MFS v3 magic (`minix3/minix/fs/mfs/const.h:26`, `SUPER_V3`).
+/// MFS version 3 magic (`minix3/minix/fs/mfs/const.h:26`).
 const SUPER_MAGIC_V3: u16 = 0x4d5a;
 /// ext2 magic (`minix3/minix/fs/ext2/const.h:16`; fsversion's `MAGIC_VALUE_EXT2`).
 const MAGIC_VALUE_EXT2: u16 = 0xef53;
@@ -129,9 +129,9 @@ pub fn stamp_ext2_magic(buffer: &mut [u8]) -> Result<(), SysinfoError> {
 /// The MFS magic constants, exposed so the execution layer and tests stamp the
 /// exact on-disk values without re-spelling them (single source of truth).
 pub const MFS_MAGIC_V1: u16 = SUPER_MAGIC_V1;
-/// See [`MFS_MAGIC_V1`].
+/// See the family doc above.
 pub const MFS_MAGIC_V2: u16 = SUPER_MAGIC_V2;
-/// See [`MFS_MAGIC_V1`].
+/// See the family doc above.
 pub const MFS_MAGIC_V3: u16 = SUPER_MAGIC_V3;
 
 #[cfg(test)]

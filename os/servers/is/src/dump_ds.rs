@@ -7,7 +7,7 @@
 //!
 //! `[ARCH: A-4]`: the table row is [`minix_types::DsEntrySnap`] — the single
 //! authority shared with the DS-side `SI_DATA_STORE` producer
-//! (`os/servers/ds/src/server.rs` 的 `render_image`); this module re-exports
+//! (`render_image` in `os/servers/ds/src/server.rs`); this module re-exports
 //! it (and the slot/flag constants) rather than keeping divergent copies.
 pub use minix_types::{DsEntrySnap, DSF_IN_USE, DSF_MASK_TYPE, DS_MAX_KEYLEN, NR_DS_KEYS};
 
@@ -124,7 +124,7 @@ pub const DS_TITLE: &str = "Data store contents:\n";
 pub const DS_COLUMNS: &str =
     "-slot- -----------key----------- -----owner----- ---type--- ----value---\n";
 
-// ── render (V1-P1-3 execution face) ───────────────────────────────
+// ── render ────────────────────────────────────────────────────────
 
 use crate::PCStr;
 use core::fmt;

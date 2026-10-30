@@ -1,5 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-// SD-19 机械化门
+// Mechanical gate: warn when a must-use value is dropped into `let _`.
 #![warn(clippy::let_underscore_must_use)]
 
 
@@ -30,7 +30,7 @@
 //!
 //! Single-threaded event loop: pure verdict functions, no shared state.
 
-// The A-3 budget pool (heap.rs) and the arena built on it (P1-2) need
+// The A-3 budget pool (heap.rs) and the arena built on it need
 // the allocation core types; the budget itself keeps usage bounded.
 extern crate alloc;
 

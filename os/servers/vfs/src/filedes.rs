@@ -304,7 +304,8 @@ pub enum CopyKind {
 }
 
 /// Context for [`copy_fd`] — C's implicit environment made explicit
-/// (the `super_user`/`who_e` globals and the shared tables; `FreeCtx` 同型).
+/// (the `super_user`/`who_e` globals and the shared tables; `FreeCtx` has the
+/// same shape).
 pub struct CopyFdCtx<'a> {
     pub filp_table: &'a mut FilpTable,
     pub vnode_table: &'a VnodeTable,

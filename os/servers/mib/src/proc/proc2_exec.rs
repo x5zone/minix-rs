@@ -8,9 +8,9 @@
 //!
 //! `[ARCH: A-7]` the registered incompleteness carries over from 17 plus
 //! two proc2-specific lanes:
-//! - `l_pctcpu`/`l_cpticks` (kernel row lacks `p_cpuavg` — C-22 first
-//!   half, edge1): `p_pctcpu`/`p_cpticks` answer 0;
-//! - the VFS light table is absent (C-22 second half): `fpl_tty` reads
+//! - `l_pctcpu`/`l_cpticks` (the kernel row lacks `p_cpuavg`):
+//!   `p_pctcpu`/`p_cpticks` answer 0;
+//! - the VFS light table is absent: `fpl_tty` reads
 //!   `NO_DEV` for every row, so the controlling-terminal lanes
 //!   (`EPROC_CTTY`/`P_CONTROLT`/`p_tdev`/`p_tpgid`) never fire;
 //! - `vm_info_usage` failures are ignored *in C* (proc.c:619 — the
@@ -82,8 +82,8 @@ pub fn proc2_exec<K: MibKernel, S: MibServices>(
 
     let kern = KernelRows::new(&tables.kernel_tab);
     let pm = PmRows::new(&tables.pm_tab);
-    // C-22 后半：light 表接通——proc2 的 tty 列（p_tdev/eflag/P_CONTROLT）
-    // 由此点亮；表缺席时 A-7 降级为 NO_DEV。
+    // light table wired up: proc2's tty columns (p_tdev/eflag/P_CONTROLT) light up
+    // from it; when the table is absent the columns degrade to NO_DEV.
     let light_rows = super::rows::LightRows::new(&tables.vfs_tab);
     let old_len = oldp.map(|o| o.left);
     let mut elmax = elmax;
@@ -110,8 +110,9 @@ pub fn proc2_exec<K: MibKernel, S: MibServices>(
         if row.mp_flags & mp_flags::IN_USE == 0 {
             continue; // proc.c:859-860
         }
-        // C-22 后半：light 表接通——fpl_tty 即进程的控制终端；僵尸不读
-        // 文件槽（proc.c:707 的 `(!zombie) ? fpl_tty : NO_DEV`）。
+        // light table wired up: fpl_tty is the process's controlling terminal;
+        // zombies do not read the file slot (proc.c:707's
+        // `(!zombie) ? fpl_tty : NO_DEV`).
         let zombie = super::rows::PmRows::is_zombie(&row);
         let tty = zombie_tty(
             zombie,
@@ -212,7 +213,7 @@ fn fill_kern_row<K: MibServices>(
     p.p_nice = minix_types::NZERO as u8;
     // C uses the KERNEL endpoint number (com.h:51 = -1) for the wchan so ps
     // and top agree with the LWP view (proc.c:669-670).
-    // `| 0x00` 在 C 里表达"类 0x00"的构式；Rust 侧直接省略（无效果操作）。
+    // `| 0x00` in C expresses a "class 0x00" construct; the Rust side omits it (a no-op).
     p.p_wchan = (Endpoint::KERNEL.0 as i64 as u64) << 8;
     put_name(&mut p.p_wmesg, b"kernel\0");
     put_name(&mut p.p_comm, b"kernel\0");
@@ -249,8 +250,8 @@ fn fill_user_row<K: MibServices>(
     let zombie = PmRows::is_zombie(row);
     let has_tty = tty != minix_types::NO_DEV as i64;
 
-    // Extended flags: terminal + session leadership by pid==pgrp (C keeps
-    // the job-control TODO — proc.c:709-713).
+    // Extended flags: terminal + session leadership by pid==pgrp (C leaves the
+    // job-control part unimplemented — proc.c:709-713).
     p.p_eflag = eflag(has_tty, row.mp_pid == row.mp_procgrp) as i32;
     p.p_exitsig = SIGNAL_CHILD;
     p.p_flag = pflag(
@@ -260,7 +261,7 @@ fn fill_user_row<K: MibServices>(
     ) as i32;
     p.p_pid = row.mp_pid;
     p.p_ppid = parent_pid;
-    p.p_sid = row.mp_procgrp; // job control TODO, proc.c:727
+    p.p_sid = row.mp_procgrp; // job-control part unimplemented, proc.c:727
     p.p_pgid = row.mp_procgrp;
     p.p_tpgid = if has_tty { row.mp_procgrp } else { 0 };
     p.p_uid = row.mp_effuid;
@@ -271,7 +272,7 @@ fn fill_user_row<K: MibServices>(
     p.p_groups[..groups].copy_from_slice(&row.mp_sgroups[..groups]);
     p.p_ngroups = groups as i16;
     // Signal words: the snapshot carries the first word of each set
-    // (dump 只打第一字的同一裁定); the remaining words stay zero.
+    // (the same ruling as dump printing only the first word); the remaining words stay zero.
     p.p_siglist = ki_sigset(row.mp_sigpending0);
     p.p_sigmask = ki_sigset(row.mp_sigmask0);
     p.p_sigcatch = ki_sigset(row.mp_catch0);
@@ -279,7 +280,7 @@ fn fill_user_row<K: MibServices>(
     p.p_nice = nice_output(row.mp_nice) as u8;
     put_name(&mut p.p_comm, &row.mp_name);
     // User of the row: start wall time is boot time + the started ticks
-    // (proc.c:744-747); child times ride the snapshot since C-22.
+    // (proc.c:744-747); child times ride the snapshot.
     p.p_uvalid = 1;
     let (s_sec, s_usec) = ticks_to_timeval(row.mp_started, hz as u64);
     p.p_ustart_sec = (boottime.saturating_add(s_sec)) as u32;
@@ -298,9 +299,9 @@ fn fill_user_row<K: MibServices>(
     p.p_stat = st.stat as i8;
     if st.stat == LSSLEEP {
         p.p_wchan = st.wchan;
-        // C 是 `if (p->p_flag & L_SINTR) p->p_realflag |= P_SINTR` 的
-        // 前置：sleep 行的 L_SINTR 位由 carry_sinter 判（proc.c:767-768），
-        // 这里照 17 的 fill 形状先落 p_flag 的位。
+        // Prerequisite for C's `if (p->p_flag & L_SINTR) p->p_realflag |= P_SINTR`:
+        // a sleep row's L_SINTR bit is judged by carry_sinter (proc.c:767-768); here
+        // the p_flag bit lands first, following the fill shape.
         if st.sinter {
             p.p_flag |= minix_types::L_SINTR as i32;
         }
@@ -338,7 +339,7 @@ fn fill_common<K: MibServices>(
         p.p_rtime_usec = usec as u32;
         sec as u32
     };
-    // A-7: p_cpuavg rides the kernel row once C-22's first half lands.
+    // p_cpuavg rides the kernel row once the kernel row carries it.
     p.p_cpticks = 0;
     p.p_pctcpu = 0;
     let (swtime, slptime) = super::lwp::judge_times(true, now, 0, now, hz);
@@ -361,10 +362,11 @@ fn fill_common<K: MibServices>(
     // `(void)vm_info_usage(...)`), so a dead VM producer answers zeroed
     // columns, byte-for-byte C's dead-VM behavior.
     let mut vui = [0u8; 64];
-    // C `vm_info_usage(kp->p_endpoint, &vui)`——ep 是被查进程。VM 的
-    // 回复内联编码仍是登记缺口（26-vm-queries §3.7），失败按 C 语义
-    // 折零列。
-    //[SD19-gate] SD-19: vm_info best-effort 折零列，失败填零不持断采集
+    // C `vm_info_usage(kp->p_endpoint, &vui)` — ep is the process being queried. The
+    // inline encoding of VM's reply is still a registered gap (26-vm-queries §3.7);
+    // failures fold to zero columns per C semantics.
+    //[SD19-gate] vm_info is best-effort and folds to zero columns; a failure fills
+    // zero rather than breaking collection
     #[allow(clippy::let_underscore_must_use)]
     let _ = svc.vm_info(VMIW_USAGE, Endpoint(kp.p_endpoint), &mut vui);
     let word = |i: usize| -> u64 {
@@ -464,8 +466,9 @@ mod tests {
         v
     }
 
-    /// C 借 `cpuavg_getstats` 之外的 LWP 通道填 proc2 的公共半——本测试
-    /// 钉住 uticks/sticks 与用户/系统时刻的独立拆分（proc.c:623-630）。
+    /// C fills proc2's common half through an LWP channel other than
+    /// `cpuavg_getstats` — this test pins the independent split of uticks/sticks and
+    /// user/system times (proc.c:623-630).
     #[test]
     fn test_kern_row_shape() {
         let ktab = kern_table();
@@ -490,13 +493,14 @@ mod tests {
         assert_eq!(&p.p_wmesg[..7], b"kernel\0");
         assert_eq!(p.p_nlwps, minix_types::NR_TASKS as u64);
         assert_eq!(p.p_realstat, SACTIVE as u64);
-        // VM 缺席 → 全零列（C 的死 VM 行为，proc.c:617-620）。
+        // VM absent → all-zero columns (C's dead-VM behavior, proc.c:617-620).
         assert_eq!(p.p_vm_rssize, 0);
         assert_eq!(p.p_uru_maxrss, 0);
     }
 
-    // ── walker 级端到端：producer（共享 mock）→ Tables 拉取 → 真实
-    // `sysctl()` 走 CTL_KERN/KERN_PROC2 → 拷出字节逐行解码断言。──
+    // ── walker-level end to end: producer (shared mock) → Tables pull → real
+    // `sysctl()` through CTL_KERN/KERN_PROC2 → copy out bytes and decode row by row
+    // for assertions. ──
 
     use crate::auth::CallAuth;
     use crate::heap::MibBudget;
@@ -508,8 +512,10 @@ mod tests {
     use core::cell::RefCell;
     use minix_types::{KI_NGROUPS, KERN_PROC_ALL, KERN_PROC_PID, KERN_PROC_TTY, KERN_PROC_UID};
 
-    /// 场景：内核伪进程 + 两个用户进程（init 全零内核行→可运行；"sh" 带
-    /// 补充组与子时钟、内核行 SENDING 到 5 → PM 词被 Direct 车道保留）。
+    /// Scenario: the kernel pseudo-process + two user processes (init has an
+    /// all-zero kernel row → runnable; "sh" has supplementary groups and child
+    /// clocks, and its kernel row is SENDING to 5 → the PM word is kept by the Direct
+    /// lane).
     fn fixture() -> (FakeKernel, FakeServices) {
         let krow = core::mem::size_of::<ProcInfoStruct>();
         let mut proctab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * krow];
@@ -620,13 +626,13 @@ mod tests {
         let mut tables = Tables::new();
         let lsz = core::mem::size_of::<KinfoProc2>() as i32;
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
-        // KERN_PROC_ALL：内核伪进程 + 两个在用行（init、sh）= 3 元素。
+        // KERN_PROC_ALL: kernel pseudo-process + two in-use rows (init, sh) = 3 elements.
         let out = query(&mut c, KERN_PROC_ALL, 0, lsz, 100, true);
         assert_eq!(out, SysctlOutcome::Done(3 * lsz as u64));
 
         let sink = c.kernel.sink.borrow();
         let read = |i: usize| -> KinfoProc2 {
-            // SAFETY(test): repr(C) POD 读，i 在拷出范围内。
+            // SAFETY(test): repr(C) POD read; i is within the copied-out range.
             unsafe {
                 core::ptr::read_unaligned(
                     sink.as_ptr().add(i * core::mem::size_of::<KinfoProc2>()) as *const KinfoProc2,
@@ -634,7 +640,7 @@ mod tests {
             }
         };
 
-        // 元素 0：内核伪进程（proc.c:657-686 的形状）。
+        // Element 0: the kernel pseudo-process (the proc.c:657-686 shape).
         let k = read(0);
         assert_eq!(k.p_pid, 0);
         assert_eq!(k.p_stat, LSSLEEP as i8);
@@ -644,7 +650,7 @@ mod tests {
         assert_eq!(k.p_realstat, SACTIVE as u64);
         assert_eq!(k.p_vm_rssize, 0, "VM 缺席 → 零列（C 死 VM 行为）");
 
-        // 元素 1："init"——组表、ustart、会话首领、可运行（全零内核行）。
+        // Element 1: "init" — group table, ustart, session leader, runnable (all-zero kernel row).
         let i1 = read(1);
         assert_eq!(i1.p_pid, 1);
         assert_eq!(i1.p_stat, minix_types::LSRUN as i8);
@@ -663,35 +669,36 @@ mod tests {
         let mut tables = Tables::new();
         let lsz = core::mem::size_of::<KinfoProc2>() as i32;
 
-        // PID 精确查：内核行不匹配（arg≠0）→ 只有 "init" 一行。
+        // Exact PID lookup: the kernel row does not match (arg≠0) → only the "init" row.
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
         let out = query(&mut c, KERN_PROC_PID, 1, lsz, 100, false);
         assert_eq!(out, SysctlOutcome::Done(lsz as u64));
 
-        // 未知 pid：kmatch=false 且无匹配行 → 长度 0。
+        // Unknown pid: kmatch=false and no matching rows → length 0.
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
         let out = query(&mut c, KERN_PROC_PID, 999, lsz, 100, false);
         assert_eq!(out, SysctlOutcome::Done(0));
 
-        // UID 过滤：arg=0 时内核伪进程按 kmatch 命中（proc.c:823-828），
-        // 加上 effuid==0 的 init 与 sh = 3 行（oldp 在场 → 无垫头）。
+        // UID filter: with arg=0 the kernel pseudo-process matches via kmatch
+        // (proc.c:823-828), plus init and sh with effuid==0 = 3 rows (oldp present →
+        // no extra headroom entry).
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
         let out = query(&mut c, KERN_PROC_UID, 0, lsz, 100, true);
         assert_eq!(out, SysctlOutcome::Done(3 * lsz as u64));
 
-        // TTY NODEV 哨兵：light 表缺席（A-7）→ 所有行都是"无终端"
-        // （含内核伪进程：kmatch 对 NODEV 为真）。
+        // TTY NODEV sentinel: the light table is absent → every row is "no terminal"
+        // (including the kernel pseudo-process: kmatch is true for NODEV).
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
         let out = query(&mut c, KERN_PROC_TTY, KERN_PROC_TTY_NODEV as i32, lsz, 100, true);
         assert_eq!(out, SysctlOutcome::Done(3 * lsz as u64));
 
-        // 未知过滤号 → EINVAL（proc.c:832-833）。
+        // Unknown filter number → EINVAL (proc.c:832-833).
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
         let out = query(&mut c, 9, 0, lsz, 100, false);
         assert_eq!(out, SysctlOutcome::err(minix_types::EINVAL));
 
-        // 长度估算（oldp=NULL）：整表估算带 EXTRA_PROCS 垫头，
-        // 单 PID 估算不带（proc.c:909-910）。
+        // Length estimation (oldp=NULL): a whole-table estimate includes the
+        // EXTRA_PROCS headroom; a single-PID estimate does not (proc.c:909-910).
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
         let out = query(&mut c, KERN_PROC_ALL, 0, lsz, 100, false);
         assert_eq!(
@@ -725,12 +732,12 @@ mod tests {
         let mut p = zeroed_proc2();
         fill_user_row(
             &mut p, &kern, &pm, None, 0, &row,
-            minix_types::NO_DEV as i64, // A-7 前状态遗留：light 行未给 → 无终端
-            0, // 根进程无父
+            minix_types::NO_DEV as i64, // legacy state: no light row supplied → no terminal
+            0, // the root process has no parent
             1000, 50, 86400 * 2, Endpoint::NONE, &mut svc,
         );
         assert_eq!(p.p_pid, 1);
-        // 内核行全零 → rts_flags==0 → 可运行（proc_is_runnable，proc.h:170）。
+        // All-zero kernel row → rts_flags==0 → runnable (proc_is_runnable, proc.h:170).
         assert_eq!(p.p_stat, minix_types::LSRUN as i8);
         assert_eq!(p.p_realstat, SACTIVE as u64);
         assert_eq!(&p.p_comm[..5], b"init\0");
@@ -738,17 +745,17 @@ mod tests {
         assert_eq!(p.p_ngroups, 2);
         assert_eq!(p.p_groups[0], 10);
         assert_eq!(p.p_groups[1], 20);
-        // ustart = boottime(172800) + started(400/50 = 8s)。
+        // ustart = boottime(172800) + started(400/50 = 8s).
         assert_eq!(p.p_ustart_sec, 172800 + 8);
-        // uctime = (25+50)/50 = 1s。
+        // uctime = (25+50)/50 = 1s.
         assert_eq!(p.p_uctime_sec, 1);
         assert_eq!(p.p_svuid, 0);
-        // 会话首领：pid == pgrp（proc.c:711-712）。
+        // Session leader: pid == pgrp (proc.c:711-712).
         assert_eq!(
             p.p_eflag & minix_types::EPROC_SLEADER as i32,
             minix_types::EPROC_SLEADER as i32
         );
-        // 无控制终端（A-7）：CTTY 车道不触发。
+        // No controlling terminal: the CTTY lane does not trigger.
         assert_eq!(p.p_eflag & minix_types::EPROC_CTTY as i32, 0);
         assert_eq!(p.p_tpgid, 0);
     }

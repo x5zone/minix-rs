@@ -515,7 +515,7 @@ pub fn plan_dumpcore(was_blocked: bool) -> DumpcorePlan {
 ///
 /// `write_buf` (`coredump.c:176-186`) writes through `read_write` with a
 /// dummy fd (`-1`): regular files never suspend, and suspension is the
-/// only thing the fd would be for (the TODO note, `179-184`). The FS is
+/// only thing the fd would be for (the C note at `179-184`). The FS is
 /// the only untestable point, so only the write is abstracted.
 pub trait CoreWriter {
     /// Append `bytes` to the volume.

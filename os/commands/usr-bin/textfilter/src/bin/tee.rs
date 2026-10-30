@@ -7,7 +7,7 @@
 //! Operands are created with `open(O_WRONLY|O_CREAT|(O_APPEND|O_TRUNC),
 //! 0666)` (`tee.c:102-103`, flags per `minix3/sys/sys/fcntl.h`); `-i`'s
 //! signal face (ignore SIGINT) is not wired in this no_std userland and
-//! stays deferred. Real-machine file creation is gated at C-57/E5.
+//! stays deferred. Real-machine file creation is gated at E5.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -102,8 +102,10 @@ fn run() -> ! {
     let mut files: Vec<(Fd, String)> = Vec::new();
     let mut rval = 0;
     for operand in &operands {
-        // 开档与回显那两句要文本形：`minix_sys::open` 的路径参数收 `&str`
-        // （`ARGV-BYTE-PATH-IN-LIBS` 在册），所以非 UTF-8 的档名在这一句被折叠。
+        // The open and echo calls need text form: `minix_sys::open` takes
+        // its path argument as `&str` (registered under
+        // `ARGV-BYTE-PATH-IN-LIBS`), so a non-UTF-8 file name is folded at
+        // this point.
         let name = String::from_utf8_lossy(operand).into_owned();
         match open(&name, open_flags(append), 0o666) {
             Ok(fd) => files.push((fd, name)),
@@ -201,8 +203,10 @@ mod tests {
 
     #[test]
     fn option_letters_cluster_within_a_token() {
-        // 关键回归：C getopt("ai") 接受聚簇，旧整 token 匹配把 `-ai` 误拒。
-        // `-a` 后接 `-i`：聚簇命中 -i → 仍按信号未接报 SignalPending。
+        // Key regression: C's getopt("ai") accepts clustering, while the old
+        // whole-token matcher wrongly rejected `-ai`. `-a` followed by `-i`:
+        // the cluster hits -i → still SignalPending, since the signal face is
+        // not wired.
         assert_eq!(
             parse_tee_args(&["-ai".as_bytes(), "f".as_bytes()]),
             Err(TeeArgError::SignalPending)
@@ -211,11 +215,12 @@ mod tests {
             parse_tee_args(&["-ia".as_bytes(), "f".as_bytes()]),
             Err(TeeArgError::SignalPending)
         );
-        // 纯聚簇 -a 两次幂等仍为 append。
+        // A cluster of only `-a` twice is idempotent and still append.
         let (append, operands) = parse_tee_args(&["-aa".as_bytes(), "f".as_bytes()]).unwrap();
         assert!(append);
         assert_eq!(operands, ["f".as_bytes()]);
-        // 聚簇里混入集外字母 → BadFlag（C `default:`）。
+        // An out-of-set letter mixed into the cluster → BadFlag (C's
+        // `default:`).
         assert_eq!(
             parse_tee_args(&["-az".as_bytes(), "f".as_bytes()]),
             Err(TeeArgError::BadFlag)

@@ -59,7 +59,7 @@ impl<B: LineBackend> TtyDriver<B> {
     }
 
     /// The write byte lane: actual bytes from the writer's grant reach
-    /// the device here (NL1 批B pipeline).
+    /// the device here (the write data pipeline).
     ///
     /// C: `do_write` parks the request and `tty_devwrite` drains the
     /// caller's bytes through the device hook; the framework replies with
@@ -150,7 +150,7 @@ impl<B: LineBackend> CharDriver for TtyDriver<B> {
             return Err(Errno::from_i32(minix_types::ENXIO));
         };
         // The backend takes what it can; the session learns the facts for
-        // readiness (A8 composition keeps probe honest).
+        // readiness (the composed face keeps the probe honest).
         let accepted = self.backend.dev_write(size);
         self.sessions[slot].note_output(accepted < size, accepted < size);
         Ok(accepted)
@@ -184,8 +184,8 @@ mod tests {
 
     #[test]
     fn test_log_minor_write_open_does_not_count() {
-        // B1 semantics flow through the face: the log alias on a console
-        // line opens without counting.
+        // The log-alias semantics flow through the face: the log alias on a
+        // console line opens without counting.
         let mut driver = driver();
         assert_eq!(driver.open(DeviceMinor(15), 0, 42), 0);
         assert_eq!(driver.sessions[0].open_count(), 0);

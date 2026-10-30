@@ -11,8 +11,8 @@ use crate::mproc::{ProcTable, _NSIG};
 pub const SIGKILL: i32 = 9;
 pub const SIGTERM: i32 = 15;
 pub const SIGCHLD: i32 = 20;
-/// Lethal signal family（`SIGS_IS_LETHAL`，`sys/signal.h:279-281` 的成员，
-/// 值见 `sys/signal.h:55-65`）。
+/// Lethal signal family (members of `SIGS_IS_LETHAL`, `sys/signal.h:279-281`;
+/// values in `sys/signal.h:55-65`).
 pub const SIGILL: i32 = 4;
 pub const SIGABRT: i32 = 6;
 pub const SIGEMT: i32 = 7;
@@ -22,15 +22,17 @@ pub const SIGBUS: i32 = 10;
 pub const SIGSEGV: i32 = 11;
 
 pub const SIGSTOP: i32 = 17;
-/// Hangup（`sys/sys/signal.h:52`）——会话首领死亡时向其进程组广播
-///（`check_sig(-procgrp, SIGHUP)`，forkexit.c:412）。
+/// Hangup (`sys/sys/signal.h:52`)—broadcast to the process group when the
+/// session leader dies (`check_sig(-procgrp, SIGHUP)`, forkexit.c:412).
 pub const SIGHUP: i32 = 1;
-/// 内核信号：SIGSNDELAY（`sys/sys/signal.h:264`，值 70——早前
-/// `sys_delay_stop` 的 EBUSY 延迟结束，可恢复当初搁置的信号处置）。
-/// 旧代码误写 42 并自注 "Actually SIGSNDELAY is 41?"——从未命中过。
+/// Kernel signal: SIGSNDELAY (`sys/sys/signal.h:264`, value 70—the earlier
+/// `sys_delay_stop` EBUSY delay has ended, so the signal handling that was set
+/// aside can resume). The old code wrote 42 with the note "Actually SIGSNDELAY
+/// is 41?"—it never matched.
 pub const SIGSNDELAY: i32 = 70;
-/// 内核信号：SIGKSIG（`sys/sys/signal.h:274`，值 74）——内核为信号
-/// 管理器积累了待处理信号（SIGS 范围内的位图经 `sys_getksig` 拉取）。
+/// Kernel signal: SIGKSIG (`sys/sys/signal.h:274`, value 74)—the kernel has
+/// accumulated pending signals for the signal manager (a bitmap over the SIGS
+/// range, pulled through `sys_getksig`).
 pub const SIGKSIG: i32 = 74;
 
 /// Kill error, maps to `errno`.
@@ -104,11 +106,13 @@ pub fn check_sig<T: crate::ipc::IpcTransport + ?Sized>(
     if pid == 1 && signo == SIGKILL {
         return Err(KillError::InvalidSignal); // EINVAL for INIT+KILL
     }
-    // Broadcast SIGTERM: RS first（signal.c:588-589）——经 sys_kill 内核
-    // 回环产生 ksig，PM 不直接投递系统进程（sig_proc 的 PRIV_PROC !ksig
-    // 分支是空操作，直接调它 RS 实际收不到通知，V2-P2-4）。C 不检查返回值。
+    // Broadcast SIGTERM: RS first (signal.c:588-589)—through the sys_kill kernel
+    // loopback so a ksig is produced; PM does not deliver to system processes
+    // directly (sig_proc's PRIV_PROC !ksig branch is a no-op, so calling it
+    // directly means RS never actually gets the notification). C does not check
+    // the return value.
     if pid == -1 && signo == SIGTERM {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = kern.sys_kill(Endpoint::RS, SIGTERM);
     }
@@ -156,7 +160,7 @@ pub fn check_sig<T: crate::ipc::IpcTransport + ?Sized>(
         if signo == 0 || proc.state.lifecycle.is_exiting() {
             continue;
         }
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = sig_proc(table, UserSlot::new(idx), signo, true, ksig, kern, transport);
         if pid > 0 {
@@ -184,24 +188,25 @@ fn is_lethal(signo: i32) -> bool {
 }
 
 /// Whether signal needs a stacktrace (`SIGS_IS_STACKTRACE`,
-/// `sys/signal.h:286`): lethal 且非 SIGABRT。C 对 PRIV_PROC 的系统信号先
-/// `sys_diagctl_stacktrace`（`signal.c:455-457`）。
+/// `sys/signal.h:286`): lethal and not SIGABRT. For PRIV_PROC system signals C
+/// first calls `sys_diagctl_stacktrace` (`signal.c:455-457`).
 fn is_stacktrace(signo: i32) -> bool {
     is_lethal(signo) && signo != SIGABRT
 }
 
 /// Whether signal is termination (`SIGS_IS_TERMINATION`,
-/// `sys/signal.h:282-284`): lethal 或 SIGKILL/SIGPIPE。终止类走
-/// `sig_proc_exit`；非终止类转 `SIGS_SIGNAL_RECEIVED` 消息
-///（`signal.c:459-470`）。
+/// `sys/signal.h:282-284`): lethal or SIGKILL/SIGPIPE. Termination-class signals
+/// go through `sig_proc_exit`; non-termination ones become
+/// `SIGS_SIGNAL_RECEIVED` messages (`signal.c:459-470`).
 fn is_termination(signo: i32) -> bool {
     is_lethal(signo) || signo == SIGKILL || signo == SIGPIPE
 }
 
 /// Checks permission (`signal.c:621-628`).
 fn can_signal(table: &ProcTable, caller: UserSlot, target: UserSlot) -> bool {
-    // 凭证恒存在：Kernel 特权槽携带全零凭证（effuid 0 = SUPER_USER），与 C 的
-    // `mp->mp_effuid` 对系统进程同为 0 一致，无需 Option 分支。
+    // Credentials always exist: the Kernel privilege slot carries all-zero
+    // credentials (effuid 0 = SUPER_USER), consistent with C's `mp->mp_effuid`
+    // also being 0 for system processes, so no Option branch is needed.
     let c = table.procs[caller.get()].resources.privilege.credentials();
     let t = table.procs[target.get()].resources.privilege.credentials();
     if c.user.effective == 0 {
@@ -213,9 +218,10 @@ fn can_signal(table: &ProcTable, caller: UserSlot, target: UserSlot) -> bool {
         || c.user.effective == t.user.effective
 }
 
-/// 把 [`sig_proc`]（trace=FALSE 的重投形态）适配为 [`crate::signal_flow::
-/// SignalDeliver`] 注入口——check_pending/handle_sigsn_delay 的投递尾巴
-///（C 直接调模块级函数，Rust 以桥接保持注入可测性）。
+/// Adapts [`sig_proc`] (the trace=FALSE redelivery form) into the
+/// [`crate::signal_flow::SignalDeliver`] injection point—the delivery tail of
+/// check_pending/handle_sigsn_delay (C calls the module-level function directly;
+/// Rust keeps injection testable through a bridge).
 struct SigProcDeliver<'a, T: crate::ipc::IpcTransport + ?Sized> {
     kern: &'a mut dyn crate::exit::KernelGateway,
     transport: &'a mut T,
@@ -223,16 +229,17 @@ struct SigProcDeliver<'a, T: crate::ipc::IpcTransport + ?Sized> {
 
 impl<T: crate::ipc::IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for SigProcDeliver<'_, T> {
     fn sig_proc(&mut self, table: &mut ProcTable, target: UserSlot, signo: i32, ksig: bool) {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = sig_proc(table, target, signo, false, ksig, self.kern, self.transport);
     }
 }
 
-/// 把 [`crate::exit::KernelGateway`] 的 `sys_delay_stop` 适配为
-/// [`crate::signal_flow::KernelStop`] seam（13-design D1 的窄接口）。
-/// 用独立桥接而非 supertrait/dyn 上转：signal_flow 不感知中央网关类型，
-/// 也不依赖 trait upcasting 的工具链版本。
+/// Adapts [`crate::exit::KernelGateway`]'s `sys_delay_stop` into the
+/// [`crate::signal_flow::KernelStop`] seam (the narrow interface from the design
+/// step 13). A separate bridge rather than supertrait/dyn upcasting:
+/// signal_flow does not know the central gateway type and does not depend on the
+/// toolchain version's trait upcasting.
 struct GatewayStopBridge<'a>(&'a mut dyn crate::exit::KernelGateway);
 
 impl crate::signal_flow::KernelStop for GatewayStopBridge<'_> {
@@ -262,10 +269,11 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         // panic in C (407-409) — but for Rust we return Err
         return Err(KillError::NoSuchProcess);
     }
-    // TRACE 先行（411-422）：调试器信号先入 sigtrace 缓冲，未停止则
-    // trace_stop 停住——内核 sys_trace(T_STOP) 真停 + tracer 在 wait 时
-    // 收到 W_STOPCODE 回复。V3-P1-1 之前此分支直接置 stopped 标志，
-    // 内核与 tracer 均无感知。
+    // TRACE first (411-422): a debugger signal enters the sigtrace buffer first,
+    // and if the process is not stopped, trace_stop stops it—the kernel really
+    // stops on sys_trace(T_STOP) and the tracer receives a W_STOPCODE reply at
+    // wait time. Before this branch was fixed it only set the stopped flag, so
+    // neither the kernel nor the tracer noticed.
     if trace && proc.state.guardianship.tracer().is_some() && signo != SIGKILL {
         table.procs[target.get()].resources.signals.trace_mask |= crate::init::sig_bit(signo);
         if !table.procs[target.get()].state.trace.stopped {
@@ -273,13 +281,15 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         }
         return Ok(());
     }
-    // VFS|EVENT pending（425-444）：置 pending 位后停住进程——防止它在
-    // VFS/事件回复到达之后、PM 复查信号之前再次发起调用；PROC_STOPPED
-    // 兼作 restart_sigs 复查的指示位（C signal.c:430-443 注释语义）。
-    // V3-P1-3 之前该分支只置位不停止，check_pending 的 VFS|EVENT 不变式
-    //（必已 stopped，signal_flow.rs:254）随之断裂。
-    // 分支条件按 C signal.c:425 用 VFS_CALL|EVENT_CALL——旧代码的
-    // `ipc_blocked.is_some()` 会把 C 不含的 DELAY_CALL 也拦进来。
+    // VFS|EVENT pending (425-444): set the pending bit and then stop the
+    // process—preventing it from issuing another call after the VFS/event reply
+    // arrives but before PM re-checks signals; PROC_STOPPED doubles as the
+    // indicator for restart_sigs' re-check (the semantics documented at C
+    // signal.c:430-443). Before this branch was fixed it only set the bit and
+    // never stopped, which broke check_pending's VFS|EVENT invariant (must
+    // already be stopped, signal_flow.rs:254). The branch condition follows C
+    // signal.c:425 and uses VFS_CALL|EVENT_CALL—the old code's
+    // `ipc_blocked.is_some()` also caught DELAY_CALL, which C excludes.
     if table.procs[target.get()].state.block.is_vfs_blocked()
         || table.procs[target.get()].state.block.is_event_blocked()
     {
@@ -287,14 +297,15 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         if ksig {
             table.procs[target.get()].resources.signals.kernel_pending |= crate::init::sig_bit(signo);
         }
-        // C: `if (!(PROC_STOPPED | DELAY_CALL)) stop_proc(rmp, FALSE)`——
-        // FALSE = 不可延迟，内核回 EBUSY 时 stop_proc 内部 panic（C 同型）。
-        // C 守卫的 DELAY_CALL 一半在 Rust 不可表示：IpcBlockReason 三变体
-        // 互斥（block.rs:50-84，ARCH A-2），VFS_CALL/EVENT_CALL 与
-        // DELAY_CALL 不能共存，故此处守卫只剩 STOPPED 一半。
+        // C: `if (!(PROC_STOPPED | DELAY_CALL)) stop_proc(rmp, FALSE)`—
+        // FALSE = may not delay, and stop_proc panics internally when the kernel
+        // answers EBUSY (the same as C). The DELAY_CALL half of C's guard is not
+        // representable in Rust: IpcBlockReason's three variants are mutually
+        // exclusive (block.rs:50-84, ARCH A-2), so VFS_CALL/EVENT_CALL and
+        // DELAY_CALL cannot coexist, leaving only the STOPPED half here.
         if !table.procs[target.get()].state.block.stopped {
             let mut bridge = GatewayStopBridge(kern);
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            //[SD19-gate] PM send/notify/reply is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = crate::signal_flow::stop_proc(
                 table,
@@ -311,35 +322,44 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
             return Ok(());
         }
         if !ksig {
-            // C signal.c:456-462：系统信号一律经内核回环——让内核选择正确
-            // 的信号管理器；若 PM 就是管理器，信号会回到 PM 再实际处置。
-            // 返回值 C 不检查。V3-P2-2 之前此分支静默丢弃（Fix #33 只修了
-            // check_sig 广播对 RS 的调用点，sig_proc 本体仍是 no-op）。
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            // C signal.c:456-462: system signals always go through the kernel
+            // loopback—letting the kernel choose the right signal manager; if PM
+            // is the manager, the signal comes back to PM for actual handling.
+            // C does not check the return value. Before this branch was fixed it
+            // silently dropped the signal (that fix only touched the call site in
+            // check_sig's broadcast to RS; sig_proc itself was still a no-op).
+            //[SD19-gate] PM send/notify/reply is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = kern.sys_kill(table.procs[target.get()].endpoint(), signo);
             return Ok(());
         }
-        // C signal.c:464-466：栈回溯类信号（lethal 且非 SIGABRT）先请求内核
-        // 打印目标栈，再走终止/投递分岔。返回值 C 不检查（诊断通道失败静默）。
+        // C signal.c:464-466: a stacktrace-class signal (lethal and not SIGABRT)
+        // first asks the kernel to print the target's stack, then takes the
+        // terminate/deliver fork. C does not check the return value (a failing
+        // diagnostic channel is silent).
         if is_stacktrace(signo) {
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            //[SD19-gate] PM send/notify/reply is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = kern.sys_diagctl_stacktrace(table.procs[target.get()].endpoint());
         }
         if !is_termination(signo) {
-            // C signal.c:468-474：非终止内核信号一律翻译成 SIGS_SIGNAL_RECEIVED
-            // 消息 `asynsend3(ep, &m, AMF_NOREPLY)` 投给目标服务。Rust 侧尚未
-            // 接线：唯一卡点是 `asynsend3` 的重试表在 PM 的 IpcTransport 无等价物
-            // （sendnb 对不在 receive 的目标会 EBUSY 丢）。载荷已不是障碍——
-            // `minix_types::MessPmLsysSigsSignal` 与 `MessageUnion` 的
-            // `m_pm_lsys_sigs_signal` 臂已在 §续-412 入库，收方（SEF 拦截臂）
-            // 也已在 §续-414 落地，接上本臂只需一个带重试的发送原语＋一个
-            // `sigs_signal_message` 形构造（RS 侧同形先例见
-            // `os/servers/rs/src/lib.rs:sigs_signal_message`）。当前内核 ksig 只产
-            // 终止类信号，此路实际不可达——登记待信号链批次 H
-            //（04-stage-pm/todo.md §12.7）。
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            // C signal.c:468-474: every non-termination kernel signal is
+            // translated into a SIGS_SIGNAL_RECEIVED message delivered to the
+            // target service via `asynsend3(ep, &m, AMF_NOREPLY)`. The Rust side
+            // is not wired yet: the only blocker is that `asynsend3`'s retry
+            // table has no equivalent in PM's IpcTransport (`sendnb` drops with
+            // EBUSY when the target is not in receive). The payload is no longer
+            // an obstacle—`minix_types::MessPmLsysSigsSignal` and
+            // `MessageUnion`'s `m_pm_lsys_sigs_signal` arm are already in, the
+            // receiving side (the SEF interception arm) has landed too, and
+            // wiring this arm only needs a retry-capable send primitive plus a
+            // `sigs_signal_message`-shaped constructor (the same-shaped
+            // precedent on the RS side is
+            // `os/servers/rs/src/lib.rs:sigs_signal_message`). The kernel's ksig
+            // currently produces only termination-class signals, so this path is
+            // in practice unreachable—recorded as pending for the signal-chain
+            // work (`04-stage-pm/todo.md` §12.7).
+            //[SD19-gate] PM send/notify/reply is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = (target, signo);
             return Ok(());
@@ -348,11 +368,13 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         }
     }
     // User process: badignore / ignore / block / TRACE_STOPPED / caught / terminate
-    // 位基统一经 `init::sig_bit`（对齐 C `__sigmask`），本函数不再出现裸移位。
+    // Bit positions uniformly go through `init::sig_bit` (aligned with C's
+    // `__sigmask`); no bare shifts appear in this function.
     let sigmask = crate::init::sig_bit(signo);
     let state = &table.procs[target.get()].resources.signals;
-    // badignore（C signal.c:483-486）：仅当内核信号本身属于 noign 集合、
-    // 且该信号又被 ignore 或 mask 时，才强制默认处理（不可通过设置吞掉）。
+    // badignore (C signal.c:483-486): only when the kernel signal itself is in
+    // the noign set and that signal has been ignored or masked does it force
+    // default handling (it cannot be swallowed by settings).
     let badignore = ksig
         && (crate::init::NOIGN_SIGSET & sigmask != 0)
         && (state.ignored & sigmask != 0 || state.mask & sigmask != 0);
@@ -374,8 +396,9 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         return Ok(());
     }
     if !badignore && (state.caught & sigmask != 0) {
-        // C signal.c:509-518：unpause 三路径——未就绪（延迟/VFS 等待）则
-        // 信号转 pending，等 UNPAUSE 回复经 restart_signals 重投。
+        // C signal.c:509-518: unpause's three paths—if not ready (deferred / VFS
+        // wait), the signal becomes pending and is redelivered through
+        // restart_signals once the UNPAUSE reply arrives.
         if !unpause(table, target, kern, transport) {
             table.procs[target.get()].resources.signals.pending |= sigmask;
             if ksig {
@@ -386,11 +409,12 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         if sig_send(table, target, signo, kern, transport).is_ok() {
             return Ok(());
         }
-        // Fall through to terminate on sig_send failure（C 同：printf 后
-        // 落入终止，signal.c:531-534）
+        // Fall through to terminate on sig_send failure (C same: printf, then
+        // fall into termination, signal.c:531-534)
     } else if !badignore && (crate::init::IGN_SIGSET & sigmask != 0) {
-        // Signal defaults to being ignored（C signal.c:535-539，注意与
-        // caught 分支互斥：捕获失败的默认忽略信号必须终止而非忽略）
+        // Signal defaults to being ignored (C signal.c:535-539; note the mutual
+        // exclusion with the caught branch: a default-ignored signal whose catch
+        // failed must terminate, not be ignored)
         return Ok(());
     }
     sig_proc_exit(table, target, signo, transport, kern)
@@ -405,32 +429,39 @@ fn sig_proc_exit<T: crate::ipc::IpcTransport + ?Sized>(
     kern: &mut dyn crate::exit::KernelGateway,
 ) -> Result<(), KillError> {
     let is_core = crate::init::CORE_SIGSET & crate::init::sig_bit(signo) != 0;
-    // C: exit_proc(rmp, 0, dump_core=is_core)——exit_proc 尾部无条件
-    // tell_vfs（DUMPCORE 或 EXIT，forkexit.c:350-358），所以 transport
-    // 必须是调用者的真实通道。V2-P0-1：曾在此构造一次性 mock，信号
-    // 终止的 VFS 告知全部丢失（core 路径进程永久卡 EXITING）。
-    // 内核出口（step 9 sys_clear）用生产网关：本路径目标为用户进程
-    //（PRIV_PROC 在前置分支已返回），step 9 不会触发；若未来语义变化
-    // 命中，pre-E1 诚实 panic（C 失败语义同型）。
-    // C: signal.c:552 — rmp->mp_sigstatus = (char) signo（进 exit_proc 前写入），
-    // 随后 forkexit.c:354 作 VFS_PM_TERM_SIG 告知 VFS、forkexit.c:374 随
-    // EXITING 保留到 zombify/wait。Rust 的 sigstatus 寄生在生命周期里而
-    // EXITING 到 exit_proc step 10 才建立，故经 sig_status 参数显式携带
-    //（§续-383：原先读 lifecycle 读回恒 0 —— VFS 拒 DUMPCORE，退出链停摆）。
+    // C: exit_proc(rmp, 0, dump_core=is_core)—exit_proc's tail unconditionally
+    // calls tell_vfs (DUMPCORE or EXIT, forkexit.c:350-358), so the transport
+    // must be the caller's real channel. It once built a one-shot mock here,
+    // losing every VFS notification of a signal termination (core-path processes
+    // then hung in EXITING forever). The kernel exit (step 9 sys_clear) uses the
+    // production gateway: this path's target is a user process (PRIV_PROC already
+    // returned in the earlier branch), so step 9 never triggers; should a future
+    // semantic change hit it, the pre-E1 code honestly panics (the same failure
+    // semantics as C).
+    // C: signal.c:552 — rmp->mp_sigstatus = (char) signo (written before
+    // entering exit_proc), then forkexit.c:354 reports it to VFS as
+    // VFS_PM_TERM_SIG, and forkexit.c:374 keeps it alongside EXITING until
+    // zombify/wait. Rust's sigstatus rides in the lifecycle, and EXITING is only
+    // established at exit_proc step 10, so it is carried explicitly through the
+    // sig_status parameter (the old code read it back from the lifecycle as a
+    // constant 0 — VFS then refused DUMPCORE and the exit chain stalled).
     crate::exit::exit_proc(table, target, 0, signo as i8, is_core, transport, kern);
     Ok(())
 }
 
-/// Unpauses a process for `sig_send`（`unpause`，`signal.c:719-770`）。
+/// Unpauses a process for `sig_send` (`unpause`, `signal.c:719-770`).
 ///
-/// 返回 `true` = 进程就绪可立即 spawn handler；`false` = 信号转 pending
-///（C 返回 FALSE，调用方 `sigaddset(pending)` 后 return）。
-/// 三路径：UNPAUSED 已置（等 restart_sigs 重查的进程，已停止）→ true；
-/// DELAY_CALL 在途 → false；WAITING/SIGSUSPENDED → `stop_proc(FALSE)` 停住
-/// → true；其余未停止 → `stop_proc(TRUE)`（内核 EBUSY 则 false）+
-/// `tell_vfs(VFS_PM_UNPAUSE)` 请求 VFS 中断其阻塞调用 → false（UNPAUSE
-/// 回复经 restart_signals 重投）。V2-P2-7 之前此函数对运行中进程直接
-/// 返回 true 且不置 stopped——sig_send 的 PROC_STOPPED 断言因此死路。
+/// Returns `true` = the process is ready to spawn the handler immediately;
+/// `false` = the signal becomes pending (C returns FALSE, and the caller does
+/// `sigaddset(pending)` and returns).
+/// Three paths: UNPAUSED already set (a process waiting for restart_sigs'
+/// re-check, already stopped) → true; DELAY_CALL in flight → false;
+/// WAITING/SIGSUSPENDED → stopped by `stop_proc(FALSE)` → true; otherwise not
+/// stopped → `stop_proc(TRUE)` (false on kernel EBUSY) +
+/// `tell_vfs(VFS_PM_UNPAUSE)` asking VFS to interrupt its blocking call → false
+/// (the UNPAUSE reply is redelivered through restart_signals). Before this
+/// function was fixed it returned true for a running process without setting
+/// stopped—dead-ending sig_send's PROC_STOPPED assertion.
 fn unpause<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     target: UserSlot,
@@ -443,7 +474,8 @@ fn unpause<T: crate::ipc::IpcTransport + ?Sized>(
         "unpause: !(VFS|EVENT)（VFS|EVENT 在 sig_proc 前置分支已返回）"
     );
     if proc.state.block.unpaused {
-        // C 734-738：UNPAUSED 必伴 PROC_STOPPED（stop 由 unpause 前一轮建立）。
+        // C 734-738: UNPAUSED always comes with PROC_STOPPED (the stop was
+        // established by the previous unpause round).
         assert!(
             proc.state.block.stopped
                 && !matches!(
@@ -458,12 +490,13 @@ fn unpause<T: crate::ipc::IpcTransport + ?Sized>(
         proc.state.block.ipc_blocked,
         Some(crate::mproc::IpcBlockReason::DelayedSignal)
     ) {
-        return false; // C 741-742：延迟调用在途 → pending
+        return false; // C 741-742: a delayed call is in flight → pending
     }
     if proc.state.wait.waiting || proc.resources.signals.suspended {
-        // C 745-753：PM 侧睡眠 → stop_proc(FALSE) 已排除 EBUSY → true。
+        // C 745-753: sleeping in PM → stop_proc(FALSE) has ruled out EBUSY →
+        // true.
         let mut stop_bridge = GatewayStopBridge(&mut *kern);
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal_flow::stop_proc(
             table,
@@ -473,8 +506,9 @@ fn unpause<T: crate::ipc::IpcTransport + ?Sized>(
         );
         return true;
     }
-    // C 760-769：未停止 → stop_proc(TRUE)（EBUSY = 延迟，false）+ 请求 VFS
-    // 中断其阻塞调用；UNPAUSE 回复经 restart_signals → restart_sigs 重投。
+    // C 760-769: not stopped → stop_proc(TRUE) (EBUSY = deferred, false) + ask
+    // VFS to interrupt its blocking call; the UNPAUSE reply goes through
+    // restart_signals → restart_sigs redelivery.
     if !proc.state.block.stopped {
         let mut stop_bridge = GatewayStopBridge(&mut *kern);
         if let Ok(crate::signal_flow::StopOutcome::Deferred) = crate::signal_flow::stop_proc(
@@ -498,25 +532,28 @@ fn unpause<T: crate::ipc::IpcTransport + ?Sized>(
     false
 }
 
-/// 把 [`crate::exit::KernelGateway`] 的 `sys_resume` 适配为
-/// [`crate::signal_flow::KernelResume`] seam（13-design D2）。
+/// Adapts [`crate::exit::KernelGateway`]'s `sys_resume` into the
+/// [`crate::signal_flow::KernelResume`] seam (design step 13, D2).
 struct GatewayResumeBridge<'a>(&'a mut dyn crate::exit::KernelGateway);
 
 impl crate::signal_flow::KernelResume for GatewayResumeBridge<'_> {
     fn resume(&mut self, ep: Endpoint) -> i32 {
-        self.0.sys_resume(ep).err().unwrap_or(0) // OK = 0；Err 携带原始 errno
+        self.0.sys_resume(ep).err().unwrap_or(0) // OK = 0; Err carries the raw errno
     }
 }
 
 /// Sends signal via handler (`sig_send`, `signal.c:772-855`).
 ///
-/// 被捕获信号投递的核心：`prepare_sigmsg`（D7 四步 mask 演化、RESETHAND
-/// 与 pending 清除，见 mproc/signal.rs）交 `sys_sigsend` 由内核建立
-/// sigframe 并唤醒（signal.c:818）；WAITING/SIGSUSPENDED 时打断阻塞调用
-///（清标志、reply(EINTR)、try_resume_proc，signal.c:823-836）。V2-P2-8
-/// 之前是 `Ok(())` 空壳——sigaction 接线后被捕获信号将"看起来送达"而
-/// 进程无感。EFAULT/ENOMEM 意为进程内存装不下 handler（合法失败，目标
-/// 将被杀，C 返回 FALSE）；其它错误 panic（C "sys_sigsend failed" 同型）。
+/// The core of delivering a caught signal: `prepare_sigmsg` (the four-step mask
+/// evolution, RESETHAND, and pending clearing, see mproc/signal.rs) is handed to
+/// `sys_sigsend`, and the kernel builds the sigframe and wakes the process
+/// (signal.c:818); for WAITING/SIGSUSPENDED it interrupts the blocking call
+/// (clear flags, reply(EINTR), try_resume_proc, signal.c:823-836). Before this
+/// was implemented it was an `Ok(())` shell—after sigaction was wired, a caught
+/// signal would "look delivered" while the process noticed nothing.
+/// EFAULT/ENOMEM mean the process's memory cannot hold the handler (a legal
+/// failure; the target will be killed, C returns FALSE); any other error panics
+/// (the same as C's "sys_sigsend failed").
 fn sig_send<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     target: UserSlot,
@@ -528,7 +565,8 @@ fn sig_send<T: crate::ipc::IpcTransport + ?Sized>(
         table.procs[target.get()].state.block.stopped,
         "sig_send: PROC_STOPPED"
     );
-    // D7 四步（mask/sigmsg 组装 + RESETHAND + pending 清除 + mp_sigmask 簿记）。
+    // The four preparation steps (mask/sigmsg assembly + RESETHAND + pending
+    // clearing + mp_sigmask bookkeeping).
     let sigmsg = table.procs[target.get()]
         .resources
         .signals
@@ -539,18 +577,19 @@ fn sig_send<T: crate::ipc::IpcTransport + ?Sized>(
         mask: sigmsg.mask,
         sighandler: sigmsg.handler.0,
         sigreturn: sigmsg.sigreturn.0,
-        stkptr: 0, // C 由内核在建立 sigframe 时从进程上下文取，sigmsg 不携带
+        stkptr: 0, // C lets the kernel take it from the process context when building the sigframe; sigmsg does not carry it
     };
     let ep = table.procs[target.get()].endpoint();
     match kern.sys_sigsend(ep, &wire) {
         Err(r) if r == -minix_types::EFAULT || r == -minix_types::ENOMEM => {
-            return Err(KillError::NoSuchProcess); // C: return(FALSE) → 终止兜底
+            return Err(KillError::NoSuchProcess); // C: return(FALSE) → terminate fallback
         }
         Err(r) => panic!("sys_sigsend failed: {}", r),
         Ok(()) => {}
     }
-    // WAITING|SIGSUSPENDED → 打断阻塞调用（signal.c:823-836）：清两标志、
-    // reply(EINTR)（UNPAUSED 未置——停止由 unpause() 刚建立）、try_resume。
+    // WAITING|SIGSUSPENDED → interrupt the blocking call (signal.c:823-836):
+    // clear both flags, reply(EINTR) (UNPAUSED not set—the stop was just
+    // established by unpause()), try_resume.
     let suspended_in_pm = table.procs[target.get()].state.wait.waiting
         || table.procs[target.get()].resources.signals.suspended;
     if suspended_in_pm {
@@ -566,7 +605,8 @@ fn sig_send<T: crate::ipc::IpcTransport + ?Sized>(
         let mut resume_bridge = GatewayResumeBridge(&mut *kern);
         crate::signal_flow::try_resume_proc(table, target, &mut resume_bridge);
     } else {
-        // 非挂起路径：经 restart_sigs 而来（UNPAUSED 必置，signal.c:841）。
+        // Non-suspended path: arrived through restart_sigs (UNPAUSED must be
+        // set, signal.c:841).
         assert!(
             table.procs[target.get()].state.block.unpaused,
             "sig_send: non-suspended path requires UNPAUSED"
@@ -593,14 +633,15 @@ pub fn process_ksig(
         return Err(KillError::InvalidEndpoint);
     }
     // Pretend PM is sender (312)
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    //[SD19-gate] PM send/notify/reply is fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
     let _ = proc.identity.procgrp;
     let pid = proc.identity.id.pid;
-    // SIGVTALRM/SIGPROF → 重置虚拟计时器（C: signal.c:326-328 的
-    // check_vtimer + fall-through 到单播 default 分支）。注意 SIGVTALRM
-    // = 26：旧代码误写 12（SIGSYS），该分支从未命中过——真实 bug，随
-    // 本条 D-23 修复。VTimerCtl 的生产实现 = 内核 sys_vtimer（E6）。
+    // SIGVTALRM/SIGPROF → reset the virtual timer (C: check_vtimer at
+    // signal.c:326-328 plus fall-through to the unicast default branch). Note
+    // SIGVTALRM = 26: the old code wrote 12 (SIGSYS), so that branch never
+    // matched—a real bug, fixed here. VTimerCtl's production implementation is
+    // the kernel's sys_vtimer (E6).
     if signo == crate::timer::SIGVTALRM || signo == crate::timer::SIGPROF {
         crate::timer::check_vtimer(table, slot, signo, vctl);
     }
@@ -609,36 +650,41 @@ pub fn process_ksig(
         2 | 3 | 28 | 29 => 0, // INT, QUIT, WINCH, INFO → group broadcast
         _ => pid,
     };
-    // check_sig 的返回值 C 不检查（signal.c:337 语句调用）——对
-    // SIGSNDELAY(70) 这类超出 _NSIG 的内核信号，check_sig 的越界门
-    // 返回 EINVAL 属预期；旧代码用 `?` 传播导致 SIGSNDELAY 尾部死路。
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    // C does not check check_sig's return value (a statement call at
+    // signal.c:337)—for kernel signals beyond _NSIG such as SIGSNDELAY(70),
+    // check_sig's out-of-bounds gate returning EINVAL is expected; the old code
+    // propagated it with `?`, dead-ending the SIGSNDELAY tail.
+    //[SD19-gate] PM send/notify/reply is fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
     let _ = check_sig(table, UserSlot::new(0), target_pid, signo, true, kern, transport);
-    // SIGSNDELAY（C signal.c:344-369）：更早的 stop_proc 因进程在途
-    // 发送而 EBUSY，内核在发送完成后投递 SIGSNDELAY——恢复当初搁置
-    // 的处置（清 DELAY_CALL → VFS|EVENT 在途则 stop_proc，否则
-    // check_pending）。13 的 handle_sigsn_delay 是该段的全语义移植。
+    // SIGSNDELAY (C signal.c:344-369): the earlier stop_proc answered EBUSY
+    // because the process had a send in flight, and the kernel delivers
+    // SIGSNDELAY once the send completes—resuming the handling set aside
+    // (clear DELAY_CALL → if VFS|EVENT is in flight, stop_proc, otherwise
+    // check_pending). Design step 13's handle_sigsn_delay is the full-semantics
+    // port of that section.
     if signo == SIGSNDELAY {
-        // 与 13 的 handle_sigsn_delay 同语义（signal_flow.rs:76-110）；
-        // 在此顺序内联是因为 stop 桥与投递桥不同时借用 kern。
+        // Same semantics as step 13's handle_sigsn_delay
+        // (signal_flow.rs:76-110); inlined in this order because the stop bridge
+        // and the delivery bridge do not borrow kern simultaneously.
         let delayed = matches!(
             table.procs[slot].state.block.ipc_blocked,
             Some(crate::mproc::IpcBlockReason::DelayedSignal)
         );
         if delayed {
-            // 清 DELAY_CALL（351）+ assert 未停止（353）。
+            // Clear DELAY_CALL (351) + assert not stopped (353).
             table.procs[slot].state.block.ipc_blocked = None;
             assert!(
                 !table.procs[slot].state.block.stopped,
                 "SIGSNDELAY: DELAY without PROC_STOPPED"
             );
-            // VFS|EVENT 在途 → stop_proc(MustStop)，等 VFS 回复后再查（359-363）。
+            // VFS|EVENT in flight → stop_proc(MustStop), then re-check after the
+            // VFS reply (359-363).
             if table.procs[slot].state.block.is_vfs_blocked()
                 || table.procs[slot].state.block.is_event_blocked()
             {
                 let mut stop_bridge = GatewayStopBridge(&mut *kern);
-                //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                //[SD19-gate] PM send/notify/reply is fire-and-forget
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = crate::signal_flow::stop_proc(
                     table,
@@ -648,9 +694,9 @@ pub fn process_ksig(
                 );
                 return Ok(());
             }
-            // 尽可能多处置常规信号（366）。
+            // Handle as many ordinary signals as possible (366).
             let mut deliver = SigProcDeliver { kern: &mut *kern, transport: &mut *transport };
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            //[SD19-gate] PM send/notify/reply is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = crate::signal_flow::check_pending(table, UserSlot::new(slot), &mut deliver);
         }
@@ -661,12 +707,14 @@ pub fn process_ksig(
     Ok(())
 }
 
-/// C `process_sigmgr_signals`（`sef_signal.c:27-63`）：SIGKSIG 通知到达
-/// 后的拉取循环——内核为信号管理器积累了待处理内核信号时，逐个取回
-/// （`sys_getksig`，取回即消费 RTS_SIGNALED）、逐信号确认（`sys_endksig`）
-/// 并驱动 `process_ksig` 处置，直到内核报告无更多。取回失败 C panic
-///（"SEF: sys_getksig failed"）；单个信号的目标已消亡（EDEADEPT）则
-/// 继续循环（C 同）。
+/// C `process_sigmgr_signals` (`sef_signal.c:27-63`): the pull loop after a
+/// SIGKSIG notification arrives—when the kernel has accumulated pending kernel
+/// signals for the signal manager, take them back one at a time
+/// (`sys_getksig`, where taking consumes RTS_SIGNALED), acknowledge each
+/// (`sys_endksig`), and drive `process_ksig` to handle it, until the kernel
+/// reports no more. A failed take panics in C ("SEF: sys_getksig failed"); a
+/// single signal whose target is already gone (EDEADEPT) just continues the
+/// loop (same as C).
 pub fn process_sigmgr_signals(
     table: &mut ProcTable,
     vctl: &mut dyn crate::timer::VTimerCtl,
@@ -681,15 +729,16 @@ pub fn process_sigmgr_signals(
             Some(pair) => pair,
             None => break,
         };
-        // 全宽位图（SD-39：与 C sigset_t 同为 128 位，`sigismember`
-        // 逐位消费；内核内部信号 71..=74 落在 word 2）。范围校验由
-        // sigset_contains 自己完成（越界答 false，而非 C 的未检查索引）。
+        // Full-width bitmap (the same 128 bits as C's sigset_t, so `sigismember`
+        // consumes it bit by bit; internal kernel signals 71..=74 land in word
+        // 2). Range checking is done by sigset_contains itself (out of bounds
+        // answers false, unlike C's unchecked index).
         for signo in 1u32..=128 {
             if minix_types::sigset_contains(set, signo) {
                 if let Err(r) = kern.end_ksig(target, signo as i32) {
                     panic!("sys_endksig failed: {}", r);
                 }
-                //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                //[SD19-gate] PM send/notify/reply is fire-and-forget
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = process_ksig(table, target, signo as i32, vctl, kern, transport);
             }
@@ -700,8 +749,9 @@ pub fn process_sigmgr_signals(
 #[cfg(test)]
 mod tests {
 
-    /// signal.rs 测试用内核网关 mock（sys_kill/sys_clear/sys_abort 恒 OK；
-    /// proc_times 可脚本化计账值供 D-14 累加断言）。
+    /// Kernel-gateway mock for the signal.rs tests (sys_kill/sys_clear/sys_abort
+    /// always OK; proc_times returns scriptable accounting values for the
+    /// accumulation assertions).
     struct TestKernel {
         pub user: minix_types::Clock,
         pub sys: minix_types::Clock,
@@ -761,14 +811,15 @@ mod tests {
         assert_eq!(res.unwrap(), 1);
     }
 
-    // ---- 信号集合与 badignore 行为（todo.md V2-P0-2 回归锚点）----
+    // ---- Signal sets and badignore behavior ----
 
-    /// C signal.h:71/80（sys/sys/signal.h）。
+    /// C signal.h:71/80 (sys/sys/signal.h).
     const SIGCONT_TEST: i32 = 19;
     const SIGWINCH_TEST: i32 = 28;
 
-    /// C signal.c:535-539：SIGCONT ∈ ign_sset，默认忽略——干净进程收到
-    /// SIGCONT 必须存活。位序错位（V2-P0-2）曾使本路径落入终止分支。
+    /// C signal.c:535-539: SIGCONT ∈ ign_sset and is default-ignored—a clean
+    /// process receiving SIGCONT must survive. A bit-order error once made this
+    /// path fall into the termination branch.
     #[test]
     fn test_sigproc_default_ignores_sigcont() {
         let mut table = ProcTable::new();
@@ -781,9 +832,9 @@ mod tests {
         assert!(table.procs[5].is_in_use() && !table.procs[5].is_exiting());
     }
 
-    /// C signal.c:483-486：ksig + 信号 ∈ noign_sset + 被进程 ignore →
-    /// badignore 强制默认处理（SIGSEGV ∈ core_sigs → dump 终止路径），
-    /// ignore 设置被穿透。
+    /// C signal.c:483-486: ksig + the signal ∈ noign_sset + the process ignores
+    /// it → badignore forces default handling (SIGSEGV ∈ core_sigs → the
+    /// dump-termination path), and the ignore setting is overridden.
     #[test]
     fn test_badignore_forces_default_on_ignored_lethal_ksig() {
         let mut table = ProcTable::new();
@@ -796,8 +847,9 @@ mod tests {
         assert!(table.procs[5].is_exiting());
     }
 
-    /// ksig 但信号 ∉ noign_sset（SIGWINCH）且被 ignore → 正常忽略：
-    /// badignore 只穿透 noign 集合内的信号（C signal.c:483-491）。
+    /// ksig but the signal ∉ noign_sset (SIGWINCH) and it is ignored → normally
+    /// ignored: badignore only overrides signals inside the noign set (C
+    /// signal.c:483-491).
     #[test]
     fn test_ignored_non_noign_ksig_still_ignored() {
         let mut table = ProcTable::new();
@@ -810,15 +862,16 @@ mod tests {
         assert!(table.procs[5].is_in_use() && !table.procs[5].is_exiting());
     }
 
-    /// V2-P0-1：信号终止必须经调用者的真实通道告知 VFS（forkexit.c
-    /// :350-358 无条件 tell_vfs）——SIGKILL → VFS_PM_EXIT，SIGSEGV
-    /// （∈ core_sigs）→ VFS_PM_DUMPCORE。修复前这些消息进一次性 mock
-    /// 黑洞，core 路径进程永久卡 EXITING。
+    /// A signal termination must tell VFS through the caller's real channel
+    /// (forkexit.c:350-358 unconditionally calls tell_vfs)—SIGKILL →
+    /// VFS_PM_EXIT, SIGSEGV (∈ core_sigs) → VFS_PM_DUMPCORE. Before the fix
+    /// these messages went into a one-shot mock black hole, and core-path
+    /// processes hung in EXITING forever.
     #[test]
     fn test_signal_termination_tells_vfs() {
         let mut kern = TestKernel { user: 0, sys: 0 };
 
-        // SIGKILL：普通终止 → VFS_PM_EXIT
+        // SIGKILL: ordinary termination → VFS_PM_EXIT
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5, 42, 42, false);
         let mut t = crate::ipc::TestIpcTransport::default();
@@ -829,7 +882,7 @@ mod tests {
             t.sent().iter().map(|(_, m)| m.m_type).collect::<Vec<_>>()
         );
 
-        // SIGSEGV：core 信号 → VFS_PM_DUMPCORE
+        // SIGSEGV: core signal → VFS_PM_DUMPCORE
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5, 42, 42, false);
         let mut t = crate::ipc::TestIpcTransport::default();
@@ -841,8 +894,9 @@ mod tests {
         );
     }
 
-    /// V2-P2-4：广播 SIGTERM 先经 sys_kill(RS) 内核回环通知 RS（C
-    /// signal.c:588-588），而非直接 sig_proc（PRIV_PROC !ksig 空转）。
+    /// A broadcast SIGTERM notifies RS through the sys_kill(RS) kernel loopback
+    /// first (C signal.c:588-588), not through a direct sig_proc call (a
+    /// PRIV_PROC !ksig no-op).
     #[test]
     fn test_broadcast_sigterm_notifies_rs_via_kernel() {
         struct RecordKill {
@@ -878,7 +932,7 @@ mod tests {
         assert_eq!(kern.killed, Some((Endpoint::RS, SIGTERM)));
     }
 
-    /// 记录型 VTimerCtl mock：捕获 (which, set 值)。
+    /// Recording VTimerCtl mock: captures (which, set value).
     struct RecVTimer { pub which: Option<crate::timer::ItimerWhich>, pub set: Option<Clock> }
     impl crate::timer::VTimerCtl for RecVTimer {
         fn vtimer(&mut self, _ep: Endpoint, which: crate::timer::ItimerWhich, set: Option<Clock>, _get: Option<&mut Clock>) -> i32 {
@@ -891,9 +945,9 @@ mod tests {
     #[test]
     fn test_process_ksig_sigvtalrm_restarts_vtimer() {
         // C: signal.c:326-328 + alarm.c:222-241 — ksig SIGVTALRM →
-        // check_vtimer：interval>0 时向内核重设 ITIMER_VIRTUAL。
+        // check_vtimer: when interval>0, reset ITIMER_VIRTUAL with the kernel.
         let mut table = ProcTable::new();
-        mk_proc(&mut table, 5, 42, 100, true); // 内核进程（ksig 路径）
+        mk_proc(&mut table, 5, 42, 100, true); // kernel process (the ksig path)
         table.procs[5].resources.intervals[crate::timer::ItimerWhich::Virtual as usize] = 50;
         let mut vt = RecVTimer { which: None, set: None };
         let mut t = crate::ipc::TestIpcTransport::default();
@@ -907,8 +961,8 @@ mod tests {
 
     #[test]
     fn test_process_ksig_sigsys_does_not_touch_vtimer() {
-        // 回归守卫：旧代码误写 `signo == 12`（SIGSYS 非 SIGVTALRM=26）——
-        // SIGSYS 不应触碰虚拟计时器。
+        // Regression guard: the old code wrote `signo == 12` (SIGSYS, not
+        // SIGVTALRM=26)—SIGSYS must not touch the virtual timer.
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5, 42, 100, true);
         let mut vt = RecVTimer { which: None, set: None };
@@ -923,8 +977,8 @@ mod tests {
 
     #[test]
     fn test_stacktrace_and_termination_match_c_macros() {
-        // C: sys/signal.h:279-286 — SIGS_IS_STACKTRACE = LETHAL && !=ABRT；
-        // SIGS_IS_TERMINATION = LETHAL || KILL || PIPE。
+        // C: sys/signal.h:279-286 — SIGS_IS_STACKTRACE = LETHAL && !=ABRT;
+        // SIGS_IS_TERMINATION = LETHAL || KILL || PIPE.
         assert!(is_stacktrace(SIGILL));
         assert!(is_stacktrace(SIGBUS));
         assert!(is_stacktrace(SIGFPE));
@@ -951,10 +1005,11 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].resources.privilege = Privilege::User(Credentials::new(1000, 100));
         let mut t = crate::ipc::TestIpcTransport::default();
-        // D-22 语义修正：SIGS_IS_LETHAL（sys/signal.h:279-281）= ILL|BUS|FPE|
-        // SEGV|EMT|ABRT，不含 SIGKILL——旧近似列表把 9 计入 lethal 是与 C 的
-        // 真实偏差（SIGKILL 对 PRIV_PROC 经 kill(2) 在 C 中合法）。改用真
-        // lethal 的 SIGSEGV 验证 EPERM 保护。
+        // Semantic correction: SIGS_IS_LETHAL (sys/signal.h:279-281) =
+        // ILL|BUS|FPE|SEGV|EMT|ABRT and does not include SIGKILL—the old
+        // approximation that counted 9 as lethal was a real deviation from C
+        // (SIGKILL against PRIV_PROC through kill(2) is legal in C). A genuinely
+        // lethal SIGSEGV verifies the EPERM protection instead.
         let mut kern_rec = TestKernel { user: 30, sys: 12 };
         let res = check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, false, &mut kern_rec, &mut t); // SIGSEGV lethal, !ksig, PRIV_PROC → EPERM
         assert_eq!(res.unwrap_err(), KillError::PermissionDenied);
@@ -988,10 +1043,11 @@ mod tests {
         assert_eq!(res.unwrap_err(), KillError::InvalidEndpoint);
     }
 
-    // ---- 内核信号拉取循环（todo.md V3-P1-2 回归锚点，批次 H）----
+    // ---- Kernel signal pull loop ----
 
-    /// 脚本化 get_ksig 的内核网关 mock：`ksig_script` 逐次出队，空则
-    /// None（= 内核侧无更多）；记录 end_ksig 确认序列。
+    /// Kernel-gateway mock with a scripted get_ksig: `ksig_script` is dequeued
+    /// one item at a time, and None (= no more on the kernel side) ends it; the
+    /// end_ksig acknowledgement sequence is recorded.
     struct KsigRecorder {
         ksig_script: Vec<Option<(minix_types::Endpoint, minix_types::SigSetBits)>>,
         endksig_calls: Vec<(minix_types::Endpoint, i32)>,
@@ -1018,10 +1074,11 @@ mod tests {
         fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
     }
 
-    /// C sef_signal.c:27-63：SIGKSIG 到达后的拉取循环——getksig 取回
-    /// （endpt, set），逐信号 endksig 确认 + process_ksig 处置，endpt
-    /// NONE 终止。SIGTERM(15) 经 process_ksig → check_sig(ksig=TRUE) →
-    /// 未捕获未忽略 → 终止链。
+    /// C sef_signal.c:27-63: the pull loop after SIGKSIG arrives—getksig takes
+    /// back (endpt, set), each signal is acknowledged with endksig and handled by
+    /// process_ksig, and endpt NONE terminates. SIGTERM(15) goes through
+    /// process_ksig → check_sig(ksig=TRUE) → not caught, not ignored → the
+    /// termination chain.
     #[test]
     fn test_process_sigmgr_signals_drains_and_delivers() {
         let mut table = ProcTable::new();
@@ -1037,27 +1094,31 @@ mod tests {
         let mut novt = NopVTimer;
         let mut t = crate::ipc::TestIpcTransport::default();
         process_sigmgr_signals(&mut table, &mut novt, &mut kern, &mut t);
-        // 逐信号确认消费（C：sys_endksig 先于 process_ksig）。
+        // Acknowledge and consume signal by signal (C: sys_endksig precedes
+        // process_ksig).
         assert_eq!(kern.endksig_calls, vec![(target_ep, SIGTERM)]);
-        // SIGTERM 默认处置终止：进程走完整 exit 链到僵尸。
+        // SIGTERM's default handling is termination: the process takes the full
+        // exit chain to a zombie.
         assert!(
             matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. } | Lifecycle::TraceZombie { .. }),
             "SIGTERM ksig must terminate the clean process, got {:?}",
             table.procs[5].state.lifecycle
         );
-        // §续-383：僵尸必须携带终止信号号（C: signal.c:552 → forkexit.c:374
-        // → zombify/wait），否则父进程 wait 把信号死亡错报成 exit 0。
+        // A zombie must carry the terminating signal number (C: signal.c:552 →
+        // forkexit.c:374 → zombify/wait); otherwise the parent's wait reports a
+        // signal death as exit 0 by mistake.
         let (_, ss) = table.procs[5].state.lifecycle.exit_code().unwrap();
         assert_eq!(ss as i32, SIGTERM, "zombie sig_status must carry SIGTERM");
     }
 
-    /// §续-383 回归锚点（riscv 门 t_strerror 死亡序列）：信号死亡的
-    /// tell_vfs 载荷必须携带真信号号。C: signal.c:552（sig_proc_exit 进
-    /// exit_proc 前写 mp_sigstatus）+ forkexit.c:351-354（DUMPCORE 载
-    /// TERM_SIG）。缺陷形态：term_sig 从 lifecycle 读回恒 0（EXITING 到
-    /// exit_proc step 10 才建立）→ VFS DUMPCORE 臂拒服务（BadEndpoint）
-    /// → PM 丢弃错误回复（续-149 臂）→ 退出链停摆在 sys_clear 之前
-    /// → 内核槽永挂 PAGEFAULT、套件停在 13/36。
+    /// A signal death's tell_vfs payload must carry the real signal number.
+    /// C: signal.c:552 (sig_proc_exit writes mp_sigstatus before entering
+    /// exit_proc) + forkexit.c:351-354 (DUMPCORE carries TERM_SIG). The defect
+    /// shape: term_sig read back from the lifecycle as a constant 0 (EXITING is
+    /// only established at exit_proc step 10) → VFS's DUMPCORE arm refused
+    /// service (BadEndpoint) → PM discarded the error reply → the exit chain
+    /// stalled before sys_clear → the kernel slot hung on PAGEFAULT forever and
+    /// the suite stopped at 13/36.
     #[test]
     fn test_sig_death_tell_vfs_carries_term_sig() {
         let mut table = ProcTable::new();
@@ -1077,7 +1138,7 @@ mod tests {
             &mut t,
         );
         assert!(res.is_ok());
-        // tell_vfs 载荷：VFS_PM_DUMPCORE 且 term_sig = SIGSEGV。
+        // tell_vfs payload: VFS_PM_DUMPCORE with term_sig = SIGSEGV.
         let call = t
             .sent()
             .iter()
@@ -1088,7 +1149,8 @@ mod tests {
             other => panic!("signal death must send DumpCore, got {other:?}"),
         };
         assert_eq!(term_sig, crate::signal::SIGSEGV);
-        // EXITING 生命周期携带 sig_status（exit_restart zombify 的源头）。
+        // The EXITING lifecycle carries sig_status (the source of exit_restart's
+        // zombify).
         assert!(table.procs[5].state.lifecycle.is_exiting());
         let (_, ss) = table.procs[5].state.lifecycle.exit_code().unwrap();
         assert_eq!(
@@ -1098,31 +1160,34 @@ mod tests {
         );
     }
 
-    /// C signal.c:344-369：SIGSNDELAY 到达时清 DELAY_CALL 并恢复搁置的
-    /// 处置——常规信号重查（此处验证 DELAY_CALL 清除与 pending 投递）。
+    /// C signal.c:344-369: on SIGSNDELAY, clear DELAY_CALL and resume the
+    /// handling that was set aside—the ordinary-signal re-check (this verifies
+    /// DELAY_CALL clearing and pending delivery).
     #[test]
     fn test_process_ksig_sigsn_delay_resumes_check_pending() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5, 42, 42, false);
         table.procs[5].state.block.ipc_blocked = Some(crate::mproc::IpcBlockReason::DelayedSignal);
-        // 搁置期间积累的未阻塞信号。
+        // Unblocked signals accumulated while the process was set aside.
         table.procs[5].resources.signals.pending = 1u64 << (SIGTERM - 1);
         let mut kern = KsigRecorder { ksig_script: Vec::new(), endksig_calls: Vec::new() };
         let mut novt = NopVTimer;
         let mut t = crate::ipc::TestIpcTransport::default();
         let target_ep = table.procs[5].identity.endpoint;
         let res = process_ksig(&mut table, target_ep, SIGSNDELAY, &mut novt, &mut kern, &mut t);
-        // C signal.c:372-378 尾部存活检查：check_pending 把 SIGTERM 默认处置
-        // 走完整 exit 链后进程持有 EXITING 位（zombify 只 OR 位不清），
-        // `(IN_USE|EXITING) != IN_USE` → EDEADEPT（NK4-C 1.54 B28：
-        // is_exiting 改 C 位语义后此处才与 C 对齐，旧断言 ok 是 Exiting-
-        // only 建模缺陷的镜像）。
+        // C signal.c:372-378 tail liveness check: after check_pending takes
+        // SIGTERM's default handling through the full exit chain, the process
+        // holds the EXITING bit (zombify only ORs the bit, never clears it), so
+        // `(IN_USE|EXITING) != IN_USE` → EDEADEPT (once is_exiting followed C's
+        // bit semantics this matched C; the old assertion's ok was a mirror of
+        // the Exiting-only modeling defect).
         assert!(
             matches!(res, Err(KillError::InvalidEndpoint)),
             "terminated process must report EDEADEPT, got {res:?}"
         );
-        // DELAY_CALL 必须清（C signal.c:351）；exit_proc 的 tell_vfs 随后
-        // 以 VFS_CALL 占位（exit.rs step 8），不能断言整个 ipc_blocked 为空。
+        // DELAY_CALL must be cleared (C signal.c:351); exit_proc's tell_vfs then
+        // occupies it with a VFS_CALL (exit.rs step 8), so the whole
+        // ipc_blocked field cannot be asserted empty.
         assert!(
             !matches!(
                 table.procs[5].state.block.ipc_blocked,
@@ -1131,13 +1196,13 @@ mod tests {
             "DELAY_CALL must clear, got {:?}",
             table.procs[5].state.block.ipc_blocked
         );
-        // SIGTERM 已处置（终止链）。
+        // SIGTERM has been handled (the termination chain).
         assert!(table.procs[5].state.lifecycle.is_exiting() || matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. }));
     }
 
-    // ---- sig_send / unpause 真实语义（todo.md V2-P2-7/V2-P2-8 回归锚点）----
+    // ---- sig_send / unpause real semantics ----
 
-    /// 记录 sys_sigsend 的 sigmsg 内容。
+    /// Records the sigmsg contents passed to sys_sigsend.
     struct SigSendRecorder {
         calls: Vec<(minix_types::Endpoint, u32, u64)>,
         reply_err: Option<i32>,
@@ -1169,17 +1234,19 @@ mod tests {
         fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
     }
 
-    /// C signal.c:772-818：sig_send 组装 sigmsg（mask/signo/handler/
-    /// sigreturn）+ mp_sigmask 簿记（sa_mask 并入 + 当前信号 defer）+
-    /// pending 清除 + sys_sigsend 投递。
+    /// C signal.c:772-818: sig_send assembles the sigmsg (mask/signo/handler/
+    /// sigreturn) + mp_sigmask bookkeeping (fold in sa_mask + defer the current
+    /// signal) + pending clearing + the sys_sigsend delivery.
     #[test]
     fn test_sig_send_books_mask_and_sends() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5, 42, 42, false);
-        // 安装 handler（caught + sa_mask 含 SIGUSR2 位）+ 停止态。
-        let sig = 16; // SIGUSR1（Minix：USR1=16）
+        // Install a handler (caught + sa_mask with the SIGUSR2 bit) + stopped
+        // state.
+        let sig = 16; // SIGUSR1 (Minix: USR1=16)
         table.procs[5].state.block.stopped = true;
-        // C signal.c:841-844：非挂起路径经 restart_sigs 而来，UNPAUSED 必置。
+        // C signal.c:841-844: the non-suspended path comes through
+        // restart_sigs, so UNPAUSED must be set.
         table.procs[5].state.block.unpaused = true;
         table.procs[5].resources.signals.caught = 1u64 << (sig - 1);
         table.procs[5].resources.signals.actions[sig as usize - 1].sa_handler = 0xCAFEBABE;
@@ -1191,24 +1258,26 @@ mod tests {
 
         let res = sig_send(&mut table, UserSlot::new(5), sig, &mut kern, &mut t);
         assert!(res.is_ok());
-        // sigmsg：signo/handler/sigreturn 逐字段（mask = mask|sa_mask|bit16）。
+        // sigmsg: signo/handler/sigreturn field by field (mask =
+        // mask|sa_mask|bit16).
         assert_eq!(kern.calls.len(), 1);
         assert_eq!(kern.calls[0].0, table.procs[5].identity.endpoint);
         assert_eq!(kern.calls[0].1, sig as u32);
         assert_eq!(kern.calls[0].2, 0xCAFEBABE);
-        // mp_sigmask 簿记：sa_mask(17) + 自身(16) 并入（C signal.c:800-808）。
-        // 信号 s 的位 = 1<<(s-1)：16→0x8000，17→0x10000。
+        // mp_sigmask bookkeeping: sa_mask(17) + itself(16) folded in (C
+        // signal.c:800-808). Signal s's bit = 1<<(s-1): 16→0x8000, 17→0x10000.
         assert_eq!(
             table.procs[5].resources.signals.mask & ((1 << 15) | (1 << 16)),
             (1 << 15) | (1 << 16)
         );
         assert_eq!(table.procs[5].resources.signals.pending & (1 << 15), 0);
-        // pending 已清（C 814-815）。
+        // pending has been cleared (C 814-815).
         assert_eq!(table.procs[5].resources.signals.pending & (1 << 15), 0);
     }
 
-    /// C signal.c:820-822：EFAULT/ENOMEM = 进程内存装不下 handler——合法
-    /// 失败返回 FALSE（调用方落终止兜底），不 panic。
+    /// C signal.c:820-822: EFAULT/ENOMEM = the process's memory cannot hold the
+    /// handler—a legal failure returning FALSE (the caller falls back to
+    /// termination), not a panic.
     #[test]
     fn test_sig_send_efault_falls_back() {
         let mut table = ProcTable::new();
@@ -1223,7 +1292,7 @@ mod tests {
         assert!(res.is_err(), "EFAULT must be a graceful FALSE");
     }
 
-    /// C unpause 745-753：WAITING → stop_proc 停住 → true（就绪 spawn）。
+    /// C unpause 745-753: WAITING → stop_proc stops it → true (ready to spawn).
     #[test]
     fn test_unpause_waiting_stops_process() {
         let mut table = ProcTable::new();
@@ -1236,8 +1305,9 @@ mod tests {
         assert!(table.procs[5].state.block.stopped, "WAITING path must stop");
     }
 
-    /// C unpause 760-769：运行中 → stop_proc(MayDefer) + VFS_PM_UNPAUSE
-    /// 请求 → false（信号转 pending，等 UNPAUSE 回复重投）。
+    /// C unpause 760-769: running → stop_proc(MayDefer) + VFS_PM_UNPAUSE request
+    /// → false (the signal becomes pending, waiting for the UNPAUSE reply to
+    /// redeliver).
     #[test]
     fn test_unpause_running_defers_to_vfs() {
         let mut table = ProcTable::new();
@@ -1252,18 +1322,19 @@ mod tests {
         assert_eq!(t.sent()[0].1.m_type, minix_types::VFS_PM_UNPAUSE);
     }
 
-    /// V3-P2-2 回归锚点：PRIV_PROC !ksig → sys_kill 内核回环（C
-    /// signal.c:456-462"let kernel pick the right signal manager"）。
+    /// PRIV_PROC !ksig → sys_kill kernel loopback (C signal.c:456-462 "let the
+    /// kernel pick the right signal manager").
     #[test]
     fn test_sig_proc_priv_proc_ksig_false_forwards_to_kernel() {
         let mut table = ProcTable::new();
-        mk_proc(&mut table, 5, 42, 42, true); // 系统进程
+        mk_proc(&mut table, 5, 42, 42, true); // system process
         let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None, kills: Vec::new() };
         let mut t = crate::ipc::TestIpcTransport::default();
         let res = sig_proc(&mut table, UserSlot::new(5), SIGHUP, false, false, &mut kern, &mut t);
         assert!(res.is_ok());
         assert_eq!(kern.calls.len(), 0, "ksig=false must not use sys_sigsend");
-        // C 同型转发：sys_kill(endpoint, SIGHUP)（signal.c:462）。
+        // Same-shaped forwarding as C: sys_kill(endpoint, SIGHUP)
+        // (signal.c:462).
         assert_eq!(kern.kills, vec![(table.procs[5].identity.endpoint, SIGHUP)]);
     }
 
@@ -1280,10 +1351,11 @@ mod tests {
         assert_eq!(table.procs[5].resources.signals.pending & (1u64 << (SIGCHLD - 1)), 0);
     }
 
-    // ---- VFS_CALL 分支的 stop_proc 接线（todo.md V3-P1-3 回归锚点）----
+    // ---- stop_proc wiring for the VFS_CALL branch ----
 
-    /// 记录 `sys_delay_stop` 调用并支持脚本化返回值的内核网关 mock：
-    /// `reply == 0` 时成功，否则原样返回该负 errno（如 EBUSY = 16）。
+    /// Kernel-gateway mock that records `sys_delay_stop` calls and supports a
+    /// scripted return value: success when `reply == 0`, otherwise that negative
+    /// errno is returned as-is (e.g. EBUSY = 16).
     #[derive(Default)]
     struct StopRecorder {
         calls: Vec<Endpoint>,
@@ -1310,9 +1382,10 @@ mod tests {
         fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
     }
 
-    /// C signal.c:425-443：VFS_CALL 挂起的进程收到信号 → pending 置位 +
-    /// `stop_proc(rmp, FALSE)` 停住（PROC_STOPPED 兼作 restart_sigs 复查
-    /// 指示）。V3-P1-3 之前只置位不停。
+    /// C signal.c:425-443: a process suspended in VFS_CALL receives a signal →
+    /// pending bit set + stopped by `stop_proc(rmp, FALSE)` (PROC_STOPPED also
+    /// serves as the indicator for restart_sigs' re-check). Before the wiring fix
+    /// it only set the bit and never stopped.
     #[test]
     fn test_sig_proc_vfs_call_stops_and_sets_pending() {
         let mut table = ProcTable::new();
@@ -1329,7 +1402,7 @@ mod tests {
         assert_eq!(kern.calls, vec![table.procs[5].identity.endpoint]);
     }
 
-    /// ksig=TRUE 时同步置 `mp_ksigpending`（C signal.c:428-429）。
+    /// When ksig=TRUE, also set `mp_ksigpending` (C signal.c:428-429).
     #[test]
     fn test_sig_proc_vfs_call_ksig_sets_kernel_pending() {
         let mut table = ProcTable::new();
@@ -1345,8 +1418,9 @@ mod tests {
         assert!(table.procs[5].state.block.stopped);
     }
 
-    /// C 守卫 `!(PROC_STOPPED | DELAY_CALL)`：已停进程不再重复调内核
-    ///（stop_proc 的 assert 也不允许），只置 pending。
+    /// C's guard `!(PROC_STOPPED | DELAY_CALL)`: an already-stopped process does
+    /// not call the kernel again (stop_proc's assert forbids it too); only the
+    /// pending bit is set.
     #[test]
     fn test_sig_proc_vfs_call_skips_stop_when_already_stopped() {
         let mut table = ProcTable::new();
@@ -1363,8 +1437,9 @@ mod tests {
         assert_eq!(table.procs[5].resources.signals.pending & bit, bit);
     }
 
-    /// DELAY_CALL（无 VFS_CALL/EVENT_CALL）不进入本分支——C signal.c:425
-    /// 只测两个 flag。SIGCONT 默认忽略，进程存活且零内核调用。
+    /// DELAY_CALL (with no VFS_CALL/EVENT_CALL) does not enter this branch—C
+    /// signal.c:425 tests only the two flags. SIGCONT is default-ignored, the
+    /// process stays alive, and there are zero kernel calls.
     #[test]
     fn test_sig_proc_delay_call_bypasses_vfs_branch() {
         let mut table = ProcTable::new();
@@ -1379,8 +1454,8 @@ mod tests {
         assert_eq!(table.procs[5].state.lifecycle, Lifecycle::Running);
     }
 
-    /// `stop_proc(rmp, FALSE)` = 不可延迟：内核回 EBUSY 必须 panic
-    ///（C signal.c:248 "stop_proc: unexpected delay call"）。
+    /// `stop_proc(rmp, FALSE)` = may not delay: a kernel EBUSY must panic (C
+    /// signal.c:248 "stop_proc: unexpected delay call").
     #[test]
     fn test_sig_proc_vfs_call_ebusy_must_stop_panics() {
         let mut table = ProcTable::new();
@@ -1390,15 +1465,16 @@ mod tests {
         let mut t = crate::ipc::TestIpcTransport::default();
         let mut kern = StopRecorder { calls: Vec::new(), reply: 16 }; // EBUSY
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            //[SD19-gate] PM send/notify/reply is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = sig_proc(&mut table, UserSlot::new(5), SIGTERM, false, false, &mut kern, &mut t);
         }));
         assert!(res.is_err(), "MustStop + EBUSY must panic");
     }
 
-    /// 记录 stacktrace 请求的内核网关 mock：sig_proc 的 ksig 栈回溯支路
-    /// （C signal.c:464-466 `sys_diagctl_stacktrace(mp_endpoint)`）回归用。
+    /// Kernel-gateway mock that records stacktrace requests: used for the
+    /// regression of sig_proc's ksig stacktrace arm (C signal.c:464-466
+    /// `sys_diagctl_stacktrace(mp_endpoint)`).
     #[derive(Default)]
     struct StacktraceRecorder {
         traces: Vec<minix_types::Endpoint>,
@@ -1423,24 +1499,29 @@ mod tests {
         }
     }
 
-    /// C signal.c:464-477：PRIV_PROC 进程收到内核致命信号（SIGSEGV 属
-    /// stacktrace 类）——先向内核请求打印目标栈回溯，再落入终止链。
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    /// C signal.c:464-477: a PRIV_PROC process receives a lethal kernel signal
+    /// (SIGSEGV is in the stacktrace class)—it first asks the kernel to print the
+    /// target's stacktrace, then falls into the termination chain.
+    //[SD19-gate] PM send/notify/reply is fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
-    /// 接线回归锚点：早前此支路是 `let _ = target;` 空转（无诊断输出）。
+    /// Wiring regression: this arm used to be a `let _ = target;` no-op with no
+    /// diagnostic output.
     #[test]
     fn test_sig_proc_ksig_stacktrace_asks_kernel_then_terminates() {
         let mut table = ProcTable::new();
-        // 内核进程（is_kernel_process=true，endpoint != PM 不会早退）。
+        // Kernel process (is_kernel_process=true, endpoint != PM so it does not
+        // return early).
         mk_proc(&mut table, 5, 42, 42, true);
         let target_ep = table.procs[5].identity.endpoint;
         let mut kern = StacktraceRecorder::default();
         let mut t = crate::ipc::TestIpcTransport::default();
         let res = check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, true, &mut kern, &mut t);
         assert!(res.is_ok());
-        // ① 栈回溯请求确实发出，目标端点 = 该进程的 endpoint（C :465）。
+        // ① The stacktrace request really goes out, with the target endpoint =
+        // that process's endpoint (C :465).
         assert_eq!(kern.traces, vec![target_ep]);
-        // ② SIGSEGV 是终止类：随后走 sig_proc_exit（C :475-477），进程离活。
+        // ② SIGSEGV is termination-class: sig_proc_exit follows (C :475-477) and
+        // the process leaves the living state.
         assert!(
             matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. })
                 || table.procs[5].state.lifecycle.is_exiting(),
@@ -1449,10 +1530,10 @@ mod tests {
         );
     }
 
-    /// C signal.c:464 + `SIGS_IS_STACKTRACE` 宏（`sys/sys/signal.h:286`
-    /// = `SIGS_IS_LETHAL && sig != SIGABRT`）：SIGABRT 虽是致命信号但被
-    /// 显式排除在 stacktrace 集合外——不得发栈回溯请求（与上一测试成对，
-    /// 钉住集合边界）。
+    /// C signal.c:464 + the `SIGS_IS_STACKTRACE` macro (`sys/sys/signal.h:286`
+    /// = `SIGS_IS_LETHAL && sig != SIGABRT`): SIGABRT is lethal but explicitly
+    /// excluded from the stacktrace set—no stacktrace request may be sent (paired
+    /// with the previous test, pinning the set boundary).
     #[test]
     fn test_sig_proc_ksig_abort_skips_stacktrace() {
         let mut table = ProcTable::new();

@@ -1,46 +1,60 @@
-//! E5(e) — PM↔SCHED 调度链联调（宿主态，走 wire 契约）。
+//! E5(e) — the PM↔SCHED scheduling chain, end to end (hosted, over the wire
+//! contract).
 //!
-//! edge_todo.md 2026-09-09 节登记的验收面：sched 是全仓唯一"每个行为都
-//! 依赖他方主动来电"的服务（PM 的 START/INHERIT/SET_NICE、内核的
-//! NO_QUANTUM、自身的 5 秒平衡闹钟），三链此前只有各 crate 内部单测，
-//! 跨服务 wire 零覆盖。本文件即其宿主半（new_edge4 §5），形态沿 E5(a)
-//! 的 pm_vm_fork.rs 判例：三侧真代码对跑，只有不可宿主驱动的一端以
-//! wire 契约代替。
+//! The acceptance surface recorded for this chain: sched is the only service in
+//! the repository where "every behavior depends on another party calling in"
+//! (PM's START/INHERIT/SET_NICE, the kernel's NO_QUANTUM, its own 5-second
+//! balance alarm); the three chains previously had only per-crate unit tests
+//! and zero cross-service wire coverage. This file is the host half, shaped
+//! after the pm_vm_fork.rs precedent: real code from all three sides runs
+//! against itself, and only the end that cannot be driven on the host is
+//! replaced by the wire contract.
 //!
-//! # 链路面
+//! # The chain surface
 //!
-//! 1. **PM**：`minix_pm::sched::{sched_init, sched_start_user}` 真状态机
-//!    跑全步，出站走真实 `MinixSchedCtl`（而非 trait 替身）——SCHEDULING_*
-//!    消息的组包、`sendrec` 往返与 rv 判定全在生产代码路径上。PM 侧传输
-//!    是自带的 `PmSide`（实现 PM 的 `IpcTransport`）：`sendrec` 把请求投
-//!    进共享 bus 后当场泵一轮 SCHED 主循环再取回执，等价 C 阻塞
-//!    `ipc_sendrec` 的时序（minix3/minix/lib/libsys/taskcall.c:16）。
-//! 2. **SCHED**：`minix_sched::server::SchedServer::run_once` 真循环消费
-//!    bus 上的请求——五字母分发、出生门/占用门/封印门、扇出环全在生
-//!    产路径上。它的 IPC 侧是自带的 `SchedSide`（实现 SCHED 的
-//!    `IpcTransport`），内核侧是自带的 `CapturedKernel`（实现 SCHED 的
-//!    `KernelApi`）。
-//! 3. **内核**：`minix-kernel` 不进依赖（C-46 记录的 workspace 特性统
-//!    一三错为预存基线，且 SYS_SCHEDCTL/SYS_SCHEDULE 的解码半已由
-//!    K1/K2 在内核 crate 单测钉死）。对账物是 SCHED 生产渲染函数产出
-//!    的 minix-types 线束：`SchedctlCall::wire()`（对位内核
-//!    `dispatch_schedctl` 的读序，os/kernel/src/syscall_process.rs:630）
-//!    与 `Fanout::wire_*`（对位 `do_schedule` 的 SchedParams 读序，
-//!    os/kernel/src/sched.rs:272-277）；NO_QUANTUM 到达侧按内核
-//!    `notify_scheduler` 的线形构造（os/kernel/src/proc_table.rs:969-999，
-//!    m_source = 耗尽者、FROM_KERNEL 封印、m_krn_lsys_schedule 账目载荷）。
+//! 1. **PM**: `minix_pm::sched::{sched_init, sched_start_user}` is the real
+//!    state machine running every step, and outgoing traffic uses the real
+//!    `MinixSchedCtl` (not a trait stand-in) — packing the SCHEDULING_*
+//!    messages, the `sendrec` round trip and the rv decision all sit on the
+//!    production code path. The PM-side transport is the local `PmSide`
+//!    (implementing PM's `IpcTransport`): `sendrec` posts the request into the
+//!    shared bus, then pumps one round of the SCHED main loop on the spot and
+//!    takes the receipt, matching the timing of C's blocking `ipc_sendrec`
+//!    (minix3/minix/lib/libsys/taskcall.c:16).
+//! 2. **SCHED**: `minix_sched::server::SchedServer::run_once` is the real loop
+//!    consuming requests from the bus — the five-letter dispatch, the birth /
+//!    occupancy / seal gates and the fanout ring all sit on the production
+//!    path. Its IPC side is the local `SchedSide` (implementing SCHED's
+//!    `IpcTransport`), and its kernel side is the local `CapturedKernel`
+//!    (implementing SCHED's `KernelApi`).
+//! 3. **Kernel**: `minix-kernel` is not a dependency (the workspace feature
+//!    unification it would bring has three errors that stand as the
+//!    pre-existing baseline, and the decode halves of
+//!    SYS_SCHEDCTL/SYS_SCHEDULE are already pinned by kernel-crate unit tests).
+//!    The artifact reconciled against is the minix-types wire form produced by
+//!    SCHED's production rendering functions: `SchedctlCall::wire()` (matching
+//!    the read order of the kernel's `dispatch_schedctl`,
+//!    os/kernel/src/syscall_process.rs:630) and `Fanout::wire_*` (matching the
+//!    SchedParams read order of `do_schedule`,
+//!    os/kernel/src/sched.rs:272-277); the NO_QUANTUM arrival side is built to
+//!    the wire shape of the kernel's `notify_scheduler`
+//!    (os/kernel/src/proc_table.rs:969-999: m_source = the spender, the
+//!    FROM_KERNEL seal, and the m_krn_lsys_schedule accounting payload).
 //!
-//! # 覆盖（三链 + 一断环守卫）
+//! # Coverage (three chains plus one broken-ring guard)
 //!
-//! - **START 链**：PM `sched_init` → SCHEDULING_START → `sys_schedctl`
-//!   注册接管 + `sys_schedule` 全字段下发 → 回执 OK 且命名 SCHED。
-//! - **INHERIT 链**：fork 子进程 `sched_start_user` → SCHEDULING_INHERIT
-//!   → 子槽继承父槽现值（优先级/时间片，C schedule.c:199-211）。
-//! - **NO_QUANTUM 回环**：内核通知（带封印）→ 降一级 → `sys_schedule`
-//!   原地回写（LOCAL：CPU KEEP）且永不回复（C main.c:73-77）；伪造封印
-//!   → EPERM 回复（C main.c:78-83）。
-//! - **拒绝透传**：二次 START 撞 SCHED 占用门（EDEADEPT）→ PM 的 rv =
-//!   回复 m_type（C taskcall.c:17-20），拒绝不再被读成成功。
+//! - **START chain**: PM `sched_init` → SCHEDULING_START → `sys_schedctl`
+//!   takeover registration + a full-field `sys_schedule` down-send → receipt OK
+//!   naming SCHED.
+//! - **INHERIT chain**: forked child `sched_start_user` → SCHEDULING_INHERIT →
+//!   the child slot inherits the parent's current values (priority/quantum, C
+//!   schedule.c:199-211).
+//! - **NO_QUANTUM ring**: a kernel notification (sealed) → drop one level →
+//!   `sys_schedule` written back in place (LOCAL: CPU KEEP) with no reply ever
+//!   (C main.c:73-77); a forged seal → EPERM reply (C main.c:78-83).
+//! - **Rejection pass-through**: a second START hits SCHED's occupancy gate
+//!   (EDEADEPT) → PM's rv = the reply's m_type (C taskcall.c:17-20), so a
+//!   rejection is no longer read as success.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -63,17 +77,19 @@ use minix_types::ipc::{MessKrnLsysSchedule, MessLsysKrnSchedule};
 use minix_types::{EDEADEPT, EPERM, Endpoint, Message, SCHEDULING_NO_QUANTUM, UserSlot};
 
 // ---------------------------------------------------------------------------
-// 共享 bus：PM 的 sendrec 与 SCHED 的 receive/send 在此会合
+// The shared bus: PM's sendrec and SCHED's receive/send meet here
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
 struct BusInner {
-    /// PM → SCHED 的请求队列，随消息携带到达状态字（普通调用无旗标、
-    /// 内核通知带 FROM_KERNEL 封印——SCHED 的 noquantum_trust 读它）。
+    /// The PM → SCHED request queue; each message carries its arrival status
+    /// word (an ordinary call has no flag, a kernel notification carries the
+    /// FROM_KERNEL seal — SCHED's noquantum_trust reads it).
     to_sched: RefCell<VecDeque<(Message, IpcStatus)>>,
-    /// SCHED → PM 的回执队列（`sendrec` 的回程腿）。
+    /// The SCHED → PM receipt queue (the return leg of `sendrec`).
     to_pm: RefCell<VecDeque<Message>>,
-    /// SCHED 每次 `send` 的落地记录（回复面断言用）。
+    /// A record of every SCHED `send` landing (used by receipt-side
+    /// assertions).
     sched_sent: RefCell<Vec<(Endpoint, Message)>>,
 }
 
@@ -81,8 +97,9 @@ struct BusInner {
 struct Bus(Rc<BusInner>);
 
 impl Bus {
-    /// 内核侧投递：绕过 PM 直接把一条到达放进 SCHED 的收件队列
-    /// （NO_QUANTUM 链用——内核 `mini_send` 不经过 PM）。
+    /// Delivery from the kernel side: bypass PM and put an arrival straight
+    /// into SCHED's inbox (used by the NO_QUANTUM chain — the kernel's
+    /// `mini_send` does not go through PM).
     fn deliver_from_kernel(&self, message: Message) {
         self.0
             .to_sched
@@ -91,7 +108,8 @@ impl Bus {
     }
 }
 
-/// SCHED 侧传输：收件出队、发送落账并入回执队列。
+/// The SCHED-side transport: dequeue arrivals, record sends and add them to
+/// the receipt queue.
 struct SchedSide {
     bus: Bus,
 }
@@ -107,9 +125,10 @@ impl SchedIpc for SchedSide {
         Ok(())
     }
 
-    // AF-5（回溯审计 2026-10-01）：SchedIpc 新增 sendnb 非阻塞发送后，
-    // mock 未同步致 `cargo build --workspace --all-targets` 编不过（E0046）。
-    // 本链 SCHED 不主动 sendnb；镜像 send 的投递记账（非阻塞仅语义差异）。
+    // After SchedIpc gained the non-blocking sendnb, this mock was not
+    // updated in step and `cargo build --workspace --all-targets` failed to
+    // compile (E0046). This chain's SCHED never calls sendnb; the body mirrors
+    // send's delivery accounting (non-blocking differs only in semantics).
     fn sendnb(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
         self.bus.0.sched_sent.borrow_mut().push((to, *message));
         self.bus.0.to_pm.borrow_mut().push_back(*message);
@@ -117,8 +136,9 @@ impl SchedIpc for SchedSide {
     }
 }
 
-/// SCHED 侧内核缝：按生产 `SysKernelApi` 的同一渲染函数族记账
-/// （transport.rs:356-364 的 wire 顺序），应答可脚本化（默认 OK）。
+/// The SCHED-side kernel seam: accounts through the same rendering function
+/// family as the production `SysKernelApi` (the wire order at
+/// transport.rs:356-364); the answers are scriptable (OK by default).
 #[derive(Default)]
 struct CapturedKernel {
     schedctl_calls: RefCell<Vec<SchedctlCall>>,
@@ -179,8 +199,9 @@ impl KernelApi for CapturedKernel {
     }
 }
 
-/// PM 侧传输：`sendrec` 投递请求后当场泵一轮 SCHED 主循环，再取回执——
-/// 等价 C 阻塞 sendrec 的时序（taskcall.c:16 `ipc_sendrec`）。
+/// The PM-side transport: after posting a request, `sendrec` pumps one round of
+/// the SCHED main loop on the spot and then takes the receipt — matching the
+/// timing of C's blocking sendrec (taskcall.c:16 `ipc_sendrec`).
 struct PmSide<'a> {
     bus: Bus,
     pump: RefCell<&'a mut dyn FnMut()>,
@@ -188,26 +209,29 @@ struct PmSide<'a> {
 
 impl PmIpc for PmSide<'_> {
     fn receive(&mut self) -> Result<(Message, minix_pm::ipc::IpcStatus), IpcTransportError> {
-        Err(IpcTransportError::WouldBlock) // 链上 PM 不收消息
+        Err(IpcTransportError::WouldBlock) // on this chain PM receives nothing
     }
 
     fn send(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), IpcTransportError> {
         panic!("E5(e) 链上 PM 只对 SCHED 做 sendrec，无异步发送")
     }
 
-    // AF-5（回溯审计 2026-10-01）：PmIpc 新增 send_blocking 后 mock 未同步
-    // 致 --workspace 编不过（E0046）。本链 PM 只对 SCHED sendrec，不主动
-    // 阻塞 send（与 send() 同语义）：如被调用即链上不该发生，失败现形。
+    // After PmIpc gained send_blocking this mock was not updated in step, so
+    // --workspace did not compile (E0046). This chain's PM only sendrecs to
+    // SCHED and never blocks in send (same semantics as send()): being called
+    // would mean something that cannot happen on the chain, so it fails
+    // loudly.
     fn send_blocking(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), IpcTransportError> {
         panic!("E5(e) 链上 PM 只对 SCHED 做 sendrec，无 send_blocking")
     }
 
     fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcTransportError> {
         assert_eq!(dest, SCHED_PROC_NR, "E5(e) 链上 PM 只对 SCHED sendrec");
-        // 真内核在投递时以发送者身份盖章 m_source（os/kernel/src/ipc.rs
-        // :1067 `p_delivermsg.m_source = caller_endpoint`）；宿主 bus 由
-        // 本传输半代行这枚章，SCHED 的来路门（valid.rs accept_message）
-        // 靠它认出 PM。
+        // The real kernel stamps m_source with the sender's identity on
+        // delivery (os/kernel/src/ipc.rs:1067
+        // `p_delivermsg.m_source = caller_endpoint`); on the host bus this
+        // transport half applies that stamp, and SCHED's origin gate
+        // (valid.rs accept_message) recognizes PM by it.
         msg.m_source = Endpoint::PM;
         self.bus
             .0
@@ -227,7 +251,7 @@ impl PmIpc for PmSide<'_> {
 }
 
 // ---------------------------------------------------------------------------
-// 夹具
+// Fixtures
 // ---------------------------------------------------------------------------
 
 const INIT_SLOT: usize = 11;
@@ -241,8 +265,8 @@ fn child_endpoint() -> Endpoint {
     Endpoint::from_generation_slot(1, CHILD_SLOT as i32)
 }
 
-/// INIT 夹具：slot 11 占用、self-parent、scheduler 尚为 KERNEL
-/// （C main.c:199 的初始态，schedule.c:37-43 的 START 把它交给 SCHED）。
+/// The INIT fixture: slot 11 in use, self-parent, scheduler still KERNEL (C's
+/// initial state at main.c:199; START at schedule.c:37-43 hands it to SCHED).
 fn table_with_init() -> ProcTable {
     let mut table = ProcTable::new();
     let p = &mut table.procs[INIT_SLOT];
@@ -258,8 +282,8 @@ fn table_with_init() -> ProcTable {
     table
 }
 
-/// fork 后子进程的 mproc 状态（main.c:373 调用点看到的形状：scheduler
-/// 与 nice 都从父槽拷贝）。
+/// The forked child's mproc state (the shape visible at the main.c:373 call
+/// site: scheduler and nice are both copied from the parent slot).
 fn add_forked_child(table: &mut ProcTable) {
     let c = &mut table.procs[CHILD_SLOT];
     c.identity.endpoint = child_endpoint();
@@ -273,7 +297,7 @@ fn add_forked_child(table: &mut ProcTable) {
     c.resources.privilege = Privilege::User(Credentials::new(0, 0));
 }
 
-/// 一台 2 CPU 的 SCHED 服务器 + 已上铃的内核缝（5s × 60Hz = 300 tick）。
+/// A two-CPU SCHED server plus an armed kernel seam (5s × 60Hz = 300 ticks).
 fn server_with_kernel() -> (SchedServer, CapturedKernel) {
     let mut kernel = CapturedKernel::with_hz(60);
     let mut server = SchedServer::new(MachineTopology {
@@ -286,9 +310,9 @@ fn server_with_kernel() -> (SchedServer, CapturedKernel) {
     (server, kernel)
 }
 
-/// 内核 NO_QUANTUM 通知的线形（proc_table.rs:969-999：m_source = 耗尽者、
-/// m_krn_lsys_schedule 账目载荷；FROM_KERNEL 封印由 deliver_from_kernel
-/// 的状态字携带）。
+/// The wire shape of a kernel NO_QUANTUM notification (proc_table.rs:969-999:
+/// m_source = the spender, the m_krn_lsys_schedule accounting payload; the
+/// FROM_KERNEL seal rides in the status word of deliver_from_kernel).
 fn no_quantum_notify(spender: Endpoint) -> Message {
     let mut message = Message {
         m_type: SCHEDULING_NO_QUANTUM,
@@ -309,7 +333,8 @@ fn no_quantum_notify(spender: Endpoint) -> Message {
 }
 
 // ---------------------------------------------------------------------------
-// E5(e).1 START 链：PM sched_init → SCHED 接管 → 内核下发 → 回执命名 SCHED
+// E5(e).1 START chain: PM sched_init → SCHED takeover → kernel down-send →
+// receipt naming SCHED
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -341,20 +366,23 @@ fn start_chain_pm_sched_takeover_and_kernel_fanout() {
         );
     }
 
-    // PM 侧：INIT 的调度器已由 KERNEL 交给 SCHED（schedule.c:40-48 的
-    // 成功半；拒绝半由 refuse 测试钉住）。
+    // PM side: INIT's scheduler has been handed from KERNEL to SCHED (the
+    // success half of schedule.c:40-48; the refusal half is pinned by the
+    // refuse test).
     assert_eq!(table.procs[INIT_SLOT].resources.scheduler, Endpoint::SCHED);
 
-    // 内核 wire 一：sys_schedctl 注册接管（flags=0 的 plain 注册，
-    // do_schedctl.c:40-43；解码半 os/kernel/src/syscall_process.rs:630）。
+    // Kernel wire one: sys_schedctl takeover registration (a plain
+    // registration with flags=0, do_schedctl.c:40-43; the decode half is at
+    // os/kernel/src/syscall_process.rs:630).
     let schedctls = kernel.schedctl_calls.borrow();
     assert_eq!(schedctls.len(), 1);
     assert_eq!(schedctls[0].target, init_endpoint());
     assert_eq!(schedctls[0].assignment, SchedulerAssignment::Server);
     assert_eq!(schedctls[0].wire().flags, 0, "注册分支不携带 KERNEL 旗标");
 
-    // 内核 wire 二：sys_schedule 全字段下发（USER_Q/USER_QUANTUM 出厂
-    // 值；解码半 os/kernel/src/sched.rs:272-277 的 SchedParams）。
+    // Kernel wire two: a full-field sys_schedule down-send (the factory
+    // USER_Q/USER_QUANTUM values; the decode half is SchedParams at
+    // os/kernel/src/sched.rs:272-277).
     let schedules = kernel.schedule_calls.borrow();
     assert_eq!(schedules.len(), 1);
     assert_eq!(schedules[0].endpoint, init_endpoint().0);
@@ -363,14 +391,16 @@ fn start_chain_pm_sched_takeover_and_kernel_fanout() {
     assert_eq!(schedules[0].cpu, 1, "2 CPU 拓扑：非 BSP 座位承接用户进程");
     assert_eq!(schedules[0].niced, 0, "天花板=USER_Q 不算 niced");
 
-    // 回复面：OK，且回执载荷命名 SCHED——C sched_start.c:73-75 把这个
-    // 字段读回 *newscheduler_e，正是 PM 侧回写 Endpoint::SCHED 的权威源。
+    // Receipt side: OK, and the receipt payload names SCHED — C
+    // sched_start.c:73-75 reads this field back into *newscheduler_e, the
+    // authoritative source for PM writing back Endpoint::SCHED.
     let sent = bus.0.sched_sent.borrow();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, Endpoint::PM);
     assert_eq!(sent[0].1.m_type, 0);
-    // SAFETY(test): 回执的活跃 union 臂是 m_sched_lsys_scheduling_start
-    //（server.rs do_start 的 payload_mut 写入同臂）。
+    // SAFETY(test): the receipt's active union arm is
+    // m_sched_lsys_scheduling_start (server.rs do_start's payload_mut writes the
+    // same arm).
     unsafe {
         assert_eq!(
             sent[0].1.m_u.m_sched_lsys_scheduling_start.scheduler,
@@ -378,12 +408,14 @@ fn start_chain_pm_sched_takeover_and_kernel_fanout() {
         );
     }
 
-    // 平衡铃已上（5s × 60Hz），先于一切业务到达。
+    // The balance bell is already armed (5s × 60Hz), ahead of every business
+    // arrival.
     assert_eq!(kernel.setalarm_calls.borrow().as_slice(), [300]);
 }
 
 // ---------------------------------------------------------------------------
-// E5(e).2 INHERIT 链：fork 子进程经 sched_start_user 继承父槽现值
+// E5(e).2 INHERIT chain: the forked child inherits the parent slot's current
+// values through sched_start_user
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -393,8 +425,9 @@ fn inherit_chain_fork_child_copies_parent_slot() {
     let (mut server, mut kernel) = server_with_kernel();
     let mut table = table_with_init();
 
-    // 先走完 START 链：SCHED 的 slot 11 现在持有 INIT 的行
-    //（priority 7 / slice 200）——INHERIT 的父槽探针读的正是它。
+    // Run the START chain first: SCHED's slot 11 now holds INIT's row
+    // (priority 7 / slice 200) — exactly what INHERIT's parent-slot probe
+    // reads.
     {
         let mut pump = || {
             assert_eq!(server.run_once(&sched_side, &mut kernel), Step::Handled);
@@ -410,8 +443,9 @@ fn inherit_chain_fork_child_copies_parent_slot() {
     assert_eq!(schedctls.len(), 1, "前链恰好一次注册");
     drop(schedctls);
 
-    // fork：子进程落 slot 12，scheduler/nice 从父槽拷贝（main.c:371-373
-    // 的调用点状态），随后 sched_start_user 发 INHERIT。
+    // fork: the child lands in slot 12 with scheduler/nice copied from the
+    // parent slot (the call-site state at main.c:371-373); sched_start_user
+    // then sends INHERIT.
     add_forked_child(&mut table);
     {
         let mut pump = || {
@@ -431,12 +465,14 @@ fn inherit_chain_fork_child_copies_parent_slot() {
         .expect("INHERIT 应成功");
     }
 
-    // PM 侧：子的调度器保持 SCHED（C sched_start.c:32-36 读回语义在
-    // 本线等值：SCHED 不转发，回执 scheduler = 接收方自己）。
+    // PM side: the child's scheduler stays SCHED (the read-back semantics of C
+    // sched_start.c:32-36 are equivalent on this line: SCHED does not forward,
+    // and the receipt's scheduler is the receiver itself).
     assert_eq!(table.procs[CHILD_SLOT].resources.scheduler, Endpoint::SCHED);
 
-    // 内核 wire：第二次下发携带子槽继承值——优先级/时间片来自父槽现值
-    //（C schedule.c:199-211），天花板来自消息的 nice→queue。
+    // Kernel wire: the second down-send carries the child slot's inherited
+    // values — priority/quantum come from the parent's current values (C
+    // schedule.c:199-211), and the ceiling from the message's nice→queue.
     let schedules = kernel.schedule_calls.borrow();
     assert_eq!(schedules.len(), 2, "START + INHERIT 两次下发");
     assert_eq!(schedules[1].endpoint, child_endpoint().0);
@@ -445,13 +481,14 @@ fn inherit_chain_fork_child_copies_parent_slot() {
     assert_eq!(schedules[1].niced, 0);
     drop(schedules);
 
-    // 注册面：接管对象是子端点。
+    // Registration side: the takeover target is the child's endpoint.
     let schedctls = kernel.schedctl_calls.borrow();
     assert_eq!(schedctls[1].target, child_endpoint());
 }
 
 // ---------------------------------------------------------------------------
-// E5(e).3 NO_QUANTUM 回环：内核通知 → 降级 → 原地回写；伪造封印 → EPERM
+// E5(e).3 NO_QUANTUM ring: kernel notification → level drop → in-place
+// write-back; forged seal → EPERM
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -461,7 +498,7 @@ fn no_quantum_loop_kernel_notify_demotes_and_writes_back() {
     let (mut server, mut kernel) = server_with_kernel();
     let mut table = table_with_init();
 
-    // 前链：INIT 已在 SCHED 的队列 7 / 200ms。
+    // Prior chain: INIT already sits in SCHED's queue 7 / 200ms.
     {
         let mut pump = || {
             assert_eq!(server.run_once(&sched_side, &mut kernel), Step::Handled);
@@ -474,14 +511,15 @@ fn no_quantum_loop_kernel_notify_demotes_and_writes_back() {
         assert_eq!(sched_init(&mut table, &mut ctl)[0].1, 0);
     }
 
-    // 内核量子耗尽通知到达（真实发送半 = notify_scheduler，
-    // proc_table.rs:937-1013；宿主以同线形构造到达）。
+    // A kernel quantum-exhaustion notification arrives (the real send half is
+    // notify_scheduler, proc_table.rs:937-1013; the host constructs the arrival
+    // in the same wire shape).
     bus.deliver_from_kernel(no_quantum_notify(init_endpoint()));
     assert_eq!(server.run_once(&sched_side, &mut kernel), Step::Handled);
 
-    // 回写面：LOCAL 扇出——降一级 7→8、时间片随行、CPU KEEP（C
-    // schedule.c:99-105 + schedule_process_local :32-33），且对内核
-    // 永不回复（C main.c:73-77）。
+    // Write-back side: a LOCAL fanout — drop one level 7→8, quantum carried
+    // along, CPU KEEP (C schedule.c:99-105 plus schedule_process_local :32-33)
+    // — and the kernel is never replied to (C main.c:73-77).
     let schedules = kernel.schedule_calls.borrow();
     assert_eq!(schedules.len(), 2, "START + 降级回写");
     assert_eq!(schedules[1].endpoint, init_endpoint().0);
@@ -494,8 +532,9 @@ fn no_quantum_loop_kernel_notify_demotes_and_writes_back() {
         "内核通知永不回复（C main.c:73-77 continue）"
     );
 
-    // 断环分界守卫：同一消息不带封印 = 伪造 → EPERM 回复（C main.c:
-    // 78-83），槽位不再降级（无新下发）。
+    // Broken-ring boundary guard: the same message without the seal = forged →
+    // an EPERM reply (C main.c:78-83), and the slot is not demoted again (no new
+    // down-send).
     let forged = no_quantum_notify(init_endpoint());
     bus.0
         .to_sched
@@ -508,9 +547,12 @@ fn no_quantum_loop_kernel_notify_demotes_and_writes_back() {
         2,
         "前链 START 回执 + 伪造回复各一条（走普通回复面）"
     );
-    // 线序符号：C 的 SCHED 以 `_SYSTEM` 编译（minix3/minix/servers/sched/sched.h:4），
-    // main.c:89-96 写回的错码本就带负号；本树判定面用正号常量、在回复边界折号
-    // （minix_types::reply_status），所以这里钉的是负值。
+    // Wire-order signs: C's SCHED is compiled with `_SYSTEM`
+    // (minix3/minix/servers/sched/sched.h:4), so the error codes written back at
+    // main.c:89-96 already carry a negative sign; this tree's decision surface
+    // uses positive constants and folds the sign at the reply boundary
+    // (minix_types::reply_status), so what is pinned here is the negative
+    // value.
     assert_eq!(sent[1].1.m_type, -EPERM);
     drop(sent);
     assert_eq!(
@@ -521,7 +563,8 @@ fn no_quantum_loop_kernel_notify_demotes_and_writes_back() {
 }
 
 // ---------------------------------------------------------------------------
-// E5(e).4 拒绝透传：SCHED 占用门拒绝（EDEADEPT）经 rv 可见于 PM
+// E5(e).4 Rejection pass-through: SCHED's occupancy-gate rejection (EDEADEPT)
+// is visible to PM through rv
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -531,7 +574,7 @@ fn sched_refusal_surfaces_to_pm_as_nonzero_rv() {
     let (mut server, mut kernel) = server_with_kernel();
     let mut table = table_with_init();
 
-    // 前链：START 成功，SCHED 的 slot 11 已被 INIT 占用。
+    // Prior chain: START succeeded, and SCHED's slot 11 is occupied by INIT.
     {
         let mut pump = || {
             assert_eq!(server.run_once(&sched_side, &mut kernel), Step::Handled);
@@ -544,10 +587,11 @@ fn sched_refusal_surfaces_to_pm_as_nonzero_rv() {
         assert_eq!(sched_init(&mut table, &mut ctl)[0].1, 0);
     }
 
-    // 二次 sched_init：同一 INIT 再发 START → 撞出生门（C sched_isemtyendpt
-    // → EDEADEPT，utility.c:46-56）。C taskcall.c:17-20 把拒绝码作为 rv
-    // 交给 PM——若 taskcall 吞掉回复 m_type，这里会读成 0（成功），
-    // schedule.c:44-47 的拒绝告警分支永远死掉。
+    // A second sched_init: the same INIT sends START again → hits the birth
+    // gate (C sched_isemtyendpt → EDEADEPT, utility.c:46-56). C
+    // taskcall.c:17-20 hands the rejection code to PM as the rv — if taskcall
+    // swallowed the reply's m_type, this would read 0 (success), and the
+    // rejection-warning branch at schedule.c:44-47 would be dead forever.
     {
         let mut pump = || {
             assert_eq!(server.run_once(&sched_side, &mut kernel), Step::Handled);
@@ -570,7 +614,8 @@ fn sched_refusal_surfaces_to_pm_as_nonzero_rv() {
         "拒绝分支只告警，不改写已成立的调度器（schedule.c:44-47）"
     );
 
-    // 拒绝链不产生任何新内核调用（出生门在 schedctl 之前，C :154-157）。
+    // The rejection chain produces no new kernel call (the birth gate precedes
+    // schedctl, C :154-157).
     assert_eq!(kernel.schedctl_calls.borrow().len(), 1);
     assert_eq!(kernel.schedule_calls.borrow().len(), 1);
 }

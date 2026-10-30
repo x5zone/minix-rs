@@ -42,11 +42,12 @@ impl VmAllocStats {
         self.allocation_failures += 1;
     }
 
-    // V11/T18 判定（替代 V10-P2-1 的 DEFERRED 注记）：不设周期 check_leak
-    // 循环——C 无对应物，且 active_pages 已经由 `self_page_count()` 进入
-    // VM_INFO Usage（vm_self_bytes）；`allocation_failures` 是真实的内存
-    // 压力信号，经 VmReply::InfoStats 扩展字段可观测（[ARCH: A-16]，
-    // V10-P2-4 同模式）。`check_leak`/`active_allocations` 保留为诊断面。
+    // Decision: no periodic check_leak loop — C has no counterpart, and
+    // active_pages already reaches VM_INFO Usage (vm_self_bytes) through
+    // `self_page_count()`; `allocation_failures` is the real memory-pressure
+    // signal, observable through the VmReply::InfoStats extension field
+    // ([ARCH: A-16], the same pattern as the other surfaced stats).
+    // `check_leak`/`active_allocations` remain as the diagnostic surface.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn active_allocations(&self) -> usize {
         self.total_allocations - self.total_deallocations

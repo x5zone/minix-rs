@@ -9,13 +9,13 @@ use minix_types::VirBytes;
 use minix_arch::{CurrentDirectMap, DirectMapArch};
 use crate::phys_mem::AlignedPhysBytes;
 
-// V10-P2-2: production only uses VM_DIRECT_MAP_SIZE + vm_phys_to_virt; the
+// Production only uses VM_DIRECT_MAP_SIZE + vm_phys_to_virt; the
 // base re-exports serve tests and the DEAD virt/phys helpers above.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const VM_DIRECT_MAP_BASE: u64 = CurrentDirectMap::VM_DIRECT_MAP_BASE;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const KERNEL_DIRECT_MAP_BASE: u64 = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
-// V10-P2-2: size now comes from `DirectMapArch` (per-arch window) instead
+// Size now comes from `DirectMapArch` (per-arch window) instead
 // of a VM-server-local hardcode that silently drifted on RISC-V (16 GiB).
 pub(crate) const VM_DIRECT_MAP_SIZE: u64 = CurrentDirectMap::VM_DIRECT_MAP_SIZE;
 
@@ -27,7 +27,7 @@ pub(crate) const VM_HEAP_LIMIT: u64 = VM_HEAP_BASE + VM_HEAP_SIZE;
 pub(crate) fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
     #[cfg(test)]
     {
-        // V11/T26: in test builds the runtime window base lives in a
+        // In test builds the runtime window base lives in a
         // thread-local so every test thread gets an isolated window (the
         // former process-global mock-base mutex serialization is gone).
         // The arithmetic mirrors `MockDirectMap::vm_phys_to_virt`.
@@ -39,7 +39,7 @@ pub(crate) fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
     }
 }
 
-// V10-P2-2: DEAD in production (only `vm_phys_to_virt` is used); kept for
+// DEAD in production (only `vm_phys_to_virt` is used); kept for
 // tests and the future kernel-IPC wiring. Revisit: either wire into a
 // heap_arena self-map assertion or delete.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -70,7 +70,7 @@ pub(crate) fn virt_to_phys(virt: VirBytes) -> AlignedPhysBytes {
 #[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub(crate) fn is_direct_map_virt(virt: VirBytes) -> bool {
-    // VM window is bounded by VM_DIRECT_MAP_SIZE (V10-P2-2). The kernel
+    // VM window is bounded by VM_DIRECT_MAP_SIZE. The kernel
     // window has no explicit size constant yet (kernel layout constants
     // live in BootParams/KERNEL_LAYOUT); the high-half check is kept and
     // documented as such — the function is DEAD in production today.
@@ -78,7 +78,7 @@ pub(crate) fn is_direct_map_virt(virt: VirBytes) -> bool {
         || (virt.0 >= VM_DIRECT_MAP_BASE && virt.0 < VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE)
 }
 
-// ── Test support: per-thread direct-map window (V11/T26) ────────────
+// ── Test support: per-thread direct-map window ──────────────────────
 //
 // The VM's direct-map window base is runtime state — the kernel grants the
 // window to the userspace VM at boot (pre-E3 the arch crate's placeholder
@@ -167,14 +167,14 @@ pub(crate) mod tests {
 
     #[test]
     fn test_layout_invariant_heap_follows_direct_map() {
-        // V10-P2-2: VM_HEAP_BASE must immediately follow the VM direct map
+        // VM_HEAP_BASE must immediately follow the VM direct map
         // window (per-arch const-assert also enforces this at compile time).
         assert_eq!(VM_HEAP_BASE, VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE);
     }
 
     #[test]
     fn test_windows_are_per_thread_and_independent() {
-        // V11/T26: two sequential windows on one thread get independent
+        // Two sequential windows on one thread get independent
         // bases (the second install replaces the first), proving tests no
         // longer share window state.
         let first = with_test_window(2, || test_vm_base());

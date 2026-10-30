@@ -9,26 +9,29 @@
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
-// 无须也不应再调。
+// The freestanding side holds a link reference to minix-rt: the bin code
+// itself uses no rt symbol, and an unreferenced rlib would be dropped whole,
+// taking `_start`/`#[panic_handler]`/`#[global_allocator]` with it (the
+// `extern crate` retention semantics of panic-halt mode). The birth chain
+// `_start` has already completed rt initialization before main (`lib.rs:86`
+// init contract: called automatically in no_std mode, idempotent), so it must
+// not and need not be called again here.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
 use minix_driver_rt::kernel::KernelTransport;
 use minix_driver_rt::runtime::DriverRuntime;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
-// E0277（docker minix-ci:1.94 实测）。
+// The entry point splits into two forms by target: the none side satisfies the
+// crt0 Consumer contract (name + Rust ABI + `-> i32`,
+// os/libs/minix-rt/src/crt0.rs:38); the host/test side keeps `()` — since
+// rustc 1.94, Termination is no longer implemented for i32, so an i32 main on
+// the host is E0277 (measured with docker minix-ci:1.94).
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
-    // real_main 原地消费返回 ()；0 即进程退出码（crt0 Consumer contract）。
+    // real_main consumes its return value in place, returning (); 0 is the
+    // process exit code (crt0 Consumer contract).
     real_main();
     0
 }
@@ -39,10 +42,13 @@ fn main() {
 }
 
 fn real_main() {
-    // 出生自证:C sef_startup 先 sys_whoami 填 sef_self_endpoint(sef.c:76-87,
-    // 失败即 panic :81)。端点由内核引导表授予(引导期不经 RS——旧注失实);
-    // 问询走无源 DirectKernelCallTransport(应答按调用者进程上下文取内核
-    // 槽,与 m_source 无关),答案再喂带源的 IPC 传输(tty NL6-A 同款)。
+    // Birth self-identification: C's sef_startup first calls sys_whoami to fill
+    // sef_self_endpoint (sef.c:76-87, failure panics at :81). The endpoint is
+    // granted by the kernel boot table (not by RS during boot — an earlier note
+    // was wrong); the query goes through the source-less
+    // DirectKernelCallTransport (the reply comes from the kernel slot of the
+    // caller's process context, independent of m_source), and the answer is
+    // then fed to the source-carrying IPC transport (same as tty NL6-A).
     let who = minix_sys::syscall::sys_whoami(&minix_sys::syscall::DirectKernelCallTransport)
         .unwrap_or_else(|r| panic!("memory: sys_whoami failed: {r}"));
     let transport = KernelTransport::new(who.endpoint);
@@ -54,12 +60,17 @@ fn real_main() {
         DriverRuntime::new(transport, "drv.chr.memory").also_announce("drv.blk.memory");
     let mut service = minix_driver_memory::init();
 
-    // SD-11 U-5 迁移（第八台，第二个驱动）：memory 是 ramdisk 块/字符驱动
-    // （boot 期供 /bin/sh、/etc/rc、imgrd 的根盘块源），src/ 内 6 处 Vec/Box、
-    // 链接 alloc-global。把全局堆供给从焊死固定池切到 VM_BRK 增长堆。安装点在
-    // service 构造（两面具与表已建、仍在固定池）之后、`serve` 主循环之前——此刻
-    // VM（boot 序第 2 位，早于 memory 第 4 位）主循环已在收请求；EINVAL fail-fast；
-    // 与 DS/SCHED/MIB/VFS/PFS/PM/TTY 同法，整块 #[cfg(target_os="none")] 不影响宿主测。
+    // Migration (eighth host, second driver): memory is a ramdisk
+    // block/character driver (it supplies the root-disk block source for
+    // /bin/sh, /etc/rc and imgrd at boot), has 6 Vec/Box uses in src/, and
+    // links alloc-global. Switch the global heap supply from the hardwired
+    // fixed pool to the VM_BRK growing heap. The install point is after
+    // service construction (both faces and their tables are built, still on
+    // the fixed pool) and before the `serve` main loop — by now VM (second in
+    // boot order, ahead of memory at fourth) is already receiving requests in
+    // its main loop; EINVAL fails fast; same approach as
+    // DS/SCHED/MIB/VFS/PFS/PM/TTY, and the whole block is
+    // #[cfg(target_os="none")] so host tests are unaffected.
     #[cfg(target_os = "none")]
     minix_rt::install_vm_supplier(minix_rt::image_end())
         .expect("memory: install_vm_supplier(镜像尾) 不得失败");
@@ -71,7 +82,8 @@ fn real_main() {
         minix_rt::free(probe);
         use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
         #[allow(clippy::let_underscore_must_use)]
-        // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+        // [SD19-gate] park is the fallback when the reporting channel itself is
+        // broken (panic.c:66)
         let _ = sys_diagctl_write(
             &DirectKernelCallTransport,
             "nk4a: memory-vmbrk probe ok pages=1 via=VM_BRK\n",
@@ -88,7 +100,8 @@ fn real_main() {
     // returns only when startup is refused or the transport dies. There is
     // nothing a driver that cannot serve can do next, so main returns and
     // the process exits (C turns the same receive failure into a panic).
-    // serve 只在启动被拒或传输死亡时返回（彼时 C 侧同款接收失败即
-    // panic）；退出码 0 由 none 入口补（crt0 Consumer contract）。
+    // serve returns only when startup is refused or the transport dies (at
+    // which point C gets the same receive failure and panics); the none entry
+    // supplies exit code 0 (crt0 Consumer contract).
     let _birth = runtime.serve(&mut service, |_| Ok(()));
 }

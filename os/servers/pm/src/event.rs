@@ -1,19 +1,21 @@
-//! PM 进程事件发布/订阅设施。
+//! PM process event publish/subscribe facility.
 //!
-//! 对应 Minix3 C 源码：
-//! - `minix3/minix/servers/pm/event.c:1-353` — 全部设施
+//! Corresponds to the Minix3 C sources:
+//! - `minix3/minix/servers/pm/event.c:1-353` — the whole facility
 //! - `minix3/minix/servers/pm/mproc.h:27` — `mp_eventsub`
 //! - `minix3/minix/servers/pm/const.h:13` — `NO_EVENTSUB`
-//! - `minix3/minix/include/minix/com.h:597-619` — `PROC_EVENT` 族
+//! - `minix3/minix/include/minix/com.h:597-619` — the `PROC_EVENT` family
 //! - `minix3/minix/include/minix/syslib.h:289-293` — `PROC_EVENT_EXIT/SIGNAL`
 //!
-//! 设计契约见 `rewrite-notes/04-stage-pm/.design/06-design.v1.md`（D1–D8）。
+//! The design contract of this facility is recorded in the PM stage's design
+//! snapshot.
 //!
-//! # 单线程模型
+//! # Single-threaded model
 //!
-//! PM 为用户态单线程事件循环，`EventRegistry` 由 `PmServer` 独占持有，
-//! `&mut EventRegistry` / `&mut ProcTable` / `&mut dyn IpcTransport` 在单线程下安全。
-//! `nested` 为 `usize` 计数非 `Atomic`。
+//! PM is a user-space single-threaded event loop; `EventRegistry` is owned
+//! exclusively by `PmServer`, so `&mut EventRegistry` / `&mut ProcTable` /
+//! `&mut dyn IpcTransport` are safe under one thread. `nested` is a `usize`
+//! counter, not an `Atomic`.
 
 use minix_types::{Endpoint, Message, ProcEvent, ProcEventMask, UserSlot};
 
@@ -21,29 +23,33 @@ use crate::ipc::IpcTransport;
 use crate::ipc::ReplyIntent;
 use crate::mproc::{EventCursor, ProcTable};
 
-/// 事件终止分派的生产服务装配（`event.c:122-123` 的 `restart_sigs` 入口）。
+/// The production service assembly for event termination dispatch (the
+/// `restart_sigs` entry at `event.c:122-123`).
 ///
-/// C 中 `restart_sigs` 直接调用模块级函数；Rust 侧经
-/// [`crate::signal_flow::RestartServices`] 注入（D5），`transport` 是唯一
-/// 外部依赖。三个成员 trait 的实现：
-/// - `SignalDeliver` → `crate::signal::sig_proc`（`trace=false`，C 的
-///   `check_pending` 重投路径 `signal.c:670`）；
-/// - `ExitHandler` → `crate::exit::exit_proc`（`dump_core=false`，C 的
-///   TRACE_EXIT 分支 `signal.c:697`）；
-/// - `KernelResume` → `sys_resume`（`signal.c:282`）。minix-sys 内核调用面
-///   落地前（edge_todo.md E6）内核侧不存在真实停止态——`block.stopped` 由
-///   PM 侧 `unpause`/`stop_proc` 自行置位，无需内核撤销，返回 OK 使
-///   `try_resume_proc` 清除 PM 侧状态；E6 落地后替换为真实 `sys_resume`
-///   （todo.md §6 D-25 登记）。
+/// In C `restart_sigs` calls module-level functions directly; on the Rust side
+/// they are injected through [`crate::signal_flow::RestartServices`], with
+/// `transport` as the only external dependency. Implementations of the three
+/// member traits:
+/// - `SignalDeliver` → `crate::signal::sig_proc` (`trace=false`, C's
+///   `check_pending` redelivery path `signal.c:670`);
+/// - `ExitHandler` → `crate::exit::exit_proc` (`dump_core=false`, C's
+///   TRACE_EXIT branch `signal.c:697`);
+/// - `KernelResume` → `sys_resume` (`signal.c:282`). Until minix-sys's kernel
+///   call face lands, no real stopped state exists on the kernel side —
+///   `block.stopped` is set by PM's own `unpause`/`stop_proc`, needs no kernel
+///   undo, and returning OK lets `try_resume_proc` clear the PM-side state;
+///   once that face lands this is replaced by a real `sys_resume`.
 pub(crate) struct PmEventServices<'a, T: IpcTransport + ?Sized> {
     transport: &'a mut T,
-    /// 内核调用出口（sig_proc 终止路径的 sys_times 计账，D-14）。
+    /// The kernel call exit (sys_times accounting on sig_proc's termination
+    /// path).
     kern: &'a mut dyn crate::exit::KernelGateway,
 }
 
 impl<'a, T: IpcTransport + ?Sized> PmEventServices<'a, T> {
-    /// 事件/信号两域共用的生产适配器（restart_sigs 的 RestartServices
-    /// 全实现；VFS 回复尾部的 `restart_signals` 亦复用，V3-P2-1）。
+    /// The production adapter shared by the event and signal domains (the
+    /// full RestartServices implementation for restart_sigs; the VFS reply
+    /// tail's `restart_signals` reuses it too).
     pub(crate) fn new(
         transport: &'a mut T,
         kern: &'a mut dyn crate::exit::KernelGateway,
@@ -54,7 +60,7 @@ impl<'a, T: IpcTransport + ?Sized> PmEventServices<'a, T> {
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for PmEventServices<'_, T> {
     fn sig_proc(&mut self, table: &mut ProcTable, target: UserSlot, signo: i32, ksig: bool) {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(table, target, signo, false, ksig, self.kern, self.transport);
     }
@@ -62,8 +68,9 @@ impl<T: IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for PmEventServ
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::ExitHandler for PmEventServices<'_, T> {
     fn exit_proc(&mut self, table: &mut ProcTable, target: UserSlot, status: i8) {
-        // 内核出口（step 9 sys_clear）用生产网关：TRACE_EXIT 目标为用户
-        // 进程，step 9 不触发；命中则 pre-E1 诚实 panic（C 失败语义同型）。
+        // The kernel exit (step 9 sys_clear) uses the production gateway:
+        // TRACE_EXIT targets are user processes, so step 9 does not fire; if it
+        // does, panic honestly (C fails the same way).
         let mut kern =
             crate::exit::TrapKernelGateway::new(minix_sys::syscall::DirectKernelCallTransport);
         crate::exit::exit_proc(table, target, status, 0, false, self.transport, &mut kern);
@@ -72,38 +79,41 @@ impl<T: IpcTransport + ?Sized> crate::signal_flow::ExitHandler for PmEventServic
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::KernelResume for PmEventServices<'_, T> {
     fn resume(&mut self, ep: Endpoint) -> i32 {
-        // C: signal.c:282 — sys_resume(ep) 恢复被停止的进程。非 OK 由
-        // try_resume_proc panic（signal.c:285）。pre-E1 Trap 网关回 -EIO →
-        // panic（fail-closed，不伪造成功）；测试注入 mock 恒 OK。
-        self.kern.sys_resume(ep).err().unwrap_or(0) // OK = 0；Err 携带原始 errno
+        // C: signal.c:282 — sys_resume(ep) resumes the stopped process. A
+        // non-OK result makes try_resume_proc panic (signal.c:285). The Trap
+        // gateway answers -EIO, which panics (fail closed, no faked success);
+        // the test-injected mock always answers OK.
+        self.kern.sys_resume(ep).err().unwrap_or(0) // OK = 0; Err carries the raw errno
     }
 }
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::RestartServices for PmEventServices<'_, T> {}
 
-/// 订阅表上限（`event.c:58` `NR_SUBS 4`）。
+/// Subscription table cap (`event.c:58` `NR_SUBS 4`).
 pub const NR_SUBS: usize = 4;
 
-/// `NO_EVENTSUB` 的 Rust 表达为 `None`（`EventCall` 不存在时）。
-/// 跨服务调试打印时可格式化为 `-1`（`const.h:13`）。
+/// `NO_EVENTSUB` is expressed as `None` in Rust (when `EventCall` is absent).
+/// For cross-service debug printing it can be formatted as `-1` (`const.h:13`).
 pub const NO_EVENTSUB_RAW: i8 = -1;
 
-/// 单个订阅者（`event.c:60-64` `subs[i]`）。
+/// A single subscriber (`event.c:60-64` `subs[i]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Subscriber {
-    /// 订阅者 endpoint（`subs[i].endpt`）。
+    /// The subscriber's endpoint (`subs[i].endpt`).
     pub endpoint: Endpoint,
-    /// 关心事件的位掩码（`subs[i].mask`）。
+    /// Bitmask of the events it cares about (`subs[i].mask`).
     pub mask: ProcEventMask,
-    /// 多少进程正阻塞在等它的回复（`subs[i].waiting`）。
+    /// How many processes are blocked waiting for its reply
+    /// (`subs[i].waiting`).
     pub waiting: usize,
 }
 
-/// 进程事件注册表（`event.c:60-67` 的 `subs` / `nsubs` / `nested` 聚合）。
+/// The process event registry (the `subs` / `nsubs` / `nested` aggregate of
+/// `event.c:60-67`).
 ///
-/// `subs[0..nsubs)` 为紧凑前缀（`Option::Some`），`nsubs` 为已用槽位数；
-/// `nested` 为重入守卫计数（`event.c:67`），仅在 `remove_sub` 的
-/// `resume_event` 调用前后 `+=1`/`-=1`。
+/// `subs[0..nsubs)` is the compact prefix (`Option::Some`) and `nsubs` is the
+/// used slot count; `nested` is the reentry guard counter (`event.c:67`),
+/// bumped `+=1`/`-=1` only around `remove_sub`'s `resume_event` call.
 #[derive(Debug)]
 pub struct EventRegistry {
     subs: [Option<Subscriber>; NR_SUBS],
@@ -118,7 +128,7 @@ impl Default for EventRegistry {
 }
 
 impl EventRegistry {
-    /// 创建空注册表。
+    /// Create an empty registry.
     pub fn new() -> Self {
         Self {
             subs: [None; NR_SUBS],
@@ -127,53 +137,55 @@ impl EventRegistry {
         }
     }
 
-    /// 已用槽位数。
+    /// Used slot count.
     pub fn len(&self) -> usize {
         self.nsubs
     }
 
-    /// 是否为空。
+    /// Whether it is empty.
     pub fn is_empty(&self) -> bool {
         self.nsubs == 0
     }
 
-    /// 是否已满（`nsubs == NR_SUBS` 时新订阅 → `ENOMEM`）。
+    /// Whether it is full (a new subscription with `nsubs == NR_SUBS` →
+    /// `ENOMEM`).
     pub fn is_full(&self) -> bool {
         self.nsubs >= NR_SUBS
     }
 
-    /// 重入计数（测试可读）。
+    /// Reentry counter (readable by tests).
     #[cfg(test)]
     pub fn nested(&self) -> usize {
         self.nested
     }
 
-    /// 某订阅者的等待计数（测试可读）。
+    /// The waiting count of one subscriber (readable by tests).
     #[cfg(test)]
     pub fn waiting(&self, idx: usize) -> Option<usize> {
         self.subs.get(idx)?.as_ref().map(|s| s.waiting)
     }
 
-    /// 某订阅者的掩码（测试可读）。
+    /// The mask of one subscriber (readable by tests).
     #[cfg(test)]
     pub fn mask(&self, idx: usize) -> Option<ProcEventMask> {
         self.subs.get(idx)?.as_ref().map(|s| s.mask)
     }
 
-    /// 某订阅者的 endpoint（测试可读）。
+    /// The endpoint of one subscriber (readable by tests).
     #[cfg(test)]
     pub fn endpoint(&self, idx: usize) -> Option<Endpoint> {
         self.subs.get(idx)?.as_ref().map(|s| s.endpoint)
     }
 
-    // ── 核心：publish / resume / remove ──
+    // ── Core: publish / resume / remove ──
 
-    /// 发布事件（`event.c:316-353` `publish_event`）。
+    /// Publish an event (`event.c:316-353` `publish_event`).
     ///
-    /// 三段式：① 断言 `nested==0` + 目标进程 `IN_USE && !EVENT_CALL` + 游标 None；
-    /// ② 若 `PRIV_PROC|EXITING` 同时置位（正在退出的系统服务）则扫描 `subs`
-    /// 找 `endpoint == target.endpoint` 并 `remove_sub`；
-    /// ③ 置 `EventCall { cursor: 0 }` 并 `resume_event`。
+    /// Three stages: (1) assert `nested==0` + target `IN_USE && !EVENT_CALL` +
+    /// cursor None; (2) if `PRIV_PROC|EXITING` are both set (a system service
+    /// in the middle of exiting), scan `subs` for
+    /// `endpoint == target.endpoint` and `remove_sub`; (3) set
+    /// `EventCall { cursor: 0 }` and `resume_event`.
     pub fn publish_event<T: IpcTransport + ?Sized>(
         &mut self,
         target: UserSlot,
@@ -193,8 +205,9 @@ impl EventRegistry {
             "publish_event: cursor must be None"
         );
 
-        // ② 服务死亡清理：正在退出的特权服务若自身是订阅者，先移除
-        // （event.c:330-343；退订后残留回复将被 do_proc_event_reply 忽略）
+        // (2) Dead-service cleanup: an exiting privileged service that is
+        // itself a subscriber is removed first (event.c:330-343; the leftover
+        // reply after unsubscribing is ignored by do_proc_event_reply).
         if proc.is_kernel_process() && proc.is_exiting() {
             let ep = proc.endpoint();
             let mut to_remove: Option<usize> = None;
@@ -210,7 +223,7 @@ impl EventRegistry {
             }
         }
 
-        // ③ 置 EVENT_CALL + 游标 0 → resume
+        // (3) Set EVENT_CALL + cursor 0 → resume
         table.procs[target.get()]
             .state
             .block
@@ -218,13 +231,14 @@ impl EventRegistry {
         self.resume_event(target, table, transport, kern);
     }
 
-    /// 串行推进事件（`event.c:74-123` `resume_event`）。
+    /// Advance the event serially (`event.c:74-123` `resume_event`).
     ///
-    /// ① 推断事件（`EXITING → Exit` / `UNPAUSED → Signal` else panic）；
-    /// ② `for i = cursor .. nsubs` 遇 `mask.contains(event)` 即
-    /// `asynsend3` + `waiting++` 后 `return`（挂起）；
-    /// ③ 无更多匹配订阅者 → 清 `EventCall` → 终止分派：Exit 走
-    /// `exit_restart`、Signal 走 `restart_sigs`（D-11/Fix #7 真实化）。
+    /// (1) Infer the event (`EXITING → Exit` / `UNPAUSED → Signal`, else
+    /// panic); (2) `for i = cursor .. nsubs`, and the first
+    /// `mask.contains(event)` gets `asynsend3` + `waiting++` and then `return`s
+    /// (suspended); (3) no more matching subscribers → clear `EventCall` →
+    /// termination dispatch: Exit takes `exit_restart`, Signal takes
+    /// `restart_sigs` (now for real).
     pub fn resume_event<T: IpcTransport + ?Sized>(
         &mut self,
         target: UserSlot,
@@ -232,7 +246,7 @@ impl EventRegistry {
         transport: &mut T,
         kern: &mut dyn crate::exit::KernelGateway,
     ) {
-        // ① 断言与事件推断
+        // (1) Assertions and event inference
         let (event, mut cursor) = {
             let proc = &table.procs[target.get()];
             assert!(proc.is_in_use(), "resume_event: target must be IN_USE");
@@ -256,55 +270,62 @@ impl EventRegistry {
             (ev, cur)
         };
 
-        // ② 串行扫描
+        // (2) Serial scan
         while cursor.0 < self.nsubs {
             let sub = self.subs[cursor.0].expect("resume_event: subs prefix must be Some");
             if sub.mask.contains_event(event) {
-                // 构造 PROC_EVENT 消息（event.c:99-103）
+                // Build the PROC_EVENT message (event.c:99-103)
                 let msg = minix_types::proc_event_msg(table.procs[target.get()].endpoint(), event);
-                // C: asynsend3(..., AMF_NOREPLY) 失败 panic（event.c:104-106）
+                // C: a failing asynsend3(..., AMF_NOREPLY) panics
+                // (event.c:104-106)
                 transport
                     .send(sub.endpoint, &msg)
                     .expect("resume_event: asynsend to subscriber failed");
-                // waiting++（event.c:108-109）。C 的 assert 在自增**前**
-                // 无条件执行（`assert(waiting < NR_PROCS)`）——release 下
-                // 同样生效；上界引用 NR_PROCS 常量而非硬编码 256（V3-P2-8）。
+                // waiting++ (event.c:108-109). C's assert runs unconditionally
+                // **before** the increment (`assert(waiting < NR_PROCS)`) and
+                // holds in a release build too; the bound references the
+                // NR_PROCS constant instead of a hardcoded 256.
                 assert!(
                     self.subs[cursor.0].expect("resume_event: cursor in prefix").waiting
                         < minix_types::NR_PROCS,
                     "resume_event: waiting must stay below NR_PROCS"
                 );
                 self.subs[cursor.0].as_mut().unwrap().waiting += 1;
-                // 更新游标（已指向当前订阅者，等待其回复）
+                // Update the cursor (it now points at the current subscriber,
+                // whose reply we await)
                 table.procs[target.get()].state.block.set_event_blocked(cursor);
                 return;
             }
             cursor.0 += 1;
         }
 
-        // ③ 无更多匹配订阅者 → 清 EVENT_CALL + 游标 → 终止分派
+        // (3) No more matching subscribers → clear EVENT_CALL + cursor →
+        // termination dispatch
         table.procs[target.get()].state.block.clear_event_blocked();
-        // C: event.c:115-122 的终止分派（09/13 的入口）
+        // C: the termination dispatch of event.c:115-122 (the 09/13 entry)
         match event {
             ProcEvent::Exit => {
-                // 09-pm-exit.md: VFS 已回复 EXIT，事件已串行投递完毕 → 二阶段收尾
+                // 09-pm-exit.md: VFS has already replied EXIT and the event
+                // has gone to every subscriber → second-phase teardown
                 crate::exit::exit_restart(table, target, transport, kern);
             }
             ProcEvent::Signal => {
-                // C: event.c:122-123 — restart_sigs(rmp)（13-signal-flow.md D5）：
-                // 清 EVENT_CALL 后重投挂起信号并按需恢复进程。
+                // C: event.c:122-123 — restart_sigs(rmp) (13-signal-flow.md):
+                // after clearing EVENT_CALL, redeliver pending signals and
+                // resume the process as needed.
                 let mut svc = PmEventServices { transport, kern };
                 crate::signal_flow::restart_sigs(table, target, &mut svc);
             }
         }
     }
 
-    /// 有序删除订阅者（`event.c:130-161` `remove_sub`）。
+    /// Remove a subscriber in order (`event.c:130-161` `remove_sub`).
     ///
-    /// ① 前移 `subs` 紧凑前缀，`nsubs--`；
-    /// ② 遍历全表 `mproc[NR_PROCS]` 对 `IN_USE|EVENT_CALL` 且游标有效者：
-    /// `cursor == slot → nested++ → resume_event → nested--`；
-    /// `cursor > slot → cursor--`。
+    /// (1) Shift the compact prefix of `subs` forward, `nsubs--`; (2) walk the
+    /// whole `mproc[NR_PROCS]` table and, for every entry with
+    /// `IN_USE|EVENT_CALL` and a valid cursor:
+    /// `cursor == slot → nested++ → resume_event → nested--`;
+    /// `cursor > slot → cursor--`.
     pub fn remove_sub<T: IpcTransport + ?Sized>(
         &mut self,
         slot: usize,
@@ -314,12 +335,12 @@ impl EventRegistry {
     ) {
         assert!(slot < self.nsubs, "remove_sub: slot out of range");
 
-        // ① 数组前移
+        // (1) Shift the array forward
         self.subs.copy_within(slot + 1..self.nsubs, slot);
         self.subs[self.nsubs - 1] = None;
         self.nsubs -= 1;
 
-        // ② 调整受影响进程的游标
+        // (2) Fix the cursors of the affected processes
         for idx in 0..minix_types::NR_PROCS {
             let proc = &table.procs[idx];
             if !proc.is_in_use() || !proc.state.block.is_event_blocked() {
@@ -327,13 +348,15 @@ impl EventRegistry {
             }
             let cur = proc.state.block.event_cursor().expect("must be EventCall");
             if cur.0 == slot {
-                // 该进程正等待被删订阅者 → 立即推进到下一个
+                // This process waits on the removed subscriber → advance it
+                // immediately
                 self.nested += 1;
-                // SAFETY: idx 已验证 in_use 且 EVENT_CALL，resume_event 前置满足
+                // SAFETY: idx was already checked in_use and EVENT_CALL, so
+                // resume_event's precondition holds
                 self.resume_event(UserSlot::new(idx), table, transport, kern);
                 self.nested -= 1;
             } else if cur.0 > slot {
-                // 游标指向被删位置之后 → 回退 1
+                // The cursor points past the removed position → step back by 1
                 let new_cur = EventCursor(cur.0 - 1);
                 table.procs[idx].state.block.set_event_blocked(new_cur);
             }
@@ -343,10 +366,12 @@ impl EventRegistry {
     // ── do_proceventmask / do_proc_event_reply ──
 
 
-    /// `do_proceventmask` 的完整可变表版本（供 `remove_sub` 需调整游标时）。
+    /// The full mutable-table version of `do_proceventmask` (for when
+    /// `remove_sub` needs to adjust cursors).
     ///
-    /// 当 `mask==0 && waiting==0` 的已订阅项需 `remove_sub` 且存在受影响进程
-    /// 时，外层应调用本方法以正确回退游标。
+    /// When a subscription with `mask==0 && waiting==0` needs `remove_sub` and
+    /// affected processes exist, the caller should use this method so the
+    /// cursors are rolled back correctly.
     pub fn do_proceventmask_mut(
         &mut self,
         caller: UserSlot,
@@ -389,13 +414,16 @@ impl EventRegistry {
         ReplyIntent::Reply(minix_types::OK)
     }
 
-    /// `do_proc_event_reply`（`event.c:218-309`）。
+    /// `do_proc_event_reply` (`event.c:218-309`).
     ///
-    ///   7 步校验（任一失败 → `ReplyLater` / `printf+SUSPEND`，仅 `!PRIV_PROC → Reply(ENOSYS)`）：
-    /// 1. `!PRIV_PROC → ENOSYS`；2. `pm_isokendpt(endpt)`；3. `EVENT_CALL`；4. 游标 `< nsubs`；
-    /// 5. `subs[i].endpoint == who_e`；6. 标志推断事件；7. `msg.event == inferred`。
-    ///    成功路径：`waiting--` 后 `mask empty && waiting==0 → remove_sub` 否则 `cursor++ → resume_event`；
-    ///    任何路径恒返 `ReplyLater`（不回复本回复消息，`main.c:88-89`）。
+    ///   Seven checks (any failure → `ReplyLater` / `printf+SUSPEND`; only
+    ///   `!PRIV_PROC → Reply(ENOSYS)`):
+    /// 1. `!PRIV_PROC → ENOSYS`; 2. `pm_isokendpt(endpt)`; 3. `EVENT_CALL`;
+    /// 4. cursor `< nsubs`; 5. `subs[i].endpoint == who_e`; 6. the flags infer
+    /// an event; 7. `msg.event == inferred`.
+    ///    Success path: `waiting--`, then `mask empty && waiting==0 → remove_sub`,
+    ///    otherwise `cursor++ → resume_event`; every path returns `ReplyLater`
+    ///    (this reply message is not answered, `main.c:88-89`).
     pub fn do_proc_event_reply(
         &mut self,
         msg: &Message,
@@ -406,39 +434,40 @@ impl EventRegistry {
     ) -> ReplyIntent {
         assert_eq!(self.nested, 0, "do_proc_event_reply: nested must be 0");
 
-        // 1. 仅系统服务可回复（event.c:232-233 → ENOSYS）
-        // NK4-C 1.30 B16：与 C `_syscall` 契约同构取负（m_type<0 = errno）。
+        // 1. Only system services may reply (event.c:232-233 → ENOSYS)
+        // The same sign flip as C's `_syscall` contract (m_type<0 = errno).
         if !table.procs[caller.get()].is_kernel_process() {
             return ReplyIntent::Reply(-minix_types::ENOSYS);
         }
 
-        // 解码 m_pm_lsys_proc_event（event.c:240）
+        // Decode m_pm_lsys_proc_event (event.c:240)
         let (endpt, reply_event) = {
             let pl = unsafe { msg.m_u.m_pm_lsys_proc_event };
             let ep = Endpoint(pl.endpt);
             let ev = match ProcEvent::from_bits(pl.event) {
                 Some(v) => v,
                 None => {
-                    // 非法 event 值（C 会在事件推断后与 m_in.event 比较失败 → SUSPEND）
-                    // 此处先视为 SUSPEND 的前置，不单独区分
+                    // Illegal event value (C fails the comparison against
+                    // m_in.event after event inference → SUSPEND). Here it is
+                    // treated as a SUSPEND precondition, not distinguished.
                     return ReplyIntent::ReplyLater;
                 }
             };
             (ep, ev)
         };
 
-        // 2. endpoint 必须可解析（event.c:241-245 → SUSPEND）
+        // 2. The endpoint must resolve (event.c:241-245 → SUSPEND)
         let slot = match table.pm_isokendpt(endpt) {
             Ok(s) => s,
             Err(_) => return ReplyIntent::ReplyLater,
         };
 
-        // 3. 确有 EVENT_CALL（event.c:247-251 → SUSPEND）
+        // 3. EVENT_CALL is really set (event.c:247-251 → SUSPEND)
         if !table.procs[slot.get()].state.block.is_event_blocked() {
             return ReplyIntent::ReplyLater;
         }
 
-        // 4. 游标有效（event.c:252-257 → SUSPEND）
+        // 4. The cursor is valid (event.c:252-257 → SUSPEND)
         let cursor = match table.procs[slot.get()].state.block.event_cursor() {
             Some(c) => c,
             None => return ReplyIntent::ReplyLater,
@@ -447,13 +476,14 @@ impl EventRegistry {
             return ReplyIntent::ReplyLater;
         }
 
-        // 5. 回复者确是游标所指订阅者（event.c:259-263 → SUSPEND）
+        // 5. The replier is indeed the subscriber the cursor points at
+        // (event.c:259-263 → SUSPEND)
         let sub_ep = self.subs[cursor.0].expect("subs prefix must be Some").endpoint;
         if sub_ep != table.procs[caller.get()].endpoint() {
             return ReplyIntent::ReplyLater;
         }
 
-        // 6. 推断事件（event.c:265-273 → SUSPEND）
+        // 6. Infer the event (event.c:265-273 → SUSPEND)
         let inferred = {
             let proc = &table.procs[slot.get()];
             if proc.is_exiting() {
@@ -465,21 +495,23 @@ impl EventRegistry {
             }
         };
 
-        // 7. event 一致性（event.c:274-278 → SUSPEND）
+        // 7. Event consistency (event.c:274-278 → SUSPEND)
         if reply_event != inferred {
             return ReplyIntent::ReplyLater;
         }
 
-        // 不检查 mask 与事件的一致性（event.c:280-287）
+        // The mask's consistency with the event is not checked
+        // (event.c:280-287)
 
-        // waiting--（event.c:289-290）
+        // waiting-- (event.c:289-290)
         {
             let sub = self.subs[cursor.0].as_mut().expect("must be Some");
             assert!(sub.waiting > 0, "waiting must be >0");
             sub.waiting -= 1;
         }
 
-        // 终局：mask empty && waiting==0 → remove_sub 否则 cursor++ → resume（event.c:299-305）
+        // Final step: mask empty && waiting==0 → remove_sub, otherwise
+        // cursor++ → resume (event.c:299-305)
         let should_remove = {
             let sub = self.subs[cursor.0].expect("must be Some");
             sub.mask.is_empty() && sub.waiting == 0
@@ -501,7 +533,7 @@ impl EventRegistry {
 #[cfg(test)]
 mod tests {
 
-    /// D-18 事件路径的内核网关 mock（sys_clear/sys_kill 恒 OK）。
+    /// Mock kernel gateway for the event path (sys_clear/sys_kill always OK).
     struct MockKernelGateway;
     impl crate::exit::KernelGateway for MockKernelGateway {
         fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
@@ -669,9 +701,11 @@ mod tests {
         table.procs[5].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
 
         reg.publish_event(tgt, &mut table, &mut transport, &mut kern);
-        // No subscriber → immediately cleared + 终止分派（exit_restart）
+        // No subscriber → immediately cleared + termination dispatch
+        // (exit_restart)
         assert!(!table.procs[5].state.block.is_event_blocked());
-        // D-19：exit_restart 现在真实发送 VM_EXIT（无订阅者通知，故仅此一条）
+        // exit_restart now really sends VM_EXIT (there is no subscriber
+        // notification, so this is the only one)
         assert_eq!(transport.sent().len(), 1);
         assert_eq!(transport.sent()[0].0, Endpoint::VM);
         assert_eq!(transport.sent()[0].1.m_type, minix_types::VM_EXIT as i32);
@@ -714,9 +748,10 @@ mod tests {
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
 
         reg.publish_event(tgt, &mut table, &mut transport, &mut kern);
-        // No matching subscriber → immediately cleared + 终止分派（exit_restart）
+        // No matching subscriber → immediately cleared + termination dispatch
+        // (exit_restart)
         assert!(!table.procs[5].state.block.is_event_blocked());
-        // D-19：唯一的 wire 发送是 exit_restart 的 VM_EXIT
+        // The only wire send is exit_restart's VM_EXIT
         assert_eq!(transport.sent().len(), 1);
         assert_eq!(transport.sent()[0].0, Endpoint::VM);
     }
@@ -771,7 +806,7 @@ mod tests {
         let intent2 = reg.do_proc_event_reply(&reply2, caller2, &mut table, &mut transport, &mut kern);
         assert_eq!(intent2, ReplyIntent::ReplyLater);
         assert!(!table.procs[5].state.block.is_event_blocked());
-        // 两条 PROC_EVENT 通知 + 终止分派的 VM_EXIT（D-19）
+        // Two PROC_EVENT notifications + the termination dispatch's VM_EXIT
         assert_eq!(transport.sent().len(), 3);
     }
 
@@ -1029,16 +1064,19 @@ mod tests {
     #[test]
     fn test_reply_signal_event_terminates_via_restart_sigs() {
         let mut kern = MockKernelGateway;
-        // D-11 端到端：最后一个订阅者回复 Signal 事件 → 终止分派
-        //（event.c:122-123）→ restart_sigs → check_pending 重投挂起的
-        // SIGKILL → sig_proc 终止路径（sig_proc_exit → exit_proc）。
-        // 目标进程必须 Running（restart_sigs 的 EXITING 守卫会 Noop）。
+        // End to end: the last subscriber replies to a Signal event →
+        // termination dispatch (event.c:122-123) → restart_sigs →
+        // check_pending redelivers the pending SIGKILL → sig_proc's termination
+        // path (sig_proc_exit → exit_proc).
+        // The target process must be Running (restart_sigs's EXITING guard
+        // would turn it into a no-op).
         let (mut table, mut reg, mut transport, sub, _tgt) = setup_reply_test();
         reg.subs[0].as_mut().unwrap().mask = ProcEventMask::SIGNAL;
-        // 目标改为 Running（不走 Exit 分派的 Exiting 前提），保持 EVENT_CALL
-        // 阻塞在游标 0；PM 侧停止 + 挂起一个未阻塞的 SIGKILL。事件推断
-        //（event.c:265-273）要求非 Exiting 目标带 UNPAUSED 标志才会推断为
-        // Signal 事件。
+        // The target becomes Running (so the Exiting precondition for Exit
+        // dispatch does not apply) and stays blocked by EVENT_CALL on cursor 0;
+        // the PM side stops it and suspends an unblocked SIGKILL. Event
+        // inference (event.c:265-273) only infers a Signal event for a
+        // non-Exiting target carrying the UNPAUSED flag.
         table.procs[5].state.lifecycle = Lifecycle::Running;
         table.procs[5].state.block.unpaused = true;
         table.procs[5].state.block.stopped = true;
@@ -1048,8 +1086,10 @@ mod tests {
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Signal);
         let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
-        // 非空 mask 的订阅者保留订阅（remove_sub 仅在 mask 空且 waiting=0
-        // 时触发，event.c:130-161）；终止分派由游标越界触发而非订阅者移除。
+        // A subscriber with a non-empty mask keeps its subscription
+        // (remove_sub only fires when the mask is empty and waiting=0,
+        // event.c:130-161); the termination dispatch is triggered by the cursor
+        // running past the end, not by subscriber removal.
         assert_eq!(reg.len(), 1);
         assert!(
             !table.procs[5].state.block.is_event_blocked(),

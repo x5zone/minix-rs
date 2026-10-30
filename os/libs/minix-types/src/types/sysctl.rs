@@ -428,12 +428,15 @@ pub const KERN_SYSVIPC_SHMMAXPGS: i32 = 8;
 // C: `VM_*` — sys/uvm/uvm_param.h:165-180. MIB populates 4 of 13
 // (loadavg/uvmexp2/maxslp/uspace); the rest are A-9 (14's list).
 //
-// 裁决 U-3（`PENDING-DECISIONS-UNBLOCK-20261009.md`）：`loadavg`/`uvmexp_sysctl`
-// 的**具名客户端结构体**推迟到首个真实消费者（`ps`/`top`/`vmstat`）立项时在
-// `sysctl_abi.rs` 建模，此处不预建无消费者的死类型。已在位的线上面是节点的
-// size lane——`sizeof(struct loadavg)`=24、`sizeof(struct uvmexp_sysctl)`=616
-// （77 个 int64_t），由 `os/servers/mib/src/subtree/vm.rs` 的 `build()` 落到
-// sysctlnode 并带宿主回读测试钉死；response 字节的逐字段排列随 P1-5 函数腿接线时补。
+// Decision (`PENDING-DECISIONS-UNBLOCK-20261009.md`): the **named client
+// structs** for `loadavg`/`uvmexp_sysctl` are deferred until the first real
+// consumer (`ps`/`top`/`vmstat`) is chartered, at which point they will be
+// modelled in `sysctl_abi.rs`; no consumer-less dead type is pre-built here.
+// What is in place is the node's size lane — `sizeof(struct loadavg)` = 24,
+// `sizeof(struct uvmexp_sysctl)` = 616 (77 `int64_t`s) — carried into the
+// sysctlnode by `build()` in `os/servers/mib/src/subtree/vm.rs` and pinned by a
+// host read-back test; the field-by-field layout of the response bytes is added
+// when the function leg is wired.
 
 /// Struct vmmeter (unimplemented). C: `VM_METER`.
 pub const VM_METER: i32 = 1;
@@ -554,11 +557,12 @@ pub const KERN_PROC_SESSION: i32 = 3;
 /// By controlling tty. C: `KERN_PROC_TTY 4` — sysctl.h:387.
 pub const KERN_PROC_TTY: i32 = 4;
 
-/// TTY 过滤哨兵：请求"没有控制终端"的行。C（NetBSD sysctl.h）：
-/// `KERN_PROC_TTY_NODEV ((dev_t)-1)`——以 i64 携带时与 (dev_t)(-1) 的
-/// 位形一致，比较语义不变（C-22）。
+/// TTY filter sentinel: requests rows with "no controlling terminal". C (NetBSD
+/// sysctl.h): `KERN_PROC_TTY_NODEV ((dev_t)-1)` — carried as an i64 it has the
+/// same bit pattern as (dev_t)(-1), so comparison semantics are unchanged.
 pub const KERN_PROC_TTY_NODEV: i64 = -1;
-/// TTY 过滤哨兵：revoke(2) 的占位（C 未实现，匹配恒空）。
+/// TTY filter sentinel: the revoke(2) placeholder (unimplemented in C, so the
+/// match is always empty).
 /// C: `KERN_PROC_TTY_REVOKE ((dev_t)-2)`。
 pub const KERN_PROC_TTY_REVOKE: i64 = -2;
 /// By effective uid. C: `KERN_PROC_UID 5` — sysctl.h:388.

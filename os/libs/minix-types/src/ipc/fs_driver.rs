@@ -128,481 +128,510 @@ pub const REQ_BPEEK: i32 = FS_BASE + 33;
 
 /// C: `IS_FS_RQ(type) ((type & ~0xff) == FS_BASE)` — vfsif.h:77.
 ///
-/// 注意它判的是**已剥掉 transid 的调用号**：线上 `m_type` 是
-/// `TRNS_ADD_ID(call_nr, transid)`（见下），直接拿线上值判会看到
-/// `0xAxx << 16` 而不是 `0xAxx`。
+/// Note that it tests the **call number with the transid already stripped**:
+/// the on-wire `m_type` is `TRNS_ADD_ID(call_nr, transid)` (see below), so
+/// testing the wire value directly yields `0xAxx << 16` rather than `0xAxx`.
 pub const fn is_fs_rq(raw: i32) -> bool {
     (raw & !0xff) == FS_BASE
 }
 
-/// C: `TRNS_ADD_ID(t, id) (((t) << 16) | ((id) & 0xFFFF))` —
-/// vfsif.h:80。把调用号与 transid 合成线上的 `m_type`：
-/// VFS 发请求、FS 发回复都用这一个式子（回复时 `t` 是**结果值**）。
+/// C: `TRNS_ADD_ID(t, id) (((t) << 16) | ((id) & 0xFFFF))` — vfsif.h:80.
+/// Combines the call number and the transid into the on-wire `m_type`: VFS
+/// sending a request and FS sending a reply both use this one expression (for
+/// a reply `t` is the **result value**).
 ///
-/// 与 `minix-fs::protocol::TransactionId` 的关系：后者是同一套 C 宏的
-/// **类型化包装**（`decode`/`encode_reply`/`encode_request` 三方法），
-/// FS 侧服务器按它写分派；VFS 侧的 `fs_comm::TransId` 另带 worker 槽
-/// 语义（`VFS_TRANSID + slot`）。三处的算式以本模块为准（vfsif.h 的
-/// 三行宏在此逐行落地），改一处须同步另两处的测试。
+/// Relation to `minix-fs::protocol::TransactionId`: the latter is a **typed
+/// wrapper** around the same C macros (`decode`/`encode_reply`/
+/// `encode_request`), and the FS-side server dispatches through it; VFS's
+/// `fs_comm::TransId` additionally carries worker-slot semantics
+/// (`VFS_TRANSID + slot`). The formula in this module is authoritative for all
+/// three (the three vfsif.h macro lines land here line by line); changing one
+/// means updating the tests of the other two.
 pub const fn trns_add_id(t: i32, id: u32) -> i32 {
     ((t as u32) << 16 | (id & 0xFFFF)) as i32
 }
 
-/// C: `TRNS_GET_ID(t) ((t) & 0xFFFF)` — vfsif.h:79（线上值的低 16 位
-/// 即 transid；`VFS_TRANSID + worker_tid`，com.h:911）。
+/// C: `TRNS_GET_ID(t) ((t) & 0xFFFF)` — vfsif.h:79 (the low 16 bits of the
+/// wire value are the transid; `VFS_TRANSID + worker_tid`, com.h:911).
 pub const fn trns_get_id(raw: i32) -> u32 {
     (raw as u32) & 0xFFFF
 }
 
-/// C: `TRNS_DEL_ID(t) ((short)((t) >> 16))` — vfsif.h:81。
+/// C: `TRNS_DEL_ID(t) ((short)((t) >> 16))` — vfsif.h:81.
 ///
-/// 注意 `(short)` 截断是**有意的**：高 16 位装的是调用号（正值，如
-/// `REQ_READ = 0xA13`）或回复的结果值（含负 errno），一律按 16 位有
-/// 符号读回。
+/// Note that the `(short)` truncation is **deliberate**: the high 16 bits hold
+/// either the call number (positive, e.g. `REQ_READ = 0xA13`) or the reply's
+/// result value (which may be a negative errno), and both are read back as
+/// 16-bit signed.
 pub const fn trns_del_id(raw: i32) -> i32 {
     ((raw >> 16) as i16) as i32
 }
 
-/// `REQ_LOOKUP` 请求载荷的 LP64 域偏移（C 字段序 + 64 位重排）。
+/// LP64 field offsets of the `REQ_LOOKUP` request payload (C field order plus
+/// 64-bit repacking).
 ///
-/// C: `mess_vfs_fs_lookup`（ipc.h:2011-2035）的字段序
+/// C: `mess_vfs_fs_lookup` (ipc.h:2011-2035) has the field order
 /// `dir_ino / root_ino / flags / path_len / path_size / ucred_size /
-/// grant_path / grant_ucred`；i386 下各占 4 字节，LP64 下指针与 `size_t`
-/// 拉到 8 字节、`uint32_t` 保持 4——**两侧（VFS 编码器与 FS 解码器）必须
-/// 用这张表**，否则名字会错位（E-REQWIRE 同族事故）。
+/// grant_path / grant_ucred`; on i386 each takes 4 bytes, on LP64 pointers and
+/// `size_t` stretch to 8 while `uint32_t` stays 4 — **both sides (the VFS
+/// encoder and the FS decoder) must use this table**, otherwise the name shifts
+/// (the same family of accident as a request/response wire mismatch).
 pub mod lookup_req_off {
-    /// `ino_t dir_ino`（lookup 起点）。
+    /// `ino_t dir_ino` (where the lookup starts).
     pub const DIR_INO: usize = 0;
-    /// `ino_t root_ino`（路径解析的根）。
+    /// `ino_t root_ino` (the root for path resolution).
     pub const ROOT_INO: usize = 8;
-    /// `uint32_t flags`（`LookupFlags`，见 `minix-fs::protocol`）。
+    /// `uint32_t flags` (`LookupFlags`, see `minix-fs::protocol`).
     pub const FLAGS: usize = 16;
-    /// `size_t path_len`（含 NUL 的名字长度）。
+    /// `size_t path_len` (name length including the NUL).
     pub const PATH_LEN: usize = 24;
-    /// `size_t path_size`（grant 窗口大小）。
+    /// `size_t path_size` (the grant window size).
     pub const PATH_SIZE: usize = 32;
-    /// `size_t ucred_size`（凭证区大小，0 = 不带）。
+    /// `size_t ucred_size` (credential area size; 0 = none attached).
     pub const UCRED_SIZE: usize = 40;
-    /// `cp_grant_id_t grant_path`（名字所在 grant）。
+    /// `cp_grant_id_t grant_path` (the grant holding the name).
     pub const GRANT_PATH: usize = 48;
-    /// `cp_grant_id_t grant_ucred`（凭证所在 grant）。
+    /// `cp_grant_id_t grant_ucred` (the grant holding the credentials).
     pub const GRANT_UCRED: usize = 56;
 }
 
-/// `REQ_READ` / `REQ_GETDENTS` 请求载荷的 LP64 域偏移（同前缀）。
+/// LP64 field offsets of the `REQ_READ` / `REQ_GETDENTS` request payloads
+/// (same prefix).
 ///
-/// C: `mess_vfs_fs_readwrite`（ipc.h:2121-2131）与
-/// `mess_vfs_fs_getdents`（ipc.h:1992-2002）的字段序相同。
+/// C: `mess_vfs_fs_readwrite` (ipc.h:2121-2131) and `mess_vfs_fs_getdents`
+/// (ipc.h:1992-2002) have the same field order.
 pub mod transfer_req_off {
-    /// `ino_t inode`。
+    /// `ino_t inode`.
     pub const INODE: usize = 0;
-    /// `off_t seek_pos`。
+    /// `off_t seek_pos`.
     pub const SEEK_POS: usize = 8;
-    /// `cp_grant_id_t grant`（数据缓冲在调用方）。
+    /// `cp_grant_id_t grant` (the data buffer lives in the caller).
     pub const GRANT: usize = 16;
-    /// `size_t nbytes`（read 的字节数）/ `mem_size`（getdents 的窗口）。
+    /// `size_t nbytes` (bytes to read) / `mem_size` (the getdents window).
     pub const BYTES: usize = 24;
 }
 
-/// C: `PATH_RET_SYMLINK (010)` — vfsif.h:12（`REQ_LOOKUP` 的 `flags` 位：
-/// 最后一个组件是符号链接时**不要**解析它，把链接本身带回）。
+/// C: `PATH_RET_SYMLINK (010)` — vfsif.h:12 (a `flags` bit of `REQ_LOOKUP`:
+/// when the last component is a symbolic link, do **not** resolve it — return
+/// the link itself).
 ///
-/// 这个位的语义在 FS 侧实现（`libfsdriver/lookup.c:249-251`），VFS 只负责
-/// 原样发过去。
+/// The bit's semantics are implemented on the FS side
+/// (`libfsdriver/lookup.c:249-251`); VFS only forwards it unchanged.
 pub const PATH_RET_SYMLINK: u32 = 0o10;
 
-/// C: `PATH_GET_UCRED (020)` — vfsif.h:16（请求里带凭证 grant，FS 用它做
-/// 权限判断）。Rust 侧凭证面还没接线，见 `encode_lookup` 的断言。
+/// C: `PATH_GET_UCRED (020)` — vfsif.h:16 (the request carries a credential
+/// grant that FS uses for permission checks). The Rust credential face is not
+/// wired yet; see the assertion in `encode_lookup`.
 pub const PATH_GET_UCRED: u32 = 0o20;
 
-/// C: `EENTERMOUNT (-301)` — vfsif.h:26（FS→VFS 的"进入挂载点"特殊码，
-/// 走回复的 `m_type`，不是错误）。
+/// C: `EENTERMOUNT (-301)` — vfsif.h:26 (the FS→VFS "entering a mount point"
+/// special code, carried in the reply's `m_type`; it is not an error).
 pub const EENTERMOUNT: i32 = -301;
-/// C: `ELEAVEMOUNT (-302)` — vfsif.h:27（"离开挂载点"）。
+/// C: `ELEAVEMOUNT (-302)` — vfsif.h:27 ("leaving a mount point").
 pub const ELEAVEMOUNT: i32 = -302;
-/// C: `ESYMLINK (-303)` — vfsif.h:28（"这是符号链接"）。
+/// C: `ESYMLINK (-303)` — vfsif.h:28 ("this is a symbolic link").
 pub const ESYMLINK: i32 = -303;
 
-/// `REQ_LOOKUP` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+/// LP64 field offsets of the `REQ_LOOKUP` **reply** payload (FS→VFS).
 ///
-/// C: `mess_fs_vfs_lookup`（ipc.h:163-176）字段序
-/// `offset / file_size / device / inode / mode / uid / gid / symloop`。
-/// 三个特殊码（[`EENTERMOUNT`]/[`ELEAVEMOUNT`]/[`ESYMLINK`]）时只有
-/// `offset`（与 `inode`、`symloop`）有意义；`Ok` 时其余字段填 `node_details`。
+/// C: `mess_fs_vfs_lookup` (ipc.h:163-176) has the field order
+/// `offset / file_size / device / inode / mode / uid / gid / symloop`.
+/// For the three special codes ([`EENTERMOUNT`]/[`ELEAVEMOUNT`]/[`ESYMLINK`])
+/// only `offset` (plus `inode` and `symloop`) is meaningful; on `Ok` the
+/// remaining fields are filled from `node_details`.
 pub mod lookup_reply_off {
-    /// `off_t offset`（FS 已消费的字节数 / 剩余路径偏移）。
+    /// `off_t offset` (bytes FS already consumed / remaining path offset).
     pub const OFFSET: usize = 0;
-    /// `off_t file_size`。
+    /// `off_t file_size`.
     pub const FILE_SIZE: usize = 8;
-    /// `dev_t device`。
+    /// `dev_t device`.
     pub const DEVICE: usize = 16;
-    /// `ino_t inode`（8 对齐，故 20..24 是垫）。
+    /// `ino_t inode` (8-aligned, so 20..24 is padding).
     pub const INODE: usize = 24;
-    /// `mode_t mode`。
+    /// `mode_t mode`.
     pub const MODE: usize = 32;
-    /// `uid_t uid`。
+    /// `uid_t uid`.
     pub const UID: usize = 36;
-    /// `gid_t gid`。
+    /// `gid_t gid`.
     pub const GID: usize = 40;
-    /// `uint16_t symloop`。
+    /// `uint16_t symloop`.
     pub const SYMLOOP: usize = 44;
 }
 
-/// `REQ_FTRUNC` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_FTRUNC` request payload.
 ///
 /// C: `mess_vfs_fs_ftrunc { ino_t inode; off_t trc_start; off_t trc_end; }`
-/// （`request.c:269-272` 的 `req_ftrunc`）。语义：`trc_end == 0` 表示
-/// "截到 `trc_start`"（mfs `fs_trunc:439-443`），非零则释放 `[start,end)`。
+/// (`req_ftrunc` at `request.c:269-272`). Semantics: `trc_end == 0` means
+/// "truncate at `trc_start`" (mfs `fs_trunc:439-443`); non-zero frees
+/// `[start,end)`.
 pub mod ftrunc_req_off {
-    /// `ino_t inode`。
+    /// `ino_t inode`.
     pub const INODE: usize = 0;
-    /// `off_t trc_start`。
+    /// `off_t trc_start`.
     pub const TRC_START: usize = 8;
-    /// `off_t trc_end`。
+    /// `off_t trc_end`.
     pub const TRC_END: usize = 16;
 }
 
-/// `REQ_CREATE` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_CREATE` request payload.
 ///
 /// C: `mess_vfs_fs_create { ino_t inode; mode_t mode; uid_t uid; gid_t gid;
-/// cp_grant_id_t grant; size_t path_len; }`（`request.c:189-196` 的
-/// `req_create`；`grant` 指向**最后组件名**）。
+/// cp_grant_id_t grant; size_t path_len; }` (`req_create` at
+/// `request.c:189-196`; `grant` points at the **last component name**).
 pub mod create_req_off {
-    /// `ino_t inode`（父目录）。
+    /// `ino_t inode` (the parent directory).
     pub const INODE: usize = 0;
-    /// `mode_t mode`（omode = 模式位，**不含** `O_*`）。
+    /// `mode_t mode` (omode = mode bits, **without** `O_*`).
     pub const MODE: usize = 8;
-    /// `uid_t uid`。
+    /// `uid_t uid`.
     pub const UID: usize = 12;
-    /// `gid_t gid`。
+    /// `gid_t gid`.
     pub const GID: usize = 16;
-    /// `cp_grant_id_t grant`。
+    /// `cp_grant_id_t grant`.
     pub const GRANT: usize = 20;
-    /// `size_t path_len`（含 NUL）。
+    /// `size_t path_len` (including the NUL).
     pub const PATH_LEN: usize = 24;
 }
 
-/// `REQ_CREATE` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+/// LP64 field offsets of the `REQ_CREATE` **reply** payload (FS→VFS).
 ///
 /// C: `mess_fs_vfs_create { off_t file_size; ino_t inode; mode_t mode;
-/// uid_t uid; gid_t gid; }`（ipc.h:141-150）——与请求是两套结构。
+/// uid_t uid; gid_t gid; }` (ipc.h:141-150) — a different structure from the
+/// request.
 pub mod create_reply_off {
-    /// `off_t file_size`。
+    /// `off_t file_size`.
     pub const FILE_SIZE: usize = 0;
-    /// `ino_t inode`。
+    /// `ino_t inode`.
     pub const INODE: usize = 8;
-    /// `mode_t mode`。
+    /// `mode_t mode`.
     pub const MODE: usize = 16;
-    /// `uid_t uid`。
+    /// `uid_t uid`.
     pub const UID: usize = 20;
-    /// `gid_t gid`。
+    /// `gid_t gid`.
     pub const GID: usize = 24;
 }
 
-/// `REQ_MKDIR` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_MKDIR` request payload.
 ///
 /// C: `mess_vfs_fs_mkdir { ino_t inode; mode_t mode; uid_t uid; gid_t gid;
-/// cp_grant_id_t grant; }`（`request.c:548-555` 的 `req_mkdir`；`grant`
-/// 指向**最后组件名**）。
+/// cp_grant_id_t grant; }` (`req_mkdir` at `request.c:548-555`; `grant` points
+/// at the **last component name**).
 pub mod mkdir_req_off {
-    /// `ino_t inode`（父目录）。
+    /// `ino_t inode` (the parent directory).
     pub const INODE: usize = 0;
-    /// `mode_t mode`（含 `I_DIRECTORY` 与 umask 后的权限位）。
+    /// `mode_t mode` (including `I_DIRECTORY` and the umask-applied
+    /// permission bits).
     pub const MODE: usize = 8;
-    /// `uid_t uid`。
+    /// `uid_t uid`.
     pub const UID: usize = 12;
-    /// `gid_t gid`。
+    /// `gid_t gid`.
     pub const GID: usize = 16;
-    /// `cp_grant_id_t grant`。
+    /// `cp_grant_id_t grant`.
     pub const GRANT: usize = 20;
 }
 
-/// `REQ_STAT` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_STAT` request payload.
 ///
 /// C: `mess_vfs_fs_stat { ino_t inode; cp_grant_id_t grant; }`
-/// (ipc.h:…… 由 `request.c:1087-1096` 的 `req_stat_actual` 填充)。
+/// (ipc.h:…, filled by `req_stat_actual` at `request.c:1087-1096`).
 pub mod stat_req_off {
-    /// `ino_t inode`。
+    /// `ino_t inode`.
     pub const INODE: usize = 0;
-    /// `cp_grant_id_t grant`（FS 往用户 `struct stat` 写的 magic grant）。
+    /// `cp_grant_id_t grant` (the magic grant FS writes the user
+    /// `struct stat` into).
     pub const GRANT: usize = 8;
 }
 
-/// `REQ_READ`/`REQ_WRITE` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+/// LP64 field offsets of the `REQ_READ`/`REQ_WRITE` **reply** payload (FS→VFS).
 ///
 /// C: `mess_fs_vfs_readwrite { off_t seek_pos; size_t nbytes; }`
-/// (ipc.h:214-220) —— 与请求载荷是两套结构，别混用（请求是
-/// [`transfer_req_off`]）。
+/// (ipc.h:214-220) — a different structure from the request payload; do not
+/// mix them up (the request one is [`transfer_req_off`]).
 pub mod transfer_reply_off {
-    /// `off_t seek_pos`（传输后的新位置）。
+    /// `off_t seek_pos` (the new position after the transfer).
     pub const SEEK_POS: usize = 0;
-    /// `size_t nbytes`（实际传输的字节数）。
+    /// `size_t nbytes` (the number of bytes actually transferred).
     pub const NBYTES: usize = 8;
 }
 
-/// `REQ_RENAME` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_RENAME` request payload.
 ///
 /// C: `mess_vfs_fs_rename { ino_t dir_old; ino_t dir_new; size_t len_old;
 /// size_t len_new; cp_grant_id_t grant_old; cp_grant_id_t grant_new; }`
-/// （ipc.h:2133-2143，`request.c:927-955` 的 `req_rename`）。**两个 grant 都是
-/// direct**（旧名是 VFS 保存下来的组件名、新名来自 name2 的最后组件，两者都
-/// 在 VFS 内存里）；两个名字长度都含结尾 NUL。
+/// (ipc.h:2133-2143, `req_rename` at `request.c:927-955`). **Both grants are
+/// direct** (the old name is a component name VFS kept, the new one comes from
+/// the last component of name2, and both live in VFS memory); both name lengths
+/// include the trailing NUL.
 pub mod rename_req_off {
-    /// `ino_t dir_old`（旧名的父目录）。
+    /// `ino_t dir_old` (the parent directory of the old name).
     pub const DIR_OLD: usize = 0;
-    /// `ino_t dir_new`（新名的父目录）。
+    /// `ino_t dir_new` (the parent directory of the new name).
     pub const DIR_NEW: usize = 8;
-    /// `size_t len_old`。
+    /// `size_t len_old`.
     pub const LEN_OLD: usize = 16;
-    /// `size_t len_new`。
+    /// `size_t len_new`.
     pub const LEN_NEW: usize = 24;
-    /// `cp_grant_id_t grant_old`。
+    /// `cp_grant_id_t grant_old`.
     pub const GRANT_OLD: usize = 32;
-    /// `cp_grant_id_t grant_new`。
+    /// `cp_grant_id_t grant_new`.
     pub const GRANT_NEW: usize = 36;
 }
 
-/// `REQ_SLINK` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_SLINK` request payload.
 ///
 /// C: `mess_vfs_fs_slink { ino_t inode; size_t path_len; size_t mem_size;
 /// cp_grant_id_t grant_path; cp_grant_id_t grant_target; uid_t uid; gid_t
-/// gid; }`（ipc.h:2146-2157，`request.c:990-1046` 的 `req_slink_actual`）。
-/// **两个 grant**：`grant_path` 是 VFS 内存里的组件名（direct），
-/// `grant_target` 是**用户内存**里的链接目标串（magic）——FS 从用户空间读
-/// 目标，这是本族里唯一一处双 grant 请求。
+/// gid; }` (ipc.h:2146-2157, `req_slink_actual` at `request.c:990-1046`).
+/// **Two grants**: `grant_path` is a component name in VFS memory (direct),
+/// `grant_target` is the link target string in **user memory** (magic) — FS
+/// reads the target from user space, the only two-grant request in this
+/// family.
 pub mod slink_req_off {
-    /// `ino_t inode`（父目录）。
+    /// `ino_t inode` (the parent directory).
     pub const INODE: usize = 0;
-    /// `size_t path_len`（组件名长度，含结尾 NUL）。
+    /// `size_t path_len` (component name length, including the trailing NUL).
     pub const PATH_LEN: usize = 8;
-    /// `size_t mem_size`（目标串长度，**不含**结尾 NUL）。
+    /// `size_t mem_size` (target string length, **excluding** the trailing
+    /// NUL).
     pub const MEM_SIZE: usize = 16;
-    /// `cp_grant_id_t grant_path`。
+    /// `cp_grant_id_t grant_path`.
     pub const GRANT_PATH: usize = 24;
-    /// `cp_grant_id_t grant_target`。
+    /// `cp_grant_id_t grant_target`.
     pub const GRANT_TARGET: usize = 28;
-    /// `uid_t uid`（新链接的属主 = 调用方有效 uid）。
+    /// `uid_t uid` (owner of the new link = the caller's effective uid).
     pub const UID: usize = 32;
-    /// `gid_t gid`。
+    /// `gid_t gid`.
     pub const GID: usize = 36;
 }
 
-/// `REQ_LINK` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_LINK` request payload.
 ///
 /// C: `mess_vfs_fs_link { ino_t inode; ino_t dir_ino; cp_grant_id_t grant;
-/// size_t path_len; }`（ipc.h:2010-2018，`request.c:390-418` 的
-/// `req_link`）。`inode` 是**被链接的文件**、`dir_ino` 是新名的父目录——
-/// 两个 ino 的顺序别弄反（结构体里文件在前、目录在后）。
+/// size_t path_len; }` (ipc.h:2010-2018, `req_link` at `request.c:390-418`).
+/// `inode` is the **file being linked** and `dir_ino` is the new name's parent
+/// directory — do not swap the two inos (in the struct the file comes first,
+/// the directory second).
 pub mod link_req_off {
-    /// `ino_t inode`（被链接的文件）。
+    /// `ino_t inode` (the file being linked).
     pub const INODE: usize = 0;
-    /// `ino_t dir_ino`（新名的父目录）。
+    /// `ino_t dir_ino` (the parent directory of the new name).
     pub const DIR_INO: usize = 8;
-    /// `cp_grant_id_t grant`。
+    /// `cp_grant_id_t grant`.
     pub const GRANT: usize = 16;
-    /// `size_t path_len`（新名长度，含结尾 NUL）。
+    /// `size_t path_len` (new name length, including the trailing NUL).
     pub const PATH_LEN: usize = 24;
 }
 
-/// `REQ_UTIME` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_UTIME` request payload.
 ///
 /// C: `mess_vfs_fs_utime { ino_t inode; time_t actime; time_t modtime;
-/// uint32_t acnsec; uint32_t modnsec; }`（ipc.h:2186-2195，
-/// `request.c:1180-1199` 的 `req_utime`）。`acnsec`/`modnsec` 可能是
-/// `UTIME_OMIT`（"这一项不动"），VFS 已把它原样带下来。
+/// uint32_t acnsec; uint32_t modnsec; }` (ipc.h:2186-2195,
+/// `request.c:1180-1199` (`req_utime`). `acnsec`/`modnsec` may be
+/// `UTIME_OMIT` ("leave this one alone"), and VFS has already carried it down
+/// unchanged.
 pub mod utime_req_off {
-    /// `ino_t inode`。
+    /// `ino_t inode`.
     pub const INODE: usize = 0;
-    /// `time_t actime`。
+    /// `time_t actime`.
     pub const ACTIME: usize = 8;
-    /// `time_t modtime`。
+    /// `time_t modtime`.
     pub const MODTIME: usize = 16;
-    /// `uint32_t acnsec`。
+    /// `uint32_t acnsec`.
     pub const ACNSEC: usize = 24;
-    /// `uint32_t modnsec`。
+    /// `uint32_t modnsec`.
     pub const MODNSEC: usize = 28;
 }
 
-/// `REQ_MKNOD` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_MKNOD` request payload.
 ///
 /// C: `mess_vfs_fs_mknod { dev_t device; ino_t inode; mode_t mode; uid_t uid;
-/// gid_t gid; cp_grant_id_t grant; size_t path_len; }`（ipc.h:2051-2062，
-/// `request.c:567-601` 的 `req_mknod`）。`inode` 是**父目录**；`grant` 指向
-/// VFS 内存里的组件名（`CPF_READ` 的 direct grant）；回复**只有状态**
-/// （libfsdriver 的 `fsdriver_mknod` 把 `m_out` 标成 `__unused`）。
+/// gid_t gid; cp_grant_id_t grant; size_t path_len; }` (ipc.h:2051-2062,
+/// `req_mknod` at `request.c:567-601`). `inode` is the **parent directory**;
+/// `grant` points at a component name in VFS memory (a `CPF_READ` direct
+/// grant); the reply carries **status only** (libfsdriver's `fsdriver_mknod`
+/// marks `m_out` as `__unused`).
 pub mod mknod_req_off {
-    /// `dev_t device`（字符/块设备的设备号，FIFO 与常规文件为 0）。
+    /// `dev_t device` (device number for char/block devices; 0 for FIFOs and
+    /// regular files).
     pub const DEVICE: usize = 0;
-    /// `ino_t inode`（父目录）。
+    /// `ino_t inode` (the parent directory).
     pub const INODE: usize = 8;
-    /// `mode_t mode`（已按 umask 收窄的完整模式，含类型位）。
+    /// `mode_t mode` (the full mode already narrowed by umask, including the
+    /// type bits).
     pub const MODE: usize = 16;
-    /// `uid_t uid`（新节点的属主 = 调用方有效 uid）。
+    /// `uid_t uid` (owner of the new node = the caller's effective uid).
     pub const UID: usize = 20;
-    /// `gid_t gid`。
+    /// `gid_t gid`.
     pub const GID: usize = 24;
-    /// `cp_grant_id_t grant`。
+    /// `cp_grant_id_t grant`.
     pub const GRANT: usize = 28;
-    /// `size_t path_len`（含结尾 NUL）。
+    /// `size_t path_len` (including the trailing NUL).
     pub const PATH_LEN: usize = 32;
 }
 
-/// `REQ_CHOWN` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_CHOWN` request payload.
 ///
 /// C: `mess_vfs_fs_chown { ino_t inode; uid_t uid; gid_t gid; }`
-/// （ipc.h:1953-1960，`request.c:136-158` 的 `req_chown`）。`-1` 的语义
-/// （"不改这一项"）由调用方先折算成现有值，见 `protect::keep_id`。
+/// (ipc.h:1953-1960, `req_chown` at `request.c:136-158`). The `-1` semantics
+/// ("do not change this one") are resolved by the caller into the current value
+/// first; see `protect::keep_id`.
 pub mod chown_req_off {
-    /// `ino_t inode`。
+    /// `ino_t inode`.
     pub const INODE: usize = 0;
-    /// `uid_t uid`。
+    /// `uid_t uid`.
     pub const UID: usize = 8;
-    /// `gid_t gid`。
+    /// `gid_t gid`.
     pub const GID: usize = 12;
 }
 
-/// `REQ_CHOWN` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+/// LP64 field offsets of the `REQ_CHOWN` **reply** payload (FS→VFS).
 ///
-/// C: `mess_fs_vfs_chown { mode_t mode; }`（ipc.h:134-138）——回的是**新的
-/// 模式**（setuid/setgid 位可能被 FS 清掉），不是 uid/gid：uid/gid 由 VFS
-/// 自己写进 vnode（`do_chown:159-163`）。
+/// C: `mess_fs_vfs_chown { mode_t mode; }` (ipc.h:134-138) — it returns the
+/// **new mode** (FS may have cleared the setuid/setgid bits), not uid/gid:
+/// uid/gid are written into the vnode by VFS itself (`do_chown:159-163`).
 pub mod chown_reply_off {
-    /// `mode_t mode`。
+    /// `mode_t mode`.
     pub const MODE: usize = 0;
 }
 
-/// `REQ_UNLINK` / `REQ_RMDIR` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_UNLINK` / `REQ_RMDIR` request payloads.
 ///
 /// C: `mess_vfs_fs_unlink { ino_t inode; cp_grant_id_t grant; size_t
-/// path_len; }`（ipc.h:2176-2183）——`req_unlink`（request.c:1149-1175）与
-/// `req_rmdir`（request.c:966-989）**共用这一个结构**，只有 `m_type` 不同。
-/// `grant` 是 VFS 自己内存里的组件名的 direct grant（`CPF_READ`，不是 magic
-/// grant：名字在 VFS 侧而不在用户侧）。
+/// path_len; }` (ipc.h:2176-2183) — `req_unlink` (request.c:1149-1175) and
+/// `req_rmdir` (request.c:966-989) **share this one structure** and differ only
+/// in `m_type`. `grant` is a direct grant of a component name in VFS's own
+/// memory (`CPF_READ`, not a magic grant: the name lives on the VFS side, not
+/// the user side).
 pub mod unlink_req_off {
-    /// `ino_t inode`（**父目录**的节点号）。
+    /// `ino_t inode` (the **parent directory**'s node number).
     pub const INODE: usize = 0;
-    /// `cp_grant_id_t grant`。
+    /// `cp_grant_id_t grant`.
     pub const GRANT: usize = 8;
-    /// `size_t path_len`（含结尾 NUL）。
+    /// `size_t path_len` (including the trailing NUL).
     pub const PATH_LEN: usize = 16;
 }
 
-/// `REQ_CHMOD` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_CHMOD` request payload.
 ///
-/// C: `mess_vfs_fs_chmod { ino_t inode; mode_t mode; }`（ipc.h:1944-1950，
-/// `request.c:108-130` 的 `req_chmod`）。
+/// C: `mess_vfs_fs_chmod { ino_t inode; mode_t mode; }` (ipc.h:1944-1950,
+/// `req_chmod` at `request.c:108-130`).
 pub mod chmod_req_off {
-    /// `ino_t inode`。
+    /// `ino_t inode`.
     pub const INODE: usize = 0;
-    /// `mode_t mode`（4 字节，8 字节域之后自然对齐）。
+    /// `mode_t mode` (4 bytes, naturally aligned after the 8-byte field).
     pub const MODE: usize = 8;
 }
 
-/// `REQ_CHMOD` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+/// LP64 field offsets of the `REQ_CHMOD` **reply** payload (FS→VFS).
 ///
-/// C: `mess_fs_vfs_chmod { mode_t mode; }`（ipc.h:127-131）——FS 回的是
-/// **实际生效的模式**（`request.c:127` 的 `*new_modep = m.m_fs_vfs_chmod.mode`，
-/// 可能被 FS 收窄），VFS 拿它回写 vnode 缓存。
+/// C: `mess_fs_vfs_chmod { mode_t mode; }` (ipc.h:127-131) — FS returns the
+/// **mode actually in effect** (`request.c:127`'s
+/// `*new_modep = m.m_fs_vfs_chmod.mode`, possibly narrowed by FS), and VFS
+/// writes it back into the vnode cache.
 pub mod chmod_reply_off {
-    /// `mode_t mode`。
+    /// `mode_t mode`.
     pub const MODE: usize = 0;
 }
 
-/// `REQ_RDLINK` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_RDLINK` request payload.
 ///
 /// C: `mess_vfs_fs_rdlink { ino_t inode; cp_grant_id_t grant; size_t
-/// mem_size; }`（ipc.h:2101-2108，`request.c:717-748` 的
-/// `req_rdlink_actual`）。`grant` 是 FS 往**用户**缓冲写链接文本的 magic
-/// grant（`CPF_WRITE`）；`mem_size` 是用户给的窗口。
+/// mem_size; }` (ipc.h:2101-2108, `req_rdlink_actual` at `request.c:717-748`).
+/// `grant` is the magic grant FS writes the link text into the **user** buffer
+/// with (`CPF_WRITE`); `mem_size` is the window the user supplied.
 pub mod rdlink_req_off {
-    /// `ino_t inode`（符号链接节点）。
+    /// `ino_t inode` (the symbolic link node).
     pub const INODE: usize = 0;
-    /// `cp_grant_id_t grant`。
+    /// `cp_grant_id_t grant`.
     pub const GRANT: usize = 8;
-    /// `size_t mem_size`。
+    /// `size_t mem_size`.
     pub const MEM_SIZE: usize = 16;
 }
 
-/// `REQ_RDLINK` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+/// LP64 field offsets of the `REQ_RDLINK` **reply** payload (FS→VFS).
 ///
-/// C: `mess_fs_vfs_rdlink { size_t nbytes; }`（ipc.h:191-195）——链接文本的
-/// 字节数在**载荷**里，`m_type` 只是 `OK`（`request.c:745`：
-/// `if (r == OK) r = m.m_fs_vfs_rdlink.nbytes;`）。
+/// C: `mess_fs_vfs_rdlink { size_t nbytes; }` (ipc.h:191-195) — the link
+/// text's byte count lives in the **payload**, and `m_type` is just `OK`
+/// (`request.c:745`: `if (r == OK) r = m.m_fs_vfs_rdlink.nbytes;`).
 pub mod rdlink_reply_off {
-    /// `size_t nbytes`。
+    /// `size_t nbytes`.
     pub const NBYTES: usize = 0;
 }
 
-/// `REQ_GETDENTS` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_GETDENTS` request payload.
 ///
 /// C: `mess_vfs_fs_getdents { ino_t inode; off_t seek_pos; cp_grant_id_t
-/// grant; size_t mem_size; }`（ipc.h:1990-2000，`request.c:308-315` 的
-/// `req_getdents_actual`）。`mem_size` 是目录项窗口的大小，数据经 `grant`
-/// 由 FS 直接写进调用方缓冲；位置由 VFS 从 filp 取出随请求带上。
+/// grant; size_t mem_size; }` (ipc.h:1990-2000, `req_getdents_actual` at
+/// `request.c:308-315`). `mem_size` is the size of the directory-entry window;
+/// FS writes the data through `grant` straight into the caller's buffer, and
+/// VFS takes the position out of the filp and sends it with the request.
 pub mod getdents_req_off {
-    /// `ino_t inode`（目录的节点号）。
+    /// `ino_t inode` (the directory's node number).
     pub const INODE: usize = 0;
-    /// `off_t seek_pos`（本趟从目录的哪个偏移开始）。
+    /// `off_t seek_pos` (which directory offset this pass starts at).
     pub const SEEK_POS: usize = 8;
-    /// `cp_grant_id_t grant`（FS 往用户缓冲写的 magic grant）。
+    /// `cp_grant_id_t grant` (the magic grant FS writes into the user buffer).
     pub const GRANT: usize = 16;
-    /// `size_t mem_size`（窗口字节数）。
+    /// `size_t mem_size` (window size in bytes).
     pub const MEM_SIZE: usize = 24;
 }
 
-/// `REQ_GETDENTS` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+/// LP64 field offsets of the `REQ_GETDENTS` **reply** payload (FS→VFS).
 ///
 /// C: `mess_fs_vfs_getdents { off_t seek_pos; size_t nbytes; }`
-/// （ipc.h:153-159）——与请求载荷是两套结构。字段序与
-/// [`transfer_reply_off`] 相同，但 C 里是两个独立结构体，这里也各自成表
-/// （对照修改时不必去猜另一个请求号的布局）。
+/// (ipc.h:153-159) — a different structure from the request payload. The field
+/// order matches [`transfer_reply_off`], but in C they are two separate structs,
+/// so they are separate tables here too (a paired edit need not guess the other
+/// request number's layout).
 pub mod getdents_reply_off {
-    /// `off_t seek_pos`（下一趟的目录偏移）。
+    /// `off_t seek_pos` (the directory offset for the next pass).
     pub const SEEK_POS: usize = 0;
-    /// `size_t nbytes`（本次实际写出的字节数）。
+    /// `size_t nbytes` (bytes actually written by this call).
     pub const NBYTES: usize = 8;
 }
 
-/// `REQ_READSUPER` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_READSUPER` request payload.
 ///
-/// C: `mess_vfs_fs_readsuper`（ipc.h:2112-2119）：`dev_t device`、
-/// `uint32_t flags`（`REQ_RDONLY`/`REQ_ISROOT` — vfsif.h:8-9）、
-/// `size_t path_len`、`cp_grant_id_t grant`（驱动标签）。
+/// C: `mess_vfs_fs_readsuper` (ipc.h:2112-2119): `dev_t device`,
+/// `uint32_t flags` (`REQ_RDONLY`/`REQ_ISROOT` — vfsif.h:8-9),
+/// `size_t path_len`, `cp_grant_id_t grant` (the driver label).
 pub mod readsuper_req_off {
-    /// `dev_t device`。
+    /// `dev_t device`.
     pub const DEVICE: usize = 0;
-    /// `uint32_t flags`。
+    /// `uint32_t flags`.
     pub const FLAGS: usize = 8;
-    /// `size_t path_len`（驱动标签长度）。
+    /// `size_t path_len` (driver label length).
     pub const PATH_LEN: usize = 16;
-    /// `cp_grant_id_t grant`（标签所在 grant）。
+    /// `cp_grant_id_t grant` (the grant holding the label).
     pub const GRANT: usize = 24;
 }
 
-/// `REQ_PUTNODE` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_PUTNODE` request payload.
 ///
 /// C: `mess_vfs_fs_putnode { ino_t inode; unsigned int count; }`
-/// （ipc.h:2093-2098，`request.c:699-711` 的 `req_putnode` 填两格）——
-/// 让 FS 把 `count` 份 inode 引用关掉（VFS 的 `fs_count` 批量归还）。
+/// (ipc.h:2093-2098; `req_putnode` at `request.c:699-711` fills both cells) —
+/// asks FS to drop `count` inode references (VFS's `fs_count` bulk return).
 pub mod putnode_req_off {
-    /// `ino_t inode`。
+    /// `ino_t inode`.
     pub const INODE: usize = 0;
-    /// `unsigned int count`。
+    /// `unsigned int count`.
     pub const COUNT: usize = 8;
 }
 
-/// `REQ_NEW_DRIVER` 请求载荷的 LP64 域偏移。
+/// LP64 field offsets of the `REQ_NEW_DRIVER` request payload.
 ///
 /// C: `mess_vfs_fs_new_driver { dev_t device; cp_grant_id_t grant;
-/// size_t path_len; }`（ipc.h:2072-2079，`request.c:664-691` 的
-/// `req_newdriver` 填这三格）。与 [`readsuper_req_off`] 长得像但**不是**
-/// 同一个结构：这里第二格就是 grant，没有 `flags` 那一格。
+/// size_t path_len; }` (ipc.h:2072-2079; `req_newdriver` at `request.c:664-691`
+/// fills these three cells). It looks like [`readsuper_req_off`] but is **not**
+/// the same structure: the second cell here is the grant, with no `flags`
+/// cell.
 pub mod new_driver_req_off {
-    /// `dev_t device`（块设备的 `v_sdev`，不是挂载分区的设备号）。
+    /// `dev_t device` (the block device's `v_sdev`, not the mounted
+    /// partition's device number).
     pub const DEVICE: usize = 0;
-    /// `cp_grant_id_t grant`（标签所在 grant，`CPF_READ`）。
+    /// `cp_grant_id_t grant` (the grant holding the label, `CPF_READ`).
     pub const GRANT: usize = 8;
-    /// `size_t path_len`（驱动标签长度，含结尾 NUL）。
+    /// `size_t path_len` (driver label length, including the trailing NUL).
     pub const PATH_LEN: usize = 16;
 }
 
@@ -610,9 +639,10 @@ pub mod new_driver_req_off {
 mod tests {
     use super::*;
 
-    /// `StatVfs::write_user_statvfs` 必须按 C `struct statvfs` 偏移落字段，而非
-    /// 旧 10×u64 自定义布局（那会把 blocks 写进 `f_flag`@0）。映射照 C `fs_statvfs`
-    /// （`minix3/minix/fs/mfs/stadir.c:92-102`）。
+    /// `StatVfs::write_user_statvfs` must land fields at the C `struct statvfs`
+    /// offsets, not the old 10×u64 custom layout (which put `blocks` into
+    /// `f_flag`@0). The mapping follows C `fs_statvfs`
+    /// (`minix3/minix/fs/mfs/stadir.c:92-102`).
     #[test]
     fn test_statvfs_wire_matches_c_layout() {
         use crate::types::statvfs::statvfs_off as off;
@@ -639,14 +669,16 @@ mod tests {
         assert_eq!(buf.get_u64(off::FFREE), 40);
         assert_eq!(buf.get_u64(off::FFAVAIL), 40);
         assert_eq!(buf.get_u64(off::NAMEMAX), 60);
-        // FS 不填的字段保持零（由 VFS 后补）：f_flag 位必须是 0，
-        // 不能是被 blocks 顶掉的 100（旧错误布局的特征）。
+        // Fields FS does not fill stay zero (VFS patches them later): the
+        // f_flag bits must be 0, not 100 pushed out by blocks (the signature of
+        // the old wrong layout).
         assert_eq!(buf.get_u64(off::FLAG), 0);
     }
 
-    /// C 绝对值全量 pin:33 个请求号逐一对照 vfsif.h:42-73 的字面偏移。
-    /// 基址错位(0x600 事故)或偏移错位都会在这里爆——单测偏移是不够的,
-    /// FS 侧按 0xA00 派生的绝对值分派。
+    /// Pins every C absolute value: all 33 request numbers against the literal
+    /// offsets of vfsif.h:42-73. A wrong base (the 0x600 accident) or a wrong
+    /// offset blows up here — testing offsets alone is not enough, since the FS
+    /// side dispatches on absolute values derived from 0xA00.
     #[test]
     fn test_req_family_matches_c_absolute_values() {
         assert_eq!(FS_BASE, 0xA00); // com.h:589
@@ -699,14 +731,17 @@ mod tests {
         }
     }
 
-    /// 槽位数与 `IS_FS_RQ` 门(vfsif.h:75/:77):带内识别、带外拒绝,
-    /// 包括 0x600(旧事故基址)与 0xB00(transid 带)。
+    /// The slot count and the `IS_FS_RQ` gate (vfsif.h:75/:77): in-band is
+    /// recognized, out-of-band is rejected, including 0x600 (the old accident
+    /// base) and 0xB00 (the transid band).
     #[test]
-    /// 请求载荷的 LP64 域偏移 pin：VFS 编码器与 FS 解码器共用这一张表，
-    /// 偏移漂移必须在编译期可见（同一模块的常量 + 本测试）。
+    /// Pin of the request payload's LP64 field offsets: the VFS encoder and the
+    /// FS decoder share this one table, so offset drift must be visible at
+    /// compile time (the module's constants plus this test).
     #[test]
     fn test_request_payload_offsets() {
-        // lookup：8 字节域两两相邻，32 位 flags 在 16，其余 8 字节对齐。
+        // lookup: two adjacent 8-byte fields, the 32-bit flags at 16, the rest
+        // 8-byte aligned.
         assert_eq!(lookup_req_off::DIR_INO, 0);
         assert_eq!(lookup_req_off::ROOT_INO, 8);
         assert_eq!(lookup_req_off::FLAGS, 16);
@@ -715,15 +750,17 @@ mod tests {
         assert_eq!(lookup_req_off::UCRED_SIZE, 40);
         assert_eq!(lookup_req_off::GRANT_PATH, 48);
         assert_eq!(lookup_req_off::GRANT_UCRED, 56);
-        // 传输族：inode/seek_pos/grant/bytes 四个 8 字节域。
+        // The transfer family: four 8-byte fields inode/seek_pos/grant/bytes.
         assert_eq!(transfer_req_off::INODE, 0);
         assert_eq!(transfer_req_off::SEEK_POS, 8);
         assert_eq!(transfer_req_off::GRANT, 16);
         assert_eq!(transfer_req_off::BYTES, 24);
-        // read 回复：seek_pos/nbytes 两个域（与请求的 transfer_req_off 分开）。
+        // The read reply: two fields seek_pos/nbytes (separate from the
+        // request's transfer_req_off).
         assert_eq!(transfer_reply_off::SEEK_POS, 0);
         assert_eq!(transfer_reply_off::NBYTES, 8);
-        // lookup 回复：八个域（特殊码只看 offset/inode/symloop）。
+        // The lookup reply: eight fields (the special codes only look at
+        // offset/inode/symloop).
         assert_eq!(lookup_reply_off::OFFSET, 0);
         assert_eq!(lookup_reply_off::FILE_SIZE, 8);
         assert_eq!(lookup_reply_off::DEVICE, 16);
@@ -732,7 +769,7 @@ mod tests {
         assert_eq!(lookup_reply_off::UID, 36);
         assert_eq!(lookup_reply_off::GID, 40);
         assert_eq!(lookup_reply_off::SYMLOOP, 44);
-        // create：请求六域 + 回复五域（两套结构）。
+        // create: six request fields + five reply fields (two structures).
         assert_eq!(create_req_off::INODE, 0);
         assert_eq!(create_req_off::MODE, 8);
         assert_eq!(create_req_off::UID, 12);
@@ -744,27 +781,27 @@ mod tests {
         assert_eq!(create_reply_off::MODE, 16);
         assert_eq!(create_reply_off::UID, 20);
         assert_eq!(create_reply_off::GID, 24);
-        // mkdir：父 inode/mode/uid/gid/grant 五个域。
+        // mkdir: five fields parent inode/mode/uid/gid/grant.
         assert_eq!(mkdir_req_off::INODE, 0);
         assert_eq!(mkdir_req_off::MODE, 8);
         assert_eq!(mkdir_req_off::UID, 12);
         assert_eq!(mkdir_req_off::GID, 16);
         assert_eq!(mkdir_req_off::GRANT, 20);
-        // ftrunc：inode/trc_start/trc_end 三个域。
+        // ftrunc: three fields inode/trc_start/trc_end.
         assert_eq!(ftrunc_req_off::INODE, 0);
         assert_eq!(ftrunc_req_off::TRC_START, 8);
         assert_eq!(ftrunc_req_off::TRC_END, 16);
-        // stat：inode/grant 两个域。
+        // stat: two fields inode/grant.
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
-        // rename：请求六域（两个 direct grant：旧名 + 新名）。
+        // rename: six request fields (two direct grants: old name + new name).
         assert_eq!(rename_req_off::DIR_OLD, 0);
         assert_eq!(rename_req_off::DIR_NEW, 8);
         assert_eq!(rename_req_off::LEN_OLD, 16);
         assert_eq!(rename_req_off::LEN_NEW, 24);
         assert_eq!(rename_req_off::GRANT_OLD, 32);
         assert_eq!(rename_req_off::GRANT_NEW, 36);
-        // slink：请求七域（两个 grant：名字 direct + 目标 magic）。
+        // slink: seven request fields (two grants: name direct + target magic).
         assert_eq!(slink_req_off::INODE, 0);
         assert_eq!(slink_req_off::PATH_LEN, 8);
         assert_eq!(slink_req_off::MEM_SIZE, 16);
@@ -772,18 +809,19 @@ mod tests {
         assert_eq!(slink_req_off::GRANT_TARGET, 28);
         assert_eq!(slink_req_off::UID, 32);
         assert_eq!(slink_req_off::GID, 36);
-        // link：请求四域（文件 ino 在前、父目录 ino 在后）。
+        // link: four request fields (the file ino first, the parent directory
+        // ino after).
         assert_eq!(link_req_off::INODE, 0);
         assert_eq!(link_req_off::DIR_INO, 8);
         assert_eq!(link_req_off::GRANT, 16);
         assert_eq!(link_req_off::PATH_LEN, 24);
-        // utime：请求五域（inode/actime/modtime/acnsec/modnsec）。
+        // utime: five request fields (inode/actime/modtime/acnsec/modnsec).
         assert_eq!(utime_req_off::INODE, 0);
         assert_eq!(utime_req_off::ACTIME, 8);
         assert_eq!(utime_req_off::MODTIME, 16);
         assert_eq!(utime_req_off::ACNSEC, 24);
         assert_eq!(utime_req_off::MODNSEC, 28);
-        // mknod：请求七域（device/inode/mode/uid/gid/grant/path_len）。
+        // mknod: seven request fields (device/inode/mode/uid/gid/grant/path_len).
         assert_eq!(mknod_req_off::DEVICE, 0);
         assert_eq!(mknod_req_off::INODE, 8);
         assert_eq!(mknod_req_off::MODE, 16);
@@ -791,55 +829,61 @@ mod tests {
         assert_eq!(mknod_req_off::GID, 24);
         assert_eq!(mknod_req_off::GRANT, 28);
         assert_eq!(mknod_req_off::PATH_LEN, 32);
-        // chown：请求三域 + 回复一域（新的模式）。
+        // chown: three request fields + one reply field (the new mode).
         assert_eq!(chown_req_off::INODE, 0);
         assert_eq!(chown_req_off::UID, 8);
         assert_eq!(chown_req_off::GID, 12);
         assert_eq!(chown_reply_off::MODE, 0);
-        // unlink/rmdir：请求三域（共用结构，只有 m_type 不同），无载荷回复。
+        // unlink/rmdir: three request fields (a shared structure, only m_type
+        // differs), no payload reply.
         assert_eq!(unlink_req_off::INODE, 0);
         assert_eq!(unlink_req_off::GRANT, 8);
         assert_eq!(unlink_req_off::PATH_LEN, 16);
-        // chmod：请求两域 + 回复一域（实际生效的模式）。
+        // chmod: two request fields + one reply field (the mode actually in
+        // effect).
         assert_eq!(chmod_req_off::INODE, 0);
         assert_eq!(chmod_req_off::MODE, 8);
         assert_eq!(chmod_reply_off::MODE, 0);
-        // rdlink：请求三域 + 回复一域（字节数在载荷里，m_type 只是 OK）。
+        // rdlink: three request fields + one reply field (the byte count is in
+        // the payload, m_type is just OK).
         assert_eq!(rdlink_req_off::INODE, 0);
         assert_eq!(rdlink_req_off::GRANT, 8);
         assert_eq!(rdlink_req_off::MEM_SIZE, 16);
         assert_eq!(rdlink_reply_off::NBYTES, 0);
-        // getdents：请求四域（inode/seek_pos/grant/mem_size）+ 回复两域。
+        // getdents: four request fields (inode/seek_pos/grant/mem_size) + two
+        // reply fields.
         assert_eq!(getdents_req_off::INODE, 0);
         assert_eq!(getdents_req_off::SEEK_POS, 8);
         assert_eq!(getdents_req_off::GRANT, 16);
         assert_eq!(getdents_req_off::MEM_SIZE, 24);
         assert_eq!(getdents_reply_off::SEEK_POS, 0);
         assert_eq!(getdents_reply_off::NBYTES, 8);
-        // reads超級：device/flags/path_len/grant。
+        // readsuper: device/flags/path_len/grant.
         assert_eq!(readsuper_req_off::DEVICE, 0);
         assert_eq!(readsuper_req_off::FLAGS, 8);
         assert_eq!(readsuper_req_off::PATH_LEN, 16);
         assert_eq!(readsuper_req_off::GRANT, 24);
-        // new_driver：device/grant/path_len（没有 flags 那一格——与
-        // readsuper 是两套结构，错用会把 grant 当 flags 发出去）。
+        // new_driver: device/grant/path_len (no flags cell — a different
+        // structure from readsuper; mixing them up sends the grant as flags).
         assert_eq!(new_driver_req_off::DEVICE, 0);
         assert_eq!(new_driver_req_off::GRANT, 8);
         assert_eq!(new_driver_req_off::PATH_LEN, 16);
-        // putnode：inode/count 两格（批量的 fs_count 归还）。
+        // putnode: two cells inode/count (the bulk fs_count return).
         assert_eq!(putnode_req_off::INODE, 0);
         assert_eq!(putnode_req_off::COUNT, 8);
     }
 
-    /// lookup 的 `flags` 两位 pin（vfsif.h:12,16）——FS 侧按同一张表判
-    /// `PATH_RET_SYMLINK`，发错字就等于让 FS 一路跟进符号链接。
+    /// Pins the two `flags` bits of lookup (vfsif.h:12,16) — the FS side tests
+    /// `PATH_RET_SYMLINK` against the same table, so sending the wrong word
+    /// means FS follows symbolic links all the way.
     #[test]
     fn test_lookup_flag_bits() {
         assert_eq!(PATH_RET_SYMLINK, 0o10);
         assert_eq!(PATH_GET_UCRED, 0o20);
     }
 
-    /// 三个特殊码的值 pin（vfsif.h:26-28，负值走回复的 m_type）。
+    /// Pins the values of the three special codes (vfsif.h:26-28; negative
+    /// values ride the reply's m_type).
     #[test]
     fn test_special_lookup_codes() {
         assert_eq!(EENTERMOUNT, -301);
@@ -847,20 +891,23 @@ mod tests {
         assert_eq!(ESYMLINK, -303);
     }
 
-    /// transid 三式互为逆（vfsif.h:79-81）：合成/取回/剥离，含负结果值
-    /// （回复里 errno 走高 16 位）。
+    /// The three transid formulas are mutual inverses (vfsif.h:79-81):
+    /// combine/fetch/strip, including negative result values (an errno in a
+    /// reply rides the high 16 bits).
     #[test]
     fn test_transid_round_trip() {
         let id = 0xB01u32 + 7; // VFS_TRANSID + worker slot
         let wire = trns_add_id(REQ_READ, id);
         assert_eq!(trns_get_id(wire), id);
         assert_eq!(trns_del_id(wire), REQ_READ);
-        // 回复臂：结果值在高 16 位，负数（errno）按 16 位有符号读回。
+        // The reply arm: the result value sits in the high 16 bits, and a
+        // negative one (errno) is read back as 16-bit signed.
         assert_eq!(trns_del_id(trns_add_id(-22, id)), -22);
         assert_eq!(trns_get_id(trns_add_id(-22, id)), id);
     }
 
-    /// `is_fs_rq` 判的是剥掉 transid 后的调用号（线上值先 `trns_del_id`）。
+    /// `is_fs_rq` tests the call number after stripping the transid (strip the
+    /// wire value with `trns_del_id` first).
     #[test]
     fn test_is_fs_rq_needs_transid_stripped() {
         let wire = trns_add_id(REQ_LOOKUP, 0xB01);
@@ -868,8 +915,8 @@ mod tests {
         assert!(is_fs_rq(trns_del_id(wire)));
     }
 
-    // C-70：补上遗漏的 #[test]（此前「挂名未注册测试」从不执行；C-68 登记的
-    // NK4-C 自登同族残留项，本线销账）
+    // Registers the `#[test]` that was previously missing (the "named but
+    // never registered" test never ran).
     #[test]
     fn test_nreqs_and_is_fs_rq_gate() {
         assert_eq!(NREQS, 34); // vfsif.h:75
@@ -877,56 +924,59 @@ mod tests {
         assert!(is_fs_rq(REQ_BPEEK));
         assert!(!is_fs_rq(FS_BASE - 1));
         assert!(!is_fs_rq(FS_BASE + 0x100));
-        assert!(!is_fs_rq(0x600)); // 旧事故基址,永不再来
+        assert!(!is_fs_rq(0x600)); // old accident base, never again
         assert!(!is_fs_rq(0x61A));
-        assert!(!is_fs_rq(0xB00)); // transid 带
-        // 与设备 RS 命名空间(com.h:919/963/1038)保持区分。
+        assert!(!is_fs_rq(0xB00)); // transid band
+        // Stays distinct from the device RS namespace (com.h:919/963/1038).
         assert_ne!(FS_BASE & !0x7f, 0x480); // CDEV_RS_BASE
         assert_ne!(FS_BASE & !0x7f, 0x580); // BDEV_RS_BASE
     }
 }
 
-/// 文件状态回复的类型化结构（`fs_stat` 的载荷，字段集与 C `struct stat`
-/// 一致）。这是 **VFS↔FS 驱动侧**的字段承载体；交付给调用进程时须按用户
-/// `struct stat`（[`crate::types::stat::Stat`]，本项目对 C `struct stat` 的
-/// 字节镜像，`st_mode@8`）布局写出，见 [`Stat::write_user_stat`]。
+/// The typed structure of a file status reply (the `fs_stat` payload, with the
+/// same field set as C `struct stat`). This is the **VFS↔FS driver-side** field
+/// carrier; when delivering to the calling process it must be written out with
+/// the user `struct stat` layout ([`crate::types::stat::Stat`], this project's
+/// byte mirror of C `struct stat`, `st_mode@8`); see
+/// [`Stat::write_user_stat`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stat {
-    /// 设备号（`st_dev`）。
+    /// Device number (`st_dev`).
     pub device: u64,
-    /// 索引节点号（`st_ino`）。
+    /// Inode number (`st_ino`).
     pub inode: u64,
-    /// 模式位（`st_mode`）。
+    /// Mode bits (`st_mode`).
     pub mode: u32,
-    /// 硬链接数（`st_nlink`）。
+    /// Hard link count (`st_nlink`).
     pub nlinks: u32,
-    /// 属主（`st_uid`）。
+    /// Owner (`st_uid`).
     pub owner: u32,
-    /// 属组（`st_gid`）。
+    /// Group (`st_gid`).
     pub group: u32,
-    /// 设备节点的设备号（`st_rdev`）。
+    /// Device number of the device node (`st_rdev`).
     pub special: u64,
-    /// 文件长度（`st_size`）。
+    /// File length (`st_size`).
     pub size: i64,
-    /// 访问时间（`st_atime`）。
+    /// Access time (`st_atime`).
     pub accessed: i64,
-    /// 修改时间（`st_mtime`）。
+    /// Modification time (`st_mtime`).
     pub modified: i64,
-    /// 状态变化时间（`st_ctime`）。
+    /// Status change time (`st_ctime`).
     pub changed: i64,
-    /// 首选输入输出块尺寸（`st_blksize`）。
+    /// Preferred I/O block size (`st_blksize`).
     pub block_size: u64,
-    /// 占用的五百一十二字节块数（`st_blocks`）。
+    /// Number of 512-byte blocks occupied (`st_blocks`).
     pub blocks: u64,
 }
 
 impl Stat {
-    /// 交付给调用进程的字节数：等于用户 `struct stat`
-    /// （[`crate::types::stat::Stat`]）的 `size_of`（LP64 为 152）——即
-    /// C `req_stat_actual`（request.c:1087）授权给 FS 直写的 magic grant 窗口。
+    /// The byte count delivered to the calling process: equal to the user
+    /// `struct stat`'s ([`crate::types::stat::Stat`]) `size_of` (152 on LP64) —
+    /// i.e. the magic-grant window C `req_stat_actual` (request.c:1087) hands to
+    /// FS for direct writes.
     pub const USER_STAT_SIZE: usize = core::mem::size_of::<crate::types::stat::Stat>();
 
-    /// 全零状态：由调用方逐字段填充。
+    /// All-zero state: the caller fills the fields one by one.
     pub const fn zeroed() -> Self {
         Self {
             device: 0,
@@ -945,19 +995,24 @@ impl Stat {
         }
     }
 
-    /// 序列化为**用户态 `struct stat`**（[`crate::types::stat::Stat`]）值，
-    /// 供 FS 经 magic grant 直写调用方缓冲。
+    /// Serialize into a **user-space `struct stat`**
+    /// ([`crate::types::stat::Stat`]) value, so FS can write straight into the
+    /// caller's buffer through a magic grant.
     ///
-    /// C `req_stat_actual`（request.c:1087）把调用进程的 `struct stat` 缓冲
-    /// 授权给 FS 直写，故 FS 落盘的字节布局必须严格对齐 C `struct stat`
-    /// （`st_mode@8`、`st_size@112`……）——即本项目的 `types::stat::Stat`，
-    /// 由 `#[repr(C)]` + 布局测试钉死，无需手算偏移。驱动侧未提供的字段
-    /// （时间纳秒、创建时间 `st_birthtim`、`st_flags`/`st_gen`/`st_spare`）
-    /// 按 C 惯例留零。此前 `ls` 把 `/bin` 当普通文件，正是因为该腿从未
-    /// 落字节、用户缓冲停留在 `st_mode=0`。
+    /// C `req_stat_actual` (request.c:1087) grants the calling process's
+    /// `struct stat` buffer to FS for direct writes, so the byte layout FS
+    /// produces must strictly match C `struct stat` (`st_mode@8`,
+    /// `st_size@112`, …) — that is this project's `types::stat::Stat`, pinned by
+    /// `#[repr(C)]` plus layout tests, so no offsets are computed by hand.
+    /// Fields the driver side does not provide (time nanoseconds, creation time
+    /// `st_birthtim`, `st_flags`/`st_gen`/`st_spare`) are left zero per C
+    /// convention. The earlier `ls` treated `/bin` as a regular file precisely
+    /// because that leg never laid down bytes and the user buffer stayed at
+    /// `st_mode=0`.
     pub fn write_user_stat(&self) -> crate::types::stat::Stat {
-        // SAFETY: `types::stat::Stat` 是 `#[repr(C)]` 的无不变量 POD，全零
-        // 是合法初值；下方逐个覆盖公开字段，私有 padding 保持零。
+        // SAFETY: `types::stat::Stat` is a `#[repr(C)]` POD with no invariants,
+        // so all-zero is a legal initial value; the public fields are overwritten
+        // one by one below and the private padding stays zero.
         let mut s: crate::types::stat::Stat = unsafe { core::mem::zeroed() };
         s.st_dev = self.device;
         s.st_mode = self.mode;
@@ -976,37 +1031,38 @@ impl Stat {
     }
 }
 
-/// 卷状态回复的类型化结构（`fs_statvfs` 的载荷，字段集与 C
-/// `struct statvfs` 一致）。
+/// The typed structure of a volume status reply (the `fs_statvfs` payload, with
+/// the same field set as C `struct statvfs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatVfs {
-    /// 全部数据块数（`f_blocks`）。
+    /// Total number of data blocks (`f_blocks`).
     pub blocks: u64,
-    /// 空闲数据块数（`f_bfree`）。
+    /// Number of free data blocks (`f_bfree`).
     pub blocks_free: u64,
-    /// 非特权可用的数据块数（`f_bavail`）。
+    /// Number of data blocks available to unprivileged users (`f_bavail`).
     pub blocks_available: u64,
-    /// 块尺寸（`f_frsize`/`f_bsize`）。
+    /// Block size (`f_frsize`/`f_bsize`).
     pub block_size: u64,
-    /// 片尺寸（`f_frsize`）。
+    /// Fragment size (`f_frsize`).
     pub fragment_size: u64,
-    /// 首选输入输出尺寸（`f_iosize`）。
+    /// Preferred I/O size (`f_iosize`).
     pub io_size: u64,
-    /// 全部索引节点数（`f_files`）。
+    /// Total number of inodes (`f_files`).
     pub files: u64,
-    /// 空闲索引节点数（`f_ffree`）。
+    /// Number of free inodes (`f_ffree`).
     pub files_free: u64,
-    /// 非特权可用的索引节点数（`f_favail`）。
+    /// Number of inodes available to unprivileged users (`f_favail`).
     pub files_available: u64,
-    /// 文件名最大长度（`f_namemax`）。
+    /// Maximum file name length (`f_namemax`).
     pub name_max: u64,
 }
 
 impl StatVfs {
-    /// `sizeof(struct statvfs)`——grant 授权窗口与拷给用户的长度都用它。
+    /// `sizeof(struct statvfs)` — used for the grant window and the length
+    /// copied to the user.
     pub const USER_STATVFS_SIZE: usize = crate::types::statvfs::STATVFS_SIZE;
 
-    /// 全零卷状态：由调用方逐字段填充。
+    /// All-zero volume status: the caller fills the fields one by one.
     pub const fn zeroed() -> Self {
         Self {
             blocks: 0,
@@ -1022,15 +1078,19 @@ impl StatVfs {
         }
     }
 
-    /// 序列化成 C `struct statvfs` 线形布局的 grant 回填缓冲。
+    /// Serialize into a grant fill buffer in C `struct statvfs` wire layout.
     ///
-    /// 字段→偏移映射照 C `fs_statvfs`（`minix3/minix/fs/mfs/stadir.c:92-102`）：
-    /// `f_bsize`←block_size、`f_frsize`←fragment_size、`f_iosize`←io_size、
-    /// `f_blocks/f_bfree/f_bavail`←blocks/blocks_free/blocks_available、
-    /// `f_files/f_ffree/f_favail`←files/files_free/files_available、`f_namemax`←name_max。
-    /// C 未由 FS 填的字段（`f_flag`/名字/`f_owner`/`f_fsidx` 等）保持零，由 VFS 侧
-    /// `req_statvfs` 后补本地值（对齐 statvfs.rs 模块头的 FS/VFS 分工）。取代旧的
-    /// 10×u64 自定义布局 `write_to`（非 C 布局、零调用、已死）。
+    /// The field→offset mapping follows C `fs_statvfs`
+    /// (`minix3/minix/fs/mfs/stadir.c:92-102`):
+    /// `f_bsize`←block_size, `f_frsize`←fragment_size, `f_iosize`←io_size,
+    /// `f_blocks/f_bfree/f_bavail`←blocks/blocks_free/blocks_available,
+    /// `f_files/f_ffree/f_favail`←files/files_free/files_available,
+    /// `f_namemax`←name_max.
+    /// Fields C leaves unfilled by FS (`f_flag`/name/`f_owner`/`f_fsidx` etc.)
+    /// stay zero and are patched with local values by VFS's `req_statvfs`
+    /// (matching the FS/VFS split in the statvfs.rs module header). Replaces the
+    /// old 10×u64 custom layout `write_to` (not the C layout, zero callers,
+    /// dead).
     pub fn write_user_statvfs(&self) -> crate::types::statvfs::StatvfsBuf {
         use crate::types::statvfs::{StatvfsBuf, statvfs_off as off};
         let mut buf = StatvfsBuf::new();

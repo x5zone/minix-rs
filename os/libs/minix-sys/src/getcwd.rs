@@ -210,7 +210,7 @@ pub(crate) fn run_traversal<'a, S: CwdSyscalls>(
                 None => {
                     // C: the quick pass ran dry — `rewinddir` and repeat
                     // as the full pass (`getcwd.c:94-97`).
-                    //[SD19-gate] C getcwd.c 忽略 rewinddir/closedir 返回值（上方 C 锚即理由）
+                    //[SD19-gate] C getcwd.c ignores the rewinddir/closedir return values (the C anchor above is the reason)
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = sys.rewind(fd);
                     scan_once(sys, fd, &current, &mut probe, &mut listing, false)
@@ -225,7 +225,7 @@ pub(crate) fn run_traversal<'a, S: CwdSyscalls>(
             // C: second exhaustion closes the handle, reports ENOENT and
             // walks back (`getcwd.c:98-102`).
             None => {
-                //[SD19-gate] C getcwd.c 忽略 rewinddir/closedir 返回值（上方 C 锚即理由）
+                //[SD19-gate] C getcwd.c ignores the rewinddir/closedir return values (the C anchor above is the reason)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = sys.close(fd);
                 return Err(fail_traversal(sys, buffer, front, Errno::ENOENT));
@@ -235,13 +235,13 @@ pub(crate) fn run_traversal<'a, S: CwdSyscalls>(
         // C: prepend "name/" before the front pointer; a full buffer is
         // ERANGE with the handle closed first (`getcwd.c:124-130`).
         if addpath(buffer, &mut front, name.as_slice()).is_err() {
-            //[SD19-gate] C getcwd.c 忽略 rewinddir/closedir 返回值（上方 C 锚即理由）
+            //[SD19-gate] C getcwd.c ignores the rewinddir/closedir return values (the C anchor above is the reason)
             #[allow(clippy::let_underscore_must_use)]
             let _ = sys.close(fd);
             return Err(fail_traversal(sys, buffer, front, Errno::from_i32(ERANGE)));
         }
         // C: `closedir(d)` after the name is banked (`getcwd.c:131`).
-        //[SD19-gate] C getcwd.c 忽略 rewinddir/closedir 返回值（上方 C 锚即理由）
+        //[SD19-gate] C getcwd.c ignores the rewinddir/closedir return values (the C anchor above is the reason)
         #[allow(clippy::let_underscore_must_use)]
         let _ = sys.close(fd);
 
@@ -811,7 +811,7 @@ mod tests {
         message.m_type = 0;
         transport.reply_sendrec(Ok(message));
         let mut buffer = [0u8; 64];
-        //[SD19-gate] C getcwd.c 忽略 rewinddir/closedir 返回值（上方 C 锚即理由）
+        //[SD19-gate] C getcwd.c ignores the rewinddir/closedir return values (the C anchor above is the reason)
         #[allow(clippy::let_underscore_must_use)]
         let _ = getcwd_via(&transport, &mut buffer);
         let sent_log = transport.sent.borrow();
@@ -820,8 +820,9 @@ mod tests {
         assert_eq!(sent.m_type, vfs::VFS_CALL_STAT);
         assert_eq!(sent.m_type, 0x115);
         assert_eq!(destination, vfs::vfs_endpoint());
-        // SAFETY(test): 读回 StatPathPayload 三 lane（length@0、name@8、
-        // buffer@16；stat 载荷无内联窗，路径经指针交付）。
+        // SAFETY(test): reads back the three StatPathPayload lanes (length@0,
+        // name@8, buffer@16; the stat payload has no inline window, the path is
+        // delivered through a pointer).
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(u64::from_ne_bytes(raw[0..8].try_into().unwrap()), 2);
         assert_ne!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0);
@@ -829,7 +830,7 @@ mod tests {
         // The second call stats the parent — the climb's recurring probe.
         let (_, second) = sent_log[1];
         assert_eq!(second.m_type, vfs::VFS_CALL_STAT);
-        // SAFETY(test): 同上，读 dot-dot 的长度 lane。
+        // SAFETY(test): as above, reading the length lane of dot-dot.
         let raw = unsafe { &second.m_u.raw };
         assert_eq!(u64::from_ne_bytes(raw[0..8].try_into().unwrap()), 3);
     }

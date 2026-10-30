@@ -137,10 +137,10 @@ impl ChildCollector<'_> {
         let now = host.now_secs().unwrap_or(0);
         for (device, code) in &dead {
             let dead = crate::utmp::dead_record(device, pid, *code, now);
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init does its best; the result is optional
             #[allow(clippy::let_underscore_must_use)]
             let _ = crate::utmp::append_record(host, crate::utmp::UTMPX_PATH, &dead);
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init does its best; the result is optional
             #[allow(clippy::let_underscore_must_use)]
             let _ = crate::utmp::append_record(host, crate::utmp::WTMPX_PATH, &dead);
         }
@@ -173,7 +173,7 @@ impl<'a> Ledger<'a> {
             return;
         }
         let now = host.now_secs().unwrap_or(0);
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init does its best; the result is optional
         #[allow(clippy::let_underscore_must_use)]
         let _ = utmpx_set_runlevel(
             host,
@@ -188,7 +188,7 @@ impl<'a> Ledger<'a> {
     /// (init.c:1008).
     pub fn reboot(&self, host: &mut dyn InitHost) {
         let now = host.now_secs().unwrap_or(0);
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init does its best; the result is optional
         #[allow(clippy::let_underscore_must_use)]
         let _ = logwtmpx(host, "~", "reboot", RecordType::Init, now);
     }
@@ -197,7 +197,7 @@ impl<'a> Ledger<'a> {
     /// (init.c:1674).
     pub fn shutdown(&self, host: &mut dyn InitHost) {
         let now = host.now_secs().unwrap_or(0);
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init does its best; the result is optional
         #[allow(clippy::let_underscore_must_use)]
         let _ = logwtmpx(host, "~", "shutdown", RecordType::Init, now);
     }
@@ -374,7 +374,7 @@ fn read_ttys_step(host: &mut dyn InitHost, state: &mut DriverState) -> StateKind
 /// quiet reap that never advances (init.c:850-856).
 fn quiet_wait(host: &mut dyn InitHost) -> ! {
     loop {
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init does its best; the result is optional
         #[allow(clippy::let_underscore_must_use)]
         let _ = host.waitpid(-1, 0);
     }
@@ -468,12 +468,15 @@ mod tests {
         host.wait_errors.push(Errno::ESRCH); // ends the reap loop
         host.now = 9;
         let mut state = fresh_state();
-        // Boot 成功时 runcom 直接接过 read_ttys 一步（C 分两轮，Rust
-        // 驱动合并为一个分派边界），交付 MultiUser 与已建会话表。
+        // On a successful boot, runcom hands straight over to the read_ttys
+        // step (C uses two rounds; the Rust driver merges them into one
+        // dispatch boundary), delivering MultiUser and the built session
+        // table.
         assert_eq!(step(&mut host, &mut state, StateKind::Runcom), StateKind::MultiUser);
         assert!(state.sessions_seen);
-        // 多用户首轮为唯一会话拉起 getty（pid 31），随后脚本以 ESRCH
-        // 收割循环收尾——无请求时 C 的 unwrap 语义即 clean_ttys。
+        // The first multi-user round starts getty (pid 31) for the only
+        // session; the script then ends with an ESRCH reap loop — with
+        // nothing to request, C's unwrap semantics amount to clean_ttys.
         assert_eq!(step(&mut host, &mut state, StateKind::MultiUser), StateKind::CleanTtys);
         assert_eq!(state.sessions[0].process, Some(31));
         assert_eq!(state.sessions.len(), 1);
@@ -504,7 +507,8 @@ mod tests {
         state.mode = RuncomMode::Fastboot;
         assert_eq!(step(&mut host, &mut state, StateKind::SingleUser), StateKind::Runcom);
         assert_eq!(state.mode, RuncomMode::Fastboot);
-        // rc 干净退出：驱动把 read_ttys 合并进同一边界。
+        // rc exits cleanly: the driver merges read_ttys into the same
+        // boundary.
         assert_eq!(step(&mut host, &mut state, StateKind::Runcom), StateKind::MultiUser);
     }
 

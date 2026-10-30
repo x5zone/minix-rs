@@ -61,10 +61,10 @@ pub mod sysctl {
 /// Subfunctions for `RS_FI`. C: `RS_FI_CRASH` — com.h:492.
 pub const RS_FI_CRASH: i32 = 1;
 
-// E-MINTYPES-RS:`COMMON_REQ_FI_CTL` 与 `SIGS_SIGNAL_RECEIVED` 是 COMMON 族
-// 常量,权威在 `super::event`(COMMON_RQ_BASE 的归属地)——本模块消费
-// COMMON_REQ_FI_CTL(fi 消息构造);SIGS_SIGNAL_RECEIVED 的外部路径经
-// ipc 的 glob re-export 保持不变。
+// `COMMON_REQ_FI_CTL` and `SIGS_SIGNAL_RECEIVED` are COMMON-family constants
+// whose authority is `super::event` (the home of `COMMON_RQ_BASE`). This module
+// consumes `COMMON_REQ_FI_CTL` (fi message construction); the external path of
+// `SIGS_SIGNAL_RECEIVED` stays unchanged through ipc's glob re-export.
 use super::event::COMMON_REQ_FI_CTL;
 
 // ── Typed payload views (ARCH A-2, semantic layer) ─────────────────────────
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_rs_init_decode_message_roundtrip() {
-        // V11/T9 step 3: the RS_INIT wire decode (MessRsInit union member).
+        // The RS_INIT wire decode (MessRsInit union member).
         let mut msg = Message::default();
         msg.m_source = Endpoint::RS;
         msg.m_type = RS_INIT;

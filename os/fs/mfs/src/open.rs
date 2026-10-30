@@ -230,7 +230,7 @@ pub fn new_node<S: BlockSource>(
         let number = ctx.table.slot(child).number;
         ctx.table.slot_mut(child).nlinks -= 1;
         ctx.table.slot_mut(child).dirty = true;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] Best-effort inode write-back after the main operation already succeeded; the C counterpart put_inode in minix3/minix/fs/mfs returns void and no error (a failure does not change an established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, child, &ctx.io);
         ctx.table.free_number(ctx.superblock, ctx.bitmap, number);
@@ -381,7 +381,7 @@ pub fn create_dir<S: BlockSource>(
         let number = ctx.table.slot(child).number;
         ctx.table.slot_mut(child).nlinks -= 1;
         ctx.table.slot_mut(child).dirty = true;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] Best-effort inode write-back after the main operation already succeeded; the C counterpart put_inode in minix3/minix/fs/mfs returns void and no error (a failure does not change an established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, child, &ctx.io);
         ctx.table.free_number(ctx.superblock, ctx.bitmap, number);
@@ -475,7 +475,7 @@ pub fn create_symlink<S: BlockSource>(
         data[target.len()] = 0;
     }
     ctx.cache.mark_dirty(slot);
-    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    // [SD19-gate] Best-effort release of a readahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.cache.release(slot);
     // True length decides: embedded zeros are refused.
@@ -511,7 +511,7 @@ fn rollback_symlink<S: BlockSource>(
     let number = ctx.table.slot(child).number;
     ctx.table.slot_mut(child).nlinks = NO_LINK;
     ctx.table.slot_mut(child).dirty = true;
-    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    // [SD19-gate] Best-effort inode write-back after the main operation already succeeded; the C counterpart put_inode in minix3/minix/fs/mfs returns void and no error (a failure does not change an established result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, child, &ctx.io);
     ctx.table.free_number(ctx.superblock, ctx.bitmap, number);

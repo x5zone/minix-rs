@@ -1,26 +1,36 @@
 //! Minix-RS tr — translate, delete or squeeze characters.
 //!
-//! Ground truth: `minix3/usr.bin/tr/tr.c` (NetBSD) + `str.c`，命令行是
-//! `tr [-cs] string1 string2` / `tr [-c] -d string1` / `tr [-c] -s string1`
-//! / `tr [-c] -ds string1 string2`。三种操作（替换、删除、挤压）与 `-c` 取补
-//! 是库侧的 `translate`/`delete`/`squeeze`/`parse_set`；本程序只管前门与数据搬运。
+//! Ground truth: `minix3/usr.bin/tr/tr.c` (NetBSD) + `str.c`; the command
+//! line is `tr [-cs] string1 string2` / `tr [-c] -d string1` /
+//! `tr [-c] -s string1` / `tr [-c] -ds string1 string2`. The three operations
+//! (translate, delete, squeeze) and `-c` complement live in the library's
+//! `translate`/`delete`/`squeeze`/`parse_set`; this program only owns the
+//! front door and the data movement.
 //!
-//! 前门按 C 分回三家句子、两个退码：
-//! ① 环（`tr.c:68-82`，`getopt("cds")`）**只可能有一个集外字母报文**——
-//!    `case '?': default: usage();`（`:79-81`）在环里直接退出，libc 那一行之后紧跟
-//!    **整块四行** usage，退 1。缺值那一支不可达（三个字母都不带值）。
-//! ② usage 那四行（`tr.c:276-282`）里程序名是**写死在串里**的，且走**标准错误**；
-//!    libc 那一行的前缀才跟着 `getprogname()`。
-//! ③ 命令自己的 `errx(1, ...)` 句子退 1、各一行且不带 usage：本支有的是
-//!    `tr: empty string2`（`tr.c:187-188`，翻译路径先取 string2 的第一个字符，
-//!    取不到就报）。`str.c` 那侧的集合语法句形状相同，由 `parse_set` 回
-//!    `SetError::Grammar` 后在这里逐句原样打出：`unknown class <名>`、
-//!    `Sequences only valid in string2`、`Misplaced sequence asterisk`、
-//!    `illegal sequence count`。`[=c=]` 等价类的两句仍是静默退 1。
+//! The front door splits, as C does, into three families of sentences and two
+//! exit codes:
+//! 1. The loop (`tr.c:68-82`, `getopt("cds")`) can produce **exactly one
+//!    unknown-letter report** — `case '?': default: usage();` (`:79-81`)
+//!    exits inside the loop, so the libc line is followed immediately by the
+//!    **whole four-line** usage block, status 1. The missing-value arm is
+//!    unreachable (none of the three letters takes a value).
+//! 2. Of the four usage lines (`tr.c:276-282`), the program name is
+//!    **hardcoded in the string**, and they go to **standard error**; only
+//!    the libc line's prefix follows `getprogname()`.
+//! 3. The command's own `errx(1, ...)` sentences exit 1, one line each, with
+//!    no usage block: this side has `tr: empty string2` (`tr.c:187-188`: the
+//!    translation path takes string2's first character and reports when there
+//!    is none). The set-syntax sentences on the `str.c` side have the same
+//!    shape; `parse_set` returns `SetError::Grammar` and each is printed
+//!    verbatim here: `unknown class <name>`, `Sequences only valid in
+//!    string2`, `Misplaced sequence asterisk`, `illegal sequence count`. The
+//!    two `[=c=]` equivalence-class sentences still exit 1 silently.
 //!
-//! 个数判与组合判全走 usage：0 个操作数、1 个操作数却没给 `-d`/`-s`、3 个及以上、
-//! `-ds` 少给一个、`-d` 多给一个——参照件逐形量出（`tmp/tr-322/ab322.log` 的 A 类）。
-//! 环不重排：`tr a -d` 的 `-d` 是第二个集合名，`tr -` 里的 `-` 是集合名。
+//! Arity and combination checks all go to usage: zero operands, one operand
+//! without `-d`/`-s`, three or more, `-ds` with one too few, `-d` with one too
+//! many — each measured against the reference binary. The loop does not
+//! reorder: in `tr a -d` the `-d` is the second set name, and the `-` in
+//! `tr -` is a set name.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -52,16 +62,18 @@ fn run() -> ! {
         Err(error) => fail(&prog, &error),
     };
 
-    // string1 用不到尾部判据（它决定的是「谁是定义域」），string2 才需要：式子以集合类
-    // 收尾时耗尽之后补的是 OOBCH，不是末字节。
+    // string1 does not need the tail criterion (that one decides "what the
+    // domain is"); only string2 does: when a set expression ends in a class,
+    // exhaustion pads with OOBCH, not with the last byte.
     let (set1, _) = expand(&prog, operands[0], SetSite::String1, complement);
     let (set2, set2_tail) = if operands.len() == 2 {
         expand(&prog, operands[1], SetSite::String2, false)
     } else {
         (Vec::new(), Set2Tail::LastByte)
     };
-    // `tr.c:187-188`：只有翻译路径（含 `-s` 翻译）会先取 string2 的首字符，取不到就报错；
-    // `-ds` 与 `-d` 路径不碰这条判据。
+    // `tr.c:187-188`: only the translation path (including `-s` translation)
+    // takes string2's first character up front and reports when there is
+    // none; the `-ds` and `-d` paths never touch this criterion.
     if !dflag && operands.len() == 2 && set2.is_empty() {
         support::warn(format!("{prog}: empty string2\n").as_bytes());
         support::terminate(1);
@@ -69,7 +81,8 @@ fn run() -> ! {
 
     let input = support::read_stdin();
     if dflag && sflag {
-        // `tr -ds string1 string2`：删掉 string1 里的，再挤压 string2 里的相邻重复
+        // `tr -ds string1 string2`: delete the characters in string1, then
+        // squeeze adjacent repeats of the characters in string2.
         let stage = run_filter(&input, |buf, out| delete(buf, &set1, out));
         emit(run_filter(&stage, |buf, out| squeeze(buf, &set2, out)));
     } else if dflag {
@@ -77,8 +90,9 @@ fn run() -> ! {
     } else if sflag && operands.len() == 1 {
         emit(run_filter(&input, |buf, out| squeeze(buf, &set1, out)));
     } else if sflag {
-        // C 的这一腿是**一趟**：映射之后的 `int` 值直接与 `string2[]`、`lastch` 比
-        //（`tr.c:239-246`），所以拆成 translate + squeeze 两步会把 OOBCH 与真 NUL 混掉。
+        // C's leg is **one pass**: the mapped `int` value is compared directly
+        // against `string2[]` and `lastch` (`tr.c:239-246`), so splitting this
+        // into translate + squeeze would conflate OOBCH with a real NUL.
         emit(run_filter(&input, |buf, out| {
             translate_and_squeeze(buf, &set1, &set2, set2_tail, out)
         }));
@@ -90,8 +104,9 @@ fn run() -> ! {
     support::terminate(0)
 }
 
-/// 跑一步过滤：输出缓冲按输入长度 + 1 备（每步都只删不改长，挤压同理），
-/// 失败即退 1——与 C 的 `setup` 在坏集合面前直接 `exit` 同形。
+/// Run one filter step: the output buffer is sized input length + 1 (every
+/// step only deletes or keeps length, squeezing likewise); on failure it exits
+/// 1 — the same shape as C's `setup` calling `exit` when a set is bad.
 fn run_filter(
     input: &[u8],
     once: impl Fn(&[u8], &mut [u8]) -> Result<usize, minix_textfilter::TextError>,
@@ -111,10 +126,13 @@ fn emit(bytes: Vec<u8>) {
     }
 }
 
-/// 把一个集合式展开成它实际含的字节；`-c` 时列出式子**没**含的一切字节。
+/// Expand a set expression into the bytes it actually contains; with `-c`,
+/// list every byte the expression does **not** contain.
 ///
-/// 语法句的形状是 C 的 `errx(1, ...)`：程序名、冒号、空格、原句，走标准错误，退 1，
-/// **不跟** usage 块。式子出在串1 还是串2 决定它撞哪一句，所以串位是入参而不是巧合。
+/// The syntax sentence has the shape of C's `errx(1, ...)`: program name,
+/// colon, space, verbatim sentence; standard error, exit 1, and **no** usage
+/// block after it. Whether the expression sits in string1 or string2 decides
+/// which sentence it hits, so the set site is a parameter, not a coincidence.
 fn expand(prog: &str, text: &[u8], site: SetSite, complement: bool) -> (Vec<u8>, Set2Tail) {
     let mut expanded = [0u8; 256];
     let (used, tail) = match parse_set(text, site, &mut expanded) {
@@ -140,8 +158,11 @@ fn expand(prog: &str, text: &[u8], site: SetSite, complement: bool) -> (Vec<u8>,
     )
 }
 
-/// 「程序名 + 语法句」那一行：句子按字节拼，因为 `unknown class <名>` 把**式子里的字节**
-/// 打回去（`str.c:253` 的 `%.*s` 带长度），文本缝折过一次就把那一串字节改成了替换字符。
+/// The "program name + syntax sentence" line: the sentence is assembled from
+/// bytes, because `unknown class <name>` echoes **the bytes from the
+/// expression** (`str.c:253`'s `%.*s` carries a length); folding through a
+/// lossy text conversion once would turn that byte string into replacement
+/// characters.
 fn grammar_line(prog: &str, grammar: &minix_textfilter::tr::SetGrammar) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(prog.as_bytes());
@@ -151,15 +172,19 @@ fn grammar_line(prog: &str, grammar: &minix_textfilter::tr::SetGrammar) -> Vec<u
     out
 }
 
-/// 两个出错出口共用一块四行 usage，区别只在前面的 libc 行有无。
+/// Both error exits share one four-line usage block; the only difference is
+/// whether the libc line precedes it.
 fn fail(prog: &str, error: &TrError) -> ! {
     match error {
         TrError::Usage { reports } => {
             for report in reports {
-                // 字节形：libc 那一行的字母位是一个裸字节（`getopt.c:79` 的
-                // `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出）。参照件
-                // `tmp/tr-322/tr` 现量 `tr -é a b` 打 `tr: unknown option -- ` + `c3` + 换行，
-                // 按 `char` 渲染会多出第二个字节（U+00C3 的 UTF-8 是 `c3 83`）。
+                // Byte form: the letter slot in the libc line is a bare byte
+                // (`getopt.c:79`'s `optopt = *place++` takes one byte at a
+                // time, and `:103` writes it out verbatim with `%c`). The
+                // reference binary measured `tr -é a b` printing
+                // `tr: unknown option -- ` + `c3` + newline; rendering it as
+                // a `char` would add a second byte (U+00C3 is `c3 83` in
+                // UTF-8).
                 support::warn(&report.line_bytes(prog));
             }
             support::warn(usage_block());

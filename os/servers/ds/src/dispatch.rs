@@ -106,28 +106,34 @@ pub const fn should_reply(result: i32) -> bool {
     result != EDONTREPLY
 }
 
-// 回复通道的状态字单源在 `minix_types::reply_status`（上面的 use 引入）。
-// DS 是它的首个消费者，C 锚在此：`_SYSTEM`（minix3/minix/servers/ds/inc.h:6，
-// “get OK and negative error codes”）+ main.c:83 的 `m.m_type = result`；
-// 真机首例实测于 E5(f) 载体 `e5-ds`（七次调用全读回 0）。
+// The single source for the reply-path status word is
+// `minix_types::reply_status` (imported by the use above). DS is its first
+// consumer; the C anchor is here: `_SYSTEM` (minix3/minix/servers/ds/inc.h:6,
+// "get OK and negative error codes") plus `m.m_type = result` at main.c:83;
+// the first on-target measurement was the E5(f) vehicle `e5-ds` (all seven
+// calls read back 0).
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use minix_types::{EINVAL, EPERM, ESRCH};
-    // 回复状态字单源（生产侧由 `server.rs` 直接调 `minix_types::reply_status`，
-    // 本测试模块从这里取）。
+    // Single source for the reply status word (production code in
+    // `server.rs` calls `minix_types::reply_status` directly; this test
+    // module takes it from here).
     use minix_types::reply_status;
 
-    /// 回复状态字的符号折转：C 的 `_SYSTEM` 把负号烘在常量里，本树
-    /// 在边界补一次（真机实测过的假成功入口，见 [`reply_status`] 注记）。
+    /// Sign folding for the reply status word: C's `_SYSTEM` bakes the
+    /// minus sign into the constant, while this tree applies it once at the
+    /// boundary (an entry point measured on target to produce false success;
+    /// see the [`reply_status`] note).
     #[test]
     fn test_reply_status_negates_errno_keeps_ok() {
         assert_eq!(reply_status(0), 0); // OK
-        assert_eq!(reply_status(ESRCH), -3); // 客户端读成 Err(3)
+        assert_eq!(reply_status(ESRCH), -3); // the client reads Err(3)
         assert_eq!(reply_status(EPERM), -1);
         assert_eq!(reply_status(EINVAL), -22);
-        // 已经是负值的（透传自他方的状态）不再二次取负。
+        // An already-negative value (a status passed through from elsewhere)
+        // is not negated a second time.
         assert_eq!(reply_status(-ESRCH), -ESRCH);
     }
 

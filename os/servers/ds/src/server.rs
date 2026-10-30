@@ -52,8 +52,8 @@ pub trait DsIpc {
     /// Send a message (C: `reply`'s `ipc_send`, main.c:123-131).
     fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32>;
     /// Send-and-receive (C: `ipc_sendrec`, sef_cb_init_response_rs_reply
-    /// sef_init.c:458-466). NK4-C B9b: the birth-report leg uses this so
-    /// the service parks in receive(RS) for RS's catch reply.
+    /// sef_init.c:458-466). The birth-report leg uses this so the service parks
+    /// in receive(RS) for RS's catch reply.
     fn send_rec(&self, to: Endpoint, message: &mut Message) -> Result<(), i32>;
     /// Wake a subscriber (C: `ipc_notify`, store.c:222).
     fn notify(&self, who: Endpoint) -> Result<(), i32>;
@@ -62,9 +62,9 @@ pub trait DsIpc {
 /// The kernel-call seam (C: `sys_safecopyfrom`/`sys_safecopyto`/
 /// `sys_datacopy`).
 pub trait DsKernel {
-    /// State-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11) —
-    /// the birth protocol's paragraph-1 kernel call (PD-34). Default models
-    /// an accepting kernel; the production impl wires the trap transport.
+    /// State-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11) --
+    /// the birth protocol's paragraph-1 kernel call. Default models an
+    /// accepting kernel; the production impl wires the trap transport.
     fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
         Ok(minix_types::OK)
     }
@@ -104,7 +104,7 @@ pub enum Step {
 }
 
 /// The DS server: both tables, the pool, the loop (SchedServer's single
-/// owner, [ARCH S-11] shape).
+/// owner, `[ARCH: S-11]` shape).
 ///
 /// The pool pins its bytes; `MemBody.data` points into this value, so a
 /// server is **created once and never moved** (`new` → run). Tests build
@@ -114,10 +114,10 @@ pub struct DsServer {
     pub store: DsStore,
     /// The subscription table (`ds_subs`, store.c:6).
     pub subs: [Option<crate::subscription::Subscription>; NR_DS_SUBS],
-    /// STR/MEM buffer pool (A-3).
+    /// STR/MEM buffer pool.
     pub heap: DsPool,
     /// Teardown scratch: buffers handed back by a delete, released into
-    /// the pool after the sweep (A-3's "交还" half, 09 D3).
+    /// the pool after the sweep (the hand-back half, 09).
     teardown: [Option<MemBody>; NR_DS_KEYS],
     /// Image scratch for `do_getsysinfo` (24 KiB of BSS, not stack).
     image: [u8; image_bytes()],
@@ -177,40 +177,49 @@ impl DsServer {
         };
         let caller = message.m_source;
 
-        // E-BIRTHFACE（NS1）出生臂：C 的 RS_INIT 由 sef_local_startup 在
-        // 主循环前消费（ds main.c:96-103 sef_startup → sef.c:127-141 阻塞
-        // 等 IS_SEF_INIT_REQUEST），循环体永远见不到它；本树无独立 startup
-        // 面，在此拦截。fresh 锚点的两拍都在此走完：reset 半
-        // （store.c:254-265，表自构造即净）+ shadow 半（store.c:267-279 经
-        // rproctab grant 把 RS 公共表整表搬回并逐行 `map_service` 植入
-        // label）。shadow 半是 E-RSWIRE 挂在 DS 名下的最后一块：没有它，
-        // DS 眼里任何服务都没有名字，`do_publish`/`do_delete`/`do_subscribe`
-        // 的源闸（store.c:297/:588/:466）会把所有服务挡在 EPERM/ESRCH，
-        // 而 label 又是 `retrieve_label_endpt` 的全部数据源（E5(f) 判据1）。
-        // 应答按 process_init 尾部（sef_init.c:113-117）回 RS_INIT+result——
-        // 注册面 fresh + restart STATEFUL（main.c:96-97），LU 未注册 →
-        // 默认 ENOSYS（sef_init.c:324-327）。
+        // E-BIRTHFACE (NS1) birth arm: C's RS_INIT is consumed by
+        // sef_local_startup before the main loop (ds main.c:96-103 sef_startup
+        // -> sef.c:127-141 blocks waiting for IS_SEF_INIT_REQUEST), so the loop
+        // body never sees it; this tree has no separate startup face, so it is
+        // intercepted here. Both beats of the fresh anchor run here: the reset
+        // half (store.c:254-265, the table is clean from construction) + the
+        // shadow half (store.c:267-279 copies RS's public table wholesale
+        // through the rproctab grant and plants each row's label via
+        // `map_service`). The shadow half is the last piece of E-RSWIRE under
+        // DS's name: without it, no service has a name as far as DS is
+        // concerned, and the source gates of `do_publish`/`do_delete`/
+        // `do_subscribe` (store.c:297/:588/:466) would push every service back
+        // with EPERM/ESRCH, while the label is also the entire data source of
+        // `retrieve_label_endpt` (E5(f) criterion 1). The answer follows
+        // process_init's tail (sef_init.c:113-117) with RS_INIT+result -- the
+        // registration face is fresh + restart STATEFUL (main.c:96-97), LU is
+        // unregistered -> default ENOSYS (sef_init.c:324-327).
         if message.m_type == minix_types::RS_INIT && caller == RS_PROC_NR {
-            // 类型化解码（`RsInit::decode_message`，ipc.h:1858-1867 的接收侧
-            //  unpack，sef_init.c:193-215）——与 VM 的 RS_INIT 腿同一条权威，
-            // 不在这里手拄字段偏移。
+            // Typed decoding (`RsInit::decode_message`, the receive-side unpack
+            // of ipc.h:1858-1867, sef_init.c:193-215) -- the same authority as
+            // VM's RS_INIT leg; no hand-copied field offsets here.
             let init = minix_types::RsInit::decode_message(&message);
             let init_type = init.init_type;
-            // shadow 半的第一拍：把 RS 授权的公共表整表搬回本地缓冲（C
-            // `sys_safecopyfrom(RS_PROC_NR, info->rproctab_gid, 0, rprocpub,
-            // sizeof(rprocpub))`，store.c:267-269；grant 由 RS 以 `ANY` 为
-            // 被授权方建起——boot.rs:963-975 对位 C main.c:185-189，所以 DS
-            // 与 VM 读同一张表）。
+            // First beat of the shadow half: copy RS's granted public table
+            // wholesale into a local buffer (C `sys_safecopyfrom(RS_PROC_NR,
+            // info->rproctab_gid, 0, rprocpub, sizeof(rprocpub))`,
+            // store.c:267-269; the grant is built by RS with `ANY` as the
+            // grantee -- boot.rs:963-975 matches C main.c:185-189, so DS and VM
+            // read the same table).
             //
-            // 搬表与植入分成两步写在两处，是借用约束：`process_init` 同时
-            // 持有「清过滤闭包」（借 kernel）与「init 闭包」（借 self），同
-            // 一闭包期里不能两处都摸 kernel。两步都在给 RS 的回报之前完成，
-            // 外部可观测顺序不变（单线程服务器在这一拍不收别的请求）。
+            // Copying the table and planting it are split into two steps at two
+            // places because of borrow constraints: `process_init` holds both
+            // the "clear IPC filter closure" (borrowing kernel) and the "init
+            // closure" (borrowing self), and one closure period cannot touch
+            // kernel in both. Both steps finish before the reply to RS, so the
+            // externally observable order is unchanged (a single-threaded
+            // server takes no other request in this beat).
             let mut wire = [0u8; crate::boot::RPROCTAB_BYTES];
             let read = if init_type == 0 {
                 if init.rproctab_gid < 0 {
-                    // GRANT_INVALID 哨兵（ready.rs 的 None → -1，
-                    // safecopies.h:52）：没有表可读就是出生失败，不静默跳过。
+                    // The GRANT_INVALID sentinel (ready.rs's None -> -1,
+                    // safecopies.h:52): no table to read is a birth failure, not
+                    // a silent skip.
                     Some(Err(minix_types::EINVAL))
                 } else {
                     Some(
@@ -222,17 +231,19 @@ impl DsServer {
             } else {
                 None
             };
-            // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
-            // 第一段 sef_init.c:59-60 的 `assert(r == OK)`，经 DsKernel 真
-            // 接线）、回报消息由库构造；分派语义保持原样（fresh 走 reset +
-            // 植入，restart STATEFUL 不重植——C 注册的是
-            // `SEF_CB_INIT_RESTART_STATEFUL`，main.c:97；LU 未注册 → 默认
-            // ENOSYS，sef_init.c:324-327）。
+            // Birth-protocol orchestration belongs to the library -- it clears
+            // the IPC filter in the first segment (C `process_init`'s first
+            // segment sef_init.c:59-60 `assert(r == OK)`, truly wired through
+            // DsKernel) and builds the reply message; the dispatch semantics
+            // stay as-is (fresh runs reset + plant, restart STATEFUL does not
+            // replant -- C registers `SEF_CB_INIT_RESTART_STATEFUL`, main.c:97;
+            // LU unregistered -> default ENOSYS, sef_init.c:324-327).
             let reply = minix_sef::process_init(
                 &mut |req, addr, len| kernel.statectl(req, addr, len),
                 init_type,
                 &mut |t| match t {
-                    // SEF_INIT_FRESH — sef.h:93：搬回来的表在此落地成 label。
+                    // SEF_INIT_FRESH -- sef.h:93: the copied-back table lands
+                    // here as labels.
                     0 => match &read {
                         Some(Ok(())) => {
                             crate::boot::plant_from_wire(&mut self.store, &mut self.subs, &wire)
@@ -242,18 +253,20 @@ impl DsServer {
                         Some(Err(e)) => *e,
                         None => OK,
                     },
-                    // SEF_INIT_RESTART — 状态随 RS 镜像恢复，锚点体为空。
+                    // SEF_INIT_RESTART -- state is restored with the RS image;
+                    // the anchor body is empty.
                     2 => OK,
                     _ => minix_types::ENOSYS,
                 },
             );
             let mut reply = match reply {
                 Ok(m) => m,
-                // C 段一 assert ＝出生失败 fail-closed（单线程服务器停机）。
+                // C's first-segment assert == birth failure fail-closed (the
+                // single-threaded server stops).
                 Err(e) => panic!("ds: birth statectl failed: {e}"),
             };
-            // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）。
-            //[SD19-gate] C ds.c:127 birth sendrec 失败即记录丢弃、循环继续，不回滚主注册
+            // The birth reply leg is C `ipc_sendrec` (not a plain send).
+            //[SD19-gate] C ds.c:127: a failed birth sendrec is logged and dropped and the loop continues; the main registration is not rolled back
             #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.send_rec(caller, &mut reply);
             return Step::Handled;
@@ -269,13 +282,15 @@ impl DsServer {
 
         // C 80-86: the answer rides back in the same message.
         if should_reply(result) {
-            // 线序符号：C 侧 errno 常量因 `_SYSTEM`（ds/inc.h:6）本就带负号，
-            // 本树在回复边界折一次（`dispatch::reply_status` 的注记记真机
-            // 实测的假成功入口）；判定面继续用正号常量，不受影响。
+            // Wire-order sign: C's errno constants are already negative
+            // because of `_SYSTEM` (ds/inc.h:6); this tree folds once at the
+            // reply boundary (`dispatch::reply_status`'s note records the
+            // false-success entry point measured on target); the judgement side
+            // keeps using positive constants and is unaffected.
             message.m_type = reply_status(result);
             // C 127-129: a failed reply is logged and dropped — the loop
             // moves on; the drop is the observable half.
-            //[SD19-gate] C 127-129 send 失败记录丢弃循环继续，与 birth sendrec 同构
+            //[SD19-gate] C 127-129: a failed send is logged, dropped, and the loop continues; same shape as the birth sendrec
             #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.send(caller, &message);
         }
@@ -585,14 +600,14 @@ impl DsServer {
                 ..
             } = self;
             let woken: &mut dyn FnMut(Endpoint) = &mut |ep: Endpoint| {
-                //[SD19-gate] ipc.notify 发后即忘（C ipc_notify 无回复），失败丢一次唤醒不持断循环
+                //[SD19-gate] ipc.notify is fire-and-forget (C ipc_notify has no reply); a failed wake drops one notification without stalling the loop
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = ipc.notify(ep);
             };
             apply_delete(store, subs, plan, woken, teardown)
         };
-        // Buffers handed back retire into the pool (A-3: C frees, this
-        // pool reclaims the slot).
+        // Buffers handed back retire into the pool (C frees; this pool
+        // reclaims the slot).
         for i in 0..effect.heap_buffers {
             if let Some(body) = self.teardown[i] {
                 self.heap.release(&body);
@@ -647,7 +662,7 @@ impl DsServer {
             && let Some(source_ep) =
                 initial_scan(&self.store, &mut self.subs, plan.slot, caller, owner)
         {
-            //[SD19-gate] 发后即忘 notify，initial_scan 唤醒失败丢一次
+            //[SD19-gate] fire-and-forget notify; a failed initial_scan wake drops one
             #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.notify(source_ep);
         }
@@ -685,7 +700,7 @@ impl DsServer {
         req.flags = entry_type.bits() as i32;
         // C :570 would panic on an unresolvable publisher (`ds_getprocep`,
         // store.c:137); the deferred verdict lands here as endpoint 0 —
-        // the registry stays up, the reply says "no name" (05 D2, 10).
+        // the registry stays up, the reply says "no name" (05, 10).
         req.owner = publisher.unwrap_or(Endpoint(0)).0;
         apply_check(&mut self.subs, hit);
         OK
@@ -715,7 +730,7 @@ impl DsServer {
         let stats = apply_update(&self.store, &mut self.subs, slot, set, &mut out);
         for endpoint in out.iter().take(stats.notified) {
             // C 222: `ipc_notify` answers to nobody; a failed wake drops.
-            //[SD19-gate] C 222 ipc_notify 无回复，失败丢一次唤醒
+            //[SD19-gate] C 222: ipc_notify has no reply; a failed wake drops one
             #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.notify(*endpoint);
         }
@@ -723,7 +738,7 @@ impl DsServer {
 
     /// Render the getsysinfo image (`ds_store` as C would copy it).
     ///
-    /// [ARCH A-10/11 + A-4]: entries serialize field-by-field into the
+    /// `[ARCH: A-10/11 + A-4]`: entries serialize field-by-field into the
     /// shared snapshot row (`DsEntrySnap`, 168 bytes: flags, key, owner,
     /// scalar). The union's pointer arm does not cross the wire; STR/MEM
     /// rows carry `mem.length` in the scalar slot (the pointer is
@@ -743,7 +758,7 @@ impl DsServer {
                     // scalar at 164: the narrow arm carries `u.u32`
                     // (U32/LABEL); the wide arm carries `u.mem.length`
                     // (STR/MEM) — the pointer itself has no meaning in
-                    // the reader's address space (A-4).
+                    // the reader's address space (`[ARCH: A-4]`).
                     let scalar = if entry
                         .flags
                         .intersects(DsFlags::TYPE_STR | DsFlags::TYPE_MEM)
@@ -753,7 +768,7 @@ impl DsServer {
                         unsafe { entry.body.mem }.length as u32
                     } else {
                         // SAFETY: narrow arm (U32/LABEL), the documented
-                        // arm for these flags (03 D2).
+                        // arm for these flags (03).
                         unsafe { entry.body.u32 }
                     };
                     out[164..168].copy_from_slice(&scalar.to_ne_bytes());
@@ -773,7 +788,7 @@ impl DsServer {
     /// The fresh anchor as the server sees it (`sef_cb_init_fresh`,
     /// store.c:254-282): reset, shadow every boot service, ring each
     /// shadow (map_service's `update_subscribers(dsp, 1)` at :246 —
-    /// batched after the loop, 06 D4: the subscription table is empty
+    /// batched after the loop, 06: the subscription table is empty
     /// at fresh boot, so the ring is quiet; the semantics stay unified).
     ///
     /// The rproctab grant fetch itself (store.c:267-269) rides the RS
@@ -864,8 +879,8 @@ impl DsKernel for SysKernel {
     }
 
     fn safecopy_from(&mut self, caller: Endpoint, grant: GrantId, buf: &mut [u8]) -> Result<(), i32> {
-        // C store.c:167-172 — sys_safecopyfrom(caller, grant, 0, SELF,
-        // buf, len)。
+        // C store.c:167-172 -- sys_safecopyfrom(caller, grant, 0, SELF,
+        // buf, len).
         minix_sys::syscall::sys_safecopyfrom(
             &minix_sys::syscall::DirectKernelCallTransport,
             caller.0,
@@ -878,8 +893,8 @@ impl DsKernel for SysKernel {
     }
 
     fn safecopy_to(&mut self, caller: Endpoint, grant: GrantId, buf: &[u8]) -> Result<(), i32> {
-        // C store.c:409-416 — sys_safecopyto(caller, grant, 0, SELF,
-        // buf, len)。
+        // C store.c:409-416 -- sys_safecopyto(caller, grant, 0, SELF,
+        // buf, len).
         minix_sys::syscall::sys_safecopyto(
             &minix_sys::syscall::DirectKernelCallTransport,
             caller.0,
@@ -892,7 +907,7 @@ impl DsKernel for SysKernel {
     }
 
     fn data_copy_to(&mut self, caller: Endpoint, where_: u64, buf: &[u8]) -> Result<(), i32> {
-        // C store.c:672-675 — sys_datacopy(SELF, src, caller, where, len)。
+        // C store.c:672-675 -- sys_datacopy(SELF, src, caller, where, len).
         minix_sys::syscall::sys_datacopy(
             &minix_sys::syscall::DirectKernelCallTransport,
             minix_sys::syscall::SELF,
@@ -905,7 +920,8 @@ impl DsKernel for SysKernel {
     }
 }
 
-/// 负 errno → 正(DS 回复面;同 ipc-server boundary 的 positive)。
+/// Negative errno -> positive (the DS reply face; same as the ipc-server
+/// boundary's `positive`).
 fn positive(e: i32) -> i32 {
     if e < 0 {
         -e
@@ -1052,9 +1068,10 @@ mod tests {
 
     #[test]
     fn test_sys_kernel_hosted_reports_eio() {
-        // S22:SysKernel 已接 minix-sys 真 wrapper(hosted 构建的
-        // DirectKernelCallTransport 诚实回 EIO/负值——E1 通电前不伪造
-        // 成功)。三方法同面。
+        // SysKernel is wired to the real minix-sys wrapper (in hosted builds
+        // DirectKernelCallTransport honestly returns EIO/negative values -- no
+        // fabricated success before the E1 wiring). All three methods share the
+        // same face.
         use crate::server::{DsKernel, SysKernel};
         use minix_types::{Endpoint, GrantId};
         let mut k = SysKernel;
@@ -1249,7 +1266,8 @@ mod tests {
 
         // The short ask refuses (store.c:668); the exact ask copies the
         // whole image (C 672-675), first byte = live entry's flags.
-        // 回复通道上的错误码按 C 的 `_SYSTEM` 线序带负号（`reply_status`）。
+        // Error codes on the reply channel carry a negative sign per C's
+        // `_SYSTEM` wire order (`reply_status`).
         let replies = ipc.replies();
         assert_eq!(replies.len(), 3);
         assert_eq!(replies[1].1, -EINVAL);
@@ -1257,8 +1275,8 @@ mod tests {
         let copies = kernel.copied.borrow();
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].0, Endpoint(9));
-        // S22:目标地址来自 m_lsys_getsysinfo.where(store.c:672 的
-        // `m_ptr->m_lsys_getsysinfo.where`),随调用原样透传。
+        // The target address comes from m_lsys_getsysinfo.where (store.c:672's
+        // `m_ptr->m_lsys_getsysinfo.where`) and passes through unchanged.
         assert_eq!(copies[0].1, 0x4000, "where_ 原样透传");
         assert_eq!(copies[0].2.len(), image_bytes());
         // Slot 0 holds the seeded "rs" label (IN_USE|TYPE_LABEL = 0x101);
@@ -1286,17 +1304,19 @@ mod tests {
         );
     }
 
-    /// E-BIRTHFACE（NS1）+ shadow 半（E-RSWIRE 的 DS 侧最后一块）：RS 的
-    /// 出生请求不再落 Unknown/EINVAL，而是按 process_init 尾部
-    /// （sef_init.c:113-117）回 RS_INIT+result；fresh 锚点的两拍都走完——
-    /// reset 半 + 经 `rproctab_gid` 整表搬回后逐行植入 label（C
-    /// store.c:267-279）。植入后的表覆盖构造态，所以断言看的是 wire 而不是
-    /// fixture 的 seed。live update 未建模：诚实 ENOSYS（sef_init.c:324-327）。
+    /// E-BIRTHFACE (NS1) + shadow half (the last DS-side piece of E-RSWIRE):
+    /// RS's birth request no longer lands on Unknown/EINVAL but answers
+    /// RS_INIT+result per process_init's tail (sef_init.c:113-117); both beats
+    /// of the fresh anchor run -- the reset half + copying the whole table back
+    /// through `rproctab_gid` and planting labels row by row (C
+    /// store.c:267-279). The planted table overwrites the construction state,
+    /// so the assertions look at the wire rather than the fixture's seed.
+    /// Live update is not modelled: honest ENOSYS (sef_init.c:324-327).
     #[test]
     fn test_rs_init_birth_plants_labels_and_answers_ok() {
         let (mut server, mut kernel) = wired();
-        // 一张三行在用、一行未在用的公共表（行宽 = 共享快照 `RprocpubSnap`，
-        // 端点用 com.h 的槽位值）。
+        // A public table with three rows in use and one not (row width = the
+        // shared snapshot `RprocpubSnap`, endpoints from com.h's slot values).
         let wire = rproctab_wire(&[
             (true, 6, b"ds"),
             (true, 2, b"rs"),
@@ -1316,8 +1336,9 @@ mod tests {
         assert_eq!(replies[0].0, RS_PROC_NR);
         assert_eq!(replies[0].1.m_type, minix_types::RS_INIT);
         assert_eq!(replies[0].1.rs_init_result(), Some(OK));
-        // 植入真发生：reset 清掉了 fixture 的 seed（vfs→9），wire 的行落地
-        // （vfs→1），未在用行不植（unused 查不到）。
+        // The planting really happens: reset wiped the fixture's seed (vfs->9),
+        // the wire's rows land (vfs->1), and the unused row is not planted
+        // (unused is not found).
         assert_eq!(
             crate::identity::resolve_endpoint(&server.store, b"vfs"),
             Some(Endpoint(1)),
@@ -1333,13 +1354,14 @@ mod tests {
             None,
             "in_use=0 的行不植入（C store.c:273 的 if 判据）"
         );
-        // 源闸随之开：DS 能反向认出端点 1 就是「vfs」（store.c:297 的闸门
-        // 读的就是这条路）。
+        // The source gate opens with it: DS can recognize endpoint 1 as "vfs"
+        // in reverse (store.c:297's gate reads exactly this path).
         let named = crate::identity::resolve_name(&server.store, Endpoint(1))
             .expect("端点 1 应有植入的 label");
         let n = named.iter().position(|&b| b == 0).unwrap_or(named.len());
         assert_eq!(&named[..n], b"vfs");
-        // live update 未建模：诚实 ENOSYS（sef_init.c:324-327 默认面）。
+        // Live update is not modelled: honest ENOSYS (the sef_init.c:324-327
+        // default face).
         let (mut server2, mut kernel2) = wired();
         let mut lu = letter(RS_PROC_NR, minix_types::RS_INIT);
         lu.m_u.m_rs_init.type_ = 1; // SEF_INIT_LU
@@ -1351,9 +1373,10 @@ mod tests {
         );
     }
 
-    /// 拼一张 rprocpub 字节表（仅测试夹具）。行形唯一真源是共享快照
-    /// `minix_types::RprocpubSnap`，与 `boot::decode_rproctab` 同一权威；
-    /// RS 侧的 `pub_wire_bytes` 与 VM 测试的 row_bytes 用同一手法。
+    /// Assemble an rprocpub byte table (test fixture only). The single truth
+    /// for the row shape is the shared snapshot `minix_types::RprocpubSnap`,
+    /// the same authority as `boot::decode_rproctab`; RS's `pub_wire_bytes` and
+    /// the VM test's `row_bytes` use the same technique.
     fn rproctab_wire(rows: &[(bool, i32, &[u8])]) -> Vec<u8> {
         let row_bytes = core::mem::size_of::<minix_types::RprocpubSnap>();
         let mut out = vec![0u8; crate::boot::RPROCTAB_BYTES];
@@ -1369,8 +1392,9 @@ mod tests {
                 label: lab,
                 vm_call_mask: 0,
             };
-            // SAFETY: 行是 `#[repr(C)]` POD 快照，取其字节镜像写入缓冲；
-            // 读侧（`decode_rproctab`）用 `read_unaligned` 反向同形。
+            // SAFETY: the row is a `#[repr(C)]` POD snapshot; take its byte
+            // image and write it into the buffer; the read side
+            // (`decode_rproctab`) mirrors the same shape with `read_unaligned`.
             unsafe {
                 let src = core::slice::from_raw_parts(
                     (&snap as *const minix_types::RprocpubSnap).cast::<u8>(),
@@ -1383,8 +1407,9 @@ mod tests {
         out
     }
 
-    /// fresh 锚点读不到表时不得静默成功：GRANT_INVALID 哨兵（RS 还没建
-    /// grant）直接回 EINVAL，由 RS 按出生失败处置。
+    /// The fresh anchor must not silently succeed when the table cannot be
+    /// read: the GRANT_INVALID sentinel (RS has not built the grant yet) maps
+    /// straight to EINVAL, and RS handles it as a birth failure.
     #[test]
     fn test_rs_init_birth_without_grant_refuses() {
         let (mut server, mut kernel) = wired();
@@ -1397,11 +1422,12 @@ mod tests {
             ipc.sent.borrow()[0].1.rs_init_result(),
             Some(minix_types::EINVAL)
         );
-        // 拷贝失败同样上浮（C 此处 panic；本树 fail-closed 交 RS 处置）。
+        // A failed copy surfaces the same way (C panics here; this tree fails
+        // closed and hands it to RS).
         let (mut server2, mut kernel2) = wired();
         let mut bad = letter(RS_PROC_NR, minix_types::RS_INIT);
         bad.m_u.m_rs_init.type_ = 0;
-        bad.m_u.m_rs_init.rproctab_gid = 42; // 没有这份授权
+        bad.m_u.m_rs_init.rproctab_gid = 42; // no such grant
         let mut ipc2 = MockIpc::new(vec![bad]);
         drain(&mut server2, &mut ipc2, &mut kernel2);
         assert_eq!(

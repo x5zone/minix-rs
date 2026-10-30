@@ -1,66 +1,74 @@
-//! `mkfs.mfs` 的决定半：空 V3 文件系统的布局计算、镜像构建与原型播种。
+//! The decisive half of `mkfs.mfs`: layout computation for an empty version-3 file
+//! system, image construction, and prototype seeding.
 //!
-//! C 对应物：`minix3/minix/usr.sbin/mkfs.mfs/mkfs.c`——布局算式照
-//! `super()`（mkfs.c:602-716），缺省 inode 数照 `main` 的 KB 阶梯
-//! （mkfs.c:344-357），根目录照 `rootdir`（mkfs.c:718-731：一个数据区、
-//! `.` 与 `..` 两条目、链接数二）。原型的文件树填充照 `eat_dir`/
-//! `eat_file`（mkfs.c:765-870）与目录、inode、分配三个助手组
-//! （mkfs.c:873-1165），宿主文件内容经 [`ProtoHost`] 缝注入——决定半
-//! 不开文件，薄壳供给读取器。
+//! C counterpart: `minix3/minix/usr.sbin/mkfs.mfs/mkfs.c` — layout arithmetic
+//! follows `super()` (mkfs.c:602-716), the default inode count follows
+//! `main`'s KB ladder (mkfs.c:344-357), the root directory follows `rootdir`
+//! (mkfs.c:718-731: one data zone, two entries `.` and `..`, link count two).
+//! Prototype tree filling follows `eat_dir`/`eat_file` (mkfs.c:765-870) and the
+//! three helper groups for directories, inodes and allocation
+//! (mkfs.c:873-1165); host file content is injected through the [`ProtoHost`]
+//! seam — the decisive half never opens files, the thin shell supplies the
+//! reader.
 //!
-//! # 布局（每块 4096 字节、`zone_shift = 0` 的缺省面）
+//! # Layout (default face: 4096 bytes per block, `zone_shift = 0`)
 //!
 //! ```text
-//! 块 0        引导块（全零；超级块在其内 1024 字节偏移处）
-//! 块 2..      inode 位图（imap_blocks 块）
-//! ..          区块位图（zmap_blocks 块）
-//! ..          inode 表（inode_table_blocks 块，每块 bs/64 个）
-//! first_data_zone 起为数据区
+//! block 0        boot block (all zero; the superblock sits at a 1024-byte
+//!                offset inside it)
+//! block 2..      inode bitmap (imap_blocks blocks)
+//! ..             zone bitmap (zmap_blocks blocks)
+//! ..             inode table (inode_table_blocks blocks, bs/64 each)
+//! data area starts at first_data_zone
 //! ```
 //!
-//! 位图按 Minix 惯例低位在前：0 号位恒置位（inode 0 与区块 0 "已分配
-//! 但不用"），根 inode（1 号）与根数据区各占 1 号位。
+//! Bitmaps are low-bit-first per Minix convention: bit 0 is always set
+//! (inode 0 and zone 0 are "allocated but unused"), and the root inode
+//! (number 1) and the root data zone each occupy bit 1.
 //!
-//! # 原型文法（C `get_line`/`mode_con`，mkfs.c:1222-1256 与 :1195-1215）
+//! # Prototype grammar (C `get_line`/`mode_con`, mkfs.c:1222-1256 and :1195-1215)
 //!
 //! ```text
-//! <引导块行，读到即弃>
-//! <块数> <inode 数>
-//! <类型><置位符><置位符><三位八进制> <uid> <gid>     ← 根目录
-//! <名字> <模式> <uid> <gid> [参数…]                  ← 逐目录入，$ 终止//! ```
+//! <boot block line, read and discarded>
+//! <block count> <inode count>
+//! <type><setuid><setgid><three octal digits> <uid> <gid>     <- root directory
+//! <name> <mode> <uid> <gid> [args...]                       <- entries per directory, `$` terminates
+//! ```
 //!
-//! 模式串是六字符（C `mkproto` mkproto.c:303-315 以 `%c%c%c%03o` 生成）：
-//! 类型字母（`d`/`b`/`c`/`s`/`l`/`-`）、set-uid 位符（`u` 或 `-`）、
-//! set-gid 位符（`g` 或 `-`）、三位八进制权限。条目行按类型字母分派
-//! （`eat_dir` mkfs.c:793 起）：目录递归、块/字符设备带
-//! `major minor [size-in-blocks]`、符号链接带目标、其余按普通文件从
-//! 宿主读内容。名字超 60 字节截断（C `dir_try_enter` 的 strncpy 同形）。
+//! The mode string is six characters (C `mkproto` mkproto.c:303-315 emits it
+//! with `%c%c%c%03o`): a type letter (`d`/`b`/`c`/`s`/`l`/`-`), a set-uid
+//! marker (`u` or `-`), a set-gid marker (`g` or `-`), and three octal
+//! permission digits. Entry lines dispatch on the type letter (`eat_dir`
+//! mkfs.c:793 ff.): directories recurse, block/char devices carry
+//! `major minor [size-in-blocks]`, symlinks carry a target, and everything
+//! else is a regular file read from the host. Names longer than 60 bytes are
+//! truncated (same shape as C `dir_try_enter`'s strncpy).
 
 use crate::inode::{DiskInode, DIRECTORY_ENTRY_SIZE, NAME_CAPACITY, TOTAL_ZONES, TYPE_DIRECTORY};
 use crate::superblock::{DiskSuperblock, DIRECT_ZONE_COUNT, FLAG_CLEAN, MAGIC_V3, START_BLOCK};
 use alloc::vec::Vec;
 use alloc::vec;
 
-/// 缺省块大小（C `DEFAULT_BLOCK_SIZE`，`usr.sbin/mkfs.mfs/v3/const.h:9` 的 4096）。
+/// Default block size (C `DEFAULT_BLOCK_SIZE`, the 4096 in `usr.sbin/mkfs.mfs/v3/const.h:9`).
 pub const DEFAULT_BLOCK_SIZE: u64 = 4096;
-/// 最小可接受块数（C `if (blocks < 5)`，mkfs.c:356）。
+/// Minimum acceptable block count (C `if (blocks < 5)`, mkfs.c:356).
 pub const MIN_BLOCKS: u64 = 5;
-/// 每块的位数（`FS_BITS_PER_BLOCK`）。
+/// Bits per block (`FS_BITS_PER_BLOCK`).
 fn bits_per_block(block_size: u64) -> u64 {
     block_size * 8
 }
 
-/// 每块的磁盘 inode 数（`INODES_PER_BLOCK(b) = b / 64`，const.h:39）。
+/// Disk inodes per block (`INODES_PER_BLOCK(b) = b / 64`, const.h:39).
 fn inodes_per_block(block_size: u64) -> u64 {
     block_size / crate::superblock::INODE_DISK_SIZE as u64
 }
 
-/// 每块的间接项数（`INDIRECTS(b) = b / 4`，const.h:38）。
+/// Indirect entries per block (`INDIRECTS(b) = b / 4`, const.h:38).
 fn indirects_per_zone(block_size: u64) -> u64 {
     block_size / 4
 }
 
-/// 位图占块数（C `bitmapsize`，mkfs.c：向上取整到整块）。
+/// Number of blocks a bitmap occupies (C `bitmapsize`, mkfs.c: round up to whole blocks).
 fn bitmap_size(nr_bits: u64, block_size: u64) -> u64 {
     let per = bits_per_block(block_size);
     let blocks = nr_bits / per;
@@ -71,87 +79,89 @@ fn bitmap_size(nr_bits: u64, block_size: u64) -> u64 {
     }
 }
 
-/// 布局计算的全部结果——镜像构建与 `mfs` 挂载校验共用同一份。
+/// Everything layout computation yields — shared by image construction and `mfs` mount validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MkfsPlan {
-    /// 块大小（字节）。
+    /// Block size in bytes.
     pub block_size: u64,
-    /// 总块数。
+    /// Total block count.
     pub blocks: u64,
-    /// 总区块数（`zone_shift = 0` 时等于块数）。
+    /// Total zone count (equals the block count when `zone_shift = 0`).
     pub zones: u64,
-    /// 可用 inode 数（已向上取整到 inode 块倍数）。
+    /// Usable inode count (already rounded up to a multiple of inodes per block).
     pub inodes: u64,
-    /// inode 位图块数。
+    /// Inode bitmap block count.
     pub inode_map_blocks: u64,
-    /// 区块位图块数。
+    /// Zone bitmap block count.
     pub zone_map_blocks: u64,
-    /// inode 表块数。
+    /// Inode table block count.
     pub inode_table_blocks: u64,
-    /// 首个数据区块号。
+    /// Number of the first data zone.
     pub first_data_zone: u64,
-    /// 最大文件尺寸。
+    /// Maximum file size.
     pub max_size: u64,
 }
 
-/// 布局计算失败的原因（错误消息对齐 C 的 `errx` 文案）。
+/// Why layout computation failed (messages match C's `errx` text).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MkfsError {
-    /// 块数不足（C "Block count too small"，mkfs.c:356）。
+    /// Too few blocks (C "Block count too small", mkfs.c:356).
     TooSmall,
-    /// inode 数不足（C "Inode count too small"，mkfs.c:358）。
+    /// Too few inodes (C "Inode count too small", mkfs.c:358).
     TooFewInodes,
-    /// 位图把数据区挤没了（C "bit maps too large"，mkfs.c:626）。
+    /// Bitmaps squeeze out the data area (C "bit maps too large", mkfs.c:626).
     MapsTooLarge,
-    /// 镜像缓冲不够容纳整幅文件系统。
+    /// The image buffer cannot hold the whole file system.
     BufferTooSmall,
-    /// 块参数小于原型头声明的规模（C mkfs.c:305-308 的 errx）。
+    /// The block argument is smaller than what the prototype header declares (the errx at C mkfs.c:305-308).
     ProtoTooLarge {
-        /// 调用方给的块数（C 的 `%d`）。
+        /// Block count given by the caller (C's `%d`).
         given: u64,
-        /// 原型头声明的块数（C 的 `%ld`）。
+        /// Block count declared by the prototype header (C's `%ld`).
         needed: u64,
     },
-    /// inode 用尽（C alloc_inode 的 "File system does not have enough
-    /// inodes"，mkfs.c:1118-1120）。
+    /// Inodes exhausted (C alloc_inode's "File system does not have enough
+    /// inodes", mkfs.c:1118-1120).
     NotEnoughInodes {
-        /// 文件系统持有的 inode 总数（C 消息里的 `%llu`）。
+        /// Total inodes the file system holds (the `%llu` in C's message).
         have: u64,
     },
-    /// 数据区用尽（C alloc_zone 的 "File system not big enough for all
-    /// the files"，mkfs.c:1157-1158）。
+    /// Data zones exhausted (C alloc_zone's "File system not big enough for all
+    /// the files", mkfs.c:1157-1158).
     NotEnoughZones,
-    /// 原型行超长/超词/缺词/数字坏——C 对应面是 `get_line` 的
-    /// "Line too long"（mkfs.c:1236-1237）加 atoi 的静默垃圾，这里一律
-    /// 拒绝而不是复刻垃圾。
+    /// Prototype line too long / too many words / missing words / bad number —
+    /// the C counterpart is `get_line`'s "Line too long" (mkfs.c:1236-1237) plus
+    /// atoi's silent garbage; everything here is rejected instead of reproducing
+    /// that garbage.
     ProtoBadLine,
-    /// 原型模式串不是七字符形（C `mode_con` 对短串会读到分隔符之外的
-    /// 字节——那是潜在越界读，Rust 侧按文法拒绝）。
+    /// Prototype mode string is not in the seven-character form (C `mode_con`
+    /// reads past the separator for short strings — a latent out-of-bounds read;
+    /// the Rust side rejects it as a grammar error).
     ProtoBadMode,
-    /// 原型在 `$` 之前结束（C get_line 的 "Unexpected end-of-file"，
-    /// mkfs.c:1239-1240）。
+    /// Prototype ends before `$` (C get_line's "Unexpected end-of-file",
+    /// mkfs.c:1239-1240).
     ProtoUnexpectedEnd,
-    /// 符号链接目标不短于一块（C enter_symlink 的 "symlink too long"，
-    /// mkfs.c:736-738）。
+    /// Symlink target is not shorter than one block (C enter_symlink's "symlink too long",
+    /// mkfs.c:736-738).
     SymlinkTooLong,
-    /// 目录超过一级间接还放不下新条目（C enter_dir 的 pexit，
-    /// mkfs.c:947-949）。
+    /// A directory cannot hold a new entry even beyond single indirect (C enter_dir's pexit,
+    /// mkfs.c:947-949).
     DirectoryTooLarge,
-    /// 文件超过二级间接（C add_zone 的 pexit，mkfs.c:1052-1053）。
+    /// File exceeds double indirect (C add_zone's pexit, mkfs.c:1052-1053).
     FileTooLarge,
-    /// 链接计数溢出（C incr_link 的 "Too many links to a directory"，
-    /// mkfs.c:1071-1072）。
+    /// Link count overflow (C incr_link's "Too many links to a directory",
+    /// mkfs.c:1071-1072).
     TooManyLinks,
-    /// inode 尺寸溢出（C incr_size 的 "File has become too big to be
-    /// handled by MFS"，mkfs.c:1096-1098）。
+    /// Inode size overflow (C incr_size's "File has become too big to be
+    /// handled by MFS", mkfs.c:1096-1098).
     SizeTooLarge,
-    /// 宿主文件读不出来（C eat_dir 的 "Can't open %s"；路径由薄壳侧
-    /// 记录——本枚举不携带数据）。
+    /// Host file cannot be read (C eat_dir's "Can't open %s"; the thin shell records
+    /// the path — this enum carries no data).
     HostFile,
 }
 
-/// 缺省 inode 数的 KB 阶梯（C `main` mkfs.c:344-357：每 2 KB 一个，
-/// 容量越大越稀，最后向上取整到 inode 块倍数）。
+/// Default inode count KB ladder (C `main` mkfs.c:344-357: one per 2 KB,
+/// sparser as capacity grows, finally rounded up to a multiple of inodes per block).
 pub fn default_inode_count(blocks: u64, block_size: u64) -> u64 {
     let kb = blocks * block_size / 1024;
     let per_kb = if kb >= 1_000_000_000 {
@@ -172,7 +182,7 @@ pub fn default_inode_count(blocks: u64, block_size: u64) -> u64 {
     raw.div_ceil(per_block) * per_block
 }
 
-/// 布局计算（C `super` 的算术半，mkfs.c:602-642；`zone_shift = 0`）。
+/// Layout computation (the arithmetic half of C `super`, mkfs.c:602-642; `zone_shift = 0`).
 pub fn plan_layout(
     blocks: u64,
     inodes: Option<u64>,
@@ -199,8 +209,8 @@ pub fn plan_layout(
     if first_data_zone >= zones {
         return Err(MkfsError::MapsTooLarge);
     }
-    // 最大文件尺寸：`NR_DZONES + ind + ind²` 个区块，封顶 `INT32_MAX`
-    // （C mkfs.c:646-655 的 `MAX_MAX_SIZE` 面）。
+    // Maximum file size: `NR_DZONES + ind + ind²` zones, capped at `INT32_MAX`
+    // (the `MAX_MAX_SIZE` face of C mkfs.c:646-655).
     let ind = indirects_per_zone(block_size);
     let zo = crate::superblock::DIRECT_ZONE_COUNT as u64
         + ind
@@ -223,7 +233,7 @@ pub fn plan_layout(
     })
 }
 
-/// 在镜像的某一位图块里置一个位（`insert_bit`：Minix 位图低位在前）。
+/// Set one bit in one bitmap block of the image (`insert_bit`: Minix bitmaps are low-bit-first).
 fn set_bit(image: &mut [u8], block_size: u64, block: u64, bit: u64) {
     let base = (block * block_size) as usize;
     let index = (bit / 8) as usize;
@@ -231,7 +241,7 @@ fn set_bit(image: &mut [u8], block_size: u64, block: u64, bit: u64) {
     image[base + index] |= 1 << offset;
 }
 
-/// 一条目录项：4 字节 inode 号加 60 字节的名字缓冲（NUL 补齐）。
+/// One directory entry: a 4-byte inode number plus a 60-byte name buffer (NUL padded).
 fn dir_entry(name: &[u8], inode: u64) -> [u8; DIRECTORY_ENTRY_SIZE] {
     let mut out = [0u8; DIRECTORY_ENTRY_SIZE];
     out[0..4].copy_from_slice(&(inode as u32).to_le_bytes());
@@ -240,17 +250,17 @@ fn dir_entry(name: &[u8], inode: u64) -> [u8; DIRECTORY_ENTRY_SIZE] {
     out
 }
 
-/// 构建整幅镜像（C `main` 的写序：boot 块零、super 块、map 与 inode 区
-/// 清零、两张位图的 0 号位、根 inode、根数据区的 `.` 与 `..`）。
+/// Build the whole image (C `main`'s write order: zero boot block, superblock, cleared
+/// map and inode areas, bit 0 of both bitmaps, root inode, `.` and `..` in the root data zone).
 ///
-/// `now` 是写入 inode 时间戳的当前时刻（C 的 `current_time`；宿主测试
-/// 固定它以保断言可复现）。
+/// `now` is the current time stamped into inodes (C's `current_time`; host tests
+/// fix it so assertions stay reproducible).
 pub fn build_image(plan: &MkfsPlan, now: i32) -> Result<Vec<u8>, MkfsError> {
     build_image_rooted(plan, now, (TYPE_DIRECTORY | 0o777) as u16, 0, 0)
 }
 
-/// 同 [`build_image`]，根 inode 的模式与属主由调用方给定——原型文件的
-/// 头第三行就是根目录的模式行（C `main` mkfs.c:313-318）。
+/// Like [`build_image`], but the root inode's mode and owner come from the caller —
+/// the third line of a prototype file is the root directory's mode line (C `main` mkfs.c:313-318).
 fn build_image_rooted(
     plan: &MkfsPlan,
     now: i32,
@@ -266,11 +276,11 @@ fn build_image_rooted(
     let mut image = vec![0u8; total];
     let bs = plan.block_size;
 
-    // 超级块：块 1（字节偏移 1024），31 字节有效负载。
+    // Superblock: block 1 (byte offset 1024), 31-byte payload.
     let small_first = if plan.first_data_zone <= u16::MAX as u64 {
         plan.first_data_zone as u16
     } else {
-        // 放不下就写零（C mkfs.c:632-640：用其它字段可重算）。
+        // Write zero when it does not fit (C mkfs.c:632-640: recomputable from other fields).
         0
     };
     let sup = DiskSuperblock {
@@ -288,17 +298,17 @@ fn build_image_rooted(
         block_size: plan.block_size as u16,
         disk_version: 0,
     };
-    // 超级块：字节偏移 1024（C `SUPER_BLOCK_BYTES`，const.h:50；本服务
-    // 器 `parse_superblock` 的同一权威）——4096 字节块下它在"块 0"内。
+    // Superblock: byte offset 1024 (C `SUPER_BLOCK_BYTES`, const.h:50; the same
+    // authority as this server's `parse_superblock`) — with 4096-byte blocks it lies inside "block 0".
     let at = crate::superblock::SUPER_BLOCK_OFFSET;
     image[at..at + DiskSuperblock::STORED_BYTES].copy_from_slice(&sup.to_bytes());
 
-    // 两张位图的 0 号位恒置位（C mkfs.c:705-708）。
+    // Bit 0 of both bitmaps is always set (C mkfs.c:705-708).
     set_bit(&mut image, bs, START_BLOCK, 0);
     set_bit(&mut image, bs, START_BLOCK + plan.inode_map_blocks, 0);
 
-    // 根 inode：1 号，链接数二，尺寸两条目，直接区指首个数据区
-    // （C `alloc_inode` 加 `rootdir` 的 `add_zone`/`incr_link`×2）。
+    // Root inode: number 1, link count two, size two entries, direct zone pointing at
+    // the first data zone (C `alloc_inode` plus `rootdir`'s `add_zone`/`incr_link`×2).
     let inode_table_block = START_BLOCK + plan.inode_map_blocks + plan.zone_map_blocks;
     let root = DiskInode {
         mode: root_mode,
@@ -319,13 +329,13 @@ fn build_image_rooted(
     image[root_at..root_at + crate::superblock::INODE_DISK_SIZE]
         .copy_from_slice(&root.to_bytes());
 
-    // 根数据区：`.` 与 `..` 都指向 1 号（C `enter_dir`×2）。
+    // Root data zone: `.` and `..` both point at number 1 (C `enter_dir`×2).
     let zone_at = (plan.first_data_zone * bs) as usize;
     image[zone_at..zone_at + DIRECTORY_ENTRY_SIZE].copy_from_slice(&dir_entry(b".", 1));
     image[zone_at + DIRECTORY_ENTRY_SIZE..zone_at + 2 * DIRECTORY_ENTRY_SIZE]
         .copy_from_slice(&dir_entry(b"..", 1));
 
-    // 位图记账：根 inode（1 号位）与根数据区（1 号位）。
+    // Bitmap accounting: the root inode (bit 1) and the root data zone (bit 1).
     set_bit(&mut image, bs, START_BLOCK, 1);
     set_bit(&mut image, bs, START_BLOCK + plan.inode_map_blocks, 1);
 
@@ -333,46 +343,49 @@ fn build_image_rooted(
 }
 
 // ======================================================================
-// 原型播种（C 的 proto-file processing assist group + eat_dir/eat_file）
+// Prototype seeding (C's proto-file processing assist group + eat_dir/eat_file)
 // ======================================================================
 
-/// 宿主文件读取缝（C `eat_dir` 里 `open(token[4])` 的等价面）：决定半
-/// 不碰文件系统，普通文件的内容由薄壳注入。`HostFile.mtime` 落进
-/// inode 的修改时刻（C `file_time`，mkfs.c:860——`-d` 强制 current_time
-/// 的分支由薄壳自行折算）。
+/// Host file reading seam (the equivalent of `open(token[4])` in C `eat_dir`):
+/// the decisive half never touches the file system; the thin shell injects regular
+/// file content. `HostFile.mtime` lands in the inode's modification time (C
+/// `file_time`, mkfs.c:860 — the `-d` branch that forces current_time is handled by
+/// the thin shell).
 pub trait ProtoHost {
-    /// 读一个宿主文件的全部内容进 `out`，返回字节数与修改时刻。内容
-    /// 超过缓冲按 [`MkfsError::BufferTooSmall`] 拒绝（文件放不进目标
-    /// 文件系统，早失败比写一半强）。实现方自行记录失败路径——
-    /// [`MkfsError::HostFile`] 不携带数据。
+    /// Read a host file's entire content into `out`, returning the byte count and
+    /// modification time. Content larger than the buffer is rejected with
+    /// [`MkfsError::BufferTooSmall`] (the file does not fit the target file system;
+    /// failing early beats writing half). The implementation records failure paths
+    /// itself — [`MkfsError::HostFile`] carries no data.
     fn read_file(&mut self, path: &str, out: &mut [u8]) -> Result<HostFile, MkfsError>;
 }
 
-/// 一次宿主读取的结果。
+/// Result of one host read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostFile {
-    /// 内容字节数。
+    /// Content byte count.
     pub len: usize,
-    /// 修改时刻（inode 的 `mtime` 来源，C `file_time`）。
+    /// Modification time (source of the inode's `mtime`, C `file_time`).
     pub mtime: i32,
 }
 
-/// 原型文件头（前两行有内容的产物）：引导块行读到即弃，第二行给块数
-/// 与 inode 数（C `main` mkfs.c:294-310）。
+/// Prototype file header (what the first two content lines yield): the boot block
+/// line is read and discarded, the second line gives block and inode counts (C `main`
+/// mkfs.c:294-310).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProtoHeader {
-    /// 原型声明的块数（第二行第一词；0 表示由调用方定夺）。
+    /// Block count declared by the prototype (first word of the second line; 0 means the caller decides).
     pub blocks: u64,
-    /// 原型声明的 inode 数（0 = 用缺省阶梯）。
+    /// Inode count declared by the prototype (0 = use the default ladder).
     pub inodes: u64,
 }
 
-/// 从原型文本解头（C `main` mkfs.c:294-310 的前两行）。调用方用头的
-/// inode 数（零换缺省阶梯）算 [`plan_layout`]，再把同一份文本交给
-/// [`build_image_seeded`]。
+/// Parse the header from prototype text (the first two lines, C `main` mkfs.c:294-310).
+/// The caller uses the header's inode count (zero means the default ladder) to compute
+/// [`plan_layout`], then hands the same text to [`build_image_seeded`].
 pub fn proto_header(proto: &str) -> Result<ProtoHeader, MkfsError> {
     let mut lines = proto.lines();
-    // 第一行是引导块装载器名，读到即弃（C "skip boot block info"）。
+    // The first line is the boot block loader name, read and discarded (C "skip boot block info").
     lines.next().ok_or(MkfsError::ProtoUnexpectedEnd)?;
     let counts = lines.next().ok_or(MkfsError::ProtoUnexpectedEnd)?;
     let tokens = tokenize(counts)?;
@@ -385,10 +398,11 @@ pub fn proto_header(proto: &str) -> Result<ProtoHeader, MkfsError> {
     })
 }
 
-/// 把一行按空格与制表符切词（C `get_line` 的 tokenize 半，mkfs.c:1244
-/// 往后：空白变分隔符，词数上限十）。空行没有词，返回空表由调用方
-/// 分派；超过十词拒绝——C 在这里越界写 `parse[10]`，属于潜在内存
-/// 事故，Rust 侧按文法错误拒绝。
+/// Split a line into words on spaces and tabs (the tokenize half of C `get_line`,
+/// mkfs.c:1244 ff.: whitespace becomes separators, at most ten words). An empty line
+/// has no words; callers dispatch on the empty table. More than ten words is
+/// rejected — C writes `parse[10]` out of bounds there, a latent memory fault; the
+/// Rust side rejects it as a grammar error.
 fn tokenize(line: &str) -> Result<Vec<&str>, MkfsError> {
     if line.len() > 300 {
         return Err(MkfsError::ProtoBadLine);
@@ -406,16 +420,18 @@ fn tokenize(line: &str) -> Result<Vec<&str>, MkfsError> {
     Ok(tokens)
 }
 
-/// 十进制数解析（C `atoi`/`strtol` 的严格面：C 对垃圾输入静默回零，
-/// 原型是构图输入，坏数直接拒绝比复刻垃圾诚实）。
+/// Decimal parsing (the strict face of C `atoi`/`strtol`: C silently returns zero on
+/// garbage; the prototype is construction input, so rejecting bad numbers outright is
+/// more honest than reproducing the garbage).
 fn parse_number(token: &str) -> Result<u64, MkfsError> {
     token.parse::<u64>().map_err(|_| MkfsError::ProtoBadLine)
 }
 
-/// 六字符模式串转权限位（C `mode_con`，mkfs.c:1195-1215；C `mkproto`
-/// mkproto.c:303-315 以 `%c%c%c%03o` 生成）。首字符定文件类型（`l` 与
-/// `s` 同映射 `S_IFLNK`，C 注记的 ls 兼容面），二三字符分别是
-/// set-uid/set-gid 位符，末三位是八进制权限。
+/// Convert a six-character mode string to permission bits (C `mode_con`,
+/// mkfs.c:1195-1215; C `mkproto` mkproto.c:303-315 generates it with `%c%c%c%03o`).
+/// The first character fixes the file type (`l` and `s` both map to `S_IFLNK`, the
+/// ls-compatibility noted in C), the second and third are the set-uid/set-gid
+/// markers, and the last three are octal permissions.
 pub fn mode_con(text: &str) -> Result<u16, MkfsError> {
     let bytes = text.as_bytes();
     if bytes.len() < 6 {
@@ -445,14 +461,14 @@ pub fn mode_con(text: &str) -> Result<u16, MkfsError> {
     Ok(mode | perm)
 }
 
-/// 原型播种构建器：镜像加两个分配游标（C 的 `next_inode`/`next_zone`
-/// 静态量），方法逐一对位 C 的助手函数组。
+/// Prototype seeder: the image plus two allocation cursors (C's `next_inode`/
+/// `next_zone` statics); its methods map one-to-one onto C's helper function groups.
 struct Seeder<'a> {
     image: &'a mut Vec<u8>,
     plan: MkfsPlan,
-    /// inode 表首块（C 的 `inode_offset` = `BLK_ILIST`）。
+    /// First inode table block (C's `inode_offset` = `BLK_ILIST`).
     table_block: u64,
-    /// 区块位图首块。
+    /// First zone bitmap block.
     zmap_block: u64,
     next_inode: u64,
     next_zone: u64,
@@ -468,8 +484,8 @@ impl<'a> Seeder<'a> {
             plan: *plan,
             table_block,
             zmap_block,
-            next_inode: 2, // 根 inode 已在底像里
-            next_zone: plan.first_data_zone + 1, // 根数据区已占
+            next_inode: 2, // root inode already present in the base image
+            next_zone: plan.first_data_zone + 1, // root data zone already taken
             now,
         }
     }
@@ -478,7 +494,7 @@ impl<'a> Seeder<'a> {
         self.plan.block_size
     }
 
-    /// inode `n` 在镜像里的 64 字节记录位置。
+    /// Position of inode `n`'s 64-byte record in the image.
     fn inode_at(&self, n: u64) -> usize {
         let per_block = self.bs() / crate::superblock::INODE_DISK_SIZE as u64;
         let block = self.table_block + (n - 1) / per_block;
@@ -503,14 +519,14 @@ impl<'a> Seeder<'a> {
         set_bit(self.image, bs, START_BLOCK, bit);
     }
 
-    /// 区块号到位图位（C `zoff = s_firstdatazone - 1` 的记账：首个数据
-    /// 区占 1 号位）。
+    /// Zone number to bitmap bit (C's `zoff = s_firstdatazone - 1` accounting:
+    /// the first data zone occupies bit 1).
     fn set_zmap_bit(&mut self, zone: u64) {
         let bs = self.bs();
         set_bit(self.image, bs, self.zmap_block, zone + 1 - self.plan.first_data_zone);
     }
 
-    /// `alloc_inode`（C mkfs.c:1112-1145）：取号、写模式属主、置位图。
+    /// `alloc_inode` (C mkfs.c:1112-1145): take a number, write mode and owner, set the bitmap bit.
     fn alloc_inode(&mut self, mode: u16, uid: u16, gid: u16) -> Result<u64, MkfsError> {
         let num = self.next_inode;
         if num > self.plan.inodes {
@@ -533,7 +549,7 @@ impl<'a> Seeder<'a> {
         Ok(num)
     }
 
-    /// `alloc_zone`（C mkfs.c:1147-1165）：取号、清零整区、置位图。
+    /// `alloc_zone` (C mkfs.c:1147-1165): take a number, zero the whole zone, set the bitmap bit.
     fn alloc_zone(&mut self) -> Result<u64, MkfsError> {
         let zone = self.next_zone;
         if zone >= self.plan.blocks {
@@ -547,7 +563,7 @@ impl<'a> Seeder<'a> {
         Ok(zone)
     }
 
-    /// `incr_link`（C mkfs.c:1057-1080）：链接计数加一，溢出即错。
+    /// `incr_link` (C mkfs.c:1057-1080): increment the link count, error on overflow.
     fn incr_link(&mut self, n: u64) -> Result<(), MkfsError> {
         let mut inode = self.read_inode(n)?;
         inode.nlinks = inode.nlinks.checked_add(1).ok_or(MkfsError::TooManyLinks)?;
@@ -555,7 +571,7 @@ impl<'a> Seeder<'a> {
         Ok(())
     }
 
-    /// `incr_size`（C mkfs.c:1082-1110）：目录每收一条目长 64 字节。
+    /// `incr_size` (C mkfs.c:1082-1110): each directory entry accepted grows the size by 64 bytes.
     fn incr_size(&mut self, n: u64, count: i32) -> Result<(), MkfsError> {
         let mut inode = self.read_inode(n)?;
         inode.size = inode
@@ -566,8 +582,9 @@ impl<'a> Seeder<'a> {
         Ok(())
     }
 
-    /// `add_zone`（C mkfs.c:957-1055）：把区块挂到 inode 的第一个空槽，
-    /// 直接区满走一级间接、再满走二级间接；尺寸与时刻随挂随记。
+    /// `add_zone` (C mkfs.c:957-1055): hang a zone in the inode's first free slot;
+    /// when the direct zones are full use single indirect, then double indirect; size
+    /// and times are recorded as zones are attached.
     fn add_zone(&mut self, n: u64, zone: u64, bytes: i32, mtime: i32) -> Result<(), MkfsError> {
         let mut inode = self.read_inode(n)?;
         inode.size = inode
@@ -584,7 +601,7 @@ impl<'a> Seeder<'a> {
                 return Ok(());
             }
         }
-        // 一级间接：槽空先分配间接区（alloc_zone 已清零置位）。
+        // Single indirect: allocate the indirect zone when the slot is empty (alloc_zone already zeroes and marks it).
         if inode.zones[DIRECT_ZONE_COUNT] == 0 {
             inode.zones[DIRECT_ZONE_COUNT] = self.alloc_zone()? as u32;
         }
@@ -593,7 +610,7 @@ impl<'a> Seeder<'a> {
         if self.hang_zone(indirect, zone)? {
             return Ok(());
         }
-        // 二级间接：槽空先分配二级区，再在其一级层挂。
+        // Double indirect: allocate the double zone when the slot is empty, then hang in its single-indirect layer.
         if inode.zones[DIRECT_ZONE_COUNT + 1] == 0 {
             let mut inode = self.read_inode(n)?;
             inode.zones[DIRECT_ZONE_COUNT + 1] = self.alloc_zone()? as u32;
@@ -615,7 +632,7 @@ impl<'a> Seeder<'a> {
         Err(MkfsError::FileTooLarge)
     }
 
-    /// 在一级间接区的第 `i` 槽找空位挂数据区；挂上返回真。
+    /// Find a free slot in a single-indirect zone for a data zone; returns true when hung.
     fn hang_zone(&mut self, indirect: u64, zone: u64) -> Result<bool, MkfsError> {
         let entries = (self.bs() / 4) as usize;
         for i in 0..entries {
@@ -645,9 +662,10 @@ impl<'a> Seeder<'a> {
         Ok(())
     }
 
-    /// `dir_try_enter`（C mkfs.c:873-903）：在一个目录区里找首个空槽
-    /// （`d_inum == 0`）写入条目。名字超 60 字节截断（C 的 strncpy 同
-    /// 形，(verbose) 警告不进决定半）。
+    /// `dir_try_enter` (C mkfs.c:873-903): find the first free slot (`d_inum == 0`)
+    /// in a directory zone and write the entry there. Names longer than 60 bytes are
+    /// truncated (same shape as C's strncpy; the (verbose) warning does not enter the
+    /// decisive half).
     fn dir_try_enter(&mut self, zone: u64, child: u64, name: &[u8]) -> Result<bool, MkfsError> {
         let bs = self.bs() as usize;
         let base = (zone * self.bs()) as usize;
@@ -667,8 +685,9 @@ impl<'a> Seeder<'a> {
         Ok(false)
     }
 
-    /// `enter_dir`（C mkfs.c:906-949）：先扫直接区（空的当场合一），
-    /// 满了走一级间接；再放不下按 C 的 pexit 拒绝。
+    /// `enter_dir` (C mkfs.c:906-949): scan direct zones first (an empty one is used
+    /// immediately), fall through to single indirect when full; if it still does not
+    /// fit, reject as C's pexit does.
     fn enter_dir(&mut self, parent: u64, name: &[u8], child: u64) -> Result<(), MkfsError> {
         let mut inode = self.read_inode(parent)?;
         for slot in 0..DIRECT_ZONE_COUNT {
@@ -703,9 +722,10 @@ impl<'a> Seeder<'a> {
         Err(MkfsError::DirectoryTooLarge)
     }
 
-    /// `rootdir` 的递归半加 `eat_dir`（C mkfs.c:765-830）：逐行读原型，
-    /// `$` 收束本目录；目录递归、设备挂设备号、链接挂目标、普通文件
-    /// 经 [`ProtoHost`] 缝读内容。
+    /// The recursive half of `rootdir` plus `eat_dir` (C mkfs.c:765-830): read the
+    /// prototype line by line, `$` closes the current directory; directories recurse,
+    /// devices hang their device number, symlinks hang their target, and regular files
+    /// are read through the [`ProtoHost`] seam.
     fn eat_dir<'p, H: ProtoHost>(
         &mut self,
         parent: u64,
@@ -717,7 +737,7 @@ impl<'a> Seeder<'a> {
             let line = lines.next().ok_or(MkfsError::ProtoUnexpectedEnd)?;
             let tokens = tokenize(line)?;
             let Some(name) = tokens.first() else {
-                continue; // 空行没有词——C 在这里读空指针，按跳过处理
+                continue; // empty line has no words — C dereferences NULL here; treat as skip
             };
             if *name == "$" {
                 return Ok(());
@@ -747,8 +767,8 @@ impl<'a> Seeder<'a> {
                         Some(text) => parse_number(text)?,
                         None => 0,
                     };
-                    // C `add_zone(n, makedev(maj, min), …)`：区块号槽位
-                    // 放设备号（major<<8|minor），不占位图。
+                    // C `add_zone(n, makedev(maj, min), …)`: the zone-number slot
+                    // holds the device number (major<<8|minor) and does not use the bitmap.
                     let dev = (major << 8) | (minor & 0xff);
                     self.add_zone(n, dev, (blocks as u32)
                         .checked_mul(self.bs() as u32)
@@ -767,8 +787,8 @@ impl<'a> Seeder<'a> {
         }
     }
 
-    /// `enter_symlink`（C mkfs.c:734-749）：目标写进一个新区，尺寸为
-    /// 目标长度（不含 NUL）。
+    /// `enter_symlink` (C mkfs.c:734-749): write the target into a new zone; the size
+    /// is the target length (without NUL).
     fn enter_symlink(&mut self, n: u64, target: &[u8]) -> Result<(), MkfsError> {
         if target.len() >= self.bs() as usize {
             return Err(MkfsError::SymlinkTooLong);
@@ -779,8 +799,9 @@ impl<'a> Seeder<'a> {
         self.add_zone(n, zone, target.len() as i32, self.now)
     }
 
-    /// `eat_file`（C mkfs.c:851-870）：内容按块切区写入，逐区挂链；
-    /// 零长文件不占区。时刻用宿主文件的修改时刻。
+    /// `eat_file` (C mkfs.c:851-870): write content zone by zone in block-sized
+    /// chunks, chaining each zone; zero-length files occupy no zone. The times come
+    /// from the host file's modification time.
     fn eat_file(&mut self, n: u64, data: &[u8], mtime: i32) -> Result<(), MkfsError> {
         let bs = self.bs() as usize;
         if data.is_empty() {
@@ -796,10 +817,11 @@ impl<'a> Seeder<'a> {
     }
 }
 
-/// 带原型播种的镜像构建（C `main` 的 `simple == 0` 支路，mkfs.c:294-424）：
-/// 头两行定规模与根模式，其余行逐目录播种。`plan` 由调用方按
-/// [`proto_header`] 的头算出——头声明的块数超过 `plan.blocks` 即拒
-/// （C mkfs.c:304-308 的 errx）。返回镜像。
+/// Build an image with prototype seeding (the `simple == 0` branch of C `main`,
+/// mkfs.c:294-424): the first two lines fix the size and root mode, remaining lines
+/// seed directory by directory. `plan` is computed by the caller from the
+/// [`proto_header`] header — a declared block count larger than `plan.blocks` is
+/// rejected (the errx at C mkfs.c:304-308). Returns the image.
 pub fn build_image_seeded<H: ProtoHost>(
     plan: &MkfsPlan,
     proto: &str,
@@ -807,7 +829,7 @@ pub fn build_image_seeded<H: ProtoHost>(
     now: i32,
 ) -> Result<Vec<u8>, MkfsError> {
     let mut lines = proto.lines();
-    lines.next().ok_or(MkfsError::ProtoUnexpectedEnd)?; // 引导块行
+    lines.next().ok_or(MkfsError::ProtoUnexpectedEnd)?; // boot block line
     let counts = lines.next().ok_or(MkfsError::ProtoUnexpectedEnd)?;
     let tokens = tokenize(counts)?;
     if tokens.len() < 2 {
@@ -839,8 +861,9 @@ mod tests {
     use crate::superblock::INODE_DISK_SIZE;
     use crate::superblock::ROOT_INODE_NUMBER;
 
-    /// 布局算术逐项对照 C `super`（mkfs.c:602-655）：64 块、64 inode、
-    /// 4096 字节块 → 各图一整块、inode 表一整块、数据区从 5 起。
+    /// Layout arithmetic checked item by item against C `super` (mkfs.c:602-655):
+    /// 64 blocks, 64 inodes, 4096-byte blocks → one block per bitmap, one inode table
+    /// block, data area starting at 5.
     #[test]
     fn test_plan_layout_matches_c_arithmetic() {
         let plan = plan_layout(64, Some(64), 4096).unwrap();
@@ -850,42 +873,43 @@ mod tests {
         assert_eq!(plan.zone_map_blocks, 1, "zmap = ceil(64/32768)");
         assert_eq!(plan.inode_table_blocks, 1, "64 inode / 每块 64 个");
         assert_eq!(plan.first_data_zone, 5);
-        // 最大文件尺寸：7 + 1024 + 1024² 个区块 × 4096 封顶 INT32_MAX。
+        // Maximum file size: 7 + 1024 + 1024² zones × 4096, capped at INT32_MAX.
         assert_eq!(plan.max_size, i32::MAX as u64);
-        // 尾偏移成立：`1,2+3` 的算式在 8 字节域里同为 5。
+        // Trailing offset holds: the `1,2+3` formula is also 5 in the 8-byte field.
         assert_eq!(crate::superblock::START_BLOCK, 2);
     }
 
-    /// 缺省 inode 数的 KB 阶梯与取整（C mkfs.c:344-357）。
+    /// Default inode count ladder and rounding (C mkfs.c:344-357).
     #[test]
     fn test_default_inode_count_ladder() {
-        // 64 块 × 4096 = 256 KB → 每 2 KB 一个 = 128。
+        // 64 blocks × 4096 = 256 KB → one per 2 KB = 128.
         assert_eq!(default_inode_count(64, 4096), 128);
-        // 阶梯切换点：100_000 KB 起每 4 KB 一个。
+        // Ladder switch point: from 100_000 KB, one per 4 KB.
         let blocks_100m = 100_000 * 1024 / 4096;
-        // 25_000 向上取整到 64 的倍数（C mkfs.c:355-357 同款取整）。
+        // 25_000 rounded up to a multiple of 64 (the same rounding as C mkfs.c:355-357).
         assert_eq!(default_inode_count(blocks_100m, 4096), 25_024);
-        // 太小直接拒。
+        // Too small: rejected outright.
         assert_eq!(plan_layout(4, None, 4096), Err(MkfsError::TooSmall));
-        // 位图挤占数据区：5 块放不下 2 图加 inode 表加数据。
+        // Bitmaps squeeze the data area: 5 blocks cannot hold 2 bitmaps plus the inode table plus data.
         assert_eq!(
             plan_layout(5, Some(64), 4096),
             Err(MkfsError::MapsTooLarge)
         );
     }
 
-    /// 镜像逐位核对：超级块可解析且字段回读一致，两张位图的 0/1 号位
-    /// 置位，根 inode 与两条目录项就位（C `main` 写序）。
+    /// Bit-level image check: the superblock parses and fields read back identically,
+    /// bits 0/1 of both bitmaps are set, root inode and two directory entries are in
+    /// place (C `main` write order).
     #[test]
     fn test_image_round_trips_through_our_own_parser() {
         let plan = plan_layout(64, Some(64), 4096).unwrap();
         let image = build_image(&plan, 1_000).unwrap();
         assert_eq!(image.len() as u64, 64 * 4096);
-        // 引导块的超块之前部分保持零（C 的 put_block(zero)）。
+        // The part of the boot block before the superblock stays zero (C's put_block(zero)).
         assert!(image[..1024].iter().all(|b| *b == 0));
-        // 超级块：先经服务器的挂载入口解析器（钉死 1024 偏移，参数
-        // 即挂载者的运行时事实），确认镜像可被本服务器挂载；再逐字段
-        // 回读。
+        // Superblock: first through the server's mount-entry parser (which pins the
+        // 1024 offset, taking the mounter's runtime facts as arguments) to confirm the
+        // image can be mounted by this server; then read back field by field.
         crate::superblock::parse_superblock(&image, 0, false).unwrap();
         let at = crate::superblock::SUPER_BLOCK_OFFSET;
         let sup = DiskSuperblock::from_bytes(&image[at..at + DiskSuperblock::STORED_BYTES])
@@ -900,12 +924,12 @@ mod tests {
         assert_eq!(sup.flags, FLAG_CLEAN);
         assert_eq!(sup.log_zone_size, 0);
         assert_eq!(sup.disk_version, 0);
-        // 位图：imap/zmap 的 0 号位与根 inode/根数据区的 1 号位。
+        // Bitmaps: bit 0 of imap/zmap and bit 1 for the root inode/root data zone.
         let imap_at = (crate::superblock::START_BLOCK * 4096) as usize;
         assert_eq!(image[imap_at], 0b11, "imap 位 0 与 1（根 inode）");
         let zmap_at = imap_at + 4096;
         assert_eq!(image[zmap_at], 0b11, "zmap 位 0 与 1（根数据区）");
-        // 根 inode：目录、链接数二、尺寸两条目、直接区指数据区。
+        // Root inode: directory, link count two, size two entries, direct zone pointing at the data zone.
         let table_at = (crate::superblock::START_BLOCK + 2) * 4096;
         let root = DiskInode::from_bytes(
             &image[table_at as usize..table_at as usize + INODE_DISK_SIZE],
@@ -916,7 +940,7 @@ mod tests {
         assert_eq!(root.size, 2 * DIRECTORY_ENTRY_SIZE as i32);
         assert_eq!(root.zones[0], 5);
         assert_eq!(root.accessed, 1_000);
-        // 目录项：`.` 与 `..` 都指根。
+        // Directory entries: `.` and `..` both point at the root.
         let zone_at = (plan.first_data_zone * 4096) as usize;
         assert_eq!(u32::from_le_bytes(image[zone_at..zone_at + 4].try_into().unwrap()), 1);
         assert_eq!(&image[zone_at + 4..zone_at + 5], b".");
@@ -931,10 +955,11 @@ mod tests {
             .all(|b| *b == 0));
     }
 
-    // ---------------- 原型播种 ----------------
+    // ---------------- Prototype seeding ----------------
 
-    /// 内存宿主：路径到（内容、修改时刻）的替身——`ProtoHost` 缝的
-    /// 测试半，对应薄壳的 std 文件读取器。
+    /// In-memory host: a stand-in mapping paths to (content, modification time) —
+    /// the test half of the `ProtoHost` seam, corresponding to the thin shell's std
+    /// file reader.
     struct MemHost {
         files: Vec<(&'static str, &'static [u8], i32)>,
     }
@@ -952,7 +977,8 @@ mod tests {
         }
     }
 
-    /// 从镜像解析 inode `n` 的直接区里第 `i` 条目录项（测试走查助手）。
+    /// Parse directory entry `i` from the direct zones of inode `n` in the image
+    /// (test walkthrough helper).
     fn dir_slot(image: &[u8], plan: &MkfsPlan, inode_number: u64, slot: usize) -> (u32, Vec<u8>) {
         let bs = plan.block_size as usize;
         let per_block = bs / INODE_DISK_SIZE;
@@ -975,7 +1001,7 @@ mod tests {
         (number, name)
     }
 
-    /// 六字符模式串的转换面（C `mode_con` 加 mkproto 的生成形）。
+    /// Conversion face of six-character mode strings (C `mode_con` plus mkproto's generated form).
     #[test]
     fn test_mode_con_six_character_forms() {
         assert_eq!(mode_con("d--755").unwrap(), 0o040755);
@@ -983,15 +1009,16 @@ mod tests {
         assert_eq!(mode_con("--g664").unwrap(), 0o100664 | 0o2000);
         assert_eq!(mode_con("s--777").unwrap(), 0o120777);
         assert_eq!(mode_con("c--660").unwrap(), 0o020660);
-        // 短串在 C 里会读到分隔符之外（潜在越界读）——按文法拒绝。
+        // Short strings read past the separator in C (latent out-of-bounds read) — rejected as a grammar error.
         assert_eq!(mode_con("d755"), Err(MkfsError::ProtoBadMode));
         assert_eq!(mode_con("d--888"), Err(MkfsError::ProtoBadMode));
         assert_eq!(mode_con("q--755"), Err(MkfsError::ProtoBadMode));
     }
 
-    /// 原型播种整树：目录递归、普通文件内容、符号链接、设备文件、
-    /// 链接计数与位图记账，全部经服务器自己的解析器回读核对
-    /// （C `eat_dir`/`eat_file` 的语义面）。
+    /// Seeding a whole tree from a prototype: directory recursion, regular file
+    /// content, symlinks, device files, link counts and bitmap accounting, all read
+    /// back through the server's own parser (the semantic face of C
+    /// `eat_dir`/`eat_file`).
     #[test]
     fn test_proto_seeds_tree_with_all_entry_types() {
         let proto = "boot\n\
@@ -1010,7 +1037,7 @@ mod tests {
         let plan = plan_layout(64, Some(16), 4096).unwrap();
         let image = build_image_seeded(&plan, proto, &mut host, 1_000).unwrap();
 
-        // 根目录：模式行来自头第三行（d-u750）；子目录一个，链接数三。
+        // Root directory: mode line from the header's third line (d-u750); one subdirectory, link count three.
         let bs = 4096usize;
         let per_block = bs / INODE_DISK_SIZE;
         let table = (START_BLOCK + plan.inode_map_blocks + plan.zone_map_blocks) as usize;
@@ -1025,7 +1052,7 @@ mod tests {
         assert_eq!(root.mode, 0o040750);
         assert_eq!(root.nlinks, 3, "根目录含子目录 etc：`.`、`..` 加 etc 的 `..`");
         assert_eq!(root.size as usize, 6 * DIRECTORY_ENTRY_SIZE);
-        // 根的头两条还是 `.`/`..`，随后是四个条目（顺序按原型行）。
+        // The root's first two entries are still `.`/`..`, then four entries (order follows the prototype lines).
         assert_eq!(dir_slot(&image, &plan, 1, 0), (1, b".".to_vec()));
         assert_eq!(dir_slot(&image, &plan, 1, 1), (1, b"..".to_vec()));
         assert_eq!(dir_slot(&image, &plan, 1, 2), (2, b"etc".to_vec()));
@@ -1033,7 +1060,7 @@ mod tests {
         assert_eq!(dir_slot(&image, &plan, 1, 4), (4, b"tty".to_vec()));
         assert_eq!(dir_slot(&image, &plan, 1, 5), (5, b"fast".to_vec()));
 
-        // etc 目录：空目录（`$` 紧随），`.`/`..` 指对，链接数二。
+        // etc directory: empty directory (`$` follows immediately), `.`/`..` point correctly, link count two.
         assert_eq!(dir_slot(&image, &plan, 2, 0), (2, b".".to_vec()));
         assert_eq!(dir_slot(&image, &plan, 2, 1), (1, b"..".to_vec()));
         let etc = DiskInode::from_bytes(&image[inode_at(2)..inode_at(2) + INODE_DISK_SIZE])
@@ -1044,7 +1071,7 @@ mod tests {
         assert_eq!(etc.nlinks, 2);
         assert_eq!(etc.size as usize, 2 * DIRECTORY_ENTRY_SIZE);
 
-        // 普通文件：内容从宿主读出，尺寸 13，mtime 来自宿主文件。
+        // Regular file: content read from the host, size 13, mtime from the host file.
         let motd = DiskInode::from_bytes(&image[inode_at(3)..inode_at(3) + INODE_DISK_SIZE])
             .unwrap();
         assert_eq!(motd.mode, 0o100644);
@@ -1053,16 +1080,16 @@ mod tests {
         let data_at = motd.zones[0] as usize * bs;
         assert_eq!(&image[data_at..data_at + 12], b"hello proto\n");
 
-        // 字符设备：`major<<8|minor` 进区块号槽，尺寸零，不占数据区。
+        // Character device: `major<<8|minor` goes into the zone-number slot, size zero, no data zone used.
         let tty = DiskInode::from_bytes(&image[inode_at(4)..inode_at(4) + INODE_DISK_SIZE])
             .unwrap();
         assert_eq!(tty.mode, 0o020660);
-        // major=4、minor=0 编码进区块号槽（`major<<8|minor`，
-        // C `proto.c` 的 dev_t 打包）；minor 为 0，不写恒真的 `| 0`。
+        // major=4, minor=0 encoded into the zone-number slot (`major<<8|minor`,
+        // C `proto.c`'s dev_t packing); minor is 0, so no always-true `| 0` is written.
         assert_eq!(tty.zones[0], 4 << 8);
         assert_eq!(tty.size, 0);
 
-        // 符号链接：目标字符串进数据区，尺寸为目标长度。
+        // Symlink: the target string goes into a data zone, size is the target length.
         let fast = DiskInode::from_bytes(&image[inode_at(5)..inode_at(5) + INODE_DISK_SIZE])
             .unwrap();
         assert_eq!(fast.mode, 0o120777);
@@ -1070,8 +1097,8 @@ mod tests {
         let target_at = fast.zones[0] as usize * bs;
         assert_eq!(&image[target_at..target_at + 10], b"/host/motd");
 
-        // 位图记账：五个 inode 全在 imap，四个数据区（根、etc、motd、
-        // fast）在 zmap；tty 无数据区。
+        // Bitmap accounting: all five inodes are in imap; four data zones (root, etc,
+        // motd, fast) are in zmap; tty has no data zone.
         let imap = &image[(START_BLOCK * 4096) as usize..];
         for ino in 1..=5u64 {
             assert_eq!(imap[(ino / 8) as usize] >> (ino % 8) & 1, 1, "imap 位 {ino}");
@@ -1081,46 +1108,46 @@ mod tests {
         assert_eq!(zmap[0] >> 1 & 0b1111, 0b1111, "位 1..4：根、etc、motd、fast 四区");
     }
 
-    /// 播种的错误面：块参数小于头、原型早断、宿主文件缺、坏模式行、
-    /// inode 用尽。
+    /// Seeding error faces: block argument below the header, prototype ends early,
+    /// missing host file, bad mode line, inodes exhausted.
     #[test]
     fn test_proto_errors_are_rejected() {
         let mut host = MemHost { files: vec![] };
         let plan = plan_layout(16, Some(8), 4096).unwrap();
-        // 头声明 64 块，参数只给 16（C mkfs.c:305-308 的 errx）。
+        // Header declares 64 blocks, argument gives only 16 (the errx at C mkfs.c:305-308).
         let proto_big = "boot\n64 8\nd--755 0 0\n$\n";
         assert_eq!(
             build_image_seeded(&plan, proto_big, &mut host, 0),
             Err(MkfsError::ProtoTooLarge { given: 16, needed: 64 })
         );
-        // 原型在 `$` 之前结束（C get_line 的 Unexpected end-of-file）。
+        // Prototype ends before `$` (C get_line's Unexpected end-of-file).
         let plan64 = plan_layout(64, Some(16), 4096).unwrap();
         let proto_short = "boot\n64 8\nd--755 0 0\n";
         assert_eq!(
             build_image_seeded(&plan64, proto_short, &mut host, 0),
             Err(MkfsError::ProtoUnexpectedEnd)
         );
-        // 宿主文件缺失（C "Can't open %s"）。
+        // Missing host file (C "Can't open %s").
         let proto_missing = "boot\n64 8\nd--755 0 0\nmotd ---644 0 0 /nope\n$\n";
         assert_eq!(
             build_image_seeded(&plan64, proto_missing, &mut host, 0),
             Err(MkfsError::HostFile)
         );
-        // 模式行坏（缺词）。
+        // Bad mode line (missing words).
         let proto_mode = "boot\n64 8\nd--755\n$\n";
         assert_eq!(
             build_image_seeded(&plan64, proto_mode, &mut host, 0),
             Err(MkfsError::ProtoBadLine)
         );
-        // inode 用尽：4096 字节块的 inode 按块取整后 64 个，装不下
-        // 根加 70 条目（C alloc_inode 的 not enough inodes）。
+        // Inodes exhausted: with 4096-byte blocks the rounded inode count is 64,
+        // which cannot hold the root plus 70 entries (C alloc_inode's not enough inodes).
         let mut many = alloc::string::String::from("boot\n64 16\nd--755 0 0\n");
         use core::fmt::Write as _;
         for k in 0..70 {
             writeln!(many, "f{k} ---644 0 0 /host/motd").unwrap();
         }
         many.push('$');
-        // 空内容文件不占区，让 inode 先耗尽。
+        // Empty-content files take no zone, so inodes run out first.
         let mut host2 = MemHost { files: vec![("/host/motd", b"", 0)] };
         let header = proto_header(&many).unwrap();
         let plan_tight = plan_layout(64, Some(header.inodes), 4096).unwrap();
@@ -1131,8 +1158,8 @@ mod tests {
         );
     }
 
-    /// 零长文件与空根目录：零长不占区（C eat_file 的 ct==0 支路），
-    /// 空根只有 `.`/`..`。
+    /// Zero-length file and bare root directory: zero length uses no zone (C
+    /// eat_file's ct==0 branch), and the bare root has only `.`/`..`.
     #[test]
     fn test_proto_empty_file_and_bare_root() {
         let mut host = MemHost { files: vec![("/empty", b"", 5)] };
@@ -1147,7 +1174,7 @@ mod tests {
         assert_eq!(file.size, 0);
         assert_eq!(file.zones[0], 0, "零长文件不占区");
         assert_eq!(file.modified, 0, "无区可挂，mtime 不落");
-        // zmap 只有根数据区一个数据位。
+        // zmap has only the root data zone's data bit.
         let zmap_at = (START_BLOCK as usize * bs) + plan.inode_map_blocks as usize * bs;
         assert_eq!(image[zmap_at], 0b11, "位 0 恒置 + 位 1 = 根数据区");
     }

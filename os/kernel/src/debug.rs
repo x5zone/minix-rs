@@ -49,7 +49,7 @@ pub fn runqueues_ok_cpu(
     proc_table: &ProcessTable,
     cpu: CpuId,
 ) -> bool {
-    // S-6.3 sched-1: ready queues are per-CPU (ProcessTable::sched[cpu]),
+    // Ready queues are per-CPU (ProcessTable::sched[cpu]),
     // mirroring C's cpulocal run_q_head/run_q_tail (cpulocals.h:58-59). Each
     // CPU validates its own queue; the cross-CPU readiness check below is
     // scoped to processes assigned to this CPU (`rp->p_cpu`).

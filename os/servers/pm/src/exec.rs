@@ -1,7 +1,7 @@
 //! Exec: `do_exec` / `do_newexec` / `exec_restart` / `do_execrestart`.
 //!
 //! C ground truth: `minix3/minix/servers/pm/exec.c` (200 lines)
-//! Design: `.design/17-design.v1.md` D1–D8 (explicit `ExecRequest`/`ExecState`/`FrameRegion`/`TracerExec`).
+//! Design: explicit `ExecRequest`/`ExecState`/`FrameRegion`/`TracerExec` values.
 //! Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Endpoint, UserSlot, Pid, VirBytes, EPERM, EINVAL, ESRCH, OK};
@@ -60,10 +60,11 @@ impl ExecError {
     }
 }
 
-/// VFS exec forwarder (`tell_vfs(VFS_PM_EXEC)` → `SUSPEND`, `exec.c:52`, D1, A-4).
+/// VFS exec forwarder (`tell_vfs(VFS_PM_EXEC)` → `SUSPEND`, `exec.c:52`).
 ///
-/// `table`/`caller` 由方法携带(tell_vfs 的 not-idle 断言与 VFS_CALL
-/// 置位需访问进程表;与 VfsForwarder 契约同形)。
+/// `table`/`caller` are carried by the method (tell_vfs's not-idle
+/// assertion and setting VFS_CALL need access to the process table; same
+/// shape as the VfsForwarder contract).
 pub trait VfsExec {
     fn forward_exec(
         &mut self,
@@ -73,47 +74,53 @@ pub trait VfsExec {
     ) -> Result<ReplyIntent, ExecError>;
 }
 
-/// Kernel exec (`sys_exec`, `exec.c:197`, D7, A-3).
+/// Kernel exec (`sys_exec`, `exec.c:197`).
 ///
-/// `reply` 的 `table` 参数供生产实现解析 slot→endpoint（测试 mock 忽略）。
+/// The `table` argument of `reply` lets the production implementation
+/// resolve slot→endpoint (the test mock ignores it).
 pub trait KernelExec {
     fn exec(&mut self, ep: Endpoint, sp: VirBytes, pc: VirBytes, ps_str: VirBytes, name: &[u8]) -> i32;
     fn kill(&mut self, ep: Endpoint, sig: i32);
     fn reply(&mut self, table: &mut ProcTable, slot: UserSlot, code: i32);
 }
 
-/// Tracer signal for `exec` (`check_sig`, `exec.c:193`, D5).
+/// Tracer signal for `exec` (`check_sig`, `exec.c:193`).
 ///
-/// `caller` 为被 exec 的目标进程自身（C: `check_sig(rmp, rmp->mp_pid, …)`）。
+/// `caller` is the target process itself, the one being exec'd (C:
+/// `check_sig(rmp, rmp->mp_pid, …)`).
 pub trait TracerSig {
     fn send(&mut self, table: &mut ProcTable, caller: UserSlot, pid: Pid, sig: i32);
 }
 
-/// `exec_restart` 两个注入点的合并 trait（D5/D7，2026-09-06 收敛）。
+/// The merged trait for `exec_restart`'s two injection points.
 ///
-/// 与 [`crate::signal_flow::RestartServices`] 同一动机：生产装配中
-/// `KernelExec` 与 `TracerSig` 共享同一 transport，两个 `&mut` 无法共存，
-/// 合并为 supertrait、函数体内经 trait 上转取用。
+/// Same motivation as [`crate::signal_flow::RestartServices`]: in the
+/// production wiring `KernelExec` and `TracerSig` share one transport and
+/// two `&mut` cannot coexist, so they are merged into a supertrait and taken
+/// inside function bodies via trait upcasting.
 pub trait ExecRestartServices: KernelExec + TracerSig {}
 
-/// `do_exec` (`exec.c:38-56`, D1) — unconditionally forward to VFS.
+/// `do_exec` (`exec.c:38-56`) — unconditionally forward to VFS.
 ///
-/// C 中本函数无调用者门（门在 `do_newexec`，exec.c:70-71）。任何持有
-/// 自身端点的进程（含 init）都可发起 execve → PM → VFS 转发。
+/// This function has no caller gate in C (the gate sits in `do_newexec`,
+/// exec.c:70-71). Any process holding its own endpoint (init included) may
+/// issue execve → PM → VFS forwarding.
 pub fn do_exec(
     table: &mut ProcTable,
     caller: UserSlot,
     req: ExecRequest,
     vfs: &mut dyn VfsExec,
 ) -> Result<ReplyIntent, ExecError> {
-    // C exec.c:43-52: memset msg → tell_vfs(mp, &m) → return SUSPEND.
-    // VfsExec 的生产实现内部编码 VFS_PM_EXEC 并做 tell_vfs。
+    // C exec.c:43-52: memset msg → tell_vfs(mp, &m) → return SUSPEND. The
+    // production VfsExec implementation encodes VFS_PM_EXEC internally and
+    // performs the tell_vfs.
     vfs.forward_exec(table, caller, req)?;
-    // do_exec 不置 PARTIAL_EXEC（那是 do_newexec 的职责，exec.c:107）。
+    // do_exec does not set PARTIAL_EXEC (that is do_newexec's job,
+    // exec.c:107).
     Ok(ReplyIntent::ReplyLater)
 }
 
-/// Apply `TAINTED` double and `allow_setuid` (helper for `do_newexec`, D2).
+/// Apply `TAINTED` double and `allow_setuid` (helper for `do_newexec`).
 fn apply_tainted_and_creds(
     table: &mut ProcTable,
     target: UserSlot,
@@ -145,9 +152,11 @@ fn apply_tainted_and_creds(
         creds.group.saved = creds.group.effective;
     }
 
-    // 100-109 TAINTED：setuid/setgid 位生效（第一条件），或 eff≠real
-    // （被提/降权，第二条件）——C 用 if/else if 两支都置位，Rust 折叠为单个
-    // 布尔，两支同作无副作用（都只 |= TAINTED），语义一致。
+    // 100-109 TAINTED: the setuid/setgid bit took effect (first condition),
+    // or eff≠real (privilege raised or dropped, second condition) — C sets
+    // the flag in both arms of an if/else if; Rust folds them into a single
+    // boolean, and both arms are side-effect-free (they only |= TAINTED), so
+    // the semantics match.
     let creds = proc.resources.privilege.credentials();
     let tainted = (effective_allow && info.allow_setuid)
         || creds.user.effective != creds.user.real
@@ -160,7 +169,7 @@ fn apply_tainted_and_creds(
     }
 }
 
-/// `do_newexec` (`exec.c:62-125`, D2/D3/D6).
+/// `do_newexec` (`exec.c:62-125`).
 pub fn do_newexec(
     table: &mut ProcTable,
     who: Endpoint,
@@ -204,7 +213,7 @@ pub fn do_newexec(
     Ok(allow)
 }
 
-/// `do_execrestart` (`exec.c:130-151`, D7).
+/// `do_execrestart` (`exec.c:130-151`).
 pub fn do_execrestart(
     table: &mut ProcTable,
     who: Endpoint,
@@ -219,7 +228,7 @@ pub fn do_execrestart(
     Ok(())
 }
 
-/// `exec_restart` (`exec.c:156-199`, D3/D4/D5/D7).
+/// `exec_restart` (`exec.c:156-199`).
 pub fn exec_restart(
     table: &mut ProcTable,
     target: UserSlot,
@@ -297,7 +306,8 @@ mod tests {
             Ok(ReplyIntent::ReplyLater)
         }
     }
-    /// 记录收到的 `ExecRequest`，用于断言转发确实抵达 VFS 且载荷原样递送。
+    /// Records the `ExecRequest` it receives, to assert that forwarding
+    /// really reached VFS and that the payload was delivered verbatim.
     struct RecordingVfs { pub seen: Option<ExecRequest> }
     impl RecordingVfs { fn new() -> Self { Self { seen: None } } }
     impl VfsExec for RecordingVfs {
@@ -311,7 +321,7 @@ mod tests {
             Ok(ReplyIntent::ReplyLater)
         }
     }
-    /// `exec_restart` 的合并注入 mock（D5/D7 收敛后单一 service 对象）。
+    /// The merged injection mock for `exec_restart` (a single service object).
     struct TestExecSvc { pub killed: Option<Endpoint>, pub replied: Option<(UserSlot,i32)>, pub execed: Option<Endpoint>, pub sig: Option<i32> }
     impl TestExecSvc { fn new() -> Self { Self { killed: None, replied: None, execed: None, sig: None } } }
     impl KernelExec for TestExecSvc {
@@ -324,8 +334,9 @@ mod tests {
     }
     impl ExecRestartServices for TestExecSvc {}
 
-    /// `do_exec` 无条件把 `ExecRequest` 转发给 VFS 并返回 ReplyLater
-    /// （C exec.c:38-56：tell_vfs(VFS_PM_EXEC) → SUSPEND，无门）。
+    /// `do_exec` unconditionally forwards the `ExecRequest` to VFS and
+    /// returns ReplyLater (C exec.c:38-56: tell_vfs(VFS_PM_EXEC) → SUSPEND,
+    /// no gate).
     #[test]
     fn test_do_exec_forwards() {
         let mut table = ProcTable::new();
@@ -334,24 +345,27 @@ mod tests {
         let mut vfs = RecordingVfs::new();
         let r = do_exec(&mut table, UserSlot::new(0), req, &mut vfs).unwrap();
         assert_eq!(r, ReplyIntent::ReplyLater);
-        // 载荷确实抵达 VFS 且原样递送（转发行为本体，而非仅返回码）。
+        // The payload really reached VFS and was delivered verbatim (the
+        // forwarding behavior itself, not merely the return code).
         let seen = vfs.seen.expect("do_exec must forward to VFS");
         assert_eq!(seen.endpoint, req.endpoint);
         assert_eq!(seen.path, req.path);
         assert_eq!(seen.path_len, req.path_len);
     }
 
-    /// `do_exec` 无调用者门（C exec.c:38-56）：init 这类既非 VFS 又非 RS
-    /// 的普通进程端点发起 execve 也必须成功——门只属于 do_newexec（70-71）。
+    /// `do_exec` has no caller gate (C exec.c:38-56): an ordinary process
+    /// endpoint such as init's, being neither VFS nor RS, must also succeed
+    /// at issuing execve — the gate belongs only to do_newexec (70-71).
     #[test]
     fn test_do_exec_no_caller_gate() {
         let mut table = ProcTable::new();
-        mk_proc(&mut table, 0); // slot 0 endpoint 是普通进程（非 VFS/RS）
+        mk_proc(&mut table, 0); // slot 0's endpoint is an ordinary process (neither VFS nor RS)
         assert_ne!(table.procs[0].endpoint(), Endpoint::VFS);
         assert_ne!(table.procs[0].endpoint(), Endpoint::RS);
         let req = ExecRequest { caller: UserSlot::new(0), endpoint: Endpoint::from_generation_slot(1,0), path: VirBytes(0x1000), path_len: 5, frame: VirBytes(0x2000), frame_len: 128, ps_str: VirBytes(0) };
         let mut vfs = NopVfs;
-        // 普通进程端点也必须被无条件转发（旧版此处误返回 EPERM）。
+        // An ordinary process endpoint must be forwarded unconditionally
+        // too (an earlier version wrongly returned EPERM here).
         let r = do_exec(&mut table, UserSlot::new(0), req, &mut vfs);
         assert_eq!(r.unwrap(), ReplyIntent::ReplyLater);
     }
@@ -433,7 +447,7 @@ mod tests {
         table.procs[5].state.guardianship = crate::mproc::Guardianship::Traced { parent: UserSlot::new(0), tracer: UserSlot::new(1), trace_options: crate::mproc::TraceOptions::empty() };
         table.procs[5].resources.privilege.credentials_mut().user.effective = 2000; // eff != real (1000)
         let info = ExecInfo { allow_setuid: true, new_uid: 0, new_gid: 0, progname: [0;16], stack_high: VirBytes(0x8000), frame_len: 64 };
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = do_newexec(&mut table, Endpoint::VFS, Endpoint::from_generation_slot(1,5), info).unwrap();
         // tracer present => allow_setuid false, so not via first branch, but eff!=real => tainted true

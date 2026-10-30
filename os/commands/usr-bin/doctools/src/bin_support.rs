@@ -12,7 +12,7 @@
 //! (hosted) or `minix_sys::exit` (target). File access and the wall clock
 //! follow the same hosted/target twin shape where a binary needs them.
 //! Writes go through `minix_sys::write` on both sides; transport failures
-//! short-circuit to a typed `Err` (edge E-SYSCALL-SIGN), so hosted runs
+//! short-circuit to a typed `Err` (the syscall/signal seam), so hosted runs
 //! observe honest failures on both channels.
 
 // Each binary includes this module and uses the subset it needs; the
@@ -110,17 +110,25 @@ pub fn emit(bytes: &[u8]) {
     }
 }
 
-/// Minix3 的 `perror(3)` 那一行：`<调用者给的串>: <句子>`——注意这张表里的
-/// `perror` **不带程序名前缀**（`minix3/lib/libc/stdio/perror.c` 打的是
-/// `fprintf(stderr, "%s%s%s\n", s, separator, buf)`），与缀程序名的
-/// `err(3)`/`warn(3)` 是两件事。渲染与句子表都住在 `minix-types` 那一份权威里
-/// （`perror_line`，与 `err_line`/`prog_name` 并列），本层经 `minix_sys::perror_line` 拿，
-/// 本处只负责写与补换行；退不退由调用者定（C 的 `perror` 也不退）。
+/// The Minix3 `perror(3)` line: `<caller-supplied string>: <sentence>` — note
+/// that `perror` here does **not** prefix the program name
+/// (`minix3/lib/libc/stdio/perror.c` prints
+/// `fprintf(stderr, "%s%s%s\n", s, separator, buf)`), which makes it a
+/// different thing from the program-name-prefixing `err(3)`/`warn(3)`. Both
+/// the rendering and the sentence table live in the single authority in
+/// `minix-types` (`perror_line`, alongside `err_line`/`prog_name`); this layer
+/// gets them through `minix_sys::perror_line` and only writes them out and
+/// appends the newline. Whether to exit is the caller's call (C's `perror`
+/// does not exit either).
 pub fn perror_line(label: &str, code: minix_sys::Errno) {
-    // C 的 `vwarnc` 直接用 `vfprintf(stderr, fmt, ap)` 打调用者的串，长度不受一行栈缓冲
-    // 限制（`minix3/lib/libc/gen/vwarnc.c:62`；`perror.c:67` 也一样把调用者的串整个打出去，
-    // 只有句子走 `strerror_r` 的定长表）。权威交回的是「本该写多少字节」——缓冲装不下也照数
-    // ——所以这里先量一次、再按那个数渲染，超长操作数不会被截断。
+    // C's `vwarnc` prints the caller's string straight through
+    // `vfprintf(stderr, fmt, ap)`, so its length is not bounded by a one-line
+    // stack buffer (`minix3/lib/libc/gen/vwarnc.c:62`; `perror.c:67` likewise
+    // emits the caller's string in full, and only the sentence goes through
+    // `strerror_r`'s fixed table). The authority returns how many bytes ought
+    // to be written — even when the buffer cannot hold them — so this sizes
+    // once, renders into that exact count, and an over-long operand is never
+    // truncated.
     let mut sizing: [u8; 0] = [];
     let need = minix_sys::perror_line(label, code, &mut sizing);
     let mut line = alloc::vec![0u8; need];

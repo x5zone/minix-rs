@@ -129,21 +129,26 @@ fn the_rotation_argument_is_parsed_like_strtol_and_rejected_in_two_orders() {
     // test. Both print C's sentence *including* the strerror tail, which this tree does
     // carry (the Minix3 `sys_errlist` table, batch 233) — the two loops below assert the
     // exact sentences, so nothing here is left to "a phrase we invented".
-    // 与 `primes` 的区别值得留在注释里：那两个命令对「一个位也没转出」的落点不同，
-    // 不是因为 libc 行为不同，而是因为 caesar 自己合成 errno（`caesar.c:131-135`），
-    // 而 primes 只看 `strtoumax` 留下的 errno（真源在无转换时不置号）。
+    // The contrast with `primes` is worth keeping in a comment: the two
+    // commands land differently when nothing was converted, not because libc
+    // behaves differently but because caesar synthesizes errno itself
+    // (`caesar.c:131-135`), while primes only reads the errno `strtoumax`
+    // left behind (the ground truth sets none on zero conversions).
     for arg in ["-1", "2147483648", "99999999999"] {
         let (out, status, err) = run(&[arg], b"abc");
         assert_eq!(out, Vec::new(), "argument {arg:?} must not be rotated");
         assert_eq!(status, 1);
-        // `err(3)` 缀的是 Minix3 自己那张表的句子（`errno.h:78` 对 ERANGE 的注与之一致）。
+        // `err(3)` appends the sentence from Minix3's own table (`errno.h:78`'s
+        // note on ERANGE agrees with it).
         assert_eq!(
             err,
             format!("caesar: Bad rotation value `{arg}': Result too large or too small\n")
         );
     }
-    // `abc` 是 `primes` 那处误读的照妖镜：同一个输入在 caesar 这里是 EINVAL（C 自己合成），
-    // 在 primes 那里却是「illegal numeric format」那句（真源不置 errno）——两形都各有门钉住。
+    // `abc` exposes the misreading around `primes`: the same input is EINVAL
+    // here in caesar (C synthesizes it) but the "illegal numeric format"
+    // sentence in primes (the ground truth sets no errno) — both shapes have
+    // a test nailing them down.
     for arg in ["", "5x", "-", "abc"] {
         let (out, status, err) = run(&[arg], b"abc");
         assert_eq!(out, Vec::new(), "argument {arg:?} must not be rotated");
@@ -192,9 +197,11 @@ fn a_failed_write_reports_the_stdout_leg_with_the_number() {
         !sentence.is_empty() && sentence.chars().any(|c| c.is_lowercase()),
         "缀的应是一句 strerror 文本而不是代号：`{sentence}`"
     );
-    // 更紧的一层：句子必须来自**那次失败的写**留下的号（宿主 `/dev/full` 回
-    // `ENOSPC`，本树表里就是「No space left on device」）。随便填一个号——哪怕同样
-    // 是一句话——都会在这里露馅，因为这句话不再说到空间。
+    // A tighter layer: the sentence must come from the number left by **that
+    // failed write** (the host `/dev/full` returns `ENOSPC`, which in this
+    // tree's table is "No space left on device"). Any other number — even one
+    // that is also a sentence — would show up here, because that sentence no
+    // longer speaks of space.
     assert!(
         sentence.to_lowercase().contains("space"),
         "句子该说那次写的失手，不是任意一个号：`{sentence}`"

@@ -1,20 +1,25 @@
-//! minix3/minix/tests Rust 腿翻译 —— 套接字域(test56/90 的策略面)。
+//! Rust-leg translation of minix3/minix/tests — the socket domain (the policy
+//! face of test56/90).
 //!
-//! # 翻译映射
+//! # Translation mapping
 //!
-//! C 网络编号测试的 socket 数据面需要 INET/UDS 服务器与真实连接;本文件钉
-//! **当前已存在的策略面**:UDS 的域/类型准入、散列槽位、环与控制消息长度
-//! 策略(C `uds.c` 对位),以及 lwip 地址工具(C test48 的地址处理面对位)。
-//! 连接建立、数据搬运、SCM_RIGHTS fd 传递挂 UDS/INET 服务器点亮后的条目。
+//! C's numbered network tests exercise the socket data plane, which needs the
+//! INET/UDS servers and real connections; this file pins down the **policy face
+//! that already exists**: UDS domain/type admission, hash slot assignment, ring
+//! and control-message length policy (matching C `uds.c`), and the lwip address
+//! utilities (matching the address-handling face of C test48). Connection
+//! establishment, data movement, and SCM_RIGHTS fd passing are items pending
+//! once the UDS/INET servers light up.
 //!
-//! | C 测试 | 语义归宿 |
+//! | C test | Semantic home |
 //! |---|---|
-//! | test56/90(UDS 准入策略) | [`uds_admission_policy_and_slot_binding`] |
-//! | test90(环与控制消息长度策略) | [`uds_ring_and_control_length_policy`] |
-//! | test48/93(地址工具:前缀/掩码/范围) | [`lwip_address_utilities_prefix_and_scope`] |
-//! | test67/80/81/91/92(TCP/UDP/RAW 数据面) | 边界外,挂 INET 点亮后补 |
+//! | test56/90 (UDS admission policy) | [`uds_admission_policy_and_slot_binding`] |
+//! | test90 (ring and control-message length policy) | [`uds_ring_and_control_length_policy`] |
+//! | test48/93 (address utilities: prefix/mask/scope) | [`lwip_address_utilities_prefix_and_scope`] |
+//! | test67/80/81/91/92 (TCP/UDP/RAW data plane) | out of scope; to be added once INET lights up |
 //!
-//! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
+//! Delivery gate = compilation; every test is `#[ignore]`, and the conditions
+//! for enabling each are given in its attribute.
 
 use minix_net_lwip::addr::{
     SCOPE_GLOBAL, SCOPE_LINK_LOCAL, address_scope, common_bits, normalize_prefix,
@@ -24,85 +29,96 @@ use minix_net_uds::core::{domain_allowed, hash_slot};
 use minix_net_uds::io::{RECEIVE_BUFFER, control_length_allowed, max_payload, ring_advance};
 
 // ---------------------------------------------------------------------------
-// test56/90 —— UDS 准入策略与槽位绑定
+// test56/90 — UDS admission policy and slot binding
 // ---------------------------------------------------------------------------
 
-/// C 语义(`uds.c:230-248`):只有本地域通过;槽位由设备号与 inode 混合
-/// 散列,结果落在槽位数界内且确定性可复现。
+/// C semantics (`uds.c:230-248`): only the local domain passes; the slot is a
+/// hash of the device number mixed with the inode, falls inside the slot index
+/// bound, and is deterministic and reproducible.
 #[test]
 #[ignore = "点亮前提:UDS 服务器连接面随载体点亮后复核"]
 fn uds_admission_policy_and_slot_binding() {
-    // 域准入:只有 AF_UNIX 对位为真。
+    // Domain admission: only AF_UNIX is admitted.
     assert!(domain_allowed(true), "本地域放行");
     assert!(!domain_allowed(false), "其他域拒绝(配置错误的早期门)");
 
-    // 槽位绑定:确定性 + 界内 + 对不同键分散。
+    // Slot binding: deterministic + in bounds + spread across different keys.
     let first = hash_slot(0x301, 42);
     let again = hash_slot(0x301, 42);
     assert_eq!(first, again, "同键同槽(确定性)");
     assert!(first < minix_net_uds::core::HASH_SLOTS, "槽位落在界内");
-    // 不同 inode 在 64 槽位(C uds.h UDSHASH_SLOTS)上大概率分散;这里只用两个键断言函数可区分。
+    // Different inodes mostly spread over the 64 slots (C uds.h
+    // UDSHASH_SLOTS); only two keys are used here to assert the function
+    // distinguishes them.
     let _ = hash_slot(0x301, 43);
 }
 
 // ---------------------------------------------------------------------------
-// test90 —— 环推进与控制消息长度策略
+// test90 — ring advance and control-message length policy
 // ---------------------------------------------------------------------------
 
-/// C 语义(uds io 面):环位置对缓冲容量取模回绕(`uds_advance`,`io.c:82`);
-/// 控制消息长度门在界内放行、越界拒绝;净载荷 = 缓冲减头部。
+/// C semantics (uds io face): the ring position wraps modulo the buffer capacity
+/// (`uds_advance`, `io.c:82`); the control-message length gate admits values in
+/// bounds and rejects those out of bounds; usable payload = buffer minus header.
 #[test]
 #[ignore = "点亮前提:UDS 服务器数据面随载体点亮后复核"]
 fn uds_ring_and_control_length_policy() {
-    // 环推进回绕:容量取模(缓冲 32768,C io.c:82)。
+    // Ring advance wrap: modulo the capacity (buffer 32768, C io.c:82).
     let wrapped = ring_advance(RECEIVE_BUFFER - 8, 16);
     assert_eq!(wrapped, 8, "越界部分对容量取模回折到环首");
     assert_eq!(ring_advance(0, 8), 8, "普通推进");
 
-    // 控制消息长度:界内(≤ CONTROL_MAX = 4096)放行,越界拒绝。
+    // Control-message length: in bounds (≤ CONTROL_MAX = 4096) admitted, out of
+    // bounds rejected.
     assert!(control_length_allowed(0));
     assert!(control_length_allowed(4096));
     assert!(!control_length_allowed(4097));
 
-    // 净载荷:缓冲减头部(头部尺寸是 wire 契约的一部分)。
+    // Usable payload: buffer minus header (the header size is part of the wire
+    // contract).
     let payload = max_payload(16);
     assert_eq!(payload, RECEIVE_BUFFER - 16, "净载荷 = 缓冲 - 头部");
 }
 
 // ---------------------------------------------------------------------------
-// test48/93 —— lwip 地址工具
+// test48/93 — lwip address utilities
 // ---------------------------------------------------------------------------
 
-/// C 语义(lwip 地址工具,`test48` 的 inet 处理面与 `test93` 的路由前缀面):
-/// v4 点分掩码转前缀长度;前缀归一化清掉主机位;公共前缀位数计算;地址
-/// 范围判定。
+/// C semantics (lwip address utilities, the inet handling face of `test48` and
+/// the routing-prefix face of `test93`): dotted v4 mask to prefix length; prefix
+/// normalization clears the host bits; common prefix bit count; address scope
+/// classification.
 #[test]
 #[ignore = "点亮前提:INET 服务器随载体点亮后端到端复核"]
 fn lwip_address_utilities_prefix_and_scope() {
-    // 点分掩码 → 前缀长度(C test93 的 netmask 面):255.255.255.0 → 24。
+    // Dotted mask → prefix length (the netmask face of C test93):
+    // 255.255.255.0 → 24.
     assert_eq!(prefix_from_netmask_v4(0xFFFF_FF00), Some(24));
     assert_eq!(prefix_from_netmask_v4(0xFFFF_0000), Some(16));
     assert_eq!(prefix_from_netmask_v4(0x0000_0000), Some(0));
-    // 非连续掩码拒绝(前缀长度无定义)。
+    // Non-contiguous mask rejected (prefix length is undefined).
     assert_eq!(prefix_from_netmask_v4(0x0FFF_FFFF), None);
 
-    // 前缀归一化:从 128 位最高端起保留前缀位,主机位清零。
-    // v4 地址以低 32 位进 u128 时,/24 的对位是 /120(96 位映射头 + 24)。
+    // Prefix normalization: keep prefix bits from the most significant end of
+    // 128 bits, clear host bits. A v4 address enters u128 in the low 32 bits, so
+    // /24 corresponds to /120 (96-bit mapped header + 24).
     let base = normalize_prefix(0xC0A8_0101, 120); // 192.168.1.1 → 192.168.1.0
     assert_eq!(base, 0xC0A8_0100, "主机位清零");
-    // 纯 v6 形:/64 保留高 64 位。
+    // Pure v6 form: /64 keeps the high 64 bits.
     let v6 = normalize_prefix(0x2001_0DB8_0000_0000_0000_0000_0000_0001, 64);
     assert_eq!(
         v6, 0x2001_0DB8_0000_0000_0000_0000_0000_0000,
         "/64 清低 64 位"
     );
 
-    // 公共前缀位:从最高端数起。v4 地址顶到 128 位高位(与 /24 对位):
-    // 低 8 位分岔 → 共 24 位;完全相同 → 32 位。
+    // Common prefix bits: counted from the most significant end. A v4 address is
+    // aligned to the top of 128 bits (corresponding to /24): the low 8 bits
+    // differ → 24 bits in common; identical → 32 bits.
     assert_eq!(common_bits(0xC0A8_0100 << 96, 0xC0A8_01FF << 96, 32), 24);
     assert_eq!(common_bits(0xC0A8_0100 << 96, 0xC0A8_0100 << 96, 32), 32);
 
-    // 地址范围判定(C addrpol.c 对位):v4 恒全局;环回走链路本地。
+    // Address scope classification (matching C addrpol.c): v4 is always global;
+    // loopback goes link-local.
     assert_eq!(
         address_scope(true, false, false, false, false, false, 0, false, false),
         SCOPE_GLOBAL,

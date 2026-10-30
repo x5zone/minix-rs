@@ -1,4 +1,4 @@
-//! SEF callback registration (ARCH A-7).
+//! SEF callback registration (`[ARCH: A-7]`).
 //!
 //! Mirrors `sef_local_startup()` (`minix3/minix/servers/rs/main.c:136-152`):
 //! RS registers 7 SEF callbacks before entering the main loop. RS is the
@@ -9,7 +9,7 @@
 //! C uses global function pointers (`sef_setcb_*`, libsys/sef.c) whose bodies
 //! reach the C globals (`rproc[]`, `rupdate`, ...). A Rust `fn` pointer has no
 //! capture — it cannot reach the server state — so the callback set is modeled
-//! as a **trait** implemented by [`crate::RsServer`] (N5 — todo §11): the
+//! as a **trait** implemented by [`crate::RsServer`] (todo §11): the
 //! callbacks become state-machine methods on the server, and `&mut self` is
 //! exactly the single-threaded user-space execution model (AGENTS.md).
 //! 01-rs-boot-init.md §3.3.
@@ -67,8 +67,8 @@ pub struct SefInitInfo {
 /// sef.h:85) *before* the LU default runs, so a later restart takes the
 /// stateful path (libsys/sef_init.c:317-330) instead of RS's full chain.
 /// A static trait cannot express this — the rebind target is a field of
-/// the server (A3 方案 a: the rebind is a single point, so one enum field
-/// beats reifying the whole callback set).
+/// the server (A3: the rebind is a single point, so one enum field beats
+/// reifying the whole callback set).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RestartCb {
     /// RS's own restart handler — the startup registration (main.c:140;
@@ -77,11 +77,11 @@ pub enum RestartCb {
     Rs,
     /// The stateful transfer generic (libsys/sef_init.c:317-330) — set by
     /// the LU rebind (main.c:558). The transfer itself (checkpoint/identity
-    /// state data) is 17/18 号; until then this arm fails closed.
+    /// state data) belongs to docs 17/18; until then this arm fails closed.
     Stateful,
 }
 
-/// The 7-method SEF callback set (ARCH A-7, N5).
+/// The 7-method SEF callback set (`[ARCH: A-7]`).
 ///
 /// C: `sef_local_startup()` — main.c:136-152. Modeled as a trait instead of
 /// a fn-pointer struct so every callback body can reach the server state: a
@@ -116,7 +116,7 @@ pub trait SefCallbacks {
     /// `int(*)(endpoint_t target, int signo)` (sef.h:270): `target` is the
     /// signal-manager endpoint the request is forwarded to, `signo` the
     /// signal number. Typed as [`Endpoint`] (not a bare `i32`) so the two
-    /// arguments cannot be transposed at a call site (R26, todo §18).
+    /// arguments cannot be transposed at a call site (todo §18).
     fn signal_manager(&mut self, target: Endpoint, signo: i32) -> Result<i32, Errno>;
 }
 
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn test_deferred_callbacks_fail_closed() {
-        // N5: the 12/18/06 callback bodies are not wired yet — every one of
+        // The 12/18/06 callback bodies are not wired yet — every one of
         // them must fail closed with `Err(ENOSYS)` instead of panicking or
         // silently succeeding (T2 pattern).
         let mut s = server();

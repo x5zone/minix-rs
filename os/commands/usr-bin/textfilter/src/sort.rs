@@ -12,14 +12,16 @@
 //! fields separated by blank runs or by the `-t` delimiter byte, default
 //! whole-line keys, the modifier transformations dictionary (`d`), fold
 //! (`f`), ignore non-printable (`i`), numeric (`n`, blank-skipping sign
-//! and fraction aware), sort-by-field-length (`l`, `fields.c` 的 `length()`：跳完前导
-//! 空白后取跨度字节数），and reverse (`r`; a local `r` is dropped when a global
+//! and fraction aware), sort-by-field-length (`l`, `fields.c`'s `length()`: skip the
+//! leading blanks, then take the span's byte count), and reverse (`r`; a local `r` is dropped when a global
 //! `-r` stands — init.c:195-197). There is **no month flag in this C**: `M` is in
 //! neither `SORT_OPTS` (sort.c:148) nor `optval`, so `-M` falls to `usage()` and
 //! `-k 1M` to `illegal field descriptor`. The last letter of `optval`'s table, `x`
-//! (hex numeric), is **not** modelled: C 的那句 `numhex()` 把 `sscanf(… "%llx", &n)`
-//! 施在**目的缓冲区游标** `pos` 而不是字段本身（`fields.c` 里 `numhex` 的那三行），所以它的
-//! 读数依赖键缓冲的复用，在值级无从复制——本壳把 `x` 留在集外字母那一支自报，不假装同形。
+//! (hex numeric), is **not** modelled: C's `numhex()` applies `sscanf(… "%llx", &n)`
+//! to the **destination-buffer cursor** `pos` rather than to the field itself (the three
+//! `numhex` lines in `fields.c`), so its reading depends on key-buffer reuse and cannot be
+//! reproduced at the value level — this shell leaves `x` in the out-of-set-letter branch and
+//! lets it report itself rather than pretending to the same shape.
 //! Ties fall back to the whole line in byte order, and the global `-r`
 //! inverts the final outcome.
 //!
@@ -58,8 +60,9 @@ pub struct KeySpec {
     pub fold: bool,
     pub ignore_nonprint: bool,
     pub numeric: bool,
-    /// Sort by the **length** of the selected span (`l`, `fields.c` 的 `length()`)。
-    /// C 在 `enterfield` 里把这一位排在数值位之前（`:208-211`），所以 `l` 与 `n` 同时存在时按长度走。
+    /// Sort by the **length** of the selected span (`l`, `fields.c`'s `length()`).
+    /// C ranks this bit ahead of the numeric bit in `enterfield` (`:208-211`), so when both `l`
+    /// and `n` are present the length decides.
     pub by_length: bool,
     /// This key's comparison inverts (dropped when a global `-r` stands).
     pub reverse: bool,
@@ -102,27 +105,29 @@ pub struct Options {
     pub blank_skip: bool,
     /// Suppress lines that compare equal to their predecessor.
     pub unique: bool,
-    /// `-S`：键相等时再按**整条记录**破并列（C 的 `posix_sort`，`sort.c:202-212`）。
-    /// 不开这一位时 C 不拿原始记录再排（`:257` 的注释就写着“Don't sort on raw record
-    /// if keys match”），所以并列键保持输入序。`-u` 在选项环**之后**把它归零
-    ///（`:256-258`），所以 `-S -u` 与 `-u -S` 同效。
+    /// `-S`: break key ties by the **whole record** (C's `posix_sort`, `sort.c:202-212`).
+    /// Without this bit C does not re-sort on the raw record (`:257`'s comment literally says
+    /// "Don't sort on raw record if keys match"), so tied keys keep input order. `-u` zeroes it
+    /// **after** the option ring (`:256-258`), so `-S -u` and `-u -S` are equivalent.
     pub posix_tiebreak: bool,
     /// Check only: report disorder and duplicates, sort nothing.
     pub check: bool,
     /// Field delimiter byte (`-t`).
     pub delimiter: Option<u8>,
-    /// 记录分隔符——C 的 `REC_D`（`sort.c:92`，初值 `'\n'`，`main` 在选项环前先
-    /// `d_mask[REC_D = '\n'] = REC_D_F`（`:139`））。`-R` 改它；它同时也决定
-    /// 「`-t` 撞不撞记录分隔符」那一判（C 查的是 `d_mask[c] & REC_D_F`，而
-    /// 这个位只跟着 `REC_D` 跑）。
-    /// C 的 `int REC_D`（`sort.c:96` 那边声明、`:226` 赋值）。类型不能压成 `u8`：
-    /// `-R` 的**字符路径**是 `REC_D = *optarg`，`char` 带符号，所以一枚 `ff` 进去是 **-1**；
-    /// 而**数值路径**（`-R\377`、`-R 255`）走 `strtol`，交回的是 0..=255 的正数。同一个
-    /// `0xff` 因此有两种下场：字符路径配不上任何输入字节、也不与 `-t` 撞掩码槽（C 那里
-    /// 是 `d_mask[-1]` 的越界写，本层不复制越界，只取它唯一可观察的后果「不算冲突」）；
-    /// 数值路径则正好落在 `d_mask[255]` 上，与 `-t` 的那枚裸字节**是冲突**（`sort.c:219-220`
-    /// 比的是 `d_mask[(u_char)*optarg] & REC_D_F`）。写出去那枚仍是低字节（`putchar` 的
-    /// `int`→`unsigned char` 转换），所以 `payload` 那边要 `as u8`。
+    /// Record delimiter — C's `REC_D` (`sort.c:92`, initial `'\n'`; `main` sets
+    /// `d_mask[REC_D = '\n'] = REC_D_F` before the option ring (`:139`)). `-R` changes it; it
+    /// also decides the "does `-t` collide with the record delimiter" test (C checks
+    /// `d_mask[c] & REC_D_F`, and that bit only follows `REC_D`).
+    /// C's `int REC_D` (declared around `sort.c:96`, assigned at `:226`). The type cannot be
+    /// narrowed to `u8`: the **character path** of `-R` is `REC_D = *optarg` with a signed
+    /// `char`, so a `ff` byte arrives as **-1**; the **numeric path** (`-R\377`, `-R 255`)
+    /// goes through `strtol` and returns a positive 0..=255. The same `0xff` therefore has two
+    /// outcomes: the character path matches no input byte and never hits `-t`'s mask slot (C
+    /// writes out of bounds at `d_mask[-1]`; this layer does not copy the out-of-bounds write,
+    /// only its one observable consequence, "not a clash"); the numeric path lands exactly on
+    /// `d_mask[255]` and **is a clash** with `-t`'s raw byte (`sort.c:219-220` compares
+    /// `d_mask[(u_char)*optarg] & REC_D_F`). What is written out is still the low byte
+    /// (`putchar`'s `int`→`unsigned char` conversion), so `payload` needs `as u8` there.
     pub record_delim: i32,
     /// Merge already-sorted runs instead of sorting (`-m`, C `sort -m`).
     pub merge: bool,
@@ -150,7 +155,7 @@ impl Default for Options {
             posix_tiebreak: false,
             check: false,
             delimiter: None,
-            // C 的全局初值：`int REC_D = '\n';`（`sort.c:92`）。
+            // C's global initial value: `int REC_D = '\n';` (`sort.c:92`).
             record_delim: 10,
             merge: false,
             output: None,
@@ -158,12 +163,16 @@ impl Default for Options {
     }
 }
 
-/// 把 `-R` 的多字节值按 C 的 `strtol(optarg, &ep, t)` 算成一个字节（`sort.c:229-238`）。
-/// `Some(byte)` 是 C 会继续往下走的形；`None` 就是那句 `invalid record delimiter`。
-/// 三条拒收判据逐句对 C：`*ep != '\0'`（末尾还有任何东西，包括一个空格）、值小于零、
-/// 值超出 `NBINS`（256）。前导空白与一个符号会被吃掉（`strtol` 自己就吃），所以下面
-/// 要求「整个串都被消费」而不是「去掉空白后全就数字」——`"1 "` 在 C 里是错的。
-/// base 0 走 C 的前缀规则：`0x`/`0X` 是十六进制、开头一个 `0` 是八进制、否则十进制。
+/// Reduce `-R`'s multi-byte value to one byte the way C's `strtol(optarg, &ep, t)` does
+/// (`sort.c:229-238`). `Some(byte)` is the shape C continues with; `None` is that `invalid
+/// record delimiter` sentence.
+/// The three rejection criteria follow C clause by clause: `*ep != '\0'` (anything left at the
+/// end, including one space), a value below zero, and a value beyond `NBINS` (256). Leading
+/// blanks and one sign are consumed (`strtol` consumes them itself), so the code below requires
+/// "the whole string was consumed" rather than "all digits once the blanks are removed" —
+/// `"1 "` is an error in C.
+/// base 0 follows C's prefix rules: `0x`/`0X` is hex, a leading `0` is octal, otherwise
+/// decimal.
 fn record_delim_number(digits: &[u8], radix: u32) -> Option<u8> {
     let mut pos = 0usize;
     while pos < digits.len() && matches!(digits[pos], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
@@ -198,15 +207,17 @@ fn record_delim_number(digits: &[u8], radix: u32) -> Option<u8> {
         pos += 1;
     }
     if !any {
-        // C 的 `strtol` 在「一个数字也没转出来」时把 `endptr` 停在**原始起点**（不是跳过
-        // 空白与符号后的位置），所以 `*ep` 只在整个串本来就为空时才是 `\0`。那就是
-        // `-R '\'` 这一形：剩空串 → 不报错且 REC_D = 0；而 `'-x'`、`'q'` 都错。
+        // C's `strtol` leaves `endptr` at the **original start** when no digit was converted
+        // (not at the position past blanks and sign), so `*ep` is `\0` only when the whole
+        // string was empty to begin with. That is the `-R '\'` shape: an empty remainder → no
+        // error and REC_D = 0; while `'-x'` and `'q'` are both errors.
         if !digits.is_empty() {
             return None;
         }
         value = 0;
     } else if pos != digits.len() {
-        // 吃了数字但末尾还有东西（包括一个空格）：C 的 `*ep != '\0'` 那一项。
+        // Digits consumed but something is left at the end (including a space): C's
+        // `*ep != '\0'` item.
         return None;
     }
     let value = if negative { -value } else { value };
@@ -247,66 +258,76 @@ fn merge_two(a: &[String], b: &[String], options: &Options) -> Vec<String> {
     out
 }
 
-/// 一条不可解析的选项参数错。三条出口对位 C 的三条真出路（见各变体注释），
-/// 不是一句「bad option」到底。
+/// One unparsable option-argument error. The three exits map to C's three real ways out (see
+/// the variant comments), not to one blanket "bad option".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
-    /// libc 的 `getopt` 自己那一行（集外字母或带值选项缺值），随后才是 `sort.c:252`
-    /// 的 `usage(NULL)`——所以真源是两行。两类各自带字母。
+    /// libc `getopt`'s own line (out-of-set letter, or a value-taking option with a missing
+    /// value), followed by `usage(NULL)` at `sort.c:252` — so the source of truth is two lines.
+    /// Both classes carry their letter.
     Getopt(crate::GetoptReport),
-    /// `-k` 的键形不对：`setcolumn`/`setfield` 里的五句 `errx(2, …)` 之一（
-    /// [`KeySpecError`]）。五句各有判据，但出口相同：退 2、**不接 usage**。
-    /// 之前五句挤在一个 `IllegalFieldDescriptor` 里，所以四句的报文都在拿别人的句子签字。
+    /// The `-k` key shape is wrong: one of the five `errx(2, …)` sentences in
+    /// `setcolumn`/`setfield` ([`KeySpecError`]). Each of the five has its own criterion, but the
+    /// exit is the same: exit 2, **no usage**. Previously the five were squeezed into one
+    /// `IllegalFieldDescriptor`, so four of the messages signed with someone else's sentence.
     KeySpec(KeySpecError),
-    /// `-t` 给了第二次：`sort.c:214-215` 的 `usage("multiple field delimiters")`，
-    /// 即先一句带程名的话，再接整个 usage 块。
+    /// `-t` given a second time: `usage("multiple field delimiters")` at `sort.c:214-215`, i.e.
+    /// one sentence carrying the program name first, then the whole usage block.
     MultipleFieldDelimiters,
-    /// `-R` 给了第二次且第一次确实改掉了默认值：`sort.c:224-225` 的
-    /// `usage("multiple record delimiters")`（也是「一句话 + usage 块」那族，退 2）。
+    /// `-R` given a second time and the first one really changed the default:
+    /// `usage("multiple record delimiters")` at `sort.c:224-225` (also the "one sentence + usage
+    /// block" family, exit 2).
     MultipleRecordDelimiters,
-    /// `-R` 的数值形解析不出来、或超出 `d_mask` 的尺寸（`sort.c:233-238` 的
-    /// `errx(2, "invalid record delimiter %s", optarg)`）：只这一句，**不接 usage**，退 2。
-    /// 带的是 C 当时手里那个 `optarg`——反斜缀已被跳过，所以 `\q` 报的是 `q`。
+    /// `-R`'s numeric form does not parse, or exceeds `d_mask`'s size (`errx(2, "invalid record
+    /// delimiter %s", optarg)` at `sort.c:233-238`): that sentence alone, **no usage**, exit 2.
+    /// It carries the `optarg` C had in hand — the backslash prefix has already been skipped, so
+    /// `\q` reports `q`.
     InvalidRecordDelimiter(Vec<u8>),
-    /// `-t` 选的字节正是当前的记录分隔符：`sort.c:217-218` 的
-    /// `errx(2, "record/field delimiter clash")`，同样不接 usage、退 2。
+    /// The byte chosen by `-t` is exactly the current record delimiter:
+    /// `errx(2, "record/field delimiter clash")` at `sort.c:217-218`, likewise no usage, exit 2.
     RecordFieldDelimiterClash,
 }
 
-/// `minix3/usr.bin/sort/init.c` 里 `setcolumn()` 与 `setfield()` 的五句 `errx(2, …)`。
-/// 句文本单源在 [`KeySpecError::sentence`]，壳只负责加程序名与退 2。
+/// The five `errx(2, …)` sentences of `setcolumn()` and `setfield()` in
+/// `minix3/usr.bin/sort/init.c`. The sentence text has its single source in
+/// [`KeySpecError::sentence`]; the shell only adds the program name and exit 2.
 ///
-/// 五句都是拿编译出来的参照件逐形量出来的（`tmp/family-diag-ref/sort_ref`，由
-/// `minix3/usr.bin/sort/` 的真源加垫片链成），不是推出来的：
+/// All five were measured shape by shape against a compiled reference build (the real
+/// `minix3/usr.bin/sort/` sources plus shims), not inferred:
 ///
-/// | 形 | C 的那一句 |
+/// | shape | C's sentence |
 /// |---|---|
-/// | `-k 0`、`-k x`、`-k ''`、`-k ,5`、`-k 1,-2` | `field numbers must be positive` |
+/// | `-k 0`, `-k x`, `-k ''`, `-k ,5`, `-k 1,-2` | `field numbers must be positive` |
 /// | `-k 1.0` | `illegal offset` |
 /// | `-k 1,0.5` | `cannot indent end of line` |
-/// | `-k 1 2`、`-k 1n2`、`-k 1.2.3` | `illegal field descriptor` |
+/// | `-k 1 2`, `-k 1n2`, `-k 1.2.3` | `illegal field descriptor` |
 /// | `-k 2.5,1.2` | `fields out of order` |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySpecError {
-    /// `init.c:160-161` 的 `col->num <= 0 && !(col->num == 0 && col == &tcol)`：
-    /// 开始列必须为正数；结束列允许 0（那表示到行尾），但负数两列都拒。
-    /// 注意判据用的是 `strtol` 的结果，所以 `-k x` 与 `-k ''` 也是零（一个数字也没转出来）。
+    /// `init.c:160-161`'s `col->num <= 0 && !(col->num == 0 && col == &tcol)`: the start column
+    /// must be positive; the end column may be 0 (meaning end of line), but a negative rejects
+    /// both columns. Note the criterion uses `strtol`'s result, so `-k x` and `-k ''` are zero
+    /// too (no digit converted).
     FieldNumbersNotPositive,
-    /// `init.c:163-164`：列号是 0（到行尾）时不能再给 `.C` 缩进。
+    /// `init.c:163-164`: when the column number is 0 (end of line), no `.C` indent may be given.
     CannotIndentEndOfLine,
-    /// `init.c:168-171`：缩进算出来是负数。只有**开始列**会 `col->indent--`，
-    /// 所以 `1.0` 报错而 `1,2.0` 合法——两列的 `.0` 不对称。
+    /// `init.c:168-171`: the computed indent is negative. Only the **start column** does
+    /// `col->indent--`, so `1.0` errors while `1,2.0` is legal — the `.0` on the two columns is
+    /// not symmetric.
     IllegalOffset,
-    /// `init.c:188-190`：开始列停下后既不是串尾也不是逗号。
+    /// `init.c:188-190`: after the start column stops, the position is neither end of string nor
+    /// a comma.
     IllegalFieldDescriptor,
-    /// `init.c:210-216`：结束列的（字段号，缩进）整体落在开始列之前。三个条件全要
-    /// 成立才报，缺一不报——`-k 2,1` 就不报（结束列没给 `.C` 时缩进是 0，源码里那句
-    /// 注释写着「indent if 0 -> end of field, i.e. okay」）。
+    /// `init.c:210-216`: the end column's (field number, indent) pair lies entirely before the
+    /// start column. All three conditions must hold to report; missing one means no report —
+    /// `-k 2,1` does not report (with no `.C` on the end column the indent is 0, and the comment
+    /// in the source says "indent if 0 -> end of field, i.e. okay").
     FieldsOutOfOrder,
 }
 
 impl KeySpecError {
-    /// C 那句 `errx` 的格式串原文（五句都没有 `%s`，坏文本不会被拼回句子）。
+    /// C's `errx` format string verbatim (none of the five has `%s`, so bad text is never
+    /// spliced back into the sentence).
     pub fn sentence(self) -> &'static str {
         match self {
             KeySpecError::FieldNumbersNotPositive => "field numbers must be positive",
@@ -321,14 +342,16 @@ impl KeySpecError {
 /// Parse global options from the argument words, returning the options
 /// plus the remaining operand words (file paths in the C; the doing half
 /// rejects them while the open-existing call is gated). `-k` and `-t`
-/// take a value, given separately or inline; 集外字母与缺值各自成一个
-/// [`ParseError::Getopt`]，键形不对与 `-t` 给第二次则是另两条出口。
+/// take a value, given separately or inline; an out-of-set letter and a missing value each
+/// become one [`ParseError::Getopt`], while a wrong key shape and a second `-t` take two other
+/// exits.
 ///
-/// 本解析器已建模的带值字母是 `k`、`o`、`t`：C 的选项串是 `sort.c:148` 的
-/// `#define SORT_OPTS "bcdD:fHik:lmno:rR:sSt:T:ux"`，其中 `:` 标出的是 `D`、`k`、`o`、
-/// `R`、`t`、`T` 六个；但 `D`/`R`/`T`（以及旗标 `S`/`x`）在本树尚未建模，它们现在
-/// 落进「集外字母」那一支——那是**选项面**的缺口（另案登记）。分成两条 libc 报文
-/// （集外字母走 `getopt.c:101-104`，缺值走 `:132-136`）的做法就体现在下面各臂里。
+/// The value-taking letters modelled by this parser are `k`, `o` and `t`: C's option string is
+/// `sort.c:148`'s `#define SORT_OPTS "bcdD:fHik:lmno:rR:sSt:T:ux"`, where `:` marks the six
+/// letters `D`, `k`, `o`, `R`, `t`, `T`; but `D`/`R`/`T` (and the flags `S`/`x`) are not
+/// modelled in this tree yet, so they currently fall into the "out-of-set letter" branch — a gap
+/// on the **option face** (registered separately). The split into two libc reports (out-of-set
+/// letters per `getopt.c:101-104`, missing values per `:132-136`) shows up in the arms below.
 pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), ParseError> {
     let mut options = Options::default();
     let mut operands: Vec<&[u8]> = Vec::new();
@@ -340,10 +363,12 @@ pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), 
             index += 1;
             continue;
         }
-        // 环走**字节**并记下标：C 的 `optopt` 是一枚 `char`（`getopt.c:79` 的 `optopt = *place++`
-        // 一次进一个字节、`:103` 的 `%c` 原样写出），所以 `-é`（`c3 a9`）报的是 `c3`。之前过
-        // `chars()` 时一个字符的两字节被当成一枚字母，报文再经 UTF-8 渲染就成了两个字节。
-        // 带值字母的「本 token 剩余部分」因此按字节下标切，语义与原来的 `chars.by_ref()` 一致。
+        // The ring walks **bytes** and records indices: C's `optopt` is one `char`
+        // (`getopt.c:79`'s `optopt = *place++` consumes one byte at a time, and `:103`'s `%c`
+        // writes it out as is), so `-é` (`c3 a9`) reports `c3`. Going through `chars()` used to
+        // treat the two bytes of one character as one letter, and the report then rendered as two
+        // bytes through UTF-8. The "rest of this token" of a value-taking letter is therefore
+        // sliced by byte index, with the same semantics as `chars.by_ref()`.
         let tail = &arg[1..];
         let letters = tail;
         let mut at = 0usize;
@@ -356,8 +381,9 @@ pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), 
                 b'd' => options.dictionary = true,
                 b'i' => options.ignore_nonprint = true,
                 b'n' => options.numeric = true,
-                // `-l` 在 C 里与 `-d`/`-f`/`-i`/`-n` 同臂（`sort.c:168`），效果也是那一句
-                // `fldtab[0].flags |= optval(ch, 0)`（`:172`），所以它是一个全局默认标志。
+                // `-l` shares C's arm with `-d`/`-f`/`-i`/`-n` (`sort.c:168`), and its effect is
+                // that same `fldtab[0].flags |= optval(ch, 0)` (`:172`), so it is a global default
+                // flag.
                 b'l' => options.by_length = true,
                 b'b' => options.blank_skip = true,
                 b'u' => options.unique = true,
@@ -368,12 +394,13 @@ pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), 
                 // now the default", so it accepts the flag and does nothing. We
                 // match that: accept, no effect (previously it errored as bad).
                 b'H' => {}
-                // `-s`（`sort.c:194-201`）与 `-S`（`:202-212`）是同一个开关的两面：前者把
-                // `posix_sort` 归零，后者置一。归零就是 C 的默认（并列键不再拿整条记录
-                // 再排，稳定保输入序），所以 `-s` 在这里确实是无操作；而 `-S` **不是**——
-                // 它打开的是下面那枚 `posix_tiebreak`，本树之前把两者都当 no-op，等于把
-                // `-S` 的那一半语义丢了（参照件：四行同键时 `-k 2,2` 给输入序 `b a c d`，
-                // `-S -k 2,2` 给记录序 `a b c d`）。
+                // `-s` (`sort.c:194-201`) and `-S` (`:202-212`) are two sides of one switch: the
+                // former zeroes `posix_sort`, the latter sets it. Zeroing is C's default (tied
+                // keys are not re-sorted by whole record, so input order is kept stably), so `-s`
+                // really is a no-op here; `-S` is **not** — it turns on the `posix_tiebreak` field
+                // below, and treating both as no-ops lost that half of `-S`'s semantics
+                // (reference: with four equal-key lines, `-k 2,2` gives the input order
+                // `b a c d`, while `-S -k 2,2` gives the record order `a b c d`).
                 b's' => {}
                 b'S' => options.posix_tiebreak = true,
                 // `-o` takes a value, inline (`-oNAME`) or as the next word
@@ -411,24 +438,27 @@ pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), 
                     }
                     if flag == b'k' {
                         match parse_key(value, &options) {
-                            // C 这一支不写 usage：`setfield`/`setcolumn` 里是那五句
-                            // `errx(2, …)` 之一（`init.c:160-216`），句子逐句不同。
+                            // C does not write usage on this branch: it is one of the five
+                            // `errx(2, …)` sentences in `setfield`/`setcolumn`
+                            // (`init.c:160-216`), and each sentence differs.
                             Ok(spec) => options.keys.push(spec),
                             Err(error) => return Err(ParseError::KeySpec(error)),
                         }
                     } else {
-                        // `-t` 在 C 里只取首字节（`sort.c:219` 的 `d_mask[(u_char)*optarg]`），
-                        // 从不查长度；但同一个选项给第二次就是
-                        // `usage("multiple field delimiters")`（`:214-215`）。
+                        // `-t` takes only the first byte in C (`d_mask[(u_char)*optarg]` at
+                        // `sort.c:219`) and never checks the length; but the same option given a
+                        // second time is `usage("multiple field delimiters")` (`:214-215`).
                         if options.delimiter.is_some() {
                             return Err(ParseError::MultipleFieldDelimiters);
                         }
-                        // 空值（`-t ''`）在 C 取到那个 `\0`，不报错。
+                        // An empty value (`-t ''`) picks up that `\0` in C, with no error.
                         let byte = value.first().copied().unwrap_or(0);
-                        // `:217-218` 紧接着查 `d_mask[byte] & REC_D_F`。那个位只待在
-                        // `REC_D` 身上（默认 `main` 给 `'\n'`，`:139`；`-R x` 之后搬到 `x`），
-                        // 所以判据就是「这个字节正好是当前的记录分隔符」——注意它不必
-                        // 先给过 `-R`：`-t '\n'` 在默认形状下就报（参照件实测同句）。
+                        // `:217-218` then checks `d_mask[byte] & REC_D_F`. That bit only lives
+                        // on `REC_D` (the default `main` installs is `'\n'`, `:139`; `-R x`
+                        // moves it to `x`), so the criterion is "this byte is exactly the current
+                        // record delimiter" — note `-R` need not have been given first:
+                        // `-t '\n'` reports under the default shape (the reference measures the
+                        // same sentence).
                         if i32::from(byte) == options.record_delim {
                             return Err(ParseError::RecordFieldDelimiterClash);
                         }
@@ -436,14 +466,18 @@ pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), 
                     }
                     break;
                 }
-                // `-R char`：把记录分隔符从默认的 `'\n'` 改掉（`sort.c:223-242`）。
-                // 次序逐句照 C：① 已经改过且不再等于 `'\n'` 就 `usage("multiple record
-                // delimiters")`——注意判的是「当前值是否仍等于 `'\n'`」而不是「给过几次」，
-                // 所以 `-R '\12' -R ,` 合法（参照件同读数，因为前者把值算回 10）；
-                // ② `*optarg` 先当值，若它就是 `'\n'` 则**直接收尾**，后面的数值形与掩码
-                // 一律不做（`-R $'\nx'` 因此等同于 `-R '\n'`）；③ 值长于一个字节才走
-                // `strtol`：带反斜缀按八进制、否则按 base 0，尾字符未吃尽/负数/超出
-                // `NBINS` 都落 `errx(2, "invalid record delimiter %s", optarg)`。
+                // `-R char`: move the record delimiter off the default `'\n'`
+                // (`sort.c:223-242`). The order follows C clause by clause: (1) if it was already
+                // changed and no longer equals `'\n'`, report
+                // `usage("multiple record delimiters")` — note the test is "is the current value
+                // still `'\n'`", not "how many times was it given", so `-R '\12' -R ,` is legal
+                // (the reference reads the same, because the first computes back to 10); (2)
+                // `*optarg` is taken as the value first, and if it is `'\n'` the arm **ends right
+                // there**, skipping the numeric form and the mask entirely (`-R $'\nx'` is
+                // therefore the same as `-R '\n'`); (3) only a value longer than one byte goes to
+                // `strtol`: with a backslash prefix in octal, otherwise base 0, and leftover tail
+                // characters / a negative / a value beyond `NBINS` all land on
+                // `errx(2, "invalid record delimiter %s", optarg)`.
                 b'R' => {
                     let mut value: &[u8] = &tail[at..];
                     if value.is_empty() {
@@ -462,11 +496,14 @@ pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), 
                     }
                     let bytes = value;
                     let first = bytes.first().copied().unwrap_or(0);
-                    // 字符路径：C 把 `*optarg`（带符号 `char`）赋给 `int REC_D`，高位那枚
-                    // 因此变成负数，后面 `first != '\n'` 与匹配判据都按这个负数走。
+                    // Character path: C assigns `*optarg` (a signed `char`) to the `int REC_D`,
+                    // so a high byte becomes negative, and the later `first != '\n'` and the
+                    // matching criteria all follow that negative value.
                     options.record_delim = i32::from(first as i8);
                     if first != b'\n' && bytes.len() > 1 {
-                        // C 先 `optarg++` 跳过反斜缀再用 `optarg` 报错，所以报的是**剩下的**串。
+                        // C does `optarg++` first to skip the backslash prefix and reports with
+                        // the then-current `optarg`, so the message carries the **remaining**
+                        // string.
                         let (digits, radix) = if bytes[0] == b'\\' {
                             (&bytes[1..], 8u32)
                         } else {
@@ -479,10 +516,12 @@ pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), 
                             }
                         }
                     }
-                    // C 在此还会 `d_mask['\n'] = d_mask[' ']` 与 `d_mask[REC_D] = REC_D_F`，
-                    // 即把换行归到「空白/字段分隔」那一类。本层的字段扫描器不读这张掩码，
-                    // 而参照件对唯一能探到的形（`-R , -k 2`，最后一行含 `\n`）给出的读数与
-                    // 本壳一致（两边都是 `b,a,d,c\n,`），所以本笔不动掩码，形状差已登记。
+                    // C also sets `d_mask['\n'] = d_mask[' ']` and `d_mask[REC_D] = REC_D_F`
+                    // here, folding newline into the "blank/field separator" class. This layer's
+                    // field scanner does not read that mask, and the reference's reading of the
+                    // only shape that can probe it (`-R , -k 2`, last line containing `\n`) agrees
+                    // with this shell (both give `b,a,d,c\n,`), so the mask is left alone; the
+                    // shape difference is registered.
                     break;
                 }
                 _ => {
@@ -494,9 +533,11 @@ pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), 
         }
         index += 1;
     }
-    // `sort.c:256-258`：选项环**跑完之后**才查 `if (UNIQUE) posix_sort = 0;`。就位置
-    // 是有意义的：它在环外，所以 `-S -u` 与 `-u -S` 同效（两形在参照件上都只留首行）。
-    // 而“并列键不再拿记录排”正是 `sort -u` 该有的：否则一叠同键行会被记录序拆散。
+    // `sort.c:256-258`: `if (UNIQUE) posix_sort = 0;` is checked **after the option ring
+    // finishes**. Its position matters: it is outside the ring, so `-S -u` and `-u -S` are
+    // equivalent (the reference keeps only the first line in both shapes). And "tied keys are
+    // not sorted by record" is exactly what `sort -u` wants: otherwise a stack of equal-key
+    // lines would be split by record order.
     if options.unique {
         options.posix_tiebreak = false;
     }
@@ -567,27 +608,35 @@ pub fn temp_candidate(path: &[u8], seed: u64, attempt: usize) -> Vec<u8> {
     out
 }
 
-/// 解一条 `-k` 规格。形状逐句对位 `init.c:181-220` 的 `setfield()`，包括**判据的先后**：
-/// 先解两列（各自的句子），再看残留（`illegal field descriptor`），然后才做四次标志
-/// 合成（局部为空才继承全局、全局 `-r` 抹掉局部 `r`、全局的 BI/BT 无条件并上、结束列
-/// 没缩进时抹掉 BT），最后才查 `fields out of order`。
+/// Parse one `-k` specification. The shape follows `setfield()` at `init.c:181-220` clause by
+/// clause, including **the order of the criteria**: parse both columns first (each with its own
+/// sentence), then look at the remainder (`illegal field descriptor`), then do the four flag
+/// combinations (inherit the globals only when the local set is empty, a global `-r` wipes the
+/// local `r`, the global BI/BT are ORed in unconditionally, BT is dropped when the end column has
+/// no indent), and only then check `fields out of order`.
 ///
-/// 与旧写法的两处实质差别：① 旧写法把五句 `errx` 挤成一句，所以四句的报文都在拿别人的
-/// 句子签字；② 旧写法把全局标志写成「逐位或」，而 C 是「局部一个字母也没有才整体继承」
-///（`init.c:193-194`），于是 `-n -k 1r` 这种形在本树按数值排、在 C 按字典序反排。
+/// Two substantive differences from the previous form: (1) it squeezed the five `errx` sentences
+/// into one, so four of the reports signed with someone else's sentence; (2) it wrote the global
+/// flags as a bitwise OR, while C inherits them wholesale only when the local segment has no
+/// letter at all (`init.c:193-194`), so a shape like `-n -k 1r` sorted numerically here but
+/// reverse-lexicographically in C.
 ///
-/// 本树尚未建模的修饰字母只剩 `x`（十六进制数，`__minix` 专有）：C 的那句 `numhex()`
-/// 把 `sscanf(… "%llx", &n)` 施在目的缓冲区的写游标而不是字段本身（`fields.c` 里 `numhex`
-/// 的那几行），读数依赖键缓冲的复用，值级无从复制。所以下面的循环**不把 `x` 收进来**（它
-/// 现在被当残留字符拒掉，报 `illegal field descriptor`），全局 `-x` 也仍走集外字母那一支——
-/// 故意不静默接受：接受而无效会把「顺序错」伪装成「顺序对」。
-/// `M` 不在 `optval` 表里，也不在 `SORT_OPTS`（`sort.c:148`）里，`switch` 同样没有
-/// `case 'M'`——所以 `-M` 与 `-k 1M` 在 C 都不认（参照件实测：前者落 `usage`，后者报
-/// `illegal field descriptor`）；旧写法把月名排序当成本树功能，那是无源建模。
+/// The only modifier letter still unmodelled is `x` (hex numeric, `__minix`-specific): C's
+/// `numhex()` applies `sscanf(… "%llx", &n)` to the destination buffer's write cursor rather
+/// than to the field itself (the few `numhex` lines in `fields.c`), so its reading depends on
+/// key-buffer reuse and cannot be reproduced at the value level. The loop below therefore **does
+/// not accept `x`** (it is currently rejected as a leftover character, reporting
+/// `illegal field descriptor`), and a global `-x` still takes the out-of-set-letter branch on
+/// purpose — silently accepting it would disguise "wrong order" as "right order".
+/// `M` is in neither the `optval` table nor `SORT_OPTS` (`sort.c:148`), and the `switch` has no
+/// `case 'M'` either — so C accepts neither `-M` nor `-k 1M` (measured against the reference: the
+/// former falls to `usage`, the latter reports `illegal field descriptor`); treating month-name
+/// sorting as a feature here was modelling without a source.
 pub fn parse_key(spec: &[u8], global: &Options) -> Result<KeySpec, KeySpecError> {
     let start = scan_column(spec, false)?;
-    // `setfield` 只看开始列停下的地方：串尾就是「键延伸到行尾」，逗号就开始解结束列，
-    // 别的字符是 `illegal field descriptor`（`init.c:188-190`）。
+    // `setfield` looks only at where the start column stopped: end of string means "the key runs
+    // to end of line", a comma starts the end column, and any other character is
+    // `illegal field descriptor` (`init.c:188-190`).
     let end_text = if start.rest.is_empty() {
         None
     } else if let Some(tail) = start.rest.strip_prefix(&b","[..]) {
@@ -597,13 +646,13 @@ pub fn parse_key(spec: &[u8], global: &Options) -> Result<KeySpec, KeySpecError>
     };
     let end = match end_text {
         Some(text) => scan_column(text, true)?,
-        // 没给结束列：C 把 `tcol.num` 留在 0（到行尾），也不扫任何字母。
+        // No end column given: C leaves `tcol.num` at 0 (end of line) and scans no letters.
         None => Column::absent(),
     };
 
     let local = start.merge(&end);
-    // `init.c:193-194`：`if (!cur_fld->flags) cur_fld->flags = gflag;`——局部只要有
-    // 一个修饰字母就不再继承全局标志。
+    // `init.c:193-194`: `if (!cur_fld->flags) cur_fld->flags = gflag;` — a local segment with
+    // even one modifier letter stops inheriting the global flags.
     let (dictionary, fold, ignore_nonprint, numeric, by_length, reverse) = if local.any {
         (
             local.dictionary,
@@ -623,19 +672,23 @@ pub fn parse_key(spec: &[u8], global: &Options) -> Result<KeySpec, KeySpecError>
             local.reverse,
         )
     };
-    // `init.c:195-197`：全局 `-r` 存在时，局部 `r` 被抹掉（不是再反一次）。
+    // `init.c:195-197`: when the global `-r` is present the local `r` is wiped (not toggled a
+    // second time).
     let reverse = if global.reverse { false } else { reverse };
-    // `init.c:206`：全局的 BI/BT 是**无条件并上**的（与上面那句不一样），而 C 的全局
-    // `-b` 一次就点亮两个位（`sort.c:159` 的 `fldtab[0].flags |= BI | BT`）。
+    // `init.c:206`: the global BI/BT are **ORed in unconditionally** (unlike the clause above),
+    // and C's global `-b` lights both bits at once (`fldtab[0].flags |= BI | BT` at
+    // `sort.c:159`).
     let blank_start = local.bi || global.blank_skip;
     let mut blank_end = local.bt || global.blank_skip;
-    // `init.c:207-208`：`if (!cur_fld->tcol.indent) flags &= ~BT`——结束列没缩进时 BT 无意义。
+    // `init.c:207-208`: `if (!cur_fld->tcol.indent) flags &= ~BT` — BT is meaningless when the
+    // end column has no indent.
     if end.eff_indent == 0 {
         blank_end = false;
     }
-    // `init.c:210-216` 的三个条件全要成立：结束列有字段号、不是「只有 BT 没有 BI」、
-    // 且结束列（号，缩进）落在开始列之前。C 写的是 `!(!(flags & BI) && (flags & BT))`
-    //（`:211`），下面那句是它的德摩根改写（clippy 不接受双重否定形，同值）。
+    // All three conditions of `init.c:210-216` must hold: the end column has a field number, it
+    // is not "BT without BI", and the end column (number, indent) lies before the start column. C
+    // writes `!(!(flags & BI) && (flags & BT))` (`:211`); the line below is its De Morgan rewrite
+    // (clippy rejects the double negation; same value).
     let not_bt_without_bi = !local.bt || local.bi;
     if end.num != 0
         && not_bt_without_bi
@@ -661,17 +714,17 @@ pub fn parse_key(spec: &[u8], global: &Options) -> Result<KeySpec, KeySpecError>
     })
 }
 
-/// 一列扫出来的形状，对位 C 的 `struct column`（`sort.h`）。
+/// The shape one column scan produces, mapping C's `struct column` (`sort.h`).
 #[derive(Debug, Clone, Copy)]
 struct Column<'a> {
-    /// 字段号；结束列允许 0（表示到行尾）。
+    /// Field number; the end column may be 0 (meaning end of line).
     num: i64,
-    /// `.C` 的原样读数（没给就是 0），交给 [`KeySpec::start_char`]。
+    /// The raw reading of `.C` (0 when absent), handed to [`KeySpec::start_char`].
     raw_indent: i64,
-    /// C 存在 `col->indent` 里的那个数：开始列在 `.C` 上减一（`init.c:168-169`），
-    /// 没给 `.C` 时两列都是 0（结构体是 memset 过的）。
+    /// The number C stores in `col->indent`: the start column decrements it on `.C`
+    /// (`init.c:168-169`), and without `.C` both columns are 0 (the struct is memset).
     eff_indent: i64,
-    /// 下面八个位就是 `optval` 给这一列置上的标志。
+    /// The eight bits below are the flags `optval` sets on this column.
     bi: bool,
     bt: bool,
     dictionary: bool,
@@ -680,15 +733,15 @@ struct Column<'a> {
     numeric: bool,
     by_length: bool,
     reverse: bool,
-    /// 一个修饰字母也没扫到（C 用 `if (!cur_fld->flags)` 判这件事）。
+    /// Not a single modifier letter was scanned (C tests this with `if (!cur_fld->flags)`).
     any: bool,
-    /// 停点之后的残留，就是 C 返回给 `setfield` 的那个 `pos`（一枚字节一格，与 C 的
-    /// `char *` 同形）。
+    /// The leftover after the stop point, exactly the `pos` C returns to `setfield` (one byte
+    /// per cell, the same shape as C's `char *`).
     rest: &'a [u8],
 }
 
 impl<'a> Column<'a> {
-    /// 结束列缺席时的形状：C 里就是那个 memset 后没动过的 `tcol`。
+    /// The shape when the end column is absent: in C it is that memset, untouched `tcol`.
     fn absent() -> Self {
         Column {
             num: 0,
@@ -707,7 +760,7 @@ impl<'a> Column<'a> {
         }
     }
 
-    /// 两列的标志在 C 里是同一个 `cur_fld->flags` 上的或，这里同形。
+    /// The two columns' flags are an OR onto the same `cur_fld->flags` in C; same shape here.
     fn merge(&self, other: &Self) -> Self {
         Column {
             num: self.num,
@@ -727,15 +780,16 @@ impl<'a> Column<'a> {
     }
 }
 
-/// C 的 `setcolumn()`（`init.c:152-178`）逐句对位。`filling_end` 对应 C 里那句
-/// `col = cur_fld->icol.num ? (&cur_fld->tcol) : (&cur_fld->icol)`（`:157`）：它决定
-/// `.C` 要不要减一。而 `b` 记成 BI 还是 BT 用的是另一个判据——`optval` 的 `tcolflag`
-/// 是 `cur_fld->tcol.num`（`:173`），所以在结束列填了 0 的那一形（`-k 1,0b`）里，
-/// `b` 仍然算 BI。两个判据不许合为一个。
+/// C's `setcolumn()` (`init.c:152-178`) clause by clause. `filling_end` corresponds to C's
+/// `col = cur_fld->icol.num ? (&cur_fld->tcol) : (&cur_fld->icol)` (`:157`): it decides whether
+/// `.C` gets decremented. Whether `b` is recorded as BI or BT uses a different criterion —
+/// `optval`'s `tcolflag` is `cur_fld->tcol.num` (`:173`) — so in the shape where the end column
+/// is filled with 0 (`-k 1,0b`), `b` still counts as BI. The two criteria must not be merged.
 fn scan_column<'a>(text: &'a [u8], filling_end: bool) -> Result<Column<'a>, KeySpecError> {
     let bytes = text;
     let (num, mut position) = scan_long(text, 0);
-    // `init.c:160-161`：开始列非正即错；结束列允许 0（那表示到行尾）。
+    // `init.c:160-161`: a non-positive start column is an error; the end column may be 0 (which
+    // means end of line).
     if num <= 0 && !(num == 0 && filling_end) {
         return Err(KeySpecError::FieldNumbersNotPositive);
     }
@@ -743,7 +797,7 @@ fn scan_column<'a>(text: &'a [u8], filling_end: bool) -> Result<Column<'a>, KeyS
     let mut raw_indent = 0i64;
     let mut eff_indent = 0i64;
     if bytes.get(position) == Some(&b'.') {
-        // `init.c:162-164`：列号是 0（到行尾）时 `.C` 无从谈起。
+        // `init.c:162-164`: when the column number is 0 (end of line), `.C` makes no sense.
         if num == 0 {
             return Err(KeySpecError::CannotIndentEndOfLine);
         }
@@ -771,8 +825,9 @@ fn scan_column<'a>(text: &'a [u8], filling_end: bool) -> Result<Column<'a>, KeyS
         any: false,
         rest: &[],
     };
-    // `init.c:173` 的 `for (; (tmp = optval(*pos, cur_fld->tcol.num)); pos++)`：`optval`
-    // 返回 0 就**停下**，那个字符留给 `setfield` 当 `*pos` 判据，不是「略过继续」。
+    // `init.c:173`'s `for (; (tmp = optval(*pos, cur_fld->tcol.num)); pos++)`: `optval`
+    // returning 0 **stops** the scan, leaving that character for `setfield`'s `*pos` test; it is
+    // not "skip and continue".
     while position < bytes.len() {
         match bytes[position] {
             b'b' => {
@@ -786,7 +841,7 @@ fn scan_column<'a>(text: &'a [u8], filling_end: bool) -> Result<Column<'a>, KeyS
             b'f' => column.fold = true,
             b'i' => column.ignore_nonprint = true,
             b'n' => column.numeric = true,
-            // `optval` 的 `case 'l': return L;`（`init.c:234`）。
+            // `optval`'s `case 'l': return L;` (`init.c:234`).
             b'l' => column.by_length = true,
             b'r' => column.reverse = true,
             _ => break,
@@ -798,10 +853,11 @@ fn scan_column<'a>(text: &'a [u8], filling_end: bool) -> Result<Column<'a>, KeyS
     Ok(column)
 }
 
-/// C 那句 `strtol(pos, &npos, 10)`（`init.c:158`、`:166`）：跳前导空白、可带一个正负号，
-/// 然后才是十进制位。一个数字也没转出来时值是 0 且指针**退回起点**（这正是 `-k x`、
-/// `-k ''` 落进「字段号必须为正」的原因）。超出 `i64` 时 C 饱和到 `LONG_MAX`/`LONG_MIN`
-/// 且**不看 `errno`**，所以那里不报错；本树同样饱和。
+/// C's `strtol(pos, &npos, 10)` (`init.c:158`, `:166`): skip leading blanks, allow one sign,
+/// then the decimal digits. When no digit is converted the value is 0 and the pointer **goes back
+/// to the start** (which is why `-k x` and `-k ''` land on "field numbers must be positive"). On
+/// overflow past `i64` C saturates to `LONG_MAX`/`LONG_MIN` and **ignores `errno`**, so there is
+/// no error there; this tree saturates the same way.
 fn scan_long(text: &[u8], from: usize) -> (i64, usize) {
     let bytes = text;
     let mut position = from;
@@ -831,9 +887,10 @@ fn scan_long(text: &[u8], from: usize) -> (i64, usize) {
     (if negative { -value } else { value }, position)
 }
 
-/// C `fields.c:length()` 的那一步：先 `SKIP_BLANKS(line)`，再取 `lineend - line`。
-/// 所以量的不是「补白后的跨度」也不是过滤后的键字节，而是跳完前导空白到跨度末尾的
-/// 字节数（`enterfield` 里的 `start`/`end`，与 [`key_bytes`] 同一套算式）。
+/// The step C's `fields.c:length()` takes: `SKIP_BLANKS(line)` first, then `lineend - line`.
+/// So it measures neither the padded span nor the filtered key bytes but the byte count from
+/// after the leading blanks to the end of the span (`start`/`end` in `enterfield`, the same
+/// arithmetic as [`key_bytes`]).
 fn span_length(line: &str, key: &KeySpec, delimiter: Option<u8>) -> usize {
     let span = key_bytes(line, key, delimiter);
     let bytes = span.as_bytes();
@@ -997,9 +1054,10 @@ fn numeric_key(bytes: &[u8]) -> NumericKey<'_> {
     while cursor < bytes.len() && is_blank(bytes[cursor]) {
         cursor += 1;
     }
-    // C 的 `number()` 先 `SKIP_BLANKS`，再取一个符号：`-` 翻负号，`+` 只是跨过去
-    //（`fields.c:283-288`）。之前本树只认 `-`，于是 `+7` 走成「一个数字也没转出来」
-    // 的那一支（整数位为空串），与 `7`/`007` 不同值——参照件量出三者同值。
+    // C's `number()` does `SKIP_BLANKS` first, then takes one sign: `-` flips negative, `+` is
+    // merely stepped over (`fields.c:283-288`). Recognising only `-` used to send `+7` down the
+    // "no digit converted" branch (empty integer part), differing from `7`/`007` — the reference
+    // measures all three as equal.
     let negative = bytes.get(cursor) == Some(&b'-');
     if matches!(bytes.get(cursor), Some(b'-') | Some(b'+')) {
         cursor += 1;
@@ -1031,13 +1089,16 @@ fn numeric_key(bytes: &[u8]) -> NumericKey<'_> {
     }
 }
 
-/// 把键归一到可比形状：整数位去前导零。C 那边是「eat initial zeroes」
-///（`fields.c:290-292`）加「Add key terminator, deleting any trailing "00"」
-///（`:373-374`，靠 `last_nz_pos` 把尾零那几字节回退掉）两句做到的。
-/// **小数尾零那一句本树不需要**：`compare_numeric` 的逐位比较把短的一方按补零算，
-/// 于是 `1.5` 与 `1.50` 已经在同一侧（这一条是负控逼出来的——先把尾零剥离删掉再跑，
-/// 新测与既有测全绿，说明那几行是冗余支而不是判据；宁可删冗余，也不去编一枚测把
-/// 它说成必要的）。
+/// Normalise a key into a comparable shape: strip the integer part's leading zeros. C does it
+/// with two sentences, "eat initial zeroes" (`fields.c:290-292`) and "Add key terminator,
+/// deleting any trailing \"00\"" (`:373-374`, using `last_nz_pos` to step the trailing-zero
+/// bytes back).
+/// **This tree does not need the trailing-fraction-zero sentence**: `compare_numeric`'s
+/// digit-by-digit comparison treats the shorter side as zero-padded, so `1.5` and `1.50` already
+/// land on the same side (this was forced by a negative control — delete the trailing-zero
+/// stripping and both the new and the existing tests stay green, which shows those lines are a
+/// redundant branch rather than a criterion; better to delete redundancy than to invent a test
+/// that calls it necessary).
 fn normalized_parts<'a>(key: &NumericKey<'a>) -> (&'a [u8], &'a [u8]) {
     let mut integer = key.integer;
     while let Some((b'0', rest)) = integer.split_first() {
@@ -1046,11 +1107,12 @@ fn normalized_parts<'a>(key: &NumericKey<'a>) -> (&'a [u8], &'a [u8]) {
     (integer, key.fraction)
 }
 
-/// 零的判据归一到两位都为空：C 那句「If the first/next character isn't a digit …
-/// value is zero」（`fields.c:307-312`）把 `0`、`000`、`0.00`、`.0` 与一个数字也
-/// 没转出来的 `fubar` 全归给同一个零键（它写的 terminator 甚而不带 `negate`，
-/// 所以 `-0` 与 `+0` 也同值，参照件实测同）。`0.00` 这种写法落在这里靠的是补零
-/// 比较：它的整数位被前导零吃光、小数位与另一方的空位逐位相等。
+/// The zero criterion normalises to "both parts empty": C's "If the first/next character isn't a
+/// digit … value is zero" (`fields.c:307-312`) folds `0`, `000`, `0.00`, `.0` and a `fubar` that
+/// converts nothing into the same zero key (the terminator it writes does not even carry
+/// `negate`, so `-0` and `+0` are equal too; the reference measures the same). `0.00` lands here
+/// through zero-padded comparison: its integer part is eaten by the leading zeros and its
+/// fraction digits each equal the other side's empty positions.
 fn is_numeric_zero(key: &NumericKey<'_>) -> bool {
     let (integer, fraction) = normalized_parts(key);
     integer.is_empty() && fraction.is_empty()
@@ -1058,7 +1120,8 @@ fn is_numeric_zero(key: &NumericKey<'_>) -> bool {
 
 fn compare_numeric(a: &NumericKey<'_>, b: &NumericKey<'_>) -> core::cmp::Ordering {
     use core::cmp::Ordering;
-    // 先查零：两个都是零就是平局，不进符号位（否则 `-0` 与 `+0` 会被符号拆开）。
+    // Check zero first: two zeros are a tie and never reach the sign bit (otherwise `-0` and
+    // `+0` would be split by the sign).
     if is_numeric_zero(a) && is_numeric_zero(b) {
         return Ordering::Equal;
     }
@@ -1069,8 +1132,9 @@ fn compare_numeric(a: &NumericKey<'_>, b: &NumericKey<'_>) -> core::cmp::Orderin
     }
     let (ai, af) = normalized_parts(a);
     let (bi, bf) = normalized_parts(b);
-    // 整数位：先比归一后的位数（也就是量级），再按字典序逐位比——十进制无符号串
-    // 这样比就是数值序，对得上 C 那套「指数 + 尾数」的字节序编码。
+    // Integer parts: compare the normalised digit counts first (i.e. the magnitude), then digit
+    // by digit lexicographically — for unsigned decimal strings that is numeric order, matching
+    // C's "exponent + mantissa" byte-order encoding.
     let magnitude = match ai.len().cmp(&bi.len()) {
         Ordering::Equal => ai.cmp(bi),
         other => other,
@@ -1078,7 +1142,8 @@ fn compare_numeric(a: &NumericKey<'_>, b: &NumericKey<'_>) -> core::cmp::Orderin
     let magnitude = if magnitude != Ordering::Equal {
         magnitude
     } else {
-        // 小数位逐位比，短的一方按补零算（`1.5` 对 `1.45`）。
+        // Fraction digits compared one by one, with the shorter side treated as zero-padded
+        // (`1.5` against `1.45`).
         let mut ordering = Ordering::Equal;
         for index in 0..af.len().max(bf.len()) {
             let x = af.get(index).copied().unwrap_or(b'0');
@@ -1126,8 +1191,10 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
         let ka = key_bytes(a, key, options.delimiter);
         let kb = key_bytes(b, key, options.delimiter);
         let ordering = if key.by_length {
-            // C 那句是 `length()`：跳完前导空白后把「跨度还有几个字节」写成十进制串，
-            // 再交给 `number()`。对纯十进制串来说数值序就是整数序，所以直接比长度。
+            // C's branch is `length()`: after skipping the leading blanks it renders "how many
+            // bytes remain in the span" as a decimal string and hands it to `number()`. For a pure
+            // decimal string numeric order is integer order, so comparing the lengths directly is
+            // equivalent.
             span_length(a, key, options.delimiter).cmp(&span_length(b, key, options.delimiter))
         } else if key.numeric {
             compare_numeric(&numeric_key(ka.as_bytes()), &numeric_key(kb.as_bytes()))
@@ -1145,11 +1212,13 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
         }
     }
     if result == Ordering::Equal && options.posix_tiebreak {
-        // C 的 `-S` 那一支：键相等时再比整条记录（`fields.c:168` 把 `keylen` 撑到包含
-        // 原始记录的长度），全局 `-r` 同样作用在这一步上。修饰字母属于键而不属于
-        // 回退，所以这里用的是未过滤的原始字节。不开 `-S` 时**不进这一支**：C 默认
-        // 不拿记录再排，并列键保持输入序（排序那一路的稳定与 `-r` 下的倒装见
-        // `bin/sort.rs`，那里才能看到输入序号）。
+        // C's `-S` branch: when keys are equal, compare the whole record (`fields.c:168` extends
+        // `keylen` to include the original record), and the global `-r` applies to this step as
+        // well. Modifier letters belong to the key, not to the fallback, so the raw, unfiltered
+        // bytes are used here. Without `-S` **this branch is not entered**: by default C does not
+        // re-sort by record and tied keys keep input order (the stability of the sorting path and
+        // the inversion under `-r` live in `bin/sort.rs`, the only place that sees input sequence
+        // numbers).
         let raw = a.as_bytes().cmp(b.as_bytes());
         return if options.reverse { raw.reverse() } else { raw };
     }
@@ -1165,32 +1234,37 @@ mod tests {
     use super::*;
     use alloc::string::ToString;
 
-    /// 测试夹具的 argv 取法：字面量仍写成 `&[&str]`，交回每枚词的原字节切片（借自字面量，
-    /// 与薄壳 `args_bytes()` 交回的形状同层）。`parse_options` 的形参是 `&[&[u8]]`，两层
-    /// 生命周期同一个，所以结果要留着断言的调用得先绑成变量。
+    /// How the test fixture takes argv: literals are still written as `&[&str]`, and the raw byte
+    /// slice of each word is returned (borrowed from the literal, the same layer as the thin
+    /// shell's `args_bytes()`). `parse_options` takes `&[&[u8]]`, and both lifetimes are the same
+    /// one, so a call whose result is kept for assertions must be bound to a variable first.
     fn argv<'a>(words: &[&'a str]) -> Vec<&'a [u8]> {
         words.iter().map(|word| word.as_bytes()).collect()
     }
 
-    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
-    /// `char` 域里是 U+00C3。绝对读数见 `tests/sort_face.rs` 那枚面门注释里的探针说明
-    /// （`tmp/sort-411/probe.c` 编的是 Minix 的 `getopt.c`，交回 `optopt=0303`）。
-    /// 参数缝在 `sort` 上改到的是**取值本身**，不是报文渲染：`-t` 只取首字节
-    /// （`sort.c:219` 的 `d_mask[(u_char)*optarg]`，C 那里从不查长度），`-R` 先取首字节
-    /// 当值、再按剩余决定是数值形还是报错（`:226-238`），而报错那句带的是 `optarg` 的
-    /// **原字节**。文本缝之下裸 `ff` 先被折成 `ef bf bd`，于是这三处一起走偏：分隔符成了
-    /// `ef`、记录分隔符成了 `ef`、回显位是三段折叠串。最坏的一形是**假冲突**——
-    /// `-R\xef -t\xff` 在 C 里是两个不同的字节（接受），折过一次就都变成 `ef`，
-    /// `:217-218` 那句 `record/field delimiter clash` 会被凭空触发。参照件
-    /// `tmp/family-diag-ref/sort_ref` 现量：`-R\xef -t\xff` 交回退 0，`-Rq\xff` 交回
-    /// `sort: invalid record delimiter q\xff`（`tmp/sort-467/ab.log`）。
+    /// An out-of-set letter returns the **first byte** after the dash, not the first character:
+    /// `-\u{e9}` (`c3 a9`) is U+00C3 in the `char` domain. For the absolute reading see the probe
+    /// note in the face-door comment of `tests/sort_face.rs` (a probe built against Minix's
+    /// `getopt.c` returns `optopt=0303`).
+    /// What the argument seam changes for `sort` is **the value itself**, not the message
+    /// rendering: `-t` takes only the first byte (`d_mask[(u_char)*optarg]` at `sort.c:219`; C
+    /// never checks the length), `-R` takes the first byte as the value and then decides from the
+    /// remainder whether it is numeric or an error (`:226-238`), and the error sentence carries the
+    /// `optarg`'s **raw bytes**. Under a text seam a bare `ff` is first folded into `ef bf bd`, so
+    /// all three go wrong together: the delimiter becomes `ef`, the record delimiter becomes `ef`,
+    /// and the echoed position is a three-chunk folded string. The worst shape is a **false
+    /// clash** — `-R\xef -t\xff` are two different bytes in C (accepted), but after one fold both
+    /// become `ef`, and `:217-218`'s `record/field delimiter clash` fires out of nowhere. The
+    /// reference measured `-R\xef -t\xff` returning 0 and `-Rq\xff` returning
+    /// `sort: invalid record delimiter q\xff`.
     #[test]
     fn the_value_letters_take_argv_bytes_not_the_lossy_form_of_them() {
-        // 冲突判据走的是 C 的两条不同类型：`-R` 的**字符路径**把 `*optarg`（带符号 `char`）
-        // 交给 `int REC_D`（`sort.c:226`）再写进 `d_mask[REC_D]`（`:241`）——高位那枚因此落在
-        // 表外：既不与 `-t` 撞（`:219-220` 比的是 `d_mask[(u_char)*optarg] & REC_D_F`），
-        // 也永不命中输入字节（`getrec` 比的是 `getc` 交回的 0..=255）。两侧同形，
-        // 五形现量在 `tmp/sort-467/ab.log`。
+        // The clash criterion follows C's two different types: `-R`'s **character path** hands
+        // `*optarg` (a signed `char`) to the `int REC_D` (`sort.c:226`), which is then written to
+        // `d_mask[REC_D]` (`:241`) — a high byte therefore lands outside the table: it neither
+        // clashes with `-t` (`:219-220` compares `d_mask[(u_char)*optarg] & REC_D_F`) nor ever
+        // matches an input byte (`getrec` compares the 0..=255 that `getc` returns). Both sides
+        // agree, and the five shapes were measured live.
         let high_char: Vec<&[u8]> = vec![b"-R\xff", b"-t\xff"];
         let (options, _) = parse_options(&high_char).expect("-R<ff> -t<ff> 在 C 里不冲突");
         assert_eq!(options.record_delim, -1, "字符路径把 ff 落成 -1");
@@ -1200,8 +1274,9 @@ mod tests {
             "字段分隔符取的是那一枚原字节"
         );
 
-        // 同一枚 255 改走**数值路径**（`-R\377` 经 `strtol`）就是正数 255，落在
-        // `d_mask[255]` 上，于是与 `-t` 的那枚裸字节撞成冲突——一枚 `ff` 的两种下场。
+        // The same 255 goes down the **numeric path** instead (`-R\377` through `strtol`) and is
+        // the positive 255, landing on `d_mask[255]`, so it clashes with `-t`'s raw byte — one `ff`
+        // with two outcomes.
         let numeric_255: Vec<&[u8]> = vec![b"-R\\377", b"-t\xff"];
         assert_eq!(
             parse_options(&numeric_255).err(),
@@ -1209,14 +1284,14 @@ mod tests {
             "数值路径的 255 与字符路径的 ff 撞在同一个掩码槽里"
         );
 
-        // 控制形：ASCII 的同一枚字节仍是冲突（`-R,` 与 `-t,`）。
+        // Control: the same byte in ASCII still clashes (`-R,` with `-t,`).
         let ascii_clash: Vec<&[u8]> = vec![b"-R,", b"-t,"];
         assert_eq!(
             parse_options(&ascii_clash).err(),
             Some(ParseError::RecordFieldDelimiterClash)
         );
 
-        // 两枚不同的高位字节（-17 与 255）各自都不命中对方 ⇒ 接受。
+        // Two different high bytes (-17 and 255) each miss the other ⇒ accepted.
         let both: Vec<&[u8]> = vec![b"-R\xef", b"-t\xff"];
         let (options, _) = parse_options(&both).expect("-R<ef> -t<ff> 是两个不同字节");
         assert_eq!(options.record_delim, -17, "ef 经带符号 `char` 落地是 -17");
@@ -1226,20 +1301,23 @@ mod tests {
             "分隔符必须是那一枚字节，不是折出来的 ef"
         );
 
-        // 数值形失败那句带的是 `optarg` 从游标起的原字节（反斜缀那支才先 `optarg++`）。
+        // The numeric-form failure sentence carries `optarg`'s raw bytes from the cursor (only the
+        // backslash-prefixed branch does `optarg++` first).
         let bad: Vec<&[u8]> = vec![b"-Rq\xff"];
         assert_eq!(
             parse_options(&bad).err(),
             Some(ParseError::InvalidRecordDelimiter(b"q\xff".to_vec()))
         );
 
-        // 操作数也是原字节：档名的**名字位**由壳自己拼进 `err(2, "%s", argv[i])` 那一句。
+        // Operands are raw bytes too: the file name's **name slot** is spliced by the shell into
+        // that `err(2, "%s", argv[i])` sentence.
         let named: Vec<&[u8]> = vec![b"/tmp/nosuch-\xff"];
         let (_, operands) = parse_options(&named).expect("操作数应当收下");
         assert_eq!(operands, vec![&b"/tmp/nosuch-\xff"[..]]);
 
-        // `-k` 的尾巴不参与回显（那五句 `errx` 都没有 `%s`），但分支判据看的是字节：
-        // 认不出的那一枚就停在 `setfield` 的 `*pos` 上（`init.c:188-190`）。
+        // `-k`'s tail takes no part in the echo (none of the five `errx` sentences has `%s`), but
+        // the branch criterion looks at bytes: the unrecognised one stops at `setfield`'s `*pos`
+        // (`init.c:188-190`).
         let spec: Vec<&[u8]> = vec![b"2\xff"];
         assert_eq!(
             parse_key(spec[0], &Options::default()).err(),
@@ -1258,11 +1336,11 @@ mod tests {
             '\u{00c3}',
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
-        // 聚簇：`l` 合法先吃掉，报的是其后第一个字节。
+        // Cluster: `l` is legal and consumed first, so the report is the first byte after it.
         assert_eq!(unknown(&["-l\u{e9}"]), '\u{00c3}', "-l\u{e9}");
-        // ASCII 那一形不许被这次改动波及。
+        // The ASCII shape must not be affected by this change.
         assert_eq!(unknown(&["-q"]), 'q', "-q");
-        // 带值字母把多字节当值收走，不是字母位。
+        // A value-taking letter swallows the multi-byte value; it is not a letter position.
         let w_args = argv(&["-o\u{e9}out"]);
         let (options, _) = parse_options(&w_args).unwrap();
         assert_eq!(options.output, Some("éout".as_bytes().to_vec()));
@@ -1299,36 +1377,41 @@ mod tests {
         let options = opts("-n");
         assert_eq!(compare("  -3.5", "2", &options), Ordering::Less);
         assert_eq!(compare("2.10", "2.5", &options), Ordering::Less);
-        // 并列键不再在比较半拆散：两个数字值相同、尾不同的行就是平局（参照件：`-n`
-        // 对 `1 y`/`1 x` 两种输入顺序都原序输出），开了 `-S` 才按记录排。
+        // Tied keys are not split in the comparison half: two lines with the same numeric value
+        // and different tails are a tie (the reference: `-n` outputs `1 y`/`1 x` in input order for
+        // both orders); only `-S` sorts by record.
         assert_eq!(compare("1 y", "1 x", &options), Ordering::Equal);
         assert_eq!(compare("1 x", "1 y", &options), Ordering::Equal);
         assert_eq!(compare("1 y", "1 x", &opts("-n -S")), Ordering::Greater);
-        // 非数字前缀都算零，同样不在比较半用记录拆散（参照件 `-n` 对 `abc`/两个
-        // 空白也原序输出）。
+        // Non-numeric prefixes all count as zero and are likewise not split by the record in the
+        // comparison half (the reference's `-n` also outputs `abc`/two blanks in input order).
         assert_eq!(compare("abc", "  ", &options), Ordering::Equal);
-        // 注：`+7`/`007`/`7` 这一组**不能**拿来做本例——参照件量出三者在 C 里同值
-        //（任意输入顺序都原序输出），而本树的数值键把 `+` 当「不是数字」处理，于
-        // 是 `+7` 得零而 `007` 得 7——那是上一轮的整行回退正好并掩盖住的一处差异，
-        // 已另立一批修（批次二百九十的「登记不执行」第①条），不在这里拿旧读数签字。
+        // Note: the `+7`/`007`/`7` group **cannot** serve as this example — the reference measures
+        // all three equal in C (both input orders come back unchanged), while this tree's numeric
+        // key treats `+` as "not a digit", giving 0 for `+7` and 7 for `007` — a difference that the
+        // old whole-line fallback happened to mask. It is registered for a separate fix and is not
+        // signed off here with the old readings.
     }
 
     #[test]
     fn test_fold_and_dictionary() {
-        // 折叠使两行的键相等，而 C 在不开 `-S` 时**不拿整条记录再排**：参照件对
-        // `Apple`/`apple`（与反过来输入）都原序输出，所以这里就该交回 `Equal`。
-        // 旧断言写的「回退到整行、`A` 先于 `a`」是本树自创的次序（批次二百九十推翻）。
+        // Folding makes the two keys equal, and without `-S` C **does not re-sort by whole
+        // record**: the reference outputs `Apple`/`apple` (and the reverse input) in input order, so
+        // this must return `Equal`. The old assertion's "fall back to the whole line, `A` before
+        // `a`" was an order this tree invented.
         let options = opts("-f");
         assert_eq!(compare("Apple", "apple", &options), Ordering::Equal);
         assert_eq!(compare("apple", "Apple", &options), Ordering::Equal);
         assert_eq!(compare("Apple", "Apple", &options), Ordering::Equal);
-        // `-S` 才把记录拿进来：这时 `A`(0x41) 先于 `a`(0x61)，与参照件
-        // `printf 'ab\nAB\n' | sort -f -S` 给出 `AB` 在前的读数同形。
+        // Only `-S` brings the record in: then `A` (0x41) comes before `a` (0x61), the same shape
+        // as the reference's `printf 'ab\nAB\n' | sort -f -S` putting `AB` first.
         assert_eq!(compare("apple", "Apple", &opts("-f -S")), Ordering::Greater);
         let dictionary = opts("-d");
-        // '+' 字节两侧都被滤掉："ab" 对 "abc"——这是键本身不等，与并列无关。
+        // The `+` byte is filtered out on both sides: "ab" against "abc" — the keys themselves
+        // differ, which has nothing to do with ties.
         assert_eq!(compare("a+b", "a+bc", &dictionary), Ordering::Less);
-        // 而滤完真的相等时仍是平局（参照件 `-d` 对 `a+b`/`ab` 原序输出）。
+        // When the filtered forms really are equal it is still a tie (the reference's `-d` outputs
+        // `a+b`/`ab` in input order).
         assert_eq!(compare("a+b", "ab", &dictionary), Ordering::Equal);
     }
 
@@ -1339,27 +1422,31 @@ mod tests {
         let mut options = opts("-t:");
         options.keys.clear();
         options.keys.push(spec);
-        // -t: -k2,2 只比第二个冒号字段；字段不同就按它排，字段相同时**不在这里拆**。
+        // -t: -k2,2 compares only the second colon field; different fields sort by it, and equal
+        // fields are **not split here**.
         assert_eq!(compare("x:b:zz", "a:a:yy", &options), Ordering::Greater);
         assert_eq!(compare("x:b:zz", "a:b:yy", &options), Ordering::Equal);
-        // 键都是字段二的 `b`，所以第三段的差异不构成序（旧写法在这里靠整行回退
-        // 报出 Less，那是自创的次序）；要拆得开只能 `-S`。
+        // Both keys are field two's `b`, so a difference in the third segment creates no order (the
+        // old form reported `Less` via the whole-line fallback — an invented order); only `-S` can
+        // split them.
         assert_eq!(compare("x:b:1", "x:b:2", &options), Ordering::Equal);
         assert_eq!(
             compare("x:b:1", "x:b:2", &opts("-t: -k 2,2 -S")),
             Ordering::Less
         );
-        // 拆平行尾靠 `-S`：参照件上同键不同尾的行，`-k 2,2` 原序输出，而
-        // `-S -k 2,2` 按记录排。
+        // Breaking ties by the tail needs `-S`: on the reference, lines with equal keys and
+        // different tails come back in input order under `-k 2,2`, while `-S -k 2,2` sorts by
+        // record.
         assert_eq!(
             compare("x:b:zz", "a:b:yy", &opts("-t: -k 2,2 -S")),
             Ordering::Greater
         );
     }
 
-    /// `.0` 在两列上不对称：只有开始列会 `col->indent--`（`init.c:168-169`），所以
-    /// 开始列的 `.0` 算出 -1 走 `illegal offset`，而结束列的 `.0`（以及光一个点）
-    /// 缩进是 0，表示「到字段末」——参照件同样接受。
+    /// `.0` is not symmetric between the two columns: only the start column does `col->indent--`
+    /// (`init.c:168-169`), so `.0` on the start column computes -1 and takes `illegal offset`,
+    /// while `.0` on the end column (and a lone dot) has indent 0, meaning "to end of field" — the
+    /// reference accepts that too.
     #[test]
     fn dot_zero_is_an_error_only_on_the_start_column() {
         assert_eq!(
@@ -1371,12 +1458,13 @@ mod tests {
         assert!(parse_key(b"1,2.", &opts("")).is_ok());
     }
 
-    /// 五句 `errx` 各自有自己的形与句子，读数拿 `tmp/family-diag-ref/sort_ref` 逐形量过。
-    /// 旧写法把五句挤成一句，所以除 `1 2` 之外四句都在拿别人的句子签字。
+    /// Each of the five `errx` sentences has its own shape and its own sentence; the readings were
+    /// measured shape by shape against the reference. The old form squeezed the five into one, so
+    /// four of them signed with someone else's sentence.
     #[test]
     fn the_five_key_spec_sentences_are_distinct() {
-        // `field numbers must be positive`（`init.c:160-161`）：零、负数、以及一个数字
-        // 也没转出来的形（`strtol` 交回 0 且指针不动）。
+        // `field numbers must be positive` (`init.c:160-161`): zero, a negative, and a shape that
+        // converts no digit (`strtol` returns 0 and leaves the pointer alone).
         for spec in ["0", "x", "", ",5", "1,-2", "-1"] {
             assert_eq!(
                 parse_key(spec.as_bytes(), &opts("")).err(),
@@ -1384,17 +1472,18 @@ mod tests {
                 "键形 {spec:?}"
             );
         }
-        // `illegal offset`（`:168-170`）：开始列 `.0` 减一后为负。
+        // `illegal offset` (`:168-170`): the start column's `.0` minus one goes negative.
         assert_eq!(
             parse_key(b"1.0", &opts("")).err(),
             Some(KeySpecError::IllegalOffset)
         );
-        // `cannot indent end of line`（`:162-163`）：列号是 0 还要给 `.C`。
+        // `cannot indent end of line` (`:162-163`): the column number is 0 yet `.C` is given.
         assert_eq!(
             parse_key(b"1,0.5", &opts("")).err(),
             Some(KeySpecError::CannotIndentEndOfLine)
         );
-        // `illegal field descriptor`（`:186-191`）：开始列停在非逗号的字符上。
+        // `illegal field descriptor` (`:186-191`): the start column stops on a character that is
+        // not a comma.
         for spec in ["1 2", "1n2", "1.2.3", "1M"] {
             assert_eq!(
                 parse_key(spec.as_bytes(), &opts("")).err(),
@@ -1402,16 +1491,18 @@ mod tests {
                 "键形 {spec:?}"
             );
         }
-        // `fields out of order`（`:213-217`）：三个条件全成立才报。
+        // `fields out of order` (`:213-217`): reported only when all three conditions hold.
         assert_eq!(
             parse_key(b"2.5,1.2", &opts("")).err(),
             Some(KeySpecError::FieldsOutOfOrder)
         );
-        // 缺一个就不报：结束列没给 `.C`（缩进为 0，源码注释写着「i.e. okay」），
-        // 以及结束列号比开始列大的那种正常接法。
+        // Missing one means no report: the end column gives no `.C` (indent 0, and the source
+        // comment says "i.e. okay"), or the end column number is larger than the start column — the
+        // normal way to chain them.
         assert!(parse_key(b"2,1", &opts("")).is_ok());
         assert!(parse_key(b"1,2.1", &opts("")).is_ok());
-        // 也接受 `strtol` 的宽容形：前导空白、正号、多余的前导零。
+        // `strtol`'s tolerant shapes are accepted too: leading blanks, a plus sign, extra leading
+        // zeros.
         for spec in ["+1", " 1", "01"] {
             assert_eq!(
                 parse_key(spec.as_bytes(), &opts("")).unwrap().start_field,
@@ -1421,31 +1512,36 @@ mod tests {
         }
     }
 
-    /// `-l` 排的是「跨度还有几个字节」（C `fields.c:length()`：先 `SKIP_BLANKS(line)`，
-    /// 再把 `lineend - line` 写成十进制串交给 `number()`）。下面四个读数直接拿参照件
-    /// `sort_ref` 量过：空行（0）、`b 2`（1）、`cc 3`（2）、`aaa 1`（3）。
-    /// 量的是长度而不是内容，所以 `b 2` 反而排在 `aaa 1` 之前（字典序倒过来）。
+    /// `-l` sorts by "how many bytes remain in the span" (C `fields.c:length()`:
+    /// `SKIP_BLANKS(line)` first, then `lineend - line` rendered as a decimal string and handed to
+    /// `number()`). The four readings below were measured directly against the reference: an empty
+    /// line (0), `b 2` (1), `cc 3` (2), `aaa 1` (3). Because it measures length rather than
+    /// content, `b 2` sorts before `aaa 1` (the lexicographic order is inverted).
     #[test]
     fn sort_by_length_orders_by_span_length_not_content() {
         let by_length = opts("-l");
         assert_eq!(compare("b 2", "aaa 1", &by_length), Ordering::Less);
         assert_eq!(compare("cc 3", "aaa 1", &by_length), Ordering::Less);
         assert_eq!(compare("", "b 2", &by_length), Ordering::Less);
-        // 等长就是平局：不开 `-S` 时比较半不拿记录拆（参照件 `-l` 对同长行原序输出），
-        // 输入序由排序那一步保住。
+        // Equal lengths are a tie: without `-S` the comparison half does not split by record (`-l`
+        // on the reference outputs equal-length lines in input order), and the sorting step keeps
+        // input order.
         assert_eq!(compare("ab 1", "cd 2", &by_length), Ordering::Equal);
-        // 全局 `-l` 与局部 `-k 1l` 同序（`-l` 走的是 `fldtab[0].flags`，`sort.c:168-172`）。
+        // A global `-l` and a local `-k 1l` order identically (`-l` goes through `fldtab[0].flags`,
+        // `sort.c:168-172`).
         assert_eq!(compare("b 2", "aaa 1", &opts("-k 1l")), Ordering::Less);
-        // 跳前导空白只发生在本键那一支里（`SKIP_BLANKS`），所以 `-t:` 下「两个补白加 aa」
-        // 的长度是 2 而不是 4——参照件给 `b:2`、`  aa:1`、`ccc:3` 这个序。
+        // The leading-blank skip happens only in this key's branch (`SKIP_BLANKS`), so under `-t:`
+        // the length of "two blanks plus aa" is 2, not 4 — the reference gives the order `b:2`,
+        // `  aa:1`, `ccc:3`.
         let delimited = opts("-t: -k 1l");
         assert_eq!(compare("  aa:1", "b:2", &delimited), Ordering::Greater);
         assert_eq!(compare("  aa:1", "ccc:3", &delimited), Ordering::Less);
     }
 
-    /// `l` 与 `n` 同时存在时按长度走：C 在 `enterfield` 里先查 `L` 再查 `N`
-    /// （`fields.c:208-211`），参照件量出 `-k 1ln` 与 `-k 1nl` 的读数与 `-k 1l` 完全相同
-    ///（而不是数值序：`aaa` 与 `cc` 都没有数字前缀，走数值两者都是 0 而平局）。
+    /// When `l` and `n` are both present the length wins: C checks `L` before `N` in `enterfield`
+    /// (`fields.c:208-211`), and the reference measures `-k 1ln` and `-k 1nl` with exactly the same
+    /// readings as `-k 1l` (not numeric order: neither `aaa` nor `cc` has a numeric prefix, so as
+    /// numbers both are 0 and tie).
     #[test]
     fn the_length_flag_wins_over_numeric() {
         for spec in ["1ln", "1nl"] {
@@ -1459,10 +1555,11 @@ mod tests {
         }
     }
 
-    /// 数值键的归一按 C 的 `number()` 做（批次二百九十一）：下面八对形在参照件里
-    /// 都是「两种输入顺序都原序输出」，也就是同值——正号只是跨过（`fields.c:283-288`）、
-    /// 前导零被吃掉（`:290-292`）、小数尾零随 terminator 一起回退（`:373-374`），
-    /// 而那个零键不带 `negate`，所以 `-0` 与 `+0` 也同值。
+    /// Numeric-key normalisation follows C's `number()`: the nine pairs below all come back in
+    /// input order from the reference (i.e. equal) — a plus sign is merely stepped over
+    /// (`fields.c:283-288`), leading zeros are eaten (`:290-292`), trailing fraction zeros are
+    /// stepped back with the terminator (`:373-374`), and the zero key carries no `negate`, so `-0`
+    /// and `+0` are equal too.
     #[test]
     fn numeric_keys_normalize_sign_leading_and_trailing_zeros() {
         for (a, b) in [
@@ -1479,32 +1576,38 @@ mod tests {
             assert_eq!(compare(a, b, &opts("-n")), Ordering::Equal, "{a} 对 {b}");
             assert_eq!(compare(b, a, &opts("-n")), Ordering::Equal, "{b} 对 {a}");
         }
-        // 补零比较才是「尾零等价」的承重件，而不是剥离：`1.4` 与 `1.40` 同值（两向
-        // 输入都原序），可 `1.4` 与 `1.45` **不同值**——决定位落在短一方的长度之外，
-        // 只有按补零逐位比才分得开（参照件两向都给 `1.4` 在前）。
+        // Zero-padded comparison, not stripping, is what carries "trailing zero equivalence":
+        // `1.4` and `1.40` are equal (both input orders come back unchanged), yet `1.4` and `1.45`
+        // are **not** equal — the deciding digit lies beyond the shorter side's length, and only
+        // digit-by-digit comparison with zero padding separates them (the reference puts `1.4` first
+        // in both directions).
         assert_eq!(compare("1.4", "1.40", &opts("-n")), Ordering::Equal);
         assert_eq!(compare("1.40", "1.4", &opts("-n")), Ordering::Equal);
         assert_eq!(compare("1.4", "1.45", &opts("-n")), Ordering::Less);
         assert_eq!(compare("1.45", "1.4", &opts("-n")), Ordering::Greater);
-        // 归一不等于丢掉量级：位数比较在去零之后做，符号仍优先。
+        // Normalising is not discarding the magnitude: the digit-count comparison runs after zero
+        // stripping, and the sign still dominates.
         assert_eq!(compare("0007", "0006", &opts("-n")), Ordering::Greater);
         assert_eq!(compare("-0.5", "-0.05", &opts("-n")), Ordering::Less);
-        // C 不认指数（`fields.c:315` 的注释写着“Maybe here we should allow for e+12 (etc)”）：
-        // `1e3` 的键就是 1（`e` 处停住），所以在 `1000` 之前——参照件两向都给这个序。
+        // C does not recognise exponents (`fields.c:315`'s comment reads "Maybe here we should allow
+        // for e+12 (etc)"): the key of `1e3` is just 1 (it stops at `e`), so it comes before `1000`
+        // — the reference gives that order in both directions.
         assert_eq!(compare("1e3", "1000", &opts("-n")), Ordering::Less);
         assert_eq!(compare("1000", "1e3", &opts("-n")), Ordering::Greater);
     }
 
-    /// `init.c:193-194` 的继承判据是「局部一个字母也没有」才整体拿全局标志，不是逐位或。
-    /// 这一形是参照件量出来的：`-n -k 2r` 与 `-k 2r` 同序（按字典序反排），而不是
-    /// `-n -k 2` 的反序（那才是把 `n` 当全局位或进来的写法）。
+    /// The inheritance criterion at `init.c:193-194` is "not one letter in the local segment",
+    /// which then takes the global flags wholesale — not a bitwise OR. This shape was measured
+    /// against the reference: `-n -k 2r` and `-k 2r` order identically (reverse lexicographic), not
+    /// like the reverse of `-n -k 2` (which is what ORing the global bit in would give).
     #[test]
     fn a_local_modifier_switches_the_global_flags_off() {
-        // 全局 `-n` 且局部无字母：继承，2 排在 10 前。
+        // Global `-n` and no local letter: inherit, so 2 comes before 10.
         assert_eq!(compare("x 2", "y 10", &opts("-n -k 2")), Ordering::Less);
-        // 全局 `-n` 但局部有 `r`：这一支的 **键**不继承 `n`，只按字典序的键反排——
-        // 所以两条命令排出来是同一个序。比的是那一条键规格，不是整个 [`Options`]
-        //（全局位本身当然还记在 Options 上，那里没有差异可查）。
+        // Global `-n` but a local `r`: this branch's **key** does not inherit `n` and only
+        // reverses the lexicographic key — so the two commands produce the same order. What is
+        // compared is that one key spec, not the whole [`Options`] (the global bit is of course
+        // still recorded on Options, where there is no difference to check).
         let w_args = argv(&["-n", "-k", "2r"]);
         let with_global = parse_options(&w_args).unwrap().0;
         let w_args = argv(&["-k", "2r"]);
@@ -1515,7 +1618,8 @@ mod tests {
         );
         assert!(!with_global.keys[0].numeric);
         assert!(with_global.numeric, "全局位本身仍照 C 存在 gflag 里");
-        // 而「局部空」那一支确实拿到了全局：同一条 `-k 2` 带不带 `-n` 是两个序。
+        // The "empty local" branch does take the global: the same `-k 2` with and without `-n`
+        // gives two different orders.
         assert!(parse_options(&argv(&["-n", "-k", "2"])).unwrap().0.keys[0].numeric);
     }
 
@@ -1539,11 +1643,14 @@ mod tests {
         assert_eq!(compare("a y z", "b x w", &options), Ordering::Greater);
     }
 
-    /// 并列键的规则（批次二百九十按参照件定形）：不开 `-S` 时比较半交回 `Equal`，
-    /// 由排序那一步的稳定性保住输入序；开了 `-S` 才拿整条记录拆平行。
-    /// `-R` 与 `-t` 的关系按 C 的掩码判据（`sort.c:217-218` 只在 `-t` 那一支查
-    /// `d_mask[c] & REC_D_F`）：撞车是 `-t` 撞当前记录分隔符，反向不查。
-    /// 参照件同读数（`-R , -t ,` 报 clash 退 2；`-t , -R ,` 安静通过）。
+    /// The tie rule (fixed against the reference): without `-S` the comparison half returns
+    /// `Equal` and the sorting step's stability keeps input order; only `-S` splits ties by the
+    /// whole record.
+    /// The `-R`/`-t` relationship follows C's mask criterion (`sort.c:217-218` checks
+    /// `d_mask[c] & REC_D_F` only on the `-t` branch): the clash is `-t` hitting the current record
+    /// delimiter, not the reverse.
+    /// The reference reads the same (`-R , -t ,` reports clash and exits 2; `-t , -R ,` passes
+    /// silently).
     #[test]
     fn dash_r_moves_the_record_delimiter_and_dash_t_clashes_with_it() {
         let w_args = argv(&["-R", ","]);
@@ -1557,14 +1664,16 @@ mod tests {
         let (o, _) = parse_options(&w_args).unwrap();
         assert_eq!(o.record_delim, 44, "反向在 C 里不查，所以只有后一个生效");
         assert_eq!(o.delimiter, Some(b','));
-        // 默认记录分隔符就是 '\n'，所以没给 `-R` 时 `-t '\n'` 也撞（参照件同句）。
+        // The default record delimiter is `'\n'`, so without `-R`, `-t '\n'` clashes too (the
+        // reference reports the same sentence).
         assert_eq!(
             parse_options(&argv(&["-t", "\n"])).err(),
             Some(ParseError::RecordFieldDelimiterClash)
         );
     }
 
-    /// `record_delim_number` 逐句对着 C 的 `strtol` + 三条拒收判据。
+    /// `record_delim_number` clause by clause against C's `strtol` plus the three rejection
+    /// criteria.
     #[test]
     fn record_delim_number_mirrors_strtol_and_its_three_refusals() {
         assert_eq!(record_delim_number(b"011", 8), Some(9), "-R '\\011' → 制表");
@@ -1595,7 +1704,8 @@ mod tests {
         );
     }
 
-    /// 数值形只在「值长于一个字节」时才走，且单字节是**字面字节**：`-R 0` 的字符是 `'0'`。
+    /// The numeric form is taken only when the value is longer than one byte, and a single byte is
+    /// a **literal byte**: the character of `-R 0` is `'0'`.
     #[test]
     fn dash_r_single_byte_is_literal_and_newline_short_circuits_the_arm() {
         let w_args = argv(&["-R", "0"]);
@@ -1604,7 +1714,7 @@ mod tests {
         let w_args = argv(&["-R", "\n"]);
         let (o, _) = parse_options(&w_args).unwrap();
         assert_eq!(o.record_delim, 10, "C 在 `REC_D == '\\n'` 处直接 break");
-        // 同一支的提前收尾意味着后面的字符整个被忽略。
+        // Ending early on the same branch means the following characters are ignored entirely.
         let w_args = argv(&["-R", "\nxy"]);
         let (o, _) = parse_options(&w_args).unwrap();
         assert_eq!(o.record_delim, 10);
@@ -1614,8 +1724,9 @@ mod tests {
         );
     }
 
-    /// 「给过第二次」的判据是「当前值已不等于 `'\n'`」而不是次数：第一次被算回 10 时
-    /// 第二次合法（参照件对 `-R '\12' -R ,` 给出的是正常输出）。
+    /// The "given twice" criterion is "the current value no longer equals `'\n'`", not a count:
+    /// when the first computes back to 10 the second is legal (the reference gives normal output
+    /// for `-R '\12' -R ,`).
     #[test]
     fn a_second_dash_r_only_reports_when_the_first_one_stuck() {
         assert_eq!(
@@ -1629,7 +1740,7 @@ mod tests {
             parse_options(&argv(&["-R", "300"])).err(),
             Some(ParseError::InvalidRecordDelimiter(b"300".to_vec()))
         );
-        // 反斜缀被跳过，所以报文里的是剩下的那串。
+        // The backslash prefix is skipped, so the message carries the remaining string.
         assert_eq!(
             parse_options(&argv(&["-R", "\\q"])).err(),
             Some(ParseError::InvalidRecordDelimiter(b"q".to_vec()))
@@ -1640,12 +1751,14 @@ mod tests {
     fn a_tie_stays_tied_and_capital_s_breaks_it_by_the_record() {
         let mut options = opts("");
         options.keys.push(parse_key(b"1,1.1", &opts("")).unwrap());
-        // 一字节长的键相等就是平局（旧写法在这里回退整行，自创了一个次序）。
+        // A one-byte key that is equal is a tie (the old form fell back to the whole line,
+        // inventing an order).
         assert_eq!(compare("a123", "a456", &options), Ordering::Equal);
         assert_eq!(compare("a456", "a123", &options), Ordering::Equal);
         options.posix_tiebreak = true;
         assert_eq!(compare("a123", "a456", &options), Ordering::Less);
-        // `-u` 在选项环**之后**把这一位归零（`sort.c:256-258`），所以两种书写顺序同效。
+        // `-u` zeroes this bit **after** the option ring (`sort.c:256-258`), so both spellings are
+        // equivalent.
         assert!(
             !parse_options(&argv(&["-S", "-u"]))
                 .unwrap()
@@ -1659,7 +1772,7 @@ mod tests {
                 .posix_tiebreak
         );
         assert!(parse_options(&argv(&["-S"])).unwrap().0.posix_tiebreak);
-        // `-s` 仍是无操作：它写的就是默认那一侧（`sort.c:194-201`）。
+        // `-s` is still a no-op: it writes the default side (`sort.c:194-201`).
         assert!(!parse_options(&argv(&["-s"])).unwrap().0.posix_tiebreak);
     }
 
@@ -1688,17 +1801,18 @@ mod tests {
         );
     }
 
-    /// 三条出口各自一个型，而且只有两条前面带 libc 那一行（壳根据型选行数）。
-    /// 集外字母那一支另有一枚测（`test_parse_options_rejects_unknown`），不在此重复。
+    /// Each of the three exits has its own type, and only two of them carry libc's line in front
+    /// (the shell picks the line count from the type). The out-of-set-letter branch has its own test
+    /// (`test_parse_options_rejects_unknown`) and is not repeated here.
     #[test]
     fn test_parse_options_splits_the_three_error_paths() {
         use crate::GetoptReport;
-        // 缺值：与集外字母同属 `Getopt`，但句子不同。
+        // Missing value: the same `Getopt` type as an out-of-set letter, but a different sentence.
         assert_eq!(
             parse_options(&argv(&["-t"])),
             Err(ParseError::Getopt(GetoptReport::MissingValue('t')))
         );
-        // 键形不对：C 是 `errx(2, …)` 五句之一，不接 usage。
+        // Wrong key shape: one of C's five `errx(2, …)` sentences, with no usage.
         assert_eq!(
             parse_options(&argv(&["-k", "x"])),
             Err(ParseError::KeySpec(KeySpecError::FieldNumbersNotPositive))
@@ -1707,8 +1821,8 @@ mod tests {
             parse_options(&argv(&["-k", "1 2"])),
             Err(ParseError::KeySpec(KeySpecError::IllegalFieldDescriptor))
         );
-        // `-t` 给第二次才是 `usage("multiple field delimiters")`；
-        // 而多字节本身**不是**错（C 只取首字节）。
+        // Only a second `-t` is `usage("multiple field delimiters")`; a multi-byte value itself is
+        // **not** an error (C takes only the first byte).
         let w_args = argv(&["-t,", "f"]);
         let (one, _) = parse_options(&w_args).unwrap();
         assert_eq!(one.delimiter, Some(b','));
@@ -1719,7 +1833,7 @@ mod tests {
             parse_options(&argv(&["-t,", "-t;"])).err(),
             Some(ParseError::MultipleFieldDelimiters)
         );
-        // 空值取到那个 `\0`（C 的 `*optarg`）。
+        // An empty value picks up that `\0` (C's `*optarg`).
         let w_args = argv(&["-t", "", "f"]);
         let (nul, _) = parse_options(&w_args).unwrap();
         assert_eq!(nul.delimiter, Some(0));

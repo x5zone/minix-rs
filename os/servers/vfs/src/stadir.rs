@@ -39,8 +39,9 @@ pub const ST_NOWAIT: u64 = 2;
 pub const VMNT_READONLY: u32 = 0o01;
 /// `VMNT_CANSTAT` (`vmnt.h:28`, octal): counted in the tally.
 pub const VMNT_CANSTAT: u32 = 0o20;
-/// `NR_MNTS` (`const.h:7`) — single truth lives in `vmnt.rs` (P2-2 同型的
-/// 单真相收敛；曾与本表 16 并存一个 8 的分叉定义，Fix #33 统一).
+/// `NR_MNTS` (`const.h:7`) — the single truth lives in `vmnt.rs` (same-kind
+/// convergence to one source; a diverging definition of 8 once coexisted with
+/// this table's 16, and the two are now unified).
 pub use crate::vmnt::NR_MNTS;
 
 /// The nine directory/status calls (header lists eight; `do_fchdir`'s
@@ -332,7 +333,8 @@ pub fn stat_then_statvfs<S: StatFs>(fs: &mut S) -> Result<(), StadirError> {
     fs.statvfs()
 }
 
-/// What the call tells the main loop (ARCH A-5).
+/// What the call tells the main loop (an architectural decision: the reply
+/// status travels separately).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StadirVerdict {
     /// Reply now (status carried separately).

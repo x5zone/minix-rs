@@ -7,9 +7,9 @@
 //! by the tty crate, doc 07 §2.6). The master face runs in this crate;
 //! the slave face is the tty line with a pty backend.
 //!
-//! Close effects carry the hangup half B2 added: the face returns
-//! [`CloseEffect`] and the service performs B0-EOF plus SIGHUP on the
-//! slave session; a pair reset additionally clears the Unix98 node.
+//! Close effects carry the hangup half: the face returns [`CloseEffect`] and
+//! the service performs the end-of-file plus SIGHUP on the slave session; a
+//! pair reset additionally clears the Unix98 node.
 
 use crate::buffer::OutputRing;
 use crate::pair::{CloseEffect, PairEnd, PairTable};
@@ -21,7 +21,8 @@ use minix_types::Errno;
 pub struct PtyMasterFace {
     pub table: PairTable,
     /// One output ring per pair: the master reads slave-written bytes
-    /// from it (`pty_master_read`, doc 07 §3.3 "两本账").
+    /// from it (`pty_master_read`, doc 07 §3.3, the separate ledgers for the
+    /// master and slave directions).
     pub rings: alloc::vec::Vec<OutputRing>,
     /// Opened minors since the last announce (the restart gate).
     pub opened: OpenDeviceSet,
@@ -66,8 +67,8 @@ impl CharDriver for PtyMasterFace {
             return -(minix_types::ENXIO);
         };
         match pair.close(PairEnd::Master) {
-            // Slave hangup (B0 + SIGHUP) and the Unix98 node clear are
-            // service actions; the face only reports which.
+            // Slave hangup (end-of-file + SIGHUP) and the Unix98 node clear
+            // are service actions; the face only reports which.
             CloseEffect::SlaveHangup | CloseEffect::PairReset | CloseEffect::Quiet => 0,
         }
     }

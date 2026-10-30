@@ -15,23 +15,30 @@ use crate::TextError;
 
 use alloc::vec::Vec;
 
-/// 一行：内容（**按字节**）加上它在输入里到底有没有那枚换行。
+/// One line: the content (**as bytes**) plus whether the input actually had that
+/// newline.
 ///
-/// C 的行腿把串尾的换行连同内容一起交回，从不替输入补：`nl.c:288` 的 `fgets` 连着换行
-/// 一起读进缓冲、`:340` 的 `printf("%s%s", sep, buffer)` 原样打出；`head.c:169-172` 干脆
-/// 逐字符 `getc`/`putchar` 搬运；`reverse.c:133-144` 记录的行区间也含那枚换行。所以
-/// 「末行没有换行」是**输入的属性**，不是程序要填的空。
+/// C's line legs return the trailing newline together with the content and never add
+/// one on the input's behalf: `fgets` at `nl.c:288` reads the newline into the buffer
+/// and `printf("%s%s", sep, buffer)` at `:340` prints it unchanged; `head.c:169-172`
+/// copies character by character with `getc`/`putchar`; the line ranges `reverse.c`
+/// records at `:133-144` include that newline too. So "the last line has no newline"
+/// is a **property of the input**, not a gap the program fills.
 ///
-/// 内容为什么是 `&[u8]` 而不是 `&str`：C 的这些行腿一个字节也不解读——`fgetln`、`fgets`、
-/// `getc` 交回的就是字节。行一旦变成 `&str`，一枚非法 UTF-8 字节就要求先做一次解码，而那一步
-/// 无论怎么取舍都在改输入：整份解失败就一份也交不出，逐行解失败就把那一行换成别的东西。
-/// 字节没有这个问题，所以取法侧（切列、比较、计数）与写出侧都在同一份字节上工作。
+/// Why the content is `&[u8]` and not `&str`: these C line legs interpret not a single
+/// byte — `fgetln`, `fgets` and `getc` return bytes. Once a line becomes a `&str`, an
+/// illegal UTF-8 byte forces a decode, and whichever way that decode is resolved it
+/// changes the input: failing on the whole input yields nothing at all, failing per
+/// line replaces that line with something else. Bytes have no such problem, so the
+/// reading side (splitting columns, comparing, counting) and the writing side work on
+/// the same bytes.
 ///
-/// 中间行一定带着换行，只有输入的最后一行可能没有。把终止状态做成一行数据之后，写出侧只看
-/// [`Line::eol`]，谁都不必再问「我现在写的这行是不是输入的末行」——`tail -r` 会把末行翻到
-/// 输出的最前面，靠行号问这句话正好会问错。参照件现量读数（`tmp/head-415`、`tmp/tail-416`、
-/// `tmp/nl-417`、`tmp/uniq-408`）与两个例外（`cut`/`rev` 在 C 里**确实**归一化补换行）见
-/// 18 篇批次四百二十三。
+/// An interior line always carries its newline; only the input's last line may lack
+/// one. Making the termination state part of the line data means the writing side
+/// only looks at [`Line::eol`], and nobody has to ask "is the line I am writing the
+/// input's last line" — `tail -r` moves the last line to the front of the output,
+/// where asking by line number would get the wrong answer. (Two exceptions: `cut` and
+/// `rev` **do** normalize by adding a newline in C.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Line<'a> {
     bytes: &'a [u8],
@@ -39,7 +46,7 @@ pub struct Line<'a> {
 }
 
 impl<'a> Line<'a> {
-    /// 内容（不含换行）加上「输入里有那枚换行」。
+    /// The content (without the newline) plus "the input had that newline".
     pub fn new(bytes: &'a [u8]) -> Line<'a> {
         Line {
             bytes,
@@ -47,59 +54,71 @@ impl<'a> Line<'a> {
         }
     }
 
-    /// 按输入原样交回一行：末行没有换行时 `terminated` 为假。
+    /// Returns a line as the input had it: `terminated` is false when the last line
+    /// lacks a newline.
     pub fn raw(bytes: &'a [u8], terminated: bool) -> Line<'a> {
         Line { bytes, terminated }
     }
 
-    /// 行的内容，按字节。
+    /// The line's content, as bytes.
     pub fn bytes(&self) -> &'a [u8] {
         self.bytes
     }
-    /// 写出这一行时该跟的字节：输入里有就原样交回，没有就**不造**。
+    /// The bytes to append when writing this line: what the input had, and **nothing**
+    /// when it had none.
     pub fn eol(&self) -> &'static [u8] {
         if self.terminated { b"\n" } else { b"" }
     }
-    /// 这一行在输入里是否带着换行。
+    /// Whether this line carried a newline in the input.
     pub fn terminated(&self) -> bool {
         self.terminated
     }
 }
 
 impl<'a> From<&'a str> for Line<'a> {
-    /// 借一段文本当「带着换行的行」：测试与只会造内容的调用方走这条。
+    /// Borrows a piece of text as "a line with a newline": the path tests and
+    /// content-only callers take.
     fn from(text: &'a str) -> Line<'a> {
         Line::new(text.as_bytes())
     }
 }
 
-/// 输入的末行在输入里有没有那枚换行——一行判据。按字节自己切行的腿（`nl` 的编号腿要容忍
-/// 非 UTF-8，不走 [`Line`]）用它，`lines_of` 也用它给末行定 `terminated`，两边同源于此。
-/// 空输入没有行，交回 `true`（补与不补都走不到任何一行）。
+/// Whether the input's last line carried that newline — a one-line predicate. Legs
+/// that split lines themselves byte-wise (the `nl` numbering leg has to tolerate
+/// non-UTF-8 and does not use [`Line`]) use it, and `lines_of` uses it to set the last
+/// line's `terminated`; both come from here.
+/// Empty input has no lines and returns `true` (neither adding nor not adding can
+/// reach a line).
 pub fn final_line_terminated(input: &[u8]) -> bool {
     input.is_empty() || input.ends_with(b"\n")
 }
 
-/// 按字节切输入，交回每一行与它在输入里的终止状态——**不做任何解码**。
+/// Splits the input byte-wise and returns every line together with its termination
+/// state in the input — **no decoding at all**.
 ///
-/// `input` 为空交回空表（没有行）。输入以换行结尾时，`split` 多交回的那片空串是
-/// 换行之后的东西、不是行；两枚相邻换行之间那片空串仍是真行。
+/// Empty `input` returns an empty table (no lines). When the input ends with a newline,
+/// the extra empty piece `split` returns is what comes after the newline, not a line;
+/// the empty piece between two adjacent newlines is a real line.
 ///
-/// 这里为什么不先把整份输入解成 `&str` 再切：解一次就要求「整份都是合法 UTF-8」，
-/// 一枚非法字节会让整份输入变成空串，于是每一行都消失——参照件对同样的输入照旧逐行
-/// 交回（`tmp/head-415/head_ref`、`tmp/nl-417/nl_ref` 现量：含 `\xff` 的行连字节一起打）。
-/// 按字节切则行是输入自己的切分，与内容是不是 UTF-8 无关。
+/// Why not decode the whole input into a `&str` first and then split: one decode
+/// demands "the whole input is valid UTF-8", and a single illegal byte would turn the
+/// whole input into an empty string, making every line disappear — while the reference
+/// build still returns line by line for the same input (a line containing `\xff` is
+/// printed with its bytes). Byte-wise splitting makes the lines the input's own
+/// division, independent of whether the content is UTF-8.
 pub fn lines_of(input: &[u8]) -> Vec<Line<'_>> {
     if input.is_empty() {
         return Vec::new();
     }
     let mut pieces: Vec<Line<'_>> = input.split(|byte| *byte == b'\n').map(Line::new).collect();
     if final_line_terminated(input) {
-        // 换行结尾时 `split` 多交回一片空串，它是换行**之后**的东西，不是行；
-        // 内部那片空串（两枚相邻换行之间）仍是真行。
+        // When the input ends with a newline, `split` returns one extra empty piece:
+        // it is what comes **after** the newline, not a line; the interior empty piece
+        // (between two adjacent newlines) is still a real line.
         pieces.pop();
     } else if let Some(last) = pieces.last_mut() {
-        // 末行在输入里没有换行：把这件事记在行上，写出的腿就不会去造它。
+        // The last line has no newline in the input: record that on the line so the
+        // writing legs will not add one.
         *last = Line::raw(last.bytes(), false);
     }
     pieces
@@ -231,19 +250,21 @@ pub struct HeadArgs {
     /// `-v`: always print per-file banners.
     pub vflag: bool,
     /// File operands in order (a lone `-` names a file, unlike `cut`).
-    /// 交回的是 argv 里那串**原字节**：横幅那一腿由壳自己拼（`head.c:130-131` 的
-    /// `printf("%s==> %s <==\\n", …, *argv)`），所以它可以逐字节回显；只有开档与
-    /// `warn("%s", *argv)` 那两条 `&str` 口要折一次（在册 `ARGV-BYTE-PATH-IN-LIBS`）。
+    /// What comes back is the **raw bytes** from argv: the banner leg is assembled by
+    /// the shell itself (`printf("%s==> %s <==\\n", …, *argv)` at `head.c:130-131`), so
+    /// it can echo byte for byte; only opening the file and the `warn("%s", *argv)`
+    /// message go through `&str` and need one lossy fold.
     pub operands: Vec<Vec<u8>>,
 }
 
 /// `head` argument-parsing failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeadArgError {
-    /// 集外字母与带值选项缺值。head 没有自己的裸 usage 腿（C 全文只有一处
-    /// `usage()`，就在 `head.c:115-117` 的 `case '?'`/`default:` 里），而那一支前面
-    /// 还有 libc 自己印的一行（`getopt.c:101-104`、`:132-136`），所以本型只留
-    /// 这一个出口，不另设 `Usage`。
+    /// An option letter outside the set, or a value option missing its value. `head`
+    /// has no bare-usage leg of its own (C has exactly one `usage()`, in the
+    /// `case '?'`/`default:` arms at `head.c:115-117`), and that arm is preceded by a
+    /// line libc prints itself (`getopt.c:101-104`, `:132-136`), so this type keeps a
+    /// single exit and adds no `Usage` variant.
     Getopt(crate::GetoptReport),
     /// A `-c`/`-n` value that is not a strictly positive integer: trailing
     /// garbage, `<= 0`, or overflow (C `strtoimax` reject, `head.c:90-103`).
@@ -251,7 +272,7 @@ pub enum HeadArgError {
         /// `true` for a `-c` (byte) count, `false` for `-n` (line).
         byte: bool,
         /// The offending value **as the argv bytes**, echoed into C's
-        /// `errx(1, "illegal … count -- %s", optarg)`（`head.c:96-97`、`:102-103`）。
+        /// `errx(1, "illegal … count -- %s", optarg)` (`head.c:96-97`, `:102-103`).
         value: Vec<u8>,
     },
 }
@@ -292,10 +313,12 @@ pub fn parse_head_args(args: &[&[u8]]) -> Result<HeadArgs, HeadArgError> {
             && arg[1] != b'-'
             && arg[1].is_ascii_digit()
         {
-            // C 的 `obsolete()` 拼的是字符数组（`head.c:188-192` 的 `-`、`n` 加
-            // `strcpy(ap + 2, *argv + 1)`），搬到这里就是「前缀两枚字节 + 原串去掉
-            // 短横后的全部字节」——尾巴里那枚非 UTF-8 字节必须原样跟着走，它随后会被
-            // `strtoimax` 拒掉并**回显进报文**（`head.c:96-97` 的 `illegal ... -- %s`）。
+            // C's `obsolete()` assembles a character array (`-`, `n` plus
+            // `strcpy(ap + 2, *argv + 1)` at `head.c:188-192`), which here is "two
+            // prefix bytes plus every byte of the original after the dash" — a
+            // non-UTF-8 byte in the tail must travel unchanged, because `strtoimax`
+            // then rejects it and it is **echoed into the message** (`illegal ... -- %s`
+            // at `head.c:96-97`).
             let mut rewritten: Vec<u8> = b"-n".to_vec();
             rewritten.extend_from_slice(&arg[1..]);
             scanned.push(rewritten);
@@ -338,9 +361,11 @@ pub fn parse_head_args(args: &[&[u8]]) -> Result<HeadArgs, HeadArgError> {
                             }
                             scanned[index].clone()
                         };
-                        // 数值腿仍交给 `str::parse::<i64>`：能转成 i64 的文本必是 ASCII，
-                        // 所以 `from_utf8` 失败与「这不是一个数」是同一件事——把解码当**纯检查**
-                        // 用，非 UTF-8 的值走 C 的那句 `illegal ... count` 并被**原字节回显**。
+                        // The numeric leg still goes to `str::parse::<i64>`: text that
+                        // parses as i64 is necessarily ASCII, so a `from_utf8` failure
+                        // and "this is not a number" are the same thing — decoding is
+                        // used as a **pure check**, and a non-UTF-8 value takes C's
+                        // `illegal ... count` sentence and is **echoed as raw bytes**.
                         match core::str::from_utf8(&value)
                             .ok()
                             .and_then(|text| text.parse::<i64>().ok())
@@ -379,10 +404,12 @@ pub fn parse_head_args(args: &[&[u8]]) -> Result<HeadArgs, HeadArgError> {
                 }
             }
         } else {
-            // C 的 `getopt` 在这里交回 -1 且不推进 `optind`（`getopt.c:71-74`），
-            // 于是 `head.c:118-119` 的 `argv += optind` 把这个 token **和它后面的
-            // 全部**当成操作数：后面的 `-q` 不再置旗标、`-x` 不再走未知字母那一句、
-            // `-n 3` 不再改计数、`--` 也不再是「选项结束」而是一个叫 `--` 的档名。
+            // C's `getopt` returns -1 here and does not advance `optind`
+            // (`getopt.c:71-74`), so `argv += optind` at `head.c:118-119` takes this
+            // token **and everything after it** as operands: a later `-q` never sets
+            // the flag, `-x` never reaches the unknown-letter sentence, `-n 3` never
+            // changes the count, and `--` is no longer "end of options" but a file
+            // named `--`.
             result.operands.extend_from_slice(&scanned[index..]);
             break;
         }
@@ -405,38 +432,44 @@ pub struct TailArgs {
     pub operands: Vec<Vec<u8>>,
 }
 
-/// `tail` 的跟随三态，对位 C 的整型全局 `fflag`（`extern.h:51`）：`-f` 置 1、`-F` 置 2、
-/// 不给是 0（`tail.c:110-121`）。三个值都被真源用在不同的判据上，所以不能压成一个布尔：
-/// 1 只读新字节、2 还按名字认换档（`forward.c:255`），0 则连睡都不睡（`:201-202`）。
+/// `tail`'s three follow states, mirroring C's integer global `fflag` (`extern.h:51`):
+/// `-f` sets 1, `-F` sets 2, and no flag is 0 (`tail.c:110-121`). All three values are
+/// used in different predicates by the ground truth, so they cannot be collapsed into
+/// one boolean: 1 only reads new bytes, 2 also recognizes a swapped file by name
+/// (`forward.c:255`), and 0 does not even sleep (`:201-202`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Follow {
-    /// 没有跟随选项：打印完就退出。
+    /// No follow option: exit after printing.
     Off,
-    /// `-f`（`fflag == 1`）：跟着**已打开的那个文件**读新字节，永不按名字重开。
+    /// `-f` (`fflag == 1`): follow the **already-open file** for new bytes and never
+    /// reopen by name.
     ByHandle,
-    /// `-F`（`fflag == 2`）：除读新字节外，每拍按操作数名字查身份，认出的换档就重开。
+    /// `-F` (`fflag == 2`): besides reading new bytes, check the operand's identity by
+    /// name each round and reopen when a swap is detected.
     ByName,
 }
 
 impl Follow {
-    /// 是否由 `fflag` 认出来的跟随（C 的 `if (fflag)`、`if (fflag && argc > 1)`、
-    /// `if (rflag) { if (fflag) usage(); }` 三处都只问这一件事）。
+    /// Whether following is active at all (C's `if (fflag)`, `if (fflag && argc > 1)`
+    /// and `if (rflag) { if (fflag) usage(); }` all ask only this one thing).
     #[must_use]
     pub fn active(self) -> bool {
         self != Follow::Off
     }
 
-    /// 这一拍要不要按名字查身份（C `forward.c:255` 的 `fflag == 2 && fp != stdin`）。
-    /// 两个条件各挡一支：`-f` 不比身份，标准输入没有名字可查（`tail.c:186` 把
-    /// `fname` 写成字面量 `"stdin"`，拿它去 `stat` 只会得到一个虚构的路径）。
+    /// Whether this round checks identity by name (C `forward.c:255`'s
+    /// `fflag == 2 && fp != stdin`). The second condition blocks one arm: standard
+    /// input has no name to check (`tail.c:186` stores the literal `"stdin"` in
+    /// `fname`, and `stat`ing that yields only a fictitious path).
     #[must_use]
     pub fn probes_identity(self, is_stdin: bool) -> bool {
         self == Follow::ByName && !is_stdin
     }
 
-    /// C `tail.c:197-201`：无操作数时先探一次标准输入能不能定位，`lseek` 报
-    /// `ESPIPE`（管道）就把 `fflag` 清零，注释写着「POSIX.2 requires this」。
-    /// 所以 `cat x | tail -f` 打印完就退出，不是永久等待。
+    /// C `tail.c:197-201`: with no operand, first probe whether standard input can be
+    /// positioned; an `lseek` reporting `ESPIPE` (a pipe) clears `fflag`, with the C
+    /// comment "POSIX.2 requires this". So `cat x | tail -f` prints and exits instead
+    /// of waiting forever.
     #[must_use]
     pub fn kept_for_stdin(self, stdin_is_pipe: bool) -> Follow {
         if stdin_is_pipe { Follow::Off } else { self }
@@ -490,17 +523,21 @@ impl TailStyle {
 /// `tail` argument-parsing failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TailError {
-    /// 不带 getopt 前置消息的用法错：C 的 `ARG` 宏首句 `if (style) usage()`
-    /// （`tail.c:86-87`，两个数字选项无论重复还是混用）与 `-r` 配跟随（`:143-145`）
-    /// 都是直接走 usage，前面不会多一行 getopt 自己的报文。
+    /// A usage error without getopt's preceding message: C's `ARG` macro opens with
+    /// `if (style) usage()` (`tail.c:86-87`, for either numeric option whether repeated
+    /// or mixed) and `-r` combined with follow (`:143-145`) both go straight to usage,
+    /// with no extra getopt line in front.
     Usage,
-    /// 集外字母与带值选项缺值：那一行由 libc 的 getopt 自己印，随后才是本命令的
-    /// usage，所以真源是**两行**。句子住在 [`GetoptReport`] 里（同族的头三个命令共用）。
+    /// An option letter outside the set, or a value option missing its value: libc's
+    /// getopt prints that line itself, and the command's usage follows, so the ground
+    /// truth is **two lines**. The sentence lives in [`GetoptReport`] (shared by the
+    /// first three commands of the family).
     Getopt(crate::GetoptReport),
-    /// `-f`/`-F` 配了两个以上操作数：C 在解析完选项、打开任何文件之前就致命退出
-    /// （`tail.c:135-137` 的 `xerrx(1, "-f and -F options only appropriate for a
-    /// single file")`）。这句话没有 `errno` 后缀（`xerrx` 走 `vwarnx`，
-    /// `misc.c:78-89`），且排在 `-r` 的用法检查之前。
+    /// `-f`/`-F` with more than one operand: C exits fatally after parsing options
+    /// and before opening any file (`xerrx(1, "-f and -F options only appropriate for
+    /// a single file")` at `tail.c:135-137`). That sentence has no `errno` suffix
+    /// (`xerrx` goes through `vwarnx`, `misc.c:78-89`), and it precedes the `-r` usage
+    /// check.
     FollowMultiFile,
     /// A `-b`/`-c`/`-n` count that is not a decimal integer (C `ARG`'s `*p` test
     /// on the leftover of `strtoll`, `tail.c:89-90`); carries the bytes, because
@@ -589,9 +626,10 @@ fn obsolete_step(arg: &[u8]) -> ObsoleteStep {
             // C `default: xerrx(1, "illegal option -- %s", *argv)` — fatal.
             Some(_) | None => return ObsoleteStep::IllegalOption,
         };
-        // C 拼的那五段依次是 `-`、被提前搬走的 `f`/`r`、单位字母、原 token 的第一个
-        // 字符（符号位），然后才是剩下的数字（`*t`/`*t--` 把单位与尾字母在原串上
-        // 就地打成 `'\0'`，所以 `strcpy(p, ap)` 只会带到数字为止）。
+        // The five pieces C assembles are, in order, `-`, the `f`/`r` moved earlier,
+        // the unit letter, the original token's first character (the sign position),
+        // and only then the remaining digits (`*t`/`*t--` write `'\0'` over the unit and
+        // trailing letter in place, so `strcpy(p, ap)` carries only the digits).
         return ObsoleteStep::Rewritten(
             [b"-".as_slice(), trail, &[unit], &bytes[0..1], body].concat(),
         );
@@ -641,7 +679,8 @@ fn digits_to_usize(digits: &[u8]) -> Option<usize> {
 /// did with `-n10`). Like `head`, `getopt` here **does not permute** (see
 /// [`parse_head_args`]): the first non-option token ends option scanning and
 /// every token from there on is an operand, so `tail f -r` reads two files and
-/// never reverses (`tail_ref f -r` 现量 `tail: -r: No such file or directory`).
+/// never reverses (the reference build's `tail f -r` measures
+/// `tail: -r: No such file or directory`).
 ///
 /// A `+N` value takes the `forward` arm of C's `ARG` macro (`tail.c:91-96`),
 /// which is a *different* style, not a negated count: `tail -n +20` starts at
@@ -691,8 +730,9 @@ pub fn parse_tail_args(args: &[&[u8]]) -> Result<TailArgs, TailError> {
     // `tail.c:107`); the default and the `-r` folding happen after the loop.
     let mut seen: Option<(RawStyle, usize)> = None;
     let mut rflag = false;
-    // C 的 `fflag` 是 0/1/2 三值而不是布尔（`-f` 置 1、`-F` 置 2，`tail.c:110-121`），
-    // 后到者覆盖前者：`tail -f -F` 在 C 就是 `fflag = 2`，所以这里也是赋值。
+    // C's `fflag` is a 0/1/2 value rather than a boolean (`-f` sets 1, `-F` sets 2,
+    // `tail.c:110-121`), and the later one overwrites the earlier: `tail -f -F` is
+    // `fflag = 2` in C, so this is an assignment too.
     let mut follow = Follow::Off;
     let mut operands: Vec<Vec<u8>> = Vec::new();
     let mut index = 0;
@@ -777,19 +817,21 @@ pub fn parse_tail_args(args: &[&[u8]]) -> Result<TailArgs, TailError> {
                 }
             }
         } else {
-            // 与 `head` 同一条判据：`getopt` 在第一个非选项 token 上收 -1 且不推进
-            // `optind`（`getopt.c:71-74`），`tail.c:110` 的 `argv += optind` 于是把
-            // 这个 token 与其后的全部当操作数——参照件现量 `tail a.txt -r` 只出
-            // 「`tail: -r: No such file or directory`」而**不**反序。
+            // The same predicate as in `head`: `getopt` returns -1 on the first
+            // non-option token without advancing `optind` (`getopt.c:71-74`), so
+            // `argv += optind` at `tail.c:110` takes this token and everything after it
+            // as operands — the reference build's `tail a.txt -r` prints only
+            // `tail: -r: No such file or directory` and does **not** reverse.
             operands.extend_from_slice(&scanned[index..]);
             break;
         }
         index += 1;
     }
 
-    // C 的两道门按 `tail.c` 里的先后排：单文件门在 `:135-137`（紧接 `argc -= optind`），
-    // 反序与跟随互斥在 `:143-145`。因此 `tail -r -f a b` 报的是单文件那句，
-    // 而不是 usage——顺序反了会把一条已经到口的诊断吞掉。
+    // C's two gates are ordered the way `tail.c` has them: the single-file gate at
+    // `:135-137` (right after `argc -= optind`), the reverse-versus-follow exclusion at
+    // `:143-145`. So `tail -r -f a b` reports the single-file sentence rather than
+    // usage — reversing the order would swallow a diagnostic already in hand.
     if follow.active() && operands.len() > 1 {
         return Err(TailError::FollowMultiFile);
     }
@@ -830,33 +872,37 @@ enum RawStyle {
     SkipBytes,
 }
 
-/// `tail -f`/`-F` 每拍决策要比的身份（接线轮见 18 篇台账批次二百八十那笔）。
+/// The identity `tail -f`/`-F` compares on each decision round.
 ///
-/// 对位 C `forward.c` 的 `USE_SLEEP` 支（`:248-272`）——kqueue 那半在 Minix 上被
-/// `#if !defined(__minix)` 排除（`:207-246`），所以真源的跟随就是「睡一拍 + 按名字
-/// 查身份」。字段就是 C 比的那四个：`st_size` 不在判据里（真源从不比它，尺寸的变化
-/// 由句柄的读位置自己反映），时间戳也不在——所以这两个都不进这个记录。
+/// It mirrors the `USE_SLEEP` arm of C `forward.c` (`:248-272`) — the kqueue half is
+/// excluded on Minix by `#if !defined(__minix)` (`:207-246`), so the ground truth's
+/// follow is "sleep one round plus check identity by name". The fields are exactly the
+/// four C compares: `st_size` is not in the predicate (the ground truth never compares
+/// it; a size change shows up through the handle's read position), and timestamps are
+/// not either — neither enters this record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatIdentity {
-    /// `struct stat::st_ino`：C 用它认出文件被换过。
+    /// `struct stat::st_ino`: C uses it to recognize that the file was replaced.
     pub ino: u64,
-    /// `st_dev`。
+    /// `st_dev`.
     pub dev: u64,
-    /// `st_rdev`（C 一并比，设备文件换指向时也算换档）。
+    /// `st_rdev` (C compares this too; a device file repointed counts as a swap).
     pub rdev: u64,
-    /// `st_nlink`：为 0 表示最后一个链接已删。
+    /// `st_nlink`: 0 means the last link was removed.
     pub nlink: u64,
 }
 
-/// 手上这个文件与名字现在指向的是不是同一个（C `forward.c:257-260` 的四个比较：
-/// `st_ino`/`st_dev`/`st_rdev` 任一变了，或 `st_nlink == 0`）。
+/// Whether the file in hand and the one the name now points to are the same (C
+/// `forward.c:257-260`'s four comparisons: any change of `st_ino`/`st_dev`/`st_rdev`,
+/// or `st_nlink == 0`).
 ///
-/// 这里**不再问 `fflag`**：「只有 `-F` 才查」是 `:255` 那道门的活，已经由
-/// [`Follow::probes_identity`] 承载。两处各重复一份同一个事实的话，抹平任何一处
-/// 都不会改变行为，变异负控也就咬不住（本轮就是这么发现的：先写成两处重复，
-/// 直到一枚负控「改坏了却全绿」）。
-/// 重开后调用方把新的身份接过来继续比（C 的 `*sbp = statbuf`，`:266`），并把
-/// 读位置交回新档的开头（C 的 `freopen`，`:261`）。
+/// This does **not ask `fflag` again**: "only `-F` probes" is the job of the gate at
+/// `:255`, already carried by [`Follow::probes_identity`]. If the same fact were
+/// repeated in both places, flattening either one would not change behavior and a
+/// mutation negative control could not catch it.
+/// After reopening, the caller takes over the new identity and keeps comparing (C's
+/// `*sbp = statbuf`, `:266`) and resets the read position to the start of the new file
+/// (C's `freopen`, `:261`).
 #[must_use]
 pub fn reopen_needed(opened: &StatIdentity, current: &StatIdentity) -> bool {
     current.ino != opened.ino
@@ -879,8 +925,10 @@ mod tests {
         out
     }
 
-    /// 比内容时只看文本——终止状态由另两枚门专门钉，不在这里重复承载。行现在是字节，
-    /// 而本文件的夹具全是 ASCII，所以这里直接 expect：真出现非 ASCII 就是夹具写错了。
+    /// Comparing content looks at text only — the termination state is pinned by two
+    /// other doors and is not repeated here. Lines are bytes now, and this file's
+    /// fixtures are all ASCII, so this expects directly: non-ASCII would mean the
+    /// fixture is wrong.
     fn texts<'a>(lines: &[Line<'a>]) -> Vec<&'a str> {
         lines
             .iter()
@@ -888,7 +936,8 @@ mod tests {
             .collect()
     }
 
-    /// 换档比较的四个字段与「不问 fflag」的分工（对位 `forward.c:255` 与 `:257-260`）。
+    /// The four fields of the swap comparison and the split from "does not ask fflag"
+    /// (mirroring `forward.c:255` and `:257-260`).
     #[test]
     fn follow_reopen_needs_a_changed_identity() {
         let opened = StatIdentity {
@@ -897,27 +946,31 @@ mod tests {
             rdev: 0,
             nlink: 1,
         };
-        // 认三种形：ino 变、dev 变、最后一个链接被删（nlink == 0）
+        // Three shapes are recognized: ino changed, dev changed, last link removed
+        // (nlink == 0)
         let rotated = StatIdentity { ino: 8, ..opened };
         assert!(reopen_needed(&opened, &rotated));
         assert!(reopen_needed(&opened, &StatIdentity { dev: 2, ..opened }));
         assert!(reopen_needed(&opened, &StatIdentity { nlink: 0, ..opened }));
-        // `st_rdev` 也算：设备文件换了指向就是换了档
+        // `st_rdev` counts too: a device file repointed is a swapped file
         assert!(reopen_needed(&opened, &StatIdentity { rdev: 5, ..opened }));
-        // 四个字段全同就不重开（尺寸不进这个记录，因此也不参与比较）
+        // All four fields equal means no reopen (size does not enter this record, so it
+        // takes no part in the comparison either)
         assert!(!reopen_needed(&opened, &opened));
     }
 
-    /// 探身份的那道门与标准输入的两支例外（`forward.c:255` 与 `tail.c:197-201`）。
+    /// The identity-probe gate and the two standard-input exceptions
+    /// (`forward.c:255` and `tail.c:197-201`).
     #[test]
     fn follow_probes_only_a_named_file_and_a_pipe_stdin_gives_it_up() {
-        // 「谁去查」全部住在这里：`-F` 只对真文件查，`-f` 不查，标准输入也不查
-        // （它没有名字可查）。比较那一步不再重复这个判断。
+        // "Who probes" all lives here: `-F` probes only a real file, `-f` does not, and
+        // standard input does not either (it has no name to check). The comparison step
+        // does not repeat that decision.
         assert!(Follow::ByName.probes_identity(false));
         assert!(!Follow::ByName.probes_identity(true));
         assert!(!Follow::ByHandle.probes_identity(false));
         assert!(!Follow::Off.probes_identity(false));
-        // 标准输入是管道时，C 把 fflag 清零（POSIX.2），连 `-F` 也算放弃
+        // When standard input is a pipe, C clears fflag (POSIX.2), so even `-F` gives up
         assert_eq!(Follow::ByName.kept_for_stdin(true), Follow::Off);
         assert_eq!(Follow::ByHandle.kept_for_stdin(true), Follow::Off);
         assert_eq!(Follow::ByName.kept_for_stdin(false), Follow::ByName);
@@ -989,13 +1042,14 @@ mod tests {
         assert_eq!(out[0].bytes(), b"y");
     }
 
-    /// 夹具仍写 `"…"` 字面量以便读，这一层把它们统一交回 `&[u8]` —— 被测的
-    /// `parse_head_args` 收的是 argv 的原字节切片。
+    /// The fixtures still write `"…"` literals for readability, and this layer hands
+    /// them back as `&[u8]` — `parse_head_args` under test takes raw argv byte slices.
     fn argv<'a>(words: &'a [&'a str]) -> Vec<&'a [u8]> {
         words.iter().map(|w| w.as_bytes()).collect()
     }
 
-    /// head 的操数期望：`HeadArgs.operands` 是 argv 的原字节，所以这里逐条转字节。
+    /// The expected head operands: `HeadArgs.operands` holds raw argv bytes, so each
+    /// word is converted to bytes here.
     fn operands_bytes(words: &[&str]) -> Vec<Vec<u8>> {
         words.iter().map(|w| w.as_bytes().to_vec()).collect()
     }
@@ -1072,11 +1126,12 @@ mod tests {
         );
     }
 
-    /// `tail` 的环同样交回短横后的**第一个字节**（`bytes[pos] as char`，`getopt.c:79` 的
-    /// `optopt = *place++` 一次进一个字节）。选项串是 `"Fb:c:fn:r"`（`tail.c:108`），
-    /// `b`/`c`/`n` 三个都带值，所以反面的 `-né` 里 `é` 是**值**、走
-    /// `tail: illegal offset -- é`（参照件 `tmp/tail-416/tail_ref` 现量）。这一枚钉的是
-    /// **已经是那样**的取法；逐字节门在 `tests/tail_face.rs`。
+    /// `tail`'s ring likewise returns the **first byte** after the dash
+    /// (`bytes[pos] as char`; `optopt = *place++` at `getopt.c:79` takes one byte at a
+    /// time). The option string is `"Fb:c:fn:r"` (`tail.c:108`), and `b`/`c`/`n` all
+    /// take a value, so in the negative case `-né` the `é` is a **value** and the line
+    /// is `tail: illegal offset -- é`. This test pins the reading that is already in
+    /// place; the byte-for-byte door lives in `tests/tail_face.rs`.
     #[test]
     fn the_tail_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
@@ -1086,7 +1141,8 @@ mod tests {
             ))),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
-        // `r` 在选项串里合法且不带值，聚簇继续吃到第一字节。
+        // `r` is a legal, value-less letter in the option string, so the cluster keeps
+        // consuming through to the first byte.
         assert_eq!(
             parse_tail_args(&argv(&["-r\u{e9}"])).err(),
             Some(TailError::Getopt(crate::GetoptReport::UnknownOption(
@@ -1094,13 +1150,14 @@ mod tests {
             ))),
             "-r\u{e9}"
         );
-        // 环停在第一个坏字母上。
+        // The ring stops at the first bad letter.
         assert_eq!(
             parse_tail_args(&argv(&["-Z\u{e9}"])).err(),
             Some(TailError::Getopt(crate::GetoptReport::UnknownOption('Z'))),
             "-Z\u{e9}"
         );
-        // 反面：`n` 是带值字母，其后的字节整个被当值收走，轮不到字母位。
+        // The negative case: `n` takes a value, so the bytes after it are consumed
+        // entirely as the value and never reach the letter position.
         assert_eq!(
             parse_tail_args(&argv(&["-n\u{e9}"])).err(),
             Some(TailError::IllegalCount(b"\xc3\xa9".to_vec())),
@@ -1108,15 +1165,17 @@ mod tests {
         );
     }
 
-    /// 值位、整段 token 位与操作数位交回的都是 argv 的**原字节**。C 那三句都直接打
-    /// argv 的内容：`ARG` 的 `xerrx(1, "illegal offset -- %s", optarg)`（`tail.c:90`，
-    /// 打的是** optarg 本身**，不是它解析出来的数）、`obsolete()` 的
-    /// `xerrx(1, "illegal option -- %s", *argv)`（`:269`，打的是**整段 token**），
-    /// 而操作数既进 `fopen`（`:167`）又进那行 `==> %s <==` 横幅（`:173`）。
-    /// `tail` 还有一条别的命令没有的腿：遗留形是 C 用 `malloc` + `strcpy` **现拼**
-    /// 出来的串（`:238-273`），所以一枚高字节会跟着拼进新 token，再一路走进取报文——
-    /// 下面 `-1<ff>2` 那一枚钉的就是这条腿（C 拼出 `-n-1<ff>2`，`ARG` 的 `*p` 停在
-    /// `ff` 上，于是回声带的是改写**之后**的值）。
+    /// The value position, the whole-token position and the operand position all
+    /// return argv's **raw bytes**. Those three C sentences print argv's content
+    /// directly: `ARG`'s `xerrx(1, "illegal offset -- %s", optarg)` (`tail.c:90`,
+    /// printing **optarg itself**, not the number parsed out of it), `obsolete()`'s
+    /// `xerrx(1, "illegal option -- %s", *argv)` (`:269`, printing the **whole token**),
+    /// and an operand enters both `fopen` (`:167`) and the `==> %s <==` banner
+    /// (`:173`). `tail` also has a leg other commands lack: the legacy form is a string
+    /// C **assembles on the spot** with `malloc` + `strcpy` (`:238-273`), so a high byte
+    /// travels into the new token and all the way into the message — the `-1<ff>2` case
+    /// below pins that leg (C assembles `-n-1<ff>2`, `ARG`'s `*p` stops on `ff`, so the
+    /// echo carries the value **after** the rewrite).
     #[test]
     fn the_tail_value_and_operand_legs_hand_back_the_argv_bytes() {
         assert_eq!(
@@ -1146,11 +1205,13 @@ mod tests {
         );
     }
 
-    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
-    /// `char` 域里是 U+00C3。环那一侧本来就是 `bytes[pos] as char`（`getopt.c:79` 的
-    /// `optopt = *place++` 一次进一个字节），所以这一枚钉的是**已经是那样**的取法，
-    /// 免得将来有人把它改回按字符取时只有面门红、说不清坏的是哪一半；参照件
-    /// `tmp/head-415/head_ref` 现量 `-é` 报单个 `303`，逐字节门在 `tests/head_face.rs`。
+    /// The outside-the-set letter returns the **first byte** after the dash, not the
+    /// first character: `-\u{e9}` (`c3 a9`) is U+00C3 in the `char` domain. The ring
+    /// side already reads `bytes[pos] as char` (`optopt = *place++` at `getopt.c:79`
+    /// takes one byte at a time), so this pins the reading that is already in place,
+    /// keeping a future change back to character-wise reading from turning only the
+    /// face red with no clue which half broke; the byte-for-byte door lives in
+    /// `tests/head_face.rs`.
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
@@ -1160,7 +1221,8 @@ mod tests {
             ))),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
-        // `q` 是选项串里合法且不带值的字母（`head.c:87` 的 `"c:n:qv"`），聚簇继续吃到第一字节。
+        // `q` is a legal, value-less letter in the option string (`"c:n:qv"` at
+        // `head.c:87`), so the cluster keeps consuming through to the first byte.
         assert_eq!(
             parse_head_args(&argv(&["-q\u{e9}"])),
             Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
@@ -1168,7 +1230,7 @@ mod tests {
             ))),
             "-q\u{e9}"
         );
-        // 环停在第一个坏字母上。
+        // The ring stops at the first bad letter.
         assert_eq!(
             parse_head_args(&argv(&["-Z\u{e9}"])),
             Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
@@ -1176,8 +1238,9 @@ mod tests {
             ))),
             "-Z\u{e9}"
         );
-        // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
-        // `head: illegal byte count -- é`，单独一行、不接 usage）。
+        // The negative case: a value-taking letter consumes the following bytes as its
+        // value, so the letter position is never reached (`head: illegal byte count --
+        // é`, a single line with no usage appended).
         assert_eq!(
             parse_head_args(&argv(&["-c\u{e9}"])),
             Err(HeadArgError::IllegalCount {
@@ -1187,13 +1250,16 @@ mod tests {
         );
     }
 
-    /// `-c`/`-n` 的值在 C 里是**被回显**的（`head.c:96-97`、`:102-103` 的
-    /// `errx(1, "illegal byte count -- %s", optarg)`），所以交回的必须是 argv 原字节；
-    /// 操数同样按字节交回（横幅那一腿由壳自己拼，不经 `&str`）。旧签名 `&[&str]` 让下面
-    /// 前两形在库里根本写不出来——一枚裸 `ff` 在走到环之前就已经不是它自己了。
-    /// 参照件 `tmp/head-415/head` 现量三形：`-c<ff>` → `head: illegal byte count -- <ff>`、
-    /// `-c 5<ff>` → 同句带尾巴那枚、obsolete 形 `-5<ff>` → `illegal line count -- 5<ff>`
-    /// （`obsolete()` 拼的是 `-n` 加原串去掉短横后的**全部**字节，`head.c:188-192`）。
+    /// A `-c`/`-n` value is **echoed** in C (`errx(1, "illegal byte count -- %s",
+    /// optarg)` at `head.c:96-97`, `:102-103`), so what comes back must be raw argv
+    /// bytes; operands are likewise returned as bytes (the banner leg is assembled by
+    /// the shell and never goes through `&str`). A `&[&str]` signature could not even
+    /// express the first two shapes — a bare `ff` is no longer itself before it reaches
+    /// the ring. The reference build measures three shapes: `-c<ff>` →
+    /// `head: illegal byte count -- <ff>`, `-c 5<ff>` → the same sentence with the
+    /// trailing byte, and the obsolete form `-5<ff>` → `illegal line count -- 5<ff>`
+    /// (`obsolete()` assembles `-n` plus **all** bytes of the original after the dash,
+    /// `head.c:188-192`).
     #[test]
     fn an_illegal_count_value_and_the_operands_carry_the_argv_bytes() {
         let bad: &[&[u8]] = &[b"-c\xff"];
@@ -1234,17 +1300,20 @@ mod tests {
     #[test]
     fn test_parse_head_args_errors() {
         // The regression: an unknown option no longer leaks as a file operand.
-        // 两支都是「libc 先印一行，再轮到 usage」，所以带的是那个字母。
+        // In both cases libc prints a line first and usage follows, so the letter is
+        // carried along.
         assert_eq!(
             parse_head_args(&argv(&["-z", "f"])),
             Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
                 'z'
             )))
         );
-        // obsolete() 只折前导那一串，所以 `f -5` 不写成 `-n5`；而 `getopt` 不重排，
-        // 第一个操作数一到就叫环结束（`getopt.c:71-74`），`-5` 于是**连着**成为操作数
-        // ——参照件 `head_ref a.txt -5` 现量：`==> a.txt <==` 十行，再 `head: -5: No
-        // such file or directory` 退 1，一个字母都不报。
+        // obsolete() rewrites only the leading run, so `f -5` does not become `-n5`;
+        // and `getopt` does not permute, so the first operand ends the ring
+        // (`getopt.c:71-74`) and `-5` becomes an operand **as it stands** — the
+        // reference build's `head a.txt -5` measures `==> a.txt <==` plus ten lines,
+        // then `head: -5: No such file or directory` with exit 1, and no letter is
+        // reported at all.
         assert_eq!(
             parse_head_args(&argv(&["f", "-5"])),
             Ok(HeadArgs {
@@ -1255,9 +1324,11 @@ mod tests {
                 operands: vec!["f".as_bytes().to_vec(), "-5".as_bytes().to_vec()],
             })
         );
-        // 操作数之后的旗标也不再生效：`-q` 在这里是一个叫 `-q` 的档名（参照件同形，
-        // 报 `head: -q: No such file or directory`），集外字母同理（不再有那句
-        // `unknown option`），带值选项连它的值一起落进操作数。
+        // Flags after an operand take no effect either: `-q` here is a file named
+        // `-q` (the reference build reports `head: -q: No such file or directory`), and
+        // the same goes for an outside-the-set letter (the `unknown option` line is
+        // gone) and for a value option, which lands in the operands together with its
+        // value.
         assert_eq!(
             parse_head_args(&argv(&["f", "-q"])),
             Ok(HeadArgs {
@@ -1292,8 +1363,9 @@ mod tests {
                 ],
             })
         );
-        // 选项在前仍照常生效，只是环一撞上操作数就再也回不来（参照件
-        // `head_ref -n 3 a.txt -5`：三行 + `-5` 那一句）。
+        // Options before the operand still take effect; the ring simply never comes
+        // back once it hits an operand (the reference build's `head -n 3 a.txt -5`:
+        // three lines plus the `-5` line).
         assert_eq!(
             parse_head_args(&argv(&["-n", "3", "f", "-5"])),
             Ok(HeadArgs {
@@ -1304,8 +1376,9 @@ mod tests {
                 operands: vec!["f".as_bytes().to_vec(), "-5".as_bytes().to_vec()],
             })
         );
-        // 操作数之后的 `--` 不是「选项结束」而是一个档名（C 的环根本没走到它）；
-        // 单个 `-` 也在同一处收 -1，于是它自己与后面的都是操作数。
+        // After an operand, `--` is not "end of options" but a file name (C's ring
+        // never reaches it); a lone `-` gets -1 at the same point, so it and everything
+        // after it are operands.
         assert_eq!(
             parse_head_args(&argv(&["f", "--", "-5"])),
             Ok(HeadArgs {
@@ -1330,7 +1403,7 @@ mod tests {
                 operands: vec!["f".as_bytes().to_vec(), "-".as_bytes().to_vec()],
             })
         );
-        // A colon option with no value argument → the libc 缺值那一行。
+        // A colon option with no value argument → the libc missing-value line.
         assert_eq!(
             parse_head_args(&argv(&["-n"])),
             Err(HeadArgError::Getopt(crate::GetoptReport::MissingValue('n')))
@@ -1364,9 +1437,10 @@ mod tests {
                 operands: Vec::new(),
             })
         );
-        // `getopt` 不重排：第一个操作数之后的 `-r` 不是旗标而是档名（参照件
-        // `tail_ref a.txt -r` 现量 `tail: -r: No such file or directory`，输出仍按
-        // 正序取后十行）。
+        // `getopt` does not permute: a `-r` after the first operand is a file name, not
+        // a flag (the reference build's `tail a.txt -r` measures
+        // `tail: -r: No such file or directory`, with the output still the last ten
+        // lines in forward order).
         assert_eq!(
             parse_tail_args(&argv(&["f", "-r"])),
             Ok(TailArgs {
@@ -1437,7 +1511,8 @@ mod tests {
             vec![b"-".to_vec()]
         );
         // error paths
-        // 集外字母与缺值都带着 libc 那一行走（句子单源在 `GetoptReport`）。
+        // Both an outside-the-set letter and a missing value go through libc's line
+        // (the sentence has a single source in `GetoptReport`).
         assert_eq!(
             parse_tail_args(&argv(&["-x", "f"])).err(),
             Some(TailError::Getopt(crate::GetoptReport::UnknownOption('x')))
@@ -1620,10 +1695,11 @@ mod tests {
         assert_eq!(oldstyle.follow, Follow::ByHandle);
     }
 
-    /// 跟随两形的取值、聚簇、覆盖与 C 的两道门（`tail.c:110-121`、`:135-137`、`:143-145`）。
+    /// The values, clustering, overwriting and C's two gates for the two follow forms
+    /// (`tail.c:110-121`, `:135-137`, `:143-145`).
     #[test]
     fn test_parse_tail_args_follow_flags_and_gates() {
-        // `-f` 与 `-F` 是两个不同的值，不是同一个布尔
+        // `-f` and `-F` are two different values, not one boolean
         assert_eq!(
             parse_tail_args(&argv(&["-f", "f"])).unwrap().follow,
             Follow::ByHandle
@@ -1632,17 +1708,18 @@ mod tests {
             parse_tail_args(&argv(&["-F", "f"])).unwrap().follow,
             Follow::ByName
         );
-        // C 的 switch 对两个字母都是赋值，所以后到者覆盖前者
+        // C's switch assigns for both letters, so the later one overwrites the earlier
         assert_eq!(
             parse_tail_args(&argv(&["-f", "-F", "f"])).unwrap().follow,
             Follow::ByName
         );
-        // 同一 token 里的聚簇也认（`-Ff` 是两个无值选项）
+        // Clustering inside one token is recognized too (`-Ff` is two value-less options)
         assert_eq!(
             parse_tail_args(&argv(&["-Ff", "f"])).unwrap().follow,
             Follow::ByHandle
         );
-        // 单文件门只看操作数个数，0 个（读标准输入）与 1 个都不拦
+        // The single-file gate looks only at the operand count; neither 0 (reading
+        // standard input) nor 1 is blocked
         assert_eq!(
             parse_tail_args(&argv(&["-f"])).unwrap().follow,
             Follow::ByHandle
@@ -1659,18 +1736,19 @@ mod tests {
             parse_tail_args(&argv(&["-F", "a", "b"])).err(),
             Some(TailError::FollowMultiFile)
         );
-        // 单文件门排在 `-r` 的用法检查之前，所以 `-r -f a b` 报的是前一句
+        // The single-file gate precedes the `-r` usage check, so `-r -f a b` reports the
+        // former sentence
         assert_eq!(
             parse_tail_args(&argv(&["-r", "-f", "a", "b"])).err(),
             Some(TailError::FollowMultiFile)
         );
-        // `-r` 与跟随互斥，带不带计数都一样
+        // `-r` and follow are mutually exclusive, with or without a count
         assert_eq!(
             parse_tail_args(&argv(&["-r", "-f", "a"])).err(),
             Some(TailError::Usage)
         );
-        // 互斥只在 `rflag` 那一支里查（`tail.c:143-145`），所以只给计数与 `-F`
-        // 不报错——这一条是本轮自己写错过一次期望、由门反证回来的
+        // The exclusion is checked only in the `rflag` arm (`tail.c:143-145`), so a
+        // count together with `-F` reports no error
         let counted = parse_tail_args(&argv(&["-n", "3", "-F", "a"])).unwrap();
         assert_eq!(counted.style, TailStyle::LastLines { off: 3 });
         assert_eq!(counted.follow, Follow::ByName);
@@ -1690,8 +1768,9 @@ mod tests {
         let frozen = parse_tail_args(&argv(&["f", "+10"])).unwrap();
         assert_eq!(frozen.style, TailStyle::LastLines { off: 10 });
         assert_eq!(frozen.operands, alloc::vec![b"f".to_vec(), b"+10".to_vec()]);
-        // 冻在环里的 `-3c` 也不再是「未知字母 3」：参照件 `tail_ref f -3c` 现量
-        // `tail: -3c: No such file or directory` 退 1，一句选项错都不打。
+        // A `-3c` frozen past the operand is no longer "unknown letter 3" either: the
+        // reference build's `tail f -3c` measures `tail: -3c: No such file or
+        // directory` with exit 1, reporting no option error at all.
         let after = parse_tail_args(&argv(&["f", "-3c"])).unwrap();
         assert_eq!(after.style, TailStyle::LastLines { off: 10 });
         assert_eq!(after.operands, alloc::vec![b"f".to_vec(), b"-3c".to_vec()]);
@@ -1807,9 +1886,11 @@ mod tests {
         );
     }
 
-    /// 行腿的终止状态：中间行永远带着输入里那枚换行，只有输入的最后一行可能没有。
-    /// 判据来自参照件对 `head`/`tail`/`nl`/`uniq` 四支壳的无尾换行读数（18 篇批次
-    /// 四百二十三），C 的行腿从不像旧写法那样替输入补一枚换行。
+    /// The termination state of the line legs: an interior line always carries the
+    /// input's newline, and only the input's last line may lack one. The predicate
+    /// comes from the reference builds' readings of newline-less tails for all four
+    /// shells `head`/`tail`/`nl`/`uniq`; C's line legs never add a newline on the
+    /// input's behalf.
     #[test]
     fn lines_of_marks_only_the_final_line_as_unterminated() {
         let marked = lines_of(b"alpha\nbeta\ngamma");
@@ -1824,7 +1905,8 @@ mod tests {
                 (b"gamma".as_slice(), false)
             ]
         );
-        // 换行结尾时多交回的那片空串不是行，两枚相邻换行之间那片才是真行。
+        // The extra empty piece returned for a trailing newline is not a line; the
+        // piece between two adjacent newlines is a real line.
         assert_eq!(lines_of(b"alpha\n").len(), 1);
         let blanks = lines_of(b"a\n\nb");
         assert_eq!(
@@ -1841,10 +1923,11 @@ mod tests {
         assert!(lines_of(b"").is_empty());
     }
 
-    /// 一枚解不出 UTF-8 的字节不是「这一行没了」，更不是「这份输入没了」。C 的行腿
-    /// （`nl.c:288` 的 `fgets`、`head.c:169-172` 的 `getc`）读的是字节，参照件对同样的
-    /// 输入连字节一起交回（`tmp/head-415/head_ref`、`tmp/nl-417/nl_ref` 现量）。
-    /// 行一旦先解码再切，一枚非法字节就让整份输入变成空串，这里交出的是零行。
+    /// A byte that does not decode as UTF-8 does not mean "this line is gone", let
+    /// alone "this input is gone". C's line legs (`fgets` at `nl.c:288`, `getc` at
+    /// `head.c:169-172`) read bytes, and the reference builds return the same input
+    /// with its bytes. Once a line is decoded before splitting, a single illegal byte
+    /// turns the whole input into an empty string, and this would return zero lines.
     #[test]
     fn an_undecodable_byte_is_still_a_line() {
         let marked = lines_of(b"a\xffb\nc\n");
@@ -1856,14 +1939,16 @@ mod tests {
             vec![(b"a\xffb".as_slice(), true), (b"c".as_slice(), true)],
             "含非法字节的行必须留在行里，且两行都带着输入里那枚换行"
         );
-        // 末行只剩一枚非法字节、且没有换行：行还在，终止状态也还得如实记。
+        // The last line is a single illegal byte with no newline: the line stays, and
+        // the termination state must still be recorded truthfully.
         let tail = lines_of(b"\xff");
         assert_eq!(tail.len(), 1);
         assert_eq!(tail[0].bytes(), b"\xff");
         assert!(!tail[0].terminated());
     }
 
-    /// `eol` 是写出侧唯一的取字节处：带着换行就交回换行，没有就交回空。
+    /// `eol` is the writing side's only place to fetch a byte: the newline when the
+    /// line had one, empty otherwise.
     #[test]
     fn a_line_writes_back_the_newline_it_had() {
         assert_eq!(Line::from("a").eol(), b"\n");

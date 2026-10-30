@@ -41,8 +41,9 @@ fn run() -> ! {
         support::terminate(0);
     }
     for operand in &operands {
-        // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
-        // 报文里念出去的是原字节。
+        // The display slot takes `&str` (the registered
+        // ARGV-BYTE-PATH-IN-LIBS limitation); folding happens only at this
+        // point. The diagnostic echoes the original bytes.
         let shown = String::from_utf8_lossy(operand).into_owned();
         let fd = match open(&shown, 0, 0) {
             Ok(fd) => fd,
@@ -55,7 +56,7 @@ fn run() -> ! {
             }
         };
         expand_stream(fd, &stops);
-        //[SD19-gate] SD-19: close 后 fd 不再使用
+        //[SD19-gate] the fd is not used after close
         #[allow(clippy::let_underscore_must_use)]
         let _ = close(fd);
     }

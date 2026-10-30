@@ -12,12 +12,17 @@ use crate::TextGameError;
 
 /// Parse one database line (`term: expansion`, both sides non empty).
 pub fn parse_acronym_line(line: &str) -> Result<(&str, &str), TextGameError> {
-    // 字段分隔是**空白**，不是冒号。真库 `minix3/share/misc/acronyms` 的 557 行里只有
-    // 1 行含冒号（那是 `$NetBSD:` 标识行），条目形如 `10Q\tthank you`；脚本那侧的取法也是
-    // 按空白断词：`sed -ne "^$target[[:space:]]*||p"`（`minix3/games/wtf/wtf:76-77`）。
-    // 改前这里按 `split_once(':')`，于是**真库没有一行解得开**，`wtf` 对自带的数据档
-    // 永远报「查无此词」（判据见 18 篇批次三百七十六）。按第一个空白断开即保证
-    // `term` 不含空白，不再需要额外的空白检查。
+    // The field separator is **whitespace**, not a colon. In the real database
+    // `minix3/share/misc/acronyms`, only 1 of 557 lines contains a colon (the
+    // `$NetBSD:` identity line); entries look like `10Q\tthank you`. The script
+    // side also splits on whitespace: `sed -ne "^$target[[:space:]]*||p"`
+    // (`minix3/games/wtf/wtf:76-77`).
+    // The old form here used `split_once(':')`, so **not a single line of the
+    // real database could be parsed**, and `wtf` always reported "no such word"
+    // for its own bundled data file (the criterion is recorded in
+    // `rewrite-notes/18-stage-commands/24-text-games.md`). Splitting at the
+    // first whitespace guarantees `term` contains no whitespace, so no extra
+    // whitespace check is needed.
     let (term, expansion) = line
         .split_once(char::is_whitespace)
         .ok_or(TextGameError::InvalidArgument)?;
@@ -31,16 +36,23 @@ pub fn parse_acronym_line(line: &str) -> Result<(&str, &str), TextGameError> {
 
 /// Every expansion stored under `term`, in the order the lines were given.
 ///
-/// C 的取法是一条管线而不是一次查表：`:75` 先把操作数整个大写（`tr '[a-z]' '[A-Z]'`），
-/// `:76` 的 `fgrep -h "$target" $acronyms` 把**所有库档当一个流**搜出所有含该串的行，
-/// `:77` 的 `sed -ne "\|^$target[[:space:]]*||"` 只留行首正是 `$target` 加空白的行，
-/// 并把这段前缀削掉。所以一个词可以命中**多行**（同档重复词条，或多档各有该词），
-/// 全部交回、顺序就是列表顺序与档内行序。
+/// C's lookup is a pipeline rather than a single table query: `:75` upper-cases
+/// the operand as a whole (`tr '[a-z]' '[A-Z]'`), `:76`'s
+/// `fgrep -h "$target" $acronyms` searches **all database files as one stream**
+/// for every line containing that string, and `:77`'s
+/// `sed -ne "\|^$target[[:space:]]*||"` keeps only lines whose start is exactly
+/// `$target` followed by whitespace, stripping that prefix. So one word can hit
+/// **several lines** (a duplicate entry in one file, or the word in several
+/// files); all of them come back, in list order and line order within a file.
 ///
-/// 大小写规则是**单向**的：查询侧被大写化抹平，词条侧不抹平，所以库里行首带小写字母的
-/// 条目永远取不到——现量（库行 `abc<TAB>lower term entry`）：查 `abc` 与查 `ABC` 都是查无，
-/// 而 `DEF<TAB>upper` 查 `def` 命中。「与 `term` 大小写不敏感地相等」再叠一条「`name` 自身
-/// 已是全大写形」，与「先把查询词大写、再逐字比」等价，且不必造一个临时的 `String`。
+/// The case rule is **one-way**: the query side is flattened by upper-casing,
+/// the entry side is not, so database entries that begin with a lowercase letter
+/// can never be found — measured (database lines `abc<TAB>lower term entry`):
+/// querying `abc` and querying `ABC` both find nothing, while `DEF<TAB>upper`
+/// is found by `def`. "Equal to `term` case-insensitively" combined with "`name`
+/// itself is already all uppercase" is equivalent to "upper-case the query word
+/// first, then compare character by character", and needs no temporary
+/// `String`.
 #[must_use]
 pub fn matching_expansions<'a>(lines: &[&'a str], term: &str) -> alloc::vec::Vec<&'a str> {
     if term.is_empty() {
@@ -62,7 +74,8 @@ mod tests {
 
     #[test]
     fn test_lines_parse() {
-        // 真库的形是「词 + 制表符 + 释义」（`minix3/share/misc/acronyms`）。
+        // The real database's shape is "word + tab + expansion"
+        // (`minix3/share/misc/acronyms`).
         assert_eq!(
             parse_acronym_line("10Q\tthank you"),
             Ok(("10Q", "thank you"))
@@ -79,15 +92,18 @@ mod tests {
             parse_acronym_line("single-field"),
             Err(TextGameError::InvalidArgument)
         );
-        // 冒号不是分界符：脚本按空白断词，所以 `LOL: x` 的词是 `LOL:` 而不是 `LOL`。
+        // A colon is not a separator: the script splits on whitespace, so the
+        // term in `LOL: x` is `LOL:`, not `LOL`.
         assert_eq!(
             parse_acronym_line("LOL: laughing"),
             Ok(("LOL:", "laughing"))
         );
     }
 
-    /// 这一枚直接对真库读数：`wtf` 的默认档就是它，解不开就等于命令失效。
-    /// 改前两处缺陷（宿主开不了档、按冒号断词）都能被它当场抓住。
+    /// This one reads the real database directly: it is `wtf`'s default file,
+    /// so being unable to parse it means the command is broken. Both earlier
+    /// defects (the host could not open the file, and term splitting on a
+    /// colon) are caught by it on the spot.
     #[test]
     fn the_shipped_acronym_database_is_readable_and_resolves() {
         let db = concat!(
@@ -110,11 +126,13 @@ mod tests {
         assert!(matching_expansions(&lines, "").is_empty());
     }
 
-    /// 一个词命中多行时**全部交回**，顺序是列表顺序与档内行序：脚本 `:76` 的
-    /// `fgrep -h $acronyms` 把所有档当一个流搜，`:77` 的 `sed` 逐行留下。现量
-    /// （同档两行 `LOL`）→ `LOL: first match` 换行 `second match`；
-    /// （两档各有 `LOL`，`-f w1 -f w2` 因**前插**而先搜 w2）→ `LOL: second file`
-    /// 换行 `first file`。
+    /// When one word hits several lines, **all** of them come back, in list
+    /// order and line order within a file: the script's `:76`
+    /// `fgrep -h $acronyms` searches all files as one stream, and `:77`'s `sed`
+    /// keeps them line by line. Measured (two `LOL` lines in one file) →
+    /// `LOL: first match` newline `second match`; (one `LOL` in each of two
+    /// files, `-f w1 -f w2`, where **prepending** makes w2 searched first) →
+    /// `LOL: second file` newline `first file`.
     #[test]
     fn every_matching_line_comes_back_in_list_order() {
         let dup = ["LOL\tfirst match", "LOL\tsecond match"];
@@ -129,10 +147,12 @@ mod tests {
         );
     }
 
-    /// 大小写只在**查询**那一侧抹平：C 先把操作数大写再逐字比库档行首。
-    /// 现量（`ACRONYMDB=<库> sh minix3/games/wtf/wtf <形>`，库行分别是
-    /// `abc<TAB>lower term entry` 与 `DEF<TAB>upper`）：查 `abc` 查无、查 `ABC` 查无、
-    /// 查 `def` 命中 `upper`。库里行首带小写字母的条目因此永远取不到。
+    /// Case is flattened only on the **query** side: C upper-cases the operand
+    /// first, then compares character by character against the start of each
+    /// database line. Measured (`ACRONYMDB=<db> sh minix3/games/wtf/wtf <form>`,
+    /// with database lines `abc<TAB>lower term entry` and `DEF<TAB>upper`):
+    /// `abc` finds nothing, `ABC` finds nothing, `def` hits `upper`. Database
+    /// entries that start with a lowercase letter are therefore unreachable.
     #[test]
     fn a_database_term_written_in_lowercase_is_unreachable() {
         let lines = ["abc\tlower term entry", "DEF\tupper"];

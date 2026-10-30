@@ -48,16 +48,20 @@
 //! a raw stack image.
 
 #![cfg_attr(not(feature = "std"), no_std)]
-// SD-19 静默吞错家族机械化门（第二家 crate，与 minix-sys 同程序）：本 crate 的
-// 掉空集中在诊断链——`core::fmt::write` 进 `ByteWriter`（其 `write_str` 恒回
-// `Ok(())`、满则静默截断，丢弃的是可证明不会失败的 `fmt::Result`）与
-// `sys_diagctl_write`（报告通道自己坏了时无更高可回报处，transport 侧 park
-// 已是 `panic.c:66` 兑底）。同属登记处置表的 maintain+comment 档；新开一个
-// 无理由的 `let _ =` 会当场多报一条。
+// Silent-error-swallowing family mechanical gate (second crate, same
+// treatment as minix-sys): this crate's swallowing is concentrated in the
+// diagnostic chain — `core::fmt::write` into `ByteWriter` (whose `write_str`
+// always returns `Ok(())` and silently truncates when full, discarding an
+// `fmt::Result` that provably cannot fail) and `sys_diagctl_write` (when the
+// reporting channel itself is broken there is nowhere higher to report; on
+// the transport side park is the `panic.c:66` fallback). Both are registered
+// under the maintain+comment tier of the disposition table; a new unexplained
+// `let _ =` reports an extra hit immediately.
 #![warn(clippy::let_underscore_must_use)]
 
-// NK4-C 1.10g 仪器化：格式化 panic 的 String 载荷 downcast 需要 alloc
-// crate 本体（本地 `mod alloc` 是 slab 分配器，名字被遮蔽）。
+// Instrumentation: downcasting the String payload of a formatted panic needs
+// the alloc crate itself (the local `mod alloc` is the slab allocator and
+// shadows the name).
 extern crate alloc as alloc_crate;
 
 /// Memory allocator: break management plus slab allocation (document 06).
@@ -135,7 +139,7 @@ pub fn free(ptr: *mut u8) {
 /// The C heap starts at the linker-provided `_end` symbol and grows through
 /// the virtual memory server. Until that server channel lands, this embedded
 /// pool plays the role of the initial heap: [`alloc::GLOBAL_POOL_BYTES`]
-/// of `.bss` owned by the binary itself (NK4-C 1.55: was sixteen pages,
+/// of `.bss` owned by the binary itself (it was sixteen pages,
 /// grown through the 512- and 1024-page capacity rounds), with virtual
 /// memory mapping chained behind it later.
 /// Page-aligned so the same memory can later be described to the virtual
@@ -213,7 +217,7 @@ fn with_global_allocator<R>(
 
 /// Reader of the global slab allocator's state snapshot (slabs and large
 /// blocks in use, pages consumed / total / free). This is the crate's formal
-/// allocator diagnostic surface rather than a boot trace: the SD-11 T1 test
+/// allocator diagnostic surface rather than a boot trace: the T1 test
 /// of [`install_vm_supplier`] asserts its post-condition through here, i.e.
 /// that total and free page counts drop to zero once the VM page supplier is
 /// installed.
@@ -221,27 +225,35 @@ pub fn global_alloc_diag() -> alloc::AllocDiag {
     with_global_allocator(|allocator| allocator.diag())
 }
 
-/// 把全局分配器的页供给切到 VM_BRK 增长堆（`SD-11` T1 安装口）。
+/// Switch the global allocator's page supply to the VM_BRK growing heap (the
+/// T1 install point).
 ///
-/// 调用时机：进程完成与 VM 的出生握手、拿到自身 data region 端点之后，
-/// 且必须在任何依赖堆增长的分配发生前（出生期的固定池分配不受影响——
-/// 切换只改变后续 [`alloc::PageSupplier::supply_pages`] 从哪里拿新页，
-/// 见 [`alloc::SlabAllocator::replace_supplier`] 的调用方契约）。
+/// When to call: after the process has completed its birth handshake with VM
+/// and obtained its own data region endpoint, and before any allocation that
+/// depends on heap growth (fixed-pool allocations during birth are unaffected
+/// — the switch only changes where subsequent
+/// [`alloc::PageSupplier::supply_pages`] calls get new pages; see the caller
+/// contract of [`alloc::SlabAllocator::replace_supplier`]).
 ///
-/// * `initial_break`：VM 侧 data region 的当前端点（对位 C 的
-///   `_brksize` 初值 = exec 建立的 data segment 端点；安装点落地时接
-///   链接器 `__bss_end`，见 `SD-11` T3）。传 0 无意义，返 `EINVAL`。
-/// * 幂等：已切 VM 形态时是 no-op（重复握手不重复安装）。
-/// * 返回后池诊断 [`global_alloc_diag`] 的总/空闲页为 0，即「已切 VM
-///   形态"的标志（[`alloc::VmBreakSupplier`] 无固定总量）。
+/// * `initial_break`: the current endpoint of the VM-side data region
+///   (counterpart of C's `_brksize` initial value = the data segment endpoint
+///   established by exec; the install point is wired to the linker's
+///   `__bss_end`, see the T3 install point). Passing 0 is meaningless and
+///   returns `EINVAL`.
+/// * Idempotent: a no-op once the VM form is active (a repeated handshake does
+///   not reinstall).
+/// * After returning, the total/free page counts of the pool diagnostic
+///   [`global_alloc_diag`] are 0, which is the "VM form is active" marker
+///   ([`alloc::VmBreakSupplier`] has no fixed total).
 pub fn install_vm_supplier(initial_break: u64) -> Result<(), minix_types::Errno> {
     if initial_break == 0 {
         return Err(minix_types::Errno::EINVAL);
     }
     with_global_allocator(|allocator| {
         if allocator.is_vm_form() {
-            // 已切 VM 形态：幂等 no-op（重复握手不重复安装，避免把
-            // initial_break 缓存回拨到旧值）。
+            // VM form already active: idempotent no-op (a repeated handshake
+            // does not reinstall, avoiding caching initial_break back to an
+            // old value).
             return Ok(());
         }
         let vm = alloc::HeapSupplier::Vm(alloc::VmBreakSupplier::new(
@@ -253,25 +265,29 @@ pub fn install_vm_supplier(initial_break: u64) -> Result<(), minix_types::Errno>
     })
 }
 
-/// 链接器镜像尾符号（C `_end`）与读取口（仅 freestanding 真身）。
+/// The linker image-end symbol (C `_end`) and its reader (freestanding body
+/// only).
 ///
-/// C 对位：`minix3/minix/lib/libc/arch/i386/sys/brksize.S` 把链接器
-/// `_end` 播成初始 `_brksize`——数据段之后的第一个字节就是堆起点。
-/// 本 crate 三架构 none 目标均走 lld，其 ELF 可执行文件内建提供
-/// `__bss_start`/`_edata`/`_end` 三符号，取地址即得（无须自定链接
-/// 脚本）。宿主 std 构建不暴露（符号语义随宿主 libc 变化，无消费
-/// 者且避免误用）。
+/// C counterpart: `minix3/minix/lib/libc/arch/i386/sys/brksize.S` seeds the
+/// linker `_end` as the initial `_brksize` — the first byte after the data
+/// segment is the heap start. All three architectures' none targets in this
+/// crate use lld, whose ELF executables provide the three symbols
+/// `__bss_start`/`_edata`/`_end` built in, so taking their address suffices
+/// (no custom linker script needed). The host std build does not expose them
+/// (symbol semantics vary with the host libc, there are no consumers, and
+/// misuse is avoided).
 #[cfg(target_os = "none")]
 mod image_end_sym {
     unsafe extern "C" {
         static _end: u8;
     }
 
-    /// 镜像尾地址（.bss 之后的第一个字节；[`install_vm_supplier`] 的
-    /// 初始断点同源，`SD-11` T3）。
+    /// Image-end address (the first byte after .bss; the same source as the
+    /// initial break of [`install_vm_supplier`], the T3 install point).
     pub fn image_end() -> u64 {
-        // 只取符号地址、不解引用——`_end` 是链接器内建符号，无对应
-        // 存储对象（`addr_of!` 本身安全，无需 unsafe 块）。
+        // Only take the symbol address, never dereference it — `_end` is a
+        // linker-builtin symbol with no backing storage object (`addr_of!` is
+        // itself safe, no unsafe block needed).
         core::ptr::addr_of!(_end) as u64
     }
 }
@@ -342,11 +358,13 @@ mod global_tests {
         assert!(!alloc(8).is_null());
     }
 
-    /// `install_vm_supplier` 安装口（SD-11 T1，host 可观察部分）：
-    /// 0 断点拒绝；安装后池诊断总/空闲归 0（VM 形态标志）；重复安装
-    /// 幂等。注意：本测把全局分配器切到 VM 形态且不可逆——libtest
-    /// 按名字序执行，`test_global_*`（g 前缀）在本测（i 前缀）之前；
-    /// 改测试名时须保持这个偏序。
+    /// The `install_vm_supplier` install point (T1, host-observable part):
+    /// a 0 break is rejected; after installation the pool diagnostic's
+    /// total/free counts drop to 0 (VM form marker); repeated installation is
+    /// idempotent. Note: this test switches the global allocator to the VM form
+    /// irreversibly — libtest runs tests in name order, and `test_global_*`
+    /// (prefix g) come before this test (prefix i); keep this ordering when
+    /// renaming tests.
     #[test]
     fn test_install_vm_supplier_guards_and_form_switch() {
         let _guard = GLOBAL_TEST_LOCK.lock().unwrap();
@@ -397,8 +415,8 @@ fn panic(info: &PanicInfo) -> ! {
         info.message(),
         &mut buffer,
     );
-    // Stage 2 (A-8 step 2): a registered diagnostic hook takes over ALL
-    // rendering. The kernel hook (D-48) prints the C-panic format —
+    // Stage 2: a registered diagnostic hook takes over ALL
+    // rendering. The kernel hook prints the C-panic format —
     // "kernel panic: " + message + "kernel on CPU %d: " + backtrace —
     // through the kernel EarlyConsole. The hook registry lives in
     // minix-types, the shared contract crate both sides already depend
@@ -412,7 +430,7 @@ fn panic(info: &PanicInfo) -> ! {
         // the process at exactly this point, which meant no panic message
         // was ever visible from user mode and the stage-3 exit below was
         // unreachable. Emit through the kernel diagnostic channel instead
-        // (SYS_DIAGCTL; the init PID-1 precedent, `os/commands/sbin/init/
+        // (SYS_DIAGCTL; the init process (pid 1) precedent, `os/commands/sbin/init/
         // src/main.rs`'s handler): the kernel prints on its EarlyConsole,
         // and when even the kernel is absent the transport's park is the
         // C panic.c:66 hang this handler already documents. The SpinSink
@@ -422,7 +440,7 @@ fn panic(info: &PanicInfo) -> ! {
             message,
         );
     }
-    // Stage 3 (A-8 step 3; C panic.c:54 `_exit(1)`): terminate through the
+    // Stage 3 (C panic.c:54 `_exit(1)`): terminate through the
     // process manager so PM can reap the process — and RS restart it when
     // it is a service. `exit` never returns: when the PM_EXIT send finds
     // no process manager (bare boot images), the transport-side park takes
@@ -431,7 +449,7 @@ fn panic(info: &PanicInfo) -> ! {
     minix_sys::exit(1)
 }
 
-// ── Panic diagnostic hook contract (D-48, A-8 step 2) ───────────────────
+// ── Panic diagnostic hook contract ──────────────────────────────────────
 //
 // The hook registry itself lives in minix-types (`minix_types::
 // set_panic_diagnostic_hook` / `run_panic_diagnostic_hook`): one registry,

@@ -11,14 +11,19 @@
 //! comes from `-c` (the C queries the window size, which belongs to the
 //! terminal face).
 //!
-//! 条目池里走的是**字节**：`column.c` 的 `input` 把 `fgetln` 那段原样存进池子（`:270-297`），
-//! 布局宽度按 `strlen` 量（`:243`），所以一枚非 UTF-8 字节既进池也占一格；表模式的最后一列
-//! 走 `printf("%s\n", …)`（`:252`）原样发出，既不补齐也没有裁尾那一步。
+//! The entry pool works on **bytes**: `input` in `column.c` stores the `fgetln`
+//! slice into the pool unchanged (`:270-297`), layout widths are measured with
+//! `strlen` (`:243`), so a non-UTF-8 byte both enters the pool and occupies one
+//! cell; the last column in table mode goes out through `printf("%s\n", ...)`
+//! (`:252`) unchanged — no padding, no trimming step.
 //!
-//! 诊断面有四处，句式各有主人：libc `getopt` 的两行（集外字母、带值选项缺值）由
-//! [`minix_textfilter::GetoptReport`] 单源，后面必接一行 usage；`warn(3)` 的
-//! `Cannot open \`…'` 是「程序名: 标签: strerror 句子」三段形；`warnx(3)` 的
-//! `line too long` 只有两段（`vwarnx` 不缀 strerror），且它每丢一条残行打一句。
+//! There are four diagnostic faces, each with its own owner of the sentence: the
+//! two libc `getopt` lines (out-of-set letter, value-taking option missing its
+//! value) come from the single source [`minix_textfilter::GetoptReport`] and are
+//! always followed by one usage line; `warn(3)`'s `Cannot open \`...'` has the
+//! three-part form "program: label: strerror sentence"; `warnx(3)`'s
+//! `line too long` has only two parts (`vwarnx` appends no strerror), and it
+//! prints one sentence for each dropped remnant line.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -34,15 +39,18 @@ use minix_textfilter::column::{columnate, parse_column_args, scan_entries};
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名那一腿交给 `warn_line` 与 `GetoptReport::line_bytes` 的 `&str` 口（登记
-    // `ARGV-BYTE-PATH-IN-LIBS`），所以臂内折一次；操作数与 `-s` 的值不跟着折。
+    // The program-name leg goes through the `&str` mouth of `warn_line` and
+    // `GetoptReport::line_bytes` (a known libs gap), so the arm folds once here;
+    // operands and the `-s` value are not folded along.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
-    // C 的选项环把 `'?'` 与集外一切交回 `default: usage()`（`column.c:107-109`），
-    // 而 libc 在返回 `'?'` 之前自己先印一行（`getopt.c:101-104`、`:132-136`）。
-    // 那一行走字节形 `line_bytes`：libc 的字母位是一个裸字节（`getopt.c:79` 的
-    // `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出），参照件
-    // `tmp/column-314/column` 现量 `column -é` 打 `c3` 一个字节，按 `char` 渲染会多一个。
+    // C's option loop sends `'?'` and everything out-of-set to `default: usage()`
+    // (`column.c:107-109`), and libc prints a line itself before returning `'?'`
+    // (`getopt.c:101-104`, `:132-136`). That line goes through the byte form
+    // `line_bytes`: libc's letter slot is one bare byte (`optopt = *place++` at
+    // `getopt.c:79` advances one byte at a time, and `:103` writes it out with
+    // `%c`); reference measurement `tmp/column-314/column` shows `column -é`
+    // printing one byte `c3`, while `char` rendering would add one.
     let (options, operands) = match parse_column_args(&args[1..]) {
         Ok(a) => (a.options, a.operands),
         Err(report) => {
@@ -51,16 +59,19 @@ fn run() -> ! {
         }
     };
 
-    // `column.c:114-123`：无操数读标准输入；否则逐个开档、共用同一个条目池，
-    // 开不了的档只 `warn(3)` 并把退出码置 1（`eval = 1`），本次运行继续走下一个档。
+    // `column.c:114-123`: no operands means read stdin; otherwise open each file
+    // in turn into one shared entry pool, where an unopenable file only `warn(3)`s
+    // and sets the exit code to 1 (`eval = 1`), and the run continues with the
+    // next file.
     let mut entries: Vec<Vec<u8>> = Vec::new();
     let mut rval = 0;
     if operands.is_empty() {
         collect(&mut entries, &mut rval, &support::read_stdin(), &prog);
     } else {
         for operand in &operands {
-            // 开档那一腿仍要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），所以折一次；报文里
-            // 回显的就是这个折叠名——它与真源差在开档腿，不差在回显写法。
+            // The open leg still requires `&str` (a known libs gap), so fold once;
+            // the message echoes this folded name — the difference from the real
+            // source is in the open leg, not in how the echo is written.
             let path = String::from_utf8_lossy(operand);
             match support::read_file(&path) {
                 Ok(bytes) => collect(&mut entries, &mut rval, &bytes, &prog),
@@ -71,8 +82,9 @@ fn run() -> ! {
             }
         }
     }
-    // `column.c:125-126`：条目池空则按 `eval` 直接返回，不进布局——布局里的
-    // `maxlength` 是 0 条时算出来的那个取齐值，与 C 的「根本没进这几个函数」不同形。
+    // `column.c:125-126`: an empty entry pool returns directly by `eval` without
+    // entering layout — layout's `maxlength` is the alignment value computed for
+    // zero entries, a different shape from C's "never entered these functions".
     if entries.is_empty() {
         support::terminate(rval);
     }
@@ -89,9 +101,11 @@ fn run() -> ! {
 /// `warnx("line too long")` per occurrence, and each such line also sets the
 /// exit status (`column.c:277-283`).
 ///
-/// 行是字节不是文本：C 的 `input` 把 `fgetln` 交回的整段原样存进池子，从不解码。
-/// 旧写法 `from_utf8(bytes).unwrap_or("")` 让一枚坏字节抹掉**整个档**的条目
-/// （现量见 `tmp/column-435/ab.log`：参照件打 `a\xffb\tz`，本壳交回空）。
+/// A line is bytes, not text: C's `input` stores the whole `fgetln` slice into the
+/// pool unchanged and never decodes. The old `from_utf8(bytes).unwrap_or("")` let
+/// one bad byte wipe **the whole file's** entries (measurement in
+/// `tmp/column-435/ab.log`: the reference prints `a\xffb\tz`, this wrapper returned
+/// empty).
 fn collect(entries: &mut Vec<Vec<u8>>, rval: &mut i32, bytes: &[u8], prog: &str) {
     let lines: Vec<&[u8]> = bytes.split(|&byte| byte == b'\n').collect();
     let pool = scan_entries(&lines);
@@ -102,8 +116,8 @@ fn collect(entries: &mut Vec<Vec<u8>>, rval: &mut i32, bytes: &[u8], prog: &str)
     }
 }
 
-/// C 的 `usage()`（`column.c:302-307`）：一行大写 `Usage`、程序名跟着
-/// `getprogname()`、`exit(1)`。
+/// C's `usage()` (`column.c:302-307`): one capitalised `Usage` line, the program
+/// name from `getprogname()`, and `exit(1)`.
 fn usage(prog: &str) -> ! {
     support::warn(format!("Usage: {prog} [-tx] [-c columns] [-s sep] [file ...]\n").as_bytes());
     support::terminate(1);

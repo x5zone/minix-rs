@@ -81,7 +81,7 @@ pub(super) mod test_utils {
     /// Creates an ActiveProc with page table and regions initialized.
     /// Use this for tests that need page table access (fork, mmap, etc.).
     ///
-    /// V11/T26: no transmute needed — annotating the table binding as
+    /// No transmute needed — annotating the table binding as
     /// `&'static` (which `VmProcTable::get_global()` returns) lets the
     /// typestate views carry the `'static` lifetime by ordinary inference;
     /// the former transmute-to-'static helper existed only

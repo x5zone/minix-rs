@@ -94,7 +94,8 @@ impl Server {
             return; // pre-init: no events file exists to receive anything
         };
         if let Some(InodeContent::Events(q)) = self.vtreefs.tree_mut().content_mut(ino) {
-            //[SD19-gate] SD-19: 事件队列 push 固定容量，满丢一条
+            //[SD19-gate] the event queue has a fixed capacity; a full queue
+            // drops one entry
             #[allow(clippy::let_underscore_must_use)]
             let _ = q.push(ev);
         }
@@ -259,7 +260,8 @@ impl Server {
                 Incoming::Devman { source, msg } => {
                     self.process_devman(source, msg, transport)
                 }
-                // 传输已自行回绝（未挂载/未服务）：无动作。
+                // The transport already refused it (not mounted / not served):
+                // nothing to do.
                 Incoming::Refused => {}
             }
         }

@@ -1,7 +1,7 @@
 //! Per-target link script selection: the freestanding birth image links
 //! differently per architecture (x86-64 keeps the original script; the
 //! riscv64 variant adds the sdata/sbss small-data sections and declares
-//! the riscv output arch). K12b riscv64 leg.
+//! the riscv output arch). This build is the riscv64 leg.
 fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let target = std::env::var("TARGET").unwrap_or_default();

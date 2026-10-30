@@ -44,7 +44,8 @@ fn one_warn_line(err: &str, label: &str) {
 
 #[test]
 fn a_failed_name_warns_the_c_line_and_the_loop_moves_on() {
-    // C 的循环把每个名字都走一遍，失败只把退出码记成 1（`mkfifo.c:93-99`）。
+    // C's loop walks every name, and a failure only sets the exit code to 1
+    // (`mkfifo.c:93-99`).
     let (out, status, err) = run(&["/tmp/mkfifo-face-a", "/tmp/mkfifo-face-b"]);
     assert_eq!(out, "", "C 的失败路不写标准输出");
     assert_eq!(status, 1);
@@ -80,9 +81,12 @@ fn no_names_at_all_answers_the_usage_line_on_stderr() {
 
 #[test]
 fn the_program_name_loses_its_directories_like_getprogname_does() {
-    // C 的运行时刻把 `argv[0]` 切成最后一段（`minix3/lib/csu/common/crt0-common.c:156-165`），
-    // 所以以带目录的路径调用时，报的第一段仍是不含目录的程序名。这里刻意把一个副本放进
-    // 临时目录再按那条路径调用：`argv[0]` 带斜杠，输出的前缀不带。
+    // At run time C cuts `argv[0]` down to its last segment
+    // (`minix3/lib/csu/common/crt0-common.c:156-165`), so invoking it through a
+    // path with directories still reports a program name without directories.
+    // This deliberately copies the binary into a temporary directory and invokes
+    // it through that path: `argv[0]` contains a slash, the printed prefix does
+    // not.
     let dir = std::env::temp_dir().join("mkfifo-face-progname");
     let _ = std::fs::create_dir_all(&dir);
     let copy = dir.join("mkfifo");
@@ -97,7 +101,8 @@ fn the_program_name_loses_its_directories_like_getprogname_does() {
     assert_eq!(output.status.code().unwrap_or(-1), 1);
     let err = String::from_utf8_lossy(&output.stderr).into_owned();
     let first = err.lines().next().unwrap_or("");
-    // 报告的前缀是不带目录的程序名，后面紧跟的才是那个操作数。
+    // The reported prefix is the program name without directories; the operand
+    // follows right after it.
     let prog = first.split(": ").next().unwrap_or("");
     assert_eq!(prog, "mkfifo", "程序名那段不该带目录：`{first}`");
     assert!(

@@ -258,11 +258,14 @@ pub struct ProcessIpc {
     /// Event subscriber cursor (legacy, deprecated).
     ///
     /// C: `mp_eventsub` (`char`, `0..nsubs-1` or `NO_EVENTSUB`).
-    /// Rust: 该字段语义实为订阅者下标（`0..NR_SUBS`），却被误建模为
-    /// `UserSlot`（进程槽位）；正确位置为 `BlockState::EventCall { cursor: EventCursor }`
-    /// （`os/servers/pm/src/mproc/block.rs:EventCursor`，`[ARCH: A-2]`）。
-    /// 新逻辑（`os/servers/pm/src/event.rs`）不再读写本字段，仅保留以兼容
-    /// `fork.rs` 旧测试；06 后续将与 02 文档联动改为 `Option<EventCursor>` 或移除。
+    /// Rust: this field really carries the subscriber index (`0..NR_SUBS`) but
+    /// was mis-modelled as `UserSlot` (a process slot); its correct home is
+    /// `BlockState::EventCall { cursor: EventCursor }`
+    /// (`os/servers/pm/src/mproc/block.rs:EventCursor`, `[ARCH: A-2]`).
+    /// New logic (`os/servers/pm/src/event.rs`) no longer reads or writes this
+    /// field; it is kept only to keep the old `fork.rs` tests compiling, and a
+    /// later change will align with the 02 document to turn it into
+    /// `Option<EventCursor>` or remove it.
     #[deprecated(note = "use BlockState::EventCall { cursor: EventCursor } instead; see 06-event-subscription.md D3")]
     pub event_subscriber: Option<UserSlot>,
     /// Stack frame address.
@@ -320,7 +323,7 @@ impl Default for ProcessIpc {
 /// | mp_flags: SIGSUSPENDED | resources.signals.suspended |
 /// | mp_flags: PRIV_PROC | resources.privilege (Privilege::Kernel) |
 /// | mp_flags: ALARM_ON/PARTIAL_EXEC/TAINTED | resources.flags (RemainingFlags) |
-/// | mp_realuid/effuid/svuid + gid triplet | resources.privilege .{User,Kernel}(Credentials)（凭证恒存在，C-28）|
+/// | mp_realuid/effuid/svuid + gid triplet | resources.privilege .{User,Kernel}(Credentials) (credentials always present) |
 /// | mp_ngroups / mp_sgroups | resources.privilege .{User,Kernel}(Credentials).ngroups/supplemental_groups |
 /// | mp_ignore/mp_catch/mp_sigmask/mp_sigmask2 | resources.signals.ignored/caught/mask/mask_saved |
 /// | mp_sigpending/mp_ksigpending/mp_sigtrace | resources.signals.pending/kernel_pending/trace_mask |

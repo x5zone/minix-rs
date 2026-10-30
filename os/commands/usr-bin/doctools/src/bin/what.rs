@@ -13,7 +13,7 @@
 //! found in any file, else `1` (`what.c:93`, where "the standard explicitly
 //! specifies an exit status of 1" when none matched). Read-only, so like
 //! `whatis`/`which` it is not gated on the writable-root E5 check; real-machine
-//! per-file `open` is the same C-57/E5 delivery gate as every guest binary.
+//! per-file `open` is the same E5 delivery gate as every guest binary.
 //! The report line is C's `perror(*argv)` rendered by the one authority in
 //! `minix-types`: `<operand>: <strerror(errno)>` — no program name (Minix3's
 //! `perror` prints none, unlike `warn(3)`/`err(3)`) and no invented phrase, and the

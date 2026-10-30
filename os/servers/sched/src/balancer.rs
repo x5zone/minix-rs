@@ -30,9 +30,9 @@ pub const BALANCE_TIMEOUT_SECS: u32 = 5;
 /// value — arming the bell (`sys_setalarm`, 02's loop) and its fatal
 /// policy (C `panic`s, `340-341,367-368`) stay caller-side.
 ///
-/// [ARCH S-9] (plan.md): this struct *is* the default policy C's comment
+/// [ARCH: policy trait seam] this struct *is* the default policy C's comment
 /// (`348-352`, "will soon be changed") promises to replace. The second
-/// policy arrives as a trait then — not one day sooner (pattern 25: one
+/// policy arrives as a trait then — not one day sooner (one
 /// behaviour needs no polymorphism).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Balancer {

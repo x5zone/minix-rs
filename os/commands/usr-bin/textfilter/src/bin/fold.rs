@@ -23,20 +23,29 @@ use minix_textfilter::GetoptReport;
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名那一腿的渲染口仍是 `&str`（`GetoptReport::line_bytes`、`warn_line` 都收 `&str`），
-    // 库侧字节口在册未动：`ARGV-BYTE-PATH-IN-LIBS`。字母与操作数这两腿从这里开始是原字节。
+    // The program-name leg still renders through `&str`
+    // (`GetoptReport::line_bytes` and `warn_line` both take `&str`), and the
+    // library-side byte entry points are registered but untouched:
+    // `ARGV-BYTE-PATH-IN-LIBS`. The option-letter and operand legs are raw
+    // bytes from here on.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let words: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let FoldArgs { options, operands } = match parse_fold_args(&words[1..]) {
         Ok(parsed) => parsed,
-        // 两支 getopt 自己的错（集外字母、`-w` 缺值）：先 libc 那一行，再 `usage()`。
-        // 旧写法只打 usage，把首行丢了；而 usage 的文本与退码当时也不合 C。
+        // The two errors getopt itself raises (an out-of-set letter, a
+        // missing `-w` value): the libc line first, then `usage()`. The old
+        // form printed only usage and lost the first line; the usage text and
+        // exit code also disagreed with C at the time.
         //
-        // 字母位走 `line_bytes`，两半都在字节上：参数缝交回原字节，`src/fold.rs` 的取法
-        // 取一个字节（`bytes[pos] as char`），于是 `-é`（`c3 a9`）只打 `c3` 一枚——与参照件
-        // `tmp/fold-405/fold_ref` 同形（libc 那一行的字母位本来就是一个字节：
-        // `getopt.c:79` 的 `optopt = *place++`、`:103` 的 `%c`）。缺值那一支的字母来自选项串
-        // `"0123456789bsw:"`，本来就是 ASCII 的 `w`，两个入口同串。
+        // The option letter goes through `line_bytes`, both halves being
+        // byte-based: the argument seam hands back raw bytes, and
+        // `src/fold.rs` takes a single byte (`bytes[pos] as char`), so `-é`
+        // (`c3 a9`) prints just the one byte `c3` — the same shape as the
+        // reference binary `tmp/fold-405/fold_ref` (the letter slot of the
+        // libc line is one byte to begin with: `getopt.c:79`
+        // `optopt = *place++`, `:103` `%c`). The missing-value branch takes
+        // its letter from the option string `"0123456789bsw:"`, which is
+        // already the ASCII `w`, so both entries share the same string.
         Err(FoldError::UnknownOption(flag)) => {
             support::warn(&GetoptReport::UnknownOption(flag).line_bytes(&prog));
             usage(&prog);
@@ -46,7 +55,8 @@ fn run() -> ! {
             usage(&prog);
         }
         Err(FoldError::IllegalWidth) => {
-            // C 这里是 `errx(1, "illegal width value")`：**只有这一行**，不接 usage。
+            // C here is `errx(1, "illegal width value")`: **this line only**,
+            // no usage appended.
             support::warn(format!("{prog}: illegal width value\n").as_bytes());
             support::terminate(1);
         }
@@ -61,18 +71,24 @@ fn run() -> ! {
         support::terminate(0);
     }
     for operand in operands {
-        // 开档与报文回显这两条腿的口都收 `&str`（`os/libs/minix-sys/src/lib.rs:fn open`、
-        // `os/libs/minix-types/src/types/errno.rs:fn err_line`），字节形操作数只能在这里
-        // 折一次——差在 `ARGV-BYTE-PATH-IN-LIBS` 里在册。
+        // Both the open leg and the error-message leg take `&str`
+        // (`os/libs/minix-sys/src/lib.rs:fn open`,
+        // `os/libs/minix-types/src/types/errno.rs:fn err_line`), so a
+        // byte-form operand can only be folded once here — the divergence is
+        // registered in `ARGV-BYTE-PATH-IN-LIBS`.
         let path = String::from_utf8_lossy(operand).into_owned();
-        // 读缝走 `bin_support` 的双生面（宿主 `std::fs`、真机 open+read）：本文件此前
-        // 直接拿裸 `open`/`read` 的 fd 自己读，**宿主上读不到任何东西**（同批次三百零六
-        // 给 `nl` 收的那处），所以新立的端到端门一跑就现形：输出是空的。
+        // The read seam goes through the two-faced `bin_support` layer (host
+        // `std::fs`, real machine open+read): this file previously read
+        // through a bare `open`/`read` fd itself and **could read nothing on
+        // the host** (the same defect addressed for `nl`), so the newly added
+        // end-to-end gate exposed it at once: the output was empty.
         let input = match support::read_file(&path) {
             Ok(data) => data,
             Err(code) => {
-                // C 是 `err(1, "%s", *argv)`（`fold.c:107-109`）：程序名、操作数、`strerror`
-                // 句子三段齐备。旧写法只打前两段，把句子弄丢了。
+                // C is `err(1, "%s", *argv)` (`fold.c:107-109`): program
+                // name, operand, and the `strerror` sentence — all three
+                // parts present. The old form printed only the first two and
+                // lost the sentence.
                 support::warn_line(&prog, &path, code);
                 support::terminate(1);
             }
@@ -93,8 +109,9 @@ fn fold_bytes(input: &[u8], options: &FoldOptions) {
     }
 }
 
-/// C 的 `usage()`（`fold.c:115-121`）：一行、程序名跟着 `getprogname()`、`exit(1)`。
-/// 旧写法把行项自成了 `[-b] [-s] [-w width | -width]` 且丢了 `[file ...]`。
+/// C's `usage()` (`fold.c:115-121`): one line, the program name following
+/// `getprogname()`, `exit(1)`. The old form invented the line items
+/// `[-b] [-s] [-w width | -width]` and dropped `[file ...]`.
 fn usage(prog: &str) -> ! {
     support::warn(format!("usage: {prog} [-bs] [-w width] [file ...]\n").as_bytes());
     support::terminate(1);

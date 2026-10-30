@@ -62,7 +62,7 @@ pub const KERN_SYSVIPC_SHM_INFO: i32 = 6;
 /// but as *query values* 5 and 6 route to the two assemblers. Only 7..9 are
 /// unsupported in both senses.
 ///
-/// [ARCH: IPC-03-01] The five slots are intentionally absent as nodes:
+/// [ARCH: IPC reserved slots] The five slots are intentionally absent as nodes:
 /// exposing them would promise information this server cannot supply.
 pub const RESERVED_SLOT_FIRST: i32 = 5;
 /// Last reserved slot. C: `KERN_SYSVIPC_SHMUSEPHYS 9` — sysctl.h:694.
@@ -172,17 +172,19 @@ pub const fn route_info_query(name_length: u32, name_value: i32) -> InfoRoute {
 }
 
 // ============================================================================
-// Subtree construction (S26/C-12: E-RMIBWIRE 协议走查器的挂载半)
+// Subtree construction (the mount half of the E-RMIBWIRE protocol walkthrough)
 // ============================================================================
 
-/// 组装 `kern.ipc` 子树根(C: `kern_ipc_node` + `kern_ipc_table[]`,
-/// main.c:54-79)。Dense 子表按 C 数组原样镜像:槽 0 与保留槽 5..9 是
-/// flags==0 的空位(遍历跳过、越界查 ENOENT),四个有效行是 INFO 函数
-/// 节点与三个 int 叶。`RMIB_RO = CTLFLAG_READONLY = 0`(rmib.h:168)。
+/// Assemble the `kern.ipc` subtree root (C: `kern_ipc_node` +
+/// `kern_ipc_table[]`, main.c:54-79).  The dense child table mirrors the C array
+/// exactly: slot 0 and the reserved slots 5..9 are empty positions with
+/// flags==0 (skipped by traversal, out-of-range lookups yield ENOENT), and the
+/// four valid rows are the INFO function node plus three int leaves.
+/// `RMIB_RO = CTLFLAG_READONLY = 0` (rmib.h:168).
 ///
-/// INFO 节点的 handler 不上树——C 的函数指针(`rnode_func`)在 Rust
-/// 侧归 [`crate::service`] 的 `RmibFuncHandler` 注入,树只带
-/// `func: true` 标志。
+/// The INFO node's handler is not stored in the tree — C's function pointer
+/// (`rnode_func`) is supplied on the Rust side by [`crate::service`]'s
+/// `RmibFuncHandler`, and the tree only carries the `func: true` flag.
 pub fn build_kern_ipc_tree() -> RmibNode {
     use minix_types::{CTLFLAG_PERMANENT, CTLFLAG_READONLY, CTLFLAG_IMMEDIATE, CTLTYPE_INT, CTLTYPE_NODE};
 
@@ -215,7 +217,8 @@ pub fn build_kern_ipc_tree() -> RmibNode {
         "ipc",
     );
     root.desc = Some(String::from("SysV IPC options"));
-    // C 数组的逐位镜像:id 0 空位 + 1..4 四个有效行 + 保留槽 5..9 空位。
+    // Bit-for-bit mirror of the C array: id 0 empty + four valid rows 1..4 +
+    // reserved slots 5..9 empty.
     let empty = || RmibNode::default();
     root.children = RmibChildren::Dense(alloc::vec![
         empty(),

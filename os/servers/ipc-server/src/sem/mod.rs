@@ -33,7 +33,7 @@ use minix_types::{
 ///
 /// C returns bare `errno.h` integers from a dozen places; the enum keeps
 /// them distinct so tests can assert *which* check fired, and [`to_errno`]
-/// maps back to the wire values (documents 05/06,收口 99).
+/// maps back to the wire values (documents 05/06).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemError {
     /// Bad identifier, index, count, or unknown command. C: `EINVAL`.

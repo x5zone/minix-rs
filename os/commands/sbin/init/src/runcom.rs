@@ -121,7 +121,7 @@ fn runetcrc(
 ) -> Attempt {
     // C: the child ignores SIGHUP/SIGTSTP (init.c:886-891); the parent
     // never touched its own dispositions in this state.
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] init is best-effort
     #[allow(clippy::let_underscore_must_use)]
     let _ = host.register_handlers(&ignore_spec(&[
         sig::SIGNAL_HANGUP,
@@ -132,11 +132,11 @@ fn runetcrc(
         Ok(0) => {
             // Child: console, argv, unblock, optional chroot, exec
             // (init.c:884-910).
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init is best-effort
             #[allow(clippy::let_underscore_must_use)]
             let _ = host.set_controlling_tty(crate::single_user::CONSOLE_PATH);
             let cmd = rc_argv(deps.mode);
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init is best-effort
             #[allow(clippy::let_underscore_must_use)]
             let _ = host.register_handlers(&SignalSpec {
                 handlers: vec![],
@@ -171,7 +171,7 @@ fn runetcrc(
             // `.is_ok()` would spin forever on `Ok((0, _))` — the aarch64
             // §1.117 livelock (INIT flooded PM with ~60k WAIT4/40s).
             while matches!(host.waitpid(-1, WNOHANG), Ok((pid, _)) if pid > 0) {}
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init is best-effort
             #[allow(clippy::let_underscore_must_use)]
             let _ = host.sleep_secs(crate::log::STALL_TIMEOUT_SECS);
             return Attempt::SingleUser;
@@ -191,7 +191,7 @@ fn runetcrc(
                                 "`{RC_SHELL_PATH}' on `{RUNCOM_SCRIPT}' stopped, restarting"
                             ),
                         );
-                        //[SD19-gate] SD-19: init 尽力而为
+                        //[SD19-gate] init is best-effort
                         #[allow(clippy::let_underscore_must_use)]
                         let _ = host.kill(pid, sig::SIGNAL_CONTINUE);
                         continue;
@@ -310,7 +310,7 @@ mod tests {
             rootdir: "/",
             signals: &signals,
         };
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| {
             runetcrc(&mut host, false, &mut collector, &deps)
@@ -338,7 +338,7 @@ mod tests {
             rootdir: "/newroot",
             signals: &signals,
         };
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| {
             runetcrc(&mut host, true, &mut collector, &deps)
@@ -368,7 +368,7 @@ mod tests {
             rootdir: "/newroot",
             signals: &signals,
         };
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| {
             runetcrc(&mut host, true, &mut collector, &deps)
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_runetcrc_fork_failure_reap_loop_exits_on_zero() {
-        // NK4-C §1.117: the WNOHANG reap loop must stop the moment no more
+        // The WNOHANG reap loop must stop the moment no more
         // children have exited. A single `Ok((0, _))` (a live child, none
         // changed) is the exit signal (C `waitpid(...) > 0`); the old
         // `.is_ok()` guard would call waitpid again, draining the empty mock

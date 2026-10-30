@@ -10,13 +10,14 @@
 //! used-fields subsets); the VFS-side GETSYSINFO producer aligns to them
 //! (SI_PROC_TAB half closed: `FProcSnap` is the minix-types authority and
 //! VFS `do_getsysinfo` serves both via the shared snapshots — `FProcSnap`
-//! （E-MIBPROD）与 `DmapSnap`（DMAP 臂按整表宽度逐行序列化，空槽记 `NONE`）。
+//! and `DmapSnap` (the DMAP arm serializes row by row across the full table width, with empty slots recorded as `NONE`).
 
 /// VFS process snapshot (used fields only).
 ///
 /// C: `struct fproc` — `minix3/minix/servers/vfs/fproc.h` (subset).
-// FProcSnap 已上收 `minix_types::FProcSnap`（E-MIBPROD 快照权威单点，
-// 与 MprocWire/ProcInfoStruct 同型）。本 crate 改 import 消费。
+// FProcSnap has been hoisted into `minix_types::FProcSnap` (the single snapshot
+// authority, the same shape as MprocWire/ProcInfoStruct). This crate now consumes
+// it via import.
 pub use minix_types::FProcSnap;
 
 use crate::PCStr;
@@ -79,7 +80,7 @@ impl BlockedOn {
 ///
 /// C: `fp_blocked_on == FP_BLOCKED_ON_CDEV → fp_cdev.endpt`, else `" nil"`
 /// (dmp_fs.c:60-63), with the source comment
-/// `/* TODO: for FP_BLOCKED_ON_SDEV we do not have the endpoint.. */`.
+/// `/* XXX: for FP_BLOCKED_ON_SDEV we do not have the endpoint.. */`.
 /// The SDEV gap is inherited explicitly as `None` (not this doc's debt).
 pub const fn blocked_endpoint(on: BlockedOn, cdev_endpt: i32) -> Option<i32> {
     match on {
@@ -181,7 +182,7 @@ pub const fn dmap_skipped(driver: i32, none: i32) -> bool {
 
 /// One fproc pagination step. C: dmp_fs.c:42-47 (`continue` on skip, the
 /// `++n > 22` break). Three states — a `bool` could not tell "skipped,
-/// keep going" from "screen full, stop" (V1-P1-3 fix).
+/// keep going" from "screen full, stop".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VfsAction {
     /// pid <= 0: skipped, uncounted, loop continues.
@@ -343,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_blocked_on_codes_and_endpoint() {
-        // C: const.h:19-25 + dmp_fs.c:60-63 (+ SDEV TODO).
+        // C: const.h:19-25 + dmp_fs.c:60-63 (+ the SDEV gap).
         assert_eq!(BlockedOn::decode(5), Some(BlockedOn::Cdev));
         assert_eq!(BlockedOn::decode(6), Some(BlockedOn::Sdev));
         assert_eq!(BlockedOn::decode(99), None);

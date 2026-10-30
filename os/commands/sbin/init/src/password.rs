@@ -2,7 +2,7 @@
 //!
 //! Covers the C dispatch at `minix3/lib/libcrypt/crypt.c:505-520` and
 //! the gate's passwd read (`getpwnam("root")`, init.c:733).
-//! Design contract: `.design/04-design.v1.md §1.1`, doc 12.
+//! Design contract: doc 12.
 //!
 //! Scheme dispatch and the four hash backends both live behind
 //! `minix-crypt` (the shared-infrastructure split libcrypt itself
@@ -153,12 +153,13 @@ mod tests {
         assert_eq!(root_password_hash("daemon:*:1:1:daemon:/"), None);
     }
 
-    /// 真装闭环：四方案正确口令放行、错误口令拒绝（黄金向量来自
-    /// 宿主 libcrypt）。
+    /// Real installation round trip: the correct password is let through for
+    /// all four schemes and a wrong password is refused (golden vectors from
+    /// the host libcrypt).
     #[test]
     fn test_build_verifier_round_trip_all_schemes() {
         let cases = [
-            ("password", "xyAjYtmfRYx/."), // 传统 DES（宿主 libcrypt 真值）
+            ("password", "xyAjYtmfRYx/."), // traditional DES (host libcrypt ground truth)
             ("password", "$1$saltstri$qQY4WxjABChYG1ccLpfkz/"), // MD5
             ("password", "$sha1$10$ab$jntRdwlglqBkw1n87bz5r/2ZrFcr"), // SHA1
             (
@@ -176,7 +177,7 @@ mod tests {
         }
     }
 
-    /// 后端报错（畸形 setting）按 deny 处理，绝不放行。
+    /// A backend error (malformed setting) counts as deny — never let through.
     #[test]
     fn test_malformed_setting_denies() {
         let verify = build_verifier("$1$").expect("verifier");

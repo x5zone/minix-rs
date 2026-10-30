@@ -25,7 +25,7 @@
 //! (directory, symlink, device, FIFO) the C program does not copy by hand at
 //! all: `copy` (`mv.c:357-399`) execs `/bin/cp -PRp` on the pair and then
 //! `/bin/rm -rf` on the source, so that leg needs the exec delivery chain
-//! (`NS5`/`C-21`) and is reported rather than faked. Two mechanical deviations
+//! and is reported rather than faked. Two mechanical deviations
 //! inside the wired legs, both invisible for a plain-file destination: C stamps
 //! owner and mode through `fchown`/`fchmod` on the open descriptor
 //! (`mv.c:328-334`) and this tree has no `f*` wrappers, so those two go by path
@@ -36,7 +36,7 @@
 //! `group_from_gid`, whose documented behaviour when the password database has
 //! no entry (`pwcache.c:296-306`) is exactly that decimal fallback, and this
 //! tree has no password lookup at all. Real-machine effect of every write-side
-//! command, this one included, is the writable-root gate (`C-57`/`E5`).
+//! command, this one included, is the writable-root gate (`E5`).
 //!
 //! The diagnostic legs go to the shared renderer (`err_line` in the `minix-types`
 //! crate; shape from `minix3/lib/libc/gen/vwarnc.c`), and C's labels come in three
@@ -201,7 +201,7 @@ fn cross_device_move(prog: &str, source: &str, target: &str, flags: &MvFlags) ->
         CrossDevice::InlineCopy => fastcopy(prog, source, target, &sb, flags),
         CrossDevice::NeedsSubprocess => {
             // mv.c:362-398: the C program execs /bin/cp -PRp and then
-            // /bin/rm -rf. No exec delivery chain here yet (NS5/C-21), so the
+            // /bin/rm -rf. No exec delivery chain here yet, so the
             // move is reported as not done. C's own lines here would name
             // `_PATH_CP`/`_PATH_RM` and the child's exit status, neither of
             // which exists in this tree, so this phrase is ours.

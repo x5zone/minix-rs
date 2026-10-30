@@ -7,8 +7,8 @@
 //! *layouts* are the producers' contracts — kernel
 //! [`minix_types::ProcInfoStruct`], PM [`minix_types::MProcSnap`] — read by
 //! name, never by hand-picked offsets. The VFS light rows are still
-//! fail-closed on the producer side (the A-7/C-21 defer), so the light view
-//! answers "idle" until that wire authority lands.
+//! fail-closed on the producer side (the deferral of that wire authority), so
+//! the light view answers "idle" until it lands.
 //!
 //! 16-mib-proc-tables.md + 17-mib-proc-lwp.md.
 
@@ -150,8 +150,8 @@ pub struct LightRow {
 }
 
 /// A view over the VFS light table. C: `fproc_tab` — proc.c:20, filled by
-/// VFS's `SI_PROCLIGHT_TAB` producer (C-22 后半已接：`FprocLightSnap`
-/// 16 B/槽)。An empty table (the A-7 degrade path when the producer is
+/// VFS's `SI_PROCLIGHT_TAB` producer (now wired through `FprocLightSnap`,
+/// 16 B per slot). An empty table (the degrade path used when the producer is
 /// dark) answers "idle" per slot.
 pub struct LightRows<'a> {
     bytes: &'a [u8],

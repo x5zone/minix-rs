@@ -7,7 +7,7 @@
 //! lines program the serial chip, pseudo slaves move bytes to the master
 //! side; this trait keeps the line policy above those details.
 //!
-//! Output byte pipeline (NL1 批B): [`LineBackend::write_bytes`] carries the
+//! Output byte pipeline: [`LineBackend::write_bytes`] carries the
 //! actual bytes from the writer's grant to the device, mirroring the C
 //! data plane where the device hook drains the parked write request
 //! (`tty_devwrite` pulling from `tp->tty_outgrant` through
@@ -63,7 +63,7 @@ pub trait LineBackend {
     /// The line was closed (last close).
     fn closed(&mut self) {}
 
-    /// The line hangs up: speed to B0 and signal the session
+    /// The line hangs up: set the speed to zero and signal the session
     /// (`sigchar(tp, SIGHUP, 1)`, `tty.c:1474`; the pty master close and
     /// `stty 0` both land here). Default: nothing — a null device has no
     /// session to signal.

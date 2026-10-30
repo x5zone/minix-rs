@@ -74,9 +74,13 @@ pub fn fold_line(line: &str, options: &FoldOptions) -> Vec<String> {
         }
         column = advance_column(column, character, options.count_bytes);
         if column > options.width {
-            // `fold.c:152-176`：回找缓冲里最后一个空格是 `-s` 独有的腿；不开 `-s` 时列位一过宽度
-            // 就把整块缓冲吐出，空格留在它落到的那一行。找到空格那一支把空格本身丢掉
-            // （`last_space++` 之后才 `wmemmove`），续行的列位由剩下的字符重算。
+            // `fold.c:152-176`: looking back for the last space in the buffer is
+            // the `-s`-only leg; without `-s`, the whole buffer is flushed as
+            // soon as the column passes the width, and the space stays on the
+            // line it landed in. The arm that finds a space drops that space
+            // itself (the `wmemmove` happens only after `last_space++`), and the
+            // continuation line's column is recomputed from the remaining
+            // characters.
             let last_space = if options.split_words {
                 buffer.iter().rposition(|&ch| ch == ' ')
             } else {
@@ -134,12 +138,14 @@ pub struct FoldArgs<'a> {
 /// `fold` argument-parsing failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FoldError {
-    /// 选项字母不在 `0-9`/`b`/`s`/`w` 里：libc `getopt` 先印一行
-    /// （`minix3/lib/libc/stdlib/getopt.c:101-104`），再由 `default: usage()` 接上那一行 usage
-    /// （`fold.c:99-101`、`:115-121`）——所以旧写法只打 usage 是把首行弄丢了。
+    /// The option letter is not in `0-9`/`b`/`s`/`w`: libc `getopt` prints one
+    /// line first (`minix3/lib/libc/stdlib/getopt.c:101-104`), and then
+    /// `default: usage()` adds the usage line (`fold.c:99-101`, `:115-121`) — so
+    /// the old form printed only usage and lost the first line.
     UnknownOption(char),
-    /// `-w` 后面什么都没有（本 token 没有剩余、下一词也没有）：同一族的另一句
-    /// （`getopt.c:132-136`），也接 usage。旧写法把它当成「非法字母」同句报出。
+    /// Nothing follows `-w` (no remainder in this token and no next word): the
+    /// other sentence of the same family (`getopt.c:132-136`), which also adds
+    /// usage. The old form reported it as the "unknown letter" sentence.
     MissingValue(char),
     /// A `-w`/legacy width that is not a positive integer (C `atoi <= 0` →
     /// `errx(1, "illegal width value")`, `fold.c:84-86`).
@@ -151,11 +157,12 @@ pub enum FoldError {
 /// `-s` cluster in one token (`-bs`, `-bw10`), `-w` takes a value attached
 /// (`-w80`) or as the following argument (`-w 80`), a leading all-digit token is
 /// the obsolete `-N` width form (`fold.c:91-98`), `--` ends option scanning, a
-/// lone `-` is an operand, and any other letter is [`FoldError::UnknownOption`]（带值选项
-/// 缺值则走 [`FoldError::MissingValue`]）。A width that is not a positive integer is
-/// [`FoldError::IllegalWidth`] — the old front door warned and *kept* the default instead of
-/// rejecting, diverging from C's `errx`. The old bin matched only the whole tokens
-/// `-b`/`-s`/`-w`, so the C-legal attached form `fold -w80 file` fell through to a usage error.
+/// lone `-` is an operand, and any other letter is [`FoldError::UnknownOption`]
+/// (a value-taking option with no value goes to [`FoldError::MissingValue`]). A
+/// width that is not a positive integer is [`FoldError::IllegalWidth`] — the old
+/// front door warned and *kept* the default instead of rejecting, diverging from
+/// C's `errx`. The old bin matched only the whole tokens `-b`/`-s`/`-w`, so the
+/// C-legal attached form `fold -w80 file` fell through to a usage error.
 pub fn parse_fold_args<'a>(args: &[&'a [u8]]) -> Result<FoldArgs<'a>, FoldError> {
     let mut options = FoldOptions::new(80);
     let mut operands: Vec<&'a [u8]> = Vec::new();
@@ -198,11 +205,15 @@ pub fn parse_fold_args<'a>(args: &[&'a [u8]]) -> Result<FoldArgs<'a>, FoldError>
                         options.width = parse_width(spec)?;
                         pos = bytes.len();
                     }
-                    // 聚簇里出现数字：C 的选项串把 `0-9` 列为合法字母（遗留的 `-N` 宽度形），
-                    // 所以它**不**报 unknown option；但 C 在那个 case 里取的是
-                    // `argv[optind - 1]`（`fold.c:91-98`），结果取决于 getopt 内部的 optind 位置，
-                    // 没参照件无法取证。本壳按与 `-N` 同一语义的读法处理：从该位置起的数字串作宽度。
-                    // 这一形已作为**声明差**登记在 18 篇台账。
+                    // A digit inside a cluster: C's optstring lists `0-9` as
+                    // legal letters (the legacy `-N` width form), so it does
+                    // **not** report an unknown option; but C's case takes
+                    // `argv[optind - 1]` there (`fold.c:91-98`), and the result
+                    // depends on optind's internal position, which cannot be
+                    // pinned without the reference binary. This shell reads it
+                    // with the same semantics as `-N`: the digit run from that
+                    // position is the width. This shape is registered as a
+                    // **declared difference** in the stage ledger.
                     digit if digit.is_ascii_digit() => {
                         options.width = parse_width(&arg[pos..])?;
                         pos = bytes.len();
@@ -221,7 +232,8 @@ pub fn parse_fold_args<'a>(args: &[&'a [u8]]) -> Result<FoldArgs<'a>, FoldError>
 /// A width is a positive integer; `0`, a non-integer, or overflow is rejected
 /// exactly as C's `atoi(optarg) <= 0` guard (`fold.c:84-86`).
 fn parse_width(spec: &[u8]) -> Result<usize, FoldError> {
-    // C 的 `atoi`：一串十进制数字、空串与非数字都归 0，随后 `<= 0` 报 `illegal width value`。
+    // C's `atoi`: a run of decimal digits; the empty string and non-digits all
+    // count as 0, after which `<= 0` reports `illegal width value`.
     if spec.is_empty() || !spec.iter().all(u8::is_ascii_digit) {
         return Err(FoldError::IllegalWidth);
     }
@@ -242,7 +254,8 @@ mod tests {
     use super::*;
     use crate::GetoptReport;
 
-    /// 字节形入口的测试适配器：夹具仍写文本，只在进解析口前折一次。
+    /// Test adapter for the byte-form entry point: fixtures stay textual and
+    /// fold once before entering the parser.
     fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
         list.iter().map(|word| word.as_bytes()).collect()
     }
@@ -255,8 +268,10 @@ mod tests {
 
     #[test]
     fn test_break_after_the_last_space() {
-        // 参照件 `tmp/fold-405/fold_ref -s -w 10` 现量：`one two` / `three four`。
-        // 空格被丢掉（C 把 `last_space` 加一之后才回移缓冲），所以续行不带前导空格。
+        // Measured against the reference binary
+        // `tmp/fold-405/fold_ref -s -w 10`: `one two` / `three four`. The space
+        // is dropped (C increments `last_space` before moving the buffer back),
+        // so the continuation line carries no leading space.
         let options = FoldOptions {
             width: 10,
             split_words: true,
@@ -270,8 +285,10 @@ mod tests {
 
     #[test]
     fn without_split_words_the_break_is_a_hard_one_and_spaces_stay() {
-        // 同一串输入不开 `-s`：`fold.c:152-176` 不回找空格，列位一过宽度就整块吐出，
-        // 空格留在它填到的那一行末尾——参照件现量 `one two th` / `ree four`。
+        // The same input without `-s`: `fold.c:152-176` does not look back for
+        // a space, and the whole buffer is flushed as soon as the column passes
+        // the width, so the space stays at the end of the line it filled — the
+        // reference binary measures `one two th` / `ree four`.
         let options = FoldOptions::new(10);
         assert_eq!(
             fold_input("one two three four\n", &options),
@@ -281,9 +298,11 @@ mod tests {
 
     #[test]
     fn split_words_drops_the_space_and_carries_the_rest_as_the_next_line() {
-        // `-s -w 4` 对 `abcdefghij klmnop`（参照件现量同此六行）：空格被丢，
-        // 剩下的字符留在缓冲里当下一行的开头，列位从它们重算——`ij` 之后是
-        // `klmn`，不是带前导空格的 ` klmn`，也不是多一行空行。
+        // `-s -w 4` on `abcdefghij klmnop` (the reference binary measures the
+        // same six lines): the space is dropped and the remaining characters
+        // stay in the buffer as the start of the next line, with the column
+        // recomputed from them — `ij` is followed by `klmn`, not by ` klmn` with
+        // a leading space, and not by an extra empty line.
         let options = FoldOptions {
             width: 4,
             split_words: true,
@@ -400,7 +419,8 @@ mod tests {
             parse_fold_args(&argv_of(&["-w"])),
             Err(FoldError::MissingValue('w'))
         );
-        // 聚簇里的数字不被当集外字母（C 的选项串包含 `0-9`）。
+        // A digit inside a cluster is not treated as an unknown letter (C's
+        // optstring includes `0-9`).
         assert_eq!(
             parse_fold_args(&argv_of(&["-b9"])).map(|a| (a.options.count_bytes, a.options.width)),
             Ok((true, 9))
@@ -429,8 +449,9 @@ mod tests {
 
     #[test]
     fn parse_fold_args_names_a_raw_ff_option_letter_as_one_byte() {
-        // 取法取一枚字节（`bytes[pos] as char`），渲染口 `line_bytes` 把它原样写回：
-        // 这一对合起来才让字母位只有一枚 `ff`。
+        // Extraction takes one byte (`bytes[pos] as char`) and the rendering
+        // door `line_bytes` writes it back verbatim: only the pair together
+        // leaves a single `ff` in the letter slot.
         assert_eq!(
             parse_fold_args(&[&b"-\xff"[..]]),
             Err(FoldError::UnknownOption('\u{ff}'))

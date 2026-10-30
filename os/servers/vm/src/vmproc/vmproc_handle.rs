@@ -179,7 +179,7 @@ impl<'a> ActiveProc<'a> {
     ///
     /// # Safety
     /// Caller must ensure this process's page table is no longer in use by hardware.
-    #[cfg_attr(not(test), allow(dead_code))] // test-only (V11/T35 judgment: kept as the clear-path primitive)
+    #[cfg_attr(not(test), allow(dead_code))] // test-only (kept as the clear-path primitive)
     pub(crate) unsafe fn force_clear(self) -> EmptySlot<'a> {
         // SAFETY: Caller guarantees this process's page table is no longer in use
         // by hardware. Single-threaded VM ensures no concurrent access.
@@ -198,13 +198,13 @@ impl<'a> ActiveProc<'a> {
     }
 
     #[inline]
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessor
+    #[cfg_attr(not(test), allow(dead_code))] // test-only accessor
     pub(crate) fn flags(&self) -> VmFlags {
         self.inner.vm_flags
     }
 
     #[inline]
-    #[allow(dead_code)] // V10-P2-1: no callers (VmProc::is_vm_instance is test-only too)
+    #[allow(dead_code)] // no callers (VmProc::is_vm_instance is test-only too)
     pub(crate) fn is_vm_instance(&self) -> bool {
         self.inner.is_vm_instance()
     }
@@ -235,7 +235,7 @@ impl<'a> ActiveProc<'a> {
     }
 
     #[inline]
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessor
+    #[cfg_attr(not(test), allow(dead_code))] // test-only accessor
     pub(crate) fn acl(&self) -> crate::acl::AclState {
         self.inner.vm_acl
     }
@@ -256,7 +256,7 @@ impl<'a> ActiveProc<'a> {
     }
 
     #[inline]
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only (query/table tests)
+    #[cfg_attr(not(test), allow(dead_code))] // test-only (query/table tests)
     pub(crate) fn set_total_max(&mut self, value: VirBytes) {
         self.inner.vm_total_max = value;
     }
@@ -296,13 +296,13 @@ impl<'a> ActiveProc<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)] // V10-P2-1: no callers yet (brk keeps totals via add/sub)
+    #[allow(dead_code)] // no callers yet (brk keeps totals via add/sub)
     pub(crate) fn set_total(&mut self, value: VirBytes) {
         self.inner.vm_total = value;
     }
 
     #[inline]
-    // V11/T31: producer = `dispatch_pagefault` (minor: fresh page / CoW /
+    // producer = `dispatch_pagefault` (minor: fresh page / CoW /
     // in-place handled; major: VFS-I/O-backed fault, counted at enqueue).
     pub(crate) fn inc_minor_fault(&mut self) {
         self.inner.vm_minor_page_fault += 1;
@@ -347,8 +347,8 @@ impl<'a> ActiveProc<'a> {
     ///
     /// Corresponds to Minix3's `pt_new()` which calls `pt_mapkernel()`.
     pub(crate) fn init_page_table(&mut self) -> Result<(), minix_arch::paging::PageTableError> {
-        // In test builds, construct a fresh software page table (V11/T21
-        // SimPaging): no pt_alloc or VM direct-map window exists in host
+        // In test builds, construct a fresh software page table (simulated
+        // paging): no pt_alloc or VM direct-map window exists in host
         // unit tests, so the simulated table stands in for the arch one.
         // It is a valid, usable `Paging` implementor — handlers may map/
         // unmap through it in tests.
@@ -391,18 +391,18 @@ impl<'a> ActiveProc<'a> {
                 layout.kernel_data_pages,
                 layout.dm_vbase,
                 layout.dm_pages,
-                // fix27 (handoff v6): kernel runtime identity windows —
+                // kernel runtime identity windows —
                 // under the UEFI link-in execution model the kernel's
                 // live code/GDT/IDT/TSS are at these low PAs; without
                 // them this table triple-faults on the first CR3 switch.
                 layout.ident_regions(),
             )?;
 
-            // D-72: every new root maps the kernel-information page read-only
+            // Every new root maps the kernel-information page read-only
             // at its fixed user VA. VM owns this mapping and its intermediate
             // page-table pages; the frame itself remains kernel-owned.
             // 0 = staged QEMU test kernel without Phase B.5: skip the mapping
-            // (the pre-D-72 test shape).
+            // (the shape from before that mapping existed).
             let ki_pa = crate::global::kerninfo_pa();
             if ki_pa != 0 {
                 pt.map(
@@ -472,8 +472,8 @@ impl<'a> ActiveProc<'a> {
     /// `regions_mut()` and `page_table_mut()` both take `&mut self`, so the
     /// fault path cannot use them in sequence; this accessor splits the two
     /// distinct `VmProc` fields instead (same destructuring discipline as
-    /// `VmContext`). C 对应: `handle_memory` 直接持有 `vmp->vm_regions`
-    /// 与 `vmp->vm_pt`（G-V12-8：缺页路径必须由 VM 自己写 PTE）。
+    /// `VmContext`).  C counterpart: `handle_memory` holds `vmp->vm_regions` and
+    /// `vmp->vm_pt` at once (the page-fault path must write PTEs itself, in VM).
     ///
     /// # Panics
     /// Panics in debug mode if vm_regions/vm_pt have not been initialized.
@@ -510,7 +510,7 @@ impl<'a> ActiveProc<'a> {
         unsafe { self.inner.vm_regions.assume_init_mut() }
     }
 
-    #[allow(dead_code)] // V10-P2-1: no callers (region counts go via regions().len())
+    #[allow(dead_code)] // no callers (region counts go via regions().len())
     pub(crate) fn region_count(&self) -> usize {
         self.regions().len()
     }
@@ -557,7 +557,7 @@ impl<'a> ActiveProc<'a> {
                     let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
                     let paddr = frames.pfn_to_phys(pfn);
 
-                    // V12-P1-2: full C `pr_writable` (region.c:130-133) —
+                    // Full C `pr_writable` (region.c:130-133) —
                     // VR_WRITABLE && mem_type->writable. The former inline
                     // `is_writable() && refcount == 1` ignored the memtype
                     // and mapped never-writable pages (MappedFile) RW.
@@ -568,10 +568,12 @@ impl<'a> ActiveProc<'a> {
                     } else {
                         PageFlags::read_only()
                     };
-                    // B41 (§1.74/§1.75)：fork eager-PTE 腿与缺页腿
-                    // （`sync_slot_pte`）同缺口——须按 region 承接的 PROT_EXEC
-                    // 置 EXECUTABLE，否则子进程可执行段在本腿落地时丢可执行位
-                    // →取指恒 #PF。与缺页腿保持同一派生规则。
+                    // The fork eager-PTE leg has the same gap as the page-fault
+                    // leg (`sync_slot_pte`): a region's PROT_EXEC must become
+                    // EXECUTABLE, otherwise the child's executable segment loses
+                    // its execute bit when this leg installs it and instruction
+                    // fetch faults forever.  Keep the same derivation rule as the
+                    // page-fault leg.
                     if region.is_executable() {
                         flags |= PageFlags::EXECUTABLE;
                     }
@@ -600,20 +602,20 @@ impl<'a> ActiveProc<'a> {
     /// minix-rs' `do_fork` historically only ran `write_page_table_mappings`
     /// on the child (`dst`), never the parent half — so the parent kept
     /// writable PTEs straight into the shared frames and its post-fork writes
-    /// silently corrupted the child's view (B48: the `sh` child read a
-    /// heap buffer the parent had already recycled). This method is the
+    /// silently corrupted the child's view (a `sh` child read a heap buffer the
+    /// parent had already recycled). This method is the
     /// missing `map_writept(src)`.
     ///
     /// Unlike `write_page_table_mappings` (which builds a fresh table via
     /// `map`), the parent's entries are already present; C `map_writept` clears
     /// only the write bit, so this reuses each live PTE's own flags and drops
     /// `WRITABLE` — never rebuilding NX/USER/exec bits from region metadata
-    /// (avoids the B41-class coupling where a flag-derivation drift would flip
+    /// (avoids the class of coupling where a flag-derivation drift would flip
     /// a parent text page to NX). Entries that were never mapped in
     /// (demand-zero slots) and entries whose frame drifted from the slot are
     /// left untouched; the page-fault path reconciles the latter.
     ///
-    /// Scope note (B48 follow-up): the `remaps > 0` (shared-memory) shortcut in
+    /// Scope note: the `remaps > 0` (shared-memory) shortcut in
     /// `is_page_writable` keeps those pages writable here, which matches C for
     /// the *parent* (a shm source stays writable). The child-side divergence is
     /// in `fork_region` (`dst.remaps = src.remaps`, where C `region_new` uses
@@ -682,7 +684,7 @@ impl<'a> ActiveProc<'a> {
     ///
     /// Returns `Err(VmError::InvalidParam)` if the region overlaps an existing region.
     /// Corresponds to Minix3's region insertion in `vm_fork()` / `do_mmap()`.
-    #[allow(dead_code)] // V10-P2-1: dispatcher inserts via regions_mut() instead
+    #[allow(dead_code)] // dispatcher inserts via regions_mut() instead
     pub(crate) fn add_region(&mut self, start: VirBytes, len: VirBytes) -> Result<(), VmError> {
         use crate::region::{VirRegion, VrFlags};
         let end = VirBytes(start.0 + len.0);
@@ -706,7 +708,7 @@ impl<'a> ActiveProc<'a> {
     /// Corresponds to Minix3's region removal in `do_munmap()` / `vm_exit()`,
     /// where `pt_writemap(vaddr, MAP_NONE, ...)` is called before removing
     /// the region from the AVL tree.
-    #[allow(dead_code)] // V10-P2-1: munmap/exit remove via regions_mut() instead
+    #[allow(dead_code)] // munmap/exit remove via regions_mut() instead
     pub(crate) fn remove_region(&mut self, start: VirBytes) -> Result<(), VmError> {
         // Find the region first to get its length for page table unmap.
         let region_len = self.regions()
@@ -722,7 +724,9 @@ impl<'a> ActiveProc<'a> {
             // Ignore unmap errors — the page may not be mapped (e.g., never
             // had physical backing), which is safe. C code also silently
             // ignores unmapped pages in pt_writemap with MAP_NONE.
-            //[SD19-gate] 与 C `pt_writemap` MAP_NONE 同构：页面可能本就没映射，unmap 失败属预期，drop 路径不回传
+            // [SD19-gate] Same shape as C `pt_writemap` MAP_NONE: the page may not
+            // have been mapped at all, so a failing unmap is expected and the drop
+            // path reports nothing back
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.page_table_mut().unmap_range(start, num_pages);
         }
@@ -742,7 +746,7 @@ impl<'a> ActiveProc<'a> {
 /// Process is in use and exiting. Can only be reaped (cleaned up)
 /// to return the slot to empty state.
 ///
-/// V12-P2-4: the four read accessors (`slot`/`endpoint`/`flags`/`regions`)
+/// The four read accessors (`slot`/`endpoint`/`flags`/`regions`)
 /// were deleted — the exit path's entire need is `regions_mut()` (page
 /// release) plus `reap()`; nothing ever read the identity fields.
 /// Re-add on first use, not speculatively.
@@ -1006,7 +1010,7 @@ mod tests {
         assert_eq!(empty.slot(), slot);
     }
 
-    // ── swap_slots (C utility.c:188-216, table-level, V11/T13) ──
+    // ---- swap_slots (C utility.c:188-216, table-level) ----
     //
     // `VmProcTable::swap_slots` exchanges the contents of two VmProc slots
     // while endpoints stay with their slots. This test verifies:

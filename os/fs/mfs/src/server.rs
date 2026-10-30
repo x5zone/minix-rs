@@ -260,7 +260,7 @@ impl<S: BlockSource> MfsServer<S> {
             old_size,
             parts.block_size,
         )?;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] after the main operation has succeeded, write the inode back best effort; the C counterpart in minix3/minix/fs/mfs, put_inode, returns void and reports no error (a failure does not change an already-established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
         Ok((blocks, old_size))
@@ -317,7 +317,7 @@ impl<S: BlockSource> MfsServer<S> {
             &*blocks,
             parts.block_size,
         );
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] after the main operation has succeeded, write the inode back best effort; the C counterpart in minix3/minix/fs/mfs, put_inode, returns void and reports no error (a failure does not change an already-established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
         result
@@ -355,7 +355,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
     fn unmounted(&mut self) {
         if let Some(fs) = self.fs.take() {
             let result = crate::mount::unmount(fs, &mut |fs: &mut MountedFs<S>| {
-                // [SD19-gate] 尽力而为收尾同步挂载；失败不改变已成立主结果
+                // [SD19-gate] best-effort finish: synchronize the mount; a failure does not change an established main result
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = Self::sync_mounted(fs);
             });
@@ -446,10 +446,11 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
     }
 
     fn peek(&mut self, inode: u64, position: i64, length: usize) -> Result<usize, Errno> {
-        // C 的 peek 入口就是读写路径本身（`table.c:20`
-        // `.fdr_peek = fs_readwrite`）：FSC_PEEK 分支按普通读走块、暖
-        // 缓存，只是不向调用方拷贝数据（`read.c:156-159`）。这里的实现
-        // 同理：读一遍、字节丢弃，返回字节数（不报新位置）。
+        // C's peek entry is the read/write path itself (`table.c:20`
+        // `.fdr_peek = fs_readwrite`): the FSC_PEEK branch reads through blocks and
+        // warms the cache like an ordinary read, it just does not copy data to the
+        // caller (`read.c:156-159`). The implementation here is the same: read once,
+        // drop the bytes, return the byte count (no new position is reported).
         let mut sink = |bytes: &[u8]| {
             let _ = bytes;
         };
@@ -558,7 +559,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                         }
                     }
                     parts.cache.mark_dirty(cache_slot);
-                    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+                    // [SD19-gate] best-effort release of the read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = parts.cache.release(cache_slot);
                 }
@@ -646,7 +647,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             name.as_bytes(),
             &mut found,
         );
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] after the main operation has succeeded, write the inode back best effort; the C counterpart in minix3/minix/fs/mfs, put_inode, returns void and reports no error (a failure does not change an already-established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
         search.map_err(|error: DirError| error.to_errno())?;
@@ -655,12 +656,13 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             .get(parts.cache, parts.device, found as u64, &parts.io)
             .map_err(|_| Errno::from_i32(ENOENT))?;
         let child = parts.inodes.slot(child_slot);
-        // C `fs_lookup`（path.c:37）把 `fn_dev = (dev_t) rip->i_zone[0]` 无条件
-        // 带出——设备号对块/字符特殊文件存在 inode 首 zone（`create_device` →
-        // `new_node` 把 dev 钉进 `zones[0]`），普通文件的 `i_zone[0]` 只是首数据
-        // 块、VFS 不会拿它当设备号路由，所以 C 注释说"always set 也无害"。先前
-        // 这里硬编码 0，使 `/dev/console` 的 `v_sdev` 退化成 major 0 →
-        // `cdev_get` 在 dmap 里找不到驱动 → `open` 回 ENXIO。
+        // C `fs_lookup` (path.c:37) unconditionally returns `fn_dev = (dev_t) rip->i_zone[0]`
+        // — for block/char special files the device number lives in the inode's first
+        // zone (`create_device` → `new_node` pins dev into `zones[0]`), while for regular
+        // files `i_zone[0]` is just the first data block and VFS never routes on it, which
+        // is why C's comment says "always set does no harm". Previously this was
+        // hardcoded to 0, degrading `/dev/console`'s `v_sdev` to major 0 → `cdev_get`
+        // found no driver in dmap → `open` returned ENXIO.
         let node = FileNode::new(
             child.number,
             child.mode as u32,
@@ -815,7 +817,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 &child_blocks,
                 parts.block_size,
             );
-            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            // [SD19-gate] after the main operation has succeeded, write the inode back best effort; the C counterpart in minix3/minix/fs/mfs, put_inode, returns void and reports no error (a failure does not change an already-established result)
             #[allow(clippy::let_underscore_must_use)]
             let _ = parts.inodes.put(parts.cache, child_slot, &parts.io);
             stored?;
@@ -894,7 +896,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 &mut found,
             )
             .map_err(|error| error.to_errno())?;
-            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            // [SD19-gate] after the main operation has succeeded, write the inode back best effort; the C counterpart in minix3/minix/fs/mfs, put_inode, returns void and reports no error (a failure does not change an already-established result)
             #[allow(clippy::let_underscore_must_use)]
             let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
         }
@@ -917,7 +919,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 size,
                 parts.block_size,
             )?;
-            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            // [SD19-gate] after the main operation has succeeded, write the inode back best effort; the C counterpart in minix3/minix/fs/mfs, put_inode, returns void and reports no error (a failure does not change an already-established result)
             #[allow(clippy::let_underscore_must_use)]
             let _ = parts.inodes.put(parts.cache, child_slot, &parts.io);
             (zones, size, images)
@@ -959,8 +961,9 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         let (mut old_blocks, old_size) = Self::load_parent(fs, old_directory)?;
         let same_dir = old_directory == new_directory;
         if same_dir {
-            // 同目录:引擎探新名/落新名都走旧镜像(C new_dirp == old_dirp),
-            // 新映像参数空置(引擎自测同款)。
+            // Same directory: the engine probes the new name and stores the new name in
+            // the old image (C new_dirp == old_dirp), and the new-image argument is empty
+            // (as in the engine's own test).
             let mut scratch = Vec::new();
             let outcome = {
                 let parts = fs.parts();
@@ -989,7 +992,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             Self::reclaim_zones(fs, &outcome.reclaimed);
             return Ok(());
         }
-        // 跨目录:新旧父各自装载(顺序拿可变借用,装载完即释放)。
+        // Cross-directory: the old and new parents are loaded separately (mutable borrows taken in sequence and released once loaded).
         let (mut new_blocks, new_size) = Self::load_parent(fs, new_directory)?;
         let outcome = {
             let parts = fs.parts();
@@ -1210,7 +1213,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
     ) -> Result<usize, Errno> {
         let fs = self.mounted()?;
         let parts = fs.parts();
-        // 暂存缓冲按分区大小钳制，避免越界长度造成巨大分配。
+        // The staging buffer is clamped to the partition size, so an out-of-range length cannot cause a huge allocation.
         let partition = parts
             .superblock
             .zones
@@ -1287,7 +1290,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
 
     fn synchronized(&mut self) {
         if let Some(fs) = self.fs.as_mut() {
-            // [SD19-gate] 尽力而为收尾同步挂载；失败不改变已成立主结果
+            // [SD19-gate] best-effort finish: synchronize the mount; a finishing failure does not change the established main result
             #[allow(clippy::let_underscore_must_use)]
             let _ = Self::sync_mounted(fs);
         }
@@ -1295,7 +1298,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
 
     fn flushed(&mut self, device: u64) {
         if let Some(fs) = self.fs.as_mut() {
-            // [SD19-gate] 尽力而为刷设备缓存；收尾失败不改变主结果
+            // [SD19-gate] best-effort flush of the device cache; a finishing failure does not change the main result
             #[allow(clippy::let_underscore_must_use)]
             let _ = fs.cache_mut().flush_device(device);
             fs.cache_mut().invalidate_device(device);
@@ -1622,7 +1625,7 @@ mod tests {
             .unwrap();
         server.create(1, "a", 0o100644, 0, 0).unwrap();
         server.write(2, 0, b"xyz").unwrap();
-        // Peek 只报字节数：读路径暖缓存，不做拷贝，也没有新位置。
+        // Peek reports only the byte count: the read path warms the cache without copying, and there is no new position.
         let got = server.peek(2, 0, 16).unwrap();
         assert_eq!(got, 3);
     }
@@ -1638,9 +1641,9 @@ mod tests {
         let _ = seen;
     }
 
-    // ---- B13: integration test using real proto-seeded imgrd image ----
+    // ---- Integration test using a real proto-seeded imgrd image ----
 
-    /// A minimal ProtoHost for the B13 integration test.
+    /// A minimal ProtoHost for the seeded-image integration test.
     struct SeedHost {
         files: Vec<(&'static str, &'static [u8], i32)>,
     }
@@ -1665,7 +1668,7 @@ mod tests {
         }
     }
 
-    /// B13: verify that `resolve_path` (full VFS→MFS lookup chain) works on
+    /// Verify that `resolve_path` (full VFS→MFS lookup chain) works on
     /// a real proto-seeded image. Tests the exact flow triggered by
     /// `stat("/dev/console")`: LookupInput{start=1, path="/dev/console"}.
     #[test]
@@ -1742,12 +1745,13 @@ mod tests {
                     "console should be char device, got mode {:o}",
                     node.mode
                 );
-                // 回归锁定（§1.99）：字符设备节点的 `fn_dev` 必须是存在 inode
-                // 首 zone 的特殊设备号——proto `console c--600 0 0 4 0` → major 4
-                // minor 0 → `(4 << 8) | 0` = 0x400（`mkfs.rs`）。C `fs_lookup`
-                // path.c:37 无条件带出 `i_zone[0]`；先前 `lookup_child` 硬编码
-                // device=0 使 VFS `cdev_get` 按 major 0 找不到 TTY 驱动 →
-                // `open("/dev/console")` 回 ENXIO。这里必须见到 0x400。
+                // Regression lock (§1.99): the `fn_dev` of a char device node must be the
+                // special device number held in the inode's first zone — proto
+                // `console c--600 0 0 4 0` → major 4 minor 0 → `(4 << 8) | 0` = 0x400
+                // (`mkfs.rs`). C `fs_lookup` path.c:37 returns `i_zone[0]` unconditionally;
+                // previously `lookup_child` hardcoded device=0, so VFS `cdev_get` found no
+                // TTY driver for major 0 → `open("/dev/console")` returned ENXIO. Here
+                // 0x400 must be seen.
                 assert_eq!(
                     node.device, 0x400,
                     "console special dev should be major<<8|minor = 0x400"

@@ -1,7 +1,7 @@
 //! Feature-gated audit sink for the VM server.
 //!
 //! `vm_acl_audit` builds the audit call sites into non-test `no_std`
-//! builds. Routing (V11/T15): `emit` forwards the formatted record to the
+//! builds. Routing: `emit` forwards the formatted record to the
 //! registered [`KernelGateway`] via `SYS_DIAGCTL` code 1 (`diag_write`) —
 //! the kernel data_copy's up to 128 bytes per call (DIAGBUFSIZE,
 //! kernel/src/syscall.rs:2281+) and writes them to the early console.
@@ -33,7 +33,7 @@ type GatewayHandle = Rc<RefCell<Box<dyn KernelGateway>>>;
 static AUDIT_SINK: minix_types::AssumeSyncCell<Option<GatewayHandle>> =
     minix_types::AssumeSyncCell::new(None);
 
-/// Register the audit gateway sink (V11/T15). Called from
+/// Register the audit gateway sink. Called from
 /// `VmServer::new`; mirrors the `register_page_alloc` construction
 /// pattern in global.rs. `AssumeSyncCell` (not `RefCell`) because
 /// statics require `Sync`: single-threaded VM (lib.rs) makes unsynchronized
@@ -50,7 +50,7 @@ pub(crate) fn register_gateway(gw: GatewayHandle) {
     }
 }
 
-/// Clear the sink (V11/T15). Called from `VmServer::drop` so a subsequent
+/// Clear the sink. Called from `VmServer::drop` so a subsequent
 /// server (the next unit test) registers its own without interference.
 ///
 /// SAFETY: see `register_gateway`.
@@ -90,7 +90,7 @@ pub(crate) fn emit_to_gateway(gw: &GatewayHandle, args: core::fmt::Arguments<'_>
         // (header contract: audit loss is never fatal); a panic here would
         // take down the VM event loop instead.
         if let Ok(mut gateway) = gw.try_borrow_mut() {
-            //[SD19-gate] 头部契约“audit 丢失从不致命”：diag_write 失败宁可丢一条记录，不可 panic 拿掉 VM 事件环
+            //[SD19-gate] header contract "audit loss is never fatal": when diag_write fails, dropping one record beats panicking and taking down the VM event loop
             #[allow(clippy::let_underscore_must_use)]
             let _ = gateway.diag_write(chunk);
         }

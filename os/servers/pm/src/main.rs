@@ -1,25 +1,27 @@
-//! Minix-RS PM 入口。
+//! Minix-RS PM entry point.
 //!
-//! C 对应: `minix3/minix/servers/pm/main.c:49`（main）——启动链细节见
-//! 01-pm-init-main.md，主循环分发见 04-ipc-dispatch.md。
+//! C counterpart: `minix3/minix/servers/pm/main.c:49` (main) — boot-chain
+//! details are in 01-pm-init-main.md, main-loop dispatch in 04-ipc-dispatch.md.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
-// 无须也不应再调。
+// The freestanding side holds a link reference to minix-rt: the bin code itself
+// touches no symbol from rt, and an unreferenced rlib is dropped wholesale,
+// taking `_start`, `#[panic_handler]` and `#[global_allocator]` with it (the
+// `extern crate` retention semantics of panic-halt).  The birth chain's `_start`
+// has already completed rt initialization before main (`lib.rs:86` init
+// contract: in no_std mode `_start` calls it automatically and idempotently), so
+// it must not and need not be called again here.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
 use minix_pm::init::{BootParams, PmServer};
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
-// E0277（docker minix-ci:1.94 实测）。
+// The entry point is split by target: the none side satisfies the crt0 Consumer
+// contract (name + Rust ABI + `-> i32`, os/libs/minix-rt/src/crt0.rs:40); the
+// host/test side stays `()` — since rustc 1.94 nothing implements Termination
+// for i32, so an i32 main on the host is E0277 (observed with docker
+// minix-ci:1.94).
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
@@ -32,31 +34,36 @@ fn main() {
 }
 
 fn real_main() -> ! {
-    // C: main.c:49-56 — main() → sef_local_startup() → sef_startup()
-    // → 阻塞等 RS 的 RS_INIT（sef.c:127-141）→ sef_cb_init_fresh
-    //（main.c:130-243，内含与 VFS 的 VFS_PM_INIT 同步 main.c:220-236）
-    // → process_init 尾部回 RS_INIT+result（sef_init.c:113-117）。
-    // 本树把 fresh 体放在构造后的 server.init()；出生请求的接收与
-    // 应答由 run() 循环内的出生臂（E-BIRTHFACE，NS1）承接。
+    // C: main.c:49-56 — main() -> sef_local_startup() -> sef_startup()
+    // -> block waiting for RS's RS_INIT (sef.c:127-141) -> sef_cb_init_fresh
+    // (main.c:130-243, which includes the VFS_PM_INIT handshake with VFS at
+    // main.c:220-236) -> process_init's tail replying RS_INIT+result
+    // (sef_init.c:113-117).
+    // This tree puts the fresh body in server.init() after construction; receipt
+    // of and reply to the birth request are handled by the birth arm inside the
+    // run() loop.
     //
-    // 真实启动获取（D-02 消费半 / S42 ②）：C main.c:167-176/238 的
-    // sys_getmonparams + sys_getimage + sys_hz。任一失败即停车——
-    // C 对应 panic（"get monitor params failed"/"couldn't get image
-    // table"），半真数据不得进启动契约。
+    // Real boot acquisition: the sys_getmonparams + sys_getimage + sys_hz calls
+    // at C main.c:167-176/238.  Any failure halts — the C counterpart is a panic
+    // ("get monitor params failed"/"couldn't get image table"), and half-true
+    // data must never enter the boot contract.
     let params = BootParams::acquire_from(&minix_sys::syscall::DirectKernelCallTransport)
         .unwrap_or_else(|e| panic!("PM boot: kernel getinfo failed: errno {e}"));
 
     let mut server = PmServer::new(params);
 
-    // C: sef_cb_init_fresh — main.c:130-243。
+    // C: sef_cb_init_fresh — main.c:130-243.
     server.init();
 
-    // SD-11 U-5 迁移（第六台）：PM 是进程表/fork/exec 工作集的服务（src/ 内
-    // 82 处 Vec/Box，链接 alloc-global）。把全局堆供给从焊死固定池切到 VM_BRK
-    // 增长堆。安装点在 init()（fresh 体已建表，仍在固定池）之后、`run()` 主
-    // 循环之前——此刻 VM（boot 序第 2 位，早于 PM 第 3 位）主循环已在收请求，
-    // `install_vm_supplier` 内的 VM_BRK 直连有应答；EINVAL fail-fast；与
-    // DS(T3)/SCHED(T3b)/MIB/VFS/PFS 同法，整块 #[cfg(target_os="none")] 不影响宿主测。
+    // Migration of the global heap supply from a welded fixed pool to a growing
+    // VM_BRK heap: PM is the service with the largest process-table/fork/exec
+    // working set (82 Vec/Box sites inside src/, linked with alloc-global).  The
+    // install point is after init() (the fresh body has built its tables, still
+    // on the fixed pool) and before the `run()` main loop — by then VM (second in
+    // boot order, ahead of PM in third) already has its main loop receiving
+    // requests, so the direct VM_BRK inside `install_vm_supplier` gets an answer;
+    // EINVAL fails fast.  Same scheme as DS/SCHED/MIB/VFS/PFS, and the whole
+    // block sits behind #[cfg(target_os="none")] so host tests are unaffected.
     #[cfg(target_os = "none")]
     minix_rt::install_vm_supplier(minix_rt::image_end())
         .expect("pm: install_vm_supplier(镜像尾) 不得失败");
@@ -67,14 +74,15 @@ fn real_main() -> ! {
         assert!(!probe.is_null(), "pm: vm-brk probe 分配失败");
         minix_rt::free(probe);
         use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-        #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+        #[allow(clippy::let_underscore_must_use)] // [SD19-gate] park is the fallback when the report channel itself is broken (panic.c:66)
         let _ = sys_diagctl_write(
             &DirectKernelCallTransport,
             "nk4a: pm-vmbrk probe ok pages=1 via=VM_BRK\n",
         );
     }
 
-    // C: main.c:59-110 — 主循环（分发细节归 04）。run() 发散
-    //（init.rs:398 `-> !`），尾表达式即 real_main 的函数尾。
+    // C: main.c:59-110 — the main loop (dispatch details belong to 04).  run()
+    // diverges (init.rs:398 `-> !`), so the tail expression is real_main's
+    // function tail.
     server.run()
 }

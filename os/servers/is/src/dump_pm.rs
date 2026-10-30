@@ -112,7 +112,7 @@ pub const fn alarm_left(alarm_on: bool, exp: u32, uptime: u32) -> Option<u32> {
 /// C: `ALARM_ON 0x10` — mproc.h:89 (sigaction alarm gate, dmp_pm.c:100).
 pub const ALARM_ON: u32 = 0x10;
 
-// ── render (V1-P1-3 execution face) ───────────────────────────────
+// ── render (execution face) ───────────────────────────────────────
 
 use crate::PCStr;
 use core::fmt;

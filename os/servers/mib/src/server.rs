@@ -159,8 +159,9 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
         // (main.c:449-454) is a different path: it only catches
         // foreign-source notifications (CLOCK et al.) that the classifier
         // leaves untouched.
-        // MIB 在 C 未注册 signal handler（上方注释有锚），逃生门令牌只为
-        // 满足库契约——无人取消。
+        // MIB registers no signal handler in C (as the comment above notes),
+        // so the escape-hatch token only satisfies the library contract —
+        // nobody cancels it.
         let cancel = minix_sef::SefCancel::new();
         let rx = match minix_sef::sef_receive_status(
             &mut self.ipc,
@@ -172,18 +173,21 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
             Ok(rx) => rx,
             Err(_) => return (Turn::ReceiveFailed, Incoming::Unknown),
         };
-        // E-BIRTHFACE（NS1）出生臂：C 在 mib_startup 内消费 RS_INIT
-        // （main.c:415-431），循环体不见；本树 fresh 锚点 ≡ 构造
-        //（MibServer::new 的静态树，≡ mib_init 体 main.c:384-410）。
-        // 注册面 fresh+restart 同体（main.c:419/425）→ 都 OK；LU 未注册
-        // → 默认 ENOSYS（sef_init.c:324-327）。应答按 process_init 尾部
-        // （sef_init.c:113-117）。
+        // E-BIRTHFACE (NS1) birth arm: C consumes RS_INIT inside
+        // mib_startup (main.c:415-431), and the loop body never sees it; this
+        // tree's fresh hook is equivalent to construction (MibServer::new's
+        // static tree, equivalent to the mib_init body at main.c:384-410).
+        // The registration face is shared by fresh+restart (main.c:419/425) →
+        // both OK; an unregistered LU → default ENOSYS (sef_init.c:324-327).
+        // The reply follows process_init's tail (sef_init.c:113-117).
         if let minix_sef::SefEvent::Init(init_type) = rx.event {
-            // PD-34：出生协议编排归库——段一清 IPC 过滤（经
-            // `MibKernel::statectl`，C `process_init` 第一段 sef_init.c:59-60
-            // 的 `assert(r == OK)`）、回报消息由库构造；本服务只答分派
-            // 语义（fresh+restart 注册同体 → 都 OK；LU 未注册 → 默认
-            // ENOSYS，sef_init.c:324-327）。
+            // Birth-protocol orchestration belongs to the library — the first
+            // segment clears IPC filtering (via `MibKernel::statectl`, C
+            // `process_init`'s first segment sef_init.c:59-60 `assert(r ==
+            // OK)`), and the library constructs the reply message; this
+            // service only answers the dispatch semantics (fresh+restart share
+            // the registration face → both OK; an unregistered LU → default
+            // ENOSYS, sef_init.c:324-327).
             let reply = minix_sef::process_init(
                 &mut |req, addr, len| self.kernel.statectl(req, addr, len),
                 init_type,
@@ -194,18 +198,20 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
             );
             return match reply {
                 Ok(mut reply) => {
-                    // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
-                    // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466）——非普通
-                    // send。sendrec 停在 receive(RS) 半等 RS catch 出口的 OK
-                    // 唤醒，避免 RS 的 reply 无人认领被野消费→回声投回
-                    // RS→step3 panic。
-                    //[SD19-gate] SD-19: RS birth reply sendrec 尽力而为
+                    // The birth reply leg = C `sef_cb_init_response_rs_reply`
+                    // = `ipc_sendrec(RS, &m)` (sef_init.c:458-466) — not an
+                    // ordinary send. The sendrec stays in receive(RS) half
+                    // waiting for the OK that wakes RS's catch exit, so RS's
+                    // reply is not left unclaimed and wild-consumed → echoed
+                    // back to RS → step3 panic.
+                    //[SD19-gate] RS birth reply sendrec: best effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.ipc.send_rec(Endpoint::RS, &mut reply);
                     (Turn::Handled, Incoming::Birth)
                 }
-                // C 段一 `assert(r == OK)`（sef_init.c:60）＝出生失败
-                // fail-closed；本循环的失败形状是 ReceiveFailed（计数累积）。
+                // C's first segment `assert(r == OK)` (sef_init.c:60) =
+                // birth failure is fail-closed; this loop's failure shape is
+                // ReceiveFailed (the counter accumulates).
                 Err(_) => (Turn::ReceiveFailed, Incoming::Unknown),
             };
         }
@@ -255,7 +261,8 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
         // sentinel goes back; send failures are logged, never fatal.
         if should_reply(out.m_type) {
             let to = msg.m_source;
-            //[SD19-gate] SD-19: send_nb 非阻塞回复，失败丢一条
+            //[SD19-gate] send_nb: non-blocking reply; a failed send drops one
+            // message
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.ipc.send_nb(to, &out);
         }
@@ -717,17 +724,18 @@ mod tests {
         assert!(s.ipc.sent.borrow().is_empty());
     }
 
-    /// E-BIRTHFACE（NS1）：RS 的出生请求按注册面应答——fresh/restart
-    /// 同体（main.c:419/425）→ OK；LU 未注册 → ENOSYS（sef_init.c:324-327）。
-    /// 应答经 send_rec（C ipc_sendrec，B9b）回 RS（process_init 尾部
-    /// sef_init.c:113-117 + sef_cb_init_response_rs_reply sef_init.c:458-466）。
+    /// E-BIRTHFACE (NS1): RS's birth request is answered by the registration
+    /// face — fresh/restart share the same body (main.c:419/425) → OK; an
+    /// unregistered LU → ENOSYS (sef_init.c:324-327). The reply goes back to
+    /// RS via send_rec (C ipc_sendrec) (process_init's tail sef_init.c:113-117
+    /// + sef_cb_init_response_rs_reply sef_init.c:458-466).
     #[test]
     fn test_rs_init_birth_answered_by_registration() {
         let mut birth = mib_msg(minix_types::RS_INIT);
         birth.m_source = Endpoint::RS;
         // Union field write is safe: the RS_INIT tag selects m_rs_init.
         birth.m_u.m_rs_init.type_ = 0; // SEF_INIT_FRESH
-        let mut s = server_with(&[(1, birth)]); // status 1 = 非通知
+        let mut s = server_with(&[(1, birth)]); // status 1 = not a notification
         let (turn, incoming) = s.run_once();
         assert_eq!(turn, Turn::Handled);
         assert_eq!(incoming, Incoming::Birth);

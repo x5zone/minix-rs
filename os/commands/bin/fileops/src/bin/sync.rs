@@ -7,7 +7,7 @@
 //! zero exit, so correctness is the faithful call, verified by the freestanding
 //! build rather than a unit test.
 //!
-//! Real-machine effect is the writable-root gate (`C-57`/E5), as for every
+//! Real-machine effect is the writable-root gate (`E5`), as for every
 //! disk-touching command; `minix_sys::sync` is the wired leg.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]

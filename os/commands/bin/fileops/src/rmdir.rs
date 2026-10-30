@@ -3,7 +3,7 @@
 //! Ground truth: `minix3/bin/rmdir/rmdir.c` (NetBSD `rmdir.c` 1.26). The
 //! command takes `-p`. Without it each operand is removed with `rmdir(2)`
 //! (which the kernel rejects for a non-empty directory — "you may empty the
-//! basket, you may not dump the筐"). With `-p`, after the operand itself is
+//! basket, you may not dump the basket"). With `-p`, after the operand itself is
 //! removed, `rm_path` walks up: it truncates the path at each trailing `/`
 //! and removes each shorter ancestor, stopping at the first failure and never
 //! removing the root (truncating past the leading `/` yields an empty path,

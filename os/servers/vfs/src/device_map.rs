@@ -9,9 +9,10 @@
 //!   `get_by_endpt`/`map_driver`/`unmap_by_endpt`
 //! - `smap.c` → `SmapEntry`/`SmapTable`/`register_plan`/`find_slot_by_label`/
 //!   `find_free_slot`/`smap_by_endpt`/`smap_by_domain`/`smap_endpt_by_dev`
-//! - `device.c` → `ioctl_route`/`ioctl_access`/`ioctl_size`（do_ioctl 分流
-//!   与 make_ioctl_grant 的解码半；授权创建半属内核 IPC 束）
-//! - `mapdriver`（misc.c 调用面）→ `classify_service`/`check_mapper`/
+//! - `device.c` → `ioctl_route`/`ioctl_access`/`ioctl_size` (the do_ioctl dispatch
+//!   and the decoding half of make_ioctl_grant; the grant-creation half belongs to
+//!   the kernel IPC side)
+//! - `mapdriver` (the misc.c call side) → `classify_service`/`check_mapper`/
 //!   `EndpointDirectory`/`resolve_driver`
 //!
 //! Design decisions (see 19-device-map.md §3):
@@ -101,15 +102,17 @@ pub struct DmapEntry {
     pub recovering: bool,
     /// A worker is currently servicing this driver.
     pub servicing: bool,
-    /// `dmap_seen_tty`（`dmap.h:31`）——这个驱动**曾经**把某个设备设为控制
-    /// 终端。它是 `cdev_opcl` 里"要不要扫全表找控制终端"的性能开关
-    /// （`cdev.c:196-201`：只有为真时才扫 `fproc[]`）。
+    /// `dmap_seen_tty` (`dmap.h:31`) — this driver **once** made some device its
+    /// controlling terminal. It is the performance switch in `cdev_opcl` for
+    /// "scan the whole table looking for a controlling terminal"
+    /// (`cdev.c:196-201`: `fproc[]` is scanned only when true).
     pub seen_tty: bool,
-    /// `dmap_sel_busy`：这个驱动有一张 **select 查询**在途（`dmap.h`）。
-    /// select 的查询是 `asynsend` 一发不等，回复落地时按这一位认领。
+    /// `dmap_sel_busy`: this driver has one **select query** in flight (`dmap.h`).
+    /// The select query is fire-and-forget `asynsend`; the reply claims it through
+    /// this bit on arrival.
     pub sel_busy: bool,
-    /// `dmap_sel_filp`：在途查询的主人 filp（`None` = 请求方已走，回复
-    /// 只清状态不再记账）。
+    /// `dmap_sel_filp`: the owner filp of the in-flight query (`None` = the
+    /// requester is gone; the reply only clears state and records nothing).
     pub sel_owner: Option<usize>,
 }
 
@@ -359,9 +362,10 @@ pub struct SmapEntry {
     pub endpt: Option<Endpoint>,
     /// Driver label, NUL-padded.
     pub label: [u8; LABEL_MAX],
-    /// `smap_sel_busy`：这个套接字驱动有一张 select 查询在途（`smap.c`）。
+    /// `smap_sel_busy`: this socket driver has one select query in flight (`smap.c`).
     pub sel_busy: bool,
-    /// `smap_sel_filp`：在途查询的主人 filp（`None` = 请求方已走）。
+    /// `smap_sel_filp`: the owner filp of the in-flight query (`None` = the requester
+    /// is gone).
     pub sel_owner: Option<usize>,
 }
 
@@ -624,30 +628,37 @@ pub fn classify_vanish(is_blk: bool, is_sock: bool) -> VanishNotice {
     }
 }
 
-/// 驱动死亡级联的编排产出(S15)。
+/// The orchestration output of the driver-death cascade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CascadeOutcome {
-    /// 家族分类(classify_vanish)。
+    /// Family classification (classify_vanish).
     pub notice: VanishNotice,
-    /// 死驱动在 dmap 表占的 major(字符家族;`None` = 无行/不适用)。
+    /// The major the dead driver occupies in the dmap table (character family;
+    /// `None` = no row / not applicable).
     pub char_major: Option<u32>,
-    /// 死驱动在 smap 表占的一基行号(socket 家族;`None` = 无行)。
+    /// The one-based row number the dead driver occupies in the smap table (socket
+    /// family; `None` = no row).
     pub sock_num: Option<u32>,
-    /// 已失效的 filp 数(字符 + socket 两面)。
+    /// Number of invalidated filps (both the character and socket sides).
     pub invalidated: usize,
 }
 
-/// 驱动死亡级联的统一入口(S15;05-stage todo P1-2 的三面合成)。
+/// The single entry point for the driver-death cascade (combining its three C
+/// entry points).
 ///
-/// C 的三处入口——`map_driver(label, major, NONE)` 的失效支
-/// (dmap.c:82-85)、`dmap_endpt_down` 的 `worker_stop + invalidate`
-/// 支(dmap.c:305-311)、smap 侧的 `invalidate_filp_by_sock_drv`
-/// (smap.c:119/160/186 传 `sp->smap_num` 一基号)——在 Rust 汇成
-/// 一个编排:身份扫描(dmap 表按端点找 major、smap 表按端点找行)→
-/// 字符/socket 失效执行(经 filedes 的失效族)→ 家族分类出
-/// [`VanishNotice`] 供调用方续派(块→`bdev_up` 路径归
-/// 20-bdev.md;字符/socket 的挂起槽 stop 与 select 唤醒归
-/// sdev/select 的消费面,本函数只做失效与分类)。
+/// C's three entry points — the invalidation branch of
+/// `map_driver(label, major, NONE)` (dmap.c:82-85), the `worker_stop + invalidate`
+/// branch of `dmap_endpt_down` (dmap.c:305-311), and
+/// `invalidate_filp_by_sock_drv` on the smap side
+/// (smap.c:119/160/186 pass `sp->smap_num`, a one-based number) — converge in Rust
+/// into one orchestration: identity scan (find the major by endpoint in the dmap
+/// table, the row by endpoint in the smap table) → character/socket invalidation
+/// (through filedes' invalidation family) → family classification producing
+/// [`VanishNotice`] for the caller to dispatch onward (the block → `bdev_up` path
+/// belongs to 20-bdev.md; the pending-slot stop and select wake-up for
+/// character/socket belong to the sdev/select consumer; this function only
+/// invalidates and classifies).
+///
 pub fn driver_death_cascade(
     dmap: &DmapTable,
     smap: &SmapTable,
@@ -663,7 +674,8 @@ pub fn driver_death_cascade(
     let mut invalidated = 0;
 
     if !is_blk && !is_sock {
-        // 字符家族:死驱动占的 dmap 行 → major → 全量字符 filp 失效。
+        // Character family: the dmap row the dead driver occupies → major →
+        // invalidate every character filp.
         if let Some(major) = get_by_endpt(dmap, dead) {
             char_major = Some(major);
             invalidated +=
@@ -671,8 +683,8 @@ pub fn driver_death_cascade(
         }
     }
     if is_sock {
-        // socket 家族:C 传 `sp->smap_num`(一基号,init_smap 的
-        // `smap_num = i + 1`,smap.c:22-37)。
+        // Socket family: C passes `sp->smap_num` (a one-based number; init_smap's
+        // `smap_num = i + 1`, smap.c:22-37).
         if let Some(row) = smap_by_endpt(smap, dead)
             && let Some(entry) = smap.entries.get(row as usize)
         {
@@ -681,7 +693,8 @@ pub fn driver_death_cascade(
                 crate::filedes::invalidate_by_sock_drv(filp_table, vnode_table, entry.num);
         }
     }
-    // 块家族:失效不适用——走 `bdev_up` 恢复路径(执行归 20)。
+    // Block family: invalidation does not apply — the `bdev_up` recovery path is
+    // used instead (execution belongs to 20).
     CascadeOutcome {
         notice,
         char_major,
@@ -1047,7 +1060,8 @@ use crate::open::FileType;
 
     #[test]
     fn test_death_cascade_char_invalidates_by_major() {
-        // 字符驱动死亡:身份扫描(dmap 表)→ 失效族执行 → notice。
+        // Character driver death: identity scan (dmap table) → invalidation family →
+        // notice.
         use crate::filp::FilpTable;
         use crate::vnode::VnodeTable;
         use crate::vnode::VnodeId;
@@ -1083,7 +1097,7 @@ use crate::open::FileType;
         let dmap = DmapTable::new();
         let mut smap = SmapTable::new();
         let dead = Endpoint(21);
-        // 行 1(一基号 2)归死驱动。
+        // Row 1 (one-based number 2) belongs to the dead driver.
         smap.entries[1].endpt = Some(dead);
         let mut tbl = FilpTable::new();
         let mut vtbl = VnodeTable::new();
@@ -1103,7 +1117,8 @@ use crate::open::FileType;
 
     #[test]
     fn test_death_cascade_block_is_recover_notice() {
-        // 块驱动:C 走 bdev_up 恢复路径——级联不失效,只出 notice。
+        // Block driver: C takes the bdev_up recovery path — the cascade does not
+        // invalidate, it only produces the notice.
         use crate::filp::FilpTable;
         use crate::vnode::VnodeTable;
 
@@ -1119,7 +1134,8 @@ use crate::open::FileType;
 
     #[test]
     fn test_death_cascade_no_row_is_inert() {
-        // 死驱动不在任何表:身份扫描空 → 零失效(fail-safe)。
+        // The dead driver is in no table: the identity scan is empty → zero
+        // invalidations (fail-safe).
         use crate::filp::FilpTable;
         use crate::vnode::VnodeTable;
 

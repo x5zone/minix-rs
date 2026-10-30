@@ -14,7 +14,8 @@ use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-/// 自身/子进程的 (utime, stime) 二元对（`getrusage`/`sys_times` 汇聚的类型化别名）。
+/// The (utime, stime) pair for self/children (`getrusage`/`sys_times` gather
+/// into this typed alias).
 type UtimeStimePair = ((i64, i64), (i64, i64));
 
 /// `UTS_TBL` length (`misc.c:46` 8).
@@ -32,11 +33,13 @@ pub const MAX_LOCAL_PARAMS: usize = 2;
 /// off) and a plain non-power flag (`0x1`) spuriously take the leg.
 pub const RB_POWERDOWN: i32 = 0x808;
 
-// P-ALL-06 收敛（2026-10-06）：本地 SI_PROC_TAB/SI_CALL_STATS 副本删除，
-// 改用 minix_types::ipc::sysinfo 单一权威。历史记录（E-ISPROD 对账挖出的
-// 真 bug）：本 crate 原本本地记 SI_PROC_TAB=0，与 C（sysinfo.h:12 值 2）
-// 及其余服务不一致——IS/MIB 按 C 值发 2 会被本服务 EINVAL 拒收。权威化
-// 之后此类错位在定义面上不可能复发。
+// The local SI_PROC_TAB/SI_CALL_STATS copies were deleted and replaced with the
+// single authority in `minix_types::ipc::sysinfo`. History (a real bug found while
+// reconciling the E-ISPROD producer): this crate used to record SI_PROC_TAB = 0
+// locally, disagreeing with C (`sysinfo.h:12` says 2) and with the other
+// services — IS/MIB sending the C value 2 got EINVAL from this service. Once the
+// constants have one authority, that class of mismatch cannot recur at the
+// definition level.
 pub use minix_types::{SI_CALL_STATS, SI_PROC_TAB};
 
 /// `RUSAGE_SELF/CHILDREN` (`resource.h`).
@@ -47,9 +50,9 @@ pub const RUSAGE_CHILDREN: i32 = -1;
 pub const PROF_START: i32 = 0;
 pub const PROF_STOP: i32 = 1;
 
-/// `PM_*` call numbers (`callnr.h: 25/36-39/45-47`)——minix-types
-/// 单一真源（[`PmCall`] 判别值派生）的再导出，本 crate 不再手抄
-/// （与上方 `SI_*` 同一判例；PD-23 采甲）。
+/// `PM_*` call numbers (`callnr.h: 25/36-39/45-47`) — a re-export from the
+/// single source of truth in minix-types (derived from [`PmCall`] discriminants),
+/// not hand-copied in this crate (the same ruling as for `SI_*` above).
 pub use minix_types::{
     PM_GETEPINFO, PM_GETMCONTEXT, PM_GETPROCNR, PM_GETRUSAGE, PM_GETSYSINFO, PM_REBOOT,
     PM_SETMCONTEXT, PM_SPROF, PM_SVRCTL, PM_SYSUNAME,
@@ -69,8 +72,9 @@ pub enum MiscError {
     Nosys,
     Fault,
     Busy,
-    /// 内核/VM 服务的原始负 errno（C 全程透传 `r`，misc.c:430-431/441-442；
-    /// V3-P2-6：不再折叠为 EINVAL）。
+    /// The raw negative errno of the kernel/VM service (C passes `r` straight
+    /// through everywhere, misc.c:430-431/441-442; it is no longer folded into
+    /// EINVAL).
     Kernel(i32),
 }
 
@@ -97,7 +101,7 @@ pub const UTS_VAL_RELEASE: &str = "3.3.0";
 pub const UTS_VAL_VERSION: &str = "Minix 3.3.0";
 pub const UTS_VAL_MACHINE: &str = "x86_64";
 
-/// `UtsField` (`misc.c:46-60` 9 槽位 4 NULL).
+/// `UtsField` (`misc.c:46-60` 9 slots, 4 of them NULL).
 const UTS_TBL: [Option<&'static str>; 8] = [
     Some(UTS_VAL_MACHINE), // 0: arch (x86_64, was i386/evbarm)
     None,                  // 1: No kernel arch
@@ -150,8 +154,9 @@ pub trait CopyToUser {
     fn copy_from_user(&mut self, src: VirBytes, dst: &mut [u8]) -> Result<(), MiscError>;
 }
 
-/// `EpInfo` (`misc.c:180-192`, D3) — `return pid` payload；`ngroups` 为
-/// 全量组数（C misc.c:184），`groups` 为按调用方缓冲截断后的拷出内容。
+/// `EpInfo` (`misc.c:180-192`, D3) — the `return pid` payload; `ngroups` is the
+/// full group count (C misc.c:184), while `groups` is the copied-out content
+/// truncated to the caller's buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpInfo {
     pub pid: Pid,
@@ -224,12 +229,13 @@ impl ParamStore {
         Self { local: Vec::new(), monitor }
     }
     pub fn set(&mut self, key: String, val: String) -> Result<(), MiscError> {
-        // C misc.c:327 → 328-334：ENOSPC（表满）先于 keylen/vallen 边界——
-        // 双条件并存时错误码不同（V3-P2-5 修正与 C 相反的检查顺序）。
+        // C misc.c:327 → 328-334: ENOSPC (table full) comes before the
+        // keylen/vallen bounds — when both conditions hold, the error code
+        // differs (the check order now matches C).
         if self.local.len() >= MAX_LOCAL_PARAMS {
             return Err(MiscError::Nospc);
         }
-        // C 328-334：keylen/vallen ∈ (0, 30)（name[30]/value[30] 边界）。
+        // C 328-334: keylen/vallen ∈ (0, 30) (the name[30]/value[30] bounds).
         if key.is_empty() || val.is_empty() || key.len() >= 30 || val.len() >= 30 {
             return Err(MiscError::Inval);
         }
@@ -252,37 +258,40 @@ impl ParamStore {
 
 /// `RebootCtl` (`misc.c:207-230`, D4, A-3).
 ///
-/// `broadcast_kill`/`stop_init`/`tell_reboot` 分别对位 C 的
-/// `check_sig(-1, SIGKILL, FALSE)`（misc.c:221）/`sys_stop(INIT_PROC_NR)`
-/// （:222）/`tell_vfs(&mproc[VFS_PROC_NR], &m)`（:228）——三者都要摸
-/// mproc 表，执行上下文由 [`do_reboot`] 按调用点以 `&mut ProcTable`
-/// 复借用转交，端口自身只持内核/传输通道。
+/// `broadcast_kill`/`stop_init`/`tell_reboot` correspond respectively to C's
+/// `check_sig(-1, SIGKILL, FALSE)` (misc.c:221), `sys_stop(INIT_PROC_NR)` (`:222`)
+/// and `tell_vfs(&mproc[VFS_PROC_NR], &m)` (`:228`) — all three must touch the
+/// mproc table, so [`do_reboot`] re-borrows the table as `&mut ProcTable` at the
+/// call site and hands it over; the port itself holds only the kernel/transport
+/// channels.
 pub trait RebootCtl {
-    /// C: `abort_flag = m_in.m_lc_pm_reboot.how`（misc.c:205；glo.h:26）。
+    /// C: `abort_flag = m_in.m_lc_pm_reboot.how` (misc.c:205; glo.h:26).
     fn set_abort(&mut self, how: i32);
-    /// C: readclock `RTCDEV_PWR_OFF` taskcall（misc.c:207-214，DS 查名
-    /// 失败即跳过）。返回是否已请求断电。
+    /// C: readclock `RTCDEV_PWR_OFF` taskcall (misc.c:207-214; skipped when the
+    /// DS name lookup fails). Returns whether power-off was requested.
     fn try_power_off(&mut self) -> bool;
     fn broadcast_kill(&mut self, table: &mut ProcTable, caller: UserSlot);
     fn stop_init(&mut self, table: &ProcTable);
     fn tell_reboot(&mut self, table: &mut ProcTable) -> i32;
 }
 
-/// VM 侧补充的资源用量三元组（`vm_getrusage` 的产出,`utility.c:446-450`）。
+/// The resource-usage triple VM contributes (`vm_getrusage`'s output,
+/// `utility.c:446-450`).
 ///
-/// C 里 VM 把这三个值写进 `struct rusage` 的 `ru_maxrss`（KB 单位,
-/// `vm_total_max/1024`）、`ru_minflt`、`ru_majflt` 槽位（其余 11 个
-/// long 域从未被任何一方写入,恒为零——`misc.c:423` memset + VM 只
-/// 改这三处）。Rust 重写把"datacopy 往返"换成消息按值通道:
-/// VM_GETRUSAGE 应答直接携带三值,PM 侧组装完整结构拷出,最终字节面
-/// 与 C 完全一致。
+/// In C, VM writes these three values into `struct rusage`'s `ru_maxrss` slot
+/// (in KB, `vm_total_max/1024`), `ru_minflt` and `ru_majflt` (the other 11 long
+/// fields are never written by either side and stay zero — `misc.c:423` memsets
+/// and VM only changes these three). The Rust rewrite replaces the "datacopy
+/// round trip" with a by-value message channel: the VM_GETRUSAGE reply carries
+/// the three values directly, PM assembles the full structure and copies it out,
+/// and the final byte image matches C exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VmUsage {
-    /// 峰值驻留集（KB）。C: `r_usage.ru_maxrss = vmp->vm_total_max/1024L`。
+    /// Peak resident set (KB). C: `r_usage.ru_maxrss = vmp->vm_total_max/1024L`.
     pub max_rss_kb: u64,
-    /// 次缺页（页重认领）。C: `r_usage.ru_minflt`。
+    /// Minor faults (pages reclaimed). C: `r_usage.ru_minflt`.
     pub minor_faults: u64,
-    /// 主缺页。C: `r_usage.ru_majflt`。
+    /// Major faults. C: `r_usage.ru_majflt`.
     pub major_faults: u64,
 }
 
@@ -298,20 +307,21 @@ pub trait McontextCtl {
     fn set(&self, ep: Endpoint, ctx: VirBytes) -> i32;
 }
 
-/// `TimesVmCtl` 生产实现(S4 收尾)。CPU 计时直连内核 SYS_TIMES
-/// (同 [`SysMcontextCtl`] 先例;hosted 构建诚实回 -EIO,通电挂 edge
-/// E1),内存面三值走 VM_GETRUSAGE taskcall(vm_fork 的 sendrec 纪律,
-/// dispatcher.rs:137-156)。
+/// The production `TimesVmCtl` implementation. CPU time comes straight from the
+/// kernel SYS_TIMES (following the [`SysMcontextCtl`] precedent; hosted builds
+/// answer -EIO honestly, and the powered-on path is tracked under E1), while the
+/// three memory values go through the VM_GETRUSAGE taskcall (the sendrec
+/// discipline of vm_fork, dispatcher.rs:137-156).
 pub struct SysTimesVmCtl<'a, T: crate::ipc::IpcTransport + ?Sized> {
-    /// VM 腿的传输(C `vm_getrusage` 的 `_taskcall(VM_PROC_NR, ...)`,
-    /// libsys vm_getrusage.c:7-17)。
+    /// Transport for the VM leg (C `vm_getrusage`'s `_taskcall(VM_PROC_NR, ...)`,
+    /// libsys vm_getrusage.c:7-17).
     pub transport: &'a mut T,
 }
 
 impl<T: crate::ipc::IpcTransport + ?Sized> TimesVmCtl for SysTimesVmCtl<'_, T> {
     fn sys_times(&mut self, ep: Endpoint) -> Result<(Clock, Clock), MiscError> {
-        // C sys_times(who_e, &utime, &stime, NULL, NULL)（misc.c:429-431;
-        // libsys sys_times.c:3-23)。失败原 errno 上抛(V3-P2-6)。
+        // C sys_times(who_e, &utime, &stime, NULL, NULL) (misc.c:429-431;
+        // libsys sys_times.c:3-23). A failure's original errno is propagated up.
         let times = minix_sys::syscall::sys_times(
             &minix_sys::syscall::DirectKernelCallTransport,
             ep.0,
@@ -321,18 +331,19 @@ impl<T: crate::ipc::IpcTransport + ?Sized> TimesVmCtl for SysTimesVmCtl<'_, T> {
     }
 
     fn vm_rusage(&mut self, ep: Endpoint, who: RusageWho) -> Result<VmUsage, MiscError> {
-        // 请求编码:C `m_lsys_vm_rusage {endpt, addr, children}`
-        // (ipc.h:1513-1520)。C 的 addr 是 PM 栈上 r_usage 的地址,
-        // 供 VM datacopy 往返;Rust 值按消息携带,addr 恒零。
+        // Request encoding: C `m_lsys_vm_rusage {endpt, addr, children}`
+        // (ipc.h:1513-1520). C's addr is the address of r_usage on PM's stack,
+        // for the VM datacopy round trip; Rust carries the values in the message,
+        // so addr is always zero.
         let children = matches!(who, RusageWho::Children);
         let mut msg = minix_types::Message {
             m_type: minix_types::VM_GETRUSAGE as i32,
             ..Default::default()
         };
         {
-            // SAFETY: m_lsys_vm_rusage 是 VM_GETRUSAGE 的文档化载荷
-            // 布局(VM 侧 call_getrusage 按 endpt@0/addr@8/children@16
-            // 解码,dispatcher.rs:912-920)。
+            // SAFETY: m_lsys_vm_rusage is the documented payload layout of
+            // VM_GETRUSAGE (VM's call_getrusage decodes
+            // endpt@0/addr@8/children@16, dispatcher.rs:912-920).
             let req = unsafe { &mut msg.m_u.m_lsys_vm_rusage };
             req.endpt = ep.0;
             req.addr = 0;
@@ -341,14 +352,14 @@ impl<T: crate::ipc::IpcTransport + ?Sized> TimesVmCtl for SysTimesVmCtl<'_, T> {
         self.transport
             .sendrec(minix_types::Endpoint::VM, &mut msg)
             .map_err(|_| MiscError::Kernel(minix_types::EIO))?;
-        // C: taskcall 返回值即结果(vm_getrusage.c:17);VM 的错误
-        // 应答 m_type 为正 errno。
+        // C: the taskcall's return value is the result (vm_getrusage.c:17); VM's
+        // error reply carries a positive errno in m_type.
         if msg.m_type != minix_types::OK {
             return Err(MiscError::Kernel(msg.m_type));
         }
-        // 回复解码:VM 编码 m1p1=max_rss_kb/m1i1=minor/m1i2=major
-        // (encode.rs:258-268,缺页计数按 i32 饱和)。
-        // SAFETY: 应答臂 m_m1 由 VM 按同一布局覆写。
+        // Reply decoding: VM encodes m1p1=max_rss_kb/m1i1=minor/m1i2=major
+        // (encode.rs:258-268; the fault counts saturate through i32).
+        // SAFETY: the reply arm m_m1 is overwritten by VM with the same layout.
         let m1 = unsafe { &msg.m_u.m_m1 };
         Ok(VmUsage {
             max_rss_kb: m1.m1p1,
@@ -359,14 +370,16 @@ impl<T: crate::ipc::IpcTransport + ?Sized> TimesVmCtl for SysTimesVmCtl<'_, T> {
 }
 
 /// `SprofCtl` (`profile.c:31-33`, D7).
-/// （8 参数与 C 的 `sys_vtimer`/profile 消息载荷一一对应，`[ARCH: A-3]`。）
+/// (The eight parameters correspond one-to-one with the payload of C's
+/// `sys_vtimer`/profile message, `[ARCH: A-3]`.)
 #[allow(clippy::too_many_arguments)]
 pub trait SprofCtl {
     fn sprof(&mut self, action: i32, mem_size: usize, freq: u32, intr_type: i32, ep: Endpoint, ctl_ptr: VirBytes, mem_ptr: VirBytes) -> i32;
 }
 
-/// `McontextCtl` 生产实现(S8 批次 G):sys_getmcontext/sys_setmcontext
-/// 直委托(minix-sys wrapper,E6 已落;错误透传,do_* 层收敛 EINVAL)。
+/// The production `McontextCtl` implementation: sys_getmcontext/sys_setmcontext
+/// delegated straight through (the minix-sys wrapper is in place; errors pass
+/// through raw, and the `do_*` layer folds EINVAL).
 pub struct SysMcontextCtl;
 
 impl McontextCtl for SysMcontextCtl {
@@ -393,10 +406,12 @@ impl McontextCtl for SysMcontextCtl {
     }
 }
 
-/// `SprofCtl` 生产实现(S8 批次 G):sys_sprof 直委托(E6 wrapper;
-/// 错误透传为原始 errno,do_sprofile 的 feature 门控保持)。
+/// The production `SprofCtl` implementation: sys_sprof delegated straight through
+/// (the minix-sys wrapper is in place; errors pass through as the original errno,
+/// and `do_sprofile`'s feature gate is unchanged).
 pub struct SysSprofCtl {
-    /// 目标进程 endpoint(sprof 的采样对象;do_sprofile 以 caller 填入)。
+    /// Target process endpoint (sprof's sampling target; `do_sprofile` fills it
+    /// with the caller).
     pub ep: Endpoint,
 }
 
@@ -411,7 +426,7 @@ impl SprofCtl for SysSprofCtl {
         ctl_ptr: VirBytes,
         mem_ptr: VirBytes,
     ) -> i32 {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = ep;
         match minix_sys::syscall::sys_sprof(
@@ -431,8 +446,10 @@ impl SprofCtl for SysSprofCtl {
 
 /// Helper: `is_superuser`.
 ///
-/// C 判据是 `mp_effuid == 0`，对所有 mproc 统一（含 `PRIV_PROC`）；系统进程
-/// 凭证的 effuid 恒 0（boot 全零初值），故直接读凭证即忠实复现 C。
+/// C's test is `mp_effuid == 0`, uniformly for every mproc (including
+/// `PRIV_PROC`); a system process's credential effuid is always 0 (boot
+/// zero-initialises everything), so reading the credential directly reproduces C
+/// faithfully.
 pub(crate) fn is_superuser(table: &ProcTable, caller: minix_types::UserSlot) -> bool {
     table.procs[caller.get()]
         .resources
@@ -452,8 +469,9 @@ pub fn do_sysuname(
     cpy: &mut dyn CopyToUser,
 ) -> Result<usize, MiscError> {
     let s = uts_field(field)?;
-    // C misc.c:85-96 default 分支：仅实现 req==0（拷出），req!=0 → EINVAL
-    //（V3-P2-5 补——旧签名无 req 形参，该分支无处产生）。
+    // C misc.c:85-96 default branch: only req==0 (copy out) is implemented;
+    // req!=0 → EINVAL (the old signature had no `req` parameter, so this branch
+    // had nowhere to arise).
     if req != 0 {
         return Err(MiscError::Inval);
     }
@@ -476,7 +494,7 @@ pub fn do_sysuname(
     buf.copy_from_slice(&copy_len);
     cpy.copy_to_user(&buf, VirBytes(0))?; // placeholder VirBytes, caller will map
     // In C, sys_datacopy uses caller endpoint; abstract via CopyToUser.
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    //[SD19-gate] PM send/notify/reply are fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
     let _ = caller_ep;
     Ok(to_copy)
@@ -497,10 +515,12 @@ pub fn do_getsysinfo(
     }
     match what {
         SysInfoWhat::ProcTab => {
-            // 整表快照序列化（`MProcSnap` 76B/槽 × NR_PROCS），逐槽拷出到
-            // 调用方缓冲。C: misc.c:142-143 的 sys_datacopy(SELF, mproc,
-            // dst, size) 对应——逐槽拷避免整表中转缓冲（旧 C-ABI 464B
-            // 行随 A-4 对齐退役，见 mproc/wire.rs 顶部差异表）。
+            // Whole-table snapshot serialization (`MProcSnap` 76B per slot ×
+            // NR_PROCS), copied out slot by slot into the caller's buffer. This
+            // corresponds to C: misc.c:142-143's sys_datacopy(SELF, mproc, dst,
+            // size) — copying slot by slot avoids a whole-table relay buffer (the
+            // old 464B C-ABI row was retired along with the A-4 alignment work,
+            // see the difference table at the top of mproc/wire.rs).
             const ROW_SIZE: usize = core::mem::size_of::<minix_types::MProcSnap>();
             let tab_size = ROW_SIZE * table.procs.len();
             if size != tab_size {
@@ -556,9 +576,11 @@ pub fn do_getepinfo(
     let slot = table.pm_isokendpt(ep).map_err(|_| MiscError::Srch)?;
     let rmp = &table.procs[slot.get()];
     let creds = rmp.resources.privilege.credentials();
-    // C misc.c:184：回复载荷的 ngroups 填**全量** mp_ngroups——截断只影响
-    // 拷贝数，调用方（RS）有权知道真实组数（区分"只有 N 组"与"有更多但
-    // 缓冲不足"）。V3-P2-4 之前先截断再填，语义退化。
+    // C misc.c:184: the reply's ngroups carries the **full** mp_ngroups — the
+    // truncation only affects the copy count, and the caller (RS) is entitled to
+    // the real group count (to tell "only N groups" from "more, but the buffer is
+    // too small"). The earlier code truncated first and then filled it in, which
+    // lost that information.
     let ngroups_full = creds.ngroups;
     let copy_len = ngroups_full.min(caller_ngroups);
     let groups = if copy_len > 0 {
@@ -566,9 +588,10 @@ pub fn do_getepinfo(
     } else {
         Vec::new()
     };
-    // [DEFERRED: D-30] groups 经 sys_datacopy 拷出到调用方缓冲 + EFAULT
-    // 透传（misc.c:187-190）——随批次 A/G 的 wire 与 CopyGroups 生产实现
-    // 落地（挂 edge E7）；当前以截断 Vec 表达拷出内容。
+    // [DEFERRED] groups are copied out to the caller's buffer via sys_datacopy
+    // with EFAULT propagation (misc.c:187-190) — that lands together with the wire
+    // and CopyGroups production implementations (tracked under E7); for now the
+    // copied-out content is expressed as a truncated Vec.
     Ok(EpInfo {
         pid: rmp.identity.id.pid,
         uid: creds.user.real,
@@ -582,11 +605,12 @@ pub fn do_getepinfo(
 
 /// `do_reboot` (`misc.c:198-231`, D4).
 ///
-/// C 序：EPERM 门（:202）→ `abort_flag = how`（:205）→ RB_POWERDOWN
-/// 走 readclock taskcall（:207-214）→ `check_sig(-1, SIGKILL, FALSE)`
-/// （:221，注释明言先 kill 后 reboot 的次序约束）→ `sys_stop(INIT_PROC_NR)`
-/// （:222，返回值不检查）→ `tell_vfs` VFS_PM_REBOOT（:228）→ SUSPEND
-/// 不回调用者（:230）。
+/// C's order: EPERM gate (`:202`) → `abort_flag = how` (`:205`) → RB_POWERDOWN
+/// takes the readclock taskcall (`:207-214`) → `check_sig(-1, SIGKILL, FALSE)`
+/// (`:221`; the comment there states the ordering constraint "kill before
+/// reboot") → `sys_stop(INIT_PROC_NR)` (`:222`, return value unchecked) →
+/// `tell_vfs` VFS_PM_REBOOT (`:228`) → SUSPEND without replying to the caller
+/// (`:230`).
 pub fn do_reboot(
     table: &mut ProcTable,
     caller: minix_types::UserSlot,
@@ -598,13 +622,13 @@ pub fn do_reboot(
     }
     ctl.set_abort(how);
     if (how & RB_POWERDOWN) != 0 {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = ctl.try_power_off();
     }
     ctl.broadcast_kill(table, caller);
     ctl.stop_init(table);
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    //[SD19-gate] PM send/notify/reply are fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctl.tell_reboot(table);
     Ok(ReplyIntent::ReplyLater) // SUSPEND never reply
@@ -615,20 +639,22 @@ pub fn do_svrctl_set(store: &mut ParamStore, key: String, val: String) -> Result
     store.set(key, val)
 }
 pub fn do_svrctl_get(store: &ParamStore, key: Option<String>, _keylen: usize, vallen: usize) -> Result<String, MiscError> {
-    // C misc.c:359：GET key 的 search_key[64] 边界 → EINVAL（V3-P2-5 补）。
+    // C misc.c:359: the GET key's search_key[64] bound → EINVAL.
     if let Some(k) = &key
         && (k.is_empty() || k.len() > 64)
     {
         return Err(MiscError::Inval);
     }
     let (val, needed) = match key {
-        // C 352-354：keylen==0 → 全表，val_len = sizeof(monitor_params)
-        //（MULTIBOOT_PARAM_BUF_SIZE = 1024，minix/param.h:28 与 multiboot.h:240）
-        // —— E2BIG 判据用缓冲全长而非实际串长（V3-P2-5 修正）。
+        // C 352-354: keylen==0 → whole table, val_len = sizeof(monitor_params)
+        // (MULTIBOOT_PARAM_BUF_SIZE = 1024, minix/param.h:28 and multiboot.h:240)
+        // — the E2BIG test uses the full buffer length, not the actual string
+        // length.
         None => {
-            // C 352-354：keylen==0 → val_len = sizeof(monitor_params)
-            //（无条件取缓冲全长 1024，NUL 尾随区域一并计入——这是 C 的
-            // 全表快照语义，非"实际串长"）。
+            // C 352-354: keylen==0 → val_len = sizeof(monitor_params)
+            // (unconditionally the full buffer length 1024, with the trailing NUL
+            // area counted in — that is C's whole-table snapshot semantics, not
+            // the "actual string length").
             let full = store.monitor.clone();
             let needed = crate::init::MULTIBOOT_PARAM_BUF_SIZE;
             (full, needed)
@@ -639,15 +665,15 @@ pub fn do_svrctl_get(store: &ParamStore, key: Option<String>, _keylen: usize, va
             (v, needed)
         }
     };
-    // C 376-378：val_len > sysgetenv.vallen → E2BIG。
+    // C 376-378: val_len > sysgetenv.vallen → E2BIG.
     if needed > vallen {
         return Err(MiscError::Big);
     }
     Ok(val)
 }
 
-/// C `_IOC(inout, group, num, len)`（`sys/ioccom.h:84-90`，x86-64
-/// `sizeof(struct sysgetenv)` = 32：两个指针 + 两个 size_t）。
+/// C `_IOC(inout, group, num, len)` (`sys/ioccom.h:84-90`, x86-64
+/// `sizeof(struct sysgetenv)` = 32: two pointers plus two size_t).
 const fn ioc(inout: u32, group: u8, num: u32, len: u32) -> i32 {
     (inout | ((len & 0xfff) << 16) | ((group as u32) << 8) | num) as i32
 }
@@ -657,31 +683,35 @@ const IOC_IN: u32 = 0x8000_0000;
 const IOC_OUT: u32 = 0x4000_0000;
 const SIZEOF_SYSGETENV: u32 = 32; // char *key + char *val + size_t keylen + size_t vallen
 
-/// `PMGETPARAM`（`sys/svrctl.h:16` `_IOWR('P', 0, sysgetenv)`）。
+/// `PMGETPARAM` (`sys/svrctl.h:16` `_IOWR('P', 0, sysgetenv)`).
 pub const PMGETPARAM: i32 = ioc(IOC_INOUT, b'P', 0, SIZEOF_SYSGETENV);
-/// `PMSETPARAM`（`sys/svrctl.h:17` `_IOW('P', 1, sysgetenv)`）。
+/// `PMSETPARAM` (`sys/svrctl.h:17` `_IOW('P', 1, sysgetenv)`).
 pub const PMSETPARAM: i32 = ioc(IOC_IN, b'P', 1, SIZEOF_SYSGETENV);
-/// `OPMGETPARAM`（`sys/svrctl.h:19` `_IOW('M', 5, sysgetenv)`，旧口径）。
-/// C `_IOW` 走 `IOC_IN`（`sys/ioccom.h` `_IOW(g,n,t)=_IOC(IOC_IN,…)`），故方向位
-/// 必为 `0x80…`——曾误按 OPMSETPARAM 的 `IOC_OUT` 写成 `0x40…`，使真实线值
-/// `0x80204D05` 落到未知 req 臂回 EINVAL（`IOCGROUP` 门放 'M' 过，但 case 不命中）。
+/// `OPMGETPARAM` (`sys/svrctl.h:19` `_IOW('M', 5, sysgetenv)`, the old
+/// spelling). C `_IOW` uses `IOC_IN` (`sys/ioccom.h`
+/// `_IOW(g,n,t)=_IOC(IOC_IN,…)`), so the direction bits must be `0x80…` — the
+/// code once wrote `0x40…` by mistake, copying OPMSETPARAM's `IOC_OUT`, which sent
+/// the real wire value `0x80204D05` into the unknown-req arm and answered EINVAL
+/// (the `IOCGROUP` gate let 'M' through, but no case matched).
 pub const OPMGETPARAM: i32 = ioc(IOC_IN, b'M', 5, SIZEOF_SYSGETENV);
-/// `OPMSETPARAM`（`sys/svrctl.h:20` `_IOR('M', 7, sysgetenv)`，旧口径）。
+/// `OPMSETPARAM` (`sys/svrctl.h:20` `_IOR('M', 7, sysgetenv)`, the old
+/// spelling).
 pub const OPMSETPARAM: i32 = ioc(IOC_OUT, b'M', 7, SIZEOF_SYSGETENV);
 
-/// C `IOCGROUP(x)`（`sys/ioccom.h:68`）。
+/// C `IOCGROUP(x)` (`sys/ioccom.h:68`).
 const fn ioc_group(x: i32) -> u8 {
     (((x as u32) >> 8) & 0xff) as u8
 }
 
-/// `do_svrctl` (`misc.c:291-395`, D5)。
+/// `do_svrctl` (`misc.c:291-395`, D5).
 ///
-/// `req` 形参化（V3-P2-5）：IOCGROUP 门（'P'/'M'，misc.c:307-309）→ 四命令
-/// 分派（309-395）→ 未知 req `EINVAL`（392-393）。旧签名的 `is_set: bool`
-/// 丢弃了 req——非法 req 无法拒绝。用户缓冲拷贝（sysgetenv/复制/EFAULT）
-/// 仍属 wire 面（批次 G），此处逻辑面以形参直传。
+/// `req` is a parameter: the IOCGROUP gate ('P'/'M', misc.c:307-309) → dispatch of
+/// the four commands (309-395) → unknown req `EINVAL` (392-393). The old
+/// signature's `is_set: bool` discarded `req`, so an illegal req could not be
+/// rejected. Copying the user buffer (sysgetenv/copy/EFAULT) still belongs to the
+/// wire face (a later batch); here the logic face passes `req` straight through.
 pub fn do_svrctl(store: &mut ParamStore, req: i32, key: Option<String>, val: Option<String>, vallen: usize) -> Result<Option<String>, MiscError> {
-    // C 307-309：IOCGROUP ∈ {'P','M'} 门。
+    // C 307-309: the IOCGROUP ∈ {'P','M'} gate.
     let group = ioc_group(req);
     if group != b'P' && group != b'M' {
         return Err(MiscError::Inval);
@@ -696,7 +726,7 @@ pub fn do_svrctl(store: &mut ParamStore, req: i32, key: Option<String>, val: Opt
             let keylen = key.as_ref().map_or(0, |k| k.len());
             do_svrctl_get(store, key, keylen, vallen).map(Some)
         }
-        _ => Err(MiscError::Inval), // C 392-393 未知 req
+        _ => Err(MiscError::Inval), // C 392-393: unknown req
     }
 }
 
@@ -710,17 +740,18 @@ pub fn set_rusage_times(ru_utime_sec: &mut i64, ru_utime_usec: &mut i64, ru_stim
     *ru_stime_usec = su;
 }
 
-/// `struct rusage` 的 LP64 字节长——2 个 timeval（`ru_utime/ru_stime`,
-/// 各 `sec+usec` 两个 i64）+ 14 个 long（`sys/resource.h:57-76`,
-/// `ru_maxrss..ru_nivcsw`）。
+/// The LP64 byte length of `struct rusage` — 2 timevals (`ru_utime`/`ru_stime`,
+/// each `sec+usec` as two i64) plus 14 longs (`sys/resource.h:57-76`,
+/// `ru_maxrss..ru_nivcsw`).
 const RUSAGE_LEN: usize = 128;
 
-/// `do_getrusage` (`misc.c:400-447`, D6)。
+/// `do_getrusage` (`misc.c:400-447`, D6).
 ///
-/// 拷出目标 `addr` 是用户态 `struct rusage*`（C `sys_datacopy` 的
-/// 目的地,misc.c:446-447）;组装顺序与 C 的三段一致——PM 填
-/// `ru_utime/ru_stime`（`set_rusage_times` 对应物）、VM 补
-/// `ru_maxrss/minflt/majflt`、其余 11 域恒零,最后一次性拷给用户。
+/// The copy-out destination `addr` is the user-space `struct rusage*` (the
+/// destination of C's `sys_datacopy`, misc.c:446-447); the assembly order matches
+/// C's three stages — PM fills `ru_utime`/`ru_stime` (the counterpart of
+/// `set_rusage_times`), VM contributes `ru_maxrss`/`minflt`/`majflt`, the other 11
+/// fields stay zero, and the whole thing is copied to the user in one go.
 pub fn do_getrusage(
     table: &ProcTable,
     caller: minix_types::UserSlot,
@@ -732,9 +763,10 @@ pub fn do_getrusage(
 ) -> Result<UtimeStimePair, MiscError> {
     let ep = table.procs[caller.get()].endpoint();
     let (utime, stime) = match who {
-        // C misc.c:430-431 透传内核返回值（V3-P2-6：seam 的错误原样
-        // 上抛，不再折叠 EINVAL；TimesVmCtl 生产实现的原始 errno 保留在
-        // MiscError::Kernel 载荷中）。
+        // C misc.c:430-431 passes the kernel return value straight through (a
+        // seam error is propagated as it is, no longer folded into EINVAL; the
+        // production TimesVmCtl's original errno is kept in the
+        // `MiscError::Kernel` payload).
         RusageWho::Slf => ctl.sys_times(ep)?,
         RusageWho::Children => {
             let p = &table.procs[caller.get()];
@@ -743,12 +775,13 @@ pub fn do_getrusage(
     };
     let (u_sec, u_usec) = rusage_from_ticks(utime, hz);
     let (s_sec, s_usec) = rusage_from_ticks(stime, hz);
-    // C misc.c:441-442 透传 vm_getrusage 返回值（V3-P2-6）。
+    // C misc.c:441-442 passes the vm_getrusage return value straight through.
     let vm = ctl.vm_rusage(ep, who)?;
-    // 组装 `struct rusage`（sys/resource.h:57-76 的 LP64 布局）:
-    // ru_utime@0/ru_stime@16/ru_maxrss@32/ru_minflt@64/ru_majflt@72,
-    // 其余 11 个 long 域 C 侧从未写入（memset 归零后 VM 只改这三处,
-    // misc.c:423 + utility.c:446-450）,保持零。
+    // Assemble `struct rusage` (the LP64 layout of sys/resource.h:57-76):
+    // ru_utime@0/ru_stime@16/ru_maxrss@32/ru_minflt@64/ru_majflt@72, while the
+    // other 11 long fields are never written on the C side (after the memset zeroes
+    // the structure VM only changes these three, misc.c:423 + utility.c:446-450),
+    // so they stay zero.
     let mut buf = [0u8; RUSAGE_LEN];
     buf[0..8].copy_from_slice(&u_sec.to_le_bytes());
     buf[8..16].copy_from_slice(&u_usec.to_le_bytes());
@@ -758,7 +791,8 @@ pub fn do_getrusage(
     buf[64..72].copy_from_slice(&(vm.minor_faults as i64).to_le_bytes());
     buf[72..80].copy_from_slice(&(vm.major_faults as i64).to_le_bytes());
     cpy.copy_to_user(&buf, addr)?;
-    // 返回分解值供测试观测;C 的返回值是 sys_datacopy 结果(成功即 OK)。
+    // The decomposed values are returned for test observation; C's return value is
+    // the sys_datacopy result (OK on success).
     Ok(((u_sec, u_usec), (s_sec, s_usec)))
 }
 
@@ -773,8 +807,9 @@ pub fn do_sprofile(
     mem_ptr: VirBytes,
     ctl: &mut dyn SprofCtl,
 ) -> Result<(), MiscError> {
-    // C profile.c:22-45 —— PROF_START 全载荷经 SprofCtl;PROF_STOP 只带
-    // action;其余动作 EINVAL(switch default)。
+    // C profile.c:22-45 — PROF_START passes the full payload through SprofCtl;
+    // PROF_STOP carries only the action; every other action is EINVAL (the switch
+    // default).
     #[cfg(feature = "sprofile")]
     {
         ctl.sprof(
@@ -784,7 +819,7 @@ pub fn do_sprofile(
     }
     #[cfg(not(feature = "sprofile"))]
     {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = (action, mem_size, freq, intr_type, ep, ctl_ptr, mem_ptr, ctl);
         Err(MiscError::Nosys)
@@ -933,12 +968,12 @@ mod tests {
         let mut cpy = NopCopy;
         // non-super → Perm
         assert_eq!(do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 100, VirBytes(0x1000), &ctl, &mut cpy).unwrap_err(), MiscError::Perm);
-        // super but size mismatch（表大小 = 槽数 × 行宽 76）
+        // super but size mismatch (table size = slot count × 76-byte row)
         table.procs[0].resources.privilege = Privilege::User(Credentials::new(0, 0));
         assert_eq!(do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 99, VirBytes(0x1000), &ctl, &mut cpy).unwrap_err(), MiscError::Inval);
-        // D-29 激活：size = 表大小 → 真实序列化拷出（NopCopy 吞拷贝），
-        // 返回 Ok——ENOSYS fail-closed 由真实数据路径取代（V3-P1-4 →
-        // D-29 闭环）。
+        // The real path is live: size = table size → a real serialized copy-out
+        // (NopCopy swallows the copy) returns Ok — the ENOSYS fail-closed answer
+        // is gone, replaced by the real data path.
         let mproc_tab = table.procs.len() * core::mem::size_of::<minix_types::MProcSnap>();
         assert_eq!(
             do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, mproc_tab, VirBytes(0x1000), &ctl, &mut cpy).unwrap(),
@@ -972,12 +1007,13 @@ mod tests {
             c
         });
         let mut cpy = NopCopy;
-        // caller buffer 2 groups：ngroups 报全量 3（C misc.c:184），拷出截断 2。
+        // caller buffer holds 2 groups: ngroups reports the full 3 (C misc.c:184),
+        // while the copy-out is truncated to 2.
         let info = do_getepinfo(&table, table.procs[1].endpoint(), 2, &mut cpy).unwrap();
         assert_eq!(info.ngroups, 3, "reply ngroups = full mp_ngroups (C misc.c:184)");
         assert_eq!(info.groups, vec![10,20]);
         assert_eq!(info.pid, 101);
-        // 缓冲充足时全量拷出。
+        // With a large enough buffer everything is copied out.
         let info = do_getepinfo(&table, table.procs[1].endpoint(), 16, &mut cpy).unwrap();
         assert_eq!(info.ngroups, 3);
         assert_eq!(info.groups, vec![10,20,30]);
@@ -1051,33 +1087,37 @@ mod tests {
         assert_eq!(do_svrctl_get(&store, Some("nope".to_string()), 4, 100).unwrap_err(), MiscError::Srch);
         // E2BIG if vallen too small
         assert_eq!(do_svrctl_get(&store, Some("a".to_string()), 1, 1).unwrap_err(), MiscError::Big);
-        // keylen==0 → whole table（缓冲 4096 > 1024 全长 → 不触发 E2BIG）
+        // keylen==0 → whole table (buffer 4096 > the full 1024 → E2BIG does not
+        // trigger)
         let whole = do_svrctl_get(&store, None, 0, 4096).unwrap();
         assert!(whole.contains("foo=bar"));
-        // V3-P2-5：全表 E2BIG 判据用 monitor 缓冲全长（C 352-354）——
-        // vallen < 1024 即 E2BIG，即使实际串只有 8 字节。
+        // The whole-table E2BIG test uses the full monitor buffer length
+        // (C 352-354) — vallen < 1024 is E2BIG even when the actual string is only
+        // 8 bytes.
         assert_eq!(do_svrctl_get(&store, None, 0, 512).unwrap_err(), MiscError::Big);
-        // V3-P2-5：GET key 64 字节边界（C 359）。
+        // The GET key's 64-byte bound (C 359).
         let long_key = "k".repeat(65);
         assert_eq!(do_svrctl_get(&store, Some(long_key), 65, 100).unwrap_err(), MiscError::Inval);
-        // V3-P2-5：ENOSPC 先于边界（C 327→328）——表满时连超长 key 也报 ENOSPC。
+        // ENOSPC comes before the bounds (C 327→328) — with a full table even an
+        // over-long key reports ENOSPC.
         assert_eq!(
             do_svrctl_set(&mut store, "k".repeat(64), "v".repeat(64)).unwrap_err(),
             MiscError::Nospc
         );
     }
 
-    // ---- do_svrctl 的 req 门控与四命令分派（V3-P2-5 回归锚点）----
+    // ---- do_svrctl's req gate and four-command dispatch (regression anchors) ----
 
     #[test]
     fn test_svrctl_req_gate_and_dispatch() {
         let mut store = ParamStore::new(String::new());
-        // IOCGROUP 门：非 'P'/'M' 组 → EINVAL（C misc.c:307-309）。
+        // IOCGROUP gate: a group other than 'P'/'M' → EINVAL (C misc.c:307-309).
         assert_eq!(
             do_svrctl(&mut store, ioc(IOC_IN, b'F', 1, 32), Some("k".into()), Some("v".into()), 0).unwrap_err(),
             MiscError::Inval
         );
-        // 四命令分派：PMSETPARAM 写入 → PMGETPARAM 读回；OPM 旧口径同语义。
+        // Four-command dispatch: PMSETPARAM writes → PMGETPARAM reads it back; the
+        // old OPM spelling has the same semantics.
         assert_eq!(
             do_svrctl(&mut store, PMSETPARAM, Some("k".into()), Some("v".into()), 2).unwrap(),
             None
@@ -1090,19 +1130,21 @@ mod tests {
             do_svrctl(&mut store, OPMGETPARAM, Some("k".into()), None, 2).unwrap(),
             Some("v".to_string())
         );
-        // 回归锁（C 镜像常量审计 2026-10-13）：真实 C 线值 `_IOW('M',5)=0x80204D05`
-        // 须命中 get 分支。旧码把 OPMGETPARAM 写成 IOC_OUT(0x40…)，此值会落
-        // 到未知 req 臂回 EINVAL——修后必路由到 get。
+        // Regression lock (C-mirror constant audit): the real C wire value
+        // `_IOW('M',5)=0x80204D05` must hit the get branch. The old code spelled
+        // OPMGETPARAM as IOC_OUT (0x40…), so this value fell into the unknown-req
+        // arm and answered EINVAL — after the fix it must route to get.
         assert_eq!(
             do_svrctl(&mut store, 0x8020_4D05u32 as i32, Some("k".into()), None, 2).unwrap(),
             Some("v".to_string())
         );
-        // 命令码与 C _IOC 算术逐位一致（i386/earm 双 arch 的 LP64 尺寸口径）。
+        // The command codes match C's `_IOC` arithmetic bit for bit (the LP64 size
+        // convention on both i386 and earm).
         assert_eq!(PMGETPARAM, 0xC020_5000u32 as i32);
         assert_eq!(PMSETPARAM, 0x8020_5001u32 as i32);
-        assert_eq!(OPMGETPARAM, 0x8020_4D05u32 as i32); // _IOW→IOC_IN（sys/svrctl.h:19 + ioccom.h）
+        assert_eq!(OPMGETPARAM, 0x8020_4D05u32 as i32); // _IOW→IOC_IN (sys/svrctl.h:19 + ioccom.h)
         assert_eq!(OPMSETPARAM, 0x4020_4D07u32 as i32);
-        // 未知 req（组对但命令号未定义）→ EINVAL（C 392-393）。
+        // Unknown req (right group, undefined command number) → EINVAL (C 392-393).
         assert_eq!(
             do_svrctl(&mut store, PMGETPARAM + 0x100, None, None, 0).unwrap_err(),
             MiscError::Inval
@@ -1111,8 +1153,9 @@ mod tests {
 
     #[test]
     fn test_sysuname_req_direction_gate() {
-        // V3-P2-5：do_sysuname 的 req 方向分支（C misc.c:89-96 default →
-        // EINVAL）——旧签名无 req 形参，该分支无处产生。
+        // do_sysuname's req direction branch (C misc.c:89-96 default → EINVAL) —
+        // the old signature had no req parameter, so this branch had nowhere to
+        // arise.
         let mut table = ProcTable::new();
         mk_running(&mut table, 0, 1000);
         let mut cpy = NopCopy;
@@ -1131,7 +1174,8 @@ mod tests {
         assert!(find_param(&mon, "nope").is_none());
     }
 
-    /// 捕获拷出目的地与字节的 CopyToUser(`do_getrusage` 布局见证)。
+    /// A CopyToUser that captures the copy-out destination and bytes (the layout
+    /// witness of `do_getrusage`).
     struct CapCopy { dst: VirBytes, buf: alloc::vec::Vec<u8>, fail: bool }
     impl CopyToUser for CapCopy {
         fn copy_to_user(&mut self, src: &[u8], dst: VirBytes) -> Result<(), MiscError> {
@@ -1160,9 +1204,10 @@ mod tests {
 
     #[test]
     fn test_getrusage_struct_byte_layout() {
-        // sys/resource.h:57-76 的 LP64 布局见证:utime@0/stime@16/
-        // maxrss@32/minflt@64/majflt@72;其余 11 个 long 域 C 侧从未
-        // 写入(misc.c:423 memset + utility.c:446-450 只改三处),恒零。
+        // Layout witness for the LP64 layout of sys/resource.h:57-76:
+        // utime@0/stime@16/maxrss@32/minflt@64/majflt@72; the other 11 long fields
+        // are never written on the C side (misc.c:423 memset + utility.c:446-450
+        // change only three), so they stay zero.
         let mut table = ProcTable::new();
         mk_running(&mut table, 0, 0);
         let mut ctl = TestTimesVm { hz: 100 };
@@ -1186,7 +1231,8 @@ mod tests {
 
     #[test]
     fn test_getrusage_vm_error_propagates_without_copyout() {
-        // C misc.c:441-442:vm_getrusage 非 OK 原样返回,数据不落用户缓冲。
+        // C misc.c:441-442: a non-OK vm_getrusage is returned as is, and no data
+        // reaches the user buffer.
         struct VmFail;
         impl TimesVmCtl for VmFail {
             fn sys_times(&mut self, _ep: Endpoint) -> Result<(Clock, Clock), MiscError> { Ok((0, 0)) }
@@ -1207,7 +1253,8 @@ mod tests {
 
     #[test]
     fn test_getrusage_copyout_failure_is_fault() {
-        // C misc.c:446-447:sys_datacopy 失败即调用失败(EFAULT 面)。
+        // C misc.c:446-447: a failing sys_datacopy fails the call (the EFAULT
+        // face).
         let mut table = ProcTable::new();
         mk_running(&mut table, 0, 0);
         let mut ctl = TestTimesVm { hz: 100 };
@@ -1282,16 +1329,16 @@ mod tests {
     // Ensure traits have ≥2 impl for Gate D
     #[test]
     fn test_traits_have_two_impls() {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = TestSysInfo { data: vec![] };
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = TestSysInfoAlt { _a: 0 };
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = TestReboot { abort: 0, killed: false, stopped: false, told: false, powered: false };
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = AltReboot;
     }

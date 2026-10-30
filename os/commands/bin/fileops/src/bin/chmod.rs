@@ -16,7 +16,7 @@
 //! file` applies the conditional execute bit. `-f` continues
 //! past errors (only sets the exit status, `chmod.c:215-219`), `-v` prints each
 //! applied mode (this tree's extension; C's option string has no `v`).
-//! Real-machine effect is the writable-root gate (`C-57`/E5), as for every
+//! Real-machine effect is the writable-root gate (`E5`), as for every
 //! write-side command; the parser is host-tested in `mode.rs`.
 //!
 //! The recursive walk replaces fts(3) with this crate's own directory decoder

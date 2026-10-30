@@ -367,7 +367,7 @@ pub fn find_entry(id: i32) -> Option<&'static KernEntry> {
 /// Securelevel gate: only ever rises (mock).
 ///
 /// C: `mib_kern_securelvl` — kern.c:17-30 (`v >= node_int`; "mock",
-/// "TODO: actual support").
+/// "TBD: actual support").
 pub const fn securelvl_ok(current: i32, new: i32) -> bool {
     new >= current
 }
@@ -389,7 +389,7 @@ pub const fn forkfsleep_ok(v: i32) -> bool {
 /// Clockinfo tick: microsecond tick from Hz.
 ///
 /// C: `clockinfo.tick = 1000000 / hz` (+ `tickadj = tick`, "I think",
-/// with a TODO to ask the kernel) — kern.c:44-55. `hz/profhz/stathz`
+/// with a note to ask the kernel) — kern.c:44-55. `hz/profhz/stathz`
 /// all echo `sys_hz()`; only the division is decided here.
 pub const fn clock_tick_us(hz: u32) -> u32 {
     1_000_000 / hz
@@ -539,8 +539,9 @@ mod tests {
 
 // ── Arena wiring (P1-2) ──
 //
-// C 的 `mib_kern_init`（kern.c:496-506 挂表）在本侧的等价物：把 45 个
-// 填充槽按 Kind 映射成竞技场结点。access/type/size 逐一对照 C 表行。
+// The equivalent of C's `mib_kern_init` (table wiring at kern.c:496-506) on
+// this side: map the 45 filler slots to arena nodes by Kind. access/type/size
+// are checked one by one against the C table rows.
 
 pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
     use crate::tree::arena::{FuncKey, NodeId};
@@ -572,7 +573,8 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
         }
     }
 
-    // C 数组按 id 索引：长度 = 最大初始化下标 + 1（kern.c:332-498）。
+    // C's array is indexed by id: length = the largest initialized index + 1
+    // (kern.c:332-498).
     let csize = KERN_ENTRIES.iter().map(|e| e.id).max().unwrap() as u32 + 1;
     t.reserve(parent, csize);
     for e in KERN_ENTRIES.iter() {
@@ -599,8 +601,9 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                     t.slot_mut(n).imm = Some(v);
                 }
                 // Unresolved names keep `imm = None` — reads refuse
-                // EOPNOTSUPP rather than invent a value. NR_VNODES 现已
-                // 解析(arena.rs:1024,锚 vfs/const.h:8 + mib/kern.c:341)。
+                // EOPNOTSUPP rather than invent a value. NR_VNODES is now
+                // resolved (arena.rs:1024, anchors vfs/const.h:8 +
+                // mib/kern.c:341).
             }
             KernKind::ConstStr(text) => {
                 let n = t.place(

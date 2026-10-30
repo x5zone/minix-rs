@@ -76,8 +76,9 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     Fs(Request),
-    /// 传输已自行拒绝的请求（未挂载的 EINVAL / 不服务请求号的 ENOSYS，
-    /// `fsdriver.c:40-56`）：回复已发出，循环不做任何事。
+    /// A request the transport already refused itself (EINVAL when not mounted,
+    /// ENOSYS for a request number it does not serve, `fsdriver.c:40-56`): the reply
+    /// has been sent, and the loop does nothing.
     Refused,
     Devman {
         source: Endpoint,
@@ -228,7 +229,7 @@ impl VTreeFs {
         // The root starts at 0 refs; a failed mount must not leak it,
         // so refcount juggling stays inside `reference` (infallible here:
         // root always exists).
-        //[SD19-gate] SD-19: tree init reference root，失败即 panic 上游
+        //[SD19-gate] tree init references root; a failure would panic upstream
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.tree.reference(root);
         // C: `if (vtreefs_hooks->init_hook != NULL) vtreefs_hooks->init_hook()`
@@ -247,7 +248,7 @@ impl VTreeFs {
     /// for devman — no `Option` slot is modeled for it.
     pub fn unmount(&mut self) {
         let root = self.tree.root();
-        //[SD19-gate] SD-19: tree teardown release root，失败无恢复
+        //[SD19-gate] tree teardown releases root; a failure has no recovery
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.tree.release(root);
     }

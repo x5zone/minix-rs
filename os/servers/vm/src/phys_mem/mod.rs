@@ -40,7 +40,7 @@
 pub(crate) mod types;
 pub(crate) mod alloc_trait;
 pub(crate) mod bitmap_alloc;
-// V10-P2-1 (DEFERRED): both alternate backends are always compiled so the
+// Both alternate backends are always compiled so the
 // parity tests run on the default CI; in a non-test build without their
 // feature they are production-dead until `relocate()` selects them.
 #[cfg_attr(all(not(test), not(feature = "segment_tree_alloc")), allow(dead_code))]
@@ -104,7 +104,7 @@ pub(crate) use segment_tree_alloc::SegmentTreeAllocator;
 pub(crate) use stats::MemStats;
 pub(crate) use types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 
-// V11-P1-3: the former `DefaultAllocator` type alias was removed. It was a
+// The former `DefaultAllocator` type alias was removed. It was a
 // constructor-less documentation alias whose claimed precedence (buddy >
 // segment-tree > bitmap) contradicted the actual runtime selection in
 // `vm_server::VmServer::choose_allocator_type` (segment-tree wins outright
@@ -172,14 +172,14 @@ impl PhysAllocator for PhysAlloc {
 }
 
 impl PhysAlloc {
-    // V10-P2-1: `is_bitmap`/`as_bitmap_mut` have no callers yet
+    // `is_bitmap`/`as_bitmap_mut` have no callers yet
     // (production uses `as_bitmap` in `relocate()`).
     #[allow(dead_code)]
     pub(crate) fn is_bitmap(&self) -> bool {
         matches!(self, PhysAlloc::Bitmap(_))
     }
 
-    // Buddy accessors, symmetric with `as_bitmap` (V11/T35 judgment: kept — —
+    // Buddy accessors, symmetric with `as_bitmap` (kept deliberately —
     // zero callers today because `relocate()` constructs the buddy backend
     // directly and nothing else needs to reach into the enum variant. Kept
     // as the enum's documented accessor surface for the buddy runtime path.
@@ -243,7 +243,7 @@ pub(crate) enum PhysAllocType {
 }
 
 impl PhysAllocType {
-    /// Backend name for audit lines (V12-P1-1: the relocation's backend
+    /// Backend name for audit lines (the relocation's backend
     /// choice is unobservable otherwise). The only caller is inside
     /// `audit_log!`, whose arguments compile away without the audit
     /// feature — hence the allow.
@@ -305,7 +305,7 @@ pub(crate) const fn bytes_to_clicks(bytes: usize) -> usize {
     (bytes + CLICK_SIZE - 1) >> CLICK_SHIFT
 }
 
-// V10-P2-1: byte↔click helpers with no callers yet (the allocators work
+// Byte↔click helpers with no callers yet (the allocators work
 // in clicks; keep as the documented conversion surface).
 #[inline]
 #[allow(dead_code)]
@@ -346,7 +346,7 @@ impl BootMemRegion {
     }
 }
 
-// V10-P2-1: test-only helper (boot-region bounds used by allocator parity
+// Test-only helper (boot-region bounds used by allocator parity
 // tests); kept out of the production surface.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn compute_memory_bounds(regions: &[BootMemRegion]) -> (usize, usize, usize) {
@@ -380,7 +380,7 @@ pub(super) fn is_low_mem_flag(flags: PageAllocFlags) -> bool {
 }
 
 /// The exclusive page ceiling a request may land under — the single
-/// translation of the `PAF_LOWER*` flags (V12-P1-1). Every backend consumes
+/// translation of the `PAF_LOWER*` flags. Every backend consumes
 /// this one function; a duplicated flags→bound table is exactly how the
 /// backends drifted apart. Mirrors C's AHLO bound (alloc.c: the allocator
 /// scans only below the requested limit).

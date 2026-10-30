@@ -298,8 +298,9 @@ mod tests {
 
     #[test]
     fn test_plan_copy_extreme_wrap_boundaries() {
-        // C: input.c:140-142 — 两个极限：tail 31 取 32 个（1+31 两段）、
-        // tail 0 取 32 个（整环一次拷）。
+        // C: input.c:140-142 — the two extremes: tail 31 copying 32 events
+        // (two segments, 1+31), and tail 0 copying 32 events (the whole ring in
+        // one copy).
         let plan = plan_copy(31, 32, 32).unwrap();
         assert_eq!((plan.first_len, plan.second_len), (1, 31));
         assert_eq!((plan.new_tail, plan.new_count), (31, 0));

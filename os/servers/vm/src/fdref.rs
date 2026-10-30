@@ -22,7 +22,7 @@ pub(crate) struct FdRefEntry {
 
 pub(crate) struct PendingFdClose {
     pub fd: i32,
-    // V10-P2-1: `dev`/`ino` are carried for diagnostics; the close request
+    // `dev`/`ino` are carried for diagnostics; the close request
     // itself only needs `fd` (mmap.rs:458).
     #[allow(dead_code)]
     pub dev: u64,
@@ -84,7 +84,7 @@ impl FdRefTable {
         unsafe { &mut *self.inner.get() }
     }
 
-    // V10-P2-1: `create` is test-only — production goes through
+    // `create` is test-only — production goes through
     // `dedup_or_new` (the dedup + refcount path).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn create(&self, fd: i32, dev: u64, ino: u64) -> u32 {
@@ -202,7 +202,7 @@ impl FdRefTable {
     /// Returns the most-recently-`create`d id for that (dev, ino)
     /// pair, or None if no such entry exists. O(1) was O(n) before
     /// (perf fix).
-    // V10-P2-1: `find_by_dev_ino`/`len`/`is_empty` are test-only today
+    // `find_by_dev_ino`/`len`/`is_empty` are test-only today
     // (the dedup check is inlined in `deref_entry` via the side index).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn find_by_dev_ino(&self, dev: u64, ino: u64) -> Option<u32> {

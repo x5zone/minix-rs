@@ -1,28 +1,31 @@
-//! 生产 `KernelApi`——RS 外部边界的 trap 后端实现。
+//! Production `KernelApi` — the trap backend implementation of RS's external
+//! boundary.
 //!
-//! [`crate::boot::KernelApi`] 五域面的唯一生产实现:每方法委托 minix-sys
-//! 的真实 wrapper(E2/E6/E9 已闭环),通电形态即最终形态(real-trap
-//! feature 由镜像构建链统一开启,宿主构建双腿回答 ±EIO——失败显式
-//! 可观察,不 panic)。
+//! The only production implementation of [`crate::boot::KernelApi`]'s five-domain
+//! face: each method delegates to a real minix-sys wrapper (no stubs remain).
+//! The powered-up form is the final form (the real-trap feature is enabled
+//! uniformly by the image build chain, and host builds answer ±EIO on both legs —
+//! failures are explicitly observable, never panics).
 //!
-//! # 两条传输腿
+//! # Two transport legs
 //!
-//! minix-sys 有两条独立传输通道,五域面横跨两者:
+//! minix-sys has two independent transport channels, and the five-domain face
+//! spans both:
 //!
-//! - **IPC 腿** `DirectTrapTransport`(SEF/PM/VM/SCHED 消息)——
-//!   `pm.rs`/`vm.rs` 的 `*_via` wrapper 与 `IpcApi` 走这里;
-//! - **内核调用腿** `DirectKernelCallTransport`(`sys_*` 调用)——
-//!   `syscall.rs` 的 `sys_*` wrapper 全部吃 `&impl KernelCallTransport`。
+//! - **IPC leg** `DirectTrapTransport` (SEF/PM/VM/SCHED messages) — the `*_via`
+//!   wrappers in `pm.rs`/`vm.rs` and `IpcApi` go through here;
+//! - **Kernel-call leg** `DirectKernelCallTransport` (`sys_*` calls) — every
+//!   `sys_*` wrapper in `syscall.rs` takes `&impl KernelCallTransport`.
 //!
-//! # 三条错误约定(见 19-rs-external-interfaces.md)
+//! # Three error conventions (see 19-rs-external-interfaces.md)
 //!
-//! 1. `*_via` taskcall wrapper:已折叠,返回即 `Result<_, Errno>`;
-//! 2. `sys_*` 内核调用 wrapper:裸 i32,负 = errno → `Errno::from_i32(-r)`;
-//! 3. IPC 腿 `TrapStatus`:正 errno → `Errno::from_i32(s.0)`。
+//! 1. `*_via` taskcall wrappers: already folded, they return `Result<_, Errno>`;
+//! 2. `sys_*` kernel-call wrappers: bare i32, negative = errno → `Errno::from_i32(-r)`;
+//! 3. IPC leg `TrapStatus`: positive errno → `Errno::from_i32(s.0)`.
 //!
-//! C 对应:`minix3/minix/servers/rs/main.c` 的 libsys 调用面
-//! (sys_getmachine/sys_privctl/sched_start/...) 与
-//! `minix3/minix/servers/rs/manager.c` 的 `_taskcall(PM/VM)` 面。
+//! C counterpart: the libsys call face of `minix3/minix/servers/rs/main.c`
+//! (sys_getmachine/sys_privctl/sched_start/...) and the `_taskcall(PM/VM)` face
+//! of `minix3/minix/servers/rs/manager.c`.
 
 use minix_sys::ipc::{AsyncSendQueue, AsyncSlotFlags, IpcTransport as _};
 use minix_sys::syscall::{self, DirectKernelCallTransport};
@@ -33,9 +36,9 @@ use crate::boot::{IpcApi, Machine, PmApi, SchedApi, SysApi, VmApi, VmRsMemReq};
 use crate::privilege::{CallMask, PrivCtlOp, PrivFlags, PrivId, Privilege, SysMap, TrapMask};
 use crate::sched::SchedulerConfig;
 
-// ── privctl SetSys 的 wire 镜像 ─────────────────────────────────────
+// ── Wire image of privctl SetSys ─────────────────────────────────────
 
-/// `IoRange` 的 wire 镜像(内核 kpriv.rs:21-24,repr(C),8 字节)。
+/// Wire image of `IoRange` (kernel kpriv.rs:21-24, repr(C), 8 bytes).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct WireIoRange {
@@ -43,7 +46,7 @@ struct WireIoRange {
     limit: u32,
 }
 
-/// `MemRange` 的 wire 镜像(内核 kpriv.rs:39-42,repr(C),16 字节)。
+/// Wire image of `MemRange` (kernel kpriv.rs:39-42, repr(C), 16 bytes).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct WireMemRange {
@@ -51,19 +54,22 @@ struct WireMemRange {
     limit: u64,
 }
 
-/// `SYS_PRIV_SET_SYS`/`UPDATE_SYS` 的载荷镜像。
+/// Payload image of `SYS_PRIV_SET_SYS`/`UPDATE_SYS`.
 ///
-/// 内核侧权威布局:`os/kernel/src/kpriv.rs` `PrivUpdateRequest`
-/// (repr(C);内核注释明确"独立 struct,只需与 RS 服务端载荷布局内部
-/// 自洽")。本镜像逐域对应 rs 的 [`Privilege`](crate::privilege::Privilege)
-/// (privilege.rs:362-395 注释"逐域可比")。**字段宽度必须逐域对齐内核
-/// (不只字段序)**:内核 `s_id: SysId = u16`(kpriv.rs:10),镜像也必须是
-/// u16——s16g/s17b 真机实锤的旧缺陷:i32 的 s_id 使 repr(C) 头部错位
-/// 4 字节,内核把 rs s_id 的高半字读成 s_flags(恒 0),SET_SYS 覆盖后
-/// 全部服务 SYS_PROC 归零 → sched `sys_setalarm` EPERM panic(main.rs
-/// init_scheduling 臂);`s_ipc_to` 恰在 24 字节处重新对齐,故 IPC 掩码
-/// 正常、症状只在 flags/sig_mgr 腿,极具迷惑性。`offset_of!` 守卫把
-/// 头部三个偏移钉死,漂移即编译失败。
+/// Authoritative kernel-side layout: `PrivUpdateRequest` in
+/// `os/kernel/src/kpriv.rs` (repr(C); the kernel comment states it is an
+/// independent struct that only needs to be internally consistent with the RS
+/// server's payload layout). This image maps domain by domain onto rs's
+/// [`Privilege`](crate::privilege::Privilege) (privilege.rs:362-395, "comparable
+/// per domain"). **Field widths, not just field order, must match the kernel**:
+/// the kernel has `s_id: SysId = u16` (kpriv.rs:10), so the image must be u16 —
+/// an old defect confirmed on real hardware: an i32 `s_id` shifted the repr(C)
+/// header by 4 bytes and the kernel read the high halfword of rs's s_id as
+/// s_flags (always 0); after SET_SYS overwrote it, every service's SYS_PROC
+/// became 0 → sched `sys_setalarm` EPERM panic (main.rs init_scheduling arm).
+/// `s_ipc_to` happens to realign at byte 24, so the IPC mask stayed correct and
+/// the symptom appeared only on the flags/sig_mgr legs — highly misleading. The
+/// `offset_of!` guards pin the three header offsets; any drift fails the build.
 #[repr(C)]
 struct WirePrivUpdate {
     s_id: u16,
@@ -82,16 +88,17 @@ struct WirePrivUpdate {
     s_mem_tab: [WireMemRange; 20],
 }
 
-// 头部偏移守卫:与内核 PrivUpdateRequest(kpriv.rs,repr(C),
-// SysId=u16)逐字节对齐的证据。s_flags 必须 @2、s_init_flags @4、
-// s_ipc_to @24(与内核首个 8 字节对齐域重合)。
+// Header offset guards: byte-for-byte alignment evidence against the kernel's
+// PrivUpdateRequest (kpriv.rs, repr(C), SysId=u16). s_flags must be @2,
+// s_init_flags @4, s_ipc_to @24 (coinciding with the kernel's first 8-byte
+// aligned field).
 const _: () = assert!(core::mem::offset_of!(WirePrivUpdate, s_flags) == 2);
 const _: () = assert!(core::mem::offset_of!(WirePrivUpdate, s_init_flags) == 4);
 const _: () = assert!(core::mem::offset_of!(WirePrivUpdate, s_ipc_to) == 24);
 const _: () = assert!(core::mem::size_of::<WirePrivUpdate>() == core::mem::size_of::<[u64; 119]>());
 
 impl WirePrivUpdate {
-    /// [`Privilege`] → wire 全量编码(SetSys/UpdateSys 载荷)。
+    /// Full [`Privilege`] → wire encoding (the SetSys/UpdateSys payload).
     fn encode(priv_: &Privilege) -> Self {
         Self {
             s_id: priv_.id.0 as u16,
@@ -108,8 +115,9 @@ impl WirePrivUpdate {
             s_nr_io_range: priv_.nr_io_range,
             s_io_tab: core::array::from_fn(|i| {
                 let r = &priv_.io_ranges[i];
-                // rs 侧语义是"数量 len";wire 是"末端口 limit"(C io_range,
-                // 内核 kpriv 按原值比较)。len==0 → 保持全零(未用项)。
+                // The rs side means "count len"; the wire means "last port limit"
+                // (C io_range; the kernel kpriv compares raw values). len==0 → stay
+                // all zero (unused entry).
                 let limit = if r.len == 0 { 0 } else { r.base + r.len - 1 };
                 WireIoRange { base: r.base, limit }
             }),
@@ -125,44 +133,49 @@ impl WirePrivUpdate {
     }
 }
 
-// ── 生产结构 ────────────────────────────────────────────────────────
+// ── Production structure ─────────────────────────────────────────────────
 
-/// RS 外部边界的生产实现(两腿 + privctl/mask 的 scratch 载荷)。
+/// Production implementation of RS's external boundary (both legs plus the
+/// privctl/mask scratch payloads).
 ///
-/// scratch 字段存在的理由:`sys_privctl(SetSys)` 与 `vm_rs_set_priv` 都
-/// 传 **RS 自有内存的地址**(内核/VM 在同步调用期间 safecopy/datacopy
-/// 该地址),结构体字段保证调用期间地址稳定——栈临时值的地址同样可以,
-/// 但字段让"载荷存活期 ≥ 调用期"成为类型事实。
+/// Why the scratch fields exist: `sys_privctl(SetSys)` and `vm_rs_set_priv` both
+/// pass **the address of RS-owned memory** (the kernel/VM safecopy/datacopy that
+/// address during the synchronous call). Struct fields keep the address stable
+/// for the duration of the call — a stack temporary's address would also work,
+/// but a field makes "payload lifetime ≥ call duration" a type-level fact.
 pub struct TrapKernelApi {
-    /// IPC 腿(pm/vm/sched 的 `*_via` 与 [`IpcApi`])。
+    /// IPC leg (the `*_via` wrappers of pm/vm/sched and [`IpcApi`]).
     ipc: minix_sys::ipc::DirectTrapTransport,
-    /// 内核调用腿(`sys_*` wrapper)。
+    /// Kernel-call leg (the `sys_*` wrappers).
     kernel: DirectKernelCallTransport,
-    /// DS 客户端(label 解析,publish/retrieve 族)。
+    /// DS client (label resolution, the publish/retrieve family).
     ds: minix_sys::ds::DsClient<
         minix_sys::ipc::DirectTrapTransport,
         DirectKernelCallTransport,
     >,
-    /// grant 表(cpf_grant_direct/revoke 生命线)。
+    /// Grant table (the cpf_grant_direct/revoke lifeline).
     grants: minix_sys::grant::GrantTable,
-    /// `sys_privctl(SetSys/UpdateSys)` 的稳定载荷。
+    /// Stable payload for `sys_privctl(SetSys/UpdateSys)`.
     priv_wire: WirePrivUpdate,
-    /// `vm_rs_set_priv` 的掩码缓冲(VM datacopy 回读 8 字节,2×u32 LE)。
+    /// Mask buffer for `vm_rs_set_priv` (VM datacopies back 8 bytes, 2×u32 LE).
     mask_wire: [u8; 8],
-    /// 异步发送的持久 SENDA 环表 —— C `static asynmsg_t msgtable[ASYN_NR]`
-    /// (`asynsend.c:18`) 的忠实移植(同 VM B5 `KernelIpcTransport::queue`)。
-    /// 内核 `senda` 只记本表的用户态地址,目标进 receive 时才回读该地址并写回
-    /// `result|AMF_DONE`(ipc.rs `deliver_async`),故槽必须活得比 `asynsend`
-    /// 调用更久。栈上现造的单槽会在下一发 `senda` 重注册 `s_asyntab` 时冲刷掉
-    /// 尚未投递的旧消息(NK4-C B7:RS 开机连发 RS_INIT,dst=VFS 那条被后一发
-    /// 覆盖 + 栈帧失效 → RS_INIT 永久丢失 → VFS 永停 receive(RS) →
-    /// INIT→VFS→RS 启动死锁)。容量 32 覆盖开机 fan-out(全部 SYS_PROC 服务器,
-    /// ~12)并留裕度。
+    /// Persistent SENDA ring for asynchronous sends — a faithful port of C's
+    /// `static asynmsg_t msgtable[ASYN_NR]` (`asynsend.c:18`; the same shape as
+    /// VM's `KernelIpcTransport::queue`).
+    /// The kernel `senda` records only the user-space address of this table; when
+    /// the target reaches receive it reads that address back and writes
+    /// `result|AMF_DONE` (ipc.rs `deliver_async`), so a slot must outlive the
+    /// `asynsend` call. A stack-local single slot is flushed when the next `senda`
+    /// re-registers `s_asyntab` before the old message is delivered (RS sends
+    /// RS_INIT several times at boot; the dst=VFS entry was overwritten by the next
+    /// send and its stack frame died → RS_INIT lost forever → VFS never left
+    /// receive(RS) → INIT→VFS→RS boot deadlock). Capacity 32 covers the boot
+    /// fan-out (all SYS_PROC servers, ~12) with margin.
     senda_queue: AsyncSendQueue<32>,
 }
 
 impl TrapKernelApi {
-    // 非 const:DsClient::new 构造 GrantTable(非 const)。
+    // Not const: DsClient::new constructs a GrantTable (not const).
     pub fn new() -> Self {
         Self {
             ipc: minix_sys::ipc::DirectTrapTransport,
@@ -202,9 +215,10 @@ impl Default for TrapKernelApi {
 }
 
 impl TrapKernelApi {
-    /// 用户栈顶(C: `minix_get_user_sp`,kernel_utils.c:40-52 读 kerninfo
-    /// 页 kuserinfo.kui_user_sp)——Rust 走 GET_KINFO 结构拷替代
-    /// (KinfoStruct.user_sp@8,与 clock_time 的 SYS_TIMES 替代同模式)。
+    /// User stack top (C: `minix_get_user_sp`, kernel_utils.c:40-52 reads
+    /// kuserinfo.kui_user_sp from the kerninfo page) — Rust substitutes a
+    /// GET_KINFO struct copy (KinfoStruct.user_sp@8, the same pattern as
+    /// clock_time's SYS_TIMES substitution).
     fn user_sp(&self) -> Result<u64, Errno> {
         let mut buf = [0u8; core::mem::size_of::<minix_types::KinfoStruct>()];
         syscall::sys_getinfo_into(&self.kernel, minix_types::GET_KINFO, &mut buf, 0)
@@ -213,7 +227,7 @@ impl TrapKernelApi {
     }
 }
 
-/// 内核调用 wrapper 的裸 i32 折返(负 = errno;pm/src/exit.rs 先例)。
+/// Fold a kernel-call wrapper's bare i32 (negative = errno; precedent in pm/src/exit.rs).
 fn sys_result(r: i32) -> Result<(), Errno> {
     if r < 0 {
         Err(Errno::from_i32(-r))
@@ -224,8 +238,8 @@ fn sys_result(r: i32) -> Result<(), Errno> {
 
 impl SysApi for TrapKernelApi {
     fn get_machine(&mut self) -> Result<Machine, Errno> {
-        // 内核 getinfo_machine 拷 MachineStruct(32 字节;kernel/misc.rs:301):
-        // processors_count u32@0, bsp_id u32@4。
+        // The kernel's getinfo_machine copies MachineStruct (32 bytes;
+        // kernel/misc.rs:301): processors_count u32@0, bsp_id u32@4.
         let mut buf = [0u8; 32];
         syscall::sys_get_machine(&self.kernel, &mut buf).map_err(Errno::from_i32)?;
         Ok(Machine {
@@ -240,8 +254,9 @@ impl SysApi for TrapKernelApi {
     }
 
     fn get_ticks(&mut self) -> Result<Clock, Errno> {
-        // SYS_TIMES 即载体(E9;C getticks 的内核请求)——SELF 由内核替换
-        // 为调用者。RS 只消费 boot_ticks( syscall.rs:1798 注)。
+        // SYS_TIMES is the carrier (C getticks's kernel request) — the kernel
+        // replaces SELF with the caller. RS consumes only boot_ticks (note at
+        // syscall.rs:1798).
         let times = syscall::sys_times(&self.kernel, Endpoint::SELF.0)
             .map_err(Errno::from_i32)?;
         Ok(times.boot_ticks as Clock)
@@ -253,9 +268,9 @@ impl SysApi for TrapKernelApi {
         op: PrivCtlOp,
         priv_: Option<&Privilege>,
     ) -> Result<(), Errno> {
-        // SetSys/UpdateSys:内核从 arg_ptr safecopy 整个 WirePrivUpdate
-        // (kernel/syscall.rs privctl_set_sys 的 arg_ptr != 0 分支);
-        // 其余 opcode 只传 opcode+endpoint,arg_ptr=0。
+        // SetSys/UpdateSys: the kernel safecopies the whole WirePrivUpdate from
+        // arg_ptr (the arg_ptr != 0 branch of kernel/syscall.rs privctl_set_sys);
+        // other opcodes pass only opcode+endpoint with arg_ptr=0.
         let arg_ptr = match (op, priv_) {
             (PrivCtlOp::SetSys | PrivCtlOp::UpdateSys, Some(p)) => {
                 self.priv_wire = WirePrivUpdate::encode(p);
@@ -268,9 +283,9 @@ impl SysApi for TrapKernelApi {
     }
 
     fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, Errno> {
-        // 线上 wire 是 PrivInfoStruct(56 字节;kernel/misc.rs:807):无
-        // init_flags/bak_sig_mgr/io/irq/mem——增量回读是既定分工(见
-        // WirePrivUpdate 注)。
+        // The on-wire form is PrivInfoStruct (56 bytes; kernel/misc.rs:807): no
+        // init_flags/bak_sig_mgr/io/irq/mem — incremental read-back is the agreed
+        // division of labor (see the WirePrivUpdate note).
         let mut buf = [0u8; 56];
         syscall::sys_get_priv(&self.kernel, proc.0, &mut buf).map_err(Errno::from_i32)?;
         let rd32 = |off: usize| u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
@@ -290,7 +305,7 @@ impl SysApi for TrapKernelApi {
     }
 
     fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno> {
-        // C main.c:433 不查旧闹钟——忽略返回的 (time_left, uptime)。
+        // C main.c:433 does not check the old alarm — ignore the returned (time_left, uptime).
         syscall::sys_setalarm(&self.kernel, delay_ticks as u64, false)
             .map(|_| ())
             .map_err(Errno::from_i32)
@@ -321,8 +336,9 @@ impl SysApi for TrapKernelApi {
 
 impl SchedApi for TrapKernelApi {
     fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno> {
-        // C sched_start.c:46-88 的复合传输目标:scheduler 是内核 →
-        // sys_schedctl;否则 SCHEDULING_START 消息发给调度器端点。
+        // The composite transport target of C sched_start.c:46-88: when the
+        // scheduler is the kernel → sys_schedctl; otherwise send a SCHEDULING_START
+        // message to the scheduler endpoint.
         if cfg.scheduler == Endpoint::KERNEL {
             syscall::sys_schedctl(
                 &self.kernel,
@@ -365,9 +381,9 @@ impl PmApi for TrapKernelApi {
     }
 
     fn cpf_reload(&mut self) -> Result<(), Errno> {
-        // C cpf_reload(safecopies.c:373-381):fork 后把 grant 表位置重新
-        // 告知内核(sys_setgrant);C 的 `if (grants)` 空表守卫 —— 表恒存在,
-        // register 直调。
+        // C cpf_reload (safecopies.c:373-381): after fork, tell the kernel the
+        // grant table location again (sys_setgrant); C's `if (grants)` empty-table
+        // guard — the table always exists here, so register is called directly.
         self.grants
             .register(&self.kernel)
             .map_err(Errno::from_i32)
@@ -385,15 +401,17 @@ impl PmApi for TrapKernelApi {
         args: &[u8],
         argc: usize,
     ) -> Result<(), Errno> {
-        // C rs/exec.c:21-64 srv_execve + do_exec(:64-127) 的五步组装。
-        // 本实现运行于子进程(自执行):段与栈写入自身地址空间,PM 接管
-        // 后 exec_restart 交出控制权。
+        // The five-step assembly of C rs/exec.c:21-64 srv_execve + do_exec
+        // (:64-127). This implementation runs in the child process (self-exec):
+        // segments and stack are written into its own address space, and
+        // exec_restart hands over control once PM takes charge.
         use alloc::vec::Vec;
         use minix_elf;
         use minix_sys::stack::{stack_fill, stack_params};
 
-        // 1. 参数解码:`args` 是 NUL 分隔的 argv 打包(前 argc 个为参数)。
-        //    C 的 envp 继承按 ARCH 决策不建模(10-rs-service-convert.md §3)。
+        // 1. Argument decoding: `args` is a NUL-separated argv pack (the first
+        //    argc entries are arguments). C's envp inheritance is not modeled per
+        //    the ARCH decision (10-rs-service-convert.md §3).
         let mut argv: Vec<&str> = Vec::new();
         for part in args.split(|&b| b == 0) {
             if argv.len() == argc || part.is_empty() {
@@ -406,8 +424,8 @@ impl PmApi for TrapKernelApi {
         }
         let empty: Vec<&str> = Vec::new();
 
-        // 2. 栈帧预算与镜像构建(stack_utils.c 纪律,user_sp 来自
-        //    GET_KINFO 的 USR_STACKTOP)。
+        // 2. Stack frame budget and image construction (stack_utils.c discipline;
+        //    user_sp comes from GET_KINFO's USR_STACKTOP).
         let params = stack_params(&argv, &empty);
         let mut frame = alloc::vec![0u8; params.frame_size];
         let user_sp = self.user_sp()?;
@@ -419,9 +437,10 @@ impl PmApi for TrapKernelApi {
                 },
             )?;
 
-        // 3. ELF 段装载(on-demand 语义:页面在首次访问时缺页分配,
-        //    filesz 字节自镜像拷入自身 vaddr;exec.c:130-150 read_seg
-        //    的 sys_datacopy 自拷同型)。
+        // 3. ELF segment loading (on-demand semantics: pages are fault-allocated
+        //    on first access; filesz bytes are copied from the image into its own
+        //    vaddr; the same shape as the sys_datacopy self-copy in exec.c:130-150
+        //    read_seg).
         let mut copied_any = false;
         for seg in minix_elf::segment_iter(exec).map_err(|_| Errno::ENOEXEC)? {
             let src = &exec[seg.offset as usize..(seg.offset + seg.filesz) as usize];
@@ -440,14 +459,15 @@ impl PmApi for TrapKernelApi {
             return Err(Errno::ENOEXEC);
         }
 
-        // 4. PM 接管(PM_EXEC_NEW 语义由 exec_restart 的 RS 门续接;
-        //    栈帧字节经 exec_restart 的 ps_str/pc 契约交付)。
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // 4. PM takeover (PM_EXEC_NEW semantics continue through exec_restart's RS
+        //    gate; stack frame bytes are delivered via exec_restart's ps_str/pc
+        //    contract).
+        // [SD19-gate] Best-effort finish; discarding the Result does not change the established primary result (C is void/ignored at the same spot)
         #[allow(clippy::let_underscore_must_use)]
         let _ = proc;
 
-        // 5. exec_restart 握手(pm/exec.c:150:exec_restart(proc, OK,
-        //    execi.pc, ps_str))。
+        // 5. exec_restart handshake (pm/exec.c:150: exec_restart(proc, OK,
+        //    execi.pc, ps_str)).
         let pc = minix_elf::entry_point(exec).map_err(|_| Errno::ENOEXEC)?;
         sys_pm::exec_restart_via(
             &self.ipc,
@@ -463,12 +483,13 @@ impl PmApi for TrapKernelApi {
     }
 
     fn waitpid(&mut self) -> Option<Pid> {
-        // C request.c:1063 do_sigchld 排空循环:waitpid(-1, &status,
-        // WNOHANG) > 0。trait 无错误通道:ECHILD(无更多子进程)正常终止;
-        // 其余错误同样终止排空(与 C 的循环退出形状一致)。
-        // NK4-C §1.117: WNOHANG 有活子但无退出时回 pid==0——C 的 `> 0`
-        // 条件此时退出排空环。`Some(0)` 会让调用方 `while let Some(_)`
-        // 无界忙等(同 init runetcrc/single_user reap 环),故 0 也归 None。
+        // C request.c:1063 do_sigchld drain loop: waitpid(-1, &status, WNOHANG) > 0.
+        // The trait has no error channel: ECHILD (no more children) ends the drain
+        // normally; other errors also end it (matching C's loop-exit shape).
+        // With WNOHANG, a live child that has not exited returns pid==0 — C's `> 0`
+        // condition then exits the drain loop. `Some(0)` would make the caller's
+        // `while let Some(_)` spin indefinitely (same as init's runetcrc/single_user
+        // reap loops), so 0 also maps to None.
         match sys_pm::waitpid_via(&self.ipc, -1, minix_sys::wait::WNOHANG, 0) {
             Ok((pid, _status)) if pid > 0 => Some(pid),
             _ => None,
@@ -488,8 +509,8 @@ impl VmApi for TrapKernelApi {
         a: usize,
         b: usize,
     ) -> Result<(), Errno> {
-        // a/b 仅 HeapPrealloc/MapPrealloc(req 2/3)消费:addr 走 m1p1,
-        // len 走 m1i3(VM 解码 dispatcher.rs:885-895)。
+        // a/b are consumed only by HeapPrealloc/MapPrealloc (req 2/3): addr goes
+        // in m1p1, len in m1i3 (VM decoding, dispatcher.rs:885-895).
         sys_vm::vm_rs_memctl_via(&self.ipc, proc, req as i32, a as u64, b as u64)
     }
 
@@ -499,8 +520,8 @@ impl VmApi for TrapKernelApi {
         vm_call_mask: CallMask,
         allow: bool,
     ) -> Result<(), Errno> {
-        // VM datacopy 回读 8 字节 = 2×u32 bitchunk LE 拼 u64(vm
-        // dispatcher.rs:805-846,NR_VM_CALLS=49 → 2 chunk)。
+        // VM datacopies back 8 bytes = 2×u32 bitchunks assembled LE into a u64
+        // (vm dispatcher.rs:805-846, NR_VM_CALLS=49 → 2 chunks).
         self.mask_wire = vm_call_mask.0.to_le_bytes();
         sys_vm::vm_rs_set_priv_via(
             &self.ipc,
@@ -520,8 +541,9 @@ impl IpcApi for TrapKernelApi {
         let sts = self.ipc.receive(endpoint, &mut msg).map_err(|t| Errno::from_i32(t.0))?;
         let status = crate::dispatch::IpcStatus { flags: sts.0 };
         let stamp = if status.is_notify() {
-            // 通知载荷的内核时间戳(ipc.h:1715);union 臂仅成功接收且
-            // 判定为通知后读取,与发送方填充的臂一致。
+            // Kernel timestamp of a notification payload (ipc.h:1715); the union
+            // arm is read only after a successful receive classified as a
+            // notification, matching the arm the sender filled.
             (unsafe { msg.m_u.m_notify.timestamp }) as Clock
         } else {
             0
@@ -535,11 +557,13 @@ impl IpcApi for TrapKernelApi {
         result: i32,
         payload: &Message,
     ) -> Result<(), Errno> {
-        // C: `reply` 是**非阻塞** `ipc_sendnb(who, m_ptr)`（utility.c:324），
-        // handler 变异后的请求消息带 result 型回传。早先误注为「阻塞
-        // ipc_send」（utility.c 全文用的是 sendnb）；出生回报握手（NK4-C
-        // B9b）要求服务侧用 sendrec parked 在 receive(RS)，RS 出口这
-        // 一发 sendnb 经 Path A 直投唤醒 parked 的服务——与 C 同构。
+        // C: `reply` is a **non-blocking** `ipc_sendnb(who, m_ptr)`
+        // (utility.c:324); the handler-mutated request message is sent back with
+        // the result as m_type. An earlier note wrongly called it "blocking
+        // ipc_send" (utility.c uses sendnb throughout); the birth-report handshake
+        // requires the service side to park in receive(RS) with sendrec, and this
+        // single sendnb at RS's exit delivers directly via Path A to wake the
+        // parked service — isomorphic to C.
         let mut m = *payload;
         m.m_type = result;
         self.ipc
@@ -552,14 +576,17 @@ impl IpcApi for TrapKernelApi {
     }
 
     fn asynsend(&mut self, endpoint: Endpoint, message: &Message) -> Result<(), Errno> {
-        // C: rs_asynsend(utility.c:223-242) 两条分支都经 asynsend3 → 持久
-        // 多条目 `static msgtable[ASYN_NR]`(asynsend.c:18):新消息追加到
-        // next_slot,从不冲刷前一条;senda_reload 每轮把整段未完成表
-        // (`&msgtable[first_slot]`, len) 重注册给内核(asynsend.c:144-155)。
-        // 早先误读为"一次性单槽"(栈上现造),下一发 senda 会覆盖 s_asyntab
-        // 并让旧栈帧失效——RS 开机 burst 连发 RS_INIT 正是此路径(NK4-C B7)。
-        // 改持持久 AsyncSendQueue 字段:先 enqueue(VALID 由 enqueue 最后或上,
-        // 对应 asynsend.c:124-131),再把 pending_slice 交给 senda。
+        // C: both branches of rs_asynsend (utility.c:223-242) go through asynsend3
+        // → the persistent multi-entry `static msgtable[ASYN_NR]` (asynsend.c:18):
+        // a new message is appended at next_slot and never flushes the previous
+        // one; senda_reload re-registers the whole unfinished table
+        // (`&msgtable[first_slot]`, len) with the kernel each round
+        // (asynsend.c:144-155). An earlier version misread it as a "one-shot single
+        // slot" (built on the stack); the next senda would overwrite s_asyntab and
+        // invalidate the old stack frame — exactly the path taken when RS fires
+        // RS_INIT in a boot burst. It now holds a persistent AsyncSendQueue field:
+        // first enqueue (VALID is OR'd in last by enqueue, matching
+        // asynsend.c:124-131), then hand pending_slice to senda.
         self.senda_queue
             .enqueue(endpoint, *message, AsyncSlotFlags::NO_REPLY)
             .map_err(|_| Errno::from_i32(minix_types::EBUSY))?;
@@ -569,7 +596,7 @@ impl IpcApi for TrapKernelApi {
     }
 
     fn safecopy_from(&mut self, source: Endpoint, addr: usize, buf: &mut [u8]) -> Result<(), Errno> {
-        // C manager.c:141/160 的 sys_datacopy 形状(SELF = -2,内核替换)。
+        // The sys_datacopy shape of C manager.c:141/160 (SELF = -2, replaced by the kernel).
         syscall::sys_datacopy(
             &self.kernel,
             source.0,
@@ -594,9 +621,10 @@ impl IpcApi for TrapKernelApi {
     }
 
     fn ds_lookup_by_label(&mut self, label: &str) -> Option<Endpoint> {
-        // DS 查表复用进程主 grant 表（NK4-C 1.24：DsClient 不再自带私有
-        // 表，否则其注册会覆盖内核 `s_grant_table`，与本结构 `grant_read`
-        // 用的 `self.grants` 错位——与 VFS B13 同根）。
+        // DS lookup reuses the process's main grant table (DsClient no longer
+        // keeps a private table; otherwise its registration would overwrite the
+        // kernel's `s_grant_table` and diverge from `self.grants`, which this
+        // struct's `grant_read` uses — same root cause as VFS).
         self.ds
             .retrieve_label_endpt(&mut self.grants, label)
             .ok()
@@ -630,7 +658,7 @@ impl IpcApi for TrapKernelApi {
     }
 
     fn grant_revoke(&mut self, grant: GrantId) {
-        // [SD19-gate] 尽力而为撤销授权
+        // [SD19-gate] Best-effort grant revocation
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.grants.revoke(grant);
     }
@@ -642,7 +670,7 @@ impl IpcApi for TrapKernelApi {
         state_data_gid: Option<GrantId>,
         state: i32,
     ) -> Result<(), Errno> {
-        // C update.c:203-227 —— m_rs_update 三域 + rs_asynsend。
+        // C update.c:203-227 — the three m_rs_update domains plus rs_asynsend.
         let mut msg = Message::default();
         msg.m_u.m_rs_update = {
             let mut u = minix_types::MessRsUpdate::default();
@@ -660,8 +688,8 @@ impl IpcApi for TrapKernelApi {
         use minix_sys::syscall::perform_taskcall;
         let mut msg = Message::default();
         {
-            // SAFETY: m_lsys_vm_update 是 VM_RS_PREPARE 的文档化载荷
-            //(minix-types vm.rs:1710-1719)。
+            // SAFETY: m_lsys_vm_update is the documented payload of VM_RS_PREPARE
+            // (minix-types vm.rs:1710-1719).
             let u = unsafe { &mut msg.m_u.m_lsys_vm_update };
             u.src = src.0;
             u.dst = dst.0;
@@ -681,7 +709,7 @@ impl IpcApi for TrapKernelApi {
 mod trap_api_tests {
     use super::*;
 
-    /// NK4-C B7 regression: consecutive `asynsend` calls accumulate into the
+    /// Regression: consecutive `asynsend` calls accumulate into the
     /// persistent ring rather than the later send flushing the earlier one.
     /// The old stack-local single-slot form could only ever hold one entry —
     /// the confirmed boot-deadlock root cause (RS_INIT to VFS dropped by the
@@ -691,10 +719,10 @@ mod trap_api_tests {
     fn asynsend_accumulates_without_flush() {
         let mut api = TrapKernelApi::new();
         let m = Message::default();
-        // [SD19-gate] asynsend 发后即忘
+        // [SD19-gate] asynsend is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = api.asynsend(Endpoint::VM, &m);
-        // [SD19-gate] asynsend 发后即忘
+        // [SD19-gate] asynsend is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = api.asynsend(Endpoint::DS, &m);
         assert_eq!(

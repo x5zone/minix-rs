@@ -13,7 +13,7 @@
 //! of a reference file), `-h` (`lutimens`, which needs the symlink-not-following
 //! face), and the `--date` / `--reference` long options. Each reports and exits
 //! 1 rather than silently diverging. Real file creation and time-setting need a
-//! writable root, so the run is gated with the write-class commands (`C-57`/E5).
+//! writable root, so the run is gated with the write-class commands (`E5`).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

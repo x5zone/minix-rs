@@ -543,7 +543,7 @@ pub fn clo_exec(rfp: &mut FProc, filp_table: &mut crate::filp::FilpTable) {
         if rfp.cloexec_set.get(i)
             && let Some(fd) = crate::filedes::Fd::new(i)
         {
-            // [SD19-gate] 尽力而为关 fd 收尾（C vfs 清理路径 close 失败不回错）
+            // [SD19-gate] best-effort close of the fd during cleanup (C's vfs cleanup path does not report close failures)
             #[allow(clippy::let_underscore_must_use)]
             let _ = close_fd(rfp, fd, filp_table);
         }
@@ -845,8 +845,8 @@ mod tests {
 
         clo_exec(&mut rfp, &mut tbl);
 
-        assert!(rfp.filps[fd0.get()].is_some()); // 非 CLOEXEC 幸存
-        assert!(rfp.filps[fd1.get()].is_none()); // CLOEXEC 已关
-        assert_eq!(tbl.get(fid1).unwrap().count, 0); // 引用已释放
+        assert!(rfp.filps[fd0.get()].is_some()); // non-CLOEXEC survives
+        assert!(rfp.filps[fd1.get()].is_none()); // CLOEXEC already closed
+        assert_eq!(tbl.get(fid1).unwrap().count, 0); // reference already released
     }
 }

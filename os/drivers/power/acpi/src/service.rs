@@ -227,7 +227,9 @@ impl<I: AcpiInterpreter, T: minix_driver_rt::transport::DriverTransport>
         if self.dispatch(&mut reply).is_err() {
             return;
         }
-        //[SD19-gate] 回复发送尽力而为：C 的 ipc_send 失败只打印；单线程泵按文档丢弃而不是卡死。
+        //[SD19-gate] reply sending is best-effort: a failed C ipc_send only prints;
+        // the single-threaded pump drops the reply as documented instead of getting
+        // stuck.
         #[allow(clippy::let_underscore_must_use)]
         let _ = transport.asynsend(msg.m_source, &mut reply);
     }

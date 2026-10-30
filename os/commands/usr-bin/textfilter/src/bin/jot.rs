@@ -12,11 +12,15 @@
 //! (`os/commands/bin/fileops/src/bin/echo.rs`): argv via
 //! `std::env::args`, termination via the host runtime.
 //!
-//! 前门有四类出口，句式各有主人：libc `getopt` 的两行（集外字母、带值字母缺值）由
-//! [`minix_textfilter::GetoptReport`] 单源且后面必接一行 usage（`jot.c:151-152` 的
-//! `default: usage()`）；`-p` 的值坏、`reps`/`step` 坏、操作数超过四个都是 `errx(3)` 的
-//! 单独一行，句子由 `jot.c` 自己写、程序名跟着 `getprogname()`，都不接 usage；
-//! 一个操作数都没有（含光写 `--`）是 usage，没有 libc 那一行。
+//! The front door has four classes of exit, each with its own sentence owner:
+//! the two libc `getopt` lines (option letter outside the set, value-requiring
+//! letter without its value) come single-sourced from
+//! [`minix_textfilter::GetoptReport`] and are always followed by one usage line
+//! (the `default: usage()` of `jot.c:151-152`); a bad `-p` value, a bad
+//! `reps`/`step`, and more than four operands are each a separate `errx(3)`
+//! line, with the sentence written by `jot.c` itself and the program name from
+//! `getprogname()`, and none of them is followed by usage; no operand at all
+//! (including a bare `--`) is usage, without the libc line.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -35,18 +39,23 @@ use minix_textfilter::jot::{
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // `jot` 不读标准输入也不开档（`jot.c` 没有一条 `fopen`），所以本支是整个参数缝上
-    // **唯一没有操作数侧 `&str` 口**的薄壳：程序名之外一处都不用折。
+    // `jot` reads neither standard input nor files (`jot.c` has not a single
+    // `fopen`), so this is the only thin shell along the argument seam with **no
+    // operand-side `&str` door**: apart from the program name, nothing is folded.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let mut seed_word: Option<&[u8]> = None;
-    // 选项环（`jot.c:150` 的 `"b:cnp:rs:w:"`）。libc 那两行与 `usage()` 是**两行**，
-    // 而 `-p` 的 `errx` 只有自己那一行——两支不是一支的详略版。
+    // Option loop (`"b:cnp:rs:w:"` at `jot.c:150`). The two libc lines and
+    // `usage()` are **two lines**, while `-p`'s `errx` has only its own line —
+    // the two branches are not a terse and a verbose form of one thing.
     //
-    // 字母位走 `line_bytes`：`src/jot.rs` 的取法本就按字节（`char::from(bytes[pos])`、
-    // 缺值那一支也是 `char::from(ch)`），非 ASCII 字母经 `line` 会被 UTF-8 编成两字节。参照件
-    // `tmp/jot-317/jot_ref` 现量 `-é`、`-cé` 都是 `jot: unknown option -- ` + 单个 `c3` +
-    // 换行，机制在 `getopt.c:79` 的 `optopt = *place++` 与 `:103` 的 `%c`。
+    // Option letters go through `line_bytes`: `src/jot.rs` already takes them by
+    // byte (`char::from(bytes[pos])`, and the missing-value branch uses
+    // `char::from(ch)`), whereas a non-ASCII letter via `line` would be encoded
+    // as two UTF-8 bytes. Measured against the C reference `jot`, both `-é` and
+    // `-cé` yield `jot: unknown option -- ` + a single `c3` + a newline, the
+    // mechanism being `optopt = *place++` at `getopt.c:79` and the `%c` at
+    // `:103`.
     let (mut options, operands) = match parse_jot_args(&args[1..]) {
         Ok(parsed) => (parsed.options, parsed.operands),
         Err(JotArgError::Getopt(report)) => {
@@ -54,7 +63,8 @@ fn run() -> ! {
             usage(&prog);
         }
         Err(JotArgError::BadPrecision) => {
-            // `jot.c:164` 那句是固定句，程序名跟着 `getprogname()`。
+            // The sentence at `jot.c:164` is fixed; the program name follows
+            // `getprogname()`.
             diagnose(&prog, b"Bad precision value");
             support::terminate(1);
         }
@@ -62,14 +72,16 @@ fn run() -> ! {
 
     // Examine args right to left, falling through the cases
     // (jot.c:184-226). `-` keeps the default for that slot.
-    // 这个 `switch (argc)` 排在任何操作数被解读之前，所以「一个操作数都没有」走 usage、
-    // 「五个以上」走那句 `Too many arguments`，两者都不先看第一个操作数的脸色。
+    // This `switch (argc)` sits before any operand is interpreted, so "no
+    // operand at all" takes usage and "five or more" takes the `Too many
+    // arguments` line; neither consults the first operand.
     if operands.is_empty() {
         usage(&prog);
     }
     if operands.len() > 4 {
-        // `jot.c:223-225`：第五个操作数起只有一句 `errx`，报的是**第五个**（`argv[4]`），
-        // 前四个一个都不解读。
+        // `jot.c:223-225`: from the fifth operand on there is only one `errx`,
+        // reporting the **fifth** (`argv[4]`); none of the first four is
+        // interpreted.
         too_many_arguments(&prog, operands[4]);
     }
     let mut inferred_begin = 0usize;
@@ -84,9 +96,12 @@ fn run() -> ! {
         }
     }
     if let Some(begin_arg) = operands.get(1).filter(|s| **s != b"-") {
-        // 空操作数在 C 是把下标算成 `-1` 的越界读（`jot.c:196`），值取决于那块内存前面
-        // 是什么；宿主参照件现量 `jot 3 '' 5` 交回 `1 3 5`，也就是那一格留着缺省，本层
-        // 按这个现量留缺省而不复制未定义行为（登记 `JOT-EMPTY-OPERAND-READS-OOB`）。
+        // An empty operand makes C compute the index as `-1`, an out-of-bounds
+        // read (`jot.c:196`) whose value depends on what precedes that memory;
+        // the hosted reference measures `jot 3 '' 5` returning `1 3 5`, i.e.
+        // that slot keeps its default, so this layer keeps the default per that
+        // measurement instead of copying undefined behavior (registered as
+        // `JOT-EMPTY-OPERAND-READS-OOB`).
         if let Some(value) = operand_to_number(begin_arg) {
             options.begin = value;
         }
@@ -125,10 +140,13 @@ fn run() -> ! {
     );
 
     let seed: u64 = match seed_word {
-        // `jot.c:118` 是 `srandom((unsigned long) step)`：先按 C 的截断取整，再按无符号回绕。
-        // 所以**负数与小数都是合法种子**（`-5` 能用，`-0.5` 截成 0），本层此前那句
-        // `v >= 0.0` 把参照件接受的形报成 `Bad step value` 是自创的判据；`strtod`
-        // 的全串检查（`parse_step`）没动，坏值照样报同一句。
+        // `jot.c:118` is `srandom((unsigned long) step)`: C's truncation first,
+        // then unsigned wraparound. So **negative numbers and fractions are both
+        // valid seeds** (`-5` works, `-0.5` truncates to 0); this layer's former
+        // `v >= 0.0` test reported shapes the reference accepts as
+        // `Bad step value`, a criterion of its own invention. The whole-string
+        // check of `strtod` (`parse_step`) is untouched, so bad values still get
+        // the same sentence.
         Some(s) => match parse_step(s) {
             Ok(v) => seed_from_step(v),
             Err(_) => bad_step(&prog, s),
@@ -172,8 +190,10 @@ fn run() -> ! {
     }
 }
 
-/// 写出「程序名 + `: ` + 那一句」这一行。**不退**——C 的 `errx` 自己 `exit`，本层的
-/// 退出处在调用方，两支（`Bad precision value` 与渲染失败那一族）共用这一个写法出口。
+/// Write the line "program name + `: ` + the sentence". It does **not** exit —
+/// C's `errx` calls `exit` itself; the exit point here belongs to the caller,
+/// and both branches (`Bad precision value` and the render-failure family) share
+/// this one output.
 fn diagnose(prog: &str, message: &[u8]) {
     let mut line = Vec::with_capacity(prog.len() + message.len() + 3);
     line.extend_from_slice(prog.as_bytes());
@@ -183,9 +203,10 @@ fn diagnose(prog: &str, message: &[u8]) {
     support::warn(&line);
 }
 
-/// 把句子的前后段与 argv 的原字节接起来（C 那四支带 `%s` 的句子共用：`jot.c:189`、
-/// `:215`、`:225`、`:385`/`:396`）。值段不经任何字符解码——一枚裸 `ff` 在句子里就是
-/// 一枚 `ff`，折过的形态会多出两枚字节。
+/// Join a sentence's prefix and suffix with argv's raw bytes (shared by C's four
+/// `%s` sentences: `jot.c:189`, `:215`, `:225`, `:385`/`:396`). The value part
+/// goes through no character decoding — a bare `ff` is a single `ff` in the
+/// sentence; a folded form would add two more bytes.
 fn quoted(prefix: &[u8], value: &[u8], suffix: &[u8]) -> Vec<u8> {
     let mut message = Vec::with_capacity(prefix.len() + value.len() + suffix.len());
     message.extend_from_slice(prefix);
@@ -194,8 +215,10 @@ fn quoted(prefix: &[u8], value: &[u8], suffix: &[u8]) -> Vec<u8> {
     message
 }
 
-/// `errx(3)` 那句的一整行：程序名跟着 `getprogname()`，短语按上表逐支取 C 的原句
-/// （两个空格的那两句、带反引号的那一句、问号结尾的那一句都是逐字对位）。
+/// The whole `errx(3)` line: the program name follows `getprogname()`, and the
+/// phrase is taken from C's sentence per branch in the match below (the two
+/// double-space sentences, the backtick sentence and the question-mark sentence
+/// all match verbatim).
 fn error_bytes(prog: &str, err: &JotError) -> Vec<u8> {
     let message = match err {
         JotError::BadPrecision => b"Bad precision value".to_vec(),
@@ -226,8 +249,9 @@ fn bad_step(prog: &str, arg: &[u8]) -> ! {
     support::terminate(1);
 }
 
-/// `jot.c:223-225`：第五个操作数起只有一句 `errx`，报的是**第五个**操作数
-/// （`argv[4]`，即 `argv += optind` 之后的下标 4），前四个一个都不解读。
+/// `jot.c:223-225`: from the fifth operand on there is only one `errx`,
+/// reporting the **fifth** operand (`argv[4]`, i.e. index 4 after
+/// `argv += optind`); none of the first four is interpreted.
 fn too_many_arguments(prog: &str, fifth: &[u8]) -> ! {
     support::warn(&error_bytes(prog, &JotError::TooManyArgs(fifth.to_vec())));
     support::terminate(1);

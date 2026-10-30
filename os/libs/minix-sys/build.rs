@@ -10,7 +10,7 @@
 //!   are the only sane behavior. Before this cfg existed, each package had
 //!   to opt in with `features = ["real-trap"]` in its own manifest, and
 //!   every package that forgot silently got the `-EIO` stub instead —
-//!   NK4-A fix20 proved this boot-killing (VM's `sys_exec` returned EIO
+//!   The omission proved boot-killing (VM's `sys_exec` returned EIO
 //!   because exactly one declaration was missing; the remaining 11 image
 //!   modules had the same latent hole).
 //! - hosted targets (tests on linux/macos/windows) have no kernel behind

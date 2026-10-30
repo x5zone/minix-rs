@@ -130,7 +130,7 @@ bitflags::bitflags! {
     ///
     /// C: `short s_trap_mask` (kernel/priv.h:34); bit positions are the IPC
     /// call numbers (`include/minix/ipcconst.h:7-13`). Full u16 backing
-    /// (R29 — OQ-2 decision 2026-09-06): C's `SRV_T/DSRV_T = ~0` on a short
+    /// (decision 2026-09-06): C's `SRV_T/DSRV_T = ~0` on a short
     /// is 0xFFFF, so `MINIX_KERNINFO` (bit 6) and the reserved bits 7-15
     /// are faithfully present and 19's `sys_getpriv` serialization needs no
     /// mapping layer. `SENDA` (16) does not fit the C `short` either — it is
@@ -626,7 +626,7 @@ mod tests {
         // C: SRV_T=DSRV_T=~0 → 0xFFFF on the C short (priv.h:61-62),
         //    USR_T=(1<<SENDREC)=0x8 (priv.h:63),
         //    CSK_T=(1<<RECEIVE)=0x4 (priv.h:59).
-        // R29 (OQ-2): full u16 backing — the old 4-bit model truncated
+        // Full u16 backing — the old 4-bit model truncated
         // SRV_T to 0x3E and silently dropped MINIX_KERNINFO (bit 6).
         assert_eq!(TrapMask::SRV_T.bits(), 0xFFFF);
         assert_eq!(TrapMask::DSRV_T.bits(), 0xFFFF);

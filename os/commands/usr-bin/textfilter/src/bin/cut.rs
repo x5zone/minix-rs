@@ -26,9 +26,11 @@ use minix_textfilter::cut::{CutError, parse_cut_args, parse_list, select_bytes, 
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // C 的每一句诊断都以 `getprogname()` 开头（err/errx 走 `vwarn`/`vwarnx`）。程序名那一腿
-    // 交给 `warn_line` 与 `line_bytes` 的 `&str` 名字段（在册 `ARGV-BYTE-PATH-IN-LIBS`），
-    // 所以臂内折一次；列表值、分隔符与操作数都不跟着折。
+    // Every C diagnostic starts with `getprogname()` (err/errx go through
+    // `vwarn`/`vwarnx`). The program-name leg goes to the `&str` name field
+    // of `warn_line` and `line_bytes` (registered under
+    // `ARGV-BYTE-PATH-IN-LIBS`), so it is folded once here; the list values,
+    // delimiter, and operands are not folded along with it.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // argv folding lives in the deciding half (`parse_cut_args`): BSD
@@ -47,30 +49,37 @@ fn run() -> ! {
     let operands = parsed.operands;
 
     let selecting_bytes = bytes_list.is_some();
-    // `parse_cut_args` 已经在选项环里把列表解了一遍（C 的 `get_list` 就坐在那个
-    // case 里），所以这里只剩「取哪一份」。四道 post-check 也已在那一半跑完。
+    // `parse_cut_args` already parsed the list inside its option loop (C's
+    // `get_list` sits in that same case), so all that remains here is which
+    // one to take. The four post-checks have also already run on that half.
     let list_text = match (bytes_list, fields_list) {
         (Some(list), None) | (None, Some(list)) => list,
         _ => usage(),
     };
     let ranges = match parse_list(list_text) {
         Ok(parsed) => parsed,
-        // 不可达：上面那个解析器已经跑过同一个串。真到了这里也按 C 的句子报，
-        // 而不是静默退 1——旧写法就是静默退 1，一句都不说。
+        // Unreachable: the parser above has already run over the same
+        // string. If this is ever reached, report C's sentence rather than
+        // exiting 1 silently — the old form exited 1 silently without saying
+        // a word.
         Err(error) => arg_error(CutError::from(error), &prog),
     };
 
     let process = |input: &[u8]| {
         for line in support::lines_of(input) {
-            // `cut` 是 C 里**归一化补换行**的那一支：`cut.c` 每处理完一行都写一枚
-            // `\n`，参照件 `tmp/cut-406/cut_ref` 对无尾换行的输入也交回三行带换行
-            // （读数 `alp\nbet\ngam\n`，见 18 篇批次四百二十三）。所以这里取 `text()`
-            // 而**不取** `eol()`——不是漏改，是这一支的 C 就这么做。
+            // `cut` is the branch in C that **normalizes the newline back
+            // in**: `cut.c` writes one `\n` after each processed line, and
+            // the reference binary `tmp/cut-406/cut_ref` returns three
+            // newline-terminated lines even for input with no trailing
+            // newline (reading `alp\nbet\ngam\n`). So the line is taken as
+            // normalized text rather than in its original `eol` form — not
+            // an oversight: C in this branch does exactly this.
             let line = line.bytes();
             let mut out = vec![0u8; line.len() + 1];
             let selection = if selecting_bytes {
-                // 字节腿没有「整行跳过」这一说：`-s` 只与 `-f` 并存（`cut.c:124`），
-                // 所以那一边的返回一律是「要写的一行」。
+                // The byte leg has no "skip the whole line" notion: `-s`
+                // only coexists with `-f` (`cut.c:124`), so that side always
+                // returns a line to write.
                 select_bytes(line, &ranges, &mut out).map(Some)
             } else {
                 select_fields(line, &ranges, delimiter, suppress, &mut out)
@@ -80,8 +89,9 @@ fn run() -> ! {
                     support::emit(&out[..len]);
                     support::emit(b"\n");
                 }
-                // `-s` 且这一行没有分隔符：C 连换行都不打——`cut.c:248` 那一判不成立，
-                // `:253-254` 又跳过 `:279` 那句 `putchar('\n')`。
+                // `-s` and this line has no delimiter: C does not even print
+                // a newline — the test at `cut.c:248` fails, and `:253-254`
+                // skip the `putchar('\n')` at `:279`.
                 Ok(None) => {}
                 Err(_) => support::terminate(1),
             }
@@ -100,18 +110,26 @@ fn run() -> ! {
             process(&support::read_stdin());
             continue;
         }
-        // 档名以字节进来；开档那一腿与 `warn("%s", *argv)` 的三段句子都要 `&str`（在册
-        // `ARGV-BYTE-PATH-IN-LIBS`），所以在这里折一次——报出来的名字与真源差在那条腿上，
-        // 不差在回显写法。`-` 的判据按字节比（上面那一判），与折叠名无关。
+        // The file name arrives as bytes; the open leg and the three-part
+        // `warn("%s", *argv)` sentence both need `&str` (registered under
+        // `ARGV-BYTE-PATH-IN-LIBS`), so it is folded once here — any
+        // divergence from ground truth lies on that leg, not in the echo
+        // form. The `-` test compares bytes (the check above) and is
+        // independent of the folded name.
         let path = String::from_utf8_lossy(operand);
-        // `support::read_file` 而不是裸 `minix_sys::open`：后者在本 crate 的命令层
-        // 没有宿主双生面，直接跑宿主二进制时任何操作数都打不开（tail 在同一条腿上
-        // 过同一个坑，那个缺口当时被登为「逐字对账不适用于 tail」）。接回双生面之后，
-        // 这一腿的报错腿才能被 `cut_face.rs` 钉住。
+        // `support::read_file` rather than a bare `minix_sys::open`: the
+        // latter has no host counterpart at this crate's command layer, so
+        // running the host binary directly fails to open any operand (tail hit
+        // the same pit on the same leg, and that gap was then entered as
+        // "verbatim reconciliation does not apply to tail"). With the
+        // counterpart wired back in, `cut_face.rs` can pin this leg's error
+        // path.
         let input = match support::read_file(&path) {
             Ok(input) => input,
-            // C `cut.c:138-142` 的 `warn("%s", *argv)`：程序名、操作数、`strerror`
-            // 句子三个成分缺一不可（旧写法把 `warn(3)` 当成 `warnx(3)` 用）。
+            // C's `warn("%s", *argv)` at `cut.c:138-142`: program name,
+            // operand, and `strerror` sentence — all three components are
+            // required (the old form used `warn(3)` as if it were
+            // `warnx(3)`).
             Err(code) => {
                 support::warn_line(&prog, &path, code);
                 status = 1;
@@ -127,18 +145,22 @@ fn run() -> ! {
 fn arg_error(e: CutError, prog: &str) -> ! {
     match e {
         CutError::Usage => usage(),
-        // libc 的那一行排在前面，usage 的三行在后面。
+        // The libc line comes first; usage's three lines follow.
         //
-        // 字母位走 `line_bytes`：`src/cut.rs` 的取法本就按字节（`bytes[pos] as char`），而 libc
-        // 那一行的字母位本来是一个字节（`getopt.c:79` 的 `optopt = *place++`、`:103` 的 `%c`）。
-        // 参照件 `tmp/cut-406/cut_ref` 现量 `-é` 与 `-cé` 都是 `cut: unknown option -- ` +
-        // 单个 `c3` + 换行，再跟那三行制表符对齐的 usage、退 1。
+        // The letter slot goes through `line_bytes`: `src/cut.rs` already
+        // works byte-wise (`bytes[pos] as char`), and the letter slot of the
+        // libc line is one byte to begin with (`getopt.c:79`
+        // `optopt = *place++`, `:103` `%c`). Measured against the reference
+        // binary `tmp/cut-406/cut_ref`, both `-é` and `-cé` print
+        // `cut: unknown option -- ` + a single `c3` + newline, then the three
+        // tab-aligned usage lines, exiting 1.
         CutError::Getopt(report) => {
             support::warn(&report.line_bytes(prog));
             usage()
         }
-        // C 的两句 errx（`cut.c:196`、`:198`）：走 `vwarnx`，所以后面不缀 `errno`
-        // 句子，而且两句都不把出错的那一段拼回去。
+        // C's two errx calls (`cut.c:196`, `:198`): they go through
+        // `vwarnx`, so no `errno` sentence is appended, and neither splices
+        // the offending value back in.
         CutError::IllegalList => {
             support::warn(format!("{prog}: [-bcf] list: illegal list value\n").as_bytes());
             support::terminate(1);
@@ -150,9 +172,11 @@ fn arg_error(e: CutError, prog: &str) -> ! {
     }
 }
 
-/// C `usage()`（`cut.c:290-296`）：**三行**，`usage:` 后面是一个制表符，后两行各以
-/// 制表符开头，而且这句里没有程序名占位（C 写死了 `cut`）。全部写标准错误——
-/// 旧写法走的是 `support::emit`，即把诊断发到标准输出，那是通道错。退 1。
+/// C's `usage()` (`cut.c:290-296`): **three lines**, a tab after `usage:`,
+/// each of the last two lines starting with a tab, and no program-name
+/// placeholder (C hardcodes `cut`). All of it goes to standard error — the
+/// old form used `support::emit`, sending diagnostics to standard output,
+/// which is the wrong channel. Exits 1.
 fn usage() -> ! {
     support::warn(
         b"usage:\tcut -b list [-n] [file ...]\n\tcut -c list [file ...]\n\tcut -f list [-d string] [-s] [file ...]\n",

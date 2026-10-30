@@ -1,18 +1,19 @@
-//! minix3/minix/tests Rust 腿翻译 —— 信号域(test5/37/41/68)。
+//! Rust-leg translation of minix3/minix/tests — the signal domain (test5/37/41/68).
 //!
-//! # 翻译映射
+//! # Translation map
 //!
-//! | C 测试 | 语义归宿 |
+//! | C test | Semantic home |
 //! |---|---|
-//! | test37(sigaction 装置与读回) | 本文件 [`sigaction_installs_reads_back_and_rejects_invalid`] |
-//! | test37b(sigprocmask/sigpending:掩码信号停 pending;解阻塞后投递的载体是 test37i) | 本文件 [`masked_signal_parks_in_pending_until_unblocked`] |
-//! | test5(同 uid 父子 kill 互发、退出状态、EINTR 面) | 本文件 [`kill_permission_eperm_esrch_and_probe`](跨用户 EPERM/ESRCH/探测在编号套件无专门载体,语义取 `signal.c:621-632` 实现面) |
-//! | test41(alarm 与 itimer 交互、到期投递;撤销与 SIG_IGN 为 alarm.c 实现语义) | 本文件 [`alarm_set_cancel_and_expiry_paths`] |
-//! | test38/68(信号与文件操作、exec 交错) | 挂起路径的续接面,待 VFS 挂起续接真链点亮后补;kill 终止链已由 `servers/pm/tests/run_once_integration.rs::kill_termination_tells_vfs_exit` 覆盖 |
+//! | test37 (sigaction install and read-back) | [`sigaction_installs_reads_back_and_rejects_invalid`] in this file |
+//! | test37b (sigprocmask/sigpending: a masked signal parks in pending; the delivery carrier for unblocking is test37i) | [`masked_signal_parks_in_pending_until_unblocked`] in this file |
+//! | test5 (same-uid parent/child mutual kill, exit status, EINTR face) | [`kill_permission_eperm_esrch_and_probe`] in this file (cross-user EPERM/ESRCH/probe has no dedicated carrier in the numbered suite; semantics taken from the implementation at `signal.c:621-632`) |
+//! | test41 (alarm and itimer interaction, expiry delivery; cancel and SIG_IGN are alarm.c implementation semantics) | [`alarm_set_cancel_and_expiry_paths`] in this file |
+//! | test38/68 (signals interleaved with file operations and exec) | the continuation face of the suspend path, to be added once the VFS suspend-continue real chain is lit; the kill-termination chain is already covered by `servers/pm/tests/run_once_integration.rs::kill_termination_tells_vfs_exit` |
 //!
-//! C 测试的断言锚点逐条给出(`minix3/minix/servers/pm/signal.c` 与
-//! `alarm.c` 的函数锚),errno 断言一律对照 C 值(EINVAL/ESRCH/EPERM)。
-//! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
+//! Each C test's assertion anchor is given (`minix3/minix/servers/pm/signal.c` and the
+//! function anchors of `alarm.c`); errno assertions always use the C values
+//! (EINVAL/ESRCH/EPERM). Delivery gate = compilation; every test is `#[ignore]`, and the
+//! lighting prerequisites are in each test's attribute.
 
 use minix_pm::TestIpcTransport;
 use minix_pm::exit::KernelGateway;
@@ -26,15 +27,15 @@ use minix_pm::timer::{SIGALRM, TimerCtl, cause_sigalrm, set_alarm};
 use minix_types::{Endpoint, VirBytes};
 
 // ---------------------------------------------------------------------------
-// 夹具
+// Fixtures
 // ---------------------------------------------------------------------------
 
-const SIG_IGN: usize = 1; // C signal.h:SIG_IGN(处理映射 mproc/signal.rs:125-127)
+const SIG_IGN: usize = 1; // C signal.h:SIG_IGN (handler mapping mproc/signal.rs:125-127)
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
-const SIGUSR1: i32 = 30; // C signal.h:82(SIGUSR1 = 30;16 在 C 编号里是 SIGURG)
+const SIGUSR1: i32 = 30; // C signal.h:82 (SIGUSR1 = 30; 16 is SIGURG in C numbering)
 
-/// C `__sigmask`(Rust 侧 `init::sig_bit` 为 crate 私有,此处按同式计算)。
+/// C `__sigmask` (the Rust side's `init::sig_bit` is crate-private, so the same formula is used here).
 fn sig_bit(sig: i32) -> u64 {
     1u64 << (sig - 1)
 }
@@ -43,7 +44,7 @@ fn ep_of(slot: usize) -> Endpoint {
     Endpoint::from_generation_slot(1, slot as i32)
 }
 
-/// 播种一个 Running 进程并给全同凭证(uid = 参数值)。
+/// Seed one Running process with uniform credentials (uid = the parameter value).
 fn seed(table: &mut ProcTable, slot: usize, pid: i32, uid: u32) {
     let p = &mut table.procs[slot];
     p.identity.endpoint = ep_of(slot);
@@ -54,14 +55,14 @@ fn seed(table: &mut ProcTable, slot: usize, pid: i32, uid: u32) {
     cred.user.effective = uid;
 }
 
-/// 槽 0 = PM 自身(uid 0 超级用户):alarm 递送与 kill 权限判定都以它为基准。
+/// Slot 0 = PM itself (uid 0, superuser): alarm delivery and kill permission checks both use it as the baseline.
 fn pm_table() -> ProcTable {
     let mut table = ProcTable::new();
     seed(&mut table, 0, 0, 0);
     table
 }
 
-/// 无操作内核网关(与 pm_vm_fork.rs 同型:夹具链不触内核面)。
+/// No-op kernel gateway (same shape as pm_vm_fork.rs: the fixture chain does not touch the kernel face).
 struct NoopKernelGateway;
 
 impl KernelGateway for NoopKernelGateway {
@@ -145,8 +146,8 @@ impl KernelGateway for NoopKernelGateway {
     }
 }
 
-/// 脚本化内核定时器(TimerCtl,C alarm.c 的 set_timer/cancel_timer 缝):
-/// 记录 set/cancel 调用,时钟手动推进。
+/// Scripted kernel timer (TimerCtl, C alarm.c's set_timer/cancel_timer seam): records
+/// set/cancel calls; the clock is advanced by hand.
 struct ScriptedTimerCtl {
     clock: minix_types::Clock,
     sets: Vec<(Endpoint, minix_types::Clock)>,
@@ -179,12 +180,13 @@ impl TimerCtl for ScriptedTimerCtl {
 }
 
 // ---------------------------------------------------------------------------
-// test37 —— sigaction 装置、读回与拒绝
+// test37 — sigaction install, read-back and rejection
 // ---------------------------------------------------------------------------
 
-/// C 语义(`minix3/minix/tests/test37.c` 的 test37b 装置/读回段;处置表见
-/// `servers/pm/signal.c`):装新处置并读回旧处置;SIGKILL 不可装置(早退,
-/// 不动 oact);无效信号号返回 EINVAL;act 为空时纯读回。
+/// C semantics (the install/read-back section of test37b in `minix3/minix/tests/test37.c`;
+/// the disposition table is in `servers/pm/signal.c`): install a new disposition and read
+/// back the old one; SIGKILL cannot be installed (early exit, oact untouched); an invalid
+/// signal number returns EINVAL; a null act is a pure read-back.
 #[test]
 #[ignore = "点亮前提:PM 信号处置面随载体用户态点亮后复核"]
 fn sigaction_installs_reads_back_and_rejects_invalid() {
@@ -192,7 +194,7 @@ fn sigaction_installs_reads_back_and_rejects_invalid() {
     let caller = minix_types::UserSlot::new(1);
     seed(&mut table, 1, 100, 200);
 
-    // 安装捕获处置:handler 0x3000,执行期屏蔽 SIGUSR1。
+    // Install a catching disposition: handler 0x3000, mask SIGUSR1 during execution.
     let installed = SigAction {
         sa_handler: 0x3000,
         sa_mask: sig_bit(SIGUSR1),
@@ -212,7 +214,7 @@ fn sigaction_installs_reads_back_and_rejects_invalid() {
     .expect("oact 请求必回填当前处置(C sigaction oact 语义)");
     assert_eq!(old.sa_handler, 0, "初始处置为 SIG_DFL(0)");
 
-    // 纯读回(act == 0):返回刚装上的处置。
+    // Pure read-back (act == 0): returns the disposition just installed.
     let readback = handle_sigaction(
         &mut table,
         caller,
@@ -228,7 +230,7 @@ fn sigaction_installs_reads_back_and_rejects_invalid() {
     assert_eq!(readback.sa_handler, 0x3000, "handler 读回一致");
     assert_eq!(readback.sa_mask, sig_bit(SIGUSR1), "执行期掩码读回一致");
 
-    // SIGKILL 不可装置(处置表 D1:早退返回 None,旧处置也不给)。
+    // SIGKILL cannot be installed (the disposition table's early-exit rule: returns None and gives no old disposition either).
     let kill_req = handle_sigaction(
         &mut table,
         caller,
@@ -242,7 +244,7 @@ fn sigaction_installs_reads_back_and_rejects_invalid() {
     .expect("SIGKILL 路径不报错(C 早退语义)");
     assert!(kill_req.is_none(), "SIGKILL 无 oact 产物");
 
-    // 无效信号号:EINVAL(C sigaction 对 0 与越界号返回 EINVAL)。
+    // Invalid signal number: EINVAL (C sigaction returns EINVAL for 0 and out-of-range numbers).
     for bad in [0, 64] {
         let err = handle_sigaction(
             &mut table,
@@ -260,26 +262,28 @@ fn sigaction_installs_reads_back_and_rejects_invalid() {
 }
 
 // ---------------------------------------------------------------------------
-// test37b —— 掩码信号停于 pending,解除后可见(C test52 本体是 pipe 加 SIGCHLD 轮替,不贡献此条)
+// test37b — a masked signal parks in pending and is visible after unblocking
+// (the body of C test52 is a pipe plus SIGCHLD rotation and does not contribute this case)
 // ---------------------------------------------------------------------------
 
-/// C 语义(signal.c:491-497 掩码臂):目标把 SIGUSR1 屏蔽后收到该信号,
-/// 信号不投递,置入 pending 位图,进程不受扰;sigpending 快照可见;
-/// 掩码解除时返回旧掩码(C sigprocmask 的 oact 语义)。
+/// C semantics (the mask arm of signal.c:491-497): after the target masks SIGUSR1 and
+/// receives that signal, it is not delivered, its pending bit is set, and the process is
+/// undisturbed; the sigpending snapshot shows it; unblocking returns the old mask (C
+/// sigprocmask's oact semantics).
 #[test]
 #[ignore = "点亮前提:PM 信号面随载体用户态点亮后复核"]
 fn masked_signal_parks_in_pending_until_unblocked() {
     let mut table = pm_table();
-    let caller = minix_types::UserSlot::new(0); // PM 超级用户:kill 权限恒过
+    let caller = minix_types::UserSlot::new(0); // PM superuser: kill permission always passes
     let target = minix_types::UserSlot::new(1);
     seed(&mut table, 1, 100, 200);
 
-    // 目标屏蔽 SIGUSR1。
+    // The target masks SIGUSR1.
     let (old_mask, _effect) = handle_sigprocmask(&mut table, target, SIG_BLOCK, sig_bit(SIGUSR1))
         .expect("SIG_BLOCK 合法");
     assert_eq!(old_mask, 0, "屏蔽前掩码为空");
 
-    // kill 送达:掩码臂把信号停进 pending,目标不受扰。
+    // kill delivery: the mask arm parks the signal in pending and the target is undisturbed.
     let sent = do_kill(
         &mut table,
         caller,
@@ -305,7 +309,7 @@ fn masked_signal_parks_in_pending_until_unblocked() {
     );
     assert_eq!(state.resources.signals.pending, sig_bit(SIGUSR1));
 
-    // 解除屏蔽:返回旧掩码(C sigprocmask oact),SIG_SETMASK 清空。
+    // Unblock: returns the old mask (C sigprocmask oact), and SIG_SETMASK clears it.
     let (prev, _effect) =
         handle_sigprocmask(&mut table, target, SIG_SETMASK, 0).expect("SIG_SETMASK 合法");
     assert_eq!(prev, sig_bit(SIGUSR1), "旧掩码含被屏蔽位");
@@ -319,36 +323,37 @@ fn masked_signal_parks_in_pending_until_unblocked() {
 }
 
 // ---------------------------------------------------------------------------
-// test5 —— kill 权限、存在性与存在探测
+// test5 — kill permission, existence, and the existence probe
 // ---------------------------------------------------------------------------
 
-/// C 语义(signal.c 权限与探测,616-632):不同用户 kill → EPERM(C 622-626
-/// 的 real/eff 匹配规则);同用户 → 命中;signo == 0 是存在探测(不投递);
-/// 未知 pid → ESRCH;负信号号 → EINVAL。
+/// C semantics (signal.c permissions and probe, 616-632): a kill from a different user →
+/// EPERM (the real/eff matching rule at C 622-626); same user → hit; signo == 0 is an
+/// existence probe (no delivery); unknown pid → ESRCH; negative signal number → EINVAL.
 #[test]
 #[ignore = "点亮前提:PM 信号面随载体用户态点亮后复核"]
 fn kill_permission_eperm_esrch_and_probe() {
     let mut table = pm_table();
     let caller = minix_types::UserSlot::new(1);
     seed(&mut table, 1, 100, 100); // uid 100
-    seed(&mut table, 2, 200, 200); // uid 200:与 caller 不同用户
-    seed(&mut table, 3, 300, 100); // uid 100:同用户
+    seed(&mut table, 2, 200, 200); // uid 200: a different user from the caller
+    seed(&mut table, 3, 300, 100); // uid 100: same user
     let mut kern = NoopKernelGateway;
     let mut transport = TestIpcTransport::new();
 
-    // 跨用户:EPERM(C signal.c:622-626 无一匹配;编号套件无跨用户载体,取实现语义)。
+    // Cross-user: EPERM (no rule at C signal.c:622-626 matches; the numbered suite has no cross-user carrier, so implementation semantics are used).
     let err = do_kill(&mut table, caller, 200, SIGTERM, &mut kern, &mut transport)
         .expect_err("不同用户必须拒绝");
     assert_eq!(err.to_errno(), minix_types::EPERM, "跨用户 kill → EPERM");
 
-    // 同用户:命中一个目标。
+    // Same user: one target hit.
     let hits =
         do_kill(&mut table, caller, 300, SIGTERM, &mut kern, &mut transport).expect("同用户可发");
     assert_eq!(hits, 1);
 
-    // 存在探测(signo == 0):命中但不投递(C signal.c:631-632 探测分支),
-    // 目标存活、无 VFS 告知。用未收到过终止信号的新目标与全新通道,
-    // 免得前一段终止链的出站消息混入对账。
+    // Existence probe (signo == 0): hit without delivery (the probe branch at C
+    // signal.c:631-632), the target stays alive and VFS is not told. Use a fresh target
+    // that never received a termination signal and a brand-new channel, so outbound
+    // messages from the previous termination chain do not mix into the accounting.
     seed(&mut table, 4, 400, 100);
     let mut probe_transport = TestIpcTransport::new();
     let probe =
@@ -363,27 +368,28 @@ fn kill_permission_eperm_esrch_and_probe() {
         "探测不产生出站消息(不投递语义)"
     );
 
-    // 未知 pid:ESRCH(C check_sig 尾段 error_code 缺省 ESRCH)。
+    // Unknown pid: ESRCH (the default error_code of check_sig's tail is ESRCH).
     let err = do_kill(&mut table, caller, 999, SIGTERM, &mut kern, &mut transport)
         .expect_err("未知 pid 必须拒绝");
     assert_eq!(err.to_errno(), minix_types::ESRCH);
 
-    // 负信号号:EINVAL(check_sig 首门)。
+    // Negative signal number: EINVAL (the first gate of check_sig).
     let err = do_kill(&mut table, caller, 300, -1, &mut kern, &mut transport)
         .expect_err("负信号号必须拒绝");
     assert_eq!(err.to_errno(), minix_types::EINVAL);
 }
 
 // ---------------------------------------------------------------------------
-// test41 —— alarm 置位、撤销与到期
+// test41 — alarm set, cancel and expiry
 // ---------------------------------------------------------------------------
 
-/// C 语义(`minix3/minix/tests/test41.c` 的 test_alarm 段 263-288;机制 `servers/pm/alarm.c`):
-/// alarm(n) 挂内核定时器并标记 ALARM_ON(set_alarm,alarm.c:299-311);
-/// alarm(0) 撤销(实现语义,test41 的撤销走 setitimer 零值);到期回调投递
-/// SIGALRM(alarm.c:317-344,test41 断言到期 SIGALRM 恰一次)——已装 SIG_IGN
-/// 则吞掉(signal.c:487-490 忽略臂),默认处置则终止(经 VFS_PM_EXIT 告知);
-/// 无警报时的到期回调是空操作。
+/// C semantics (the test_alarm section of `minix3/minix/tests/test41.c`, 263-288; the
+/// mechanism is in `servers/pm/alarm.c`): alarm(n) arms a kernel timer and marks ALARM_ON
+/// (set_alarm, alarm.c:299-311); alarm(0) cancels (implementation semantics; test41's
+/// cancel goes through setitimer with a zero value); the expiry callback delivers SIGALRM
+/// (alarm.c:317-344, and test41 asserts exactly one SIGALRM on expiry) — an installed
+/// SIG_IGN swallows it (the ignore arm of signal.c:487-490), while the default disposition
+/// terminates (announced through VFS_PM_EXIT); an expiry callback with no alarm is a no-op.
 #[test]
 #[ignore = "点亮前提:PM 定时器与信号终止链随载体点亮后复核"]
 fn alarm_set_cancel_and_expiry_paths() {
@@ -393,7 +399,7 @@ fn alarm_set_cancel_and_expiry_paths() {
     let target_ep = ep_of(1);
     let mut kern = NoopKernelGateway;
 
-    // 置位:内核定时器收到 (ep, 10),进程标记 ALARM_ON,到期时间 = now + 10。
+    // Set: the kernel timer receives (ep, 10), the process is marked ALARM_ON, and the expiry time = now + 10.
     let mut tctl = ScriptedTimerCtl::new(1000);
     set_alarm(&mut table, target, 10, &mut tctl);
     assert_eq!(
@@ -404,17 +410,17 @@ fn alarm_set_cancel_and_expiry_paths() {
     let timer = table.procs[1].resources.timer.as_ref().expect("ALARM_ON");
     assert_eq!(timer.expire_time, 1010, "到期时间 = now + ticks");
 
-    // 撤销:alarm(0) 取消内核定时器并清标记(alarm.c:305-308)。
+    // Cancel: alarm(0) cancels the kernel timer and clears the mark (alarm.c:305-308).
     set_alarm(&mut table, target, 0, &mut tctl);
     assert_eq!(tctl.cancels, vec![target_ep], "alarm(0) 取消定时器");
     assert!(table.procs[1].resources.timer.is_none(), "标记清除");
 
-    // 无警报时的到期回调:guard 拦截,不投递(alarm.c:330-331)。
+    // Expiry callback with no alarm: the guard intercepts it and nothing is delivered (alarm.c:330-331).
     let mut transport = TestIpcTransport::new();
     let delivered = cause_sigalrm(&mut table, target_ep, &mut tctl, &mut kern, &mut transport);
     assert!(!delivered, "无 ALARM_ON 标记 → 不触发投递");
 
-    // SIG_IGN:重挂警报后到期,信号被忽略臂吞掉,目标存活。
+    // SIG_IGN: arm the alarm again, it expires, the ignore arm swallows the signal, and the target survives.
     set_alarm(&mut table, target, 10, &mut tctl);
     handle_sigaction(
         &mut table,
@@ -445,9 +451,10 @@ fn alarm_set_cancel_and_expiry_paths() {
         "SIG_IGN 吞掉 SIGALRM,目标存活"
     );
 
-    // 默认处置:重挂警报后到期,SIGALRM 终止目标并告知 VFS(C
-    // forkexit.c:347-359 的无条件 tell_vfs;终止链告知见 run_once_integration
-    // ::kill_termination_tells_vfs_exit 判例)。
+    // Default disposition: arm the alarm again, it expires, SIGALRM terminates the target
+    // and tells VFS (C forkexit.c:347-359's unconditional tell_vfs; the termination-chain
+    // announcement is covered by the run_once_integration::kill_termination_tells_vfs_exit
+    // case).
     let target2_slot = minix_types::UserSlot::new(2);
     seed(&mut table, 2, 101, 200);
     set_alarm(&mut table, target2_slot, 5, &mut tctl);

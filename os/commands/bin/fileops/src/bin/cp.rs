@@ -30,7 +30,7 @@
 //! and fts(3)'s cycle report (`cp.c:349-352`) has no counterpart, a physical
 //! walk never rejoins a tree through a link. The real machine effect of every
 //! write-side command, this one included, is the writable-root gate
-//! (`C-57`/`E5`).
+//! (`E5`).
 //!
 //! The diagnostic legs are wired to the shared renderer (`err_line` in the
 //! `minix-types` crate, shape from `minix3/lib/libc/gen/vwarnc.c`), and they are

@@ -15,10 +15,12 @@
 //! [`handles`] opens lazily and closes silently.
 
 #![no_std]
-// SD-19 静默吞错家族机械化门（本 crate 接手）：句柄关闭等 `Result` 返回被
-// `let _ =` 掉空时，这个 restriction lint 让它在 `cargo clippy` 当场现形。
-// 本 crate 已定性的站点按同族惯例写 `//[SD19-gate] <理由>` + 语句级
-// `#[allow]`；今后新写一处无理由的 `let _ =` 会多报一条警告。
+// Mechanical gate for the silent-error-swallow family, taken on by this crate:
+// when a `Result` return such as a handle close is dropped with `let _ =`, this
+// restriction lint makes it surface immediately in `cargo clippy`.
+// Sites this crate has already classified follow the family convention:
+// `//[SD19-gate] <reason>` plus a statement-level `#[allow]`; any future
+// unjustified `let _ =` reports one extra warning.
 #![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;

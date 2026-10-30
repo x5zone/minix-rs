@@ -115,7 +115,7 @@ pub fn send_flags_allowed(flags: u32) -> bool {
 }
 
 /// Whether header plus payload stays within a payload bound
-/// (`udpsock.c:486-493`, `rawsock.c` 晚期检查同型). Each caller passes its
+/// (`udpsock.c:486-493`, `rawsock.c` has the same late check). Each caller passes its
 /// own protocol bound — the bounds carry per-protocol C anchors, the
 /// arithmetic is shared.
 pub fn payload_fits(header_length: usize, payload_length: usize, max: usize) -> bool {

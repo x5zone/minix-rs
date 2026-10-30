@@ -38,10 +38,12 @@ use minix_textfilter::pr::{
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // `egetopt` 那一句的前缀不是 `getprogname()` 而是它自己现算的 argv[0] 最后一段
-    // （`egetopt.c:145-147`，`nargv` 从不前进，所以 `*nargv` 就是 `argv[0]`），两者同一物；
-    // 而 pr 自己的那些句子把 `pr` 写死在串里，所以只有 `Getopt` 那一枝用 prog。
-    // `GetoptReport::line_bytes` 收 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折这一处。
+    // The prefix in that `egetopt` line is not `getprogname()` but the last
+    // component of argv[0] that egetopt computes itself (`egetopt.c:145-147`;
+    // `nargv` never advances, so `*nargv` is `argv[0]`) — the same thing.
+    // pr's own messages hard-code `pr` in the string, so only the `Getopt` arm
+    // uses prog. `GetoptReport::line_bytes` takes `&str` (registered deviation
+    // `ARGV-BYTE-PATH-IN-LIBS`), so this is the one spot that folds.
     let prog = alloc::string::String::from_utf8_lossy(support::prog_name_bytes(&argv));
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // argv folding lives in the deciding half (`parse_pr_args`): BSD getopt with
@@ -73,8 +75,9 @@ fn run() -> ! {
                 let input = support::read_stdin();
                 files.push((&[], split_lines(&expand_input(&input, &options))));
             } else {
-                // 只有开档那一步折一次（`minix_sys::open` 的 `&str` 口，在册）；
-                // 报文位与标题位用的都是原字节。
+                // Only the open step folds once (`minix_sys::open` takes
+                // `&str`, a registered deviation); the diagnostic and title
+                // slots both keep the raw bytes.
                 let path = alloc::string::String::from_utf8_lossy(op);
                 match support::read_file(&path) {
                     Ok(bytes) => {
@@ -82,12 +85,13 @@ fn run() -> ! {
                         files.push((*op, split_lines(&bytes)));
                     }
                     Err(code) => {
-                        // C `pr.c:1364-1370`：`++errcnt` 后印
-                        // `"pr: Cannot open %s, %s\n", argv[…], strerror(errno)`——
-                        // 大写 C、名字与句子之间是一个逗号（不是 `err(3)` 那个冒号形），
-                        // 然后 `continue`，退码最终才变 1。旧写法是自创的
-                        // `pr: cannot open <名>`，既丢了句子也换了词。`-r`（nodiag）
-                        // 能屏蔽这一句，本壳没有那支（已登记）。
+                        // C `pr.c:1364-1370`: after `++errcnt` it prints
+                        // `"pr: Cannot open %s, %s\n", argv[…], strerror(errno)` —
+                        // capital C, and a comma between the name and the
+                        // sentence (not the `err(3)` colon form); it then
+                        // `continue`s and the exit status only turns 1 at the
+                        // end. `-r` (nodiag) can suppress this line; this shell
+                        // has no such arm (a registered deviation).
                         let mut line = Vec::new();
                         line.extend_from_slice(b"pr: Cannot open ");
                         line.extend_from_slice(op);
@@ -184,18 +188,24 @@ fn split_lines(input: &[u8]) -> Vec<Vec<u8>> {
 
 /// Map a [`PrError`] to the exact C diagnostic and exit status.
 ///
-/// 关键点（本轮现查 C 得到的推翻）：`main` 是 `ret_val = setup(...); if (!ret_val) {…}
-/// else usage();`（`pr.c:142-157`），所以**任何**一条 setup 错误都会再接上那三行 usage；
-/// 旧注释写的“message goes out on its own (no usage line)”是错的，本枝所有臂现在都是
-/// “自己那句 + usage 三行”，退码 1（`:158-160`）。唯一例外是 [`PrError::Unmodelled`]：
-/// 那三个字母在 C 是被接受的，本树没建模，所以那一句是**本壳自己的**，不套 C 形。注意
-/// 那三行里后两行各带十个前导空格，而整个句子不靠 `getprogname()`（C 写死了 `pr`）。
+/// Key point (re-checked against the C source): `main` runs
+/// `ret_val = setup(...); if (!ret_val) {…} else usage();` (`pr.c:142-157`),
+/// so **every** setup error is followed by those three usage lines; each arm
+/// here therefore emits its own line plus the three usage lines and exits
+/// with status 1 (`:158-160`). The only exception is [`PrError::Unmodelled`]:
+/// C accepts those option letters, this tree does not model them, so that
+/// line is **this shell's own** and does not follow C's shape. Note that the
+/// last two of the three lines each carry ten leading spaces, and no line
+/// relies on `getprogname()` (C hard-codes `pr`).
 fn arg_error(prog: &str, e: PrError) -> ! {
     match e {
-        // `egetopt` 那一行（`egetopt.c:144-151` 或 `:196-205`）紧跟 usage 三行。
-        // 字母位走 `line_bytes`：`egetopt.c:110` 的 `eoptopt = (int)*place++` 一次进一个
-        // 字节、`:148` 的 `%c` 原样写出，所以 `-é`（`c3 a9`）报的是 `c3`——这一支不走
-        // libc 的 `getopt`，取法的证据要落在 `egetopt.c` 上而不是 `getopt.c:79`。
+        // The `egetopt` line (`egetopt.c:144-151` or `:196-205`) is followed
+        // by the three usage lines. The letter slot goes through `line_bytes`:
+        // `egetopt.c:110` does `eoptopt = (int)*place++`, one byte at a time,
+        // and `:148` prints it with `%c` unchanged, so `-é` (`c3 a9`) reports
+        // `c3` — this arm does not go through libc's `getopt`, so the evidence
+        // for how the byte is taken must come from `egetopt.c`, not from
+        // `getopt.c:79`.
         PrError::Getopt(report) => {
             support::warn(&report.line_bytes(prog));
             usage()
@@ -207,9 +217,10 @@ fn arg_error(prog: &str, e: PrError) -> ! {
         // C's string really does end in a space before the newline (`pr.c:1800`).
         PrError::WidthValue => fail(b"pr: -w width must be 1 or more \n"),
         PrError::NumberWidth => fail(b"pr: -n width must be 1 or more\n"),
-        // C 那句是 `fprintf(errf, "pr: invalid value for -%c %s\n", 字母, eoptarg)`
-        // （`pr.c:1726-1729`、`1757-1760`、`1785-1788`）：值位是 `eoptarg` 从那一位起的
-        // **原字节**，所以拼句子不能经过任何字符解码。
+        // The C line is `fprintf(errf, "pr: invalid value for -%c %s\n", letter, eoptarg)`
+        // (`pr.c:1726-1729`, `1757-1760`, `1785-1788`): the value slot is the
+        // **raw bytes** of `eoptarg` starting at that letter, so composing the
+        // line must not pass through any character decoding.
         PrError::InvalidValue(letter, value) => {
             let mut line = Vec::new();
             line.extend_from_slice(format!("pr: invalid value for -{letter} ").as_bytes());
@@ -231,7 +242,8 @@ fn arg_error(prog: &str, e: PrError) -> ! {
     }
 }
 
-/// C 的一条 setup 错误：先自己那句（走 `errf`），再由 `main` 接上 usage（`pr.c:156-157`）。
+/// One C setup error: first its own line (through `errf`), then `main`
+/// appends the usage lines (`pr.c:156-157`).
 fn fail(message: &[u8]) -> ! {
     support::warn(message);
     usage()

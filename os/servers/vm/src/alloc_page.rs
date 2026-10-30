@@ -30,8 +30,8 @@ use crate::region::{PfnAllocator, PfnAllocError, PAGE_SIZE};
 /// (`[ARCH: A-1]`): the VA is a constant offset (`VM_DIRECT_MAP_BASE + phys`),
 /// so allocation is a single non-recursive path regardless of init phase.
 pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTableError> {
-    // V11/T30: C pagetable.c:375 allocates page-table pages through
-    // `alloc_mem` (the reclaim-retry funnel), so the Rust hook does too.
+    // C pagetable.c:375 allocates page-table pages through `alloc_mem` (the
+    // reclaim-retry funnel), so the Rust hook does too.
     let pfn = alloc_pfn_reclaiming(crate::global::page_alloc_mut())
         .map_err(|_| PageTableError::AllocationFailed)?;
     let phys = AlignedPhysBytes::new(pfn as u64 * PAGE_SIZE);
@@ -41,9 +41,10 @@ pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTa
     // SAFETY: `virt` is a page-aligned Direct Map VA of a freshly allocated,
     // exclusively owned physical page; no aliasing reference exists.
     unsafe {
-            // 续-311 [ARCH: riscv-vmddm]：零填走内核代零钩子（KDM 写 4096 零
-        // +sfence），绕开平移层对 DM 窗 VA 写的时序性误导；未注册态回落
-        // 直填。
+            // [ARCH: riscv-vmddm] zero-fill goes through the kernel's
+        // zeroing hook (KDM writes 4096 zeros + sfence), sidestepping the
+        // translation layer's false timing signal for DM-window VA writes;
+        // when the hook is unregistered, fall back to filling directly.
         #[cfg(all(target_arch = "riscv64", not(test)))]
         if minix_arch::riscv64::paging::vmdm::zero_page(phys.as_u64()).is_none() {
             core::ptr::write_bytes(virt.0 as *mut u8, 0, CLICK_SIZE);
@@ -54,15 +55,19 @@ pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTa
     Ok((minix_types::PhysBytes(phys.as_u64()), virt))
 }
 
-/// E4 余件:页表页归还钩子——`minix_arch::pt_alloc::register_free` 的
-/// VM 侧对应物(镜像 [`vm_pt_alloc`] 的分配方向)。`destroy()` 的
-/// `free_child_tables` + 根页回收只有在 free 钩子注册后才激活;
-/// 未注册时 destroy 退化为只清零根(中间页表页泄漏)。
+/// The page-table page return hook — the VM-side counterpart of
+/// `minix_arch::pt_alloc::register_free` (the mirror image of [`vm_pt_alloc`]'s
+/// allocation direction). `destroy()`'s `free_child_tables` plus root-page
+/// reclaim only become active once the free hook is registered; while it is
+/// unregistered, destroy degrades to zeroing the root only (intermediate
+/// page-table pages leak).
 ///
-/// C: `pt_free` 把页表页还回 `alloc_mem` 池(pagetable.c:1427-1437)。
+/// C: `pt_free` returns page-table pages to the `alloc_mem` pool
+/// (pagetable.c:1427-1437).
 pub(crate) fn vm_pt_free(phys: minix_types::PhysBytes) {
-    // 页表页由分配器产出,恒页对齐;非对齐输入即调用方 bug,
-    // AlignedPhysBytes::new 的 fail-fast 断言就是契约。
+    // Page-table pages come from the allocator and are always page-aligned;
+    // an unaligned input is a caller bug, and the fail-fast assertion in
+    // AlignedPhysBytes::new is the contract.
     let aligned = AlignedPhysBytes::new(phys.0);
     crate::global::page_alloc_mut().free_page(aligned);
 }
@@ -91,7 +96,7 @@ impl VmPageAllocator {
         result
     }
 
-    // V10-P2-1: `alloc_page`/`alloc_pages`/`self_alloc_count`/`stats` are
+    // `alloc_page`/`alloc_pages`/`self_alloc_count`/`stats` are
     // test-only today (production goes through `alloc_phys` + the
     // `PfnAllocator` impl).
     #[cfg_attr(not(test), allow(dead_code))]
@@ -132,7 +137,7 @@ impl VmPageAllocator {
         self.stats.active_pages()
     }
 
-    /// Page-allocation failures recorded (V11/T18, [ARCH: A-16]).
+    /// Page-allocation failures recorded ([ARCH: A-16]).
     pub(crate) fn alloc_failures(&self) -> usize {
         self.stats.allocation_failures()
     }
@@ -164,9 +169,9 @@ impl PfnAllocator for VmPageAllocator {
         self.free_page(phys);
     }
 
-    /// V12-P2-7: one multi-page request through the funnel — the backends
+    /// One multi-page request through the funnel — the backends
     /// hand out contiguous runs natively, and the funnel's reclaim-retry
-    /// (V11/T30) comes along for free. Replaces ContiguousAnonymous's
+    /// reclaim-retry comes along for free. Replaces ContiguousAnonymous's
     /// allocate-verify-rollback dance.
     fn alloc_contiguous(&mut self, count: u32) -> Result<u32, PfnAllocError> {
         self.alloc_phys(count as usize, PageAllocFlags::empty())
@@ -193,7 +198,7 @@ pub(crate) fn alloc_pfn_reclaiming(alloc: &mut dyn PfnAllocator) -> Result<u32, 
 
 /// Retry core with the reclaim pass injected — the global sink read makes
 /// parallel-test registration a non-concern, and the deterministic core is
-/// unit-testable without touching process-global state (V11/T30 test-safety
+/// unit-testable without touching process-global state (test-safety
 /// contract: no test spins an unbounded loop or grows an unbounded buffer).
 fn alloc_pfn_reclaiming_inner(
     alloc: &mut dyn PfnAllocator,
@@ -229,10 +234,10 @@ mod tests {
     use crate::direct_map::{test_vm_base, with_test_window};
 
     /// Run a test closure with the direct-map window pointed at a fresh
-    /// per-thread leaked buffer (V11/T26: 512 pages covers the largest
+    /// per-thread leaked buffer (512 pages covers the largest
     /// allocator under test; each window is exclusive to this test thread,
     /// so no global serialization is needed).
-    // ── V11/T30: alloc_mem reclaim-retry funnel (deterministic core) ──
+    // ── alloc_mem reclaim-retry funnel (deterministic core) ──
 
     /// Counting stub allocator: succeeds `budget` times, then reports OOM.
     struct BudgetAlloc {
@@ -348,7 +353,7 @@ mod tests {
         let meta_pages = bytes_to_clicks(meta_size);
 
         let meta_phys_base = base;
-        // The per-thread window base (V11/T26) is stable for this test, so
+        // The per-thread window base is stable for this test, so
         // the metadata slice can be derived directly from it.
         let metadata = unsafe {
             core::slice::from_raw_parts_mut(
@@ -364,7 +369,7 @@ mod tests {
         PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions, meta_phys_base as u64, meta_pages))
     }
 
-    /// V12-P2-7: the alloc_contiguous override issues ONE multi-page
+    /// The alloc_contiguous override issues ONE multi-page
     /// request through the funnel. Contiguity within each run is the
     /// backend's construction guarantee (bitmap scans a run, buddy hands
     /// out a block, segment-tree first-fits a range) — this test pins the
@@ -474,9 +479,10 @@ mod tests {
         });
     }
 
-    /// E4 余件:vm_pt_free 把页表页还回分配器——free 后再分配应取回
-    /// 同一物理页(空闲表 LIFO/位图回收语义),证明归还真实入池而非
-    /// 丢弃。与 test_vm_pt_alloc 同一 mock 窗口隔离。
+    /// vm_pt_free returns page-table pages to the allocator — reallocating
+    /// after the free should draw from the pool, showing the page really
+    /// went back rather than being dropped. Same mock-window isolation as
+    /// test_vm_pt_alloc.
     #[test]
     fn test_vm_pt_free_returns_page_to_allocator() {
         with_alloc_mock_base(|| {
@@ -487,8 +493,10 @@ mod tests {
             let (phys, _virt) = vm_pt_alloc().expect("pt page allocation");
             vm_pt_free(phys);
 
-            // 归还后的页回到可分配池:后续分配成功且池余量恢复。
-            // (不断言"取回同一 pfn"——那是具体分配器策略而非契约。)
+            // The returned page is back in the allocatable pool: the next
+            // allocation succeeds and the pool's free count recovers. (No
+            // assertion on getting the same pfn back — that is a particular
+            // allocator's policy, not the contract.)
             let again = alloc_pfn_reclaiming(crate::global::page_alloc_mut())
                 .expect("allocator must serve from the pool after pt free");
             let _ = again;

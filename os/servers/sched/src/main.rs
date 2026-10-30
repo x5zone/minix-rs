@@ -12,19 +12,20 @@
 #[global_allocator]
 static GLOBAL: std::alloc::System = std::alloc::System;
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
-// 无须也不应再调。
+// The freestanding side holds a link reference to minix-rt: the bin code itself uses no
+// rt symbol, so an unreferenced rlib would be dropped wholesale and `_start`/
+// `#[panic_handler]`/`#[global_allocator]` would vanish with it (the `extern crate`
+// retention semantics of panic-halt mode). The birth chain's `_start` has already
+// completed rt initialization before main (`lib.rs:86` init contract: `_start` calls it
+// automatically in no_std mode, and it is idempotent), so it must not and need not be
+// called here.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
-// E0277（docker minix-ci:1.94 实测）。
+// The entry comes in two forms by target: the none side satisfies the crt0 Consumer
+// contract (name + Rust ABI + `-> i32`, os/libs/minix-rt/src/crt0.rs:40); the host/test
+// side stays `()` — since rustc 1.94, Termination is no longer implemented for i32, so
+// an i32 main on the host is E0277 (measured with docker minix-ci:1.94).
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
@@ -75,27 +76,30 @@ fn real_main() -> ! {
             .init_scheduling(&mut kernel)
             .unwrap_or_else(|errno| panic!("sys_setalarm failed: {errno}"));
 
-        // SD-11 T3b 第二迁安装点（首迁 DS 同法，`minix_rt::install_vm_supplier`）:
-        // 把全局堆供给切到 VM_BRK 增长堆，初始断点 = 链接器镜像尾
-        //（C `brksize.S` 以 `_end` 播 `_brksize` 的同一符号）。安装本身
-        // 无 IPC；首次超出固定池的分配才真正发 VM_BRK。出生序上 SCHED
-        // 晚于 VM（`rs/boot.rs` 装机表），安装时 VM 主循环已在收请求；
-        // EINVAL（镜像尾为 0 = 链接缺陷）fail-fast。
+        // Install point of the second VM_BRK migration (the first, for DS, used the same
+        // approach via `minix_rt::install_vm_supplier`): switch the global heap supply to
+        // the VM_BRK growing heap, with the initial break = the linker image end (C
+        // `brksize.S` initializes `_brksize` from `_end`, the same symbol). The install
+        // itself does no IPC; only the first allocation beyond the fixed pool actually
+        // issues VM_BRK. In birth order SCHED comes after VM (`rs/boot.rs` boot table), so
+        // VM's main loop is already receiving requests at install time; EINVAL (image end
+        // of 0 = a link defect) fails fast.
         #[cfg(target_os = "none")]
         minix_rt::install_vm_supplier(minix_rt::image_end())
             .expect("sched: install_vm_supplier(镜像尾) 不得失败");
 
-        // SD-11 T3b 真机取证探针（DS 同法）：8 字节 slab 请求强制走
-        // `add_slab`→`supply_page`→`VM_BRK`，成功打一行串口标记——
-        // VM_BRK 腿对更早出生服务的贯通证据；探针块随 free 回 slab
-        // 自由表（VM 侧页不回收：收缩 brk 从不 unmap，同 C）。
+        // On-hardware evidence probe for the second VM_BRK migration (same approach as
+        // DS): an 8-byte slab request is forced through `add_slab`→`supply_page`→`VM_BRK`,
+        // and success prints one serial line — evidence that the VM_BRK leg is live for an
+        // earlier-born service; the probe block returns to the slab free list with free
+        // (the VM side does not reclaim pages: shrinking brk never unmaps, same as C).
         #[cfg(target_os = "none")]
         {
             let probe = minix_rt::alloc(8);
             assert!(!probe.is_null(), "sched: vm-brk probe 分配失败");
             minix_rt::free(probe);
             use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-            // [SD19-gate] 报告通道自坏时 park 兜底（panic.c:66）
+            // [SD19-gate] fallback to park when the report channel itself is broken (panic.c:66)
             #[allow(clippy::let_underscore_must_use)]
             let _ = sys_diagctl_write(
                 &DirectKernelCallTransport,

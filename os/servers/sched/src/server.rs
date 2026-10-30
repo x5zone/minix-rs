@@ -4,8 +4,8 @@
 //! (`minix3/minix/servers/sched/main.c:22-96` and the write-back steps of
 //! `schedule.c`). 01 owns the startup order, 02 owns the message rules, the
 //! arms (06~08) own the verdicts; this module owns what is left — the state
-//! those rules talk about, and the order the verbs run in. [ARCH S-11]
-//! (plan.md ARCH table, doc 02 D8): C keeps four file-scope globals
+//! those rules talk about, and the order the verbs run in. [ARCH: the four C
+//! file-scope globals fold into one owner]: C keeps four file-scope globals
 //! (`schedproc[NR_PROCS]`, `cpu_proc[]`, `machine`, `balance_timeout` —
 //! `schedproc.h:36`, `schedule.c:16,46`, `main.c:17`); the rewrite folds
 //! them into one owner so the single-threaded event loop never splits a
@@ -46,7 +46,7 @@ pub const MAX_CPUS: usize = 32;
 
 /// Consecutive receive failures before the loop declares the transport
 /// broken. C panics on the first failure (`main.c:39-40`); the bound is the
-/// one deliberate deviation (VM's V10-P0-2 precedent,
+/// one deliberate deviation (VM's precedent,
 /// `os/servers/vm/src/vm_server.rs`): a blocked receive has no transient
 /// "no message" failure, so one `Err` is already a broken transport — but
 /// counting to a bound instead of panicking immediately keeps pre-E1 runs
@@ -205,10 +205,12 @@ impl SchedServer {
         // ── settle (C 89-96) ──
         if let DispatchVerdict::Reply(code) = verdict {
             let mut reply = message;
-            // 线序符号：C 的 SCHED 以 `_SYSTEM` 编译（sched.h:4「tell headers
-            // that this is the kernel」→ errno 常量带负号），main.c:89-96 写回
-            // 的错码因此是负数；本树判定面用正号常量，在回复边界折一次
-            // （单源 `minix_types::reply_status`，与 DS/VFS 同纪律）。
+            // Wire sign: C's SCHED is compiled with `_SYSTEM` (sched.h:4 "tell
+            // headers that this is the kernel" -> errno constants are negative), so
+            // the error codes written back at main.c:89-96 are negative; this tree's
+            // decision face uses positive constants and folds once at the reply
+            // boundary (single source `minix_types::reply_status`, the same
+            // discipline as DS/VFS).
             reply.m_type = minix_types::reply_status(code);
 
             // C 101-106: a failed reply is logged and dropped — the loop
@@ -628,11 +630,13 @@ mod tests {
         (row.state, row.priority.get(), row.time_slice_ms)
     }
 
-    /// 参战场景的序列断言（卡 B / S27 的宿主冒烟）：一台 server 连吃四轮，
-    /// 按 C `main.c:35-96` 的世界顺序——PM 交接（回 OK）、内核耗尽（静默降
-    /// 级）、时钟通知（整理 + 重上铃）、野调用（ENOSYS）。逐件行为各有专项
-    /// 测试，这里锁的是**顺序与总账**：四个回合跑完，回复恰好两条、内核调用
-    /// 恰好三类、槽位账本与负载账本自洽。
+    /// Sequence assertion for the participation scenario (host smoke test): one
+    /// server handles four rounds in a row, in the world order of C `main.c:35-96` —
+    /// PM handover (reply OK), kernel exhaustion (silent downgrade), clock
+    /// notification (tidy up + re-arm the bell), stray call (ENOSYS). Each behaviour
+    /// has its own dedicated test; what is locked here is the **order and the
+    /// totals**: after four rounds there are exactly two replies, exactly three
+    /// kernel calls, and the slot ledger and load ledger are self-consistent.
     #[test]
     fn test_participation_sequence_end_to_end() {
         let mut s = server(2);
@@ -640,15 +644,16 @@ mod tests {
         s.init_scheduling(&mut kernel).expect("bell armed");
         let ipc = MockIpc::default();
 
-        // 回合 1：PM 把 fork 出的孩子交接给 SCHED → 回 OK，槽位就位。
+        // Round 1: PM hands the forked child to SCHED -> reply OK, slot in place.
         ipc.deliver(start_message(CHILD, 50, 8, 100), status_call());
         assert_eq!(s.run_once(&ipc, &mut kernel), Step::Handled);
         assert_eq!(slot_state(&s, CHILD as usize), (SlotState::InUse, 8, 100));
         assert_eq!(ipc.sent.borrow().len(), 1);
         assert_eq!(ipc.sent.borrow()[0].1.m_type, 0, "START 回 OK");
 
-        // 回合 2：内核报告孩子量子耗尽（带内核封印）→ 降一阶 + 扇出，不回复
-        //（START 的交接扇出在前，账上现在是两条内核下发）。
+        // Round 2: the kernel reports the child's quantum exhausted (with the kernel
+        // seal) -> downgrade one step + fan out, no reply (START's handover fan-out
+        // came first, so the books now show two kernel dispatches).
         ipc.deliver(noquantum_message(CHILD), status_kernel());
         assert_eq!(s.run_once(&ipc, &mut kernel), Step::Handled);
         assert_eq!(
@@ -659,7 +664,7 @@ mod tests {
         assert_eq!(kernel.schedule_calls.borrow().len(), 2, "交接 + 降级两条");
         assert_eq!(s.procs[CHILD as usize].priority.get(), 9, "8 降一阶到 9");
 
-        // 回合 3：CLOCK 打铃 → 升一阶 + 重上铃，仍然不回复。
+        // Round 3: CLOCK rings -> upgrade one step + re-arm the bell, still no reply.
         let mut clock = blank(0);
         clock.m_source = Endpoint::CLOCK;
         ipc.deliver(clock, status_notify());
@@ -669,7 +674,7 @@ mod tests {
         assert_eq!(s.procs[CHILD as usize].priority.get(), 8, "9 升一阶到 8");
         assert_eq!(ipc.sent.borrow().len(), 1);
 
-        // 回合 4：来路不明的调用号 → ENOSYS（C 85-86 + utility.c:18-23）。
+        // Round 4: an unknown call number -> ENOSYS (C 85-86 + utility.c:18-23).
         ipc.deliver(blank(0x777), status_call());
         assert_eq!(s.run_once(&ipc, &mut kernel), Step::Handled);
         let sent = ipc.sent.borrow();
@@ -790,8 +795,9 @@ mod tests {
             assert_eq!(s.procs[CHILD as usize].state, SlotState::Free);
             let sent = ipc.sent.borrow();
             assert_eq!(sent.len(), 1);
-            // 表中的 `expected` 是正号 errno 常量（判定面语言），线序上回的是
-            // 负值（C `_SYSTEM`，sched.h:4）——在此取负对标。
+            // The table's `expected` uses positive errno constants (the
+            // decision-face language) while the wire returns negative values
+            // (C `_SYSTEM`, sched.h:4) — negate here to compare.
             assert_eq!(sent[0].1.m_type, -expected);
         }
         // A taken slot refuses too (the START door is the vacant door).
@@ -1128,7 +1134,7 @@ mod tests {
     #[should_panic(expected = "IPC transport broken")]
     fn test_run_panics_after_sustained_receive_failures() {
         // The bound: 64 consecutive failures kill the loop loudly instead
-        // of busy-spinning forever (VM's V10-P0-2 precedent).
+        // of busy-spinning forever (VM's precedent).
         let mut s = server(1);
         let mut kernel = MockKernel::default();
         let ipc = MockIpc::default(); // every turn fails

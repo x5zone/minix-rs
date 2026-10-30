@@ -40,17 +40,22 @@ const DIFF_EXIT: i32 = 1;
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名那一腿交给 `warn_line` 与 `GetoptReport::line_bytes` 的 `&str` 口（登记
-    // `ARGV-BYTE-PATH-IN-LIBS`），所以臂内折一次；操作数与报文的名字位不跟着折。
+    // The program-name leg goes to the `&str` entries of `warn_line` and
+    // `GetoptReport::line_bytes` (registered under `ARGV-BYTE-PATH-IN-LIBS`),
+    // so it is folded once here; operand bytes and the message name slots are
+    // not folded along with it.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
     let refs: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
-    // C 的次序是「选项环 → `-l`/`-s` 互斥 → 操作数个数 → 开档」（`cmp.c:74-100`），
-    // 三处出口的形制各不相同：集外字母是 libc 一行**加** usage 一行；互斥是一句 `errx`
-    // 就完（没有 usage）；个数不对只有 usage 一行。都退 `ERR_EXIT` = 2。
+    // C's order is "option loop → `-l`/`-s` mutual exclusion → operand count →
+    // open" (`cmp.c:74-100`), and the three exits have different shapes: an
+    // out-of-set letter is one libc line **plus** one usage line; the exclusion
+    // is a single `errx` (no usage); a wrong count is just the one usage line.
+    // All exit `ERR_EXIT` = 2.
     let flags = match parse_cmp_flags(&refs[1..]) {
         Ok(flags) => flags,
         Err(CmpArgError::UnknownOption(letter)) => {
-            // 字母位走 `line_bytes`：取法已在 `src/cmp.rs` 改成按字节，两边同形才成立。
+            // The letter slot goes through `line_bytes`: `src/cmp.rs` now takes
+            // it byte-wise, which is what makes both sides agree.
             support::warn(&GetoptReport::UnknownOption(letter).line_bytes(&prog));
             usage();
         }
@@ -85,14 +90,17 @@ fn run() -> ! {
     let data1 = if stdin1 {
         support::read_stdin()
     } else {
-        // 开档那一腿仍要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），所以折一次；
-        // 折出来的串同时喂给 `warn_line`——报文腿与开档腿同一条，两条腿不会分叉。
+        // The open leg still needs `&str` (registered under
+        // `ARGV-BYTE-PATH-IN-LIBS`), so it is folded once; the folded string
+        // also feeds `warn_line` — the message leg and the open leg use the
+        // same one, so they cannot diverge.
         let path = String::from_utf8_lossy(file1);
         match support::read_file(&path) {
             Ok(data) => data,
             Err(code) => {
-                // C `cmp.c:101-104`：`if (!sflag) warn("%s", file1);` 然后
-                // `exit(ERR_EXIT)`——`-s` 之下**整句不打**，只留退出码 2。
+                // C `cmp.c:101-104`: `if (!sflag) warn("%s", file1);` then
+                // `exit(ERR_EXIT)` — under `-s` **nothing is printed at all**,
+                // leaving only exit status 2.
                 if !silent {
                     support::warn_line(&prog, &path, code);
                 }
@@ -107,7 +115,8 @@ fn run() -> ! {
         match support::read_file(&path) {
             Ok(data) => data,
             Err(code) => {
-                // 同上：第二支的 `warn` 也被 `sflag` 管着（`cmp.c:113-117`）。
+                // Same as above: the second branch's `warn` is also gated by
+                // `sflag` (`cmp.c:113-117`).
                 if !silent {
                     support::warn_line(&prog, &path, code);
                 }
@@ -235,7 +244,7 @@ fn parse_skip(word: &[u8]) -> Result<i64, ()> {
     }
     // A zero-length run is only reachable through the bare leading `0`, which is
     // itself the digit C converted: the value is zero and the offset stops there.
-    // 溢出走 `checked_*`，对位 C 的 `errno == ERANGE` 那一判。
+    // Overflow goes through `checked_*`, matching C's `errno == ERANGE` test.
     let value = digits[..run].iter().try_fold(0i64, |acc, b| {
         let digit = skip_digit(*b, radix).ok_or(())?;
         acc.checked_mul(radix as i64)
@@ -245,9 +254,10 @@ fn parse_skip(word: &[u8]) -> Result<i64, ()> {
     Ok(if negative { -value } else { value })
 }
 
-/// `strtoq` 在 base 0 下认的那一枚数字：十进制只到 `9`，十六进制才收 `a`-`f`
-/// （大小写同价）。按字节判，是为了让非法字节在数字串里扮演 C 的那个停点，
-/// 而不是先把整词折成文本再猜它是不是数字。
+/// The digit `strtoq` recognizes under base 0: decimal stops at `9`, and only
+/// hexadecimal accepts `a`-`f` (either case). Judging byte by byte lets an
+/// invalid byte play C's stop point inside the digit run, instead of folding
+/// the whole word to text first and then guessing whether it is a digit.
 fn skip_digit(byte: u8, radix: u32) -> Option<u32> {
     if byte.is_ascii_digit() && ((byte - b'0') as u32) < radix {
         return Some((byte - b'0') as u32);
@@ -280,8 +290,9 @@ fn skip_eof(file: &[u8], len: usize, list_all: bool, silent: bool) -> ! {
     support::terminate(DIFF_EXIT)
 }
 
-/// C 的 `errx`/`warn` 那一前缀：`cmp: ` 加 `eofmsg` 的那一句再加换行。
-/// 名字位是操作数原字节，所以整行按字节拼，不借 `format!` 的 `{}`。
+/// C's `errx`/`warn` prefix: `cmp: ` plus `eofmsg`'s sentence plus a newline.
+/// The name slot holds the operand's raw bytes, so the whole line is assembled
+/// byte-wise rather than through `format!`'s `{}`.
 fn eof_line(file: &[u8], byte: u64, line: u64, list_all: bool) -> Vec<u8> {
     let mut text = b"cmp: ".to_vec();
     text.extend_from_slice(&report_eof(file, byte, line, list_all));
@@ -303,7 +314,8 @@ mod tests {
         assert_eq!(uses_stdin(b"-", b"f"), Ok([true, false]));
         assert_eq!(uses_stdin(b"f", b"-"), Ok([false, true]));
         assert_eq!(uses_stdin(b"a", b"b"), Ok([false, false]));
-        // 两个操作数都是 `-`：C `cmp.c:110` 报“只能指定一次标准输入”。
+        // Both operands are `-`: C `cmp.c:110` reports "standard input may
+        // only be specified once".
         assert_eq!(uses_stdin(b"-", b"-"), Err(()));
     }
 

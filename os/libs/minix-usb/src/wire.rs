@@ -8,8 +8,8 @@
 //! opcode *numbers* live in [`crate::protocol`]; this module is the other
 //! half of the contract: the payload slots.
 //!
-//! The USB family speaks through the M4 payload arm (four long arguments
-//! plus padding, `MessageM4`); the init name rides the M3 character arm.
+//! The USB family speaks through the `MessageM4` payload arm (four long
+//! arguments plus padding); the init name rides the `MessageM3` character arm.
 //! These helpers type the slots so no caller hand-indexes union fields.
 
 use alloc::string::String;
@@ -79,7 +79,7 @@ pub fn split_info(msg: &Message) -> Option<(i64, i64)> {
     Some((arm.m4l1, arm.m4l2))
 }
 
-/// The init handshake's driver name, carried in the M3 character arm
+/// The init handshake's driver name, carried in the `MessageM3` character arm
 /// (`USB_RB_INIT_NAME m3_ca1`, `com.h:838`).
 ///
 /// Returns `None` for bytes that are not valid until a NUL (the C code

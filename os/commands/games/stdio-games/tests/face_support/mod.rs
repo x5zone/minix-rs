@@ -1,28 +1,38 @@
-//! 端到端门的公共夹具：把输入喂给已启动的真子进程，并解释为什么写标准输入不能 panic。
+//! Shared fixture for the end-to-end gates: feed input to an already-started real
+//! child process, and explain why writing standard input must not panic.
 //!
-//! 每一条 `*_face.rs` 门都是「起真进程 → 写标准输入 → 收三条通道」这三步。第二步有个
-//! 容易被忽略的前提：**命令可能根本就读标准输入**。C 的诊断支大多排在任何读之前
-//! （`minix3/usr.bin/pr/pr.c` 的 `usage()`、`minix3/usr.bin/vis/vis.c` 的集外字母支、
-//! `minix3/games/primes/primes.c` 的负号支都是这种形状），子进程一退出，管道的读端就关闭，
-//! 父进程这时的 `write_all` 拿到 `BrokenPipe`。
+//! Every `*_face.rs` gate follows the same three steps: start a real process, write
+//! its standard input, and collect three channels. The second step has an easily
+//! overlooked precondition: **the command may never read standard input at all**.
+//! Most C diagnostic branches come before any read (`usage()` in
+//! `minix3/usr.bin/pr/pr.c`, the out-of-set-letter branch in
+//! `minix3/usr.bin/vis/vis.c`, and the negative-number branch in
+//! `minix3/games/primes/primes.c` are all shaped that way); once the child exits,
+//! the read end of the pipe closes and the parent's `write_all` gets `BrokenPipe`.
 //!
-//! 这件事**发不发生取决于父子双方谁先被调度**：输入小到一个 64K 管道缓冲能装下时，
-//! 父进程往往在子进程退出之前就写完了，于是同一条用例时红时绿。实测形态是
-//! `pr_face` 单目标三连跑 1 红 2 绿、`vis_face` 在同容器串跑多门那一趟独红
-//! （取证见 `rewrite-notes/18-stage-commands/todo.md` 批次二百九十九那条的登记③）。
-//! 把它当 panic，就是把门自己的竞态当成了被测代码的缺陷。
+//! Whether this **happens depends on which of parent and child is scheduled first**:
+//! when the input is small enough to fit a 64K pipe buffer, the parent usually
+//! finishes writing before the child exits, so the same case goes red or green at
+//! random. Measured shape: `pr_face` in a single-target triple run went 1 red, 2
+//! green, and `vis_face` was the only red one in a same-container multi-gate run
+//! (the evidence is recorded in `rewrite-notes/18-stage-commands/todo.md`).
+//! Treating it as a panic mistakes the gate's own race for a defect in the code
+//! under test.
 //!
-//! 因此这里只放过 `BrokenPipe`，其余写错当场断言失败——否则门会静默失去输入而假绿。
+//! So only `BrokenPipe` is tolerated here; any other write error asserts immediately
+//! — otherwise a gate would silently lose its input and pass falsely.
 
 use std::io::ErrorKind;
 use std::io::Write as _;
 use std::process::Child;
 
-/// 把 `input` 写进子进程的标准输入并关闭它（关闭是必须的：命令普遍读到文件尾才收工）。
+/// Write `input` into the child's standard input and close it (closing is required:
+/// commands generally read to end-of-file before finishing).
 ///
-/// 子进程在读之前就退出的那些用例里，这一写会拿到 `BrokenPipe`，那是被测形状的正常
-/// 结果，不是门的失败；判据仍在 stdout、stderr 与退码三条通道上，它们由调用方的
-/// `wait_with_output` 收集，与写入是否完整无关。
+/// In cases where the child exits before reading, this write gets `BrokenPipe`; that
+/// is a normal outcome of the shape under test, not a gate failure. The verdicts
+/// still come from the three channels stdout, stderr, and exit code, which the
+/// caller's `wait_with_output` collects regardless of whether the write completed.
 pub fn write_stdin(child: &mut Child, input: &[u8]) {
     let mut stdin = child.stdin.take().expect("stdin piped");
     if let Err(err) = stdin.write_all(input) {

@@ -4,9 +4,10 @@
 
 use crate::{EAGAIN, EINVAL, EIO, ENOMEM, ENOSYS, EPERM, ESRCH};
 
-/// PM 错误类型（fork 协调错误的用户可见形态；`PmRequest`/`PmResponse`
-/// 两个零使用枚举已按 E7 预裁决删除——PM wire 面由类型化
-/// `Mess*` 结构承载，见下方 G 批及 A-E 批）。
+/// PM error type (the user-visible form of fork coordination errors; the
+/// two unused zero-use enums `PmRequest`/`PmResponse` were removed in
+/// favour of the typed `Mess*` structs that carry the PM wire surface, see
+/// below).
 /// PM error types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PmError {
@@ -47,17 +48,19 @@ impl PmError {
     }
 }
 
-/// PM 系统调用枚举——调用号单一真源（C: `callnr.h:14-60`，`PM_BASE + 1`
-/// ~ `PM_BASE + 47`）。
+/// PM system call enumeration — the single source of call numbers (C:
+/// `callnr.h:14-60`, `PM_BASE + 1` through `PM_BASE + 47`).
 ///
-/// 判别值 = 消息 `m_type` 中的调用号（`callnr.h:9`：`PM_BASE = 0x000`）。
-/// 本枚举与下方 `Mess*` 载荷同库同源（PD-23 采甲）：发送方（`minix-sys`
-/// 线形包装）、接收方（PM 分派）、将来的信号代理循环（内核→PM→RS 三方）
-/// 都引用这里，不各自手抄。下方 `PM_*` 常量全部由本枚举派生，六批
-/// C 绝对值钉测随派生同时钉住枚举判别值。
+/// The discriminant is the call number in the message's `m_type`
+/// (`callnr.h:9`: `PM_BASE = 0x000`). This enum and the `Mess*` payloads
+/// below share one library and one source: the sender (`minix-sys` wire
+/// wrappers), the receiver (PM dispatch) and the future signal-proxy loop
+/// (kernel → PM → RS) all reference it here instead of copying numbers by
+/// hand. Every `PM_*` constant below is derived from this enum, and the C
+/// absolute-value pins hold the enum discriminants down at the same time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
-#[allow(clippy::upper_case_acronyms)] // 与 C `PM_*` 宏名保持同形。
+#[allow(clippy::upper_case_acronyms)] // Keeps the shape of C's `PM_*` macro names.
 pub enum PmCall {
     /// PM_EXIT — _exit(2)
     Exit = 1,
@@ -107,7 +110,7 @@ pub enum PmCall {
     SigProcMask = 23,
     /// PM_SIGRETURN — sigreturn(2)
     SigReturn = 24,
-    /// PM_SYSUNAME — sysuname(2)（obsolete）
+    /// PM_SYSUNAME — sysuname(2) (obsolete)
     SysUname = 25,
     /// PM_GETPRIORITY — getpriority(2)
     GetPriority = 26,
@@ -143,9 +146,9 @@ pub enum PmCall {
     SrvFork = 41,
     /// PM_SRV_KILL — srv_kill(2)
     SrvKill = 42,
-    /// PM_EXEC_NEW — exec 新路径（newexec）
+    /// PM_EXEC_NEW — the new exec path (newexec)
     ExecNew = 43,
-    /// PM_EXEC_RESTART — exec 重启路径
+    /// PM_EXEC_RESTART — the exec restart path
     ExecRestart = 44,
     /// PM_GETEPINFO — getepinfo(2)
     GetEpInfo = 45,
@@ -156,14 +159,16 @@ pub enum PmCall {
 }
 
 impl PmCall {
-    /// 从消息 `m_type` 解码为已注册的 PM 调用。
+    /// Decode a message `m_type` into a registered PM call.
     ///
-    /// 返回 `None` 当 `nr` 不在 1..=47（含 `nr == 0` 保留值与未注册号）；
-    /// 调用方（分发层）对 `None` 返回 ENOSYS，与 C `call_index >=
-    /// NR_PM_CALLS || call_vec[call_index] == NULL → ENOSYS`
-    /// （main.c:94-101）一致。
+    /// Returns `None` when `nr` is outside 1..=47 (including the reserved
+    /// value `nr == 0` and unregistered numbers); the caller (the dispatch
+    /// layer) answers `None` with ENOSYS, matching C's
+    /// `call_index >= NR_PM_CALLS || call_vec[call_index] == NULL → ENOSYS`
+    /// (main.c:94-101).
     pub fn from_call_nr(nr: i32) -> Option<PmCall> {
-        // nr 在 1..=47 内按判别值匹配；判别值即调用号。
+        // Match discriminants inside 1..=47; the discriminant is the call
+        // number.
         match nr {
             1 => Some(PmCall::Exit),
             2 => Some(PmCall::Fork),
@@ -216,41 +221,44 @@ impl PmCall {
         }
     }
 
-    /// 返回调用号（消息 `m_type` 值，C: `PM_BASE + N`）。
+    /// Return the call number (the message `m_type` value, C: `PM_BASE + N`).
     pub fn call_nr(self) -> i32 {
         self as i32
     }
 }
 
-// ── G 批：杂项 9 调用（04-stage-pm/todo.md §11.1.1 批次表）──
+// ── Miscellaneous calls 18/19/25/37/38/39/47 ──
 //
-// C 真值：callnr.h 18/19/25/37/38/39/47 + ipc.h 对应
-// `mess_lc_pm_*` / `mess_lc_svrctl` 结构。45/46（getepinfo/getprocnr）
-// 已由 E9 PmApi 切片落地；37 常量已由 A 批锚定，本批补齐结构。
-// 各常量值由 [`PmCall`] 判别值派生（PD-23 单一真源），本批钉测继续
-// 把派生结果钉在 C 绝对值上。
+// C ground truth: callnr.h 18/19/25/37/38/39/47 plus the matching
+// `mess_lc_pm_*` / `mess_lc_svrctl` structures in ipc.h.
+// 45/46 (getepinfo/getprocnr) already landed with the E9 PmApi slice;
+// the 37 constant was already anchored, and the structures are added here.
+// Every constant value is derived from the [`PmCall`] discriminant (single
+// source), and the pin tests hold the derived result down against the C
+// absolute values.
 
 /// C: `PM_GETMCONTEXT (PM_BASE + 18)` — callnr.h:31.
 pub const PM_GETMCONTEXT: i32 = PmCall::GetMContext as i32;
 /// C: `PM_SETMCONTEXT (PM_BASE + 19)` — callnr.h:32.
 pub const PM_SETMCONTEXT: i32 = PmCall::SetMContext as i32;
-/// C: `PM_SYSUNAME (PM_BASE + 25)` — callnr.h:38（C 注记 obsolete，行为保留）。
+/// C: `PM_SYSUNAME (PM_BASE + 25)` — callnr.h:38 (C notes it as obsolete; behaviour is kept).
 pub const PM_SYSUNAME: i32 = PmCall::SysUname as i32;
 /// C: `PM_SVRCTL (PM_BASE + 38)` — callnr.h:51.
 pub const PM_SVRCTL: i32 = PmCall::SvrCtl as i32;
 /// C: `PM_SPROF (PM_BASE + 39)` — callnr.h:52.
 pub const PM_SPROF: i32 = PmCall::SProf as i32;
-// PM_GETSYSINFO（PM_BASE + 47，callnr.h:60）已有权威定义于
-// `ipc/sysinfo.rs`（PM 表请求，E-MIBPROD/E-ISPROD 域）——不在此重复。
+// PM_GETSYSINFO (PM_BASE + 47, callnr.h:60) already has its authoritative
+// definition in `ipc/sysinfo.rs` (the PM table request, E-MIBPROD/E-ISPROD
+// area) — it is not repeated here.
 
-/// `mcontext_t` 指针载荷（GETMCONTEXT/SETMCONTEXT 共用）。
+/// The `mcontext_t` pointer payload (shared by GETMCONTEXT/SETMCONTEXT).
 ///
-/// C: `mess_lc_pm_mcontext` — ipc.h:477-481。LP64：指针 4→8，
-/// padding 52→48，总长保持 56。
+/// C: `mess_lc_pm_mcontext` — ipc.h:477-481. LP64: the pointer widens from
+/// 4 to 8 bytes and padding goes 52→48, keeping the total at 56.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmMcontext {
-    /// `mcontext_t *`——用户态上下文存储地址。
+    /// `mcontext_t *` — the user-space context storage address.
     pub ctx: u64,
     _pad: [u8; 48],
 }
@@ -266,14 +274,14 @@ impl MessLcPmMcontext {
     }
 }
 
-/// REBOOT 载荷。
+/// REBOOT payload.
 ///
-/// C: `mess_lc_pm_reboot` — ipc.h:503-507（int how + pad52，
-/// LP64 同形 56）。
+/// C: `mess_lc_pm_reboot` — ipc.h:503-507 (int how + pad52, the same
+/// 56-byte shape under LP64).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmReboot {
-    /// 重启方式（RBT_HALT/RBT_REBOOT/RBT_PANIC）。
+    /// Reboot mode (RBT_HALT/RBT_REBOOT/RBT_PANIC).
     pub how: i32,
     _pad: [u8; 52],
 }
@@ -283,56 +291,57 @@ impl MessLcPmReboot {
     }
 }
 
-/// SYSUNAME 载荷。
+/// SYSUNAME payload.
 ///
-/// C: `mess_lc_pm_sysuname` — ipc.h:565-571（req/field/len/value）。
-/// LP64：len 对齐 8 → @8，value @16，padding 40→28，总长 56。
+/// C: `mess_lc_pm_sysuname` — ipc.h:565-571 (req/field/len/value).
+/// LP64: len is 8-aligned → @8, value @16, padding 40→28, total 56.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmSysuname {
-    /// 操作码（uname 命名空间 request）。
+    /// Operation code (the uname namespace request).
     pub req: i32,
-    /// 字段选择。
+    /// Field selector.
     pub field: i32,
-    /// 缓冲长度。
+    /// Buffer length.
     pub len: u64,
-    /// 用户缓冲指针。
+    /// User buffer pointer.
     pub value: u64,
     _pad: [u8; 28],
 }
 
-/// SVRCTL 载荷（PM 服务器控制；与内核/RS 的 `mess_lc_svrctl` 同形）。
+/// SVRCTL payload (PM server control; the same shape as the kernel/RS
+/// `mess_lc_svrctl`).
 ///
-/// C: `mess_lc_svrctl` — ipc.h:603-608（unsigned long request +
-/// vir_bytes arg）。LP64：request@0、arg@8、padding 48，总长 56。
+/// C: `mess_lc_svrctl` — ipc.h:603-608 (unsigned long request +
+/// vir_bytes arg). LP64: request@0, arg@8, padding 48, total 56.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmSvrctl {
-    /// SVRCTL 请求码。
+    /// SVRCTL request code.
     pub request: u64,
-    /// 请求参数（用户指针或数值）。
+    /// Request argument (a user pointer or a numeric value).
     pub arg: u64,
     _pad: [u8; 40],
 }
 
-/// SPROF 载荷（PM 侧统计剖面控制）。
+/// SPROF payload (PM-side statistical profile control).
 ///
-/// C: `mess_lc_pm_sprof` — ipc.h:550-558。LP64：三个 int + 三个
-/// 8 字节域，padding 32→16，总长 56。
+/// C: `mess_lc_pm_sprof` — ipc.h:550-558. LP64: three ints plus three
+/// 8-byte fields, padding 32→16, total 56.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmSprof {
-    /// 动作码（start/stop）。
+    /// Action code (start/stop).
     pub action: i32,
-    /// 采样频率。
+    /// Sampling frequency.
     pub freq: i32,
-    /// 中断类型。
+    /// Interrupt type.
     pub intr_type: i32,
-    /// 控制块指针。
+    /// Control-block pointer.
     pub ctl_ptr: u64,
-    /// 内存区指针。
+    /// Memory-region pointer.
     pub mem_ptr: u64,
-    /// 内存区大小。
+    /// Memory-region size.
     pub mem_size: u64,
     _pad: [u8; 16],
 }
@@ -351,20 +360,22 @@ mod tests {
     }
 }
 
-// ── E7 A 批:凭证调用号与 wire 结构(callnr.h:15-45 + ipc.h)──
+// ── E7: credential call numbers and wire structures (callnr.h:15-45 + ipc.h) ──
 //
-// PM_BASE = 0(无偏移基),A 批调用号 = 4..=37 的绝对值。
-// 布局:i386 C 头的 m_lc_pm_* 全为 4 字节字段 + padding 至 56,LP64
-// 仅 vir_bytes 指针需要 8 字节对齐(groups.ptr),padding 相应缩短
-// (rs_start LP64 判例)。
+// PM_BASE = 0 (no offset base), so the call numbers here are the absolute
+// values 4..=37.
+// Layout: the i386 C header's m_lc_pm_* is all 4-byte fields plus padding
+// to 56; under LP64 only the vir_bytes pointer needs 8-byte alignment
+// (groups.ptr), and the padding shrinks accordingly (the rs_start LP64
+// precedent).
 
-/// C: `PM_GETPID` — callnr.h:17。
+/// C: `PM_GETPID` — callnr.h:17.
 pub const PM_GETPID: i32 = PmCall::GetPid as i32;
-/// C: `PM_SETUID` — callnr.h:18。
+/// C: `PM_SETUID` — callnr.h:18.
 pub const PM_SETUID: i32 = PmCall::SetUid as i32;
-/// C: `PM_GETUID` — callnr.h:19。
+/// C: `PM_GETUID` — callnr.h:19.
 pub const PM_GETUID: i32 = PmCall::GetUid as i32;
-/// C: `PM_PTRACE` — callnr.h:21。
+/// C: `PM_PTRACE` — callnr.h:21.
 pub const PM_PTRACE: i32 = PmCall::Ptrace as i32;
 /// C: `PM_SETGROUPS` — callnr.h:22.
 pub const PM_SETGROUPS: i32 = PmCall::SetGroups as i32;
@@ -389,42 +400,45 @@ pub const PM_GETSID: i32 = PmCall::GetSid as i32;
 /// C: `PM_REBOOT` — callnr.h:52.
 pub const PM_REBOOT: i32 = PmCall::Reboot as i32;
 
-/// SYS_SETUID / SYS_SETGID 请求载荷(C: `mess_lc_pm_setuid` /
-/// `mess_lc_pm_setgid` — ipc.h:525-529,字段 4 字节 + padding[52])。
+/// The SYS_SETUID / SYS_SETGID request payload (C: `mess_lc_pm_setuid` /
+/// `mess_lc_pm_setgid` — ipc.h:525-529, 4-byte fields + padding[52]).
 ///
-/// SETGID 与 SETUID 同布局(gid_t 与 uid_t 同宽),共用此结构;
-/// 语义由调用号区分(callnr.h:18/:25)。
+/// SETGID and SETUID share the layout (`gid_t` and `uid_t` are the same
+/// width), so they share this struct; the call number distinguishes the
+/// semantics (callnr.h:18/:25).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmSetid {
-    /// 新的 uid/gid。C: `uid_t uid`(setuid)或 `gid_t gid`(setgid)。
+    /// The new uid/gid. C: `uid_t uid` (setuid) or `gid_t gid` (setgid).
     pub id: u32,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 52],
 }
 
-/// SYS_GETSID 请求载荷(C: `mess_lc_pm_getsid` — ipc.h:453-457,
-/// `pid_t pid` + padding[52])。pid 为 0 时查调用进程自身的会话。
+/// The SYS_GETSID request payload (C: `mess_lc_pm_getsid` — ipc.h:453-457,
+/// `pid_t pid` + padding[52]). A pid of 0 queries the calling process's
+/// own session.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmGetsid {
-    /// 目标进程 pid(0 = 调用进程)。C: `pid_t pid`。
+    /// Target process pid (0 = the calling process). C: `pid_t pid`.
     pub pid: i32,
     /// Padding to 56 bytes.
     pub _padding: [u8; 52],
 }
 
-/// SYS_SETGROUPS / SYS_GETGROUPS 请求载荷(C: `mess_lc_pm_groups` —
-/// ipc.h:459-465:`int num; vir_bytes ptr`)。LP64:`ptr` 8 字节对齐到
-/// offset 8,padding 缩短至 44(总 56 不变,rs_start LP64 判例)。
+/// The SYS_SETGROUPS / SYS_GETGROUPS request payload (C:
+/// `mess_lc_pm_groups` — ipc.h:459-465: `int num; vir_bytes ptr`). LP64:
+/// `ptr` is 8-byte aligned at offset 8 and the padding shrinks to 44 (the
+/// total stays 56; the rs_start LP64 precedent).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmGroups {
-    /// 组数(SET)或请求的组数(GET)。C: `int num`。
+    /// Group count (SET) or requested group count (GET). C: `int num`.
     pub num: i32,
-    /// gid_t 数组指针。C: `vir_bytes ptr`。
+    /// Pointer to the gid_t array. C: `vir_bytes ptr`.
     pub ptr: u64,
-    /// Padding to 56 bytes (LP64: C i386 的 48 → 40)。
+    /// Padding to 56 bytes (LP64: the C i386 value 48 becomes 40).
     pub _padding: [u8; 40],
 }
 
@@ -433,7 +447,8 @@ mod credential_wire_tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// C 绝对值 pin:A 批凭证调用号(callnr.h:17-52,PM_BASE=0)。
+    /// C absolute-value pin: the credential call numbers
+    /// (callnr.h:17-52, PM_BASE=0).
     #[test]
     fn test_pm_credential_call_numbers_match_c() {
         assert_eq!(PM_GETPID, 4); // callnr.h:17
@@ -453,8 +468,9 @@ mod credential_wire_tests {
         assert_eq!(PM_REBOOT, 37); // callnr.h:52
     }
 
-    /// 布局见证:三 wire 结构均 56 字节(union payload size);
-    /// groups.ptr 在 LP64 落 offset 8(u64 对齐)。
+    /// Layout witness: all three wire structs are 56 bytes (the union
+    /// payload size); under LP64 `groups.ptr` lands at offset 8 (u64
+    /// alignment).
     #[test]
     fn test_pm_credential_wire_layouts() {
         assert_eq!(size_of::<MessLcPmSetid>(), 56);
@@ -467,7 +483,7 @@ mod credential_wire_tests {
     }
 }
 
-// ── E7 B 批:信号控制调用号与 wire 结构(callnr.h:20-24 + ipc.h)──
+// ── E7: signal control call numbers and wire structures (callnr.h:20-24 + ipc.h) ──
 
 /// C: `PM_SIGACTION` — callnr.h:33.
 pub const PM_SIGACTION: i32 = PmCall::SigAction as i32;
@@ -479,58 +495,61 @@ pub const PM_SIGPENDING: i32 = PmCall::SigPending as i32;
 pub const PM_SIGPROCMASK: i32 = PmCall::SigProcMask as i32;
 /// C: `PM_SIGRETURN` — callnr.h:37.
 pub const PM_SIGRETURN: i32 = PmCall::SigReturn as i32;
-/// C: `PM_KILL` — callnr.h:24(KILL 与 SIGACTION 共用 `mess_lc_pm_sig`)。
+/// C: `PM_KILL` — callnr.h:24 (KILL and SIGACTION share `mess_lc_pm_sig`).
 pub const PM_KILL: i32 = PmCall::Kill as i32;
 
-/// SIGACTION/KILL 请求载荷(C: `mess_lc_pm_sig` — ipc.h:528-540)。
+/// The SIGACTION/KILL request payload (C: `mess_lc_pm_sig` — ipc.h:528-540).
 ///
-/// 字段族:`pid`(目标进程,0=自身)、`nr`(信号号)、`act`/`oact`
-/// (`struct sigaction` 的用户态指针,signal.c:48-84)、`ret`
-/// (sigreturn 恢复桩,signal.c:84)。LP64 与 i386 同布局(全 4 字节
-/// 字段在前,指针 8 字节对齐自动落在 8/16/24)。
+/// Field family: `pid` (target process, 0 = self), `nr` (signal number),
+/// `act`/`oact` (user-space pointers to `struct sigaction`, signal.c:48-84),
+/// `ret` (the sigreturn restore stub, signal.c:84). LP64 keeps the i386
+/// layout (the 4-byte fields come first, so the 8-byte-aligned pointers
+/// land automatically at 8/16/24).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmSig {
-    /// 目标进程 pid。C: `pid_t pid`。
+    /// Target process pid. C: `pid_t pid`.
     pub pid: i32,
-    /// 信号号。C: `int nr`。
+    /// Signal number. C: `int nr`.
     pub nr: i32,
-    /// `struct sigaction *` 用户态指针。C: `vir_bytes act`。
+    /// User-space `struct sigaction *`. C: `vir_bytes act`.
     pub act: u64,
-    /// 旧 action 出参指针。C: `vir_bytes oact`。
+    /// Out-parameter pointer for the old action. C: `vir_bytes oact`.
     pub oact: u64,
-    /// sigreturn 恢复桩。C: `vir_bytes ret`。
+    /// The sigreturn restore stub. C: `vir_bytes ret`.
     pub ret: u64,
-    /// Padding to 56 bytes (C: union payload size)。
+    /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 24],
 }
 
-/// SIGPROCMASK/SIGSUSPEND 请求载荷(C: `mess_lc_pm_sigset` — ipc.h:543-549)。
+/// The SIGPROCMASK/SIGSUSPEND request payload (C: `mess_lc_pm_sigset` —
+/// ipc.h:543-549).
 ///
-/// `set` 是 C `sigset_t`(sigtypes.h:59-62:`u32 bits[4]`,16 字节)。
+/// `set` is a C `sigset_t` (sigtypes.h:59-62: `u32 bits[4]`, 16 bytes).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmSigset {
-    /// SIG_BLOCK/UNBLOCK/SETMASK/INQUIRE。C: `int how`。
+    /// SIG_BLOCK/UNBLOCK/SETMASK/INQUIRE. C: `int how`.
     pub how: i32,
-    /// Padding to offset 8 (LP64 `vir_bytes` 对齐;i386 无此 pad)。
+    /// Padding to offset 8 (LP64 `vir_bytes` alignment; i386 has no pad here).
     pub _pad: [u8; 4],
-    /// 恢复桩指针。C: `vir_bytes ctx`。
+    /// Restore-stub pointer. C: `vir_bytes ctx`.
     pub ctx: u64,
-    /// 信号掩码。C: `sigset_t set`(16 字节)。
+    /// Signal mask. C: `sigset_t set` (16 bytes).
     pub set: [u32; 4],
-    /// Padding to 56 bytes (LP64: C i386 的 32 → 24)。
+    /// Padding to 56 bytes (LP64: the C i386 value 32 becomes 24).
     pub _padding: [u8; 24],
 }
 
-/// SIGPROCMASK/SIGPENDING 回复载荷(C: `mess_pm_lc_sigset` — 旧掩码/待决
-/// 集由回复消息带回,signal.c:117/97)。LP64:set 16 字节 + padding 至 56。
+/// The SIGPROCMASK/SIGPENDING reply payload (C: `mess_pm_lc_sigset` — the
+/// old mask / pending set comes back in the reply message, signal.c:117/97).
+/// LP64: 16 bytes of `set` plus padding to 56.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessPmLcSigset {
-    /// 旧掩码(SIGPROCMASK)或待决集(SIGPENDING)。C: `sigset_t set`。
+    /// Old mask (SIGPROCMASK) or pending set (SIGPENDING). C: `sigset_t set`.
     pub set: [u32; 4],
-    /// Padding to 56 bytes (C: union payload size)。
+    /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 40],
 }
 
@@ -541,20 +560,23 @@ impl MessPmLcSigset {
     }
 }
 
-/// 信号管理器把“已收到的信号”转发给目标服务的载荷。
+/// Payload used by the signal manager to forward an "already received"
+/// signal to the target service.
 ///
-/// C: `mess_pm_lsys_sigs_signal` — `ipc.h:1815-1819`（`int num` +
-/// 52 字节 padding = 56）。发送方是信号管理器（PM 为服务代理：
-/// `pm/signal.c:470-473`；RS 同理：`rs/main.c:699-701`），消息类型是
-/// `SIGS_SIGNAL_RECEIVED`，接收方的 SEF 把这一个号码交给它的信号回调
-/// （`sef_signal.c:115-128`）。它与通知载荷里的位图是信号请求的两种形状：
-/// 位图形来自内核 `SYSTEM`，本形来自信号管理器。
+/// C: `mess_pm_lsys_sigs_signal` — `ipc.h:1815-1819` (`int num` + 52 bytes
+/// of padding = 56). The sender is the signal manager (PM acts as the
+/// service proxy: `pm/signal.c:470-473`; RS likewise: `rs/main.c:699-701`),
+/// the message type is `SIGS_SIGNAL_RECEIVED`, and the receiver's SEF
+/// hands this single number to its signal callback (`sef_signal.c:115-128`).
+/// It is one of the two shapes of a signal request, the other being the
+/// bitmap in the notify payload: the bitmap form comes from the kernel
+/// `SYSTEM`, this form comes from the signal manager.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessPmLsysSigsSignal {
-    /// 被转发的信号号。C: `int num`。
+    /// The forwarded signal number. C: `int num`.
     pub num: i32,
-    /// Padding to 56 bytes (C: union payload size)。
+    /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 52],
 }
 
@@ -563,7 +585,8 @@ mod sig_wire_tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// C 绝对值 pin:B 批信号控制调用号(callnr.h:33-37 + :24)。
+    /// C absolute-value pin: the signal control call numbers
+    /// (callnr.h:33-37 + :24).
     #[test]
     fn test_pm_signal_call_numbers_match_c() {
         assert_eq!(PM_SIGACTION, 20); // callnr.h:33
@@ -574,8 +597,8 @@ mod sig_wire_tests {
         assert_eq!(PM_KILL, 11); // callnr.h:24
     }
 
-    /// 布局见证:MessLcPmSig 56 字节(mess_lc_pm_sig — ipc.h:528-540),
-    /// 指针域 LP64 落 8/16/24。
+    /// Layout witness: MessLcPmSig is 56 bytes (mess_lc_pm_sig —
+    /// ipc.h:528-540), with the pointer fields at 8/16/24 under LP64.
     #[test]
     fn test_mess_lc_pm_sig_layout() {
         assert_eq!(size_of::<MessLcPmSig>(), 56);
@@ -587,7 +610,7 @@ mod sig_wire_tests {
         assert_eq!(offset_of!(MessLcPmSig, _padding), 32);
     }
 
-    /// 布局见证:MessLcPmSigset 56 字节(how/ctx/set/padding)。
+    /// Layout witness: MessLcPmSigset is 56 bytes (how/ctx/set/padding).
     #[test]
     fn test_mess_lc_pm_sigset_layout() {
         assert_eq!(size_of::<MessLcPmSigset>(), 56);
@@ -597,8 +620,8 @@ mod sig_wire_tests {
         assert_eq!(offset_of!(MessLcPmSigset, _padding), 32);
     }
 
-    /// 布局见证:MessPmLsysSigsSignal 56 字节,`num` 落在偏移 0
-    ///(C `int num` 是结构体首个字段 — ipc.h:1815-1819)。
+    /// Layout witness: MessPmLsysSigsSignal is 56 bytes and `num` lands at
+    /// offset 0 (C `int num` is the struct's first field — ipc.h:1815-1819).
     #[test]
     fn test_mess_pm_lsys_sigs_signal_layout() {
         assert_eq!(size_of::<MessPmLsysSigsSignal>(), 56);
@@ -607,41 +630,44 @@ mod sig_wire_tests {
     }
 }
 
-// ── E7 C 批:时间调用号与 wire 结构(callnr.h:19/40-43 + ipc.h:574-583)──
+// ── E7: time call numbers and wire structures (callnr.h:19/40-43 + ipc.h:574-583) ──
 //
-// 六个时间调用(STIME 7/GETTIMEOFDAY 28/CLOCK_GETRES 33/CLOCK_GETTIME 34/
-// CLOCK_SETTIME 35/GETRUSAGE 36)在 C 共用 `mess_lc_pm_time` 一臂,按
-// `clk_id` 与 `now` 分派(time.c:31/55/79)。
+// The six time calls (STIME 7 / GETTIMEOFDAY 28 / CLOCK_GETRES 33 /
+// CLOCK_GETTIME 34 / CLOCK_SETTIME 35 / GETRUSAGE 36) share one
+// `mess_lc_pm_time` arm in C, dispatched on `clk_id` and `now`
+// (time.c:31/55/79).
 
-/// C: `PM_STIME` — callnr.h:19(PM_BASE + 7)。
+/// C: `PM_STIME` — callnr.h:19 (PM_BASE + 7).
 pub const PM_STIME: i32 = PmCall::Stime as i32;
-/// C: `PM_GETTIMEOFDAY` — callnr.h:43(PM_BASE + 28)。
+/// C: `PM_GETTIMEOFDAY` — callnr.h:43 (PM_BASE + 28).
 pub const PM_GETTIMEOFDAY: i32 = PmCall::GetTimeOfDay as i32;
-/// C: `PM_CLOCK_GETRES` — callnr.h:48(PM_BASE + 33)。
+/// C: `PM_CLOCK_GETRES` — callnr.h:48 (PM_BASE + 33).
 pub const PM_CLOCK_GETRES: i32 = PmCall::ClockGetRes as i32;
-/// C: `PM_CLOCK_GETTIME` — callnr.h:49(PM_BASE + 34)。
+/// C: `PM_CLOCK_GETTIME` — callnr.h:49 (PM_BASE + 34).
 pub const PM_CLOCK_GETTIME: i32 = PmCall::ClockGetTime as i32;
-/// C: `PM_CLOCK_SETTIME` — callnr.h:50(PM_BASE + 35)。
+/// C: `PM_CLOCK_SETTIME` — callnr.h:50 (PM_BASE + 35).
 pub const PM_CLOCK_SETTIME: i32 = PmCall::ClockSetTime as i32;
-/// C: `PM_GETRUSAGE` — callnr.h:51(PM_BASE + 36)。
+/// C: `PM_GETRUSAGE` — callnr.h:51 (PM_BASE + 36).
 pub const PM_GETRUSAGE: i32 = PmCall::GetRUsage as i32;
 
-/// 时间调用共用载荷(C: `mess_lc_pm_time` — ipc.h:574-583)。
+/// The payload shared by the time calls (C: `mess_lc_pm_time` —
+/// ipc.h:574-583).
 ///
-/// LP64 布局:`time_t`/`long` 均为 8 字节,`_padding` 由 C i386 的 36
-/// 缩至 32 保持 56 字节 payload(A-3 判例,rs_start 先例)。
+/// LP64 layout: `time_t`/`long` are both 8 bytes, and `_padding` shrinks
+/// from the C i386 value 36 to 32 to keep the 56-byte payload (the A-3
+/// precedent, following rs_start).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmTime {
-    /// 秒。C: `time_t sec`。
+    /// Seconds. C: `time_t sec`.
     pub sec: u64,
-    /// POSIX 时钟 id(CLOCK_REALTIME 等)。C: `clockid_t clk_id`。
+    /// POSIX clock id (CLOCK_REALTIME etc.). C: `clockid_t clk_id`.
     pub clk_id: i32,
-    /// 0 = 渐变模式(adjtime),非 0 = 绝对设置。C: `int now`。
+    /// 0 = gradual mode (adjtime), non-zero = absolute set. C: `int now`.
     pub now: i32,
-    /// 纳秒部分。C: `long nsec`。
+    /// Nanoseconds part. C: `long nsec`.
     pub nsec: i64,
-    /// Padding to 56 bytes (LP64: C i386 的 36 → 32)。
+    /// Padding to 56 bytes (LP64: the C i386 value 36 becomes 32).
     pub _padding: [u8; 32],
 }
 
@@ -650,7 +676,7 @@ mod time_wire_tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// C 绝对值 pin:C 批时间调用号(callnr.h:19/43/48-51)。
+    /// C absolute-value pin: the time call numbers (callnr.h:19/43/48-51).
     #[test]
     fn test_pm_time_call_numbers_match_c() {
         assert_eq!(PM_STIME, 7); // callnr.h:19
@@ -661,8 +687,9 @@ mod time_wire_tests {
         assert_eq!(PM_GETRUSAGE, 36); // callnr.h:51
     }
 
-    /// 布局见证:MessLcPmTime 56 字节;sec u64@0、clk_id@8、now@12、
-    /// nsec@16(LP64 time_t/long 均 8 字节,padding 36→32 保持 payload)。
+    /// Layout witness: MessLcPmTime is 56 bytes; sec u64@0, clk_id@8,
+    /// now@12, nsec@16 (under LP64 `time_t`/`long` are both 8 bytes, and
+    /// padding 36→32 keeps the payload size).
     #[test]
     fn test_mess_lc_pm_time_layout() {
         assert_eq!(size_of::<MessLcPmTime>(), 56);
@@ -673,135 +700,140 @@ mod time_wire_tests {
     }
 }
 
-// ── E7 D/E 批:itimer 与 exec 调用号与 wire 结构 ──
+// ── E7: itimer and exec call numbers and wire structures ──
 
-/// C: `PM_ITIMER` — callnr.h:30(PM_BASE + 17)。
+/// C: `PM_ITIMER` — callnr.h:30 (PM_BASE + 17).
 pub const PM_ITIMER: i32 = PmCall::Itimer as i32;
-/// C: `PM_EXEC` — callnr.h:27(PM_BASE + 14)。
+/// C: `PM_EXEC` — callnr.h:27 (PM_BASE + 14).
 pub const PM_EXEC: i32 = PmCall::Exec as i32;
-/// C: `PM_EXEC_NEW` — callnr.h:56(PM_BASE + 43)。
+/// C: `PM_EXEC_NEW` — callnr.h:56 (PM_BASE + 43).
 pub const PM_EXEC_NEW: i32 = PmCall::ExecNew as i32;
-/// C: `PM_EXEC_RESTART` — callnr.h:57(PM_BASE + 44)。
+/// C: `PM_EXEC_RESTART` — callnr.h:57 (PM_BASE + 44).
 pub const PM_EXEC_RESTART: i32 = PmCall::ExecRestart as i32;
 
-// ── E9 PmApi 分域:RS 服务进程管理调用号与 wire ──
+// ── E9 PmApi area: RS service process-management call numbers and wire ──
 
-/// `PM_SRV_FORK` — 为系统服务派生子进程(callnr.h:54,PM_BASE + 41)。
-/// RS 自升级链的入口(C manager.c:576 `srv_fork`)。
+/// `PM_SRV_FORK` — fork a child process for a system service
+/// (callnr.h:54, PM_BASE + 41). The entry point of RS's self-upgrade chain
+/// (C manager.c:576 `srv_fork`).
 pub const PM_SRV_FORK: i32 = PmCall::SrvFork as i32;
-/// `PM_GETEPINFO` — 按端点取进程凭证(callnr.h:58,PM_BASE + 45)。
+/// `PM_GETEPINFO` — look up a process's credentials by endpoint
+/// (callnr.h:58, PM_BASE + 45).
 pub const PM_GETEPINFO: i32 = PmCall::GetEpInfo as i32;
-/// `PM_GETPROCNR` — 按 pid 反查端点(callnr.h:59,PM_BASE + 46)。
+/// `PM_GETPROCNR` — look up an endpoint by pid (callnr.h:59, PM_BASE + 46).
 pub const PM_GETPROCNR: i32 = PmCall::GetProcNr as i32;
 
-/// getepinfo 请求载荷(C: `mess_lsys_pm_getepinfo` — ipc.h:1398-1406)。
+/// getepinfo request payload (C: `mess_lsys_pm_getepinfo` — ipc.h:1398-1406).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MessLsysPmGetepinfo {
-    /// 目标进程端点。C: `endpoint_t endpt`。
+    /// Target process endpoint. C: `endpoint_t endpt`.
     pub endpt: i32,
-    /// LP64:vir_bytes 拓宽后的对齐垫。
+    /// LP64: alignment pad after `vir_bytes` was widened.
     pub _pad: u32,
-    /// groups 缓冲指针(0 = 不取组表)。C: `vir_bytes groups`。
+    /// groups buffer pointer (0 = do not fetch the group list). C: `vir_bytes groups`.
     pub groups: u64,
-    /// 缓冲容量(组数)。C: `int ngroups`。
+    /// Buffer capacity (number of groups). C: `int ngroups`.
     pub ngroups: i32,
-    /// LP64 对齐垫。
+    /// LP64 alignment pad.
     pub _pad2: u32,
-    /// LP64:域合计 24,padding 由 44 缩至 32,总 56。
+    /// LP64: the fields total 24, padding shrinks from 44 to 32, total 56.
     pub _padding: [u8; 32],
 }
 
-/// getepinfo 应答载荷(PM → 调用方。C: `mess_pm_lsys_getepinfo` —
-/// ipc.h:1788-1798,全 4 字节域,padding 36,总 56)。
+/// getepinfo reply payload (PM → caller. C: `mess_pm_lsys_getepinfo` —
+/// ipc.h:1788-1798: all 4-byte fields, padding 36, total 56).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessPmLsysGetepinfo {
-    /// 真实 uid。C: `uid_t uid`。
+    /// Real uid. C: `uid_t uid`.
     pub uid: i32,
-    /// 有效 uid。C: `uid_t euid`。
+    /// Effective uid. C: `uid_t euid`.
     pub euid: i32,
-    /// 真实 gid。C: `gid_t gid`。
+    /// Real gid. C: `gid_t gid`.
     pub gid: i32,
-    /// 有效 gid。C: `gid_t egid`。
+    /// Effective gid. C: `gid_t egid`.
     pub egid: i32,
-    /// 组数(groups 缓冲非空时有效)。C: `int ngroups`。
+    /// Group count (meaningful when the groups buffer is non-empty). C: `int ngroups`.
     pub ngroups: i32,
-    /// Padding to 56 bytes。
+    /// Padding to 56 bytes.
     pub _padding: [u8; 36],
 }
 
-/// getprocnr 请求载荷(C: `mess_lsys_pm_getprocnr` — ipc.h:1407-1412)。
+/// getprocnr request payload (C: `mess_lsys_pm_getprocnr` — ipc.h:1407-1412).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLsysPmGetprocnr {
-    /// 进程 id。C: `pid_t pid`。
+    /// Process id. C: `pid_t pid`.
     pub pid: i32,
-    /// Padding to 56 bytes。
+    /// Padding to 56 bytes.
     pub _padding: [u8; 52],
 }
 
-/// getprocnr 应答载荷(PM → 调用方。C: `mess_pm_lsys_getprocnr` —
-/// ipc.h:1800-1805)。
+/// getprocnr reply payload (PM → caller. C: `mess_pm_lsys_getprocnr` —
+/// ipc.h:1800-1805).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessPmLsysGetprocnr {
-    /// 进程端点。C: `endpoint_t endpt`。
+    /// Process endpoint. C: `endpoint_t endpt`.
     pub endpt: i32,
-    /// Padding to 56 bytes。
+    /// Padding to 56 bytes.
     pub _padding: [u8; 52],
 }
 
-/// itimer 请求载荷(C: `mess_lc_pm_itimer` — ipc.h:468-474)。
+/// itimer request payload (C: `mess_lc_pm_itimer` — ipc.h:468-474).
 ///
-/// `which`:ITIMER_REAL/ITIMER_VIRTUAL/ITIMER_PROF;`value`/`ovalue`
-/// 为 `struct itimerval` 的用户态指针。
+/// `which`: ITIMER_REAL/ITIMER_VIRTUAL/ITIMER_PROF; `value`/`ovalue` are
+/// user-space pointers to `struct itimerval`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmItimer {
-    /// 定时器类型。C: `int which`。
+    /// Timer type. C: `int which`.
     pub which: i32,
-    /// 新值指针(`struct itimerval *`)。C: `vir_bytes value`。
+    /// New-value pointer (`struct itimerval *`). C: `vir_bytes value`.
     pub value: u64,
-    /// 旧值出参指针。C: `vir_bytes ovalue`。
+    /// Out-parameter pointer for the old value. C: `vir_bytes ovalue`.
     pub ovalue: u64,
-    /// LP64:value/ovalue 拓为 8 字节(域合计 24),padding 由 44 缩至 32,总 56。
+    /// LP64: value/ovalue widen to 8 bytes (fields total 24), padding
+    /// shrinks from 44 to 32, total 56.
     pub _padding: [u8; 32],
 }
 
-/// exec 请求载荷(C: `mess_lc_pm_exec` — ipc.h:435-443:name/namelen/
-/// frame/framelen/ps_str 五域 + padding[36])。
+/// exec request payload (C: `mess_lc_pm_exec` — ipc.h:435-443:
+/// name/namelen/frame/framelen/ps_str, five fields + padding[36]).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcPmExec {
-    /// 新映像名指针。C: `vir_bytes name`。
+    /// Pointer to the new image name. C: `vir_bytes name`.
     pub name: u64,
-    /// 名字长度。C: `size_t namelen`。
+    /// Name length. C: `size_t namelen`.
     pub namelen: u64,
-    /// 初始栈帧指针。C: `vir_bytes frame`。
+    /// Pointer to the initial stack frame. C: `vir_bytes frame`.
     pub frame: u64,
-    /// 栈帧长度。C: `size_t framelen`。
+    /// Stack frame length. C: `size_t framelen`.
     pub framelen: u64,
-    /// ps_strings 指针。C: `vir_bytes ps_str`。
+    /// ps_strings pointer. C: `vir_bytes ps_str`.
     pub ps_str: u64,
-    /// LP64:五个 4 字节域拓为 8 字节(40),padding 由 36 缩至 16,总 56。
+    /// LP64: the five 4-byte fields widen to 8 bytes (40 total), padding
+    /// shrinks from 36 to 16, total 56.
     pub _padding: [u8; 16],
 }
 
-/// exec-restart 应答载荷(RS→PM)。C: `mess_rs_pm_exec_restart` —
-/// ipc.h:1869-1876:endpt/result/pc/ps_str + padding[40]。
+/// exec-restart reply payload (RS→PM). C: `mess_rs_pm_exec_restart` —
+/// ipc.h:1869-1876: endpt/result/pc/ps_str + padding[40].
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessRsPmExecRestart {
-    /// 目标进程端点。C: `endpoint_t endpt`。
+    /// Target process endpoint. C: `endpoint_t endpt`.
     pub endpt: i32,
-    /// exec 结果。C: `int result`。
+    /// exec result. C: `int result`.
     pub result: i32,
-    /// 新入口 PC。C: `vir_bytes pc`。
+    /// New entry PC. C: `vir_bytes pc`.
     pub pc: u64,
-    /// ps_strings 指针。C: `vir_bytes ps_str`。
+    /// ps_strings pointer. C: `vir_bytes ps_str`.
     pub ps_str: u64,
-    /// LP64:pc/ps_str 拓为 8 字节(域合计 24),padding 由 40 缩至 32,总 56。
+    /// LP64: pc/ps_str widen to 8 bytes (fields total 24), padding
+    /// shrinks from 40 to 32, total 56.
     pub _padding: [u8; 32],
 }
 
@@ -810,7 +842,7 @@ mod itimer_exec_wire_tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// C 绝对值 pin:D/E 批调用号。
+    /// C absolute-value pin: the itimer/exec call numbers.
     #[test]
     fn test_itimer_exec_call_numbers_match_c() {
         assert_eq!(PM_ITIMER, 17); // callnr.h:30
@@ -819,7 +851,7 @@ mod itimer_exec_wire_tests {
         assert_eq!(PM_EXEC_RESTART, 44); // callnr.h:57
     }
 
-    /// 布局见证:MessLcPmItimer 56 字节(which@0/value@8/ovalue@16)。
+    /// Layout witness: MessLcPmItimer is 56 bytes (which@0/value@8/ovalue@16).
     #[test]
     fn test_mess_lc_pm_itimer_layout() {
         assert_eq!(size_of::<MessLcPmItimer>(), 56);
@@ -828,7 +860,7 @@ mod itimer_exec_wire_tests {
         assert_eq!(offset_of!(MessLcPmItimer, ovalue), 16);
     }
 
-    /// 布局见证:MessLcPmExec 56 字节(name/namelen/frame/framelen/ps_str)。
+    /// Layout witness: MessLcPmExec is 56 bytes (name/namelen/frame/framelen/ps_str).
     #[test]
     fn test_mess_lc_pm_exec_layout() {
         assert_eq!(size_of::<MessLcPmExec>(), 56);
@@ -839,7 +871,7 @@ mod itimer_exec_wire_tests {
         assert_eq!(offset_of!(MessLcPmExec, ps_str), 32);
     }
 
-    /// 布局见证:MessRsPmExecRestart 56 字节(endpt/result/pc/ps_str)。
+    /// Layout witness: MessRsPmExecRestart is 56 bytes (endpt/result/pc/ps_str).
     #[test]
     fn test_mess_rs_pm_exec_restart_layout() {
         assert_eq!(size_of::<MessRsPmExecRestart>(), 56);
@@ -855,7 +887,8 @@ mod pm_service_wire_tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// 绝对值 pin:E9 PmApi 三调用号(callnr.h:54/:58/:59)。
+    /// Absolute-value pin: the three E9 PmApi call numbers
+    /// (callnr.h:54/:58/:59).
     #[test]
     fn test_pm_service_call_numbers() {
         assert_eq!(PM_SRV_FORK, 41);
@@ -863,8 +896,9 @@ mod pm_service_wire_tests {
         assert_eq!(PM_GETPROCNR, 46);
     }
 
-    /// 布局见证 ×4:getepinfo 请求/应答与 getprocnr 请求/应答
-    /// (LP64:getepinfo 请求 groups@8 对齐垫,总 56)。
+    /// Layout witness ×4: the getepinfo request/reply and the getprocnr
+    /// request/reply (LP64: in the getepinfo request, groups is 8-aligned
+    /// after a pad, total 56).
     #[test]
     fn test_pm_service_wire_layouts() {
         assert_eq!(size_of::<MessLsysPmGetepinfo>(), 56);
@@ -891,8 +925,8 @@ mod g_batch_wire_tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// G 批调用号绝对值 pin（C callnr.h 31/32/38/51/52/60，
-    /// PM_BASE = 0）。
+    /// Absolute-value pins for the miscellaneous call numbers (C callnr.h
+    /// 31/32/38/51/52/60, PM_BASE = 0).
     #[test]
     fn test_g_batch_call_numbers_match_c() {
         assert_eq!(PM_GETMCONTEXT, 18); // callnr.h:31
@@ -902,7 +936,8 @@ mod g_batch_wire_tests {
         assert_eq!(PM_SPROF, 39); // callnr.h:52
     }
 
-    /// 布局见证：五个 G 批结构均为 56 字节（PM wire 总长契约）。
+    /// Layout witness: all five structures are 56 bytes (the PM wire
+    /// total-length contract).
     #[test]
     fn test_g_batch_struct_sizes() {
         assert_eq!(size_of::<MessLcPmMcontext>(), 56);
@@ -912,9 +947,10 @@ mod g_batch_wire_tests {
         assert_eq!(size_of::<MessLcPmSprof>(), 56);
     }
 
-    /// 字段偏移见证（LP64 判例：Mcontext/Reboot 单域；Sysuname 的
-    /// len 对齐 8 → @8、value @16；Svrctl 双 8 字节域；Sprof 三个
-    /// int + 对齐垫 + 三个 8 字节域）。
+    /// Field-offset witness (LP64 precedents: Mcontext/Rebook are
+    /// single-field; Sysuname's len is 8-aligned → @8 and value @16;
+    /// Svrctl has two 8-byte fields; Sprof has three ints, an alignment
+    /// pad, and three 8-byte fields).
     #[test]
     fn test_g_batch_field_offsets() {
         assert_eq!(offset_of!(MessLcPmMcontext, ctx), 0);
@@ -934,15 +970,16 @@ mod g_batch_wire_tests {
     }
 }
 
-/// 调用号单一真源的随迁钉测（自 pm 服务器 `ipc/calls.rs` 上移，
-/// PD-23 采甲）：47 个判别值全量往返 + 未注册号拒绝。
+/// Pin tests that travelled with the single source of call numbers (moved
+/// up from the PM server's `ipc/calls.rs`): all 47 discriminants round
+/// trip, and unregistered numbers are rejected.
 #[cfg(test)]
 mod pm_call_nr_tests {
     use super::PmCall;
 
     #[test]
     fn test_call_nr_roundtrip_all_registered() {
-        // callnr.h:14-60 — 47 个调用号全部可解码且可回编码。
+        // callnr.h:14-60 — all 47 call numbers decode and re-encode.
         for nr in 1..=47 {
             let call = PmCall::from_call_nr(nr).unwrap_or_else(|| panic!("nr {} unregistered", nr));
             assert_eq!(call.call_nr(), nr);
@@ -951,8 +988,8 @@ mod pm_call_nr_tests {
 
     #[test]
     fn test_call_nr_rejects_unregistered() {
-        // nr == 0 保留（message type 0 traditionally reserved）；
-        // 越界 48/0xff+ 未注册。
+        // nr == 0 is reserved (message type 0 is traditionally reserved);
+        // 48 and above are out of range and unregistered.
         assert!(PmCall::from_call_nr(0).is_none());
         assert!(PmCall::from_call_nr(48).is_none());
         assert!(PmCall::from_call_nr(0x100).is_none());

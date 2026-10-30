@@ -58,61 +58,75 @@ pub const MAX_SLAB_OBJECT_BYTES: usize = 2048;
 /// Must cover every pool page: a slab dedicates one page, so if this is
 /// smaller than the pool's page count the fixed `slabs` record table fills
 /// while pool bytes are still free, and a request fails with "out of memory"
-/// despite an 87%-empty pool. Real-machine NK4-C 1.5c (`nk4c: OOM-RT
-/// slabs=64/64 … px=65/512`, 2026-09-23): `MAX_SLABS=64` capped slab objects
-/// at ~256 KiB of a 2 MiB pool because the pool was grown to 512 pages
-/// (第12轮扰动实验) without raising this table. Tying it to the pool page
-/// count keeps tracking and byte capacity consistent.
+/// despite an 87%-empty pool. Real-machine measurement (`OOM-RT
+/// slabs=64/64 … px=65/512`): `MAX_SLABS=64` capped slab objects at ~256 KiB of
+/// a 2 MiB pool because the pool had been grown to 512 pages without raising
+/// this table. Tying it to the pool page count keeps tracking and byte capacity
+/// consistent.
 pub const MAX_SLABS: usize = GLOBAL_POOL_BYTES / PAGE_BYTES;
 
 /// Maximum simultaneous whole-page allocations one allocator tracks.
 ///
-/// A premature "out of memory" is confirmed on real machine NK4-C 1.58
-/// (**B34**): after B33b let `/bin/sh` run, a cross-space `kdst copy` of a
-/// 4 KiB run hit `nk4c: OOM-RT size=001000 … big=20/20 px=094/400`（十六
-/// 进制：`big=0x20/0x20`=32/32 记录表满，而 `px=0x94/0x400`=148/1024
-/// 空闲页仍在）——即早期登记的「big-block-heavy server 到来时 revisit」
-/// 同型缺陷，与已修的 `MAX_SLABS`（见上）一类：每个 big block ≥ 1 页，
-/// 所以原则上的上限应是 [`GLOBAL_POOL_PAGES`]。
+/// A premature "out of memory" was confirmed on the real machine: after
+/// `/bin/sh` was allowed to run, a cross-space `kdst copy` of a 4 KiB run hit
+/// `OOM-RT size=001000 … big=20/20 px=094/400` (hex: `big=0x20/0x20` =
+/// 32/32 record table full while `px=0x94/0x400` = 148/1024 pages were still
+/// free)—the same defect class as the big-block-heavy server case noted
+/// earlier, and the same kind as the `MAX_SLABS` one above: every big block is
+/// at least one page, so the principled ceiling is [`GLOBAL_POOL_PAGES`].
 ///
-/// 但未直接绑到 `GLOBAL_POOL_PAGES`：那会把分配器静态实例（`GlobalAllocator`
-/// 里的 `big_blocks` 数组）撑大——每个 `Option<BigBlock>` 槽在 x86_64 上是
-/// 24 B（`*mut u8` 无 niche，`Option` 需独立 discriminant），从 32 槽到
-/// 1024 槽 ≈ +24 KB，平移每个用户服务器的 .bss/用户栈基址；而 boot 对服务
-/// 镜像是 demand-fill-on-first-touch（未 eager 物化），实测确定性地让 VM 在
-/// 启动初期自缺页递归 panic（从 30090 行崩回 124 行，§1.59 对照实验
-/// bn22ctl 坐实）。那属反复被 defer 的结构债（boot eager 物化 / VM-backed
-/// heap supplier）。因此本轮采用与 B29/B30 同类的“保守容量 round”：抬到
-/// 覆盖真机观测峰值（big 峰值 47）的 64——(64−32)×24 B = +768 B <
-/// 一页，不跨未物化页。原则解 = 待 boot eager 物化落地后改绑
-/// `GLOBAL_POOL_PAGES`。
+/// It was not tied to `GLOBAL_POOL_PAGES` at first: that enlarges the
+/// allocator's static instance (the `big_blocks` array in `GlobalAllocator`) —
+/// each `Option<BigBlock>` slot is 24 B on x86_64 (`*mut u8` has no niche, so
+/// `Option` needs a separate discriminant), and going from 32 to 1024 slots
+/// costs ≈ +24 KB, shifting every user server's .bss/user-stack base. Boot
+/// maps service images demand-fill-on-first-touch (no eager materialization),
+/// and measurement showed VM deterministically panicking on a self-fault during
+/// early boot (crashing back from line 30090 to line 124). That is a structural
+/// debt repeatedly deferred (boot eager materialization / VM-backed heap
+/// supplier). So a conservative capacity round of the same kind as the earlier
+/// ones raised the table to 64—covering the measured real-machine peak (big
+/// peak 47): (64−32)×24 B = +768 B < one page, never crossing an unmaterialized
+/// page. The principled fix is to bind `GLOBAL_POOL_PAGES` once boot eager
+/// materialization lands.
 ///
-/// r7 实测把「boot eager 物化」的确切缺口钉死（单核重建·同镜像双跑）：本
-/// 常量抬到 `GLOBAL_POOL_PAGES`=1024 → `OOM-RT`=0（premature-OOM 消失），
-/// 但 boot 于 ~116 行确定性 `pagefault in VM`（rip=0x23581b、
-/// cr2=rsp=0x7ffffffeef88、err=0x6 not-present）；抬到 128 同样崩（同一现
-/// 场）、改回 64 全新重建复现 29685 行至 premature-OOM（`OOM-RT`=1）＝
-/// 排除构建产物敏感性、坐实常量本身是回归因。根因＝`install_boot_stack`
-/// 只为每个 boot 服务 eager 映**一个** frame 页、4 MiB 栈区其余页按需缺页，
-/// 而 VM 无法服务自身启动缺页；`exec_bootproc` 的 eager `memsz` 只覆盖
-/// PT_LOAD/.bss，**不覆盖初始栈 runway**（§1.91 猜「memsz eager 已化解 §1.59」
-/// 因此被推翻）。⇒ 原则解的真前置是「boot 初始栈 eager runway 物化」（对位
-/// C `handle_memory_once`/`MAP_PREALLOC`，§1.55 分歧），非纯抬本常量。
-/// 故本轮仍留 64（非回退、是唯一不崩的已知值），把常量抬升与 eager-runway
-/// 修复绑为一个单元（r7b）。
+/// A later single-core rebuild with the same image twice pinned the exact gap in
+/// "boot eager materialization": raising this constant to
+/// `GLOBAL_POOL_PAGES`=1024 made `OOM-RT`=0 (the premature OOM disappeared),
+/// but boot deterministically faulted at ~line 116 (`pagefault in VM`,
+/// rip=0x23581b, cr2=rsp=0x7ffffffeef88, err=0x6 not-present); raising it to
+/// 128 crashed the same way, and going back to 64 with a fresh rebuild
+/// reproduced line 29685 down to the premature OOM (`OOM-RT`=1)—ruling out
+/// build-artifact sensitivity and establishing the constant itself as the
+/// regression cause. Root cause: `install_boot_stack` eagerly maps only **one**
+/// frame page per boot service, and the remaining pages of the 4 MiB stack area
+/// fault on demand, while VM cannot serve its own boot faults; `exec_bootproc`'s
+/// eager `memsz` covers only PT_LOAD/.bss and **not the initial stack runway**
+/// (so the earlier guess that eager `memsz` had resolved it was overturned).
+/// ⇒ The real precondition for the principled fix is "materialize the boot
+/// initial stack's eager runway" (the counterpart of C
+/// `handle_memory_once`/`MAP_PREALLOC`, a known divergence), not merely raising
+/// this constant. So 64 stayed (not a rollback—the only known non-crashing
+/// value), bundling the constant raise and the eager-runway fix as one unit.
 ///
-/// r7b 已落地（本轮）：在正确落点 `os/arch/src/arch/boot.rs` 把 VM 自身初
-/// 始栈 eager runway `VM_STACK_SIZE` 64 KiB→256 KiB（覆盖 §1.92 实测 ~65 KiB
-/// 启动栈下降）。§1.94 纠正：真落点是 kernel `load_vm_elf`（`install_boot_stack`
-/// 对 VM 从不调用），非 memtype `ev_new`。前置既解除 → 本常量直绑
-/// `GLOBAL_POOL_PAGES` 根除 premature-OOM（下表为其旧保守 round 的历史叙述）。
+/// The eager-runway fix has landed: at the right spot,
+/// `os/arch/src/arch/boot.rs` raises VM's own initial-stack eager runway
+/// `VM_STACK_SIZE` from 64 KiB to 256 KiB (covering the measured ~65 KiB boot
+/// stack descent). A later correction: the real spot is the kernel's
+/// `load_vm_elf` (`install_boot_stack` is never called for VM), not memtype
+/// `ev_new`. With the precondition gone, this constant binds
+/// `GLOBAL_POOL_PAGES` directly and root-fixes the premature OOM (the table
+/// below preserves the earlier conservative round's history).
 pub const MAX_BIG_BLOCKS: usize = GLOBAL_POOL_PAGES;
 
-/// §1.60 护栏退役：旧编译期断言要求 `(MAX_BIG_BLOCKS - 32)` 的数组增长小于
-/// 一页，以规避一个启动 panic。但 §1.92-§1.94 实证该 panic 源于 VM 自身初
-/// 始栈 runway 不足（已在 `boot.rs` `VM_STACK_SIZE` 修），**非**本数组增长跨
-/// 未物化页——VM 的 `.bss` 由 `load_vm_elf` 段循环按 memsz 整段 eager 物化。
-/// 绑 `GLOBAL_POOL_PAGES`（每池页一条记录）才是原则天花板，一页护栏遂删除。
+// The old compile-time guard is retired: it required the
+// `(MAX_BIG_BLOCKS - 32)` array growth to stay under one page to avoid a boot
+// panic. Measurements showed that panic came from VM's own initial-stack
+// runway being too short (fixed in `boot.rs` `VM_STACK_SIZE`), **not** from
+// this array growth crossing an unmaterialized page—VM's `.bss` is eagerly
+// materialized whole-segment by `load_vm_elf`'s loop per memsz. Binding
+// `GLOBAL_POOL_PAGES` (one record per pool page) is the principled ceiling,
+// so the one-page guard was deleted.
 
 /// Initial heap pool for the global allocator, in bytes (2048 pages).
 ///
@@ -126,19 +140,19 @@ pub const MAX_BIG_BLOCKS: usize = GLOBAL_POOL_PAGES;
 /// takes the frames right there) — although this rewrite's VM currently
 /// only records the PREALLOC bit and demand-fills on first touch
 /// (`mmap.rs` `PREALLOC_MAP`, `memtype.rs` `AnonymousMemory` has no
-/// `ev_new`), a divergence registered with NK4-C 1.55. Either way the
+/// `ev_new`), a known divergence. Either way the
 /// bootproc leg prices the pool in real pages at exec time, which caps
 /// how far it may grow until the VM-backed supplier lands (C's RS asks
 /// for an 8 MiB prealloc map outright — `rs/const.h:83
 /// RS_VM_DEFAULT_MAP_PREALLOC_LEN`).
 /// The former 16-page pool OOM'd real servers —
 /// RS's boot allocates a 256512-byte table and aborted before its main
-/// loop (real machine NK4-A C-3 c12a: "memory allocation of 256512 bytes
-/// failed", 2026-09-22). C servers grow a real heap through VM `brk`; a
+/// loop (measured: "memory allocation of 256512 bytes failed"). C servers
+/// grow a real heap through VM `brk`; a
 /// VM-backed supplier is the follow-up (alloc.rs §module docs, "later,
 /// virtual memory mapping").
 ///
-/// 512 pages died on the real machine NK4-C 1.55 (bn7/bn8: VFS panic
+/// 512 pages died on the real machine (VFS panic
 /// `memory allocation of 40960 bytes failed`, raw hex diag
 /// `size=00a000 slabs=009/200 big=06/20 px=200/200 fp=0aa/200`): VFS's
 /// own tables alone consume ~327 pages — `FProc` is
@@ -150,33 +164,39 @@ pub const MAX_BIG_BLOCKS: usize = GLOBAL_POOL_PAGES;
 /// C keeps those tables in BSS and never caps its heap. 1024 pages
 /// doubles the runway; the faithful fix is the VM-backed supplier.
 ///
-/// NK4-C §续-279c (real machine gh140/141, ATF suite): the 1024-page pool
-/// hit the same wall again from a new consumer — MFS's block cache pool
+/// A later real-machine ATF-suite run showed the 1024-page pool
+/// hitting the same wall again from a new consumer — MFS's block cache pool
 /// (`DEFAULT_POOL_BUFFERS` 1024 × 4 KiB lazily-filled `Buffer` pages, the C
 /// `DEFAULT_NR_BUFS` faithful value) legally fills the whole pool while the
-/// 16 MiB imgrd (ATF suite seeding, §续-278) grows the working set, leaving
+/// 16 MiB imgrd (ATF suite seeding) grows the working set, leaving
 /// zero runway for transient allocations: `oomrt caller=0xa` (MFS_PROC_NR),
 /// `big=3b6/400 px=400/400 fp=0`. Budget identity for alloc-global servers
 /// with a C-sized cache: cache pages + transient headroom ≤ pool pages —
-/// 2048 doubles the runway again (same 扰动实验 posture as B29 above; VM is
-/// unaffected: it does not take `alloc-global`, `os/servers/vm/Cargo.toml:
-/// 47`, so the B34 .bss-self-paging landmine does not apply here). The
+/// 2048 doubles the runway again (the same capacity-round stance as above; VM
+/// is unaffected: it does not take `alloc-global`, `os/servers/vm/Cargo.toml:
+/// 47`, so the .bss-self-paging landmine does not apply here). The
 /// faithful fix stays the VM-backed supplier (module docs).
 #[cfg(not(target_arch = "x86_64"))]
-pub const GLOBAL_POOL_BYTES: usize = 2048 * PAGE_BYTES; // NK4-C §续-279c MFS cache 预算轮
+pub const GLOBAL_POOL_BYTES: usize = 2048 * PAGE_BYTES; // MFS cache budget round
 
-/// x86_64 分档——§续-279c 容量轮的 x86 回归修复（真机 gh142 后补验）：
-/// 同轮全量 boot 在 x86 上 init runcom 回落 SingleUser（aarch64 同池健康
-/// 有真机门读数），x86 侧加载腿对 .bss 4→8MiB 膨胀有独立预算约束——
-/// **具体限点未坐实**（279e 候选：bootface identity/DM 窗、copy_in_bytes
-/// 同源窗口；注意 §1.101 demand-fill 是 VM exec_bootproc 的架构无关
-/// 腿，x86 亦走此路，故非 demand-fill 差异所致，不得拿此充当根因）。
-/// x86 暂无 ATF 套件需求（xtask 播种门控 ATF_BOOT_LEG_READY=[aarch64]），
-/// 1024 页即 §续-279c 前的基线值——x86 产物逐字节回到旧态，回归零风险。
-/// riscv 走下方 2048 档但 boot 受 (A) 门控、**从未以 2048 池启动**：
-/// .bss 膨胀对 riscv 加载腿的影响未验证，(A) 解锁后需与 x86 同法回归。
-/// 原则解（demand-zero 运行时段或 VM-backed heap，三架构统一 2048+）在
-/// module docs 挂账，落地后删除本分档。
+/// x86_64 tiering—the x86 regression fix for the 2048-page capacity round (the
+/// real-machine follow-up after that round): the same full boot falls back from
+/// init runcom to SingleUser on x86 (aarch64 with the same pool is healthy, with
+/// real-machine gate readings), because x86's load leg has an independent budget
+/// constraint against a 4→8 MiB .bss expansion—**the exact limit point is not
+/// established** (candidate sites: the bootface identity/DM window, the
+/// `copy_in_bytes` sibling window; note that demand-fill is VM `exec_bootproc`'s
+/// architecture-independent leg and x86 goes through it too, so this cannot be
+/// blamed on a demand-fill difference and must not be offered as the root
+/// cause). x86 has no ATF suite requirement yet (xtask seeds only under
+/// `ATF_BOOT_LEG_READY=[aarch64]`), so 1024 pages—the baseline value before the
+/// 2048-page round—puts x86 artifacts back byte-identically to the old state,
+/// with zero regression risk. riscv takes the 2048 tier below but its boot is
+/// gated by (A) and has **never started with a 2048-page pool**: the effect of
+/// the .bss expansion on riscv's load leg is unverified, and once (A) unlocks
+/// it needs the same regression as x86. The principled fix (a demand-zero
+/// runtime segment or a VM-backed heap, unifying all three architectures at
+/// 2048+) is recorded in the module docs; delete this tiering when it lands.
 #[cfg(target_arch = "x86_64")]
 pub const GLOBAL_POOL_BYTES: usize = 1024 * PAGE_BYTES;
 
@@ -267,8 +287,8 @@ pub trait PageSupplier {
     fn pool_diag(&self) -> (usize, usize, usize) {
         (0, 0, 0)
     }
-    /// 是否为 VM 支撑形态（安装幂等判断用；默认 `false`，VM 形态
-    /// 实现各自覆写）。
+    /// Whether this supplier is in the VM-backed form (used for install
+    /// idempotence; defaults to `false`, and the VM form overrides it).
     fn is_vm_form(&self) -> bool {
         false
     }
@@ -395,7 +415,7 @@ impl PageSupplier for FixedPoolSupplier<'_> {
         // first and only then advances the bump cursor. Without this a
         // single-page big-block request fails the moment the bump cursor
         // reaches the pool end even though freed pages sit on the free stack
-        // (real machine NK4-C 1.60 **B35**: `size=0x1000` refused while
+        // (measured on the real machine: `size=0x1000` refused while
         // `px=400/400` bump exhausted and `fp=39c/400`=924 pages stranded).
         if page_count == 1 {
             return self.supply_page();
@@ -432,41 +452,53 @@ impl PageSupplier for FixedPoolSupplier<'_> {
     }
 }
 
-/// VM_BRK 支撑的堆页供给者（`PD-28`/`SD-11` 的终解落点）。
+/// Heap page supplier backed by VM_BRK (the final landing point for VM-backed
+/// heap supply).
 ///
-/// C 真源：`minix3/minix/lib/libc/sys/brk.c` 的 `brk` —— 把断点推进到
-/// 绝对地址并把请求转给虚存服务器；本供给者把它用作整页供给机制：
-/// [`PageSupplier::supply_pages`] 把断点一次推进 n 页、返回区间首址
-/// （C `map_region_extend_upto_v` 延伸既有 region，VA 天然连续；
-/// VM 侧 `brk.rs` 的增长腿是相邻 ANON region）。新页清零由 ANON
-/// 的 demand-zero 语义保证（首次触碰缺页分得零页），与
-/// [`FixedPoolSupplier`] 的显式 `write_bytes` 清零在可观察行为上等价。
+/// C ground truth: `brk` in `minix3/minix/lib/libc/sys/brk.c`—it pushes the
+/// break to an absolute address and forwards the request to the virtual memory
+/// server; this supplier uses it as a whole-page supply mechanism:
+/// [`PageSupplier::supply_pages`] advances the break by n pages at once and
+/// returns the start of the range (C `map_region_extend_upto_v` extends the
+/// existing region, so the VA is naturally contiguous; the growth leg on the VM
+/// side is an adjacent ANON region). Zero-fill of new pages comes from ANON's
+/// demand-zero semantics (the first touch faults in a zero page), which is
+/// observably equivalent to [`FixedPoolSupplier`]'s explicit `write_bytes`
+/// clearing.
 ///
-/// # 释放语义（换供给者的关键设计）
+/// # Release semantics (the key design point behind swapping suppliers)
 ///
-/// 安装点之前全局分配器已经从固定池拿过页（出生过程本身的分配），
-/// 这些旧页的释放记录仍在 `SlabAllocator` 里，归还时会落到本供给者——
-/// 但池页不在本供给者的堆区间，不能被误当成 VM 页。因此 [`release_page`]
-/// 对区间外指针诚实 no-op：池页生命周期等于进程生命周期，最终释放无
-/// 意义；界外归还计入 [`Self::foreign_releases`] 供真机诊断，防止静默
-/// 吞掉未来可能出现的区间计算缺陷。区间内归还同样不降断点——C 收缩
-/// brk 从不 unmap（`brk.rs` `extend_upto_v` 的 "a lower break never
-/// unmaps"），页仍被 region 覆盖，只是供给者不再复用。
+/// Before the install point the global allocator has already taken pages from
+/// the fixed pool (the allocations of the birth process itself); the release
+/// records for those old pages still live in `SlabAllocator`, so returning them
+/// lands here—but pool pages are not inside this supplier's heap range and must
+/// not be mistaken for VM pages. Therefore [`release_page`] is an honest no-op
+/// for out-of-range pointers: a pool page's lifetime equals the process
+/// lifetime, so a final release means nothing; out-of-range releases are counted
+/// in [`Self::foreign_releases`] for real-machine diagnosis, preventing a future
+/// range-computation defect from being swallowed silently. In-range releases do
+/// not lower the break either—C shrinking brk never unmaps (`brk.rs`
+/// `extend_upto_v`'s "a lower break never unmaps"), the page stays covered by
+/// the region, and the supplier simply stops reusing it.
 pub struct VmBreakSupplier<T: IpcTransport> {
     transport: T,
-    /// VM 侧 data region 的初始断点（安装时由调用方提供；对位 C 的
-    /// `_brksize` 初值 = exec 建立的 data segment 端点，来源在首迁
-    /// 安装点落地时接链接器 `__bss_end`）。
+    /// The VM-side data region's initial break (provided by the caller at
+    /// install time; the counterpart of C's initial `_brksize` = the end of the
+    /// data segment established by exec, with the source wired to the linker's
+    /// `__bss_end` at the install point).
     heap_base: u64,
-    /// 当前断点缓存（C libc 的 `_brksize` 缓存同形；[`break_via` 的
-    /// "地址不变即免往返"短路直接复用]）。
+    /// Current break cache (the same shape as C libc's `_brksize` cache;
+    /// [`break_via`]'s "same address means no round trip" short-circuit reuses
+    /// it directly).
     top: u64,
     foreign_releases: usize,
 }
 
 impl<T: IpcTransport> VmBreakSupplier<T> {
-    /// 以 VM 侧初始断点建供给者。`initial_break` 为 0 无意义，由
-    /// [`install_vm_supplier`]（全局安装口）拒绝；直接构造（测试）自担。
+    /// Builds a supplier around the VM-side initial break. An `initial_break` of
+    /// 0 is meaningless and is rejected by [`install_vm_supplier`] (the global
+    /// install door); direct construction (tests) takes that responsibility
+    /// itself.
     pub fn new(transport: T, initial_break: u64) -> Self {
         VmBreakSupplier {
             transport,
@@ -476,12 +508,14 @@ impl<T: IpcTransport> VmBreakSupplier<T> {
         }
     }
 
-    /// VM 侧已供给的整页数（诊断：消耗了断点区间多少页）。
+    /// Whole pages already supplied on the VM side (diagnostic: how many pages
+    /// of the break range have been consumed).
     pub fn pages_supplied(&self) -> usize {
         ((self.top - self.heap_base) / PAGE_BYTES as u64) as usize
     }
 
-    /// 界外归还计数（旧池页等非本供给者页的释放）。
+    /// Out-of-range release count (releases of pages not owned here, such as
+    /// old pool pages).
     pub fn foreign_releases(&self) -> usize {
         self.foreign_releases
     }
@@ -504,17 +538,21 @@ impl<T: IpcTransport> PageSupplier for VmBreakSupplier<T> {
         let old_top = self.top;
         let new_top = old_top + page_count as u64 * PAGE_BYTES as u64;
         if new_top < old_top {
-            // 地址空间耗尽（溢出）：fail-fast 返回 None，同池耗尽形状。
+            // Address space exhausted (overflow): fail fast with None, the same
+            // shape as pool exhaustion.
             return None;
         }
-        // C: brk.c — 断点变化必发请求；`break_via` 内部只处理"不变短路"。
-        // Errno（VM ENOMEM 等）→ None，同 [`FixedPoolSupplier`] 耗尽形状。
+        // C: brk.c — any change of the break must issue a request; `break_via`
+        // itself only handles the "unchanged" short-circuit.
+        // An Errno (VM ENOMEM etc.) → None, the same shape as
+        // [`FixedPoolSupplier`] exhaustion.
         match minix_sys::vm::break_via(&self.transport, VirBytes(old_top), VirBytes(new_top)) {
             Ok(_) => {
                 self.top = new_top;
-                // SAFETY: 区间 [old_top, new_top) 由 VM 刚刚延伸覆盖
-                //（ANON demand-zero，首次触碰得零页），页对齐由
-                // `extend_upto_v` 的 roundup 保证。
+                // SAFETY: the range [old_top, new_top) was just extended and
+                // covered by VM (ANON demand-zero, so the first touch yields a
+                // zero page); page alignment is guaranteed by `extend_upto_v`'s
+                // roundup.
                 Some(old_top as *mut u8)
             }
             Err(_) => None,
@@ -525,38 +563,44 @@ impl<T: IpcTransport> PageSupplier for VmBreakSupplier<T> {
         if !self.owns(page) {
             self.foreign_releases += 1;
         }
-        // 区间内/外都不真正回收（见类型文档的释放语义）。
+        // In-range and out-of-range pages are both never really reclaimed (see
+        // the release semantics in the type docs).
     }
 
     fn pool_diag(&self) -> (usize, usize, usize) {
-        // (消耗页数, 总页数, 空闲页数)：VM 形态没有固定总量，总/空闲
-        // 记 0 —— OOM 诊断打印的总数为 0 即可读出“已切 VM 形态”。
+        // (pages consumed, pages total, pages free): the VM form has no fixed
+        // total, so total/free are 0—an OOM diagnostic printing total 0 is how
+        // one reads "switched to the VM form".
         (self.pages_supplied(), 0, 0)
     }
 
-    /// 是否为 VM 支撑形态（安装幂等判断用；固定池形态保持 trait 默认
-    /// `false`，[`HeapSupplier`] 按当前臂转发）。
+    /// Whether this is the VM-backed form (used for install idempotence; the
+    /// fixed-pool form keeps the trait default `false`, and [`HeapSupplier`]
+    /// forwards by its current arm).
     fn is_vm_form(&self) -> bool {
         true
     }
 }
 
-/// 全局分配器页供给者的运行期形态（`PD-28`/`SD-11` T1）。
+/// Runtime form of the global allocator's page supplier (VM-backed heap supply).
 ///
-/// 出生至 VM 握手前是 [`FixedPoolSupplier`]（行为与历史完全一致）；
-/// 出生握手后经 [`install_vm_supplier`] 切到 [`VmBreakSupplier`]。
-/// 枚举而非 trait object：全局实例免 vtable，且两种形态的切换点是
-/// 编译期已知的有限集合（固定池 / VM_BRK，`mmap` 通道是后续演进）。
-/// 生命周期跟随固定池臂（全局实例用 `'static` 的 `.bss` 池；测试可
-/// 用局部缓冲）。传输通道参数化且默认 [`DirectTrapTransport`]：
-/// 全局实例用默认（真 trap），host 测试注入 mock 钉闭环。
+/// From birth until the VM handshake it is [`FixedPoolSupplier`] (behavior
+/// exactly as before); after the handshake [`install_vm_supplier`] switches it
+/// to [`VmBreakSupplier`]. An enum rather than a trait object: the global
+/// instance avoids a vtable, and the switch point is a finite set known at
+/// compile time (fixed pool / VM_BRK, with the `mmap` channel as later
+/// evolution). Its lifetime follows the fixed-pool arm (the global instance uses
+/// a `'static` `.bss` pool; tests may use a local buffer). The transport is
+/// parameterized and defaults to [`DirectTrapTransport`]: the global instance
+/// uses the default (real traps), and host tests inject a mock to pin the
+/// closed loop.
 pub enum HeapSupplier<'a, T = DirectTrapTransport>
 where
     T: IpcTransport,
 {
-    /// `.bss` 固定池（出生默认形态）。
+    /// `.bss` fixed pool (the birth default form).
     Fixed(FixedPoolSupplier<'a>),
-    /// VM_BRK 增长堆（握手后安装）。
+    /// VM_BRK growing heap (installed after the handshake).
     Vm(VmBreakSupplier<T>),
 }
 
@@ -594,8 +638,9 @@ impl<T: IpcTransport> PageSupplier for HeapSupplier<'_, T> {
     }
 }
 
-// 上面 match 臂的类型推断需要知道 `HeapSupplier::Fixed` 构造处的 T：
-// 由赋值/标注上下文提供（全局 = 默认 DirectTrapTransport，测试 = mock）。
+// The match arms above need to know T at the `HeapSupplier::Fixed`
+// construction site: the assignment/annotation context supplies it (the global
+// instance uses the default DirectTrapTransport, tests use a mock).
 
 /// One slab: a single page cut into equal slots of one size class.
 #[derive(Debug, Clone, Copy)]
@@ -645,18 +690,22 @@ impl<S: PageSupplier> SlabAllocator<S> {
         }
     }
 
-    /// 换页供给者（`SD-11` T1）：出生形态（固定池）到 VM 形态的切换点。
+    /// Swaps the page supplier: the switch point from the birth form (fixed
+    /// pool) to the VM form.
     ///
-    /// 调用方契约：新供给者对不在其区间内的指针（旧池页）释放必须诚实
-    /// no-op——[`VmBreakSupplier`] 的释放语义满足这一点（界外归还仅计数，
-    /// 见其类型文档）。旧池页的 slab/free-list 记录在本结构里原样保留：
-    /// 切换不改变任何已分配块的有效性，只改变后续 [`supply_pages`] 从哪
-    /// 里拿新页。
+    /// Caller contract: the new supplier must honestly no-op on releasing
+    /// pointers outside its own range (old pool pages)—[`VmBreakSupplier`]'s
+    /// release semantics satisfy this (out-of-range releases are only counted;
+    /// see its type docs). The old pool pages' slab/free-list records stay in
+    /// this structure unchanged: the swap does not affect the validity of any
+    /// allocated block, only where subsequent [`supply_pages`] calls get new
+    /// pages from.
     pub fn replace_supplier(&mut self, supplier: S) {
         self.supplier = supplier;
     }
 
-    /// 当前供给者是否为 VM 支撑形态（[`install_vm_supplier`] 的幂等判断）。
+    /// Whether the current supplier is in the VM-backed form (the idempotence
+    /// test of [`install_vm_supplier`]).
     pub fn is_vm_form(&self) -> bool {
         self.supplier.is_vm_form()
     }
@@ -977,48 +1026,57 @@ mod tests {
         assert_eq!(first, second);
     }
 
-    /// B34 回归 pin：`big_blocks` 记录表早先硬编 32，会在池字节仍充裕时
-    /// 因表满而 premature-OOM（真机 `nk4c: OOM-RT size=001000 big=20/20
-    /// px=094/400`，十六进制＝32/32 表满而 148/1024 空闲页仍在）。本轮按
-    /// 常量文档采用「保守容量 round」把表抬到 64（覆盖真机峰值 32/32），
-    /// 原则解（绑 [`GLOBAL_POOL_PAGES`]）待 boot eager 物化落地。本测从 48
-    /// 页池连续分配 40 个单页 big block（旧码 32 上限会在第 33 个返
-    /// null），全部必须成功，且全释放后记录表槽可回收再分配。
+    /// Regression pin: the `big_blocks` record table was once hardcoded to 32,
+    /// which caused a premature OOM while pool bytes were still plentiful (the
+    /// record table full: measured `OOM-RT size=001000 big=20/20
+    /// px=094/400`, hex = 32/32 table full while 148/1024 pages remained free).
+    /// The conservative capacity round described in the constant's docs raised
+    /// the table to 64 (covering the measured peak of 32/32), with the
+    /// principled fix (binding [`GLOBAL_POOL_PAGES`]) pending boot eager
+    /// materialization. This test allocates 40 single-page big blocks in a row
+    /// from a 48-page pool (the old 32 cap returned null on the 33rd); every
+    /// one must succeed, and after freeing them all a record slot must be
+    /// reusable.
     #[test]
     fn test_big_block_table_not_capped_at_32() {
         let mut pool = [0u8; 48 * PAGE_BYTES];
         let mut allocator = test_allocator(&mut pool);
         let mut ptrs = [core::ptr::null_mut::<u8>(); 40];
         for slot in ptrs.iter_mut() {
-            let p = allocator.alloc(PAGE_BYTES); // 4 KiB → 单个 big block
+            let p = allocator.alloc(PAGE_BYTES); // 4 KiB → a single big block
             assert!(!p.is_null(), "big block >32 must not premature-OOM");
             *slot = p;
         }
         for p in ptrs {
             allocator.free(p);
         }
-        // 全释放后仍可分配一个 big block（记录表槽回收生效）。
+        // After freeing everything one more big block must still be allocatable
+        // (record-table slots are reclaimed).
         assert!(!allocator.alloc(PAGE_BYTES).is_null());
     }
 
-    /// B35 回归 pin：单页 big block 必须能复用 free-stack。旧
-    /// `supply_pages` 只走 bump 游标，游标撞池尾后即使 free-stack 有
-    /// 空闲页也拒绝对 1 页请求供货（真机 `size=0x1000` 而 `fp=924`
-    /// 搁浅）。本测用 4 页池：先填满 bump（4 个单页 big block），释
-    /// 放一个回 free-stack，再取一个必须从回收页成功。
+    /// Regression pin: a single-page big block must be able to reuse the
+    /// free-stack. The old `supply_pages` only walked the bump cursor, so once
+    /// the cursor hit the pool end it refused to serve a 1-page request even
+    /// with free pages on the free-stack (measured on the real machine:
+    /// `size=0x1000` while `fp=924`, stranded). This test uses a 4-page pool:
+    /// fill the bump first (4 single-page big blocks), release one back to the
+    /// free-stack, then the next allocation must succeed from the reclaimed
+    /// page.
     #[test]
     fn test_single_page_big_block_reuses_free_stack() {
         let mut pool = [0u8; 4 * PAGE_BYTES];
         let mut allocator = test_allocator(&mut pool);
-        // 填满 bump 区：4 个单页 big block，游标至池尾。
+        // Fill the bump area: 4 single-page big blocks, cursor at the pool end.
         let mut held = [core::ptr::null_mut::<u8>(); 4];
         for slot in held.iter_mut() {
-            let p = allocator.alloc(PAGE_BYTES); // 4 KiB → 1 页 big block
+            let p = allocator.alloc(PAGE_BYTES); // 4 KiB → one 1-page big block
             assert!(!p.is_null(), "fill must succeed while bump has room");
             *slot = p;
         }
-        // 释放一个→回 free-stack；此时 bump 已尽，新请求只能来
-        // 自回收页（旧码 `supply_pages(1)` 在此必返 null）。
+        // Release one → back to the free-stack; the bump is now exhausted, so a
+        // new request can only come from the reclaimed page (the old code's
+        // `supply_pages(1)` necessarily returned null here).
         allocator.free(held[0]);
         held[0] = core::ptr::null_mut();
         let reused = allocator.alloc(PAGE_BYTES);
@@ -1096,22 +1154,25 @@ mod tests {
         );
     }
 
-    // ===== SD-11 T2：VmBreakSupplier 闭环（host mock transport）=====
+    // ===== VmBreakSupplier closed loop (host mock transport) =====
 
-    /// Mock VM transport 的共享状态：`sendrec` 一律成功并记录 brk 请求
-    /// 载荷，其余通道本供给者不触达、统一拒答。宿主测试钉「断点推进→
-    /// 取页→界外释放→ENOMEM→None」闭环；真实 trap 通道由真机门验证
-    /// （与 minix-sys `time.rs` 的 `FakeTimesTransport` 同形）。
+    /// Shared state of the mock VM transport: `sendrec` always succeeds and
+    /// records the brk request payload, while the other channels are never
+    /// reached by this supplier and uniformly refuse. The host test pins the
+    /// "break advance → page take → out-of-range release → ENOMEM → None" closed
+    /// loop; the real trap channel is verified by the real-machine gate (the
+    /// same shape as `FakeTimesTransport` in minix-sys `time.rs`).
     struct MockVmState {
-        /// 每次 `VM_CALL_BREAK` 请求的 requested 地址（`break_via` 写在
-        /// raw 载荷首 8 字节）。
+        /// The requested address of each `VM_CALL_BREAK` (`break_via` writes it
+        /// into the first 8 bytes of the raw payload).
         breaks: core::cell::RefCell<Vec<u64>>,
-        /// 置位后模拟 VM 拒绝增长（ENOMEM 路径）。
+        /// When set, simulates VM refusing growth (the ENOMEM path).
         refuse_breaks: core::cell::Cell<bool>,
     }
 
-    /// transport 按值移交进 [`VmBreakSupplier`]，测试用 `Rc` 克隆持有
-    /// 状态以便移交后继续观测/翻转（std 测试构建可用）。
+    /// The transport is moved into [`VmBreakSupplier`] by value, so the test
+    /// keeps a `Rc` clone of the state to observe/flip it after the move (the
+    /// std test build allows this).
     struct MockVmTransport {
         state: std::rc::Rc<MockVmState>,
     }
@@ -1145,7 +1206,8 @@ mod tests {
             if self.state.refuse_breaks.get() {
                 return Err(TrapStatus(-1));
             }
-            // SAFETY: raw 载荷 56 字节，`break_via` 刚写入前 8 字节。
+            // SAFETY: the raw payload is 56 bytes, and `break_via` has just
+            // written the first 8.
             let requested =
                 unsafe { u64::from_ne_bytes(message.m_u.raw[..8].try_into().unwrap()) };
             self.state.breaks.borrow_mut().push(requested);
@@ -1169,9 +1231,11 @@ mod tests {
         }
     }
 
-    /// 闭环：初始断点 → 供给 2 页 → 断点推进且返回旧断点 → 再供给 1 页 →
-    /// 区间内/外释放语义（界外计数、界内 no-op）→ VM 拒绝时 None 且
-    /// 状态不回退 → 诊断三元组（消耗 3 / 总 0 / 空闲 0）。
+    /// Closed loop: initial break → supply 2 pages → break advances and the old
+    /// break is returned → supply 1 more page → in-range/out-of-range release
+    /// semantics (out-of-range counted, in-range no-op) → None when VM refuses
+    /// with no state rollback → the diagnostic triple (consumed 3 / total 0 /
+    /// free 0).
     #[test]
     fn test_vm_break_supplier_growth_page_and_release_semantics() {
         let state = std::rc::Rc::new(MockVmState {
@@ -1182,8 +1246,8 @@ mod tests {
         assert_eq!(supplier.pages_supplied(), 0);
         assert!(supplier.is_vm_form());
 
-        // 增长：一次供给 2 页，返回旧断点（SlabAllocator 把它当
-        // big-block 首址）。
+        // Growth: supply 2 pages at once and return the old break
+        // (SlabAllocator treats it as the big block's start address).
         let first = supplier.supply_pages(2).expect("VM 堆首次供给");
         assert_eq!(first as u64, 0x10_0000);
         assert_eq!(supplier.pages_supplied(), 2);
@@ -1192,32 +1256,37 @@ mod tests {
             vec![0x10_0000 + 2 * PAGE_BYTES as u64]
         );
 
-        // 再供给 1 页：断点从缓存续推，不再重复 heap_base。
+        // Supply 1 more page: the break continues from the cache instead of
+        // repeating heap_base.
         let second = supplier.supply_page().expect("第二次供给");
         assert_eq!(second as u64, 0x10_0000 + 2 * PAGE_BYTES as u64);
 
-        // 区间内释放：诚实 no-op，不计界外（C 收缩 brk 从不 unmap）。
+        // In-range release: honest no-op, not counted as foreign (C shrinking
+        // brk never unmaps).
         supplier.release_page(second);
         assert_eq!(supplier.foreign_releases(), 0);
 
-        // 界外释放（旧池页等）：计数供真机诊断，不回收（栈上数组地址
-        // 仅作比较、不接触）。
+        // Out-of-range release (old pool pages etc.): counted for real-machine
+        // diagnosis, not reclaimed (the stack array address is only compared,
+        // never touched).
         let foreign_buffer = [0u8; 16];
         supplier.release_page(foreign_buffer.as_ptr() as *mut u8);
         assert_eq!(supplier.foreign_releases(), 1);
 
-        // VM 拒绝（ENOMEM 路径）：None，断点缓存与请求数不回退。
+        // VM refusal (the ENOMEM path): None, with neither the break cache nor
+        // the request count rolling back.
         state.refuse_breaks.set(true);
         assert!(supplier.supply_pages(1).is_none());
         assert_eq!(supplier.pages_supplied(), 3);
         assert_eq!(state.breaks.borrow().len(), 2);
 
-        // 诊断：VM 形态无固定总量，总/空闲记 0。
+        // Diagnostics: the VM form has no fixed total, so total/free are 0.
         assert_eq!(supplier.pool_diag(), (3, 0, 0));
     }
 
-    /// HeapSupplier Fixed 臂转发：诊断与分配行为与裸 FixedPoolSupplier
-    /// 一致（出生形态行为不变的回归 pin）。
+    /// HeapSupplier's Fixed arm forwarding: diagnostics and allocation behavior
+    /// match a bare FixedPoolSupplier (the regression pin that the birth form
+    /// behaves unchanged).
     #[test]
     fn test_heap_supplier_fixed_form_serves_from_pool() {
         let mut pool = pool_buffer();
@@ -1231,9 +1300,11 @@ mod tests {
         allocator.free(pointer);
     }
 
-    /// T1 切换闭环：出生形态从固定池分配（行为不变）→ `replace_supplier`
-    /// 切 VM 形态 → 出生期 big-block 释放落界外计数（诚实 no-op）→ 新
-    /// 分配从 VM 断点增长 → 诊断切 VM 标志（总/空闲 0）。
+    /// Switch closed loop: the birth form allocates from the fixed pool
+    /// (unchanged behavior) → `replace_supplier` switches to the VM form →
+    /// releasing the birth-time big block lands in the foreign count (honest
+    /// no-op) → new allocations grow from the VM break → diagnostics switch the
+    /// VM flag (total/free 0).
     #[test]
     fn test_replace_supplier_switches_to_vm_growth() {
         let mut pool = pool_buffer();
@@ -1243,8 +1314,9 @@ mod tests {
         }));
         let mut allocator: SlabAllocator<HeapSupplier<'_, MockVmTransport>> =
             SlabAllocator::new(HeapSupplier::Fixed(FixedPoolSupplier::new(&mut pool)));
-        // 出生期：固定池分一个 1 页 big block（释放时才会回到供给者，
-        // 小槽归还走 slab 自由表、不触供给者）。
+        // Birth phase: the fixed pool hands out one 1-page big block (a release
+        // only returns to the supplier; small-slot returns go through the slab
+        // free list and never touch the supplier).
         let birth = allocator.alloc(PAGE_BYTES);
         assert!(!birth.is_null());
 
@@ -1254,10 +1326,12 @@ mod tests {
         )));
         assert!(allocator.is_vm_form());
 
-        // 切换后出生块仍可释放：固定池页不在 VM 区间 → 界外计数。
+        // The birth block is still releasable after the switch: a fixed-pool
+        // page is not in the VM range → foreign count.
         allocator.free(birth);
 
-        // 新分配从 VM 断点增长（big-block 1 页 → supply_pages(1)）。
+        // A new allocation grows from the VM break (1-page big block →
+        // supply_pages(1)).
         let vm_page = allocator.alloc(PAGE_BYTES);
         assert!(!vm_page.is_null());
         assert_eq!(vm_page as u64, 0x10_0000);

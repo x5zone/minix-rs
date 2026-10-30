@@ -203,8 +203,9 @@ impl MinixSysHost {
     /// their delivery legs land, same as the stub module itself.
     #[cfg(target_arch = "x86_64")]
     fn sigreturn_stub() -> u64 {
-        // fn 指针取址两步走（clippy function_casts_as_integer 建议形）：
-        // 直接 `as u64` 是新告警面。
+        // Taking the address of an fn pointer in two steps (the shape clippy's
+        // function_casts_as_integer suggests): a direct `as u64` is a new lint
+        // surface.
         minix_rt::signals::__sigreturn as *const () as u64
     }
 
@@ -218,8 +219,8 @@ impl MinixSysHost {
     /// One sigaction round trip: handler address in, sigreturn stub in
     /// the `ret` lane (C: `sigaction.c:15-19`). The transport is fixed to
     /// the direct trap by `minix_sys::sigaction` — the command layer does
-    /// not own a transport seam (18-stage layering rule, boundary gate
-    /// C-7); the wire-lane mapping itself is pinned by minix-sys's own
+    /// not own a transport seam (18-stage layering rule, boundary gate);
+    /// the wire-lane mapping itself is pinned by minix-sys's own
     /// `pm::sigaction_via` tests, not here.
     fn send_sigaction(signum: i32, handler: usize, sigreturn: u64) -> Result<(), Errno> {
         let act = SigActionWire {
@@ -278,10 +279,10 @@ impl InitHost for MinixSysHost {
         // login_tty.c:46-61), folded: setsid (failure warned away,
         // init.c:674), the DTR-low gap (250 ms, init.c:98/680), open
         // O_RDWR, TIOCSCTTY, dup2 onto 0/1/2, close the working fd.
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init best effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::setsid();
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init best effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::nanosleep(0, 250_000_000);
         let fd = minix_sys::open(device, O_RDWR, 0)?;
@@ -289,12 +290,12 @@ impl InitHost for MinixSysHost {
         // everything after it is best-effort.
         minix_sys::ioctl(fd, minix_sys::tty::TIOCSCTTY, 0)?;
         for std_fd in [0, 1, 2] {
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init best effort
             #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::dup2(fd, std_fd);
         }
         if fd > 2 {
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init best effort
             #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::close(fd);
         }
@@ -445,8 +446,8 @@ impl InitHost for MinixSysHost {
         // /bin/sh, init.c:962 /etc/rc); stat is the same existence
         // question without the open. ENOENT is the "no" answer; any other
         // error travels (a caller can distinguish "absent" from "broken").
-        // C 的 stat 缓冲是 memset 零初始化：全整数域的 repr(C)，零是每个
-        // 字段的合法位型。
+        // C's stat buffer is a memset zero initialization: with an all-integer
+        // repr(C), zero is a valid bit pattern for every field.
         let mut buf: minix_sys::Stat = unsafe { core::mem::zeroed() };
         match minix_sys::stat(path, &mut buf) {
             Ok(()) => Ok(true),
@@ -456,15 +457,15 @@ impl InitHost for MinixSysHost {
     }
 
     fn console_write(&mut self, severity: crate::log::Severity, message: &str) {
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init best effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = severity;
         // fd 1 is whatever the boot environment left attached; a
         // failed console write has nowhere better to go.
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init best effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::write(1, message.as_bytes());
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init best effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::write(1, b"\n");
     }
@@ -513,7 +514,7 @@ impl InitHost for MinixSysHost {
         // close. The fd never outlives the call.
         let fd = minix_sys::open(path, O_WRONLY | O_APPEND, 0)?;
         let write_rv = minix_sys::write(fd, bytes);
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init best effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
         write_rv.map(|_| ())
@@ -532,14 +533,14 @@ impl InitHost for MinixSysHost {
                 Ok(0) => break,
                 Ok(n) => body.extend_from_slice(&chunk[..n]),
                 Err(e) => {
-                    //[SD19-gate] SD-19: init 尽力而为
+                    //[SD19-gate] init best effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(fd);
                     return Err(e);
                 }
             }
         }
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init best effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
         Ok(String::from_utf8_lossy(&body).into_owned())
@@ -632,7 +633,7 @@ impl InitHost for ScriptHost {
     }
 
     fn waitpid(&mut self, pid: Pid, options: i32) -> Result<(Pid, WaitStatus), Errno> {
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init best effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = (pid, options);
         if !self.wait_outcomes.is_empty() {
@@ -665,7 +666,7 @@ impl InitHost for ScriptHost {
     }
 
     fn set_controlling_tty(&mut self, device: &str) -> Result<(), Errno> {
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init best effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = device;
         Ok(())
@@ -823,7 +824,8 @@ pub fn restore_spec(signums: &[i32]) -> SignalSpec {
 /// C: `SIG_SETMASK 3` (`minix3/sys/sys/signal.h:176`).
 const SIG_SETMASK: i32 = 3;
 
-/// 全信号集（1..=64;C `sigfillset`,128 位 sigset_t 的高 64 位不用）。
+/// The full signal set (1..=64; C `sigfillset`, the upper 64 bits of the
+/// 128-bit sigset_t stay unused).
 fn sigset_full() -> [u32; 4] {
     let mut set = [0u32; 4];
     for sig in 1..=64usize {
@@ -832,7 +834,8 @@ fn sigset_full() -> [u32; 4] {
     set
 }
 
-/// 全集减去 `except`（C: `delset` 变参循环,init.c:324-327）。
+/// The full set minus `except` (C: the `delset` vararg loop,
+/// init.c:324-327).
 fn sigset_full_minus(except: &[i32]) -> [u32; 4] {
     let mut set = sigset_full();
     for &sig in except {
@@ -851,12 +854,14 @@ mod tests {
     fn test_sigaction_carries_sigreturn_stub() {
         // C: libc folds the restore stub into every sigaction request
         // (`sigaction.c:18` `.ret = __sigreturn`). The rewrite's stub is
-        // minix-rt's `__sigreturn` (NL3③); a zero slot was the NS11 gap.
-        // The init-side pin is the stub VALUE; the wire-lane mapping
-        // (`ret` 参数 → `MessLcPmSig.ret`、PM endpoint、调用号) 由
-        // minix-sys 自己的回放测试钉死（pm.rs sigaction_via 测试）——
-        // 命令层不自建 transport 测试替身（边界守卫 C-7：直用 libsys
-        // IPC 层类型即违规，注释里写字面量路径都会被 grep 命中）。
+        // minix-rt's `__sigreturn`; a zero slot was the old gap.
+        // The init-side pin is the stub VALUE; the wire-lane mapping (the
+        // `ret` argument → `MessLcPmSig.ret`, the PM endpoint, the call
+        // number) is pinned by minix-sys's own replay tests (the pm.rs
+        // sigaction_via test) — the command layer does not build a transport
+        // test double (boundary guard: using the libsys IPC layer types
+        // directly is the violation, and even writing a literal path in a
+        // comment gets caught by grep).
         let stub = MinixSysHost::sigreturn_stub();
         assert_ne!(stub, 0, "x86_64 测试面上桩地址必须非零");
         assert_eq!(
@@ -869,49 +874,56 @@ mod tests {
     #[test]
     fn test_minix_host_honest_enosys_for_missing_wrappers() {
         let mut host = MinixSysHost::default();
-        // 本测试分两栏：**已接线**的接缝在宿主 trap 断链下诚实回 EIO
-        // （E1 切片 5 的 hosted fallback；rt-birth 同款注记）；**本地环境
-        // 表面**无机器往返（set_env 走成功/INVAL 栏）——两栏都不许把
-        // 失败装成功。
-        // 内核 mib 三件已接线（minix-sys 的 MIB_SYSCTL 客户端面：
-        // sysctl(2) = SENDREC 直达 MIB 服务，C 亦无 GETMIB 内核臂，
-        // 见 trait 上方注记）——宿主 trap 断链诚实回 EIO，与 chroot
-        // 等已接线面同栏。
+        // This test has two columns: the **wired** seams answer EIO honestly
+        // while the host trap chain is broken (the hosted fallback, the same
+        // note as rt-birth); the **local environment surface** has no machine
+        // round trip (set_env takes the success/INVAL column) — neither column
+        // may dress a failure up as success.
+        // The three kernel mib entries are wired (minix-sys's MIB_SYSCTL
+        // client face: sysctl(2) = SENDREC straight to the MIB service, and C
+        // has no GETMIB kernel arm either — see the note above the trait) —
+        // the host trap chain is broken, so they answer EIO honestly, the same
+        // column as chroot and the other wired faces.
         assert_eq!(host.securitylevel(), Err(Errno::EIO));
         assert_eq!(host.set_securitylevel(0), Err(Errno::EIO));
         assert_eq!(host.init_root(), Err(Errno::EIO));
-        // chroot 已接线（VFS_CHROOT 面）：宿主 trap 断链诚实回 EIO。
+        // chroot is wired (the VFS_CHROOT face): with the host trap chain
+        // broken it answers EIO honestly.
         assert_eq!(host.chroot("/"), Err(Errno::EIO));
-        // set_env 已接线（本地环境表，setenv 语义）：成功路径 Ok，
-        // 畸形名 EINVAL（C setenv.c:70-74）；exec 帧消费见 execve.rs。
+        // set_env is wired (a local environment table with setenv semantics):
+        // the success path is Ok, a malformed name is EINVAL (C setenv.c:70-74);
+        // the exec frame consumes it, see execve.rs.
         assert_eq!(host.set_env("PATH", "/sbin"), Ok(()));
         assert_eq!(host.set_env("", "/sbin"), Err(Errno::EINVAL));
         assert_eq!(host.set_env("PA=TH", "/sbin"), Err(Errno::EINVAL));
-        // 已接线（宿主 trap 断链 → EIO）：文件族三件 + 信号安装。
+        // Wired (broken host trap chain → EIO): the three file-family calls
+        // plus signal installation.
         assert_eq!(host.path_exists("/dev/console"), Err(Errno::EIO));
         assert_eq!(host.read_file("/etc/ttys"), Err(Errno::EIO));
         assert_eq!(host.append_file("/var/run/utmpx", b"x"), Err(Errno::EIO));
         assert_eq!(host.close_std_fds(), Err(Errno::EIO));
-        // 信号安装已是真实封装（E-INITSYS ①）：宿主 trap 断链诚实回
-        // EIO（E1 切片 5 的 hosted fallback；rt-birth 同款注记）——不伪造
-        // 成功。真机上 PM 服务该调用号（S3 的 dispatch 臂）后回真实结果，
-        // main 告警后继续——两条路径都如实。
+        // Signal installation is already a real wrapper: with the host trap
+        // chain broken it answers EIO honestly (the hosted fallback, the same
+        // note as rt-birth) — no faked success. On a real machine PM serves
+        // that call number and answers with the real result, after which main
+        // warns and continues — both paths are faithful.
         let spec = default_signal_spec();
         assert!(
             matches!(host.register_handlers(&spec), Err(e) if e == Errno::EIO),
             "宿主 trap 断链 → EIO（不伪造成功）"
         );
-        // alarm/time/set_controlling_tty 已接线（PM_ITIMER /
-        // PM_GETTIMEOFDAY / open+TIOCSCTTY+dup2 面）：宿主 trap 断链
-        // 诚实回 EIO。
+        // alarm/time/set_controlling_tty are wired (the PM_ITIMER /
+        // PM_GETTIMEOFDAY / open+TIOCSCTTY+dup2 faces): with the host trap
+        // chain broken they answer EIO honestly.
         assert_eq!(host.alarm(10), Err(Errno::EIO));
         assert_eq!(host.now_secs(), Err(Errno::EIO));
         assert_eq!(
             host.set_controlling_tty("/dev/console"),
             Err(Errno::EIO)
         );
-        // exec 已接线（PM_EXEC 面，execve.rs）：宿主 kerninfo 断链 →
-        // 帧的 vsp 无从取值 → 诚实 EIO（不伪造成功）。
+        // exec is wired (the PM_EXEC face, execve.rs): the host kerninfo chain
+        // is broken → the frame's vsp cannot be obtained → honest EIO (no
+        // faked success).
         assert_eq!(
             host.exec(&ParsedCommand {
                 exec_path: "/bin/sh".into(),
@@ -952,7 +964,8 @@ mod tests {
         host.console_write(crate::log::Severity::Alert, "boot");
         assert_eq!(host.console.len(), 1);
         assert_eq!(host.slept.len(), 0);
-        // [SD19-gate] 测试夹内：睡眠记录由下方 assert_eq 断言，返回值无关
+        // [SD19-gate] inside the test harness: the sleep record is asserted by
+        // the assert_eq below, the return value does not matter
         #[allow(clippy::let_underscore_must_use)]
         let _ = host.sleep_secs(30);
         assert_eq!(host.slept, vec![30]);

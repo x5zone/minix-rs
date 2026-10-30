@@ -78,47 +78,54 @@ mod tests {
 
 
 // ---------------------------------------------------------------------------
-// 路由表（C `rttree.c` 的存储半 + `route.c:371-738` 的增删查；19 篇 §2.5
-// 登记的"判断与存储分离"在此收敛：树实现换扁平最长匹配，外部契约一致
-// ——前缀合法性、最长匹配获胜、默认路由即前缀 0 条目）。
+// The routing table (the storage half of C's `rttree.c` plus the
+// add/remove/lookup of `route.c:371-738`; the "decision separated from
+// storage" registered in doc 19 §2.5 converges here: the tree implementation
+// becomes a flat longest-match table with the same external contract — prefix
+// validity, longest match wins, the default route being the prefix-0 entry).
 // ---------------------------------------------------------------------------
 
-/// 地址族（路由条目按族分行；地址按族取 4 或 16 字节定长表示）。
+/// Address family (route entries are grouped per family; an address takes a
+/// fixed 4- or 16-byte representation per family).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpVersion {
-    /// 版本 4：地址取前 4 字节。
+    /// Version 4: the address takes the first 4 bytes.
     V4,
-    /// 版本 6：地址取全 16 字节。
+    /// Version 6: the address takes all 16 bytes.
     V6,
 }
 
-/// 一条路由条目：网络（按前缀规范化）、下一跳（`None` 即直连）、
-/// 出接口行号。默认网关与默认路由的配合见 19 篇 §1.3（前缀 0 的条目
-/// 配一个下一跳地址实现全网可达）。
+/// A route entry: network (normalized by prefix), next hop (`None` means
+/// directly connected), outgoing interface line number. The interplay of the
+/// default gateway and the default route is in doc 19 §1.3 (a prefix-0 entry
+/// paired with a next-hop address makes the whole network reachable).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteEntry {
-    /// 地址族。
+    /// Address family.
     pub version: IpVersion,
-    /// 目的网络（加入时按前缀规范化，主机位清零）。
+    /// Destination network (normalized by prefix on insertion, host bits cleared).
     pub dest: [u8; 16],
-    /// 前缀长度（0 = 默认路由）。
+    /// Prefix length (0 = default route).
     pub prefix: u8,
-    /// 下一跳；`None` = 直连（目的地即本地链路）。
+    /// Next hop; `None` = directly connected (the destination is on the local link).
     pub gateway: Option<[u8; 16]>,
-    /// 出接口行号（服务侧接口表，第 14 篇）。
+    /// Outgoing interface line number (the service-side interface table, doc 14).
     pub ifdev: u16,
 }
 
-/// 路由表：扁平条目组，查找按最长前缀获胜。C 的 `rttree` 用前缀树是
-/// 存储策略，对外可观察的语义只有"增、删、最长匹配查"，本表以同语义
-/// 的扁平实现承载（19 篇 §2.5 已登记该差异）。
+/// The routing table: a flat entry set; lookup is longest-prefix-wins. C's
+/// `rttree` uses a prefix tree as a storage strategy, but the only externally
+/// observable semantics are "add, remove, longest-match lookup", and this
+/// table carries them with a flat implementation of the same semantics (doc 19
+/// §2.5 records the difference).
 #[derive(Debug, Default)]
 pub struct RouteTable {
     entries: Vec<RouteEntry>,
 }
 
-/// 按族与前缀长度造掩码（大端位序：位 0 是第 0 字节最高位，19 篇 §1.2；
-/// 导出帧的掩码槽复用同一函数）。
+/// Build a mask from the family and prefix length (big-endian bit order: bit 0
+/// is the most significant bit of byte 0, doc 19 §1.2; the mask slot of the
+/// exported frame reuses the same function).
 pub(crate) fn prefix_mask(version: IpVersion, prefix: u8) -> [u8; 16] {
     let mut mask = [0u8; 16];
     let bits = match version {
@@ -144,29 +151,32 @@ fn masked(address: &[u8], mask: &[u8; 16]) -> [u8; 16] {
 }
 
 impl RouteTable {
-    /// `route_init`（`route.c:248`）：空表起步。
+    /// `route_init` (`route.c:248`): start from an empty table.
     pub fn new() -> Self {
         RouteTable { entries: Vec::new() }
     }
 
-    /// 在册条数。
+    /// Number of registered entries.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// 是否为空。
+    /// Whether the table is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// 在册条目（rtsock 的 read 导出面按插入序逐条取）。
+    /// The registered entries (the rtsock read export face takes them one by
+    /// one in insertion order).
     pub fn entries(&self) -> &[RouteEntry] {
         &self.entries
     }
 
-    /// 增或改：同键（族、网络、前缀）条目被替换（C 的增删改查里的
-    /// "改"半）。前缀按族校验（32/128，`route.rs` 既有合法性函数），
-    /// 目的地址按前缀规范化（主机位清零，树假设的前提）。
+    /// Add or update: an entry with the same key (family, network, prefix) is
+    /// replaced (the "update" half of C's add/remove/update/query). The prefix
+    /// is validated per family (32/128, the existing validity functions in
+    /// `route.rs`), and the destination address is normalized by the prefix
+    /// (host bits cleared, the premise of the tree's assumption).
     pub fn add(&mut self, mut entry: RouteEntry) -> Result<(), i32> {
         let allowed = match entry.version {
             IpVersion::V4 => version4_prefix_allowed(entry.prefix),
@@ -184,7 +194,8 @@ impl RouteTable {
         Ok(())
     }
 
-    /// 删：同键精确匹配，返回是否确实在册。
+    /// Remove: exact match on the key; returns whether it was actually
+    /// registered.
     pub fn remove(&mut self, version: IpVersion, dest: [u8; 16], prefix: u8) -> bool {
         let mask = prefix_mask(version, prefix);
         let dest = masked(&dest, &mask);
@@ -194,8 +205,9 @@ impl RouteTable {
         self.entries.len() != before
     }
 
-    /// 查：最长前缀获胜；无匹配（含无默认路由）返回 `None`——C 的
-    /// 选路覆盖返回"不可达"由调用方折错。
+    /// Lookup: longest prefix wins; no match (including no default route)
+    /// returns `None` — C's routing coverage returning "unreachable" is turned
+    /// into an error by the caller.
     pub fn lookup(&self, version: IpVersion, address: &[u8]) -> Option<&RouteEntry> {
         let mut best: Option<&RouteEntry> = None;
         for entry in self.entries.iter().filter(|e| e.version == version) {
@@ -242,7 +254,7 @@ mod table_tests {
         let hit = table.lookup(IpVersion::V4, &[192, 168, 1, 5]).unwrap();
         assert_eq!(hit.prefix, 16, "更长前缀获胜");
         assert_eq!(hit.gateway, None, "直连条目无下一跳");
-        // 落在 16 位前缀之外的地址走默认路由。
+        // An address outside the 16-bit prefix goes through the default route.
         let miss = table.lookup(IpVersion::V4, &[8, 8, 8, 8]).unwrap();
         assert_eq!(miss.prefix, 0);
     }
@@ -250,7 +262,8 @@ mod table_tests {
     #[test]
     fn test_dest_normalized_on_add() {
         let mut table = RouteTable::new();
-        // 主机位非零：按前缀规范化后与规范化形式同键（改语义覆盖）。
+        // Non-zero host bits: after normalization by the prefix it has the
+        // same key as the normalized form (covered by the update semantics).
         table.add(v4_entry([192, 168, 1, 1], 16, None)).unwrap();
         assert_eq!(table.len(), 1);
         table.add(v4_entry([192, 168, 9, 9], 16, Some([10, 0, 0, 1]))).unwrap();
@@ -283,12 +296,12 @@ mod table_tests {
             gateway: None,
             ifdev: 1,
         };
-        // 版本 6 前缀超 128 拒绝。
+        // A version 6 prefix above 128 is rejected.
         v6.prefix = 129;
         assert_eq!(table.add(v6).unwrap_err(), minix_types::EINVAL);
         v6.prefix = 128;
         table.add(v6).unwrap();
-        // 族隔离：版本 4 的查询不命中版本 6 条目。
+        // Family isolation: a version 4 lookup does not hit version 6 entries.
         assert!(table.lookup(IpVersion::V4, &[0u8; 4]).is_none());
     }
 }

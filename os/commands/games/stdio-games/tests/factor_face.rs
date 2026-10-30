@@ -159,14 +159,18 @@ fn trailing_junk_is_reported_as_an_illegal_numeric_format() {
 
 #[test]
 fn a_failed_read_leaves_with_c_stdin_sentence_and_exits_one() {
-    // C 在 `fgets` 返回 `NULL` 且 `ferror(stdin)` 时走 `err(1, "stdin")`（`factor.c:157-161`）,
-    // 与「只是读到尽头」分两条路：后者 `exit(0)` 且不出声。读一个目录的描述符必定出错
-    // （`EISDIR`），于是这句能在进程级看到；尾句同样取自本树的表（21 号 `Is a directory`）。
+    // C takes `err(1, "stdin")` when `fgets` returns `NULL` and
+    // `ferror(stdin)` holds (`factor.c:157-161`), a separate path from "just
+    // hit end of input": that one does `exit(0)` silently. Reading a
+    // directory's descriptor always fails (`EISDIR`), so the sentence is
+    // visible at process level; the tail sentence also comes from this tree's
+    // table (entry 21, `Is a directory`).
     let (out, status, err) = run_with_directory_stdin(&[]);
     assert_eq!(out, "");
     assert_eq!(status, 1);
     assert_eq!(err, "factor: stdin: Is a directory\n");
-    // 对照：空的管道只是读到尽头，C 与本树都安静退 0。
+    // Contrast: an empty pipe is just end of input; C and this tree both
+    // exit 0 quietly.
     let (quiet, quiet_status, quiet_err) = run(&[], b"");
     assert_eq!(
         (quiet.as_str(), quiet_status, quiet_err.as_str()),
@@ -176,9 +180,12 @@ fn a_failed_read_leaves_with_c_stdin_sentence_and_exits_one() {
 
 #[test]
 fn an_overflowed_value_leaves_with_the_range_sentence_not_the_format_one() {
-    // `err(1, "%s", str)` (`factor.c:126`) 把 `strtoul` 设的 `ERANGE` 织进句子，而且走在
-    // 行末检验之前：同一个带尾巴的超大数答这句而不提格式。句子取自本树的 `sys_errlist`，
-    // 因此是 Minix3 的 `Result too large or too small` 而不是 glibc 的那句。
+    // `err(1, "%s", str)` (`factor.c:126`) weaves the `ERANGE` that `strtoul`
+    // set into the sentence, and does so before the end-of-line check: the
+    // same oversized number with a trailing junk char gets this sentence and
+    // no format complaint. The sentence comes from this tree's
+    // `sys_errlist`, hence Minix3's `Result too large or too small` rather
+    // than glibc's wording.
     let (out, status, err) = run(&["18446744073709551616"], b"");
     assert_eq!(out, "");
     assert_eq!(status, 1);
@@ -186,14 +193,16 @@ fn an_overflowed_value_leaves_with_the_range_sentence_not_the_format_one() {
         err,
         "factor: 18446744073709551616: Result too large or too small\n"
     );
-    // 溢出优先于「行末只许换行」。
+    // Overflow takes precedence over "only a newline may end the line".
     let (_, _, junked) = run(&["99999999999999999999999x"], b"");
     assert_eq!(
         junked,
         "factor: 99999999999999999999999x: Result too large or too small\n"
     );
-    // 标准输入那条腿同理，只是 C 把整行（含换行）当 `%s`；本壳与 illegal 那句同样
-    // 先剔行尾换行（已在库文档里声明的分流）。
+    // The standard-input leg is the same, except C passes the whole line
+    // (newline included) as `%s`; this shell strips the trailing newline
+    // first, as it does for the illegal sentence (the split announced in the
+    // library docs).
     let (out, status, stdin_err) = run(&[], b"18446744073709551616\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);

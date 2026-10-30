@@ -233,11 +233,13 @@ impl VnodeTable {
         None
     }
 
-    /// `update_bspec` 的扫描半（`mount.c:46-56`，`send_drv_e=0` 分支）：
-    /// 把 `sdev == dev` 的打开块特殊文件改路到新的 FS 端点。
+    /// The scanning half of `update_bspec` (`mount.c:46-56`, the
+    /// `send_drv_e=0` branch): reroute open block-special files with
+    /// `sdev == dev` to the new FS endpoint.
     ///
-    /// C 的 `send_drv_e != 0` 分支（`req_newdriver` 补发）随驱动重启面
-    /// （19 号 `recover_step`）落，boot 挂载传 0，这里只接扫描赋值。
+    /// C's `send_drv_e != 0` branch (resending `req_newdriver`) lands with the
+    /// driver-restart surface (`recover_step`); a boot mount passes 0, so only
+    /// the scanning and assignment are wired here.
     pub fn route_block_special(&mut self, dev: DevId, fs_e: Endpoint) {
         for v in self.slots.iter_mut() {
             if v.ref_count > 0
@@ -302,7 +304,8 @@ impl VnodeTable {
         let map_count = v.mapfs_count;
         fs_ctl.put_node(fs, ino, count)?;
         if map_fs != Endpoint::NONE && map_fs != fs {
-            // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+            // [SD19-gate] best-effort vnode put-back / reference-count
+            // cleanup (C's put_vnode is void and returns no error)
             #[allow(clippy::let_underscore_must_use)]
             let _ = fs_ctl.put_node(map_fs, map_ino, map_count);
         }
@@ -325,7 +328,8 @@ impl VnodeTable {
         let fs = v.fs;
         let ino = v.ino;
         let to_put = v.fs_count - 1;
-        // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+        // [SD19-gate] best-effort vnode put-back / reference-count cleanup
+        // (C's put_vnode is void and returns no error)
         #[allow(clippy::let_underscore_must_use)]
         let _ = fs_ctl.put_node(fs, ino, to_put);
         if let Some(v) = self.get_mut(id) {
@@ -354,16 +358,17 @@ pub trait FsCtl {
     fn put_node(&mut self, fs: Endpoint, ino: u64, count: usize) -> Result<(), VnodeError>;
 }
 
-/// 一笔待投递的 `REQ_PUTNODE`（C `put_vnode` 慢路径的 `req_putnode`，
-/// vnode.c:278——`fs_e`/`inode_nr`/`fs_count` 三元组）。VFS 侧排队，
-/// 主循环统一发（回复 C 只 printf，丢弃无损）。
+/// One `REQ_PUTNODE` awaiting delivery (the `req_putnode` of C's `put_vnode`
+/// slow path, vnode.c:278 — the `fs_e`/`inode_nr`/`fs_count` triple). VFS
+/// queues them and the main loop sends them all (C only printf's the reply,
+/// so dropping it loses nothing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PutNodeReq {
-    /// FS 端点。
+    /// FS endpoint.
     pub fs_e: Endpoint,
-    /// inode 号。
+    /// inode number.
     pub ino: u64,
-    /// 归还的引用份数（`v_fs_count`）。
+    /// Number of reference counts to return (`v_fs_count`).
     pub count: usize,
 }
 

@@ -30,9 +30,11 @@ use minix_textfilter::window::{
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // C 的诊断行与 usage 行都以 `getprogname()` 开头（`head.c:200-202` 把程序名
-    // 当 `%s` 递进去），所以不能写死命令名。程序名那一腿交给 `warn`/`warn_line` 与
-    // `line_bytes` 的 `&str` 名字段（在册 `ARGV-BYTE-PATH-IN-LIBS`），臂内折一次。
+    // Both C's diagnostic lines and its usage line start with `getprogname()`
+    // (`head.c:200-202` passes the program name as `%s`), so the command name
+    // cannot be hard-coded. The program-name leg goes to `warn`/`warn_line` and
+    // to `line_bytes`'s `&str` name field (registered `ARGV-BYTE-PATH-IN-LIBS`),
+    // so it is folded once here.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let HeadArgs {
@@ -43,18 +45,22 @@ fn run() -> ! {
         operands,
     } = match parse_head_args(&args[1..]) {
         Ok(parsed) => parsed,
-        // libc 的那一行在前，usage 在后（`getopt.c:101-104`、`:132-136`）。字母位走
-        // `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 的
-        // `%c` 原样写出，所以 `-é`（`c3 a9`）报的是 `c3`；取法在 `src/window.rs` 的环里
-        // 已经是 `bytes[pos] as char`，两边同形才成立。
+        // libc's line comes first, usage after (`getopt.c:101-104`, `:132-136`).
+        // The letter byte goes through `line_bytes`: `getopt.c:79`'s
+        // `optopt = *place++` takes one byte at a time and `:103`'s `%c` writes
+        // it out verbatim, so `-é` (`c3 a9`) reports `c3`; the extraction in
+        // `src/window.rs`'s loop is already `bytes[pos] as char`, and that only
+        // holds if both sides have the same shape.
         Err(HeadArgError::Getopt(report)) => {
             support::warn(&report.line_bytes(&prog));
             usage(&prog)
         }
         Err(HeadArgError::IllegalCount { byte, value }) => {
-            // C `errx(1, "illegal byte count -- %s", optarg)`（`head.c:92-102`）：
-            // 走 `vwarnx`，所以后面不缀 `errno` 句子；而 `%s` 交回的是 **optarg 的原字节**，
-            // 所以那一段不许过 `&str`——句子按字节拼，`value` 直接接上去。
+            // C `errx(1, "illegal byte count -- %s", optarg)` (`head.c:92-102`):
+            // goes through `vwarnx`, so no `errno` sentence is appended; and the
+            // `%s` hands back the **raw bytes of optarg**, so that segment must not
+            // pass through `&str` — the sentence is assembled from bytes and `value`
+            // is appended directly.
             let kind: &[u8] = if byte { b"byte" } else { b"line" };
             let mut line = prog.as_bytes().to_vec();
             line.extend_from_slice(b": illegal ");
@@ -80,15 +86,16 @@ fn run() -> ! {
         support::terminate(0);
     }
     for operand in &operands {
-        // 开档与 `warn("%s", *argv)` 两条腿都要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），
-        // 所以这里折一次；**横幅那一腿不跟着折**——它是本壳自己 `printf` 的
-        // （`head.c:130-131`），交回的必须是 argv 原字节。
+        // Both opening the file and `warn("%s", *argv)` need a `&str` (registered
+        // `ARGV-BYTE-PATH-IN-LIBS`), so it is folded once here; **the banner leg is
+        // not folded** — this shell prints it itself (`head.c:130-131`), and what it
+        // hands back must be the raw argv bytes.
         let path = String::from_utf8_lossy(operand);
         let data = match support::read_file(&path) {
             Ok(data) => data,
-            // C `head.c:124-127` 是 `warn("%s", *argv)` + `eval = 1` + `continue`：
-            // 程序名、操作数、`strerror` 句子三个成分缺一不可（旧写法把 `warn(3)`
-            // 当成 `warnx(3)` 用）。
+            // C `head.c:124-127` is `warn("%s", *argv)` + `eval = 1` + `continue`:
+            // all three components — program name, operand, `strerror` sentence —
+            // are required (an older spelling used `warn(3)` as if it were `warnx(3)`).
             Err(code) => {
                 support::warn_line(&prog, &path, code);
                 status = 1;
@@ -129,7 +136,8 @@ fn head_stream(input: &[u8], count: usize, bytecnt: usize) {
     let drained = window.drain(&mut survivors);
     for line in &survivors[..drained] {
         let mut out = line.bytes().to_vec();
-        // C 的行形是逐字符搬运（`head.c:169-172`），末行没有换行就不造一枚。
+        // C's line shape is a character-by-character copy (`head.c:169-172`); no
+        // terminator is invented for a last line that has none.
         out.extend_from_slice(line.eol());
         support::emit(&out);
     }
@@ -141,9 +149,10 @@ fn first_bytes_of(input: &[u8], bytecnt: usize) -> &[u8] {
     &input[..bytecnt.min(input.len())]
 }
 
-/// `head` 的 usage 行，逐字对位 `head.c:199-203`（`"usage: %s [-n lines] [file ...]\n"`
-/// 加 `getprogname()`，退 1）。注意 C 这一行里根本没有 `-c`/`-q`/`-v` 三个字母——
-/// 上游就少列了，本壳照C而不替它修正清单。
+/// `head`'s usage line, verbatim against `head.c:199-203`
+/// (`"usage: %s [-n lines] [file ...]\n"` plus `getprogname()`, exit 1). Note that
+/// this C line carries no `-c`/`-q`/`-v` letters at all — upstream simply omits
+/// them, and this shell follows C instead of correcting the list on its behalf.
 fn usage(prog: &str) -> ! {
     support::warn(format!("usage: {prog} [-n lines] [file ...]\n").as_bytes());
     support::terminate(1);

@@ -58,7 +58,7 @@ impl MemStats {
         self.allocation_failures += 1;
     }
 
-    // V10-P2-1: getters + report are test-only today; production only
+    // Getters + report are test-only today; production only
     // drives `record_*` (the allocators' hot path).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn total_allocations(&self) -> usize {

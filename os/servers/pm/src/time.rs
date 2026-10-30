@@ -4,7 +4,7 @@
 //! + `minix3/minix/include/minix/ipc.h:469` `mess_lc_pm_time/mess_pm_lc_time`
 //! + `minix3/sys/sys/time.h:283/288` `CLOCK_REALTIME 0/MONOTONIC 3`
 //! + `minix3/minix/lib/libsys/getuptime.c:9-22` + `libsys/clock_time.c:13-40`
-//!   Design: `.design/19-design.v1.md` D1–D8 (explicit `ClockId/decompose_clock/clock_resolution/ClockSource/BootTimeCtl/SetTimeCtl/ClockTime`).
+//!   Design: explicit `ClockId/decompose_clock/clock_resolution/ClockSource/BootTimeCtl/SetTimeCtl/ClockTime`.
 //!   Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Clock, Time, UserSlot, EINVAL, EPERM};
@@ -18,8 +18,10 @@ pub const CLOCK_REALTIME: i32 = 0;
 /// `CLOCK_MONOTONIC` (`sys/time.h:288`, 3 not 1).
 pub const CLOCK_MONOTONIC: i32 = 3;
 
-/// `PM_*` 时间族调用号——minix-types 单一真源（[`PmCall`] 判别值派生）
-/// 的再导出，本 crate 不再手抄（PD-23 采甲；`misc.rs` 的 `SI_*` 同判例）。
+/// `PM_*` time-family call numbers — re-exported from minix-types, the single
+/// source (derived from the [`PmCall`] discriminants), so this crate no longer
+/// copies them by hand (the `SI_*` re-exports in `misc.rs` follow the same
+/// precedent).
 pub use minix_types::{
     PM_CLOCK_GETRES, PM_CLOCK_GETTIME, PM_CLOCK_SETTIME, PM_GETTIMEOFDAY, PM_STIME,
 };
@@ -55,7 +57,7 @@ impl TryFrom<i32> for ClockId {
     }
 }
 
-/// `TimeRequest` (`ipc.h:469` `mess_lc_pm_time` four fields, D1).
+/// `TimeRequest` (`ipc.h:469` `mess_lc_pm_time`, four fields).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeRequest {
     pub clk: ClockId,
@@ -86,30 +88,31 @@ impl TimeError {
     }
 }
 
-/// `ClockSource` (`getuptime` three values, `libsys/getuptime.c:9-22`, D2, A-11).
+/// `ClockSource` (`getuptime`'s three values, `libsys/getuptime.c:9-22`).
 pub trait ClockSource {
     fn uptime(&self) -> Result<(Clock, Clock, Time), TimeError>;
 }
 
-/// `BootTimeCtl` (`sys_stime`, `libsys/sys_stime.c:9`, D5, A-11).
+/// `BootTimeCtl` (`sys_stime`, `libsys/sys_stime.c:9`).
 pub trait BootTimeCtl {
     fn set_boottime(&mut self, boottime: Time) -> i32;
 }
 
-/// `SetTimeCtl` (`sys_settime`, `libsys/sys_settime.c:9-12`, D6, A-11).
+/// `SetTimeCtl` (`sys_settime`, `libsys/sys_settime.c:9-12`).
 pub trait SetTimeCtl {
     fn set_time(&mut self, now: bool, clk: ClockId, sec: Time, nsec: i64) -> i32;
 }
 
-/// `ClockTime` (`clock_time`, `libsys/clock_time.c:13-40`, D7, A-11).
+/// `ClockTime` (`clock_time`, `libsys/clock_time.c:13-40`).
 pub trait ClockTime {
     fn clock_time(&self) -> Timespec;
 }
 
-// ── S4 批次 C:生产时间面(零成本内核腿,批次 C 接线)──
+// ── Production time face (zero-cost kernel leg) ──
 
-/// `ClockSource` 生产实现:`sys_times` 自拷读 uptime 三值
-/// (C: libsys getuptime.c 的 SYS_TIMES 面;E1 已通电)。
+/// Production `ClockSource`: reads the three uptime values through a
+/// self-copying `sys_times` call (C: the SYS_TIMES face in libsys getuptime.c;
+/// the kernel call is wired).
 pub struct SysClockSource;
 
 impl ClockSource for SysClockSource {
@@ -123,7 +126,7 @@ impl ClockSource for SysClockSource {
     }
 }
 
-/// `BootTimeCtl` 生产实现:`sys_stime` 直委托。
+/// Production `BootTimeCtl`: straight delegation to `sys_stime`.
 pub struct SysBootTimeCtl;
 
 impl BootTimeCtl for SysBootTimeCtl {
@@ -138,7 +141,7 @@ impl BootTimeCtl for SysBootTimeCtl {
     }
 }
 
-/// `SetTimeCtl` 生产实现:`sys_settime` 直委托。
+/// Production `SetTimeCtl`: straight delegation to `sys_settime`.
 pub struct SysSetTimeCtl;
 
 impl SetTimeCtl for SysSetTimeCtl {
@@ -156,9 +159,9 @@ impl SetTimeCtl for SysSetTimeCtl {
     }
 }
 
-/// `ClockTime` 生产实现:`sys_times` + `wall_clock_time`。
+/// Production `ClockTime`: `sys_times` plus `wall_clock_time`.
 pub struct SysClockTime {
-    /// 系统频率(wall 换算需要)。
+    /// System frequency (needed for the wall-clock conversion).
     pub hz: Clock,
 }
 
@@ -178,13 +181,14 @@ impl ClockTime for SysClockTime {
                 let (sec, nsec) = minix_sys::misc::wall_clock_time(snap);
                 Timespec { sec: sec as Time, nsec: nsec as i64 }
             }
-            // 时钟不可达:零时间戳(fail-soft,同 do_memory 的错误口径)。
+            // Clock unreachable: a zero timestamp (fail-soft, the same error
+            // stance as do_memory).
             Err(_) => Timespec { sec: 0, nsec: 0 },
         }
     }
 }
 
-/// `decompose_clock` (`time.c:42-44`, D3, A-11) — `boottime + clock/hz` with `%hz*1e9/hz`.
+/// `decompose_clock` (`time.c:42-44`) — `boottime + clock/hz` with `%hz*1e9/hz`.
 ///
 /// - `clock` is `realtime` for `CLOCK_REALTIME` or `ticks` for `CLOCK_MONOTONIC`.
 /// - `hz` is `system_hz` explicit param (not global), `hz<=50000`.
@@ -198,7 +202,7 @@ pub fn decompose_clock(boottime: Time, clock: Clock, hz: Clock) -> Timespec {
     Timespec { sec, nsec }
 }
 
-/// `clock_resolution` (`time.c:58-60`, D4) — `1e9/hz`.
+/// `clock_resolution` (`time.c:58-60`) — `1e9/hz`.
 pub fn clock_resolution(hz: Clock) -> Timespec {
     if hz == 0 {
         return Timespec { sec: 0, nsec: 0 };
@@ -206,12 +210,12 @@ pub fn clock_resolution(hz: Clock) -> Timespec {
     Timespec { sec: 0, nsec: NSEC_PER_SEC / hz }
 }
 
-/// `do_time` (`time.c:94-104`, D7).
+/// `do_time` (`time.c:94-104`).
 pub fn do_time(clock: &dyn ClockTime) -> Timespec {
     clock.clock_time()
 }
 
-/// `do_stime` (`time.c:110-131`, D5).
+/// `do_stime` (`time.c:110-131`).
 pub fn do_stime(
     table: &ProcTable,
     caller: UserSlot,
@@ -220,7 +224,7 @@ pub fn do_stime(
     src: &dyn ClockSource,
     ctl: &mut dyn BootTimeCtl,
 ) -> Result<(), TimeError> {
-    // 119-121  SUPER_USER gate (15's is_superuser)
+    // 119-121  SUPER_USER gate (reuses the shared superuser predicate)
     if !is_superuser(table, caller) {
         return Err(TimeError::Perm);
     }
@@ -236,7 +240,7 @@ pub fn do_stime(
     Ok(())
 }
 
-/// `do_gettime` (`time.c:22-47`, D2).
+/// `do_gettime` (`time.c:22-47`).
 pub fn do_gettime(
     src: &dyn ClockSource,
     clk: ClockId,
@@ -250,14 +254,14 @@ pub fn do_gettime(
     Ok(decompose_clock(boottime, clock, hz))
 }
 
-/// `do_getres` (`time.c:53-65`, D4).
+/// `do_getres` (`time.c:53-65`).
 pub fn do_getres(clk: ClockId, hz: Clock) -> Result<Timespec, TimeError> {
     match clk {
         ClockId::Realtime | ClockId::Monotonic => Ok(clock_resolution(hz)),
     }
 }
 
-/// `do_settime` (`time.c:71-88`, D6).
+/// `do_settime` (`time.c:71-88`).
 pub fn do_settime(
     table: &ProcTable,
     caller: UserSlot,
@@ -282,7 +286,8 @@ pub fn do_settime(
 
 /// `is_superuser` helper (`getset.c:114` reuse, `mproc/credentials.rs:Credentials::is_superuser`).
 fn is_superuser(table: &ProcTable, caller: UserSlot) -> bool {
-    // V3-P3-1：与 misc.rs 的同名谓词收敛为单一定义（委托，消除三处重复）。
+    // Converged with the same-named predicate in misc.rs into a single
+    // definition (delegation removes three duplicates).
     crate::misc::is_superuser(table, caller)
 }
 

@@ -184,7 +184,7 @@ pub fn create_link<S: BlockSource>(
     }
     if answer.is_err() {
         let io = ctx.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, target, &io);
         return answer;
@@ -194,7 +194,7 @@ pub fn create_link<S: BlockSource>(
         .get(ctx.cache, ctx.device, dir_number, &ctx.io)
         .map_err(|_| {
             let io = ctx.io;
-            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
             #[allow(clippy::let_underscore_must_use)]
             let _ = ctx.table.put(ctx.cache, target, &io);
             LinkError::Invalid
@@ -203,10 +203,10 @@ pub fn create_link<S: BlockSource>(
         let parent_inode = ctx.table.slot(parent);
         if parent_inode.nlinks == crate::inode::NO_LINK {
             let io = ctx.io;
-            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
             #[allow(clippy::let_underscore_must_use)]
             let _ = ctx.table.put(ctx.cache, target, &io);
-            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
             #[allow(clippy::let_underscore_must_use)]
             let _ = ctx.table.put(ctx.cache, parent, &io);
             return Err(LinkError::Invalid);
@@ -230,10 +230,10 @@ pub fn create_link<S: BlockSource>(
         ) {
             Ok(()) => {
                 let io = ctx.io;
-                // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = ctx.table.put(ctx.cache, target, &io);
-                // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = ctx.table.put(ctx.cache, parent, &io);
                 return Err(LinkError::Exists);
@@ -241,10 +241,10 @@ pub fn create_link<S: BlockSource>(
             Err(DirError::NotFound) => {}
             Err(error) => {
                 let io = ctx.io;
-                // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = ctx.table.put(ctx.cache, target, &io);
-                // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = ctx.table.put(ctx.cache, parent, &io);
                 return Err(error.into());
@@ -285,10 +285,10 @@ pub fn create_link<S: BlockSource>(
         inode.dirty = true;
     }
     let io = ctx.io;
-    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, target, &io);
-    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, parent, &io);
     Ok(LinkOutcome::default())
@@ -384,7 +384,7 @@ pub fn remove_directory<S: BlockSource>(
             size: child_size,
             last_dpos: 0,
         };
-        // [SD19-gate] 主操作已成功删除；C mfs 删子目录内 . 与 .. 时忽略错误（link.c），尽力清理
+        // [SD19-gate] the main delete already succeeded; C mfs ignores errors when deleting . and .. inside a subdirectory (link.c), so cleanup is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = search_blocks(
             child_blocks,
@@ -396,7 +396,7 @@ pub fn remove_directory<S: BlockSource>(
             b".",
             &mut number,
         );
-        // [SD19-gate] 主操作已成功删除；C mfs 删子目录内 . 与 .. 时忽略错误（link.c），尽力清理
+        // [SD19-gate] the main delete already succeeded; C mfs ignores errors when deleting . and .. inside a subdirectory (link.c), so cleanup is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = search_blocks(
             child_blocks,
@@ -460,7 +460,8 @@ pub fn rename<S: BlockSource>(
     new_name: &[u8],
 ) -> Result<LinkOutcome, LinkError> {
     let old_dir = open_parent(ctx, old_dir_number)?;
-    // 旧文件（link.c:268-277）：打开失败随父目录引用一起返回。
+    // Old file (link.c:268-277): an open failure returns along with the parent
+    // reference.
     let old_file = match open_child(ctx, old_dir, old_dir_images, old_name) {
         Ok(slot) => slot,
         Err(error) => {
@@ -468,12 +469,12 @@ pub fn rename<S: BlockSource>(
             return Err(error);
         }
     };
-    // 旧文件是挂载点（link.c:279-283）。
+    // The old file is a mountpoint (link.c:279-283).
     if ctx.table.slot(old_file).mountpoint {
         release_pair(ctx, old_dir, old_file);
         return Err(LinkError::Busy);
     }
-    // 新父目录（link.c:286-290）。
+    // New parent directory (link.c:286-290).
     let new_dir = match open_parent(ctx, new_dir_number) {
         Ok(slot) => slot,
         Err(error) => {
@@ -481,15 +482,16 @@ pub fn rename<S: BlockSource>(
             return Err(error);
         }
     };
-    // 新父目录已被删除（link.c:291-296）。
+    // The new parent directory has been deleted (link.c:291-296).
     if ctx.table.slot(new_dir).nlinks == crate::inode::NO_LINK {
         release_pair(ctx, old_dir, old_file);
         release_parent(ctx, new_dir);
         return Err(LinkError::Invalid);
     }
     let same_pdir = old_dir_number == new_dir_number;
-    // 试探新名字，不要求存在（link.c:299）。同一父目录时新名字就在
-    // 旧镜像里（C 的 new_dirp == old_dirp），搜同一份镜像。
+    // Probe the new name; it need not exist (link.c:299). With the same parent
+    // directory the new name is in the old images (C's new_dirp == old_dirp), so
+    // search the same images.
     let probe_images: &mut Vec<Vec<u8>> = if same_pdir {
         old_dir_images
     } else {
@@ -517,12 +519,13 @@ pub fn rename<S: BlockSource>(
             Err(error) => return Err(error.into()),
         }
     };
-    // 新名字是挂载点：放掉试探引用，按忙回答（link.c:302-306）。
-    // 立即 return，无需把 `new_file` 复位成 None（旧写法在这里多写一次
-    // 赋值，是 clippy `value_assigned_to_never_read` 报的死写）。
+    // The new name is a mountpoint: release the probe reference and answer busy
+    // (link.c:302-306). Return immediately; there is no need to reset `new_file`
+    // to None (the old form wrote one extra assignment here, a dead store that
+    // clippy's `value_assigned_to_never_read` reported).
     if let Some(slot) = new_file && ctx.table.slot(slot).mountpoint {
         let io = ctx.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, slot, &io);
         return Err(LinkError::Busy);
@@ -534,9 +537,10 @@ pub fn rename<S: BlockSource>(
 
     match new_file {
         None => {
-            // 环走查（link.c:315-342）：目录搬家且父目录不同时，顺新父目录
-            // 的点点上走，撞见旧文件就是把目录搬进自己的子树。缺点点按最坏
-            // 情况处理（link.c:336-340）。
+            // Cycle walk (link.c:315-342): when moving a directory to a different
+            // parent, walk up the new parent's dot-dot chain; hitting the old file
+            // means the directory is moved into its own subtree. A missing dot-dot
+            // is handled as the worst case (link.c:336-340).
             if odir && !same_pdir {
                 let mut current = new_dir_number;
                 loop {
@@ -565,7 +569,7 @@ pub fn rename<S: BlockSource>(
                         ctx.block_size,
                     )
                     .map_err(|_| LinkError::Io)?;
-                    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                    // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = ctx.table.put(ctx.cache, slot, &ctx.io);
                     let mut found = 0u32;
@@ -593,7 +597,8 @@ pub fn rename<S: BlockSource>(
                     }
                 }
             }
-            // 目录搬家且新父目录链接到顶（link.c:346-349）。
+            // Moving a directory and the new parent is at the link ceiling
+            // (link.c:346-349).
             if error.is_none()
                 && odir
                 && !same_pdir
@@ -603,8 +608,9 @@ pub fn rename<S: BlockSource>(
             }
         }
         Some(slot) => {
-            // 新名字存在（link.c:350-356）：同一文件记内部相同标记，类型
-            // 交错各报其错。
+            // The new name exists (link.c:350-356): the same file records the
+            // internal "same" mark; a type mismatch reports its own error.
+            //
             let new_number = child_number(ctx, slot);
             let ndir = ctx.table.slot(slot).mode as u32 & TYPE_MASK == TYPE_DIRECTORY;
             if old_number == new_number {
@@ -619,8 +625,8 @@ pub fn rename<S: BlockSource>(
 
     let mut outcome = LinkOutcome::default();
     if error.is_none() && !same {
-        // 新名字已存在：先腾位置（link.c:371-378）。腾出来的区号折进
-        // 本次的回收清单。
+        // The new name already exists: make room first (link.c:371-378). The
+        // reclaimed zone numbers fold into this operation's reclaim list.
         if let Some(slot) = new_file {
             let (zones, size) = {
                 let node = ctx.table.slot(slot);
@@ -636,8 +642,8 @@ pub fn rename<S: BlockSource>(
                 ctx.block_size,
             )
             .map_err(|_| LinkError::Io)?;
-            // 同父目录时新名字就在旧镜像里：替换操作走旧镜像
-            // （C 的 new_dirp == old_dirp，同一目录）。
+            // With the same parent the new name is in the old images: the replace
+            // operates on the old images (C's new_dirp == old_dirp, one directory).
             let target_images: &mut Vec<Vec<u8>> = if same_pdir {
                 &mut *old_dir_images
             } else {
@@ -662,8 +668,9 @@ pub fn rename<S: BlockSource>(
     }
 
     if error.is_none() {
-        // 同父目录先删旧名腾出槽位，再进新名（link.c:391-395）；跨父目录
-        // 先进新名，保证新目录满时旧名字还在（link.c:397-399）。
+        // Same parent: delete the old name to free the slot first, then enter the
+        // new name (link.c:391-395); different parents: enter the new name first,
+        // so the old name survives when the new directory is full (link.c:397-399).
         let number = old_number as u32;
         let mut scratch = 0u32;
         if same_pdir {
@@ -748,9 +755,10 @@ pub fn rename<S: BlockSource>(
     }
 
     if error.is_none() && !same && odir && !same_pdir {
-        // 目录跨父目录搬家：改写被搬目录里的点点（link.c:405-414）。
-        // 先删旧点点，再把新父目录的编号作为点点进入——不增长，整块
-        // 原位覆写即可。
+        // Moving a directory to a different parent: rewrite the dot-dot inside the
+        // moved directory (link.c:405-414). Delete the old dot-dot, then enter the
+        // new parent's number as dot-dot — no growth, so an in-place overwrite of
+        // the whole block suffices.
         let (zones, size) = {
             let node = ctx.table.slot(old_file);
             (node.zones, node.size as u64)
@@ -770,7 +778,7 @@ pub fn rename<S: BlockSource>(
             last_dpos: 0,
         };
         let mut none = 0u32;
-        // [SD19-gate] 主操作已成功删除；C mfs 删子目录内 . 与 .. 时忽略错误（link.c），尽力清理
+        // [SD19-gate] the main delete already succeeded; C mfs ignores errors when deleting . and .. inside a subdirectory (link.c), so cleanup is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = search_blocks(
             &mut moved_images,
@@ -815,7 +823,7 @@ pub fn rename<S: BlockSource>(
                         .write_slot(slot, image)
                         .map_err(|_| LinkError::Io)?;
                     ctx.cache.mark_dirty(slot);
-                    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+                    // [SD19-gate] best-effort release of a read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = ctx.cache.release(slot);
                 }
@@ -828,12 +836,12 @@ pub fn rename<S: BlockSource>(
         }
     }
 
-    // 释放四个槽位（link.c:417-420）。SAME 按成功返回（link.c:421）。
+    // Release the four slots (link.c:417-420). SAME returns success (link.c:421).
     release_pair(ctx, old_dir, old_file);
     release_parent(ctx, new_dir);
     if let Some(slot) = new_file {
         let io = ctx.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, slot, &io);
     }
@@ -897,10 +905,10 @@ fn child_number<S: BlockSource>(ctx: &LinkCtx<'_, S>, slot: usize) -> u64 {
 /// Release both slots once.
 fn release_pair<S: BlockSource>(ctx: &mut LinkCtx<'_, S>, parent: usize, child: usize) {
     let io = ctx.io;
-    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, child, &io);
-    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, parent, &io);
 }
@@ -920,7 +928,7 @@ fn release_child<S: BlockSource>(
 /// Release the parent slot.
 fn release_parent<S: BlockSource>(ctx: &mut LinkCtx<'_, S>, parent: usize) {
     let io = ctx.io;
-    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, parent, &io);
 }
@@ -946,14 +954,14 @@ pub fn read_link<S: BlockSource>(
     };
     if mode as u32 & TYPE_MASK != crate::inode::TYPE_SYMLINK {
         let io = ctx.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, slot, &io);
         return Err(LinkError::Access);
     }
     if zone == 0 {
         let io = ctx.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, slot, &io);
         return Err(LinkError::Io);
@@ -963,18 +971,18 @@ pub fn read_link<S: BlockSource>(
         .acquire(BlockKey::new(ctx.device, zone), AcquireMode::Normal)
         .map_err(|_| {
             let io = ctx.io;
-            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
             #[allow(clippy::let_underscore_must_use)]
             let _ = ctx.table.put(ctx.cache, slot, &io);
             LinkError::Io
         })?;
     let take = (capacity as i64).min(size).max(0) as usize;
     let bytes = ctx.cache.slot_data(cache_slot).to_vec();
-    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    // [SD19-gate] best-effort release of a read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.cache.release(cache_slot);
     let io = ctx.io;
-    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    // [SD19-gate] best-effort inode write-back after the main operation succeeded; the corresponding C put_inode in minix3/minix/fs/mfs is void and returns no error (a failure does not change the established result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, slot, &io);
     out(&bytes[..take.min(bytes.len())]);
@@ -1484,7 +1492,8 @@ mod tests {
     }
 
 
-    /// 种一个名字进镜像并同步目录尺寸（rename 内部按槽位尺寸走查）。
+    /// Plant one name into the images and sync the directory size (rename walks
+    /// by slot size internally).
     fn plant_name(
         fixture: &mut Fixture,
         dir: usize,
@@ -1516,8 +1525,9 @@ mod tests {
         dir_inode.dirty = true;
     }
 
-    /// 在盘上种一个真实目录：点与点点写入区号对应的块，槽位带区号、
-    /// 尺寸与链接数二——环走查从缓存读「..」，夹具必须有真的磁盘点项链。
+    /// Plant a real directory on disk: write dot and dot-dot into the block for the
+    /// zone, and give the slot a zone, a size and link count two — the cycle walk
+    /// reads ".." through the cache, so the fixture needs a real on-disk chain.
     fn plant_dir(fixture: &mut Fixture, slot: usize, zone: u64, parent_number: u64) {
         let number = fixture.table.slot(slot).number;
         let mut images: Vec<Vec<u8>> = Vec::new();
@@ -1610,8 +1620,8 @@ mod tests {
         let dir2_number = fixture.table.slot(dir2).number;
         let inner = open_dir(&mut fixture);
         let inner_number = fixture.table.slot(inner).number;
-        // 三个目录都种真的磁盘点项链：dir1 与 dir2 的点点指根，
-        // inner 的点点指 dir1。
+        // Plant a real on-disk dot-dot chain for all three directories: dir1 and
+        // dir2 point at the root, and inner points at dir1.
         plant_dir(&mut fixture, dir1, 7, 1);
         plant_dir(&mut fixture, dir2, 8, 1);
         plant_dir(&mut fixture, inner, 9, dir1_number);
@@ -1627,13 +1637,14 @@ mod tests {
             b"moved",
         )
         .unwrap();
-        // 新父目录查得到，旧父目录没有了。
+        // The new parent has it; the old parent no longer does.
         assert_eq!(
             search_found(&mut fixture, dir2, &mut dir2_images, b"moved"),
             Some(inner_number as u32)
         );
         assert!(search_found(&mut fixture, dir1, &mut dir1_images, b"inner").is_none());
-        // 点点改写：冲刷后 inner 数据区的第 64 字节起指向新父目录。
+        // Dot-dot rewrite: after the flush, bytes 64 onward in inner's data block
+        // point at the new parent.
         fixture.cache.flush_all().unwrap();
         let mut block = alloc::vec![0u8; BLOCK_SIZE];
         minix_fs::cache::BlockSource::read_block(
@@ -1643,7 +1654,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(block[64..68], (dir2_number as u32).to_le_bytes());
-        // 新父目录因获得子目录链接计数加一。
+        // The new parent's link count goes up by one for the acquired subdirectory.
         assert!(fixture.table.slot(dir2).nlinks >= 2);
     }
 
@@ -1659,7 +1670,7 @@ mod tests {
         let second_number = fixture.table.slot(second).number;
         plant_name(&mut fixture, dir, &mut images, b"a", first_number as u32);
         plant_name(&mut fixture, dir, &mut images, b"b", second_number as u32);
-        // a 改名到 b：b 的旧编号退出，a 的编号顶上。
+        // Rename a to b: b's old number leaves and a's number takes its place.
         let mut ctx = ctx_of(&mut fixture);
         rename(
             &mut ctx,
@@ -1691,7 +1702,7 @@ mod tests {
         let sub_number = fixture.table.slot(sub).number;
         plant_name(&mut fixture, dir, &mut images, b"f", file_number as u32);
         plant_name(&mut fixture, dir, &mut images, b"d", sub_number as u32);
-        // 文件改名到已存在的目录名：报告是目录。
+        // Renaming a file onto an existing directory name: reports "is a directory".
         let mut ctx = ctx_of(&mut fixture);
         assert_eq!(
             rename(
@@ -1706,7 +1717,7 @@ mod tests {
             .unwrap_err(),
             LinkError::IsDirectory
         );
-        // 目录改名到已存在的文件名：报告非目录。
+        // Renaming a directory onto an existing file name: reports "not a directory".
         let mut ctx = ctx_of(&mut fixture);
         assert_eq!(
             rename(
@@ -1753,14 +1764,15 @@ mod tests {
         let sub_number = fixture.table.slot(sub).number;
         let top = open_dir(&mut fixture);
         let top_number = fixture.table.slot(top).number;
-        // dir 的点点指根，sub 的点点指 dir；top 的点点指根但链接数到顶。
+        // dir's dot-dot points at the root, sub's at dir; top's at the root but its
+        // link count is at the ceiling.
         plant_dir(&mut fixture, dir, 7, 1);
         plant_dir(&mut fixture, sub, 8, dir_number);
         plant_dir(&mut fixture, top, 9, 1);
         fixture.table.slot_mut(top).nlinks = crate::inode::LINK_CEILING as u16;
         plant_name(&mut fixture, dir, &mut images, b"d", sub_number as u32);
-        // 环：把 dir 搬进 sub 的子树，走查从 sub 上行撞见 dir，报告
-        // 无效参数。
+        // Cycle: move dir into sub's subtree; the walk goes up from sub, hits dir,
+        // and reports an invalid argument.
         let mut ctx = ctx_of(&mut fixture);
         assert_eq!(
             rename(
@@ -1775,7 +1787,8 @@ mod tests {
             .unwrap_err(),
             LinkError::Invalid
         );
-        // 链接到顶：目录搬进链接数到顶的新父目录报告链接过多。
+        // Link ceiling: moving a directory into a new parent at the link ceiling
+        // reports "too many links".
         let mut ctx = ctx_of(&mut fixture);
         assert_eq!(
             rename(

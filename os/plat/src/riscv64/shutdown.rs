@@ -1,9 +1,9 @@
-//! QEMU test shutdown backend — sifive_test finisher (S-11 §3.8).
+//! QEMU test shutdown backend — sifive_test finisher.
 //!
 //! QEMU `virt` maps the `sifive_test` device at 0x100000: a 32-bit write of
 //! `FINISHER_PASS` (0x5555) exits with code 0; `FINISHER_FAIL` (0x3333)
 //! exits with code `(value >> 16) & 1`... (low bits carry a code). Real-
-//! hardware backend (SBI SRST) is a separate later lane (§3.8).
+//! hardware backend (SBI SRST) is a separate later lane.
 
 const SIFIVE_TEST_BASE: usize = 0x100000;
 /// FINISHER_PASS — exit QEMU with code 0.

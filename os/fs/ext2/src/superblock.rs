@@ -189,9 +189,10 @@ pub const fn group_count(block_count: u32, first_data_block: u32, blocks_per_gro
 }
 
 /// Validate the whole superblock and derive geometry (`read_super`).
-/// 解出盘上 1024 字节的存储态超块（偏移按 ext2 规范：`s_inodes_count@0`
-/// … `s_feature_ro_compat@100`）。字段到结构的映射不是声明序——盘序
-/// 与结构序不同，逐偏移显式读。
+/// Decode the 1024-byte on-disk stored superblock (offsets per the ext2
+/// spec: `s_inodes_count@0` ... `s_feature_ro_compat@100`). The field to
+/// struct mapping does not follow declaration order — the on-disk order
+/// differs from the struct order, so every offset is read explicitly.
 pub fn from_stored(stored: &[u8]) -> RawSuperblock {
     let rd32 = |at: usize| -> u32 {
         u32::from_le_bytes(stored[at..at + 4].try_into().unwrap())
@@ -220,20 +221,21 @@ pub fn from_stored(stored: &[u8]) -> RawSuperblock {
     }
 }
 
-/// 一个块组的描述符（`struct ext2_group_desc`，32 字节）。只读半只用
-/// inode 表块号；位图与计数字段供写半（F3c）消费。
+/// One block group descriptor (`struct ext2_group_desc`, 32 bytes). The
+/// read-only half uses only the inode table block number; the bitmap and
+/// count fields serve the write half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupDescriptor {
-    /// 块位图所在块。
+    /// Block holding the block bitmap.
     pub block_bitmap: u32,
-    /// inode 位图所在块。
+    /// Block holding the inode bitmap.
     pub inode_bitmap: u32,
-    /// inode 表起始块。
+    /// First block of the inode table.
     pub inode_table: u32,
 }
 
 impl GroupDescriptor {
-    /// 从块数据偏移处解一个描述符。
+    /// Decode one descriptor at a byte offset into the block data.
     pub fn decode(block: &[u8], at: usize) -> Option<Self> {
         let window = block.get(at..at + 32)?;
         let rd32 = |base: usize| -> u32 {

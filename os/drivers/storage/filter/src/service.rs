@@ -98,7 +98,7 @@ impl<L: LowerLeg> FilterService<L> {
         };
         wire::write_i32(&mut reply, wire::reply::STATUS, status);
         wire::write_i32(&mut reply, wire::reply::ID, id);
-        //[SD19-gate] 回复发送尽力而为：C 的 send_panic 失败即 panic；单线程泵按文档丢弃而不是卡死。
+        //[SD19-gate] Reply sending is best-effort: C's send_panic panics on failure; the single-threaded pump discards per the docs instead of wedging.
         #[allow(clippy::let_underscore_must_use)]
         let _ = transport.asynsend(caller, &mut reply);
     }

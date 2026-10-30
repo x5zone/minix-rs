@@ -727,7 +727,8 @@ mod tests {
     fn test_sysctl_wire_carries_inline_name_and_reply_length() {
         let mut transport = CannedTransport::new();
         let mut reply = cleared_message();
-        // SAFETY(test): 回程 overlay 单 lane（oldlen@0），服务端长度。
+        // SAFETY(test): reply overlay, single lane (oldlen@0), the service's
+        // length.
         unsafe { &mut reply.m_u.m_mib_lc_sysctl }.oldlen = 4;
         transport.reply_sendrec(Ok(reply));
         let mut buffer = [0u8; 4];
@@ -747,9 +748,11 @@ mod tests {
         assert_eq!(destination, mib_endpoint());
         assert_eq!(destination, Endpoint(MIB_ENDPOINT_NUMBER));
         assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
-        // C 绝对值 pin：MIB_BASE 0x1800 + 0（com.h:1022/:1026）。
+        // Pin against C's absolute value: MIB_BASE 0x1800 + 0
+        // (com.h:1022/:1026).
         assert_eq!(sent.m_type, 0x1800);
-        // SAFETY(test): 读回请求 overlay 的字段序（ipc.h:424-433）。
+        // SAFETY(test): read back the request overlay's field order
+        // (ipc.h:424-433).
         let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
         assert_ne!(wire.oldp, 0);
         assert_eq!(wire.oldlen, 4);
@@ -774,7 +777,7 @@ mod tests {
             Some(&payload),
         )
         .unwrap();
-        // SAFETY(test): 同上，读 new 侧 lanes。
+        // SAFETY(test): as above, reading the new-side lanes.
         let wire = unsafe { &transport.sent.borrow()[0].1.m_u.m_lc_mib_sysctl };
         assert_ne!(wire.newp, 0);
         assert_eq!(wire.newlen, 4);
@@ -791,8 +794,9 @@ mod tests {
     fn test_gethostname_wire_carries_kern_hostname_mib_and_refreshes_length() {
         let mut transport = CannedTransport::new();
         let mut reply = cleared_message();
-        // SAFETY(test): 回程 overlay 单 lane（oldlen@0）：服务端答复长度
-        // 与 C `mib_read` 的 `strlen+1` 形状一致（6 字节 = "minix\0"）。
+        // SAFETY(test): reply overlay, single lane (oldlen@0): the service's
+        // answer length matches C `mib_read`'s `strlen+1` shape (6 bytes =
+        // "minix\0").
         unsafe { &mut reply.m_u.m_mib_lc_sysctl }.oldlen = 6;
         transport.reply_sendrec(Ok(reply));
         let mut buffer = [0u8; MAX_HOSTNAME_LEN + 1];
@@ -802,7 +806,7 @@ mod tests {
         let (destination, sent) = transport.sent.borrow()[0];
         assert_eq!(destination, mib_endpoint());
         assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
-        // SAFETY(test): 请求 overlay 的 name/lanes（ipc.h:424-433）。
+        // SAFETY(test): the request overlay's name/lanes (ipc.h:424-433).
         let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
         assert_eq!(wire.namelen, 2);
         assert_eq!(&wire.name[..2], &[CTL_KERN, KERN_HOSTNAME]);
@@ -828,7 +832,8 @@ mod tests {
         let (destination, sent) = transport.sent.borrow()[0];
         assert_eq!(destination, mib_endpoint());
         assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
-        // SAFETY(test): 请求 overlay：new lanes 承载、old lanes 恒零。
+        // SAFETY(test): request overlay: the new lanes carry the payload, the
+        // old lanes are always zero.
         let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
         assert_eq!(wire.namelen, 2);
         assert_eq!(&wire.name[..2], &[CTL_KERN, KERN_HOSTNAME]);
@@ -846,8 +851,8 @@ mod tests {
     fn test_getdomainname_wire_carries_kern_domainname_mib_and_refreshes_length() {
         let mut transport = CannedTransport::new();
         let mut reply = cleared_message();
-        // SAFETY(test): 服务端答 5 = "local\0"（本例 5 字节包含
-        // 尾部终止符）。
+        // SAFETY(test): the service answers 5 = "local\0" (5 bytes here
+        // including the trailing terminator).
         unsafe { &mut reply.m_u.m_mib_lc_sysctl }.oldlen = 5;
         transport.reply_sendrec(Ok(reply));
         let mut buffer = [0u8; MAX_HOSTNAME_LEN];
@@ -857,7 +862,7 @@ mod tests {
         let (destination, sent) = transport.sent.borrow()[0];
         assert_eq!(destination, mib_endpoint());
         assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
-        // SAFETY(test): name 内联两元组 = [CTL_KERN, KERN_DOMAINNAME]。
+        // SAFETY(test): the inline name two-tuple = [CTL_KERN, KERN_DOMAINNAME].
         let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
         assert_eq!(wire.namelen, 2);
         assert_eq!(&wire.name[..2], &[CTL_KERN, KERN_DOMAINNAME]);
@@ -878,7 +883,8 @@ mod tests {
         let (destination, sent) = transport.sent.borrow()[0];
         assert_eq!(destination, mib_endpoint());
         assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
-        // SAFETY(test): new lanes 承载、old lanes 恒零、mib 为 domain。
+        // SAFETY(test): the new lanes carry, the old lanes are always zero, and
+        // the mib is domain.
         let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
         assert_eq!(wire.namelen, 2);
         assert_eq!(&wire.name[..2], &[CTL_KERN, KERN_DOMAINNAME]);
@@ -898,7 +904,8 @@ mod tests {
         let name = [1, 2, 3];
         assert_eq!(name.len(), MessLcMibSysctl::INLINE_NAME_COMPONENTS + 1);
         sysctl_via(&transport, &name, None, None).unwrap();
-        // SAFETY(test): 长名时 name lanes 恒零、namep 承载。
+        // SAFETY(test): for a long name the name lanes are always zero and
+        // namep carries it.
         let wire = unsafe { &transport.sent.borrow()[0].1.m_u.m_lc_mib_sysctl };
         assert_eq!(wire.namelen, 3);
         assert_ne!(wire.namep, 0);
@@ -914,7 +921,7 @@ mod tests {
         let mut transport = CannedTransport::new();
         let mut reply = cleared_message();
         reply.m_type = -ENOMEM;
-        // SAFETY(test): 回程长度 lane 携带"需要多大"。
+        // SAFETY(test): the reply length lane carries "how big it needs to be".
         unsafe { &mut reply.m_u.m_mib_lc_sysctl }.oldlen = 88;
         transport.reply_sendrec(Ok(reply));
         let mut buffer = [0u8; 4];

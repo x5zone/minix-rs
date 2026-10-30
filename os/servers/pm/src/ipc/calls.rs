@@ -1,21 +1,26 @@
-//! PM 调用分发表（C: `table.c:call_vec` + `callnr.h` 47 个调用号）。
+//! PM call dispatch table (C: `table.c:call_vec` + the 47 call numbers of
+//! `callnr.h`).
 //!
-//! 文档: `rewrite-notes/04-stage-pm/04-ipc-dispatch.md`。
+//! Document: `rewrite-notes/04-stage-pm/04-ipc-dispatch.md`.
 //!
-//! # 与 C 的对应
+//! # Correspondence with C
 //!
-//! - `callnr.h:14-60` 的 47 个 `PM_*` 调用号 → [`PmCall`] 枚举判别值
-//!   （`#[repr(i32)]`，值域 1..=47，与 C `PM_BASE + N` 完全一致）。
-//! - `table.c:23-59` 的 `call_vec[NR_PM_CALLS]` 函数指针表 →
-//!   [`dispatch_pm_call`] 的 match 分发（ARCH A-5：C 表驱动指针 →
-//!   Rust 编译期穷尽 match）。
-//! - C 对 NULL/越界槽位返回 ENOSYS（main.c:94-101）→ Rust 对未注册
-//!   调用号返回 ENOSYS；对已注册但 handler 未实现的调用同样返回
-//!   ENOSYS 占位（DEFERRED，归属 07~20 各文档）。
+//! - The 47 `PM_*` call numbers in `callnr.h:14-60` → the [`PmCall`] enum
+//!   discriminants (`#[repr(i32)]`, values 1..=47, exactly matching C's
+//!   `PM_BASE + N`).
+//! - The `call_vec[NR_PM_CALLS]` function-pointer table in `table.c:23-59` →
+//!   the match dispatch in [`dispatch_pm_call`] (ARCH A-5: C's table-driven
+//!   pointers → Rust's compile-time exhaustive match).
+//! - C returns ENOSYS for a NULL or out-of-range slot (main.c:94-101) → Rust
+//!   returns ENOSYS for an unregistered call number; a registered call whose
+//!   handler is not implemented returns ENOSYS as a placeholder too (DEFERRED,
+//!   owned by documents 07~20).
 //!
-//! 调用号常量不单独散列（不重复 callnr.h 47 个 `pub const`）：[`PmCall`]
-//! 枚举判别值即单一事实源，权威定义在 minix-types 的 `ipc/pm.rs`（与
-//! `Mess*` 载荷同库同源，PD-23 采甲）；本模块只再导出与分发。
+//! The call-number constants are not listed separately (no repeating the 47
+//! `pub const`s of callnr.h): the [`PmCall`] discriminants are the single
+//! source of truth, authoritatively defined in minix-types' `ipc/pm.rs` (same
+//! library and origin as the `Mess*` payloads); this module only re-exports
+//! them and dispatches.
 
 use crate::event::{EventRegistry, PmEventServices};
 use crate::ipc::{IpcTransport, ReplyIntent};
@@ -28,25 +33,32 @@ use minix_types::{ENOSYS, EINVAL, Endpoint, Gid, Message, PmError, ProcEventMask
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// PM 系统调用枚举已上移共享类型库（PD-23 采甲：调用号与 `Mess*` 载荷
-/// 同库同源，钉值测试随迁 `minix-types/src/ipc/pm.rs` 的
-/// `pm_call_nr_tests`）。此处再导出，保持 `crate::ipc` 的 `PmCall`
-/// 路径与 [`dispatch_pm_call`] 签名不变。
+/// The PM system call enum has moved up to the shared type library (the call
+/// numbers and the `Mess*` payloads live in one library from one origin, and
+/// the value-pinning tests moved with it to `pm_call_nr_tests` in
+/// `minix-types/src/ipc/pm.rs`). Re-exported here so the `PmCall` path under
+/// `crate::ipc` and the [`dispatch_pm_call`] signature stay unchanged.
 pub use minix_types::PmCall;
 
-/// 分发一个已注册的 PM 调用（C: `call_vec[call_index]()`，main.c:99）。
+/// Dispatch one registered PM call (C: `call_vec[call_index]()`, main.c:99).
 ///
-/// **单一分发表**（ARCH A-5）：C 的 `call_vec` 是一张 47 项函数指针表，
-/// 所有已注册调用走同一路径；Rust 对应为这一个穷尽 match——已落地的
-/// handler（7 个）在此解码消息载荷并调用，未落地的（40 个）返回
-/// `Reply(ENOSYS)` 占位（过渡差异，文档化于 04 文档 §3.6 D6）。
-/// 主循环不得绕过本函数内联拦截任何调用（旧实现的 7 个内联块已收编）。
+/// **Single dispatch table** (ARCH A-5): C's `call_vec` is a 47-entry
+/// function-pointer table and every registered call takes the same path; in
+/// Rust that is this one exhaustive match — the handlers already in place (7)
+/// decode the message payload and call through, and the ones not yet in place
+/// (40) return a `Reply(ENOSYS)` placeholder (a transitional difference
+/// documented in document 04, section 3.6 D6).
+/// The main loop must not bypass this function and intercept a call inline
+/// (the seven inline blocks of the earlier implementation are all folded in
+/// here).
 ///
-/// handler 签名与 C `int (*)(void)` 的差异见 04 文档 §3.3（D3/D5）：
-/// C handler 读全局 `m_in`/`mp`；Rust 显式传 `table`/`events`/`transport`
-/// + caller 槽位 + 消息引用（ARCH A-3：隐式全局 → 显式参数）。
-// 参数面是 ARCH A-3 的刻意形状:每个参数对应一条独立的 seam(表/事件/
-// 传输/内核网关/定时器束/调用方/消息),不应为了 lint 计数再聚合。
+/// How the handler signature differs from C's `int (*)(void)` is described in
+/// document 04, section 3.3 (D3/D5): C handlers read the globals `m_in`/`mp`;
+/// Rust passes `table`/`events`/`transport` + the caller slot + the message
+/// reference explicitly (ARCH A-3: implicit globals → explicit parameters).
+// The parameter list is the deliberate shape of ARCH A-3: each parameter is
+// its own seam (table / events / transport / kernel gateway / timer bundle /
+// caller / message), and they must not be aggregated for a lint count.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_pm_call<T: IpcTransport>(
     call: PmCall,
@@ -59,21 +71,23 @@ pub fn dispatch_pm_call<T: IpcTransport>(
     msg: &Message,
 ) -> ReplyIntent {
     match call {
-        // C: do_fork（forkexit.c:139 `return SUSPEND`）——fork 的回复不是
-        // 同步的：do_fork 发出 VFS_PM_FORK 后返回 SUSPEND，父/子回复由
-        // 05 的 VFS_PM_FORK_REPLY（handle_vfs_reply，main.c:369-394）
-        // 异步完成。失败（表满/内存不足/VM 拒绝）同步回复 errno
-        //（forkexit.c:60-79 的 `return EAGAIN/ENOMEM/s`）。
+        // C: do_fork (forkexit.c:139 `return SUSPEND`) — fork's reply is not
+        // synchronous: do_fork sends VFS_PM_FORK and returns SUSPEND, and the
+        // parent/child replies complete asynchronously through
+        // VFS_PM_FORK_REPLY (handle_vfs_reply, main.c:369-394). Failures (table
+        // full / out of memory / VM refusal) reply with errno synchronously
+        // (`return EAGAIN/ENOMEM/s`, forkexit.c:60-79).
         //
-        // NK4-C 1.30 B16：错误回执与 C 客户端 `_syscall`/`_taskcall` 契约对齐（m_type<0
-        // = −errno），与 F10b 内核 `reply_wire()` 同构。旧实现回正 errno 使调用方将
-        // `Ok(positive)` 当有效数据（例如 init 将 EAGAIN=11 当 child_pid）。
+        // The error reply matches the C client `_syscall`/`_taskcall` contract
+        // (m_type < 0 = −errno) and is isomorphic to the kernel's `reply_wire()`.
+        // A positive errno would make the caller take `Ok(positive)` as valid data
+        // (for example init treating EAGAIN=11 as a child_pid).
         PmCall::Fork => match crate::fork::do_fork(table, msg.m_source, transport, kern) {
             Ok(_child_pid) => ReplyIntent::ReplyLater,
             Err(e) => ReplyIntent::Reply(-PmError::from(e).to_errno()),
         },
-        // C: do_srv_fork（forkexit.c:237/239）——与 fork 相反：立即
-        // reply(child, OK) 后同步返回 pid。
+        // C: do_srv_fork (forkexit.c:237/239) — the opposite of fork: reply
+        // (child, OK) immediately, then return the pid synchronously.
         PmCall::SrvFork => {
             let (uid, gid) = super::decode::srv_fork(msg);
             let params = crate::mproc::SrvForkParams { uid, gid };
@@ -82,9 +96,10 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-PmError::from(e).to_errno()),
             }
         }
-        // C: do_getsetpriority（misc.c:239-286）——GET 返回 nice-PRIO_MIN，
-        // SET 过权限门后调 sched_nice 通知调度者并回 0。SchedCtl 走生产
-        // MinixSchedCtl（SCHEDULING_SET_NICE 到 mp_scheduler）。
+        // C: do_getsetpriority (misc.c:239-286) — GET returns nice minus
+        // PRIO_MIN; SET passes the permission gate, calls sched_nice to inform
+        // the scheduler, and replies 0. SchedCtl uses the production
+        // MinixSchedCtl (SCHEDULING_SET_NICE to mp_scheduler).
         PmCall::GetPriority | PmCall::SetPriority => {
             let (which, who, prio) = super::decode::getsetpriority(msg);
             let mut ctl = crate::sched::MinixSchedCtl::new(transport);
@@ -101,17 +116,20 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_exit（forkexit.c:246-266）——返回 SUSPEND 且**永不回复**
-        //（进程已消亡，"beyond the grave"），plan.md §7.3 的 NoReply 子情形。
+        // C: do_exit (forkexit.c:246-266) — returns SUSPEND and **never replies**
+        // (the process is gone, "beyond the grave"), the NoReply subcase of
+        // plan.md section 7.3.
         PmCall::Exit => {
             let status = super::decode::exit(msg);
-            // do_exit 当前恒返 NoReply——直接透传而非丢弃，未来语义变化
-            // 时回复意图不会被静默吞掉。
+            // do_exit currently always returns NoReply — pass it through rather
+            // than discard it, so a future semantic change cannot silently swallow
+            // the reply intent.
             crate::exit::do_exit(table, caller, status, transport, kern)
         }
-        // C: do_wait4（forkexit.c:471-542）——同步回复（W_STOPCODE/WNOHANG/
-        // ECHILD）或 SUSPEND（wait_test 命中后挂 WAITING，由 tell_parent/
-        // tell_tracer 稍后回复）。handler 直接返回回复意图。
+        // C: do_wait4 (forkexit.c:471-542) — reply synchronously
+        // (W_STOPCODE/WNOHANG/ECHILD) or return SUSPEND (after wait_test hits,
+        // WAITING is set and tell_parent/tell_tracer replies later). The handler
+        // returns the reply intent directly.
         PmCall::Wait4 => {
             let (pidarg, options, addr) = super::decode::wait4(msg);
             crate::wait::do_wait4(
@@ -124,9 +142,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 kern,
             )
         }
-        // C: do_kill（signal.c:197-204）——成功回复 0；caller 自杀且已处
-        // EXITING 时是 SUSPEND（check_sig 的 sig_proc_exit 链，signal.c:384）
-        // → 本次不回复。
+        // C: do_kill (signal.c:197-204) — reply 0 on success; when the caller
+        // kills itself while already EXITING the result is SUSPEND (check_sig's
+        // sig_proc_exit chain, signal.c:384) → no reply this time.
         PmCall::Kill => {
             let (pid, signo) = super::decode::kill(msg);
             match crate::signal::do_kill(table, caller, pid, signo, kern, transport) {
@@ -140,7 +158,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_srv_kill（signal.c:204-211）——同 do_kill 的回复模式。
+        // C: do_srv_kill (signal.c:204-211) — the same reply pattern as do_kill.
         PmCall::SrvKill => {
             let (pid, signo) = super::decode::srv_kill(msg);
             match crate::signal::do_srv_kill(table, caller, pid, signo, kern, transport) {
@@ -154,17 +172,19 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_proceventmask（event.c:179-206）——掩码更新走 EventRegistry
-        //（06-event-subscription.md），回复意图由 registry 决定。
+        // C: do_proceventmask (event.c:179-206) — the mask update goes through
+        // EventRegistry (06-event-subscription.md), and the registry decides the
+        // reply intent.
         PmCall::ProcEventMask => {
             let mask_bits = super::decode::proceventmask(msg);
             let mask = ProcEventMask::from_bits_truncate(mask_bits);
             events.do_proceventmask_mut(caller, mask, table, transport, kern)
         }
-        // C: do_trace（trace.c:42-250）——ptrace 全命令面（V3-P1-1 接线，
-        // 批次 B 的 trace 半边）。守卫/权限错误同步回复 errno；OK 回复的
-        // data 载荷经 ipc.reply 预填（m_pm_lc_ptrace.data，C trace.c:59 等），
-        // 主循环 reply() 以 m_type 携带返回码整体发出。
+        // C: do_trace (trace.c:42-250) — the full ptrace command face. Guard and
+        // permission errors reply with errno synchronously; for an OK reply the
+        // data payload is pre-filled through ipc.reply (`m_pm_lc_ptrace.data`,
+        // C trace.c:59 and similar), and the main loop's reply() sends the whole
+        // thing with the return code carried in m_type.
         PmCall::Ptrace => {
             let (pid, preq, addr, data) = super::decode::ptrace(msg);
             let req = crate::trace::PtraceReq { req: preq, pid, addr, data };
@@ -173,10 +193,11 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_setitimer——批次 D。value/ovalue 是 `struct itimerval`
-        // 用户态指针(32 字节:interval@0..16 + value@16..32,每域
-        // tv_sec@0..8 + tv_usec@8..16),字节搬运经网关 copy 缝;旧值只在
-        // ovalue 非零时写回。
+        // C: do_setitimer. value/ovalue are user pointers to `struct itimerval`
+        // (32 bytes: interval@0..16 + value@16..32, each field being
+        // tv_sec@0..8 + tv_usec@8..16); the byte movement goes through the
+        // gateway copy seam. The old value is written back only when ovalue is
+        // non-null.
         PmCall::Itimer => {
             let (which, value_ptr, ovalue_ptr) = super::decode::itimer(msg);
             let mut raw = [0u8; 32];
@@ -225,11 +246,12 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_sigaction（signal.c:40-86）——批次 B 余。act/oact 是
-        // `struct sigaction` 用户态指针(LP64 32 字节:handler@0/mask@8/
-        // flags@24),字节搬运走网关 copy 缝;旧值快照在 install 前
-        // (handle_sigaction),时序与 C 的 oact-先拷差异仅在 fault 排序,
-        // 注释已锚 C。
+        // C: do_sigaction (signal.c:40-86). act/oact are user pointers to
+        // `struct sigaction` (LP64, 32 bytes: handler@0/mask@8/flags@24); the
+        // byte movement goes through the gateway copy seam. The old value is
+        // snapshotted before the install (handle_sigaction); the only ordering
+        // difference from C's copy-oact-first is fault ordering, and the C
+        // anchor is noted on the handler.
         PmCall::SigAction => {
             let (nr, act_ptr, oact_ptr, ret) = super::decode::sigaction(msg);
             let mut svec = [0u8; 32];
@@ -266,12 +288,13 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_sigsuspend(signal.c:157-171)——存 mask/装新掩码/挂起。
+        // C: do_sigsuspend (signal.c:157-171) — store the mask, install the new
+        // mask, then suspend.
         PmCall::SigSuspend => {
             let (_how, _ctx, set) = super::decode::sigset(msg);
             handle_sigsuspend(table, caller, set)
         }
-        // C: do_sigpending(signal.c:88-97)——reply 载荷 m_pm_lc_sigset.set。
+        // C: do_sigpending (signal.c:88-97) — reply payload m_pm_lc_sigset.set.
         PmCall::SigPending => {
             let pending = handle_sigpending(table, caller);
             table.procs[caller.get()].ipc.reply = Some(Message {
@@ -285,11 +308,12 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             });
             ReplyIntent::Reply(0)
         }
-        // C: do_sigprocmask(signal.c:99-155)——旧掩码经 reply 载荷回;
-        // 三个成功分支末端都内联 check_pending(mp)(signal.c:122/131/139),
-        // MaskOpEffect 的 needs_check 是同一判定的语义等价(Block 只加
-        // 屏蔽,不可能产生新可投递——check 会立即空转;Unblock/SetMask
-        // 为 true)。
+        // C: do_sigprocmask (signal.c:99-155) — the old mask comes back in the
+        // reply payload; all three success branches end with an inline
+        // check_pending(mp) (signal.c:122/131/139). `MaskOpEffect`'s
+        // `needs_check` is the semantic equivalent of that same decision (Block
+        // only adds mask bits, so it cannot create a newly deliverable signal —
+        // a check there would spin immediately; Unblock/SetMask are true).
         PmCall::SigProcMask => {
             let (how, _ctx, set) = super::decode::sigset(msg);
             match handle_sigprocmask(table, caller, how, set) {
@@ -303,12 +327,13 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                         },
                         ..Message::default()
                     });
-                    // 生产装配:PmEventServices(RestartServices 全实现,
-                    // sig_proc 生产腿)。BrokenOnVfs 是 C 的同名出口
-                    // (VFS|EVENT 挂起,留待 unpause 路径)。
+                    // Production wiring: PmEventServices (RestartServices fully
+                    // implemented, sig_proc production leg). BrokenOnVfs is C's
+                    // same-named exit (VFS|EVENT suspended, left to the unpause
+                    // path).
                     if let crate::mproc::MaskOpEffect::Changed { needs_check: true } = effect {
                         let mut svc = PmEventServices::new(transport, kern);
-                        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                        //[SD19-gate] PM send/notify/reply fire-and-forget
                         #[allow(clippy::let_underscore_must_use)]
                         let _ = crate::signal_flow::check_pending(table, caller, &mut svc);
                     }
@@ -317,8 +342,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_sigreturn(signal.c:173-192)——恢复掩码 + sys_sigreturn,
-        // 成功后无条件 check_pending(mp)(190)。
+        // C: do_sigreturn (signal.c:173-192) — restore the mask + sys_sigreturn,
+        // then an unconditional check_pending(mp) on success (190).
         PmCall::SigReturn => {
             let (_how, ctx, set) = super::decode::sigset(msg);
             let ok = {
@@ -328,18 +353,18 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             match ok {
                 Ok(()) => {
                     let mut svc = PmEventServices::new(transport, kern);
-                    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                    //[SD19-gate] PM send/notify/reply fire-and-forget
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = crate::signal_flow::check_pending(table, caller, &mut svc);
                     ReplyIntent::Reply(0)
                 }
-                // fault 载荷是 sys_sigreturn 的原始负 errno。
+                // The fault payload is sys_sigreturn's raw negative errno.
                 Err(crate::signal_handlers::SigReturnError::Fault(code)) => {
                     ReplyIntent::Reply(code)
                 }
             }
         }
-        // ===== S2 批次 A:凭证族 13 调用(getset.c)=====
+        // ===== Credentials family, 13 calls (getset.c) =====
         PmCall::GetPid => {
             match do_get(table, caller, GetOp::GetPid, &mut NoopGroups) {
                 Ok(r) => get_result_intent(table, caller, r),
@@ -362,8 +387,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             }
         }
         PmCall::SetGroups => {
-            // C getset.c:184-206 —— num<0 → EINVAL;gid 数组经 copy 缝
-            // 拷入后整组安装并转发 VFS。
+            // C getset.c:184-206 — num<0 → EINVAL; the gid array is copied in
+            // through the copy seam, then the whole set is installed and
+            // forwarded to VFS.
             let (num, ptr) = super::decode::groups(msg);
             if num < 0 {
                 return ReplyIntent::Reply(EINVAL);
@@ -454,9 +480,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // ===== S6 批次 E:exec 族三调用(exec.c)=====
-        // C: do_exec(pm/exec.c:38-56)——exec 由 VFS/RS 发起:转发
-        // VFS_PM_EXEC 五域后 tell_vfs,返回 SUSPEND。
+        // ===== Exec family, three calls (exec.c) =====
+        // C: do_exec (pm/exec.c:38-56) — exec is initiated by VFS/RS: forward
+        // the five VFS_PM_EXEC fields, then tell_vfs, then return SUSPEND.
         PmCall::Exec => {
             let (path, path_len, frame, frame_len, ps_str) = super::decode::exec(msg);
             let req = crate::exec::ExecRequest {
@@ -471,18 +497,20 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut vfs_fwd = SysVfsExec { transport };
             match crate::exec::do_exec(table, caller, req, &mut vfs_fwd) {
                 Ok(intent) => intent,
-                // SD-16（P-ALL-05，2026-10-06 定谳）：C 的 PM 定义 _SYSTEM=1
-                // 使 errno 常量取负（errno.h:189 `_SIGN = -`，pm.h:4），
-                // do_exec 返回负 EPERM、main.c:106 原值进 m_type——线上
-                // 契约是负 errno（用户侧 `m_type < 0 → errno = -m_type`，
-                // compat 层实测同形）。本臂曾回正数＝线上契约漂移；对齐
-                // 为负，与 fork 臂（Reply(-to_errno())）同形。
+                // C's PM defines _SYSTEM=1, which makes the errno constants
+                // negative (errno.h:189 `_SIGN = -`, pm.h:4); do_exec returns a
+                // negative EPERM and main.c:106 puts that value into m_type. The
+                // wire contract is a negative errno (on the user side
+                // `m_type < 0 → errno = -m_type`, measured the same in the compat
+                // layer). Replying a positive number would drift from the wire
+                // contract, so the value is negated, the same shape as the fork
+                // arm (`Reply(-to_errno())`).
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_newexec(pm/exec.c:64-123)——endpt@0/ptr@8,ptr 指向 VFS
-        // 内存中的 exec_info(拷入 192 字节);reply 载荷 m_pm_lexec_exec_new
-        // .suid@0(C :120-122)。
+        // C: do_newexec (pm/exec.c:64-123) — endpt@0/ptr@8, where ptr points at
+        // the exec_info in VFS memory (192 bytes copied in); the reply payload is
+        // m_pm_lexec_exec_new.suid@0 (C :120-122).
         PmCall::ExecNew => {
             let (endpoint_raw, ptr) = super::decode::exec_new(msg);
             let mut info_raw = [0u8; EXEC_INFO_COPY_SIZE];
@@ -505,11 +533,12 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             };
             match crate::exec::do_newexec(table, msg.m_source, Endpoint(endpoint_raw), info) {
                 Ok(allow) => {
-                    // C :120-122 —— reply 载荷 suid@0。
+                    // C :120-122 — reply payload suid@0.
                     let mut reply = Message::default();
                     let suid = i32::from(allow);
-                    // SAFETY: m_pm_lexec_exec_new.suid@0 的 raw 字节写入;
-                    // 索引切片构成对 union 字段的读借用,需 unsafe 块。
+                    // SAFETY: a raw-byte write into m_pm_lexec_exec_new.suid@0;
+                    // forming an index slice is a read borrow of a union field, so
+                    // it needs an unsafe block.
                     unsafe {
                         reply.m_u.raw[0..4].copy_from_slice(&suid.to_le_bytes());
                     }
@@ -519,8 +548,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_execrestart(pm/exec.c:130-151)——仅 RS;RS 门在
-        // do_execrestart 内。服务装配照 vfs.rs ExecServices 先例。
+        // C: do_execrestart (pm/exec.c:130-151) — RS only; the RS gate lives
+        // inside do_execrestart. The service wiring follows the vfs.rs
+        // ExecServices precedent.
         PmCall::ExecRestart => {
             let (endpt, result, pc, ps_str) = super::decode::exec_restart(msg);
             let info = crate::exec::ExecRestartInfo {
@@ -535,9 +565,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // ===== S4 批次 C:时间族六调用(time.c)=====
+        // ===== Time family, six calls (time.c) =====
 
-        // C: do_stime(time.c:110-131)——SUPER_USER 门 + boottime 锚重置。
+        // C: do_stime (time.c:110-131) — SUPER_USER gate + boottime anchor reset.
         PmCall::Stime => {
             let (_clk, _now, sec, _nsec) = super::decode::time(msg);
             let src = crate::time::SysClockSource;
@@ -554,8 +584,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_gettime(time.c:22-47)——clk 分派 REALTIME/MONOTONIC,
-        // decompose 后 reply 预填 m_lc_pm_time{sec,nsec}。
+        // C: do_gettime (time.c:22-47) — clk dispatches to REALTIME/MONOTONIC,
+        // and after decomposition the reply is pre-filled with
+        // m_lc_pm_time{sec,nsec}.
         PmCall::GetTimeOfDay | PmCall::ClockGetTime => {
             let (clk, _now, _sec, _nsec) = super::decode::time(msg);
             let clk = match crate::time::ClockId::try_from(clk) {
@@ -566,11 +597,12 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             match crate::time::do_gettime(&src, clk, timers.system_hz) {
                 Ok(ts) => {
                     let mut reply = minix_types::Message::default();
-                    // SAFETY: 应答 overlay 是 C `mess_pm_lc_time`
-                    // (ipc.h:1769-1773:sec@0/nsec@8,LP64 自然宽)——
-                    // C do_gettime 写 mp_reply.m_pm_lc_time(time.c:43-46)、
-                    // libc 客户端读同一 overlay(gettimeofday.c:18-20);
-                    // 不是请求臂 m_lc_pm_time(nsec 在 @16)。
+                    // SAFETY: the reply overlay is C `mess_pm_lc_time`
+                    // (ipc.h:1769-1773: sec@0/nsec@8, LP64 natural width) —
+                    // C do_gettime writes mp_reply.m_pm_lc_time (time.c:43-46) and
+                    // the libc client reads the same overlay (gettimeofday.c:18-20);
+                    // it is not the request arm m_lc_pm_time (where nsec sits at
+                    // @16).
                     unsafe {
                         reply.m_u.raw[0..8].copy_from_slice(&(ts.sec as u64).to_ne_bytes());
                         reply.m_u.raw[8..16].copy_from_slice(&ts.nsec.to_ne_bytes());
@@ -581,7 +613,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_clock_getres——1e9/hz(REALTIME/MONOTONIC 同值)。
+        // C: do_clock_getres — 1e9/hz (the same value for REALTIME/MONOTONIC).
         PmCall::ClockGetRes => {
             let (clk, _now, _sec, _nsec) = super::decode::time(msg);
             let clk = match crate::time::ClockId::try_from(clk) {
@@ -591,8 +623,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             match crate::time::do_getres(clk, timers.system_hz) {
                 Ok(ts) => {
                     let mut reply = minix_types::Message::default();
-                    // SAFETY: 应答 overlay 同 GetTimeOfDay 臂——C
-                    // `mess_pm_lc_time`(ipc.h:1769-1773)sec@0/nsec@8。
+                    // SAFETY: the reply overlay is the same as the GetTimeOfDay
+                    // arm — C `mess_pm_lc_time` (ipc.h:1769-1773) sec@0/nsec@8.
                     unsafe {
                         reply.m_u.raw[0..8].copy_from_slice(&(ts.sec as u64).to_ne_bytes());
                         reply.m_u.raw[8..16].copy_from_slice(&ts.nsec.to_ne_bytes());
@@ -603,8 +635,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_clock_settime(time.c:71-88)——SUPER_USER 门 + MONOTONIC
-        // 不可变。
+        // C: do_clock_settime (time.c:71-88) — SUPER_USER gate + MONOTONIC is
+        // immutable.
         PmCall::ClockSetTime => {
             let (clk, now, sec, nsec) = super::decode::time(msg);
             let clk = match crate::time::ClockId::try_from(clk) {
@@ -627,9 +659,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // ===== S8 批次 G:mcontext 族两调用(mcontext.c)=====
-        // C do_getmcontext(mcontext.c:13-22):sys_getmcontext 透传,
-        // 错误收敛 EINVAL(do_getmcontext 的 MiscError::Inval)。
+        // ===== mcontext family, two calls (mcontext.c) =====
+        // C do_getmcontext (mcontext.c:13-22): pass through sys_getmcontext,
+        // collapsing errors to EINVAL (MiscError::Inval in do_getmcontext).
         PmCall::GetMContext => {
             let (endpt, ctx) = super::decode::mcontext(msg);
             let ctl = crate::misc::SysMcontextCtl;
@@ -646,14 +678,14 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_getprocnr(misc.c:149-164)——RS 询问 pid 的 endpoint,
-        // 应答载荷 m_pm_lsys_getprocnr.endpt。
+        // C: do_getprocnr (misc.c:149-164) — RS asks for the endpoint of a pid;
+        // the reply payload is m_pm_lsys_getprocnr.endpt.
         PmCall::GetProcNr => {
             let pid = super::decode::getprocnr(msg);
             match crate::misc::do_getprocnr(table, msg.m_source, pid) {
                 Ok(ep) => {
                     let mut reply = minix_types::Message::default();
-                    // SAFETY: 应答臂 endpt@0。
+                    // SAFETY: the reply arm is endpt@0.
                     unsafe {
                         reply.m_u.raw[0..4].copy_from_slice(&ep.0.to_le_bytes());
                     }
@@ -663,8 +695,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_getepinfo(misc.c:169-193)——凭证快照 + groups 经
-        // copy 缝拷出(D-30(b) 收口);pid 为 taskcall 返回值。
+        // C: do_getepinfo (misc.c:169-193) — a credential snapshot plus the
+        // groups copied out through the copy seam; pid is the taskcall return
+        // value.
         PmCall::GetEpInfo => {
             let (ep, groups_ptr, ngroups) = super::decode::getepinfo(msg);
             let mut cpy = KernCopyToUser { kern, who: msg.m_source };
@@ -676,8 +709,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             ) {
                 Ok(info) => {
                     let mut reply = minix_types::Message::default();
-                    // SAFETY: 应答臂 m_pm_lsys_getepinfo(uid@0/euid@4/
-                    // gid@8/egid@12/ngroups@16,C ipc.h:517-524)。
+                    // SAFETY: the reply arm is m_pm_lsys_getepinfo (uid@0/euid@4/
+                    // gid@8/egid@12/ngroups@16, C ipc.h:517-524).
                     let arm = unsafe { &mut reply.m_u.m_pm_lsys_getepinfo };
                     arm.uid = info.uid as i32;
                     arm.euid = info.euid as i32;
@@ -690,8 +723,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_sysuname(misc.c:60-96)——uname 命名空间只读半;
-        // 字节经 copy 缝拷到调用方 value 缓冲,返回拷贝字节数。
+        // C: do_sysuname (misc.c:60-96) — the read-only half of the uname
+        // namespace; bytes are copied to the caller's value buffer through the
+        // copy seam, and the number of bytes copied is returned.
         PmCall::SysUname => {
             let (req, field, len, value) = super::decode::sysuname(msg);
             let mut cpy = KernCopyToUser { kern, who: msg.m_source };
@@ -706,8 +740,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_sprofile(profile.c:22-45)——sprofile feature 门控;
-        // SprofCtl 生产直委托 sys_sprof。
+        // C: do_sprofile (profile.c:22-45) — gated on the sprofile feature;
+        // SprofCtl delegates straight to sys_sprof in production.
         PmCall::SProf => {
             let (action, freq, intr_type, ctl_ptr, mem_ptr, mem_size) =
                 super::decode::sprof(msg);
@@ -727,11 +761,12 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_reboot(misc.c:198-231)——EPERM 门 → abort_flag →
-        // RB_POWERDOWN readclock 腿 → check_sig(-1, SIGKILL) 广播 →
-        // sys_stop(INIT) → tell VFS VFS_PM_REBOOT → SUSPEND 不回复
-        // (回复经 VFS_PM_REBOOT_REPLY 特例走 sys_abort(abort_flag),
-        // ipc/vfs.rs handle_vfs_reply 的 D-09 臂)。
+        // C: do_reboot (misc.c:198-231) — EPERM gate → abort_flag →
+        // RB_POWERDOWN readclock leg → check_sig(-1, SIGKILL) broadcast →
+        // sys_stop(INIT) → tell VFS VFS_PM_REBOOT → SUSPEND without replying
+        // (the reply goes through the VFS_PM_REBOOT_REPLY special case into
+        // sys_abort(abort_flag), the reboot-reply arm of ipc/vfs.rs
+        // handle_vfs_reply).
         PmCall::Reboot => {
             let how = super::decode::reboot(msg);
             let mut ctl = SysRebootCtl {
@@ -744,17 +779,18 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_svrctl(misc.c:302-390)——IOCGROUP 门('P'/'M')+
-        // sysgetenv 32 字节拷入(key/val 指针与长度),SET 存表,GET 回拷
-        // val(misc.c:359-384)。
+        // C: do_svrctl (misc.c:302-390) — IOCGROUP gate ('P'/'M') plus a 32-byte
+        // sysgetenv copy-in (key/val pointers and lengths); SET stores the value
+        // in the table, GET copies val back (misc.c:359-384).
         PmCall::SvrCtl => {
             let (request, arg) = super::decode::svrctl(msg);
-            // C misc.c:311-312 —— IOCGROUP 门('P'=0x50 / 'M'=0x4D)。
+            // C misc.c:311-312 — the IOCGROUP gate ('P'=0x50 / 'M'=0x4D).
             let group = ((request >> 8) & 0xff) as u8;
             if group != b'P' && group != b'M' {
                 return ReplyIntent::Reply(EINVAL);
             }
-            // 非 PARAM 请求码:PM 无分支 → EINVAL(C switch default)。
+            // A non-PARAM request code: PM has no branch for it → EINVAL (C's
+            // switch default).
             let is_param = matches!(
                 request as u32,
                 x if x == crate::misc::PMGETPARAM as u32
@@ -765,7 +801,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             if !is_param {
                 return ReplyIntent::Reply(EINVAL);
             }
-            // struct sysgetenv{key 指针,val 指针,keylen,vallen} 32 字节拷入。
+            // struct sysgetenv {key pointer, val pointer, keylen, vallen} copied
+            // in as 32 bytes.
             let mut env = [0u8; 32];
             if let Err(e) = kern.copy_from_user(msg.m_source, arg, &mut env) {
                 return ReplyIntent::Reply(e);
@@ -774,7 +811,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let (key_ptr, val_ptr, keylen, vallen) =
                 (u64_at(0), u64_at(8), u64_at(16) as usize, u64_at(24) as usize);
 
-            // key 串拷入(search_key[64] 边界,misc.c:313-316)。
+            // Copy in the key string (search_key[64] bound, misc.c:313-316).
             let mut key_buf = [0u8; 64];
             let key_len = keylen.min(64);
             if key_len > 0
@@ -793,8 +830,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 vallen,
             ) {
                 Ok(val) => {
-                    // C misc.c:379-384 —— GET:val 回拷至调用方缓冲,
-                    // m1i2 = vallen。
+                    // C misc.c:379-384 — GET: copy val back to the caller's
+                    // buffer, m1i2 = vallen.
                     if let Some(v) = &val
                         && let Err(e) = kern.copy_to_user(
                             v.as_bytes(),
@@ -812,8 +849,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_getsysinfo(misc.c:108-144)——SUPER_USER 门,SI_* 分类,
-        // 整表/计数经 copy 缝交付(D-29 数据路径 + D-32 计数)。
+        // C: do_getsysinfo (misc.c:108-144) — SUPER_USER gate, SI_* classification,
+        // whole tables and counts delivered through the copy seam.
         PmCall::GetSysInfo => {
             let (what, where_, size) = super::decode::getsysinfo(msg);
             struct StatsCtl<'a> {
@@ -821,11 +858,13 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             }
             impl crate::misc::SysInfoCtl for StatsCtl<'_> {
                 fn proc_tab(&self) -> &[u8] {
-                    // ProcTab 走 do_getsysinfo 的逐槽 cpy 路径,不经 ctl。
+                    // ProcTab goes through do_getsysinfo's per-slot cpy path, not
+                    // through the ctl.
                     &[]
                 }
-                // call_stats 与 trait 同门控:无 feature 时 SI_CALL_STATS
-                // 请求已在 SysInfoWhat 分类处拒绝。
+                // call_stats is gated the same way as the trait: without the
+                // feature, an SI_CALL_STATS request is already refused where
+                // SysInfoWhat is classified.
                 #[cfg(feature = "syscall_stats")]
                 fn call_stats(&self) -> &[u8] {
                     self.stats
@@ -852,9 +891,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
-        // C: do_getrusage(misc.c:400-447)——who 0/-1 门(S4 收尾):
-        // SysTimesVmCtl 双腿(SYS_TIMES + VM_GETRUSAGE taskcall),完整
-        // struct rusage 128 字节经 copy 缝拷出。
+        // C: do_getrusage (misc.c:400-447) — the who 0/-1 gate: SysTimesVmCtl
+        // has both legs (SYS_TIMES + a VM_GETRUSAGE taskcall), and the complete
+        // 128-byte struct rusage is copied out through the copy seam.
         PmCall::GetRUsage => {
             let (who_raw, addr) = super::decode::rusage(msg);
             let who = match crate::misc::RusageWho::try_from(who_raw) {
@@ -885,7 +924,8 @@ use crate::signal_handlers::{
 };
 use crate::mproc::SigMsg;
 
-/// getepinfo 的组表拷出适配(S8/D-30(b)):Caller 组缓冲按 u32 LE。
+/// Copy-out adapter for getepinfo's group table: the caller's group buffer takes
+/// u32 little-endian elements.
 struct KernCopyToUser<'a> {
     kern: &'a mut dyn crate::exit::KernelGateway,
     who: Endpoint,
@@ -903,8 +943,9 @@ impl crate::misc::CopyToUser for KernCopyToUser<'_> {
     }
 }
 
-/// 无拷贝组表出口:不搬组表的调用(GetPid/GetUid 等)仍需满足
-/// do_get/do_set 的 trait 形状;copy 路径诚实失败(不可达)。
+/// The no-copy group exit: calls that do not move a group table (GetPid/GetUid
+/// and friends) still have to satisfy the do_get/do_set trait shape; the copy
+/// path fails honestly (unreachable).
 struct NoopGroups;
 impl CopyGroups for NoopGroups {
     fn copy_to_user(&mut self, _gids: &[Gid], _ptr: VirBytes) -> Result<(), SetError> {
@@ -915,8 +956,9 @@ impl CopyGroups for NoopGroups {
     }
 }
 
-/// 凭证族的组表拷贝适配(S2):`CopyGroups` 语义经网关 copy 缝落地,
-/// gid 按 u32 LE 逐元素搬运(NGROUPS_MAX 槽,credentials.rs A-11)。
+/// The credential family's group-table copy adapter: the `CopyGroups` semantics
+/// land on the gateway copy seam, moving gids element by element as u32
+/// little-endian (`NGROUPS_MAX` slots, as documented in credentials.rs).
 struct SysCopyGroups<'a> {
     kern: &'a mut dyn crate::exit::KernelGateway,
     who: Endpoint,
@@ -945,8 +987,8 @@ impl CopyGroups for SysCopyGroups<'_> {
     }
 }
 
-/// exec 臂的 VFS 转发适配(S6):VFS_PM_EXEC 五域编码 + tell_vfs 三段
-/// (exec.c:44-54)。
+/// The exec arm's VFS forwarding adapter: encode the five VFS_PM_EXEC fields and
+/// run the three tell_vfs steps (exec.c:44-54).
 struct SysVfsExec<'a, T: IpcTransport + ?Sized> {
     transport: &'a mut T,
 }
@@ -971,14 +1013,15 @@ impl<T: IpcTransport + ?Sized> crate::exec::VfsExec for SysVfsExec<'_, T> {
     }
 }
 
-/// `struct exec_info` 的 PM 消费域字节宽(libexec.h:21-58,LP64):
-/// proc_e@0/hdr@8/hdr_len@16/frame_len@24/progname@32(16)/new_uid@48/
-/// new_gid@52/allow_setuid@56/…/stack_high@184;拷入尺寸 192。
+/// Byte widths of the `struct exec_info` fields PM consumes (libexec.h:21-58,
+/// LP64): proc_e@0/hdr@8/hdr_len@16/frame_len@24/progname@32 (16)/new_uid@48/
+/// new_gid@52/allow_setuid@56/…/stack_high@184; the copy-in size is 192.
 const EXEC_INFO_COPY_SIZE: usize = 192;
 
-/// Reboot 臂的生产端口(NS10):abort_flag 直写 PmServer 字段
-/// (C glo.h:26 `abort_flag` 对位)、内核腿经 KernelGateway、VFS 告知经
-/// IpcTransport(`misc.rs::RebootCtl` 文档的各腿 C 对位)。
+/// The Reboot arm's production ports: abort_flag written straight into the
+/// PmServer field (C's `abort_flag` in glo.h:26 is the counterpart), kernel legs
+/// through KernelGateway, and the VFS notification through IpcTransport (each leg
+/// and its C counterpart is described in the `misc.rs::RebootCtl` documentation).
 struct SysRebootCtl<'a, T: IpcTransport + ?Sized> {
     abort_flag: &'a mut i32,
     kern: &'a mut dyn crate::exit::KernelGateway,
@@ -991,19 +1034,22 @@ impl<T: IpcTransport + ?Sized> crate::misc::RebootCtl for SysRebootCtl<'_, T> {
     }
 
     fn try_power_off(&mut self) -> bool {
-        // C misc.c:207-214:DS 查 "readclock.drv" 成功才 _taskcall 断电,
-        // 查不到即静默跳过("nothing we can do if it fails")。PM 尚无 DS
-        // label→endpoint 客户端,且当前 boot 信封本无 readclock 驱动(C
-        // 同样走跳过分支,外部行为一致);断电腿维持诚实不请求,驱动与 DS
-        // 客户端出现后随波次接入。
+        // C misc.c:207-214: only after the DS lookup of "readclock.drv" succeeds
+        // is the power-off `_taskcall` made; when the lookup fails the step is
+        // skipped silently ("nothing we can do if it fails"). PM has no
+        // DS label→endpoint client yet, and the current boot envelope carries no
+        // readclock driver at all (C would take the same skip branch, so the
+        // external behavior matches); the power-off leg stays honest by not
+        // requesting it, and will be wired in once the driver and the DS client
+        // exist.
         false
     }
 
     fn broadcast_kill(&mut self, table: &mut ProcTable, caller: UserSlot) {
-        // C misc.c:221:check_sig(-1, SIGKILL, FALSE)("kill all users
-        // except init"),返回值不检查。广播跳过 PRIV_PROC 的语义在
-        // check_sig 内(signal.c:607-608 对位)。
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        // C misc.c:221: check_sig(-1, SIGKILL, FALSE) ("kill all users except
+        // init"), return value unchecked. The broadcaster's skip of PRIV_PROC
+        // lives inside check_sig (mirroring signal.c:607-608).
+        //[SD19-gate] PM send/notify/reply fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::check_sig(
             table,
@@ -1017,22 +1063,24 @@ impl<T: IpcTransport + ?Sized> crate::misc::RebootCtl for SysRebootCtl<'_, T> {
     }
 
     fn stop_init(&mut self, table: &ProcTable) {
-        // C misc.c:222:sys_stop(INIT_PROC_NR),返回值不检查。生产
-        // KernelGateway::sys_delay_stop 在 E6 wrapper 落地前是诚实占位
-        // (-EIO,exit.rs),此处对失败静默与 C 同型;「init 未被内核冻结」
-        // 的窗口差异随 E6 wrapper 自愈(FIXLOG NS10 已登记)。
+        // C misc.c:222: sys_stop(INIT_PROC_NR), return value unchecked. The
+        // production KernelGateway::sys_delay_stop is an honest placeholder until
+        // the E6 wrapper lands (-EIO, exit.rs), and staying silent about the
+        // failure matches C; the window where "init is not yet frozen by the
+        // kernel" heals once the E6 wrapper exists (recorded in the fix log).
         if let Ok(slot) = table.pm_isokendpt(Endpoint::INIT) {
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            //[SD19-gate] PM send/notify/reply fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.kern.sys_delay_stop(table.procs[slot.get()].endpoint());
         }
     }
 
     fn tell_reboot(&mut self, table: &mut ProcTable) -> i32 {
-        // C misc.c:228:tell_vfs(&mproc[VFS_PROC_NR], &m)——Reboot 不关联
-        // 用户进程,借 VFS 槽位挂 VFS_CALL(ipc/vfs.rs tell_vfs 文档)。
-        // VFS 不在表(已死)时回复方与 abort 交付都不可能,跳过告知与 C
-        // 写死槽位的可观察结果一致。
+        // C misc.c:228: tell_vfs(&mproc[VFS_PROC_NR], &m) — Reboot is not tied to
+        // a user process, so the VFS slot carries the VFS_CALL (see the
+        // ipc/vfs.rs tell_vfs documentation). When VFS is not in the table (dead)
+        // neither a replier nor the abort delivery is possible, so skipping the
+        // notification has the same observable result as C writing a fixed slot.
         if let Ok(slot) = table.pm_isokendpt(Endpoint::VFS) {
             crate::ipc::vfs::tell_vfs(table, slot, minix_types::VfsCall::Reboot, self.transport);
         }
@@ -1040,8 +1088,9 @@ impl<T: IpcTransport + ?Sized> crate::misc::RebootCtl for SysRebootCtl<'_, T> {
     }
 }
 
-/// 凭证族的 VFS 转发适配(S2):编码 VfsCall 后走 tell_vfs 同型三段
-/// (not-idle 断言 / send / VFS_CALL 置位——vfs.rs:166-175)。
+/// The credential family's VFS forwarding adapter: encodes a VfsCall and then
+/// runs tell_vfs's three steps (not-idle assertion / send / set VFS_CALL —
+/// vfs.rs:166-175).
 struct SysVfsForward<'a, T: IpcTransport + ?Sized> {
     transport: &'a mut T,
 }
@@ -1077,8 +1126,9 @@ impl<T: IpcTransport + ?Sized> VfsForwarder for SysVfsForward<'_, T> {
     }
 }
 
-/// `do_get` 结果 → 回复意图(C getset.c:52-81 的双值载荷语义)。
-/// Uid/Gid 的 real/eff 双值经 reply 预填槽(m1i1/m1i2)交付。
+/// `do_get` result → reply intent (C getset.c:52-81's two-value payload
+/// semantics). Uid/Gid's real/eff pair is delivered by pre-filling the reply slots
+/// (m1i1/m1i2).
 fn get_result_intent(table: &mut ProcTable, caller: UserSlot, r: GetResult) -> ReplyIntent {
     let mut prefill = |real: i32, eff: i32| {
         let mut msg = Message::default();
@@ -1106,8 +1156,9 @@ fn get_result_intent(table: &mut ProcTable, caller: UserSlot, r: GetResult) -> R
     }
 }
 
-/// sigreturn 臂的网关适配:`handle_sigreturn` 只消费 `KernelSig::sigreturn`
-/// (C do_sigreturn 不调 sys_sigsend),sigsend 在此适配器内诚实失败。
+/// The sigreturn arm's gateway adapter: `handle_sigreturn` consumes only
+/// `KernelSig::sigreturn` (C do_sigreturn does not call sys_sigsend), so sigsend
+/// fails honestly inside this adapter.
 struct SigReturnKern<'a>(&'a mut dyn crate::exit::KernelGateway);
 
 impl crate::signal_handlers::KernelSig for SigReturnKern<'_> {
@@ -1119,7 +1170,8 @@ impl crate::signal_handlers::KernelSig for SigReturnKern<'_> {
     }
 }
 
-/// 网关/wrapper 的负 errno 约定 → reply 的正 errno(错误保真,取绝对值)。
+/// From the gateway/wrapper negative-errno convention → the reply's positive
+/// errno (error fidelity: take the absolute value).
 #[cfg(test)]
 fn leak_timers() -> crate::timer::TimerFaces<'static> {
     let tctl: &'static mut dyn crate::timer::TimerCtl = Box::leak(Box::new(crate::timer::SysTimerCtl::new()));
@@ -1142,21 +1194,24 @@ fn leak_timers() -> crate::timer::TimerFaces<'static> {
 
 #[cfg(test)]
 mod tests {
-    /// `setpriority` 的 dispatch 级接线（卡C/S10）：SET 过权限门后经生产
-    /// `MinixSchedCtl` 向进程的调度器发 `SCHEDULING_SET_NICE`（两域
-    /// endpoint/maxprio），用户回 0。
+    /// `setpriority`'s dispatch-level wiring: after SET passes the permission
+    /// gate it sends `SCHEDULING_SET_NICE` (two fields, endpoint/maxprio) to the
+    /// process's scheduler through the production `MinixSchedCtl`, and the user
+    /// side gets 0.
     #[test]
     fn test_setpriority_sends_set_nice_to_scheduler() {
         use minix_types::{Endpoint, Message};
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
-        // 调度器设为用户态调度器（非 KERNEL/NONE——KERNEL/NONE 会跳过）。
+        // The scheduler is set to a user-space scheduler (not KERNEL/NONE — those
+        // would be skipped).
         let sched = Endpoint::from_generation_slot(0, 4);
         table.procs[3].resources.scheduler = sched;
         let mut msg = Message { m_type: 27, ..Message::default() };
         msg.m_source = ep;
-        // m1i1=which(PRIO_PROCESS=0)、m1i2=who(0=自己)、m1i3=prio(5)。
-        // SAFETY(test): m1 载荷三整数按 misc.c:244 的域序写。
+        // m1i1=which (PRIO_PROCESS=0), m1i2=who (0=itself), m1i3=prio (5).
+        // SAFETY(test): the three m1 payload integers are written in misc.c:244's
+        // field order.
         unsafe {
             let raw = &mut msg.m_u.raw;
             raw[0..4].copy_from_slice(&0i32.to_le_bytes());
@@ -1174,13 +1229,13 @@ mod tests {
             &msg,
         );
         assert_eq!(intent, ReplyIntent::Reply(0), "SET 成功回 0");
-        // 生产 ctl 经 sendrec 发了 SCHEDULING_SET_NICE（两域）。
+        // The production ctl sent SCHEDULING_SET_NICE over sendrec (two fields).
         let hit = transport
             .sent()
             .iter()
             .find(|(e, m)| *e == sched && m.m_type == minix_types::SCHEDULING_SET_NICE)
             .expect("SET 要向调度器发 SET_NICE");
-        // SAFETY(test): endpoint@0、maxprio@4（MessPmSchedSchedulingSetNice）。
+        // SAFETY(test): endpoint@0, maxprio@4 (MessPmSchedSchedulingSetNice).
         let raw = unsafe { &hit.1.m_u.raw };
         assert_eq!(
             i32::from_le_bytes(raw[0..4].try_into().unwrap()),
@@ -1193,7 +1248,7 @@ mod tests {
     use crate::ipc::TestIpcTransport;
     use minix_types::Endpoint;
 
-    /// 测试用内核网关 mock（sys_kill/sys_clear 恒 OK）。
+    /// Kernel gateway mock for tests (sys_kill/sys_clear always OK).
     #[derive(Default)]
     struct NoopKernel;
     impl crate::exit::KernelGateway for NoopKernel {
@@ -1225,8 +1280,9 @@ mod tests {
 
     #[test]
     fn test_dispatch_fork_success_is_reply_later() {
-        // C: do_fork 返回 SUSPEND（forkexit.c:139）——fork 同步不回复；
-        // 父进程已注册时 do_fork 走到 vm_fork（脚本化 OK 应答）→ ReplyLater。
+        // C: do_fork returns SUSPEND (forkexit.c:139) — fork does not reply
+        // synchronously; with the parent registered, do_fork reaches vm_fork (a
+        // scripted OK reply) → ReplyLater.
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let _kern = NoopKernel;
@@ -1247,19 +1303,21 @@ mod tests {
             &msg,
         );
         assert_eq!(intent, ReplyIntent::ReplyLater);
-        // fork 链路真实发出：先 VM_FORK（sendrec 记录在 sent），后 VFS_PM_FORK。
+        // The fork path really sends: VM_FORK first (the sendrec recorded in
+        // sent), VFS_PM_FORK after.
         assert_eq!(transport.sent()[0].0, Endpoint::VM);
         assert!(transport.sent().len() >= 2);
     }
 
     #[test]
     fn test_dispatch_fork_parent_unknown_is_error_reply() {
-        // C: forkexit.c:59-79 的同步可失败段——父进程不存在 → errno 回复
-        //（pm_isokendpt 防御，ESRCH），不再有"静默 ReplyLater"的假路径。
+        // C: the synchronously-failing part of forkexit.c:59-79 — a parent that
+        // does not exist yields an errno reply (the pm_isokendpt defense,
+        // ESRCH), with no fictitious "silent ReplyLater" path.
         let (mut table, mut events, mut transport) =
             setup_with_caller(3, Endpoint::from_generation_slot(1, 3));
         let mut msg = Message { m_type: 2, ..Message::default() };
-        msg.m_source = Endpoint::from_generation_slot(9, 9); // 未注册的父
+        msg.m_source = Endpoint::from_generation_slot(9, 9); // an unregistered parent
         let intent = dispatch_pm_call(
             PmCall::Fork,
             &mut table,
@@ -1278,8 +1336,8 @@ mod tests {
 
     #[test]
     fn test_dispatch_exit_is_no_reply() {
-        // C: do_exit 返回 SUSPEND 且永不回复（forkexit.c:246-266，
-        // plan.md §7.3 的 NoReply 子情形）。
+        // C: do_exit returns SUSPEND and never replies (forkexit.c:246-266, the
+        // NoReply subcase of plan.md section 7.3).
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let _kern = NoopKernel;
@@ -1298,7 +1356,7 @@ mod tests {
         assert_eq!(intent, ReplyIntent::NoReply);
     }
 
-    /// 构造 sigset 请求载荷(how@0/ctx@8/set@16,MessLcPmSigset)。
+    /// Builds a sigset request payload (how@0/ctx@8/set@16, MessLcPmSigset).
     fn sigset_msg(m_type: i32, how: i32, set: u64) -> Message {
         let mut msg = Message { m_type, ..Message::default() };
         msg.m_u.m_lc_pm_sigset.how = how;
@@ -1309,14 +1367,15 @@ mod tests {
 
     #[test]
     fn test_sigprocmask_unblock_redelivers_pending() {
-        // C signal.c:131 — SIG_UNBLOCK 成功分支末端内联 check_pending;
-        // 见证:解除屏蔽后 pending 位被消费(sig_proc 投递)。
+        // C signal.c:131 — the SIG_UNBLOCK success branch ends with an inline
+        // check_pending; the witness: after unblocking, the pending bit is
+        // consumed (delivered by sig_proc).
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let usr1 = 30; // SIGUSR1(minix signal.h:82)
         let bit = 1u64 << (usr1 - 1);
         table.procs[3].resources.signals.pending |= bit;
-        table.procs[3].resources.signals.mask |= bit; // 先屏蔽
+        table.procs[3].resources.signals.mask |= bit; // block it first
         let mut msg = sigset_msg(23, crate::mproc::SIG_UNBLOCK, bit);
         msg.m_source = ep;
         assert_eq!(
@@ -1341,15 +1400,17 @@ mod tests {
 
     #[test]
     fn test_sigprocmask_block_keeps_pending() {
-        // 对照:Block 的 needs_check=false(只加屏蔽,不可能产生新可投
-        // 递)——pending 保留;若实现误调 check_pending,该 pending
-        // (未屏蔽)会被投递清位,此测试抓住。
+        // Control: Block has needs_check=false (it only adds mask bits and cannot
+        // create a newly deliverable signal) — the pending bit stays; if the
+        // implementation wrongly called check_pending, that pending signal
+        // (unblocked) would be delivered and the bit cleared, which this test
+        // catches.
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let usr1 = 30;
         let bit = 1u64 << (usr1 - 1);
-        table.procs[3].resources.signals.pending |= bit; // 未屏蔽
-        let mut msg = sigset_msg(23, crate::mproc::SIG_BLOCK, 1 << 1); // 屏蔽 SIGINT,与 usr1 无关
+        table.procs[3].resources.signals.pending |= bit; // not blocked
+        let mut msg = sigset_msg(23, crate::mproc::SIG_BLOCK, 1 << 1); // block SIGINT, unrelated to usr1
         msg.m_source = ep;
         assert_eq!(
             dispatch_pm_call(
@@ -1373,15 +1434,16 @@ mod tests {
 
     #[test]
     fn test_sigreturn_redelivers_pending_unconditionally() {
-        // C signal.c:190 — do_sigreturn 成功后无条件 check_pending;
-        // 恢复的掩码(此处空)解除后 pending 被消费。
+        // C signal.c:190 — do_sigreturn calls check_pending unconditionally after
+        // success; once the restored mask (empty here) unblocks it, the pending
+        // bit is consumed.
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let usr1 = 30;
         let bit = 1u64 << (usr1 - 1);
         table.procs[3].resources.signals.pending |= bit;
         table.procs[3].resources.signals.mask |= bit;
-        let mut msg = sigset_msg(24, 0, 0); // 恢复掩码 = 空集
+        let mut msg = sigset_msg(24, 0, 0); // restored mask = empty set
         msg.m_source = ep;
         assert_eq!(
             dispatch_pm_call(
@@ -1403,7 +1465,8 @@ mod tests {
         );
     }
 
-    /// 捕获 copy_to_user 字节的内核网关(getrusage 拷出见证)。
+    /// Kernel gateway that captures copy_to_user bytes (the witness for getrusage
+    /// copy-out).
     struct CapKernel {
         copies: alloc::vec::Vec<(alloc::vec::Vec<u8>, Endpoint, u64)>,
     }
@@ -1428,12 +1491,13 @@ mod tests {
         fn sys_sigreturn(&mut self, _ep: Endpoint, _ctx: VirBytes) -> Result<(), i32> { Ok(()) }
     }
 
-    /// 构造 VM_GETRUSAGE 应答(m1p1=max_rss_kb/m1i1=minor/m1i2=major,
-    /// VM encode.rs:258-268 的镜像)。
+    /// Builds a VM_GETRUSAGE reply (m1p1=max_rss_kb/m1i1=minor/m1i2=major, the
+    /// mirror of VM encode.rs:258-268).
     fn vm_rusage_reply(max_rss_kb: u64, minor: i32, major: i32, m_type: i32) -> Message {
         let mut reply = Message::default();
         reply.m_type = m_type;
-        // SAFETY: 测试构造——按 VM 应答编码域序写 m1。
+        // SAFETY: test construction — m1 is written in the field order of VM's
+        // reply encoding.
         let m1 = unsafe { &mut reply.m_u.m_m1 };
         m1.m1p1 = max_rss_kb;
         m1.m1i1 = minor;
@@ -1443,8 +1507,10 @@ mod tests {
 
     #[test]
     fn test_dispatch_getrusage_children_roundtrip() {
-        // RUSAGE_CHILDREN(-1) 全链:CPU 桶取 child_utime/stime(不走
-        // SYS_TIMES 腿),VM 腿按值回三字段,128 字节经 copy 缝落用户。
+        // The whole RUSAGE_CHILDREN(-1) chain: the CPU buckets come from
+        // child_utime/stime (not the SYS_TIMES leg), the VM leg answers the three
+        // fields by value, and 128 bytes land in the user buffer through the copy
+        // seam.
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         table.procs[3].resources.child_utime = 200;
@@ -1454,7 +1520,8 @@ mod tests {
         let mut msg = Message { m_type: 36, ..Message::default() };
         msg.m_source = ep;
         {
-            // SAFETY: 测试构造——按 ipc.h:510-515 域序写请求。
+            // SAFETY: test construction — the request is written in ipc.h:510-515's
+            // field order.
             let raw = unsafe { &mut msg.m_u.raw };
             raw[0..4].copy_from_slice(&(-1i32).to_le_bytes());
             raw[8..16].copy_from_slice(&0x3000u64.to_le_bytes());
@@ -1472,17 +1539,18 @@ mod tests {
             ),
             ReplyIntent::Reply(0)
         );
-        // VM 腿:请求发往 VM,endpt=调用方,children=1。
+        // The VM leg: the request goes to VM, endpt=caller, children=1.
         assert_eq!(transport.sent().len(), 1);
         let (dst, req) = &transport.sent()[0];
         assert_eq!(*dst, Endpoint::VM);
         assert_eq!(req.m_type, minix_types::VM_GETRUSAGE as i32);
-        // SAFETY: 断言侧按编码域序读。
+        // SAFETY: the assertion side reads in encoding field order.
         let req_pl = unsafe { &req.m_u.m_lsys_vm_rusage };
         assert_eq!(req_pl.endpt, ep.0);
         assert_eq!(req_pl.children, 1);
-        // 拷出面:128 字节 rusage,utime=2s(200/100),maxrss/minflt/
-        // majflt 取 VM 三值(sys/resource.h:57-76 布局)。
+        // The copy-out face: 128 bytes of rusage, utime=2s (200/100), and
+        // maxrss/minflt/majflt taking VM's three values (sys/resource.h:57-76
+        // layout).
         assert_eq!(kern.copies.len(), 1);
         let (bytes, copy_ep, addr) = &kern.copies[0];
         assert_eq!(*copy_ep, ep);
@@ -1498,19 +1566,21 @@ mod tests {
 
     #[test]
     fn test_dispatch_clockgetres_reply_lands_on_c_lane() {
-        // C-54:C 应答 overlay 是 m_pm_lc_time(ipc.h:1769-1773,LP64
-        // sec@0/nsec@8)——应答 nsec 落 @8,不落请求臂 m_lc_pm_time 的
-        // @16 槽。选 ClockGetRes 臂做车道 pin:do_getres 纯 1e9/hz
-        // 计算(time.c:60 对位),无内核时钟腿,宿主可确定性断言;
-        // GetTimeOfDay 臂与它同形编码(SysClockSource 硬编码内核腿,
-        // 宿主单测不可达——注入缝缺口随 FIXLOG 登记)。
+        // C's reply overlay is m_pm_lc_time (ipc.h:1769-1773, LP64
+        // sec@0/nsec@8) — the reply's nsec lands at @8, not in the request arm
+        // m_lc_pm_time's @16 slot. The ClockGetRes arm is chosen for the lane pin:
+        // do_getres is a pure 1e9/hz computation (mirroring time.c:60), has no
+        // kernel clock leg, and is deterministically assertable on a host. The
+        // GetTimeOfDay arm encodes the same shape (SysClockSource hardcodes the
+        // kernel leg and is unreachable from a host unit test — the injection-seam
+        // gap is recorded in the fix log).
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let mut kern = CapKernel { copies: alloc::vec::Vec::new() };
         let mut msg = Message { m_type: 33, ..Message::default() };
         msg.m_source = ep;
         {
-            // SAFETY: 测试构造——按 m_lc_pm_time 车道写 clk_id@8。
+            // SAFETY: test construction — clk_id@8 written on the m_lc_pm_time lane.
             let raw = unsafe { &mut msg.m_u.raw };
             raw[8..12].copy_from_slice(&0i32.to_le_bytes()); // CLOCK_REALTIME
         }
@@ -1528,25 +1598,25 @@ mod tests {
             ReplyIntent::Reply(0)
         );
         let reply = table.procs[3].ipc.reply.take().expect("应答已预填");
-        // SAFETY: 按应答 overlay 车道读字节。
+        // SAFETY: read bytes along the reply overlay lane.
         let raw = unsafe { &reply.m_u.raw };
         let sec = u64::from_ne_bytes(raw[0..8].try_into().unwrap());
         let nsec = i64::from_ne_bytes(raw[8..16].try_into().unwrap());
         assert_eq!(sec, 0);
-        assert_eq!(nsec, 1_000_000_000 / 100); // hz=100 → 10ms 分辨率
+        assert_eq!(nsec, 1_000_000_000 / 100); // hz=100 → 10ms resolution
         assert_eq!(raw[16..24], [0u8; 8], "旧 @16 槽不再被写");
     }
 
     #[test]
     fn test_dispatch_getrusage_invalid_who_is_einval() {
-        // C misc.c:407-409——who ∉ {0,-1} → EINVAL,不发 VM 腿。
+        // C misc.c:407-409 — who ∉ {0,-1} → EINVAL, and no VM leg is sent.
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let mut kern = CapKernel { copies: alloc::vec::Vec::new() };
         let mut msg = Message { m_type: 36, ..Message::default() };
         msg.m_source = ep;
         {
-            // SAFETY: 同上——按解码域序写 who。
+            // SAFETY: as above — who is written in decoding field order.
             let raw = unsafe { &mut msg.m_u.raw };
             raw[0..4].copy_from_slice(&5i32.to_le_bytes());
         }
@@ -1561,8 +1631,8 @@ mod tests {
                 UserSlot::new(3),
                 &msg
             ),
-            // B16 契约（SD-16 对齐轮）：错误回执 m_type<0 = −errno
-            //（C _syscall 客户端契约，fork 臂 1.30 同款）。
+            // Error replies are m_type<0 = −errno (the C _syscall client
+            // contract, the same as the fork arm).
             ReplyIntent::Reply(-EINVAL)
         );
         assert!(transport.sent().is_empty());
@@ -1571,8 +1641,8 @@ mod tests {
 
     #[test]
     fn test_dispatch_getrusage_vm_error_passthrough() {
-        // C misc.c:441-442——vm_getrusage 非 OK 原样透传(VM 错误应答
-        // m_type 即正 errno)。
+        // C misc.c:441-442 — a non-OK vm_getrusage is passed through unchanged
+        // (a VM error reply carries a positive errno in m_type).
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         transport.queue_sendrec_reply(vm_rusage_reply(0, 0, 0, minix_types::ESRCH));
@@ -1580,7 +1650,7 @@ mod tests {
         let mut msg = Message { m_type: 36, ..Message::default() };
         msg.m_source = ep;
         {
-            // SAFETY: 同上。
+            // SAFETY: as above.
             let raw = unsafe { &mut msg.m_u.raw };
             raw[0..4].copy_from_slice(&(-1i32).to_le_bytes());
         }
@@ -1597,7 +1667,8 @@ mod tests {
             ),
             ReplyIntent::Reply(-minix_types::ESRCH)
         );
-        // 失败不落用户缓冲(C misc.c:446 的 datacopy 不可达)。
+        // A failure writes nothing into the user buffer (C's datacopy at
+        // misc.c:446 is unreachable).
         assert!(kern.copies.is_empty());
     }
 }

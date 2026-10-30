@@ -1,30 +1,35 @@
-//! VFS 设备映射表快照 —— `SI_DMAP_TAB` 的 wire 权威
-//! （`[ARCH: A-4]` 单一权威）。
+//! VFS device map table snapshot — the wire authority for `SI_DMAP_TAB`
+//! (`[ARCH: A-4]` single authority).
 //!
-//! C ground truth: `minix3/minix/servers/vfs/dmap.h:16-28`（`struct dmap
-//! dmap[NR_DEVICES]`，`NR_DEVICES 135` — dmap.h:82）。快照只带**使用字段
-//! 子集**（C 声明序，`#[repr(C)]`）——与 `FProcSnap`/`MProcSnap`/
-//! `DsEntrySnap`/`RprocpubSnap` 同一裁定：C 的 `dmap_sel_filp`（filp 指针）、
-//! `dmap_lock`（互斥量）、`dmap_servicing`（线程 id）都是 VFS 进程内部状态，
-//! 跨 wire 无意义；IS 的 `dmap_dmp` 只打标签、major 与驱动端点三列。
+//! C ground truth: `minix3/minix/servers/vfs/dmap.h:16-28` (`struct dmap
+//! dmap[NR_DEVICES]`, `NR_DEVICES 135` — dmap.h:82). The snapshot carries
+//! only the **subset of fields in use** (C declaration order, `#[repr(C)]`)
+//! — the same ruling as `FProcSnap`/`MProcSnap`/`DsEntrySnap`/
+//! `RprocpubSnap`: C's `dmap_sel_filp` (filp pointer), `dmap_lock` (mutex)
+//! and `dmap_servicing` (thread id) are all VFS-process-internal state and
+//! mean nothing across the wire; IS's `dmap_dmp` prints only the label,
+//! major and driver endpoint columns.
 //!
-//! 生产者（`os/servers/vfs/src/misc.rs` 的 `do_getsysinfo` DMAP 臂）按本
-//! 结构逐行序列化整表；消费方（IS `dump_vfs` 的 `dmap_dmp`）按名读取。
-//! 空槽的 `dmap_driver` 是 `NONE`（`init_dmap` 把每行填 `NONE`——
-//! dmap.c:235-247；不是 0），消费者按它过滤。
+//! The producer (the DMAP arm of `do_getsysinfo` in
+//! `os/servers/vfs/src/misc.rs`) serializes the whole table row by row into
+//! this structure; the consumer (`dmap_dmp` in IS `dump_vfs`) reads it by
+//! name. An empty slot's `dmap_driver` is `NONE` (`init_dmap` fills every
+//! row with `NONE` — dmap.c:235-247; it is not 0), and the consumer filters
+//! on that.
 
-/// C `LABEL_MAX 16` — vfs/const.h:34（标签列宽）。
+/// C `LABEL_MAX 16` — vfs/const.h:34 (label column width).
 pub const DMAP_LABEL_LEN: usize = 16;
-/// C `NR_DEVICES 135` — dmap.h:82（表行数；`SI_DMAP_TAB` 的长度契约）。
+/// C `NR_DEVICES 135` — dmap.h:82 (number of table rows; the length
+/// contract of `SI_DMAP_TAB`).
 pub const NR_DEVICES: usize = 135;
 
-/// 设备映射表行快照（`struct dmap` 的使用字段子集）。
+/// Device map table row snapshot (the subset of `struct dmap` fields in use).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmapSnap {
-    /// C: `dmap_driver` (dmap.h:17；`NONE` = 空槽，不是 0)。
+    /// C: `dmap_driver` (dmap.h:17; `NONE` = empty slot, not 0).
     pub dmap_driver: i32,
-    /// C: `dmap_label[LABEL_MAX]` (dmap.h:18)。
+    /// C: `dmap_label[LABEL_MAX]` (dmap.h:18).
     pub dmap_label: [u8; DMAP_LABEL_LEN],
 }
 
@@ -40,7 +45,7 @@ mod dmap_snap_layout_tests {
     use super::*;
     use core::mem::offset_of;
 
-    /// 布局见证：驱动端点 4 字节 + 标签 16 字节 = 20。
+    /// Layout witness: 4-byte driver endpoint + 16-byte label = 20.
     #[test]
     fn test_dmap_snap_layout() {
         assert_eq!(size_of::<DmapSnap>(), 20);
@@ -48,7 +53,8 @@ mod dmap_snap_layout_tests {
         assert_eq!(offset_of!(DmapSnap, dmap_label), 4);
     }
 
-    /// 整表宽度 = 行数 × 行宽（生产者与消费者的同一算式）。
+    /// Whole-table width = row count x row width (the same formula on the
+    /// producer and consumer sides).
     #[test]
     fn test_table_width() {
         assert_eq!(NR_DEVICES, 135);

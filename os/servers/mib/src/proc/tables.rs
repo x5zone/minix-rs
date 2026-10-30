@@ -292,14 +292,15 @@ pub struct Tables {
     scratch_vfs: Vec<u8>,
 }
 
-/// 每槽行宽（字节）：内核行 [`minix_types::ProcInfoStruct`]（104）、PM 行
-/// [`minix_types::MProcSnap`]（88，C-21）、VFS light 行（C `struct
-/// fproc_light`，fproc.h:111-115：dev_t + int + endpoint_t = 16）。
+/// Per-slot row width in bytes: kernel row [`minix_types::ProcInfoStruct`]
+/// (104), PM row [`minix_types::MProcSnap`] (88), VFS light row (C `struct
+/// fproc_light`, fproc.h:111-115: dev_t + int + endpoint_t = 16).
 pub const KERN_ROW: usize = core::mem::size_of::<minix_types::ProcInfoStruct>();
 /// See [`KERN_ROW`].
 pub const PM_ROW: usize = core::mem::size_of::<minix_types::MProcSnap>();
-/// light 行宽按 C `fproc_light` 定；wire 权威（VFS 生产者）落地时由
-/// minix-types 的 Snap 类型接管（C-21 后半），不一致时钉值测试爆。
+/// The light row width is fixed by C's `fproc_light`; once the wire
+/// authority (the VFS producer) lands, the Snap type in minix-types takes
+/// over, and a pinned-value test fails on any mismatch.
 pub const LIGHT_ROW: usize = 16;
 
 impl Tables {
@@ -329,13 +330,16 @@ impl Tables {
     /// are copied into the snapshot fields so a later transport failure
     /// cannot corrupt the live snapshot.
     ///
-    /// `[ARCH: A-7]` VFS light 半的**缺席降级**：C 里三表任一失败即
-    /// `tabs_valid = FALSE`（latch 到重启）；本实现的 VFS 生产者尚是
-    /// fail-closed（vfs/misc.rs 的 `ProcLightTab` 臂，等 C-21 后半的 wire
-    /// 权威），按 C 语义 latch 会让 MIB 自第一次调用起永久不可用。故
-    /// light 拉取失败降级为"空表继续"，fill 半对 light 维度（cdev/sdev
-    /// 阻塞的 wchan/wmesg）如实退化——内核/PM 半不受影响。生产者落地后
-    /// 本分支自然消失。
+    /// `[ARCH: A-7]` **Absent-source degradation** for the VFS light half: in
+    /// C any of the three tables failing sets `tabs_valid = FALSE` (latching
+    /// until reboot); this implementation's VFS producer is still fail-closed
+    /// (the `ProcLightTab` arm in vfs/misc.rs, awaiting the wire authority),
+    /// so latching per C semantics would leave MIB permanently unusable from
+    /// its first call onward. A failed light pull therefore degrades to
+    /// "continue with an empty table", and the fill half degrades honestly on
+    /// the light dimension (wchan/wmesg for cdev/sdev blocking) — the
+    /// kernel/PM halves are unaffected. This branch disappears naturally once
+    /// the producer lands.
     pub fn update<K: crate::transport::MibKernel, S: crate::transport::MibServices>(
         &mut self,
         now_tick: u64,
@@ -369,8 +373,8 @@ impl Tables {
             return false;
         }
         self.pm_tab = self.scratch_pm.clone();
-        // VFS light table (proc.c:106: SI_PROCLIGHT_TAB) — 缺席降级，
-        // 见上方 [ARCH: A-7] 注记。
+        // VFS light table (proc.c:106: SI_PROCLIGHT_TAB) — absent-source
+        // degradation, see the `[ARCH: A-7]` note above.
         match services.getsysinfo(
             minix_types::Endpoint::VFS,
             minix_types::SI_PROCLIGHT_TAB,
@@ -536,8 +540,9 @@ mod pull_tests {
         assert_eq!(tables.kernel_tab.len(), tables.scratch_len().0);
     }
 
-    /// VFS light 缺席（生产者 fail-closed）不 latch：内核/PM 半照常落，
-    /// light 置空（[ARCH: A-7] 的降级语义，tables.rs 头注）。
+    /// An absent VFS light table (producer fail-closed) does not latch: the
+    /// kernel/PM halves land as usual and light is left empty (the
+    /// `[ARCH: A-7]` degradation semantics, header note of tables.rs).
     #[test]
     fn test_vfs_light_absent_degrades() {
         let mut tables = Tables::new();
@@ -548,7 +553,7 @@ mod pull_tests {
         assert_eq!(tables.pm_tab.len(), tables.scratch_len().1);
         assert!(tables.vfs_tab.is_empty());
         assert!(!tables.latched);
-        // 下一 tick 照常重拉（不锁死）。
+        // The next tick pulls again as usual (no lockout).
         assert!(tables.update(8, &mut kernel, &mut services));
     }
 

@@ -28,7 +28,7 @@
 //!   done instead: the leak is invisible to the command's observable behavior and
 //!   is not worth preserving.
 //!
-//! Real-machine effect is the writable-root gate (`C-57`/E5), as for every
+//! Real-machine effect is the writable-root gate (`E5`), as for every
 //! write-side command: the root image is the read-only boot-shim `imgrd`, so the
 //! `ftruncate` leg cannot be exercised on the machine yet.
 

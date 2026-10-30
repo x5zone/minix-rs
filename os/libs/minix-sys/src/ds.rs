@@ -38,11 +38,13 @@ pub struct DsCheckReply {
 
 /// One DS client bound to two transport legs and the store's endpoint.
 ///
-/// C 的一个进程自带两条硬件腿：DS 对话走 int-33 IPC（`_taskcall`），
-/// grant 生命线走 SYSCALL（`cpf_*` = SYS_SAFECOPY 家族）。`IpcTransport`
-/// 与 `KernelCallTransport` 分立成两个载体参数（T7 约束放宽，2026-09-18）：
-/// 单一直传载体不再被迫聚合双 trait（input 聚合 workaround 与
-/// minix-driver-rt 的 ENOSYS 登记随此解除）。
+/// C's one process carries two hardware legs: DS dialogue goes over int-33 IPC
+/// (`_taskcall`), while the grant lifeline goes over SYSCALL (`cpf_*` = the
+/// SYS_SAFECOPY family). `IpcTransport` and `KernelCallTransport` are split into
+/// two carrier parameters (the single-carrier constraint was relaxed on
+/// 2026-09-18): a direct-call carrier no longer has to aggregate both traits
+/// (that also retires the input aggregation workaround and the minix-driver-rt
+/// ENOSYS registration).
 ///
 /// The grant table is owned by the *process*, not the client: C keeps one
 /// global libc `grants` array (safecopies.c) shared by every `cpf_*` user
@@ -51,11 +53,11 @@ pub struct DsCheckReply {
 /// borrows the caller's table on each call — constructing several
 /// `DsClient`s in one process must reuse the same `GrantTable`, never own
 /// a private one, or the divergent tables hijack the kernel's view and
-/// every safecopy read hits a stale slot (NK4-C 1.24 B13 root cause).
+/// every safecopy read hits a stale slot (the observed root cause).
 pub struct DsClient<I: IpcTransport, K: KernelCallTransport> {
-    /// DS 对话腿：publish/retrieve/check 的 `_taskcall(DS, ...)`。
+    /// DS dialogue leg: `_taskcall(DS, ...)` for publish/retrieve/check.
     ipc: I,
-    /// grant 生命线腿：`grant_direct`/`revoke` 的内核调用。
+    /// Grant lifeline leg: the kernel calls of `grant_direct`/`revoke`.
     kernel: K,
     ds_endpoint: Endpoint,
 }
@@ -151,7 +153,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
         // alive across the call, and C revokes unconditionally (ds.c:32),
         // on the transport-failure path too.
         let outcome = perform_taskcall(&self.ipc, self.ds_endpoint, call, &mut msg);
-        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        //[SD19-gate] C ds.c:32 revokes unconditionally and ignores the return
+        // value (the C anchor above is the reason)
         #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(key_grant);
         let reply = outcome.map_err(|e| e.to_i32())?;
@@ -233,7 +236,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             Some(DsVal::grant(val_grant)),
             buffer.len() as i32,
         );
-        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        //[SD19-gate] C ds.c:32 revokes unconditionally and ignores the return
+        // value (the C anchor above is the reason)
         #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(val_grant);
         r.map(|_| ())
@@ -266,7 +270,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             Some(DsVal::grant(val_grant)),
             buf.len() as i32,
         );
-        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        //[SD19-gate] C ds.c:32 revokes unconditionally and ignores the return
+        // value (the C anchor above is the reason)
         #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(val_grant);
         r.map(|_| ())
@@ -300,8 +305,9 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
     ) -> Result<usize, i32> {
         let room = buf.len().min(DS_MAX_KEYLEN);
         let mut seed = alloc::vec![0u8; DS_MAX_KEYLEN];
-        // WRITE grant 必须源自 *mut(as_ptr 派生的写别名是 UB);store
-        // 的写入经 grant 直达这块内存,mut 借用覆盖整个 taskcall。
+        // The WRITE grant must originate from *mut (a write alias derived from
+        // as_ptr is UB); the store's writes reach this memory directly through
+        // the grant, and the mut borrow spans the whole taskcall.
         let key_grant = grants.grant_direct(
             &self.kernel,
             self.ds_endpoint.0,
@@ -323,7 +329,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
         // Same unlifted-outcome shape as `check`: the WRITE grant stays
         // alive across the taskcall; revoke runs on every path (ds.c:32).
         let outcome = perform_taskcall(&self.ipc, self.ds_endpoint, DS_RETRIEVE_LABEL, &mut msg);
-        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        //[SD19-gate] C ds.c:32 revokes unconditionally and ignores the return
+        // value (the C anchor above is the reason)
         #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(key_grant);
         let reply = outcome.map_err(|e| e.to_i32())?;
@@ -380,7 +387,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             Some(DsVal::grant(val_grant)),
             grant_len as i32,
         );
-        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        //[SD19-gate] C ds.c:32 revokes unconditionally and ignores the return
+        // value (the C anchor above is the reason)
         #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(val_grant);
         let msg = r?;
@@ -417,7 +425,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             Some(DsVal::grant(val_grant)),
             buffer.len() as i32,
         );
-        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        //[SD19-gate] C ds.c:32 revokes unconditionally and ignores the return
+        // value (the C anchor above is the reason)
         #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(val_grant);
         let msg = r?;
@@ -489,14 +498,16 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
         // SAFETY: the store wrote flags/owner back into the request lanes.
         let req = unsafe { &msg.m_u.m_ds_req };
         let has_event = reply >= 0 && req.flags != 0;
-        // C ds_check 的 key 参数是 WRITE grant 登记的本进程内存：DS 把
-        // 事件 key 写进去，revoke 后内容仍在（ds.c:209-219）。回拷给
-        // 调用者——VFS 的 ds_event 靠 key 前缀分类（misc.c:952-970）。
+        // C ds_check's key parameter is this process's own memory registered as
+        // a WRITE grant: DS writes the event key into it and the content is
+        // still there after the revoke (ds.c:209-219). Copy it back to the
+        // caller—VFS's ds_event classifies by key prefix (misc.c:952-970).
         if has_event {
             let n = room.min(key.len());
             key[..n].copy_from_slice(&seed[..n]);
         }
-        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        //[SD19-gate] C ds.c:32 revokes unconditionally and ignores the return
+        // value (the C anchor above is the reason)
         #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(key_grant);
         if reply < 0 {
@@ -518,12 +529,13 @@ mod ds_client_tests {
     use crate::ipc::CannedTransport;
     use crate::syscall::CannedKernelCallTransport;
 
-    /// 双载体装配契约（T7 约束放宽，2026-09-18）：grant 生命线载体
-    /// （`KernelCallTransport`，SYSCALL 腿）与 DS 对话载体
-    /// （`IpcTransport`，int-33 腿）分立成两个参数——单一直传载体
-    /// （如只实现其一的 CannedKernelCallTransport）不再被迫聚合双 trait
-    /// （input 的聚合 workaround 与 minix-driver-rt 的 ENOSYS 登记随此
-    /// 解除）。
+    /// Dual-carrier assembly contract (the single-carrier constraint was relaxed
+    /// on 2026-09-18): the grant lifeline carrier (`KernelCallTransport`, the
+    /// SYSCALL leg) and the DS dialogue carrier (`IpcTransport`, the int-33 leg)
+    /// are two separate parameters—a single direct-call carrier (such as a
+    /// CannedKernelCallTransport implementing only one of them) no longer has
+    /// to aggregate both traits (which also retires input's aggregation
+    /// workaround and the minix-driver-rt ENOSYS registration).
     #[test]
     fn test_dual_carrier_assembly() {
         let ds = DsClient::new(
@@ -534,14 +546,16 @@ mod ds_client_tests {
         assert_eq!(ds.ds_endpoint(), Endpoint::DS);
     }
 
-    /// publish 的两类动词各走各腿：grant 生命线落 kernel 载体（空脚本
-    /// 内核调用即成功），`_taskcall(DS, DS_PUBLISH)` 落 ipc 载体（脚本
-    /// OK 应答）——整链成功，无人再要求同一类型实现双 trait。
+    /// publish's two kinds of verbs each take their own leg: the grant lifeline
+    /// lands on the kernel carrier (an empty script makes the kernel call
+    /// succeed), while `_taskcall(DS, DS_PUBLISH)` lands on the ipc carrier
+    /// (scripted OK answer)—the whole chain succeeds, and no one demands that
+    /// one type implement both traits.
     #[test]
     fn test_publish_label_over_split_carriers() {
         let mut ipc = CannedTransport::new();
         let mut reply = Message::default();
-        reply.m_type = 0; // do_invoke_ds 成功
+        reply.m_type = 0; // do_invoke_ds succeeds
         ipc.reply_sendrec(Ok(reply));
         let mut ds = DsClient::new(ipc, CannedKernelCallTransport::new(), Endpoint::DS);
         let mut grants = GrantTable::new();

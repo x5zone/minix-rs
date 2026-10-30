@@ -77,7 +77,8 @@ mod tests {
             m_type: 0,
             ..Default::default()
         };
-        // SAFETY(test): 取 union 字段的 &mut 写回值——内核 Input 臂会填同一槽。
+        // SAFETY(test): take a `&mut` to the union field to write the value
+        // back — the kernel Input arm fills the same slot.
         let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_devio };
         arm.value = value;
         reply

@@ -552,7 +552,7 @@ mod tests {
     fn test_do_init_ready_pending_underflow_panics() {
         // C: main.c:586 — `num_init_ready_pending > 0` before decrement; a
         // zero pending is a program error, not a silent saturate.
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort finish; discarding the Result does not change an already-established main result (C's counterpart is void/ignored)
         #[allow(clippy::let_underscore_must_use)]
         let _ = do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 0, true, 0, 100);
     }

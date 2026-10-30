@@ -40,8 +40,8 @@ fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// The letter position of the libc line is **one raw byte**: the reference
-/// `tmp/uniq-408/uniq_ref` (`uniq.c` + Minix's `getopt.c` + the progname/`util.h` shim set,
+/// The letter position of the libc line is **one raw byte**: the reference build
+/// (`uniq.c` + Minix's `getopt.c` + the progname/`util.h` shim set,
 /// started through the `uniq` symlink so both binaries carry the same `getprogname()`) prints
 /// `uniq: unknown option -- ` + `c3` + newline for `-\u{e9}`, `-c\u{e9}` and `-u\u{e9}`
 /// (`c`/`d`/`u` are C's valueless letters in `"-cdf:s:u"`, so clusters keep scanning into the
@@ -157,8 +157,8 @@ fn obsolete_forms_fold_into_the_skip_options() {
 
 #[test]
 fn only_the_operand_count_takes_a_bare_usage() {
-    // 第三个操作数走的是 `uniq.c:124` 的 `default: usage()`：选项环早已跑完，
-    // 所以前面**没有** libc 那一行。
+    // A third operand goes through `uniq.c:124`'s `default: usage()`: the option
+    // ring has long finished, so there is **no** libc line in front of it.
     const USAGE: &str = "usage: uniq [-cdu] [-f fields] [-s chars] [input_file [output_file]]\n";
     for args in [&["a", "b", "c"][..], &["-c", "a", "b", "c"][..]] {
         let (out, status, err) = run(args, "a\n");
@@ -170,14 +170,16 @@ fn only_the_operand_count_takes_a_bare_usage() {
 
 #[test]
 fn unknown_option_and_missing_value_take_two_lines() {
-    // Minix3 的 `uniq` 没有 `-i` 这个字母（选项串是 `"-cdf:s:u"`）。两行：
-    // `getopt.c:101-104` 的那一句（字母不带引号，与本机 glibc 不同形）加 usage。
+    // Minix3's `uniq` has no `-i` letter (the option string is `"-cdf:s:u"`). Two lines:
+    // the `getopt.c:101-104` line (the letter is unquoted, unlike this host's glibc) plus
+    // usage.
     const USAGE: &str = "usage: uniq [-cdu] [-f fields] [-s chars] [input_file [output_file]]\n";
     let (out, status, err) = run(&["-i"], "a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);
     assert_eq!(err, format!("uniq: unknown option -- i\n{USAGE}"));
-    // 缺值同理（`getopt.c:132-136`）：`-f` 与 `-s` 各自的字母。
+    // A missing value behaves the same (`getopt.c:132-136`): `-f` and `-s` each report
+    // their own letter.
     for letter in ['f', 's'] {
         let word = format!("-{letter}");
         let (out, status, err) = run(&[&word], "a\n");
@@ -189,7 +191,8 @@ fn unknown_option_and_missing_value_take_two_lines() {
             "`-{letter}` 缺值那一支"
         );
     }
-    // 不带值的旗标 `-c` 本身就是合法选项，不该走 usage（与上面两支的分界）。
+    // The valueless flag `-c` is itself a legal option and must not go to usage (the
+    // dividing line from the two branches above).
     assert_eq!(
         run(&["-c"], "a\na\n"),
         (String::from("   2 a\n"), 0, String::new())
@@ -198,8 +201,9 @@ fn unknown_option_and_missing_value_take_two_lines() {
 
 #[test]
 fn the_two_skip_values_get_their_own_sentences_with_the_bad_value_echoed() {
-    // C 这里是 `errx(1, "illegal field skip value: %s", optarg)` 与它的 `-s` 同胞
-    //（`uniq.c:90-98`）：自己的句子、带坏值、**没有 usage**。
+    // C here is `errx(1, "illegal field skip value: %s", optarg)` and its `-s`
+    // sibling (`uniq.c:90-98`): their own sentences, carrying the bad value,
+    // **without usage**.
     for (args, message) in [
         (&["-f", "x"][..], "uniq: illegal field skip value: x\n"),
         (&["-s", "x"][..], "uniq: illegal character skip value: x\n"),
@@ -214,8 +218,8 @@ fn the_two_skip_values_get_their_own_sentences_with_the_bad_value_echoed() {
         assert_eq!(status, 1, "{args:?} 的 stderr 是 {err:?}");
         assert_eq!(err, message, "{args:?}");
     }
-    // `-f -1` 不同：那个 `-1` 会先被 `obsolete()` 折叠成 `-f1`，所以带回去的是
-    // `-f1`（宿主参照件同读数）。
+    // `-f -1` differs: that `-1` is first folded by `obsolete()` into `-f1`, so what
+    // comes back is `-f1` (the host reference reads the same).
     let (out, status, err) = run(&["-f", "-1"], "a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);
@@ -224,18 +228,20 @@ fn the_two_skip_values_get_their_own_sentences_with_the_bad_value_echoed() {
 
 #[test]
 fn an_empty_or_padded_skip_value_is_a_count_not_an_error() {
-    // C 的那道检查只有两条：转出一个负数，或 `*p` 还有残留（`uniq.c:91`、`:97`）。
-    // `strtol` 一个数字都没转出来时值为 0 且 `*p` 停在数字起点，所以 `-f ''` 是
-    // 合法的零（跳 0 个字段，等价于不给 `-f`），而前导空白会被跳掉。
+    // C's check has only two arms: a converted negative number, or a leftover in `*p`
+    // (`uniq.c:91`, `:97`). When `strtol` converts not a single digit the value is 0
+    // and `*p` stays at the start of the digits, so `-f ''` is a legal zero (skip 0
+    // fields, equivalent to omitting `-f`), and leading blanks are skipped.
     let three = "foo SAME\nbar SAME\nbaz OTHER\n";
     let plain = run(&["-f", "0"], three).0;
     assert_eq!(plain, run(&["-f", ""], three).0, "空值就是零");
     assert_eq!(plain, run(&["-f", " 0"], three).0, "前导空白跳掉");
     assert_eq!(run(&["-f+0"], three).0, plain, "附值形可带一个正号");
     assert_ne!(plain, run(&["-f", "1"], three).0, "零与一真的不一样");
-    // 而分开写的 `+0` 不走到 `strtol`：C 的 `obsolete()` 先把它折成 `-s0`，于是
-    // `-f` 拿到的值是 `-s0`，转不出数字就报 errx（宿主参照件同读数：
-    // `uniq_ref: illegal field skip value: -s0`）。
+    // A separate `+0` never reaches `strtol`: C's `obsolete()` first folds it into
+    // `-s0`, so the value `-f` receives is `-s0`, which converts no digits and so
+    // reports errx (the host reference reads the same:
+    // `uniq_ref: illegal field skip value: -s0`).
     let (out, status, err) = run(&["-f", "+0"], three);
     assert_eq!(out, "");
     assert_eq!(status, 1);
@@ -289,8 +295,8 @@ fn unopenable_input_leaves_no_output_file() {
     let (out, status, err) = run(&[&missing_text, &output_text], "");
     assert_eq!(out, "");
     assert_eq!(status, 1);
-    // `err(1, "%s", name)` 的三个成分（程序名、操作数、`strerror` 句子），
-    // 而且它是致命的（退 1）。
+    // The three components of `err(1, "%s", name)` (program name, operand,
+    // `strerror` sentence), and it is fatal (exit 1).
     assert_eq!(
         err,
         format!("uniq: {missing_text}: No such file or directory\n")
@@ -335,7 +341,8 @@ fn agrees_with_the_host_uniq_where_the_two_specs_coincide() {
     }
 }
 
-/// 把标准输出接到一枚已打开的落点上跑一腿（`/dev/full` 用得上：写它必回 `ENOSPC`）。
+/// Run a leg with standard output connected to an already-open sink (`/dev/full` is the
+/// one that matters: writing it always answers `ENOSPC`).
 fn run_into_sink(args: &[&str], input: &str, sink_path: &str) -> (i32, String) {
     let sink = fs::OpenOptions::new()
         .write(true)
@@ -356,10 +363,12 @@ fn run_into_sink(args: &[&str], input: &str, sink_path: &str) -> (i32, String) {
     )
 }
 
-/// 写腿第一形（标准输出写不进）：C 的输出腿从不查失手——`file(argv[1], "w")` 只在**开档**
-/// 失败时 `err(1, "%s", name)`（`minix3/usr.bin/uniq/uniq.c:216-221`），此后 `fprintf`
-/// 的返回值一律不看，全文件没有一处 `ferror`/`fflush`。参照件同形实测一字不报、**退 0**。
-/// 改前本壳经 `support::emit` 静默退 1：一句话不说是对的，退码不对。
+/// Write leg, shape one (standard output takes no bytes): C's output leg never checks
+/// for failure — `file(argv[1], "w")` only calls `err(1, "%s", name)` when **opening**
+/// fails (`minix3/usr.bin/uniq/uniq.c:216-221`), and after that the return value of
+/// `fprintf` is never examined; the whole file has not a single `ferror`/`fflush`. The
+/// reference reports not a word and **exits 0** on this shape. An earlier shell silently
+/// exited 1 through `support::emit`: staying silent is right, the exit code was not.
 #[test]
 fn a_stdout_that_stops_taking_bytes_stays_silent_and_exits_zero() {
     let (status, err) = run_into_sink(&[], "a\na\nb\n", "/dev/full");
@@ -370,10 +379,12 @@ fn a_stdout_that_stops_taking_bytes_stays_silent_and_exits_zero() {
     );
 }
 
-/// 写腿第二形（输出操作数写不进）：宿主上 `File::create("/dev/full")` 这一层是成功的
-/// （字符设备的截断是空操作），失败只落在写与收尾——正是 C 不看的那两处。改前本壳印一句
-/// 只有两段的 `uniq: <路径>` 并退 1：句子不是 C 的句子（C 的两段形只出现在 `errx`），
-/// 退码也不是 C 的退码。
+/// Write leg, shape two (the output operand takes no bytes): on the host
+/// `File::create("/dev/full")` succeeds at this layer (truncating a character device is
+/// a no-op) and failure lands only in the write and the flush — exactly the two places
+/// C does not look at. An earlier shell printed a two-part `uniq: <path>` and exited 1:
+/// the sentence is not C's sentence (C's two-part form appears only in `errx`), and the
+/// exit code is not C's either.
 #[test]
 fn an_output_operand_that_cannot_be_written_stays_silent_and_exits_zero() {
     let input = scratch("sink-in");
@@ -388,11 +399,13 @@ fn an_output_operand_that_cannot_be_written_stays_silent_and_exits_zero() {
     let _ = fs::remove_file(&input);
 }
 
-/// `uniq` 不给无尾换行的末行补换行，而且印的是一个连续段的第一行——那一行的终止状态
-/// 跟着它自己走。C 的 `uniq` 用 `fgetln` 得到含换行的行、比较时剥掉换行、打印时原样
-/// 交回（`minix3/usr.bin/uniq/uniq.c`）；参照件 `tmp/uniq-408/uniq_ref` 对
-/// `x\nx\ny`（末尾无换行）现量交回 `x\ny`：两枚 `x` 并成一个段、印带换行的第一枚，
-/// `y` 没有换行就原样结束。
+/// `uniq` does not add a newline to a final line that lacks one, and it prints the first
+/// line of a run — that line's termination state travels with it. C's `uniq` uses
+/// `fgetln` to get the line including its newline, strips the newline for comparison, and
+/// hands it back as is for printing (`minix3/usr.bin/uniq/uniq.c`); the reference build
+/// measured `x\nx\ny` (no trailing newline) returning `x\ny`: the two `x` lines merge
+/// into one run and the first is printed with its newline, while `y` has none and ends
+/// as is.
 #[test]
 fn uniq_does_not_supply_a_newline_the_input_lacked() {
     let (out, code, err) = run(&[], "x\nx\ny");

@@ -1,88 +1,99 @@
-//! `stat` 的选项面与格式串解析（决定半第一包）。
+//! `stat`'s option face and format-string parsing (the first deciding-half
+//! package).
 //!
-//! 真源是 `minix3/usr.bin/stat/stat.c`（NetBSD 1.38）。这个命令的骨架是一台
-//! 小型格式机：一串自带字段码的模板，加上一批把模板换成预置模板的开关。本包只做
-//! 「读命令行走哪条预置」与「把模板拆成可渲染的件」这两件事；把件换成文字（字段取值、
-//! 进制与宽度、时间渲染、符号链尾巴）在下一包，薄壳与系统调用腿在其后。
+//! Ground truth is `minix3/usr.bin/stat/stat.c` (NetBSD 1.38). The command's
+//! skeleton is a small format machine: a stream of templates carrying field
+//! codes, plus a set of switches that replace the template with predefined
+//! ones. This package does only two things: "read which predefined template the
+//! command line selects" and "split a template into renderable pieces"; turning
+//! pieces into text (field values, radix and width, time rendering, symlink
+//! tail) is the next package, with the thin shell and the system-call legs
+//! after it.
 //!
-//! 之所以能这样切：C 里 `output()`（`stat.c:368-566`）扫模板时只产出一段段的
-//! 「子格式串 + 解析出的参数」，再交给 `format1()`（`stat.c:568-1151`）去取值渲染。
-//! 两段之间没有共享状态，解析形可以单独钉住测试。
+//! The split works because C's `output()` (`stat.c:368-566`) only produces
+//! "sub-format string + parsed parameters" segments while scanning the
+//! template, then hands them to `format1()` (`stat.c:568-1151`) to fetch values
+//! and render. The two halves share no state, so the parsed form can be pinned
+//! by tests on its own.
 
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-/// 预置模板。C 用四个宏加 `TIME_FORMAT` 表达（`stat.c:94-115`）；此处原样抄成常量，
-/// 好让「选了哪条预置」这一件事在宿主测里可直接断言。
+/// The predefined templates. C expresses them as four macros plus
+/// `TIME_FORMAT` (`stat.c:94-115`); they are copied verbatim as constants here
+/// so that a host test can assert directly "which preset was chosen".
 pub const DEF_FORMAT: &str =
     "%d %i %Sp %l %Su %Sg %r %z \"%Sa\" \"%Sm\" \"%Sc\" \"%SB\" %k %b %#Xf %N";
-/// 预置：`-r`（`stat.c:97-98`）。
+/// Preset for `-r` (`stat.c:97-98`).
 pub const RAW_FORMAT: &str = "%d %i %#p %l %u %g %r %z %a %m %c %B %k %b %f %N";
-/// 预置：`-l`（`stat.c:99`）。
+/// Preset for `-l` (`stat.c:99`).
 pub const LS_FORMAT: &str = "%Sp %l %Su %Sg %Z %Sm %N%SY";
-/// 预置：`-l -F`（`stat.c:100`）。
+/// Preset for `-l -F` (`stat.c:100`).
 pub const LSF_FORMAT: &str = "%Sp %l %Su %Sg %Z %Sm %N%T%SY";
-/// 预置：`-s`（`stat.c:101-105`）。
+/// Preset for `-s` (`stat.c:101-105`).
 pub const SHELL_FORMAT: &str = "st_dev=%d st_ino=%i st_mode=%#p st_nlink=%l \
     st_uid=%u st_gid=%g st_rdev=%r st_size=%z st_atime=%Sa st_mtime=%Sm \
     st_ctime=%Sc st_birthtime=%SB st_blksize=%k st_blocks=%b st_flags=%f";
-/// 预置：`-x`（`stat.c:106-113`）。
+/// Preset for `-x` (`stat.c:106-113`).
 pub const LINUX_FORMAT: &str = "  File: \"%N\"%n  Size: %-11z  FileType: %HT%n  \
     Mode: (%04OLp/%.10Sp)         Uid: (%5u/%8Su)  Gid: (%5g/%8Sg)%nDevice: %Hd,%Ld   \
     Inode: %i    Links: %l%nAccess: %Sa%nModify: %Sm%nChange: %Sc";
-/// 默认时间模板（`stat.c:115`）；`-s` 用 `%s`、`-x` 用 `%c`（`stat.c:302-311`）。
+/// The default time template (`stat.c:115`); `-s` uses `%s` and `-x` uses
+/// `%c` (`stat.c:302-311`).
 pub const TIME_FORMAT: &str = "%b %e %T %Y";
 
-/// 字段码。`stat.c:158-178` 的 `SHOW_*`，逐个对应一个字母。
+/// Field codes. The `SHOW_*` list at `stat.c:158-178`, one letter each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Datum {
-    /// `%R`：realpath（`stat.c:158`）。
+    /// `%R`:realpath(`stat.c:158`).
     Realpath,
-    /// `%d`：`st_dev`。
+    /// `%d`:`st_dev`.
     Dev,
-    /// `%i`：`st_ino`。
+    /// `%i`:`st_ino`.
     Ino,
-    /// `%p`：`st_mode`。
+    /// `%p`:`st_mode`.
     Mode,
-    /// `%l`：`st_nlink`。
+    /// `%l`:`st_nlink`.
     Nlink,
-    /// `%u`：`st_uid`。
+    /// `%u`:`st_uid`.
     Uid,
-    /// `%g`：`st_gid`。
+    /// `%g`:`st_gid`.
     Gid,
-    /// `%r`：`st_rdev`。
+    /// `%r`:`st_rdev`.
     Rdev,
-    /// `%a`：`st_atime`。
+    /// `%a`:`st_atime`.
     Atime,
-    /// `%m`：`st_mtime`。
+    /// `%m`:`st_mtime`.
     Mtime,
-    /// `%c`：`st_ctime`。
+    /// `%c`:`st_ctime`.
     Ctime,
-    /// `%B`：`st_birthtime`。
+    /// `%B`:`st_birthtime`.
     Btime,
-    /// `%z`：`st_size`。
+    /// `%z`:`st_size`.
     Size,
-    /// `%b`：`st_blocks`。
+    /// `%b`:`st_blocks`.
     Blocks,
-    /// `%k`：`st_blksize`。
+    /// `%k`:`st_blksize`.
     Blksize,
-    /// `%f`：`st_flags`。
+    /// `%f`:`st_flags`.
     Flags,
-    /// `%v`：`st_generation`。
+    /// `%v`:`st_generation`.
     Gen,
-    /// `%Y`：符号链的内容。
+    /// `%Y`: the symlink's contents.
     Symlink,
-    /// `%T`：文件类型名。
+    /// `%T`: the file type name.
     Filetype,
-    /// `%N`：文件名。
+    /// `%N`: the file name.
     Filename,
-    /// `%Z`：`sizerdev`——字符/块设备给 `rdev`，其余给 `size`（`stat.c:447-448` 的注释）。
+    /// `%Z`: `sizerdev` — char/block devices give `rdev`, everything else
+    /// gives `size` (the comment at `stat.c:447-448`).
     SizeRdev,
 }
 
 impl Datum {
-    /// 解析字段码字母（`stat.c:515-537` 的那一长串 `fmtcase`）。
+    /// Parse the field-code letter (the long `fmtcase` chain at
+    /// `stat.c:515-537`).
     fn from_char(c: u8) -> Option<Datum> {
         Some(match c {
             b'R' => Datum::Realpath,
@@ -111,7 +122,7 @@ impl Datum {
     }
 }
 
-/// 进制/形态选择字母 `D O U X F S`（`stat.c:140-145`）。
+/// The radix/form selection letters `D O U X F S` (`stat.c:140-145`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutFmt {
     Decimal,
@@ -123,7 +134,7 @@ pub enum OutFmt {
 }
 
 impl OutFmt {
-    /// 解析输出形态字母（`stat.c:494-503`）。
+    /// Parse the output-form letter (`stat.c:494-503`).
     fn from_char(c: u8) -> Option<OutFmt> {
         Some(match c {
             b'D' => OutFmt::Decimal,
@@ -137,7 +148,8 @@ impl OutFmt {
     }
 }
 
-/// 子字段选择 `H M L`（`stat.c:154-156`）：取高位/中位/低位片段。
+/// Sub-field selection `H M L` (`stat.c:154-156`): take the high, middle, or
+/// low slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hilo {
     High,
@@ -146,7 +158,7 @@ pub enum Hilo {
 }
 
 impl Hilo {
-    /// 解析子字段字母（`stat.c:505-513`）。
+    /// Parse the sub-field letter (`stat.c:505-513`).
     fn from_char(c: u8) -> Option<Hilo> {
         Some(match c {
             b'H' => Hilo::High,
@@ -157,76 +169,85 @@ impl Hilo {
     }
 }
 
-/// 格式参数位。`stat.c:117-121` 的 `FLAG_POUND`…`FLAG_MINUS`，取值逐位照抄。
+/// Format-parameter bits. `FLAG_POUND`…`FLAG_MINUS` at `stat.c:117-121`; the
+/// values are copied bit for bit.
 pub const FLAG_POUND: u32 = 0x01;
-/// 见 `FLAG_POUND`（`stat.c:118`）。
+/// See `FLAG_POUND` (`stat.c:118`).
 pub const FLAG_SPACE: u32 = 0x02;
-/// 见 `FLAG_POUND`（`stat.c:119`）。
+/// See `FLAG_POUND` (`stat.c:119`).
 pub const FLAG_PLUS: u32 = 0x04;
-/// 见 `FLAG_POUND`（`stat.c:120`）。
+/// See `FLAG_POUND` (`stat.c:120`).
 pub const FLAG_ZERO: u32 = 0x08;
-/// 见 `FLAG_POUND`（`stat.c:121`）。
+/// See `FLAG_POUND` (`stat.c:121`).
 pub const FLAG_MINUS: u32 = 0x10;
 
-/// 单字符简写件（`stat.c:129-132` 的 `SIMPLE_*`）。
+/// Single-character shorthand pieces (the `SIMPLE_*` set at `stat.c:129-132`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Simple {
-    /// `%n`：换行。
+    /// `%n`: a newline.
     Newline,
-    /// `%t`：制表符。
+    /// `%t`: a tab.
     Tab,
-    /// `%%`：一个百分号。
+    /// `%%`: one percent sign.
     Percent,
-    /// `%@`：本文件是第几个操作数（`stat.c:417-423`，`fn` 从 1 起）。
+    /// `%@`: the operand's ordinal among the files (`stat.c:417-423`; `fn`
+    /// starts at 1).
     FileNumber,
 }
 
-/// 一条完整字段件，带 C 用来报错的那段子格式串。
+/// One complete field spec, carrying the sub-format string C uses in its error
+/// message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec<'a> {
-    /// `FLAG_*` 的按位或（`stat.c:451-462`）。
+    /// Bitwise OR of the `FLAG_*` bits (`stat.c:451-462`).
     pub flags: u32,
-    /// 字段宽度；`-1` 表示没写（C 的初值，`stat.c:468`）。
+    /// Field width; `-1` means absent (C's initial value, `stat.c:468`).
     pub size: i32,
-    /// 精度；`-1` 表示没写（C 的初值，`stat.c:479`）。
+    /// Precision; `-1` means absent (C's initial value, `stat.c:479`).
     pub prec: i32,
-    /// 输出形态，没写则 `None`（C 置 `ofmt = 0`，`stat.c:501`）。
+    /// Output form; `None` when absent (C sets `ofmt = 0`, `stat.c:501`).
     pub ofmt: Option<OutFmt>,
-    /// 子字段，没写则 `None`（C 置 `hilo = 0`，`stat.c:512`）。
+    /// Sub-field; `None` when absent (C sets `hilo = 0`, `stat.c:512`).
     pub hilo: Option<Hilo>,
-    /// 字段码。
+    /// Field code.
     pub datum: Datum,
-    /// 本子格式串的原文（含起始的 `%`，到字段码为止）。C 把它连同长度一并交给
-    /// `format1()`（`stat.c:570`），两处报错都用它做 `"%.*s: bad format"` 的回显：
-    /// 扫描阶段读不出字段码在 `stat.c:555-556`，取值阶段发现该字段不接受所请求的
-    /// 形态在 `stat.c:989`、`:997`、`:1117`。
+    /// The verbatim text of this sub-format string (from the leading `%`
+    /// through the field code). C passes it to `format1()` together with its
+    /// length (`stat.c:570`), and both error sites echo it via
+    /// `"%.*s: bad format"`: unreadable field codes during scanning at
+    /// `stat.c:555-556`, and a field rejecting the requested form while values
+    /// are fetched, at `stat.c:989`, `:997`, `:1117`.
     pub source: &'a str,
 }
 
-/// 模板拆开后的件。
+/// A piece of a split template.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece<'a> {
-    /// 普通字节，原样输出。
+    /// An ordinary byte, emitted verbatim.
     Literal(u8),
-    /// `%n` / `%t` / `%%` / `%@` 四条形同简写的写法。
+    /// One of the four shorthand forms `%n` / `%t` / `%%` / `%@`.
     Simple(Simple),
-    /// 一条字段件。
+    /// One field spec.
     Spec(Spec<'a>),
 }
 
-/// 坏格式。C 一律 `errx(1, "%.*s: bad format", …)`（`stat.c:554-556`），
-/// 这里把那段子格式串交给调用方去渲染，纯逻辑层不必知道退出码。
+/// Bad format. C always does `errx(1, "%.*s: bad format", …)`
+/// (`stat.c:554-556`); here the sub-format string is handed to the caller to
+/// render, and the pure logic layer need not know the exit code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BadFormat {
-    /// 报错文本里回显的那段子格式串（从 `%` 起，到读坏的那个字符止，含之）。
+    /// The sub-format string echoed in the error text (from `%` through the
+    /// offending character, inclusive).
     pub span: String,
 }
 
-/// 拆模板（C 的 `output()` 主循环，`stat.c:380-556`）。
+/// Split a template (C's `output()` main loop, `stat.c:380-556`).
 ///
-/// 与 C 同形的几处：`%` 后先试四个简写字母；再连吃五个参数位字母；然后是最多十进制
-/// 宽度、可选 `.` 与最多十进制精度、可选形态字母、可选子字段字母，最后必须是字段码，
-/// 否则整条子格式串（含读坏的那一字符）进 `BadFormat`。
+/// The shape follows C: after `%`, first try the four shorthand letters; then
+/// eat up to five parameter-bit letters; then a decimal width, an optional `.`
+/// with a decimal precision, an optional form letter, and an optional sub-field
+/// letter; finally a field code is mandatory, otherwise the whole sub-format
+/// string (including the offending character) goes into `BadFormat`.
 pub fn parse_format(fmt: &str) -> Result<Vec<Piece<'_>>, BadFormat> {
     let bytes = fmt.as_bytes();
     let mut out = Vec::new();
@@ -238,11 +259,12 @@ pub fn parse_format(fmt: &str) -> Result<Vec<Piece<'_>>, BadFormat> {
             i += 1;
             continue;
         }
-        // 子格式串从这里的 '%' 起算（C 的 `subfmt = statfmt`，`stat.c:398`）。
+        // The sub-format string starts at this '%' (C's `subfmt = statfmt`,
+        // `stat.c:398`).
         let start = i;
         i += 1;
 
-        // 四个单字符简写（`stat.c:402-425`）。
+        // The four single-character shorthands (`stat.c:402-425`).
         if i < bytes.len() {
             let simple = match bytes[i] {
                 b'n' => Some(Simple::Newline),
@@ -284,8 +306,11 @@ pub fn parse_format(fmt: &str) -> Result<Vec<Piece<'_>>, BadFormat> {
                         size = v;
                         i += 1;
                     }
-                    // C 判的是乘加后为负（`stat.c:469-475`）；溢出到负与超出可表示
-                    // 范围都落进同一支坏格式，报错文本按同一规则取。
+                    // C checks whether the multiply-add went negative
+                    // (`stat.c:469-475`); overflow to negative and values beyond
+                    // the representable range both fall into the same
+                    // bad-format arm, with the error text taken by the same
+                    // rule.
                     _ => return Err(bad(fmt, start, i)),
                 }
             }
@@ -309,7 +334,7 @@ pub fn parse_format(fmt: &str) -> Result<Vec<Piece<'_>>, BadFormat> {
             }
         }
 
-        // 形态字母与子字段字母各最多一个（`stat.c:494-513`）。
+        // At most one form letter and one sub-field letter (`stat.c:494-513`).
         let ofmt = if i < bytes.len() {
             OutFmt::from_char(bytes[i])
         } else {
@@ -347,10 +372,11 @@ pub fn parse_format(fmt: &str) -> Result<Vec<Piece<'_>>, BadFormat> {
     Ok(out)
 }
 
-/// 坏格式的报错文本：C 用 `statfmt - subfmt + 1` 的长度截子格式串
-/// （`stat.c:554-556`）。这里的 `i` 停在读坏的位置（可能等于串尾），
-/// 因此跨度是 `[start, i]` 闭区间；串尾时 C 会连 `'\0'` 一起计入长度，
-/// 实际打出来的仍是到串尾为止的原文。
+/// The bad-format error text: C slices the sub-format string to the length
+/// `statfmt - subfmt + 1` (`stat.c:554-556`). Here `i` stops at the offending
+/// position (possibly the end of the string), so the span is the closed range
+/// `[start, i]`; at the end of the string C counts the `'\0'` into the length
+/// too, but what is actually printed is still the text up to the end.
 fn bad(fmt: &str, start: usize, i: usize) -> BadFormat {
     let end = (i + 1).min(fmt.len());
     BadFormat {
@@ -358,73 +384,81 @@ fn bad(fmt: &str, start: usize, i: usize) -> BadFormat {
     }
 }
 
-/// 命令行走哪条预置模板。C 用 `fmtchar` 一个整数表达（`stat.c:204`）。
+/// Which predefined template the command line selects. C expresses it as the
+/// single integer `fmtchar` (`stat.c:204`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FmtChar {
-    /// 自定义 `-f`（或默认模板）。
+    /// Custom `-f` (or the default template).
     Format,
-    /// `-l`（`-F` 时换成 `LSF_FORMAT`）。
+    /// `-l` (`LSF_FORMAT` when `-F` is given).
     Ls,
-    /// `-r`。
+    /// `-r`.
     Raw,
-    /// `-s`。
+    /// `-s`.
     Shell,
-    /// `-x`。
+    /// `-x`.
     Linux,
 }
 
-/// 同一条二进制按 `argv[0]` 换人格：`readlink` 是 `stat` 的另一张脸
-/// （`stat.c:219-232`）。
+/// One binary switching personality by `argv[0]`: `readlink` is `stat`'s other
+/// face (`stat.c:219-232`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Personality {
     Stat,
     Readlink,
 }
 
-/// 选项面的解析结果。
+/// The parsed result of the option face.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan<'a> {
-    /// 人格。
+    /// The personality.
     pub personality: Personality,
-    /// 选到的模板：预置常量或 `-f` 自带。
+    /// The selected template: a preset constant or the one given to `-f`.
     pub format: &'a str,
-    /// 时间模板（`-t`），未给则为 `TIME_FORMAT`，`-s`/`-x` 各有默认（`stat.c:292-318`）。
+    /// Time template (`-t`), `TIME_FORMAT` when absent; `-s`/`-x` have their
+    /// own defaults (`stat.c:292-318`).
     pub timefmt: &'a str,
-    /// `-F`：`-l` 用带 `%T` 的那条形。
+    /// `-F`: `-l` uses the variant carrying `%T`.
     pub ls_f: bool,
-    /// `-L`：先 `stat()`，失败且 `ENOENT` 再退到 `lstat()`（`stat.c:327-334`）。
+    /// `-L`: `stat()` first, falling back to `lstat()` on `ENOENT`
+    /// (`stat.c:327-334`).
     pub use_stat: bool,
-    /// `-n`：末尾不换行（`stat.c:559-560`）。
+    /// `-n`: no trailing newline (`stat.c:559-560`).
     pub no_nl: bool,
-    /// `-q`：取值失败时不出声。
+    /// `-q`: stay silent when a value cannot be fetched.
     pub quiet: bool,
-    /// 操作数起点（C 的 `optind`）。
+    /// Operand start (C's `optind`).
     pub operands: usize,
 }
 
-/// 选项面的失败。`Usage` 对应 C 的 `usage()` 退出（`stat.c:357-365`），
-/// `Conflict` 对应两处 `errx`（`stat.c:261-263`、`stat.c:289-291`）。
+/// A failure of the option face. `Usage` corresponds to C's `usage()` exit
+/// (`stat.c:357-365`); `Conflict` corresponds to the two `errx` sites
+/// (`stat.c:261-263`, `stat.c:289-291`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
-    /// `usage: <prog> <synopsis>` 那条路。
+    /// The `usage: <prog> <synopsis>` path.
     Usage,
-    /// `can't use format '%c' with '%c'`：两个模板开关撞了（`stat.c:261-263`）。
+    /// `can't use format '%c' with '%c'`: two template switches collide
+    /// (`stat.c:261-263`).
     FormatConflict { first: char, second: char },
-    /// `can't use format '%c' with -F`（`stat.c:289-291`）。
+    /// `can't use format '%c' with -F`(`stat.c:289-291`).
     NotWithDashF { fmtchar: char },
 }
 
-/// 扫参数（C 的 `getopt` 串在 `stat.c:219-232`：stat 是 `"f:FlLnqrst:x"`，
-/// readlink 是 `"fnqsv"`）。
+/// Scan the arguments (C's `getopt` string is at `stat.c:219-232`: `stat` uses
+/// `"f:FlLnqrst:x"` and `readlink` uses `"fnqsv"`).
 ///
-/// `prog_name` 交的是已经去掉目录的那一段（C 的 `getprogname()`，规则在
-/// `minix3/lib/csu/common/crt0-common.c:156-165`，取法是壳侧唯一的 `bin_support::prog_name`），
-/// 因为人格判据是 `stat.c:220` 的 `strcmp(getprogname(), "readlink") == 0`——整段相等，
-/// 不是「以 `readlink` 结尾」：`/bin/my-readlink` 在 C 里仍走 stat 人格。
+/// `prog_name` is passed already stripped of its directory (C's
+/// `getprogname()`, rule in `minix3/lib/csu/common/crt0-common.c:156-165`,
+/// taken through the shell's single `bin_support::prog_name`), because the
+/// personality test is `strcmp(getprogname(), "readlink") == 0` at `stat.c:220`
+/// — whole-string equality, not "ends with `readlink`": `/bin/my-readlink`
+/// still takes the stat personality in C.
 ///
-/// 两条人格的差别都照 C：readlink 默认模板 `%Y`、默认 `quiet`、`-f` 意为 `%R`、
-/// `-s` 只是把 `quiet` 再置一次、`-v` 取消 `quiet`，而 stat 的 `-F -L -l -r -t -x`
-/// 在它那里都是不认识的开关（不在选项串里）。
+/// Both personalities' differences follow C: readlink's default template is
+/// `%Y`, `quiet` is on by default, `-f` means `%R`, `-s` only sets `quiet`
+/// again, and `-v` clears `quiet`; stat's `-F -L -l -r -t -x` are all unknown
+/// switches there (absent from its option string).
 pub fn parse_args<'a>(args: &[&'a str], prog_name: &str) -> Result<Plan<'a>, PlanError> {
     let readlink = prog_name == "readlink";
     let mut format: Option<&'a str> = None;
@@ -444,7 +478,7 @@ pub fn parse_args<'a>(args: &[&'a str], prog_name: &str) -> Result<Plan<'a>, Pla
         }
         let bytes = a.as_bytes();
         if bytes.len() < 2 || bytes[0] != b'-' {
-            break; // BSD getopt 在第一个非选项处停下
+            break; // BSD getopt stops at the first non-option
         }
         let mut k = 1usize;
         while k < bytes.len() {
@@ -457,21 +491,24 @@ pub fn parse_args<'a>(args: &[&'a str], prog_name: &str) -> Result<Plan<'a>, Pla
                 'v' if readlink => quiet = false,
                 'f' => {
                     if readlink {
-                        // readlink 的选项串是 `"fnqsv"`（`stat.c:221`）：`f` 后面没有冒号，
-                        // 所以 `-f` 不取值，它的意思就是「只报解析后的路径」。
+                        // readlink's option string is `"fnqsv"` (`stat.c:221`):
+                        // `f` has no colon, so `-f` takes no value; it means
+                        // "report only the resolved path".
                         format = Some("%R");
                     } else {
                         let value = take_value(args, &mut i, bytes, &mut k)?;
                         format = Some(value);
-                        // `stat.c:245-258`：`-f` 与 `-l/-r/-s/-x` 共用 `fmtchar` 这个坑，
-                        // 所以第二个模板开关会撞车。
+                        // `stat.c:245-258`: `-f` and `-l/-r/-s/-x` share the
+                        // `fmtchar` slot, so a second template switch
+                        // collides.
                         claim_fmtchar(&mut fmtchar, 'f')?;
                     }
                 }
                 'l' | 'r' | 's' => {
                     if readlink {
-                        // `stat.c:246-249`：readlink 的 `-s` 只是把 quiet 再置一次。
-                        // `-l`/`-r` 不在它的选项串里，落到下面的未知分支。
+                        // `stat.c:246-249`: readlink's `-s` only sets quiet
+                        // again. `-l`/`-r` are not in its option string and
+                        // fall into the unknown branch below.
                         if c == 's' {
                             quiet = true;
                         } else {
@@ -490,7 +527,8 @@ pub fn parse_args<'a>(args: &[&'a str], prog_name: &str) -> Result<Plan<'a>, Pla
         i += 1;
     }
 
-    // `stat.c:279-291`：没写模板开关时，`-F` 折成 `-l`，否则落默认模板。
+    // `stat.c:279-291`: with no template switch given, `-F` folds to `-l`;
+    // otherwise the default template applies.
     let fmtchar = match fmtchar {
         Some(c) => c,
         None if ls_f => 'l',
@@ -513,7 +551,7 @@ pub fn parse_args<'a>(args: &[&'a str], prog_name: &str) -> Result<Plan<'a>, Pla
         });
     }
 
-    // `-s` 与 `-x` 各带自己的时间默认（`stat.c:292-318`）。
+    // `-s` and `-x` each carry their own time default (`stat.c:292-318`).
     let timefmt = match fmtchar {
         's' => timefmt.unwrap_or("%s"),
         'x' => timefmt.unwrap_or("%c"),
@@ -546,8 +584,10 @@ pub fn parse_args<'a>(args: &[&'a str], prog_name: &str) -> Result<Plan<'a>, Pla
     })
 }
 
-/// 取带值开关的值：簇里还有字符就取余段（getopt 的 `-fVALUE` 形），
-/// 否则吃下一个 argv；两者都没有就是缺参，C 里 getopt 返 `?` 走 usage。
+/// Take a value-taking switch's value: the rest of the cluster when characters
+/// remain (getopt's `-fVALUE` form), otherwise the next argv entry; with
+/// neither it is a missing argument, and getopt answers `?` in C, going to
+/// usage.
 fn take_value<'a>(
     args: &[&'a str],
     i: &mut usize,
@@ -556,7 +596,7 @@ fn take_value<'a>(
 ) -> Result<&'a str, PlanError> {
     if *k + 1 < bytes.len() {
         let value = &args[*i][*k + 1..];
-        *k = bytes.len() - 1; // 消费整簇余段（外层还会 +1）
+        *k = bytes.len() - 1; // consume the cluster's rest (the outer loop adds 1)
         return Ok(value);
     }
     let next = *i + 1;
@@ -567,7 +607,8 @@ fn take_value<'a>(
     Ok(args[next])
 }
 
-/// `stat.c:255-257`：`fmtchar` 已被占就报 `can't use format '%c' with '%c'`。
+/// `stat.c:255-257`: when `fmtchar` is already taken, report
+/// `can't use format '%c' with '%c'`.
 fn claim_fmtchar(slot: &mut Option<char>, c: char) -> Result<(), PlanError> {
     if let Some(first) = *slot {
         return Err(PlanError::FormatConflict { first, second: c });
@@ -576,7 +617,8 @@ fn claim_fmtchar(slot: &mut Option<char>, c: char) -> Result<(), PlanError> {
     Ok(())
 }
 
-/// 一个时间字段：整秒加纳秒（C 的 `st_*time` 与 `st_*timensec`）。
+/// One time field: whole seconds plus nanoseconds (C's `st_*time` and
+/// `st_*timensec`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeField {
     pub secs: i64,
@@ -584,55 +626,60 @@ pub struct TimeField {
 }
 
 impl TimeField {
-    /// 组装一个时间字段。
+    /// Assemble a time field.
     pub const fn new(secs: i64, nsecs: i64) -> Self {
         TimeField { secs, nsecs }
     }
 }
 
-/// 一份纯字段的文件状态。薄壳把内核交回的状态结构逐字段拷进来，本层因此
-/// 不碰任何系统调用面（分层边界：库侧只用 `minix_sys` 的薄壳才许读句柄）。
+/// A file status made of plain fields. The thin shell copies the status
+/// structure the kernel returns field by field, so this layer never touches the
+/// system-call face (layering boundary: only the thin shell may use `minix_sys`
+/// to read a handle).
 ///
-/// 宽度按 C 的字段宽度给定，因为 `format1()` 的 `small` 判据（`stat.c:606`、
-/// `:636`、`:684` 一类 `sizeof(...) == 4`）真的会改变非十进制形态下的取值：
-/// 32 位字段在八进制/无符号/十六进制形里先截到 32 位（`stat.c:1126-1128`）。
+/// Widths follow C's field widths, because `format1()`'s `small` test (the
+/// `sizeof(...) == 4` family at `stat.c:606`, `:636`, `:684`) really does change
+/// values in non-decimal forms: 32-bit fields are first truncated to 32 bits in
+/// octal/unsigned/hex form (`stat.c:1126-1128`).
 #[derive(Debug, Clone, Copy)]
 pub struct StatData {
-    /// `st_dev`（`dev_t`，64 位）。
+    /// `st_dev` (`dev_t`, 64-bit).
     pub dev: u64,
-    /// `st_mode`（`mode_t`，32 位）。
+    /// `st_mode` (`mode_t`, 32-bit).
     pub mode: u32,
-    /// `st_ino`（64 位）。
+    /// `st_ino` (64-bit).
     pub ino: u64,
-    /// `st_nlink`（32 位）。
+    /// `st_nlink` (32-bit).
     pub nlink: u32,
-    /// `st_uid`（32 位）。
+    /// `st_uid` (32-bit).
     pub uid: u32,
-    /// `st_gid`（32 位）。
+    /// `st_gid` (32-bit).
     pub gid: u32,
-    /// `st_rdev`（64 位）。
+    /// `st_rdev` (64-bit).
     pub rdev: u64,
-    /// `st_atim`。
+    /// `st_atim`.
     pub atime: TimeField,
-    /// `st_mtim`。
+    /// `st_mtim`.
     pub mtime: TimeField,
-    /// `st_ctim`。
+    /// `st_ctim`.
     pub ctime: TimeField,
-    /// `st_birthtim`。
+    /// `st_birthtim`.
     pub btime: TimeField,
-    /// `st_size`（64 位，有符号）。
+    /// `st_size` (64-bit, signed).
     pub size: i64,
-    /// `st_blocks`（64 位，512 字节块数）。
+    /// `st_blocks` (64-bit, the count of 512-byte blocks).
     pub blocks: i64,
-    /// `st_blksize`（32 位）。
+    /// `st_blksize` (32-bit).
     pub blksize: i32,
-    /// `st_flags`（32 位）。
+    /// `st_flags` (32-bit).
     pub flags: u32,
-    /// `st_gen`（32 位）。字段名不叫 `gen`：那是 2024 版语言的保留字。
+    /// `st_gen` (32-bit). The field is not named `gen`: that is a reserved word
+    /// in the 2024 edition of the language.
     pub generation: u32,
 }
 
-/// 形态允许集，位值与 C 的 `FMTF_*` 逐位相同（`stat.c:147-152`）。
+/// The allowed-form set; bit values are identical to C's `FMTF_*`
+/// (`stat.c:147-152`).
 mod fmtf {
     pub const DECIMAL: u8 = 0x01;
     pub const OCTAL: u8 = 0x02;
@@ -642,45 +689,54 @@ mod fmtf {
     pub const STRING: u8 = 0x20;
 }
 
-/// 渲染一条件所需的外部信息。符号链内容由薄壳一次读好交进来：C 也是在
-/// `format1()` 里就地 `readlink()`（`stat.c:844-861`），把这条腿留在薄壳侧
-/// 才能让本层的渲染完全可测。
+/// External information needed to render one spec. The symlink contents are read
+/// once by the thin shell and passed in: C also `readlink()`s in place inside
+/// `format1()` (`stat.c:844-861`), and keeping that leg on the thin-shell side
+/// is what makes this layer's rendering fully testable.
 pub struct Render<'a> {
-    /// 文件状态。
+    /// The file status.
     pub data: &'a StatData,
-    /// 操作数名；`None` 表示标准输入（C 的 `file == NULL`，打 `(stdin)`）。
+    /// Operand name; `None` means standard input (C's `file == NULL`, printing
+    /// `(stdin)`).
     pub name: Option<&'a str>,
-    /// 符号链目标。只有 `mode` 确为符链时才有意义。
+    /// The symlink target. Meaningful only when `mode` really is a symlink.
     pub link: Option<&'a str>,
-    /// `%R` 要的解析结果：由薄壳拿 `crate::realpath` 折好后交进来（`None` 表示
-    /// 折失败了，对应 C 的 `realpath()` 返 `NULL` 那一支，`stat.c:824-833`）。
+    /// The resolved result `%R` needs: the thin shell resolves through
+    /// `crate::realpath` and passes it in (`None` means resolution failed,
+    /// corresponding to C's `realpath()` returning `NULL`, `stat.c:824-833`).
     pub resolved: Option<&'a str>,
-    /// 时间模板（`-t`，或 `-s`/`-x` 的默认，或 `TIME_FORMAT`）。
+    /// Time template (`-t`, the `-s`/`-x` default, or `TIME_FORMAT`).
     pub timefmt: &'a str,
-    /// `%@` 用的操作数序号，C 从 1 起（`stat.c:278` 的 `fn = 1`）。
+    /// Operand ordinal for `%@`; C starts at 1 (`fn = 1` at `stat.c:278`).
     pub file_number: usize,
 }
 
-/// 一轮渲染的可观察副作用，薄壳据此决定退出码与末尾换行。
+/// The observable side effects of one render round; the thin shell decides the
+/// exit code and the trailing newline from them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Report {
-    /// C 的全局 `linkfail`：`%Y` 读不到目标或 `%R` 解析失败时置起
-    /// （`stat.c:850`、`:829`、`:859`），`readlink` 人格用它当退出码（`stat.c:354`）。
+    /// C's global `linkfail`: set when `%Y` cannot read the target or `%R`
+    /// fails to resolve (`stat.c:850`, `:829`, `:859`); the `readlink`
+    /// personality uses it as the exit code (`stat.c:354`).
     pub linkfail: bool,
-    /// 本轮输出是否以换行结尾（`stat.c:559-560` 据此决定是否补一个换行）。
+    /// Whether this round's output ends with a newline (`stat.c:559-560` decides
+    /// from it whether to add one).
     pub ends_with_newline: bool,
 }
 
-/// 渲染阶段的失败。C 在这两处都是 `errx(1, "%.*s: bad format", flen, fmt)`。
+/// A failure of the render stage. C does `errx(1, "%.*s: bad format", flen,
+/// fmt)` at both sites.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FaceError {
-    /// 子片段字母或形态字母与该字段不合（`stat.c:994-996`），或字符串形
-    /// 却没有字符串可打（`stat.c:1116-1117`）。带着那条子格式串的原文。
+    /// A sub-field or form letter that does not fit the field
+    /// (`stat.c:994-996`), or a string form with no string to print
+    /// (`stat.c:1116-1117`). Carries the verbatim sub-format string.
     BadFormat(String),
 }
 
-/// 一条字段的取值结果。`num` 总在（数值形用），`text` 只在有字符串形时在，
-/// `nsecs` 只有时间字段带得动 `F` 形态。
+/// The fetched value of one field. `num` is always present (for numeric forms),
+/// `text` only when a string form exists, and `nsecs` can only be carried by
+/// time fields for the `F` form.
 struct Field {
     num: u64,
     text: Option<String>,
@@ -689,10 +745,12 @@ struct Field {
     small: bool,
     shift: u32,
     linkfail: bool,
-    /// 只有时间字段带得动它：`F` 形态打的是 `秒.纳秒`（`stat.c:1029-1099`）。
+    /// Only time fields can carry it: the `F` form prints
+    /// `seconds.nanoseconds` (`stat.c:1029-1099`).
     nsecs: i64,
-    /// `%Z` 在字符/块设备上走的那一支：C 直接把两个片段各自渲染后用逗号接起来
-    /// （`stat.c:966-978`），数值形与字符串形的选择只作用于这两个片段。
+    /// The `%Z` arm for char/block devices: C renders the two slices separately
+    /// and joins them with a comma (`stat.c:966-978`); the numeric/string form
+    /// choice applies to each slice.
     pair_of_rdev: bool,
 }
 
@@ -712,9 +770,10 @@ impl Field {
     }
 }
 
-/// 取一条字段的值。对应 `format1()` 开头那一大段 `switch (what)`
-/// （`stat.c:600-990`）。`hilo` 在这里就折掉：能被某字段消费的子片段字母
-/// 会被吃掉并置 `None`，消费不掉的留着，由调用方按 C 判坏格式。
+/// Fetch one field's value. Corresponds to the big `switch (what)` at the top of
+/// `format1()` (`stat.c:600-990`). `hilo` is folded here: a sub-field letter a
+/// field consumes is taken and set to `None`, one it does not consume is left
+/// for the caller to judge as bad format, following C.
 fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>), FaceError> {
     let d = ctx.data;
     let mut hilo = spec.hilo;
@@ -725,7 +784,8 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
             } else {
                 d.rdev
             };
-            // C 的片段取法：`major()` 取高位、`minor()` 取低位（`stat.c:618-625`）。
+            // C's slice rule: `major()` takes the high slice, `minor()` the
+            // low one (`stat.c:618-625`).
             let num = match hilo {
                 Some(Hilo::High) => {
                     hilo = None;
@@ -743,8 +803,9 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
                 OutFmt::Unsigned,
                 false,
             );
-            // `devname(3)` 需要扫 `/dev` 找配对项，本树没有这条腿，取 C 找不到时
-            // 的那一支：打 `???`（`stat.c:616` 的 `sdata = "???"`）。
+            // `devname(3)` would have to scan `/dev` for a matching entry; this
+            // tree has no such leg, so take C's not-found arm: print `???`
+            // (`sdata = "???"` at `stat.c:616`).
             f.text = Some("???".to_string());
             f
         }
@@ -755,15 +816,17 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
             false,
         ),
         Datum::Mode => {
-            // `strmode` 的十一个字符里去掉末尾填充位，再按片段切
-            // （`stat.c:636-665`：高位取用户三位、中位取组三位、低位取其他三位）。
+            // Take the trailing pad off `strmode`'s eleven characters, then
+            // slice (`stat.c:636-665`: high takes the user triple, middle the
+            // group triple, low the other triple).
             let mut smode = crate::mode::strmode(d.mode).to_vec();
             if smode.last() == Some(&b' ') {
                 smode.pop();
             }
             let (num, slice) = match hilo {
                 Some(Hilo::High) => {
-                    // 数值折成类型位加用户三位（`stat.c:652`：`data >>= 12`）。
+                    // The number folds to the type bits plus the user triple
+                    // (`stat.c:652`: `data >>= 12`).
                     hilo = None;
                     ((d.mode >> 12) as u64, &smode[1..4])
                 }
@@ -795,8 +858,9 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
             OutFmt::Unsigned,
             true,
         ),
-        // 口令库在本树尚无封装（同 `chown` 的前置），因此永远走 C 的「查不到」支：
-        // 打 `(123)` 这一形（`stat.c:685-690`、`:699-704`），不是裸数字。
+        // This tree has no password-database wrapper yet (the same prerequisite
+        // as `chown`), so C's "not found" arm always applies: print the `(123)`
+        // form (`stat.c:685-690`, `:699-704`), not a bare number.
         Datum::Uid => named_id(d.uid as u64, true),
         Datum::Gid => named_id(d.gid as u64, false),
         Datum::Size => {
@@ -806,8 +870,9 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
                 OutFmt::Unsigned,
                 false,
             );
-            // 大/中/小片段在 `stat.c:767-782` 是「按 2 的幂换算到 G/M/K」，
-            // 打印前再「右移一位加一后取整」（`stat.c:1144-1148`），即四舍五入。
+            // The high/middle/low slices are "scaled by powers of two to G/M/K"
+            // at `stat.c:767-782`, then "shift right one, add one, shift right
+            // one" before printing (`stat.c:1144-1148`), i.e. rounding half up.
             f.shift = match hilo {
                 Some(Hilo::High) => {
                     hilo = None;
@@ -859,11 +924,13 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
             time_field(t, ctx.timefmt)
         }
         Datum::Realpath => {
-            // C 的这一支与 `%Y` 共用同一套前缀算法（`stat.c:822-838`）：先写
-            // `" -> "`，再让 realpath 往 `path + 4` 里写，折失败时出声一次、置
-            // `linkfail` 并把串清空。默认形态在指针算好之后才补，故裸 `%R` 不带
-            // 前缀，显式 `%SR` 才带。解析本身在薄壳侧（`crate::realpath`），
-            // 本层只吃它交回的结果。
+            // This arm shares `%Y`'s prefix algorithm (`stat.c:822-838`): write
+            // `" -> "` first, then let realpath write into `path + 4`; on
+            // failure, speak once, set `linkfail`, and empty the string. The
+            // default form is filled in after the pointer is computed, so a bare
+            // `%R` carries no prefix and an explicit `%SR` does. Resolution
+            // itself lives in the thin shell (`crate::realpath`); this layer
+            // only consumes the result handed back.
             let explicit_string = spec.ofmt == Some(OutFmt::String);
             match (ctx.name, ctx.resolved) {
                 (None, _) => text_field("(stdin)".to_string()),
@@ -877,8 +944,10 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
             }
         }
         Datum::Symlink => {
-            // C 的次序要留着：默认形态在指针算好之后才补上（`stat.c:855-856`），
-            // 所以裸 `%Y` 不带 ` -> ` 前缀，显式 `%SY` 才带（`stat.c:443-446` 的注释）。
+            // C's order must be kept: the default form is filled in after the
+            // pointer is computed (`stat.c:855-856`), so a bare `%Y` carries no
+            // ` -> ` prefix and an explicit `%SY` does (the comment at
+            // `stat.c:443-446`).
             let explicit_string = spec.ofmt == Some(OutFmt::String);
             if (d.mode & crate::cp::S_IFMT) == crate::cp::S_IFLNK {
                 let body = ctx.link.unwrap_or_default().to_string();
@@ -929,7 +998,8 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
         Datum::Filename => {
             let Some(name) = ctx.name else {
                 let f = text_field("(stdin)".to_string());
-                // `(stdin)` 没有路径可切，C 在此直接丢掉高/低片段（`stat.c:919-926`）。
+                // `(stdin)` has no path to slice; C drops the high/low slices
+                // here (`stat.c:919-926`).
                 if hilo == Some(Hilo::High) || hilo == Some(Hilo::Low) {
                     hilo = None;
                 }
@@ -955,8 +1025,9 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
             }
         }
         Datum::SizeRdev => {
-            // `%Z`：字符/块设备走 `rdev` 的高低片段，其余走 `size`
-            // （`stat.c:961-989`，C 用两次递归调用拼出 `major,minor`）。
+            // `%Z`: char/block devices take `rdev`'s high and low slices, the
+            // rest take `size` (`stat.c:961-989`; C uses two recursive calls to
+            // build `major,minor`).
             let is_dev = (d.mode & crate::cp::S_IFMT) == crate::cp::S_IFCHR
                 || (d.mode & crate::cp::S_IFMT) == crate::cp::S_IFBLK;
             if is_dev {
@@ -989,8 +1060,9 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
     Ok((field, hilo))
 }
 
-/// `%Su`/`%Sg`：查得到名字打名字，查不到打 `(数字)`。本树没有口令库，
-/// 所以恒走后者；这一支与 C 的 `getpwuid()` 返回 `NULL` 时同形（`stat.c:685-690`）。
+/// `%Su`/`%Sg`: print the name when it resolves, `(number)` when it does not.
+/// This tree has no password database, so the latter always applies; this arm
+/// has the same shape as C when `getpwuid()` returns `NULL` (`stat.c:685-690`).
 fn named_id(value: u64, is_user: bool) -> Field {
     let mut f = Field::numeric(
         value,
@@ -1017,15 +1089,17 @@ fn text_field(text: String) -> Field {
     }
 }
 
-/// 时间字段：数值形给整秒，字符串形走 `strftime` 子集，浮点形另带纳秒
-/// （`stat.c:741-758`）。C 用 `localtime()`；本层与 `date`/`who` 同一口径——
-/// 无时区库，分解即 UTC。
+/// A time field: numeric forms give whole seconds, the string form goes through
+/// the `strftime` subset, and the float form carries nanoseconds too
+/// (`stat.c:741-758`). C uses `localtime()`; this layer follows the same
+/// convention as `date`/`who` — no timezone library, so the breakdown is UTC.
 fn time_field(t: TimeField, timefmt: &str) -> Field {
     let mut text = String::new();
     if t.secs >= 0 || t.secs.checked_add(0).is_some() {
         let broken = minix_proctools::dates::breakdown(t.secs);
         let mut buf = [0u8; 256];
-        // 交回秒数本身，`%s` 才有得打（`-s` 的默认模板就是它）。
+        // Hand back the seconds themselves so `%s` has something to print (it
+        // is the `-s` default template).
         if let Ok(used) =
             minix_proctools::dates::format_at(timefmt, &broken, Some(t.secs), &mut buf)
         {
@@ -1050,19 +1124,21 @@ fn time_field(t: TimeField, timefmt: &str) -> Field {
     }
 }
 
-/// 主设备号。Minix3 给 NetBSD 派生工具用的那对宏在
-/// `minix3/tools/compat/compat_defs.h:1254`：`(x & 0x000fff00) >> 8`。
+/// Major device number. The macro pair Minix3 provides for NetBSD-derived tools
+/// is at `minix3/tools/compat/compat_defs.h:1254`: `(x & 0x000fff00) >> 8`.
 fn major_of(dev: u64) -> u64 {
     (dev & 0x000f_ff00) >> 8
 }
 
-/// 次设备号。同一处 `compat_defs.h:1259-1260`：高段 `0xfff00000 >> 12` 或上低八位。
+/// Minor device number. Same place, `compat_defs.h:1259-1260`: the high part
+/// `0xfff00000 >> 12` OR'd with the low eight bits.
 fn minor_of(dev: u64) -> u64 {
     ((dev & 0xfff0_0000) >> 12) | (dev & 0x0000_00ff)
 }
 
-/// `%T` 的两副面孔：高位是名字，低位/缺省是 `ls` 那一类记号
-/// （`stat.c:867-912`）。未知类型两副都落 `???`。
+/// `%T`'s two faces: the high slice is the name, the low slice (and the default)
+/// is the `ls`-style mark (`stat.c:867-912`). An unknown type gives `???` in
+/// both.
 fn type_pair(mode: u32) -> (&'static str, &'static str) {
     const S_IFMT: u32 = crate::cp::S_IFMT;
     match mode & S_IFMT {
@@ -1078,10 +1154,12 @@ fn type_pair(mode: u32) -> (&'static str, &'static str) {
     }
 }
 
-/// 把件表渲染成文本（`output()` 的输出腿 + `format1()` 的全部形态选择）。
+/// Render the piece list into text (`output()`'s output leg plus all of
+/// `format1()`'s form selection).
 ///
-/// 连续的普通字节合并成一段再落进 `out`，这样模板里的非 ASCII 文字（UTF-8 的
-/// 多字节序列被拆成逐字节件）不会被拆散。
+/// Consecutive ordinary bytes are merged into one segment before landing in
+/// `out`, so that non-ASCII text in the template (a UTF-8 multibyte sequence is
+/// split into per-byte pieces) is not torn apart.
 pub fn render(
     pieces: &[Piece<'_>],
     ctx: &Render<'_>,
@@ -1099,7 +1177,7 @@ pub fn render(
                     Simple::Tab => '\t',
                     Simple::Percent => '%',
                     Simple::FileNumber => {
-                        // C 把 `fn` 用 `%d` 打出来（`stat.c:417-424`）。
+                        // C prints `fn` with `%d` (`stat.c:417-424`).
                         pending.clear();
                         out.push_str(&itoa(ctx.file_number as i64));
                         continue;
@@ -1126,19 +1204,21 @@ fn flush(pending: &mut Vec<u8>, out: &mut String) {
     }
 }
 
-/// 渲染一条字段件，返回 C 的 `linkfail` 是否该置起。
+/// Render one field spec and return whether C's `linkfail` should be set.
 fn render_spec(spec: &Spec<'_>, ctx: &Render<'_>, out: &mut String) -> Result<bool, FaceError> {
     let (field, leftover_hilo) = take_field(spec, ctx)?;
     let form = match spec.ofmt {
         Some(f) => f,
         None => field.default,
     };
-    // `stat.c:994-996`：子片段没人吃掉、或形态不在该字段的允许集里，都是坏格式。
+    // `stat.c:994-996`: an unconsumed sub-field slice, or a form outside the
+    // field's allowed set, is bad format.
     if leftover_hilo.is_some() || !allowed_has(field.allowed, form) {
         return Err(FaceError::BadFormat(spec.source.to_string()));
     }
     if field.pair_of_rdev {
-        // C 在这里递归渲染主次两段再用逗号接起来，宽度与精度作用于每一段。
+        // C recursively renders the major and minor slices here and joins them
+        // with a comma; width and precision apply to each slice.
         let head = render_number(
             spec.flags,
             spec.size,
@@ -1158,7 +1238,8 @@ fn render_spec(spec: &Spec<'_>, ctx: &Render<'_>, out: &mut String) -> Result<bo
     }
     if form == OutFmt::String {
         let Some(text) = &field.text else {
-            // `stat.c:1116-1117`：要字符串形却没有字符串可打。
+            // `stat.c:1116-1117`: a string form was asked for but there is no
+            // string to print.
             return Err(FaceError::BadFormat(spec.source.to_string()));
         };
         let body = if spec.flags & FLAG_POUND != 0 {
@@ -1181,12 +1262,14 @@ fn render_spec(spec: &Spec<'_>, ctx: &Render<'_>, out: &mut String) -> Result<bo
     }
     let mut value = field.num;
     if field.small && form != OutFmt::Decimal {
-        // `stat.c:1128-1130`：32 位字段在非十进制形里先截到 32 位，免得符号扩展
-        // 把输出打成一片 f。
+        // `stat.c:1128-1130`: 32-bit fields are first truncated to 32 bits in
+        // non-decimal forms, so sign extension does not fill the output with
+        // f's.
         value &= 0xffff_ffff;
     }
     if field.shift > 0 {
-        // `stat.c:1144-1148`：先右移一位、加一、再右移一位，即除以 2 的幂后四舍五入。
+        // `stat.c:1144-1148`: shift right one, add one, shift right one —
+        // divide by the power of two, rounding half up.
         value = (value >> (field.shift - 1)) + 1;
         value >>= 1;
     }
@@ -1208,7 +1291,7 @@ fn allowed_has(allowed: u8, form: OutFmt) -> bool {
     allowed & bit != 0
 }
 
-/// 数值形：等价于 C 拼出的 `%[flags][width][.prec]ll[doxu]`。
+/// Numeric forms: equivalent to C's assembled `%[flags][width][.prec]ll[doxu]`.
 fn render_number(flags: u32, width: i32, prec: i32, form: OutFmt, value: u64) -> String {
     let signed = form == OutFmt::Decimal;
     let negative = signed && (value as i64) < 0;
@@ -1220,7 +1303,8 @@ fn render_number(flags: u32, width: i32, prec: i32, form: OutFmt, value: u64) ->
     let digits = match form {
         OutFmt::Hex => format!("{:x}", magnitude),
         OutFmt::Octal => format!("{:o}", magnitude),
-        // 无符号形要把整 64 位打出来（`%z` 对一个负 `st_size` 就打回绕后的巨数）。
+        // The unsigned form must print all 64 bits (`%z` on a negative
+        // `st_size` prints the wrapped huge number).
         OutFmt::Unsigned => format!("{magnitude}"),
         _ => itoa(magnitude as i64),
     };
@@ -1254,7 +1338,8 @@ fn render_number(flags: u32, width: i32, prec: i32, form: OutFmt, value: u64) ->
     if width > 0 && body.chars().count() < width as usize {
         let fill = width as usize - body.chars().count();
         if zero_pad {
-            // 零填在符号与前缀之后、数字之前（`%#08x` 打 `0x0000ff`）。
+            // Zero padding goes after the sign and prefix, before the digits
+            // (`%#08x` prints `0x0000ff`).
             return format!("{}{}{}{}", sign, prefix, "0".repeat(fill), digits);
         }
         if flags & FLAG_MINUS != 0 {
@@ -1265,17 +1350,21 @@ fn render_number(flags: u32, width: i32, prec: i32, form: OutFmt, value: u64) ->
     body
 }
 
-/// `F` 形态：`秒.纳秒`。C 把宽度让给秒（`size -= prec + 1`，`stat.c:1056-1062`），
-/// 精度超过九位就用零补足（`stat.c:1088-1093`）。
+/// The `F` form: `seconds.nanoseconds`. C gives the width to the seconds
+/// (`size -= prec + 1`, `stat.c:1056-1062`), and a precision above nine digits
+/// is padded with zeros (`stat.c:1088-1093`).
 fn render_float(flags: u32, width: i32, prec: i32, secs: u64, nsecs: i64) -> String {
-    // 精度为 0 就是「只要秒」，小数点也不打（`stat.c:1031-1042`）。
+    // A precision of 0 means "seconds only", with no decimal point either
+    // (`stat.c:1031-1042`).
     if prec == 0 {
         return render_number(flags, width, -1, OutFmt::Decimal, secs);
     }
-    // 未给精度 = 有几位打几位（九位），给了就照给（`stat.c:1045-1048`）。
+    // No precision given = print all available digits (nine); a given
+    // precision is followed as is (`stat.c:1045-1048`).
     let want = if prec < 0 { 9 } else { prec };
     let shown = want.min(9) as usize;
-    // 宽度让给秒：C 先扣掉小数点与小数位（`stat.c:1050-1062`）。
+    // The width goes to the seconds: C first subtracts the decimal point and
+    // the fraction digits (`stat.c:1050-1062`).
     let secs_width = if width > 0 { width - (want + 1) } else { width };
     let head = render_number(flags, secs_width, -1, OutFmt::Decimal, secs);
     let mut frac = nsecs.unsigned_abs();
@@ -1289,19 +1378,19 @@ fn render_float(flags: u32, width: i32, prec: i32, secs: u64, nsecs: i64) -> Str
             body.insert_str(pos + 1, &"0".repeat(shown - digits));
         }
     }
-    // 超过九位的部分只能补零（`stat.c:1088-1093`）。
+    // Anything beyond nine digits can only be zero padding (`stat.c:1088-1093`).
     if want > 9 {
         body.push_str(&"0".repeat((want - 9) as usize));
     }
     body
 }
 
-/// 十进制整数字面量（C 各处 `%d`/`%lld` 的最小实现）。
+/// A decimal integer literal (the minimal implementation of C's `%d`/`%lld`).
 fn itoa(value: i64) -> String {
     format!("{value}")
 }
 
-/// 左补到 `width` 个字符，不足才补。
+/// Left-pad to `width` characters, only when short.
 fn pad_left(text: &str, width: usize, fill: char) -> String {
     if text.chars().count() >= width {
         return text.to_string();
@@ -1312,9 +1401,10 @@ fn pad_left(text: &str, width: usize, fill: char) -> String {
     )
 }
 
-/// 字符串形：精度截断、宽度填充。`0` 标志对字符串不生效——C 那侧取决于
-/// libc 是否按 glibc 那样把零填用于 `%s`，本树按 POSIX 的保守读法用空格，
-/// 五条预置模板都不涉及这一形。
+/// String forms: precision truncates, width pads. The `0` flag does not apply
+/// to strings — on C's side that depends on whether libc applies zero padding to
+/// `%s` the way glibc does; this tree takes POSIX's conservative reading and
+/// uses spaces, and none of the five preset templates reaches this form.
 fn pad(text: &str, width: i32, prec: i32, flags: u32) -> String {
     let mut body: String = if prec >= 0 {
         text.chars().take(prec as usize).collect()
@@ -1332,9 +1422,10 @@ fn pad(text: &str, width: i32, prec: i32, flags: u32) -> String {
     body
 }
 
-/// `vis(3)` 的一个子集：`VIS_CSTYLE | VIS_OCTAL | VIS_WHITE`（`stat.c:1000-1006`
-/// 在 `#` 与字符串形并现时用它）。可打印 ASCII 原样出，有名字的七控制字符
-/// 加 `NUL` 走反斜杠形，其余（含空格与所有非 ASCII 字节）走三位八进制。
+/// A subset of `vis(3)`: `VIS_CSTYLE | VIS_OCTAL | VIS_WHITE` (`stat.c:1000-1006`
+/// uses it when `#` meets a string form). Printable ASCII comes out verbatim,
+/// the seven control characters with names plus `NUL` take the backslash form,
+/// and everything else (spaces and all non-ASCII bytes) takes three-digit octal.
 fn vis(text: &str) -> String {
     let mut out = String::new();
     for ch in text.chars() {
@@ -1349,8 +1440,9 @@ fn vis(text: &str) -> String {
             '\u{b}' => out.push_str("\\v"),
             '\\' => out.push_str("\\\\"),
             c if c.is_ascii_graphic() => out.push(c),
-            // VIS_WHITE 把空格也算作要转义的空白；非 ASCII 字节在 C 语言环境里
-            // 不是可打印字符，两者都落三位八进制。
+            // VIS_WHITE counts a space as whitespace to escape; a non-ASCII
+            // byte is not printable in C's locale either, so both take
+            // three-digit octal.
             c => {
                 for byte in c.encode_utf8(&mut [0u8; 4]).as_bytes() {
                     if *byte == b' ' || !byte.is_ascii_graphic() {
@@ -1369,7 +1461,8 @@ fn vis(text: &str) -> String {
 mod tests {
     use super::*;
 
-    /// 字段码字母（与 `Datum::from_char` 反向，供测里拼原文）。
+    /// The field-code letter (the inverse of `Datum::from_char`, for assembling
+    /// source text in tests).
     fn datum_letter(datum: Datum) -> char {
         match datum {
             Datum::Realpath => 'R',
@@ -1396,7 +1489,8 @@ mod tests {
         }
     }
 
-    /// 「无参数位、无宽度、无精度」的裸字段件，即 C 说的「每个数据都有合理的默认输出形」。
+    /// A bare field spec — no parameter bits, no width, no precision — i.e. C's
+    /// "every datum has a sensible default output form".
     fn bare(datum: Datum) -> Piece<'static> {
         let source = Box::leak(format!("%{}", datum_letter(datum)).into_boxed_str());
         Piece::Spec(Spec {
@@ -1457,7 +1551,8 @@ mod tests {
 
     #[test]
     fn width_then_precision_then_form_then_subfield() {
-        // `%04OLp`：宽 4、零填、八进制、低位片段、`st_mode`（LINUX_FORMAT 里的原件）。
+        // `%04OLp`: width 4, zero padding, octal, low slice, `st_mode` (the
+        // original from LINUX_FORMAT).
         let pieces = parse_format("%04OLp").unwrap();
         let Piece::Spec(s) = &pieces[0] else {
             panic!("应是字段件");
@@ -1521,7 +1616,8 @@ mod tests {
     fn unknown_letters_are_bad_format_and_the_span_includes_the_offender() {
         let err = parse_format("%Q").unwrap_err();
         assert_eq!(err.span, "%Q");
-        // 参数位与宽度都吃了但字段码不对：跨度到读坏处为止。
+        // Parameter bits and width are consumed but the field code is wrong: the
+        // span runs through the offending position.
         let err = parse_format("%-12Q").unwrap_err();
         assert_eq!(err.span, "%-12Q");
     }
@@ -1530,7 +1626,8 @@ mod tests {
     fn a_trailing_percent_is_bad_format_without_eating_a_real_char() {
         let err = parse_format("%").unwrap_err();
         assert_eq!(err.span, "%");
-        // `%c` 本身是合法字段码（`st_ctime`），串尾的坏写法要用一个不认识的字母。
+        // `%c` itself is a valid field code (`st_ctime`), so a bad spelling at
+        // the end of the string needs an unrecognized letter.
         let err = parse_format("ab%Q").unwrap_err();
         assert_eq!(err.span, "%Q");
     }
@@ -1543,14 +1640,17 @@ mod tests {
 
     #[test]
     fn oversized_width_falls_into_the_same_bad_format() {
-        // C 的判据是「乘加后有符号回绕成负」（`stat.c:469-475`），因此它对宽度的
-        // 上限其实取决于 int 的宽度与回绕值；本实现用 checked 算术判，任何超出可
-        // 表示范围的宽度都当场落坏格式。跨度停在把计算打爆的那一位数字（C 在报错
-        // 前会先把游标推过一个字符，故它的回显可能多带后一个字符——这条窄差异登记
-        // 在台账，不影响哪种写法会被拒掉）。
+        // C's criterion is "the multiply-add wraps negative under signed
+        // arithmetic" (`stat.c:469-475`), so its width ceiling actually depends
+        // on the width of int and the wrap value; this implementation checks with
+        // checked arithmetic, and any width beyond the representable range falls
+        // into bad format on the spot. The span stops at the digit that blew the
+        // computation up (C advances the cursor one character before reporting,
+        // so its echo may carry one extra following character — that narrow
+        // difference does not affect which spellings are rejected).
         let err = parse_format("%9999999999z").unwrap_err();
         assert_eq!(err.span, "%9999999999");
-        // 精度那一串同理（`stat.c:479-488`）。
+        // The same holds for the precision digits (`stat.c:479-488`).
         let err = parse_format("%.9999999999z").unwrap_err();
         assert_eq!(err.span, "%.9999999999");
     }
@@ -1558,7 +1658,8 @@ mod tests {
     #[test]
     fn mixed_literal_and_specs_keep_their_order() {
         let pieces = parse_format("Size: %-11z%n").unwrap();
-        // "Size: " 六个字面件 + 一条字段件 + 一个换行简写。
+        // Six literal pieces for "Size: ", one field spec, and one newline
+        // shorthand.
         assert_eq!(pieces.len(), 8);
         assert_eq!(pieces[0], Piece::Literal(b'S'));
         assert!(matches!(pieces[6], Piece::Spec(_)));
@@ -1587,7 +1688,8 @@ mod tests {
             LINUX_FORMAT
         );
         assert_eq!(parse_args(&["-l", "f"], "stat").unwrap().format, LS_FORMAT);
-        // -F 单用不改模板选择：C 把它折成 fmtchar='l'（stat.c:281-286）。
+        // -F alone does not change the template choice: C folds it into
+        // fmtchar='l' (stat.c:281-286).
         assert_eq!(parse_args(&["-F", "f"], "stat").unwrap().format, LSF_FORMAT);
     }
 
@@ -1595,7 +1697,7 @@ mod tests {
     fn shell_and_linux_forms_carry_their_own_time_default() {
         assert_eq!(parse_args(&["-s"], "stat").unwrap().timefmt, "%s");
         assert_eq!(parse_args(&["-x"], "stat").unwrap().timefmt, "%c");
-        // -t 给了就听它的，包括与 -s/-x 同时给（stat.c:261-263）。
+        // A given -t wins, including alongside -s/-x (stat.c:261-263).
         assert_eq!(
             parse_args(&["-s", "-t", "%Y"], "stat").unwrap().timefmt,
             "%Y"
@@ -1611,7 +1713,8 @@ mod tests {
                 second: 's'
             }
         );
-        // 同一字母写两遍也撞：C 的判据只看 fmtchar 是否已被占。
+        // Writing the same letter twice collides too: C's criterion only checks
+        // whether fmtchar is already taken.
         assert!(matches!(
             parse_args(&["-x", "-x"], "stat").unwrap_err(),
             PlanError::FormatConflict { .. }
@@ -1634,8 +1737,9 @@ mod tests {
     fn dash_f_shares_the_template_slot_so_the_second_switch_conflicts() {
         let plan = parse_args(&["-f", "%N", "f"], "stat").unwrap();
         assert_eq!(plan.format, "%N");
-        // `stat.c:245-258` 的 FALLTHROUGH 让 `-f` 自己就占下 `fmtchar='f'`，
-        // 第二个模板开关（包括第二个 `-f`）都撞车。
+        // The FALLTHROUGH at `stat.c:245-258` makes `-f` itself claim
+        // `fmtchar='f'`, so a second template switch (including a second `-f`)
+        // collides.
         assert_eq!(
             parse_args(&["-f", "%N", "-r"], "stat").unwrap_err(),
             PlanError::FormatConflict {
@@ -1650,11 +1754,13 @@ mod tests {
                 second: 'f'
             }
         );
-        // 缺值走 usage（C 里 getopt 返 `?`）。
+        // A missing value goes to usage (getopt answers `?` in C).
         assert_eq!(parse_args(&["-f"], "stat"), Err(PlanError::Usage));
-        // 贴在簇后面的值形（getopt 的 `-fVALUE`）也认。
+        // The value form attached to the cluster (getopt's `-fVALUE`) is
+        // recognized too.
         assert_eq!(parse_args(&["-f%N"], "stat").unwrap().format, "%N");
-        // 同一个簇里的余段全归 `-f`，不会被再当选项扫一遍。
+        // The rest of the same cluster all belongs to `-f` and is not scanned as
+        // options again.
         let plan = parse_args(&["-nqf%N", "x"], "stat").unwrap();
         assert!(plan.no_nl && plan.quiet);
         assert_eq!(plan.format, "%N");
@@ -1666,7 +1772,7 @@ mod tests {
         let plan = parse_args(&["-Lnq", "a", "b"], "stat").unwrap();
         assert!(plan.use_stat && plan.no_nl && plan.quiet);
         assert_eq!(plan.operands, 1);
-        // `-` 单个字符不是选项，是 stdin 操作数（getopt 的行为）。
+        // A lone `-` is not an option but a stdin operand (getopt's behavior).
         let plan = parse_args(&["-", "f"], "stat").unwrap();
         assert_eq!(plan.operands, 0);
     }
@@ -1682,16 +1788,17 @@ mod tests {
         assert_eq!(plan.personality, Personality::Readlink);
         assert_eq!(plan.format, "%Y");
         assert!(plan.quiet);
-        // readlink 的 -f 不取值（它的选项串里 `f` 不带冒号），意为 %R；-v 取消 quiet。
+        // readlink's -f takes no value (`f` has no colon in its option string)
+        // and means %R; -v clears quiet.
         assert_eq!(parse_args(&["-f"], "readlink").unwrap().format, "%R");
         assert!(!parse_args(&["-v"], "readlink").unwrap().quiet);
-        // `-s` 在 readlink 里只是把 quiet 再置一次（`stat.c:246-249`），
-        // 而 `-l`/`-r`/`-x`/`-F`/`-L`/`-t` 都不在它的选项串里。
+        // `-s` in readlink only sets quiet again (`stat.c:246-249`), and
+        // `-l`/`-r`/`-x`/`-F`/`-L`/`-t` are not in its option string.
         assert!(parse_args(&["-s"], "readlink").unwrap().quiet);
         assert_eq!(parse_args(&["-l"], "readlink"), Err(PlanError::Usage));
         assert_eq!(parse_args(&["-F"], "readlink"), Err(PlanError::Usage));
         assert_eq!(parse_args(&["-t", "%Y"], "readlink"), Err(PlanError::Usage));
-        // stat 的 `-v` 同样不在选项串里。
+        // stat's `-v` is likewise absent from its option string.
         assert_eq!(parse_args(&["-v"], "stat"), Err(PlanError::Usage));
     }
 }
@@ -1766,7 +1873,8 @@ mod face_tests {
     fn the_ls_like_templates_mark_type_and_follow_the_link() {
         let mut d = sample();
         d.mode = crate::cp::S_IFLNK | 0o777;
-        // `%SY` 显式字符串形才带 ` -> `（stat.c:855-856 的指针先于默认形态算好）。
+        // Only the explicit string form `%SY` carries ` -> ` (the pointer at
+        // stat.c:855-856 is computed before the default form).
         assert_eq!(
             face(
                 LS_FORMAT,
@@ -1823,24 +1931,29 @@ mod face_tests {
     fn the_three_subfield_letters_slice_the_permission_groups() {
         let mut d = sample();
         d.mode = 0o100754;
-        // 字符串形才切权限组（`stat.c:650-666` 的 `stmp += …; stmp[3] = 0`）。
+        // Only the string form slices the permission groups (`stmp += …;
+        // stmp[3] = 0` at `stat.c:650-666`).
         assert_eq!(face("%SHp", &d, None, None, TIME_FORMAT), "rwx");
         assert_eq!(face("%SMp", &d, None, None, TIME_FORMAT), "r-x");
         assert_eq!(face("%SLp", &d, None, None, TIME_FORMAT), "r--");
-        // 裸片段仍是数值形：高位折成类型位（`stat.c:652`），低位取那九位（`:664`），
-        // 中位取 `(data >> 9) & 07`（`:658`）。
+        // A bare slice is still numeric: high folds to the type bits
+        // (`stat.c:652`), low takes those nine bits (`:664`), and middle takes
+        // `(data >> 9) & 07` (`:658`).
         assert_eq!(face("%Hp", &d, None, None, TIME_FORMAT), "10");
         assert_eq!(face("%Lp", &d, None, None, TIME_FORMAT), "754");
-        // 中位是 C 自己的一处不一致：数值那一支折的是粘滞/设组/设身三位，字符串那一支
-        // 切的是组权限（`stmp += 4`，`:659`）。0o100754 的特殊三位全空，所以数值形
-        // 打 0 而字符串形打 `r-x`。照抄不「修正」——外部行为优先。
+        // The middle slice is an inconsistency in C itself: the numeric arm folds
+        // the sticky/setgid/setuid triple, while the string arm slices the group
+        // permission (`stmp += 4`, `:659`). With all special bits clear in
+        // 0o100754, the numeric form prints 0 while the string form prints
+        // `r-x`. Copied rather than "fixed" — external behavior wins.
         assert_eq!(face("%Mp", &d, None, None, TIME_FORMAT), "0");
         assert_eq!(face("%SMp", &d, None, None, TIME_FORMAT), "r-x");
     }
 
     #[test]
     fn hex_with_pound_and_zero_padding_put_the_zeros_after_the_prefix() {
-        // 宽度算的是整个字段（含 `0x`），所以零填两位而不是四位。
+        // The width covers the whole field (including `0x`), so zero padding is
+        // two digits rather than four.
         assert_eq!(
             face("%#08Xz", &sample(), None, None, TIME_FORMAT),
             "0x001000"
@@ -1854,7 +1967,8 @@ mod face_tests {
 
     #[test]
     fn sign_flags_only_ride_the_decimal_form() {
-        // 默认是无符号形，`+` 与空格旗标在它身上不落发（C 的 `%+llu` 同理）。
+        // The default is the unsigned form, so the `+` and space flags have no
+        // effect on it (the same as C's `%+llu`).
         assert_eq!(face("%+z", &sample(), None, None, TIME_FORMAT), "4096");
         assert_eq!(face("%+Dz", &sample(), None, None, TIME_FORMAT), "+4096");
         assert_eq!(face("% Dz", &sample(), None, None, TIME_FORMAT), " 4096");
@@ -1862,7 +1976,8 @@ mod face_tests {
         let mut neg = sample();
         neg.size = -1;
         assert_eq!(face("%Dz", &neg, None, None, TIME_FORMAT), "-1");
-        // 默认是无符号形，负大小就打成回绕后的巨数（同 C 的 `%llu`）。
+        // The default is the unsigned form, so a negative size prints the wrapped
+        // huge number (the same as C's `%llu`).
         assert_eq!(
             face("%z", &neg, None, None, TIME_FORMAT),
             "18446744073709551615"
@@ -1877,7 +1992,7 @@ mod face_tests {
             face("%6.8i", &sample(), None, None, TIME_FORMAT),
             "00000042"
         );
-        // 字符串形的精度是截断。
+        // Precision on the string form truncates.
         assert_eq!(
             face("%.4SN", &sample(), Some("/etc/rc"), None, TIME_FORMAT),
             "/etc"
@@ -1902,7 +2017,8 @@ mod face_tests {
             face("%Sm", &sample(), None, None, TIME_FORMAT),
             "Sep  9 01:46:41 2001"
         );
-        // 时间模板换成 `%s` 之后，字符串形就退化成整秒。
+        // With the time template switched to `%s`, the string form degrades to
+        // whole seconds.
         assert_eq!(face("%Sm", &sample(), None, None, "%s"), "1000000001");
     }
 
@@ -1920,7 +2036,8 @@ mod face_tests {
             face("%.0Fm", &sample(), None, None, TIME_FORMAT),
             "1000000001"
         );
-        // 请求超过九位时，多余的部分补零（stat.c:1088-1093）。
+        // When more than nine digits are requested, the excess is zero padding
+        // (stat.c:1088-1093).
         assert_eq!(
             face("%.12Fc", &sample(), None, None, TIME_FORMAT),
             "1000000002.000000000000"
@@ -1943,7 +2060,8 @@ mod face_tests {
             face("%SY", &d, Some("l"), Some("/tmp/x"), TIME_FORMAT),
             " -> /tmp/x"
         );
-        // 非符链上 `%Y` 打空串，并把 linkfail 置起（stat.c:858-861）。
+        // On a non-symlink `%Y` prints the empty string and sets linkfail
+        // (stat.c:858-861).
         let pieces = parse_format("%Y").unwrap();
         let ctx = Render {
             data: &sample(),
@@ -1990,12 +2108,13 @@ mod face_tests {
             face("%LN", &sample(), Some("/etc/rc"), None, TIME_FORMAT),
             "rc"
         );
-        // 尾部斜杠先剥掉再切（stat.c:929-937）。
+        // Trailing slashes are stripped before slicing (stat.c:929-937).
         assert_eq!(
             face("%HN", &sample(), Some("/etc/rc//"), None, TIME_FORMAT),
             "/etc"
         );
-        // 没有斜杠的路径，高位片段打成 `.`（stat.c:939-941）。
+        // For a path without a slash, the high slice prints `.`
+        // (stat.c:939-941).
         assert_eq!(face("%HN", &sample(), Some("rc"), None, TIME_FORMAT), ".");
         assert_eq!(face("%N", &sample(), None, None, TIME_FORMAT), "(stdin)");
     }
@@ -2020,12 +2139,13 @@ mod face_tests {
     fn device_datums_split_major_and_minor_and_sizerdev_folds_to_the_pair() {
         let mut dev = sample();
         dev.mode = crate::cp::S_IFCHR | 0o666;
-        // `makedev(3, 1)` 按同一文件 :1264 的编码是 0x301。
+        // `makedev(3, 1)` encodes to 0x301 under the encoding at :1264 in the
+        // same file.
         dev.rdev = 0x301;
         assert_eq!(face("%Hr", &dev, None, None, TIME_FORMAT), "3");
         assert_eq!(face("%Lr", &dev, None, None, TIME_FORMAT), "1");
         assert_eq!(face("%Z", &dev, None, None, TIME_FORMAT), "3,1");
-        // 非设备走 size 一支（stat.c:979-988）。
+        // Non-devices take the size arm (stat.c:979-988).
         assert_eq!(face("%Z", &sample(), None, None, TIME_FORMAT), "4096");
     }
 
@@ -2050,7 +2170,8 @@ mod face_tests {
             face("%#SN", &sample(), Some("a\tb c"), None, TIME_FORMAT),
             "a\\tb\\040c"
         );
-        // 反斜杠自己也要被_escape_，非 ASCII 字节走三位八进制。
+        // The backslash itself is escaped too, and non-ASCII bytes take
+        // three-digit octal.
         assert_eq!(
             face("%#SN", &sample(), Some("a\\b"), None, TIME_FORMAT),
             "a\\\\b"
@@ -2077,7 +2198,8 @@ mod face_tests {
             render(&pieces, &ctx, &mut out).unwrap_err(),
             FaceError::BadFormat("%Mf".to_string())
         );
-        // 节点号没有字符串形（stat.c:639-641 的允许集里没有 FMTF_STRING）。
+        // The inode number has no string form (FMTF_STRING is absent from the
+        // allowed set at stat.c:639-641).
         let pieces = parse_format("%Si").unwrap();
         assert_eq!(
             render(&pieces, &ctx, &mut String::new()).unwrap_err(),
@@ -2087,8 +2209,10 @@ mod face_tests {
 
     #[test]
     fn the_realpath_letter_renders_what_the_shell_resolved() {
-        // `%R` 与 `%Y` 共用那条前缀规则：裸形不打 ` -> `，显式字符串形才打
-        // （`stat.c:822-838`）。折失败时打空并置 `linkfail`；无操作数打 `(stdin)`。
+        // `%R` shares `%Y`'s prefix rule: the bare form prints no ` -> `, only
+        // the explicit string form does (`stat.c:822-838`). On resolution failure
+        // it prints nothing and sets `linkfail`; with no operand it prints
+        // `(stdin)`.
         let pieces = parse_format("%R|%SR").unwrap();
         let d = sample();
         let mut out = String::new();

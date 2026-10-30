@@ -170,11 +170,11 @@ mod tests {
     }
 }
 
-// ── D-41 (S-6.2): boot-frozen cell — the type-level "write-once, then
+// ── Boot-frozen cell — the type-level "write-once, then
 // read-only on every CPU" primitive ──
 
 /// A cell written exactly once, then read-only forever — the type-level
-/// expression of "boot-frozen" state (S-6.2 D-41): the BSP freezes the value
+/// expression of "boot-frozen" state: the BSP freezes the value
 /// during single-threaded boot; every CPU (BSP and all APs) reads it
 /// afterwards, concurrently.
 ///

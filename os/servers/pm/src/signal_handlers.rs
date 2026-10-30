@@ -416,7 +416,7 @@ mod tests {
         table.procs[5].state.block.stopped = false; // not stopped → panic
         let mut k = OkKernel;
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            //[SD19-gate] PM send/notify/reply: fire and forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = sig_send(&mut table, UserSlot::new(5), 3, &mut k);
         }));
@@ -446,7 +446,7 @@ mod tests {
         table.procs[5].state.block.stopped = true;
         table.procs[5].state.block.unpaused = true;
         let mut k = UnexpectedKernel;
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply: fire and forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = sig_send(&mut table, UserSlot::new(5), 3, &mut k);
     }

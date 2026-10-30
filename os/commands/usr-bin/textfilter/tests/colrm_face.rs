@@ -1,22 +1,33 @@
 //! End-to-end face for the `colrm` binary, checked against
-//! `minix3/usr.bin/colrm/colrm.c`（选项环 `:67-74`、操作数段 `:76-95`、
-//! 列走与读写 `:97-121`、`check()` `:123-130`、`usage()` `:132-137`）与它驱动的
-//! libc `getopt`（`minix3/lib/libc/stdlib/getopt.c:74-78`、`:81-92`、`:95-104`）。
+//! `minix3/usr.bin/colrm/colrm.c` (option loop `:67-74`, operand section `:76-95`,
+//! column walk and read/write `:97-121`, `check()` `:123-130`, `usage()` `:132-137`)
+//! and the libc `getopt` it drives (`minix3/lib/libc/stdlib/getopt.c:74-78`,
+//! `:81-92`, `:95-104`).
 //!
-//! `colrm.c:67` 的 optstring 是**空串**，与批次三百零九的 `rev` 逐字同构，所以那一环的
-//! 三形照搬；但 `colrm` 的操作数不是文件名而是**列号**，于是同一个裸 `-` 在两条命令里
-//! 落到完全不同的句子。参照件 `tmp/colrm-310/colrm_ref`（`colrm.c` 真源 + Minix 的
-//! `getopt.c` + 程序名垫片，宿主现链）逐形量出的形状是：
-//! ① 任何 `-` 开头的 token（除 `--` 与裸 `-`）= libc 一行 + usage 一行，退 1；
-//! ② `--` 结束选项环且自身不算操作数，裸 `-` 则是操作数、被当列号拒收；
-//! ③ 不重排：操作数之后的 `-Z` 也是列号（`colrm: illegal column -- -Z`）；
-//! ④ 两支列号都坏时报**后写**的那支（C 先算 `argv[1]` 再 FALLTHROUGH）；
-//! ⑤ 列号走 `strtol`：前导空白、`+` 号、溢出饱和都收，尾随字符与 0 拒收，
-//!    负数经 `u_long` 回绕成极大值后被收（`colrm -- -5` 退 0 且整行透传）；
-//! ⑥ `err(1, ...)` 那行三段形缀 `strerror`，`errx` 那行两段形不缀。
+//! `colrm.c:67`'s optstring is the **empty string**, structurally identical to
+//! `rev`, so the three shapes of that loop carry over; but `colrm`'s operands
+//! are **column numbers**, not file names, so the same bare `-` lands on a
+//! completely different sentence in the two commands. The shapes measured one by
+//! one with the reference binary `tmp/colrm-310/colrm_ref` (`colrm.c` ground truth
+//! + Minix's `getopt.c` + a program-name shim, linked on the host) are:
+//! (1) any token starting with `-` (except `--` and a bare `-`) = one libc line +
+//!     one usage line, exit 1;
+//! (2) `--` ends the option loop and is not an operand itself, while a bare `-`
+//!     is an operand and is rejected as a column;
+//! (3) no reordering: a `-Z` after an operand is also a column
+//!     (`colrm: illegal column -- -Z`);
+//! (4) when both column operands are bad, the **later-written** one is reported
+//!     (C computes `argv[1]` first and then FALLTHROUGHs);
+//! (5) columns go through `strtol`: leading blanks, a `+` sign and overflow
+//!     saturation are accepted, trailing characters and 0 rejected, and a negative
+//!     wraps through `u_long` into a huge value and is accepted (`colrm -- -5`
+//!     exits 0 and passes every line through);
+//! (6) the `err(1, ...)` line is the three-part form suffixed with `strerror`,
+//!     while the `errx` line is the two-part form without it.
 //!
-//! 这扇门前不存在：`colrm` 的读缝直接拿裸 `minix_sys::read`，宿主上读不到任何输入，
-//! 所以它的输出以前只能靠库测（同批次三百零六的 `nl`、三百零八的 `fold`、三百零九的 `rev`）。
+//! This face did not exist before: `colrm`'s read seam used a bare
+//! `minix_sys::read`, so the host could not read any input and its output could
+//! only be covered by library tests (as with `nl`, `fold` and `rev`).
 
 mod face_support;
 
@@ -26,7 +37,8 @@ use std::os::unix::ffi::OsStringExt;
 
 const COLRM: &str = env!("CARGO_BIN_EXE_colrm");
 const USAGE: &str = "usage: colrm [start [stop]]\n";
-/// 参照件用的输入（`tmp/colrm-310/in.txt`），金样逐形取自它的读数。
+/// Input used by the reference binary (`tmp/colrm-310/in.txt`); the goldens were
+/// taken shape by shape from its readings.
 const INPUT: &[u8] = b"abcdefg\nhi\n";
 
 fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
@@ -46,8 +58,9 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
-/// 同上但交回**原始字节**：字母位要钉的是「一个字节」，`String::from_utf8_lossy`
-/// 把 `c3` 与 `c3 83` 都渲染成替换字符，文本夹具区分不了这两种错法。
+/// Same as above but returns **raw bytes**: the letter slot must pin "one byte",
+/// and `String::from_utf8_lossy` renders both `c3` and `c3 83` as the replacement
+/// character, so a text fixture cannot tell those two errors apart.
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(COLRM)
         .args(args)
@@ -65,8 +78,10 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`colrm.c:67-72` 的 `case '?': default`）。
-/// 参照件读数 `colrm: unknown option -- Z` + usage。旧写法少了 libc 那一行。
+/// Off-string letter: the libc line first, `usage()` after, exit 1
+/// (`colrm.c:67-72`'s `case '?': default`).
+/// The reference reading is `colrm: unknown option -- Z` + usage. The old form
+/// was missing the libc line.
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     let (out, status, err) = run(&["-Z"], INPUT);
@@ -75,10 +90,12 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     assert_eq!(err, format!("colrm: unknown option -- Z\n{USAGE}"));
 }
 
-/// 非 ASCII 的集外字母打的是**一个裸字节**：参照件 `tmp/colrm-310/colrm` 现量
-/// `colrm -é` → `colrm: unknown option -- ` + `c3` + 换行 + usage，退 1。
-/// 取法（短横后的第一个字节，`getopt.c:79`）与渲染（字节而不是 UTF-8 的两个字节）
-/// 两半缺一都还是分叉：只改取法打 `c3 83`，只改渲染打 `c3 a9`。
+/// A non-ASCII off-string letter prints **one raw byte**: the reference binary
+/// `tmp/colrm-310/colrm` measured `colrm -é` → `colrm: unknown option -- ` +
+/// `c3` + newline + usage, exit 1.
+/// Missing either half — taking the byte right after the dash (`getopt.c:79`) or
+/// rendering it as a byte rather than two UTF-8 bytes — still diverges: fixing
+/// only the take prints `c3 83`, fixing only the rendering prints `c3 a9`.
 #[test]
 fn the_option_line_of_a_nonascii_letter_carries_one_raw_byte() {
     let want: Vec<u8> = [
@@ -92,8 +109,9 @@ fn the_option_line_of_a_nonascii_letter_carries_one_raw_byte() {
     assert_eq!(status, 1, "stderr 是 {err:?}");
     assert_eq!(err, want, "字母该是一个裸字节 c3");
 
-    // 聚簇里非 ASCII 排第二位：报错仍落在第一个字节上，且仍只有一行 libc 报文
-    // （`colrm.c:68-72` 的 `default: usage()` 拿到 '?' 就退，不会再回 getopt）。
+    // A non-ASCII letter in second position of a cluster: the error still names
+    // the first byte, and there is still only one libc report (`colrm.c:68-72`'s
+    // `default: usage()` exits on '?' without returning to getopt).
     let (out, status, err) = run_bytes(&["-x\u{e9}"], INPUT);
     assert_eq!(out, Vec::new());
     assert_eq!(status, 1);
@@ -102,7 +120,7 @@ fn the_option_line_of_a_nonascii_letter_carries_one_raw_byte() {
         b"colrm: unknown option -- x\nusage: colrm [start [stop]]\n".to_vec()
     );
 
-    // ASCII 那一形两个入口一字不差。
+    // For the ASCII shape the two entry points are byte-identical.
     let (_out, status, err) = run_bytes(&["-Z"], INPUT);
     assert_eq!(status, 1);
     assert_eq!(
@@ -111,8 +129,9 @@ fn the_option_line_of_a_nonascii_letter_carries_one_raw_byte() {
     );
 }
 
-/// 聚簇只报**第一个**字符：调用者拿到 `'?'` 就 `usage()` 退出，不回到 getopt 读第二个
-/// （参照件：`-bZ` → `unknown option -- b`）。
+/// A cluster reports only its **first** character: the caller gets `'?'`, runs
+/// `usage()` and exits without returning to getopt for the second one (the
+/// reference: `-bZ` → `unknown option -- b`).
 #[test]
 fn a_cluster_reports_only_its_first_letter() {
     let (out, status, err) = run(&["-bZ"], INPUT);
@@ -120,8 +139,9 @@ fn a_cluster_reports_only_its_first_letter() {
     assert_eq!(err, format!("colrm: unknown option -- b\n{USAGE}"));
 }
 
-/// `--x` 报的字母是第二个连字符：optstring 里没有 `-`，它也是集外字符
-/// （参照件：`unknown option -- -`）。纯 `--` 走的是另一支。
+/// The letter reported for `--x` is the second hyphen: optstring has no `-`, so it
+/// is an off-string character too (the reference: `unknown option -- -`). A pure
+/// `--` takes the other branch.
 #[test]
 fn a_dash_followed_by_a_word_is_an_unknown_option_named_by_the_dash() {
     let (out, status, err) = run(&["--x"], INPUT);
@@ -129,8 +149,9 @@ fn a_dash_followed_by_a_word_is_an_unknown_option_named_by_the_dash() {
     assert_eq!(err, format!("colrm: unknown option -- -\n{USAGE}"));
 }
 
-/// `--` 自身被吃掉、后面的都算操作数（`getopt.c:81-85` 先 `++optind`）：
-/// 单给 `--` 仍是整行透传，`-- 2 4` 则真的删 2..4 列。
+/// `--` itself is consumed and everything after it counts as operands
+/// (`getopt.c:81-85` does `++optind` first): `--` alone still passes every line
+/// through, while `-- 2 4` actually deletes columns 2..4.
 #[test]
 fn the_end_of_options_marker_is_not_an_operand() {
     let (out, status, err) = run(&["--"], INPUT);
@@ -146,10 +167,12 @@ fn the_end_of_options_marker_is_not_an_operand() {
     );
 }
 
-/// 裸 `-` 是操作数而不是选项：optstring 里没有 `-`，getopt 结束选项环时**不推进**
-/// `optind`（`getopt.c:87-92`），于是它落进 `argv += optind` 那一段，被当列号拒收
-/// （参照件：`colrm: illegal column -- -`，一行、没有 usage、退 1）。
-/// 同一个 token 在 `rev` 那里走的是 `fopen` 失败支，句子完全不同。
+/// A bare `-` is an operand, not an option: optstring has no `-`, and getopt ends
+/// the option loop **without advancing** `optind` (`getopt.c:87-92`), so it lands
+/// in the `argv += optind` section and is rejected as a column (the reference:
+/// `colrm: illegal column -- -`, one line, no usage, exit 1).
+/// The same token in `rev` takes the `fopen` failure branch, a completely
+/// different sentence.
 #[test]
 fn a_solitary_dash_is_an_operand_rejected_as_a_column() {
     let (out, status, err) = run(&["-"], INPUT);
@@ -159,8 +182,9 @@ fn a_solitary_dash_is_an_operand_rejected_as_a_column() {
     assert!(!err.contains("usage:"), "列号的 errx 不接 usage：{err:?}");
 }
 
-/// 不重排：非选项 token 一到，选项环就结束（`getopt.c:74-78`），所以 `colrm 2 -Z` 里的
-/// `-Z` 是个**列号**（参照件：`illegal column -- -Z`，而不是 `unknown option`）。
+/// No reordering: the option loop ends as soon as a non-option token arrives
+/// (`getopt.c:74-78`), so the `-Z` in `colrm 2 -Z` is a **column** (the
+/// reference: `illegal column -- -Z`, not `unknown option`).
 #[test]
 fn an_option_looking_token_after_an_operand_is_a_column() {
     let (out, status, err) = run(&["2", "-Z"], INPUT);
@@ -169,14 +193,16 @@ fn an_option_looking_token_after_an_operand_is_a_column() {
     assert_eq!(err, "colrm: illegal column -- -Z\n");
 }
 
-/// 两支都坏时报**后写**的那支：C 的 `case 2:` 先对 `argv[1]` 做 `strtol` 并检查，
-/// `/* FALLTHROUGH */` 才轮到 `argv[0]`（`colrm.c:78-87`）。参照件：`abc def` → `def`。
+/// When both are bad, the **later-written** one is reported: C's `case 2:` runs
+/// `strtol` on `argv[1]` and checks it first, and only then does
+/// `/* FALLTHROUGH */` reach `argv[0]` (`colrm.c:78-87`). The reference:
+/// `abc def` → `def`.
 #[test]
 fn the_stop_column_is_checked_before_the_start_column() {
     let (out, status, err) = run(&["abc", "def"], INPUT);
     assert_eq!((out.as_str(), status), ("", 1));
     assert_eq!(err, "colrm: illegal column -- def\n");
-    // 只有 start 坏时，报的才是 start。
+    // When only start is bad, start is what gets reported.
     let (_, status, err) = run(&["abc", "2"], INPUT);
     assert_eq!(
         (err.as_str(), status),
@@ -184,8 +210,9 @@ fn the_stop_column_is_checked_before_the_start_column() {
     );
 }
 
-/// 列号的接受面是 `strtol` 而不是「一串数字」：前导空白、显式 `+`、前导零都收；
-/// 零与尾巴有字符的都拒（C 测 `*p`）。参照件逐形量过。
+/// The accepted surface for a column is `strtol`, not "a run of digits": leading
+/// blanks, an explicit `+` and leading zeros are accepted; zero and trailing
+/// characters are rejected (C tests `*p`). The reference measured every shape.
 #[test]
 fn column_numbers_take_the_strtol_forms() {
     for accepted in ["3", " 3", "+3", "03"] {
@@ -208,9 +235,11 @@ fn column_numbers_take_the_strtol_forms() {
     }
 }
 
-/// 溢出与负数都**不被拒**：`strtol` 溢出饱和到 `long` 的端点，而 `colrm.c:63` 把它存进
-/// `u_long`，于是 C 的 `<= 0` 只挡得住 0，负数回绕成极大值。两者都比任何真实列号大，
-/// 整行透传、退 0（参照件：`colrm 99999999999999999999999` 与 `colrm -- -5` 全透传）。
+/// Neither overflow nor negatives are **rejected**: `strtol` saturates to a `long`
+/// endpoint and `colrm.c:63` stores it in a `u_long`, so C's `<= 0` only blocks 0;
+/// a negative wraps into a huge value. Both are larger than any real column, so
+/// the whole line passes through and the exit is 0 (the reference:
+/// `colrm 99999999999999999999999` and `colrm -- -5` both pass everything).
 #[test]
 fn an_overflowing_or_negative_column_passes_everything_through() {
     for huge in ["99999999999999999999999", "100"] {
@@ -229,8 +258,8 @@ fn an_overflowing_or_negative_column_passes_everything_through() {
     );
 }
 
-/// 多于两个操作数只印 usage（`colrm.c:90-91` 的 `default: usage()`），没有 libc 那一行，
-/// 也没有列号句子。
+/// More than two operands prints only usage (`colrm.c:90-91`'s
+/// `default: usage()`), without the libc line and without a column sentence.
 #[test]
 fn too_many_operands_print_only_the_usage() {
     let (out, status, err) = run(&["2", "4", "6"], INPUT);
@@ -239,9 +268,11 @@ fn too_many_operands_print_only_the_usage() {
     assert_eq!(err, USAGE);
 }
 
-/// 起始列大于结束列那一支是 `err(1, ...)` 而不是 `errx`：三段形里缀 `strerror(errno)`，
-/// 而此刻 `errno` 是 0，句子内容由各平台的表定（参照件在本机印 `Success`），
-/// 所以本壳的门只钉形状：程序名 + 句子 + 一段非空后缀、一行、不接 usage、退 1。
+/// The start-after-stop branch is `err(1, ...)`, not `errx`: the three-part form
+/// suffixes `strerror(errno)`, and `errno` is 0 here, so the sentence body
+/// depends on each platform's table (the reference prints `Success` on this host).
+/// This shell's gate therefore pins only the shape: program name + sentence + a
+/// non-empty suffix, one line, no usage, exit 1.
 #[test]
 fn start_after_stop_prints_the_err_line_without_the_usage() {
     let (out, status, err) = run(&["4", "2"], INPUT);
@@ -257,42 +288,53 @@ fn start_after_stop_prints_the_err_line_without_the_usage() {
     assert!(!err.contains("usage:"), "这一支不接 usage：{err:?}");
 }
 
-/// 输出腿（本闸门存在的另一半）：以前 `colrm` 用裸 `minix_sys::read`，宿主上**读不到输入**，
-/// 所以列走从来没有被进程级测过；而且旧写法把输入过一遍 UTF-8 校验、非文本字节整段丢掉。
-/// 金样逐形取自参照件读数（`tmp/colrm-310/golden.log`）。
+/// The output leg (the other half of why this gate exists): `colrm` used to read
+/// through a bare `minix_sys::read`, so the host **could not read input** and the
+/// column walk had never been tested at process level; the old form also ran the
+/// input through a UTF-8 check and dropped non-text bytes wholesale. The goldens
+/// were taken shape by shape from the reference readings
+/// (`tmp/colrm-310/golden.log`).
 #[test]
 fn the_column_walk_reaches_the_output_end_to_end() {
-    // 只给起始列：从该列起到行末全删（stop 留 0）。
+    // Start column only: delete from that column to end of line (stop stays 0).
     assert_eq!(run(&["3"], INPUT).0, "ab\nhi\n");
-    // 区间：列 2..4 删掉。
+    // Range: columns 2..4 are deleted.
     assert_eq!(run(&["2", "4"], INPUT).0, "aefg\nh\n");
     assert_eq!(run(&["1", "1"], INPUT).0, "bcdefg\ni\n");
-    // 制表符把列进到 8 的倍数：删 2..8 时第一个制表符落点 8 被删，
-    // 第二个落点 16 在区间外而留下。
+    // A tab advances the column to the next multiple of 8: deleting 2..8 removes
+    // the first tab's landing column 8, while the second lands at 16, outside the
+    // range, and stays.
     let (out, status, _) = run(&["2", "8"], b"a\tb\tc\n");
     assert_eq!((out.as_str(), status), ("ab\tc\n", 0));
     let (out, status, _) = run(&["2", "9"], b"a\tb\tc\n");
     assert_eq!((out.as_str(), status), ("a\tc\n", 0));
-    // 退格把列拉回，被拉回后落点仍在区间外的字节留下。
+    // A backspace pulls the column back; bytes whose landing column is then
+    // outside the range stay.
     let (out, status, _) = run(&["2"], b"ab\x08\x08X\n");
     assert_eq!((out.as_str(), status), ("a\x08\x08X\n", 0));
-    // 末行没有换行也照删，且不补换行（C 一路 putchar，从不自己加）。
+    // The last line is deleted even without a trailing newline, and no newline is
+    // added (C only ever calls putchar and never adds one).
     let (out, status, _) = run(&["2", "3"], b"abcdef");
     assert_eq!((out.as_str(), status), ("adef", 0));
-    // 空输入产出空。
+    // Empty input yields empty output.
     let (out, status, err) = run(&["2"], b"");
     assert_eq!((out.as_str(), err.as_str(), status), ("", "", 0));
-    // 非 UTF-8 字节不被整段丢弃：C 按字节走列，本壳也必须按字节（旧写法先做 UTF-8
-    // 校验、校验不过就把整个输入当空）。这里 `2 3` 删掉的正是那两个不可打印字节。
+    // Non-UTF-8 bytes are not dropped wholesale: C walks columns byte by byte and
+    // this shell must too (the old form validated UTF-8 first and treated the whole
+    // input as empty when that failed). Here `2 3` deletes exactly those two
+    // unprintable bytes.
     let (out, status, _) = run(&["2", "3"], b"a\xff\xbccdef\n");
     assert_eq!((out.as_str(), status), ("acdef\n", 0));
 }
 
-/// 读写两根腿的承载件：把标准输出接到 `/dev/full`（字符设备，写它必拿 `ENOSPC`）。
-/// 参照件 `tmp/colrm-310/colrm_ref` 在这一形上要越过 stdio 缓冲才报——实测阈值落在
-/// (4096, 4505] 字节之间：4 KiB 输出退 0 且一字不报，4505 字节起报
-/// `colrm_ref: stdout: No space left on device` 退 1。本壳没有 stdio 缓冲，
-/// 尺寸无论大小都当场报（下面两枚门各钉一边）。
+/// The carrier for both the read and write legs: standard output wired to
+/// `/dev/full` (a character device whose writes always return `ENOSPC`).
+/// On this shape the reference binary `tmp/colrm-310/colrm_ref` reports only after
+/// crossing the stdio buffer — the measured threshold lies
+/// between 4096 and 4505 bytes: 4 KiB of output exits 0 without a word, and from
+/// 4505 bytes it reports `colrm_ref: stdout: No space left on device` and exits 1.
+/// This shell has no stdio buffer, so it reports immediately at any size (the two
+/// gates below pin one side each).
 fn run_into_sink(args: &[&str], input: &[u8]) -> (i32, String) {
     let sink = std::fs::OpenOptions::new()
         .write(true)
@@ -313,10 +355,13 @@ fn run_into_sink(args: &[&str], input: &[u8]) -> (i32, String) {
     )
 }
 
-/// 读腿：把一个**目录**的 fd 交给标准输入，打开成功而读的时候拿 `EISDIR`。
-/// C 的 `check(stdin)`（`colrm.c:123-130`）先看 `feof` 再看 `ferror`，于是走
-/// `err(1, "stdin")`——参照件同形打 `colrm_ref: stdin: Is a directory`、退 1、无输出。
-/// 改前本壳把读失败当文件末尾，一句话不说还退 0。句子取自 Minix 的 errno 表。
+/// The read leg: hand standard input the fd of a **directory**, which opens fine
+/// but returns `EISDIR` on read.
+/// C's `check(stdin)` (`colrm.c:123-130`) checks `feof` and then `ferror`, so it
+/// takes `err(1, "stdin")` — the reference prints
+/// `colrm_ref: stdin: Is a directory`, exits 1 and produces no output.
+/// Before the change this shell treated a read failure as end of file, said nothing
+/// and exited 0. The sentence comes from Minix's errno table.
 #[test]
 fn a_stdin_that_cannot_be_read_names_the_stream_and_exits_one() {
     let dir = std::env::temp_dir().join(format!("colrm-stdin-dir-{}", std::process::id()));
@@ -345,7 +390,8 @@ fn a_stdin_that_cannot_be_read_names_the_stream_and_exits_one() {
     assert_eq!(output.status.code(), Some(1), "读错要把退码置起来");
 }
 
-/// 写腿（越过参照件阈值的那一形，两边同形）：8 KiB 透传写到 `/dev/full`。
+/// The write leg (the shape that crosses the reference threshold, the same on both
+/// sides): 8 KiB passed through and written to `/dev/full`.
 #[test]
 fn a_stdout_that_cannot_be_written_names_the_stream_and_exits_one() {
     let payload = vec![b'y'; 8192];
@@ -357,9 +403,12 @@ fn a_stdout_that_cannot_be_written_names_the_stream_and_exits_one() {
     );
 }
 
-/// 同一形的小输出：参照件被 glibc 的缓冲吞掉（退 0 不报），本壳无缓冲因此**报**。
-/// 这一枚钉的是刻意的分叉，不是回归——把缓冲尺寸抄进命令层等于把一个 libc 的机制
-/// 写进 OS 语义，而真机上 Minix stdio 的缓冲又是另一个数，抄了也是错。
+/// A small output on the same shape: the reference swallows it in glibc's buffer
+/// (exits 0, no report), while this shell has no buffer and therefore **reports**.
+/// This gate pins a deliberate divergence, not a regression — copying the buffer
+/// size into the command layer would write a libc mechanism into OS semantics, and
+/// on real hardware Minix stdio's buffer is yet another number, so copying it would
+/// still be wrong.
 #[test]
 fn a_small_write_failure_is_reported_instead_of_swallowed_by_a_buffer() {
     let (status, err) = run_into_sink(&["--", "-5"], b"abcdefg\nhi\n");
@@ -370,18 +419,26 @@ fn a_small_write_failure_is_reported_instead_of_swallowed_by_a_buffer() {
     );
 }
 
-/// 两根腿同时坏：参照件实测报的是 **stdin** 而不是 stdout——C 一个字节都没读进来，
-/// 环里从未调用 `putchar`，写错压根没机会被观察。本壳同样先拿到零字节输入、写出零字节
-/// （空写不失败），于是报读腿。这一枚钉的是「两腿同坏时报哪条」这个**观察结果**。
+/// Both legs broken at once: the reference measures **stdin**, not stdout — C never
+/// reads a single byte, so the loop never calls `putchar` and the write error has no
+/// chance to be observed at all. This shell likewise gets zero bytes of input and
+/// writes zero bytes (an empty write does not fail), so it reports the read leg.
+/// This gate pins the **observation** of "which stream is reported when both legs
+/// break".
 ///
-/// 本注释以前还写着「先后规则本身在这形上不可证……宿主上造不出『有字节在飞、同时读也
-/// 出错』的承载」，那半句已被批次三百七十五**否证**：pty 的 master 端在 slave 关闭后
-/// 会先交出已缓冲的字节、下一口才回 `EIO`，正是一根宿主可造的真读源。四形矩阵读数与
-/// 判据说见 `tools/atf-c-compat/probes/colrm_leg_order.py`。先后规则本身仍未钉住，但
-/// 原因换了：不是造不出承载，而是要钉它就得在命令层复刻 libc 的缓冲阈值（Minix 的
-/// `BUFSIZ`＝1024，见 `minix3/include/stdio.h:182` 与 `minix3/lib/libc/stdio/makebuf.c:170`），
-/// 而「该不该复刻」是原则冲突，已挂 A 板 §6 待人裁决——裁决未落之前本枚门维持现状，
-/// 不去动它。
+/// This comment used to say "the ordering rule itself cannot be proven on this
+/// shape ... the host cannot build a carrier where bytes are in flight and the read
+/// also fails at the same time"; that half has since been **disproved**: after the
+/// slave closes, a pty master first hands over buffered bytes and only returns `EIO`
+/// on the next read, which is exactly a real read source the host can build. The
+/// four-shape matrix readings and the predicate argument are in
+/// `tools/atf-c-compat/probes/colrm_leg_order.py`. The ordering rule itself is still
+/// not pinned, but the reason changed: it is not that no carrier can be built, but
+/// that pinning it would require replicating libc's buffer threshold in the command
+/// layer (Minix's `BUFSIZ` = 1024, see `minix3/include/stdio.h:182` and
+/// `minix3/lib/libc/stdio/makebuf.c:170`), and whether to replicate it is a
+/// conflict of principles that needs a human decision — until that decision lands,
+/// this gate stays as it is.
 #[test]
 fn both_streams_broken_reports_the_stream_c_reaches_first() {
     let dir = std::env::temp_dir().join(format!("colrm-both-broken-{}", std::process::id()));
@@ -409,7 +466,8 @@ fn both_streams_broken_reports_the_stream_c_reaches_first() {
     assert_eq!(output.status.code(), Some(1));
 }
 
-/// 参数字节的原始形：`OsString::from_vec` 交得出裸 `ff`，`&str` 腿交不出（批次四百四十五）。
+/// The raw form of argument bytes: `OsString::from_vec` can yield a bare `ff`, the
+/// `&str` leg cannot.
 fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(COLRM)
         .args(
@@ -430,8 +488,10 @@ fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 操作数回显走原字节：参照件 `tmp/colrm-310/colrm_ref` 现量 `colrm 1<ff>3` 打
-/// `colrm: illegal column -- 1<ff>3`，`<ff>` 是一枚字节而不是三字节替换字符。
+/// Operand echo uses the original bytes: the reference binary
+/// `tmp/colrm-310/colrm_ref` measured `colrm 1<ff>3` printing
+/// `colrm: illegal column -- 1<ff>3`, where `<ff>` is one byte, not a three-byte
+/// replacement character.
 #[test]
 fn a_raw_nonutf8_operand_is_echoed_as_its_own_bytes() {
     let (out, status, err) = run_raw(&[b"1\xff3".to_vec()], INPUT);
@@ -448,8 +508,9 @@ fn a_raw_nonutf8_operand_is_echoed_as_its_own_bytes() {
     );
 }
 
-/// 集外字母那一行的字母位是一枚裸 `ff`：参数缝把 `ff` 折成 `ef bf bd` 之后，
-/// 取「第一个字节」取到的是 `ef`，所以这一枚门同时钉取法与缝。
+/// The letter slot of the off-string-option line is a bare `ff`: once the argument
+/// seam has folded `ff` into `ef bf bd`, "taking the first byte" gets `ef`, so this
+/// gate pins both the take and the seam.
 #[test]
 fn a_raw_nonutf8_option_letter_is_named_as_one_byte() {
     let (out, status, err) = run_raw(&[b"-\xff".to_vec(), b"3".to_vec()], INPUT);

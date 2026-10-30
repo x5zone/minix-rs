@@ -157,15 +157,15 @@ pub struct MockKernelApi {
     pub payload: Option<Vec<u8>>,
     /// Bytes handed to `safecopy_to`, in order (R7 copy-out assertions).
     pub sent_copies: Vec<(Endpoint, usize, Vec<u8>)>,
-    /// grant_read 发放序号(下一个 gid)。
+    /// The grant_read sequence number (the next gid).
     pub grant_seq: u32,
-    /// 最近一次 grant_read 的 (gid, addr, len)。
+    /// The (gid, addr, len) of the most recent grant_read.
     pub last_grant: Option<(u32, u64, u64)>,
-    /// 已 revoke 的 gid。
+    /// Gids that have been revoked.
     pub revoked_grants: Vec<GrantId>,
-    /// sendrec_to 记录(dest + 消息快照)。
+    /// sendrec_to records (destination + message snapshot).
     pub sent_rec: Vec<(Endpoint, minix_types::Message)>,
-    /// lu_request_prepare 调用记录。
+    /// lu_request_prepare call records.
     pub prepare_requests: Vec<Endpoint>,
     /// Canned receive queue (E-10/06 wiring tests): `receive` pops the front
     /// entry; empty queue → `Err(ENOSYS)` (the loop ends, T2 semantics).
@@ -544,7 +544,8 @@ impl IpcApi for MockKernelApi {
     }
 }
 
-// ── Shared boot fixtures（R40：夹具族上移，shell 域测试随 handler 同模块）──────
+// ── Shared boot fixtures (fixture family lifted; shell-domain tests stay in the
+// handler's module) ──────
 
 use crate::boot::{BootTables, KernelApi, RinitState};
 use crate::process_table::RProcTable;

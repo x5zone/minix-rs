@@ -13,10 +13,12 @@
 pub use minix_types::{SI_PROC_TAB, SI_PROCALL_TAB, SI_PROCPUB_TAB};
 use minix_types::{Errno, sysctl};
 
-// （P-ALL-06 收敛 2026-10-06：SI_PROC_TAB/SI_PROCPUB_TAB/SI_PROCALL_TAB
-// 三个本地手抄常量删除，改用 minix_types::ipc::sysinfo 的单一权威
-// （sysinfo.h 行号锚注随权威走）。上游 C 只在 sysinfo.h 定义一次、
-// 各服务 include——本地副本正是「手抄结构体/常量错位」陷阱家族。
+// The three locally hand-copied constants SI_PROC_TAB/SI_PROCPUB_TAB/
+// SI_PROCALL_TAB are gone; the single authority in minix_types::ipc::sysinfo
+// is used instead (the sysinfo.h line-number anchors travel with it).
+// Upstream C defines them once in sysinfo.h and every service includes it —
+// local copies are exactly the "hand-copied struct/constant drift" trap
+// family.
 
 /// Which process-table the `do_getsysinfo` request names.
 ///

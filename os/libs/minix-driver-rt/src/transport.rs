@@ -25,9 +25,9 @@ pub trait DriverTransport {
     /// Blocking send (`send`).
     fn send(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32>;
 
-    /// Send-and-receive (`ipc_sendrec`). NK4-C B9b: the RS birth-report
-    /// leg uses this so the driver parks in receive(RS) for RS's catch
-    /// reply (C `sef_cb_init_response_rs_reply`, sef_init.c:458-466).
+    /// Send-and-receive (`ipc_sendrec`): the RS birth-report leg uses this
+    /// so the driver parks in receive(RS) for RS's catch reply (C
+    /// `sef_cb_init_response_rs_reply`, sef_init.c:458-466).
     fn send_rec(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32>;
 
     /// Non-blocking send without a reply (`asynsend3(AMF_NOREPLY)`):
@@ -59,9 +59,10 @@ pub trait DriverTransport {
     ///
     /// C: `chardriver_announce` publishes `drv.chr.<name>`
     /// (`chardriver.c:99`); the block and net families publish their own
-    /// prefixes. 动词是 `ds_publish_u32(key, DS_DRIVER_UP, DSF_OVERWRITE)`
-    /// （chardriver.c:119）——本方名说的是键名的角色（告知“这个 label 活了”），
-    /// 不是 DS 条目类型：TYPE_LABEL 只有 RS 能发（store.c:302-304）。
+    /// prefixes. The verb is `ds_publish_u32(key, DS_DRIVER_UP, DSF_OVERWRITE)`
+    /// (chardriver.c:119) — the method name states the role of the key
+    /// ("this label is up"), not a DS entry type: only RS may send
+    /// TYPE_LABEL (store.c:302-304).
     /// Failure is a startup failure — a driver nobody can find
     /// must not serve.
     fn publish_label(&mut self, label: &str) -> Result<(), i32>;

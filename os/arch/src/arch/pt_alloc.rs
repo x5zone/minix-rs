@@ -41,7 +41,7 @@ use crate::paging::PageTableError;
 
 type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
 
-/// Free function for page-table pages (V11/E4): takes the physical address
+/// Free function for page-table pages: takes the physical address
 /// of the page and returns it to the source allocator.
 type PtFreeFn = fn(PhysBytes);
 
@@ -132,7 +132,7 @@ pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
     alloc_fn()
 }
 
-/// Register a page-table page free function (V11/E4).
+/// Register a page-table page free function.
 ///
 /// Pair with [`register`]: the same allocator domain that hands out
 /// page-table pages takes them back here. Same write-once contract as

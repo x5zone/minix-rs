@@ -90,7 +90,7 @@ impl BuddyAllocator {
         alloc
     }
 
-    // V11-P2-3: test-only — `make_test_metadata` sizes its buffer slice with
+    // Test-only — `make_test_metadata` sizes its buffer slice with
     // this (padding-inclusive) formula. The production relocation path uses
     // the page-aligned `PhysAllocType::Buddy::metadata_size` (phys_mem/mod.rs).
     #[cfg_attr(not(test), allow(dead_code))]
@@ -263,7 +263,7 @@ impl BuddyAllocator {
         }
         let size = 1usize << order;
 
-        // V12-P1-1: honor a low-memory bound (`PAF_LOWER1MB/16MB` →
+        // Honor a low-memory bound (`PAF_LOWER1MB/16MB` →
         // `max_page`) at every step. Three situations, in preference order:
         //
         // 1. A fully in-bounds block at this order — use it directly,
@@ -352,7 +352,7 @@ impl BuddyAllocator {
     /// Pop the first free block at `order` that lies **fully** under
     /// `max_page` — walk-and-unlink, since the head may be entirely above
     /// the bound while a later block is below. Straddling blocks are left
-    /// alone here; `pop_straddling` owns them (V12-P1-1).
+    /// alone here; `pop_straddling` owns them.
     fn pop_free_fitting(&mut self, order: usize, max_page: usize) -> Option<usize> {
         let block = 1usize << order;
         let mut prev = FREE_LIST_SENTINEL;
@@ -518,8 +518,8 @@ impl PhysAllocator for BuddyAllocator {
         self.total_pages
     }
 
-    /// Reserve `[base_page, base_page+count)` — split-down semantics
-    /// (V11/T22, V11-P2-2): every free block intersecting the range is
+    /// Reserve `[base_page, base_page+count)` — split-down semantics:
+    /// every free block intersecting the range is
     /// split down to single pages; pages inside the range leave the
     /// free lists (`ORDER_INVALID`), pages outside stay free. Without
     /// the split-down, a page sitting *inside* a larger free block is
@@ -605,7 +605,7 @@ mod tests {
         tp
     }
 
-    /// V11/T22 (V11-P2-2): `reserve_pages` on the buddy backend — mirrors
+    /// `reserve_pages` on the buddy backend — mirrors
     /// bitmap's `test_reserve_pages`: reserved pages leave the free count
     /// and are never handed out.
     #[test]
@@ -633,7 +633,7 @@ mod tests {
         assert!(!reached_reserved, "reserved pages 10..15 must never be allocated");
     }
 
-    /// V11/T22 (V11-P2-2): `available_regions` on the buddy backend —
+    /// `available_regions` on the buddy backend —
     /// free regions must account for every free page after alloc/free.
     #[test]
     fn test_available_regions_buddy_accounts_free_pages() {

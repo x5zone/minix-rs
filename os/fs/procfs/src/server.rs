@@ -64,7 +64,7 @@ pub trait ProcSource {
     fn processors(&self) -> Option<Vec<content::ProcessorInfo<'_>>> {
         None
     }
-    /// 进程总数（kinfo）。
+    /// Total process count (kinfo).
     fn process_count(&self) -> Option<u32> {
         None
     }

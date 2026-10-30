@@ -698,8 +698,9 @@ mod tests {
 
     #[test]
     fn test_enqueue_lands_at_index_31_then_wraps() {
-        // C: input.c:347-355 — 落位公式在尾部边界的形态：下标 31 满员后再
-        // 来一个，踩掉最旧（tail 0→1）、新事件落位 0。
+        // C: input.c:347-355 — the placement formula at the tail boundary: with
+        // index 31 full, one more event displaces the oldest (tail 0→1) and the
+        // new event lands at index 0.
         let mut table = InputTable::fresh();
         let device = &mut table.devices[1];
         device.count = 31;
@@ -713,8 +714,10 @@ mod tests {
 
     #[test]
     fn test_route_delivers_mux_slot_reports_to_mux_queues() {
-        // C: input.c:392-397 — 总机槽位自身的事件（id 0 / 5）进对应总机队列
-        // （投递看 opened，input.c:404-407；总机恒 active，故打开后永直达）。
+        // C: input.c:392-397 — events reported by the mux slots themselves
+        // (id 0 / 5) enter the matching mux queue (delivery depends on opened,
+        // input.c:404-407; a mux is always active, so once opened it is always
+        // delivered directly).
         let mut table = InputTable::fresh();
         table.devices[0].owner = Endpoint(9);
         table.devices[0].opened = true;
@@ -732,10 +735,11 @@ mod tests {
 
     #[test]
     fn test_key_is_new_driver_prefix_only_key_yields_empty_label() {
-        // （connect.rs 的到来过滤函数；在此处测其边界值。）
+        // (connect.rs's arrival filter; its boundary values are tested here.)
         use crate::connect::key_is_new_driver;
-        // C: input.c:582 — 前缀即整键时标签为空串（与存储里的真实 label
-        // 必不匹配，随后被 label 校验静默忽略——空串不是错误）。
+        // C: input.c:582 — when the prefix is the whole key the label is the empty
+        // string (it can never match a real label in storage and is then ignored
+        // silently by the label check — the empty string is not an error).
         assert_eq!(key_is_new_driver("drv.inp."), Some(""));
         assert_eq!(key_is_new_driver("drv.inp.pckbd"), Some("pckbd"));
         assert_eq!(key_is_new_driver("other.key"), None);
@@ -743,8 +747,10 @@ mod tests {
 
     #[test]
     fn test_stored_event_narrows_lanes_like_c() {
-        // C: input.c:348-354 — 整型车道窄化为 16 位字段：页/码/标志的越界
-        // 输入按 C 的隐式截断处理（协议小量由保证方约束，见 3.5 节）。
+        // C: input.c:348-354 — the integer lanes narrow to 16-bit fields:
+        // out-of-range page/code/flag inputs are handled by C's implicit
+        // truncation (protocol quantities are bounded by the guarantor, see
+        // section 3.5).
         let event = stored_event(1, 0x1_0007, 0x1_0042, -5, 0x1_0004);
         assert_eq!((event.page, event.code, event.flags), (0x0007, 0x0042, 0x0004));
         assert_eq!(event.value, -5);

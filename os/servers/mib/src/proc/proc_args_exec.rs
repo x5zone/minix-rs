@@ -289,20 +289,24 @@ mod tests {
         n
     }
 
-    /// 目标进程内存像：帧 0x10000..0x12000（2 页），ps_strings 在帧尾；
-    /// 向量在 0x11100（"hello"/"world"/NULL），串体在 0x11400 与 0x11808
-    /// ——一个跨在向量页，一个落在独立的串页，恰好走到三种 PageHome。
+    /// The target process memory image: frame 0x10000..0x12000 (two pages),
+    /// ps_strings at the end of the frame; the vector is at 0x11100
+    /// ("hello"/"world"/NULL), the strings at 0x11400 and 0x11808 — one on the
+    /// vector's page, one on a separate string page, hitting all three
+    /// PageHome cases.
     const FRAME: u64 = 0x1_0000;
     const FRAME_LEN: u64 = 0x2000;
     const TARGET_EP: i32 = 7;
 
     fn target_image() -> Vec<u8> {
         let mut mem = vec![0u8; FRAME_LEN as usize];
-        // 像内索引一律用**帧相对偏移**（mock 的 target_base 才是绝对基址）。
+        // All indexes inside the image use **frame-relative offsets** (the
+        // mock's target_base alone is the absolute base).
         let base = 0usize;
-        // ps_strings 落帧尾。
+        // ps_strings sits at the end of the frame.
         let pss_at = base + FRAME_LEN as usize - 32;
-        // SAFETY(test): repr(C) POD 写进像内窗口，索引在界内。
+        // SAFETY(test): a repr(C) POD written into a window of the image,
+        // with the index in bounds.
         unsafe {
             core::ptr::write_unaligned(
                 mem.as_mut_ptr().add(pss_at) as *mut minix_types::PsStrings,
@@ -314,20 +318,22 @@ mod tests {
                 },
             );
         }
-        // ARGV 向量 @+0x100：[hello, world, NULL]。
-        // 向量里存的是**进程绝对地址**（FRAME + 帧内偏移）——C 的 walk 按
-        // 绝对地址找页，0 页指针即终止（proc.c:1075-1077）。
+        // ARGV vector @+0x100: [hello, world, NULL].
+        // The vector stores **process absolute addresses** (FRAME plus the
+        // in-frame offset) — C's walk looks up pages by absolute address and
+        // stops at a zero page pointer (proc.c:1075-1077).
         let put_ptr = |mem: &mut Vec<u8>, at: usize, p: u64| {
             mem[at..at + 8].copy_from_slice(&p.to_le_bytes());
         };
         put_ptr(&mut mem, base + 0x100, FRAME + 0x400);
         put_ptr(&mut mem, base + 0x108, FRAME + 0x808);
         put_ptr(&mut mem, base + 0x110, 0);
-        // 串体："hello" 在向量页内（+0x400），"world" 跨到下一页的页首
-        // 附近（+0x808），NULL 终止符都在串内。
+        // The strings: "hello" on the vector's page (+0x400), "world" near the
+        // start of the next page (+0x808); the NULL terminators are part of the
+        // strings.
         mem[base + 0x400..base + 0x406].copy_from_slice(b"hello\0");
         mem[base + 0x808..base + 0x80e].copy_from_slice(b"world\0");
-        // ENV 向量 @+0x140：["A=1", NULL]。
+        // ENV vector @+0x140: ["A=1", NULL].
         put_ptr(&mut mem, base + 0x140, FRAME + 0x600);
         put_ptr(&mut mem, base + 0x148, 0);
         mem[base + 0x600..base + 0x604].copy_from_slice(b"A=1\0");
@@ -337,7 +343,8 @@ mod tests {
     fn pm_table() -> Vec<u8> {
         let prow = core::mem::size_of::<MProcSnap>();
         let mut v = vec![0u8; minix_types::NR_PROCS * prow];
-        // SAFETY(test): repr(C) POD 写进槽窗口，索引在界内。
+        // SAFETY(test): a repr(C) POD written into the slot window, with the
+        // index in bounds.
         unsafe {
             core::ptr::write_unaligned(
                 v.as_mut_ptr() as *mut MProcSnap,
@@ -365,7 +372,8 @@ mod tests {
             target_base: FRAME,
             target_mem: target_image(),
         };
-        // getproctab 只需前几行有效（拉取按整表拷贝）。
+        // getproctab only needs the first rows valid (the fetch copies the
+        // whole table).
         k.proctab.truncate(0);
         k.proctab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * core::mem::size_of::<ProcInfoStruct>()];
         (k, FakeServices { pm_tab: pm_table(), light_tab: Vec::new() })
@@ -406,8 +414,8 @@ mod tests {
         )
     }
 
-    /// ARGV 全量：两根串按序拷出，NULL 终止符在内（C 的串边界含 '\0'，
-    /// proc.c:1114-1121）。
+    /// Full ARGV: both strings are copied out in order, including the NULL
+    /// terminators (C's string bounds include '\0', proc.c:1114-1121).
     #[test]
     fn test_proc_args_argv_end_to_end() {
         let (mut k, mut s) = fixture();
@@ -428,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_proc_args_env_and_counts() {
-        // ENV 全量：一根 "A=1\0"。
+        // Full ENV: one "A=1\0" string.
         {
             let (mut k, mut s) = fixture();
             let mut tables = Tables::new();
@@ -444,7 +452,7 @@ mod tests {
             assert_eq!(&sink[..4], b"A=1\0");
         }
 
-        // NARGV/NENV：计数走 4 字节回复（proc.c:969/:972）。
+        // NARGV/NENV: the count travels in a four-byte reply (proc.c:969/:972).
         {
             let (mut k, mut s) = fixture();
             let mut tables = Tables::new();
@@ -473,7 +481,8 @@ mod tests {
             assert_eq!(c.kernel.sink.borrow()[..4], 1i32.to_le_bytes());
         }
 
-        // NARGV 的 oldp=NULL 估算：sizeof(count)，不打扰目标（:958-960）。
+        // NARGV estimate with oldp=NULL: sizeof(count), without disturbing the
+        // target (:958-960).
         {
             let (mut k, mut s) = fixture();
             let mut tables = Tables::new();
@@ -487,7 +496,7 @@ mod tests {
     fn test_proc_args_estimate_and_gates() {
         let (mut k, mut s) = fixture();
 
-        // ARGV 估算：roundup(min(0x2000, ARG_MAX), 4096) = 0x2000。
+        // ARGV estimate: roundup(min(0x2000, ARG_MAX), 4096) = 0x2000.
         {
             let mut tables = Tables::new();
             let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
@@ -495,7 +504,8 @@ mod tests {
             assert_eq!(out, SysctlOutcome::Done(0x2000));
         }
 
-        // 未知请求号 → EOPNOTSUPP（不是 EINVAL——形状对、操作不存在）。
+        // Unknown request number → EOPNOTSUPP (not EINVAL — the shape is
+        // right, the operation does not exist).
         {
             let mut tables = Tables::new();
             let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
@@ -503,7 +513,7 @@ mod tests {
             assert_eq!(out, SysctlOutcome::err(minix_types::EOPNOTSUPP));
         }
 
-        // 未知 pid → ESRCH。
+        // Unknown pid → ESRCH.
         {
             let mut tables = Tables::new();
             let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
@@ -511,8 +521,9 @@ mod tests {
             assert_eq!(out, SysctlOutcome::err(ESRCH));
         }
 
-        // 拷出截断：left=5 → 只回 5 字节且返回 5（C 的截断语义，
-        // proc.c:1032-1038——不回 ENOMEM）。
+        // Truncated copy-out: left=5 → only 5 bytes are returned and the
+        // result is 5 (C's truncation semantics, proc.c:1032-1038 — it does not
+        // return ENOMEM).
         {
             let mut tables = Tables::new();
             let mut c = e2e_ctx(&mut k, &mut s, &mut tables);

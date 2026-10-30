@@ -71,9 +71,9 @@ pub const NAME_CAPACITY: usize = 60;
 /// seven hundred sixty-seven).
 pub const LINK_CEILING: u32 = 32767;
 
-/// Direct zone slots per inode (`V2_NR_DZONES`, seven).
+/// Direct zone slots per inode (seven; `const.h:5`).
 pub const DIRECT_ZONES: usize = 7;
-/// Total zone slots per inode (`V2_NR_TZONES`, ten).
+/// Total zone slots per inode (ten; `const.h:6`).
 pub const TOTAL_ZONES: usize = 10;
 
 /// Why an inode operation failed. Wire mapping follows the C call sites:
@@ -623,7 +623,10 @@ impl InodeTable {
             )
             .map_err(|_| InodeError::Corrupt)?;
         let record = DiskInode::from_bytes(&cache.slot_data(cache_slot)[offset..])?;
-        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        // [SD19-gate] Best-effort release of the read-ahead cache slot; a
+        // failure disables the strategy (self-limiting) and does not
+        // change the primary result (same as the minix-fs bio cache
+        // `release`).
         #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(cache_slot);
         if record.size < 0 {
@@ -684,7 +687,10 @@ impl InodeTable {
             data[offset..offset + INODE_DISK_SIZE].copy_from_slice(&bytes);
         }
         cache.mark_dirty(cache_slot);
-        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        // [SD19-gate] Best-effort release of the read-ahead cache slot; a
+        // failure disables the strategy (self-limiting) and does not
+        // change the primary result (same as the minix-fs bio cache
+        // `release`).
         #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(cache_slot);
         self.slots[slot].dirty = false;
@@ -700,8 +706,9 @@ impl InodeTable {
         slot: usize,
         params: &InodeIo,
     ) -> Result<(), InodeError> {
-        // C 只在非只读挂载时把槽位标脏（`inode.c:398`），只读挂载的
-        // 写回在此整体拒绝：内存态保留，磁盘不动。
+        // C marks the slot dirty only on a non-read-only mount
+        // (`inode.c:398`); for a read-only mount the whole write-back is
+        // refused here: in-memory state is kept, the disk is untouched.
         if params.read_only {
             return Err(InodeError::ReadOnly);
         }
@@ -888,7 +895,10 @@ mod tests {
             .unwrap();
         let back = DiskInode::from_bytes(&cache.slot_data(check)[offset..]).unwrap();
         assert_eq!(back.size, 500);
-        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        // [SD19-gate] Best-effort release of the read-ahead cache slot; a
+        // failure disables the strategy (self-limiting) and does not
+        // change the primary result (same as the minix-fs bio cache
+        // `release`).
         #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(check);
     }
@@ -903,7 +913,8 @@ mod tests {
         let slot = table.get(&mut cache, DEVICE, 3, &params).unwrap();
         table.slot_mut(slot).size = 500;
         table.slot_mut(slot).dirty = true;
-        // 只读挂载：写回整体拒绝（EROFS），磁盘不动。
+        // Read-only mount: write-back is refused outright (EROFS), the
+        // disk is untouched.
         assert!(matches!(
             table.write_back(&mut cache, slot, &params),
             Err(InodeError::ReadOnly)

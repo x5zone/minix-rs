@@ -61,9 +61,10 @@ mod local_off {
     pub mod statvfs {
         pub const GRANT: usize = 0;
     }
-    /// `mess_vfs_fs_mkdir` 的 `path_len@24`——C 结构与 create 同形
-    /// （`call.c:535` 读 `m_vfs_fs_mkdir.path_len`），但 `minix-types` 的
-    /// `mkdir_req_off` 表漏列了这一域；本地补位，待表上收后同撤。
+    /// `mess_vfs_fs_mkdir`'s `path_len@24` — the C structure has the same shape
+    /// as create (`call.c:535` reads `m_vfs_fs_mkdir.path_len`), but the
+    /// `mkdir_req_off` table in `minix-types` omits that field; filled in
+    /// locally here, to be withdrawn once the table takes it over.
     pub mod mkdir_len {
         pub const PATH_LEN: usize = 24;
     }
@@ -375,10 +376,13 @@ pub fn data_grant(request: RequestNumber, msg: &Message) -> i32 {
 /// (`fsdriver.c:50-56`).
 pub fn encode_reply(request: RequestNumber, reply: &FsReply) -> Message {
     let mut msg = Message {
-        // FS→VFS 回复的 status 在线上一律折成非正号（`reply_status`：`0` 与已
-        // 负值原样透传，正 errno 取负）——与 C 服务端 `_SYSTEM` 构建下 FS 回负
-        // errno 一致，且与本树 `FsReply.status` 文档「zero or a negative error
-        // number」对齐。成功字节数走 `payload`（status=0），折号不触及。
+        // An FS→VFS reply's status always folds to the non-positive form on the
+        // wire (`reply_status`: `0` and already-negative values pass through,
+        // a positive errno is negated) — consistent with the C server, where an
+        // FS built as `_SYSTEM` returns a negative errno, and with this tree's
+        // `FsReply.status` documentation "zero or a negative error number". The
+        // success byte count travels in `payload` (status=0), which the folding
+        // never touches.
         m_type: TransactionId::encode_reply(reply_status(reply.status), reply.transaction),
         ..Message::default()
     };
@@ -599,9 +603,11 @@ mod tests {
 
     #[test]
     fn test_encode_reply_folds_error_status_to_negative() {
-        // ERESTART 根因回归钉：fs-rt 在 encode 边界把正 errno 折成负号上线，使
-        // VFS `main_loop::run_worker_continuations` 的 `status == -(ERESTART)`
-        // 得命中（ERESTART→EIO 转换因此生效）；此前正号 `69` 永不中。
+        // Regression pin for the ERESTART root cause: fs-rt folds a positive
+        // errno to its negative form at the encode boundary, so VFS's
+        // `main_loop::run_worker_continuations` test `status == -(ERESTART)`
+        // can hit (the ERESTART→EIO conversion therefore takes effect);
+        // previously the positive `69` never matched.
         let reply = FsReply::status(minix_types::ERESTART, TransactionId(7));
         let m = encode_reply(RequestNumber::Read, &reply);
         assert_eq!(
@@ -609,7 +615,9 @@ mod tests {
             -(minix_types::ERESTART),
             "FS→VFS 回复的 status 必须折成负 errno"
         );
-        // 成功 status=0 原样透传（`reply_status` 对 0 幂等），不波及读写字节流（走 payload）。
+        // A successful status=0 passes through as-is (`reply_status` is
+        // idempotent on 0) and does not touch the read/write byte stream
+        // (which travels in payload).
         let ok = FsReply::status(0, TransactionId(7));
         assert_eq!(minix_types::trns_del_id(encode_reply(RequestNumber::Read, &ok).m_type), 0);
     }

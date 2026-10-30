@@ -217,9 +217,9 @@ mod tests {
     }
 }
 
-// ── Arena wiring (P1-2) ──
+// ── Arena wiring ──
 //
-// C 的 `mib_hw_init` 等价物（hw.c:132-139 挂表）。
+// The equivalent of C's `mib_hw_init` (hw.c:132-139 mounts the table).
 
 pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
     use crate::tree::arena::FuncKey;
@@ -250,8 +250,10 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                 }
             }
             HwKind::Func(f) => {
-                // C hw.c:106-127 —— physmem/usermem 是一函数两门：宽度
-                // 随门（id）而非函数，窄门 INT|UNSIGNED 4B，宽门 QUAD 8B。
+                // C hw.c:106-127 — physmem/usermem are one function behind
+                // two doors: the width follows the door (id), not the
+                // function; the narrow door is INT|UNSIGNED 4B, the wide
+                // door QUAD 8B.
                 let (flags, size) = match (f, e.id) {
                     (HwFunc::Physmem, HW_PHYSMEM) => (CTLTYPE_INT | CTLFLAG_UNSIGNED | RO, 4),
                     (HwFunc::Physmem, HW_PHYSMEM64) => (CTLTYPE_QUAD | RO, 8),

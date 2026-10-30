@@ -1,8 +1,8 @@
-//! Minix-RS driver (net/3c90x) — 占位 crate。
+//! Minix-RS driver (net/3c90x) — placeholder crate.
 //!
-//! C 对应: `minix3/minix/drivers/net/3c90x/`
-//! 状态: 占位（stub），待实装。
+//! C counterpart: `minix3/minix/drivers/net/3c90x/`
+//! Status: placeholder (stub), not yet implemented.
 #![no_std]
 
-/// 服务初始化入口（占位）。
+/// Service initialization entry point (placeholder).
 pub fn init() {}

@@ -1,5 +1,6 @@
-//! 12/16 号初始化与 Live Update 的 handler shell（A-1 拆分）。决策与编排
-//! 本体在 ready.rs/live_update.rs；此处是 run() 分派到达的处理壳。
+//! Handler shell for initialization and Live Update.  The decisions and the
+//! orchestration live in ready.rs/live_update.rs; this is the shell that run()'s
+//! dispatch reaches.
 
 use super::*;
 
@@ -91,7 +92,8 @@ impl RsServer {
                     walked.is_some(),
                     "peek_next said Some; the walk must dispatch the same target"
                 );
-                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                // [SD19-gate] best-effort completion; discarding the Result does not
+                // change the primary result already established (C is void/ignored here)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = walked;
                 Ok(minix_types::EDONTREPLY)
@@ -191,7 +193,7 @@ impl RsServer {
             crate::ready::ReadyOutcome::FreshInitDone => {
                 // C: request.c:517-524 — unblock the service with the echo of
                 // its own RS_INIT message (m_type = OK), then finalize.
-                // [SD19-gate] 尽力而为回复收尾
+                // [SD19-gate] best-effort reply completion
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.reply(m.m_source, 0, m);
                 let has_prev = state.table.get(id).prev_rp.is_some();

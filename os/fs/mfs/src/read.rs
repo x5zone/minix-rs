@@ -137,7 +137,9 @@ fn read_indirect<S: BlockSource>(
         .acquire(BlockKey::new(device, zone), AcquireMode::Normal)
         .map_err(|_| ReadError::Io)?;
     let bytes = cache.slot_data(slot).to_vec();
-    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    // [SD19-gate] Best-effort release of the readahead cache slot; a failure
+    // is a self-disabling policy and does not change the primary result (same
+    // as minix-fs bio cache.release)
     #[allow(clippy::let_underscore_must_use)]
     let _ = cache.release(slot);
     if !bytes.len().is_multiple_of(4) {
@@ -226,7 +228,9 @@ pub fn read_file<S: BlockSource>(
                 .acquire_tagged(BlockKey::new(device, device_block), AcquireMode::Normal, tag)
                 .map_err(|_| ReadError::Io)?;
             let bytes = cache.slot_data(cache_slot).to_vec();
-            // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+            // [SD19-gate] Best-effort release of the readahead cache slot; a failure
+            // is a self-disabling policy and does not change the primary result (same
+            // as minix-fs bio cache.release)
             #[allow(clippy::let_underscore_must_use)]
             let _ = cache.release(cache_slot);
             chunk = chunk.min(bytes.len().saturating_sub(offset));
@@ -308,8 +312,8 @@ fn readahead_file<S: BlockSource>(
     let block_size = params.block_size as u64;
     let mut blocks_ahead = (bytes_left as u64).div_ceil(block_size);
     let mut blocks_left = size.saturating_sub(position).div_ceil(block_size);
-    // 临近一阶间接块：窗口与块总数同时加一（link.c:397-402 同式，
-    // `read.c:397-402`）。
+    // Approaching the first indirect block: the window and the block total
+    // both go up by one (same form as link.c:397-402, `read.c:397-402`).
     let indirect1_position = (params.map.direct_zones as u64).saturating_mul(block_size);
     if position <= indirect1_position && size > indirect1_position {
         blocks_ahead += 1;
@@ -322,8 +326,9 @@ fn readahead_file<S: BlockSource>(
     if blocks_ahead == 0 {
         return 0;
     }
-    // 收集窗口内的设备块号：映射命中用映射值，洞用顺序猜测继续排队
-    // （`read.c:426-432` 的回退），不再中途停下。
+    // Collect the device block numbers inside the window: a mapping hit uses
+    // the mapped value, a hole keeps queueing with a sequential guess (the
+    // `read.c:426-432` fallback) instead of stopping midway.
     let mut queue = Vec::new();
     let mut position_running = position;
     let mut previous = 0u64;
@@ -334,7 +339,9 @@ fn readahead_file<S: BlockSource>(
                 queue.push(device_block);
                 previous = device_block;
             }
-            // 洞：顺序猜测继续（上一个设备块加一；无前值则停在块首之后）。
+            // Hole: keep going with the sequential guess (previous device
+            // block plus one; with no previous value, start after the block
+            // head).
             _ => {
                 if previous != 0 {
                     queue.push(previous + 1);
@@ -388,7 +395,8 @@ pub fn list_dir_entries<S: BlockSource>(
     if !(*position).is_multiple_of(crate::inode::DIRECTORY_ENTRY_SIZE as u64) {
         return Err(ReadError::Unaligned);
     }
-    // 冷目录从盘装载（C 用 `get_inode`，`read.c:474`），非目录拒绝。
+    // A cold directory is loaded from disk (C uses `get_inode`,
+    // `read.c:474`); non-directories are refused.
     let slot = table
         .get(cache, device, number, io)
         .map_err(|_| ReadError::Invalid)?;
@@ -433,7 +441,9 @@ pub fn list_dir_entries<S: BlockSource>(
                         .acquire(BlockKey::new(device, device_block), AcquireMode::Normal)
                         .map_err(|_| ReadError::Io)?;
                     let bytes = cache.slot_data(cache_slot).to_vec();
-                    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+                    // [SD19-gate] Best-effort release of the readahead cache slot; a failure
+                    // is a self-disabling policy and does not change the primary result (same
+                    // as minix-fs bio cache.release)
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = cache.release(cache_slot);
                     bytes
@@ -469,7 +479,10 @@ pub fn list_dir_entries<S: BlockSource>(
                 let raw_type = match table.get(cache, device, entry.ino as u64, io) {
                     Ok(target_slot) => {
                         let mode = table.slot(target_slot).mode;
-                        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                        // [SD19-gate] Best-effort inode write-back after the primary
+                        // operation succeeded; C's minix3/minix/fs/mfs put_inode is void
+                        // and reports no error (a failure does not change the result
+                        // already established)
                         #[allow(clippy::let_underscore_must_use)]
                         let _ = table.put(cache, target_slot, io);
                         file_type_byte(mode)
@@ -965,10 +978,13 @@ mod tests {
             indirect_per_block: 128,
             read_only: false,
         };
-        // 冷目录：先放回引用，枚举时从盘重新装载（与 C get_inode 一致）。
+        // Cold directory: put the reference back first, then reload from disk
+        // when enumerating (matches C's get_inode).
         {
             let slot = fixture.table.find(DEVICE, dir_number).unwrap();
-            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            // [SD19-gate] Best-effort inode write-back after the primary operation
+            // succeeded; C's minix3/minix/fs/mfs put_inode is void and reports no
+            // error (a failure does not change the result already established)
             #[allow(clippy::let_underscore_must_use)]
             let _ = fixture.table.put(&mut fixture.cache, slot, &io);
         }

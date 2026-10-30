@@ -330,7 +330,7 @@ mod flags {
         alloc.free_mem(addr, 1);
     }
 
-    // --- V12-P1-1: low-memory bounds × three backends. The plain tests
+    // --- Low-memory bounds across three backends. The plain tests
     // above never leave the bound's good side — a fresh allocator's first
     // free block starts at page 0, so an out-of-bounds answer was
     // impossible to observe. These force the bad shapes: a freed HIGH page
@@ -682,9 +682,10 @@ mod multi_region {
         assert!(a.is_ok());
     }
 
-    // ── V11/T22 (V11-P2-2): reserve_pages / available_regions 补测 ──
-    // bitmap 的两方法已有直接测试（bitmap_alloc.rs:735/:755）；此处补
-    // buddy 与 segment-tree 后端的同语义测试（ bitmap_alloc.rs:687 模板）。
+    // ── reserve_pages / available_regions coverage ──
+    // Both bitmap methods already have direct tests (bitmap_alloc.rs:735/:755);
+    // what is added here is the same-semantics test for the buddy and
+    // segment-tree backends (following the bitmap_alloc.rs:687 template).
 
     #[test]
     fn buddy_reserve_pages_excludes_reserved() {

@@ -12,21 +12,23 @@
 //! for.
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs` init 契约：no_std 模式 `_start` 自动调用、幂等），这里无须
-// 也不应再调。
+// The freestanding side holds a link reference to minix-rt: the bin code
+// itself uses no rt symbol, and an unreferenced rlib would be dropped whole,
+// taking `_start`/`#[panic_handler]`/`#[global_allocator]` with it (the
+// `extern crate` retention semantics of panic-halt mode). The birth chain
+// `_start` has already completed rt initialization before main (`lib.rs` init
+// contract: called automatically in no_std mode, idempotent), so it must not
+// and need not be called again here.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
 use minix_driver_rt::kernel::KernelTransport;
 use minix_driver_rt::runtime::DriverRuntime;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字 + Rust
-// ABI + `-> i32`，`os/libs/minix-rt/src/crt0.rs`）；宿主与测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现。
+// The entry point splits into two forms by target: the none side satisfies the
+// crt0 Consumer contract (name + Rust ABI + `-> i32`,
+// `os/libs/minix-rt/src/crt0.rs`); the host/test side keeps `()` — since
+// rustc 1.94, Termination is no longer implemented for i32.
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {

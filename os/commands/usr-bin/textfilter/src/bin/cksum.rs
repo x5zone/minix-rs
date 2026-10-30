@@ -5,10 +5,12 @@
 //! length, and the `%lu %lld` output format (`print.c` `pcrc`/`psum1`/`psum2`)
 //! — is the library's `cksum` module. This program reads each file operand (or
 //! standard input when none) and prints `{crc} {length}` plus ` {name}` for a
-//! file. `-a` 的摘要那条腿走 `minix_textfilter::digest` 的真本体（八枚算法全接），报文形是
-//! C 的 `MD5 (file) = <digest>` 与它的 `-n`/`-q` 两个变体；`-s`/`-t`/`-x` 三条自印腿按 argv
-//! 次序在诊断之前排出去（判据与读数见 `emit_action`）；hash 在里的 `-c` 校验腿按 C 的
-//! `do_check` 逐行重算比对（见 `check_files`）。
+//! file. The `-a` digest leg goes through the real body of `minix_textfilter::digest`
+//! (all eight algorithms wired), and the report shapes are C's `MD5 (file) = <digest>`
+//! and its `-n`/`-q` variants; the three self-printing legs `-s`/`-t`/`-x` are emitted
+//! in argv order ahead of diagnostics (see `emit_action` for the criterion and the
+//! readings); the `-c` check leg inside hash mode recomputes and compares line by line
+//! as C's `do_check` does (see `check_files`).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -28,65 +30,75 @@ use minix_textfilter::cksum::{
 use minix_textfilter::digest::{self, Algo};
 
 fn run() -> ! {
-    // argv 按字节交回：C 的 `crt0` 给的是字节数组，`cksum.c:193` 的选项环把 `argv`
-    // 原样交给 `getopt`，取值腿与操作数腿拿到的都是那些字节。
+    // argv comes back as bytes: C's `crt0` hands over a byte array, and the option loop
+    // at `cksum.c:193` passes `argv` to `getopt` verbatim, so the value leg and the
+    // operand leg both receive those bytes.
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名那一腿要交给 `warn_line` 的 `&str` 口（登记 `ARGV-BYTE-PATH-IN-LIBS`），
-    // 所以在臂内折一次 lossy，与其余各支同一条既定口径。
+    // The program-name leg has to go through `warn_line`'s `&str` opening (registered
+    // `ARGV-BYTE-PATH-IN-LIBS`), so it is folded lossily once inside the arm, the same
+    // established policy as every other branch.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let prog = prog.as_str();
     let args: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let mut actions: Vec<CksumAction> = Vec::new();
     let parsed = parse_cksum_args_into(&args, &mut actions);
-    // C 的 `-s`/`-t`/`-x` 三条腿在 getopt 环**里**就把话印完（`cksum.c:255-274`），后面
-    // 选项报错追不回来：参照件 e-1/e-2/e-3 三形的 stdout 都有那一行，退码仍是 1。
-    // 所以这一趟在诊断之前，不在 `hash_run` 里。
+    // C's three legs `-s`/`-t`/`-x` finish printing **inside** the getopt loop
+    // (`cksum.c:255-274`), before later option errors can catch up: reference fixtures
+    // e-1/e-2/e-3 all carry that line on stdout and still exit 1. So this pass runs
+    // before the diagnostics and is not part of `hash_run`.
     for action in &actions {
         emit_action(action);
     }
     let request = match parsed {
         Ok(request) => request,
         Err(CksumError::IllegalOptionValue(flag)) => {
-            // C：`warnx("illegal argument to -o option")` + `usage()`（`cksum.c:219`、`:243`）。
+            // C: `warnx("illegal argument to -o option")` + `usage()` (`cksum.c:219`, `:243`).
             support::warn(format!("{prog}: illegal argument to -{flag} option\n").as_bytes());
             usage();
         }
         Err(CksumError::IllegalUseOfA) => {
-            // C 的 `case 'a'` 第一行（`cksum.c:195-199`）：`warnx` 两段形，不缀 strerror，
-            // 随后 `usage()`。这一形要 hash 已被选中才到得了，所以它跟着状态走。
+            // C's first line of `case 'a'` (`cksum.c:195-199`): the two-part `warnx` form,
+            // with no strerror suffix, followed by `usage()`. This shape is reachable only
+            // once a hash has been selected, so it follows the state.
             support::warn(format!("{prog}: illegal use of -a option\n").as_bytes());
             usage();
         }
         Err(CksumError::MutuallyExclusiveWithSum(name)) => {
-            // C 的 `warnx("%s mutually exclusive with sum", hash->hashname)`
-            //（`cksum.c:228-234`）：句子里是表里那一份**大写**名字（`MD5` 而不是 `md5`）。
+            // C's `warnx("%s mutually exclusive with sum", hash->hashname)`
+            // (`cksum.c:228-234`): the sentence carries the **upper-case** name from the
+            // table (`MD5`, not `md5`).
             support::warn(format!("{prog}: {name} mutually exclusive with sum\n").as_bytes());
             usage();
         }
         Err(CksumError::RequiresHash(flag)) => {
-            // C 的 `requirehash`（`cksum.c:521-525`）：`<旗标> flag requires `-a algorithm'`
-            // 再接 usage。旧写法把句子自创成「requires a hash algorithm」且不接 usage。
+            // C's `requirehash` (`cksum.c:521-525`): `<flag> flag requires `-a algorithm'`
+            // followed by usage. The old wording invented "requires a hash algorithm" and
+            // skipped usage.
             support::warn(format!("{prog}: -{flag} flag requires `-a algorithm'\n").as_bytes());
             usage();
         }
         Err(CksumError::UnknownOption(flag)) => {
-            // libc 的那一句（`getopt.c:101-104`）是 `unknown option`，不是 `illegal option`——
-            // 后者属于 `pr` 链的 `egetopt`，同一族里不能混用。字母位走 `line_bytes`：
-            // `getopt.c:79` 的 `optopt = *place++` 一次进一个字节，`-é`（`c3 a9`）报的是 `c3`。
+            // libc's sentence (`getopt.c:101-104`) is `unknown option`, not `illegal
+            // option` — the latter belongs to the `pr` chain's `egetopt`, and the two must
+            // not be mixed in one family. The letter position goes through `line_bytes`:
+            // `getopt.c:79`'s `optopt = *place++` takes one byte at a time, so `-é`
+            // (`c3 a9`) reports `c3`.
             support::warn(&GetoptReport::UnknownOption(flag).line_bytes(prog));
             usage();
         }
         Err(CksumError::MissingValue(flag)) => {
-            // 带值选项缺值：libc 的另一句（`getopt.c:132-136`），同样接 usage。
+            // Option with a value missing its value: libc's other sentence (`getopt.c:132-136`), likewise followed by usage.
             support::warn(&GetoptReport::MissingValue(flag).line_bytes(prog));
             usage();
         }
     };
 
     if request.do_check {
-        // C 的 `if (do_check)` 整块在计算那支**之前**（`cksum.c:283`），所以 `-a md5 -c 档`
-        // 走的是校验腿；`-s`/`-t`/`-x` 已经在选项环那趟把各自的行印出去了。
-        // `-c` 只吃第一个操作数当校验档（多余的忽略），对位 C 的 `argv[0]`-或-标准输入。
+        // C's whole `if (do_check)` block sits **before** the computing branch
+        // (`cksum.c:283`), so `-a md5 -c file` takes the check leg; `-s`/`-t`/`-x` have
+        // already printed their lines in the option-loop pass.
+        // `-c` takes only the first operand as the check file (the rest are ignored),
+        // mirroring C's `argv[0]`-or-stdin.
         support::terminate(check_files(
             prog,
             &request.operands,
@@ -96,8 +108,9 @@ fn run() -> ! {
     }
 
     if let Some(algo) = request.hash {
-        // 选中了算法：八枚的本体与 `-s`/`-t`/`-x` 三条腿都已接成真读数（`src/digest.rs` 与
-        // 上面的 `emit_action`），这一腿只剩摘要本体。
+        // An algorithm is selected: the eight bodies and the three legs `-s`/`-t`/`-x`
+        // are already wired to real readings (`src/digest.rs` and `emit_action` above);
+        // only the digest body remains on this leg.
         support::terminate(hash_run(prog, &request, algo));
     }
 
@@ -109,15 +122,20 @@ fn run() -> ! {
         support::terminate(status);
     }
     for operand in request.operands.iter().copied() {
-        // 读缝走 `bin_support` 那对 cfg 双生面，不再直写 `minix_sys::open`/`read`：
-        // 直写的那条腿在宿主上恒读不到（批次三百八十四现跑 `printf 'abc' | cksum` 得
-        // `4294967295 0`，即零字节的 CRC），于是「三段句子齐不齐」这件事在宿主上根本
-        // 无法比对——报文形的门会钉住占位传输交回的那句话，而不是内核的那一句。
-        // 这一步同时销掉登记 `CKSUM-HOSTED-READ-SEAM`（修法就是那一批给摘要腿定的那条）。
-        // C 的 `warn("%s", fn)`（`cksum.c:491-495`）是 `warn(3)` 而不是 `warnx(3)`：
-        // 程序名、操作数、`strerror` 句子三个成分缺一不可（旧写法把第三段擦了）。
-        // 档名那一腿的两个 `&str` 口（打开与三段报文的那一句）都在库里，登记
-        // `ARGV-BYTE-PATH-IN-LIBS`；摘要行里的文件名回显走原字节。
+        // The read seam goes through `bin_support`'s pair of cfg twins instead of writing
+        // `minix_sys::open`/`read` directly: the direct leg can never read on the host (a
+        // host run of `printf 'abc' | cksum` yields `4294967295 0`, i.e. the CRC of zero
+        // bytes), so whether "the three-part sentence is complete" cannot be compared on
+        // the host at all — a report-shape gate would pin the sentence the placeholder
+        // transport returns, not the kernel's.
+        // This step also retires the registration `CKSUM-HOSTED-READ-SEAM` (the fix is
+        // the same one already applied to the digest leg).
+        // C's `warn("%s", fn)` (`cksum.c:491-495`) is `warn(3)`, not `warnx(3)`: program
+        // name, operand, and `strerror` sentence are all required (the old wording wiped
+        // the third part).
+        // The file-name leg's two `&str` openings (open and the three-part report
+        // sentence) live in the library, registered `ARGV-BYTE-PATH-IN-LIBS`; the file
+        // name echoed in the digest line uses the raw bytes.
         let path = String::from_utf8_lossy(operand);
         let input = match support::read_file(&path) {
             Ok(input) => input,
@@ -132,35 +150,42 @@ fn run() -> ! {
     support::terminate(status)
 }
 
-/// C 的 `hash` 那条路：`cksum.c:474-491` 的循环体加上 `hash_digest_file`（`:506-524`）。
-/// 有操作数就逐档印一行摘要，没有操作数就把标准输入读尽——`-p` 时先把字节原样转抄到
-/// 标准输出——末尾印那一行摘要（`md5.c` 的 `MD5Filter`，摘要那行恒在转抄之后）。
+/// C's `hash` path: the loop body of `cksum.c:474-491` plus `hash_digest_file`
+/// (`:506-524`). With operands, print one digest line per file; without operands, read
+/// standard input to the end — under `-p`, first copy the bytes verbatim to standard
+/// output — then print the one digest line (`md5.c`'s `MD5Filter`; the digest line
+/// always comes after the copy).
 ///
-/// 三条形状在 C 里由 `print_flags` 决定，`-q` 赢 `-n`（`cksum.c:515-520` 是
-/// `if QUIET … else if NORMAL … else …`）：
+/// The three shapes are decided in C by `print_flags`, and `-q` beats `-n`
+/// (`cksum.c:515-520` is `if QUIET … else if NORMAL … else …`):
 ///
-/// * 缺省 `MD5 (file) = <digest>`；
-/// * `-n` `<digest> file`；
-/// * `-q` 只有 `<digest>`。
+/// * default `MD5 (file) = <digest>`;
+/// * `-n` `<digest> file`;
+/// * `-q` only `<digest>`.
 ///
-/// 这一腿没有退路了：`-s`/`-t`/`-x` 三条自印腿的行在 `emit_action` 里，hash 在里的 `-c`
-/// 校验腿在 `check_files` 里，本壳那句占位报文（`cksum: -a crypto algorithms are not
-/// modelled yet` 退 2）已经随批次三百八十八整条删除。
+/// This leg has no fallback left: the lines of the three self-printing legs
+/// `-s`/`-t`/`-x` live in `emit_action`, the `-c` check leg inside hash mode lives in
+/// `check_files`, and this shell's placeholder report (`cksum: -a crypto algorithms are
+/// not modelled yet`, exit 2) has been deleted wholesale.
 ///
-/// 读档走 `support::read_file`/`support::read_stdin` 这一对 cfg 双生面，与 crc 那条腿同一缝
-///（批次三百八十四把摘要腿换过来、批次三百八十九把 crc 腿也换过来）。直写 `minix_sys::open`
-/// 的那条缝在宿主上开不了也读不到（现跑 `printf 'abc' | cksum` → `4294967295 0`，即零字节），
-/// 于是宿主门只能钉住空输入的摘要与占位传输交回的错号——那种门比没有门更坏。
+/// Reading files goes through `support::read_file`/`support::read_stdin`, the same pair
+/// of cfg twins as the crc leg (the digest leg was switched over first, then the crc
+/// leg). The seam that wrote `minix_sys::open` directly can neither open nor read on
+/// the host (a run of `printf 'abc' | cksum` gives `4294967295 0`, i.e. zero bytes), so
+/// a host gate could only pin the digest of empty input and the error number the
+/// placeholder transport returns — that kind of gate is worse than none.
 fn hash_run(prog: &str, request: &CksumRequest<'_>, algo: Algo) -> i32 {
     if request.operands.is_empty() {
-        // C 的 `else if (hash && !nohashstdin)`（`cksum.c:489`）：`-s`/`-t`/`-x` 任一出现过，
-        // 这一腿就整个跳过——它们自己的行已经在诊断之前由 `emit_action` 排出去了
-        //（参照件 s-10 形：`-a md5 -p -s abc` 只有那一行串摘要，既不转抄也不摘要标准输入）。
+        // C's `else if (hash && !nohashstdin)` (`cksum.c:489`): if any of `-s`/`-t`/`-x`
+        // appeared, this leg is skipped entirely — their own lines were already emitted
+        // by `emit_action` ahead of diagnostics (reference fixture s-10: `-a md5 -p -s abc`
+        // prints only that one digest line, neither copying nor digesting standard input).
         if request.nohash_stdin {
             return 0;
         }
-        // 读失手在 C 那边就是「读到尽头」（`MD5Filter` 的 `while ((len = fread(…)) > 0)`
-        // 不看 `ferror`），本壳的 `read_stdin` 同一口径，所以这里没有错腿可报。
+        // A read failure on C's side is "read to the end" (`MD5Filter`'s
+        // `while ((len = fread(…)) > 0)` ignores `ferror`), and this shell's `read_stdin`
+        // follows the same rule, so there is no error leg to report here.
         let input = support::read_stdin();
         if request.pipe {
             support::emit(&input);
@@ -175,18 +200,21 @@ fn hash_run(prog: &str, request: &CksumRequest<'_>, algo: Algo) -> i32 {
         let input = match support::read_file(&path) {
             Ok(input) => input,
             Err(code) => {
-                // C 的 `filefunc` 交回 `NULL` 时 `hash_digest_file` 退 1，`main` 于是
-                // `warn("%s", fn)` 并把整体 `rval` 置 1（`cksum.c:477-483`），**不印摘要行**。
-                // 参照件 f-1 形：`cksum_ref: <路径>: No such file or directory`；目录那一形是
-                // `.: Is a directory`（f-3），句子由承载的 `strerror` 表给，本壳走同一张表
-                //（`bin_support::warn_line` → `minix_sys::err_line`）。
+                // When C's `filefunc` returns `NULL`, `hash_digest_file` returns 1 and
+                // `main` therefore does `warn("%s", fn)` and sets the overall `rval` to 1
+                // (`cksum.c:477-483`), **without printing a digest line**.
+                // Reference fixture f-1: `cksum_ref: <path>: No such file or directory`;
+                // the directory shape is `.: Is a directory` (f-3); the sentence comes from
+                // the hosted `strerror` table, and this shell uses the same table
+                // (`bin_support::warn_line` → `minix_sys::err_line`).
                 support::warn_line(prog, &path, code);
                 status = 1;
                 continue;
             }
         };
-        // 三条形状的行名位都是操作数的原字节：C 交出去的是 `printf("…%s…", fn)`，
-        // 那个 `fn` 就是 argv 里那一串，从不问编码。
+        // All three shapes echo the operand's raw bytes as the file name: C hands out
+        // `printf("…%s…", fn)`, and that `fn` is the byte string from argv; encoding is
+        // never consulted.
         let digest = algo.hex_digest(&input);
         if request.print_quiet {
             support::emit(format!("{digest}\n").as_bytes());
@@ -205,10 +233,12 @@ fn hash_run(prog: &str, request: &CksumRequest<'_>, algo: Algo) -> i32 {
     status
 }
 
-/// C 的 `MD5String` 那一行（`minix3/usr.bin/cksum/md5.c:60-67`）：`NAME ("<串>") = <摘要>`。
-/// 串是**原样回显**的，不转义也不加别的标点（参照件 s-2 带空格、s-3 空串两形同此形）；
-/// 这一行不受 `-n`/`-q`/`-p` 影响，因为 `printf` 的格式串在 `md5.c` 里写死，`print_flags`
-/// 只在 `hash_digest_file`（`cksum.c:506-524`）那条腿里被读。
+/// C's `MD5String` line (`minix3/usr.bin/cksum/md5.c:60-67`): `NAME ("<string>") = <digest>`.
+/// The string is **echoed verbatim**, not escaped and with no extra punctuation
+/// (reference fixtures s-2 with spaces and s-3 with the empty string both look like
+/// this); this line is unaffected by `-n`/`-q`/`-p`, because the `printf` format string
+/// is hardwired in `md5.c` and `print_flags` is read only on the `hash_digest_file` leg
+/// (`cksum.c:506-524`).
 fn string_line(algo: Algo, text: &[u8]) -> Vec<u8> {
     let mut line = format!("{} (\"", algo.hashname()).into_bytes();
     line.extend_from_slice(text);
@@ -216,8 +246,9 @@ fn string_line(algo: Algo, text: &[u8]) -> Vec<u8> {
     line
 }
 
-/// 排出一条自印腿的字节。三条腿各印几行、行首是什么，判据都在 `md5.c` 的那三个函数里，
-/// 八枚算法共用同一份（`digest::TEST_SUITE` 的注释记了为什么共用）。
+/// Emit the bytes of one self-printing leg. How many lines each of the three legs prints
+/// and what starts each line is decided in the three functions of `md5.c`, shared by all
+/// eight algorithms (the comment on `digest::TEST_SUITE` records why).
 fn emit_action(action: &CksumAction<'_>) {
     match action {
         CksumAction::String(algo, text) => support::emit(&string_line(*algo, text)),
@@ -228,9 +259,10 @@ fn emit_action(action: &CksumAction<'_>) {
             }
         }
         CksumAction::TimeTrial(algo) => {
-            // C 分两次写：先印这一句并 `fflush`（`md5.c:81-83`），再开始折叠，折完才补
-            // ` done` 与那三行。这里也分两次，不拼成一整串——`Time`/`Speed` 两行的值
-            // 本来就只能在折叠之后才知道。
+            // C writes in two steps: first this sentence plus `fflush` (`md5.c:81-83`),
+            // then the folding, and only when done the ` done` and the three lines. This
+            // does the same in two steps rather than building one string — the `Time` and
+            // `Speed` values can only be known after folding anyway.
             support::emit(
                 format!(
                     "{} time trial.  Digesting {} {}-byte blocks ...",
@@ -244,8 +276,9 @@ fn emit_action(action: &CksumAction<'_>) {
             let hex = algo.hex_digest(&digest::time_trial_data());
             let elapsed = support::wall_seconds() - start;
             let total = (digest::TIME_TRIAL_BLOCK_LEN * digest::TIME_TRIAL_BLOCK_COUNT) as i64;
-            // C 那句 `(endTime - startTime) != 0 ? (endTime - startTime) : 1`：一秒内跑完
-            // 就按 1 秒算，所以 1000×1000 字节的读数恒为 `Speed = 1000000 bytes/second`。
+            // C's `(endTime - startTime) != 0 ? (endTime - startTime) : 1`: anything that
+            // finishes within a second counts as 1 second, so the reading for 1000×1000
+            // bytes is always `Speed = 1000000 bytes/second`.
             let divisor = if elapsed != 0 { elapsed } else { 1 };
             support::emit(
                 format!(
@@ -258,34 +291,44 @@ fn emit_action(action: &CksumAction<'_>) {
     }
 }
 
-/// `cksum -c`：C 的 `do_check`（`cksum.c:283-465`）逐行验档。行为三条：
-/// 一行全对就**一声不出**；判失败就打 `<档>: FAILED`（`hash` 在里时前缀 `(<NAME>) `，`:454`），
-/// 整趟里只要有一行失败（或因格式失败）就退 1。
+/// `cksum -c`: C's `do_check` (`cksum.c:283-465`) verifies the file line by line.
+/// Three behaviors: a fully correct line says **nothing**; a failed check prints
+/// `<file>: FAILED` (prefixed `(<NAME>) ` when hash mode is on, `:454`); any failed line
+/// in the whole run (or a format failure) makes the exit status 1.
 ///
-/// `hash` 状态是**跨行留存**的：C 在遇到 `NAME (档) = 摘要` 这一形时把 `hash` 指过去
-///（`hash = nhash`，`:363`），此后同一档里那些没有 `(` 的普通行也走摘要那一支——
-/// 参照件 h-1/h-3/h-4 三形实测都因此判失败，其中 h-4 根本没给 `-a`，算法是档里第一行
-/// 的行首前缀自己认的。所以本函数带着 `hash` 走一遍循环，而不是一行一判。
+/// The `hash` state is **kept across lines**: when C meets the `NAME (file) = digest`
+/// shape it points `hash` there (`hash = nhash`, `:363`), and from then on ordinary
+/// lines in the same file without a `(` also take the digest branch — reference
+/// fixtures h-1/h-3/h-4 all fail as a result, and h-4 never even passed `-a`: the
+/// algorithm is recognized from the line prefix of the file's first line. So this
+/// function carries `hash` through the loop instead of judging each line alone.
 ///
-/// 摘要那一支读不到档时 C 走的是 `access(filename, R_OK) == 0` 那半条短路（`:424`），
-/// 失败也只打 `(MD5) <档>: FAILED`——**不** warn 那一句，与 crc 那支的 `warn("%s", filename)`
-///（`:432`）分叉（参照件 c-5/h-13 两形实测）。crc 那支读失手时的 warn 照 C 只在 `-w` 下打。
+/// In the digest branch, when the file cannot be read, C takes the
+/// `access(filename, R_OK) == 0` short circuit (`:424`) and on failure prints only
+/// `(MD5) <file>: FAILED` — it does **not** warn, which forks from the crc branch's
+/// `warn("%s", filename)` (`:432`) (reference fixtures c-5/h-13 confirm both). The crc
+/// branch's warn on a failed read is printed, as in C, only under `-w`.
 ///
-/// 三条格式腿的句子各是各的：`unknown hash: <整行>`（`:358`，只在行首前缀认不出时）、
-/// `bogus format: <整行>. Skipping...`（`:325` 与 `:398` 两处同句）、
-/// `no filename in <整行>? Skipping...`（`:381` 与 `:409`）。三句都只在 `-w` 下打
-///（C 的 `if (check_warn)` 包着每一句），但**都记一次失败**（`rval = 1`）。
+/// Each of the three format legs has its own sentence: `unknown hash: <whole line>`
+/// (`:358`, only when the line prefix is unrecognized), `bogus format: <whole line>.
+/// Skipping...` (`:325` and `:398`, same sentence), `no filename in <whole line>?
+/// Skipping...` (`:381` and `:409`). All three print only under `-w` (C's
+/// `if (check_warn)` wraps each), but **each records a failure** (`rval = 1`).
 fn check_files(prog: &str, operands: &[&[u8]], check_warn: bool, selected: Option<Algo>) -> i32 {
     let from_operand = !operands.is_empty();
-    // 校验档这一整条腿（打开、`Cannot read` 那句里的档名、档内容逐行解析）仍走文本缝，
-    // 登记 `CKSUM-CHECK-LEG-TEXTSEAM` 待独立一轮；本片的射程是选项环与摘要回显。
+    // The whole check-file leg (open, the file name in the `Cannot read` sentence, and
+    // the line-by-line parse of the file content) still goes through the text seam,
+    // registered `CKSUM-CHECK-LEG-TEXTSEAM` for a separate round; this slice covers the
+    // option loop and the digest echo.
     let path = String::from_utf8_lossy(operands.first().copied().unwrap_or(b""));
     let bytes = if from_operand {
         match support::read_file(&path) {
             Ok(bytes) => bytes,
-            // 校验档本身打不开在 C 是 `err(1, "Cannot read %s", argc>0?argv[0]:"stdin")`
-            //（`cksum.c:301-303`）：`err(3)` = 那三段句子再加 `exit(1)`。参照件 c-9 形实测
-            // `cksum_ref: Cannot read <路径>: No such file or directory`，退 1、stdout 空。
+            // A check file that cannot be opened is, in C, `err(1, "Cannot read %s",
+            // argc>0?argv[0]:"stdin")` (`cksum.c:301-303`): `err(3)` = those three parts
+            // plus `exit(1)`. Reference fixture c-9 shows
+            // `cksum_ref: Cannot read <path>: No such file or directory`, exit 1, empty
+            // stdout.
             Err(code) => {
                 support::warn_line(prog, &format!("Cannot read {path}"), code);
                 return 1;
@@ -297,8 +340,8 @@ fn check_files(prog: &str, operands: &[&[u8]], check_warn: bool, selected: Optio
     let Ok(text) = core::str::from_utf8(&bytes) else {
         return 1;
     };
-    // C 用 `fgets` 逐行读，所以末尾那个换行 terminates 掉最后一行、不产出一枚幻影空行；
-    // 只剥这一个。
+    // C reads line by line with `fgets`, so the trailing newline terminates the last
+    // line without producing a phantom empty line; strip exactly that one.
     let body = text.strip_suffix('\n').unwrap_or(text);
     let mut hash = selected;
     let mut failed = false;
@@ -310,8 +353,9 @@ fn check_files(prog: &str, operands: &[&[u8]], check_warn: bool, selected: Optio
                     name,
                     digest,
                 } => {
-                    // C 认不出行首前缀就整行不作数，报一句 `unknown hash`（`-w` 下）并记失败；
-                    // 它**不**打 FAILED 行（参照件 c-3/c-4 两形：stdout 空）。
+                    // When C cannot recognize the line prefix it discards the whole line,
+                    // reports `unknown hash` (under `-w`) and records a failure; it does
+                    // **not** print a FAILED line (reference fixtures c-3/c-4: empty stdout).
                     let _ = (name, digest);
                     if check_warn {
                         support::warn(format!("cksum: unknown hash: {line}\n").as_bytes());
@@ -347,16 +391,19 @@ fn check_files(prog: &str, operands: &[&[u8]], check_warn: bool, selected: Optio
                 }
                 CheckLine::Token { token, name } => {
                     let ok = match hash {
-                        // `hash` 已选中：拿整串 token 与重算的摘要逐字比（`:424-426` 的 `strcmp`），
-                        // 读不到档也只算失败、不 warn（参照件 h-13 形）。
+                        // `hash` selected: compare the whole token string with the recomputed
+                        // digest (the `strcmp` at `:424-426`); an unreadable file only counts as
+                        // a failure and does not warn (reference fixture h-13).
                         Some(algo) => verify_digest(algo, name, token),
-                        // crc 那支：第一个词按 `strtoul` 取前导十进制（`:442`），档读不到时
-                        // 在 `-w` 下 warn 那一句（`:432`）。
+                        // crc branch: the first word is parsed as a leading decimal via
+                        // `strtoul` (`:442`), and an unreadable file warns under `-w` (`:432`).
                         None => match support::read_file(name) {
-                            // crc 那一支读不到档时 C 打的是 `warn("%s", filename)`（`:432`），
-                            // 也是三段形，而且只在 `-w` 下打（`if (check_warn)` 包着它）。
-                            // 摘要那一支的同一格**不**打这一句（`access` 短路，`:424`），
-                            // 那一格的门在 `an_unreadable_operand_in_a_digest_line_fails_without_warning`。
+                            // In the crc branch, C's warning for an unreadable file is
+                            // `warn("%s", filename)` (`:432`), also three-part and only under
+                            // `-w` (`if (check_warn)` wraps it). The same cell in the digest
+                            // branch does **not** print this sentence (`access` short circuit,
+                            // `:424`); that cell's gate is
+                            // `an_unreadable_operand_in_a_digest_line_fails_without_warning`.
                             Err(code) => {
                                 if check_warn {
                                     support::warn_line(prog, name, code);
@@ -382,9 +429,11 @@ fn check_files(prog: &str, operands: &[&[u8]], check_warn: bool, selected: Optio
     i32::from(failed)
 }
 
-/// 把 `name` 这档读尽、按 `algo` 重算摘要，与档里记的 `expected` 逐字比。读不到就是失败：
-/// C 那一侧要么被 `access` 挡在门外（`:424`），要么 `filefunc` 交回 `NULL`——它把 `NULL`
-/// 直接喂给 `strcmp`，于是那一条会当场崩（`:425`），本壳按「失败」收，不跟着崩。
+/// Read the file `name` to the end, recompute the digest with `algo`, and compare it
+/// verbatim with the `expected` recorded in the file. An unreadable file is a failure:
+/// on C's side it is either blocked by `access` (`:424`) or `filefunc` returns `NULL`,
+/// which it feeds straight to `strcmp`, so that line crashes on the spot (`:425`); this
+/// shell records it as a failure instead of crashing along.
 fn verify_digest(algo: Algo, name: &str, expected: &str) -> bool {
     match support::read_file(name) {
         Ok(data) => algo.hex_digest(&data) == expected,
@@ -412,10 +461,11 @@ fn emit_line(kind: SumKind, data: &[u8], name: Option<&[u8]>) {
     }
 }
 
-/// C 的 `usage()`（`cksum.c:535-550`）：九行——`cksum`/`sum` 各占两行（参数串与
-/// 文件串分列），`md2`/`md4`/`md5`/`rmd160`/`sha1` 各一行。名字在 C 里是**字面量**
-/// （递的是 `sumargs`/`hashargs`/`fileargs` 三个串，不用 `getprogname()`），所以这一
-/// 块的缩进与行项都得逐字抄。`exit(1)`。
+/// C's `usage()` (`cksum.c:535-550`): nine lines — `cksum`/`sum` take two each (argument
+/// string and file string on separate lines), and `md2`/`md4`/`md5`/`rmd160`/`sha1` take
+/// one each. In C the names are **literals** (it passes the three strings
+/// `sumargs`/`hashargs`/`fileargs`, not `getprogname()`), so this block's indentation
+/// and line items must be copied verbatim. `exit(1)`.
 fn usage() -> ! {
     support::warn(
         concat!(

@@ -1,7 +1,7 @@
-//! Test: riscv64 SSIE software-interrupt IPI round-trip (SMP bring-up
-//! K10, edge1 line — the riscv64 leg of S-10's "BSP↔AP schedule IPI").
+//! Test: riscv64 SSIE software-interrupt IPI round-trip (SMP bring-up —
+//! the riscv64 leg of the "BSP↔AP schedule IPI" test).
 //!
-//! S-10 proved the IPI round-trip on the x86 LAPIC lane (test-smp-ipi:
+//! The x86 LAPIC lane proves the IPI round-trip (test-smp-ipi:
 //! schedule_sync → 0xF0 vector → sched_handler_full → pending cleared).
 //! The riscv64 lane takes the SSIE path instead — same production pieces,
 //! different interrupt injection:
@@ -23,7 +23,7 @@
 //! 5. BSP observes the flag. Round-trip proven at the hardware-mechanism
 //!    level; the production `SmpState`/`sched_handler_full` integration
 //!    rides the riscv64 multi-hart bring-up lane (test-smp-aps-riscv64
-//!    equivalent), exactly as S-10's x86 carrier was the proof vehicle
+//!    equivalent), exactly as the x86 carrier was the proof vehicle
 //!    for its own lane.
 //!
 //! Unlike the x86_64/aarch64 variants this is not a UEFI binary: QEMU
@@ -155,7 +155,7 @@ core::arch::global_asm!(
     "    sd t2, 0(t1)",
     "    la sp, __ap_stack_top",
     // SSIE (bit 1 of sie): supervisor software interrupts enabled —
-    // the S-4 capability prep this lane activates.
+    // the capability this lane turns on.
     "    li t0, 2",
     "    csrs sie, t0",
     // stvec → the IPI handler (Direct mode; 4-byte aligned symbol).
@@ -409,7 +409,7 @@ extern "C" fn rust_main(boot_hart: u64, dtb_phys: u64) -> ! {
         Err(_) => fail("DTB parse failed"),
     };
     // Install the platform global: the production send_sched_ipi reads
-    // the ACLINT SSWI base from it (K10 round 4). Must happen before any
+    // the ACLINT SSWI base from it. Must happen before any
     // IPI sender runs.
     unsafe { minix_platform::init(desc) };
     let topo = minix_platform::platform_desc().cpu_topology();
@@ -501,7 +501,7 @@ extern "C" fn rust_main(boot_hart: u64, dtb_phys: u64) -> ! {
 
     // 4. Send the IPI through the production send_sched_ipi — with the
     //    platform global installed it takes the ACLINT SSWI direct-write
-    //    path (K10 round 4): the DTB's sswi@… SETIP word for hart1 is
+    //    path: the DTB's sswi@… SETIP word for hart1 is
     //    written from S-mode, no SBI involvement. Round-3 established
     //    that the SBI send_ipi path cannot reach an S-mode hart on
     //    aclint-mswi firmware (MSIP stays M-level, no SSIP conversion).

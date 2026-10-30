@@ -5,8 +5,8 @@
 //!
 //! The module owns the shadowing motion and nothing else: resetting both
 //! tables, shadowing one boot entry per seat, and batching the boot list.
-//! Transport (safecopy of the RS table, 02/12), the notify ring (10, D5),
-//! the abort verdict (the sef owner in 01, D3), and naming judgement (05)
+//! Transport (safecopy of the RS table, 02/12), the notify ring (10),
+//! the abort verdict (the sef owner in 01), and naming judgement (05)
 //! stay out.
 //!
 //! Single-threaded event loop: pure functions over caller-held tables, no
@@ -21,14 +21,14 @@ use crate::subscription::DsSubs;
 /// RS label bound (`rs.h:58`: `RS_MAX_LABEL_LEN 16`).
 ///
 /// The bound rides the type: a wider RS label in future is a compile-time
-/// event here, not a silent lane overrun (D1).
+/// event here, not a silent lane overrun.
 pub const RS_LABEL_LEN: usize = 16;
 
 /// The boot owner's lane (`store.c:242`: `strcpy(dsp->owner, "rs")`).
 ///
 /// The master follows the table: the grant source (RS) is the registrar,
 /// so its name is the constant — one place to change if the registrar
-/// is ever renamed (D6).
+/// is ever renamed.
 pub const RS_OWNER_LANE: &[u8; DS_MAX_KEYLEN] = &{
     let mut lane = [0u8; DS_MAX_KEYLEN];
     lane[0] = b'r';
@@ -40,7 +40,7 @@ pub const RS_OWNER_LANE: &[u8; DS_MAX_KEYLEN] = &{
 ///
 /// Only the three lanes the shadow needs: occupancy, the endpoint number,
 /// and the service name. The rest of `rprocpub` (masks, PCI, domains) is
-/// RS scheduling material — another owner's domain (D1).
+/// RS scheduling material — another owner's domain.
 #[derive(Debug, Clone, Copy)]
 pub struct BootService {
     /// Boot-table occupancy. C: `rprocpub.in_use` — rs.h:166.
@@ -55,13 +55,13 @@ pub struct BootService {
 ///
 /// The anchor's first step: every seat vacant before any shadow lands.
 /// C clears flags only; full clearing is the superset — outward-equal on
-/// a fresh boot (memory starts zeroed) and simpler ever after (D2).
+/// a fresh boot (memory starts zeroed) and simpler ever after.
 pub fn reset_tables(store: &mut DsStore, subs: &mut DsSubs) {
     store.fill(None);
     subs.fill(None);
 }
 
-/// Copy a label lane with three stops (`strcpy` made explicit, D4).
+/// Copy a label lane with three stops (`strcpy` made explicit).
 ///
 /// Copies until the first NUL, the label bound (16), or the lane bound
 /// (79, keeping the terminator) — whichever stops first. C trusts the
@@ -79,26 +79,32 @@ fn copy_label(lane: &mut [u8; DS_MAX_KEYLEN], label: &[u8; RS_LABEL_LEN]) {
     lane[n] = 0;
 }
 
-/// RS label 约定期（`rs.h:58`：`RS_MAX_LABEL_LEN 16`）与本模块的 `RS_LABEL_LEN`
-/// 必须同值——两者是同一张表行的字段宽（行列解码的唯一真源在共享快照）。
+/// The RS label bound (`rs.h:58`: `RS_MAX_LABEL_LEN 16`) and this module's
+/// `RS_LABEL_LEN` must agree -- both are the field width of the same table
+/// row (the single truth for row/column decoding is the shared snapshot).
 const _: () = assert!(RS_LABEL_LEN == minix_types::RS_MAX_LABEL_LEN);
 
-/// 公共表一行的字节宽。行形唯一真源是共享快照 `RprocpubSnap`
-/// （`[ARCH: A-4]` 单源纪律）——VM 的 RS_INIT 腿读同一张表用同一个行宽
-/// （`servers/vm/src/vm_server.rs:ipc_call_rs_init`），两处不得各自手拄。
+/// Byte width of one public-table row. The single truth for the row shape is
+/// the shared snapshot `RprocpubSnap` (`[ARCH: A-4]` single-source
+/// discipline) -- VM's RS_INIT leg reads the same table with the same row
+/// width (`servers/vm/src/vm_server.rs:ipc_call_rs_init`); the two places
+/// must not hand-copy it separately.
 pub const RPROCTAB_ROW_BYTES: usize = core::mem::size_of::<minix_types::RprocpubSnap>();
 
-/// 冷启动一次拷贝的行数（C `store.c:263` 的
-/// `struct rprocpub rprocpub[NR_BOOT_PROCS]`）——引导表到此结束，
-/// 动态服务行的 label 由 RS 的 `publish_service`（manager.c:787-862）补。
+/// How many rows one cold-boot copy carries (C's
+/// `struct rprocpub rprocpub[NR_BOOT_PROCS]` at `store.c:263`) -- the boot
+/// table ends here; dynamic service rows get their labels from RS's
+/// `publish_service` (manager.c:787-862).
 pub const RPROCTAB_ROWS: usize = minix_types::NR_BOOT_PROCS;
 
-/// 整表字节量（C 的 `sizeof(rprocpub)`，store.c:267-269 那一次 safecopyfrom 的量）。
+/// Whole-table byte count (C's `sizeof(rprocpub)`, the amount of the single
+/// safecopyfrom at store.c:267-269).
 pub const RPROCTAB_BYTES: usize = RPROCTAB_ROWS * RPROCTAB_ROW_BYTES;
 
 impl BootService {
-    /// 空槽形状（解码输出缓冲的初值）。`in_use = false` 的行被
-    /// [`apply_boot_map`] 跳过，与 C 的 `if (rprocpub[i].in_use)` 同判据。
+    /// The empty-slot shape (the initial value of the decode output buffer).
+    /// Rows with `in_use = false` are skipped by [`apply_boot_map`], the same
+    /// criterion as C's `if (rprocpub[i].in_use)`.
     pub const VACANT: BootService = BootService {
         in_use: false,
         endpoint: Endpoint::NONE,
@@ -106,17 +112,20 @@ impl BootService {
     };
 }
 
-/// 把读回的 rprocpub 字节流转成 shadow 列表（逐行解行，C 的逐行结构读）。
+/// Turn the read-back rprocpub byte stream into a shadow list (decoding row by
+/// row, C's per-row struct read).
 ///
-/// 返回实际解码行数（受 `out` 容量与 `bytes` 长度双重限制）；调用方给
-/// [`RPROCTAB_ROWS`] 大小的数组，两处同源不会截断。
+/// Returns the number of rows actually decoded (limited by both `out`'s
+/// capacity and `bytes`' length); callers pass an array of [`RPROCTAB_ROWS`],
+/// so the two ends share one source and cannot truncate.
 pub fn decode_rproctab(bytes: &[u8], out: &mut [BootService]) -> usize {
     let n = out.len().min(bytes.len() / RPROCTAB_ROW_BYTES);
     for (i, slot) in out.iter_mut().enumerate().take(n) {
         let row = &bytes[i * RPROCTAB_ROW_BYTES..][..RPROCTAB_ROW_BYTES];
-        // SAFETY(读取): 行是 `#[repr(C)]` POD 快照的字节镜像；
-        // `read_unaligned` 不假设缓冲对齐（授权拷贝落地的是字节流）。
-        // VM 读同一张表用同一手法。
+        // SAFETY (read): the row is the byte image of a `#[repr(C)]` POD
+        // snapshot; `read_unaligned` assumes no buffer alignment (what the
+        // grant copy lands is a byte stream). VM reads the same table the same
+        // way.
         let w: minix_types::RprocpubSnap =
             unsafe { core::ptr::read_unaligned(row.as_ptr().cast()) };
         *slot = BootService {
@@ -128,11 +137,13 @@ pub fn decode_rproctab(bytes: &[u8], out: &mut [BootService]) -> usize {
     n
 }
 
-/// 冷启动 shadow 半的整拍：解码整表字节流→ reset →逐行植入。
+/// The whole cold-boot shadow half in one beat: decode the whole table byte
+/// stream -> reset -> plant row by row.
 ///
-/// 传输（把 RS 的授权内存搬回来）归调用方——本函数不碰 kernel（06 篇
-/// 分层：`boot.rs` 只拥有 shadow 动作）。C 对拷贝/植入失败 `panic`
-/// （store.c:269/:276），本树把 errno 上抛给出生协议（fail-closed）。
+/// Transport (carrying RS's granted memory back) belongs to the caller -- this
+/// function never touches the kernel (the 06 layering: `boot.rs` owns only the
+/// shadow motion). C `panic`s on copy/plant failure (store.c:269/:276); this
+/// tree propagates the errno to the birth protocol (fail-closed).
 pub fn plant_from_wire(store: &mut DsStore, subs: &mut DsSubs, bytes: &[u8]) -> Result<usize, i32> {
     let mut services = [BootService::VACANT; RPROCTAB_ROWS];
     let n = decode_rproctab(bytes, &mut services);
@@ -143,12 +154,12 @@ pub fn plant_from_wire(store: &mut DsStore, subs: &mut DsSubs, bytes: &[u8]) -> 
 ///
 /// Take a seat (full house reads `Err(ENOMEM)`, `store.c:235-237`),
 /// then fill the three lanes: the label key (`store.c:240`), the
-/// endpoint number (`store.c:241` — labels ride the number lane, 03 D2),
+/// endpoint number (`store.c:241` — labels ride the number lane, 03),
 /// and the RS owner (`store.c:242`), flagged in-use label (`store.c:243`).
 ///
 /// The notify ring (`update_subscribers(dsp, 1)`, `store.c:246`) is NOT
 /// rung here: the ring lives in 10 and is not yet built — the hook stands
-/// documented (06-ds-boot-mapping.md D4) instead of wired hollow (D5).
+/// documented (06-ds-boot-mapping.md) instead of wired hollow.
 pub fn map_service(
     store: &mut DsStore,
     label: &[u8; RS_LABEL_LEN],
@@ -178,8 +189,8 @@ pub fn map_service(
 /// Reset, then shadow every occupied entry in order; idle entries are
 /// skipped. The first failure aborts the batch (`Err`) — the C
 /// equivalent panics (`store.c:275-277`); the abort verdict belongs to
-/// the sef owner (01), so this motion returns instead of presuming it
-/// (D3). Returns the shadowed count.
+/// the sef owner (01), so this motion returns instead of presuming it.
+/// Returns the shadowed count.
 pub fn apply_boot_map(
     store: &mut DsStore,
     subs: &mut DsSubs,
@@ -249,7 +260,7 @@ mod tests {
     fn test_map_full_reads_enomem() {
         // A full house at anchor time is an error, not a panic here
         // (C: ENOMEM at `store.c:235-237`; the abort verdict is the
-        // owner's, D3).
+        // owner's).
         let mut store: DsStore = [None; NR_DS_KEYS];
         for seat in store.iter_mut() {
             *seat = Some(crate::store::DataEntry {
@@ -295,7 +306,7 @@ mod tests {
     #[test]
     fn test_label_stop_and_truncation() {
         // Copy stops at NUL; a boundless label stops at the lane bound
-        // (D4: three stops).
+        // (three stops).
         let mut store: DsStore = [None; NR_DS_KEYS];
         let full = [b'z'; RS_LABEL_LEN];
         let slot = map_service(&mut store, &full, Endpoint(3)).unwrap();

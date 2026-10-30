@@ -1,32 +1,40 @@
-//! E5(f) 宿主半 — DS 发布/订阅/取回三链，接到 VFS 的事件分类上。
+//! E5(f) hosted half — the three DS chains (publish, subscribe, fetch) wired to
+//! VFS's event classification.
 //!
-//! 驱动进程起来时先向 DS 发布一个 `drv.<类>.<n>` 的 u32 值（`DS_DRIVER_UP`），
-//! 订阅方（VFS）用一条模式串订下自己关心的那类前缀，之后每次发布都由 DS 的
-//! 扫描决定唤醒谁。这条链的宿主半能整段跑起来，因为 DS 服务器把事件循环开在了
-//! 两个小 trait 上：`DsIpc`（收/发/唤醒）与 `DsKernel`（grant 拷贝）。
+//! When a driver process comes up it first publishes a u32 value under
+//! `drv.<class>.<n>` to DS (`DS_DRIVER_UP`); the subscriber (VFS) claims the class
+//! prefix it cares about with one pattern string, and from then on every publish
+//! lets DS's scan decide whom to wake. This chain's hosted half runs end to end
+//! because the DS server hangs its event loop on two small traits: `DsIpc`
+//! (receive/send/wake) and `DsKernel` (grant copies).
 //!
-//! # 链路面（全部真代码，只有 IPC 与 grant 传输是脚本）
+//! # Chain surface (all real code; only the IPC and grant transports are scripted)
 //!
-//! 1. **标签面**：`minix_ds::boot::apply_boot_map` 真函数铺 RS/VFS/MFS 的标签
-//!    （`store.c:273-279` 的 fresh 锚），之后 `resolve_name` 才认得出调用者——
-//!    发布与订阅都要求调用者有名字（`store.c:297-299` / `:514-516`）。
-//! 2. **订阅面**：`DsServer::run_once` 收 `DS_SUBSCRIBE` → `plan_subscribe` 的
-//!    模式编译检查（`pattern::EreMatcher`，C 的 `regcomp` 对应物）→ `apply_subscribe`
-//!    落座。
-//! 3. **发布面**：`DS_PUBLISH` → `plan_publish` 的六步裁决 → 提交半写条目 →
-//!    `ring` 调 `notify::apply_update` 扫描订阅表，命中的座位置位并 `ipc_notify`。
-//! 4. **取回面**：`DS_CHECK` → `plan_check` 取最低置位 → `safecopy_to` 把事件
-//!    key 写回调用者 → 回复消息的 `flags`/`owner` 域带类型与发布者端点 →
-//!    `apply_check` 消费掉这一位。
-//! 5. **对端接缝**：取回的 key 与值正是 VFS `ds_event` 排空循环的输入
-//!    （`os/servers/vfs/src/misc.rs:782-836` 的 `classify_ds_key` 与
-//!    `ds_event_action`），断言两者咬合。
+//! 1. **Label face**: the real `minix_ds::boot::apply_boot_map` lays down the
+//!    RS/VFS/MFS labels (the fresh anchor of `store.c:273-279`), after which
+//!    `resolve_name` can recognize the caller — both publish and subscribe
+//!    require the caller to have a name (`store.c:297-299` / `:514-516`).
+//! 2. **Subscribe face**: `DsServer::run_once` receives `DS_SUBSCRIBE` →
+//!    `plan_subscribe`'s pattern-compile check (`pattern::EreMatcher`, the C
+//!    counterpart of `regcomp`) → `apply_subscribe` takes the seat.
+//! 3. **Publish face**: `DS_PUBLISH` → `plan_publish`'s six-step verdict → the
+//!    commit half writes the entry → `ring` calls `notify::apply_update` to scan
+//!    the subscription table; hit seats are marked and `ipc_notify`'d.
+//! 4. **Fetch face**: `DS_CHECK` → `plan_check` takes the lowest set bit →
+//!    `safecopy_to` writes the event key back to the caller → the reply message's
+//!    `flags`/`owner` fields carry the type and the publisher endpoint →
+//!    `apply_check` consumes that bit.
+//! 5. **Peer seam**: the fetched key and value are exactly the input of VFS's
+//!    `ds_event` drain loop (`classify_ds_key` and `ds_event_action` in
+//!    `os/servers/vfs/src/misc.rs:782-836`); the test asserts the two mesh.
 //!
-//! # 与 DS 自有单测的分工
+//! # Division of labor with DS's own unit tests
 //!
-//! DS crate 内测试逐个覆盖 `plan_*`/`apply_*` 纯函数与各 arm 的拒绝路；本文件
-//! 不重复它们，只把 **一次完整的发布→订阅→取回** 串起来跑真服务器，并断言
-//! 事件 key 在 VFS 侧的归宿。真机三链（RS 启动各服务时的真实发布）挂 T2 / E5(f)。
+//! The in-crate DS tests cover the `plan_*`/`apply_*` pure functions and each
+//! arm's rejection path one by one; this file does not repeat them, it only
+//! strings **one full publish → subscribe → fetch** through the real server and
+//! asserts where the event key lands on the VFS side. The on-target three chains
+//! (the real publishes as RS starts each service) hang off T2 / E5(f).
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -40,13 +48,14 @@ use minix_types::{
 use minix_vfs::misc::{DsDriverKind, DsUpTarget, classify_ds_key, ds_event_action};
 
 // ---------------------------------------------------------------------------
-// 夹具：脚本化 IPC 与 grant 传输
+// Fixtures: scripted IPC and grant transports
 // ---------------------------------------------------------------------------
 
-/// 脚本化 IPC：收到的消息按序出队，发出的回复与唤醒分别记账。
+/// Scripted IPC: received messages dequeue in order; sent replies and wake-ups
+/// are booked separately.
 ///
-/// `DsIpc::send`/`notify` 收 `&self`（C 的一发不等，`main.c:123-131` /
-/// `store.c:222`），所以记账走 `RefCell`。
+/// `DsIpc::send`/`notify` take `&self` (C's fire-and-forget, `main.c:123-131` /
+/// `store.c:222`), so the bookkeeping goes through `RefCell`.
 #[derive(Default)]
 struct ScriptedIpc {
     inbox: RefCell<VecDeque<Message>>,
@@ -64,7 +73,8 @@ impl ScriptedIpc {
     fn notified(&self) -> Vec<Endpoint> {
         self.notified.borrow().clone()
     }
-    /// 最后一条回复（DS 把应答写在同一个消息缓冲里，`main.c:80-86`）。
+    /// The last reply (DS writes the answer into the same message buffer,
+    /// `main.c:80-86`).
     fn last_reply(&self) -> (Endpoint, Message) {
         self.sent
             .borrow()
@@ -92,7 +102,8 @@ impl DsIpc for ScriptedIpc {
     }
 }
 
-/// 脚本化 grant 传输：key 的字节按序供给，写回的字节按序记账。
+/// Scripted grant transport: key bytes are supplied in order, written-back bytes
+/// are booked in order.
 #[derive(Default)]
 struct ScriptedKernel {
     keys: RefCell<VecDeque<Vec<u8>>>,
@@ -138,10 +149,10 @@ impl DsKernel for ScriptedKernel {
 }
 
 // ---------------------------------------------------------------------------
-// 夹具：消息与标签
+// Fixtures: messages and labels
 // ---------------------------------------------------------------------------
 
-/// 一条 DS 请求（`mess_ds_req` 载荷，C ipc.h:107）。
+/// One DS request (the `mess_ds_req` payload, C ipc.h:107).
 fn ds_request(
     call: i32,
     from: Endpoint,
@@ -166,21 +177,23 @@ fn ds_request(
     msg
 }
 
-/// 服务标签（`rprocpub.label[16]`，rs.h:177）。
+/// A service label (`rprocpub.label[16]`, rs.h:177).
 fn label(text: &str) -> [u8; RS_LABEL_LEN] {
     let mut lane = [0u8; RS_LABEL_LEN];
     lane[..text.len()].copy_from_slice(text.as_bytes());
     lane
 }
 
-/// 事件 key 的 NUL 停车道（DS 的 key 车道是 80 字节含终止符）。
+/// The NUL parking lane of an event key (DS's key lane is 80 bytes including
+/// the terminator).
 fn key_lane(text: &str) -> Vec<u8> {
     let mut lane = vec![0u8; text.len()];
     lane.copy_from_slice(text.as_bytes());
     lane
 }
 
-/// 铺好三个服务标签的空服务器（RS 是标签的登记方，`store.c:242`）。
+/// An empty server with three service labels laid down (RS is the label
+/// registrant, `store.c:242`).
 fn server_with_labels() -> DsServer {
     let mut server = DsServer::new();
     let services = [
@@ -204,19 +217,20 @@ fn server_with_labels() -> DsServer {
     server
 }
 
-/// 订阅方关心的模式：块设备驱动事件（C 侧订阅时自动加 `^…$` 锚，
-/// `store.c:487-493`；Rust 的引擎按整串匹配表达同一语义）。
+/// The pattern the subscriber cares about: block device driver events (C adds
+/// the `^…$` anchors automatically on subscribe, `store.c:487-493`; the Rust
+/// engine expresses the same semantics by whole-string matching).
 const BLK_PATTERN: &str = r"drv\.blk\..*";
 
 // ---------------------------------------------------------------------------
-// E5(f).1 三链全通：订阅 → 发布 → 唤醒 → 取回
+// E5(f).1 All three chains: subscribe → publish → wake → fetch
 // ---------------------------------------------------------------------------
 
 #[test]
 fn ds_publish_subscribe_check_chain_wakes_subscriber_and_vfs_classifies() {
     let mut server = server_with_labels();
 
-    // ── 第一步：VFS 订阅块设备事件（`DS_SUBSCRIBE`，store.c:487-508）──
+    // ── Step one: VFS subscribes to block device events (`DS_SUBSCRIBE`, store.c:487-508) ──
     let subscribe = ds_request(
         DS_SUBSCRIBE,
         Endpoint::VFS,
@@ -234,7 +248,7 @@ fn ds_publish_subscribe_check_chain_wakes_subscriber_and_vfs_classifies() {
     );
     assert!(ipc.notified().is_empty(), "订阅本身不唤醒任何人");
 
-    // ── 第二步：MFS 发布 `drv.blk.0` = DS_DRIVER_UP（store.c:297-378）──
+    // ── Step two: MFS publishes `drv.blk.0` = DS_DRIVER_UP (store.c:297-378) ──
     let publish = ds_request(
         DS_PUBLISH,
         Endpoint::MFS,
@@ -252,7 +266,7 @@ fn ds_publish_subscribe_check_chain_wakes_subscriber_and_vfs_classifies() {
         "扫描命中 VFS 的订阅，唤醒它一次（store.c:222 的 ipc_notify）"
     );
 
-    // 条目落座：key 与值就是驱动上报的那一对。
+    // Entry seated: key and value are exactly the pair the driver reported.
     let (key_text, published_value) = {
         let entry_slot =
             minix_ds::slots::lookup_entry(&server.store, b"drv.blk.0", DsFlags::TYPE_U32)
@@ -260,13 +274,14 @@ fn ds_publish_subscribe_check_chain_wakes_subscriber_and_vfs_classifies() {
         let entry = entry_slot.get(&server.store).expect("座位有体");
         let end = entry.key.iter().position(|&b| b == 0).unwrap_or(0);
         let key_text = String::from_utf8(entry.key[..end].to_vec()).expect("key 是文本");
-        // SAFETY: 本次发布走的是 TYPE_U32 臂，narrow arm 即活跃臂（store.rs:43-48）。
+        // SAFETY: this publish goes through the TYPE_U32 arm, so the narrow arm
+        // is the active one (store.rs:43-48).
         (key_text, unsafe { entry.body.u32 })
     };
     assert_eq!(key_text, "drv.blk.0");
     assert_eq!(published_value, DS_DRIVER_UP as u32, "值是 DS_DRIVER_UP");
 
-    // ── 第三步：VFS 取回事件（`DS_CHECK`，store.c:544-578）──
+    // ── Step three: VFS fetches the event (`DS_CHECK`, store.c:544-578) ──
     let check = ds_request(
         DS_CHECK,
         Endpoint::VFS,
@@ -293,7 +308,7 @@ fn ds_publish_subscribe_check_chain_wakes_subscriber_and_vfs_classifies() {
     );
     assert_eq!(req.owner, Endpoint::MFS.0, "回复的 owner 域带发布者端点（store.c:570）");
 
-    // 取回即消费：同一位不会被取两次（`apply_check`，store.c:575）。
+    // Fetch consumes: the same bit is never fetched twice (`apply_check`, store.c:575).
     let check_again = ds_request(
         DS_CHECK,
         Endpoint::VFS,
@@ -310,9 +325,10 @@ fn ds_publish_subscribe_check_chain_wakes_subscriber_and_vfs_classifies() {
          `_SYSTEM`（ds/inc.h:6）把 errno 带负号发出，本树在 `reply_status` 折转"
     );
 
-    // ── 第四步：对端接缝——VFS 拿这对 key/值做驱动上线决策 ──
-    // VFS 的 `ds_event` 排空循环正是这条通道的消费方：先按 key 前缀分类，
-    // 再按取回的值判断是否为驱动上线事件。
+    // ── Step four: the peer seam — VFS uses this key/value pair for the driver-up decision ──
+    // VFS's `ds_event` drain loop is exactly the consumer of this channel: it first
+    // classifies by key prefix, then decides from the fetched value whether this is a
+    // driver-up event.
     assert_eq!(
         classify_ds_key(&key_text),
         Some(DsDriverKind::Blk),
@@ -323,7 +339,8 @@ fn ds_publish_subscribe_check_chain_wakes_subscriber_and_vfs_classifies() {
         Some(DsUpTarget::Dmap { is_blk: true }),
         "DS_DRIVER_UP 触发 dmap 上线（misc.c:976-982）"
     );
-    // 反面对照：换个类前缀，同一条决策给出另一支；值不是上线事件则无动作。
+    // Negative control: switch the class prefix and the same decision gives the
+    // other branch; a value that is not an up event produces no action.
     assert_eq!(
         classify_ds_key("drv.chr.4"),
         Some(DsDriverKind::Chr),
@@ -337,14 +354,14 @@ fn ds_publish_subscribe_check_chain_wakes_subscriber_and_vfs_classifies() {
 }
 
 // ---------------------------------------------------------------------------
-// E5(f).2 模式不匹配的发布不唤醒订阅者
+// E5(f).2 A publish outside the pattern wakes no subscriber
 // ---------------------------------------------------------------------------
 
 #[test]
 fn ds_publish_outside_subscribed_pattern_does_not_wake_subscriber() {
     let mut server = server_with_labels();
 
-    // 订阅块设备类。
+    // Subscribe to the block device class.
     let subscribe = ds_request(
         DS_SUBSCRIBE,
         Endpoint::VFS,
@@ -357,7 +374,8 @@ fn ds_publish_outside_subscribed_pattern_does_not_wake_subscriber() {
     assert_eq!(server.run_once(&mut ipc, &mut kernel), Step::Handled);
     assert_eq!(ipc.last_reply().1.m_type, OK);
 
-    // 发布一个字符设备事件：类型臂相同，但模式串不匹配。
+    // Publish a character device event: same type arm, but the pattern does not
+    // match.
     let publish = ds_request(
         DS_PUBLISH,
         Endpoint::MFS,
@@ -374,7 +392,7 @@ fn ds_publish_outside_subscribed_pattern_does_not_wake_subscriber() {
         "模式不匹配的发布不唤醒订阅者（entry_matches 的第三道门，store.c:190-193）"
     );
 
-    // 订阅者名下也没有未读更新。
+    // The subscriber also has no unread update.
     let check = ds_request(
         DS_CHECK,
         Endpoint::VFS,

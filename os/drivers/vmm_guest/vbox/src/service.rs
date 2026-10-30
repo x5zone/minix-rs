@@ -335,7 +335,9 @@ impl<B: Backdoor> VboxService<B> {
         write_i32(&mut reply, cwire::RESULT, result);
         write_i32(&mut reply, cwire::CODE, code);
         write_i64(&mut reply, cwire::ID, id);
-        //[SD19-gate] 回复发送尽力而为：C 的 send_reply 失败只打印一行；单线程泵按文档丢弃而不是卡死。
+        //[SD19-gate] reply sending is best effort: in C a failing send_reply
+        // only prints one line; the single-threaded pump drops it as documented
+        // instead of stalling.
         #[allow(clippy::let_underscore_must_use)]
         let _ = transport.asynsend(endpt, &mut reply);
     }

@@ -2,7 +2,7 @@
 //! against `minix3/games/arithmetic/arithmetic.c` (the option scan `:119-139`,
 //! `penalise` `:303-316`, `usage` `:378-385`).
 //!
-//! This door pins the diagnostic channel, which is the whole point of batch 二百五十一:
+//! This gate pins the diagnostic channel, which is the whole point of this face:
 //! C's three option errors are `errx(1, …)` and `usage()` is a `fprintf(stderr, …)`,
 //! yet the shell sent all three to **standard output** (and its usage line was a
 //! lowercase literal with the name baked in). Channel is part of an `err(3)`-family
@@ -136,9 +136,10 @@ fn the_twentieth_correct_answer_prints_the_score_block_with_both_time_numbers() 
         String::from_utf8_lossy(&buffer)
     );
 
-    // C 的 `while(!getchar())`（`arithmetic.c:177-179`）吃掉一个字节。先投一个 `x`：它应当被
-    // 那个等待用掉，于是第 21 题读到的是我们随后写去的真答案。若这一腿不接，`x` 会落进
-    // 第 21 题那一行，C 的 `Please type a number.` 就冒出来，而第 21 题永远答不上。
+    // C's `while(!getchar())` (`arithmetic.c:177-179`) eats one byte. Feed an `x` first: it
+    // should be consumed by that wait, so question 21 reads the real answer we write
+    // afterwards. If this leg is not wired, `x` lands on question 21's line, C's `Please
+    // type a number.` shows up, and question 21 can never be answered.
     stdin.write_all(b"x").expect("feed the keypress");
     stdin.flush().expect("flush the keypress");
     let mut question = None;
@@ -159,8 +160,8 @@ fn the_twentieth_correct_answer_prints_the_score_block_with_both_time_numbers() 
     stdout.read_to_end(&mut tail).expect("drain the output");
     buffer.extend_from_slice(&tail);
     let out = String::from_utf8_lossy(&buffer).into_owned();
-    // 那一个字符是被等待吃掉的，不是被题目读走的：二十题全对，加第 21 题共 21 个 `Right!`，
-    // 且全程不出一句 `Please type a number.`。
+    // That one character is eaten by the wait, not read as an answer: all twenty questions
+    // plus question 21 give 21 `Right!` lines, and `Please type a number.` never appears.
     assert_eq!(
         out.matches("Right!\n").count(),
         21,

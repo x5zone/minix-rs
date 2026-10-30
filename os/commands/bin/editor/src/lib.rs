@@ -1,5 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-// SD-19 机械化门
+// Mechanized gate: no silent dropping of must-use results.
 #![warn(clippy::let_underscore_must_use)]
 
 
@@ -38,7 +38,7 @@
 //! the terminal stage, and `g`/`v`/`G`/`V` (plus `u` and `!`) still answer
 //! "not wired" through the `?` channel (09-editors.md §5 declares the
 //! boundary). Substitute `s` and search addresses now run on the stage's
-//! regex crate (`minix-regex`, the 08 篇 engine): `s/old/new/[g|N][pln]`
+//! regex crate (`minix-regex`, the document-08 engine): `s/old/new/[g|N][pln]`
 //! with `&`/group replay, bare-`s` replay, and the `//` empty-pattern
 //! cache. File input/output also stays outside the pure logic:
 //! [`exec::EditorIo`] carries the seam, and the `ed` binary supplies the

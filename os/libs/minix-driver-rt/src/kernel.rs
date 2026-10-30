@@ -24,8 +24,8 @@ pub struct KernelTransport {
     /// `static asynmsg_t msgtable[ASYN_NR]` (`asynsend.c:18`). The kernel
     /// records only the user address of this table and re-reads it once the
     /// destination enters receive, so a stack-local single slot would be
-    /// flushed by the next `senda` re-registration (NK4-C B7 same-shape
-    /// defect; on RS it was the confirmed boot-deadlock root cause). The
+    /// flushed by the next `senda` re-registration (the same shape as the
+    /// defect that was the confirmed boot-deadlock root cause on RS). The
     /// `DriverRuntime<T>` owns this transport for the driver's whole
     /// lifetime, so the slots outlive each `asynsend` call.
     senda_queue: AsyncSendQueue<16>,
@@ -61,8 +61,9 @@ impl DriverTransport for KernelTransport {
 
     fn send_rec(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
         msg.m_source = self.self_endpoint;
-        // NK4-C B9b：出生回报腿 C `ipc_sendrec`（sef_init.c:458-466）——
-        // 单陷阱 send+receive，停在 receive(RS) 半等 RS catch 的 OK。
+        // Birth-report leg, C `ipc_sendrec` (sef_init.c:458-466): a single-trap
+        // send+receive that stops in the receive(RS) half waiting for RS's catch
+        // to answer OK.
         sendrec(dst, msg).map_err(|_| -minix_types::EIO)
     }
 
@@ -71,8 +72,9 @@ impl DriverTransport for KernelTransport {
         // C: driver asynsend → asynsend3 uses the **process-global persistent**
         // multi-entry `static msgtable[ASYN_NR]` (asynsend.c:18) — appends,
         // never flushes. The prior stack-local single slot got overwritten by
-        // the next `senda` (stale `s_asyntab` + dead frame → lost pending
-        // message; NK4-C B7 same-shape defect). Route through the persistent
+        // the next `senda` (stale `s_asyntab` + dead frame -> lost pending
+        // message; the same shape as the RS boot-deadlock defect). Route through
+        // the persistent
         // `AsyncSendQueue`: `enqueue` (VALID OR-ed last, asynsend.c:124-131)
         // then hand `pending_slice` to `senda` (asynsend.c:154).
         self.senda_queue
@@ -118,7 +120,7 @@ impl DriverTransport for KernelTransport {
     }
 
     fn copy_to_addr(&mut self, dest: Endpoint, addr: u64, buf: &[u8]) -> Result<(), i32> {
-        // C `store_t`（readclock.c:185-189）：sys_datacopy(SELF, &t, who_e, addr, n)。
+        // C `store_t` (readclock.c:185-189): sys_datacopy(SELF, &t, who_e, addr, n).
         sys_datacopy(
             &DirectKernelCallTransport,
             self.self_endpoint.get(),
@@ -130,7 +132,7 @@ impl DriverTransport for KernelTransport {
     }
 
     fn copy_from_addr(&mut self, src: Endpoint, addr: u64, buf: &mut [u8]) -> Result<(), i32> {
-        // C `fetch_t`（readclock.c:179-183）：sys_datacopy(who_e, addr, SELF, &t, n)。
+        // C `fetch_t` (readclock.c:179-183): sys_datacopy(who_e, addr, SELF, &t, n).
         sys_datacopy(
             &DirectKernelCallTransport,
             src.get(),
@@ -142,19 +144,23 @@ impl DriverTransport for KernelTransport {
     }
 
     fn publish_label(&mut self, label: &str) -> Result<(), i32> {
-        // C: `chardriver_announce` 的 DS 发布半（chardriver.c:99-127）。动词是
-        // **`ds_publish_u32(key, DS_DRIVER_UP, DSF_OVERWRITE)`**（chardriver.c:119），
-        // 不是发布 label：TYPE_LABEL 的发布权在 RS 一家（DS 的源闸
-        // store.c:302-304「Only RS can publish labels」写死 `m_source == RS_PROC_NR`），
-        // 驱动发 TYPE_LABEL 永远 EPERM——真机上这一条把 MEM/TTY 的 announce
-        // 直接打死（原误用 `publish_label` 被 DS 回复符号缺陷掩盖成假成功，
-        // 见台账 E-DSWIRE 的上机终态）。键名沿用调用方给的 `drv.chr.*`，
-        // C 则由 `ds_retrieve_label_name(sef_self())` 拼出（差量登记在台账）。
+        // C: the DS publish half of `chardriver_announce` (chardriver.c:99-127).
+        // The verb is **`ds_publish_u32(key, DS_DRIVER_UP, DSF_OVERWRITE)`**
+        // (chardriver.c:119), not publishing a label: only RS may publish
+        // TYPE_LABEL (DS's source gate at store.c:302-304, "Only RS can publish
+        // labels", hard-codes `m_source == RS_PROC_NR`), so a driver publishing
+        // TYPE_LABEL always gets EPERM — on real hardware this killed MEM's and
+        // TTY's announce outright (the earlier misuse of `publish_label` was
+        // masked into a false success by a DS reply-sign defect).  The key name
+        // reuses the caller-supplied `drv.chr.*`; C builds it with
+        // `ds_retrieve_label_name(sef_self())`.
         //
-        // DsClient 双载体装配（ds.rs，T7 约束放宽）：DS 对话 = int-33 IPC 腿，
-        // grant 生命线 = SYSCALL 腿；宿主构建诚实 -EIO。grant 链（grant.rs
-        // register）上浮正 errno、taskcall 链上浮负状态——此处归一为本
-        // trait 其余动词的负状态约定。
+        // DsClient is assembled from two carriers (ds.rs): the DS conversation
+        // runs on the int-33 IPC leg and the grant lifetime on the SYSCALL leg;
+        // hosted builds honestly return -EIO.  The grant chain (grant.rs
+        // register) surfaces positive errnos while the taskcall chain surfaces
+        // negative statuses — normalized here to the negative-status convention
+        // used by the rest of this trait.
         let mut ds = DsClient::new(DirectTrapTransport, DirectKernelCallTransport, Endpoint::DS);
         let mut grants = minix_sys::grant::GrantTable::new();
         ds.publish_u32(
@@ -243,8 +249,9 @@ mod kernel_transport_tests {
     use super::*;
     use crate::transport::DriverTransport;
 
-    /// 宿主构建（未开 real-trap）下 SENDA 腿诚实 -EIO（SENDA 表接线
-    /// 落地后的门控验证，input `KernelTransport::asynsend` 同款）。
+    /// In a hosted build (real-trap not enabled) the SENDA leg honestly returns
+    /// -EIO (the gated check that follows the SENDA table wiring, the same shape
+    /// as the input server's `KernelTransport::asynsend`).
     #[test]
     fn test_asynsend_hosted_is_eio() {
         let mut t = KernelTransport::new(Endpoint::PM);
@@ -252,7 +259,7 @@ mod kernel_transport_tests {
         assert_eq!(t.asynsend(Endpoint::DS, &mut msg), Err(-minix_types::EIO));
     }
 
-    /// NK4-C B7 regression: two async sends must BOTH stay pending in the
+    /// Regression guard: two async sends must BOTH stay pending in the
     /// persistent ring — the second `senda` must not flush the first. The old
     /// stack-local single-slot form could only ever hold one entry (the
     /// confirmed boot-deadlock root cause on RS); this pins the fix at the
@@ -266,8 +273,9 @@ mod kernel_transport_tests {
             m_type: 7,
             ..Message::default()
         };
-        //[SD19-gate] 本测试钉的是两次 asynsend 都入队且互不冲刷（断言
-        // pending_count 为 2）；单次调用结果按夹具忽略。
+        // [SD19-gate] This test pins that both asynsend calls enqueue and that
+        // neither flushes the other (it asserts pending_count == 2); the per-call
+        // result is ignored as a fixture.
         #[allow(clippy::let_underscore_must_use)]
         let _ = t.asynsend(Endpoint::DS, &mut m1);
         #[allow(clippy::let_underscore_must_use)]
@@ -279,18 +287,21 @@ mod kernel_transport_tests {
         );
     }
 
-    /// DS announce 腿经双载体 DsClient：宿主下 grant 生命线首跳即
-    /// -EIO 并诚实上浮（publish_label 从 ENOSYS 登记位变真实路径后的
-    /// fail-closed 语义）。
+    /// The DS announce leg goes through the two-carrier DsClient: on the host the
+    /// grant lifetime fails at its first hop with -EIO, which is surfaced honestly
+    /// (the fail-closed semantics of publish_label now that it is a real path
+    /// instead of a registered ENOSYS placeholder).
     #[test]
     fn test_publish_label_hosted_is_eio() {
         let mut t = KernelTransport::new(Endpoint::PM);
         assert_eq!(t.publish_label("drv.chr.t7"), Err(-minix_types::EIO));
     }
 
-    /// DS label 查表腿经双载体 DsClient：宿主下查表不可达诚实返回
-    /// `None`（调用方读作 C 的"忽略该消息"，与 publish 的 fail-closed
-    /// 上浮同源，但查表失败在 C 里是静默忽略而非错误码）。
+    /// The DS label lookup leg goes through the two-carrier DsClient: on the host
+    /// the lookup is unreachable and honestly returns `None` (the caller reads it
+    /// as C's "ignore this message"; it comes from the same fail-closed surfacing
+    /// as publish, except that a failed lookup in C is a silent ignore rather than
+    /// an error code).
     #[test]
     fn test_lookup_label_hosted_is_none() {
         let mut t = KernelTransport::new(Endpoint::PM);

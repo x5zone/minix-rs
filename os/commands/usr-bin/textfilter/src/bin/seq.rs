@@ -8,28 +8,39 @@
 //! generation and `-f` formats of the C are declared unsupported by the
 //! engine (the same float-rendering adjudication as printf's).
 //!
-//! 前门有**三家句子、两个退码**，都按 C 逐句搬回：
-//! ① `errflg` 一族退 1，形如「libc 的零到多行 + **一行** usage」——`-h`、操作数
-//!    不是 1..3 个都只有 usage 那一行（`h` 在 optstring 里，libc 无话可说；C 的
-//!    `case 'h'` 后面没有 `break`，直接落 `default: errflg++`，`seq.c:120-122`），
-//!    而集外字母与带值字母缺值会先各印一行 libc（环**不在第一个坏字母处停**，
-//!    `seq -+- 3` 因此有两行 libc）。usage 那行跟着 `getprogname()`（`seq.c:133-136`）。
-//! ② 命令自己的 `errx(1, ...)` 一族退 1，各**一行**且不接 usage：
-//!    `zero increment`/`zero decrement`（名字随 `first < last` 变）、
-//!    `needs positive increment`、`needs negative decrement`、
-//!    `invalid format string: \`%q'`（带原文，反引号加单引号是 C 的原样措辞）。
-//! ③ 操作数一族走 `e_atof()`，退 **2**：尾巴有杂字符是
-//!    `invalid floating point argument: 3x`（`errx`），溢出/下溢是
-//!    `1e310: Numerical result out of range`（`err` 的三段形，带 `strerror`）。
-//!    C 解析操作数的次序是 `last`→`first`→`incr`，所以 `seq 3 -w` 报的是 `-w`。
+//! The front door has **three sentence families and two exit statuses**,
+//! each carried over from C sentence by sentence:
+//! ① The `errflg` family exits 1 in the shape "zero or more libc lines plus
+//!    **one** usage line" -- `-h`, and an operand count outside 1..3, produce
+//!    only the usage line (`h` is in the optstring, so libc has nothing to
+//!    say; C's `case 'h'` has no `break` and falls straight into
+//!    `default: errflg++`, `seq.c:120-122`), while an out-of-set letter and a
+//!    value-taking letter missing its value each print one libc line first
+//!    (the loop **does not stop at the first bad letter**, so `seq -+- 3`
+//!    yields two libc lines). The usage line follows `getprogname()`
+//!    (`seq.c:133-136`).
+//! ② The command's own `errx(1, ...)` family exits 1, each **one line** with
+//!    no usage attached: `zero increment`/`zero decrement` (the name follows
+//!    `first < last`), `needs positive increment`, `needs negative decrement`,
+//!    `invalid format string: \`%q'` (with the original text; the backtick
+//!    plus single quote is C's verbatim wording).
+//! ③ The operand family goes through `e_atof()` and exits **2**: trailing junk
+//!    gives `invalid floating point argument: 3x` (`errx`), while overflow or
+//!    underflow gives `1e310: Numerical result out of range` (`err`'s
+//!    three-part shape, with `strerror`). C parses operands in the order
+//!    `last`→`first`→`incr`, so `seq 3 -w` blames `-w`.
 //!
-//! 命令行按**字节**走到这里（[`bin_support::args_bytes`]）：`-s`/`-t` 的值就是打出去的
-//! 内容，`-f` 的值与操作数就是报文里的内容，所以这三处只要经过文本缝就会改到输出与
-//! 回显的字节（现量 `tmp/argv-443/measure.log`：参照件 `seq -s<ff> 1 3` 打
-//! `1\xff2\xff3\xff`，折叠形打的是 `ef bf bd` 三位；同一枚 `-\xff` 在折叠形里是三个字母
-//! 各报一行，在字节形里是一个字母一行）。唯一仍折一次的是 `OutOfRange` 那一行的操作数
-//! 位——那一句要借库侧的 `strerror`，而 `strerror` 的口收 `&str`，账在
-//! `ARGV-BYTE-PATH-IN-LIBS`。
+//! The command line arrives here as **bytes** ([`bin_support::args_bytes`]):
+//! the values of `-s`/`-t` are exactly what gets printed, and the value of
+//! `-f` plus the operands are exactly what lands in the message, so any of
+//! these three passing through a text seam would alter the output and echo
+//! bytes (measured against the reference binary: `seq -s<ff> 1 3` prints
+//! `1\xff2\xff3\xff`, while the folded shape prints the three bytes
+//! `ef bf bd`; the same `-\xff` is three letters each reporting a line in the
+//! folded shape but one letter per line in the byte shape). The only place
+//! still folded once is the operand slot of the `OutOfRange` line -- that
+//! sentence borrows the library-side `strerror`, whose mouth takes `&str`;
+//! the debt is registered as `ARGV-BYTE-PATH-IN-LIBS`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -60,14 +71,18 @@ fn run() -> ! {
     support::terminate(0);
 }
 
-/// 三家句子各走各的出口与退码；libc 那几行交回 [`minix_textfilter::GetoptReport`] 单源。
+/// Each of the three families takes its own exit and status; the libc lines
+/// come back from the single source in [`minix_textfilter::GetoptReport`].
 fn fail(prog: &str, error: &SeqError) -> ! {
     match error {
         SeqError::Usage { reports } => {
             for report in reports {
-                // 字母位走 `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个
-                // 字节，而 `seq` 的环是**累加形**（`errflg` 累加、不在第一个坏字母处停，
-                // `seq.c:101-113`），所以命令行上几枚字节就交回几行、每行一个裸字节。
+                // The letter slot goes through `line_bytes`: `getopt.c:79`'s
+                // `optopt = *place++` takes one byte at a time, and `seq`'s
+                // loop is **accumulating** (`errflg` accumulates instead of
+                // stopping at the first bad letter, `seq.c:101-113`), so as
+                // many bytes as there are on the command line, that many lines
+                // come back, one bare byte each.
                 support::warn(&report.line_bytes(prog));
             }
             support::warn(
@@ -88,7 +103,8 @@ fn fail(prog: &str, error: &SeqError) -> ! {
             support::terminate(2);
         }
         SeqError::OutOfRange(word) => {
-            // `err(2, "%s", num)` 的三段形带 `strerror`，那一行只能借库侧的 `&str` 口
+            // `err(2, "%s", num)`'s three-part shape carries `strerror`; that
+            // line can only borrow the library-side `&str` mouth
             let word = String::from_utf8_lossy(word);
             support::warn_line(prog, &word, Errno::from_i32(ERANGE));
             support::terminate(2);
@@ -102,8 +118,11 @@ fn fail(prog: &str, error: &SeqError) -> ! {
             support::terminate(1);
         }
         SeqError::BadFormatPlain => give_up(prog, "invalid format string"),
-        // 与 printf 家同一处裁决：说明符本身合法之后按 `%g`/`%.2f` 渲染浮点还没接上。
-        // C 在这一形照常打数，本壳交回一行自认的说明并退 1，登记为 SEQ-FLOAT-RENDER。
+        // The same adjudication as the printf family: once the specifier
+        // itself is accepted, rendering floats via `%g`/`%.2f` is not wired up
+        // yet. C prints numbers here as usual; this shell returns one line of
+        // self-confessed explanation and exits 1, registered as
+        // SEQ-FLOAT-RENDER.
         SeqError::FloatNotModelled => {
             support::warn(format!("{prog}: -f formats wait for the float renderer\n").as_bytes());
             support::terminate(1);
@@ -111,14 +130,16 @@ fn fail(prog: &str, error: &SeqError) -> ! {
     }
 }
 
-/// `errx(1, ...)`：一行、带程序名、不接 usage、退 1。
+/// `errx(1, ...)`: one line, with the program name, no usage, exit 1.
 fn give_up(prog: &str, message: &str) -> ! {
     support::warn(format!("{prog}: {message}\n").as_bytes());
     support::terminate(1);
 }
 
-/// 「程序名 + 句子 + **原字节** + 后随字符 + 换行」那一族：句子与后随字符都是 ASCII，
-/// 唯一不是的是被 `%s` 交回的那个值，所以它按字节拼而不能经 `format!` 的 `{}`。
+/// The family "program name + sentence + **raw bytes** + trailing characters +
+/// newline": the sentence and the trailing characters are ASCII, and the only
+/// non-ASCII part is the value handed back by `%s`, so it must be assembled
+/// byte-wise rather than through `format!`'s `{}`.
 fn sentence(prog: &str, lead: &[u8], word: &[u8], trail: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(prog.as_bytes());

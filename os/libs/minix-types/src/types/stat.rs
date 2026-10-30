@@ -98,18 +98,23 @@ mod tests {
         assert_eq!(offset_of!(Stat, st_spare), 140);
     }
 
-    /// NK4-C 续-277c（CodeReview P1-1）：目标③ C 桥（tools/atf-c-compat/
-    /// posix-stubs.c 的 lstat 翻译层）把本布局的字节偏移手抄成了
-    /// `FS_ST_*` 宏——本测试读那份 C 源逐条对账：任何一侧改动（字段序/
-    /// 宽度/宏值）都会让这里变红，而不是让 C 侧静默读垃圾。
-    /// 路径从 crate 位置推导（os/libs/minix-types 上溯三级 = 仓根），仅宿主
-    /// 测试跑（#[cfg(test)] 天然不进生产构建）。因此**容器门必须以仓根为挂载点**
-    /// （`-v "$PWD:/work" -w /work/os`，配方写在 `AGENTS.md` 的 Build & Test）：以
-    /// `os/` 为根挂载时这份 C 源在容器外，本测试会报 `NotFound`——那是取证配方错，
-    /// 不是布局漂移，别把它当代码债登记。
+    /// The C bridge (the `lstat` translation layer in
+    /// `tools/atf-c-compat/posix-stubs.c`) hand-copies this layout's byte
+    /// offsets into the `FS_ST_*` macros -- this test reads that C source and
+    /// reconciles them entry by entry: any change on either side (field order,
+    /// width, macro value) turns red here instead of letting the C side
+    /// silently read garbage. The path is derived from the crate location
+    /// (three levels up from os/libs/minix-types = repo root), and only the
+    /// host test runs (#[cfg(test)] never enters a production build).
+    /// Therefore **the container gate must mount the repo root**
+    /// (`-v "$PWD:/work" -w /work/os`, the recipe in `AGENTS.md` under
+    /// Build & Test): mounted with `os/` as the root, this C source sits
+    /// outside the container and the test reports `NotFound` -- that is a
+    /// wrong evidence recipe, not layout drift, so do not register it as code
+    /// debt.
     #[test]
     fn test_c_bridge_fs_stat_offsets_match_rust_layout() {
-        use std::format; // no_std 预lude 不带 format!，宿主测试显式导入
+        use std::format; // the no_std prelude does not carry format!, so the host test imports it explicitly
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../tools/atf-c-compat/posix-stubs.c"

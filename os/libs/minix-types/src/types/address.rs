@@ -62,7 +62,7 @@ impl VirBytes {
 ///
 /// NOTE (`PhysFrame::SIZE`, 4 KiB): `minix-types` is an
 /// architecture-independent crate. All currently supported architectures
-/// (x86-64 / AArch64 / RISC-V64) use 4 KiB base pages, so the constant
+/// (x86-64 / AArch64 / RISC-V 64) use 4 KiB base pages, so the constant
 /// is safe for now. If a different base page size is ever supported,
 /// introduce a `PageSize` trait — not before (over-engineering).
 #[repr(transparent)]

@@ -58,11 +58,13 @@ fn run() -> ! {
     let text = String::from_utf8_lossy(&image).into_owned();
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
-        // 空库：每个名字都查无（EmptyManDb 的诚实面）。
+        // Empty database: every name misses (the honest face of
+        // EmptyManDb).
         support::warn(format!("whatis: {db_path}: nothing appropriate\n").as_bytes());
         support::terminate(1);
     }
-    // 生命周期：库行借 `text`，查询循环在同段借用内完成。
+    // Lifetime: the database rows borrow `text`; the query loop finishes
+    // inside that same borrow.
     query(SliceManDb { lines: &lines }, &names);
 }
 
@@ -71,8 +73,10 @@ fn query(db: SliceManDb, names: &[&str]) -> ! {
     for name in names {
         match db.lookup_exact(name) {
             Some(entry) => {
-                // 经典行式 `name, name(section) - description`——条目不存
-                // 原文行，按解析域重组（空白已归一，语义同行）。
+                // Classic line form `name, name(section) - description` —
+                // an entry does not keep its source line, so the line is
+                // rebuilt from the parsed fields (whitespace already
+                // normalized, same semantics as the line).
                 support::emit(
                     format!(
                         "{}({}) - {}\n",

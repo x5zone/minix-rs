@@ -26,12 +26,15 @@ fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let words: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
-    // `colrm.c:67` 的 optstring 是空串，与 `rev.c:70` 逐字同形：`-Z` 先由 libc 印一行
-    // 集外字母（`getopt.c:101-104`），再由 `:68-72` 的 `default: usage()` 印 usage，
-    // 而裸 `-` 与 `--` 之后的 token 都落回操作数（操作数是列号，不是文件名）。
-    // 集外字母那一行走字节形 `line_bytes`：libc 的字母位是短横后的**一个裸字节**
-    //（`getopt.c:79` 的 `optopt = *place++` 一次进一个字节，`:103` 用 `%c` 原样写出），
-    // 参照件 `tmp/colrm-310/colrm_ref` 现量 `colrm -é` 打 `c3` 一个字节。
+    // `colrm.c:67` has an empty optstring, the same shape as `rev.c:70`: libc
+    // first prints one out-of-set letter (`getopt.c:101-104`), then the
+    // `default: usage()` at `:68-72` prints usage, while a bare `-` and any
+    // token after `--` fall back to operands (the operands are column numbers,
+    // not file names). The out-of-set-letter line goes through the byte form
+    // `line_bytes`: libc's letter slot is **one bare byte** behind the dash
+    // (`getopt.c:79` `optopt = *place++` consumes one byte at a time, `:103`
+    // prints it verbatim with `%c`), so a reference build measured `colrm -é`
+    // printing the single byte `c3`.
     let operands = match empty_optstring_operands_bytes(&words) {
         Ok(rest) => rest,
         Err(report) => {
@@ -43,17 +46,22 @@ fn run() -> ! {
         Ok(range) => range,
         Err(ColrmOperand::TooManyOperands) => usage(),
         Err(ColrmOperand::IllegalColumn(word)) => {
-            // C 的 `errx(1, "illegal column -- %s", argv[..])`（`colrm.c:80-86`）：
-            // `errx` 只有程序名与句子两段，不缀 `strerror`；`%s` 打的是**操作数原文的
-            // 字节**，所以那一串字节不经任何文本折返。
+            // C's `errx(1, "illegal column -- %s", argv[..])`
+            // (`colrm.c:80-86`): `errx` carries only the program name and the
+            // sentence, with no `strerror` suffix; the `%s` prints the **raw
+            // bytes of the operand**, so those bytes never round-trip through
+            // text.
             support::warn(&illegal_column(&prog, word));
             support::terminate(1);
         }
         Err(ColrmOperand::StartAfterStop) => {
-            // C 的 `err(1, "illegal start and stop columns")`（`colrm.c:94-95`）是 `err`
-            // 而不是 `errx`，所以三段形里还缀一句 `strerror(errno)`；走到这里时 `errno`
-            // 还是 0，句子内容由各平台的 strerror 表定（参照件在本机印 `Success`，
-            // Minix 的表对 0 另有一句），所以本壳只保证形状。
+            // C's `err(1, "illegal start and stop columns")` (`colrm.c:94-95`)
+            // is `err` rather than `errx`, so the three-part form appends a
+            // `strerror(errno)` sentence as well; by the time we reach here
+            // `errno` is still 0 and the sentence text is decided by each
+            // platform's strerror table (the reference build prints `Success`
+            // here, while Minix's table has its own sentence for 0), so this
+            // shell only guarantees the shape.
             support::warn_line(
                 &prog,
                 "illegal start and stop columns",
@@ -63,13 +71,18 @@ fn run() -> ! {
         }
     };
 
-    // 读缝走 `bin_support` 的双生面（宿主 `std::io::stdin`、真机 `read(STDIN)`）。
-    // C 那边是一边读一边写（`getchar`/`putchar`），输出内容与先收全再过滤同一物。
+    // The read seam goes through `bin_support`'s twin face (host
+    // `std::io::stdin`, real hardware `read(STDIN)`). C reads and writes as it
+    // goes (`getchar`/`putchar`); collecting everything first and filtering
+    // after produces the same output.
     //
-    // 两根腿都可能出错，C 都交给同一个 `check()`（`colrm.c:123-130`）：它先看 `feof`
-    // 再看 `ferror`，报错时报的是**流名**——`err(1, "%s", stream == stdin ? "stdin" :
-    // "stdout")`。写错发生在环内（`putchar` 返回 EOF 就当场查流并退出），所以它先于
-    // 「读到头才发现的读错」；本壳把这两件事的先后照搬，各报一行、退码 1。
+    // Both legs can fail and C hands both to the same `check()`
+    // (`colrm.c:123-130`): it tests `feof` first, then `ferror`, and reports
+    // the **stream name** on error — `err(1, "%s", stream == stdin ? "stdin" :
+    // "stdout")`. A write error happens inside the loop (`putchar` returning
+    // EOF checks the stream and exits on the spot), so it precedes a read
+    // error that is only discovered at end of input; this shell keeps that
+    // order and prints one line each, exiting 1.
     let (input, read_failure) = support::read_stdin_error();
     let filtered = filter_column(&input, start, stop);
     match support::emit_error(&filtered) {
@@ -82,13 +95,14 @@ fn run() -> ! {
                 support::warn_line(&prog, "stdin", code);
                 support::terminate(1);
             }
-            // 读干净、写干净，就是 C 的 `check(stdin)` 走到 `feof` 那一支：`exit(0)`。
+            // Clean read and clean write are C's `check(stdin)` taking the
+            // `feof` branch: `exit(0)`.
             None => support::terminate(0),
         },
     }
 }
 
-/// `errx(1, "illegal column -- %s", argv[..])` 那一行：程序名、句子、操作数的**原字节**。
+/// The `errx(1, "illegal column -- %s", argv[..])` line: program name, sentence, and the **raw bytes** of the operand.
 fn illegal_column(prog: &str, word: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(prog.as_bytes());
@@ -98,8 +112,9 @@ fn illegal_column(prog: &str, word: &[u8]) -> Vec<u8> {
     out
 }
 
-/// C 的 `usage()`（`colrm.c:132-137`）：一行、退 1。这一行里的命令名是**写死**的
-/// `"colrm"`（不像 `rev.c:110-115` 那样跟着 `getprogname()`），所以这里不拼程序名。
+/// C's `usage()` (`colrm.c:132-137`): one line, exit 1. The command name in
+/// that line is hard-coded `"colrm"` (unlike `rev.c:110-115`, which follows
+/// `getprogname()`), so the program name is not spliced in here.
 fn usage() -> ! {
     support::warn(b"usage: colrm [start [stop]]\n");
     support::terminate(1);

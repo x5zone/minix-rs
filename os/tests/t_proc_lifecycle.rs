@@ -1,21 +1,25 @@
-//! minix3/minix/tests Rust 腿翻译 —— 进程生命周期域(test1/2/12/13/70)。
+//! Rust-leg translation of minix3/minix/tests — process lifecycle domain
+//! (test1/2/12/13/70).
 //!
-//! # 翻译映射
+//! # Translation mapping
 //!
-//! | C 测试 | 语义归宿 |
+//! | C test | Semantic home |
 //! |---|---|
-//! | test70(两进程对各自临时文件并发 lseek 的消息字段竞争回归) | 本文件 [`lseek_alternating_processes_keep_shared_offset_consistent`](C 的两进程各持独立文件;Rust VFS 单线程事件循环无竞争对象,钉的是字段逐条对账;测试额外覆盖 fork 共享 filp 后单一偏移的 POSIX 继承语义) |
-//! | test13(pipe 加 fork 的描述符继承吞吐面) | 本文件 [`fork_shares_filp_entries_and_bumps_counts`](fd 继承面;pipe 语义本体归 `t_pipe_select_locks.rs`) |
-//! | test1/2/12(fork/wait/僵尸) | 已由 `pm_vm_fork.rs`(fork 全链)与 `servers/pm/tests/run_once_integration.rs`(exit 不回复僵尸化、wait4 回收带状态、ECHILD)覆盖,不重复断言 |
+//! | test70 (message-field race regression where two processes lseek their own temp files concurrently) | [`lseek_alternating_processes_keep_shared_offset_consistent`] in this file (C gives each process its own file; Rust VFS is a single-threaded event loop with no shared race object, so what is pinned is field-by-field accounting; the test additionally covers the POSIX inheritance semantics of a single offset after a fork shares the filp) |
+//! | test13 (descriptor-inheritance throughput face of pipe + fork) | [`fork_shares_filp_entries_and_bumps_counts`] in this file (the fd inheritance face; pipe semantics themselves live in `t_pipe_select_locks.rs`) |
+//! | test1/2/12 (fork/wait/zombie) | Already covered by `pm_vm_fork.rs` (the whole fork chain) and `servers/pm/tests/run_once_integration.rs` (exit without reply then zombify, wait4 reaping with status, ECHILD); not asserted again |
 //!
-//! # 曾钉住的 C↔Rust 语义缺口(已修)
+//! # C<->Rust semantic gap previously pinned (fixed)
 //!
-//! C `misc.c:616-617`:pm_fork 对每个非空 `fp_filp[i]` 执行 `filp_count++`;
-//! C `misc.c:632-633`:对 `fp_rd`/`fp_wd` 各执行 `dup_vnode`。`copy_fproc`
-//! 曾只拷贝索引不递增(原 dispatcher.rs 文档标注 DEFERRED to 04/05),本
-//! 缺口已补齐:`VfsPmHandler` 现持有三表并在 fork 臂真实落计数。
+//! C `misc.c:616-617`: pm_fork runs `filp_count++` for every non-null
+//! `fp_filp[i]`; C `misc.c:632-633`: runs `dup_vnode` for each of `fp_rd`/`fp_wd`.
+//! `copy_fproc` used to copy only the indices without incrementing (the original
+//! dispatcher.rs docs marked it DEFERRED to 04/05); the gap is now closed:
+//! `VfsPmHandler` holds all three tables and really lands the counts in its fork
+//! arm.
 //!
-//! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
+//! Delivery gate = compilation; every test is `#[ignore]`; lighting-up
+//! preconditions are on each test's attribute.
 
 use minix_types::{Endpoint, Message, MessageM7, MessageUnion, UserSlot};
 use minix_vfs::PmHandler;
@@ -23,7 +27,8 @@ use minix_vfs::call_table::{SyscallResult, VfsCallNum};
 use minix_vfs::main_loop::VfsState;
 use minix_vfs::vnode::{FsCtl, VnodeId};
 
-/// 空操作 vnode 归还通道(零引用跨界时的 REQ_PUTNODE 宿主替身)。
+/// No-op vnode return channel (the host stand-in for REQ_PUTNODE when the reference
+/// count crosses zero).
 struct NopCtl;
 impl FsCtl for NopCtl {
     fn put_node(
@@ -38,7 +43,7 @@ impl FsCtl for NopCtl {
 use minix_vfs::worker::WorkerFunc;
 
 // ---------------------------------------------------------------------------
-// 夹具:复刻 crate 内 `seeded` 的公开 API 形态(syscalls.rs:5006)
+// Fixture: reproduces the public API shape of the crate's `seeded` (syscalls.rs:5006)
 // ---------------------------------------------------------------------------
 
 const PARENT_PID: i32 = 100;
@@ -68,8 +73,8 @@ fn seeded_vfs_state() -> VfsState {
     state
 }
 
-/// 组一条 lseek 请求(C `ipc.h:725-731`:offset 64 位拆 m7i1/m7i2,fd @m7i3,
-/// whence @m7i4;SEEK_SET = 0)。
+/// Build one lseek request (C `ipc.h:725-731`: the 64-bit offset splits into
+/// m7i1/m7i2, fd @m7i3, whence @m7i4; SEEK_SET = 0).
 fn lseek_msg(slot: usize, offset: i64, fd: i32) -> Message {
     Message {
         m_source: ep_of(slot),
@@ -87,16 +92,18 @@ fn lseek_msg(slot: usize, offset: i64, fd: i32) -> Message {
 }
 
 // ---------------------------------------------------------------------------
-// test13 + C misc.c:616-617/:632-633 —— fork 的描述符继承与共享计数
+// test13 + C misc.c:616-617/:632-633 — fork's descriptor inheritance and shared
+// counts
 // ---------------------------------------------------------------------------
 
-/// C 语义:子进程继承父的 fd 表(同一 filp 索引),每个继承项 `filp_count++`,
-/// root/working 目录 vnode 各 `dup_vnode`(引用计数 +1)。
+/// C semantics: the child inherits the parent's fd table (the same filp indices);
+/// each inherited entry gets `filp_count++`, and the root/working directory vnodes
+/// each get `dup_vnode` (reference count +1).
 #[test]
 fn fork_shares_filp_entries_and_bumps_counts() {
     let mut state = seeded_vfs_state();
     let fid = state.filp_table.alloc_filp(0o644).expect("filp 表有空位");
-    state.filp_table.inc_count(fid); // 父进程打开:count = 1
+    state.filp_table.inc_count(fid); // parent opened it: count = 1
     {
         let fp = state.fproc_table.get_mut(UserSlot::new(0)).expect("slot 0");
         fp.filps[3] = Some(fid.get());
@@ -105,9 +112,9 @@ fn fork_shares_filp_entries_and_bumps_counts() {
     }
     {
         let v = state.vnode_table.get_mut(VnodeId(0)).expect("vnode slot 0");
-        // 父进程 rd/wd 同指 vnode 0:引用计数各持一次,合计 2。
+        // The parent's rd/wd both point at vnode 0: one reference each, 2 total.
         v.ref_count = 2;
-        v.mode = 0o040755; // 目录
+        v.mode = 0o040755; // directory
     }
 
     let mut ctl = NopCtl;
@@ -148,8 +155,9 @@ fn fork_shares_filp_entries_and_bumps_counts() {
     );
 }
 
-/// C 语义(misc.c:651-660):子进程退出经 `close_fd` 逐 fd 清减、rd/wd
-/// 各 `put_vnode`——fork 时递增的共享计数在退出后完整归还。
+/// C semantics (misc.c:651-660): child exit decrements each fd through `close_fd`
+/// and calls `put_vnode` for rd/wd — the shared counts bumped at fork are fully
+/// returned after exit.
 #[test]
 fn exit_releases_inherited_counts_back_to_pre_fork() {
     let mut state = seeded_vfs_state();
@@ -191,7 +199,7 @@ fn exit_releases_inherited_counts_back_to_pre_fork() {
         4
     );
 
-    // 子退出:继承的计数完整归还(C misc.c:651-660)。
+    // Child exit: the inherited counts are fully returned (C misc.c:651-660).
     minix_vfs::VfsPmHandler {
         table: &mut state.fproc_table,
         filp_table: &mut state.filp_table,
@@ -220,17 +228,22 @@ fn exit_releases_inherited_counts_back_to_pre_fork() {
 }
 
 // ---------------------------------------------------------------------------
-// test70 —— 父子进程对同一文件的交替 lseek
+// test70 — parent and child alternating lseek on the same file
 // ---------------------------------------------------------------------------
 
-/// C test70(`minix3/minix/tests/test70.c`)的动机:两进程并发 lseek 时
-/// VFS 的 m_out 消息字段被竞争线程覆写导致返回错值——C 里父子各自 mkstemp
-/// 独立临时文件(子 [0,1000)、父 [1000,2000),5000 轮)。Rust VFS 是单线程
-/// 事件循环,竞争从架构上不存在;本测试把该动机钉成两条可执行语义:每条
-/// 请求的 m7 字段独立解析、待答进程身份与请求进程一致;并以 fork 共享同一
-/// filp 的夹具一并覆盖 POSIX 继承语义下的单一 `filp.pos`(C 由
-/// `misc.c` pm_fork 的 filp 共继承承载,编号套件无共享偏移专项)。规模按
-/// 宿主预算缩为 64 轮(单线程下无竞争对象,轮数只影响对账次数)。
+/// The motivation of C test70 (`minix3/minix/tests/test70.c`): when two processes
+/// lseek concurrently, VFS's m_out message fields get overwritten by the competing
+/// thread and wrong values are returned — in C the parent and child each `mkstemp`
+/// an independent temp file (child [0,1000), parent [1000,2000), 5000 rounds). Rust
+/// VFS is a single-threaded event loop, so the race does not exist by construction;
+/// this test pins that motivation as two executable semantics: each request's m7
+/// fields are parsed independently, and the process awaiting the answer is the
+/// process that made the request. It also uses a fork sharing one filp to cover the
+/// single `filp.pos` under POSIX inheritance semantics (C carries that through
+/// pm_fork's filp co-inheritance in `misc.c`; the numbered suite has no
+/// shared-offset case of its own). The scale is reduced to 64 rounds for the host
+/// budget (with no race object in a single thread, the round count only affects how
+/// many times the accounting runs).
 #[test]
 #[ignore = "点亮前提:VFS 挂起路径续接(REQ_INHIBREAD → FS 回复 → 携新位置回信)真链复核"]
 fn lseek_alternating_processes_keep_shared_offset_consistent() {
@@ -238,7 +251,8 @@ fn lseek_alternating_processes_keep_shared_offset_consistent() {
     let fid = state.filp_table.alloc_filp(0o644).expect("filp 表有空位");
     state.filp_table.inc_count(fid);
 
-    // 父子双 fproc,fd4 共享同一 filp——fork 后共享偏移的载体。
+    // Two fprocs, parent and child, sharing one filp at fd4 — the carrier of the
+    // shared offset after fork.
     for (slot, pid) in [(0usize, PARENT_PID), (1usize, CHILD_PID)] {
         let fp = state
             .fproc_table
@@ -249,7 +263,7 @@ fn lseek_alternating_processes_keep_shared_offset_consistent() {
         fp.filps[4] = Some(fid.get());
     }
     {
-        // C test70 的 ftruncate 临时文件:常规文件、可 seek、足够大。
+        // C test70's ftruncate'd temp file: a regular file, seekable, large enough.
         let v = state.vnode_table.get_mut(VnodeId(0)).expect("vnode slot 0");
         v.mode = 0o100644;
         v.size = 4000;
@@ -260,7 +274,8 @@ fn lseek_alternating_processes_keep_shared_offset_consistent() {
         f.vnode = Some(0);
         f.pos = 0;
     }
-    // 位置变化路径要经挂载窗口发 REQ_INHIBREAD(dev 须非 NO_DEV)。
+    // The position-change path must go through a mount window to send REQ_INHIBREAD
+    // (dev must not be NO_DEV).
     let vmnt = state.vmnt_table.alloc().expect("vmnt 表有空位");
     {
         let m = state.vmnt_table.get_mut(vmnt).expect("vmnt 存在");
@@ -268,8 +283,9 @@ fn lseek_alternating_processes_keep_shared_offset_consistent() {
         m.dev = 7;
     }
 
-    // 交替轮转:子进程区间 [1,65)、父进程区间 [1001,1065)。
-    // 首轮偏移从 base+1 起,保证每步都"位置变化"(挂起路径)。
+    // Alternating rounds: child range [1,65), parent range [1001,1065).
+    // The first offset starts at base+1, so every step counts as a "position
+    // change" (the suspend path).
     for round in 0..64i64 {
         for (slot, base) in [(1usize, 0i64), (0usize, 1000i64)] {
             let offset = base + round + 1;
@@ -304,7 +320,8 @@ fn lseek_alternating_processes_keep_shared_offset_consistent() {
             );
             assert_eq!(pending.req.m_type, minix_types::REQ_INHIBREAD);
 
-            // 清场:真机上由 FS 回复驱动续接;测试里逐轮独立。
+            // Cleanup: on real hardware the FS reply drives continuation; here each
+            // round is independent.
             state.pending_fs = None;
             state.current_worker = None;
             state.worker_pool.release(worker);

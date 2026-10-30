@@ -2,13 +2,13 @@
 //!
 //! C correspondence: `struct termios` as used through `tty_termios`
 //! (`tty.h`), the defaults restored on last close
-//! (`termios_defaults`, `tty.c:769-771`), the hangup speed `B0` checked in
+//! (`termios_defaults`, `tty.c:769-771`), the zero-baud hangup speed checked in
 //! `select_try` (`tty.c:822-826`), and the control-character indices
 //! (`VERASE`, `VKILL`, `VEOF`, `VMIN`, `VTIME`, `VLNEXT`, `VREPRINT`).
 
 /// Output speed meaning "hung up": no operation will ever block.
 ///
-/// C: `B0` (`tty.c:822`): when the output speed is zero, every watched
+/// C (`tty.c:822`): when the output speed is zero, every watched
 /// operation reports ready at once.
 pub const SPEED_HANGUP: u32 = 0;
 

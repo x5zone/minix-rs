@@ -51,10 +51,10 @@ pub(crate) fn handle_vm_exit(
     let mut exiting = table.get_exiting(slot)
         .ok_or(VmExitError::NotExiting)?;
 
-    // V13-P3-1之2: cancel the dying process's stale queued/in-flight VFS
-    // requests before the exit path enqueues its final FdClose — the close
-    // must survive the purge (C mappedfile_delete → fdref_deref sends it
-    // during exit, mem_file.c:280-287).
+    // Cancel the dying process's stale queued and in-flight VFS requests
+    // before the exit path enqueues its final FdClose — the close must survive
+    // the purge (C mappedfile_delete → fdref_deref sends it during exit,
+    // mem_file.c:280-287).
     vfs_queue.purge_by_owner(endpoint);
 
     free_process_phys(exiting.regions_mut(), frames, page_alloc, vfs_queue, endpoint, slot, table);
@@ -111,9 +111,9 @@ fn free_process_phys(
     own_slot: UserSlot,
     table: &VmProcTable,
 ) {
-    // G-V12-7: release shared remaps up front — a deleted shared region must
-    // decrement its source's `remaps` (C `shared_delete`, mem_shared.c:
-    // 110-123, which map_free runs from the per-region ev_delete). The
+    // Release shared remaps up front — a deleted shared region must decrement
+    // its source's `remaps` (C `shared_delete`, mem_shared.c:110-123, which
+    // map_free runs from the per-region ev_delete). The
     // source may live in this very process (self-remap) or in another one;
     // `release_shared_remap` routes each case to the legal mutable handle.
     let shared_sources = regions
@@ -171,9 +171,9 @@ fn free_process_phys(
         if let Some(id) = fdref_id
             && let Some(close) = crate::fdref::FdRefTable::get_global().deref_entry(id)
         {
-            // V11/T10: the close is enqueued into the VfsRequestQueue; the
-            // send half (VFS_VMCALL wire) is edge E-VFSWIRE — the vfs
-            // server's message-level decode is still being built.
+            // The close is enqueued into the VfsRequestQueue; the send half
+            // (the VFS_VMCALL wire) is not wired yet — the vfs server's
+            // message-level decode is still being built.
             let vreq = crate::vfs_queue::VfsRequest {
                 request_type: crate::vfs_queue::VfsRequestType::FdClose,
                 req_id: 0,
@@ -252,8 +252,8 @@ pub(crate) fn handle_procctl_clear(
     // it). Skipping it here leaves the kernel pointing at the *pre-clear*
     // root — which `free_page_table` just tore down — while VM maps the new
     // image into the fresh root, so the exec'd child re-faults its first text
-    // page forever (NK4-C 续-35 root-cause: aarch64 VA 0x200000 memreq
-    // livelock). `pdes` (kernel-visible PDE alias) has no meaning under the
+    // page forever (the root cause of the aarch64 VA 0x200000 memreq livelock).
+    // `pdes` (kernel-visible PDE alias) has no meaning under the
     // Direct Map, so 0 travels as `virt_root = None` (same documented
     // deviation as the fork/boot legs). C drops `pt_bind`'s return value and
     // answers OK even when the kernel call failed — the silent staleness
@@ -276,8 +276,10 @@ pub(crate) fn handle_procctl_clear(
 /// (exit.c:139-148). Called by VFS to ensure memory pages are mapped
 /// for a given address range (wrflag=1 means writable).
 ///
-/// C: `handle_memory_start(vmp, msg->VMPCTL_M1, msg->VMPCTL_LEN,
-///     msg->VMPCTL_FLAGS, VFS_PROC_NR, VFS_PROC_NR, transid, 1)`.
+/// C: `handle_memory_start(vmp, msg->m1_i1, msg->VMPCTL_LEN,
+///     msg->VMPCTL_FLAGS, VFS_PROC_NR, VFS_PROC_NR, transid, 1)` — the address
+/// rides the first message word `m1_i1` (C reaches it through the `VMPCTL`
+/// address macro).
 ///
 /// In the current Rust implementation, `handle_memory_once` resolves
 /// CoW pages synchronously. File-backed mappings that would SUSPEND
@@ -304,11 +306,10 @@ pub(crate) fn handle_procctl_handlemem(
         return Err(VmProcctlError::InvalidAddress);
     }
 
-    // Design D4 (22-design.v1.md): file-backed HANDLEMEM requires VFS to
-    // provide pages — C SUSPENDs and continues via VM_VFS_REPLY
-    // (exit.c:144-148). The VFS callback machinery is not wired yet
-    // (backlog B1, doc 23) — fail explicitly with NotImplemented instead of
-    // silently succeeding. The check covers the region at the range start;
+    // File-backed HANDLEMEM requires VFS to provide pages — C SUSPENDs and
+    // continues via VM_VFS_REPLY (exit.c:144-148). The VFS callback machinery
+    // is not wired yet (doc 23) — fail explicitly with NotImplemented instead
+    // of silently succeeding. The check covers the region at the range start;
     // mixed anon/file ranges are handled when the full SUSPEND/VM_VFS_REPLY
     // path lands (doc 23).
     if let Some(region) = proc.regions().find(minix_types::VirBytes(mem))
@@ -323,7 +324,7 @@ pub(crate) fn handle_procctl_handlemem(
 
     // Use handle_memory_once to resolve CoW / ensure pages are mapped.
     // C: handle_memory_start → handle_memory_step → map_handle_memory
-    // G-V12-8: the resolution must also write the process PTEs.
+    // The resolution must also write the process PTEs.
     let (regions, pt) = proc.mem_parts_mut();
     let result = crate::fork::handle_memory_once(
         regions,
@@ -368,9 +369,8 @@ pub(crate) enum VmProcctlHandlememResult {
 pub(crate) enum VmProcctlError {
     InvalidEndpoint,
     ProcessNotFound,
-    // Judgment (V11/T24): no constructor today — kept for the exhaustive
-    // errno-mapping surface (V10-P2-3 closure) and the CLEAR/HANDLEMEM
-    // permission checks.
+    // No constructor today — kept for the exhaustive errno-mapping surface
+    // and the CLEAR/HANDLEMEM permission checks.
     #[allow(dead_code)]
     PermissionDenied,
     InvalidAddress,
@@ -468,7 +468,7 @@ mod tests {
 
         // len <= 0 is rejected before any region lookup (defensive
         // hardening — C would SUSPEND and reply OK for len==0 via the
-        // empty handle_memory_step loop; see 22-vm-exit.md §3 D5).
+        // empty handle_memory_step loop; see 22-vm-exit.md §3).
         let result = handle_procctl_handlemem(
             table, &mut page_alloc, &mut frames, ep, 0x1000, 0, 1,
         );
@@ -494,7 +494,7 @@ mod tests {
         let mut frames = make_frames();
 
         // Invalid endpoint → EINVAL (C exit.c:122-125). Does not reach the
-        // page-table path (which needs real paging, B4 backlog), so the
+        // page-table path (which needs real paging), so the
         // gateway is never called here.
         let mut gateway = crate::kernel_gateway::MockGateway::new();
         let result = handle_procctl_clear(
@@ -528,7 +528,7 @@ mod tests {
 
         // File-backed HANDLEMEM needs VFS-provided pages (C: SUSPEND +
         // VM_VFS_REPLY, exit.c:144-148); not wired yet → NotImplemented
-        // (ENOSYS). Design D4 (22-design.v1.md).
+        // (ENOSYS).
         let result = handle_procctl_handlemem(
             table, &mut page_alloc, &mut frames, ep, 0x1000, 16, 1,
         );

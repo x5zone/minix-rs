@@ -72,11 +72,14 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
     }
 
     // Three rings evaluated **per child in table order** (`forkexit.c:do_wait4`
-    // 512-545)：tracer 环先（TRACE_ZOMBIE → TRACE_STOPPED），真父环后（ZOMBIE）。
-    // 判定发生在每个子进程的循环体内、命中即返回——多个候选子进程并存时，交付
-    // 对象是**表序最先命中者**，与它属于哪一环无关。禁止拆成多趟遍历：那会把
-    // "表序优先"改成"环序优先"，当低表序的普通僵尸与高表序的追踪僵尸并存时，
-    // C 交付前者、多趟遍历交付后者。
+    // 512-545): the tracer ring first (TRACE_ZOMBIE -> TRACE_STOPPED), the real
+    // parent ring after (ZOMBIE).  The decision happens inside each child's loop
+    // body and returns on the first hit — when several candidate children exist,
+    // the one delivered is the **first hit in table order**, regardless of which
+    // ring it belongs to.  Never split this into several passes: that would turn
+    // "table order first" into "ring order first", so with a low-index ordinary
+    // zombie and a high-index trace zombie both present, C delivers the former
+    // while a multi-pass version delivers the latter.
     for &idx in &candidates {
         let tracer_owns = table.procs[idx].state.guardianship.tracer() == Some(caller);
         if tracer_owns && matches!(table.procs[idx].state.lifecycle, Lifecycle::TraceZombie { .. }) {
@@ -86,18 +89,21 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
             return ReplyIntent::ReplyLater;
         }
         if tracer_owns && table.procs[idx].state.trace.stopped {
-            // C forkexit.c:519-531 — TRACE_STOPPED 子进程：扫描 mp_sigtrace
-            // 取最低位的待报告停止信号，sigdelset 消费之，回复载荷
-            // W_STOPCODE(i)、返回值 pid。sigtrace 为空时与 C 一致地落到
-            // 下一个环（ZOMBIE），不虚构停止码。
+            // C forkexit.c:519-531 — TRACE_STOPPED child: scan mp_sigtrace for
+            // the lowest pending stop signal, consume it with sigdelset, and reply
+            // with payload W_STOPCODE(i) and return value pid.  When sigtrace is
+            // empty, fall through to the next ring (ZOMBIE) as C does, without
+            // inventing a stop code.
             let trace_mask = table.procs[idx].resources.signals.trace_mask;
             let reported = (1..crate::mproc::_NSIG as i32)
                 .find(|&i| trace_mask & (1u64 << (i - 1)) != 0);
             if let Some(signo) = reported {
                 table.procs[idx].resources.signals.trace_mask &= !(1u64 << (signo - 1));
                 let status = w_stopcode(signo);
-                // 状态写 mp_reply.m_pm_lc_wait4.status（载荷），返回值 pid 作 m_type；
-                // caller 的回复缓冲供挂起后异步回复路径（check_parent → tell_parent）复用。
+                // The status goes into mp_reply.m_pm_lc_wait4.status (the payload)
+                // and the pid is the m_type; the caller's reply buffer is reused by
+                // the asynchronous reply path after suspension (check_parent ->
+                // tell_parent).
                 let mut reply = Message::default();
                 reply.m_u.m_pm_lc_wait4.status = status;
                 table.procs[caller.get()].ipc.reply = Some(reply);
@@ -107,11 +113,12 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
         if table.procs[idx].state.guardianship.parent() == caller
             && matches!(table.procs[idx].state.lifecycle, Lifecycle::Zombie { .. })
         {
-            // 537-545: ZOMBIE → tell_parent + cleanup if not VFS|EVENT。
-            // tell_parent（exit.rs）负责 reply(parent, pid) + 载荷 W_EXITCODE +
-            // WAITING 清 + TOLD_PARENT + 时间累计；本环只补 cleanup
-            // （VFS|EVENT 挂起时延迟到 reply 之后）。rusage 经 tell_parent 的
-            // VIRCOPY 真实投递。
+            // 537-545: ZOMBIE -> tell_parent + cleanup if not VFS|EVENT.
+            // tell_parent (exit.rs) handles reply(parent, pid) + the W_EXITCODE
+            // payload + clearing WAITING + TOLD_PARENT + accumulating times; this
+            // ring only adds cleanup (deferred until after the reply when
+            // VFS|EVENT is blocked).  rusage is delivered for real through
+            // tell_parent's VIRCOPY.
             let child_slot = UserSlot::new(idx);
             crate::exit::tell_parent(table, child_slot, rusage_addr, transport, kern);
             if !is_vfs_or_event_blocked(table, child_slot) {
@@ -132,7 +139,7 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
         table.procs[caller.get()].state.wait.rusage_addr = rusage_addr;
         ReplyIntent::ReplyLater
     } else {
-        // NK4-C 1.30 B16：无子 → ECHILD 与 C `_syscall` 契约同构取负。
+        // No children -> ECHILD, negated like the C `_syscall` contract.
         ReplyIntent::Reply(-ECHILD)
     }
 }
@@ -145,7 +152,7 @@ fn is_vfs_or_event_blocked(table: &ProcTable, slot: UserSlot) -> bool {
 #[cfg(test)]
 mod tests {
 
-    /// wait.rs 测试用内核网关 mock（sys_times 恒零值；datacopy 恒 OK）。
+    /// Kernel gateway mock for wait.rs tests (sys_times always returns zero; datacopy always succeeds).
     struct NoopKernelGateway;
     impl crate::exit::KernelGateway for NoopKernelGateway {
         fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
@@ -235,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_wait_target_from_pidarg_zero() {
-        // pidarg==0 → -procgrp
+        // pidarg==0 -> -procgrp
         let target = WaitTarget::from_pidarg(0, 42);
         assert_eq!(target, WaitTarget::Group(-42));
         let state = crate::mproc::WaitState { waiting: true, target, rusage_addr: VirBytes(0) };
@@ -243,9 +250,9 @@ mod tests {
         assert!(!state.is_waiting_for(100, 43));
     }
 
-    // ── D-20：TRACE_STOPPED 环的真实 sigtrace 扫描（forkexit.c:519-531）──
+    // ---- The TRACE_STOPPED ring's real sigtrace scan (forkexit.c:519-531) ----
 
-    /// 播种一个被 `tracer=0` 跟踪且处于 ptrace 停止态的子进程。
+    /// Seed a child that is traced by `tracer=0` and sits in the ptrace stopped state.
     fn traced_stopped_child(table: &mut ProcTable, slot: usize, pid: i32, trace_mask: u64) {
         table.procs[slot].state.lifecycle = Lifecycle::Running;
         table.procs[slot].identity.id.pid = pid;
@@ -261,12 +268,13 @@ mod tests {
 
     #[test]
     fn test_wait4_trace_stopped_reports_lowest_signal_and_consumes_bit() {
-        // C: forkexit.c:519-531 — sigtrace 扫描取最低信号位，sigdelset
-        // 消费之，回复载荷 W_STOPCODE(i)、返回 pid。
+        // C: forkexit.c:519-531 — the sigtrace scan takes the lowest signal bit,
+        // sigdelset consumes it, and the reply carries payload W_STOPCODE(i) with
+        // pid as the return value.
         let mut table = ProcTable::new();
         table.procs[0].state.lifecycle = Lifecycle::Running;
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
-        // 两个待报告信号：SIGTRAP(5) 与 SIGSTOP(17)——最低位 SIGTRAP 先报。
+        // Two pending signals: SIGTRAP(5) and SIGSTOP(17) — the lowest bit, SIGTRAP, is reported first.
         let two_pending = (1u64 << (5 - 1)) | (1u64 << (17 - 1));
         traced_stopped_child(&mut table, 5, 100, two_pending);
 
@@ -274,8 +282,8 @@ mod tests {
         let mut kern = NoopKernelGateway;
         let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport, &mut kern);
 
-        assert_eq!(intent, ReplyIntent::Reply(100)); // 子进程 pid
-        // D-26 wire 契约：状态在 m_pm_lc_wait4.status 载荷（C forkexit.c:528）
+        assert_eq!(intent, ReplyIntent::Reply(100)); // child pid
+        // Wire contract: the status is in the m_pm_lc_wait4.status payload (C forkexit.c:528)
         let reply = table.procs[0].ipc.reply.expect("reply buffer must carry W_STOPCODE");
         assert_eq!(
             unsafe { reply.m_u.m_pm_lc_wait4.status },
@@ -291,9 +299,10 @@ mod tests {
 
     #[test]
     fn test_wait4_trace_stopped_empty_sigtrace_falls_through() {
-        // C: 519-531 的 for 未命中即落出 if——停止态但 sigtrace 为空时
-        // 不虚构停止码，继续 ZOMBIE 环/尾部（此处无僵尸 → children>0 且
-        // 无 WNOHANG → SUSPEND 等待）。
+        // C: when the for loop at 519-531 misses, control falls out of the if —
+        // in the stopped state with an empty sigtrace no stop code is invented and
+        // the ZOMBIE ring/tail continues (here there is no zombie, so children>0
+        // and no WNOHANG -> SUSPEND and wait).
         let mut table = ProcTable::new();
         table.procs[0].state.lifecycle = Lifecycle::Running;
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
@@ -309,14 +318,15 @@ mod tests {
 
     #[test]
     fn test_tell_parent_async_writes_status_payload() {
-        // D-26 异步路径：父未 wait → 子保持 Zombie；父随后 wait（SUSPEND）
-        // 由 zombify→check_parent→tell_parent 补发 reply(parent, pid) +
-        // m_pm_lc_wait4.status 载荷（forkexit.c:707-709）。
+        // Asynchronous path: the parent is not waiting -> the child stays Zombie;
+        // when the parent waits later (SUSPEND), zombify->check_parent->tell_parent
+        // sends the deferred reply(parent, pid) plus the m_pm_lc_wait4.status
+        // payload (forkexit.c:707-709).
         let mut table = ProcTable::new();
         table.procs[0].state.lifecycle = Lifecycle::Running;
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].identity.id.pid = 50;
-        // 僵尸子：exit(7)（无信号）。
+        // Zombie child: exit(7) (no signal).
         table.procs[5].state.lifecycle = Lifecycle::Zombie { exit_code: 7, sig_status: 0 };
         table.procs[5].identity.id.pid = 100;
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
@@ -324,7 +334,7 @@ mod tests {
         table.procs[5].state.wait.waiting = false;
 
         let mut transport = crate::ipc::TestIpcTransport::default();
-        // D-21：addr = 父进程 wait4 传入的 rusage 缓冲地址（VirBytes(0x7000)）
+        // addr = the rusage buffer address the parent passed to wait4 (VirBytes(0x7000))
         let told = crate::exit::tell_parent(&mut table, UserSlot::new(5), VirBytes(0x7000), &mut transport, &mut NoopKernelGateway);
 
         assert!(told);
@@ -345,16 +355,16 @@ mod tests {
 
     #[test]
     fn test_wait4_zombie_status_carries_wcoreflag_byte() {
-        // D-07 状态级断言：僵尸子进程的 sig_status 带 WCOREFLAG（bit7）→
-        // ZOMBIE 环后 ToldParent 原样保留位型（bit 运算全程 u8 域，i8 符号
-        // 扩展不得破坏 bit7）。wire 载荷建模（C m_pm_lc_wait4.status）缺
-        // minix-types 成员，登记为 todo.md §6 D-26（挂 E7）。
+        // State-level assertion: the zombie child's sig_status carries WCOREFLAG
+        // (bit 7) -> after the ZOMBIE ring, ToldParent keeps the bit pattern intact
+        // (all bit operations stay in the u8 domain; i8 sign extension must not
+        // clobber bit 7).
         let mut table = ProcTable::new();
         table.procs[0].state.lifecycle = Lifecycle::Running;
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].identity.id.pid = 50;
         table.procs[0].state.wait.waiting = true;
-        // 僵尸子：SIGABRT(6) 终止且 core dumped（0o200|6 = 134 → i8 -122）。
+        // Zombie child: killed by SIGABRT(6) with a core dump (0o200|6 = 134 -> i8 -122).
         table.procs[5].state.lifecycle = Lifecycle::Zombie {
             exit_code: 0,
             sig_status: (0o200u8 | 6u8) as i8,
@@ -367,7 +377,7 @@ mod tests {
         let mut kern = NoopKernelGateway;
         let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport, &mut kern);
 
-        assert_eq!(intent, ReplyIntent::ReplyLater); // tell_parent 已在 wire 回复父
+        assert_eq!(intent, ReplyIntent::ReplyLater); // tell_parent already replied to the parent on the wire
         match table.procs[5].state.lifecycle {
             Lifecycle::ToldParent { exit_code, sig_status } => {
                 assert_eq!(exit_code, 0);
@@ -376,16 +386,17 @@ mod tests {
             ref other => panic!("unexpected lifecycle {:?}", other),
         }
         assert!(!table.procs[0].state.wait.waiting, "WAITING must clear");
-        // D-26 wire 契约：m_type = 子 pid，载荷 m_pm_lc_wait4.status =
-        // W_EXITCODE(0, 0o200|6)——状态在载荷而非 m_type。
+        // Wire contract: m_type = child pid, payload m_pm_lc_wait4.status =
+        // W_EXITCODE(0, 0o200|6) — the status travels in the payload, not in m_type.
         let wire = transport
             .sent()
             .iter()
             .find(|(ep, m)| *ep == Endpoint::from_generation_slot(1, 0) && m.m_type == 100)
             .expect("reply(parent, pid) must be sent");
-        // C forkexit.c:713 不掩码：`mp_sigstatus`（`char`）整型提升按符号扩展，
-        // 故 0o200|6 在 wire 上是 -122；libc 宏（WIFSIGNALED/WCOREDUMP）掩掉差异，
-        // 但原始 status 整数必须与 C 逐位一致。
+        // C forkexit.c:713 does not mask: `mp_sigstatus` (`char`) integer-promotes
+        // with sign extension, so 0o200|6 is -122 on the wire; the libc macros
+        // (WIFSIGNALED/WCOREDUMP) hide the difference, but the raw status integer
+        // must match C bit for bit.
         assert_eq!(
             unsafe { wire.1.m_u.m_pm_lc_wait4.status },
             (0o200u8 | 6u8) as i8 as i32,
@@ -393,20 +404,23 @@ mod tests {
         );
     }
 
-    /// 表序优先（`forkexit.c:do_wait4` 501-548）：低表序的普通僵尸与高表序的追踪
-    /// 僵尸并存时，C 交付表序在前的普通僵尸——环判定在每个子进程的循环体内、命中
-    /// 即返回，与"属于哪一环"无关。回归对象：曾以三趟独立遍历实现（环序优先）。
+    /// Table order first (`forkexit.c:do_wait4` 501-548): with a low-index ordinary
+    /// zombie and a high-index trace zombie both present, C delivers the ordinary
+    /// zombie that comes first in table order — the ring decision happens inside
+    /// each child's loop body and returns on the first hit, regardless of which
+    /// ring it belongs to.  Regression target: this was once implemented as three
+    /// independent passes (ring order first).
     #[test]
     fn test_wait4_table_order_beats_ring_order() {
         let mut table = ProcTable::new();
         table.procs[0].state.lifecycle = Lifecycle::Running;
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
-        // slot 5：普通僵尸，父 = caller
+        // slot 5: ordinary zombie, parent = caller
         table.procs[5].state.lifecycle = Lifecycle::Zombie { exit_code: 0, sig_status: 0 };
         table.procs[5].identity.id.pid = 100;
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
         table.procs[5].state.guardianship = Guardianship::Normal { parent: UserSlot::new(0) };
-        // slot 6：追踪僵尸，tracer = caller
+        // slot 6: trace zombie, tracer = caller
         table.procs[6].state.lifecycle = Lifecycle::TraceZombie { exit_code: 0, sig_status: 0 };
         table.procs[6].identity.id.pid = 101;
         table.procs[6].identity.endpoint = Endpoint::from_generation_slot(1, 6);

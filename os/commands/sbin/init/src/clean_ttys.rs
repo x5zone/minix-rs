@@ -227,7 +227,7 @@ mod tests {
 fn shutdown_session(host: &mut dyn InitHost, sp: &mut Session) {
     sp.flags.set(SE_SHUTDOWN);
     if let Some(pid) = sp.process {
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init is best-effort here
         #[allow(clippy::let_underscore_must_use)]
         let _ = host.kill(pid, sig::SIGNAL_HANGUP);
     }

@@ -1,5 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-// SD-19 机械化门
+// Mechanical gate: every discarded `Result` must carry a written reason.
 #![warn(clippy::let_underscore_must_use)]
 
 

@@ -1,15 +1,19 @@
-//! `sockops` — 套接字路的服务半：sdev 请求翻译、建户、挂起续答。
+//! `sockops` — the service half of the socket path: sdev request translation, socket creation, and continuation of suspended replies.
 //!
-//! C 对应物三处：`alloc_socket`（`lwip.c:151-190`，域与类型分派到各套
-//! 接字模块，RAW 要根身份）、sockdriver 框架的"立即回答或挂起记账"
-//! （可挂起表 `sockdriver.c:8-26`，`Continuation::new` 的 Rust 同位）、
-//! 以及 sockevent 的唤醒回执（`SEV_*` 事件位到期/就绪后按请求的回复
-//! 形状续答）。映射边界见 `25-smoltcp-shim.md` §2/§3。
+//! Three C counterparts: `alloc_socket` (`lwip.c:151-190`, dispatching domain and
+//! type to the individual socket modules, with RAW requiring root identity), the
+//! sockdriver framework's "answer now or record a suspension" (the suspendable
+//! table `sockdriver.c:8-26`, the Rust counterpart of `Continuation::new`), and the
+//! sockevent wakeup receipt (continue with the requested reply shape once the
+//! `SEV_*` event bits fire or become ready). For the mapping boundary see
+//! `25-smoltcp-shim.md` §2/§3.
 //!
-//! 本模块当前翻译的请求：`SDEV_SOCKET`（建户——立即回答，C 同样不挂
-//! 起）。其余请求族（读写/连接/收发数据面）随各自家族批次逐条过墙；
-//! 对它们暂按"未接线"（ENOSYS）以通用回复形状回答——VFS 侧的各续接
-//! 体对不认识的回复号一律折 EIO，不会把通用形状误读成数据。
+//! Requests translated so far: `SDEV_SOCKET` (socket creation — answered
+//! immediately; C does not suspend for it either). The remaining request families
+//! (read/write/connect/data plane) cross the wall one by one with their own family
+//! batches; for now they are answered with the generic reply shape as "not wired"
+//! (ENOSYS) — every VFS-side continuation folds an unknown reply number to EIO, so
+//! the generic shape is never misread as data.
 
 use alloc::vec::Vec;
 
@@ -22,48 +26,49 @@ use minix_types::{Endpoint, Message};
 use crate::lwip_port::{Stack, StackFamily, StackSocket};
 use crate::startup::raw_allowed;
 
-/// 域常量（Minix3 `sys/sys/socket.h:179-331` 的 `PF_*` 值：套接字路按
-/// 域分派，`alloc_socket` 的 `lwip.c:156-188` 同一张表）。
+/// Domain constants (the `PF_*` values of Minix3 `sys/sys/socket.h:179-331`: the
+/// socket path dispatches by domain; `alloc_socket` uses the same table at
+/// `lwip.c:156-188`).
 pub mod domain {
-    /// `PF_INET`（2，`sys/sys/socket.h:179`）。
+    /// `PF_INET` (2, `sys/sys/socket.h:179`).
     pub const INET: i32 = 2;
-    /// `PF_LINK`（18，`sys/sys/socket.h:196` 的 `AF_LINK`）。
+    /// `PF_LINK` (18, the `AF_LINK` of `sys/sys/socket.h:196`).
     pub const LINK: i32 = 18;
-    /// `PF_INET6`（24，`sys/sys/socket.h:206` 的 `AF_INET6`）。
+    /// `PF_INET6` (24, the `AF_INET6` of `sys/sys/socket.h:206`).
     pub const INET6: i32 = 24;
-    /// `PF_ROUTE`（34，`sys/sys/socket.h:222` 的 `AF_ROUTE`）。
+    /// `PF_ROUTE` (34, the `AF_ROUTE` of `sys/sys/socket.h:222`).
     pub const ROUTE: i32 = 34;
 }
 
-/// 类型常量（`sys/socket.h` 的 `SOCK_*`：流 1、数据报 2、原始 3）。
+/// Type constants (`SOCK_*` of `sys/socket.h`: stream 1, datagram 2, raw 3).
 pub mod sock_type {
-    /// `SOCK_STREAM`（1）。
+    /// `SOCK_STREAM` (1).
     pub const STREAM: i32 = 1;
-    /// `SOCK_DGRAM`（2）。
+    /// `SOCK_DGRAM` (2).
     pub const DGRAM: i32 = 2;
-    /// `SOCK_RAW`（3）。
+    /// `SOCK_RAW` (3).
     pub const RAW: i32 = 3;
 }
 
-/// 一条 `SDEV_SOCKET` 请求的解码结果。
+/// Decoded form of one `SDEV_SOCKET` request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SocketRequest {
-    /// 请求方带回的标识（VFS 侧放的是调用方端点，回复原样带回）。
+    /// Caller-supplied id (VFS puts the caller endpoint here; the reply carries it back verbatim).
     pub req_id: i32,
-    /// 通讯域（[`domain`] 常量）。
+    /// Communication domain (a [`domain`] constant).
     pub domain: i32,
-    /// 套接字类型（[`sock_type`] 常量）。
+    /// Socket type (a [`sock_type`] constant).
     pub sock_type: i32,
-    /// 协议号（0 = 缺省）。
+    /// Protocol number (0 = default).
     pub protocol: i32,
-    /// 发起套接字调用的用户进程端点（RAW 的根身份检查用它）。
+    /// Endpoint of the user process that issued the socket call (used for RAW's root identity check).
     pub user_endpt: i32,
 }
 
-/// 解码 `SDEV_SOCKET` 载荷：`mess_vfs_lsockdriver_socket { req_id@0;
-/// domain@4; type@8; protocol@12; user_endpt@16 }`（ipc.h:2329-2337）。
+/// Decode the `SDEV_SOCKET` payload: `mess_vfs_lsockdriver_socket { req_id@0;
+/// domain@4; type@8; protocol@12; user_endpt@16 }` (ipc.h:2329-2337).
 pub fn decode_socket(msg: &Message) -> Option<SocketRequest> {
-    // SAFETY: 该请求的载荷按上述域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: the payload of this request is written into the message payload area in the field order above (no dedicated union member).
     let raw = unsafe { &msg.m_u.raw };
     let word = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
     Some(SocketRequest {
@@ -75,15 +80,15 @@ pub fn decode_socket(msg: &Message) -> Option<SocketRequest> {
     })
 }
 
-/// 组装 `SDEV_SOCKET_REPLY`：`mess_lsockdriver_vfs_socket_reply
-/// { req_id@0; sock_id@4; sock_id2@8 }`——`sock_id` 为负即错误（VFS 侧
-/// 按此判读），非成对请求 `sock_id2` 恒 -1。
+/// Assemble `SDEV_SOCKET_REPLY`: `mess_lsockdriver_vfs_socket_reply
+/// { req_id@0; sock_id@4; sock_id2@8 }` — a negative `sock_id` is an error (VFS
+/// reads it that way); `sock_id2` is always -1 for non-pair requests.
 pub fn socket_reply(req_id: i32, sock_id: i32) -> Message {
     let mut m = Message {
         m_type: SdevReply::SocketReply as i32,
         ..Message::default()
     };
-    // SAFETY: 回复载荷按上述域序写在消息负载区。
+    // SAFETY: the reply payload is written into the message payload area in the field order above.
     unsafe {
         let raw = &mut m.m_u.raw;
         raw[0..4].copy_from_slice(&req_id.to_le_bytes());
@@ -93,9 +98,10 @@ pub fn socket_reply(req_id: i32, sock_id: i32) -> Message {
     m
 }
 
-/// 错误码的线上归一：`minix_types::E*` 常量是正号（crate 惯例），
-/// `util::ERR_*` 与栈特征返回的错误是负号线上形状——两种来源在路上
-/// 汇合时统一折成"负号或零"，回复载荷不再二次翻转。
+/// Wire normalization of error codes: the `minix_types::E*` constants are positive
+/// (crate convention) while `util::ERR_*` and the errors returned by stack features
+/// are negative wire shapes — when the two sources meet on the path they are folded
+/// into "negative or zero", so the reply payload never flips a sign a second time.
 fn wire(code: i32) -> i32 {
     if code > 0 {
         -code
@@ -104,15 +110,16 @@ fn wire(code: i32) -> i32 {
     }
 }
 
-/// 组装通用回复（`mess_lsockdriver_vfs_reply { req_id; status }`——
-/// **状态在第二格**）：建户之外的请求族暂以 ENOSYS 走这条形状诚实
-/// 回答；VFS 侧各续接体对不认识的回复号折 EIO，不会误读成数据。
+/// Assemble the generic reply (`mess_lsockdriver_vfs_reply { req_id; status }` —
+/// **the status sits in the second word**): request families other than socket
+/// creation answer honestly through this shape with ENOSYS; every VFS-side
+/// continuation folds an unknown reply number to EIO and never misreads it as data.
 pub fn simple_reply(req_id: i32, status: i32) -> Message {
     let mut m = Message {
         m_type: SdevReply::Reply as i32,
         ..Message::default()
     };
-    // SAFETY: 回复载荷按上述域序写在消息负载区。
+    // SAFETY: the reply payload is written into the message payload area in the field order above.
     unsafe {
         let raw = &mut m.m_u.raw;
         raw[0..4].copy_from_slice(&req_id.to_le_bytes());
@@ -121,9 +128,9 @@ pub fn simple_reply(req_id: i32, status: i32) -> Message {
     m
 }
 
-/// 域与类型到栈家族的分派（`alloc_socket` 的因特网半，`lwip.c:156-172`）。
-/// 流→TCP、数据报→UDP、原始→RAW（根身份门在调用方）；其余类型
-/// EPROTOTYPE（`lwip.c:170`）。
+/// Dispatch domain and type to a stack family (the internet half of `alloc_socket`,
+/// `lwip.c:156-172`). Stream → TCP, datagram → UDP, raw → RAW (the root identity gate
+/// lives in the caller); any other type is EPROTOTYPE (`lwip.c:170`).
 pub fn internet_family(sock_type: i32, is_root: bool) -> Result<StackFamily, i32> {
     match sock_type {
         sock_type::STREAM => Ok(StackFamily::Tcp),
@@ -139,16 +146,18 @@ pub fn internet_family(sock_type: i32, is_root: bool) -> Result<StackFamily, i32
     }
 }
 
-/// 调用方身份的缝（C `util_is_root`——服务持有 fproc 副本查 uid；本
-/// 模型的进程表面随系统进程批接线，生产实现先 fail-closed 恒非根，
-/// RAW 建户回 EACCES；测试注 canned 实现）。
+/// The caller-identity seam (C `util_is_root` — the service holds an fproc copy and
+/// looks up the uid; this model's process surface is wired with the system-process
+/// batch, so the production implementation fail-closes to non-root for now and RAW
+/// creation returns EACCES; tests inject a canned implementation).
 pub trait IdentitySource {
-    /// 该端点是否根身份（RAW 建户的门）。
+    /// Whether this endpoint has root identity (the gate on RAW creation).
     fn is_root(&self, user: Endpoint) -> bool;
 }
 
-/// 生产实现：fail-closed 恒非根（C `util_is_root` 的进程表面随系统
-/// 进程批接线，接线前 RAW 建户一律 EACCES——不假装放行）。
+/// Production implementation: fail-closed, always non-root (the process surface of
+/// C `util_is_root` is wired with the system-process batch; until then RAW creation
+/// always gets EACCES — no pretending to allow it).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FailClosedIdentity;
 
@@ -158,7 +167,7 @@ impl IdentitySource for FailClosedIdentity {
     }
 }
 
-/// canned 替身：按构造参数回答（服务二进制测试用它放行/拒绝 RAW）。
+/// Canned stand-in: answers from its construction parameter (the service binary tests use it to allow or deny RAW).
 #[derive(Debug, Clone, Copy)]
 pub struct CannedIdentity(pub bool);
 
@@ -168,7 +177,7 @@ impl IdentitySource for CannedIdentity {
     }
 }
 
-/// 类基到家族（线上套接字号反查栈家族用）。
+/// Class base to family (used to look up a stack family from a wire socket id).
 fn family_of_class(class: sockid::SockClass) -> Option<StackFamily> {
     match class {
         sockid::SockClass::Tcp => Some(StackFamily::Tcp),
@@ -178,9 +187,10 @@ fn family_of_class(class: sockid::SockClass) -> Option<StackFamily> {
     }
 }
 
-/// 家族到类基（建户时把栈内下标直接当作命名空间下标——两类下标同源
-/// 同长（栈 16 位、命名空间 20 位），线上号反查即闭式映射，免维护
-/// 第二张映射表）。
+/// Family to class base (at creation the in-stack index is used directly as the
+/// namespace index — the two index spaces share origin and length (stack 16 bits,
+/// namespace 20 bits) — so the wire-id reverse lookup is a closed-form mapping and no
+/// second mapping table has to be maintained).
 fn class_base_of(family: StackFamily) -> Option<i32> {
     match family {
         StackFamily::Tcp => Some(sockid::SOCKID_TCP),
@@ -190,7 +200,7 @@ fn class_base_of(family: StackFamily) -> Option<i32> {
     }
 }
 
-/// 线上套接字号反查栈内句柄（家族随类、下标即栈内下标）。
+/// Reverse-lookup a stack handle from a wire socket id (family follows the class; the index is the in-stack index).
 pub fn stack_socket_of(raw_id: i32) -> Option<StackSocket> {
     let id = SockId::from_raw(raw_id)?;
     let family = family_of_class(id.class()?)?;
@@ -198,15 +208,15 @@ pub fn stack_socket_of(raw_id: i32) -> Option<StackSocket> {
 }
 
 // ---------------------------------------------------------------------------
-// 地址翻译：Minix `sockaddr_in`（16 字节，`netinet/in.h:239-245`——
-// sin_len u8@0、sin_family u8@1、sin_port 网络序 u16@2、sin_addr@4、
-// sin_zero[8]@8）与墙端点的双向翻译。
+// Address translation: Minix `sockaddr_in` (16 bytes, `netinet/in.h:239-245` —
+// sin_len u8@0, sin_family u8@1, sin_port network-order u16@2, sin_addr@4,
+// sin_zero[8]@8) and the wall endpoint, in both directions.
 // ---------------------------------------------------------------------------
 
-/// `sockaddr_in` 的字节数（16）。
+/// Size of `sockaddr_in` in bytes (16).
 pub const INET_ADDR_LEN: usize = 16;
 
-/// 解码 16 字节 `sockaddr_in`；族字节非 `AF_INET`（2）拒绝。
+/// Decode a 16-byte `sockaddr_in`; a family byte other than `AF_INET` (2) is rejected.
 pub fn decode_inet_endpoint(bytes: &[u8]) -> Option<crate::lwip_port::StackEndpoint> {
     if bytes.len() < INET_ADDR_LEN || bytes[1] != domain::INET as u8 {
         return None;
@@ -220,7 +230,7 @@ pub fn decode_inet_endpoint(bytes: &[u8]) -> Option<crate::lwip_port::StackEndpo
     })
 }
 
-/// 编码 16 字节 `sockaddr_in`（sin_len = 16，端口转网络序）。
+/// Encode a 16-byte `sockaddr_in` (sin_len = 16, port converted to network order).
 pub fn encode_inet_endpoint(endpoint: crate::lwip_port::StackEndpoint) -> [u8; INET_ADDR_LEN] {
     let mut out = [0u8; INET_ADDR_LEN];
     out[0] = INET_ADDR_LEN as u8;
@@ -233,13 +243,14 @@ pub fn encode_inet_endpoint(endpoint: crate::lwip_port::StackEndpoint) -> [u8; I
 }
 
 // ---------------------------------------------------------------------------
-// 拷贝缝：凡跨空间取数处必有缝。生产实现委托 minix-sys 的 safecopy
-// 动词（宿主下不可达，如实报错）；测试注 canned 实现。
+// Copy seam: every fetch across address spaces goes through a seam. The production
+// implementation delegates to minix-sys's safecopy verbs (unreachable on the host,
+// which reports the error honestly); tests inject a canned implementation.
 // ---------------------------------------------------------------------------
 
-/// 内核拷贝动词的缝（C `sys_safecopyfrom`/`sys_safecopyto`）。
+/// The seam over the kernel copy verbs (C `sys_safecopyfrom`/`sys_safecopyto`).
 pub trait CopyTransport {
-    /// 经 grant 把授权方内存拷进 `buf`。
+    /// Copy the granter's memory into `buf` through a grant.
     fn safecopy_from(
         &mut self,
         granter: i32,
@@ -248,7 +259,7 @@ pub trait CopyTransport {
         buf: &mut [u8],
     ) -> Result<(), i32>;
 
-    /// 经 grant 把 `buf` 拷给授权方。
+    /// Copy `buf` to the granter through a grant.
     fn safecopy_to(
         &mut self,
         granter: i32,
@@ -258,13 +269,14 @@ pub trait CopyTransport {
     ) -> Result<(), i32>;
 }
 
-/// canned 替身：grant 号到字节的映射表，`safecopy_to` 的写入入账供
-/// 断言（服务二进制测试用它喂地址/数据，不用真内核）。
+/// Canned stand-in: a grant-number-to-bytes map, plus a ledger of `safecopy_to`
+/// writes for assertions (the service binary tests use it to feed addresses and data
+/// without a real kernel).
 #[derive(Debug, Default)]
 pub struct CannedCopyTransport {
-    /// grant 号 → 预置内容（`safecopy_from` 的来源）。
+    /// Grant number → preset content (the source for `safecopy_from`).
     pub from: Vec<(i32, Vec<u8>)>,
-    /// `safecopy_to` 的写入账（grant 号与字节）。
+    /// Ledger of `safecopy_to` writes (grant number and bytes).
     pub written: Vec<(i32, Vec<u8>)>,
 }
 
@@ -301,8 +313,9 @@ impl CopyTransport for CannedCopyTransport {
     }
 }
 
-/// 生产实现：minix-sys 的内核调用（宿主构建下 trap 不可达，调用方按
-/// 错误折算——与其他通电面的宿主行为一致）。
+/// Production implementation: minix-sys kernel calls (the trap is unreachable in a
+/// host build; callers fold the error — consistent with the host behavior of the
+/// other live surfaces).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SysCopyTransport;
 
@@ -342,20 +355,23 @@ impl CopyTransport for SysCopyTransport {
     }
 }
 
-/// 建户（C `alloc_socket` 的因特网半 + 模块 `*_socket` 的登记半）：
-/// 域门 → 类型分派 → 栈内开户 → 命名空间分配 → 服务表登记。返回线上
-/// 套接字号（`SockId::raw`，回复载荷原样携带）。
+/// Socket creation (the internet half of C `alloc_socket` plus the module's
+/// `*_socket` registration half): domain gate → type dispatch → open in the stack →
+/// namespace allocation → service-table registration. Returns the wire socket id
+/// (`SockId::raw`, carried verbatim in the reply payload).
 ///
-/// `PF_ROUTE`/`PF_LINK` 两域的模块（rtsock/lnksock）随后批接线，暂按
-/// 未接线（ENOSYS）回答；未知域按 C 回 EAFNOSUPPORT（`lwip.c:186`）。
+/// The modules for the `PF_ROUTE`/`PF_LINK` domains (rtsock/lnksock) are wired in a
+/// later batch and answer as not wired (ENOSYS) for now; an unknown domain returns
+/// EAFNOSUPPORT as C does (`lwip.c:186`).
 pub fn open_socket(
     stack: &mut dyn Stack,
     table: &mut SockTable,
     req: &SocketRequest,
     is_root: bool,
 ) -> Result<i32, i32> {
-    // RT/LNK 两域不进栈：服务侧表登记（C 的 rtsock/lnksocket 同为表
-    // 对象），消息面（第 20/11 篇）随后批接线。
+    // RT/LNK do not enter the stack: they are service-side table registrations
+    // (C's rtsock/lnksocket are table objects too); their message plane
+    // (chapters 20/11) is wired in a later batch.
     if req.domain == domain::ROUTE {
         return open_service_socket(table, sockid::SockClass::Rt);
     }
@@ -366,8 +382,9 @@ pub fn open_socket(
         domain::INET | domain::INET6 => internet_family(req.sock_type, is_root)?,
         _ => return Err(minix_types::EAFNOSUPPORT),
     };
-    // RAW 建户的协议号校验照 C（rawsock.c:312-313——负数与超 u8 拒绝）
-    // 后随协议值入栈（过滤面）。TCP/UDP 不消费协议号。
+    // RAW creation validates the protocol number as C does (rawsock.c:312-313 —
+    // reject negatives and values beyond u8), then passes the protocol value into
+    // the stack (the filter surface). TCP/UDP do not consume it.
     let raw_protocol = match family {
         StackFamily::Raw => {
             if req.protocol < 0 || req.protocol > u8::MAX as i32 {
@@ -383,13 +400,13 @@ pub fn open_socket(
         .and_then(sockid::SockClass::from_base)
         .and_then(|c| SockId::from_class(c, stack_socket.index() as u32));
     let Some(id) = id else {
-        //[SD19-gate] SD-19: error path cleanup，close 失败丢一个孤儿 fd
+        //[SD19-gate] error path cleanup: a failed close leaks one orphan fd
         #[allow(clippy::let_underscore_must_use)]
         let _ = stack.close(stack_socket);
         return Err(minix_types::EINVAL);
     };
     if table.add(id).is_err() {
-        //[SD19-gate] SD-19: error path cleanup，close 失败丢一个孤儿 fd
+        //[SD19-gate] error path cleanup: a failed close leaks one orphan fd
         #[allow(clippy::let_underscore_must_use)]
         let _ = stack.close(stack_socket);
         return Err(minix_types::EAGAIN);
@@ -397,9 +414,10 @@ pub fn open_socket(
     Ok(id.raw())
 }
 
-/// 服务侧建户（rtsock/lnksock 两域：不进栈，纯服务表对象——C 的
-/// `rtsock_socket`/`lnksock_socket` 同为表登记）。类内下标线性扫描
-/// 空闲号（两域套接字数少，扫描面可忽略）。
+/// Service-side creation (rtsock/lnksock domains: they do not enter the stack, they
+/// are pure service-table objects — C's `rtsock_socket`/`lnksock_socket` are table
+/// registrations too). Scans the class linearly for a free index (these two domains
+/// hold few sockets, so the scan cost is negligible).
 pub fn open_service_socket(
     table: &mut SockTable,
     class: sockid::SockClass,
@@ -416,13 +434,14 @@ pub fn open_service_socket(
 }
 
 // ---------------------------------------------------------------------------
-// UDP 家族操作翻译（第 09 篇的 sdev 面）：BIND/CONNECT/GETSOCKNAME/
-// SEND/RECEIVE 五条。数据面经拷贝缝在用户 grant 与栈缓冲间搬运。
+// UDP family operation translation (the sdev side of chapter 09): the five
+// BIND/CONNECT/GETSOCKNAME/SEND/RECEIVE. The data plane moves bytes between the
+// user grant and the stack buffers through the copy seam.
 // ---------------------------------------------------------------------------
 
-/// `SDEV_BIND`/`SDEV_CONNECT`/`SDEV_GETSOCKNAME` 的载荷：
+/// Payload of `SDEV_BIND`/`SDEV_CONNECT`/`SDEV_GETSOCKNAME`:
 /// `mess_vfs_lsockdriver_addr { req_id@0; sock_id@4; grant@8; len@12;
-/// user_endpt@16; sflags@20 }`（ipc.h:2258-2269）。
+/// user_endpt@16; sflags@20 }` (ipc.h:2258-2269).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddrRequest {
     pub req_id: i32,
@@ -433,9 +452,9 @@ pub struct AddrRequest {
     pub sflags: u32,
 }
 
-/// 解码 `mess_vfs_lsockdriver_addr` 载荷。
+/// Decode the `mess_vfs_lsockdriver_addr` payload.
 pub fn decode_addr(msg: &Message) -> Option<AddrRequest> {
-    // SAFETY: 载荷按上述域序写在消息负载区。
+    // SAFETY: the payload is written into the message payload area in the field order above.
     let raw = unsafe { &msg.m_u.raw };
     let word = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
     Some(AddrRequest {
@@ -448,12 +467,12 @@ pub fn decode_addr(msg: &Message) -> Option<AddrRequest> {
     })
 }
 
-/// `SDEV_SEND`/`SDEV_RECV` 的载荷：`mess_vfs_lsockdriver_sendrecv
+/// Payload of `SDEV_SEND`/`SDEV_RECV`: `mess_vfs_lsockdriver_sendrecv
 /// { req_id@0; sock_id@4; data_grant@8; [pad@12]; data_len@16(8B);
 /// ctl_grant@24; ctl_len@28; addr_grant@32; addr_len@36; user_endpt@40;
-/// flags@44 }`（ipc.h:2305-2317，LP64 总长 56 与断言宏一致；
-/// `data_len` 是 size_t 占 8 字节，`ctl_len`/`addr_len` 是 unsigned
-/// int 占 4 字节——域距与 VFS 侧编码逐格一致）。
+/// flags@44 }` (ipc.h:2305-2317; the LP64 total of 56 matches the assert macro;
+/// `data_len` is a size_t and takes 8 bytes while `ctl_len`/`addr_len` are unsigned
+/// int and take 4 — the field distances match the VFS-side encoding word for word).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SendRecvRequest {
     pub req_id: i32,
@@ -468,9 +487,9 @@ pub struct SendRecvRequest {
     pub flags: u32,
 }
 
-/// 解码 `mess_vfs_lsockdriver_sendrecv` 载荷。
+/// Decode the `mess_vfs_lsockdriver_sendrecv` payload.
 pub fn decode_sendrecv(msg: &Message) -> Option<SendRecvRequest> {
-    // SAFETY: 载荷按上述域序写在消息负载区；只有 data_len 是 8 字节。
+    // SAFETY: the payload is written into the message payload area in the field order above; only data_len is 8 bytes.
     let raw = unsafe { &msg.m_u.raw };
     let word = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
     Some(SendRecvRequest {
@@ -487,14 +506,14 @@ pub fn decode_sendrecv(msg: &Message) -> Option<SendRecvRequest> {
     })
 }
 
-/// 组装 `SDEV_RECV_REPLY`：`mess_lsockdriver_vfs_recv_reply { req_id@0;
-/// status@4; ctl_len@8; addr_len@12; flags@16 }`。
+/// Assemble `SDEV_RECV_REPLY`: `mess_lsockdriver_vfs_recv_reply { req_id@0;
+/// status@4; ctl_len@8; addr_len@12; flags@16 }`.
 pub fn recv_reply(req_id: i32, status: i32, ctl_len: u32, addr_len: u32) -> Message {
     let mut m = Message {
         m_type: SdevReply::ReceiveReply as i32,
         ..Message::default()
     };
-    // SAFETY: 回复载荷按上述域序写在消息负载区。
+    // SAFETY: the reply payload is written into the message payload area in the field order above.
     unsafe {
         let raw = &mut m.m_u.raw;
         raw[0..4].copy_from_slice(&req_id.to_le_bytes());
@@ -505,8 +524,8 @@ pub fn recv_reply(req_id: i32, status: i32, ctl_len: u32, addr_len: u32) -> Mess
     m
 }
 
-/// `SDEV_LISTEN`/`SDEV_SHUTDOWN` 的载荷：`mess_vfs_lsockdriver_simple
-/// { req_id@0; sock_id@4; param@8 }`（ipc.h:2319-2327）。
+/// Payload of `SDEV_LISTEN`/`SDEV_SHUTDOWN`: `mess_vfs_lsockdriver_simple
+/// { req_id@0; sock_id@4; param@8 }` (ipc.h:2319-2327).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimpleRequest {
     pub req_id: i32,
@@ -514,9 +533,9 @@ pub struct SimpleRequest {
     pub param: i32,
 }
 
-/// 解码 `mess_vfs_lsockdriver_simple` 载荷。
+/// Decode the `mess_vfs_lsockdriver_simple` payload.
 pub fn decode_simple(msg: &Message) -> Option<SimpleRequest> {
-    // SAFETY: 载荷按上述域序写在消息负载区。
+    // SAFETY: the payload is written into the message payload area in the field order above.
     let raw = unsafe { &msg.m_u.raw };
     let word = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
     Some(SimpleRequest {
@@ -526,14 +545,14 @@ pub fn decode_simple(msg: &Message) -> Option<SimpleRequest> {
     })
 }
 
-/// 组装 `SDEV_ACCEPT_REPLY`：`mess_lsockdriver_vfs_accept_reply
-/// { req_id@0; sock_id@4; status@8; len@12 }`——新套接字号随回复带回。
+/// Assemble `SDEV_ACCEPT_REPLY`: `mess_lsockdriver_vfs_accept_reply
+/// { req_id@0; sock_id@4; status@8; len@12 }` — the new socket id comes back in the reply.
 pub fn accept_reply(req_id: i32, sock_id: i32, status: i32, len: u32) -> Message {
     let mut m = Message {
         m_type: SdevReply::AcceptReply as i32,
         ..Message::default()
     };
-    // SAFETY: 回复载荷按上述域序写在消息负载区。
+    // SAFETY: the reply payload is written into the message payload area in the field order above.
     unsafe {
         let raw = &mut m.m_u.raw;
         raw[0..4].copy_from_slice(&req_id.to_le_bytes());
@@ -544,9 +563,10 @@ pub fn accept_reply(req_id: i32, sock_id: i32, status: i32, len: u32) -> Message
     m
 }
 
-/// 一张接收"留言条"：挂起后完成所需的全部现场（C 的 `w_drv_sendrec`
-/// 原始消息在此拆成字段——续答时要按它拷数据、写对端地址、回原请求）。
-/// TCP connect 的留言条：等待建连完成后回 0。
+/// One sticky note: all the state needed to finish after a suspension (C's
+/// `w_drv_sendrec` raw message is split into fields here — the continuation must
+/// copy data, write the peer address, and answer the original request from it).
+/// The sticky note for TCP connect: reply 0 once the connection is established.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingConnect {
     pub sock_id: i32,
@@ -554,8 +574,9 @@ pub struct PendingConnect {
     pub req_id: i32,
 }
 
-/// TCP 发送的留言条：缓冲满时挂起，可写后重新拷数据再试（数据在
-/// 用户内存里，每次尝试都要重拷）。
+/// Sticky note for a TCP send: suspended when the buffer is full; once writable,
+/// copy the data again and retry (the data lives in user memory, so every attempt
+/// must re-copy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingTcpSend {
     pub sock_id: i32,
@@ -566,8 +587,8 @@ pub struct PendingTcpSend {
     pub user_endpt: i32,
 }
 
-/// TCP 接收的留言条：无数据时挂起，可读后续答（EOF 回 0，即 C 的
-/// read 返回 0）。
+/// Sticky note for a TCP receive: suspended when there is no data; answered later
+/// once readable (EOF replies 0, i.e. C's read returning 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingTcpRecv {
     pub sock_id: i32,
@@ -578,7 +599,7 @@ pub struct PendingTcpRecv {
     pub user_endpt: i32,
 }
 
-/// TCP accept 的留言条：等待受纳完成后回新套接字号与对端地址。
+/// Sticky note for TCP accept: reply the new socket id and the peer address once the accept completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingAccept {
     pub listener_id: i32,
@@ -589,26 +610,26 @@ pub struct PendingAccept {
     pub user_endpt: i32,
 }
 
-/// 挂起留言条的账本（服务侧"没办完写留言条"的全部现场；唤醒扫描
-/// 与超时摘条都在这本账上做）。
+/// The book of sticky notes (every bit of state for "not done yet, leave a note" on
+/// the service side; the wakeup scan and the timeout removal both work on this book).
 #[derive(Debug, Default)]
 pub struct PendingTables {
-    /// UDP 接收挂起（带对端地址出向面）。
+    /// UDP receive suspension (with the peer-address outbound face).
     pub recvs: Vec<PendingRecv>,
-    /// TCP 连接挂起。
+    /// TCP connect suspension.
     pub connects: Vec<PendingConnect>,
-    /// TCP 受纳挂起。
+    /// TCP accept suspension.
     pub accepts: Vec<PendingAccept>,
-    /// TCP 发送挂起（缓冲满）。
+    /// TCP send suspension (buffer full).
     pub tcp_sends: Vec<PendingTcpSend>,
-    /// TCP 接收挂起（无数据）。
+    /// TCP receive suspension (no data).
     pub tcp_recvs: Vec<PendingTcpRecv>,
-    /// select 等待（一层触发：回复后由 VFS 自行重挂）。
+    /// select waits (one-shot trigger: after the reply VFS re-arms by itself).
     pub selects: Vec<PendingSelect>,
 }
 
-/// 一条 select 等待：套接字号、VFS 端点（select1 回复的目的地）与
-/// 关心的就绪位（`SDEV_OP_*`）。
+/// One select wait: the socket id, the VFS endpoint (destination of the select1
+/// reply) and the readiness bits of interest (`SDEV_OP_*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingSelect {
     pub sock_id: i32,
@@ -617,9 +638,9 @@ pub struct PendingSelect {
 }
 
 impl PendingTables {
-    /// 取消一位调用方在某套接字上的全部挂起现场（C `sockevent_cancel`
-    /// 的服务半；SDEV_CANCEL 无回复，取消后原请求由超时/事件路径
-    /// 自然沉默）。
+    /// Cancel every suspended state of one caller on one socket (the service half of
+    /// C `sockevent_cancel`; SDEV_CANCEL has no reply, so after the cancel the
+    /// original request just goes silent through the timeout/event path).
     pub fn cancel_for(&mut self, sock_id: i32, who: Endpoint) {
         self.recvs.retain(|n| !(n.sock_id == sock_id && n.caller == who));
         self.connects
@@ -637,38 +658,39 @@ impl PendingTables {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingRecv {
-    /// 线上套接字号。
+    /// Wire socket id.
     pub sock_id: i32,
-    /// 被挂起的调用方（VFS 进程端点，续答回执的目的地）。
+    /// The suspended caller (the VFS process endpoint, destination of the continuation reply).
     pub caller: Endpoint,
-    /// 原请求的 req_id（回复原样带回）。
+    /// req_id of the original request (carried back verbatim in the reply).
     pub req_id: i32,
-    /// 数据 grant（收到的数据拷给它）。
+    /// Data grant (received data is copied to it).
     pub data_grant: i32,
-    /// 用户数据缓冲长度。
+    /// Length of the user data buffer.
     pub data_len: usize,
-    /// 对端地址 grant（sockaddr_in 写回给它）。
+    /// Peer address grant (sockaddr_in is written back to it).
     pub addr_grant: i32,
-    /// 用户地址缓冲长度。
+    /// Length of the user address buffer.
     pub addr_len: usize,
-    /// 授权方端点（拷贝动词的 granter）。
+    /// Granter endpoint (the granter argument of the copy verbs).
     pub user_endpt: i32,
 }
 
-/// 关闭如何半关（`sys/socket.h` 的 `SHUT_*` 值，与垫片的 `shutdown_tcp`
-/// 同表）。
+/// How a close half-closes (`SHUT_*` values of `sys/socket.h`, the same table as the
+/// shim's `shutdown_tcp`).
 pub mod shut {
-    /// `SHUT_RD`（0）。
+    /// `SHUT_RD` (0).
     pub const RD: i32 = 0;
-    /// `SHUT_WR`（1）。
+    /// `SHUT_WR` (1).
     pub const WR: i32 = 1;
-    /// `SHUT_RDWR`（2）。
+    /// `SHUT_RDWR` (2).
     pub const RDWR: i32 = 2;
 }
 
-/// 取消（C `sdev_cancel` 的服务半，sdev.c:25 的"无回复"面）：摘掉
-/// 该调用方在该套接字上的全部挂起现场——服务侧留言条与表内记账都
-/// 清。**不发回复**（C：取消的回复就是原请求的回复，这里沉默让位）。
+/// Cancel (the service half of C `sdev_cancel`, the "no reply" face of sdev.c:25):
+/// drop every suspended state of this caller on this socket — both the service-side
+/// sticky notes and the in-table bookkeeping. **Sends no reply** (C: the cancel's
+/// reply is the original request's reply; here the silence yields to it).
 pub fn cancel_road(table: &mut SockTable, pending: &mut PendingTables, msg: &Message) {
     let Some(req) = decode_simple(msg) else {
         return;
@@ -681,8 +703,9 @@ pub fn cancel_road(table: &mut SockTable, pending: &mut PendingTables, msg: &Mes
     pending.cancel_for(req.sock_id, who);
 }
 
-/// select 路（C `sdev_select` 的两层回复）：就绪即回一型；未就绪登记
-/// 等待（一层触发——回复后由 VFS 自行决定重挂），ready-scan 唤醒。
+/// The select path (C `sdev_select` has two reply layers): reply type one immediately
+/// when ready; otherwise register the wait (one-shot trigger — after the reply VFS
+/// decides by itself whether to re-arm), woken by ready-scan.
 pub fn select_road(
     stack: &mut dyn Stack,
     table: &mut SockTable,
@@ -704,7 +727,7 @@ pub fn select_road(
     let Some(id) = SockId::from_raw(sock_id) else {
         return Some(select1_reply(sock_id, 0));
     };
-    // 同一套接字只挂一条等待（C `ss_endpt` 单槽；重复 select 顶替）。
+    // Only one wait per socket (C `ss_endpt` is a single slot; a repeated select replaces it).
     if let Err(e) = table.register_select(id, vfs, ops) {
         let _ = e;
         return Some(select1_reply(sock_id, 0));
@@ -718,9 +741,11 @@ fn sock_id_from(v: usize) -> i32 {
     v as i32
 }
 
-/// 关闭（C `sdev_close` → 各模块 close + 表摘除）：栈类先关栈内套
-/// 接字，服务侧类（rtsock/lnksock）只摘表；两类都回 0。C 的可挂起
-/// 关闭（缓冲未走的体面收尾）随接口批——此处为立即关闭，登记差异。
+/// Close (C `sdev_close` → each module's close + table removal): stack classes close
+/// the in-stack socket first, service-side classes (rtsock/lnksock) only remove the
+/// table entry; both reply 0. C's suspendable close (a graceful finish while the
+/// buffer drains) comes with the interface batch — this is an immediate close, a
+/// registered difference.
 pub fn close_socket(
     stack: &mut dyn Stack,
     table: &mut SockTable,
@@ -733,7 +758,7 @@ pub fn close_socket(
         return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
     };
     if let Some(stack_socket) = stack_socket_of(req.sock_id) {
-        //[SD19-gate] SD-19: 显式 close，C close() 返回值不消费
+        //[SD19-gate] explicit close; C's close() return value is not consumed
         #[allow(clippy::let_underscore_must_use)]
         let _ = stack.close(stack_socket);
     }
@@ -741,9 +766,10 @@ pub fn close_socket(
     Some(simple_reply(req.req_id, 0))
 }
 
-/// 半关（C `sdev_shutdown` → `sock_shutdown`）：栈类转
-/// [`Stack::shutdown_tcp`]，服务侧类（rtsock/lnksock）无对端半关
-/// 语义，成功无操作回答（与 C 的 datagram shutdown 行为一致）。
+/// Half-close (C `sdev_shutdown` → `sock_shutdown`): stack classes forward to
+/// [`Stack::shutdown_tcp`]; service-side classes (rtsock/lnksock) have no
+/// peer-half-close semantics and answer success with no operation (matching C's
+/// datagram shutdown behavior).
 pub fn shutdown_socket(
     stack: &mut dyn Stack,
     msg: &Message,
@@ -760,10 +786,10 @@ pub fn shutdown_socket(
     }
 }
 
-/// 解码 `SDEV_SELECT` 载荷：`mess_vfs_lsockdriver_select { sock_id@0;
-/// ops@4 }`（ipc.h:2295-2302；ops 是 `SDEV_OP_*` 就绪位）。
+/// Decode the `SDEV_SELECT` payload: `mess_vfs_lsockdriver_select { sock_id@0; ops@4 }`
+/// (ipc.h:2295-2302; ops holds `SDEV_OP_*` readiness bits).
 pub fn decode_select(msg: &Message) -> Option<(i32, u8)> {
-    // SAFETY: 载荷按上述域序写在消息负载区。
+    // SAFETY: the payload is written into the message payload area in the field order above.
     let raw = unsafe { &msg.m_u.raw };
     Some((
         i32::from_le_bytes(raw[0..4].try_into().unwrap()),
@@ -771,14 +797,14 @@ pub fn decode_select(msg: &Message) -> Option<(i32, u8)> {
     ))
 }
 
-/// 组装 select 一型回复：`mess_lsockdriver_vfs_select_reply
-/// { sock_id@0; status@4 }`——status 是就绪的 `SDEV_OP_*` 位。
+/// Assemble the select type-one reply: `mess_lsockdriver_vfs_select_reply
+/// { sock_id@0; status@4 }` — status carries the ready `SDEV_OP_*` bits.
 pub fn select1_reply(sock_id: i32, ready: u8) -> Message {
     let mut m = Message {
         m_type: SdevReply::SelectReply1 as i32,
         ..Message::default()
     };
-    // SAFETY: 回复载荷按上述域序写在消息负载区。
+    // SAFETY: the reply payload is written into the message payload area in the field order above.
     unsafe {
         let raw = &mut m.m_u.raw;
         raw[0..4].copy_from_slice(&sock_id.to_le_bytes());
@@ -787,7 +813,7 @@ pub fn select1_reply(sock_id: i32, ready: u8) -> Message {
     m
 }
 
-/// 就绪位与关心位的交集（读/写两面；错误位随 error 字段单独批）。
+/// Intersection of ready bits and bits of interest (the read/write faces; the error bit goes with the error field in its own batch).
 fn matched_ops(readiness: crate::lwip_port::Readiness, ops: u8) -> u8 {
     use minix_sockdriver::sdev::{SDEV_OP_RD, SDEV_OP_WR};
     let mut matched = 0u8;
@@ -800,9 +826,10 @@ fn matched_ops(readiness: crate::lwip_port::Readiness, ops: u8) -> u8 {
     matched & ops
 }
 
-/// UDP 路的翻译入口：`msg` 已是 UDP 类套接字上的某条请求。返回
-/// `Some(回复)` 立即答；`None` = 已挂起（留言条入 `pending`，VFS 侧的
-/// 调用进程在睡，别回；唤醒后由 [`ready_scan`] 续答）。
+/// Translation entry for the UDP path: `msg` is some request on a UDP-class socket.
+/// Returns `Some(reply)` to answer immediately; `None` = suspended (a sticky note has
+/// entered `pending`, the VFS-side calling process is asleep, do not reply; once
+/// woken, [`ready_scan`] continues the answer).
 pub fn translate_udp(
     stack: &mut dyn Stack,
     copy: &mut dyn CopyTransport,
@@ -819,7 +846,7 @@ pub fn translate_udp(
         let Some(stack_socket) = stack_socket_of(req.sock_id) else {
             return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
         };
-        // 地址在用户内存里（grant），拷进来再翻译。
+        // The address lives in user memory (grant); copy it in, then translate.
         let mut bytes = [0u8; INET_ADDR_LEN];
         let n = req.len.min(INET_ADDR_LEN as u32) as usize;
         if copy
@@ -880,8 +907,8 @@ fn translate_udp_data(
     };
     let sending = msg.m_type == SdevRequest::Send as i32;
     if sending {
-        // 拷数据入栈缓冲再发；长度按用户的 data_len 截（上限在本批为
-        // 栈缓冲尺寸）。
+        // Copy the data into a stack buffer and send; the length is capped by the
+        // user's data_len (the upper bound in this batch is the stack buffer size).
         let mut data = alloc::vec![0u8; req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
         if copy
             .safecopy_from(req.user_endpt, req.data_grant, 0, &mut data)
@@ -889,8 +916,8 @@ fn translate_udp_data(
         {
             return Some(simple_reply(req.req_id, -(minix_types::EFAULT)));
         }
-        // 对端地址：addr_len 在场即 sendto 语义，否则走 connect 的
-        // 默认对端。
+        // Peer address: an addr_len present means sendto semantics, otherwise use
+        // connect's default peer.
         let remote = if req.addr_len >= INET_ADDR_LEN {
             let mut addr_bytes = [0u8; INET_ADDR_LEN];
             if copy
@@ -908,14 +935,16 @@ fn translate_udp_data(
             Err(e) => Some(simple_reply(req.req_id, wire(e))),
         }
     } else {
-        // 接收：先试一次（可能已有包）；空且非阻塞即回 EWOULDBLOCK；
-        // 空且阻塞则挂起记账（调用方由 VFS 侧挂起，此处不回），唤醒后
-        // 由 ready-scan 续答。
+        // Receive: try once first (a packet may already be there); empty and
+        // non-blocking replies EAGAIN at once; empty and blocking suspends with
+        // bookkeeping (the caller is suspended on the VFS side, no reply here), and
+        // ready-scan answers it later once woken.
         let mut data = alloc::vec![0u8; req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
         match stack.recv_udp(stack_socket, &mut data) {
             Ok((n, peer)) => {
-                // 数据与对端地址都要拷给用户（C recv 数据面的两个
-                // safecopyto）；拷不动即报错，不以成功码丢数据。
+                // Both the data and the peer address must be copied to the user
+                // (C recv's two safecopyto on the data plane); if the copy fails,
+                // report an error — never drop data under a success code.
                 let addr_bytes = encode_inet_endpoint(peer);
                 let addr_len = req.addr_len.min(INET_ADDR_LEN);
                 if copy
@@ -933,16 +962,17 @@ fn translate_udp_data(
                 Some(recv_reply(req.req_id, n as i32, 0, addr_len as u32))
             }
             Err(_) => {
-                // 非阻塞判定：请求旗标（MSG_DONTWAIT）或套接字上的
-                // FIONBIO 旗标（ioctl 批）任一在场即立即回。
+                // Non-block decision: either the request flag (MSG_DONTWAIT) or the
+                // socket's FIONBIO flag (ioctl batch) present means reply immediately.
                 if req.flags & minix_sockdriver::sdev::MSG_DONTWAIT != 0
                     || stack.is_nonblock(stack_socket)
                 {
                     return Some(recv_reply(req.req_id, -(minix_types::EAGAIN), 0, 0));
                 }
-                // 挂起：唤醒事件 = 可读或对端关闭；无超时（SO_RCVTIMEO
-                // 随选项批）。留言条入 `pending`，唤醒后由 ready-scan
-                // 完成接收并续答。
+                // Suspend: wakeup event = readable or peer closed; no timeout
+                // (SO_RCVTIMEO comes with the options batch). The sticky note enters
+                // `pending`; once woken, ready-scan completes the receive and continues
+                // the answer.
                 if stack_socket_of(req.sock_id).is_none() {
                     return Some(recv_reply(req.req_id, -(minix_types::EBADF), 0, 0));
                 }
@@ -975,18 +1005,20 @@ fn translate_udp_data(
 }
 
 // ---------------------------------------------------------------------------
-// 选项路（SDEV_SETSOCKOPT/SDEV_GETSOCKOPT，第 08/09 篇的 sdev 面收尾）：
-// C 侧的选项处理分两层——libsockevent 框架半管 SOL_SOCKET 的开关型与
-// 容量型选项（sockevent.c:1823-1966），各套接字模块的 sop_setsockopt
-// 管协议级选项（tcpsock.c:2123/udpsock.c:580）。本模型两层都在服务：
-// SOL_SOCKET 的已支持名单走墙方法，其余名字与协议级选项按 C 框架的
-// "驱动必须对不认识的选项回 ENOPROTOOPT"契约（sockdriver.c:843-844 的
-// 对偶注记）诚实拒绝——已登记差异见 FIXLOG 与 25 篇 §3。
+// Options path (SDEV_SETSOCKOPT/SDEV_GETSOCKOPT, the sdev-side closeout of chapters
+// 08/09): C splits option handling into two layers — the libsockevent framework half
+// handles SOL_SOCKET's switch-type and capacity-type options (sockevent.c:1823-1966),
+// while each socket module's sop_setsockopt handles protocol-level options
+// (tcpsock.c:2123/udpsock.c:580). This model serves both layers: the supported
+// SOL_SOCKET names go through wall methods, and all other names plus protocol-level
+// options are honestly refused per the C framework's "a driver must answer
+// ENOPROTOOPT for options it does not recognize" contract (the dual note at
+// sockdriver.c:843-844) — see FIXLOG and chapter 25 §3 for the registered differences.
 // ---------------------------------------------------------------------------
 
-/// `SDEV_SETSOCKOPT`/`SDEV_GETSOCKOPT` 的载荷：
+/// Payload of `SDEV_SETSOCKOPT`/`SDEV_GETSOCKOPT`:
 /// `mess_vfs_lsockdriver_getset { req_id@0; sock_id@4; level@8; name@12;
-/// grant@16; len@20 }`（ipc.h:2270-2281）。
+/// grant@16; len@20 }` (ipc.h:2270-2281).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GetSetRequest {
     pub req_id: i32,
@@ -997,9 +1029,9 @@ pub struct GetSetRequest {
     pub len: u32,
 }
 
-/// 解码 `mess_vfs_lsockdriver_getset` 载荷。
+/// Decode the `mess_vfs_lsockdriver_getset` payload.
 pub fn decode_getset(msg: &Message) -> Option<GetSetRequest> {
-    // SAFETY: 载荷按上述域序写在消息负载区。
+    // SAFETY: the payload is written into the message payload area in the field order above.
     let raw = unsafe { &msg.m_u.raw };
     let word = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
     Some(GetSetRequest {
@@ -1012,9 +1044,11 @@ pub fn decode_getset(msg: &Message) -> Option<GetSetRequest> {
     })
 }
 
-/// 选项路：设置方向拷入选项值、落墙；查询方向读当前值拷回用户 grant、
-/// 回复成功码就是拷出的字节数（C `do_getsockopt` 的"主回复码即长度"
-/// 契约，sockdriver.c:852-861；设置成功回 0，sockdriver.c:827-834）。
+/// Options path: the set direction copies the option value in and stores it on the
+/// wall; the get direction reads the current value, copies it back to the user grant,
+/// and replies the success code as the byte count (C `do_getsockopt`'s "the main
+/// reply code is the length" contract, sockdriver.c:852-861; a successful set replies
+/// 0, sockdriver.c:827-834).
 pub fn sockopt_road(
     stack: &mut dyn Stack,
     copy: &mut dyn CopyTransport,
@@ -1025,14 +1059,16 @@ pub fn sockopt_road(
         return Some(simple_reply(0, -(minix_types::EINVAL)));
     };
     let setting = msg.m_type == SdevRequest::SetSockOpt as i32;
-    // 只有 SOL_SOCKET 层进墙：协议级选项（IPPROTO_TCP/IPPROTO_IP 的
-    // NODELAY、组播族等）在 C 由各模块的 sop_setsockopt 承接，本模型
-    // 尚未接——统一按 ENOPROTOOPT 诚实拒绝（登记差异）。
+    // Only the SOL_SOCKET level goes through the wall: protocol-level options
+    // (IPPROTO_TCP/IPPROTO_IP NODELAY, the multicast family, etc.) are handled by
+    // each module's sop_setsockopt in C and are not wired in this model — honestly
+    // refused as ENOPROTOOPT (a registered difference).
     if req.level != crate::lwip_port::SOL_SOCKET {
         return Some(simple_reply(req.req_id, wire(minix_types::ENOPROTOOPT)));
     }
-    // RT/LNK 是服务侧类，无选项面语义（C rtsock_setsockopt 的
-    // USELOOPBACK/RCVBUF 随通告队列批一并评估，登记）。
+    // RT/LNK are service-side classes with no option-surface semantics (C
+    // rtsock_setsockopt's USELOOPBACK/RCVBUF are evaluated together with the
+    // announcement-queue batch; registered).
     let service_class = SockId::from_raw(req.sock_id)
         .and_then(|id| id.class())
         .is_some_and(|class| matches!(class, sockid::SockClass::Rt | sockid::SockClass::Lnk));
@@ -1042,8 +1078,8 @@ pub fn sockopt_road(
     let Some(stack_socket) = stack_socket_of(req.sock_id) else {
         return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
     };
-    // 设置方向的值拷入：C `sockdriver_copyin_opt` 要求长度恰为
-    // sizeof(int)（sockdriver.c:184-194，不等即 EINVAL）。
+    // Copy in the value for the set direction: C `sockdriver_copyin_opt` requires
+    // the length to be exactly sizeof(int) (sockdriver.c:184-194, anything else is EINVAL).
     let requested = if setting {
         if req.len != 4 {
             return Some(simple_reply(req.req_id, -(minix_types::EINVAL)));
@@ -1062,20 +1098,20 @@ pub fn sockopt_road(
     let outcome = match stack_socket.family() {
         StackFamily::Tcp => stack.sockopt_tcp(stack_socket, req.name, requested),
         StackFamily::Udp => stack.sockopt_udp(stack_socket, req.name, requested),
-        // RAW 的选项面随 HDRINCL 选项批（跨线挂账维持登记）。
+        // RAW's option surface comes with the HDRINCL options batch (the cross-line ledger stays registered).
         _ => Err(crate::util::STACK_BAD_ARGUMENT),
     };
     Some(match outcome {
-        // 墙不认识的名字：诚实的"选项未支持"。
+        // A name the wall does not know: an honest "option not supported".
         Err(e) if e == crate::util::STACK_BAD_ARGUMENT => {
             simple_reply(req.req_id, wire(minix_types::ENOPROTOOPT))
         }
         Err(e) => simple_reply(req.req_id, wire(e)),
         Ok(None) => simple_reply(req.req_id, 0),
         Ok(Some(value)) => {
-            // 查询方向：值拷回用户 grant，按用户 optlen 截（C
-            // `sockdriver_copyout_opt` 的截断语义，sockdriver.c:201-212），
-            // 回复成功码 = 拷出长度。
+            // Get direction: copy the value back to the user grant, truncated to the
+            // user's optlen (C `sockdriver_copyout_opt`'s truncation semantics,
+            // sockdriver.c:201-212); the success code is the copied length.
             let bytes = value.to_le_bytes();
             let out_len = (req.len as usize).min(bytes.len());
             match copy.safecopy_to(caller.0, req.grant, 0, &bytes[..out_len]) {
@@ -1087,22 +1123,23 @@ pub fn sockopt_road(
 }
 
 // ---------------------------------------------------------------------------
-// ioctl 路（SDEV_IOCTL）：FIONREAD 是 C 的框架半行为（`sockevent_ioctl`
-// 的 `sop_test_recv` 出口，sockevent.c:1779-1793），FIONBIO 在 C 由 libc
-// 改写为 fcntl(O_NONBLOCK)（`libc/sys/ioctl.c:296`/`:330`），本模型在
-// 服务侧补同一语义的旗标位；其余请求按 C 的服务侧 ENOTTY 出口回答
-// （sockevent.c:1765-1769 + ifconf_ioctl 的 default 分支）。
+// ioctl path (SDEV_IOCTL): FIONREAD is the framework-half behavior in C (the
+// `sop_test_recv` exit of `sockevent_ioctl`, sockevent.c:1779-1793); FIONBIO
+// is rewritten by libc into fcntl(O_NONBLOCK) in C (`libc/sys/ioctl.c:296`/
+// `:330`), and this model adds a flag bit with the same semantics on the
+// service side; any other request answers through C's service-side ENOTTY
+// exit (sockevent.c:1765-1769 plus ifconf_ioctl's default branch).
 // ---------------------------------------------------------------------------
 
-/// `FIONREAD`（`_IOR('f', 127, int)` = 0x4004667F，`sys/filio.h:47`）。
+/// `FIONREAD` (`_IOR('f', 127, int)` = 0x4004667F, `sys/filio.h:47`).
 pub const FIONREAD: u64 = 0x4004_667F;
-/// `FIONBIO`（`_IOW('f', 126, int)` = 0x8004667E，`sys/filio.h:48`；
-/// 方向位是 `IOC_IN`）。
+/// `FIONBIO` (`_IOW('f', 126, int)` = 0x8004667E, `sys/filio.h:48`; the
+/// direction bit is `IOC_IN`).
 pub const FIONBIO: u64 = 0x8004_667E;
 
-/// `SDEV_IOCTL` 的载荷：`mess_vfs_lsockdriver_ioctl { req_id@0;
+/// Payload of `SDEV_IOCTL`: `mess_vfs_lsockdriver_ioctl { req_id@0;
 /// sock_id@4; request@8(8B); grant@16; user_endpt@24; sflags@28 }`
-/// （ipc.h:2283-2294；`request` 是 unsigned long，LP64 下占 8 字节）。
+/// (ipc.h:2283-2294; `request` is an unsigned long, 8 bytes under LP64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IoctlRequest {
     pub req_id: i32,
@@ -1113,9 +1150,9 @@ pub struct IoctlRequest {
     pub sflags: u32,
 }
 
-/// 解码 `mess_vfs_lsockdriver_ioctl` 载荷。
+/// Decode the `mess_vfs_lsockdriver_ioctl` payload.
 pub fn decode_ioctl(msg: &Message) -> Option<IoctlRequest> {
-    // SAFETY: 载荷按上述域序写在消息负载区；只有 request 是 8 字节。
+    // SAFETY: the payload is written into the message payload area in the field order above; only request is 8 bytes.
     let raw = unsafe { &msg.m_u.raw };
     let word = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
     Some(IoctlRequest {
@@ -1128,9 +1165,10 @@ pub fn decode_ioctl(msg: &Message) -> Option<IoctlRequest> {
     })
 }
 
-/// ioctl 路：FIONREAD 查待收量拷回用户 grant（回复 0，值走缓冲——C
-/// `sockevent_ioctl` 的 `copyout` 加 `reply_generic(OK)` 形状）；FIONBIO
-/// 置/清套接字的非阻塞旗标；其余命令 ENOTTY。
+/// ioctl path: FIONREAD copies the pending-receive amount back to the user
+/// grant (reply 0, the value travels in the buffer — C `sockevent_ioctl`'s
+/// `copyout` plus `reply_generic(OK)` shape); FIONBIO sets/clears the socket's
+/// non-blocking flag; any other command is ENOTTY.
 pub fn ioctl_road(
     stack: &mut dyn Stack,
     copy: &mut dyn CopyTransport,
@@ -1140,8 +1178,8 @@ pub fn ioctl_road(
     let Some(req) = decode_ioctl(msg) else {
         return Some(simple_reply(0, -(minix_types::EINVAL)));
     };
-    // RT/LNK 是服务侧类：无 ioctl 语义（C rtsock/lnksock 的 sop_ioctl
-    // 缺席，框架折 ENOTTY）。
+    // RT/LNK are service-side classes: no ioctl semantics (C rtsock/lnksock
+    // have no sop_ioctl, and the framework folds it to ENOTTY).
     let service_class = SockId::from_raw(req.sock_id)
         .and_then(|id| id.class())
         .is_some_and(|class| matches!(class, sockid::SockClass::Rt | sockid::SockClass::Lnk));
@@ -1183,17 +1221,21 @@ pub fn ioctl_road(
 }
 
 // ---------------------------------------------------------------------------
-// rtsock/lnksock 消息路（第 20/11 篇的 sdev 面收尾）。RT 域的读写 =
-// 路由表的增删查消息：write 解析一条 RTM 帧落表（增/删/改），read 从
-// 表导出 RTM_GET 帧。C 的 read 拉"路由变化通告队列"（表变化广播给所
-// 有路由套接字）、一次一条；本模型的 read 是表快照导出、能装几条装
-// 几条——与 C sysctl 出口的导出循环同构（rtsock.c:1473-1476），通告
-// 队列差异登记。LNK 域无对端半关、无数据面：读写按 C 的 NULL 钩子
-// 语义回 EOPNOTSUPP（登记；close 已随批八闭环）。
+// rtsock/lnksock message path (the sdev-side closeout of chapters 20/11). RT
+// read/write = add/delete/query messages for the routing table: write parses
+// one RTM frame and applies it to the table (add/delete/change), read exports
+// RTM_GET frames from the table. C's read pulls the "route change announcement
+// queue" (table changes broadcast to all routing sockets), one at a time; this
+// model's read exports a table snapshot, fitting as many entries as it can —
+// isomorphic to C's sysctl export loop (rtsock.c:1473-1476), with the
+// announcement-queue difference registered. The LNK domain has no peer
+// half-close and no data plane: read/write answer EOPNOTSUPP per C's NULL hook
+// semantics (registered; close is already closed out).
 // ---------------------------------------------------------------------------
 
-/// 线上 sockaddr 到路由表行的族与 16 字节目的表示；族不是版本 4/6
-/// 回 `None`（调用方折 EAFNOSUPPORT）。
+/// Wire sockaddr to a routing-table row's family and 16-byte destination
+/// representation; a family other than version 4/6 returns `None` (the caller
+/// folds it to EAFNOSUPPORT).
 fn route_address(sa: crate::rtsock::RtSockaddr) -> Option<(crate::route::IpVersion, [u8; 16])> {
     match sa.family {
         2 => {
@@ -1206,11 +1248,13 @@ fn route_address(sa: crate::rtsock::RtSockaddr) -> Option<(crate::route::IpVersi
     }
 }
 
-/// RT 域的消息路。Send = 写一条 RTM 帧落表；Receive = 导出表快照。
-/// 类型与身份门照 C rtsock_put：ADD/DELETE/CHANGE 要根身份
-/// （rtsock.c:545-550，`is_root` 走身份缝）；GET 收下成功——查询的
-/// 答案就是 read 导出面（登记差异：C 在写回执里捎单条查询结果）；
-/// LOCK 与其余类型 EOPNOTSUPP（metric 锁定面未接，登记）。
+/// Message path of the RT domain. Send = write one RTM frame into the table;
+/// Receive = export a table snapshot. Type and identity gates follow C
+/// rtsock_put: ADD/DELETE/CHANGE require root identity (rtsock.c:545-550,
+/// `is_root` goes through the identity seam); GET is accepted successfully —
+/// the query's answer is the read export surface (registered difference: C
+/// piggybacks a single query result on the write receipt); LOCK and any other
+/// type are EOPNOTSUPP (the metric-lock surface is not wired; registered).
 pub fn rt_road(
     routes: Option<&mut crate::route::RouteTable>,
     copy: &mut dyn CopyTransport,
@@ -1223,7 +1267,7 @@ pub fn rt_road(
     };
     let receiving = msg.m_type == SdevRequest::Receive as i32;
     let Some(routes) = routes else {
-        // 启动链步 9（路由表建账）未到：还不能服务。
+        // Startup chain step 9 (route-table accounting) has not arrived yet: cannot serve.
         return Some(if receiving {
             recv_reply(req.req_id, -(minix_types::EAGAIN), 0, 0)
         } else {
@@ -1231,7 +1275,7 @@ pub fn rt_road(
         });
     };
     if receiving {
-        // 空表：最小模型没有通告队列可等，诚实立即回（登记）。
+        // Empty table: the minimal model has no announcement queue to wait on, so answer honestly and immediately (registered).
         if routes.is_empty() {
             return Some(recv_reply(req.req_id, -(minix_types::EAGAIN), 0, 0));
         }
@@ -1247,8 +1291,9 @@ pub fn rt_road(
             off += n;
         }
         if off == 0 {
-            // 连一帧都装不下（用户缓冲小于最小帧 168 字节）：拒绝截断
-            // ——截断会破坏帧边界。
+            // Not even one frame fits (the user buffer is below the 168-byte
+            // minimum frame): refuse to truncate — truncation would break frame
+            // boundaries.
             return Some(recv_reply(req.req_id, -(minix_types::EMSGSIZE), 0, 0));
         }
         return match copy.safecopy_to(req.user_endpt, req.data_grant, 0, &data[..off]) {
@@ -1256,7 +1301,7 @@ pub fn rt_road(
             Err(code) => Some(recv_reply(req.req_id, wire(code), 0, 0)),
         };
     }
-    // 写半：消息上限 512（`rtsock_pre_send`，rtsock.c:634-651）。
+    // Write half: the message limit is 512 (`rtsock_pre_send`, rtsock.c:634-651).
     if req.data_len > crate::rtsock::SEND_BUFFER_MAX {
         return Some(simple_reply(req.req_id, -(minix_types::EMSGSIZE)));
     }
@@ -1286,7 +1331,7 @@ pub fn rt_road(
             let Some((version, dest)) = route_address(dst) else {
                 return Some(simple_reply(req.req_id, -(minix_types::EAFNOSUPPORT)));
             };
-            // 掩码位不在场 = 主机条目（C 同语义）。
+            // No prefix bits present = a host entry (same semantics as C).
             let prefix = frame.prefix.unwrap_or(match version {
                 crate::route::IpVersion::V4 => 32,
                 crate::route::IpVersion::V6 => 128,
@@ -1298,7 +1343,7 @@ pub fn rt_road(
                     Err(minix_types::ESRCH)
                 }
             } else {
-                // ADD 与 CHANGE 同走"增或同键替换"（表的改半）。
+                // ADD and CHANGE both go through "insert or replace on the same key" (the table's change half).
                 routes.add(crate::route::RouteEntry {
                     version,
                     dest,
@@ -1316,10 +1361,11 @@ pub fn rt_road(
     })
 }
 
-/// LNK 域的消息路：无数据面（第 11 篇）。C 的 lnksock 操作表只有
-/// `sop_ioctl`/`sop_free` 两项（lnksock.c:75-76），读写的 NULL 钩子在
-/// 框架折 EOPNOTSUPP（sockdriver.c:745-746）——按同一错误回答（登记；
-/// close 已随批八闭环）。
+/// Message path of the LNK domain: no data plane (chapter 11). C's lnksock
+/// operation table has only `sop_ioctl`/`sop_free` (lnksock.c:75-76), and the
+/// framework folds the NULL read/write hooks to EOPNOTSUPP
+/// (sockdriver.c:745-746) — answer with the same error (registered; close was
+/// closed out).
 pub fn lnk_road(msg: &Message) -> Option<Message> {
     let Some(req) = decode_sendrecv(msg) else {
         return Some(simple_reply(0, -(minix_types::EINVAL)));
@@ -1331,8 +1377,9 @@ pub fn lnk_road(msg: &Message) -> Option<Message> {
     }
 }
 
-/// 统一分派：按线上套接字的类把请求交给 UDP 路或 TCP 路。未知类
-/// （route/link 两域的消息面随后批）按未接线回答。
+/// Unified dispatch: hand the request to the UDP path or the TCP path according
+/// to the wire socket's class. An unknown class (the message plane of the
+/// route/link domains comes in a later batch) answers as not wired.
 #[allow(clippy::too_many_arguments)]
 pub fn translate(
     stack: &mut dyn Stack,
@@ -1342,9 +1389,9 @@ pub fn translate(
     caller: Endpoint,
     msg: &Message,
 ) -> Option<Message> {
-    // sock_id 在三类载荷里都在 @4；建户（Socket/SocketPair）不带
-    // sock_id，不走本分派。
-    // SAFETY: 首格域序两形状共用。
+    // sock_id sits at @4 in all three payload shapes; socket creation
+    // (Socket/SocketPair) carries no sock_id and does not go through this
+    // dispatch.
     let raw = unsafe { &msg.m_u.raw };
     let sock_id = i32::from_le_bytes(raw[4..8].try_into().unwrap());
     match SockId::from_raw(sock_id)
@@ -1358,10 +1405,12 @@ pub fn translate(
     }
 }
 
-/// TCP 路的翻译入口：BIND/LISTEN/CONNECT/ACCEPT/GETPEERNAME 五条。
-/// connect 与 accept 的可挂起语义在此落：非阻塞立即回
-/// EINPROGRESS/EWOULDBLOCK，阻塞挂起记账，唤醒后由 [`ready_scan`]
-/// 续答（connect 等建连=可写；accept 等受理=监听者可读）。
+/// Translation entry for the TCP path: BIND/LISTEN/CONNECT/ACCEPT/GETPEERNAME,
+/// five operations. The suspendable semantics of connect and accept land here:
+/// non-blocking replies EINPROGRESS/EWOULDBLOCK immediately, blocking suspends
+/// with bookkeeping and is answered later by [`ready_scan`] once woken
+/// (connect waits for establishment = writable; accept waits for a connection
+/// = listener readable).
 pub fn translate_tcp(
     stack: &mut dyn Stack,
     copy: &mut dyn CopyTransport,
@@ -1427,11 +1476,11 @@ pub fn translate_tcp(
         return match stack.connect_tcp(stack_socket, endpoint) {
             Ok(()) => {
                 if req.sflags & minix_sockdriver::sdev::SDEV_NONBLOCK != 0 {
-                    // 非阻塞：开张即回"进行中"，建连完成由就绪位说话。
+                    // Non-blocking: reply "in progress" right away; the readiness bit reports completion.
                     Some(simple_reply(req.req_id, -(minix_types::EINPROGRESS)))
                 } else {
-                    // 阻塞：挂等建连（SEV_CONNECT 唤醒；无超时，选项随
-                    // 后批）。
+                    // Blocking: suspend waiting for establishment (SEV_CONNECT
+                    // wakes it; no timeout, options come in a later batch).
                     pending.connects.push(PendingConnect {
                         sock_id: req.sock_id,
                         caller,
@@ -1495,7 +1544,7 @@ pub fn translate_tcp(
         let Some(stack_socket) = stack_socket_of(req.sock_id) else {
             return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
         };
-        // 非阻塞判定：请求旗标或 FIONBIO 旗标任一在场即立即回。
+        // Non-block decision: either the request flag or the FIONBIO flag present means reply immediately.
         let nonblock = req.flags & minix_sockdriver::sdev::MSG_DONTWAIT != 0
             || stack.is_nonblock(stack_socket);
         let _ = req.ctl_grant;
@@ -1503,8 +1552,9 @@ pub fn translate_tcp(
         let _ = req.addr_grant;
         let _ = req.addr_len;
         if m_type == SdevRequest::Send as i32 {
-            // 流式发送：入多少回多少（部分发送合法）；缓冲满且阻塞
-            // 挂起，非阻塞回 EAGAIN。
+            // Stream send: reply as many bytes as were taken (partial sends are
+            // legal); suspend when the buffer is full and blocking, reply EAGAIN
+            // when non-blocking.
             let mut data = alloc::vec![0u8; req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
             if copy
                 .safecopy_from(req.user_endpt, req.data_grant, 0, &mut data)
@@ -1532,17 +1582,18 @@ pub fn translate_tcp(
                 Err(e) => Some(simple_reply(req.req_id, wire(e))),
             };
         }
-        // 流式接收：有数据拷给用户；EOF（对端关且取尽）回 0；空且
-        // 阻塞挂起，非阻塞回 EAGAIN；连接未开按错误回答。
+        // Stream receive: copy data to the user when present; reply 0 on EOF
+        // (peer closed and drained); suspend when empty and blocking, reply
+        // EAGAIN when non-blocking; an unopened connection answers with an error.
         let mut data = alloc::vec![0u8; req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
         let outcome = stack.recv_tcp(stack_socket, &mut data);
         return match outcome {
-            // EOF 与真错误先行（栈把"空"折成阻塞类错误，归入挂起半）。
+            // EOF and real errors first (the stack folds "empty" into a blocking-class error, which belongs to the suspend half).
             Ok((0, true)) => Some(recv_reply(req.req_id, 0, 0, 0)),
             Err(e) if e != crate::util::ERR_WOULD_BLOCK => {
                 Some(recv_reply(req.req_id, wire(e), 0, 0))
             }
-            // 空（阻塞类错误或空读）：非阻塞回 EAGAIN，阻塞挂起记账。
+            // Empty (blocking-class error or an empty read): non-blocking replies EAGAIN, blocking suspends with bookkeeping.
             _ => {
                 if nonblock {
                     return Some(recv_reply(req.req_id, -(minix_types::EAGAIN), 0, 0));
@@ -1584,8 +1635,10 @@ pub fn translate_tcp(
     Some(simple_reply(0, -(minix_types::ENOSYS)))
 }
 
-/// RAW 路的翻译入口：Send（写全报文）与 Receive（读全报文）。数据面
-/// 是 grant 与栈缓冲间的直接搬运——全报文语义（含 IP 头，HDRINCL）。
+/// Translation entry for the RAW path: Send (write a full packet) and Receive
+/// (read a full packet). The data plane moves bytes directly between the grant
+/// and the stack buffers — full-packet semantics (including the IP header,
+/// HDRINCL).
 pub fn translate_raw(
     stack: &mut dyn Stack,
     copy: &mut dyn CopyTransport,
@@ -1611,7 +1664,7 @@ pub fn translate_raw(
             Err(e) => Some(simple_reply(req.req_id, wire(e))),
         };
     }
-    // 接收：拷给用户。
+    // Receive: copy to the user.
     let mut data = alloc::vec![0u8; req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
     match stack.recv_raw(stack_socket, &mut data) {
         Ok(n) => {
@@ -1627,11 +1680,13 @@ pub fn translate_raw(
     }
 }
 
-/// 就绪扫描（C `sockevent_process` 的"事件唤醒续答"半）：每趟推进后
-/// 扫一遍接收留言条——栈报可读的即续答完成（拷数据与对端地址给用户、
-/// 回 `SDEV_RECV_REPLY`），返回 `(调用方, 回复)` 对由循环尾发出；暂不
-/// 就绪的留言条原样留在 `pending`。超时路径（`poll_timers` 的
-/// `TimedOut`）由调用方在同一处处理并从 `pending` 摘条。
+/// Readiness scan (the "event wakeup continuation" half of C
+/// `sockevent_process`): after every advancing pass, scan the receive sticky
+/// notes — one whose stack reports readable is completed (copy data and peer
+/// address to the user, reply `SDEV_RECV_REPLY`), returning `(caller, reply)`
+/// pairs for the loop tail to send; notes not ready yet stay in `pending`
+/// unchanged. The timeout path (`poll_timers`' `TimedOut`) is handled by the
+/// caller in the same place and removes the note from `pending`.
 pub fn ready_scan(
     stack: &mut dyn Stack,
     copy: &mut dyn CopyTransport,
@@ -1657,8 +1712,9 @@ pub fn ready_scan(
         let mut data = alloc::vec![0u8; note.data_len];
         match stack.recv_udp(stack_socket, &mut data) {
             Ok((n, peer)) => {
-                // 数据与对端地址都拷给用户；任一拷不动即按错误续答
-                // （成功码丢数据是"假成功"，禁）。
+                // Copy both the data and the peer address to the user; if
+                // either copy fails, answer with an error (dropping data under
+                // a success code would be a "fake success" — forbidden).
                 let addr_bytes = encode_inet_endpoint(peer);
                 let addr_len = note.addr_len.min(INET_ADDR_LEN);
                 let data_ok =
@@ -1675,7 +1731,7 @@ pub fn ready_scan(
                 pending.recvs.remove(i);
             }
             Err(_) => {
-                // 就绪位翻了但收不动（对端关闭一类）：按连接复位回。
+                // Readiness flipped but the receive fails (peer closed and the like): answer as a connection reset.
                 replies.push((
                     note.caller,
                     recv_reply(note.req_id, -(minix_types::ECONNRESET), 0, 0),
@@ -1684,7 +1740,7 @@ pub fn ready_scan(
             }
         }
     }
-    // TCP connect：建连完成（可写）即回 0。
+    // TCP connect: established (writable) replies 0.
     let mut i = 0;
     while i < pending.connects.len() {
         let note = pending.connects[i];
@@ -1699,7 +1755,7 @@ pub fn ready_scan(
             i += 1;
         }
     }
-    // TCP 发送：可写后重拷数据再试（部分发送即回实际入队量）。
+    // TCP send: once writable, copy the data again and retry (a partial send replies the amount actually queued).
     let mut i = 0;
     while i < pending.tcp_sends.len() {
         let note = pending.tcp_sends[i];
@@ -1736,7 +1792,7 @@ pub fn ready_scan(
             }
         }
     }
-    // TCP 接收：可读后续答；EOF 回 0（C read 的文件尾语义）。
+    // TCP receive: answer once readable; EOF replies 0 (C read's end-of-file semantics).
     let mut i = 0;
     while i < pending.tcp_recvs.len() {
         let note = pending.tcp_recvs[i];
@@ -1775,7 +1831,7 @@ pub fn ready_scan(
             _ => i += 1,
         }
     }
-    // TCP accept：监听者可读即受纳，回新套接字号与对端地址。
+    // TCP accept: once the listener is readable, accept and reply the new socket id and peer address.
     let mut i = 0;
     while i < pending.accepts.len() {
         let note = pending.accepts[i];
@@ -1799,8 +1855,9 @@ pub fn ready_scan(
                     .safecopy_to(note.user_endpt, note.addr_grant, 0, &bytes[..len])
                     .is_ok();
                 let status = if copy_ok { 0 } else { -(minix_types::EFAULT) };
-                // 受纳套接字登记进服务表（线上号 = TCP 类基 + 栈内
-                // 下标）；登记失败按"无空位"续答。
+                // Register the accepted socket in the service table (wire id =
+                // TCP class base + in-stack index); a failed registration is
+                // answered as "no free slot".
                 let registered =
                     SockId::from_class(sockid::SockClass::Tcp, accepted.index() as u32);
                 match registered {
@@ -1812,7 +1869,7 @@ pub fn ready_scan(
                         pending.accepts.remove(i);
                     }
                     _ => {
-                        //[SD19-gate] SD-19: accept orphan cleanup，close 失败无面
+                        //[SD19-gate] accept orphan cleanup; a failed close has no face
                         #[allow(clippy::let_underscore_must_use)]
                         let _ = stack.close(accepted);
                         replies.push((
@@ -1829,13 +1886,15 @@ pub fn ready_scan(
                 }
             }
             Err(_) => {
-                // 可读但受理未完成（握手半程）：留言条留下，下轮再试。
+                // Readable but the accept is not complete (half-way handshake): keep the note and retry next round.
                 i += 1;
             }
         }
     }
-    // select 等待：就绪位与关心位有交集即回一型并摘账（一层触发：
-    // 回复后由 VFS 自行决定重挂；对端关闭按错误位归入 ERR 面）。
+    // select waits: reply type one and drop the note as soon as the ready bits
+    // intersect the bits of interest (one-shot trigger: after the reply VFS
+    // decides by itself whether to re-arm; a peer close goes to the ERR face
+    // through the error bit).
     let mut i = 0;
     while i < pending.selects.len() {
         let note = pending.selects[i];
@@ -1864,7 +1923,7 @@ mod tests {
     use super::*;
     use crate::stack::SmoltcpStack;
 
-    /// 现成栈加空表：建户用的最小现场。
+    /// A ready-made stack plus an empty table: the minimal scene for socket creation.
     fn fixture() -> (SmoltcpStack, SockTable) {
         (SmoltcpStack::new(1, 0), SockTable::new())
     }
@@ -1893,7 +1952,7 @@ mod tests {
         };
         let raw_req = SocketRequest {
             req_id: 2, domain: domain::INET6, sock_type: sock_type::RAW,
-            protocol: 0, user_endpt: 0, // 根身份
+            protocol: 0, user_endpt: 0, // root identity
         };
         let udp_id = open_socket(&mut stack, &mut table, &dgram, false).unwrap();
         let raw_id = open_socket(&mut stack, &mut table, &raw_req, true).unwrap();
@@ -1937,7 +1996,7 @@ mod tests {
             req_id: 1, domain: domain::ROUTE, sock_type: sock_type::DGRAM,
             protocol: 0, user_endpt: 100,
         };
-        // RT/LNK 服务侧建户（批八起转真）：不进栈，类号各归其位。
+        // RT/LNK service-side creation (real now): does not enter the stack, and each class keeps its own id.
         let route_id = open_socket(&mut stack, &mut table, &route, false).unwrap();
         assert_eq!(
             sockid::SockId::from_raw(route_id).unwrap().class_base(),
@@ -1957,7 +2016,7 @@ mod tests {
     #[test]
     fn test_decode_and_reply_roundtrip() {
         let mut msg = Message::default();
-        // SAFETY(test): 按 mess_vfs_lsockdriver_socket 域序填。
+        // SAFETY(test): fill in the field order of mess_vfs_lsockdriver_socket.
         unsafe {
             let raw = &mut msg.m_u.raw;
             raw[0..4].copy_from_slice(&55i32.to_le_bytes());
@@ -1970,9 +2029,9 @@ mod tests {
         assert_eq!(req.req_id, 55);
         assert_eq!(req.domain, domain::INET);
         assert_eq!(req.user_endpt, 100);
-        // 回复形状：req_id 原样带回，sock_id2 恒 -1。
+        // Reply shape: req_id comes back verbatim, sock_id2 is always -1.
         let reply = socket_reply(55, sockid::SOCKID_TCP + 3);
-        // SAFETY(test): 按 mess_lsockdriver_vfs_socket_reply 域序读。
+        // SAFETY(test): read in the field order of mess_lsockdriver_vfs_socket_reply.
         let raw = unsafe { &reply.m_u.raw };
         assert_eq!(reply.m_type, SdevReply::SocketReply as i32);
         assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 55);
@@ -1984,12 +2043,12 @@ mod tests {
     fn test_simple_reply_carries_status_in_second_word() {
         let reply = simple_reply(9, -(minix_types::ENOSYS));
         assert_eq!(reply.m_type, SdevReply::Reply as i32);
-        // SAFETY(test): { req_id@0; status@4 }。
+        // SAFETY(test): { req_id@0; status@4 }.
         let raw = unsafe { &reply.m_u.raw };
         assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), -(minix_types::ENOSYS));
     }
 
-    /// getset 请求的构造助手（ipc.h:2270-2281 域序）。
+    /// Builder helper for getset requests (ipc.h:2270-2281 field order).
     fn getset_msg(set: bool, req_id: i32, sock_id: i32, level: i32, name: i32, grant: i32, len: u32) -> Message {
         let mut msg = Message::default();
         msg.m_type = if set {
@@ -1997,7 +2056,7 @@ mod tests {
         } else {
             SdevRequest::GetSockOpt as i32
         };
-        // SAFETY(test): 按 mess_vfs_lsockdriver_getset 域序填。
+        // SAFETY(test): fill in the field order of mess_vfs_lsockdriver_getset.
         unsafe {
             let raw = &mut msg.m_u.raw;
             raw[0..4].copy_from_slice(&req_id.to_le_bytes());
@@ -2022,7 +2081,7 @@ mod tests {
         let mut copy = CannedCopyTransport::default();
         let caller = Endpoint(100);
 
-        // 设置：值经 grant 拷入（4 字节恰长），成功回 0。
+        // Set: the value is copied in through the grant (exactly 4 bytes long), success replies 0.
         copy.from.push((7, 1i32.to_le_bytes().to_vec()));
         let reply = sockopt_road(
             &mut stack,
@@ -2031,13 +2090,13 @@ mod tests {
             &getset_msg(true, 5, id, SOL_SOCKET, SO_KEEPALIVE, 7, 4),
         )
         .unwrap();
-        // SAFETY(test): { req_id@0; status@4 }。
+        // SAFETY(test): { req_id@0; status@4 }.
         let raw = unsafe { &reply.m_u.raw };
         assert_eq!(reply.m_type, SdevReply::Reply as i32);
         assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 5);
         assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), 0, "设置成功");
 
-        // 查询：当前值拷回 grant（写入账），回复成功码 = 拷出长度 4。
+        // Get: copy the current value back to the grant (write ledger); the success code is the copied length, 4.
         let reply = sockopt_road(
             &mut stack,
             &mut copy,
@@ -2054,7 +2113,7 @@ mod tests {
             "使能值已拷进用户缓冲"
         );
 
-        // 非法名与非法层：ENOPROTOOPT（诚实拒绝）。
+        // Illegal name and illegal level: ENOPROTOOPT (an honest refusal).
         let reply = sockopt_road(
             &mut stack,
             &mut copy,
@@ -2080,7 +2139,7 @@ mod tests {
             "协议级选项未接（登记差异）"
         );
 
-        // 设置长度非 4：EINVAL（C copyin_opt 的恰长契约）。
+        // Set length other than 4: EINVAL (C copyin_opt's exact-length contract).
         let reply = sockopt_road(
             &mut stack,
             &mut copy,
@@ -2101,7 +2160,7 @@ mod tests {
         let mut copy = CannedCopyTransport::default();
         let caller = Endpoint(100);
 
-        // RT 类（服务侧对象）：选项面无语义 → ENOPROTOOPT。
+        // RT class (a service-side object): no option surface → ENOPROTOOPT.
         let rt_id = open_service_socket(&mut table, sockid::SockClass::Rt).unwrap();
         let reply = sockopt_road(
             &mut stack,
@@ -2116,8 +2175,9 @@ mod tests {
             "RT 类无选项面"
         );
 
-        // 负号（线上错误通道的保留区）：EBADF。非负的良构号落在已关
-        // 槽位时与其他路一致走墙的通用错误（-204）。
+        // A negative id (the reserved area of the wire error channel): EBADF.
+        // A well-formed non-negative id that lands on a closed slot takes the
+        // wall's generic error (-204), consistent with the other paths.
         let ghost = -1i32;
         let reply = sockopt_road(
             &mut stack,
@@ -2132,11 +2192,11 @@ mod tests {
         );
     }
 
-    /// ioctl 请求的构造助手（ipc.h:2283-2294 域序；request 8 字节）。
+    /// Builder helper for ioctl requests (ipc.h:2283-2294 field order; request is 8 bytes).
     fn ioctl_msg(req_id: i32, sock_id: i32, request: u64, grant: i32) -> Message {
         let mut msg = Message::default();
         msg.m_type = SdevRequest::Ioctl as i32;
-        // SAFETY(test): 按 mess_vfs_lsockdriver_ioctl 域序填。
+        // SAFETY(test): fill in the field order of mess_vfs_lsockdriver_ioctl.
         unsafe {
             let raw = &mut msg.m_u.raw;
             raw[0..4].copy_from_slice(&req_id.to_le_bytes());
@@ -2159,7 +2219,7 @@ mod tests {
         };
         let id = open_socket(&mut stack, &mut table, &req, false).unwrap();
 
-        // FIONBIO 置位：值 1 经 grant 拷入，成功回 0。
+        // Set FIONBIO: the value 1 is copied in through the grant, success replies 0.
         copy.from.push((3, 1i32.to_le_bytes().to_vec()));
         let reply = ioctl_road(
             &mut stack,
@@ -2174,10 +2234,10 @@ mod tests {
             "置非阻塞成功"
         );
 
-        // 旗标消费：非阻塞 UDP 空收立即回 EAGAIN（不走挂起，无留言条）。
+        // Flag consumption: an empty receive on a non-blocking UDP socket replies EAGAIN at once (no suspension, no sticky note).
         let mut recv = Message::default();
         recv.m_type = SdevRequest::Receive as i32;
-        // SAFETY(test): sendrecv 域序（data@8/16，flags@44=0）。
+        // SAFETY(test): sendrecv field order (data@8/16, flags@44=0).
         unsafe {
             let raw = &mut recv.m_u.raw;
             raw[0..4].copy_from_slice(&4i32.to_le_bytes());
@@ -2186,15 +2246,16 @@ mod tests {
             raw[16..24].copy_from_slice(&64usize.to_le_bytes());
         }
         let reply = translate_udp(&mut stack, &mut copy, &mut table, &mut PendingTables::default(), caller, &recv).unwrap();
-        // SAFETY(test): recv_reply { req_id@0; status@4 }。
+        // SAFETY(test): recv_reply { req_id@0; status@4 }.
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             -(minix_types::EAGAIN),
             "FIONBIO 置位后空收立即回（旗标被收发路消费）"
         );
-        // 对照：旗标等价的 MSG_DONTWAIT 也立即回（两车道合流正确）。
-        // 先清旗标再验请求旗标车道。
-        // SAFETY(test): flags@44。
+        // Control: the equivalent MSG_DONTWAIT flag also replies immediately
+        // (the two lanes merge correctly). Clear the flag first, then verify
+        // the request-flag lane.
+        // SAFETY(test): flags@44.
         unsafe {
             recv.m_u.raw[44..48].copy_from_slice(&(MSG_DONTWAIT as i32).to_le_bytes());
         }
@@ -2208,7 +2269,7 @@ mod tests {
             "MSG_DONTWAIT 车道同样立即回"
         );
 
-        // 未知命令：ENOTTY。
+        // Unknown command: ENOTTY.
         let reply = ioctl_road(
             &mut stack,
             &mut copy,
@@ -2235,7 +2296,7 @@ mod tests {
         let mut copy = CannedCopyTransport::default();
         let caller = Endpoint(100);
 
-        // 空环的 FIONREAD：0。值经 grant 拷出，回复 0（值走缓冲）。
+        // FIONREAD on an empty ring: 0. The value is copied out through the grant and the reply is 0 (the value travels in the buffer).
         let reply = ioctl_road(
             &mut stack,
             &mut copy,
@@ -2251,7 +2312,7 @@ mod tests {
         let (_, written) = copy.written.last().expect("值已拷出");
         assert_eq!(i32::from_le_bytes(written[..4].try_into().unwrap()), 0);
 
-        // 有包后：peek 出队首包长度（不消费）。回环设备喂一个包。
+        // With a packet queued: peek the head packet length (no consumption). Feed one packet on the loopback device.
         let mut loop_stack = crate::stack::SmoltcpStack::<crate::stack::LoopDevice>::with_device(
             0x5EED,
             crate::stack::LoopDevice::new(),
@@ -2262,7 +2323,7 @@ mod tests {
             req_id: 3, domain: domain::INET, sock_type: sock_type::DGRAM,
             protocol: 0, user_endpt: 100,
         };
-        // 新栈配新表：槽位下标从 0 重排，与上一半的表互不相干。
+        // A new stack gets a fresh table: slot indices restart from 0 and are independent of the previous half's table.
         let mut ltable = SockTable::new();
         let lid = open_socket(&mut loop_stack, &mut ltable, &lreq, false).unwrap();
         let sock = stack_socket_of(lid).unwrap();
@@ -2302,7 +2363,7 @@ mod tests {
         );
         assert_eq!(loop_stack.pending_recv_udp(sock), Some(5), "包仍在环上");
 
-        // RT 类：ENOTTY（C rtsock 无 sop_ioctl）。
+        // RT class: ENOTTY (C rtsock has no sop_ioctl).
         let rt_id = open_service_socket(&mut table, sockid::SockClass::Rt).unwrap();
         let reply = ioctl_road(
             &mut stack,

@@ -4,9 +4,9 @@
 //! C correspondence: the semantic halves of `super.c` (mount scan),
 //! `lookup.c`/`search_dir` (child lookup), `read.c` (extent-clamped
 //! reads), `util.c` (listings), and `inode.c` (status) — the parts the
-//! V1 audit marks as the unimplemented semantic layer. The format-parsing
+//! audit marks as the unimplemented semantic layer. The format-parsing
 //! modules ([`crate::volume`], [`crate::record`], [`crate::rockridge`])
-//! are the already-delivered half; this module is the F3a semantic wave.
+//! are the already-delivered half; this module delivers the semantics half.
 //!
 //! **Disc seam**: the server holds the whole disc image in memory. ISO
 //! media is read-only, so the image is the entire device state; the
@@ -18,7 +18,7 @@
 //! sector LBA where its directory record or data lives, `record.rs`
 //! `location`). A small cache remembers the full record per visited node
 //! — lookups and listings populate it, reads and status consume it
-//! (the "inode 缓存" the V1 audit lists as missing).
+//! (the "inode cache" the audit lists as missing).
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -158,8 +158,9 @@ impl IsoServer {
             && let Ok(entries) = rockridge::split_entries(&record.rock_tail)
         {
             for entry in &entries {
-                // NM 载荷首字节是标志位，名字从第二字节起
-                // （susp_rock_ridge.c 的 NM 布局）。
+                // The first payload byte of NM is a flags byte; the name
+                // starts at the second byte (the NM layout in
+                // susp_rock_ridge.c).
                 if entry.tag == *rockridge::TAG_NAME && entry.length > 1 {
                     let payload =
                         &record.rock_tail[entry.payload..entry.payload + entry.length];
@@ -389,18 +390,18 @@ mod tests {
     use alloc::vec;
 
     const SECTOR: usize = 2048;
-    /// 事件域之外的测试镜像布局：16=PVD，17=终止符，18..19=根目录，
-    /// 20=文件数据。
+    /// Test image sector layout: 16=PVD, 17=terminator, 18..19=root
+    /// directory, 20=file data.
     const PVD_SECTOR: usize = 16;
     const TERM_SECTOR: usize = 17;
     const ROOT_SECTOR: usize = 18;
     const FILE_SECTOR: usize = 20;
     const FILE_DATA: &[u8] = b"HELLO ISO";
 
-    /// 一条 ISO 目录记录（record::decode 可解）。
+    /// One ISO directory record (decodable by `record::decode`).
     fn dir_record(location: u32, data_length: u32, flags: u8, name: &[u8], tail: &[u8]) -> Vec<u8> {
         let name_start = 33usize;
-        let total = (name_start + name.len() + tail.len() + 1) & !1; // 偶对齐
+        let total = (name_start + name.len() + tail.len() + 1) & !1; // even alignment
         let mut r = vec![0u8; total];
         r[0] = total as u8;
         r[1] = 0; // ext_attributes
@@ -416,8 +417,9 @@ mod tests {
         r
     }
 
-    /// 构建最小 ISO 镜像：PVD + 终止符 + 根目录（./../FILE.TXT;1 +
-    /// 带 NM 尾的长名条目）+ 文件数据。
+    /// Build a minimal ISO image: PVD + terminator + root directory (`.`,
+    /// `..`, `FILE.TXT;1` plus a long-name entry with an NM tail) + file
+    /// data.
     fn build_image() -> Vec<u8> {
         let mut image = vec![0u8; 22 * SECTOR];
         // PVD
@@ -426,15 +428,16 @@ mod tests {
         image[pvd + 1..pvd + 6].copy_from_slice(b"CD001");
         image[pvd + 6] = 1;
         image[pvd + 128..pvd + 130].copy_from_slice(&2048u16.to_le_bytes());
-        // 根目录记录（PVD 偏移 156）：location=ROOT_SECTOR
+        // Root directory record (PVD offset 156): location=ROOT_SECTOR
         let root_rec = dir_record(ROOT_SECTOR as u32, SECTOR as u32, 0x02, b"\x00", &[]);
         image[pvd + 156..pvd + 156 + root_rec.len()].copy_from_slice(&root_rec);
-        // 终止符
+        // Terminator
         let term = TERM_SECTOR * SECTOR;
         image[term] = 255;
         image[term + 1..term + 6].copy_from_slice(b"CD001");
         image[term + 6] = 1;
-        // 根目录内容：./../FILE.TXT;1 + NM 长名条目
+        // Root directory contents: `.`, `..`, `FILE.TXT;1` + the NM
+        // long-name entry
         let root_start = ROOT_SECTOR * SECTOR;
         let mut at = root_start;
         let dot = dir_record(ROOT_SECTOR as u32, SECTOR as u32, 0x02, b"\x00", &[]);
@@ -446,14 +449,14 @@ mod tests {
         let file = dir_record(FILE_SECTOR as u32, FILE_DATA.len() as u32, 0, b"FILE.TXT;1", &[]);
         image[at..at + file.len()].copy_from_slice(&file);
         at += file.len();
-        // NM 长名条目（Rock Ridge）：系统 use 尾 = NM 条目
-        // SUSP 布局：签名(2) + 长度(1，含 4 字节头) + 版本(1) + 载荷
-        //（NM：标志(1) + 名字）。
+        // NM long-name entry (Rock Ridge): the system-use tail is the NM
+        // entry. SUSP layout: signature (2) + length (1, including the
+        // 4-byte header) + version (1) + payload (NM: flags (1) + name).
         let mut nm_tail = alloc::vec::Vec::new();
         nm_tail.extend_from_slice(b"NM");
         nm_tail.push((4 + 1 + b"reallongname.txt".len()) as u8);
-        nm_tail.push(1); // 版本
-        nm_tail.push(0); // NM 标志
+        nm_tail.push(1); // version
+        nm_tail.push(0); // NM flags
         nm_tail.extend_from_slice(b"reallongname.txt");
         let long = dir_record(
             21,
@@ -463,7 +466,7 @@ mod tests {
             &nm_tail,
         );
         image[at..at + long.len()].copy_from_slice(&long);
-        // 文件数据
+        // File data
         let data = FILE_SECTOR * SECTOR;
         image[data..data + FILE_DATA.len()].copy_from_slice(FILE_DATA);
         image
@@ -494,12 +497,12 @@ mod tests {
         assert!(!is_dir);
         assert_eq!(file.inode_number, FILE_SECTOR as u64);
         assert_eq!(file.size, FILE_DATA.len() as i64);
-        // Rock Ridge NM 长名。
+        // Rock Ridge NM long name.
         let (long, _) = server
             .lookup_child(root.inode_number, "reallongname.txt")
             .unwrap();
         assert_eq!(long.size, 1);
-        // 未命中 → ENOENT。
+        // A miss → ENOENT.
         assert_eq!(
             server.lookup_child(root.inode_number, "NOPE").unwrap_err().to_i32(),
             ENOENT
@@ -518,7 +521,7 @@ mod tests {
             .unwrap();
         assert_eq!(n, FILE_DATA.len());
         assert_eq!(got, FILE_DATA);
-        // 越界位置读到零（EOF 而非错误）。
+        // An out-of-range position reads as zero (EOF, not an error).
         let n = server.read(file.inode_number, 100, 16, &mut |_| {}).unwrap();
         assert_eq!(n, 0);
     }
@@ -562,7 +565,8 @@ mod tests {
         .unwrap();
         let mut caps = CapabilityFlags::EMPTY;
         let root = server.mount(0, MountFlags::EMPTY, &mut caps).unwrap();
-        // norock 下长名条目只认交换名。
+        // Under norock the long-name entry is recognized only by its
+        // interchange name.
         let (long, _) = server
             .lookup_child(root.inode_number, "SHORT.TXT")
             .unwrap();

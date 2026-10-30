@@ -18,8 +18,8 @@
 //!            data_offset u32, req_nr u32 } (16 bytes each)
 //! then:      NUL-terminated strings (offsets from buffer start)
 //! ```
-//! `type` is always 0 (`entry->type = 0; /* TODO: use macro */`,
-//! generic.c:88); `req_nr` is never written by the serializer AND never
+//! `type` is always 0 (C sets `entry->type = 0` with a note to use a
+//! macro, generic.c:88); `req_nr` is never written by the serializer AND never
 //! read by the server (`rg req_nr` hits only the `devinfo.h:32`
 //! definition) — 4 garbage bytes per entry, preserved raw for roundtrip
 //! fidelity. `type` classification is 07's job (A-6).

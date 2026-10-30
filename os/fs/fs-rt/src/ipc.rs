@@ -96,8 +96,8 @@ impl RtIpc for SysRtIpc {
         let mut sef = SeIpcAdapter;
         // The library's entry point monomorphizes its callback (`impl FnMut`),
         // while this trait is object-safe and can only carry the unsized
-        // `dyn FnMut` — a thin closure bridges the two (IS 的同款接线，
-        // `os/servers/is/src/sef.rs`).
+        // `dyn FnMut` — a thin closure bridges the two (the same wiring as
+        // IS, `os/servers/is/src/sef.rs`).
         let mut handoff = |signo: i32| on_signal(signo);
         let recv = minix_sef::sef_receive_status(&mut sef, src, msg, &mut handoff, cancel);
         match recv {
@@ -225,7 +225,7 @@ impl RtIpc for ScriptedRtIpc {
         if matches!(receipt, Receipt::Signal) {
             // Same walk the library runs on a real SYSTEM notification, so
             // the scripted loop cannot drift from production shape. Same
-            // escape hatch too (PD-27): a hook that cancels turns this
+            // escape hatch too: a hook that cancels turns this
             // delivery into `Err(EINTR)` instead of a receipt, exactly what
             // `sef_receive_status` does after a cancelled callback.
             minix_sef::dispatch_kernel_notify(msg.notify_sigset(), on_signal);

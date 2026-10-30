@@ -36,15 +36,19 @@ fn split_lines(input: &[u8]) -> Vec<String> {
     pieces
 }
 
-/// `rev` 的选项环，交回剩下的操作数（C 的 `argv += optind`，`rev.c:77-78`）。
+/// `rev`'s option loop, returning the remaining operands (C's `argv += optind`,
+/// `rev.c:77-78`).
 ///
-/// C 的 optstring 是**空串**（`rev.c:70`），所以这一支就是共件
-/// [`crate::empty_optstring_operands_bytes`] 描述的那三形：任何 `-` 开头的 token 都算集外字母
-/// 并由 libc 先印一行、`--` 自身不算操作数、裸 `-` 算操作数。`rev` 拿到操作数后把它们
-/// 当文件逐个 `fopen`（`rev.c:83-106`），这一段是 `rev` 自己的事，归壳。
+/// C's optstring is the **empty string** (`rev.c:70`), so this branch is the three
+/// shapes described by the shared [`crate::empty_optstring_operands_bytes`]: any
+/// token starting with `-` counts as an off-charset letter and gets one libc line
+/// first, `--` itself is not an operand, and a bare `-` is an operand. After
+/// receiving the operands, `rev` `fopen`s them one by one as files
+/// (`rev.c:83-106`); that part is `rev`'s own business and belongs to the shell.
 ///
-/// 报的字母是短横后的**第一个字节**（`getopt.c:79` 的 `optopt = *place++` 步进在字节上），
-/// 壳侧那一行要用 [`crate::GetoptReport::line_bytes`] 才打得出 C 的那个裸字节。
+/// The reported letter is the **first byte** after the dash (`getopt.c:79`'s
+/// `optopt = *place++` steps over bytes); the shell-side line must use
+/// [`crate::GetoptReport::line_bytes`] to print C's raw byte.
 pub fn parse_rev_args<'a>(
     argv: &'a [&'a [u8]],
 ) -> Result<Vec<&'a [u8]>, GetoptReport> {
@@ -76,11 +80,14 @@ mod tests {
         assert!(reversed_lines(b"").is_empty());
     }
 
-    /// 选项环的几形逐个钉：任何字母都集外（取第一个字符）、`--` 自身不算操作数、
-    /// 裸 `-` 是操作数、非选项 token 之后的内容不再扫描（不重排）。
+    /// Pin the option-loop shapes one by one: any letter is off-charset (the first
+    /// character is reported), `--` itself is not an operand, a bare `-` is an
+    /// operand, and content after a non-option token is not scanned (no
+    /// rearrangement).
     #[test]
     fn the_option_ring_takes_no_letters_and_stops_at_the_first_operand() {
-        // 空 optstring ⇒ 任何字母都报，报的是 `-` 后的第一个字符。
+        // Empty optstring ⇒ every letter is reported, and what is reported is the
+        // first character after `-`.
         assert_eq!(
             parse_rev_args(&["-Z".as_bytes()]),
             Err(GetoptReport::UnknownOption('Z'))
@@ -94,20 +101,23 @@ mod tests {
             parse_rev_args(&["--x".as_bytes()]),
             Err(GetoptReport::UnknownOption('-'))
         );
-        // `--` 结束选项环且自身被吃掉；裸 `-` 留着当操作数。
+        // `--` ends the option loop and is itself consumed; a bare `-` stays as an
+        // operand.
         assert_eq!(parse_rev_args(&["--".as_bytes(), "f".as_bytes()]), Ok(vec!["f".as_bytes()]));
         assert_eq!(parse_rev_args(&["-".as_bytes()]), Ok(vec!["-".as_bytes()]));
         assert_eq!(parse_rev_args(&["--".as_bytes()]), Ok(vec![]));
-        // 非选项 token 一到就停：它后面的 `-Z` 不再当选项看。
+        // Stop at the first non-option token: a following `-Z` is no longer treated
+        // as an option.
         assert_eq!(parse_rev_args(&["f".as_bytes(), "-Z".as_bytes()]), Ok(vec!["f".as_bytes(), "-Z".as_bytes()]));
         assert_eq!(parse_rev_args(&["f".as_bytes(), "g".as_bytes()]), Ok(vec!["f".as_bytes(), "g".as_bytes()]));
         let nothing: [&[u8]; 0] = [];
         assert_eq!(parse_rev_args(&nothing), Ok(vec![]));
     }
 
-    /// 集外字母落在**字节**上：`é`（`c3 a9`）报 U+00C3 而不是 U+00E9。
-    /// 参照件 `tmp/rev-309/rev_ref` 现量 `rev -é` → `unknown option -- ` + 裸字节 `c3`
-    /// 一行，再 `usage` 一行、退 1（`getopt.c:79` 的 `optopt = *place++` 一次只进一个字节）。
+    /// An off-charset letter lands on **bytes**: `é` (`c3 a9`) reports U+00C3, not
+    /// U+00E9. The reference `tmp/rev-309/rev_ref` measures `rev -é` →
+    /// `unknown option -- ` + raw byte `c3`, one line, then one `usage` line and
+    /// exit 1 (`getopt.c:79`'s `optopt = *place++` advances one byte at a time).
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
@@ -115,15 +125,17 @@ mod tests {
             Err(GetoptReport::UnknownOption('\u{00c3}')),
             "两字节的字符不能整个当字母报"
         );
-        // 聚簇里非 ASCII 排在第二位时，报错仍落在第一个字节上（调用者拿到 '?' 就退出）。
+        // When a non-ASCII byte is second in a cluster, the report still lands on the
+        // first byte (the caller exits as soon as it gets '?').
         assert_eq!(
             parse_rev_args(&["-x\u{e9}".as_bytes()]),
             Err(GetoptReport::UnknownOption('x'))
         );
     }
 
-    /// 参数缝交回原字节之后，一枚裸 `ff` 的字母不再被折成 U+FFFD：报告里的字母就是
-    /// C 的 `optopt`，`line_bytes` 把它打回那一个字节。
+    /// After the argument seam returns raw bytes, an option letter of a raw `ff` is
+    /// no longer folded into U+FFFD: the letter in the report is C's `optopt`, and
+    /// `line_bytes` prints it back as that one byte.
     #[test]
     fn a_raw_ff_option_letter_is_named_by_that_byte_not_the_replacement_char() {
         assert_eq!(
@@ -131,7 +143,7 @@ mod tests {
             Err(GetoptReport::UnknownOption('\u{00ff}')),
             "字母该是裸字节 ff，不是折叠后的 U+FFFD"
         );
-        // ASCII 一形不受影响：字母本来就是那一个字节。
+        // The ASCII shape is unaffected: the letter already is that one byte.
         assert_eq!(parse_rev_args(&[b"-Z".as_slice()]), Err(GetoptReport::UnknownOption('Z')));
     }
 }

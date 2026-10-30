@@ -34,7 +34,7 @@
 
 extern crate alloc;
 
-// no_std（NS8-B guest 构建面）：裸 String 由 alloc 供给。
+// no_std (guest build surface): bare String is supplied by alloc.
 use alloc::string::String;
 
 use crate::device_map::{
@@ -177,15 +177,15 @@ pub enum Route {
     Enosys { raw: u32 },
 }
 
-/// `do_reply` 的两类 `printf+return` 软失败（main.c:193-203）——回复
-/// 不落地、窗口不动、主循环继续。硬失败（找不到 vmnt）按 C panic。
+/// The two `printf+return` soft failures of `do_reply` (main.c:193-203): the
+/// reply is dropped, the window stays put, the loop continues (C panics when the vmnt is missing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsReplyError {
-    /// 低 16 位不是合法 `IS_VFS_FS_TRANSID`。
+    /// The low 16 bits are not a valid `IS_VFS_FS_TRANSID`.
     SpuriousTransid,
-    /// 槽号越界（>`NR_WTHREADS`）。
+    /// Slot number out of range (> `NR_WTHREADS`).
     SlotOutOfRange,
-    /// `wp->w_task != who_e`——不是该端点在等的回复（main.c:193-196）。
+    /// `wp->w_task != who_e` — not the reply this endpoint is waiting for (main.c:193-196).
     WrongTask,
 }
 
@@ -315,8 +315,8 @@ pub struct VfsState {
     pub lock_table: LockTable,
     /// Worker thread pool.
     pub worker_pool: WorkerPool,
-    /// FS/VM/驱动通信窗口（`glo.h:17 sending` + 各 `vmnt.m_comm`,
-    /// comm.c;S12 W1 入态）。
+    /// FS/VM/driver communication window (`glo.h:17 sending` plus each
+    /// `vmnt.m_comm`, comm.c).
     pub comm: GlobalComm,
     /// Revive counter (number of blocked processes revived).
     pub reviving: usize,
@@ -338,73 +338,73 @@ pub struct VfsState {
     pub pending: usize,
     /// Whether boot completed (`finish_init()` ran).
     pub initialized: bool,
-    /// 本进程的 grant 表（C 的 `grants[]` 全局数组，safecopies.c）。
-    /// 启动段经 `register`（C 的 `sys_setgrant`）把表位置告知内核；
-    /// 对话臂用它把**用户缓冲**授权给 FS 读写（`grant_user_buffer`）。
+    /// This process's grant table (C's global `grants[]`, safecopies.c).
+    /// During startup `register` (C `sys_setgrant`) tells the kernel where the table lives;
+    /// the conversation arm uses it to grant **user buffers** to FS for reading/writing (`grant_user_buffer`).
     pub grants: minix_sys::grant::GrantTable,
-    /// 当前分发的作业绑在哪个 worker 槽（C 的 `self`／`fp_func` 背后的
-    /// 槽指针；臂用它登记续接、发送 FS 请求）。`None` = 未绑（非 syscall
-    /// 路径或已释放）。
+    /// Which worker slot the job being dispatched is bound to (the slot pointer
+    /// behind C's `self`/`fp_func`; the arm uses it to register continuations and send FS requests).
+    /// `None` = unbound (not a syscall path, or already released).
     pub current_worker: Option<usize>,
-    /// 臂登记、待主循环发出的 FS 对话（单线程模型：臂只碰状态，I/O 归
-    /// 循环——C 的 `fs_sendrec` 在同一处既登记又发送，这里拆成两半）。
-    /// `struct statvfs` 的 VFS 侧缓冲（C `fill_statvfs` 的局部 `struct
-    /// statvfs buf`）：FS 经 direct grant 整块回填它，VFS 补本地字段后再整块
-    /// 拷给用户。放在状态里而不是栈上，是因为 grant 要指向一个**稳定地址**。
+    /// FS conversation registered by an arm, waiting for the main loop to send it (single-threaded
+    /// model: arms only touch state, I/O belongs to the loop — C's `fs_sendrec` registers and sends in
+    /// one place; here it is split in two). The VFS-side buffer for `struct statvfs` (the local
+    /// `struct statvfs buf` of C `fill_statvfs`): FS fills it in one direct-grant block, VFS patches
+    /// local fields and copies it to the user as one block. It lives in state, not on the stack, because the grant must point at a **stable address**.
     pub statvfs_buf: minix_types::StatvfsBuf,
-    /// `selecttab[MAXSELECTS]`（C `select.c:31`）——每个挂起的 `select` 一个槽，
-    /// 存调用者、三张 fd 集与阻塞/超时状态。
+    /// `selecttab[MAXSELECTS]` (C `select.c:31`) — one slot per pending `select`,
+    /// holding the caller, the three fd sets, and the blocked/timeout state.
     pub select_table: crate::select::SelectTable,
-    /// 驱动标签 → 端点的**本地目录**（C `do_mapdriver` 的
-    /// `ds_retrieve_label_endpt` 那一跳）。生产填充面（DS 事件里带标签时写入）
-    /// 还没接线——见 `LabelDir` 的注记；空表下 `mapdriver` 对任何标签都回
-    /// EINVAL（fail-closed，不假装解析成功）。
+    /// Local directory mapping driver labels to endpoints (the
+    /// `ds_retrieve_label_endpt` hop of C `do_mapdriver`). The production fill path (written when a DS event carries
+    /// a label) is not wired yet — see the `LabelDir` note; with an empty table `mapdriver` answers
+    /// EINVAL for any label (fail-closed, never pretending the lookup succeeded).
     pub driver_labels: alloc::vec::Vec<(alloc::string::String, Endpoint)>,
-    /// 根文件系统的端点（C `glo.h:21` 的 `EXTERN int ROOT_FS_E`）。
+    /// Endpoint of the root file system (C `glo.h:21` `EXTERN int ROOT_FS_E`).
     ///
-    /// 块设备 open 要用它选 `v_bfs_e`（设备没被别的挂载占着就归根）并决定
-    /// 要不要补发 `REQ_NEW_DRIVER`（open.c:186-216）。**赋值面在根挂载**
-    /// （`mount.c:326-328` 的 `ROOT_FS_E = fs_e`，NS4 已接：见
-    /// [`Self::do_init_root`]）；在此之前恒为 `NONE`，块设备 open 在"设备未被
-    /// 挂载占着"这条路上按 C 的 newdriver 失败路径收尾（`bdev_close` +
-    /// `ENXIO`），不假装通知成功。
+    /// Block-device open uses it to pick `v_bfs_e` (the device falls back to root when no other mount
+    /// holds it) and to decide whether to send `REQ_NEW_DRIVER` (open.c:186-216). **Assigned by the root mount**
+    /// (`ROOT_FS_E = fs_e` at `mount.c:326-328`, wired: see
+    /// [`Self::do_init_root`]); before that it is always `NONE`, and block-device open on the "device not
+    /// held by a mount" path ends in C's newdriver failure path (`bdev_close` +
+    /// `ENXIO`), without pretending the notification succeeded.
     pub root_fs_e: Endpoint,
-    /// 根文件系统的设备号（C `glo.h:20` 的 `EXTERN dev_t ROOT_DEV`）。
+    /// Device number of the root file system (C `glo.h:20` `EXTERN dev_t ROOT_DEV`).
     ///
-    /// 与 [`Self::root_fs_e`] 同点赋值（`mount.c:326-327`），boot 链上即
-    /// `DEV_IMGRD`。
+    /// Assigned together with [`Self::root_fs_e`] (`mount.c:326-327`); on the boot chain it is
+    /// `DEV_IMGRD`.
     pub root_dev: DevId,
-    /// 根挂载计数（C `glo.h:19` 的 `EXTERN int have_root`）。
+    /// Root-mount counter (C `glo.h:19` `EXTERN int have_root`).
     ///
-    /// `mount_fs` 用它区分"根可挂两次"（ramdisk/boot 盘，mount.c:208-210）
-    /// 的 `mount_root` 判定；boot 根挂载完成后为 1。
+    /// `mount_fs` uses it for the `mount_root` decision that lets the root be mounted twice
+    /// (ramdisk/boot disk, mount.c:208-210); it is 1 after the boot root mount completes.
     pub have_root: u32,
-    /// `none` 伪设备池（C `mount.c:33-37` 的 nonedev 位图）。
+    /// `none` pseudo-device pool (the nonedev bitmap at C `mount.c:33-37`).
     ///
-    /// `mount_pfs` 要从这里分一个伪设备（`find_free_nonedev`）。
+    /// `mount_pfs` allocates a pseudo device from it (`find_free_nonedev`).
     pub nonedev: crate::mount::NonedevBitmap,
     pub pending_fs: Option<PendingFs>,
-    /// 待投递的 `REQ_PUTNODE` 队列（`put_vnode` 慢路径的通知面；C 是
-    /// worker 同步 `fs_sendrec`，模型里臂/续接上下文不能同步发——排队
-    /// 由主循环统一投，回复 C 只 printf，丢弃无损）。
+    /// Queue of `REQ_PUTNODE` messages waiting to be delivered (the notification side of the
+    /// `put_vnode` slow path; C sends synchronously from a worker via `fs_sendrec`, but here arm/continuation
+    /// contexts cannot send synchronously — the main loop delivers the queue; C only printfs the reply, so dropping it loses nothing).
     pub pending_puts: alloc::vec::Vec<crate::vnode::PutNodeReq>,
 
-    /// 待发送的回复（W3 回复半）：`run_once` 分发完把结果折成
-    /// `(调用方, 回复消息)` 入队，`run()` 在每轮循环尾发出（C `reply(who_e,
-    /// result)` 的位置，`job_m_out` 就是那条消息）。多数回复只有 `m_type`
-    /// （状态字）；带载荷的（如 `lseek` 的新位置）由 `queue_reply_msg` 入队。
-    /// `Suspend` 的臂不入队——它们的回复在 FS 应答落地时发。
+    /// Reply waiting to be sent (the reply half): `run_once` folds the result of a dispatch into
+    /// a `(caller, reply message)` pair and queues it; `run()` sends it at the end of each loop iteration (the
+    /// position of C `reply(who_e, result)`, where `job_m_out` is that message). Most replies carry only `m_type` (the status word);
+    /// payload ones (such as `lseek`'s new offset) are queued by `queue_reply_msg`.
+    /// `Suspend` arms do not queue — their replies are sent when the FS answer lands.
     pub pending_reply: Option<(Endpoint, Message)>,
 }
 
-/// Boot rproctab 消费的失败面：C 侧 `init_fresh` 对两类失败都 panic
-///（main.c:457-459 与 main.c:461-466），这里 Err 化保住决策面可测，
-/// panic 归 run()（与 finish_init 的 Err→panic 同款分层）。
+/// Failure surface consumed by boot rproctab: C's `init_fresh` panics on both failure kinds
+/// (main.c:457-459 and main.c:461-466); here they are turned into Err so the decision surface stays testable,
+/// and the panic belongs to run() (the same Err→panic layering as finish_init).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BootMapError {
-    /// `sys_safecopyfrom` 失败，携内核返回的 errno（main.c:458）。
+    /// `sys_safecopyfrom` failed; carries the kernel errno (main.c:458).
     Safecopy(i32),
-    /// `map_service` 语义失败（dmap.c:198-226 的 EINVAL/ENODEV 面）。
+    /// `map_service` semantic failure (the EINVAL/ENODEV face of dmap.c:198-226).
     Map(MapError),
 }
 
@@ -416,8 +416,8 @@ impl VfsState {
             filp_table: FilpTable::new(),
             vnode_table: VnodeTable::new(),
             vmnt_table: VmntTable::new(),
-            // C init_dmap(dmap.c:230-247):清零全 NONE 后唯一显式
-            // 映射 CTTY_MAJOR ← "vfs"(CTTY_ENDPT)——W5/S13 接线。
+            // C init_dmap (dmap.c:230-247): after clearing everything to NONE, the only explicit
+            // mapping is CTTY_MAJOR ← "vfs" (CTTY_ENDPT).
             dmap_table: DmapTable::init(),
             smap_table: SmapTable::new(),
             lock_table: LockTable::new(),
@@ -427,7 +427,7 @@ impl VfsState {
             current_message: Message::default(),
             current_fp_slot: None,
             boot_phase: BootPhase::PmHandshake,
-            // C: `block_all` 为 BSS 全局（glo.h），初始为 0（允许）。
+            // C: `block_all` is a BSS global (glo.h), initially 0 (allowed).
             accept_requests: true,
             pending: 0,
             initialized: false,
@@ -458,8 +458,8 @@ impl VfsState {
     pub fn init_fresh(&mut self) {
         assert!(!self.initialized, "init_fresh called on an initialized VFS");
         self.boot_phase = BootPhase::PmHandshake;
-        // main.c:405-408 — fproc 槽清零（BSS 全局在 Rust 中即"构造即空"；
-        // 显式重置保留，使 restart/LU 路径（DEFERRED）语义诚实）。
+        // main.c:405-408 — clear the fproc slots (a BSS global is "empty on construction" in Rust;
+        // the explicit reset is kept so restart/LU paths (DEFERRED) have honest semantics).
         self.fproc_table.reset_all();
     }
 
@@ -482,22 +482,22 @@ impl VfsState {
 
         let init = VfsPmInit::decode(msg)?;
 
-        // main.c:428-431 — 终止：endpoint = NONE 表示没有更多系统进程。
+        // main.c:428-431 — terminator: endpoint = NONE means no more system processes.
         if init.endpoint == Endpoint::NONE {
-            // main.c:435-436 — ipc_send(PM_PROC_NR, OK) 同步屏障（内核 IPC
-            // 未落地，DEFERRED；阶段推进即等价握手完成）。
+            // main.c:435-436 — ipc_send(PM_PROC_NR, OK) synchronous barrier (kernel IPC is
+            // not implemented, DEFERRED; advancing the phase is the equivalent handshake completion).
             self.boot_phase = BootPhase::InitTables;
             return Ok(true);
         }
 
-        // 槽号范围已由 decode 校验（fail-closed，等价 C 越界数组访问改为显式失败）。
+        // Slot range is already validated by decode (fail-closed: C's out-of-bounds array access becomes an explicit failure).
         let slot = UserSlot::new(init.slot as usize);
         let fp = self
             .fproc_table
             .get_mut(slot)
             .ok_or(VfsPmInitError::SlotOutOfRange(init.slot))?;
 
-        // main.c:419-425 — 填充 boot 进程槽位。
+        // main.c:419-425 — fill the boot process slots.
         fp.flags = FpFlags::NOFLAGS;
         fp.pid = init.pid;
         fp.endpoint = init.endpoint;
@@ -525,29 +525,29 @@ impl VfsState {
             "finish_init requires completed VFS_PM_INIT handshake"
         );
 
-        // main.c:438 — system_hz = sys_hz()（内核 IPC 未落地，DEFERRED，归 99）。
+        // main.c:438 — system_hz = sys_hz() (kernel IPC not implemented, DEFERRED, tracked as 99).
         // main.c:441 — ds_subscribe("drv\\.[bc]..\\..*", DSF_INITIAL | DSF_OVERWRITE)
-        //              （ARCH A-14 未实现，DEFERRED，归 19/24）。
-        // main.c:445 — worker_init()：WorkerPool 构造即就绪（NR_WTHREADS=9，归 08）。
-        // main.c:448 — bsf_lock：单线程事件循环下锁原语降级（归 07）。
-        // main.c:451-453 — init_dmap()/init_smap():init_dmap 已随
-        // VfsState::new 的 DmapTable::init 接线(CTTY 槽,S13 W5);
-        // init_smap ≡ SmapTable::new(全空基编号)。
+        //              (ARCH A-14 not implemented, DEFERRED, tracked as 19/24).
+        // main.c:445 — worker_init(): WorkerPool is ready on construction (NR_WTHREADS=9, tracked as 08).
+        // main.c:448 — bsf_lock: lock primitives degrade under the single-threaded event loop (tracked as 07).
+        // main.c:451-453 — init_dmap()/init_smap(): init_dmap is already
+        // wired through VfsState::new's DmapTable::init (CTTY slot);
+        // init_smap ≡ SmapTable::new (all-empty base numbering).
         // main.c:455-467 — sys_safecopyfrom(RS_PROC_NR, rproctab) + map_service()
-        //                  已接线：RS_INIT 携带的 gid 由 run() 的 boot 会合段
-        //                  解出（C 的 sef_local_startup → init_fresh 时序位，
-        //                  先于本函数），经 `map_boot_services` 落 dmap 行后
-        //                  根挂载才有 REQ_READSUPER 路由。
+        //                  already wired: the gid carried by RS_INIT is
+        //                  decoded by run()'s boot rendezvous (C's sef_local_startup → init_fresh timing,
+        //                  before this function); `map_boot_services` lands the dmap rows and
+        //                  only then does the root mount have a REQ_READSUPER route.
 
-        // main.c:468-483 — fp_lock（槽位锁，单线程下归 07）+ filp/rd/wd 清零。
+        // main.c:468-483 — fp_lock (slot lock, tracked as 07 under single thread) + filp/rd/wd clearing.
         self.fproc_table.init_phase2();
 
         // main.c:485-489 — init_vnodes()/init_vmnts()/init_select()/init_filps()
-        //                  （表结构归 04~06，DEFERRED）。
+        //                  (table structures tracked as 04~06, DEFERRED).
 
-        // main.c:492-497 — worker_start(fproc_addr(VFS_PROC_NR), do_init_root, ...)。
-        // C 的 do_init_root 失败即 panic（main.c:519-520）——这里把 Err 交给
-        // 调用方（run() panic），决策面保持可测。
+        // main.c:492-497 — worker_start(fproc_addr(VFS_PROC_NR), do_init_root, ...).
+        // C's do_init_root panics on failure (main.c:519-520) — here the Err goes to
+        // the caller (run() panics), keeping the decision surface testable.
         self.do_init_root(kernel, transport)?;
 
         assert_eq!(self.boot_phase, BootPhase::Running);
@@ -555,12 +555,12 @@ impl VfsState {
         Ok(())
     }
 
-    /// Root mount sequence (main.c:501-527) — NS4/W6 执行编排。
+    /// Root mount sequence (main.c:501-527) — execution orchestration.
     ///
-    /// 拒绝新请求（`worker_allow(FALSE)`）后挂 pipe fs 与根 fs：PFS 的
-    /// `req_readsuper` 失败只记录（C printf，挂载照旧），根挂载失败返回
-    /// [`MountError`]（C `panic("Failed to initialize root")`，main.c:519-520
-    /// 的 panic 归调用方）。成功后相位推进 `Running`。
+    /// After refusing new requests (`worker_allow(FALSE)`) it mounts pipe fs and root fs: a PFS
+    /// `req_readsuper` failure is only recorded (C printf, the mount proceeds); root mount failure returns
+    /// [`MountError`] (C `panic("Failed to initialize root")`, main.c:519-520;
+    /// the panic belongs to the caller). On success the phase advances to `Running`.
     pub fn do_init_root(
         &mut self,
         kernel: &impl KernelCallTransport,
@@ -573,43 +573,43 @@ impl VfsState {
         );
         self.boot_phase = BootPhase::Mounting;
 
-        // main.c:503 — worker_allow(FALSE)：挂载期间拒绝新请求（含 init(8)）。
+        // main.c:503 — worker_allow(FALSE): refuse new requests during the mount (including init(8)).
         self.set_accept_requests(false);
 
-        // main.c:505 — mount_pfs()：失败容忍（C printf 后继续）。
-        // C: printf("VFS: unable to mount PFS (%d)\n", r)——诊断输出，
-        // 无行为权重；no_std 载体无 stdout 承诺，这里静默同权。
-        // [SD19-gate] 尽力而为挂载 PFS 辅助服务（失败不阻塞主启动）
+        // main.c:505 — mount_pfs(): failure tolerated (C printf then continues).
+        // C: printf("VFS: unable to mount PFS (%d)\n", r) — diagnostic output,
+        // no behavioral weight; a no_std target promises no stdout, so silence is equivalent.
+        // [SD19-gate] best-effort PFS helper mount (failure does not block boot)
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.mount_pfs(kernel, transport);
 
         // main.c:508-518 — mount_fs(DEV_IMGRD, "bootramdisk", "/", MFS_PROC_NR,
-        //                   0, "mfs", "fs_imgrd")；失败 = C panic 路径。
+        //                   0, "mfs", "fs_imgrd"); failure = C panic path.
         let r = self.mount_fs_root(kernel, transport);
 
         match r {
             Ok(()) => {
-                // main.c:525 — worker_allow(TRUE)：根文件系统就绪。
+                // main.c:525 — worker_allow(TRUE): the root file system is ready.
                 self.set_accept_requests(true);
                 self.boot_phase = BootPhase::Running;
                 Ok(())
             }
-            // C: panic("Failed to initialize root")——门不复位（进程即将
-            // 终止，worker 门无观察者）；错误交调用方决定处置。
+            // C: panic("Failed to initialize root") — the gate is not reopened (the process is about to
+            // terminate, no observer of the worker gate); the error is left to the caller.
             Err(e) => Err(e),
         }
     }
 
-    /// Boot 链 rproctab 消费（main.c:455-467）——E-RPROCTAB 的 VFS 消费半
-    /// （NS4-A；RS 供方契约 = NS2 的 `pub_wire` 镜像，5917f2d51）。
+    /// Boot-chain rproctab consumption (main.c:455-467) — the VFS consumption half
+    /// (the RS provider contract is the `pub_wire` mirror).
     ///
-    /// C `init_fresh` 在根挂载（main.c:492-497）之前把 RS 的公共进程表整表
-    /// safecopy 进来并逐行 `map_service`（dmap.c:198-226）：imgrd→memory 的
-    /// dmap 行由此装配，是 do_init_root 的 REQ_READSUPER 路由前置。行宽 =
-    /// 共享快照 `RprocpubSnap`（`[ARCH: A-4]` 单一权威）；表宽 = `NR_BOOT_PROCS`
-    /// （C main.c:399 `rprocpub[NR_BOOT_PROCS]`，param.h:9 = 17——RS 的 64 行
-    /// 公共表里 boot 进程占首段槽位，C 同款只读首 17 行）。C 的 `map_service`
-    /// 是导出符号，Rust 侧唯一调用方是同模块 run() 的 boot 会合段，故私有。
+    /// Before the root mount (main.c:492-497), C `init_fresh` safecopies the whole RS public
+    /// process table in and runs `map_service` row by row (dmap.c:198-226): the imgrd→memory
+    /// dmap row is assembled here, a prerequisite for do_init_root's REQ_READSUPER route. Row width =
+    /// the shared snapshot `RprocpubSnap` (`[ARCH: A-4]` single authority); table width = `NR_BOOT_PROCS`
+    /// (C main.c:399 `rprocpub[NR_BOOT_PROCS]`, param.h:9 = 17 — boot processes occupy the leading
+    /// slots of RS's 64-row public table, and C likewise reads only the first 17 rows). C's `map_service`
+    /// is an exported symbol; in Rust its only caller is this module's run() boot rendezvous, so it stays private.
     fn map_boot_services(
         &mut self,
         kernel: &impl KernelCallTransport,
@@ -620,8 +620,8 @@ impl VfsState {
             minix_types::NR_BOOT_PROCS
                 * core::mem::size_of::<minix_types::RprocpubSnap>()
         ];
-        // 授权方是 RS_PROC_NR，不是 SELF（C main.c:456；VM 同款先例
-        // ipc_call_rs_init，vm_server.rs:1704）。
+        // The grantor is RS_PROC_NR, not SELF (C main.c:456; the VM has the same
+        // precedent, ipc_call_rs_init, vm_server.rs:1704).
         minix_sys::syscall::sys_safecopyfrom(
             kernel,
             Endpoint::RS.get(),
@@ -635,22 +635,22 @@ impl VfsState {
         self.apply_boot_rows(&rows).map_err(BootMapError::Map)
     }
 
-    /// 公共表字节流 → 行快照（RS 供方 `pub_wire_bytes` 序列化的逆）。
+    /// Public-table byte stream → row snapshots (the inverse of the RS provider's `pub_wire_bytes` serialization).
     fn decode_boot_rows(buf: &[u8]) -> alloc::vec::Vec<minix_types::RprocpubSnap> {
         const ENTRY_SIZE: usize = core::mem::size_of::<minix_types::RprocpubSnap>();
         let mut rows = alloc::vec::Vec::new();
         for chunk in buf.chunks_exact(ENTRY_SIZE) {
-            // SAFETY(读取): 快照行是 repr(C) POD，从授权捞回的字节位逐行读；
-            // `read_unaligned` 不假设缓冲对齐（内核 safecopy 写的是字节流）。
-            // 与 VM 的 ipc_call_rs_init 解码半同形（vm_server.rs:1711）。
+            // SAFETY(read): a snapshot row is repr(C) POD, read row by row from the bytes rescued from the grant;
+            // `read_unaligned` makes no alignment assumption about the buffer (kernel safecopy writes a byte stream).
+            // Same shape as the decode half of the VM's ipc_call_rs_init (vm_server.rs:1711).
             rows.push(unsafe { core::ptr::read_unaligned(chunk.as_ptr().cast()) });
         }
         rows
     }
 
-    /// isokendpt + `FP_SRV_PROC` 标记（dmap.c:208-214）。端点解析失败即
-    /// EINVAL（C printf 后返回；boot 载体无 stdout 承诺，静默同权）。
-    /// fproc 槽已在 PM 握手期填满，端点↔槽一致性由 `is_ok_endpoint` 复验。
+    /// isokendpt + `FP_SRV_PROC` marking (dmap.c:208-214). Endpoint resolution failure is
+    /// EINVAL (C returns after printf; a boot target promises no stdout, so silence is equivalent).
+    /// The fproc slot was filled during the PM handshake; `is_ok_endpoint` re-verifies endpoint↔slot consistency.
     fn mark_boot_service(&mut self, endpoint: i32) -> Result<(), MapError> {
         let slot = self
             .fproc_table
@@ -662,17 +662,17 @@ impl VfsState {
         Ok(())
     }
 
-    /// 逐行 `map_service`（dmap.c:198-226）：空槽跳过（main.c:462）、boot
-    /// 用户跳过（rs.h:188）、服务标 `FP_SRV_PROC`、带设备行落 dmap。任一
-    /// 行失败上抛——C 对 map_service 失败 panic（main.c:463-466）。
+    /// Row-by-row `map_service` (dmap.c:198-226): empty slots are skipped (main.c:462), the boot
+    /// user is skipped (rs.h:188), services get `FP_SRV_PROC`, and rows with a device land in dmap. Any
+    /// row failure is propagated — C panics on a map_service failure (main.c:463-466).
     fn apply_boot_rows(&mut self, rows: &[minix_types::RprocpubSnap]) -> Result<(), MapError> {
         for row in rows {
             if row.in_use == 0 {
                 continue;
             }
             let is_boot_user = Endpoint(row.endpoint) == Endpoint::INIT;
-            // NO_DEV（id.rs:62，DevId=u64）与 C 一致是跨型比较：devmajor_t(int)
-            // 对 dev_t 0（dmap.c:217）。
+            // NO_DEV (id.rs:62, DevId=u64) is a cross-type comparison, as in C: devmajor_t(int)
+            // against dev_t 0 (dmap.c:217).
             let has_device = row.dev_nr != NO_DEV as i32;
             match classify_service(is_boot_user, has_device) {
                 ServiceMap::SkipBootUser => {}
@@ -680,10 +680,10 @@ impl VfsState {
                 ServiceMap::MapDriver => {
                     self.mark_boot_service(row.endpoint)?;
                     // C map_driver(rpub->label, rpub->dev_nr, rpub->endpoint)
-                    //（dmap.c:220）。label 按 NUL 截断（C strlen 门
-                    // dmap.c:89-94 在 map_driver 内复验）；dev_nr 负值
-                    // as u32 回绕出界 → ENODEV，与 C 的 major<0 门
-                    //（dmap.c:67）同判。
+                    // (dmap.c:220). The label is truncated at NUL (C's strlen gate
+                    // dmap.c:89-94 re-checks it inside map_driver); a negative dev_nr
+                    // wraps out of range as u32 → ENODEV, the same verdict as C's major<0 gate
+                    // (dmap.c:67).
                     let n = row
                         .label
                         .iter()
@@ -701,15 +701,15 @@ impl VfsState {
         Ok(())
     }
 
-    /// `mount_pfs`（`mount.c:391-425`）：PFS 以固定身份领一个 `none` 伪设备
-    /// 与一个 vmnt 槽，`req_readsuper` 确认后仅回填 `m_fs_flags`（C 忽略
-    /// 节点明细）。库存不足按 C 的 panic 路径返回 Err（调用方终止 boot）。
+    /// `mount_pfs` (`mount.c:391-425`): PFS claims one `none` pseudo device under a fixed identity
+    /// plus one vmnt slot; after `req_readsuper` confirms, only `m_fs_flags` is filled (C ignores
+    /// the node details). An exhausted pool returns Err following C's panic path (the caller terminates boot).
     fn mount_pfs(
         &mut self,
         kernel: &impl KernelCallTransport,
         transport: &impl minix_sys::ipc::IpcTransport,
     ) -> Result<(), MountError> {
-        // find_free_nonedev + get_free_vmnt（C panic → 这里 Err 上抛）。
+        // find_free_nonedev + get_free_vmnt (C panic → here the Err is propagated).
         let dev = crate::mount::alloc_nonedev(&mut self.nonedev)?;
         let slot = self.vmnt_table.alloc().map_err(|_| MountError::NoMem)?;
 
@@ -724,8 +724,8 @@ impl VfsState {
             v.fs_flags = 0;
         }
 
-        // req_readsuper(vmp, "", dev, FALSE, FALSE)（mount.c:417）——确认往返，
-        // 成功只回填 fs_flags；节点明细按 C 忽略。
+        // req_readsuper(vmp, "", dev, FALSE, FALSE) (mount.c:417) — confirmation round trip;
+        // on success only fs_flags is filled; node details are ignored as in C.
         let mut client = WireFsClient {
             grants: &mut self.grants,
             kernel,
@@ -743,15 +743,15 @@ impl VfsState {
                 }
                 Ok(())
             }
-            // C: printf + 挂载照旧——PFS 缺席不阻塞 boot（管道面后补）。
+            // C: printf + the mount proceeds — a missing PFS does not block boot (the pipe surface comes later).
             Err(e) => Err(e),
         }
     }
 
-    /// `mount_fs` 的根路径（`mount.c:156-350` 的 `mount_root` 分支）：
-    /// DEV_IMGRD 上的 mfs 挂为 `/`，装配 ROOT_DEV/ROOT_FS_E、根 vnode、
-    /// MAKEROOT 全表与 bspec 扫描。挂载点查找/胶水阶段（非根路径）归
-    /// 18-mount 的 `do_mount`。
+    /// The root path of `mount_fs` (the `mount_root` branch of `mount.c:156-350`):
+    /// mfs on DEV_IMGRD is mounted at `/`; ROOT_DEV/ROOT_FS_E, the root vnode,
+    /// the whole MAKEROOT table and the bspec scan are assembled. Mount-point lookup and glue (the non-root path)
+    /// belong to `do_mount` in 18-mount.
     fn mount_fs_root(
         &mut self,
         kernel: &impl KernelCallTransport,
@@ -759,11 +759,11 @@ impl VfsState {
     ) -> Result<(), MountError> {
         let dev = DEV_IMGRD;
         let fs_e = Endpoint::MFS;
-        let mount_root = true; // mount_path "/" 且 boot 期 have_root < 2
+        let mount_root = true; // mount_path "/" and have_root < 2 during boot
 
-        // mount.c:170-183 — 非 none 设备先查 dmap 拿驱动标签；无驱动 = EINVAL
-        // （"no driver for dev"）。boot 链上 dmap[MEMORY_MAJOR] 的装配半
-        // （rproctab 消费）未接时，这里按 C 同款失败——不假装有盘。
+        // mount.c:170-183 — a non-none device first looks up its driver label in dmap; no driver = EINVAL
+        // ("no driver for dev"). While the boot-chain assembly half of dmap[MEMORY_MAJOR]
+        // (rproctab consumption) is unwired, this fails exactly as C does — never pretending a disk exists.
         let major = DevCodec::major(dev);
         let label = {
             let entry = self
@@ -779,16 +779,16 @@ impl VfsState {
             alloc::string::String::from_utf8_lossy(&entry.label[..end]).into_owned()
         };
 
-        // mount.c:190-200 — 设备已挂 → EBUSY；领空闲 vmnt 槽 → ENOMEM。
+        // mount.c:190-200 — device already mounted → EBUSY; allocate a free vmnt slot → ENOMEM.
         if self.vmnt_table.find_by_dev(dev).is_some() {
             return Err(MountError::Busy);
         }
         let slot = self.vmnt_table.alloc().map_err(|_| MountError::NoMem)?;
 
-        // mount.c:248-251 — 根 vnode（mount_root 跳过挂载点查找/胶水）。
+        // mount.c:248-251 — root vnode (mount_root skips the mount-point lookup/glue).
         let root_vn = self.vnode_table.alloc().map_err(|_| MountError::NoMem)?;
 
-        // mount.c:256-262 — isokendpt(fs_e) + 记系统进程旗标。
+        // mount.c:256-262 — isokendpt(fs_e) + set the system-process flag.
         let fs_slot = UserSlot::new(fs_e.slot() as usize);
         if self.fproc_table.get_mut(fs_slot).is_none() {
             self.vmnt_table.mark_free(slot);
@@ -800,7 +800,7 @@ impl VfsState {
             .flags
             .insert(FpFlags::SRV_PROC);
 
-        // mount.c:264-269 — vmnt 基础数据 + MOUNTING 旗标。
+        // mount.c:264-269 — vmnt base data + MOUNTING flag.
         {
             let v = self.vmnt_table.get_mut(slot).ok_or(MountError::NoMem)?;
             v.fs = fs_e;
@@ -811,7 +811,7 @@ impl VfsState {
             v.flags.insert(VmntFlags::MOUNTING);
         }
 
-        // mount.c:270-272 — req_readsuper 往返（grant+sendrec+revoke）。
+        // mount.c:270-272 — req_readsuper round trip (grant+sendrec+revoke).
         let read = {
             let mut client = WireFsClient {
                 grants: &mut self.grants,
@@ -831,17 +831,17 @@ impl VfsState {
 
         let info = match read {
             Ok(info) => info,
-            // mount.c:277-281 — 失败：释放 vmnt（根 vnode ref==0，天然回
-            // 自由表，与 C 的 get_free_vnode 语义一致），errno 上抛。
+            // mount.c:277-281 — failure: release the vmnt (the root vnode has ref==0, so it returns to
+            // the free table naturally, matching C's get_free_vnode semantics); the errno is propagated.
             Err(e) => {
                 self.vmnt_table.mark_free(slot);
                 return Err(e);
             }
         };
 
-        // mount.c:266 + 297-303 — fs_flags 与并发窗口（threaded → NR_WTHREADS）。
-        // mount.c:268-270 的 update_statvfs（statvfs 缓存首填）归 stadir
-        // 消费面（getvfsstat 接线波次，见 18-mount 实现表）。
+        // mount.c:266 + 297-303 — fs_flags and the concurrency window (threaded → NR_WTHREADS).
+        // update_statvfs at mount.c:268-270 (the first fill of the statvfs cache) belongs to the stadir
+        // consumer side (the getvfsstat wiring pass, see the 18-mount implementation table).
         {
             let v = self.vmnt_table.get_mut(slot).ok_or(MountError::NoMem)?;
             v.fs_flags = info.fs_flags;
@@ -850,7 +850,7 @@ impl VfsState {
             window.cur_reqs = 0;
         }
 
-        // mount.c:283-296 — 根 vnode 七连填 + 引用基线。
+        // mount.c:283-296 — the seven-field root vnode fill + reference baseline.
         {
             let vn = self.vnode_table.get_mut(root_vn).ok_or(MountError::NoMem)?;
             vn.fs = info.node.fs_e;
@@ -866,12 +866,12 @@ impl VfsState {
             vn.dev = dev;
         }
 
-        // mount.c:305 — VMNT_CANSTAT：此后可对外报告该文件系统。
+        // mount.c:305 — VMNT_CANSTAT: the file system can be reported externally from now on.
         if let Some(v) = self.vmnt_table.get_mut(slot) {
             v.flags.insert(VmntFlags::CANSTAT);
         }
 
-        // mount.c:318-325 — 挂载落位：根节点、无父挂载点、标签。
+        // mount.c:318-325 — mount placement: root node, no parent mount point, label.
         {
             let v = self.vmnt_table.get_mut(slot).ok_or(MountError::NoMem)?;
             v.root = Some(root_vn.get());
@@ -879,17 +879,17 @@ impl VfsState {
             v.label = alloc::string::String::from("fs_imgrd");
         }
 
-        // mount.c:331 — update_bspec(dev, fs_e, 0)：已有块特殊文件改路
-        // （boot 期表空，扫描为空转；语义随挂载提供）。
+        // mount.c:331 — update_bspec(dev, fs_e, 0): existing block-special files are redirected
+        // (the table is empty at boot, so the scan is a no-op; the semantics arrive with the mount).
         self.vnode_table.route_block_special(dev, fs_e);
 
-        // mount.c:326-328 — ROOT_DEV/ROOT_FS_E（NS4 赋值面核心）。
+        // mount.c:326-328 — ROOT_DEV/ROOT_FS_E (the core assignment site).
         self.root_dev = dev;
         self.root_fs_e = fs_e;
 
-        // mount.c:331-345 — MAKEROOT 全表：既有进程的 rd/wd 换根。boot 期
-        // 指针为空（None），`put_vnode` 半按 C 同款跳过；ref 基线即上面的
-        // `ref_count = 1`（C 首个 MAKEROOT 的 dup_vnode 同源）。
+        // mount.c:331-345 — the whole MAKEROOT table: existing processes' rd/wd move to the new root. At boot
+        // the pointer is None, so the `put_vnode` half is skipped as in C; the ref baseline is the `ref_count = 1`
+        // above (same origin as the dup_vnode in C's first MAKEROOT).
         for i in 0..NR_PROCS {
             if let Some(fp) = self.fproc_table.get_mut(UserSlot::new(i))
                 && fp.pid != PID_FREE
@@ -899,7 +899,7 @@ impl VfsState {
             }
         }
 
-        // mount.c:349 — have_root++。
+        // mount.c:349 — have_root++.
         self.have_root += 1;
         Ok(())
     }
@@ -1014,7 +1014,7 @@ impl VfsState {
 
         // 1. FS reply via transid — `TRNS_GET_ID` + `IS_VFS_FS_TRANSID`.
         let transid_raw = m_type & 0xFFFF;
-        // `decode` 自带 `is_fs_transid` 守门——两层条件在此合并为一层。
+        // `decode` has its own `is_fs_transid` gate — the two conditions are merged into one here.
         if let Some(slot) = codec.decode(transid_raw) {
             return Route::FsReply {
                 transid: transid_raw,
@@ -1062,11 +1062,11 @@ impl VfsState {
         }
     }
 
-    /// `run_once`——主循环单轮入口：接收消息 → 路由 → 门控 → 分发。
+    /// `run_once` — single-iteration entry of the main loop: receive → route → gate → dispatch.
     ///
-    /// 门语义（legacy dispatch 迁入）：`accept_requests == false` 时用户
-    /// 请求标 `FP_PENDING` 并计数（去重），不处理；`Pm` 控制面短路的
-    /// 优先序由 `route_message` 保持。
+    /// Gate semantics (inherited from legacy dispatch): with `accept_requests == false`, user
+    /// requests are marked `FP_PENDING` and counted (deduplicated), not processed; the priority of
+    /// the `Pm` control-plane shortcut is preserved by `route_message`.
     pub fn run_once<C: TransIdCodec>(&mut self, msg: &Message, codec: &C) -> Route {
         self.current_message = *msg;
         self.current_fp_slot = msg.m_source.to_user_slot();
@@ -1074,9 +1074,9 @@ impl VfsState {
         match route {
             Route::Syscall { call } => {
                 if self.accept_requests {
-                    // C main.c:146-160 —— 作业先绑 worker 槽
-                    // （`worker_start(rfp, use_spare=TRUE)`）；没有空槽即
-                    // `EAGAIN`（`worker_available()==0` 的分支）。
+                    // C main.c:146-160 — the job is bound to a worker slot first
+                    // (`worker_start(rfp, use_spare=TRUE)`); no free slot means
+                    // `EAGAIN` (the `worker_available()==0` branch).
                     let assigned = self.current_fp_slot.and_then(|fs| {
                         self.worker_pool.assign_first_fit(
                             fs,
@@ -1088,9 +1088,9 @@ impl VfsState {
                         Some(idx) => {
                             self.current_worker = Some(idx);
                             let result = crate::syscalls::dispatch_syscall(self, call);
-                            // 臂没挂起（`Suspend` 之外）= 作业完结：释放槽
-                            // （C `worker_main` 尾部的 `worker_release`）；
-                            // 挂起的臂自己登记续接，槽留给续接体释放。
+                            // The arm did not suspend (anything except `Suspend`) = job complete: release the slot
+                            // (C's `worker_release` at the tail of `worker_main`);
+                            // a suspended arm registers its own continuation, and the slot is released by that continuation body.
                             if !matches!(result, crate::call_table::SyscallResult::Suspend) {
                                 self.worker_pool.release(idx);
                                 self.current_worker = None;
@@ -1098,7 +1098,7 @@ impl VfsState {
                             self.queue_reply(msg.m_source, result);
                         }
                         None => {
-                            // C handle_work:150-151 —— 无槽即 `EAGAIN`。
+                            // C handle_work:150-151 — no slot means `EAGAIN`.
                             self.queue_reply(
                                 msg.m_source,
                                 crate::call_table::SyscallResult::Error(minix_types::EAGAIN),
@@ -1110,16 +1110,16 @@ impl VfsState {
                 }
             }
             Route::Enosys { .. } => {
-                // C main.c:283-294——不可解析的调用号回 ENOSYS 而不是装成
-                // 真调用（W3 回复半：发送在 `run()` 的循环尾）。
+                // C main.c:283-294 — an unresolvable call number answers ENOSYS instead of posing as
+                // a real call (reply half: sending happens at the loop tail of `run()`).
                 self.queue_reply(msg.m_source, crate::call_table::SyscallResult::Nosys);
             }
             Route::Pm => {
-                // C main.c 的 `service_pm`：VFS_PM_* 控制面。此前本臂缺席
-                // 时消息被静默丢弃；NS5 起解码分派——EXEC 走同步执行件
-                // （exec_worker::pm_exec，ARCH A-1"同步到底无续作"，传输
-                // 与 run() 的 FS flush 同款 trap 直连），其余控制调用走
-                // `VfsPmHandler` 纯表面。解码失败 = 诚实 ENOSYS。
+                // `service_pm` of C main.c: the VFS_PM_* control plane. Before this arm existed
+                // such messages were silently dropped; decode-and-dispatch was added — EXEC goes to the synchronous executor
+                // (exec_worker::pm_exec; under ARCH A-1 it runs to completion with no continuation, its transport
+                // the same direct trap as run()'s FS flush), while other control calls go through the
+                // pure `VfsPmHandler` surface. Decode failure = an honest ENOSYS.
                 use crate::ipc::PmHandler as _;
                 use minix_types::{VfsCall, VfsReply};
                 match VfsCall::decode(msg) {
@@ -1131,15 +1131,15 @@ impl VfsState {
                         frame_len,
                         ps_str,
                     }) => {
-                        // 栈顶生产源是 kerninfo `user_sp`（C exec.c:217 经
-                        // `minix_get_user_sp`，kernel_utils.c:39-62）；读半
-                        // 归 E-KERNINFO 波次，暂以 boot 契约缺省值供缝
-                        // （已登记 new_edge3 NS5-B）。
-                        // §续-338 修正：缺省值必须落在本架构的规范用户
-                        // 地址范围内——riscv64/Sv39 用 48 位风格的
-                        // 0x7fff_ffff_f000 会产出非规范地址，用户程序首次
-                        // 栈存储即 store page fault 死循环（(A) 的 rc 循环
-                        // 根因）。单一权威见 `minix_types::USER_STACK_TOP`。
+                        // The production source of the stack top is kerninfo `user_sp` (C exec.c:217 via
+                        // `minix_get_user_sp`, kernel_utils.c:39-62); the read half belongs to a later
+                        // work stream, so a boot-contract default fills the gap for now.
+                        // The default must lie inside this architecture's canonical user-address
+                        // range: on riscv64/Sv39 a 48-bit-style 0x7fff_ffff_f000 is a non-canonical
+                        // address, so a user program's first stack store becomes a store page-fault
+                        // loop (the root cause of the rc loop).
+                        // The single authority for this value is
+                        // `minix_types::USER_STACK_TOP`.
                         const DEFAULT_USER_SP: u64 = minix_types::USER_STACK_TOP;
                         let kernel = minix_sys::syscall::DirectKernelCallTransport;
                         let ipc = minix_sys::ipc::DirectTrapTransport;
@@ -1157,8 +1157,8 @@ impl VfsState {
                                 stack_high: DEFAULT_USER_SP,
                             },
                         );
-                        // C worker 的回程：status 带结果（失败为负 errno），
-                        // pc/newsp 只在成功时有意义（com.h:570-575）。
+                        // C worker's return path: status carries the result (negative errno on failure);
+                        // pc/newsp are meaningful only on success (com.h:570-575).
                         let reply = match result {
                             Ok(loaded) => VfsReply::Exec {
                                 status: minix_types::OK,
@@ -1176,10 +1176,10 @@ impl VfsState {
                         self.queue_reply_msg(msg.m_source, reply.encode_reply_for(endpoint));
                     }
                     Ok(other) => {
-                        // C `service_pm`：回复需把请求的目标端点回显进
-                        // `VFS_PM_ENDPT`（m7_i1），PM 才能解析出挂
-                        // `VFS_CALL` 的槽位。`other` 将被 move 进 `handle`，
-                        // 故先取端点（fork/srv_fork → 子端点）。
+                        // C `service_pm`: the reply must echo the request's target endpoint into
+                        // `VFS_PM_ENDPT` (m7_i1) so PM can resolve the slot on which the
+                        // `VFS_CALL` hangs. `other` will be moved into `handle`,
+                        // so the endpoint is read first (fork/srv_fork → the child endpoint).
                         let target = other.endpoint();
                         let mut sink = put_node_sink(&mut self.pending_puts);
                         let mut handler = crate::ipc::VfsPmHandler {
@@ -1207,41 +1207,41 @@ impl VfsState {
                 }
             }
             Route::Bdev | Route::Cdev | Route::Sdev => {
-                // C main.c:126-134 —— 块/字符/套接字驱动的回复各走
-                // `bdev_reply`/`cdev_reply`/`sdev_reply`，三者的公共前半是
-                // "找等这个驱动的 worker 槽 → 落槽 → 唤醒"。找不到就软失败
-                // （C 里是 printf + return，主循环继续）。
-                // [SD19-gate] 尽力而为回复帧处理（失败仅影响内部状态记录，不改变已回复调用方的事实）
+                // C main.c:126-134 — block/char/socket driver replies go through
+                // `bdev_reply`/`cdev_reply`/`sdev_reply`; their common first half is
+                // "find the worker slot waiting for this driver → land the result → wake it". Failure to find it is a soft failure
+                // (printf + return in C; the main loop continues).
+                // [SD19-gate] best-effort reply-frame handling (failure only affects internal bookkeeping, not the fact that the caller was already answered)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.handle_drv_reply(msg);
             }
             Route::Notify { source, .. } => {
-                // CLOCK 通知 = select 的超时闹钟到点（单闹钟近似，见
-                // `select_timeout_check`）；其余通知（DS/KERNEL）暂不消费。
+                // A CLOCK notification = a select timeout alarm fired (single-alarm approximation, see
+                // `select_timeout_check`); other notifications (DS/KERNEL) are not consumed yet.
                 if source == Endpoint::CLOCK {
                     self.select_timeout_check();
                 }
             }
             Route::FsReply { .. } => {
-                // C main.c:80-89 — do_reply 无应答对象；软失败（typed
-                // `FsReplyError`）即 C 的 printf+return，主循环继续。
-                // [SD19-gate] 尽力而为回复帧处理（失败仅影响内部状态记录，不改变已回复调用方的事实）
+                // C main.c:80-89 — do_reply has no answer target; a soft failure (typed
+                // `FsReplyError`) is C's printf+return, and the main loop continues.
+                // [SD19-gate] best-effort reply-frame handling (failure only affects internal bookkeeping, not the fact that the caller was already answered)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.handle_fs_reply(msg, codec);
             }
             _ => {}
         }
-        // 续接驱动点：本轮（或上一轮）的 FS 回复若已落在某个槽上，就跑该
-        // 作业的续接体（C 的"线程从 `worker_wait` 返回后继续"在单线程模型
-        // 里的对应物）。放在路由之后，保证同一轮里"收回复 → 完成作业"闭
-        // 环。
+        // Continuation drive point: if this (or the previous) round landed an FS reply on a slot, run that
+        // job's continuation body (the counterpart, in the single-threaded model, of C's
+        // "thread continues after returning from `worker_wait`"). It sits after routing so that "collect reply → complete job"
+        // closes within the same round.
         self.run_worker_continuations();
         route
     }
 
-    /// `common_open` 的**本地半**（C `open.c:118-274` 里不碰 FS 的那些步）：
-    /// 类型分派 → fd/filp 装配 → 回 fd（成功时 syscall 结果就是 fd）。
-    /// `Open` 与 `Creat` 两条臂共用（后者走完 create 之后落到这里）。
+    /// The **local half** of `common_open` (the steps of C `open.c:118-274` that do not touch FS):
+    /// type dispatch → fd/filp assembly → return fd (on success the syscall result is the fd).
+    /// Shared by the `Open` and `Creat` arms (the latter lands here after create completes).
     pub fn finish_open_local(
         &mut self,
         idx: usize,
@@ -1252,12 +1252,12 @@ impl VfsState {
         self.finish_open_local_inner(idx, fp_slot, node, oflags, false);
     }
 
-    /// [`Self::finish_open_local`] 的本体；`trunc_done` 表示"`O_TRUNC` 的
-    /// 截断已经做过"（`O_TRUNC` 分支的续接体走这条），于是分派时把该位当
-    /// 已消费——否则 `dispatch_open` 会再判一次 `NeedTruncate` 而成环。
-    /// **`filp_flags` 仍写原始 `oflags`**：C `open.c:136` 是
-    /// `filp->filp_flags = oflags`（含 `O_TRUNC`），这个字随后随读写请求
-    /// 原样传给 FS（`read.c` 的 `REQ_FLAGS`），不是本地私有的。
+    /// The body of [`Self::finish_open_local`]; `trunc_done` means "the `O_TRUNC`"
+    /// truncation has already happened" (the continuation of the `O_TRUNC` branch takes this route), so dispatch
+    /// treats that bit as consumed — otherwise `dispatch_open` would see `NeedTruncate` again and loop.
+    /// **`filp_flags` still stores the original `oflags`**: C `open.c:136` is
+    /// `filp->filp_flags = oflags` (including `O_TRUNC`), and that word is later passed to FS verbatim
+    /// with read/write requests (`REQ_FLAGS` in `read.c`); it is not local-private state.
     fn finish_open_local_inner(
         &mut self,
         idx: usize,
@@ -1328,8 +1328,8 @@ impl VfsState {
                 self.finish_worker_job(idx, fp_slot, e.to_errno());
             }
             crate::open::OpenOutcome::NeedTruncate => {
-                // C `common_open:150-157`：常规文件 + `O_TRUNC` → W 位门 →
-                // `truncate_vnode(vp, 0)`（**结果忽略**）→ 照常装配。
+                // C `common_open:150-157`: regular file + `O_TRUNC` → W-bit gate →
+                // `truncate_vnode(vp, 0)` (**result ignored**) → normal assembly.
                 let (real_uid, eff_uid, real_gid, eff_gid, supp) =
                     match fp_slot.and_then(|s| self.fproc_table.get(s)) {
                         Some(fp) => (
@@ -1365,7 +1365,7 @@ impl VfsState {
                     readonly_fs,
                 });
                 if let Err(e) = forbid {
-                    // C 的 `break`：带该错误结束 open。
+                    // C's `break`: terminate open with that error.
                     self.finish_worker_job(idx, fp_slot, e.to_errno());
                     return;
                 }
@@ -1390,21 +1390,21 @@ impl VfsState {
                     vmnt,
                     fs_e: node.fs_e,
                     worker: idx,
-                    grant: 0, // 无数据面
+                    grant: 0, // no data plane
                     user,
-                    // C `truncate_vnode(vp, 0)` → `req_ftrunc(fs_e, ino, 0, 0)`。
+                    // C `truncate_vnode(vp, 0)` → `req_ftrunc(fs_e, ino, 0, 0)`.
                     req: crate::request::encode_ftrunc(node.ino, 0, 0),
                 });
             }
             crate::open::OpenOutcome::Delegate(crate::open::DeviceClass::Char) => {
-                // C `common_open` 的 `S_IFCHR` 支（open.c:162-168）→
+                // The `S_IFCHR` branch of C `common_open` (open.c:162-168) →
                 // `cdev_open(fd, vp->v_sdev, bits | (oflags & O_NOCTTY))`
-                // → `cdev_opcl`（cdev.c:236-249）：`cdev_map` 的 `/dev/tty`
-                // 重定向 → dmap 按 major 找驱动（没有 → ENXIO）→ `CTTY_MAJOR`
-                // 例外（`/dev/tty` 直接成功，不打扰驱动）→ `O_NOCTTY` 三条规则
-                // → 认领 fd/filp → `CDEV_OPEN` → worker 等待。
+                // → `cdev_opcl` (cdev.c:236-249): `/dev/tty` redirection through `cdev_map`
+                // → dmap finds the driver by major (none → ENXIO) → the `CTTY_MAJOR`
+                // exception (`/dev/tty` succeeds directly, without disturbing the driver) → the three `O_NOCTTY` rules
+                // → claim fd/filp → `CDEV_OPEN` → worker wait.
                 let dev = node.dev;
-                // `cdev_map`：`/dev/tty` 换成进程的控制终端（`tty_redirect`）。
+                // `cdev_map`: `/dev/tty` is replaced by the process's controlling terminal (`tty_redirect`).
                 let is_ctty =
                     ((dev & 0x000fff00) >> 8) as u32 == crate::device_map::CTTY_MAJOR as u32;
                 let fp_tty = fp_slot
@@ -1421,14 +1421,14 @@ impl VfsState {
                         return;
                     }
                 };
-                // CTTY 例外：`/dev/tty` 不真发请求（`cdev.c:174`）。**判定键是
-                // 原始设备的 major**——C 的这一行看的是**未映射**的 `dev`
-                // （`cdev_get` 只在内部换算 minor），所以"有控制终端的
-                // `/dev/tty` open"在这里就返回 OK，绝不打扰真实 tty 的驱动
-                // （C 注释：否则 setsid() 之后再开 `/dev/tty`，那个真实设备
-                // 会被永久打开）。重定向后的设备号只用于算 minor/dmap 行。
+                // CTTY exception: `/dev/tty` does not really send a request (`cdev.c:174`). **The key is the
+                // major of the raw device** — this C line looks at the **unmapped** `dev`
+                // (`cdev_get` only converts the minor internally), so opening `/dev/tty` when a controlling
+                // terminal exists returns OK here and never disturbs the real tty's driver
+                // (per the C comment: otherwise, after setsid(), opening `/dev/tty` would leave that real device
+                // permanently open). The redirected device number only serves minor/dmap-row computation.
                 if is_ctty {
-                    // 仍要认领 fd/filp（C 是在类型分派之前认领的）。
+                    // The fd/filp must still be claimed (C claims before type dispatch).
                     let Some(slot) = fp_slot else {
                         self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
                         return;
@@ -1483,8 +1483,8 @@ impl VfsState {
                         return;
                     }
                 };
-                // `O_NOCTTY` 三条规则（`noctty_force`）：非会话首进程、已有控制
-                // 终端、或这个驱动见过 TTY 且别处已把它设成控制终端 → 强制加上。
+                // The three `O_NOCTTY` rules (`noctty_force`): not the session leader, already has a controlling
+                // terminal, or this driver has seen a TTY that was made controlling elsewhere → force the flag on.
                 let (is_leader, has_tty) = fp_slot
                     .and_then(|s| self.fproc_table.get(s))
                     .map(|fp| {
@@ -1520,7 +1520,7 @@ impl VfsState {
                     self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
                     return;
                 };
-                // 认领 fd/filp（C 在类型分派之前就认领；失败路径由续接体放开）。
+                // Claim fd/filp (C claims before type dispatch; the continuation releases them on failure).
                 let (fd, filp_id) = {
                     let Some(fp) = self.fproc_table.get_mut(slot) else {
                         self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
@@ -1547,8 +1547,8 @@ impl VfsState {
                 self.filp_table.inc_count(filp_id);
                 if let Some(fp) = self.fproc_table.get_mut(slot) {
                     fp.filps[fd.get()] = Some(filp_id.get());
-                    // C `open.c:138-139`：`O_CLOEXEC` 位在**类型分派之前**
-                    // 就记进 `fp_cloexec_set`，三种设备类型同样适用。
+                    // C `open.c:138-139`: the `O_CLOEXEC` bit is recorded in `fp_cloexec_set` **before
+                    // type dispatch**, and applies equally to all three device kinds.
                     if oflags & crate::open::OpenFlags::CLOEXEC.bits() != 0 {
                         fp.cloexec_set.set(fd.get(), true);
                     }
@@ -1558,9 +1558,9 @@ impl VfsState {
                     .get(slot)
                     .map(|fp| fp.endpoint)
                     .unwrap_or(Endpoint::NONE);
-                // `CDEV_OPEN`（形状由 `cdev::open_request` 钉住：`id`/`user`
-                // 是调用者端点，`minor` 在第三格——位次发错，驱动开的就是
-                // 次设备号 0）。
+                // `CDEV_OPEN` (shape pinned by `cdev::open_request`: `id`/`user`
+                // are the caller endpoint and `minor` is in the third slot — send the fields in the wrong
+                // position and the driver opens minor device number 0).
                 let m = crate::cdev::open_request(minor, user_e, access);
                 if let Some(wp) = self.worker_pool.get_mut(idx) {
                     wp.cont = Some(crate::worker::WorkerCont::CdevOpen {
@@ -1570,31 +1570,31 @@ impl VfsState {
                     });
                 }
                 if let Err(e) = self.send_drv_for_slot(idx, fp_slot, drv_e, &m) {
-                    // 发不出去：走 C 的失败尾（放开 fd/filp + 放回 vnode）再回错。
+                    // Send failed: take C's failure tail (release fd/filp + put back the vnode), then return the error.
                     self.release_open_claim(fp_slot, fd.get() as u32, filp_id.get(), vnode_idx);
                     self.finish_worker_job(idx, fp_slot, e);
                 }
                 return;
             }
             crate::open::OpenOutcome::Delegate(crate::open::DeviceClass::Block) => {
-                // C `common_open` 的 `S_IFBLK` 支（open.c:172-217）→
-                // `bdev_open(dev, bits)`（bdev.c:79-112）：major 界内**且**
-                // dmap 有驱动（缺一即 ENXIO）→ `BDEV_OPEN`（minor/access/id）
-                // → **worker 等待**（C 里块驱动不许挂起，调用线程直接阻塞在
-                // `drv_sendrec` 上；本模型的对应物是 worker 槽等待，续接体
-                // `WorkerCont::BdevOpen` 收尾）。
+                // The `S_IFBLK` branch of C `common_open` (open.c:172-217) →
+                // `bdev_open(dev, bits)` (bdev.c:79-112): major in range **and**
+                // a dmap driver present (missing either means ENXIO) → `BDEV_OPEN` (minor/access/id)
+                // → **worker wait** (in C a block driver may not suspend, so the calling thread blocks directly in
+                // `drv_sendrec`; the counterpart here is a worker-slot wait, completed by the continuation
+                // `WorkerCont::BdevOpen`).
                 //
-                // 驱动过了之后还有第二段：选 `v_bfs_e`（这个设备被哪个 FS
-                // 管），没被别的挂载占着时补一条 `REQ_NEW_DRIVER`——都在
-                // `bdev_open_bfs_stage` 里。
+                // After the driver passes there is a second stage: pick `v_bfs_e` (which FS manages
+                // this device) and, when no other mount holds it, send a `REQ_NEW_DRIVER` — all in
+                // `bdev_open_bfs_stage`.
                 let dev = node.dev;
                 let major = ((dev & 0x000fff00) >> 8) as u32;
                 let minor = (((dev & 0xfff0_0000) >> 12) | (dev & 0xff)) as u32;
                 let major_valid = (major as usize) < crate::device_map::NR_DEVICES;
                 let driver = self.dmap_table.get(major).and_then(|row| row.driver);
-                // C `bdev_open:86-89` 的两道门（major 界内、dmap 行上有驱动）
-                // 走决策层（它带着 ENXIO 的判据）；端点本身取 dmap 行的
-                // `Endpoint`。
+                // The two gates of C `bdev_open:86-89` (major in range, a driver on the dmap row)
+                // go through the decision layer (which carries the ENXIO criterion); the endpoint itself comes from the dmap row's
+                // `Endpoint`.
                 if crate::bdev::resolve_driver(major_valid, driver.map(|e| e.get())).is_err() {
                     self.finish_worker_job(idx, fp_slot, crate::bdev::BdevError::NoDev.to_errno());
                     return;
@@ -1615,7 +1615,7 @@ impl VfsState {
                     self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
                     return;
                 };
-                // 认领 fd/filp（C 在类型分派之前认领；失败路径由续接体放开）。
+                // Claim fd/filp (C claims before type dispatch; the continuation releases them on failure).
                 let (fd, filp_id) = {
                     let Some(fp) = self.fproc_table.get_mut(slot) else {
                         self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
@@ -1646,9 +1646,9 @@ impl VfsState {
                         fp.cloexec_set.set(fd.get(), true);
                     }
                 }
-                // `BDEV_OPEN`（形状由 `bdev::open_request` 钉住：块族首格是
-                // `pos`，`minor` 在 8——按字符族的位次发，驱动收到的就是
-                // "次设备号 0"）。
+                // `BDEV_OPEN` (shape pinned by `bdev::open_request`: for the block family the first slot is
+                // `pos` and `minor` is at 8 — send the char-family layout and the driver receives
+                // "minor device number 0").
                 let m = crate::bdev::open_request(minor, access);
                 if let Some(wp) = self.worker_pool.get_mut(idx) {
                     wp.cont = Some(crate::worker::WorkerCont::BdevOpen {
@@ -1662,25 +1662,25 @@ impl VfsState {
                     });
                 }
                 if let Err(e) = self.send_drv_for_slot(idx, fp_slot, drv_e, &m) {
-                    // 发不出去：走 C 的失败尾（放开认领 + 放回 vnode）再回错。
-                    // 传输层把内核状态折成一个 `EIO`——C 在
-                    // `EDEADSRCDST`/`EDEADEPT` 时还会 `dmap_unmap_by_endpt`
-                    // 解映射死驱动（`bdev.c:60-64`），那一步要传输层给出分类
-                    // （`bdev::classify_send` 的输入），本批未接。
+                    // Send failed: take C's failure tail (release the claim + put back the vnode), then return the error.
+                    // The transport folds the kernel status into a single `EIO` — C additionally
+                    // calls `dmap_unmap_by_endpt` on `EDEADSRCDST`/`EDEADEPT` to unmap a dead
+                    // driver (`bdev.c:60-64`); that step needs a classification from the transport
+                    // (the input to `bdev::classify_send`) and is not wired yet.
                     self.release_open_claim(fp_slot, fd.get() as u32, filp_id.get(), vnode_idx);
                     self.finish_worker_job(idx, fp_slot, e);
                 }
             }
-            // FIFO 配对（`S_IFIFO` 支：`map_vnode(PFS)` + `pipe_open`）与
-            // 未识别类型：本批未接线，诚实拒绝。
+            // FIFO pairing (the `S_IFIFO` branch: `map_vnode(PFS)` + `pipe_open`) and
+            // unrecognized types: not wired yet; rejected honestly.
             _ => self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS),
         }
     }
 
-    /// C `advance`（path.c:60-127）的收尾：把走完的节点并进 vnode 表——
-    /// `find_by_ino` 命中则抬 FS 引用 + `dup`，否则填草稿槽并置
-    /// `fs_count = ref_count = 1`。返回表下标（走完之后的臂要拿它当
-    /// `filp_vno`）。
+    /// The tail of C `advance` (path.c:60-127): merge the traversed node into the vnode table —
+    /// a `find_by_ino` hit bumps the FS reference + `dup`s, otherwise the draft slot is filled and
+    /// `fs_count = ref_count = 1`. Returns the table index (the arm after the walk needs it as
+    /// `filp_vno`).
     pub fn intern_vnode(&mut self, node: &crate::path::NodeDetails) -> Option<usize> {
         if let Some(hit) = self.vnode_table.find_by_ino(node.fs_e, node.ino) {
             if let Some(v) = self.vnode_table.get_mut(hit) {
@@ -1690,11 +1690,11 @@ impl VfsState {
             return Some(hit.0);
         }
         let scratch = self.vnode_table.alloc().ok()?;
-        // C `advance`（path.c:98-106）：`v_sdev = res.dev`（**特殊设备号**，
-        // 设备节点靠它认驱动）、`v_dev = vmp->m_dev`（**挂载分区的设备号**）。
-        // 两者是不同字段：先前把 `res.dev` 写进 `v_dev` 是错的——设备节点的
-        // `v_sdev` 一直是 0，`cdev_get`/`bdev_ioctl` 那些按 `v_sdev` 找驱动的
-        // 地方就都找不到。
+        // C `advance` (path.c:98-106): `v_sdev = res.dev` (**special device number**;
+        // device nodes identify their driver by it), `v_dev = vmp->m_dev` (**the mounted partition's device number**).
+        // These are different fields: writing `res.dev` into `v_dev` was a bug —
+        // a device node's `v_sdev` stayed 0, so every place that finds a driver by `v_sdev`
+        // (`cdev_get`/`bdev_ioctl`) failed to find one.
         let mount_dev = self
             .vmnt_table
             .find_by_fs(node.fs_e)
@@ -1716,20 +1716,20 @@ impl VfsState {
         Some(scratch.0)
     }
 
-    /// `common_open` 的**失败尾**（C open.c:275-285）：放开刚认领的 fd 与
-    /// filp，再放回 vnode（`put_vnode`）。
+    /// The **failure tail** of `common_open` (C open.c:275-285): release the just-claimed fd and
+    /// filp, then put the vnode back (`put_vnode`).
     ///
-    /// 设备类分支（字符/块）在驱动或 FS 拒绝之后都走这一处——不放开就等于
-    /// 漏一个 fd 槽、一个 filp 引用与一个 vnode 引用，攒够了
-    /// `vnode_table.alloc()` 就开始回 `ENFILE`。
+    /// Both device branches (char/block) come here after the driver or FS refuses — not releasing would
+    /// leak one fd slot, one filp reference and one vnode reference; once enough accumulate,
+    /// `vnode_table.alloc()` starts returning `ENFILE`.
     ///
-    /// vnode 的放回走 `VnodeTable::put` 的**快速路径**（`ref>1 → ref--`）；
-    /// 慢路径（`ref==1` → `req_putnode`）与 `change_into`/`close_filp` 是
-    /// 同一处待办（`DeferredPutNode` 把那条 FS 通知留空）。
-    /// `put_vnode` 的 VFS 半（C vnode.c:240-290）：快速路径（`ref>1`）
-    /// 只减引用；慢路径（`ref==1`）把 `REQ_PUTNODE` 排进
-    /// [`VfsState::pending_puts`]（`clean_refs` 的批量归还同路收集），
-    /// 主循环统一投递。返回 `put` 的结果（`Ok(true)` = 槽已释放）。
+    /// The vnode is put back through the **fast path** of `VnodeTable::put` (`ref>1 → ref--`);
+    /// the slow path (`ref==1` → `req_putnode`) is the same pending item as `change_into`/`close_filp`
+    /// (`DeferredPutNode` leaves that FS notification empty).
+    /// The VFS half of `put_vnode` (C vnode.c:240-290): the fast path (`ref>1`)
+    /// only decrements; the slow path (`ref==1`) queues `REQ_PUTNODE` into
+    /// [`VfsState::pending_puts`] (the batch return of `clean_refs` is collected the same way),
+    /// and the main loop delivers them. Returns the `put` result (`Ok(true)` = slot released).
     pub fn put_vnode_deferred(&mut self, id: crate::vnode::VnodeId) -> Result<bool, i32> {
         let mut q: alloc::vec::Vec<crate::vnode::PutNodeReq> = alloc::vec::Vec::new();
         let mut sink = PutNodeSink(&mut q);
@@ -1755,22 +1755,22 @@ impl VfsState {
             fp.filps[fd as usize] = None;
             fp.cloexec_set.set(fd as usize, false);
         }
-        // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+        // [SD19-gate] best-effort vnode put-back/reference-count cleanup (C put_vnode returns void, no error)
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.put_vnode_deferred(crate::vnode::VnodeId(vnode));
     }
 
-    /// 块设备 open 成功后的**第二段**（C `open.c:186-216`）：定 `v_bfs_e`，
-    /// 需要时补发 `REQ_NEW_DRIVER`。
+    /// The **second stage** after a successful block-device open (C `open.c:186-216`): fix `v_bfs_e` and,
+    /// when needed, send `REQ_NEW_DRIVER`.
     ///
-    /// `v_bfs_e` 的选法照抄 C（[`crate::vmnt::VmntTable::bfs_for_device`]）：
-    /// 默认根文件系统，被别的挂载占着就用那个挂载的 FS。**只有归根时**才
-    /// 补发驱动标签——别的 FS 在挂载时已经从 readsuper 的标签参数认识这个
-    /// 块驱动了。
+    /// `v_bfs_e` is chosen exactly as in C ([`crate::vmnt::VmntTable::bfs_for_device`]):
+    /// default to the root file system; if another mount holds the device, use that mount's FS. **Only when
+    /// falling back to root** is the driver label sent — other FS instances already learned this
+    /// block driver from readsuper's label argument at mount time.
     ///
-    /// 三值返回：`Ok(true)` = 已挂上 `WorkerCont::BdevNewDriver`（在等 FS
-    /// 回复，调用方**不要**收尾）；`Ok(false)` = 不需要通知，调用方直接回
-    /// fd；`Err(errno)` = 这一段失败，调用方走失败尾再回错。
+    /// Three-way return: `Ok(true)` = `WorkerCont::BdevNewDriver` is attached (waiting for the FS
+    /// reply; the caller must **not** finalize); `Ok(false)` = no notification needed, the caller returns
+    /// the fd directly; `Err(errno)` = this stage failed, the caller takes the failure tail and returns the error.
     fn bdev_open_bfs_stage(
         &mut self,
         idx: usize,
@@ -1785,12 +1785,12 @@ impl VfsState {
             v.bfs = bfs_e;
         }
         if bfs_e != self.root_fs_e {
-            // C 的 `if (vp->v_bfs_e != ROOT_FS_E) { unlock_bsf(); break; }`。
+            // C's `if (vp->v_bfs_e != ROOT_FS_E) { unlock_bsf(); break; }`.
             return Ok(false);
         }
-        // 根文件系统这一支要发 `req_newdriver`。根挂载还没执行过
-        // （`root_fs_e` 还是 `NONE`）时没有可发的对象——按 C 的 newdriver
-        // 失败路径收尾（`bdev_close` + `ENXIO`），不假装通知成功。
+        // This root-file-system branch sends `req_newdriver`. Before the root mount has run
+        // (`root_fs_e` is still `NONE`) there is no target — finish through C's newdriver
+        // failure path (`bdev_close` + `ENXIO`), without pretending the notification succeeded.
         if bfs_e == Endpoint::NONE {
             return Err(minix_types::ENXIO);
         }
@@ -1807,9 +1807,9 @@ impl VfsState {
             .unwrap_or(Endpoint::NONE);
         let (grant, label_len) = {
             let wp = self.worker_pool.get_mut(idx).ok_or(minix_types::EIO)?;
-            // C 的标签是 dmap 行里的定长数组，要授权的是 `strlen(label)+1`
-            // 字节（含结尾 NUL）；槽内的 `path_scratch` 是 VFS 自己的内存，
-            // direct grant 必须指向一个**稳定地址**。
+            // C's label is a fixed-size array in the dmap row; the grant covers `strlen(label)+1`
+            // bytes (including the trailing NUL); the slot's `path_scratch` is VFS's own memory, and a
+            // direct grant must point at a **stable address**.
             let n = label.iter().position(|b| *b == 0).unwrap_or(label.len());
             let len = n + 1;
             if len > wp.path_scratch.len() {
@@ -1818,7 +1818,7 @@ impl VfsState {
             wp.path_scratch[..n].copy_from_slice(&label[..n]);
             wp.path_scratch[n] = 0;
             let addr = wp.path_scratch.as_ptr() as u64;
-            // C `cpf_grant_direct(fs_e, (vir_bytes) label, len, CPF_READ)`。
+            // C `cpf_grant_direct(fs_e, (vir_bytes) label, len, CPF_READ)`.
             let grant = self
                 .grants
                 .grant_direct(
@@ -1850,12 +1850,12 @@ impl VfsState {
         Ok(true)
     }
 
-    /// 调用方的根目录三元组（C `fp_rd` → vnode → `(fs, ino, dev)`）。
+    /// The caller's root-directory triple (C `fp_rd` → vnode → `(fs, ino, dev)`).
     ///
-    /// 路径起点选择（root vs work dir）在臂侧（`eat_path` 的首字符判断），
-    /// 这里只做 vnode → 三元组的解引用；槽空/vnode 缺失回零三元组，
-    /// `LookupWalk` 的 chroot 边界判定自然失效（与 C 的 `fp_rd == NULL`
-    /// 在未初始化进程上的效果一致）。
+    /// Path-start selection (root vs work dir) happens on the arm side (the first-character test in `eat_path`);
+    /// this only dereferences vnode → triple. An empty slot / missing vnode yields the zero triple,
+    /// which naturally disables `LookupWalk`'s chroot boundary (same effect as C's `fp_rd == NULL`
+    /// on an uninitialized process).
     pub fn root_dir_of(&self, fp_slot: Option<minix_types::UserSlot>) -> crate::path::RootDir {
         let vnode = fp_slot
             .and_then(|s| self.fproc_table.get(s))
@@ -1875,7 +1875,7 @@ impl VfsState {
         }
     }
 
-    /// 调用方的工作目录三元组（C `fp_wd`）。
+    /// The caller's working-directory triple (C `fp_wd`).
     pub fn work_dir_of(&self, fp_slot: minix_types::UserSlot) -> crate::path::RootDir {
         let vnode = self
             .fproc_table
@@ -1896,8 +1896,8 @@ impl VfsState {
         }
     }
 
-    /// 当前挂载表（`path::lookup` 的 `mounts` 参数）——从 `vmnt_table` +
-    /// 各挂载点的根 vnode 组装。空行（`fs == NONE`）不进表。
+    /// The current mount table (the `mounts` argument of `path::lookup`) — assembled from `vmnt_table` plus
+    /// each mount point's root vnode. Empty rows (`fs == NONE`) are excluded.
     pub fn mounted_fs_list(&self) -> alloc::vec::Vec<crate::path::MountedFs> {
         let mut out = alloc::vec::Vec::new();
         for idx in 0..crate::vmnt::NR_MNTS {
@@ -1907,8 +1907,8 @@ impl VfsState {
             if v.fs == Endpoint::NONE {
                 continue;
             }
-            // 根 vnode（`m_root_node` 的 (ino, dev)）与挂载点 vnode
-            // （`m_mounted_on` 的 (ino, fs, dev)）。
+            // The root vnode (`m_root_node`'s (ino, dev)) and the mount-point vnode
+            // (`m_mounted_on`'s (ino, fs, dev)).
             let root_vn = v
                 .root
                 .and_then(|i| self.vnode_table.get(crate::vnode::VnodeId(i)));
@@ -1928,8 +1928,8 @@ impl VfsState {
         out
     }
 
-    /// 把槽内的路径游标装进 scratch（+ NUL）、授权、组 `REQ_LOOKUP` 并交给
-    /// 循环发送（与臂的首条 lookup 共用同一条构造路径）。
+    /// Pack the slot's path cursor into scratch (+ NUL), grant it, build `REQ_LOOKUP` and hand it to
+    /// the loop to send (sharing the same construction path as the arm's first lookup).
     pub fn send_lookup_for_slot(
         &mut self,
         idx: usize,
@@ -1950,8 +1950,8 @@ impl VfsState {
                 .as_ref()
                 .map(|p| p.walk.resolve().path.clone())
                 .unwrap_or_default();
-            // `PATH_RET_SYMLINK` 等位要原样发给 FS（语义在 FS 侧，
-            // libfsdriver/lookup.c:249-251）——漏发等于让 FS 跟进末组件符号链接。
+            // Flags such as `PATH_RET_SYMLINK` must be sent to FS verbatim (their meaning lives in FS,
+            // libfsdriver/lookup.c:249-251) — omitting them makes FS follow a trailing-component symlink.
             let flags = wp
                 .path
                 .as_ref()
@@ -1975,7 +1975,7 @@ impl VfsState {
                 .map_err(|_| minix_types::EIO)?;
             (grant, len, flags)
         };
-        // 现场里记录新 grant（回复后 revoke）。
+        // Record the new grant in the slot (revoked after the reply).
         if let Some(wp) = self.worker_pool.get_mut(idx)
             && let Some(p) = wp.path.as_mut()
         {
@@ -1992,14 +1992,14 @@ impl VfsState {
         Ok(())
     }
 
-    /// `change_into`（C stadir.c:120-140）：把 `fp_wd`/`fp_rd` 换成新 vnode。
-    /// 同一个 vnode 直接成功；不是目录 → ENOTDIR；不可搜索 → EACCES；都过了
-    /// 才换（旧目录 `put_vnode`、新目录 `dup_vnode`）。
+    /// `change_into` (C stadir.c:120-140): replace `fp_wd`/`fp_rd` with a new vnode.
+    /// The same vnode succeeds directly; not a directory → ENOTDIR; not searchable → EACCES; only after
+    /// both pass does the swap happen (`put_vnode` the old directory, `dup_vnode` the new one).
     ///
-    /// 旧目录的释放走 `VnodeTable::put` 的**快速路径**（`ref>1 → ref--`）；
-    /// 慢路径（`ref==1` → `req_putnode`）与 `filp.rs` 里 `close_filp` 的同一处
-    /// 待办一样**还没接线**，`DeferredPutNode` 把那条 FS 通知留空——这是登记
-    /// 在案的缺口，不是"已完成"。
+    /// Releasing the old directory takes the **fast path** of `VnodeTable::put` (`ref>1 → ref--`);
+    /// the slow path (`ref==1` → `req_putnode`), like the same pending item in `filp.rs`'s `close_filp`,
+    /// is **not wired yet** and `DeferredPutNode` leaves that FS notification empty — this is a
+    /// recorded gap, not "done".
     pub fn change_into(
         &mut self,
         fp_slot: Option<minix_types::UserSlot>,
@@ -2026,7 +2026,7 @@ impl VfsState {
             Some(v) => (v.mode, v.uid, v.gid),
             None => return minix_types::EINVAL,
         };
-        // C `change_into`：目录类型门 → `forbidden(fp, vp, X_BIT)`。
+        // C `change_into`: directory-type gate → `forbidden(fp, vp, X_BIT)`.
         if mode & crate::open::S_IFMT != crate::open::S_IFDIR {
             return minix_types::ENOTDIR;
         }
@@ -2068,9 +2068,9 @@ impl VfsState {
         if let Err(e) = forbid {
             return e.to_errno();
         }
-        // 换：旧目录 put（快速路径）、新目录已经 dup 过（`intern_vnode`）。
+        // Swap: put the old directory (fast path); the new directory is already dup'd (`intern_vnode`).
         if let Some(old_id) = old {
-            // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+            // [SD19-gate] best-effort vnode put-back/reference-count cleanup (C put_vnode returns void, no error)
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.put_vnode_deferred(crate::vnode::VnodeId(old_id));
         }
@@ -2084,9 +2084,9 @@ impl VfsState {
         0
     }
 
-    /// 扫出 `sync`/`fsync` 要通知的挂载（C `do_sync`/`do_fsync` 的循环过滤）：
-    /// `m_dev != NO_DEV && m_fs_e != NONE && m_root_node != NULL`；`dev` 给了
-    /// 就再按设备号过滤（fsync 用文件的 `v_dev`）。
+    /// Scan the mounts `sync`/`fsync` must notify (the loop filter of C `do_sync`/`do_fsync`):
+    /// `m_dev != NO_DEV && m_fs_e != NONE && m_root_node != NULL`; if `dev` is given,
+    /// filter by device number too (fsync uses the file's `v_dev`).
     pub fn sync_targets(&self, dev: Option<minix_types::DevId>) -> alloc::vec::Vec<Endpoint> {
         let mut out = alloc::vec::Vec::new();
         for idx in 0..crate::vmnt::NR_MNTS {
@@ -2106,11 +2106,11 @@ impl VfsState {
         out
     }
 
-    /// `fill_statvfs` 的**本地半**（C stadir.c:255-272 的尾部）：补上只读位、
-    /// `f_fsid`/`f_fsidx` 与三个名字字段，然后整块拷给用户。
+    /// The **local half** of `fill_statvfs` (the tail of C stadir.c:255-272): fill in the read-only bit,
+    /// `f_fsid`/`f_fsidx` and the three name fields, then copy the whole block to the user.
     ///
-    /// `sys_datacopy` 是跨空间的，宿主构建下不可达 → 诚实回浮 EIO（不假装
-    /// 拷成功）。
+    /// `sys_datacopy` is cross-space and unreachable in a host build → answer an honest EIO (never
+    /// pretend the copy succeeded).
     fn finish_statvfs_copy(
         &mut self,
         idx: usize,
@@ -2134,15 +2134,15 @@ impl VfsState {
             let f = b.get_u64(minix_types::statvfs_off::FLAG);
             b.set_u64(minix_types::statvfs_off::FLAG, f | minix_types::ST_RDONLY);
         }
-        // `f_fsid` 与 `f_fsidx.__fsid_val[0]` 都是设备号（C 的注释说这是
-        // NetBSD 的做法）。
+        // `f_fsid` and `f_fsidx.__fsid_val[0]` are both the device number (C's comment says this follows
+        // NetBSD).
         b.set_u64(minix_types::statvfs_off::FSID, dev);
         b.set_u32(minix_types::statvfs_off::FSIDX, dev as u32);
         b.set_u32(minix_types::statvfs_off::FSIDX + 4, 0);
         b.set_name(minix_types::statvfs_off::FSTYPENAME, &fstype);
         b.set_name(minix_types::statvfs_off::MNTONNAME, &mount_path);
         b.set_name(minix_types::statvfs_off::MNTFROMNAME, &mount_dev);
-        // 拷给用户：`sys_datacopy_wrapper(SELF, &buf, endpt, buf_addr, sizeof)`。
+        // Copy to the user: `sys_datacopy_wrapper(SELF, &buf, endpt, buf_addr, sizeof)`.
         let user = fp_slot
             .and_then(|s| self.fproc_table.get(s))
             .map(|fp| fp.endpoint)
@@ -2162,8 +2162,8 @@ impl VfsState {
         }
     }
 
-    /// 把挂载行的缓存抄进 VFS 侧缓冲（C `fill_statvfs` 的 `ST_NOWAIT` 分支：
-    /// `memset(&buf, 0, ...)` 之后逐字段抄 `m_stats`）。
+    /// Copy the mount row's cache into the VFS-side buffer (the `ST_NOWAIT` branch of C `fill_statvfs`:
+    /// after `memset(&buf, 0, ...)`, copy `m_stats` field by field).
     fn statvfs_fill_from_cache(&mut self, vmnt_idx: usize) {
         use minix_types::statvfs_off as off;
         self.statvfs_buf = minix_types::StatvfsBuf::new();
@@ -2192,8 +2192,8 @@ impl VfsState {
         b.set_u64(off::NAMEMAX, stats.f_namemax);
     }
 
-    /// 给某个挂载发一条 `REQ_STATVFS`（direct grant 指向 VFS 侧缓冲），并登记
-    /// 续接（含 `getvfsstat` 的序列状态）。C `req_statvfs`（request.c:232-247）。
+    /// Send one `REQ_STATVFS` to a mount (the direct grant points at the VFS-side buffer) and register
+    /// the continuation (including `getvfsstat`'s sequence state). C `req_statvfs` (request.c:232-247).
     #[allow(clippy::too_many_arguments)]
     fn send_statvfs_request(
         &mut self,
@@ -2244,9 +2244,9 @@ impl VfsState {
         Ok(())
     }
 
-    /// `fill_statvfs` 的**入口**（C stadir.c:230-253）：`ST_NOWAIT` 就用挂载行
-    /// 缓存（不打扰 FS），否则给 VFS 侧缓冲做 direct grant 并发 `REQ_STATVFS`，
-    /// 统计量由续接体收（`WorkerCont::Statvfs`）。
+    /// The **entry** of `fill_statvfs` (C stadir.c:230-253): with `ST_NOWAIT` it uses the mount row's
+    /// cache (no FS traffic); otherwise it direct-grants the VFS-side buffer and sends `REQ_STATVFS`,
+    /// with the statistics collected by the continuation (`WorkerCont::Statvfs`).
     pub fn begin_statvfs(
         &mut self,
         idx: usize,
@@ -2270,9 +2270,9 @@ impl VfsState {
         )
     }
 
-    /// `make_sock_fd` 的前半（C socket.c:86-176）：锁 PFS → 预留 vnode →
-    /// 认领 fd/filp → `req_newnode(PFS, effuid, effgid, S_IFSOCK|ACCESSPERMS,
-    /// dev)`。后半（填 vnode/filp）在 `WorkerCont::SockFd` 的续接体里。
+    /// The first half of `make_sock_fd` (C socket.c:86-176): lock PFS → reserve a vnode →
+    /// claim fd/filp → `req_newnode(PFS, effuid, effgid, S_IFSOCK|ACCESSPERMS,
+    /// dev)`. The second half (filling vnode/filp) lives in the `WorkerCont::SockFd` continuation.
     pub fn begin_make_sock_fd(
         &mut self,
         idx: usize,
@@ -2285,13 +2285,13 @@ impl VfsState {
         let Some(slot) = fp_slot else {
             return Err(minix_types::EINVAL);
         };
-        // C `find_vmnt(PFS_PROC_NR)`：拿不到就 panic（"PFS gone"）；Rust 侧
-        // fail-closed（PFS 是另一条线的服务器）。
+        // C `find_vmnt(PFS_PROC_NR)`: panic when not found ("PFS gone"); the Rust side is
+        // fail-closed (PFS is a server implemented elsewhere).
         let Some(vmnt_id) = self.vmnt_table.find_by_fs(minix_types::Endpoint::PFS) else {
             return Err(minix_types::EIO);
         };
         let vnode = self.vnode_table.alloc().map_err(|_| minix_types::ENFILE)?;
-        // C `get_fd(fp, 0, R_BIT | W_BIT, &fd, &filp)`。
+        // C `get_fd(fp, 0, R_BIT | W_BIT, &fd, &filp)`.
         let (fd, filp) = {
             use crate::filedes::FdAllocPolicy;
             let fp = self.fproc_table.get_mut(slot).ok_or(minix_types::EINVAL)?;
@@ -2335,16 +2335,16 @@ impl VfsState {
             worker: idx,
             grant: 0,
             user,
-            // C socket.c:134-136：`S_IFSOCK | ACCESSPERMS` 作为节点模式。
+            // C socket.c:134-136: `S_IFSOCK | ACCESSPERMS` as the node mode.
             req: crate::request::encode_newnode(dev, crate::open::S_IFSOCK | 0o777, uid, gid),
         });
         Ok(())
     }
 
-    /// 套接字驱动的 getset 族（C `sdev_setsockopt` sdev.c:450-495 /
-    /// `sdev_get` sdev.c:500-555）：把用户缓冲做成 magic grant 交给驱动
-    /// （`set` 方向 `CPF_READ`、`get` 方向 `CPF_WRITE`），回复号必须是
-    /// `SDEV_REPLY`，**状态在载荷里**；`get` 方向的状态就是新长度。
+    /// The socket-driver getset family (C `sdev_setsockopt` sdev.c:450-495 /
+    /// `sdev_get` sdev.c:500-555): turn the user buffer into a magic grant for the driver
+    /// (`CPF_READ` in the `set` direction, `CPF_WRITE` in the `get` direction); the reply number must be
+    /// `SDEV_REPLY` and **the status is in the payload**; for `get`, the status is the new length.
     #[allow(clippy::too_many_arguments)]
     pub fn send_sdev_getset(
         &mut self,
@@ -2365,7 +2365,7 @@ impl VfsState {
             .and_then(|s| self.fproc_table.get(s))
             .map(|fp| fp.endpoint)
             .unwrap_or(Endpoint::NONE);
-        // C 的 `cpf_grant_magic(drv, who_e, addr, len, CPF_READ|CPF_WRITE)`。
+        // C's `cpf_grant_magic(drv, who_e, addr, len, CPF_READ|CPF_WRITE)`.
         let access = if write_dir {
             minix_types::CpFlags::WRITE
         } else {
@@ -2380,7 +2380,7 @@ impl VfsState {
         };
         // SAFETY: `mess_vfs_lsockdriver_getset { int32_t req_id; int32_t
         // sock_id; int level; int name; cp_grant_id_t grant; unsigned int len; }`
-        // （ipc.h:2272-2281）。
+        // (ipc.h:2272-2281).
         unsafe {
             let raw = &mut req.m_u.raw;
             raw[0..4].copy_from_slice(&user.0.to_le_bytes());
@@ -2396,7 +2396,7 @@ impl VfsState {
         match self.send_drv_for_slot(idx, fp_slot, drv_e, &req) {
             Ok(()) => Ok(()),
             Err(e) => {
-                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.revoke_grant(grant);
                 Err(e)
@@ -2404,12 +2404,12 @@ impl VfsState {
         }
     }
 
-    /// 套接字驱动的"简单请求"（C `sdev_simple` sdev.c:245-276）：`listen`/
-    /// `shutdown`/`close` 共用——`{req_id, sock_id, param}` 发给驱动，回复号
-    /// 必须是 `SDEV_REPLY`，**状态在回复载荷里**。
+    /// A socket-driver "simple request" (C `sdev_simple` sdev.c:245-276): shared by `listen`/
+    /// `shutdown`/`close` — `{req_id, sock_id, param}` is sent to the driver; the reply number
+    /// must be `SDEV_REPLY` and **the status is in the reply payload**.
     ///
-    /// `dev` 是套接字设备号（`v_sdev`），靠 `smap_endpt_by_dev` 认驱动与
-    /// `sock_id`（C `get_smap_by_dev`）。
+    /// `dev` is the socket device number (`v_sdev`); `smap_endpt_by_dev` finds the driver and
+    /// `sock_id` (C `get_smap_by_dev`).
     pub fn send_sdev_simple(
         &mut self,
         idx: usize,
@@ -2430,7 +2430,7 @@ impl VfsState {
             ..minix_types::Message::default()
         };
         // SAFETY: `mess_vfs_lsockdriver_simple { int32_t req_id; sock_id_t
-        // sock_id; int param; }`（ipc.h:2318-2326）。
+        // sock_id; int param; }` (ipc.h:2318-2326).
         unsafe {
             let raw = &mut req.m_u.raw;
             raw[0..4].copy_from_slice(&user.0.to_le_bytes());
@@ -2443,9 +2443,9 @@ impl VfsState {
         self.send_drv_for_slot(idx, fp_slot, drv_e, &req)
     }
 
-    /// `get_sock`（C socket.c:276-302）：fd → filp → **必须是套接字**
-    /// （否则 `ENOTSOCK`），返回它的设备号与打开标志。套接字族共用的第一道门
-    /// ——全本地判定，没有驱动对话。
+    /// `get_sock` (C socket.c:276-302): fd → filp → **must be a socket**
+    /// (otherwise `ENOTSOCK`); returns its device number and open flags. The first gate shared by the socket family
+    /// — purely local, with no driver conversation.
     pub fn get_sock(&self, fp_slot: minix_types::UserSlot, fd: i32) -> Result<(u64, i32), i32> {
         if fd < 0 {
             return Err(minix_types::EBADF);
@@ -2466,25 +2466,25 @@ impl VfsState {
             .vnode_table
             .get(crate::vnode::VnodeId(vnode_idx))
             .ok_or(minix_types::EBADF)?;
-        // C `!S_ISSOCK(filp->filp_vno->v_mode)` → ENOTSOCK。
+        // C `!S_ISSOCK(filp->filp_vno->v_mode)` → ENOTSOCK.
         if v.mode & crate::open::S_IFMT != crate::open::S_IFSOCK {
             return Err(minix_types::ENOTSOCK);
         }
         Ok((v.sdev, filp.flags))
     }
 
-    /// `do_mapdriver` 的**主体**（C dmap.c:106-177 的取标签之后那半）：
-    /// 标签 → 端点（`resolve_driver`）→ 标成服务进程（`FP_SRV_PROC`）→
-    /// `map_driver`（major 有效时）→ `smap_map`（有域时；失败要**撤销** dmap）。
+    /// The **body** of `do_mapdriver` (the half of C dmap.c:106-177 after label retrieval):
+    /// label → endpoint (`resolve_driver`) → mark as a service process (`FP_SRV_PROC`) →
+    /// `map_driver` (when the major is valid) → `smap_map` (when a domain is given; failure must **undo** the dmap).
     ///
-    /// `caller` 是消息来源（C 的 `who_e`）：只有 RS 能映射驱动
-    /// （`check_mapper`）。
+    /// `caller` is the message source (C's `who_e`): only RS can map drivers
+    /// (`check_mapper`).
     #[allow(clippy::too_many_arguments)]
-    /// `ds_retrieve_label_endpt` 那一跳的**填充半**（C `do_mapdriver`
-    /// dmap.c:148-152 的前置）：拿标签去 DS 查端点，查到就**upsert** 进
-    /// `driver_labels`（同名更新、新名追加），返回端点；DS 不可达或标签
-    /// 未登记返回 `None`——调用方回退到本地表（空表语义仍是 EINVAL，
-    /// fail-closed 链不变）。
+    /// The **fill half** of the `ds_retrieve_label_endpt` hop (the prerequisite of C `do_mapdriver`
+    /// dmap.c:148-152): ask DS for the endpoint by label and, on a hit, **upsert** it into
+    /// `driver_labels` (update on the same name, append a new one) and return the endpoint; unreachable DS or an
+    /// unregistered label returns `None` — the caller falls back to the local table (empty-table semantics
+    /// stay EINVAL; the fail-closed chain is unchanged).
     pub fn ds_fill_label(&mut self, label: &str) -> Option<Endpoint> {
         let mut ds = minix_sys::ds::DsClient::new(
             minix_sys::ipc::DirectTrapTransport,
@@ -2492,7 +2492,7 @@ impl VfsState {
             Endpoint::DS,
         );
         let (endpoint, _flags) = ds.retrieve_label_endpt(&mut self.grants, label).ok()?;
-        // 幂等 upsert：同名更新（驱动重启换端点），新名追加。
+        // Idempotent upsert: the same name updates (a driver restart changes the endpoint), a new name appends.
         match self
             .driver_labels
             .iter_mut()
@@ -2516,8 +2516,8 @@ impl VfsState {
         if crate::device_map::check_mapper(caller).is_err() {
             return minix_types::EPERM;
         }
-        // C dmap.c:148-152 —— 标签 → 端点：先走 DS 那一跳（查到即填充
-        // 本地表），DS 没有再回退本地表（空表语义仍是 EINVAL）。
+        // C dmap.c:148-152 — label → endpoint: first the DS hop (a hit fills the
+        // local table); without DS it falls back to the local table (empty-table semantics stay EINVAL).
         if self.ds_fill_label(label).is_none()
             && !self.driver_labels.iter().any(|(name, _)| name == label)
         {
@@ -2531,7 +2531,7 @@ impl VfsState {
             Ok(e) => e,
             Err(e) => return e.to_errno(),
         };
-        // C dmap.c:154-158 —— 端点必须是已知进程（`isokendpt`），并标成服务。
+        // C dmap.c:154-158 — the endpoint must be a known process (`isokendpt`), and is marked as a service.
         let Some(slot) = endpoint.to_user_slot() else {
             return minix_types::EINVAL;
         };
@@ -2541,7 +2541,7 @@ impl VfsState {
         if let Some(fp) = self.fproc_table.get_mut(slot) {
             fp.flags |= crate::fproc::FpFlags::SRV_PROC;
         }
-        // C dmap.c:161-165 —— major 有效就写 dmap 行。
+        // C dmap.c:161-165 — a valid major writes the dmap row.
         if major != minix_types::NO_DEV as u32 {
             if let Err(e) = crate::device_map::map_driver(
                 &mut self.dmap_table,
@@ -2552,19 +2552,19 @@ impl VfsState {
                 return e.to_errno();
             }
         }
-        // C dmap.c:166-173 —— 有域就写 smap；失败要把刚才的 dmap 撤销。
+        // C dmap.c:166-173 — a domain writes smap; failure must undo the dmap just written.
         if !domains.is_empty() {
             let ndomains = domains.len();
             if ndomains > 8 {
-                // `NR_DOMAIN`（config.h:61 = 8）。
+                // `NR_DOMAIN` (config.h:61 = 8).
                 if major != minix_types::NO_DEV as u32 {
-                    // [SD19-gate] device_map 登记尽力而为（失败由后续 open 路径再暴露）
+                    // [SD19-gate] best-effort device_map registration (failure resurfaces through later open paths)
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = crate::device_map::map_driver(&mut self.dmap_table, None, major, None);
                 }
                 return minix_types::EINVAL;
             }
-            // 逐域检查（C smap.c:74-84）：越界/UNSPEC → EINVAL、被别人占了 → EBUSY。
+            // Per-domain check (C smap.c:74-84): out of range/UNSPEC → EINVAL, already taken → EBUSY.
             let existing =
                 crate::device_map::find_slot_by_label(&self.smap_table, label.as_bytes());
             let free = crate::device_map::find_free_slot(&self.smap_table);
@@ -2579,7 +2579,7 @@ impl VfsState {
                 Ok(p) => p,
                 Err(e) => {
                     if major != minix_types::NO_DEV as u32 {
-                        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                        // [SD19-gate] best-effort cleanup; dropping the Result does not change an established main result (C is equally void/ignoring here)
                         #[allow(clippy::let_underscore_must_use)]
                         let _ =
                             crate::device_map::map_driver(&mut self.dmap_table, None, major, None);
@@ -2587,7 +2587,7 @@ impl VfsState {
                     return e.to_errno();
                 }
             };
-            // 应用：写行（标签 + 端点）与 `pfmap[domain] = 行`。
+            // Apply: write the row (label + endpoint) and `pfmap[domain] = row`.
             let slot = plan.slot as usize;
             {
                 let row = &mut self.smap_table.entries[slot];
@@ -2596,7 +2596,7 @@ impl VfsState {
                 row.label = [0u8; crate::device_map::LABEL_MAX];
                 row.label[..n].copy_from_slice(&label.as_bytes()[..n]);
             }
-            // 替换时先解掉旧实例的域映射（C smap.c:105-118 的 unmap 段）。
+            // When replacing, first unmap the old instance's domain mapping (the unmap section of C smap.c:105-118).
             for d in 0..crate::device_map::PF_MAX {
                 if self.smap_table.pfmap[d] == Some(plan.slot) {
                     self.smap_table.pfmap[d] = None;
@@ -2611,9 +2611,9 @@ impl VfsState {
         0
     }
 
-    /// `getvfsstat` 的**入口**（C `do_getvfsstat` stadir.c:330-403）：`buf == 0`
-    /// 时只数个数（不打扰 FS）；否则按 `bufsize / sizeof(struct statvfs)` 截断
-    /// 挂载列表，逐个 `fill_statvfs` 到 `buf + i*sizeof`，返回**个数**。
+    /// The **entry** of `getvfsstat` (C `do_getvfsstat` stadir.c:330-403): with `buf == 0`
+    /// it only counts (no FS traffic); otherwise it truncates the mount list to `bufsize / sizeof(struct statvfs)`,
+    /// fills each entry with `fill_statvfs` at `buf + i*sizeof`, and returns the **count**.
     pub fn begin_getvfsstat(
         &mut self,
         idx: usize,
@@ -2622,7 +2622,7 @@ impl VfsState {
         bufsize: u64,
         flags: i32,
     ) -> Result<(), i32> {
-        // C 的过滤：`m_dev != NO_DEV && (m_flags & VMNT_CANSTAT)`。
+        // C's filter: `m_dev != NO_DEV && (m_flags & VMNT_CANSTAT)`.
         let mut targets = alloc::vec::Vec::new();
         for i in 0..crate::vmnt::NR_MNTS {
             let Some(v) = self.vmnt_table.get(crate::vmnt::VmntId(i)) else {
@@ -2637,11 +2637,11 @@ impl VfsState {
             targets.push(i);
         }
         if buf_addr == 0 {
-            // 只报个数：C 直接 `return count`。
+            // Count only: C returns `count` directly.
             self.finish_worker_job_value(idx, fp_slot, targets.len() as i32);
             return Ok(());
         }
-        // 空间不足的截断（C 的 `if (bufsize < sizeof) break;`）。
+        // Truncation when space runs out (C's `if (bufsize < sizeof) break;`).
         let fits = (bufsize / minix_types::STATVFS_SIZE as u64) as usize;
         targets.truncate(fits);
         if targets.is_empty() {
@@ -2654,7 +2654,7 @@ impl VfsState {
         }
         let count = targets.len().min(crate::vmnt::NR_MNTS) as u8;
         if flags & minix_types::ST_NOWAIT != 0 {
-            // 缓存分支：逐个就地填 + 拷，不发请求。
+            // Cached branch: fill each in place and copy, without sending requests.
             for (at, vmnt_idx) in targets.iter().enumerate() {
                 self.statvfs_fill_from_cache(*vmnt_idx);
                 let dst = buf_addr + (at as u64) * minix_types::STATVFS_SIZE as u64;
@@ -2670,8 +2670,8 @@ impl VfsState {
         self.send_statvfs_request(idx, fp_slot, targets[0], buf_addr, (arr, count, 0))
     }
 
-    /// `rename` 的阶段 1 → 阶段 2 转场：切出 name2 的最后组件，从进程根起走
-    /// 它的父目录（C `do_rename:218-231` 的第二趟 `last_dir`）。
+    /// The `rename` stage 1 → stage 2 transition: peel off name2's last component and walk its
+    /// parent directory from the process root (the second `last_dir` pass of C `do_rename:218-231`).
     fn rename_stage_two(
         &mut self,
         idx: usize,
@@ -2703,9 +2703,9 @@ impl VfsState {
         }
     }
 
-    /// 发一条 `REQ_RENAME`（C `req_rename` — request.c:927-955）：两个名字各占
-    /// 槽内 scratch 的一半（`PATH_MAX` 1024 → 每半 512 ≥ `NAME_MAX+1`），各做
-    /// 一张 **direct grant**（两张都指向 VFS 自己的内存）；回复只有状态。
+    /// Send one `REQ_RENAME` (C `req_rename` — request.c:927-955): each name takes half of the slot's
+    /// scratch (`PATH_MAX` 1024 → 512 per half ≥ `NAME_MAX+1`), each gets its own **direct grant**
+    /// (both point at VFS's own memory); the reply carries only a status.
     #[allow(clippy::too_many_arguments)]
     pub fn send_rename_for_slot(
         &mut self,
@@ -2754,7 +2754,7 @@ impl VfsState {
             ) {
                 Ok(g) => g,
                 Err(_) => {
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(g_old);
                     return Err(minix_types::EIO);
@@ -2778,9 +2778,9 @@ impl VfsState {
         Ok(())
     }
 
-    /// 从进程根/工作目录起走一条路径的**父目录**（`last_dir` 的目录前缀），
-    /// 现场换成 `follow` 并发出首条 lookup。C 里 rename/link 这些"换条路径
-    /// 再来一趟"的地方都是这个形状（新 `resolve` + 同一套 `last_dir`）。
+    /// Walk the **parent directory** of a path from the process root/work dir (the directory prefix of `last_dir`),
+    /// swap the slot to `follow`, and send the first lookup. In C, rename/link and other "switch paths
+    /// and make another pass" sites all have this shape (a new `resolve` plus the same `last_dir`).
     pub fn start_parent_walk(
         &mut self,
         idx: usize,
@@ -2835,14 +2835,14 @@ impl VfsState {
         self.send_lookup_for_slot(idx, fp_slot, fs_e, dir_ino, root_ino)
     }
 
-    /// 给驱动发一条请求并让槽等它（C `sdev_sendrec`/`cdev_opcl`/`bdev_sendrec`
-    /// 的公共前半）：`asynsend3(drv_e, m, AMF_NOREPLY)` 是**发完不等**，线程随后
-    /// 在 `worker_wait` 里等回复——本模型里就是"槽的 `task` 指向驱动、
-    /// `sendrec` 放着请求、状态 `WaitingForFs`"，回复到达由
-    /// [`Self::handle_drv_reply`] 落槽并唤醒。
+    /// Send one request to a driver and make the slot wait for it (the common first half of C
+    /// `sdev_sendrec`/`cdev_opcl`/`bdev_sendrec`): `asynsend3(drv_e, m, AMF_NOREPLY)` is **send-and-don't-wait**; the thread then
+    /// waits for the reply in `worker_wait` — here that is "the slot's `task` points at the driver,
+    /// `sendrec` holds the request, the state is `WaitingForFs`", and an arriving reply is landed and woken by
+    /// [`Self::handle_drv_reply`].
     ///
-    /// 发送失败（宿主构建下 trap 不可达）返回 EIO，调用方按错误收尾——不假装
-    /// 发出去了。
+    /// A send failure (traps are unreachable in a host build) returns EIO and the caller takes the error tail —
+    /// it never pretends the request went out.
     pub fn send_drv_for_slot(
         &mut self,
         idx: usize,
@@ -2851,16 +2851,16 @@ impl VfsState {
         req: &Message,
     ) -> Result<(), i32> {
         if let Some(wp) = self.worker_pool.get_mut(idx) {
-            // C `self->w_task = sp->smap_endpt; self->w_drv_sendrec = m_ptr`。
+            // C `self->w_task = sp->smap_endpt; self->w_drv_sendrec = m_ptr`.
             wp.task = Some(drv_e);
             wp.sendrec = Some(*req);
             wp.state = crate::worker::WorkerState::WaitingForFs;
         }
         let _ = fp_slot;
-        // C `drv_sendrec` 失败后的分类（bdev.c:60-68）：死端点
-        // （`EDEADSRCDST`/`EDEADEPT`）先 `dmap_unmap_by_endpt` 解映射，
-        // 一切类别统一折 EIO。内核状态在 TrapStatus 里（正号域），宿主
-        // 传输恒 EIO(5) → `Fatal` 类 → 不解映射（不误伤活表）。
+        // Classification after a `drv_sendrec` failure (bdev.c:60-68): dead endpoints
+        // (`EDEADSRCDST`/`EDEADEPT`) are first unmapped via `dmap_unmap_by_endpt`;
+        // every class folds into EIO. The kernel status lives in TrapStatus (positive domain); the host
+        // transport always yields EIO(5) → the `Fatal` class → no unmapping (never damaging a live table).
         match minix_sys::ipc::DirectTrapTransport.send(drv_e, req) {
             Ok(()) => Ok(()),
             Err(st) => {
@@ -2872,9 +2872,9 @@ impl VfsState {
         }
     }
 
-    /// 套接字读写的驱动请求（C `sdev_readwrite` sdev.c:336-410）：三张可选的
-    /// magic grant（数据/控制/地址；发送方向 `CPF_READ`、接收方向 `CPF_WRITE`），
-    /// 发出去**不等**（这类调用可能等很久），进程级挂起。
+    /// A socket read/write driver request (C `sdev_readwrite` sdev.c:336-410): three optional
+    /// magic grants (data/control/address; `CPF_READ` on send, `CPF_WRITE` on receive);
+    /// it sends **without waiting** (such calls can take long) and suspends the process.
     #[allow(clippy::too_many_arguments)]
     pub fn send_sdev_readwrite(
         &mut self,
@@ -2902,8 +2902,8 @@ impl VfsState {
         )
     }
 
-    /// 同上，但允许指定现场里的 `aux`（`recvmsg` 要把 `msg_buf` 带下去——
-    /// 收尾要回写 msghdr 的几个字段，C `sdev_readwrite` 的最后一参）。
+    /// Same as above, but lets the caller pass the slot's `aux` (`recvmsg` must carry `msg_buf` down —
+    /// the tail writes back several msghdr fields; the last argument of C `sdev_readwrite`).
     #[allow(clippy::too_many_arguments)]
     pub fn send_sdev_readwrite_aux(
         &mut self,
@@ -2935,7 +2935,7 @@ impl VfsState {
             match spec {
                 None => Ok((minix_types::GRANT_INVALID, 0)),
                 Some((buf, len)) => {
-                    // C 只对**非零**缓冲建 grant（`if (data_buf != 0)`）。
+                    // C creates a grant only for **non-zero** buffers (`if (data_buf != 0)`).
                     if buf == 0 {
                         return Ok((minix_types::GRANT_INVALID, 0));
                     }
@@ -2950,7 +2950,7 @@ impl VfsState {
             Ok(p) => p,
             Err(e) => {
                 for g in grants.iter().flatten() {
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(*g);
                 }
@@ -2961,7 +2961,7 @@ impl VfsState {
             Ok(p) => p,
             Err(e) => {
                 for g in grants.iter().flatten() {
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(*g);
                 }
@@ -2979,7 +2979,7 @@ impl VfsState {
         // SAFETY: `mess_vfs_lsockdriver_sendrecv { int32_t req_id; int32_t
         // sock_id; cp_grant_id_t data_grant; size_t data_len; cp_grant_id_t
         // ctl_grant; unsigned int ctl_len; cp_grant_id_t addr_grant; unsigned
-        // int addr_len; endpoint_t user_endpt; int flags; }`（ipc.h:2304-2317）。
+        // int addr_len; endpoint_t user_endpt; int flags; }` (ipc.h:2304-2317).
         unsafe {
             let raw = &mut req.m_u.raw;
             raw[0..4].copy_from_slice(&user.0.to_le_bytes());
@@ -2997,7 +2997,7 @@ impl VfsState {
             .is_err()
         {
             for g in grants.iter().flatten() {
-                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.revoke_grant(*g);
             }
@@ -3006,17 +3006,17 @@ impl VfsState {
         let block = crate::fproc::SdevBlock {
             dev,
             call,
-            // `GrantId` 是 `i32` 的别名（minix-types `types::id`），直接放。
+            // `GrantId` is an alias of `i32` (minix-types `types::id`), so it goes in directly.
             grants: [grants[0], grants[1], grants[2]],
             aux,
         };
         self.suspend_on_sdev(fp_slot, idx, block)
     }
 
-    /// **进程级挂起**的套接字调用（C `sdev_suspend` sdev.c:82-112）：把调用进程
-    /// 标成 `FP_BLOCKED_ON_SDEV` 并**释放 worker 槽**（这类调用可能等很久——
-    /// 比如 connect 等对端——C 不肯拿 worker 槽去等），回复到达后由
-    /// [`Self::finish_sdev_blocked`] 收尾。
+    /// A **process-level suspend** socket call (C `sdev_suspend` sdev.c:82-112): mark the calling process
+    /// `FP_BLOCKED_ON_SDEV` and **release the worker slot** (such calls can wait a long time —
+    /// e.g. connect waiting for a peer — and C refuses to hold a worker slot for it); when the reply arrives,
+    /// [`Self::finish_sdev_blocked`] finalizes it.
     pub fn suspend_on_sdev(
         &mut self,
         fp_slot: Option<minix_types::UserSlot>,
@@ -3028,8 +3028,8 @@ impl VfsState {
         };
         let fp = self.fproc_table.get_mut(slot).ok_or(minix_types::EINVAL)?;
         fp.blocked_on = crate::fproc::BlockedOn::Sdev(block);
-        // 释放槽（C 的 `suspend()` 之后 worker 就空了）；`run_once` 见
-        // `Suspend` 不再重复释放，也不回用户——回复由驱动那侧来。
+        // Release the slot (after C's `suspend()` the worker is empty); `run_once` seeing
+        // `Suspend` does not release again and does not reply to the user — the reply comes from the driver side.
         self.worker_pool.release(idx);
         if self.current_worker == Some(idx) {
             self.current_worker = None;
@@ -3037,14 +3037,14 @@ impl VfsState {
         Ok(())
     }
 
-    /// 驱动回复唤醒**进程级挂起**的套接字调用（C `sdev_reply` 的第二条路 +
-    /// `sdev_finish` 的 bind/connect 组）：按**设备号的驱动**找到那个被挂起的
-    /// 进程，清掉挂起态、撤销它留下的 grant，再把状态回给用户。
+    /// A driver reply waking a **process-level suspended** socket call (the second path of C `sdev_reply`
+    /// plus the bind/connect group of `sdev_finish`): find the suspended process by the **device number's
+    /// driver**, clear the suspend state, revoke the grant it left behind, then return the status to the user.
     ///
-    /// 返回 `true` 表示认领了这条回复。
+    /// Returns `true` when this reply was claimed.
     pub fn finish_sdev_blocked(&mut self, msg: &Message) -> bool {
-        // C `sdev_reply`：回复里的 `req_id` 是调用方端点——本模型里直接按
-        // "谁被挂起 + 设备号的驱动是谁"找（两者等价且更严）。
+        // C `sdev_reply`: `req_id` in the reply is the caller endpoint — here the lookup is directly by
+        // "who is suspended + which driver owns this device number" (equivalent and stricter).
         let mut found: Option<(minix_types::UserSlot, crate::fproc::SdevBlock)> = None;
 
         for i in 0..minix_types::NR_PROCS {
@@ -3055,7 +3055,7 @@ impl VfsState {
             let crate::fproc::BlockedOn::Sdev(block) = fp.blocked_on else {
                 continue;
             };
-            // 这个设备的驱动就是回复方吗？
+            // Is this device's driver the replying party?
             if crate::device_map::smap_endpt_by_dev(&self.smap_table, block.dev)
                 == Some(msg.m_source)
             {
@@ -3066,13 +3066,13 @@ impl VfsState {
         let Some((slot, block)) = found else {
             return false;
         };
-        // 清挂起态（C 的 `rfp->fp_blocked_on = FP_BLOCKED_ON_NONE`）。
+        // Clear the suspend state (C's `rfp->fp_blocked_on = FP_BLOCKED_ON_NONE`).
         if let Some(fp) = self.fproc_table.get_mut(slot) {
             fp.blocked_on = crate::fproc::BlockedOn::None;
         }
-        // 撤销留下的 grant（C 的 `sdev_finish` 之前先 revoke 那三张）。
+        // Revoke the grants it left behind (C revokes those three before `sdev_finish`).
         for g in block.grants.iter().flatten() {
-            // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+            // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.revoke_grant(*g);
         }
@@ -3081,23 +3081,23 @@ impl VfsState {
             .get(slot)
             .map(|fp| fp.endpoint)
             .unwrap_or(Endpoint::NONE);
-        // 状态与收尾按**调用**分流（C `sdev_finish` 的 switch）：
-        // - 发送方向（`VFS_SENDTO`）用 `SDEV_REPLY`，状态就是结果；
-        // - 接收方向（`VFS_RECVFROM`）用 `SDEV_RECV_REPLY`，载荷里还有
-        //   `ctl_len`/`addr_len`/`flags`——`recvfrom` 要把 **addr_len 放进
-        //   回复载荷**（`m_vfs_lc_socklen { len }`，C `resume_recvfrom`）。
-        // `accept` 有**自己的三态收尾**（C `resume_accept` socket.c:367-465）：
-        // ① 失败且没建套接字 → 只回错误；② 失败但驱动已建套接字 → 关掉它再回
-        // 错误；③ 成功 → 现场**再开一个 worker** 去做 `make_sock_fd`（C 注释：
-        // 收尾里还要阻塞调用，主线程不能做），成功回 fd + 对端地址长度。
+        // Status and finalization branch by **call** (C `sdev_finish`'s switch):
+        // - Send direction (`VFS_SENDTO`) uses `SDEV_REPLY`; the status is the result;
+        // - Receive direction (`VFS_RECVFROM`) uses `SDEV_RECV_REPLY`; the payload also has
+        //   `ctl_len`/`addr_len`/`flags` — `recvfrom` must put **addr_len into the reply
+        //   payload** (`m_vfs_lc_socklen { len }`, C `resume_recvfrom`).
+        // `accept` has **its own three-state finalization** (C `resume_accept` socket.c:367-465):
+        // ① failure and no socket created → return only the error; ② failure but the driver created a socket → close it, then return
+        // the error; ③ success → **open another worker** in the slot to run `make_sock_fd` (C's comment:
+        // finalization still makes blocking calls, which the main thread cannot do); on success return the fd plus the peer address length.
         if msg.m_type == minix_sockdriver::sdev::SdevReply::AcceptReply as i32 {
             // SAFETY: `mess_lsockdriver_vfs_accept_reply { int32_t req_id@0;
-            // int32_t sock_id@4; int status@8; unsigned int len@12 }`。
+            // int32_t sock_id@4; int status@8; unsigned int len@12 }`.
             let raw = unsafe { &msg.m_u.raw };
             let sock_id = i32::from_le_bytes(raw[4..8].try_into().unwrap());
             let status = i32::from_le_bytes(raw[8..12].try_into().unwrap());
             let addr_len = u32::from_le_bytes(raw[12..16].try_into().unwrap());
-            // `split_smap_dev` 给 `(num, sockid)`——这里要的是**行号**。
+            // `split_smap_dev` gives `(num, sockid)` — what is needed here is the **row number**.
             let smap_num = match crate::device_map::split_smap_dev(block.dev) {
                 Some((num, _)) => num,
                 None => {
@@ -3109,7 +3109,7 @@ impl VfsState {
                 }
             };
             if sock_id < 0 {
-                // case ①：没建套接字，只回错误。
+                // case ①: no socket created; return only the error.
                 self.queue_reply(
                     target,
                     crate::call_table::SyscallResult::Error(if status != 0 {
@@ -3121,14 +3121,14 @@ impl VfsState {
                 return true;
             }
             let dev = crate::device_map::make_smap_dev(smap_num, sock_id as u32);
-            // case ②/③ 都要一个 worker（收尾里可能要再发驱动请求 / PFS 请求）。
+            // cases ②/③ both need a worker (finalization may send further driver requests / PFS requests).
             let Some(new_idx) = self.worker_pool.assign_first_fit(
                 slot,
                 crate::worker::WorkerFunc::DoWork,
                 &Message::default(),
             ) else {
-                // 槽位耗尽：C 在这里会尽力而为；本模型里诚实回 EAGAIN 并记
-                // 缺口（新套接字由驱动侧留着，等驱动死亡回收）。
+                // Slot exhaustion: C does a best effort here; this model answers EAGAIN honestly and records
+                // the gap (the new socket stays on the driver side, reclaimed when the driver dies).
                 self.queue_reply(
                     target,
                     crate::call_table::SyscallResult::Error(minix_types::EAGAIN),
@@ -3136,8 +3136,8 @@ impl VfsState {
                 return true;
             };
             self.current_worker = Some(new_idx);
-            // 监听套接字还在吗？它的打开标志要被新套接字继承（C `resume_accept`
-            // 的 `get_sock(listen_fd, &ldev, &flags)`）。
+            // Is the listening socket still there? Its open flags are inherited by the new socket (C `resume_accept`'s
+            // `get_sock(listen_fd, &ldev, &flags)`).
             let listen_fd = match block.aux {
                 crate::fproc::SdevAux::Fd(fd) => fd as i32,
                 _ => -1,
@@ -3154,7 +3154,7 @@ impl VfsState {
                 }
             };
             if status != 0 {
-                // case ②：驱动建了套接字但整体失败 → 关掉它，回错误。
+                // case ②: the driver created a socket but the call failed overall → close it and return the error.
                 if let Some(wp) = self.worker_pool.get_mut(new_idx) {
                     wp.cont = Some(crate::worker::WorkerCont::SdevCloseThenReply { status });
                 }
@@ -3168,13 +3168,13 @@ impl VfsState {
                     )
                     .is_err()
                 {
-                    // 关不掉也要把错误回给用户（C 是 `(void)sdev_close`）。
+                    // Even a failed close must still return the error to the user (C is `(void)sdev_close`).
                     self.finish_worker_job(new_idx, Some(slot), status);
                 }
                 return true;
             }
-            // case ③：继承监听套接字的三个标志位（C 的 `flags &=
-            // O_CLOEXEC | O_NONBLOCK | O_NOSIGPIPE`）。
+            // case ③: inherit the listening socket's three flag bits (C's `flags &=
+            // O_CLOEXEC | O_NONBLOCK | O_NOSIGPIPE`).
             let inherit = (crate::open::OpenFlags::CLOEXEC.bits()
                 | crate::fcntl::O_NONBLOCK
                 | crate::fcntl::O_NOSIGPIPE)
@@ -3182,7 +3182,7 @@ impl VfsState {
             if let Err(e) =
                 self.begin_make_sock_fd(new_idx, Some(slot), dev, inherit, Some(addr_len), None)
             {
-                // 建 fd 失败 → 也要关掉新套接字（C 的同一个分支）。
+                // fd creation failed → the new socket must be closed too (C's same branch).
                 if let Some(wp) = self.worker_pool.get_mut(new_idx) {
                     wp.cont = Some(crate::worker::WorkerCont::SdevCloseThenReply { status: e });
                 }
@@ -3206,12 +3206,12 @@ impl VfsState {
         let mut status;
         let mut addr_len_out: Option<u32> = None;
         if msg.m_type == minix_sockdriver::sdev::SdevReply::Reply as i32 {
-            // SAFETY: `mess_lsockdriver_vfs_reply { int32_t req_id; int status; }`。
+            // SAFETY: `mess_lsockdriver_vfs_reply { int32_t req_id; int status; }`.
             let raw = unsafe { &msg.m_u.raw };
             status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
         } else if msg.m_type == recv_reply {
             // SAFETY: `mess_lsockdriver_vfs_recv_reply { req_id@0, status@4,
-            // ctl_len@8, addr_len@12, flags@16 }`。
+            // ctl_len@8, addr_len@12, flags@16 }`.
             let raw = unsafe { &msg.m_u.raw };
             status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
             let ctl_len = u32::from_le_bytes(raw[8..12].try_into().unwrap());
@@ -3222,15 +3222,15 @@ impl VfsState {
                     addr_len_out = Some(addr_len);
                 }
                 crate::fproc::SdevCall::Recvmsg if status >= 0 => {
-                    // C `resume_recvmsg`（socket.c:600-660）：改 msghdr 的三个
-                    // 字段（`msg_controllen`/`msg_flags`/`msg_namelen`，后者只在
-                    // `addr_len > 0` 时改）再**整块拷回用户**；拷贝失败就把那个
-                    // 错误当状态回（C 的 `status = r`）。宿主下这次拷贝不可达，
-                    // 所以这里如实回 EIO/EINVAL。
+                    // C `resume_recvmsg` (socket.c:600-660): modify three msghdr
+                    // fields (`msg_controllen`/`msg_flags`/`msg_namelen`, the last only when
+                    // `addr_len > 0`), then **copy the whole block back to the user**; a failed copy returns that
+                    // error as the status (C's `status = r`). In a host build that copy is unreachable,
+                    // so this returns EIO/EINVAL honestly.
                     let update = crate::socket::recvmsg_update(ctl_len, rflags as u32, addr_len);
                     let _ = update;
                     if let crate::fproc::SdevAux::Buf(msgbuf) = block.aux {
-                        // 取回用户那份 msghdr（生产件是跨空间拷贝）。
+                        // Fetch the user's copy of the msghdr (in production this is a cross-space copy).
                         use crate::socket::MsgHdrFetcher as _;
                         let fetcher = crate::socket::SysMsgHdrFetcher { who: target };
                         if let Ok(mh) = fetcher.fetch_msghdr(msgbuf.0) {
@@ -3254,8 +3254,8 @@ impl VfsState {
                             )
                             .is_err()
                             {
-                                // 负号：这个函数的 `status` 按"线上带符号
-                                // 状态"解释，正号会被当成成功值/fd。
+                                // Negative sign: this function's `status` is interpreted as a "signed on-wire
+                                // status"; a positive value would be taken as a success value/fd.
                                 status = -minix_types::EIO;
                             }
                         } else {
@@ -3268,8 +3268,8 @@ impl VfsState {
         } else if msg.m_type < 0 {
             status = msg.m_type;
         } else {
-            // 回复号不是认识的任何一种：折 EIO——**负号**（这个函数的
-            // `status` 按"线上带符号状态"解释，正号会被当成成功值/fd）。
+            // Reply number of an unknown kind: fold to EIO — **negative** (this function's
+            // `status` is interpreted as a "signed on-wire status"; a positive value would be taken as a success value/fd).
             status = -minix_types::EIO;
         }
         let result = if status < 0 {
@@ -3279,7 +3279,7 @@ impl VfsState {
                 m_type: status,
                 ..Message::default()
             };
-            // SAFETY: `mess_vfs_lc_socklen { unsigned int len; }` 在负载区首字。
+            // SAFETY: `mess_vfs_lc_socklen { unsigned int len; }` occupies the first word of the payload area.
             unsafe {
                 m.m_u.raw[0..4].copy_from_slice(&len.to_le_bytes());
             }
@@ -3292,18 +3292,18 @@ impl VfsState {
         true
     }
 
-    // ───────────────────────── select 的等待半 ─────────────────────────
-    // C select.c 的回复/超时/重启机械（do_select 的请求半在 syscalls.rs）。
-    // 查询是 `asynsend` 一发不等（`cdev_select`/`sdev_select`），所以这半
-    // 不经 worker 槽：回复按 dmap/smap 的 `sel_busy` 认领，超时按 CLOCK
-    // 通知收尾，进程级挂起（`BlockedOn::Select`）与 bind/accept 同模式。
+    // ───────────────────────── select waiting half ─────────────────────────
+    // The reply/timeout/restart machinery of C select.c (the request half of do_select lives in syscalls.rs).
+    // Queries are send-and-don't-wait via `asynsend` (`cdev_select`/`sdev_select`), so this half
+    // does not go through worker slots: replies are claimed via dmap/smap `sel_busy`, timeouts are finalized by CLOCK
+    // notifications, and the process-level suspend (`BlockedOn::Select`) follows the same pattern as bind/accept.
 
-    /// 发一张 select 查询（C `cdev_select` cdev.c:350-377 /
-    /// `sdev_select` sdev.c:647-668）：`asynsend` 一发不等。
+    /// Send one select query (C `cdev_select` cdev.c:350-377 /
+    /// `sdev_select` sdev.c:647-668): send-and-don't-wait via `asynsend`.
     ///
-    /// 消息形状：字符 `mess_vfs_lchardriver_select { devminor_t minor@0;
-    /// int ops@4 }`（ipc.h，`minor` 是 4 字节域）；套接字
-    /// `mess_vfs_lsockdriver_select { int32 sock_id@0; int ops@4 }`。
+    /// Message shape: char `mess_vfs_lchardriver_select { devminor_t minor@0;
+    /// int ops@4 }` (ipc.h, `minor` is a 4-byte field); socket
+    /// `mess_vfs_lsockdriver_select { int32 sock_id@0; int ops@4 }`.
     pub fn send_select_query(
         &mut self,
         is_char: bool,
@@ -3312,17 +3312,17 @@ impl VfsState {
     ) -> Result<(), i32> {
         let mut m = Message {
             m_type: if is_char {
-                // 字符侧同 §1.105 教训：`CdevRequest::Select as i32` = 6（索引），
-                // 驱动解 6 归类 Other 不回；必走 `message_type()`(0x406)。
-                // 套接字侧 `SdevRequest` 有显式 `#[repr(u32)]` 判别值，`as i32` 仍对。
+                // On the char side, the lesson holds: `CdevRequest::Select as i32` = 6 (an index),
+                // which the driver decodes as Other and does not answer; `message_type()` (0x406) is mandatory.
+                // On the socket side `SdevRequest` has explicit `#[repr(u32)]` discriminants, so `as i32` remains correct.
                 minix_chardriver::protocol::CdevRequest::Select.message_type()
             } else {
                 minix_sockdriver::sdev::SdevRequest::Select as i32
             },
             ..Message::default()
         };
-        // SAFETY: 两族 select 请求的前两格都是 `int32 id/minor@0; int
-        // ops@4`（ipc.h:2216-2222 / lsockdriver_select）。
+        // SAFETY: the first two words of both select request families are `int32 id/minor@0; int
+        // ops@4` (ipc.h:2216-2222 / lsockdriver_select).
         unsafe {
             let raw = &mut m.m_u.raw;
             let id = if is_char {
@@ -3345,20 +3345,20 @@ impl VfsState {
         } else {
             crate::device_map::smap_endpt_by_dev(&self.smap_table, dev).ok_or(minix_types::EIO)?
         };
-        // C `asynsend3(dmap_driver, &mess, AMF_NOREPLY)`（失败 panic——
-        // 模型里传输失败折 EIO，调用方记进 `se->error`）。
+        // C `asynsend3(dmap_driver, &mess, AMF_NOREPLY)` (panics on failure —
+        // here a transport failure folds to EIO, which the caller records in `se->error`).
         use minix_sys::ipc::IpcTransport as _;
         minix_sys::ipc::DirectTrapTransport
             .sendnb(drv_e, &m)
             .map_err(|_| minix_types::EIO)
     }
 
-    /// `select_request_char`/`select_request_sock` 的共用体
-    /// （select.c:459-565）：`/dev/tty` 重映射 → `filp_select_dev` 冲突门 →
-    /// `select_filter`（决策件）→ 驱动 busy 门 → 发查询 → 记账。
+    /// Shared body of `select_request_char`/`select_request_sock`
+    /// (select.c:459-565): `/dev/tty` remap → `filp_select_dev` conflict gate →
+    /// `select_filter` (the decision module) → driver busy gate → send the query → bookkeeping.
     ///
-    /// 返回 `Ok(ready)` = 本轮就绪位（空 = 在途或暂无）；`Err(e)` =
-    /// C 的 `r != OK && r != SUSPEND`（记进 `se->error` 的那类）。
+    /// Returns `Ok(ready)` = ready bits for this round (empty = in flight or none yet); `Err(e)` =
+    /// C's `r != OK && r != SUSPEND` (the class recorded in `se->error`).
     pub(crate) fn select_request_driver(
         &mut self,
         fp_slot: Option<minix_types::UserSlot>,
@@ -3380,8 +3380,8 @@ impl VfsState {
                 .ok_or(minix_types::EIO)?;
             v.sdev
         };
-        // C `cdev_map`（select_request_char:470-473）：字符族做 `/dev/tty`
-        // 重映射；套接字族原样（select.c:539）。
+        // C `cdev_map` (select_request_char:470-473): the char family gets the `/dev/tty`
+        // remap; the socket family stays as is (select.c:539).
         let dev = if is_char {
             let major = ((sdev & 0x000fff00) >> 8) as u32;
             let is_ctty = major == crate::device_map::CTTY_MAJOR;
@@ -3409,7 +3409,7 @@ impl VfsState {
                 crate::select::SelOps::from_bits_truncate(filp.select_ops),
             )
         };
-        // C select.c:475-487：一张 filp 挂了两个控制终端的错乱门。
+        // C select.c:475-487: the corruption gate for one filp hung on two controlling terminals.
         if old_dev != 0 && old_dev != dev {
             return Err(minix_types::EIO);
         }
@@ -3422,7 +3422,7 @@ impl VfsState {
         }
         match filter_step(flags, want, block) {
             FilterOutcome::ReadyNone | FilterOutcome::Suspend => {
-                // 空手而回（0 就绪位）——filter 判"现在没得问"或在途。
+                // Empty-handed (0 ready bits) — filter says "nothing to ask now" or the query is in flight.
                 Ok(SO::empty())
             }
             FilterOutcome::Query {
@@ -3432,8 +3432,8 @@ impl VfsState {
                 set_block,
                 ..
             } => {
-                // 驱动 busy 门（select.c:508-510/547-549）：同一驱动同一
-                // 时刻只许一张查询在途。
+                // Driver busy gate (select.c:508-510/547-549): at most one query per driver
+                // may be in flight at a time.
                 let busy = if is_char {
                     let major = ((dev & 0x000fff00) >> 8) as u32;
                     self.dmap_table
@@ -3462,8 +3462,8 @@ impl VfsState {
                 }
                 match self.send_select_query(is_char, dev, rops) {
                     Ok(()) => {
-                        // 成功：标驱动在途 + filp 的 BUSY/阻塞监视位
-                        // （C select.c:519-522/555-558 的三连义务）。
+                        // Success: mark the driver in flight + the filp's BUSY/block-monitor bits
+                        // (the three-part obligation of C select.c:519-522/555-558).
                         let block_bits = if set_block.contains(SO::RD) {
                             crate::filp::FsfFlags::RD_BLOCK.bits()
                         } else {
@@ -3512,8 +3512,8 @@ impl VfsState {
         }
     }
 
-    /// 槽的"有 fd 在等驱动答复吗"（`is_deferred` 的第二参：任何参与 filp
-    /// 带 `FSF_UPDATE | FSF_BUSY`）。
+    /// "Does any fd in the slot wait for a driver answer" (the second argument of `is_deferred`: any participating filp
+    /// carrying `FSF_UPDATE | FSF_BUSY`).
     pub(crate) fn select_any_update_or_busy(&self, s: usize) -> bool {
         let Some(se) = self.select_table.get(s) else {
             return false;
@@ -3529,7 +3529,7 @@ impl VfsState {
         })
     }
 
-    /// `restart_proc`（select.c:1303-1312）：有结果且不再 deferred 就收尾。
+    /// `restart_proc` (select.c:1303-1312): finalize once there is a result and it is no longer deferred.
     fn select_restart_proc(&mut self, s: usize) {
         let Some(se) = self.select_table.get(s) else {
             return;
@@ -3541,10 +3541,10 @@ impl VfsState {
         }
     }
 
-    /// `select_cancel_all`（select.c:712-738）：逐 filp 释放选择账
-    /// （`cancel_one` 决策件），最后一任清 stale 的 dmap/smap 归属
-    /// （busy **保持**——查询还在途，回复落地时只清状态），清超时，放槽，
-    /// 清进程挂起态。
+    /// `select_cancel_all` (select.c:712-738): release each filp's select bookkeeping
+    /// (`cancel_one`, the decision module); the last holder clears stale dmap/smap ownership
+    /// (busy **stays** — the query is still in flight, and only the state is cleared when the reply lands), clears the timeout, frees the slot,
+    /// and clears the process suspend state.
     fn select_cancel_all(&mut self, s: usize) {
         let filps: alloc::vec::Vec<usize> = self
             .select_table
@@ -3580,7 +3580,7 @@ impl VfsState {
                 if let Some(row) = self.dmap_table.get_mut(major)
                     && row.sel_owner == Some(filp_idx)
                 {
-                    row.sel_owner = None; // leave _busy set（C select.c:763）
+                    row.sel_owner = None; // leave _busy set (C select.c:763)
                 }
                 if let Some((num, _)) = crate::device_map::split_smap_dev(dev)
                     && let Some(row) = self.smap_table.entries.iter_mut().find(|r| r.num == num)
@@ -3596,7 +3596,7 @@ impl VfsState {
             se.filps.clear();
         }
         self.select_table.release(s);
-        // 清进程挂起态（C 由 revive 的唤醒机制承担）。
+        // Clear the process suspend state (C delegates this to revive's wakeup mechanism).
         if let Some(slot) = requestor
             && let Some(fp) = self.fproc_table.get_mut(slot)
             && fp.blocked_on == crate::fproc::BlockedOn::Select
@@ -3605,12 +3605,12 @@ impl VfsState {
         }
     }
 
-    /// `select_return`（select.c:1090-1107）：取消 → 结果集拷回 →
-    /// `revive(req_endpt, r)`（模型里 = queue_reply + 清挂起态，见
-    /// [`Self::select_cancel_all`] 尾部）。
+    /// `select_return` (select.c:1090-1107): cancel → copy the result sets back →
+    /// `revive(req_endpt, r)` (here = queue_reply + clear the suspend state; see
+    /// the tail of [`Self::select_cancel_all`]).
     fn select_return(&mut self, s: usize) {
-        // CLOCK/回复路径没有可注入的 io——构造生产件（宿主下 store 不可
-        // 达时按错误收尾，簿记仍完整）。
+        // The CLOCK/reply path has no injectable io — the production object is built (an unreachable
+        // store in a host build finalizes with an error; bookkeeping stays complete).
         let who = self
             .select_table
             .get(s)
@@ -3631,10 +3631,10 @@ impl VfsState {
         }
     }
 
-    /// 超时布防 + 进程级挂起（C `do_select:319-335` 的 `set_timer` +
-    /// `suspend(FP_BLOCKED_ON_SELECT)`）。`Until` 计划经 `sys_setalarm`
-    /// 设**一个**内核闹钟（多 select 并存时重设为最早到期——全表近似
-    /// 见 [`Self::select_timeout_check`]）。
+    /// Timeout arming + process-level suspend (C `do_select:319-335`'s `set_timer` +
+    /// `suspend(FP_BLOCKED_ON_SELECT)`). An `Until` plan sets **one** kernel alarm via `sys_setalarm`
+    /// (with several concurrent selects it is reset to the earliest expiry — see
+    /// [`Self::select_timeout_check`] for the whole-table approximation).
     pub(crate) fn select_arm_and_suspend(
         &mut self,
         slot_idx: usize,
@@ -3645,14 +3645,14 @@ impl VfsState {
             if let Some(se) = self.select_table.get_mut(slot_idx) {
                 se.expiry = ticks;
             }
-            // 单闹钟：有并存 select 时重设为最早到期。
+            // Single alarm: with concurrent selects it is reset to the earliest expiry.
             let next = (0..crate::select::MAXSELECTS)
                 .filter_map(|s| self.select_table.get(s))
                 .filter(|se| se.requestor.is_some() && se.expiry > 0)
                 .map(|se| se.expiry)
                 .min()
                 .unwrap_or(ticks);
-            // [SD19-gate] 闹钟设置尽力而为（C 同位忽略返回）
+            // [SD19-gate] best-effort alarm setup (C ignores the return at the same point)
             #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::syscall::sys_setalarm(
                 &minix_sys::syscall::DirectKernelCallTransport,
@@ -3665,8 +3665,8 @@ impl VfsState {
             .get_mut(fp_slot)
             .ok_or(minix_types::EINVAL)?;
         fp.blocked_on = crate::fproc::BlockedOn::Select;
-        // 释放 worker 槽（进程级挂起；与 `suspend_on_sdev` 同模式——
-        // C 的 `suspend()` 之后 worker 作业即告终）。
+        // Release the worker slot (process-level suspend; same pattern as `suspend_on_sdev` —
+        // after C's `suspend()` the worker job is over).
         if let Some(idx) = self.current_worker {
             self.worker_pool.release(idx);
             self.current_worker = None;
@@ -3674,14 +3674,14 @@ impl VfsState {
         Ok(())
     }
 
-    /// `select_return` 的可注入 io 版（do_select 的立即返回路径用它，
-    /// 拿臂的 FdSetIo 缝让宿主可测）。返回用户拿到的那只值。
+    /// The injectable-io version of `select_return` (used by do_select's immediate-return path;
+    /// the arm's FdSetIo seam keeps it host-testable). Returns the value the user receives.
     pub(crate) fn select_finish(
         &mut self,
         s: usize,
         io: &impl crate::select::FdSetIo,
     ) -> Result<i32, i32> {
-        // 释放前取走收尾要的数据（cancel 会放掉槽）。
+        // Take the data finalization needs before releasing (cancel frees the slot).
         let (error, nready, vir, sets) = {
             let Some(se) = self.select_table.get(s) else {
                 return Ok(0);
@@ -3700,13 +3700,13 @@ impl VfsState {
         let (vir_read, vir_write, vir_err) = vir;
         let (rd, wr, er) = sets;
         self.select_cancel_all(s);
-        // C：error 时**不拷**结果集，直接回错误（select.c:1101-1105）。
-        // C：error 时**不拷**结果集，直接回错误（select.c:1101-1105）。
+        // C: on error the result sets are **not copied**; return the error directly (select.c:1101-1105).
+        // C: on error the result sets are **not copied**; return the error directly (select.c:1101-1105).
         if error != 0 {
             return Err(error);
         }
-        // C `copy_fdsets(se, se->nfds, TO_PROC)`：只拷回用户预期的
-        // 字节数——三张集就是按这个字节数分配的，整集拷回。
+        // C `copy_fdsets(se, se->nfds, TO_PROC)`: copy back only the byte count
+        // the user expects — the three sets were allocated to that size, so the whole set is copied back.
         if vir_read != 0
             && let Err(e) = io.store(vir_read, &rd)
         {
@@ -3725,8 +3725,8 @@ impl VfsState {
         Ok(nready as i32)
     }
 
-    /// `filp_status`（select.c:1283-1301）：把一个 filp 的新状态广播给
-    /// 所有选它的槽。`status < 0` 记错；否则记就绪位。
+    /// `filp_status` (select.c:1283-1301): broadcast a filp's new status to
+    /// every slot selecting it. `status < 0` records an error; otherwise it records ready bits.
     fn select_filp_status(&mut self, filp_idx: usize, status: i32) {
         let mut found = alloc::vec::Vec::new();
         for s in 0..crate::select::MAXSELECTS {
@@ -3772,8 +3772,8 @@ impl VfsState {
         }
     }
 
-    /// `select_cdev_reply1`（select.c:1004-1070）：字符驱动的一型回复。
-    /// 设备不匹配时**保持**在途标记（C 同款：等真正的回复）。
+    /// `select_cdev_reply1` (select.c:1004-1070): a type-1 reply from a char driver.
+    /// On a device mismatch the in-flight mark **stays** (as in C: wait for the real reply).
     pub fn select_cdev_reply1(&mut self, driver_e: Endpoint, minor: u32, status: i32) {
         let Some(major) = crate::device_map::get_by_endpt(&self.dmap_table, driver_e) else {
             return;
@@ -3783,7 +3783,7 @@ impl VfsState {
             return;
         };
         if !row.sel_busy {
-            return; // 没人等这张回复
+            return; // no one is waiting for this reply
         }
         let owner = row.sel_owner;
         if let Some(filp_idx) = owner {
@@ -3793,7 +3793,7 @@ impl VfsState {
                 .map(|f| f.select_dev == dev)
                 .unwrap_or(false);
             if !ok {
-                return; // 驱动答非所问：保持在途
+                return; // the driver answered something else: keep it in flight
             }
         }
         if let Some(row) = self.dmap_table.get_mut(major) {
@@ -3806,7 +3806,7 @@ impl VfsState {
         self.select_restart_filps();
     }
 
-    /// `select_sdev_reply1`（select.c:1072-1107）：套接字驱动的一型回复。
+    /// `select_sdev_reply1` (select.c:1072-1107): a type-1 reply from a socket driver.
     pub fn select_sdev_reply1(&mut self, dev: u64, status: i32) {
         let (num, _) = match crate::device_map::split_smap_dev(dev) {
             Some(p) => p,
@@ -3840,8 +3840,8 @@ impl VfsState {
         self.select_restart_filps();
     }
 
-    /// `select_reply1`（select.c:956-999）：一型回复的 filp 记账 +
-    /// 广播（`reply1_step` 决策件）。
+    /// `select_reply1` (select.c:956-999): filp bookkeeping + broadcast for a type-1 reply
+    /// (`reply1_step`, the decision module).
     fn select_reply1(&mut self, filp_idx: usize, status: i32) {
         let (flags, ops) = {
             let Some(f) = self.filp_table.get(crate::filp::FilpId(filp_idx)) else {
@@ -3865,12 +3865,12 @@ impl VfsState {
         self.select_filp_status(filp_idx, broadcast);
     }
 
-    /// `select_cdev_reply2`（select.c:1160-1192）+ `select_reply2`
-    /// （select.c:1109-1158）：二型（就绪通知）回复，扫全部槽里盯着这个
-    /// 设备的 fd。
+    /// `select_cdev_reply2` (select.c:1160-1192) + `select_reply2`
+    /// (select.c:1109-1158): a type-2 (readiness notification) reply; scan every slot's fd watching this
+    /// device.
     pub fn select_cdev_reply2(&mut self, driver_e: Endpoint, minor: u32, status: i32) {
         if status == 0 {
-            return; // C：weird status
+            return; // C: weird status
         }
         let Some(major) = crate::device_map::get_by_endpt(&self.dmap_table, driver_e) else {
             return;
@@ -3879,7 +3879,7 @@ impl VfsState {
         self.select_reply2(dev, status);
     }
 
-    /// `select_sdev_reply2`（select.c:1194-1210）。
+    /// `select_sdev_reply2` (select.c:1194-1210).
     pub fn select_sdev_reply2(&mut self, dev: u64, status: i32) {
         if status == 0 {
             return;
@@ -3889,7 +3889,7 @@ impl VfsState {
 
     fn select_reply2(&mut self, dev: u64, status: i32) {
         for s in 0..crate::select::MAXSELECTS {
-            // 拷出本槽的 fd 关联（后面要对表做可变借用，不跨写持借用）。
+            // Snapshot this slot's fd associations (the table needs a mutable borrow afterwards; do not hold a borrow across it).
             let filps = match self.select_table.get(s) {
                 Some(se) if se.requestor.is_some() => se.filps.clone(),
                 _ => continue,
@@ -3947,9 +3947,9 @@ impl VfsState {
         self.select_restart_filps();
     }
 
-    /// `select_restart_filps`（select.c:1212-1260）：重启 deferred 的
-    /// 查询（INIT 拆两张卡的更新态 filp——SUSPEND 期间先答一个，回复
-    /// 落地后再问下一个）。
+    /// `select_restart_filps` (select.c:1212-1260): restart deferred queries
+    /// (INIT splits an update-state filp into two cards — answer one during SUSPEND,
+    /// then ask the next after the reply lands).
     pub fn select_restart_filps(&mut self) {
         for s in 0..crate::select::MAXSELECTS {
             let (filps, block, requestor) = match self.select_table.get(s) {
@@ -3981,7 +3981,7 @@ impl VfsState {
                     kind,
                     crate::select::FdKind::Char | crate::select::FdKind::Sock
                 ) {
-                    // C 断言只处理字符/套接字（select.c:1237-1240）。
+                    // C asserts that only chars/sockets are handled (select.c:1237-1240).
                     continue;
                 }
                 let is_char = kind == crate::select::FdKind::Char;
@@ -4015,16 +4015,16 @@ impl VfsState {
         }
     }
 
-    /// `select_timeout_check`（select.c:861-880）的单闹钟近似：CLOCK 通知
-    /// 到点时取**最早到期**的槽收尾；其余槽的 expiry 同减这段时间；还
-    /// 有挂着的就重设闹钟。
+    /// The single-alarm approximation of `select_timeout_check` (select.c:861-880): when a CLOCK notification
+    /// fires, finalize the **earliest-expiring** slot; subtract that interval from every other slot's expiry;
+    /// if any remain, re-arm the alarm.
     ///
-    /// [ARCH: select 单闹钟近似] C 的每槽 `timer`（set_timer 链）在这里
-    /// 收敛成"一个内核闹钟 + 到点全表扫描"：同一到期时刻的槽一起收尾，
-    /// 数学与 timer 链一致，省掉 per-slot 内核闹钟面。三处一致标注随
-    /// 本批 doc 同步。
+    /// [ARCH: single-alarm select] C's per-slot `timer` (the set_timer chain) converges here
+    /// into "one kernel alarm + a whole-table scan on expiry": slots expiring at the same instant finish together,
+    /// the arithmetic matches the timer chain, and the per-slot kernel-alarm surface disappears. The three-way
+    /// annotation is kept in sync with the design docs.
     pub fn select_timeout_check(&mut self) -> bool {
-        // 找最小非零 expiry。
+        // Find the smallest non-zero expiry.
         let mut min: Option<(usize, u64)> = None;
         for s in 0..crate::select::MAXSELECTS {
             let Some(se) = self.select_table.get(s) else {
@@ -4040,7 +4040,7 @@ impl VfsState {
         let Some((_, elapsed)) = min else {
             return false;
         };
-        // 其余槽同减这段时间；到期的槽（expiry == elapsed）收尾。
+        // Subtract that interval from the other slots; expired slots (expiry == elapsed) are finalized.
         let mut fired = alloc::vec::Vec::new();
         for s in 0..crate::select::MAXSELECTS {
             let Some(se) = self.select_table.get(s) else {
@@ -4067,7 +4067,7 @@ impl VfsState {
             se.expiry = 0;
             let deferred = self.select_any_update_or_busy(s);
             if deferred {
-                // 定时器来得太早：转非阻塞重试（C 同款）。
+                // The timer fired too early: switch to a non-blocking retry (as in C).
                 let se = self.select_table.get_mut(s).unwrap();
                 se.block = false;
                 self.select_restart_proc(s);
@@ -4075,14 +4075,14 @@ impl VfsState {
                 self.select_return(s);
             }
         }
-        // 还有挂着的就重设闹钟。
+        // If any remain, re-arm the alarm.
         let next = (0..crate::select::MAXSELECTS)
             .filter_map(|s| self.select_table.get(s))
             .filter(|se| se.requestor.is_some() && se.expiry > 0)
             .map(|se| se.expiry)
             .min();
         if let Some(ticks) = next {
-            // [SD19-gate] 闹钟设置尽力而为（C 同位忽略返回）
+            // [SD19-gate] best-effort alarm setup (C ignores the return at the same point)
             #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::syscall::sys_setalarm(
                 &minix_sys::syscall::DirectKernelCallTransport,
@@ -4093,19 +4093,19 @@ impl VfsState {
         true
     }
 
-    /// 驱动回复落槽（C `sdev_reply`/`cdev_reply`/`bdev_reply` 的公共前半）：
-    /// 找到**正在等这个驱动**的 worker 槽，把回复落进它的 `sendrec` 并唤醒
-    /// （状态转 `Busy`，与 FS 回复同一套续接机制）。
+    /// Land a driver reply (the common first half of C `sdev_reply`/`cdev_reply`/`bdev_reply`):
+    /// find the worker slot **waiting for this driver**, land the reply into its `sendrec` and wake it
+    /// (state becomes `Busy`; the same continuation machinery as FS replies).
     ///
-    /// 找不到等它的槽就按"没有 worker 在等"忽略（`device_map::check_reply`
-    /// 的 `ReplyIgnore::NoWorker` 语义）——软失败，主循环继续。
+    /// If no waiting slot is found, ignore it as "no worker waiting" (the `ReplyIgnore::NoWorker`
+    /// semantics of `device_map::check_reply`) — a soft failure; the main loop continues.
     pub fn handle_drv_reply(&mut self, msg: &Message) -> Result<usize, FsReplyError> {
-        // select 的两型回复没有 worker 在等（查询是 asynsend 一发不等），
-        // 先于 worker 槽匹配拦截（C 在 cdev_reply/sdev_reply 里各自分派
-        // SEL1/SEL2——cdev.c:494-503）。`usize::MAX` = 已由 select 层收尾。
-        // SAFETY: 一型 `mess_lchardriver_vfs_sel1 { int status@0; int32
-        // minor@4 }`；套接字两型 `mess_lsockdriver_vfs_select_reply {
-        // int32 sock_id@0; int status@4 }`（ipc.h）。
+        // The two select reply types have no waiting worker (queries are asynsend send-and-don't-wait),
+        // so they are intercepted before worker-slot matching (C dispatches SEL1/SEL2 separately in
+        // cdev_reply/sdev_reply — cdev.c:494-503). `usize::MAX` = already finalized by the select layer.
+        // SAFETY: type 1 is `mess_lchardriver_vfs_sel1 { int status@0; int32
+        // minor@4 }`; the two socket types are `mess_lsockdriver_vfs_select_reply {
+        // int32 sock_id@0; int status@4 }` (ipc.h).
         let raw = unsafe { &msg.m_u.raw };
         match msg.m_type {
             t if t == minix_chardriver::protocol::CdevReplyKind::SelectImmediate as i32 => {
@@ -4123,9 +4123,9 @@ impl VfsState {
             t if t == minix_sockdriver::sdev::SdevReply::SelectReply1 as i32
                 || t == minix_sockdriver::sdev::SdevReply::SelectReply2 as i32 =>
             {
-                // C sdev.c:1017-1028：先按来源找 smap 行（`sp`），再拼
-                // `make_smap_dev(sp->smap_num, sock_id)`——注意用行的
-                // **一基 num 字段**，`smap_by_endpt` 给的是数组位置。
+                // C sdev.c:1017-1028: first find the smap row by source (`sp`), then build
+                // `make_smap_dev(sp->smap_num, sock_id)` — note the row's
+                // **one-based num field** is used; `smap_by_endpt` gives the array position.
                 let sock_id = u32::from_le_bytes(raw[0..4].try_into().unwrap());
                 let status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
                 let sdev_dev = crate::device_map::smap_by_endpt(&self.smap_table, msg.m_source)
@@ -4142,11 +4142,11 @@ impl VfsState {
             }
             _ => {}
         }
-        // 槽配对：C `cdev_generic_reply`（cdev.c:442-460）先按回复的 `id`
-        // （VFS 发请求时填的 `proc_e`，cdev.c:326）认进程、再看它的 worker
-        // 等不等这个驱动——两个作业同候一个驱动时，"首个等它的槽"会错认
-        // 别人的回复。这里先试 id 精确配对，配不上（宿主构造的请求不带
-        // id）回落首匹配保开合路径兼容。
+        // Slot matching: C `cdev_generic_reply` (cdev.c:442-460) first identifies the process by the reply's `id`
+        // (`proc_e`, filled when VFS sends the request, cdev.c:326), then checks whether its worker
+        // waits for this driver — with two jobs waiting on one driver, "the first waiting slot" would misattribute
+        // someone else's reply. Here an exact id match is tried first; with no match (host-constructed requests carry no
+        // id) it falls back to first-match for open/close path compatibility.
         let id_slot = if msg.m_type == minix_types::CDEV_REPLY_BASE {
             let reply_user = i32::from_le_bytes(raw[4..8].try_into().unwrap());
             self.fproc_table.is_ok_endpoint(Endpoint(reply_user)).ok()
@@ -4164,10 +4164,10 @@ impl VfsState {
                 .find(|i| self.worker_pool.get(*i).is_some_and(waits_on_driver));
         }
         let Some(slot) = slot else {
-            // 没有 worker 在等：试试**进程级挂起**那条路（C `sdev_reply` 的
-            // 第二条分支——bind/connect/accept/recvfrom 这些调用的回复）。
+            // No worker is waiting: try the **process-level suspend** path (the second branch
+            // of C `sdev_reply` — replies for bind/connect/accept/recvfrom calls).
             if self.finish_sdev_blocked(msg) {
-                return Ok(usize::MAX); // 已由被挂起的进程收尾
+                return Ok(usize::MAX); // already finalized by the suspended process
             }
             return Err(FsReplyError::WrongTask);
         };
@@ -4175,19 +4175,19 @@ impl VfsState {
             .worker_pool
             .get_mut(slot)
             .ok_or(FsReplyError::SlotOutOfRange)?;
-        // 驱动回复的 `m_type` 就是状态/回复号（C 的 `w_drv_sendrec` 原样收），
-        // 不像 FS 回复那样带 transid——所以这里**不剥**。
+        // A driver reply's `m_type` is the status/reply number (C's `w_drv_sendrec` takes it as is);
+        // unlike FS replies it carries no transid — so nothing is **stripped** here.
         wp.sendrec = Some(*msg);
         wp.task = None;
         wp.state = crate::worker::WorkerState::Busy;
         Ok(slot)
     }
 
-    /// 给槽发一条 `REQ_SYNC`（C `req_sync`：空载荷、状态回复）。
+    /// Send one `REQ_SYNC` to the slot (C `req_sync`: empty payload, status reply).
     ///
-    /// **不动槽上的续接标识**：调用方（`begin_sync_sequence` 与
-    /// `SyncMounts` 续接体）自己把它设成序列状态——这里若顺手写成
-    /// `Status`，序列的"还剩几条"就丢了（本轮踩过）。
+    /// **Do not touch the slot's continuation tag**: the caller (`begin_sync_sequence` and the
+    /// `SyncMounts` continuation) sets it to the sequence state itself — writing `Status` here
+    /// would lose the sequence's "how many remain" (a bug seen this round).
     pub fn send_sync_for_slot(
         &mut self,
         idx: usize,
@@ -4203,7 +4203,7 @@ impl VfsState {
             vmnt,
             fs_e,
             worker: idx,
-            grant: 0, // 无数据面
+            grant: 0, // no data plane
             user,
             req: Message {
                 m_type: minix_types::REQ_SYNC,
@@ -4213,8 +4213,8 @@ impl VfsState {
         Ok(())
     }
 
-    /// 启动一串 `REQ_SYNC`（`sync`/`fsync` 共用）：把目标挂载收进定长数组，
-    /// 发第一条，剩下的留给 `WorkerCont::SyncMounts` 续接体逐条发。
+    /// Start a `REQ_SYNC` sequence (shared by `sync`/`fsync`): collect the target mounts into a fixed array,
+    /// send the first, and leave the rest to the `WorkerCont::SyncMounts` continuation.
     pub fn begin_sync_sequence(
         &mut self,
         idx: usize,
@@ -4227,24 +4227,24 @@ impl VfsState {
             arr[i] = *ep;
         }
         if targets.is_empty() {
-            // C 的循环一条都没发：直接成功（没有挂载要同步不是错误）。
+            // C's loop sent nothing at all: succeed directly (nothing to sync is not an error).
             return Ok(());
         }
         if let Some(wp) = self.worker_pool.get_mut(idx) {
             wp.cont = Some(crate::worker::WorkerCont::SyncMounts {
                 targets: arr,
                 count: targets.len().min(crate::vmnt::NR_MNTS) as u8,
-                at: 1, // 第 0 条由下面发
+                at: 1, // entry 0 is sent below
                 first_err: 0,
             });
         }
         self.send_sync_for_slot(idx, fp_slot, targets[0])
     }
 
-    /// 发一条 `REQ_UNLINK`/`REQ_RMDIR`（C `req_unlink`/`req_rmdir`，
-    /// request.c:1149-1175 / 966-989）：组件名写进槽内 scratch 并做
-    /// **direct grant**（名字在 VFS 内存里，不是 magic grant），父目录 ino
-    /// 与名字长度随请求带上；回复只有状态，所以续接标识是 `Status`。
+    /// Send one `REQ_UNLINK`/`REQ_RMDIR` (C `req_unlink`/`req_rmdir`,
+    /// request.c:1149-1175 / 966-989): the component name goes into the slot's scratch and gets a
+    /// **direct grant** (the name is in VFS memory, not a magic grant); the parent-dir ino
+    /// and name length accompany the request; the reply is status-only, so the continuation tag is `Status`.
     pub fn send_unlink_for_slot(
         &mut self,
         idx: usize,
@@ -4267,7 +4267,7 @@ impl VfsState {
             wp.path_scratch[n] = 0;
             let addr = wp.path_scratch.as_ptr() as u64;
             let len = n + 1;
-            // C `cpf_grant_direct(fs_e, lastc, len, CPF_READ)`。
+            // C `cpf_grant_direct(fs_e, lastc, len, CPF_READ)`.
             let grant = self
                 .grants
                 .grant_direct(
@@ -4299,9 +4299,9 @@ impl VfsState {
         Ok(())
     }
 
-    /// `do_chown` 的**共用体**（C protect.c:24-110 的 path 与 fd 两半只差
-    /// vnode 的来源）：只读门 → 三条属主规则（`protect::chown_gate`）→
-    /// `-1` 折算（`protect::keep_id`）→ 界检查 → `REQ_CHOWN`。
+    /// The **shared body** of `do_chown` (C protect.c:24-110; the path and fd halves differ only in
+    /// where the vnode comes from): read-only gate → three ownership rules (`protect::chown_gate`) →
+    /// `-1` conversion (`protect::keep_id`) → range check → `REQ_CHOWN`.
     #[allow(clippy::too_many_arguments)]
     pub fn finish_chown(
         &mut self,
@@ -4328,8 +4328,8 @@ impl VfsState {
             .and_then(|v| self.vmnt_table.get(v))
             .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
             .unwrap_or(false);
-        // C `do_chown:140-151`：先只读门，再三条规则（都按**消息里的原始
-        // 值**判：非超级用户给 `-1` 也会在"no giving away"那条上被拒）。
+        // C `do_chown:140-151`: first the read-only gate, then the three rules (all judged on the **raw
+        // values in the message**: a non-superuser passing `-1` is still rejected by the "no giving away" rule).
         let verdict = crate::protect::chown_gate(
             eff_uid == crate::link::SU_UID,
             node_uid == eff_uid,
@@ -4341,7 +4341,7 @@ impl VfsState {
             self.finish_worker_job(idx, fp_slot, e.to_errno());
             return;
         }
-        // C `do_chown:154-158`：`-1` 折算成现有值，然后界检查。
+        // C `do_chown:154-158`: convert `-1` to the current value, then the range check.
         let new_uid = crate::protect::keep_id(
             if uid == crate::protect::ID_EXPIRED {
                 None
@@ -4384,18 +4384,18 @@ impl VfsState {
             vmnt,
             fs_e,
             worker: idx,
-            grant: 0, // 无数据面
+            grant: 0, // no data plane
             user,
             req: crate::request::encode_chown(ino, new_uid, new_gid),
         });
     }
 
-    /// `truncate_vnode` 的**发送半**（C link.c:365-381，`do_truncate` 与
-    /// `do_ftruncate` 共用）：大小不变且是常规文件 → 不发请求（POSIX 文件
-    /// 时间）→ 类型门（REG/FIFO）→ 64 位能力门 → `REQ_FTRUNC`。
+    /// The **send half** of `truncate_vnode` (C link.c:365-381, shared by `do_truncate` and
+    /// `do_ftruncate`): unchanged size on a regular file → send nothing (POSIX file
+    /// time) → type gate (REG/FIFO) → 64-bit capability gate → `REQ_FTRUNC`.
     ///
-    /// 返回值三态：`Ok(true)` = 已登记请求（调用方报挂起）、`Ok(false)` =
-    /// 大小不变（调用方回 0）、`Err(errno)` = 门没过。
+    /// Three-way return: `Ok(true)` = request registered (the caller reports suspend), `Ok(false)` =
+    /// unchanged size (the caller returns 0), `Err(errno)` = a gate rejected it.
     #[allow(clippy::too_many_arguments)]
     pub fn send_ftrunc_for_vnode(
         &mut self,
@@ -4408,17 +4408,17 @@ impl VfsState {
         length: i64,
         vnode: usize,
     ) -> Result<bool, i32> {
-        // C link.c:349-354 —— 大小不变则不打扰 FS（POSIX 文件时间）。
+        // C link.c:349-354 — unchanged size does not disturb FS (POSIX file time).
         if mode & crate::open::S_IFMT == crate::open::S_IFREG && size == length as u64 {
             return Ok(false);
         }
-        // C `truncate_vnode:375-376` —— 只服务常规文件与管道。
+        // C `truncate_vnode:375-376` — serve only regular files and pipes.
         let ftype = mode & crate::open::S_IFMT;
         if ftype != crate::open::S_IFREG && ftype != crate::open::S_IFIFO {
             return Err(minix_types::EINVAL);
         }
         let vmnt_id = self.vmnt_table.find_by_fs(fs_e).ok_or(minix_types::EIO)?;
-        // C request.c:274-278 —— 未声明 64 位且长度越过 INT_MAX 即 EINVAL。
+        // C request.c:274-278 — without 64-bit support, a length beyond INT_MAX is EINVAL.
         let fs_flags = self
             .vmnt_table
             .get(vmnt_id)
@@ -4427,8 +4427,8 @@ impl VfsState {
         if fs_flags & crate::request::FsFlags::IS64BIT.bits() == 0 && length > i32::MAX as i64 {
             return Err(minix_types::EINVAL);
         }
-        // worker 槽到**真要发请求**时才算数：大小不变那条路不该因为"没槽"
-        // 而变成 EAGAIN（C 里 `truncate_vnode` 才是需要线程的地方）。
+        // A worker slot matters only when a request is **really sent**: the unchanged-size path must not turn into
+        // EAGAIN just because "no slot" (in C, `truncate_vnode` is where a thread is actually needed).
         let Some(idx) = idx else {
             return Err(minix_types::EAGAIN);
         };
@@ -4446,22 +4446,22 @@ impl VfsState {
             vmnt: vmnt_id.0,
             fs_e,
             worker: idx,
-            grant: 0, // 无数据面，不发 grant
+            grant: 0, // no data plane, no grant sent
             user: user_e,
             req: crate::request::encode_ftrunc(ino, length, 0),
         });
         Ok(true)
     }
 
-    /// `do_utimens` 的**共用体**（C time.c:44-160 的 path 与 fd 两半只差
-    /// vnode 的来源）：属主/超级用户门（EPERM，**但两个纳秒都是 `UTIME_NOW`
-    /// 时退化为写权限检查**）→ 只读门（EROFS）→ 纳秒折算（`UTIME_NOW` 取
-    /// 当前时间、`UTIME_OMIT` 原样带下、其余校验 < 1e9 否则 EINVAL）→
-    /// `REQ_UTIME`。
+    /// The **shared body** of `do_utimens` (C time.c:44-160; the path and fd halves differ only in
+    /// where the vnode comes from): owner/superuser gate (EPERM, **but when both nanoseconds are `UTIME_NOW`
+    /// it degrades to a write-permission check**) → read-only gate (EROFS) → nanosecond conversion (`UTIME_NOW` takes
+    /// the current time, `UTIME_OMIT` is passed through, the rest must be < 1e9 or EINVAL) →
+    /// `REQ_UTIME`.
     ///
-    /// 时钟：C 的 `clock_time` 读 kerninfo 页（不会失败），Rust 侧同源数据走
-    /// 内核调用（`clock_time_via`）——宿主构建下取不到，这里**诚实上浮
-    /// EIO**，不用 0 当"现在"（写进文件系统的是 1970 时间戳，比报错更难查）。
+    /// Clock: C's `clock_time` reads the kerninfo page (it cannot fail); the Rust side gets the same data via a
+    /// kernel call (`clock_time_via`) — unreachable in a host build, so **EIO is surfaced honestly**
+    /// rather than using 0 as "now" (a 1970 timestamp written into the file system is harder to diagnose than an error).
     #[allow(clippy::too_many_arguments)]
     pub fn finish_utimens(
         &mut self,
@@ -4495,8 +4495,8 @@ impl VfsState {
             .and_then(|v| self.vmnt_table.get(v))
             .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
             .unwrap_or(false);
-        // C `time.c:123-130` 的三条（顺序即优先级：属主门 → 写权限退化门 →
-        // 只读门覆盖一切）。
+        // The three rules of C `time.c:123-130` (order is priority: owner gate → write-permission degraded gate →
+        // read-only gate overrides everything).
         let mut verdict: Result<(), i32> = if node_uid == eff_uid || eff_uid == crate::link::SU_UID
         {
             Ok(())
@@ -4507,9 +4507,9 @@ impl VfsState {
             && atime.1 == crate::open::UTIME_NOW
             && mtime.1 == crate::open::UTIME_NOW
         {
-            // 两个都是"现在"＝touch：退化成写权限检查（C `time.c:126-128`
-            // 的 `forbidden(fp, vp, W_BIT)`——用的是节点的真实模式与属组，
-            // 不是"只判权限位"）。
+            // Both are "now" = touch: degrade to a write-permission check (C `time.c:126-128`'s
+            // `forbidden(fp, vp, W_BIT)` — it uses the node's real mode and group,
+            // not just a permission-bit test).
             let forbid = crate::protect::forbidden_decision(&crate::protect::ForbidInput {
                 real_uid,
                 real_gid,
@@ -4533,7 +4533,7 @@ impl VfsState {
             self.finish_worker_job(idx, fp_slot, e);
             return;
         }
-        // C `time.c:135-158`：需要"现在"时取一次时钟（只在有 NOW 时取）。
+        // C `time.c:135-158`: when "now" is needed, read the clock once (only when a NOW is present).
         let needs_now = |nsec: i64| nsec == crate::open::UTIME_NOW;
         let now = if needs_now(atime.1) || needs_now(mtime.1) {
             match minix_sys::syscall::clock_time_via(&minix_sys::syscall::DirectKernelCallTransport)
@@ -4587,16 +4587,16 @@ impl VfsState {
             vmnt,
             fs_e,
             worker: idx,
-            grant: 0, // 无数据面
+            grant: 0, // no data plane
             user,
             req: crate::request::encode_utime(ino, actime, modtime, acnsec as u32, modnsec as u32),
         });
     }
 
-    /// `do_chmod` 的**共用体**（C protect.c:62-133 的 path 与 fd 两半只差
-    /// vnode 的来源）：属主/超级用户门（EPERM）→ 只读门（EROFS）→ setgid
-    /// 清位（`protect::strip_setgid`）→ `REQ_CHMOD`；回复带**整字模式**，
-    /// 续接体写回 vnode 缓存。
+    /// The **shared body** of `do_chmod` (C protect.c:62-133; the path and fd halves differ only in
+    /// where the vnode comes from): owner/superuser gate (EPERM) → read-only gate (EROFS) → setgid
+    /// bit clearing (`protect::strip_setgid`) → `REQ_CHMOD`; the reply carries the **whole mode word**,
+    /// which the continuation writes back into the vnode cache.
     #[allow(clippy::too_many_arguments)]
     pub fn finish_chmod(
         &mut self,
@@ -4616,7 +4616,7 @@ impl VfsState {
                 return;
             }
         };
-        // C `do_chmod:112-114`：只有属主或超级用户能改模式。
+        // C `do_chmod:112-114`: only the owner or superuser may change the mode.
         if node_uid != eff_uid && eff_uid != crate::link::SU_UID {
             self.finish_worker_job(idx, fp_slot, minix_types::EPERM);
             return;
@@ -4631,7 +4631,7 @@ impl VfsState {
             self.finish_worker_job(idx, fp_slot, minix_types::EROFS);
             return;
         }
-        // 非超级用户且文件不在自己的组里就清 setgid（protect.c:120-121）。
+        // A non-superuser whose file is not in their group has setgid cleared (protect.c:120-121).
         let new_mode =
             crate::protect::strip_setgid(eff_uid == crate::link::SU_UID, node_gid, eff_gid, mode);
         let vmnt = match self.vmnt_table.find_by_fs(fs_e) {
@@ -4652,18 +4652,18 @@ impl VfsState {
             vmnt,
             fs_e,
             worker: idx,
-            grant: 0, // 无数据面
+            grant: 0, // no data plane
             user,
             req: crate::request::encode_chmod(ino, new_mode),
         });
     }
 
-    /// 收尾一个挂起的作业并回用户（**错误收尾**与相位 2 之后的统一出口）。
+    /// Finalize a suspended job and reply to the user (the unified exit for **error finalization** and after phase 2).
     ///
-    /// `status` 是**错误码**：正号的 errno 常量（`minix_types::EINVAL` 一类，
-    /// crate 惯例）或从 FS/驱动回复带来的**负值**线上状态——两种写法都收，
-    /// 非零一律按错误收（[`Self::queue_reply`] 在边界折成负号）。成功**值**
-    /// （fd、字节数、条数）走 [`Self::finish_worker_job_value`]。
+    /// `status` is an **error code**: a positive errno constant (the crate convention, e.g.
+    /// `minix_types::EINVAL`) or a **negative** on-wire status from an FS/driver reply — both forms are accepted,
+    /// and any non-zero value is finalized as an error ([`Self::queue_reply`] folds it negative at the boundary). Successful **values**
+    /// (fd, byte count, entry count) go through [`Self::finish_worker_job_value`].
     pub fn finish_worker_job(
         &mut self,
         idx: usize,
@@ -4689,17 +4689,17 @@ impl VfsState {
             } else if status > 0 {
                 crate::call_table::SyscallResult::Error(status)
             } else {
-                // 线上带来的负值状态：先翻回正号 errno，边界再统一折负。
+                // Negative on-wire status: flip back to a positive errno first; the boundary folds it negative again.
                 crate::call_table::SyscallResult::Error(-status)
             };
             self.queue_reply(target, result);
         }
     }
 
-    /// [`Self::finish_worker_job`] 的成功**值**出口：`open`/`accept` 回 fd、
-    /// `read`/`write` 回字节数、`getvfsstat` 回挂载条数——这些都是非负的
-    /// 成功值（C 的 `reply(who, r)` 里同一个 `r`），但走错误收尾会被边界
-    /// 折成负号，用户拿到的就成了一个错误。0 也走这里（等于 `Ok(0)`）。
+    /// The successful-**value** exit of [`Self::finish_worker_job`]: `open`/`accept` return an fd,
+    /// `read`/`write` return a byte count, `getvfsstat` returns a mount count — all non-negative
+    /// success values (the same `r` in C's `reply(who, r)`), but error finalization would fold them negative
+    /// at the boundary and hand the user an error. 0 also comes through here (equivalent to `Ok(0)`).
     pub fn finish_worker_job_value(
         &mut self,
         idx: usize,
@@ -4725,14 +4725,14 @@ impl VfsState {
         }
     }
 
-    /// 把臂登记的 FS 对话发出去（C `fs_sendrec` 的发送半；臂里做不到，
-    /// 因为臂没有 transport 句柄）。
+    /// Send the FS conversation registered by an arm (the send half of C `fs_sendrec`; the arm cannot do it
+    /// itself because it has no transport handle).
     ///
-    /// 成功：`fs_sendrec` 把 worker 槽置 `WaitingForFs` 并投递，作业挂起
-    /// 等回复（由 [`Self::handle_fs_reply`] 落地、[`Self::run_worker_continuations`]
-    /// 收尾）。
-    /// 失败：C 的臂会走错误回复并结束作业——这里照做：撤 grant、清续接、
-    /// 释放槽、回错误给用户。
+    /// Success: `fs_sendrec` sets the worker slot to `WaitingForFs` and delivers, and the job suspends
+    /// awaiting the reply (landed by [`Self::handle_fs_reply`], finalized by
+    /// [`Self::run_worker_continuations`]).
+    /// Failure: C's arm replies with the error and ends the job — the same happens here: revoke the grant, clear the continuation,
+    /// release the slot, and reply the error to the user.
     pub fn flush_pending_fs(&mut self, transport: &mut impl crate::fs_comm::FsTransport) {
         let Some(p) = self.pending_fs.take() else {
             return;
@@ -4745,16 +4745,16 @@ impl VfsState {
                     wp.sendrec = None;
                     wp.task = None;
                 }
-                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.revoke_grant(p.grant);
                 self.worker_pool.release(p.worker);
                 if self.current_worker == Some(p.worker) {
                     self.current_worker = None;
                 }
-                // C 的错误面：comm.c 的 `find_vmnt` 失败给 EIO、自死锁给
-                // EDEADLK；本原语把两者都折成 EIO（对用户可观测的都是
-                // "这次对话没成"）。
+                // C's error surface: `find_vmnt` failure in comm.c gives EIO, self-deadlock gives
+                // EDEADLK; this primitive folds both into EIO (from the user's perspective both mean
+                // "the conversation did not happen").
                 let _ = e;
                 self.queue_reply(
                     p.user,
@@ -4764,22 +4764,22 @@ impl VfsState {
         }
     }
 
-    /// 把排队的 `REQ_PUTNODE` 逐条发出（`put_vnode` 慢路径的投递半）。
+    /// Send the queued `REQ_PUTNODE` messages one by one (the delivery half of the `put_vnode` slow path).
     ///
-    /// C 在 worker 里同步 `fs_sendrec`（vnode.c:278），失败 `printf`
-    /// （vnode.c:281-283）——不回用户、不重试。模型里回复被忽略，发送
-    /// 失败同样丢弃：对用户可观测的行为一致（FS 侧引用计数由 FS 自己
-    /// 的回收面兜底）。
+    /// C does a synchronous `fs_sendrec` in the worker (vnode.c:278) and `printf`s on failure
+    /// (vnode.c:281-283) — no user reply, no retry. Here the reply is ignored and a send
+    /// failure is dropped likewise: user-observable behavior is the same (the FS-side reference count is
+    /// covered by the FS's own reclamation machinery).
     pub fn flush_pending_puts(&mut self, transport: &impl minix_sys::ipc::IpcTransport) {
         let puts: alloc::vec::Vec<crate::vnode::PutNodeReq> =
             core::mem::take(&mut self.pending_puts);
         for p in puts {
-            // C `req_putnode`（request.c:699-711）：sendrec，回复只查错。
-            // 队列按挂载行过滤（挂载没了 = 无处可发，丢弃）。
+            // C `req_putnode` (request.c:699-711): sendrec; the reply is only checked for errors.
+            // The queue is filtered by mount row (a mount that is gone cannot receive it; drop it).
             if self.vmnt_table.find_by_fs(p.fs_e).is_none() {
                 continue;
             }
-            // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+            // [SD19-gate] best-effort IPC cleanup (send-and-forget/timeout path; failure does not change an established main result)
             #[allow(clippy::let_underscore_must_use)]
             let _ = transport.sendrec(
                 p.fs_e,
@@ -4788,15 +4788,15 @@ impl VfsState {
         }
     }
 
-    /// 跑所有"回复已到、续接未跑"的作业。
+    /// Run every job whose "reply arrived but continuation has not run".
     ///
-    /// 判定：槽上有续接标识（`cont`）且回复已落在 `sendrec`（由
-    /// [`Self::handle_fs_reply`] 写入）。每个这样的作业按续接标识完成：
-    /// 撤销 grant、按需写回状态、把结果回给用户，然后释放槽。
+    /// Test: the slot has a continuation tag (`cont`) and the reply has landed in `sendrec` (written by
+    /// [`Self::handle_fs_reply`]). Each such job is completed according to the continuation tag:
+    /// revoke the grant, write back state as needed, reply the result to the user, then release the slot.
     ///
-    /// C 锚点：`fs_sendrec` 返回后的那一半（`read.c:181-190` 的位置推进、
-    /// `request.c:1109` 的 revoke），状态字取 `reqmp->m_type`，
-    /// `ERESTART` 折成 `EIO`（comm.c:161-163）。
+    /// C anchor: the half after `fs_sendrec` returns (the offset advance in `read.c:181-190`,
+    /// the revoke at `request.c:1109`); the status word comes from `reqmp->m_type`, and
+    /// `ERESTART` folds to `EIO` (comm.c:161-163).
     pub fn run_worker_continuations(&mut self) {
         for idx in 0..crate::worker::NR_WTHREADS {
             let (cont, reply, fp_slot) = match self.worker_pool.get_mut(idx) {
@@ -4804,13 +4804,13 @@ impl VfsState {
                     let (Some(cont), Some(reply)) = (wp.cont, wp.sendrec) else {
                         continue;
                     };
-                    // 必须"回复已落槽"才跑续接：`sendrec` 在 C 里是双向缓冲
-                    // ——`fs_sendrec` 送出时装的是**请求**（`set_waiting`），
-                    // `do_reply` 收到时才被回复覆写。C 的线程在
-                    // `worker_wait` 里阻塞，只有 `worker_signal`（本模型里
-                    // `handle_fs_reply` 置 `Busy`）才会醒；若只按
-                    // `cont + sendrec` 判定，另一个客户端的调用进来时会拿
-                    // 请求码当状态，把挂起的作业假完成。
+                    // A continuation runs only when the reply has landed: in C, `sendrec` is a bidirectional buffer
+                    // — `fs_sendrec` puts the **request** in it (`set_waiting`), and only
+                    // `do_reply` receiving overwrites it with the reply. C's thread blocks in
+                    // `worker_wait` and wakes only on `worker_signal` (here
+                    // `handle_fs_reply` sets `Busy`); testing only `cont + sendrec` would let another
+                    // client's call take the request code as the status and
+                    // falsely complete the suspended job.
                     if wp.state != crate::worker::WorkerState::Busy {
                         continue;
                     }
@@ -4820,37 +4820,37 @@ impl VfsState {
             };
             let mut status = reply.m_type;
             if status == -(minix_types::ERESTART) {
-                // C `comm.c:161-163` 的 `r = reqmp->m_type; if (r == ERESTART)
-                // r = EIO;`——FS 的回复 m_type 在线上带负号（服务端都是
-                // `_SYSTEM` 构建），比较与结果都要用负号。
+                // C `comm.c:161-163`'s `r = reqmp->m_type; if (r == ERESTART)
+                // r = EIO;` — an FS reply's m_type is negative on the wire (servers are all
+                // `_SYSTEM` builds), so both the comparison and the result use the negative value.
                 status = -(minix_types::EIO);
             }
-            // `status` 何时是**成功值**（字节数/条数）而不是错误码：读/写与
-            // 目录读取的收尾把实际字节数、`getvfsstat` 把挂载条数放进同一个
-            // 槽——置位的臂由收尾按 `Ok(value)` 发（负号折算只认错误码）。
+            // When `status` is a **success value** (byte count/entry count) rather than an error code: read/write
+            // and directory-read finalization put the actual byte count, and `getvfsstat` the mount count, into the same
+            // slot — the finalizer sends a marked arm as `Ok(value)` (negative folding applies only to error codes).
             let mut value_reply = false;
-            // 带载荷的回复（少数臂需要，如 lseek 的新位置）：臂把它填进
-            // 这里，由下面的统一收尾发出——**不能**在臂里直接
-            // `queue_reply_msg`，否则会被收尾的裸回复覆盖。
+            // A payload reply (needed by a few arms, e.g. lseek's new offset): the arm fills it in
+            // here and the unified finalizer below sends it — the arm must **not** call
+            // `queue_reply_msg` directly, or the finalizer's bare reply would overwrite it.
             let mut reply_payload: Option<Message> = None;
             match cont {
                 crate::worker::WorkerCont::Fstat { grant } => {
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                 }
                 crate::worker::WorkerCont::OpenTrunc { node, oflags } => {
-                    // C `common_open:150-157` 的 `truncate_vnode(vp, 0)` 结果
-                    // **被忽略**——截断失败不拦 open；随后照常装配。清掉
-                    // `O_TRUNC` 位再进本地半（否则 dispatch 会再判一次）。
+                    // The result of `truncate_vnode(vp, 0)` in C `common_open:150-157` is
+                    // **ignored** — a failed truncate does not block open; assembly then proceeds normally. The
+                    // `O_TRUNC` bit is cleared before the local half (otherwise dispatch would test it again).
                     let _ = status;
                     self.finish_open_local_inner(idx, fp_slot, &node, oflags, true);
                     continue;
                 }
                 crate::worker::WorkerCont::Create { user, oflags } => {
-                    // 阶段 3：`REQ_CREATE` 的回复是新建节点的 node_details
-                    // （C `req_create` 收尾）→ 本地半（fd/filp 装配）。
-                    // `EEXIST` 一类错误按状态收尾（`O_EXCL` 的 FS 侧答复）。
+                    // Stage 3: the `REQ_CREATE` reply is the new node's node_details
+                    // (C `req_create` finalization) → the local half (fd/filp assembly).
+                    // Errors such as `EEXIST` are finalized as a status (the FS-side answer for `O_EXCL`).
                     if status != 0 {
                         self.finish_worker_job(idx, fp_slot, status);
                         continue;
@@ -4861,15 +4861,15 @@ impl VfsState {
                     continue;
                 }
                 crate::worker::WorkerCont::Status => {
-                    // 纯状态：无载荷、无副作用——收尾的默认路径就够了。
+                    // Pure status: no payload, no side effects — the finalizer's default path suffices.
                 }
                 crate::worker::WorkerCont::Freesp {
                     vnode,
                     zero_len,
                     start,
                 } => {
-                    // C misc.c:236-237：`F_FREESP` 的零长（`l_len == 0`）
-                    // 在 `req_ftrunc` 成功后把 `v_size` 收到 `start`。
+                    // C misc.c:236-237: for `F_FREESP` with zero length (`l_len == 0`),
+                    // after `req_ftrunc` succeeds, shrink `v_size` to `start`.
                     if status == 0
                         && zero_len
                         && let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode))
@@ -4879,16 +4879,16 @@ impl VfsState {
                     }
                 }
                 crate::worker::WorkerCont::InhibRead { offset } => {
-                    // 位置已在臂里改好（C `actual_lseek:640`）；这里只把新位置
-                    // 填进回复载荷（C `do_lseek` 的 `m_vfs_lc_lseek.offset`）。
-                    // 请求失败时按 C 返回错误（位置仍已改动）。
+                    // The offset was already updated in the arm (C `actual_lseek:640`); here only the new offset is
+                    // put into the reply payload (C `do_lseek`'s `m_vfs_lc_lseek.offset`).
+                    // On request failure the error is returned as in C (the offset has still been updated).
                     let mut m = Message {
                         m_type: status,
                         ..Message::default()
                     };
                     if status == 0 {
                         // SAFETY: `mess_vfs_lc_lseek { off_t offset; }`
-                        // （ipc.h:2206-2210）在负载区首字。
+                        // (ipc.h:2206-2210), in the first word of the payload area.
                         unsafe {
                             m.m_u.raw[0..8].copy_from_slice(&offset.to_le_bytes());
                         }
@@ -4896,10 +4896,10 @@ impl VfsState {
                     reply_payload = Some(m);
                 }
                 crate::worker::WorkerCont::Chown { vnode, uid, gid } => {
-                    // C `do_chown:159-163`：成功时把 uid/gid 写进 vnode、模式
-                    // 取回复里的新值（FS 可能清掉 setuid/setgid 位）。
+                    // C `do_chown:159-163`: on success write uid/gid into the vnode and take the mode
+                    // from the reply (FS may have cleared setuid/setgid bits).
                     if status == 0 {
-                        // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
+                        // SAFETY: the reply payload is written in LP64 field order in the payload area (shared table).
                         let raw = unsafe { &reply.m_u.raw };
                         let mut b4 = [0u8; 4];
                         b4.copy_from_slice(
@@ -4915,11 +4915,11 @@ impl VfsState {
                     }
                 }
                 crate::worker::WorkerCont::Chmod { vnode } => {
-                    // C `do_chmod` 的收尾（protect.c:126-128）：成功时把
-                    // **FS 回的实际模式**写回 vnode 缓存——FS 可能收窄
-                    // （例如没有权限位就清掉 setgid），缓存跟着 FS 走。
+                    // C `do_chmod` finalization (protect.c:126-128): on success write the
+                    // **actual mode returned by FS** back into the vnode cache — FS may narrow it
+                    // (e.g. clear setgid when permissions do not allow it); the cache follows FS.
                     if status == 0 {
-                        // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
+                        // SAFETY: the reply payload is written in LP64 field order in the payload area (shared table).
                         let raw = unsafe { &reply.m_u.raw };
                         let mut b4 = [0u8; 4];
                         b4.copy_from_slice(
@@ -4933,18 +4933,18 @@ impl VfsState {
                     }
                 }
                 crate::worker::WorkerCont::SdevGetSet { grant, write_dir } => {
-                    // C `sdev_setsockopt`/`sdev_get` 的收尾：撤 grant →
-                    // 回复号必须是 `SDEV_REPLY` → 状态取载荷首字；`get` 方向
-                    // 那个状态就是**新长度**，塞进回复载荷
-                    // （`m_vfs_lc_socklen { len }`，C `do_getsockopt:696-697`）。
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // C `sdev_setsockopt`/`sdev_get` finalization: revoke the grant →
+                    // the reply number must be `SDEV_REPLY` → the status comes from the first payload word; for `get`
+                    // that status is the **new length**, placed into the reply payload
+                    // (`m_vfs_lc_socklen { len }`, C `do_getsockopt:696-697`).
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status != minix_sockdriver::sdev::SdevReply::Reply as i32 {
                         status = minix_types::EIO;
                     } else {
                         // SAFETY: `mess_lsockdriver_vfs_reply { int32_t
-                        // req_id; int status; }`——状态在第二格（`req_id` 在前）。
+                        // req_id; int status; }` — the status is in the second slot (`req_id` comes first).
                         let raw = unsafe { &reply.m_u.raw };
                         status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
                         if write_dir && status >= 0 {
@@ -4954,7 +4954,7 @@ impl VfsState {
                                 ..Message::default()
                             };
                             // SAFETY: `mess_vfs_lc_socklen { unsigned int len; }`
-                            // 在负载区首字。
+                            // in the first word of the payload area.
                             unsafe {
                                 m.m_u.raw[0..4].copy_from_slice(&len.to_le_bytes());
                             }
@@ -4964,12 +4964,12 @@ impl VfsState {
                     }
                 }
                 crate::worker::WorkerCont::CdevOpen { fd, filp, dev } => {
-                    // C `cdev_opcl` 的收尾（cdev.c:236-249）：状态取
-                    // `mess_lchardriver_vfs_reply.status`（**首字**）；`>= 0`
-                    // 时低位是两个效果位——`CDEV_CLONED`（要 PFS 建克隆节点，
-                    // 未接）与 `CDEV_CTTY`（把设备记成控制终端）。
+                    // C `cdev_opcl` finalization (cdev.c:236-249): the status comes from
+                    // `mess_lchardriver_vfs_reply.status` (**the first word**); when `>= 0`
+                    // the low bits are two effect flags — `CDEV_CLONED` (requires PFS to create a clone node,
+                    // not wired) and `CDEV_CTTY` (record the device as the controlling terminal).
                     // SAFETY: `mess_lchardriver_vfs_reply { int status;
-                    // uint32_t id; }`——状态在首字。
+                    // uint32_t id; }` — the status is in the first word.
                     let raw = unsafe { &reply.m_u.raw };
                     let dstatus = i32::from_le_bytes(raw[0..4].try_into().unwrap());
                     let vnode = self
@@ -4978,24 +4978,24 @@ impl VfsState {
                         .and_then(|f| f.vnode)
                         .unwrap_or(0);
                     if dstatus < 0 {
-                        // 驱动拒绝：走 C 的失败尾（放开 fd/filp + 放回 vnode），
-                        // 把错误回用户。
+                        // Driver refused: take C's failure tail (release fd/filp + put back the vnode),
+                        // and reply the error to the user.
                         self.release_open_claim(fp_slot, fd, filp, vnode);
                         self.finish_worker_job(idx, fp_slot, dstatus);
                         continue;
                     }
                     let effects = crate::cdev::open_effects(dstatus, dev);
                     if effects.clone_minor.is_some() {
-                        // `cdev_clone`（cdev.c:100-145）要 PFS 建一个新节点
-                        // （`req_newnode(PFS_PROC_NR, ...)`）——PFS 是另一条线，
-                        // 本批未接：诚实拒绝并走失败尾（不假装打开了一个克隆
-                        // 设备）。
+                        // `cdev_clone` (cdev.c:100-145) requires PFS to create a new node
+                        // (`req_newnode(PFS_PROC_NR, ...)`) — PFS is implemented elsewhere
+                        // and not wired yet: reject honestly and take the failure tail (never pretending a clone
+                        // device was opened).
                         self.release_open_claim(fp_slot, fd, filp, vnode);
                         self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS);
                         continue;
                     }
                     if let Some(tty_dev) = effects.grant_tty {
-                        // C：`fp->fp_tty = dev; dp->dmap_seen_tty = TRUE;`
+                        // C: `fp->fp_tty = dev; dp->dmap_seen_tty = TRUE;`
                         if let Some(slot) = fp_slot
                             && let Some(fp) = self.fproc_table.get_mut(slot)
                         {
@@ -5006,8 +5006,8 @@ impl VfsState {
                             row.seen_tty = true;
                         }
                     }
-                    // 成功：用户拿到的是 fd（C `r = OK` 之后 `common_open`
-                    // 把 `r = fd` 回上去）。
+                    // Success: the user receives the fd (after C `r = OK`, `common_open`
+                    // replies `r = fd` upward).
                     self.finish_worker_job_value(idx, fp_slot, fd as i32);
                     continue;
                 }
@@ -5020,23 +5020,23 @@ impl VfsState {
                     access,
                     retries,
                 } => {
-                    // C `bdev_sendrec`（bdev.c:36-58）的对话半：状态取
-                    // `mess_lblockdriver_lbdev_reply.status`（**首字**）。
-                    // SAFETY: `{ int status; int id; }`（ipc.h:356-361）。
+                    // The conversation half of C `bdev_sendrec` (bdev.c:36-58): the status comes from
+                    // `mess_lblockdriver_lbdev_reply.status` (**the first word**).
+                    // SAFETY: `{ int status; int id; }` (ipc.h:356-361).
                     let raw = unsafe { &reply.m_u.raw };
                     let mut dstatus = i32::from_le_bytes(raw[0..4].try_into().unwrap());
                     let mut finished = false;
                     if dstatus == crate::bdev::SEND_RESTART {
-                        // 驱动回 `ERESTART` 就原样重发，五次为限；烧断即 EIO
-                        // （C 的 `retry_count < 5` 保险丝）。
+                        // On a driver `ERESTART`, resend as is, five times at most; blowing the fuse means EIO
+                        // (C's `retry_count < 5` fuse).
                         match crate::bdev::RetryState(retries).step(dstatus) {
                             crate::bdev::RetryVerdict::Again => {
                                 let major = ((dev & 0x000fff00) >> 8) as u32;
                                 let drv_e = self.dmap_table.get(major).and_then(|row| row.driver);
                                 let mut resent = false;
                                 if let Some(drv_e) = drv_e {
-                                    // 重发**同一条**请求（C 的 `*mess_ptr =
-                                    // mess_retry`），计数留在续接体里。
+                                    // Resend the **same** request (C's `*mess_ptr =
+                                    // mess_retry`); the count lives in the continuation.
                                     let m = crate::bdev::open_request(minor, access);
                                     if let Some(wp) = self.worker_pool.get_mut(idx) {
                                         wp.cont = Some(crate::worker::WorkerCont::BdevOpen {
@@ -5055,8 +5055,8 @@ impl VfsState {
                                 if resent {
                                     continue;
                                 }
-                                // 驱动没了或发不出去：C 的 `bdev_sendrec` 在这
-                                // 两处都回 EIO。
+                                // Driver gone or send failed: C's `bdev_sendrec` returns EIO in
+                                // both places.
                                 dstatus = minix_types::EIO;
                             }
                             _ => dstatus = minix_types::EIO,
@@ -5070,9 +5070,9 @@ impl VfsState {
                     if finished {
                         continue;
                     }
-                    // 驱动放行：第二段（`v_bfs_e` 选择 + 可能的
-                    // `REQ_NEW_DRIVER`）。挂上 FS 对话时这一段返回 `true`，
-                    // 作业留给 `BdevNewDriver` 续接体收尾。
+                    // Driver cleared: the second stage (`v_bfs_e` selection + a possible
+                    // `REQ_NEW_DRIVER`). When an FS conversation is attached this stage returns `true`,
+                    // and the job is left to the `BdevNewDriver` continuation.
                     match self.bdev_open_bfs_stage(idx, fp_slot, vnode, fd, filp, dev) {
                         Ok(true) => continue,
                         Ok(false) => {
@@ -5092,9 +5092,9 @@ impl VfsState {
                     vnode,
                     dev,
                 } => {
-                    // C `open.c:210-216`：`req_newdriver` 成功就照常回 fd；
-                    // 失败要**先给驱动发 `BDEV_CLOSE`** 把刚打开的设备关掉，
-                    // 再回 `ENXIO`（close 的返回值被丢掉）。
+                    // C `open.c:210-216`: a successful `req_newdriver` returns the fd as usual;
+                    // on failure, `BDEV_CLOSE` must be **sent to the driver first** to close the device just opened,
+                    // then `ENXIO` is returned (the close return value is dropped).
                     if status == 0 {
                         self.finish_worker_job_value(idx, fp_slot, fd as i32);
                         continue;
@@ -5104,8 +5104,8 @@ impl VfsState {
                     let drv_e = self.dmap_table.get(major).and_then(|row| row.driver);
                     let m = crate::bdev::close_request(minor);
                     if let Some(wp) = self.worker_pool.get_mut(idx) {
-                        // 等驱动的 close 回复到了再收尾——**不**把这条请求
-                        // 发出去就撒手（撒手会让回复落到别的作业头上）。
+                        // Wait for the driver's close reply before finalizing — do **not** let go
+                        // right after sending (letting go would land the reply on another job).
                         wp.cont = Some(crate::worker::WorkerCont::BdevCloseThenReply {
                             status: minix_types::ENXIO,
                             fd,
@@ -5118,8 +5118,8 @@ impl VfsState {
                         None => false,
                     };
                     if !sent {
-                        // 驱动没了或发不出去：C 的 `bdev_close` 在这里回 ENXIO，
-                        // 调用点丢掉它——直接走失败尾。
+                        // Driver gone or send failed: C's `bdev_close` returns ENXIO here and
+                        // the call site drops it — go straight to the failure tail.
                         self.release_open_claim(fp_slot, fd, filp, vnode);
                         self.finish_worker_job(idx, fp_slot, minix_types::ENXIO);
                     }
@@ -5131,18 +5131,18 @@ impl VfsState {
                     filp,
                     vnode,
                 } => {
-                    // 补偿的 `BDEV_CLOSE` 回来了：走 C 的失败尾，再回原来的
-                    // 错误（`open.c:213` 的 `r = ENXIO`）。close 的状态不看
-                    // （C 是 `(void)bdev_close(dev)`）。
+                    // The compensating `BDEV_CLOSE` returned: take C's failure tail, then return the original
+                    // error (`r = ENXIO` at `open.c:213`). The close status is ignored
+                    // (C is `(void)bdev_close(dev)`).
                     self.release_open_claim(fp_slot, fd, filp, vnode);
                     self.finish_worker_job(idx, fp_slot, status);
                     continue;
                 }
                 crate::worker::WorkerCont::BdevIoctl { grant, filp } => {
-                    // C `bdev_ioctl` 的收尾：撤 grant → 清 `filp_ioctl_fp` →
-                    // 状态取 `mess_lblockdriver_lbdev_reply.status`（**首字**，
-                    // 与字符设备同族、与套接字不同族）。
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // C `bdev_ioctl` finalization: revoke the grant → clear `filp_ioctl_fp` →
+                    // the status comes from `mess_lblockdriver_lbdev_reply.status` (**the first word**,
+                    // the same family as char devices, a different family from sockets).
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp)) {
@@ -5150,26 +5150,26 @@ impl VfsState {
                     }
                     if status == 0 {
                         // SAFETY: `mess_lblockdriver_lbdev_reply { int status;
-                        // int id; }`（ipc.h:356-361）——状态在首字。
+                        // int id; }` (ipc.h:356-361) — the status is in the first word.
                         let raw = unsafe { &reply.m_u.raw };
                         status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
                     }
                 }
                 crate::worker::WorkerCont::CdevIoctl { grant } => {
-                    // C `cdev_io` 的 ioctl 收尾（cdev.c:438-477 的
-                    // `cdev_generic_reply` 面）：撤 grant → 状态取
-                    // `mess_lchardriver_vfs_reply.status`（**载荷首字**，
-                    // 无条件解码——驱动回复的 m_type 恒 `CDEV_REPLY`(0x480)，
-                    // `status`（初值＝reply.m_type）永不为 0，旧
-                    // `if status == 0` 门是死路：载荷状态从不读出，0x480 会
-                    // 被当错误码回给用户）。负值折正回用户，`EINTR` 折回
-                    // `EAGAIN`（cdev.c:471-473 的换码对）；非负按值回
-                    // （ioctl 的成功态即 0，`Ok(0)`）。
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // C `cdev_io` ioctl finalization (the `cdev_generic_reply` side of cdev.c:438-477):
+                    // revoke the grant → the status comes from `mess_lchardriver_vfs_reply.status`
+                    // (**the first payload word**, decoded unconditionally — a driver reply's m_type is always
+                    // `CDEV_REPLY`(0x480), so `status` (initialized from reply.m_type) is never 0;
+                    // the old `if status == 0` gate is a dead end: the payload status is never read and 0x480
+                    // would be returned to the user as an error code). Negative values are flipped positive for the user,
+                    // `EINTR` folds back to `EAGAIN` (the code-swap pair of cdev.c:471-473); non-negative
+                    // values are returned as-is
+                    // (ioctl's success state is 0, `Ok(0)`).
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     // SAFETY: `mess_lchardriver_vfs_reply { int status;
-                    // uint32_t id; }`（ipc.h:943-948）——状态在首字。
+                    // uint32_t id; }` (ipc.h:943-948) — the status is in the first word.
                     let raw = unsafe { &reply.m_u.raw };
                     let dstatus = i32::from_le_bytes(raw[0..4].try_into().unwrap());
                     if dstatus < 0 {
@@ -5184,19 +5184,19 @@ impl VfsState {
                     }
                 }
                 crate::worker::WorkerCont::CdevIo { grant } => {
-                    // C `cdev_io` 的数据收尾 + `cdev_generic_reply` 的 revive
-                    // 面（cdev.c:438-477）：撤 grant → 状态取
-                    // `mess_lchardriver_vfs_reply.status`（**载荷首字**，无条件
-                    // 解码——驱动回复的 m_type 恒 `CDEV_REPLY`，不像 FS 回复
-                    // 把状态放在 m_type 里）。成功是搬运字节数（非负，`Ok` 值
-                    // 回用户）；失败是负 errno，`EINTR` 折回 `EAGAIN`
-                    // （cdev.c:471-473 与 `cdev_cancel` 的转换配对）。读/写的
-                    // 进程级挂起在此收尾：清 `BlockedOn::Cdev`。
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // C `cdev_io` data finalization + the revive side of `cdev_generic_reply`
+                    // (cdev.c:438-477): revoke the grant → the status comes from
+                    // `mess_lchardriver_vfs_reply.status` (**the first payload word**, decoded
+                    // unconditionally — a driver reply's m_type is always `CDEV_REPLY`, unlike FS replies
+                    // which put the status in m_type). Success is the byte count (non-negative, sent as an `Ok` value
+                    // to the user); failure is a negative errno, with `EINTR` folded back to `EAGAIN`
+                    // (the code-swap pair of cdev.c:471-473 and `cdev_cancel`). A read/write
+                    // process-level suspend is finalized here: clear `BlockedOn::Cdev`.
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     // SAFETY: `mess_lchardriver_vfs_reply { int status;
-                    // uint32_t id; }`（ipc.h:943-948）——状态在首字。
+                    // uint32_t id; }` (ipc.h:943-948) — the status is in the first word.
                     let raw = unsafe { &reply.m_u.raw };
                     let dstatus = i32::from_le_bytes(raw[0..4].try_into().unwrap());
                     if let Some(slot) = fp_slot
@@ -5217,14 +5217,14 @@ impl VfsState {
                     }
                 }
                 crate::worker::WorkerCont::SdevSimple => {
-                    // C `sdev_simple` 的收尾：回复号必须是 `SDEV_REPLY`，
-                    // 状态在**载荷**里（`mess_lsockdriver_vfs_reply.status`）。
+                    // C `sdev_simple` finalization: the reply number must be `SDEV_REPLY`,
+                    // and the status is in the **payload** (`mess_lsockdriver_vfs_reply.status`).
                     if status != minix_sockdriver::sdev::SdevReply::Reply as i32 {
                         status = minix_types::EIO;
                     } else {
                         // SAFETY: `mess_lsockdriver_vfs_reply { int32_t
-                        // req_id; int status; }`（ipc.h:1023-1028）——**状态在
-                        // 第二格**（`req_id` 在前），不是首字。
+                        // req_id; int status; }` (ipc.h:1023-1028) — **the status is in
+                        // the second slot** (`req_id` comes first), not the first word.
                         let raw = unsafe { &reply.m_u.raw };
                         status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
                     }
@@ -5234,16 +5234,16 @@ impl VfsState {
                     flags,
                     smap_num,
                 } => {
-                    // C `sdev_socket`（sdev.c:140-170）：回复号必须是
-                    // `SDEV_SOCKET_REPLY`（否则 EIO），`sock_id < 0` 就是驱动
-                    // 报的错误；成功后设备号 = `make_smap_dev(行号, sock_id)`。
-                    // 回复号必须是 `SDEV_SOCKET_REPLY`（`SdevReply::SocketReply`）。
+                    // C `sdev_socket` (sdev.c:140-170): the reply number must be
+                    // `SDEV_SOCKET_REPLY` (otherwise EIO); `sock_id < 0` is the error the driver
+                    // reports; on success the device number = `make_smap_dev(row number, sock_id)`.
+                    // The reply number must be `SDEV_SOCKET_REPLY` (`SdevReply::SocketReply`).
                     if status != minix_sockdriver::sdev::SdevReply::SocketReply as i32 {
                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                         continue;
                     }
-                    // SAFETY: 回复载荷 `mess_lsockdriver_vfs_socket_reply`
-                    // （req_id@0、sock_id@4、sock_id2@8）。
+                    // SAFETY: the reply payload `mess_lsockdriver_vfs_socket_reply`
+                    // (req_id@0, sock_id@4, sock_id2@8).
                     let (sock_id, sock_id2) = unsafe {
                         let raw = &reply.m_u.raw;
                         (
@@ -5257,12 +5257,12 @@ impl VfsState {
                     }
                     let dev = crate::device_map::make_smap_dev(smap_num, sock_id as u32);
                     if pair {
-                        // 成对：两个设备号都要 `make_sock_fd`。先建第一个，
-                        // 第二个由 `SockFd` 的第一半收尾接着建（C socket.c:
-                        // 249-266）——`pending_fs` 一次只装一条请求，所以两半
-                        // 是**串行**的，不是并发。
+                        // Paired: both device numbers need `make_sock_fd`. The first is created first;
+                        // the second is created when the `SockFd` first-half finalization continues (C socket.c:
+                        // 249-266) — `pending_fs` holds only one request at a time, so the two halves
+                        // are **serial**, not concurrent.
                         if sock_id2 < 0 {
-                            // C：`sock_id2 < 0` 是协议错误 → 先关掉 dev0 再 EIO。
+                            // C: `sock_id2 < 0` is a protocol error → close dev0 first, then EIO.
                             if let Some(wp) = self.worker_pool.get_mut(idx) {
                                 wp.cont = Some(crate::worker::WorkerCont::SdevCloseThenReply {
                                     status: minix_types::EIO,
@@ -5313,9 +5313,9 @@ impl VfsState {
                     addr_len_out,
                     pair,
                 } => {
-                    // C `make_sock_fd` 的后半（socket.c:140-176）：用回复的
-                    // `node_details` 填 vnode（`v_sdev` 是套接字设备号）与 filp，
-                    // 再按 `flags` 置 CLOEXEC。**用户拿到的返回值是 fd**。
+                    // The second half of C `make_sock_fd` (socket.c:140-176): fill the vnode from the reply's
+                    // `node_details` (`v_sdev` is the socket device number) and the filp,
+                    // then set CLOEXEC from `flags`. **The value the user receives is the fd**.
                     if status != 0 {
                         self.filp_table.dec_count(crate::filp::FilpId(filp));
                         if let Some(slot) = fp_slot
@@ -5345,7 +5345,7 @@ impl VfsState {
                         v.ref_count = 1;
                         v.size = 0;
                         v.dev = minix_types::NO_DEV;
-                        // C socket.c:157 —— `vp->v_sdev = dev`：套接字靠它认驱动。
+                        // C socket.c:157 — `vp->v_sdev = dev`: a socket identifies its driver by it.
                         v.sdev = dev;
                     }
                     if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp)) {
@@ -5358,11 +5358,11 @@ impl VfsState {
                     {
                         fp.cloexec_set.set(fd as usize, true);
                     }
-                    // `socketpair` 的成对编排（C `do_socketpair:249-266`）：
-                    // - 第一半成功 → 接着建第二半（把 fd0 与"这是第二半"带过去）；
-                    // - 第二半成功 → 回复 `m_vfs_lc_fdpair { fd0, fd1 }`；
-                    // - 第二半失败 → `close_fd(fp, fd0)` + 关掉 dev1（C 的
-                    //   `close_fd` + `(void)sdev_close(dev[1])`）。
+                    // The paired orchestration of `socketpair` (C `do_socketpair:249-266`):
+                    // - first half succeeds → build the second half (carrying fd0 and "this is the second half");
+                    // - second half succeeds → reply `m_vfs_lc_fdpair { fd0, fd1 }`;
+                    // - second half fails → `close_fd(fp, fd0)` + close dev1 (C's
+                    // `close_fd` + `(void)sdev_close(dev[1])`).
                     if let Some(pair_state) = pair {
                         if !pair_state.second {
                             if let Err(e) = self.begin_make_sock_fd(
@@ -5377,15 +5377,15 @@ impl VfsState {
                                     second: true,
                                 }),
                             ) {
-                                // 第二半起不来：关掉第一半的 fd + 那个设备。
-                                // C 的 `close_fd(fp, fd0, may_suspend=FALSE)`：
-                                // 清掉第一半的 fd（本地动作，不发驱动请求——
-                                // C 的 `may_suspend=FALSE` 就是"别在这里阻塞"）。
+                                // The second half could not start: close the first half's fd + that device.
+                                // C's `close_fd(fp, fd0, may_suspend=FALSE)`:
+                                // clears the first half's fd (a local action, no driver request —
+                                // C's `may_suspend=FALSE` means "do not block here").
                                 if let Some(slot) = fp_slot
                                     && let Some(fd0) = crate::filedes::Fd::new(fd as usize)
                                     && let Some(fp) = self.fproc_table.get_mut(slot)
                                 {
-                                    // [SD19-gate] 尽力而为关 fd 收尾（C vfs 清理路径 close 失败不回错）
+                                    // [SD19-gate] best-effort fd close in finalization (C VFS cleanup path does not return an error if close fails)
                                     #[allow(clippy::let_underscore_must_use)]
                                     let _ = crate::filedes::close_fd(fp, fd0, &mut self.filp_table);
                                 }
@@ -5409,13 +5409,13 @@ impl VfsState {
                             }
                             continue;
                         }
-                        // 第二半成功：拼 fd 对回复。
+                        // The second half succeeded: assemble the fd-pair reply.
                         let mut m = Message {
                             m_type: 0,
                             ..Message::default()
                         };
                         // SAFETY: `mess_vfs_lc_fdpair { int fd0; int fd1; }`
-                        // （ipc.h:2198-2203）在负载区前两字。
+                        // (ipc.h:2198-2203), in the first two words of the payload area.
                         unsafe {
                             m.m_u.raw[0..4].copy_from_slice(&(pair_state.fd0 as i32).to_le_bytes());
                             m.m_u.raw[4..8].copy_from_slice(&(fd as i32).to_le_bytes());
@@ -5429,13 +5429,13 @@ impl VfsState {
                         continue;
                     }
                     if let Some(len) = addr_len_out {
-                        // `accept` 的收尾：fd 是状态、**对端地址长度在载荷里**
-                        // （C `resume_accept` 末段的 `m_vfs_lc_socklen.len`）。
+                        // `accept` finalization: the fd is the status and **the peer address length is in the payload**
+                        // (`m_vfs_lc_socklen.len` at the end of C `resume_accept`).
                         let mut m = Message {
                             m_type: fd as i32,
                             ..Message::default()
                         };
-                        // SAFETY: `mess_vfs_lc_socklen { unsigned int len; }`。
+                        // SAFETY: `mess_vfs_lc_socklen { unsigned int len; }`.
                         unsafe {
                             m.m_u.raw[0..4].copy_from_slice(&len.to_le_bytes());
                         }
@@ -5453,8 +5453,8 @@ impl VfsState {
                     continue;
                 }
                 crate::worker::WorkerCont::SdevCloseThenReply { status } => {
-                    // 关掉那个"多出来的"套接字之后，回**原来的错误**
-                    // （C `resume_accept` 的 `(void)sdev_close(dev, ...)`）。
+                    // After closing the "extra" socket, return the **original error**
+                    // (C `resume_accept`'s `(void)sdev_close(dev, ...)`).
                     self.finish_worker_job(idx, fp_slot, status);
                     continue;
                 }
@@ -5466,9 +5466,9 @@ impl VfsState {
                     flags,
                     vnode,
                 } => {
-                    // C `create_pipe` 的后半（pipe.c:117-131）：拿新节点的
-                    // `node_details` 填 vnode 与两个 filp，再把 fd 对放进回复
-                    // 载荷。失败时按 `rollback_for(Node)` 回滚两端。
+                    // The second half of C `create_pipe` (pipe.c:117-131): fill the vnode and both filps from the new
+                    // node's `node_details`, then place the fd pair into the reply
+                    // payload. On failure both ends are rolled back via `rollback_for(Node)`.
                     if status != 0 {
                         let plan = crate::pipe::rollback_for(crate::pipe::CreateStage::Node);
                         let _ = plan;
@@ -5482,8 +5482,8 @@ impl VfsState {
                                 }
                             }
                         }
-                        // C 用 `filp_count = 0` 把 filp 标回空闲；Rust 侧就是
-                        // `dec_count`（归零即释放）。
+                        // C marks a filp free with `filp_count = 0`; on the Rust side that is
+                        // `dec_count` (zero means released).
                         self.filp_table.dec_count(crate::filp::FilpId(filp0));
                         self.filp_table.dec_count(crate::filp::FilpId(filp1));
                         if let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode)) {
@@ -5493,9 +5493,9 @@ impl VfsState {
                         self.finish_worker_job(idx, fp_slot, status);
                         continue;
                     }
-                    // 回复的 `node_details`（`mess_fs_vfs_newnode`：file_size/
-                    // device/inode/mode/uid/gid）——字段序与 `lookup_reply_off`
-                    // 的前六域一致，复用那张表。
+                    // The reply's `node_details` (`mess_fs_vfs_newnode`: file_size/
+                    // device/inode/mode/uid/gid) — the field order matches the first six fields of
+                    // `lookup_reply_off`, so that table is reused.
                     let node = crate::request::decode_lookup_reply(status, &reply);
                     let Some(crate::path::LookupRes::Ok { ino, mode, .. }) = node else {
                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -5513,8 +5513,8 @@ impl VfsState {
                         v.size = 0;
                         v.dev = minix_types::NO_DEV;
                     }
-                    // 两个 filp：读端 `O_RDONLY | (flags & ~O_ACCMODE)`、写端
-                    // `O_WRONLY | ...`；vnode 再 dup 一次（两端各持一个引用）。
+                    // Two filps: read end `O_RDONLY | (flags & ~O_ACCMODE)`, write end
+                    // `O_WRONLY | ...`; the vnode is dup'd once more (each end holds one reference).
                     let extra = (flags as u32 & !crate::open::O_ACCMODE) as i32;
                     if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp0)) {
                         f.vnode = Some(vnode);
@@ -5532,14 +5532,14 @@ impl VfsState {
                         fp.cloexec_set.set(fd0 as usize, true);
                         fp.cloexec_set.set(fd1 as usize, true);
                     }
-                    // 回复载荷：`m_vfs_lc_fdpair { fd0, fd1 }`（用户拿到的
-                    // 就是这两个 fd；C `do_pipe2:48-51`）。
+                    // Reply payload: `m_vfs_lc_fdpair { fd0, fd1 }` (these two fds
+                    // are what the user receives; C `do_pipe2:48-51`).
                     let mut m = Message {
                         m_type: status,
                         ..Message::default()
                     };
                     // SAFETY: `mess_vfs_lc_fdpair { int fd0; int fd1; }`
-                    // （ipc.h:2198-2203）在负载区前两字。
+                    // (ipc.h:2198-2203), in the first two words of the payload area.
                     unsafe {
                         m.m_u.raw[0..4].copy_from_slice(&(fd0 as i32).to_le_bytes());
                         m.m_u.raw[4..8].copy_from_slice(&(fd1 as i32).to_le_bytes());
@@ -5554,10 +5554,10 @@ impl VfsState {
                     seq_count,
                     seq_at,
                 } => {
-                    // C `update_statvfs` + `fill_statvfs` 的收尾：撤销 grant →
-                    // 把 FS 那 17 个字段存进挂载行缓存 → 补本地字段 → 整块拷给
-                    // 用户（状态照 C：`update_statvfs` 失败就 EIO，否则看拷贝）。
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // C `update_statvfs` + `fill_statvfs` finalization: revoke the grant →
+                    // store the 17 FS fields in the mount row's cache → fill local fields → copy the block to
+                    // the user (status as in C: `update_statvfs` failure means EIO, otherwise the copy decides).
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
@@ -5587,9 +5587,9 @@ impl VfsState {
                         }
                         status = self.finish_statvfs_copy(idx, fp_slot, user_buf, vmnt);
                     }
-                    // `getvfsstat` 的序列：还有下一个就继续（用户缓冲按
-                    // `i*sizeof(struct statvfs)` 推进），否则收尾回**个数**
-                    // （C `do_getvfsstat` 的 `return count`）。
+                    // The `getvfsstat` sequence: if another entry remains, continue (advance the user buffer by
+                    // `i*sizeof(struct statvfs)`); otherwise finalize and return the **count**
+                    // (C `do_getvfsstat`'s `return count`).
                     if status == 0 && seq_count > 0 {
                         let next = (seq_at + 1) as usize;
                         if next < seq_count as usize {
@@ -5615,10 +5615,10 @@ impl VfsState {
                     at,
                     first_err,
                 } => {
-                    // C `do_sync`/`do_fsync` 的循环在单线程模型里的形态：每条
-                    // 回复到达就发下一条，发完报 `first_err`（C 把 `req_sync`
-                    // 的返回值丢掉，只留加锁错误）。
-                    let _ = status; // 单条 REQ_SYNC 的结果不影响用户可见值
+                    // The shape of C `do_sync`/`do_fsync`'s loop in the single-threaded model: on each
+                    // reply, send the next request; when done, report `first_err` (C drops the `req_sync`
+                    // return value and keeps only the locking error).
+                    let _ = status; // a single REQ_SYNC result does not affect the user-visible value
                     if (at as usize) < (count as usize) {
                         let next = targets[at as usize];
                         if let Some(wp) = self.worker_pool.get_mut(idx) {
@@ -5634,18 +5634,18 @@ impl VfsState {
                         }
                         continue;
                     }
-                    // 序列跑完：C 的 `r` 就是加锁结果（这里恒为 first_err）。
+                    // Sequence complete: C's `r` is the locking result (here always first_err).
                     status = first_err;
                 }
                 crate::worker::WorkerCont::Rdlink { grant } => {
-                    // C `req_rdlink_actual`（request.c:743-747）：撤销 grant，
-                    // 然后**从载荷取字节数**（`mess_fs_vfs_rdlink.nbytes`），
-                    // `m_type` 只是 OK——用户拿到的长度不是状态字。
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // C `req_rdlink_actual` (request.c:743-747): revoke the grant,
+                    // then **take the byte count from the payload** (`mess_fs_vfs_rdlink.nbytes`);
+                    // `m_type` is only OK — the length the user receives is not the status word.
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
-                        // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
+                        // SAFETY: the reply payload is written in LP64 field order in the payload area (shared table).
                         let raw = unsafe { &reply.m_u.raw };
                         let mut b8 = [0u8; 8];
                         b8.copy_from_slice(
@@ -5657,17 +5657,17 @@ impl VfsState {
                     }
                 }
                 crate::worker::WorkerCont::Getdents { grant, filp } => {
-                    // C `req_getdents_actual` 的收尾（request.c:330-336）：
-                    // 回复的 `seek_pos` 是下一趟的位置、`nbytes` 是本次写出
-                    // 的字节数，而**位置只在 `nbytes > 0` 时推进**
-                    // （read.c:311-313 的 `if (r > 0) rfilp->filp_pos =
-                    // new_pos;`）——空目录/缓冲满都是 `nbytes == 0`，位置
-                    // 必须留在原处，否则下一趟会跳过条目。
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // C `req_getdents_actual` finalization (request.c:330-336):
+                    // the reply's `seek_pos` is the next position and `nbytes` is the number of bytes
+                    // written this round, but **the position advances only when `nbytes > 0`**
+                    // (`if (r > 0) rfilp->filp_pos = new_pos;` in read.c:311-313)
+                    // - an empty directory/full buffer both give `nbytes == 0`, and the position
+                    // must stay put, or the next pass would skip entries.
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
-                        // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
+                        // SAFETY: the reply payload is written in LP64 field order in the payload area (shared table).
                         let raw = unsafe { &reply.m_u.raw };
                         let mut b8 = [0u8; 8];
                         b8.copy_from_slice(
@@ -5685,14 +5685,14 @@ impl VfsState {
                         {
                             f.pos = new_pos;
                         }
-                        // 用户拿到的是字节数（C 返回 `nbytes`，不是 0）。
+                        // The user receives the byte count (C returns `nbytes`, not 0).
                         status = nbytes as i32;
                         value_reply = true;
                     }
                 }
                 crate::worker::WorkerCont::Ftrunc { vnode, newsize } => {
-                    // 成功时更新 vnode 大小（C `truncate_vnode` 尾部的
-                    // `vp->v_size = newsize`；失败不动）。
+                    // On success update the vnode size (the tail of C `truncate_vnode`:
+                    // `vp->v_size = newsize`; on failure it is unchanged).
                     if status == 0
                         && let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode))
                     {
@@ -5700,23 +5700,23 @@ impl VfsState {
                     }
                 }
                 crate::worker::WorkerCont::Path => {
-                    // 路径遍历的续走：取出现场 → revoke → 解回复 →
-                    // `walk.resume` → 再发一条 lookup（放回现场、继续挂起）
-                    // 或做相位 2（`PathFollow`）。
+                    // Path-walk continuation: take the slot → revoke → decode the reply →
+                    // `walk.resume` → send another lookup (put back the slot, keep suspended)
+                    // or run phase 2 (`PathFollow`).
                     let Some(mut pending) =
                         self.worker_pool.get_mut(idx).and_then(|wp| wp.path.take())
                     else {
                         continue;
                     };
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(pending.grant);
-                    // `PathFollow` 非 `Copy`（`Mkdir` 带组件名）——克隆一份
-                    // 给相位 2，`pending.walk` 仍留在原地供续走。
+                    // `PathFollow` is not `Copy` (`Mkdir` carries a component name) - clone one
+                    // for phase 2, leaving `pending.walk` in place for continuation.
                     let follow = pending.follow.clone();
                     let walk_err = |e: crate::path::PathError| e.to_errno();
-                    // 回复解码：特殊码/OK 交给状态机；其余状态（含负 errno）
-                    // 按错误收尾。
+                    // Reply decoding: special codes/OK go to the state machine; other statuses (including negative errno)
+                    // are finalized as errors.
                     let resumed: Result<crate::path::WalkStep, PathFail> =
                         match crate::request::decode_lookup_reply(status, &reply) {
                             Some(res) => {
@@ -5735,8 +5735,8 @@ impl VfsState {
                             dir_ino,
                             root_ino,
                         }) => {
-                            // 再发一条 REQ_LOOKUP（路径从 walk 的游标拷进槽内
-                            // scratch + NUL），现场放回，继续挂起。
+                            // Send another REQ_LOOKUP (the path is copied from the walk cursor into the slot's
+                            // scratch + NUL), put the slot back, and stay suspended.
                             if let Some(wp) = self.worker_pool.get_mut(idx) {
                                 wp.path = Some(pending);
                             }
@@ -5744,7 +5744,7 @@ impl VfsState {
                                 .send_lookup_for_slot(idx, fp_slot, fs_e, dir_ino, root_ino)
                                 .is_err()
                             {
-                                // 发送前失败（无 vmnt/无槽/grant 失败）：收尾。
+                                // Failure before sending (no vmnt/no slot/grant failure): finalize.
                                 if let Some(wp) = self.worker_pool.get_mut(idx) {
                                     wp.path = None;
                                 }
@@ -5754,8 +5754,8 @@ impl VfsState {
                         }
                         Ok(crate::path::WalkStep::Done(node)) => match follow {
                             crate::worker::PathFollow::Unlink { entry, rmdir } => {
-                                // C `do_unlink`（link.c:122-159）阶段 1 走通：
-                                // 父目录类型门 → `X|W` 权限门 → 粘滞位门。
+                                // C `do_unlink` (link.c:122-159) stage 1 passed:
+                                // parent directory type gate → `X|W` permission gate → sticky-bit gate.
                                 if node.mode & crate::open::S_IFMT != crate::open::S_IFDIR {
                                     self.finish_worker_job(idx, fp_slot, minix_types::ENOTDIR);
                                     continue;
@@ -5781,7 +5781,7 @@ impl VfsState {
                                     .and_then(|v| self.vmnt_table.get(v))
                                     .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
                                     .unwrap_or(false);
-                                // C `forbidden(fp, dirp, X_BIT | W_BIT)`。
+                                // C `forbidden(fp, dirp, X_BIT | W_BIT)`.
                                 let forbid = crate::protect::forbidden_decision(
                                     &crate::protect::ForbidInput {
                                         real_uid,
@@ -5802,10 +5802,10 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, e.to_errno());
                                     continue;
                                 }
-                                // C `do_unlink:132-152`：粘滞位目录上要先把
-                                // 受害者查出来（`advance(dirp, stickycheck)`），
-                                // 属主不对就是 EPERM——这一步是**子遍历**，
-                                // 所以在 Rust 里是又一段挂起。
+                                // C `do_unlink:132-152`: on a sticky directory the
+                                // victim must first be looked up (`advance(dirp, stickycheck)`);
+                                // a wrong owner means EPERM - this step is a **sub-walk**,
+                                // hence another suspend point in Rust.
                                 if node.mode & crate::open::S_ISVTX != 0 {
                                     let start = crate::path::LookupStart {
                                         fs: node.fs_e,
@@ -5879,10 +5879,10 @@ impl VfsState {
                                 dir_fs_e,
                                 dir_ino,
                             } => {
-                                // C `do_unlink:137-141`：粘滞位目录里只有受害者
-                                // 属主或超级用户能删（决策函数 `link::sticky_check`）。
-                                // 受害者查不到时走上一条 Err 分支（C 的
-                                // `else r = err_code`），这里不会到达。
+                                // C `do_unlink:137-141`: in a sticky directory only the victim's
+                                // owner or the superuser may delete (decision function `link::sticky_check`).
+                                // When the victim cannot be looked up the earlier Err branch (C's
+                                // `else r = err_code`) is taken, so this point is unreachable.
                                 let eff_uid = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
                                     Some(fp) => fp.eff_uid,
                                     None => {
@@ -5902,9 +5902,9 @@ impl VfsState {
                                 continue;
                             }
                             crate::worker::PathFollow::Chdir { into_root } => {
-                                // C `do_chdir`/`do_chroot` 的收尾：走完就
-                                // `change_into`（本地改本进程的当前/根目录，
-                                // 没有 FS 往返）。
+                                // C `do_chdir`/`do_chroot` finalization: after the walk,
+                                // `change_into` (locally change this process's work/root directory;
+                                // no FS round trip).
                                 let Some(vnode) = self.intern_vnode(&node) else {
                                     self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
                                     continue;
@@ -5914,8 +5914,8 @@ impl VfsState {
                                 continue;
                             }
                             crate::worker::PathFollow::Statvfs { user_buf, flags } => {
-                                // C `do_statvfs:318-323`：走完拿 vnode 的
-                                // `v_vmnt` 再进 `fill_statvfs`。
+                                // C `do_statvfs:318-323`: after the walk, take the vnode's
+                                // `v_vmnt` and enter `fill_statvfs`.
                                 let Some(vmnt_idx) = self.vmnt_table.find_by_fs(node.fs_e) else {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                     continue;
@@ -5928,9 +5928,9 @@ impl VfsState {
                                 continue;
                             }
                             crate::worker::PathFollow::RenameOld { entry, new_path } => {
-                                // C `do_rename:194-215`：旧父目录带粘滞位就先做
-                                // **子遍历**取受害者属主（与 unlink 同款），
-                                // 否则直接转阶段 2。
+                                // C `do_rename:194-215`: if the old parent directory is sticky, first run a
+                                // **sub-walk** to get the victim's owner (same as unlink);
+                                // otherwise go straight to stage 2.
                                 if node.mode & crate::open::S_ISVTX != 0 {
                                     let start = crate::path::LookupStart {
                                         fs: node.fs_e,
@@ -6007,8 +6007,8 @@ impl VfsState {
                                 continue;
                             }
                             crate::worker::PathFollow::RenameOldSticky { entry, new_path } => {
-                                // 子遍历走通：C `do_rename:205-210` 的属主门
-                                // （决策函数 `link::sticky_check`），过了转阶段 2。
+                                // Sub-walk passed: the owner gate of C `do_rename:205-210`
+                                // (decision function `link::sticky_check`); on success go to stage 2.
                                 let eff_uid = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
                                     Some(fp) => fp.eff_uid,
                                     None => {
@@ -6031,8 +6031,8 @@ impl VfsState {
                                 old_name,
                                 new_entry,
                             } => {
-                                // C `do_rename:242-259`：跨设备门（EXDEV）→
-                                // 两个父目录的 `W|X` 门 → `req_rename`。
+                                // C `do_rename:242-259`: cross-device gate (EXDEV) →
+                                // the `W|X` gates of both parent directories → `req_rename`.
                                 if node.fs_e != old_fs_e {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EXDEV);
                                     continue;
@@ -6058,10 +6058,10 @@ impl VfsState {
                                     .and_then(|v| self.vmnt_table.get(v))
                                     .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
                                     .unwrap_or(false);
-                                // 新父目录的 `W|X` 门（旧父目录那道在阶段 1 的
-                                // `rename_stage_two` 里过——C 把两道写在一处，
-                                // 但两道的输入不同，Rust 侧按阶段各判一次，
-                                // 结果与 C 等价：任一不过就是那个错误码）。
+                                // The new parent directory's `W|X` gate (the old parent's is checked in stage 1's
+                                // `rename_stage_two` - C writes both in one place,
+                                // but their inputs differ; the Rust side checks each per stage,
+                                // equivalent to C: failing either yields that error code).
                                 let forbid = crate::protect::forbidden_decision(
                                     &crate::protect::ForbidInput {
                                         real_uid,
@@ -6091,10 +6091,10 @@ impl VfsState {
                                 continue;
                             }
                             crate::worker::PathFollow::LinkSrc { dst_path } => {
-                                // C `do_link:188-196` 阶段 1 走通：转阶段 2——
-                                // 切出 name2 的父目录与组件名，**从根/工作目录
-                                // 重新起走**（C 是同一个 `resolve` 换路径再来
-                                // 一趟 `last_dir`）。
+                                // C `do_link:188-196` stage 1 passed: go to stage 2 -
+                                // peel off name2's parent directory and component name, and **start the walk again
+                                // from the root/work directory** (C reuses the same `resolve` with a new path for
+                                // another `last_dir` pass).
                                 let rd = self.root_dir_of(fp_slot);
                                 let split = match crate::path::last_dir_split(&dst_path) {
                                     Ok(sp) => sp,
@@ -6188,8 +6188,8 @@ impl VfsState {
                                 src_ino,
                                 entry,
                             } => {
-                                // C `do_link:203-211`：跨设备门（EXDEV）→
-                                // `W|X` 门 → `req_link`。
+                                // C `do_link:203-211`: cross-device gate (EXDEV) →
+                                // `W|X` gate → `req_link`.
                                 if node.fs_e != src_fs_e {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EXDEV);
                                     continue;
@@ -6261,7 +6261,7 @@ impl VfsState {
                                     }
                                 };
                                 let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
-                                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                                     #[allow(clippy::let_underscore_must_use)]
                                     let _ = self.revoke_grant(grant);
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6291,9 +6291,9 @@ impl VfsState {
                                 target_addr,
                                 target_len,
                             } => {
-                                // C `do_slink:411-414`：`forbidden(fp, vp,
-                                // W_BIT|X_BIT)` 过了才发 `req_slink`（父目录
-                                // 的类型由遍历/FS 把关，这里没有单独的类型门）。
+                                // C `do_slink:411-414`: `forbidden(fp, vp,
+                                // W_BIT|X_BIT)` passes, then `req_slink` is sent (the parent directory's
+                                // type is checked by the walk/FS; there is no separate type gate here).
                                 let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
                                     .and_then(|s| self.fproc_table.get(s))
                                 {
@@ -6339,7 +6339,7 @@ impl VfsState {
                                     .and_then(|s| self.fproc_table.get(s))
                                     .map(|fp| fp.endpoint)
                                     .unwrap_or(Endpoint::NONE);
-                                // 名字：VFS 内存里的 direct grant。
+                                // The name: a direct grant into VFS memory.
                                 let (grant_path, name_len) = {
                                     let Some(wp) = self.worker_pool.get_mut(idx) else {
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6365,8 +6365,8 @@ impl VfsState {
                                         }
                                     }
                                 };
-                                // 目标串：**用户内存**里的 magic grant（首趟带
-                                // `CPF_TRY`，C request.c:1061-1062）。
+                                // The target string: a magic grant into **user memory** (the first pass carries it).
+                                // `CPF_TRY`, C request.c:1061-1062).
                                 let grant_target = match self.grant_user_buffer(
                                     node.fs_e,
                                     user,
@@ -6376,7 +6376,7 @@ impl VfsState {
                                 ) {
                                     Ok(g) => g,
                                     Err(_) => {
-                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                                         #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant_path);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6384,10 +6384,10 @@ impl VfsState {
                                     }
                                 };
                                 let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
-                                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                                     #[allow(clippy::let_underscore_must_use)]
                                     let _ = self.revoke_grant(grant_path);
-                                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                                     #[allow(clippy::let_underscore_must_use)]
                                     let _ = self.revoke_grant(grant_target);
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6419,10 +6419,10 @@ impl VfsState {
                                 mtime,
                                 flags,
                             } => {
-                                // C `do_utimens` 的路径半（time.c:74-96）：未知
-                                // 标志在入口就拒（这里再核一次，防 follow 被
-                                // 别处构造）；`AT_SYMLINK_NOFOLLOW` 的遍历语义
-                                // 已在入口用于选 flags。
+                                // The path half of C `do_utimens` (time.c:74-96): unknown
+                                // flags are rejected at the entry point (re-checked here in case follow was
+                                // constructed elsewhere); the walk semantics of `AT_SYMLINK_NOFOLLOW`
+                                // already selected the flags at the entry point.
                                 let _ = flags;
                                 self.finish_utimens(
                                     idx, fp_slot, node.fs_e, node.ino, node.uid, node.gid,
@@ -6435,9 +6435,9 @@ impl VfsState {
                                 mode_bits,
                                 dev,
                             } => {
-                                // C `do_mknod:543-552`：父目录类型门 → `W|X`
-                                // 权限门 → `req_mknod`（名字走 direct grant，
-                                // 回复只有状态）。
+                                // C `do_mknod:543-552`: parent directory type gate → `W|X`
+                                // permission gate → `req_mknod` (the name uses a direct grant;
+                                // the reply is status-only).
                                 if node.mode & crate::open::S_IFMT != crate::open::S_IFDIR {
                                     self.finish_worker_job(idx, fp_slot, minix_types::ENOTDIR);
                                     continue;
@@ -6483,9 +6483,9 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, e.to_errno());
                                     continue;
                                 }
-                                // 名字写进槽内 scratch 并做 direct grant
-                                // （C `cpf_grant_direct(fs_e, lastc, len,
-                                // CPF_READ)`）。
+                                // The name is written into the slot's scratch and direct-granted
+                                // (C `cpf_grant_direct(fs_e, lastc, len,
+                                // CPF_READ)`).
                                 let (grant, name_len) = {
                                     let Some(wp) = self.worker_pool.get_mut(idx) else {
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6512,7 +6512,7 @@ impl VfsState {
                                     }
                                 };
                                 let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
-                                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                                     #[allow(clippy::let_underscore_must_use)]
                                     let _ = self.revoke_grant(grant);
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6538,8 +6538,8 @@ impl VfsState {
                                 continue;
                             }
                             crate::worker::PathFollow::Truncate { length } => {
-                                // C `do_truncate:311-316`：`forbidden(fp, vp,
-                                // W_BIT)` 过了才动文件；大小不变那条在发送半里。
+                                // C `do_truncate:311-316`: `forbidden(fp, vp,
+                                // W_BIT)` passes, the file is touched; the unchanged-size case lives in the send half.
                                 let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
                                     .and_then(|s| self.fproc_table.get(s))
                                 {
@@ -6596,17 +6596,17 @@ impl VfsState {
                                     length,
                                     vnode,
                                 ) {
-                                    // 已登记请求：等 FS 回复（续接体收尾）。
+                                    // Request registered: wait for the FS reply (the continuation finalizes).
                                     Ok(true) => {}
-                                    // 大小不变：C 回 `r = OK`，作业就地完结。
+                                    // Unchanged size: C returns `r = OK`; the job completes in place.
                                     Ok(false) => self.finish_worker_job(idx, fp_slot, 0),
                                     Err(e) => self.finish_worker_job(idx, fp_slot, e),
                                 }
                                 continue;
                             }
                             crate::worker::PathFollow::Chown { uid, gid } => {
-                                // C `do_chown` 的路径半：走完就交给共用体
-                                // （只读门 + 三条属主规则 + 界检查 + 发请求）。
+                                // The path half of C `do_chown`: after the walk, hand over to the shared body
+                                // (read-only gate + three ownership rules + range check + send request).
                                 let Some(vnode) = self.intern_vnode(&node) else {
                                     self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
                                     continue;
@@ -6618,8 +6618,8 @@ impl VfsState {
                                 continue;
                             }
                             crate::worker::PathFollow::Chmod { user: _u, mode } => {
-                                // C `do_chmod` 的路径半：走完并表 vnode，然后进
-                                // 共用体（属主门 + 只读门 + setgid 清位 + 发请求）。
+                                // The path half of C `do_chmod`: after the walk and vnode interning, enter
+                                // the shared body (owner gate + read-only gate + setgid clearing + send request).
                                 let Some(vnode) = self.intern_vnode(&node) else {
                                     self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
                                     continue;
@@ -6635,10 +6635,10 @@ impl VfsState {
                                 buf,
                                 buf_size,
                             } => {
-                                // C `do_rdlink`（link.c:496-506）：不是符号链接
-                                // 就是 EINVAL（`PATH_RET_SYMLINK` 已经让 FS 不
-                                // 跟进末组件，所以这里拿到的是链接本身），是
-                                // 符号链接才发 `REQ_RDLINK`。
+                                // C `do_rdlink` (link.c:496-506): not a symlink
+                                // means EINVAL (`PATH_RET_SYMLINK` already made FS not
+                                // follow the last component, so what arrives here is the link itself); only a symlink
+                                // sends `REQ_RDLINK`.
                                 if node.mode & crate::open::S_IFMT != crate::open::S_IFLNK {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
                                     continue;
@@ -6647,8 +6647,8 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                     continue;
                                 };
-                                // magic grant：FS 往用户缓冲写链接文本。
-                                // C 的首趟带 `CPF_TRY`（request.c:760-761）。
+                                // magic grant: FS writes the link text into the user buffer.
+                                // C's first pass carries `CPF_TRY` (request.c:760-761).
                                 let grant = match self.grant_user_buffer(
                                     node.fs_e,
                                     user,
@@ -6683,10 +6683,10 @@ impl VfsState {
                                 user: _acc_user,
                                 access,
                             } => {
-                                // C `do_access`（protect.c:216-231）的本地半：
-                                // 走完就判权限——`forbidden` 用**真实** uid/gid
-                                // （protect.c:255-256 的 `job_call_nr ==
-                                // VFS_ACCESS` 特例），根用户另有 rwx 全给的面。
+                                // The local half of C `do_access` (protect.c:216-231):
+                                // after the walk, check permissions — `forbidden` uses the **real** uid/gid
+                                // (the `job_call_nr == VFS_ACCESS` special case at protect.c:255-256);
+                                // the root user also has a full-rwx face.
                                 let _ = _acc_user;
                                 let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
                                     .and_then(|s| self.fproc_table.get(s))
@@ -6747,11 +6747,11 @@ impl VfsState {
                                 mode,
                                 path: _creat_path,
                             } => {
-                                // `path` 只在阶段 1 失败（ENOENT）时用得到，
-                                // 那条路走的是 Err 分支里的同一字段。
-                                // 阶段 1 走通＝文件已存在：`O_EXCL` 即
-                                // EEXIST（C open.c:118-120 的 `exist` 判定），
-                                // 否则按普通 open 收尾。
+                                // `path` is needed only when stage 1 fails (ENOENT);
+                                // that route uses the same field in the Err branch.
+                                // Stage 1 passing = the file already exists: with `O_EXCL` that is
+                                // EEXIST (C's `exist` decision at open.c:118-120);
+                                // otherwise finalize as a normal open.
                                 let _ = user;
                                 if oflags & crate::open::OpenFlags::EXCL.bits() != 0 {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EEXIST);
@@ -6767,8 +6767,8 @@ impl VfsState {
                                 mode,
                                 entry,
                             } => {
-                                // 阶段 2 走通（父目录在）：发 `REQ_CREATE`
-                                // （C `new_node` → `req_create`）。
+                                // Stage 2 passed (parent directory exists): send `REQ_CREATE`.
+                                // (C `new_node` → `req_create`).
                                 let (grant, name_len) = {
                                     let Some(wp) = self.worker_pool.get_mut(idx) else {
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6798,7 +6798,7 @@ impl VfsState {
                                 let vmnt = match self.vmnt_table.find_by_fs(node.fs_e) {
                                     Some(v) => v.0,
                                     None => {
-                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                                         #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6809,7 +6809,7 @@ impl VfsState {
                                 {
                                     Some(fp) => (fp.eff_uid, fp.eff_gid),
                                     None => {
-                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                                         #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
@@ -6830,19 +6830,19 @@ impl VfsState {
                                         node.ino, grant, mode, uid, gid, name_len,
                                     ),
                                 });
-                                continue; // 等 REQ_CREATE 的回复（Create 续接）
+                                continue; // wait for the REQ_CREATE reply (Create continuation)
                             }
                             crate::worker::PathFollow::Mkdir { user, entry, mode } => {
-                                // C `do_mkdir`（open.c:564-598）：走到的必须是
-                                // 目录（否则 ENOTDIR）→ 权限门（W|X）→
-                                // `req_mkdir(父 ino, lastc, uid, gid, bits)`。
+                                // C `do_mkdir` (open.c:564-598): the node reached must be a
+                                // directory (otherwise ENOTDIR) → permission gate (W|X) →
+                                // `req_mkdir(parent ino, lastc, uid, gid, bits)`.
                                 let ftype = node.mode & crate::open::S_IFMT;
                                 if ftype != crate::open::S_IFDIR {
                                     self.finish_worker_job(idx, fp_slot, minix_types::ENOTDIR);
                                     continue;
                                 }
-                                // 权限门：`forbidden(fp, vp, W_BIT|X_BIT)`
-                                // （C :589）。
+                                // Permission gate: `forbidden(fp, vp, W_BIT|X_BIT)`.
+                                // (C :589).
                                 let (real_uid, eff_uid, real_gid, eff_gid, supp) = match fp_slot
                                     .and_then(|s| self.fproc_table.get(s))
                                 {
@@ -6884,8 +6884,8 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, e.to_errno());
                                     continue;
                                 }
-                                // 最后组件名进槽内 scratch + NUL，授权给
-                                // FS 读（C `req_mkdir` 的 `cpf_grant_direct`）。
+                                // The last component name goes into the slot's scratch + NUL and is granted
+                                // to FS for reading (C `req_mkdir`'s `cpf_grant_direct`).
                                 let (grant, name_len) = {
                                     let Some(wp) = self.worker_pool.get_mut(idx) else {
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6916,7 +6916,7 @@ impl VfsState {
                                 let vmnt = match self.vmnt_table.find_by_fs(node.fs_e) {
                                     Some(v) => v.0,
                                     None => {
-                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                                         #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6936,11 +6936,11 @@ impl VfsState {
                                         node.ino, grant, mode, eff_uid, eff_gid,
                                     ),
                                 });
-                                continue; // 等 REQ_MKDIR 的回复（Status 续接收尾）
+                                continue; // wait for the REQ_MKDIR reply (Status continuation finalizes)
                             }
                             crate::worker::PathFollow::Stat { user, buf } => {
-                                // 相位 2：grant 用户 stat 缓冲 → REQ_STAT →
-                                // 续接交棒给 Fstat（已落的那条）。
+                                // Phase 2: grant the user stat buffer → REQ_STAT →
+                                // hand the continuation to Fstat (the one already landed).
                                 let grant = match self.grant_user_buffer(
                                     node.fs_e,
                                     user,
@@ -6957,7 +6957,7 @@ impl VfsState {
                                 let vmnt = match self.vmnt_table.find_by_fs(node.fs_e) {
                                     Some(v) => v.0,
                                     None => {
-                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                                         #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
@@ -6975,7 +6975,7 @@ impl VfsState {
                                     user,
                                     req: crate::request::encode_stat(node.ino, grant),
                                 });
-                                continue; // 等 stat 的回复（Fstat 续接收尾）
+                                continue; // wait for the stat reply (Fstat continuation finalizes)
                             }
                         },
                         Err(e) => {
@@ -6983,9 +6983,9 @@ impl VfsState {
                                 PathFail::Path(p) => walk_err(p),
                                 PathFail::Status(st) => st,
                             };
-                            // `creat` 阶段 1 的 ENOENT → 阶段 2：**走父目录**
-                            // （C `new_node` 的 `last_dir` 那一步）。其余错误
-                            // 按状态收尾。
+                            // ENOENT in `creat` stage 1 → stage 2: **walk the parent directory**
+                            // (the `last_dir` step of C `new_node`). Other errors
+                            // are finalized as a status.
                             if status == minix_types::ENOENT
                                 && let crate::worker::PathFollow::Creat {
                                     user,
@@ -7103,15 +7103,15 @@ impl VfsState {
                     orig_pos,
                     write,
                 } => {
-                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
-                        // C `req_readwrite_actual` 的成功半：从**回复**取
-                        // `seek_pos`/`nbytes`（`mess_fs_vfs_readwrite` —
-                        // ipc.h:214-220，偏移取共享权威表），位置写回 filp，
-                        // 状态给用户的是"实际读到的字节数"（C 的 `cum_io`）。
-                        // SAFETY: 回复载荷按 LP64 域序写在负载区。
+                        // The success half of C `req_readwrite_actual`: take `seek_pos`/`nbytes`
+                        // from the **reply** (`mess_fs_vfs_readwrite` —
+                        // ipc.h:214-220, the offsets come from the shared authority table), write the position back to the filp,
+                        // and hand the user "bytes actually read" as the status (C's `cum_io`).
+                        // SAFETY: the reply payload is written in LP64 field order in the payload area.
                         let raw = unsafe { &reply.m_u.raw };
                         let mut b8 = [0u8; 8];
                         b8.copy_from_slice(
@@ -7127,8 +7127,8 @@ impl VfsState {
                         if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp)) {
                             f.pos = new_pos;
                         }
-                        // C read.c:255-259 —— 写方向且是常规文件/目录时，
-                        // 新位置越过旧大小即抬高（读方向不动大小）。
+                        // C read.c:255-259 — on the write direction for a regular file/directory,
+                        // a new position beyond the old size raises it (the read direction does not change the size).
                         if write
                             && let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode))
                             && (v.mode & crate::open::S_IFMT == crate::open::S_IFREG
@@ -7140,11 +7140,11 @@ impl VfsState {
                         }
                         status = nbytes as i32;
                         value_reply = true;
-                        let _ = orig_pos; // 位置已由回复给出，原值只作对账
+                        let _ = orig_pos; // the position already came from the reply; the old value is only for reconciliation
                     }
                 }
             }
-            // 完成：清槽 + 回用户（目标取 fproc 的端点）。
+            // Complete: clear the slot + reply to the user (the target is the fproc's endpoint).
             if let Some(wp) = self.worker_pool.get_mut(idx) {
                 wp.cont = None;
                 wp.sendrec = None;
@@ -7162,14 +7162,14 @@ impl VfsState {
                     Some(m) => self.queue_reply_msg(target, m),
                     None => {
                         let result = if value_reply {
-                            // 成功值（字节数/条数）：非负，原样回。
+                            // Success value (byte count/entry count): non-negative, returned as is.
                             crate::call_table::SyscallResult::Ok(status)
                         } else if status == 0 {
                             crate::call_table::SyscallResult::Ok(0)
                         } else if status > 0 {
                             crate::call_table::SyscallResult::Error(status)
                         } else {
-                            // 线上带来的负值状态：先翻回正号 errno，边界再统一折负。
+                            // Negative on-wire status: flip back to a positive errno first; the boundary folds it negative again.
                             crate::call_table::SyscallResult::Error(-status)
                         };
                         self.queue_reply(target, result);
@@ -7265,7 +7265,7 @@ impl VfsState {
     ///
     /// If a revived slot exists, `unblock` it and return `Revived*`.
     /// Otherwise the caller should `receive` (we return `Ready` as a
-    /// placeholder for “receive then route”).
+    /// placeholder for "receive then route").
     pub fn poll_next(&mut self) -> PollResult {
         if let Some(slot) = self.next_reviving_slot() {
             match self.unblock(slot) {
@@ -7297,21 +7297,21 @@ impl VfsState {
         self.reply(target, result)
     }
 
-    /// 把一次分发的 [`SyscallResult`](crate::call_table::SyscallResult)
-    /// 折成回复并入队（W3 回复半）。
+    /// Fold the [`SyscallResult`](crate::call_table::SyscallResult) of one dispatch into a
+    /// reply and queue it (the reply half).
     ///
-    /// 映射照 C 的 `do_work` 尾部 `reply(who_e, result)`（main.c:297 →
-    /// `reply:638` 的 `m_out->m_type = result; ipc_sendnb(...)`），但**符号要
-    /// 在边界折一次**：C 的 VFS 是 `_SYSTEM` 构建，`errno.h:187-192` 的
-    /// `_SIGN` 让 `EINVAL` 这些常量本身带负号（`errno.h:64`），所以 C 写进
-    /// `m_type` 的错误码是负值，用户侧 `_syscall` 按 `m_type < 0` 判错
-    /// （`minix3/minix/lib/libc/sys/syscall.c:9-25`；Rust 用户侧同约定，
-    /// 见 `minix-sys/src/syscall.rs:107`）。Rust 的臂内部用**正号**常量
-    /// （crate 惯例，`minix_types::EINVAL == 22`），于是这里统一折成负号。
+    /// The mapping follows the `reply(who_e, result)` tail of C `do_work` (main.c:297 →
+    /// `reply:638`'s `m_out->m_type = result; ipc_sendnb(...)`), but **the sign is
+    /// folded once at the boundary**: C's VFS is a `_SYSTEM` build, and `_SIGN` in
+    /// `errno.h:187-192` makes constants such as `EINVAL` negative already (`errno.h:64`), so the error
+    /// code C writes into `m_type` is negative; the user side's `_syscall` tests `m_type < 0`
+    /// (`minix3/minix/lib/libc/sys/syscall.c:9-25`; the Rust user side follows the same convention,
+    /// see `minix-sys/src/syscall.rs:107`). Rust arms use **positive** constants
+    /// internally (crate convention, `minix_types::EINVAL == 22`), so the sign is folded negative here.
     ///
-    /// 驱动与 FS 回复带来的状态**已经是负值**（那些进程同样是 `_SYSTEM`
-    /// 构建），原样透传——`Error(e)` 只在 `e > 0` 时取负，两条来源不会互相
-    /// 打架。成功值是 fd/字节数/0，一律非负，`Ok(v)` 不动。
+    /// Statuses coming from driver and FS replies are **already negative** (those processes are `_SYSTEM`
+    /// builds too), so they pass through unchanged — `Error(e)` negates only when `e > 0`, and the two
+    /// sources cannot conflict. Success values are fd/byte count/0, always non-negative, and `Ok(v)` is left alone.
     pub fn queue_reply(&mut self, target: Endpoint, result: crate::call_table::SyscallResult) {
         use crate::call_table::SyscallResult;
         if target == Endpoint::NONE || target.to_user_slot().is_none() {
@@ -7329,10 +7329,10 @@ impl VfsState {
             SyscallResult::Nosys => -minix_types::ENOSYS,
             SyscallResult::Suspend => return,
         };
-        // 臂已经自己入过一条**带载荷**的回复（如 `lseek` 位置不变那条路把
-        // 新位置写进 `m_vfs_lc_lseek.offset`，C `open.c:665-666`）时，这条
-        // 统一收尾的裸回复**不能覆盖它**——覆盖掉用户拿到的就是偏移 0。
-        // 一轮只该有一条回复：先入队者为准。
+        // When the arm has already queued a **payload** reply itself (e.g. the unchanged-position
+        // `lseek` path writing the new offset into `m_vfs_lc_lseek.offset`, C `open.c:665-666`), this
+        // unified finalizer's bare reply **must not overwrite it** — overwriting would hand the user offset 0.
+        // One reply per round: the first one queued wins.
         if self.pending_reply.is_some() {
             return;
         }
@@ -7345,8 +7345,8 @@ impl VfsState {
         );
     }
 
-    /// 入队一条**带载荷**的回复（C 的 `job_m_out` 在返回前被臂填字段，
-    /// 如 `lseek` 把新位置写进 `m_vfs_lc_lseek.offset`）。
+    /// Queue one **payload** reply (C's `job_m_out` has fields filled by the arm before return,
+    /// e.g. `lseek` writing the new offset into `m_vfs_lc_lseek.offset`).
     pub fn queue_reply_msg(&mut self, target: Endpoint, msg: Message) {
         if target == Endpoint::NONE || target.to_user_slot().is_none() {
             return;
@@ -7354,22 +7354,22 @@ impl VfsState {
         self.pending_reply = Some((target, msg));
     }
 
-    /// 取走待发回复（`run()` 每轮循环尾调用）。
+    /// Take the pending reply (called by `run()` at the tail of each loop iteration).
     pub fn take_reply(&mut self) -> Option<(Endpoint, Message)> {
         self.pending_reply.take()
     }
 
-    /// 给 FS 发一张 **magic grant**：把 `user_e`:`addr` 起的 `bytes` 字节
-    /// 授权给 `fs_e` 读写。
+    /// Send FS a **magic grant**: authorize the `bytes` bytes starting at `user_e`:`addr`
+    /// to `fs_e` for reading and writing.
     ///
     /// C: `cpf_grant_magic(fs_e, user_e, addr, bytes, access)` ——
-    /// `request.c:844`（read/write）与 `:1087`（stat）都是这个形状；权限位
-    /// 由调用方给（读是 `CPF_WRITE`——FS 往用户缓冲写；带 `CPF_TRY` 的那一半
-    /// 由 `GrantScope` 表达，`ERESTART` 重发路径见 `req_stat`/`req_readwrite`）。
+    /// `request.c:844` (read/write) and `:1087` (stat) share this shape; the permission bits
+    /// come from the caller (read is `CPF_WRITE` — FS writes into the user buffer; the half with `CPF_TRY`
+    /// is expressed by `GrantScope`; see `req_stat`/`req_readwrite` for the `ERESTART` resend path).
     ///
-    /// 失败面：表满/内核调用失败即 `Err`——C 在这两处 `panic`
-    /// （"cpf_grant_* failed"），Rust 让臂自己决定（C 语义上这是内部错误，
-    /// 臂按 `EIO` 回用户）。
+    /// Failure surface: a full table / failed kernel call yields `Err` — C `panic`s in both
+    /// places ("cpf_grant_* failed"); Rust leaves the decision to the arm (semantically an internal error in C;
+    /// the arm replies `EIO` to the user).
     pub fn grant_user_buffer(
         &mut self,
         fs_e: Endpoint,
@@ -7388,27 +7388,27 @@ impl VfsState {
         )
     }
 
-    /// 撤销一张 grant（C `cpf_revoke`）。返回值按 C 的调用点语义：只要
-    /// 撤销本身不报错就回 `Ok`；`GRANT_FAULTED` 由调用方比对
-    /// （C 的 `if (cpf_revoke(grant_id) == GRANT_FAULTED) return ERESTART;`）。
+    /// Revoke one grant (C `cpf_revoke`). The return value follows C's call-site semantics: `Ok`
+    /// whenever the revoke itself does not error; `GRANT_FAULTED` is compared by the caller
+    /// (C's `if (cpf_revoke(grant_id) == GRANT_FAULTED) return ERESTART;`).
     pub fn revoke_grant(&mut self, grant: i32) -> Result<i32, i32> {
         self.grants.revoke(grant)
     }
 
-    /// `fs_sendrec`（comm.c:134-170）的对话原语——syscall 臂的进入半。
+    /// The conversation primitive of `fs_sendrec` (comm.c:134-170) — the entry half of syscall arms.
     ///
-    /// 与 C 六步对应：`find_vmnt(fs_e)` 校验（`vmnt` 存在且 `fs` 指向
-    /// 同一端点，不符即 `EIO`，comm.c:137-140）→ `EDEADLK` 自死锁守门
-    /// （调用进程本身就是该 FS，comm.c:142-144）→ `assert(w_sendrec ==
-    /// NULL)`（槽不得已在等待，comm.c:146）→ `w_sendrec` 挂接
-    /// （[`crate::worker::WorkerSlot::set_waiting`]）→ 窗口二守门下的
-    /// `sendmsg`/`queuemsg`（经 [`FsTransport::send_fs`]）。C 的
-    /// `worker_wait` 在单线程模型中即"臂返回 Suspend、槽停在
-    /// `WaitingForFs`"，回复由 [`Self::handle_fs_reply`] 落地。
+    /// Mirrors C's six steps: `find_vmnt(fs_e)` validation (`vmnt` exists and `fs` points at
+    /// the same endpoint, otherwise `EIO`, comm.c:137-140) → `EDEADLK` self-deadlock gate
+    /// (the calling process is that FS itself, comm.c:142-144) → `assert(w_sendrec ==
+    /// NULL)` (the slot must not already be waiting, comm.c:146) → attach `w_sendrec`
+    /// ([`crate::worker::WorkerSlot::set_waiting`]) → under the second window gate
+    /// `sendmsg`/`queuemsg` (via [`FsTransport::send_fs`]). C's
+    /// `worker_wait` becomes "the arm returns Suspend and the slot stays in
+    /// `WaitingForFs`" in the single-threaded model; the reply is landed by [`Self::handle_fs_reply`].
     ///
-    /// 发送失败时槽的等待标记不清除——与 C 一致（`sendmsg` 失败后
-    /// `w_sendrec` 留待作业结束的 `worker_release` 清理），调用方臂
-    /// 收到 `Err` 后走错误回复并释放槽。
+    /// On a send failure the slot's wait mark is not cleared — as in C (after `sendmsg` fails,
+    /// `w_sendrec` is left for the job-ending `worker_release` to clean up); the caller arm
+    /// receives the `Err`, replies with the error and releases the slot.
     pub fn fs_sendrec<T: FsTransport>(
         &mut self,
         transport: &mut T,
@@ -7424,7 +7424,7 @@ impl VfsState {
         if v.fs != fs_ep {
             return Err(CommError::NoVmnt);
         }
-        // comm.c:142-144 — `if (fs_e == fp->fp_endpoint) return EDEADLK`。
+        // comm.c:142-144 — `if (fs_e == fp->fp_endpoint) return EDEADLK`.
         if let Some(fp_slot) = self.worker_pool.get(slot).and_then(|w| w.fp_slot)
             && let Some(fp) = self.fproc_table.get(fp_slot)
             && fp.endpoint == fs_ep
@@ -7433,7 +7433,7 @@ impl VfsState {
         }
         {
             let w = self.worker_pool.get_mut(slot).ok_or(CommError::NoWorker)?;
-            // comm.c:146 — `assert(self->w_sendrec == NULL)`。
+            // comm.c:146 — `assert(self->w_sendrec == NULL)`.
             assert!(
                 w.state != crate::worker::WorkerState::WaitingForFs,
                 "fs_sendrec on already-waiting slot (C comm.c:146 assert)"
@@ -7445,15 +7445,15 @@ impl VfsState {
             .map(|_| ())
     }
 
-    /// `send_work`（comm.c:37-47）× `fs_sendmore`（comm.c:66-87）的
-    /// 真发送半——窗口放行后把排队的请求补发出去。
+    /// The real send half of `send_work` (comm.c:37-47) × `fs_sendmore` (comm.c:66-87) —
+    /// after the window opens, flush the queued requests.
     ///
-    /// C 的补发由作业结束的 worker 调 `send_work()` 驱动；单线程模型
-    /// 下由主循环层在回复落地后调用（`run()` 持 transport 时），本原语
-    /// 独立可测。`GlobalComm::fs_sendmore` 承载 C 的守门序与
-    /// `pop + sending--`（`c_cur_reqs++` 由其内联）；随后按 `sendmsg`
-    /// 的 transid 戳 + `asynsend3` 投递——发送失败以 `(void)` 忽略继续
-    /// （comm.c:86 的既有行为，计数已先行递增）。返回实际补发条数。
+    /// In C the flush is driven by `send_work()` from the finishing worker; in the single-threaded
+    /// model the main-loop layer calls it after a reply lands (when `run()` holds the transport), keeping this primitive
+    /// independently testable. `GlobalComm::fs_sendmore` carries C's gate order and
+    /// `pop + sending--` (`c_cur_reqs++` is inlined there); then it stamps the transid via `sendmsg`
+    /// and delivers with `asynsend3` — a send failure is ignored as `(void)`
+    /// (C's existing behavior at comm.c:86; the count was already incremented). Returns the number actually flushed.
     pub fn flush_send_queue<T: minix_sys::ipc::IpcTransport>(
         &mut self,
         transport: &mut T,
@@ -7466,8 +7466,8 @@ impl VfsState {
         }
         let mut sent = 0;
         for idx in 0..crate::vmnt::NR_MNTS {
-            // C fs_sendmore:79 `if (vmp->m_fs_e == NONE) return` 的
-            // 对应物——空挂载槽不扫。
+            // The counterpart of `if (vmp->m_fs_e == NONE) return` in C fs_sendmore:79 —
+            // empty mount slots are not scanned.
             if self
                 .vmnt_table
                 .get(crate::vmnt::VmntId(idx))
@@ -7493,8 +7493,8 @@ impl VfsState {
                     .get(crate::vmnt::VmntId(idx))
                     .map(|v| v.fs)
                     .unwrap_or(Endpoint::NONE);
-                // C sendmsg 的 `TRNS_ADD_ID` 戳（此处补戳排队时未 stamp
-                // 的槽内请求）+ `asynsend3`（`(void)` 忽略失败）。
+                // C sendmsg's `TRNS_ADD_ID` stamp (adding it here for queued requests that were not stamped
+                // at queue time) + `asynsend3` (failure ignored as `(void)`).
                 let mut out = req;
                 out.m_type = crate::fs_comm::TransId::add(req.m_type as u32, slot) as i32;
                 if transport.sendnb(fs_ep, &out).is_ok() {
@@ -7505,21 +7505,21 @@ impl VfsState {
         sent
     }
 
-    /// `do_reply:187`（main.c）——FS 回复落地到等待中的 worker 槽。
+    /// `do_reply:187` (main.c) — land an FS reply on the waiting worker slot.
     ///
-    /// C 步骤逐条对应：
-    /// 1. `transid` 解码出槽号（`TRNS_GET_ID` + `IS_VFS_FS_TRANSID`）。
+    /// C's steps, one by one:
+    /// 1. `transid` decodes the slot number (`TRNS_GET_ID` + `IS_VFS_FS_TRANSID`).
     /// 2. `who_e != VM_PROC_NR && find_vmnt(who_e)==NULL → panic`
-    ///    （main.c:190-191）——VM 回复跳过 vmnt 查找；找不到挂载点即
-    ///    fail-fast（同 C 的 panic 文案）。
-    /// 3. `wp->w_task != who_e → printf+return`（main.c:193-196）——
-    ///    typed 为 [`FsReplyError::WrongTask`]。
-    /// 4. `*w_sendrec = m_in; w_sendrec 转为已交付`（main.c:204-205）——
-    ///    槽模型的 `sendrec` 存储被回复覆写，续接侧从同槽读回结果
-    ///    （C 的续接在 `fs_sendrec:164` 读 `reqmp->m_type`）。
-    /// 5. `w_task = NONE; c_cur_reqs--`（main.c:206-208）——窗口放行。
-    /// 6. `worker_signal(wp)`（main.c:209）——槽从 `WaitingForFs` 回
-    ///    `Busy`（协程可运行；单线程模型下"可运行"即等待续接分派）。
+    /// (main.c:190-191) — VM replies skip the vmnt lookup; a mount point not found is
+    /// fail-fast (same panic text as C).
+    /// 3. `wp->w_task != who_e → printf+return` (main.c:193-196) —
+    /// typed as [`FsReplyError::WrongTask`].
+    /// 4. `*w_sendrec = m_in; w_sendrec becomes delivered` (main.c:204-205) —
+    /// the slot model's `sendrec` storage is overwritten by the reply; the continuation reads the result from the same slot
+    /// (C's continuation reads `reqmp->m_type` at `fs_sendrec:164`).
+    /// 5. `w_task = NONE; c_cur_reqs--` (main.c:206-208) — the window opens.
+    /// 6. `worker_signal(wp)` (main.c:209) — the slot moves from `WaitingForFs` back to
+    /// `Busy` (the coroutine is runnable; in the single-threaded model "runnable" means waiting for continuation dispatch).
     pub fn handle_fs_reply<C: TransIdCodec>(
         &mut self,
         msg: &Message,
@@ -7532,7 +7532,7 @@ impl VfsState {
         if slot >= crate::worker::NR_WTHREADS {
             return Err(FsReplyError::SlotOutOfRange);
         }
-        // C main.c:190 — VM 回复不经 vmnt 查找；其余找不到挂载点 panic。
+        // C main.c:190 — VM replies skip the vmnt lookup; others panic when no mount point is found.
         let vmnt_idx = if msg.m_source == Endpoint::VM {
             None
         } else {
@@ -7552,14 +7552,14 @@ impl VfsState {
             // C main.c:193-196 — expected X to reply, not Y.
             return Err(FsReplyError::WrongTask);
         }
-        // C main.c:88 —— `m_in.m_type = TRNS_DEL_ID(m_in.m_type)`：**进
-        // do_reply 之前就把 transid 剥掉**，于是 `*w_sendrec` 里的
-        // `m_type` 是服务端的原始状态（含 `EENTERMOUNT` 一类特殊码），
-        // 续接体直接拿它判成功/失败/特殊码。
+        // C main.c:88 — `m_in.m_type = TRNS_DEL_ID(m_in.m_type)`: **the transid is stripped
+        // before entering do_reply**, so `m_type` in `*w_sendrec` is the server's
+        // raw status (including special codes such as `EENTERMOUNT`), and the continuation
+        // uses it directly to decide success/failure/special code.
         let mut stripped = *msg;
         stripped.m_type = minix_types::trns_del_id(msg.m_type);
-        // C main.c:204-206 — `*w_sendrec = m_in` 后清 w_task；槽模型里
-        // "是否在等"由 task 承载，回复体留在 sendrec 供续接读取。
+        // C main.c:204-206 — clear w_task after `*w_sendrec = m_in`; in the slot model
+        // "is it waiting" is carried by task, and the reply body stays in sendrec for the continuation.
         wp.sendrec = Some(stripped);
         wp.task = None;
         if let Some(idx) = vmnt_idx {
@@ -7569,7 +7569,7 @@ impl VfsState {
             );
             self.comm.vmnts[idx].cur_reqs -= 1;
         }
-        // C main.c:209 worker_signal —— 线程从 worker_wait 返回。
+        // C main.c:209 worker_signal — the thread returns from worker_wait.
         wp.state = crate::worker::WorkerState::Busy;
         Ok(slot)
     }
@@ -7581,11 +7581,11 @@ impl Default for VfsState {
     }
 }
 
-/// 路径续走的两种失败源（状态机错误 vs FS 回复的原始状态）。
+/// The two failure sources of path continuation (state-machine error vs the raw status of an FS reply).
 enum PathFail {
-    /// `LookupWalk` 的错误（`PathError`）。
+    /// A `LookupWalk` error (`PathError`).
     Path(crate::path::PathError),
-    /// FS 回复的状态不是 OK/三特殊码（普通错误）。
+    /// The FS reply status is not OK/one of the three special codes (an ordinary error).
     Status(i32),
 }
 
@@ -7595,25 +7595,25 @@ impl From<crate::path::PathError> for PathFail {
     }
 }
 
-/// 一条待发的 FS 对话（见 [`VfsState::flush_pending_fs`]）。
+/// One pending FS conversation (see [`VfsState::flush_pending_fs`]).
 #[derive(Debug, Clone, Copy)]
 pub struct PendingFs {
-    /// 目标挂载窗口（`vmnt` 下标）。
+    /// Target mount window (`vmnt` index).
     pub vmnt: usize,
-    /// 目标文件系统端点。
+    /// Target file-system endpoint.
     pub fs_e: Endpoint,
-    /// 该作业占用的 worker 槽下标。
+    /// Worker slot index occupied by this job.
     pub worker: usize,
-    /// 已发给 FS 的 magic grant（发送失败时由循环撤销）。
+    /// Magic grant already sent to FS (revoked by the loop if sending fails).
     pub grant: i32,
-    /// 用户端点（回复目的地）。
+    /// User endpoint (reply destination).
     pub user: Endpoint,
-    /// 请求消息（`REQ_*`）。
+    /// Request message (`REQ_*`).
     pub req: Message,
 }
 
-/// SEF 循环的 IPC 适配:`SefIpc` 只需要 receive/notify 两动词,由
-/// trap 直连传输承载(VM 的 `SefAdapter` 同形;S13 W4 接线)。
+/// IPC adapter for the SEF loop: `SefIpc` needs only the receive/notify verbs, carried by
+/// the direct trap transport (same shape as the VM's `SefAdapter`).
 pub struct VfsIpc {
     inner: minix_sys::ipc::DirectTrapTransport,
 }
@@ -7645,15 +7645,15 @@ impl minix_sef::SefIpc for VfsIpc {
 
 /// VFS main loop.
 ///
-/// Corresponds to Minix3's `main()` function (main.c:54-118): SEF 启动 →
-/// 握手阻塞循环(main.c:410-436)→ `sef_receive(ANY)` 主循环(main.c:601)。
-/// 生产回复发送，按 C 分双轨（Ground Truth）：PM 控制腿 = 阻塞
-/// `ipc_send` + 失败 panic（`service_pm()` 尾，main.c:912-915）；其余
-/// 调用者腿 = `ipc_sendnb` + 忽略失败（通用 `reply()`，main.c:638-650）。
+/// Corresponds to Minix3's `main()` function (main.c:54-118): SEF startup →
+/// handshake blocking loop (main.c:410-436) → `sef_receive(ANY)` main loop (main.c:601).
+/// Production reply sending splits into two tracks as in C (Ground Truth): the PM control leg = a blocking
+/// `ipc_send` + panic on failure (`service_pm()` tail, main.c:912-915); other
+/// caller legs = `ipc_sendnb` + ignored failure (the generic `reply()`, main.c:638-650).
 ///
-/// 应答只带 `m_type`（C 的 `reply` 同样是 `memset(&m, 0, sizeof(m));
-/// m.m_type = result` 的裸回复）——数据面早已由各臂自己拷出或经
-/// FS 应答落地。
+/// The reply carries only `m_type` (C's `reply` is likewise the bare `memset(&m, 0, sizeof(m));
+/// m.m_type = result` reply) — the data plane was already copied out by the arms themselves or landed
+/// via the FS answer.
 fn send_reply(target: Endpoint, reply: Message) {
     use minix_sys::ipc::IpcTransport;
     // C split (Ground Truth): the `service_pm()` tail replies to PM
@@ -7662,16 +7662,16 @@ fn send_reply(target: Endpoint, reply: Message) {
     // `ipc_sendnb` and ignores failures (main.c:638-650). Routing the
     // PM leg through sendnb was a semantic deviation: when PM was not
     // parked in receive yet (its tell_vfs leg still running), the
-    // reply raced. Real machine NK4-C §1.120-cont.7: aarch64 froze at
-    // VFS_PM_FORK_REPLY (0x987) while x86 crossed the same window by
-    // timing luck -- a two-arch Heisenbug signature of this split.
-    // Invariant (NK4-C §1.120-cont.7 review): unlike C, where only VFS's
-    // main thread blocks here while worker threads keep serving, this
-    // server is single-threaded — the whole loop stalls until PM takes
-    // the reply. Safe today because PM's tell_vfs leg is a one-way send
-    // that always returns to receive (its sendrec-on-VFS legs precede
-    // tell_vfs); any future PM->VFS sendrec leg that waits on this loop
-    // would deadlock here.
+    // reply raced. On real hardware aarch64 froze at VFS_PM_FORK_REPLY (0x987)
+    // while x86 crossed the same window by timing luck -- a two-architecture
+    // Heisenbug signature of this split.
+    // Invariant: unlike C, where only VFS's main thread blocks here while
+    // worker threads keep serving, this server is single-threaded — the whole
+    // loop stalls until PM takes the reply.
+    // Safe today because PM's tell_vfs leg is a one-way send that always
+    // returns to receive (its sendrec-on-VFS legs precede tell_vfs);
+    // any future PM->VFS sendrec leg that waits on this loop would deadlock
+    // here.
     if target == Endpoint::PM {
         minix_sys::ipc::DirectTrapTransport
             .send(target, &reply)
@@ -7680,19 +7680,19 @@ fn send_reply(target: Endpoint, reply: Message) {
     }
     // Non-blocking send (C `ipc_sendnb`): the caller is waiting in
     // sendrec and will not refuse the delivery.
-    // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+    // [SD19-gate] best-effort IPC cleanup (send-and-forget/timeout path; failure does not change an established main result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::ipc::DirectTrapTransport.sendnb(target, &reply);
 }
 
-/// 出生回报腿（NK4-C B9b）：C `sef_cb_init_response_rs_reply` =
-/// `ipc_sendrec(RS, &m)`（sef_init.c:458-466）。与业务回复的 sendnb 不
-/// 同：sendrec 让 VFS 发出 RS_INIT 后停在 receive(RS) 半（内核置
-/// REPLY_PEND、getfrom=RS），等 RS catch 出口回的那一发 OK 唤醒——避免
-/// RS 的 reply 无人认领被野消费→回声投回 RS→step3 panic。
+/// The birth-reply leg: C `sef_cb_init_response_rs_reply` =
+/// `ipc_sendrec(RS, &m)` (sef_init.c:458-466). Unlike the sendnb used for service replies,
+/// sendrec leaves VFS parked in the receive(RS) half after sending RS_INIT (the kernel sets
+/// REPLY_PEND, getfrom=RS) and waits for the OK that RS's catch exit returns — this prevents
+/// RS's reply from being claimed by no one and consumed feral → echoed back to RS → step3 panic.
 fn send_birth_reply(mut reply: Message) {
     use minix_sys::ipc::IpcTransport;
-    // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+    // [SD19-gate] best-effort IPC cleanup (send-and-forget/timeout path; failure does not change an established main result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::ipc::DirectTrapTransport.sendrec(Endpoint::RS, &mut reply);
 }
@@ -7701,22 +7701,22 @@ pub fn run() -> ! {
     let mut state = VfsState::new();
     state.init_fresh();
     let mut ipc = VfsIpc::new();
-    // VFS 在 C 未注册 signal handler（本文件稳态循环内的注释有锚），逃生门
-    // 令牌只为满足库契约——无人取消，三处收信共用。
+    // VFS registers no signal handler in C (see the steady-state loop comment in this file); the escape-hatch
+    // token only satisfies the library contract — no one cancels it, and all three receive sites share it.
     let cancel = minix_sef::SefCancel::new();
 
-    // 启动握手(main.c:410-436):`sef_receive(PM_PROC_NR)` do-while——
-    // 每条 VFS_PM_INIT 填一个 fproc 槽,endpoint==NONE 终止。
+    // Startup handshake (main.c:410-436): `sef_receive(PM_PROC_NR)` do-while —
+    // each VFS_PM_INIT fills one fproc slot; endpoint==NONE terminates.
     loop {
         let mut msg = Message::default();
-        // 握手段的空信号闭包与稳态同据（见下方稳态循环内的注释）：C VFS
-        // 不注册 signal handler，SYSTEM 通知由库默认空 handler 吞掉，
-        // 握手期与稳态期同一条 SEF 拦截臂，闭包无号可用。
+        // The empty signal closure in the handshake phase has the same basis as steady state (see the steady-state loop
+        // comment below): C VFS registers no signal handler, so SYSTEM notifications are swallowed by the library's
+        // default empty handler; the same SEF interception arm serves both phases, leaving the closure no code to handle.
         let recv =
             minix_sef::sef_receive_status(&mut ipc, Endpoint::PM, &mut msg, &mut |_| {}, &cancel)
                 .unwrap_or_else(|e| panic!("vfs: handshake receive failed: {e}"));
-        // NONE 终止符也经 step:状态机在此完成 PmHandshake→InitTables
-        // 转换(与既有握手测试的 complete 语义一致)。
+        // The NONE terminator also goes through step: the state machine performs the PmHandshake→InitTables
+        // transition here (consistent with the existing handshake test's complete semantics).
         let complete = state
             .pm_handshake_step(&recv.message)
             .unwrap_or_else(|e| panic!("vfs: handshake rejected message: {e:?}"));
@@ -7724,16 +7724,16 @@ pub fn run() -> ! {
             break;
         }
     }
-    // C main.c:435-436 — `mess.m_type = OK; ipc_send(PM_PROC_NR, &mess)`：
-    // 进程表收齐后把成功回给 PM（PM 侧 `vfs_init_sync` 的末条是 sendrec
-    // 屏障，等的就是这一条——不发则 PM 启动链停在这里）。
-    // NK4-C 1.10 根因修复：屏障必须用**阻塞** send（C ipc_send 对位）。
-    // 原 send_reply 走 sendnb：PM 此刻在 sendrec 的 receive 半（未接收），
-    // ENOTREADY 被 `let _ =` 吞掉 ⇒ OK 回复丢失、PM 的 barrier 缓冲保持
-    // 旧内容 ⇒ m_type != 0 panic（1.10i 第二站点）。阻塞 send 使 VFS
-    // 挂起直到 PM 进 receive 收下回复——与 C 语义一致。
-    // [SD19-gate] C main.c:435-436 ipc_send 不检查返回；阻塞 send 失败仅当
-    // PM 已死，VFS 随后收不到任何请求自然停摆，回错无处可去
+    // C main.c:435-436 — `mess.m_type = OK; ipc_send(PM_PROC_NR, &mess)`:
+    // Once the process table is complete, reply success to PM (the last entry of PM's `vfs_init_sync` is the sendrec
+    // barrier waiting for exactly this — without it PM's boot chain stops here).
+    // Root-cause fix: the barrier must use a **blocking** send (matching C ipc_send).
+    // The old send_reply used sendnb: PM is at that moment in sendrec's receive half (not receiving),
+    // so ENOTREADY was swallowed by `let _ =` ⇒ the OK reply was lost and PM's barrier buffer kept
+    // old content ⇒ m_type != 0 panic. A blocking send parks VFS
+    // until PM enters receive and takes the reply — matching C semantics.
+    // [SD19-gate] C main.c:435-436 does not check ipc_send's return; a blocking send can fail only if
+    // PM is dead, after which VFS receives no requests and stalls naturally, so the error has nowhere to go
     #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::send(
         Endpoint::PM,
@@ -7743,16 +7743,16 @@ pub fn run() -> ! {
         },
     );
 
-    // ── Boot 会合段：RS_INIT 消费（main.c:455-467 的对位时序位）──
-    // C 的 sef_local_startup 在 do_init_root（main.c:492-497）之前消费
-    // RS_INIT 并跑 init_fresh 的 rproctab 装配——dmap 的 boot 行是根挂载
-    // 的路由前置。RS boot 按 image 序逐台 asynsend 并等应答（rs/boot.rs
-    // step2），VFS 的 RS_INIT 严格晚于 PM 握手完成，所以这里对 RS 阻塞
-    // 收是 C 同序而非忙等。
+    // ── Boot rendezvous: RS_INIT consumption (the matching timing position of main.c:455-467) ──
+    // C's sef_local_startup consumes RS_INIT before do_init_root (main.c:492-497)
+    // and runs init_fresh's rproctab assembly — dmap's boot row is the root mount's
+    // routing prerequisite. The RS boot sends to each server in image order and waits for answers (rs/boot.rs
+    // step2); VFS's RS_INIT is strictly later than PM handshake completion, so blocking on RS here
+    // follows C's order rather than busy-waiting.
     let mut boot_msg = Message::default();
     loop {
-        // 会合段空信号闭包同据（稳态循环内注释）：C VFS 未注册 handler，
-        // SEF 拦截臂先于本循环消费信号请求，闭包无号可用。
+        // The rendezvous-phase empty signal closure has the same basis (see the steady-state loop comment): C VFS
+        // registers no handler; the SEF interception arm consumes signal requests before this loop, so the closure has no code.
         let recv = minix_sef::sef_receive_status(
             &mut ipc,
             Endpoint::RS,
@@ -7762,18 +7762,18 @@ pub fn run() -> ! {
         )
         .unwrap_or_else(|e| panic!("vfs: boot rendezvous receive failed: {e}"));
         let SefEvent::Init(init_type) = recv.event else {
-            // 非 Init 的 RS 面消息：合法 ping 已在 SEF 层消化（sef.c:208-214），
-            // 其余在 boot 会合期不应出现——丢弃重等，C sef_local_startup 的
-            // 循环同款。
+            // Non-Init RS messages: a legitimate ping was already consumed in the SEF layer (sef.c:208-214);
+            // anything else should not occur during the boot rendezvous — drop it and wait again, the same
+            // as C sef_local_startup's loop.
             continue;
         };
-        // 生面应答（E-BIRTHFACE 库根半）：PD-34 编排面——段一清 IPC 过滤
-        // （C `process_init` 第一段 sef_init.c:59-60 的 `assert(r == OK)`，
-        // statectl 直连真接线）、回报消息由库构造；分派语义（fresh 实体
-        // ≡ 构造期 init_fresh；restart 重走本地重置；LU 有注册但 Rust 侧
-        // LU 机制未建模 → 诚实 ENOSYS）保持原样。rproctab 的消费结果就是
-        // 本服务的 init 结果（失败 panic ＝ C do_sef_init_request 失败
-        // 同族 fail-fast）。
+        // Birth-face reply (the library-root half): the orchestration — stage one IPC filtering
+        // (C `process_init` stage one's `assert(r == OK)` at sef_init.c:59-60,
+        // with statectl wired directly), and the reply message built by the library; the dispatch semantics (a fresh
+        // instance ≡ init_fresh at construction; restart re-runs the local reset; LU is registered but the Rust
+        // side does not model the LU machinery → an honest ENOSYS) stay as they were. The rproctab consumption result is
+        // this service's init result (failure panic = the same family of fail-fast as C
+        // do_sef_init_request failure).
         let birth = minix_sef::process_init(
             &mut |req, addr, len| {
                 let r = minix_sys::syscall::sys_statectl(
@@ -7794,12 +7794,12 @@ pub fn run() -> ! {
         );
         let mut reply = match birth {
             Ok(m) => m,
-            // C 段一 assert ＝ 出生失败 fail-closed（启动期无恢复面）。
+            // C's stage-one assert = fail-closed on birth failure (no recovery surface during startup).
             Err(e) => panic!("vfs: birth statectl failed: {e}"),
         };
         if reply.rs_init_result() == Some(0) {
-            // restart 重走本地重置（主循环 Init 臂同款）；fresh 的重置已在
-            // run() 开头做掉（≡ C init_fresh 单次执行）。
+            // restart re-runs the local reset (same as the main loop's Init arm); the fresh reset was already
+            // done at the start of run() (≡ C init_fresh's single execution).
             if init_type == 2 {
                 state.init_fresh();
             }
@@ -7815,8 +7815,8 @@ pub fn run() -> ! {
         break;
     }
 
-    // main.c:492-497 — do_init_root 经 worker_start 启动；C 失败即 panic
-    // （main.c:519-520），这里同权。
+    // main.c:492-497 — do_init_root starts via worker_start; C panics on failure
+    // (main.c:519-520), and the same applies here.
     state
         .finish_init(
             &minix_sys::syscall::DirectKernelCallTransport,
@@ -7824,10 +7824,10 @@ pub fn run() -> ! {
         )
         .unwrap_or_else(|e| panic!("vfs: failed to initialize root: {e:?}"));
 
-    // 启动段(main.c:441):向 DS 订阅驱动上线事件(失败远端忽略)。
-    // C 进程启动时的 grant 表注册（`sys_setgrant`，safecopies.c 的
-    // `grants` 全局在这里告诉内核表位置）；失败无恢复面，仅记录。
-    // [SD19-gate] DS 订阅/登记尽力而为（失败由后续查询路径再暴露）
+    // Startup (main.c:441): subscribe to driver-online events at DS (remote failure ignored).
+    // The grant-table registration at C process startup (`sys_setgrant`; the `grants`
+    // global in safecopies.c tells the kernel where the table is); failure has no recovery surface, so it is only recorded.
+    // [SD19-gate] best-effort DS subscription/registration (failure resurfaces through later query paths)
     #[allow(clippy::let_underscore_must_use)]
     let _ = state
         .grants
@@ -7838,39 +7838,39 @@ pub fn run() -> ! {
         minix_sys::syscall::DirectKernelCallTransport,
         Endpoint::DS,
     );
-    // DS 订阅腿复用**进程主 grant 表**（`state.grants`，7813 已向内核
-    // 注册）——NK4-C 1.24 修复：DsClient 不再自带私有表，否则其
-    // `SYS_SETGRANT` 会覆盖内核 `s_grant_table`，令后续 lookup 的 safecopy
-    // 读到错表（fl=0→EPERM→copy_from→wire EIO）。
-    // [SD19-gate] DS 订阅/登记尽力而为（失败由后续查询路径再暴露）
+    // The DS subscription leg reuses the **process's main grant table** (`state.grants`, already
+    // registered with the kernel) — the DsClient no longer carries a private table; otherwise its
+    // `SYS_SETGRANT` would overwrite the kernel's `s_grant_table` and make later lookups' safecopy
+    // read the wrong table (fl=0 → EPERM → copy_from → wire EIO).
+    // [SD19-gate] best-effort DS subscription/registration (failure resurfaces through later query paths)
     #[allow(clippy::let_underscore_must_use)]
     let _ = ds.subscribe(&mut state.grants, "drv\\.[bc]..\\..*", {
         (minix_types::DsFlags::INITIAL | minix_types::DsFlags::OVERWRITE).bits() as i32
     });
 
-    // SD-11 U-5 迁移（第四迁，缓存大头）：VFS 是走全局堆最重的服务
-    // （fproc/mount/path 等工作集），把全局供给从焊死固定池切到 VM_BRK
-    // 增长堆。安装点在 boot 握手（PM 握手 + RS INIT 会合 + finish_init
-    // root mount）全部完成、DS 订阅之后、稳态事件循环之前——此刻 VM（boot
-    // 序第 2 位，早于 VFS 第 5 位）主循环已在收请求，`install_vm_supplier`
-    // 内的 VM_BRK 直连有应答；EINVAL（镜像尾为 0=链接缺陷）fail-fast。
-    // 启动段的分配（init_fresh 表装配）仍在固定池，形态切换只影响此后的
-    // 增长分配。与首迁 DS（T3）/二迁 SCHED（T3b）/三迁 MIB 同法。
+    // Heap migration (the fourth, and the biggest cache consumer): VFS is the service that uses the global
+    // heap most heavily (fproc/mount/path working sets), so its global supply moves from a hard-wired fixed pool to a
+    // VM_BRK growing heap. The install point is after the whole boot handshake (PM handshake + RS INIT rendezvous + finish_init
+    // root mount) completes, after DS subscription, and before the steady-state event loop — by then VM (second
+    // in boot order, ahead of VFS at fifth) has its main loop receiving requests, so the VM_BRK direct call inside
+    // `install_vm_supplier` gets an answer; EINVAL (image tail 0 = link defect) is fail-fast.
+    // Startup allocations (init_fresh table assembly) still use the fixed pool; the switch affects only later
+    // growth allocations. Same method as the earlier DS/SCHED/MIB migrations.
     #[cfg(target_os = "none")]
     minix_rt::install_vm_supplier(minix_rt::image_end())
         .expect("vfs: install_vm_supplier(镜像尾) 不得失败");
 
-    // SD-11 真机取证探针：安装后立即从 VM 腿取一页（8 字节 slab 请求触发
-    // add_slab → supply_page → VM_BRK），失败即 fail-fast；成功打一行串口
-    // 标记作 VM_BRK 增长腿端到端贯通的 L1 证据。探针块随 free 回 slab 自由
-    // 表（VM 侧页不回收：收缩 brk 从不 unmap，同 C）。
+    // Real-hardware evidence probe: immediately after installation, request one page from the VM leg (an 8-byte
+    // slab request triggers add_slab → supply_page → VM_BRK); failure is fail-fast, and success prints one serial
+    // marker line as L1 evidence that the VM_BRK growth leg works end to end. The probe block returns to the slab
+    // free list on free (the VM side does not reclaim pages: shrinking brk never unmaps, as in C).
     #[cfg(target_os = "none")]
     {
         let probe = minix_rt::alloc(8);
         assert!(!probe.is_null(), "vfs: vm-brk probe 分配失败");
         minix_rt::free(probe);
         use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-        #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+        #[allow(clippy::let_underscore_must_use)] // [SD19-gate] fall back to parking when the reporting channel itself is broken (panic.c:66)
         let _ = sys_diagctl_write(
             &DirectKernelCallTransport,
             "nk4a: vfs-vmbrk probe ok pages=1 via=VM_BRK\n",
@@ -7878,19 +7878,19 @@ pub fn run() -> ! {
     }
 
     loop {
-        // C main.c:601-602 — sef_receive(ANY):ping 拦截在 SEF 层完成。
+        // C main.c:601-602 — sef_receive(ANY): ping interception completes in the SEF layer.
         let mut msg = Message::default();
         let recv = minix_sef::sef_receive_status(
             &mut ipc,
             Endpoint::ANY,
             &mut msg,
             &mut |_| {
-                // C VFS 未注册 signal handler——main.c:374-388 的 sef_local_startup
-                // 只登记 init 与 LU 回调，全目录 grep `sef_setcb_signal_handler`
-                // 零命中，库默认值即空函数 `sef_cb_signal_handler_null`
-                //（sef.h:287 ＋ sef_signal.c:156-158）：SYSTEM 通知在库内被改写成
-                // 信号请求（sef.c:187）、空 handler 消费后框架 `continue`
-                //（sef.c:231-235），主循环对信号面无可观察行为——空闭包即忠实。
+                // C VFS registers no signal handler — sef_local_startup at main.c:374-388
+                // registers only init and LU callbacks, and a whole-tree grep for `sef_setcb_signal_handler`
+                // has zero hits, so the library default is the empty function `sef_cb_signal_handler_null`
+                // (sef.h:287 plus sef_signal.c:156-158): SYSTEM notifications are rewritten inside the library into
+                // signal requests (sef.c:187), the empty handler consumes them and the framework `continue`s
+                // (sef.c:231-235); the main loop has no observable signal behavior — an empty closure is faithful.
             },
             &cancel,
         )
@@ -7899,13 +7899,13 @@ pub fn run() -> ! {
             SefEvent::Call(_) => {
                 let codec = VfsTransIdCodec;
                 let _ = state.run_once(&recv.message, &codec);
-                // W3 回复半：本轮分发的回复在循环尾发出（C `do_work`
-                // 尾部的 `reply(who_e, result)`）。
+                // Reply half: this round's dispatch reply is sent at the loop tail (C `do_work`'s
+                // tail `reply(who_e, result)`).
                 if let Some((target, reply)) = state.take_reply() {
                     send_reply(target, reply);
                 }
-                // 臂登记的 FS 对话在这一段发出（生产传输：trap 直连 +
-                // grant 已由臂发出）。发送失败在 flush 内部收尾。
+                // FS conversations registered by arms are sent in this section (production transport: direct trap;
+                // the grant was already sent by the arm). A send failure is finalized inside flush.
                 let mut fs_ipc = crate::fs_comm::IpcFsTransport {
                     transport: minix_sys::ipc::DirectTrapTransport,
                 };
@@ -7918,21 +7918,21 @@ pub fn run() -> ! {
                 // hangs in `WaitingForFs` forever — the drain leg was
                 // implemented (`flush_send_queue`) but never wired in.
                 state.flush_send_queue(&mut minix_sys::ipc::DirectTrapTransport);
-                // put_vnode 慢路径的 REQ_PUTNODE 投递（sendrec 直连，
-                // 回复只查错——C vnode.c:278 的 worker 内同步 sendrec）。
+                // REQ_PUTNODE delivery for the put_vnode slow path (direct sendrec;
+                // the reply is only checked for errors — C's synchronous in-worker sendrec at vnode.c:278).
                 state.flush_pending_puts(&minix_sys::ipc::DirectTrapTransport);
             }
             SefEvent::Signal(_) => {}
-            // E-BIRTHFACE（NS1）出生应答半：C 的 RS_INIT 在 sef_local_startup
-            // 内消费后由 process_init 尾部回 RS_INIT+result（sef_init.c:113-117），
-            // 这条应答是 RS boot step3 释放的条件。result 按 C 注册面
-            // （main.c:377-381）：fresh 实体（本树构造即跑过 ≡ state.init_fresh，
-            // init_restart ≡ init_fresh 亦已文档化）→ OK；LU 有注册
-            //（sef_cb_init_lu）但 Rust 侧 LU 机制未建模 → 诚实 ENOSYS。
+            // Birth-reply half: after C's RS_INIT is consumed inside sef_local_startup,
+            // process_init's tail replies RS_INIT+result (sef_init.c:113-117);
+            // this reply is the condition for RS boot step3 to proceed. result follows C's registration
+            // face (main.c:377-381): a fresh instance (this tree runs init_fresh at construction,
+            // init_restart ≡ init_fresh, both documented) → OK; LU is registered
+            // (`sef_cb_init_lu`) but the Rust side does not model the LU machinery → an honest ENOSYS.
             SefEvent::Init(init_type) => {
-                // PD-34 编排面（与会合臂同据）：段一清过滤（直连真接线）、
-                // 回报由库构造；分派语义（fresh/restart → 重走本地重置 +
-                // OK；LU 未建模 → ENOSYS）保持原样。
+                // Orchestration (same basis as the rendezvous arm): stage-one filtering is wired directly,
+                // the reply is built by the library; the dispatch semantics (fresh/restart → re-run the local reset +
+                // OK; LU unmodeled → ENOSYS) stay as they were.
                 let birth = minix_sef::process_init(
                     &mut |req, addr, len| {
                         let r = minix_sys::syscall::sys_statectl(
@@ -7963,12 +7963,12 @@ pub fn run() -> ! {
     }
 }
 
-/// `EndpointDirectory` 的生产实现：读 `VfsState::driver_labels`。
+/// Production implementation of `EndpointDirectory`: reads `VfsState::driver_labels`.
 ///
-/// C 的对应物是 `ds_retrieve_label_endpt`（dmap.c:148-152）——一次 **DS 往返**。
-/// 单线程模型里那需要新的路由面（DS 回复的落槽与续接），本批没接；所以这里先
-/// 用本地表，**表由谁填**（DS 事件里带标签时写入 / 或把 DS 往返接起来）是登记
-/// 在案的缺口。空表语义与 C 的"标签未知"一致：EINVAL。
+/// The C counterpart is `ds_retrieve_label_endpt` (dmap.c:148-152) — a **DS round trip**.
+/// In the single-threaded model that needs a new routing surface (landing the DS reply and its continuation), not wired yet; so this uses
+/// the local table for now, and **who fills it** (writing on DS events that carry a label, or wiring the DS round trip) is a
+/// recorded gap. Empty-table semantics match C's "unknown label": EINVAL.
 struct LabelDir<'a>(&'a [(alloc::string::String, Endpoint)]);
 
 impl crate::device_map::EndpointDirectory for LabelDir<'_> {
@@ -7980,12 +7980,12 @@ impl crate::device_map::EndpointDirectory for LabelDir<'_> {
     }
 }
 
-/// `FsCtl` 的**队列收集**实现：`VnodeTable::put` 慢路径（`ref==1` →
-/// `req_putnode`）与 `clean_refs`（`fs_count > 256` 的批量归还）把通知
-/// 收进缓冲，调用方再并入 [`VfsState::pending_puts`] 统一投递。
+/// The **queue-collection** implementation of `FsCtl`: the `VnodeTable::put` slow path (`ref==1` →
+/// `req_putnode`) and `clean_refs` (batch return when `fs_count > 256`) collect notifications
+/// into a buffer, which the caller merges into [`VfsState::pending_puts`] for unified delivery.
 pub(crate) struct PutNodeSink<'a>(&'a mut alloc::vec::Vec<crate::vnode::PutNodeReq>);
 
-/// 跨模块构造入口（exec_worker 的终局 vnode 归还与主循环共用同一sink）。
+/// Cross-module construction entry (exec_worker's final vnode return shares the same sink as the main loop).
 pub(crate) fn put_node_sink(
     sink: &'_ mut alloc::vec::Vec<crate::vnode::PutNodeReq>,
 ) -> PutNodeSink<'_> {
@@ -8008,15 +8008,15 @@ impl crate::vnode::FsCtl for PutNodeSink<'_> {
     }
 }
 
-/// 热身 grant 表（测试专用）：宿主构建下 `sys_setgrant` 不可达，**每次表
-/// 增长后的第一次分配必然失败**，之后再分配就成功（失败路径已经把 freelist
-/// 铺好了）。臂测试要断言"真正登记出去的请求"，就得先把这一步趟平——连续做
-/// 几轮覆盖多次增长，并把热身用的槽**撤销回 freelist**（不撤销的话表刚好被
-/// 热身占满，测试自己的 grant 又要触发一次增长 → 又撞上那个失败）。
-/// 测试专用：把状态铺成"臂真的能发出请求"的基线——挂载行（fs=MFS、dev 非
-/// NO_DEV）、调用方的根/工作目录 vnode（`root_dir_of`/`work_dir_of` 的输入）、
-/// 以及热身过的 grant 表。路径臂的入口测试都要从这里起步，否则会停在
-/// "根目录没设"或"grant 没热"上，断言虽然也是 EIO 但**理由不对**。
+/// Warm up the grant table (test-only): `sys_setgrant` is unreachable in a host build, so **the first
+/// allocation after each table growth necessarily fails**; later allocations succeed (the failure path has already
+/// laid out the freelist). An arm test that asserts "the request was really registered" must first get past this — run
+/// several rounds to cover multiple growths, and **revoke the warm-up slots back to the freelist** (without revoking, the table
+/// would be left full by the warm-up itself and the test's own grant would trigger another growth → hitting that failure again).
+/// Test-only: lay out the state as a baseline where "the arm can really send a request" — a mount row (fs=MFS, dev not
+/// NO_DEV), the caller's root/work-dir vnodes (the inputs of `root_dir_of`/`work_dir_of`),
+/// and a warmed-up grant table. Path-arm entry tests must start here, or they stop at
+/// "no root directory" or "grant not warm": the assertion is still EIO, but for the **wrong reason**.
 #[cfg(test)]
 pub(crate) fn seed_ready_state(state: &mut VfsState) {
     {
@@ -8055,7 +8055,7 @@ pub(crate) fn warm_grants(state: &mut VfsState) {
         }
     }
     for g in ids {
-        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+        // [SD19-gate] best-effort grant revocation: the main operation already succeeded or is on the error path, so a failed revoke does not change its result
         #[allow(clippy::let_underscore_must_use)]
         let _ = state.grants.revoke(g);
     }
@@ -8068,14 +8068,14 @@ mod tests {
     use crate::worker::WorkerState;
     use minix_types::{Endpoint, VFS_PM_INIT};
 
-    /// 播种挂载点 0:fs=MFS、dev 非 NO_DEV(find_by_fs 的双条件)。
+    /// Seed mount point 0: fs=MFS, dev not NO_DEV (the two conditions of find_by_fs).
     fn seed_vmnt0(state: &mut VfsState) {
         let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
         v.fs = Endpoint::MFS;
-        v.dev = 1; // DevId(u64),非 NO_DEV 即可
+        v.dev = 1; // DevId(u64); any value other than NO_DEV works
     }
 
-    /// 播种 worker 槽并置 `WaitingForFs`(fs_sendrec 的 sendmsg 半)。
+    /// Seed a worker slot and set `WaitingForFs` (the sendmsg half of fs_sendrec).
     fn seed_waiting(state: &mut VfsState, slot: usize, task: Endpoint) {
         let req = Message {
             m_type: 0x503,
@@ -8088,7 +8088,7 @@ mod tests {
             .set_waiting(task, req);
     }
 
-    /// 构造 FS 回复消息(m_type 高 16 请求号、低 16 transid)。
+    /// Build an FS reply message (m_type high 16 = request number, low 16 = transid).
     fn reply_msg(req: u32, slot: usize, source: Endpoint) -> Message {
         let mut m = Message {
             m_type: crate::fs_comm::TransId::add(req, slot) as i32,
@@ -8098,22 +8098,22 @@ mod tests {
         m
     }
 
-    /// 挂载表组装（`mounted_fs_list`）与起点三元组（`root_dir_of` /
-    /// `work_dir_of`）：从 `vmnt_table` + vnode 表读出的六个事实。
+    /// Mount-table assembly (`mounted_fs_list`) and the start triples (`root_dir_of` /
+    /// `work_dir_of`): the six facts read from `vmnt_table` plus the vnode table.
     #[test]
     fn test_mount_list_and_start_triples() {
         let mut state = VfsState::new();
-        // 一个挂载行：fs=MFS，dev=7，root vnode=3（ino=30），挂载点 vnode=4
-        // （ino=40, fs=VFS, dev=7）。
+        // One mount row: fs=MFS, dev=7, root vnode=3 (ino=30), mount-point vnode=4
+        // (ino=40, fs=VFS, dev=7).
         let v_root = state.vnode_table.alloc().unwrap();
         {
             let v = state.vnode_table.get_mut(v_root).unwrap();
             v.fs = Endpoint::MFS;
             v.ino = 30;
             v.dev = 7;
-            // `alloc` 取"ref_count == 0 的第一个槽"，不置 ref → 不抬引用
-            // 的话下一次 alloc 会拿到同一个槽（`advance` 的用法是先 alloc
-            // 再填再置 ref_count/fs_count）。
+            // `alloc` takes "the first slot with ref_count == 0"; without setting ref, the next alloc
+            // would get the same slot (the `advance` usage is: alloc,
+            // fill, then set ref_count/fs_count).
             v.ref_count = 1;
         }
         let v_mnt = state.vnode_table.alloc().unwrap();
@@ -8138,7 +8138,7 @@ mod tests {
         assert_eq!(mounts[0].root, (30, 7));
         assert_eq!(mounts[0].mounted_on, Some((40, Endpoint::VFS, 7)));
 
-        // 起点三元组：根与工作目录各自解到 (fs, ino, dev)。
+        // Start triples: root and work dir each resolve to (fs, ino, dev).
         let slot = minix_types::UserSlot::new(0);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -8151,9 +8151,9 @@ mod tests {
         assert_eq!((wd.fs, wd.ino, wd.dev), (Endpoint::VFS, 40, 7));
     }
 
-    /// `PathFollow::Mkdir` 的相位 2：父目录门（非目录 → ENOTDIR）→ 权限门
-    /// （W|X，`forbidden_decision`）→ 组 `REQ_MKDIR`（组件名进槽内 scratch +
-    /// 只读 grant）并挂起；续接交棒 `WorkerCont::Status`。
+    /// Phase 2 of `PathFollow::Mkdir`: parent-directory gate (not a directory → ENOTDIR) → permission gate
+    /// (W|X, `forbidden_decision`) → build `REQ_MKDIR` (the component name goes into the slot's scratch +
+    /// a read-only grant) and suspend; the continuation hands over to `WorkerCont::Status`.
     #[test]
     fn test_path_follow_mkdir_gates_and_hands_off() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -8164,10 +8164,10 @@ mod tests {
             let fp = state.fproc_table.get_mut(slot).unwrap();
             fp.endpoint = user;
             fp.pid = 100;
-            fp.eff_uid = 0; // root：权限门必过
+            fp.eff_uid = 0; // root: the permission gate always passes
             fp.umask = 0o022;
         }
-        // 挂载行（REQ_MKDIR 要经窗口；dev 必须是真设备号）。
+        // Mount row (REQ_MKDIR goes through the window; dev must be a real device number).
         let vmnt = state.vmnt_table.alloc().unwrap();
         {
             let m = state.vmnt_table.get_mut(vmnt).unwrap();
@@ -8189,7 +8189,7 @@ mod tests {
             dev: 0,
         };
 
-        // 情形一：走到的不是目录 → ENOTDIR（C open.c:587-588）。
+        // Case one: the node reached is not a directory → ENOTDIR (C open.c:587-588).
         let (walk, _) = crate::path::LookupWalk::begin(
             start,
             crate::path::Lookup::new("/d".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
@@ -8202,7 +8202,7 @@ mod tests {
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): mode = S_IFREG（非目录）。
+        // SAFETY(test): mode = S_IFREG (not a directory).
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
@@ -8229,9 +8229,9 @@ mod tests {
             Some((user, -minix_types::ENOTDIR))
         );
 
-        // 情形二：目录 + root：过门 → 组 `REQ_MKDIR`。宿主下要先热身 grant
-        // 表（首次增长过不了 `sys_setgrant`，但失败路径已铺好 freelist），
-        // 否则这条断言会退化成"第一次发请求必然失败"的顺序产物。
+        // Case two: directory + root: gate passes → build `REQ_MKDIR`. In a host build the grant
+        // table must be warmed first (the first growth cannot pass `sys_setgrant`, but the failure path has laid out the freelist);
+        // otherwise this assertion degenerates into an ordering artifact of "the first request necessarily fails".
         warm_grants(&mut state);
         let idx2 = state
             .worker_pool
@@ -8249,7 +8249,7 @@ mod tests {
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): mode = S_IFDIR。
+        // SAFETY(test): mode = S_IFDIR.
         unsafe {
             let raw = &mut reply2.m_u.raw;
             raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -8276,7 +8276,7 @@ mod tests {
         let p = state.pending_fs.as_ref().expect("已登记 REQ_MKDIR");
         assert_eq!(p.req.m_type, minix_types::REQ_MKDIR);
         assert_eq!(p.worker, idx2);
-        // SAFETY(test): 按 mkdir_req_off 读回父目录 ino 与模式。
+        // SAFETY(test): read back the parent-directory ino and mode via mkdir_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -8284,7 +8284,7 @@ mod tests {
             assert_eq!(ino, 9, "inode 域是父目录");
             assert_eq!(mode, crate::open::S_IFDIR | 0o755);
         }
-        // 回复到达：状态原样回用户，槽释放。
+        // Reply arrives: the status goes back to the user as is, and the slot is released.
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx2).unwrap();
@@ -8305,7 +8305,7 @@ mod tests {
         assert_eq!(m2.m_type, 0, "REQ_MKDIR 成功 → 用户拿 0");
     }
 
-    /// `WorkerCont::Status`：纯状态续接——回复的状态原样回给用户。
+    /// `WorkerCont::Status`: a pure status continuation — the reply status goes back to the user as is.
     #[test]
     fn test_worker_continuation_status_replies_verbatim() {
         use crate::worker::WorkerCont;
@@ -8337,10 +8337,10 @@ mod tests {
         );
     }
 
-    /// `PathFollow::Open` 的相位 2（`common_open` 的本地半）：走完 → 类型
-    /// 分派 → fd/filp 装配 → 回 fd。**完全本地，宿主可测**——这是 Open 臂
-    /// 里唯一不需要内核的部分，也正是最易错的部分（fd 与 filp 两处槽位
-    /// 的认领顺序、O_CLOEXEC 位图）。
+    /// Phase 2 of `PathFollow::Open` (the local half of `common_open`): walk → type
+    /// dispatch → fd/filp assembly → return fd. **Fully local, host-testable** — the only part of the Open arm
+    /// that needs no kernel, and also the most error-prone (the claim order of the fd and filp
+    /// slots, the O_CLOEXEC bitmap).
     #[test]
     fn test_path_follow_open_assembles_fd_and_filp() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -8356,7 +8356,7 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        // 现场：一趟已走完的遍历（follow = Open，无 O_TRUNC）。
+        // The slot: a completed walk (follow = Open, no O_TRUNC).
         let start = crate::path::LookupStart {
             fs: Endpoint::MFS,
             ino: 1,
@@ -8375,12 +8375,12 @@ mod tests {
             0,
         )
         .unwrap();
-        // 回复：OK + ino=5 + mode=S_IFREG|0644（四域 node_details）。
+        // The reply: OK + ino=5 + mode=S_IFREG|0644 (four node_details fields).
         let mut reply = Message {
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): 按 lookup_reply_off 填 ino 与 mode。
+        // SAFETY(test): fill ino and mode via lookup_reply_off.
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -8396,7 +8396,7 @@ mod tests {
                 grant: 9,
                 follow: PathFollow::Open {
                     user,
-                    oflags: 0, // O_RDONLY（access 位为 0）
+                    oflags: 0, // O_RDONLY (the access bits are 0)
                 },
             });
             wp.sendrec = Some(reply);
@@ -8404,12 +8404,12 @@ mod tests {
         }
         state.run_worker_continuations();
 
-        // 回的是 fd（C `common_open` 返回 fd 即 syscall 结果）。
+        // The return is the fd (in C, `common_open` returning an fd is the syscall result).
         let (target, reply) = state.take_reply().expect("回复");
         assert_eq!(target, user);
         assert_eq!(reply.m_type, 0, "首个 fd 是 0");
         let fd = reply.m_type as usize;
-        // fd 与 filp 两处都认领了：fproc 槽指向 filp，filp 带 vnode 与模式。
+        // Both the fd and the filp are claimed: the fproc slot points at the filp, and the filp carries the vnode and mode.
         let fp = state.fproc_table.get(slot).unwrap();
         let filp_id = fp.filps[fd].expect("fd 指向 filp");
         let f = state.filp_table.get(crate::filp::FilpId(filp_id)).unwrap();
@@ -8419,18 +8419,18 @@ mod tests {
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
-    /// `sync`/`fsync` 的多挂载序列（C `do_sync`/`do_fsync` 的循环）：
-    /// 目标过滤（`dev != NO_DEV && fs != NONE && root != NULL`，fsync 再按
-    /// 设备号收窄）→ 逐条发 `REQ_SYNC` → 发完报 `first_err`（C 丢掉单条的
-    /// 返回值，只留加锁错误）。
+    /// The multi-mount `sync`/`fsync` sequence (the loop of C `do_sync`/`do_fsync`):
+    /// target filtering (`dev != NO_DEV && fs != NONE && root != NULL`; fsync narrows further
+    /// by device number) → send one `REQ_SYNC` per target → report `first_err` when done (C drops each individual
+    /// return value and keeps only the locking error).
     #[test]
     fn test_sync_sequence_over_mounts() {
         use crate::worker::WorkerCont;
         let user = Endpoint::from_generation_slot(1, 0);
         let mut state = VfsState::new();
         crate::main_loop::seed_ready_state(&mut state);
-        // 行 0：有效（MFS、dev 1、有根）。行 1：另一个 FS、dev 2。行 2：缺根
-        // ——必须被过滤掉。
+        // Row 0: valid (MFS, dev 1, has a root). Row 1: another FS, dev 2. Row 2: no root
+        // — must be filtered out.
         let vid = state.vnode_table.find_by_ino(Endpoint::MFS, 1).unwrap();
         {
             let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
@@ -8446,20 +8446,20 @@ mod tests {
             let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(2)).unwrap();
             v.fs = Endpoint::from_generation_slot(0, 8);
             v.dev = 3;
-            v.root = None; // 没根 → 不过滤进来
+            v.root = None; // no root → does not make it into the filter
         }
-        // 全量：两行（行 0 与行 1）。
+        // Full set: two rows (row 0 and row 1).
         assert_eq!(
             state.sync_targets(None),
             alloc::vec![Endpoint::MFS, Endpoint::from_generation_slot(0, 7)]
         );
-        // 按设备收窄：只要 dev 2 那一行（fsync 的形态）。
+        // Narrow by device: only the dev 2 row (the fsync shape).
         assert_eq!(
             state.sync_targets(Some(2)),
             alloc::vec![Endpoint::from_generation_slot(0, 7)]
         );
 
-        // 序列跑起来：第一条 REQ_SYNC 已登记，现场带两条目标。
+        // Start the sequence: the first REQ_SYNC is registered, the slot carries two targets.
         let slot = minix_types::UserSlot::new(0);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -8483,7 +8483,7 @@ mod tests {
             })
         ));
 
-        // 第一条回复到达 → 发第二条。
+        // The first reply arrives → send the second.
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -8500,7 +8500,7 @@ mod tests {
         assert_eq!(p.fs_e, Endpoint::from_generation_slot(0, 7));
         assert!(state.take_reply().is_none(), "序列没跑完不回用户");
 
-        // 第二条回复到达 → 序列结束，回 0 并释放槽。
+        // The second reply arrives → the sequence ends, 0 is returned and the slot is released.
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -8519,10 +8519,10 @@ mod tests {
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
-    /// `rename` 的三段链（C `do_rename` link.c:166-280）：阶段 1 走旧父目录
-    /// →（旧父目录带粘滞位时插一段子遍历取受害者属主）→ 阶段 2 走新父目录 →
-    /// 跨设备门 + `W|X` 门 + `REQ_RENAME`（**两个 direct grant**，旧名是阶段 1
-    /// 保存下来的）。
+    /// The three-stage `rename` chain (C `do_rename` link.c:166-280): stage 1 walks the old parent directory
+    /// → (if it is sticky, a sub-walk gets the victim's owner) → stage 2 walks the new parent directory →
+    /// cross-device gate + `W|X` gate + `REQ_RENAME` (**two direct grants**; the old name was saved in
+    /// stage 1).
     #[test]
     fn test_path_follow_rename_chain_and_request() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -8568,7 +8568,7 @@ mod tests {
                 m_type: minix_types::OK,
                 ..Message::default()
             };
-            // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+            // SAFETY(test): fill ino/mode/uid/gid via lookup_reply_off.
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -8603,7 +8603,7 @@ mod tests {
             state.pending_fs = None;
         };
 
-        // ① 阶段 1 走通、旧父目录无粘滞位 → 直接转阶段 2（旧名已保存）。
+        // ① stage 1 passed and the old parent is not sticky → go to stage 2 directly (the old name is saved).
         let mut state = VfsState::new();
         crate::main_loop::seed_ready_state(&mut state);
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
@@ -8631,7 +8631,7 @@ mod tests {
         );
         clear_slot(&mut state, idx);
 
-        // ② 旧父目录带粘滞位 → 先插一段子遍历。
+        // ② The old parent directory is sticky → insert a sub-walk first.
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
         plant(
             &mut state,
@@ -8660,7 +8660,7 @@ mod tests {
         );
         clear_slot(&mut state, idx);
 
-        // ③ 子遍历走通：受害者属主不是调用方 → EPERM。
+        // ③ Sub-walk passed: the victim's owner is not the caller → EPERM.
         let (idx, walk) = mk(&mut state, 2000);
         plant(
             &mut state,
@@ -8678,7 +8678,7 @@ mod tests {
             Some((user, -minix_types::EPERM))
         );
 
-        // ④ 阶段 2：跨设备 → EXDEV。
+        // ④ Stage 2: cross-device → EXDEV.
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
         {
             let start = crate::path::LookupStart {
@@ -8720,7 +8720,7 @@ mod tests {
             Some((user, -minix_types::EXDEV))
         );
 
-        // ⑤ 阶段 2：非属主对新父目录无写权 → EACCES。
+        // ⑤ Stage 2: a non-owner without write permission on the new parent → EACCES.
         let (idx, walk) = mk(&mut state, 2000);
         plant(
             &mut state,
@@ -8740,7 +8740,7 @@ mod tests {
             Some((user, -minix_types::EACCES))
         );
 
-        // ⑥ 全过 → REQ_RENAME（两个 direct grant + 两个名字长度）+ 状态回复。
+        // ⑥ All pass → REQ_RENAME (two direct grants + two name lengths) + status reply.
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
         plant(
             &mut state,
@@ -8757,7 +8757,7 @@ mod tests {
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_RENAME");
         assert_eq!(p.req.m_type, minix_types::REQ_RENAME);
-        // SAFETY(test): 按 rename_req_off 读回六域。
+        // SAFETY(test): read back the six fields via rename_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let dir_old = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -8789,10 +8789,10 @@ mod tests {
         );
     }
 
-    /// `PathFollow::LinkSrc` → `LinkDst` 的转场 + `LinkDst` 的门与请求：
-    /// C `do_link`（link.c:170-230）是**两段遍历**——先 `eat_path` 源文件、
-    /// 再 `last_dir` 新名的父目录；跨设备即 EXDEV，父目录要 `W|X`，请求
-    /// `REQ_LINK` 的两个 ino 顺序是**文件在前、目录在后**。
+    /// The `PathFollow::LinkSrc` → `LinkDst` transition plus `LinkDst`'s gates and request:
+    /// C `do_link` (link.c:170-230) is a **two-stage walk** — first `eat_path` the source file,
+    /// then `last_dir` the new name's parent; cross-device means EXDEV, the parent needs `W|X`, and
+    /// `REQ_LINK`'s two inos are ordered **file first, directory second**.
     #[test]
     fn test_path_follow_link_chain_and_gates() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -8838,7 +8838,7 @@ mod tests {
                 m_type: minix_types::OK,
                 ..Message::default()
             };
-            // SAFETY(test): 按 lookup_reply_off 填 ino/mode。
+            // SAFETY(test): fill ino/mode via lookup_reply_off.
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -8860,11 +8860,11 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         };
 
-        // ① 阶段 1 走通（源文件在）→ 转阶段 2：现场换成 LinkDst，且已登记
-        // 第二条 REQ_LOOKUP（走新名的父目录）。
+        // ① Stage 1 passed (the source file exists) → go to stage 2: the slot becomes LinkDst, and a
+        // second REQ_LOOKUP is already registered (walking the new name's parent directory).
         let mut state = VfsState::new();
-        // 阶段 2 要从**进程根**重新起走，所以根目录 vnode 必须先铺好
-        // （`seed_ready_state` 一并把 grant 表热身）。
+        // Stage 2 restarts from the **process root**, so the root-directory vnode must be seeded first
+        // (`seed_ready_state` also warms up the grant table).
         crate::main_loop::seed_ready_state(&mut state);
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
         plant(
@@ -8903,10 +8903,10 @@ mod tests {
         }
         state.worker_pool.release(idx);
 
-        // ② 跨设备 → EXDEV（源在 MFS、父目录在别的 FS）。
+        // ② Cross-device → EXDEV (the source is on MFS, the parent on another FS).
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
         {
-            // 让这一趟遍历的 fs 变成"另一个 FS"：换起点重建 walk。
+            // Make this walk's fs "another FS": change the starting point and rebuild the walk.
             let start = crate::path::LookupStart {
                 fs: Endpoint::from_generation_slot(0, 9),
                 ino: 1,
@@ -8946,7 +8946,7 @@ mod tests {
             Some((user, -minix_types::EXDEV))
         );
 
-        // ③ 同设备 + 非属主对 0755 无写权 → EACCES。
+        // ③ Same device + a non-owner without write permission on 0755 → EACCES.
         let (idx, walk) = mk(&mut state, 2000);
         plant(
             &mut state,
@@ -8965,7 +8965,7 @@ mod tests {
             Some((user, -minix_types::EACCES))
         );
 
-        // ④ 全过 → REQ_LINK（文件 ino 在前、目录 ino 在后）+ 状态回复。
+        // ④ All pass → REQ_LINK (file ino first, directory ino second) + status reply.
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
         plant(
             &mut state,
@@ -8981,7 +8981,7 @@ mod tests {
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_LINK");
         assert_eq!(p.req.m_type, minix_types::REQ_LINK);
-        // SAFETY(test): 按 link_req_off 读回四域。
+        // SAFETY(test): read back the four fields via link_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let inode = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -9008,10 +9008,10 @@ mod tests {
         );
     }
 
-    /// `PathFollow::Slink`（symlink 的父目录半）：`W|X` 权限门（EACCES）过了
-    /// 才发 `REQ_SLINK`；请求带**两个 grant**——名字（VFS 内存 direct）与目标
-    /// 串（用户内存 magic），`mem_size` 是目标串长度**不含**结尾 NUL
-    /// （C `do_slink:411-414` + `req_slink_actual`）。
+    /// `PathFollow::Slink` (the parent-directory half of symlink): only after the `W|X` permission gate (EACCES)
+    /// passes is `REQ_SLINK` sent; the request carries **two grants** — the name (direct, VFS memory) and the target
+    /// string (magic, user memory); `mem_size` is the target length **excluding** the trailing NUL
+    /// (C `do_slink:411-414` + `req_slink_actual`).
     #[test]
     fn test_path_follow_slink_gates_and_two_grants() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -9057,7 +9057,7 @@ mod tests {
                 m_type: minix_types::OK,
                 ..Message::default()
             };
-            // SAFETY(test): 按 lookup_reply_off 填 ino/mode。
+            // SAFETY(test): fill ino/mode via lookup_reply_off.
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -9076,14 +9076,14 @@ mod tests {
                 follow: PathFollow::Slink {
                     entry: "l".to_string(),
                     target_addr: 0x6000,
-                    target_len: 7, // "target" 不含 NUL
+                    target_len: 7, // "target" does not include the NUL
                 },
             });
             wp.sendrec = Some(reply);
             wp.state = crate::worker::WorkerState::Busy;
         };
 
-        // ① 目录 0755（other 有 x 无 w）、非属主 → `W|X` 门拒。
+        // ① Directory 0755 (other has x but no w), non-owner → the `W|X` gate rejects.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         crate::main_loop::warm_grants(&mut state);
@@ -9101,7 +9101,7 @@ mod tests {
             Some((user, -minix_types::EACCES))
         );
 
-        // ② root → 发 REQ_SLINK，双 grant 都在请求里。
+        // ② root → send REQ_SLINK, with both grants in the request.
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
         plant(
             &mut state,
@@ -9112,7 +9112,7 @@ mod tests {
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_SLINK");
         assert_eq!(p.req.m_type, minix_types::REQ_SLINK);
-        // SAFETY(test): 按 slink_req_off 读回七域。
+        // SAFETY(test): read back the seven fields via slink_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let dir_ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -9128,7 +9128,7 @@ mod tests {
             assert_ne!(grant_target, grant_path, "两个 grant 必须是两张");
             assert_eq!(uid, crate::link::SU_UID);
         }
-        // 回复只有状态。
+        // The reply carries only a status.
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -9146,17 +9146,17 @@ mod tests {
         );
     }
 
-    /// `intern_vnode` 的**设备号归属**（C `advance` path.c:98-106）：
-    /// `v_sdev = res.dev`（特殊设备号，设备节点靠它认驱动）、
-    /// `v_dev = vmp->m_dev`（挂载分区的设备号）。两者是不同字段——先前把
-    /// `res.dev` 写进 `v_dev` 是错的（`v_sdev` 一直为 0，`cdev_get` 那类按
-    /// `v_sdev` 找驱动的地方就都找不到）。
+    /// The **device-number attribution** of `intern_vnode` (C `advance` path.c:98-106):
+    /// `v_sdev = res.dev` (the special device number; device nodes identify their driver by it),
+    /// `v_dev = vmp->m_dev` (the mounted partition's device number). They are different fields — writing
+    /// `res.dev` into `v_dev` was a bug (`v_sdev` stayed 0, so places such as `cdev_get` that find
+    /// a driver by `v_sdev` all failed).
     #[test]
     fn test_intern_vnode_splits_device_numbers() {
         use minix_types::Endpoint;
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
-        // 挂载行的设备号是 1（`seed_vmnt0` 播的）；节点带特殊设备号 0x0507。
+        // The mount row's device number is 1 (seeded by `seed_vmnt0`); the node carries special device number 0x0507.
         let node = crate::path::NodeDetails {
             fs_e: Endpoint::MFS,
             ino: 0x42,
@@ -9172,18 +9172,18 @@ mod tests {
         assert_eq!(v.dev, 1, "v_dev 是挂载行的设备号");
     }
 
-    /// Open 的字符设备分支（`common_open` 的 `S_IFCHR` 支）：`/dev/tty` 例外
-    /// 的判定键是**原始 major**——有控制终端就直接成功、不打扰真实 tty 驱动
-    /// （C `cdev.c:174`）；无控制终端 → ENXIO；普通设备无驱动 → ENXIO；
-    /// 有驱动而宿主发不出去 → EIO，且**认领全部放开**（C `common_open`
-    /// 失败尾的 `put_vnode`——不放开就漏 fd 与 vnode 引用）。
+    /// Open's char-device branch (the `S_IFCHR` branch of `common_open`): the key for the `/dev/tty`
+    /// exception is the **raw major** — with a controlling terminal it succeeds directly without disturbing
+    /// the real tty driver (C `cdev.c:174`); no controlling terminal → ENXIO; an ordinary device with no driver → ENXIO;
+    /// a driver present but a host send failure → EIO, and **all claims are released** (C `common_open`
+    /// failure tail's `put_vnode` — not releasing leaks the fd and vnode reference).
     #[test]
     fn test_open_char_device_branch() {
         use crate::worker::WorkerCont;
         let user = Endpoint::from_generation_slot(1, 0);
-        let tty_dev = 0x0401u64; // 控制终端：major 4 / minor 1
+        let tty_dev = 0x0401u64; // controlling terminal: major 4 / minor 1
 
-        // (a) `/dev/tty`（major 5）+ 有控制终端：直接成功，无驱动请求。
+        // (a) `/dev/tty` (major 5) + a controlling terminal: succeeds directly, with no driver request.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         let slot = minix_types::UserSlot::new(0);
@@ -9221,14 +9221,14 @@ mod tests {
             "fd 仍被认领"
         );
 
-        // (b) `/dev/tty` 但没有控制终端：ENXIO（C `cdev_map` → NO_DEV）。
+        // (b) `/dev/tty` but no controlling terminal: ENXIO (C `cdev_map` → NO_DEV).
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
             fp.endpoint = user;
             fp.pid = 100;
-            // fp.tty 默认 NO_DEV
+            // fp.tty defaults to NO_DEV
         }
         let idx = state
             .worker_pool
@@ -9240,7 +9240,7 @@ mod tests {
             Some((user, -minix_types::ENXIO))
         );
 
-        // (c) 普通字符设备（major 4）但 dmap 行没有驱动：ENXIO。
+        // (c) An ordinary char device (major 4) with no driver on the dmap row: ENXIO.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         {
@@ -9262,8 +9262,8 @@ mod tests {
             Some((user, -minix_types::ENXIO))
         );
 
-        // (d) 有驱动而宿主发不出去：EIO，且 fd/filp/vnode 全部放开
-        // （vnode 放回后 ref_count 归 0，槽可复用——C `common_open` 失败尾）。
+        // (d) A driver present but a host send failure: EIO, and fd/filp/vnode are all released
+        // (after the vnode is put back its ref_count returns to 0 and the slot is reusable — C `common_open`'s failure tail).
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         {
@@ -9295,10 +9295,10 @@ mod tests {
         );
     }
 
-    /// Open 的块设备分支（`common_open` 的 `S_IFBLK` 支）：无驱动 → ENXIO；
-    /// 驱动放行后选 `v_bfs_e`（被挂载占着就用那个挂载的 FS，不再发
-    /// `REQ_NEW_DRIVER`）；设备空闲时 `v_bfs_e` 归根文件系统——根挂载未接
-    /// （`root_fs_e` 为 NONE）→ 按 C 的 newdriver 失败路径收尾（ENXIO）。
+    /// Open's block-device branch (the `S_IFBLK` branch of `common_open`): no driver → ENXIO;
+    /// after the driver clears, pick `v_bfs_e` (if a mount holds the device, use that mount's FS and send no
+    /// `REQ_NEW_DRIVER`); when the device is free, `v_bfs_e` falls back to the root file system — with no root mount
+    /// (`root_fs_e` is NONE) → finish through C's newdriver failure path (ENXIO).
     #[test]
     fn test_open_block_device_branch() {
         use crate::worker::WorkerCont;
@@ -9316,7 +9316,7 @@ mod tests {
             dev,
         };
 
-        // (a) dmap 行没有驱动：ENXIO（C `bdev_open:88-89` 的门）。
+        // (a) No driver on the dmap row: ENXIO (C's gate at `bdev_open:88-89`).
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         {
@@ -9334,7 +9334,7 @@ mod tests {
             Some((user, -minix_types::ENXIO))
         );
 
-        // (b) 有驱动而宿主发不出去：EIO + 认领放开。
+        // (b) A driver present but a host send failure: EIO + claims released.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         {
@@ -9354,8 +9354,8 @@ mod tests {
         );
         assert!(state.fproc_table.get(slot).unwrap().filps[0].is_none());
 
-        // (c) 驱动放行 + 设备被挂载占着：`v_bfs_e` 用那个挂载的 FS，直接回
-        // fd（C `open.c:208-210`：不是根文件系统就不再发 newdriver）。
+        // (c) Driver cleared + the device is held by a mount: `v_bfs_e` uses that mount's FS and the fd is
+        // returned directly (C `open.c:208-210`: a non-root FS sends no newdriver).
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         {
@@ -9384,7 +9384,7 @@ mod tests {
             ..Message::default()
         }; // BDEV_REPLY
         // SAFETY(test): `mess_lblockdriver_lbdev_reply { int status; int id; }`
-        // ——状态在首字，OK 为 0。
+        // -- the status is in the first word; OK is 0.
         unsafe {
             reply.m_u.raw[0..4].copy_from_slice(&0i32.to_le_bytes());
         }
@@ -9418,8 +9418,8 @@ mod tests {
             "v_bfs_e 用占着设备的挂载行的 FS"
         );
 
-        // (d) 设备空闲、根挂载未接（`root_fs_e` = NONE）：按 C 的 newdriver
-        // 失败路径收尾——放开认领并回 ENXIO（不假装通知成功）。
+        // (d) Device free and no root mount (`root_fs_e` = NONE): finish through C's newdriver
+        // failure path — release the claims and return ENXIO (never pretending the notification succeeded).
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         {
@@ -9463,8 +9463,8 @@ mod tests {
         );
         assert!(state.fproc_table.get(slot).unwrap().filps[0].is_none());
 
-        // (e) 驱动回 ERESTART：按 `bdev_sendrec` 的保险丝重发；宿主发不出 →
-        // EIO 收尾（不悬挂、认领放开）。
+        // (e) The driver answers ERESTART: resend according to `bdev_sendrec`'s fuse; a host send failure →
+        // finalize with EIO (no hang, claims released).
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         {
@@ -9486,7 +9486,7 @@ mod tests {
             m_type: 0x580,
             ..Message::default()
         };
-        // SAFETY(test): ERESTART 在载荷首字（线上是负值）。
+        // SAFETY(test): ERESTART is in the first payload word (negative on the wire).
         unsafe {
             reply.m_u.raw[0..4].copy_from_slice(&(-minix_types::ERESTART).to_le_bytes());
         }
@@ -9512,9 +9512,9 @@ mod tests {
         assert!(state.fproc_table.get(slot).unwrap().filps[0].is_none());
     }
 
-    /// `PathFollow::Mknod`（mknod 的父目录半）：类型门（ENOTDIR）→ `W|X`
-    /// 权限门（EACCES）→ 名字 direct grant → `REQ_MKNOD` 七域随行、回复只有
-    /// 状态（C `do_mknod:543-552` + `req_mknod`）。
+    /// `PathFollow::Mknod` (the parent-directory half of mknod): type gate (ENOTDIR) → `W|X`
+    /// permission gate (EACCES) → direct grant for the name → `REQ_MKNOD` with its seven fields, status-only
+    /// reply (C `do_mknod:543-552` + `req_mknod`).
     #[test]
     fn test_path_follow_mknod_gates_and_request_shape() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -9560,7 +9560,7 @@ mod tests {
                 m_type: minix_types::OK,
                 ..Message::default()
             };
-            // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+            // SAFETY(test): fill ino/mode/uid/gid via lookup_reply_off.
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -9588,7 +9588,7 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         };
 
-        // ① 父目录不是目录 → ENOTDIR。
+        // ① The parent is not a directory → ENOTDIR.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         crate::main_loop::warm_grants(&mut state);
@@ -9605,7 +9605,7 @@ mod tests {
             Some((user, -minix_types::ENOTDIR))
         );
 
-        // ② 目录 0755（other 有 x 无 w）、非属主 → `W|X` 门拒（EACCES）。
+        // ② Directory 0755 (other has x but no w), non-owner → the `W|X` gate rejects (EACCES).
         let (idx, walk) = mk(&mut state, 2000);
         plant(
             &mut state,
@@ -9620,7 +9620,7 @@ mod tests {
             Some((user, -minix_types::EACCES))
         );
 
-        // ③ root + 可写目录 → REQ_MKNOD 七域随行；回复只有状态。
+        // ③ root + writable directory → REQ_MKNOD with its seven fields; the reply is status-only.
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
         plant(
             &mut state,
@@ -9631,7 +9631,7 @@ mod tests {
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_MKNOD");
         assert_eq!(p.req.m_type, minix_types::REQ_MKNOD);
-        // SAFETY(test): 按 mknod_req_off 读回七域。
+        // SAFETY(test): read back the seven fields via mknod_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let dev = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -9664,10 +9664,10 @@ mod tests {
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
-    /// `PathFollow::Truncate`（truncate 的路径半）：走完过 W 位门 → 发送半
-    /// （与 `Ftruncate` 共用）。三态：写位门拒 → EACCES；大小不变 → 就地回 0
-    /// 且**不发请求**（POSIX 文件时间，C link.c:311-314）；真要截断 → 登记
-    /// `REQ_FTRUNC`（宿主下要热身 grant 表才看得到）。
+    /// `PathFollow::Truncate` (the path half of truncate): after the walk, pass the W-bit gate → the send half
+    /// (shared with `Ftruncate`). Three outcomes: write-bit gate rejects → EACCES; unchanged size → return 0 in place
+    /// and **send no request** (POSIX file time, C link.c:311-314); a real truncate → register
+    /// `REQ_FTRUNC` (in a host build the grant table must be warmed to observe it).
     #[test]
     fn test_path_follow_truncate_gates_and_same_size_skip() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -9713,7 +9713,7 @@ mod tests {
                 m_type: minix_types::OK,
                 ..Message::default()
             };
-            // SAFETY(test): 按 lookup_reply_off 填 ino/mode/size/uid。
+            // SAFETY(test): fill ino/mode/size/uid via lookup_reply_off.
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[minix_types::lookup_reply_off::FILE_SIZE
@@ -9740,7 +9740,7 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         };
 
-        // ① 非属主对 0644 无写权 → EACCES（C `forbidden(fp, vp, W_BIT)`）。
+        // ① A non-owner without write permission on 0644 → EACCES (C `forbidden(fp, vp, W_BIT)`).
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         let (idx, walk) = mk(&mut state, 2000);
@@ -9758,7 +9758,7 @@ mod tests {
             Some((user, -minix_types::EACCES))
         );
 
-        // ② 属主 + 大小不变 → 就地回 0，不发请求（POSIX 文件时间）。
+        // ② Owner + unchanged size → return 0 in place, with no request (POSIX file time).
         let (idx, walk) = mk(&mut state, 1000);
         plant(
             &mut state,
@@ -9779,7 +9779,7 @@ mod tests {
             "槽已释放"
         );
 
-        // ③ 属主 + 真要截断 → 登记 REQ_FTRUNC。
+        // ③ Owner + a real truncate → register REQ_FTRUNC.
         warm_grants(&mut state);
         let (idx, walk) = mk(&mut state, 1000);
         plant(
@@ -9792,7 +9792,7 @@ mod tests {
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_FTRUNC");
         assert_eq!(p.req.m_type, minix_types::REQ_FTRUNC);
-        // SAFETY(test): 按 ftrunc_req_off 读回 ino/start/end。
+        // SAFETY(test): read back ino/start/end via ftrunc_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -9802,10 +9802,10 @@ mod tests {
         }
     }
 
-    /// `PathFollow::Chown`（path 半）：走完并表 vnode 后进 `finish_chown`
-    /// 共用体——与 fd 半共用同一体，所以这里只钉"path 半真的走到了共用体"
-    /// （发 `REQ_CHOWN` 且 vnode 缓存被登记），门与折算的细节在 Fchown 那条
-    /// 测试里逐条钉过。
+    /// `PathFollow::Chown` (path half): after the walk and vnode interning it enters the `finish_chown`
+    /// shared body — the same body as the fd half, so this test only pins "the path half really reached it"
+    /// (sends `REQ_CHOWN` and registers the vnode cache); gate and conversion details are pinned one by one in
+    /// the Fchown test.
     #[test]
     fn test_path_follow_chown_reaches_shared_body() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -9818,7 +9818,7 @@ mod tests {
             let fp = state.fproc_table.get_mut(slot).unwrap();
             fp.endpoint = user;
             fp.pid = 100;
-            fp.eff_uid = crate::link::SU_UID; // root：跳过三条属主规则
+            fp.eff_uid = crate::link::SU_UID; // root: skips the three ownership rules
             fp.eff_gid = 0;
         }
         let idx = state
@@ -9847,7 +9847,7 @@ mod tests {
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+        // SAFETY(test): fill ino/mode/uid/gid via lookup_reply_off.
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -9876,7 +9876,7 @@ mod tests {
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_CHOWN");
         assert_eq!(p.req.m_type, minix_types::REQ_CHOWN);
-        // SAFETY(test): 按 chown_req_off 读回三域（root 不做 -1 折算以外的改动）。
+        // SAFETY(test): read back three fields via chown_req_off (root makes no change beyond the -1 conversion).
         unsafe {
             let raw = &p.req.m_u.raw;
             let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -9884,7 +9884,7 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((ino, uid, gid), (0x77, 2000, 200));
         }
-        // 并表：vnode 缓存里已经有了这个 ino（C `eat_path` 的临时 vnode）。
+        // Interning: the vnode cache already holds this ino (C `eat_path`'s temporary vnode).
         let v = state
             .vnode_table
             .find_by_ino(Endpoint::MFS, 0x77)
@@ -9892,18 +9892,18 @@ mod tests {
         assert_eq!(v, Some(0x77), "path 半走完要和 vnode 表并上");
     }
 
-    /// `PathFollow::Unlink`（阶段 1）的三道门 + `PathFollow::UnlinkSticky`
-    /// （阶段 2，粘滞位目录上的子遍历）：C `do_unlink`（link.c:122-159）。
+    /// The three gates of `PathFollow::Unlink` (stage 1) plus `PathFollow::UnlinkSticky`
+    /// (stage 2, the sub-walk on a sticky directory): C `do_unlink` (link.c:122-159).
     ///
-    /// 阶段 1 走完父目录后：类型门（不是目录 → ENOTDIR）→ `X|W` 权限门
-    /// （EACCES）→ 粘滞位门（开着就转阶段 2，**子遍历**取受害者属主）。
-    /// 阶段 2 的属主门在续接体里判：受害者属主 ≠ 有效 id 且不是超级用户
-    /// → EPERM。
+    /// After stage 1 walks the parent: type gate (not a directory → ENOTDIR) → `X|W` permission gate
+    /// (EACCES) → sticky gate (if sticky, go to stage 2 and **sub-walk** for the victim's owner).
+    /// Stage 2's owner gate is judged in the continuation: the victim's owner != the effective id and not the superuser
+    /// → EPERM.
     ///
-    /// 宿主可测到"请求已登记"这一步：grant 表首次增长要过 `sys_setgrant`
-    /// （宿主不可达），但失败路径已经把 freelist 铺好，**后续 grant 会成功**
-    /// ——所以测试开头先做一次"热身" grant 把这一格确定性化，之后就能断言
-    /// 真正登记出去的请求（`REQ_LOOKUP` / `REQ_UNLINK` / `REQ_RMDIR`）。
+    /// The host can test up to "request registered": the grant table's first growth needs `sys_setgrant`
+    /// (unreachable on the host), but the failure path has laid out the freelist, so **later grants succeed**
+    /// - therefore the test starts with one "warm-up" grant to make this deterministic, after which it can assert
+    /// the request that was really registered (`REQ_LOOKUP` / `REQ_UNLINK` / `REQ_RMDIR`).
     #[test]
     fn test_path_follow_unlink_gates_and_sticky_stage() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -9940,7 +9940,7 @@ mod tests {
                 m_type: minix_types::OK,
                 ..Message::default()
             };
-            // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+            // SAFETY(test): fill ino/mode/uid/gid via lookup_reply_off.
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -9966,11 +9966,11 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         };
 
-        // ① 父目录不是目录（父路径解析到一个常规文件）→ ENOTDIR。
+        // ① The parent is not a directory (the parent path resolves to a regular file) → ENOTDIR.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
-        // 热身：让 grant 表完成一次（失败的）增长，后续 grant 走 freelist
-        // 直接成功——把"能不能发请求"从测试变量里去掉。
+        // Warm-up: let the grant table complete one (failed) growth so later grants take the freelist
+        // and succeed directly — removing "can it send a request" from the test variables.
         warm_grants(&mut state);
         let (slot, idx, walk) = mk(&mut state);
         {
@@ -9994,7 +9994,7 @@ mod tests {
             Some((user, -minix_types::ENOTDIR))
         );
 
-        // ② 目录 0755（other 有 x 无 w）、调用方 1000 号 → 权限门拒。
+        // ② Directory 0755 (other has x but no w), caller id 1000 → the permission gate rejects.
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10021,8 +10021,8 @@ mod tests {
             Some((user, -minix_types::EACCES))
         );
 
-        // ③ 0777 可写但带粘滞位 → 转阶段 2；宿主下子遍历的 grant 不可达 →
-        // EIO（真机上这里是第二条 REQ_LOOKUP）。
+        // ③ 0777 writable but sticky → go to stage 2; in a host build the sub-walk's grant is unreachable →
+        // EIO (on real hardware this is the second REQ_LOOKUP).
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10046,16 +10046,16 @@ mod tests {
         let p = state.pending_fs.as_ref().expect("已登记第二条 REQ_LOOKUP");
         assert_eq!(p.req.m_type, minix_types::REQ_LOOKUP, "粘滞位门要再走一趟");
         assert_eq!(p.fs_e, Endpoint::MFS);
-        // 子遍历带 `PATH_RET_SYMLINK`（C `lookup_init(&stickycheck, ...,
-        // PATH_RET_SYMLINK, ...)`，link.c:134）——这是宿主下能观测到的
-        // "flags 真的发进消息"的地方（域曾经从来没写过）。
-        // SAFETY(test): 按 lookup_req_off 读 FLAGS 域。
+        // The sub-walk carries `PATH_RET_SYMLINK` (C `lookup_init(&stickycheck, ...,
+        // PATH_RET_SYMLINK, ...)`, link.c:134) — this is the host-observable place where
+        // "flags really go into the message" (the field had never been written before).
+        // SAFETY(test): read the FLAGS field via lookup_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let flags = u32::from_le_bytes(raw[16..20].try_into().unwrap());
             assert_eq!(flags, minix_types::PATH_RET_SYMLINK);
         }
-        // 现场换成了阶段 2（父目录身份随行）。
+        // The slot has switched to stage 2 (parent-directory identity travels with it).
         assert!(matches!(
             state
                 .worker_pool
@@ -10070,10 +10070,10 @@ mod tests {
                 ..
             })
         ));
-        // 清掉这一轮的挂起现场再进下一条用例：留着的话，下一轮
-        // `run_worker_continuations` 会拿**陈旧的回复**把这个槽再跑一遍，
-        // 两条作业在同一轮完成时只有先入队的那条回复发得出去（模型一轮一条
-        // 回复），测试就会读到别人的回复。测试卫生，不是实现问题。
+        // Clear this round's pending slot before the next case: otherwise the next round
+        // of `run_worker_continuations` would run this slot again with a **stale reply**; when two jobs
+        // finish in the same round only the first queued reply can be sent (one reply per round
+        // in this model), so the test would read someone else's reply. Test hygiene, not an implementation issue.
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -10084,7 +10084,7 @@ mod tests {
         }
         state.worker_pool.release(idx);
 
-        // ④ 0777 无粘滞位 → 直接发请求；宿主下同样停在 grant → EIO。
+        // ④ 0777 without sticky → send the request directly; on the host it likewise stops at the grant → EIO.
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10107,7 +10107,7 @@ mod tests {
         let p = state.pending_fs.as_ref().expect("已登记 REQ_UNLINK");
         assert_eq!(p.req.m_type, minix_types::REQ_UNLINK);
         assert_eq!(p.worker, idx);
-        // SAFETY(test): 按 unlink_req_off 读回父目录 ino 与名字长度。
+        // SAFETY(test): read back the parent-directory ino and name length via unlink_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -10115,7 +10115,7 @@ mod tests {
             assert_eq!(ino, 7, "inode 域是**父目录**的节点号");
             assert_eq!(path_len, 2, "名字含结尾 NUL（\"x\" → 2 字节）");
         }
-        // 回复只有状态：续接体把状态原样回用户。
+        // The reply is status-only: the continuation returns the status to the user as is.
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -10137,7 +10137,7 @@ mod tests {
             "槽已释放"
         );
 
-        // ⑤ 阶段 2：受害者属主不是调用方（1000 vs 0）→ EPERM。
+        // ⑤ Stage 2: the victim's owner is not the caller (1000 vs 0) → EPERM.
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10164,7 +10164,7 @@ mod tests {
             Some((user, -minix_types::EPERM))
         );
 
-        // ⑥ 阶段 2：受害者属主就是调用方 → 过粘滞位门，停在 grant → EIO。
+        // ⑥ Stage 2: the victim's owner is the caller → sticky gate passes, stops at the grant → EIO.
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10188,7 +10188,7 @@ mod tests {
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_RMDIR");
         assert_eq!(p.req.m_type, minix_types::REQ_RMDIR, "rmdir 走自己的请求号");
-        // SAFETY(test): 父目录 ino 随现场带过来。
+        // SAFETY(test): the parent-directory ino comes with the slot.
         unsafe {
             let raw = &p.req.m_u.raw;
             let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -10196,10 +10196,10 @@ mod tests {
         }
     }
 
-    /// `PathFollow::Chmod` 与 `WorkerCont::Chmod`：`chmod` 的两段。
-    /// 走完先过两道门（属主/超级用户 → 否则 EPERM；只读挂载 → EROFS），
-    /// 再过 setgid 清位（非超级用户且文件不在自己的组里），才发 `REQ_CHMOD`；
-    /// 回复带**实际生效的模式**，续接体回写 vnode 缓存（C protect.c:120-128）。
+    /// `PathFollow::Chmod` and `WorkerCont::Chmod`: the two stages of `chmod`.
+    /// After the walk, two gates (owner/superuser → otherwise EPERM; read-only mount → EROFS),
+    /// then setgid clearing (non-superuser with the file outside their group), and only then `REQ_CHMOD`;
+    /// the reply carries the **effective mode**, which the continuation writes back into the vnode cache (C protect.c:120-128).
     #[test]
     fn test_path_follow_chmod_gates_and_cache_writeback() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -10236,7 +10236,7 @@ mod tests {
                 m_type: minix_types::OK,
                 ..Message::default()
             };
-            // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+            // SAFETY(test): fill ino/mode/uid/gid via lookup_reply_off.
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -10262,7 +10262,7 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         };
 
-        // ① 非属主（有效 id 1000，文件属主 0）→ EPERM，不发请求。
+        // ① Non-owner (effective id 1000, file owner 0) → EPERM, no request sent.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         let (slot, idx, walk) = mk(&mut state);
@@ -10281,7 +10281,7 @@ mod tests {
             Some((user, -minix_types::EPERM))
         );
 
-        // ② 属主但挂载是只读 → EROFS。
+        // ② Owner but the mount is read-only → EROFS.
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10302,9 +10302,9 @@ mod tests {
             Some((user, -minix_types::EROFS))
         );
 
-        // ③ 属主（非超级用户：有效 id 1000 = 文件属主）+ 可写挂载：发请求，
-        // 且 setgid 位被清（文件组 0 ≠ 有效组 1000，protect.c:120-121）。
-        // 注意这里**不能**用 eff_uid 0——0 就是超级用户，清位那条不适用。
+        // ③ Owner (non-superuser: effective id 1000 = file owner) + writable mount: send the request,
+        // and the setgid bit is cleared (file group 0 != effective group 1000, protect.c:120-121).
+        // Note that eff_uid 0 must **not** be used here — 0 is the superuser, and the clearing rule does not apply.
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10322,7 +10322,7 @@ mod tests {
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_CHMOD");
         assert_eq!(p.req.m_type, minix_types::REQ_CHMOD);
-        // SAFETY(test): 按 chmod_req_off 读回 inode/mode。
+        // SAFETY(test): read back inode/mode via chmod_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -10331,10 +10331,10 @@ mod tests {
             assert_eq!(mode, 0o664, "setgid 位被清（非超级用户且不同组）");
         }
 
-        // 续接体：回复带实际模式（FS 收窄成 0o750）→ 回写 vnode 缓存。
-        // 注意回复里的模式是**整字**（含类型位）：mfs 的 `fs_chmod` 末尾是
-        // `*mode = rip->i_mode`（mfs/protect.c），libfsdriver 原样搬进回复
-        // （call.c:787）。只回权限位是错的实现——缓存里的类型位会丢。
+        // Continuation: the reply carries the actual mode (FS narrows it to 0o750) → write it back to the vnode cache.
+        // Note the mode in the reply is the **whole word** (including type bits): mfs's `fs_chmod` ends with
+        // `*mode = rip->i_mode` (mfs/protect.c), and libfsdriver copies it into the reply verbatim
+        // (call.c:787). Returning only permission bits is a wrong implementation — the cache would lose the type bits.
         let vnode = match state.worker_pool.get_mut(idx).unwrap().cont {
             Some(WorkerCont::Chmod { vnode }) => vnode,
             _ => panic!("续接标识应是 Chmod"),
@@ -10344,7 +10344,7 @@ mod tests {
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): 按 chmod_reply_off 填实际模式（整字，含 S_IFREG）。
+        // SAFETY(test): fill the actual mode (whole word, including S_IFREG) via chmod_reply_off.
         unsafe {
             reply.m_u.raw[0..4].copy_from_slice(&(crate::open::S_IFREG | 0o750).to_le_bytes());
         }
@@ -10369,10 +10369,10 @@ mod tests {
         );
     }
 
-    /// `PathFollow::Rdlink` 与 `WorkerCont::Rdlink`：`readlink` 的两段。
-    /// 走完先过"是不是符号链接"的门（C link.c:496-501 的 `S_ISLNK`，否则
-    /// EINVAL），是链接才发 `REQ_RDLINK`；回复的**字节数在载荷里**而不是
-    /// 状态字（C request.c:745），续接体要从 `rdlink_reply_off::NBYTES` 取。
+    /// `PathFollow::Rdlink` and `WorkerCont::Rdlink`: the two stages of `readlink`.
+    /// After the walk, first the "is it a symlink" gate (C link.c:496-501's `S_ISLNK`, otherwise
+    /// EINVAL); only a link sends `REQ_RDLINK`; the reply's **byte count is in the payload**, not the
+    /// status word (C request.c:745), so the continuation reads `rdlink_reply_off::NBYTES`.
     #[test]
     fn test_path_follow_rdlink_gates_and_continuation() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -10409,7 +10409,7 @@ mod tests {
                 m_type: minix_types::OK,
                 ..Message::default()
             };
-            // SAFETY(test): 按 lookup_reply_off 填 ino/mode。
+            // SAFETY(test): fill ino/mode via lookup_reply_off.
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -10420,7 +10420,7 @@ mod tests {
             reply
         };
 
-        // 不是符号链接（常规文件）→ EINVAL，不发任何 FS 请求。
+        // Not a symlink (a regular file) → EINVAL, with no FS request sent.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         let (slot, idx, walk) = mk(&mut state);
@@ -10451,8 +10451,8 @@ mod tests {
             Some((user, -minix_types::EINVAL))
         );
 
-        // 是符号链接：发 `REQ_RDLINK`。宿主下要先热身 grant 表（见 Unlink
-        // 测试的说明），否则会退化成"停在 grant"的顺序产物。
+        // It is a symlink: send `REQ_RDLINK`. In a host build the grant table must be warmed first (see the Unlink
+        // test note), or the result degenerates into an ordering artifact of "stopped at the grant".
         warm_grants(&mut state);
         let (slot, idx, walk) = mk(&mut state);
         {
@@ -10478,7 +10478,7 @@ mod tests {
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_RDLINK");
         assert_eq!(p.req.m_type, minix_types::REQ_RDLINK);
-        // SAFETY(test): 按 rdlink_req_off 读回 ino 与窗口大小。
+        // SAFETY(test): read back ino and window size via rdlink_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -10486,7 +10486,7 @@ mod tests {
             assert_eq!(ino, 9);
             assert_eq!(mem_size, 128, "窗口大小来自用户给的 bufsize");
         }
-        // 清现场再进下一条用例（理由同 Unlink 那条测试：一轮一条回复）。
+        // Clear the slot before the next case (same reason as the Unlink test: one reply per round).
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -10497,7 +10497,7 @@ mod tests {
         }
         state.worker_pool.release(idx);
 
-        // 续接体：状态 OK 时长度取自载荷的 nbytes（不是状态字 0）。
+        // Continuation: on status OK the length comes from the payload's nbytes (not the status word 0).
         let idx2 = state
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
@@ -10506,7 +10506,7 @@ mod tests {
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): 按 rdlink_reply_off 填 nbytes。
+        // SAFETY(test): fill nbytes via rdlink_reply_off.
         unsafe {
             reply.m_u.raw[0..8].copy_from_slice(&12u64.to_le_bytes());
         }
@@ -10523,7 +10523,7 @@ mod tests {
             "用户拿到的是链接文本长度"
         );
 
-        // 续接体：FS 报错时错误原样回（不读载荷）。
+        // Continuation: on an FS error the error goes back as is (the payload is not read).
         let idx3 = state
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
@@ -10544,10 +10544,10 @@ mod tests {
         );
     }
 
-    /// `PathFollow::Access`：走完即判权限，**没有 FS 往返**——`forbidden`
-    /// 对 access(2) 用**真实** uid/gid（C protect.c:255-256 的
-    /// `job_call_nr == VFS_ACCESS` 特例）。这里的现场特意让真实 id 是文件
-    /// 属主、有效 id 不是：若实现错用有效 id，W_OK 会被误拒。
+    /// `PathFollow::Access`: permissions are judged right after the walk, with **no FS round trip** — `forbidden`
+    /// uses the **real** uid/gid for access(2) (the `job_call_nr == VFS_ACCESS` special case at
+    /// protect.c:255-256). The slot here deliberately makes the real id the file owner
+    /// and the effective id not: an implementation wrongly using the effective id would reject W_OK.
     #[test]
     fn test_path_follow_access_uses_real_ids() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -10573,9 +10573,9 @@ mod tests {
                 crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS)
                     .unwrap(),
                 rd,
-                // 遍历时带的 id 故意等于后面用例里的调用方真实 id（1000）：
-                // 若实现按遍历参数而非回复里的属主算，用例 2 的 W_OK 会被
-                // 误放行——那条断言因此是区分性的。
+                // The id carried by the walk deliberately equals the caller's real id in the later case (1000):
+                // if the implementation used the walk parameter instead of the owner from the reply, case 2's W_OK would be
+                // wrongly allowed — that assertion is therefore discriminating.
                 1000,
                 1000,
             )
@@ -10587,7 +10587,7 @@ mod tests {
                 m_type: minix_types::OK,
                 ..Message::default()
             };
-            // SAFETY(test): 按 lookup_reply_off 填 mode/uid/gid（ino 用不着）。
+            // SAFETY(test): fill mode/uid/gid via lookup_reply_off (ino is unused).
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -10627,7 +10627,7 @@ mod tests {
             state.take_reply().expect("回复").1.m_type
         };
 
-        // 真实 id = 属主(0)、有效 id = 1000：W_OK 按真实 id 判 → 允许。
+        // Real id = owner (0), effective id = 1000: W_OK is judged by the real id → allowed.
         let mut state = VfsState::new();
         let (slot, idx, walk) = mk(&mut state);
         {
@@ -10652,7 +10652,7 @@ mod tests {
             "access 用真实 id 判：真实 id 是属主 → W_OK 允许"
         );
 
-        // 属主是 0、真实 id 也是 1000（换一组）：W_OK 被拒。
+        // The owner is 0 and the real id is also 1000 (another set): W_OK is rejected.
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10671,7 +10671,7 @@ mod tests {
             -minix_types::EACCES,
             "非属主对 0644 无写权"
         );
-        // 同一个 0644：别人的读位在（other r）→ R_OK 允许。
+        // Same 0644: the other read bit is set (other r) → R_OK is allowed.
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10690,7 +10690,7 @@ mod tests {
             0
         );
 
-        // 只读挂载 + W_OK → EROFS（C `read_only` 在 forbidden 尾部）。
+        // Read-only mount + W_OK → EROFS (C `read_only` at the tail of forbidden).
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -10716,12 +10716,12 @@ mod tests {
         );
     }
 
-    /// `open` 的 `O_TRUNC` 分支（C `common_open:150-157`）：常规文件 +
-    /// `O_TRUNC` → W 位门过了之后发 `REQ_FTRUNC(ino, 0, 0)`（`end == 0`
-    /// 即"截到 start"，mfs `fs_trunc:439-443`）→ 回复到达后照常装配 fd。
-    /// 两段都钉在这里：**发出去的是截断请求**（不是直接装配），以及
-    /// **截断状态被忽略**（C 没接 `truncate_vnode` 的返回值）——所以回复
-    /// 里带错误也照样装配。
+    /// The `O_TRUNC` branch of `open` (C `common_open:150-157`): regular file +
+    /// `O_TRUNC` → after the W-bit gate passes, send `REQ_FTRUNC(ino, 0, 0)` (`end == 0`
+    /// means "truncate to start", mfs `fs_trunc:439-443`) → assemble the fd as usual when the reply arrives.
+    /// Both halves are pinned here: **what goes out is a truncate request** (not direct assembly), and
+    /// **the truncate status is ignored** (C does not consume `truncate_vnode`'s return value) — so even a reply
+    /// carrying an error still assembles.
     #[test]
     fn test_open_trunc_sends_ftrunc_then_assembles() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -10733,7 +10733,7 @@ mod tests {
             let fp = state.fproc_table.get_mut(slot).unwrap();
             fp.endpoint = user;
             fp.pid = 100;
-            fp.eff_uid = 0; // 文件属主，0644 有 W 位
+            fp.eff_uid = 0; // file owner; 0644 has the W bit
         }
         let idx = state
             .worker_pool
@@ -10749,9 +10749,9 @@ mod tests {
             fs: Endpoint::MFS,
             dev: 0,
         };
-        // 遍历时带的 id 故意与回复里的属主不同（7777 vs 0）：权限判断必须
-        // 按 `node_details` 的属主算（C `advance` 的 `v_uid = res.uid`），
-        // 按遍历参数算会把"非属主"误判成属主。
+        // The id carried by the walk deliberately differs from the reply's owner (7777 vs 0): permissions must
+        // be computed from the `node_details` owner (C `advance`'s `v_uid = res.uid`);
+        // using the walk parameter would misjudge a "non-owner" as the owner.
         let (walk, _) = crate::path::LookupWalk::begin(
             start,
             crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
@@ -10764,7 +10764,7 @@ mod tests {
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+        // SAFETY(test): fill ino/mode/uid/gid via lookup_reply_off.
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -10790,13 +10790,13 @@ mod tests {
         }
         state.run_worker_continuations();
 
-        // 相位 2 没直接装配：登记的是截断请求，槽继续挂起，用户还没回复。
+        // Phase 2 did not assemble directly: a truncate request is registered, the slot stays suspended, and the user has no reply yet.
         assert!(state.take_reply().is_none(), "截断未完成前不得回复 fd");
         let p = state.pending_fs.as_ref().expect("已登记 REQ_FTRUNC");
         assert_eq!(p.req.m_type, minix_types::REQ_FTRUNC);
         assert_eq!(p.worker, idx);
         assert_eq!(p.grant, 0, "截断无数据面");
-        // SAFETY(test): 按 ftrunc_req_off 读回三域。
+        // SAFETY(test): read back the three fields via ftrunc_req_off.
         unsafe {
             let raw = &p.req.m_u.raw;
             let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
@@ -10814,7 +10814,7 @@ mod tests {
         ));
         assert!(!state.worker_pool.get_mut(idx).unwrap().is_idle());
 
-        // 回复到达（故意带错误）：C 忽略截断结果，照常装配。
+        // The reply arrives (deliberately with an error): C ignores the truncate result and assembles as usual.
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -10839,9 +10839,9 @@ mod tests {
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
-    /// `O_TRUNC` 的 W 位门（C `common_open:152` 的 `forbidden(fp, vp,
-    /// W_BIT)`）：只读打开 + `O_TRUNC` 的文件若不可写，open 直接以
-    /// `EACCES` 结束——**不发截断请求**。
+    /// The W-bit gate for `O_TRUNC` (C `common_open:152`'s `forbidden(fp, vp,
+    /// W_BIT)`): if a read-only-open + `O_TRUNC` file is not writable, open ends
+    /// directly with `EACCES` - **no truncate request is sent**.
     #[test]
     fn test_open_trunc_denied_by_write_gate() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -10853,7 +10853,7 @@ mod tests {
             let fp = state.fproc_table.get_mut(slot).unwrap();
             fp.endpoint = user;
             fp.pid = 100;
-            fp.eff_uid = 1000; // 非属主、非 root
+            fp.eff_uid = 1000; // non-owner, non-root
             fp.real_uid = 1000;
             fp.eff_gid = 1000;
             fp.real_gid = 1000;
@@ -10876,9 +10876,9 @@ mod tests {
             start,
             crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
             rd,
-            // 遍历时带的 id **故意等于调用方的有效 id**（1000）：权限判断若
-            // 按遍历参数而非回复里的属主算，就会把非属主当成属主、把这次
-            // 打开放行——这条断言因此是区分性的。
+            // The id carried by the walk **deliberately equals the caller's effective id** (1000): if permissions
+            // were computed from the walk parameter instead of the reply's owner, a non-owner would be treated as the owner
+            // and this open would be allowed — that assertion is therefore discriminating.
             1000,
             1000,
         )
@@ -10887,7 +10887,7 @@ mod tests {
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): 0644 且属主是 0 → 1000 号只读。
+        // SAFETY(test): 0644 with owner 0 → id 1000 is read-only.
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -10925,9 +10925,9 @@ mod tests {
         );
     }
 
-    /// `WorkerCont::Path` 的收尾接线：走完（`Ok`）后进相位 2（这里 grant 在
-    /// 宿主不可达 → 以 EIO 收尾），**槽必须被释放、用户必须收到回复**——
-    /// 防的是"续接体吞掉作业、槽泄漏、调用方永等"。
+    /// The finalization wiring of `WorkerCont::Path`: after the walk (`Ok`) it enters phase 2 (here the grant is
+    /// unreachable on the host → finalize with EIO), and **the slot must be released and the user must receive a reply** —
+    /// guarding against "the continuation swallows the job, the slot leaks, the caller waits forever".
     #[test]
     fn test_worker_continuation_path_finishes_on_phase2_failure() {
         use crate::worker::{PathFollow, PathPending, WorkerCont};
@@ -10943,7 +10943,7 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        // 现场：一趟已走完的遍历（路径随便给，续接只用到 follow）。
+        // The slot: a completed walk (any path will do; the continuation only uses follow).
         let start = crate::path::LookupStart {
             fs: Endpoint::MFS,
             ino: 1,
@@ -10962,12 +10962,12 @@ mod tests {
             0,
         )
         .unwrap();
-        // 回复：OK + ino=5（四域 node_details）。
+        // The reply: OK + ino=5 (four node_details fields).
         let mut reply = Message {
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): 按 lookup_reply_off 填 ino。
+        // SAFETY(test): fill ino via lookup_reply_off.
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
@@ -10996,8 +10996,8 @@ mod tests {
         );
     }
 
-    /// 续接层的**写**分支：除位置推进外还要按 C read.c:255-259 抬高
-    /// vnode 大小（位置越过旧大小才动；读方向不动大小）。
+    /// The continuation layer's **write** branch: besides advancing the position, it raises the vnode size
+    /// per C read.c:255-259 (only when the position passes the old size; the read direction does not change the size).
     #[test]
     fn test_worker_continuation_write_raises_vnode_size() {
         use crate::worker::WorkerCont;
@@ -11014,7 +11014,7 @@ mod tests {
         {
             let v = state.vnode_table.get_mut(vid).unwrap();
             v.mode = crate::open::S_IFREG | 0o644;
-            v.size = 0x100; // 旧大小
+            v.size = 0x100; // old size
         }
         let idx = state
             .worker_pool
@@ -11024,7 +11024,7 @@ mod tests {
             m_type: 0,
             ..Message::default()
         };
-        // SAFETY(test): 按 transfer_reply_off 填回复（写 0x40 字节到 0x140）。
+        // SAFETY(test): fill the reply via transfer_reply_off (write 0x40 bytes to 0x140).
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[minix_types::transfer_reply_off::SEEK_POS
@@ -11059,7 +11059,7 @@ mod tests {
             Some((user, 0x40))
         );
 
-        // 反向对照：新位置**未**越过旧大小 → 大小不动。
+        // Reverse control: the new position does **not** pass the old size → the size is unchanged.
         let idx2 = state
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
@@ -11068,7 +11068,7 @@ mod tests {
             m_type: 0,
             ..Message::default()
         };
-        // SAFETY(test): 位置 0x110（小于当前 0x140），写 0x10 字节。
+        // SAFETY(test): position 0x110 (below the current 0x140), writing 0x10 bytes.
         unsafe {
             let raw = &mut reply2.m_u.raw;
             raw[minix_types::transfer_reply_off::SEEK_POS
@@ -11099,9 +11099,9 @@ mod tests {
         let _ = state.take_reply();
     }
 
-    /// 续接层的 Read 分支：从回复取 `seek_pos`/`nbytes`（C `mess_fs_vfs_readwrite`
-    /// 的共享偏移表），位置写回 filp，**状态＝实际读到的字节数**（C 的
-    /// `cum_io`），槽释放。
+    /// The continuation layer's Read branch: take `seek_pos`/`nbytes` from the reply (the shared offset table
+    /// of C `mess_fs_vfs_readwrite`), write the position back to the filp, set **status = bytes actually read** (C's
+    /// `cum_io`), and release the slot.
     #[test]
     fn test_worker_continuation_read_updates_filp_and_status() {
         use crate::worker::WorkerCont;
@@ -11121,12 +11121,12 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        // 回复载荷：seek_pos@0、nbytes@8（共享偏移表）。
+        // Reply payload: seek_pos@0, nbytes@8 (shared offset table).
         let mut reply = Message {
             m_type: 0,
             ..Message::default()
         };
-        // SAFETY(test): 按 transfer_reply_off 填回复。
+        // SAFETY(test): fill the reply via transfer_reply_off.
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[minix_types::transfer_reply_off::SEEK_POS
@@ -11163,10 +11163,10 @@ mod tests {
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
-    /// `WorkerCont::Getdents`：回复的 `seek_pos`/`nbytes` 取共享表
-    /// （`getdents_reply_off`），**位置只在 `nbytes > 0` 时推进**
-    /// （C read.c:311-313）——空目录或窗口装不下一整条目录项时
-    /// `nbytes == 0`，位置若动了下一趟就跳过条目；用户拿到的是字节数。
+    /// `WorkerCont::Getdents`: `seek_pos`/`nbytes` come from the reply via the shared table
+    /// (`getdents_reply_off`), and **the position advances only when `nbytes > 0`**
+    /// (C read.c:311-313) — an empty directory or a window too small for one whole entry gives
+    /// `nbytes == 0`; if the position moved, the next pass would skip entries. The user receives the byte count.
     #[test]
     fn test_worker_continuation_getdents_position_gate() {
         use crate::worker::WorkerCont;
@@ -11190,7 +11190,7 @@ mod tests {
                 m_type: status,
                 ..Message::default()
             };
-            // SAFETY(test): 按 getdents_reply_off 填 seek_pos/nbytes。
+            // SAFETY(test): fill seek_pos/nbytes via getdents_reply_off.
             unsafe {
                 let raw = &mut reply.m_u.raw;
                 raw[0..8].copy_from_slice(&pos.to_le_bytes());
@@ -11213,16 +11213,16 @@ mod tests {
             state.take_reply().expect("回复").1.m_type
         };
 
-        // 空目录（nbytes == 0）：位置**不动**，用户拿到 0。
+        // Empty directory (nbytes == 0): the position does **not move**, and the user receives 0.
         assert_eq!(run(&mut state, 0, 0x180, 0), 0);
         assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x100);
 
-        // 真读出条目：位置推进到回复给的新位置，用户拿到字节数。
+        // Entries really read: the position advances to the new position from the reply, and the user receives the byte count.
         assert_eq!(run(&mut state, 0, 0x180, 48), 48);
         assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x180);
 
-        // FS 报错：位置不动，错误原样回用户。
-        // FS 报错：位置不动，错误原样回用户（FS 的线上状态是负值）。
+        // FS error: the position does not move and the error goes back to the user as is.
+        // FS error: the position does not move and the error goes back as is (FS's on-wire status is negative).
         assert_eq!(
             run(&mut state, -minix_types::ENOTDIR, 0x200, 12),
             -minix_types::ENOTDIR
@@ -11230,9 +11230,9 @@ mod tests {
         assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x180);
     }
 
-    /// 续接层（`run_worker_continuations`）：回复已落槽的作业按续接标识
-    /// 收尾——Fstat 只撤 grant 并把状态回给用户；`ERESTART` 折 `EIO`
-    /// （C comm.c:161-163）；槽被释放。
+    /// The continuation layer (`run_worker_continuations`): jobs whose reply has landed are finalized according to
+    /// their continuation tag — Fstat only revokes the grant and returns the status to the user; `ERESTART` folds to `EIO`
+    /// (C comm.c:161-163); the slot is released.
     #[test]
     fn test_worker_continuation_fstat_completes_job() {
         use crate::worker::WorkerCont;
@@ -11244,7 +11244,7 @@ mod tests {
             fp.endpoint = user;
             fp.pid = 100;
         }
-        // 手工摆出"臂挂起后回复已到"的槽态：cont + sendrec + WaitingForFs。
+        // Hand-build the slot state "arm suspended, reply already arrived": cont + sendrec + WaitingForFs.
         let idx = state
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
@@ -11270,7 +11270,7 @@ mod tests {
             "槽已释放"
         );
 
-        // ERESTART 折 EIO（C comm.c:161-163）。
+        // ERESTART folds to EIO (C comm.c:161-163).
         let idx2 = state
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
@@ -11278,7 +11278,7 @@ mod tests {
         {
             let wp = state.worker_pool.get_mut(idx2).unwrap();
             wp.cont = Some(WorkerCont::Fstat { grant: 8 });
-            // FS 回复的线上状态带负号（服务端都是 `_SYSTEM` 构建）。
+            // An FS reply's on-wire status is negative (servers are all `_SYSTEM` builds).
             wp.sendrec = Some(Message {
                 m_type: -(minix_types::ERESTART),
                 ..Message::default()
@@ -11292,13 +11292,13 @@ mod tests {
         );
     }
 
-    /// 续接层的门：**只有回复已落槽的作业**才跑续接。C 里 `w_sendrec`
-    /// 是双向缓冲——`fs_sendrec` 送出时装的是请求、线程随即在
-    /// `worker_wait` 里阻塞；只有 `do_reply`（本模型的
-    /// `handle_fs_reply` 置 `Busy`）才会把回复覆写进去并唤醒线程。若少了
-    /// 这道门，另一个客户端在这段时间里发来的调用会驱动续接体拿请求码
-    /// 当状态，把挂起的作业假完成（用户收到垃圾结果、真回复到达时
-    /// `w_task` 已被清而报 WrongTask）。
+    /// The continuation gate: **only jobs whose reply has landed** run their continuation. In C, `w_sendrec`
+    /// is a bidirectional buffer — `fs_sendrec` puts the request in, and the thread then blocks in
+    /// `worker_wait`; only `do_reply` (in this model, `handle_fs_reply` setting `Busy`)
+    /// overwrites it with the reply and wakes the thread. Without this gate,
+    /// a call arriving from another client during that window would drive the continuation to take the request code
+    /// as the status and falsely complete the suspended job (the user gets garbage, and when the real reply arrives
+    /// `w_task` has already been cleared, so WrongTask is reported).
     #[test]
     fn test_continuation_skips_slot_still_waiting_for_fs() {
         use crate::worker::{WorkerCont, WorkerState};
@@ -11314,8 +11314,8 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .expect("空闲槽");
-        // 发送半之后的槽态：sendrec 里是**请求**（`REQ_LOOKUP` 的码），
-        // 状态是 `WaitingForFs`（`fs_sendrec` → `set_waiting`）。
+        // The slot state after the send half: sendrec holds the **request** (the `REQ_LOOKUP` code),
+        // and the state is `WaitingForFs` (`fs_sendrec` → `set_waiting`).
         let req = crate::request::encode_lookup(3, 2, 1, 1, 0);
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -11336,7 +11336,7 @@ mod tests {
             state.worker_pool.get_mut(idx).unwrap().cont.is_some(),
             "续接标识保留给真正的回复"
         );
-        // 回复真到了（`handle_fs_reply` 的落槽形态）：这时才跑。
+        // Only now that the reply has really arrived (the landing shape of `handle_fs_reply`) does it run.
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
             wp.sendrec = Some(Message {
@@ -11354,9 +11354,9 @@ mod tests {
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
-    /// W3 回复半：`SyscallResult` → 回复入队的映射（C `do_work` 尾部
-    /// `reply(who_e, result)`）。`Suspend` 不入队（回复在 FS 应答落地时
-    /// 发），`Nosys` 显式回 ENOSYS，目标为 NONE 时不发。
+    /// Reply half: the `SyscallResult` → queued-reply mapping (C `do_work`'s tail
+    /// `reply(who_e, result)`). `Suspend` is not queued (its reply is sent when the FS answer lands),
+    /// `Nosys` explicitly returns ENOSYS, and a NONE target sends nothing.
     #[test]
     fn test_queue_reply_maps_syscall_results() {
         use crate::call_table::SyscallResult;
@@ -11382,7 +11382,7 @@ mod tests {
             Some((user, -minix_types::ENOSYS))
         );
 
-        // 驱动/FS 带来的状态已经是负值：**不二次取负**。
+        // Statuses from drivers/FS are already negative: **do not negate twice**.
         state.queue_reply(user, SyscallResult::Error(-minix_types::ENXIO));
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
@@ -11398,8 +11398,8 @@ mod tests {
 
     #[test]
     fn test_handle_fs_reply_delivers_to_waiting_slot() {
-        // C do_reply(main.c:187-211)主路径:校验 → 落地 → 窗口放行 →
-        // worker_signal。VfsState::comm 入态(S12 W1)后的见证。
+        // The C do_reply main path (main.c:187-211): validate → land → open the window →
+        // worker_signal. Witness after `VfsState::comm` entered its state.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         seed_waiting(&mut state, 2, Endpoint::MFS);
@@ -11409,18 +11409,18 @@ mod tests {
         let r = state.handle_fs_reply(&reply, &VfsTransIdCodec);
         assert_eq!(r, Ok(2));
         let wp = state.worker_pool.get(2).unwrap();
-        assert_eq!(wp.state, WorkerState::Busy); // worker_signal 后可运行
+        assert_eq!(wp.state, WorkerState::Busy); // runnable after worker_signal
         assert_eq!(wp.task, None); // w_task = NONE(main.c:206)
         let delivered = wp.sendrec.expect("reply delivered");
-        // C main.c:88 —— transid 在进 do_reply 前被剥掉，槽里留的是服务端
-        // 原始状态（0x503 是这条测试造的"状态字"）。
+        // C main.c:88 — the transid is stripped before do_reply, so the slot keeps the server's
+        // raw status (0x503 is the "status word" fabricated by this test).
         assert_eq!(delivered.m_type, 0x503);
         assert_eq!(state.comm.vmnts[0].cur_reqs, 0); // c_cur_reqs--(main.c:207)
     }
 
     #[test]
     fn test_handle_fs_reply_vm_skips_vmnt_lookup() {
-        // C main.c:190 — who_e == VM_PROC_NR 不查 vmnt,窗口不动。
+        // C main.c:190 — who_e == VM_PROC_NR skips the vmnt check; the window does not move.
         let mut state = VfsState::new();
         seed_waiting(&mut state, 1, Endpoint::VM);
         let reply = reply_msg(0x503, 1, Endpoint::VM);
@@ -11430,9 +11430,9 @@ mod tests {
 
     #[test]
     fn test_handle_fs_reply_wrong_task_is_typed_printf() {
-        // C main.c:193-196 — w_task != who_e → printf+return(软失败,
-        // 回复不落地、窗口不动)。注意 C 的 find_vmnt(main.c:190)在
-        // w_task 检查之前,故错误应答方的 vmnt 也必须存在。
+        // C main.c:193-196 — w_task != who_e → printf+return (a soft failure:
+        // the reply is not landed and the window does not move). Note that C's find_vmnt (main.c:190) runs before
+        // the w_task check, so the wrong responder's vmnt must also exist.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         {
@@ -11456,7 +11456,7 @@ mod tests {
 
     #[test]
     fn test_handle_fs_reply_spurious_transid() {
-        // 低 16 位非 IS_VFS_FS_TRANSID → SpuriousTransid。
+        // The low 16 bits are not IS_VFS_FS_TRANSID → SpuriousTransid.
         let mut state = VfsState::new();
         let mut msg = Message {
             m_type: 0x503,
@@ -11472,18 +11472,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "Couldn't find vmnt for endpoint")]
     fn test_handle_fs_reply_unknown_fs_panics_like_c() {
-        // C main.c:190-191 — 非 VM 回复且 find_vmnt 失败 → panic(fail-fast)。
+        // C main.c:190-191 — a non-VM reply with a failed find_vmnt → panic (fail-fast).
         let mut state = VfsState::new();
-        seed_waiting(&mut state, 2, Endpoint::MFS); // 未播种 vmnt0
+        seed_waiting(&mut state, 2, Endpoint::MFS); // vmnt0 not seeded
         let reply = reply_msg(0x503, 2, Endpoint::MFS);
-        // [SD19-gate] 尽力而为回复帧处理（失败仅影响内部状态记录，不改变已回复调用方的事实）
+        // [SD19-gate] best-effort reply-frame handling (failure only affects internal bookkeeping, not the fact that the caller was already answered)
         #[allow(clippy::let_underscore_must_use)]
         let _ = state.handle_fs_reply(&reply, &VfsTransIdCodec);
     }
 
     #[test]
     fn test_run_once_fs_reply_reaches_slot() {
-        // C main.c:80-89 — transid 命中即 do_reply,主循环无应答对象。
+        // C main.c:80-89 — a transid hit means do_reply; the main loop has no answer target.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         seed_waiting(&mut state, 2, Endpoint::MFS);
@@ -11495,11 +11495,11 @@ mod tests {
         assert_eq!(state.comm.vmnts[0].cur_reqs, 0);
     }
 
-    // ── S12 第二片:fs_sendrec 对话原语 + flush_send_queue 补发 ──
+    // ── fs_sendrec conversation primitive + flush_send_queue resend ──
 
     extern crate alloc;
 
-    /// 可脚本失败的最小 IPC 传输(sendnb 记录 + 可注入失败)。
+    /// A minimal IPC transport that can fail on script (sendnb log + injectable failure).
     struct FlushIpc {
         sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
         fail: bool,
@@ -11543,7 +11543,7 @@ mod tests {
         }
     }
 
-    /// 回复落地 + 补发的闭环Fixture:vmnt0(MFS) + 槽 2 在飞。
+    /// Closed-loop fixture for reply landing + resend: vmnt0 (MFS) + slot 2 in flight.
     fn dialogue_fixture() -> VfsState {
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
@@ -11554,7 +11554,7 @@ mod tests {
 
     #[test]
     fn test_fs_sendrec_send_path_marks_waiting() {
-        // comm.c:137-158 主路径:窗口开 → sendnb 投递 + 槽 WaitingForFs。
+        // comm.c:137-158 main path: window open → sendnb delivery + slot WaitingForFs.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         let mut probe = crate::fs_comm::IpcFsTransport {
@@ -11582,7 +11582,7 @@ mod tests {
 
     #[test]
     fn test_fs_sendrec_vmnt_mismatch_is_eio() {
-        // comm.c:137-140 — find_vmnt 找不到该 fs endpoint → EIO。
+        // comm.c:137-140 — find_vmnt cannot find that fs endpoint → EIO.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         let mut probe = crate::fs_comm::IpcFsTransport {
@@ -11601,7 +11601,7 @@ mod tests {
 
     #[test]
     fn test_fs_sendrec_edeadlk_when_caller_is_fs() {
-        // comm.c:142-144 — 调用进程本身就是目标 FS → EDEADLK。
+        // comm.c:142-144 — the calling process is itself the target FS → EDEADLK.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         let caller_ep = Endpoint::from_generation_slot(1, 9);
@@ -11610,7 +11610,7 @@ mod tests {
             v.fs = caller_ep;
             v.dev = 2;
         }
-        // 槽 3 绑定 fproc,其 endpoint 即目标 FS。
+        // Slot 3 is bound to a fproc whose endpoint is the target FS.
         let fp = state.fproc_table.get_mut(UserSlot::new(3)).unwrap();
         fp.endpoint = caller_ep;
         let w = state.worker_pool.get_mut(3).unwrap();
@@ -11632,8 +11632,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "fs_sendrec on already-waiting slot")]
     fn test_fs_sendrec_double_sendrec_asserts() {
-        // comm.c:146 — `assert(self->w_sendrec == NULL)`。
-        let mut state = dialogue_fixture(); // 槽 2 已 WaitingForFs
+        // comm.c:146 — `assert(self->w_sendrec == NULL)`.
+        let mut state = dialogue_fixture(); // slot 2 is already WaitingForFs
         let mut probe = crate::fs_comm::IpcFsTransport {
             transport: FlushIpc {
                 sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
@@ -11641,18 +11641,18 @@ mod tests {
             },
         };
         let req = Message::default();
-        // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+        // [SD19-gate] best-effort IPC cleanup (send-and-forget/timeout path; failure does not change an established main result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 2, &req);
     }
 
     #[test]
     fn test_fs_sendrec_queue_path_marks_waiting() {
-        // comm.c:156-158 窗口满 → 排队,槽同样 WaitingForFs(sending++,
-        // 不投递)。
+        // comm.c:156-158 window full → queue; the slot is likewise WaitingForFs (sending++,
+        // no delivery).
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
-        state.comm.vmnts[0].cur_reqs = 1; // max=1 已占满
+        state.comm.vmnts[0].cur_reqs = 1; // max=1 already taken
         let mut probe = crate::fs_comm::IpcFsTransport {
             transport: FlushIpc {
                 sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
@@ -11678,8 +11678,8 @@ mod tests {
 
     #[test]
     fn test_flush_after_reply_drains_queue() {
-        // 闭环:在飞(槽2)+ 排队(槽4)→ 回复落地放行 → flush 补发
-        // 槽 4 的请求(transid 戳)→ 窗口再占满。
+        // Closed loop: in flight (slot 2) + queued (slot 4) → reply lands, window opens → flush resends
+        // slot 4's request (transid stamped) → the window fills again.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         seed_waiting(&mut state, 2, Endpoint::MFS);
@@ -11694,15 +11694,15 @@ mod tests {
             m_type: 0x604,
             ..Message::default()
         };
-        // 窗口满 → 槽 4 排队(请求存槽内,未 stamp)。
+        // Window full → slot 4 queues (the request stays in the slot, unstamped).
         assert_eq!(
             state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req),
             Ok(())
         );
-        // 回复落地槽 2,窗口放行。
+        // The reply lands on slot 2; the window opens.
         let reply = reply_msg(0x503, 2, Endpoint::MFS);
         assert_eq!(state.handle_fs_reply(&reply, &VfsTransIdCodec), Ok(2));
-        // 补发:槽 4 的请求上瓦,stamped + 投递。
+        // Resend: slot 4's request is stamped + delivered.
         assert_eq!(state.flush_send_queue(&mut probe.transport), 1);
         assert_eq!(probe.transport.sent.borrow().len(), 1);
         let (dst, sent) = probe.transport.sent.borrow()[0].clone();
@@ -11710,13 +11710,13 @@ mod tests {
         assert_eq!(sent.m_type as u32, crate::fs_comm::TransId::add(0x604, 4));
         assert_eq!(state.comm.vmnts[0].cur_reqs, 1);
         assert_eq!(state.comm.sending, 0);
-        // 再 flush:窗口又满,无补发。
+        // Flush again: the window is full again, nothing to resend.
         assert_eq!(state.flush_send_queue(&mut probe.transport), 0);
     }
 
     #[test]
     fn test_flush_skips_send_failures_and_empty_mounts() {
-        // comm.c:86 — 补发的 asynsend3 失败 `(void)` 忽略;空挂载槽不扫。
+        // comm.c:86 — a failed asynsend3 on resend is ignored as `(void)`; empty mount slots are not scanned.
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         seed_waiting(&mut state, 2, Endpoint::MFS);
@@ -11735,7 +11735,7 @@ mod tests {
         let reply = reply_msg(0x503, 2, Endpoint::MFS);
         assert_eq!(state.handle_fs_reply(&reply, &VfsTransIdCodec), Ok(2));
         assert_eq!(state.flush_send_queue(&mut probe.transport), 0);
-        // 计数已随 fs_sendmore 先行递增(C 既有次序)。
+        // The count was already incremented by fs_sendmore (C's existing order).
         assert_eq!(state.comm.vmnts[0].cur_reqs, 1);
         assert!(probe.transport.sent.borrow().is_empty());
     }
@@ -11841,7 +11841,7 @@ mod tests {
             state.pm_handshake_step(&msg),
             Err(VfsPmInitError::SlotOutOfRange(9999))
         );
-        // fail-closed：越界消息不得破坏表状态。
+        // fail-closed: an out-of-range message must not damage table state.
         assert_eq!(state.boot_phase, BootPhase::PmHandshake);
     }
 
@@ -11877,7 +11877,7 @@ mod tests {
         state.init_fresh();
         let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
         let ipc = BootScriptedIpc::default();
-        // [SD19-gate] 测试夹内：finish_init 失败由后续状态断言体现
+        // [SD19-gate] inside the test harness: finish_init failure is reflected by later state assertions
         #[allow(clippy::let_underscore_must_use)]
         let _ = state.finish_init(&kernel, &ipc);
     }
@@ -11903,10 +11903,10 @@ mod tests {
         assert_eq!(state.root_fs_e, Endpoint::MFS);
     }
 
-    // ── NS4/W6 根挂载编排 ────────────────────────────────────────────
+    // ── root-mount orchestration ──
 
-    /// 给 dmap 播种 memory 驱动行（DEV_IMGRD 的 major 归属，C boot 链上
-    /// 由 rproctab/map_service 装配——E-RPROCTAB 消费半，这里测试直填）。
+    /// Seed the dmap memory driver row (the major owner of DEV_IMGRD; on C's boot chain it is
+    /// assembled by rproctab/map_service — the test fills it in directly).
     fn seed_imgrd_driver(state: &mut VfsState) {
         let mut entry = crate::device_map::DmapEntry::empty();
         entry.driver = Some(Endpoint::MEM);
@@ -11914,17 +11914,17 @@ mod tests {
         assert!(state.dmap_table.set(crate::device_map::MEMORY_MAJOR, entry));
     }
 
-    // ── NS4-A：boot rproctab 消费（main.c:455-467 消费半） ──────────────
+    // ── boot rproctab consumption (the consumption half of main.c:455-467) ──
 
-    /// repr(C) POD 快照行的字节镜像（`decode_boot_rows` 的逆，注入用）。
+    /// Byte image of a repr(C) POD snapshot row (the inverse of `decode_boot_rows`, for injection).
     fn row_bytes(row: &minix_types::RprocpubSnap) -> [u8; 40] {
         let mut b = [0u8; core::mem::size_of::<minix_types::RprocpubSnap>()];
-        // SAFETY(测试): repr(C) POD 行 write_unaligned——read_unaligned 的逆。
+        // SAFETY(test): write_unaligned of a repr(C) POD row — the inverse of read_unaligned.
         unsafe { (b.as_mut_ptr() as *mut minix_types::RprocpubSnap).write_unaligned(*row) };
         b
     }
 
-    /// 内存驱动 boot 行（C 链上 imgrd 的供给者，rpub.label = "memory"）。
+    /// The memory-driver boot row (imgrd's supplier on C's chain; rpub.label = "memory").
     fn mem_boot_row() -> minix_types::RprocpubSnap {
         minix_types::RprocpubSnap {
             in_use: 1,
@@ -11950,8 +11950,8 @@ mod tests {
     fn test_apply_boot_rows_maps_driver_and_marks_service() {
         let mut state = VfsState::new();
         state.init_fresh();
-        // fproc 槽预填 endpoint：C 的 PM 握手先收齐进程表（main.c:419-436），
-        // map_service 的 isokendpt 才解析得到（dmap.c:208）。槽位随端点派生。
+        // fproc slots are pre-filled with endpoints: C's PM handshake completes the process table first (main.c:419-436),
+        // so map_service's isokendpt can resolve them (dmap.c:208). The slot is derived from the endpoint.
         let mem_slot = Endpoint::MEM.to_user_slot().unwrap();
         state.fproc_table.get_mut(mem_slot).unwrap().endpoint = Endpoint::MEM;
 
@@ -11967,8 +11967,8 @@ mod tests {
         assert_eq!(&entry.label[..7], b"memory\0");
     }
 
-    /// dmap 已驱动行计数（`entries` 私有，逐 major 走 `get`；CTTY 槽在
-    /// `VfsState::new` 已预填——判"apply 未新增行"用计数差而非全空）。
+    /// Count of dmap rows with drivers (`entries` is private; walk `get` per major; the CTTY slot is
+    /// pre-filled by `VfsState::new` — "apply added no rows" is judged by count difference, not total emptiness).
     fn dmap_driver_count(table: &DmapTable) -> usize {
         (0..table.len() as u32)
             .filter(|m| table.get(*m).is_some_and(|e| e.driver.is_some()))
@@ -11980,8 +11980,8 @@ mod tests {
         let mut state = VfsState::new();
         state.init_fresh();
         let vacant = minix_types::RprocpubSnap::default();
-        // boot 用户（init）：IS_RPUB_BOOT_USR（rs.h:188）——mark/dmap 都不做
-        //（C dmap.c:206 先于 isokendpt，无需 fproc 槽）。
+        // Boot user (init): IS_RPUB_BOOT_USR (rs.h:188) — neither mark nor dmap is done
+        // (C dmap.c:206 runs before isokendpt, so no fproc slot is needed).
         let boot_user = minix_types::RprocpubSnap {
             in_use: 1,
             endpoint: Endpoint::INIT.get(),
@@ -11993,7 +11993,7 @@ mod tests {
             dmap_driver_count(&state.dmap_table),
             dmap_driver_count(&DmapTable::init())
         );
-        // boot 用户与空槽都不得标 SRV_PROC。
+        // Neither a boot user nor an empty slot may be marked SRV_PROC.
         let init_slot = Endpoint::INIT.to_user_slot().unwrap();
         let fp = state.fproc_table.get_mut(init_slot).unwrap();
         assert!(!fp.flags.contains(FpFlags::SRV_PROC));
@@ -12005,7 +12005,7 @@ mod tests {
         state.init_fresh();
         let mfs_slot = Endpoint::MFS.to_user_slot().unwrap();
         state.fproc_table.get_mut(mfs_slot).unwrap().endpoint = Endpoint::MFS;
-        // dev_nr == NO_DEV（id.rs:62 = 0）：只标服务，不落 dmap（dmap.c:217-218）。
+        // dev_nr == NO_DEV (id.rs:62 = 0): only mark the service, no dmap row (dmap.c:217-218).
         let service_only = minix_types::RprocpubSnap {
             in_use: 1,
             endpoint: Endpoint::MFS.get(),
@@ -12025,7 +12025,7 @@ mod tests {
     fn test_apply_boot_rows_rejects_unknown_endpoint() {
         let mut state = VfsState::new();
         state.init_fresh();
-        // 端点不在 fproc（isokendpt 失败，dmap.c:208-212）→ EINVAL。
+        // The endpoint is not in fproc (isokendpt fails, dmap.c:208-212) → EINVAL.
         let ghost = minix_types::RprocpubSnap {
             in_use: 1,
             endpoint: 0x555,
@@ -12041,7 +12041,7 @@ mod tests {
         state.init_fresh();
         let mem_slot = Endpoint::MEM.to_user_slot().unwrap();
         state.fproc_table.get_mut(mem_slot).unwrap().endpoint = Endpoint::MEM;
-        // dev_nr 负值：C map_driver 的 major<0 门（dmap.c:67）→ ENODEV。
+        // Negative dev_nr: C map_driver's major<0 gate (dmap.c:67) → ENODEV.
         let bad_major = minix_types::RprocpubSnap {
             in_use: 1,
             endpoint: Endpoint::MEM.get(),
@@ -12064,8 +12064,8 @@ mod tests {
         assert_eq!(sent.len(), 1);
         let call = sent[0];
         assert_eq!(call.m_type, minix_types::SYS_SAFECOPYFROM);
-        // SAFETY(测试): m_lsys_kern_safecopy 是 SAFECOPYFROM 的载荷布局
-        //（minix-sys sys_safecopyfrom 装载侧同字段）。
+        // SAFETY(test): m_lsys_kern_safecopy is the payload layout of SAFECOPYFROM
+        // (the loading side of minix-sys sys_safecopyfrom uses the same fields).
         let sc = unsafe { &call.m_u.m_lsys_kern_safecopy };
         assert_eq!(sc.from_to, Endpoint::RS.get());
         assert_eq!(sc.grant_id, 7);
@@ -12089,12 +12089,12 @@ mod tests {
         );
     }
 
-    /// 根 readsuper 的脚本回复（ipc.h:198-211 布局：file_size@0、device@8、
-    /// inode@16、flags@24、mode@28、uid@32、gid@36、con_reqs@40）。
+    /// Scripted reply for the root readsuper (ipc.h:198-211 layout: file_size@0, device@8,
+    /// inode@16, flags@24, mode@28, uid@32, gid@36, con_reqs@40).
     fn readsuper_reply(ino: u64, mode: u32, size: u64) -> Message {
         let mut m = Message::default();
         {
-            // SAFETY: 按 request.rs:1140 解码器的既有偏移写字节面。
+            // SAFETY: write the byte face at the existing offsets of the request.rs:1140 decoder.
             let raw = unsafe { &mut m.m_u.raw };
             raw[0..8].copy_from_slice(&size.to_le_bytes());
             raw[16..24].copy_from_slice(&ino.to_le_bytes());
@@ -12106,13 +12106,13 @@ mod tests {
         m
     }
 
-    /// boot 段脚本 IPC：`sendrec` 依次弹出回复，空脚本给默认成功回复
-    /// （目录根节点、非 threaded）。
+    /// Scripted IPC for the boot phase: `sendrec` pops replies in order; an empty script yields the default success reply
+    /// (directory root node, non-threaded).
     struct BootScriptedIpc {
         queue: core::cell::RefCell<alloc::collections::VecDeque<Option<Message>>>,
-        /// (目的地, 发出的请求) 按序记录。
+        /// (destination, request sent) recorded in order.
         pub sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
-        /// 非 None 时下一次 sendrec 报这个正 errno（TrapStatus 契约）。
+        /// A positive errno for the next sendrec when not None (TrapStatus contract).
         pub fail_next: core::cell::Cell<Option<i32>>,
     }
 
@@ -12175,8 +12175,8 @@ mod tests {
         }
     }
 
-    /// boot 前置：一个 live 进程槽（槽 0，供 MAKEROOT 断言）+ 握手终止
-    /// + dmap 驱动行（根挂载的脚本环境）。
+    /// Boot preconditions: one live process slot (slot 0, for the MAKEROOT assertion) + handshake termination
+    /// + dmap driver rows (the scripted environment for the root mount).
     fn boot_ready_state() -> (VfsState, BootScriptedIpc) {
         let mut state = VfsState::new();
         state.init_fresh();
@@ -12202,19 +12202,19 @@ mod tests {
     fn test_root_mount_full_assembly() {
         let (mut state, ipc) = boot_ready_state();
         let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
-        // 脚本序:PFS 先答（明细按 C 忽略），MFS 后答（根 inode 1、目录、
-        // 串行窗口 = 1——flags@24 零即无 RES_THREADED）。
+        // Script order: PFS answers first (its details are ignored as in C), MFS afterwards (root inode 1, directory,
+        // serial window = 1 — flags@24 zero means no RES_THREADED).
         ipc.push(Some(readsuper_reply(1, crate::open::S_IFDIR | 0o755, 32)));
         ipc.push(Some(readsuper_reply(1, crate::open::S_IFDIR | 0o755, 4096)));
 
         state.do_init_root(&kernel, &ipc).unwrap();
 
-        // 赋值面（mount.c:326-328）。
+        // The assignment site (mount.c:326-328).
         assert_eq!(state.root_fs_e, Endpoint::MFS);
         assert_eq!(state.root_dev, DEV_IMGRD);
         assert_eq!(state.have_root, 1);
 
-        // vmnt 行：标签/路径/设备 + CANSTAT + 窗口（mount.c:297-305/318-325）。
+        // vmnt row: label/path/device + CANSTAT + window (mount.c:297-305/318-325).
         let id = state
             .vmnt_table
             .find_by_dev(DEV_IMGRD)
@@ -12230,7 +12230,7 @@ mod tests {
         assert_eq!(v.mounted_on, None);
         assert_eq!(state.comm.vmnts[id.get()].max_reqs, 1);
 
-        // 根 vnode 七连填（mount.c:283-296）。
+        // The seven-field root vnode fill (mount.c:283-296).
         let root_idx = v.root.expect("root vnode set");
         let vn = state
             .vnode_table
@@ -12245,7 +12245,7 @@ mod tests {
         assert_eq!(vn.vmnt, Some(crate::vnode::VmntId(id.get())));
         assert_eq!(vn.dev, DEV_IMGRD);
 
-        // MAKEROOT：live fproc 槽（槽 0 已被握手播种）rd/wd 归根。
+        // MAKEROOT: the live fproc slot's (slot 0 was seeded by the handshake) rd/wd move to the root.
         let fp = state.fproc_table.get(UserSlot::new(0)).unwrap();
         assert_eq!(fp.root_dir, Some(root_idx));
         assert_eq!(fp.work_dir, Some(root_idx));
@@ -12254,7 +12254,7 @@ mod tests {
     #[test]
     fn test_root_mount_without_driver_is_inval_and_gate_stays_closed() {
         let (mut state, ipc) = boot_ready_state();
-        // 拔掉 dmap 行：boot 装配半（rproctab 消费）缺位时的诚实失败。
+        // Remove the dmap row: an honest failure when the boot assembly half (rproctab consumption) is absent.
         state.dmap_table.set(
             crate::device_map::MEMORY_MAJOR,
             crate::device_map::DmapEntry::empty(),
@@ -12263,7 +12263,7 @@ mod tests {
 
         let r = state.do_init_root(&kernel, &ipc);
         assert!(matches!(r, Err(MountError::Inval)));
-        // C panic 前 worker 门不复位；root 未赋值。
+        // The worker gate is not reopened before the C panic; root is unassigned.
         assert!(!state.accept_requests);
         assert_eq!(state.root_fs_e, Endpoint::NONE);
         assert_eq!(state.have_root, 0);
@@ -12273,13 +12273,13 @@ mod tests {
     fn test_pfs_readsuper_failure_tolerated() {
         let (mut state, ipc) = boot_ready_state();
         let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
-        // 第一发（PFS）失败，第二发（MFS）走默认回复。
+        // The first shot (PFS) fails; the second (MFS) takes the default reply.
         ipc.fail_next.set(Some(minix_types::EIO));
 
         state.do_init_root(&kernel, &ipc).unwrap();
         assert_eq!(state.have_root, 1);
         assert_eq!(state.root_fs_e, Endpoint::MFS);
-        // PFS 行仍站着（C：printf 后挂载照旧），fs_flags 未回填。
+        // The PFS row is still present (C: the mount proceeds after printf), fs_flags is not filled.
         let pfs = state
             .vmnt_table
             .find_by_fs(Endpoint::PFS)
@@ -12299,10 +12299,10 @@ mod tests {
         let (mfs_dst, mfs_req) = &sent[1];
         assert_eq!(*pfs_dst, Endpoint::PFS);
         assert_eq!(*mfs_dst, Endpoint::MFS);
-        // 线上 `m_type` 带 transid 高 16 位戳记（C `fs_sendrec` 的
-        // `TRNS_ADD_ID(call, id)`）：FS 侧按 `TransactionId::decode`（call =
-        // raw >> 16）分派，裸 `REQ_READSUPER` 会因 call=0 落入 `Unserved`。
-        // 同步 sendrec 用 id=0，故线上值 = `trns_add_id(REQ_READSUPER, 0)`。
+        // The on-wire `m_type` carries the transid in its high 16 bits (C `fs_sendrec`'s
+        // `TRNS_ADD_ID(call, id)`): FS dispatches via `TransactionId::decode` (call =
+        // raw >> 16), so a bare `REQ_READSUPER` would fall into `Unserved` with call=0.
+        // A synchronous sendrec uses id=0, so the on-wire value = `trns_add_id(REQ_READSUPER, 0)`.
         assert_eq!(
             minix_types::trns_del_id(pfs_req.m_type),
             minix_types::REQ_READSUPER as i32,
@@ -12322,7 +12322,7 @@ mod tests {
             minix_types::trns_add_id(minix_types::REQ_READSUPER, 0)
         );
 
-        // 线上形状（request.c:780-813）：device@0、flags@8、path_len@16、grant@24。
+        // The on-wire shape (request.c:780-813): device@0, flags@8, path_len@16, grant@24.
         let raw = unsafe { &mfs_req.m_u.raw };
         let dev = u64::from_le_bytes(raw[0..8].try_into().unwrap());
         let flags = u32::from_le_bytes(raw[8..12].try_into().unwrap());
@@ -12330,7 +12330,7 @@ mod tests {
         let grant = i32::from_le_bytes(raw[24..28].try_into().unwrap());
         assert_eq!(dev, DEV_IMGRD);
         assert_ne!(flags & crate::request::REQ_ISROOT, 0, "根挂载带 REQ_ISROOT");
-        // label "memory\0" = 7 字节（dmap 行播种的驱动标签）。
+        // label "memory\0" = 7 bytes (the driver label seeded in the dmap row).
         assert_eq!(path_len, 7);
         assert!(grant >= 0, "grant 已建（CPF_READ 直授权）");
     }
@@ -12532,9 +12532,9 @@ mod tests {
         }
     }
 
-    /// `CdevIo` 续接的成功面（NS7）：驱动回复 `CDEV_REPLY`，载荷首字是
-    /// 搬运字节数——原样作为 `Ok` 值回用户，`BlockedOn::Cdev` 清掉
-    /// （C `cdev_generic_reply` 的 `revive` 面，cdev.c:471-477）。
+    /// The success face of the `CdevIo` continuation: the driver replies `CDEV_REPLY`, and the first payload word is
+    /// the byte count moved — returned as an `Ok` value, with `BlockedOn::Cdev` cleared
+    /// (the `revive` side of C `cdev_generic_reply`, cdev.c:471-477).
     #[test]
     fn test_cdev_io_continuation_completes_with_count() {
         let mut state = VfsState::new();
@@ -12554,8 +12554,8 @@ mod tests {
             m_source: Endpoint::from_generation_slot(0, 12),
             ..Message::default()
         };
-        // SAFETY(test): `mess_lchardriver_vfs_reply { status; id }`——状态
-        // 在载荷首字，id 在第二字。
+        // SAFETY(test): `mess_lchardriver_vfs_reply { status; id }` — the status is
+        // in the first payload word, id in the second.
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[0..4].copy_from_slice(&7i32.to_le_bytes());
@@ -12590,8 +12590,8 @@ mod tests {
         );
     }
 
-    /// `CdevIo` 续接的失败面：负 errno 原样折正回用户；`EINTR` 按
-    /// `cdev_generic_reply` 的折算改回 `EAGAIN`（cdev.c:471-473）。
+    /// The failure face of the `CdevIo` continuation: a negative errno is folded positive for the user as is;
+    /// `EINTR` is converted back to `EAGAIN` per `cdev_generic_reply` (cdev.c:471-473).
     #[test]
     fn test_cdev_io_continuation_error_and_eintr() {
         let make_reply = |status: i32, user: Endpoint| {
@@ -12600,7 +12600,7 @@ mod tests {
                 m_source: Endpoint::from_generation_slot(0, 12),
                 ..Message::default()
             };
-            // SAFETY(test): 状态在载荷首字。
+            // SAFETY(test): the status is in the first payload word.
             unsafe {
                 m.m_u.raw[0..4].copy_from_slice(&status.to_le_bytes());
                 m.m_u.raw[4..8].copy_from_slice(&user.get().to_le_bytes());
@@ -12626,7 +12626,7 @@ mod tests {
             idx
         };
 
-        // EIO：负 errno 折正。
+        // EIO: the negative errno is folded positive.
         let mut state = VfsState::new();
         let user = Endpoint::from_generation_slot(1, 0);
         let idx = park(&mut state, user);
@@ -12639,7 +12639,7 @@ mod tests {
             Some((user, -minix_types::EIO))
         );
 
-        // EINTR → EAGAIN（`cdev_cancel` 的配对转换）。
+        // EINTR → EAGAIN (the paired conversion of `cdev_cancel`).
         let mut state = VfsState::new();
         let idx = park(&mut state, user);
         let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -12653,10 +12653,10 @@ mod tests {
         );
     }
 
-    /// `CdevIoctl` 续接收尾（NS7-A）：载荷首字**无条件**解码——驱动回复
-    /// m_type 恒 `CDEV_REPLY`(0x480)，旧 `if status == 0` 门恒假、0x480 会
-    /// 被当错误码漏给用户；修后成功（status=0）回 `Ok(0)`，错误（-ENOTTY）
-    /// 折正回用户，`EINTR` 折回 `EAGAIN`（cdev.c:471-473）。
+    /// `CdevIoctl` continuation finalization: the first payload word is decoded **unconditionally** — a driver reply's
+    /// m_type is always `CDEV_REPLY`(0x480), so the old `if status == 0` gate was always false and 0x480 would
+    /// leak to the user as an error code; after the fix, success (status=0) returns `Ok(0)`, an error (-ENOTTY)
+    /// is folded positive for the user, and `EINTR` folds back to `EAGAIN` (cdev.c:471-473).
     #[test]
     fn test_cdev_ioctl_continuation_decodes_payload() {
         let make_reply = |status: i32, user: Endpoint| {
@@ -12666,7 +12666,7 @@ mod tests {
                 ..Message::default()
             };
             // SAFETY(test): `mess_lchardriver_vfs_reply { status; id }`——
-            // 状态在载荷首字，id 在第二字。
+            // The status is in the first payload word, id in the second.
             unsafe {
                 m.m_u.raw[0..4].copy_from_slice(&status.to_le_bytes());
                 m.m_u.raw[4..8].copy_from_slice(&user.get().to_le_bytes());
@@ -12693,7 +12693,7 @@ mod tests {
         };
         let user = Endpoint::from_generation_slot(1, 0);
 
-        // 成功：status=0 → `Ok(0)`（旧门下这里是 -0x480）。
+        // Success: status=0 → `Ok(0)` (under the old gate this was -0x480).
         let mut state = VfsState::new();
         let idx = park(&mut state, user);
         let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -12706,7 +12706,7 @@ mod tests {
             "ioctl 成功态回 Ok(0)，不是 0x480 被当错误码"
         );
 
-        // 错误：-ENOTTY 折正。
+        // Error: -ENOTTY is folded positive.
         let mut state = VfsState::new();
         let idx = park(&mut state, user);
         let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -12719,9 +12719,9 @@ mod tests {
         );
     }
 
-    /// 驱动回复的 id 配对（NS7）：两个作业同候一个驱动时，回复按载荷的
-    /// `id`（= 发请求时的 `proc_e`）落到正确的槽——不是"首个等它的槽"
-    /// （C `cdev_generic_reply` 按 id 认进程，cdev.c:442-460）。
+    /// ID pairing of driver replies: when two jobs wait on the same driver, a reply lands on the correct
+    /// slot by the payload's `id` (= the `proc_e` when the request was sent) — not on "the first waiting
+    /// slot" (C `cdev_generic_reply` identifies the process by id, cdev.c:442-460).
     #[test]
     fn test_drv_reply_lands_by_id() {
         let mut state = VfsState::new();
@@ -12745,13 +12745,13 @@ mod tests {
                 .set_waiting(driver, parked);
             state.worker_pool.get_mut(idx).unwrap().fp_slot = Some(UserSlot::new(slot));
         }
-        // B 的回复到达：必须落 B 的槽（1），A 的槽原样等着。
+        // B's reply arrives: it must land on B's slot (1); A's slot keeps waiting.
         let mut reply = Message {
             m_type: minix_types::CDEV_REPLY_BASE,
             m_source: driver,
             ..Message::default()
         };
-        // SAFETY(test): `mess_lchardriver_vfs_reply { status; id }`。
+        // SAFETY(test): `mess_lchardriver_vfs_reply { status; id }`.
         unsafe {
             reply.m_u.raw[4..8].copy_from_slice(&user_b.get().to_le_bytes());
         }
@@ -12763,26 +12763,26 @@ mod tests {
         );
         assert_eq!(state.worker_pool.get(1).unwrap().state, WorkerState::Busy);
 
-        // 无 id 归宿（id 是未登记端点）→ 回落首匹配，兼容不带 id 的请求。
+        // No id match (the id is an unregistered endpoint) → fall back to first-match, compatible with requests without an id.
         let mut stray = Message {
             m_type: minix_types::CDEV_REPLY_BASE,
             m_source: driver,
             ..Message::default()
         };
-        // SAFETY(test): 同上，id 换成未登记端点。
+        // SAFETY(test): same as above, with the id replaced by an unregistered endpoint.
         unsafe {
             stray.m_u.raw[4..8].copy_from_slice(&9999i32.to_le_bytes());
         }
         assert_eq!(state.handle_drv_reply(&stray), Ok(0));
     }
 
-    /// `apply_boot_rows` 的 tty 槽半（NS7 的 dmap 半）：RS dev 表来的
-    /// `dev_nr = TTY_MAJOR(4)` 行落 dmap[4]，驱动端点 = tty（NS4-A 的
-    /// boot 装配把 `BOOT_IMAGE_DEV_TABLE` 的 tty 行带进 pub_wire）。
+    /// The tty-slot half of `apply_boot_rows` (its dmap half): the `dev_nr = TTY_MAJOR(4)` row from the RS dev
+    /// table lands in dmap[4] with driver endpoint = tty (the boot assembly carries `BOOT_IMAGE_DEV_TABLE`'s
+    /// tty row into pub_wire).
     #[test]
     fn test_apply_boot_rows_maps_tty_dmap_slot() {
         let mut state = VfsState::new();
-        // isokendpt 要求端点↔槽一致（dmap.c:208-214 对位）。
+        // isokendpt requires endpoint↔slot consistency (dmap.c:208-214 correspondence).
         {
             let fp = state.fproc_table.get_mut(UserSlot::new(5)).unwrap();
             fp.pid = 7;
@@ -12793,7 +12793,7 @@ mod tests {
         let row = minix_types::RprocpubSnap {
             in_use: 1,
             endpoint: Endpoint::TTY.get(),
-            dev_nr: 4, // TTY_MAJOR（rs table.c:45-50 → dmap.h:25）
+            dev_nr: 4, // TTY_MAJOR (rs table.c:45-50 → dmap.h:25)
             label,
             ..minix_types::RprocpubSnap::default()
         };
@@ -13054,7 +13054,7 @@ mod run_once_tests {
 
     #[test]
     fn test_run_once_enosys_for_unknown() {
-        // 未知调用号 → Enosys 路由（main.c:283-294 的 ENOSYS 语义）。
+        // Unknown call number → Enosys route (the ENOSYS semantics of main.c:283-294).
         let mut state = VfsState::new();
         state.init_fresh();
         let codec = VfsTransIdCodec;

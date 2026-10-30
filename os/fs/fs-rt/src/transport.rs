@@ -79,15 +79,15 @@ pub fn serve<D: minix_fs::driver::FsDriver>(
 /// Terminating here means the loop leaves without a reply: C's
 /// `fsdriver_terminate()` clears the running flag and cancels the pending
 /// receive (`fsdriver.c:68-74`) — that cancel is the library's escape hatch
-/// ([`minix_sef::SefCancel`], PD-27): the turn cancels from inside the
+/// ([`minix_sef::SefCancel`]): the turn cancels from inside the
 /// callback, the library answers `Err(EINTR)`, and the decision maps to the
 /// [`Incoming::SyncThenCancelled`]/[`Incoming::Cancelled`] return without
 /// consuming a further message.
 pub type SignalDecision = Box<dyn FnMut(i32) -> SignalAction>;
 
 /// What a file server makes of one signal number — re-exported from
-/// [`minix_sef`] (PD-25: one vocabulary definition lives with the SEF
-/// contract; the FS runtime and its four servers consume it unchanged).
+/// [`minix_sef`] (one vocabulary definition lives with the SEF contract; the
+/// FS runtime and its four servers consume it unchanged).
 pub use minix_sef::SignalAction;
 
 /// What the birth callback is being asked to run.
@@ -178,7 +178,8 @@ impl<I: RtIpc> FsRt<I> {
         // (process_init tail: `m.m_type = RS_INIT;
         // m.m_rs_init.result = result;` — sef_init.c).
         reply.m_u.m_rs_init.result = result;
-        //[SD19-gate] RS 出生报告 send：发后即忘，成败由紧随其后的 result==0 判定
+        //[SD19-gate] RS birth-report send: fire-and-forget; success is judged
+        //by the result == 0 check immediately after
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.send(Endpoint::RS, &reply);
         result == 0
@@ -195,7 +196,7 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
             // without any receipt value. Only `ipc` and `on_signal` are
             // borrowed here, leaving the rest of the runtime untouched.
             let FsRt { ipc, on_signal, .. } = self;
-            // The escape hatch (PD-27, C `sef_cancel` — sef.c:291-297 +
+            // The escape hatch (C `sef_cancel` — sef.c:291-297 +
             // sef.c:161-162): a non-Ignore decision cancels the pending
             // receive from inside the callback, so the library answers
             // `Err(EINTR)` and the decision maps to the leaving receipt right
@@ -284,12 +285,16 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
                             // hook with no state, so the observable
                             // behavior is the reply code.
                             let reply = Message {
-                                // 分类阶段直回的 errno 同样走单源折号（与
-                                // `wire::encode_reply` 同语义），保证 FS→VFS 线上一律非正号。
+                                // An errno replied directly by the
+                                // classification stage also goes through the
+                                // single-source sign folding (same semantics as
+                                // `wire::encode_reply`), keeping every
+                                // FS→VFS wire status non-positive.
                                 m_type: TransactionId::encode_reply(reply_status(e.to_i32()), transaction),
                                 ..Message::default()
                             };
-                            //[SD19-gate] 错误回复 send：已在返回错误路径，send 失败无可再报
+                            //[SD19-gate] error-reply send: already on the
+                            //error-return path; a failed send has nothing left to report
                             #[allow(clippy::let_underscore_must_use)]
                             let _ = self.ipc.send(self.peer, &reply);
                             continue;
@@ -307,7 +312,8 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
         if let Some(bytes) = wire::lookup_rewrite_bytes(&reply)
             && self.grant != minix_types::GRANT_INVALID
         {
-            //[SD19-gate] lookup 重写尽力而为 copy_to：失败则 VFS 从重写路径重启解析（紧邻注释已陈明）
+            //[SD19-gate] lookup-rewrite best-effort copy_to: on failure VFS
+            //restarts resolution from the rewritten path (stated just above)
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.ipc.copy_to(self.peer, self.grant, 0, &bytes);
         }
@@ -315,7 +321,8 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
         // new-node replies carry the device; create does not).
         let request = self.last_request.unwrap_or(RequestNumber::GetNode);
         let msg = wire::encode_reply(request, &reply);
-        //[SD19-gate] 终回复 send：发后即忘，与 C sef 回复语义一致（send 失败无从重投）
+        //[SD19-gate] final-reply send: fire-and-forget, matching C sef reply
+        //semantics (a failed send has no retry path)
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.send(Endpoint(to), &msg);
     }
@@ -330,9 +337,11 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
     }
 
     fn copy_out(&mut self, offset: usize, bytes: &[u8]) -> Result<(), minix_types::Errno> {
-        // SD-19 signature rework：真失败不再静默吞。invalid grant 维持 OK
-        // （peek 空通道按 C 就是 no-op 成功，data.rs 同语义），但 safecopyto
-        // 本身坏了按 copy_in 同构回 EIO，由 dispatch 梯子覆盖回复。
+        // Signature rework: a real failure is no longer swallowed silently.
+        // An invalid grant still answers OK (peeking an empty channel is a
+        // no-op success in C, same semantics as data.rs), but a broken
+        // safecopyto reports EIO symmetrically with copy_in, and the dispatch
+        // ladder turns that into a reply.
         if self.grant == minix_types::GRANT_INVALID {
             return Ok(());
         }

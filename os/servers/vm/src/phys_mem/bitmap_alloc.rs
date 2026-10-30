@@ -88,8 +88,8 @@ impl BitmapAllocator {
         bitmap_bytes + cache_bytes + METADATA_ALIGN_PADDING
     }
 
-    // V10-P2-1: metrics surface without callers yet (reserved for the
-    // VM_INFO stats expansion, V10-P2-4).
+    // Metrics surface without callers yet (reserved for the VM_INFO stats
+    // expansion).
     #[allow(dead_code)]
     pub fn total_memory(&self) -> usize {
         self.total_pages * CLICK_SIZE
@@ -115,8 +115,8 @@ impl BitmapAllocator {
         (self.meta_phys_base, self.meta_pages)
     }
 
-    // V10-P2-1: metrics surface without callers yet (reserved for the
-    // VM_INFO stats expansion / cache-pressure heuristic, alloc.c:242-279).
+    // Metrics surface without callers yet (reserved for the VM_INFO stats
+    // expansion / cache-pressure heuristic, alloc.c:242-279).
     #[allow(dead_code)]
     pub fn is_under_pressure(&self) -> bool {
         self.free_pages * 10 < self.total_pages
@@ -186,7 +186,7 @@ impl BitmapAllocator {
     /// 64-bit chunks. This is acceptable for current Minix3 use
     /// (typical memory budget: 256MB-2GB = 65K-500K pages).
     ///
-    /// **Future optimizations** (NOT done; tracked as bitmap perf TODO):
+    /// **Future optimizations** (NOT done; tracked as bitmap performance work):
     /// 1. **Last-found hint**: a `last_alloc_bit: usize` field that
     ///    defaults to `start_scan`. The first scan starts at the
     ///    hint; if no free run is found, falls back to `start_scan`.
@@ -303,19 +303,23 @@ impl BitmapAllocator {
         self.bitmap.len() * BITS_PER_CHUNK
     }
 
-    // V11/T17 判定：C 的 `cache_freepages()`（cache.c:288-305）在本架构中
-    // 不需要 allocator 侧对应物——
-    //   1. 其"回收单引用缓存页"语义已由 VM 层实现：
-    //      `PageCache::free_pages()`（page_cache.rs，走 lru_oldest +
-    //      refcount==1 判定 + rmcache），由主循环压力钩子 `alloc_cycle`
-    //      批量调用（vm_server.rs，FREE_CACHE_BATCH=1024）。
-    //   2. C 的"alloc_mem 失败后同步重试"对应 minix-rs 的"回收后清压力
-    //      计数，下一次分配失败重新武装"——异步化的偏差已在 alloc_cycle
-    //      文档与 24-page-cache 登记为已知差异。
-    //   3. allocator 内部的 freed-page LIFO（free 路径压入）在
-    //      `alloc_mem` 里本就被优先消费——回收语义已天然覆盖。
-    // 保留此 no-op 钩子只会暗示"allocator 应该认识 VM block cache"，
-    // 而两层缓存的刻意分离（[ARCH: A-1] Direct Map 设计）恰恰不允许。
+    // C's `cache_freepages()` (cache.c:288-305) has no counterpart on the allocator
+    // side in this architecture:
+    //   1. Its "reclaim single-reference cache pages" semantics are already
+    //      implemented by the VM layer: `PageCache::free_pages()` (page_cache.rs,
+    //      using lru_oldest + the refcount==1 test + rmcache), called in batches by
+    //      the main-loop pressure hook `alloc_cycle` (vm_server.rs,
+    //      FREE_CACHE_BATCH=1024).
+    //   2. C's "retry synchronously after alloc_mem fails" corresponds to
+    //      minix-rs's "clear the pressure counter after reclaiming, re-arm on the
+    //      next allocation failure" — this asynchronous deviation is registered as a
+    //      known difference in the alloc_cycle docs and 24-page-cache.
+    //   3. The allocator's internal freed-page LIFO (pushed on the free path) is
+    //      already consumed with priority inside `alloc_mem` — the reclaim semantics
+    //      are covered naturally.
+    // Keeping this no-op hook would only suggest "the allocator should know about the
+    // VM block cache", which the deliberate separation of the two cache layers
+    // ([ARCH: A-1] Direct Map design) forbids.
 }
 
 impl PhysAllocator for BitmapAllocator {
@@ -343,7 +347,7 @@ impl PhysAllocator for BitmapAllocator {
         // minix-rs that reclaim is asynchronous — the main loop's
         // `alloc_cycle` calls `PageCache::free_pages()` and re-arms the
         // pressure counter — so a failed attempt here simply falls through
-        // to `AllocError::OutOfMemory` (V11/T17 判定，见上方注记).
+        // to `AllocError::OutOfMemory` (see the note above).
         let page = self.alloc_pages(alloc_clicks, max_page, use_cache);
 
         let page = match page {
@@ -477,11 +481,13 @@ mod tests {
         assert_eq!(addr.page_index(), 5);
     }
 
-    /// NK4-A fix21 复现：真机 init_boot_procs→init_page_table 报
-    /// AllocationFailed。用 fix20c 串口路标的真实幸存区列表（前 8 条
-    /// 照抄，后 2 条以同形小区补）+ 生产同款 sum 语义 total_pages，
-    /// 走 init → 大块(229) 分配（fix18 grow 形状）→ 模拟 relocate
-    /// （available_regions 重建）→ 单页分配，逐步断言不 OOM。
+    /// Reproduction of the real-hardware failure where
+    /// init_boot_procs→init_page_table reports AllocationFailed. It uses the real
+    /// surviving-region list from the serial log (the first 8 entries copied
+    /// verbatim, 2 more added as small regions of the same shape) plus the
+    /// production sum semantics for total_pages, then goes init → large-block (229)
+    /// allocation (the grow shape) → simulated relocate (rebuilding
+    /// available_regions) → single-page allocation, asserting no OOM at each step.
     #[test]
     fn test_first_light_regions_survive_relocate_reinit() {
         let regions = vec![
@@ -494,21 +500,21 @@ mod tests {
             BootMemRegion { base: 0x1da5d000, size: 0x3000 },
             BootMemRegion { base: 0x1da92000, size: 0x32000 },
         ];
-        // 生产语义：total = sum(size/CLICK)（boot.rs read_boot_params L297）
+        // Production semantics: total = sum(size/CLICK) (boot.rs read_boot_params L297)
         let tp: usize = regions.iter().map(|r| r.size / CLICK_SIZE).sum();
         let metadata = make_test_metadata(tp);
         let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
 
-        // 1. fix18 grow 形状：229 页大块必须给得出来
+        // 1. grow shape: the 229-page large block must be satisfiable
         let big = alloc
             .alloc_mem(229, PageAllocFlags::empty())
             .expect("fix21 repro: 229-page grow must succeed");
-        // 2. 单页（页表根形状）
+        // 2. single page (page-table-root shape)
         let one = alloc
             .alloc_mem(1, PageAllocFlags::empty())
             .expect("fix21 repro: single page before relocate");
 
-        // 3. 模拟 relocate：旧表 available_regions → 新 metadata 重建
+        // 3. Simulated relocate: the old table's available_regions → rebuild with new metadata
         let mut free_regions: alloc::vec::Vec<BootMemRegion> = alloc::vec::Vec::new();
         alloc.available_regions(&mut |base_page, num_pages| {
             free_regions.push(BootMemRegion {
@@ -519,12 +525,13 @@ mod tests {
         let metadata2 = make_test_metadata(tp);
         let mut alloc2 = BitmapAllocator::init(metadata2, tp, &free_regions, 0, 0);
 
-        // 4. relocate 后单页分配——真机挂点形状（init_page_table→pt_new）
+        // 4. Single-page allocation after relocate — the real-hardware failure shape (init_page_table→pt_new)
         let after = alloc2
             .alloc_mem(1, PageAllocFlags::empty())
             .expect("fix21 repro: single page after relocate re-init");
-        // 5. 归还路径也要工作（vm_pt_free 形状）——归还给页的原分配器
-        //    （alloc2 的 stats 没有这两笔分配，free 它会触发下溢断言）。
+        // 5. The free path must work too (vm_pt_free shape) — return pages to their
+        //    original allocator (alloc2's stats lack these two allocations; freeing
+        //    there would trip the underflow assertion).
         alloc.free_mem(one, 1);
         alloc.free_mem(big, 229);
         let _ = after;

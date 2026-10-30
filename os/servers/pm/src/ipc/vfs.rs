@@ -1,29 +1,41 @@
-//! PM ↔ VFS 异步协议：请求发送（`tell_vfs`）与回复状态机（`handle_vfs_reply`）。
+//! PM ↔ VFS async protocol: request send (`tell_vfs`) and the reply state
+//! machine (`handle_vfs_reply`).
 //!
-//! 对应 Minix3 C 源码：
-//! - `minix3/minix/servers/pm/utility.c:120-139` — `tell_vfs`（置位 VFS_CALL + 异步发送）
-//! - `minix3/minix/servers/pm/main.c:294-424` — `handle_vfs_reply`（11 路回复状态机）
+//! C ground truth:
+//! - `minix3/minix/servers/pm/utility.c:120-139` — `tell_vfs` (sets VFS_CALL,
+//!   sends asynchronously)
+//! - `minix3/minix/servers/pm/main.c:294-424` — `handle_vfs_reply` (11-way
+//!   reply state machine)
 //!
-//! 设计契约见 `04-stage-pm/.design/05-design.v1.md`（D2~D8）。
+//! Design contract: `rewrite-notes/04-stage-pm/05-vfs-interaction.md`.
 //!
-//! # 与微内核事件模型的对照
+//! # Contrast with the microkernel event model
 //!
-//! Minix3 的 PM 是**单线程事件循环**（`04-ipc-dispatch` 已确立：handler 阻塞 =
-//! 整个服务器停摆）。它向 VFS 发起的请求（exec 装载镜像、fork 复制 fd、setuid、
-//! exit 等）耗时且不可预测（要读盘、写盘、等待 tty/pipe）。若同步等待，PM 会停摆；
-//! 若此时 VFS 又经 `ipc_send(PM_PROC_NR, ...)`（阻塞）反向向 PM 发消息，则双方互
-//! 相等待 → 死锁。因此 PM 用 `asynsend3`（非阻塞、`AMF_NOREPLY`）把请求"投出"，
-//! 然后立刻回到主循环；VFS 处理完（可能经 worker 线程，见 `vfs/main.c:895-899`
-//! 注释）才异步回送回复，PM 在主循环第一路（`main.c:84-87`）收口。
+//! Minix3's PM is a **single-threaded event loop** (established by
+//! `rewrite-notes/04-stage-pm/04-ipc-dispatch.md`: a blocking handler stalls the
+//! whole server). The requests it sends to VFS (exec image loading, fork fd
+//! copy, setuid, exit, ...) are slow and unpredictable (disk reads and writes,
+//! waiting on tty/pipe). Waiting synchronously would stall PM; and if VFS then
+//! sent a message back to PM via `ipc_send(PM_PROC_NR, ...)` (blocking), both
+//! sides would wait on each other → deadlock. PM therefore "posts" the request
+//! with `asynsend3` (non-blocking, `AMF_NOREPLY`) and returns to the main loop
+//! at once; VFS, once done (possibly via a worker thread, see the comment in
+//! `vfs/main.c:895-899`), sends the reply asynchronously, and PM collects it in
+//! the first branch of the main loop (`main.c:84-87`).
 //!
-//! 这与 Redox 的 `Scheme` 模型同构而异构：
-//! - **同构**：请求被"投出"后，调用方不立即得到结果；结果由被调用方在"稍后"回复。
-//! - **异构**：Redox 把延迟完成挂在 `handle` 表上（内核挂起调用者，`doc.redox-os.org/
-//!   book/scheme-operation.html`），其 unit 是 *scheme handle*；Minix3 把延续挂在
-//!   *进程*（`mproc`）的标志位上，unit 是 *进程*，因为 PM 的请求本质都是进程状态迁移。
-//!   Rust 侧保留"以进程为单位"的语义，但把 C 的隐式标志位延续提升为显式端口调用
-//!   （[`VfsReplyServices`]），消除 `main.c`/`event.c`/`signal.c` 四处散落、靠 `panic`
-//!   兜底的状态推断（ARCH A-2 / A-6 延伸）。
+//! This is isomorphic to Redox's `Scheme` model in shape but not in unit:
+//! - **Same shape**: after the request is "posted" the caller does not get a
+//!   result immediately; the callee replies "later".
+//! - **Different unit**: Redox hangs deferred completion off a `handle` table
+//!   (the kernel suspends the caller, `doc.redox-os.org/
+//!   book/scheme-operation.html`); its unit is the *scheme handle*. Minix3
+//!   hangs the continuation off flags on the *process* (`mproc`); its unit is
+//!   the *process*, because PM's requests are all process-state transitions.
+//!   The Rust side keeps the "per process" semantics but lifts C's implicit
+//!   flag-bit continuation into an explicit port call
+//!   ([`VfsReplyServices`]), eliminating the state inference scattered across
+//!   four sites in `main.c`/`event.c`/`signal.c` and backed by `panic` (an
+//!   extension of the explicit-port design).
 
 
 use minix_types::{
@@ -34,183 +46,201 @@ use minix_types::{
 use crate::ipc::transport::IpcTransport;
 use crate::mproc::{IpcBlockReason, ProcTable};
 
-/// Minix3 成功码（`minix3/sys/sys/errno.h:190` `#define OK 0`）。
+/// Minix3 success code (`minix3/sys/sys/errno.h:190` `#define OK 0`).
 pub const OK: i32 = 0;
 
-/// core dump 标志位（`minix3/sys/sys/wait.h:63`，值 `0200`）。
+/// Core dump flag bit (`minix3/sys/sys/wait.h:63`, value `0200`).
 ///
-/// 仅 `VfsReply::Core` 成功时置位（main.c:357-358），当前 `set_core_flag`
-/// 为 DEFERRED（见 [`VfsReplyServices::set_core_flag`]）。
+/// Set only on a successful `VfsReply::Core` (main.c:357-358); see
+/// [`VfsReplyServices::set_core_flag`].
 #[allow(dead_code)]
 const WCOREFLAG: i32 = 0o200;
 
-/// `tell_vfs` 的发送错误。
+/// The send error of `tell_vfs`.
 ///
-/// 进程事件类型（供 [`VfsReplyServices::publish_event`] 使用）。
+/// Process event type (used by [`VfsReplyServices::publish_event`]).
 ///
-/// 对应 C `event.c:86-91` 中由 `EXITING` / `UNPAUSED` 标志推断的两类事件；此处把推断
-/// 上提到状态机（[`VfsReplyServices`] 的调用点），消除 `publish_event` 内部的
-/// `panic("unknown event for flags")`（D6）。
+/// Corresponds to the two events C infers from the `EXITING` / `UNPAUSED`
+/// flags in `event.c:86-91`; here the inference moves up into the state
+/// machine (the call sites of [`VfsReplyServices`]), removing the
+/// `panic("unknown event for flags")` inside `publish_event`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcEvent {
-    /// 进程退出事件（EXITING 置位）。
+    /// Process exit event (EXITING set).
     Exit,
-    /// 信号/解暂停事件（UNPAUSED 置位）。
+    /// Signal/unpause event (UNPAUSED set).
     Signal,
 }
 
-/// `exec_restart` 的参数（来自 `VFS_PM_EXEC_REPLY`，main.c:350-353）。
+/// Arguments of `exec_restart` (from `VFS_PM_EXEC_REPLY`, main.c:350-353).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecRestartArgs {
-    /// 执行状态（OK 或失败，`VFS_PM_STATUS = m7_i2`）。
+    /// Execution status (OK or failure, `VFS_PM_STATUS = m7_i2`).
     pub status: i32,
-    /// 程序计数器（`VFS_PM_PC = m7_p1`）。
+    /// Program counter (`VFS_PM_PC = m7_p1`).
     pub pc: u64,
-    /// 可能更新的用户栈指针（`VFS_PM_NEWSP = m7_p2`）。
+    /// Possibly updated user stack pointer (`VFS_PM_NEWSP = m7_p2`).
     pub newsp: u64,
-    /// 可能更新的 ps_strings 指针（`VFS_PM_NEWPS_STR`）。LP64 下完整 64
-    /// 位（B43：旧 `i32` 截断 + 下游 `as u64` 符号扩展会毁掉 x86-64 用户
-    /// ps_strings 地址）。
+    /// Possibly updated ps_strings pointer (`VFS_PM_NEWPS_STR`). Full 64 bits
+    /// under LP64 (an earlier `i32` truncation plus a downstream `as u64`
+    /// sign extension would destroy the x86-64 user ps_strings address).
     pub newps_str: u64,
 }
 
-/// PM 回复 VFS 时的效果端口（六边形架构：状态机是纯逻辑，效果经此端口施加）。
+/// Effect port for PM's replies to VFS (hexagonal architecture: the state
+/// machine is pure logic, effects are applied through this port).
 ///
-/// 读取方法供状态机做分支决策；效果方法即时施加。两个实现：
-/// - [`PmServices`]：生产实现（部分方法在 06/09/13/16/17 落地前为 `unimplemented!`）。
-/// - [`RecordingServices`]：测试实现（录制调用序列，供断言）。
+/// Read methods let the state machine branch; effect methods apply at once.
+/// Two implementations:
+/// - [`PmServices`]: production (some methods are `unimplemented!` until their
+///   design lands).
+/// - [`RecordingServices`]: test implementation (records the call sequence for
+///   assertions).
 pub trait VfsReplyServices {
-    // ── 读取（状态机决策用）──
+    // ── Reads (state-machine decisions) ──
 
-    /// 将回复中的 endpoint 解析为槽位（C: `pm_isokendpt`，main.c:317-319）。
+    /// Resolve the reply's endpoint to a slot (C: `pm_isokendpt`, main.c:317-319).
     ///
-    /// 返回 `None` 时状态机产生 [`VfsReplyError::BadEndpoint`]。
+    /// `None` makes the state machine produce [`VfsReplyError::BadEndpoint`].
     fn slot_of_endpoint(&self, endpoint: Endpoint) -> Option<UserSlot>;
 
-    /// 抽取并清除 `VFS_CALL | NEW_PARENT`（main.c:327-328）。
+    /// Extract and clear `VFS_CALL | NEW_PARENT` (main.c:327-328).
     ///
-    /// 返回 `NEW_PARENT` 旧值；若 `VFS_CALL` 未置位则 panic（main.c:324-325
-    /// "reply without request"）。清除必须在读取之后、使用之前，与 C 顺序一致。
+    /// Returns the old `NEW_PARENT`; panics if `VFS_CALL` is clear (main.c:324-325
+    /// "reply without request"). Clearing must happen after reading and before
+    /// use, matching C order.
     fn take_vfs_call(&mut self, slot: UserSlot) -> bool;
 
-    /// `UNPAUSED` 是否在进入时为置位（main.c:330-331 入口不变式）。
+    /// Whether `UNPAUSED` is set on entry (main.c:330-331 entry invariant).
     fn is_unpaused(&self, slot: UserSlot) -> bool;
 
-    /// 进程是否正在退出（用于尾部 `restart_sigs` 条件，main.c:422）。
+    /// Whether the process is exiting (for the tail `restart_sigs` condition, main.c:422).
     fn is_exiting(&self, slot: UserSlot) -> bool;
 
-    /// 进程是否在使用中（用于尾部 `restart_sigs` 条件，main.c:422）。
+    /// Whether the process is in use (for the tail `restart_sigs` condition, main.c:422).
     fn is_in_use(&self, slot: UserSlot) -> bool;
 
-    /// 进程组号（SETSID 回复码，main.c:345 → `reply(caller, mp_procgrp)`）。
+    /// Process group number (SETSID reply code, main.c:345 → `reply(caller, mp_procgrp)`).
     fn procgrp_of(&self, slot: UserSlot) -> Pid;
 
-    /// 进程 PID（FORK 成功回复父进程时作为回复码，main.c:393 → `rmp->mp_pid`）。
+    /// Process PID (reply code when a FORK success reply goes to the parent, main.c:393 → `rmp->mp_pid`).
     fn pid_of(&self, slot: UserSlot) -> Pid;
 
-    /// 父进程槽位（`reply_to_guardian` 内部使用）。
+    /// Parent process slot (used inside `reply_to_guardian`).
     fn parent_slot(&self, slot: UserSlot) -> UserSlot;
 
-    // ── 效果（即时施加）──
+    // ── Effects (applied immediately) ──
 
-    /// 回复进程本体（main.c:339/345/389）。
+    /// Reply to the process itself (main.c:339/345/389).
     fn reply(&mut self, slot: UserSlot, code: i32);
 
-    /// 回复父进程；当 `suppress`（`new_parent` 为真）时抑制回复（main.c:384/392）。
+    /// Reply to the parent; suppressed when `suppress` (`new_parent` true) (main.c:384/392).
     fn reply_to_guardian(&mut self, slot: UserSlot, suppress: bool, code: i32);
 
-    /// 启动新进程调度（main.c:373）。返回 `Err` 表示调度失败（main.c:378-386）。
+    /// Start scheduling the new process (main.c:373). `Err` means scheduling failed (main.c:378-386).
     fn sched_start_user(&mut self, slot: UserSlot) -> Result<(), i32>;
 
-    /// 摘除子进程的调度器归属（置 `scheduler = NONE`），main.c:380
-    /// `rmp->mp_scheduler = NONE; /* don't try to stop scheduling */`。
-    /// 仅在 `sched_start_user` 失败的 fork 拆除腿调用：子进程从未成功在
-    /// 调度器注册，退出链后续的 `exit_restart` sched_stop 门（forkexit.c:425
-    /// / exit.rs:499）不得对它发 `SCHEDULING_STOP`（否则调度器收到对
-    /// 未知进程的停止请求）。NONE 需保持到 VFS EXIT 回复后的 `exit_restart`
-    /// 才生效，故必须先于 `exit_proc` 施加，与 C 的语句顺序一致。
+    /// Detach the child's scheduler ownership (set `scheduler = NONE`), main.c:380
+    /// `rmp->mp_scheduler = NONE; /* don't try to stop scheduling */`.
+    /// Called only on the fork teardown leg where `sched_start_user` failed:
+    /// the child never registered with the scheduler, so the later
+    /// `exit_restart` sched_stop gate (forkexit.c:425 / exit.rs:499) must not
+    /// send it `SCHEDULING_STOP` (otherwise the scheduler receives a stop
+    /// request for an unknown process). NONE must survive until the
+    /// `exit_restart` after the VFS EXIT reply, so it must be applied before
+    /// `exit_proc`, matching C statement order.
     fn detach_scheduler(&mut self, slot: UserSlot);
 
-    /// 推进进程退出（main.c:381/379 → `exit_proc(rmp, -1, FALSE)` 或 CORE/EXIT 路径）。
+    /// Advance the process exit (main.c:381/379 → `exit_proc(rmp, -1, FALSE)` or the CORE/EXIT path).
     fn exit_proc(&mut self, slot: UserSlot, status: i32, dump_core: bool);
 
-    /// 置 `WCOREFLAG`（仅 `Core` 回复且 status==OK，main.c:357-358）。
+    /// Set `WCOREFLAG` (only a `Core` reply with status==OK, main.c:357-358).
     fn set_core_flag(&mut self, slot: UserSlot);
 
-    /// 断言进程正在退出（main.c:362 `assert(mp_flags & EXITING)`，EXIT/CORE 路径）。
+    /// Assert the process is exiting (main.c:362 `assert(mp_flags & EXITING)`, EXIT/CORE path).
     fn assert_exiting(&mut self, slot: UserSlot);
 
-    /// 断言进程已停止（main.c:407 `assert(mp_flags & PROC_STOPPED)`，UNPAUSE 路径）。
+    /// Assert the process is stopped (main.c:407 `assert(mp_flags & PROC_STOPPED)`, UNPAUSE path).
     fn assert_stopped(&mut self, slot: UserSlot);
 
-    /// 发布进程事件（main.c:365/413 `publish_event`，06 档落地具体订阅）。
+    /// Publish a process event (main.c:365/413 `publish_event`; the concrete
+    /// subscriptions live in `rewrite-notes/04-stage-pm/06-event-subscription.md`).
     fn publish_event(&mut self, slot: UserSlot, event: ProcEvent);
 
-    /// 重启执行（main.c:350 `exec_restart`，17 档落地）。
+    /// Restart execution (main.c:350 `exec_restart`, implemented by
+    /// `rewrite-notes/04-stage-pm/17-exec.md`).
     fn exec_restart(&mut self, slot: UserSlot, args: ExecRestartArgs);
 
-    /// 重投挂起信号（尾部，main.c:422-423 `restart_sigs`）。
+    /// Re-post pending signals (tail, main.c:422-423 `restart_sigs`).
     fn restart_signals(&mut self, slot: UserSlot);
 
-    /// 置 `UNPAUSED`（main.c:410，UNPAUSE 路径）。
+    /// Set `UNPAUSED` (main.c:410, UNPAUSE path).
     fn set_unpaused(&mut self, slot: UserSlot);
 
-    /// 请求内核中止（main.c:309 `sys_abort(abort_flag)`，REBOOT 特例）。
+    /// Ask the kernel to abort (main.c:309 `sys_abort(abort_flag)`, REBOOT special case).
     fn sys_abort(&mut self);
 }
 
-/// 发送 VFS 请求（C: `utility.c:120-139` `tell_vfs`）。
+/// Send a VFS request (C: `utility.c:120-139` `tell_vfs`).
 ///
-/// 顺序与 C **一致**：① not-idle 检查 → ② 异步发送 → ③ 成功后才置 `VFS_CALL`。
-/// 若先置位后发送，发送失败会留下永不清除的 `VFS_CALL`，该进程从此再无法发起
-/// VFS 调用。
+/// Order matches C **exactly**: (1) not-idle check → (2) async send →
+/// (3) set `VFS_CALL` only after success. Setting the flag first would leave
+/// an unclearable `VFS_CALL` behind on a send failure, and that process could
+/// never issue another VFS call.
 ///
-/// `call` 携带目标进程 endpoint（[`VfsCall::endpoint`]），`slot` 是 PM 侧的进程槽位，
-/// 二者通常对应同一进程；对 `Reboot` 这种不与进程关联的请求，`slot` 由调用方按
-/// C 约定借 `VFS` 槽位（misc.c:230）。
+/// `call` carries the target endpoint ([`VfsCall::endpoint`]); `slot` is the
+/// PM-side process slot. The two usually denote the same process; for requests
+/// not tied to a process, such as `Reboot`, the caller borrows the `VFS` slot
+/// per C convention (misc.c:230).
 pub fn tell_vfs<T: IpcTransport + ?Sized>(
     table: &mut ProcTable,
     slot: UserSlot,
     call: VfsCall,
     transport: &mut T,
 ) {
-    // ① not-idle（utility.c:122-123）：VFS_CALL 或 EVENT_CALL 均不可——
-    // 同一进程不可能同时有两个未完成的 VFS 调用（05 文档 §2.1：标志位
-    // 即 continuation 槽位）。违反即 PM 状态损坏，panic 交由 RS 重启。
+    // ① not-idle (utility.c:122-123): neither VFS_CALL nor EVENT_CALL may be
+    // set — one process cannot have two outstanding VFS calls (the flag is
+    // the continuation slot, see §2.1 of
+    // rewrite-notes/04-stage-pm/05-vfs-interaction.md). Violation means PM
+    // state corruption; panic and let RS restart us.
     if table.procs[slot.get()].state.block.ipc_blocked.is_some() {
         panic!("tell_vfs: not idle: {call:?}");
     }
 
-    // ② 异步发送（utility.c:127 asynsend3(VFS_PROC_NR, AMF_NOREPLY)）。
-    // 发送失败 = 传输层损坏，panic 与 C 同型（utility.c:127-129）。
+    // ② async send (utility.c:127 asynsend3(VFS_PROC_NR, AMF_NOREPLY)).
+    // Send failure means a broken transport; panic, same shape as C
+    // (utility.c:127-129).
     let msg = call.encode();
     if let Err(e) = transport.send(Endpoint::VFS, &msg) {
         panic!("tell_vfs: unable to send to VFS: {e:?}");
     }
 
-    // ③ 置 VFS_CALL（utility.c:128）——必须在发送成功后
+    // ③ set VFS_CALL (utility.c:128) — only after a successful send
     table.procs[slot.get()].state.block.ipc_blocked =
         Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
 }
 
-/// 处理 VFS 回复（C: `main.c:294-424` `handle_vfs_reply`）。
+/// Handle a VFS reply (C: `main.c:294-424` `handle_vfs_reply`).
 ///
-/// 四段结构：① REBOOT 特例 → ② endpoint 解析 → ③ 不变式与 `NEW_PARENT` 抽取 →
-/// ④ 11 路 switch + 尾部 `restart_sigs`。纯逻辑，效果与读取全部经 [`VfsReplyServices`]。
+/// Four-part structure: (1) REBOOT special case → (2) endpoint resolution →
+/// (3) invariants and `NEW_PARENT` extraction → (4) 11-way switch plus the
+/// tail `restart_sigs`. Pure logic; all effects and reads go through
+/// [`VfsReplyServices`].
 pub fn handle_vfs_reply<S: VfsReplyServices>(
     svc: &mut S,
     msg: &Message,
 ) -> Result<(), VfsReplyError> {
-    // ① REBOOT 特例：不与任何进程关联，直接请求内核中止（main.c:304-312）
+    // ① REBOOT special case: not tied to any process, ask the kernel to abort
+    // directly (main.c:304-312)
     if msg.m_type == VFS_PM_REBOOT_REPLY {
         svc.sys_abort();
         return Ok(());
     }
 
-    // ② 解码回复（含 RS 族校验；非 RS 族 → NotAReply）
+    // ② Decode the reply (includes RS-family validation; non-RS family → NotAReply)
     let reply = VfsReply::decode(msg)?;
 
-    // ③ endpoint 解析（main.c:315-321）
+    // ③ endpoint resolution (main.c:315-321)
     let endpt_raw = unsafe { msg.m_u.m_m7.m7i1 };
     let endpt = Endpoint(endpt_raw);
     let slot = match svc.slot_of_endpoint(endpt) {
@@ -218,7 +248,7 @@ pub fn handle_vfs_reply<S: VfsReplyServices>(
         None => return Err(VfsReplyError::BadEndpoint(endpt)),
     };
 
-    // ④ 不变式 + NEW_PARENT 抽取（main.c:324-328）
+    // ④ invariants + NEW_PARENT extraction (main.c:324-328)
     let new_parent = svc.take_vfs_call(slot);
     if svc.is_unpaused(slot) {
         // main.c:330-331
@@ -228,58 +258,62 @@ pub fn handle_vfs_reply<S: VfsReplyServices>(
         );
     }
 
-    // ⑤ 11 路（main.c:334-419）
+    // ⑤ 11-way (main.c:334-419)
     match reply {
         VfsReply::SetUid | VfsReply::SetGid | VfsReply::SetGroups => {
-            // main.c:339：唤醒原始调用者
+            // main.c:339: wake the original caller
             svc.reply(slot, OK);
         }
         VfsReply::SetSid => {
-            // main.c:345：回复码为进程组号
+            // main.c:345: the reply code is the process group number
             svc.reply(slot, svc.procgrp_of(slot));
         }
         VfsReply::Exec { status, pc, newsp, newps_str } => {
-            // main.c:350-353：exec_restart 内部负责回复调用者
+            // main.c:350-353: exec_restart replies to the caller itself
             svc.exec_restart(slot, ExecRestartArgs { status, pc, newsp, newps_str });
         }
         VfsReply::Core { status } => {
-            // main.c:357-360：status==OK 置 WCOREFLAG，然后 fallthrough 到 EXIT
+            // main.c:357-360: status==OK sets WCOREFLAG, then falls through to EXIT
             if status == OK {
                 svc.set_core_flag(slot);
             }
             svc.assert_exiting(slot);
             svc.publish_event(slot, ProcEvent::Exit);
-            return Ok(()); // 提前 return，不走尾部
+            return Ok(()); // early return, skipping the tail
         }
         VfsReply::Exit => {
-            // main.c:362-367：发布退出事件后 return（不做尾部 restart_sigs）
+            // main.c:362-367: publish the exit event and return (no tail restart_sigs)
             svc.assert_exiting(slot);
             svc.publish_event(slot, ProcEvent::Exit);
             return Ok(());
         }
         VfsReply::Fork => {
-            // main.c:369-396：调度新进程，再回复子进程与父进程
+            // main.c:369-396: start scheduling the new process, then reply to
+            // the child and the parent
             if svc.sched_start_user(slot).is_err() {
-                // 调度失败：先摘除调度器归属（main.c:380 `mp_scheduler =
-                // NONE`——子进程从未成功注册，退出链后续的 exit_restart
-                // 不得对它发 SCHEDULING_STOP），再拆除新进程，向父进程回复
-                // 失败（除非父已死）。回复码 -1 与 C main.c:385 `reply(...,
-                // -1)` 同号。
+                // Scheduling failed: detach scheduler ownership first
+                // (main.c:380 `mp_scheduler = NONE` — the child never
+                // registered, so the later exit_restart must not send it
+                // SCHEDULING_STOP), then tear down the new process and reply
+                // failure to the parent (unless the parent is dead). Reply
+                // code -1 matches C main.c:385 `reply(..., -1)`.
                 svc.detach_scheduler(slot);
                 svc.exit_proc(slot, -1, false);
                 svc.reply_to_guardian(slot, new_parent, -1);
-                return Ok(()); // 提前 return
+                return Ok(()); // early return
             }
-            // 调度成功：回复子进程本体（caller slot），再回复父进程（除非父已死）
+            // Scheduling succeeded: reply to the process itself (caller slot),
+            // then to the parent (unless the parent is dead)
             svc.reply(slot, OK);
             svc.reply_to_guardian(slot, new_parent, svc.pid_of(slot));
-            // 走到尾部 restart_sigs
+            // fall through to the tail restart_sigs
         }
         VfsReply::SrvFork => {
-            // main.c:398-401：服务进程 fork，无事可做
+            // main.c:398-401: server-process fork, nothing to do
         }
         VfsReply::Unpause => {
-            // main.c:403-415：置 UNPAUSED，发布信号事件后 return（不做尾部）
+            // main.c:403-415: set UNPAUSED, publish the signal event, then
+            // return (no tail)
             svc.assert_stopped(slot);
             svc.set_unpaused(slot);
             svc.publish_event(slot, ProcEvent::Signal);
@@ -288,18 +322,21 @@ pub fn handle_vfs_reply<S: VfsReplyServices>(
         VfsReply::Reboot => unreachable!("REBOOT_REPLY 已在特例分支处理"),
     }
 
-    // ⑥ 尾部：restart_sigs（main.c:421-423）
-    // 条件 (IN_USE|EXITING) == IN_USE：在使用中且未退出。
+    // ⑥ Tail: restart_sigs (main.c:421-423)
+    // Condition (IN_USE|EXITING) == IN_USE: in use and not exiting.
     if svc.is_in_use(slot) && !svc.is_exiting(slot) {
         svc.restart_signals(slot);
     }
     Ok(())
 }
 
-/// `exec_restart` 的生产服务装配（C: `main.c:350-352` 的 exec_restart 调用）。
+/// Production service assembly for `exec_restart` (C: the exec_restart call at
+/// main.c:350-352).
 ///
-/// 只持 transport——`KernelExec::reply`/`TracerSig::send` 需要的进程表经
-/// 方法参数传入（`exec_restart` 自身持表），避免两个 `&mut ProcTable` 共存。
+/// Holds only the transport — the process table needed by
+/// `KernelExec::reply`/`TracerSig::send` is passed as a method parameter
+/// (`exec_restart` itself owns the table), so two `&mut ProcTable` never
+/// coexist.
 pub(crate) struct ExecServices<'a, T: IpcTransport> {
     pub(crate) transport: &'a mut T,
     pub(crate) kern: &'a mut dyn crate::exit::KernelGateway,
@@ -307,15 +344,17 @@ pub(crate) struct ExecServices<'a, T: IpcTransport> {
 
 impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
     fn exec(&mut self, ep: Endpoint, sp: VirBytes, pc: VirBytes, ps: VirBytes, name: &[u8]) -> i32 {
-        // C: sys_exec（exec.c:197；libsys sys_exec.c 的
-        // m_lsys_krn_sys_exec {endpt, stack, name, ip, ps_str}）。
-        // B40 (§1.72)：内核 SYS_EXEC face 已落地（kernel syscall_process.rs
-        // `dispatch_exec` + minix-sys `sys_exec` 包装），此前桩返 ENOSYS 是
-        // edge E6 未接线遗留（已过时）。`name` 指针指向 PM 进程表内的名字
-        // 缓冲，内核按 caller(PM) 的 CR3 data_copy 读取——对齐 C 传
-        // `(vir_bytes)rmp->mp_name`。失败原 errno（perform_kernel_call 返回
-        // 的负 reply）上抛给 exec_restart 尾部的 panic（C exec.c:198 同型），
-        // 不伪造成功。
+        // C: sys_exec (exec.c:197; libsys sys_exec.c's m_lsys_krn_sys_exec
+        // {endpt, stack, name, ip, ps_str}). The kernel SYS_EXEC face is in
+        // place (kernel syscall_process.rs `dispatch_exec` + the minix-sys
+        // `sys_exec` wrapper); the earlier stub that returned ENOSYS was a
+        // leftover from an unwired kernel-call face (since obsolete). `name`
+        // points at the name buffer inside PM's process table and the kernel
+        // reads it with a data_copy under caller(PM)'s CR3 — matching C
+        // passing `(vir_bytes)rmp->mp_name`. On failure the original errno
+        // (the negative reply from perform_kernel_call) is propagated to
+        // exec_restart's tail panic (same shape as C exec.c:198); success is
+        // never fabricated.
         match minix_sys::syscall::sys_exec(
             &minix_sys::syscall::DirectKernelCallTransport,
             ep.0,
@@ -330,21 +369,23 @@ impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
     }
 
     fn kill(&mut self, _ep: Endpoint, _sig: i32) {
-        // C: sys_kill（exec.c:195 的 PARTIAL_EXEC 拆除分支）——内核调用面
-        // 未落地（edge E6，同 D-13 家族）；C 不检查返回值，此处显式 no-op。
+        // C: sys_kill (exec.c:195, the PARTIAL_EXEC teardown branch) — the
+        // kernel call face is not implemented yet; C does not check the
+        // return value, so this is an explicit no-op.
     }
 
     fn reply(&mut self, table: &mut ProcTable, slot: UserSlot, code: i32) {
-        // C: reply(who_p, result)（exec.c:167 失败回复）。
-        // NK4-C 1.10p 语义注记：本 transport 的 `send` 即 sendnb 语义
-        //（trait 注释：PM 绝大多数 send 站点是回复，C 里都不阻塞）——
-        // 阻塞版仅 send_blocking（VFS_PM_INIT 握手专用）。
+        // C: reply(who_p, result) (exec.c:167 failure reply).
+        // Semantic note: `send` on this transport has sendnb semantics (see
+        // the trait comment: most PM send sites are replies, which never
+        // block in C) — the blocking form is `send_blocking` only, reserved
+        // for the VFS_PM_INIT handshake.
         let msg = Message {
             m_type: code,
             ..Default::default()
         };
         let ep = table.procs[slot.get()].endpoint();
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply: fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.transport.send(ep, &msg);
     }
@@ -352,7 +393,7 @@ impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
 
 impl<T: IpcTransport> crate::exec::TracerSig for ExecServices<'_, T> {
     fn send(&mut self, table: &mut ProcTable, caller: UserSlot, pid: Pid, sig: i32) {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply: fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::check_sig(table, caller, pid, sig, false, self.kern, self.transport);
     }
@@ -360,18 +401,19 @@ impl<T: IpcTransport> crate::exec::TracerSig for ExecServices<'_, T> {
 
 impl<T: IpcTransport> crate::exec::ExecRestartServices for ExecServices<'_, T> {}
 
-/// 生产实现（DEFERRED 方法在对应文档落地前为 `unimplemented!`，自说明字符串标明归属）。
+/// Production implementation (methods still DEFERRED are `unimplemented!`
+/// until their design lands; the self-describing string names the owner).
 pub struct PmServices<'a, T: IpcTransport> {
     table: &'a mut ProcTable,
     transport: &'a mut T,
     event_registry: &'a mut crate::event::EventRegistry,
-    /// 内核调用出口（step 9 sys_clear 等，2026-09-06 D-18 接线）。
+    /// Kernel call exit (e.g. step-9 `sys_clear`).
     kern: &'a mut dyn crate::exit::KernelGateway,
     abort_flag: i32,
 }
 
 impl<'a, T: IpcTransport> PmServices<'a, T> {
-    /// 构造生产端口。
+    /// Construct the production port.
     pub fn new(
         table: &'a mut ProcTable,
         transport: &'a mut T,
@@ -394,7 +436,8 @@ impl<'a, T: IpcTransport> PmServices<'a, T> {
             m_type: code,
             ..Default::default()
         };
-        // C 的 reply() 在发送失败时仅告警不 panic；这里保持一致。
+        // C's reply() only warns on a send failure; it does not panic. Keep
+        // that behavior.
         if let Err(e) = self.transport.send(ep, &msg) {
             pm_diag!("PM: vfs reply to slot {} failed: {:?}", slot.get(), e);
         }
@@ -407,7 +450,8 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn take_vfs_call(&mut self, slot: UserSlot) -> bool {
-        // main.c:324-328：先校验 VFS_CALL 置位，再抽取 NEW_PARENT 并清除。
+        // main.c:324-328: first check that VFS_CALL is set, then extract
+        // NEW_PARENT and clear.
         let proc = &mut self.table.procs[slot.get()];
         match proc.state.block.ipc_blocked.take() {
             Some(IpcBlockReason::VfsCall { reply_to_new_parent }) => reply_to_new_parent,
@@ -448,7 +492,8 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
 
     fn reply_to_guardian(&mut self, slot: UserSlot, suppress: bool, code: i32) {
         if suppress {
-            // main.c:384/392：父进程已死（被 INIT 收养），抑制回复。
+            // main.c:384/392: the parent is dead (adopted by INIT), suppress
+            // the reply.
             return;
         }
         let parent = self.table.procs[slot.get()].parent();
@@ -457,16 +502,20 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
 
     fn sched_start_user(&mut self, slot: UserSlot) -> Result<(), i32> {
         let sched = self.table.procs[slot.get()].resources.scheduler;
-        // main.c:372：调度器为内核或 NONE 时无需显式启动。
+        // main.c:372: nothing to start explicitly when the scheduler is the
+        // kernel or NONE.
         if sched == Endpoint::KERNEL || sched == Endpoint::NONE {
             return Ok(());
         }
-        // main.c:373 — `sched_start_user(rmp->mp_scheduler, rmp)`：决策件
-        // 内部做 nice→queue 换算并发 SCHEDULING_INHERIT（生产 MinixSchedCtl
-        // 经 IPC 到调度器，S10 假面转真）。
-        // C 的 rmp->mp_endpoint（子进程自身端点）即本处 child_ep；
-        // 旧代码误传 sched（=scheduler 字段）作为 schedulee 导致 SCHED
-        // 对 Endpoint::SCHED(slot4) 而非子进程(slot12+) 做 schedctl。
+        // main.c:373 — `sched_start_user(rmp->mp_scheduler, rmp)`: the policy
+        // component performs the nice→queue conversion and sends
+        // SCHEDULING_INHERIT (production MinixSchedCtl reaches the scheduler
+        // over IPC; the placeholder face is now backed by a real
+        // implementation).
+        // C's rmp->mp_endpoint (the child's own endpoint) is child_ep here;
+        // an earlier version mistakenly passed sched (the scheduler field) as
+        // the schedulee, so SCHED issued schedctl against Endpoint::SCHED(slot4)
+        // instead of the child (slot12+).
         let child_ep = self.table.procs[slot.get()].endpoint();
         let mut ctl = crate::sched::MinixSchedCtl::new(self.transport);
         crate::sched::sched_start_user(self.table, child_ep, slot, &mut ctl)
@@ -474,27 +523,31 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn detach_scheduler(&mut self, slot: UserSlot) {
-        // C: main.c:380 — fork 调度失败腿在 exit_proc 前置 NONE，令退出链
-        // 后续的 exit_restart sched_stop 门（forkexit.c:425 / exit.rs `if
-        // scheduler != KERNEL && != NONE`）跳过，不对从未成功注册的子进程
-        // 发 SCHEDULING_STOP。
+        // C: main.c:380 — on the fork scheduling-failure leg, set NONE before
+        // exit_proc so the exit chain's later `exit_restart` sched_stop gate
+        // (forkexit.c:425 / exit.rs `if scheduler != KERNEL && != NONE`) is
+        // skipped and no SCHEDULING_STOP is sent to a child that never
+        // registered.
         self.table.procs[slot.get()].resources.scheduler = Endpoint::NONE;
     }
 
     fn exit_proc(&mut self, slot: UserSlot, status: i32, dump_core: bool) {
-        // C: main.c:381 — fork 调度失败路径 `exit_proc(rmp, -1, FALSE
-        // /*dump_core*/)`：直接走二阶段退出（09 的 exit_proc 全链：sys_stop
-        // → VFS_PM_EXIT → 僵尸化 → 收养链），不重读消息、不经 do_exit 的
-        // 入口门。status 截断为 i8 与 C 的 exit_status 语义一致。
+        // C: main.c:381 — fork scheduling-failure path `exit_proc(rmp, -1,
+        // FALSE /*dump_core*/)`: enters the two-phase exit directly (the full
+        // exit_proc chain: sys_stop → VFS_PM_EXIT → zombify → adoption; see
+        // rewrite-notes/04-stage-pm/09-pm-exit.md), without re-reading the
+        // message and without do_exit's entry gate. status truncates to i8,
+        // matching C's exit_status semantics.
         crate::exit::exit_proc(self.table, slot, status as i8, 0, dump_core, self.transport, self.kern);
     }
 
     fn set_core_flag(&mut self, slot: UserSlot) {
-        // C: main.c:357-358 — `rmp->mp_sigstatus |= WCOREFLAG`（仅 Core 回复
-        // 且 status==OK，VfsReply::Core 分支已判定）。位运算在 u8 域进行：
-        // 0o200 置信号字节的 bit7，wait4 报告时经 W_EXITCODE 组合出
-        // "core dumped"（WIFCORED 等价判定）。C 在此之前 assert EXITING
-        //（main.c:362）；Rust 侧对非 Exiting 目标 fail-fast。
+        // C: main.c:357-358 — `rmp->mp_sigstatus |= WCOREFLAG` (only a Core
+        // reply with status==OK; the VfsReply::Core branch already decided
+        // that). The or happens in the u8 domain: 0o200 sets bit 7 of the
+        // signal byte, and wait4 combines it via W_EXITCODE into "core
+        // dumped" (the WIFCORED equivalent). C asserts EXITING before this
+        // (main.c:362); the Rust side fails fast for a non-Exiting target.
         match &mut self.table.procs[slot.get()].state.lifecycle {
             crate::mproc::Lifecycle::Exiting { sig_status, .. } => {
                 *sig_status = (*sig_status as u8 | WCOREFLAG as u8) as i8;
@@ -523,9 +576,11 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn publish_event(&mut self, slot: UserSlot, event: ProcEvent) {
-        // [ARCH A-9] 事件订阅/发布 — 见 06-event-subscription.md。
-        // 校验传入事件与目标进程标志推断一致，再经 EventRegistry 发布
-        // （复用 `publish_event` 的 `PRIV_PROC|EXITING` 清理与串行化）。
+        // [ARCH: event-subscription] — see
+        // rewrite-notes/04-stage-pm/06-event-subscription.md.
+        // Validate that the passed event agrees with the one inferred from the
+        // target's flags, then publish through EventRegistry (reusing
+        // `publish_event`'s `PRIV_PROC|EXITING` cleanup and serialization).
         let inferred = {
             let proc = &self.table.procs[slot.get()];
             if proc.is_exiting() {
@@ -546,19 +601,22 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
             "publish_event: caller event {:?} != inferred {:?} for slot {}",
             event, inferred, slot.get()
         );
-        // 通过 EventRegistry 发布（V3-P2-7：字段级重借用即可满足借用
-        // 检查器对不相交字段的要求——四个 `&mut` 字段互不相交，
-        // `PmServices::new` 的构造方式即是先例；此前的裸指针 unsafe 拆分
-        // 并无必要，no_std 代码库应最小化 unsafe 面）。
+        // Publish through EventRegistry (field-level reborrows satisfy the
+        // borrow checker's disjoint-field requirement — the four `&mut`
+        // fields are disjoint, as the way `PmServices::new` is constructed
+        // already demonstrates; the earlier raw-pointer unsafe split was
+        // unnecessary, and a no_std codebase should keep the unsafe surface
+        // minimal).
         self.event_registry
             .publish_event(slot, self.table, &mut *self.transport, &mut *self.kern);
     }
 
     fn exec_restart(&mut self, slot: UserSlot, args: ExecRestartArgs) {
         // C: main.c:350-352 — exec_restart(rmp, VFS_PM_STATUS, PC, NEWSP,
-        // NEWPS_STR)。生产端口 ExecServices 持 transport（与 self.table
-        // 不相交借用），17 的全语义（PARTIAL_EXEC 拆除/caught 复位/tracer
-        // 信号/sys_exec）在 crate::exec::exec_restart 内。
+        // NEWPS_STR). The production port ExecServices holds the transport
+        // (borrowed disjointly from self.table); the full exec semantics
+        // (PARTIAL_EXEC teardown / caught reset / tracer signal / sys_exec)
+        // live in crate::exec::exec_restart.
         let mut svc = ExecServices {
             transport: self.transport,
             kern: self.kern,
@@ -575,12 +633,15 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn restart_signals(&mut self, slot: UserSlot) {
-        // C: main.c:421-423 — VFS 回复尾部 `if ((IN_USE|EXITING)==IN_USE)
-        // restart_sigs(rmp)`：回复落定后重查挂起信号（PROC_STOPPED 兼作
-        // 复查指示，sig_proc 的 VFS|EVENT 分支自 V3-P1-3 起真实置位）。
-        // V3-P2-1 之前是 no-op 脚手架，其注释前提（"PM 尚未建模挂起信号"）
-        // 自 Fix #7 起失真，且 V2 的 24 处 DEFERRED 收敛漏掉了它。
-        // 复用事件域的 `PmEventServices`（RestartServices 全实现，Fix #7/#28）。
+        // C: main.c:421-423 — the VFS reply tail `if ((IN_USE|EXITING)==IN_USE)
+        // restart_sigs(rmp)`: once the reply settles, recheck pending signals
+        // (PROC_STOPPED doubles as the recheck indicator; sig_proc's VFS|EVENT
+        // branch has really set it since the signal-flow rework). Before that
+        // this was a no-op scaffold whose premise ("PM does not model pending
+        // signals yet") had gone stale, and the earlier DEFERRED sweep missed
+        // it.
+        // Reuse the event domain's `PmEventServices` (a full RestartServices
+        // implementation).
         let mut ev = crate::event::PmEventServices::new(self.transport, self.kern);
         crate::signal_flow::restart_sigs(self.table, slot, &mut ev);
     }
@@ -590,23 +651,28 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn sys_abort(&mut self) {
-        // C: main.c:304-312 — REBOOT 回复特例：`sys_abort(abort_flag)` 后
-        // 返回主循环等待 HARD_STOP 通知。返回值 C 不予检查：abort 成功时
-        // 机器直接停机；失败（pre-E1 为 -EIO）PM 继续循环，不伪造停机状态。
-        // [E6 切片已落地] minix-sys `sys_abort`（edge_todo.md E6）。
+        // C: main.c:304-312 — REBOOT reply special case: `sys_abort(abort_flag)`
+        // and then return to the main loop waiting for the HARD_STOP
+        // notification. C does not check the return value: on success the
+        // machine stops; on failure (pre-E1 returns -EIO) PM keeps looping and
+        // does not fake a stopped state. The minix-sys `sys_abort` slice is in
+        // place.
         if let Err(r) = self.kern.sys_abort(self.abort_flag) {
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            //[SD19-gate] PM send/notify/reply: fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
-            let _ = r; // C 同型：忽略返回值，主循环继续
+            let _ = r; // same shape as C: ignore the return value, keep looping
         }
     }
 }
 
-/// 测试用录制实现：把端口调用序列存进 [`RecordedEffect`]，供断言。
+/// Test recorder: stores the port call sequence in [`RecordedEffect`] for
+/// assertions.
 ///
-/// 读取方法返回构造时配置的状态（`endpoint_slot` / `unpaused` / `exiting` / `in_use` /
-/// `procgrp` / `pid` / `parent` / `next_new_parent` / `next_sched_result`），使状态机
-/// 的每条分支都可确定性断言，而无需真实 `ProcTable` / `IpcTransport`。
+/// Read methods return the state configured at construction (`endpoint_slot` /
+/// `unpaused` / `exiting` / `in_use` / `procgrp` / `pid` / `parent` /
+/// `next_new_parent` / `next_sched_result`), so every branch of the state
+/// machine can be asserted deterministically without a real `ProcTable` /
+/// `IpcTransport`.
 #[cfg(test)]
 pub struct RecordingServices {
     pub effects: Vec<RecordedEffect>,
@@ -621,11 +687,11 @@ pub struct RecordingServices {
     pub next_sched_result: Result<(), i32>,
 }
 
-/// [`RecordingServices`] 录制的端口效果。
+/// Port effects recorded by [`RecordingServices`].
 ///
-/// 读取类变体（SlotOfEndpoint/IsUnpaused/...）仅由纯读取方法产生；录制实现
-/// 当前不记录纯读取调用（见 `VfsReplyServices` 读取方法签名 `&self`），故标注
-/// `allow(dead_code)`。
+/// Read-class variants (SlotOfEndpoint/IsUnpaused/...) are produced only by
+/// pure read methods; the recorder does not record pure reads (see the `&self`
+/// read method signatures in `VfsReplyServices`), hence `allow(dead_code)`.
 #[cfg(test)]
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -655,7 +721,8 @@ pub enum RecordedEffect {
 
 #[cfg(test)]
 impl RecordingServices {
-    /// 构造默认配置：若 endpoint 命中则解析为 `slot(1)`，其余状态为典型运行值。
+    /// Default configuration: a matching endpoint resolves to `slot(1)`; the
+    /// remaining state holds typical runtime values.
     pub fn new() -> Self {
         Self {
             effects: Vec::new(),
@@ -841,11 +908,11 @@ mod tests {
     #[test]
     fn test_core_sets_flag_then_exit_event_early_return() {
         let mut svc = RecordingServices::new();
-        svc.exiting = true; // EXITING 置位，供 assert_exiting 通过
+        svc.exiting = true; // EXITING set so assert_exiting passes
         let mut msg = reply_msg(VFS_PM_CORE_REPLY, Endpoint::from_generation_slot(1, 1));
         msg.m_u.m_m7.m7i2 = 0; // status OK
         handle_vfs_reply(&mut svc, &msg).unwrap();
-        // Core: set_core_flag → assert_exiting → publish(Exit) → 提前 return（无 restart_signals）
+        // Core: set_core_flag → assert_exiting → publish(Exit) → early return (no restart_signals)
         assert!(svc.effects.contains(&RecordedEffect::SetCoreFlag { slot: UserSlot::new(1) }));
         assert!(svc.effects.contains(&RecordedEffect::PublishEvent {
             slot: UserSlot::new(1),
@@ -885,7 +952,8 @@ mod tests {
             code: 1234,
         }));
         assert!(svc.effects.contains(&RecordedEffect::RestartSignals { slot: UserSlot::new(1) }));
-        // sched 成功腿不得摘除调度器归属（detach 仅属失败腿）。
+        // The success leg must not detach scheduler ownership (detach belongs
+        // to the failure leg only).
         assert!(!svc.effects.contains(&RecordedEffect::DetachScheduler { slot: UserSlot::new(1) }));
     }
 
@@ -893,8 +961,8 @@ mod tests {
     fn test_fork_success_suppressed_guardian_when_new_parent() {
         let mut svc = RecordingServices::new();
         svc.next_sched_result = Ok(());
-        svc.next_new_parent = true; // 父进程已死
-        svc.pid = 1234; // 即便抑制，传入的回复码仍是子进程 PID
+        svc.next_new_parent = true; // the parent is dead
+        svc.pid = 1234; // even when suppressed, the reply code passed is still the child PID
         let msg = reply_msg(VFS_PM_FORK_REPLY, Endpoint::from_generation_slot(1, 1));
         handle_vfs_reply(&mut svc, &msg).unwrap();
         assert!(svc.effects.contains(&RecordedEffect::Reply {
@@ -904,7 +972,7 @@ mod tests {
         assert!(svc.effects.contains(&RecordedEffect::ReplyToGuardian {
             slot: UserSlot::new(1),
             suppressed: true,
-            code: 1234, // pid 配置默认 100，但被 suppress 忽略
+            code: 1234, // pid defaults to 100, but is ignored under suppress
         }));
     }
 
@@ -914,15 +982,16 @@ mod tests {
         svc.next_sched_result = Err(-1);
         let msg = reply_msg(VFS_PM_FORK_REPLY, Endpoint::from_generation_slot(1, 1));
         handle_vfs_reply(&mut svc, &msg).unwrap();
-        // sched 失败 → detach_scheduler + exit_proc(slot, -1, false) + reply_to_guardian(parent, false, -1) + return
+        // sched failure → detach_scheduler + exit_proc(slot, -1, false) + reply_to_guardian(parent, false, -1) + return
         assert!(svc.effects.contains(&RecordedEffect::ExitProc {
             slot: UserSlot::new(1),
             status: -1,
             dump_core: false,
         }));
-        // C main.c:380 保真：失败腿必须先 detach_scheduler（置 scheduler=NONE）
-        // 再 exit_proc，否则 exit_proc 的 sched_stop 门会对从未注册的子进程
-        // 误发 SCHEDULING_STOP。定序断言防回归。
+        // C main.c:380 fidelity: the failure leg must detach_scheduler (set
+        // scheduler=NONE) before exit_proc, otherwise exit_proc's sched_stop
+        // gate wrongly sends SCHEDULING_STOP to a child that never registered.
+        // The order assertion guards against regression.
         assert!(svc.effects.contains(&RecordedEffect::DetachScheduler {
             slot: UserSlot::new(1),
         }));
@@ -947,7 +1016,7 @@ mod tests {
             suppressed: false,
             code: -1,
         }));
-        // 没有回复子进程、没有 restart_signals
+        // no reply to the child, no restart_signals
         assert!(!svc.effects.contains(&RecordedEffect::Reply {
             slot: UserSlot::new(1),
             code: OK,
@@ -960,7 +1029,7 @@ mod tests {
         let mut svc = RecordingServices::new();
         let msg = reply_msg(VFS_PM_SRV_FORK_REPLY, Endpoint::from_generation_slot(1, 1));
         handle_vfs_reply(&mut svc, &msg).unwrap();
-        // 无任何 reply/exit，仅尾部 restart_signals
+        // no reply/exit at all, only the tail restart_signals
         assert!(svc.effects.contains(&RecordedEffect::RestartSignals { slot: UserSlot::new(1) }));
         assert!(!svc.effects.iter().any(|e| matches!(e, RecordedEffect::Reply { .. })));
     }
@@ -981,7 +1050,7 @@ mod tests {
     #[test]
     fn test_bad_endpoint_replies_with_error() {
         let mut svc = RecordingServices::new();
-        svc.endpoint_slot = None; // 任何 endpoint 都解析失败
+        svc.endpoint_slot = None; // every endpoint fails to resolve
         let msg = reply_msg(VFS_PM_SETUID_REPLY, Endpoint::from_generation_slot(1, 1));
         let err = handle_vfs_reply(&mut svc, &msg).unwrap_err();
         assert_eq!(err, VfsReplyError::BadEndpoint(Endpoint::from_generation_slot(1, 1)));
@@ -990,11 +1059,11 @@ mod tests {
     #[test]
     fn test_unpaused_on_entry_panics() {
         let mut svc = RecordingServices::new();
-        svc.unpaused = true; // 入口即 UNPAUSED → 入口不变式失败
+        svc.unpaused = true; // UNPAUSED already set on entry → entry invariant fails
         let msg = reply_msg(VFS_PM_SETUID_REPLY, Endpoint::from_generation_slot(1, 1));
         let result = std::panic::catch_unwind(move || {
             let mut svc = svc;
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            //[SD19-gate] PM send/notify/reply: fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = handle_vfs_reply(&mut svc, &msg);
         });
@@ -1003,13 +1072,15 @@ mod tests {
 
     #[test]
     fn test_decode_error_propagates() {
-        // 非 RS 族的回复 → VfsReply::decode 返回 NotAReply，但 run_once 仅在 is_vfs_pm_rs
-        // 时调用本函数；这里直接验证函数对 NotAReply 的传播（用普通 PM 调用码）。
+        // A non-RS-family reply → VfsReply::decode returns NotAReply, but
+        // run_once only calls this function when is_vfs_pm_rs holds; here we
+        // verify propagation of NotAReply directly (using a plain PM call code).
         let mut svc = RecordingServices::new();
-        let msg = reply_msg(0 /* 非 RS 族 */, Endpoint::from_generation_slot(1, 1));
-        // 0 不在 RS 族 → decode 失败。但 slot_of_endpoint 仍会被调用（先解码再解析）。
+        let msg = reply_msg(0 /* not RS family */, Endpoint::from_generation_slot(1, 1));
+        // 0 is not in the RS family → decode fails. slot_of_endpoint would
+        // still be called (decode first, resolve second).
         let err = handle_vfs_reply(&mut svc, &msg).unwrap_err();
-        // 0 的族判定：is_vfs_pm_rs(0) = (0 & !0x7f)==0x980? 否 → NotAReply(0)
+        // family test for 0: is_vfs_pm_rs(0) = (0 & !0x7f)==0x980? No → NotAReply(0)
         assert_eq!(err, VfsReplyError::NotAReply(0));
     }
 
@@ -1032,12 +1103,12 @@ mod tests {
             table.procs[slot.get()].state.block.ipc_blocked,
             Some(IpcBlockReason::VfsCall { reply_to_new_parent: false })
         );
-        // TestIpcTransport 应记录一条发往 VFS 的消息
+        // TestIpcTransport should record one message addressed to VFS
         assert_eq!(transport.sent().len(), 1);
         assert_eq!(transport.last_sent_dest(), Some(Endpoint::VFS));
     }
 
-    /// vfs.rs 测试用内核网关 mock（恒 OK）。
+    /// Kernel gateway mock for these tests (always OK).
     #[derive(Default)]
     struct NoopKernelGateway;
     impl crate::exit::KernelGateway for NoopKernelGateway {
@@ -1061,9 +1132,9 @@ mod tests {
 
     #[test]
     fn test_production_set_core_flag_sets_bit7_on_exiting() {
-        // D-07：Core 回复 status==OK → WCOREFLAG 置入 sig_status 的 bit7
-        //（main.c:357-358）；非 Exiting 目标 fail-fast（main.c:362 的
-        // assert EXITING 的 Rust 等价）。
+        // Core reply with status==OK → WCOREFLAG goes into bit 7 of sig_status
+        // (main.c:357-358); a non-Exiting target fails fast (the Rust
+        // equivalent of C's assert EXITING at main.c:362).
         use crate::ipc::transport::TestIpcTransport;
         use crate::mproc::Lifecycle;
 
@@ -1083,7 +1154,7 @@ mod tests {
             ref other => panic!("unexpected lifecycle {:?}", other),
         }
 
-        // 非 Exiting → fail-fast（C 的 assert(mp_flags & EXITING) 同源）
+        // Non-Exiting → fail fast (same source as C's assert(mp_flags & EXITING))
         svc.table.procs[2].state.lifecycle = Lifecycle::Running;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             svc.set_core_flag(UserSlot::new(2));
@@ -1093,8 +1164,9 @@ mod tests {
 
     #[test]
     fn test_production_sys_abort_saves_how_to_kernel() {
-        // D-09：REBOOT 回复特例（main.c:304-312）——`sys_abort(abort_flag)`
-        // 经 KernelGateway 发出，abort_flag 即最初 reboot 请求的 how 位组。
+        // REBOOT reply special case (main.c:304-312) — `sys_abort(abort_flag)`
+        // goes out through KernelGateway; abort_flag is the how bits from the
+        // original reboot request.
         use crate::ipc::transport::TestIpcTransport;
 
         struct RecordingKernel { last_how: Option<i32>, copied: Option<alloc::vec::Vec<u8>> }
@@ -1131,8 +1203,9 @@ mod tests {
 
     #[test]
     fn test_production_exit_proc_delegates_to_exit_chain() {
-        // D-06：生产端口 exit_proc 委托 09 的二阶段退出——FORK 调度失败
-        //（main.c:381 exit_proc(rmp, -1, FALSE)）时子进程僵尸化并通知 VFS。
+        // The production port's exit_proc delegates to the two-phase exit —
+        // on FORK scheduling failure (main.c:381 exit_proc(rmp, -1, FALSE))
+        // the child zombifies and VFS is notified.
         use crate::ipc::transport::TestIpcTransport;
         use crate::mproc::Lifecycle;
 
@@ -1141,14 +1214,16 @@ mod tests {
         let mut events = crate::event::EventRegistry::new();
         let mut kern = NoopKernelGateway;
         let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0);
-        // 待拆除的子进程（RS fork 出的 PRIV_PROC 语义在 08；此处普通用户进程）
+        // Child to tear down (the RS-forked PRIV_PROC semantics live in
+        // rewrite-notes/04-stage-pm/08-pm-srv-fork.md; a plain user process
+        // here)
         svc.table.procs[1].identity.endpoint = Endpoint::from_generation_slot(2, 1);
         svc.table.procs[1].identity.id.pid = 42;
         svc.table.procs[1].state.lifecycle = Lifecycle::Running;
 
         svc.exit_proc(UserSlot::new(1), -1, false);
 
-        // 子进程已进入退出/僵尸态，且 VFS_PM_EXIT 已发出。
+        // The child has entered exit/zombie state and VFS_PM_EXIT was sent.
         assert!(
             !matches!(svc.table.procs[1].state.lifecycle, Lifecycle::Running),
             "exit_proc must move the child out of Running, got {:?}",
@@ -1173,7 +1248,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut transport = TestIpcTransport::default();
         let slot = UserSlot::new(1);
-        // 预先置位（模拟已在进行 VFS 调用或事件调用）
+        // Pre-set (simulating an in-flight VFS call or event call)
         table.procs[slot.get()].state.block.ipc_blocked =
             Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
         let call = VfsCall::SetUid {
@@ -1185,8 +1260,9 @@ mod tests {
         unreachable!("not-idle must panic before sending");
     }
 
-    /// V3-P2-1 回归锚点：VFS 回复尾部的 restart_signals 委托
-    /// `restart_sigs`——挂起且未阻塞的 SIGKILL 在回复落定后投递（终止链）。
+    /// Regression: the VFS reply tail's restart_signals delegation to
+    /// `restart_sigs` — a pending, unblocked SIGKILL is delivered once the
+    /// reply settles (termination chain).
     #[test]
     fn test_restart_signals_delivers_pending_sigkill() {
         use crate::ipc::transport::TestIpcTransport;
@@ -1199,14 +1275,14 @@ mod tests {
         svc.table.procs[1].identity.endpoint = Endpoint::from_generation_slot(2, 1);
         svc.table.procs[1].identity.id.pid = 42;
         svc.table.procs[1].state.lifecycle = Lifecycle::Running;
-        // C 的 restart_sigs 前置：PROC_STOPPED（sig_proc 的 VFS|EVENT 分支
-        // 置位，V3-P1-3）+ 挂起未阻塞的 SIGKILL。
+        // C restart_sigs preconditions: PROC_STOPPED (set by sig_proc's
+        // VFS|EVENT branch) + a pending, unblocked SIGKILL.
         svc.table.procs[1].state.block.stopped = true;
         svc.table.procs[1].resources.signals.pending = 1u64 << (9 - 1);
 
         svc.restart_signals(UserSlot::new(1));
 
-        // SIGKILL → sig_proc → 终止链 → 僵尸。
+        // SIGKILL → sig_proc → termination chain → zombie.
         assert!(
             matches!(
                 svc.table.procs[1].state.lifecycle,
@@ -1217,8 +1293,8 @@ mod tests {
         );
     }
 
-    /// 无停止态、无 TRACE_EXIT → Noop：信号保持挂起（C restart_sigs 的
-    /// 早退分支，signal.c:693）。
+    /// No stop state, no TRACE_EXIT → no-op: the signal stays pending (C
+    /// restart_sigs early-exit branch, signal.c:693).
     #[test]
     fn test_restart_signals_noop_when_not_stopped() {
         use crate::ipc::transport::TestIpcTransport;
@@ -1235,7 +1311,8 @@ mod tests {
 
         svc.restart_signals(UserSlot::new(1));
 
-        // 不满足重查前置：信号原样挂起、进程存活。
+        // Recheck preconditions not met: the signal stays pending, the
+        // process lives.
         assert_eq!(svc.table.procs[1].resources.signals.pending, 1u64 << (9 - 1));
         assert_eq!(svc.table.procs[1].state.lifecycle, Lifecycle::Running);
     }

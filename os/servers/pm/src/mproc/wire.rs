@@ -1,41 +1,47 @@
-//! PM 进程表 → `SI_PROC_TAB` 快照行（`[ARCH: A-4]` 单一权威）。
+//! PM process table -> `SI_PROC_TAB` snapshot rows (`[ARCH: A-4]` single
+//! authority).
 //!
-//! C ground truth: `servers/pm/mproc.h` `mproc[NR_PROCS]`；wire 行是
-//! [`minix_types::MProcSnap`]（200 字节/槽，布局见证在其 `layout` 测试）。
-//! 消费方（IS `dump_pm` 的两个 dump、MIB `proc/tables` 的取表半）按名读
-//! 字段——C 的逐行 `MP_MAGIC` 漂移校验由共享类型取代（见该结构文档）。
+//! C ground truth: `servers/pm/mproc.h` `mproc[NR_PROCS]`; the wire row is
+//! [`minix_types::MProcSnap`] (200 bytes per slot, with the layout witness in its
+//! `layout` tests). Consumers (IS `dump_pm`'s two dumps, MIB `proc/tables`'s
+//! table-fetch half) read fields by name — C's per-row `MP_MAGIC` drift check is
+//! replaced by the shared type (see that struct's documentation).
 //!
-//! 映射纪律：C 字段 → PM 类型化对应物逐一映射；无对应物的字段填 0。
-//! 与 C 快照的差异表（A-4 子集裁定的落地清单）：
+//! Mapping discipline: C fields map one by one to typed PM counterparts; fields
+//! with no counterpart are filled with 0.
+//! Difference table against the C snapshot (the A-4 subset decision's landing
+//! list):
 //!
-//! | C 字段 | 处理 | 说明 |
+//! | C field | Treatment | Notes |
 //! |---|---|---|
-//! | mp_pid/name/procgrp/parent/tracer | 直接映射 | `NO_TRACER = 0`（const.h:11）|
-//! | mp_realuid/effuid/realgid/effgid | credentials | 两类变体统一序列化：boot 系统进程全零（C 初值）、srv_fork 子为注入值（C-28）|
-//! | mp_nice | resources.nice | 直接映射 |
-//! | mp_flags | 位合成（[`flags_for`]）| IN_USE 置位即"在用"判据 |
-//! | mp_ignore/catch/sigmask/sigpending `__bits[0]` | signals | 低位字；dump 只打这一字 |
-//! | mp_timer_exp | resources.timer | `tmr_exp_time`（无 timer 时为 0）|
-//! | mp_started | resources.started | fork 时置的 uptime（C-21 新槽，MIB swtime 消费）|
-//! | mp_svuid/svgid | credentials 的 IdSet saved 位 | KERN_PROC2 的 p_svuid/svgid（C-22）|
-//! | mp_child_utime/stime | resources.child_* | KERN_PROC2 的 p_uctime（C-22）|
-//! | mp_ngroups/sgroups | credentials 的 ngroups/supplemental_groups | KERN_PROC2 的 p_groups（C-22）|
-//! | mp_endpoint | identity.endpoint | KERN_PROC_ARGS 读目标进程页的地址载体（C-22）|
-//! | mp_frame_addr/len | ipc.frame_addr/frame_len | 参数帧基址与长度（C-22，KERN_PROC_ARGS 估算上限）|
-//! | 其余 C 字段（mp_reply[64]、mp_sigact、mp_sgroups、mp_wpid…）| 不进快照 | A-4 裁定：无人读或跨 wire 无意义 |
+//! | mp_pid/name/procgrp/parent/tracer | direct map | `NO_TRACER = 0` (const.h:11) |
+//! | mp_realuid/effuid/realgid/effgid | credentials | both variants serialize uniformly: boot system processes are all zero (C initial values), srv_fork children carry injected values |
+//! | mp_nice | resources.nice | direct map |
+//! | mp_flags | bit composition ([`flags_for`]) | an in-use slot is one with IN_USE set |
+//! | mp_ignore/catch/sigmask/sigpending `__bits[0]` | signals | low word; dumps print only this word |
+//! | mp_timer_exp | resources.timer | `tmr_exp_time` (0 when there is no timer) |
+//! | mp_started | resources.started | uptime set at fork (MIB swtime consumes it) |
+//! | mp_svuid/svgid | credentials' IdSet saved fields | KERN_PROC2's p_svuid/svgid |
+//! | mp_child_utime/stime | resources.child_* | KERN_PROC2's p_uctime |
+//! | mp_ngroups/sgroups | credentials' ngroups/supplemental_groups | KERN_PROC2's p_groups |
+//! | mp_endpoint | identity.endpoint | address carrier KERN_PROC_ARGS uses to read the target process's pages |
+//! | mp_frame_addr/len | ipc.frame_addr/frame_len | argument frame base and length (the upper bound KERN_PROC_ARGS estimates) |
+//! | remaining C fields (mp_reply[64], mp_sigact, mp_sgroups, mp_wpid...) | not in the snapshot | the A-4 decision: nobody reads them, or they are meaningless across the wire |
 //!
-//! `mp_flags` 的位值权威在 `minix_types::mp_flags`（C-21 上收），本 crate
-//! re-export 保持既有引用点不动；文件尾的钉值测试防两处分叉。
+//! The authority for `mp_flags` bit values is `minix_types::mp_flags`; this crate
+//! re-exports it so existing reference sites stay untouched, and the pin-value test
+//! at the end of the file prevents the two copies from diverging.
 
 use crate::mproc::{ProcTable, Process};
 use minix_types::MProcSnap;
 
-/// C mproc.h:86-104 的 flags 位——权威在 `minix_types::mp_flags`。
+/// The flags bits from C mproc.h:86-104 — the authority is `minix_types::mp_flags`.
 pub use minix_types::mp_flags;
 
 #[cfg(test)]
 mod flag_authority_pin {
-    /// 权威位值的钉值（C mproc.h:86-104）——防两处分叉回退。
+    /// Pin values for the authoritative bits (C mproc.h:86-104) — prevents a
+    /// divergence regression.
     #[test]
     fn pm_flags_match_minix_types() {
         use super::mp_flags as a;
@@ -61,10 +67,12 @@ mod flag_authority_pin {
     }
 }
 
-/// C `mp_flags` 的位合成（不变量：在用槽必带 `IN_USE`）。
+/// Bit composition for C `mp_flags` (invariant: an in-use slot always carries
+/// `IN_USE`).
 ///
-/// C: mproc.h:86-104 各位的置位处散在 wait/exit/signal 各文件；
-/// 本函数把同一组位在**一处**合成，`serialize_snap` 与空槽判据共用。
+/// C: the setters for the bits at mproc.h:86-104 are scattered across the
+/// wait/exit/signal files; this function composes the same set **in one place**,
+/// shared by `serialize_snap` and the empty-slot rule.
 pub fn flags_for(p: &Process) -> u32 {
     let mut flags: u32 = mp_flags::IN_USE;
     flags |= match &p.state.lifecycle {
@@ -105,42 +113,45 @@ pub fn flags_for(p: &Process) -> u32 {
     if p.resources.signals.suspended {
         flags |= mp_flags::SIGSUSPENDED;
     }
-    // C 的 `is_kernel_process() ⇔ mp_flags & PRIV_PROC`（mproc.h）。两类
-    // `Privilege` 变体的凭证在 `serialize_snap` 统一序列化，特权位在此合成：
-    // boot 服务与 srv_fork 子（C-28）同为 `Kernel`，MIB 取表半据此判 SYSTEM
-    // （`minix_proc_exec.rs` 的 `mflags & PRIV_PROC`）。
+    // C's `is_kernel_process() ⇔ mp_flags & PRIV_PROC` (mproc.h). Credentials of
+    // both `Privilege` variants serialize uniformly in `serialize_snap`, and the
+    // privilege bit is composed here: boot services and srv_fork children are both
+    // `Kernel`, and MIB's table-fetch half decides SYSTEM from it
+    // (`mflags & PRIV_PROC` in `minix_proc_exec.rs`).
     if p.resources.privilege.is_kernel() {
         flags |= mp_flags::PRIV_PROC;
     }
     flags
 }
 
-/// 把一个 PM 槽序列化为 `MProcSnap` 行。
+/// Serialize one PM slot into an `MProcSnap` row.
 ///
-/// `idx` 是槽位索引（`mp_parent`/`mp_tracer` 引用的就是它）。未使用槽
-/// 返回全零行（`IN_USE` 未置）——消费方按 `mp_flags & IN_USE` 过滤空槽，
-/// 与 C 的空槽映像同一判据。
+/// `idx` is the slot index (what `mp_parent`/`mp_tracer` reference). An unused slot
+/// returns an all-zero row (`IN_USE` not set) — consumers filter empty slots by
+/// `mp_flags & IN_USE`, the same rule as C's empty-slot image.
 pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    //[SD19-gate] PM send/notify/reply results are fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
-    let _ = idx; // C 的 mp_parent/mp_tracer 已是槽索引，无需换算
+    let _ = idx; // C's mp_parent/mp_tracer are already slot indices; no conversion needed
     let mut w = MProcSnap::default();
     if !p.state.lifecycle.is_in_use() {
         return w;
     }
 
-    // ── identity（mproc.h:28-45/80）──
+    // ── identity (mproc.h:28-45/80) ──
     w.mp_pid = p.identity.id.pid;
     w.mp_procgrp = p.identity.procgrp;
     w.mp_name = p.identity.name;
 
-    // ── guardianship（mproc.h:33-34；NO_TRACER = 0）──
+    // ── guardianship (mproc.h:33-34; NO_TRACER = 0) ──
     w.mp_parent = p.state.guardianship.parent().0 as i32;
     w.mp_tracer = p.state.guardianship.tracer().map_or(0, |t| t.0 as i32);
 
-    // ── credentials（mproc.h:41-45）──
-    // 凭证恒存在：User 槽携带用户凭证，Kernel 特权槽携带全零凭证
-    //（C 系统进程 uid/gid 初值为 0，消费方按 uid=0 视作 root）。两类统一序列化。
+    // ── credentials (mproc.h:41-45) ──
+    // Credentials always exist: User slots carry user credentials and Kernel
+    // privilege slots carry all-zero credentials (C system processes start with
+    // uid/gid 0, and consumers treat uid=0 as root). Both kinds serialize
+    // uniformly.
     {
         let cred = p.resources.privilege.credentials();
         w.mp_realuid = cred.user.real;
@@ -149,24 +160,24 @@ pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
         w.mp_effgid = cred.group.effective;
     }
 
-    // ── signals（mproc.h:53-57；u64 SigSet 的低位字）──
+    // ── signals (mproc.h:53-57; low word of the u64 SigSet) ──
     let sig = &p.resources.signals;
     w.mp_ignore0 = sig.ignored as u32;
     w.mp_catch0 = sig.caught as u32;
     w.mp_sigmask0 = sig.mask as u32;
     w.mp_sigpending0 = sig.pending as u32;
 
-    // ── resources：nice / timer 到期时刻 / started（mproc.h:62/75）──
+    // ── resources: nice / timer expiry / started (mproc.h:62/75) ──
     w.mp_nice = p.resources.nice;
     if let Some(timer) = &p.resources.timer {
         w.mp_timer_exp = timer.expire_time as u32;
     }
-    // C: `mp_started = getuptime()`（forkexit.c:114，forkexit.rs 注记的
-    // 同一时刻值）——MIB 的 swtime（`uptime - mp_started`）消费它。
+    // C: `mp_started = getuptime()` (forkexit.c:114, the same instant noted in
+    // forkexit.rs) — MIB's swtime (`uptime - mp_started`) consumes it.
     w.mp_started = p.resources.started as u64;
 
-    // ── 凭证尾段 + 子进程时钟（C-22；KERN_PROC2 的 p_svuid/svgid、
-    // p_groups、p_uctime 消费）──
+    // ── credential tail + child clocks (consumed by KERN_PROC2's
+    // p_svuid/svgid, p_groups, p_uctime) ──
     {
         let cred = p.resources.privilege.credentials();
         w.mp_svuid = cred.user.saved;
@@ -176,9 +187,10 @@ pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
     }
     w.mp_child_utime = p.resources.child_utime as u64;
     w.mp_child_stime = p.resources.child_stime as u64;
-    // ── KERN_PROC_ARGS 的取页载体（C-22）──
-    // C: `mp->mp_endpoint`（proc.c:963 的 datacopy 目标进程）与
-    // `mp_frame_addr + mp_frame_len`（ps_strings 落在帧尾，proc.c:964）。
+    // ── page-fetch carrier for KERN_PROC_ARGS ──
+    // C: `mp->mp_endpoint` (the datacopy target process at proc.c:963) and
+    // `mp_frame_addr + mp_frame_len` (ps_strings sits at the frame's tail,
+    // proc.c:964).
     w.mp_endpoint = p.identity.endpoint.0;
     w.mp_frame_addr = p.ipc.frame_addr.0;
     w.mp_frame_len = p.ipc.frame_len as u64;
@@ -187,7 +199,8 @@ pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
     w
 }
 
-/// 序列化整表（`NR_PROCS` 槽 × 76 字节）。返回槽数（== 输出槽数）。
+/// Serialize the whole table (`NR_PROCS` slots x 76 bytes). Returns the slot count
+/// (== the output slot count).
 pub fn serialize_mproc_tab(table: &ProcTable, out: &mut [MProcSnap]) {
     assert_eq!(out.len(), table.procs.len(), "mproc tab slot count mismatch");
     for (idx, (row, proc)) in out.iter_mut().zip(table.procs.iter()).enumerate() {
@@ -200,7 +213,8 @@ mod tests {
     use super::*;
     use crate::mproc::ProcTable;
 
-    /// 空槽：全零行（`IN_USE` 未置）。C 的空 `mproc` 槽判据同构。
+    /// Empty slot: an all-zero row (`IN_USE` not set). Same rule as C's empty
+    /// `mproc` slot.
     #[test]
     fn test_empty_slot_is_all_zero() {
         let table = ProcTable::new();
@@ -210,7 +224,8 @@ mod tests {
         assert_eq!(out[0], MProcSnap::default());
     }
 
-    /// 在用槽必带 IN_USE；flags 合成涵盖 wait/exit/signal 三类位。
+    /// An in-use slot always carries IN_USE; the flag composition covers the
+    /// wait/exit/signal bit groups.
     #[test]
     fn test_flags_for_in_use_and_waiting() {
         use crate::mproc::Lifecycle;
@@ -222,8 +237,9 @@ mod tests {
         assert_ne!(flags & mp_flags::WAITING, 0);
     }
 
-    /// `PRIV_PROC` 随 `Privilege::Kernel` 合成：boot 服务与 srv_fork 子
-    ///（C-28）同为 Kernel，MIB 据此判 SYSTEM；User 进程不得带此位。
+    /// `PRIV_PROC` is composed along with `Privilege::Kernel`: boot services and
+    /// srv_fork children are both Kernel, and MIB decides SYSTEM from it; User
+    /// processes must never carry this bit.
     #[test]
     fn test_flags_for_priv_proc() {
         use crate::mproc::{Credentials, Privilege};
@@ -234,7 +250,7 @@ mod tests {
             0,
             "Kernel 进程 mp_flags 必带 PRIV_PROC（C is_kernel_process 判据）"
         );
-        let user = crate::mproc::Process::new(1, 2); // 默认 User
+        let user = crate::mproc::Process::new(1, 2); // default User
         assert_eq!(
             flags_for(&user) & mp_flags::PRIV_PROC,
             0,
@@ -242,8 +258,9 @@ mod tests {
         );
     }
 
-    /// 行宽 = minix-types 权威（88，C-21 的 `mp_started` 尾槽），整表宽度
-    /// 跟随之（旧 C-ABI 464 B 行退役）。
+    /// Row width follows the minix-types authority (88, with `mp_started` as the
+    /// tail slot), and the whole-table width follows it (the old 464-byte C-ABI row
+    /// is retired).
     #[test]
     fn test_row_width_follows_shared_snapshot() {
         assert_eq!(core::mem::size_of::<MProcSnap>(), 200);

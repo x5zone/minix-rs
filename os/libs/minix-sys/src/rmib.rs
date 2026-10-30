@@ -272,12 +272,12 @@ mod tests {
     }
 }
 
-// ── E-RMIBWIRE 纯函数层:拷出原语与节点打包 ──
+// ── E-RMIBWIRE pure-function layer: copy-out primitives and node packing ──
 //
-// C: rmib.c 的 `rmib_oldp`/`rmib_newp`(rmib.c:24-30)、`rmib_inrange`
-// (:63-71)、`rmib_getoldlen`(:78-88)、`rmib_copyout`(:97-126)、
-// `rmib_copyout_node`(:200-260)。拷出动作以闭包注入——grant 写入是
-// 传输半(E1),而钳制/裁剪/打包语义是纯逻辑,宿主可测。
+// C: `rmib_oldp`/`rmib_newp` (:24-30), `rmib_inrange` (:63-71), `rmib_getoldlen`
+// (:78-88), `rmib_copyout` (:97-126), `rmib_copyout_node` (:200-260) in rmib.c.
+// The copy-out action is injected as a closure: the grant write is the transport
+// half (E1); clamping, trimming and packing are pure logic, host-testable.
 
 use alloc::string::String;
 use alloc::vec;
@@ -294,9 +294,9 @@ use minix_types::{
 /// (C `NULL`) means "compute only, no copy".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RmibOldp {
-    /// MIB 服务的 grant(服务器向它写)。C: `oldp_grant`。
+    /// The MIB service's grant (the server writes into it). C: `oldp_grant`.
     pub grant: i32,
-    /// 调用方请求的总长度。C: `oldp_len`。
+    /// Total length requested by the caller. C: `oldp_len`.
     pub len: usize,
 }
 
@@ -312,23 +312,23 @@ pub struct RmibNewp {
 /// One forwarded RMIB call (C: `struct rmib_call` — rmib.h:22-30).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RmibCall {
-    /// 调用方(发起 sysctl 的用户进程)端点。C: `call_endpt`。
+    /// Endpoint of the caller (the user process that issued the sysctl). C: `call_endpt`.
     pub endpt: i32,
-    /// 请求原始全名。C: `call_oname`。
+    /// Original full name of the request. C: `call_oname`.
     pub oname: [i32; minix_types::CTL_MAXNAME as usize],
-    /// 剩余名字(自当前节点起)。C: `call_name`。
+    /// Remaining name (starting at the current node). C: `call_name`.
     pub name: [i32; minix_types::CTL_MAXNAME as usize],
-    /// 剩余名字长度。C: `call_namelen`。
+    /// Length of the remaining name. C: `call_namelen`.
     pub namelen: usize,
-    /// 调用旗标(RMIB_FLAG_AUTH)。C: `call_flags`。
+    /// Call flags (RMIB_FLAG_AUTH). C: `call_flags`.
     pub flags: u32,
-    /// 子树版本。C: `call_rootver`。
+    /// Subtree version. C: `call_rootver`.
     pub rootver: u32,
-    /// 全树版本。C: `call_treever`。
+    /// Whole-tree version. C: `call_treever`.
     pub treever: u32,
 }
 
-/// C: `rmib_inrange` — rmib.c:63-71。偏移是否落在请求窗口内。
+/// C: `rmib_inrange` — rmib.c:63-71. Whether the offset falls inside the request window.
 pub const fn rmib_inrange(oldp: Option<&RmibOldp>, off: usize) -> bool {
     match oldp {
         None => false,
@@ -336,7 +336,7 @@ pub const fn rmib_inrange(oldp: Option<&RmibOldp>, off: usize) -> bool {
     }
 }
 
-/// C: `rmib_getoldlen` — rmib.c:78-88。请求总长度(None → 0)。
+/// C: `rmib_getoldlen` — rmib.c:78-88. Total requested length (None → 0).
 pub const fn rmib_getoldlen(oldp: Option<&RmibOldp>) -> usize {
     match oldp {
         None => 0,
@@ -344,12 +344,13 @@ pub const fn rmib_getoldlen(oldp: Option<&RmibOldp>) -> usize {
     }
 }
 
-/// C: `rmib_copyout` — rmib.c:97-126. 把 `buf[..size]` 写进窗口的
-/// `[off..]`,自动钳制到请求长度;窗口外(或 `None`)时不动并原样返回
-/// `size`(C 的"nothing to do"语义)。拷出动词注入,宿主可测。
+/// C: `rmib_copyout` — rmib.c:97-126. Writes `buf[..size]` into the window at
+/// `[off..]`, clamped to the requested length; outside the window (or with
+/// `None`) nothing moves and `size` is returned as-is (C's "nothing to do"
+/// semantics). The copy-out verb is injected, so this is host-testable.
 ///
-/// 返回 `Ok(size)`(C 的"requested length for the caller's convenience")
-/// 或 `Err(errno)`(注入动词失败,如 EFAULT)。
+/// Returns `Ok(size)` (C's "requested length for the caller's convenience") or
+/// `Err(errno)` (the injected verb failed, e.g. EFAULT).
 pub fn rmib_copyout(
     oldp: Option<&RmibOldp>,
     off: usize,
@@ -366,33 +367,34 @@ pub fn rmib_copyout(
     Ok(size)
 }
 
-/// 远程 MIB 节点——服务自持子树的客户端形状(C: `struct rmib_node`,
-/// rmib.h:64-90)。指针成员改为 owned 形状(名称串 + 子节点向量或稀疏
-/// 对),函数驱动节点以 `func: true` 表达。
+/// A remote MIB node — the client-side shape of a service-owned subtree
+/// (C: `struct rmib_node`, rmib.h:64-90). Pointer members become owned shapes
+/// (name string plus a child vector or sparse pairs); function-driven nodes
+/// are expressed as `func: true`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RmibNode {
-    /// C: `rnode_flags` — CTLTYPE_ 类型 + CTLFLAG_ 旗标。
+    /// C: `rnode_flags` — CTLTYPE_ type plus CTLFLAG_ flags.
     pub flags: u32,
-    /// C: `rnode_size` — 关联数据大小;NODE 时为子节点数(func 驱动的
-    /// NODE 表示期望请求数)。
+    /// C: `rnode_size` — size of the associated data; for NODE it is the number
+    /// of children (a func-driven NODE indicates the expected request count).
     pub size: u32,
-    /// 直接值( Immediate 节点)。C: `rnode_val_u` 的 bool/int/quad/clen。
+    /// Direct value (immediate nodes). C: the bool/int/quad/clen arm of `rnode_val_u`.
     pub value: Option<RmibImmediate>,
-    /// 字符串/结构数据(非 immediate 的数据节点)。C: `rnode_data`。
+    /// String/struct data (data nodes that are not immediate). C: `rnode_data`.
     pub data: Option<Vec<u8>>,
-    /// 子节点(非稀疏:索引即 id;稀疏:显式 id 对)。C: `rnode_cptr` /
-    /// `rnode_icptr`。
+    /// Children (non-sparse: the index is the id; sparse: explicit id pairs).
+    /// C: `rnode_cptr` / `rnode_icptr`.
     pub children: RmibChildren,
-    /// 函数驱动节点(C: `rnode_func != NULL`)。Rust 侧不携带函数指针,
-    /// handler 归属由服务自派。
+    /// Function-driven node (C: `rnode_func != NULL`). The Rust side carries no
+    /// function pointer; the service dispatches its own handler.
     pub func: bool,
-    /// 节点名。C: `rnode_name`。
+    /// Node name. C: `rnode_name`.
     pub name: String,
-    /// 描述(可缺省)。C: `rnode_desc`。
+    /// Description (optional). C: `rnode_desc`.
     pub desc: Option<String>,
 }
 
-/// 直接值(C: `rnode_val_u` 联合的具体臂)。
+/// A direct value (the concrete arm of C's `rnode_val_u` union).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RmibImmediate {
     /// C: `rvu_bool`。
@@ -401,25 +403,28 @@ pub enum RmibImmediate {
     Int(i32),
     /// C: `rvu_quad`。
     Quad(u64),
-    /// C: `rvu_clen`(实际子节点数,写回 NODE 描述时用)。
+    /// C: `rvu_clen` (actual child count, used when writing back the NODE description).
     Clen(u32),
 }
 
-/// 子节点集合:常规数组(id = 索引)或稀疏数组(显式 id 对,升序无重复;
-/// C: `rnode_cptr` / `rnode_icptr`)。
+/// Child collection: a plain array (id = index) or a sparse array (explicit
+/// id pairs, ascending without duplicates; C: `rnode_cptr` / `rnode_icptr`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum RmibChildren {
-    /// 无子节点。
+    /// No children.
     #[default]
     None,
-    /// C: `rnode_cptr` — 索引即 id,flags==0 的空槽被遍历跳过(rmib.c:351)。
+    /// C: `rnode_cptr` — the index is the id; empty slots with flags==0 are skipped
+    /// during traversal (rmib.c:351).
     Dense(Vec<RmibNode>),
-    /// C: `rnode_icptr` — (id, 节点) 对,必须升序无重复(rmib.h:53-56)。
+    /// C: `rnode_icptr` — (id, node) pairs, which must be ascending without
+    /// duplicates (rmib.h:53-56).
     Sparse(Vec<(u32, RmibNode)>),
 }
 
 impl RmibChildren {
-    /// 子节点数(C: `rnode_size` 对 sparse 情形由库维护为 icptr 长度)。
+    /// Number of children (C: for the sparse case the library maintains
+    /// `rnode_size` as the icptr length).
     pub fn len(&self) -> usize {
         match self {
             RmibChildren::None => 0,
@@ -428,19 +433,20 @@ impl RmibChildren {
         }
     }
 
-    /// 是否为空。
+    /// Whether the collection is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
 
-/// C: `rmib_copyout_node` — rmib.c:200-260。把一个节点打包成
-/// `sysctlnode`(96 字节,布局见 minix-types::sysctl_abi)并拷出:
-/// 剥离 CTLFLAG_SPARSE(库内部旗标,rmib.c:208-214)、盖版本戳
-/// SYSCTL_VERSION、immediate 值在可见时填入、NODE 特则(真实父节点
-/// 报 csize/clen,函数驱动节点置 SYSCTL_NODE_FN)。
-///
-/// 返回 `Ok(size_of::<SysctlNode>())`——与 C 一致,便于调用方累计偏移。
+/// C: `rmib_copyout_node` — rmib.c:200-260. Packs one node into a
+/// `sysctlnode` (96 bytes, layout in minix-types::sysctl_abi) and copies it out:
+/// it strips CTLFLAG_SPARSE (a library-internal flag, rmib.c:208-214), stamps
+/// SYSCTL_VERSION, fills in immediate values when visible, and applies the NODE
+/// special cases (a real parent reports csize/clen; a function-driven node
+/// gets SYSCTL_NODE_FN).
+/// Returns `Ok(size_of::<SysctlNode>())` — matching C, so the caller can
+/// accumulate the offset.
 pub fn rmib_copyout_node(
     call: &RmibCall,
     oldp: Option<&RmibOldp>,
@@ -449,17 +455,18 @@ pub fn rmib_copyout_node(
     rnode: &RmibNode,
     write: impl FnOnce(&[u8], usize) -> Result<(), i32>,
 ) -> Result<usize, i32> {
-    // C: rmib.c:203-206 — 窗口外不动,但返回节点大小供偏移累计。
+    // C: rmib.c:203-206 — outside the window nothing moves, but the node size is
+    // returned for offset accumulation.
     if !rmib_inrange(oldp, off) {
         return Ok(core::mem::size_of::<SysctlNode>());
     }
 
-    // SAFETY-形状:SysctlNode 无 Default(union 成员);repr(C) 全 PoD,
-    // 零值即 C 的 memset(&scn, 0, sizeof(scn))(rmib.c:206)。
+    // SAFETY-shape: SysctlNode has no Default (union members); repr(C), all PoD,
+    // so the zero value is C's memset(&scn, 0, sizeof(scn)) (rmib.c:206).
     let mut scn: SysctlNode = unsafe { core::mem::zeroed() };
 
-    // C: rmib.c:208-214 — 版本戳 + 剥离 CTLFLAG_SPARSE(NetBSD 重载旗标,
-    // 不对 userland 暴露)。
+    // C: rmib.c:208-214 — version stamp plus stripping of CTLFLAG_SPARSE (a
+    // NetBSD-overloaded flag, not exposed to userland).
     scn.sysctl_flags = SYSCTL_VERSION | (rnode.flags & !CTLFLAG_SPARSE);
     scn.sysctl_num = id as i32;
     let name_bytes = rnode.name.as_bytes();
@@ -468,11 +475,13 @@ pub fn rmib_copyout_node(
     scn.sysctl_ver = call.rootver;
     scn._sysctl_size = rnode.size as u64;
 
-    // C: rmib.c:216-217 — PRIVATE 节点的信息仅对授权调用方可见。
+    // C: rmib.c:216-217 — PRIVATE node information is visible only to authorized
+    // callers.
     let visible =
         (rnode.flags & CTLFLAG_PRIVATE == 0) || (call.flags & RMIB_FLAG_AUTH) != 0;
 
-    // C: rmib.c:219-231 — immediate 节点在可见时填入直接值。
+    // C: rmib.c:219-231 — immediate nodes get their direct value filled in when
+    // visible.
     if rnode.flags & CTLFLAG_IMMEDIATE != 0 && visible {
         let node_type = sysctl_type(rnode.flags);
         if let Some(value) = rnode.value {
@@ -485,8 +494,9 @@ pub fn rmib_copyout_node(
         }
     }
 
-    // C: rmib.c:233-249 — NODE 特则:真实父节点报 csize/clen(可见时),
-    // 函数驱动节点置 SYSCTL_NODE_FN 哨兵(供 trace(1) 识别)。
+    // C: rmib.c:233-249 — NODE special cases: a real parent reports csize/clen
+    // (when visible); a function-driven node gets the SYSCTL_NODE_FN sentinel
+    // (so trace(1) can recognize it).
     if sysctl_type(rnode.flags) == CTLTYPE_NODE {
         scn._sysctl_size = core::mem::size_of::<SysctlNode>() as u64;
         if !rnode.func && visible {
@@ -497,24 +507,26 @@ pub fn rmib_copyout_node(
         }
     }
 
-    // SAFETY: SysctlNodeUn 是 plain-old-data 联合;写 child 臂与上面
-    // C 的 scn 字段填法一致(打印机可见性/类型已判)。
-    // (字段写入已按 repr(C) 布局完成。)
+    // SAFETY: SysctlNodeUn is a plain-old-data union; writing the child arm
+    // matches the C field filling above (visibility/type already decided).
+    // (Field writes are already done according to the repr(C) layout.)
     rmib_copyout(oldp, off, scn_as_bytes(&scn), write)
 }
 
-/// `SysctlNode` 的字节视图(repr(C),96 字节)。
+/// Byte view of `SysctlNode` (repr(C), 96 bytes).
 fn scn_as_bytes(scn: &SysctlNode) -> &[u8] {
-    // SAFETY: `#[repr(C)]` 结构体,全部字段为 PoD,无 padding 初始化
-    // 要求(目标缓冲按字节读)。
+    // SAFETY: `#[repr(C)]` struct, all fields PoD, no padding-initialization
+    // requirement (the destination buffer reads it byte by byte).
     unsafe {
         core::slice::from_raw_parts(scn as *const SysctlNode as *const u8, core::mem::size_of::<SysctlNode>())
     }
 }
 
-/// C: `rmib_copyout_desc` 的描述打包半 — rmib.c:355-380(描述结构 +
-/// 描述串分两次拷出;此处产出合并后的字节序列与应拷总量,写入仍注入)。
-/// 描述长度含 NUL(desc 为 None 时按 1 字节计,rmib.c:368-372)。
+/// The description-packing half of C's `rmib_copyout_desc` — rmib.c:355-380
+/// (the description struct and string are copied out in two steps; here we
+/// produce the merged byte sequence and the total to copy, with writing still
+/// injected). The description length includes the NUL (a None desc counts as
+/// 1 byte, rmib.c:368-372).
 pub fn rmib_copyout_desc(
     call: &RmibCall,
     oldp: Option<&RmibOldp>,
@@ -523,23 +535,25 @@ pub fn rmib_copyout_desc(
     rnode: &RmibNode,
     mut write: impl FnMut(&[u8], usize) -> Result<(), i32>,
 ) -> Result<usize, i32> {
-    // C: rmib.c:360-364 — PRIVATE 节点的描述也是私有:直接返回 0
-    // (不累计偏移,遍历中相当于"这个节点不存在")。
+    // C: rmib.c:360-364 — a PRIVATE node's description is private too: return 0
+    // immediately (the offset does not advance, so during traversal it is as if
+    // the node does not exist).
     if (rnode.flags & CTLFLAG_PRIVATE) != 0 && (call.flags & RMIB_FLAG_AUTH) == 0 {
         return Ok(0);
     }
 
     let desc = rnode.desc.as_deref().unwrap_or("");
-    let len = desc.len() + 1; // 含 NUL(rmib.c:368-372)
+    let len = desc.len() + 1; // includes the NUL (rmib.c:368-372)
 
-    // repr(C) PoD,零值 = C 的 memset(rmib.c:373-376)。
+    // repr(C) PoD, so the zero value equals C's memset (rmib.c:373-376).
     let mut scd: SysctlDesc = unsafe { core::mem::zeroed() };
     scd.descr_num = id as i32;
     scd.descr_ver = call.rootver;
     scd.descr_len = len as u32;
 
-    // C: rmib.c:377-379 — 先拷描述头(offsetof descr_str = 12),再拷串。
-    // 窗口钳制由 rmib_copyout 负责;这里先拷头。
+    // C: rmib.c:377-379 — copy the description header first (offsetof descr_str
+    // = 12), then the string. Window clamping is rmib_copyout's job; here we copy
+    // the header first.
     let head = unsafe {
         core::slice::from_raw_parts(
             &scd as *const SysctlDesc as *const u8,
@@ -549,8 +563,10 @@ pub fn rmib_copyout_desc(
     rmib_copyout(oldp, off, head, |bytes, at| write(bytes, at))?;
     let str_off = off + core::mem::size_of::<SysctlDesc>();
 
-    // 描述串(带 NUL)。C 分两次拷出;合并为一次写入(头+串不连续内存,
-    // C 原样;Rust 侧拼接后一次钳制拷出,语义等价——总量与偏移一致)。
+    // Description string (with NUL). C copies it out in two steps; here it is
+    // merged into one write (header and string are non-contiguous, as in C; the
+    // Rust side concatenates and does one clamped copy-out — same total and
+    // offsets, so the semantics are equivalent).
     let mut payload = desc.as_bytes().to_vec();
     payload.push(0);
     let payload = payload;
@@ -560,9 +576,10 @@ pub fn rmib_copyout_desc(
     Ok(core::mem::size_of::<SysctlDesc>() + payload.len())
 }
 
-/// SYS_UPDATE 的节点查找(C: `rmib_lookup` — rmib.c:340-360 区域):
-/// 在 `parent` 的子节点集合中按 id 找子节点。
-/// [`rmib_lookup`] 的可变版(下行遍历中叶写入需要 &mut)。
+/// Node lookup for SYS_UPDATE (C: `rmib_lookup` — rmib.c:340-360 area):
+/// finds a child by id in `parent`'s child collection.
+/// Mutable version of [`rmib_lookup`] (leaf writes during the downward walk
+/// need &mut).
 pub fn rmib_lookup_mut(parent: &mut RmibNode, id: u32) -> Option<&mut RmibNode> {
     match &mut parent.children {
         RmibChildren::None => None,
@@ -611,12 +628,12 @@ mod pure_tests {
         }
     }
 
-    /// C rmib.c:97-126 — 拷出钳制三态:全量/截断/窗口外。
+    /// C rmib.c:97-126 — the three clamp states: full copy / truncated / outside.
     #[test]
     fn test_rmib_copyout_clamps_to_window() {
         let window = RmibOldp { grant: 3, len: 16 };
 
-        // 窗口内全量。
+        // Fully inside the window.
         let mut moved: Vec<(usize, usize)> = Vec::new();
         let r = rmib_copyout(Some(&window), 0, &[0xAA; 16], |b, off| {
             moved.push((off, b.len()));
@@ -625,7 +642,8 @@ mod pure_tests {
         assert_eq!(r, Ok(16));
         assert_eq!(moved, vec![(0, 16)]);
 
-        // 尾部截断:off=8 处只剩 8 字节预算,请求 16 只动 8。
+        // Truncated at the tail: only 8 bytes of budget remain at off=8, so a
+        // request of 16 moves 8.
         let mut moved2: Vec<(usize, usize)> = Vec::new();
         let r = rmib_copyout(Some(&window), 8, &[0xBB; 16], |b, off| {
             moved2.push((off, b.len()));
@@ -634,7 +652,7 @@ mod pure_tests {
         assert_eq!(r, Ok(16), "返回请求长度(C rmib.c:124)");
         assert_eq!(moved2, vec![(8, 8)]);
 
-        // 窗口外:什么都不动,原样返回 size。
+        // Outside the window: nothing moves and size is returned as-is.
         let mut calls = 0;
         let r = rmib_copyout(Some(&window), 16, &[0xCC; 4], |_, _| {
             calls += 1;
@@ -643,7 +661,7 @@ mod pure_tests {
         assert_eq!(r, Ok(4));
         assert_eq!(calls, 0);
 
-        // None 窗口(C NULL):只算不动。
+        // None window (C NULL): compute only, no copy.
         let r = rmib_copyout(None, 0, &[1; 8], |_, _| {
             calls += 1;
             Ok(())
@@ -652,7 +670,7 @@ mod pure_tests {
         assert_eq!(calls, 0);
     }
 
-    /// C rmib.c:63-88 — inrange 与 getoldlen。
+    /// C rmib.c:63-88 — inrange and getoldlen.
     #[test]
     fn test_rmib_inrange_and_getoldlen() {
         let window = RmibOldp { grant: 1, len: 32 };
@@ -664,13 +682,13 @@ mod pure_tests {
         assert_eq!(rmib_getoldlen(None), 0);
     }
 
-    /// C rmib.c:200-260 — copyout_node 打包:版本戳、SPARSE 剥离、名称、
-    /// immediate 分派、NODE 特则(csize/clen 或 NODE_FN 哨兵)。
+    /// C rmib.c:200-260 — copyout_node packing: version stamp, SPARSE stripping,
+    /// name, immediate dispatch, NODE special cases (csize/clen or NODE_FN).
     #[test]
     fn test_rmib_copyout_node_packs_sysctlnode() {
         let c = call();
         let window = RmibOldp { grant: 5, len: 256 };
-        // 非 PRIVATE 的 int immediate 节点:值应填入。
+        // A non-PRIVATE int immediate node: the value must be filled in.
         let mut pub_node = node(
             minix_types::CTLFLAG_PERMANENT | CTLTYPE_INT | CTLFLAG_IMMEDIATE,
             "nprocs",
@@ -685,16 +703,16 @@ mod pure_tests {
         .unwrap();
         assert_eq!(size, core::mem::size_of::<SysctlNode>());
 
-        // SAFETY(test):读取打包好的 int immediate 臂。
+        // SAFETY(test): read the packed int immediate arm.
         let scn: &SysctlNode = unsafe { &*(captured.as_ptr() as *const SysctlNode) };
         assert_eq!(scn.sysctl_flags, SYSCTL_VERSION | (pub_node.flags & !CTLFLAG_SPARSE));
         assert_eq!(scn.sysctl_num, 0);
         assert_eq!(scn.sysctl_ver, 7);
-        // SAFETY(test):int immediate 臂由打包写入。
+        // SAFETY(test): the int immediate arm was written by packing.
         assert_eq!(unsafe { scn.sysctl_un.scu_idata }, 42);
 
-        // C rmib.c:219-231 — PRIVATE 且无授权:immediate 不填(保持零),
-        // 其余字段照常打包。
+        // C rmib.c:219-231 — PRIVATE without authorization: the immediate value is
+        // not filled in (stays zero); the other fields pack as usual.
         let mut private_node = node(
             minix_types::CTLFLAG_PERMANENT | CTLTYPE_INT | CTLFLAG_IMMEDIATE | CTLFLAG_PRIVATE,
             "secret",
@@ -708,12 +726,13 @@ mod pure_tests {
         .unwrap();
         let scn2: &SysctlNode = unsafe { &*(captured2.as_ptr() as *const SysctlNode) };
         assert_eq!(scn2.sysctl_num, 1);
-        // SAFETY(test):未授权路径不写 immediate。
+        // SAFETY(test): the unauthorized path does not write the immediate value.
         assert_eq!(unsafe { scn2.sysctl_un.scu_idata }, 0, "无授权不得泄漏 immediate");
     }
 
-    /// C rmib.c:233-249 — NODE 特则:非函数 + 可见 → 报 csize/clen;
-    /// 函数驱动 → SYSCTL_NODE_FN 哨兵;SPARSE 旗标不进 wire。
+    /// C rmib.c:233-249 — NODE special cases: non-function plus visible → report
+    /// csize/clen; function-driven → the SYSCTL_NODE_FN sentinel; the SPARSE flag
+    /// never goes on the wire.
     #[test]
     fn test_rmib_copyout_node_parent_rules() {
         let c = call();
@@ -731,18 +750,19 @@ mod pure_tests {
             Ok(())
         })
         .unwrap();
-        // SAFETY(test):读打包结果(模拟 userland 解读)。
+        // SAFETY(test): read the packed result (simulating userland decoding).
         let scn: &SysctlNode = unsafe { &*(captured.as_ptr() as *const SysctlNode) };
-        // SPARSE 已剥:wire flags = VERSION + 原 flags 去 SPARSE。
+        // SPARSE is stripped: wire flags = VERSION + original flags minus SPARSE.
         assert_eq!(scn.sysctl_flags & CTLFLAG_SPARSE, 0);
         assert_eq!(scn.sysctl_flags & SYSCTL_VERSION, SYSCTL_VERSION);
         assert_eq!(scn._sysctl_size, core::mem::size_of::<SysctlNode>() as u64);
-        // SAFETY(test):child 臂由 NODE 特则写入。
+        // SAFETY(test): the child arm was written by the NODE special case.
         assert_eq!(unsafe { scn.sysctl_un.scu_child.suc_clen }, 1);
-        // SAFETY(test):非函数节点未写 _suc_child,读前已确认臂归属。
+        // SAFETY(test): a non-function node does not write _suc_child; arm ownership
+        // was confirmed before reading.
         assert_eq!(unsafe { scn.sysctl_un.scu_child._suc_child }, 0);
 
-        // 函数驱动节点:置 NODE_FN 哨兵。
+        // Function-driven node: the NODE_FN sentinel is set.
         let mut func_node = node(CTLFLAG_PERMANENT | CTLTYPE_NODE, "dyn");
         func_node.func = true;
         let mut captured2: Vec<u8> = Vec::new();
@@ -752,11 +772,13 @@ mod pure_tests {
         })
         .unwrap();
         let scn2: &SysctlNode = unsafe { &*(captured2.as_ptr() as *const SysctlNode) };
-        // SAFETY(test):NODE_FN 哨兵由函数驱动特则写入。
+        // SAFETY(test): the NODE_FN sentinel was written by the function-driven
+        // special case.
         assert_eq!(unsafe { scn2.sysctl_un.scu_child._suc_child }, SYSCTL_NODE_FN as u64);
     }
 
-    /// C rmib.c:355-364 — PRIVATE 节点的描述直接跳过(返回 0,不累计)。
+    /// C rmib.c:355-364 — a PRIVATE node's description is skipped outright
+    /// (returns 0, no accumulation).
     #[test]
     fn test_rmib_copyout_desc_skips_private() {
         let c = call();
@@ -774,24 +796,27 @@ mod pure_tests {
     }
 }
 
-/// MIB 挂载时的描述拉取请求(C: `m_mib_lsys_info` 字段集,rmib.c:998 起)。
+/// Description-fetch request issued at MIB mount time (C: the
+/// `m_mib_lsys_info` field set, rmib.c:998 onward).
 pub struct RmibInfoReq {
-    /// 子树根 id。C: `root_id`。
+    /// Subtree root id. C: `root_id`.
     pub root_id: u32,
-    /// 根节点名缓冲 grant。C: `name_grant`。
+    /// Grant for the root node name buffer. C: `name_grant`.
     pub name_grant: i32,
-    /// 名缓冲大小。C: `name_size`。
+    /// Name buffer size. C: `name_size`.
     pub name_size: usize,
-    /// 描述缓冲 grant。C: `desc_grant`。
+    /// Grant for the description buffer. C: `desc_grant`.
     pub desc_grant: i32,
-    /// 描述缓冲大小。C: `desc_size`。
+    /// Description buffer size. C: `desc_size`.
     pub desc_size: usize,
 }
 
-/// C: `rmib_info` — rmib.c:998-1035. 把子树根的名字与描述拷给 MIB 服务
-/// (挂载时 MIB 会拉一次)。名字放不下 → ENAMETOOLONG(C 同,服务编写者
-/// 的错);描述超长按 desc_size 截断(C rmib.c:1030-1032);无描述拷
-/// 空串。成功返回 OK(C 的返回值即最后一次 safecopy 的结果)。
+/// C: `rmib_info` — rmib.c:998-1035. Copies the subtree root's name and
+/// description to the MIB service (the MIB pulls them once at mount time).
+/// A name that does not fit → ENAMETOOLONG (same as C; the service author's bug).
+/// An over-long description is truncated to desc_size (C rmib.c:1030-1032);
+/// no description copies an empty string. Returns OK on success (C returns the
+/// result of the last safecopy).
 pub fn rmib_info(
     table: &SubtreeTable,
     req: &RmibInfoReq,
@@ -800,7 +825,7 @@ pub fn rmib_info(
     let slot = table.slots.get(req.root_id as usize).ok_or(minix_types::ENOENT)?;
     let root = slot.tree.as_ref().ok_or(minix_types::ENOENT)?;
 
-    // C rmib.c:1007-1011 — 名字(含 NUL)必须放得下。
+    // C rmib.c:1007-1011 — the name (including the NUL) must fit.
     let mut name = Vec::with_capacity(root.name.len() + 1);
     name.extend_from_slice(root.name.as_bytes());
     name.push(0);
@@ -809,7 +834,8 @@ pub fn rmib_info(
     }
     io.copyout(&name, req.name_grant, 0)?;
 
-    // C rmib.c:1014-1032 — 无描述拷空串;超长截断到 desc_size。
+    // C rmib.c:1014-1032 — no description copies an empty string; an over-long
+    // one is truncated to desc_size.
     let mut desc: Vec<u8> = Vec::new();
     match &root.desc {
         Some(d) => {
@@ -823,60 +849,67 @@ pub fn rmib_info(
     Ok(())
 }
 
-// ── E-RMIBWIRE 2/2:rmib_call 遍历、叶读写、注册簿记 ──
+// ── E-RMIBWIRE 2/2: rmib_call traversal, leaf read/write, registration bookkeeping ──
 //
-// C: rmib_call(rmib.c:678-824)、rmib_getptr(:482-516)、rmib_read
-// (:518-545)、rmib_write(:547-645)、rmib_readwrite(:647-668)、
-// rmib_register/deregister/reregister/send_reg(:862-975)、rmib_init。
+// C: rmib_call (rmib.c:678-824), rmib_getptr (:482-516), rmib_read
+// (:518-545), rmib_write (:547-645), rmib_readwrite (:647-668),
+// rmib_register/deregister/reregister/send_reg (:862-975), rmib_init.
 //
-// ARCH 偏差(两处,均已在 10-stage-mib 侧声明):
-// 1. grant 拷入/拷出经 [`RmibIo`] 注入(真实实现 = sys_safecopyfrom/to,
-//    E1 后接线);树与叶子数据是本进程内存,读写为纯内存操作。
-// 2. 注册消息(asynsend3 到 MIB 服务)产出与发送分离:簿记函数返回待发
-//    消息,发送归服务主循环(E1 后接 asynsend3/AMF_NOREPLY)。
+// ARCH deviations (two, both declared on the 10-stage-mib side):
+// 1. grant copy-in/copy-out is injected through [`RmibIo`] (the real
+//    implementation = sys_safecopyfrom/to, wired up after E1); the tree and
+//    leaf data live in this process's memory, so reads/writes are pure memory
+//    operations.
+// 2. Registration-message production (asynsend3 to the MIB service) is
+//    separated from sending: the bookkeeping functions return the pending
+//    message, and sending belongs to the service main loop (asynsend3/
+//    AMF_NOREPLY after E1).
 
 use minix_types::{grant_valid, CTL_MAXNAME, CTLFLAG_ANYWRITE, CTL_SHORTNAME, ERESTART};
 
-/// 转发的 sysctl 调用请求(C: `m_mib_lsys_call` 字段集,rmib.c:687-716)。
+/// A forwarded sysctl call request (C: the `m_mib_lsys_call` field set,
+/// rmib.c:687-716).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RmibCallReq {
-    /// 子树根 id(即 MountTable 槽号)。C: `root_id`。
+    /// Subtree root id (the MountTable slot number). C: `root_id`.
     pub root_id: u32,
-    /// 剩余名字长度。C: `name_len`。
+    /// Length of the remaining name. C: `name_len`.
     pub name_len: usize,
-    /// 名字缓冲 grant。C: `name_grant`。
+    /// Grant for the name buffer. C: `name_grant`.
     pub name_grant: i32,
-    /// 旧值窗口 grant。C: `oldp_grant`。
+    /// Grant for the old-value window. C: `oldp_grant`.
     pub oldp_grant: i32,
-    /// 旧值请求长度。C: `oldp_len`。
+    /// Requested old-value length. C: `oldp_len`.
     pub oldp_len: usize,
-    /// 新值窗口 grant。C: `newp_grant`。
+    /// Grant for the new-value window. C: `newp_grant`.
     pub newp_grant: i32,
-    /// 新值长度。C: `newp_len`。
+    /// New-value length. C: `newp_len`.
     pub newp_len: usize,
-    /// 发起 sysctl 的用户进程端点。C: `user_endpt`。
+    /// Endpoint of the user process that issued the sysctl. C: `user_endpt`.
     pub user_endpt: i32,
-    /// 调用旗标(RMIB_FLAG_AUTH)。C: `flags`。
+    /// Call flags (RMIB_FLAG_AUTH). C: `flags`.
     pub flags: u32,
-    /// 子树版本。C: `root_ver`。
+    /// Subtree version. C: `root_ver`.
     pub root_ver: u32,
-    /// 全树版本。C: `tree_ver`。
+    /// Whole-tree version. C: `tree_ver`.
     pub tree_ver: u32,
 }
 
-/// grant 通道的拷入/拷出动词(E1 后接 sys_safecopyfrom/to;宿主测试用
-/// 内存实现)。
+/// Copy-in/copy-out verbs for the grant channel (sys_safecopyfrom/to after E1;
+/// host tests use an in-memory implementation).
 pub trait RmibIo {
-    /// 从 `grant` 的 `off` 偏移拷入至多 `dst.len()` 字节。
+    /// Copy in at most `dst.len()` bytes from `grant` at offset `off`.
     fn copyin(&mut self, dst: &mut [u8], grant: i32, off: usize) -> Result<(), i32>;
-    /// 把 `src` 写到 `grant` 的 `off` 偏移。
+    /// Write `src` into `grant` at offset `off`.
     fn copyout(&mut self, src: &[u8], grant: i32, off: usize) -> Result<(), i32>;
 }
 
-/// 函数驱动节点的服务回调(C: `rnode->rnode_func(&call, rnode, oldp,
-/// newp)`,rmib.h:18-21 + rmib.c:809-811——C 以函数指针挂在节点上,
-/// Rust 的 [`RmibNode`] 只带 `func: bool` 标志,handler 由服务侧经本
-/// trait 注入)。返回拷出字节数(`Ok`)或负 errno(`Err`)。
+/// Service callback for a function-driven node (C:
+/// `rnode->rnode_func(&call, rnode, oldp, newp)`, rmib.h:18-21 +
+/// rmib.c:809-811 — C hangs a function pointer on the node, while Rust's
+/// [`RmibNode`] only carries the `func: bool` flag and the service injects the
+/// handler through this trait). Returns the number of bytes copied out (`Ok`)
+/// or a negative errno (`Err`).
 pub trait RmibFuncHandler {
     fn call_func(
         &mut self,
@@ -888,74 +921,81 @@ pub trait RmibFuncHandler {
     ) -> Result<usize, i32>;
 }
 
-/// 注册簿记产出的待发消息(C: `rmib_send_reg` 组装的
-/// `MIB_REGISTER`/`MIB_DEREGISTER`——m_type 与 m_lsys_mib_register 载荷)。
+/// A pending message produced by registration bookkeeping (the
+/// `MIB_REGISTER`/`MIB_DEREGISTER` that C's `rmib_send_reg` assembles —
+/// m_type plus the m_lsys_mib_register payload).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RmibRegMessage {
-    /// `MIB_REGISTER`:根 id、剥离 SPARSE 的旗标、子容量/子数、名字。
+    /// `MIB_REGISTER`: root id, flags with SPARSE stripped, child capacity and
+    /// count, name.
     Register {
-        /// 根 id(槽号)。
+        /// Root id (slot number).
         root_id: u32,
-        /// 剥离 SPARSE 的旗标 + SYSCTL_VERSION。C: rmib_send_reg(:864-871)。
+        /// Flags with SPARSE stripped plus SYSCTL_VERSION. C: rmib_send_reg
+        /// (:864-871).
         flags: u32,
-        /// 子容量。C: `csize`。
+        /// Child capacity. C: `csize`.
         csize: u32,
-        /// 有效子数。C: `clen`。
+        /// Effective child count. C: `clen`.
         clen: u32,
-        /// 挂载路径(前缀名)。C: `mib`/`miblen`。
+        /// Mount path (prefix name). C: `mib`/`miblen`.
         mib: [i32; CTL_SHORTNAME as usize],
-        /// 名字长度。C: `miblen`。
+        /// Name length. C: `miblen`.
         miblen: u32,
     },
-    /// `MIB_DEREGISTER`:仅根 id(C rmib.c:955-965)。
+    /// `MIB_DEREGISTER`: root id only (C rmib.c:955-965).
     Deregister {
-        /// 根 id(槽号)。
+        /// Root id (slot number).
         root_id: u32,
     },
 }
 
-/// 槽内树 + 挂载路径(C: `rnodes[]` 槽三元组,rnodes[.].rno_node/rno_name/
-/// rno_namelen)。
+/// The in-slot tree plus mount path (C: the `rnodes[]` slot triple,
+/// rnodes[.].rno_node/rno_name/rno_namelen).
 #[derive(Debug, Clone, Default)]
 pub struct MountSlot {
-    /// 挂载的子树根(自持,替代 C 的裸指针)。None = 空槽。
+    /// The mounted subtree root (owned, replacing C's bare pointer). None = empty
+    /// slot.
     pub tree: Option<RmibNode>,
-    /// 挂载路径(前缀名)。C: `rno_name`(i32 数组,每元素一个名字分量)。
+    /// Mount path (prefix name). C: `rno_name` (an i32 array, one name component
+    /// per element).
     pub name: [i32; CTL_SHORTNAME as usize],
-    /// 路径长度。C: `rno_namelen`。
+    /// Path length. C: `rno_namelen`.
     pub namelen: usize,
 }
 
-/// 子树注册表(C: `rnodes[RMIB_MAX_SUBTREES]`)。槽号即线上根 id。
+/// Subtree registry (C: `rnodes[RMIB_MAX_SUBTREES]`). The slot number is the
+/// on-wire root id.
 #[derive(Debug, Clone, Default)]
 pub struct SubtreeTable {
-    /// 十六个槽(C rmib.c:47)。
+    /// Sixteen slots (C rmib.c:47).
     pub slots: [MountSlot; RMIB_MAX_SUBTREES],
 }
 
 impl SubtreeTable {
-    /// 空表。
+    /// An empty table.
     pub fn new() -> Self {
         Self { slots: core::array::from_fn(|_| MountSlot::default()) }
     }
 
-    /// 注册子树(C: `rmib_register` — rmib.c:892-924)。名字非空且短于
-    /// 上限、根必须是 NODE 型;同树重复注册 EEXIST;表满 ENOMEM。
-    /// 返回 `(根 id, 待发 MIB_REGISTER 消息)`——发送归调用方(E1 后
-    /// asynsend3,ARCH 偏差 2)。
+    /// Register a subtree (C: `rmib_register` — rmib.c:892-924). The name must be
+    /// non-empty and shorter than the limit, and the root must be a NODE;
+    /// registering the same tree twice is EEXIST; a full table is ENOMEM.
+    /// Returns `(root id, pending MIB_REGISTER message)` — sending belongs to the
+    /// caller (asynsend3 after E1, ARCH deviation 2).
     pub fn register(
         &mut self,
         name: &[i32],
         root: RmibNode,
     ) -> Result<(u32, RmibRegMessage), i32> {
-        // C: rmib.c:896-899 — namelen ∈ [1, CTL_SHORTNAME) 且根为 NODE 型。
+        // C: rmib.c:896-899 — namelen ∈ [1, CTL_SHORTNAME) and the root is a NODE.
         if name.is_empty() || name.len() >= CTL_SHORTNAME as usize {
             return Err(minix_types::EINVAL);
         }
         if minix_types::sysctl_type(root.flags) != minix_types::CTLTYPE_NODE {
             return Err(minix_types::EINVAL);
         }
-        // C: rmib.c:902-908 — 同树 EEXIST;取第一个空槽。
+        // C: rmib.c:902-908 — the same tree is EEXIST; take the first free slot.
         let mut free_id: Option<usize> = None;
         for (id, slot) in self.slots.iter().enumerate() {
             if slot.tree.as_ref() == Some(&root) {
@@ -977,7 +1017,8 @@ impl SubtreeTable {
             namelen: name.len(),
         };
 
-        // C: rmib_send_reg — 剥 SPARSE + 版本戳 + csize/clen + 名字。
+        // C: rmib_send_reg — strip SPARSE, stamp the version, add csize/clen and
+        // the name.
         let tree = self.slots[id].tree.as_ref().unwrap();
         Ok((
             id as u32,
@@ -992,9 +1033,10 @@ impl SubtreeTable {
         ))
     }
 
-    /// 注销子树(C: `rmib_deregister` — rmib.c:934-969)。返回待发
-    /// MIB_DEREGISTER 消息;未注册返回 ENOENT。C 对 asynsend3 失败不处理
-    /// (注释:调用方无从补救)——发送归调用方后该语义自然保持。
+    /// Deregister a subtree (C: `rmib_deregister` — rmib.c:934-969). Returns the
+    /// pending MIB_DEREGISTER message; an unregistered tree is ENOENT. C ignores
+    /// asynsend3 failures (the comment says the caller cannot remedy them) — with
+    /// sending owned by the caller, that semantics is preserved naturally.
     pub fn deregister(&mut self, root: &RmibNode) -> Result<RmibRegMessage, i32> {
         for (id, slot) in self.slots.iter_mut().enumerate() {
             if slot.tree.as_ref() == Some(root) {
@@ -1005,8 +1047,8 @@ impl SubtreeTable {
         Err(minix_types::ENOENT)
     }
 
-    /// 重发全部存活子树的注册(C: `rmib_reregister` — rmib.c:971-980;
-    /// MIB 服务重启后由主循环调用)。
+    /// Re-send the registration of every live subtree (C: `rmib_reregister` —
+    /// rmib.c:971-980; called by the main loop after the MIB service restarts).
     pub fn reregister(&mut self) -> Vec<RmibRegMessage> {
         let mut out = Vec::new();
         for (id, slot) in self.slots.iter_mut().enumerate() {
@@ -1026,8 +1068,9 @@ impl SubtreeTable {
     }
 }
 
-/// 递归计算有效子节点数(C: `rmib_init` 的 clen 半,rmib.c:826-860):
-/// dense 跳过 flags==0 空槽;sparse 计全部显式项。
+/// Recursively computes the effective child count (the clen half of C's
+/// `rmib_init`, rmib.c:826-860): dense skips empty slots with flags==0; sparse
+/// counts every explicit pair.
 pub fn count_children(root: &RmibNode) -> u32 {
     match &root.children {
         RmibChildren::None => 0,
@@ -1036,9 +1079,10 @@ pub fn count_children(root: &RmibNode) -> u32 {
     }
 }
 
-/// C: `rmib_getptr` — rmib.c:482-516 的数据面:返回叶节点的当前值字节
-/// (immediate 序列化;data 节点返回自有缓冲;STRING+IMMEDIATE 与 NODE
-/// 无数据 → None)。`rmib_readwrite`/`rmib_read` 据此取源。
+/// The data side of C's `rmib_getptr` — rmib.c:482-516: returns the leaf
+/// node's current value bytes (immediate serialized; data nodes return their
+/// own buffer; STRING+IMMEDIATE and NODE have no data → None).
+/// `rmib_readwrite`/`rmib_read` take their source from here.
 fn getptr_bytes(rnode: &RmibNode) -> Option<Vec<u8>> {
     let node_type = sysctl_type(rnode.flags);
     let immediate = rnode.flags & minix_types::CTLFLAG_IMMEDIATE != 0;
@@ -1063,8 +1107,9 @@ fn getptr_bytes(rnode: &RmibNode) -> Option<Vec<u8>> {
     }
 }
 
-/// 写回叶节点的当前值字节(`rmib_getptr` 的写半; immediate 节点写回
-/// `value`,数据节点写回 `data`)。长度不匹配返回 None(调用方给 EINVAL)。
+/// Writes the leaf node's current value bytes back (the write half of
+/// `rmib_getptr`; immediate nodes write `value`, data nodes write `data`).
+/// A length mismatch returns None (the caller maps that to EINVAL).
 fn setptr_bytes(rnode: &mut RmibNode, bytes: &[u8]) -> Option<()> {
     let node_type = sysctl_type(rnode.flags);
     let immediate = rnode.flags & minix_types::CTLFLAG_IMMEDIATE != 0;
@@ -1091,8 +1136,8 @@ fn setptr_bytes(rnode: &mut RmibNode, bytes: &[u8]) -> Option<()> {
     Some(())
 }
 
-/// C: `rmib_read` — rmib.c:518-545. 读当前(旧)数据:长度总是返回,
-/// 数据仅在窗口存在时拷出。
+/// C: `rmib_read` — rmib.c:518-545. Read the current (old) data: the length is
+/// always returned; the data is copied out only when a window exists.
 fn rmib_read(rnode: &RmibNode, oldp: Option<&RmibOldp>, io: &mut dyn RmibIo) -> Result<usize, i32> {
     let data = getptr_bytes(rnode).ok_or(minix_types::EINVAL)?;
     if let Some(w) = oldp {
@@ -1101,21 +1146,24 @@ fn rmib_read(rnode: &RmibNode, oldp: Option<&RmibOldp>, io: &mut dyn RmibIo) -> 
     Ok(data.len())
 }
 
-/// C: `rmib_write` — rmib.c:547-645. 写新值:先拷入临时缓冲(防半途失败
-/// 毁值,C rmib.c:556-566),长度按类型校验(非串须精确匹配;串可短、
-/// 尾 NUL 自补;超栈预算非授权 EPERM),最后落盘。
+/// C: `rmib_write` — rmib.c:547-645. Write a new value: first copy into a
+/// temporary buffer (so a mid-way failure cannot corrupt the value, C
+/// rmib.c:556-566), validate the length by type (non-strings must match
+/// exactly; strings may be shorter and get a trailing NUL; over the stack
+/// budget without authorization is EPERM), then commit.
 fn rmib_write(rnode: &mut RmibNode, newp: Option<&RmibNewp>, call: &RmibCall, io: &mut dyn RmibIo) -> Result<(), i32> {
     let newp = match newp {
         Some(n) => n,
-        None => return Ok(()), // nothing to do(rmib.c:558)
+        None => return Ok(()), // nothing to do (rmib.c:558)
     };
     let newlen = newp.len;
     let node_type = sysctl_type(rnode.flags);
     let immediate = rnode.flags & minix_types::CTLFLAG_IMMEDIATE != 0;
 
-    // C rmib.c:570-592 — 数据节点须有存储;长度按类型校验。
+    // C rmib.c:570-592 — data nodes must have storage; the length is validated
+    // by type.
     if rnode.data.is_none() && (!immediate || matches!(node_type, CTLTYPE_STRING | CTLTYPE_STRUCT)) {
-        // NODE/无数据节点:rmib_getptr 返回 NULL → EINVAL。
+        // NODE/no-data node: rmib_getptr returns NULL → EINVAL.
         if !immediate {
             return Err(minix_types::EINVAL);
         }
@@ -1133,29 +1181,31 @@ fn rmib_write(rnode: &mut RmibNode, newp: Option<&RmibNewp>, call: &RmibCall, io
         }
     }
 
-    // C rmib.c:604-615 — 超栈预算(RMIB_STACKBUF)且非授权 → EPERM。
+    // C rmib.c:604-615 — over the stack budget (RMIB_STACKBUF) and not authorized
+    // → EPERM.
     if newlen + 1 > RMIB_STACKBUF && (call.flags & RMIB_FLAG_AUTH) == 0 {
         return Err(minix_types::EPERM);
     }
 
-    // 拷入临时缓冲(C rmib.c:623-626)。
+    // Copy into the temporary buffer (C rmib.c:623-626).
     let mut src = vec![0u8; newlen + 1];
     io.copyin(&mut src[..newlen], newp.grant, 0)?;
 
-    // C rmib.c:627-648 — 校验并落盘(STRING 自补 NUL)。
+    // C rmib.c:627-648 — validate and commit (STRING gets its NUL filled in).
     if node_type == CTLTYPE_STRING && newlen > 0 && src[newlen - 1] != 0 {
         if newlen == rnode.size as usize {
-            return Err(minix_types::EINVAL); // NUL 放不下(rmib.c:636-641)
+            return Err(minix_types::EINVAL); // the NUL does not fit (rmib.c:636-641)
         }
         src[newlen] = 0; // C rmib.c:643
     }
-    // SAFETY(形状):写入臂由类型决定,长度已在上面校验。
+    // SAFETY(shape): the write arm is decided by the type; the length was
+    // validated above.
     setptr_bytes(rnode, &src[..newlen.min(rnode.size as usize).max(1)]);
     Ok(())
 }
 
-/// C: `rmib_readwrite` — rmib.c:647-668. 叶节点通用读+写:先读旧值
-/// (总是返回旧长度),再写新值。
+/// C: `rmib_readwrite` — rmib.c:647-668. Generic leaf read+write: read the old
+/// value first (always returning the old length), then write the new one.
 fn rmib_readwrite(
     call: &RmibCall,
     rnode: &mut RmibNode,
@@ -1168,26 +1218,31 @@ fn rmib_readwrite(
     Ok(len)
 }
 
-/// C: `rmib_call` — rmib.c:678-824. 处理 MIB 服务转发的 sysctl 调用。
+/// C: `rmib_call` — rmib.c:678-824. Handles a sysctl call forwarded by the MIB
+/// service.
 ///
-/// 名字逐级下行:负 id 是元标识符(QUERY/DESCRIBE 须为最后分量;
-/// CREATE/DESTROY 仅静态子树 → EPERM;其余 EOPNOTSUPP);正 id 查子
-/// 节点(PRIVATE 无授权 EPERM;叶节点后还有名字分量 ENOTDIR;叶+新值
-/// 须 READWRITE 且[ANYWRITE 或授权]);函数驱动节点此版返回 EOPNOTSUPP
-/// (handler 由服务自派,经 `func` 回调注入);普通叶走 readwrite。名字
-/// 耗尽在非叶节点 → EISDIR(名字指向节点数组)。
+/// The name is walked component by component: a negative id is a
+/// meta-identifier (QUERY/DESCRIBE must be the last component; CREATE/DESTROY
+/// apply to static subtrees only → EPERM; everything else EOPNOTSUPP); a
+/// positive id looks up a child (PRIVATE without authorization EPERM; name
+/// components after a leaf ENOTDIR; a leaf plus a new value requires READWRITE
+/// and [ANYWRITE or authorization]); function-driven nodes return EOPNOTSUPP in
+/// this version (the handler is dispatched by the service and injected through
+/// the `func` callback); ordinary leaves go through readwrite. Name exhausted
+/// on a non-leaf → EISDIR (the name points at a node array).
 ///
-/// `func` 是函数驱动节点的回调(C-12):`Some` 时 func 节点交由
-/// [`RmibFuncHandler::call_func`](C `rnode->rnode_func(&call, rnode,
-/// oldp, newp)` 的返回值语义同 `Ok(字节数)/Err(errno)`),`None` 时维持
-/// 既有 EOPNOTSUPP。
+/// `func` is the callback for function-driven nodes: when `Some`, func nodes
+/// are handed to [`RmibFuncHandler::call_func`] (with the same return semantics
+/// as C's `rnode->rnode_func(&call, rnode, oldp, newp)`, i.e.
+/// `Ok(byte count)/Err(errno)`); when `None`, the existing EOPNOTSUPP is kept.
 pub fn rmib_call(
     table: &mut SubtreeTable,
     req: &RmibCallReq,
     io: &mut dyn RmibIo,
     func: Option<&mut dyn RmibFuncHandler>,
 ) -> Result<usize, i32> {
-    // C rmib.c:688-695 — 未注册子树返回 ERESTART(MIB 应注销其以为的挂载)。
+    // C rmib.c:688-695 — an unregistered subtree returns ERESTART (the MIB should
+    // deregister the mount it believes it has).
     let slot = match req.root_id as usize >= RMIB_MAX_SUBTREES {
         true => return Err(ERESTART),
         false => &mut table.slots[req.root_id as usize],
@@ -1197,7 +1252,8 @@ pub fn rmib_call(
         None => return Err(ERESTART),
     };
 
-    // C rmib.c:702-716 — 挂载路径作前缀;剩余名字经 grant 拷入。
+    // C rmib.c:702-716 — the mount path is the prefix; the remaining name is
+    // copied in through the grant.
     let prefixlen = slot.namelen;
     if prefixlen + req.name_len > CTL_MAXNAME as usize {
         return Err(minix_types::EINVAL);
@@ -1212,7 +1268,8 @@ pub fn rmib_call(
         }
     }
 
-    // C rmib.c:718-726 — oldp/newp 按 grant 有效性构造(grant 无效 = NULL)。
+    // C rmib.c:718-726 — oldp/newp are built according to grant validity (an
+    // invalid grant = NULL).
     let oldp = if grant_valid(req.oldp_grant) {
         Some(RmibOldp { grant: req.oldp_grant, len: req.oldp_len })
     } else {
@@ -1224,7 +1281,7 @@ pub fn rmib_call(
         None
     };
 
-    // C rmib.c:730-733 + :747-760 — 逐级下行。
+    // C rmib.c:730-733 + :747-760 — walk down level by level.
     let mut call_ctx = RmibCall {
         endpt: req.user_endpt,
         oname: name,
@@ -1234,11 +1291,12 @@ pub fn rmib_call(
         rootver: req.root_ver,
         treever: req.tree_ver,
     };
-    // C rmib.c:736 `call.call_name = &name[prefixlen]`——handler/叶写入
-    // 的可见视图从挂载前缀之后开始;每消费一个分量,视图左移一格
-    // (C 的 `call.call_name++` 指针推进,rmib.c:746-748)。Rust 以
-    // copy_within 平移对齐:name[0..namelen] 恒为"当前节点之后"的
-    // 剩余分量。
+    // C rmib.c:736 `call.call_name = &name[prefixlen]` — the view visible to
+    // handlers and leaf writes starts after the mount prefix; each consumed
+    // component shifts the view left by one (C advances the `call.call_name`
+    // pointer, rmib.c:746-748). Rust shifts in place with copy_within:
+    // name[0..namelen] always holds the remaining components after the current
+    // node.
     call_ctx.name.copy_within(prefixlen.., 0);
     let mut rnode: &mut RmibNode = root;
 
@@ -1247,8 +1305,8 @@ pub fn rmib_call(
         call_ctx.name.copy_within(1.., 0);
         call_ctx.namelen -= 1;
 
-        // C: rparent 总是 NODE(rmib.c:750 的 assert)。
-        // 元标识符:必须是最后一个分量(rmib.c:755-771)。
+        // C: rparent is always a NODE (the assert at rmib.c:750).
+        // Meta-identifier: must be the last component (rmib.c:755-771).
         if id < 0 {
             if call_ctx.namelen > 0 {
                 return Err(minix_types::EINVAL);
@@ -1261,20 +1319,20 @@ pub fn rmib_call(
                     describe_nodes(rnode, &call_ctx, oldp.as_ref(), io)
                 }
                 minix_types::CTL_CREATE | minix_types::CTL_DESTROY => {
-                    Err(minix_types::EPERM) // 仅静态子树(rmib.c:776-779)
+                    Err(minix_types::EPERM) // static subtrees only (rmib.c:776-779)
                 }
                 _ => Err(minix_types::EOPNOTSUPP),
             };
         }
 
-        // C rmib.c:782-784 — 找子节点。
+        // C rmib.c:782-784 — find the child.
         let next = rmib_lookup_mut(rnode, id as u32);
         rnode = match next {
             Some(child) => child,
             None => return Err(minix_types::ENOENT),
         };
 
-        // C rmib.c:787-789 — 本级访问门。
+        // C rmib.c:787-789 — access gate for this level.
         if (rnode.flags & CTLFLAG_PRIVATE) != 0 && (call_ctx.flags & RMIB_FLAG_AUTH) == 0 {
             return Err(minix_types::EPERM);
         }
@@ -1282,12 +1340,13 @@ pub fn rmib_call(
         let is_leaf = sysctl_type(rnode.flags) != CTLTYPE_NODE;
         let has_func = rnode.func;
 
-        // C rmib.c:793-796 — 叶后不得再有名字分量。
+        // C rmib.c:793-796 — no name component may follow a leaf.
         if is_leaf && call_ctx.namelen > 0 {
             return Err(minix_types::ENOTDIR);
         }
 
-        // C rmib.c:799-806 — 叶(或函数节点)+新值:写权限门。
+        // C rmib.c:799-806 — leaf (or function node) plus a new value: the
+        // write-permission gate.
         if (is_leaf || has_func) && newp.is_some() {
             if (rnode.flags & CTLFLAG_READWRITE) != CTLFLAG_READWRITE {
                 return Err(minix_types::EPERM);
@@ -1297,8 +1356,9 @@ pub fn rmib_call(
             }
         }
 
-        // C rmib.c:809-811 — 函数驱动节点交 handler;返回值即结果
-        // (`Ok(字节数)`/`Err(负 errno)`)。无回调注入时维持 EOPNOTSUPP。
+        // C rmib.c:809-811 — function-driven nodes go to the handler; the return
+        // value is the result (`Ok(byte count)`/`Err(negative errno)`). Without an
+        // injected callback, EOPNOTSUPP is kept.
         if has_func {
             return match func {
                 Some(h) => h.call_func(rnode, &call_ctx, oldp.as_ref(), newp.as_ref(), io),
@@ -1306,18 +1366,20 @@ pub fn rmib_call(
             };
         }
 
-        // C rmib.c:813-815 — 常规数据叶:通用读写。
+        // C rmib.c:813-815 — ordinary data leaf: generic read/write.
         if is_leaf {
             return rmib_readwrite(&call_ctx, rnode, oldp.as_ref(), newp.as_ref(), io);
         }
-        // 否则继续下行。
+        // Otherwise keep walking down.
     }
 
-    // C rmib.c:820-822 — 名字耗尽在非叶节点:名字指向节点数组 → EISDIR。
+    // C rmib.c:820-822 — name exhausted on a non-leaf: the name points at a node
+    // array → EISDIR.
     Err(minix_types::EISDIR)
 }
 
-/// C: `rmib_query` — rmib.c:282-345. 枚举子节点(copyout_node 序列)。
+/// C: `rmib_query` — rmib.c:282-345. Enumerate children (a copyout_node
+/// sequence).
 fn enumerate_nodes(
     rnode: &RmibNode,
     call: &RmibCall,
@@ -1331,7 +1393,7 @@ fn enumerate_nodes(
     Ok(off)
 }
 
-/// C: `rmib_describe` — rmib.c:414-458. 枚举子节点描述。
+/// C: `rmib_describe` — rmib.c:414-458. Enumerate child descriptions.
 fn describe_nodes(
     rnode: &RmibNode,
     call: &RmibCall,
@@ -1349,8 +1411,8 @@ fn oldp_grant_of(oldp: Option<&RmibOldp>) -> i32 {
     oldp.map(|o| o.grant).unwrap_or(-1)
 }
 
-/// 子节点遍历统一形态(dense 跳过 flags==0 空槽;sparse 用显式 id;
-/// C rmib.c:337-350 / :435-447)。
+/// Unified child-iteration shape (dense skips empty slots with flags==0;
+/// sparse uses explicit ids; C rmib.c:337-350 / :435-447).
 fn iter_children(rnode: &RmibNode) -> Vec<(u32, &RmibNode)> {
     match &rnode.children {
         RmibChildren::None => Vec::new(),
@@ -1364,7 +1426,7 @@ fn iter_children(rnode: &RmibNode) -> Vec<(u32, &RmibNode)> {
     }
 }
 
-// ── rmib_call 函数节点派发(C-12;C rmib.c:809-811)──
+// ── rmib_call function-node dispatch (C rmib.c:809-811) ──
 
 #[cfg(test)]
 mod func_tests {
@@ -1372,7 +1434,7 @@ mod func_tests {
     use alloc::{string::String, vec::Vec};
     use minix_types::{CTLTYPE_INT, CTLTYPE_NODE, EFAULT, EINVAL};
 
-    /// 内存 grant 通道:copyout 追加记录,copyin 按 grant 读。
+    /// In-memory grant channel: copyout appends records, copyin reads by grant.
     struct MemIo {
         grants: Vec<(i32, Vec<u8>)>,
         written: Vec<(i32, Vec<u8>)>,
@@ -1412,7 +1474,8 @@ mod func_tests {
         }
     }
 
-    /// 探针 handler:记录节点名与剩余名字长度,按脚本返回。
+    /// Probe handler: records the node name and remaining-name length, returns per
+    /// script.
     struct Probe {
         seen: Option<(String, usize)>,
         ret: Result<usize, i32>,
@@ -1441,7 +1504,7 @@ mod func_tests {
         RmibNode { flags, name: String::from(name), ..RmibNode::default() }
     }
 
-    /// 根 NODE(子:[0]=func 节点,[1]=int 叶),挂载名 [0, 82]。
+    /// Root NODE (children: [0] = func node, [1] = int leaf), mount name [0, 82].
     fn fixture() -> SubtreeTable {
         let mut root = node(CTLTYPE_NODE, "ipc");
         let mut info = node(CTLTYPE_NODE, "info");
@@ -1472,8 +1535,9 @@ mod func_tests {
 
     #[test]
     fn test_func_node_dispatches_to_handler() {
-        // C rmib.c:809-811 — name=[1] 走到 func 节点,handler 收到
-        // namelen=0(名字在节点处耗尽),返回值即结果。
+        // C rmib.c:809-811 — name=[1] reaches the func node; the handler gets
+        // namelen=0 (the name is exhausted at the node), and its return value is
+        // the result.
         let mut table = fixture();
         let mut io = MemIo::new(alloc::vec![(5, alloc::vec![0, 0, 0, 0]), (7, alloc::vec![0; 16])]);
         let mut probe = Probe { seen: None, ret: Ok(4) };
@@ -1485,7 +1549,7 @@ mod func_tests {
 
     #[test]
     fn test_func_node_handler_errno_passthrough() {
-        // handler 的 Err 原样上抛(C 的返回负 errno)。
+        // The handler's Err is propagated as-is (C returns a negative errno).
         let mut table = fixture();
         let mut io = MemIo::new(alloc::vec![(5, alloc::vec![0, 0, 0, 0]), (7, alloc::vec![0; 16])]);
         let mut probe = Probe { seen: None, ret: Err(EINVAL) };
@@ -1497,7 +1561,7 @@ mod func_tests {
 
     #[test]
     fn test_func_node_without_handler_is_eopnotsupp() {
-        // C-12 前的既有行为保持:None 回调 → EOPNOTSUPP。
+        // Pre-existing behavior preserved: None callback → EOPNOTSUPP.
         let mut table = fixture();
         let mut io = MemIo::new(alloc::vec![(5, alloc::vec![0, 0, 0, 0]), (7, alloc::vec![0; 16])]);
         assert_eq!(
@@ -1508,9 +1572,10 @@ mod func_tests {
 
     #[test]
     fn test_handler_sees_name_after_consumed_component() {
-        // C rmib.c:746-748 指针推进语义:name=[0(info), 5(SEM_INFO)]
-        // 时,handler 看到的是 call.name[0]==5、namelen==1——即
-        // "当前节点之后"的剩余分量(kern_ipc_info 的 call_name[0])。
+        // C rmib.c:746-748 pointer-advance semantics: with name=[0(info),
+        // 5(SEM_INFO)] the handler sees call.name[0]==5 and namelen==1 — the
+        // remaining components after the current node (kern_ipc_info's
+        // call_name[0]).
         let mut table = fixture();
         let mut io = MemIo::new(alloc::vec![
             (5, alloc::vec![0, 0, 0, 0, 5, 0, 0, 0]),
@@ -1529,7 +1594,8 @@ mod func_tests {
 
     #[test]
     fn test_data_leaf_bypasses_handler() {
-        // name=[2] 是普通 int 叶:不走 handler,走通用 readwrite。
+        // name=[2] is an ordinary int leaf: it does not go to the handler but to
+        // generic readwrite.
         let mut table = fixture();
         let mut io = MemIo::new(alloc::vec![(5, alloc::vec![1, 0, 0, 0]), (7, alloc::vec![0; 16])]);
         let mut probe = Probe { seen: None, ret: Ok(0) };

@@ -10,16 +10,18 @@
 //! differs from the character framework's endpoint-label publish that the
 //! shared runtime's announce runs. The key spelling is faithful here; the
 //! value-versus-endpoint payload of the announce is a transport detail that
-//! rides on the input server's subscription reader (a closed edge3 concern),
-//! so it is registered rather than faked.
+//! rides on the input server's subscription reader (closed elsewhere), so it
+//! is registered rather than faked.
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs` init 契约：no_std 模式 `_start` 自动调用、幂等），这里无须
-// 也不应再调。
+// The freestanding side holds a link reference to minix-rt: the bin code
+// itself touches no rt symbol, so an unreferenced rlib is discarded whole
+// and `_start`/`#[panic_handler]`/`#[global_allocator]` disappear with it —
+// this is the keep-alive meaning of `extern crate` in panic-halt style. The
+// birth chain's `_start` already finished rt initialization before main
+// (the `lib.rs` init contract: in no_std mode `_start` calls it
+// automatically, idempotently), so there is neither need nor reason to call
+// it again here.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
@@ -27,9 +29,10 @@ use minix_driver_rt::kernel::KernelTransport;
 use minix_driver_rt::runtime::DriverRuntime;
 use minix_sys::inputdriver::announce_key;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字 + Rust
-// ABI + `-> i32`，`os/libs/minix-rt/src/crt0.rs`）；宿主与测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现。
+// The entry point splits by target: the none side satisfies the crt0
+// Consumer contract (name + Rust ABI + `-> i32`,
+// `os/libs/minix-rt/src/crt0.rs`); host and test sides keep `()` — since
+// rustc 1.94, Termination is no longer implemented for i32.
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
@@ -43,10 +46,12 @@ fn main() {
 }
 
 fn real_main() {
-    // 出生自证:C sef_startup 先 sys_whoami 填 sef_self_endpoint(sef.c:76-87,
-    // 失败即 panic :81)。端点由内核引导表授予(引导期不经 RS——旧注失实);
-    // 问询走无源 DirectKernelCallTransport,答案再喂带源的 IPC 传输
-    //(tty NL6-A 同款)。
+    // Birth self-identification: C's sef_startup calls sys_whoami first to
+    // fill sef_self_endpoint (sef.c:76-87, panic on failure at :81). The
+    // endpoint is granted by the kernel boot table (the bootstrap path does
+    // not go through RS); the query rides the sourceless
+    // DirectKernelCallTransport, and the answer then feeds the
+    // endpoint-carrying IPC transport (the same form as tty).
     let who = minix_sys::syscall::sys_whoami(&minix_sys::syscall::DirectKernelCallTransport)
         .unwrap_or_else(|r| panic!("pckbd: sys_whoami failed: {r}"));
     let transport = KernelTransport::new(who.endpoint);

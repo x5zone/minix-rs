@@ -1,18 +1,24 @@
 //! End-to-end face for the `cksum` binary: both the option diagnostics and the
-//! `-a` digest legs, checked against `minix3/usr.bin/cksum/cksum.c`（选项环
-//! `:193-278`、摘要腿 `:474-491`、`hash_digest_file` `:506-524`、`requirehash`
-//! `:521-525`、`usage()` `:535-550`）与它驱动的 libc `getopt`
-//!（`minix3/lib/libc/stdlib/getopt.c:101-104`、`:132-136`）。
+//! `-a` digest legs, checked against `minix3/usr.bin/cksum/cksum.c` (option loop
+//! `:193-278`, digest legs `:474-491`, `hash_digest_file` `:506-524`,
+//! `requirehash` `:521-525`, `usage()` `:535-550`) and the libc `getopt` it
+//! drives (`minix3/lib/libc/stdlib/getopt.c:101-104`, `:132-136`).
 //!
-//! 三种形状各不隶属，旧写法把它们压成一种：
-//! ① getopt 自己报的（集外字母、带值选项缺值）是「libc 一行 + 九行 usage」；
-//! ② 命令自己的 `warnx`（`illegal argument to -a|-o option`、`<旗标> flag requires
-//!    `-a algorithm'`）也是「一行 + 同一块 usage」，但**句子不同**；
-//! ③ usage 块里的程序名在 C 里是**字面量**（`cksum`/`sum`/`md2`…），不跟着 `argv[0]` 走，
-//!    而①那一行跟着 `getprogname()`。
+//! The three shapes are independent; the old implementation collapsed them into
+//! one:
+//! (1) what getopt itself reports (out-of-set letter, value-taking option with a
+//!     missing value) is "one libc line + the nine-line usage";
+//! (2) the command's own `warnx` (`illegal argument to -a|-o option`, `<flag> flag
+//!     requires `-a algorithm'`) is also "one line + the same usage block", but
+//!     with **a different sentence**;
+//! (3) the program name inside the usage block is a **literal** in C
+//!     (`cksum`/`sum`/`md2`...), not taken from `argv[0]`, while the line in (1)
+//!     follows `getprogname()`.
 //!
-//! 摘要那一族的报文形另有四种（三种操作数形状加标准输入），它们的期望值不是算给
-//! 自己看的：出处是本页末尾注明的参照件读数，参照件由本仓的 C 原件编出。
+//! The digest family has four other message shapes (three operand shapes plus
+//! standard input); their expected values are not computed for their own sake:
+//! they come from the reference-binary readings noted at the end of this page,
+//! and the reference binary is built from this repo's C originals.
 
 mod face_support;
 
@@ -23,15 +29,17 @@ use std::process::{Command, Stdio};
 
 const CKSUM: &str = env!("CARGO_BIN_EXE_cksum");
 
-/// 摘要那几条腿要真开档、真读字节，所以得有临时档；`cksum` 的报文里带的就是操作数
-/// 原文，故路径必须是进程独占的（同一台机器上并发跑两个测试进程不能撞名）。
+/// The digest legs really open files and read bytes, so they need scratch files;
+/// `cksum`'s messages carry the operand text verbatim, so the path must be
+/// process-exclusive (two concurrent test processes on one machine must not
+/// collide on a name).
 fn scratch(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!("cksum-face-{}-{name}", std::process::id()));
     path
 }
 
-/// C `usage()` 的九行原文（`cksum.c:535-549`）。
+/// The nine verbatim lines of C `usage()` (`cksum.c:535-549`).
 const USAGE: &str = concat!(
     "usage: cksum [-n] [-a algorithm [-ptx] [-s string]] [-o 1|2]\n",
     "             [file ... | -c [-w] [sumfile]]\n",
@@ -61,8 +69,9 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
-/// 集外字母：libc 的 `unknown option`（**不是** `illegal option`，那是 `pr` 的 `egetopt` 措辞），
-/// 后接整块 usage，退 1（C 的 `usage()` 是 `exit(1)`，旧写法退 2）。
+/// An out-of-set letter: libc's `unknown option` (**not** `illegal option`,
+/// which is `pr`'s `egetopt` wording), followed by the whole usage block and
+/// exit 1 (C's `usage()` calls `exit(1)`; the old implementation exited 2).
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_nine_line_usage() {
     let (out, status, err) = run(&["-Z"], b"a");
@@ -71,8 +80,9 @@ fn an_unknown_letter_prints_the_libc_line_then_the_nine_line_usage() {
     assert_eq!(err, format!("cksum: unknown option -- Z\n{USAGE}"));
 }
 
-/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
-/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+/// Same command seam as `run`, but stderr comes back **byte for byte**:
+/// `from_utf8_lossy` renders a bare `c3` as the three-byte U+FFFD, so the text
+/// form cannot distinguish "one byte" from "two bytes" mistakes.
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(CKSUM)
         .args(args)
@@ -90,15 +100,20 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**。期望逐形取自参照件
-/// `tmp/cksum-hash-state/cksum_ref`（经同名软链 `tmp/cksum-414/cksum` 起 ⇒ 程序名段与本壳
-/// 一致、整条 stderr 直比；本轮先按批次四百零七那条规矩打 `-Z` 验过归属：交回
-/// `unknown option -- Z`，是 Minix 的 `getopt.c` 而不是 glibc 那句带引号的
-/// `invalid option -- 'Z'`）：`-é` 与 `-né` 都是 `cksum: unknown option -- ` + 单个 `c3` +
-/// 换行再跟那**九行** usage（`cksum.c:535-549`）、退 **1**；`-Zé` 停在 `Z`；反面的 `-aé`
-/// 里 `é` 是**值**而不是字母，走命令自己的 `illegal argument to -a option` 再接 usage
-/// （字母位是写死的 `a`，两处渲染同形）。ASCII 那几形（`-Z`、`-q`、`--x`、缺值两句）
-/// 本文件已有主人，不重复承载。
+/// The letter slot of that out-of-set-letter line is **one bare byte**. The
+/// expected form comes from the reference binary
+/// `tmp/cksum-hash-state/cksum_ref` (started through the same-named symlink
+/// `tmp/cksum-414/cksum`, so the program-name segment matches this wrapper and
+/// the whole stderr compares directly; probing `-Z` first established
+/// provenance: it returns `unknown option -- Z`, i.e. Minix's `getopt.c`, not
+/// glibc's quoted `invalid option -- 'Z'`): `-é` and `-né` both print
+/// `cksum: unknown option -- ` + a single `c3` + newline followed by the
+/// **nine-line** usage (`cksum.c:535-549`) and exit **1**; `-Zé` stops at `Z`;
+/// conversely, in `-aé` the `é` is a **value**, not a letter, so it takes the
+/// command's own `illegal argument to -a option` plus usage (the letter slot is
+/// the hard-coded `a`, so both render the same). The ASCII forms (`-Z`, `-q`,
+/// `--x`, the missing-value sentences) already have owners in this file and are
+/// not duplicated here.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_cksum() {
     let want: Vec<u8> = [
@@ -135,7 +150,8 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_cksum() {
     );
 }
 
-/// 带值选项缺值是 libc 的另一句，同样接 usage；两个字母都要试（`-a` 与 `-o`）。
+/// A value-taking option with a missing value is libc's other sentence, also
+/// followed by usage; every value-taking letter must be tried (`-a`, `-o`, `-s`).
 #[test]
 fn a_value_taking_letter_without_its_value_prints_the_libc_line() {
     for letter in ['a', 'o', 's'] {
@@ -150,7 +166,8 @@ fn a_value_taking_letter_without_its_value_prints_the_libc_line() {
     }
 }
 
-/// 值不合法是命令自己的 `warnx`，句子跟着字母走；与①的区别在句子，不在行数。
+/// An illegal value comes from the command's own `warnx`, and the sentence names
+/// the letter; the difference from (1) is the sentence, not the line count.
 #[test]
 fn an_illegal_option_value_names_its_own_letter_in_warnx() {
     let (_, status, err) = run(&["-o", "9"], b"a");
@@ -167,8 +184,9 @@ fn an_illegal_option_value_names_its_own_letter_in_warnx() {
     );
 }
 
-/// C 的 `requirehash`：`<旗标> flag requires `-a algorithm'` 再接 usage。
-/// 旧写法自创成 `requires a hash algorithm` 且不接 usage、还退 2。
+/// C's `requirehash`: `<flag> flag requires `-a algorithm'` followed by usage.
+/// The old implementation invented `requires a hash algorithm`, skipped the
+/// usage block, and exited 2.
 #[test]
 fn the_hash_only_flags_report_requirehash_then_usage() {
     for flag in ['p', 't', 'x'] {
@@ -182,25 +200,33 @@ fn the_hash_only_flags_report_requirehash_then_usage() {
     }
 }
 
-/// getopt 的形状本身要能从外面验：聚簇（`-nq`）与附值（`-o2`）都是合法调用，
-/// 旧写法按整个 token 匹配字母，会把它们当集外字母拒掉。
+/// The getopt shapes themselves must be externally verifiable: clustering
+/// (`-nq`) and inline values (`-o2`) are both legal calls, and the old
+/// implementation matched letters against the whole token and rejected them as
+/// out-of-set letters.
 #[test]
 fn clustered_and_inline_letters_are_accepted() {
     let (out, status, err) = run(&["-nq"], b"abc");
     assert_eq!((status, err.as_str()), (0, ""), "stderr 是 {err:?}");
-    // 输出的具体数字属另一面（`src/cksum.rs` 的库测已钉 crc 值），这里只要求「被接受且有产出」。
+    // The concrete numbers belong to another face (the `src/cksum.rs` library
+    // tests pin the crc values); here only "accepted and produces output" is
+    // required.
     assert!(!out.is_empty(), "被接受就该有校验和输出");
     let (_, status, err) = run(&["-o2"], b"abc");
     assert_eq!((status, err.as_str()), (0, ""), "stderr 是 {err:?}");
-    // `--` 之后的负向词是操作数，不再当旗标（这里它是个读不到的档名）。
+    // A token starting with `-` after `--` is an operand, not a flag (here it is
+    // an unreadable file name).
     let (_, status, _) = run(&["--", "-o"], b"a");
     assert_eq!(status, 1, "`--` 后该把 -o 当操作数");
 }
 
-/// 状态驱动的第一条诊断：`-a` 在已选中 hash 之后再次出现。C 的 `case 'a'` 第一行就是
-/// 这条（`cksum.c:195-199`），`warnx` 两段形（不缀 strerror）再接同一块九行 usage，退 1。
-/// 本壳以前到不了这一形——`-a md5` 在解析阶段就被自创的占位句挡住，于是第二枚 `-a`
-/// 根本没机会被看到；批次三百三十三把「选中」记成状态之后，这条诊断的先后次序就照 C 走了。
+/// State-driven diagnostic one: `-a` appears again after a hash has already been
+/// selected. C's `case 'a'` first line is exactly this (`cksum.c:195-199`): a
+/// two-segment `warnx` (no strerror suffix) followed by the same nine-line usage
+/// block, exit 1. This wrapper could not reach the shape before — `-a md5` was
+/// stopped during parsing by an invented placeholder sentence, so the second `-a`
+/// never got a chance to be seen. Once "selected" became tracked state, this
+/// diagnostic follows C's ordering.
 #[test]
 fn a_second_dash_a_after_a_selection_reports_illegal_use() {
     let (out, status, err) = run(&["-a", "md5", "-a", "sha1"], b"");
@@ -211,14 +237,17 @@ fn a_second_dash_a_after_a_selection_reports_illegal_use() {
         "该是 warnx 那一行接 usage"
     );
     assert_eq!(status, 1);
-    // 第二枚的名字好不好都在所不问：这条诊断先看状态，`crc` 同样被它挡住。
+    // Whether the second name is valid does not matter: this diagnostic checks
+    // state first, so `crc` is stopped by it too.
     let (_, _, err2) = run(&["-a", "md5", "-a", "crc"], b"");
     assert_eq!(err2, err, "报的是「-a 用错了」而不是名字问题");
 }
 
-/// 状态驱动的第二条诊断：`-o` 在已选中 hash 之后出现。C 打的是
-/// `warnx("%s mutually exclusive with sum", hash->hashname)`（`cksum.c:228-234`），
-/// 句子里的名字是 `hashes[]` 表里**大写**那一份（`:126` 的 `"MD5"`），大小写入口不影响它。
+/// State-driven diagnostic two: `-o` appears after a hash has been selected. C
+/// prints `warnx("%s mutually exclusive with sum", hash->hashname)`
+/// (`cksum.c:228-234`), where the name is the **uppercase** entry in the
+/// `hashes[]` table (`"MD5"` at `:126`); the case used on the command line does
+/// not affect it.
 #[test]
 fn dash_o_after_a_selection_names_the_hash_and_exits_one() {
     for word in ["md5", "MD5", "Md5"] {
@@ -233,10 +262,12 @@ fn dash_o_after_a_selection_names_the_hash_and_exits_one() {
             "`-a {word}` 之后 `-o 1` 该报大写的 MD5"
         );
     }
-    // 反过来先 `-o` 再 `-a` 就不冲突：这时状态还是空的，C 也照样走下去——而 C 走下去之后
-    // 只看 `hash`（`cksum.c:478-483` 的 `if (hash != NULL)` 在 `cfncn` 之前），`-o 1` 被
-    // 整个忽略，印的是标准输入的摘要。批次三百八十四把摘要本体接上之后，这一形第一次
-    // 有了真读数。
+    // In the opposite order, `-o` before `-a`, there is no conflict: the state
+    // is still empty and C proceeds as well — and once it proceeds, only `hash`
+    // is consulted (`if (hash != NULL)` at `cksum.c:478-483` precedes `cfncn`),
+    // so `-o 1` is ignored entirely and the standard-input digest is printed.
+    // Once the digest body was wired in, this shape got real readings for the
+    // first time.
     let (out, status, err) = run(&["-o", "1", "-a", "md5"], b"");
     assert_eq!(
         (out.as_str(), status, err.as_str()),
@@ -245,13 +276,15 @@ fn dash_o_after_a_selection_names_the_hash_and_exits_one() {
     );
 }
 
-/// 选中之后到占位之间的那段路：`-p`/`-s` 这类要先过 `requirehash` 的旗标，在 C 里
-/// 一旦 `hash` 已选中就**放行**（`cksum.c:521-525` 的条件不成立），所以它们不该再报
-/// `-p flag requires \`-a algorithm'`；本壳以前无条件报，是因为状态没建模。
-/// 放行之后两条腿分岔：`-p` 只动 `pflag`（`cksum.c:250`），标准输入那一腿照旧要跑，
-/// 于是批次三百八十四接上摘要本体之后它印的是真摘要；`-s` 还置 `nohashstdin`
-///（`:258`）并且自己那一句要靠 `stringfunc`，那条腿仍在占位句上（`CKSUM-HASH-STATE` 的
-/// 下一片）。
+/// The stretch between selection and the placeholder: flags like `-p`/`-s` that
+/// must first pass `requirehash` are **let through** in C once `hash` is
+/// selected (the condition at `cksum.c:521-525` does not hold), so they must not
+/// report `-p flag requires \`-a algorithm'` anymore; this wrapper used to report
+/// it unconditionally because the state was not modeled. After the let-through
+/// the two legs diverge: `-p` only touches `pflag` (`cksum.c:250`) and the
+/// standard-input leg still runs, so once the digest body was wired in it prints
+/// a real digest; `-s` also sets `nohashstdin` (`:258`) and its own line depends
+/// on `stringfunc`, which is still on the placeholder sentence.
 #[test]
 fn flags_requiring_a_hash_pass_once_a_hash_is_selected() {
     let (out, s_p, e_p) = run(&["-a", "sha1", "-p"], b"");
@@ -264,8 +297,10 @@ fn flags_requiring_a_hash_pass_once_a_hash_is_selected() {
         ("da39a3ee5e6b4b0d3255bfef95601890afd80709\n", 0, ""),
         "`-p` 放行之后走的是标准输入那一腿"
     );
-    // `-s` 放行之后自己那一行就印完了，并且 `nohashstdin` 让标准输入那一腿整个跳过
-    //（参照件 s-10 形：`-a sha1 -p -s abc` 只有一行串摘要，既不转抄也不摘要标准输入）。
+    // Once `-s` is let through, its own line is printed and `nohashstdin` makes
+    // the standard-input leg skip entirely (reference form s-10: `-a sha1 -p -s
+    // abc` prints only the string digest line, neither copying nor digesting
+    // standard input).
     let (out, s_s, e_s) = run(&["-a", "sha1", "-s", "abc"], b"xyzzy");
     assert!(
         !e_s.contains("requires `-a algorithm'"),
@@ -280,7 +315,8 @@ fn flags_requiring_a_hash_pass_once_a_hash_is_selected() {
         ),
         "`-s` 印的是串摘要那一行，标准输入的 `xyzzy` 不再被摘要"
     );
-    // 没选中时仍是批次三百零七钉下的那一句（对照，证明放行是由状态决定的）。
+    // Without a selection it is still the same sentence (control: proves the
+    // let-through is decided by state).
     let (_, s0, e0) = run(&["-p"], b"");
     assert_eq!(
         (s0, e0.as_str()),
@@ -291,11 +327,13 @@ fn flags_requiring_a_hash_pass_once_a_hash_is_selected() {
     );
 }
 
-/// 三族各自端到端：文件操作数走 C 的三种报文形（缺省 `NAME (档) = 摘要`、`-n` 把摘要
-/// 提到前面并接空格与档名、`-q` 只剩摘要），`-q` 与 `-n` 同时给时按
-/// `cksum.c:515-520` 的次序 ** quiet 赢**。摘要的期望值出自本仓 C 原件编出的参照件
-/// （配方见 `rewrite-notes/18-stage-commands/todo.md` 批次三百八十四），内容是同一份
-/// `a\na\nb\n`，三族各一行，一枚算法对一次形状表。
+/// Each of the three families end to end: a file operand follows C's three
+/// message shapes (default `NAME (file) = digest`, `-n` putting the digest first
+/// followed by a space and the file name, `-q` leaving only the digest), and
+/// when `-q` and `-n` are both given, quiet wins per the order at
+/// `cksum.c:515-520`. The expected digests come from the reference binary built
+/// from this repo's C originals; the content is the same `a\na\nb\n` in every
+/// case, one line per family, one algorithm against one shape table.
 #[test]
 fn md5_sha1_sha256_print_c_shapes_for_a_file_operand() {
     let file = scratch("digest-body");
@@ -331,9 +369,10 @@ fn md5_sha1_sha256_print_c_shapes_for_a_file_operand() {
     let _ = fs::remove_file(&file);
 }
 
-/// 第二片新接的三族走同一张形状表：`MD4`、`SHA384`、`SHA512`。摘要值同样出自参照件，
-/// 内容与上一枚门用的是同一份 `a\na\nb\n`，所以两枚门横向还能互校（同一份输入、六串
-/// 摘要、两套形状）。
+/// The next three newly wired families follow the same shape table: `MD4`,
+/// `SHA384`, `SHA512`. The digest values likewise come from the reference
+/// binary, over the same `a\na\nb\n`, so the two gates can cross-check each
+/// other (same input, six digests, two shape tables).
 #[test]
 fn md4_sha384_sha512_print_c_shapes_for_a_file_operand() {
     let file = scratch("digest-wide");
@@ -370,8 +409,10 @@ fn md4_sha384_sha512_print_c_shapes_for_a_file_operand() {
     let _ = fs::remove_file(&file);
 }
 
-/// 最后两族走同一张形状表：`MD2` 与 `RMD160`。到这一枚门为止，C 的八枚算法都能从命令行
-/// 产出真摘要，`cksum -a <八枚任一> <档>` 三形各有一处端到端依据。
+/// The last two families follow the same shape table: `MD2` and `RMD160`. With
+/// this gate, all eight C algorithms produce real digests from the command line,
+/// and each of the three shapes for `cksum -a <any of the eight> <file>` has
+/// end-to-end evidence.
 #[test]
 fn md2_and_rmd160_print_c_shapes_for_a_file_operand() {
     let file = scratch("digest-tail");
@@ -402,9 +443,11 @@ fn md2_and_rmd160_print_c_shapes_for_a_file_operand() {
     let _ = fs::remove_file(&file);
 }
 
-/// 读不到的操作数：C 的 `filefunc` 交回 `NULL` 时不印摘要行，`main` 报
-/// `warn("%s", fn)` 并把 `rval` 置 1（`cksum.c:477-483`）。好档仍然各得一行，且**按
-/// 操作数顺序**——把坏档夹在两枚好档中间，两行摘要的次序不能跟着坏档走。
+/// An unreadable operand: when C's `filefunc` returns `NULL` no digest line is
+/// printed; `main` reports `warn("%s", fn)` and sets `rval` to 1
+/// (`cksum.c:477-483`). Good files still each get a line, **in operand order** —
+/// with the bad file between two good ones, the order of the two digest lines
+/// must not follow the bad file.
 #[test]
 fn an_unreadable_operand_prints_no_digest_line_and_makes_the_run_fail() {
     let first = scratch("first");
@@ -435,10 +478,12 @@ fn an_unreadable_operand_prints_no_digest_line_and_makes_the_run_fail() {
     }
 }
 
-/// `-p` 的转抄在摘要**之前**，而且转抄的是原样字节（C 的 `MD5Filter` 边读边 `fwrite`，
-/// 末尾才 `printf("%s\n", …End(…))`，`minix3/usr.bin/cksum/md5.c` 的 `MD5Filter`）。
-/// 输入不带换行时，那一行摘要就接在转抄的最后一个字节后面——这枚门钉的就是这个不分
-/// 行、不补换行的形状。
+/// `-p`'s passthrough happens **before** the digest, and it copies the original
+/// bytes (C's `MD5Filter` reads and `fwrite`s as it goes, only calling
+/// `printf("%s\n", ...End(...))` at the end; `MD5Filter` in
+/// `minix3/usr.bin/cksum/md5.c`). When the input has no trailing newline, the
+/// digest line follows the last copied byte directly — this gate pins exactly
+/// that shape: no line break inserted, no newline appended.
 #[test]
 fn the_passthrough_copies_the_input_verbatim_before_the_digest() {
     let (out, status, err) = run(&["-a", "md5", "-p"], b"xyzzy");
@@ -449,16 +494,19 @@ fn the_passthrough_copies_the_input_verbatim_before_the_digest() {
     );
     assert_eq!((status, err.as_str()), (0, ""));
 
-    // 不给 `-p` 就没有转抄，只有那一行摘要（同一份输入）。
+    // Without `-p` there is no passthrough, only the digest line (same input).
     let (out, _, _) = run(&["-a", "md5"], b"xyzzy");
     assert_eq!(out, "1271ed5ef305aadabc605b1609e24c52\n");
 }
 
-/// `-s` 那一行的形：`NAME ("<串>") = <摘要>`，串**原样回显**（带空格、空串都不加任何处理），
-/// 而且它不受 `-n`/`-q`/`-p` 影响——C 的 `MD5String` 只有一句写死的 `printf`
-///（`minix3/usr.bin/cksum/md5.c:65-66`），`print_flags` 只在 `hash_digest_file`
-///（`cksum.c:506-524`）那条腿里被读。期望值取自本仓 C 原件编出的参照件
-///（`tmp/cksum-hash-state/readings.log` 的 s-1…s-14 各形，配方 `bash tmp/cksum-hash-state/shapes.sh`）。
+/// The shape of the `-s` line: `NAME ("<string>") = <digest>`, with the string
+/// **echoed verbatim** (spaces or the empty string get no special treatment),
+/// and it is unaffected by `-n`/`-q`/`-p` — C's `MD5String` has a single
+/// hard-coded `printf` (`minix3/usr.bin/cksum/md5.c:65-66`), and `print_flags`
+/// is only read on the `hash_digest_file` leg (`cksum.c:506-524`). The expected
+/// values come from the reference binary built from this repo's C originals
+/// (forms s-1...s-14 in `tmp/cksum-hash-state/readings.log`, recipe
+/// `bash tmp/cksum-hash-state/shapes.sh`).
 #[test]
 fn dash_s_prints_the_string_digest_line_verbatim() {
     for (value, expected) in [
@@ -474,7 +522,8 @@ fn dash_s_prints_the_string_digest_line_verbatim() {
         );
     }
 
-    // 取值的两条路都要走到同一形：附值（`-sabc`）与聚簇带值（`-sa`，参照件 s-5/s-6 两形）。
+    // Both ways of taking the value must reach the same shape: attached value
+    // (`-sabc`) and clustered-with-value (`-sa`, reference forms s-5/s-6).
     for (flag, value, digest) in [
         ("-sabc", "abc", "900150983cd24fb0d6963f7d28e17f72"),
         ("-sa", "a", "0cc175b9c0f1b6a831c399e269772661"),
@@ -487,7 +536,8 @@ fn dash_s_prints_the_string_digest_line_verbatim() {
         );
     }
 
-    // `-n`/`-q`/`-p` 都不改这一行（s-10/s-11/s-12 三形同值），换算法就换名字与摘要（s-13/s-14）。
+    // `-n`/`-q`/`-p` do not change this line (forms s-10/s-11/s-12 have the same
+    // value); changing the algorithm changes the name and the digest (s-13/s-14).
     for prefix in [vec!["-n"], vec!["-q"], vec!["-p"]] {
         let mut argv = vec!["-a", "md5"];
         argv.extend(prefix.iter().copied());
@@ -513,10 +563,12 @@ fn dash_s_prints_the_string_digest_line_verbatim() {
     );
 }
 
-/// `-x` 打的八枚串是 C 的 `MD5TestSuite` 写死的那一份（`md5.c:118-133`），八枚算法共用
-/// 同一串文字（`md2.c`/`md4.c`/`rmd160.c`/`sha1.c`/`sha2*.c` 都只 `#include "md5.c"`），
-/// 所以这里是**整块九行**逐字对参照件（x-1 形）。最后一枚在 C 里是反斜杠续行拼出来的
-/// 80 字符（`:143-144`），抄错长度就立刻在这一行分叉。
+/// The eight strings `-x` prints are the ones hard-coded in C's `MD5TestSuite`
+/// (`md5.c:118-133`), shared by all eight algorithms (`md2.c`/`md4.c`/`rmd160.c`/
+/// `sha1.c`/`sha2*.c` all just `#include "md5.c"`), so here the **whole nine-line
+/// block** compares verbatim against the reference (form x-1). The last string is
+/// 80 characters assembled with backslash continuations in C (`:143-144`); a
+/// wrong length diverges on that line immediately.
 #[test]
 fn dash_x_prints_the_eight_reference_strings() {
     let expected = concat!(
@@ -534,11 +586,13 @@ fn dash_x_prints_the_eight_reference_strings() {
     assert_eq!((status, err.as_str()), (0, ""), "stderr 是 {err:?}");
     assert_eq!(out, expected, "九行整块对参照件 x-1");
 
-    // 出现两次就印两套（x-5 形： getopt 环每命中一次调一次 `testsuitefunc`）。
+    // Given twice, it prints two sets (form x-5: the getopt loop calls
+    // `testsuitefunc` once per hit).
     let (out, _, _) = run(&["-a", "md5", "-x", "-x"], b"");
     assert_eq!(out, format!("{expected}{expected}"), "重复出现不合并");
 
-    // 同一串文字配 SHA512 的 128 位十六进制（x-2 形里取头尾两枚，长度不对就当场分叉）。
+    // The same strings with SHA512's 128 hex digits (form x-2 spot-checks the
+    // first and last; a wrong length diverges on the spot).
     let (out, _, _) = run(&["-a", "sha512", "-x"], b"");
     assert_eq!(out.lines().count(), 9, "八枚串加一行标题");
     assert_eq!(
@@ -558,10 +612,12 @@ fn dash_x_prints_the_eight_reference_strings() {
     );
 }
 
-/// `-t` 的四行里前两行是写死的：`%s time trial.  Digesting %d %d-byte blocks ...` 加
-/// 紧随的 `" done\n"`（`md5.c:81-83`、`:101`），所以第一行末尾是 `... done`，中间**两个**
-/// 空格在 `trial.` 之后。第二行的摘要由那 1000 × 1000 字节决定（t-1 形）；
-/// 后两行是墙钟，只能钉住形——`Time = <n> seconds` 与 `Speed = <n> bytes/second`。
+/// The first two of `-t`'s four lines are hard-coded: `%s time trial.  Digesting
+/// %d %d-byte blocks ...` followed by `" done\n"` (`md5.c:81-83`, `:101`), so the
+/// first line ends with `... done`, with **two** spaces after `trial.`. The
+/// second line's digest is determined by those 1000 x 1000 bytes (form t-1); the
+/// last two lines are wall-clock readings, so only their shape can be pinned —
+/// `Time = <n> seconds` and `Speed = <n> bytes/second`.
 #[test]
 fn dash_t_prints_four_lines_with_the_wall_clock_pair() {
     let (out, status, err) = run(&["-a", "md5", "-t"], b"");
@@ -575,8 +631,11 @@ fn dash_t_prints_four_lines_with_the_wall_clock_pair() {
         ],
         "前两行逐字对参照件 t-1（`trial.` 之后两个空格，行尾是 `... done`）"
     );
-    // 后两行是墙钟，钉不得值；钉的是 C 那句算术：`Speed = 1000*1000 / (delta != 0 ? delta : 1)`
-    //（`md5.c:109-111`）。一秒内跑完时读数正是参照件那一形 `Time = 0` 与 `Speed = 1000000`。
+    // The last two lines are wall-clock readings, so their values cannot be
+    // pinned; what is pinned is C's arithmetic:
+    // `Speed = 1000*1000 / (delta != 0 ? delta : 1)` (`md5.c:109-111`). When the
+    // run finishes within a second the readings are exactly the reference's
+    // `Time = 0` and `Speed = 1000000`.
     let number = |line: &str, prefix: &str, suffix: &str| -> i64 {
         line.strip_prefix(prefix)
             .and_then(|rest| rest.strip_suffix(suffix))
@@ -592,12 +651,15 @@ fn dash_t_prints_four_lines_with_the_wall_clock_pair() {
         "除数按 C 取 `delta != 0 ? delta : 1`"
     );
     if elapsed == 0 {
-        // 一秒内跑完（本机与容器都是这一形，参照件 t-1 亦此形）时除数必须取 1：
-        // 这一枚分支不钉住的话，「把除数写死成 1」这种注入在本机就看不出来。
+        // When the run finishes within a second (the case on this machine and in
+        // containers, and the reference form t-1 too), the divisor must be 1: if
+        // this branch were not pinned, an injection that hard-codes the divisor
+        // to 1 would be invisible here.
         assert_eq!(speed, 1_000_000, "Time = 0 那一支的 Speed 读数");
     }
 
-    // 换算法只换名字与摘要，四行的骨架不动。
+    // Changing the algorithm changes only the name and the digest; the four-line
+    // skeleton stays.
     let (out, _, _) = run(&["-a", "sha1", "-t"], b"");
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 4, "四行：{lines:?}");
@@ -610,12 +672,15 @@ fn dash_t_prints_four_lines_with_the_wall_clock_pair() {
     assert!(lines[3].starts_with("Speed = ") && lines[3].ends_with(" bytes/second"));
 }
 
-/// 三条自印腿的**次序**：它们在 C 的 getopt 环里就跑完了，所以在操作数之前、也在
-/// 报错那一条诊断之前。参照件 s-7/x-6/t-3 三形都是「腿的行在前，档名报错在后」，
-/// e-1/e-2/e-3 三形都是「stdout 已有那一行，stderr 是诊断加 usage，退码 1」。
+/// The **order** of the three self-printing legs: they finish inside C's getopt
+/// loop, so they come before the operands and also before the error diagnostic.
+/// Reference forms s-7/x-6/t-3 are all "leg lines first, file-name error after",
+/// and e-1/e-2/e-3 are all "stdout already has that line, stderr has the
+/// diagnostic plus usage, exit code 1".
 #[test]
 fn the_self_printing_legs_come_before_operands_and_before_errors() {
-    // 同现时按 argv 次序：`-x -s abc` 是套件九行在前、串摘要一行在后（s-9 形）。
+    // When both appear, argv order applies: `-x -s abc` prints the nine-line
+    // suite first and the string-digest line after (form s-9).
     let (out, _, _) = run(&["-a", "md5", "-x", "-s", "abc"], b"");
     assert!(out.starts_with("MD5 test suite:\n"), "{out:?}");
     assert!(
@@ -623,7 +688,8 @@ fn the_self_printing_legs_come_before_operands_and_before_errors() {
         "套件之后才是 -s 那一行"
     );
 
-    // 有操作数时腿在前、档在后；档读不到照旧是那句 `warn`（s-7 形）。
+    // With an operand, the legs come first and the file after; an unreadable
+    // file still gets that `warn` line (form s-7).
     let missing = scratch("legs-missing");
     let (out, status, err) = run(&["-a", "md5", "-s", "abc", missing.to_str().unwrap()], b"");
     assert_eq!(
@@ -636,7 +702,8 @@ fn the_self_printing_legs_come_before_operands_and_before_errors() {
         "stderr 是 {err:?}"
     );
 
-    // 报错追不回来：三形的 stdout 都有那一行，退码都是 1。
+    // The error cannot undo it: in all three shapes stdout has that line and the
+    // exit code is 1.
     for (tail, diagnostic) in [
         (vec!["-Z"], format!("cksum: unknown option -- Z\n{USAGE}")),
         (
@@ -658,7 +725,8 @@ fn the_self_printing_legs_come_before_operands_and_before_errors() {
         assert_eq!((status, err.as_str()), (1, diagnostic.as_str()), "{argv:?}");
     }
 
-    // 反向对照：`-s` 自己没过 `requirehash` 时什么都没有（e-4 形：stdout 空）。
+    // Reverse control: when `-s` itself fails `requirehash`, nothing is printed
+    // (form e-4: stdout empty).
     let (out, status, err) = run(&["-s", "abc"], b"");
     assert_eq!(out, "", "没选中算法就不该有串摘要行");
     assert_eq!(
@@ -670,10 +738,13 @@ fn the_self_printing_legs_come_before_operands_and_before_errors() {
     );
 }
 
-/// 占位句已经全部退场：八枚算法本体、`-s`/`-t`/`-x` 三条自印腿与 hash 在里的 `-c` 校验腿
-/// 都按参照件读数接成真相，所以 `cksum: -a crypto algorithms are not modelled yet`（退 2）
-/// 这一句在本壳里已经不存在——这枚门钉的是「没有任何一形再落回那句占位」。
-/// 判据出处：`cksum.c` 的三条自印腿 `:255-275`、`do_check` 的摘要腿 `:424-426` 与 `:454`。
+/// The placeholder sentence is entirely gone: the eight algorithm bodies, the
+/// three self-printing legs `-s`/`-t`/`-x`, and the `-c` check leg with a hash all
+/// produce real readings from the reference binary, so
+/// `cksum: -a crypto algorithms are not modelled yet` (exit 2) no longer exists
+/// in this wrapper — this gate pins that "no shape falls back to that
+/// placeholder". Source of the criteria: the three self-printing legs in
+/// `cksum.c` `:255-275`, and `do_check`'s digest legs `:424-426` and `:454`.
 #[test]
 fn no_hash_shape_lands_on_the_retired_placeholder() {
     let file = scratch("placeholder-none");
@@ -697,10 +768,12 @@ fn no_hash_shape_lands_on_the_retired_placeholder() {
     let _ = fs::remove_file(&file);
 }
 
-/// `cksum -c` 遇上 `NAME (档) = 摘要` 这一形：C 用 `hash->filefunc` 把档重算一遍再逐字比
-///（`cksum.c:424-426`），**全对就一声不出**（参照件 c-1），而且这一形不需要 `-a`——
-/// 算法名是从行首前缀认出来的（`:343-352`，参照件 c-7 形同值）。摘要期望值取自参照件
-/// f-4 形（同一份内容 `hello\n`）。
+/// `cksum -c` meeting the `NAME (file) = digest` shape: C recomputes the file
+/// with `hash->filefunc` and compares character by character
+/// (`cksum.c:424-426`); **a full match prints nothing** (reference form c-1),
+/// and this shape needs no `-a` — the algorithm name is recognized from the line
+/// prefix (`:343-352`, same values as reference form c-7). The expected digest
+/// comes from reference form f-4 (same content `hello\n`).
 #[test]
 fn a_matching_digest_line_says_nothing_and_exits_zero() {
     let file = scratch("check-good");
@@ -726,7 +799,8 @@ fn a_matching_digest_line_says_nothing_and_exits_zero() {
         );
     }
 
-    // 换算法就换摘要：同一份字节配 SHA256 的 64 位十六进制（参照件 f-4 同族读数）。
+    // Changing the algorithm changes the digest: the same bytes with SHA256's 64
+    // hex digits (same family of readings as reference f-4).
     let sha = scratch("check-good-sha");
     fs::write(
         &sha,
@@ -747,9 +821,11 @@ fn a_matching_digest_line_says_nothing_and_exits_zero() {
     let _ = fs::remove_file(&sha);
 }
 
-/// 摘要不对的那一行：C 打 `(MD5) <档>: FAILED`（`:454` 的 `printf("(%s) ", hash->hashname)`
-/// 再接 `:455` 那句），整趟退 1（`badcnt > 0 ⇒ rval = 1`，`:463-464`）。前缀里的名字跟着
-/// **行首那一枚**，不跟着 `-a`：参照件 g-11 形是 `-a md5` 配 `SHA1 (...)` 一行，报的是 `(SHA1) `。
+/// A line with a wrong digest: C prints `(MD5) <file>: FAILED` (`printf("(%s) ",
+/// hash->hashname)` at `:454`, then the sentence at `:455`) and the whole run
+/// exits 1 (`badcnt > 0 => rval = 1`, `:463-464`). The name in the prefix follows
+/// **the one at the line start**, not `-a`: reference form g-11 combines `-a md5`
+/// with a `SHA1 (...)` line and reports `(SHA1) `.
 #[test]
 fn a_mismatched_digest_line_fails_with_the_line_own_hash_name() {
     let file = scratch("check-bad");
@@ -767,7 +843,8 @@ fn a_mismatched_digest_line_fails_with_the_line_own_hash_name() {
     assert_eq!(out, format!("(MD5) {name}: FAILED\n"), "stderr 是 {err:?}");
     assert_eq!((status, err.as_str()), (1, ""), "摘要不对要退 1");
 
-    // 行首名字压过 `-a`：这一行按 SHA1 重算，所以报的也是 `(SHA1) `（参照件 g-11/g-12 两形）。
+    // The line-start name wins over `-a`: this line is recomputed as SHA1, so it
+    // reports `(SHA1) ` too (reference forms g-11/g-12).
     let other = scratch("check-other-sums");
     fs::write(
         &other,
@@ -783,9 +860,11 @@ fn a_mismatched_digest_line_fails_with_the_line_own_hash_name() {
     let _ = fs::remove_file(&other);
 }
 
-/// 档读不到时的两条路**分叉**：`hash` 在里那一支走 `access(filename, R_OK)`（`:424`），
-/// 失败只把这一行判红、一句 warn 都没有；crc 那一支才 warn（`:432`，且只在 `-w` 下）。
-/// 参照件 c-5 与 h-13 两形（后者带 `-w`）实测都是只有 `(MD5) <档>: FAILED` 一行。
+/// The two paths **diverge** when the file cannot be read: the branch with a hash
+/// goes through `access(filename, R_OK)` (`:424`) and on failure only marks that
+/// line bad, with no warn at all; only the crc branch warns (`:432`, and only
+/// under `-w`). Reference forms c-5 and h-13 (the latter with `-w`) both show
+/// only the single `(MD5) <file>: FAILED` line.
 #[test]
 fn an_unreadable_operand_in_a_digest_line_fails_without_warning() {
     let missing = scratch("check-missing-target");
@@ -822,9 +901,11 @@ fn an_unreadable_operand_in_a_digest_line_fails_without_warning() {
     let _ = fs::remove_file(&sums);
 }
 
-/// 认不出的算法名：C 找完 `hashes[]` 没命中就 `rval = 1` 并 `continue`（`:356-366`），
-/// **不打 FAILED 行**；那句 `unknown hash: <整行>` 只在 `-w` 下打（参照件 c-3 与 c-4 两形：
-/// 前者 stdout/stderr 全空，后者 stderr 收到整行原文）。
+/// An unrecognized algorithm name: after scanning `hashes[]` without a hit, C
+/// sets `rval = 1` and `continue`s (`:356-366`), printing **no FAILED line**; the
+/// `unknown hash: <whole line>` sentence is printed only under `-w` (reference
+/// forms c-3 and c-4: the former has both stdout and stderr empty, the latter
+/// puts the whole line on stderr).
 #[test]
 fn an_unknown_hash_prefix_fails_the_run_and_only_names_the_line_under_w() {
     let sums = scratch("check-unknown-sums");
@@ -848,7 +929,8 @@ fn an_unknown_hash_prefix_fails_the_run_and_only_names_the_line_under_w() {
         "句子带的是整行原文"
     );
 
-    // 大小写敏感：`md5` 这种小写行首同样认不出（参照件 g-10 形），与 `-a` 那一腿正好相反。
+    // Case-sensitive: a lowercase line start like `md5` is equally unrecognized
+    // (reference form g-10), the exact opposite of the `-a` leg.
     let lower = scratch("check-lower-sums");
     fs::write(&lower, "md5 (/nope) = d41d8cd98f00b204e9800998ecf8427e\n").unwrap();
     let (_, status, err) = run(&["-w", "-c", lower.to_str().unwrap()], b"");
@@ -864,10 +946,13 @@ fn an_unknown_hash_prefix_fails_the_run_and_only_names_the_line_under_w() {
     let _ = fs::remove_file(&lower);
 }
 
-/// `hash` 状态**跨行留存**：C 在认出一行摘要时把 `hash` 指过去（`hash = nhash`，`:363`），
-/// 于是同一档里后面那些没有 `(` 的普通行也走摘要那一支（`:373-389`），第一个词整串被拿去和
-/// 重算的摘要比——参照件 c-6/h-1/h-4 三形实测：普通行一律判红并带 `(MD5) ` 前缀，
-/// 而且 h-4 **没给 `-a`**（算法是第一行自己认的）。
+/// The `hash` state **persists across lines**: when C recognizes a digest line it
+/// points `hash` at it (`hash = nhash`, `:363`), so later ordinary lines without
+/// a `(` in the same file also take the digest branch (`:373-389`), and the first
+/// word is compared as a whole against the recomputed digest — reference forms
+/// c-6/h-1/h-4 all show ordinary lines marked bad with the `(MD5) ` prefix, and
+/// h-4 gives **no `-a`** at all (the algorithm was recognized from the first
+/// line).
 #[test]
 fn a_digest_line_switches_the_rest_of_the_file_to_digest_compare() {
     let good = scratch("mixed-good");
@@ -894,8 +979,9 @@ fn a_digest_line_switches_the_rest_of_the_file_to_digest_compare() {
         assert_eq!(status, 1, "{args:?}");
     }
 
-    // 反过来的次序（普通行在前）也一样：那时 `hash` 还没被认定，走的是 crc 那一支，
-    // 报的是不带前缀的 `<档>: FAILED`（参照件 c-8 形）。
+    // The reverse order (ordinary line first) behaves the same way: `hash` is not
+    // yet established, so the crc branch applies and reports the unprefixed
+    // `<file>: FAILED` (reference form c-8).
     let reversed = scratch("mixed-reversed");
     fs::write(&reversed, format!("12345 {good_name}\n")).unwrap();
     let (out, status, _) = run(&["-c", reversed.to_str().unwrap()], b"");
@@ -907,10 +993,12 @@ fn a_digest_line_switches_the_rest_of_the_file_to_digest_compare() {
     let _ = fs::remove_file(&reversed);
 }
 
-/// 两句格式诊断按状态分叉，`-w` 下的句子不同：没有 `(` 又没有空格时，
-/// `hash` 未选中报 `bogus format: <行>. Skipping...`（`:395-401`，参照件 h-9 形），
-/// 已选中报 `no filename in <行>? Skipping...`（`:377-383`）。有 `(` 缺 `)` 用的还是前一句
-///（`:322-328`）。三形都记一次失败。
+/// The two format diagnostics diverge on state, and the sentences differ under
+/// `-w`: with neither `(` nor a space, an unselected `hash` reports
+/// `bogus format: <line>. Skipping...` (`:395-401`, reference form h-9) while a
+/// selected one reports `no filename in <line>? Skipping...` (`:377-383`). A `(`
+/// without a matching `)` still uses the former sentence (`:322-328`). All three
+/// shapes record one failure.
 #[test]
 fn the_two_format_sentences_follow_the_hash_state() {
     let no_space = scratch("sentence-nospace");
@@ -922,7 +1010,8 @@ fn the_two_format_sentences_follow_the_hash_state() {
         "hash 未选中那支的句子"
     );
 
-    // 同一行，但让 `hash` 先被前面一行认定 → 报的是另一句。
+    // Same line, but let `hash` be established by an earlier line -> the other
+    // sentence is reported.
     let good = scratch("sentence-state");
     fs::write(&good, "hello\n").unwrap();
     let good_name = good.to_str().unwrap().to_owned();
@@ -940,7 +1029,7 @@ fn the_two_format_sentences_follow_the_hash_state() {
         "hash 已选中那支的另一句"
     );
 
-    // 有 `(` 缺 `)`：还是 `bogus format` 那一句（`:322-328`）。
+    // A `(` without a matching `)`: still the `bogus format` sentence (`:322-328`).
     let unclosed = scratch("sentence-unclosed");
     fs::write(&unclosed, "MD5 (/nope = abc\n").unwrap();
     let (_, status, err) = run(&["-w", "-c", unclosed.to_str().unwrap()], b"");
@@ -955,16 +1044,19 @@ fn the_two_format_sentences_follow_the_hash_state() {
     let _ = fs::remove_file(&unclosed);
 }
 
-/// 文件腿的三形逐字对参照件（`tmp/cksum-hash-state/readings.log` 的 f-1/f-3/c-9 三节）：
-/// 操作数读不到是 `<程序名>: <操作数>: <strerror>`，目录那一形是 `.: Is a directory`，
-/// 校验档打不开是 `<程序名>: Cannot read <路径>: <strerror>` 并退 1。三句都走 `err(3)`/`warn(3)`
-/// 那一条缝（`bin_support::warn_line` → `minix_sys::err_line`），不是把 `warn(3)` 当 `warnx(3)` 用。
+/// The three file legs compare verbatim against the reference (sections
+/// f-1/f-3/c-9 in `tmp/cksum-hash-state/readings.log`): an unreadable operand is
+/// `<program>: <operand>: <strerror>`, the directory shape is
+/// `.: Is a directory`, and an unopenable checksum file is `<program>: Cannot
+/// read <path>: <strerror>` with exit 1. All three go through the `err(3)`/
+/// `warn(3)` seam (`bin_support::warn_line` -> `minix_sys::err_line`), not
+/// through `warn(3)` used as `warnx(3)`.
 #[test]
 fn the_three_file_legs_carry_the_strerror_segment() {
     let missing = scratch("fileleg-missing").to_str().unwrap().to_owned();
     let here = ".";
 
-    // f-1：`-a md5 <读不到的档>`，摘要行一行不出、退 1。
+    // f-1: `-a md5 <unreadable file>` produces no digest line and exits 1.
     let (out, status, err) = run(&["-a", "md5", &missing], b"");
     assert_eq!(out, "", "读不到的那档不产行");
     assert_eq!(
@@ -975,11 +1067,13 @@ fn the_three_file_legs_carry_the_strerror_segment() {
         )
     );
 
-    // f-3：目录当操作数——句子由 `strerror` 表给，不是自创的「Is a directory」文案。
+    // f-3: a directory as the operand — the sentence comes from the `strerror`
+    // table, not invented "Is a directory" wording.
     let (_, status, err) = run(&["-a", "md5", here], b"");
     assert_eq!((status, err.as_str()), (1, "cksum: .: Is a directory\n"));
 
-    // c-9：校验档本身打不开是 `err(1, "Cannot read %s", …)`——三段句子加退 1。
+    // c-9: an unopenable checksum file itself is `err(1, "Cannot read %s", ...)`
+    // — the three-segment sentence plus exit 1.
     let (out, status, err) = run(&["-a", "md5", "-c", &missing], b"");
     assert_eq!(out, "");
     assert_eq!(
@@ -990,7 +1084,8 @@ fn the_three_file_legs_carry_the_strerror_segment() {
         )
     );
 
-    // 不带 `-a` 的摘要档校验也走同一句（`err(1, …)` 在选项环之外，与算法无关）。
+    // A checksum-file check without `-a` uses the same sentence (`err(1, ...)`
+    // sits outside the option loop and is algorithm-independent).
     let (_, status, err) = run(&["-c", &missing], b"");
     assert_eq!(
         (status, err.as_str()),
@@ -1001,9 +1096,12 @@ fn the_three_file_legs_carry_the_strerror_segment() {
     );
 }
 
-/// 校验档里那一行的档读不到时，两条路的句子数不同：crc 那支在 `-w` 下打
-/// `<程序名>: <档>: <strerror>`（`cksum.c:432` 的 `warn("%s", filename)`），不带 `-w` 就一句不出；
-/// 摘要那支根本不打这一句（`access` 短路，`:424`）。参照件 h-13 与 f-1 两形的对比。
+/// When the file named by a line in the checksum file cannot be read, the two
+/// paths differ in sentence count: the crc branch prints
+/// `<program>: <file>: <strerror>` under `-w` (`warn("%s", filename)` at
+/// `cksum.c:432`) and nothing without `-w`; the digest branch never prints this
+/// sentence at all (`access` short-circuits, `:424`). Contrast reference forms
+/// h-13 and f-1.
 #[test]
 fn the_crc_check_leg_warns_with_three_segments_only_under_w() {
     let missing = scratch("crcwarn-missing").to_str().unwrap().to_owned();
@@ -1033,10 +1131,13 @@ fn the_crc_check_leg_warns_with_three_segments_only_under_w() {
     let _ = fs::remove_file(&sums);
 }
 
-/// crc 那条腿（不带 `-a` 的操作数）现在也走双生面，所以句子钉得住：C 在 `cksum.c:491-495`
-/// 打的是 `warn("%s", fn)`——程序名、操作数、`strerror` 三段。直写 `minix_sys::open` 的时候
-/// 这一形在宿主上只能钉住占位传输交回的 `Input/output error`（那是载体不是行为），换缝之后
-/// 参照件与本体交回同一句（A/B 232 形不一致 0）。
+/// The crc leg (an operand without `-a`) now goes through the twin face too, so
+/// its sentence can be pinned: C prints `warn("%s", fn)` at `cksum.c:491-495` —
+/// program name, operand, `strerror`, three segments. When calling
+/// `minix_sys::open` directly, the host could only pin the placeholder
+/// transport's `Input/output error` (carrier, not behavior); after the seam
+/// change, reference and implementation return the same sentence (A/B: zero
+/// mismatches across 232 shapes).
 #[test]
 fn the_crc_operand_leg_prints_the_same_three_segments_as_the_hash_leg() {
     let missing = scratch("crcshape-missing").to_str().unwrap().to_owned();
@@ -1048,11 +1149,14 @@ fn the_crc_operand_leg_prints_the_same_three_segments_as_the_hash_leg() {
         "不带 -a 也是三段形"
     );
 
-    // 目录那一形（参照件 f-3）：句子来自承载的 strerror 表，不是自创文案。
+    // The directory shape (reference f-3): the sentence comes from the carrier's
+    // strerror table, not invented wording.
     let (_, status, err) = run(&["."], b"");
     assert_eq!((status, err.as_str()), (1, "cksum: .: Is a directory\n"));
 
-    // 好档与坏档混在一起：坏档占一个位置但不产行，好档按 argv 次序照出（参照件 f-2 的推论）。
+    // Good and bad files mixed: the bad file takes a position but produces no
+    // line, while good files come out in argv order (a corollary of reference
+    // f-2).
     let good = scratch("crcshape-good");
     fs::write(&good, "abc\n").unwrap();
     let good_name = good.to_str().unwrap().to_owned();
@@ -1071,8 +1175,9 @@ fn the_crc_operand_leg_prints_the_same_three_segments_as_the_hash_leg() {
     let _ = fs::remove_file(&good);
 }
 
-/// argv 形态的字节形夹具：一枚裸 `ff` 写不成 `&str`，所以参数按字节交下去
-/// （`OsStr::from_bytes`），比的是子进程实际收到的那串字节。
+/// Byte-shaped argv fixture: a bare `ff` cannot be written as `&str`, so
+/// arguments are passed down as bytes (`OsStr::from_bytes`) and the comparison is
+/// against the byte string the child process actually receives.
 fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, Vec<u8>, Option<i32>) {
     use std::os::unix::ffi::OsStrExt as _;
     let mut child = Command::new(CKSUM)
@@ -1087,7 +1192,8 @@ fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, Vec<u8>, Option<i32>) {
     (output.stdout, output.stderr, output.status.code())
 }
 
-/// 临时档的**字节形**名字：`scratch` 那支交回 `PathBuf`，而这里要在名字里放一枚裸 `ff`。
+/// A **byte-shaped** scratch file name: `scratch` returns a `PathBuf`, while this
+/// one must carry a bare `ff` in the name.
 fn scratch_bytes(suffix: &[u8]) -> Vec<u8> {
     let mut name = std::env::temp_dir()
         .as_os_str()
@@ -1101,9 +1207,11 @@ fn scratch_bytes(suffix: &[u8]) -> Vec<u8> {
 
 #[test]
 fn a_raw_byte_in_the_s_string_is_echoed_as_that_byte_by_cksum() {
-    // C 的 `MD5String` 把串交给 `printf("%s (\"%s\") = ", …)`（`md5.c:60-67`），逐字回显
-    // 不转义。这一形不钉摘要值（算法本体另有门钉），钉的是回显位里那一枚裸字节：
-    // 取值链路只要还过一层 `from_utf8_lossy`，这里就成了 `ef bf bd` 三字节。
+    // C's `MD5String` hands the string to `printf("%s (\"%s\") = ", ...)`
+    // (`md5.c:60-67`), echoing it verbatim without escaping. This shape does not
+    // pin the digest value (the algorithm body has its own gate); it pins the
+    // bare byte in the echo slot: if the value path still crossed a
+    // `from_utf8_lossy` layer, this would become the three bytes `ef bf bd`.
     let value = [b"ab".as_slice(), b"\xff", b"cd"].concat();
     let args: [&[u8]; 4] = [
         b"-a".as_slice(),
@@ -1122,15 +1230,19 @@ fn a_raw_byte_in_the_s_string_is_echoed_as_that_byte_by_cksum() {
 
 #[test]
 fn a_raw_byte_in_an_operand_name_is_echoed_as_that_byte_by_cksum() {
-    // C 的摘要行是 `printf("%lu %llu %s\n", v, len, fn)`（`cksum.c:486` 的 `printfile`），
-    // 那个 `fn` 就是 argv 里的一串字节。参数缝半此前在 `support::args()` 里把它折成
-    // 替换字符（一枚 `ff` 变三字节 `ef bf bd`），回显位因此与真源差两字节。
-    // `1112837078 4` 是 `abc` 加换行的 POSIX CRC 与字节数，读数取自本页那枚 crc 形状门。
+    // C's digest line is `printf("%lu %llu %s\n", v, len, fn)` (`printfile` at
+    // `cksum.c:486`), and that `fn` is the byte string from argv. The argument
+    // seam used to fold it into replacement characters in `support::args()` (one
+    // `ff` became the three bytes `ef bf bd`), so the echo slot differed from the
+    // real source by two bytes. `1112837078 4` is the POSIX CRC and byte count
+    // for `abc` plus a newline, taken from the crc shape gate on this page.
     //
-    // 档名**按折叠形落盘**只为把两条腿隔开：开档那一腿仍要 `&str`（在册
-    // `ARGV-BYTE-PATH-IN-LIBS`），本壳因此在开档前折一次；按原字节名落盘的话，宿主上
-    // 只会得到 `ENOENT`，那就退到报文腿、回显位根本走不到。落 `ARGV-BYTE-PATH-IN-LIBS`
-    // 的那一轮该把这里改成原字节名，断言本身不动。
+    // The file is written under the **folded** name only to separate the two
+    // legs: the open leg still requires `&str` (a known libs gap), so this
+    // wrapper folds once before opening. Written under the raw byte name, the
+    // host would only produce `ENOENT`, which falls to the message leg and never
+    // reaches the echo slot. The round that closes that libs gap should switch
+    // this to the raw byte name; the assertions themselves stay unchanged.
     let raw = scratch_bytes(b"raw\xfflib");
     let folded = String::from_utf8_lossy(&raw).into_owned();
     fs::write(&folded, b"abc\n").expect("折叠名的临时档该落得下去");

@@ -1,31 +1,35 @@
-//! 生产传输：devman 作为"文件系统外形的服务器"接在 VFS 的 fsdriver
-//! 协议上，同时在同一个循环里收 DEVMAN 消息（C `fsdriver_task` +
-//! `fdr_other` 的单循环形态，DM-P1-2）。
+//! The production transport: devman sits on VFS's fsdriver protocol as a
+//! "filesystem-shaped server" and receives DEVMAN messages in the same loop
+//! (C's single-loop shape of `fsdriver_task` plus `fdr_other`).
 //!
-//! # 分层
+//! # Layering
 //!
-//! - [`KernelIpc`]：内核面（收/发/往返/通知/grant 两向拷贝）——生产实现
-//!   是 [`SysKernel`]（`minix-sys` 的 `DirectTrapTransport` +
-//!   `sys_safecopyfrom/to`），测试注入脚本替身。**这是本模块能测的全部
-//!   原因**：wire 编解码、分类、回复成型都不碰内核。
-//! - [`MinixTransport`]：`Transport` 的生产实现——`next()` 收包并分类，
-//!   `reply()/send()/sendrec()` 按 fsdriver 协议成型后发出。
+//! - [`KernelIpc`]: the kernel face (receive/send/round trip/notify/both
+//!   directions of grant copy) — the production implementation is [`SysKernel`]
+//!   (`minix-sys`'s `DirectTrapTransport` plus `sys_safecopyfrom/to`), and tests
+//!   inject a scripted stand-in. **This is the whole reason the module is
+//!   testable**: wire encode/decode, classification and reply shaping never
+//!   touch the kernel.
+//! - [`MinixTransport`]: the production `Transport` — `next()` receives and
+//!   classifies, `reply()/send()/sendrec()` shape a message per the fsdriver
+//!   protocol and send it.
 //!
-//! # 协议要点（逐条对 C 锚点）
+//! # Protocol points (each against a C anchor)
 //!
-//! - **transid**：VFS 的请求 `m_type = TRNS_ADD_ID(call_nr, transid)`，
-//!   回复 `m_type = TRNS_ADD_ID(result, transid)`（`fsdriver.c:34-50`）；
-//!   算式用 `minix_types` 的 `trns_*`（vfsif.h:79-81 的唯一权威）。
-//! - **入口分流**：`is_ipc_notify(status) || source != VFS` → `fdr_other`
-//!   且**不回信**（`fsdriver.c:26-31`）；devman 的 `fdr_other` 就是
-//!   DEVMAN 消息面（`DevmanMsg::classify`）。
-//! - **mount 门**：未挂载时除 `REQ_READSUPER` 外一律 `EINVAL`
-//!   （`fsdriver.c:40-46`）；请求号经 `RequestNumber`（含 `GetNode` 空槽
-//!   → `ENOSYS`）。
-//! - **数据面是 grant**：`REQ_READ`/`REQ_GETDENTS` 的 `grant` 指向**调用方**
-//!   缓冲，数据由 FS 侧 `sys_safecopyto` 写出（`libfsdriver` 的
-//!   `fsdriver_copyout`）；`REQ_LOOKUP` 的名字由 FS 侧
-//!   `sys_safecopyfrom` 读入（C 的 `fsdriver_getname`，`call.c:36-41`）。
+//! - **transid**: a VFS request carries `m_type = TRNS_ADD_ID(call_nr, transid)`
+//!   and the reply `m_type = TRNS_ADD_ID(result, transid)` (`fsdriver.c:34-50`);
+//!   the arithmetic uses `minix_types`' `trns_*` (the single authority,
+//!   vfsif.h:79-81).
+//! - **Entry split**: `is_ipc_notify(status) || source != VFS` → `fdr_other`
+//!   with **no reply** (`fsdriver.c:26-31`); devman's `fdr_other` is the DEVMAN
+//!   message face (`DevmanMsg::classify`).
+//! - **mount gate**: while unmounted everything except `REQ_READSUPER` gets
+//!   `EINVAL` (`fsdriver.c:40-46`); request numbers go through `RequestNumber`
+//!   (an empty `GetNode` slot → `ENOSYS`).
+//! - **The data face is a grant**: the `grant` of `REQ_READ`/`REQ_GETDENTS`
+//!   points at the **caller's** buffer, and the FS side writes the data with
+//!   `sys_safecopyto` (`libfsdriver`'s `fsdriver_copyout`); `REQ_LOOKUP` reads
+//!   the name with `sys_safecopyfrom` (C's `fsdriver_getname`, `call.c:36-41`).
 
 use minix_types::{
     is_fs_rq, lookup_req_off, readsuper_req_off, transfer_req_off, trns_add_id, trns_del_id,
@@ -36,26 +40,29 @@ use minix_types::{
 use crate::ipc::DevmanMsg;
 use crate::vtreefs::{Incoming, Reply, Request, Transport};
 
-/// 内核面：收包/发送/往返/通知/grant 两向拷贝。
+/// The kernel face: receive/send/round trip/notify/both directions of grant
+/// copy.
 ///
-/// 生产实现 [`SysKernel`]；测试用脚本替身（本模块的测试与
-/// `server.rs` 的集成测试都靠它）。
+/// The production implementation is [`SysKernel`]; tests use a scripted
+/// stand-in (both this module's tests and `server.rs`'s integration tests rely
+/// on it).
 pub trait KernelIpc {
-    /// 阻塞收包（`ipc_receive` 语义：返回状态字）。
+    /// Blocking receive (`ipc_receive` semantics: returns the status word).
     fn receive(&mut self, src: Endpoint, msg: &mut Message) -> Result<i32, i32>;
-    /// 通知（SEF ping 的 pong 走这里，`sef_ping.c:61`）。
+    /// Notify (SEF ping's pong goes through here, `sef_ping.c:61`).
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32>;
-    /// 非阻塞发（fsdriver 回复用 `ipc_send`，devman 的 DEVMAN 回复用
-    /// `ipc_send`，转发的发起用 `ipc_sendrec`）。
+    /// Non-blocking send (fsdriver replies use `ipc_send`, devman's DEVMAN
+    /// replies use `ipc_send`, and starting a forward uses `ipc_sendrec`).
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), i32>;
-    /// 阻塞往返（C `ipc_sendrec`，bind.c:32/80）。
+    /// Blocking round trip (C `ipc_sendrec`, bind.c:32/80).
     fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), i32>;
-    /// 状态控制动词（C `sys_statectl`，libsys sys_statectl.c:3-11）——
-    /// 出生协议段一（PD-34 `process_init`）的清 IPC 过滤经此发出。
-    /// 返回内核结果码（OK 或负 errno）。
+    /// The state-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11) —
+    /// the birth protocol's first section clears its IPC filter through this
+    /// (`process_init`). Returns the kernel result code (OK or a negative
+    /// errno).
     fn statectl(&mut self, request: i32, address: u64, length: i32) -> i32;
-    /// `sys_safecopyfrom(granter, grant, off, buf)` —— 把调用方缓冲的
-    /// 字节读进来（加名字/写载荷）。
+    /// `sys_safecopyfrom(granter, grant, off, buf)` — read bytes in from the
+    /// caller's buffer (for names and payloads).
     fn safecopy_from(
         &mut self,
         granter: Endpoint,
@@ -63,8 +70,8 @@ pub trait KernelIpc {
         offset: u64,
         buf: &mut [u8],
     ) -> Result<(), i32>;
-    /// `sys_safecopyto(granter, grant, off, buf)` —— 把结果字节写回调用方
-    /// 缓冲（读数据/目录项）。
+    /// `sys_safecopyto(granter, grant, off, buf)` — write result bytes back to
+    /// the caller's buffer (read data and directory entries).
     fn safecopy_to(
         &mut self,
         granter: Endpoint,
@@ -74,7 +81,7 @@ pub trait KernelIpc {
     ) -> Result<(), i32>;
 }
 
-/// 生产内核面：`minix-sys` 的 trap 传输 + 内核调用。
+/// The production kernel face: `minix-sys`'s trap transport plus kernel calls.
 #[derive(Debug, Default)]
 pub struct SysKernel;
 
@@ -148,7 +155,8 @@ impl KernelIpc for SysKernel {
     }
 }
 
-/// `KernelIpc` → `minix_sef::SefIpc` 的桥（SEF 收包只需要收与通知两动词）。
+/// The `KernelIpc` → `minix_sef::SefIpc` bridge (SEF receive needs only the
+/// receive and notify verbs).
 struct SefBridge<'a, K: KernelIpc>(&'a mut K);
 
 impl<K: KernelIpc> minix_sef::SefIpc for SefBridge<'_, K> {
@@ -160,23 +168,28 @@ impl<K: KernelIpc> minix_sef::SefIpc for SefBridge<'_, K> {
     }
 }
 
-/// 生产 `Transport`：一收一分类一回复，FS 面与 DEVMAN 面同循环。
+/// The production `Transport`: receive one, classify it, reply — the FS face
+/// and the DEVMAN face share one loop.
 pub struct MinixTransport<K: KernelIpc> {
     kernel: K,
-    /// SIGTERM 锁存（C libvtreefs `got_signal` → `fsdriver_terminate()` 置
-    /// libfsdriver 的 `running = FALSE`，vtreefs.c:39-46 + fsdriver.c:68-74
-    /// ——`running` 正是传输循环的停止标志，Rust 对位物住本层）。
+    /// The SIGTERM latch (C libvtreefs `got_signal` → `fsdriver_terminate()`
+    /// sets libfsdriver's `running = FALSE`, vtreefs.c:39-46 + fsdriver.c:68-74
+    /// — `running` is exactly the transport loop's stop flag, and the Rust
+    /// counterpart lives on this layer).
     terminate: bool,
-    /// 当前请求的 grant 与对端（`reply()` 要用：数据面写回调用方缓冲）。
+    /// The current request's grant and granter (needed by `reply()`: the data
+    /// face writes back to the caller's buffer).
     current_grant: i32,
     current_granter: Endpoint,
-    /// 当前请求的 transid（回复回显）。
+    /// The current request's transid (echoed in the reply).
     current_transaction: u32,
-    /// 当前请求的调用方（回复目的地；C 的 `m_ptr->m_source`）。
+    /// The current request's caller (the reply destination; C's
+    /// `m_ptr->m_source`).
     current_source: Endpoint,
-    /// 已挂载？（mount 门；与 `Server::process_fs` 的 `VTreeFs` 状态分开
-    /// 保存——C 的 `fsdriver_mounted` 是库全局，Rust 由传输持有一份，
-    /// `Server::run` 的挂载语义不变）。
+    /// Mounted yet? (the mount gate; kept separately from the `VTreeFs` state
+    /// in `Server::process_fs` — C's `fsdriver_mounted` is a library global,
+    /// Rust keeps one copy in the transport, and `Server::run`'s mount
+    /// semantics are unchanged).
     mounted: bool,
 }
 
@@ -193,33 +206,39 @@ impl<K: KernelIpc> MinixTransport<K> {
         }
     }
 
-    /// 借出内核面（测试与装配用）。
+    /// Lend out the kernel face (for tests and assembly).
     pub fn kernel_mut(&mut self) -> &mut K {
         &mut self.kernel
     }
 
-    /// 收一条消息（SEF 语义：ping 透明；信号请求在库内拦截后交回调）。
+    /// Receive one message (SEF semantics: a ping is transparent; a signal
+    /// request is intercepted inside the library and handed to the callback).
     ///
-    /// 信号面的真源锚：devman 的 C main 走 `run_vtreefs`（main.c:88），
-    /// libvtreefs 的 `sef_local_startup` 注册了 `got_signal`
-    ///（vtreefs.c:59 注册、:39-46 实体——非 SIGTERM 忽略，SIGTERM 转
-    /// `fsdriver_terminate()`）。所以「devman 没有注册 signal handler」
-    /// 是假陈述——注册发生在它链接的库里，与 procfs 同族；`servers/
-    /// devman/` 目录级 grep 查不到库的注册点，不能当注册面证据。
-    /// Rust 对位：SIGTERM 在回调里锁存 `terminate` 并取消挂起收信
-    ///（`fsdriver_terminate()` = `running=FALSE` ＋ `sef_cancel`，
-    /// fsdriver.c:68-74——PD-27 逃生门让本调用以 `Err(EINTR)` 当场返回，
-    /// 循环在 `next()` 的终止检查处停止）。
+    /// The ground truth for the signal face: devman's C main goes through
+    /// `run_vtreefs` (main.c:88), and libvtreefs's `sef_local_startup`
+    /// registered `got_signal` (registered at vtreefs.c:59, implemented at
+    /// :39-46 — anything but SIGTERM is ignored, SIGTERM turns into
+    /// `fsdriver_terminate()`). So "devman registers no signal handler" is a
+    /// false statement — the registration happens in the library it links,
+    /// the same family as procfs; a directory-level grep of `servers/devman/`
+    /// cannot see the library's registration point and is no evidence about the
+    /// registration surface. The Rust counterpart: SIGTERM latches `terminate`
+    /// in the callback and cancels the pending receive
+    /// (`fsdriver_terminate()` = `running=FALSE` plus `sef_cancel`,
+    /// fsdriver.c:68-74 — the escape hatch makes this call return `Err(EINTR)`
+    /// on the spot, and the loop stops at `next()`'s termination check).
     fn receive_message(&mut self, msg: &mut Message) -> Option<i32> {
         let cancel = minix_sef::SefCancel::new();
-        // 拆字段借用：bridge 可变借 `kernel`，回调写 `terminate`——两个
-        // 不相交的字段，闭包与桥可并存。
+        // Split the field borrows: the bridge mutably borrows `kernel` and the
+        // callback writes `terminate` — two disjoint fields, so the closure and
+        // the bridge can coexist.
         let Self {
             kernel, terminate, ..
         } = self;
         let mut bridge = SefBridge(kernel);
         let mut on_signal = |signo: i32| {
-            // C `got_signal`（vtreefs.c:39-46）：SIGTERM 之外一律忽略。
+            // C `got_signal` (vtreefs.c:39-46): everything but SIGTERM is
+            // ignored.
             if signo == minix_types::SIGNAL_TERMINATE {
                 *terminate = true;
                 cancel.cancel();
@@ -233,29 +252,33 @@ impl<K: KernelIpc> MinixTransport<K> {
             &cancel,
         ) {
             Ok(recv) => Some(recv.status),
-            // `Err(EINTR)`＝逃生门的干净停止：终止决定已在回调里锁存，
-            // C 的对应物是 `fsdriver_terminate()` 之后的循环退出而非损坏。
-            // 其余收包失败＝传输损坏：C `panic`（fsdriver.c:92），Rust 由
-            // 调用方（main）决定——这里同样返回 None 让循环退出。
+            // `Err(EINTR)` is the escape hatch's clean stop: the termination
+            // decision is already latched in the callback, and C's counterpart
+            // is the loop exit after `fsdriver_terminate()`, not corruption.
+            // Any other receive failure is transport corruption: C panics
+            // (fsdriver.c:92), Rust leaves it to the caller (main) — here it
+            // likewise returns None so the loop exits.
             Err(minix_types::EINTR) => None,
             Err(_) => None,
         }
     }
 
-    /// `REQ_LOOKUP` 的载荷解码：名字经 grant 读入（C `fsdriver_getname`）。
+    /// Decode the `REQ_LOOKUP` payload: the name is read in through the grant
+    /// (C `fsdriver_getname`).
     ///
-    /// 载荷布局（C `mess_vfs_fs_lookup` — ipc.h:2011-2035；Rust 侧按
-    /// 同一字段序的 LP64 视图）：
-    /// `dir_ino@0`、`root_ino@8`、`flags@16`、`path_len@24`、
-    /// `path_size@32`、`ucred_size@40`、`grant_path@48`、`grant_ucred@56`。
+    /// Payload layout (C `mess_vfs_fs_lookup` — ipc.h:2011-2035; the Rust side
+    /// is the LP64 view of the same field order):
+    /// `dir_ino@0`, `root_ino@8`, `flags@16`, `path_len@24`, `path_size@32`,
+    /// `ucred_size@40`, `grant_path@48`, `grant_ucred@56`.
     fn decode_lookup(&mut self, msg: &Message) -> Option<Request> {
-        // SAFETY: VFS 的 REQ_LOOKUP 载荷按上述域序写在消息负载区。
+        // SAFETY: VFS writes the REQ_LOOKUP payload into the message payload
+        // area in the field order given above.
         let raw = unsafe { &msg.m_u.raw };
         let dir = read_i64(raw, lookup_req_off::DIR_INO) as u64;
         let path_len = read_i64(raw, lookup_req_off::PATH_LEN) as usize;
         let grant_path = read_i64(raw, lookup_req_off::GRANT_PATH) as i32;
-        // 名字长度门：0 或超上限即拒（C 的 `path_len = strlen + 1`，
-        // `PATH_MAX 255` — sys/sys/syslimits.h）。
+        // Name length gate: 0 or above the limit is rejected (C's
+        // `path_len = strlen + 1`, `PATH_MAX 255` — sys/sys/syslimits.h).
         if path_len == 0 || path_len > PATH_BUF_MAX {
             return None;
         }
@@ -267,7 +290,8 @@ impl<K: KernelIpc> MinixTransport<K> {
         {
             return None;
         }
-        // C 的路径是 NUL 结尾（`path_len = strlen + 1`，request.c:447）。
+        // C's path is NUL-terminated (`path_len = strlen + 1`,
+        // request.c:447).
         let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
         let name = alloc::string::String::from_utf8_lossy(&name[..end]).into_owned();
         self.current_grant = grant_path;
@@ -278,11 +302,11 @@ impl<K: KernelIpc> MinixTransport<K> {
         })
     }
 
-    /// `REQ_READ`/`REQ_GETDENTS` 的公有前缀：`inode@0`、`seek_pos@8`、
-    /// `grant@16`、`nbytes/mem_size@24`（C `mess_vfs_fs_readwrite` —
-    /// ipc.h:2121-2131、`mess_vfs_fs_getdents` — ipc.h:1992-2002）。
+    /// The common prefix of `REQ_READ`/`REQ_GETDENTS`: `inode@0`, `seek_pos@8`,
+    /// `grant@16`, `nbytes/mem_size@24` (C `mess_vfs_fs_readwrite` —
+    /// ipc.h:2121-2131, `mess_vfs_fs_getdents` — ipc.h:1992-2002).
     fn decode_transfer(&mut self, msg: &Message) -> (u64, i64, i32, usize) {
-        // SAFETY: 同上，按字段序读。
+        // SAFETY: as above, read in field order.
         let raw = unsafe { &msg.m_u.raw };
         let ino = read_i64(raw, transfer_req_off::INODE) as u64;
         let pos = read_i64(raw, transfer_req_off::SEEK_POS);
@@ -294,10 +318,12 @@ impl<K: KernelIpc> MinixTransport<K> {
     }
 }
 
-/// 名字缓冲上限：C `PATH_MAX 255`（sys/sys/syslimits.h）含 NUL。
+/// The name buffer limit: C `PATH_MAX 255` (sys/sys/syslimits.h) plus the
+/// NUL.
 const PATH_BUF_MAX: usize = 256;
 
-/// 从消息负载的字节区读一个 8 字节小端字（越界给 0）。
+/// Read one 8-byte little-endian word from the message payload's byte area
+/// (0 when out of range).
 fn read_i64(raw: &[u8], at: usize) -> i64 {
     let mut b = [0u8; 8];
     if at + 8 <= raw.len() {
@@ -309,8 +335,9 @@ fn read_i64(raw: &[u8], at: usize) -> i64 {
 impl<K: KernelIpc> Transport for MinixTransport<K> {
     fn next(&mut self) -> Option<Incoming> {
         loop {
-            // C `while (running)`（fsdriver.c 的循环条件，running 由
-            // `fsdriver_terminate()` 清零）：终止后不再收发，循环停止。
+            // C `while (running)` (the loop condition in fsdriver.c; running is
+            // cleared by `fsdriver_terminate()`): after termination nothing is
+            // received or sent, and the loop stops.
             if self.terminate {
                 return None;
             }
@@ -319,28 +346,34 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
             let notify = minix_sef::is_ipc_notify(status);
             let source = msg.m_source;
 
-            // **出生面**（全树共同的 RS_INIT 握手，卡K/S25 收口；S42 批二
-            // 转完整握手表述）：RS 的发送腿（boot step2，main.c:365/387
-            // 对位 + do_up 的 `rs_asynsend`，utility.c:62）已在库，本拦截
-            // 即握手的应答半——C `sef_startup` 尾部 + `do_sef_init_request`
-            // （sef_init.c:193-215）。fresh 就地应答 `RS_INIT+OK`（devman
-            // 的树在 `Server::new` 构造期已建，等价 C `init_hook` 的首次
-            // 构建语义），LU/RESTART 诚实拒 `ENOSYS` 并终止循环（C 对
-            // init 失败 panic；单线程服务器 fail-closed 停机，RS 按崩溃
-            // 处置）。第三处实现已随 S42 批二落在 sched 传输层（第三族）：
-            // 三族各持是分层使然（fs-rt 依赖 minix-fs 的 FsDriver 面、
-            // devman/sched 各贴自身传输层），统一上收留裁决（fs-rt 本卡
-            // 禁触，无法三向归一）。
+            // **Birth face** (the RS_INIT handshake shared across the tree): the
+            // RS send leg (boot step2, matching main.c:365/387, plus do_up's
+            // `rs_asynsend`, utility.c:62) already lives in the library, so this
+            // interception is the answering half of the handshake — C
+            // `sef_startup`'s tail plus `do_sef_init_request`
+            // (sef_init.c:193-215). A fresh request is answered in place with
+            // `RS_INIT+OK` (devman's tree is already built by `Server::new`,
+            // equivalent to the first-build semantics of C `init_hook`), while
+            // LU/RESTART are honestly refused with `ENOSYS` and the loop
+            // terminates (C panics on init failure; a single-threaded server
+            // stops fail-closed and RS treats it as a crash). A third copy of
+            // this logic lives in the sched transport layer: the three copies
+            // exist because of layering (fs-rt depends on minix-fs's FsDriver
+            // face, devman and sched each carry their own transport layer), and
+            // unifying them is left to a later decision (fs-rt is out of bounds
+            // here, so the three cannot be folded into one now).
             if !notify && msg.m_type == minix_types::RS_INIT && source == Endpoint::RS {
-                // SAFETY: 出生请求的活跃 union 臂是 `m_rs_init`
-                // （m_type == RS_INIT 且来源 RS）。
+                // SAFETY: the active union arm of a birth request is
+                // `m_rs_init` (m_type == RS_INIT and the source is RS).
                 let kind = unsafe { msg.m_u.m_rs_init.type_ };
-                // PD-34：出生协议编排归库——段一清 IPC 过滤（C
-                // `process_init` 第一段 sef_init.c:59-60 的 `assert(r == OK)`，
-                // 经 `KernelIpc::statectl` 真接线）、回报消息由库构造；
-                // 分派语义（devman 的树在 `Server::new` 构造期已建，等价 C
-                // `init_hook` 的首次构建语义 → fresh OK；LU/RESTART 诚实拒
-                // `ENOSYS`）保持原样。
+                // The birth protocol's orchestration belongs to the library:
+                // its first section clears the IPC filter (C `process_init`'s
+                // first section, the `assert(r == OK)` at sef_init.c:59-60,
+                // really wired through `KernelIpc::statectl`), and the library
+                // builds the report message. The dispatch semantics are
+                // unchanged (devman's tree is already built by `Server::new`,
+                // equivalent to the first-build semantics of C `init_hook` →
+                // fresh OK; LU/RESTART are honestly refused with `ENOSYS`).
                 let reply = minix_sef::process_init(
                     &mut |req, addr, len| {
                         let r = self.kernel.statectl(req, addr, len);
@@ -355,31 +388,37 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
                 );
                 let mut reply = match reply {
                     Ok(m) => m,
-                    // C 段一 assert ＝ 出生失败 fail-closed（单线程服务器
-                    // 停机，RS 按崩溃处置——与下方 init 被拒同款）。
+                    // C's section-one assert means a birth failure is
+                    // fail-closed (the single-threaded server stops and RS
+                    // treats it as a crash — the same as a refused init
+                    // below).
                     Err(_) => return None,
                 };
-                // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
-                // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466），非普通 send：
-                // 发 RS_INIT 后停在 receive(RS) 半等 RS catch 出口的 OK 唤醒。
-                //[SD19-gate] SD-19: sendrec RS birth 唤醒，失败不持断
+                // The birth report leg = C `sef_cb_init_response_rs_reply`
+                // = `ipc_sendrec(RS, &m)` (sef_init.c:458-466), not a plain
+                // send: after sending RS_INIT it parks in the receive(RS) half,
+                // waiting for the OK wakeup from RS's catch exit.
+                //[SD19-gate] sendrec wakes RS at birth; a failure does not
+                // abort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.sendrec(Endpoint::RS, &mut reply);
                 if reply.rs_init_result() == Some(minix_types::OK) {
-                    continue; // 出生已应答，吞掉这条，服务循环继续
+                    continue; // birth answered: swallow this one, keep serving
                 }
-                return None; // init 被拒：fail-closed 停机
+                return None; // init refused: stop fail-closed
             }
 
-            // C `fsdriver_process:26-31`：非请求（通知或别的服务发来的消息）
-            // 走 `other` 且不回信。devman 的 other 就是 DEVMAN 消息面。
+            // C `fsdriver_process:26-31`: a non-request (a notification or a
+            // message from another service) takes the `other` path with no
+            // reply. devman's other path is the DEVMAN message face.
         if notify || source != Endpoint::VFS {
             if notify {
                 return Some(Incoming::Devman { source, msg: None });
             }
             let m4 = unsafe { &msg.m_u.m_m4 };
             let (word2, word3) = (m4.m4l2 as i32, m4.m4l3 as i32);
-            // ADD 的载荷在调用方的 grant 里（05 §2.2）：先按 grant 读入。
+            // ADD's payload sits in the caller's grant, so read it in through
+            // the grant first.
             let mut body = alloc::vec::Vec::new();
             if crate::ipc::dispatch(msg.m_type) == crate::ipc::Handler::Add {
                 let grant = crate::ipc::grant_id(&msg);
@@ -399,26 +438,30 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
             return Some(Incoming::Devman { source, msg: decoded });
         }
 
-        // FS 面：先剥 transid，再按请求号分类（`GetNode` 空槽 → Unserved
-        // 语义由 C 的 `fsdriver_callvec` 空槽给出）。
-        // 线上 m_type 的高 16 位是调用号（vfsif.h:79-81）。
+        // FS face: strip the transid first, then classify by request number
+        // (an empty `GetNode` slot → the Unserved semantics that C's
+        // `fsdriver_callvec` empty slot provides).
+        // On the wire the high 16 bits of m_type are the call number
+        // (vfsif.h:79-81).
         if !is_fs_rq(trns_del_id(msg.m_type)) {
-            // 号不在 FS 段：C 会按 `call_nr - FS_BASE` 越界 → ENOSYS；
-            // 这里交回 DEVMAN 面（`DevmanMsg::classify` 会给 None = 不回信）。
+            // The number is not in the FS range: C would index out of bounds
+            // with `call_nr - FS_BASE` → ENOSYS; here it goes back to the DEVMAN
+            // face (`DevmanMsg::classify` yields None = no reply).
             return Some(Incoming::Devman { source, msg: None });
         }
         let call = trns_del_id(msg.m_type);
         self.current_transaction = trns_get_id(msg.m_type);
         self.current_source = source;
 
-        // mount 门（`fsdriver.c:40-46`）：未挂载时除 ReadSuper 外一律
-        // EINVAL——由 `reply()` 按 `mount_refused` 回答，这里用一个专用
-        // Incoming 变体表达不了，故走 `Request::Unmount` 之外的路径：
-        // 决策放在本函数，返回一个"被拒请求"由 run 直接回信。
+        // The mount gate (`fsdriver.c:40-46`): while unmounted everything but
+        // ReadSuper gets EINVAL. `reply()` would answer it as `mount_refused`,
+        // but a dedicated Incoming variant cannot express that, so the decision
+        // is made in this function and a "refused request" is returned for run
+        // to answer directly.
         let request = match call {
             REQ_READSUPER => {
-                // 载荷：device@0、flags@8（C `mess_vfs_fs_readsuper` —
-                // ipc.h:2112-2119；`REQ_ISROOT` 位在 flags）。
+                // Payload: device@0, flags@8 (C `mess_vfs_fs_readsuper` —
+                // ipc.h:2112-2119; the `REQ_ISROOT` bit is in flags).
                 let raw = unsafe { &msg.m_u.raw };
                 let flags = read_i64(raw, readsuper_req_off::FLAGS) as u32;
                 let is_root = minix_fs::protocol::MountFlags(flags).is_root();
@@ -446,10 +489,11 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
                 }
             }
             _ => {
-                // 未挂载（非 ReadSuper）或 devman 不服务的请求号：
-                // C 按 EINVAL / ENOSYS 两分（`fsdriver.c:40-56`）。
+                // Unmounted (and not ReadSuper), or a request number devman
+                // does not serve: C splits these into EINVAL / ENOSYS
+                // (`fsdriver.c:40-56`).
                 let status = if self.mounted { ENOSYS } else { EINVAL };
-                //[SD19-gate] SD-19: 错误回复 send 尽力而为
+                //[SD19-gate] the error reply's send is best effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self
                     .kernel
@@ -473,15 +517,17 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
             Reply::Entries(Ok(entries)) => (entries.len() as i32, Some(PayloadKind::Dents)),
             Reply::Entries(Err(e)) => (e.to_i32(), None),
         };
-        // 数据面：读/目录项经 grant 写回调用方缓冲（C `fsdriver_copyout`）。
+        // Data face: read data and directory entries are written back to the
+        // caller's buffer through the grant (C `fsdriver_copyout`).
         if let Some(PayloadKind::Data(bytes)) = &payload
             && self
                 .kernel
                 .safecopy_to(self.current_granter, self.current_grant, 0, bytes)
                 .is_err()
         {
-            // 拷出失败：回 EFAULT（C 的 `fsdriver_copyout` 失败即该 errno）。
-            //[SD19-gate] SD-19: EFAULT 回复 send，失败丢一次
+            // Copy-out failed: reply EFAULT (in C, a `fsdriver_copyout`
+            // failure is that errno).
+            //[SD19-gate] the EFAULT reply's send is dropped on failure
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.kernel.send(
                 self.current_source,
@@ -491,21 +537,23 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
         }
         let mut m = reply_msg(status, self.current_transaction);
         if let Some(PayloadKind::Node(ino)) = payload {
-            // `struct fsdriver_node` 的回复字段（C call.c:57-62：node
-            // 号 + 属性在同一条消息里）——devman 的节点属性由 VFS 另行
-            // stat，这里只回节点号（C 的 `fsdriver_node` 首字段）。
-            // SAFETY: 回复负载的字节区。
+            // The reply fields of `struct fsdriver_node` (C call.c:57-62: the
+            // node number and attributes share one message) — devman's node
+            // attributes are stat'ed separately by VFS, so only the node number
+            // is returned (the first field of C's `fsdriver_node`).
+            // SAFETY: the byte area of the reply payload.
             unsafe {
                 m.m_u.raw[0..8].copy_from_slice(&(ino.0 as u64).to_le_bytes());
             }
         }
-        //[SD19-gate] SD-19: 终回复 send
+        //[SD19-gate] the terminal reply's send
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.kernel.send(self.current_source, &m);
     }
 
     fn send(&mut self, dest: Endpoint, msg: &Message) {
-        //[SD19-gate] SD-19: send 抽象层，失败无上层消费
+        //[SD19-gate] an abstract send layer; nothing above consumes a
+        // failure
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.kernel.send(dest, msg);
     }
@@ -517,14 +565,14 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
     }
 }
 
-/// 回复里状态之外还要送什么（数据面/节点号）。
+/// What a reply carries besides the status (data face / node number).
 enum PayloadKind {
     Data(alloc::vec::Vec<u8>),
     Node(crate::vtreefs::Ino),
     Dents,
 }
 
-/// 成型一条 fsdriver 回复：`m_type = TRNS_ADD_ID(status, transid)`。
+/// Shape one fsdriver reply: `m_type = TRNS_ADD_ID(status, transid)`.
 fn reply_msg(status: i32, transaction: u32) -> Message {
     Message {
         m_type: trns_add_id(status, transaction),
@@ -538,15 +586,18 @@ mod tests {
     use crate::vtreefs::{Ino, Transport};
     use alloc::collections::VecDeque;
 
-    /// 脚本化内核面：收包队列 + 记录发送 + 可注入的 safecopy 失败。
+    /// A scripted kernel face: an inbox queue, send recording and injectable
+    /// safecopy failures.
     #[derive(Default)]
     struct ScriptedKernel {
         inbox: VecDeque<(Message, i32)>,
         sent: alloc::vec::Vec<(Endpoint, Message)>,
         sendrecs: alloc::vec::Vec<(Endpoint, Message)>,
-        /// 下一次 `safecopy_from` 交给调用方的字节（名字等）。
+        /// The bytes the next `safecopy_from` hands to the caller (names and
+        /// the like).
         from_bytes: alloc::vec::Vec<u8>,
-        /// `safecopy_to` 收到的字节（读/目录项回写）。
+        /// The bytes `safecopy_to` received (read data and directory entry
+        /// write-backs).
         to_bytes: alloc::vec::Vec<u8>,
         to_grant: Option<(Endpoint, i32, u64)>,
         fail_from: bool,
@@ -603,14 +654,14 @@ mod tests {
         }
     }
 
-    /// 造一条 VFS 发来的请求：`m_type = TRNS_ADD_ID(call, transid)`。
+    /// Build a request as sent by VFS: `m_type = TRNS_ADD_ID(call, transid)`.
     fn vfs_request(call: i32, transid: u32, payload: &[(usize, i64)]) -> Message {
         let mut m = Message {
             m_source: Endpoint::VFS,
             m_type: trns_add_id(call, transid),
             ..Message::default()
         };
-        // SAFETY(test): 按偏移表填载荷。
+        // SAFETY(test): fill the payload per the offset table.
         unsafe {
             for (at, v) in payload {
                 m.m_u.raw[*at..*at + 8].copy_from_slice(&v.to_le_bytes());
@@ -621,8 +672,8 @@ mod tests {
 
     fn ready(kernel: ScriptedKernel) -> MinixTransport<ScriptedKernel> {
         let mut t = MinixTransport::new(kernel);
-        // 先挂载（C 的 `fsdriver_mounted`）：框架语义要求除 ReadSuper 外
-        // 的请求都在挂载后才被服务。
+        // Mount first (C's `fsdriver_mounted`): the framework requires every
+        // request but ReadSuper to be served only after mounting.
         t.kernel_mut().inbox.push_back((
             vfs_request(REQ_READSUPER, 0xB01, &[(readsuper_req_off::DEVICE, 0)]),
             0,
@@ -635,8 +686,9 @@ mod tests {
         t
     }
 
-    /// 未挂载时除 ReadSuper 外一律 EINVAL（`fsdriver.c:40-46`），且回复已
-    /// 由传输发出（循环收到 `Refused`，不再动手）。
+    /// While unmounted everything but ReadSuper gets EINVAL
+    /// (`fsdriver.c:40-46`), and the reply has already been sent by the
+    /// transport (the loop gets `Refused` and does nothing more).
     #[test]
     fn test_mount_gate_refuses_before_mount() {
         let mut k = ScriptedKernel::default();
@@ -648,7 +700,8 @@ mod tests {
         assert_eq!(sent[0].1.m_type, trns_add_id(EINVAL, 0xB02), "EINVAL 且回显 transid");
     }
 
-    /// ReadSuper：挂载请求分类 + 回复盖 transid；`REQ_ISROOT` 位进 `is_root`。
+    /// ReadSuper: the mount request is classified and the reply carries the
+    /// transid; the `REQ_ISROOT` bit lands in `is_root`.
     #[test]
     fn test_readsuper_encodes_is_root_flag() {
         let flags = minix_fs::protocol::MountFlags::IS_ROOT.0 as i64;
@@ -665,7 +718,8 @@ mod tests {
         );
     }
 
-    /// Lookup：名字经 grant 读入（`fsdriver_getname`），NUL 截断。
+    /// Lookup: the name is read in through the grant (`fsdriver_getname`) and
+    /// truncated at the NUL.
     #[test]
     fn test_lookup_reads_name_via_grant() {
         let mut t = ready(ScriptedKernel::default());
@@ -691,14 +745,15 @@ mod tests {
         }
         t.reply(Reply::Found(Err(minix_types::Errno::from_i32(minix_types::ENOENT))));
         let sent = &t.kernel_mut().sent;
-        // `ready()` 已发过挂载回复，故看最后一条。
+        // `ready()` already sent the mount reply, so look at the last one.
         assert_eq!(
             sent.last().unwrap().1.m_type,
             trns_add_id(minix_types::ENOENT, 0xB03)
         );
     }
 
-    /// Read：数据面经 grant 写回调用方（`fsdriver_copyout`），状态是字节数。
+    /// Read: the data face writes back to the caller through the grant
+    /// (`fsdriver_copyout`), and the status is the byte count.
     #[test]
     fn test_read_copies_out_via_grant() {
         let mut t = ready(ScriptedKernel::default());
@@ -730,18 +785,19 @@ mod tests {
         );
     }
 
-    /// 非 VFS 来源的消息走 DEVMAN 面（`fsdriver.c:26-31`），不回信。
+    /// A message from a non-VFS source takes the DEVMAN face
+    /// (`fsdriver.c:26-31`) and gets no reply.
     #[test]
     fn test_non_vfs_source_goes_to_devman_face() {
         let mut k = ScriptedKernel::default();
-        // DEVMAN_DEL：m4l2 = 设备 id。
+        // DEVMAN_DEL: m4l2 = the device id.
         let mut m = Message {
             m_source: Endpoint(5),
             m_type: minix_types::DEVMAN_DEL_DEV,
             ..Message::default()
         };
-        // union 字段写是 safe 的（只有读才 unsafe）；DEVMAN 的
-        // BIND/UNBIND/DEL 用 m4 词（05 相位表）。
+        // Writing a union field is safe (only reads are unsafe); DEVMAN's
+        // BIND/UNBIND/DEL use the m4 words.
         m.m_u.m_m4.m4l2 = 11;
         k.inbox.push_back((m, 0));
         let mut t = MinixTransport::new(k);
@@ -755,10 +811,12 @@ mod tests {
         assert!(t.kernel_mut().sent.is_empty(), "other 面不回信");
     }
 
-    /// 收包失败＝传输损坏：`next()` 给 None 让循环退出（调用方决定 panic）。
-    /// 管理器形信号帧（C：信号管理器把号码译成 `SIGS_SIGNAL_RECEIVED`
-    /// 携 `num`——pm/signal.c:470-473、rs/main.c:699-701）。union 字段写
-    /// 是 safe 的（只有读才 unsafe）；`m_type` 标签选中载荷臂。
+    /// A receive failure means transport corruption: `next()` gives None so the
+    /// loop exits (the caller decides on a panic).
+    /// A manager-shaped signal frame (C: the signal manager translates the
+    /// number into `SIGS_SIGNAL_RECEIVED` carrying `num` — pm/signal.c:470-473,
+    /// rs/main.c:699-701). Writing a union field is safe (only reads are
+    /// unsafe); the `m_type` tag selects the payload arm.
     fn manager_signal_msg(signo: i32) -> Message {
         let mut m = Message {
             m_source: Endpoint::PM,
@@ -771,18 +829,21 @@ mod tests {
 
     #[test]
     fn test_manager_sigterm_latches_terminate_and_stops_loop() {
-        // devman 的信号面真源：C 走 run_vtreefs（main.c:88），libvtreefs
-        // 注册 `got_signal`（vtreefs.c:59/:39-46）——SIGTERM 转
-        // `fsdriver_terminate()`（置 running=FALSE ＋ sef_cancel，
-        // fsdriver.c:68-74）。本树对位：管理器形 SIGTERM 在回调里锁存
-        // `terminate` 并取消挂起收信，`next()` 在终止检查处返回 None——
-        // 循环停止、后续帧不再服务（PD-27 逃生门让收信当场以 EINTR 返回）。
+        // Ground truth for devman's signal face: C goes through run_vtreefs
+        // (main.c:88), and libvtreefs registers `got_signal`
+        // (vtreefs.c:59/:39-46) — SIGTERM turns into `fsdriver_terminate()`
+        // (running=FALSE plus sef_cancel, fsdriver.c:68-74). The counterpart
+        // here: a manager-shaped SIGTERM latches `terminate` in the callback and
+        // cancels the pending receive, so `next()` returns None at the
+        // termination check — the loop stops and no further frames are served
+        // (the escape hatch makes the receive return EINTR on the spot).
         let mut k = ScriptedKernel::default();
         k.inbox
             .push_back((manager_signal_msg(minix_types::SIGNAL_TERMINATE), 0));
-        // 取消后若库继续收，队列为空 → 夹具回 EIO——若逃生门失效，这条
-        // EIO 会被旧 `Err(_)` 臂同样折成 None，所以用 `terminate` 锁存位
-        // 区分「干净停止」与「损坏停止」。
+        // If the library kept receiving after the cancel, the empty inbox would
+        // make the fixture return EIO; with the escape hatch gone that EIO would
+        // fold to None through the same `Err(_)` arm, so the `terminate` latch
+        // distinguishes a clean stop from a corrupt one.
         let mut transport = MinixTransport::new(k);
         assert_eq!(transport.next(), None, "SIGTERM 后循环停止");
         assert!(transport.terminate, "锁存置位（干净停止而非损坏）");
@@ -794,8 +855,9 @@ mod tests {
         assert_eq!(t.next(), None);
     }
 
-    /// 出生面：RS_INIT（fresh）就地应答 `RS_INIT+OK` 并被吞掉，下一条
-    /// 消息正常进入分类（C `sef_startup` 尾部 + `do_sef_init_request`）。
+    /// Birth face: a (fresh) RS_INIT is answered in place with `RS_INIT+OK` and
+    /// swallowed, and the next message is classified normally (C
+    /// `sef_startup`'s tail plus `do_sef_init_request`).
     #[test]
     fn test_rs_birth_fresh_replies_ok_and_continues() {
         let mut birth = Message {
@@ -803,11 +865,11 @@ mod tests {
             m_source: Endpoint::RS,
             ..Message::default()
         };
-        // union 字段写是 safe 的；活跃臂 `m_rs_init`（type_=0 即
-        // SEF_INIT_FRESH）。
+        // Writing a union field is safe; the active arm is `m_rs_init`
+        // (type_=0 means SEF_INIT_FRESH).
         birth.m_u.m_rs_init.type_ = 0;
         let follow = Message {
-            m_type: 0x1000 + 3, // 通知 → Devman 面提示
+            m_type: 0x1000 + 3, // a notification → surfaces on the Devman face
             m_source: Endpoint(7),
             ..Message::default()
         };
@@ -825,13 +887,14 @@ mod tests {
         let (dest, reply) = &kernel.sendrecs[0];
         assert_eq!(*dest, Endpoint::RS);
         assert_eq!(reply.m_type, minix_types::RS_INIT);
-        // SAFETY(test): 回信臂 `m_rs_init.result`。
+        // SAFETY(test): the reply arm `m_rs_init.result`.
         unsafe {
             assert_eq!(reply.m_u.m_rs_init.result, minix_types::OK);
         }
     }
 
-    /// 出生面：LU/RESTART 诚实拒 `ENOSYS` 并终止循环（fail-closed）。
+    /// Birth face: LU/RESTART are honestly refused with `ENOSYS` and the loop
+    /// terminates (fail-closed).
     #[test]
     fn test_rs_birth_stateful_refused_ends_loop() {
         let mut birth = Message {
@@ -839,7 +902,7 @@ mod tests {
             m_source: Endpoint::RS,
             ..Message::default()
         };
-        // type_=1 即 SEF_INIT_LU。
+        // type_=1 means SEF_INIT_LU.
         birth.m_u.m_rs_init.type_ = 1;
         let kernel = ScriptedKernel {
             inbox: VecDeque::from(vec![(birth, 0)]),
@@ -847,24 +910,26 @@ mod tests {
         };
         let mut t = MinixTransport::new(kernel);
         assert!(t.next().is_none(), "init 被拒 → 循环停机");
-        // 回信仍是 RS_INIT + ENOSYS（RS 按崩溃处置，不假装就绪）。
-        // NK4-C B9b：出生腿走 sendrec，记入 sendrecs。
+        // The reply is still RS_INIT + ENOSYS (RS treats it as a crash rather
+        // than pretending the server is ready).
+        // The birth leg goes through sendrec, recorded in sendrecs.
         let kernel = t.kernel;
         let (dest, reply) = &kernel.sendrecs[0];
         assert_eq!(*dest, Endpoint::RS);
-        // SAFETY(test): 同上。
+        // SAFETY(test): as above.
         unsafe {
             assert_eq!(reply.m_u.m_rs_init.result, minix_types::ENOSYS);
         }
     }
 
-    /// 非 RS 源的 RS_INIT 不拦截（走既有 DEVMAN 面）——出生判定同时看
-    /// 类型与来源（C `IS_SEF_INIT_REQUEST`，sef.h:33-34）。
+    /// An RS_INIT from a non-RS source is not intercepted (it takes the
+    /// existing DEVMAN face) — the birth test looks at both type and source (C
+    /// `IS_SEF_INIT_REQUEST`, sef.h:33-34).
     #[test]
     fn test_rs_init_from_other_source_not_intercepted() {
         let fake = Message {
             m_type: minix_types::RS_INIT,
-            m_source: Endpoint(5), // 非 RS
+            m_source: Endpoint(5), // not RS
             ..Message::default()
         };
         let kernel = ScriptedKernel {

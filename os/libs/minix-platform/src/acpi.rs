@@ -542,7 +542,7 @@ unsafe fn parse_madt(
                 // ACPI Processor UID (u32 at +8): QEMU's GICv3 MADT zeroes the
                 // MPIDR field (+68) for GICv2 and the embedded GICR Base (+60)
                 // for both, so UID is the usable hardware id and equals the
-                // redistributor frame index (S-2b, byte-verified against the
+                // redistributor frame index (byte-verified against the
                 // live AAVMF MADT). Flags (bit 0 = Processor Enabled) at +12.
                 // The redistributor base itself is NOT read here — the GICC
                 // field is zero on QEMU; see the MADT_TYPE_GICR arm below.
@@ -598,8 +598,8 @@ unsafe fn parse_madt(
                 // GIC Distributor (24 bytes), ACPICA
                 // `acpi_madt_generic_distributor` layout: header(4) +
                 // GIC ID(4) + base_address(8, at +8) + global_irq_offset(4)
-                // + version(1). Empirically pinned on QEMU virt GICv2
-                // (S-2b): base 0x08000000 at +8, version 2 at +20.
+                // + version(1). Empirically pinned on QEMU virt GICv2:
+                // base 0x08000000 at +8, version 2 at +20.
                 if entry_len >= 21 {
                     let base = (madt_phys + offset) as *const u8;
                     let bytes = unsafe {

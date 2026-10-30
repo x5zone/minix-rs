@@ -29,11 +29,11 @@
 ///
 /// `KTS_INT_UM` (4, entry from usermapped kernel code) and `KTS_SYSENTER`
 /// (6, i386-only mechanism) are deliberately not modeled: minix-rs has no
-/// usermapped kernel region on 64-bit (the W-2 exclusion in the kernel
-/// todo) and no SYSENTER entry, so no entry path can ever produce them.
+/// usermapped kernel region on 64-bit (the kernel layout leaves no such
+/// region) and no SYSENTER entry, so no entry path can ever produce them.
 ///
 /// The recording half (entry paths stamping the style) lands with the asm
-/// trap-entry work — smp_todo S-8. Until then every process carries
+/// trap-entry work. Until then every process carries
 /// [`TrapStyle::NoEntry`], which the return path refuses to dispatch on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TrapStyle {
@@ -97,7 +97,7 @@ pub enum ReturnSequence {
     FullContext,
     /// The entry saved a skinny frame; the return must pair it
     /// (sysret-class). C: `restore_user_context_syscall` —
-    /// arch_system.c:592-595. Lands with the asm entry work (S-8).
+    /// arch_system.c:592-595. Lands with the asm entry work.
     FastSyscall,
 }
 

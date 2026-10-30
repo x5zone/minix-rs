@@ -6,9 +6,9 @@
 //! repetition a type: `FsReq` (32 variants, one per live `REQ_*` type,
 //! `FS_BASE 0xA00` prefix), `FsResp`
 //! (`NodeDetails` 7 fields vs `LookupRes` 9 fields), `GrantScope` (`Try` vs
-//! `NoTry`), `FsFlags` (`RES_64BIT`守门).  `REQ_GETNODE 0xA01` is dead.
+//! `NoTry`), `FsFlags` (`RES_64BIT` gate).  `REQ_GETNODE 0xA01` is dead.
 //!
-//! `ARCH A-2` (enum vs function pointer) and `ARCH A-8` (64-bit) in one place.
+//! `[ARCH: A-2]` (enum vs function pointer) and `[ARCH: A-8]` (64-bit) in one place.
 //!
 //! E-REQWIRE: the `REQ_*` numbers themselves are no longer defined here —
 //! they moved to the shared authority `minix-types::fs_driver` (consumed by
@@ -16,7 +16,7 @@
 //! the registered third consumer). The C-absolute pin tests stay in this
 //! module: they guard what VFS actually puts on the wire.
 
-#[cfg(test)] // Box 仅测试模块（PathFetcher/FsClient 注入）使用
+#[cfg(test)] // Box is used only by the test module (PathFetcher/FsClient injection)
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -92,8 +92,8 @@ pub struct VfsUCred {
 
 /// Typed `REQ_*` request — 32 variants, one per live `REQ_*` type (no
 /// `GetNode`; `vfsif.h` defines 33 constants of which `REQ_GETNODE` is dead).
-/// `REQ_RDONLY` / `REQ_ISROOT` — `readsuper` 的请求 flags
-/// (vfsif.h:8-9;S14 挂载先行批的 wire 编码面)。
+/// `REQ_RDONLY` / `REQ_ISROOT` — `readsuper`'s request flags
+/// (vfsif.h:8-9; the wire-encoding face of the mount-first work).
 pub const REQ_RDONLY: u32 = 0o1;
 pub const REQ_ISROOT: u32 = 0o2;
 
@@ -400,10 +400,10 @@ impl FsReq {
 pub enum FsResp {
     Node(NodeDetails),
     Lookup(LookupRes),
-    /// `readsuper` 回复(req_readsuper,request.c:818):
-    /// `node_details` + `fs_flags`(RES_*)+ `con_reqs`
-    /// (ipc.h:198-211;con_reqs 在 C 侧无消费者,mount.c 的 max_reqs
-    /// 由 RES_THREADED 决定——见 `mount.rs::SuperInfo::max_reqs`)。
+    /// `readsuper` reply (req_readsuper, request.c:818):
+    /// `node_details` + `fs_flags`(RES_*) + `con_reqs`
+    /// (ipc.h:198-211; con_reqs has no consumer on the C side, and mount.c's max_reqs
+    /// is decided by RES_THREADED — see `mount.rs::SuperInfo::max_reqs`).
     ReadSuper {
         node: NodeDetails,
         fs_flags: FsFlags,
@@ -441,9 +441,9 @@ impl FsError {
     }
 }
 
-/// `req_readsuper` 的请求编码(C request.c:780-813):device@0(dev_t)、
-/// flags@8(REQ_RDONLY/ISROOT)、path_len@16(size_t)、grant@24
-/// (cp_grant_id_t,ipc.h:2111-2119 的 LP64 布局)。
+/// Request encoding for `req_readsuper` (C request.c:780-813): device@0(dev_t),
+/// flags@8(REQ_RDONLY/ISROOT), path_len@16(size_t), grant@24
+/// (cp_grant_id_t, the LP64 layout at ipc.h:2111-2119).
 pub fn encode_readsuper(
     device: u64,
     path_len: usize,
@@ -462,8 +462,8 @@ pub fn encode_readsuper(
     if isroot {
         flags |= REQ_ISROOT;
     }
-    // SAFETY: raw 臂按字节写——无专属 union 成员的 wire 面
-    // (前例:pm 的 decode.rs raw 模式)。
+    // SAFETY: the raw arm writes byte-wise — a wire face with no dedicated union
+    // member (precedent: pm's decode.rs raw mode).
     let raw = unsafe { &mut msg.m_u.raw };
     raw[0..8].copy_from_slice(&device.to_le_bytes());
     raw[8..12].copy_from_slice(&flags.to_le_bytes());
@@ -472,36 +472,38 @@ pub fn encode_readsuper(
     msg
 }
 
-/// `req_putnode` 的请求编码（C request.c:699-711）：载荷
-/// `{inode@0(ino_t), count@8(unsigned int)}`——把 `count` 份 inode 引用
-/// 还给 FS（`put_vnode` 慢路径的批量归还）。回复只有状态，调用方丢弃。
+/// Request encoding for `req_putnode` (C request.c:699-711): payload
+/// `{inode@0(ino_t), count@8(unsigned int)}` — returns `count` inode references
+/// to the FS (the batch return of `put_vnode`'s slow path). The reply is status
+/// only and is discarded by the caller.
 pub fn encode_putnode(ino: u64, count: i32) -> Message {
     let mut msg = Message {
         m_type: REQ_PUTNODE,
         ..Message::default()
     };
-    // SAFETY: raw 臂按字节写——`mess_vfs_fs_putnode`（ipc.h:2093-2098）
-    // 没有专属 union 成员，域序见 `minix_types::putnode_req_off`。
+    // SAFETY: the raw arm writes byte-wise — `mess_vfs_fs_putnode` (ipc.h:2093-2098)
+    // has no dedicated union member; field order in `minix_types::putnode_req_off`.
     let raw = unsafe { &mut msg.m_u.raw };
     raw[0..8].copy_from_slice(&ino.to_le_bytes());
     raw[8..12].copy_from_slice(&count.to_le_bytes());
     msg
 }
 
-/// `req_newdriver` 的请求编码（C request.c:664-691）：载荷
-/// `{device@0(dev_t), grant@8(cp_grant_id_t), path_len@16(size_t)}`——
-/// 驱动标签本体在 VFS 内存里，经 **direct grant** 给 FS（`CPF_READ`），
-/// 回复只有状态。
+/// Request encoding for `req_newdriver` (C request.c:664-691): payload
+/// `{device@0(dev_t), grant@8(cp_grant_id_t), path_len@16(size_t)}` — the driver
+/// label itself lives in VFS memory and goes to the FS through a **direct grant**
+/// (`CPF_READ`); the reply is status only.
 ///
-/// `device` 是**块设备的特殊设备号**（`vp->v_sdev`），不是挂载分区的设备号
-/// ——FS 用它认"这个分区归哪个块驱动"。
+/// `device` is the **special device number of the block device** (`vp->v_sdev`),
+/// not the device number of the mounted partition — the FS uses it to tell "which
+/// block driver owns this partition".
 pub fn encode_new_driver(device: u64, grant: i32, path_len: usize) -> Message {
     let mut msg = Message {
         m_type: REQ_NEW_DRIVER,
         ..Message::default()
     };
-    // SAFETY: raw 臂按字节写——`mess_vfs_fs_new_driver`（ipc.h:2072-2079）
-    // 没有专属 union 成员，域序见 `minix_types::new_driver_req_off`。
+    // SAFETY: the raw arm writes byte-wise — `mess_vfs_fs_new_driver` (ipc.h:2072-2079)
+    // has no dedicated union member; field order in `minix_types::new_driver_req_off`.
     let raw = unsafe { &mut msg.m_u.raw };
     raw[0..8].copy_from_slice(&device.to_le_bytes());
     raw[8..12].copy_from_slice(&grant.to_le_bytes());
@@ -509,21 +511,23 @@ pub fn encode_new_driver(device: u64, grant: i32, path_len: usize) -> Message {
     msg
 }
 
-/// `readsuper` 回复解码(C request.c:818-825):file_size@0(off_t)、
-/// device@8(dev_t)、inode@16(ino_t)、flags@24(u32 = fs_flags)、
-/// mode@28、uid@32、gid@36、con_reqs@40(u16,ipc.h:198-211)。
-/// `fs_e` 由调用方给(即 `m_source`,C 的 `res->fs_e = m.m_source`)。
-/// `REQ_READ` / `REQ_WRITE` 请求（C `req_readwrite_actual` —
-/// request.c:834-874）：载荷 `{inode, seek_pos, grant, nbytes}`，数据面由
-/// FS 经 grant 直读写（读是 FS 往用户缓冲 `safecopyto`）。
+/// `readsuper` reply decode (C request.c:818-825): file_size@0(off_t),
+/// device@8(dev_t), inode@16(ino_t), flags@24(u32 = fs_flags),
+/// mode@28, uid@32, gid@36, con_reqs@40(u16, ipc.h:198-211).
+/// `fs_e` is supplied by the caller (i.e. `m_source`; C's `res->fs_e = m.m_source`).
+/// `REQ_READ` / `REQ_WRITE` request (C `req_readwrite_actual` —
+/// request.c:834-874): payload `{inode, seek_pos, grant, nbytes}`; the data face is
+/// read and written by the FS directly through the grant (for reads the FS
+/// `safecopyto`s into the user buffer).
 ///
-/// 偏移取共享权威 `minix_types::transfer_req_off`（FS 侧解码用同一张表）。
+/// Offsets come from the shared authority `minix_types::transfer_req_off` (the FS side
+/// decodes with the same table).
 pub fn encode_read(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_READ,
         ..Message::default()
     };
-    // SAFETY: REQ_READ 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_READ's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::transfer_req_off::INODE..minix_types::transfer_req_off::INODE + 8]
@@ -538,27 +542,29 @@ pub fn encode_read(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
-/// `REQ_WRITE` 请求（与 [`encode_read`] 同载荷，方向相反：FS 从用户缓冲
-/// **读**数据，故 grant 权限位是 `CPF_READ` — C `req_readwrite_actual`
-/// request.c:846-848 的 `rw_flag==READING ? CPF_WRITE : CPF_READ`）。
+/// `REQ_WRITE` request (same payload as [`encode_read`], opposite direction: the FS
+/// **reads** data from the user buffer, so the grant permission bit is `CPF_READ` —
+/// C `req_readwrite_actual` request.c:846-848's
+/// `rw_flag==READING ? CPF_WRITE : CPF_READ`).
 pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     let mut msg = encode_read(ino, grant, pos, nbytes);
     msg.m_type = minix_types::REQ_WRITE;
     msg
 }
 
-/// `REQ_NEWNODE` 请求（C `req_newnode` — request.c:170-197）。
+/// `REQ_NEWNODE` request (C `req_newnode` — request.c:170-197).
 ///
-/// 载荷 `{device, mode, uid, gid}`（ipc.h:2082-2090）；**回复带新节点的
-/// `node_details`**（`mess_fs_vfs_newnode`：file_size/device/inode/mode/uid/gid
-/// ——字段序与 [`minix_types::lookup_reply_off`] 的前六域一致，解码可复用那张
-/// 表）。管道就是靠它向 PFS 要一个新 inode。
+/// Payload `{device, mode, uid, gid}` (ipc.h:2082-2090); **the reply carries the new
+/// node's `node_details`** (`mess_fs_vfs_newnode`:
+/// file_size/device/inode/mode/uid/gid — its field order matches the first six fields
+/// of [`minix_types::lookup_reply_off`], so decoding can reuse that table). This is
+/// how a pipe asks PFS for a new inode.
 pub fn encode_newnode(dev: u64, mode: u32, uid: u32, gid: u32) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_NEWNODE,
         ..Message::default()
     };
-    // SAFETY: REQ_NEWNODE 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_NEWNODE's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[0..8].copy_from_slice(&dev.to_le_bytes());
@@ -569,16 +575,17 @@ pub fn encode_newnode(dev: u64, mode: u32, uid: u32, gid: u32) -> Message {
     msg
 }
 
-/// `REQ_FLUSH` 请求（C `req_flush` — request.c:219-229）。
+/// `REQ_FLUSH` request (C `req_flush` — request.c:219-229).
 ///
-/// 载荷只有 `device`：让 FS 把该设备上的块刷下去（`fcntl(F_FLUSH_FS_CACHE)`
-/// 与 `bdev` 的刷盘路径都用它）。回复只有状态。
+/// The payload is just `device`: it asks the FS to flush that device's blocks (both
+/// `fcntl(F_FLUSH_FS_CACHE)` and `bdev`'s flush path use it). The reply is status
+/// only.
 pub fn encode_flush(dev: u64) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_FLUSH,
         ..Message::default()
     };
-    // SAFETY: REQ_FLUSH 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_FLUSH's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[0..8].copy_from_slice(&dev.to_le_bytes());
@@ -586,16 +593,17 @@ pub fn encode_flush(dev: u64) -> Message {
     msg
 }
 
-/// `REQ_STATVFS` 请求（C `req_statvfs` — request.c:232-247）。
+/// `REQ_STATVFS` request (C `req_statvfs` — request.c:232-247).
 ///
-/// 载荷只有 `grant`：FS 按 C 的 `struct statvfs` 布局**整块写进** VFS 侧的
-/// 缓冲（direct grant，`CPF_WRITE`），回复只有状态。
+/// The payload is just `grant`: the FS writes a whole `struct statvfs` in C's layout
+/// **into** the VFS-side buffer (direct grant, `CPF_WRITE`); the reply is status
+/// only.
 pub fn encode_statvfs(grant: i32) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_STATVFS,
         ..Message::default()
     };
-    // SAFETY: REQ_STATVFS 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_STATVFS's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[0..4].copy_from_slice(&grant.to_le_bytes());
@@ -603,10 +611,11 @@ pub fn encode_statvfs(grant: i32) -> Message {
     msg
 }
 
-/// `REQ_RENAME` 请求（C `req_rename` — request.c:927-955）。
+/// `REQ_RENAME` request (C `req_rename` — request.c:927-955).
 ///
-/// 两个名字都在 VFS 内存里（各一张 direct grant）：旧名是 VFS 从 name1 的
-/// 最后组件保存下来的，新名来自 name2 的最后组件。两个长度都含结尾 NUL。
+/// Both names live in VFS memory (one direct grant each): the old name was saved by
+/// VFS from name1's last component, and the new name comes from name2's last
+/// component. Both lengths include the trailing NUL.
 pub fn encode_rename(
     dir_old: u64,
     dir_new: u64,
@@ -619,7 +628,7 @@ pub fn encode_rename(
         m_type: minix_types::REQ_RENAME,
         ..Message::default()
     };
-    // SAFETY: REQ_RENAME 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_RENAME's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::rename_req_off::DIR_OLD..minix_types::rename_req_off::DIR_OLD + 8]
@@ -638,10 +647,11 @@ pub fn encode_rename(
     msg
 }
 
-/// `REQ_SLINK` 请求（C `req_slink_actual` — request.c:990-1046）。
+/// `REQ_SLINK` request (C `req_slink_actual` — request.c:990-1046).
 ///
-/// 双 grant：组件名（VFS 内存，direct）与链接目标串（**用户内存**，magic）。
-/// `mem_size` 是目标串长度、**不含**结尾 NUL（C 传 `vname1_length - 1`）。
+/// Two grants: the component name (VFS memory, direct) and the link target string
+/// (**user memory**, magic). `mem_size` is the target length **without** the trailing
+/// NUL (C passes `vname1_length - 1`).
 pub fn encode_slink(
     dir_ino: u64,
     path_len: usize,
@@ -655,7 +665,7 @@ pub fn encode_slink(
         m_type: minix_types::REQ_SLINK,
         ..Message::default()
     };
-    // SAFETY: REQ_SLINK 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_SLINK's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::slink_req_off::INODE..minix_types::slink_req_off::INODE + 8]
@@ -677,16 +687,17 @@ pub fn encode_slink(
     msg
 }
 
-/// `REQ_LINK` 请求（C `req_link` — request.c:390-418）。
+/// `REQ_LINK` request (C `req_link` — request.c:390-418).
 ///
-/// 载荷 `{inode(被链接的文件), dir_ino(新名的父目录), grant(新名), path_len}`
-/// ——两个 ino 的顺序是**文件在前、目录在后**（结构体序），别弄反。
+/// Payload `{inode(the file being linked), dir_ino(the new name's parent directory),
+/// grant(the new name), path_len}` — the order of the two inos is **file first,
+/// directory second** (struct order), so do not swap them.
 pub fn encode_link(linked_ino: u64, dir_ino: u64, grant: i32, path_len: usize) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_LINK,
         ..Message::default()
     };
-    // SAFETY: REQ_LINK 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_LINK's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::link_req_off::INODE..minix_types::link_req_off::INODE + 8]
@@ -701,16 +712,17 @@ pub fn encode_link(linked_ino: u64, dir_ino: u64, grant: i32, path_len: usize) -
     msg
 }
 
-/// `REQ_UTIME` 请求（C `req_utime` — request.c:1180-1199）。
+/// `REQ_UTIME` request (C `req_utime` — request.c:1180-1199).
 ///
-/// 载荷 `{inode, actime, modtime, acnsec, modnsec}`：秒与纳秒分开带，
-/// `acnsec`/`modnsec` 可能是 `UTIME_OMIT`（"这一项不动"）。回复只有状态。
+/// Payload `{inode, actime, modtime, acnsec, modnsec}`: seconds and nanoseconds
+/// travel separately, and `acnsec`/`modnsec` may be `UTIME_OMIT` ("leave this field
+/// alone"). The reply is status only.
 pub fn encode_utime(ino: u64, actime: i64, modtime: i64, acnsec: u32, modnsec: u32) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_UTIME,
         ..Message::default()
     };
-    // SAFETY: REQ_UTIME 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_UTIME's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::utime_req_off::INODE..minix_types::utime_req_off::INODE + 8]
@@ -727,10 +739,11 @@ pub fn encode_utime(ino: u64, actime: i64, modtime: i64, acnsec: u32, modnsec: u
     msg
 }
 
-/// `REQ_MKNOD` 请求（C `req_mknod` — request.c:567-601）。
+/// `REQ_MKNOD` request (C `req_mknod` — request.c:567-601).
 ///
-/// 载荷七域：`device`（字符/块设备号）、父目录 `inode`、已收窄的 `mode`、
-/// 属主 `uid`/`gid`、名字 grant、名字长度。回复只有状态。
+/// Seven fields in the payload: `device` (the character/block device number), the
+/// parent directory `inode`, the already-narrowed `mode`, the owner `uid`/`gid`, the
+/// name grant, and the name length. The reply is status only.
 pub fn encode_mknod(
     dev: u64,
     dir_ino: u64,
@@ -744,7 +757,7 @@ pub fn encode_mknod(
         m_type: minix_types::REQ_MKNOD,
         ..Message::default()
     };
-    // SAFETY: REQ_MKNOD 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_MKNOD's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::mknod_req_off::DEVICE..minix_types::mknod_req_off::DEVICE + 8]
@@ -765,16 +778,16 @@ pub fn encode_mknod(
     msg
 }
 
-/// `REQ_CHOWN` 请求（C `req_chown` — request.c:136-158）。
+/// `REQ_CHOWN` request (C `req_chown` — request.c:136-158).
 ///
-/// 载荷 `{inode, uid, gid}`；回复带**新的模式**（FS 可能清掉 setuid/setgid），
-/// uid/gid 由 VFS 自己写回 vnode。
+/// Payload `{inode, uid, gid}`; the reply carries the **new mode** (the FS may clear
+/// setuid/setgid), and VFS writes uid/gid back to the vnode itself.
 pub fn encode_chown(ino: u64, uid: u32, gid: u32) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_CHOWN,
         ..Message::default()
     };
-    // SAFETY: REQ_CHOWN 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_CHOWN's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::chown_req_off::INODE..minix_types::chown_req_off::INODE + 8]
@@ -787,17 +800,18 @@ pub fn encode_chown(ino: u64, uid: u32, gid: u32) -> Message {
     msg
 }
 
-/// `REQ_UNLINK` 请求（C `req_unlink` — request.c:1149-1175）。
+/// `REQ_UNLINK` request (C `req_unlink` — request.c:1149-1175).
 ///
-/// 载荷 `{inode, grant, path_len}`：`inode` 是**父目录**，`grant` 指向 VFS
-/// 内存里的组件名（`CPF_READ` 的 direct grant，名字不在用户空间）。回复只有
-/// 状态（`m_type`），没有载荷——所以续接体用 `WorkerCont::Status` 就够。
+/// Payload `{inode, grant, path_len}`: `inode` is the **parent directory**, and
+/// `grant` points at the component name in VFS memory (a `CPF_READ` direct grant;
+/// the name is not in user space). The reply is status only (`m_type`) with no
+/// payload — so the continuation needs just `WorkerCont::Status`.
 pub fn encode_unlink(dir_ino: u64, grant: i32, path_len: usize) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_UNLINK,
         ..Message::default()
     };
-    // SAFETY: REQ_UNLINK 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_UNLINK's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::unlink_req_off::INODE..minix_types::unlink_req_off::INODE + 8]
@@ -810,24 +824,25 @@ pub fn encode_unlink(dir_ino: u64, grant: i32, path_len: usize) -> Message {
     msg
 }
 
-/// `REQ_RMDIR` 请求：与 [`encode_unlink`] **同载荷同结构**（C 里
-/// `req_rmdir` 也填 `m_vfs_fs_unlink`，request.c:977-979），只有 `m_type` 不同。
+/// `REQ_RMDIR` request: the **same payload and structure** as [`encode_unlink`] (C's
+/// `req_rmdir` also fills `m_vfs_fs_unlink`, request.c:977-979); only `m_type`
+/// differs.
 pub fn encode_rmdir(dir_ino: u64, grant: i32, path_len: usize) -> Message {
     let mut msg = encode_unlink(dir_ino, grant, path_len);
     msg.m_type = minix_types::REQ_RMDIR;
     msg
 }
 
-/// `REQ_CHMOD` 请求（C `req_chmod` — request.c:108-130）。
+/// `REQ_CHMOD` request (C `req_chmod` — request.c:108-130).
 ///
-/// 载荷 `{inode, mode}`；回复带**实际生效的模式**（FS 可能收窄），由调用方
-/// 回写 vnode 缓存。
+/// Payload `{inode, mode}`; the reply carries the **mode that actually took effect**
+/// (the FS may narrow it), which the caller writes back to the vnode cache.
 pub fn encode_chmod(ino: u64, mode: u32) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_CHMOD,
         ..Message::default()
     };
-    // SAFETY: REQ_CHMOD 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_CHMOD's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::chmod_req_off::INODE..minix_types::chmod_req_off::INODE + 8]
@@ -838,17 +853,17 @@ pub fn encode_chmod(ino: u64, mode: u32) -> Message {
     msg
 }
 
-/// `REQ_RDLINK` 请求（C `req_rdlink_actual` — request.c:717-748）。
+/// `REQ_RDLINK` request (C `req_rdlink_actual` — request.c:717-748).
 ///
-/// 载荷 `{inode, grant, mem_size}`；数据面由 FS 经 grant 把链接文本写进
-/// **用户**缓冲（`CPF_WRITE` 的 magic grant）。回复的字节数在载荷里
-/// （`rdlink_reply_off::NBYTES`），`m_type` 只是 `OK`。
+/// Payload `{inode, grant, mem_size}`; the data face has the FS write the link text
+/// through the grant into the **user** buffer (a `CPF_WRITE` magic grant). The byte
+/// count is in the payload (`rdlink_reply_off::NBYTES`); `m_type` is just `OK`.
 pub fn encode_rdlink(ino: u64, grant: i32, mem_size: usize) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_RDLINK,
         ..Message::default()
     };
-    // SAFETY: REQ_RDLINK 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_RDLINK's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::rdlink_req_off::INODE..minix_types::rdlink_req_off::INODE + 8]
@@ -861,19 +876,21 @@ pub fn encode_rdlink(ino: u64, grant: i32, mem_size: usize) -> Message {
     msg
 }
 
-/// `REQ_GETDENTS` 请求（C `req_getdents_actual` — request.c:288-336）。
+/// `REQ_GETDENTS` request (C `req_getdents_actual` — request.c:288-336).
 ///
-/// 载荷 `{inode, seek_pos, grant, mem_size}`；数据面由 FS 经 grant 往用户
-/// 缓冲写目录项（`CPF_WRITE` 的 magic grant）。位置由调用方从 filp 取出
-/// 随请求带上——FS 不持有位置（C `read.c:309` 传的是 `rfilp->filp_pos`）。
+/// Payload `{inode, seek_pos, grant, mem_size}`; the data face has the FS write
+/// directory entries through the grant into the user buffer (a `CPF_WRITE` magic
+/// grant). The caller takes the position out of the filp and carries it with the
+/// request — the FS holds no position (C `read.c:309` passes `rfilp->filp_pos`).
 ///
-/// 偏移取共享权威 `minix_types::getdents_req_off`（FS 侧解码用同一张表）。
+/// Offsets come from the shared authority `minix_types::getdents_req_off` (the FS side
+/// decodes with the same table).
 pub fn encode_getdents(ino: u64, pos: i64, grant: i32, mem_size: usize) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_GETDENTS,
         ..Message::default()
     };
-    // SAFETY: REQ_GETDENTS 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_GETDENTS's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::getdents_req_off::INODE..minix_types::getdents_req_off::INODE + 8]
@@ -888,16 +905,18 @@ pub fn encode_getdents(ino: u64, pos: i64, grant: i32, mem_size: usize) -> Messa
     msg
 }
 
-/// `REQ_LOOKUP` 请求（C `req_lookup` — request.c:430-500）。
+/// `REQ_LOOKUP` request (C `req_lookup` — request.c:430-500).
 ///
-/// 载荷是 `mess_vfs_fs_lookup`：路径 grant（**`CPF_READ|CPF_WRITE`** ——
-/// FS 要把"剩余路径"写回来，这是 `EENTERMOUNT`/`ESYMLINK` 报告进度的方法）、
-/// 路径长度与窗口、起目录 ino 与 chroot 边界 ino、以及 `flags`
-/// （`PATH_RET_SYMLINK`/`PATH_GET_UCRED` — vfsif.h）；凭证 grant 在
-/// `ngroups > 0` 时才带（本编码器把 `grant_ucred`/`ucred_size` 留给调用方传 0，
-/// 凭证面随 Open 族一并接）。
+/// The payload is `mess_vfs_fs_lookup`: the path grant (**`CPF_READ|CPF_WRITE`** — the
+/// FS writes the "remaining path" back, which is how `EENTERMOUNT`/`ESYMLINK` report
+/// progress), the path length and window, the start-directory ino and the chroot
+/// boundary ino, and `flags` (`PATH_RET_SYMLINK`/`PATH_GET_UCRED` — vfsif.h); the
+/// credential grant is carried only when `ngroups > 0` (this encoder leaves
+/// `grant_ucred`/`ucred_size` for the caller to pass as 0; the credential face lands
+/// with the Open family).
 ///
-/// 偏移取共享权威 `minix_types::lookup_req_off`（FS 侧解码用同一张表）。
+/// Offsets come from the shared authority `minix_types::lookup_req_off` (the FS side
+/// decodes with the same table).
 pub fn encode_lookup(
     grant_path: i32,
     path_len: usize,
@@ -905,11 +924,13 @@ pub fn encode_lookup(
     root_ino: u64,
     flags: u32,
 ) -> Message {
-    // `PATH_RET_SYMLINK` 的语义在 **FS 侧**实现（libfsdriver/lookup.c:249-251：
-    // "最后一个组件是符号链接且 VFS 要求不解析时不解析"），所以这个字必须
-    // 真的发过去——少发就等于让 FS 一路跟进符号链接。
-    // `PATH_GET_UCRED` 需要随请求带凭证 grant，本编码器还不带（ucred_size=0）：
-    // 谁先打开这条面，谁在这里补 grant 并把断言换成实现。
+    // `PATH_RET_SYMLINK` semantics are implemented on the **FS side**
+    // (libfsdriver/lookup.c:249-251: "do not resolve when the last component is a
+    // symlink and VFS asked for no resolution"), so this word really must be sent —
+    // dropping it would let the FS follow symlinks all the way.
+    // `PATH_GET_UCRED` needs a credential grant carried with the request, which this
+    // encoder does not carry yet (ucred_size=0): whoever opens this face first adds the
+    // grant here and turns the assertion into the implementation.
     debug_assert!(
         flags & minix_types::PATH_GET_UCRED == 0,
         "lookup 的凭证面未接线（req_lookup 的 ucred grant）"
@@ -918,7 +939,7 @@ pub fn encode_lookup(
         m_type: minix_types::REQ_LOOKUP,
         ..Message::default()
     };
-    // SAFETY: REQ_LOOKUP 的载荷按 LP64 域序写在消息负载区。
+    // SAFETY: REQ_LOOKUP's payload is written in LP64 field order in the message payload area.
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::lookup_req_off::DIR_INO..minix_types::lookup_req_off::DIR_INO + 8]
@@ -933,20 +954,21 @@ pub fn encode_lookup(
             .copy_from_slice(&(crate::path::PATH_MAX as u64).to_le_bytes());
         raw[minix_types::lookup_req_off::GRANT_PATH..minix_types::lookup_req_off::GRANT_PATH + 4]
             .copy_from_slice(&grant_path.to_le_bytes());
-        // ucred_size = 0（不带凭证，见上）。
+        // ucred_size = 0 (no credentials carried; see above).
     }
     msg
 }
 
-/// 解一条 `REQ_LOOKUP` 回复（C `req_lookup` 的收尾 — request.c:500-521）。
+/// Decode one `REQ_LOOKUP` reply (the tail of C `req_lookup` — request.c:500-521).
 ///
-/// `status` 是剥掉 transid 后的 `m_type`：`OK` 时字节区是 `node_details`
-/// 的前四域（ino/mode/size/dev），三个特殊码
-/// （`EENTERMOUNT`/`ELEAVEMOUNT`/`ESYMLINK`）只有 `offset`/`inode`/`symloop`
-/// 有意义；其余（含负 errno）由调用方按错误处理（本函数返回 `None`）。
+/// `status` is `m_type` with the transid stripped: on `OK` the byte area is the first
+/// four fields of `node_details` (ino/mode/size/dev), and the three special codes
+/// (`EENTERMOUNT`/`ELEAVEMOUNT`/`ESYMLINK`) carry meaningful `offset`/`inode`/`symloop`
+/// only; everything else (including a negative errno) is handled as an error by the
+/// caller (this function returns `None`).
 pub fn decode_lookup_reply(status: i32, msg: &Message) -> Option<crate::path::LookupRes> {
     use minix_types::lookup_reply_off as off;
-    // SAFETY: 回复载荷按上述域序写在负载区。
+    // SAFETY: the reply payload is written in the field order above in the payload area.
     let raw = unsafe { &msg.m_u.raw };
     let rd8 = |at: usize| -> u64 {
         let mut b = [0u8; 8];
@@ -975,8 +997,8 @@ pub fn decode_lookup_reply(status: i32, msg: &Message) -> Option<crate::path::Lo
             mode: rd4(off::MODE),
             size: rd8(off::FILE_SIZE),
             dev: rd8(off::DEVICE),
-            // `node_details` 的属主/属组：C `advance` 把它写进 vnode 的
-            // `v_uid`/`v_gid`（path.c:98-99），权限判断随后按它算。
+            // `node_details`' owner/group: C `advance` writes them into the vnode's
+            // `v_uid`/`v_gid` (path.c:98-99), and permission checks then use them.
             uid: rd4(off::UID),
             gid: rd4(off::GID),
         }),
@@ -997,22 +1019,24 @@ pub fn decode_lookup_reply(status: i32, msg: &Message) -> Option<crate::path::Lo
     }
 }
 
-/// `REQ_INHIBREAD` 请求（C `req_inhibread` — request.c:374-384）：载荷只有
-/// `{inode}`，让 FS 丢掉该 inode 的预读状态（`lseek` 改了位置时发）。
+/// `REQ_INHIBREAD` request (C `req_inhibread` — request.c:374-384): the payload is
+/// only `{inode}`, which tells the FS to drop that inode's read-ahead state (sent when
+/// `lseek` moved the position).
 pub fn encode_inhibread(ino: u64) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_INHIBREAD,
         ..Message::default()
     };
-    // SAFETY: 载荷只有 `ino_t inode` 一个域，写在负载区首字。
+    // SAFETY: the payload is a single `ino_t inode` field, written in the first word of the payload area.
     unsafe {
         msg.m_u.raw[0..8].copy_from_slice(&ino.to_le_bytes());
     }
     msg
 }
 
-/// `REQ_CREATE` 请求（C `req_create` — request.c:166-200）：父目录 ino +
-/// 模式位 + uid/gid + 指向**最后组件名**的 grant + 名字长度。
+/// `REQ_CREATE` request (C `req_create` — request.c:166-200): parent directory ino +
+/// mode bits + uid/gid + a grant pointing at the **last component name** + the name
+/// length.
 pub fn encode_create(
     dir_ino: u64,
     grant: i32,
@@ -1025,7 +1049,7 @@ pub fn encode_create(
         m_type: minix_types::REQ_CREATE,
         ..Message::default()
     };
-    // SAFETY: REQ_CREATE 的载荷按 LP64 域序写在消息负载区。
+    // SAFETY: REQ_CREATE's payload is written in LP64 field order in the message payload area.
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::create_req_off::INODE..minix_types::create_req_off::INODE + 8]
@@ -1044,12 +1068,12 @@ pub fn encode_create(
     msg
 }
 
-/// 解一条 `REQ_CREATE` 回复（C `req_create` 收尾）：`fs_e` 取回复的
-/// `m_source`（C 的 `res->fs_e = m.m_source`），`dev` 为 0（新建节点无设备，
-/// C 的 `res->dev` 在该路径上未写）。
+/// Decode one `REQ_CREATE` reply (the tail of C `req_create`): `fs_e` comes from the
+/// reply's `m_source` (C's `res->fs_e = m.m_source`), and `dev` is 0 (a newly created
+/// node has no device; C's `res->dev` is not written on this path).
 pub fn decode_create_reply(msg: &Message) -> crate::path::NodeDetails {
     use minix_types::create_reply_off as off;
-    // SAFETY: 回复载荷按上述域序写在负载区。
+    // SAFETY: the reply payload is written in the field order above in the payload area.
     let raw = unsafe { &msg.m_u.raw };
     let rd8 = |at: usize| -> u64 {
         let mut b = [0u8; 8];
@@ -1076,14 +1100,14 @@ pub fn decode_create_reply(msg: &Message) -> crate::path::NodeDetails {
     }
 }
 
-/// `REQ_MKDIR` 请求（C `req_mkdir` — request.c:528-558）：父目录 ino +
-/// 权限位 + uid/gid + 指向**最后组件名**的 grant。
+/// `REQ_MKDIR` request (C `req_mkdir` — request.c:528-558): parent directory ino +
+/// permission bits + uid/gid + a grant pointing at the **last component name**.
 pub fn encode_mkdir(dir_ino: u64, grant: i32, mode: u32, uid: u32, gid: u32) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_MKDIR,
         ..Message::default()
     };
-    // SAFETY: REQ_MKDIR 的载荷按 LP64 域序写在消息负载区。
+    // SAFETY: REQ_MKDIR's payload is written in LP64 field order in the message payload area.
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::mkdir_req_off::INODE..minix_types::mkdir_req_off::INODE + 8]
@@ -1100,16 +1124,16 @@ pub fn encode_mkdir(dir_ino: u64, grant: i32, mode: u32, uid: u32, gid: u32) -> 
     msg
 }
 
-/// `REQ_FTRUNC` 请求（C `req_ftrunc` — request.c:261-282）。
+/// `REQ_FTRUNC` request (C `req_ftrunc` — request.c:261-282).
 ///
-/// VFS 的 `truncate_vnode` 只发一种形状：`req_ftrunc(fs_e, ino, newsize, 0)`
-/// ——`trc_end == 0` 在 FS 侧就是"截到 `trc_start`"（mfs `fs_trunc`）。
+/// VFS's `truncate_vnode` sends exactly one shape: `req_ftrunc(fs_e, ino, newsize, 0)`
+/// — `trc_end == 0` means "truncate to `trc_start`" on the FS side (mfs `fs_trunc`).
 pub fn encode_ftrunc(ino: u64, start: i64, end: i64) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_FTRUNC,
         ..Message::default()
     };
-    // SAFETY: REQ_FTRUNC 的载荷按 LP64 域序写在消息负载区。
+    // SAFETY: REQ_FTRUNC's payload is written in LP64 field order in the message payload area.
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::ftrunc_req_off::INODE..minix_types::ftrunc_req_off::INODE + 8]
@@ -1122,16 +1146,18 @@ pub fn encode_ftrunc(ino: u64, start: i64, end: i64) -> Message {
     msg
 }
 
-/// `REQ_STAT` 请求（C `req_stat_actual` — request.c:1087-1096）：载荷只有
-/// `{inode, grant}` 两域，FS 把 `struct stat` 直接写进 grant 指向的用户缓冲。
+/// `REQ_STAT` request (C `req_stat_actual` — request.c:1087-1096): the payload has
+/// only the two fields `{inode, grant}`, and the FS writes `struct stat` straight into
+/// the user buffer the grant points at.
 ///
-/// 偏移取共享权威 `minix_types::stat_req_off`（FS 侧解码用同一张表）。
+/// Offsets come from the shared authority `minix_types::stat_req_off` (the FS side
+/// decodes with the same table).
 pub fn encode_stat(ino: u64, grant: i32) -> Message {
     let mut msg = Message {
         m_type: minix_types::REQ_STAT,
         ..Message::default()
     };
-    // SAFETY: REQ_STAT 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    // SAFETY: REQ_STAT's payload is written in LP64 field order in the message payload area (no dedicated union member).
     unsafe {
         let raw = &mut msg.m_u.raw;
         raw[minix_types::stat_req_off::INODE..minix_types::stat_req_off::INODE + 8]
@@ -1143,7 +1169,7 @@ pub fn encode_stat(ino: u64, grant: i32) -> Message {
 }
 
 pub fn decode_readsuper_reply(msg: &Message, fs_e: Endpoint) -> FsResp {
-    // SAFETY: 同 encode_readsuper——按字节读回复载荷。
+    // SAFETY: same as encode_readsuper — read the reply payload byte-wise.
     let raw = unsafe { &msg.m_u.raw };
     let u64_at = |o: usize| u64::from_le_bytes(raw[o..o + 8].try_into().unwrap());
     let u32_at = |o: usize| u32::from_le_bytes(raw[o..o + 4].try_into().unwrap());
@@ -1217,23 +1243,26 @@ pub struct MockFsClient {
     pub inject_restart: bool,
 }
 
-/// 生产 `FsClient`——`REQ_*` 走真传输（NS4/18-mount W6 执行件）。
+/// Production `FsClient` — `REQ_*` goes over the real transport.
 ///
-/// C `request.c` 每个 `req_*` 的三步舞是同一形状：`cpf_grant_direct` 建载荷
-/// grant → 填消息 `fs_sendrec` → `cpf_revoke`，回复解进出参。这里对
-/// [`FsReq::ReadSuper`] 实现该形状（根挂载链当前的唯一消费，C
-/// `request.c:780-833`）；其余 `REQ_*` 变体在各自臂通电时逐个补臂，缺失
-/// 即 [`FsError::UnknownReq`] 诚实失败——不假装发送成功。
+/// The three-step dance of every `req_*` in C `request.c` has one shape:
+/// `cpf_grant_direct` builds the payload grant → fill the message and `fs_sendrec` →
+/// `cpf_revoke`, with the reply decoded into out-parameters. Here that shape is
+/// implemented for [`FsReq::ReadSuper`] (the only consumer the root-mount chain has
+/// today, C `request.c:780-833`); the remaining `REQ_*` variants get one arm each as
+/// they are energized, and a missing arm fails honestly with [`FsError::UnknownReq`]
+/// — it does not pretend the send succeeded.
 ///
-/// 借用面：grant 表住 [`crate::main_loop::VfsState`]（`grants` 字段），客户
-/// 端按调用借 `&mut`，避免把表搬出状态聚合（ARCH A-4）。
+/// Borrowing: the grant table lives in [`crate::main_loop::VfsState`] (the `grants`
+/// field), and the client borrows it `&mut` per call, avoiding moving the table out of
+/// the state aggregate ([ARCH: A-4]).
 pub struct WireFsClient<'a, K: minix_sys::syscall::KernelCallTransport, T: minix_sys::ipc::IpcTransport>
 {
-    /// `cpf_grant_direct`/`cpf_revoke` 的表（safecopies.c 的 `grants` 全局）。
+    /// The table behind `cpf_grant_direct`/`cpf_revoke` (the `grants` global of safecopies.c).
     pub grants: &'a mut minix_sys::grant::GrantTable,
-    /// `sys_setgrant`/grant 增长所需的内核调用传输。
+    /// The kernel-call transport needed by `sys_setgrant`/grant growth.
     pub kernel: &'a K,
-    /// `fs_sendrec` 的承载（trap 直连；C worker 上下文的同步 sendrec）。
+    /// The carrier for `fs_sendrec` (direct trap; C's synchronous sendrec in a worker context).
     pub ipc: &'a T,
 }
 
@@ -1247,12 +1276,13 @@ impl<
             FsReq::ReadSuper { fs_e, label, dev, readonly, isroot } => {
                 (fs_e, label, dev, readonly, isroot)
             }
-            // 未通电的 REQ_* 臂：诚实拒绝（18-mount 后续波次逐个落）。
+            // A `REQ_*` arm that is not energized: refuse honestly (the follow-up waves of the mount work land them one by one).
             other => return Err(FsError::UnknownReq(other.m_type())),
         };
 
-        // C request.c:789-793 — `len = strlen(label)+1`，grant 覆盖含 NUL 的
-        // 整串（CPF_READ）。空 label（mount_pfs 传 ""）也是 1 字节 NUL。
+        // C request.c:789-793 — `len = strlen(label)+1`, the grant covers the whole
+        // string including the NUL (CPF_READ). An empty label (mount_pfs passes "") is
+        // still one NUL byte.
         let mut bytes = label.into_bytes();
         bytes.push(0);
         let len = bytes.len();
@@ -1266,30 +1296,33 @@ impl<
                 minix_types::CpFlags::READ,
             )
             .map_err(FsError::Io)?;
-        // C request.c:797-810 — 消息四件套 flags/grant/device/path_len。
+        // C request.c:797-810 — the message's four-piece set flags/grant/device/path_len.
         let mut msg = encode_readsuper(dev, len, grant_id, readonly, isroot);
-        // C `fs_sendrec`（comm.c）在往返前把线上 `m_type` 戳上 transid 高 16
-        // 位：`TRNS_ADD_ID(call, id)`。FS 侧（`fs-rt::transport::receive`）按
-        // `TransactionId::decode`（call = raw >> 16）分派——不戳则 call=0、
-        // `index = 0.wrapping_sub(FS_BASE)` 下溢 → `Unserved` → 回 ENOSYS，
-        // read_super 从未真正抵达 MFS 的挂载门（`task.rs:429`），MFS 的
-        // `is_mounted()` 因此恒假。同步 sendrec 靠阻塞往返匹配回复（非
-        // transid），故 id 取 0 即可。
+        // C `fs_sendrec` (comm.c) stamps the wire `m_type` with the transid in the high
+        // 16 bits before the round trip: `TRNS_ADD_ID(call, id)`. The FS side
+        // (`fs-rt::transport::receive`) dispatches via `TransactionId::decode`
+        // (call = raw >> 16) — without the stamp call=0 and
+        // `index = 0.wrapping_sub(FS_BASE)` underflows → `Unserved` → ENOSYS comes
+        // back, so read_super never reaches MFS's mount gate (`task.rs:429`) and MFS's
+        // `is_mounted()` is forever false. A synchronous sendrec matches the reply by
+        // blocking round trip (not by transid), so id 0 is enough here.
         msg.m_type = trns_add_id(REQ_READSUPER, 0);
-        // C request.c:813 — `fs_sendrec`（同步往返，worker 上下文）。
+        // C request.c:813 — `fs_sendrec` (synchronous round trip, worker context).
         let r = self.ipc.sendrec(fs_e, &mut msg);
-        // C request.c:814 — 回复无关成败都先 revoke（C 同样先 revoke 再查 r）。
-        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+        // C request.c:814 — revoke first whether or not the reply succeeded (C also revokes before checking r).
+        // [SD19-gate] Best-effort grant revoke: the main operation already completed or has entered the error path, and a failed revoke does not change its result
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.grants.revoke(grant_id);
         if let Err(t) = r {
             return Err(FsError::Io(t.0));
         }
-        // C `req_readsuper`（request.c:813-816）：`fs_sendrec` 抽出的回复状态
-        // 非 OK 即原样上抛，**先于**解出载荷。回复 `m_type =
-        // TRNS_ADD_ID(status, id)`，剥 id 取 status（高 16 位）。旧代码无视
-        // 状态字直接 `decode_readsuper_reply` 返 Ok，把 ENOSYS 也当挂载成功，
-        // 让 `do_init_root` 带病开门（boot 应 panic，见 main.c:519-520）。
+        // C `req_readsuper` (request.c:813-816): if the reply status pulled out by
+        // `fs_sendrec` is not OK, it is propagated unchanged, **before** decoding the
+        // payload. The reply's `m_type = TRNS_ADD_ID(status, id)`; strip the id to get
+        // the status (the high 16 bits). Older code ignored the status word and went
+        // straight to `decode_readsuper_reply` returning Ok, treating ENOSYS as a
+        // successful mount and letting `do_init_root` open the door sick (boot should
+        // panic, see main.c:519-520).
         let status = trns_del_id(msg.m_type);
         if status != 0 {
             return Err(FsError::Io(status));
@@ -1379,9 +1412,10 @@ mod tests {
 
     #[test]
     fn test_reqwire_all_33_align_c_ipc_h() {
-        // E-REQWIRE：全量 33 常量对账（C vfsif.h REQ_GETNODE..REQ_BPEEK）。
-        // 绝对值 = 0xA00 + 偏移；常量本体已收敛至 minix-types::fs_driver，
-        // 本表改为钉住 VFS 消费侧（编码进 m_type 的就是这些值）。
+        // E-REQWIRE: reconcile all 33 constants (C vfsif.h REQ_GETNODE..REQ_BPEEK).
+        // The absolute value = 0xA00 + offset; the constants themselves have converged
+        // into minix-types::fs_driver, and this table now pins the VFS consumption side
+        // (these are the values encoded into m_type).
         let expected: [(i32, i32); 33] = [
             (1, 0xA01), (2, 0xA02), (3, 0xA03), (4, 0xA04),
             (5, 0xA05), (6, 0xA06), (7, 0xA07), (8, 0xA08),
@@ -1408,7 +1442,7 @@ mod tests {
         for (i, &val) in consts.iter().enumerate() {
             assert_eq!(val, expected[i].1, "REQ index {} mismatch", i + 1);
         }
-        // 死常量 GETNODE 也在表内但不应被 dispatch。
+        // The dead GETNODE constant is in the table too but must not be dispatched.
         assert!(!FsReq::is_known(REQ_GETNODE));
     }
 
@@ -1609,13 +1643,14 @@ mod tests {
     }
 
     #[test]
-    /// `REQ_LOOKUP` 请求编码：grant/长度/起目录/chroot 边界四个域落在共享
-    /// 偏移表上；`path_size` 恒为 `PATH_MAX`（C 的窗口大小）。
+    /// `REQ_LOOKUP` request encoding: the four fields grant/length/start-dir/chroot
+    /// boundary land on the shared offset table; `path_size` is always `PATH_MAX`
+    /// (C's window size).
     #[test]
     fn test_encode_lookup_fields() {
         let m = encode_lookup(7, 12, 0x33, 0x11, minix_types::PATH_RET_SYMLINK);
         assert_eq!(m.m_type, minix_types::REQ_LOOKUP);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -1650,15 +1685,16 @@ mod tests {
         assert_eq!(i32::from_le_bytes(b4), 7);
     }
 
-    /// `REQ_LOOKUP` 回复解码（C `req_lookup` 收尾 — request.c:500-521）：
-    /// `OK` → 四域 `node_details`；三个特殊码 → offset/ino/symloop；其余
-    /// 状态（含负 errno）→ `None` 交错误面。
+    /// `REQ_LOOKUP` reply decode (the tail of C `req_lookup` — request.c:500-521):
+    /// `OK` → the four `node_details` fields; the three special codes →
+    /// offset/ino/symloop; any other status (including a negative errno) → `None` handed
+    /// to the error face.
     #[test]
     fn test_decode_lookup_reply_variants() {
         use minix_types::lookup_reply_off as off;
         let mk = |status: i32, off_v: i64, ino: u64, symloop: u16, mode: u32, size: u64, dev: u64| {
             let mut m = Message { m_type: status, ..Message::default() };
-            // SAFETY(test): 按共享偏移表填回复。
+            // SAFETY(test): fill the reply through the shared offset table.
             unsafe {
                 let raw = &mut m.m_u.raw;
                 raw[off::OFFSET..off::OFFSET + 8].copy_from_slice(&off_v.to_le_bytes());
@@ -1705,12 +1741,12 @@ mod tests {
         );
     }
 
-    /// `REQ_CREATE` 编码六域 + 回复解码五域（`fs_e` 取 `m_source`）。
+    /// `REQ_CREATE` encodes six fields + reply decodes five (`fs_e` from `m_source`).
     #[test]
     fn test_encode_create_and_decode_reply() {
         let m = encode_create(0x20, 44, 0o100644, 1000, 1000, 4);
         assert_eq!(m.m_type, minix_types::REQ_CREATE);
-        // SAFETY(test): 按共享偏移表读回请求域。
+        // SAFETY(test): read back the request fields through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -1722,13 +1758,13 @@ mod tests {
         );
         assert_eq!(u64::from_le_bytes(b8), 4);
 
-        // 回复：file_size@0、inode@8、mode@16、uid@20、gid@24。
+        // Reply: file_size@0, inode@8, mode@16, uid@20, gid@24.
         let mut reply = Message {
             m_source: minix_types::Endpoint::MFS,
             m_type: minix_types::OK,
             ..Message::default()
         };
-        // SAFETY(test): 按共享偏移表填回复。
+        // SAFETY(test): fill the reply through the shared offset table.
         unsafe {
             let raw = &mut reply.m_u.raw;
             raw[minix_types::create_reply_off::FILE_SIZE
@@ -1751,12 +1787,12 @@ mod tests {
         assert_eq!((d.size, d.dev), (0, 0));
     }
 
-    /// `REQ_MKDIR` 编码：五域（父 ino/mode/uid/gid/grant）。
+    /// `REQ_MKDIR` encoding: five fields (parent ino/mode/uid/gid/grant).
     #[test]
     fn test_encode_mkdir_fields() {
         let m = encode_mkdir(0x10, 33, 0o40755, 1000, 1000);
         assert_eq!(m.m_type, minix_types::REQ_MKDIR);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -1774,13 +1810,13 @@ mod tests {
         assert_eq!(rd4(minix_types::mkdir_req_off::GRANT), 33);
     }
 
-    /// `REQ_FTRUNC` 编码：三域（inode/trc_start/trc_end），且 VFS 的调用
-    /// 形状是 `end = 0`（"截到 start"）。
+    /// `REQ_FTRUNC` encoding: three fields (inode/trc_start/trc_end), and VFS's call
+    /// shape is `end = 0` ("truncate to start").
     #[test]
     fn test_encode_ftrunc_fields() {
         let m = encode_ftrunc(0x42, 100, 0);
         assert_eq!(m.m_type, minix_types::REQ_FTRUNC);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -1798,12 +1834,12 @@ mod tests {
         assert_eq!(i64::from_le_bytes(b8), 0);
     }
 
-    /// `REQ_STAT` 编码：inode/grant 落在共享偏移表的两个域上。
+    /// `REQ_STAT` encoding: inode/grant land on two fields of the shared offset table.
     #[test]
     fn test_encode_stat_fields() {
         let m = encode_stat(0x1234, 42);
         assert_eq!(m.m_type, minix_types::REQ_STAT);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -1817,23 +1853,25 @@ mod tests {
         assert_eq!(i32::from_le_bytes(b4), 42);
     }
 
-    /// `REQ_WRITE`：与读同载荷，只换请求号（方向差在 grant 权限位上）。
+    /// `REQ_WRITE`: same payload as read, only the request number differs (the direction
+    /// difference is in the grant permission bit).
     #[test]
     fn test_encode_write_shares_read_layout() {
         let w = encode_write(0x11, 9, 0x20, 8);
         let r = encode_read(0x11, 9, 0x20, 8);
         assert_eq!(w.m_type, minix_types::REQ_WRITE);
         assert_eq!(r.m_type, minix_types::REQ_READ);
-        // SAFETY(test): 两边的负载字节应逐位相同（只有 m_type 不同）。
+        // SAFETY(test): the payload bytes on both sides must be bit-identical (only m_type differs).
         assert_eq!(unsafe { w.m_u.raw }, unsafe { r.m_u.raw });
     }
 
-    /// `REQ_READ` 编码：四个域（inode/seek_pos/grant/nbytes）落在共享偏移表上。
+    /// `REQ_READ` encoding: four fields (inode/seek_pos/grant/nbytes) land on the shared
+    /// offset table.
     #[test]
     fn test_encode_read_fields() {
         let m = encode_read(0x99, 5, 0x1000, 64);
         assert_eq!(m.m_type, minix_types::REQ_READ);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -1856,15 +1894,16 @@ mod tests {
         assert_eq!(u64::from_le_bytes(b8), 64);
     }
 
-    /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
-    /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
-    /// 这里只钉请求侧，防"看着回复表写请求"。
-    /// `encode_newnode` 的四域落位（device@0、mode@8、uid@12、gid@16）。
+    /// `encode_getdents`'s four fields land per `getdents_req_off` — request and reply are
+    /// two different structures (the reply is decoded by `main_loop`'s continuation using
+    /// `getdents_reply_off`), so only the request side is pinned here, guarding against
+    /// "writing the request off the reply table".
+    /// `encode_newnode`'s four fields land (device@0, mode@8, uid@12, gid@16).
     #[test]
     fn test_encode_newnode_fields() {
         let m = encode_newnode(0, 0o010600, 1000, 100);
         assert_eq!(m.m_type, minix_types::REQ_NEWNODE);
-        // SAFETY(test): 按 C 的 `mess_vfs_fs_newnode` 域序读回。
+        // SAFETY(test): read back in C's `mess_vfs_fs_newnode` field order.
         let raw = unsafe { &m.m_u.raw };
         assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), 0);
         assert_eq!(u32::from_le_bytes(raw[8..12].try_into().unwrap()), 0o010600);
@@ -1872,32 +1911,32 @@ mod tests {
         assert_eq!(u32::from_le_bytes(raw[16..20].try_into().unwrap()), 100);
     }
 
-    /// `encode_flush`：载荷只有 `device`。
+    /// `encode_flush`: the payload is just `device`.
     #[test]
     fn test_encode_flush_device_only() {
         let m = encode_flush(0x0301);
         assert_eq!(m.m_type, minix_types::REQ_FLUSH);
-        // SAFETY(test): device 在负载区首字（mess_vfs_fs_flush）。
+        // SAFETY(test): device is in the first word of the payload area (mess_vfs_fs_flush).
         let raw = unsafe { &m.m_u.raw };
         assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), 0x0301);
     }
 
-    /// `encode_statvfs`：载荷只有 `grant`（FS 整块回填 `struct statvfs`）。
+    /// `encode_statvfs`: the payload is just `grant` (the FS fills back a whole `struct statvfs`).
     #[test]
     fn test_encode_statvfs_grant_only() {
         let m = encode_statvfs(7);
         assert_eq!(m.m_type, minix_types::REQ_STATVFS);
-        // SAFETY(test): grant 在负载区首字（mess_vfs_fs_statvfs）。
+        // SAFETY(test): grant is in the first word of the payload area (mess_vfs_fs_statvfs).
         let raw = unsafe { &m.m_u.raw };
         assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 7);
     }
 
-    /// `encode_putnode`：两域落位（inode/count）。
+    /// `encode_putnode`: two fields land (inode/count).
     #[test]
     fn test_encode_putnode_fields() {
         let m = encode_putnode(0x77, 3);
         assert_eq!(m.m_type, minix_types::REQ_PUTNODE);
-        // SAFETY(test): 按共享偏移表读回（putnode_req_off）。
+        // SAFETY(test): read back through the shared offset table (putnode_req_off).
         let raw = unsafe { &m.m_u.raw };
         assert_eq!(
             u64::from_le_bytes(
@@ -1919,13 +1958,14 @@ mod tests {
         );
     }
 
-    /// `encode_new_driver`：三域落位（device/grant/path_len）——**grant 在
-    /// 第二格**（`readsuper` 的第二格是 flags），错位会把标签长度当设备号发。
+    /// `encode_new_driver`: three fields land (device/grant/path_len) — **grant is in the
+    /// second slot** (`readsuper`'s second slot is flags); a misplacement would send the
+    /// label length as the device number.
     #[test]
     fn test_encode_new_driver_fields() {
         let m = encode_new_driver(0x0301, 11, 8);
         assert_eq!(m.m_type, minix_types::REQ_NEW_DRIVER);
-        // SAFETY(test): 按共享偏移表读回（new_driver_req_off）。
+        // SAFETY(test): read back through the shared offset table (new_driver_req_off).
         let raw = unsafe { &m.m_u.raw };
         assert_eq!(
             u64::from_le_bytes(
@@ -1956,13 +1996,13 @@ mod tests {
         );
     }
 
-    /// `encode_rename` 的六域落位（两个 direct grant：旧名 + 新名，长度都
-    /// 含结尾 NUL）。
+    /// `encode_rename`'s six fields land (two direct grants: old name + new name, both
+    /// lengths include the trailing NUL).
     #[test]
     fn test_encode_rename_fields() {
         let m = encode_rename(0x11, 0x22, 5, 7, 3, 4);
         assert_eq!(m.m_type, minix_types::REQ_RENAME);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -1994,13 +2034,13 @@ mod tests {
         assert_eq!(i32::from_le_bytes(b4), 4);
     }
 
-    /// `encode_slink` 的七域落位（双 grant：名字 direct + 目标 magic）与
-    /// `encode_link` 的四域落位（文件 ino 在前、父目录 ino 在后）。
+    /// `encode_slink`'s seven fields land (two grants: name direct + target magic) and
+    /// `encode_link`'s four fields land (file ino first, parent directory ino second).
     #[test]
     fn test_encode_slink_and_link_fields() {
         let sl = encode_slink(0x11, 4, 7, 3, 4, 1000, 100);
         assert_eq!(sl.m_type, minix_types::REQ_SLINK);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &sl.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -2037,7 +2077,7 @@ mod tests {
 
         let lk = encode_link(0x77, 0x11, 9, 5);
         assert_eq!(lk.m_type, minix_types::REQ_LINK);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &lk.m_u.raw };
         b8.copy_from_slice(
             &raw[minix_types::link_req_off::INODE..minix_types::link_req_off::INODE + 8],
@@ -2057,13 +2097,14 @@ mod tests {
         assert_eq!(u64::from_le_bytes(b8), 5);
     }
 
-    /// `encode_utime` 的五个域落位（inode/actime/modtime/acnsec/modnsec）——
-    /// 秒与纳秒分开带，纳秒可能是 `UTIME_OMIT` 哨兵。
+    /// `encode_utime`'s five fields land (inode/actime/modtime/acnsec/modnsec) — seconds
+    /// and nanoseconds travel separately, and the nanoseconds may be the `UTIME_OMIT`
+    /// sentinel.
     #[test]
     fn test_encode_utime_fields() {
         let m = encode_utime(0x66, 1700000000, 1700000001, 123, 456);
         assert_eq!(m.m_type, minix_types::REQ_UTIME);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -2089,13 +2130,13 @@ mod tests {
         assert_eq!(u32::from_le_bytes(b4), 456);
     }
 
-    /// `encode_mknod` 的七个域落位（device@0、inode@8、mode@16、uid@20、
-    /// gid@24、grant@28、path_len@32）。
+    /// `encode_mknod`'s seven fields land (device@0, inode@8, mode@16, uid@20,
+    /// gid@24, grant@28, path_len@32).
     #[test]
     fn test_encode_mknod_fields() {
         let m = encode_mknod(0x0301, 0x11, 0o100644, 1000, 100, 5, 8);
         assert_eq!(m.m_type, minix_types::REQ_MKNOD);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -2129,12 +2170,12 @@ mod tests {
         assert_eq!(u64::from_le_bytes(b8), 8);
     }
 
-    /// `encode_chown` 的三个域落位（inode@0、uid@8、gid@12）。
+    /// `encode_chown`'s three fields land (inode@0, uid@8, gid@12).
     #[test]
     fn test_encode_chown_fields() {
         let m = encode_chown(0x55, 1000, 100);
         assert_eq!(m.m_type, minix_types::REQ_CHOWN);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -2152,15 +2193,16 @@ mod tests {
         assert_eq!(u32::from_le_bytes(b4), 100);
     }
 
-    /// `encode_unlink` / `encode_rmdir` 的三个域落位，并钉住"两者同载荷、
-    /// 只有 m_type 不同"这一条（C 里共用一个结构体，别写成两套偏移）。
+    /// `encode_unlink` / `encode_rmdir`'s three fields land, pinning "both share one
+    /// payload and differ only in m_type" (C shares one struct; do not write two sets of
+    /// offsets).
     #[test]
     fn test_encode_unlink_and_rmdir_share_layout() {
         let u = encode_unlink(0x11, 21, 8);
         let r = encode_rmdir(0x11, 21, 8);
         assert_eq!(u.m_type, minix_types::REQ_UNLINK);
         assert_eq!(r.m_type, minix_types::REQ_RMDIR);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &u.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -2176,18 +2218,19 @@ mod tests {
             &raw[minix_types::unlink_req_off::PATH_LEN..minix_types::unlink_req_off::PATH_LEN + 8],
         );
         assert_eq!(u64::from_le_bytes(b8), 8);
-        // 除 m_type 外逐字节相同（同一结构体的两个调用号）。
+        // Byte-identical apart from m_type (two call numbers for the same structure).
         let ru = unsafe { &r.m_u.raw };
         assert_eq!(raw, ru, "unlink 与 rmdir 的载荷必须逐字节一致");
     }
 
-    /// `encode_chmod` 的两个域落位（inode@0、mode@8）；回复侧的 `mode`
-    /// 是"实际生效的模式"，与请求同名字不同来源。
+    /// `encode_chmod`'s two fields land (inode@0, mode@8); the reply-side `mode` is "the
+    /// mode that actually took effect", the same name as the request's but from a
+    /// different source.
     #[test]
     fn test_encode_chmod_fields() {
         let m = encode_chmod(0x33, 0o640);
         assert_eq!(m.m_type, minix_types::REQ_CHMOD);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -2201,13 +2244,13 @@ mod tests {
         assert_eq!(u32::from_le_bytes(b4), 0o640);
     }
 
-    /// `encode_rdlink` 的三个域落位；回复侧只有 `nbytes` 一域（见
-    /// `rdlink_reply_off`）——别把回复表拿来写请求。
+    /// `encode_rdlink`'s three fields land; the reply side has only the one field
+    /// `nbytes` (see `rdlink_reply_off`) — do not write requests off the reply table.
     #[test]
     fn test_encode_rdlink_fields() {
         let m = encode_rdlink(0x42, 11, 256);
         assert_eq!(m.m_type, minix_types::REQ_RDLINK);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -2230,7 +2273,7 @@ mod tests {
     fn test_encode_getdents_fields() {
         let m = encode_getdents(0x77, 0x800, 9, 4096);
         assert_eq!(m.m_type, minix_types::REQ_GETDENTS);
-        // SAFETY(test): 按共享偏移表读回。
+        // SAFETY(test): read back through the shared offset table.
         let raw = unsafe { &m.m_u.raw };
         let mut b8 = [0u8; 8];
         b8.copy_from_slice(
@@ -2256,16 +2299,16 @@ mod tests {
 
     #[test]
     fn test_encode_readsuper_wire_layout() {
-        // ipc.h:2111-2119:device@0/flags@8/path_len@16/grant@24。
+        // ipc.h:2111-2119: device@0/flags@8/path_len@16/grant@24.
         let msg = encode_readsuper(0x0401, 5, 7, true, true);
         assert_eq!(msg.m_type, REQ_READSUPER);
-        // SAFETY: 断言侧按编码域序读。
+        // SAFETY: the assertion side reads in encoding field order.
         let raw = unsafe { &msg.m_u.raw };
         assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), 0x0401);
         assert_eq!(u32::from_le_bytes(raw[8..12].try_into().unwrap()), REQ_RDONLY | REQ_ISROOT);
         assert_eq!(u64::from_le_bytes(raw[16..24].try_into().unwrap()), 5);
         assert_eq!(i32::from_le_bytes(raw[24..28].try_into().unwrap()), 7);
-        // 非 root 非只读:flags = 0。
+        // Neither root nor read-only: flags = 0.
         let msg2 = encode_readsuper(1, 0, 0, false, false);
         let raw2 = unsafe { &msg2.m_u.raw };
         assert_eq!(u32::from_le_bytes(raw2[8..12].try_into().unwrap()), 0);
@@ -2273,11 +2316,11 @@ mod tests {
 
     #[test]
     fn test_decode_readsuper_reply_roundtrip() {
-        // ipc.h:198-211:file_size@0/device@8/inode@16/flags@24/
-        // mode@28/uid@32/gid@36/con_reqs@40。
+        // ipc.h:198-211: file_size@0/device@8/inode@16/flags@24/
+        // mode@28/uid@32/gid@36/con_reqs@40.
         let mut msg = Message::default();
         {
-            // SAFETY: 测试构造——按回复域序写 raw。
+            // SAFETY: constructing under test — write raw bytes in reply field order.
             let raw = unsafe { &mut msg.m_u.raw };
             raw[0..8].copy_from_slice(&4096u64.to_le_bytes()); // file_size
             raw[8..16].copy_from_slice(&0x0401u64.to_le_bytes()); // device

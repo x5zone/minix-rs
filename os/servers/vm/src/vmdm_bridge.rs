@@ -1,16 +1,22 @@
-//! VM 页表遍历的内核代读旁路（NK4-C 续-311，riscv 专用）。
+//! Kernel-proxied read bypass for VM page-table walks (riscv only).
 //!
-//! walk_read 的 VmDm 槽读/写/清零改经 SYS_VMCTL 内核调用由内核 KDM 直达，
-//! 绕开 QEMU 平移层对 DM 窗虚拟地址的时序性误导（§续-291..310 穷举收口）。
-//! 原与启动路标探针同居 bootmark 模块，T8 探针滚除时拆出独立成模块——
-//! 路标族已随结案清除，本机制是生产功能，去留裁决=保留。
+//! walk_read's reads, writes, and zeroing of VmDm slots go through the
+//! SYS_VMCTL kernel call and reach the kernel KDM directly, bypassing the
+//! QEMU translation layer's timing-dependent misdirection of DM-window
+//! virtual addresses.
+//! This used to share the bootmark module with the boot route-marker probes;
+//! it was split out into its own module when those probes were rolled out.
+//! The marker family is gone, but this mechanism is production functionality
+//! and is kept.
 
-// ── NK4-C 续-311 内核代读旁路 read-fn（riscv-only 生产机制）──
-// walk_read 的 VmDm 槽读改经本 fn：SYS_VMCTL(43) + VmCtlParam::PteRead(20)，
-// pa 走 m1p1，内核 KDM 直读回填 m1p1。绕开 QEMU 平移层对 DM 窗 VA 的
-// 时序性误导（§续-291..310 穷举收口）。
+// ── Kernel-proxied read bypass read-fn (riscv-only production mechanism) ──
+// walk_read's VmDm slot reads go through this fn: SYS_VMCTL(43) +
+// VmCtlParam::PteRead(20); pa travels in m1p1 and the kernel KDM reads it
+// directly and writes it back into m1p1. This bypasses the QEMU translation
+// layer's timing-dependent misdirection of DM-window VAs.
 
-/// 注册进 arch 钩子（时机对齐 pt_alloc::register——先于任何 walk）。
+/// Register into the arch hooks (timing aligned with pt_alloc::register —
+/// before any walk).
 #[cfg(all(target_arch = "riscv64", not(test)))]
 pub(crate) fn register_vmdm_read() {
     minix_arch::riscv64::paging::vmdm::register_read(vmdm_read_via_kernel);
@@ -22,8 +28,8 @@ pub(crate) fn register_vmdm_read() {
 fn vmdm_write_via_kernel(paddr: u64, val: u64) {
     let mut msg = minix_types::Message::default();
     {
-        // SAFETY: SYS_VMCTL wire——m1i1=VM、m1i2=21(PteWrite)、m1p1=pa、
-        // m1p2=val；内核 KDM 直写+sfence。
+        // SAFETY: SYS_VMCTL wire — m1i1=VM, m1i2=21 (PteWrite), m1p1=pa,
+        // m1p2=val; the kernel KDM writes directly and then issues sfence.
         let m1 = unsafe { &mut msg.m_u.m_m1 };
         m1.m1i1 = minix_types::Endpoint::VM.0;
         m1.m1i2 = 21;
@@ -42,8 +48,8 @@ fn vmdm_write_via_kernel(paddr: u64, val: u64) {
 fn vmdm_zero_via_kernel(paddr: u64) {
     let mut msg = minix_types::Message::default();
     {
-        // SAFETY: SYS_VMCTL wire——m1i1=VM、m1i2=22(PteZero)、m1p1=pa；
-        // 内核 KDM 写 4096 零+sfence。
+        // SAFETY: SYS_VMCTL wire — m1i1=VM, m1i2=22 (PteZero), m1p1=pa;
+        // the kernel KDM writes 4096 zero bytes and then issues sfence.
         let m1 = unsafe { &mut msg.m_u.m_m1 };
         m1.m1i1 = minix_types::Endpoint::VM.0;
         m1.m1i2 = 22;
@@ -61,11 +67,12 @@ fn vmdm_zero_via_kernel(paddr: u64) {
 fn vmdm_read_via_kernel(paddr: u64) -> u64 {
     let mut msg = minix_types::Message::default();
     {
-        // SAFETY: SYS_VMCTL wire——m1i1=VM、m1i2=20(PteRead)、m1p1=pa；
-        // 内核 PteRead 臂 KDM 直读后回填 m1p1（kernel/src/syscall.rs）。
+        // SAFETY: SYS_VMCTL wire — m1i1=VM, m1i2=20 (PteRead), m1p1=pa;
+        // the kernel's PteRead arm reads through KDM and writes the value
+        // back into m1p1 (kernel/src/syscall.rs).
         let m1 = unsafe { &mut msg.m_u.m_m1 };
         m1.m1i1 = minix_types::Endpoint::VM.0;
-        m1.m1i2 = 20; // VmCtlParam::PteRead wire 号（kernel/src/vm.rs TryFrom）
+        m1.m1i2 = 20; // wire number of VmCtlParam::PteRead (kernel/src/vm.rs TryFrom)
         m1.m1p1 = paddr;
     }
     let reply = minix_sys::syscall::perform_kernel_call(

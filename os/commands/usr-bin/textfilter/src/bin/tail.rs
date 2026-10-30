@@ -58,21 +58,26 @@ use minix_textfilter::window::{
 };
 
 // ---------------------------------------------------------------------------
-// 跟随环路的双生缝
+// The twin seam of the follow loop
 //
-// 为什么写在壳这一层而不是 `bin_support`：这些缝只服务「拿着一个开好的句柄一直读」
-// 这一种形状，本 crate 里今天只有 `tail` 用它。`bin_support` 是三十来个二进制各自
-// `#[path]` 包进去的共享面，为一个用户加接口会把改动摊到全族头上；等第二个跟随者
-// 出现再上提。
+// Why this lives at the shell layer rather than in `bin_support`: these seams
+// serve only the one shape "hold an already-opened handle and keep reading", and
+// in this crate only `tail` uses it today. `bin_support` is the shared face that
+// about thirty binaries each pull in via `#[path]`; adding an interface for one
+// user would spread the change over the whole family. Promote it once a second
+// follower appears.
 // ---------------------------------------------------------------------------
 
-/// C `forward(FILE *fp, ...)` 里的那个 `fp`。跟随期间它必须一直开着：「读到哪儿」是
-/// 句柄的性质而不是文件大小的算术（`forward.c:191-195` 每轮从当前位置抄到 EOF，
-/// 而缩小时不回退位置——重定位只存在于被排除的 kqueue 支 `:238-243`）。
+/// The `fp` of C `forward(FILE *fp, ...)`. It must stay open for the whole
+/// follow: "how far we have read" is a property of the handle, not arithmetic on
+/// the file size (`forward.c:191-195` copies from the current position to EOF on
+/// every round, and does not rewind when the file shrinks — repositioning exists
+/// only in the excluded kqueue arm `:238-243`).
 #[cfg(any(test, not(target_os = "none")))]
 pub struct FollowSource {
-    /// 句柄统一套一层 `ManuallyDrop`，由下面的 `Drop` 决定关不关：C 的 `fclose`
-    /// 只作用于操作数（`tail.c:183`），标准输入那条腿不关。
+    /// The handle is wrapped uniformly in `ManuallyDrop`, with the `Drop` below
+    /// deciding whether to close it: C's `fclose` applies only to operands
+    /// (`tail.c:183`), and the standard-input leg is never closed.
     file: std::mem::ManuallyDrop<std::fs::File>,
     is_stdin: bool,
 }
@@ -92,12 +97,13 @@ pub struct FollowSource {
     is_stdin: bool,
 }
 
-// 宿主错误号 → C `errno` 的换算住在 `support::errno_of`（与 `read_file`、`open_input`
-// 同一口径），本文件不再另写一份：C 的 `ierr()` 走的是带号的 `xerr`/`vwarn`
-// （`misc.c:53-57`、`:65-76`），两份换算迟早会漂移。
+// The host-errno → C `errno` conversion lives in `support::errno_of` (the same
+// convention as `read_file` and `open_input`), and this file does not write a
+// second copy: C's `ierr()` goes through the numbered `xerr`/`vwarn`
+// (`misc.c:53-57`, `:65-76`), and two conversions would drift apart eventually.
 
 impl FollowSource {
-    /// C `fopen(fname, "r")`（`tail.c:167`）。
+    /// C `fopen(fname, "r")` (`tail.c:167`).
     #[cfg(any(test, not(target_os = "none")))]
     fn open(path: &str) -> Result<Self, minix_sys::Errno> {
         std::fs::File::open(path)
@@ -110,15 +116,17 @@ impl FollowSource {
 
     #[cfg(all(not(test), target_os = "none"))]
     fn open(path: &str) -> Result<Self, minix_sys::Errno> {
-        // `O_RDONLY` 是零，就是 `bin_support` 里那条读缝用的同一组形参。
+        // `O_RDONLY` is zero — the same argument set the read seam in
+        // `bin_support` uses.
         minix_sys::open(path, 0, 0).map(|fd| FollowSource {
             fd,
             is_stdin: false,
         })
     }
 
-    /// 无操作数那一腿的 stdin。C 在 `tail.c:186` 把 `fname` 写成字面量 `"stdin"`，
-    /// 诊断行因此也念得出这个名字。
+    /// The stdin leg when there is no operand. C writes `fname` as the literal
+    /// `"stdin"` at `tail.c:186`, so the diagnostic line can pronounce that name
+    /// too.
     #[cfg(any(test, not(target_os = "none")))]
     fn stdin() -> Self {
         use std::os::fd::FromRawFd as _;
@@ -138,8 +146,9 @@ impl FollowSource {
         }
     }
 
-    /// C `fstat(fileno(fp), &sb)`（`tail.c:168`、`:188`）——操作数打不开**或**取不到
-    /// 身份都是 `ierr(); continue`，所以这一口不是可选项。
+    /// C `fstat(fileno(fp), &sb)` (`tail.c:168`, `:188`) — failing to open the
+    /// operand **or** failing to get its identity is `ierr(); continue`, so this
+    /// mouth is not optional.
     #[cfg(any(test, not(target_os = "none")))]
     fn identity(&self) -> Result<StatIdentity, minix_sys::Errno> {
         self.file
@@ -150,21 +159,24 @@ impl FollowSource {
 
     #[cfg(all(not(test), target_os = "none"))]
     fn identity(&self) -> Result<StatIdentity, minix_sys::Errno> {
-        // `struct stat` 的每个字段都是整数或整数的 timespec，全零是合法实例——与本
-        // crate `probe_path`、`fileops` 的 `ls`/`test` 用同一种构造。
+        // Every field of `struct stat` is an integer or an integer timespec, so
+        // all zeros is a legal instance — the same construction this crate uses
+        // in `probe_path` and in `fileops`' `ls`/`test`.
         let mut stat: minix_sys::Stat = unsafe { core::mem::zeroed() };
         minix_sys::fstat(self.fd, &mut stat)?;
         Ok(target_identity(&stat))
     }
 
-    /// C 的定位探测：`lseek(fileno(stdin), 0, SEEK_CUR) == -1 && errno == ESPIPE`
-    /// （`tail.c:197-201`）。只有这一个号会让 C 放弃跟随，别的错误（比如 `EBADF`）
-    /// 仍然往下走，所以这里也不能「凡是错就算管道」。
+    /// C's positioning probe: `lseek(fileno(stdin), 0, SEEK_CUR) == -1 && errno
+    /// == ESPIPE` (`tail.c:197-201`). Only this one number makes C give up
+    /// following; other errors (say `EBADF`) still go on, so "any error means a
+    /// pipe" is not allowed here either.
     #[cfg(any(test, not(target_os = "none")))]
     fn is_pipe_by_position(&mut self) -> bool {
         use std::io::Seek as _;
-        // `SeekFrom::Current(0)` 就是 C 那句 `lseek(fd, 0, SEEK_CUR)`：只问位置、
-        // 不动它，所以探测本身不会影响后面那拍从哪儿读。
+        // `SeekFrom::Current(0)` is exactly C's `lseek(fd, 0, SEEK_CUR)`: it asks
+        // for the position without moving it, so the probe itself cannot affect
+        // where the next round reads from.
         match self.file.seek(std::io::SeekFrom::Current(0)) {
             Err(error) => error.raw_os_error() == Some(minix_sys::ESPIPE),
             _ => false,
@@ -173,16 +185,17 @@ impl FollowSource {
 
     #[cfg(all(not(test), target_os = "none"))]
     fn is_pipe_by_position(&mut self) -> bool {
-        // `SEEK_CUR` 是 1（`minix3/sys/sys/unistd.h:175`）。
+        // `SEEK_CUR` is 1 (`minix3/sys/sys/unistd.h:175`).
         match minix_sys::lseek(self.fd, 0, 1) {
             Err(error) => error.to_i32() == minix_sys::ESPIPE,
             _ => false,
         }
     }
 
-    /// 初始那一整块：把当前位置之后的字节收齐（C 的定位与首轮抄字节都在 `forward()`
-    /// 的 switch 与第一个 `getc` 环路里，`forward.c:101-178`、`:191-195`）。
-    /// 收到 EOF 或出错为止，句柄不关。
+    /// The initial whole block: collect the bytes after the current position
+    /// (C's positioning and first byte-copying round both live in `forward()`'s
+    /// switch and its first `getc` loop, `forward.c:101-178`, `:191-195`). It runs
+    /// until EOF or an error, and the handle is not closed.
     #[cfg(any(test, not(target_os = "none")))]
     fn collect(&mut self) -> Result<Vec<u8>, minix_sys::Errno> {
         use std::io::Read as _;
@@ -207,8 +220,9 @@ impl FollowSource {
         Ok(data)
     }
 
-    /// 跟随环路的每一拍：边读边写（C 的 `putchar` 就在 `getc` 里同步做，
-    /// `forward.c:192-195`），所以读失败之前抄到的字节已经出去了。
+    /// One round of the follow loop: read and write as you go (C's `putchar`
+    /// happens synchronously inside `getc`, `forward.c:192-195`), so bytes copied
+    /// before a read failure have already gone out.
     #[cfg(any(test, not(target_os = "none")))]
     fn pump(&mut self) -> Result<(), minix_sys::Errno> {
         use std::io::Read as _;
@@ -234,17 +248,20 @@ impl FollowSource {
         }
     }
 
-    /// C `freopen(fname, "r", fp)`（`forward.c:261`）：按名字重新打开同一个操作数，
-    /// 读位置回到新档的开头。目标侧没有 `freopen`，语义是「放掉旧的再按名字开」，
-    /// 而标准输入永不走到这里（`probes_identity` 那一层就挡住了）。
+    /// C `freopen(fname, "r", fp)` (`forward.c:261`): reopen the same operand by
+    /// name, with the read position back at the start of the new file. The target
+    /// side has no `freopen`, so the semantics are "drop the old one and open by
+    /// name", and standard input never reaches here (`probes_identity` blocks it
+    /// one layer up).
     #[cfg(any(test, not(target_os = "none")))]
     fn reopen(&mut self, path: &str) -> Result<(), minix_sys::Errno> {
         if self.is_stdin {
             return Err(minix_sys::Errno::EBADF);
         }
         let fresh = std::fs::File::open(path).map_err(|e| support::errno_of(&e))?;
-        // C 的 `freopen` 是把那个流换掉，旧句柄不留着；本对象自己管那份释放
-        // （`Drop` 只在没重开过的手上跑）。
+        // C's `freopen` swaps the stream out and does not keep the old handle;
+        // this object owns that release itself (`Drop` only runs on a handle that
+        // was never reopened).
         unsafe { std::mem::ManuallyDrop::drop(&mut self.file) };
         self.file = std::mem::ManuallyDrop::new(fresh);
         Ok(())
@@ -262,9 +279,10 @@ impl FollowSource {
     }
 }
 
-/// 真机侧的释放对位 C `fclose(fp)`（`tail.c:183`）：操作数读完就关，标准输入不关
-///（C 的那条腿也不 `fclose(stdin)`）。宿主侧 `File` 的析构已经是这个语义，
-/// `ManuallyDrop` 那一臂天生不会去关 fd 0。
+/// The target-side release matches C `fclose(fp)` (`tail.c:183`): operands are
+/// closed once read, standard input is not (C's leg does not `fclose(stdin)`
+/// either). On the host side `File`'s destructor already has these semantics, and
+/// the `ManuallyDrop` arm by construction never closes fd 0.
 #[cfg(all(not(test), target_os = "none"))]
 impl Drop for FollowSource {
     fn drop(&mut self) {
@@ -274,10 +292,11 @@ impl Drop for FollowSource {
     }
 }
 
-/// C `forward()` 手上那三样：开着的句柄、它的身份（`sbp`）、以及操作数名字
-/// （全局 `fname`，argv 的原字节）。标准输入没有名字，所以这里是 `Option<&[u8]>`——C 用
-/// `fp != stdin` 表达同一件事（`forward.c:255`），而决定半的
-/// [`Follow::probes_identity`] 就是那道判据的模型。
+/// The three things C `forward()` holds: the open handle, its identity (`sbp`),
+/// and the operand name (the global `fname`, argv's raw bytes). Standard input has
+/// no name, hence `Option<&[u8]>` here — C expresses the same thing with
+/// `fp != stdin` (`forward.c:255`), and the deciding half's
+/// [`Follow::probes_identity`] is the model of that test.
 struct FollowTarget<'a> {
     source: FollowSource,
     opened: StatIdentity,
@@ -289,15 +308,17 @@ impl<'a> FollowTarget<'a> {
         self.path.is_none()
     }
 
-    /// 诊断行里念的那个名字：C 的 `ierr()` 用的是全局 `fname`，无操作数时
-    /// `tail.c:186` 把它写成字面量 `"stdin"`。名字是 argv 的原字节，所以这里交回
-    /// 字节而不是 `&str`。
+    /// The name the diagnostic line pronounces: C's `ierr()` uses the global
+    /// `fname`, and with no operand `tail.c:186` writes it as the literal
+    /// `"stdin"`. The name is argv's raw bytes, so this hands back bytes rather
+    /// than `&str`.
     fn label(&self) -> &'a [u8] {
         self.path.unwrap_or(b"stdin".as_slice())
     }
 }
 
-/// 宿主 `struct stat` 的四个被比字段（`std::os::unix::fs::MetadataExt`）。
+/// The four compared fields of the host `struct stat`
+/// (`std::os::unix::fs::MetadataExt`).
 #[cfg(any(test, not(target_os = "none")))]
 fn host_identity(metadata: std::fs::Metadata) -> StatIdentity {
     use std::os::unix::fs::MetadataExt as _;
@@ -309,7 +330,7 @@ fn host_identity(metadata: std::fs::Metadata) -> StatIdentity {
     }
 }
 
-/// 真机侧 `Stat` 的同四个字段。
+/// The same four fields on the target-side `Stat`.
 #[cfg(all(not(test), target_os = "none"))]
 fn target_identity(stat: &minix_sys::Stat) -> StatIdentity {
     StatIdentity {
@@ -320,9 +341,10 @@ fn target_identity(stat: &minix_sys::Stat) -> StatIdentity {
     }
 }
 
-/// C `stat(fname, &statbuf)`（`forward.c:256`）：按操作数名字查身份，与手上这个
-/// 句柄的身份相比。打不开的名字（换档后被删掉）在 C 里被 `!= -1` 那道判据挡住，
-/// 这一拍什么都不做，下一拍继续睡。
+/// C `stat(fname, &statbuf)` (`forward.c:256`): look up the operand's identity by
+/// name and compare it with the identity of the handle in hand. A name that no
+/// longer opens (deleted after the swap) is caught by C's `!= -1` test, and that
+/// round does nothing while the next keeps sleeping.
 #[cfg(any(test, not(target_os = "none")))]
 fn stat_by_path(path: &str) -> Result<StatIdentity, minix_sys::Errno> {
     std::fs::metadata(path)
@@ -337,23 +359,26 @@ fn stat_by_path(path: &str) -> Result<StatIdentity, minix_sys::Errno> {
     Ok(target_identity(&stat))
 }
 
-/// C 的 `(void) sleep(1)`（`forward.c:253`）：返回值被丢掉，被信号提前打断也就打断。
+/// C's `(void) sleep(1)` (`forward.c:253`): the return value is discarded, so
+/// being interrupted early by a signal simply interrupts.
 #[cfg(any(test, not(target_os = "none")))]
 fn sleep_one_tick() {
     std::thread::sleep(std::time::Duration::from_secs(1));
 }
 
-/// 真机侧的等待通道是 `minix_sys::nanosleep`，它的实现就是 VFS 的空集 `select`
-/// 带超时（`misc::nanosleep_via` → `select_empty_via`，与 C `nanosleep.c` 同源）。
-/// 返回值同样丢掉，对位 C 的 `(void)`。
+/// The target side's wait channel is `minix_sys::nanosleep`, whose implementation
+/// is VFS's empty-set `select` with a timeout (`misc::nanosleep_via` →
+/// `select_empty_via`, from the same source as C `nanosleep.c`). Its return value
+/// is discarded too, matching C's `(void)`.
 #[cfg(all(not(test), target_os = "none"))]
 fn sleep_one_tick() {
     let _ = minix_sys::nanosleep(1, 0);
 }
 
-/// C `(void) fflush(stdout)`（`forward.c:200`）：一拍的数据要在睡下去之前交出去。
-/// 宿主的标准输出带行缓冲，没有这一口就会被扣住半行；真机侧 `emit` 直接 `write(2)`，
-/// 没有用户态缓冲可刷。
+/// C `(void) fflush(stdout)` (`forward.c:200`): a round's data must be handed out
+/// before sleeping. The host's standard output is line buffered, so without this
+/// mouth half a line would be held back; on the target side `emit` calls
+/// `write(2)` directly and there is no user-space buffer to flush.
 #[cfg(any(test, not(target_os = "none")))]
 fn flush_output() {
     use std::io::Write as _;
@@ -365,10 +390,12 @@ fn flush_output() {}
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // C 的每一句诊断都以 `getprogname()` 开头（`misc.c:66-91` 的 vwarn/vwarnx），
-    // 所以下面不再写死「tail」。程序名那一处折一次（`line_bytes` 与 `err_line` 两条
-    // `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`）；操作数、横幅与三句回显都另有按字节
-    // 的腿，不经过这里。
+    // Every diagnostic sentence of C starts with `getprogname()`
+    // (`misc.c:66-91`'s vwarn/vwarnx), so nothing below hardcodes "tail". The
+    // program name is folded once here (the two `&str` mouths `line_bytes` and
+    // `err_line`, registered as `ARGV-BYTE-PATH-IN-LIBS`); operands, banners and
+    // the three echoed sentences have byte-wise legs of their own and do not go
+    // through it.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // argv folding lives in the deciding half (`parse_tail_args`): BSD
@@ -392,14 +419,16 @@ fn run() -> ! {
     let mut status = 0;
 
     if operands.is_empty() {
-        // C `tail.c:185-207`：`fname = "stdin"`、fstat 不成就 `ierr(); exit(1)`，
-        // 然后探一次能不能定位——管道就把 `fflag` 清零（POSIX.2）。
+        // C `tail.c:185-207`: `fname = "stdin"`, `ierr(); exit(1)` when fstat
+        // fails, then one probe for whether the stream can be positioned — a pipe
+        // clears `fflag` (POSIX.2).
         let source = FollowSource::stdin();
         let opened = match source.identity() {
             Ok(opened) => opened,
             Err(code) => {
-                // C 的 `ierr()` 打的是全局 `fname`，而标准输入那一形 `tail.c:186` 把
-                // 它写成字面量 `"stdin"`——五个字节，不是折过的东西。
+                // C's `ierr()` prints the global `fname`, and the standard-input
+                // form at `tail.c:186` writes it as the literal `"stdin"` — five
+                // bytes, not something folded.
                 warn_bytes(&prog, b"stdin", code);
                 support::terminate(1);
             }
@@ -424,11 +453,13 @@ fn run() -> ! {
         support::terminate(0);
     }
     for operand in &operands {
-        // C `tail.c:167-171`：`fopen` 失败**或** `fstat` 失败都是 `ierr(); continue`，
-        // 那句诊断是 `tail: <名>: <句子>`（`misc.c:53-57` 走的是带 `errno` 的
-        // `xerr`/`vwarn`，不是 `warnx`）。
-        // 开档那条 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`）：折的只是递给 `open`
-        // 的那个名字，诊断位与横幅位用的仍是 `operand` 的原字节。
+        // C `tail.c:167-171`: a failed `fopen` **or** a failed `fstat` is both
+        // `ierr(); continue`, and that diagnostic is `tail: <name>: <sentence>`
+        // (`misc.c:53-57` goes through the errno-carrying `xerr`/`vwarn`, not
+        // `warnx`).
+        // The `&str` mouth for opening (`ARGV-BYTE-PATH-IN-LIBS`): only the name
+        // handed to `open` is folded; the diagnostic slot and the banner slot
+        // still use `operand`'s raw bytes.
         let shown = String::from_utf8_lossy(operand);
         let source = match FollowSource::open(&shown) {
             Ok(source) => source,
@@ -465,8 +496,9 @@ fn run() -> ! {
         first = false;
         tail_stream(&data, style);
         if follow.active() {
-            // C 的 `forward()` 在跟随时永不返回，能回到这里只有 `ierr()` 那一条腿；
-            // 后面的操作数早在 `tail.c:135-137` 被单文件门挡住了，所以收尾直接退。
+            // C's `forward()` never returns while following, so the only way back
+            // here is the `ierr()` leg; later operands were already blocked by the
+            // single-file gate at `tail.c:135-137`, so the wrap-up simply exits.
             if !follow_rounds(&mut target, follow, &prog) {
                 status = 1;
             }
@@ -476,29 +508,35 @@ fn run() -> ! {
     support::terminate(status)
 }
 
-/// C `forward.c:191-274` 的 `for(;;)` 在 Minix 上剩下的那一支（kqueue 那半被
-/// `#if !defined(__minix)` 排除在 `:207-246`）：睡一拍 →仅 `-F` 的真文件按名字查
-/// 身份、认出换档就重开→把当前位置之后的字节边读边写。
+/// What C `forward.c:191-274`'s `for(;;)` has left on Minix (the kqueue half is
+/// excluded by `#if !defined(__minix)` at `:207-246`): sleep one round → for a
+/// `-F` real file only, look up the identity by name and reopen once the swap is
+/// recognised → read and write the bytes after the current position as you go.
 ///
-/// 首拍的输出不在这里：调用方已经把整块读到并打了区域，位置也就到了 EOF；C 的环路
-/// 是「先抄后睡」，所以这里从睡起算与真源同一序。
+/// The first round's output is not here: the caller has already read the whole
+/// block and printed the range, so the position is at EOF; C's loop is "copy
+/// first, then sleep", so starting from a sleep here keeps the same order as the
+/// original.
 ///
-/// 返回 `false` 对位 C 的 `ierr(); return;` 与 `ierr(); goto out;`（`:196-199`、
-/// `:262-265`）：非致命，但退出码已经变成 1。
+/// Returning `false` matches C's `ierr(); return;` and `ierr(); goto out;`
+/// (`:196-199`, `:262-265`): non-fatal, but the exit code has already become 1.
 fn follow_rounds(target: &mut FollowTarget, follow: Follow, prog: &str) -> bool {
     loop {
         sleep_one_tick();
         if follow.probes_identity(target.is_stdin()) {
-            // 能走到这里 `path` 必是 `Some`：`probes_identity` 对标准输入恒为 false。
-            // 不 `unwrap`，那个不可达状态不值得一个panic。
+            // Reaching here means `path` must be `Some`: `probes_identity` is
+            // always false for standard input. No `unwrap` — that unreachable
+            // state is not worth a panic.
             if let Some(name) = target.path {
-                // 按名字查身份与重开这两条腿都走 `&str` 的路径口（在册
-                // `ARGV-BYTE-PATH-IN-LIBS`）；`freopen(fname, …)`（`forward.c:261`）
-                // 报出来用的还是 `fname` 的原字节，所以诊断位不跟着折。
+                // Both the name-based identity lookup and the reopen take the
+                // `&str` path mouth (registered as `ARGV-BYTE-PATH-IN-LIBS`);
+                // `freopen(fname, …)` (`forward.c:261`) still reports using
+                // `fname`'s raw bytes, so the diagnostic slot is not folded along.
                 let shown = String::from_utf8_lossy(name);
                 match stat_by_path(&shown) {
-                    // C 的 `stat(fname, &statbuf) != -1`：名字认不出来（换档后
-                    // 被删掉）就这一拍什么都不做，下一拍继续睡——不报错也不退出。
+                    // C's `stat(fname, &statbuf) != -1`: an unrecognisable name
+                    // (deleted after the swap) means this round does nothing and
+                    // the next keeps sleeping — no error, no exit.
                     Err(_) => {}
                     Ok(current) => {
                         if reopen_needed(&target.opened, &current) {
@@ -506,7 +544,8 @@ fn follow_rounds(target: &mut FollowTarget, follow: Follow, prog: &str) -> bool 
                                 warn_bytes(prog, name, code);
                                 return false;
                             }
-                            // C 的 `*sbp = statbuf`：新档的身份接手，下一拍比的是它。
+                            // C's `*sbp = statbuf`: the new file's identity takes
+                            // over, and the next round compares against it.
                             target.opened = current;
                         }
                     }
@@ -580,8 +619,10 @@ fn tail_stream(input: &[u8], style: TailStyle) {
 
 fn emit_line(line: minix_textfilter::window::Line<'_>) {
     let mut out = line.bytes().to_vec();
-    // C `reverse.c:133-144` 记录的行区间本来就含那枚换行，末行没有就不补；`tail -r`
-    // 会把没换行的末行翻到输出的**最前面**，所以这件事只能记在行上，不能问行号。
+    // The line range C `reverse.c:133-144` records already contains that newline,
+    // and is not patched when the last line lacks one; `tail -r` moves an
+    // unterminated last line to the **front** of the output, so this fact can only
+    // be recorded on the line, not asked by line number.
     out.extend_from_slice(line.eol());
     support::emit(&out);
 }
@@ -650,17 +691,20 @@ fn arg_error(e: TailError, prog: &str) -> ! {
     match e {
         TailError::Usage => usage(prog),
         TailError::Getopt(report) => {
-            // libc 的那一句（`getopt.c:101-104` 或 `:132-136`）在前，usage 行在后。
-            // 句子单源住在 `GetoptReport`，本族其它命令拿到的是同一份文本。字母位走
-            // `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103`
-            // 与 `:134` 的 `%c` 原样写出，所以 `-é`（`c3 a9`）报的是 `c3`；取法在
-            // `src/window.rs` 的环里是 `char::from(bytes[pos])`，两边同形才成立。
+            // libc's sentence (`getopt.c:101-104` or `:132-136`) comes first, the
+            // usage line after. The sentence has a single home in `GetoptReport`,
+            // so the other commands in this family receive the same text. The
+            // letter slot goes through `line_bytes`: `getopt.c:79`'s
+            // `optopt = *place++` takes one byte at a time and `:103`/`:134` write
+            // it back with `%c`, so `-é` (`c3 a9`) reports `c3`; the take in
+            // `src/window.rs`'s ring is `char::from(bytes[pos])`, and the two sides
+            // agree only when both are bytewise.
             support::warn(&report.line_bytes(prog));
             usage(prog)
         }
         TailError::FollowMultiFile => {
-            // C `tail.c:135-137` 的 `xerrx(1, ...)`：`xerrx` 走 `vwarnx`
-            // （`misc.c:78-89`），所以那一句后面**不缀 `errno` 句子**。
+            // C `tail.c:135-137`'s `xerrx(1, ...)`: `xerrx` goes through `vwarnx`
+            // (`misc.c:78-89`), so **no `errno` sentence is appended** to that line.
             support::warn(
                 format!("{prog}: -f and -F options only appropriate for a single file\n")
                     .as_bytes(),
@@ -668,9 +712,10 @@ fn arg_error(e: TailError, prog: &str) -> ! {
             support::terminate(1);
         }
         TailError::IllegalCount(v) => {
-            // C `xerrx(1, "illegal offset -- %s", optarg)` (`tail.c:90`)：`%s` 打的是
-            // `optarg` 的每一枚字节。值位是 argv 的原字节（遗留形那里还是改写**之后**的
-            // 那串字节，见 `src/window.rs` 的 `obsolete_step`），所以这一行自己拼。
+            // C `xerrx(1, "illegal offset -- %s", optarg)` (`tail.c:90`): `%s`
+            // prints every byte of `optarg`. The value slot is argv's raw bytes (for
+            // the legacy form it is the string **after** rewriting, see
+            // `obsolete_step` in `src/window.rs`), so this line is assembled here.
             support::warn(
                 &[
                     format!("{prog}: illegal offset -- ").as_bytes(),
@@ -683,7 +728,7 @@ fn arg_error(e: TailError, prog: &str) -> ! {
         }
         TailError::IllegalOption(v) => {
             // C `obsolete()`'s fatal arm: `xerrx(1, "illegal option -- %s", *argv)`
-            // （`tail.c:269`）——带的是**整段 token**，同样按原字节。
+            // (`tail.c:269`) — it carries the **whole token**, likewise as raw bytes.
             support::warn(
                 &[
                     format!("{prog}: illegal option -- ").as_bytes(),
@@ -697,12 +742,15 @@ fn arg_error(e: TailError, prog: &str) -> ! {
     }
 }
 
-/// C `tail.c:173-174` 的 `printf("%s==> %s <==\n", first ? "" : "\n", fname)`：
-/// 多个操作数时每个档前一行横幅，第一档前面不加空行。`fname` 是 argv 的那枚字节，
-/// 而且这行走的是**标准输出**（不是诊断腿）。拆成纯函数是为了给那枚「档名里带裸字节
-/// 的真档」留一条能钉住的门：横幅本身在宿主上开不了那种档（开档那条 `&str` 口，在册
-/// `ARGV-BYTE-PATH-IN-LIBS`），端到端只能看到失败的那一句，所以「名字按字节进横幅」
-/// 这一条只能在拼字的这一步钉。
+/// C `tail.c:173-174`'s `printf("%s==> %s <==\n", first ? "" : "\n", fname)`:
+/// with several operands every file gets a banner line before it, with no blank
+/// line before the first. `fname` is that byte of argv, and this line goes to
+/// **standard output** (not the diagnostic leg). It is a pure function so that
+/// "a real file whose name carries a raw byte" has a gate it can pin: the banner
+/// path cannot open such a file on the host (the `&str` mouth for opening,
+/// registered as `ARGV-BYTE-PATH-IN-LIBS`), and end to end only the failure
+/// sentence is visible, so "the name enters the banner as bytes" can only be
+/// pinned at this assembly step.
 fn banner(first: bool, name: &[u8]) -> Vec<u8> {
     let mut line: Vec<u8> = Vec::new();
     if !first {
@@ -714,14 +762,19 @@ fn banner(first: bool, name: &[u8]) -> Vec<u8> {
     line
 }
 
-/// C 的 `warn(3)` 那一行按**字节**渲染：`prog: label: <strerror 句子>` 加换行，写完不退
-/// （对位 C 的 `ierr()`：`tail.c:169` 与 `forward.c:196` 都只报不终止，退码最后才变 1）。
-/// 形状与句子仍照 `minix-types` 里那份权威（`verrc.c` 的三段：程序名、`": "`、调用者的串、
-/// `": "`、`strerror(code)`）。之所以在这里再拼一次而不是用 `support::warn_line`：那条口
-/// 的 label 是 `&str`（`minix_sys::err_line` 至今只有文本形，在册 `ARGV-BYTE-PATH-IN-LIBS`），
-/// 而 `tail` 的 label 全是 argv 递进来的档名——经 `err_line` 会把一枚裸 `ff` 折成
-/// `ef bf bd` 三枚，参照件同形逐字节对不上（`split`/`sort` 两轮都量过这一形）。
-/// 等 `err_line` 那条口换成字节形，这一份就并回去。
+/// C's `warn(3)` line is rendered **bytewise**: `prog: label: <strerror
+/// sentence>` plus a newline, with no exit after writing (matching C's `ierr()`:
+/// `tail.c:169` and `forward.c:196` only report without terminating, and the exit
+/// code turns 1 only at the end). The shape and the sentences still follow the
+/// authority in `minix-types` (`verrc.c`'s three parts: program name, `": "`, the
+/// caller's string, `": "`, `strerror(code)`). The reason for assembling once more
+/// here instead of using `support::warn_line`: that mouth's label is `&str`
+/// (`minix_sys::err_line` still has only the text form, registered as
+/// `ARGV-BYTE-PATH-IN-LIBS`), while all of `tail`'s labels are operand names
+/// coming in from argv — going through `err_line` would fold a bare `ff` into the
+/// three bytes `ef bf bd`, which cannot match the reference byte for byte (both
+/// the `split` and `sort` rounds measured this shape). Once `err_line` gains a
+/// byte form, this copy merges back into it.
 fn warn_bytes(prog: &str, label: &[u8], code: minix_sys::Errno) {
     let mut line = Vec::new();
     line.extend_from_slice(prog.as_bytes());
@@ -733,8 +786,9 @@ fn warn_bytes(prog: &str, label: &[u8], code: minix_sys::Errno) {
     support::warn(&line);
 }
 
-/// C `tail.c:299-305`：那一行是大写 `Usage:`、带 `getprogname()`，而且选项列表里
-/// 本来就有 `-f | -F`（本壳之前那行小写且只列 `-r` 的写法是自创的）。
+/// C `tail.c:299-305`: that line spells `Usage:` in capitals and carries
+/// `getprogname()`, and its option list includes `-f | -F` (the shell's previous
+/// lowercase line listing only `-r` was an invention).
 fn usage(prog: &str) -> ! {
     support::warn(
         format!("Usage: {prog} [-f | -F | -r] [-b # | -c # | -n #] [file ...]\n").as_bytes(),
@@ -819,8 +873,10 @@ mod tests {
         assert_eq!(bytes_after_lines(b"only\n", 5), b"");
     }
 
-    /// 这些单测比的是「哪些行、什么顺序」；末行换行状态由面门逐字节钉，不在这里重复承载。
-    /// 行现在是字节，而本文件的夹具全是 ASCII：解不出来就是夹具写错了，不当静默替换。
+    /// These unit tests compare "which lines, in what order"; the newline state of
+    /// the last line is pinned bytewise by the face gate and not carried again
+    /// here. Lines are bytes now, and this file's fixtures are all ASCII: failing
+    /// to decode means the fixture is wrong, not a case for silent replacement.
     fn texts<'a>(lines: &[minix_textfilter::window::Line<'a>]) -> Vec<&'a str> {
         lines
             .iter()
@@ -875,13 +931,17 @@ mod tests {
         assert!(reverse_bytes(input, 0).is_empty());
     }
 
-    /// 横幅那一行走的是标准输出，而它的名字位是 argv 的原字节（`tail.c:173-174` 把
-    /// `fname` 直接交给 `%s`）。这一枚钉的是**拼字**这一腿：一枚裸 `ff` 既不折成
-    /// `ef bf bd` 三枚，也不因「必须是文本」而被挡在拼字之前。端到端看不到这一形——
-    /// 档名带裸字节的真档在本壳开不了（开档那条 `&str` 口，在册
-    /// `ARGV-BYTE-PATH-IN-LIBS`），所以横幅只能在纯函数上钉，而失败那一句的档名归
-    /// `tests/tail_face.rs`。`first` 那两形钉的是 C 的空行规则：第一档前不空，
-    /// 其后每档前一个空行（`first ? "" : "\n"`）。
+    /// The banner line goes to standard output and its name slot is argv's raw
+    /// bytes (`tail.c:173-174` hands `fname` straight to `%s`). This test pins the
+    /// **assembly** leg: a bare `ff` neither folds into the three bytes `ef bf bd`
+    /// nor is stopped before assembly by "must be text". End to end this shape is
+    /// invisible — a real file whose name carries a raw byte cannot be opened by
+    /// this shell (the `&str` mouth for opening, registered as
+    /// `ARGV-BYTE-PATH-IN-LIBS`), so the banner can only be pinned on the pure
+    /// function, while the name inside the failure sentence belongs to
+    /// `tests/tail_face.rs`. The two `first` shapes pin C's blank-line rule: none
+    /// before the first file, one blank line before every file after it
+    /// (`first ? "" : "\n"`).
     #[test]
     fn the_banner_names_the_operand_bytes_and_only_the_second_one_gets_a_blank_line() {
         assert_eq!(

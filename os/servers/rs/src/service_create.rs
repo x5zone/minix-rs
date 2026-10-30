@@ -131,7 +131,7 @@ pub fn clone_slot(table: &mut RProcTable, src: SlotId) -> Result<SlotId, Errno> 
         // manager.c:1834-1835: share_exec(clone_rp, rp) — the clone above
         // already shares the Arc (ServiceSlot::clone clones the Arc, not the
         // buffer); routed through the single implementation as a plain
-        // borrow (OQ-3 resolution — no whole-slot copy here).
+        // borrow (no whole-slot copy here).
         crate::exec::share_exec(&mut c, table.get(src));
     }
     c.old_rp = None; // manager.c:1837
@@ -531,7 +531,7 @@ mod tests {
         // exec image (share_exec). Rust expresses the share as one `Arc`; the
         // clone must reference the *same* buffer, not a deep copy, and the
         // routing must go through `exec::share_exec` without copying the
-        // whole source slot (OQ-3 resolution).
+        // whole source slot.
         let mut t = RProcTable::new();
         let src = t.alloc_slot().unwrap();
         let mut s = in_use_slot();
@@ -962,7 +962,7 @@ pub fn create_service(
             .is_err()
         {
             crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
-            // [SD19-gate] 尽力而为 VM 控制清理
+            // [SD19-gate] best-effort VM control cleanup
             #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
             return Err(Errno::ENOMEM);
@@ -972,7 +972,7 @@ pub fn create_service(
         Ok(synced) => table.get_mut(rp).priv_ = synced,
         Err(_) => {
             crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
-            // [SD19-gate] 尽力而为 VM 控制清理
+            // [SD19-gate] best-effort VM control cleanup
             #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
             return Err(Errno::ENOMEM);
@@ -998,7 +998,7 @@ pub fn create_service(
         && let Err(e) = kernel.sched_init_proc(cfg)
     {
         crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
-        // [SD19-gate] 尽力而为 VM 控制清理
+        // [SD19-gate] best-effort VM control cleanup
         #[allow(clippy::let_underscore_must_use)]
         let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
         return Err(e);
@@ -1010,7 +1010,7 @@ pub fn create_service(
         let slot = table.get_mut(rp);
         if let Err(e) = read_exec(slot) {
             crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
-            // [SD19-gate] 尽力而为 VM 控制清理
+            // [SD19-gate] best-effort VM control cleanup
             #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
             return Err(e);
@@ -1029,7 +1029,7 @@ pub fn create_service(
             s.argc as usize,
         )
     };
-    // [SD19-gate] 尽力而为 VM 控制清理
+    // [SD19-gate] best-effort VM control cleanup
     #[allow(clippy::let_underscore_must_use)]
     let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
     if let Err(e) = execve_result {
@@ -1042,7 +1042,7 @@ pub fn create_service(
 
     // The VFS non-blocking-fork workaround (manager.c:646-656) — retained
     // verbatim; the C comment marks it removable once VFS is fixed.
-    // [SD19-gate] 尽力而为 setuid 收尾
+    // [SD19-gate] best-effort setuid tail
     #[allow(clippy::let_underscore_must_use)]
     let _ = kernel.setuid(0);
 
@@ -1076,7 +1076,7 @@ pub fn create_service(
             })
             .unwrap_or_default();
         for ep in endpoints {
-            // [SD19-gate] 尽力而为 VM 控制清理
+            // [SD19-gate] best-effort VM control cleanup
             #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.vm_memctl(ep, crate::boot::VmRsMemReq::Pin, 0, 0);
         }
@@ -1175,7 +1175,8 @@ mod r22a_tests {
             };
             assert!(create_service(&mut table, rp, &mut k, 100, &mut read_exec).is_ok());
         }
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort tail; dropping the Result does not change
+        // an established primary result (C is void/ignores at the same site).
         #[allow(clippy::let_underscore_must_use)]
         let _ = &mut loaded;
         // Table refresh landed (manager.c:589-597).
@@ -1434,10 +1435,10 @@ pub fn run_service(
 /// (`Box<dyn FnMut>`) so `Default` can provide the 19-gated noop set — the
 /// `&mut dyn` shape of the original proposal cannot implement `Default`
 /// (a reference to a locally created closure would dangle).
-/// Binary-load / recovery-script seam signature (read_exec 与 run_script
-/// 同形：吃槽位、可失败)。
+/// Binary-load / recovery-script seam signature (read_exec and run_script share
+/// the shape: takes a slot, can fail).
 pub type SlotEffectFn<'a> = dyn FnMut(&mut ServiceSlot) -> Result<(), Errno> + 'a;
-/// DS publish seam signature. C: publish_service (11 号/19).
+/// DS publish seam signature. C: publish_service (docs 11 and 19).
 pub type PublishFn<'a> = dyn FnMut(&RProcTable, SlotId) -> Result<(), Errno> + 'a;
 /// RS_INIT async-send seam signature. C: rs_asynsend (utility.c:223).
 pub type AsynsendFn<'a> = dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno> + 'a;
@@ -1445,7 +1446,7 @@ pub type AsynsendFn<'a> = dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Res
 pub struct CreateEffects<'a> {
     /// Binary load. C: exec.c read_seg (19-rs-external-interfaces.md).
     pub read_exec: alloc::boxed::Box<SlotEffectFn<'a>>,
-    /// DS publish face. C: publish_service — manager.c:962-966 (11 号/19).
+    /// DS publish face. C: publish_service — manager.c:962-966 (docs 11 and 19).
     pub publish: alloc::boxed::Box<PublishFn<'a>>,
     /// RS_INIT async send. C: rs_asynsend — utility.c:223 (production
     /// ENOSYS until the 19 wiring).
@@ -1469,7 +1470,7 @@ impl Default for CreateEffects<'_> {
 /// dropped: the Rust `run_service` takes no publish seam, so the field had
 /// no consumer to serve.
 pub struct RestartEffects<'a> {
-    /// Binary load for a freshly cloned replica (19 号 file I/O).
+    /// Binary load for a freshly cloned replica (doc 19, file I/O).
     pub read_exec: &'a mut SlotEffectFn<'a>,
     /// Recovery script hook. C: run_script — manager.c:1255-1261 (15/19).
     pub run_script: &'a mut SlotEffectFn<'a>,
@@ -1713,7 +1714,7 @@ mod r22b_tests {
     }
 }
 
-// ── init_service / clone_service / restart_service (R23c/R28 收口) ───────────
+// ── init_service / clone_service / restart_service (finalized) ──────────────
 
 /// Sends the `RS_INIT` initialization message to a service.
 ///
@@ -1722,9 +1723,9 @@ mod r22b_tests {
 /// `state_endpoint`, else the previous replica's endpoint), script flag
 /// fold, message assembly (with the single-shot map-prealloc take) and
 /// `rs_asynsend`. RS itself (ROOT_SYS_PROC) sends nothing
-/// (utility.c:29-31). `gid` is the rproctab grant (12 接线注入);
-/// `prepare_state` is the LU descriptor value (16, `SEF_LU_STATE_NULL`
-/// outside updates).
+/// (utility.c:29-31). `gid` is the rproctab grant (injected by the doc 12
+/// wiring); `prepare_state` is the LU descriptor value (doc 16,
+/// `SEF_LU_STATE_NULL` outside updates).
 pub fn init_service(
     slot: &mut ServiceSlot,
     spec: InitSpec,
@@ -1821,7 +1822,8 @@ pub fn clone_service(
                         unlink_replica(table, rp, instance_flag);
                         // C: kill_service(replica, ...) — EXITING + crash.
                         let e = Errno::ENOMEM;
-                        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                        // [SD19-gate] best-effort tail; dropping the Result does not change
+                        // an established primary result (C is void/ignores at the same site).
                         #[allow(clippy::let_underscore_must_use)]
                         let _ = crate::recovery::kill_service(table.get_mut(replica), kernel, e);
                         return Err(e);
@@ -1853,7 +1855,7 @@ pub fn restart_service(
 ) {
     // See if a late reply has to be sent (manager.c:1252-1253).
     if table.get(rp).flags.contains(RFlags::LATEREPLY) {
-        // [SD19-gate] 尽力而为回复收尾
+        // [SD19-gate] best-effort reply tail
         #[allow(clippy::let_underscore_must_use)]
         let _ = kernel.reply(
             table.get(rp).pub_.endpoint,
@@ -1866,7 +1868,8 @@ pub fn restart_service(
     // Run a recovery script if available (manager.c:1255-1261).
     if table.get(rp).script[0] != 0 {
         if let Err(e) = (effects.run_script)(table.get_mut(rp)) {
-            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            // [SD19-gate] best-effort tail; dropping the Result does not change
+            // an established primary result (C is void/ignores at the same site).
             #[allow(clippy::let_underscore_must_use)]
             let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, e);
         }
@@ -1889,7 +1892,8 @@ pub fn restart_service(
             ) {
                 Ok(r) => r,
                 Err(e) => {
-                    // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                    // [SD19-gate] best-effort tail; dropping the Result does not change
+                    // an established primary result (C is void/ignores at the same site).
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, e);
                     return;
@@ -1907,7 +1911,8 @@ pub fn restart_service(
         .update_service(table, kernel, rp, replica, 1, SysFlags::empty())
         .is_err()
     {
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort tail; dropping the Result does not change
+        // an established primary result (C is void/ignores at the same site).
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, Errno::EIO);
         return;
@@ -1926,7 +1931,8 @@ pub fn restart_service(
     )
     .is_err()
     {
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort tail; dropping the Result does not change
+        // an established primary result (C is void/ignores at the same site).
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, Errno::EIO);
         return;

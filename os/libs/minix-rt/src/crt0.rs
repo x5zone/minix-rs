@@ -27,7 +27,7 @@
 //! 3. **runtime init**: the kernel information page query through the real
 //!    trap (document 03; C: the libc constructor's `ipc_minix_kerninfo`).
 //!    Failure is *not* fatal: the state records what happened and `main`
-//!    decides (C init.c:22-26 "not fatal" semantics — see V1-P1-4).
+//!    decides (C init.c:22-26 "not fatal" semantics).
 //! 4. **publish**: argv/envp descriptor and the program short name (byte
 //!    scan for the last `/`, C crt0-common.c:158-167) become the statics
 //!    the accessors below serve.
@@ -49,10 +49,10 @@
 //! ```
 //!
 //! (Reference consumer: rt-birth, `test-kernels/user/rt-birth/src/main.rs`
-//! — real-machine verified on all three architectures. NS8-B 起，11 个
-//! boot 装机模块〔ds/rs/pm/sched/vfs/mib/vm/memory/tty/pfs/mfs〕的同款
-//! none 侧入口经 `servers/*/src/main.rs` 的双形 main 落地；init 的签名
-//! 半随 NS11。) Arguments are
+//! — real-machine verified on all three architectures. Eleven boot-installed
+//! modules {ds/rs/pm/sched/vfs/mib/vm/memory/tty/pfs/mfs} land the same
+//! none-side entry through the dual-form `main` in `servers/*/src/main.rs`;
+//! init's signature half is newer.) Arguments are
 //! never taken: the argv/env vectors live behind the accessor functions
 //! above, matching the std `main()` + `env::args()` split rather than C's
 //! `main(argc, argv, envp)`. The returned `i32` becomes the process exit
@@ -399,7 +399,7 @@ pub extern "C" fn _start() -> ! {
 
 // ── Entry stub (riscv64) ────────────────────────────────────────────────
 //
-// K12b riscv64 leg. Established by the kernel's `build_cpu_context`
+// The riscv64 leg. Established by the kernel's `build_cpu_context`
 // (arch/src/riscv64/boot.rs): `sp` is the initial stack pointer and `a0`
 // (x10) carries the `ps_strings` pointer — the register IS the birth
 // function's first argument per the RISC-V ABI, so the stub is a bare
@@ -420,7 +420,7 @@ pub extern "C" fn _start() -> ! {
 
 // ── Entry stub (aarch64) ────────────────────────────────────────────────
 //
-// K12b aarch64 leg. Established by the kernel's `build_cpu_context`
+// The aarch64 leg. Established by the kernel's `build_cpu_context`
 // (arch/src/arm64/boot.rs): `sp` is the initial stack pointer and `x0`
 // carries the `ps_strings` pointer — the register IS the birth function's
 // first argument per the AArch64 ABI, so the stub is a bare call (same

@@ -310,10 +310,12 @@ impl Default for GlobalComm {
 
 /// `fs_sendrec` / `drv_sendrec` / `vm_sendrec` error — maps to errno.
 ///
-/// 只表达**发送/对接半**的失败（C `fs_sendrec` 的 `return(r)` 面，
-/// comm.c:24-59）。回复**落地后**的状态折算不在这里：C `comm.c:161-163` 的
-/// `if (reqmp->m_type == ERESTART) r = EIO` 归宿在
-/// `VfsState::run_worker_continuations` 的头部（线上状态带负号域）。
+/// It expresses only failures of the **send/attach half** (the `return(r)`
+/// surface of C's `fs_sendrec`, comm.c:24-59). The status folding **after the
+/// reply lands** is not here: C's `comm.c:161-163`
+/// `if (reqmp->m_type == ERESTART) r = EIO` lives at the head of
+/// `VfsState::run_worker_continuations` (the wire status carries a negative
+/// domain).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommError {
     NoVmnt,
@@ -323,8 +325,8 @@ pub enum CommError {
     DriverBusy,
     CttyNotBlock,
     NoWorker,
-    /// `asynsend3` 底层失败(sendnb 的 TrapStatus 原值,C sendmsg
-    /// comm.c:24-31 的 `return(r)`)。
+    /// Underlying `asynsend3` failure (the `TrapStatus` raw value from
+    /// sendnb; C sendmsg's `return(r)`, comm.c:24-31).
     IpcError(i32),
 }
 
@@ -454,11 +456,13 @@ impl FsTransport for BlockingTransport {
     }
 }
 
-/// 生产传输(S12 W1):三出口都经 [`minix_sys::ipc::IpcTransport::sendnb`]
-/// 真发送,对应 C `sendmsg` 尾部的 `asynsend3(dst, m, AMF_NOREPLY)`
-/// (comm.c:23)。窗口/排队记账复用 [`GlobalComm`]——窗口开走
-/// `sendmsg` 计数+投递,窗口满或 `VMNT_CALLBACK` 走 `queuemsg`
-/// (comm.c:148-158 的二分支,排队是常态路径而非错误)。
+/// Production transport: all three exits really send through
+/// [`minix_sys::ipc::IpcTransport::sendnb`], corresponding to C `sendmsg`'s
+/// tail `asynsend3(dst, m, AMF_NOREPLY)` (comm.c:23). Window/queue accounting
+/// reuses [`GlobalComm`] — an open window goes through `sendmsg` (count +
+/// deliver), a full window or `VMNT_CALLBACK` goes through `queuemsg`
+/// (comm.c:148-158's two branches; queueing is the normal path, not an
+/// error).
 pub struct IpcFsTransport<T: minix_sys::ipc::IpcTransport> {
     pub transport: T,
 }
@@ -476,8 +480,9 @@ impl<T: minix_sys::ipc::IpcTransport> FsTransport for IpcFsTransport<T> {
             return Err(CommError::NoVmnt);
         }
         if global.vmnts[vmnt].can_send().is_ok() {
-            // sendmsg 路径:计数(comm.c:17)→ transid 戳入 m_type 低 16
-            // (comm.c:19,vfsif.h:80 TRNS_ADD_ID)→ asynsend3(comm.c:23)。
+            // sendmsg path: count (comm.c:17) → stamp the transid into
+            // m_type's low 16 bits (comm.c:19, vfsif.h:80 TRNS_ADD_ID) →
+            // asynsend3 (comm.c:23).
             let tid = global.sendmsg(Some(vmnt), fs_ep, slot);
             let mut out = *req;
             out.m_type = TransId::add(req.m_type as u32, slot) as i32;
@@ -486,9 +491,10 @@ impl<T: minix_sys::ipc::IpcTransport> FsTransport for IpcFsTransport<T> {
                 .map_err(|st| CommError::IpcError(st.0))?;
             Ok(tid)
         } else {
-            // queuemsg 路径(comm.c:156-158):排队等窗口,回复到达后由
-            // flush 侧(fs_sendmore 语义)补发;排队的请求消息由对话层
-            // 持有(worker 槽的 w_sendrec),此处只记账。
+            // queuemsg path (comm.c:156-158): queue for a window; once the
+            // reply arrives the flush side (fs_sendmore semantics) re-sends.
+            // The queued request message is held by the conversation layer
+            // (the worker slot's w_sendrec); only accounting happens here.
             global.queuemsg(vmnt, slot)?;
             Ok(TransId(TransId::encode(slot)))
         }
@@ -503,8 +509,9 @@ impl<T: minix_sys::ipc::IpcTransport> FsTransport for IpcFsTransport<T> {
         if drv == CTTY_ENDPT {
             return Err(CommError::CttyNotBlock);
         }
-        // C drv_sendrec 的 dmap 排他锁归 21/21-cdev(块驱动 20);本层
-        // 只管投递:transid 戳 + asynsend3 同 sendmsg(comm.c:19-23)。
+        // C drv_sendrec's dmap exclusive lock belongs to 21/21-cdev (block
+        // drivers 20); this layer only delivers: transid stamp + asynsend3,
+        // same as sendmsg (comm.c:19-23).
         let mut out = *req;
         out.m_type = TransId::add(req.m_type as u32, slot) as i32;
         self.transport
@@ -514,7 +521,8 @@ impl<T: minix_sys::ipc::IpcTransport> FsTransport for IpcFsTransport<T> {
     }
 
     fn send_vm(&mut self, slot: SlotId, req: &Message) -> Result<TransId, CommError> {
-        // `NULL vmp` → 无窗口计数(vm_sendrec,comm.c:171 起)。
+        // `NULL vmp` → no window accounting (vm_sendrec, starting at
+        // comm.c:171).
         let mut out = *req;
         out.m_type = TransId::add(req.m_type as u32, slot) as i32;
         self.transport
@@ -589,8 +597,10 @@ mod tests {
     use super::*;
     use minix_types::Endpoint;
 
-    /// 脚本化 IPC 传输:记录 sendnb 投递,可注入失败(IpcFsTransport 测试)。
-    /// `IpcTransport` 以 `&self` 为接口,记录侧用 `RefCell` 内部可变。
+    /// Scripted IPC transport: records sendnb deliveries and can inject
+    /// failures (for IpcFsTransport tests). `IpcTransport` has a `&self`
+    /// interface, so the recording side uses `RefCell` for interior
+    /// mutability.
     struct ScriptedIpc {
         sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
         fail_with: Option<i32>,
@@ -625,11 +635,11 @@ mod tests {
         fn query_kerninfo_page(&self) -> Result<u64, minix_sys::ipc::TrapStatus> { Ok(0) }
     }
 
-    const REQ_PROBE: u32 = 0x503; // 任意请求号(transid 戳见证用)
+    const REQ_PROBE: u32 = 0x503; // arbitrary request number (to witness the transid stamp)
 
     #[test]
     fn test_ipc_fs_transport_send_real_path() {
-        // comm.c:148-153 窗口开 → sendmsg 计数 + transid 戳 + sendnb。
+        // comm.c:148-153 window open → sendmsg count + transid stamp + sendnb.
         let mut global = GlobalComm::new();
         let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
         let req = Message { m_type: REQ_PROBE as i32, ..Message::default() };
@@ -645,10 +655,10 @@ mod tests {
 
     #[test]
     fn test_ipc_fs_transport_queues_when_window_full() {
-        // comm.c:156-158 窗口满 → queuemsg 是常态路径(非错误),
-        // 不投递,sending++。
+        // comm.c:156-158 window full → queuemsg is the normal path (not an
+        // error): nothing is delivered, sending++.
         let mut global = GlobalComm::new();
-        global.vmnts[0].cur_reqs = 1; // max=1,窗口占满
+        global.vmnts[0].cur_reqs = 1; // max=1, window full
         let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
         let req = Message { m_type: REQ_PROBE as i32, ..Message::default() };
         let r = t.send_fs(0, Endpoint::MFS, 3, &req, &mut global);
@@ -660,7 +670,8 @@ mod tests {
 
     #[test]
     fn test_ipc_fs_transport_callback_suppresses_send() {
-        // VMNT_CALLBACK 抑制(can_send 的 Callback 臂)同样走排队。
+        // VMNT_CALLBACK suppression (can_send's Callback arm) also goes
+        // through queueing.
         let mut global = GlobalComm::new();
         global.vmnts[0].callback = true;
         let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
@@ -672,8 +683,9 @@ mod tests {
 
     #[test]
     fn test_ipc_fs_transport_sendnb_failure_is_ipc_error() {
-        // C sendmsg 的 asynsend3 失败 → return(r)(comm.c:24-31);
-        // 计数已先行递增(C 的既有次序),错误原值透传。
+        // C sendmsg's asynsend3 failure → return(r) (comm.c:24-31); the count
+        // was already incremented first (C's existing order), and the raw
+        // error value passes through.
         let mut global = GlobalComm::new();
         let mut t = IpcFsTransport {
             transport: ScriptedIpc {
@@ -692,7 +704,8 @@ mod tests {
 
     #[test]
     fn test_ipc_fs_transport_send_vm_no_window() {
-        // vm_sendrec 的 NULL vmp:投递 VM + transid 戳,窗口不动。
+        // vm_sendrec's NULL vmp: deliver to VM + stamp transid, window
+        // untouched.
         let mut global = GlobalComm::new();
         let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
         let req = Message { m_type: REQ_PROBE as i32, ..Message::default() };
@@ -707,7 +720,7 @@ mod tests {
 
     #[test]
     fn test_ipc_fs_transport_send_drv_ctty_gate() {
-        // drv_sendrec 的 CTTY_ENDPT → EIO 面(CttyNotBlock)。
+        // drv_sendrec's CTTY_ENDPT → the EIO face (CttyNotBlock).
         let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
         let req = Message::default();
         assert_eq!(
@@ -715,7 +728,7 @@ mod tests {
             Err(CommError::CttyNotBlock)
         );
         assert!(t.transport.sent.borrow().is_empty());
-        // 非 CTTY:transid 戳 + 投递。
+        // Non-CTTY: transid stamp + delivery.
         let r = t.send_drv(Endpoint::from_generation_slot(1, 5), 6, &req);
         assert!(r.is_ok());
         assert_eq!(t.transport.sent.borrow()[0].1.m_type as u32, TransId::add(0, 6));
@@ -952,10 +965,12 @@ mod tests {
             Box::new(BlockingTransport),
             Box::new(MockTransport::default()),
         ];
-        // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+        // [SD19-gate] best-effort IPC teardown (fire-and-forget/timeout path;
+        // a failure does not change an already established main result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = transports[0].send_vm(0, &msg);
-        // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+        // [SD19-gate] best-effort IPC teardown (fire-and-forget/timeout path;
+        // a failure does not change an already established main result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = transports[1].send_vm(0, &msg);
     }

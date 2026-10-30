@@ -17,7 +17,8 @@
 //! On a host build `open`/`stat` answer `EIO` through the transport seam, which is
 //! enough to reach the `perror` leg and both `fprintf` legs; `ENOENT`'s silence
 //! (`truncate.c:109-114`) and a real `ftruncate` need the writable root image, so
-//! they stay with the deciding half's unit tests and the `C-57`/`E5` machine gate.
+//! they stay with the deciding half's unit tests and the `E5` writable-root
+//! machine gate.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;

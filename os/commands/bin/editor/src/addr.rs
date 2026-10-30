@@ -56,13 +56,14 @@ pub enum Base {
     SearchBackward(PatternRef),
 }
 
-/// 模式字节区间：指向命令行文本里的模式体。`Address` 保持 `Copy`，区间
-/// 随命令行存活，求值时按引用取字节。
+/// Pattern byte span: points at the pattern body inside the command line text.
+/// `Address` stays `Copy`; the span lives as long as the command line, and
+/// evaluation fetches the bytes by reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PatternRef {
-    /// 模式体在命令行里的起点（`/` 或 `?` 之后）。
+    /// Start of the pattern body in the command line (just past `/` or `?`).
     pub start: u16,
-    /// 模式体字节数（0 = 空模式，复用上一模式）。
+    /// Number of pattern body bytes (0 = empty pattern, reuse the previous one).
     pub len: u16,
 }
 
@@ -222,10 +223,12 @@ fn parse_offset(text: &str, mut pos: usize) -> Result<(i32, usize), EditorError>
 /// Scan a `/pattern/` or `?pattern?` body, returning the pattern span and
 /// the position past it.
 ///
-/// C `extract_pattern`（re.c:88-130）：扫描到未转义的定界符或行尾；`\\`
-/// 跳过下一字节（转义后的定界符不终止），`[` 的平衡由 `parse_char_class`
-/// 把守（未闭合 "unbalanced brackets"）；模式字节**原样保留**（转义交给
-/// 正则引擎），行尾的结束定界符可省（C 是"是定界符才吃"，next_addr:356）。
+/// C `extract_pattern` (re.c:88-130): scan to an unescaped delimiter or end of
+/// line; `\\` skips the next byte (an escaped delimiter does not terminate);
+/// `[` balance is guarded by `parse_char_class` (an unclosed class is
+/// "unbalanced brackets"); pattern bytes are **kept verbatim** (escapes go to
+/// the regex engine); the closing delimiter at end of line may be omitted (C
+/// eats it only when it is a delimiter, next_addr:356).
 pub fn scan_pattern(bytes: &[u8], pos: usize, closer: u8) -> Result<(PatternRef, usize), EditorError> {
     let start = pos;
     let mut at = pos;
@@ -234,13 +237,14 @@ pub fn scan_pattern(bytes: &[u8], pos: usize, closer: u8) -> Result<(PatternRef,
             b'\\' => {
                 at += 2;
                 if at > bytes.len() {
-                    // C 的 "trailing backslash (\\)"（re.c:110-113）。
+                    // C's "trailing backslash (\\)" (re.c:110-113).
                     return Err(EditorError::InvalidArgument);
                 }
             }
             b'[' => {
-                // `parse_char_class`（re.c:118-133）：`^` 与首个 `]` 可字面，
-                // `[:`/`[.`/`[=` 三类名直到成对收尾；扫不到 `]` 即未闭合。
+                // `parse_char_class` (re.c:118-133): `^` and a leading `]` may be
+                // literal, and the three names `[:`/`[.`/`[=` run until their
+                // paired terminator; failing to find `]` means unclosed.
                 let mut inner = at + 1;
                 if bytes.get(inner) == Some(&b'^') {
                     inner += 1;
@@ -279,7 +283,8 @@ pub fn scan_pattern(bytes: &[u8], pos: usize, closer: u8) -> Result<(PatternRef,
     Ok((PatternRef { start: start as u16, len: (at - start) as u16 }, at))
 }
 
-/// 取模式字节（区间由本模块的扫描产出，越界即编程错误——用断言拒绝）。
+/// Fetch the pattern bytes (the span comes from this module's scan; an
+/// out-of-range span is a programming error, refused by the slice assertion).
 pub fn pattern_bytes(line: &str, span: PatternRef) -> &[u8] {
     let start = span.start as usize;
     let end = start + span.len as usize;
@@ -335,7 +340,7 @@ pub fn evaluate(address: Address, context: &Context) -> Result<usize, EditorErro
             n as usize
         }
         Base::Mark(slot) => context.marks[slot as usize].ok_or(EditorError::InvalidArgument)?,
-        // 搜索基需要缓冲与正则库：走 [`evaluate_with`]。
+        // A search base needs the buffer and the regex library: go through [`evaluate_with`].
         Base::SearchForward(_) | Base::SearchBackward(_) => {
             return Err(EditorError::InvalidArgument)
         }
@@ -347,7 +352,7 @@ pub fn evaluate(address: Address, context: &Context) -> Result<usize, EditorErro
     Ok(line as usize)
 }
 
-/// 一个地址的非搜索基（数字、标记、当前、末行）到行的解析。
+/// Resolve an address's non-search base (number, mark, current, last) to a line.
 fn plain_base(base: Base, context: &Context) -> Result<usize, EditorError> {
     match base {
         Base::Current => Ok(context.current),
@@ -363,18 +368,21 @@ fn plain_base(base: Base, context: &Context) -> Result<usize, EditorError> {
     }
 }
 
-/// 搜索求值的对外缝：缓冲访问与匹配都归调用方（`exec` 持 store 与正则
-/// 库），`addr` 只管"求到基行之后"的偏移与界检查。
+/// The outward seam for search evaluation: buffer access and matching belong to
+/// the caller (`exec` holds the store and the regex library); `addr` only owns
+/// "get to the base line, then" the offset and bounds checks.
 ///
-/// `Ok(None)` = 整缓冲绕一圈无匹配——C `get_matching_node_addr` 的
-/// "no match"（main.c:938）由调用方折成自己的错误消息；`Err` 是求值本身
-/// 失败（空缓冲、坏模式）。
+/// `Ok(None)` = a wrap all the way around the buffer found no match — the
+/// "no match" of C `get_matching_node_addr` (main.c:938) is folded into the
+/// caller's own error message; `Err` means evaluation itself failed (empty
+/// buffer, bad pattern).
 pub trait SearchProbe {
     fn find_line(&mut self, pattern: &[u8], forward: bool) -> Result<Option<usize>, EditorError>;
 }
 
-/// 拒绝搜索基的占位实现：纯数字调用方（测试、不求值的命令）用它保持
-/// 旧签名——搜索基照旧走"invalid address"通道。
+/// Placeholder that refuses search bases: numeric-only callers (tests, commands
+/// that never evaluate) use it to keep the old signature — a search base still
+/// takes the "invalid address" channel.
 pub struct NoSearch;
 
 impl SearchProbe for NoSearch {
@@ -383,7 +391,7 @@ impl SearchProbe for NoSearch {
     }
 }
 
-/// [`evaluate`] 的带搜索版：`line` 是模式区间所指的命令行原文。
+/// [`evaluate`] with search support: `line` is the raw command line text the pattern span points into.
 pub fn evaluate_with(
     address: Address,
     context: &Context,
@@ -419,11 +427,12 @@ pub fn evaluate_range(
     context: &Context,
     default: (usize, usize),
 ) -> Result<(usize, usize), EditorError> {
-    // 空行文本配 `NoSearch`：搜索基照旧被拒，纯数字路径与旧行为一致。
+    // Empty line text paired with `NoSearch`: a search base is still refused, so
+    // the numeric-only path matches the old behavior.
     evaluate_range_with(range, context, default, "", &mut NoSearch)
 }
 
-/// [`evaluate_range`] 的带搜索版：搜索地址经 `probe` 在缓冲上求值。
+/// [`evaluate_range`] with search support: search addresses are evaluated over the buffer through `probe`.
 pub fn evaluate_range_with(
     range: &AddressRange,
     context: &Context,
@@ -592,8 +601,10 @@ mod tests {
 
     #[test]
     fn test_search_pattern_edges() {
-        // 空模式（`//`）记零长区间；转义后的定界符不终止；行尾省略结束
-        // 定界符（C next_addr:356 是定界符才吃）；尾偏移仍归地址。
+        // An empty pattern (`//`) records a zero-length span; an escaped
+        // delimiter does not terminate; at end of line the closing delimiter is
+        // omitted (C next_addr:356 eats it only when it is a delimiter); trailing
+        // offsets still belong to the address.
         let (range, _) = parse_range("//+1").unwrap();
         assert_eq!(range.first, Some(address(Base::SearchForward(span(1, 0)), 1)));
         let (range, _) = parse_range("/a\\/b/p").unwrap();
@@ -602,9 +613,9 @@ mod tests {
         let (range, used) = parse_range("?x").unwrap();
         assert_eq!(range.first, Some(address(Base::SearchBackward(span(1, 1)), 0)));
         assert_eq!(used, 2);
-        // 未闭合字符类（C re.c:120 "unbalanced brackets"）。
+        // Unclosed character class (C re.c:120 "unbalanced brackets").
         assert_eq!(parse_range("/[ab/p").map(|_| ()), Err(EditorError::InvalidArgument));
-        // 行尾孤立反斜杠（C re.c:110 "trailing backslash"）。
+        // Isolated trailing backslash at end of line (C re.c:110 "trailing backslash").
         assert_eq!(parse_range("/a\\").map(|_| ()), Err(EditorError::InvalidArgument));
     }
 

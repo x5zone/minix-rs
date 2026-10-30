@@ -19,9 +19,12 @@
 //!   that scheme, which is the pre-crate behavior and stays honest.
 
 #![no_std]
-// [SD-19] 静默吞错家族编译门：无理由的新 `let _ =`（丢弃 `#[must_use]` 返回值）
-// 会在每次 clippy 当场多报一条，把本家族的发现从「审计可发现」升级为「编译可发现」。
-// 不升 `deny`（零断面风险）；有意丢弃处逐站加 `//[SD19-gate] <理由>` + 语句级 `#[allow]`。
+// [SD19-gate] compile gate for the silent-swallow-error family: a newly added
+// unjustified `let _ =` (dropping a `#[must_use]` return value) reports one
+// extra warning on every clippy run, upgrading this family from
+// "audit-discoverable" to "compile-discoverable". Not raised to `deny` (zero
+// risk of a hard stop); deliberate discards get `//[SD19-gate] <reason>` plus a
+// statement-level `#[allow]` at each site.
 #![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
@@ -78,7 +81,8 @@ pub fn crypt(key: &[u8], setting: &str) -> Result<String, CryptError> {
 mod tests {
     use super::*;
 
-    /// MD5 本体的 RFC 1321 官方向量（铁锚：本体错则一切后端错）。
+    /// The RFC 1321 official vectors for MD5 itself (the anchor: if the core
+    /// is wrong, every backend is wrong).
     #[test]
     fn test_md5_rfc1321_vectors() {
         let digest = |data: &[u8]| {
@@ -90,9 +94,13 @@ mod tests {
             let mut out = alloc::string::String::new();
             for b in d {
                 use core::fmt::Write as _;
-                // [SD19-gate] 写向 String 的十六进制格式化器（宿主测试内 `hex` 闭包）：
-                // `String` 的 `write_fmt`（经 `core::fmt::Write` trait）仅在分配失败（OOM）时
-                // 回 Err，测试环境不可恢复；失败体现为后续 `assert_eq!` 的十六进制失配，故丢弃写错属刻意形状。
+                // [SD19-gate] the hex formatter writing into a String (the
+                // `hex` closure inside this host test): `String`'s
+                // `write_fmt` (via the `core::fmt::Write` trait) returns Err
+                // only on allocation failure (OOM), which is unrecoverable in
+                // a test environment; the failure surfaces as a hex mismatch
+                // in a later `assert_eq!`, so discarding the write error is a
+                // deliberate shape.
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = out.write_fmt(format_args!("{:02x}", b));
             }
@@ -109,7 +117,8 @@ mod tests {
             hex(&digest(b"abcdefghijklmnopqrstuvwxyz")),
             "c3fcd3d76192e4007dfb496cca67e13b"
         );
-        // 跨块输入（RFC 1321 套件后两条：62 字节与 80 字节）。
+        // Cross-block input (the last two cases of the RFC 1321 suite: 62
+        // bytes and 80 bytes).
         let long = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         assert_eq!(
             hex(&digest(long.as_bytes())),
@@ -122,9 +131,11 @@ mod tests {
         );
     }
 
-    /// `$1$` 后端：宿主 `openssl passwd -1 -salt S PW` 生成的黄金向量
-    /// （salt 超 8 字节按 C md5crypt.c:38-40 截断；magic 剥离；
-    /// salt 内 `$` 终止）。六条覆盖长/短 salt 与不同口令。
+    /// The `$1$` backend: golden vectors generated on the host with
+    /// `openssl passwd -1 -salt S PW` (salts longer than 8 bytes are truncated
+    /// per C md5crypt.c:38-40; the magic is stripped; a `$` inside the salt
+    /// terminates it). The six cases cover long/short salts and different
+    /// passwords.
     #[test]
     fn test_md5crypt_golden_vectors_from_openssl() {
         let cases: [(&str, &str, &str); 6] = [
@@ -144,7 +155,8 @@ mod tests {
         }
     }
 
-    /// verify 闭环：重推导与 setting 一致即通过；错口令不通过。
+    /// verify round trip: a re-derivation matching the setting passes; a wrong
+    /// password does not.
     #[test]
     fn test_verify_round_trip() {
         let setting = "$1$saltstri$qQY4WxjABChYG1ccLpfkz/";
@@ -152,26 +164,28 @@ mod tests {
         assert!(!verify(b"wrong", setting).unwrap());
     }
 
-    /// 未移植后端如实报 Unsupported（SHA1 与 bcrypt 同类）；
-    /// 传统 DES 走真实现。
+    /// Unported backends honestly report Unsupported (SHA1 and bcrypt alike);
+    /// traditional DES goes through the real implementation.
     #[test]
     fn test_unsupported_schemes_reported() {
-        // $2b$：minix3 的 C 只认 $2$ 与 $2a$（版本字符不得高于 '2'）。
+        // $2b$: minix3's C only accepts $2$ and $2a$ (the version character
+        // must not exceed '2').
         assert_eq!(
             crypt(b"pw", "$2b$12$abcdefghijklmnopqrstuv"),
             Err(CryptError::Invalid)
         );
-        // SHA1：真实现（宿主 libcrypt 向量）。
+        // SHA1: the real implementation (host libcrypt vectors).
         assert_eq!(
             crypt(b"password", "$sha1$10$ab").unwrap(),
             "$sha1$10$ab$jntRdwlglqBkw1n87bz5r/2ZrFcr"
         );
-        // 传统 DES：口令前八字节 + 盐两位。
+        // Traditional DES: the first eight password bytes plus two salt
+        // characters.
         assert_eq!(
             crypt(b"password", "Ja").unwrap(),
             "Ja/uBmQcgHDwg"
         );
-        // 扩展 DES（`_` + 4 迭代字符 + 4 盐字符）。
+        // Extended DES (`_` + 4 iteration characters + 4 salt characters).
         assert_eq!(
             crypt(b"password", "_./..abcd").unwrap(),
             "_./..abcdl2BMogUW5JA"

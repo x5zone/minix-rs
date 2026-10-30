@@ -52,11 +52,15 @@ impl RotationFailure {
 
 /// C's `get_rotation` (`caesar.c:124-139`), acceptance rules and all.
 ///
-/// 这里最容易搬错的一件事：`caesar` 的 `EINVAL` 是**它自己合成**的（`caesar.c:131-133`
-/// 在 `errno == 0` 且「空串或有尾字符」时手动置起），不依赖 `strtol` 在无转换时是否置号；
-/// 而 `primes` 走的是「只看 `strtoumax` 留下的 errno」那条路，真源在无转换时不置号
-/// （`_strtol.h:184-186` 只把 `endptr` 留在原处），所以同一串 `abc` 在两个命令里分属两句。
-/// 别把 `primes` 的结论搬过来「修」这里，反之亦然。
+/// The easiest thing to transplant wrongly here: `caesar`'s `EINVAL` is
+/// **synthesized by the program itself** (`caesar.c:131-133` sets it by hand when
+/// `errno == 0` and the argument is empty or has trailing characters); it does not
+/// depend on whether `strtol` sets an errno when no conversion happens. `primes`
+/// takes the other route, "look only at the errno `strtoumax` left behind", and the
+/// ground truth sets none when nothing is converted (`_strtol.h:184-186` leaves
+/// `endptr` where it was), so the same string `abc` falls into two different
+/// sentences depending on the command. Do not bring `primes`' conclusion over here
+/// to "fix" this, nor the reverse.
 ///
 /// The parsing is `strtol`, which is more generous than "digits only" in two ways a
 /// caller cannot see from the outside: it **skips leading white space** and it takes an
@@ -385,11 +389,12 @@ mod tests {
         );
     }
 
-    /// 两个失败各自缀哪一句，由 Minix3 自己的 `sys_errlist` 决定（本树那份表在
-    /// `minix-types`）：`EINVAL` 是 `Invalid argument`，`ERANGE` 是
-    /// `Result too large or too small`。后者是这张表与 glibc 的差别之一——照抄 glibc 会
-    /// 写成 `Numerical result out of range`，而 Minix3 的 `errno.h:78` 注释本身就写
-    /// `Result too large or too small`。
+    /// Which sentence suffixes each failure is decided by Minix3's own
+    /// `sys_errlist` (this tree's copy of that table lives in `minix-types`):
+    /// `EINVAL` is `Invalid argument`, `ERANGE` is `Result too large or too
+    /// small`. The latter is one of the places where that table differs from
+    /// glibc — copying glibc would give `Numerical result out of range`, while
+    /// Minix3's own `errno.h:78` comment reads `Result too large or too small`.
     #[test]
     fn each_failure_carries_the_errno_c_sets_and_minix3_words_it() {
         assert_eq!(
@@ -400,7 +405,7 @@ mod tests {
             RotationFailure::Range.errno().message(),
             Some("Result too large or too small")
         );
-        // 标识符面与句子面各归各：`err(3)` 缀的是句子。
+        // Identifier face and sentence face stay separate: `err(3)` appends the sentence.
         assert_eq!(RotationFailure::Invalid.errno().name(), Some("EINVAL"));
         assert_eq!(RotationFailure::Range.errno().to_i32(), ERANGE);
     }

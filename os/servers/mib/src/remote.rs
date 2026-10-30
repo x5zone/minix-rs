@@ -207,10 +207,10 @@ pub const fn check_reply(is_reply: bool, req_id: u32, status: i32) -> ReplyCheck
 
 /// Caller-is-root flag for relayed calls: `1`/`0`, no more.
 ///
-/// C: `m.m_mib_lsys_call.flags = !!mib_authed(call)` + `TODO: define
-/// flags` — remote.c:434. The TODO is C's, quoted here so the wire bit
-/// is not mistaken for a designed flag set: today it is exactly one
-/// boolean.
+/// C: `m.m_mib_lsys_call.flags = !!mib_authed(call)` plus a C-side
+/// `define flags` note — remote.c:434. That note is C's, quoted here so
+/// the wire bit is not mistaken for a designed flag set: today it is
+/// exactly one boolean.
 pub const fn caller_flag(authed: bool) -> u32 {
     authed as u32
 }
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(check_reply(false, 0, 0), ReplyCheck::WrongType);
         assert_eq!(check_reply(true, 41, 0), ReplyCheck::WrongId);
         assert_eq!(check_reply(true, 0, -200), ReplyCheck::Deliver(-200));
-        // Caller flag is one boolean; the TODO is C's (:434).
+        // Caller flag is one boolean; the open note is C's (:434).
         assert_eq!(caller_flag(true), 1);
         assert_eq!(caller_flag(false), 0);
     }

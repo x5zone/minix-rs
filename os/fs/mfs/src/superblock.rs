@@ -573,9 +573,10 @@ mod tests {
 
     #[test]
     fn test_max_size_widens_without_long_max_clamp() {
-        // s_max_size 是盘上有符号三十二位字段：最大值 2147483647 经
-        // 加宽进入六十四位长度，C 的 LONG_MAX 截断在本目标不可达
-        // （三十二位 long 的上限与字段上限重合，截断是恒等操作）。
+        // s_max_size is a signed 32-bit on-disk field: its maximum 2147483647
+        // widens into the 64-bit length, so C's LONG_MAX clamp is unreachable on
+        // this target (a 32-bit long's ceiling coincides with the field's, making
+        // the clamp an identity operation).
         let mut disk = valid_disk();
         disk.max_size = i32::MAX;
         let parsed = parse_superblock(&block_with(&disk), 0x301, false).unwrap();
@@ -669,8 +670,9 @@ mod tests {
 
     #[test]
     fn test_max_size_u32_needs_no_clamp() {
-        // s_max_size 是盘上三十二位字段：最大值也不超 i64 上限，
-        // 因此 C 的 LONG_MAX 截断在本目标不可达（superblock.rs 论证）。
+        // s_max_size is a 32-bit on-disk field: even its maximum does not exceed
+        // i64's ceiling, so C's LONG_MAX clamp is unreachable on this target
+        // (argument in superblock.rs).
         let max_u32 = u32::MAX as u64;
         assert!(max_u32 <= i64::MAX as u64);
         assert_eq!(max_u32 as i64, max_u32 as i64);
@@ -681,7 +683,8 @@ mod tests {
         let mut map = Bitmap::new(64);
         let bit = map.alloc(1).unwrap();
         assert!(map.free(bit));
-        // 第二次释放同一位：返回 false，位保持空闲，不再变化。
+        // Freeing the same bit a second time: returns false, the bit stays free and
+        // unchanged.
         assert!(!map.free(bit));
         assert!(!map.test(bit));
     }

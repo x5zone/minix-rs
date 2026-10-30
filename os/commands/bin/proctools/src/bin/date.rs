@@ -17,8 +17,8 @@
 //! `settimeofday`/`adjtime` plus wtmp/syslog accounting, `date.c:337-357`)
 //! has no client wrapper yet, so an operand that would mutate the clock
 //! reports an error and exits 1 rather than pretending to set the time.
-//! Tracked in 12-process-tools.md §5 and the coordination ledger with the
-//! command面 真机半.
+//! Tracked in 12-process-tools.md §5 and the real-machine half of the
+//! command face in the coordination ledger.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

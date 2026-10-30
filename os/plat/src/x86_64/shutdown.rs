@@ -1,4 +1,4 @@
-//! QEMU test shutdown backend — isa-debug-exit (S-11, §3.8).
+//! QEMU test shutdown backend — isa-debug-exit (§3.8).
 //!
 //! `isa-debug-exit` is a QEMU ISA device: an I/O write to its base port
 //! (0x501 by default) terminates QEMU with exit code `(value << 1) | 1`.

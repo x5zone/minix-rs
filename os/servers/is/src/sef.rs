@@ -8,7 +8,8 @@
 //! The SEF *framework* (`sef_startup`, `sef_receive` internals) lives in
 //! `minix-sef`; this module adapts it to the seam IS consumes. Production
 //! binding is [`SysSefTransport`] (below), which routes through `minix-sys`
-//!'s trap transport (hosted build returns EIO honestly until E1 真机通电).
+//!'s trap transport (a hosted build returns EIO honestly until E1 real
+//! hardware is powered on).
 
 use minix_sys::ipc::IpcTransport as _;
 use core::fmt;
@@ -123,13 +124,13 @@ pub trait SefTransport {
     /// Send a reply. C: `ipc_send(who, &m_out)` — main.c:143.
     fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32>;
     /// State-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11) —
-    /// the birth protocol's paragraph-1 kernel call (PD-34
-    /// `process_init`). Production wires the trap transport; test doubles
-    /// model an accepting kernel.
+    /// the birth protocol's paragraph-1 kernel call, `process_init`.
+    /// Production wires the trap transport; test doubles model an
+    /// accepting kernel.
     fn statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32>;
     /// Send-and-receive. C: `ipc_sendrec` — sef_cb_init_response_rs_reply
-    /// (sef_init.c:458-466). NK4-C B9b: the birth-report leg parks in
-    /// receive(RS) for RS's catch reply instead of a fire-and-forget send.
+    /// (sef_init.c:458-466). The birth-report leg parks in receive(RS) for
+    /// RS's catch reply instead of doing a fire-and-forget send.
     fn send_rec(&mut self, dest: Endpoint, reply: &mut Message) -> Result<(), i32>;
     /// Emit the illegal-request warning. C: `printf("IS: warning, got
     /// illegal request %d from %d\n", ...)` — main.c:60-61.
@@ -154,11 +155,13 @@ pub trait SefTransport {
     fn diag_out(&mut self) -> &mut dyn fmt::Write;
 }
 
-/// 生产 SEF 传输(S23):`receive` 经 `minix-sef` 的
-/// `sef_receive_status`(ping 透明不变量 A-11 由库层保证),`send` 走
-/// trap 传输的阻塞 `send`(C `ipc_send`),三条 `warn_*` 与
-/// [`SefTransport::diag_out`] 走 A-6 诊断缝——`SYS_DIAGCTL` code 1
-/// 的控制台通道(minix-sys `sys_diagctl_write`,rs 的 diag 缝同出口)。
+/// Production SEF transport: `receive` goes through `minix-sef`'s
+/// `sef_receive_status` (the ping transparency invariant A-11 is guaranteed by
+/// the library layer), `send` uses the trap transport's blocking `send` (C
+/// `ipc_send`), and the three `warn_*` methods plus
+/// [`SefTransport::diag_out`] use the A-6 diagnostic seam — the `SYS_DIAGCTL`
+/// code 1 console channel (minix-sys `sys_diagctl_write`; rs reaches the same
+/// exit through its diagnostic seam).
 pub struct SysSefTransport {
     ipc: SefIpcAdapter,
     diag: DiagWriter,
@@ -179,7 +182,8 @@ impl Default for SysSefTransport {
     }
 }
 
-/// `minix-sef` 的 `SefIpc` 动词适配(trap 直连;RS/VM 同形先例)。
+/// Adapts `minix-sef`'s `SefIpc` verbs onto the trap transport, following the
+/// same form already used by RS and VM.
 struct SefIpcAdapter {
     inner: minix_sys::ipc::DirectTrapTransport,
 }
@@ -195,13 +199,14 @@ impl minix_sef::SefIpc for SefIpcAdapter {
     }
 }
 
-/// 诊断输出的 `fmt::Write` 汇聚点(A-6):每次 `write_str` 直送内核
-/// 诊断台(printf 的面貌——片段化无害,内核逐段打)。
+/// The `fmt::Write` sink for diagnostic output (A-6): every `write_str` goes
+/// straight to the kernel diagnostic console — the shape of `printf`, where
+/// fragmentation is harmless because the kernel prints segment by segment.
 pub struct DiagWriter;
 
 impl fmt::Write for DiagWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        //[SD19-gate] SD-19: IPC 发后即忘
+        //[SD19-gate] IPC fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::syscall::sys_diagctl_write(
             &minix_sys::syscall::DirectKernelCallTransport,
@@ -213,9 +218,10 @@ impl fmt::Write for DiagWriter {
 
 impl SefTransport for SysSefTransport {
     fn startup(&mut self) {
-        // C sef_startup()(main.c:88)触发 init 回调;Rust 的 init 面由
-        // IsServer::startup 显式调 init_fresh(lib.rs:151-155),此处无需
-        // 额外动作——保留 C 的调用点形状。
+        // C sef_startup() (main.c:88) triggers the init callbacks; in Rust the
+        // init face is explicit — IsServer::startup calls init_fresh
+        // (lib.rs:151-155) — so nothing extra belongs here. The C call-site
+        // shape is kept.
     }
 
     fn receive(
@@ -224,12 +230,14 @@ impl SefTransport for SysSefTransport {
         on_signal: &mut dyn FnMut(i32),
         cancel: &minix_sef::SefCancel,
     ) -> Result<(Endpoint, i32), i32> {
-        // C main.c:125-129 — sef_receive(ANY, &m_in);ping 在 SEF 层
-        // 拦截并作答（A-11:分类器永不见 ping）。信号号在同一次收信里
-        // 交给回调（C 直接在 `sef_receive_status` 内调注册的 handler，
-        // main.c:85），这里把同一个号转交给主循环提供的处理体。
-        // 一薄层 closure 是必要的：库入口按 `impl FnMut` 单态化，而本
-        // trait 为了对象安全只能收 `dyn FnMut`（不定长）。
+        // C main.c:125-129 — sef_receive(ANY, &m_in); a ping is intercepted
+        // and answered inside the SEF layer (A-11: the classifier never sees a
+        // ping). Signal numbers reach the callback within that same receive
+        // step (C calls the registered handler directly inside
+        // `sef_receive_status`, main.c:85); here the same number is forwarded
+        // to the body the main loop supplied. The thin closure is necessary
+        // because the library entry point monomorphizes over `impl FnMut`,
+        // while this trait, for object safety, can only take `dyn FnMut`.
         let mut handoff = |signo: i32| on_signal(signo);
         let recv = minix_sef::sef_receive_status(
             &mut self.ipc,
@@ -242,7 +250,7 @@ impl SefTransport for SysSefTransport {
     }
 
     fn statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32> {
-        // C `sys_statectl` 的 trap 直连（diag_write 同款直连先例）。
+        // Direct trap call for C `sys_statectl`, the same direct form diag_write uses.
         let r = minix_sys::syscall::sys_statectl(
             &minix_sys::syscall::DirectKernelCallTransport,
             request,
@@ -263,9 +271,9 @@ impl SefTransport for SysSefTransport {
     }
 
     fn warn_illegal(&mut self, call_nr: i32, sender: Endpoint) {
-        // C main.c:60-61 文案。
+        // C's wording at main.c:60-61.
         use core::fmt::Write as _;
-        //[SD19-gate] SD-19: IPC 发后即忘
+        //[SD19-gate] IPC fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = writeln!(
             self.diag,
@@ -275,17 +283,17 @@ impl SefTransport for SysSefTransport {
     }
 
     fn warn_fkey_events(&mut self, status: i32) {
-        // C dmp.c:84-86 文案。
+        // C's wording at dmp.c:84-86.
         use core::fmt::Write as _;
-        //[SD19-gate] SD-19: IPC 发后即忘
+        //[SD19-gate] IPC fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = writeln!(self.diag, "IS: warning, fkey_events failed: {}", status);
     }
 
     fn warn_fkey_ctl(&mut self, status: i32) {
-        // C dmp.c:63-65 文案。
+        // C's wording at dmp.c:63-65.
         use core::fmt::Write as _;
-        //[SD19-gate] SD-19: IPC 发后即忘
+        //[SD19-gate] IPC fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = writeln!(self.diag, "IS: warning, fkey_ctl failed: {}", status);
     }
@@ -299,8 +307,8 @@ impl SefTransport for SysSefTransport {
 mod tests {
     #[test]
     fn test_sys_sef_transport_hosted_is_eio() {
-        // hosted 构建的 trap 直连诚实回 EIO(E1 通电前不伪造成功);
-        // S23 片 1 的真装面。
+        // The hosted trap transport honestly returns EIO (no faked success
+        // before E1 hardware power-on).
         let mut t = super::SysSefTransport::new();
         let mut inbox = Message::default();
         let cancel = minix_sef::SefCancel::new();
@@ -312,8 +320,9 @@ mod tests {
 
     #[test]
     fn test_sys_sef_diag_out_writable_and_warns_do_not_panic() {
-        // A-6 缝:write_str 直送 sys_diagctl_write——hosted 下内核回
-        // EIO 被吞(warn 是尽力而为),writeln! 仍 Ok;三条 warn 同面。
+        // The A-6 seam: write_str goes straight to sys_diagctl_write, and in a
+        // hosted build the kernel's EIO is swallowed (warn is best-effort), so
+        // writeln! still returns Ok; all three warnings take the same path.
         use core::fmt::Write as _;
         let mut t = super::SysSefTransport::new();
         assert!(writeln!(t.diag_out(), "IS: warning, got illegal request {} from {}", 65, 9).is_ok());

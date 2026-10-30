@@ -100,11 +100,13 @@ pub const SIGNAL_POWER: i32 = 32;
 pub const SIGNAL_KERNEL_MEMORY: i32 = 71;
 /// New kernel message. C: `SIGKMESS 72` (`signal.h:272`).
 ///
-/// 消费方归属登记：这一号由内核投递（`minix3/minix/kernel/system.c:480`、
-/// `kernel/system/do_diagctl.c:56`），读者在驱动侧的信号回调
-/// （`minix3/minix/drivers/system/log/log.c:115`、`drivers/tty/tty/tty.c:456`）；
-/// 不在 P-ALL-08 T1/T2 的 SEF 侧范围内——本枚只是把族表补全，
-/// 接入批次＝驱动信号面（与 `SIGNAL_KERNEL_MANAGER_SELF` 同批）。
+/// Consumer-ownership note: this number is delivered by the kernel
+/// (`minix3/minix/kernel/system.c:480`, `kernel/system/do_diagctl.c:56`), and
+/// its readers sit in the driver-side signal callbacks
+/// (`minix3/minix/drivers/system/log/log.c:115`, `drivers/tty/tty/tty.c:456`).
+/// It is outside the SEF-side T1/T2 scope — this item only completes the
+/// family table; wiring it up belongs to the driver signal face (the same
+/// place that consumes `SIGNAL_KERNEL_MANAGER_SELF`).
 pub const SIGNAL_KERNEL_MESSAGE: i32 = 72;
 /// Kernel signal pending for the signal manager itself. C: `SIGKSIGSM 73`
 /// (`signal.h:273`).
@@ -125,12 +127,13 @@ pub const KERNEL_SIGNAL_LAST: i32 = SIGNAL_KERNEL_PENDING;
 ///
 /// C: `IS_SIGK(signo)` — `signal.h:278`.
 ///
-/// 消费方归属登记：C 侧唯一读者是默认信号回调
-/// `sef_cb_signal_handler_posix_default`（`sef_signal.c:182-201`，其在 :196 用
-/// `IS_SIGK` 判定「内核信号不触发终止」）；SEF 收信侧的遍历走
-/// `KERNEL_SIGNAL_FIRST..=KERNEL_SIGNAL_LAST` 区间本身（`sef_signal.c:97`），
-/// 不调这个谓词——本枚是族表的完整镜像，接入批次＝默认回调与服务侧
-/// 信号语义验证（P-ALL-08 T2）。
+/// Consumer-ownership note: the only C reader is the default signal callback
+/// `sef_cb_signal_handler_posix_default` (`sef_signal.c:182-201`, which uses
+/// `IS_SIGK` at :196 to decide that kernel signals do not trigger termination);
+/// the SEF receive side walks the `KERNEL_SIGNAL_FIRST..=KERNEL_SIGNAL_LAST`
+/// interval itself (`sef_signal.c:97`) and does not call this predicate — this
+/// item is a complete mirror of the family table; what remains is verifying the
+/// default callback and service-side signal semantics (T2).
 pub const fn is_kernel_signal(signo: i32) -> bool {
     signo >= KERNEL_SIGNAL_FIRST && signo <= KERNEL_SIGNAL_LAST
 }
@@ -158,9 +161,11 @@ mod tests {
         assert!(!is_valid_signal_number(64));
     }
 
-    /// C 绝对值 pin：内核信号族（signal.h:271-277）。这四个号码决定通知
-    /// 载荷位图必须覆盖到第 74 位，也与内核侧 `syscall_signal.rs` 的同名
-    /// 常量互证（那处是 `u32`，本处是消息与回调用的 `i32`）。
+    /// C absolute-value pin: the kernel signal family (signal.h:271-277). These
+    /// four numbers decide that the notification payload bitmap must reach bit
+    /// 74, and they cross-check the same-named constants on the kernel side in
+    /// `syscall_signal.rs` (that one is `u32`, this one `i32` for messages and
+    /// callbacks).
     #[test]
     fn test_kernel_signal_numbers_match_c_header() {
         assert_eq!(SIGNAL_KERNEL_MEMORY, 71); // signal.h:271
@@ -171,14 +176,15 @@ mod tests {
         assert_eq!(KERNEL_SIGNAL_LAST, SIGNAL_KERNEL_PENDING); // signal.h:277
     }
 
-    /// C: `IS_SIGK` 的区间边界（signal.h:278）——相邻的 SIGSNDELAY=70 与
-    /// 族外的 75 都不属于内核信号族。
+    /// C: the `IS_SIGK` window bounds (signal.h:278) — the adjacent
+    /// SIGSNDELAY=70 and the out-of-family 75 both fall outside the kernel
+    /// signal family.
     #[test]
     fn test_is_kernel_signal_window_bounds() {
         assert!(is_kernel_signal(71));
         assert!(is_kernel_signal(74));
         assert!(!is_kernel_signal(70)); // SIGSNDELAY — signal.h:264
         assert!(!is_kernel_signal(75));
-        assert!(!is_kernel_signal(1)); // 用户信号不在此族
+        assert!(!is_kernel_signal(1)); // user signals are not in this family
     }
 }

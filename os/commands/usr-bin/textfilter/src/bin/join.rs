@@ -53,8 +53,10 @@ fn line_refs(buf: &[u8]) -> Vec<&[u8]> {
     lines
 }
 
-/// 写出「程序名 + 那一句」这一行。**不退**——C 的 `warnx` 印完继续跑，`errx` 才 `exit`，
-/// 两者的差别由调用方决定（`fail` 退、`warn_then_usage` 接 usage）。
+/// Write the `<program name>: <sentence>` line. **No exit** — C's `warnx`
+/// prints it and keeps going; only `errx` calls `exit`. Which of the two this
+/// is belongs to the caller (the `fail` family exits, `warn_then_usage`
+/// follows up with usage).
 fn diagnose(prog: &str, message: &[u8]) {
     let mut line = Vec::with_capacity(prog.len() + message.len() + 3);
     line.extend_from_slice(prog.as_bytes());
@@ -64,15 +66,18 @@ fn diagnose(prog: &str, message: &[u8]) {
     support::warn(&line);
 }
 
-/// C 的 `errx` 那一族：程序名（`getprogname()`）、短语、不缀句子，写完退 1。短语交回的是
-/// **字节**——`join.c:145`/`:156`/`:176`/`:190`/`:592` 那五支把 `optarg` 或整个 token 拼进
-/// 句子，那一段是 argv 的原字节，经任何字符解码都会改长度。
+/// C's `errx` family: program name (`getprogname()`), the phrase, no appended
+/// sentence, exit 1 after writing. The phrase comes back as **bytes** — the
+/// five arms `join.c:145`/`:156`/`:176`/`:190`/`:592` splice `optarg` or the
+/// whole token into the sentence, and that span is argv's raw bytes; any
+/// character decoding would change its length.
 fn fail(prog: &str, message: &[u8]) -> ! {
     diagnose(prog, message);
     support::terminate(1)
 }
 
-/// 把 `prefix` 与 argv 原字节接成一句（C 的 `"… -- %s"` 那五支共用）。
+/// Concatenate `prefix` and argv's raw bytes into one sentence (shared by
+/// C's five `"... -- %s"` arms).
 fn quoted(prefix: &str, value: &[u8]) -> Vec<u8> {
     let mut message = Vec::with_capacity(prefix.len() + value.len());
     message.extend_from_slice(prefix.as_bytes());
@@ -80,8 +85,9 @@ fn quoted(prefix: &str, value: &[u8]) -> Vec<u8> {
     message
 }
 
-/// `join.c:630-637`：`fprintf(stderr, "usage: %s ...\n            ...\n", getprogname())`——
-/// **两行**，名字只出现在第一行（第二行十二个空格的缩进把它接在第 12 列下面）。
+/// `join.c:630-637`: `fprintf(stderr, "usage: %s ...\n            ...\n", getprogname())` —
+/// **two lines**, the name appears only on the first one (the twelve-space
+/// indent on the second line continues it under column 12).
 fn usage(prog: &str) -> ! {
     support::warn(
         format!("usage: {prog} [-a fileno | -v fileno] [-e string] [-j fileno field]\n").as_bytes(),
@@ -90,55 +96,68 @@ fn usage(prog: &str) -> ! {
     support::terminate(1)
 }
 
-/// C 的 `warnx` 那一族在这里的形状：先一句缀程名的话，再接那两行 usage，退 1
-/// （`join.c:141-142` 等八支都是 `warnx(...)` 紧跟 `usage()`）。
+/// The shape of C's `warnx` family here: first one line carrying the program
+/// name, then those two usage lines, exit 1 (the eight arms such as
+/// `join.c:141-142` are all `warnx(...)` immediately followed by `usage()`).
 fn warn_then_usage(prog: &str, message: &[u8]) -> ! {
     diagnose(prog, message);
     usage(prog)
 }
 
-/// 把决定半交回的 [`JoinError`] 落成 C 那支自己的报文。**三支 `warnx`+`usage()`、
-/// 三支 `errx`（不接 usage）、一支只出 usage** ——分岔本体（哪个字母、哪个值、
-/// 接不接 usage）都在决定半交的变体参数里，所以壳不需要自己发明文案：
-/// `join.c:141`/`:145`/`:152`/`:156`/`:171`/`:176`/`:186`/`:190`/`:202`/`:217`/`:222`
-/// 与 `fieldarg` 的 `:527-532` 逐支对应。
+/// Render the [`JoinError`] the decision half hands back as C's own message
+/// for that arm. **Three `warnx`+`usage()` arms, three `errx` arms (no usage),
+/// one usage-only arm** — the branching itself (which letter, which value,
+/// whether usage follows) lives in the variant payloads, so the shell never
+/// invents wording: `join.c:141`/`:145`/`:152`/`:156`/`:171`/`:176`/`:186`/
+/// `:190`/`:202`/`:217`/`:222` and `fieldarg`'s `:527-532` correspond arm by
+/// arm.
 fn join_error_fail(prog: &str, e: JoinError<'_>) -> ! {
     match e {
-        // `join.c:236-237`：`if (argc != 2) usage();`——只打两行 usage，不缀诊断行。
+        // `join.c:236-237`: `if (argc != 2) usage();` — only the two usage
+        // lines, no diagnostic line.
         JoinError::Usage => usage(prog),
-        // 表外字母与带值选项缺值：libc 先印自己那一句（`getopt.c:101-104`、
-        // `:132-136`），再落 `join.c:226-228` 的 `case '?'` → 同样那两行 usage。
+        // Unknown option letter or a value-taking option missing its value:
+        // libc prints its own line first (`getopt.c:101-104`, `:132-136`),
+        // then falls into `join.c:226-228`'s `case '?'` → the same two usage
+        // lines.
         JoinError::Getopt(report) => {
-            // 字母位走 `line_bytes`：`src/join.rs` 的取法本就按字节（`b[1] as char`），而 libc
-            // 那一行的字母位本来是一个字节（`getopt.c:79` 的 `optopt = *place++`、`:103` 的
-            // `%c`）。参照件 `tmp/join-407/join_ref` 现量 `-é` 是 `join: unknown option -- ` +
-            // 单个 `c3` + 换行，再跟那两行 usage。
+            // The letter slot goes through `line_bytes`: `src/join.rs` already
+            // takes it as a byte (`b[1] as char`), and libc's line has a
+            // single byte in the letter slot anyway (`optopt = *place++` at
+            // `getopt.c:79`, `%c` at `:103`). A measured reference run of
+            // `-é` prints `join: unknown option -- ` + one `c3` byte +
+            // newline, then the two usage lines.
             support::warn(&report.line_bytes(prog));
             usage(prog)
         }
-        // 句子把选项字母写在前面（`"-1 option field number less than 1"`）。
+        // The sentence puts the option letter first (`"-1 option field number less than 1"`).
         JoinError::FieldLessThan1(opt) => {
             warn_then_usage(prog, format!("{opt} option field number less than 1").as_bytes())
         }
         JoinError::FileNumberNot12(opt) => {
             warn_then_usage(prog, format!("{opt} option file number not 1 or 2").as_bytes())
         }
-        // 这两支 C 不写字母，只把 `optarg` 跟在一对短线后（`"illegal field number -- %s"`）：
-        // 值段是 argv 原字节，所以句子按字节拼。
+        // These two arms write no letter in C; they put `optarg` after a pair
+        // of dashes (`"illegal field number -- %s"`): the value span is argv's
+        // raw bytes, so the sentence is assembled bytewise.
         JoinError::IllegalFieldNumber(value) => {
             warn_then_usage(prog, quoted("illegal field number -- ", value).as_slice())
         }
         JoinError::IllegalFileNumber(value) => {
             warn_then_usage(prog, quoted("illegal file number -- ", value).as_slice())
         }
-        // `-t` 那一支同样不写字母（C 也只写 `"illegal tab character specification"`）。
+        // The `-t` arm likewise writes no letter (C also writes only
+        // `"illegal tab character specification"`).
         JoinError::BadTabChar => warn_then_usage(prog, b"illegal tab character specification"),
-        // 以下三支 C 走 `errx`：印完就走，没有 usage。
+        // The three arms below go through `errx` in C: print and leave, no
+        // usage.
         JoinError::MalformedOutputField => fail(prog, b"malformed -o option field"),
         JoinError::FieldNumbersAre1Based => fail(prog, b"field numbers are 1 based"),
         JoinError::AAndVMutuallyExclusive => fail(prog, b"-a and -v options mutually exclusive"),
-        // legacy `-j` 的畸形形：C 在 `obsolete()` 里 `errx(1, "illegal option -- %s", ap)`
-        // （`join.c:592`），句子带整个 token（含前导短线与原字节尾巴），**不接 usage**。
+        // The malformed legacy `-j` forms: C does
+        // `errx(1, "illegal option -- %s", ap)` inside `obsolete()`
+        // (`join.c:592`); the sentence carries the whole token (leading dash
+        // and raw byte tail included) and **no usage**.
         JoinError::IllegalOptionToken(token) => {
             fail(prog, quoted("illegal option -- ", token).as_slice())
         }
@@ -149,10 +168,12 @@ fn join_error_fail(prog: &str, e: JoinError<'_>) -> ! {
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
-    // C 的 `join` 不调 `setprogname`；`getprogname()` 仍由
-    // `minix3/lib/csu/common/crt0-common.c:156-165` 从 `argv[0]` 起好那一段，
-    // 所以它的 `errx`/`err`/`usage` 三族都从那一段开头。程序名交回原字节，只有下面
-    // 两条 `&str` 口（开档、`err(1, "%s", name)`）与 usage 那两行需要文本形时折一次。
+    // C's `join` does not call `setprogname`; `getprogname()` is still primed
+    // from `argv[0]` by `minix3/lib/csu/common/crt0-common.c:156-165`, so all
+    // three of its families (`errx`/`err`/`usage`) start with that span. The
+    // program name is handed back as raw bytes; only the two `&str` mouths
+    // below (opening a file, `err(1, "%s", name)`) and the two usage lines
+    // need the text form, so the fold happens once.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
 
     let (opts, files) = match parse_join_args(&args[1..]) {
@@ -160,18 +181,22 @@ fn run() -> ! {
         Err(e) => join_error_fail(&prog, e),
     };
 
-    // `join.c:250-251`：两个操数都是 `-` 时两个 `FILE*` 都等于 `stdin`，C 直接
-    // `errx(1, "only one input file may be stdin")`——本壳此前没有这一支，会把同一条
-    // 输入读两遍。C 在 `slurp` 之前护住它，这里也放在两次读之前。`-` 的判据按字节，
-    // 因此它与「档名有没有被折过」无关。
+    // `join.c:250-251`: when both operands are `-` both `FILE*`s equal
+    // `stdin`, and C takes `errx(1, "only one input file may be stdin")`
+    // right away — this shell used to lack that arm and would read the same
+    // input twice. C guards it before `slurp`; here it sits before both
+    // reads. The `-` test is bytewise, so it does not depend on whether the
+    // filename was ever folded.
     if files[0] == b"-" && files[1] == b"-" {
         fail(&prog, b"only one input file may be stdin");
     }
 
-    // `join.c:241-249`：操数是 `-` 就读标准输入，否则 `fopen`；失手就是
-    // `err(1, "%s", *argv)`——操数名与那个号的句子一起出，程序就此结束（**致命**，
-    // 第二个操数连试都不试）。开档与那一行都要借 `&str` 口，所以在这之前折一次
-    //（在册 `ARGV-BYTE-PATH-IN-LIBS`）。
+    // `join.c:241-249`: a `-` operand reads standard input, otherwise
+    // `fopen`; failure is `err(1, "%s", *argv)` — the operand name and the
+    // errno sentence come out together and the program ends there
+    // (**fatal**: the second operand is never even tried). Opening the file
+    // and that line both need the `&str` mouth, so the fold happens up front
+    // (registered as `ARGV-BYTE-PATH-IN-LIBS`).
     let read_operand = |name: &[u8]| -> Vec<u8> {
         if name == b"-" {
             return read_stdin();

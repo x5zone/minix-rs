@@ -185,8 +185,9 @@ impl<T: DriverTransport> DriverRuntime<T> {
             ..Message::default()
         };
         reply.m_u.m_rs_init.result = result;
-        // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）——发
-        // RS_INIT 后停在 receive(RS) 半等 RS catch 出口的 OK 唤醒。
+        // Birth report leg = C `ipc_sendrec` (not a plain send) — after
+        // sending RS_INIT it stays in the receive(RS) half waiting for the OK
+        // wakeup from RS's catch exit.
         self.transport.send_rec(Endpoint::RS, &mut reply)?;
         if result != 0 {
             return Err(result);
@@ -295,8 +296,9 @@ mod tests {
                 m_type: msg.m_type + 1,
                 ..Message::default()
             };
-            //[SD19-gate] Counter 夹具只计数并回一条消息，断言消费的是
-            // `handled` 与运输日志；回发结果按夹具忽略。
+            //[SD19-gate] The counter fixture only counts and replies with one
+            // message; the assertions consume `handled` and the transport log;
+            // the fixture ignores the send-back result.
             #[allow(clippy::let_underscore_must_use)]
             let _ = transport.send(msg.m_source, &mut reply);
         }

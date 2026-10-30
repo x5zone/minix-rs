@@ -104,7 +104,9 @@ pub trait FsDriver {
         length: usize,
         out: &mut dyn FnMut(&[u8]),
     ) -> Result<usize, Errno> {
-        //[SD19-gate] default trait impl 占位：丢弃未用形参（非吞错），本方法恒返 ENOSYS 待真实驱动覆写
+        //[SD19-gate] default trait impl placeholder: drops the unused parameters (it does
+        // not swallow errors); this method always returns ENOSYS until a real driver
+        // overrides it.
         #[allow(clippy::let_underscore_must_use)]
         let _ = (inode, position, length, out);
         Err(Errno::from_i32(ENOSYS))
@@ -140,7 +142,9 @@ pub trait FsDriver {
         capacity: usize,
         out: &mut dyn FnMut(&[u8]),
     ) -> Result<usize, Errno> {
-        //[SD19-gate] default trait impl 占位：丢弃未用形参（非吞错），本方法恒返 ENOSYS 待真实驱动覆写
+        //[SD19-gate] default trait impl placeholder: drops the unused parameters (it does
+        // not swallow errors); this method always returns ENOSYS until a real driver
+        // overrides it.
         #[allow(clippy::let_underscore_must_use)]
         let _ = (inode, position, capacity, out);
         Err(Errno::from_i32(ENOSYS))
@@ -266,7 +270,9 @@ pub trait FsDriver {
         capacity: usize,
         out: &mut dyn FnMut(&[u8]),
     ) -> Result<usize, Errno> {
-        //[SD19-gate] default trait impl 占位：丢弃未用形参（非吞错），本方法恒返 ENOSYS 待真实驱动覆写
+        //[SD19-gate] default trait impl placeholder: drops the unused parameters (it does
+        // not swallow errors); this method always returns ENOSYS until a real driver
+        // overrides it.
         #[allow(clippy::let_underscore_must_use)]
         let _ = (inode, capacity, out);
         Err(Errno::from_i32(ENOSYS))
@@ -338,7 +344,9 @@ pub trait FsDriver {
         length: usize,
         out: &mut dyn FnMut(&[u8]),
     ) -> Result<usize, Errno> {
-        //[SD19-gate] default trait impl 占位：丢弃未用形参（非吞错），本方法恒返 ENOSYS 待真实驱动覆写
+        //[SD19-gate] default trait impl placeholder: drops the unused parameters (it does
+        // not swallow errors); this method always returns ENOSYS until a real driver
+        // overrides it.
         #[allow(clippy::let_underscore_must_use)]
         let _ = (device, position, length, out);
         Err(Errno::from_i32(ENOSYS))
@@ -524,25 +532,26 @@ pub fn classify(
 /// The `run_post_call` flag tells the caller whether the server's post-call
 /// hook must run (only after a dispatched request that produced a reply).
 pub enum HeaderAction {
-    /// 非请求消息：交给 `other` 钩子，不发回复。
+    /// Not a request message: handed to the `other` hook, no reply is sent.
     Silence,
-    /// 拒绝类回答：未挂载（EINVAL）或未知请求（ENOSYS）。
+    /// A refusal answer: not mounted (EINVAL) or unknown request (ENOSYS).
     Reply {
-        /// 状态码：EINVAL 或 ENOSYS。
+        /// Status code: EINVAL or ENOSYS.
         status: i32,
-        /// 回显的事务编号。
+        /// The echoed transaction number.
         transaction: TransactionId,
     },
-    /// 可分发请求：调用方继续走适配层，适配结果就是回复。
+    /// A dispatchable request: the caller continues into the adapter layer, and the
+    /// adapted result is the reply.
     Continue {
-        /// 要适配的请求。
+        /// The request to adapt.
         request: RequestNumber,
-        /// 回显的事务编号。
+        /// The echoed transaction number.
         transaction: TransactionId,
     },
 }
 
-/// 把路由结果翻译成循环动作。
+/// Translate a routing verdict into a loop action.
 pub fn handle_header(route: Route) -> HeaderAction {
     match route {
         Route::Other => HeaderAction::Silence,

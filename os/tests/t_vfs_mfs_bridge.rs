@@ -1,28 +1,31 @@
-//! VFS↔MFS 跨包桥 v0 —— LOOKUP 单段探针(四层真代码)。
+//! VFS↔MFS cross-package bridge v0 — a single-segment LOOKUP probe (four real layers).
 //!
-//! # 链路
+//! # Chain
 //!
-//! 用户侧 `minix_sys::vfs::open_via`(C libc open 的 Rust 对位)发出 open
-//! 请求 → `VfsState::run_once` 走真主循环:路径解析、worker 绑定、grant
-//! 登记(路径 grant 指向**真实宿主地址**)→ `pending_fs` 挂起 LOOKUP 请求
-//! → 桥(`task::run` + 本文件 [`Bridge`])用 fs-rt 的 `decode_body` 解码、
-//! `task::dispatch` 驱动**真 MfsServer 真盘**、`encode_reply` 编回 →
-//! `handle_fs_reply` 落地 → open 本地完成,应答用户。
+//! The user side's `minix_sys::vfs::open_via` (the Rust counterpart of C libc open)
+//! issues an open request → `VfsState::run_once` runs the real main loop: path
+//! resolution, worker binding, grant registration (the path grant points at a **real
+//! host address**) → `pending_fs` suspends a LOOKUP request → the bridge (`task::run` +
+//! this file's [`Bridge`]) decodes with fs-rt's `decode_body`, `task::dispatch` drives
+//! **a real MfsServer on a real disk**, `encode_reply` encodes back → `handle_fs_reply`
+//! lands it → open completes locally and answers the user.
 //!
-//! # 定案(桥的两项设计)
+//! # Rulings (the bridge's two design points)
 //!
-//! 1. **grant 宿主模型 = 真地址直读**:VFS 的 `GrantTable` 登记本就持有
-//!    真实宿主地址(worker scratch、用户缓冲),桥经 `GrantTable::probe`
-//!    (内核视角读取,`minix-sys`)取窗后按裸指针直读直写——与 VFS 自身
-//!    宿主模型及 mib_sysctl 裸指针回放判例一致。
-//! 2. **请求映射 = FS_BASE 偏移**:VFS `REQ_*` 与 fs-rt `RequestNumber`
-//!    同源(C `vfsif.h` 索引),`m_type - FS_BASE` 即表索引。
+//! 1. **Grant host model = direct reads of real addresses**: VFS's `GrantTable`
+//!    registration already holds real host addresses (worker scratch, user buffers); the
+//!    bridge takes the window through `GrantTable::probe` (a kernel-view read,
+//!    `minix-sys`) and reads/writes through the bare pointer — consistent with VFS's own
+//!    host model and the mib_sysctl bare-pointer replay case.
+//! 2. **Request mapping = FS_BASE offset**: VFS `REQ_*` and fs-rt `RequestNumber` share
+//!    one origin (the C `vfsif.h` index), and `m_type - FS_BASE` is the table index.
 //!
-//! # 覆盖边界
+//! # Coverage boundary
 //!
-//! 本探针覆盖 LOOKUP 一段;open 的数据面(读写)、非路径请求(ReadSuper
-//! 等)随后续段铺开。用户 sendrec 的回程在探针里以 EIO 失败收场——真实
-//! 应答落在 `VfsState` 的回复队列,断言以它为准。
+//! This probe covers the LOOKUP segment; the data plane of open (read/write) and
+//! non-path requests (ReadSuper and the like) are laid out in later segments. The user
+//! sendrec round trip ends in failure with EIO in the probe — the real answer lands in
+//! `VfsState`'s reply queue, and assertions use that.
 
 use minix_fs::driver::{FsDriver, Server as TaskServer};
 use minix_fs::protocol::{MountFlags, RequestNumber};
@@ -44,10 +47,11 @@ const BLOCK_SIZE: usize = 4096;
 const ROOT: u64 = 1;
 
 const MFS_EP: Endpoint = Endpoint::MFS;
-const USER_EP: Endpoint = Endpoint::from_generation_slot(2, 0); // slot 0 = 种子进程槽
+const USER_EP: Endpoint = Endpoint::from_generation_slot(2, 0); // slot 0 = the seeded process slot
 
 // ---------------------------------------------------------------------------
-// 桥的 grant 通道:内核视角取窗,真地址直读直写
+// The bridge's grant channel: take the window from the kernel view, read and write
+// real addresses directly
 // ---------------------------------------------------------------------------
 
 struct BridgeIpc<'a> {
@@ -62,7 +66,7 @@ impl RtIpc for BridgeIpc<'_> {
         _on_signal: &mut dyn FnMut(i32),
         _cancel: &minix_sef::SefCancel,
     ) -> Result<minix_fs_rt::ipc::Receipt, i32> {
-        Err(minix_types::EIO) // 桥不走 SEF 接收半(请求由 VFS 侧喂入)，也就没有信号号可交
+        Err(minix_types::EIO) // the bridge does not use the SEF receive half (requests are fed in by the VFS side), so there is no signal number to return
     }
     fn send(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), i32> {
         Ok(())
@@ -81,10 +85,10 @@ impl RtIpc for BridgeIpc<'_> {
             .ok_or(minix_types::EINVAL)?
             > len
         {
-            return Err(minix_types::EINVAL); // 越出授权窗:C 内核同判
+            return Err(minix_types::EINVAL); // beyond the grant window: the C kernel rules the same
         }
-        // SAFETY: 窗口地址由 VFS 的 grant 登记持有(真实宿主内存),
-        // 边界经上方检查对齐授权长度。
+        // SAFETY: the window address is held by VFS's grant registration (real host
+        // memory), and the bounds were checked against the grant length above.
         unsafe {
             buf.copy_from_slice(core::slice::from_raw_parts(
                 (start + offset) as *const u8,
@@ -112,7 +116,7 @@ impl RtIpc for BridgeIpc<'_> {
         {
             return Err(minix_types::EINVAL);
         }
-        // SAFETY: 同 copy_from,写半。
+        // SAFETY: same as copy_from, write half.
         unsafe {
             core::slice::from_raw_parts_mut((start + offset) as *mut u8, bytes.len())
                 .copy_from_slice(bytes);
@@ -122,7 +126,7 @@ impl RtIpc for BridgeIpc<'_> {
 }
 
 // ---------------------------------------------------------------------------
-// 桥:VFS pending_fs ↔ task::run 的双向缝
+// The bridge: the two-way seam between VFS pending_fs and task::run
 // ---------------------------------------------------------------------------
 
 struct Bridge<'a> {
@@ -134,18 +138,19 @@ struct Bridge<'a> {
 
 impl TaskTransport for Bridge<'_> {
     fn receive(&mut self) -> Incoming {
-        // 先捕获臂登记的请求( flush 会消费 pending ),再走发送半。
+        // Capture the request registered by the arm first (flush consumes pending), then run the send half.
         let Some((raw_req, worker)) = self
             .state
             .pending_fs
             .as_ref()
             .map(|p| (p.req.clone(), p.worker))
         else {
-            return Incoming::Cancelled; // 挂起清空:syscall 已走完
+            return Incoming::Cancelled; // suspended state cleared: the syscall has already finished
         };
         self.state.flush_pending_fs(self.blocking);
-        // 复现生产发送半的 transid 盖章(fs_sendrec 经 TransId::add 把
-        // worker slot 编入 m_type 高 16 位,com.h:909-911)——线上形态。
+        // Reproduce the transid stamping of the production send half (fs_sendrec encodes
+        // the worker slot into the top 16 bits of m_type via TransId::add, com.h:909-911)
+        // — the wire shape.
         let mut wire = raw_req;
         wire.m_type = minix_vfs::fs_comm::TransId::add(wire.m_type as u32, worker as usize) as i32;
         let envelope = Envelope {
@@ -173,28 +178,28 @@ impl TaskTransport for Bridge<'_> {
     fn reply(&mut self, _to: i32, reply: minix_fs::task::FsReply) {
         let rn = self.last_rn.expect("reply 前必有请求");
         let mut msg = encode_reply(rn, &reply);
-        // 内核在送达时为应答盖章来源(VFS 按来源找 vmnt,C main.c:191)。
+        // The kernel stamps the source on the reply when delivering it (VFS finds the vmnt by source, C main.c:191).
         msg.m_source = MFS_EP;
         self.state
             .handle_fs_reply(&msg, &VfsTransIdCodec)
             .expect("VFS 接受桥回灌的 FS 应答");
-        // 续接推进:lookup 回复驱动 walk/open 收尾,可能登记下一个请求。
+        // Continuation progress: the lookup reply drives walk/open to completion and may register the next request.
         self.state.run_worker_continuations();
     }
 
     fn copy_in(&mut self, _offset: usize, _out: &mut [u8]) -> Result<(), minix_types::Errno> {
-        Err(minix_types::Errno::from_i32(minix_types::ENOSYS)) // LOOKUP 无数据面
+        Err(minix_types::Errno::from_i32(minix_types::ENOSYS)) // LOOKUP has no data plane
     }
     fn copy_out(&mut self, _offset: usize, _bytes: &[u8]) -> Result<(), minix_types::Errno> {
-        Ok(()) // 桥测只验请求/回复链，数据面不落地
+        Ok(()) // the bridge test only verifies the request/reply chain; the data plane does not land
     }
 }
 
 // ---------------------------------------------------------------------------
-// 夹具:真盘 MFS + 种子好的 VfsState
+// Fixture: a real-disk MFS plus a seeded VfsState
 // ---------------------------------------------------------------------------
 
-/// 真盘 MFS:mkfs 产镜像 → ImgrdBlockSource → mount → 根下建 "hello"。
+/// Real-disk MFS: mkfs builds the image → ImgrdBlockSource → mount → create "hello" under the root.
 fn mfs_with_hello() -> (MfsServer<ImgrdBlockSource>, u64) {
     use minix_fs::protocol::CapabilityFlags;
     use minix_fs_mfs::mkfs::{build_image, plan_layout};
@@ -214,7 +219,7 @@ fn mfs_with_hello() -> (MfsServer<ImgrdBlockSource>, u64) {
     (server, hello.inode_number)
 }
 
-/// 种子 VfsState:vmnt 一行、根 vnode、用户进程槽、grant 热身。
+/// Seeded VfsState: one vmnt row, the root vnode, a user process slot, and a grant warm-up.
 fn seeded_state() -> VfsState {
     let mut state = VfsState::new();
     state.initialized = true;
@@ -243,8 +248,9 @@ fn seeded_state() -> VfsState {
         row.fs = MFS_EP;
         row.dev = DEVICE;
     }
-    // grant 热身:宿主构建下表增长后的首次登记失败(freelist 已铺好),
-    // 第二次起成功——与 crate 内 seed_ready_state 的判例一致。
+    // Grant warm-up: under a host build the first registration after the table grows
+    // fails (the freelist is already laid out) and the second succeeds — consistent with
+    // the crate's seed_ready_state case.
     loop {
         match state.grants.grant_direct(
             &minix_sys::syscall::DirectKernelCallTransport,
@@ -254,7 +260,7 @@ fn seeded_state() -> VfsState {
             minix_types::CpFlags::READ,
         ) {
             Ok(g) => {
-                // [SD19-gate] 测试夹内撤销授权：尽力而为，失败由后续断言体现
+                // [SD19-gate] revoke the grant inside the test fixture: best effort; a failure shows up in later assertions
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = state.grants.revoke(g);
                 break;
@@ -266,7 +272,7 @@ fn seeded_state() -> VfsState {
 }
 
 // ---------------------------------------------------------------------------
-// 探针
+// Probe
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -274,23 +280,23 @@ fn lookup_bridge_resolves_open() {
     let (mfs, hello_ino) = mfs_with_hello();
     let mut state = seeded_state();
 
-    // 用户侧真请求:minix_sys open 包装发出,路径 grant 指向真实缓冲。
+    // A real request from the user side: the minix_sys open wrapper issues it, with the path grant pointing at a real buffer.
     let mut path = b"hello\0".to_vec();
     let mut canned = CannedTransport::new();
     canned.reply_sendrec(Err(minix_sys::ipc::TrapStatus(minix_types::EIO)));
     let _ = open_via(&canned, path.as_ptr() as u64, path.len(), 0, 0);
     let (_src, mut req) = canned.sent.borrow()[0].clone();
-    // 内核在送达时盖章 m_source;探针以 USER_EP 充当内核章。
+    // The kernel stamps m_source on delivery; the probe uses USER_EP as the kernel stamp.
     req.m_source = USER_EP;
 
-    // VFS 真主循环:open 挂起在 LOOKUP。
+    // The real VFS main loop: open suspends on LOOKUP.
     let route = state.run_once(&req, &VfsTransIdCodec);
     assert!(
         state.pending_fs.is_some(),
         "open 应挂起在 LOOKUP 请求上(route={route:?})"
     );
 
-    // 桥驱动真 MfsServer:外层循环"发送半→task::run→续接",直到 open 完成。
+    // The bridge drives the real MfsServer: the outer loop is "send half → task::run → continuation" until open completes.
     let mut task_server = TaskServer::new(mfs);
     task_server.did_mount(
         DEVICE,
@@ -321,11 +327,11 @@ fn lookup_bridge_resolves_open() {
     assert!(rounds >= 1, "桥至少服务一轮 LOOKUP");
     assert!(state.pending_fs.is_none(), "桥循环后不得残留未服务请求");
 
-    // open 本地完成:应答用户 OK + fd;hello 的 vnode 已入表。
+    // open completes locally: answer the user OK + fd; hello's vnode is in the table.
     let (target, reply) = state.take_reply().expect("open 应有用户应答");
     assert_eq!(target, USER_EP);
     assert_eq!(reply.m_type, minix_types::OK, "open 成功");
-    // SAFETY(test): fd 在回复载荷首字(mess_vfs_lc_open 的 fd 车道)。
+    // SAFETY(test): fd is the first word of the reply payload (the fd lane of mess_vfs_lc_open).
     let fd = unsafe { i32::from_le_bytes(reply.m_u.raw[0..4].try_into().unwrap()) };
     assert!(fd >= 0, "回复载荷带非负 fd,得 {fd}");
 

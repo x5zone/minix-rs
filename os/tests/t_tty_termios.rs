@@ -1,29 +1,35 @@
-//! minix3/minix/tests Rust 腿翻译 —— 终端域(test74/77 的可钉面)。
+//! Rust-leg translation of minix3/minix/tests — the terminal domain (the
+//! pinnable surface of test74/77).
 //!
-//! # 翻译映射
+//! # Translation mapping
 //!
-//! C test77(termios/pty/setsid)与 test74(ioctl/select/mmap)的主体需要
-//! tty/pty 服务器与真实终端设备;本文件钉**当前已存在的契约面**:
-//! termios 记录的字节布局(ioctl 一次搬运的 44 字节块,C `termios.h:192-200`)
-//! 与 tty ioctl 请求号(C `ttycom.h:88-89` 的 `_IOR/_IOW` 展开)。pty 会话、
-//! setsid 与终端挂起唤醒链挂 tty 服务器点亮后的后续条目。
+//! The bulk of C test77 (termios/pty/setsid) and test74 (ioctl/select/mmap)
+//! needs the tty/pty servers and real terminal devices; this file pins the
+//! **contract surface that already exists**: the byte layout of the termios
+//! record (the 44-byte block an ioctl moves in one go, C `termios.h:192-200`)
+//! and the tty ioctl request numbers (the `_IOR/_IOW` expansions of C
+//! `ttycom.h:88-89`). The pty session, setsid, and terminal
+//! suspend/wakeup chain are follow-up entries for after the tty server is
+//! brought up.
 //!
-//! | C 测试 | 语义归宿 |
+//! | C test | Semantic home |
 //! |---|---|
-//! | test77(termios 记录搬运) | [`termios_byte_layout_roundtrip_preserves_record`] |
-//! | test77(ioctl 请求号 ABI) | [`tty_ioctl_request_numbers_match_c_ttycom`] |
-//! | test77(pty 会话/setsid)、test74(设备 select/mmap) | 边界外,挂 tty 面点亮后补 |
+//! | test77 (termios record transfer) | [`termios_byte_layout_roundtrip_preserves_record`] |
+//! | test77 (ioctl request-number ABI) | [`tty_ioctl_request_numbers_match_c_ttycom`] |
+//! | test77 (pty session/setsid), test74 (device select/mmap) | Out of scope; follow-up once the tty surface is brought up |
 //!
-//! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
+//! Delivery gate = compilation; every test is `#[ignore]`d, and the
+//! precondition for enabling each one is given in its attribute.
 
 use minix_sys::{TIOCGETA, TIOCSETA};
 
 // ---------------------------------------------------------------------------
-// test77 —— termios 记录字节布局
+// test77 — termios record byte layout
 // ---------------------------------------------------------------------------
 
-/// C 语义(`termios.h:192-200` 的内存序序列化):termios 记录整体以
-/// 44 字节块搬运(ioctl 参数),序列化-反序列化后七个字段逐项还原。
+/// C semantics (in-memory-order serialization, `termios.h:192-200`): the
+/// termios record travels as one 44-byte block (the ioctl argument), and
+/// serialization followed by deserialization restores all seven fields.
 #[test]
 #[ignore = "点亮前提:tty 服务器 ioctl 面随载体点亮后端到端复核"]
 fn termios_byte_layout_roundtrip_preserves_record() {
@@ -58,30 +64,33 @@ fn termios_byte_layout_roundtrip_preserves_record() {
 }
 
 // ---------------------------------------------------------------------------
-// test77 —— tty ioctl 请求号 ABI
+// test77 — tty ioctl request-number ABI
 // ---------------------------------------------------------------------------
 
-/// C 语义(`ttycom.h:88-89`):TIOCGETA = `_IOR('t', 19, struct termios)`
-/// = IOC_OUT(0x4000_0000) | 44 字节参数 | 组 't' | 序号 19;TIOCSETA 同型
-/// 置 IOC_IN(0x8000_0000)、序号 20。请求号是用户态与 tty 服务器的共享
-/// ABI,逐字节钉死。
+/// C semantics (`ttycom.h:88-89`): TIOCGETA = `_IOR('t', 19, struct
+/// termios)` = IOC_OUT(0x4000_0000) | 44-byte argument | group 't' | number
+/// 19; TIOCSETA uses the same form with IOC_IN(0x8000_0000) and number 20.
+/// The request numbers are the shared ABI between userland and the tty
+/// server, pinned byte by byte.
 #[test]
 #[ignore = "点亮前提:tty 服务器 ioctl 面随载体点亮后端到端复核"]
 fn tty_ioctl_request_numbers_match_c_ttycom() {
-    // _IOR('t', 19, 44 字节):方向出(0x4000_0000)、长度 44(<<16)、
-    // 组码 't'(0x74)、序号 19(0x13)。
+    // _IOR('t', 19, 44 bytes): direction out (0x4000_0000), length 44
+    // (<<16), group code 't' (0x74), number 19 (0x13).
     assert_eq!(
         TIOCGETA,
         0x4000_0000 | (44 << 16) | (0x74 << 8) | 19,
         "TIOCGETA 逐位对账 C ttycom.h:88"
     );
-    // _IOW('t', 20, 44 字节):方向入(0x8000_0000)、序号 20(0x14)。
+    // _IOW('t', 20, 44 bytes): direction in (0x8000_0000), number 20
+    // (0x14).
     assert_eq!(
         TIOCSETA,
         0x8000_0000 | (44 << 16) | (0x74 << 8) | 20,
         "TIOCSETA 逐位对账 C ttycom.h:89"
     );
-    // 方向位互斥:GETA 带出方向,SETA 带入方向。
+    // The direction bits are mutually exclusive: GETA carries out-direction,
+    // SETA carries in-direction.
     assert_eq!(TIOCGETA & 0xC000_0000, 0x4000_0000);
     assert_eq!(TIOCSETA & 0xC000_0000, 0x8000_0000);
 }

@@ -1,41 +1,61 @@
 //! End-to-end face for the `tr` binary, checked against
-//! `minix3/usr.bin/tr/tr.c`（选项环 `:68`、`case '?': default: usage();` `:79-81`、
-//! 个数判 `:86-97`、`-ds` 要 string2 `:104-106`、`-d` 不许 string2 `:123-125`、
-//! 单集合挤压 `:139-140`、翻译路径要两个集合 `:156-157`、`empty string2` `:187-188`、
-//! `usage()` `:276-282`）与它驱动的 libc `getopt`（`minix3/lib/libc/stdlib/getopt.c:74-78`、
-//! `:80-85`、`:86-93`、`:94-95`、`:98-106`）。
+//! `minix3/usr.bin/tr/tr.c` (the option loop `:68`, `case '?': default:
+//! usage();` `:79-81`, the arity checks `:86-97`, `-ds` requiring string2
+//! `:104-106`, `-d` forbidding string2 `:123-125`, single-set squeeze
+//! `:139-140`, the translation path requiring two sets `:156-157`,
+//! `empty string2` `:187-188`, `usage()` `:276-282`) and the libc `getopt` it
+//! drives (`minix3/lib/libc/stdlib/getopt.c:74-78`, `:80-85`, `:86-93`,
+//! `:94-95`, `:98-106`).
 //!
-//! 下面每一条期望值都是从参照件 `tmp/tr-322/tr_ref` 现量出来的，逐形对账表在
-//! `tmp/tr-322/ab322.log`（SAME=62 / DIFF=3，三形全属已登记的 `TR-SET-GRAMMAR-SENTENCES`）。
-//! 量出来的形状有六条：
-//! ① optstring `"cds"` 三个字母**都不带值**，libc 的「option requires an argument」在本支不可达；
-//!    而 `:79-81` 把 `?` 与 `default` 直接送进 `usage()`，环当场退出 ⇒ 集外字母**只有一行**
-//!    libc（`-ZQ` 只报 `Z`、`-Q -Z a` 只报 `Q`），与 `seq` 的逐字母累加相反（`jot` 也走这一支形状）。
-//! ② `--s a` 报的字母是 `-`：`getopt.c:79` 取的是短横后的第一个字节，`:80-85` 只把**恰好**
-//!    两横认作结束标记，第三字节非空就往下走，`:98` 在 `"cds"` 里找不到 `-` ⇒ `unknown option -- -`。
-//! ③ 裸 `-` 不是选项也不是操作数游标的一部分：`:86-93` 让 `-` 留在操作数里，
-//!    于是 `tr - a` 是把 `-` 换成 `a`，`tr - -` 原样输出。
-//! ④ usage 那四行的程序名写死在串里（`:278-281`），libc 那一行的名字却跟着 `argv[0]`
-//!    （`getopt.c:103` 的 `getprogname()`）——同一支命令里两行来历不同，下面
-//!    `the_libc_line_follows_argv_zero_but_the_block_is_hardwired` 就是钉这一条。
-//! ⑤ `empty string2` 只在翻译路径上出现且**不接** usage（`:187-188`），
-//!    `-d ''` 与 `-ds a ''` 都不触发它。
-//! ⑥ 本支没有读写操作数档的腿（数据只从标准输入来），所以「薄壳裸 `read` 宿主读不到输入」
-//!    那一家族停在 `paste` 的十一处。
+//! Every expected value below was measured from the reference binary
+//! `tmp/tr-322/tr_ref`; the shape-by-shape reconciliation table is in
+//! `tmp/tr-322/ab322.log` (SAME=62 / DIFF=3, the three shapes all registered as
+//! `TR-SET-GRAMMAR-SENTENCES`). Six shapes were measured:
+//! 1. The optstring `"cds"` has **no letter taking a value**, so libc's
+//!    "option requires an argument" is unreachable on this side; and `:79-81`
+//!    sends `?` and `default` straight into `usage()`, exiting the loop on the
+//!    spot ⇒ an unknown letter produces **one line** only of libc text (`-ZQ`
+//!    reports only `Z`, `-Q -Z a` only `Q`), unlike `seq`'s per-letter
+//!    accumulation (`jot` takes this same shape).
+//! 2. `--s a` reports the letter `-`: `getopt.c:79` takes the first byte after
+//!    the dash, `:80-85` recognizes as the terminator **exactly** two dashes,
+//!    so a non-empty third byte keeps the walk going, and `:98` finds no `-` in
+//!    `"cds"` ⇒ `unknown option -- -`.
+//! 3. A bare `-` is neither an option nor part of the operand cursor: `:86-93`
+//!    leaves `-` among the operands, so `tr - a` maps `-` to `a`, and `tr - -`
+//!    copies its input through.
+//! 4. The four usage lines hardcode the program name in the string
+//!    (`:278-281`), while the libc line's name follows `argv[0]`
+//!    (`getprogname()` at `getopt.c:103`) — two lines of different origin in
+//!    one command, which
+//!    `the_libc_line_follows_argv_zero_but_the_block_is_hardwired` pins.
+//! 5. `empty string2` appears only on the translation path and is **not**
+//!    followed by usage (`:187-188`); neither `-d ''` nor `-ds a ''` triggers
+//!    it.
+//! 6. This side has no read/write-operand leg (data comes only from standard
+//!    input), so the "thin shell's bare `read` cannot read input on the host"
+//!    family stops at `paste`'s eleven sites.
 //!
-//! 集合语法的六句报文在本壳都已接上（`str.c` 的 `genclass()`、`genseq()`、`genequiv()`），
-//! 期望值取自参照件现量：`tr_ref '[x*3]' y` 与 `tr_ref '[ab*2]' y` 都是
-//! `Sequences only valid in string2`、`tr_ref abc '[ab*2]'` 是 `Misplaced sequence asterisk`、
-//! `tr_ref abc '[x*1a]'` 是 `illegal sequence count`、`tr_ref [:bogus:] y` 是
-//! `unknown class bogus`、`tr_ref '[=ab=]' y` 是 `Misplaced equivalence equals sign`、
-//! `tr_ref '[=a=b=]' y` 是 `Misplaced equivalence right bracket`，全部退 1 且
-//! **不跟** usage 块。同一轮里 `bracket()`（`str.c:176-210`）的判据也一并照抄：`[x]`、
-//! `[:alpha`、`[x`、`[x]y*` 这些「没成形」的式子在参照件里是**字面量**且退 0。
-//! `tr.c` 的 OOBCH 腿（批次三百九十，登记名 `TR-EQUIV-OOBCH-SET2`）现在也接上了：
-//! string2 以一枚集合类（`[:alpha:]`/`[=c=]`）收尾时，耗尽之后重复的是 `OOBCH`（256），
-//! 经 `putchar` 截成 `\0`；以普通字符、区间或 `[x*n]` 收尾时才重复末字节。
-//! `-s` 那一腿另有一条：C 在**同一趟**里映射并挤压（`tr.c:240-246`），判据在 `int` 域上，
-//! 所以两枚相邻的 OOBCH-NUL 会挤成一枚，而输入里本来就有的 NUL 不参与挤压。
+//! The six set-grammar sentences are all wired in this shell (`genclass()`,
+//! `genseq()`, `genequiv()` in `str.c`); expected values come from measurements
+//! of the reference: `tr_ref '[x*3]' y` and `tr_ref '[ab*2]' y` both print
+//! `Sequences only valid in string2`, `tr_ref abc '[ab*2]'` prints `Misplaced
+//! sequence asterisk`, `tr_ref abc '[x*1a]'` prints `illegal sequence count`,
+//! `tr_ref [:bogus:] y` prints `unknown class bogus`, `tr_ref '[=ab=]' y` prints
+//! `Misplaced equivalence equals sign`, and `tr_ref '[=a=b=]' y` prints
+//! `Misplaced equivalence right bracket`; all exit 1 and are **not** followed
+//! by the usage block. The same round copied `bracket()`'s criteria too
+//! (`str.c:176-210`): the "not formed" expressions `[x]`, `[:alpha`, `[x`,
+//! `[x]y*` are **literals** in the reference and exit 0.
+//! `tr.c`'s OOBCH leg (registered as `TR-EQUIV-OOBCH-SET2`) is now wired as
+//! well: when string2 ends in a character class (`[:alpha:]`/`[=c=]`), what
+//! repeats after exhaustion is `OOBCH` (256), truncated to `\0` by `putchar`;
+//! only when it ends in an ordinary character, a range, or `[x*n]` does the
+//! last byte repeat.
+//! The `-s` leg has one more rule: C maps and squeezes in **one pass**
+//! (`tr.c:240-246`) with the criterion in the `int` domain, so two adjacent
+//! OOBCH-NULs squeeze into one, while a NUL already present in the input takes
+//! no part in squeezing.
 
 mod face_support;
 
@@ -44,7 +64,8 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
 const TR: &str = env!("CARGO_BIN_EXE_tr");
-/// `tr.c:276-282`：整块四行，后三行七个空格对齐，程序名写死为 `tr`。
+/// `tr.c:276-282`: the whole four-line block, the last three lines aligned with
+/// seven spaces, the program name hardcoded as `tr`.
 const USAGE: &str = concat!(
     "usage: tr [-cs] string1 string2\n",
     "       tr [-c] -d string1\n",
@@ -69,8 +90,9 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
-/// 逐字节比 stderr 的夹具：这一族要钉的是「字母位是一个裸字节」，而
-/// `String::from_utf8_lossy` 会把裸 `c3` 与 `c3 83` 都读成替换字符。
+/// A fixture that compares stderr byte by byte: this family must pin "the
+/// letter slot is one bare byte", and `String::from_utf8_lossy` reads both a
+/// bare `c3` and `c3 83` as the replacement character.
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(TR)
         .args(args)
@@ -88,11 +110,13 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/tr-322/tr` 现量
-/// `tr -é a b` 与 `tr -cé a b` 都打 `tr: unknown option -- ` + `c3` + 换行，
-/// 再跟那块四行 usage、退 1（`tr.c:79-81` 的 `default: usage()`）。`c` 是合法字母，
-/// 所以聚簇会继续走到 `é` 的第一个字节。ASCII 的 `-Z`、`-dZ` 两形同时钉住：
-/// 换渲染不许改动它们，也不许把 usage 那块挤掉。
+/// The letter slot of the unknown-letter line is **one bare byte**: the
+/// reference measured both `tr -é a b` and `tr -cé a b` printing
+/// `tr: unknown option -- ` + `c3` + newline, then the four-line usage block,
+/// status 1 (the `default: usage()` at `tr.c:79-81`). `c` is a valid letter, so
+/// the cluster keeps walking to the first byte of `é`. The ASCII shapes `-Z`
+/// and `-dZ` are pinned at the same time: a change of rendering must not alter
+/// them, nor squeeze out the usage block.
 #[test]
 fn an_off_letter_of_a_multibyte_flag_prints_one_raw_byte() {
     let want: Vec<u8> = [
@@ -119,7 +143,8 @@ fn an_off_letter_of_a_multibyte_flag_prints_one_raw_byte() {
 
 #[test]
 fn usage_block_is_four_lines_on_stderr() {
-    // 参照件对旗标自身无操作数的每一形都只退这块：rc=1、标准输出空、stderr 恰是四行
+    // For every shape where the flags alone have no operands, the reference
+    // exits with just this block: rc=1, empty stdout, stderr exactly four lines
     for args in [
         &[] as &[&str],
         &["-"],
@@ -141,20 +166,21 @@ fn usage_block_is_four_lines_on_stderr() {
 
 #[test]
 fn operand_count_and_combination_all_say_usage_alone() {
-    // 个数判 `:86-97` 与两处组合判 `:104-106`、`:123-125` 全在环**之外**，
-    // 所以这些形只有 usage，没有 libc 那一行
+    // The arity checks `:86-97` and the two combination checks `:104-106`,
+    // `:123-125` all sit **outside** the loop, so these shapes get only usage,
+    // without the libc line
     for args in [
-        &["a", "b", "c"][..],      // 三个操作数
-        &["a", "b", "c", "d"][..], // 四个
-        &["--", "a"][..],          // `--` 吃掉后只剩一个
-        &["a", "-", "b"][..],      // 环在 `a` 就收，`-` 是第二个操作数 ⇒ 三个
-        &["a", "b", "-c"][..],     // 不重排：`-c` 也是操作数
-        &["-d", "a", "b"][..],     // `-d` 多给一个（`:123-125`）
-        &["-dc", "a", "b"][..],    // 同上，聚簇顺序无关
+        &["a", "b", "c"][..],      // three operands
+        &["a", "b", "c", "d"][..], // four
+        &["--", "a"][..],          // after `--` is consumed only one remains
+        &["a", "-", "b"][..],      // the loop stops at `a`, so `-` is the second operand ⇒ three
+        &["a", "b", "-c"][..],     // no reordering: `-c` is an operand too
+        &["-d", "a", "b"][..],     // `-d` with one operand too many (`:123-125`)
+        &["-dc", "a", "b"][..],    // same, cluster order irrelevant
         &["-cd", "a", "b"][..],
-        &["-ds", "a"][..],      // `-ds` 少给一个（`:104-106`）
-        &["-s", "-d", "a"][..], // 跨 token 的 -s 与 -d 合成 `-ds`，仍少一个
-        &["-c", "a"][..],       // 无 -d/-s 时一个操作数不够
+        &["-ds", "a"][..],      // `-ds` with one operand too few (`:104-106`)
+        &["-s", "-d", "a"][..], // a cross-token -s and -d combine into `-ds`, still one short
+        &["-c", "a"][..],       // without -d/-s a single operand is not enough
     ] {
         let (out, code, err) = run(args, b"aabbcc\n");
         assert_eq!(code, 1, "{args:?}");
@@ -165,7 +191,8 @@ fn operand_count_and_combination_all_say_usage_alone() {
 
 #[test]
 fn off_letter_gets_one_libc_line_then_the_block() {
-    // `:79-81` 在环里就退出 ⇒ 报文不累加：`-ZQ` 只报 Z，`-Q -Z a` 只报 Q
+    // `:79-81` exits inside the loop ⇒ reports do not accumulate: `-ZQ` reports
+    // only Z, `-Q -Z a` only Q
     for (args, letter) in [
         (vec!["-Z"], "Z"),
         (vec!["-h"], "h"),
@@ -183,7 +210,8 @@ fn off_letter_gets_one_libc_line_then_the_block() {
             "{args:?} 一行 libc 必须在整块 usage 之前"
         );
     }
-    // `--s a` 报的字母是短横本身：第三字节 `s` 让它不被认作结束标记
+    // `--s a` reports the dash itself: the third byte `s` keeps it from being
+    // read as the terminator
     let (out, code, err) = run(&["--s", "a"], b"aabbcc\n");
     assert_eq!((code, out.as_str()), (1, ""));
     assert_eq!(err, format!("tr: unknown option -- -\n{USAGE}"));
@@ -191,9 +219,10 @@ fn off_letter_gets_one_libc_line_then_the_block() {
 
 #[test]
 fn the_libc_line_follows_argv_zero_but_the_block_is_hardwired() {
-    // `getopt.c:103` 用 `getprogname()`，`tr.c:278-281` 把 `tr` 写死在串里。
-    // 参照件现量：argv[0]="trsweep" 报 `trsweep:`，argv[0]="/some/dir/tr" 报过 basename 的 `tr:`，
-    // 两种情况下那四行都一字不变
+    // `getopt.c:103` uses `getprogname()`, while `tr.c:278-281` hardcodes `tr`
+    // in the string. Reference measurements: argv[0]="trsweep" reports
+    // `trsweep:`, argv[0]="/some/dir/tr" reports `tr:` after the basename, and
+    // the four lines stay identical in both cases
     for argv0 in ["trsweep", "/some/dir/tr"] {
         let mut child = Command::new(TR)
             .arg0(argv0)
@@ -219,7 +248,8 @@ fn the_libc_line_follows_argv_zero_but_the_block_is_hardwired() {
 
 #[test]
 fn flag_cluster_is_per_letter_and_order_free() {
-    // 同一组旗标不论聚簇还是分词、不论顺序，落点一致
+    // The same flag set lands identically whether clustered or split, in any
+    // order
     for args in [
         vec!["-c", "-s", "a", "b"],
         vec!["-sc", "a", "b"],
@@ -227,11 +257,13 @@ fn flag_cluster_is_per_letter_and_order_free() {
     ] {
         let (out, code, err) = run(&args, b"aabbcc\n");
         assert_eq!((code, err), (0, String::new()), "{args:?}");
-        // 挤压集取的是 string2，取补后的 string1 把余下全映射成 `b`，
-        // 于是换行也被挤掉：参照件给出 `aab`，末尾没有换行
+        // The squeeze set is string2; the complemented string1 maps everything
+        // else to `b`, so the newline is squeezed out too: the reference gives
+        // `aab` with no trailing newline
         assert_eq!(out, "aab", "{args:?}");
     }
-    // `-s -d a b` 与 `-ds a b` 同形；`-ds ab b` 删掉 a、b 再按 string2 挤压
+    // `-s -d a b` and `-ds a b` are the same shape; `-ds ab b` deletes a and b,
+    // then squeezes by string2
     for (args, want) in [
         (vec!["-s", "-d", "a", "b"], "bcc\n"),
         (vec!["-ds", "a", "b"], "bcc\n"),
@@ -263,11 +295,12 @@ fn delete_squeeze_and_complement_shapes_are_the_measured_ones() {
 
 #[test]
 fn empty_string2_sentence_has_no_usage_block() {
-    // `:187-188` 的 `errx`：一行、退 1、**不接** usage
+    // `:187-188`'s `errx`: one line, status 1, **no** usage after it
     let (out, code, err) = run(&["a", ""], b"abc\n");
     assert_eq!((code, out), (1, String::new()));
     assert_eq!(err, "tr: empty string2\n");
-    // 同一条判据不在删除与挤压路径上：空集合都合法
+    // The same criterion is absent from the delete and squeeze paths: empty
+    // sets are legal
     for (args, want) in [
         (vec!["-d", ""], "aabbcc\n"),
         (vec!["-ds", "a", ""], "bbcc\n"),
@@ -280,14 +313,15 @@ fn empty_string2_sentence_has_no_usage_block() {
 
 #[test]
 fn the_ring_does_not_reorder_operands() {
-    // 裸 `-` 留在操作数里：`tr - a` 把 `-` 换成 `a`，`tr - -` 原样
+    // A bare `-` stays among the operands: `tr - a` maps `-` to `a`, `tr - -`
+    // copies its input through
     let (out, code, err) = run(&["-", "a"], b"a-b\n");
     assert_eq!((code, err), (0, String::new()));
     assert_eq!(out, "aab\n");
     let (out, code, err) = run(&["-", "-"], b"a-b\n");
     assert_eq!((code, err), (0, String::new()));
     assert_eq!(out, "a-b\n");
-    // `--` 吃掉自身：`tr -- a b` 与 `tr a b` 同形
+    // `--` consumes itself: `tr -- a b` has the same shape as `tr a b`
     let (out, code, err) = run(&["--", "a", "b"], b"aabbcc\n");
     assert_eq!((code, err), (0, String::new()));
     assert_eq!(out, "bbbbcc\n");
@@ -309,15 +343,17 @@ fn translation_path_is_unchanged_by_the_shell_rewrite() {
         assert_eq!((code, err), (0, String::new()), "{args:?}");
         assert_eq!(out, want, "{args:?}");
     }
-    // 空输入是成功
+    // Empty input is success.
     let (out, code, err) = run(&["a", "b"], b"");
     assert_eq!((out, code, err), (String::new(), 0, String::new()));
 }
 
 #[test]
 fn an_empty_string1_is_the_identity_map() {
-    // `tr.c:178-181` 的恒等预填 + `:214-215` 的空集合立刻 break ⇒ 谁也没被映射过；
-    // 参照件对这四形都是退 0 且原样照抄（开工前的读数在 `tmp/tr-323/measure_before.log`）
+    // The identity prefill at `tr.c:178-181` plus the immediate break on an
+    // empty set at `:214-215` ⇒ nothing is ever mapped; the reference exits 0
+    // and copies its input through for all four shapes (the pre-work reading is
+    // in `tmp/tr-323/measure_before.log`)
     for args in [
         vec!["", "x"],
         vec!["", "b"],
@@ -328,16 +364,19 @@ fn an_empty_string1_is_the_identity_map() {
         assert_eq!((code, err), (0, String::new()), "{args:?}");
         assert_eq!(out, "aabbcc\n", "{args:?}");
     }
-    // 取补路径不受这条影响：空的 string1 取补是**全体字节**，都映射到 string2 的末字节，
-    // 于是七个输入字节全变 `x`，连结尾换行也被换掉
+    // The complement path is unaffected: complementing an empty string1 yields
+    // **all bytes**, all mapped to string2's last byte, so all seven input bytes
+    // become `x`, including the trailing newline
     let (out, code, err) = run(&["-c", "", "x"], b"aabbcc\n");
     assert_eq!((code, err), (0, String::new()));
     assert_eq!(out, "xxxxxxx");
-    // 而空 string2 仍是那一句 `errx`（`:187-188`），恒等支不会把它吞掉
+    // An empty string2 still gets that `errx` line (`:187-188`); the identity
+    // branch does not swallow it
     let (out, code, err) = run(&["", ""], b"aabbcc\n");
     assert_eq!((code, out), (1, String::new()));
     assert_eq!(err, "tr: empty string2\n");
-    // 三个操作数里带一个空串，判的还是个数（`:86-97`），恒等支管不着
+    // Three operands including an empty string still fail the arity check
+    // (`:86-97`); the identity branch has no say
     let (_, code, err) = run(&["", "x", "extra"], b"aabbcc\n");
     assert_eq!(code, 1);
     assert_eq!(err, USAGE);
@@ -345,7 +384,8 @@ fn an_empty_string1_is_the_identity_map() {
 
 #[test]
 fn the_four_set_grammar_sentences_reach_stderr_verbatim() {
-    // 参照件现量：一句、退 1、**不跟** usage 块（`str.c` 每处都是当场 errx(1, ...)）
+    // Reference measurements: one sentence, status 1, **no** usage block after
+    // it (`str.c` calls errx(1, ...) on the spot everywhere)
     for (set1, set2, want) in [
         ("[x*3]", "y", "tr: Sequences only valid in string2\n"),
         ("[ab*2]", "y", "tr: Sequences only valid in string2\n"),
@@ -364,9 +404,13 @@ fn the_four_set_grammar_sentences_reach_stderr_verbatim() {
 
 #[test]
 fn the_two_equivalence_sentences_reach_stderr_verbatim() {
-    // 参照件现量（`tmp/tr-341/measure341.log`）：这两句各一句、退 1、**不跟** usage，
-    // 且两串位同判——`bracket()` 认形式、`genequiv()` 核内部，两处都不分串位。
-    // 本支之前本壳把 `[=ab=]` 悄悄收成单枚成员 `a` 并退 0：假报「能干」比不报更贵。
+    // Reference measurements (`tmp/tr-341/measure341.log`): these two sentences
+    // are one line each, status 1, **no** usage after them, and both string
+    // positions are judged the same way — `bracket()` checks the form and
+    // `genequiv()` checks the inside, neither distinguishing the position.
+    // Before this test, this shell quietly collapsed `[=ab=]` to the single
+    // member `a` and exited 0: a false report of "handled" costs more than no
+    // report.
     for (set, want) in [
         ("[=ab=]", "tr: Misplaced equivalence equals sign\n"),
         ("[=abc=]", "tr: Misplaced equivalence equals sign\n"),
@@ -383,21 +427,24 @@ fn the_two_equivalence_sentences_reach_stderr_verbatim() {
             );
         }
     }
-    // 成形的那一枚不退化：`[=c=]` 仍是**单枚**成员 `c`、退 0（参照件现量 `abx`，
-    // 因为被换掉的是输入里的 `c` 而不是 `a`）
+    // A well-formed one does not regress: `[=c=]` is still the **single** member
+    // `c`, status 0 (the reference measured `abx`, because the replaced input
+    // byte is `c`, not `a`)
     let (out, code, err) = run(&["[=c=]", "x"], b"abc\n");
     assert_eq!((code, out.as_str(), err.as_str()), (0, "abx\n", ""));
 }
 
 #[test]
 fn an_unshaped_bracket_is_a_literal_not_a_complaint() {
-    // `bracket()` 返回假就 FALLTHROUGH 成字面 `[`（`str.c:124-132`），参照件这几形全退 0
+    // A false return from `bracket()` falls through to a literal `[`
+    // (`str.c:124-132`); the reference exits 0 for all these shapes
     let (out, code, err) = run(&["[x]", "y"], b"abc\n");
     assert_eq!((code, out.as_str(), err.as_str()), (0, "abc\n", ""));
     let (out, code, err) = run(&["abc", "[x]"], b"abc\n");
     assert_eq!((code, out.as_str(), err.as_str()), (0, "[x]\n", ""));
-    // `[:alpha` 没成形，于是 `[`、`:`、`a`、`l`、`p`、`h`、`a` 全是字面量：集合里含 `a`，
-    // `a` 被换成 `y`——参照件同形现量 `ybc\n`（见 tmp/tr-335/ab335.log）
+    // `[:alpha` is not formed, so `[`, `:`, `a`, `l`, `p`, `h`, `a` are all
+    // literals: the set contains `a`, so `a` becomes `y` — the reference
+    // measured `ybc\n` for the same shape (see tmp/tr-335/ab335.log)
     for (set, want) in [("[x", "abc\n"), ("[x]y*", "abc\n"), ("[:alpha", "ybc\n")] {
         let (out, code, err) = run(&[set, "y"], b"abc\n");
         assert_eq!((code, out.as_str(), err.as_str()), (0, want, ""), "{set:?}");
@@ -406,7 +453,8 @@ fn an_unshaped_bracket_is_a_literal_not_a_complaint() {
 
 #[test]
 fn an_open_or_zero_repeat_replaces_every_member() {
-    // `[x*]` 与 `[x*0]` 都是 INFINITE，参照件与空集合无关（空 string2 另有那句）
+    // Both `[x*]` and `[x*0]` are INFINITE; the reference has nothing to do
+    // with empty sets (an empty string2 gets its own sentence)
     for set in ["[x*]", "[x*0]"] {
         let (out, code, err) = run(&["abc", set], b"abc\n");
         assert_eq!(
@@ -419,15 +467,19 @@ fn an_open_or_zero_repeat_replaces_every_member() {
 
 #[test]
 fn a_reversed_range_is_three_literals_and_exits_zero() {
-    // 参照件 `tr_ref z-a y` 退 0：区间退回后 z、-、a 各自入集，`a` 被换成 `y`
+    // The reference exits 0 for `tr_ref z-a y`: with the range reversed, z, -,
+    // and a each enter the set, so `a` becomes `y`
     let (out, code, err) = run(&["z-a", "y"], b"abc\n");
     assert_eq!((code, out.as_str(), err.as_str()), (0, "ybc\n", ""));
 }
 
-/// string2 用尽之后补什么，C 的判据是「式子的最后一项是不是集合类」，不是「短了就重复末字节」：
-/// 名字类与等价类都把 `lastch` 顶成 `OOBCH`（`minix3/usr.bin/tr/str.c:158-166` 对 `:110-122`），
-/// `tr.c:220` 存进映射表的是 256，`putchar` 再截成 `\0`。期望值逐字取自参照件
-/// （`tmp/tr-322/tr_ref`，同一轮把八形一并量在 `tmp/tr-390/ab.log`）。
+/// What C pads with after string2 is exhausted depends on "does the expression
+/// end in a character class", not on "repeat the last byte when short": both
+/// name classes and equivalence classes set `lastch` to `OOBCH`
+/// (`minix3/usr.bin/tr/str.c:158-166` against `:110-122`), `tr.c:220` stores
+/// 256 in the map, and `putchar` truncates it to `\0`. Expected values are taken
+/// verbatim from the reference (`tmp/tr-322/tr_ref`; the same round measured all
+/// eight shapes in `tmp/tr-390/ab.log`).
 #[test]
 fn an_exhausted_character_class_pads_with_nul_bytes() {
     let (out, status, err) = run(&["abc", "[=c=]"], b"abc\n");
@@ -441,22 +493,26 @@ fn an_exhausted_character_class_pads_with_nul_bytes() {
     assert_eq!(out, "0123456789\0\0\0\0\0\0\n", "名字类同理");
     assert_eq!(status, 0);
 
-    // 集合类之后还有普通字符，就回到「重复末字节」——这是同一判据的反面。
+    // If ordinary characters follow the class, the rule returns to "repeat the
+    // last byte" — the other side of the same criterion.
     let (out, _, _) = run(&["abcdefghijklmnop", "[:digit:]x"], b"abcdefghijklmnop\n");
     assert_eq!(out, "0123456789xxxxxx\n");
     let (out, _, _) = run(&["abc", "xy"], b"abc\n");
     assert_eq!(out, "xyy\n", "普通式子仍重复末字节");
 }
 
-/// 本层原先给「集合」留了八格并让每枚成员都占一格，于是九枚字面量（`tr 'abcdefghi' 'x'`）
-/// 成了一条**不说一句话**的退 1。C 侧没有这个上限：字面量、区间、转义都只是 `lastch`
-/// 的一次赋值，只有 `[:class:]`/`[=c=]` 才进 SET 状态。参照件同形交回 `xxx` 退 0。
+/// This layer used to reserve eight SET slots with every member taking one, so
+/// nine literals (`tr 'abcdefghi' 'x'`) became a status-1 exit **with no
+/// message**. C has no such limit: literals, ranges, and escapes are all just
+/// one assignment to `lastch`, and only `[:class:]`/`[=c=]` enter the SET state.
+/// The reference returns `xxx` and exits 0 for the same shape.
 #[test]
 fn a_long_literal_set_is_translated_instead_of_vanishing_silently() {
     let (out, status, err) = run(&["abcdefghi", "x"], b"abc\n");
     assert_eq!((out.as_str(), status, err.as_str()), ("xxx\n", 0, ""));
 
-    // 26 枚区间成员本来就是 `tr a-z A-Z` 的日常形；九枚字面量不该比它更特殊。
+    // 26 range members are the everyday shape of `tr a-z A-Z`; nine literals
+    // should not be treated more specially.
     let (out, status, err) = run(&["abcdefghijklmnopqrstuvwxyz", "[=q=]"], b"abcz\n");
     assert_eq!(
         out, "q\0\0\0\n",
@@ -472,10 +528,12 @@ fn a_long_literal_set_is_translated_instead_of_vanishing_silently() {
     );
 }
 
-/// `-s` 与翻译同趟（`tr.c:240-246`），挤压判据在 `int` 域：相邻两枚 OOBCH 挤成一枚，
-/// 而输入里本来就有的 NUL 映射到自身、从没被记进「交回过」那张表，所以不挤。
-/// 四形期望值全部取自参照件（含 `ab\0c` 那形——本枚门第一版把期望写成 `c\0\0`，
-/// 参照件现量是 `c\0\0\0`，纠正过程记在 18 篇批次三百九十三）。
+/// `-s` shares the pass with translation (`tr.c:240-246`), and the squeeze
+/// criterion lives in the `int` domain: two adjacent OOBCHs squeeze into one,
+/// while a NUL already in the input maps to itself and is never recorded in the
+/// "handed back" table, so it does not squeeze. All expected values come from
+/// the reference (including the `ab\0c` shape — the first version of this test
+/// wrote `c\0\0` while the reference measures `c\0\0\0`).
 #[test]
 fn the_squeeze_leg_collapses_padded_nuls_but_not_real_ones() {
     for (input, expected) in [
@@ -483,8 +541,9 @@ fn the_squeeze_leg_collapses_padded_nuls_but_not_real_ones() {
         (&b"abbc\n"[..], "c\0\n"),
         (&b"ab\0c\n"[..], "c\0\0\0\n"),
         (&b"a\0b\0c\n"[..], "c\0\0\0\0\n"),
-        // `lastch` 的初值就是 OOBCH（`tr.c:240`），所以开头那枚 OOBCH 也被挤掉：整趟输出
-        // 只剩那一枚换行（参照件 `tr -s ab [=c=]` ← `b\n` 现量）。
+        // `lastch` starts out as OOBCH (`tr.c:240`), so the leading OOBCH is
+        // squeezed too: the whole pass leaves only that newline (the reference
+        // measured `tr -s ab [=c=]` ← `b\n`).
         (&b"b\n"[..], "\n"),
         (&b"ba\n"[..], "c\n"),
     ] {
@@ -494,8 +553,11 @@ fn the_squeeze_leg_collapses_padded_nuls_but_not_real_ones() {
     }
 }
 
-/// 与 `run` 同一条进程缝，但参数是**原始字节**：`&str` 交不出裸 `ff`，集合式与类名
-/// 的字节语义只有这样才量得出来。标准输入按夹具口径喂，写不进不算被测缺陷。
+/// The same process seam as `run`, but with **raw bytes** as arguments: a `&str`
+/// cannot hand over a bare `ff`, so only this way can the byte semantics of set
+/// expressions and class names be measured. Standard input is fed per the
+/// fixture convention; a failed write is not counted as a defect of the code
+/// under test.
 fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt as _;
@@ -520,15 +582,18 @@ fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集合式按字节到位：`-d a<ff>b` 删的是那**一枚** `ff`。期望取自参照件
-/// `tmp/tr-322/tr_ref` 现量（`tmp/argv-444/ab-after.log`）：输入 `a\xffbq` 打回 `q`；
-/// 折叠形把式子数成 `a ef bf bd b` 五位，于是 `ff` 留在输出里。
+/// Set expressions stay byte-exact: `-d a<ff>b` deletes that **one** `ff`. The
+/// expectation comes from the reference `tmp/tr-322/tr_ref` (measured in
+/// `tmp/argv-444/ab-after.log`): the input `a\xffbq` comes back as `q`; the
+/// lossy form would count the expression as five bytes `a ef bf bd b`, leaving
+/// `ff` in the output.
 #[test]
 fn a_raw_nonutf8_set_member_deletes_that_byte() {
     let (out, code, err) = run_raw(&[b"-d".to_vec(), b"a\xffb".to_vec()], b"a\xffbq\n");
     assert_eq!((code, err), (0, Vec::new()));
     assert_eq!(out, b"q\n");
-    // 逆序集合同理：`-c a<ff>` 的定义域里 `ff` 是一员，所以它原样通过而 `z` 被换成 `y`
+    // Same for the reverse set: `ff` is a member of `-c a<ff>`'s domain, so it
+    // passes through unchanged while `z` becomes `y`
     let (out, code, err) = run_raw(
         &[b"-c".to_vec(), b"a\xff".to_vec(), b"y".to_vec()],
         b"a\xffz\n",
@@ -537,8 +602,9 @@ fn a_raw_nonutf8_set_member_deletes_that_byte() {
     assert_eq!(out, b"a\xffyy");
 }
 
-/// 认不出的类名按**原字节**回显（`str.c:253` 的 `%.*s` 带长度）：参照件对
-/// `tr $'[:\xfffoo:]' x` 打 `tr: unknown class \xfffoo` 并退 1。
+/// An unrecognized class name is echoed **as raw bytes** (`str.c:253`'s `%.*s`
+/// carries a length): for `tr $'[:\xfffoo:]' x` the reference prints
+/// `tr: unknown class \xfffoo` and exits 1.
 #[test]
 fn an_unknown_class_name_with_a_raw_byte_is_echoed_by_that_byte() {
     let (out, code, err) = run_raw(&[b"[:\xfffoo:]".to_vec(), b"x".to_vec()], b"a\n");

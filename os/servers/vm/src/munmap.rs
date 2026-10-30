@@ -213,7 +213,7 @@ pub(crate) fn unmap_range(
 
             if unmap_start <= reg_start && unmap_end >= reg_end {
                 // Whole region falls inside the unmap range.
-                // G-V12-7: capture the shared source before the region is
+                // Capture the shared source before the region is
                 // torn down — C `shared_delete` (mem_shared.c:110-123)
                 // decrements the source's `remaps` on deletion. Only this
                 // arm can fire for shared regions: the middle/head/tail
@@ -329,9 +329,9 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
-        // Test builds construct a software page table (V11/T21 SimPaging) —
+        // Test builds construct a software page table (SimPaging) —
         // required now that the unmap paths hand a real `PageTable` to
-        // `free_region_pages` (V11/T25 flipped the old None stubs).
+        // `free_region_pages` (the old None stubs are gone).
         active.init_page_table().unwrap();
         active.init_regions();
         ep
@@ -644,7 +644,7 @@ mod tests {
         // fallback (munmap_vm_lin → vm_self_unmappages) needs the real VM
         // self page table, which is not initialized in unit tests — that
         // path returns InternalError here and is exercised at runtime
-        // only (backlog B3).
+        // only.
         let table = VmProcTable::get_global();
         let vm_slot = UserSlot(Endpoint::VM.slot() as usize);
         unsafe { table.reset_slot(vm_slot); }

@@ -90,7 +90,7 @@ impl VmProc {
     ///
     /// This creates a vacant slot and sets the vm_slot field.
     /// The vm_pt and vm_regions remain uninitialized.
-    #[allow(dead_code)] // V10-P2-1: no callers (table uses vacant() + explicit slot set)
+    #[allow(dead_code)] // No callers (table uses vacant() + explicit slot set)
     pub(crate) const fn vacant_with_slot(vm_slot: UserSlot) -> Self {
         let mut proc = Self::vacant();
         proc.vm_slot = vm_slot;
@@ -99,7 +99,7 @@ impl VmProc {
 
     /// Checks if the process is in use.
     #[inline]
-    #[allow(dead_code)] // V10-P2-1: typestate views replace raw flag reads
+    #[allow(dead_code)] // Typestate views replace raw flag reads
     pub(crate) fn is_in_use(&self) -> bool {
         self.vm_flags.contains(VmFlags::IN_USE)
     }
@@ -113,7 +113,7 @@ impl VmProc {
 
     /// Checks if this is a VM instance.
     #[inline]
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only today
+    #[cfg_attr(not(test), allow(dead_code))] // Test-only today
     pub(crate) fn is_vm_instance(&self) -> bool {
         self.vm_flags.contains(VmFlags::VM_INSTANCE)
     }
@@ -130,7 +130,7 @@ impl VmProc {
         self.vm_major_page_fault = 0;
     }
 
-    // V12-P2-4: the former debug `check()` ("IN_USE ⇒ endpoint is not
+    // The former debug `check()` ("IN_USE ⇒ endpoint is not
     // NONE") was deleted rather than wired — wiring it falsified the
     // premise: `activate_relaxed` legitimately supports NONE-endpoint
     // slots (fork/exec temporary slots), so the assertion does not state

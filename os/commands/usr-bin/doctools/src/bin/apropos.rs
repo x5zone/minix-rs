@@ -1,9 +1,13 @@
 //! Minix-RS apropos — the keyword face of the manual database.
 //!
-//! Ground truth: `minix3/usr.bin/whatis/whatis.c` 的 apropos 半（按关键
-//! 词扫库，命中的行原样打印，一行未中即退出 1）。本壳走决定半的
-//! `for_each_matching`（大小写折叠的行内匹配），库面与缺库行为同
-//! `whatis`——经典文本库，`makewhatis` 构建面是 10 篇 §3.4 的声明留白。
+//! Ground truth: the apropos half of `minix3/usr.bin/whatis/whatis.c` (scans
+//! the database for the keywords, prints matching lines verbatim, exits 1 as
+//! soon as no line matches). This shell goes through the decision half's
+//! `for_each_matching` (case-folded match within a line); the database
+//! surface and the missing-database behaviour are the same as `whatis` —
+//! the classic text database, with the `makewhatis` build face left as a
+//! declared gap in `rewrite-notes/18-stage-commands/10-doc-man-tools.md`
+//! §3.4.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

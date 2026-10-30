@@ -18,7 +18,7 @@
 //! pointer back to PM for restoration. Without it a delivered signal never
 //! returns: the handler's `ret` jumps to whatever the frame carried.
 //! init was the first consumer to plant the real address in the `ret`
-//! slot (it fills `minix_rt::signals::__sigreturn` — NS11); the
+//! slot (it fills `minix_rt::signals::__sigreturn`); the
 //! [`sigaction`] face below now supplies it for every caller.
 //!
 //! # Frame contract (what PM's delivery arm must plant)
@@ -76,8 +76,8 @@ use minix_sys::pm::{SigActionWire, sigaction_via, sigsuspend_via};
 /// one-call face C programs get because their libc holds both the
 /// wrapper and `__sigreturn`. This module is the minix-rs counterpart of
 /// that unit, so the `ret` slot is filled here, with this module's
-/// trampoline address (NS11's init did the same by hand; this face is
-/// the shared form). The trampoline only exists on x86_64 — on the other
+/// trampoline address (init filed it by hand first; this face is the
+/// shared form). The trampoline only exists on x86_64 — on the other
 /// architectures there is no correct `ret` value until their delivery
 /// legs land, so this face is x86_64-only with the module gate.
 pub fn sigaction_with<T: IpcTransport>(
@@ -139,7 +139,7 @@ mod tests {
 
     /// The `sigaction` face rides the canned transport with the
     /// trampoline's own address in the `ret` lane — the value PM plants
-    /// as the handler return address (C sigaction.c:19 `ret` 域).
+    /// as the handler return address (C sigaction.c:19, the `ret` field).
     #[test]
     fn sigaction_face_carries_trampoline_address() {
         let mut transport = CannedTransport::new();

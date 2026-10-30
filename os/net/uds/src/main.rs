@@ -3,18 +3,21 @@
 //! Production wiring: kernel traps via `minix-sys`, SEF interception via
 //! `minix-sef`, road bookkeeping via `minix-netdriver`. The per-road
 //! business work lives in `ProductionHandler` — `socket_device` is the
-//! landing spot for the uds request implementations (21/22 篇轨道).
+//! landing spot for the uds request implementations (the 21/22 doc tracks).
 
 fn main() {
     let mut ipc = minix_net_uds::server::KernelIpc { transport: minix_sys::ipc::DirectTrapTransport };
     let mut handler = ProductionHandler::new();
     let mut table = minix_netdriver::socktable::SockTable::new();
-    // 传输持续损坏时循环带错误退出；C 侧同位是 panic——日志归运行时诊断。
+    // The loop exits with an error when the transport stays broken; the C
+    // counterpart panics at the same point — logging belongs to the runtime
+    // diagnostics.
     let _ = minix_net_uds::server::run(&mut ipc, &mut handler, &mut table);
 }
 
-/// Per-road work for the running service. `running` 由终止信号清零
-/// （uds_signal 的 C 形状），`sockets_in_use` 随对象表增减。
+/// Per-road work for the running service. `running` is cleared by the
+/// termination signal (the C shape of uds_signal); `sockets_in_use` follows
+/// the object table.
 struct ProductionHandler {
     running: bool,
     sockets_in_use: usize,
@@ -32,7 +35,8 @@ impl minix_net_uds::server::UdsHandler for ProductionHandler {
     }
 
     fn draining(&self) -> bool {
-        // C `uds_in_use > 0`（uds.c:1358）——逃生门的取消只在无人用时发生。
+        // C `uds_in_use > 0` (uds.c:1358) — the escape hatch cancels only
+        // while nobody is using the device.
         self.sockets_in_use > 0
     }
 
@@ -43,7 +47,8 @@ impl minix_net_uds::server::UdsHandler for ProductionHandler {
         _table: &mut minix_netdriver::socktable::SockTable,
         _msg: &minix_types::Message,
     ) -> Option<minix_types::Message> {
-        // uds 请求实现体随 21/22 篇轨道落地；循环与记账已就位。
+        // The uds request implementations land with the 21/22 doc tracks; the
+        // loop and the bookkeeping are already in place.
         None
     }
 

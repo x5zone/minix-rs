@@ -117,7 +117,7 @@ pub struct BootParams<'a> {
     /// C: `is_first_time()` (main.c:79-88) — returns true when RS still
     /// holds `RTS_BOOTINHIBIT`, which gates `init_vm()` in `main()`.
     pub is_first_time: bool,
-    /// Kernel layout reported by the handoff (V11/E3) — drives
+    /// Kernel layout reported by the handoff — drives
     /// `init_global_state`'s per-process kernel mapping constants.
     /// `None` for version ≤ 2 handoffs (the historical mock constants
     /// apply) and for host tests (`BootParams::simple`).
@@ -133,10 +133,11 @@ impl<'a> BootParams<'a> {
     /// Single-region boot params with no modules and no boot processes.
     ///
     /// Intended for unit tests that only exercise allocator/dispatch
-    /// paths. Production code must use real boot parameters — T13 审计
-    /// A5：此前无 `#[cfg(test)]` 门且内嵌 x86 栈顶字面量，靠注释维持
-    /// 「仅测试」约定；现编译期门控（生产误用=符号不存在）且栈顶引
-    /// `minix_types::USER_STACK_TOP` 权威（宿主测试按宿主架构取值）。
+    /// paths. Production code must use real boot parameters — this
+    /// constructor is `#[cfg(test)]`-gated (using it in production means the
+    /// symbol does not exist), and the stack top references the
+    /// `minix_types::USER_STACK_TOP` authority (host tests take the host
+    /// architecture's value).
     #[cfg(test)]
     pub fn simple(total_pages: usize, free_regions: &'a [BootMemRegion]) -> Self {
         Self {
@@ -303,22 +304,27 @@ pub fn read_boot_params() -> BootParams<'static> {
     // window (VM PMM eligible = conventional ∩ DM-representable −
     // LiveBootstrap).
     //
-    // 续-168 成修：A2 切割漏了 VM 正在运行的**地址空间根页**（以及
-    // bootstrap 直接挂在其下的 L1 表簇）——gh46 sas-clear 实证 kernel
-    // 持根=0x82000000（handoff root_paddr=boot bump 池基），而该页在
-    // free list 内（gh32/45 分配轨迹穿越池区间）；池耗尽降序发放到池
-    // 底时根页被当普通帧分配→VM 自身翻译（BSS/堆/DM 窗）间歇腐坏→
-    // walk 走设备洞/btree panic/region range 坏全家族。此处按 root 页
-    // 起扣 64KB（覆盖 gh35 实测 bootstrap L1 簇 0x82001000..0x8200f000），
-    // 泄漏表同步收缩。
-    // 续-180 扩界：kernel bump 池整体（gh49 vm pc=0x3a006 取指 fault=
-    // VM 自身 text 帧在池内被发放覆写；池=bootface root/pt/名字池/模块
-    // 落地/全部 boot 服务器镜像帧的所在，32MiB 全扣）。
+    // The A2 cut initially missed VM's own **address-space root page** (and the
+    // cluster of L1 tables the bootstrap hangs directly beneath it) — a live
+    // trace showed the kernel holding root=0x82000000 (handoff root_paddr = the
+    // boot bump pool base) while that page sat inside the free list (allocation
+    // traces cross the pool interval); once the pool drained downward to its
+    // base, the root page was handed out as an ordinary frame, and VM's own
+    // translations (BSS/heap/DM window) went intermittently corrupt → walk
+    // through device holes / btree panic / region range corruption, one whole
+    // family. Deduct 64KB starting at the root page here (covering the measured
+    // bootstrap L1 cluster 0x82001000..0x8200f000); the leak table shrinks with
+    // it.
+    // Widened further: the kernel bump pool as a whole (a vm pc=0x3a006 fetch
+    // fault was VM's own text frame being handed out and overwritten inside the
+    // pool; the pool holds the bootface root/pt/name pool, the module landing
+    // areas and every boot server's image frames, so all 32MiB is deducted).
     let root_deduct_base = 0x8200_0000;
     let root_deduct_end = 0x8400_0000;
-    // 续-175 成修：模块镜像帧同样在 free list 内被回收——VM 自身 text
-    // 被其他服务器 ELF 覆写→取指 fault（gh53 vm 0x8 pc=0x39f4a SIGSEGV-
-    // for-itself）与全部"腐坏"家族同根。扣减所有 boot 模块区 + root 块。
+    // Module image frames are reclaimed from the free list as well — VM's own
+    // text was overwritten by another server's ELF, giving a fetch fault
+    // (vm 0x8 pc=0x39f4a SIGSEGV-for-itself), the same root as the whole
+    // "corruption" family. Deduct every boot module region plus the root block.
     let mut deduct: alloc::vec::Vec<(u64, u64)> = alloc::vec![(root_deduct_base, root_deduct_end)];
     for m in handoff.modules[..handoff.module_count as usize].iter() {
         let m_base = m.start_addr & !(0x1000u64 - 1);
@@ -389,8 +395,8 @@ pub fn read_boot_params() -> BootParams<'static> {
         },
         vm_allocated_bytes: handoff.vm_allocated_bytes,
         is_first_time: handoff.is_first_time != 0,
-        // V11/E3: version ≥ 3 handoffs carry the kernel layout; version ≤ 2
-        // yields None (consumer falls back to the mock constants + warn).
+        // Version ≥ 3 handoffs carry the kernel layout; version ≤ 2 yields
+        // None (the consumer falls back to the mock constants + warn).
         kernel_layout: handoff.kernel_layout(),
         // E-BOOTFRAME: handoff v4 carries the initial user stack top
         // (C exec_bootproc reads `kernel_boot_info.user_sp`, main.c:372).

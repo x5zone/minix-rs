@@ -1,6 +1,6 @@
-//! AP early entry ABI — the cross-assembly value-passing contract (S-3a).
+//! AP early entry ABI — the cross-assembly value-passing contract.
 //!
-//! Frozen design: smp_todo §3.2 (2026-09-06 GPT-review revision). The three
+//! Frozen design (2026-09-06 GPT-review revision). The three
 //! architectures converge on one Rust entry point that receives a *physical
 //! address*; all per-AP information travels inside an `ApBootstrap` record.
 //!

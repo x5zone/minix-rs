@@ -1,11 +1,11 @@
-//! mproc 重构方案性能和内存基准测试
+//! Memory and performance benchmark of the mproc restructuring options.
 //!
-//! 测试三种方案的内存占用和性能差异：
-//! - 方案二：Enum 状态机
-//! - 方案三：分层抽象
-//! - 方案五：Bitflags + View
+//! Compares three options for memory footprint and performance:
+//! - Option 2: Enum state machine
+//! - Option 3: Layered abstraction
+//! - Option 5: Bitflags + View
 //!
-//! 运行方式：
+//! How to run:
 //! ```bash
 //! cargo test --release -- --nocapture
 //! ```
@@ -14,10 +14,10 @@ use std::mem::size_of;
 use std::time::Instant;
 
 // ============================================================================
-// 方案二：Enum 状态机
+// Option 2: Enum state machine
 // ============================================================================
 
-/// 进程生命周期（方案二）
+/// Process lifecycle (Option 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleV2 {
     Unused,
@@ -44,7 +44,7 @@ impl Default for LifecycleV2 {
     }
 }
 
-/// 阻塞状态（方案二）
+/// Block state (Option 2).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BlockStateV2 {
     pub stopped: bool,
@@ -59,7 +59,7 @@ pub enum IpcBlockReasonV2 {
     DelayedSignal,
 }
 
-/// 进程结构（方案二）
+/// Process structure (Option 2).
 #[derive(Debug, Clone)]
 pub struct ProcessV2 {
     pub pid: i32,
@@ -77,10 +77,10 @@ pub struct ProcessV2 {
 }
 
 // ============================================================================
-// 方案三：分层抽象
+// Option 3: Layered abstraction
 // ============================================================================
 
-/// 身份信息（方案三）
+/// Identity (Option 3).
 #[derive(Debug, Clone, Default)]
 pub struct ProcessIdentityV3 {
     pub pid: i32,
@@ -90,7 +90,7 @@ pub struct ProcessIdentityV3 {
     pub name: [u8; 16],
 }
 
-/// 状态机（方案三）
+/// State machine (Option 3).
 #[derive(Debug, Clone)]
 pub struct ProcessStateV3 {
     pub lifecycle: LifecycleV3,
@@ -132,7 +132,7 @@ pub enum IpcBlockReasonV3 {
     DelayedSignal,
 }
 
-/// 资源（方案三）
+/// Resources (Option 3).
 #[derive(Debug, Clone)]
 pub struct ProcessResourcesV3 {
     pub child_utime: i64,
@@ -141,7 +141,7 @@ pub struct ProcessResourcesV3 {
     pub flags: u32,
 }
 
-/// 进程结构（方案三）
+/// Process structure (Option 3).
 #[derive(Debug, Clone)]
 pub struct ProcessV3 {
     pub identity: ProcessIdentityV3,
@@ -150,7 +150,7 @@ pub struct ProcessV3 {
 }
 
 // ============================================================================
-// 方案五：Bitflags + View
+// Option 5: Bitflags + View
 // ============================================================================
 
 bitflags::bitflags! {
@@ -178,7 +178,7 @@ bitflags::bitflags! {
     }
 }
 
-/// 生命周期视图（方案五）
+/// Lifecycle view (Option 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleViewV5 {
     Unused,
@@ -189,7 +189,7 @@ pub enum LifecycleViewV5 {
     ToldParent,
 }
 
-/// 进程结构（方案五）
+/// Process structure (Option 5).
 #[derive(Debug, Clone)]
 pub struct ProcessV5 {
     pub pid: i32,
@@ -249,7 +249,7 @@ impl ProcessV5 {
 }
 
 // ============================================================================
-// 默认实现
+// Default implementations
 // ============================================================================
 
 impl Default for ProcessV2 {
@@ -316,7 +316,7 @@ impl Default for ProcessV5 {
 }
 
 // ============================================================================
-// 基准测试
+// Benchmarks
 // ============================================================================
 
 const NUM_PROCESSES: usize = 256;
@@ -325,7 +325,7 @@ const NUM_ITERATIONS: usize = 1_000_000;
 fn main() {
     println!("=== mproc 重构方案基准测试 ===\n");
     
-    // 1. 内存大小测试
+    // 1. Memory footprint test
     println!("--- 内存大小测试 ---");
     println!("方案二 (Enum):");
     println!("  LifecycleV2:   {} bytes", size_of::<LifecycleV2>());
@@ -348,7 +348,7 @@ fn main() {
     println!("  {} 个进程:      {} KB", NUM_PROCESSES,
         (size_of::<ProcessV5>() * NUM_PROCESSES) as f64 / 1024.0);
     
-    // 内存对比
+    // Memory comparison
     println!("\n--- 内存对比 ---");
     let v2_size = size_of::<ProcessV2>();
     let v3_size = size_of::<ProcessV3>();
@@ -361,10 +361,10 @@ fn main() {
     println!("方案二 vs 方案三: {:.1}% 差异",
         ((v2_size as f64 / v3_size as f64) - 1.0) * 100.0);
     
-    // 2. 性能测试
+    // 2. Performance test
     println!("\n--- 性能测试 ---");
     
-    // 初始化进程表
+    // Set up the process tables
     let mut v2_procs: Vec<ProcessV2> = (0..NUM_PROCESSES)
         .map(|i| ProcessV2 { pid: i as i32 + 1, ..Default::default() })
         .collect();
@@ -378,7 +378,7 @@ fn main() {
         .map(|i| ProcessV5 { pid: i as i32 + 1, ..Default::default() })
         .collect();
     
-    // 测试 1: 状态检查 (is_zombie)
+    // Test 1: state query (is_zombie)
     println!("\n测试 1: is_zombie() - {} 次迭代", NUM_ITERATIONS);
     
     let start = Instant::now();
@@ -411,7 +411,7 @@ fn main() {
     let v5_time = start.elapsed();
     println!("  方案五: {:?} (count={})", v5_time, count);
     
-    // 测试 2: 状态设置 (set_exiting)
+    // Test 2: state transition (set_exiting)
     println!("\n测试 2: 设置状态 - {} 次迭代", NUM_ITERATIONS);
     
     let start = Instant::now();
@@ -441,10 +441,10 @@ fn main() {
     let v5_time = start.elapsed();
     println!("  方案五: {:?}", v5_time);
     
-    // 测试 3: 复杂状态检查
+    // Test 3: compound state query
     println!("\n测试 3: 复杂状态检查 - {} 次迭代", NUM_ITERATIONS);
     
-    // 设置一些复杂状态
+    // Set up some compound state
     for proc in &mut v2_procs {
         proc.lifecycle = LifecycleV2::Running;
         proc.block.stopped = true;
@@ -489,7 +489,7 @@ fn main() {
     let v5_time = start.elapsed();
     println!("  方案五: {:?} (count={})", v5_time, count);
     
-    // 3. 总结
+    // 3. Summary
     println!("\n=== 总结 ===");
     println!("| 方案 | 进程大小 | 256进程内存 | 状态检查 | 状态设置 |");
     println!("|------|---------|------------|---------|---------|");

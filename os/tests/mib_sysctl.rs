@@ -1,53 +1,60 @@
-//! E5(g) — MIB/sysctl 四链联调（宿主态，走 wire 契约）。
+//! E5(g) — four-chain MIB/sysctl integration (host side, over the wire contract).
 //!
-//! edge_todo.md 验收面增补（2026-09-15，10-stage-mib 架构审查）登记的四链，
-//! 宿主半沿 E5(e) pm_sched.rs 判例：两侧真代码对跑，只有不可宿主驱动的
-//! 一端以 wire 契约代替。
+//! The four chains registered as host-side acceptance coverage follow the E5(e)
+//! pm_sched.rs precedent: both sides run real code, and only the end that cannot be
+//! driven on a host is replaced by the wire contract.
 //!
-//! # 链路面
+//! # Chain face
 //!
-//! 1. **调用方**：`minix_sys::{sysctl_via, sysctlbyname_via}` 真客户端——
-//!    `MIB_SYSCTL` 组包（NS11-B 的 64 位车道 overlay）、sendrec 往返、
-//!    回程长度车道读出（含"服务端拒绝也回写长度"的 NetBSD quirk，
-//!    `__sysctl.c:29-38`）。传输是自带的 `CallerSide`（实现 minix-sys
-//!    的 `IpcTransport`）：`sendrec` 把请求投进共享 bus 后当场泵一轮
-//!    MIB 主循环再取回执（minix3/minix/lib/libsys/taskcall.c:16 的阻塞
-//!    时序等价形）。
-//! 2. **MIB 服务**：`minix_mib::server::Server::run_once` 真循环消费
-//!    bus——SEF 收包、triage、`sysctl_arm` 五道门、walker 树查找、
-//!    `copy_out` 拷出全在生产路径上。内核动词由 `TestKernel` 承载：
-//!    `sys_datacopy` 在宿主上是同地址空间搬运（指针本就出自调用方
-//!    进程内的缓冲，E5 线束判例），`sys_hz`/`getticks`/`boottime`
-//!    给罐装值（`DEFAULT_HZ`=100，os/kernel/src/clock.rs:685 的内核
-//!    线束名义）；peer 动词（DS 标签、VM 统计、远端中继）诚实
-//!    `-EIO`——本文件的链不依赖它们。
-//! 3. **内核/DS**：不进依赖（E5(e) 的特性统一陷阱对账不变）。
+//! 1. **Caller**: the real `minix_sys::{sysctl_via, sysctlbyname_via}` clients — the
+//!    `MIB_SYSCTL` message assembly (the 64-bit lane overlay), the sendrec round trip,
+//!    and the return length-lane read (including NetBSD's quirk that the length is
+//!    written back even when the server refuses, `__sysctl.c:29-38`). The transport is
+//!    the local `CallerSide` (implementing minix-sys's `IpcTransport`): `sendrec` puts
+//!    the request on the shared bus, pumps one MIB main-loop round on the spot, then
+//!    takes the reply (the blocking-sequence equivalent of
+//!    minix3/minix/lib/libsys/taskcall.c:16).
+//! 2. **MIB service**: `minix_mib::server::Server::run_once`, the real loop consuming
+//!    the bus — SEF receive, triage, the five `sysctl_arm` gates, the walker tree
+//!    lookup and `copy_out` all run on the production path. Kernel verbs are carried by
+//!    `TestKernel`: `sys_datacopy` is a same-address-space move on the host (the
+//!    pointers already point into buffers inside the caller process — the E5 harness
+//!    precedent), while `sys_hz`/`getticks`/`boottime` answer canned values
+//!    (`DEFAULT_HZ`=100, the kernel harness nominal at os/kernel/src/clock.rs:685); peer
+//!    verbs (DS label, VM statistics, remote relay) honestly answer `-EIO` — the chains
+//!    in this file do not depend on them.
+//! 3. **Kernel/DS**: not part of the dependency (E5(e)'s feature-unification trap
+//!    reconciliation stands unchanged).
 //!
-//! # 覆盖（四链）
+//! # Coverage (four chains)
 //!
-//! - **链 1 · MIB_SYSCTL 往返**：clockrate 整读（OK + 20 字节
-//!   `struct clockinfo` + 长度车道）；短缓冲 → `ENOMEM` 部分拷贝 +
-//!   **完整长度仍回写**（C main.c:341-356）；`oldp=NULL` 尺寸探测 →
-//!   OK + 长度。
-//! - **链 1 · 名字走树**：`sysctlbyname_via("kern.clockrate")` 经真树
-//!   的逐级 `CTL_QUERY` 枚举解析（NS11-A 客户端 × 真服务端树）。
-//! - **链 2 · rmibtest 注册契约**（服务端半）：SENDREC 形注册被拒
-//!   （C remote.c:210-211 单向协议）；空路径静默丢（:894-897）。
-//!   客户端本地失败三分类（空/超长/非节点）与八类远端拒绝的**授权
-//!   中继半**挂 T2（grant 传输不可宿主）——见文件尾登记行。
-//! - **链 4 · minix.mib.* 统计对账**：nodes/objects/remotes 经真树
-//!   读出；fresh 服务 remotes=0，nodes>0、objects≥nodes，且名字走查
-//!   不改变计数。
-//! - **链 3 · ERESTART 纯裁决面**：`check_reply` 三分支（C remote.c
-//!   :455-459 + :359/:361/:461/:463）、`locate_slot` 三裁决（Fresh/
-//!   Reuse/ReapThenReuse——死亡槽位收割即 mib_down 前半，C remote.c
-//!   :64-68）、`dereg_slot` 摘除（C :285 一带）。
+//! - **Chain 1 · MIB_SYSCTL round trip**: full clockrate read (OK + the 20-byte
+//!   `struct clockinfo` + the length lane); short buffer → `ENOMEM` with a partial copy
+//!   + **the full length is still written back** (C main.c:341-356); `oldp=NULL` size
+//!   probe → OK + length.
+//! - **Chain 1 · name walk through the tree**: `sysctlbyname_via("kern.clockrate")`
+//!   resolves through the real tree's level-by-level `CTL_QUERY` enumeration (client
+//!   name walk × real server-side tree).
+//! - **Chain 2 · rmibtest registration contract** (server half): a SENDREC-shaped
+//!   registration is refused (C remote.c:210-211 is a one-way protocol); an empty path
+//!   is dropped silently (:894-897). The client's three local failure classes
+//!   (empty/too long/not a node) and the **authorized relay half** of the eight remote
+//!   refusals ride on T2 (grant transfer cannot be hosted) — see the registration line at
+//!   the end of the file.
+//! - **Chain 4 · minix.mib.* statistics reconciliation**: nodes/objects/remotes are read
+//!   out of the real tree; a fresh service has remotes=0, nodes>0, objects≥nodes, and a
+//!   name walk does not change the counts.
+//! - **Chain 3 · ERESTART pure verdicts**: `check_reply`'s three branches (C remote.c
+//!   :455-459 + :359/:361/:461/:463), `locate_slot`'s three verdicts (Fresh/
+//!   Reuse/ReapThenReuse — reaping a dead slot is the first half of mib_down, C remote.c
+//!   :64-68), and `dereg_slot`'s removal (around C :285).
 //!
-//! # 登记（非本文件范围）
+//! # Registered (outside this file's scope)
 //!
-//! 远端中继的授权拷贝半（`grant_magic` 路径）与 libsys
-//! `rmib_register` 客户端本地失败面属 E-RMIBWIRE 传输余量，真机半
-//! 挂 T2——本文件以纯裁决面钉住其决策逻辑。
+//! The authorized-copy half of the remote relay (the `grant_magic` path) and the
+//! client-side local failure face of libsys `rmib_register` belong to the E-RMIBWIRE
+//! transport remainder, whose real-hardware half rides on T2 — this file pins their
+//! decision logic through the pure verdicts.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -68,20 +75,20 @@ use minix_types::{
 
 const CALLER: Endpoint = Endpoint(20);
 const HZ: u32 = 100;
-/// `struct clockinfo` 尺寸（五 `int`，sys/sys/sysctl.h:206-212；walker
-/// 的 clockrate 应答大小，kern.rs:561 `CTLTYPE_STRUCT | RO` = 20）。
+/// `struct clockinfo` size (five `int`s, sys/sys/sysctl.h:206-212; the
+/// walker's clockrate reply size, kern.rs:561 `CTLTYPE_STRUCT | RO` = 20).
 const CLOCKINFO_LEN: usize = 20;
 
 // ---------------------------------------------------------------------------
-// 共享 bus：调用方的 sendrec 与 MIB 的 receive/sendnb 在此会合
+// Shared bus: the caller's sendrec and MIB's receive/sendnb meet here
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
 struct BusInner {
-    /// 调用方 → MIB 的到达队列，随消息携带到达状态字（sendrec/单向
-    /// send 的判别由 MIB triage 读）。
+    /// Caller → MIB arrival queue, carrying the arrival status word with the
+    /// message (MIB triage reads it to tell sendrec from one-way send).
     to_mib: RefCell<VecDeque<(Message, u32)>>,
-    /// MIB → 调用方的回执队列（`send_nb` 的落地）。
+    /// MIB → caller reply queue (`send_nb`'s landing point).
     to_caller: RefCell<VecDeque<Message>>,
 }
 
@@ -102,8 +109,8 @@ impl Bus {
     }
 }
 
-/// MIB 服务端 IPC 缝（[`MibIpc`] + SEF 收包）：从 bus 取到达、往 bus
-/// 投回执。
+/// MIB server IPC seam ([`MibIpc`] + SEF receive): takes arrivals from the bus
+/// and puts replies on the bus.
 struct MibSide {
     bus: Bus,
 }
@@ -125,7 +132,7 @@ impl MibIpc for MibSide {
     }
 
     fn send_rec(&mut self, _peer: Endpoint, _message: &mut Message) -> Result<(), i32> {
-        Err(minix_types::EIO) // 远端中继腿：本文件不触达（T2）
+        Err(minix_types::EIO) // remote relay leg: not reached in this file (T2)
     }
 
     fn notify(&mut self, _to: Endpoint) -> Result<(), i32> {
@@ -136,8 +143,9 @@ impl MibIpc for MibSide {
 impl SefIpc for MibSide {
     fn receive(&mut self, _src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
         match self.bus.0.to_mib.borrow_mut().pop_front() {
-            // 状态字是 triage 与 is_sendrec 判别的唯一来源，必须原样
-            // 送达（真实内核在 receive 的第三参数里交给它）。
+            // The status word is the only source for triage and for the
+            // is_sendrec decision; it must be delivered as is (a real kernel
+            // hands it over in receive's third argument).
             Some((arriving, status)) => {
                 *msg = arriving;
                 Ok(status as i32)
@@ -151,20 +159,22 @@ impl SefIpc for MibSide {
     }
 }
 
-/// 内核动词：同地址空间搬运（宿主回放 `sys_datacopy`）+ 罐装时基。
+/// Kernel verbs: same-address-space move (host replay of `sys_datacopy`) + canned
+/// time base.
 struct TestKernel;
 
 impl MibKernel for TestKernel {
     fn datacopy_from(&mut self, _src: Endpoint, src_addr: u64, buf: &mut [u8]) -> Result<(), i32> {
-        // SAFETY: 宿主线束——src_addr 是调用方进程内缓冲的地址（调用方
-        // 与服务同进程），E5 线束判例的同地址空间回放。
+        // SAFETY: host harness — src_addr is the address of a buffer inside the
+        // caller process (caller and service share a process); the same-address-space
+        // replay of the E5 harness precedent.
         let src = unsafe { core::slice::from_raw_parts(src_addr as *const u8, buf.len()) };
         buf.copy_from_slice(src);
         Ok(())
     }
 
     fn datacopy_to(&mut self, _dest: Endpoint, dest_addr: u64, buf: &[u8]) -> Result<(), i32> {
-        // SAFETY: 同上——dest_addr 指向调用方进程内缓冲。
+        // SAFETY: as above — dest_addr points into a buffer inside the caller process.
         let dest = unsafe { core::slice::from_raw_parts_mut(dest_addr as *mut u8, buf.len()) };
         dest.copy_from_slice(buf);
         Ok(())
@@ -177,7 +187,7 @@ impl MibKernel for TestKernel {
         _len: u64,
         _dir: RelayDir,
     ) -> Result<GrantId, i32> {
-        Err(minix_types::EIO) // 授权中继：T2
+        Err(minix_types::EIO) // authorized relay: T2
     }
 
     fn grant_revoke(&mut self, _grant: GrantId) {}
@@ -199,12 +209,13 @@ impl MibKernel for TestKernel {
     }
 }
 
-/// peer 动词：全部诚实 `-EIO`（本文件的链不依赖 DS/VM/PM 对端）。
+/// Peer verbs: all honestly `-EIO` (the chains in this file do not depend on DS/VM/PM
+/// peers).
 struct TestServices;
 
 impl MibServices for TestServices {
     fn getnuid(&mut self, _who: Endpoint) -> Result<u32, i32> {
-        Ok(0) // root：PRIVATE 节点可读（本文件未触达 PRIVATE）
+        Ok(0) // root: PRIVATE nodes are readable (this file never touches PRIVATE)
     }
 
     fn getsysinfo(&mut self, _target: Endpoint, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
@@ -240,13 +251,14 @@ impl MibServices for TestServices {
 }
 
 // ---------------------------------------------------------------------------
-// 装配：Rc<RefCell<Server>> 共享句柄——调用方传输投递后泵一轮主循环，
-// 测试体可在任意时刻经同一句柄检查服务端状态（slots/计数）。
+// Assembly: an `Rc<RefCell<Server>>` shared handle — after the caller transport
+// delivers it pumps one main-loop round, and the test body can inspect server state
+// (slots/counters) through the same handle at any time.
 // ---------------------------------------------------------------------------
 
 type TestServer = Server<TestKernel, TestServices, MibSide>;
 
-/// 调用方侧传输（minix-sys 的 [`IpcTransport`]）。
+/// Caller-side transport (minix-sys's [`IpcTransport`]).
 #[derive(Clone)]
 struct CallerSide {
     bus: Bus,
@@ -269,7 +281,7 @@ impl CallerSide {
         (caller, server, bus)
     }
 
-    /// 泵一轮并取回执（sendrec 的回程腿）。
+    /// Pump one round and take the reply (sendrec's return leg).
     fn round_trip(&self, message: &mut Message) -> Option<Message> {
         message.m_source = CALLER;
         self.bus.deliver(*message, CALL_SENDREC);
@@ -277,7 +289,8 @@ impl CallerSide {
         self.bus.take_reply()
     }
 
-    /// 单向发送（注册面协议）：投递 + 泵一轮，回执留在 bus 上供断言。
+    /// One-way send (registration-face protocol): deliver + pump one round; the reply
+    /// stays on the bus for assertions.
     fn fire_and_forget(&self, message: &Message) {
         let mut arriving = *message;
         arriving.m_source = CALLER;
@@ -319,7 +332,7 @@ impl IpcTransport for CallerSide {
     }
 }
 
-/// 经真树读一个 `minix.mib.*` 计数（链 4 的观测面）。
+/// Read one `minix.mib.*` counter through the real tree (chain 4's observation face).
 fn read_stat(caller: &CallerSide, leaf: i32) -> (i64, usize) {
     let mut buffer = [0u8; 16];
     let mut length = buffer.len();
@@ -343,11 +356,11 @@ fn read_stat(caller: &CallerSide, leaf: i32) -> (i64, usize) {
 }
 
 // ---------------------------------------------------------------------------
-// 链 1 · MIB_SYSCTL 往返
+// Chain 1 · MIB_SYSCTL round trip
 // ---------------------------------------------------------------------------
 
-/// clockrate 整读：真解码 → 真树查找 → 真拷出 → OK + 完整 Clockinfo +
-/// 长度车道 20。
+/// Full clockrate read: real decode → real tree lookup → real copy-out → OK + the
+/// complete Clockinfo + length lane 20.
 #[test]
 fn sysctl_round_trip_returns_full_clockinfo() {
     let (caller, _server, _bus) = CallerSide::pair();
@@ -364,7 +377,7 @@ fn sysctl_round_trip_returns_full_clockinfo() {
     )
     .expect("clockrate 整读");
     assert_eq!(length, CLOCKINFO_LEN, "回程长度车道 = 节点全尺寸");
-    // Clockinfo 五 int：hz/tick/tickadj/stathz/profhz——tick=1e6/hz。
+    // Clockinfo's five ints: hz/tick/tickadj/stathz/profhz — tick=1e6/hz.
     let i32_at = |off: usize| i32::from_le_bytes(buffer[off..off + 4].try_into().unwrap());
     assert_eq!(i32_at(0), HZ as i32, "hz");
     assert_eq!(i32_at(4), 1_000_000 / HZ as i32, "tick = 1e6/hz");
@@ -373,9 +386,10 @@ fn sysctl_round_trip_returns_full_clockinfo() {
     assert_eq!(i32_at(16), HZ as i32, "profhz");
 }
 
-/// 短缓冲：服务端拷出放得下的前缀、应答 ENOMEM，但**完整长度仍回写**
-/// （C main.c:341-356；sysctl_via 侧"服务端拒绝也回写长度"的
-/// `__sysctl.c:29-38` quirk 在真两端间成立）。
+/// Short buffer: the server copies out the prefix that fits and answers ENOMEM, but
+/// **the full length is still written back** (C main.c:341-356; sysctl_via's
+/// `__sysctl.c:29-38` quirk of "write the length back even when the server refuses"
+/// holds between the two real ends).
 #[test]
 fn enomem_partial_copy_still_writes_full_length() {
     let (caller, _server, _bus) = CallerSide::pair();
@@ -396,7 +410,8 @@ fn enomem_partial_copy_still_writes_full_length() {
         "短缓冲应答 ENOMEM"
     );
     assert_eq!(length, CLOCKINFO_LEN, "失败路径长度车道仍回写全尺寸");
-    // 部分拷贝：放得下的前 8 字节是真实数据（hz + tick 前半）。
+    // Partial copy: the first 8 bytes that fit are real data (hz + the first half of
+    // tick).
     assert_eq!(
         i32::from_le_bytes(buffer[0..4].try_into().unwrap()),
         HZ as i32,
@@ -404,14 +419,15 @@ fn enomem_partial_copy_still_writes_full_length() {
     );
 }
 
-/// `oldp=NULL` 的尺寸探测：OK（非 ENOMEM）且长度车道携带全尺寸——
-/// sysctl(3) 的两段式读法第一段。
+/// Size probe with `oldp=NULL`: OK (not ENOMEM) and the length lane carries the full
+/// size — the first pass of sysctl(3)'s two-step read.
 #[test]
 fn length_probe_without_oldp_answers_size() {
     let (caller, _server, _bus) = CallerSide::pair();
     let mut message = Message::zeroed();
     {
-        // SAFETY: 请求 overlay 按文档化车道写（NS11-B 64 位车道）。
+        // SAFETY: the request overlay is written along the documented lanes (64-bit
+        // lane).
         let wire: &mut MessLcMibSysctl = unsafe { &mut message.m_u.m_lc_mib_sysctl };
         wire.oldp = 0;
         wire.oldlen = 64;
@@ -421,13 +437,14 @@ fn length_probe_without_oldp_answers_size() {
     message.m_type = MIB_CALL_SYSCTL;
     let reply = caller.round_trip(&mut message).expect("探测有回执");
     assert_eq!(reply.m_type, minix_types::OK, "尺寸探测应答 OK");
-    // SAFETY: 应答 overlay 读回程长度车道。
+    // SAFETY: the reply overlay is read for the return length lane.
     let replied = unsafe { &reply.m_u.m_mib_lc_sysctl };
     assert_eq!(replied.oldlen as usize, CLOCKINFO_LEN, "长度车道 = 全尺寸");
 }
 
-/// `sysctlbyname_via` 经真树逐级 `CTL_QUERY` 枚举解析名字——客户端
-/// 名字走 × 服务端查询枚举的真实闭环。
+/// `sysctlbyname_via` resolves a name through the real tree's level-by-level
+/// `CTL_QUERY` enumeration — a real closed loop of client name walk × server-side
+/// query enumeration.
 #[test]
 fn sysctlbyname_walks_the_real_tree() {
     let (caller, _server, _bus) = CallerSide::pair();
@@ -452,18 +469,18 @@ fn sysctlbyname_walks_the_real_tree() {
 }
 
 // ---------------------------------------------------------------------------
-// 链 2 · rmibtest 注册契约（服务端半）
+// Chain 2 · rmibtest registration contract (server half)
 // ---------------------------------------------------------------------------
 
-/// SENDREC 形注册被拒：注册协议是单向（C remote.c:210-211，避免
-/// MIB→服务调用环）——拒绝有回执（阻塞调用方不能被晾着），且槽表
-/// 不动。
+/// A SENDREC-shaped registration is refused: the registration protocol is one-way (C
+/// remote.c:210-211, avoiding a MIB→service call cycle) — the refusal has a reply (a
+/// blocking caller must not be left hanging), and the slot table stays untouched.
 #[test]
 fn register_via_sendrec_is_refused() {
     let (caller, server, bus) = CallerSide::pair();
     let mut message = Message::zeroed();
     {
-        // SAFETY: 注册 overlay 按文档化车道写。
+        // SAFETY: the registration overlay is written along the documented lanes.
         let wire: &mut MessLsysMibRegister = unsafe { &mut message.m_u.m_lsys_mib_register };
         wire.miblen = 2;
         wire.mib[..2].copy_from_slice(&[CTL_MINIX, 60]);
@@ -483,14 +500,14 @@ fn register_via_sendrec_is_refused() {
     let _ = bus.replies_pending();
 }
 
-/// 空路径单向注册：静默丢（C :894-897 "nothing to mount"）——无回执
-/// 落地，槽表不动。
+/// Empty-path one-way registration: dropped silently (C :894-897 "nothing to mount") —
+/// no reply lands, the slot table stays untouched.
 #[test]
 fn register_empty_path_is_silently_dropped() {
     let (caller, server, bus) = CallerSide::pair();
     let mut message = Message::zeroed();
     {
-        // SAFETY: 注册 overlay 按文档化车道写。
+        // SAFETY: the registration overlay is written along the documented lanes.
         let wire: &mut MessLsysMibRegister = unsafe { &mut message.m_u.m_lsys_mib_register };
         wire.miblen = 0;
     }
@@ -509,12 +526,13 @@ fn register_empty_path_is_silently_dropped() {
 }
 
 // ---------------------------------------------------------------------------
-// 链 4 · minix.mib.* 统计对账
+// Chain 4 · minix.mib.* statistics reconciliation
 // ---------------------------------------------------------------------------
 
-/// 统计子树三计数经真树读出并与服务端挂载态对账：fresh 服务
-/// remotes=0；nodes>0、objects≥nodes（对象含节点）；名字走查（枚举）
-/// 不改变任何计数。
+/// The three counters of the statistics subtree are read out of the real tree and
+/// reconciled against the server's mount state: a fresh service has remotes=0;
+/// nodes>0, objects≥nodes (objects include nodes); a name walk (enumeration) changes
+/// no counter.
 #[test]
 fn minix_mib_stats_reconcile_with_tree_and_slots() {
     let (caller, server, _bus) = CallerSide::pair();
@@ -536,7 +554,7 @@ fn minix_mib_stats_reconcile_with_tree_and_slots() {
             .all(|s| s.endpt.is_none()),
         "remotes 计数与槽表一致（无占用槽）"
     );
-    // 走查幂等：一次完整的 by-name 枚举解析不改变计数。
+    // Walk idempotence: one complete by-name enumeration resolution changes no counter.
     let mut buffer = [0u8; CLOCKINFO_LEN];
     let mut length = buffer.len();
     minix_sys::sysctl::sysctlbyname_via(
@@ -559,11 +577,12 @@ fn minix_mib_stats_reconcile_with_tree_and_slots() {
 }
 
 // ---------------------------------------------------------------------------
-// 链 3 · ERESTART 纯裁决面（remote.rs 的决策逻辑）
+// Chain 3 · ERESTART pure verdicts (the decision logic in remote.rs)
 // ---------------------------------------------------------------------------
 
-/// 回执校验三分支：正确投递、类型错、请求 id 错（C remote.c:455-459
-/// + :359/:361/:461/:463）——中继调用"服务还活着吗"的判定核心。
+/// The three branches of reply checking: correct delivery, wrong type, wrong request id
+/// (C remote.c:455-459 + :359/:361/:461/:463) — the core of the relay call's "is the
+/// service still alive" decision.
 #[test]
 fn check_reply_verdicts_match_c() {
     use remote::ReplyCheck;
@@ -573,9 +592,9 @@ fn check_reply_verdicts_match_c() {
     assert_eq!(remote::check_reply(true, 7, 0), ReplyCheck::WrongId);
 }
 
-/// 槽位生命周期：Fresh 建户、同端点同标签 Reuse、同标签死亡槽位
-/// ReapThenReuse（收割即 mib_down 前半，C remote.c:64-68）、按端点
-/// 摘除。
+/// Slot lifecycle: Fresh creates an entry, Reuse for the same endpoint and label,
+/// ReapThenReuse for a dead slot with the same label (reaping is the first half of
+/// mib_down, C remote.c:64-68), and removal by endpoint.
 #[test]
 fn slot_lifecycle_verdicts_cover_shadowing_and_death() {
     use remote::{EndptSlot, Label, SlotVerdict, locate_slot};
@@ -585,14 +604,14 @@ fn slot_lifecycle_verdicts_cover_shadowing_and_death() {
         roots: Vec::new(),
         label: label(name),
     };
-    // 有空闲座位的新服务 → Fresh（表预分配座位，Fresh=找到空座，
-    // C remote.c:136-147）。
+    // A new service with a free seat → Fresh (the table pre-allocates seats; Fresh =
+    // a free seat was found, C remote.c:136-147).
     let slots = vec![slot(Some(20), b"lwip"), slot(None, b"")];
     assert!(matches!(
         locate_slot(&slots, 21, label(b"netstack")),
         SlotVerdict::Fresh { eid: 1 }
     ));
-    // 同端点 → Reuse，标签无关（C :126-127 端点优先）。
+    // Same endpoint → Reuse, label irrelevant (C :126-127 endpoint wins).
     assert!(matches!(
         locate_slot(&slots, 20, label(b"lwip")),
         SlotVerdict::Reuse { eid: 0 }
@@ -601,20 +620,20 @@ fn slot_lifecycle_verdicts_cover_shadowing_and_death() {
         locate_slot(&slots, 20, label(b"renamed")),
         SlotVerdict::Reuse { eid: 0 }
     ));
-    // 占用槽 + 同标签 + 不同端点 → ReapThenReuse（服务死亡→收割→
-    // 续座，mib_down 的表侧形态，C :128-136）。
+    // Occupied slot + same label + different endpoint → ReapThenReuse (service died →
+    // reap → reuse the seat; the table-side shape of mib_down, C :128-136).
     let slots = vec![slot(Some(20), b"lwip"), slot(None, b"")];
     assert!(matches!(
         locate_slot(&slots, 21, label(b"lwip")),
         SlotVerdict::ReapThenReuse { eid: 0 }
     ));
-    // 全占用且无同标签 → Full（C :140-148）。
+    // All occupied and no same label → Full (C :140-148).
     let full = vec![slot(Some(20), b"lwip")];
     assert!(matches!(
         locate_slot(&full, 21, label(b"netstack")),
         SlotVerdict::Full
     ));
-    // 按端点摘除：死亡服务退场。
+    // Removal by endpoint: a dead service leaves the table.
     let mut slots = vec![slot(Some(20), b"lwip"), slot(Some(21), b"uds")];
     assert_eq!(remote::dereg_slot(&slots, 20), Some(0));
     assert_eq!(remote::dereg_slot(&slots, 99), None);

@@ -100,7 +100,7 @@ fn list_one(operand: &str, show_dot: bool, almost_all: bool, _header: bool) -> i
             Ok(0) => break,
             Ok(n) => n,
             Err(_) => {
-                //[SD19-gate] SD-19: error path cleanup close
+                //[SD19-gate] close on the error path
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = minix_sys::close(fd);
                 support::warn(format!("ls: {operand}: read error\n").as_bytes());
@@ -131,7 +131,7 @@ fn list_one(operand: &str, show_dot: bool, almost_all: bool, _header: bool) -> i
             names.push(name);
         }
     }
-    //[SD19-gate] SD-19: close 后 fd 不再使用
+    //[SD19-gate] the fd is no longer used after close
     #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::close(fd);
     names.sort();
@@ -251,7 +251,8 @@ mod tests {
 
     #[test]
     fn clustered_modeled_flags_accepted() {
-        // 关键回归：旧整 token 匹配把合法聚簇 `-1a`/`-aA` 误拒。`-1` 为 no-op。
+        // Key regression: the old whole-token matcher wrongly rejected legal
+        // clusters `-1a`/`-aA`. `-1` is a no-op.
         let a = parse_ls_args(&["-1a", "f"]).unwrap();
         assert!(a.show_dot);
         assert_eq!(a.operands, vec!["f"]);
@@ -261,7 +262,8 @@ mod tests {
 
     #[test]
     fn dash_dash_ends_option_scanning() {
-        // 关键回归：`--` 之后的 `-a` 是文件、不是选项（旧用 continue 误置 show_dot）。
+        // Key regression: after `--`, `-a` is a file, not an option (the old
+        // code used `continue` and wrongly set show_dot).
         let a = parse_ls_args(&["--", "-a", "f"]).unwrap();
         assert!(!a.show_dot);
         assert_eq!(a.operands, vec!["-a", "f"]);
@@ -279,7 +281,7 @@ mod tests {
             Some(LsError::LongStatUnwired)
         );
         assert_eq!(parse_ls_args(&["-x", "f"]).err(), Some(LsError::Usage));
-        // 裸 `-` 是操数。
+        // A bare `-` is an operand.
         assert_eq!(parse_ls_args(&["-"]).unwrap().operands, vec!["-"]);
     }
 }

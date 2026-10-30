@@ -430,10 +430,11 @@ mod tests {
         assert_eq!(relative_target(100, -30), 70);
         assert_eq!(relative_target(30, -100), 0, "truncate.c:131-132 clamps");
         assert_eq!(relative_target(30, 0), 30);
-        // 这一形正是批次二百四十四登记、本笔闭合的分叉：C 把和写进带符号的
-        // `off_t`（`truncate.c:122`），`MAX + 5` 回绕到 `MIN + 4`，再由 `:131-132`
-        // 的钳位收成 **0**；饱和加会停在 `i64::MAX`，于是同一句命令在 C 那里清空
-        // 文件、在这里却去截出一个荒谬的大值
+        // This shape is the divergence worth pinning: C writes the sum into a
+        // signed `off_t` (`truncate.c:122`), so `MAX + 5` wraps to `MIN + 4`,
+        // which the clamp at `:131-132` then collapses to **0**; a saturating
+        // add would stop at `i64::MAX`, so the same command empties the file
+        // in C yet truncates to an absurdly large value here.
         assert_eq!(relative_target(i64::MAX, 5), 0);
         assert_eq!(relative_target(i64::MIN / 2, i64::MIN / 2), 0);
         assert_eq!(clamp(-1), 0);
@@ -442,17 +443,23 @@ mod tests {
 
     #[test]
     fn a_positive_overflow_wraps_then_clamps_to_zero() {
-        // `truncate.c:122` 把和写进带符号的 `off_t`，溢出是回绕而不是停在顶上；
-        // 回绕落到负侧之后由 `:131-132` 的钳位收成 0。饱和加会把这一形停在
-        // `i64::MAX`，于是同一句命令在 C 那里清空文件、在这里却去截出一个荒谬的大值
+        // `truncate.c:122` writes the sum into a signed `off_t`, so overflow
+        // wraps instead of pinning at the top; once the wrap lands on the
+        // negative side, the clamp at `:131-132` collapses it to 0. A
+        // saturating add would pin this shape at `i64::MAX`, so the same
+        // command empties the file in C yet truncates to an absurdly large
+        // value here.
         assert_eq!(relative_target(1, i64::MAX), 0);
         assert_eq!(relative_target(i64::MAX, i64::MAX), 0);
         assert_eq!(relative_target(i64::MAX - 5, 10), 0);
-        // 不回绕的形照旧：正的正着加、负的往零钳
+        // Shapes that do not wrap behave as before: positives add up,
+        // negatives clamp toward zero.
         assert_eq!(relative_target(4096, 4096), 8192);
         assert_eq!(relative_target(10, -3), 7);
         assert_eq!(relative_target(3, -10), 0);
-        // `st_size` 非负，所以负方向的回绕不可达：最小加数配上零恰好停在 `i64::MIN`
+        // `st_size` is non-negative, so the negative-direction wrap is
+        // unreachable: the smallest addend with a zero exactly lands on
+        // `i64::MIN`.
         assert_eq!(relative_target(0, i64::MIN), 0);
     }
 }

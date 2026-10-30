@@ -156,30 +156,35 @@ pub struct Session {
     /// While collecting text for `a`/`i`/`c`: the insert-before position
     /// of the next input line.
     pending_input: Option<usize>,
-    /// `G`/`V` 交互全局的进行态（C `exec_global` 的 interact 半，
-    /// glbl.c:107-134）：每个活跃行显示后等一条命令。
+    /// The in-progress state of the `G`/`V` interactive global (the interact
+    /// half of C's `exec_global`, glbl.c:107-134): each active line is
+    /// displayed and then one command is awaited.
     pending_global: Option<PendingGlobal>,
-    /// 上一次的模式字节（`s/old/…` 写入；`//` 空模式与裸 `s` 复用——C 的
-    /// `pat` 全局加 `expr` 缓存，re.c:59-88）。空 len = 无。
+    /// The previous pattern bytes (written by `s/old/...`; the empty pattern
+    /// `//` and the bare `s` reuse it -- C's `pat` global plus the `expr`
+    /// cache, re.c:59-88). Empty len = none.
     last_pattern: [u8; MAX_TEXT],
     last_pattern_len: usize,
-    /// 上一次的替换模板（`%%<delim>` 复用形与裸 `s` 用——C 的 `rhbuf`，
-    /// sub.c:44-46）。空 len = 无。
+    /// The previous replacement template (used by the `%%<delim>` reuse form
+    /// and the bare `s` -- C's `rhbuf`, sub.c:44-46). Empty len = none.
     last_replacement: [u8; MAX_TEXT],
     last_replacement_len: usize,
-    /// 上一次 `s` 的作用域（裸 `s`/`sg`/`sN` 重放——C 的 `sgflag`/`sgnum`
-    /// 全局）。`None` = 还没有过替换（"no previous substitution"）。
+    /// The previous `s` scope (replayed by bare `s`/`sg`/`sN` -- C's
+    /// `sgflag`/`sgnum` globals). `None` = no substitution yet ("no previous
+    /// substitution").
     last_scope: Option<SubstScope>,
-    /// 撤销栈（C `ustack`/`u_p`，undo.c:41-43）。每个条目记一次变更；
-    /// `u` 逆序回放后翻种翻转序，第二次 `u` 即重做。
+    /// The undo stack (C `ustack`/`u_p`, undo.c:41-43). Each entry records one
+    /// change; after `u` replays it in reverse the kind flips and the order
+    /// reverses, so a second `u` redoes it.
     undo_stack: Vec<UndoEntry>,
-    /// `u_current_addr`/`u_addr_last`（C undo.c:64-65）：变更前的现场，
-    /// `None` = 尚未启用（`u` 回 "nothing to undo"）。
+    /// `u_current_addr`/`u_addr_last` (C undo.c:64-65): the state before the
+    /// change; `None` = not armed yet (`u` answers "nothing to undo").
     undo_current: Option<usize>,
     undo_last: Option<usize>,
-    /// `isglobal`（C main.c:91）：全局命令执行中——清栈被抑制（整段
-    /// 全局是一条撤销单位）、嵌套 `g` 被拒、`s` 无匹配不算错、裸地址
-    /// 缺省即当前行。
+    /// `isglobal` (C main.c:91): a global command is running -- clearing the
+    /// stack is suppressed (a whole global run is one undo unit), a nested `g`
+    /// is refused, an `s` with no match is not an error, and a bare address
+    /// defaults to the current line.
     is_global: bool,
     /// The suffix `gflag` of the command that opened text-input mode; the
     /// post-input display uses it (`exec_command` returns it, and the
@@ -264,8 +269,9 @@ impl Session {
         &self.last_replacement[..self.last_replacement_len]
     }
 
-    /// 记住一个新编译的模式（C `pat = tpat`，main.c:739-743——**替换成功
-    /// 与否都记**：缓存在解析时就落账）。
+    /// Remember a freshly compiled pattern (C `pat = tpat`, main.c:739-743 --
+    /// it is remembered **whether or not the substitution succeeds**: the
+    /// cache is charged at parse time).
     fn remember_pattern(&mut self, bytes: &[u8]) -> Result<(), ExecError> {
         if bytes.len() > MAX_TEXT {
             return Err(err("out of memory"));
@@ -369,18 +375,21 @@ fn marks_delete(sess: &mut Session, from: usize, to: usize) {
     }
 }
 
-/// 一条撤销记录的种类（C `UADD`/`UDEL`，ed.h:84-85）。`u` 回放后翻转：
-/// Add 变 Delete（下次 `u` 即重做删除），反之亦然。
+/// The kind of one undo record (C `UADD`/`UDEL`, ed.h:84-85). `u` flips it
+/// after replay: Add becomes Delete (the next `u` redoes the deletion), and
+/// vice versa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UndoKind {
-    /// 插入了 `from..=to` 行（撤销 = 删回）。
+    /// Lines `from..=to` were inserted (undo = delete them back).
     Add,
-    /// 删除了 `from..=to` 行，`text` 留有内容（撤销 = 插回）。
+    /// Lines `from..=to` were deleted and `text` keeps their contents
+    /// (undo = insert them back).
     Delete,
 }
 
-/// 一条撤销记录（C `undo_t`，ed.h:87-91——C 用行节点指针保身份，本模型
-/// 用行号加内容：Delete 件把被删文本带在身上，`u` 时原样插回）。
+/// One undo record (C `undo_t`, ed.h:87-91 -- C keeps identity with line-node
+/// pointers; this model uses line numbers plus contents: a Delete entry carries
+/// the deleted text and inserts it back verbatim on `u`).
 #[derive(Debug, Clone)]
 struct UndoEntry {
     kind: UndoKind,
@@ -389,17 +398,18 @@ struct UndoEntry {
     text: Vec<u8>,
 }
 
-/// `clear_undo_stack`（undo.c:107-120）：清栈并把现场快照进
-/// `undo_current`/`undo_last`——这条快照是 `u` 的"改动前状态"。
-/// 每个改动型命令（a/i/c/d/e/E/i/j/m/r/s/t）在动手前调用。
+/// `clear_undo_stack` (undo.c:107-120): clear the stack and snapshot the state
+/// into `undo_current`/`undo_last` -- that snapshot is `u`'s "state before the
+/// change". Every modifying command (a/i/c/d/e/E/i/j/m/r/s/t) calls it before
+/// touching the buffer.
 fn clear_undo<S: TextStore>(store: &S, sess: &mut Session) {
     sess.undo_stack.clear();
     sess.undo_current = Some(sess.current);
     sess.undo_last = Some(store.line_count());
 }
 
-/// `push_undo_stack` 的插入半（C 的 UADD，main.c:1085/1125/1203：每一行
-/// 插入记一条）。
+/// The insert half of `push_undo_stack` (C's UADD, main.c:1085/1125/1203: every
+/// inserted line records one entry).
 fn push_undo_add(sess: &mut Session, pos: usize) {
     sess.undo_stack.push(UndoEntry {
         kind: UndoKind::Add,
@@ -425,10 +435,10 @@ fn insert_line<S: TextStore>(
     Ok(())
 }
 
-/// A deleted range: the store call plus `delete_lines`' bookkeeping
-/// (`main.c:1222` 的 UDEL 记账加 `main.c:1233-1235`——current 落到
-/// `from - 1`，缓冲已改）。删除的文本随条目带走（C 靠节点保留，这里
-/// 靠 `text`）。
+/// A deleted range: the store call plus `delete_lines`' bookkeeping (the UDEL
+/// record at `main.c:1222` plus `main.c:1233-1235` -- current becomes
+/// `from - 1` and the buffer is dirty). The deleted text travels with the entry
+/// (C keeps it in the nodes; here `text` carries it).
 fn delete_range<S: TextStore>(
     store: &mut S,
     sess: &mut Session,
@@ -457,8 +467,9 @@ fn delete_range<S: TextStore>(
     Ok(())
 }
 
-/// 活跃表（C `glbl.c` 的 `active_list`，升序记内容快照）。定长缓冲：
-/// 活跃内容是缓冲内容的子集，store 的容量就是表的容量上限。
+/// The active table (C `glbl.c`'s `active_list`, recording content snapshots in
+/// ascending order). Fixed-size buffers: active contents are a subset of the
+/// buffer contents, so the store's capacity is the table's upper bound.
 struct ActiveList {
     text: [u8; MAX_TEXT],
     starts: [u16; MAX_LINES + 1],
@@ -483,27 +494,31 @@ impl ActiveList {
     }
 }
 
-/// `G`/`V` 的进行态：活跃表加游标，加本段 G 已见过的最近命令（C 的
-/// `ocmd` 静态量，`&` 重放源；`seen` 对应 C 局部 `cmd != NULL` 的
-/// "no previous command" 门——每段 G 重新起算）。
+/// The in-progress state of `G`/`V`: the active table plus the cursor, plus the
+/// most recent command seen in this `G` run (C's `ocmd` static, the source `&`
+/// replays; `seen` corresponds to C's local `cmd != NULL` "no previous command"
+/// gate -- it starts over for each `G` run).
 struct PendingGlobal {
     active: ActiveList,
-    /// 下一活跃行下标。
+    /// The index of the next active line.
     next: usize,
-    /// 内容重定位的扫描起点（行号）。
+    /// The scan start (line number) for content relocation.
     relocate: usize,
-    /// 当前等答案的行号。
+    /// The line number currently awaiting an answer.
     at: usize,
     prev: [u8; MAX_TEXT],
     prev_len: usize,
     seen: bool,
-    /// 尾缀打印位（`G/…/n` 之类，C `main.c:566` 的 GET_COMMAND_SUFFIX）。
+    /// The suffix print bit (`G/.../n` etc., C `main.c:566`'s
+    /// GET_COMMAND_SUFFIX).
     gflag: u8,
 }
 
-/// `g`/`v`/`G`/`V` 的公共前半（C `build_active_list`，glbl.c:43-67）：
-/// 范围求值（缺省整缓冲）、模式解析（空模式复用上一模式并落账）、按
-/// 匹配与否收活跃表。返回表与模式后的余部起点。
+/// The common front half of `g`/`v`/`G`/`V` (C `build_active_list`,
+/// glbl.c:43-67): evaluate the range (the whole buffer by default), parse the
+/// pattern (an empty pattern reuses the previous one and charges it to the
+/// cache), and collect the active table by match or non-match. Returns the
+/// table and the start of the remainder after the pattern.
 fn build_active<S: TextStore>(
     store: &mut S,
     sess: &mut Session,
@@ -517,7 +532,8 @@ fn build_active<S: TextStore>(
     let (from, to) =
         evaluate_range_with(range, &context_of(store, sess), (1, count), line, &mut probe)
             .map_err(map_store_error)?;
-    // 探针的借用到此为止：后面的建表走可变借用。
+    // The probe's borrow ends here: building the table below takes a mutable
+    // borrow.
     let rest = &line[cursor..];
     let bytes = rest.as_bytes();
     if bytes.is_empty() || bytes[0] == b' ' {
@@ -530,7 +546,8 @@ fn build_active<S: TextStore>(
     let mut pattern_buf = [0u8; MAX_TEXT];
     pattern_buf[..pattern_len].copy_from_slice(&bytes[1..1 + pattern_len]);
     if pattern_len == 0 {
-        // 空模式复用上一模式（C `get_compiled_pattern` 的 expr 缓存）。
+        // An empty pattern reuses the previous one (C
+        // `get_compiled_pattern`'s expr cache).
         pattern_len = sess.last_pattern_len;
         pattern_buf[..pattern_len].copy_from_slice(sess.last_pattern_bytes());
     }
@@ -555,24 +572,31 @@ fn build_active<S: TextStore>(
     Ok((active, after))
 }
 
-/// `g`/`v` 的执行半（C `glbl.c` 全篇 + `main.c:562-574`）：
+/// The execution half of `g`/`v` (all of C `glbl.c` + `main.c:562-574`):
 ///
-/// 1. 范围缺省整缓冲（`check_addr_range(1, addr_last)`）；尾形式
-///    `<定界>模式<定界>子命令`（空子命令不隐含 `p`——本构建无
-///    BACKWARDS，glbl.c:56-63）；空模式复用上一模式。
-/// 2. 建活跃表（`build_active_list`，glbl.c:43-67）：`g` 收匹配行、
-///    `v` 收不匹配行，升序记内容快照。
-/// 3. 清撤销栈一次（exec_global:143）——整段全局是**一条**撤销单位，
-///    子命令里的清栈被 `is_global` 抑制。
-/// 4. 逐活跃行执行子命令（`exec_global:104-144`）：当前行落到活跃行
-///    上；活跃行已被删/已改则跳过（定位规则见下）；子命令出错即中止
-///    整段全局（已执行的变更保留，C 同）。嵌套 `g` 在派发处拒绝
-///    （main.c:562-564）。
+/// 1. The range defaults to the whole buffer (`check_addr_range(1, addr_last)`);
+///    the tail form is `<delim>pattern<delim>subcommand` (an empty subcommand
+///    does not imply `p` -- this build has no BACKWARDS, glbl.c:56-63); an
+///    empty pattern reuses the previous one.
+/// 2. Build the active table (`build_active_list`, glbl.c:43-67): `g` collects
+///    matching lines and `v` non-matching ones, recording content snapshots in
+///    ascending order.
+/// 3. Clear the undo stack once (exec_global:143) -- a whole global run is
+///    **one** undo unit, and stack clearing inside subcommands is suppressed by
+///    `is_global`.
+/// 4. Run the subcommand for each active line (`exec_global:104-144`): the
+///    current line moves to the active line; active lines already deleted or
+///    changed are skipped (relocation rule below); a subcommand error aborts
+///    the whole global run (changes already made are kept, as in C). A nested
+///    `g` is refused at dispatch (main.c:562-564).
 ///
-/// **登记偏差（活跃行的定位）**：C 用行节点身份（被删行的槽位置空、
-/// `next_active_node` 跳过），本模型按匹配时的内容从上次命中处向后
-/// 重定位——计数减少视为有行被删，从命中行重扫；否则从下一行起扫。
-/// 重复内容的行在搬移/插入类子命令下可能与 C 差位。
+/// **Registered deviation (locating active lines)**: C uses line-node identity
+/// (the slot of a deleted line is emptied and `next_active_node` skips it);
+/// this model relocates by the content captured at match time, scanning forward
+/// from the last hit -- a decrease in the line count is taken as a deletion and
+/// the scan restarts at the hit line; otherwise it starts at the next line.
+/// Lines with duplicate contents may therefore land differently from C under
+/// subcommands that move or insert lines.
 fn global_command<S: TextStore, I: EditorIo>(
     store: &mut S,
     sess: &mut Session,
@@ -584,7 +608,7 @@ fn global_command<S: TextStore, I: EditorIo>(
     if sess.is_global {
         return Err(err("cannot nest global commands"));
     }
-    // 命令字母在 `line[cursor - 1]`（`g` 或 `v`）。
+    // The command letter is at `line[cursor - 1]` (`g` or `v`).
     let is_match = line.as_bytes()[cursor - 1] == b'g';
     let (active, after) = build_active(store, sess, line, cursor, range, is_match)?;
     if !sess.is_global {
@@ -597,7 +621,8 @@ fn global_command<S: TextStore, I: EditorIo>(
     let mut cursor_pos = 1usize;
     for index in 0..active.count {
         let want = active.line(index).to_vec();
-        // 内容重定位：从上一命中处向后找同文行（见函数头偏差注记）。
+        // Content relocation: scan forward from the previous hit for a line
+        // with the same text (see the deviation note in the function header).
         let mut found = None;
         let mut n = cursor_pos;
         while n <= store.line_count() {
@@ -612,8 +637,8 @@ fn global_command<S: TextStore, I: EditorIo>(
         let Some(at) = found else { continue };
         sess.current = at;
         if cmd.is_empty() {
-            // 空子命令：本构建不隐含 `p`（glbl.c:56-63 无 BACKWARDS），
-            // 只落当前行。
+            // Empty subcommand: this build does not imply `p` (glbl.c:56-63
+            // has no BACKWARDS); only move the current line.
             cursor_pos = at + 1;
             continue;
         }
@@ -622,8 +647,10 @@ fn global_command<S: TextStore, I: EditorIo>(
         if result.is_err() || matches!(result, Ok(Flow::Quit) | Ok(Flow::QuitModified)) {
             break;
         }
-        // 游标推进：计数减少 = 有行被删，下一个活跃行可能就落在命中行
-        // 上（重扫）；否则命中行若存活即消费掉（下一行起扫）。
+        // Cursor advance: a decrease in the count means a line was deleted, so
+        // the next active line may sit on the hit line itself (rescan);
+        // otherwise the hit line, if it survived, is consumed (scan starts at
+        // the next line).
         let survived = at <= store.line_count() && {
             let mut b = [0u8; MAX_TEXT];
             let used = store.read_line(at, &mut b).map_err(map_store_error)?;
@@ -635,9 +662,10 @@ fn global_command<S: TextStore, I: EditorIo>(
     result
 }
 
-/// `G`/`V` 的启动半（C `main.c:560-574` 的 G/V 支路）：与 `g`/`v` 同一
-/// 建表半（`build_active_list`），随后读 p/l/n 尾缀、清栈一次、置
-/// 输入态并显示第一个活跃行——余下的交互跨多次 [`step`] 进行。
+/// The startup half of `G`/`V` (the G/V branch of C `main.c:560-574`): the same
+/// table-building half as `g`/`v` (`build_active_list`), then read the p/l/n
+/// suffix, clear the stack once, enter input mode, and display the first active
+/// line -- the rest of the interaction spans several [`step`] calls.
 fn global_interactive_start<S: TextStore, I: EditorIo>(
     store: &mut S,
     sess: &mut Session,
@@ -675,8 +703,9 @@ fn global_interactive_start<S: TextStore, I: EditorIo>(
     }
 }
 
-/// 定位并显示下一个活跃行（C `exec_global` 循环头的 `display_lines`，
-/// glbl.c:107-110）。返回假表示活跃表走尽——整个 G 收束。
+/// Locate and display the next active line (the `display_lines` at the head of
+/// C's `exec_global` loop, glbl.c:107-110). A false return means the active
+/// table is exhausted -- the whole `G` run settles.
 fn global_resume<S: TextStore, I: EditorIo>(
     store: &mut S,
     sess: &mut Session,
@@ -685,7 +714,8 @@ fn global_resume<S: TextStore, I: EditorIo>(
 ) -> Result<bool, ExecError> {
     while pending.next < pending.active.count {
         let want = pending.active.line(pending.next).to_vec();
-        // 内容重定位：从上一命中处向后找同文行（批次三十同式）。
+        // Content relocation: scan forward from the previous hit for a line
+        // with the same text (the same shape as `g`).
         let mut found = None;
         let mut n = pending.relocate;
         while n <= store.line_count() {
@@ -709,9 +739,11 @@ fn global_resume<S: TextStore, I: EditorIo>(
     Ok(false)
 }
 
-/// 一条 `G`/`V` 的回答（C glbl.c:111-134）：空行跳过、`&` 重放、其余
-/// 按全局文法执行。`Ok(None)` = 继续等下一活跃行的回答；`Ok(Some)`
-/// = G 收束并带出流向；`Err` = G 整段中止（已执行的变更保留，C 同）。
+/// One `G`/`V` answer (C glbl.c:111-134): an empty line skips, `&` replays,
+/// and anything else runs through the global grammar. `Ok(None)` = keep waiting
+/// for the next active line's answer; `Ok(Some)` = the `G` run settles and
+/// carries the flow out; `Err` = abort the whole `G` run (changes already made
+/// are kept, as in C).
 fn global_interact_answer<S: TextStore, I: EditorIo>(
     store: &mut S,
     sess: &mut Session,
@@ -722,7 +754,7 @@ fn global_interact_answer<S: TextStore, I: EditorIo>(
     let at = pending.at;
     let want = pending.active.line(pending.next).to_vec();
     if line.is_empty() {
-        // `n == 1 && ibuf == "\n"`：这一行跳过（glbl.c:119-120）。
+        // `n == 1 && ibuf == "\n"`: skip this line (glbl.c:119-120).
         pending.next += 1;
         pending.relocate = at + 1;
         return if global_resume(store, sess, io, pending)? {
@@ -734,7 +766,7 @@ fn global_interact_answer<S: TextStore, I: EditorIo>(
     let cmd: &str;
     if line == "&" {
         if !pending.seen {
-            // C glbl.c:121-125：本段还没给过命令。
+            // C glbl.c:121-125: this run has not supplied a command yet.
             return Err(err("no previous command"));
         }
         cmd = core::str::from_utf8(&pending.prev[..pending.prev_len])
@@ -753,13 +785,15 @@ fn global_interact_answer<S: TextStore, I: EditorIo>(
         Err(e) => Err(e),
         Ok(flow @ (Flow::Quit | Flow::QuitModified)) => Ok(Some(flow)),
         Ok(Flow::Continue) => {
-            // C `append_lines` 的 isglobal 支路（main.c:1059-1064）：正文
-            // 从命令串里读——一段回答收不到正文行，`a`/`i`/`c` 落空即过。
+            // The isglobal branch of C `append_lines` (main.c:1059-1064):
+            // text comes from the command string -- one answer cannot receive
+            // text lines, so `a`/`i`/`c` fall through empty.
             if sess.pending_input.take().is_some() {
                 sess.pending_gflag = 0;
             }
-            // 重定位记账：计数减少 = 有行被删（重扫）；否则命中行若
-            // 存活即消费掉（下一行起扫）。
+            // Relocation bookkeeping: a decrease in the count means a line was
+            // deleted (rescan); otherwise the hit line, if it survived, is
+            // consumed (scan starts at the next line).
             let survived = at <= store.line_count() && {
                 let mut b = [0u8; MAX_TEXT];
                 let used = store.read_line(at, &mut b).map_err(map_store_error)?;
@@ -776,19 +810,24 @@ fn global_interact_answer<S: TextStore, I: EditorIo>(
     }
 }
 
-/// `pop_undo_stack`（undo.c:71-105）：`u` 的本体——逆序回放撤销栈，把
-/// 每条变更翻回去，然后**翻转种类、倒转栈序、互换现场快照**（第二次
-/// `u` 即重做；C 的 `type ^= 1` 加 USWAP，undo.c:117-123）。
+/// `pop_undo_stack` (undo.c:71-105): the body of `u` -- replay the undo stack in
+/// reverse, flipping every change back, then **flip the kinds, reverse the stack
+/// order, and swap the state snapshots** (a second `u` redoes; C's
+/// `type ^= 1` plus USWAP, undo.c:117-123).
 ///
-/// 回放走裸 store 调用（不再入栈），标记按原命令同款平移/摘除；结束
-/// 后当前行与缓冲规模取自改动前快照（`u_current_addr`/`u_addr_last`）。
+/// Replay uses raw store calls (nothing is pushed back onto the stack), and
+/// marks shift or disappear exactly as under the original command; afterwards
+/// the current line and the buffer size come from the pre-change snapshot
+/// (`u_current_addr`/`u_addr_last`).
 fn pop_undo<S: TextStore>(store: &mut S, sess: &mut Session) -> Result<(), ExecError> {
-    // `undo_last` 是重做态的缓冲规模：回放本身把它恢复出来（C 的
-    // `addr_last = u_addr_last` 互换），这里用它做回放完整性的断言。
+    // `undo_last` is the buffer size of the redo state: replay itself restores
+    // it (C's `addr_last = u_addr_last` swap); it is used here as the replay
+    // completeness assertion.
     let (Some(undo_current), Some(undo_last)) = (sess.undo_current, sess.undo_last) else {
         return Err(err("nothing to undo"));
     };
-    // C：`else if (u_p) modified = 1;`——有账可翻就把缓冲标脏。
+    // C: `else if (u_p) modified = 1;` -- when there is a record to flip, mark
+    // the buffer dirty.
     if !sess.undo_stack.is_empty() {
         sess.modified = true;
     }
@@ -801,8 +840,9 @@ fn pop_undo<S: TextStore>(store: &mut S, sess: &mut Session) -> Result<(), ExecE
         };
         match kind {
             UndoKind::Add => {
-                // 撤销插入：先把 `from..=to` 的现行文本收进条目（翻转后
-                // 是 Delete，重做时要用），再删回。
+                // Undo an insertion: first collect the current text of
+                // `from..=to` into the entry (after flipping it becomes Delete
+                // and a redo needs it), then delete it back.
                 let mut text = Vec::new();
                 let mut n = from;
                 while n <= to {
@@ -819,7 +859,8 @@ fn pop_undo<S: TextStore>(store: &mut S, sess: &mut Session) -> Result<(), ExecE
                 e.text = text;
             }
             UndoKind::Delete => {
-                // 撤销删除：把带的文本按行插回 `from`，翻成 Add。
+                // Undo a deletion: insert the carried text back line by line at
+                // `from`, and flip it to Add.
                 let text = sess.undo_stack[i].text.clone();
                 let line_text =
                     core::str::from_utf8(&text).map_err(|_| err("invalid content"))?;
@@ -852,8 +893,8 @@ fn map_store_error(e: EditorError) -> ExecError {
         // The C editor's buffer-exhaustion face (`io.c` sbuf full).
         EditorError::TooLong => err("out of memory"),
         EditorError::InvalidArgument => err("invalid address"),
-        // C `get_matching_node_addr`/`search_and_replace` 的 "no match"
-        // （main.c:938，sub.c:175-179）。
+        // "no match" from C `get_matching_node_addr`/`search_and_replace`
+        // (main.c:938, sub.c:175-179).
         EditorError::NoMatch => err("no match"),
     }
 }
@@ -1174,11 +1215,13 @@ fn parse_range_err(line: &str) -> Result<(AddressRange, usize), ExecError> {
     parse_range(line).map_err(|_| err("invalid address"))
 }
 
-/// 缓冲上的搜索探针（`addr::SearchProbe` 的 store 半）：模式交给 08 篇
-/// 的 BRE 引擎，扫描次序照抄 C `get_matching_node_addr`
-/// （main.c:919-938）——从当前行的下一行（反向：上一行）起，
-/// `INC_MOD`/`DEC_MOD`（ed.h:101-102）绕整缓冲一圈，当前行最后被访问；
-/// 空缓冲没有可扫的行，按无效地址回答。
+/// The search probe over the buffer (the store half of `addr::SearchProbe`): the
+/// pattern goes to the BRE engine of doc 08, and the scan order copies C
+/// `get_matching_node_addr` (main.c:919-938) -- starting at the line after the
+/// current one (backward: the previous line), `INC_MOD`/`DEC_MOD`
+/// (ed.h:101-102) wrap once around the whole buffer, and the current line is
+/// visited last; an empty buffer has no line to scan and answers with an
+/// invalid address.
 struct StoreSearch<'a, S: TextStore> {
     store: &'a S,
     sess: &'a Session,
@@ -1263,8 +1306,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
         return Ok(Flow::Continue);
     }
 
-    // `G`/`V` 交互全局：每行输入是当前活跃行的回答（C `exec_global` 的
-    // interact 半跨多次 step——每个匹配行显示后等一条命令）。
+    // `G`/`V` interactive global: each input line is the answer for the
+    // current active line (the interact half of C's `exec_global` spans several
+    // steps -- each matching line is displayed and one command is awaited).
     if sess.pending_global.is_some() {
         let mut pending = sess.pending_global.take().unwrap();
         match global_interact_answer(store, sess, io, line, &mut pending) {
@@ -1285,8 +1329,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
 
     let (range, consumed) = parse_range_err(line)?;
     let rest = &line[consumed..];
-    // 搜索探针：不可变借用 store 与 sess；NLL 保证各臂在末次使用之后即可
-    // 可变访问（求值都在变更之前）。
+    // Search probe: it borrows store and sess immutably; NLL guarantees each
+    // arm can take a mutable borrow once the probe's last use is past (all
+    // evaluation happens before any change).
     let mut probe = StoreSearch { store, sess: &*sess };
     if rest.is_empty() {
         // A bare address (or bare newline): display the second address,
@@ -1437,7 +1482,8 @@ fn step_inner<S: TextStore, I: EditorIo>(
             }
             let mut target_buf = [0u8; MAX_FILENAME + 1];
             let target = target_name(sess, typed, &mut target_buf)?;
-            // C 522/537：e/E 无条件清撤销栈（在删旧缓冲之前）。
+            // C 522/537: e/E clears the undo stack unconditionally (before
+            // deleting the old buffer).
             if !sess.is_global {
                 clear_undo(store, sess);
             }
@@ -1716,8 +1762,10 @@ fn step_inner<S: TextStore, I: EditorIo>(
             substitute_command(store, sess, io, line, cursor, &modifiers, &range)
         }
         Command::Undo => {
-            // C main.c:794-800：地址即 "unexpected address"，后缀照读，
-            // 然后 `pop_undo_stack`——**不清栈**（清栈是改动型命令的事）。
+            // C main.c:794-800: an address is "unexpected address", the suffix
+            // is still read, and then `pop_undo_stack` runs -- **without
+            // clearing the stack** (clearing is the business of modifying
+            // commands).
             if range.first.is_some() || range.second.is_some() {
                 return Err(err("unexpected address"));
             }
@@ -1742,19 +1790,24 @@ fn step_inner<S: TextStore, I: EditorIo>(
     }
 }
 
-/// `s` 的执行半（C `main.c:698-770` + `sub.c:49-240`）：
+/// The execution half of `s` (C `main.c:698-770` + `sub.c:49-240`):
 ///
-/// 1. **前导旗标**（可连写；起手后遇到非旗标即 "invalid command suffix"）：
-///    `g` 全局、`p` 替换行即打印、`r` 复用上一替换、数字 = 第 N 个匹配。
-///    空尾（裸 `s`）= 整体重放。
-/// 2. **尾形式** `<delim>pat<delim>repl<delim?>[g|N]?`：定界符任取（空格
-///    即 "invalid pattern delimiter"），`repl` 处 `%%<delim>` 复用上一替
-///    换（"no previous substitution"），结束定界符行尾可省；其后的 `p`/
-///    `l`/`n` 与修饰位同族（C 的 GET_COMMAND_SUFFIX）。
-/// 3. **模式缓存**：非空模式编入并立即落账（C `pat = tpat`，main.c:739）；
-///    空模式（`//`）复用上一模式（"no previous pattern"，re.c:69）。范围
-///    缺省当前行；替换发生的最后一行成为新的当前行；全程无替换回
-///    "no match"（C `search_and_replace`，sub.c:141-181）。
+/// 1. **Leading flags** (may be written in sequence; after they start, any
+///    non-flag is "invalid command suffix"): `g` global, `p` print the replaced
+///    line, `r` reuse the previous replacement, a digit = the N-th match. An
+///    empty tail (bare `s`) = replay everything.
+/// 2. **Tail form** `<delim>pat<delim>repl<delim?>[g|N]?`: the delimiter may be
+///    any character (a space is "invalid pattern delimiter"), `%%<delim>` at
+///    `repl` reuses the previous replacement ("no previous substitution"), and
+///    the closing delimiter may be omitted at end of line; the following `p`/
+///    `l`/`n` belong to the same family as the modifier bits (C's
+///    GET_COMMAND_SUFFIX).
+/// 3. **Pattern cache**: a non-empty pattern is compiled and remembered at once
+///    (C `pat = tpat`, main.c:739); an empty pattern (`//`) reuses the previous
+///    one ("no previous pattern", re.c:69). The range defaults to the current
+///    line; the last line where a replacement happened becomes the new current
+///    line; with no replacement anywhere, the answer is "no match" (C
+///    `search_and_replace`, sub.c:141-181).
 fn substitute_command<S: TextStore, I: EditorIo>(
     store: &mut S,
     sess: &mut Session,
@@ -1766,7 +1819,7 @@ fn substitute_command<S: TextStore, I: EditorIo>(
 ) -> Result<Flow, ExecError> {
     let rest = &line[cursor..];
     let bytes = rest.as_bytes();
-    // ── 前导旗标 ──
+    // ── leading flags ──
     let mut scope_override: Option<SubstScope> = None;
     let mut reuse_replacement = false;
     let mut print_replaced = false;
@@ -1800,20 +1853,22 @@ fn substitute_command<S: TextStore, I: EditorIo>(
         }
     }
     if at > 0 && at < bytes.len() {
-        // 旗标起手后只许旗标到行尾（C `while (sflags && *ibufp != '\n')`
-        // 的 default 臂，main.c:719-722）。
+        // Once flags have started, only flags may follow until end of line (the
+        // default arm of C `while (sflags && *ibufp != '\n')`, main.c:719-722).
         return Err(err("invalid command suffix"));
     }
     let flagged = at > 0;
-    // ── 模式与替换的来源 ──（本 crate 无堆：来源先抄进局部定长缓冲）
+    // ── where pattern and replacement come from ── (this crate has no heap:
+    // sources are first copied into local fixed-size buffers)
     let mut pattern_buf = [0u8; MAX_TEXT];
     let mut pattern_len: usize;
     let mut repl_buf = [0u8; MAX_TEXT];
     let repl_len: usize;
     let mut scope;
     if reuse_replacement {
-        // `sr`（C main.c:730-737 的 SGR 半）：从尾里读**新模式**，替换与
-        // 作用域沿用上一次（`sgflag`/`sgnum` 不动）；空尾等同裸 `s`。
+        // `sr` (the SGR half of C main.c:730-737): read a **new pattern** from
+        // the tail while the replacement and scope stay as before
+        // (`sgflag`/`sgnum` untouched); an empty tail is the same as bare `s`.
         let Some(prev) = sess.last_scope else {
             return Err(err("no previous substitution"));
         };
@@ -1832,8 +1887,8 @@ fn substitute_command<S: TextStore, I: EditorIo>(
             pattern_buf[..pattern_len].copy_from_slice(&bytes[1..1 + pattern_len]);
         }
     } else if bytes.is_empty() || flagged {
-        // 裸/旗标形式：整段复用（C 的 sflags 门：`if (sflags && !pat)`
-        // → "no previous substitution"，main.c:725-728）。
+        // Bare or flagged form: replay everything (C's sflags gate
+        // `if (sflags && !pat)` -> "no previous substitution", main.c:725-728).
         let Some(prev_scope) = sess.last_scope else {
             return Err(err("no previous substitution"));
         };
@@ -1853,8 +1908,8 @@ fn substitute_command<S: TextStore, I: EditorIo>(
         pattern_buf[..pattern_len].copy_from_slice(&bytes[1..1 + pattern_len]);
         let mut r_at = after_pattern;
         if bytes.get(r_at) == Some(&b'%') && bytes.get(r_at + 1) == Some(&delim) {
-            // `%%<delim>`：复用上一替换（C `extract_subst_template` 的
-            // rhbuf 分支，sub.c:82-89）。
+            // `%%<delim>`: reuse the previous replacement (the rhbuf branch of
+            // C `extract_subst_template`, sub.c:82-89).
             if sess.last_replacement_len == 0 {
                 return Err(err("no previous substitution"));
             }
@@ -1887,7 +1942,7 @@ fn substitute_command<S: TextStore, I: EditorIo>(
             _ => {}
         }
     }
-    // 空模式复用上一模式（C re.c:66-72）。
+    // An empty pattern reuses the previous one (C re.c:66-72).
     if pattern_len == 0 {
         pattern_len = sess.last_pattern_len;
         pattern_buf[..pattern_len].copy_from_slice(sess.last_pattern_bytes());
@@ -1895,8 +1950,9 @@ fn substitute_command<S: TextStore, I: EditorIo>(
     if pattern_len == 0 {
         return Err(err("no previous pattern"));
     }
-    // 落账（C main.c:739-743 与 sub.c 的 rhbuf：解析成功即记，替换成败
-    // 不回头）。
+    // Remember them (C main.c:739-743 and sub.c's rhbuf: recorded as soon as
+    // parsing succeeds, without looking back at whether the substitution
+    // succeeded).
     sess.remember_pattern(&pattern_buf[..pattern_len])?;
     sess.remember_replacement(&repl_buf[..repl_len])?;
     sess.last_scope = Some(scope);
@@ -1911,15 +1967,18 @@ fn substitute_command<S: TextStore, I: EditorIo>(
         scope,
         print: false,
     };
-    // 范围缺省当前行（C `check_addr_range(current_addr, current_addr)`，
-    // main.c:760-761）。没有当前行（缓冲空）时 C 会去扫它的 0 号头行
-    // （空串），无匹配即 "no match"——本模型没有 0 号行，如实折同一错误
-    // （登记偏差：能匹配空串的模式在 C 里会真插一行，未知行为面）。
+    // The range defaults to the current line (C
+    // `check_addr_range(current_addr, current_addr)`, main.c:760-761). With no
+    // current line (empty buffer) C scans its line 0 head (the empty string)
+    // and reports "no match" on a miss -- this model has no line 0, so it folds
+    // to the same error faithfully (registered deviation: a pattern that can
+    // match the empty string would really insert a line in C; that behavior is
+    // unknown here).
     if sess.current == 0 && range.first.is_none() && range.second.is_none() {
         return Err(err("no match"));
     }
-    // C `main.c:684`：全局里 `s` 的清栈被 isglobal 抑制——整段全局是
-    // 一条撤销单位。
+    // C `main.c:684`: inside a global, `s`'s stack clearing is suppressed by
+    // isglobal -- a whole global run is one undo unit.
     if !sess.is_global {
         clear_undo(store, sess);
     }
@@ -1932,7 +1991,8 @@ fn substitute_command<S: TextStore, I: EditorIo>(
         &mut probe,
     )
     .map_err(map_store_error)?;
-    // 探针的借用到此为止：后面的删插走可变借用（NLL 分路径结清）。
+    // The probe's borrow ends here: the insert/delete below takes a mutable
+    // borrow (NLL settles it per path).
     let original_current = sess.current;
     let mut last_changed: Option<usize> = None;
     let mut n = from;
@@ -1943,10 +2003,12 @@ fn substitute_command<S: TextStore, I: EditorIo>(
         let mut out = [0u8; MAX_TEXT];
         let (len, replaced) = subst_apply(&compiled, &template, line_text, &mut out);
         if replaced {
-            // C：delete_lines(current, current) + 逐行 put_sbuf_line
-            // （sub.c:148-163）；替换模板在行内不会引入换行（模板里的
-            // 反斜杠换行是交互续行面，本模型的行不带换行），单行删插。
-            // 删与插都走带撤销记账的助手（UDEL + UADD，sub.c:152）。
+            // C: delete_lines(current, current) + put_sbuf_line per line
+            // (sub.c:148-163); the replacement template never introduces a
+            // newline inside a line (a backslash-newline in the template is the
+            // interactive continuation face, and this model's lines carry no
+            // newline), so this is a single-line delete plus insert. Both go
+            // through the undo-recording helpers (UDEL + UADD, sub.c:152).
             let text = core::str::from_utf8(&out[..len]).map_err(|_| err("invalid content"))?;
             delete_range(store, sess, n, n)?;
             insert_line(store, sess, n, text)?;
@@ -1955,13 +2017,13 @@ fn substitute_command<S: TextStore, I: EditorIo>(
         n += 1;
     }
     sess.current = last_changed.unwrap_or(original_current);
-    // C `sub.c:175` 的 `!(gflag & GLB)`：全局里 `s` 无匹配不算错
-    // （main.c:755 置 GLB）。
+    // C `sub.c:175`'s `!(gflag & GLB)`: inside a global, an `s` with no match
+    // is not an error (main.c:755 sets GLB).
     if last_changed.is_none() && !sess.is_global {
         return Err(err("no match"));
     }
-    // 后缀打印（C：SGP 折 GPR 并清 GLS|GNP，main.c:752-754；其余与
-    // GET_COMMAND_SUFFIX 同族）。
+    // Suffix printing (C: SGP folds into GPR and clears GLS|GNP,
+    // main.c:752-754; the rest belongs to the GET_COMMAND_SUFFIX family).
     let mut bits = suffix_bits(modifiers)?;
     if print_replaced {
         bits = GPR;
@@ -2311,34 +2373,35 @@ mod tests {
         assert_eq!(io.err_out, b"invalid address\n".to_vec());
     }
 
-    /// `s` 的尾形式（C main.c:698-770 + sub.c）：首替、`g` 全局、`N` 第
-    /// N 个、`p` 打印；范围缺省当前行；替换行成为新当前行；无替换回
-    /// "no match"。
+    /// The tail forms of `s` (C main.c:698-770 + sub.c): first substitution,
+    /// `g` global, `N` the N-th, `p` print; the range defaults to the current
+    /// line; the replaced line becomes the new current line; no replacement
+    /// answers "no match".
     #[test]
     fn test_substitute_tail_forms() {
         let (mut store, mut sess) = seeded(&["foo boo", "bar"]);
         let mut io = ScriptIo::new();
-        // `2s/a/0/`：作用第二行，首替。
+        // `2s/a/0/`: applies to the second line, first substitution.
         step(&mut store, &mut sess, "2s/a/0/", &mut io).unwrap();
         let mut line = [0u8; 64];
         store.read_line(2, &mut line).unwrap();
         assert_eq!(&line[..3], b"b0r");
-        // 当前行的 `s`：`1s/o/0/` 只换第一个 o。
+        // `s` on the current line: `1s/o/0/` replaces only the first o.
         step(&mut store, &mut sess, "1s/o/0/", &mut io).unwrap();
         store.read_line(1, &mut line).unwrap();
         assert_eq!(&line[..7], b"f0o boo");
         assert_eq!(sess.current, 1, "替换行成为当前行");
-        // `g` 全局。
+        // `g` global.
         step(&mut store, &mut sess, "1s/o/0/g", &mut io).unwrap();
         store.read_line(1, &mut line).unwrap();
         assert_eq!(&line[..7], b"f00 b00");
-        // `N`：第二个匹配。
+        // `N`: the second match.
         let (mut store, mut sess) = seeded(&["foo boo"]);
         sess.current = 1;
         step(&mut store, &mut sess, "s/o/0/2", &mut io).unwrap();
         store.read_line(1, &mut line).unwrap();
         assert_eq!(&line[..7], b"fo0 boo");
-        // 无匹配："no match"。
+        // No match: "no match".
         let (mut store, mut sess) = seeded(&["abc"]);
         assert_eq!(
             step(&mut store, &mut sess, "s/z/q/", &mut io).unwrap_err().message,
@@ -2346,8 +2409,10 @@ mod tests {
         );
     }
 
-    /// 裸 `s` 与 `sg`/`sN` 重放上一次替换（C 的 sflags 门：没有上一替换
-    /// 即 "no previous substitution"；空模式 `//` 复用上一模式，re.c:66）。
+    /// Bare `s` and `sg`/`sN` replay the previous substitution (C's sflags
+    /// gate: without a previous substitution the answer is "no previous
+    /// substitution"; the empty pattern `//` reuses the previous pattern,
+    /// re.c:66).
     #[test]
     fn test_substitute_replay_and_pattern_cache() {
         let (mut store, mut sess) = seeded(&["aa", "ab"]);
@@ -2357,71 +2422,73 @@ mod tests {
         let mut line = [0u8; 64];
         store.read_line(1, &mut line).unwrap();
         assert_eq!(&line[..2], b"xa");
-        // 裸 `s`：重放（范围仍是当前行）。
+        // Bare `s`: replay (the range is still the current line).
         sess.current = 2;
         step(&mut store, &mut sess, "s", &mut io).unwrap();
         store.read_line(2, &mut line).unwrap();
         assert_eq!(&line[..2], b"xb");
-        // 空模式 `//` 复用上一模式。
+        // The empty pattern `//` reuses the previous pattern.
         let (mut store, mut sess) = seeded(&["k1", "k2"]);
         sess.current = 1;
         step(&mut store, &mut sess, "s/k/z/", &mut io).unwrap();
         step(&mut store, &mut sess, "2s//z/", &mut io).unwrap();
         store.read_line(2, &mut line).unwrap();
         assert_eq!(&line[..2], b"z2");
-        // 无上一替换即拒。
+        // Refused without a previous substitution.
         let (mut store, mut sess) = seeded(&["x"]);
         assert_eq!(
             step(&mut store, &mut sess, "s", &mut io).unwrap_err().message,
             "no previous substitution"
         );
-        // 无上一模式即拒。
+        // Refused without a previous pattern.
         assert_eq!(
             step(&mut store, &mut sess, "s//y/", &mut io).unwrap_err().message,
             "no previous pattern"
         );
     }
 
-    /// 替换模板的 `&` 与分组回放（C 的 regsub 语义，08 篇引擎同源）。
+    /// The replacement template's `&` and group replay (C's regsub semantics,
+    /// the same source as the doc 08 engine).
     #[test]
     fn test_substitute_replacement_replay() {
         let (mut store, mut sess) = seeded(&["hello world"]);
         let mut io = ScriptIo::new();
         sess.current = 1;
-        // `\+` 是扩展正则的量词（pattern.rs:305 只在 extended 收）；BRE 用
-        // 字面组。
+        // `\+` is the extended-regex quantifier (pattern.rs:305 accepts it only
+        // in extended mode); BRE uses literal groups.
         step(&mut store, &mut sess, "s/\\(ll\\)/[&]/", &mut io).unwrap();
         let mut line = [0u8; 64];
         store.read_line(1, &mut line).unwrap();
         assert_eq!(&line[..13], b"he[ll]o world");
     }
 
-    /// 搜索地址求值：正向、反向、绕圈、`+N` 偏移与 "no match"（C
-    /// `get_matching_node_addr` main.c:919-938 的绕行次序）。
+    /// Search-address evaluation: forward, backward, wrapping, a `+N` offset,
+    /// and "no match" (the wrap order of C `get_matching_node_addr`,
+    /// main.c:919-938).
     #[test]
     fn test_search_addresses_evaluate() {
         let (mut store, mut sess) = seeded(&["alpha", "beta", "gamma", "beta"]);
         let mut io = ScriptIo::new();
         sess.current = 4;
-        // 正向：4 之后没有 beta，绕回到 2。
+        // Forward: no beta after 4, so it wraps back to 2.
         step(&mut store, &mut sess, "/beta/", &mut io).unwrap();
         assert_eq!(sess.current, 2, "裸搜索地址显示并把当前行移过去");
-        // 反向：从 2 往回是 4。
+        // Backward: from 2 the way back is 4.
         sess.current = 2;
         step(&mut store, &mut sess, "?beta?d", &mut io).unwrap();
         assert_eq!(store.line_count(), 3, "反向搜到的行（4）被删除");
-        // 偏移跟在搜索基后。
+        // The offset follows the search base.
         let (mut store, mut sess) = seeded(&["alpha", "mid", "omega"]);
         sess.current = 1;
         step(&mut store, &mut sess, "/alpha/+1", &mut io).unwrap();
         assert_eq!(sess.current, 2);
-        // 无匹配。
+        // No match.
         sess.current = 1;
         assert_eq!(
             step(&mut store, &mut sess, "/zebra/", &mut io).unwrap_err().message,
             "no match"
         );
-        // 空缓冲无可搜。
+        // An empty buffer has nothing to search.
         let (mut store, mut sess) = seeded(&[]);
         assert_eq!(
             step(&mut store, &mut sess, "/x/", &mut io).unwrap_err().message,
@@ -2429,15 +2496,17 @@ mod tests {
         );
     }
 
-    /// `u` 的撤销与重做（C undo.c:71-105 的回放与快照互换）：`d` 后
-    /// `u` 恢复行与当前行，再次 `u` 重做删除；`modified` 在撤销时回脏。
+    /// `u`'s undo and redo (C undo.c:71-105's replay and snapshot swap): after
+    /// `d`, `u` restores the lines and the current line, and another `u` redoes
+    /// the deletion; `modified` goes dirty on undo.
     #[test]
     fn test_undo_restores_delete_then_redoes() {
         let (mut store, mut sess) = seeded(&["alpha", "beta", "gamma"]);
         sess.current = 1;
         step(&mut store, &mut sess, "2,3d", &mut io_none()).unwrap();
         assert_eq!(store.line_count(), 1);
-        // 撤销：行回来，当前行回到改动前（1）。
+        // Undo: the lines come back and the current line returns to its
+        // pre-change value (1).
         step(&mut store, &mut sess, "u", &mut io_none()).unwrap();
         assert_eq!(store.line_count(), 3);
         let mut line = [0u8; 64];
@@ -2445,15 +2514,16 @@ mod tests {
         assert_eq!(&line[..4], b"beta");
         assert_eq!(sess.current, 1, "当前行取改动前快照");
         assert!(sess.modified, "撤销把缓冲标脏（C undo.c:91）");
-        // 重做：再删一次。
+        // Redo: delete once more.
         step(&mut store, &mut sess, "u", &mut io_none()).unwrap();
         assert_eq!(store.line_count(), 1);
-        // 第三次 `u` 再撤销——翻转后的栈继续循环。
+        // A third `u` undoes again -- the flipped stack keeps cycling.
         step(&mut store, &mut sess, "u", &mut io_none()).unwrap();
         assert_eq!(store.line_count(), 3);
     }
 
-    /// 插入的撤销（`a` 的 UADD 件）与 "nothing to undo" 起手。
+    /// Undo of an insertion (the UADD entries from `a`) and the "nothing to
+    /// undo" start.
     #[test]
     fn test_undo_restores_append_and_reports_empty() {
         let (mut store, mut sess) = seeded(&["one"]);
@@ -2464,7 +2534,8 @@ mod tests {
             "nothing to undo",
             "未做任何改动前 `u` 拒绝（C undo.c:76-79）"
         );
-        // `a` 插两行，`u` 一次全收掉（每行一条 UADD，回放逆序各删）。
+        // `a` inserts two lines and one `u` takes both back (one UADD entry per
+        // line, replayed in reverse, each deleting its line).
         step(&mut store, &mut sess, "a", &mut io).unwrap();
         step(&mut store, &mut sess, "two", &mut io).unwrap();
         step(&mut store, &mut sess, "three", &mut io).unwrap();
@@ -2472,7 +2543,7 @@ mod tests {
         assert_eq!(store.line_count(), 3);
         step(&mut store, &mut sess, "u", &mut io).unwrap();
         assert_eq!(store.line_count(), 1, "两行插入被整批撤销");
-        // 重做把两行放回。
+        // Redo puts the two lines back.
         step(&mut store, &mut sess, "u", &mut io).unwrap();
         assert_eq!(store.line_count(), 3);
         let mut line = [0u8; 64];
@@ -2480,8 +2551,8 @@ mod tests {
         assert_eq!(&line[..5], b"three");
     }
 
-    /// 替换的撤销：原文恢复（C `search_and_replace` 的 UDEL+UADD 对，
-    /// sub.c:148-163）。
+    /// Undo of a substitution: the original text is restored (C
+    /// `search_and_replace`'s UDEL+UADD pair, sub.c:148-163).
     #[test]
     fn test_undo_restores_substitute() {
         let (mut store, mut sess) = seeded(&["foo boo", "keep"]);
@@ -2496,7 +2567,8 @@ mod tests {
         assert_eq!(&line[..7], b"foo boo");
         store.read_line(2, &mut line).unwrap();
         assert_eq!(&line[..4], b"keep", "未替换的行不受影响");
-        // 新改动清掉旧撤销账（C：每个改动型命令先 clear_undo_stack）。
+        // A new change wipes the old undo record (C: every modifying command
+        // calls clear_undo_stack first).
         step(&mut store, &mut sess, "2d", &mut io).unwrap();
         step(&mut store, &mut sess, "u", &mut io).unwrap();
         assert_eq!(store.line_count(), 2, "撤销指向最近一次改动（d）");
@@ -2504,11 +2576,12 @@ mod tests {
         assert_eq!(&line[..4], b"keep");
     }
 
-    /// `g/pat/cmd`：匹配行逐个执行子命令（C `glbl.c` 的 exec_global）。
-    /// 经典三件：删除全部匹配、逐行替换、打印。
+    /// `g/pat/cmd`: run the subcommand for each matching line (exec_global in C
+    /// `glbl.c`). The classic three: delete every match, substitute line by
+    /// line, print.
     #[test]
     fn test_global_delete_substitute_and_print() {
-        // `g/x/d`：删光匹配行。
+        // `g/x/d`: delete every matching line.
         let (mut store, mut sess) = seeded(&["x1", "keep", "x2", "also"]);
         sess.current = 1;
         let mut io = io_none();
@@ -2519,7 +2592,7 @@ mod tests {
         assert_eq!(&line[..4], b"keep");
         store.read_line(2, &mut line).unwrap();
         assert_eq!(&line[..4], b"also");
-        // `v/x/d`：删光不匹配行（反向）。
+        // `v/x/d`: delete every non-matching line (the inverse).
         let (mut store, mut sess) = seeded(&["x1", "keep", "x2"]);
         sess.current = 1;
         step(&mut store, &mut sess, "v/x/d", &mut io).unwrap();
@@ -2528,8 +2601,8 @@ mod tests {
         assert_eq!(&line[..2], b"x1");
         store.read_line(2, &mut line).unwrap();
         assert_eq!(&line[..2], b"x2");
-        // `g/o/s/o/0/`：逐行替换（每行首替），后缀 `p` 的打印走子命令
-        // 自己的通道。
+        // `g/o/s/o/0/`: substitute line by line (first match per line); the
+        // suffix `p` prints through the subcommand's own channel.
         let (mut store, mut sess) = seeded(&["foo", "boo"]);
         sess.current = 1;
         step(&mut store, &mut sess, "g/o/s/o/0/", &mut io).unwrap();
@@ -2539,8 +2612,9 @@ mod tests {
         assert_eq!(&line[..3], b"b0o");
     }
 
-    /// 全局的撤销：整段全局是**一条**撤销单位（C exec_global:143 清栈
-    /// 一次，子命令里的清栈被 isglobal 抑制）。
+    /// Undo of a global: a whole global run is **one** undo unit (C
+    /// exec_global:143 clears the stack once, and stack clearing inside
+    /// subcommands is suppressed by isglobal).
     #[test]
     fn test_global_undo_is_one_unit() {
         let (mut store, mut sess) = seeded(&["x1", "keep", "x2"]);
@@ -2550,20 +2624,22 @@ mod tests {
         assert_eq!(store.line_count(), 1);
         step(&mut store, &mut sess, "u", &mut io).unwrap();
         assert_eq!(store.line_count(), 3, "一次 `u` 撤销整段全局");
-        // 嵌套 `g` 被拒（C main.c:562-564）。
+        // A nested `g` is refused (C main.c:562-564).
         step(&mut store, &mut sess, "g/x/g/x/d", &mut io).unwrap_err();
-        // 错误中止：子命令出错即中止整段（已执行的变更保留，C 同）。
+        // Error abort: a subcommand error aborts the whole run (changes already
+        // made are kept, as in C).
         let (mut store, mut sess) = seeded(&["a1", "a2"]);
         sess.current = 1;
-        // `y` 没有对应的命令字母（C 的分派表里无此支）。
+        // `y` has no command letter of its own (C's dispatch table has no such
+        // arm).
         assert_eq!(
             step(&mut store, &mut sess, "g/a/y", &mut io).unwrap_err().message,
             "unknown command"
         );
     }
 
-    /// 空子命令不隐含 `p`（本构建无 BACKWARDS，glbl.c:56-63）：只落
-    /// 当前行到最后一个活跃行。
+    /// An empty subcommand does not imply `p` (this build has no BACKWARDS,
+    /// glbl.c:56-63): the current line merely moves to the last active line.
     #[test]
     fn test_global_empty_cmd_moves_current_only() {
         let (mut store, mut sess) = seeded(&["m1", "mid", "m2"]);
@@ -2582,7 +2658,7 @@ mod tests {
         ScriptIo::new()
     }
 
-    /// 读回整个缓冲（测试断言助手）。
+    /// Read the whole buffer back (test assertion helper).
     fn buffer_lines<S: TextStore>(store: &S) -> Vec<String> {
         let mut buf = [0u8; MAX_TEXT];
         let mut lines = Vec::new();
@@ -2598,7 +2674,8 @@ mod tests {
         let (mut store, mut sess) = seeded(&["one", "two", "three", "four"]);
         let mut io = ScriptIo::new();
         feed(&mut store, &mut sess, &mut io, &["G/o", "s/o/0", "&", ""]);
-        // 逐活跃行先显示后执行；`&` 重放上一条；空行跳过（glbl.c:111-134）。
+        // Each active line is displayed and then run; `&` replays the previous
+        // one; an empty line skips (glbl.c:111-134).
         assert_eq!(io.out_lines(), ["one", "two", "four"]);
         assert_eq!(buffer_lines(&store), ["0ne", "tw0", "three", "four"]);
         assert_eq!(sess.current, 4, "最后一个活跃行落当前行");
@@ -2608,7 +2685,8 @@ mod tests {
     fn test_interactive_global_v_inverse_and_number_suffix() {
         let (mut store, mut sess) = seeded(&["one", "two", "three", "four"]);
         let mut io = ScriptIo::new();
-        // `V` 收不匹配行，`n` 尾缀给显示加编号（C main.c:566 的后缀）。
+        // `V` collects non-matching lines, and the `n` suffix numbers the
+        // display (C main.c:566's suffix).
         feed(&mut store, &mut sess, &mut io, &["V/e/n", "", ""]);
         assert_eq!(io.out_lines(), ["2\ttwo", "4\tfour"]);
         assert_eq!(buffer_lines(&store), ["one", "two", "three", "four"], "全跳过：缓冲不动");
@@ -2618,14 +2696,16 @@ mod tests {
     fn test_interactive_global_amp_needs_a_previous_command() {
         let (mut store, mut sess) = seeded(&["a", "b"]);
         let mut io = ScriptIo::new();
-        // 起手 `&`：本段还没给过命令（glbl.c:121-125）——整段中止。
+        // `&` at the start: this run has not supplied a command yet
+        // (glbl.c:121-125) -- the whole run aborts.
         assert_eq!(step(&mut store, &mut sess, "G/a", &mut io).unwrap(), Flow::Continue);
         assert_eq!(
             step(&mut store, &mut sess, "&", &mut io).unwrap_err().message,
             "no previous command"
         );
         assert_eq!(store.line_count(), 2, "中止不动缓冲");
-        // seen 每段 G 重新起算：新一段的起手 `&` 同样被拒。
+        // `seen` starts over for each `G` run: the `&` at the start of a new run
+        // is refused the same way.
         feed(&mut store, &mut sess, &mut io, &["G/a", "d"]);
         assert_eq!(store.line_count(), 1);
         assert_eq!(step(&mut store, &mut sess, "G/b", &mut io).unwrap(), Flow::Continue);
@@ -2641,13 +2721,15 @@ mod tests {
         let mut io = ScriptIo::new();
         feed(&mut store, &mut sess, &mut io, &["G/a", "d", "d"]);
         assert_eq!(buffer_lines(&store), ["b", "b"], "两个活跃行都按内容重定位后删除");
-        // 回答里的嵌套 g 被拒（C main.c:562-564 的 isglobal 门）。
+        // A nested g in an answer is refused (the isglobal gate at C
+        // main.c:562-564).
         assert_eq!(step(&mut store, &mut sess, "G/b", &mut io).unwrap(), Flow::Continue);
         assert_eq!(
             step(&mut store, &mut sess, "g/x/d", &mut io).unwrap_err().message,
             "cannot nest global commands"
         );
-        // 中止后回到正常派发：下一行不再是回答。
+        // After the abort, dispatch is back to normal: the next line is no
+        // longer an answer.
         let before = io.out_lines();
         assert_eq!(step(&mut store, &mut sess, "1,$p", &mut io).unwrap(), Flow::Continue);
         assert_eq!(io.out_lines()[before.len()..], ["b", "b"]);
@@ -2658,7 +2740,8 @@ mod tests {
         let (mut store, mut sess) = seeded(&["one", "two", "four"]);
         let mut io = ScriptIo::new();
         feed(&mut store, &mut sess, &mut io, &["G/o", "s/o/0", "&", "&"]);
-        // 清栈一次——整段 G 是一条撤销单位（C exec_global:143）。
+        // The stack is cleared once -- a whole `G` run is one undo unit (C
+        // exec_global:143).
         feed(&mut store, &mut sess, &mut io, &["u"]);
         assert_eq!(buffer_lines(&store), ["one", "two", "four"], "一次 u 翻掉整段 G");
         feed(&mut store, &mut sess, &mut io, &["u"]);
@@ -2670,7 +2753,8 @@ mod tests {
         let (mut store, mut sess) = seeded(&["x", "y"]);
         let mut io = ScriptIo::new();
         assert_eq!(step(&mut store, &mut sess, "G/x", &mut io).unwrap(), Flow::Continue);
-        // 坏回答（未知命令）中止整段 G；已执行的变更保留（C 同）。
+        // A bad answer (unknown command) aborts the whole `G` run; changes
+        // already made are kept (as in C).
         assert_eq!(
             step(&mut store, &mut sess, "~", &mut io).unwrap_err().message,
             "unknown command"

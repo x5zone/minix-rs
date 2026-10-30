@@ -6,9 +6,9 @@
 //! read), `rw_block`/`rw_chunk` (block walk through
 //! [`crate::mapping::decompose`]), `link.c`/`misc.c` directory lookup,
 //! and `getdents`/`stat`. The allocation policy half (balloc/ialloc,
-//! placement.rs) and the write/link namespace operations are F3c — the
-//! write-side trait methods keep their `ENOSYS` defaults here (C mounts
-//! this shape read-only first, too).
+//! placement.rs) and the write/link namespace operations come next — the
+//! write-side trait methods keep their `ENOSYS` defaults here (C mounts this
+//! shape read-only first, too).
 //!
 //! **Disc seam**: the server holds the whole image in memory (read-only
 //! half of the device state for the hosted wave); the production
@@ -37,9 +37,9 @@ use crate::superblock::{
 /// Superblock's stored size — the boot pad occupies block 0's first half.
 const STORED_AT: usize = SUPER_OFFSET;
 
-/// 链接数上限（Minix 语义取 32767，`minix3/sys/sys/syslimits.h` 的
-/// `LINK_MAX`；盘上字段虽是 u16，C `link.c:364-365` 的
-/// `SHRT_MAX || LINK_MAX` 双门同为此值）。
+/// Link count cap (Minix semantics take 32767, the `LINK_MAX` of
+/// `minix3/sys/sys/syslimits.h`; although the on-disk field is u16, C's
+/// `link.c:364-365` double gate `SHRT_MAX || LINK_MAX` yields the same value).
 const LINK_MAX: u32 = 32767;
 
 /// The read-only ext2 server over an in-memory image.
@@ -96,8 +96,9 @@ impl Ext2Server {
         let index = (number - 1) % self.inodes_per_group;
         // The descriptor table starts right after the superblock's block
         // (`first_data_block + 1`); one 32-byte descriptor per group.
-        // 描述符表紧随超块块（`first_data_block + 1`），每组 32 字节；
-        // 组内 inode 表块号在描述符 +8。
+        // The descriptor table directly follows the superblock block
+        // (`first_data_block + 1`), 32 bytes per entry; the group's inode-table
+        // block number sits at descriptor +8.
         let table_block = (self.first_data_block + 1) as u64;
         let descriptor_block = self.block(table_block + group as u64)?;
         let Some(descriptor) = GroupDescriptor::decode(descriptor_block, 0) else {
@@ -192,8 +193,9 @@ impl Ext2Server {
         Ok(())
     }
 
-    /// 把文件块 `file_block` 的物理块号写进指针迷宫；路径上的中间块
-    /// （一级/二级/三级间接）为零时先分配并清零。
+    /// Write the physical block number of file block `file_block` into the
+    /// pointer maze; intermediate blocks along the path (single/double/triple
+    /// indirect) are allocated and zeroed first when absent.
     fn set_pointer(
         &mut self,
         inode: &mut DiskInode,
@@ -260,7 +262,7 @@ impl Ext2Server {
         Ok(())
     }
 
-    /// 读一个指针槽（间接块内 `index` 处的 u32）。
+    /// Read one pointer slot (the u32 at `index` inside an indirect block).
     fn pointer_slot(&self, block: u64, index: u64) -> Result<Option<u64>, Errno> {
         let data = self.block(block)?;
         let at = index as usize * 4;
@@ -268,7 +270,7 @@ impl Ext2Server {
         Ok(if value == 0 { None } else { Some(value as u64) })
     }
 
-    /// 写一个指针槽。
+    /// Write one pointer slot.
     fn write_pointer_slot(
         &mut self,
         block: u64,
@@ -280,15 +282,16 @@ impl Ext2Server {
         Ok(())
     }
 
-    /// 清零一个块（新分配的间接块必须清零，否则陈旧数据泄漏）。
+    /// Zero one block (a newly allocated indirect block must be zeroed, or
+    /// stale data leaks).
     fn zero_block(&mut self, block: u64) -> Result<(), Errno> {
         let size = self.geometry.block_size as usize;
         let at = block as usize * size;
         self.image.get_mut(at..at + size).map(|slice| slice.fill(0)).ok_or(Errno::from_i32(EIO))
     }
 
-    /// 释放一个 inode 的全部数据块与间接块（C `truncate` 的释放半）。
-    /// 返回释放的数据块数。
+    /// Free all data blocks and indirect blocks of one inode (the free half of
+    /// C `truncate`). Returns the number of data blocks freed.
     fn free_file_blocks(&mut self, inode: &DiskInode) -> Result<u32, Errno> {
         let addresses = u64::from(self.geometry.block_size) / 4;
         let mut freed = 0u32;
@@ -297,7 +300,7 @@ impl Ext2Server {
                 continue;
             }
             let level = if slot < 12 {
-                0 // 直接
+                0 // direct
             } else if slot == 12 {
                 1
             } else if slot == 13 {
@@ -311,7 +314,8 @@ impl Ext2Server {
                     freed += 1;
                 }
                 _ => {
-                    // 间接块：先递归释放其指向的数据/下层块，再释放自身。
+                    // Indirect block: recursively free what it points at
+                    // first, then free itself.
                     freed += self.free_indirect_tree(
                         u64::from(*pointer),
                         level,
@@ -323,7 +327,8 @@ impl Ext2Server {
         Ok(freed)
     }
 
-    /// 递归释放一棵间接树（`level` = 树高：1 单间、2 双间、3 三间）。
+    /// Recursively free one indirect tree (`level` = tree height: 1 single,
+    /// 2 double, 3 triple).
     fn free_indirect_tree(
         &mut self,
         block: u64,
@@ -335,7 +340,8 @@ impl Ext2Server {
         }
         let mut freed = 0u32;
         if level > 1 {
-            // 先把指针值拷出来再递归释放（递归需要 &mut self）。
+            // Copy the pointer value out first, then recurse (recursion needs
+            // &mut self).
             let data = self.block(block)?.to_vec();
             for index in 0..addresses {
                 let at = index as usize * 4;
@@ -350,8 +356,9 @@ impl Ext2Server {
         Ok(freed + 1)
     }
 
-    /// 按名字找目录项，返回（条目，槽位，前驱槽位——块内第一条时为
-    /// `None`）。删除需要前驱做 rec_len 合并（C `ext2_delete_entry`）。
+    /// Find a directory entry by name; returns (entry, slot, predecessor slot —
+    /// `None` for the first one in the block). Deletion needs the predecessor
+    /// for rec_len merging (C `ext2_delete_entry`).
     fn find_entry_slot(
         &mut self,
         directory: u32,
@@ -384,10 +391,12 @@ impl Ext2Server {
         Err(Errno::from_i32(ENOENT))
     }
 
-    /// 在目录里插入一条新目录项（C `ext2_add_entry`）：先找可复用的
-    /// 空槽（number == 0 且 rec_len 够长）或真实条目的尾部余量
-    /// （rec_len − actual_size ≥ needed，缩当前条目、余量里插新条）；
-    /// 都没有就给目录扩一个块，新条目落在块首（rec_len = 块大小）。
+    /// Insert a new directory entry (C `ext2_add_entry`): first look for a
+    /// reusable empty slot (number == 0 with a long enough rec_len) or the tail
+    /// slack of a real entry (rec_len − actual_size ≥ needed: shrink the current
+    /// entry and put the new one in the slack); if neither exists, grow the
+    /// directory by one block and the new entry lands at the block head
+    /// (rec_len = block size).
     fn add_entry(
         &mut self,
         directory: u32,
@@ -411,7 +420,8 @@ impl Ext2Server {
                     Err(_) => break,
                 };
                 let actual = dir::actual_size(entry.name.len());
-                // 空槽复用：number == 0 且整段够长。
+                // Empty-slot reuse: number == 0 and the whole segment is long
+                // enough.
                 if entry.number == 0 && step >= needed {
                     let at = block_number as usize * block_size + offset;
                     let mut new = vec![0u8; needed];
@@ -421,7 +431,8 @@ impl Ext2Server {
                     new[7] = file_type;
                     new[8..8 + name.len()].copy_from_slice(name);
                     self.image[at..at + needed].copy_from_slice(&new);
-                    // 余量成为尾随空槽（rec_len = step - needed）。
+                    // The slack becomes a trailing empty slot
+                    // (rec_len = step - needed).
                     if step > needed {
                         let rest = step - needed;
                         let mut free = vec![0u8; rest];
@@ -430,8 +441,8 @@ impl Ext2Server {
                     }
                     return Ok(());
                 }
-                // 真实条目的尾部余量：缩当前 rec_len 到实际大小，
-                // 余量里插新条。
+                // Tail slack of a real entry: shrink the current rec_len to its
+                // actual size and insert the new entry into the slack.
                 if step >= needed + actual {
                     let shrink_at = block_number as usize * block_size + offset;
                     let shrunken: [u8; 2] = (actual as u16).to_le_bytes();
@@ -456,7 +467,8 @@ impl Ext2Server {
                 offset += step;
             }
         }
-        // 没有空间：扩一个块，新条目落在块首（rec_len = 块大小）。
+        // No room: grow by one block; the new entry lands at the block head
+        // (rec_len = block size).
         let new_block = self.alloc_block()?;
         let mut record_ref = self.read_inode(directory)?;
         record_ref.blocks[blocks] = new_block as u32;
@@ -474,9 +486,10 @@ impl Ext2Server {
         Ok(())
     }
 
-    /// 按名字删除目录项（C `ext2_delete_entry`）：有前驱则合并
-    /// rec_len；是块内第一条则 number = 0（槽位留给 add_entry 复用）。
-    /// 返回被删条目的 inode 号。
+    /// Delete a directory entry by name (C `ext2_delete_entry`): with a
+    /// predecessor merge rec_len; for the first entry in the block set number =
+    /// 0 (leaving the slot for add_entry to reuse). Returns the deleted entry's
+    /// inode number.
     fn remove_entry(&mut self, directory: u32, name: &str) -> Result<u32, Errno> {
         let (entry, (block_index, offset, rec_len), prev) =
             self.find_entry_slot(directory, name)?;
@@ -485,7 +498,8 @@ impl Ext2Server {
         let at = block_number as usize * block_size + offset;
         match prev {
             Some((_, prev_offset, prev_len)) => {
-                // 合并进前驱：前驱 rec_len 加上本条。
+                // Merge into the predecessor: the predecessor's rec_len grows
+                // by this entry.
                 let merged = prev_len as usize + rec_len as usize;
                 let prev_at =
                     block_number as usize * block_size + prev_offset + 4;
@@ -493,14 +507,16 @@ impl Ext2Server {
                     .copy_from_slice(&(merged as u16).to_le_bytes());
             }
             None => {
-                // 块内第一条：inode 号清零（rec_len 保留占位）。
+                // First entry in the block: zero the inode number (rec_len
+                // stays as a placeholder).
                 self.image[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
             }
         }
         Ok(entry.number)
     }
 
-    /// inode 的链接数增减；归零时返回 `true`（调用方负责释放）。
+    /// Adjust an inode's link count; return `true` when it reaches zero (the
+    /// caller does the freeing).
     fn adjust_links(&mut self, number: u32, delta: i32) -> Result<bool, Errno> {
         let mut record = self.read_inode(number)?;
         let links = i32::from(record.links) + delta;
@@ -513,8 +529,9 @@ impl Ext2Server {
         Ok(false)
     }
 
-    /// 释放一个 inode：清 inode 位图位、零化表内记录、空闲计数回加
-    /// （C `free_bit` IMAP 半）。调用方先释放数据块。
+    /// Free one inode: clear the inode bitmap bit, zero the table record, add
+    /// the free count back (the IMAP half of C `free_bit`). The caller frees the
+    /// data blocks first.
     fn free_inode(&mut self, number: u32) -> Result<(), Errno> {
         let group = (number - 1) / self.inodes_per_group;
         let index = (number - 1) % self.inodes_per_group;
@@ -528,7 +545,7 @@ impl Ext2Server {
         }
         self.gdt_add_free_inodes(group, 1);
         self.sb_add_free_inodes(1);
-        // 表内记录零化。
+        // Zero the table record.
         let record_at = descriptor.inode_table as usize
             * self.geometry.block_size as usize
             + index as usize * self.geometry.inode_size as usize;
@@ -553,22 +570,23 @@ impl Ext2Server {
         Ok(())
     }
 
-    /// 组描述符读取（组号 → 32 字节描述符）。
+    /// Group descriptor read (group number → 32-byte descriptor).
     fn group_descriptor(&mut self, group: u32) -> Result<GroupDescriptor, Errno> {
         let table_block = (self.first_data_block + 1) as u64;
         let block = self.block(table_block + group as u64)?;
         GroupDescriptor::decode(block, 0).ok_or(Errno::from_i32(EIO))
     }
 
-    /// 存储态超块的空闲块计数回写（`s_free_blocks_count` @12）。
+    /// Write back the stored superblock's free-block count
+    /// (`s_free_blocks_count` @12).
     fn sb_add_free_blocks(&mut self, delta: i32) {
         let at = STORED_AT + 12;
         let current = i32::from_le_bytes(self.image[at..at + 4].try_into().unwrap());
         self.image[at..at + 4].copy_from_slice(&(current + delta).to_le_bytes());
     }
 
-    /// 存储态超块的空闲 inode 计数回写（`s_free_inodes_count` @16）。
-    /// F3c-2 的 alloc_inode/free_inode 消费。
+    /// Write back the stored superblock's free-inode count
+    /// (`s_free_inodes_count` @16). Consumed by alloc_inode/free_inode.
     #[allow(dead_code)]
     fn sb_add_free_inodes(&mut self, delta: i32) {
         let at = STORED_AT + 16;
@@ -576,7 +594,8 @@ impl Ext2Server {
         self.image[at..at + 4].copy_from_slice(&(current + delta).to_le_bytes());
     }
 
-    /// 组描述符的空闲块计数增减（`bg_free_blocks_count` @12）。
+    /// Adjust the group descriptor's free-block count
+    /// (`bg_free_blocks_count` @12).
     fn gdt_add_free_blocks(&mut self, group: u32, delta: i32) {
         let at = (self.first_data_block + 1) as usize
             * self.geometry.block_size as usize
@@ -586,8 +605,8 @@ impl Ext2Server {
         self.image[at..at + 2].copy_from_slice(&((current + delta) as u16).to_le_bytes());
     }
 
-    /// 组描述符的空闲 inode 计数增减（`bg_free_inodes_count` @14）。
-    /// F3c-2 的 alloc_inode/free_inode 消费。
+    /// Adjust the group descriptor's free-inode count
+    /// (`bg_free_inodes_count` @14). Consumed by alloc_inode/free_inode.
     #[allow(dead_code)]
     fn gdt_add_free_inodes(&mut self, group: u32, delta: i32) {
         let at = (self.first_data_block + 1) as usize
@@ -598,9 +617,10 @@ impl Ext2Server {
         self.image[at..at + 2].copy_from_slice(&((current + delta) as u16).to_le_bytes());
     }
 
-    /// 分配一个空闲块（C `alloc_bit` ZMAP 半）：逐组扫块位图，首个零位
-    /// 即取（位 0 = 块 `first_data_block` + 组内偏移）。置位并回写超块/
-    /// 组描述符的空闲计数。
+    /// Allocate a free block (the ZMAP half of C `alloc_bit`): scan the block
+    /// bitmaps group by group and take the first zero bit (bit 0 = block
+    /// `first_data_block` + in-group offset). Set the bit and write back the
+    /// free counts of the superblock and the group descriptor.
     fn alloc_block(&mut self) -> Result<u64, Errno> {
         for group in 0..self.geometry.group_count {
             let descriptor = self.group_descriptor(group)?;
@@ -625,7 +645,8 @@ impl Ext2Server {
         Err(Errno::from_i32(ENOSPC))
     }
 
-    /// 释放一个块（C `free_bit`）：清位并回写空闲计数。
+    /// Free one block (C `free_bit`): clear the bit and write back the free
+    /// counts.
     fn free_block(&mut self, number: u64) {
         let group = ((number.saturating_sub(self.first_data_block as u64))
             / u64::from(self.inodes_per_group.max(1))) as u32;
@@ -643,10 +664,12 @@ impl Ext2Server {
         }
     }
 
-    /// 分配一个 inode：扫 inode 位图取首个零位，写入初始记录（模式 +
-    /// 链接数 1，指针清零），回写空闲计数，返回 inode 号（位 i →
-    /// inode i+1；位 0 对应不存在的 inode 0，mkfs 时恒占用）。
-    /// F3c-2 的 create/mkdir/link 消费（本批仅 write/truncate 直接读写）。
+    /// Allocate an inode: scan the inode bitmap for the first zero bit, write
+    /// the initial record (mode + link count 1, pointers zeroed), write the free
+    /// counts back, and return the inode number (bit i → inode i+1; bit 0 is
+    /// nonexistent inode 0, always occupied by mkfs). Consumed by
+    /// create/mkdir/link (this batch only reads and writes through
+    /// write/truncate directly).
     #[allow(dead_code)]
     fn alloc_inode(&mut self, mode: u16) -> Result<u32, Errno> {
         for group in 0..self.geometry.group_count {
@@ -687,7 +710,8 @@ impl Ext2Server {
         Err(Errno::from_i32(ENOSPC))
     }
 
-    /// 把缓存里的 inode 记录编码回镜像的 inode 表位置。
+    /// Encode the cached inode record back to its slot in the image's inode
+    /// table.
     fn write_inode_back(&mut self, number: u32, inode: &DiskInode) {
         let group = (number - 1) / self.inodes_per_group;
         let index = u64::from(number - 1) % u64::from(self.inodes_per_group);
@@ -727,9 +751,10 @@ impl Ext2Server {
         F: FnMut(dir::Entry) -> bool,
     {
         let inode = self.read_inode(directory)?;
-        // 块数按 inode 尺寸向上取整；**块内**按 rec_len 步进（目录项不
-        // 跨块，最后一条的 rec_len 吸收块内余量——遍历按块界走，不按
-        // 尺寸逐字节截断）。
+        // The block count rounds the inode size up; **within a block** the walk
+        // steps by rec_len (a directory entry never spans blocks, and the last
+        // one's rec_len absorbs the in-block slack — the walk follows block
+        // boundaries, never truncating byte by byte by size).
         let blocks = u64::from(inode.size).div_ceil(u64::from(self.geometry.block_size)) as usize;
         let mut stop = false;
         for file_block in 0..blocks {
@@ -863,7 +888,8 @@ impl FsDriver for Ext2Server {
             offset_in_block = 0;
             file_block += 1;
         }
-        // 尺寸抬升：写入越过了旧尾才抬（原地覆写不改尺寸）。
+        // Size raise: only when the write passes the old end (an in-place
+        // overwrite does not change the size).
         let new_end = position as u64 + data.len() as u64;
         if new_end > u64::from(record.size) {
             record.size = new_end as u32;
@@ -919,8 +945,9 @@ impl FsDriver for Ext2Server {
             &mut staging[..],
         );
         let mut done = false;
-        // 逐块遍历：inode 尺寸只定块数，**块内**按 rec_len 步进（最后
-        // 一条的 rec_len 吸收块内余量，尺寸不逐字节截断遍历）。
+        // Per-block walk: the inode size only fixes the block count; **within a
+        // block** the walk steps by rec_len (the last one's rec_len absorbs the
+        // in-block slack, so the walk is not truncated byte by byte by size).
         let blocks = u64::from(inode.size).div_ceil(block_size as u64) as usize;
         for block_index in 0..blocks {
             if done {
@@ -959,7 +986,8 @@ impl FsDriver for Ext2Server {
         }
         let delivered = encoder.finish()?;
         if !done {
-            // 未提前结束：位置推进到目录尾（块数 × 块大小）。
+            // Not ended early: the position advances to the directory end
+            // (block count × block size).
             let blocks = u64::from(inode.size).div_ceil(u64::from(self.geometry.block_size)) as usize;
             *position = (blocks as u64 * u64::from(self.geometry.block_size)) as i64;
         } else {
@@ -1014,8 +1042,8 @@ impl FsDriver for Ext2Server {
             record.size = self.geometry.block_size;
             self.write_inode_back(number, &record);
             self.cache.insert(number, record);
-            // 点项：`.` 指向自己、`..` 指向父亲（rec_len 各占 12，尾部
-            // 余量归 `..`）。
+            // The dot entries: `.` points at itself and `..` at the parent
+            // (each rec_len is 12, and the tail slack belongs to `..`).
             let at = data_block as usize * self.geometry.block_size as usize;
             let mut dot = vec![0u8; 12];
             dot[0..4].copy_from_slice(&number.to_le_bytes());
@@ -1035,7 +1063,8 @@ impl FsDriver for Ext2Server {
             self.image[at + 12..at + 12 + rest as usize]
                 .copy_from_slice(&dotdot);
         }
-        // 父目录的链接数因子目录的 `..` 而加一。
+        // The parent directory's link count grows by one for the
+        // subdirectory's `..`.
         let mut parent = self.read_inode(directory as u32)?;
         parent.links += 1;
         self.write_inode_back(directory as u32, &parent);
@@ -1074,7 +1103,9 @@ impl FsDriver for Ext2Server {
             return Err(Errno::from_i32(EPERM));
         }
         self.add_entry(directory as u32, inode as u32, dir::TYPE_REGULAR, name.as_bytes())?;
-        //[SD19-gate] C link.c:92 `rip->i_links_count++` 后接 void `put_inode` 不回错；主操作 add_entry 已成功后链数尽力而为
+        //[SD19-gate] C link.c:92 does `rip->i_links_count++` then a void
+        // `put_inode` that reports no error; the link count is best effort
+        // after add_entry already succeeded
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.adjust_links(inode as u32, 1);
         Ok(())
@@ -1090,7 +1121,10 @@ impl FsDriver for Ext2Server {
             return Err(Errno::from_i32(EPERM));
         }
         if self.adjust_links(number, -1)? {
-            //[SD19-gate] C link.c:260 `put_inode` 内部处理 inode 归零后的 block 释放、void 不回错；unlink 主操作已确认 last link，不因 block 释放失败而回滚
+            //[SD19-gate] C link.c:260 `put_inode` handles block release once
+            // the inode hits zero and is void, reporting no error; unlink already
+            // confirmed the last link, so a failed block release does not roll
+            // back
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.free_file_blocks(&record);
             self.free_inode(number)?;
@@ -1107,8 +1141,8 @@ impl FsDriver for Ext2Server {
         if !Self::is_directory(&child) {
             return Err(Errno::from_i32(EINVAL));
         }
-        // 空检查：只允许 `.` 与 `..` 两个真实条目（其余条目一律
-        // `ENOTEMPTY`——C `link.c` 的 rmdir 空检查）。
+        // Empty check: only the two real entries `.` and `..` are allowed (any
+        // other entry means `ENOTEMPTY` — C `link.c`'s rmdir empty check).
         let mut real_entries = 0usize;
         self.walk_directory(entry.number, |e| {
             if e.number != 0 {
@@ -1120,11 +1154,16 @@ impl FsDriver for Ext2Server {
             return Err(Errno::from_i32(minix_types::ENOTEMPTY));
         }
         let number = self.remove_entry(directory as u32, name)?;
-        //[SD19-gate] C link.c:260 `put_inode` 内部处理 inode 归零后的 block 释放、void 不回错；rmdir 已确认 empty 并取子 inode，不因 block 释放失败而回滚
+        //[SD19-gate] C link.c:260 `put_inode` handles block release once the
+        // inode hits zero and is void, reporting no error; rmdir already
+        // confirmed empty and took the child inode, so a failed block release
+        // does not roll back
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.free_file_blocks(&child);
         self.free_inode(number)?;
-        //[SD19-gate] C link.c:255 直接 `rip->i_links_count--;` 后接 void `put_inode`；remove_entry 已成功后父目录链数尽力而为
+        //[SD19-gate] C link.c:255 does `rip->i_links_count--;` then a void
+        // `put_inode`; the parent directory's link count is best effort after
+        // remove_entry already succeeded
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.adjust_links(directory as u32, -1);
         Ok(())
@@ -1153,16 +1192,18 @@ impl FsDriver for Ext2Server {
         let old_record = self.read_inode(old_number)?;
         let old_is_dir = Self::is_directory(&old_record);
         let same_pdir = old_directory == new_directory;
-        // 目标名现状：不存在记 `None`（查找的 ENOENT），其余错误如实传播。
+        // Current state of the target name: absent records `None` (the lookup's
+        // ENOENT); every other error propagates as it is.
         let target = match self.find_entry_slot(new_directory as u32, new_name) {
             Ok((entry, _, _)) => Some(entry.number),
             Err(e) if e.to_i32() == ENOENT => None,
             Err(e) => return Err(e),
         };
 
-        // 祖先环检查（C 在目标检查之前跑）：沿新父的 `..` 上行，撞见
-        // 被搬目录即 EINVAL；`..` 缺失按最坏情况同样拒绝；根的 `..`
-        // 自指即到顶放行。
+        // Ancestor-cycle check (C runs it before the target checks): walk up
+        // the new parent's `..` and EINVAL if the directory being moved is met; a
+        // missing `..` is likewise rejected as the worst case; the root's `..`
+        // pointing at itself means the top was reached, so allow it.
         if old_is_dir && !same_pdir {
             let mut current = new_directory as u32;
             loop {
@@ -1182,7 +1223,7 @@ impl FsDriver for Ext2Server {
 
         if let Some(target_number) = target {
             if target_number == old_number {
-                // C `SAME`：改名到自己，成功无操作。
+                // C `SAME`: renaming to itself succeeds as a no-op.
                 return Ok(());
             }
             let target_record = self.read_inode(target_number)?;
@@ -1194,14 +1235,16 @@ impl FsDriver for Ext2Server {
                 return Err(Errno::from_i32(EISDIR));
             }
         } else if old_is_dir && !same_pdir {
-            // 目标不存在才查新父的链接顶：目录迁入要占一条 `..` 链接。
+            // Only when the target is absent does it check the new parent's
+            // link cap: a directory moving in takes one `..` link.
             let parent = self.read_inode(new_directory as u32)?;
             if u32::from(parent.links) >= LINK_MAX {
                 return Err(Errno::from_i32(EMLINK));
             }
         }
 
-        // 覆写：目标先摘除——目录走空检查与释放，文件走减链释放。
+        // Overwrite: remove the target first — a directory goes through the
+        // empty check and free, a file through link decrement and free.
         if target.is_some() {
             if old_is_dir {
                 self.remove_dir(new_directory, new_name)?;
@@ -1210,8 +1253,10 @@ impl FsDriver for Ext2Server {
             }
         }
 
-        // 条目换位（C 两顺序）：同父先删后插，腾出的槽位给新名；跨父
-        // 先插后删，插入失败（盘满）时旧名原封不动，文件不丢。
+        // Entry swap (C's two orders): same parent deletes then inserts, giving
+        // the freed slot to the new name; cross parent inserts then deletes, so
+        // an insert failure (disk full) leaves the old name untouched and the
+        // file is not lost.
         let entry_type = dirent_type_for_mode(old_record.mode as u32);
         if same_pdir {
             self.remove_entry(old_directory as u32, old_name)?;
@@ -1221,12 +1266,16 @@ impl FsDriver for Ext2Server {
             self.remove_entry(old_directory as u32, old_name)?;
         }
 
-        // `..` 修正：搬走的目录仍指向旧父。摘除 `..` 时旧父链接减一
-        // （C unlink_file 的减链半）；重插指向新父成功时新父链接加一
-        // （C ENTER + links_count++），插入失败按 C 不加不减。
+        // `..` fix-up: a moved directory still points at the old parent.
+        // Removing `..` decrements the old parent's link count (the decrement
+        // half of C unlink_file); a successful reinsert pointing at the new
+        // parent increments it (C ENTER + links_count++), and a failed insert
+        // adds and subtracts nothing, as in C.
         if old_is_dir && !same_pdir {
             if let Ok(old_parent) = self.remove_entry(old_number, "..") {
-                //[SD19-gate] C link.c:440 rename 直接 `--` 后 `put_inode(old_dirp)` 不回错；`..` 已摘下、旧父目录链数尽力而为
+                //[SD19-gate] C link.c:440 rename does the direct `--` then
+                // `put_inode(old_dirp)` without reporting; `..` is already
+                // detached, so the old parent's link count is best effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.adjust_links(old_parent, -1);
             }
@@ -1260,8 +1309,9 @@ impl FsDriver for Ext2Server {
             record.gid = group as u16;
             record.size = target.len() as u32;
             if target.len() < 60 {
-                // 快速符号链接：目标直接写进指针区的 60 字节。按 u32 槽
-                // 组装，避开裸指针。
+                // Fast symbolic link: the target goes straight into the 60
+                // bytes of the pointer area. Assemble through u32 slots,
+                // avoiding a raw pointer.
                 for (index, chunk) in target.chunks(4).enumerate() {
                     let mut word = [0u8; 4];
                     word[..chunk.len()].copy_from_slice(chunk);
@@ -1290,7 +1340,8 @@ impl FsDriver for Ext2Server {
         let record = self.read_inode(inode as u32)?;
         let length = record.size as usize;
         let bytes: Vec<u8> = if length < 60 {
-            // 快速符号链接：目标住在指针区的 60 字节里，按 u32 槽展开。
+            // Fast symbolic link: the target lives in the 60 bytes of the
+            // pointer area, expanded through u32 slots.
             let mut target = Vec::new();
             for word in &record.blocks {
                 target.extend_from_slice(&word.to_le_bytes());
@@ -1309,7 +1360,8 @@ impl FsDriver for Ext2Server {
         Ok(n)
     }
 
-    /// Change owner/group (C `protect.c` 的 chown 半：字段写回)。
+    /// Change owner/group (the chown half of C `protect.c`: write the fields
+    /// back).
     fn change_owner(&mut self, inode: u64, owner: u32, group: u32) -> Result<u32, Errno> {
         let mut record = self.read_inode(inode as u32)?;
         record.uid = owner as u16;
@@ -1320,7 +1372,7 @@ impl FsDriver for Ext2Server {
     }
 
     /// Change permission bits: format bits stay, the caller's mode rides
-    /// the low bits (C `mfs protect.c`)。
+    /// the low bits (C `mfs protect.c`).
     fn change_mode(&mut self, inode: u64, mode: u32) -> Result<u32, Errno> {
         let mut record = self.read_inode(inode as u32)?;
         record.mode = ((record.mode & 0o170000) as u32 | (mode & 0o7777)) as u16;
@@ -1329,8 +1381,9 @@ impl FsDriver for Ext2Server {
         Ok(u32::from(record.mode))
     }
 
-    /// Update access and modification times (秒级落盘；纳秒位 ext2 旧版
-    /// 不存，丢弃——C 同样只存秒)。
+    /// Update access and modification times (seconds land on disk; the
+    /// nanosecond fields are not stored by old ext2 revisions and are dropped —
+    /// C stores only seconds too).
     fn update_times(
         &mut self,
         inode: u64,
@@ -1363,17 +1416,18 @@ impl FsDriver for Ext2Server {
     }
 }
 
-/// 目录项槽位定位：块下标、块内偏移、rec_len。
+/// Directory-entry slot location: block index, in-block offset, rec_len.
 type SlotPos = (usize, usize, u16);
 
-/// 位图位测试（位 0 = 字节 0 的最低位）。
+/// Bitmap bit test (bit 0 = the lowest bit of byte 0).
 fn bit_test(map: &[u8], bit: u32) -> bool {
     map[(bit / 8) as usize] & (1 << (bit % 8)) != 0
 }
 
-/// inode 模式类型位 → 目录项 file_type 字节（`path.c` ENTER 的映射链，
-/// `minix3/minix/fs/ext2/path.c:286-303`）。套接字与未知类型落
-/// `TYPE_UNKNOWN`——映射链上没有 socket 分支，与 C 行为一致。
+/// inode mode type bits → directory-entry file_type byte (the ENTER mapping
+/// chain of `path.c`, `minix3/minix/fs/ext2/path.c:286-303`). Sockets and
+/// unknown types land on `TYPE_UNKNOWN` — the mapping chain has no socket
+/// branch, matching C.
 fn dirent_type_for_mode(mode: u32) -> u8 {
     match mode & 0o170000 {
         0o100000 => dir::TYPE_REGULAR,
@@ -1386,14 +1440,14 @@ fn dirent_type_for_mode(mode: u32) -> u8 {
     }
 }
 
-/// 位图置位。
-#[allow(dead_code)] // F3c-2 的 inode 位图分配消费
+/// Set a bitmap bit.
+#[allow(dead_code)] // consumed by the inode bitmap allocation
 fn bit_set(map: &mut [u8], bit: u32) {
     map[(bit / 8) as usize] |= 1 << (bit % 8);
 }
 
-/// 位图清位。
-#[allow(dead_code)] // F3c-2 的 free_inode 消费
+/// Clear a bitmap bit.
+#[allow(dead_code)] // consumed by free_inode
 fn bit_clear(map: &mut [u8], bit: u32) {
     map[(bit / 8) as usize] &= !(1 << (bit % 8));
 }
@@ -1431,7 +1485,8 @@ mod tests {
     const FILE_DATA_BLOCK: u64 = 6;
     const FILE_DATA: &[u8] = b"HELLO EXT2";
 
-    /// 盘上 1024 字节超块（旧 revision、单组、16 inode/组）。
+    /// The on-disk 1024-byte superblock (old revision, single group, 16 inodes
+    /// per group).
     fn stored_super() -> [u8; SUPER_STORED_BYTES] {
         let raw = RawSuperblock {
             magic: superblock::MAGIC,
@@ -1452,7 +1507,8 @@ mod tests {
             feature_ro_compat: 0,
             state: superblock::STATE_CLEAN,
         };
-        // 存储 encode 走同一偏移表（from_stored 的对偶）。
+        // The stored encode goes through the same offset table (the dual of
+        // from_stored).
         let mut stored = [0u8; SUPER_STORED_BYTES];
         fn put32(stored: &mut [u8], at: usize, v: u32) {
             stored[at..at + 4].copy_from_slice(&v.to_le_bytes());
@@ -1480,7 +1536,8 @@ mod tests {
         stored
     }
 
-    /// 一条 ext2 目录项（dir::decode 可解，rec_len 含尾部 slack）。
+    /// One ext2 directory entry (decodable by dir::decode, rec_len including
+    /// tail slack).
     fn entry(number: u32, file_type: u8, name: &[u8], rec_len: u16) -> Vec<u8> {
         let mut e = vec![0u8; rec_len as usize];
         e[0..4].copy_from_slice(&number.to_le_bytes());
@@ -1491,7 +1548,7 @@ mod tests {
         e
     }
 
-    /// 一个 DiskInode 的存储态（inode::encode 的输入）。
+    /// The stored form of a DiskInode (input to inode::encode).
     fn inode_record(mode: u16, size: u32, blocks: [u32; 15]) -> [u8; 128] {
         let inode = DiskInode {
             mode,
@@ -1511,13 +1568,15 @@ mod tests {
         inode::encode(&inode)
     }
 
-    /// 构建最小 ext2 镜像：块 0 超块、块 1 组描述符、块 4~5 inode 表、
-    /// 块 6 根目录、块 7 文件数据。
+    /// Build a minimal ext2 image: block 0 superblock, block 1 group
+    /// descriptor, blocks 4-5 inode table, block 6 root directory, block 7 file
+    /// data.
     fn build_image() -> Vec<u8> {
         let mut image = vec![0u8; 32 * BLOCK];
-        // 超块
+        // Superblock
         image[STORED_AT..STORED_AT + SUPER_STORED_BYTES].copy_from_slice(&stored_super());
-        // 组描述符（块 1，组 0）：块位图=2、inode 位图=3、inode 表=4。
+        // Group descriptor (block 1, group 0): block bitmap = 2, inode
+        // bitmap = 3, inode table = 4.
         let mut gdt = vec![0u8; BLOCK];
         let mut gd = [0u8; 32];
         gd[0..4].copy_from_slice(&(BLOCK_BITMAP_BLOCK as u32).to_le_bytes());
@@ -1525,19 +1584,19 @@ mod tests {
         gd[8..12].copy_from_slice(&(INODE_TABLE_BLOCK as u32).to_le_bytes());
         gdt[..32].copy_from_slice(&gd);
         image[BLOCK..2 * BLOCK].copy_from_slice(&gdt);
-        // 块位图（块 2）：块 0..=6 已占（引导+超块/GDT/位图×2/inode 表/
-        // 根目录/文件数据）。
+        // Block bitmap (block 2): blocks 0..=6 are taken (boot + superblock /
+        // GDT / two bitmaps / inode table / root directory / file data).
         let bm = BLOCK_BITMAP_BLOCK as usize * BLOCK;
         for bit in 0u32..=6 {
             image[bm + (bit / 8) as usize] |= 1 << (bit % 8);
         }
-        // inode 位图（块 3）：inode 1..=11 已占（位 0..=10）。
+        // Inode bitmap (block 3): inodes 1..=11 are taken (bits 0..=10).
         let ib = INODE_BITMAP_BLOCK as usize * BLOCK;
         for bit in 0u32..=10 {
             image[ib + (bit / 8) as usize] |= 1 << (bit % 8);
         }
-        // inode 表（块 4 起，128 字节/条）：
-        // inode 2 = 根目录，inode 11 = FILE.TXT（直接块 6）。
+        // Inode table (from block 4, 128 bytes each):
+        // inode 2 = root directory, inode 11 = FILE.TXT (direct block 6).
         let mut inodes = vec![0u8; 2 * BLOCK];
         let root = inode_record(0o040755, 3 * 8, {
             let mut b = [0u32; 15];
@@ -1554,7 +1613,7 @@ mod tests {
         inodes[at..at + 128].copy_from_slice(&file);
         image[INODE_TABLE_BLOCK as usize * BLOCK..INODE_TABLE_BLOCK as usize * BLOCK + inodes.len()]
             .copy_from_slice(&inodes);
-        // 根目录（块 5）
+        // Root directory (block 5)
         let mut dir_data = vec![0u8; BLOCK];
         let mut at = 0usize;
         for e in [
@@ -1567,7 +1626,7 @@ mod tests {
         }
         image[ROOT_DIR_BLOCK as usize * BLOCK..ROOT_DIR_BLOCK as usize * BLOCK + BLOCK]
             .copy_from_slice(&dir_data);
-        // 文件数据（块 6）
+        // File data (block 6)
         let data = FILE_DATA_BLOCK as usize * BLOCK;
         image[data..data + FILE_DATA.len()].copy_from_slice(FILE_DATA);
         image
@@ -1623,7 +1682,7 @@ mod tests {
             .unwrap();
         assert_eq!(n, 10);
         assert_eq!(got, b"HELLO EXT2");
-        // EOF 之后读到零。
+        // Reads past EOF yield zeros.
         let n = server.read(11, 100, 8, &mut |_| {}).unwrap();
         assert_eq!(n, 0);
     }
@@ -1653,14 +1712,15 @@ mod tests {
         assert_eq!(st.size, 10);
         assert_eq!(st.nlinks, 1);
     }
-    /// F3c-1：写扩展——inode 11 追加数据，分配新块并抬升尺寸。
+    /// Write extension: appending data to inode 11 allocates new blocks and
+    /// raises the size.
     #[test]
     fn test_write_extends_and_allocates() {
         let mut server = mounted();
         let data = b"MORE DATA 12345";
         let n = server.write(11, 10, data).unwrap();
         assert_eq!(n, data.len(), "原地+扩展混合写全量落盘");
-        // 读回拼接验证：前 10 字节旧数据 + 新数据。
+        // Read-back check: the 10 old bytes plus the new data.
         let mut got = Vec::new();
         let read = server
             .read(11, 0, 1024, &mut |bytes| got.extend_from_slice(bytes))
@@ -1670,24 +1730,31 @@ mod tests {
         assert_eq!(&got[10..], data);
     }
 
-    /// F3c-1：间接链写——12 个直接块写满后再写触发单间间接块分配
-    /// （`mapping::decompose`：文件块 12 起走 `blocks[12]`）。
+    /// Indirect chain writes: after the 12 direct blocks are full, the next
+    /// write triggers a single-indirect block allocation (`mapping::decompose`:
+    /// file blocks from 12 on go through `blocks[12]`).
     #[test]
     fn test_write_allocates_indirect_blocks() {
         let block_size = 4096usize;
         let mut server = mounted();
-        // 写 13 块：0..12 直接，12 起单间间接。
+        // Write 13 blocks: 0..12 direct, from 12 on single-indirect.
         let big = vec![b'A'; block_size * 13 + 16];
         let n = server.write(11, 0, &big).unwrap();
         assert_eq!(n, big.len());
-        // 读回两端：最后一块住在单间间接块里。
+        // Read back both ends: the last block lives in the single-indirect
+        // block.
         let mut head = Vec::new();
-        //[SD19-gate] 测试夹具：紧邻 `assert_eq!(head, ...)` 断言读回内容，read 失败会体现为下条失配；不 unwrap 是刻意的形状（与 minix-sys/src/lib.rs 测试夹具档同处理）
+        //[SD19-gate] Test fixture: the read-back content is asserted by the
+        // `assert_eq!(head, ...)` right after, so a failed read shows up as the
+        // next mismatch; not unwrapping is deliberate (the same treatment as the
+        // minix-sys/src/lib.rs test fixture)
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.read(11, 0, 16, &mut |bytes| head.extend_from_slice(bytes));
         assert_eq!(head, vec![b'A'; 16]);
         let mut tail = Vec::new();
-        //[SD19-gate] 测试夹具：紧邻 `assert_eq!(tail, ...)` 断言间接块尾部内容，read 失败会体现为下条失配；不 unwrap 同 1675 形状
+        //[SD19-gate] Test fixture: the indirect-block tail is asserted by the
+        // `assert_eq!(tail, ...)` right after, so a failed read shows up as the
+        // next mismatch; not unwrapping is the same shape as above
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.read(11, (block_size * 13) as i64, 16, &mut |bytes| {
             tail.extend_from_slice(bytes)
@@ -1695,7 +1762,8 @@ mod tests {
         assert_eq!(tail, vec![b'A'; 16]);
     }
 
-    /// F3c-1：truncate 释放全部块与间接块，位图与计数还原。
+    /// truncate frees every block and indirect block, restoring the bitmaps and
+    /// counts.
     #[test]
     fn test_truncate_frees_blocks_and_restores_counts() {
         let mut server = mounted();
@@ -1705,24 +1773,29 @@ mod tests {
         let mut st = Stat::zeroed();
         server.stat(11, &mut st).unwrap();
         assert_eq!(st.size, 0, "truncate 后尺寸归零");
-        // 截断后再写：块从位图重新分配，数据依然可读。
+        // Write after truncation: blocks are reallocated from the bitmap and the
+        // data is still readable.
         let n = server.write(11, 0, b"FRESH").unwrap();
         assert_eq!(n, 5);
         let mut got = Vec::new();
-        //[SD19-gate] 测试夹具：紧邻 `assert_eq!(&got[..5], ...)` 断言截断写入后旧尾巴已清；不 unwrap 同 1675 形状
+        //[SD19-gate] Test fixture: `assert_eq!(&got[..5], ...)` right after
+        // asserts the old tail is gone after the truncating write; not unwrapping
+        // is the same shape as above
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.read(11, 0, 16, &mut |bytes| got.extend_from_slice(bytes));
         assert_eq!(&got[..5], b"FRESH");
     }
 
-    /// F3c-1：写穿间接链后 truncate 的位图清位核对（间接块也被释放）。
+    /// Bitmap clearing after a truncate of a write that crossed the indirect
+    /// chain (the indirect block is freed too).
     #[test]
     fn test_truncate_after_indirect_write_restores_bitmap() {
         let mut server = mounted();
         let big = vec![b'B'; 4096 * 2];
         let _ = server.write(11, 0, &big).unwrap();
         server.truncate(11, 0, 0).unwrap();
-        // 全部块位图清零后，一次大分配仍应成功（位图还原断言的代理）。
+        // With every block bitmap bit cleared, one large allocation should still
+        // succeed (a proxy for the bitmap-restoration assertion).
         let first = server.alloc_block().unwrap();
         let second = server.alloc_block().unwrap();
         assert_ne!(first, second);
@@ -1730,7 +1803,7 @@ mod tests {
         server.free_block(second);
     }
 
-    // ---- F3c-2：namespace 操作与元数据 ----
+    // ---- Namespace operations and metadata ----
 
     #[test]
     fn test_create_makes_file_findable_and_readable() {
@@ -1775,7 +1848,8 @@ mod tests {
             .unwrap();
         server.unlink(ROOT_INODE_NUMBER as u64, "GONE.TXT").unwrap();
         assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "GONE.TXT").is_err());
-        // 最后一条链接断开 → inode 释放（再次分配拿到同一号）。
+        // The last link breaks → the inode is freed (the next allocation gets
+        // the same number).
         let reused = server.alloc_inode(0o100644).unwrap();
         assert_eq!(reused, node.inode_number as u32, "释放后位图位回收");
     }
@@ -1790,12 +1864,13 @@ mod tests {
             .lookup_child(ROOT_INODE_NUMBER as u64, "SUB")
             .unwrap();
         assert!(is_dir);
-        // 子目录里 . 与 .. 在场：. 指自己、.. 指父亲。
+        // `.` and `..` are present in the subdirectory: `.` points at itself
+        // and `..` at the parent.
         let (dot, dot_is_dir) = server.lookup_child(sub.inode_number, ".").unwrap();
         assert!(dot_is_dir && dot.inode_number == sub.inode_number);
         let (dotdot, _) = server.lookup_child(sub.inode_number, "..").unwrap();
         assert_eq!(dotdot.inode_number, ROOT_INODE_NUMBER as u64);
-        // rmdir：名字消失（空目录语义）。
+        // rmdir: the name disappears (empty-directory semantics).
         server.remove_dir(ROOT_INODE_NUMBER as u64, "SUB").unwrap();
         assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "SUB").is_err());
     }
@@ -1863,9 +1938,10 @@ mod tests {
         assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "RENAMED.TXT").is_ok());
     }
 
-    // ---- F3c-2 tail：fs_rename 决策树（link.c:268-445 对位） ----
+    // ---- Tail: the fs_rename decision tree (paired with link.c:268-445) ----
 
-    /// 跨父搬目录：名字迁移 + `..` 重指新父 + 两父链接数一减一增。
+    /// Move a directory across parents: the name migrates, `..` re-points at
+    /// the new parent, and the two parents' link counts shift by one each way.
     #[test]
     fn test_rename_moves_dir_across_parents_and_retargets_dotdot() {
         let mut server = mounted();
@@ -1882,17 +1958,19 @@ mod tests {
         let (c, is_dir) = server.lookup_child(b.inode_number, "C").unwrap();
         assert!(is_dir);
         assert_eq!(c.inode_number, a.inode_number, "inode 跟着走");
-        // C 的 `..` 现在指向新父 B，`.` 仍指自己。
+        // C's `..` now points at the new parent B, while `.` still points at
+        // itself.
         let (dotdot, _) = server.lookup_child(c.inode_number, "..").unwrap();
         assert_eq!(dotdot.inode_number, b.inode_number);
         let (dot, _) = server.lookup_child(c.inode_number, ".").unwrap();
         assert_eq!(dot.inode_number, c.inode_number);
-        // 目录项类型字节：C 与 `..` 都是目录。
+        // Directory-entry type bytes: both C and `..` are directories.
         let (c_entry, _, _) = server.find_entry_slot(b.inode_number as u32, "C").unwrap();
         assert_eq!(c_entry.file_type, dir::TYPE_DIRECTORY);
         let (dd_entry, _, _) = server.find_entry_slot(c.inode_number as u32, "..").unwrap();
         assert_eq!(dd_entry.file_type, dir::TYPE_DIRECTORY);
-        // 链接账：旧父 -1，新父 +1（B = 自身两链 + C 的 `..`）。
+        // Link accounting: old parent -1, new parent +1 (B = its own two links
+        // plus C's `..`).
         let mut root_after = Stat::zeroed();
         server.stat(ROOT_INODE_NUMBER as u64, &mut root_after).unwrap();
         assert_eq!(root_after.nlinks + 1, root_before.nlinks);
@@ -1901,7 +1979,8 @@ mod tests {
         assert_eq!(b_stat.nlinks, 3);
     }
 
-    /// 跨父搬文件：换位走"先插后删"，目录链接数不动（文件不牵 `..`）。
+    /// Move a file across parents: the swap goes "insert first, then delete"
+    /// and directory link counts stay put (a file brings no `..`).
     #[test]
     fn test_rename_moves_file_across_parents() {
         let mut server = mounted();
@@ -1919,8 +1998,8 @@ mod tests {
         assert_eq!(st.nlinks, 2, "文件迁移不占目录链接");
     }
 
-    /// 目录搬进自己的子树：沿 `..` 上行撞见自己即 EINVAL；合法的隔代
-    /// 迁移照常成功。
+    /// Move a directory into its own subtree: walking up `..` and meeting
+    /// itself is EINVAL; a legal move to another generation still succeeds.
     #[test]
     fn test_rename_refuses_dir_into_own_subtree() {
         let mut server = mounted();
@@ -1928,7 +2007,7 @@ mod tests {
         let (top, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "TOP").unwrap();
         server.make_dir(top.inode_number, "SUB", 0o755, 0, 0).unwrap();
         let (sub, _) = server.lookup_child(top.inode_number, "SUB").unwrap();
-        // 直接子树命中。
+        // A direct subtree hit.
         assert_eq!(
             server
                 .rename(ROOT_INODE_NUMBER as u64, "TOP", sub.inode_number, "UNDER")
@@ -1936,7 +2015,8 @@ mod tests {
                 .to_i32(),
             minix_types::EINVAL
         );
-        // SUB 搬到根下不构成环，放行，且 `..` 随迁指向根。
+        // Moving SUB under the root forms no cycle, so allow it, and `..`
+        // follows along and points at the root.
         server
             .rename(top.inode_number, "SUB", ROOT_INODE_NUMBER as u64, "SUB2")
             .unwrap();
@@ -1945,7 +2025,8 @@ mod tests {
         assert_eq!(dotdot.inode_number, ROOT_INODE_NUMBER as u64);
     }
 
-    /// 覆写同名文件目标：旧目标摘除释放，名字落到旧 inode，号回收。
+    /// Overwrite a same-named file target: the old target is detached and
+    /// freed, the name lands on the old inode, and the number is recycled.
     #[test]
     fn test_rename_overwrites_file_target_and_recycles_inode() {
         let mut server = mounted();
@@ -1963,12 +2044,14 @@ mod tests {
         let mut st = Stat::zeroed();
         server.stat(a.inode_number, &mut st).unwrap();
         assert_eq!(st.nlinks, 1);
-        // 旧 B 链接归零已释放：下一次分配回收同号。
+        // The old B hit zero links and was freed: the next allocation recycles
+        // the same number.
         let recycled = server.alloc_inode(0o100644).unwrap();
         assert_eq!(recycled, b.inode_number as u32);
     }
 
-    /// 目录盖到非空目录上：空检查拒绝，两名都原地不动。
+    /// Put a directory over a non-empty directory: the empty check refuses, and
+    /// both names stay put.
     #[test]
     fn test_rename_dir_onto_nonempty_dir_refuses() {
         let mut server = mounted();
@@ -1987,7 +2070,8 @@ mod tests {
         assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "DST").is_ok());
     }
 
-    /// 类型错配两拒绝：目录盖文件 ENOTDIR，文件盖目录 EISDIR。
+    /// Two type-mismatch refusals: a directory over a file gives ENOTDIR, a file
+    /// over a directory gives EISDIR.
     #[test]
     fn test_rename_type_mismatch_refusals() {
         let mut server = mounted();
@@ -2008,7 +2092,8 @@ mod tests {
         );
     }
 
-    /// 改名到自己：成功无操作，条目不重复、链接不增。
+    /// Rename to itself: succeeds as a no-op, with no duplicate entry and no
+    /// link growth.
     #[test]
     fn test_rename_to_same_name_is_noop() {
         let mut server = mounted();
@@ -2029,7 +2114,8 @@ mod tests {
         assert_eq!(st.nlinks, 1);
     }
 
-    /// 同父换名保留目录项类型字节（普通文件与符号链接各一）。
+    /// Same-parent rename keeps the directory-entry type byte (one regular file
+    /// and one symbolic link each).
     #[test]
     fn test_rename_keeps_dirent_type_byte() {
         let mut server = mounted();
@@ -2052,7 +2138,8 @@ mod tests {
         assert_eq!(lnk_entry.file_type, dir::TYPE_SYMLINK);
     }
 
-    /// 跨父搬目录且新父链接顶到上限：EMLINK，失败无副作用。
+    /// Move a directory across parents with the new parent at its link cap:
+    /// EMLINK, and the failure has no side effects.
     #[test]
     fn test_rename_cross_parent_emlink_when_parent_full() {
         let mut server = mounted();
@@ -2079,7 +2166,8 @@ mod tests {
         let _ = server
             .create(ROOT_INODE_NUMBER as u64, "M.TXT", 0o644, 0, 0)
             .unwrap();
-        // 改基座镜像里 FILE.TXT（inode 11，0o100644）的权限位。
+        // Change the permission bits of FILE.TXT (inode 11, 0o100644) in the
+        // base image.
         let new_mode = server
             .change_mode(11, 0o600)
             .unwrap();

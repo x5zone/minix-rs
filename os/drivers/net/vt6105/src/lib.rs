@@ -1,8 +1,8 @@
-//! Minix-RS driver (net/vt6105) — 占位 crate。
+//! Minix-RS driver (net/vt6105) — placeholder crate.
 //!
-//! C 对应: `minix3/minix/drivers/net/vt6105/`
-//! 状态: 占位（stub），待实装。
+//! C counterpart: `minix3/minix/drivers/net/vt6105/`
+//! Status: placeholder (stub), implementation pending.
 #![no_std]
 
-/// 服务初始化入口（占位）。
+/// Service initialization entry point (placeholder).
 pub fn init() {}

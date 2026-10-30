@@ -12,9 +12,11 @@
 //! (`TABROUND(l) = (l + 8) & ~7`, column.c:59) and advance `endcol` by
 //! the rounded maximum length per column.
 //!
-//! 条目、字段、宽度全是**字节**：C 用 `fgetln` 一字节一字节读出、用 `strlen` 量长、
-//! 用 `printf("%s")` 原样发出，整条链没有一次解码。所以一枚非 UTF-8 字节既不会让
-//! 所属的记录消失，也不会让补齐的宽度多算一位。
+//! Entries, fields and widths are all **bytes**: C reads one byte at a time with
+//! `fgetln`, measures length with `strlen`, and emits verbatim with
+//! `printf("%s")`; the whole chain never decodes once. So a non-UTF-8 byte
+//! neither makes its record disappear nor makes the padding width count one
+//! unit too many.
 //!
 //! The terminal width comes from `-c` (default 80, column.c:68 — the C
 //! queries the window size, which belongs to the terminal face). `-t`
@@ -51,32 +53,43 @@ impl Default for ColumnOptions {
     }
 }
 
-/// `column` argv 解析结果：选项 + 文件操数。
+/// The result of parsing `column`'s argv: options plus file operands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnArgs<'a> {
     pub options: ColumnOptions,
     pub operands: Vec<&'a [u8]>,
 }
 
-/// 把 `column` 的 argv 尾部按 BSD `getopt("c:s:tx")`（`column.c:93`）拆成 [`ColumnArgs`]。
-/// `t`/`x` 是无值旗标（逐字聚簇，如 `-tx`/`-xt`）；`c`/`s` 带值，值附于字母后
-/// （`-c100`/`-s,`）或取下一项（`-c 100`）。失败只可能是 libc `getopt` 那两形，
-/// 所以错误载荷直接用 crate 根的 [`GetoptReport`]（句子单源，壳侧渲染）：
-/// ① 集外字母 [`GetoptReport::UnknownOption`]（`getopt.c:95-104`，`--x` 的字母就是 `-`）；
-/// ② 带值选项后面没有值 [`GetoptReport::MissingValue`]（`getopt.c:132-136`，
-///    即 `column.c:107-109` 的 `default: usage()` 之前 libc 自己印的那一行）。
+/// Splits the tail of `column`'s argv into [`ColumnArgs`] per BSD
+/// `getopt("c:s:tx")` (`column.c:93`). `t`/`x` are valueless flags (clustered
+/// verbatim, e.g. `-tx`/`-xt`); `c`/`s` take a value, either attached to the
+/// letter (`-c100`/`-s,`) or taken from the next item (`-c 100`). Failures can
+/// only be libc `getopt`'s two shapes, so the error payload is the crate-root
+/// [`GetoptReport`] directly (one sentence source, rendered by the shell):
+/// 1. an out-of-set letter [`GetoptReport::UnknownOption`] (`getopt.c:95-104`;
+///    the letter of `--x` is `-`);
+/// 2. a missing value after a value-taking option
+///    [`GetoptReport::MissingValue`] (`getopt.c:132-136`, i.e. the line libc
+///    itself prints before `column.c:107-109`'s `default: usage()`).
 ///
-/// `--` 结束选项环而自身不是操作数（`getopt.c:81-85` 先 `++optind`）；裸 `-` 与任何
-/// 非选项 token 一到就结束选项环**且不重排**（`getopt.c:74-78`、`:87-92`），它和它后面的
-/// token 整个落进操作数——`column` 会把它们当档名去 `fopen`（旧写法扫完一个非选项 token
-/// 还继续扫下一个，于是 `foo -t` 里的 `-t` 被偷偷当旗标吃掉，C 却是去开那个叫 `-t` 的档）。
+/// `--` ends the option loop without being an operand (`getopt.c:81-85` does
+/// `++optind` first); a bare `-` or any non-option token ends the option loop
+/// on arrival **and is not reordered** (`getopt.c:74-78`, `:87-92`), so it and
+/// the tokens after it all become operands — `column` will `fopen` them as file
+/// names (the old form kept scanning past a non-option token, so the `-t` in
+/// `foo -t` was silently eaten as a flag while C opens the file named `-t`).
 ///
-/// `-c` 的宽度走 [`crate::atoi`]，与 `column.c:96` 的 `atoi(optarg)` 逐字同形：非数字、
-/// 空串、负数都不是错。宽度非正时 C 的 `maxlength >= termwidth` 那一判（`:131`）在
-/// 条目池非空时**永远成立**（最长条目至少 1 字节，取齐到制表位后是 8），于是布局退成
-/// 每条一行；这里把负宽度并到 0 是为了让 `termwidth` 留一个 `usize`——两者在上面的
-/// 判定下观察等价，而 `numcols` 的除法只在 `maxlength < termwidth` 时才走到，
-/// 那时宽度必然为正。终端宽度本身（`ioctl(TIOCGWINSZ)` 与 `COLUMNS`）属终端面，不在本层。
+/// The `-c` width goes through [`crate::atoi`], verbatim the same shape as
+/// `column.c:96`'s `atoi(optarg)`: non-digits, the empty string and negative
+/// numbers are not errors. For a non-positive width, C's `maxlength >=
+/// termwidth` test (`:131`) is **always true** when the entry pool is non-empty
+/// (the longest entry is at least one byte, and rounding it up to the tab stop
+/// gives 8), so the layout degrades to one entry per line; folding a negative
+/// width to 0 here keeps `termwidth` a `usize` — the two are observationally
+/// equivalent under the test above, and `numcols`' division is only reached
+/// when `maxlength < termwidth`, where the width must be positive. The terminal
+/// width itself (`ioctl(TIOCGWINSZ)` and `COLUMNS`) belongs to the terminal
+/// face, not this layer.
 pub fn parse_column_args<'a>(args: &'a [&'a [u8]]) -> Result<ColumnArgs<'a>, GetoptReport> {
     let mut options = ColumnOptions::default();
     let mut index = 0usize;
@@ -85,12 +98,14 @@ pub fn parse_column_args<'a>(args: &'a [&'a [u8]]) -> Result<ColumnArgs<'a>, Get
             break Vec::new();
         };
         if arg == b"--" {
-            // `getopt.c:81-85`：`++optind` 之后才返回 -1，所以 `--` 自身不是操作数。
+            // `getopt.c:81-85`: -1 is returned only after `++optind`, so `--`
+            // itself is not an operand.
             break args[index + 1..].to_vec();
         }
         if arg.len() < 2 || arg[0] != b'-' {
-            // `getopt.c:74-78`：非选项 token 一到就返回 -1，**不推进** `optind`，
-            // 于是它自己连同后面的 token 全是操作数。
+            // `getopt.c:74-78`: -1 is returned on the first non-option token
+            // **without advancing** `optind`, so it and the tokens after it are
+            // all operands.
             break args[index..].to_vec();
         }
         let mut pos = 1usize;
@@ -99,8 +114,10 @@ pub fn parse_column_args<'a>(args: &'a [&'a [u8]]) -> Result<ColumnArgs<'a>, Get
                 b't' => options.table = true,
                 b'x' => options.fill_rows_first = true,
                 ch @ (b'c' | b's') => {
-                    // 值是「本串去掉 `-` 与字母之后的那一段」，没有剩余就取下一个 token
-                    // （`getopt.c:118-141`）；两种取法都把本串吃到尽头。
+                    // The value is "the rest of this string after the `-` and the
+                    // letter"; with nothing left, take the next token
+                    // (`getopt.c:118-141`). Both forms consume this string to its
+                    // end.
                     let value = if pos + 1 < arg.len() {
                         &arg[pos + 1..]
                     } else {
@@ -122,10 +139,14 @@ pub fn parse_column_args<'a>(args: &'a [&'a [u8]]) -> Result<ColumnArgs<'a>, Get
                     pos = arg.len();
                 }
                 _ => {
-                    // 报的是**这一处的第一个字节**：C 的 `optopt` 是 `char`，`%c` 打的就是
-                    // 那一个字节。这里按字节取而不是切字符串，是因为聚簇游标 `pos` 是
-                    // **字节**下标，非 ASCII 字母时它会落进多字节字符中间——`&arg[pos..]`
-                    // 在那一刻不是字符边界，切串当场 panic（同族的 `col` 带着这一枚，已登记）。
+                    // What is reported is **the first byte at this position**: C's
+                    // `optopt` is a `char`, and `%c` prints exactly that one byte.
+                    // It is taken by byte rather than by slicing the string
+                    // because the cluster cursor `pos` is a **byte** index; for a
+                    // non-ASCII letter it lands inside a multi-byte character,
+                    // where `&arg[pos..]` is not a character boundary and slicing
+                    // panics on the spot (the sibling `col` carries the same item,
+                    // already registered).
                     return Err(GetoptReport::UnknownOption(char::from(arg[pos])));
                 }
             }
@@ -139,23 +160,28 @@ pub fn parse_column_args<'a>(args: &'a [&'a [u8]]) -> Result<ColumnArgs<'a>, Get
 /// Splits one input line into table fields (strtok semantics: leading
 /// and repeated separators collapse, empty fields dropped).
 ///
-/// 分隔符集是**字节**集：C 交给 `strtok` 的是 `char *`，`strspn` 一个字节一个字节地比
-/// （`maketbl` 的 `strtok(p, separator)`，`column.c:224-225`）。按字符判会放过一枚单独的
-/// 续字节——条目现在按字节进池，那种字节是真能出现的。
+/// The separator set is a set of **bytes**: what C hands `strtok` is a `char *`,
+/// and `strspn` compares one byte at a time (`maketbl`'s
+/// `strtok(p, separator)`, `column.c:224-225`). Testing by character would let a
+/// lone continuation byte through — entries now enter the pool as bytes, so such
+/// a byte really can occur.
 fn split_fields<'a>(line: &'a [u8], separator: &[u8]) -> Vec<&'a [u8]> {
     line.split(|byte| separator.contains(byte))
         .filter(|field| !field.is_empty())
         .collect()
 }
 
-/// 一份输入交回的东西：进池的条目，加上被 C 丢掉**且警告过**的未终止末行数。
+/// What one input hands back: the entries that entered the pool, plus the number
+/// of unterminated tail lines that C drops **and warns about**.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct EntryPool {
     pub entries: Vec<Vec<u8>>,
-    /// 末行没有换行符的行数（只可能是 0 或 1）。C 的 `input` 先跳前导空白判空行，
-    /// 再 `strchr(p, '\n')` 找不到换行就 `warnx("line too long")`、置 `eval = 1`
-    /// 并**把这一行整个丢掉**（`column.c:277-283`）——所以「最后一行没回车」不是
-    /// 无害的形状，它既少一条输出又改退出码。
+    /// The number of tail lines without a newline (only 0 or 1 can occur). C's
+    /// `input` first skips leading whitespace to test for a blank line, then
+    /// fails `strchr(p, '\n')`, at which point it calls `warnx("line too long")`,
+    /// sets `eval = 1` and **drops that whole line** (`column.c:277-283`) — so "the
+    /// last line has no carriage return" is not a harmless shape: it loses one
+    /// output line and changes the exit code.
     pub dropped_tail: usize,
 }
 
@@ -163,16 +189,20 @@ pub struct EntryPool {
 /// unterminated tail line dropped with a warning, and every kept entry the
 /// **whole line** as read (the C `input` loop, `column.c:272-296`).
 ///
-/// 跳前导空白只服务于两处判定——「整条是空白所以是空行」和「从这一段起找换行符」——
-/// 入库的是 `buf` 本身，所以条目**留着它的前导空白**（`column.c:287` 的
-/// `list[entries++] = buf`，而 `:285` 的 `len = p - buf` 也是从行首量的，
-/// 于是 `maxlength` 把前导空白一并算进去）。参照件现量印证了这一点：
-/// 输入 `  lead` 在 `-t` 之外的布局里原样打回那两个空格。
+/// Skipping leading whitespace serves only two tests — "the whole line is
+/// whitespace, hence blank" and "look for the newline starting here" — and what
+/// enters the pool is `buf` itself, so an entry **keeps its leading whitespace**
+/// (`column.c:287`'s `list[entries++] = buf`, while `:285`'s `len = p - buf` is
+/// also measured from the start of the line, so `maxlength` counts the leading
+/// whitespace too). The reference confirms this: the input `  lead`, in a layout
+/// other than `-t`, prints those two spaces back verbatim.
 ///
-/// 入参是条目本身（字节，不是文本——C 的 `input` 一字节一字节读进 `buf`，
-/// `column.c:272-296`）。按 `split(b'\n')` 的产物理解：**最后一个元素是那条没有换行符的末行**，
-/// 输入以 `\n` 结束时它是空串，那时并没有未终止的行（`column.c:272` 的 `fgetln`
-/// 只把带换行的记录交出来，最后一段是 EOF 截断的残行）。
+/// The parameter is the entries themselves (bytes, not text — C's `input` reads
+/// one byte at a time into `buf`, `column.c:272-296`). Read them as the output of
+/// `split(b'\n')`: **the last element is the tail line without a newline**; when
+/// the input ends with `\n` it is the empty string, and then there is no
+/// unterminated line (`column.c:272`'s `fgetln` only hands out records that carry
+/// a newline; the last segment is the residual truncated by EOF).
 #[must_use]
 pub fn scan_entries(lines: &[&[u8]]) -> EntryPool {
     let mut pool = EntryPool::default();
@@ -185,9 +215,11 @@ pub fn scan_entries(lines: &[&[u8]]) -> EntryPool {
         pending.push(tail);
     }
     for (index, line) in pending.iter().enumerate() {
-        // 前导空白一段段跳过去（本工具链的 `&[u8]` 没有 `trim_start_matches`，手动走）。
-        // 哪些字节算空白照 C locale 的 `isspace` 表：空格、制表、换行、垂直制表、
-        // 换页、回车六枚——只认前两枚会把一枚垂直制表符当条目收下。
+        // Skip leading whitespace one run at a time (this toolchain's `&[u8]` has
+        // no `trim_start_matches`, so walk it by hand). Which bytes count as
+        // whitespace follows the C locale's `isspace` table: space, tab, newline,
+        // vertical tab, form feed, carriage return — recognising only the first
+        // two would take a vertical tab as part of the entry.
         let mut blank = 0usize;
         while matches!(
             line.get(blank),
@@ -196,8 +228,10 @@ pub fn scan_entries(lines: &[&[u8]]) -> EntryPool {
             blank += 1;
         }
         let head = &line[blank..];
-        // 空行判在换行判之前（C 先 `for (...; isspace) ;if (!*p) continue`，
-        // 才 `strchr`）：末行整条是空白时它算空行，不算长行，一句警告都没有。
+        // The blank test comes before the newline test (C runs
+        // `for (...; isspace) ;if (!*p) continue` first and calls `strchr`
+        // after): a tail line that is entirely whitespace counts as blank, not as
+        // a long line, and draws no warning at all.
         if head.is_empty() {
             continue;
         }
@@ -256,10 +290,12 @@ fn table_mode(entries: &[Vec<u8>], options: &ColumnOptions) -> Vec<Vec<u8>> {
         let last = row.len().saturating_sub(1);
         for (index, field) in row.iter().enumerate() {
             line.extend_from_slice(field);
-            // C 的最后一列走 `printf("%s\n", t->list[coloff])`（`column.c:252`）：
-            // 既不补齐也没有「裁掉行尾」这一步。所以字段自带的尾随空白——回车这类
-            // 不在分隔符集里的字符——原样留在行尾；旧写法补齐之后再 `trim_end`，
-            // 把那一枚回车一并吃掉了。
+            // C's last column goes through `printf("%s\n", t->list[coloff])`
+            // (`column.c:252`): no padding and no "trim the line end" step. So
+            // trailing whitespace carried by the field itself — characters such as
+            // carriage return that are not in the separator set — stays at the end
+            // of the line; the old form padded and then called `trim_end`, eating
+            // that carriage return too.
             if index < last {
                 line.extend(core::iter::repeat_n(b' ', widths[index] - field.len() + 2));
             }
@@ -288,8 +324,9 @@ fn c_columnate(entries: &[Vec<u8>], options: &ColumnOptions) -> Vec<Vec<u8>> {
     for (index, entry) in entries.iter().enumerate() {
         line.extend_from_slice(entry);
         chcnt += entry.len();
-        // C 的 `if (!--entries) break;` 排在补齐之前：最后一条之后**不补制表符**，
-        // 也不决定这一行是否收尾（收尾由下面的 `if (chcnt)` 定）。
+        // C's `if (!--entries) break;` comes before the padding: after the last
+        // entry there is **no tab padding**, and it does not decide whether the
+        // line closes (closing is decided by the `if (chcnt)` below).
         if index + 1 == entries.len() {
             break;
         }
@@ -308,8 +345,9 @@ fn c_columnate(entries: &[Vec<u8>], options: &ColumnOptions) -> Vec<Vec<u8>> {
             endcol += maxlength;
         }
     }
-    // `if (chcnt) putchar('\n')`：整行刚好在上一步被收走时 `chcnt` 已清 0，
-    // 所以这里不会多交出一行空行。
+    // `if (chcnt) putchar('\n')`: when the line was just taken in the previous
+    // step, `chcnt` has already been cleared to 0, so no extra blank line is
+    // handed out here.
     if chcnt != 0 {
         out.push(line);
     }
@@ -337,8 +375,9 @@ fn r_columnate(entries: &[Vec<u8>], options: &ColumnOptions) -> Vec<Vec<u8>> {
             };
             line.extend_from_slice(entry);
             chcnt += entry.len();
-            // 下一格越界就收行：C 的 `if ((base += numrows) >= entries) break;`
-            // 也排在补齐之前，所以行尾不挂制表符。
+            // Close the line when the next cell is out of range: C's
+            // `if ((base += numrows) >= entries) break;` also comes before the
+            // padding, so the line end carries no tab.
             if index + numrows >= entries.len() {
                 break;
             }
@@ -386,13 +425,17 @@ mod tests {
 
     #[test]
     fn a_blank_line_is_any_run_of_isspace_bytes_not_just_space_and_tab() {
-        // C 的 `input` 先按 `isspace` 扫前导空白，扫到串尾就整条空行、静默丢弃，
-        // 连「末行没有换行符」那一判都轮不到（`column.c:274-278` 的次序在此）。
-        // 夹具写字面字节：垂直制表 `0b`、换页 `0c`、回车 `0d` 各一枚都该被丢。
+        // C's `input` first scans leading whitespace with `isspace`; reaching the
+        // end of the string makes the line blank and silently dropped, so the
+        // "tail line has no newline" test is not even reached (the order of
+        // `column.c:274-278` is reproduced here). The fixture writes literal
+        // bytes: vertical tab `0b`, form feed `0c` and carriage return `0d`, one
+        // each, must all be dropped.
         let pool = scan_entries(&[b"\x0b\x0c", b"\r", b""]);
         assert!(pool.entries.is_empty(), "got {:?}", pool.entries);
         assert_eq!(pool.dropped_tail, 0, "整条空白不是残行，不该计数");
-        // 反面照旧：真内容之前的空白整段跳过，条目本身一个字节都不动。
+        // The other side as before: whitespace before real content is skipped as
+        // a whole, and the entry itself is not changed by a single byte.
         let pool = scan_entries(&[b"\x0bx", b"y\r", b""]);
         assert_eq!(pool.entries, [b"\x0bx".to_vec(), b"y\r".to_vec()]);
     }
@@ -403,17 +446,21 @@ mod tests {
             table: true,
             ..ColumnOptions::default()
         };
-        // 末元素是空串：`split('\n')` 在输入以换行结束时留下的那一段，不是残行。
+        // The last element is the empty string: the segment `split('\n')` leaves
+        // when the input ends with a newline, not a residual line.
         let pool = scan_entries(&[b"", b"x\ty", b""]);
         let out = columnate(&pool.entries, &options);
-        // 空行被丢掉（C `input` 的前导空白判），所以只剩一条补齐的行。
+        // Blank lines are dropped (C `input`'s leading-whitespace test), so only
+        // one padded line remains.
         assert_eq!(pool.dropped_tail, 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], *b"x  y");
     }
 
-    /// 条目是字节串：一枚非 UTF-8 字节既不进池也不进布局宽度（宽度按 `strlen`，
-    /// `column.c:243`）。旧写法在壳侧解一次 UTF-8，一枚坏字节让整个档**一条都不交**。
+    /// An entry is a byte string: a non-UTF-8 byte neither leaves it out of the
+    /// pool nor changes the layout width (the width follows `strlen`,
+    /// `column.c:243`). The old form decoded UTF-8 once in the shell, and one bad
+    /// byte made the whole file hand out **not a single entry**.
     #[test]
     fn a_byte_that_is_not_utf8_is_still_an_entry_and_its_layout_is_bytes() {
         let options = ColumnOptions::default();
@@ -424,7 +471,8 @@ mod tests {
             columnate(&pool.entries, &options),
             vec![b"a\xffb\tz".to_vec()]
         );
-        // 表模式同样按字节补齐：`a\xffb` 是 3 字节，与 `dddd` 比时短 1 字节就补 1 空格。
+        // Table mode also pads by bytes: `a\xffb` is 3 bytes, so against `dddd`
+        // it is one byte short and gets exactly one space.
         let table = ColumnOptions {
             table: true,
             ..ColumnOptions::default()
@@ -436,9 +484,10 @@ mod tests {
         );
     }
 
-    /// 分隔符集是**字节**集（C 交给 `strtok` 的就是那张字节表）：`-s é` 的值是
-    /// `c3 a9`，条目里一枚单独的 `a9` 就是分隔符。按字符判会把它当普通字节放过，
-    /// 整条成一列。
+    /// The separator set is a set of **bytes** (what C hands `strtok` is that byte
+    /// table): the value of `-s é` is `c3 a9`, so a lone `a9` inside an entry is a
+    /// separator. Testing by character would let it through as an ordinary byte
+    /// and the whole line would become one column.
     #[test]
     fn the_separator_is_a_set_of_bytes_not_a_set_of_characters() {
         let options = ColumnOptions {
@@ -450,8 +499,10 @@ mod tests {
         assert_eq!(columnate(&entries, &options), vec![b"a  b".to_vec()]);
     }
 
-    /// 表模式的最后一列原样发出（`column.c:252` 那句 `printf("%s\n", …)`）：
-    /// 字段尾随的回车因此留在行尾。旧写法补齐后 `trim_end`，把它一并裁掉。
+    /// The last column of table mode is emitted verbatim (`column.c:252`'s
+    /// `printf("%s\n", …)`): a trailing carriage return therefore stays at the end
+    /// of the line. The old form padded and then called `trim_end`, cutting it
+    /// away too.
     #[test]
     fn a_trailing_carriage_return_survives_because_the_last_column_is_printed_raw() {
         let options = ColumnOptions {
@@ -478,8 +529,9 @@ mod tests {
         assert!(out[0].starts_with(b"1  b  22"));
     }
 
-    /// 入库的是整行：前导空白留在条目里（C 存的是 `buf` 而不是跳过空白后的 `p`），
-    /// 只有「整条空白 = 空行」这一判用得到跳过空白后的那一段。
+    /// What enters the pool is the whole line: leading whitespace stays in the
+    /// entry (C stores `buf`, not the whitespace-skipped `p`), and only the
+    /// "entirely whitespace = blank line" test uses the skipped segment.
     #[test]
     fn test_entry_collection_keeps_the_line_and_drops_blank_lines() {
         let pool = scan_entries(&[b"   one", b"", b"  two", b""]);
@@ -487,8 +539,10 @@ mod tests {
         assert_eq!(pool.dropped_tail, 0);
     }
 
-    /// 末行没有换行符：C 判它「长行」，丢条目 + 记一句警告（参照件同受，
-    /// `column.c:277-283`）。整条是空白的末行仍按空行处理，警告都没有。
+    /// A tail line without a newline: C calls it a "long line", drops the entry and
+    /// records a warning (the reference behaves the same, `column.c:277-283`). A
+    /// tail line that is entirely whitespace is still treated as blank, with no
+    /// warning at all.
     #[test]
     fn test_unterminated_tail_line_is_dropped_and_counted() {
         let pool = scan_entries(&[b"one", b"two"]);
@@ -504,7 +558,8 @@ mod tests {
 
     #[test]
     fn parse_flags_cluster_and_attached_values() {
-        // 关键回归：聚簇与附值不被前门当文件操数。
+        // Key regression: clusters and attached values are not mistaken for file
+        // operands by the front door.
         let argv: &[&[u8]] = &[b"-tx", b"f"];
         let a = parse_column_args(argv).unwrap();
         assert!(a.options.table && a.options.fill_rows_first);
@@ -514,19 +569,22 @@ mod tests {
         assert_eq!(b.options.termwidth, 100);
         assert_eq!(b.options.separator, b",".to_vec());
         assert_eq!(b.operands, vec![&b"f1"[..], &b"f2"[..]]);
-        // 分离值也照常取下一项。
+        // A detached value is still taken from the next item as usual.
         let argv: &[&[u8]] = &[b"-c", b"120", b"-t", b"f"];
         let c = parse_column_args(argv).unwrap();
         assert_eq!(c.options.termwidth, 120);
         assert!(c.options.table);
     }
 
-    /// `-s` 的值就是分隔符集，所以它得**逐字节**交回：C 把 `optarg` 原样交给 `strtok`
-    /// （`column.c:224-225`），那张表是一个字节一个字节比的。文本缝折一次
-    /// `from_utf8_lossy` 会把一枚裸 `ff` 变成 `ef bf bd` 三枚，于是同时错两件事——
-    /// 真的 `ff` 切不开，而输入里那三字节 U+FFFD 反倒被当成分隔符切开。
-    /// 参照件 `tmp/column-314/column` 现量：`-s<ff>` 下 `a<ff>b` 切成两列、
-    /// `a<ef bf bd>b` 原样一行（`tmp/column-459/ab-measure.log`）。
+    /// The value of `-s` is the separator set itself, so it must come back **byte
+    /// for byte**: C hands `optarg` to `strtok` verbatim (`column.c:224-225`), and
+    /// that table is compared one byte at a time. Once the text seam folds,
+    /// `from_utf8_lossy` turns a bare `ff` into the three bytes `ef bf bd`, which
+    /// breaks two things at once — the real `ff` no longer splits, while the three
+    /// U+FFFD bytes in the input are split as if they were separators. Measured
+    /// against the reference `tmp/column-314/column`: under `-s<ff>`, `a<ff>b`
+    /// splits into two columns and `a<ef bf bd>b` stays one line
+    /// (`tmp/column-459/ab-measure.log`).
     #[test]
     fn the_separator_value_reaches_the_byte_set_one_byte_per_separator() {
         let argv: &[&[u8]] = &[b"-t", b"-s\xff"];
@@ -552,22 +610,26 @@ mod tests {
 
     #[test]
     fn parse_operand_discrimination_without_reordering() {
-        // 裸 `-` 与非 dash token 都是操数；`--` 后全为操数（`--` 自身不是）。
+        // A bare `-` and non-dash tokens are operands; everything after `--` is an
+        // operand (`--` itself is not).
         let argv: &[&[u8]] = &[b"-", b"f2"];
         let a = parse_column_args(argv).unwrap();
         assert_eq!(a.operands, vec![&b"-"[..], &b"f2"[..]]);
         let argv: &[&[u8]] = &[b"-t", b"--", b"-c", b"f"];
         let b = parse_column_args(argv).unwrap();
         assert!(b.options.table);
-        assert_eq!(b.operands, vec![&b"-c"[..], &b"f"[..]]); // `--` 后的 `-c` 是文件名字串
-        // 不重排：第一个非选项 token 一到，选项环当场结束，后面的 token 整个当操数。
+        assert_eq!(b.operands, vec![&b"-c"[..], &b"f"[..]]); // `-c` after `--` is a file name
+        // No reordering: on the first non-option token the option loop ends on the
+        // spot, and the tokens after it are all operands.
         let argv: &[&[u8]] = &[b"f", b"-t"];
         let c = parse_column_args(argv).unwrap();
         assert_eq!(c.operands, vec![&b"f"[..], &b"-t"[..]]);
         assert!(!c.options.table);
     }
 
-    /// `-c` 的值是 C 的 `atoi`：非数字、0、负数都不是错，只是宽度塌到「每条一行」。
+    /// The value of `-c` goes through C's `atoi`: non-digits, 0 and negative
+    /// numbers are not errors, they just collapse the width to "one entry per
+    /// line".
     #[test]
     fn parse_width_is_atoi_not_a_strict_number() {
         let cases: [(&[&[u8]], usize); 5] = [
@@ -587,40 +649,44 @@ mod tests {
         assert_eq!(
             parse_column_args(&[b"-z", b"f"]).err(),
             Some(GetoptReport::UnknownOption('z'))
-        ); // 集外
+        ); // out of set
         assert_eq!(
             parse_column_args(&[b"-tZ"]).err(),
             Some(GetoptReport::UnknownOption('Z'))
-        ); // 聚簇里的集外字母
+        ); // out-of-set letter inside a cluster
         assert_eq!(
             parse_column_args(&[b"--x"]).err(),
             Some(GetoptReport::UnknownOption('-'))
-        ); // `--x` 的字母就是 `-`（getopt.c:95-104）
+        ); // the letter of `--x` is `-` (getopt.c:95-104)
         assert_eq!(
             parse_column_args(&[b"-c"]).err(),
             Some(GetoptReport::MissingValue('c'))
-        ); // 缺值
+        ); // missing value
         assert_eq!(
             parse_column_args(&[b"-t", b"-s"]).err(),
             Some(GetoptReport::MissingValue('s'))
         );
     }
 
-    /// 聚簇游标走的是**字节**下标，所以非 ASCII 字母时它落进多字节字符中间：
-    /// 报的字母取那一个字节，而切字符串会当场 panic（`&arg[pos..]` 不在字符边界上）。
+    /// The cluster cursor is a **byte** index, so for a non-ASCII letter it lands
+    /// inside a multi-byte character: the reported letter is that one byte, while
+    /// slicing the string would panic on the spot (`&arg[pos..]` is not on a
+    /// character boundary).
     #[test]
     fn a_non_ascii_cluster_letter_reports_a_byte_without_panicking() {
-        // `-té`：`t` 是合法旗标，游标进到 `é` 的首字节 0xC3，报的就是那一字节。
+        // `-té`: `t` is a valid flag, the cursor reaches the first byte of `é`
+        // (0xC3), and that byte is what gets reported.
         assert_eq!(
             parse_column_args(&[b"-t\xc3\xa9"]).err(),
             Some(GetoptReport::UnknownOption('\u{c3}'))
         );
-        // 游标落在续字节上也不 panic。
+        // Landing on a continuation byte does not panic either.
         assert_eq!(
             parse_column_args(&[b"-tx\xc3\xa9"]).err(),
             Some(GetoptReport::UnknownOption('\u{c3}'))
         );
-        // 带值字母后面的多字节值是合法 optarg（值从字符边界上切起）。
+        // A multi-byte value after a value-taking letter is a valid optarg (the
+        // value is sliced from a character boundary).
         assert_eq!(
             parse_column_args(&[b"-s\xc3\xa9", b"f"])
                 .unwrap()

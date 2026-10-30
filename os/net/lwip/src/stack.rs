@@ -1,21 +1,25 @@
-//! `stack` — 语义垫片的栈半：smoltcp 一族对 [`crate::lwip_port::Stack`]
-//! 墙的实现。
+//! `stack` — the stack half of the semantics shim: the smoltcp family's
+//! implementation of the [`crate::lwip_port::Stack`] wall.
 //!
-//! 选型裁决（17-stage-net todo N1-P1-3，`[ARCH N-1]`）：协议栈本体走
-//! smoltcp 一族，Minix 的套接字语义（可挂起请求、三张 grant 的数据面、
-//! sdev 回复形状）由自研垫片承担；服务代码只认 [`crate::lwip_port::Stack`]
-//! 特征，不认任何具体栈。本模块就是 smoltcp 侧的那块垫片，映射边界的
-//! 完整论证在 `25-smoltcp-shim.md`。
+//! Selection decision (recorded in the network stage notes,
+//! `[ARCH: protocol stack behind the Stack trait]`): the protocol stack body is
+//! smoltcp, while Minix's socket semantics (suspendable requests, the data plane
+//! over three grants, the sdev reply shape) are carried by a purpose-built shim;
+//! service code only knows the [`crate::lwip_port::Stack`] trait, not any concrete
+//! stack. This module is that shim on the smoltcp side; the full argument for the
+//! mapping boundary is in `25-smoltcp-shim.md`.
 //!
-//! C 对应物两处：`lwip_init()`（`lwip.c:208-210`，栈库初始化——这里是
-//! 构造接口与套接字集合，种子经 `Config::random_seed` 交给栈做随机面，
-//! 与 C 把种子喂 `srand48` 同位）与主定时器（`init_timer(&lwip_timer)`
-//! 加 `recheck_timer = TRUE`，`lwip.c:255-259`；主循环的
-//! `check_lwip_timer`/`expire_timers` 在 `lwip.c:315`/`:328`）。smoltcp
-//! 把"到点的定时器随一遍推进而服务"合成进一次 `Interface::poll`，所以
-//! 墙上 [`Stack::poll`] 的返回值（下次交付时刻）就是 C
-//! `sys_check_timeouts` 的语义位，布防后"进循环先查一遍"由调用方第一趟
-//! 就调 [`Stack::poll`] 兑现。
+//! There are two C counterparts: `lwip_init()` (`lwip.c:208-210`, the stack-library
+//! initialization — here it is constructing the interface and the socket set, with
+//! the seed handed to the stack through `Config::random_seed` for its random face,
+//! the same position as C feeding the seed to `srand48`) and the main timer
+//! (`init_timer(&lwip_timer)` plus `recheck_timer = TRUE`, `lwip.c:255-259`; the
+//! main loop's `check_lwip_timer`/`expire_timers` are at `lwip.c:315`/`:328`).
+//! smoltcp folds "due timers are serviced along with one pass of progress" into a
+//! single `Interface::poll`, so [`Stack::poll`]'s return value (the next delivery
+//! instant) on the wall is the semantic slot of C's `sys_check_timeouts`; after
+//! arming, "check once on entering the loop" is honoured by the caller calling
+//! [`Stack::poll`] on its first pass.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -36,25 +40,32 @@ use crate::lwip_port::{PollWhen, Readiness, Stack, StackFamily, StackSocket};
 use crate::lwip_port::{TCP_SEND_BUFFER, TCP_WINDOW};
 use crate::util;
 
-/// 垫片本体：接口、中继设备、套接字集合、槽位表四件套。
+/// The shim itself: interface, trunk device, socket set and slot table.
 ///
-/// 槽位表把服务侧句柄的 `index` 半边翻译成栈内句柄：下标稳定（关闭只
-/// 清槽、不搬移后续槽位，服务手里的句柄永远指同一个套接字），家族随槽
-/// 记录——家族对不上的句柄按"已关闭"回答（墙的契约：缺省就绪位，不炸）。
+/// The slot table translates the `index` half of a service-side handle into an
+/// in-stack handle: indices are stable (closing only clears a slot and never
+/// shifts the slots after it, so a handle the service holds always names the same
+/// socket), and the family is recorded per slot — a handle whose family does not
+/// match is answered as "already closed" (the wall's contract: default readiness
+/// bits, no panic).
 pub struct SmoltcpStack<D: Device = TrunkDevice> {
     iface: Interface,
     device: D,
     sockets: SocketSet<'static>,
     slots: Vec<Option<Slot>>,
-    /// 临时端口分配器（connect 未预绑时的本地端口，49152 起）。
+    /// Ephemeral port allocator (the local port when connect has no pre-bound
+    /// one, starting at 49152).
     ephemeral: u16,
 }
 
-/// 一个在役槽位：栈内句柄、开户家族、UDP 默认对端（connect 语义）、
-/// TCP 预绑端点与监听旗标，外加选项面的记录半（收发缓冲容量按
-/// lwipopts 契约的缺省档起账，SO_SNDBUF/SO_RCVBUF 选项在界内改记；
-/// SO_BROADCAST 与非阻塞旗标各占一位。物理缓冲尺寸不随选项改——
-/// smoltcp 的缓冲构造后定容，登记差异见 `25-smoltcp-shim.md` §3）。
+/// One live slot: the in-stack handle, the opening family, the UDP default peer
+/// (connect semantics), the TCP pre-bound endpoint and listener flag, plus the
+/// bookkeeping half of the option face (send/receive buffer capacities start at
+/// the lwipopts contract defaults and the SO_SNDBUF/SO_RCVBUF options may change
+/// them within bounds; SO_BROADCAST and the non-blocking flag get one bit each.
+/// Physical buffer sizes do not follow the options — smoltcp buffers are
+/// fixed-capacity after construction; the difference is recorded in
+/// `25-smoltcp-shim.md` §3).
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     handle: smoltcp::iface::SocketHandle,
@@ -69,10 +80,12 @@ struct Slot {
 }
 
 impl<D: Device + 'static> SmoltcpStack<D> {
-    /// 栈本体构造（C `lwip_init`，`lwip.c:208-210`）：接口按三层介质
-    /// （`HardwareAddress::Ip`——以太帧介质等 16-stage 网卡接缝时再扩），
-    /// `seed` 交给栈做随机面（TCP 初始序号等，与 C 的 `srand48` 同位）。
-    /// 设备即垫片的墙：缺省 [`TrunkDevice`]，测试换 [`LoopDevice`]。
+    /// Stack construction (C `lwip_init`, `lwip.c:208-210`): the interface uses
+    /// the layer-3 medium (`HardwareAddress::Ip` — the Ethernet-frame medium waits
+    /// for the 16-stage NIC seam), and `seed` goes to the stack for its random face
+    /// (TCP initial sequence numbers etc., the same position as C's `srand48`).
+    /// The device is the shim's wall: [`TrunkDevice`] by default, [`LoopDevice`]
+    /// in tests.
     pub fn new(seed: u64, now_millis: i64) -> Self
     where
         D: Default,
@@ -80,7 +93,7 @@ impl<D: Device + 'static> SmoltcpStack<D> {
         Self::with_device(seed, D::default(), now_millis)
     }
 
-    /// 指定设备构造。
+    /// Construct with an explicit device.
     pub fn with_device(seed: u64, device: D, now_millis: i64) -> Self {
         let mut config = Config::new(HardwareAddress::Ip);
         config.random_seed = seed;
@@ -95,14 +108,16 @@ impl<D: Device + 'static> SmoltcpStack<D> {
         }
     }
 
-    /// 按服务侧句柄取槽：下标越界、空槽、家族对不上都算"已关闭"。
+    /// Look up a slot by service-side handle: an out-of-range index, an empty slot
+    /// and a family mismatch all count as "closed".
     fn slot(&self, socket: StackSocket) -> Option<Slot> {
         let idx = socket.index() as usize;
         let slot = self.slots.get(idx).copied().flatten()?;
         (slot.family == socket.family()).then_some(slot)
     }
 
-    /// 取槽位的可变引用；越界、空槽、家族对不上为 `None`。
+    /// Mutable slot reference; out of range, empty slot or family mismatch gives
+    /// `None`.
     fn slot_mut(&mut self, socket: StackSocket) -> Option<&mut Slot> {
         let idx = socket.index() as usize;
         match self.slots.get_mut(idx) {
@@ -111,7 +126,8 @@ impl<D: Device + 'static> SmoltcpStack<D> {
         }
     }
 
-    /// 取 UDP 套接字的栈内可变引用；句柄失效或家族不符为 `None`。
+    /// Mutable in-stack reference to a UDP socket; a stale handle or a family
+    /// mismatch gives `None`.
     fn udp_mut(
         &mut self,
         socket: StackSocket,
@@ -121,7 +137,8 @@ impl<D: Device + 'static> SmoltcpStack<D> {
             .map(|slot| self.sockets.get_mut(slot.handle))
     }
 
-    /// 取 TCP 套接字的栈内可变引用；句柄失效或家族不符为 `None`。
+    /// Mutable in-stack reference to a TCP socket; a stale handle or a family
+    /// mismatch gives `None`.
     fn tcp_mut(
         &mut self,
         socket: StackSocket,
@@ -131,8 +148,9 @@ impl<D: Device + 'static> SmoltcpStack<D> {
             .map(|slot| self.sockets.get_mut(slot.handle))
     }
 
-    /// 换掉槽位上的栈内套接字（TCP 受连接：监听者的句柄转给受纳
-    /// 套接字，监听者换新对象）。
+    /// Replace the in-stack socket on a slot (TCP accepted connection: the
+    /// listener's handle is transferred to the accepted socket, and the listener
+    /// gets a fresh object).
     fn replace_handle(&mut self, socket: StackSocket, handle: smoltcp::iface::SocketHandle) {
         let idx = socket.index() as usize;
         if let Some(Some(slot)) = self.slots.get_mut(idx) {
@@ -140,9 +158,10 @@ impl<D: Device + 'static> SmoltcpStack<D> {
         }
     }
 
-    /// 新开一个 TCP 槽位指向既有句柄（受纳套接字的登记）。选项记录半
-    /// 从监听者槽位继承（C `ipsock_clone` 把 sndbuf/rcvbuf 抄给克隆体，
-    /// `ipsock.c:157-158`；旗标位同源 `sockevent_clone`）。
+    /// Open a new TCP slot pointing at an existing handle (registering an accepted
+    /// socket). The option bookkeeping half is inherited from the listener's slot
+    /// (C `ipsock_clone` copies sndbuf/rcvbuf to the clone, `ipsock.c:157-158`;
+    /// the flag bits come from the same source, `sockevent_clone`).
     fn push_slot_for(
         &mut self,
         family: StackFamily,
@@ -180,7 +199,7 @@ impl<D: Device + 'static> SmoltcpStack<D> {
         Some(StackSocket::new(family, index as u16))
     }
 
-    /// 取一个临时本地端口。
+    /// Take an ephemeral local port.
     fn next_ephemeral(&mut self) -> u16 {
         let port = self.ephemeral;
         self.ephemeral = self.ephemeral.wrapping_add(1).max(49152);
@@ -189,21 +208,23 @@ impl<D: Device + 'static> SmoltcpStack<D> {
 }
 
 impl<D: Device + 'static> Stack for SmoltcpStack<D> {
-    /// 推进栈：收发包、服务到期定时器，再问栈下次何时需要推进。
-    /// smoltcp 的一次 `poll` 就是 C `expire_timers` 的同位动作；返回的
-    /// 时刻与 C `sys_now` 同一毫秒时间基。
+    /// Advance the stack: receive/send packets, service due timers, then ask the
+    /// stack when it next needs advancing. One smoltcp `poll` is the same action as
+    /// C's `expire_timers`; the returned instant shares C's `sys_now` millisecond
+    /// time base.
     fn poll(&mut self, now_millis: u64) -> PollWhen {
         let now = Instant::from_millis(now_millis as i64);
         self.iface.poll(now, &mut self.device, &mut self.sockets);
         match self.iface.poll_delay(now, &self.sockets) {
-            // `Duration::total_millis` 本就返回 `u64`，直接相加。
+            // `Duration::total_millis` already returns `u64`, so add directly.
             Some(d) => PollWhen::At(now_millis + d.total_millis()),
             None => PollWhen::Never,
         }
     }
 
-    /// 一个套接字的当前就绪位。TCP 按收发缓冲余量，UDP 与 RAW 按包环
-    /// 余量；句柄失效按墙的契约回缺省值。
+    /// The current readiness bits of one socket. TCP follows send/receive buffer
+    /// headroom, UDP and RAW follow packet-ring headroom; a stale handle returns
+    /// the default value per the wall's contract.
     fn readiness(&self, socket: StackSocket) -> Readiness {
         let Some(slot) = self.slot(socket) else {
             return Readiness::default();
@@ -212,7 +233,8 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
             StackFamily::Tcp => {
                 let s = self.sockets.get::<tcp::Socket>(slot.handle);
                 if slot.tcp_listener {
-                    // 监听者：状态离开 Listen 即有连接挂账（可受理）。
+                    // Listener: any state other than Listen means a connection is
+                    // pending (acceptable).
                     Readiness {
                         readable: s.state() != smoltcp::socket::tcp::State::Listen,
                         writable: false,
@@ -233,16 +255,19 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         }
     }
 
-    /// 打开一个指定家族的 socket。TCP 的收发缓冲按 lwipopts 契约定容
-    /// （接收窗 [`TCP_WINDOW`]、发送缓冲 [`TCP_SEND_BUFFER`]，
-    /// `lwipopts.h:267`/`:282`）；UDP 与 RAW 的包环按同一份契约的量级
-    /// 取整块；ICMP 面随第 07 篇的批次接线（C 侧 ICMP 走 RAW 协议口，
-    /// 本特性集未编入 smoltcp 的独立 ICMP 套接字），先以通用错误回答。
+    /// Open a socket of the given family. TCP send/receive buffers are sized per
+    /// the lwipopts contract (receive window [`TCP_WINDOW`], send buffer
+    /// [`TCP_SEND_BUFFER`], `lwipopts.h:267`/`:282`); the UDP and RAW packet rings
+    /// take a whole block of the same contract's magnitude; the ICMP face is wired
+    /// with the doc-07 batch (on the C side ICMP goes through the RAW protocol
+    /// slot, and this feature set does not compile smoltcp's dedicated ICMP socket
+    /// in), so for now it answers with a generic error.
     fn open(&mut self, family: StackFamily, protocol: Option<u8>) -> Result<StackSocket, i32> {
         let handle = match family {
             StackFamily::Tcp => {
-                // SocketBuffer 是托管切片（环形缓冲的构造参数），自有
-                // 缓冲经 `ManagedSlice::from` 交栈。
+                // SocketBuffer is a managed slice (the ring buffer's constructor
+                // argument), and the owned buffer is handed to the stack through
+                // `ManagedSlice::from`.
                 let rx = ManagedSlice::from(vec![0u8; TCP_WINDOW]);
                 let tx = ManagedSlice::from(vec![0u8; TCP_SEND_BUFFER]);
                 self.sockets.add(tcp::Socket::new(rx, tx))
@@ -259,8 +284,9 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
                 self.sockets.add(smoltcp::socket::udp::Socket::new(rx, tx))
             }
             StackFamily::Raw => {
-                // 协议在建户时收下（Minix 第三参，rawsock.c:314 的
-                // `raw_new_ip_type` 同位）；None = 通配（收面过滤全放）。
+                // The protocol is taken at creation (Minix's third argument, the
+                // same position as `raw_new_ip_type` at rawsock.c:314); None =
+                // wildcard (accept everything on the receive filter).
                 let rx = raw::PacketBuffer::new(
                     vec![raw::PacketMetadata::EMPTY; 8],
                     vec![0u8; TCP_WINDOW],
@@ -275,7 +301,8 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
             }
             StackFamily::Icmp => return Err(util::ERR_GENERIC),
         };
-        // 收发容量的缺省档随家族取（tcpsock.c:87/:90、udpsock.c:30/:33）。
+        // Capacity defaults follow the family (tcpsock.c:87/:90,
+        // udpsock.c:30/:33).
         let (sndbuf, rcvbuf) = match family {
             StackFamily::Tcp => (
                 crate::lwip_port::TCP_SNDBUF_DEF,
@@ -310,8 +337,9 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         Ok(StackSocket::new(family, index as u16))
     }
 
-    /// 关闭一个 socket：清槽、撤栈内套接字。此后它的句柄失效（槽位
-    /// 已空，之后再按已关闭句柄回答）。
+    /// Close a socket: clear the slot and remove the in-stack socket. Its handle is
+    /// stale afterwards (the slot is empty, and later lookups answer as already
+    /// closed).
     fn close(&mut self, socket: StackSocket) -> Result<(), i32> {
         let idx = socket.index() as usize;
         let slot = self.slot(socket).ok_or(util::ERR_GENERIC)?;
@@ -320,7 +348,7 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         Ok(())
     }
 
-    // -- UDP 半（第 09 篇的栈面）--
+    // -- UDP half (the stack face of doc 09) --
 
     fn bind_udp(
         &mut self,
@@ -339,8 +367,9 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         socket: StackSocket,
         remote: crate::lwip_port::StackEndpoint,
     ) -> Result<(), i32> {
-        // smoltcp 的 UDP 没有连接态：默认对端记在服务侧槽位上，send
-        // 不带地址时取它（逐包元数据模型，`send_slice` 的 meta 参数）。
+        // smoltcp's UDP has no connection state: the default peer is recorded on
+        // the service-side slot, and send without an address takes it (the
+        // per-packet metadata model, `send_slice`'s meta parameter).
         if remote.addr.is_none() {
             return Err(util::ERR_INVALID);
         }
@@ -368,7 +397,8 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
                 IpEndpoint { addr: to_ip_address(addr), port: remote.port }
             }
             None => {
-                // 无地址即 send 语义：取 connect 定下的默认对端。
+                // No address means send semantics: take the default peer set by
+                // connect.
                 let slot = self.slot(socket).ok_or(util::ERR_GENERIC)?;
                 let peer = slot.udp_peer.ok_or(util::ERR_INVALID)?;
                 let peer_addr = peer.addr.expect("connect 时已校验地址在场");
@@ -427,7 +457,7 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         })
     }
 
-    // -- TCP 半（第 08 篇的栈面）--
+    // -- TCP half (the stack face of doc 08) --
 
     fn bind_tcp(
         &mut self,
@@ -445,8 +475,9 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
     }
 
     fn listen_tcp(&mut self, socket: StackSocket, backlog: u32) -> Result<(), i32> {
-        // backlog 收下记账（smoltcp 单监听者一次挂一个连接；多并发
-        // 监听随接口批次评估）。
+        // The backlog is accepted for bookkeeping (smoltcp's single listener hangs
+        // one connection at a time; concurrent listening is evaluated with the
+        // interface batch).
         let _ = backlog;
         let local = self.slot(socket).and_then(|s| s.tcp_local);
         let listen = listen_endpoint(local);
@@ -477,8 +508,9 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
             Some(local) => local.port,
             None => self.next_ephemeral(),
         };
-        // 字段级分离借用：先读槽位（拷走句柄），再同时可变借 iface
-        // 上下文与套接字集合。
+        // Field-level split borrow: read the slot first (copying the handle out),
+        // then mutably borrow the iface context and the socket set at the same
+        // time.
         let handle = self
             .slot(socket)
             .filter(|slot| slot.family == StackFamily::Tcp)
@@ -503,7 +535,8 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         }
         let state = self.sockets.get::<smoltcp::socket::tcp::Socket>(slot.handle).state();
         if state != State::Established {
-            // 只认建连完成的连接；未完成由服务层挂起等待。
+            // Only connections that completed the handshake count; incomplete ones
+            // are left for the service layer to park and wait on.
             return Err(util::ERR_WOULD_BLOCK);
         }
         let peer = self
@@ -515,8 +548,10 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
             .sockets
             .get::<smoltcp::socket::tcp::Socket>(slot.handle)
             .listen_endpoint();
-        // 先挂新监听者（占新句柄），再摘建连的旧对象重新登记——顺序
-        // 反了会让集合复用刚释放的槽位号，两个句柄撞号。
+        // Install the fresh listener first (taking a new handle), then remove the
+        // established old object and register it again — the reverse order would
+        // let the set reuse the just-freed slot number, so the two handles would
+        // collide.
         let fresh = {
             let rx = ManagedSlice::from(vec![0u8; TCP_WINDOW]);
             let tx = ManagedSlice::from(vec![0u8; TCP_SEND_BUFFER]);
@@ -531,7 +566,8 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
             .map_err(|_| util::ERR_ADDRESS_IN_USE)?;
         let established = self.sockets.remove(slot.handle);
         let accepted_handle = self.sockets.add(established);
-        // 受纳槽位继承监听者的选项记录半（C ipsock_clone 同位）。
+        // The accepted slot inherits the listener's option bookkeeping half (the
+        // same position as C's ipsock_clone).
         let accepted = self
             .push_slot_for(StackFamily::Tcp, accepted_handle, Some(slot))
             .ok_or(util::ERR_GENERIC)?;
@@ -558,7 +594,8 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
     ) -> Result<(usize, bool), i32> {
         use smoltcp::socket::tcp::RecvError;
         match self.tcp_mut(socket).ok_or(util::ERR_GENERIC)?.recv_slice(data) {
-            // 语义三分：有数据；EOF（对端关且取尽）；连接未开。
+            // Three-way semantics: data; EOF (peer closed and everything
+            // drained); connection not open.
             Ok(0) => Err(util::ERR_WOULD_BLOCK),
             Ok(n) => Ok((n, false)),
             Err(RecvError::Finished) => Ok((0, true)),
@@ -567,8 +604,10 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
     }
 
     fn shutdown_tcp(&mut self, socket: StackSocket, how: i32) -> Result<(), i32> {
-        // 写向与双向：体面 FIN（随推进发出，套接字留驻到收尾）。
-        // 读向单独关闭在 smoltcp 无对应动词——按能力如实回答。
+        // Write direction and both directions: a graceful FIN (sent with the next
+        // pass; the socket stays until it finishes). Closing the read direction
+        // alone has no counterpart verb in smoltcp — answer honestly per
+        // capability.
         const SHUT_RD: i32 = 0;
         const SHUT_WR: i32 = 1;
         const SHUT_RDWR: i32 = 2;
@@ -584,7 +623,7 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         }
     }
 
-    // -- 选项半（SDEV_SETSOCKOPT/SDEV_GETSOCKOPT 的栈面）--
+    // -- Option half (the stack face of SDEV_SETSOCKOPT/SDEV_GETSOCKOPT) --
 
     fn sockopt_tcp(
         &mut self,
@@ -593,9 +632,10 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         value: Option<i32>,
     ) -> Result<Option<i32>, i32> {
         match name {
-            // 保活：使能按 C 的 SOF_KEEPALIVE 语义（setsockmask，
-            // tcpsock.c:2096-2100）——smoltcp 的间隔型 API 取 C pcb 的
-            // 缺省空闲值（TCP_KEEPIDLE_DEFAULT，tcp_priv.h:139）。
+            // Keepalive: enabling follows C's SOF_KEEPALIVE semantics
+            // (setsockmask, tcpsock.c:2096-2100) — smoltcp's interval-style API
+            // takes the C pcb's default idle value (TCP_KEEPIDLE_DEFAULT,
+            // tcp_priv.h:139).
             crate::lwip_port::SO_KEEPALIVE => {
                 let s = self.tcp_mut(socket).ok_or(util::ERR_GENERIC)?;
                 match value {
@@ -612,8 +652,9 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
                     None => Ok(Some(i32::from(s.keep_alive().is_some()))),
                 }
             }
-            // 收发容量：界内改记（C ipsock_setsockopt:482-510 的界检查
-            // 加记账半）；物理缓冲维持 lwipopts 契约尺寸，登记差异。
+            // Send/receive capacity: record within bounds (the bounds check plus
+            // the bookkeeping half of C's ipsock_setsockopt:482-510); the physical
+            // buffer keeps the lwipopts contract size, a recorded difference.
             crate::lwip_port::SO_SNDBUF => match value {
                 Some(v) => {
                     if v <= 0
@@ -657,9 +698,11 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         value: Option<i32>,
     ) -> Result<Option<i32>, i32> {
         match name {
-            // 广播放行：C 在 setsockmask 置 SOF_BROADCAST（udpsock.c:553-
-            // 557）；smoltcp 的广播收发是栈内行为（无对位 API），旗标记
-            // 在服务侧槽位上——查询语义保留，发送面的差异已登记。
+            // Broadcast permission: C sets SOF_BROADCAST in setsockmask
+            // (udpsock.c:553-557); smoltcp's broadcast send/receive is in-stack
+            // behaviour (no counterpart API), so the flag lives on the service-side
+            // slot — the query semantics are preserved and the send-face difference
+            // is recorded.
             crate::lwip_port::SO_BROADCAST => match value {
                 Some(v) => {
                     self.slot_mut(socket).ok_or(util::ERR_GENERIC)?.broadcast = v != 0;
@@ -670,7 +713,8 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
                     Ok(Some(i32::from(broadcast)))
                 }
             },
-            // 容量面与 TCP 同形，界取 UDP 三档。
+            // The capacity face has the same shape as TCP, with the UDP three
+            // bounds.
             crate::lwip_port::SO_SNDBUF => match value {
                 Some(v) => {
                     if v <= 0
@@ -707,11 +751,11 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         }
     }
 
-    // -- ioctl 半（SDEV_IOCTL 的栈面）--
+    // -- ioctl half (the stack face of SDEV_IOCTL) --
 
     fn pending_recv_udp(&mut self, socket: StackSocket) -> Option<usize> {
-        // peek 不消费：队首包的载荷长度（C pktsock_test_recv 的首包
-        // 语义，pktsock.c:886-899）。
+        // peek does not consume: the payload length of the first packet (the
+        // first-packet semantics of C pktsock_test_recv, pktsock.c:886-899).
         self.udp_mut(socket)?.peek().ok().map(|(payload, _)| payload.len())
     }
 
@@ -742,7 +786,7 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         self.slot(socket).map(|slot| slot.nonblock).unwrap_or(false)
     }
 
-    // -- RAW 半（第 10 篇的栈面；全报文语义 = HDRINCL）--
+    // -- RAW half (the stack face of doc 10; full-packet semantics = HDRINCL) --
 
     fn send_raw(&mut self, socket: StackSocket, data: &[u8]) -> Result<usize, i32> {
         let slot = self
@@ -786,20 +830,23 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         })
     }
 
-    /// 交付一个入站帧：中继设备没有真网卡可交，按"网络未接"回答。
-    /// 真数据路径随 16-stage 网卡接缝落地（N1-P1-5 的帧模型一并细化）。
+    /// Deliver an inbound frame: the trunk device has no real NIC to hand it to,
+    /// so answer "network down". The real data path lands with the 16-stage NIC
+    /// seam (the frame model is refined along with it).
     fn receive_frame(&mut self, _frame: &[u8]) -> Result<(), i32> {
         Err(util::ERR_NETWORK_DOWN)
     }
 
-    /// 从栈取一个出站帧：中继设备的发送半恒空，恒 `None`（暂无待发帧
-    /// ——没有网卡，栈发不出去任何东西）。
+    /// Take one outbound frame from the stack: the trunk device's transmit half is
+    /// always empty, always `None` (no frame pending — without a NIC the stack
+    /// cannot send anything out).
     fn transmit_frame(&mut self, _frame: &mut [u8]) -> Option<usize> {
         None
     }
 }
 
-/// 墙端点到栈监听端点的翻译（`None` 地址 = 通配）。
+/// Translation from a wall endpoint to a stack listen endpoint (`None` address =
+/// wildcard).
 fn listen_endpoint(
     endpoint: Option<crate::lwip_port::StackEndpoint>,
 ) -> IpListenEndpoint {
@@ -810,7 +857,7 @@ fn listen_endpoint(
     IpListenEndpoint { addr, port }
 }
 
-/// 墙地址到栈地址。
+/// Wall address to stack address.
 fn to_ip_address(addr: crate::lwip_port::StackIpAddr) -> IpAddress {
     match addr {
         crate::lwip_port::StackIpAddr::V4(octets) => {
@@ -824,7 +871,7 @@ fn to_ip_address(addr: crate::lwip_port::StackIpAddr) -> IpAddress {
     }
 }
 
-/// 栈地址到墙地址。
+/// Stack address to wall address.
 fn from_ip_address(addr: IpAddress) -> crate::lwip_port::StackIpAddr {
     match addr {
         IpAddress::Ipv4(v4) => crate::lwip_port::StackIpAddr::V4(v4.octets()),
@@ -833,8 +880,9 @@ fn from_ip_address(addr: IpAddress) -> crate::lwip_port::StackIpAddr {
 }
 
 impl<D: Device + 'static> SmoltcpStack<D> {
-    /// 给接口挂一个版本 4 地址（ifconf 的栈半；接口批次会用墙外的一层
-    /// 包住它，这里先供测试与缺省配置步使用）。
+    /// Attach a version 4 address to the interface (the stack half of ifconf; the
+    /// interface batch will wrap it in a layer outside the wall, and for now it
+    /// serves tests and the default configuration step).
     pub fn add_address_v4(&mut self, octets: [u8; 4], prefix: u8, now_millis: i64) {
         let cidr = IpCidr::new(
             IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(
@@ -845,7 +893,8 @@ impl<D: Device + 'static> SmoltcpStack<D> {
         let _ = now_millis;
         self.iface.update_ip_addrs(|addrs| {
             if addrs.push(cidr).is_err() {
-                // 地址表满：首版只挂一个地址，替换首条。
+                // Address table full: the first version carries one address, so
+                // replace the first entry.
                 if let Some(first) = addrs.iter_mut().next() {
                     *first = cidr;
                 }
@@ -854,19 +903,24 @@ impl<D: Device + 'static> SmoltcpStack<D> {
     }
 }
 
-/// 16-stage 网卡数据路径的接缝（垫片的墙）：收发恒空的中继设备。
+/// The seam to the 16-stage NIC data path (the shim's wall): a trunk device whose
+/// receive and transmit are always empty.
 ///
-/// 接口在它上面一切就绪（构造、地址、路由表、套接字集合、定时推进），
-/// 只是没有包进也没有包出——每趟推进空转。真驱动落地时换这个类型的
-/// 收发两个半；若裁决回退 FFI（N1-P1-3 的墙后面），换的也是这一个点。
+/// The interface is fully ready on it (construction, addresses, routing table,
+/// socket set, timer advance), only no packet comes in or goes out — every pass
+/// spins idle. When the real driver lands, the receive and transmit halves of this
+/// type are replaced; if the decision falls back to FFI (behind the same wall),
+/// that is the same single point that changes.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TrunkDevice;
 
-/// [`TrunkDevice`] 的接收令牌：`receive` 恒 `None`，令牌永不发出去。
+/// [`TrunkDevice`]'s receive token: `receive` is always `None`, so the token is
+/// never handed out.
 #[derive(Debug)]
 pub struct TrunkRxToken;
 
-/// [`TrunkDevice`] 的发送令牌：`transmit` 恒 `None`，令牌永不发出去。
+/// [`TrunkDevice`]'s transmit token: `transmit` is always `None`, so the token is
+/// never handed out.
 #[derive(Debug)]
 pub struct TrunkTxToken;
 
@@ -901,8 +955,8 @@ impl Device for TrunkDevice {
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
-        // 非穷尽结构体：crate 外先取缺省再改字段（smoltcp 自己的
-        // `phy/mod.rs:54` 同款写法）。
+        // A non-exhaustive struct: outside the crate, take the default and then
+        // set fields (the same form as smoltcp's own `phy/mod.rs:54`).
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ip;
         caps.max_transmission_unit = 1500;
@@ -912,15 +966,16 @@ impl Device for TrunkDevice {
     }
 }
 
-/// 回环设备（仅测试）：发出去的帧绕回接收半，配合接口地址即可在
-/// 宿主测试里走完整的数据面（绑、发、推进、收），不依赖任何网卡。
+/// Loopback device (tests only): a sent frame loops back to the receive half, so
+/// together with an interface address the whole data plane (bind, send, advance,
+/// receive) runs in a host test without depending on any NIC.
 #[derive(Debug, Default)]
 pub struct LoopDevice {
     looped: alloc::vec::Vec<alloc::vec::Vec<u8>>,
 }
 
 impl LoopDevice {
-    /// 空回环设备。
+    /// An empty loopback device.
     pub fn new() -> Self {
         LoopDevice { looped: alloc::vec::Vec::new() }
     }
@@ -950,7 +1005,7 @@ impl Device for LoopDevice {
     }
 }
 
-/// [`LoopDevice`] 的接收令牌：把绕回的帧交给栈。
+/// [`LoopDevice`]'s receive token: hands the looped frame to the stack.
 #[derive(Debug)]
 pub struct LoopRxToken {
     frame: alloc::vec::Vec<u8>,
@@ -965,7 +1020,7 @@ impl RxToken for LoopRxToken {
     }
 }
 
-/// [`LoopDevice`] 的发送令牌：帧入绕回队列。
+/// [`LoopDevice`]'s transmit token: the frame enters the loopback queue.
 #[derive(Debug)]
 pub struct LoopTxToken<'a> {
     queue: &'a mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
@@ -1005,7 +1060,8 @@ mod tests {
         let r = stack.open(StackFamily::Raw, None).unwrap();
         assert_ne!(t.index(), u.index());
         assert_ne!(u.index(), r.index());
-        // ICMP 面未接：诚实回答通用错误，不发假句柄。
+        // The ICMP face is unwired: answer honestly with a generic error, no fake
+        // handle.
         assert_eq!(
             stack.open(StackFamily::Icmp, None).unwrap_err(),
             util::ERR_GENERIC,
@@ -1022,9 +1078,11 @@ mod tests {
             Readiness::default(),
             "失效句柄回缺省就绪位（墙的契约）"
         );
-        // 用 UDP 验证在役位：无连接状态、包环有余量即可发（TCP 的
-        // `can_send` 依赖连接建立后的 MSS 协商，新套接字两个位都是假，
-        // 与缺省值不可区分，锁不出这个断言）。
+        // Use UDP to check the live bits: there is no connection state, and
+        // headroom in the packet ring already allows sending (TCP's `can_send`
+        // depends on the MSS negotiation after connection setup, so a fresh socket
+        // has both bits false, indistinguishable from the defaults, and cannot pin
+        // this assertion).
         let socket = stack.open(StackFamily::Udp, None).unwrap();
         assert!(!stack.readiness(socket).readable);
         assert!(stack.readiness(socket).writable);
@@ -1036,7 +1094,8 @@ mod tests {
     fn test_close_guards_family_and_double_close() {
         let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
         let tcp = stack.open(StackFamily::Tcp, None).unwrap();
-        // 家族对不上的句柄按"已关闭"回答（不动栈内套接字）。
+        // A handle with a mismatched family is answered as "already closed" (the
+        // in-stack socket is not touched).
         let wrong_family = StackSocket::new(StackFamily::Udp, tcp.index());
         assert!(stack.close(wrong_family).is_err());
         stack.close(tcp).expect("首关成功");
@@ -1046,8 +1105,9 @@ mod tests {
     #[test]
     fn test_udp_datagram_loopback_roundtrip() {
         use crate::lwip_port::StackEndpoint;
-        // 回环设备上的完整数据面：绑 → 发到自身 → 推进（帧绕回、
-        // 栈收包入套接字缓冲）→ 收到带发送方端点的原样数据。
+        // The full data plane on the loopback device: bind → send to itself →
+        // advance (the frame loops back and the stack puts the packet into the
+        // socket buffer) → receive the verbatim data with the sender endpoint.
         let mut stack: SmoltcpStack<LoopDevice> =
             SmoltcpStack::with_device(0x5EED, LoopDevice::new(), 0);
         stack.add_address_v4([127, 0, 0, 1], 8, 0);
@@ -1072,8 +1132,9 @@ mod tests {
             )
             .expect("发送入栈");
         assert_eq!(sent, 4);
-        // 一趟推进不足以让帧绕回并被栈消费（发送与接收各需一遍），
-        // 推到时间前进为止——有数据后再收。
+        // One pass is not enough for the frame to loop back and be consumed by the
+        // stack (sending and receiving each need a pass), so advance until time
+        // moves on — receive again once there is data.
         let mut received = None;
         for tick in 1..=8u64 {
             stack.poll(tick * 100);
@@ -1107,7 +1168,7 @@ mod tests {
             SmoltcpStack::with_device(0x5EED, LoopDevice::new(), 0);
         stack.add_address_v4([127, 0, 0, 1], 8, 0);
 
-        // 服务端：绑 7777 → 监听。
+        // Server: bind 7777 → listen.
         let server = stack.open(StackFamily::Tcp, None).expect("服务端建户");
         stack
             .bind_tcp(
@@ -1117,7 +1178,7 @@ mod tests {
             .expect("绑定");
         stack.listen_tcp(server, 1).expect("监听");
 
-        // 客户端：连 127.0.0.1:7777（本地端口走临时分配）。
+        // Client: connect to 127.0.0.1:7777 (the local port is ephemeral).
         let client = stack.open(StackFamily::Tcp, None).expect("客户端建户");
         stack
             .connect_tcp(
@@ -1126,10 +1187,12 @@ mod tests {
             )
             .expect("connect 开张");
 
-        // 轮询推进：握手在数趟内完成（SYN → SYN-ACK → ACK 经回环设备
-        // 各绕回一趟）。可读位在 SYN 到达即亮（状态离开 Listen），此时
-        // 受纳仍会回阻塞类错误——真实服务的形状就是唤醒后再试，直到
-        // 建连完成。
+        // Poll forward: the handshake completes within a few passes (SYN →
+        // SYN-ACK → ACK, each looping back through the loopback device once). The
+        // readability bit lights as soon as the SYN arrives (the state leaves
+        // Listen), and accept still returns a would-block error then — the real
+        // service shape is to retry after being woken, until the connection is
+        // established.
         let mut outcome = None;
         for tick in 1..=16u64 {
             stack.poll(tick * 100);
@@ -1148,7 +1211,8 @@ mod tests {
             "对端端点=客户端的临时端口"
         );
         assert_ne!(accepted.index(), server.index(), "受纳套接字是独立槽位");
-        // 新监听者继续在岗：再开一个客户端可再次建连。
+        // The fresh listener stays on duty: opening another client connects
+        // again.
         assert!(
             stack.readiness(server).writable == false && !stack.readiness(server).readable,
             "换上的新监听者回到等待态"
@@ -1170,7 +1234,8 @@ mod tests {
         }
         let (accepted2, _) = accepted2.expect("新监听者继续受理");
         assert_ne!(accepted2.index(), accepted.index());
-        // 建连两端可写（established 的 can_send）。
+        // Both ends of an established connection are writable (can_send of
+        // established).
         assert!(stack.readiness(accepted).writable, "受纳套接字可写");
         assert!(stack.readiness(client).writable, "客户端套接字可写");
     }
@@ -1178,7 +1243,8 @@ mod tests {
     #[test]
     fn test_fresh_stack_polls_never() {
         let mut stack: SmoltcpStack = SmoltcpStack::new(0x1234_5678, 0);
-        // 空栈无定时器无待办：推进后睡到下一个消息到来。
+        // An empty stack has no timers and nothing pending: after advancing it
+        // sleeps until the next message arrives.
         assert_eq!(stack.poll(0), PollWhen::Never);
         assert_eq!(stack.poll(10_000), PollWhen::Never);
     }
@@ -1189,7 +1255,8 @@ mod tests {
         let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
         let socket = stack.open(StackFamily::Tcp, None).unwrap();
 
-        // 保活：缺省关；使能后查询为开（间隔取 C 的缺省空闲值）。
+        // Keepalive: off by default; once enabled the query says on (the interval
+        // takes C's default idle value).
         assert_eq!(
             stack.sockopt_tcp(socket, SO_KEEPALIVE, None).unwrap(),
             Some(0),
@@ -1208,7 +1275,8 @@ mod tests {
             "清位后查询为关"
         );
 
-        // 容量：缺省档（tcpsock.c:87/:90），界内改记，界外 EINVAL。
+        // Capacity: default tier (tcpsock.c:87/:90), recorded within bounds,
+        // EINVAL outside them.
         assert_eq!(
             stack.sockopt_tcp(socket, SO_SNDBUF, None).unwrap(),
             Some(crate::lwip_port::TCP_SNDBUF_DEF as i32)
@@ -1233,7 +1301,8 @@ mod tests {
             util::ERR_INVALID,
             "低于接收窗拒（tcpsock.c:89：接收缓冲必须不小于窗口）"
         );
-        // 未支持的名字：墙按栈参数错误回答（路上折 ENOPROTOOPT）。
+        // An unsupported name: the wall answers with a stack argument error (folded
+        // to ENOPROTOOPT on the way out).
         assert_eq!(
             stack.sockopt_tcp(socket, 0x2000, Some(1)).unwrap_err(),
             util::STACK_BAD_ARGUMENT
@@ -1246,12 +1315,14 @@ mod tests {
         let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
         let socket = stack.open(StackFamily::Udp, None).unwrap();
 
-        // 广播放行：缺省关，置位后查询为开。
+        // Broadcast permission: off by default; after setting the bit the query
+        // says on.
         assert_eq!(stack.sockopt_udp(socket, SO_BROADCAST, None).unwrap(), Some(0));
         assert_eq!(stack.sockopt_udp(socket, SO_BROADCAST, Some(1)), Ok(None));
         assert_eq!(stack.sockopt_udp(socket, SO_BROADCAST, None).unwrap(), Some(1));
 
-        // 接收容量：缺省 32768（udpsock.c:33），下界 512（MEMPOOL_BUFSIZE）。
+        // Receive capacity: default 32768 (udpsock.c:33), lower bound 512
+        // (MEMPOOL_BUFSIZE).
         assert_eq!(
             stack.sockopt_udp(socket, SO_RCVBUF, None).unwrap(),
             Some(crate::lwip_port::UDP_RCVBUF_DEF as i32)
@@ -1261,7 +1332,7 @@ mod tests {
             util::ERR_INVALID
         );
         assert_eq!(stack.sockopt_udp(socket, SO_RCVBUF, Some(512)), Ok(None));
-        // 选项互不串槽：广播位仍在。
+        // Options do not cross slots: the broadcast bit is still set.
         assert_eq!(stack.sockopt_udp(socket, SO_BROADCAST, None).unwrap(), Some(1));
     }
 }

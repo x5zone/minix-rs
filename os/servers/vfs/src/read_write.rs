@@ -339,7 +339,7 @@ pub fn select_route(ft: FileType, dir: RwDir) -> IoRoute {
 /// Device presence check (`read.c:168-169,208-209,214-215`).
 ///
 /// C panics on `NO_DEV` ("tries to access … NO_DEV"); here that
-/// impossible path becomes a defensive `ENXIO` (ARCH hardening, D4).
+/// impossible path becomes a defensive `ENXIO` (ARCH hardening).
 pub fn check_dev(dev: u64) -> Result<u64, IoError> {
     if dev == NO_DEV {
         return Err(IoError::NoDev);
@@ -448,11 +448,11 @@ pub enum IoError {
     BadF,
     /// `EPIPE`: write with no reader (also arms `SIGPIPE`).
     Pipe,
-    /// `ENXIO`: deviceless vnode (C panics; ARCH hardening, D4).
+    /// `ENXIO`: deviceless vnode (C panics; ARCH hardening).
     NoDev,
     /// `EOPNOTSUPP`: reserved rejection slot for dispatch.
     NotSup,
-    /// `EIO`: unknown file type / driver error归一.
+    /// `EIO`: unknown file type / driver error, normalized.
     Io,
 }
 

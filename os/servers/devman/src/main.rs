@@ -19,28 +19,31 @@ fn main() {
         use minix_devman::ipc::minix::{MinixTransport, SysKernel};
         use minix_devman::{RootStat, ServerConfig};
 
-        // C: main.c:77-89 — 填 hooks + 描述根 inode + `run_vtreefs`。
-        // Rust 侧 hooks 已内联进 `Server`（DM-P1-2/P1-5），根 inode 描述
-        // 仍是 `RootStat::devman_root()`。
+        // C: main.c:77-89 — fill hooks + describe the root inode + `run_vtreefs`.
+        // On the Rust side the hooks are already inlined into `Server`; the
+        // root inode description is still `RootStat::devman_root()`.
         let root = RootStat::devman_root();
         let config = ServerConfig::devman_default(root);
 
-        // C: `run_vtreefs` 的初始化失败在 C 里 panic（vtreefs.c:16-33）；
-        // Rust 侧 `Server::new` 回 `Err(ENOMEM)`，启动期无恢复面，折回
-        // panic（与 01 的 `IsServer::startup` 失败同款）。
+        // A `run_vtreefs` initialization failure panics in C (vtreefs.c:16-33);
+        // on the Rust side `Server::new` returns `Err(ENOMEM)`, and with no
+        // recovery surface at startup it folds back into a panic (same as a
+        // failed `IsServer::startup` in 01).
         let mut server = match minix_devman::server::Server::new(&config) {
             Ok(server) => server,
             Err(e) => panic!("devman: init failed: {e:?}"),
         };
 
-        // 生产传输：内核 IPC + SEF 收包 + grant 读写；FS 面按 VFS 的
-        // fsdriver 协议（transid/请求号/回复成型），DEVMAN 面同循环
-        // （C `fsdriver_task` + `fdr_other`，DM-P1-2）。
+        // Production transport: kernel IPC + SEF message reception + grant
+        // read/write; the FS side follows VFS's fsdriver protocol
+        // (transid/request number/reply shaping), and the DEVMAN side shares
+        // that loop (C `fsdriver_task` + `fdr_other`).
         let mut transport = MinixTransport::new(SysKernel);
         server.run(&mut transport);
 
-        // 循环只在收包失败时返回（`Transport::next` 给 None）——C 在这里
-        // panic（fsdriver.c:92：传输损坏无恢复面）。
+        // The loop returns only when message reception fails
+        // (`Transport::next` yields None) — C panics here (fsdriver.c:92: a
+        // broken transport has no recovery surface).
         panic!("devman: fsdriver loop ended (receive failed)");
     }
 }

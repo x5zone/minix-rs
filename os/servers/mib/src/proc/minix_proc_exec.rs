@@ -9,9 +9,11 @@
 //! ProcFS semantics (unlike the CTL_KERN nodes): a negative PID names a
 //! kernel task, a positive one a user process, and PID 0 is nothing.
 //!
-//! `[ARCH: A-7]` **已消解（C-25，2026-09-20）**：内核 GET_PROCTAB 行扩面后
-//! `p_kipc_cycles`/`p_kcall_cycles` 到场，两列直接读行（C `proc.c:1278-1279`）；
-//! 内核侧的 IPC 记账（`kbill_ipc` 标记）同批接上，值不再是恒零。
+//! `[ARCH: A-7]` **resolved**: once the kernel's GET_PROCTAB row was widened,
+//! `p_kipc_cycles`/`p_kcall_cycles` arrived and both columns read the row
+//! directly (C `proc.c:1278-1279`); the kernel side's IPC accounting (the
+//! `kbill_ipc` flag) was wired in the same pass, so the values are no longer
+//! constant zero.
 //!
 //! 20-mib-proc-minix.md.
 
@@ -181,7 +183,8 @@ fn proc_data<K: MibKernel, S: MibServices>(
         mpd_user_time: kp.p_user_time as u32,
         mpd_sys_time: kp.p_sys_time as u32,
         mpd_cycles: kp.p_cycles,
-        // C `proc.c:1278-1279`：两列直接读内核行的周期账（C-25 行扩面后到场）。
+        // C `proc.c:1278-1279`: both columns read the cycle accounting straight
+        // from the kernel row (present once the row was widened).
         mpd_kipc_cycles: kp.p_kipc_cycles,
         mpd_kcall_cycles: kp.p_kcall_cycles,
         mpd_nice: 0,
@@ -236,8 +239,9 @@ mod tests {
     };
     use crate::proc::Tables;
 
-    /// 场景：内核行 0 = KERNEL 任务（可运行）；PM 槽 1 = "init"（IN_USE、
-    /// PRIV_PROC），槽 2 = 僵尸 "dead"，槽 3 = pid 0 的空壳（被 list 过滤）。
+    /// Scenario: kernel row 0 = the KERNEL task (runnable); PM slot 1 = "init"
+    /// (IN_USE, PRIV_PROC), slot 2 = the zombie "dead", slot 3 = the pid 0 empty
+    /// shell (filtered out by list).
     fn padded(name: &[u8]) -> [u8; 16] {
         let mut n = [0u8; 16];
         n[..name.len()].copy_from_slice(name);
@@ -250,7 +254,7 @@ mod tests {
     fn fixture() -> (FakeKernel, FakeServices) {
         let krow = core::mem::size_of::<ProcInfoStruct>();
         let mut proctab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * krow];
-        // pid -4（KERNEL 任务）→ kslot = -4 + NR_TASKS = 1（proc.c:1247）。
+        // pid -4 (the KERNEL task) maps to kslot = -4 + NR_TASKS = 1 (proc.c:1247).
         put_row(
             &mut proctab,
             1,
@@ -273,7 +277,7 @@ mod tests {
         let prow = core::mem::size_of::<Row>();
         let mut pm = vec![0u8; minix_types::NR_PROCS * prow];
         let put_m = |v: &mut Vec<u8>, mslot: usize, row: &Row| {
-            // SAFETY(test): repr(C) POD 写进槽窗口，索引在界内。
+            // SAFETY(test): repr(C) POD written into the slot window; the index is in bounds.
             unsafe {
                 core::ptr::write_unaligned(v.as_mut_ptr().add(mslot * prow) as *mut Row, *row);
             }
@@ -294,7 +298,7 @@ mod tests {
             ..Row::default()
         });
         put_m(&mut pm, 3, &Row {
-            mp_pid: 0, // pid 0：list 过滤（proc.c:1200 的 `pid <= 0`）
+            mp_pid: 0, // pid 0: filtered out by list (proc.c:1200 `pid <= 0`)
             mp_flags: mp_flags::IN_USE,
             ..Row::default()
         });
@@ -331,8 +335,9 @@ mod tests {
         }
     }
 
-    /// PROC_LIST：整表 256 行全量拷出，两行在用——init（uid/gid/无僵尸
-    /// 位）与 dead（僵尸位）；pid 0 空壳被过滤（proc.c:1200）。
+    /// PROC_LIST: the whole 256-row table is copied out, with two rows in use —
+    /// init (uid/gid, no zombie bit) and dead (zombie bit); the pid 0 empty
+    /// shell is filtered out (proc.c:1200).
     #[test]
     fn test_proc_list_end_to_end() {
         let (mut k, mut s) = fixture();
@@ -354,7 +359,7 @@ mod tests {
             drop(sink);
             drop(c);
             let row = |i: usize| -> MinixProcList {
-                // SAFETY(test): repr(C) POD 读，i 在拷出范围内。
+                // SAFETY(test): repr(C) POD read; i is within the copied range.
                 unsafe {
                     core::ptr::read_unaligned(
                         snapshot.as_ptr().add(i * core::mem::size_of::<MinixProcList>())
@@ -362,21 +367,21 @@ mod tests {
                     )
                 }
             };
-        // 槽 0 未用：全零。
+        // Slot 0 is unused: all zero.
         assert_eq!(row(0).mpl_flags, 0);
-        // 槽 1 = init：IN_USE、无僵尸位。
+        // Slot 1 = init: IN_USE, no zombie bit.
         let init = row(1);
         assert_eq!(init.mpl_flags, MPLF_IN_USE);
         assert_eq!(init.mpl_pid, 1);
-        // 槽 2 = dead：IN_USE | ZOMBIE。
+        // Slot 2 = dead: IN_USE | ZOMBIE.
         let dead = row(2);
         assert_eq!(dead.mpl_flags, MPLF_IN_USE | MPLF_ZOMBIE);
         assert_eq!(dead.mpl_pid, 99);
-        // 槽 3 = pid 0 空壳：被过滤，全零。
+        // Slot 3 = the pid 0 empty shell: filtered out, all zero.
         assert_eq!(row(3).mpl_flags, 0);
         }
 
-        // 大小估算（oldp=NULL）。
+        // Size estimation (oldp=NULL).
         {
             let mut tables = Tables::new();
             let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
@@ -388,15 +393,16 @@ mod tests {
         }
     }
 
-    /// PROC_DATA：用户行（init——SYSTEM 位来自 PRIV_PROC，RUNNABLE 来自
-    /// 全零内核行）与任务行（pid=-4 → KERNEL 槽，名字取内核行）。
+    /// PROC_DATA: a user row (init — the SYSTEM bit comes from PRIV_PROC, the
+    /// RUNNABLE bit from the all-zero kernel row) and a task row (pid=-4 maps to
+    /// the KERNEL slot, with the name taken from the kernel row).
     #[test]
     fn test_proc_data_end_to_end() {
         let (mut k, mut s) = fixture();
         let mut tables = Tables::new();
         let size = core::mem::size_of::<MinixProcData>() as u64;
 
-        // 用户行 pid 1。
+        // User row, pid 1.
         {
             let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
             let out = walker::sysctl(
@@ -409,7 +415,7 @@ mod tests {
             );
             assert_eq!(out, SysctlOutcome::Done(size));
             let sink = c.kernel.sink.borrow();
-            // SAFETY(test): repr(C) POD 读。
+            // SAFETY(test): repr(C) POD read.
             let mpd = unsafe {
                 core::ptr::read_unaligned(sink.as_ptr() as *const MinixProcData)
             };
@@ -424,7 +430,7 @@ mod tests {
             assert_eq!(&mpd.mpd_name[..5], b"init\0");
         }
 
-        // 任务行 pid = -4（KERNEL 槽）：名字取内核行，nice 恒 0。
+        // Task row, pid = -4 (KERNEL slot): the name comes from the kernel row, nice is always 0.
         {
             let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
             let out = walker::sysctl(
@@ -437,7 +443,7 @@ mod tests {
             );
             assert_eq!(out, SysctlOutcome::Done(size));
             let sink = c.kernel.sink.borrow();
-            // SAFETY(test): repr(C) POD 读。
+            // SAFETY(test): repr(C) POD read.
             let mpd = unsafe {
                 core::ptr::read_unaligned(sink.as_ptr() as *const MinixProcData)
             };
@@ -447,7 +453,7 @@ mod tests {
             assert_eq!(mpd.mpd_flags & MPDF_ZOMBIE, 0);
         }
 
-        // 门的门：namelen != 1 → EINVAL；pid 0 与越界负 pid → ESRCH。
+        // The gate of gates: namelen != 1 gives EINVAL; pid 0 and an out-of-range negative pid give ESRCH.
         {
             let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
             let out = walker::sysctl(

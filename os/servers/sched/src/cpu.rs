@@ -18,7 +18,7 @@
 /// Two numbers the kernel reports once at startup (`sys_getmachine`,
 /// 01): how many CPUs exist and which one bootstrapped. Every choice
 /// below reads them — the topology is a parameter, never a global, so
-/// single-CPU and multi-CPU fall out of one rule (S-5: the `CONFIG_SMP`
+/// single-CPU and multi-CPU fall out of one rule (the `CONFIG_SMP`
 /// compile gate becomes a runtime count).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MachineTopology {
@@ -36,8 +36,8 @@ pub struct MachineTopology {
 /// topology's count, and that guarantee is `pick`'s job (the only
 /// producer); the type's value is at the signatures, where a bare
 /// `u32` forced every reader to re-ask "is this a CPU, a count, or a
-/// queue?". [ARCH S-4] kin: bare integers that carry meaning become
-/// types (the load counter's sentinel went the same way, `CpuLoad`).
+/// queue?". [ARCH: bare integers that carry meaning become types] — the
+/// load counter's sentinel went the same way (`CpuLoad`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuId(pub u32);
 
@@ -46,7 +46,7 @@ pub struct CpuId(pub u32);
 /// C keeps `unsigned cpu_proc[]` with a `-1` sentinel (`CPU_DEAD`, `37`)
 /// for the gone — a bare `unsigned` that asks "how dead is dead?".
 /// `None` answers in the type: the slot holds a count or it holds
-/// nothing. [ARCH S-4] (plan.md).
+/// nothing. [ARCH: the `-1` sentinel becomes a type].
 pub type CpuLoad = Option<u32>;
 
 /// Choose a CPU (`pick_cpu`, `schedule.c:48-78`).

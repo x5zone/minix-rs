@@ -3,13 +3,14 @@
 //! C: `minix3/minix/servers/is/dmp_rs.c` (74 lines). One dump over two
 //! tables (`SI_PROCPUB_TAB` + `SI_PROC_TAB`): identity (PUB) + state
 //! (PRIV), `RS_IN_USE` filter, dual-source 6-char code. Bodies await the
-//! A-6 output channel; this module delivers snapshots, encoders, and
+//! output channel; this module delivers snapshots, encoders, and
 //! format constants.
 //!
 //! `[ARCH: A-4]`: the two table rows are [`minix_types::RprocpubSnap`] /
 //! [`minix_types::RprocSnap`] — the single authority shared with the RS-side
 //! `SI_PROCPUB_TAB`/`SI_PROC_TAB` producer (`os/servers/rs/src/shell_request.rs`
-//! 的三个 copy-out)；本模块只重导出（同一行也服务 VM 的 `RS_INIT` 握手）。
+//! three copy-outs); this module only re-exports (the same row also serves
+//! VM's `RS_INIT` handshake).
 pub use minix_types::{RprocSnap, RprocpubSnap, RS_MAX_COMMAND, RS_TABLE_LEN};
 
 /// In-use filter. C: `rp->r_flags & RS_IN_USE` (`RS_IN_USE 0x001` —
@@ -42,7 +43,7 @@ pub const RPROC_TITLE: &str = "Reincarnation Server (RS) system process table du
 pub const RPROC_COLUMNS: &str =
     "----label---- endpoint- -pid- flags- -dev- -T- alive_tm starts command\n";
 
-// ── render (V1-P1-3 execution face) ───────────────────────────────
+// ── render (execution face) ───────────────────────────────────────
 
 use crate::PCStr;
 use core::fmt;

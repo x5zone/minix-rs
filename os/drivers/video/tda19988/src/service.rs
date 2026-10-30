@@ -102,7 +102,9 @@ impl Tda19988Service {
         };
         wire::write_i32(&mut reply, wire::reply::STATUS, status);
         wire::write_i32(&mut reply, wire::reply::ID, id);
-        //[SD19-gate] 回复发送尽力而为：C 的 send_reply 失败即 panic；单线程泵按文档丢弃而不是卡死。
+        //[SD19-gate] Reply sending is best-effort: C's send_reply panics on
+        // failure; the single-threaded pump drops the reply instead of wedging,
+        // as documented.
         #[allow(clippy::let_underscore_must_use)]
         let _ = transport.asynsend(caller, &mut reply);
     }
@@ -125,7 +127,7 @@ impl Tda19988Service {
             };
             wire::write_i32(&mut reply, wire::reply::STATUS, ENXIO);
             wire::write_i32(&mut reply, wire::reply::ID, id);
-            //[SD19-gate] 同 reply：拒绝回复尽力而为。
+            //[SD19-gate] Same as reply: refusing a request is best-effort too.
             #[allow(clippy::let_underscore_must_use)]
             let _ = transport.asynsend(msg.m_source, &mut reply);
             return;

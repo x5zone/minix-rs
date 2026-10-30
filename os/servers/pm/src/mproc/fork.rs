@@ -217,9 +217,9 @@ impl<'a> PmContext<'a> {
     ) {
         let parent = self.current_proc().clone();
 
-        // C: `rmc->mp_started = getticks()`（forkexit.c:114）——子进程的
-        // started 取当前内核 uptime；ClockSource 由调用方注入（E6 前为
-        // 测试 mock）。
+        // C: `rmc->mp_started = getticks()` (forkexit.c:114) — the child's
+        // started is the current kernel uptime; the ClockSource is injected by
+        // the caller (a test mock before E6 was wired).
         let started = clock
             .uptime()
             .map(|(ticks, _, _)| ticks)
@@ -325,7 +325,7 @@ impl Process {
     /// | `rmc->mp_flags &= (IN_USE\|DELAY_CALL\|TAINTED)` | `flags` keeps only TAINTED; `ipc_blocked` reset (DELAY_CALL unreachable at fork: a process with DELAY_CALL set is mid-send in the kernel and cannot execute fork) |
     /// | `rmc->mp_flags &= ~PRIV_PROC` | `privilege = Privilege::User(..)` (PRIV_PROC not inherited by normal fork) |
     /// | `if (rmc->mp_flags & PRIV_PROC) scheduler = SCHED_PROC_NR` | kernel parent → `scheduler = Endpoint::SCHED` |
-    /// | `rmc->mp_started = getticks()` | `started`（调用方注入，`forkexit.c:114`） |
+    /// | `rmc->mp_started = getticks()` | `started` (injected by the caller, `forkexit.c:114`) |
     pub fn fork_from(
         parent: &Process, 
         child_index: usize, 
@@ -469,7 +469,7 @@ mod tests {
             fork_result.child_endpoint,
             &FixedClock(0),
         );
-        // started 来自注入的时钟（D-24：uptime ticks）
+        // started comes from the injected clock (uptime ticks)
         let child = ctx.table.get(fork_result.child_index).unwrap();
         assert_eq!(child.resources.started, 100_000);
         

@@ -590,12 +590,14 @@ mod tests {
         assert!(readonly_gate(true, false).is_ok());
     }
 
-    /// B33 回归 pin：`forbidden_decision` 的 `access` 必须是**低 3 位**
-    /// 的 R/W/X（`X_BIT`/`R_BIT`/`W_BIT`），与 `perm_bits` 同档。exec 开
-    /// 卷腿曾误传 9 位模式的 owner-X 位（`0o100`），使 root/owner 的
-    /// `perm=0o7` 恒判 `(perm|access)!=perm` 而误拒 EACCES（真机
-    /// 实锤 mode=0o100755、euid=0、root 自有文件都拒）。本测锁定：
-    /// 同一 root 执行 0o755 普通文件，`X_BIT` 通过、`0o100` 误拒。
+    /// Regression pin: `forbidden_decision`'s `access` must be the **low three
+    /// bits** of R/W/X (`X_BIT`/`R_BIT`/`W_BIT`), the same domain as `perm_bits`.
+    /// The exec open path used to pass the owner-X bit of a nine-bit mode (`0o100`),
+    /// which made `perm=0o7` for root/owner always evaluate `(perm|access)!=perm`
+    /// and wrongly deny EACCES (measured on real hardware: mode=0o100755, euid=0,
+    /// a root-owned file, all denied). This test pins:
+    /// root execs an ordinary 0o755 file, `X_BIT` passes and `0o100` is wrongly
+    /// denied.
     #[test]
     fn test_exec_access_bit_is_low_three_not_nine_bit() {
         let mk = |access: u8| ForbidInput {
@@ -612,9 +614,10 @@ mod tests {
             supp: &[],
             readonly_fs: false,
         };
-        // 正确编码：低 3 位 X_BIT → root 执行 0o755 放行。
+        // Correct encoding: low-three-bit X_BIT → root exec of 0o755 is allowed.
         assert_eq!(forbidden_decision(&mk(X_BIT)), Ok(()));
-        // 错误编码（B33 历史缺陷）：9 位 owner-X 位 0o100 → 误拒。
+        // Wrong encoding (the historical defect): nine-bit owner-X bit 0o100 →
+        // wrongly denied.
         assert_eq!(forbidden_decision(&mk(0o100)), Err(ProtectError::Acces));
     }
 

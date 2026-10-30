@@ -115,8 +115,10 @@ fn decode_tape(strings: &[String]) {
     let mut synced = false;
     let mut needs_newline = false;
     loop {
-        // C 在 `!feof(stdin)` 时走 `err(1, "fgets")`（`ppt.c:109-111`）：读**出错**与读到
-        // 尽头是两件事，前者退 1 且不再补那个换行，后者才走下面的收尾。
+        // When `!feof(stdin)` C takes `err(1, "fgets")` (`ppt.c:109-111`): a
+        // read **error** and end of input are two different things — the
+        // former exits with 1 and does not emit the owed newline, only the
+        // latter falls through to the wrap-up below.
         let has_line = match reader.next_line() {
             Ok(has_line) => has_line,
             Err(code) => {
@@ -146,8 +148,9 @@ fn decode_tape(strings: &[String]) {
             None => {}
         }
     }
-    // 走到这里只有两种可能：读到尽头，或一张磁带读到没有同步位的行并已提前离开。
-    // 读出错的那条腿在上面已经离开，形状与 C 的 `err(1, "fgets")` 一致。
+    // Only two ways reach here: end of input, or a tape that hit a line
+    // without a sync hole and already left early. The read-error arm left
+    // above, matching C's `err(1, "fgets")` shape.
     if needs_newline {
         support::emit(b"\n");
     }

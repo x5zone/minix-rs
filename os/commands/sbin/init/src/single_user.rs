@@ -98,7 +98,7 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
     // C: downgrade an active security level first (init.c:711-713);
     // the gate compares against the pre-downgrade value.
     if deps.from_securitylevel > 0 {
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] best-effort call: the result is ignored by design
         #[allow(clippy::let_underscore_must_use)]
         let _ = host.set_securitylevel(0);
     }
@@ -106,7 +106,7 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
     // C: SIG_IGN for SIGHUP/SIGTSTP around the shell (init.c:715-719);
     // restored from the default table on every exit path below.
     let ignore = ignore_spec(&[sig::SIGNAL_HANGUP, sig::SIGNAL_TERMINAL_STOP]);
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] best-effort call: the result is ignored by design
     #[allow(clippy::let_underscore_must_use)]
     let _ = host.register_handlers(&ignore);
 
@@ -119,10 +119,10 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
             // C: init.c:818 `while (waitpid(-1, NULL, WNOHANG) > 0)` — reap
             // only already-exited children; WNOHANG returning 0 (live child,
             // none changed) or an error ends the loop. `.is_ok()` would spin
-            // forever on `Ok((0, _))` (NK4-C §1.117 same mistranslation).
+            // forever on `Ok((0, _))` (the same mistranslation).
             while matches!(host.waitpid(-1, WNOHANG), Ok((pid, _)) if pid > 0) {}
             let restore = restore_spec(&[sig::SIGNAL_HANGUP, sig::SIGNAL_TERMINAL_STOP]);
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] best-effort call: the result is ignored by design
             #[allow(clippy::let_underscore_must_use)]
             let _ = host.register_handlers(&restore);
             return SingleUserOutcome::Restart;
@@ -148,7 +148,7 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
                         // C: stopped shell — SIGCONT it and keep
                         // waiting (init.c:843-847).
                         warning(host, "shell stopped, restarting");
-                        //[SD19-gate] SD-19: init 尽力而为
+                        //[SD19-gate] best-effort call: the result is ignored by design
                         #[allow(clippy::let_underscore_must_use)]
                         let _ = host.kill(pid, sig::SIGNAL_CONTINUE);
                     } else {
@@ -201,7 +201,7 @@ fn finish_shell(host: &mut dyn InitHost, status: crate::wait::WaitStatus) -> Sin
 
 fn restore_after(host: &mut dyn InitHost) {
     let restore = restore_spec(&[sig::SIGNAL_HANGUP, sig::SIGNAL_TERMINAL_STOP]);
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] best-effort call: the result is ignored by design
     #[allow(clippy::let_underscore_must_use)]
     let _ = host.register_handlers(&restore);
 }
@@ -222,7 +222,7 @@ fn child_shell(
         Ok(true) => CONSTTY_PATH,
         _ => CONSOLE_PATH,
     };
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] best-effort call: the result is ignored by design
     #[allow(clippy::let_underscore_must_use)]
     let _ = host.set_controlling_tty(tty);
 
@@ -268,7 +268,7 @@ fn child_shell(
     // fallback is unconditional: after the first failure C resets
     // argv[0] to "-sh" and retries INIT_BSHELL — even when the first
     // attempt already was INIT_BSHELL.
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] best-effort call: the result is ignored by design
     #[allow(clippy::let_underscore_must_use)]
     let _ = host.set_env("PATH", INIT_PATH);
     let err = host.exec(&crate::session::ParsedCommand {
@@ -282,7 +282,7 @@ fn child_shell(
     });
     emergency(host, &format!("can't exec `{RC_SHELL_PATH}' for single user: {err}"));
     // C: plain `sleep(STALL_TIMEOUT)` — no log line (init.c:811).
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] best-effort call: the result is ignored by design
     #[allow(clippy::let_underscore_must_use)]
     let _ = host.sleep_secs(crate::log::STALL_TIMEOUT_SECS);
     host.exit_process(3);
@@ -368,7 +368,7 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] best-effort call: the result is ignored by design
         #[allow(clippy::let_underscore_must_use)]
         let _ = single_user(&mut host, deps);
         assert_eq!(host.securitylevel_sets, vec![0]);
@@ -396,8 +396,7 @@ mod tests {
 
     #[test]
     fn test_entity_fork_failure_reap_loop_exits_on_zero() {
-        // NK4-C §1.117: the WNOHANG reap loop breaks the moment no child has
-        // exited. A single `Ok((0, _))` (live child, none changed) ends it
+        // The WNOHANG reap loop breaks the moment no child has exited. A single `Ok((0, _))` (live child, none changed) ends it
         // (C `waitpid(...) > 0`); the old `.is_ok()` guard would call waitpid
         // again and drain the empty mock queue (panic) — an unbounded spin.
         let mut host = ScriptHost::default();
@@ -505,7 +504,7 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] best-effort call: the result is ignored by design
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         assert_eq!(host.exec_requests.len(), 2);
@@ -539,7 +538,7 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] best-effort call: the result is ignored by design
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         // First attempt execs the operator's shell; the fallback resets
@@ -571,7 +570,7 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] best-effort call: the result is ignored by design
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         assert_eq!(
@@ -599,7 +598,7 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] best-effort call: the result is ignored by design
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         assert_eq!(host.exits, vec![0]);

@@ -629,7 +629,7 @@ pub fn dup2_via(transport: &impl IpcTransport, fd: i32, fd2: i32) -> Result<i32,
     if fd == fd2 {
         return Ok(fd2);
     }
-    //[SD19-gate] C dup2.c:30 忽略 close(fd2) 返回值
+    //[SD19-gate] C dup2.c:30 ignores close(fd2)'s return value
     #[allow(clippy::let_underscore_must_use)]
     let _ = close_via(transport, fd2);
     fcntl_via(transport, fd, F_DUPFD, fd2, 0)
@@ -641,22 +641,24 @@ pub const VFS_CALL_PIPE2: i32 = 0x100 + 26;
 /// Creates a pipe over the given transport (C: `pipe2`,
 /// `minix3/minix/lib/libc/sys/pipe.c:14-27`).
 ///
-/// Request payload is `mess_lc_vfs_pipe2`（flags@0、_unused@4、oflags@8）；
+/// Request payload is `mess_lc_vfs_pipe2` (flags@0, _unused@4, oflags@8);
 /// the server bitwise-ors the two flag fields (`pipe.c:45-46`), and the C
 /// libc writes the same `flags` into both for backward compatibility
 /// (`pipe.c:18-19`) — done the same way here. The OK reply carries
-/// `mess_vfs_lc_fdpair { int fd0; int fd1; }`（`ipc.h:2198-2203`）in the
+/// `mess_vfs_lc_fdpair { int fd0; int fd1; }` (`ipc.h:2198-2203`) in the
 /// first two payload words; the return is that (read end, write end) pair.
 pub fn pipe2_via(transport: &impl IpcTransport, flags: i32) -> Result<(i32, i32), Errno> {
     let mut message = crate::syscall::cleared_message();
-    // SAFETY: `mess_lc_vfs_pipe2` 的两个 i32 域写在负载区偏移 0 与 8
-    // （服务端 `syscalls.rs` 的 Pipe2 臂按同布局解码，互为见证）。
+    // SAFETY: the two i32 fields of `mess_lc_vfs_pipe2` are written at payload
+    // offsets 0 and 8 (the server's Pipe2 arm in `syscalls.rs` decodes the same
+    // layout, each witnessing the other).
     unsafe {
         message.m_u.raw[0..4].copy_from_slice(&flags.to_le_bytes());
         message.m_u.raw[8..12].copy_from_slice(&flags.to_le_bytes());
     }
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_PIPE2, &mut message)?;
-    // SAFETY: 成功回复是 `mess_vfs_lc_fdpair`，fd0/fd1 在负载区前两字。
+    // SAFETY: the success reply is `mess_vfs_lc_fdpair`; fd0/fd1 are the first
+    // two payload words.
     let (fd0, fd1) = unsafe {
         (
             i32::from_le_bytes(message.m_u.raw[0..4].try_into().expect("four payload bytes")),
@@ -690,7 +692,8 @@ pub fn chroot_via(
     // flags/mode lanes stay zero — chroot carries neither.
     if name_length_including_nul <= OPEN_PATH_INLINE_MAX {
         // SAFETY: the caller's path buffer lives in this same address space
-        // (user library reads its own argument — C loadname.c:16-17 同型)。
+        // (user library reads its own argument — the same shape as
+        // C loadname.c:16-17).
         let path_bytes = unsafe {
             core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
         };
@@ -868,8 +871,8 @@ struct CreatePayload {
 /// including the NUL under the 56-byte payload invariant; longer paths
 /// travel by the pointer lane and the server fetches them from the
 /// caller's address space, exactly the split C's `copy_path` makes).
-/// C: `mess_lc_vfs_path` (`ipc.h:754-768`) — open-existing 的载荷形状。
-/// i386 原始布局：name/len/flags/mode/buf[40] = 56 字节。
+/// C: `mess_lc_vfs_path` (`ipc.h:754-768`) — the open-existing payload shape.
+/// Original i386 layout: name/len/flags/mode/buf[40] = 56 bytes.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct OpenPathPayload {
@@ -880,19 +883,24 @@ struct OpenPathPayload {
     buf: [u8; 32],
 }
 
-/// open-existing 内联容量（LP64 判例：指针 4→8 后 buf 由 C i386 的
-/// `M_PATH_STRING_MAX` 40 收缩为 32；含 NUL 的总长 ≤ 32 才能内联）。
-/// 超长路径走指针车道，由服务端 fetch（C `copy_path` 双支，
-/// utility.c:31-32）——内联是优化不是上限。
+/// Inline capacity of open-existing (LP64 ruling: after pointers go 4→8, buf
+/// shrinks from C i386's `M_PATH_STRING_MAX` 40 to 32; only a NUL-inclusive
+/// length ≤ 32 can be inlined). Longer paths travel by the pointer lane and the
+/// server fetches them (both branches of C `copy_path`, utility.c:31-32) —
+/// inlining is an optimization, not a limit.
 pub const OPEN_PATH_INLINE_MAX: usize = 32;
 
-/// open-existing 路径的 wire 语义（C `_loadname`，loadname.c:7-19）：
-/// **地址与 NUL 含长度恒发送**（:15-17），路径 ≤ [`OPEN_PATH_INLINE_MAX`]
-/// 字节（含 NUL）才内联进载荷 buf（:18 的 strcpy 是优化非语义；C 容量是
-/// `M_PATH_STRING_MAX` 40，本线 LP64 载荷 56 字节不变量下内联窗为 32，
-/// 99 篇 §1.2 判例）。超长路径不内联，由服务端从调用方地址空间取回
-/// （C `copy_path` → `fetch_name`，utility.c:31-32/:60-90：上限 PATH_MAX、
-/// 尾字节 NUL 校验）——超长与否是服务端裁决，客户端不发 `ENAMETOOLONG`。
+/// Wire semantics of the open-existing path (C `_loadname`, loadname.c:7-19):
+/// **the address and the NUL-inclusive length are always sent** (:15-17), and
+/// only a path ≤ [`OPEN_PATH_INLINE_MAX`] bytes (including the NUL) is inlined
+/// into the payload buf (the strcpy at :18 is an optimization, not semantics;
+/// C's capacity is `M_PATH_STRING_MAX` 40, while on this line, under the
+/// 56-byte LP64 payload invariant, the inline window is 32 — the ruling in
+/// doc 99 §1.2). Longer paths are not inlined and the server fetches them from
+/// the caller's address space (C `copy_path` → `fetch_name`,
+/// utility.c:31-32/:60-90: PATH_MAX bound and trailing-NUL check) — whether a
+/// path is too long is the server's decision; the client never sends
+/// `ENAMETOOLONG`.
 pub fn open_existing_via(
     transport: &impl IpcTransport,
     name_address: u64,
@@ -906,10 +914,12 @@ pub fn open_existing_via(
     packed[0..8].copy_from_slice(&name_address.to_le_bytes());
     packed[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
     packed[16..20].copy_from_slice(&flags.to_le_bytes());
-    // mode @20..24 = 0（非创建路径无 mode，C open.c:31 同填 0）。
+    // mode @20..24 = 0 (the non-create path takes no mode; C open.c:31 fills 0
+    // too).
     if name_length_including_nul <= OPEN_PATH_INLINE_MAX {
         // SAFETY: the caller's path buffer lives in this same address space
-        // (user library reads its own argument — C loadname.c:18 同型)。
+        // (user library reads its own argument — the same shape as
+        // C loadname.c:18).
         let path_bytes = unsafe {
             core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
         };
@@ -1001,11 +1011,12 @@ pub fn select_empty_via(
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_SELECT, &mut message)
 }
 
-// ── 文件操作族（NL4 高优先批，2026-09-21）──────────────────────────────
+// ── file operation family ──────────────────────────────────────────────
 //
-// 十六个调用号，全部对应 `minix3/minix/include/minix/callnr.h:78-106` 的
-// `VFS_BASE + N`；服务端 `os/servers/vfs/src/syscalls.rs` 的各臂早已就绪，
-// 本批是纯客户端封装缺口（new_edge2.md NL4 侦察结论）。
+// Sixteen call numbers, all matching `VFS_BASE + N` in
+// `minix3/minix/include/minix/callnr.h:78-106`; the server arms in
+// `os/servers/vfs/src/syscalls.rs` were already in place, so this was purely a
+// client wrapper gap.
 
 /// `VFS_LINK (VFS_BASE + 6)` (`callnr.h:78`).
 pub const VFS_CALL_LINK: i32 = 0x100 + 6;
@@ -1096,7 +1107,8 @@ fn path_request_via(
     packed[20..24].copy_from_slice(&mode.to_le_bytes());
     if name_length_including_nul <= OPEN_PATH_INLINE_MAX {
         // SAFETY: the caller's path buffer lives in this same address space
-        // (user library reads its own argument — C loadname.c:16-17 同型)。
+        // (user library reads its own argument — the same shape as
+        // C loadname.c:16-17).
         let path_bytes = unsafe {
             core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
         };
@@ -1139,8 +1151,8 @@ pub fn chdir_via(
 
 /// Creates a directory (C: `mkdir`,
 /// `minix3/minix/lib/libc/sys/mkdir.c:8-17`; the server applies the
-/// process umask to the low permission bits, `open.c:583` 对位的
-/// `do_mkdir` 臂).
+/// process umask to the low permission bits, in the `do_mkdir` arm that is
+/// the counterpart of `open.c:583`).
 pub fn mkdir_via(
     transport: &impl IpcTransport,
     name_address: u64,
@@ -1176,7 +1188,7 @@ pub fn chmod_via(
 /// Checks real-uid access bits without opening (C: `access`,
 /// `minix3/minix/lib/libc/sys/access.c:8-17`; the `amode` word is
 /// `R_OK|W_OK|X_OK` or `F_OK`, validated server-side at
-/// `protect.c:199-233` 对位的 Access 臂).
+/// the Access arm that is the counterpart of `protect.c:199-233`).
 pub fn access_via(
     transport: &impl IpcTransport,
     name_address: u64,
@@ -1191,7 +1203,8 @@ pub fn access_via(
 /// length @16, second @24 (`ipc.h:708-715`). Unlike the six above, these
 /// three carry no inline bytes: the C wrappers pass both pointers and the
 /// server fetches the names through the caller's address space
-/// (`SysPathFetcher::fetch`, 服务端 Link/Symlink/Rename 臂同见证).
+/// (`SysPathFetcher::fetch`, witnessed by the server's Link/Symlink/Rename
+/// arms as well).
 ///
 /// C sets exactly these four fields in `link.c`/`symlink.c`/`rename.c`
 /// after a memset; no length pre-check happens client-side because no
@@ -1277,9 +1290,10 @@ pub fn rename_via(
 /// Sets a path's owner and group (C: `chown`,
 /// `minix3/minix/lib/libc/sys/chown.c:9-20`).
 ///
-/// `mess_lc_vfs_chown`（`ipc.h:611-619`）：name@0、len@8、fd@16、
-/// owner@20、group@24。fd lane 是 fchown 复用的字段，path 半按 C memset
-/// 保持 0（chown.c 只填 name/len/owner/group，服务端按调用号判别）。
+/// `mess_lc_vfs_chown` (`ipc.h:611-619`): name@0, len@8, fd@16, owner@20,
+/// group@24. The fd lane is the field fchown reuses; the path half stays 0 from
+/// C's memset (chown.c fills only name/len/owner/group, and the server tells
+/// the two apart by call number).
 pub fn chown_via(
     transport: &impl IpcTransport,
     name_address: u64,
@@ -1302,9 +1316,9 @@ pub fn chown_via(
 /// Sets a path's length (C: `truncate`,
 /// `minix3/minix/lib/libc/sys/truncate.c:9-17`).
 ///
-/// `mess_lc_vfs_truncate`（`ipc.h:894-902`）：offset@0、fd@8、name@16、
-/// len@24。fd lane 是 ftruncate 复用的字段，path 半按 C memset 保持 0；
-/// name 走地址由服务端 fetcher 取回。
+/// `mess_lc_vfs_truncate` (`ipc.h:894-902`): offset@0, fd@8, name@16, len@24.
+/// The fd lane is the field ftruncate reuses; the path half stays 0 from C's
+/// memset, and the name travels by address for the server's fetcher.
 pub fn truncate_via(
     transport: &impl IpcTransport,
     name_address: u64,
@@ -1327,7 +1341,7 @@ pub fn truncate_via(
 /// [`truncate_via`], fd half).
 pub fn ftruncate_via(transport: &impl IpcTransport, fd: i32, offset: i64) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
-    // SAFETY: offset@0、fd@8（`mess_lc_vfs_truncate` 的 fd 半）。
+    // SAFETY: offset@0, fd@8 (the fd half of `mess_lc_vfs_truncate`).
     unsafe {
         message.m_u.raw[0..8].copy_from_slice(&offset.to_le_bytes());
         message.m_u.raw[8..12].copy_from_slice(&fd.to_le_bytes());
@@ -1337,7 +1351,7 @@ pub fn ftruncate_via(transport: &impl IpcTransport, fd: i32, offset: i64) -> Res
 
 /// Changes the working directory to an open descriptor's (C: `fchdir`,
 /// `minix3/minix/lib/libc/sys/chdir.c:21-29`; `mess_lc_vfs_fchdir`
-/// 只有一个 int fd @0，`ipc.h:640-644`).
+/// carries only one int fd @0, `ipc.h:640-644`).
 pub fn fchdir_via(transport: &impl IpcTransport, fd: i32) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     // SAFETY: `mess_lc_vfs_fchdir { int fd; }` — descriptor at byte zero.
@@ -1350,10 +1364,11 @@ pub fn fchdir_via(transport: &impl IpcTransport, fd: i32) -> Result<(), Errno> {
 /// Sets the file-creation mask and reports the previous one (C: `umask`,
 /// `minix3/minix/lib/libc/sys/umask.c:9-17`).
 ///
-/// `mess_lc_vfs_umask`（`ipc.h:905-909`）只有一个 mode_t mask @0（4 字节
-/// lane）。C 把回复的 message type 直接当旧 mask 读回（umask 是唯一经
-/// m_type 值通道返回 mode_t 的文件调用），服务端 Umask 臂
-/// （protect.c:186-190 对位）同形回复 `Ok(old)`。
+/// `mess_lc_vfs_umask` (`ipc.h:905-909`) carries only one mode_t mask @0 (a
+/// 4-byte lane). C reads the reply's message type directly as the old mask
+/// (umask is the only file call that returns a mode_t through the m_type value
+/// channel), and the server's Umask arm (the counterpart of
+/// protect.c:186-190) answers `Ok(old)` in the same shape.
 pub fn umask_via(transport: &impl IpcTransport, mask: u32) -> Result<u32, Errno> {
     let mut message = crate::syscall::cleared_message();
     // SAFETY: `mess_lc_vfs_umask { mode_t mask; }` — mask at byte zero.
@@ -1367,17 +1382,20 @@ pub fn umask_via(transport: &impl IpcTransport, mask: u32) -> Result<u32, Errno>
 /// Reads a symlink target into the caller's buffer (C: `readlink`,
 /// `minix3/minix/lib/libc/sys/readlink.c:13-24`).
 ///
-/// `mess_lc_vfs_readlink`（`ipc.h:785-792`）：name@0、namelen@8、buf@16、
-/// bufsize@24——C 的 wire **没有内联路径字段**（i386 与 LP64 换算皆然，
-/// 剩余载荷区是 padding），客户端只发四个 lane，路径由服务端从调用方
-/// 地址空间取回（C `do_rdlink` 恒 `fetch_name`，link.c:494：上限
-/// PATH_MAX、尾字节 NUL 校验）。此前 minix-rs 在 @32 起自造过 24 字节
-/// 内联窗（`READLINK_INLINE_MAX`），与 C 形状不符且给长路径加了客户端
-/// 上限——NL10 拆除，双侧恒指针。namelen 为 0 仍是本面的诚实拒绝
-/// （C `strlen+1` 不可达 0）。
+/// `mess_lc_vfs_readlink` (`ipc.h:785-792`): name@0, namelen@8, buf@16,
+/// bufsize@24 — C's wire has **no inline path field** (true for both the i386
+/// and the LP64 conversion; the remaining payload area is padding), so the
+/// client sends only the four lanes and the server fetches the path from the
+/// caller's address space (C `do_rdlink` always calls `fetch_name`, link.c:494:
+/// PATH_MAX bound and trailing-NUL check). An earlier minix-rs version invented
+/// a 24-byte inline window from @32 (`READLINK_INLINE_MAX`), which did not
+/// match C's shape and added a client-side limit on long paths; it has been
+/// removed and both sides always use the pointer. A namelen of 0 is still an
+/// honest rejection on this face (C's `strlen+1` can never be 0).
 ///
 /// The reply's message type carries the byte count the server wrote into
-/// `buf` (C: `_syscall` 的非负 m_type 直接作为 ssize_t 返回).
+/// `buf` (C: `_syscall`'s non-negative m_type is returned directly as an
+/// ssize_t).
 pub fn readlink_via(
     transport: &impl IpcTransport,
     name_address: u64,
@@ -1405,10 +1423,11 @@ pub fn readlink_via(
 /// Creates a special file node (C: `mknod`,
 /// `minix3/minix/lib/libc/sys/mknod.c:9-19`).
 ///
-/// `mess_lc_vfs_mknod`（`ipc.h:736-744`）：device@0（dev_t，8 字节）、
-/// name@8、len@16、mode@24（mode_t，4 字节 lane）。mode 高位携带文件
-/// 类型（`S_IFIFO` 等），服务端只放行非超级用户的 FIFO（open.c:530-531
-/// 对位的 Mknod 臂）；name 走地址由服务端 fetcher 取回。
+/// `mess_lc_vfs_mknod` (`ipc.h:736-744`): device@0 (dev_t, 8 bytes), name@8,
+/// len@16, mode@24 (mode_t, a 4-byte lane). The high bits of mode carry the
+/// file type (`S_IFIFO` etc.), and the server only admits a FIFO from a
+/// non-superuser (the Mknod arm that is the counterpart of open.c:530-531);
+/// the name travels by address for the server's fetcher.
 pub fn mknod_via(
     transport: &impl IpcTransport,
     name_address: u64,
@@ -1802,10 +1821,10 @@ mod tests {
         assert_eq!(transport.sendrec_calls.get(), 1);
     }
 
-    // ── L10:stat 族 / ioctl / fcntl / getdents 的 wire 回放 ──
+    // ── wire replay for the stat family / ioctl / fcntl / getdents ──
 
-    /// stat 载荷逐 lane：len(含 NUL)/name/buf（C mess_lc_vfs_stat，
-    /// ipc.h:874-880），调用号 VFS_STAT=0x115。
+    /// stat payload lane by lane: len (NUL included)/name/buf (C
+    /// mess_lc_vfs_stat, ipc.h:874-880), call number VFS_STAT=0x115.
     #[test]
     fn test_stat_wire_roundtrip() {
         let mut transport = CannedTransport::new();
@@ -1814,14 +1833,16 @@ mod tests {
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, VFS_CALL_STAT);
         assert_eq!(sent.m_type, 0x115);
-        // SAFETY(test): 读回三 lane 的 raw 字节（与 StatPathPayload 同布局）。
+        // SAFETY(test): read back the raw bytes of the three lanes (the same
+        // layout as StatPathPayload).
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(u64::from_ne_bytes(raw[0..8].try_into().unwrap()), 12);
         assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0x9000);
         assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 0xA000);
     }
 
-    /// lstat 与 stat 同载荷异调用号（stat.c 单文件两函数的形状）。
+    /// lstat shares stat's payload with a different call number (the shape of
+    /// the two functions in stat.c).
     #[test]
     fn test_lstat_uses_lstat_call_number() {
         let mut transport = CannedTransport::new();
@@ -1832,7 +1853,7 @@ mod tests {
         assert_eq!(sent.m_type, 0x117);
     }
 
-    /// fstat 载荷：fd @0、buf @8（ipc.h:665-670 的 LP64 换算）。
+    /// fstat payload: fd @0, buf @8 (the LP64 conversion of ipc.h:665-670).
     #[test]
     fn test_fstat_wire_roundtrip() {
         let mut transport = CannedTransport::new();
@@ -1841,15 +1862,15 @@ mod tests {
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, VFS_CALL_FSTAT);
         assert_eq!(sent.m_type, 0x116);
-        // SAFETY(test): 读回 fd 与 buf lane。
+        // SAFETY(test): read back the fd and buf lanes.
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 7);
         assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0xA000);
     }
 
-    /// statvfs1 载荷：fd@0(路径半留 0)/flags@4/len@8/name@16/buf@24
-    /// (ipc.h:905-913)；调用号 VFS_STATVFS1=0x128；buf 由服务端填充、
-    /// 应答只是判写（reply 0）。
+    /// statvfs1 payload: fd@0 (the path half stays 0)/flags@4/len@8/name@16/
+    /// buf@24 (ipc.h:905-913); call number VFS_STATVFS1=0x128; the server fills
+    /// buf, so the reply is only a verdict (reply 0).
     #[test]
     fn test_statvfs1_wire_roundtrip() {
         let mut transport = CannedTransport::new();
@@ -1858,7 +1879,8 @@ mod tests {
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, VFS_CALL_STATVFS1);
         assert_eq!(sent.m_type, 0x128);
-        // SAFETY(test): 读回五域 raw 字节（与 Statvfs1Payload 同布局）。
+        // SAFETY(test): read back the raw bytes of the five fields (the same
+        // layout as Statvfs1Payload).
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 0);
         assert_eq!(i32::from_ne_bytes(raw[4..8].try_into().unwrap()), minix_types::ST_WAIT);
@@ -1867,9 +1889,9 @@ mod tests {
         assert_eq!(u64::from_ne_bytes(raw[24..32].try_into().unwrap()), 0xA000);
     }
 
-    /// getvfsstat 载荷：buf@0/len@8/flags@16 (ipc.h:897-902)；
-    /// 调用号 VFS_GETVFSSTAT=0x127；应答是**个数**（非 0），同 getdents 的
-    /// 非负计数约定。
+    /// getvfsstat payload: buf@0/len@8/flags@16 (ipc.h:897-902); call number
+    /// VFS_GETVFSSTAT=0x127; the reply is a **count** (not 0), following
+    /// getdents' non-negative count convention.
     #[test]
     fn test_getvfsstat_wire_and_count_reply() {
         let mut transport = CannedTransport::new();
@@ -1881,15 +1903,16 @@ mod tests {
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, VFS_CALL_GETVFSSTAT);
         assert_eq!(sent.m_type, 0x127);
-        // SAFETY(test): 读回 buf/len/flags 三域。
+        // SAFETY(test): read back the three fields buf/len/flags.
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(u64::from_ne_bytes(raw[0..8].try_into().unwrap()), 0xC000);
         assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 3 * 272);
         assert_eq!(i32::from_ne_bytes(raw[16..20].try_into().unwrap()), minix_types::ST_NOWAIT);
     }
 
-    /// ioctl 三 lane：fd/req(64 位)/arg（ipc.h:699-705）；应答原样上浮
-    /// （成功值经 m_type 返回，如请求编码的返回值）。
+    /// ioctl's three lanes: fd/req(64-bit)/arg (ipc.h:699-705); the reply
+    /// surfaces as is (a success value comes back through m_type, e.g. the
+    /// value a request encodes).
     #[test]
     fn test_ioctl_wire_roundtrip() {
         let mut transport = CannedTransport::new();
@@ -1898,15 +1921,15 @@ mod tests {
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, VFS_CALL_IOCTL);
         assert_eq!(sent.m_type, 0x118);
-        // SAFETY(test): 读回 fd/req/arg lane。
+        // SAFETY(test): read back the fd/req/arg lanes.
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 4);
         assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0x8927);
         assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 0xB000);
     }
 
-    /// fcntl：fd/cmd/arg_int 并排 arg_ptr（ipc.h:655-662；同调用只填
-    /// 其一）；应答 = 命令结果（F_DUPFD 的新 fd）。
+    /// fcntl: fd/cmd/arg_int beside arg_ptr (ipc.h:655-662; a given call fills
+    /// only one of them); the reply = the command's result (F_DUPFD's new fd).
     #[test]
     fn test_fcntl_wire_roundtrip() {
         let mut transport = CannedTransport::new();
@@ -1914,7 +1937,7 @@ mod tests {
         assert_eq!(fcntl_via(&transport, 2, FCNTL_COMMAND_DUPLICATE, 0, 0), Ok(5));
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, VFS_CALL_FCNTL);
-        // SAFETY(test): 读回 fd/cmd/arg_int/arg_ptr lane。
+        // SAFETY(test): read back the fd/cmd/arg_int/arg_ptr lanes.
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 2);
         assert_eq!(i32::from_ne_bytes(raw[4..8].try_into().unwrap()), 0);
@@ -1922,8 +1945,8 @@ mod tests {
         assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 0);
     }
 
-    /// getdents 复用 read/write 载荷（getdents.c 直接填 m_lc_vfs_readwrite），
-    /// 应答 = 实读字节数。
+    /// getdents reuses the read/write payload (getdents.c fills
+    /// m_lc_vfs_readwrite directly); the reply = the bytes actually read.
     #[test]
     fn test_getdents_wire_roundtrip() {
         let mut transport = CannedTransport::new();
@@ -1932,12 +1955,14 @@ mod tests {
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, VFS_CALL_GETDENTS);
         assert_eq!(sent.m_type, 0x11D);
-        // SAFETY(test): 读回 fd/buf/len lane（与 ReadWritePayload 同布局）。
+        // SAFETY(test): read back the fd/buf/len lanes (the same layout as
+        // ReadWritePayload).
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 6);
         assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0xC000);
         assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 512);
-        // 保留计数器恒零（read.c:282-312 对非零 EINVAL）。
+        // The reserved counter stays zero (read.c:282-312 returns EINVAL on a
+        // non-zero value).
         assert_eq!(u64::from_ne_bytes(raw[24..32].try_into().unwrap()), 0);
     }
 }
@@ -1948,8 +1973,8 @@ mod payload_layout_tests {
     use crate::ipc::CannedTransport;
     use core::mem::{offset_of, size_of};
 
-    /// E-MINTYPES-RUNTIME 第②步：VFS 族五个 payload 的 56 字节/偏移断言
-    /// （C ipc.h:795-803 readwrite、close、seek、create——C 字段顺序）。
+    /// The 56-byte/offset assertions for the five VFS-family payloads
+    /// (C ipc.h:795-803 readwrite, close, seek, create — C field order).
     #[test]
     fn test_readwrite_payload_layout() {
         assert_eq!(size_of::<ReadWritePayload>(), 56);
@@ -1961,7 +1986,8 @@ mod payload_layout_tests {
 
     #[test]
     fn test_seek_payload_layout() {
-        // C: mess_lc_vfs_seek（offset 头 + whence）——C 字段顺序逐域。
+        // C: mess_lc_vfs_seek (offset first, then whence) — field by field in
+        // C order.
         assert_eq!(size_of::<SeekPayload>(), 56);
         assert_eq!(offset_of!(SeekPayload, offset), 0);
     }
@@ -1974,7 +2000,8 @@ mod payload_layout_tests {
 
     #[test]
     fn test_time_val_layout() {
-        // C: struct timespec 的 seconds/nsec 双 64 位形态（LP64 16B）。
+        // C: struct timespec's seconds/nsec as two 64-bit values (16B under
+        // LP64).
         assert_eq!(size_of::<TimeVal>(), 16);
         assert_eq!(offset_of!(TimeVal, seconds), 0);
         assert_eq!(offset_of!(TimeVal, microseconds), 8);
@@ -1995,8 +2022,9 @@ mod open_path_tests {
         message
     }
 
-    /// open-existing 载荷布局见证：LP64 判例下总长 56（C i386 buf[40]
-    /// 收缩为 32），字段序 name/len/flags/mode/buf。
+    /// open-existing payload layout witness: 56 bytes total under the LP64
+    /// ruling (C's i386 buf[40] shrinks to 32), field order
+    /// name/len/flags/mode/buf.
     #[test]
     fn test_open_path_payload_layout() {
         assert_eq!(size_of::<OpenPathPayload>(), 56);
@@ -2007,12 +2035,14 @@ mod open_path_tests {
         assert_eq!(offset_of!(OpenPathPayload, buf), 24);
     }
 
-    /// 内联边界与指针车道分界：恰好 32（含 NUL）内联拷贝；33 起不再读
-    /// 调用方缓冲，buf 保持零、地址/长度 lane 照发（C loadname.c:15-18
-    /// 的 strcpy 跳过同型；服务端 fetch 见 utility.c:31-32）。
+    /// The inline boundary and the pointer-lane split: exactly 32 (NUL
+    /// included) is copied inline; from 33 on the caller's buffer is not read,
+    /// buf stays zero, and the address/length lanes are still sent (the same
+    /// shape as the skipped strcpy of C loadname.c:15-18; the server-side fetch
+    /// is at utility.c:31-32).
     #[test]
     fn test_open_path_inline_boundary_and_pointer_lane() {
-        // 恰好 32（含 NUL）：可内联。
+        // Exactly 32 (NUL included): inlineable.
         assert_eq!(31, OPEN_PATH_INLINE_MAX - 1);
         let mut inline_transport = CannedTransport::new();
         inline_transport.reply_sendrec(Ok(reply_with_type(3)));
@@ -2027,7 +2057,8 @@ mod open_path_tests {
         let raw = unsafe { &sent[0].1.m_u.raw };
         assert_eq!(&raw[24..24 + short.len()], short, "内联支拷贝路径字节");
 
-        // 超界 33：不发 ENAMETOOLONG，照发往返——buf 零、lane 在。
+        // Over the boundary at 33: no ENAMETOOLONG is sent, the round trip
+        // still happens — buf zero, lanes present.
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(4)));
         let long = [b'a'; OPEN_PATH_INLINE_MAX + 1];
@@ -2059,8 +2090,8 @@ mod dup2_wire_tests {
         message
     }
 
-    /// C 绝对值 pin：F_DUPFD=0 / F_GETFL=3（sys/sys/fcntl.h:178/181）、
-    /// OPEN_MAX=255（syslimits.h:38）。
+    /// C absolute-value pin: F_DUPFD=0 / F_GETFL=3 (sys/sys/fcntl.h:178/181),
+    /// OPEN_MAX=255 (syslimits.h:38).
     #[test]
     fn test_dup2_constants_match_c() {
         assert_eq!(F_DUPFD, 0);
@@ -2068,8 +2099,8 @@ mod dup2_wire_tests {
         assert_eq!(OPEN_MAX, 255);
     }
 
-    /// 全序：F_GETFL 探测 → close(fd2) → F_DUPFD(fd, fd2)，回复即新
-    /// 描述符（dup2.c:22-30）。
+    /// Full order: F_GETFL probe → close(fd2) → F_DUPFD(fd, fd2), and the reply
+    /// is the new descriptor (dup2.c:22-30).
     #[test]
     fn test_dup2_probes_closes_and_duplicates() {
         let mut transport = CannedTransport::new();
@@ -2083,9 +2114,10 @@ mod dup2_wire_tests {
         assert_eq!(sent[2].1.m_type, VFS_CALL_FCNTL);
     }
 
-    /// 同槽短路：fd == fd2 在探测之后直接成功——close 与 F_DUPFD
-    /// 都不发生（探测本身在前，dup2.c:22-29）；越界目标零回合 EBADF
-    /// （dup2.c:17-19）。
+    /// Same-slot short circuit: fd == fd2 succeeds right after the probe —
+    /// neither close nor F_DUPFD happens (the probe itself comes first,
+    /// dup2.c:22-29); an out-of-range target is EBADF with zero round trips
+    /// (dup2.c:17-19).
     #[test]
     fn test_dup2_same_fd_short_circuits_and_bounds_reject() {
         let mut transport = CannedTransport::new();
@@ -2097,7 +2129,8 @@ mod dup2_wire_tests {
         assert_eq!(transport.sent.borrow().len(), 1, "bounds rejects add no round trips");
     }
 
-    /// 源描述符失效：F_GETFL 的错误原样上行（dup2.c:22-26），不发后续。
+    /// Source descriptor invalid: F_GETFL's error travels up unchanged
+    /// (dup2.c:22-26) and nothing further is sent.
     #[test]
     fn test_dup2_source_probe_failure_travels() {
         let mut transport = CannedTransport::new();
@@ -2113,12 +2146,13 @@ mod pipe_wire_tests {
     use crate::ipc::CannedTransport;
     use minix_types::Message;
 
-    /// OK 回复携带 `mess_vfs_lc_fdpair { int fd0; int fd1; }`（ipc.h:2198-2203）
-    /// 于负载区前两字（服务端 main_loop.rs 的 Pipe2 收尾同布局写入）。
+    /// The OK reply carries `mess_vfs_lc_fdpair { int fd0; int fd1; }`
+    /// (ipc.h:2198-2203) in the first two payload words (the server's Pipe2
+    /// wrap-up in main_loop.rs writes the same layout).
     fn reply_fdpair(fd0: i32, fd1: i32) -> Message {
         let mut message = Message::zeroed();
         message.m_type = 0;
-        // SAFETY: test-only canned reply, fdpair 前两字。
+        // SAFETY: test-only canned reply, the first two fdpair words.
         unsafe {
             message.m_u.raw[0..4].copy_from_slice(&fd0.to_le_bytes());
             message.m_u.raw[4..8].copy_from_slice(&fd1.to_le_bytes());
@@ -2132,9 +2166,10 @@ mod pipe_wire_tests {
         message
     }
 
-    /// 请求腿：flags 同时写 @0 与 @8（C libc 双写向后兼容，pipe.c:18-19），
-    /// 调用号 VFS_PIPE2 = VFS_BASE + 26（callnr.h:98），目的端 VFS。
-    /// 回复腿：fd 对从 fdpair 读出。
+    /// Request leg: flags are written at both @0 and @8 (C libc writes both for
+    /// backward compatibility, pipe.c:18-19), the call number is
+    /// VFS_PIPE2 = VFS_BASE + 26 (callnr.h:98), destination VFS.
+    /// Reply leg: the fd pair is read from fdpair.
     #[test]
     fn test_pipe2_wire_roundtrip_both_flag_fields() {
         let mut transport = CannedTransport::new();
@@ -2151,7 +2186,8 @@ mod pipe_wire_tests {
         assert_eq!(&raw[8..12], &0o2000000i32.to_le_bytes(), "oflags@8 同值双写");
     }
 
-    /// `pipe()` 顶层形态 = `pipe2(_, 0)`（C pipe.c:30-33）：flags 两字段皆零。
+    /// The top-level `pipe()` form = `pipe2(_, 0)` (C pipe.c:30-33): both flag
+    /// fields are zero.
     #[test]
     fn test_pipe2_zero_flags_matches_pipe_shim() {
         let mut transport = CannedTransport::new();
@@ -2163,8 +2199,9 @@ mod pipe_wire_tests {
         assert_eq!(&raw[0..12], &[0u8; 12]);
     }
 
-    /// 服务端错误（如 PFS 未挂载时的 EIO，syscalls.rs Pipe2 臂 fail-closed）
-    /// 以负 m_type 回来，fd 对不被读出。
+    /// A server error (e.g. EIO when PFS is not mounted, the fail-closed Pipe2
+    /// arm in syscalls.rs) comes back as a negative m_type, and the fd pair is
+    /// not read out.
     #[test]
     fn test_pipe2_error_lane_returns_errno() {
         let mut transport = CannedTransport::new();
@@ -2186,14 +2223,15 @@ mod chroot_wire_tests {
         message
     }
 
-    /// C 绝对值 pin：VFS_CHROOT = VFS_BASE + 28（callnr.h:100）。
+    /// C absolute-value pin: VFS_CHROOT = VFS_BASE + 28 (callnr.h:100).
     #[test]
     fn test_chroot_call_number_matches_c() {
         assert_eq!(VFS_CALL_CHROOT, 0x100 + 28);
     }
 
-    /// 载荷形态沿 open_existing：地址@0、长度@8、flags/mode 零、内联
-    /// 路径字节 @24（chroot.c:15 loadname 内联语义的载荷等价物）。
+    /// The payload shape follows open_existing: address@0, length@8,
+    /// flags/mode zero, inline path bytes @24 (the payload equivalent of the
+    /// loadname inline semantics of chroot.c:15).
     #[test]
     fn test_chroot_payload_carries_inline_path() {
         let mut transport = CannedTransport::new();
@@ -2211,8 +2249,10 @@ mod chroot_wire_tests {
         assert_eq!(&raw[24..24 + path.len()], path);
     }
 
-    /// 越界路径与 open 同构：超内联不本地拒绝，buf 保持零、地址/长度
-    /// lane 照发（指针车道，服务端 fetch）；0 长仍零回合拒绝。
+    /// An over-boundary path behaves like open: an over-inline name is not
+    /// rejected locally, buf stays zero, and the address/length lanes are still
+    /// sent (the pointer lane, server-side fetch); a 0 length is still rejected
+    /// with zero round trips.
     #[test]
     fn test_chroot_long_path_travels_by_pointer_lane() {
         let mut transport = CannedTransport::new();
@@ -2253,13 +2293,15 @@ mod fileop_wire_tests {
         transport.sent.borrow().last().cloned().unwrap()
     }
 
-    /// 请求腿的 lane 读出（测试断言专用，与 chroot wire 测试同法）。
+    /// Lane read-back of the request leg (test assertions only, the same method
+    /// as the chroot wire test).
     fn raw_lane(msg: &Message, range: core::ops::Range<usize>) -> Vec<u8> {
         // SAFETY: test-only read-back of the outgoing wire bytes.
         unsafe { msg.m_u.raw[range].to_vec() }
     }
 
-    /// C 绝对值 pin：16 个调用号对 `callnr.h:78-106` 逐一定死。
+    /// C absolute-value pin: the 16 call numbers are fixed one by one against
+    /// `callnr.h:78-106`.
     #[test]
     fn test_fileop_call_numbers_match_c() {
         assert_eq!(VFS_CALL_LINK, 0x100 + 6);
@@ -2280,8 +2322,9 @@ mod fileop_wire_tests {
         assert_eq!(VFS_CALL_FTRUNCATE, 0x100 + 34);
     }
 
-    /// mkdir 请求腿全 lane：address@0、len@8、flags@16 零、mode@20、
-    /// 内联字节@24（C mkdir.c：memset 后只经 mode 与 loadname）。
+    /// Every lane of the mkdir request leg: address@0, len@8, flags@16 zero,
+    /// mode@20, inline bytes@24 (C mkdir.c: after the memset only mode and
+    /// loadname write).
     #[test]
     fn test_mkdir_wire_lanes_and_inline_path() {
         let mut transport = CannedTransport::new();
@@ -2298,8 +2341,9 @@ mod fileop_wire_tests {
         assert_eq!(raw_lane(&sent, 24..24 + path.len()), path.to_vec(), "inline@24");
     }
 
-    /// unlink/rmdir/chdir 共用同一形状，mode lane 也保持零（C 侧只
-    /// memset + loadname）。错误经负 m_type 上行。
+    /// unlink/rmdir/chdir share the same shape, and the mode lane also stays
+    /// zero (C only does memset + loadname). Errors travel up as a negative
+    /// m_type.
     #[test]
     fn test_path_only_calls_carry_zero_mode_and_error_lane_travels() {
         let mut transport = CannedTransport::new();
@@ -2315,13 +2359,13 @@ mod fileop_wire_tests {
         for (_, msg) in transport.sent.borrow().iter() {
             assert_eq!(raw_lane(msg, 16..24), [0; 8], "flags/mode 全零");
         }
-        // 错误腿：ENOENT 以负 m_type 回来。
+        // Error leg: ENOENT comes back as a negative m_type.
         transport.reply_sendrec(Ok(reply_with_type(-minix_types::ENOENT)));
         assert_eq!(unlink_via(&transport, path.as_ptr() as u64, path.len()), Err(Errno::ENOENT));
     }
 
-    /// chmod 与 access 复用 mode lane：chmod 传新权限位，access 传
-    /// amode（C 两文件同写 `m_lc_vfs_path.mode`）。
+    /// chmod and access reuse the mode lane: chmod passes the new permission
+    /// bits, access passes amode (both C files write `m_lc_vfs_path.mode`).
     #[test]
     fn test_chmod_and_access_share_mode_lane() {
         let mut transport = CannedTransport::new();
@@ -2336,9 +2380,11 @@ mod fileop_wire_tests {
         assert_eq!(sent[1].1.m_type, VFS_CALL_ACCESS);
     }
 
-    /// 内联族超长走指针车道：33 字节起不内联、lane 照发（服务端 fetch，
-    /// utility.c:31-32）；mode lane 在超长支也保持（mkdir 的 0o700 在）；
-    /// 0 长仍零回合拒绝（本面 API 契约，C strlen+1 不可达）。
+    /// In the inline family an over-long path takes the pointer lane: from 33
+    /// bytes on it is not inlined and the lanes are still sent (server-side
+    /// fetch, utility.c:31-32); the mode lane survives on the over-long arm too
+    /// (mkdir's 0o700 is there); a 0 length is still rejected with zero round
+    /// trips (this face's API contract; C's strlen+1 can never be 0).
     #[test]
     fn test_path_family_long_path_travels_by_pointer_lane() {
         let mut transport = CannedTransport::new();
@@ -2368,8 +2414,9 @@ mod fileop_wire_tests {
         assert!(quiet.sent.borrow().is_empty(), "0 长零回合拒绝");
     }
 
-    /// link 四 lane：name1@0、name2@8、len1@16、len2@24（地址制，无
-    /// 内联字节；symlink/rename 共用 helper，各以调用号区分）。
+    /// link's four lanes: name1@0, name2@8, len1@16, len2@24 (by address, with
+    /// no inline bytes; symlink/rename share the helper and are told apart by
+    /// call number).
     #[test]
     fn test_link_family_carries_both_names_by_address() {
         let mut transport = CannedTransport::new();
@@ -2406,8 +2453,8 @@ mod fileop_wire_tests {
         }
     }
 
-    /// chown：name@0、len@8、fd@16 零（path 半按 C memset 不写）、
-    /// owner@20、group@24。
+    /// chown: name@0, len@8, fd@16 zero (the path half writes nothing, per C's
+    /// memset), owner@20, group@24.
     #[test]
     fn test_chown_wire_lanes() {
         let mut transport = CannedTransport::new();
@@ -2423,8 +2470,8 @@ mod fileop_wire_tests {
         assert_eq!(raw_lane(&sent, 24..28), 1001u32.to_le_bytes(), "group@24");
     }
 
-    /// truncate：offset@0、fd@8 零（path 半）、name@16、len@24；
-    /// ftruncate：offset@0、fd@8。
+    /// truncate: offset@0, fd@8 zero (the path half), name@16, len@24;
+    /// ftruncate: offset@0, fd@8.
     #[test]
     fn test_truncate_family_wire_lanes() {
         let mut transport = CannedTransport::new();
@@ -2451,7 +2498,7 @@ mod fileop_wire_tests {
         assert_eq!(f[8..12].to_vec(), 7i32.to_le_bytes(), "fd@8");
     }
 
-    /// fchdir 只有一个 int fd lane @0（`ipc.h:640-644`）。
+    /// fchdir has only one int fd lane @0 (`ipc.h:640-644`).
     #[test]
     fn test_fchdir_wire_lane() {
         let mut transport = CannedTransport::new();
@@ -2463,8 +2510,9 @@ mod fileop_wire_tests {
         assert_eq!(raw_lane(&sent, 4..56), vec![0; 52], "其余保持零");
     }
 
-    /// umask：mask@0（4 字节 lane）；旧 mask 经回复 m_type 值通道带回
-    /// （服务端 `Ok(old as i32)`，protect.c:186-190 对位）。
+    /// umask: mask@0 (a 4-byte lane); the old mask comes back through the
+    /// reply's m_type value channel (the server's `Ok(old as i32)`, the
+    /// counterpart of protect.c:186-190).
     #[test]
     fn test_umask_mask_lane_and_old_value_reply() {
         let mut transport = CannedTransport::new();
@@ -2475,10 +2523,11 @@ mod fileop_wire_tests {
         assert_eq!(raw_lane(&sent, 0..4), 0o077u32.to_le_bytes(), "mask@0");
     }
 
-    /// readlink：name@0、namelen@8、buf@16、bufsize@24 四 lane，@32 起
-    /// 是 C padding 保持零（wire 无内联字段，C readlink.c:17-20 同形）；
-    /// 写字节数经回复 m_type 带回；路径长度无客户端上限（服务端
-    /// `do_rdlink` 恒 fetch_name，link.c:494）。
+    /// readlink: the four lanes name@0, namelen@8, buf@16, bufsize@24, with
+    /// C padding from @32 staying zero (the wire has no inline field, the same
+    /// shape as C readlink.c:17-20); the byte count comes back through the
+    /// reply's m_type; the path length has no client-side limit (the server's
+    /// `do_rdlink` always calls fetch_name, link.c:494).
     #[test]
     fn test_readlink_wire_and_value_reply() {
         let mut transport = CannedTransport::new();
@@ -2505,7 +2554,8 @@ mod fileop_wire_tests {
             vec![0; 24],
             "padding@32 保持零（无内联窗）"
         );
-        // 长名照发（此前 24 字节自造窗已拆）。
+        // A long name is still sent (the earlier invented 24-byte window has
+        // been removed).
         transport.reply_sendrec(Ok(reply_with_type(0)));
         let long = [b'a'; 40];
         assert_eq!(
@@ -2616,17 +2666,17 @@ mod time_sync_wire_tests {
         let transport = CannedTransport::new();
         let abs = b"/tmp/f\0";
         let rel = b"tmp/f\0";
-        // 空名 → ENOENT（C utimensat.c:32-35）。
+        // Empty name → ENOENT (C utimensat.c:32-35).
         assert_eq!(
             utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, 1, 0, 0, 0, 0, 0),
             Err(Errno::ENOENT)
         );
-        // 相对名 + dirfd != AT_FDCWD → EINVAL（C :36-39）。
+        // Relative name + dirfd != AT_FDCWD → EINVAL (C :36-39).
         assert_eq!(
             utimensat_via(&transport, 7, rel.as_ptr() as u64, rel.len(), 0, 0, 0, 0, 0),
             Err(Errno::EINVAL)
         );
-        // flags 超界 → EINVAL（C :40-42）。
+        // flags out of range → EINVAL (C :40-42).
         assert_eq!(
             utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, abs.len(), 0, 0, 0, 0, 70000),
             Err(Errno::EINVAL)
@@ -2635,7 +2685,7 @@ mod time_sync_wire_tests {
             utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, abs.len(), 0, 0, 0, 0, -1),
             Err(Errno::EINVAL)
         );
-        // 全部被挡：零往返。
+        // Everything is stopped: zero round trips.
         assert!(transport.sent.borrow().is_empty());
     }
 

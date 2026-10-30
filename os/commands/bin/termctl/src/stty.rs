@@ -41,8 +41,8 @@ pub enum SttyOp<'a> {
     ControlChar(u8, u8),
     /// Set (`true`) or clear (`false`) the named flag in its group.
     Flag(FlagGroup, &'a str, bool),
-    /// A whole `gfmt1:...` grep-form operand (C `stty.c:143-146` 的
-    /// `strncmp` 前缀支路，交给 [`grep_read`] 落值).
+    /// A whole `gfmt1:...` grep-form operand (C `stty.c:143-146`'s
+    /// `strncmp` prefix branch, handed to [`grep_read`] to land the values).
     Grep(&'a str),
 }
 
@@ -97,9 +97,11 @@ pub fn parse_args<'a>(args: &[&'a str]) -> Result<([SttyOp<'a>; 16], usize), Ter
     while index < args.len() {
         let word = args[index];
         if let Some(rest) = word.strip_prefix("gfmt1") {
-            // C 的 main 循环先 `strncmp("gfmt1")` 命中即 gread（stty.c:143-146），
-            // 不过关键字表。这里在解析侧做语法预验（坏操作数在解析时报警，
-            // 与 C 边读边 errx 的时机等值），apply 侧再落值。
+            // C's main loop does `strncmp("gfmt1")` first and goes to gread on
+            // a hit (stty.c:143-146), bypassing the keyword table. Here the
+            // syntax check runs on the parse side (a bad operand is reported
+            // at parse time, equivalent to C's errx timing while reading);
+            // the apply side then lands the values.
             grep_read(&mut minix_sys::Termios::new(), rest)?;
             push(&mut ops, &mut count, SttyOp::Grep(word))?;
             index += 1;
@@ -137,8 +139,9 @@ pub fn parse_args<'a>(args: &[&'a str]) -> Result<([SttyOp<'a>; 16], usize), Ter
     Ok((ops, count))
 }
 
-/// (name, group, bit) 三元组：`FLAGS` 里每个字的落位（`termios.h`
-/// 各旗标 define；`cs8` 特殊——置位时先清 `CSIZE` 掩码再上 `CS8`）。
+/// (name, group, bit) triples: where each word in `FLAGS` lands (the flag
+/// defines of `termios.h`; `cs8` is special — setting it first clears the
+/// `CSIZE` mask, then sets `CS8`).
 const FLAG_BITS: [(&str, FlagGroup, u32); 16] = [
     ("parenb", FlagGroup::Control, minix_sys::PARENB),
     ("parodd", FlagGroup::Control, minix_sys::PARODD),
@@ -158,12 +161,14 @@ const FLAG_BITS: [(&str, FlagGroup, u32); 16] = [
     ("onlcr", FlagGroup::Output, minix_sys::ONLCR),
 ];
 
-/// Apply parsed operations to a terminal attribute record (`modeset`,
-/// `modes.c:208` 的搜索次序在解析层已定，这里只做落位）。
+/// Apply parsed operations to a terminal attribute record (`modeset`; the
+/// search order of `modes.c:208` is already settled in the parse layer, so
+/// this only lands values).
 ///
-/// `cs8` 的置位先清 `CSIZE` 掩码（字符大小是域不是位）；清除则只清
-/// `CS8` 位值。速度同时写两个方向（C 的 `cfsetispeed`/`cfsetospeed`
-/// 成对面）。
+/// Setting `cs8` clears the `CSIZE` mask first (character size is a field,
+/// not a bit); clearing it clears only the `CS8` bit value. Speeds are
+/// written to both directions at once (C's `cfsetispeed`/`cfsetospeed` come
+/// as a pair).
 pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_sys::Termios) {
     for op in &ops[..count.min(ops.len())] {
         match *op {
@@ -177,10 +182,12 @@ pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_sys::Termios) {
                 }
             }
             SttyOp::Grep(word) => {
-                // 解析侧已验过语法，这里不可能再失败；坏输入在 C 里
-                // errx 直接终止，报错时机归调用层的 parse。
+                // The parse side already validated the syntax, so this
+                // cannot fail again; bad input terminates immediately with
+                // errx in C, so the reporting time belongs to the caller's
+                // parse.
                 if let Some(rest) = word.strip_prefix("gfmt1") {
-                    //[SD19-gate] SD-19: grep_read 辅助打印，失败丢一行输出
+                    //[SD19-gate] grep_read auxiliary print: a failure drops one output line
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = grep_read(t, rest);
                 }
@@ -198,7 +205,8 @@ pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_sys::Termios) {
                     FlagGroup::Output => &mut t.c_oflag,
                 };
                 if name == "cs8" && set {
-                    // 置八位：清大小域再上 CS8（termios.h:131-135）。
+                    // Set the eighth bit: clear the size field, then set
+                    // CS8 (termios.h:131-135).
                     *word &= !minix_sys::CSIZE;
                     *word |= minix_sys::CS8;
                 } else if set {
@@ -211,11 +219,13 @@ pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_sys::Termios) {
     }
 }
 
-/// `-a` 显示面：速度行、四组旗标（清除的名字带负号）、控制字符行。
+/// The `-a` display face: the speed line, the four flag groups (cleared names
+/// carry a minus), and the control-character line.
 ///
-/// C 的 `stty -a` 还有 rows/columns 与 line discipline 两个域——本模型
-/// 的属性记录没有这两个面，显示里省略（13-terminal-termios.md §5 声明）。
-/// 旗标清单就是决定半认识的十六个字。
+/// C's `stty -a` also has rows/columns and line discipline fields — this
+/// model's attribute record has no such faces, so the display omits them (as
+/// declared in 13-terminal-termios.md §5). The flag list is exactly the
+/// sixteen words the deciding half knows.
 pub fn display_a(t: &minix_sys::Termios, out: &mut [u8]) -> Result<usize, TermError> {
     let mut at = 0usize;
     let put = |out: &mut [u8], at: &mut usize, bytes: &[u8]| -> Result<(), TermError> {
@@ -250,8 +260,9 @@ pub fn display_a(t: &minix_sys::Termios, out: &mut [u8]) -> Result<usize, TermEr
     number(out, &mut at, t.c_ospeed as u32)?;
     put(out, &mut at, b" baud;\n")?;
 
-    // 控制字符行：恒显的七个槽位（intr/quit/erase/kill/eof/eol 对齐
-    // C 的显示序；undef 打 `<undef>`）。
+    // The control-character line: the seven always-visible slots
+    // (intr/quit/erase/kill/eof/eol in C's display order; disabled ones print
+    // `<undef>`).
     let named = [
         ("intr = ", VINTR_SLOT),
         ("quit = ", VQUIT_SLOT),
@@ -267,7 +278,8 @@ pub fn display_a(t: &minix_sys::Termios, out: &mut [u8]) -> Result<usize, TermEr
         put(out, &mut at, label.as_bytes())?;
         let value = t.c_cc[*slot];
         if value == crate::cchar::DISABLED || value == 0 {
-            // 0 即 `_POSIX_VDISABLE`（Minix 的禁用值）——同 `<undef>`。
+            // 0 is `_POSIX_VDISABLE` (Minix's disable value) — same as
+            // `<undef>`.
             put(out, &mut at, b"<undef>")?;
         } else {
             put(out, &mut at, b"^")?;
@@ -281,7 +293,8 @@ pub fn display_a(t: &minix_sys::Termios, out: &mut [u8]) -> Result<usize, TermEr
     }
     put(out, &mut at, b";\n")?;
 
-    // 四组旗标：置位裸名、清除带负号（C `stty -a` 的分组打印序）。
+    // The four flag groups: set bits print the bare name, cleared ones carry
+    // a minus (C `stty -a`'s grouping order).
     for (group, gap) in [
         (FlagGroup::Control, true),
         (FlagGroup::Input, false),
@@ -317,11 +330,13 @@ pub fn display_a(t: &minix_sys::Termios, out: &mut [u8]) -> Result<usize, TermEr
     Ok(at)
 }
 
-/// `-g` 单行格式输出——终端属性的机器可读形态。
+/// `-g` single-line format output — the machine-readable form of the
+/// terminal attributes.
 ///
-/// C: `gprint` (`minix3/bin/stty/gfmt.c:61-71`)：四个旗标字按小写十六进制
-/// 打印（printf `%x`：无前导零，0 打 `0`），随后按 `cchars1` 表
-/// (`cchar.c:59-79`) 的 18 个主名同格式逐一打印，行尾两个速度按十进制。
+/// C: `gprint` (`minix3/bin/stty/gfmt.c:61-71`): the four flag words print as
+/// lowercase hex (printf `%x`: no leading zeros, 0 prints as `0`), then the 18
+/// primary names of the `cchars1` table (`cchar.c:59-79`) print one by one in
+/// the same format, and the line ends with the two speeds in decimal.
 pub fn grep_print(t: &minix_sys::Termios, out: &mut [u8]) -> Result<usize, TermError> {
     let mut at = 0usize;
     put(out, &mut at, b"gfmt1:cflag=")?;
@@ -333,8 +348,9 @@ pub fn grep_print(t: &minix_sys::Termios, out: &mut [u8]) -> Result<usize, TermE
     put(out, &mut at, b":oflag=")?;
     hex(out, &mut at, t.c_oflag)?;
     put(out, &mut at, b":")?;
-    // 前 18 项是 cchars1 主名；表尾三项（brk/flush/rprnt）是旧别名，
-    // C 的 cchars1 里没有，不打印。
+    // The first 18 entries are the cchars1 primary names; the table's last
+    // three (brk/flush/rprnt) are old aliases that C's cchars1 does not have,
+    // so they are not printed.
     for (name, slot, _) in crate::cchar::CONTROL_CHARS.iter().take(18) {
         put(out, &mut at, name.as_bytes())?;
         put(out, &mut at, b"=")?;
@@ -349,18 +365,23 @@ pub fn grep_print(t: &minix_sys::Termios, out: &mut [u8]) -> Result<usize, TermE
     Ok(at)
 }
 
-/// `gfmt1:...` 操作数输入面——从 grep 格式回填旗标与控制字符。
+/// The `gfmt1:...` operand input face — refills flags and control characters
+/// from the grep format.
 ///
-/// C: `gread` (`minix3/bin/stty/gfmt.c:73-131`)，逐段对位：`gfmt1` 前缀已
-/// 由调用方剥去，余文必须含冒号（C `strchr`），冒号后按 `name=value`
-/// 冒号分段。除 `min`/`time`（VMIN/VTIME 槽，C `sscanf` `%ld` 十进制）
-/// 外都按十六进制（`%lx`）取最长合法前缀；不认识的名称报错。
+/// C: `gread` (`minix3/bin/stty/gfmt.c:73-131`), segment for segment: the
+/// caller has already stripped the `gfmt1` prefix, the remainder must contain
+/// a colon (C `strchr`), and after the colon segments are `name=value` split
+/// by colons. Everything except `min`/`time` (the VMIN/VTIME slots, C
+/// `sscanf` `%ld` decimal) is read as hex (`%lx`, longest legal prefix); an
+/// unknown name is an error.
 ///
-/// 两处对 C 事实的等值复刻，测试钉死：C 的 `ispeed`/`ospeed` 名称分支
-/// 在 `#ifdef BSD4_4` 内而 minix3 未定义该宏（全树 grep 零命中），所以
-/// `-g` 自己行尾打印的两段在输入侧按"不认识名称"拒绝——C 的
-/// `stty $(stty -g)` 往返在这台机器上本就不成立。C 的 `sscanf` 在无
-/// 合法数字时留下未初始化变量（未定义行为），这里统一报错。
+/// Two equivalences to C facts, pinned by tests: C's `ispeed`/`ospeed` name
+/// branches sit inside `#ifdef BSD4_4`, and minix3 does not define that macro
+/// (a whole-tree grep finds nothing), so the two segments `-g` prints at the
+/// end of its own line are rejected on the input side as unknown names — C's
+/// `stty $(stty -g)` round trip simply does not hold on this machine. And
+/// C's `sscanf` leaves the variable uninitialized when there is no legal
+/// number (undefined behavior); here it is uniformly an error.
 pub fn grep_read(t: &mut minix_sys::Termios, rest: &str) -> Result<(), TermError> {
     let Some(start) = rest.find(':').map(|i| &rest[i + 1..]) else {
         return Err(TermError::InvalidArgument);
@@ -404,7 +425,8 @@ pub fn grep_read(t: &mut minix_sys::Termios, rest: &str) -> Result<(), TermError
     Ok(())
 }
 
-/// 向缓冲追加字节（越界即整行报错，同 `display_a` 的失败语义）。
+/// Append bytes to the buffer (an overflow fails the whole line, the same
+/// failure semantics as `display_a`).
 fn put(out: &mut [u8], at: &mut usize, bytes: &[u8]) -> Result<(), TermError> {
     if *at + bytes.len() > out.len() {
         return Err(TermError::InvalidArgument);
@@ -414,7 +436,8 @@ fn put(out: &mut [u8], at: &mut usize, bytes: &[u8]) -> Result<(), TermError> {
     Ok(())
 }
 
-/// C printf `%x` 形态：小写十六进制、无前导零、0 打单个 `0`。
+/// C printf `%x` shape: lowercase hex, no leading zeros, 0 prints as a
+/// single `0`.
 fn hex(out: &mut [u8], at: &mut usize, value: u32) -> Result<(), TermError> {
     if value == 0 {
         return put(out, at, b"0");
@@ -435,7 +458,8 @@ fn hex(out: &mut [u8], at: &mut usize, value: u32) -> Result<(), TermError> {
     Ok(())
 }
 
-/// 十进制整数（C printf `%d` 形态，同 `display_a` 的速度打印）。
+/// A decimal integer (C printf `%d` shape, same as `display_a`'s speed
+/// printing).
 fn number(out: &mut [u8], at: &mut usize, value: u32) -> Result<(), TermError> {
     if value == 0 {
         return put(out, at, b"0");
@@ -455,8 +479,10 @@ fn number(out: &mut [u8], at: &mut usize, value: u32) -> Result<(), TermError> {
     Ok(())
 }
 
-/// C `sscanf` `%lx` 的可辩护近亲：跳过空白与可选 `0x` 前缀，取最长合法
-/// 十六进制前缀（溢出按 wrapping 折算，C 为未定义行为），无合法数字报错。
+/// A defensible close relative of C `sscanf` `%lx`: skips whitespace and an
+/// optional `0x` prefix, takes the longest legal hex prefix (overflow is
+/// folded as wrapping, where C leaves it undefined), and errors when there is
+/// no legal digit.
 fn parse_hex(text: &str) -> Result<u64, TermError> {
     let body = text.trim_start();
     let body = body
@@ -477,7 +503,7 @@ fn parse_hex(text: &str) -> Result<u64, TermError> {
     }
 }
 
-/// C `sscanf` `%ld` 的同型面：最长十进制前缀。
+/// The same shape for C `sscanf` `%ld`: the longest decimal prefix.
 fn parse_dec(text: &str) -> Result<u64, TermError> {
     let body = text.trim_start();
     let mut acc = 0u64;
@@ -494,7 +520,8 @@ fn parse_dec(text: &str) -> Result<u64, TermError> {
     }
 }
 
-/// `CONTROL_CHARS` 表里的槽位常量名对齐（`termios.h:44-74` 的槽位号）。
+/// Slot constant names aligned with the `CONTROL_CHARS` table (the slot
+/// numbers of `termios.h:44-74`).
 const VINTR_SLOT: usize = 8;
 const VQUIT_SLOT: usize = 9;
 const VERASE_SLOT: usize = 3;
@@ -547,8 +574,10 @@ mod tests {
 
     #[test]
     fn test_grep_print_bytes_exact() {
-        // C gprint 的逐字节形态（gfmt.c:66-70）：四旗标 %x、18 段控制字符、
-        // 十进制速度收尾。构造值全部取非零单 nibble 以上，防前导零漂移。
+        // The byte-exact shape of C gprint (gfmt.c:66-70): four flags as %x,
+        // 18 control-character segments, then decimal speeds. Every
+        // constructed value is above a single non-zero nibble, preventing
+        // leading-zero drift.
         let mut t = minix_sys::Termios::new();
         t.c_cflag = 0x1c;
         t.c_iflag = 0x500;
@@ -573,7 +602,8 @@ mod tests {
 
     #[test]
     fn test_grep_read_flags_and_chars() {
-        // 四旗标 + 十六进制控制字符段 + min/time 十进制段（C %ld 支路）。
+        // Four flags + hex control-character segments + decimal min/time
+        // segments (C's %ld branch).
         let mut t = minix_sys::Termios::new();
         grep_read(
             &mut t,
@@ -591,7 +621,7 @@ mod tests {
 
     #[test]
     fn test_grep_read_min_decimal_not_hex() {
-        // C gread 对 min/time 用 %ld：`min=16` 落 16 而非 0x16=22。
+        // C gread uses %ld for min/time: `min=16` lands as 16, not 0x16=22.
         let mut t = minix_sys::Termios::new();
         grep_read(&mut t, ":min=16").unwrap();
         assert_eq!(t.c_cc[minix_sys::VMIN], 16);
@@ -599,8 +629,10 @@ mod tests {
 
     #[test]
     fn test_grep_read_rejects_ispeed_segment_as_c_does() {
-        // C !BSD4_4 事实（gfmt.c:100-121 的 ifdef 未启用）：-g 自己打印的
-        // ispeed/ospeed 段在输入侧按不认识名称拒绝——往返不成立于 C，照实复刻。
+        // A C fact under !BSD4_4 (the ifdef at gfmt.c:100-121 is not
+        // enabled): the ispeed/ospeed segments -g prints itself are rejected
+        // on the input side as unknown names — the round trip does not hold
+        // in C, and this mirrors it faithfully.
         let mut t = minix_sys::Termios::new();
         assert_eq!(
             grep_read(&mut t, ":cflag=1c:ispeed=9600:ospeed=9600:"),
@@ -611,7 +643,8 @@ mod tests {
 
     #[test]
     fn test_grep_read_rejects_malformed() {
-        // 无冒号 / 段无等号 / 非法名称 / 无合法数字：全部报错。
+        // No colon / a segment without `=` / an illegal name / no legal
+        // digits: all are errors.
         let mut t = minix_sys::Termios::new();
         assert!(grep_read(&mut t, "cflag=1c").is_err());
         assert!(grep_read(&mut t, ":cflag").is_err());
@@ -621,15 +654,17 @@ mod tests {
 
     #[test]
     fn test_grep_operand_flows_through_parse_and_apply() {
-        // `gfmt1:` 前缀词绕开关键字表成为 Grep op，与其他操作数按命令行
-        // 顺序混排生效（C 主循环逐操作数语义）。
+        // A `gfmt1:`-prefixed word bypasses the keyword table and becomes a
+        // Grep op, taking effect interleaved with the other operands in
+        // command-line order (C's main loop is per-operand).
         let (ops, count) = parse_args(&["echo", "gfmt1:lflag=8a:"]).unwrap();
         assert_eq!(count, 2);
         assert_eq!(ops[0], SttyOp::Flag(FlagGroup::Local, "echo", true));
         assert_eq!(ops[1], SttyOp::Grep("gfmt1:lflag=8a:"));
         let mut t = minix_sys::Termios::new();
         apply_ops(&ops, count, &mut t);
-        // echo 位先置（lflag |= 0x8），gfmt1 的 lflag=8a 随后整体覆盖。
+        // The echo bit is set first (lflag |= 0x8), then gfmt1's lflag=8a
+        // overwrites it wholesale.
         assert_eq!(t.c_lflag, 0x8a);
     }
 
@@ -644,15 +679,17 @@ mod tests {
     fn test_apply_flag_bits_and_cs8_domain() {
         use super::*;
         let mut t = minix_sys::Termios::new();
-        // 四组各一位：置位落对字，清除清对位。
+        // One bit in each of the four groups: setting lands in the right
+        // word, clearing clears the right bit.
         let (ops, count) = parse_args(&["echo", "-icrnl", "parenb", "-onlcr"]).unwrap();
         apply_ops(&ops, count, &mut t);
         assert!(t.c_lflag & minix_sys::ECHO != 0);
         assert!(t.c_iflag & minix_sys::ICRNL == 0);
         assert!(t.c_cflag & minix_sys::PARENB != 0);
         assert!(t.c_oflag & minix_sys::ONLCR == 0);
-        // cs8 置位：清 CSIZE 域再上 CS8（termios.h:131-135）。
-        t.c_cflag |= 0x100; // 人为置 CS7 位（CSIZE 域内）
+        // Setting cs8: clear the CSIZE field, then set CS8
+        // (termios.h:131-135).
+        t.c_cflag |= 0x100; // deliberately set the CS7 bit (inside the CSIZE field)
         let (ops, count) = parse_args(&["cs8"]).unwrap();
         apply_ops(&ops, count, &mut t);
         assert!(t.c_cflag & minix_sys::CSIZE == minix_sys::CS8);

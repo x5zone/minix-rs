@@ -14,8 +14,10 @@ use minix_types::{EBADF, EDONTREPLY, EINVAL, EIO, ENOTTY, ENXIO, ERESTART, OK};
 /// "not low seven bits", equals this base is a character request; see
 /// [`is_char_request`].
 ///
-/// [ARCH: 字符框架判定核单点] 常量权威住 `minix-types::types::device`
-/// （com.h 逐值钉值测试随库），本模块再导出保持既有名字。
+/// [ARCH: single decision point for the character framework] The constant's
+/// authority lives in `minix-types::types::device` (its per-value pinning tests
+/// against com.h ship with the library); this module re-exports it to keep the
+/// existing names.
 pub use minix_types::{
     CDEV_REQUEST_BASE, CDEV_REPLY_BASE, CDEV_NONBLOCK, CDEV_CLONED, CDEV_CTTY, SELECT_READ,
     SELECT_WRITE, SELECT_ERROR, SELECT_NOTIFY, ACCESS_READ, ACCESS_WRITE,
@@ -140,8 +142,9 @@ pub struct RequestId(pub u32);
 ///
 /// C: `open_devs` plus `next_open_devs_slot` plus the three helpers
 /// `clear_open_devs`, `is_open_dev`, `set_open_dev` (`chardriver.c:54-94`).
-/// The machinery lives in the shared driver runtime (`[ARCH: 驱动服务运行时
-/// 统一]`); the block framework's identical copy was consolidated there.
+/// The machinery lives in the shared driver runtime (`[ARCH: unified driver
+/// service runtime]`); the block framework's identical copy was consolidated
+/// there.
 pub type OpenDeviceSet = minix_driver_rt::core::OpenSet;
 
 /// Default result when a device provides no read or write callback.

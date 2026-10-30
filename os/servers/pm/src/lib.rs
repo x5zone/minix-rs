@@ -29,24 +29,27 @@
 //! - `ipc`: IPC message handling
 
 #![cfg_attr(not(test), no_std)]
-// SD-19 机械化门
+// Mechanical gate: the lint flags every unqualified `let _`.
 #![warn(clippy::let_underscore_must_use)]
 
 
-// alloc 宏（vec!/format!）crate 级引入：no_std 侧由 alloc 供给；
-// 测试态 std 形态下与 prelude 同名宏语义一致（init 双形态先例）。
+// alloc macros (vec!/format!) imported at crate level: alloc supplies them on
+// the no_std side; under the test-mode std form they keep the same semantics
+// as the prelude macros of the same name (dual-form init precedent).
 #[macro_use]
 extern crate alloc;
 
-// 诊断行输出（C 对位 printf，main.c 沿线的尽力而为打印）：
-// - 生产（no_std）：无 stderr，走内核 diagctl 通道（minix-sys
-//   sys_diagctl_write，rs verbose 行同款）；失败吞掉——尽力而为语义。
-// - 测试态（std 形态）：保持 eprintln!，宿主测试面行为不变。
+// Diagnostic line output (C counterpart is printf, the best-effort prints
+// along main.c):
+// - Production (no_std): no stderr; goes through the kernel diagctl channel
+//   (minix-sys sys_diagctl_write, same as the rs verbose lines); failures are
+//   swallowed — best-effort semantics.
+// - Test mode (std form): keeps eprintln!, host-test behavior unchanged.
 #[cfg(not(test))]
 macro_rules! pm_diag {
     ($($arg:tt)*) => {{
         let line = alloc::format!($($arg)*);
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::syscall::sys_diagctl_write(
             &minix_sys::syscall::DirectKernelCallTransport, &line);
@@ -75,10 +78,12 @@ pub mod timer;
 pub mod trace;
 pub mod wait;
 
-// 公共 API 面显式化（P2-4，2026-09-06）：原 `pub use ipc::*; pub use mproc::*;`
-// 把 ipc/ 与 mproc/ 两棵模块树压平到 crate 根——顶层与 mproc 下 5 对同名
-// 模块（fork/signal/wait/credentials/trace 的 logic 层与 state 层）在根上
-// 只暴露一份符号，使用者无法分辨来源。现在统一走完整模块路径
-// （`pm::ipc::*` / `pm::mproc::*` / `pm::init::*`），仅保留测试接缝的
-// 显式 re-export（内部 14 处 + 外部集成测试的既有惯例路径）。
+// Explicit public API surface: the former `pub use ipc::*; pub use mproc::*;`
+// flattened the two module trees ipc/ and mproc/ onto the crate root — five
+// pairs of same-named modules (the logic and state layers of
+// fork/signal/wait/credentials/trace) exposed a single set of symbols at the
+// root, leaving users unable to tell the source apart. Everything now goes
+// through full module paths (`pm::ipc::*` / `pm::mproc::*` / `pm::init::*`),
+// keeping only the explicit re-exports the test seams need (14 internal sites
+// plus the established paths of the external integration tests).
 pub use ipc::TestIpcTransport;

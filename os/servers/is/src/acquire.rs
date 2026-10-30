@@ -4,9 +4,9 @@
 //! `sys_diagctl` (stack traces), the kernel-message channel (`[ARCH: A-3]`),
 //! `getsysinfo` (peer-server tables), `vm_info` (address spaces). Each
 //! channel is a trait; production implementations land with the
-//! `minix-sys`/kernel wiring (forward references, 01 §3 D2 pattern).
+//! `minix-sys`/kernel wiring (forward references, the 01 section 3 pattern).
 //!
-//! Data outlets (V1-P1-2): C copies each table *into the caller*
+//! Data outlets: C copies each table *into the caller*
 //! (`sys_getinfo` stores at `endpt = SELF`; `getsysinfo` servers
 //! `sys_datacopy` to the caller), so every fetch method carries a typed
 //! output slice — one method per C `sys_get*`/`getsysinfo` shorthand, with
@@ -33,9 +33,10 @@ use minix_sys::syscall::{
     perform_taskcall, sys_getinfo_into, DirectKernelCallTransport,
 };
 
-/// GET_KMESSAGES 快照总大小（kernel `kmess::KMESS_SNAPSHOT_SIZE` 镜像：
-/// 8 字节游标头 + 10000 字节环体，sys_config.h:22）。内核侧常量为
-/// pub(crate)，此处按同一 wire 契约本地锚定并测试锁定。
+/// Total GET_KMESSAGES snapshot size (a mirror of the kernel's
+/// `kmess::KMESS_SNAPSHOT_SIZE`: an 8-byte cursor header + a 10000-byte ring
+/// body, sys_config.h:22). The kernel-side constant is `pub(crate)`, so it is
+/// anchored locally on the same wire contract and locked by tests.
 const KMESS_SNAPSHOT_SIZE: usize = 10008;
 use minix_types::{
     DS_GETSYSINFO, Endpoint, Message, PM_GETSYSINFO, RS_GETSYSINFO, SI_DATA_STORE, SI_DMAP_TAB,
@@ -138,7 +139,7 @@ pub trait DiagctlTransport {
 /// (`28-usermapped-data.md`); the production implementation is the
 /// `GET_KMESSAGES` `sys_getinfo` sub-request (kernel edge E-ISKMESS): the
 /// kernel copies the raw ring into `ring` and the cursor fields into
-/// `meta`, and IS computes the print start via `kmess_start` (05 §3 D4).
+/// `meta`, and IS computes the print start via `kmess_start` (05 section 3).
 /// The `DIAGCTL_CODE_STACKTRACE` channel is NOT reused: it prints into the
 /// kernel log and returns no buffer (different semantics).
 pub trait KerninfoTransport {
@@ -153,7 +154,7 @@ pub trait KerninfoTransport {
 /// `who`→call-number map (PM/VFS/RS/DS, else `ENOSYS`), then `_taskcall`.
 /// Server side (`pm/misc.c:105-145`, `vfs/misc.c:61-113`): root gate
 /// (`EPERM`) + exact `len == size` match (`EINVAL`) + `sys_datacopy`.
-/// IS-side obligations (04 §3 D4): always root (IS uid 0), exact
+/// IS-side obligations (04 section 3): always root (IS uid 0), exact
 /// `size_of` lengths (the out-slice length), in-scope tables only. The
 /// RS double pull is one all-or-nothing method (dmp_rs.c:33-34).
 pub trait GetSysinfoTransport {
@@ -216,7 +217,7 @@ pub trait VmInfoTransport {
 ///
 /// C: `getticks()` — `minix3/minix/lib/libsys/getticks.c` reads
 /// `kerninfo->kclockinfo->uptime` (ticks since boot, wraps on overflow).
-/// minix-rs has no usermapped page (A-3); the production transport routes
+/// minix-rs builds no usermapped page; the production transport routes
 /// the equivalent kernel call (SYS_TIMES family). Consumer: 06
 /// (sigaction's alarm countdown, dmp_pm.c:78/101-102).
 pub trait ClockTransport {
@@ -226,7 +227,7 @@ pub trait ClockTransport {
 
 /// The five channels bundled for the orchestrator.
 ///
-/// The per-channel traits stay fine-grained (04 §3 D2: each dump domain
+/// The per-channel traits stay fine-grained (04 section 3: each dump domain
 /// consumes a subset), but `IsServer` — the only component that talks to
 /// all of them — holds one value behind this supertrait (RS `KernelApi`
 /// five-domain precedent, 03-stage-rs). Dump bodies never take this
@@ -251,22 +252,24 @@ impl<T> Acquires for T where
 {
 }
 
-/// 生产取数面(S23 片 3a/3b):SYS_GETINFO 族直调(结构即 minix-types 的
-/// wire 权威,repr(C) 布局按字节通到内核)、SYS_DIAGCTL 的 stacktrace
-/// (code 2,载荷端点)、SYS_TIMES 的 uptime(`real_ticks`,C `getticks`
-/// 读 kclockinfo->uptime 的同源量;A-3 无 usermapped 页)、
-/// `GET_KMESSAGES` 快照([`KernelKmessTransport`])。
-/// `GetSysinfo` 五腿经 [`SysGetsysinfo`](片 3b-2)、`VM_INFO` 三查询经
-/// [`SysVmInfo`](片 3b-3)——六通道全部就位，无 fail-closed 占位。
+/// The production acquisition face: the SYS_GETINFO family called directly
+/// (the structs are minix-types' wire authority, and their repr(C) layout goes
+/// to the kernel byte for byte), SYS_DIAGCTL's stacktrace (code 2, payload
+/// endpoint), SYS_TIMES' uptime (`real_ticks`, the same quantity C's `getticks`
+/// reads from kclockinfo->uptime; this tree builds no usermapped page), and the
+/// `GET_KMESSAGES` snapshot ([`KernelKmessTransport`]). The five `GetSysinfo`
+/// legs go through [`SysGetsysinfo`] and the three `VM_INFO` queries through
+/// [`SysVmInfo`] -- all six channels are in place, with no fail-closed
+/// placeholder.
 #[derive(Debug, Default)]
 pub struct SysAcquires {
-    /// getsysinfo 五腿生产客户端（片 3b-2）。
+    /// Production client for the five getsysinfo legs.
     getsys: SysGetsysinfo,
 }
 
 impl SysAcquires {
-    /// SYS_GETINFO 的共享承载:`Ok` → OK(0),`Err(e)` → 负 errno 原样
-    /// (C 的 `r != OK` 判读面)。
+    /// The shared carrier for SYS_GETINFO: `Ok` -> OK(0), `Err(e)` -> the
+    /// negative errno as-is (the face where C tests `r != OK`).
     fn getinfo(request: i32, buf: &mut [u8], endpt: i32) -> i32 {
         match minix_sys::syscall::sys_getinfo_into(
             &DirectKernelCallTransport,
@@ -280,12 +283,14 @@ impl SysAcquires {
     }
 }
 
-/// 结构切片的字节视图(出参缓冲;结构都是 repr(C) 的 wire 权威)。
+/// Byte view of a struct slice (the output buffer; the structs are all repr(C)
+/// wire authority).
 ///
 /// # Safety
-/// `T` 为 POD(repr(C)、无填充语义依赖);调用期间切片独占。
+/// `T` must be POD (repr(C), no padding semantics relied upon); the slice is
+/// exclusive for the duration of the call.
 unsafe fn out_bytes<T>(v: &mut [T]) -> &mut [u8] {
-    // SAFETY: 由调用方保证的 POD 切片 → 字节视图。
+    // SAFETY: the caller guarantees a POD slice -> byte view.
     unsafe {
         core::slice::from_raw_parts_mut(
             v.as_mut_ptr().cast::<u8>(),
@@ -330,9 +335,9 @@ impl SysGetinfoTransport for SysAcquires {
 
 impl DiagctlTransport for SysAcquires {
     fn stacktrace(&mut self, proc: Endpoint) -> i32 {
-        // C: sys_diagctl_stacktrace(ep)(dmp_kernel.c:378)→
-        // SYS_DIAGCTL code 2 的载荷端点在 `d.endpt`(minix-sys 非 code1
-        // 分支写 arg2)。
+        // C: sys_diagctl_stacktrace(ep) (dmp_kernel.c:378) -> the SYS_DIAGCTL
+        // code 2 payload endpoint lands in `d.endpt` (minix-sys writes arg2 on
+        // the non-code1 branch).
         match minix_sys::syscall::sys_diagctl(
             &DirectKernelCallTransport,
             2, // DIAGCTL_CODE_STACKTRACE — com.h:413
@@ -347,9 +352,10 @@ impl DiagctlTransport for SysAcquires {
 
 impl ClockTransport for SysAcquires {
     fn uptime(&mut self) -> u32 {
-        // C getticks():kclockinfo->uptime(usermapped 页,A-3 不建)。
-        // SYS_TIMES 的 real_ticks 是同源量(自 boot 的实时 ticks);
-        // 失败回 0(C 的调用点无失败面)。
+        // C getticks(): kclockinfo->uptime (the usermapped page, which this
+        // tree does not build). SYS_TIMES' real_ticks is the same quantity
+        // (real ticks since boot); on failure return 0 (C's call site has no
+        // failure face).
         match minix_sys::syscall::sys_times(&DirectKernelCallTransport, Endpoint::SELF.0) {
             Ok(t) => t.real_ticks as u32,
             Err(_) => 0,
@@ -359,9 +365,11 @@ impl ClockTransport for SysAcquires {
 
 impl KerninfoTransport for SysAcquires {
     fn kmessages(&mut self, meta: &mut KmessagesSnap, ring: &mut [u8]) -> i32 {
-        // 片 3b-1:`GET_KMESSAGES` 快照通道真装——10008 字节快照(8 字节
-        // 游标头 + 10000 环体)经 `sys_getinfo` 一次取回后拆包;宿主构建
-        // 诚实上浮 -EIO(核 `kmess` 臂只在 real-trap 下可达)。
+        // The `GET_KMESSAGES` snapshot channel is really wired -- the 10008-byte
+        // snapshot (an 8-byte cursor header + a 10000-byte ring body) is fetched
+        // once via `sys_getinfo` and then unpacked; hosted builds honestly
+        // surface -EIO (the kernel's `kmess` arm is only reachable under
+        // real-trap).
         KernelKmessTransport.kmessages(meta, ring)
     }
 }
@@ -629,24 +637,28 @@ impl VmInfoTransport for FakeAcquires {
     }
 }
 }
-/// 生产 `KerninfoTransport`：经 `sys_getinfo` 的 `GET_KMESSAGES`
-/// 子请求（E-ISKMESS A-3，minix-types `sysinfo::GET_KMESSAGES` = 7）从
-/// 内核拉取环形缓冲快照并拆包。
+/// Production `KerninfoTransport`: pulls the kernel ring-buffer snapshot
+/// through `sys_getinfo`'s `GET_KMESSAGES` sub-request (E-ISKMESS;
+/// minix-types `sysinfo::GET_KMESSAGES` = 7) and unpacks it.
 ///
-/// 快照 wire 形状（kernel `kmess::KMESS_SNAPSHOT_SIZE` = 10008）：
-/// `km_next` (i32) @0、`km_size` (i32) @4、顺序展开的环体 10000 字节。
-/// 拆包后 `meta` 携游标、`ring` 携调用方缓冲能容纳的环体前缀。
+/// Snapshot wire shape (kernel `kmess::KMESS_SNAPSHOT_SIZE` = 10008):
+/// `km_next` (i32) @0, `km_size` (i32) @4, then the ring body of 10000 bytes
+/// laid out in order. After unpacking, `meta` carries the cursor and `ring`
+/// carries the prefix of the ring body that fits in the caller's buffer.
 ///
-/// 宿主构建（未开 `real-trap`）下 transport 诚实返回 `-EIO`，本实现原样
-/// 上浮——调用方按既有 fail-closed 语义处理，与
-/// `minix-rt::DirectTrapSource` 同款门控形态。
+/// In hosted builds (without `real-trap`) the transport honestly returns
+/// `-EIO`, and this implementation surfaces it unchanged -- the caller
+/// handles it with the existing fail-closed semantics, the same gated shape as
+/// `minix-rt::DirectTrapSource`.
 pub struct KernelKmessTransport;
 
 impl KerninfoTransport for KernelKmessTransport {
     fn kmessages(&mut self, meta: &mut KmessagesSnap, ring: &mut [u8]) -> i32 {
-        // 10008 字节快照缓冲：固定容量（内核臂单次整块拷出），栈上分配
-        // —— IS 用户栈 64 KiB（loader stack），快照占 ~15%，余量充足；
-        // C 的 kmessages_dmp print_buf 为同量级缓冲（dmp_kernel.c:74）。
+        // A fixed-capacity 10008-byte snapshot buffer (the kernel arm copies it
+        // out in one block), allocated on the stack -- the IS user stack is
+        // 64 KiB (loader stack), the snapshot takes ~15%, so there is ample
+        // headroom; C's kmessages_dmp print_buf is a buffer of the same order
+        // (dmp_kernel.c:74).
         let mut snap = [0u8; KMESS_SNAPSHOT_SIZE];
         match sys_getinfo_into(
             &DirectKernelCallTransport,
@@ -663,9 +675,11 @@ impl KerninfoTransport for KernelKmessTransport {
     }
 }
 
-/// 拆 GET_KMESSAGES 快照：8 字节头（`km_next`/`km_size`，LE i32）进
-/// `meta`，环体按 `ring` 容量填前缀（调用方缓冲短于 10000 时截断——
-/// `kmessages_dmp` 的 print 组装按 `km_size` 游标重排，与容量无关）。
+/// Split a GET_KMESSAGES snapshot: the 8-byte header (`km_next`/`km_size`, LE
+/// i32) goes into `meta`, and the ring body fills the prefix that fits in
+/// `ring` (truncated when the caller's buffer is shorter than 10000 --
+/// `kmessages_dmp`'s print assembly reorders by the `km_size` cursor
+/// independently of that capacity).
 fn split_kmess_snapshot(snap: &[u8], meta: &mut KmessagesSnap, ring: &mut [u8]) {
     meta.km_next = i32::from_le_bytes([snap[0], snap[1], snap[2], snap[3]]);
     meta.km_size = i32::from_le_bytes([snap[4], snap[5], snap[6], snap[7]]);
@@ -674,41 +688,49 @@ fn split_kmess_snapshot(snap: &[u8], meta: &mut KmessagesSnap, ring: &mut [u8]) 
     ring[..n].copy_from_slice(&body[..n]);
 }
 
-/// 生产 `GetSysinfoTransport`（S23 片 3b-2）：五条腿一律走
-/// `getsysinfo(who, what, where, size)` 的消息形状。
+/// Production `GetSysinfoTransport`: all five legs ride the message shape
+/// `getsysinfo(who, what, where, size)`.
 ///
-/// C: `minix3/minix/lib/libsys/getsysinfo.c:14-31`——`who` 映射调用号
-/// （PM/VFS/RS/DS，其余 `ENOSYS`），随后 `_taskcall(who, call_nr, &m)`；
-/// `m_lsys_getsysinfo` 三字段是"取什么"（`what`）、"放哪"（调用方虚地址
-/// `where`）、"多长"（`size`）。服务端（PM `misc.c:108-144`、VFS
-/// `misc.c:59-113`、RS `request.c:1095-1142`、DS `store.c:653-678`）做
-/// root 门 + **尺寸精确匹配**（差一字节即 `EINVAL`）+ `sys_datacopy`
-/// 拷回调用方——所以调用方声明的 `size` 必须等于出参切片的字节长度
-/// （04 §3.4 D4 义务②），`what` 必须按 C 值发（`minix_types::SI_*`）。
+/// C: `minix3/minix/lib/libsys/getsysinfo.c:14-31` -- `who` selects the call
+/// number (PM/VFS/RS/DS, `ENOSYS` otherwise), then
+/// `_taskcall(who, call_nr, &m)`; `m_lsys_getsysinfo`'s three fields are "what
+/// to fetch" (`what`), "where to put it" (the caller's virtual address
+/// `where`), and "how long" (`size`). The server side (PM `misc.c:108-144`,
+/// VFS `misc.c:59-113`, RS `request.c:1095-1142`, DS `store.c:653-678`)
+/// applies a root gate + **exact size match** (one byte off is `EINVAL`) +
+/// `sys_datacopy` back to the caller -- so the `size` the caller declares must
+/// equal the output slice's byte length, and `what` must be sent with the C
+/// value (`minix_types::SI_*`).
 ///
-/// 五条腿的行宽都是共享快照类型（`[ARCH: A-4]` 单一权威）：PM 腿
-/// `MProcSnap`（片 3b-2a 已对齐）、VFS 腿 `FProcSnap`（E-MIBPROD 已对齐）、
-/// RS 两表与 DS 表的**生产者**对齐归 S33（E-MIBPROD/E-ISPROD 余项）——
-/// 对齐前服务端按精确尺寸门回 `EINVAL`，dump 体按 C 的 warn-and-continue
-/// 打一行错误继续（04 §2.6），不 panic、不伪造数据。
+/// All five legs use the shared snapshot types as their row width
+/// (`[ARCH: A-4]`, single authority): the PM leg `MProcSnap` (aligned), the VFS
+/// leg `FProcSnap` (aligned under E-MIBPROD), and the **producer** alignment of
+/// the RS pair and the DS table still belongs to E-MIBPROD/E-ISPROD's remaining
+/// items -- before alignment the server answers `EINVAL` at the exact-size
+/// gate, and the dump body prints one error line and continues with C's
+/// warn-and-continue (04 section 2.6), neither panicking nor fabricating data.
 ///
-/// 每条腿有 `*_via(transport, …)` 形态：生产传 [`DirectTrapTransport`]，
-/// 测试传脚本双替身（宿主构建下真 trap 诚实上浮 `-EIO`）。
+/// Each leg has a `*_via(transport, …)` shape: production passes
+/// [`DirectTrapTransport`], tests pass a scripted double (in hosted builds the
+/// real trap honestly surfaces `-EIO`).
 #[derive(Debug, Default)]
 pub struct SysGetsysinfo;
 
 impl SysGetsysinfo {
-    /// 一腿的共用承载。
+    /// The shared carrier for one leg.
     ///
-    /// 消息打包用 raw 三 lane（what @0..4、where @8..16、size @16..24，
-    /// 与 `MessLsysGetsysinfo` 的 LP64 布局逐字节一致），经共享
-    /// [`minix_sys::syscall::perform_taskcall`] 上浮：传输级失败走
-    /// `Err(Errno)`（TrapStatus 符号契约——真机回复寄存器与宿主回退臂
-    /// 都报正 errno），sendrec 成功后的原始回复 `m_type` 走 `Ok`，负值
-    /// 即服务端错误码（C `_taskcall` 语义）。
+    /// The message is packed into three raw lanes (what @0..4, where @8..16,
+    /// size @16..24, byte-identical to `MessLsysGetsysinfo`'s LP64 layout) and
+    /// sent through the shared [`minix_sys::syscall::perform_taskcall`]:
+    /// transport-level failures come back as `Err(Errno)` (the TrapStatus sign
+    /// contract -- both the target's reply registers and the host fallback arm
+    /// report a positive errno), a successful sendrec leaves the raw reply's
+    /// `m_type` in `Ok`, and a negative value is the server's error code (C
+    /// `_taskcall` semantics).
     ///
-    /// `where` 传的是**调用方自己的缓冲地址**（服务端按 `sys_datacopy`
-    /// SELF→caller 回填），因此 `out` 必须在调用期间保持独占。
+    /// `where` is **the caller's own buffer address** (the server fills it back
+    /// SELF->caller via `sys_datacopy`), so `out` must stay exclusive for the
+    /// duration of the call.
     fn fetch<Row>(
         transport: &impl IpcTransport,
         who: Endpoint,
@@ -716,8 +738,8 @@ impl SysGetsysinfo {
         out: &mut [Row],
     ) -> Result<i32, minix_types::Errno> {
         let mut msg = Message::default();
-        // SAFETY: m_lsys_getsysinfo 的 raw 三 lane 视图（C getsysinfo.c:
-        // 27-29 的 what/where/size）。
+        // SAFETY: the raw three-lane view of m_lsys_getsysinfo (C
+        // getsysinfo.c:27-29's what/where/size).
         unsafe {
             msg.m_u.raw[..4].copy_from_slice(&what.to_ne_bytes());
             msg.m_u.raw[8..16].copy_from_slice(&(out.as_mut_ptr() as u64).to_ne_bytes());
@@ -727,8 +749,9 @@ impl SysGetsysinfo {
         perform_taskcall(transport, who, getsysinfo_call(who), &mut msg)
     }
 
-    /// 一腿的对外形态：传输级 `Err` 折算回负 errno，与 sendrec 成功但
-    /// 服务端回负 `m_type` 的形状合流（trait 的 C 整型契约）。
+    /// The outward shape of one leg: a transport-level `Err` folds back to a
+    /// negative errno, merging with the shape where sendrec succeeds but the
+    /// server answers a negative `m_type` (the trait's C integer contract).
     fn leg<Row>(transport: &impl IpcTransport, who: Endpoint, what: i32, out: &mut [Row]) -> i32 {
         match Self::fetch(transport, who, what, out) {
             Ok(reply) => reply,
@@ -736,13 +759,15 @@ impl SysGetsysinfo {
         }
     }
 
-    /// PM 进程表腿。C: `dmp_pm.c:47/82`。
+    /// The PM process-table leg. C: `dmp_pm.c:47/82`.
     pub fn pm_proc_tab_via(transport: &impl IpcTransport, out: &mut [MProcSnap]) -> i32 {
         Self::leg(transport, Endpoint::PM, SI_PROC_TAB, out)
     }
 
-    /// RS 双拉腿。C: `dmp_rs.c:33-34`——先 PUB 后 PRIV，前者失败短路
-    /// （`||` 语义：PUB 拿不到就没有可对账的身份列，继续拉 PRIV 无意义）。
+    /// The RS double-pull leg. C: `dmp_rs.c:33-34` -- PUB first, then PRIV, and
+    /// a PUB failure short-circuits (`||` semantics: without PUB there is no
+    /// identity column to reconcile against, so pulling PRIV afterwards is
+    /// pointless).
     pub fn rs_tables_via(
         transport: &impl IpcTransport,
         pub_out: &mut [RprocpubSnap],
@@ -755,20 +780,21 @@ impl SysGetsysinfo {
         Self::leg(transport, Endpoint::RS, SI_PROC_TAB, priv_out)
     }
 
-    /// DS 数据仓腿。C: `dmp_ds.c:15`。
+    /// The DS data-store leg. C: `dmp_ds.c:15`.
     pub fn ds_data_store_via(transport: &impl IpcTransport, out: &mut [DsEntrySnap]) -> i32 {
         Self::leg(transport, Endpoint::DS, SI_DATA_STORE, out)
     }
 
-    /// VFS fproc_tab 腿。C: `dmp_fs.c:31`。
+    /// The VFS fproc_tab leg. C: `dmp_fs.c:31`.
     ///
-    /// VFS 侧的运行时应答面已落地（W3 回复半：`dispatch_syscall` 的
-    /// `Getsysinfo` 臂 + `run()` 循环尾的 `send_reply`），故本腿正常收发。
+    /// VFS's runtime answer face is in place (`dispatch_syscall`'s `Getsysinfo`
+    /// arm plus the `send_reply` at the tail of the `run()` loop), so this leg
+    /// sends and receives normally.
     pub fn vfs_proc_tab_via(transport: &impl IpcTransport, out: &mut [FProcSnap]) -> i32 {
         Self::leg(transport, Endpoint::VFS, SI_PROC_TAB, out)
     }
 
-    /// VFS dmap_tab 腿。C: `dmp_fs.c:71`。
+    /// The VFS dmap_tab leg. C: `dmp_fs.c:71`.
     pub fn vfs_dmap_tab_via(transport: &impl IpcTransport, out: &mut [DmapSnap]) -> i32 {
         Self::leg(transport, Endpoint::VFS, SI_DMAP_TAB, out)
     }
@@ -796,35 +822,42 @@ impl GetSysinfoTransport for SysGetsysinfo {
     }
 }
 
-/// 生产 `VmInfoTransport`（S23 片 3b-3）：VM_INFO 三查询的**值通道**客户端。
+/// Production `VmInfoTransport`: the **value-channel** client for the three
+/// VM_INFO queries.
 ///
-/// C: `minix3/minix/lib/libsys/vm_info.c:10-57`——`_taskcall(VM_PROC_NR,
-/// VM_INFO, &m)`，请求域 `what`/`ep`/`count`/`ptr`/`next`；C 的服务端把结果
-/// `sys_datacopy` 进调用方缓冲（`minix3/minix/servers/vm/utility.c:169-182`，
-/// 复制前先 `handle_memory_once` 钉住目标页防死锁）。minix-rs 的 VM 用**值
-/// 通道**取代这一步（`[ARCH: 26-D1]`，`02-stage-vm/26-vm-queries.md`）：结果
-/// 编码在回复消息的 M1 槽里，`ptr` 不参与（故本客户端传 0）。
+/// C: `minix3/minix/lib/libsys/vm_info.c:10-57` -- `_taskcall(VM_PROC_NR,
+/// VM_INFO, &m)`, with request fields `what`/`ep`/`count`/`ptr`/`next`; C's
+/// server copies the results into the caller's buffer with `sys_datacopy`
+/// (`minix3/minix/servers/vm/utility.c:169-182`, pinning the target page with
+/// `handle_memory_once` first to avoid deadlock). minix-rs's VM replaces that
+/// step with a **value channel** (`[ARCH: 26-D1]`,
+/// `02-stage-vm/26-vm-queries.md`): results are encoded in the reply message's
+/// m1 slots and `ptr` does not participate (so this client sends 0).
 ///
-/// 槽位对照（生产者：`os/servers/vm/src/ipc/encode.rs` 的 `encode_reply_data`）：
-/// - STATS：`m1p1`=页大小、`m1i1`=总页数、`m1i2`=空闲页、`m1i3`=最大连续块、
-///   `m1p2`=缓存页；
-/// - USAGE：`m1p1`/`m1p2`/`m1p3` = total/common/shared（**字节**，即 C
-///   `struct vm_usage_info` 的 `vui_total`/`vui_common`/`vui_shared`）；
-/// - REGION：`m1i1`=实际条数、`m1i2`=新游标（低 32 位——区域地址在低 4 GiB
-///   用户区间内，故 C 的 `vir_bytes` 游标在此不丢精度）。
+/// Slot mapping (producer: `encode_reply_data` in
+/// `os/servers/vm/src/ipc/encode.rs`):
+/// - STATS: `m1p1` = page size, `m1i1` = total pages, `m1i2` = free pages,
+///   `m1i3` = largest contiguous block, `m1p2` = cached pages;
+/// - USAGE: `m1p1`/`m1p2`/`m1p3` = total/common/shared (**bytes**, i.e. C
+///   `struct vm_usage_info`'s `vui_total`/`vui_common`/`vui_shared`);
+/// - REGION: `m1i1` = actual entry count, `m1i2` = new cursor (low 32 bits --
+///   region addresses live in the low 4 GiB user range, so C's `vir_bytes`
+///   cursor loses no precision here).
 ///
-/// REGION 的条目数组按 `[ARCH: 26-D7]` 的**值通道分批**随回复内联
-/// （每包 [`SysVmInfo::VRI_PER_REPLY`] 条，20 字节紧凑布局），
-/// [`SysVmInfo::vm_region_via`] 替调用方把批拼齐——C 的"一次调用搬一批"
-/// 语义不变，只是往返次数由包大小决定。
+/// REGION's entry array is inlined in the reply in **value-channel batches**
+/// (`[ARCH: 26-D7]`, [`SysVmInfo::VRI_PER_REPLY`] entries per packet, a
+/// compact 20-byte layout), and [`SysVmInfo::vm_region_via`] stitches the
+/// batches for the caller -- C's "one call moves one batch" semantics are
+/// unchanged; only the number of round trips depends on the packet size.
 #[derive(Debug, Default)]
 pub struct SysVmInfo;
 
 impl SysVmInfo {
-    /// 三查询共用的请求封装：填 `what`/`ep`/`count`/`next` 后 taskcall。
+    /// The request wrapper shared by the three queries: fill
+    /// `what`/`ep`/`count`/`next`, then taskcall.
     ///
-    /// 回复落地在同一个 `msg` 上（`_taskcall` 复用消息缓冲，C 同构），
-    /// 故调用方读 `msg.m_u.m_m1` 取结果槽。
+    /// The reply lands on the same `msg` (`_taskcall` reuses the message buffer,
+    /// as in C), so the caller reads `msg.m_u.m_m1` for the result slots.
     fn call(
         transport: &impl IpcTransport,
         what: i32,
@@ -833,9 +866,10 @@ impl SysVmInfo {
         next: u64,
     ) -> Result<(i32, Message), minix_types::Errno> {
         let mut msg = Message::default();
-        // `m_lsys_vm_info` 是 VM_INFO 的载荷域（C ipc.h:1494-1502 的
-        // what/ep/count/ptr/next；`ptr` 在 minix-rs 值通道下不参与）——
-        // 该联合成员是普通 POD 字段，整体赋值无需 unsafe。
+        // `m_lsys_vm_info` is VM_INFO's payload domain (C ipc.h:1494-1502's
+        // what/ep/count/ptr/next; `ptr` does not participate under minix-rs's
+        // value channel) -- that union member is a plain POD field, so a whole
+        // assignment needs no unsafe.
         msg.m_u.m_lsys_vm_info = minix_types::ipc::MessLsysVmInfo {
             what,
             ep: ep.get(),
@@ -851,7 +885,7 @@ impl SysVmInfo {
         }
     }
 
-    /// 把 taskcall 的两级失败折成 C 的整型状态面。
+    /// Fold taskcall's two failure levels into C's integer status face.
     fn status(r: Result<(i32, Message), minix_types::Errno>) -> (i32, Option<Message>) {
         match r {
             Ok((minix_types::OK, msg)) => (minix_types::OK, Some(msg)),
@@ -869,7 +903,8 @@ impl SysVmInfo {
             0,
         ));
         let Some(msg) = msg else { return status };
-        // SAFETY: VM 的 STATS 回复用 M1 槽（encode.rs 的 InfoStats 臂）。
+        // SAFETY: VM's STATS reply uses the m1 slots (encode.rs's InfoStats
+        // arm).
         let m1 = unsafe { &msg.m_u.m_m1 };
         *out = VmStatsSnap {
             vsi_pagesize: m1.m1p1 as u32,
@@ -894,7 +929,8 @@ impl SysVmInfo {
             0,
         ));
         let Some(msg) = msg else { return status };
-        // SAFETY: VM 的 USAGE 回复用 M1 槽（encode.rs 的 InfoUsage 臂）。
+        // SAFETY: VM's USAGE reply uses the m1 slots (encode.rs's InfoUsage
+        // arm).
         let m1 = unsafe { &msg.m_u.m_m1 };
         *out = VmUsageSnap {
             vui_total: m1.m1p1,
@@ -904,17 +940,21 @@ impl SysVmInfo {
         minix_types::OK
     }
 
-    /// 一次 REGION 回复里最多携带的条目数（与服务端
-    /// `os/servers/vm/src/ipc/encode.rs` 的 `MAX_VRI_PER_REPLY` 同一契约；
-    /// 消费方按游标续批，不依赖此常数做正确性判断）。
+    /// The most entries one REGION reply can carry (the same contract as
+    /// `MAX_VRI_PER_REPLY` in `os/servers/vm/src/ipc/encode.rs`; consumers
+    /// continue by cursor and do not use this constant for correctness
+    /// decisions).
     pub const VRI_PER_REPLY: usize = 2;
 
-    /// 解一包 REGION 回复：`(本包条数, 新游标, 条目字节区)`。
+    /// Decode one REGION reply packet: `(entries in this packet, new cursor,
+    /// entry byte region)`.
     ///
-    /// 布局（生产端 `pack_region_reply` 同解）：`[0..4)` 条数、
-    /// `[4..12)` 游标（LE u64）、`[12..)` 每条 20 字节（addr/length/prot）。
+    /// Layout (the producer's `pack_region_reply` encodes it the same way):
+    /// `[0..4)` count, `[4..12)` cursor (LE u64), `[12..)` 20 bytes per entry
+    /// (addr/length/prot).
     fn decode_region_payload(msg: &Message) -> (usize, u64, &[u8]) {
-        // SAFETY: 回复负载的 raw 视图；本函数只读，长度由本包条数校验。
+        // SAFETY: a raw view of the reply payload; this function only reads,
+        // and the length is checked against the packet's count.
         let raw = unsafe { &msg.m_u.raw };
         let count = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]).max(0) as usize;
         let mut next_bytes = [0u8; 8];
@@ -925,17 +965,21 @@ impl SysVmInfo {
         (want, next, body)
     }
 
-    /// 区域批腿：**循环取批**直到调用方缓冲填满、服务端报空、或游标不再
-    /// 前进（防死循环）。
+    /// The region batch leg: **keep taking batches** until the caller's buffer
+    /// is full, the server reports empty, or the cursor stops advancing (loop
+    /// guard).
     ///
-    /// C 的 `vm_info_region` 一次调用搬 `count` 条（`utility.c:142-160` 的
-    /// `MIN(count, MAX_VRI_COUNT)`），条数受调用方缓冲限制；minix-rs 的
-    /// IPC 模型把条目内联在回复里（`[ARCH: 26-D7]` 值通道，每包
-    /// [`Self::VRI_PER_REPLY`] 条），故这里替调用方把批拼起来——调用方
-    /// 看到的语义与 C 相同（返回条数 + 新游标），只有往返次数不同。
+    /// C's `vm_info_region` moves `count` entries per call (`utility.c:142-160`
+    /// uses `MIN(count, MAX_VRI_COUNT)`) and the count is bounded by the
+    /// caller's buffer; minix-rs's IPC model inlines the entries in the reply
+    /// (`[ARCH: 26-D7]` value channel, [`Self::VRI_PER_REPLY`] entries per
+    /// packet), so this stitches the batches for the caller -- the caller sees
+    /// the same semantics as C (entry count + new cursor); only the number of
+    /// round trips differs.
     ///
-    /// 返回 `(status, 新游标, 收到条数)`：`status != OK` 时 `out` 未被触碰
-    /// 的部分保持原样，游标回退到最后一包生效处。
+    /// Returns `(status, new cursor, entries received)`: when `status != OK`,
+    /// the untouched part of `out` keeps its previous contents and the cursor
+    /// falls back to the last applied packet.
     pub fn vm_region_via(
         transport: &impl IpcTransport,
         who: Endpoint,
@@ -954,7 +998,8 @@ impl SysVmInfo {
                 cursor,
             ));
             let Some(msg) = msg else {
-                // 服务端拒绝：已收到的条目照实报，游标停在最后一包生效处。
+                // The server refused: report the entries received so far
+                // truthfully, and leave the cursor at the last applied packet.
                 return (status, cursor, filled as i32);
             };
             let (got, next_out, body) = Self::decode_region_payload(&msg);
@@ -971,16 +1016,18 @@ impl SysVmInfo {
                     vri_addr: addr,
                     vri_length: length,
                     vri_prot: i32::from_le_bytes(b4),
-                    vri_flags: 0, // C 的 vri_flags 恒零（region.c 从不写）
+                    vri_flags: 0, // C's vri_flags is always zero (region.c never writes it)
                 };
                 filled += 1;
             }
             if got == 0 {
-                // 空包＝枚举到底：C 的 `get_region_info` 返回 0 即此义。
+                // An empty packet means enumeration is exhausted: that is what
+                // C's `get_region_info` returning 0 means.
                 return (minix_types::OK, next_out, filled as i32);
             }
             if next_out == cursor {
-                // 游标不前进＝服务端没推进，停批防死循环。
+                // The cursor did not advance = the server made no progress;
+                // stop batching to avoid a loop.
                 return (minix_types::OK, cursor, filled as i32);
             }
             cursor = next_out;
@@ -993,8 +1040,9 @@ impl SysVmInfo {
 mod tests {
     #[test]
     fn test_sys_acquires_hosted_negative_errno_and_uptime_zero() {
-        // hosted:trap 直连诚实回负 errno(C 的 r 判读面);uptime 回 0
-        // (C getticks 无失败面,失败面按 0 记)。
+        // Hosted: the direct trap honestly returns negative errno (the face
+        // where C tests `r`); uptime returns 0 (C's getticks has no failure
+        // face, so a failure is recorded as 0).
         use super::{ClockTransport, DiagctlTransport, SysAcquires, SysGetinfoTransport};
         let mut a = SysAcquires::default();
         let mut kinfo = KinfoStruct::default();
@@ -1009,9 +1057,11 @@ mod tests {
 
     #[test]
     fn test_sys_acquires_kmessages_leg_is_live_not_fail_closed() {
-        // 片 3b-1 见证:kmessages 腿已换装 KernelKmessTransport——宿主
-        // 构建下如实回 -EIO(DirectKernelCallTransport 的 real-trap 门控),
-        // 不再是 fail-closed panic(占位替身随六通道全真装一并删除)。
+        // Witness that the kmessages leg is live: it has been switched to
+        // KernelKmessTransport -- hosted builds truthfully answer -EIO
+        // (DirectKernelCallTransport's real-trap gate), no longer a fail-closed
+        // panic (the placeholder double was deleted together with the full
+        // wiring of all six channels).
         use super::{KerninfoTransport, SysAcquires};
         let mut a = SysAcquires::default();
         let mut meta = KmessagesSnap::default();
@@ -1021,14 +1071,15 @@ mod tests {
 
     #[test]
     fn test_sys_acquires_getinfo_wire_shape() {
-        // CannedKernelCallTransport 断言 SYS_GETINFO 的字段:
-        // request 与 val_len(size_of 视图)按结构真身走。
+        // CannedKernelCallTransport asserts SYS_GETINFO's fields: the request
+        // and val_len (the size_of view) follow the struct's real shape.
         use super::{SysAcquires, SysGetinfoTransport};
         use minix_sys::syscall::CannedKernelCallTransport;
 
         let mut a = SysAcquires::default();
-        // 借载体的可观测性:直接用 sys_getinfo_into 的形状断言,
-        // 绕开结构方法(方法内是同一承载)。
+        // Observability through the carrier: assert the shape via
+        // sys_getinfo_into directly, bypassing the struct method (the method
+        // goes through the same carrier).
         let canned = CannedKernelCallTransport::new();
         let mut kinfo = KinfoStruct::default();
         let bytes = unsafe {
@@ -1037,7 +1088,7 @@ mod tests {
                 core::mem::size_of::<KinfoStruct>(),
             )
         };
-        //[SD19-gate] SD-19: 尽力而为
+        //[SD19-gate] best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::syscall::sys_getinfo_into(
             &canned,
@@ -1047,14 +1098,15 @@ mod tests {
         );
         let sent = canned.sent.borrow();
         assert_eq!(sent.len(), 1);
-        // SAFETY: 断言侧按 m_lsys_krn_sys_getinfo 域序读。
+        // SAFETY: the assertion side reads in m_lsys_krn_sys_getinfo field
+        // order.
         let gi = unsafe { &sent[0].m_u.m_lsys_krn_sys_getinfo };
         assert_eq!(gi.request, minix_types::GET_KINFO);
         assert_eq!(gi.val_len as usize, core::mem::size_of::<KinfoStruct>());
         assert_eq!(gi.endpt, Endpoint::NONE.0);
-        //[SD19-gate] SD-19: 尽力而为
+        //[SD19-gate] best-effort
         #[allow(clippy::let_underscore_must_use)]
-        let _ = &mut a; // 方法面与承载同形(上面直调展示 wire)
+        let _ = &mut a; // the method face matches the carrier (the direct call above shows the wire)
     }
 
     use super::fake::FakeAcquires;
@@ -1140,9 +1192,10 @@ mod tests {
 mod kerninfo_transport_tests {
     use super::*;
 
-    /// 快照拆包契约：8 字节头（km_next/km_size，LE i32）进 meta，
-    /// 环体按调用方缓冲容量填前缀（kernel kmess::KMESS_SNAPSHOT_SIZE
-    /// 同一 wire 形状——kernel/src/kmess.rs:29-32）。
+    /// Snapshot unpacking contract: the 8-byte header (km_next/km_size, LE i32)
+    /// goes into meta, and the ring body fills the prefix that fits in the
+    /// caller's buffer (the same wire shape as the kernel's
+    /// `kmess::KMESS_SNAPSHOT_SIZE` -- kernel/src/kmess.rs:29-32).
     #[test]
     fn test_split_kmess_snapshot_round_trip() {
         let mut snap = vec![0u8; 10008];
@@ -1162,8 +1215,9 @@ mod kerninfo_transport_tests {
         assert_eq!(ring[9999], (9999 % 251) as u8);
     }
 
-    /// 调用方缓冲短于环体时按容量截断——kmessages_dmp 的 print 组装
-    /// 按 km_size 游标自排（dmp_kernel.c:77-85），与快照总长解耦。
+    /// A caller buffer shorter than the ring body truncates to its capacity --
+    /// kmessages_dmp's print assembly lays itself out by the km_size cursor
+    /// (dmp_kernel.c:77-85), decoupled from the snapshot's total length.
     #[test]
     fn test_split_kmess_snapshot_truncates_to_ring_capacity() {
         let mut snap = vec![0u8; 10008];
@@ -1175,13 +1229,15 @@ mod kerninfo_transport_tests {
         split_kmess_snapshot(&snap, &mut meta, &mut ring);
 
         assert_eq!(meta.km_next, 7);
-        assert_eq!(&ring[..4], &[0, 0, 0, 0]); // 体前 4 字节（快照零填充）
+        assert_eq!(&ring[..4], &[0, 0, 0, 0]); // first 4 body bytes (snapshot zero fill)
         assert_eq!(ring[127], 0);
     }
 
-    /// 宿主构建（未开 real-trap）下 DirectKernelCallTransport 诚实返回
-    /// -EIO：生产 transport 原样上浮，不吞错、不假装成功——调用方按
-    /// fail-closed 语义处理（minix-rt DirectTrapSource 同款门控形态）。
+    /// In hosted builds (without real-trap) DirectKernelCallTransport honestly
+    /// returns -EIO: the production transport surfaces it unchanged, neither
+    /// swallowing the error nor pretending success -- the caller handles it with
+    /// fail-closed semantics (the same gated shape as minix-rt
+    /// DirectTrapSource).
     #[test]
     fn test_kernel_kmess_transport_hosted_is_eio() {
         let mut t = KernelKmessTransport;
@@ -1191,7 +1247,8 @@ mod kerninfo_transport_tests {
         assert_eq!(code, -minix_types::EIO);
     }
 
-    /// 快照尺寸契约：wire 头 8 字节 + 10000 环体（sys_config.h:22）。
+    /// Snapshot size contract: an 8-byte wire header + a 10000-byte ring body
+    /// (sys_config.h:22).
     #[test]
     fn test_kmess_snapshot_size_matches_kernel() {
         assert_eq!(KMESS_SNAPSHOT_SIZE, 10008);
@@ -1205,10 +1262,11 @@ mod vfs_proc_tab_transport_tests {
     use minix_sys::ipc::CannedTransport;
     use minix_types::OK;
 
-    /// wire 三元组回放（PM 腿，已对齐的生产腿）：请求臂 =
-    /// `getsysinfo(PM, SI_PROC_TAB, buf, 76×len)`——目的地 PM、调用号
-    /// `PM_GETSYSINFO`、what/where/size 三 lane（C getsysinfo.c:14-31 +
-    /// dmp_pm.c:47）；应答臂 m_type 原样上浮（`_taskcall` 语义，OK 即成功）。
+    /// Wire triple replay (the PM leg, an already-aligned production leg):
+    /// the request arm = `getsysinfo(PM, SI_PROC_TAB, buf, 76*len)` --
+    /// destination PM, call number `PM_GETSYSINFO`, and the what/where/size lanes
+    /// (C getsysinfo.c:14-31 + dmp_pm.c:47); the answer arm surfaces `m_type`
+    /// unchanged (`_taskcall` semantics, OK means success).
     #[test]
     fn test_pm_proc_tab_wire_roundtrip_canned() {
         let mut canned = CannedTransport::new();
@@ -1224,7 +1282,8 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(*dest, Endpoint::PM);
         assert_eq!(msg.m_type, getsysinfo_call(Endpoint::PM));
         assert_eq!(msg.m_type, PM_GETSYSINFO);
-        // SAFETY(test): 读回打包的三 lane（与 SysGetsysinfo::fetch 同布局）。
+        // SAFETY(test): read back the three packed lanes (the same layout as
+        // SysGetsysinfo::fetch).
         unsafe {
             let raw = &msg.m_u.raw;
             let what = i32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]);
@@ -1240,10 +1299,10 @@ mod vfs_proc_tab_transport_tests {
         }
     }
 
-    /// RS/DS 腿的调用号与 what 值回放：`SI_PROCPUB_TAB`(11) 与
-    /// `SI_PROC_TAB`(2) 分两次拉（C dmp_rs.c:33-34），DS 拉
-    /// `SI_DATA_STORE`(5)（C dmp_ds.c:15）——三者的调用号来自
-    /// `getsysinfo_call`（C getsysinfo.c:14-24 的 switch）。
+    /// Replay of the RS/DS legs' call numbers and what values: `SI_PROCPUB_TAB`
+    /// (11) and `SI_PROC_TAB` (2) are pulled separately (C dmp_rs.c:33-34), and
+    /// DS pulls `SI_DATA_STORE` (5) (C dmp_ds.c:15) -- all three call numbers
+    /// come from `getsysinfo_call` (the switch in C getsysinfo.c:14-24).
     #[test]
     fn test_rs_and_ds_legs_wire_values_canned() {
         let mut canned = CannedTransport::new();
@@ -1262,7 +1321,7 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(sent[0].1.m_type, RS_GETSYSINFO);
         assert_eq!(sent[1].0, Endpoint::RS);
         assert_eq!(sent[1].1.m_type, RS_GETSYSINFO);
-        // SAFETY(test): what @0..4（与 fetch 同布局）。
+        // SAFETY(test): what @0..4 (the same layout as fetch).
         let what_of = |m: &Message| unsafe {
             i32::from_ne_bytes([m.m_u.raw[0], m.m_u.raw[1], m.m_u.raw[2], m.m_u.raw[3]])
         };
@@ -1281,7 +1340,8 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(what_of(&sent[0].1), SI_DATA_STORE);
     }
 
-    /// RS 双拉短路：PUB 失败即返回，不发 PRIV（C dmp_rs.c:33-34 的 `||`）。
+    /// RS double-pull short circuit: a PUB failure returns at once without
+    /// sending PRIV (C dmp_rs.c:33-34's `||`).
     #[test]
     fn test_rs_tables_short_circuit_on_pub_failure() {
         let mut canned = CannedTransport::new();
@@ -1298,8 +1358,9 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(canned.sent.borrow().len(), 1, "PUB 失败后不再发 PRIV");
     }
 
-    /// 服务端负回复（EINVAL=尺寸门/EPERM=root 门）原样上浮——run_dump 的
-    /// `!= OK` 消费面按 04 §2.6 warn-and-continue。
+    /// Server negative replies (EINVAL = size gate, EPERM = root gate) surface
+    /// unchanged -- run_dump's `!= OK` consumer follows 04 section 2.6
+    /// warn-and-continue.
     #[test]
     fn test_server_error_reply_passthrough() {
         let mut canned = CannedTransport::new();
@@ -1314,10 +1375,11 @@ mod vfs_proc_tab_transport_tests {
         );
     }
 
-    /// 宿主构建（未开 real-trap）下 DirectTrapTransport 诚实报错——
-    /// 传输级失败走 `Err(Errno(EIO))`（TrapStatus 符号契约），trait 消费
-    /// 面折算回 C 整型契约的 `-EIO`，不假装成功（`KernelKmessTransport`
-    /// 同款门控验证）。
+    /// In hosted builds (without real-trap) DirectTrapTransport honestly
+    /// reports failure -- a transport-level failure yields `Err(Errno(EIO))`
+    /// (the TrapStatus sign contract), the trait consumer folds it back to the C
+    /// integer contract's `-EIO`, and no success is faked (the same gated
+    /// verification as `KernelKmessTransport`).
     #[test]
     fn test_getsysinfo_legs_hosted_are_eio() {
         use super::{GetSysinfoTransport, SysGetsysinfo};
@@ -1331,10 +1393,12 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(sys.ds_data_store(&mut store), -minix_types::EIO);
     }
 
-    /// VFS 两腿的请求形状与宿主行为：目的地 VFS、调用号 `VFS_GETSYSINFO`、
-    /// what 分别是 `SI_PROC_TAB`(2) 与 `SI_DMAP_TAB`(3)、size = 出参切片
-    /// 字节长（服务端的精确长度门）；宿主构建下真 trap 不可达，如实回
-    /// `-EIO`（不再需要本地 fail-closed 出口——VFS 应答面已通电）。
+    /// The VFS legs' request shape and hosted behavior: destination VFS, call
+    /// number `VFS_GETSYSINFO`, what values `SI_PROC_TAB` (2) and `SI_DMAP_TAB`
+    /// (3) respectively, and size = the output slice's byte length (the
+    /// server's exact-length gate); in hosted builds the real trap is
+    /// unreachable, so it truthfully returns `-EIO` (no local fail-closed exit
+    /// is needed any more -- VFS's answer face is powered).
     #[test]
     fn test_vfs_legs_wire_and_hosted_eio() {
         use minix_sys::ipc::CannedTransport;
@@ -1357,7 +1421,7 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(sent[0].1.m_type, VFS_GETSYSINFO);
         assert_eq!(sent[1].0, Endpoint::VFS);
         assert_eq!(sent[1].1.m_type, VFS_GETSYSINFO);
-        // SAFETY(test): what/where/size 三 lane（与 fetch 同布局）。
+        // SAFETY(test): the what/where/size lanes (the same layout as fetch).
         let lanes = |m: &Message| unsafe {
             let raw = &m.m_u.raw;
             let what = i32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]);
@@ -1374,7 +1438,8 @@ mod vfs_proc_tab_transport_tests {
             (SI_DMAP_TAB, (dm.len() * core::mem::size_of::<DmapSnap>()) as u64)
         );
 
-        // 宿主：真 trap 不可达 → 传输级 -EIO（诚实面）。
+        // Hosted: the real trap is unreachable -> transport-level -EIO (the
+        // honest face).
         let mut sys = SysGetsysinfo;
         let mut fp = [FProcSnap::default(); 2];
         assert_eq!(sys.vfs_proc_tab(&mut fp), -minix_types::EIO);
@@ -1382,24 +1447,26 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(sys.vfs_dmap_tab(&mut dm), -minix_types::EIO);
     }
 
-    /// VM_INFO 三查询的请求形状与回复槽解码（值通道，[ARCH: 26-D1]）：
-    /// STATS 读 m1p1/m1i1/m1i2/m1i3/m1p2，USAGE 读 m1p1/p2/p3（字节），
-    /// REGION 读 m1i1/m1i2。请求侧断言目的地 VM、调用号 `VM_INFO`、
-    /// what 值（C com.h:732-734 的 1/2/3）与 ep/count 域。
+    /// The three VM_INFO queries' request shape and reply-slot decoding (value
+    /// channel, `[ARCH: 26-D1]`): STATS reads m1p1/m1i1/m1i2/m1i3/m1p2, USAGE
+    /// reads m1p1/p2/p3 (bytes), and REGION reads m1i1/m1i2. The request side
+    /// asserts destination VM, call number `VM_INFO`, the what value (1/2/3 from
+    /// C com.h:732-734), and the ep/count fields.
     #[test]
     fn test_vm_info_stats_usage_wire_and_slots() {
-        // STATS：服务端把五个值写进 M1 槽（vm/ipc/encode.rs 的 InfoStats）。
+        // STATS: the server writes five values into the m1 slots (InfoStats in
+        // vm/ipc/encode.rs).
         let mut canned = CannedTransport::new();
         let mut reply = Message::default();
         reply.m_type = OK;
-        // SAFETY(test): 按 VM 的 InfoStats 槽序回填。
+        // SAFETY(test): fill in VM's InfoStats slot order.
         unsafe {
             let m1 = &mut reply.m_u.m_m1;
-            m1.m1p1 = 4096; // 页大小
-            m1.m1i1 = 100; // 总页数
-            m1.m1i2 = 40; // 空闲页
-            m1.m1i3 = 12; // 最大连续块
-            m1.m1p2 = 7; // 缓存页
+            m1.m1p1 = 4096; // page size
+            m1.m1i1 = 100; // total pages
+            m1.m1i2 = 40; // free pages
+            m1.m1i3 = 12; // largest contiguous block
+            m1.m1p2 = 7; // cached pages
         }
         canned.reply_sendrec(Ok(reply));
 
@@ -1414,16 +1481,17 @@ mod vfs_proc_tab_transport_tests {
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].0, Endpoint::VM);
         assert_eq!(sent[0].1.m_type, minix_sys::vm::VM_CALL_INFO);
-        // SAFETY(test): 请求域（与 SysVmInfo::call 同布局）。
+        // SAFETY(test): the request fields (the same layout as SysVmInfo::call).
         let req = unsafe { &sent[0].1.m_u.m_lsys_vm_info };
         assert_eq!(req.what, minix_types::VMIW_STATS);
         assert_eq!(req.ptr, 0, "值通道：不把调用方缓冲地址交给服务端");
 
-        // USAGE：三个字节值进 m1p1/p2/p3（encode.rs 的 InfoUsage）。
+        // USAGE: the three byte values go into m1p1/p2/p3 (InfoUsage in
+        // encode.rs).
         let mut canned = CannedTransport::new();
         let mut reply = Message::default();
         reply.m_type = OK;
-        // SAFETY(test): 按 InfoUsage 槽序回填。
+        // SAFETY(test): fill in the InfoUsage slot order.
         unsafe {
             let m1 = &mut reply.m_u.m_m1;
             m1.m1p1 = 8192;
@@ -1439,15 +1507,17 @@ mod vfs_proc_tab_transport_tests {
             (8192, 4096, 1024)
         );
         let sent = canned.sent.borrow();
-        // SAFETY(test): 请求域。
+        // SAFETY(test): the request fields.
         let req = unsafe { &sent[0].1.m_u.m_lsys_vm_info };
         assert_eq!(req.what, minix_types::VMIW_USAGE);
         assert_eq!(req.ep, Endpoint::PM.get());
     }
 
-    /// REGION 值通道分批（`[ARCH: 26-D7]`）：客户端替调用方把多包拼齐
-    /// ——每包按 `count`/`next`/条目区解，空包（count=0）即枚举到底；
-    /// 请求侧的 `count` 是"我还缺几条、但不超过单包容量"。
+    /// REGION value-channel batching (`[ARCH: 26-D7]`): the client stitches
+    /// several packets for the caller -- each packet is decoded by
+    /// `count`/`next`/the entry region, and an empty packet (count=0) means
+    /// enumeration is exhausted; the request-side `count` is "how many I still
+    /// need, capped at one packet's capacity".
     #[test]
     fn test_vm_info_region_batches_until_empty() {
         let packed = |addrs: &[(u64, u64, i32)], next: u64| {
@@ -1464,7 +1534,7 @@ mod vfs_proc_tab_transport_tests {
         let reply_with = |payload: &[u8]| {
             let mut m = Message::default();
             m.m_type = OK;
-            // SAFETY(test): 按打包布局填回复负载。
+            // SAFETY(test): fill the reply payload in the packed layout.
             unsafe {
                 m.m_u.raw[..payload.len()].copy_from_slice(payload);
             }
@@ -1487,7 +1557,9 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(out[1].vri_addr, 0x2000);
         assert_eq!(out[1].vri_prot, 3);
 
-        // 三包请求：count 逐包递减到"还缺几条"（≤ 单包容量），游标逐包前进。
+        // Three packet requests: count decreases packet by packet to "how many
+        // I still need" (<= one packet's capacity), and the cursor advances per
+        // packet.
         let sent = canned.sent.borrow();
         let reqs: Vec<_> = sent
             .iter()
@@ -1501,8 +1573,8 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(reqs[2], (minix_types::VMIW_REGION, 2, 0x3000));
     }
 
-    /// 宿主构建下三条 VM 腿都诚实上浮 -EIO，不假装成功
-    /// （`KernelKmessTransport` 同款门控形态）。
+    /// In hosted builds all three VM legs honestly surface -EIO and never fake
+    /// success (the same gated shape as `KernelKmessTransport`).
     #[test]
     fn test_vm_info_legs_hosted_are_eio() {
         use super::{SysAcquires, VmInfoTransport};
@@ -1515,8 +1587,9 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(a.vm_region(Endpoint::PM, &mut out, 0), (-minix_types::EIO, 0, 0));
     }
 
-    /// FakeAcquires 的 vfs_proc_tab 腿仍在（编排层测试不换装）——本模块
-    /// 只验证生产 transport 自身；main 换装挂 E-ISWIRE(3)。
+    /// FakeAcquires still has the vfs_proc_tab leg (the orchestration-layer
+    /// tests do not swap it) -- this module verifies only the production
+    /// transport itself; the main swap is tracked as E-ISWIRE's third item.
     #[test]
     fn test_fake_acquires_leg_unchanged() {
         let mut f = FakeAcquires::ok();

@@ -337,9 +337,9 @@ impl VmUnmapPhysIn {
     /// `vaddr` (u32 @ 4). The target is an explicit message field — the
     /// driver unmaps on behalf of the process it mapped memory for.
     ///
-    /// Do NOT decode from `MessageM1` — same wire-format family as
-    /// 19-P1-1 / 16-P0-1 / 20-P1-1 (the old M1 decode read `vaddr` from
-    /// `m1p1` @ 16, which is past the 4-byte vaddr).
+    /// Do NOT decode from `MessageM1` — same wire-format family as the other
+    /// fixes here (the old slot-1 decode read `vaddr` from `m1p1` @ 16, which
+    /// is past the 4-byte vaddr).
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
         // SAFETY: `m_lsys_vm_unmap_phys` is the active union arm for
@@ -360,8 +360,8 @@ impl VmShmUnmapIn {
     /// ipc.h:934-940) as sent by libc `vm_shm_unmap`: `forwhom` (i32 @ 0),
     /// `addr` (u32 @ 4).
     ///
-    /// Do NOT decode from `MessageM1` — same wire-format family as
-    /// 19-P1-1 / 16-P0-1 / 20-P1-1.
+    /// Do NOT decode from `MessageM1` — same wire-format family as the other
+    /// fixes here.
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
         // SAFETY: `m_lc_vm_shm_unmap` is the active union arm for
@@ -495,7 +495,7 @@ pub struct VmExecNewmemIn {
 // C: VM_PROCCTL fields use the m9 union layout (`message.m_m9`)
 //     #define VMPCTL_PARAM  m9_l1   // operation (VMPPARAM_CLEAR/SETMCALL/...)
 //     #define VMPCTL_WHO    m9_l2   // target endpoint
-//     #define VMPCTL_M1     m9_l3   // user-space pointer (m1 sys call index)
+//     VMPCTL's m1 parameter = m9_l3   // user-space pointer (m1 sys call index)
 //     #define VMPCTL_LEN    m9_l4   // byte count
 //     #define VMPCTL_FLAGS  m9_l5   // write flag
 //
@@ -514,7 +514,7 @@ pub struct VmProcctlIn {
     pub param: i32,
     /// VMPCTL_WHO — target endpoint.
     pub who: Endpoint,
-    /// VMPCTL_M1 — user-space pointer or extra parameter.
+    /// VMPCTL's m1 parameter — user-space pointer or extra parameter.
     pub m1: u64,
     /// VMPCTL_LEN — byte count.
     pub len: i32,
@@ -523,10 +523,11 @@ pub struct VmProcctlIn {
 }
 
 // ---------------------------------------------------------------------------
-// VM_REMAP / VM_REMAP_RO  (PM → VM)  — 客户端打包已实现（分叉消除：
-// minix-sys `remap_via` 泛化 call 号覆盖 VM_REMAP/VM_REMAP_RO，见
-// vm.rs:305-327 与 E-MINTYPES-RUNTIME 裁决）；服务端解码臂随 VM 消费
-// 落地时补充。
+// VM_REMAP / VM_REMAP_RO  (PM → VM) — client-side packing is implemented
+// (the forked paths are gone: minix-sys `remap_via` generalises the call
+// number over VM_REMAP/VM_REMAP_RO, see vm.rs:305-327 and the
+// E-MINTYPES-RUNTIME ruling); the server-side decode arm is added when VM
+// consumes it.
 // ---------------------------------------------------------------------------
 // C: mess_lsys_vm_vmremap (ipc.h:1537) — destination/source endpoints are
 // explicit message fields, NOT derived from m_source (the IPC server
@@ -599,7 +600,8 @@ impl VmVfsReplyIn {
     /// (`MessVmVfsReply`, C `mess_10` layout — ipc.h:86-92, com.h:708-714).
     /// Do NOT decode from `MessageM1`: the m10 payload starts with
     /// `m10ull1` at offset 0, shifting every `VMV_*` field 8 bytes past the
-    /// `MessageM1` offsets (23-P0-1 wire-format family).
+    /// `MessageM1` offsets (the same wire-format family as the other fixes
+    /// here).
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
         // SAFETY: `m_vm_vfs_reply` is the active union arm for VM_VFS_REPLY
@@ -655,10 +657,11 @@ pub struct VmRegionInfo {
 /// actual count returned is `fields.count <= 64`. Boxing would only
 /// add an `alloc` dependency for no measurable benefit, so we keep
 /// it inline. The transport encoding of the array is `DEFERRED` —
-/// M1's 3-pointer + 3-int slot set carries only `count`/`next` in
+/// the 3-pointer + 3-int slot set of message slot 1 carries only
+/// `count`/`next` in
 /// the kernel reply path. See
 /// `rewrite-notes/02-stage-vm/26-vm-queries.md`
-/// §3.7 ("transport 缺口") for the explicit gap contract.
+/// §3.7 ("transport gap") for the explicit gap contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmReply {
     Fork(VmForkOut),
@@ -692,19 +695,18 @@ pub enum VmReply {
         /// C: `vsi_cached` — `cached_pages` reported by `get_stats_info`
         /// (cache.c:328-331).
         cached_pages: u64,
-        /// minix-rs extension (V11/T18): page-allocation failures seen —
+        /// minix-rs extension: page-allocation failures seen —
         /// memory-pressure signal ([ARCH: A-16]). Not part of C's
         /// `struct vm_stats_info` wire layout (dropped at encode; observable
         /// in-process only).
         alloc_failures: u32,
-        /// minix-rs extension (V10-P2-4): main-loop dropped-message count
+        /// minix-rs extension: main-loop dropped-message count
         /// (receive failures + invalid callers, [ARCH: A-14]). Not part of
         /// C's `struct vm_stats_info` wire layout — observable in-process
         /// only until a syslog/extension slot lands.
         dropped_messages: u64,
-        /// minix-rs extension (V10-P2-4): failed pagefault handlings
-        /// (V9-P1-1 counter). Same wire-layout caveat as
-        /// `dropped_messages`.
+        /// minix-rs extension: failed pagefault handlings. Same wire-layout
+        /// caveat as `dropped_messages`.
         pagefault_errors: u64,
     },
     InfoUsage {
@@ -860,8 +862,8 @@ impl VmBrkIn {
     ///
     /// Do NOT decode from `MessageM1` — C's `do_brk` uses `m_source`, not
     /// `m1_i1`; a real libc sender leaves `m1_i1` zeroed (brk.c memsets the
-    /// message), so the old M1 decode would read endpoint 0 → EINVAL for
-    /// every brk() (same family as 16-P0-1 VM_PAGEFAULT wire format).
+    /// message), so the old slot-1 decode would read endpoint 0 → EINVAL for
+    /// every brk() (same family as the VM_PAGEFAULT wire-format fix).
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
         // SAFETY: `m_lc_vm_brk` is the active union arm for VM_BRK messages —
@@ -890,11 +892,11 @@ impl VmMunmapIn {
     /// `munmap()` (`m.VMUM_ADDR = addr; m.VMUM_LEN = len;`,
     /// libc/sys/mmap.c:79-86, lanes aliased to `mess_mmap.addr/len`).
     /// The `addr`/`len` lanes are 64-bit — same overlay decision as
-    /// `VmMmapIn` (see `MessMmap`, edge NS5-A).
+    /// `VmMmapIn` (see `MessMmap`).
     ///
-    /// Do NOT decode from `MessageM1` — same wire-format family as
-    /// 19-P1-1 / 16-P0-1 / 20-P1-1 (the old M1 decode read the endpoint
-    /// from `m_mmap.offset`'s low bits and addr/len from prot/flags/fd).
+    /// Do NOT decode from `MessageM1` — same wire-format family as the other
+    /// fixes here (the old slot-1 decode read the endpoint from
+    /// `m_mmap.offset`'s low bits and addr/len from prot/flags/fd).
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
         // SAFETY: `m_mmap` is the active union arm for VM_MUNMAP messages
@@ -948,9 +950,9 @@ impl VmProcctlIn {
     /// Field offsets match the C senders: `param`@16, `who`@20, `m1`@24,
     /// `len`@28, `flags`@32 (com.h:753-757, 32-bit `long`).
     ///
-    /// Do NOT decode from `MessageM1` — same wire-format family as
-    /// 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode re-mapped the five
-    /// fields to different offsets, breaking C-layout compatibility).
+    /// Do NOT decode from `MessageM1` — same wire-format family as the other
+    /// fixes here (the old slot-1 decode re-mapped the five fields to
+    /// different offsets, breaking C-layout compatibility).
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
         // SAFETY: `m_lc_vm_procctl` is the active union arm for VM_PROCCTL
@@ -976,8 +978,8 @@ impl VmRemapIn {
     ///
     /// Do NOT decode from `MessageM1` — the C sender (libc `vm_remap`,
     /// libc/sys/mmap.c) memsets the message and writes the fields at the
-    /// union payload offsets, so an M1 read would misplace every field
-    /// (same family as 19-P1-1 / 16-P0-1 wire-format fixes).
+    /// union payload offsets, so a slot-1 read would misplace every field
+    /// (same family as the other wire-format fixes here).
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
         // SAFETY: `m_lsys_vm_vmremap` is the active union arm for
@@ -1008,12 +1010,12 @@ impl VmMmapIn {
     /// C's (`mess_mmap`, ipc.h:1582-1592, as sent by libc `minix_mmap_for`,
     /// libc/sys/mmap.c); the `addr`/`len` lanes are 64-bit — the C header
     /// only compiles at 56-byte payload size on i386 and minix-rs userspace
-    /// is LP64 (see `MessMmap`, edge NS5-A).
+    /// is LP64 (see `MessMmap`).
     ///
     /// Do NOT decode from `MessageM1` — the real libc sender memsets the
     /// message and writes the fields at the union payload offsets, so the
-    /// old M1 decode read prot/flags/fd/offset as 0 for every mmap()
-    /// (same family as 19-P1-1 / 16-P0-1 wire-format fixes).
+    /// old slot-1 decode read prot/flags/fd/offset as 0 for every mmap()
+    /// (same family as the other wire-format fixes here).
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
         // SAFETY: `m_mmap` is the active union arm for VM_MMAP messages.
@@ -1061,10 +1063,10 @@ impl VmMmapOut {
     /// writes it (`m->m_mmap.retaddr = (void *) vr->vaddr`,
     /// servers/vm/mmap.c:276; file-backed continuation :191) and where libc
     /// `minix_mmap_for` reads it (`return m.m_mmap.retaddr`,
-    /// libc/sys/mmap.c:44-45). Not an M1 slot — the M1 pointer lanes end at
-    /// `m1p3` (@32..40) — hence a dedicated overlay encoder instead of
-    /// `EncodeToM1` (edge NS5-A; the old m1p1 form was the reply-lane half
-    /// of the mmap_via scramble).
+    /// libc/sys/mmap.c:44-45). Not a slot-1 lane — the slot-1 pointer lanes
+    /// end at `m1p3` (@32..40) — hence a dedicated overlay encoder instead of
+    /// `EncodeToM1` (the old m1p1 form was the reply-lane half of the
+    /// mmap_via scramble).
     pub fn encode_message(&self, msg: &mut Message) {
         // SAFETY: `m_mmap` is the active union arm for VM_MMAP replies.
         let mm = unsafe { &mut msg.m_u.m_mmap };
@@ -1110,8 +1112,8 @@ impl VmVfsMmapIn {
     /// as u64 at offsets 0/8/16, then `who`/`vaddr`/`len`/`flags`/`fd` as
     /// 32-bit fields and `clearend` as u16.
     ///
-    /// Do NOT decode from `MessageM1` — same wire-format family as
-    /// 19-P1-1 / 16-P0-1 (the old M1 decode zeroed offset/dev/ino/flags/
+    /// Do NOT decode from `MessageM1` — same wire-format family as the other
+    /// fixes here (the old slot-1 decode zeroed offset/dev/ino/flags/
     /// clearend for every VFS_MMAP).
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
@@ -1139,14 +1141,15 @@ impl VmCacheIn {
     /// the C wire format (`mess_vmmcp`, ipc.h:2383-2393) as sent by
     /// `vm_cachecall` (libsys/vm_cache.c:8-43): `dev` (u64 @ 0),
     /// `dev_offset` (i64 @ 8), `ino_offset` (i64 @ 16), `ino` (u64 @ 24),
-    /// `block` (u64 @ 32 — E-VMMCPWIRE 余件:`void *` 按 x86_64 加宽,
-    /// u32 在 MMAP 窗口地址上恒截断高位), `flags_ptr` (u64 @ 40),
+    /// `block` (u64 @ 32 — the remaining E-VMMCPWIRE item: `void *` widens
+    /// for x86_64, and a u32 would always truncate the high bits of an MMAP
+    /// window address), `flags_ptr` (u64 @ 40),
     /// `pages` (u8 @ 48), `flags` (u8 @ 49).
     ///
-    /// Do NOT decode from `MessageM1` — same wire-format family as
-    /// 23-P0-1 / 22-P0-1 / 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode
-    /// read `dev` from `m1p1` @16 and hardcoded `ino`/`ino_offset`/`block`
-    /// to 0, so setcache could never see the FS's inode or block address).
+    /// Do NOT decode from `MessageM1` — same wire-format family as the other
+    /// fixes here (the old slot-1 decode read `dev` from `m1p1` @16 and
+    /// hardcoded `ino`/`ino_offset`/`block` to 0, so setcache could never see
+    /// the FS's inode or block address).
     #[inline(always)]
     pub fn decode_message(msg: &Message) -> Self {
         // SAFETY: `m_vmmcp` is the active union arm for the four cache
@@ -1220,9 +1223,10 @@ mod tests {
     fn test_vm_brk_in_decode_message() {
         // C wire format: libc brk() sends only m_lc_vm_brk.addr; the caller
         // endpoint is m_source (kernel-set). On the 32-bit wire, addr sits at
-        // payload offset 0 — the same bytes as m1_i1 — so the OLD M1 decode
-        // (endpoint = m1i1) read the low 32 bits of addr → garbage endpoint
-        // → EINVAL for every brk() (19-P1-1, same family as 16-P0-1).
+        // payload offset 0 — the same bytes as m1_i1 — so the old slot-1
+        // decode (endpoint = m1i1) read the low 32 bits of addr → garbage
+        // endpoint → EINVAL for every brk() (same family as the other
+        // wire-format fixes here).
         use crate::ipc::{MessLcVmBrk, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::PM;
@@ -1248,9 +1252,9 @@ mod tests {
     #[test]
     fn test_vm_mmap_in_decode_message() {
         // Wire format (mess_mmap field order, ipc.h:1582; 64-bit addr/len
-        // lanes per the NS5-A overlay decision — offset u64 @ 0, addr u64
+        // lanes per the overlay decision — offset u64 @ 0, addr u64
         // @ 8, len u64 @ 16, prot @ 24, flags @ 28, fd @ 32, forwhom @ 36).
-        // The old M1 decode zeroed prot/flags/fd/offset — the regression
+        // The old slot-1 decode zeroed prot/flags/fd/offset — the regression
         // asserts all fields survive; the >4 GiB addr pins the 64-bit lane
         // (a u32 lane would truncate it).
         use crate::ipc::{MessMmap, Message};
@@ -1285,7 +1289,7 @@ mod tests {
         // C's VM writes the chosen address into the same m_mmap overlay's
         // retaddr lane (servers/vm/mmap.c:276; :191 file-backed), where
         // libc minix_mmap_for reads it back (libc/sys/mmap.c:44-45) — not
-        // an M1 slot (edge NS5-A).
+        // a slot-1 lane.
         use crate::ipc::{Message, VmMmapOut};
         let mut msg = Message::default();
         VmMmapOut {
@@ -1356,10 +1360,10 @@ mod tests {
 
     #[test]
     fn test_vm_munmap_in_decode_message() {
-        // 21-P1-1 regression: VM_MUNMAP reuses mess_mmap (com.h:650-651)
-        // and the caller is m_source (mmap.c:518-525). The old M1 decode
-        // read the endpoint from m_mmap.offset's low bits and addr/len
-        // from prot/flags — all wrong.
+        // VM_MUNMAP reuses mess_mmap (com.h:650-651) and the caller is
+        // m_source (mmap.c:518-525). The old slot-1 decode read the endpoint
+        // from m_mmap.offset's low bits and addr/len from prot/flags — all
+        // wrong.
         use crate::ipc::{MessMmap, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::from_generation_slot(1, 33);
@@ -1383,9 +1387,9 @@ mod tests {
 
     #[test]
     fn test_vm_unmap_phys_in_decode_message() {
-        // 21-P1-1 regression: mess_lsys_vm_unmap_phys (ipc.h:1521) has
-        // ep (i32 @ 0), vaddr (u32 @ 4). The old M1 decode read vaddr
-        // from m1p1 @ 16 — past the 4-byte field.
+        // mess_lsys_vm_unmap_phys (ipc.h:1521) has ep (i32 @ 0),
+        // vaddr (u32 @ 4). The old slot-1 decode read vaddr from m1p1 @ 16 —
+        // past the 4-byte field.
         use crate::ipc::{MessLsysVmUnmapPhys, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::MEM;
@@ -1404,9 +1408,8 @@ mod tests {
 
     #[test]
     fn test_vm_shm_unmap_in_decode_message() {
-        // 21-P1-1 regression: mess_lc_vm_shm_unmap (ipc.h:934) has
-        // forwhom (i32 @ 0), addr (u32 @ 4). The old M1 decode read addr
-        // from m1p1 @ 16.
+        // mess_lc_vm_shm_unmap (ipc.h:934) has forwhom (i32 @ 0),
+        // addr (u32 @ 4). The old slot-1 decode read addr from m1p1 @ 16.
         use crate::ipc::{MessLcVmShmUnmap, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::PM;
@@ -1684,82 +1687,83 @@ mod tests {
     }
 }
 
-// ── E-RSWIRE V13c:五消息专属 wire 结构(C ipc.h 锚点;LP64 判例——
-// 指针/尺寸域 4→8、padding 等比收缩、总长保持 56)──
+// ── E-RSWIRE: dedicated wire structs for five messages (C ipc.h anchors;
+// the LP64 ruling — pointer/size fields widen 4→8, padding shrinks by the
+// same amount, total length stays 56)──
 
-/// getphys 请求载荷(C: `mess_lc_vm_getphys` — ipc.h:928-934)。
+/// getphys request payload (C: `mess_lc_vm_getphys` — ipc.h:928-934).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLcVmGetphys {
-    /// 目标进程端点。C: `endpoint_t endpt`。
+    /// Target process endpoint. C: `endpoint_t endpt`.
     pub endpt: i32,
-    /// 查询地址。C: `void *addr`(LP64 @8)。
+    /// Address to query. C: `void *addr` (LP64 @8).
     pub addr: u64,
-    /// 回传地址出参。C: `void *ret_addr`。
+    /// Output parameter: the returned address. C: `void *ret_addr`.
     pub ret_addr: u64,
-    /// LP64:域合计 24,padding 由 44 缩至 32,总 56。
+    /// LP64: the fields total 24; padding shrinks from 44 to 32, total 56.
     pub _padding: [u8; 32],
 }
 
-/// getref 请求载荷(C: `mess_lsys_vm_getref` — ipc.h:1487-1492)。
+/// getref request payload (C: `mess_lsys_vm_getref` — ipc.h:1487-1492).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLsysVmGetref {
-    /// 目标进程端点。C: `endpoint_t endpt`。
+    /// Target process endpoint. C: `endpoint_t endpt`.
     pub endpt: i32,
-    /// 查询地址。C: `void *addr`。
+    /// Address to query. C: `void *addr`.
     pub addr: u64,
-    /// 引用计数出参。C: `int retc`。
+    /// Output parameter: the reference count. C: `int retc`.
     pub retc: i32,
-    /// LP64:24 字节域后 padding 32,总 56。
+    /// LP64: 24 bytes of fields followed by 32 bytes of padding, total 56.
     pub _padding: [u8; 32],
 }
 
-/// info 请求载荷(C: `mess_lsys_vm_info` — ipc.h:1494-1502)。
+/// info request payload (C: `mess_lsys_vm_info` — ipc.h:1494-1502).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLsysVmInfo {
-    /// 查询类别(VMIW_*)。C: `int what`。
+    /// Query kind (VMIW_*). C: `int what`.
     pub what: i32,
-    /// 目标端点。C: `endpoint_t ep`。
+    /// Target endpoint. C: `endpoint_t ep`.
     pub ep: i32,
-    /// region 枚举条数。C: `int count`。
+    /// Number of region entries. C: `int count`.
     pub count: i32,
-    /// LP64:三个 int 后 4 字节对齐垫。C: padding(隐式)。
+    /// LP64: 4-byte alignment pad after the three ints. C: implicit padding.
     pub _pad: u32,
-    /// 用户缓冲指针。C: `void *ptr`。
+    /// User buffer pointer. C: `void *ptr`.
     pub ptr: u64,
-    /// 枚举游标。C: `vir_bytes next`。
+    /// Enumeration cursor. C: `vir_bytes next`.
     pub next: u64,
-    /// LP64:32 字节域后 padding 24,总 56。
+    /// LP64: 32 bytes of fields followed by 24 bytes of padding, total 56.
     pub _padding: [u8; 24],
 }
 
-/// rusage 请求载荷(C: `mess_lsys_vm_rusage` — ipc.h:1513-1520)。
+/// rusage request payload (C: `mess_lsys_vm_rusage` — ipc.h:1513-1520).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLsysVmRusage {
-    /// 目标进程端点。C: `endpoint_t endpt`。
+    /// Target process endpoint. C: `endpoint_t endpt`.
     pub endpt: i32,
-    /// rusage 缓冲地址。C: `vir_bytes addr`。
+    /// Address of the rusage buffer. C: `vir_bytes addr`.
     pub addr: u64,
-    /// 是否含子进程累计。C: `int children`。
+    /// Whether to include accumulated child usage. C: `int children`.
     pub children: i32,
-    /// LP64:24 字节域后 padding 32,总 56。
+    /// LP64: 24 bytes of fields followed by 32 bytes of padding, total 56.
     pub _padding: [u8; 32],
 }
 
-/// update 请求载荷(C: `mess_lsys_vm_update` — ipc.h:1527-1534)。
+/// update request payload (C: `mess_lsys_vm_update` — ipc.h:1527-1534).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessLsysVmUpdate {
-    /// 源实例端点。C: `endpoint_t src`。
+    /// Source instance endpoint. C: `endpoint_t src`.
     pub src: i32,
-    /// 目标实例端点。C: `endpoint_t dst`。
+    /// Destination instance endpoint. C: `endpoint_t dst`.
     pub dst: i32,
-    /// 更新标志。C: `int flags`。
+    /// Update flags. C: `int flags`.
     pub flags: i32,
-    /// 无指针域,LP64 padding 与 i386 同为 44,总 56。
+    /// No pointer fields, so the LP64 padding is 44 as on i386, total 56.
     pub _padding: [u8; 44],
 }
 
@@ -1768,7 +1772,8 @@ mod vm_wire_struct_tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// 布局见证:getphys 56B,endpt@0/addr@8/ret_addr@16(ipc.h:928-934)。
+    /// Layout witness: getphys 56B, endpt@0/addr@8/ret_addr@16
+    /// (ipc.h:928-934).
     #[test]
     fn test_mess_lc_vm_getphys_layout() {
         assert_eq!(size_of::<MessLcVmGetphys>(), 56);
@@ -1777,7 +1782,8 @@ mod vm_wire_struct_tests {
         assert_eq!(offset_of!(MessLcVmGetphys, ret_addr), 16);
     }
 
-    /// 布局见证:getref 56B,endpt@0/addr@8/retc@16(ipc.h:1487-1492)。
+    /// Layout witness: getref 56B, endpt@0/addr@8/retc@16
+    /// (ipc.h:1487-1492).
     #[test]
     fn test_mess_lsys_vm_getref_layout() {
         assert_eq!(size_of::<MessLsysVmGetref>(), 56);
@@ -1786,8 +1792,8 @@ mod vm_wire_struct_tests {
         assert_eq!(offset_of!(MessLsysVmGetref, retc), 16);
     }
 
-    /// 布局见证:info 56B,what@0/ep@4/count@8/ptr@16/next@24
-    /// (ipc.h:1494-1502)。
+    /// Layout witness: info 56B, what@0/ep@4/count@8/ptr@16/next@24
+    /// (ipc.h:1494-1502).
     #[test]
     fn test_mess_lsys_vm_info_layout() {
         assert_eq!(size_of::<MessLsysVmInfo>(), 56);
@@ -1798,8 +1804,8 @@ mod vm_wire_struct_tests {
         assert_eq!(offset_of!(MessLsysVmInfo, next), 24);
     }
 
-    /// 布局见证:rusage 56B,endpt@0/addr@8/children@16
-    /// (ipc.h:1513-1520)。
+    /// Layout witness: rusage 56B, endpt@0/addr@8/children@16
+    /// (ipc.h:1513-1520).
     #[test]
     fn test_mess_lsys_vm_rusage_layout() {
         assert_eq!(size_of::<MessLsysVmRusage>(), 56);
@@ -1808,7 +1814,7 @@ mod vm_wire_struct_tests {
         assert_eq!(offset_of!(MessLsysVmRusage, children), 16);
     }
 
-    /// 布局见证:update 56B,src@0/dst@4/flags@8(ipc.h:1527-1534)。
+    /// Layout witness: update 56B, src@0/dst@4/flags@8 (ipc.h:1527-1534).
     #[test]
     fn test_mess_lsys_vm_update_layout() {
         assert_eq!(size_of::<MessLsysVmUpdate>(), 56);
@@ -1818,20 +1824,23 @@ mod vm_wire_struct_tests {
     }
 }
 
-// ── E-VFSWIRE:VFS_VMCALL 家族绝对值(VM → VFS 页请求)──
+// ── E-VFSWIRE: absolute values of the VFS_VMCALL family (VM → VFS page
+// requests)──
 
-/// `VFS_VMCALL` 调用号:`VFS_BASE(0x100) + 38` = 294(callnr.h:68/:110)。
-/// VM 向 VFS 发起的页请求(FDLOOKUP/FDCLOSE/FDIO)走此 m_type;
-/// VFS 以 `VM_VFS_REPLY`(0xC1E)应答,便于区分请求与应答
-/// (vfs misc.c:57-60)。
+/// `VFS_VMCALL` call number: `VFS_BASE(0x100) + 38` = 294
+/// (callnr.h:68/:110). Page requests VM sends to VFS
+/// (FDLOOKUP/FDCLOSE/FDIO) use this m_type; VFS answers with
+/// `VM_VFS_REPLY` (0xC1E), keeping requests and replies distinguishable
+/// (vfs misc.c:57-60).
 pub const VFS_VMCALL: i32 = 294;
 
-/// 请求 opcode:借用 fd 到 VM 表(`do_vm_call:414` 分派)。
-/// C: `VMVFSREQ_FDLOOKUP` — com.h:702。
+/// Request opcode: borrow an fd into the VM table (`do_vm_call:414`
+/// dispatch).
+/// C: `VMVFSREQ_FDLOOKUP` — com.h:702.
 pub const VMVFSREQ_FDLOOKUP: i32 = 101;
-/// 请求 opcode:关闭借用的 fd。C: `VMVFSREQ_FDCLOSE` — com.h:703。
+/// Request opcode: close a borrowed fd. C: `VMVFSREQ_FDCLOSE` — com.h:703.
 pub const VMVFSREQ_FDCLOSE: i32 = 102;
-/// 请求 opcode:寻位 + 分页 I/O 探测。C: `VMVFSREQ_FDIO` — com.h:704。
+/// Request opcode: seek plus paging-I/O peek. C: `VMVFSREQ_FDIO` — com.h:704.
 pub const VMVFSREQ_FDIO: i32 = 103;
 
 #[cfg(test)]
@@ -1840,8 +1849,9 @@ mod vfs_call_wire_tests {
     use crate::ipc::message::MessVmVfsCall;
     use core::mem::{offset_of, size_of};
 
-    /// 绝对值 pin:调用号与 opcode(E-VFSWIRE 纪律——m_type 与字段
-    /// 绝对值必须以 C 源断言;R2-P0-1 基址分叉教训)。
+    /// Absolute-value pin: call number and opcodes (E-VFSWIRE discipline —
+    /// m_type and field absolute values must be asserted against the C source;
+    /// the lesson of the forked base addresses).
     #[test]
     fn test_vfs_call_absolute_values() {
         assert_eq!(VFS_VMCALL, 0x100 + 38); // callnr.h:68/:110
@@ -1853,8 +1863,8 @@ mod vfs_call_wire_tests {
         assert_eq!(VM_VFS_REPLY, 0xC1E);
     }
 
-    /// 布局见证:MessVmVfsCall 56 字节,m10 六域位
-    /// (offset@0/req@8/fd@12/req_id@16/endpoint@20/length@32)。
+    /// Layout witness: MessVmVfsCall 56 bytes, six m10 fields
+    /// (offset@0/req@8/fd@12/req_id@16/endpoint@20/length@32).
     #[test]
     fn test_mess_vm_vfs_call_layout() {
         assert_eq!(size_of::<MessVmVfsCall>(), 56);
@@ -1866,8 +1876,9 @@ mod vfs_call_wire_tests {
         assert_eq!(offset_of!(MessVmVfsCall, length), 32);
     }
 
-    /// vfs.c:83-90 的字节级复刻:同一构造在 C 与 Rust 产生相同
-    /// payload 字节(req_id 作为唯一例证域,offset 走 u64 槽)。
+    /// Byte-level replica of vfs.c:83-90: the same construction produces the
+    /// same payload bytes in C and Rust (req_id as the sole witness field,
+    /// with offset in a u64 slot).
     #[test]
     fn test_vfs_call_wire_matches_c_construction() {
         let call = MessVmVfsCall {

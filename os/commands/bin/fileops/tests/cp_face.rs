@@ -14,7 +14,7 @@
 //! reachable shapes are the fatal one and the ones that never touch the filesystem:
 //! the usage pair, the refused-letter line, and what `argv[0]` contributes. The deeper
 //! legs (`copy_file`'s open/read/write family, `setfile`, the `-R` walk) are pinned by
-//! the deciding half's unit tests and by the real-machine gate `C-57`/`E5`, and this
+//! the deciding half's unit tests and by the real-machine gate `E5`, and this
 //! door does not pretend to cover them.
 
 use std::fs;

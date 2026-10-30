@@ -7,18 +7,26 @@
 //! leave 1). Exactly two operands are required; each `-` names standard
 //! input. The merge itself is the library's tested `comm` module.
 //!
-//! 诊断面只有两处出口，但**行数不同**：集外字母是 libc 先印一行（`getopt.c:101-104`）
-//! 再由 `comm.c:91-93` 的 `default: usage()` 接第二行；操作数不是两个（多、少都算）
-//! 只有 `usage()` 那一行（`comm.c:101`）。optstring `"123f"` 里没有带值字母，所以
-//! libc 的缺值那一句在本支根本到不了——可达出口由 optstring 定，不按同族规律补。
-//! 打不开的档名是 `err(1, "%s", name)` 三段形且**致命**（`comm.c:181-184`）：与
-//! `column`/`rev` 的 warn+继续不同，`comm` 开不了第一个档就直接退 1，第二个档名
-//! 连试都不试。
+//! The diagnostic surface has only two exits, but they emit **different
+//! numbers of lines**: for an unknown option letter libc prints one line
+//! first (`getopt.c:101-104`) and then `comm.c:91-93`'s `default: usage()`
+//! adds a second; when the operand count is not two (too many or too few
+//! alike) only the single `usage()` line appears (`comm.c:101`). The optstring
+//! `"123f"` has no letter that takes a value, so libc's missing-argument
+//! message is unreachable on this branch — the reachable exits are decided by
+//! the optstring, not padded out by analogy with sibling tools.
+//! An unopenable file name is the three-part `err(1, "%s", name)` form and is
+//! **fatal** (`comm.c:181-184`): unlike `column`/`rev`, which warn and
+//! continue, `comm` exits 1 as soon as it cannot open the first file and never
+//! even tries the second name.
 //!
-//! 命令行参数按**字节**进来（`support::args_bytes`），所以一枚裸 `ff` 走到选项环时仍是
-//! `ff`，字母位报的也是那一枚字节本身。只剩两条腿仍要 `&str`：开档与 `err(1, "%s", name)`
-//! 的句子（都在 `os/libs/` 的领地里，登记 `ARGV-BYTE-PATH-IN-LIBS`），于是壳内留下两处臂内
-//! 折叠（程序名一处、操作数一处）——与其余各支同一条既定口径。
+//! Command-line arguments arrive as **bytes** (`support::args_bytes`), so a
+//! bare `ff` is still `ff` when it reaches the option loop, and the
+//! option-letter report prints that very byte. Only two legs still require
+//! `&str`: opening a file and the `err(1, "%s", name)` sentence (both in
+//! `os/libs/` territory, registered as `ARGV-BYTE-PATH-IN-LIBS`), so the shell
+//! keeps two in-arm conversions (one for the program name, one for the
+//! operands) — the same established rule as every other branch.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -34,16 +42,21 @@ use minix_textfilter::comm::{CommArgError, CommOptions, comm, parse_comm_args};
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名那一腿交给 `warn_line` 与 `line_bytes` 的 `&str` 名字段（在册
-    // `ARGV-BYTE-PATH-IN-LIBS`），所以臂内折一次；两个操作数不跟着折。
+    // The program-name leg goes to the `&str` name field of `warn_line` and
+    // `line_bytes` (registered as `ARGV-BYTE-PATH-IN-LIBS`), so it is
+    // converted once inside the arm; the two operands are not converted
+    // along with it.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
-    // C 的选项环只有一条报错支：libc 先印一行，`usage()` 再印一行（退 1）。
-    // 旧写法少了 libc 那一行，把两类失败都压成一行自撰的 usage。
+    // C's option loop has only one error branch: libc prints one line, then
+    // `usage()` prints another (exit 1). The old form omitted libc's line and
+    // flattened both failure kinds into a single hand-written usage line.
     let (options, files): (CommOptions, [&[u8]; 2]) = match parse_comm_args(&args[1..]) {
         Ok(parsed) => parsed,
         Err(CommArgError::UnknownOption(letter)) => {
-            // 字母位走 `line_bytes`：取法已在 `src/comm.rs` 改成按字节，两边同形才成立。
+            // The option-letter position uses `line_bytes`: retrieval in
+            // `src/comm.rs` is byte-based, and the two sides must stay in the
+            // same form for this to hold.
             support::warn(&GetoptReport::UnknownOption(letter).line_bytes(&prog));
             usage();
         }
@@ -55,11 +68,13 @@ fn run() -> ! {
     let a: Vec<&[u8]> = lines1.iter().map(Vec::as_slice).collect();
     let b: Vec<&[u8]> = lines2.iter().map(Vec::as_slice).collect();
     let merged = comm(&a, &b, &options);
-    // 列前缀按 C 那样**只发给真正打出来的列**（`comm.c:105-110`：`p = tabs;` 然后
-    // `if (flag1) col1 = *p++; if (flag2) col2 = *p++; if (flag3) col3 = *p;`）。
-    // 所以压掉列一之后，原来的列二拿到的是 `tabs[0]`（无前缀）、原来的列三拿 `tabs[1]`，
-    // 而不是按列号固定取 `tabs[column - 1]`——旧写法正是后者，`comm -1` 于是给
-    // 公共行打了两个制表符。
+    // Column prefixes are handed out as in C, **only to columns that are
+    // actually printed** (`comm.c:105-110`: `p = tabs;` then
+    // `if (flag1) col1 = *p++; if (flag2) col2 = *p++; if (flag3) col3 = *p;`).
+    // So after column one is suppressed, the former column two gets `tabs[0]`
+    // (no prefix) and the former column three gets `tabs[1]`, rather than
+    // taking `tabs[column - 1]` by fixed column number — the old form did the
+    // latter, so `comm -1` put two tabs in front of common lines.
     let tabs = ["", "\t", "\t\t"];
     let mut prefix = ["\t\t"; 4];
     let mut next = 0usize;
@@ -86,12 +101,16 @@ fn run() -> ! {
 /// Read one operand (`-` is standard input) and split it into newline-stripped
 /// lines. An unopenable named file is fatal (C `file()` `err(1)`).
 ///
-/// 末行没有换行符也照样是一条记录（`getnextln` 只在「EOF 且一个字符都没读到」时才
-/// 返回 `NULL`，`comm.c:211-214`）——这一点与 `column` 相反，那边把残行当「长行」丢掉。
+/// A last line without a newline is still a record (`getnextln` returns
+/// `NULL` only on "EOF with no character read at all", `comm.c:211-214`) —
+/// the opposite of `column`, which discards the residue as an overlong line.
 ///
-/// 档名以字节进来；开档那一腿与 `err(1, "%s", name)` 的句子都要 `&str`（在册
-/// `ARGV-BYTE-PATH-IN-LIBS`），所以在这里折一次——报出来的名字与真源差在那条腿上，
-/// 不差在回显写法。`-` 的判据按**字节**比，与折叠名无关。
+/// File names arrive as bytes; both the file-opening leg and the
+/// `err(1, "%s", name)` sentence need `&str` (registered as
+/// `ARGV-BYTE-PATH-IN-LIBS`), so the conversion happens here once — the
+/// reported name differs from the true source on that leg only, not in the
+/// echoing form. The `-` test is a **byte** comparison and is unrelated to the
+/// converted name.
 fn operand_lines(prog: &str, name: &[u8]) -> Vec<Vec<u8>> {
     let path = String::from_utf8_lossy(name);
     let input = if name == b"-" {
@@ -100,7 +119,8 @@ fn operand_lines(prog: &str, name: &[u8]) -> Vec<Vec<u8>> {
         match support::read_file(&path) {
             Ok(data) => data,
             Err(code) => {
-                // C 是 `err(1, "%s", name)`：程序名、档名、`strerror` 句子，一行，然后退 1。
+                // C does `err(1, "%s", name)`: program name, file name, and
+                // `strerror` sentence on one line, then exit 1.
                 support::warn_line(prog, &path, code);
                 support::terminate(1);
             }
@@ -109,9 +129,11 @@ fn operand_lines(prog: &str, name: &[u8]) -> Vec<Vec<u8>> {
     split_lines(&input)
 }
 
-/// 按字节切行：C 的 `getnextln` 逐 `getc` 填缓冲（`comm.c:200-205`），非 UTF-8 字节
-/// 只是那一行里的一个字节。旧写法 `from_utf8(input).unwrap_or("")` 让一枚坏字节抹掉
-/// 整个档的记录（现量见 `tmp/paste-comm-434/ab.log`：参照件打三列，旧本壳交回空）。
+/// Split lines by byte: C's `getnextln` fills its buffer one `getc` at a time
+/// (`comm.c:200-205`), so a non-UTF-8 byte is just a byte in that line. The
+/// old form `from_utf8(input).unwrap_or("")` let one bad byte erase every
+/// record in the file (measured against the reference: it printed three
+/// columns where the old shell returned nothing).
 fn split_lines(input: &[u8]) -> Vec<Vec<u8>> {
     if input.is_empty() {
         return Vec::new();
@@ -126,8 +148,9 @@ fn split_lines(input: &[u8]) -> Vec<Vec<u8>> {
     pieces
 }
 
-/// C 的 `usage()`（`comm.c:195-199`）：一行、**程序名写死在串里**（不像 `column` 那样
-/// 跟着 `getprogname()`）、退 1。
+/// C's `usage()` (`comm.c:195-199`): one line with the **program name
+/// hardcoded in the string** (unlike `column`, which follows
+/// `getprogname()`), then exit 1.
 fn usage() -> ! {
     support::warn(b"usage: comm [-123f] file1 file2\n");
     support::terminate(1);

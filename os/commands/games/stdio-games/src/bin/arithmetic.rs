@@ -10,9 +10,10 @@
 //! exits (`:241-243`); the score block is `showstats`, which fires every twenty
 //! problems (`:148-151`) and on the interrupt (`:156-161`) — never at end of input.
 //! Its shape is three pieces with two different guards, and it carries the
-//! `Total time %ld seconds; %.1f seconds per problem` line (`:172-173`) that批次二百五十七
-//! 接上：`qtime` 逐题累加的是两次 `time(2)` 戳的**整秒差**，那一个小数位是
-//! `(float)qtime / nright` 经 `gdtoa` 的就近取整、平手取偶。
+//! `Total time %ld seconds; %.1f seconds per problem` line (`:172-173`): `qtime`
+//! accumulates, problem by problem, the **whole-second difference** between two
+//! `time(2)` stamps, and that single decimal digit is `(float)qtime / nright`
+//! rounded to nearest with ties to even by `gdtoa`.
 //!
 //! Two declared differences: the operand source is a seeded linear congruential
 //! generator (the C program uses `random(3)`, whose sequence is time-seeded and
@@ -20,7 +21,7 @@
 //! forget about the penalty" branch (`arithmetic.c:309-310`: a failed `malloc`
 //! makes `penalise` a no-op) has no counterpart — this tree's penalty list is a
 //! `Vec`, which aborts instead of returning null. The penalty arithmetic itself
-//! is modelled (批次二百三十二：`Penalties`/`Drawn`/`charged_operands`) and C
+//! is modelled (`Penalties`/`Drawn`/`charged_operands`) and C
 //! emits no sound on a wrong answer, so there is no hint face to miss.
 //!
 //! The diagnostic face is C's and nothing else: all three option errors are
@@ -59,8 +60,9 @@ const KEYS: [Operator; 4] = [
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    // C 的 `arithmetic` 不调 `setprogname`；`getprogname()` 仍由
-    // `crt0-common.c:156-165` 从 `argv[0]` 起好那一段，`usage()` 用的就是它。
+    // C's `arithmetic` does not call `setprogname`; `getprogname()` is still set
+    // up from `argv[0]` by `crt0-common.c:156-165`, and that is what `usage()`
+    // uses.
     let prog = support::prog_name(&argv);
     let mut range = DEFAULT_RANGE;
     let mut keys: Vec<usize> = vec![0, 1];
@@ -72,8 +74,8 @@ fn run() -> ! {
                 match parse_range(&argv[index]) {
                     Ok(value) => range = value,
                     Err(_) => {
-                        // `arithmetic.c:132`：`errx(1, "arithmetic: invalid range.")`——
-                        // 前缀重复是 C 的格式串自带的。
+                        // `arithmetic.c:132`: `errx(1, "arithmetic: invalid range.")`—
+                        // the duplicated prefix comes from C's own format string.
                         support::warn(b"arithmetic: arithmetic: invalid range.\n");
                         support::terminate(1);
                     }
@@ -86,7 +88,7 @@ fn run() -> ! {
                     match KEYS.iter().position(|op| sign_of(*op) == key) {
                         Some(position) => keys.push(position),
                         None => {
-                            // `arithmetic.c:126`，同上。
+                            // `arithmetic.c:126`, same as above.
                             support::warn(b"arithmetic: arithmetic: unknown key.\n");
                             support::terminate(1);
                         }
@@ -94,8 +96,8 @@ fn run() -> ! {
                 }
             }
             _ => {
-                // `arithmetic.c:378-385`：`Usage: %s [-o +-x/] [-r range]\n`，大写 U、
-                // 名字嵌在串里，走 stderr。
+                // `arithmetic.c:378-385`: `Usage: %s [-o +-x/] [-r range]\n`, capital U,
+                // the name embedded in the string, to stderr.
                 support::warn(format!("Usage: {prog} [-o +-x/] [-r range]\n").as_bytes());
                 support::terminate(1);
             }
@@ -121,7 +123,8 @@ fn run() -> ! {
         // so the wrong attempts below are inside the charged window.
         let start = support::epoch_micros();
         loop {
-            // C 的 arithmetic 不看 `ferror`（全篇无此判），读到尽头与读出错都直接收摊退 0。
+            // C's arithmetic never checks `ferror` (no such test anywhere in it);
+            // end of file and a read error both just wrap up and exit 0.
             let has_line = reader.next_line().unwrap_or(false);
             if !has_line {
                 support::emit(b"\n");
@@ -253,8 +256,8 @@ fn draw(
     match penalties.draw(slot, operand, maxval, next_random(random)) {
         Drawn::Direct(value) | Drawn::Penalised(value) => value,
         Drawn::Inconsistent => {
-            // `arithmetic.c:362`：`errx(1, "arithmetic: bug: inconsistent penalties.")`，
-            // 重复前缀同上面两处。
+            // `arithmetic.c:362`: `errx(1, "arithmetic: bug: inconsistent penalties.")`,
+            // the duplicated prefix again as in the two cases above.
             support::warn(b"arithmetic: arithmetic: bug: inconsistent penalties.\n");
             support::terminate(1)
         }
@@ -339,9 +342,11 @@ fn show_stats<R: FnMut(&mut [u8]) -> Result<usize, minix_sys::Errno>>(
         }
     }
     support::emit(b"Press RETURN to continue...\n");
-    // C 的 `while(!getchar());`（`arithmetic.c:177-179`）从这里**吃掉一个字节**：拿到 NUL 就继续
-    // 等，拿到任何别的字节、读到尽头或读失手都结束（它不查 `feof`，也不查 `ferror`）。不吃
-    // 掉它，下一个 `fgets` 就会把这个字符读进题里，第 21 题的答案因而偏一位。
+    // C's `while(!getchar());` (`arithmetic.c:177-179`) **eats one byte** here:
+    // a NUL keeps it waiting, while any other byte, end of file, or read failure
+    // ends the loop (it checks neither `feof` nor `ferror`). Without eating it,
+    // the next `fgets` would read that character into the problem and shift the
+    // 21st answer by one.
     while reader.next_byte() == Some(0) {}
     support::emit(b"\n");
 }

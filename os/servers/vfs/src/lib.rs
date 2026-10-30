@@ -22,10 +22,12 @@
 //! - `ipc`: IPC message handling.
 
 #![cfg_attr(not(test), no_std)]
-// [SD-19] 静默吞错家族编译门：无理由的新 let _ 会在每次 clippy 多报一条；有意丢弃逐站 [SD19-gate] 理由 + #[allow]。
+// Compile gate for the silent-swallow family: a new `let _` without a stated
+// reason reports one extra clippy hit on every run; intentional discards give
+// their [SD19-gate] reason at each site plus #[allow].
 #![warn(clippy::let_underscore_must_use)]
 
-// alloc 宏（vec!/format!）crate 级引入（init 双形态先例）。
+// alloc macros (vec!/format!) imported at crate level (dual-form init precedent).
 #[macro_use]
 extern crate alloc;
 

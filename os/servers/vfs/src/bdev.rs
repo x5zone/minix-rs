@@ -12,9 +12,10 @@
 //! - reopen/notify/root predicates type the driver-swap sweeps
 //! - the ioctl guard duty reuses 19's `BLOCK_NEEDS_GUARD` (not redefined)
 
-// BDEV 线上常量（RQ_BASE/OFF 三档/R_BIT/W_BIT）单一权威住
-// `minix_types::types::device`（edge E-DEVWIRE），经下方 use 消费；
-// u64 算术处由使用点自行拓宽。
+// The BDEV wire constants (RQ_BASE / the three OFF values / R_BIT / W_BIT) have
+// their single authority in `minix_types::types::device` and are consumed
+// through the `use` below; call sites that need u64 arithmetic widen them
+// themselves.
 pub use minix_types::{
     BDEV_CLOSE_OFF, BDEV_IOCTL_OFF, BDEV_OPEN_OFF, BDEV_R_BIT, BDEV_RQ_BASE, BDEV_W_BIT,
 };
@@ -27,13 +28,15 @@ pub const SEND_DEAD_SRC_DST: i32 = 202;
 /// See the [`SEND_DEAD_SRC_DST`] group comment.
 pub const SEND_LOCKED: i32 = 208;
 
-/// Restart request from a driver (`ERESTART`)。
+/// Restart request from a driver (`ERESTART`).
 ///
-/// 这是**驱动回复载荷**里的状态字（`mess_lblockdriver_lbdev_reply.status`）：
-/// 驱动是 `_SYSTEM` 构建，常量在线上带负号（`sys/sys/errno.h:187-192` 的
-/// `_SIGN`），所以比较值取负。内核传输层的失败状态（`SendOutcome::Failed`、
-/// `classify_send` 的输入）是另一个域——**正号**（`minix-sys` 的 TrapStatus
-/// 约定），两个域不要混。
+/// This is the status word inside the **driver reply payload**
+/// (`mess_lblockdriver_lbdev_reply.status`): the driver is a `_SYSTEM` build,
+/// so the constant carries a minus sign on the wire (`sys/sys/errno.h:187-192`
+/// `_SIGN`), and the comparison value is therefore negative. The kernel
+/// transport layer's failure statuses (`SendOutcome::Failed`, the inputs of
+/// `classify_send`) live in a different domain — **positive** (the `minix-sys`
+/// TrapStatus convention). Do not mix the two domains.
 pub const SEND_RESTART: i32 = -(minix_types::ERESTART);
 
 /// Retry fuse: at most five restarts (`bdev.c:41-54`).
@@ -233,19 +236,20 @@ pub fn access_bits(read: bool, write: bool) -> u8 {
     access
 }
 
-/// `BDEV_OPEN` 请求消息（C `bdev_open:94-104`：`memset` 之后只填
-/// `minor`/`access`/`id`，`pos` 留 0）。
+/// The `BDEV_OPEN` request message (C `bdev_open:94-104`: after `memset` only
+/// `minor`/`access`/`id` are filled, `pos` stays 0).
 ///
-/// 偏移表 [`minix_types::lblockdriver_msg_off`]——**首格是 `pos`**，`minor`
-/// 在 8 而不是 0；这条形状由 [`minix_types::lblockdriver_msg_off`] 的钉值
-/// 测试与本函数的测试双面锁住。
+/// The offset table [`minix_types::lblockdriver_msg_off`] puts **`pos` in the
+/// first cell**, so `minor` sits at 8, not 0; that shape is locked from both
+/// sides by the pinned-value test of [`minix_types::lblockdriver_msg_off`] and
+/// by this function's test.
 pub fn open_request(minor: u32, access: u8) -> minix_types::Message {
     let mut m = minix_types::Message {
         m_type: BdevOp::Open.msg_type() as i32,
         ..minix_types::Message::default()
     };
-    // SAFETY: `mess_lbdev_lblockdriver_msg` 无专属 union 成员，按共享偏移表
-    // 写字节（ipc.h:338-353）。
+    // SAFETY: `mess_lbdev_lblockdriver_msg` has no dedicated union member, so
+    // the bytes are written through the shared offset table (ipc.h:338-353).
     unsafe {
         let raw = &mut m.m_u.raw;
         raw[minix_types::lblockdriver_msg_off::MINOR
@@ -258,13 +262,14 @@ pub fn open_request(minor: u32, access: u8) -> minix_types::Message {
     m
 }
 
-/// `BDEV_CLOSE` 请求消息（C `bdev_close:125-135`：只填 `minor`，`id` 留 0）。
+/// The `BDEV_CLOSE` request message (C `bdev_close:125-135`: only `minor` is
+/// filled, `id` stays 0).
 pub fn close_request(minor: u32) -> minix_types::Message {
     let mut m = minix_types::Message {
         m_type: BdevOp::Close.msg_type() as i32,
         ..minix_types::Message::default()
     };
-    // SAFETY: 同 [`open_request`]（ipc.h:338-353）。
+    // SAFETY: same as [`open_request`] (ipc.h:338-353).
     unsafe {
         let raw = &mut m.m_u.raw;
         raw[minix_types::lblockdriver_msg_off::MINOR
@@ -385,10 +390,11 @@ mod tests {
 
     #[test]
     fn test_request_shapes() {
-        // `BDEV_OPEN`：`minor` 在 8（首格是 `pos`）、`access` 在 16、其余 0。
+        // `BDEV_OPEN`: `minor` at 8 (the first cell is `pos`), `access` at 16,
+        // everything else 0.
         let m = open_request(0x0205, BDEV_R_BIT as u8 | BDEV_W_BIT as u8);
         assert_eq!(m.m_type, 0x500);
-        // SAFETY(test): 按共享偏移表读回，逐格核对。
+        // SAFETY(test): read back through the shared offset table, cell by cell.
         let raw = unsafe { &m.m_u.raw };
         assert_eq!(
             u64::from_le_bytes(
@@ -427,10 +433,10 @@ mod tests {
             ),
             (BDEV_R_BIT | BDEV_W_BIT) as i32
         );
-        // `BDEV_CLOSE`：只带 minor。
+        // `BDEV_CLOSE`: carries `minor` only.
         let m = close_request(7);
         assert_eq!(m.m_type, 0x501);
-        // SAFETY(test): 同上。
+        // SAFETY(test): as above.
         let raw = unsafe { &m.m_u.raw };
         assert_eq!(
             i32::from_le_bytes(

@@ -8,12 +8,13 @@
 // but the test harness allocates memory before main() runs.
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
-// 无须也不应再调。
+// The freestanding side holds a link reference to minix-rt: the bin code itself
+// touches no symbol from rt, and an unreferenced rlib is dropped wholesale,
+// taking `_start`, `#[panic_handler]` and `#[global_allocator]` with it (the
+// `extern crate` retention semantics of panic-halt).  The birth chain's `_start`
+// has already completed rt initialization before main (`lib.rs:86` init
+// contract: in no_std mode `_start` calls it automatically and idempotently), so
+// it must not and need not be called again here.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
@@ -21,10 +22,11 @@ extern crate minix_rt;
 #[global_allocator]
 static GLOBAL: std::alloc::System = std::alloc::System;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
-// E0277（docker minix-ci:1.94 实测）。
+// The entry point is split by target: the none side satisfies the crt0 Consumer
+// contract (name + Rust ABI + `-> i32`, os/libs/minix-rt/src/crt0.rs:40); the
+// host/test side stays `()` — since rustc 1.94 nothing implements Termination
+// for i32, so an i32 main on the host is E0277 (observed with docker
+// minix-ci:1.94).
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
@@ -58,12 +60,12 @@ fn real_main() -> ! {
 
         // C: main.c:101-108 — if(is_first_time()) { init_vm(); __vm_init_fresh=1; }
         //
-        // G-V12-10: a warm start (`is_first_time == false`, C hot-restart
-        // semantics after RTS_BOOTINHIBIT clears) cannot be served here — C
-        // survives it because its state lives in BSS globals that outlive the
-        // restart, while minix-rs state lives inside the VmServer instance.
-        // Refuse loudly instead of silently panicking at `run()`'s first
-        // `assert!(self.initialized)` (02-stage-vm/todo.md G-V12-10).
+        // A warm start (`is_first_time == false`, C hot-restart semantics after
+        // RTS_BOOTINHIBIT clears) cannot be served here — C survives it because
+        // its state lives in BSS globals that outlive the restart, while
+        // minix-rs state lives inside the VmServer instance.  Refuse loudly
+        // instead of silently panicking at `run()`'s first
+        // `assert!(self.initialized)` (see 02-stage-vm/todo.md).
         if params.is_first_time {
             server.init();
         } else {

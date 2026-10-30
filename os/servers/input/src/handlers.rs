@@ -658,8 +658,9 @@ mod tests {
 
     #[test]
     fn test_second_selector_overwrites_the_first() {
-        // C: input.c:320 — selector = endpt 无条件覆盖：一设备至多一个查询者，
-        // 后来者顶掉前者，前者不会被叫醒两次。
+        // C: input.c:320 — selector = endpt, overwritten unconditionally: a
+        // device has at most one querier; a later one displaces the earlier
+        // one, which is never woken twice.
         let mut device = keyboard();
         apply_select_record(&mut device, Endpoint(11));
         apply_select_record(&mut device, Endpoint(12));

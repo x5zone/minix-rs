@@ -119,23 +119,25 @@ mod tests {
 
 
 // ---------------------------------------------------------------------------
-// 注册表（C `mcast_array` 加空闲链，`mcast.c:43-66` 的服务半）：成员记录
-// 定长总量（两族各 64），插队走 `early_join_check` 的三道早检。
+// Registry (the service half of C's `mcast_array` plus free list,
+// `mcast.c:43-66`): a fixed total of membership records (64 per family),
+// and a join goes through the three early checks of `early_join_check`.
 // ---------------------------------------------------------------------------
 
-/// 一条在役成员：套接字号、接口行号、组地址。
+/// One live membership: socket id, interface row, group address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Member {
-    /// 服务侧套接字号（`SockId::raw`，关户清账的键）。
+    /// Service-side socket id (`SockId::raw`, the key for close-time cleanup).
     pub socket: u32,
-    /// 服务侧接口表行号（第 14 篇）。
+    /// Service-side interface table row (doc 14).
     pub ifdev: u16,
-    /// 组地址。
+    /// Group address.
     pub group: crate::lwip_port::StackIpAddr,
 }
 
-/// 组播成员注册表：定长记录槽，空闲槽复用（C 的空闲链在定长数组上的
-/// 等价形状——插入取首个空槽，退出即清槽）。
+/// Multicast membership registry: fixed-size record slots, free slots
+/// reused (the fixed-array equivalent of C's free list — insert takes the
+/// first empty slot, leave clears that slot).
 #[derive(Debug)]
 pub struct McastRegistry {
     records: Vec<Option<Member>>,
@@ -148,18 +150,19 @@ impl Default for McastRegistry {
 }
 
 impl McastRegistry {
-    /// `mcast_init`（`mcast.c:55-66`）：全部槽位清空。
+    /// `mcast_init` (`mcast.c:55-66`): all slots cleared.
     pub fn new() -> Self {
         McastRegistry { records: alloc::vec![None; TOTAL_MEMBERSHIPS] }
     }
 
-    /// 空闲记录数（`early_join_check` 的第三道输入）。
+    /// Number of free records (the third input of `early_join_check`).
     pub fn free_records(&self) -> usize {
         self.records.iter().filter(|s| s.is_none()).count()
     }
 
-    /// 入组：先过三道早检（重复、单套接字上限、全局余量），通过即占
-    /// 一个空槽。网络侧的组管理协议交换随接口批次接线。
+    /// Join: pass the three early checks first (duplicate, per-socket
+    /// maximum, global room), then occupy one empty slot. The network-side
+    /// group management protocol exchange is wired with the interface work.
     pub fn join(
         &mut self,
         socket: u32,
@@ -189,7 +192,7 @@ impl McastRegistry {
         Ok(())
     }
 
-    /// 退组：找到即清槽，返回是否确实在册。
+    /// Leave: clear the slot if found, returning whether it was present.
     pub fn leave(
         &mut self,
         socket: u32,
@@ -207,8 +210,9 @@ impl McastRegistry {
         }
     }
 
-    /// 关户清账：套接字关闭时它的全部成员记录一并释放，返回释放条数
-    /// （C `mcast_head` 的清理半）。
+    /// Close-time cleanup: release all of a socket's membership records when
+    /// it closes, returning how many were released (the cleanup half of C's
+    /// `mcast_head`).
     pub fn leave_socket(&mut self, socket: u32) -> usize {
         let mut freed = 0;
         for slot in self.records.iter_mut() {
@@ -259,14 +263,15 @@ mod registry_tests {
             Err(JoinRejection::SocketFull),
             "单套接字八组上限"
         );
-        // 别的套接字可共享同一组（成员记录按套接字独立，无一对一约束）。
+        // Another socket may share the same group (records are per socket,
+        // with no one-to-one constraint).
         assert!(reg.join(2, 0, v4([224, 0, 0, 1])).is_ok());
     }
 
     #[test]
     fn test_global_exhaustion_and_close_cleanup() {
         let mut reg = McastRegistry::new();
-        // 两个套接字各持八组轮流填，填满 128 条。
+        // Fill all 128 records by rotating sockets that hold eight groups each.
         let mut joined = 0;
         'fill: for group in 1.. {
             for socket in 1..=32u32 {
@@ -286,7 +291,8 @@ mod registry_tests {
             reg.join(99, 0, v4([224, 0, 0, 200])),
             Err(JoinRejection::TableFull)
         );
-        // 关户清账：1 号套接字的全部记录释放后，全局又有余量。
+        // Close-time cleanup: once socket 1's records are released, global
+        // room exists again.
         let freed = reg.leave_socket(1);
         assert!(freed > 0);
         assert!(reg.join(99, 0, v4([224, 0, 0, 200])).is_ok());

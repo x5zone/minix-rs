@@ -12,23 +12,28 @@
 static GLOBAL: std::alloc::System = std::alloc::System;
 
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
-// 无须也不应再调。
+// The freestanding side holds a link reference to minix-rt: the bin code
+// itself uses no rt symbol, so an unreferenced rlib would be dropped whole
+// and `_start`/`#[panic_handler]`/`#[global_allocator]` would vanish with
+// it (the `extern crate` retention semantics of panic-halt mode). The birth
+// chain `_start` has already completed rt initialization before main
+// (`lib.rs:86` init contract: in no_std mode `_start` calls it
+// automatically, idempotently), so it must not and need not be called here
+// again.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
-// E0277（docker minix-ci:1.94 实测）。
+// The entry point splits into two forms per target: the none side satisfies
+// the crt0 Consumer contract (name + Rust ABI + `-> i32`,
+// `os/libs/minix-rt/src/crt0.rs:40`); the host/test sides keep `()` —
+// since rustc 1.94 Termination is no longer implemented for i32, and an i32
+// main on the host is an immediate E0277 (measured in docker
+// minix-ci:1.94).
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
-    // real_main 原地消费返回 ()；0 即进程退出码（crt0 Consumer contract）。
+    // real_main consumes the () it returns; 0 is the process exit code
+    // (crt0 Consumer contract).
     real_main();
     0
 }
@@ -46,8 +51,8 @@ fn real_main() {
         use minix_rs::{RsServer, SefInitType, boot::BootTables};
 
         // C: sef_local_startup() — main.c:51. The SEF callback set is the
-        // `SefCallbacks` trait implemented by `RsServer` itself (N5); there
-        // is no separate registration value to construct.
+        // `SefCallbacks` trait implemented by `RsServer` itself; there is no
+        // separate registration value to construct.
 
         // C: sys_getimage(image) — main.c:196. The kernel's GET_IMAGE
         // answer is the boot truth (do_getinfo.c:86-90); a failure stops
@@ -58,9 +63,11 @@ fn real_main() {
             .unwrap_or_else(|e| panic!("RS boot: sys_getimage failed: errno {e}"));
 
         // C main.c:171 — env_parse("rs_verbose", "d", 0, &rs_verbose, 0, 1)
-        // over the monitor parameters (GET_MONPARAMS → S42 批一真值链)。
-        // verbose 带来的 printf 增量在 C 遍布 rs_verbose 门控点；Rust 侧
-        // 的消费面随 19/E-11 接线补齐，此处先取真值并经诊断缝确认解析。
+        // over the monitor parameters (GET_MONPARAMS is the boot truth
+        // chain). C gates the extra printf output on rs_verbose at many
+        // points; the Rust side grows that consumption surface once the
+        // wiring lands, so here we only take the value and confirm through
+        // the diagnostic seam that it parsed.
         let mut monparams = [0u8; 1024]; // MULTIBOOT_PARAM_BUF_SIZE — param.h:28
         let monparams_ok =
             minix_sys::syscall::sys_getmonparams(&minix_sys::syscall::DirectKernelCallTransport, &mut monparams)
@@ -69,7 +76,9 @@ fn real_main() {
         if rs_verbose {
             use minix_sys::syscall::{sys_diagctl, DirectKernelCallTransport};
             let line = b"RS: running in verbose mode\n";
-            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            // [SD19-gate] best-effort wrap-up; discarding the Result does
+            // not change the already-established main result (C is
+            // void/ignores at the same spot).
             #[allow(clippy::let_underscore_must_use)]
             let _ = sys_diagctl(&DirectKernelCallTransport, 1, line.as_ptr() as u64, line.len() as i32);
         }
@@ -77,12 +86,13 @@ fn real_main() {
         let mut server = RsServer::new(tables);
 
         // C: sef_startup() → sef_cb_init_fresh() — main.c:151,158-494.
-        // KernelApi 生产实现 = TrapKernelApi（trap 直连内核，S42 批一
-        // 接线；构造序 RsServer::new 默认装配）。C treats boot failure
+        // The production KernelApi is TrapKernelApi (a direct trap to the
+        // kernel; `RsServer::new` assembles it by default in its
+        // constructor). C treats boot failure
         // as fatal (main.c:226 `panic(...)`); do not enter the main loop on
         // an incomplete boot — an RS that never finished booting cannot
         // manage services. The SEF face carries a bare errno; the typed
-        // cause (E-6) distinguishes "kernel face not wired" (`ENOSYS`) from
+        // cause distinguishes "kernel face not wired" (`ENOSYS`) from
         // "boot invariant violation" (`EINVAL`, e.g. a corrupt boot table).
         if let Err(e) = server.init(SefInitType::Fresh) {
             panic!(
@@ -91,10 +101,11 @@ fn real_main() {
             );
         }
 
-        // C: main loop — main.c:50-131 (skeleton; details in 06). C 的
-        // while(TRUE) 永不返回；循环退出 = 传输/boot 面故障，属致命——
-        // 与 boot 失败同款 panic（X-6：此前 `let _ =` 把 Err 静默吞掉，
-        // 进程以 0 退出假成功）。
+        // C: main loop — main.c:50-131 (skeleton; details in doc 06). C's
+        // while(TRUE) never returns; leaving the loop means a
+        // transport/boot failure and is fatal — the same panic as a boot
+        // failure (silently swallowing the Err in `let _ =` would exit the
+        // process with status 0 and fake success).
         if let Err(e) = server.run() {
             panic!("RS main loop terminated: {e:?}");
         }

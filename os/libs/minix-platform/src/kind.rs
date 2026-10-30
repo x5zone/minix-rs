@@ -58,7 +58,7 @@ pub unsafe fn parse_by_kind(source: PlatformDescSource) -> Result<PlatformDescEn
                 Err(_e) => Err(PlatformParseError::DtbParse),
             }
         }
-        // S-2b: aarch64 joins the RSDP arm — AAVMF exposes the ACPI 2.0
+        // aarch64 joins the RSDP arm — AAVMF exposes the ACPI 2.0
         // RSDP via config table (empirically verified: 8 entries, ACPI2
         // present, both DTB GUIDs absent), and `AcpiDesc::parse` handles
         // MADT GICC for aarch64 topology.

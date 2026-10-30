@@ -1,6 +1,6 @@
 //! Cache-request handlers — the Rust `mem_cache.c` family.
 //!
-//! V12-P2-1: the four `do_mapcache`/`do_setcache`/`do_forgetcache`/
+//! The four `do_mapcache`/`do_setcache`/`do_forgetcache`/
 //! `do_clearcache` counterparts moved out of `dispatcher.rs` (which keeps
 //! decode → call → encode only). C houses them in `mem_cache.c`, the cache
 //! domain module; the Rust handlers live beside their dispatcher siblings

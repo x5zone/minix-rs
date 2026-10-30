@@ -250,24 +250,26 @@ mod tests {
 
     #[test]
     fn test_prefix_shown_matrix() {
-        // 默认：多操作数显名、单/零隐名（grep.c:493-494）。
+        // Default: with several operands the name is shown; with one or zero
+        // it is hidden (grep.c:493-494).
         let d = GrepOptions::default();
         assert!(d.prefix_shown(2));
         assert!(!d.prefix_shown(1));
         assert!(!d.prefix_shown(0));
-        // -H：即便单操作数也显名。
+        // -H: show the name even for a single operand.
         let h = GrepOptions {
             force_prefix: true,
             ..Default::default()
         };
         assert!(h.prefix_shown(1));
-        // -h 压过一切，从不显名（C 看 !hflag）。
+        // -h overrides everything and never shows the name (C tests
+        // !hflag).
         let s = GrepOptions {
             no_prefix: true,
             ..Default::default()
         };
         assert!(!s.prefix_shown(3));
-        // -h 与 -H 并存：-h 胜。
+        // -h and -H together: -h wins.
         let both = GrepOptions {
             no_prefix: true,
             force_prefix: true,

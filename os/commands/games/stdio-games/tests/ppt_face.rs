@@ -39,14 +39,17 @@ const PUNCHED_A: &str = "| o   .  o|";
 
 #[test]
 fn a_failed_read_leaves_with_c_fgets_sentence_and_exits_one() {
-    // C 的解码路在读到尽头时补一个换行后安静离开，读**出错**才走 `err(1, "fgets")`
-    // （`ppt.c:109-111`，判据是 `!feof(stdin)`）。两句在进程级分开：目录描述符读出 `EISDIR`
-    // 得 `ppt: fgets: Is a directory` 并退 1，且不补那个换行。
+    // C's decode path, on reaching end of input, emits one owed newline and
+    // leaves quietly; only a read **error** goes through `err(1, "fgets")`
+    // (`ppt.c:109-111`; the test is `!feof(stdin)`). The two outcomes are
+    // distinct at the process level: reading from a directory descriptor gives
+    // `EISDIR`, yields `ppt: fgets: Is a directory`, exits 1, and does not emit
+    // that newline.
     let (out, status, err) = run_with_directory_stdin(&["-d"]);
     assert_eq!(out, "");
     assert_eq!(status, 1);
     assert_eq!(err, "ppt: fgets: Is a directory\n");
-    // 对照：空输入只是读到尽头，退 0 且不出声。
+    // Control case: empty input is merely end of input; it exits 0 silently.
     let (_, clean_status, clean_err) = run(&["-d"], b"");
     assert_eq!((clean_status, clean_err.as_str()), (0, ""));
 }

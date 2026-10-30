@@ -233,7 +233,7 @@ impl PageCache {
     /// Fails with `AlreadyCached` when the physical frame is already in the
     /// cache (`PBF_INCACHE`, cache.c:222-226) — one block has exactly one
     /// cache entry.
-    #[allow(clippy::too_many_arguments)] // V10-P2-1 (DEFERRED): fold into an AddCacheCtx struct
+    #[allow(clippy::too_many_arguments)] // DEFERRED: fold into an AddCacheCtx struct
     pub(crate) fn addcache(
         &mut self,
         dev: u64,
@@ -427,7 +427,7 @@ impl PageCache {
     }
 
     /// Number of cache entries (diagnostics/tests).
-    // V10-P2-1: test-only (the dispatcher queries by dev/offset directly).
+    // Test-only (the dispatcher queries by dev/offset directly).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn len(&self) -> usize {
         self.by_dev.len()

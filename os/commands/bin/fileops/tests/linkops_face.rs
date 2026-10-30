@@ -69,8 +69,10 @@ fn a_failed_link_reports_the_syscall_not_either_operand() {
 
 #[test]
 fn the_operand_counts_are_checked_before_any_syscall_is_tried() {
-    // C 的两个程序只有一条 `argc != 2` / `argc != 3`（`unlink.c:52`、`link.c:53`），
-    // 没有 getopt：任何形状不对都直接 usage，且 usage 行是硬写死的字符串（不带程序名）。
+    // C's two programs each have a single `argc != 2` / `argc != 3` check
+    // (`unlink.c:52`, `link.c:53`) and no getopt: any wrong shape goes
+    // straight to usage, and the usage line is a hardcoded string (with no
+    // program name).
     let (_, status, err) = run("unlink", &[]);
     assert_eq!(status, 1);
     assert_eq!(err, "usage: unlink file\n");
@@ -87,7 +89,8 @@ fn the_operand_counts_are_checked_before_any_syscall_is_tried() {
 
 #[test]
 fn an_option_looking_operand_is_still_just_a_name() {
-    // 没有 getopt，`-x` 就是文件名；C 走 `unlink("-x")` 失败后同样只报号。
+    // No getopt, so `-x` is just a file name; C's `unlink("-x")` likewise
+    // reports only the errno after failing.
     let (_, status, err) = run("unlink", &["-x"]);
     assert_eq!(status, 1);
     assert_perror_line(&err, "unlink", &[]);

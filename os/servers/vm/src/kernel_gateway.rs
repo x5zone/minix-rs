@@ -19,7 +19,7 @@
 //! returns the result through `KcallResult::Ok(ret)` → `reply_code()`
 //! (kernel/src/syscall.rs:219-222).
 //!
-//! # Status (V11/T9 step 2)
+//! # Status (gateway coverage)
 //!
 //! - The message construction and reply decoding here are **final**.
 //! - The trap instruction sequences themselves are edge **E1/E2**
@@ -46,7 +46,7 @@ pub(crate) enum GatewayError {
 /// One fetched kernel memory request.
 ///
 /// Reply payload of SYS_VMCTL `VMCTL_MEMREQ_GET` (kernel syscall.rs fills
-/// `SVMCTL_MRG_*` M1 fields; C: `sys_vmctl_get_memreq` out-params
+/// `SVMCTL_MRG_*` fields in message word 1; C: `sys_vmctl_get_memreq` out-params
 /// `(&who, &mem, &len, &wrflag, &who_s, &mem_s, &requestor)` — minix-rs
 /// narrows to the fields the CHECK path consumes, kernel vm.rs §3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,9 +72,9 @@ pub(crate) trait KernelGateway {
     /// Notify the kernel to create the child scheduling entity.
     ///
     /// C: `sys_fork()` (libsys) → kernel `do_fork()`
-    /// (kernel/src/syscall_process.rs:122-215). Wire (M1): `m1i1` = parent
-    /// endpoint, `m1i2` = child slot, `m1i3` = flags (the C `PFF_*` fork
-    /// flag — see below). Reply: `m_type` =
+    /// (kernel/src/syscall_process.rs:122-215). Wire (message word 1):
+    /// `m1i1` = parent endpoint, `m1i2` = child slot, `m1i3` = flags (the
+    /// C `PFF_*` fork flag — see below). Reply: `m_type` =
     /// child endpoint on success, negative errno on failure
     /// (KcallResult::Ok(child_endpoint.0) → reply_code()).
     ///
@@ -114,7 +114,7 @@ pub(crate) trait KernelGateway {
     ///
     /// C: `sys_update(src_e, dst_e, flags)` (libsys) → kernel `do_update`
     /// (kernel/src/misc.rs dispatch_update — 12-step swap, all implemented).
-    /// Wire (M1): `m1i1` = src endpoint, `m1i2` = dst endpoint, `m1i3` =
+    /// Wire (message word 1): `m1i1` = src endpoint, `m1i2` = dst endpoint, `m1i3` =
     /// flags (SYS_UPD_ROLLBACK bit). Reply: OK(0) or negative errno.
     fn sys_update(&mut self, src: Endpoint, dst: Endpoint, flags: u32)
         -> Result<(), GatewayError>;
@@ -174,7 +174,7 @@ pub(crate) trait KernelGateway {
     ///
     /// C: `sys_kill(endpoint, sig)` (libsys) → kernel `do_kill`
     /// (kernel/src/syscall_signal.rs). VM's use: SIGSEGV delivery when a
-    /// page fault is not servable (G-V12-6; C pagefaults.c:109-119).
+    /// page fault is not servable (C pagefaults.c:109-119).
     fn sys_kill(&mut self, endpoint: Endpoint, signal: i32) -> Result<(), GatewayError>;
 
     /// Clear the kernel's pagefault suspension (RTS_PAGEFAULT) on a process.
@@ -190,7 +190,7 @@ pub(crate) trait KernelGateway {
     /// main.c:414-416, the "make it runnable" step right after the boot
     /// process's `sys_exec`. Boot processes are forked with
     /// VMINHIBIT|BOOTINHIBIT (kernel/src/lib.rs:1666); without this call
-    /// they stay parked forever after exec (NK4-A fix23 forensics: every
+    /// they stay parked forever after exec (boot forensics: every
     /// `exec X ok` landmark reached the boot proc's `_start` never).
     fn sys_vmctl_boot_inhibit_clear(&mut self, endpoint: Endpoint)
         -> Result<(), GatewayError>;
@@ -201,7 +201,7 @@ pub(crate) trait KernelGateway {
     /// — the tail of `pt_bind` (pagetable.c:1421). Kernel side (C
     /// `setcr3`, arch_do_vmctl.c:19-33) stores the root AND clears
     /// RTS_VMINHIBIT via RTS_UNSET — this call is the boot path's only
-    /// VMINHIBIT clear leg (NK4-A fix25 forensics: boot procs were exec'd
+    /// VMINHIBIT clear leg (boot forensics: boot procs were exec'd
     /// and BOOTINHIBIT-lifted but never scheduled because no SETADDRSPACE
     /// ever told the kernel about VM-built page tables). `ptroot_virt`
     /// carries C's `pdes` kernel-visible alias; under the Direct Map the
@@ -309,7 +309,7 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
     }
 
     fn sys_kill(&mut self, endpoint: Endpoint, signal: i32) -> Result<(), GatewayError> {
-        // V11/T35+: reuse minix-sys's SYS_KILL wrapper (same wire the PM
+        // Reuse minix-sys's SYS_KILL wrapper (same wire the PM
         // side uses — kernel/src/syscall_signal.rs:141-147 m_sigcalls).
         let reply = minix_sys_kill(&self.transport, endpoint.0, signal);
         if reply < 0 {
@@ -399,8 +399,9 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
     fn sys_update(&mut self, src: Endpoint, dst: Endpoint, flags: u32)
         -> Result<(), GatewayError>
     {
-        // E2: consume the minix-sys wrapper (SYS_UPDATE is M1 by C design —
-        // do_update.c:9-11; kernel dispatch_update reads m1i1/m1i2/m1i3).
+        // E2: consume the minix-sys wrapper (SYS_UPDATE uses message word 1
+        // by C design — do_update.c:9-11; kernel dispatch_update reads
+        // m1i1/m1i2/m1i3).
         minix_sys::syscall::sys_update(&self.transport, src.get(), dst.get(), flags as i32)
             .map_err(GatewayError::Kernel)
     }
@@ -478,18 +479,18 @@ pub(crate) struct MockGateway {
     /// Endpoint returned on the next `sys_fork`.
     pub fork_reply: Result<Endpoint, GatewayError>,
     /// Last (parent, child_slot, flags) seen, for call-shape assertions.
-    /// `flags` captures the C `PFF_*` fork flag (B22: do_fork must pass
+    /// `flags` captures the C `PFF_*` fork flag (do_fork must pass
     /// PFF_VMINHIBIT so the kernel parks the child until addrspace bind).
     pub last_fork: core::cell::Cell<Option<(Endpoint, UserSlot, u32)>>,
-    /// msgaddr handed back by `sys_fork` (V11/T33; `None` = pre-E-FORKMSG).
+    /// msgaddr handed back by `sys_fork` (`None` = pre-E-FORKMSG).
     pub fork_msgaddr: core::cell::Cell<Option<u64>>,
-    /// Diagnostic text recorded by `diag_write` (V11/T15).
+    /// Diagnostic text recorded by `diag_write`.
     pub diag_log: RefCell<alloc::string::String>,
-    /// Last `sys_exec` seen: (endpt, ip, stack, ps_str) (V11/T14).
+    /// Last `sys_exec` seen: (endpt, ip, stack, ps_str).
     pub last_exec: Cell<Option<(Endpoint, u64, u64, u64)>>,
-    /// Reply m_type for the next `sys_update` (0 = OK) (V11/T13).
+    /// Reply m_type for the next `sys_update` (0 = OK).
     pub update_reply: Cell<i32>,
-    /// Last (src, dst, flags) seen by `sys_update` (V11/T13).
+    /// Last (src, dst, flags) seen by `sys_update`.
     pub last_update: Cell<Option<(Endpoint, Endpoint, u32)>>,
     /// Last `sys_safecopyfrom` seen: (granter, grant_id, offset, len)
     /// (E-RSWIRE).
@@ -497,20 +498,20 @@ pub(crate) struct MockGateway {
     /// Bytes the next `sys_safecopyfrom` copies into the caller's buffer
     /// (simulates the kernel writing grant content).
     pub safecopy_payload: RefCell<alloc::vec::Vec<u8>>,
-    /// Pending kernel memory requests for `sys_vmctl_memreq_get` (V11/T29).
+    /// Pending kernel memory requests for `sys_vmctl_memreq_get`.
     pub pending_memreqs: RefCell<alloc::collections::VecDeque<KernelMemReq>>,
-    /// (target, ok) pairs recorded by `sys_vmctl_memreq_reply` (V11/T29).
+    /// (target, ok) pairs recorded by `sys_vmctl_memreq_reply`.
     pub memreq_replies: RefCell<alloc::vec::Vec<(Endpoint, bool)>>,
-    /// When non-zero, `sys_vmctl_memreq_get` answers this errno (V11/T29).
+    /// When non-zero, `sys_vmctl_memreq_get` answers this errno.
     pub memreq_error: Cell<i32>,
-    /// (endpoint, signal) pairs recorded by `sys_kill` (V11/T35).
+    /// (endpoint, signal) pairs recorded by `sys_kill`.
     pub kills: RefCell<alloc::vec::Vec<(Endpoint, i32)>>,
-    /// Endpoints recorded by `sys_vmctl_clear_pagefault` (V11/T35).
+    /// Endpoints recorded by `sys_vmctl_clear_pagefault`.
     pub clear_pagefaults: RefCell<alloc::vec::Vec<Endpoint>>,
-    /// Endpoints recorded by `sys_vmctl_boot_inhibit_clear` (NK4-A fix23).
+    /// Endpoints recorded by `sys_vmctl_boot_inhibit_clear`.
     pub boot_inhibit_clears: RefCell<alloc::vec::Vec<Endpoint>>,
     /// (endpoint, ptroot_phys, ptroot_virt) tuples recorded by
-    /// `sys_vmctl_set_addrspace` (NK4-A fix25).
+    /// `sys_vmctl_set_addrspace`.
     pub addrspace_sets: RefCell<alloc::vec::Vec<(Endpoint, u64, u64)>>,
 }
 
@@ -572,7 +573,7 @@ impl KernelGateway for MockGateway {
         -> Result<(Endpoint, Option<u64>), GatewayError>
     {
         self.last_fork.set(Some((parent, child_slot, flags)));
-        // V11/T33: hand back the scripted msgaddr so tests can drive the
+        // Hand back the scripted msgaddr so tests can drive the
         // eager-CoW phase end to end (None = pre-E-FORKMSG shape).
         self.fork_reply.clone().map(|ep| (ep, self.fork_msgaddr.get()))
     }
@@ -687,7 +688,7 @@ mod tests {
         assert_eq!(msgaddr, Some(0x7000));
     }
 
-    /// V11/T14: the SYS_EXEC wire — call number 1, `MessLsysKrnSysExec`
+    /// The SYS_EXEC wire — call number 1, `MessLsysKrnSysExec`
     /// {endpt, ip, stack, name, ps_str}; kernel replies OK(0).
     #[test]
     fn test_trap_gateway_sys_exec_wire() {
@@ -718,7 +719,8 @@ mod tests {
         let mut check = Message::default();
         check.m_type = 1; // VMPTYPE_CHECK
         {
-            // SAFETY: reply fields land in M1 (kernel syscall.rs:2010-2023).
+            // SAFETY: reply fields land in message word 1
+            // (kernel syscall.rs:2010-2023).
             let m1 = unsafe { &mut check.m_u.m_m1 };
             m1.m1i1 = 70;                 // SVMCTL_MRG_TARGET
             m1.m1p1 = 0x3000_0000;        // SVMCTL_MRG_ADDR

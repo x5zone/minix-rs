@@ -94,27 +94,30 @@ pub trait ClientTransport {
     fn sendrec(&mut self, ep: Endpoint, msg: &mut Message) -> Result<(), ClientError>;
 }
 
-/// 生产 `ClientTransport`：把客户端的三件内核事务接到真传输上。
+/// The production `ClientTransport`: connects the client's three kernel
+/// transactions to real transports.
 ///
-/// C 对应：`cpf_grant_direct(…, CPF_READ)`（safecopies.c:148-172）、
-/// `cpf_revoke`（:218-263）、`ipc_sendrec`（libsys 的 `ipc_sendrec`）。
-/// 持一张 grant 表（C 的进程级 `grants` 全局数组，`safecopies.c`），
-/// 由调用方在服务启动时用 [`GrantTable::register`] 告知内核表位置。
+/// C counterpart: `cpf_grant_direct(…, CPF_READ)` (safecopies.c:148-172),
+/// `cpf_revoke` (:218-263), `ipc_sendrec` (libsys's `ipc_sendrec`).
+/// It holds a grant table (C's process-level `grants` global array,
+/// `safecopies.c`), and the caller tells the kernel where that table lives with
+/// [`GrantTable::register`] when the service starts.
 ///
-/// 失败折成 [`ClientError`]：C 在这些路径上一律 `panic`（generic.c 的
-/// "could not talk…"），Rust 让调用方决定（driver 侧的 run 循环把
-/// transport 失败当致命，与 C 的 panic 同面）。
+/// Failures fold into [`ClientError`]: C `panic`s on all these paths (generic.c's
+/// "could not talk…"), while Rust lets the caller decide (the driver-side run
+/// loop treats a transport failure as fatal, the same face as C's panic).
 pub struct SysClientTransport {
-    /// 本进程的 grant 表（C 的 `grants[]`）。
+    /// This process's grant table (C's `grants[]`).
     grants: crate::grant::GrantTable,
-    /// 内核调用传输（grant 表注册与 safecopy 走它）。
+    /// The kernel-call transport (grant-table registration and safecopy use it).
     kernel: crate::syscall::DirectKernelCallTransport,
-    /// IPC 传输（sendrec 走它）。
+    /// The IPC transport (sendrec uses it).
     ipc: crate::ipc::DirectTrapTransport,
 }
 
 impl SysClientTransport {
-    /// 空表 + 真传输（`register` 需在服务启动、拿到内核表位置后调用）。
+    /// An empty table plus real transports (`register` must be called at service
+    /// startup, once the kernel table location is known).
     pub fn new() -> Self {
         Self {
             grants: crate::grant::GrantTable::new(),
@@ -123,7 +126,8 @@ impl SysClientTransport {
         }
     }
 
-    /// 把 grant 表位置告知内核（C 的 `sys_setgrant`，进程启动一次）。
+    /// Tells the kernel where the grant table lives (C's `sys_setgrant`, called
+    /// once per process at startup).
     pub fn register(&self) -> Result<(), i32> {
         self.grants.register(&self.kernel)
     }
@@ -137,11 +141,12 @@ impl Default for SysClientTransport {
 
 impl ClientTransport for SysClientTransport {
     fn grant(&mut self, who_to: Endpoint, buf: &[u8]) -> Result<i32, ClientError> {
-        // C: `cpf_grant_direct(devman_ep, buf, len, CPF_READ)` —— 收方
-        // 写进表项的 `cp_who_to`。`NONE` 不是通配：内核拒绝
-        // `cp_who_to` 既不等于调用者也不等于 `ANY` 的 direct grant
-        // （`do_safecopy.c:195-196`），而 `NONE != ANY`——按 NONE 签发的
-        // 授权在 devman 侧 safecopy 时必然 EPERM。
+        // C: `cpf_grant_direct(devman_ep, buf, len, CPF_READ)` — the receiver is
+        // written into the entry's `cp_who_to`. `NONE` is not a wildcard: the
+        // kernel rejects a direct grant whose `cp_who_to` equals neither the
+        // caller nor `ANY` (`do_safecopy.c:195-196`), and `NONE != ANY` — so a
+        // grant issued under NONE necessarily fails with EPERM when devman
+        // safecopies it.
         self.grants
             .grant_direct(
                 &self.kernel,
@@ -154,7 +159,8 @@ impl ClientTransport for SysClientTransport {
     }
 
     fn revoke(&mut self, grant: i32) {
-        //[SD19-gate] 本函数返回类型 void（驱动侧不消费 revoke 结果）
+        //[SD19-gate] this function's return type is void (the driver side does
+        // not consume the revoke result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.grants.revoke(grant);
     }
@@ -334,15 +340,17 @@ pub fn handle_msg(
 
 #[cfg(test)]
 mod tests {
-    /// 生产 `ClientTransport` 的宿主面：grant 表项要经内核调用申请
-    /// （`sys_setgrant` 侧），宿主构建下不可达 → 诚实报 `Transport`
-    /// 错误；`sendrec` 同理。真机行为由 E5(h) 联调覆盖。
+    /// The hosted face of the production `ClientTransport`: grant-table entries
+    /// must be requested through a kernel call (the `sys_setgrant` side), which
+    /// is unreachable in a hosted build → it honestly reports a `Transport`
+    /// error; `sendrec` likewise. Real-hardware behaviour is covered by the
+    /// E5(h) integration run.
     #[test]
     fn test_sys_client_transport_hosted_errors_are_honest() {
         use super::{ClientError, ClientTransport, SysClientTransport};
         let mut t = SysClientTransport::new();
         assert_eq!(t.grant(minix_types::Endpoint(9), b"abc"), Err(ClientError::Transport));
-        t.revoke(1); // 未登记的 id：C `cpf_revoke` 回 EINVAL，这里静默
+        t.revoke(1); // unregistered id: C `cpf_revoke` returns EINVAL, silent here
         let mut m = minix_types::Message::default();
         assert_eq!(
             t.sendrec(minix_types::Endpoint(9), &mut m),
