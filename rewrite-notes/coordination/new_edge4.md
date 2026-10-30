@@ -3881,3 +3881,12 @@ C2D 余 riscv 远端 `fence.i`、READY 有界 ack；钳制继续兜底。
 注记回写。读数：riscv 全镜像 PASS（ap-irq-ready=1/panic=0；初始 ELF
 装载的实际 RFENCE ecall 返回 0）、`test-smp-ipi-riscv64`（aclint=on）
 PASS、`run_all` 39/0/0。C2D 只剩 READY 有界 ack；钳制继续兜底。
+
+**C2D-READYACK 里程碑（有界 ack/READY）**：码笔 `b9013b981`、合并
+`156e6ea0d`。x86 的内联 ack/READY 等待抽成 `wait_ap_boot_ack`（双时钟
+500 tick / 20e9 TSC，轮询 `observe_boot_ack` 后置 READY）+
+`warn_ap_boot_timeout`；aarch64/riscv 的 `smp_init` 在 AP_ARRIVED 后
+同样调用（两次独立发布，单次采样会输竞态）。aarch64/riscv 全镜像
+PASS，`WARNING: not all CPUs booted` 计数 0，`run_all` 39/0/0。C2D
+前置至此全绿；撤钳实施另列 C2E（riscv 默认固件 SSI 投递限制仍在，
+按实测决定窄钳/固件门）。
