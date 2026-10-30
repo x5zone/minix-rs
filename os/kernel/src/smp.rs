@@ -485,11 +485,11 @@ impl SmpState {
     /// performs the paired `if (is_idle) restart_local_timer()`.
     ///
     /// The C2C stop-loss still holds the BSP affinity clamp. The AP entries
-    /// (C2D-APENTRY/C2D-RVAPENTRY) and the wake-time timer restart
-    /// (C2D-WAKETIMER) are in place; riscv64's scheduler-flag application,
-    /// riscv64's remote `fence.i`, and the READY bounded ack wait remain
-    /// before the clamp can be removed. SSI delivery on riscv is additionally
-    /// firmware-blocked (see `riscv64::smp`).
+    /// (C2D-APENTRY/C2D-RVAPENTRY), the wake-time timer restart
+    /// (C2D-WAKETIMER), riscv's scheduler-flag application (C2D-RVFLAGS), and
+    /// riscv's remote `fence.i` (C2D-RVFENCE) are in place; the READY bounded
+    /// ack wait remains before the clamp can be removed. SSI delivery on riscv
+    /// is additionally firmware-blocked (see `riscv64::smp`).
     pub fn clear_idle_flag(&mut self, cpu: CpuId) -> bool {
         match self.cpu_locals.get_mut(cpu.index()) {
             Some(local) => core::mem::replace(&mut local.cpu_is_idle, false),
