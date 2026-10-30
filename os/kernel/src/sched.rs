@@ -366,8 +366,9 @@ fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
 /// `ICC_SGI1R_EL1`/`GICD_SGIR` by ARE state, and its APs enter
 /// `scheduler_loop` (C2D-APENTRY); riscv64's APs enter `scheduler_loop` and
 /// open `sie.SSIE`/`sie.STIE` (C2D-RVAPENTRY), though its SSI cross-hart
-/// delivery is still firmware-blocked, and riscv64 clears `sip.SSIP` without
-/// applying the pending scheduler flags. The wake entries now clear
+/// delivery is still firmware-blocked, and riscv64's SWI arm now applies the
+/// pending scheduler flags through `sched_handler_full` +
+/// `preempt_current_on_ipi` (C2D-RVFLAGS). The wake entries now clear
 /// `cpu_is_idle` and restart the AP's local timer via `context_stop_idle`
 /// (C2D-WAKETIMER). riscv64 still runs its boot-loaded images under a
 /// local-only `fence.i` (`os/arch/src/riscv64/cache_sync.rs`), whose

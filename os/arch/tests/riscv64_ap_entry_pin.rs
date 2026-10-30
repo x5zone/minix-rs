@@ -30,6 +30,10 @@ fn kernel_smp_src() -> &'static str {
     include_str!("../../kernel/src/smp.rs")
 }
 
+fn trap_src() -> &'static str {
+    include_str!("../../kernel/src/trap_dispatch.rs")
+}
+
 fn kernel_lib_src() -> &'static str {
     include_str!("../../kernel/src/lib.rs")
 }
@@ -72,6 +76,29 @@ fn ap_tail_opens_ssie_and_stie_before_marking_ready() {
     assert!(
         kernel.contains("enable_ap_interrupts") && kernel.contains("mark_ap_irq_ready"),
         "riscv AP tail no longer opens the gates / latches the reading"
+    );
+}
+
+#[test]
+fn riscv_swi_arm_applies_scheduler_flags() {
+    let s = trap_src();
+    let start = s.find("fn riscv64_swi_arm").expect("riscv SWI arm missing");
+    let end = s[start..]
+        .find("riscv64 EI arm")
+        .map(|i| start + i)
+        .unwrap_or(s.len());
+    let arm = &s[start..end];
+    assert!(
+        arm.contains("sched_handler_full") && arm.contains("preempt_current_on_ipi"),
+        "riscv SWI arm must apply scheduler flags and preempt the current process"
+    );
+    assert!(
+        arm.contains("bkl_unlock"),
+        "riscv SWI arm must release the BKL it acquired"
+    );
+    assert!(
+        !arm.contains("swi-ack"),
+        "the diagnostic swi-ack print should be gone"
     );
 }
 
