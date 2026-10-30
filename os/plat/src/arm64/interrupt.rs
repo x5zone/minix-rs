@@ -83,13 +83,17 @@ const GICR_WAKER_CHILDREN_ASLEEP: u32 = 0x4;
 /// # Fields
 ///
 /// - `gicd_base`: GIC Distributor MMIO base, from `Gicv3Desc`.
-/// - `gicr_base`: GIC Redistributor MMIO base, from `Gicv3Desc`.
+/// - `gicr_base`: GIC Redistributor MMIO base for hardware CPU 0.
+/// - `gicr_stride`: per-CPU redistributor stride (from `Gicv3Desc`).
 /// - `nr_irqs`: number of IRQ vectors (from descriptor, clamped to `NR_IRQ_VECTORS`).
 pub struct AArch64InterruptController {
     /// GIC Distributor MMIO base address.
     gicd_base: usize,
-    /// GIC Redistributor MMIO base address.
+    /// GIC Redistributor MMIO base address for hardware CPU 0.
     gicr_base: usize,
+    /// Per-CPU redistributor stride. The DTB/ACPI parsers record the same
+    /// mapping in `CpuInfo::gicr_base = gicr_base + hw_id * gicr_stride`.
+    gicr_stride: usize,
     /// Number of IRQ vectors supported.
     nr_irqs: usize,
 }
@@ -109,6 +113,63 @@ impl AArch64InterruptController {
 
     unsafe fn gicr_write32(&self, offset: usize, value: u32) {
         core::ptr::write_volatile((self.gicr_base + offset) as *mut u32, value);
+    }
+
+    /// Redistributor base for one hardware CPU.
+    ///
+    /// The platform parsers build `CpuInfo::gicr_base` with the same
+    /// `gicr_base + hw_id * gicr_stride` mapping (single contiguous
+    /// redistributor region; QEMU virt and the ACPI GICR structure both
+    /// present it that way). Multi-region topologies with non-contiguous
+    /// redistributors would need GICR_TYPER discovery; that is recorded as a
+    /// follow-up, not guessed here.
+    fn gicr_base_for(&self, hw_id: usize) -> usize {
+        self.gicr_base + hw_id * self.gicr_stride
+    }
+
+    unsafe fn gicr_read32_at(&self, base: usize, offset: usize) -> u32 {
+        core::ptr::read_volatile((base + offset) as *const u32)
+    }
+
+    unsafe fn gicr_write32_at(&self, base: usize, offset: usize, value: u32) {
+        core::ptr::write_volatile((base + offset) as *mut u32, value);
+    }
+
+    /// Open this CPU's GICv3 CPU interface (SRE, PMR, Group-1 enable).
+    ///
+    /// `init()` runs only on the BSP. An AP's CPU-interface system
+    /// registers are per-CPU state and carry no guarantee from firmware, so
+    /// the IPI bring-up repeats this sequence on the AP itself.
+    fn init_cpu_interface_current() {
+        unsafe {
+            let mut sre: u64;
+            core::arch::asm!("mrs {}, icc_sre_el1", out(reg) sre);
+            sre |= 0x7;
+            core::arch::asm!("msr icc_sre_el1, {}", in(reg) sre);
+            core::arch::asm!("msr icc_pmr_el1, {}", in(reg) 0xFFu64);
+            core::arch::asm!("msr icc_igrpen1_el1, {}", in(reg) 0x1u64);
+        }
+    }
+
+    /// Enable one SGI on the calling CPU's redistributor.
+    ///
+    /// Runs on the CPU named by `hw_id` (BSP at boot, AP in its own tail),
+    /// so the CPU-interface and redistributor writes land on that CPU's
+    /// state.
+    fn enable_sgi_on_current_cpu(&mut self, hw_id: usize, intid: u8) {
+        let base = self.gicr_base_for(hw_id);
+        let bit = 1u32 << (intid & 31);
+        unsafe {
+            // Wake this CPU's redistributor before touching its SGI frame.
+            self.gicr_write32_at(base, GICR_WAKER, 0);
+            while self.gicr_read32_at(base, GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP != 0 {
+                core::hint::spin_loop();
+            }
+            // SGIs must be Group 1 (the IRQ leg claims through ICC_IAR1).
+            self.gicr_write32_at(base, GICR_IGROUPR0, 0xFFFF_FFFF);
+            self.gicr_write32_at(base, GICR_ISENABLER0, bit);
+        }
+        Self::init_cpu_interface_current();
     }
 
     fn init_distributor(&mut self) {
@@ -157,14 +218,7 @@ impl AArch64InterruptController {
     }
 
     fn init_cpu_interface(&mut self) {
-        unsafe {
-            let mut sre: u64;
-            core::arch::asm!("mrs {}, icc_sre_el1", out(reg) sre);
-            sre |= 0x7;
-            core::arch::asm!("msr icc_sre_el1, {}", in(reg) sre);
-            core::arch::asm!("msr icc_pmr_el1, {}", in(reg) 0xFFu64);
-            core::arch::asm!("msr icc_igrpen1_el1, {}", in(reg) 0x1u64);
-        }
+        Self::init_cpu_interface_current();
     }
 }
 
@@ -187,6 +241,11 @@ impl InterruptRouter for AArch64InterruptController {
             gicv3.gicr_base != 0,
             "AArch64InterruptController::new: descriptor did not provide GICR base"
         );
+        assert!(
+            gicv3.gicr_stride != 0,
+            "AArch64InterruptController::new: descriptor did not provide a \
+             redistributor stride (a zero stride aliases every CPU onto CPU 0)"
+        );
         // Route to the kernel higher-half (TTBR1) MMIO alias. The
         // descriptor's `gicd_base`/`gicr_base` are physical addresses; this
         // controller is constructed only after `enable()`
@@ -201,6 +260,7 @@ impl InterruptRouter for AArch64InterruptController {
                 as usize,
             gicr_base: minix_platform::arch::aarch64::mmio_translate(gicv3.gicr_base as u64)
                 as usize,
+            gicr_stride: gicv3.gicr_stride,
             nr_irqs: (gicv3.nr_irqs as usize).min(NR_IRQ_VECTORS),
         }
     }
@@ -296,6 +356,14 @@ mod tests {
         // Direct Map, this test must catch it.
         assert_eq!(ic.gicd_base, 0xFFFF_C000_0000_0000_usize);
         assert_eq!(ic.gicr_base, (0xFFFF_C000_0000_0000 + 0x000A_0000) as usize);
+        assert_eq!(ic.gicr_stride, 0x2_0000);
+        // The per-CPU mapping must match the one DTB/ACPI record in
+        // `CpuInfo::gicr_base`; a stride of zero would alias every CPU onto
+        // CPU 0's redistributor and make the SGI enable silently wrong.
+        assert_eq!(
+            ic.gicr_base_for(2),
+            ic.gicr_base + 2 * ic.gicr_stride
+        );
     }
 
     // Note: 2 of this file's original 3 tests were constant self-references or
@@ -355,5 +423,9 @@ impl PerCpuInterruptUnit for AArch64InterruptController {
         unsafe {
             core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) intid as u64);
         }
+    }
+
+    fn enable_sgi(&mut self, hw_id: usize, intid: u8) {
+        self.enable_sgi_on_current_cpu(hw_id, intid);
     }
 }

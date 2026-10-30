@@ -55,7 +55,65 @@ const SGIR_TARGET_LIST_FILTER: u32 = 0 << 24;
 
 /// SGI INTID used for the schedule IPI. SGIs occupy INTID range 0..15;
 /// we use ID 0. ARM GIC Architecture Specification §4.3.22.
-const SCHED_SGI_INTID: u32 = 0;
+pub const SCHED_SGI_INTID: u32 = 0;
+
+/// GICD_CTLR offset and its `ARE_NS` bit (GICv3 affinity routing enable).
+///
+/// `GICD_SGIR` is a GICv2 register: in GICv3 it is only honored when
+/// affinity routing is disabled. With `ARE_NS = 1` the send path must use
+/// `ICC_SGI1R_EL1`. The distributor's `CTLR` is read at send time because
+/// firmware (or a later boot stage) owns the ARE bits.
+const GICD_CTLR: usize = 0x0000;
+const GICD_CTLR_ARE_NS: u32 = 1 << 4;
+
+/// `ICC_SGI1R_EL1` field positions (ARM GICv3 architecture).
+///
+/// TargetList selects the destination PEs by Aff0 within the affinity
+/// group named by Aff1/Aff2/Aff3; INTID is the SGI number. The current
+/// send API carries only the logical CPU index, so this implementation
+/// keeps the existing single-cluster assumption: the target's Aff0 is that
+/// index and Aff1/2/3 are this CPU's (all CPUs in one cluster). Cross-
+/// cluster routing needs a per-CPU MPIDR table and is a recorded
+/// follow-up.
+const SGI1R_TARGET_LIST_SHIFT: u64 = 0;
+const SGI1R_AFFINITY_1_SHIFT: u64 = 16;
+const SGI1R_INTID_SHIFT: u64 = 24;
+const SGI1R_AFFINITY_2_SHIFT: u64 = 32;
+const SGI1R_AFFINITY_3_SHIFT: u64 = 48;
+
+/// Read this CPU's MPIDR affinity fields `(Aff1, Aff2, Aff3)`.
+fn mpidr_affinity() -> (u64, u64, u64) {
+    let mpidr: u64;
+    // SAFETY: MPIDR_EL1 is readable at EL1 (and EL0 with UAO); the read is
+    // side-effect-free.
+    unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr) };
+    ((mpidr >> 8) & 0xff, (mpidr >> 16) & 0xff, (mpidr >> 32) & 0xff)
+}
+
+/// Whether the distributor currently has affinity routing enabled.
+fn gicd_are_ns() -> bool {
+    // SAFETY: GICD_CTLR is a read-only observation here; the base was set
+    // by `set_gicd_base` before any IPI sender can run.
+    let ctlr = unsafe {
+        core::ptr::read_volatile((gicd_base() + GICD_CTLR) as *const u32)
+    };
+    ctlr & GICD_CTLR_ARE_NS != 0
+}
+
+/// Send the scheduler SGI through `ICC_SGI1R_EL1` (GICv3 ARE mode).
+fn send_sgi1r(cpu: u32) {
+    let (aff1, aff2, aff3) = mpidr_affinity();
+    let target_list = 1u64 << (cpu & 0xF);
+    let value = (target_list << SGI1R_TARGET_LIST_SHIFT)
+        | (aff1 << SGI1R_AFFINITY_1_SHIFT)
+        | ((SCHED_SGI_INTID as u64) << SGI1R_INTID_SHIFT)
+        | (aff2 << SGI1R_AFFINITY_2_SHIFT)
+        | (aff3 << SGI1R_AFFINITY_3_SHIFT);
+    // SAFETY: ICC_SGI1R_EL1 is the architectural GICv3 SGI-generation
+    // register; ICC_SRE_EL1.SRE was enabled during interrupt-controller
+    // init. The write is side-effecting and has no memory operand.
+    unsafe { core::arch::asm!("msr icc_sgi1r_el1, {}", in(reg) value) };
+}
 
 /// PSCI `CPU_ON` function ID, **SMC64/HVC64 calling convention**
 /// (0xC400_0003; ARM DEN 0022D (PSCI) §5.4.3).
@@ -138,7 +196,17 @@ pub(crate) unsafe fn set_gicd_base(base: usize) {
 /// it; the read itself is non-tearing on aarch64.
 #[inline]
 unsafe fn gicd_base() -> usize {
-    GICD_BASE
+    let base = GICD_BASE;
+    // A zero base used to turn the first SGI send into a store at 0xF00
+    // (GICD_SGIR) or a read at 0 (ARE probe) and a translation-fault panic
+    // in the middle of `sched_enqueue_with`. Fail at the wiring point
+    // instead: `arch_init` seeds this from the platform descriptor.
+    assert!(
+        base != 0,
+        "aarch64 SGI send before set_gicd_base: arch_init did not seed the \
+         GIC distributor base from the platform descriptor"
+    );
+    base
 }
 
 /// ARM64 SMP backend using the GICv3 interrupt controller.
@@ -155,8 +223,18 @@ impl SmpArch for AArch64SmpArch {
     fn send_sched_ipi(cpu: u32) {
         // C: arch_send_smp_schedule_ipi(cpu) — smp.c:65
         //
-        // Generate SGI 0 targeting a single CPU by writing GICD_SGIR.
-        // GICD_SGIR layout (ARM GIC Architecture Specification §4.3.22):
+        // GICv3 with affinity routing enabled (ARE_NS=1) ignores the legacy
+        // GICD_SGIR path; use ICC_SGI1R_EL1 there. Only when firmware left
+        // affinity routing off does the GICv2-compatible distributor
+        // register below apply.
+        if gicd_are_ns() {
+            send_sgi1r(cpu);
+            return;
+        }
+
+        // Legacy (ARE_NS=0) GICD_SGIR path: generate SGI 0 targeting a
+        // single CPU. GICD_SGIR layout (ARM GIC Architecture
+        // Specification §4.3.22):
         //   Bits [25:24]: Target List Filter — 0 = send to the CPU(s)
         //                 specified in the CPU target list.
         //   Bits [23:16]: CPU Target List — one bit per CPU in the

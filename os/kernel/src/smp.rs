@@ -490,9 +490,12 @@ impl SmpState {
     /// AP woken by a scheduling IPI would stay masked and never tick again.
     /// The C2C stop-loss therefore restores the BSP affinity clamp; the
     /// enqueue wake producer remains in place but inert (no process is homed
-    /// on an AP). The receive-side arms — clear plus timer restart on wake,
-    /// scheduler-flag application on aarch64/riscv64, and riscv64's remote
-    /// `fence.i` — must land together before the clamp is removed.
+    /// on an AP). aarch64's BSP SGI gate and scheduler-flag application are
+    /// now wired (C2D-A64SGI), but its APs still park in `wfi` before
+    /// `scheduler_loop`; the remaining arms — AP entry into the scheduler on
+    /// aarch64/riscv, clear plus timer restart on wake, riscv64's flag
+    /// application, and riscv64's remote `fence.i` — must land together
+    /// before the clamp is removed.
     pub fn clear_idle_flag(&mut self, cpu: CpuId) -> bool {
         match self.cpu_locals.get_mut(cpu.index()) {
             Some(local) => core::mem::replace(&mut local.cpu_is_idle, false),
@@ -794,6 +797,26 @@ impl SmpState {
         proc_table.rts_unset(proc_nr, RtsFlagsBits::PROC_STOP);
     }
 
+    /// Preempt the process interrupted on this CPU, without acknowledging
+    /// the interrupt. C: `smp.c:194-204` (`smp_ipi_sched_handler`) minus
+    /// `ipi_ack()`.
+    ///
+    /// The aarch64 SGI lane claims and completes through ICC_IAR1/EOIR in
+    /// the trap body, so calling `ipi_sched_handler` there would complete
+    /// the same INTID twice. x86 and riscv64 keep the ack in
+    /// [`Self::ipi_sched_handler`].
+    pub fn preempt_current_on_ipi(
+        &mut self,
+        proc_table: &mut crate::proc_table::ProcessTable,
+        current_cpu: CpuId,
+    ) {
+        let curr = self.cpu_locals[current_cpu.index()].proc_ptr;
+        if let Some(curr_nr) = curr
+            && curr_nr != proc_nr::IDLE {
+                proc_table.rts_set(curr_nr, RtsFlagsBits::PREEMPTED);
+            }
+    }
+
     /// IPI schedule handler: ack + preempt current process.
     /// C: smp.c:194-204 — `smp_ipi_sched_handler()`
     pub fn ipi_sched_handler<A: SmpArch>(
@@ -802,11 +825,7 @@ impl SmpState {
         current_cpu: CpuId,
     ) {
         A::ack_ipi();
-        let curr = self.cpu_locals[current_cpu.index()].proc_ptr;
-        if let Some(curr_nr) = curr
-            && curr_nr != proc_nr::IDLE {
-                proc_table.rts_set(curr_nr, RtsFlagsBits::PREEMPTED);
-            }
+        self.preempt_current_on_ipi(proc_table, current_cpu);
     }
 
     /// IPI halt handler: ack + stop local timer + halt CPU.

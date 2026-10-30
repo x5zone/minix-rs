@@ -2488,6 +2488,26 @@ pub unsafe extern "C" fn aarch64_kernel_body(
             // Spurious: nothing claimable, nothing to complete.
             None => return PARK_NONE,
             Some(id) if id == GIC_SPURIOUS_INTID => return PARK_NONE,
+            // Scheduler SGI: no hook chain. Run C's smp_sched_handler +
+            // smp_ipi_sched_handler policy under the BKL, then complete the
+            // claim exactly once (the generic path would mask the SGI and
+            // return Spurious without completing it).
+            Some(id) if id == minix_arch::arm64::smp::SCHED_SGI_INTID => {
+                let acquired = crate::smp::bkl_lock_or_inherit();
+                {
+                    let section = unsafe { crate::smp::BklSection::assume_held() };
+                    let table = crate::proc_table_with(&section);
+                    let smp = crate::smp_state_with(&section);
+                    let cpu = crate::current_cpu_id();
+                    smp.sched_handler_full(table, cpu);
+                    smp.preempt_current_on_ipi(table, cpu);
+                }
+                if acquired {
+                    crate::smp::bkl_unlock();
+                }
+                crate::irq_manager::complete_hardware_irq(Some(id));
+                return PARK_NONE;
+            }
             Some(id) => {
                 // INTIDs ≥ NR_IRQ_VECTORS cannot be enabled (the
                 // controller clamps its line count at the manager bound)

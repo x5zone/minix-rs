@@ -294,6 +294,39 @@ pub fn dispatch_claimed_hardware_irq(irq: IrqVector, claimed: Option<u32>) -> Re
     result
 }
 
+/// Complete a claim taken by [`claim_hardware_irq`] without routing it
+/// through a hook chain.
+///
+/// The aarch64 scheduler SGI (INTID 0) has no registered hook: its policy
+/// runs in the trap body, and the claim must still be written back or the
+/// GIC keeps the interrupt active and refires it forever. This is the
+/// completion half only; masking/unmasking is deliberately skipped for an
+/// SGI (the controller's `dispatch_claimed` would mask it).
+pub fn complete_hardware_irq(claimed: Option<u32>) {
+    let acquired = crate::smp::bkl_lock_or_inherit();
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    crate::irq_manager_with(&section).controller_complete(claimed);
+    if acquired {
+        crate::smp::bkl_unlock();
+    }
+}
+
+/// Enable the scheduler SGI on the CPU named by its architecture hardware
+/// id. Only aarch64 has a per-CPU SGI enable bit; other architectures'
+/// `enable_sgi` is a documented no-op.
+#[cfg(target_arch = "aarch64")]
+pub fn enable_sched_sgi_for_cpu(hw_id: usize) {
+    let acquired = crate::smp::bkl_lock_or_inherit();
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    crate::irq_manager_with(&section).enable_sgi(
+        hw_id,
+        minix_arch::arm64::smp::SCHED_SGI_INTID as u8,
+    );
+    if acquired {
+        crate::smp::bkl_unlock();
+    }
+}
+
 /// An IRQ hook slot in the global hook pool.
 struct IrqHookSlot {
     next: Option<usize>,
@@ -543,6 +576,20 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
     /// ([`claim_hardware_irq`] is its kernel-side wrapper).
     pub fn controller_claim(&mut self) -> Option<u32> {
         self.controller.claim()
+    }
+
+    /// The controller's completion write, exposed for a claim that has no
+    /// hook chain (the aarch64 scheduler SGI lane).
+    pub fn controller_complete(&mut self, claimed: Option<u32>) {
+        self.controller.complete(claimed);
+    }
+
+    /// Enable one SGI on the CPU named by its architecture hardware id.
+    ///
+    /// Forwarded to [`crate::interrupt::PerCpuInterruptUnit::enable_sgi`];
+    /// x86 and riscv64 keep the trait's no-op default.
+    pub fn enable_sgi(&mut self, hw_id: usize, intid: u8) {
+        self.controller.enable_sgi(hw_id, intid);
     }
 
     /// Dispatch against a claim the caller already took.

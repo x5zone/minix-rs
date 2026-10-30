@@ -952,10 +952,16 @@ impl ProcessTable {
         }
 
         // C proc.c:1647-1650 — enqueueing onto an idle CPU wakes it with a
-        // scheduling IPI. The same-CPU case cannot be idle (the current
-        // process is running), so checking the target CPU's flag directly is
-        // equivalent to C's `else if` on the preemption branch.
+        // scheduling IPI. This is the `else` of C's `cpuid == rp->p_cpu`
+        // preemption branch, so it only fires for a *different* CPU: a
+        // self-target must never send itself an IPI. The explicit
+        // same-CPU exclusion matters because `cpu_is_idle` can still be
+        // observed true on the current CPU in the window between `idle()`
+        // setting it and the timer interrupt clearing it; testing the flag
+        // alone would turn that window into a re-entrant scheduler-IPI
+        // handler.
         if let Some(smp) = unsafe { crate::try_smp_state() }
+            && cpu_id != crate::current_cpu_id()
             && smp.cpu_local(cpu_id).is_some_and(|local| local.cpu_is_idle)
         {
             // Publish the run-queue writes before the IPI. With IPC senders
