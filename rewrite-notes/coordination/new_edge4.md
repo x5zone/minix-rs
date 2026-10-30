@@ -3526,6 +3526,19 @@ stack/mcast/routes/pending/wake_replies 各面齐备；`grep -rn "unimplemented!
 第 2 步建，smoltcp 适配的落地随 `25-smoltcp-shim.md` 的设计（本轮不代做）；② **SF/RS 启动链**
 挂 **E-NETSTART**（跨板）。判据：`cargo test -p minix-net-lwip -p minix-net-uds` → **148 / 0**（6 段）。
 
+### 第一百九十六笔（A 板 A22 成员 `E-ISWIRE`：devman 的 SefHooks 生产实现现查已落，本成员闭）
+
+A22 是跨阶段传输族的**家庭行**（板上自注「逐项领，一次一个」），本笔领的是成员 `E-ISWIRE`
+（devman SefHooks 是 `minix-sef` 的第三消费方）。现查：`os/servers/devman/src/hooks.rs:108` 的
+`SefHooks` trait 已有生产实现 `DevmanSef`（`:134` 的 `init_server` = 重建 `Server::new(&config)`，
+对位 C `vtreefs.c:52-62` 的 fresh 回调；restart 注册为 `SEF_CB_INIT_RESTART_STATEFUL`、正文空，
+因为状态随 RS 镜像恢复存活；信号注册落在 `ipc::minix::MinixTransport::terminate` 的停止闩上），
+`test_devman_sef_production_hooks` 钉住；`main.rs` 以等价的 inline 形（`Server::new` + `run`，
+带 `main.c:77-89` 锚、初始化失败响亮 panic）起服务。
+
+判据：`cargo test -p minix-devman --lib` → **90 / 0**（hooks 过滤下 5/0）。A22 其余成员照旧逐项领，
+E1/E6/E7/E8/E9 的内核半边与真机腿归 C 板。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
