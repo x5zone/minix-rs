@@ -50,6 +50,16 @@ const TAIL: &str = env!("CARGO_BIN_EXE_tail");
 const UNEXPAND: &str = env!("CARGO_BIN_EXE_unexpand");
 const UNIFDEF: &str = env!("CARGO_BIN_EXE_unifdef");
 const VIS: &str = env!("CARGO_BIN_EXE_vis");
+const WC: &str = env!("CARGO_BIN_EXE_wc");
+const EXPAND: &str = env!("CARGO_BIN_EXE_expand");
+const DIFF: &str = env!("CARGO_BIN_EXE_diff");
+const HEXDUMP: &str = env!("CARGO_BIN_EXE_hexdump");
+const UNVIS: &str = env!("CARGO_BIN_EXE_unvis");
+const ASA: &str = env!("CARGO_BIN_EXE_asa");
+const TSORT: &str = env!("CARGO_BIN_EXE_tsort");
+const LOOK: &str = env!("CARGO_BIN_EXE_look");
+const LAM: &str = env!("CARGO_BIN_EXE_lam");
+const PATCH: &str = env!("CARGO_BIN_EXE_patch");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
 const FF: u8 = 0xFF;
@@ -233,4 +243,52 @@ fn the_accumulating_ring_names_the_raw_byte_once() {
         err,
         [b"seq: unknown option -- \xff\n".as_slice(), usage].concat()
     );
+}
+
+/// 族终笔（批次四百七十三）的收口门：`args()` 文本口已删，余下十二支没有字母面的壳
+/// 也全部走 `args_bytes()`——它们的 argv 字节腿只剩**操数名**一处（报文里的那一位与
+/// 开档口递进去的那一串）。本枚门把十支「报文里念得出操数名」的壳各喂一枚带裸 `ff`
+/// 的操数，钉住报文里的名字位是**原字节**（折过的 `ef bf bd` 不再出现）；colcrt 与 fmt
+/// 的开档失手句不带档名位，没有可观察的字节腿，不入列。
+#[test]
+fn the_plain_shells_operand_echo_carries_the_argv_bytes() {
+    let ff: Vec<u8> = [b"nosuch".as_slice(), &[0xff][..], b".txt".as_slice()].concat();
+    // diff 要凑齐两枚操数才走到开档（一枚直接落 usage），且第一侧要**开得成功**
+    // 才轮到第二侧报错——给它一份临时档；look 的单操数形按 C 的 `argc == 2` 特例
+    // 把那一枚当查询词（非 ASCII 先拒），档名腿要两枚才可达。
+    let mut scratch = std::env::temp_dir();
+    scratch.push(format!("argv-bytes-side-{}", std::process::id()));
+    std::fs::write(&scratch, b"side a\n").expect("writing the scratch file");
+    let scratch_os = std::os::unix::ffi::OsStrExt::as_bytes(scratch.as_os_str());
+    let pair_args: Vec<&[u8]> = vec![scratch_os, &ff];
+    let args: [&[u8]; 1] = [&ff];
+    let rows: [(&str, &str, i32, Vec<u8>); 10] = [
+        ("wc", WC, 1, b"wc: nosuch\xff.txt\n".to_vec()),
+        ("expand", EXPAND, 1, b"expand: Cannot open `nosuch\xff.txt'\n".to_vec()),
+        ("diff", DIFF, 2, b"diff: nosuch\xff.txt\n".to_vec()),
+        ("hexdump", HEXDUMP, 1, b"hexdump: nosuch\xff.txt\n".to_vec()),
+        ("unvis", UNVIS, 0, b"unvis: nosuch\xff.txt\n".to_vec()),
+        ("asa", ASA, 0, b"nosuch\xff.txt: cannot open\n".to_vec()),
+        ("tsort", TSORT, 1, b"tsort: nosuch\xff.txt\n".to_vec()),
+        ("look", LOOK, 1, b"look: Can't open nosuch\xff.txt\n".to_vec()),
+        ("lam", LAM, 1, b"lam: open nosuch\xff.txt\n".to_vec()),
+        (
+            "patch",
+            PATCH,
+            2,
+            b"patch: target file `nosuch\xff.txt' waits on the open-existing seam (edge E-CMDSYSFACE)\n".to_vec(),
+        ),
+    ];
+    for (name, exe, want_code, want_err) in rows {
+        let argv: &[&[u8]] = if matches!(name, "diff" | "look") {
+            &pair_args
+        } else {
+            &args
+        };
+        let (code, out, err) = run(exe, argv, b"aabbcc\n");
+        assert_eq!(code, want_code, "{name} 在裸字节操数上的退码");
+        assert_eq!(err, want_err, "{name} 的操数名位该是原字节");
+        assert_eq!(out, Vec::<u8>::new(), "{name} 的标准输出");
+    }
+    let _ = std::fs::remove_file(&scratch);
 }

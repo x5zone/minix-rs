@@ -30,25 +30,31 @@ pub const STDERR: Fd = 2;
 
 /// Program arguments without `argv[0]` conventions applied — index 0 is
 /// the program name, exactly as C's `argv`.
+/// 字节形出口（A2 参数缝半的族终笔）：C 从头到尾把 `argv` 当字节数组，凡是要把选项字母
+/// 或操作数**按原字节**交回去的腿都不能走有损折叠——`String::from_utf8_lossy` 会把一枚裸
+/// `ff` 折成三字节 `ef bf bd`（批次四百二十二在 `random -\xff` 上现量过的那条残差）。
 #[cfg(all(not(test), target_os = "none"))]
-pub fn args() -> alloc::vec::Vec<alloc::string::String> {
-    minix_rt::crt0::args()
-        .map(|raw| alloc::string::String::from_utf8_lossy(raw).into_owned())
+pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+    minix_rt::crt0::args().map(<[u8]>::to_vec).collect()
+}
+
+/// Hosted twin of [`args_bytes`]：`args_os()` 交回的正是同一串原始字节。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    std::env::args_os()
+        .map(|raw| raw.as_bytes().to_vec())
         .collect()
 }
 
-/// Hosted twin of [`args`] (see the module header for the seam contract).
-/// `std::env::args()` panics on a non-UTF-8 argument, which would make this leg
-/// diverge from the target leg (which renders lossily); `args_os()` keeps the raw
-/// bytes so both legs apply the same lossy render — C passes argv as bytes and
-/// never validates them（批次四百二十二，现量：`random -\xff` 参照件打
-/// `unknown option -- \xff`，本壳宿主腿曾直接 panic 退 134）。
-#[cfg(any(test, not(target_os = "none")))]
-pub fn args() -> alloc::vec::Vec<alloc::string::String> {
-    use std::os::unix::ffi::OsStrExt as _;
-    std::env::args_os()
-        .map(|raw| alloc::string::String::from_utf8_lossy(raw.as_bytes()).into_owned())
-        .collect()
+/// [`prog_name`] 的字节形：`argv[0]` 按原字节交回，且取的是**最后一段斜杠之后**的那串
+/// （与 [`prog_name`] 交给 `minix_sys::prog_name` 的 basename 规则同形）。
+pub fn prog_name_bytes(argv: &[alloc::vec::Vec<u8>]) -> &[u8] {
+    let raw = argv.first().map_or(&[][..], |name| name.as_slice());
+    match raw.iter().rposition(|&byte| byte == b'/') {
+        Some(cut) => &raw[cut + 1..],
+        None => raw,
+    }
 }
 
 /// Every environment string as raw `KEY=VALUE` bytes, in order (C `environ`).
@@ -152,18 +158,6 @@ pub fn emit_error(bytes: &[u8]) -> Option<minix_sys::Errno> {
         }
     }
     None
-}
-
-/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
-/// `minix3/lib/csu/common/crt0-common.c:156-165`，权威在 `minix-types` 的 `prog_name`）。
-/// `err(3)`/`errx(3)` 那几行都以它开头——但只以它们俩开头：`random` 的 `usage()` 把名字
-/// 写死在串里，两路不同来历，见 `src/lottery.rs` 的 `USAGE`。
-pub fn prog_name(argv: &[alloc::string::String]) -> &str {
-    let raw = argv
-        .first()
-        .map(alloc::string::String::as_str)
-        .unwrap_or("");
-    minix_sys::prog_name(raw)
 }
 
 /// C 的 `err(3)`/`warn(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退

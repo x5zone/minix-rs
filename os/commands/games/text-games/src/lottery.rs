@@ -89,22 +89,20 @@ pub const UNKNOWN_OPTION: &str = "unknown option -- ";
 
 /// 走完选项环。只认「以 `-` 开头且长度大于一」的 token 为选项；`--` 是结束标记；其余一切
 /// （含裸 `-`）从这一枚起都算操作数。集外字母当场返回，环不再往下走（C 的 `usage()` 即退出）。
-pub fn scan_ring(tokens: &[&str]) -> Ring {
+pub fn scan_ring(tokens: &[&[u8]]) -> Ring {
     let mut exit_status = false;
     let mut unbuffered = false;
     let mut index = 0usize;
     while index < tokens.len() {
-        let Some(body) = tokens[index].strip_prefix('-') else {
-            break;
-        };
-        if body.is_empty() {
+        let body: &[u8] = tokens[index];
+        if body.first() != Some(&b'-') || body.len() == 1 {
             break;
         }
-        if body == "-" {
+        if &body[1..] == b"-" {
             index += 1;
             break;
         }
-        for letter in body.bytes() {
+        for &letter in &body[1..] {
             match letter {
                 b'e' => exit_status = true,
                 b'r' => unbuffered = true,
@@ -151,7 +149,7 @@ pub fn line_selected(denominator: f64, draw: u64) -> bool {
 /// `errno == ERANGE` 走带操作数的三段形，`denom == 0` 或 `*ep != '\0'` 归 `errx` 那句不含
 /// 操作数的话。**`ERANGE` 判在前**（`random.c:96` 早于 `:98`），所以 `18e308` 报的是号，
 /// 不是「不是有效分母」——尽管那个值本身也确实当不了分母。
-pub fn judge_operands(operands: &[&str]) -> OperandLeg {
+pub fn judge_operands(operands: &[&[u8]]) -> OperandLeg {
     let [only] = operands else {
         return if operands.is_empty() {
             OperandLeg::NoOperandDefault
@@ -194,8 +192,8 @@ pub struct Strtod {
 /// `nan(0x…)` 的载荷。舍入也不逐位对齐：C 走 gdtoa 的大数精化，这里按
 /// `有效数字 × 10^指数` 乘出来，超过 17 位的数字串丢掉尾巴，因此极端位数上可能差一个
 /// 末位单位——只影响「恰好压在阈值那一格」的选中判定。
-pub fn scan_strtod(word: &str) -> Strtod {
-    let bytes = word.as_bytes();
+pub fn scan_strtod(word: &[u8]) -> Strtod {
+    let bytes = word;
     let mut index = 0usize;
     while matches!(bytes.get(index), Some(&c) if matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
     {
@@ -597,22 +595,22 @@ mod tests {
             ("1e-400", 0.0, 6, true),
         ];
         for (word, value, rest, erange) in cases {
-            let read = scan_strtod(word);
+            let read = scan_strtod(word.as_bytes());
             assert_eq!(read.value, value, "{word:?} 的值");
             assert_eq!((read.rest, read.erange), (rest, erange), "{word:?}");
         }
         // 位进展望只在 17 位以内：尾巴丢掉、折进十幂，所以 21 位那一串落在 2.1e20
-        assert_eq!(scan_strtod("210000000000000000000").value, 2.1e20);
+        assert_eq!(scan_strtod(b"210000000000000000000").value, 2.1e20);
         // `inf` 与 `nan` 靠 `INFNAN_CHECK` 那块；`match` 折小写，所以三形都算数
-        assert_eq!(scan_strtod("inf").value, f64::INFINITY);
-        assert_eq!(scan_strtod("infinity").rest, 8);
-        assert_eq!(scan_strtod("INF").rest, 3);
-        assert_eq!(scan_strtod("-inf").value, f64::NEG_INFINITY);
-        assert!(scan_strtod("nan").value.is_nan());
-        assert!(scan_strtod("NaN").value.is_nan());
-        assert_eq!(scan_strtod("nan").rest, 3);
+        assert_eq!(scan_strtod(b"inf").value, f64::INFINITY);
+        assert_eq!(scan_strtod(b"infinity").rest, 8);
+        assert_eq!(scan_strtod(b"INF").rest, 3);
+        assert_eq!(scan_strtod(b"-inf").value, f64::NEG_INFINITY);
+        assert!(scan_strtod(b"nan").value.is_nan());
+        assert!(scan_strtod(b"NaN").value.is_nan());
+        assert_eq!(scan_strtod(b"nan").rest, 3);
         // `infi` 那一形 C 不吃 `inity` 的第一格之外的东西：`ep` 停在第 3 格
-        assert_eq!(scan_strtod("infi").rest, 3);
+        assert_eq!(scan_strtod(b"infi").rest, 3);
     }
 
     #[test]
@@ -626,23 +624,27 @@ mod tests {
             ("nan( 0x1f )", 11),
             ("NAN(0123456789abcdef)", 21),
         ] {
-            let read = scan_strtod(word);
+            let read = scan_strtod(word.as_bytes());
             assert!(read.value.is_nan(), "{word:?} 应当是 NaN");
             assert_eq!((read.rest, read.erange), (expected_rest, false), "{word:?}");
             assert_eq!(read.rest, word.len(), "{word:?} 应当整串吃掉");
         }
         for word in ["nan(0x1f", "nan(", "nan(garbage"] {
             let open = word.find('(').expect("测试串里就有左括号");
-            let read = scan_strtod(word);
+            let read = scan_strtod(word.as_bytes());
             assert!(read.value.is_nan(), "{word:?}");
             assert_eq!(
                 read.rest, open,
                 "{word:?} 没有右括号，游标该留在左括号那一格"
             );
-            assert_eq!(judge_operands(&[word]), OperandLeg::NotValid, "{word:?}");
+            assert_eq!(
+                judge_operands(&[word.as_bytes()]),
+                OperandLeg::NotValid,
+                "{word:?}"
+            );
         }
         assert!(matches!(
-            judge_operands(&["nan(0x1f)"]),
+            judge_operands(&[b"nan(0x1f)"]),
             OperandLeg::Accepted(value) if value.is_nan()
         ));
     }
@@ -665,12 +667,12 @@ mod tests {
             ("0x1p-99999999", 0.0, 13), // `ret_tiny` 那一路：值 0 而**不立** errno
         ];
         for (word, value, rest) in cases {
-            let read = scan_strtod(word);
+            let read = scan_strtod(word.as_bytes());
             assert_eq!(read.value, value, "{word:?} 的值");
             assert_eq!((read.rest, read.erange), (rest, false), "{word:?}");
         }
         // 溢出这一形与十进制的 `18e308` 分流：十六进制那一支整段绕过 `range_err`
-        let huge = scan_strtod("0x1p99999999");
+        let huge = scan_strtod(b"0x1p99999999");
         assert_eq!(huge.value, f64::INFINITY);
         assert!(!huge.erange, "十六进制溢出立号就成了另一句报文");
         assert_eq!(huge.rest, 12);
@@ -706,10 +708,10 @@ mod tests {
         // `switch (argc)` 的四个出口（`random.c:89-104`）：零枚不是「缺参数」而是「分母 2」，
         // 两枚以上才是 usage，中间那一枚才轮到取值判断
         assert_eq!(judge_operands(&[]), OperandLeg::NoOperandDefault);
-        assert_eq!(judge_operands(&["3"]), OperandLeg::Accepted(3.0));
-        assert_eq!(judge_operands(&["3", "4"]), OperandLeg::TooMany);
+        assert_eq!(judge_operands(&[b"3"]), OperandLeg::Accepted(3.0));
+        assert_eq!(judge_operands(&[b"3", b"4"]), OperandLeg::TooMany);
         // 第三枚是空串也不改变个数：判的是个数，不是内容
-        assert_eq!(judge_operands(&["3", "", "4"]), OperandLeg::TooMany);
+        assert_eq!(judge_operands(&[b"3", b"", b"4"]), OperandLeg::TooMany);
         assert_eq!(NO_OPERAND_DENOMINATOR, 2.0);
     }
 
@@ -718,27 +720,35 @@ mod tests {
         // `denom == 0 || *ep != '\0'`（`:98`）与 `errno == ERANGE`（`:96`）是两句话：
         // 前者不含操作数，后者把操作数放在位上。把后者并到前者就丢掉了号
         for word in ["0", "", "abc", "-", "6x", "e5", "1e", "infi"] {
-            assert_eq!(judge_operands(&[word]), OperandLeg::NotValid, "{word:?}");
+            assert_eq!(
+                judge_operands(&[word.as_bytes()]),
+                OperandLeg::NotValid,
+                "{word:?}"
+            );
         }
         for word in ["18e308", "1e-400"] {
-            assert_eq!(judge_operands(&[word]), OperandLeg::OutOfRange, "{word:?}");
+            assert_eq!(
+                judge_operands(&[word.as_bytes()]),
+                OperandLeg::OutOfRange,
+                "{word:?}"
+            );
         }
         // 全零的数字串不立 ERANGE（C 的 `nz0` 那条路直接 `goto ret`），落回「不是有效分母」，
         // 哪怕指数大得离谱
-        assert_eq!(judge_operands(&["0e99999"]), OperandLeg::NotValid);
-        assert_eq!(judge_operands(&["1"]), OperandLeg::Accepted(1.0));
+        assert_eq!(judge_operands(&[b"0e99999"]), OperandLeg::NotValid);
+        assert_eq!(judge_operands(&[b"1"]), OperandLeg::Accepted(1.0));
         // `0x10` 走 `gethex`：`pcheck:` 那个 `switch (*s)` 没有 `default` 拒绝分支
         // （`gethex.c:110-112`），所以不带二进制指数的十六进制照样认，值 16
-        assert_eq!(judge_operands(&["0x10"]), OperandLeg::Accepted(16.0));
+        assert_eq!(judge_operands(&[b"0x10"]), OperandLeg::Accepted(16.0));
         // `2^32` 在 `double` 里是精确的，不该报溢出
         assert_eq!(
-            judge_operands(&["4294967296"]),
+            judge_operands(&[b"4294967296"]),
             OperandLeg::Accepted(4.294967296e9)
         );
         // `nan` 认下（C 的 `denom == 0` 对 NaN 为假），但值不可比：`PartialEq` 上 NaN 不
         // 等于自己，所以这里只验它落在 `Accepted` 那一支
         assert!(matches!(
-            judge_operands(&["nan"]),
+            judge_operands(&[b"nan"]),
             OperandLeg::Accepted(value) if value.is_nan()
         ));
     }
@@ -764,7 +774,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scan_ring(&["-e"]),
+            scan_ring(&[b"-e"]),
             Ring::Done {
                 exit_status: true,
                 unbuffered: false,
@@ -772,7 +782,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scan_ring(&["-er", "-r", "3"]),
+            scan_ring(&[b"-er", b"-r", b"3"]),
             Ring::Done {
                 exit_status: true,
                 unbuffered: true,
@@ -780,9 +790,9 @@ mod tests {
                 operands_at: 2
             }
         );
-        assert_eq!(scan_ring(&["-Z"]), Ring::Unknown(b'Z'));
-        assert_eq!(scan_ring(&["-eZ"]), Ring::Unknown(b'Z'));
-        assert_eq!(scan_ring(&["-Ze"]), Ring::Unknown(b'Z'));
+        assert_eq!(scan_ring(&[b"-Z"]), Ring::Unknown(b'Z'));
+        assert_eq!(scan_ring(&[b"-eZ"]), Ring::Unknown(b'Z'));
+        assert_eq!(scan_ring(&[b"-Ze"]), Ring::Unknown(b'Z'));
     }
 
     /// 集外那一枚交回的是短横后的**第一个字节**，不是第一个字符：`-é` 的字节串是
@@ -792,14 +802,14 @@ mod tests {
     #[test]
     fn the_off_letter_is_a_byte_and_not_a_character() {
         // `é` 是两个 UTF-8 字节，环停在第一个上
-        assert_eq!(scan_ring(&["-\u{e9}"]), Ring::Unknown(0xc3));
+        assert_eq!(scan_ring(&[b"-\xc3\xa9"]), Ring::Unknown(0xc3));
         // 合法字母在先也一样：`-eé` 报的还是 `c3`（`e` 被吃掉，环继续走到下一字节）
-        assert_eq!(scan_ring(&["-e\u{e9}"]), Ring::Unknown(0xc3));
+        assert_eq!(scan_ring(&[b"-e\xc3\xa9"]), Ring::Unknown(0xc3));
         // U+0080 那一格是这条渲染规则的判据位：它按 UTF-8 编码要占两个字节，
         // 而 C 打的是一个裸字节（`-\u{80}` 的字节串是 `c2 80`，报第一个 `c2`）
-        assert_eq!(scan_ring(&["-\u{80}"]), Ring::Unknown(0xc2));
+        assert_eq!(scan_ring(&[b"-\xc2\x80"]), Ring::Unknown(0xc2));
         // 反面：`--` 是结束标记，不当集外字母报（`getopt.c:81-85`）
-        assert_ne!(scan_ring(&["--"]), Ring::Unknown(b'-'));
+        assert_ne!(scan_ring(&[b"--"]), Ring::Unknown(b'-'));
     }
 
     /// 句子那一侧只有一种装法：字母位是原字节，不经过任何再编码。
@@ -824,7 +834,7 @@ mod tests {
     fn end_of_options_and_a_bare_dash_are_two_different_things() {
         // `--` 是结束标记：它自己不算操作数，下一枚起才算。裸 `-` 相反——它**就是**操作数
         assert_eq!(
-            scan_ring(&["--"]),
+            scan_ring(&[b"--"]),
             Ring::Done {
                 exit_status: false,
                 unbuffered: false,
@@ -832,7 +842,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scan_ring(&["--", "3"]),
+            scan_ring(&[b"--", b"3"]),
             Ring::Done {
                 exit_status: false,
                 unbuffered: false,
@@ -840,7 +850,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scan_ring(&["-"]),
+            scan_ring(&[b"-"]),
             Ring::Done {
                 exit_status: false,
                 unbuffered: false,
@@ -848,7 +858,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scan_ring(&["-e", "-"]),
+            scan_ring(&[b"-e", b"-"]),
             Ring::Done {
                 exit_status: true,
                 unbuffered: false,

@@ -1,18 +1,18 @@
 //! The argv seam face for the whole crate: every shell gets its arguments through
-//! `bin_support::args()`，宿主腿与真机腿在那里必须同形。
+//! `bin_support::args_bytes()`，宿主腿与真机腿在那里交回同一串原始字节。
 //!
 //! 真值出处是批次四百二十二的一枚现量：宿主腿曾用 `std::env::args()`（对非 UTF-8
-//! 参数 unwrap 即 panic 退 134），而真机腿是 `from_utf8_lossy`——于是
-//! `random -\xff` 在宿主上直接崩，参照件 `tmp/random-421/random` 打的却是
-//! `unknown option -- \xff`（C 把 argv 当字节传，从不校验）。修法照 textfilter
-//! `bin_support.rs` 的同一条缝：`args_os()` 保原字节、两条腿各自 lossy。
+//! 参数 unwrap 即 panic 退 134），参照件 `tmp/random-421/random` 打的却是
+//! `unknown option -- \xff`（C 把 argv 当字节传，从不校验）。批次四百二十二先把两条腿
+//! 统一到「保原字节、各自 lossy」，这一枚门钉的契约是「裸字节 == lossy 等价」；
+//! **族终笔（批次四百七十三）把契约升级为「裸字节 == 原字节」**：壳侧换 `args_bytes()`，
+//! 有损折叠不再是缝的一部分，下面那枚门的期望也随之从「两路相等」改为逐字节等于
+//! C 的答案（参照件 `tmp/random-421/random` 的读数）。
 //!
-//! 这一枚门钉的是**缝的契约**而不是各壳的报文：给每支壳喂一枚裸 `-\xff`
-//! （`OsStr` 字节，不经 UTF-8），再喂它的 lossy 等价串，两路的三样（退码、标准
-//! 输出、标准错误）必须逐字节相同——即「裸字节参数的表现 == lossy 等价的表现」。
 //! 各壳报文本身的真值由各自的面门承载（`random_face` 的字节形门、`wtf_face` 的
-//! usage 形、`fortune_face` 的 `Cannot open` 三段形），这里不重复断言字面，
-//! 只断言两路相等且**没有一行 panic**。
+//! usage 形、`fortune_face` 的 `Cannot open` 三段形）；这一枚只钉 argv 缝上
+//! **跨壳一致**的那三形，外加「没有一行 panic」——宿主腿曾经的那枚
+//! `env::args()` unwrap panic 退 134，正是这扇门立起来的原因。
 
 use std::ffi::OsStr;
 use std::io::Write as _;
@@ -58,32 +58,55 @@ fn feed_stdin(child: &mut std::process::Child, input: &[u8]) {
     }
 }
 
-/// 裸字节参数的表现必须与它的 lossy 等价**逐字节相同**，且三支壳哪一支都不得
-/// 以信号退出（`code()` 回 None 就是崩了，比如宿主腿曾经的那枚 `env::args()`
-/// unwrap panic——它退 134，正是本枚门立起来的原因）。
+/// 裸字节参数的表现必须**逐字节等于 C 的答案**（参照件 `tmp/random-421/random`
+/// 的读数；`\xff` 经 lossy 折成 `ef bf bd` 的那条腿已随族终笔拆除），且三支壳
+/// 哪一支都不得以信号退出（`code()` 回 None 就是崩了，比如宿主腿曾经的那枚
+/// `env::args()` unwrap panic——它退 134，正是本枚门立起来的原因）。
 #[test]
-fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent() {
+fn a_raw_nonutf8_argument_reaches_the_report_as_itself() {
     let raw = OsStr::from_bytes(b"-\xff");
-    let lossy = OsStr::new("-\u{fffd}");
-    // 三支壳吃这一枚 token 的位置不同：random/wtf 走选项环，fortune 当档名——
-    // 但「裸字节 == lossy 等价」这条缝契约对三种位置都得成立。
-    let rows: [(&str, &[u8]); 3] = [("random", b"aa\nbb\n"), ("wtf", b""), ("fortune", b"")];
-    for (name, input) in rows {
-        let (raw_code, raw_out, raw_err) = run(name, &[raw], input);
-        let (lossy_code, lossy_out, lossy_err) = run(name, &[lossy], input);
-        assert!(
-            raw_code != 134 && lossy_code != 134,
-            "{name} 以信号退出（134 = panic 的 abort），宿主腿的 argv 缝在校验参数：{raw_err:?}"
-        );
-        assert_eq!(
-            (raw_code, raw_out.clone(), raw_err.clone()),
-            (lossy_code, lossy_out, lossy_err),
-            "{name} 的裸字节参数与 lossy 等价表现不同——两条 argv 腿不同形"
-        );
-        // 反面：非法字节不许原样出现在报文里（lossy 之后它是 U+FFFD 的三个字节）
-        assert!(
-            !raw_out.contains(&b'\xff') && !raw_err.contains(&b'\xff'),
-            "{name} 的报文里出现了未经 lossy 的原字节"
-        );
-    }
+    // random：`-\xff` 走选项环，libc 那一行的字母位是**那枚字节**（参照件读数
+    // `unknown option -- \xff`），usage 行写死 `random`。
+    let (code, out, err) = run("random", &[raw], b"aa\nbb\n");
+    assert_ne!(code, 134, "random 以信号退出：{err:?}");
+    assert_eq!(
+        err,
+        b"random: unknown option -- \xff\nusage: random [-er] [denominator]\n".to_vec()
+    );
+    assert_eq!(out, Vec::<u8>::new());
+    // wtf：`-\xff` 在旗标位（`-` 开头且长于一）只落 usage，而 wtf 的 usage 走
+    // **标准输出**、退 1——裸字节与折过的串在这里同判（判据是「长于一」），
+    // 报文里不含任何字节位。
+    let (code, out, err) = run("wtf", &[raw], b"");
+    assert_eq!(code, 1);
+    assert_eq!(out, b"usage: wtf [-o] [-f dbfile] [is] term ...\n".to_vec());
+    assert_eq!(err, Vec::<u8>::new());
+    // 反面：查询词位置上的裸字节必须**原样**进报文——`wtf -- -\xff` 把那枚字节当
+    // 查询词（`--` 之后旗标环停了），那句「I don't know what …」里的名字就是那枚字节，
+    // 折过的 `ef bf bd` 不再出现。查询要走到，先得有一档可开：缺省词典不在镜像里
+    // （look 那支同款残差），用 `-f` 递一份临时库。
+    let mut db = std::env::temp_dir();
+    db.push(format!("argv-seam-db-{}", std::process::id()));
+    std::fs::write(&db, b"Y2K: the year two thousand problem\n").expect("writing the scratch db");
+    let db_os = OsStr::from_bytes(db.as_os_str().as_bytes());
+    let (code, _out, err) = run(
+        "wtf",
+        &[OsStr::new("-f"), db_os, OsStr::new("--"), raw],
+        b"",
+    );
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        // 那枚 token 整个是查询词：`-` 也在里面，原样出现。
+        b"wtf: I don't know what `-\xff' means!\n".to_vec()
+    );
+    let _ = std::fs::remove_file(&db);
+    // fortune：`-\xff` 当档名开不了，`Cannot open` 三段形的档名位是原字节。
+    let (code, out, err) = run("fortune", &[raw], b"");
+    assert_eq!(code, 1);
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(
+        err,
+        b"fortune: Cannot open `-\xff': No such file or directory\n".to_vec()
+    );
 }

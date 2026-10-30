@@ -18,7 +18,7 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
@@ -30,12 +30,13 @@ use minix_text_games::lottery::{
 };
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名折一次（`line_bytes` 与三段形那两条 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`）。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     // C 的 `argc -= optind; switch (argc)`（`random.c:86-104`）。本支的选项环还没接上，
     // 所以操作数就是 `argv[1..]`；判完个数才轮到读输入。
     // 环先走，操作数才是剩下的那些（C 的 `argc -= optind`）
-    let tokens: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let tokens: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let (exit_status, operands) = match scan_ring(&tokens) {
         Ring::Done {
             exit_status,
@@ -47,12 +48,12 @@ fn run() -> ! {
             // 第一行走 `getprogname()`，第二行的 `random` 写死在串里。字母位走
             // `unknown_option_line` 的字节出口：`getopt.c:79` 的 `optopt = *place++`
             // 一次进一个字节，把 `c3` 当字符装进 `String` 就会多带一个 `83`。
-            support::warn(&unknown_option_line(prog, letter));
+            support::warn(&unknown_option_line(&prog, letter));
             support::warn(USAGE.as_bytes());
             support::terminate(1);
         }
     };
-    let operands: Vec<&str> = operands.to_vec();
+    let operands: Vec<&[u8]> = operands.to_vec();
     let denominator = match judge_operands(&operands) {
         OperandLeg::NoOperandDefault => NO_OPERAND_DENOMINATOR,
         OperandLeg::Accepted(value) => value,
@@ -64,16 +65,25 @@ fn run() -> ! {
         OperandLeg::NotValid => {
             // `errx(1, "denominator is not valid.")`（`:98-99`）：前缀跟着 `argv[0]`，
             // 但操作数不在句子里——`errx` 没有 `%s` 位
-            support::warn(format!("{prog}: {NOT_VALID_SENTENCE}\n").as_bytes());
+            support::warn(format!("{}: {NOT_VALID_SENTENCE}\n", prog).as_bytes());
             support::terminate(1);
         }
         OperandLeg::OutOfRange => {
-            // `err(1, "%s", *argv)`（`:96-97`）：三段形，位上是操作数，尾巴是号对应的句子
-            support::warn_line(
-                prog,
-                operands[0],
-                minix_sys::Errno::from_i32(TextGameError::OutOfRange.as_errno()),
+            // `err(1, "%s", *argv)`（`:96-97`）：三段形，位上是操作数（**原字节**），
+            // 尾巴是号对应的句子。`err_line` 的标签口收 `&str`，这里自己拼。
+            let mut line: Vec<u8> = prog.as_bytes().to_vec();
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(operands[0]);
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(
+                minix_sys::Strerror(minix_sys::Errno::from_i32(
+                    TextGameError::OutOfRange.as_errno(),
+                ))
+                .to_string()
+                .as_bytes(),
             );
+            line.push(b'\n');
+            support::warn(&line);
             support::terminate(1);
         }
     };
@@ -96,7 +106,7 @@ fn run() -> ! {
         // `ferror(stdin)` 那一路是 `err(2, "stdin")`（`random.c:135-136`）：三段形，位上
         // 是 `stdin` 这个词而不是档名（C 的 `ifd` 初值就是 0，标准输入与命名档走同一条
         // `read()` 腿），退码是 2。薄壳这里原来打的是一句自创的 `random: read error` 退 1
-        support::warn_line(prog, "stdin", code);
+        support::warn_line(&prog, "stdin", code);
         support::terminate(2);
     }
     // C 是一趟过流（`random.c:126-137`）：掷中就把这一行整行写出去，下一行另掷一次。
@@ -114,7 +124,7 @@ fn run() -> ! {
             //（`random.c:131-133`）：三段形的位上是 `stdout` 这个词而不是档名，退码是 2。
             // 写缝交回号（`support::emit_error`），句子与退码由这一支自己定
             if let Some(code) = support::emit_error(format!("{line}\n").as_bytes()) {
-                support::warn_line(prog, "stdout", code);
+                support::warn_line(&prog, "stdout", code);
                 support::terminate(2);
             }
         }

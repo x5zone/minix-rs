@@ -42,8 +42,8 @@ fn usage() -> ! {
 
 /// The whole program body; both `main` forms call it and it never returns.
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let a: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let a: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
 
     let mut dictionary = false;
     let mut fold = false;
@@ -63,18 +63,20 @@ fn run() -> ! {
             Some(s) => *s,
             None => break,
         };
-        if !first.starts_with('-') {
+        if first.first() != Some(&b'-') {
             break;
         }
-        for ch in first[1..].chars() {
-            match ch {
-                'd' => dictionary = true,
-                'f' => fold = true,
+        for &flag_byte in &first[1..] {
+            match flag_byte {
+                b'd' => dictionary = true,
+                b'f' => fold = true,
+                // 集外旗标的字母位按原字节（C 的判据在字节上，`look.c` 的旗标环）。
                 other => {
-                    let mut msg = String::from("Bad flag: ");
-                    let mut buf = [0u8; 4];
-                    msg.push_str(other.encode_utf8(&mut buf));
-                    warn_exit(&msg);
+                    let mut msg: Vec<u8> = b"look: Bad flag: ".to_vec();
+                    msg.push(other);
+                    msg.push(b'\n');
+                    support::warn(&msg);
+                    support::terminate(1);
                 }
             }
         }
@@ -83,23 +85,29 @@ fn run() -> ! {
     }
 
     // After flags, C expects the operands to reduce to `string [file]`.
-    let (string, file) = match argc {
+    let (string, file): (&[u8], Option<&[u8]>) = match argc {
         3 => (a[base + 1], Some(a[base + 2])),
         2 => (a[base + 1], None),
         _ => usage(),
     };
-    let path = file.unwrap_or(DEFAULT_DICT);
+    // 默认词典是常量路径，开档口仍要 `&str`。
+    let path: &[u8] = file.unwrap_or(DEFAULT_DICT.as_bytes());
 
-    if !string.as_bytes().is_ascii() {
+    if !string.is_ascii() {
         warn_exit("prefix string contains non-ASCII characters.");
     }
 
-    let data = match support::read_file(path) {
+    // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+    // 报文里念出去的是原字节。
+    let shown = String::from_utf8_lossy(path).into_owned();
+    let data = match support::read_file(&shown) {
         Ok(d) => d,
         Err(_) => {
-            let mut msg = String::from("Can't open ");
-            msg.push_str(path);
-            warn_exit(&msg);
+            let mut msg: Vec<u8> = b"look: Can't open ".to_vec();
+            msg.extend_from_slice(path);
+            msg.push(b'\n');
+            support::warn(&msg);
+            support::terminate(1);
         }
     };
 
@@ -110,7 +118,7 @@ fn run() -> ! {
 
     let opts = LookOptions { dictionary, fold };
     let mut out: Vec<u8> = Vec::new();
-    for line in look_matches(string.as_bytes(), &lines, &opts) {
+    for line in look_matches(string, &lines, &opts) {
         out.extend_from_slice(line);
         out.push(b'\n');
     }

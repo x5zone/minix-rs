@@ -16,7 +16,6 @@
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
-use alloc::format;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -26,38 +25,55 @@ mod support;
 use minix_sys::read;
 use minix_textfilter::diff::{DiffFormat, DiffOptions, DiffStatus, diff_lines, split_text};
 
+/// `-U` 的取值判据照 C 的 `atoi` 只认 ASCII 数字；折前折后同判，只改报文里的字节。
+fn parse_usize(bytes: &[u8]) -> Option<usize> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut value: usize = 0;
+    for &digit in bytes {
+        if !digit.is_ascii_digit() {
+            return None;
+        }
+        value = value
+            .checked_mul(10)?
+            .checked_add(usize::from(digit - b'0'))?;
+    }
+    Some(value)
+}
+
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
     let mut options = DiffOptions::default();
-    let mut operands: Vec<String> = Vec::new();
+    let mut operands: Vec<&[u8]> = Vec::new();
 
     let mut i = 1;
     while i < argv.len() {
-        let arg = argv[i].clone();
-        if !arg.starts_with('-') || arg.len() == 1 {
+        let arg: &[u8] = &argv[i];
+        if arg.first() != Some(&b'-') || arg.len() == 1 {
             operands.push(arg);
             i += 1;
             continue;
         }
-        let chars: Vec<char> = arg.chars().skip(1).collect();
+        let flags: &[u8] = &arg[1..];
         let mut k = 0usize;
-        while k < chars.len() {
-            match chars[k] {
-                'q' => options.format = DiffFormat::Brief,
-                'e' => options.format = DiffFormat::Ed,
-                'f' => options.format = DiffFormat::ForwardEd,
-                'n' => options.format = DiffFormat::Rcs,
-                'u' => options.format = DiffFormat::Unified,
-                'd' => options.minimal = true,
-                'U' => {
+        while k < flags.len() {
+            match flags[k] {
+                b'q' => options.format = DiffFormat::Brief,
+                b'e' => options.format = DiffFormat::Ed,
+                b'f' => options.format = DiffFormat::ForwardEd,
+                b'n' => options.format = DiffFormat::Rcs,
+                b'u' => options.format = DiffFormat::Unified,
+                b'd' => options.minimal = true,
+                b'U' => {
                     // -U n: extended context count.
-                    let value = if k + 1 < chars.len() {
-                        Some(chars[k + 1..].iter().collect::<String>())
+                    let value: Option<&[u8]> = if k + 1 < flags.len() {
+                        Some(&flags[k + 1..])
                     } else {
                         i += 1;
-                        argv.get(i).cloned()
+                        argv.get(i).map(Vec::as_slice)
                     };
-                    match value.and_then(|v| v.parse::<usize>().ok()) {
+                    match value.and_then(parse_usize) {
                         Some(n) => {
                             options.context = n;
                             options.format = DiffFormat::Unified;
@@ -70,7 +86,11 @@ fn run() -> ! {
                     break;
                 }
                 _ => {
-                    support::warn(format!("diff: illegal option -- {}\n", chars[k]).as_bytes());
+                    // 集外字母的字母位按原字节（C 的 `%c`）。
+                    let mut line: Vec<u8> = b"diff: illegal option -- ".to_vec();
+                    line.push(flags[k]);
+                    line.push(b'\n');
+                    support::warn(&line);
                     support::warn(b"usage: diff [-qeuFn] [-U n] file1 file2\n");
                     support::terminate(2);
                 }
@@ -87,7 +107,7 @@ fn run() -> ! {
 
     let mut sides: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
     for (side, operand) in operands.iter().enumerate() {
-        if operand == "-" {
+        if *operand == b"-" {
             let mut chunk = [0u8; 4096];
             loop {
                 match read(support::STDIN, &mut chunk) {
@@ -97,13 +117,19 @@ fn run() -> ! {
                 }
             }
         } else {
-            match support::read_file(operand) {
+            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+            // 报文里念出去的是原字节。
+            let shown = String::from_utf8_lossy(operand).into_owned();
+            match support::read_file(&shown) {
                 Ok(data) => sides[side] = data,
                 Err(_) => {
                     // C `diffreg` sets `status |= 2` and exits 2; a side
                     // that will not open leaves nothing to compare, so it
                     // is fatal here too.
-                    support::warn(format!("diff: {operand}\n").as_bytes());
+                    let mut line: Vec<u8> = b"diff: ".to_vec();
+                    line.extend_from_slice(operand);
+                    line.push(b'\n');
+                    support::warn(&line);
                     support::terminate(2);
                 }
             }
@@ -114,13 +140,12 @@ fn run() -> ! {
     let la = split_text(&text_a);
     let lb = split_text(&text_b);
 
-    let result = diff_lines(
-        &la,
-        &lb,
-        operands[0].as_str(),
-        operands[1].as_str(),
-        &options,
-    );
+    // 输出报头里的两个档名是内容半的一条腿（在册 `DIFF-LABEL-CONTENT-TEXTSEAM`）：
+    // `diff_lines` 的标签口收 `&str`，折只发生在这一刻，带裸字节的档名在报头里
+    // 仍是折过的。
+    let label_a = String::from_utf8_lossy(operands[0]).into_owned();
+    let label_b = String::from_utf8_lossy(operands[1]).into_owned();
+    let result = diff_lines(&la, &lb, &label_a, &label_b, &options);
     support::emit(result.text.as_bytes());
     support::terminate(match result.status {
         DiffStatus::Same => 0,

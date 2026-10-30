@@ -10,19 +10,19 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
 mod support;
-use minix_text_games::fortune::{pick_quip, SliceQuips};
+use minix_text_games::fortune::{SliceQuips, pick_quip};
 
 const DEFAULT_DB: &str = "/usr/share/games/fortune";
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let path = args.get(1).copied().unwrap_or(DEFAULT_DB);
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
+    let path: &[u8] = args.get(1).copied().unwrap_or(DEFAULT_DB.as_bytes());
 
     // 开档失手单独报（C 的 `err(1, "Cannot open `%s'", ...)`），读档失手不报：
     // C 装载用的是 `fgets(...) != NULL`（`fortune.c:268`、`:293`），从不查 `ferror`，
@@ -30,15 +30,25 @@ fn run() -> ! {
     // 真机腿落在 `minix_sys::{open, read, close}`，宿主腿落在 `std::fs`。句子沿用本壳
     // 已有的两句（对 C 的 `err(1, "Cannot open `%s'", ...)` 形状尚未齐平，那笔账在
     // `rewrite-notes/18-stage-commands/todo.md`），本轮只把两条臂接可达、不改口径
-    let image = match support::slurp_operand(path) {
+    // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+    // 报文里念出去的是原字节。
+    let shown = String::from_utf8_lossy(path).into_owned();
+    let image = match support::slurp_operand(&shown) {
         Ok(image) => image,
         Err(support::OperandFailure::Open(code)) => {
             // C 的这一路是 `err(1, "Cannot open `%s'", fp->path)`（`fortune.c:1056`，另有
             // `:1067` 与 `:1116` 两条同一句式的 `.dat` 腿）：三段形，中间那位是「句子 + 带反引号
-            // 与单引号包住的档名」，尾巴是号对应的句子，退码 1。本壳的档名访问失败正是这一路
-            //（目录腿在 C 走 `warn`（`:525`、`:705`）不退场，本壳现在还不走目录，不在这一形里）
-            let prog = support::prog_name(&argv);
-            support::warn_line(prog, &format!("Cannot open `{path}'"), code);
+            // 与单引号包住的档名（原字节）」，尾巴是号对应的句子，退码 1。本壳的档名访问失败
+            // 正是这一路（目录腿在 C 走 `warn`（`:525`、`:705`）不退场，本壳现在还不走目录，
+            // 不在这一形里）。`err_line` 的标签口收 `&str`，这里自己拼。
+            let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+            let mut line: Vec<u8> = prog.as_bytes().to_vec();
+            line.extend_from_slice(b": Cannot open `");
+            line.extend_from_slice(path);
+            line.extend_from_slice(b"': ");
+            line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+            line.push(b'\n');
+            support::warn(&line);
             support::terminate(1);
         }
     };
@@ -57,7 +67,10 @@ fn run() -> ! {
             let _ = support::emit_error(format!("{quip}\n").as_bytes());
         }
         Err(_) => {
-            support::warn(format!("fortune: {path}: empty database\n").as_bytes());
+            let mut line: Vec<u8> = b"fortune: ".to_vec();
+            line.extend_from_slice(path);
+            line.extend_from_slice(b": empty database\n");
+            support::warn(&line);
             support::terminate(1);
         }
     }

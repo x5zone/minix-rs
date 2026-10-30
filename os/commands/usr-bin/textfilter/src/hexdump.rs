@@ -7,8 +7,8 @@
 //! zero-width `%_p` pads, `*` for duplicate full blocks and the final
 //! address line. The `-e`/`-f` format mini-language is a registered
 //! remaining corner.
-use alloc::vec::Vec;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use alloc::{format, vec};
 
 /// Output format presets, one per hexsyntax option.
@@ -44,7 +44,7 @@ pub const BLOCKSIZE: usize = 16;
 #[derive(Debug, PartialEq)]
 pub enum HexError {
     BadLength(String),
-    BadSkip(String),
+    BadSkip,
     /// `-e`/`-f` are not implemented (registered corner).
     FormatLanguageUnsupported,
 }
@@ -107,40 +107,130 @@ pub fn row_spec(format: DumpFormat) -> RowSpec {
         DumpFormat::Default => RowSpec {
             gutter_width: 7,
             gutter_pad: 1,
-            groups: vec![(GroupSpec { count: 8, bytes: 2, lead: 0, body: UnitBody::HexLower(4), restart: false, trailing_space: true }, "\n")],
+            groups: vec![(
+                GroupSpec {
+                    count: 8,
+                    bytes: 2,
+                    lead: 0,
+                    body: UnitBody::HexLower(4),
+                    restart: false,
+                    trailing_space: true,
+                },
+                "\n",
+            )],
         },
         DumpFormat::Hex => RowSpec {
             gutter_width: 7,
             gutter_pad: 1,
-            groups: vec![(GroupSpec { count: 8, bytes: 2, lead: 3, body: UnitBody::HexLower(4), restart: false, trailing_space: true }, "\n")],
+            groups: vec![(
+                GroupSpec {
+                    count: 8,
+                    bytes: 2,
+                    lead: 3,
+                    body: UnitBody::HexLower(4),
+                    restart: false,
+                    trailing_space: true,
+                },
+                "\n",
+            )],
         },
         DumpFormat::OctalShort => RowSpec {
             gutter_width: 7,
             gutter_pad: 1,
-            groups: vec![(GroupSpec { count: 8, bytes: 2, lead: 1, body: UnitBody::Octal(6), restart: false, trailing_space: true }, "\n")],
+            groups: vec![(
+                GroupSpec {
+                    count: 8,
+                    bytes: 2,
+                    lead: 1,
+                    body: UnitBody::Octal(6),
+                    restart: false,
+                    trailing_space: true,
+                },
+                "\n",
+            )],
         },
         DumpFormat::Decimal => RowSpec {
             gutter_width: 7,
             gutter_pad: 1,
-            groups: vec![(GroupSpec { count: 8, bytes: 2, lead: 2, body: UnitBody::Decimal(5), restart: false, trailing_space: true }, "\n")],
+            groups: vec![(
+                GroupSpec {
+                    count: 8,
+                    bytes: 2,
+                    lead: 2,
+                    body: UnitBody::Decimal(5),
+                    restart: false,
+                    trailing_space: true,
+                },
+                "\n",
+            )],
         },
         DumpFormat::OctalBytes => RowSpec {
             gutter_width: 7,
             gutter_pad: 1,
-            groups: vec![(GroupSpec { count: 16, bytes: 1, lead: 0, body: UnitBody::Octal(3), restart: false, trailing_space: true }, "\n")],
+            groups: vec![(
+                GroupSpec {
+                    count: 16,
+                    bytes: 1,
+                    lead: 0,
+                    body: UnitBody::Octal(3),
+                    restart: false,
+                    trailing_space: true,
+                },
+                "\n",
+            )],
         },
         DumpFormat::Chars => RowSpec {
             gutter_width: 7,
             gutter_pad: 1,
-            groups: vec![(GroupSpec { count: 16, bytes: 1, lead: 0, body: UnitBody::CharEscape, restart: false, trailing_space: true }, "\n")],
+            groups: vec![(
+                GroupSpec {
+                    count: 16,
+                    bytes: 1,
+                    lead: 0,
+                    body: UnitBody::CharEscape,
+                    restart: false,
+                    trailing_space: true,
+                },
+                "\n",
+            )],
         },
         DumpFormat::Canonical => RowSpec {
             gutter_width: 8,
             gutter_pad: 2,
             groups: vec![
-                (GroupSpec { count: 8, bytes: 1, lead: 0, body: UnitBody::HexLower(2), restart: true, trailing_space: true }, "  "),
-                (GroupSpec { count: 8, bytes: 1, lead: 0, body: UnitBody::HexLower(2), restart: false, trailing_space: true }, "  |"),
-                (GroupSpec { count: 16, bytes: 1, lead: 0, body: UnitBody::Printable, restart: true, trailing_space: false }, "|\n"),
+                (
+                    GroupSpec {
+                        count: 8,
+                        bytes: 1,
+                        lead: 0,
+                        body: UnitBody::HexLower(2),
+                        restart: true,
+                        trailing_space: true,
+                    },
+                    "  ",
+                ),
+                (
+                    GroupSpec {
+                        count: 8,
+                        bytes: 1,
+                        lead: 0,
+                        body: UnitBody::HexLower(2),
+                        restart: false,
+                        trailing_space: true,
+                    },
+                    "  |",
+                ),
+                (
+                    GroupSpec {
+                        count: 16,
+                        bytes: 1,
+                        lead: 0,
+                        body: UnitBody::Printable,
+                        restart: true,
+                        trailing_space: false,
+                    },
+                    "|\n",
+                ),
             ],
         },
     }
@@ -200,8 +290,8 @@ fn render_unit(group: &GroupSpec, bytes: &[u8]) -> String {
 }
 
 /// Parses the `-s` argument: strtol base 0 with b/k/m block suffixes.
-pub fn parse_skip(arg: &str) -> Result<u64, HexError> {
-    let lower = arg.as_bytes();
+pub fn parse_skip(arg: &[u8]) -> Result<u64, HexError> {
+    let lower = arg;
     let mut i = 0;
     let neg = if i < lower.len() && (lower[i] == b'+' || lower[i] == b'-') {
         let n = lower[i] == b'-';
@@ -210,16 +300,19 @@ pub fn parse_skip(arg: &str) -> Result<u64, HexError> {
     } else {
         false
     };
-    let (value, used) = if i + 1 < lower.len() && lower[i] == b'0' && (lower[i + 1] | 0x20) == b'x' {
+    let (value, used) = if i + 1 < lower.len() && lower[i] == b'0' && (lower[i + 1] | 0x20) == b'x'
+    {
         let ds = i + 2;
         let mut j = ds;
         while j < lower.len() && lower[j].is_ascii_hexdigit() {
             j += 1;
         }
         if j == ds {
-            return Err(HexError::BadSkip(arg.to_string()));
+            return Err(HexError::BadSkip);
         }
-        let v = u64::from_str_radix(&arg[ds..j], 16).map_err(|_| HexError::BadSkip(arg.to_string()))?;
+        // `ds..j` 已被上面的十六进制判据验证为 ASCII，`from_utf8` 在这里不会失败。
+        let digits = core::str::from_utf8(&arg[ds..j]).unwrap_or("");
+        let v = u64::from_str_radix(digits, 16).map_err(|_| HexError::BadSkip)?;
         (v, j)
     } else {
         let ds = i;
@@ -228,9 +321,10 @@ pub fn parse_skip(arg: &str) -> Result<u64, HexError> {
             j += 1;
         }
         if j == ds {
-            return Err(HexError::BadSkip(arg.to_string()));
+            return Err(HexError::BadSkip);
         }
-        (arg[ds..j].parse::<u64>().map_err(|_| HexError::BadSkip(arg.to_string()))?, j)
+        let digits = core::str::from_utf8(&arg[ds..j]).unwrap_or("");
+        (digits.parse::<u64>().map_err(|_| HexError::BadSkip)?, j)
     };
     let mut value = if neg { 0 } else { value };
     if used < lower.len() {
@@ -238,7 +332,7 @@ pub fn parse_skip(arg: &str) -> Result<u64, HexError> {
             b'b' => value.wrapping_mul(512),
             b'k' => value.wrapping_mul(1024),
             b'm' => value.wrapping_mul(1048576),
-            _ => return Err(HexError::BadSkip(arg.to_string())),
+            _ => return Err(HexError::BadSkip),
         };
     }
     Ok(value)
@@ -343,7 +437,11 @@ pub fn render_row(block: &[u8], addr: usize, total: usize, spec: &RowSpec, out: 
             if start >= block.len() || start + addr >= total {
                 // Past end-of-data: blank field ("%<w>s " with "").
                 let width = group.field_width();
-                let spaces = if is_last { width.saturating_sub(1) } else { width };
+                let spaces = if is_last {
+                    width.saturating_sub(1)
+                } else {
+                    width
+                };
                 for _ in 0..spaces {
                     out.push(b' ');
                 }
@@ -407,10 +505,14 @@ mod tests {
     #[test]
     fn test_verbose_prints_duplicates() {
         let data = vec![b'A'; 32];
-        let out = dump(&data, DumpFormat::Default, &HexOptions {
-            verbose: true,
-            ..HexOptions::default()
-        });
+        let out = dump(
+            &data,
+            DumpFormat::Default,
+            &HexOptions {
+                verbose: true,
+                ..HexOptions::default()
+            },
+        );
         let text = text(out);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 3);
@@ -473,10 +575,14 @@ mod tests {
 
     #[test]
     fn test_length_clamps_input() {
-        let out = dump(b"abcdef", DumpFormat::Default, &HexOptions {
-            length: Some(2),
-            ..HexOptions::default()
-        });
+        let out = dump(
+            b"abcdef",
+            DumpFormat::Default,
+            &HexOptions {
+                length: Some(2),
+                ..HexOptions::default()
+            },
+        );
         let s = text(out);
         assert!(s.lines().next().unwrap().starts_with("0000000 6261 "));
         assert_eq!(s.lines().last(), Some("0000002"));
@@ -490,13 +596,13 @@ mod tests {
 
     #[test]
     fn test_skip_suffixes() {
-        assert_eq!(parse_skip("16").unwrap(), 16);
-        assert_eq!(parse_skip("0x10").unwrap(), 16);
-        assert_eq!(parse_skip("2b").unwrap(), 1024);
-        assert_eq!(parse_skip("2k").unwrap(), 2048);
-        assert_eq!(parse_skip("1m").unwrap(), 1048576);
-        assert!(parse_skip("x").is_err());
-        assert!(parse_skip("1q").is_err());
+        assert_eq!(parse_skip(b"16").unwrap(), 16);
+        assert_eq!(parse_skip(b"0x10").unwrap(), 16);
+        assert_eq!(parse_skip(b"2b").unwrap(), 1024);
+        assert_eq!(parse_skip(b"2k").unwrap(), 2048);
+        assert_eq!(parse_skip(b"1m").unwrap(), 1048576);
+        assert!(parse_skip(b"x").is_err());
+        assert!(parse_skip(b"1q").is_err());
     }
 
     #[test]

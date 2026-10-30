@@ -13,7 +13,7 @@
 //!
 //! The operand face (`colrm.c:76-95`) is here too: which operand gets
 //! rejected, in what order, and what `strtol` accepts. The option ring
-//! is the crate-wide empty-optstring one (`crate::empty_optstring_operands`)
+//! is the crate-wide empty-optstring one (`crate::empty_optstring_operands_bytes`)
 //! because `colrm.c:67` writes `getopt(argc, argv, "")` exactly like
 //! `rev.c:70`.
 

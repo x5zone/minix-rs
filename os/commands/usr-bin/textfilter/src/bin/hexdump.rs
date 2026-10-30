@@ -34,60 +34,62 @@ use minix_textfilter::hexdump::{
 };
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
     let mut formats: Vec<DumpFormat> = Vec::new();
     let mut options = HexOptions::default();
     let mut skip: u64 = 0;
 
     let mut i = 1;
     while i < argv.len() {
-        let arg = argv[i].clone();
-        if !arg.starts_with('-') || arg.len() == 1 {
+        let arg: &[u8] = &argv[i];
+        if arg.first() != Some(&b'-') || arg.len() == 1 {
             break;
         }
-        let chars: Vec<char> = arg.chars().skip(1).collect();
+        let flags = &arg[1..];
         let mut k = 0usize;
-        while k < chars.len() {
-            match chars[k] {
-                'b' => formats.push(DumpFormat::OctalBytes),
-                'c' => formats.push(DumpFormat::Chars),
-                'C' => formats.push(DumpFormat::Canonical),
-                'd' => formats.push(DumpFormat::Decimal),
-                'o' => formats.push(DumpFormat::OctalShort),
-                'x' => formats.push(DumpFormat::Hex),
-                'v' => options.verbose = true,
-                'n' => {
-                    let value = match flag_value(&argv, &mut i, &chars, &mut k) {
+        while k < flags.len() {
+            match flags[k] {
+                b'b' => formats.push(DumpFormat::OctalBytes),
+                b'c' => formats.push(DumpFormat::Chars),
+                b'C' => formats.push(DumpFormat::Canonical),
+                b'd' => formats.push(DumpFormat::Decimal),
+                b'o' => formats.push(DumpFormat::OctalShort),
+                b'x' => formats.push(DumpFormat::Hex),
+                b'v' => options.verbose = true,
+                b'n' => {
+                    let value = match flag_value(&argv, &mut i, flags, &mut k) {
                         Some(v) => v,
                         None => usage(),
                     };
-                    match value.parse::<i64>() {
-                        Ok(n) if n >= 0 => options.length = Some(n as usize),
+                    match parse_i64(value) {
+                        Some(n) if n >= 0 => options.length = Some(n as usize),
                         _ => {
-                            support::warn(
-                                format!("hexdump: {}: bad length value\n", value).as_bytes(),
-                            );
+                            let mut line: Vec<u8> = b"hexdump: ".to_vec();
+                            line.extend_from_slice(value);
+                            line.extend_from_slice(b": bad length value\n");
+                            support::warn(&line);
                             support::terminate(1);
                         }
                     }
                 }
-                's' => {
-                    let value = match flag_value(&argv, &mut i, &chars, &mut k) {
+                b's' => {
+                    let value = match flag_value(&argv, &mut i, flags, &mut k) {
                         Some(v) => v,
                         None => usage(),
                     };
-                    match parse_skip(&value) {
+                    match parse_skip(value) {
                         Ok(n) => skip = n,
-                        Err(HexError::BadSkip(_)) => {
-                            support::warn(
-                                format!("hexdump: {}: bad skip value\n", value).as_bytes(),
-                            );
+                        Err(HexError::BadSkip) => {
+                            let mut line: Vec<u8> = b"hexdump: ".to_vec();
+                            line.extend_from_slice(value);
+                            line.extend_from_slice(b": bad skip value\n");
+                            support::warn(&line);
                             support::terminate(1);
                         }
                         Err(_) => unreachable!(),
                     }
                 }
-                'e' | 'f' => {
+                b'e' | b'f' => {
                     support::warn(
                         b"hexdump: the -e/-f format language is not implemented yet (registered corner)\n",
                     );
@@ -103,7 +105,7 @@ fn run() -> ! {
         formats.push(DumpFormat::Default);
     }
 
-    let operands: Vec<&str> = argv[i..].iter().map(|s| s.as_str()).collect();
+    let operands: Vec<&[u8]> = argv[i..].iter().map(Vec::as_slice).collect();
     // `display.c` `next` chains every operand through `freopen` onto stdin,
     // so the file operands form one continuous byte stream with a single
     // running address (and `-s` skips from that stream's front, as `start`
@@ -123,10 +125,15 @@ fn run() -> ! {
         }
     } else {
         for operand in &operands {
-            match support::read_file(operand) {
+            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻。
+            let shown = String::from_utf8_lossy(operand).into_owned();
+            match support::read_file(&shown) {
                 Ok(data) => input.extend_from_slice(&data),
                 Err(_) => {
-                    support::warn(format!("hexdump: {operand}\n").as_bytes());
+                    let mut line: Vec<u8> = b"hexdump: ".to_vec();
+                    line.extend_from_slice(operand);
+                    line.push(b'\n');
+                    support::warn(&line);
                     rval = 1;
                 }
             }
@@ -161,13 +168,49 @@ fn run() -> ! {
     support::terminate(rval);
 }
 
-fn flag_value(argv: &[String], i: &mut usize, chars: &[char], k: &mut usize) -> Option<String> {
+/// `-n`/`-s` 的取值：本 token 剩下的那段，或下一个词——都按 argv 的**原字节**交回。
+fn flag_value<'a>(
+    argv: &'a [Vec<u8>],
+    i: &mut usize,
+    flags: &'a [u8],
+    k: &mut usize,
+) -> Option<&'a [u8]> {
     *k += 1;
-    if *k < chars.len() {
-        return Some(chars[*k..].iter().collect());
+    if *k < flags.len() {
+        return Some(&flags[*k..]);
     }
     *i += 1;
-    argv.get(*i).cloned()
+    argv.get(*i).map(Vec::as_slice)
+}
+
+/// `-n` 的取值判据照 C 的 `strtoll` 只认 ASCII：可带一枚符号、读到非数字为止；
+/// 一枚裸字节折前折后都不是数字，所以这一腿折叠改不了判决、只改报文里的那串字节。
+fn parse_i64(bytes: &[u8]) -> Option<i64> {
+    let mut i = 0usize;
+    let negative = match bytes.first() {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut value: i64 = 0;
+    let mut digits = 0usize;
+    while let Some(digit @ b'0'..=b'9') = bytes.get(i) {
+        value = value
+            .checked_mul(10)?
+            .checked_add(i64::from(digit - b'0'))?;
+        i += 1;
+        digits += 1;
+    }
+    if digits == 0 {
+        return None;
+    }
+    Some(if negative { -value } else { value })
 }
 
 fn usage() -> ! {

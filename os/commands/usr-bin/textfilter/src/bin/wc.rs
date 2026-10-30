@@ -24,15 +24,23 @@ extern crate alloc;
 #[path = "../bin_support.rs"]
 mod support;
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use minix_sys::{close, open, read};
-use minix_textfilter::count::{format_counts, CharField, Counter};
+use minix_textfilter::count::{CharField, Counter, format_counts};
 
 /// The count chunk size (the C `wc` reads in `MAXBSIZE` steps).
 const CHUNK: usize = 4096;
+
+/// 操数那句的两段形（本壳既有句式照旧），档名位交回 argv 的**原字节**——折过的
+/// `ef bf bd` 不再出现。
+fn warn_named(name: &[u8]) {
+    let mut line: Vec<u8> = b"wc: ".to_vec();
+    line.extend_from_slice(name);
+    line.push(b'\n');
+    support::warn(&line);
+}
 
 fn usage() -> ! {
     support::emit(b"usage: wc [-L | -m | -l | -w | -c] [file ...]\n");
@@ -77,8 +85,8 @@ fn emit_counts(show: (bool, bool, CharField, bool), counts: &Counter, name: Opti
 
 /// The whole program body; both `main` forms call it and it never returns.
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
 
     let mut doline = false;
     let mut doword = false;
@@ -89,13 +97,13 @@ fn run() -> ! {
     let mut i = 1;
     while i < args.len() {
         let a = args[i];
-        if a == "--" {
+        if a == b"--" {
             i += 1;
             break;
         }
-        if a.len() > 1 && a.starts_with('-') {
+        if a.len() > 1 && a[0] == b'-' {
             any_flag = true;
-            for flag in a[1..].bytes() {
+            for flag in a[1..].iter().copied() {
                 match flag {
                     b'l' => doline = true,
                     b'w' => doword = true,
@@ -130,7 +138,7 @@ fn run() -> ! {
         CharField::Off
     };
     let show = (doline, doword, char_field, dolongest);
-    let operands: Vec<&str> = args[i..].to_vec();
+    let operands: Vec<&[u8]> = args[i..].to_vec();
 
     let mut status = 0;
     let mut total = Counter::new();
@@ -148,11 +156,14 @@ fn run() -> ! {
     }
 
     for operand in &operands {
-        let fd = match open(operand, 0, 0) {
+        // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+        // 报文里念出去的是原字节。
+        let shown = String::from_utf8_lossy(operand).into_owned();
+        let fd = match open(&shown, 0, 0) {
             Ok(fd) => fd,
             Err(_) => {
                 // C warns and skips the file; no output line for it.
-                support::warn(format!("wc: {operand}\n").as_bytes());
+                warn_named(operand);
                 status = 1;
                 continue;
             }
@@ -161,9 +172,9 @@ fn run() -> ! {
         #[allow(clippy::let_underscore_must_use)]
         let _ = close(fd);
         match result {
-            Ok(counts) => emit_counts(show, &counts, Some(operand.as_bytes())),
+            Ok(counts) => emit_counts(show, &counts, Some(operand)),
             Err(_) => {
-                support::warn(format!("wc: {operand}\n").as_bytes());
+                warn_named(operand);
                 status = 1;
             }
         }

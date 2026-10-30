@@ -12,18 +12,17 @@
 
 extern crate alloc;
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_sys::{close, open, read};
-use minix_textfilter::expand::{expand, parse_expand_args, ExpandArgs, ExpandError};
+use minix_textfilter::expand::{ExpandArgs, ExpandError, expand, parse_expand_args};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let refs: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let ExpandArgs { stops, operands } = match parse_expand_args(&refs[1..]) {
         Ok(parsed) => parsed,
         Err(ExpandError::Usage) => usage(),
@@ -42,10 +41,16 @@ fn run() -> ! {
         support::terminate(0);
     }
     for operand in &operands {
-        let fd = match open(operand, 0, 0) {
+        // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+        // 报文里念出去的是原字节。
+        let shown = String::from_utf8_lossy(operand).into_owned();
+        let fd = match open(&shown, 0, 0) {
             Ok(fd) => fd,
             Err(_) => {
-                support::warn(format!("expand: Cannot open `{operand}'\n").as_bytes());
+                let mut line: Vec<u8> = b"expand: Cannot open `".to_vec();
+                line.extend_from_slice(operand);
+                line.extend_from_slice(b"'\n");
+                support::warn(&line);
                 support::terminate(1);
             }
         };

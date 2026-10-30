@@ -23,8 +23,7 @@
 
 extern crate alloc;
 
-use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
@@ -36,11 +35,11 @@ use minix_textfilter::vis::{DecodeOptions, DecodeOutcome, DecodeState, unvis_byt
 const USAGE: &str = "Usage: unvis [-e] [-Hh | -m] [file ...]\n";
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
     let (options, operands) = match parse_unvis_args(&argv) {
         Ok(parsed) => parsed,
         Err(message) => {
-            support::warn(message.as_bytes());
+            support::warn(&message);
             support::terminate(1);
         }
     };
@@ -49,12 +48,20 @@ fn run() -> ! {
     // status stays success however many of them cannot be opened.
     let mut out: Vec<u8> = Vec::new();
     if operands.is_empty() {
-        process(&support::read_stdin(), "<stdin>", &options, &mut out);
+        process(&support::read_stdin(), b"<stdin>", &options, &mut out);
     } else {
         for operand in &operands {
-            match support::read_file(operand) {
+            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+            // 报文里念出去的是原字节。
+            let shown = String::from_utf8_lossy(operand).into_owned();
+            match support::read_file(&shown) {
                 Ok(data) => process(&data, operand, &options, &mut out),
-                Err(_) => support::warn(format!("unvis: {operand}\n").as_bytes()),
+                Err(_) => {
+                    let mut line: Vec<u8> = b"unvis: ".to_vec();
+                    line.extend_from_slice(operand);
+                    line.push(b'\n');
+                    support::warn(&line);
+                }
             }
         }
     }
@@ -70,7 +77,7 @@ fn run() -> ! {
 /// state; the run continues, since `warnx` is not `errx` (`:126-128`). At end of
 /// input the machine is flushed once and only a finished byte is written — an
 /// incomplete escape is dropped without a word (`:137-139`).
-fn process(data: &[u8], name: &str, options: &DecodeOptions, out: &mut Vec<u8>) {
+fn process(data: &[u8], name: &[u8], options: &DecodeOptions, out: &mut Vec<u8>) {
     let mut state = DecodeState::default();
     let mut offset = 0usize;
     for &byte in data {
@@ -85,9 +92,12 @@ fn process(data: &[u8], name: &str, options: &DecodeOptions, out: &mut Vec<u8>) 
                 }
                 DecodeOutcome::Nothing => {}
                 DecodeOutcome::Invalid => {
-                    support::warn(
-                        format!("unvis: {name}: offset: {offset}: can't decode\n").as_bytes(),
-                    );
+                    let mut line: Vec<u8> = b"unvis: ".to_vec();
+                    line.extend_from_slice(name);
+                    line.extend_from_slice(b": offset: ");
+                    line.extend_from_slice(offset.to_string().as_bytes());
+                    line.extend_from_slice(b": can't decode\n");
+                    support::warn(&line);
                     state = DecodeState::default();
                 }
             }
@@ -103,20 +113,19 @@ fn process(data: &[u8], name: &str, options: &DecodeOptions, out: &mut Vec<u8>) 
 /// scanning, and a lone `-` is an operand. The mode combination C refuses by name
 /// is checked after the whole loop and before any file is opened (`:80-89`), and
 /// `-e` is not part of that test.
-fn parse_unvis_args(argv: &[String]) -> Result<(DecodeOptions, Vec<&str>), String> {
+fn parse_unvis_args(argv: &[Vec<u8>]) -> Result<(DecodeOptions, Vec<&[u8]>), Vec<u8>> {
     let mut options = DecodeOptions::default();
-    let mut operands: Vec<&str> = Vec::new();
+    let mut operands: Vec<&[u8]> = Vec::new();
     let mut index = 1usize;
     let mut scanning = true;
     while index < argv.len() {
-        let token = argv[index].as_str();
-        let bytes = token.as_bytes();
+        let bytes: &[u8] = &argv[index];
         if !scanning || bytes.len() < 2 || bytes[0] != b'-' {
-            operands.push(token);
+            operands.push(bytes);
             index += 1;
             continue;
         }
-        if token == "--" {
+        if bytes == b"--" {
             scanning = false;
             index += 1;
             continue;
@@ -127,7 +136,7 @@ fn parse_unvis_args(argv: &[String]) -> Result<(DecodeOptions, Vec<&str>), Strin
                 b'h' => options.http1808 = true,
                 b'm' => options.mime = true,
                 b'H' => options.http1866 = true,
-                _ => return Err(String::from(USAGE)),
+                _ => return Err(USAGE.as_bytes().to_vec()),
             }
         }
         index += 1;
@@ -135,7 +144,7 @@ fn parse_unvis_args(argv: &[String]) -> Result<(DecodeOptions, Vec<&str>), Strin
     // `unvis.c:80-89` switches on the three style bits together and lists exactly
     // the combinations that include MIME plus at least one HTTP style.
     if options.mime && (options.http1808 || options.http1866) {
-        return Err(String::from("unvis: Can't mix -m with -h and/or -H\n"));
+        return Err(b"unvis: Can't mix -m with -h and/or -H\n".to_vec());
     }
     Ok((options, operands))
 }

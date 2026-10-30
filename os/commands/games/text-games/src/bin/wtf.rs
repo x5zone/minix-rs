@@ -22,9 +22,9 @@ use minix_text_games::acronym::matching_expansions;
 const DEFAULT_DB: &str = "/usr/share/misc/acronyms";
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let mut db_files: Vec<&str> = Vec::new();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
+    let mut db_files: Vec<&[u8]> = Vec::new();
     let mut at = 1;
     // 真源 `minix3/games/wtf/wtf:16-27` 走 `getopts f:o`，认不出来的旗标一律 `usage`
     // 退 1（实测 `sh minix3/games/wtf/wtf -Z nasa` → 先一句 shell 自己的
@@ -36,7 +36,7 @@ fn run() -> ! {
     // 经脚本 `:30` 的 `shift "$(expr "$OPTIND" - 1)"` 交回位置参数。
     while at < args.len() {
         match args[at] {
-            "-f" => {
+            b"-f" => {
                 at += 1;
                 match args.get(at).copied() {
                     Some(path) => {
@@ -51,16 +51,16 @@ fn run() -> ! {
                     None => usage(),
                 }
             }
-            "-o" => {
+            b"-o" => {
                 // 只认全字的旗标：决定半的查询本就是全字匹配，语义已含。
                 // 真正挑 `*-o` 那批库档要的是通配展开，那是 A9c 的第②条。
                 at += 1;
             }
-            "--" => {
+            b"--" => {
                 at += 1;
                 break;
             }
-            leading if leading.starts_with('-') && leading.len() > 1 => usage(),
+            leading if leading.first() == Some(&b'-') && leading.len() > 1 => usage(),
             _ => break,
         }
     }
@@ -73,8 +73,8 @@ fn run() -> ! {
     // `IS lol` → `IS` 查无一句，随后仍印 `LOL: laughing out loud`，退 1。
     // 旧写法在查询循环里跳过任意位置的 `is`，还把它做成大小写不敏感的
     // `is_skipped_word`，于是上面三形全与参照件分叉（且退码也差）。
-    let mut terms: Vec<&str> = args[at.min(args.len())..].to_vec();
-    if terms.first().copied() == Some("is") {
+    let mut terms: Vec<&[u8]> = args[at.min(args.len())..].to_vec();
+    if terms.first().copied() == Some(b"is".as_slice()) {
         terms.remove(0);
     }
     if terms.is_empty() {
@@ -92,12 +92,13 @@ fn run() -> ! {
     } else {
         String::new()
     };
-    let mut files: Vec<&str> = db_files;
+    let mut files: Vec<&[u8]> = db_files;
     if files.is_empty() {
-        files.extend(env_list.split_ascii_whitespace());
+        // `ACRONYMDB` 是环境串不是 argv，留 `&str`；开档口再统一折。
+        files.extend(env_list.split_ascii_whitespace().map(|f| f.as_bytes()));
     }
     if files.is_empty() {
-        files.push(DEFAULT_DB);
+        files.push(DEFAULT_DB.as_bytes());
     }
 
     // 列表里每一档都要**先**过一遍：脚本 `:64-69` 是一条独立的前置圈，逐档
@@ -112,13 +113,17 @@ fn run() -> ! {
     let mut lines: Vec<&str> = Vec::new();
     let mut pool: Vec<String> = Vec::new();
     for path in &files {
-        let image = match support::slurp_operand(path) {
+        // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+        // 报文里念出去的是原字节。
+        let shown = String::from_utf8_lossy(path).into_owned();
+        let image = match support::slurp_operand(&shown) {
             Ok(image) => image,
             Err(support::OperandFailure::Open(_)) => {
                 // 脚本原句 `wtf: cannot open acronym database file \`<路径>'`（`:67`，实测同）。
-                support::warn(
-                    format!("wtf: cannot open acronym database file `{path}'\n").as_bytes(),
-                );
+                let mut line: Vec<u8> = b"wtf: cannot open acronym database file `".to_vec();
+                line.extend_from_slice(path);
+                line.extend_from_slice(b"'\n");
+                support::warn(&line);
                 support::terminate(1);
             }
         };
@@ -130,17 +135,26 @@ fn run() -> ! {
 
     let mut status = 0;
     for term in &terms {
-        // 脚本 `:75` 先把查询词转大写（`tr '[a-z]' '[A-Z]'`）再拿它输出，实测
-        // `ACRONYMDB=<库> sh … nasa` → `NASA: National Aeronautics and Space Administration`。
+        // 脚本 `:75` 先把查询词转大写（`tr '[a-z]' '[A-Z]'`——按**字节**，非 ASCII 的
+        // 字节原样穿过）再拿它输出，实测
+        // `ACRONYDB=<库> sh … nasa` → `NASA: National Aeronautics and Space Administration`。
         // 改前本壳原样输出查询词，等于把「打印哪个形态」这件真值漏掉了。
-        let shown = term.to_ascii_uppercase();
-        let expansions = matching_expansions(&lines, term);
+        // `shown` 按 argv 原字节走；查表那一口收 `&str`（行池本身是折过的内容半，
+        // 在册 `WTF-POOL-CONTENT-TEXTSEAM`），折只发生在递进去的这一刻——ASCII 的
+        // 判据折前折后同判。
+        let shown: Vec<u8> = term.iter().map(|b| b.to_ascii_uppercase()).collect();
+        let term_text = String::from_utf8_lossy(term).into_owned();
+        let expansions = matching_expansions(&lines, &term_text);
         if !expansions.is_empty() {
             // 一个词命中**多行**时（同档重复词条，或两档各有该词），`:77` 的 `sed` 把所有
             // 匹配行都留下、`:80` 的 `echo "$target: $ans"` 只在**第一行**前面加 `TARGET: `，
             // 后面的行裸着出。现量：同档两行 `LOL` → `LOL: first match` 换行 `second match`。
             let joined = expansions.join("\n");
-            support::emit(format!("{shown}: {joined}\n").as_bytes());
+            let mut out: Vec<u8> = shown;
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(joined.as_bytes());
+            out.push(b'\n');
+            support::emit(&out);
             continue;
         }
         {
@@ -149,7 +163,10 @@ fn run() -> ! {
             // 实参，`$target` 只在命中那支用）。实测 `… zzz` → ``I don't know what
             // `zzz' means!``，本壳一度印成 `ZZZ` 已经改回。句子本身走 stderr、
             // 末了 `rv=1`（`:106-107`）。
-            support::warn(format!("wtf: I don't know what `{term}' means!\n").as_bytes());
+            let mut line: Vec<u8> = b"wtf: I don't know what `".to_vec();
+            line.extend_from_slice(term);
+            line.extend_from_slice(b"' means!\n");
+            support::warn(&line);
             status = 1;
         }
     }

@@ -32,15 +32,15 @@ pub struct TsortArgs<'a> {
     /// `-q`: suppress the "cycle in data" report.
     pub quiet: bool,
     /// The optional file operand (`tsort.c` `switch(argc)`: `0` → stdin, `1` →
-    /// this file, `default` → usage).
-    pub file: Option<&'a str>,
+    /// this file, `default` → usage)——按 argv 的原字节交回（A2 参数缝半）。
+    pub file: Option<&'a [u8]>,
 }
 
 /// Why argv could not be folded into [`TsortArgs`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TsortParseError {
     /// A flag letter outside C's `getopt("dlq")`.
-    UnknownOption(char),
+    UnknownOption(u8),
     /// More than one file operand (C's `default: usage()`).
     TooManyOperands,
 }
@@ -48,16 +48,16 @@ pub enum TsortParseError {
 /// Fold argv (after the program name) into a [`TsortArgs`]. Flags cluster like
 /// `getopt` (`-dq` sets both); any other dash letter is unknown; a lone `-` or a
 /// non-dash token is the file operand.
-pub fn parse_args<'a>(args: &[&'a str]) -> Result<TsortArgs<'a>, TsortParseError> {
+pub fn parse_args<'a>(args: &[&'a [u8]]) -> Result<TsortArgs<'a>, TsortParseError> {
     let mut quiet = false;
-    let mut file: Option<&'a str> = None;
+    let mut file: Option<&'a [u8]> = None;
     let mut operand_count = 0usize;
     for &arg in args {
-        if arg.len() > 1 && arg.starts_with('-') {
-            for flag in arg[1..].chars() {
+        if arg.len() > 1 && arg[0] == b'-' {
+            for &flag in &arg[1..] {
                 match flag {
-                    'd' | 'l' => {}
-                    'q' => quiet = true,
+                    b'd' | b'l' => {}
+                    b'q' => quiet = true,
                     other => return Err(TsortParseError::UnknownOption(other)),
                 }
             }
@@ -209,7 +209,10 @@ pub fn tsort(tokens: &[&str]) -> Result<TsortResult, TsortError> {
             alive_count -= 1;
             continue;
         }
-        let members: Vec<String> = cycle.iter().map(|&index| names[index].to_string()).collect();
+        let members: Vec<String> = cycle
+            .iter()
+            .map(|&index| names[index].to_string())
+            .collect();
         result.cycles.push(Cycle { members });
         // The C removes the node the search started from.
         result.order.push(names[start].to_string());
@@ -281,14 +284,14 @@ mod tests {
         // `-d`/`-l` are C getopt flags whose globals are never read; they must
         // parse (not error), and cluster (`-dq`) like getopt.
         assert_eq!(
-            parse_args(&["-d", "-l", "data"]),
+            parse_args(&[b"-d", b"-l", b"data"]),
             Ok(TsortArgs {
                 quiet: false,
-                file: Some("data")
+                file: Some(b"data".as_slice())
             })
         );
         assert_eq!(
-            parse_args(&["-dq"]),
+            parse_args(&[b"-dq"]),
             Ok(TsortArgs {
                 quiet: true,
                 file: None
@@ -300,7 +303,7 @@ mod tests {
     fn test_parse_args_operand_and_errors() {
         // Zero operands → stdin (file None); one operand → that file.
         assert_eq!(
-            parse_args(&["-q"]),
+            parse_args(&[b"-q"]),
             Ok(TsortArgs {
                 quiet: true,
                 file: None
@@ -308,19 +311,19 @@ mod tests {
         );
         // More than one operand is C's `default: usage()`.
         assert_eq!(
-            parse_args(&["a", "b"]),
+            parse_args(&[b"a", b"b"]),
             Err(TsortParseError::TooManyOperands)
         );
         // A dash letter outside "dlq" is unknown; a lone `-` is a file operand.
         assert_eq!(
-            parse_args(&["-z"]),
-            Err(TsortParseError::UnknownOption('z'))
+            parse_args(&[b"-z"]),
+            Err(TsortParseError::UnknownOption(b'z'))
         );
         assert_eq!(
-            parse_args(&["-"]),
+            parse_args(&[b"-"]),
             Ok(TsortArgs {
                 quiet: false,
-                file: Some("-")
+                file: Some(b"-".as_slice())
             })
         );
     }

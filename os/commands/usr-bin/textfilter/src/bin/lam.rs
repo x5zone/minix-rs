@@ -16,7 +16,6 @@
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
-use alloc::format;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -27,7 +26,7 @@ use minix_sys::read;
 use minix_textfilter::lam::{LamSpec, MAX_STREAMS, laminate, parse_width, split_stream};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
     // Sticky capitals: -F -P -S -T carry to every stream after them.
     let mut sticky = [false; 4]; // [P, S, F, T]
     let mut specs: Vec<LamSpec> = Vec::new();
@@ -37,8 +36,8 @@ fn run() -> ! {
 
     let mut i = 1;
     while i < argv.len() {
-        let arg = argv[i].clone();
-        if arg == "-" || !arg.starts_with('-') || arg.len() == 1 {
+        let arg: &[u8] = &argv[i];
+        if arg == b"-" || arg.first() != Some(&b'-') || arg.len() == 1 {
             if specs.len() >= MAX_STREAMS {
                 support::warn(b"lam: too many input files\n");
                 support::terminate(1);
@@ -59,7 +58,7 @@ fn run() -> ! {
             // `lam.c:113-116`: a bare `-` reads stdin, anything else is
             // fopen'd, and an unopenable operand is fatal (`errx(1)`).
             let mut bytes = Vec::new();
-            if arg == "-" {
+            if arg == b"-" {
                 let mut chunk = [0u8; 4096];
                 loop {
                     match read(support::STDIN, &mut chunk) {
@@ -69,10 +68,16 @@ fn run() -> ! {
                     }
                 }
             } else {
-                match support::read_file(&arg) {
+                // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+                // 报文里念出去的是原字节。
+                let shown = String::from_utf8_lossy(arg).into_owned();
+                match support::read_file(&shown) {
                     Ok(data) => bytes = data,
                     Err(_) => {
-                        support::warn(format!("lam: open {arg}\n").as_bytes());
+                        let mut line: Vec<u8> = b"lam: open ".to_vec();
+                        line.extend_from_slice(arg);
+                        line.push(b'\n');
+                        support::warn(&line);
                         support::terminate(1);
                     }
                 }
@@ -85,38 +90,43 @@ fn run() -> ! {
             continue;
         }
         // An option: applies to the next stream operand.
-        let chars: Vec<char> = arg.chars().skip(1).collect();
+        let flags: &[u8] = &arg[1..];
         let mut k = 0usize;
-        while k < chars.len() {
-            let raw = chars[k];
+        while k < flags.len() {
+            let raw = flags[k];
             let c = raw.to_ascii_lowercase();
             match c {
-                's' => {
-                    match flag_value(&argv, &mut i, &chars, &mut k) {
-                        Some(v) => pending.sep = v,
-                        None => need_after('s'),
+                b's' => {
+                    match flag_value(&argv, &mut i, flags, &mut k) {
+                        // `-s` 的值进 LamSpec.sep（引擎那头是 `String`，内容半在册
+                        // `LAM-SEP-CONTENT-TEXTSEAM`）：折只发生在这一刻，输出里
+                        // 的分隔串因此还是折过的。
+                        Some(v) => {
+                            pending.sep = String::from_utf8_lossy(v).into_owned();
+                        }
+                        None => need_after(b's'),
                     }
                     sticky[1] = raw.is_ascii_uppercase();
                 }
-                't' => {
-                    match flag_value(&argv, &mut i, &chars, &mut k) {
+                b't' => {
+                    match flag_value(&argv, &mut i, flags, &mut k) {
                         Some(v) => {
-                            pending.eol = *v.as_bytes().first().unwrap_or(&b'\n');
+                            pending.eol = *v.first().unwrap_or(&b'\n');
                         }
-                        None => need_after('t'),
+                        None => need_after(b't'),
                     }
                     sticky[3] = raw.is_ascii_uppercase();
                     nofinalnl = true;
                 }
-                'f' | 'p' => {
-                    let value = match flag_value(&argv, &mut i, &chars, &mut k) {
+                b'f' | b'p' => {
+                    let value = match flag_value(&argv, &mut i, flags, &mut k) {
                         Some(v) => v,
                         None => need_after(c),
                     };
-                    match parse_width(&value) {
+                    match parse_width(value) {
                         Ok(w) => {
                             pending.width = Some(w);
-                            if c == 'p' {
+                            if c == b'p' {
                                 pending.pad = true;
                                 sticky[0] = raw.is_ascii_uppercase();
                             } else {
@@ -124,15 +134,19 @@ fn run() -> ! {
                             }
                         }
                         Err(_) => {
-                            support::warn(
-                                format!("lam: invalid format string `{}`\n", value).as_bytes(),
-                            );
+                            let mut line: Vec<u8> = b"lam: invalid format string `".to_vec();
+                            line.extend_from_slice(value);
+                            line.extend_from_slice(b"`\n");
+                            support::warn(&line);
                             support::terminate(1);
                         }
                     }
                 }
                 _ => {
-                    support::warn(format!("lam: What do you mean by -{}?\n", raw).as_bytes());
+                    let mut line: Vec<u8> = b"lam: What do you mean by -".to_vec();
+                    line.push(raw);
+                    line.extend_from_slice(b"?\n");
+                    support::warn(&line);
                     usage();
                 }
             }
@@ -158,17 +172,26 @@ fn run() -> ! {
     support::terminate(0);
 }
 
-fn flag_value(argv: &[String], i: &mut usize, chars: &[char], k: &mut usize) -> Option<String> {
+/// `-s`/`-t`/`-f`/`-p` 的取值：本 token 剩下的那段，或下一个词——按 argv 的原字节交回。
+fn flag_value<'a>(
+    argv: &'a [Vec<u8>],
+    i: &mut usize,
+    flags: &'a [u8],
+    k: &mut usize,
+) -> Option<&'a [u8]> {
     *k += 1;
-    if *k < chars.len() {
-        return Some(chars[*k..].iter().collect());
+    if *k < flags.len() {
+        return Some(&flags[*k..]);
     }
     *i += 1;
-    argv.get(*i).cloned()
+    argv.get(*i).map(Vec::as_slice)
 }
 
-fn need_after(c: char) -> ! {
-    support::warn(format!("lam: Need string after -{}\n", c).as_bytes());
+fn need_after(c: u8) -> ! {
+    let mut line: Vec<u8> = b"lam: Need string after -".to_vec();
+    line.push(c);
+    line.extend_from_slice(b"\n");
+    support::warn(&line);
     support::terminate(1);
 }
 

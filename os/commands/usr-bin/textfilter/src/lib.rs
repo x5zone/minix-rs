@@ -191,25 +191,7 @@ impl GetoptReport {
 /// 报的是短横后的**第一个字节**，不是第一个字符：`getopt.c:79` 的 `optopt = *place++`
 /// 步进在 `char *` 上，一次一个字节。参照件现量 `rev -é` 报裸字节 `c3`（`é` 的后半 `a9`
 /// 根本不进报文），按字符取会报 U+00E9。同法先例见 `src/col.rs:parse_col_flags`。
-pub fn empty_optstring_operands<'a>(
-    argv: &'a [&'a str],
-) -> Result<alloc::vec::Vec<&'a str>, GetoptReport> {
-    let Some(first) = argv.first() else {
-        return Ok(alloc::vec::Vec::new());
-    };
-    let Some(flag) = first.strip_prefix('-') else {
-        return Ok(argv.to_vec());
-    };
-    if flag == "-" {
-        return Ok(argv[1..].to_vec());
-    }
-    let Some(byte) = flag.as_bytes().first().copied() else {
-        return Ok(argv.to_vec());
-    };
-    Err(GetoptReport::UnknownOption(char::from(byte)))
-}
-
-/// [`empty_optstring_operands`] 的字节形（A2 参数缝半）：同一张三形判据，只是交回的
+/// 空 optstring 的操作数环（A2 参数缝半的字节形，`&str` 共件已随族终笔删除）：同一张三形判据，交回的
 /// 是原字节。字母仍是短横后的**第一个字节**——`char::from(byte)` 收进报告，那正是 C 里
 /// `unsigned char` 提升成 `int` 的形状；[`GetoptReport::line_bytes`] 再把它打回那一个字节。
 pub fn empty_optstring_operands_bytes<'a>(
@@ -273,7 +255,7 @@ pub fn atoi(text: &[u8]) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{GetoptReport, empty_optstring_operands, empty_optstring_operands_bytes};
+    use super::{GetoptReport, empty_optstring_operands_bytes};
 
     /// 那两行的原文逐字钉在这里（单源），因为壳侧的门只能证明「渲染出来了」，
     /// 证明不了措辞。真值取 `minix3/lib/libc/stdlib/getopt.c:101-104` 与
@@ -369,40 +351,40 @@ mod tests {
             GetoptReport::UnknownOption('\u{00ff}').line_bytes("rev"),
             b"rev: unknown option -- \xff\n".to_vec()
         );
-        // 同一枚参数经 `args()` 的折叠腿进来时，字母位已经不是那一个字节了——两形的差
-        // 就是 A/B 里那条残差。
-        let folded: alloc::borrow::Cow<'_, str> =
-            alloc::string::String::from_utf8_lossy(&[b'-', 0xff][..]);
-        assert_eq!(
-            empty_optstring_operands(&[folded.as_ref()]),
-            Err(GetoptReport::UnknownOption('\u{00ef}')),
-            "折叠腿交回的是 efbfbd 三字节，取第一个字节就成了 ef——这正是 A/B 里那条字母位差一位的成因"
-        );
+        // 文本缝的折叠对照形已随 `args()` 的删除而失去载体：那条腿不存在了，
+        // A/B 里「字母位差一位」的残差自此无源。
     }
 
-    /// 空 optstring 那一支报的是短横后的第一个**字节**。
+    /// 空 optstring 那一支报的是短横后的第一个**字节**（`&str` 形共件已随族终笔删除，
+    /// 这张三形判据的钉子全部迁到字节形上）。
     #[test]
     fn empty_optstring_names_the_first_byte_of_the_flag() {
         assert_eq!(
-            empty_optstring_operands(&["-\u{e9}"]),
+            empty_optstring_operands_bytes(&[b"-\xc3\xa9"]),
             Err(GetoptReport::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
         // 聚簇仍报第一个字节：ASCII 的 x 排在前面就落在 x 上。
         assert_eq!(
-            empty_optstring_operands(&["-x\u{e9}"]),
+            empty_optstring_operands_bytes(&[b"-x\xc3\xa9"]),
             Err(GetoptReport::UnknownOption('x'))
         );
         // ASCII 与三形（`--` 吃掉自身、裸 `-` 与 `--x`）不受这条改法影响。
         assert_eq!(
-            empty_optstring_operands(&["-Z"]),
+            empty_optstring_operands_bytes(&[b"-Z"]),
             Err(GetoptReport::UnknownOption('Z'))
         );
         assert_eq!(
-            empty_optstring_operands(&["--x"]),
+            empty_optstring_operands_bytes(&[b"--x"]),
             Err(GetoptReport::UnknownOption('-'))
         );
-        assert_eq!(empty_optstring_operands(&["--", "f"]), Ok(vec!["f"]));
-        assert_eq!(empty_optstring_operands(&["-"]), Ok(vec!["-"]));
+        assert_eq!(
+            empty_optstring_operands_bytes(&[b"--", b"f"]),
+            Ok(vec![b"f".as_slice()])
+        );
+        assert_eq!(
+            empty_optstring_operands_bytes(&[b"-"]),
+            Ok(vec![b"-".as_slice()])
+        );
     }
 }

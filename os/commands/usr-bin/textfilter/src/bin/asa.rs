@@ -19,28 +19,29 @@ extern crate alloc;
 #[path = "../bin_support.rs"]
 mod support;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use minix_textfilter::asa::asa;
 
 /// The whole program body; both `main` forms call it and it never returns.
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-
-    let files: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let files: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
 
     if files.is_empty() {
         let input = read_stdin();
         support::emit(&asa(&input));
     } else {
         for name in &files {
-            match support::read_file(name) {
+            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+            // 报文里念出去的是原字节。
+            let shown = String::from_utf8_lossy(name).into_owned();
+            match support::read_file(&shown) {
                 Ok(data) => support::emit(&asa(&data)),
                 Err(_) => {
-                    let mut msg = String::from(name.as_str());
-                    msg.push_str(": cannot open\n");
-                    support::warn(msg.as_bytes());
+                    let mut msg: Vec<u8> = name.to_vec();
+                    msg.extend_from_slice(b": cannot open\n");
+                    support::warn(&msg);
                 }
             }
         }

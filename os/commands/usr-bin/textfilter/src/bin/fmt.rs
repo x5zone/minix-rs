@@ -32,17 +32,23 @@ fn fail(message: &str) -> ! {
 
 /// Parse a decimal byte length the way C's `getnum` does for whole-number
 /// operands; anything non-numeric is `None`.
-fn parse_len(s: &str) -> Option<usize> {
-    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+fn parse_len(s: &[u8]) -> Option<usize> {
+    if s.is_empty() || !s.iter().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    s.parse::<usize>().ok()
+    let mut value: usize = 0;
+    for digit in s {
+        value = value
+            .checked_mul(10)?
+            .checked_add(usize::from(digit - b'0'))?;
+    }
+    Some(value)
 }
 
 /// The whole program body; both `main` forms call it and it never returns.
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
 
     let mut opts = FmtOptions::default();
     let mut compat = true;
@@ -50,32 +56,32 @@ fn run() -> ! {
     macro_rules! value {
         () => {{
             i += 1;
-            args.get(i).copied().unwrap_or("")
+            args.get(i).copied().unwrap_or(b"")
         }};
     }
 
     // Leading option letters (getopt stops at the first non-option operand).
     while i < args.len() {
         let a = args[i];
-        if a == "--" {
+        if a == b"--" {
             i += 1;
             break;
         }
-        if !a.starts_with('-') || a.len() == 1 {
+        if a.first() != Some(&b'-') || a.len() == 1 {
             break; // a bare "-" names stdin; anything else is an operand
         }
         let flag = &a[1..];
         match flag {
-            "g" => {
+            b"g" => {
                 opts.goal = parse_len(value!()).unwrap_or_else(|| fail("bad goal number"));
                 compat = false;
             }
-            "m" | "w" => {
+            b"m" | b"w" => {
                 opts.max = parse_len(value!()).unwrap_or_else(|| fail("bad max number"));
                 compat = false;
             }
-            "r" => opts.raw = true,
-            "C" => opts.center = true,
+            b"r" => opts.raw = true,
+            b"C" => opts.center = true,
             _ => fail("unknown option"),
         }
         i += 1;
@@ -105,10 +111,14 @@ fn run() -> ! {
         input = read_stdin();
     } else {
         for f in &args[i..] {
-            if *f == "-" {
+            if *f == b"-" {
                 input.extend(read_stdin());
             } else {
-                input.extend(support::read_file(f).unwrap_or_else(|_| fail("cannot open input")));
+                // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻。
+                let shown = String::from_utf8_lossy(f).into_owned();
+                input.extend(
+                    support::read_file(&shown).unwrap_or_else(|_| fail("cannot open input")),
+                );
             }
         }
     }

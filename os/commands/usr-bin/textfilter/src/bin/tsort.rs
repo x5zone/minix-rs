@@ -12,7 +12,6 @@
 
 extern crate alloc;
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
@@ -21,8 +20,8 @@ mod support;
 use minix_textfilter::tsort::{TsortArgs, parse_args, tsort};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let refs: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let TsortArgs { quiet, file } = match parse_args(&refs[1..]) {
         Ok(args) => args,
         Err(_) => usage(),
@@ -31,13 +30,21 @@ fn run() -> ! {
     // C `switch(argc)`: no operand reads stdin, one operand reads that file
     // (`err(1, "%s")` when it cannot be opened), more than one is a usage error.
     let input = match file {
-        Some(path) => match support::read_file(path) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                support::warn(format!("tsort: {path}\n").as_bytes());
-                support::terminate(1);
+        Some(path) => {
+            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+            // 报文里念出去的是原字节。
+            let shown = String::from_utf8_lossy(path).into_owned();
+            match support::read_file(&shown) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    let mut line: Vec<u8> = b"tsort: ".to_vec();
+                    line.extend_from_slice(path);
+                    line.push(b'\n');
+                    support::warn(&line);
+                    support::terminate(1);
+                }
             }
-        },
+        }
         None => support::read_stdin(),
     };
     let text = core::str::from_utf8(&input).unwrap_or("");

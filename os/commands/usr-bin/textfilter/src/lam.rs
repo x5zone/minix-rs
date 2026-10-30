@@ -4,8 +4,8 @@
 //! flag, line terminator character) and the row assembly loop over
 //! in-memory line streams. File opening stays behind the hosted
 //! command seam (registered as 待开放路径 like tee/split).
-use alloc::vec::Vec;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use alloc::{format, vec};
 
 /// Per-stream options. Capitalized flags (`-F -P -S -T`) persist to
@@ -50,7 +50,7 @@ pub enum LamError {
     TooManyStreams,
     NoStreams,
     NeedStringAfter(char),
-    InvalidFormat(String),
+    InvalidFormat,
 }
 
 /// Maximum input streams (the C's MAXOFILES).
@@ -141,23 +141,35 @@ pub fn laminate(streams: &[Vec<String>], specs: &[LamSpec]) -> Vec<String> {
 
 /// Parses the `min.max` width argument. The C restricts the string to
 /// `-.0123456789` and wraps it into `%...s`.
-pub fn parse_width(arg: &str) -> Result<LamWidth, LamError> {
+pub fn parse_width(arg: &[u8]) -> Result<LamWidth, LamError> {
     if !arg
-        .bytes()
-        .all(|b| b == b'-' || b == b'.' || b.is_ascii_digit())
+        .iter()
+        .all(|b| *b == b'-' || *b == b'.' || b.is_ascii_digit())
     {
-        return Err(LamError::InvalidFormat(arg.to_string()));
+        return Err(LamError::InvalidFormat);
     }
-    let left = arg.starts_with('-');
-    let body = if left { &arg[1..] } else { arg };
-    let (min_s, max_s) = match body.split_once('.') {
-        Some((a, b)) => (a, b),
-        None => (body, ""),
+    let left = arg.first() == Some(&b'-');
+    let body: &[u8] = if left { &arg[1..] } else { arg };
+    let dot = body.iter().position(|&b| b == b'.');
+    let (min_s, max_s): (&[u8], &[u8]) = match dot {
+        Some(at) => (&body[..at], &body[at + 1..]),
+        None => (body, b""),
     };
+    // 两段都已被判据验证为 ASCII 数字，`from_utf8` 在这里不会失败。
+    let min_digits = core::str::from_utf8(min_s).unwrap_or("");
+    let max_digits = core::str::from_utf8(max_s).unwrap_or("");
     Ok(LamWidth {
         left,
-        min: if min_s.is_empty() { 0 } else { min_s.parse().unwrap_or(0) },
-        max: if max_s.is_empty() { usize::MAX } else { max_s.parse().unwrap_or(0) },
+        min: if min_s.is_empty() {
+            0
+        } else {
+            min_digits.parse().unwrap_or(0)
+        },
+        max: if max_s.is_empty() {
+            usize::MAX
+        } else {
+            max_digits.parse().unwrap_or(0)
+        },
     })
 }
 
@@ -202,7 +214,11 @@ mod tests {
             LamSpec::default(),
             LamSpec {
                 pad: true,
-                width: Some(LamWidth { left: false, min: 3, max: usize::MAX }),
+                width: Some(LamWidth {
+                    left: false,
+                    min: 3,
+                    max: usize::MAX,
+                }),
                 ..LamSpec::default()
             },
         ];
@@ -213,19 +229,19 @@ mod tests {
 
     #[test]
     fn test_width_clips_then_pads() {
-        let w = parse_width("8.2").unwrap();
+        let w = parse_width(b"8.2").unwrap();
         assert_eq!(apply_width(&w, "abcdef"), "      ab");
-        let w = parse_width("-8.2").unwrap();
+        let w = parse_width(b"-8.2").unwrap();
         assert_eq!(apply_width(&w, "abcdef"), "ab      ");
-        let w = parse_width("2.10").unwrap();
+        let w = parse_width(b"2.10").unwrap();
         assert_eq!(apply_width(&w, "abc"), "abc");
     }
 
     #[test]
     fn test_width_parse_rejects_junk() {
-        assert_eq!(parse_width("8x"), Err(LamError::InvalidFormat("8x".into())));
-        assert!(parse_width("8.10").is_ok());
-        assert!(parse_width("-4").is_ok());
+        assert_eq!(parse_width(b"8x"), Err(LamError::InvalidFormat));
+        assert!(parse_width(b"8.10").is_ok());
+        assert!(parse_width(b"-4").is_ok());
     }
 
     #[test]
@@ -240,11 +256,20 @@ mod tests {
         let a = split_stream(b"a\n", b'\n');
         let b = split_stream(b"b\n", b'\n');
         let c = split_stream(b"c\n", b'\n');
-        let rows = laminate(&[a, b, c], &[
-            LamSpec::default(),
-            LamSpec { sep: ",".into(), ..LamSpec::default() },
-            LamSpec { sep: "-".into(), ..LamSpec::default() },
-        ]);
+        let rows = laminate(
+            &[a, b, c],
+            &[
+                LamSpec::default(),
+                LamSpec {
+                    sep: ",".into(),
+                    ..LamSpec::default()
+                },
+                LamSpec {
+                    sep: "-".into(),
+                    ..LamSpec::default()
+                },
+            ],
+        );
         assert_eq!(rows, vec!["a,b-c"]);
     }
 }

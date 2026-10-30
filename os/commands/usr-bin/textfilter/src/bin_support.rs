@@ -36,26 +36,6 @@ pub const STDOUT: Fd = 1;
 /// Terminates the process with an exit status (see the module header).
 /// Program arguments without `argv[0]` conventions applied — index 0 is
 /// the program name, exactly as C's `argv`.
-#[cfg(all(not(test), target_os = "none"))]
-pub fn args() -> alloc::vec::Vec<alloc::string::String> {
-    minix_rt::crt0::args()
-        .map(|raw| alloc::string::String::from_utf8_lossy(raw).into_owned())
-        .collect()
-}
-
-/// Hosted twin of [`args`] (see the module header for the seam contract).
-/// `std::env::args()` panics on a non-UTF-8 argument, which would make this leg
-/// diverge from the target leg (which renders lossily); `args_os()` keeps the raw
-/// bytes so both legs apply the same lossy render — C passes argv as bytes and
-/// never validates them.
-#[cfg(any(test, not(target_os = "none")))]
-pub fn args() -> alloc::vec::Vec<alloc::string::String> {
-    use std::os::unix::ffi::OsStrExt as _;
-    std::env::args_os()
-        .map(|raw| alloc::string::String::from_utf8_lossy(raw.as_bytes()).into_owned())
-        .collect()
-}
-
 /// 字节形出口（A2 参数缝半）：C 从头到尾把 `argv` 当字节数组，`getopt` 的字母取自
 /// 字节步进（`minix3/lib/libc/stdlib/getopt.c:optopt = *place++`），所以凡是要把选项字母
 /// 或操作数**按原字节**交回去的腿都不能走 [`args`]——那里的
@@ -355,17 +335,6 @@ pub fn wall_seconds() -> i64 {
 #[cfg(all(not(test), target_os = "none"))]
 pub fn wall_seconds() -> i64 {
     minix_sys::gettimeofday().map_or(0, |(seconds, _)| seconds)
-}
-
-/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
-/// `minix3/lib/csu/common/crt0-common.c:156-165`，权威在 `minix-types` 的 `prog_name`）。
-/// `err(3)`/`warn(3)`/`usage()` 的那几行都以它开头。
-pub fn prog_name(argv: &[alloc::string::String]) -> &str {
-    let raw = argv
-        .first()
-        .map(alloc::string::String::as_str)
-        .unwrap_or("");
-    minix_sys::prog_name(raw)
 }
 
 /// C 的 `warn(3)`/`err(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退

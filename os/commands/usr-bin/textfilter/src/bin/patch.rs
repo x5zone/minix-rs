@@ -13,46 +13,62 @@
 //! are registered corners. The hosted-versus-target seams are the
 //! echo template's (`os/commands/bin/fileops/src/bin/echo.rs`).
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::patch::{apply_patch, parse_patch, PatchOptions};
 use minix_sys::read;
+use minix_textfilter::patch::{PatchOptions, apply_patch, parse_patch};
+
+/// `-F` 的取值判据照 C 的 `atoi` 只认 ASCII 数字；折前折后同判，只改报文里的字节。
+fn parse_usize(bytes: &[u8]) -> Option<usize> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut value: usize = 0;
+    for &digit in bytes {
+        if !digit.is_ascii_digit() {
+            return None;
+        }
+        value = value
+            .checked_mul(10)?
+            .checked_add(usize::from(digit - b'0'))?;
+    }
+    Some(value)
+}
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
     let mut options = PatchOptions::default();
-    let mut patchfile: Option<String> = None;
-    let mut operands: Vec<String> = Vec::new();
+    let mut patchfile: Option<Vec<u8>> = None;
+    let mut operands: Vec<&[u8]> = Vec::new();
 
     let mut i = 1;
     while i < argv.len() {
-        let arg = argv[i].clone();
-        if !arg.starts_with('-') || arg.len() == 1 {
+        let arg: &[u8] = &argv[i];
+        if arg.first() != Some(&b'-') || arg.len() == 1 {
             operands.push(arg);
             i += 1;
             continue;
         }
-        let chars: Vec<char> = arg.chars().skip(1).collect();
+        let flags: &[u8] = &arg[1..];
         let mut k = 0usize;
-        while k < chars.len() {
-            match chars[k] {
-                'F' => {
-                    let value = if k + 1 < chars.len() {
-                        Some(chars[k + 1..].iter().collect::<String>())
+        while k < flags.len() {
+            match flags[k] {
+                b'F' => {
+                    let value: Option<&[u8]> = if k + 1 < flags.len() {
+                        Some(&flags[k + 1..])
                     } else {
                         i += 1;
-                        argv.get(i).cloned()
+                        argv.get(i).map(Vec::as_slice)
                     };
-                    match value.and_then(|v| v.parse::<usize>().ok()) {
+                    match value.and_then(parse_usize) {
                         Some(n) => options.max_fuzz = n,
                         None => {
                             support::warn(b"patch: bad fuzz value\n");
@@ -61,10 +77,10 @@ fn run() -> ! {
                     }
                     break;
                 }
-                'i' => {
+                b'i' => {
                     k += 1;
-                    if k < chars.len() {
-                        patchfile = Some(chars[k..].iter().collect());
+                    if k < flags.len() {
+                        patchfile = Some(flags[k..].to_vec());
                     } else {
                         i += 1;
                         patchfile = argv.get(i).cloned();
@@ -73,8 +89,8 @@ fn run() -> ! {
                         }
                     }
                 }
-                'u' | 'n' => {} // format hints: the parser detects shapes itself
-                'c' | 'e' | 'R' => {
+                b'u' | b'n' => {} // format hints: the parser detects shapes itself
+                b'c' | b'e' | b'R' => {
                     support::warn(
                         b"patch: context-format/ed/reverse patches are registered corners\n",
                     );
@@ -91,24 +107,30 @@ fn run() -> ! {
         usage();
     }
     if let Some(target) = operands.first() {
-        support::warn(
-            format!(
-                "patch: target file `{}` waits on the open-existing seam (edge E-CMDSYSFACE)\n",
-                target
-            )
-            .as_bytes(),
-        );
+        // 档名位按原字节（那条 seam 在册 E-CMDSYSFACE）。
+        let mut line: Vec<u8> = b"patch: target file `".to_vec();
+        line.extend_from_slice(target);
+        line.extend_from_slice(b"' waits on the open-existing seam (edge E-CMDSYSFACE)\n");
+        support::warn(&line);
         support::terminate(2);
     }
 
-    let text = match patchfile {
-        Some(path) => match support::read_file(&path) {
-            Ok(v) => String::from_utf8_lossy(&v).into_owned(),
-            Err(_) => {
-                support::warn(format!("patch: can't read {}\n", path).as_bytes());
-                support::terminate(2);
+    let text = match &patchfile {
+        Some(path) => {
+            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
+            // 报文里念出去的是原字节。
+            let shown = String::from_utf8_lossy(path).into_owned();
+            match support::read_file(&shown) {
+                Ok(v) => String::from_utf8_lossy(&v).into_owned(),
+                Err(_) => {
+                    let mut line: Vec<u8> = b"patch: can't read ".to_vec();
+                    line.extend_from_slice(path);
+                    line.push(b'\n');
+                    support::warn(&line);
+                    support::terminate(2);
+                }
             }
-        },
+        }
         None => {
             let mut v = Vec::new();
             let mut chunk = [0u8; 4096];
@@ -128,7 +150,9 @@ fn run() -> ! {
     match parse_patch(&text) {
         Ok(hunks) => {
             if operands.is_empty() {
-                support::warn(format!("patch: {} hunks read; no target file given\n", hunks.len()).as_bytes());
+                support::warn(
+                    format!("patch: {} hunks read; no target file given\n", hunks.len()).as_bytes(),
+                );
                 support::terminate(if hunks.is_empty() { 1 } else { 0 });
             }
             let input: Vec<&str> = Vec::new();
@@ -154,7 +178,6 @@ fn usage() -> ! {
     support::warn(b"usage: patch [-Fu] [-i patchfile] [origfile]\n");
     support::terminate(2);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

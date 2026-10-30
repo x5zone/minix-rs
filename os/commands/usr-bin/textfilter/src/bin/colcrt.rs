@@ -20,7 +20,7 @@ extern crate alloc;
 #[path = "../bin_support.rs"]
 mod support;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use minix_textfilter::colcrt::{ColcrtOptions, colcrt};
 
@@ -39,34 +39,36 @@ fn usage() -> ! {
 
 /// The whole program body; both `main` forms call it and it never returns.
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
 
     let mut opts = ColcrtOptions::default();
-    let mut files: Vec<String> = Vec::new();
+    let mut files: Vec<&[u8]> = Vec::new();
     let mut i = 1;
     // C parses leading `-`-prefixed operands as flags, then treats the rest as
     // file names (the first non-flag stops the option loop).
     while i < args.len() {
         let a = args[i];
-        if !a.starts_with('-') || a == "-" {
+        if a.first() != Some(&b'-') || a == b"-" {
             break;
         }
         match &a[1..] {
-            "" => opts.suppress_underline = true,
-            "2" => opts.print_all = true,
+            b"" => opts.suppress_underline = true,
+            b"2" => opts.print_all = true,
             _ => usage(),
         }
         i += 1;
     }
-    files.extend(args[i..].iter().map(|s| s.to_string()));
+    files.extend(args[i..].iter().copied());
 
     let mut out: Vec<u8> = Vec::new();
     if files.is_empty() {
         out.extend(colcrt(&read_stdin(), &opts));
     } else {
         for f in &files {
-            let data = support::read_file(f).unwrap_or_else(|_| fail("cannot open input"));
+            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻。
+            let shown = String::from_utf8_lossy(f).into_owned();
+            let data = support::read_file(&shown).unwrap_or_else(|_| fail("cannot open input"));
             out.extend(colcrt(&data, &opts));
         }
     }
