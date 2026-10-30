@@ -3901,3 +3901,10 @@ PASS，`WARNING: not all CPUs booted` 计数 0，`run_all` 39/0/0。C2D
 e5-ds `chain ok`）、aarch64/riscv 全镜像 PASS（ap-irq-ready=1 /
 panic=0）、kernel mock 849/0/8、三架构 check 0 error、riscv pin 6/0。
 C2b/C2E 至此收口；riscv SSI 固件门保留为平台前置。
+
+**C7b 里程碑（计数口径与改名前置）**：码笔 `4b0d4e560`。README 定义
+“正式文档数”=顶层 `NN-*.md`（排除 `NN-todo.md`）的机械计数，附复算
+命令；01 阶段旧表 38 是迁移前陈旧读数，按口径改为 23，其余 stage
+读数一致。新增“文档改名与拆分的前置”：改名/拆分必须与全部代码注释
+同笔，提交前重跑 `tools/check-rs-unwired.sh`（PASS）；附引用分布
+复算命令与当前头部读数。README style error 0、断链 0。C7b 余项清零。
