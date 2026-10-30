@@ -3546,3 +3546,16 @@ check-layout all PASS、`run_all` **39/0/0**（`tmp/i25-batches/run-all.log`）�
 A/B 领地未越界编辑：578 文件 / 24,816 条注释 CJK 行的移交清单、按目录批次
 与归属建议落在 `tmp/i25-cross-territory-handoff.md`；I-25 在全仓口径下只剩
 这份 A/B 移交面，C 板领地已清零。
+
+**I25AB / I25POST 里程碑（全仓注释清零）**：在 C 板领地 155 文件之后，
+A/B 领地 576 文件完成同类整改（合并笔 `9c9c24bbe`），合并时主树新增的
+15 个 textfilter/text-games 文件再补一笔 29 文件翻译（合并笔
+`f933b53ab`）。最终全仓 **1,549 个 Rust 文件：注释 CJK 0 行、广义锚点
+0 行**；654 个纯注释文件与基线的非注释 token 零差异，另
+`os/servers/vm/src/pagetable/sim.rs` 的 `SimPaging` 按 D-59 补齐
+`phys_addr_limit`/`validate_virtual_range`（独立提交 `9d073dfdb`）。
+安全门 `check_comments.py` / `check_broad.py` 全绿；workspace 8,284
+passed / 0 failed、minix-vm 四形态 543/562/543/561、kernel mock
+850/0/8、arch 286/0、boot-shim test-all 53/0、三架构 check 0 error、
+kernel-image check-layout PASS、`run_all` 39/0/0。审计落
+`tmp/i25-final-audit.md`；I-25 至此全仓闭合。
