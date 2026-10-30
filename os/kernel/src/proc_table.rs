@@ -958,6 +958,12 @@ impl ProcessTable {
         if let Some(smp) = unsafe { crate::try_smp_state() }
             && smp.cpu_local(cpu_id).is_some_and(|local| local.cpu_is_idle)
         {
+            // Publish the run-queue writes before the IPI. With IPC senders
+            // and receivers now allowed on different CPUs (PD-19), the IPI is
+            // the completion edge: the receiver's BKL acquire pairs with this
+            // release, so the enqueued process and the delivered message are
+            // visible before the woken CPU schedules it.
+            core::sync::atomic::fence(Ordering::Release);
             <minix_arch::CurrentSmpArch as minix_arch::SmpArch>::send_sched_ipi(cpu_id.raw());
         }
 
