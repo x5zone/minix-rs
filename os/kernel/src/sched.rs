@@ -298,18 +298,6 @@ fn validate_cpu_param(
     Ok(())
 }
 
-/// Core of the stop-loss guard: keep every CPU requested by
-/// SYS_SCHEDCTL / SYS_SCHEDULE on the BSP until the AP receive-side arms are
-/// complete. `None` keeps C's `-1 = keep-current` semantics untouched.
-/// Extracted into a pure function that takes `bsp` as an argument so hosted
-/// tests can cover it directly (on hardware the clamp is reachable only once
-/// `try_smp_state()` returns `Some`, so an inlined version could not be
-/// reached from the existing host cases).
-#[inline]
-fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
-    cpu.map(|_| bsp)
-}
-
 /// Update a process's scheduling parameters.
 ///
 /// C: `sched_proc()` — system.c:642-723.
@@ -357,32 +345,29 @@ fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
 /// runtime-reachable only on a multi-CPU machine, mirroring C's
 /// CONFIG_SMP gating by data rather than by cfg.
 ///
-/// # AP wake-up boundary (stop-loss)
+/// # AP placement
 ///
-/// The enqueue producer exists (`sched_enqueue_with` sends the C
-/// `proc.c:1647` scheduling IPI when the target CPU's `cpu_is_idle` is
-/// set, and never to the current CPU), but the receive side is not complete:
-/// aarch64 now opens the BSP's SGI gate, sends through
-/// `ICC_SGI1R_EL1`/`GICD_SGIR` by ARE state, and its APs enter
-/// `scheduler_loop` (C2D-APENTRY); riscv64's APs enter `scheduler_loop` and
-/// open `sie.SSIE`/`sie.STIE` (C2D-RVAPENTRY), though its SSI cross-hart
-/// delivery is still firmware-blocked, and riscv64's SWI arm now applies the
-/// pending scheduler flags through `sched_handler_full` +
-/// `preempt_current_on_ipi` (C2D-RVFLAGS). The wake entries now clear
-/// `cpu_is_idle` and restart the AP's local timer via `context_stop_idle`
-/// (C2D-WAKETIMER). riscv64's cache-sync now issues the local `fence.i` plus
-/// the SBI RFENCE `remote_fence_i` broadcast (C2D-RVFENCE). Until the
-/// remaining receive-side arms land, `params.cpu` is clamped to the BSP by
-/// [`clamp_cpu_to_bsp`]: the request is accepted (returns `Ok`), but the
-/// process stays on the BSP. This mirrors C's non-SMP build
-/// (`system.c:686-689` ignores the cpu parameter and returns OK) and keeps
-/// Step 3.5 migration and the Step 7 affinity write from ever targeting an
-/// AP. Remove this clamp only in the batch that wires the receive-side
-/// arms.
+/// On x86_64 and aarch64 the caller's `cpu` is applied after the C
+/// range/readiness gate: enqueue sends the `proc.c:1647` scheduling IPI to a
+/// different idle CPU (`sched_enqueue_with`, with the Release fence), the
+/// SGI path applies the scheduler flags and preempts the interrupted
+/// process, the wake entries clear `cpu_is_idle` and restart the AP's
+/// one-shot (`context_stop_idle`), and both AP tails enter
+/// `scheduler_loop`. The C2C stop-loss clamp is gone there (C2E), and
+/// `run_all` (including `test-smp-aps`/`test-smp-ipi` and the e5-ds
+/// cross-CPU chain) stays green.
+///
+/// riscv64 keeps a **narrow** transitional clamp: its default firmware does
+/// not deliver a cross-hart SSIP (the SWI forensic note in `riscv64::smp`;
+/// `test-smp-ipi-riscv64` passes only with `aclint=on`). An AP-homed process
+/// would never be woken, so `params.cpu` is rewritten to the BSP there until
+/// firmware delegation or an SSWI device is available. This is a platform
+/// gate, not a shared-scheduler difference.
 pub fn sched_proc(
     table: &mut crate::proc_table::ProcessTable,
     nr: ProcNr,
-    mut params: SchedParams,
+    // Mutated only by the riscv64 narrow clamp below.
+    #[allow(unused_mut)] mut params: SchedParams,
 ) -> Result<(), SchedProcError> {
     use crate::proc::{MiscFlagsBits, RtsFlagsBits};
 
@@ -425,12 +410,15 @@ pub fn sched_proc(
         None => validate_cpu_param(params.cpu, 1, |v: u32| v == 0)?,
     }
 
-    // Step 3 (stop-loss): clamp the requested affinity to the BSP. See the
-    // AP wake-up boundary in this function's docs. The validation above still
-    // runs first, so out-of-range requests keep C's EINVAL/EBADCPU verdicts;
-    // the clamp only rewrites the accepted destination.
-    let bsp = smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0);
-    params.cpu = clamp_cpu_to_bsp(params.cpu, bsp);
+    // riscv64 narrow stop-loss (see `# AP placement`): the default firmware
+    // does not deliver a cross-hart SSIP, so an AP-homed process would never
+    // be woken. The validation above still runs first; only the accepted
+    // destination is rewritten. x86_64/aarch64 apply the caller's cpu.
+    #[cfg(target_arch = "riscv64")]
+    {
+        let bsp = smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0);
+        params.cpu = params.cpu.map(|_| bsp);
+    }
 
     // Step 3.5: SMP migration (C system.c:672-677, CONFIG_SMP):
     //   if (p->p_cpu != cpuid && cpu != -1 && cpu != p->p_cpu)
@@ -438,11 +426,11 @@ pub fn sched_proc(
     // A runnable process homed on another CPU and re-homed by this call
     // must be stopped there first (context saved via IPI); on a
     // single-CPU machine p_cpu == cpuid always holds, so the branch is
-    // unreachable — exactly as in C. The stop-loss clamp above also makes it
-    // unreachable on a multi-CPU machine: `dest` was rewritten to the BSP,
-    // so `dest != homed` cannot hold while every process was itself homed on
-    // the BSP. Without SMP state (early boot, hosted tests) there is no
-    // migrator to call and the check skips.
+    // unreachable — exactly as in C. On a multi-CPU x86_64/aarch64 machine
+    // the branch is reachable now that the caller's cpu is applied
+    // unchanged; riscv's narrow clamp keeps it unreachable there; without
+    // SMP state (early boot, hosted tests) there is no migrator to call and
+    // the check skips.
     let runnable = table.get(nr).is_some_and(|p| p.is_runnable());
     if runnable {
         let cpuid = crate::current_cpu_id();
@@ -509,10 +497,9 @@ pub fn sched_proc(
     // Step 7: apply CPU affinity (SMP).
     // C: system.c:691-693 (CONFIG_SMP only):
     //   if (cpu != -1) p->p_cpu = cpu;
-    // Under the stop-loss clamp `params.cpu` is the BSP here, so this stores
-    // the BSP even when the caller asked for an AP. The store stays in place:
-    // the clamp is a destination rewrite, not a skip of C's affinity step, so
-    // removing it later restores the AP path without touching this code.
+    // On x86_64/aarch64 this writes the caller's requested CPU (it passed
+    // the Step 3 range/readiness gate); riscv's narrow clamp has already
+    // rewritten it to the BSP; `None` keeps the current affinity.
     if let Some(v) = params.cpu
         && let Some(p) = table.get_mut(nr)
     {
@@ -986,18 +973,6 @@ mod tests {
         sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false }).unwrap();
         let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(1), niced: false });
         assert_eq!(result.unwrap_err(), SchedProcError::InvalidArgument);
-    }
-
-    #[test]
-    fn test_clamp_cpu_to_bsp_transitional_guard() {
-        // Coverage for the stop-loss guard's pure function: any requested
-        // cpu is clamped to the BSP, a request already on the BSP stays
-        // idempotent, and `None` (keep-current) is unaffected.
-        assert_eq!(clamp_cpu_to_bsp(Some(1), 0), Some(0));
-        assert_eq!(clamp_cpu_to_bsp(Some(3), 0), Some(0));
-        assert_eq!(clamp_cpu_to_bsp(Some(0), 0), Some(0));
-        assert_eq!(clamp_cpu_to_bsp(Some(2), 2), Some(2));
-        assert_eq!(clamp_cpu_to_bsp(None, 0), None);
     }
 
     #[test]

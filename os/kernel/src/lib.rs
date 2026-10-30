@@ -3755,29 +3755,19 @@ fn idle(
         local.cpu_is_idle = true;
     }
     if smp.ncpus() > 1 && cpu != smp.bsp_cpu_id() {
-        // CONTRACT (C2C stop-loss): masking the AP timer here is only one
-        // half of C's design. C pairs it with `context_stop_idle`
-        // (arch_clock.c:351-369), which clears `cpu_is_idle` and restarts the
-        // local timer at interrupt entry so a woken AP resumes ticking.
-        //   1. Receive side: the wake entries call
-        //      `context_stop_idle_current`, which clears the flag and runs
-        //      `restart_local_timer` (C2D-WAKETIMER) — the BSP guard keeps
-        //      its PIT source, APs re-arm their one-shot. aarch64 opens the
-        //      BSP's SGI 0 gate, sends via ICC_SGI1R/GICD_SGIR by ARE state,
-        //      and its APs enter `scheduler_loop` (C2D-APENTRY); riscv64's
-        //      APs enter `scheduler_loop` and open SSIE/STIE
-        //      (C2D-RVAPENTRY), though its SSI cross-hart delivery is still
-        //      firmware-blocked; its SWI arm now applies the pending
-        //      scheduler flags via `sched_handler_full` +
-        //      `preempt_current_on_ipi` (C2D-RVFLAGS), and its cache-sync now
-        //      issues the SBI RFENCE broadcast (C2D-RVFENCE).
-        //   2. Producer: LANDED. `sched_enqueue_with` sends the C
-        //      `proc.c:1647` SCHED IPI when the target CPU is idle — inert
-        //      while the clamp below keeps every process on the BSP.
-        //   3. Affinity clamp: RESTORED (stop-loss), so `SYS_SCHEDCTL` /
-        //      `SYS_SCHEDULE` accept but rewrite any requested CPU to the BSP.
-        // Keep APs off user work until the receive-side arms land; only then
-        // remove the clamp and this mask becomes safe again.
+        // C pairs this AP timer mask with `context_stop_idle`
+        // (arch_clock.c:351-369): the wake entries call
+        // `context_stop_idle_current`, which clears `cpu_is_idle` and runs
+        // `restart_local_timer` (C2D-WAKETIMER), so a woken AP resumes
+        // ticking. The C2D prerequisites are all in place (AP tails in
+        // `scheduler_loop`, SGI/SWI flag application, riscv RFENCE, bounded
+        // ack/READY), and C2E removed the BSP affinity clamp on
+        // x86_64/aarch64: the caller's cpu lands on an AP, and
+        // `sched_enqueue_with` sends the C `proc.c:1647` SCHED IPI to a
+        // different idle CPU. riscv64 keeps a narrow clamp (in `sched_proc`)
+        // because its default firmware does not deliver a cross-hart SSIP;
+        // `test-smp-ipi-riscv64` passes only with `aclint=on`. That is a
+        // platform gate, not a shared-scheduler difference.
         crate::clock::stop_local_timer();
     } else {
         restart_local_timer();
