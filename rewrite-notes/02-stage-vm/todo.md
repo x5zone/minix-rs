@@ -1,6 +1,7 @@
 # 02-stage-vm Rust 实现架构级 Review TODO
 
 > **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 2 ｜ `stopgap landed` 3。两条真未做：实时更新（热更）的活与重启状态机、启动进程的可执行文件装载链。
+> **`2026-10-31` 现查（A 板 A14 第一腿，claim/A14-VM-qoder）**：① **启动进程的可执行文件装载链已落**——`vm_server.rs::exec_bootproc`（`:785`）走 `minix_elf::entry_point` + `segment_iter` 的 PT_LOAD 遍历、逐段页对齐落页（注释写明 RS 入口段 `vaddr=0x2246c0` 非页对齐的旧缺陷与修法）、按 `memsz` 留堆/BSS 尾、随后建初始栈帧；判据 `cargo test -p minix-vm --lib` → **543 / 0**。② **热更/重启状态机是唯一剩下的腿**，已升级为本文件 §20 的可执行条目 `V20-P1-1`（见下）：它不是缺一段代码，而是缺一个 **跨重启状态承载的架构决定**——C 的 `is_first_time()` 靠 BSS 全局在 `RTS_BOOTINHIBIT` 清后存活，Rust 的状态在 `VmServer` 实例里、实例随进程消失；现行为是**响亮拒绝**（`main.rs:73` 的 panic），panic 文案里指的 `G-V12-10` 在本文件并无对应条目（旧引用悬空），本笔把条目立起来并把文案改指它。
 > **本表有多行已过期**，按代码为准刷新：虚存服务向根服务要表已由真实的安全拷贝取回替代（不再返回空表）、调用屏蔽字面宽已拓宽到六十四位、进程内陷入层的占位实现已被直通陷入传输取代。逐条命令见 `../coordination/TODO-LEDGER-INDEX.md` §4。
 > 跨阶段联动项（虚存地址空间标识刷新、根服务接线、端到端联调）的状态权威在 `../coordination/TODO-LEDGER-OPEN.md` §4；本文件条目描述与修法仍是权威，本轮只加本摘要不改条目。
 
@@ -516,3 +517,20 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - 第七轮 V12 全卷（含 Fix #59–#62 修复记录原文）：[`archive/todo-V12-archive-2026-09-09.md`](archive/todo-V12-archive-2026-09-09.md)
 - 本轮 SYMBOLS 全量清单：`.review/claude/vm/v13/SYMBOLS.md`（中间产物，正式引用以本文件 §18.1/§1 汇总为准）
 - 跨 stage 条目唯一入口：`rewrite-notes/coordination/edge_todo.md`（§18.4 两条增补；§19 V14-P2-1 为 VM 侧活指针，联动 E-ISWIRE / E1 / E5）
+
+---
+
+## 20. V20（2026-10-31，A 板 A14 第二腿）：热更/重启状态机的跨重启承载
+
+### V20-P1-1 VM 暖启动（`is_first_time == false`）的状态承载（open，挂设计决定）
+
+- **C 语义**（`minix3/minix/servers/vm/main.c:79-108`）：`is_first_time()` 读 BSS 全局，`RTS_BOOTINHIBIT`
+  清后重启回来的同一进程，BSS 里的 `vm_pagedir`/区表/页表状态原样还在，所以 `init_vm()` 跳过、直接
+  `printf("VM is warm\n")` 继续服务——热更是「进程重启、数据活着」。
+- **Rust 现状**：状态全在 `VmServer` 实例里，实例随进程消失；`main.rs:73` 对暖启动**响亮拒绝**
+  （panic），文案原指 `G-V12-10`——本文件并无该条目（悬空锚点，本笔修正为 `V20-P1-1`）。
+- **为什么不是单轮修**：补齐它要一个 `[ARCH]` 级决定——跨重启状态放在哪（静态区/共享页/从根服务
+  重放），以及三架构下这块内存的登记与清零时序；三选一都要设计稿（与 SD-10/PD-22 同级的裁决面）。
+  在那之前，「响亮拒绝」是诚实行为：静默以空状态继续会让所有既有进程的页表失去宿主。
+- **验收（当真做时）**：暖启动一起、「VM is warm」路径可达、既有进程的缺页链仍解到原区表；
+  真机腿走 C 板第 4 节。

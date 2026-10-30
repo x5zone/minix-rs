@@ -72,7 +72,7 @@ fn real_main() -> ! {
             panic!(
                 "VM warm restart (is_first_time = false) is not supported: \
                  minix-rs keeps no cross-restart BSS state (C main.c:101-108 \
-                 semantics); see 02-stage-vm/todo.md G-V12-10"
+                 semantics); see 02-stage-vm/todo.md V20-P1-1"
             );
         }
 
