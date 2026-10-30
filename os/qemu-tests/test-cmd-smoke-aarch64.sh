@@ -75,7 +75,7 @@ SERIAL_LOG="$WORK/serial.log"
 export TMPDIR=/tmp
 qemu-system-aarch64 \
     -machine virt,gic-version=3 \
-    -cpu cortex-a72 \
+    -cpu max \
     -smp 4 \
     -m 512M \
     -drive "if=pflash,format=raw,unit=0,file=$FW,readonly=on" \

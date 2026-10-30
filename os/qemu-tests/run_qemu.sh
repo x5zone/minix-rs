@@ -123,7 +123,7 @@ case "$ARCH" in
         fi
         QEMU_ARGS=(
             -machine virt,gic-version=3
-            -cpu cortex-a72
+            -cpu max
             -smp 4
             -drive "if=pflash,format=raw,unit=0,file=$FW,readonly=on"
             -drive "if=pflash,format=raw,unit=1,file=$FW_VARS"

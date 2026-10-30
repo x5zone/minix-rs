@@ -76,7 +76,7 @@ pub fn command(arch: Arch, image: &Path, serial: &Path) -> Result<(Command, Vec<
             // source parsed successfully" (NK4-C §1.110 forensics).
             "virt,gic-version=3".into(),
             "-cpu".into(),
-            "cortex-a72".into(),
+            "max".into(),
             "-smp".into(),
             "4".into(),
         ]),
