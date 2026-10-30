@@ -3171,6 +3171,23 @@ HEAD 三份各 0 处 `Diff in`，本轮三份格式化前 7 / 2 / 1 处、格式
 里本笔涉及的 `rewrite-notes/18-stage-commands/`、`rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md`
 与 `os/commands/usr-bin/textfilter/` 三处都没有在制改动。快进之后的主树复跑读数另记一笔合回补记。
 
+**合回读数（第一百八十五笔补记，批次四百七十一）**：快进前复跑上面两条命令，
+`git log --oneline ae4aadcfb..rewrite` 仍交回空、`git merge-base --is-ancestor ae4aadcfb rewrite`
+退 0 ⇒ `git merge --ff-only claim/GETOPT-REPORT-BYTE-LETTER-qoder` 纯快进成功
+（`8 files changed, 620 insertions(+), 91 deletions(-)`，主树 `rewrite` 顶到里程碑笔 `df7701d47`）。
+逐笔验祖先四笔全 ✓（码笔 `3d0497ead`、文档笔 `1f6dc50b2`、台账补正笔 `01a1aaa84`、里程碑笔
+`df7701d47`）。主树当场复跑 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter`
+→ 退出码 0、**69 段 / 1283 / 0**，与领取树最终态逐数相同（库内 631、`unifdef_face` 15，
+`/home/xzhao/github/minix-rs/tmp/unifdef-471-maintree.log`）。取证目录 `tmp/unifdef-471/`
+（三侧现量、A/B 补栏前后两份、负控三枚、`symcheck.log`、`content-seam.log`、`attribution.log`、
+门日志、改前与改后两枚件、`post2/` 快照）已在主树 `tmp/` 下，无需另抄。
+本笔留在读数里的两处教训：其一，`-s` 那一形的初版判断是**读码读出来的因果**（`find_sym` 里那句
+`from_utf8(...).ok()?` 会吃掉带裸字节的符号），一次都没量就写成了在册项——补跑之后本壳那侧
+根本没有输出，册项删除，判据是「读码得到的『应该如此』不是观察，立册之前必须有一条跑过的命令兜着」；
+其二，A/B 脚本末尾那几行在册形的打印语句里**没有 `out=` 栏**，标准输出的差异落不进日志，
+而我还在旁边写了一句把它解释掉、连前提都不对——补栏重跑才看见参照件打 `A`/`B` 两行而本壳打空。
+少了的那一栏会让读日志的人以为看见了全部，而含糊的解释又是自己写的，就更看不见。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
