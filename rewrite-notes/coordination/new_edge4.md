@@ -3407,6 +3407,14 @@ lib 目标单独跑退 0、真触发 0；本片不碰那两枚存量错。
 （kernel 的 form 契约在无特性时编译期报错，AGENTS.md 已写明），改用「逐 crate + 两家存量错
 exclude」的分域读数。
 
+**合回读数（第一百八十八笔补记，A25）**：快进前复跑 `git log --oneline 11689b345..rewrite`
+空、`git merge-base --is-ancestor 11689b345 rewrite` 退 0 ⇒ 纯快进成功（`5 files changed,
+77 insertions(+), 1 deletion(-)`，主树顶到 `b1ede829f`）。逐笔验祖先两笔全 ✓（码笔
+`e5169e66c`、台账笔 `b1ede829f`）。主树复跑 `cargo test -p minix-sched` → 3 段 / 88 / 0
+（`tmp/sd19-473/maintree-sched2.log`；第一次用共享 `os/target` 撞上并发写冲突的
+`Permission denied`——同目录另一条线正在构建，按并发纪律改用 `CARGO_TARGET_DIR` 独立目标
+目录复跑，读数一致）。处置表与读数随台账笔入 SD-19 行与 A25 行。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
