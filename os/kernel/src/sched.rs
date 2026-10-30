@@ -298,6 +298,18 @@ fn validate_cpu_param(
     Ok(())
 }
 
+/// Core of the stop-loss guard: keep every CPU requested by
+/// SYS_SCHEDCTL / SYS_SCHEDULE on the BSP until the AP receive-side arms are
+/// complete. `None` keeps C's `-1 = keep-current` semantics untouched.
+/// Extracted into a pure function that takes `bsp` as an argument so hosted
+/// tests can cover it directly (on hardware the clamp is reachable only once
+/// `try_smp_state()` returns `Some`, so an inlined version could not be
+/// reached from the existing host cases).
+#[inline]
+fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
+    cpu.map(|_| bsp)
+}
+
 /// Update a process's scheduling parameters.
 ///
 /// C: `sched_proc()` — system.c:642-723.
@@ -345,12 +357,25 @@ fn validate_cpu_param(
 /// runtime-reachable only on a multi-CPU machine, mirroring C's
 /// CONFIG_SMP gating by data rather than by cfg.
 ///
-/// # AP wake-up
+/// # AP wake-up boundary (stop-loss)
 ///
-/// A request to home a process on an AP is accepted. The enqueue path sends
-/// the C `proc.c:1647` scheduling IPI when the target CPU's `cpu_is_idle` is
-/// set, and that CPU's timer-interrupt entry clears the flag; the local
-/// one-shot timer is rearmed by `clock::local_tick` on every tick.
+/// The enqueue producer exists (`sched_enqueue_with` sends the C
+/// `proc.c:1647` scheduling IPI when the target CPU's `cpu_is_idle` is
+/// set), but the receive side is not complete: aarch64 never enables SGI 0
+/// (`GICR_ISENABLER0` starts fully masked and IPI bring-up does not exist),
+/// riscv64 clears `sip.SSIP` without applying the pending scheduler flags,
+/// and no architecture clears `cpu_is_idle` plus restarts the AP's local
+/// timer on the wake path — an AP that idled once therefore never ticks
+/// again. riscv64 also still runs its boot-loaded images under a local-only
+/// `fence.i` (`os/arch/src/riscv64/cache_sync.rs`), whose remote-fence arm
+/// is the documented precondition of unclamping. Until those receive-side
+/// arms land, `params.cpu` is clamped to the BSP by
+/// [`clamp_cpu_to_bsp`]: the request is accepted (returns `Ok`), but the
+/// process stays on the BSP. This mirrors C's non-SMP build
+/// (`system.c:686-689` ignores the cpu parameter and returns OK) and keeps
+/// Step 3.5 migration and the Step 7 affinity write from ever targeting an
+/// AP. Remove this clamp only in the batch that wires the receive-side
+/// arms.
 pub fn sched_proc(
     table: &mut crate::proc_table::ProcessTable,
     nr: ProcNr,
@@ -397,14 +422,24 @@ pub fn sched_proc(
         None => validate_cpu_param(params.cpu, 1, |v: u32| v == 0)?,
     }
 
+    // Step 3 (stop-loss): clamp the requested affinity to the BSP. See the
+    // AP wake-up boundary in this function's docs. The validation above still
+    // runs first, so out-of-range requests keep C's EINVAL/EBADCPU verdicts;
+    // the clamp only rewrites the accepted destination.
+    let bsp = smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0);
+    params.cpu = clamp_cpu_to_bsp(params.cpu, bsp);
+
     // Step 3.5: SMP migration (C system.c:672-677, CONFIG_SMP):
     //   if (p->p_cpu != cpuid && cpu != -1 && cpu != p->p_cpu)
     //       smp_schedule_migrate_proc(p, cpu);
     // A runnable process homed on another CPU and re-homed by this call
     // must be stopped there first (context saved via IPI); on a
     // single-CPU machine p_cpu == cpuid always holds, so the branch is
-    // unreachable — exactly as in C. Without SMP state (early boot,
-    // hosted tests) there is no migrator to call and the check skips.
+    // unreachable — exactly as in C. The stop-loss clamp above also makes it
+    // unreachable on a multi-CPU machine: `dest` was rewritten to the BSP,
+    // so `dest != homed` cannot hold while every process was itself homed on
+    // the BSP. Without SMP state (early boot, hosted tests) there is no
+    // migrator to call and the check skips.
     let runnable = table.get(nr).is_some_and(|p| p.is_runnable());
     if runnable {
         let cpuid = crate::current_cpu_id();
@@ -471,7 +506,10 @@ pub fn sched_proc(
     // Step 7: apply CPU affinity (SMP).
     // C: system.c:691-693 (CONFIG_SMP only):
     //   if (cpu != -1) p->p_cpu = cpu;
-    // On uniprocessor Rust rewrite this is a no-op (cpu is always 0).
+    // Under the stop-loss clamp `params.cpu` is the BSP here, so this stores
+    // the BSP even when the caller asked for an AP. The store stays in place:
+    // the clamp is a destination rewrite, not a skip of C's affinity step, so
+    // removing it later restores the AP path without touching this code.
     if let Some(v) = params.cpu
         && let Some(p) = table.get_mut(nr)
     {
@@ -945,6 +983,18 @@ mod tests {
         sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false }).unwrap();
         let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(1), niced: false });
         assert_eq!(result.unwrap_err(), SchedProcError::InvalidArgument);
+    }
+
+    #[test]
+    fn test_clamp_cpu_to_bsp_transitional_guard() {
+        // Coverage for the stop-loss guard's pure function: any requested
+        // cpu is clamped to the BSP, a request already on the BSP stays
+        // idempotent, and `None` (keep-current) is unaffected.
+        assert_eq!(clamp_cpu_to_bsp(Some(1), 0), Some(0));
+        assert_eq!(clamp_cpu_to_bsp(Some(3), 0), Some(0));
+        assert_eq!(clamp_cpu_to_bsp(Some(0), 0), Some(0));
+        assert_eq!(clamp_cpu_to_bsp(Some(2), 2), Some(2));
+        assert_eq!(clamp_cpu_to_bsp(None, 0), None);
     }
 
     #[test]
