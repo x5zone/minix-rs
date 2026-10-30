@@ -57,7 +57,7 @@ sleep 1
 
 timeout "$TIMEOUT_RUN" qemu-system-aarch64 \
     -machine virt,gic-version=3 \
-    -cpu cortex-a57 \
+    -cpu max \
     -smp 1 \
     -m 256M \
     -nographic \

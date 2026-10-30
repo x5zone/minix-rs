@@ -900,6 +900,25 @@ pub mod mock {
             size: PageSize,
             flags: PageFlags,
         ) -> Result<(), PageTableError> {
+            if !Self::supports_huge_page(size) {
+                return Err(PageTableError::NotSupported);
+            }
+            if vaddr.0 % size.bytes() != 0 || paddr.0 % size.bytes() != 0 {
+                return Err(PageTableError::InvalidAddress);
+            }
+            let _va_end = vaddr
+                .0
+                .checked_add(size.bytes())
+                .ok_or(PageTableError::InvalidAddress)?;
+            let pa_end = paddr
+                .0
+                .checked_add(size.bytes())
+                .ok_or(PageTableError::InvalidAddress)?;
+            if Self::validate_virtual_range(vaddr.0, size.bytes()).is_err()
+                || pa_end > Self::phys_addr_limit()?
+            {
+                return Err(PageTableError::InvalidAddress);
+            }
             let size = size
                 .try_as_usize()
                 .ok_or(PageTableError::InvalidAddress)?;
@@ -1303,6 +1322,62 @@ pub mod mock {
                     .is_err()
             );
             assert!(<MockPaging as Paging>::validate_virtual_range(u64::MAX, 2).is_err());
+        }
+
+        /// A capability error is reported before any table write: the address
+        /// stays unmapped, so callers cannot observe a half-installed leaf.
+        #[test]
+        fn mock_map_huge_rejects_unsupported_size_without_mapping() {
+            let mut pt = MockPaging::new().unwrap();
+            let vaddr = VirBytes(0x200_0000);
+            let paddr = PhysBytes(0x400_0000);
+            let unsupported = PageSize::try_from_bytes(8192).unwrap();
+            assert_eq!(
+                pt.map_huge(vaddr, paddr, unsupported, PageFlags::read_write()),
+                Err(PageTableError::NotSupported)
+            );
+            assert!(pt.query(vaddr).is_none());
+        }
+
+        #[test]
+        fn mock_map_huge_rejects_bad_alignment_and_bounds_without_mapping() {
+            let mut pt = MockPaging::new().unwrap();
+            let flags = PageFlags::read_write();
+
+            // Misaligned virtual address.
+            assert_eq!(
+                pt.map_huge(
+                    VirBytes(0x200_1000),
+                    PhysBytes(0x400_0000),
+                    PageSize::MIB_2,
+                    flags
+                ),
+                Err(PageTableError::InvalidAddress)
+            );
+
+            // Physical end above the mock's 52-bit bound.
+            assert_eq!(
+                pt.map_huge(
+                    VirBytes(0x200_0000),
+                    PhysBytes(1u64 << 52),
+                    PageSize::MIB_2,
+                    flags
+                ),
+                Err(PageTableError::InvalidAddress)
+            );
+
+            // Non-canonical virtual range.
+            assert_eq!(
+                pt.map_huge(
+                    VirBytes(0x0000_8000_0000_0000),
+                    PhysBytes(0x400_0000),
+                    PageSize::MIB_2,
+                    flags
+                ),
+                Err(PageTableError::InvalidAddress)
+            );
+            assert!(pt.query(VirBytes(0x200_1000)).is_none());
+            assert!(pt.query(VirBytes(0x200_0000)).is_none());
         }
 
         #[test]

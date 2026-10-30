@@ -1096,6 +1096,25 @@ impl HugePages for Riscv64Paging {
         size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        if !Self::supports_huge_page(size) {
+            return Err(PageTableError::NotSupported);
+        }
+        if vaddr.0 % size.bytes() != 0 || paddr.0 % size.bytes() != 0 {
+            return Err(PageTableError::InvalidAddress);
+        }
+        let _va_end = vaddr
+            .0
+            .checked_add(size.bytes())
+            .ok_or(PageTableError::InvalidAddress)?;
+        let pa_end = paddr
+            .0
+            .checked_add(size.bytes())
+            .ok_or(PageTableError::InvalidAddress)?;
+        if Self::validate_virtual_range(vaddr.0, size.bytes()).is_err()
+            || pa_end > Self::phys_addr_limit()?
+        {
+            return Err(PageTableError::InvalidAddress);
+        }
         let size = size
             .try_as_usize()
             .ok_or(PageTableError::InvalidAddress)?;

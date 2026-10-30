@@ -4648,7 +4648,7 @@ mod tests {
     #[test]
     fn test_boot_flow_identity_and_kernel_map() {
         let memmap: &'static [minix_boot::MemoryRegion] = &[
-            minix_boot::MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 }, // 16MB
+            minix_boot::MemoryRegion { base: PhysBytes(0x200000), len: 0x1000000 }, // 16MB
         ];
         let info = KernelInfo {
             memmap,
@@ -4670,7 +4670,7 @@ mod tests {
         let root_page = PhysBytes(0x1000);
         let mut paging = MockPaging::new_from_page(root_page);
 
-        let huge_size = MockPaging::HUGE_PAGE_SIZE;
+        let huge_size = MockPaging::FALLBACK_HUGE_PAGE_SIZE;
 
         // Test Step 1: Identity mapping
         let region = &info.memmap[0];
@@ -4686,7 +4686,7 @@ mod tests {
         assert!(identity_pages > 0, "no identity pages mapped");
 
         // Verify identity mapping — query a mapped huge-page-aligned address
-        let query_addr = region.base.0; // base is 0x100000, mapped at first iteration
+        let query_addr = region.base.0; // 2 MiB-aligned base, mapped at first iteration
         let result = paging.query(VirBytes(query_addr));
         assert!(result.is_some(), "identity mapping not found at 0x{:x}", query_addr);
 
@@ -4917,7 +4917,7 @@ mod tests {
         for _region in info.memmap { /* empty */ }
 
         // Kernel map should still work
-        let huge_size = MockPaging::HUGE_PAGE_SIZE;
+        let huge_size = MockPaging::FALLBACK_HUGE_PAGE_SIZE;
         let mut offset = 0u64;
         while offset < info.kern_size {
             paging.map_huge(
@@ -4975,9 +4975,9 @@ mod tests {
     #[test]
     fn test_mock_paging_query_after_map() {
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
-        paging.map_huge(VirBytes(0x100000), PhysBytes(0x100000),
-            MockPaging::HUGE_PAGE_SIZE, PageFlags::read_write()).unwrap();
-        assert!(paging.query(VirBytes(0x100000)).is_some(),
+        paging.map_huge(VirBytes(0x200000), PhysBytes(0x200000),
+            MockPaging::FALLBACK_HUGE_PAGE_SIZE, PageFlags::read_write()).unwrap();
+        assert!(paging.query(VirBytes(0x200000)).is_some(),
             "mapped page should be queryable at 0x100000");
         assert!(paging.query(VirBytes(0x00_0001_0000_0000)).is_none(),
             "unmapped page should not be queryable");

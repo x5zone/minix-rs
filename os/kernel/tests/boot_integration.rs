@@ -15,14 +15,14 @@ fn boot_simulation_full_flow() {
     // ── Set up simulated hardware (what UEFI would provide) ──
 
     let memmap: &'static [MemoryRegion] = &[MemoryRegion {
-        base: PhysBytes(0x100000), // 1MB, conventional RAM start
+        base: PhysBytes(0x200000), // 2MB, conventional RAM start
         len:  0x2000000,           // 32MB
     }];
 
     let kernel_info = KernelInfo {
         memmap,
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000), // x86-64 kernel half
-        kern_phys_base: PhysBytes(0x100000),              // loaded at 1MB
+        kern_phys_base: PhysBytes(0x200000),              // loaded at 2MB
         kern_size: 0x400000,                              // 4MB kernel
         free_upper_idx: Some(256),                              // user space PML4 idx 0-255
         user_sp: VirBytes(USER_STACK_TOP as u64),         // user stack top
@@ -66,7 +66,7 @@ fn boot_simulation_full_flow() {
     println!("── Step 1: Create empty page table root ──");
     let mut paging = MockPaging::new_from_page(root_page);
 
-    let huge_size = MockPaging::HUGE_PAGE_SIZE;
+    let huge_size = MockPaging::FALLBACK_HUGE_PAGE_SIZE;
     println!("  PAGE_SIZE={} huge_granularity={} KB",
         MockPaging::PAGE_SIZE, huge_size.bytes() / 1024);
 

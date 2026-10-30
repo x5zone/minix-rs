@@ -101,7 +101,7 @@ if [ "${D1_DUMPDTB:-0}" = "1" ]; then
     WORK="$ROOT/target/image/aarch64"
     DTB="$WORK/d1_dumpdtb_$RUN.dtb"
     qemu-system-aarch64 -machine virt,gic-version=3,dumpdtb="$DTB" \
-        -cpu cortex-a57 -m 512M -display none >/dev/null 2>&1
+        -cpu max -m 512M -display none >/dev/null 2>&1
     [ -s "$DTB" ] || { echo "FAIL: dumpdtb not produced"; exit 1; }
     IMG_COPY="$WORK/minix_d1_$RUN.img"
     cp "$IMG" "$IMG_COPY"
@@ -129,7 +129,7 @@ sleep 1
 
 timeout "$TIMEOUT_BOOT" qemu-system-aarch64 \
     -machine virt,gic-version=3 \
-    -cpu cortex-a57 \
+    -cpu max \
     -smp 1 \
     -m 512M \
     -net none \

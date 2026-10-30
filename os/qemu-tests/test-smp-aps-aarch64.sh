@@ -128,7 +128,7 @@ SERIAL="$IMG/smp_serial_$RUN.log"
 rm -f "$SERIAL"
 # shellcheck disable=SC2086
 timeout "$TIMEOUT_BOOT" qemu-system-aarch64 \
-    -machine virt,gic-version=3 -cpu cortex-a57 -smp 2 -m 512M \
+    -machine virt,gic-version=3 -cpu max -smp 2 -m 512M \
     -kernel "$REL/kernel" \
     -dtb "$QEMU_DTB" \
     -device "loader,addr=$TABLE_PA,file=$TABLE_BIN,force-raw=on" \
