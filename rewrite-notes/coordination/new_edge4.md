@@ -2666,3 +2666,61 @@ SD-24 arm2 不能先于 C1（SD-10 污染案 / PD-16）结案落地；本线已 
 覆盖支持/不支持/仅回退/都不可用；kernel mock **849/0/8**（845+4）、x86 QEMU
 `hello-boot` PASS、HEAD 干净树全量 `run_all` **39/0/0**（`tmp/01-cboard-baseline-20261030/run-all-final.log`）。D-59 余四阶段（`PageSize`/能力 API、事实/规划与策略拆分、
 `map_huge` 防御与 SMP 预检、机械重命名）与覆盖损失门仍开放。
+
+**D59SIZE 里程碑（D-59 阶段二）**：码笔 `916d7346f`、合并笔 `4dc6a797f`。
+`PageSize` 新类型（≥4 KiB 的 2 的幂，`try_from_bytes`/`try_from_usize`/`try_as_usize`
+可失败）；`HugePages` 的尺寸常量与 `map_huge` 全部改用它；`supports_huge_page(PageSize)`
+去掉默认实现，x86-64 用 CPUID.80000001H:EDX.GBPAGES 回答 1 GiB；删除
+`HugePages::supports_1gb_page` 与 `BootDmInstaller::supports_1gb_page` 两个入口，
+DM 规划以 `one_gb: bool` 接收能力事实。门读数：minix-arch runtime-window **273/0**
+（270+3）、kernel mock **849/0/8**、三架构生产 check 0 error、kernel-image
+`check-layout all` PASS；x86 冒烟到 scheduler/T4（du 读侧为既有 A 板红，基线同报）。
+
+**D59POLICY 里程碑（D-59 阶段三 A/B）**：码笔 `007bcabdb`（arch）+
+`d5d18b3a7`（kernel）、合并笔 `8d99bb774`。`Paging` 增加 `phys_addr_limit()`（x86
+先查 CPUID 最大扩展叶再读 80000008H；ARM64 以 `ID_AA64MMFR0_EL1.PARange >= 0b101`
+为前提返回 1<<48；RISC-V 平台声明 1<<48）与逐端点 canonical 的
+`validate_virtual_range()`；`BootArch`/`CurrentBootArch` 绑定 Paging/DirectMap/
+DmInstaller；`DirectMapArch` 增加 `KERNEL_DIRECT_MAP_SIZE`/`KERNEL_DM_VA_END_LIMIT`
+与三架构编译期断言；`DirectMapLayout`/`PageSupport`/`BootPageSupport`/
+`detect_boot_page_support` 落码；`DmPagePolicy`/`DmWindow`/`plan_dm_policy` 与
+`plan_range_units` 从策略取尺寸；`preflight_boot_dm_range` 在一次写表前预检全部
+候选，`install_prevalidated_boot_dm_range` 只重放已验证序列；内核新增
+`boot_policy.rs`（`KernelLayout`/`KernelMapPolicy`/`BootPagePolicy`/
+`plan_kernel_mapping`/`plan_boot_pages`），两条启动入口一次规划、分别取
+`policy.kernel()`/`policy.dm()`。首跑 `run_all` **30/9** 暴露三处真实问题并当批修正：
+①boot module 候选用裸字节长度（页尾不齐，x86 实测 `[0x1db79000,0x1db9a500)`）——
+按页向上取整；②aarch64 能力门要求 48 位 PA，而测试 CPU `cortex-a57/a72` 只有 44 位
+——QEMU 改 `-cpu max`（run_qemu 与四个专用脚本/xtask 同步）；③riscv 测试内核
+`_start` 在 `.text.init`，QEMU 从镜像基址进入，泛型单态化代码可排在 `_start` 之前
+（rt-birth 基址变成 `establish_boot_dm` 后静默挂死）——三个使用 `.text.init` 的
+link.ld 显式前置。修正后三架构收口读数见 D59DEFEND。
+
+**D59DEFEND 里程碑（D-59 阶段四）**：码笔 `6b8c9ff10`、合并笔
+`f9bab95c2`。三架构与 mock 的 `map_huge` 在写表前检查能力（`NotSupported`）、
+尺寸对齐、区间 `checked_add`、canonical 范围与 `phys_addr_limit`（`InvalidAddress`）；
+mock 增两条「错误不落表」负控。aarch64 测试平台改用 `-cpu max`；riscv 三个
+`.text.init` 内核链接脚本前置入口段。门读数：minix-arch **286/0**、kernel mock
+**850/0/8**、xtask 17/0、三架构生产 check 0 error、kernel-image `check-layout all`
+PASS、x86/aarch64 shim 冒烟 PASS、aarch64/riscv rt-birth PASS；HEAD 全量 `run_all`
+**39/0/0**（`tmp/d59size-phase2/run-all-defend.log`）。
+
+**D59RENAME 里程碑（D-59 阶段五）**：码笔 `30e14c6ce`、合并笔
+`5479b8083`。`DmCoverageArch`→`BootDmInstaller`、`dm_install_leaf`→`install_leaf`、
+`CurrentDmCoverage`→`CurrentBootDmInstaller`，四个实现与聚合 `Arch::DmInstaller`
+关联类型随改，模块 `arch/dm_coverage.rs`→`arch/boot_dm.rs`；内核自己的候选组装层
+`kernel/src/dm_coverage.rs` 不改名。01 篇 §3.6/§3.7/§4.5 与 07 篇 §4.3 的逐字引文
+同步到阶段一至四后的真实 API。验证：`rg 'DmCoverage|dm_install_leaf|arch::dm_coverage|
+arch/dm_coverage|establish_dm_range' os` 零命中、arch **286/0**、kernel mock
+**850/0/8**、三架构 check 0 error、check-layout PASS、两架构冒烟 PASS、
+`doc-style-lint --diff` error 0；HEAD 全量 `run_all` **39/0/0**
+（`tmp/d59size-phase2/run-all-rename.log`）。D-59 五阶段至此全部落地；覆盖损失门
+仍按设计 §10 独立立项，不在本轮闭合。
+
+**C1VERIFY 里程碑（C1 内容级扩片）**：码笔 `ddf977298`、合并笔
+`5092e5501`。`nk4a_copy_verify` 在分片挂起前先核已拷贝前缀 `[0, done)`，恢复后的
+重试再走全量路径——两段合起来覆盖本次拷贝实际搬过的每个字节，挂起点（未映射页）
+不读。真机门：`test-atf-riscv64.sh` **RESULT: PASS（36/36：34 passed + 2 skipped +
+0 failed/broken）**；串口 `nk4c: csc-verify armed` 在、csc 内容不一致 **0** 条；
+`nk4c: mset-verify armed` 在、零 HIT；ptwb HIT 3 条均为既有已知良性形状。串口存
+`tmp/c1-atf/rs64/serial.log`。C1 按 PD-16 仍保持开放（仪器覆盖已补到内容级）。
