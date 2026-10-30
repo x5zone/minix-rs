@@ -298,17 +298,6 @@ fn validate_cpu_param(
     Ok(())
 }
 
-/// Core of the transitional guard: until C's AP wake-up trio is wired, clamp
-/// every CPU requested by SYS_SCHEDCTL / SYS_SCHEDULE to the BSP. `None` keeps
-/// C's `-1 = keep-current` semantics untouched. Extracted into a pure function
-/// that takes `bsp` as an argument so hosted tests can cover it directly (on
-/// hardware the clamp is reachable only once `try_smp_state()` returns `Some`,
-/// so the inlined version cannot be reached from the existing host cases).
-#[inline]
-fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
-    cpu.map(|_| bsp)
-}
-
 /// Update a process's scheduling parameters.
 ///
 /// C: `sched_proc()` — system.c:642-723.
@@ -356,16 +345,12 @@ fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
 /// runtime-reachable only on a multi-CPU machine, mirroring C's
 /// CONFIG_SMP gating by data rather than by cfg.
 ///
-/// # Transitional deviation
+/// # AP wake-up
 ///
-/// Until the AP wake-up trio (`context_stop_idle` + enqueue wake IPI +
-/// AP timer restart) is wired, `params.cpu` is clamped to the BSP by
-/// [`clamp_cpu_to_bsp`]: a request to home a process on an AP is accepted
-/// (returns `Ok`) but the process stays on the BSP. This keeps Step 3.5
-/// migration and the Step 7 affinity write from ever targeting an AP, so
-/// `-smp4` boot no longer starves INIT on a masked, un-wakeable AP. Remove
-/// this clamp once real SMP (the trio + the cross-CPU VM-corruption fix)
-/// lands. See the in-body comment for the full rationale.
+/// A request to home a process on an AP is accepted. The enqueue path sends
+/// the C `proc.c:1647` scheduling IPI when the target CPU's `cpu_is_idle` is
+/// set, and that CPU's timer-interrupt entry clears the flag; the local
+/// one-shot timer is rearmed by `clock::local_tick` on every tick.
 pub fn sched_proc(
     table: &mut crate::proc_table::ProcessTable,
     nr: ProcNr,
@@ -411,29 +396,6 @@ pub fn sched_proc(
         })?,
         None => validate_cpu_param(params.cpu, 1, |v: u32| v == 0)?,
     }
-
-    // Transitional guard (counterpart of lib.rs idle()'s CONTRACT arm #3):
-    // this port has not yet wired C's AP wake-up trio — context_stop_idle
-    // (arch_clock.c:351-369, whose interrupt entry clears cpu_is_idle and
-    // restarts the local timer), the enqueue wake IPI (proc.c:1647), and the AP
-    // timer re-arm. An idle AP's LAPIC timer is masked by idle() and has no
-    // wake-up arm, so routing a process to an AP starves it forever (a -smp4
-    // boot deadlocks on INIT); a single wake IPI delivered to arm #2 was
-    // measured to make the AP run user processes and then trigger cross-CPU VM
-    // service corruption (pagefault-for-VM plus a #UD flood). Therefore, before
-    // an AP can safely host user processes, the cpu requested by both the
-    // SYS_SCHEDCTL and SYS_SCHEDULE legs is clamped to the BSP — its observable
-    // effect (accept the request, keep the process on the BSP) matches C's
-    // non-SMP build (system.c:686-689 sits entirely inside #ifdef CONFIG_SMP,
-    // ignores the cpu parameter and returns OK); the error-code path still
-    // validates as C's CONFIG_SMP does (out of range EINVAL / not ready
-    // EBADCPU, see Step 3 above). Remove this clamp once real SMP (the trio plus
-    // the cross-CPU corruption fix) lands. Known side effect during the
-    // transition: the SCHED server's ledger still records the process on the
-    // requested AP, while the kernel/MIB reads p_sched.cpu as always the BSP —
-    // take the kernel as authoritative.
-    let bsp = smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0);
-    params.cpu = clamp_cpu_to_bsp(params.cpu, bsp);
 
     // Step 3.5: SMP migration (C system.c:672-677, CONFIG_SMP):
     //   if (p->p_cpu != cpuid && cpu != -1 && cpu != p->p_cpu)
@@ -983,18 +945,6 @@ mod tests {
         sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false }).unwrap();
         let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(1), niced: false });
         assert_eq!(result.unwrap_err(), SchedProcError::InvalidArgument);
-    }
-
-    #[test]
-    fn test_clamp_cpu_to_bsp_transitional_guard() {
-        // Coverage for the transitional guard's pure function: any requested
-        // cpu is clamped to the BSP, a request already on the BSP stays
-        // idempotent, and `None` (keep-current) is unaffected.
-        assert_eq!(clamp_cpu_to_bsp(Some(1), 0), Some(0));
-        assert_eq!(clamp_cpu_to_bsp(Some(3), 0), Some(0));
-        assert_eq!(clamp_cpu_to_bsp(Some(0), 0), Some(0));
-        assert_eq!(clamp_cpu_to_bsp(Some(2), 2), Some(2));
-        assert_eq!(clamp_cpu_to_bsp(None, 0), None);
     }
 
     #[test]
