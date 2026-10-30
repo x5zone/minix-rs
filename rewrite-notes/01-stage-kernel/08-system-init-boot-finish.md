@@ -1510,7 +1510,7 @@ pub const KERNINFO_USER_VA: u64 = 0x2_0000_0000;
 const KUSERINFO_OFFSET: usize = 0x800;
 ```
 
-（`os/kernel/src/kerninfo.rs:const KERNINFO_USER_VA` 与 `:const KUSERINFO_OFFSET`。第二条注释的原话就是 §3.2 增补决策的落点：C 的两个分离符号（`minix_kerninfo` 与 `kuserinfo`，都在 `.usermapped` 段）在 Rust 并到一页，保留的只有指针关系——`KERNINFO_USER_VA + KUSERINFO_OFFSET`。）
+（`os/libs/minix-types/src/types/boot.rs:const KERNINFO_USER_VA` 与 `os/kernel/src/kerninfo.rs:const KUSERINFO_OFFSET`。前者是单一权威定义，内核 `os/kernel/src/kerninfo.rs` 只以 `pub use minix_types::KERNINFO_USER_VA` 再导出。第二条注释的原话就是 §3.2 增补决策的落点：C 的两个分离符号（`minix_kerninfo` 与 `kuserinfo`，都在 `.usermapped` 段）在 Rust 并到一页，保留的只有指针关系——`KERNINFO_USER_VA + KUSERINFO_OFFSET`。）
 
 页的构建时机在 Phase B.5，注释把次序理由写全：
 
