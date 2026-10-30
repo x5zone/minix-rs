@@ -1615,19 +1615,19 @@ C 的建表两个函数都直接用 4MB 大页：`pg_identity` 给每个页目�
 64 位侧情况不同：层数变多，每个架构支持的大页尺寸集合与"怎么表示这是一个大页"都不同。Rust 侧把这部分能力放进一个扩展 trait（`paging_ext.rs` 的 [`trait HugePages`](os/arch/src/arch/paging_ext.rs:trait HugePages)）：
 
 ```rust
-// 代码引用（`supports_1gb_page` 上方的文档注释见下方说明段），os/arch/src/arch/paging_ext.rs:trait HugePages。
+// 代码引用，os/arch/src/arch/paging_ext.rs:trait HugePages。
 pub trait HugePages: Paging {
-    /// Supported huge page sizes (in bytes), sorted largest first.
-    const HUGE_PAGE_SIZES: &'static [usize];
+    /// Supported huge page sizes, sorted largest first.
+    const HUGE_PAGE_SIZES: &'static [PageSize];
 
-    /// Preferred huge page size for Direct Map (bytes).
-    const HUGE_PAGE_SIZE: u64;
+    /// Preferred huge page size for Direct Map.
+    const HUGE_PAGE_SIZE: PageSize;
 
     /// Page table level shift for the preferred huge page.
     const HUGE_PAGE_SHIFT: u32;
 
     /// Fallback huge page size when the preferred size is not available.
-    const FALLBACK_HUGE_PAGE_SIZE: u64;
+    const FALLBACK_HUGE_PAGE_SIZE: PageSize;
 
     /// Hardware-specific bit that identifies a PTE as a huge-page entry
     /// (x86_64: PS bit `1 << 7`; ARM64/RISC-V: 0 — no extra bit needed).
@@ -1637,25 +1637,20 @@ pub trait HugePages: Paging {
         &mut self,
         vaddr: VirBytes,
         paddr: PhysBytes,
-        size: usize,
+        size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError>;
 
-    fn supports_huge_page(size: usize) -> bool {
-        Self::HUGE_PAGE_SIZES.contains(&size)
-    }
-
-    fn supports_1gb_page() -> bool {
-        true
-    }
+    /// Whether this architecture/CPU supports the given huge page size.
+    fn supports_huge_page(size: PageSize) -> bool;
 }
 ```
 
-引文末尾的 `supports_1gb_page()` 值得单独说一句：它的默认实现恒真，源码注释给出的适用范围是"ARM64 与 RISC-V 恒支持，x86-64 依一次 CPUID 检查（`CPUID.80000001H:EDX.GBPAGES`）判定"；它目前没有生产调用者（注释把这一条记为 latent capability）——Direct Map 覆盖建立处的运行时 1GiB 探测走的是另一个 trait（`DmCoverageArch::supports_1gb_page`），不经过这里。
+这里没有默认实现，也没有第二个能力入口：每个架构必须显式回答自己的页大小能力（x86-64 在 `supports_huge_page` 内查 `CPUID.80000001H:EDX.GBPAGES`，ARM64/RISC-V 按自己的翻译模式回答）。能力事实由 `BootPageSupport` 快照收集，选页由纯规划函数完成，`map_huge` 只执行已经验证过的写入。
 
 四条理由，逐条对应可检查的事实：
 
-- `HugePages: Paging` 是**超集**关系：boot 阶段用 `P: HugePages` 一个 bound 就能同时用到 `Paging::new_from_page`/`enable` 与 `HugePages::map_huge`（`arch_boot_impl<P: HugePages>` 就是这么写的）。运行时只用 `P: Paging` 的消费者不必携带大页负担。
+- `HugePages: Paging` 是**超集**关系：boot 阶段用 `A: BootArch` 一个 bound 就能同时取到 `A::Paging`（`new_from_page`/`enable`/`map_huge`）、`A::DirectMap` 的窗口常量与 `A::DmInstaller` 的装叶实现（`arch_boot_impl<A: BootArch>` 就是这么写的）。运行时只用 `P: Paging` 的消费者不必携带大页负担。
 - 标识方式因架构而异。x86-64 靠条目的 PS 位（bit 7）区分大页与"指向下一级表"；ARM64 与 RISC-V **没有这一位**，所以常量取 0。一个"三个架构都要提供、但其中两个恒为 0"的常量放在基础 trait 里，等于把架构差异写进共有接口。
 - 大页是**可选能力**而不是基础能力。x86-64 的首选是 1GB、回退 2MB；把 `map_huge` 放进 `Paging` 会让所有 `Paging` 实现都必须实现它，包括那些不打算支持大页的实现。
 - `Paging` 的职责面保持窄：`new_from_page`、`from_active_root`、`map`、`unmap`、`query`、`enable` 这些是"页表能做什么"；大页参数是"硬件能提供多大的块"。
@@ -1666,16 +1661,16 @@ pub trait HugePages: Paging {
 |---|---|
 | `HUGE_PAGE_SIZE` 移入 `Paging` | 违反第 2、3 条：ARM64/RISC-V 会被迫携带一个恒为 0 的标识位常量；不支持大页的实现被迫提供 `map_huge` |
 | 另立一个只服务 boot 的 `PageTableBoot` trait | 与 `Paging::map/query` 重复——同一套硬件操作出现两个 trait，调用方要同时满足两个 bound |
-| 不定义 trait，直接把 `map_huge` 写成具体类型的方法 | boot 路径无法用泛型统一三种架构；`arch_boot_impl<P>` 的 `P` 会退化成三个 `#[cfg]` 分支 |
+| 不定义 trait，直接把 `map_huge` 写成具体类型的方法 | boot 路径无法用泛型统一三种架构；`arch_boot_impl<A>` 的 `A::Paging` 会退化成三个 `#[cfg]` 分支 |
 
 x86-64 的实现给出这套设计的两个可核对点（`paging.rs` 的 [`impl HugePages for X86_64Paging`](os/arch/src/x86_64/paging.rs:impl HugePages for X86_64Paging) 的常量与 `fn map_huge`）：
 
 ```rust
 // 代码引用，os/arch/src/x86_64/paging.rs:impl HugePages for X86_64Paging 的常量与 map_huge 守卫段。
-    const HUGE_PAGE_SIZES: &'static [usize] = &[1 << 30, 1 << 21];
-    const HUGE_PAGE_SIZE: u64 = 1 << 30;
+    const HUGE_PAGE_SIZES: &'static [PageSize] = &[PageSize::GIB_1, PageSize::MIB_2];
+    const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
     const HUGE_PAGE_SHIFT: u32 = 30;
-    const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21;
+    const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
     const PTE_HUGE_IDENTIFIER_BIT: u64 = X64PteFlags::PS.bits();
 ...
         if shift == PDPT_SHIFT {
@@ -1690,21 +1685,22 @@ x86-64 的实现给出这套设计的两个可核对点（`paging.rs` 的 [`impl
         }
 ```
 
-- `HUGE_PAGE_SIZES = &[1GB, 2MB]`、`HUGE_PAGE_SIZE = 1GB`、回退 2MB：尺寸阶梯是"首选失败往下退"。谁选尺寸不在这里，而在 `arch_boot_impl` 的校验步骤（`lib.rs` 的 [`fn boot_validate_and_prepare`](os/kernel/src/lib.rs:fn boot_validate_and_prepare)）：
+- `HUGE_PAGE_SIZES = &[1GB, 2MB]`、`HUGE_PAGE_SIZE = 1GB`、回退 2MB：尺寸阶梯是"首选失败往下退"。谁选尺寸不在这里，而在内核的纯规划层（`os/kernel/src/boot_policy.rs` 的 `plan_kernel_mapping`）；`boot_validate_and_prepare` 只采集能力事实与校验恒等窗口：
 
 ```rust
-// 代码引用，os/kernel/src/lib.rs:boot_validate_and_prepare 的尺寸选择段。
-    // Choose the largest huge-page size that both bases and kern_size are aligned to.
-    let kern_huge = if kv.is_multiple_of(huge) && kp.is_multiple_of(huge) && ks.is_multiple_of(huge) {
-        huge
-    } else if kv.is_multiple_of(fallback) && kp.is_multiple_of(fallback) && ks.is_multiple_of(fallback) {
-        fallback
+// 代码引用，os/kernel/src/boot_policy.rs:fn plan_kernel_mapping 的尺寸选择段（首选不支持或布局不齐才退到回退）。
+    let page_size = if preferred.supported() && layout_satisfies(preferred.size(), layout) {
+        preferred.size()
+    } else if fallback.supported() && layout_satisfies(fallback.size(), layout) {
+        fallback.size()
+    } else if !fallback.supported() {
+        return Err(KernelMapError::FallbackUnsupported(fallback.size()));
     } else {
-        panic!("arch_boot: kern_virt_base, kern_phys_base, and kern_size must be aligned to at least FALLBACK_HUGE_PAGE_SIZE");
+        return Err(KernelMapError::NoKernelPageSize);
     };
 ```
 
-  三条件（虚拟基址、物理基址、长度）同时对齐到 1GB 才用 1GB。这条阶梯不是风格：`check-layout.sh` 的 L5 断言要求镜像跨距按 2MiB 对齐，正是为了让它至少能落进回退档（断言清单见 §5.2）。
+  三条件（虚拟基址、物理基址、长度）同时对齐到首选尺寸才用它；首选不受硬件支持时先降级而不是先看对齐。这条阶梯不是风格：`check-layout.sh` 的 L5 断言要求镜像跨距按 2MiB 对齐，正是为了让它至少能落进回退档（断言清单见 §5.2）。
 - `AlreadyMapped` 守卫处理的是"目标槽位已经是一个 1GB 大页"的情形。注释给了理由："demoting it would corrupt the existing mapping."
 
 **去掉 `AlreadyMapped` 守卫会怎样**：直接按 2MB 路径往下走。`e3` 里原本存的是 `paddr | PRESENT | PS`（因为 1GB 大页的 PDPT 条目就是叶条目），代码在"条目已存在"分支里做的是 `(e3 & ADDR_MASK) as *mut u64`——也就是把那个 1GB 物理块的基址当成下级页表指针。接下来 `write_entry(pd, i2, ...)` 写的是 `paddr + i2*8`：这段内存正被 1GB 映射覆盖，可能就是内核自己的数据页。写完之后 1GB 映射还在（条目没变），但它的前 4KB 已经被当成页表改写。守卫的代价是"这次 2MB 映射失败"，去掉守卫的代价是"被映射的那段物理内存头部被写坏"。
@@ -1726,7 +1722,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     let kinfo: &'static KernelInfo = crate::kernel_info()
         .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
     ...
-    arch_boot_impl::<X86_64Paging>(kinfo, root_page);
+    arch_boot_impl::<X86_64BootArch>(kinfo, root_page);
     ...
     unsafe { X86_64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
@@ -1738,8 +1734,12 @@ aarch64 上多一层（`lib.rs` 的 [`fn enter_kernel_image_v1`](os/kernel/src/l
 
 ```rust
 // 代码引用（省略号处为步骤注释与校验），os/kernel/src/lib.rs:fn enter_kernel_image_v1。
-    let kern_huge = boot_validate_and_prepare::<AArch64Paging>(kernel_info);
-    build_bootstrap_root_and_enable::<AArch64Paging>(kernel_info, root_page, kern_huge);
+    let support = boot_validate_and_prepare::<AArch64BootArch>(kernel_info);
+    let layout = DirectMapLayout::<AArch64BootArch>::from_arch();
+    let kernel_layout = KernelLayout { virtual_base: kernel_info.kern_virt_base().0, physical_base: kernel_info.kern_phys_base().0, size: kernel_info.kern_size() };
+    let policy = plan_boot_pages::<AArch64BootArch>(&support, kernel_layout, &layout)
+        .unwrap_or_else(|e| panic!("enter_kernel_image_v1: page-size policy: {e}"));
+    build_bootstrap_root_and_enable::<AArch64BootArch>(root_page, &policy.kernel());
     let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
         .expect("enter_kernel_image_v1: bump region not registered");
     let bump_next = boot_alloc::boot_alloc_next();
@@ -2312,19 +2312,17 @@ pub fn build_kernel_info(
     let kv = kernel_info.kern_virt_base().0;
     let kp = kernel_info.kern_phys_base().0;
     let ks = kernel_info.kern_size();
-    let huge = P::HUGE_PAGE_SIZE;
-    let fallback = P::FALLBACK_HUGE_PAGE_SIZE;
 
     assert!(ks > 0, "arch_boot: kern_size must be > 0");
     assert!(kp.is_multiple_of(0x1000), "arch_boot: kern_phys_base must be page-aligned");
     assert!(kv.is_multiple_of(0x1000), "arch_boot: kern_virt_base must be page-aligned");
-    // （尺寸阶梯的代码与解码在 §3.6，这里不重复。）
-    ...
-    assert!(ks.is_multiple_of(kern_huge),
-        "arch_boot: kern_size must be a multiple of the chosen huge page size");
     assert!(kernel_info.kern_stack_top().0.is_multiple_of(16),
         "arch_boot: kern_stack_top must be 16-byte aligned");
-    ...
+    ... // 分配器注册
+    let support = detect_boot_page_support::<A>()
+        .unwrap_or_else(|e| panic!("arch_boot: page-size capability facts: {e}"));
+    assert!(support.phys_addr_limit() >= IDENTITY_MAP_END, "...");
+    support
 ```
 
 而 `KernelInfo::validate`（`kmain` 入口调用）是第二道，两条互补：
@@ -2333,7 +2331,7 @@ pub fn build_kernel_info(
 |---|---|
 | `ks > 0` | boot-shim 没装载成功却继续往下走 |
 | 两个基址页对齐 | 布局常量写错（链接脚本改了而工具没跟） |
-| 大页阶梯（三条件对齐） | 镜像跨距不满足 2MiB 对齐 → 提前给出可读的 panic |
+| `plan_kernel_mapping` 的首选/回退选择 | 镜像跨距不满足回退尺寸对齐 → 启动规划阶段给出可读错误 |
 | `kern_stack_top` 16 字节对齐 | ABI 要求（AAPCS64 / SysV 的栈对齐） |
 | `KernelInfo::validate` 的 `bootstrap_len == 0` | 字段被误设（见 §3.5） |
 | `KernelInfo::validate` 的 `kern_size != 0` | 同 `ks > 0`，在另一个入口再挡一次 |
@@ -2791,7 +2789,7 @@ $ echo $?
 | L2 | `e_machine` 与预期三元组相符 | 拿错架构工件（用 x86 工件当 aarch64 用） |
 | L3 | 首段 `PT_LOAD` 的 VMA/LMA = 该架构预期基址 | 布局常量与链接脚本不符 |
 | L4 | 所有 `PT_LOAD` 的 `(vaddr - paddr)` 是同一个平移量 | "一个 `kern_virt_base ↔ kern_phys_base` 平移"的前提 |
-| L5 | 镜像跨距 2MiB 对齐 | `boot_validate_and_prepare` 的大页阶梯至少能落进回退档 |
+| L5 | 镜像跨距 2MiB 对齐 | `plan_kernel_mapping` 的页尺寸选择至少能落进回退档 |
 | L6 | 入口 = 链接脚本 `ENTRY(_start)`，且落在首段内 | 入口符号与段布局脱节 |
 | L7 | 引导栈符号存在、自顶向下 64KiB、落在末段内 | 栈符号与镜像范围脱节 |
 | L8 | `minix_kernel::arch_boot` 符号在镜像里 | `--gc-sections`/归档粒度把内核启动图裁出镜像 |
@@ -2799,7 +2797,7 @@ $ echo $?
 
 L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 保证"两套地址之间只有一个偏移量"这件事对每个段都成立，L5 保证"选出的页尺寸"有一个可用的档位。L8 是"链接保留"的可观测证据——`KERNEL_ENTRY_ANCHOR` 持有 `arch_boot` 的函数指针，链接脚本 `KEEP` 该节，两者一起挡住裁剪。
 
-**去掉 L5（跨距对齐断言）会怎样**：一个跨距为 `2MiB + 4KiB` 的镜像在 `boot_validate_and_prepare` 里既进不了 1GiB 档也进不了 2MiB 档（`kern_size` 同时对两者都不整除——L5 检查的是**跨距**（全部 `PT_LOAD` 段的跨度），阶梯检查的是 `kern_size`（同一组段 `min(paddr)` 与 `max(paddr+memsz)` 之差）；无额外填充时二者相等，L5 因此保证阶梯至少落进 2MiB 档），落到 `panic!("... must be aligned to at least FALLBACK_HUGE_PAGE_SIZE")`。现场是"启动第一步就 panic"，根因在链接脚本的段间距；没有宿主断言就只能靠真机二分定位。
+**去掉 L5（跨距对齐断言）会怎样**：一个跨距为 `2MiB + 4KiB` 的镜像在 `boot_validate_and_prepare` 里既进不了 1GiB 档也进不了 2MiB 档（`kern_size` 同时对两者都不整除——L5 检查的是**跨距**（全部 `PT_LOAD` 段的跨度），阶梯检查的是 `kern_size`（同一组段 `min(paddr)` 与 `max(paddr+memsz)` 之差）；无额外填充时二者相等，L5 因此保证阶梯至少落进 2MiB 档），落到 `KernelMapError::NoKernelPageSize`（启动入口把它转成可读 panic）。现场是"启动第一步就 panic"，根因在链接脚本的段间距；没有宿主断言就只能靠真机二分定位。
 
 #### 5.2.3 真机层（三条链各自证明什么）
 

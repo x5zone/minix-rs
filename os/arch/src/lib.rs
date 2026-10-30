@@ -88,8 +88,8 @@ pub use arch::cache_sync::{
 
 pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;
-pub use arch::dm_coverage::{
-    DmCoverageArch, DmPagePolicy, DmPolicyError, DmRange, DmWindow, install_boot_dm_range,
+pub use arch::boot_dm::{
+    BootDmInstaller, DmPagePolicy, DmPolicyError, DmRange, DmWindow, install_boot_dm_range,
     install_prevalidated_boot_dm_range, plan_dm_policy, plan_range_units, preflight_boot_dm_range,
 };
 pub use pte_walk_arch::PteWalkArch;
@@ -158,22 +158,22 @@ pub use direct_map::Riscv64DirectMap;
 
 pub type CurrentDirectMap = <CurrentBootArch as BootArch>::DirectMap;
 
-// ── CurrentDmCoverage type alias ──
+// ── CurrentBootDmInstaller type alias ──
 //
-// Selects the architecture-specific `DmCoverageArch` implementor (DM
+// Selects the architecture-specific `BootDmInstaller` implementor (DM
 // coverage establishment on the bootstrap root). Like `CurrentPteWalk`, the
 // implementor is a ZST: the operation is static boot-time table surgery, not
 // a per-handle page-table service.
 #[cfg(feature = "runtime-window")]
-pub use arch::dm_coverage::mock::MockDmCoverage;
+pub use arch::boot_dm::mock::MockBootDmInstaller;
 #[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
-pub use x86_64::paging::X86_64DmCoverage;
+pub use x86_64::paging::X86_64BootDmInstaller;
 #[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
-pub use arm64::paging::AArch64DmCoverage;
+pub use arm64::paging::AArch64BootDmInstaller;
 #[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
-pub use riscv64::paging::Riscv64DmCoverage;
+pub use riscv64::paging::Riscv64BootDmInstaller;
 
-pub type CurrentDmCoverage = <CurrentBootArch as BootArch>::DmInstaller;
+pub type CurrentBootDmInstaller = <CurrentBootArch as BootArch>::DmInstaller;
 
 // ── CurrentPteWalk type aliases ──
 //

@@ -48,7 +48,7 @@
 
 use crate::arch::{
     arch_init::ArchInit, boot::CpuContextArch, cache_sync::CacheSyncArch, clock::ClockArch,
-    cpu_identity::CpuIdentityArch, direct_map::DirectMapArch, dm_coverage::DmCoverageArch,
+    cpu_identity::CpuIdentityArch, direct_map::DirectMapArch, boot_dm::BootDmInstaller,
     exception::ExceptionArch, fpu_arch::FpuArch, paging::Paging, protection::ProtectionArch,
     pte_walk_arch::PteWalkArch, signal_context::SignalContext, smp::SmpArch,
     stacktrace::StacktraceArch, timer_irq_gate::TimerIrqGate, tlb_arch::TlbArch,
@@ -103,7 +103,7 @@ pub trait Arch: Sized {
     /// Software PTE walk over an established tree.
     type PteWalk: PteWalkArch;
     /// Direct-map coverage establishment on the bootstrap root.
-    type DmCoverage: DmCoverageArch;
+    type DmInstaller: BootDmInstaller;
 }
 
 /// x86-64 architecture bundle. Exists only on `target_arch = "x86_64"`
@@ -130,7 +130,7 @@ impl Arch for X86_64Arch {
     type Init = crate::x86_64::arch_init::X86_64ArchInit;
     type Paging = crate::x86_64::paging::X86_64Paging;
     type PteWalk = crate::x86_64::paging::X86_64PteWalk;
-    type DmCoverage = crate::x86_64::paging::X86_64DmCoverage;
+    type DmInstaller = crate::x86_64::paging::X86_64BootDmInstaller;
 }
 
 /// AArch64 architecture bundle.
@@ -156,7 +156,7 @@ impl Arch for AArch64Arch {
     type Init = crate::arm64::arch_init::AArch64ArchInit;
     type Paging = crate::arm64::paging::AArch64Paging;
     type PteWalk = crate::arm64::paging::AArch64PteWalk;
-    type DmCoverage = crate::arm64::paging::AArch64DmCoverage;
+    type DmInstaller = crate::arm64::paging::AArch64BootDmInstaller;
 }
 
 /// RISC-V (RV64) architecture bundle.
@@ -182,7 +182,7 @@ impl Arch for Riscv64Arch {
     type Init = crate::riscv64::arch_init::Riscv64ArchInit;
     type Paging = crate::riscv64::paging::Riscv64Paging;
     type PteWalk = crate::riscv64::paging::Riscv64PteWalk;
-    type DmCoverage = crate::riscv64::paging::Riscv64DmCoverage;
+    type DmInstaller = crate::riscv64::paging::Riscv64BootDmInstaller;
 }
 
 /// Mock bundle for host tests (the `mock` feature). Families with a mock
@@ -212,7 +212,7 @@ impl Arch for MockArch {
     type Fpu = crate::arch::fpu_arch::MockFpuArch;
     type Paging = crate::arch::paging::mock::MockPaging;
     type PteWalk = crate::arch::pte_walk_arch::MockPteWalk;
-    type DmCoverage = crate::arch::dm_coverage::mock::MockDmCoverage;
+    type DmInstaller = crate::arch::boot_dm::mock::MockBootDmInstaller;
 }
 
 #[cfg(all(feature = "runtime-window", target_arch = "aarch64"))]
@@ -234,7 +234,7 @@ impl Arch for MockArch {
     type Fpu = crate::arch::fpu_arch::MockFpuArch;
     type Paging = crate::arch::paging::mock::MockPaging;
     type PteWalk = crate::arch::pte_walk_arch::MockPteWalk;
-    type DmCoverage = crate::arch::dm_coverage::mock::MockDmCoverage;
+    type DmInstaller = crate::arch::boot_dm::mock::MockBootDmInstaller;
 }
 
 #[cfg(all(feature = "runtime-window", target_arch = "riscv64"))]
@@ -256,7 +256,7 @@ impl Arch for MockArch {
     type Fpu = crate::arch::fpu_arch::MockFpuArch;
     type Paging = crate::arch::paging::mock::MockPaging;
     type PteWalk = crate::arch::pte_walk_arch::MockPteWalk;
-    type DmCoverage = crate::arch::dm_coverage::mock::MockDmCoverage;
+    type DmInstaller = crate::arch::boot_dm::mock::MockBootDmInstaller;
 }
 
 /// The currently-compiling architecture bundle — the single `cfg` anchor.
@@ -334,8 +334,8 @@ mod tests {
         assert_eq!(tid::<<CurrentArch as Arch>::Paging>(), tid::<crate::CurrentPaging>());
         assert_eq!(tid::<<CurrentArch as Arch>::PteWalk>(), tid::<crate::CurrentPteWalk>());
         assert_eq!(
-            tid::<<CurrentArch as Arch>::DmCoverage>(),
-            tid::<crate::CurrentDmCoverage>()
+            tid::<<CurrentArch as Arch>::DmInstaller>(),
+            tid::<crate::CurrentBootDmInstaller>()
         );
     }
 

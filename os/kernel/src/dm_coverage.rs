@@ -68,7 +68,7 @@
 
 use crate::boot_alloc;
 use minix_arch::arch::boot_arch::BootArch;
-use minix_arch::arch::dm_coverage::{
+use minix_arch::arch::boot_dm::{
     DmPagePolicy, install_prevalidated_boot_dm_range, plan_dm_policy, preflight_boot_dm_range,
 };
 use minix_arch::paging::{PageFlags, PageTableError};
@@ -469,7 +469,7 @@ mod tests {
     use minix_types::{USER_STACK_TOP, VirBytes};
 
     /// Mock-mode regression: establishment over a synthetic memmap runs
-    /// through the registry-backed MockDmCoverage without touching real
+    /// through the registry-backed MockBootDmInstaller without touching real
     /// tables, and the union drops the bump candidate that sits inside a
     /// memmap range.
     #[test]
@@ -702,7 +702,7 @@ mod tests {
     #[test]
     #[cfg(feature = "mock")]
     fn test_reserved_kernel_dm_installs_gap_leaf() {
-        // `lock_boot_globals` clears the MockDmCoverage registry on
+        // `lock_boot_globals` clears the MockBootDmInstaller registry on
         // acquisition (process-global leaf set shared by boot-flow tests).
         let _boot = crate::test_sync::lock_boot_globals();
         use minix_arch::CurrentDirectMap;
@@ -748,7 +748,7 @@ mod tests {
             unsafe { install_prevalidated_boot_dm_range(root, r, window, &policy) }
                 .expect("mock kernel window reserved coverage");
         }
-        let leaves = minix_arch::arch::dm_coverage::mock::mock_dm_leaves();
+        let leaves = minix_arch::arch::boot_dm::mock::mock_dm_leaves();
         let base = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
         assert!(
             leaves.contains_key(&(base + 0x1f00_0000)),
@@ -818,7 +818,7 @@ mod tests {
         unsafe { establish_boot_dm::<minix_arch::arch::boot_arch::MockBootArch>(&info, root, &policy) }
             .expect("mock establish_boot_dm");
 
-        let leaves = minix_arch::arch::dm_coverage::mock::mock_dm_leaves();
+        let leaves = minix_arch::arch::boot_dm::mock::mock_dm_leaves();
         assert!(
             leaves.contains_key(&(CurrentDirectMap::KERNEL_DIRECT_MAP_BASE + 0x1f00_0000)),
             "reserved gap range must be installed in the kernel window"

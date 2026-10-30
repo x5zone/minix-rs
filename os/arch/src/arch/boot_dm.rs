@@ -295,7 +295,7 @@ pub fn plan_dm_policy<A: BootArch>(
 ///
 /// The emit closure is fallible so the installation driver can propagate a
 /// leaf conflict (`AlreadyMapped` — a boot-layout bug per the
-/// [`DmCoverageArch`] contract) instead of panicking mid-establishment.
+/// [`BootDmInstaller`] contract) instead of panicking mid-establishment.
 pub fn plan_range_units<A: BootArch, F: FnMut(u64, PageSize) -> Result<(), PageTableError>>(
     range: DmRange,
     policy: &DmPagePolicy<A>,
@@ -350,7 +350,7 @@ pub fn plan_range_units<A: BootArch, F: FnMut(u64, PageSize) -> Result<(), PageT
 /// is a static boot-time operation on the bootstrap root, not a per-handle
 /// page-table service, so implementors are dedicated ZSTs rather than the
 /// runtime `Paging` types.
-pub trait DmCoverageArch {
+pub trait BootDmInstaller {
     /// Install one leaf mapping `vaddr → paddr` with `size ∈ {1 GiB, 2 MiB,
     /// 4 KiB}` (matching the sizes [`plan_range_units`] emits) and `flags`.
     ///
@@ -377,7 +377,7 @@ pub trait DmCoverageArch {
     ///   `PA < min(IDENTITY_MAP_END, VM DM window PA end)`).
     /// - Single-threaded boot context; no concurrent table walkers.
     /// - `vaddr` must be aligned to `size`; `paddr` likewise.
-    unsafe fn dm_install_leaf(
+    unsafe fn install_leaf(
         root_paddr: PhysBytes,
         vaddr: VirBytes,
         paddr: PhysBytes,
@@ -478,7 +478,7 @@ pub unsafe fn install_prevalidated_boot_dm_range<A: BootArch>(
         // SAFETY: caller satisfied the boot-context contract; geometry was
         // checked by `preflight_boot_dm_range`; sizes come from the policy.
         unsafe {
-            A::DmInstaller::dm_install_leaf(
+            A::DmInstaller::install_leaf(
                 root,
                 VirBytes(va),
                 PhysBytes(pa),
@@ -509,14 +509,14 @@ pub unsafe fn install_boot_dm_range<A: BootArch>(
 
 /// Software model of DM coverage establishment for host tests.
 ///
-/// `MockDmCoverage` records every leaf in a global registry instead of
+/// `MockBootDmInstaller` records every leaf in a global registry instead of
 /// touching real page tables, so `install_boot_dm_range` drivers (and later the
 /// kernel boot path's two-source candidate assembly) can be tested for hole
 /// exclusion, window clipping, VA offsetting and page-size selection without
 /// hardware.
 #[cfg(feature = "runtime-window")]
 pub mod mock {
-    use super::{DmCoverageArch, PageFlags, PageSize, PageTableError};
+    use super::{BootDmInstaller, PageFlags, PageSize, PageTableError};
     use minix_types::{PhysBytes, VirBytes};
     use std::collections::BTreeMap;
     use std::sync::{Mutex, OnceLock};
@@ -529,11 +529,11 @@ pub mod mock {
         REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
     }
 
-    /// Registry-backed implementor of [`DmCoverageArch`].
-    pub struct MockDmCoverage;
+    /// Registry-backed implementor of [`BootDmInstaller`].
+    pub struct MockBootDmInstaller;
 
-    impl DmCoverageArch for MockDmCoverage {
-        unsafe fn dm_install_leaf(
+    impl BootDmInstaller for MockBootDmInstaller {
+        unsafe fn install_leaf(
             _root_paddr: PhysBytes,
             vaddr: VirBytes,
             paddr: PhysBytes,
@@ -752,7 +752,7 @@ mod tests {
         );
     }
 
-    // ── install driver tests (MockDmCoverage registry) ──
+    // ── install driver tests (MockBootDmInstaller registry) ──
     // The mock registry serializes single operations, but each test's
     // clear → install → assert sequence is only meaningful as a whole.
     static SEQ_LOCK: Mutex<()> = Mutex::new(());
