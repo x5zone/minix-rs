@@ -3793,3 +3793,11 @@ kernel mock **850/0/8**（+1 clamp 单测）、minix-arch **286/0**（含
 riscv64_cache_sync_pin 3/0）、三架构 `minix-kernel` check 0 error。C 板
 C2b/C5/C13 转 ⏸，新增 C2C 行；接收侧四件同批落地并经三架构真机门后才可
 再撤钳。
+
+**C7B-08 里程碑（08 篇锚点漂移）**：合并 `5b60bf6de`。
+`os/kernel/src/kerninfo.rs` 已改为 `pub use minix_types::KERNINFO_USER_VA`，
+08 篇原锚点 `os/kernel/src/kerninfo.rs:const KERNINFO_USER_VA` 被
+`anchor-resolve.sh` 报 ZERO-DEF；改指权威定义
+`os/libs/minix-types/src/types/boot.rs:const KERNINFO_USER_VA` 并注明内核侧
+是再导出。08 篇锚点 **134/134**、断链 **0**、`doc-style-lint --diff`
+error 0。C7b 余项收窄为正式文档计数口径与改名前置。
