@@ -34,6 +34,10 @@ fn trap_src() -> &'static str {
     include_str!("../../kernel/src/trap_dispatch.rs")
 }
 
+fn sched_src() -> &'static str {
+    include_str!("../../kernel/src/sched.rs")
+}
+
 fn kernel_lib_src() -> &'static str {
     include_str!("../../kernel/src/lib.rs")
 }
@@ -99,6 +103,24 @@ fn riscv_swi_arm_applies_scheduler_flags() {
     assert!(
         !arm.contains("swi-ack"),
         "the diagnostic swi-ack print should be gone"
+    );
+}
+
+#[test]
+fn riscv_keeps_the_narrow_firmware_gate_clamp() {
+    let s = sched_src();
+    assert!(
+        s.contains(r#"#[cfg(target_arch = "riscv64")]"#)
+            && s.contains("params.cpu = params.cpu.map(|_| bsp)"),
+        "riscv's narrow BSP clamp disappeared; the default firmware cannot \
+         deliver a cross-hart SSIP, so AP-homed processes would starve"
+    );
+    assert!(
+        s.contains("test-smp-ipi-riscv64")
+            && s.contains("aclint=on")
+            && s.contains("platform")
+            && s.contains("gate"),
+        "the narrow clamp lost its firmware-gate rationale"
     );
 }
 
