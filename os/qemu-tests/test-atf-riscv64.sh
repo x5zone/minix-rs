@@ -27,6 +27,8 @@
 #
 # Env knobs: RS_ATF_SKIP_BUILD=1 reuse suite ELFs + image artifacts;
 #            RS_ATF_WORK=<dir> keep the work dir (serial log inspection);
+#            RS_ATF_SMP=<n> QEMU CPU count for both the topology dump and the
+#            boot (default 2: DTB topology must match the ignition run);
 #            TIMEOUT_BOOT window.
 
 set -uo pipefail
@@ -41,6 +43,7 @@ PLAN="$IMG/atf-plan.txt"
 # 套件在 1800s 窗内推进到 23/36（21 passed+1 failed+1 skipped）。窗口按
 # 60 分钟给足；Phase E 滚除探针后应显著加快（届时可回收此值）。
 TIMEOUT_BOOT="${TIMEOUT_BOOT:-3600}"
+SMP="${RS_ATF_SMP:-2}"
 WORK="${RS_ATF_WORK:-$(mktemp -d /tmp/atf_rs64.XXXXXX)}"
 mkdir -p "$WORK" || { echo "FAIL: 工作目录不可建：$WORK"; exit 1; }
 TABLE_PA=0x85000000
@@ -167,8 +170,8 @@ MOD_COUNT=$(ls "$REL"/minix-{ds,rs,pm,sched,vfs,driver-memory,driver-tty,mib,vm,
 echo "== Stage 4: 拼 BootFileTable + 生成 DTB(chosen) + QEMU loader 参数 =="
 BASE_DTB="$IMG/base.dtb"; QEMU_DTB="$IMG/qemu.dtb"; TABLE_BIN="$IMG/table.bin"
 rm -f "$BASE_DTB" "$QEMU_DTB" "$TABLE_BIN"
-# 拓扑真值=DTB：dump 必须 -smp 2（与点火同参；缺省 1 CPU ⇒ smp_init 多核分支惰性，§续-399 现场教训）
-timeout 10 qemu-system-riscv64 -machine virt -smp 2 -m 512M -display none -bios default \
+# 拓扑真值=DTB：dump 必须与点火用同一个 -smp 数（缺省 1 CPU ⇒ smp_init 多核分支惰性）
+timeout 10 qemu-system-riscv64 -machine virt -smp "$SMP" -m 512M -display none -bios default \
     -machine dumpdtb="$BASE_DTB" >/dev/null 2>&1 || true
 [ -f "$BASE_DTB" ] || fail "dumpdtb 未产出"
 fdtput -p -t x "$BASE_DTB" /chosen opensbi,boot-file-table "$TABLE_PA" || fail "fdtput 注入失败"
@@ -213,7 +216,7 @@ echo "== Stage 5: OpenSBI 直载点火（-kernel=镜像, -dtb=chosen, loader=表
 rm -f "$SERIAL_LOG"
 # shellcheck disable=SC2086
 qemu-system-riscv64 \
-    -machine virt -smp 2 -m 512M -bios default \
+    -machine virt -smp "$SMP" -m 512M -bios default \
     -kernel "$REL/kernel" \
     -dtb "$QEMU_DTB" \
     -device "loader,addr=$TABLE_PA,file=$TABLE_BIN,force-raw=on" \
