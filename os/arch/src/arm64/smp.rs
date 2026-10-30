@@ -41,6 +41,43 @@
 //!    architecture equivalent of arch/i386/smp.c).
 
 use crate::smp::SmpArch;
+use core::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+
+/// Hardware Aff0 → logical CPU id map.
+///
+/// `ap_cpu_id_readback` must be callable from any hot path without touching
+/// the platform descriptor. The map is written once per CPU during bring-up
+/// (BSP in `smp_init`, each AP in its tail). A sentinel entry means "not
+/// recorded yet"; the readback then falls back to Aff0 itself, which is the
+/// QEMU single-cluster layout (logical index == Aff0) and the existing
+/// behaviour before this map existed.
+const CPU_ID_MAP_LEN: usize = 64;
+static CPU_ID_MAP: [AtomicU32; CPU_ID_MAP_LEN] =
+    [const { AtomicU32::new(u32::MAX) }; CPU_ID_MAP_LEN];
+
+/// Record the logical id for a hardware Aff0. Called on the CPU itself
+/// before it enters any kernel path that calls `current_cpu_id()`.
+pub fn set_cpu_id(hw_id: u32, logical_id: u32) {
+    if let Some(slot) = CPU_ID_MAP.get(hw_id as usize) {
+        slot.store(logical_id, AtomicOrdering::Release);
+    }
+}
+
+/// This CPU's logical id: `MPIDR_EL1.Aff0` through the map, with the
+/// unmapped fallback described on [`CPU_ID_MAP`].
+pub fn cpu_id_readback() -> u64 {
+    let mpidr: u64;
+    // SAFETY: MPIDR_EL1 is readable at EL1; the read is side-effect-free.
+    unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr) };
+    let aff0 = (mpidr & 0xff) as u32;
+    match CPU_ID_MAP.get(aff0 as usize) {
+        Some(slot) => {
+            let mapped = slot.load(AtomicOrdering::Acquire);
+            if mapped == u32::MAX { u64::from(aff0) } else { u64::from(mapped) }
+        }
+        None => u64::from(aff0),
+    }
+}
 
 /// GICD_SGIR register offset from the GIC distributor base address.
 ///

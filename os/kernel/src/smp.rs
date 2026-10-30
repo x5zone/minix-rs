@@ -490,12 +490,11 @@ impl SmpState {
     /// AP woken by a scheduling IPI would stay masked and never tick again.
     /// The C2C stop-loss therefore restores the BSP affinity clamp; the
     /// enqueue wake producer remains in place but inert (no process is homed
-    /// on an AP). aarch64's BSP SGI gate and scheduler-flag application are
-    /// now wired (C2D-A64SGI), but its APs still park in `wfi` before
-    /// `scheduler_loop`; the remaining arms — AP entry into the scheduler on
-    /// aarch64/riscv, clear plus timer restart on wake, riscv64's flag
-    /// application, and riscv64's remote `fence.i` — must land together
-    /// before the clamp is removed.
+    /// on an AP). aarch64's BSP SGI gate, scheduler-flag application, and AP
+    /// entry into `scheduler_loop` are now wired (C2D-A64SGI/C2D-APENTRY);
+    /// the remaining arms — riscv AP entry into the scheduler, clear plus
+    /// timer restart on wake, riscv64's flag application, and riscv64's
+    /// remote `fence.i` — must land together before the clamp is removed.
     pub fn clear_idle_flag(&mut self, cpu: CpuId) -> bool {
         match self.cpu_locals.get_mut(cpu.index()) {
             Some(local) => core::mem::replace(&mut local.cpu_is_idle, false),
@@ -933,6 +932,27 @@ impl Drop for BootLockGuard<'_> {
 /// each AP in [`ap_finish_booting`].
 pub(crate) static BOOT_LOCK: BootLock = BootLock::new();
 
+/// Per-CPU observation latch: this AP opened its redistributor's scheduler
+/// SGI and timer PPI gates (C2D-APENTRY). Written by the AP after
+/// `enable_ap_irq_sources`, read by the BSP after `wait_for_aps` to record
+/// the AP-side bring-up reading.
+static AP_IRQ_READY: [AtomicBool; MAX_CPUS] =
+    [const { AtomicBool::new(false) }; MAX_CPUS];
+
+/// Mark this CPU's per-CPU interrupt gates as open.
+pub fn mark_ap_irq_ready(cpu: CpuId) {
+    if let Some(slot) = AP_IRQ_READY.get(cpu.index()) {
+        slot.store(true, Ordering::Release);
+    }
+}
+
+/// Whether the CPU named by `cpu` opened its SGI + timer PPI gates.
+pub fn ap_irq_ready(cpu: CpuId) -> bool {
+    AP_IRQ_READY
+        .get(cpu.index())
+        .is_some_and(|slot| slot.load(Ordering::Acquire))
+}
+
 /// AP-side finish handshake — C `ap_finish_booting` (arch_smp.c:222 parity:
 /// boot_lock + online self-report; the fuller per-CPU work that C also does
 /// inside this critical section is not part of it yet).
@@ -1098,7 +1118,9 @@ pub fn smp_init() {
     /// aarch64 half: with multiple CPUs configured, wake secondary cores
     /// through PSCI CPU_ON — the stub (ap_early_entry) reads the record,
     /// installs the BSP's TTBR/MAIR/TCR, enables the MMU and jumps to the
-    /// convergence point; it sets the AP_ARRIVED marker and then stays in wfi.
+    /// convergence point; it sets the AP_ARRIVED marker and hands off to the
+    /// kernel-registered AP tail, which installs the per-CPU identity, trap
+    /// entry, timer and GIC gates, then enters the shared scheduler loop.
     /// Three deliberate differences from the riscv half:
     /// - BSP identity = the `current_cpu_id()` identity anchor (whoever runs
     ///   this kernel is the BSP, the same shape as C arch_smp.c's register-read
@@ -1113,10 +1135,10 @@ pub fn smp_init() {
     ///   with zero production behavior change; the dedicated gate
     ///   test-smp-aps-aarch64.sh activates it with -smp 2 (topology truth =
     ///   DTB).
-    /// - Respect the main-core clamp red line: an AP stays in wfi on arrival
-    ///   and never enters the scheduler — the clamp has not been removed, so
-    ///   this wiring only establishes the prerequisite fact "the secondary core
-    ///   really wakes"; it does not place processes.
+    /// - The main-core clamp is still in force: APs enter the scheduler and
+    ///   idle, but `sched_proc` rewrites every requested affinity to the BSP,
+    ///   so no process is placed on them. Entering the loop is what makes the
+    ///   AP's per-CPU timer/SGI state observable; it does not unclamp.
     /// - Degraded continuation (C arch_smp.c semantics): if some CPU does not
     ///   arrive within the bound, print and continue single-core, without
     ///   blocking boot.
@@ -1125,6 +1147,7 @@ pub fn smp_init() {
         use core::sync::atomic::Ordering;
         use minix_arch::arm64::ap_early_entry::{
             AP_ARRIVED, BOOT_HART_ELECTED, ap_early_entry, record as ap_record,
+            register_ap_tail,
         };
         use minix_arch::{CurrentSmpArch, SmpArch};
         use minix_plat::EarlyConsole as _;
@@ -1136,6 +1159,14 @@ pub fn smp_init() {
         }
 
         let smp = unsafe { crate::smp_state_boot_unchecked() };
+        // Seed the MPIDR map before current_cpu_id() is used: the BSP is the
+        // topology slot whose hw_id matches the platform's bsp_id. Without
+        // this the aarch64 readback would fall back to Aff0 and could name a
+        // different slot when the firmware does not list CPUs in Aff0 order.
+        let bsp_slot = (0..topo.nr_cpus as usize)
+            .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+            .expect("smp_init: BSP hw_id not found in topology") as u32;
+        minix_arch::arm64::smp::set_cpu_id(topo.bsp_id, bsp_slot);
         // BSP identity = election truth first (same shape as the riscv half):
         // the direct-kernel chain's election cell holds the elected MPIDR+1
         // (kernel-image _start LD/EXCL elects the master). The
@@ -1178,6 +1209,10 @@ pub fn smp_init() {
         let entry_pa = minix_arch::arm64::ap_early_entry::entry_start_pa();
         let convergence_va = ap_early_entry as usize;
 
+        // Register the kernel continuation before the first CPU_ON: the
+        // convergence point calls it once the record is consumed.
+        register_ap_tail(smp_ap_tail);
+
         for logical in 0..topo.nr_cpus as u32 {
             if logical == bsp_logical {
                 continue;
@@ -1207,6 +1242,11 @@ pub fn smp_init() {
             // ap-arrived=1 confirmed this channel is the only delivery surface:
             // the mailbox had zero consumers and zero parkers; kernel-image's
             // non-elected arm now falls back to a local wfi).
+            // AP_ARRIVED is one shared cell: clear it before this CPU_ON so
+            // the wait below observes THIS hart's arrival, not the previous
+            // hart's. The dmb orders the record write and the clear before
+            // the PSCI call.
+            AP_ARRIVED.store(0, Ordering::Release);
             unsafe { core::arch::asm!("dmb ish", options(nomem, nostack)) };
             <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, entry_pa);
 
@@ -1236,6 +1276,34 @@ pub fn smp_init() {
                 crate::kmess::KernelConsole::write_str("\n");
             } else {
                 crate::kmess::KernelConsole::write_str("nk4c: ap-timeout\n");
+            }
+        }
+
+        // C wait_for_APs parity: release the BKL, wait for every AP's online
+        // self-report, then re-acquire. The APs block on the BKL inside
+        // ap_finish_booting until this release; without it they never publish
+        // online and the scheduler hand-off deadlocks.
+        smp.wait_for_aps::<CurrentSmpArch>();
+
+        // AP-side bring-up reading: each AP latches `ap_irq_ready` after
+        // opening its redistributor SGI + timer PPI gates, before publishing
+        // online. The BSP holds the BKL again here, so the print is
+        // serialized.
+        {
+            use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+            for logical in 0..topo.nr_cpus as u32 {
+                if logical == bsp_logical {
+                    continue;
+                }
+                let cpu = crate::proc::CpuId::new_unchecked(logical);
+                let ready = crate::smp::ap_irq_ready(cpu);
+                Console::write_str(if ready {
+                    "nk4c: ap-irq-ready cpu="
+                } else {
+                    "nk4c: ap-irq-not-ready cpu="
+                });
+                Console::write_hex(logical as u64);
+                Console::write_str(if ready { " sgi=1 timer=1\n" } else { "\n" });
             }
         }
     }
@@ -1430,6 +1498,57 @@ unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_
     // online self-report. Enter the shared scheduling loop with the
     // BKL held (§3.6 precondition). Diverges into the idle halt on this
     // CPU until IPI/interrupt-driven work arrives.
+    ap_finish_booting(logical_id);
+    crate::scheduler_loop(crate::proc::CpuId::new_unchecked(logical_id));
+}
+
+/// aarch64 AP tail — the counterpart of the x86 one, reached from
+/// `arm64::ap_early_entry` after the PSCI stub installed the BSP root and
+/// switched the MMU on.
+///
+/// Per-CPU order matters: record the logical id before any
+/// `current_cpu_id()` call (the MPIDR map is the aarch64 identity anchor),
+/// publish the boot ack, install the per-CPU stack base and exception
+/// vector, open the redistributor SGI/timer gates, arm the one-shot, then
+/// the BKL/online handshake, then the shared scheduler loop.
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" fn smp_ap_tail(
+    logical_id: u32,
+    hw_id: u64,
+    kernel_stack_top_va: u64,
+) -> ! {
+    use minix_arch::ProtectionArch;
+    // Identity first: everything below (timer init stores the ICR per CPU,
+    // the scheduler reads its own CpuLocal) calls current_cpu_id().
+    minix_arch::arm64::smp::set_cpu_id(hw_id as u32, logical_id);
+    // Ack (C ap_cpu_ready parity): the record has been consumed into locals.
+    unsafe { crate::smp_state_boot_unchecked() }.publish_boot_ack(logical_id);
+    // Per-CPU kernel-stack base + this AP's VBAR_EL1.
+    crate::with_protection(|prot| {
+        prot.init_ap(
+            logical_id,
+            minix_types::VirBytes::new(kernel_stack_top_va),
+        )
+    });
+    {
+        use minix_arch::TrapEntryArch;
+        crate::with_trap_entry(|trap| trap.load_ap());
+    }
+    // C arch_post_init parity: this CPU's ptproc slot = VM.
+    {
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        if let Some(local) = smp.cpu_local_mut(crate::proc::CpuId::new_unchecked(logical_id)) {
+            local.ptproc = Some(crate::proc::proc_nr::VM_PROC_NR);
+        }
+    }
+    // Open this CPU's GIC gates (scheduler SGI + timer PPI) before arming
+    // the timer, so the first tick is not lost. This may briefly wait for
+    // the BSP's BKL; the BSP reaches wait_for_aps after seeing boot_ack and
+    // releases it there.
+    crate::irq_manager::enable_ap_irq_sources(hw_id as usize);
+    crate::smp::mark_ap_irq_ready(crate::proc::CpuId::new_unchecked(logical_id));
+    crate::clock::init_ap_local_timer();
+    // boot_lock → BKL (kept held into the loop) → online self-report.
     ap_finish_booting(logical_id);
     crate::scheduler_loop(crate::proc::CpuId::new_unchecked(logical_id));
 }

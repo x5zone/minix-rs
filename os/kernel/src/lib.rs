@@ -3742,12 +3742,13 @@ fn idle(
         // local timer at interrupt entry so a woken AP resumes ticking.
         //   1. Receive side: NOT complete. No architecture restarts the AP
         //      timer on the wake path, so this mask is permanent after the
-        //      first idle. aarch64 now opens the BSP's SGI 0 gate and sends
-        //      via ICC_SGI1R/GICD_SGIR by ARE state, but its APs park in
-        //      `wfi` before `scheduler_loop` (only x86 has `smp_ap_tail`);
-        //      riscv64 clears `sip.SSIP` without applying the pending
-        //      scheduler flags and keeps the local-only `fence.i` contract,
-        //      whose remote-fence arm is this unclamp's precondition.
+        //      first idle. aarch64 now opens the BSP's SGI 0 gate, sends via
+        //      ICC_SGI1R/GICD_SGIR by ARE state, and its APs enter
+        //      `scheduler_loop` (C2D-APENTRY); riscv64's APs still park in
+        //      `wfi` (no tail yet), clear `sip.SSIP` without applying the
+        //      pending scheduler flags, and keep the local-only `fence.i`
+        //      contract, whose remote-fence arm is this unclamp's
+        //      precondition.
         //   2. Producer: LANDED. `sched_enqueue_with` sends the C
         //      `proc.c:1647` SCHED IPI when the target CPU is idle — inert
         //      while the clamp below keeps every process on the BSP.

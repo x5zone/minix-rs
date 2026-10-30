@@ -29,6 +29,14 @@ fn arch_init_src() -> &'static str {
     include_str!("../src/arm64/arch_init.rs")
 }
 
+fn ap_entry_src() -> &'static str {
+    include_str!("../src/arm64/ap_early_entry.rs")
+}
+
+fn arch_lib_src() -> &'static str {
+    include_str!("../src/lib.rs")
+}
+
 #[test]
 fn are_ns_selects_icc_sgi1r_else_legacy_sgir() {
     let s = smp_src();
@@ -75,6 +83,34 @@ fn distributor_base_is_seeded_and_never_used_unset() {
     assert!(
         init.contains("set_gicd_base") && init.contains("Gicv3Desc"),
         "arch_init must seed the SGI send path from the Gicv3Desc"
+    );
+}
+
+#[test]
+fn ap_entry_hands_off_to_the_kernel_tail() {
+    let s = ap_entry_src();
+    assert!(
+        s.contains("register_ap_tail") && s.contains("AP_TAIL") && s.contains("ApTailFn"),
+        "aarch64 AP convergence lost the kernel-tail handoff gate"
+    );
+    assert!(
+        s.contains("kernel_stack_top_va") && s.contains("AP_ARRIVED"),
+        "AP convergence must snapshot the record (stack top included) before publishing arrival"
+    );
+}
+
+#[test]
+fn aarch64_cpu_id_map_is_the_identity_anchor() {
+    let smp = smp_src();
+    assert!(
+        smp.contains("set_cpu_id")
+            && smp.contains("cpu_id_readback")
+            && smp.contains("mpidr_el1"),
+        "aarch64 lost the MPIDR -> logical identity map"
+    );
+    assert!(
+        arch_lib_src().contains("arm64::smp::cpu_id_readback"),
+        "ap_cpu_id_readback no longer reads the aarch64 identity map"
     );
 }
 

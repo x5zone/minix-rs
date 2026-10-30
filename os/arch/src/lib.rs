@@ -544,9 +544,13 @@ pub fn ap_enable_lapic() {
 #[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn ap_enable_lapic() {}
 
-/// Read this CPU's per-CPU identity (x86-64: `gs:0x10` written by
-/// `program_gs`; other archs return 0 — their identity path is per-CPU
-/// register based and lands with their own per-CPU bring-up work).
+/// Read this CPU's per-CPU identity.
+///
+/// x86-64: `gs:0x10` written by `program_gs`. aarch64: `MPIDR_EL1.Aff0`
+/// through the bring-up map (`arm64::smp::set_cpu_id`), so an AP that
+/// entered the scheduler reads its own logical id. riscv64 and the host
+/// runtime-window form return 0 — their identity path lands with their own
+/// per-CPU bring-up work.
 #[cfg(feature = "runtime-window")]
 pub fn ap_cpu_id_readback() -> u64 {
     0
@@ -555,7 +559,11 @@ pub fn ap_cpu_id_readback() -> u64 {
 pub fn ap_cpu_id_readback() -> u64 {
     crate::x86_64::trap_stub::gs_cpu_id()
 }
-#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
+pub fn ap_cpu_id_readback() -> u64 {
+    crate::arm64::smp::cpu_id_readback()
+}
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub fn ap_cpu_id_readback() -> u64 {
     0
 }
