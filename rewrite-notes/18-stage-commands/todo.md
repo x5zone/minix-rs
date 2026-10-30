@@ -124,9 +124,9 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - **先把形状说清**：`minix3/usr.bin/tail/tail.c:108` 的 optstring 是 `"Fb:c:fn:r"`——七个字母，
   带值的只有 `b`/`c`/`n`。`tail` 与本族其它支最大不同的是它在 `getopt` **之前**还有一趟
   `obsolete()`（`:106` 调用、`:217-296` 实现）：C 直接**改写 argv**——按字节判 token 形状
-  （`ap[0]` 是 `-`/`+`、`ap[1]` 是数字还是字母、`:246` 的 `*t == 'f' || *t == 'r'`、
-  `:251-260` 的 `case 'b'/'c'/'l'` 与数字那一串 case），命中就 `malloc` 一个新串
-  `-` + 尾字母 + 单位字母 + 原 token 首字符 + 数字（`:271-273` 的 `*p++ = *argv[0]` 与
+  （`ap[0]` 是 `-`/`+`、`ap[1]` 是数字还是字母、`:248` 的 `*t == 'f' || *t == 'r'`、
+  `:252-261` 的 `case 'b'/'c'/'l'` 与数字那一串 case），命中就 `malloc` 一个新串
+  `-` + 尾字母 + 单位字母 + 原 token 首字符 + 数字（`:271-272` 的 `*p++ = *argv[0]` 与
   `strcpy(p, ap)`），再把原 token 换成它。字节缝在这一支因此多出别处没有的腿：
   ① 字母位（libc 那句 `unknown option -- %c`，`minix3/lib/libc/stdlib/getopt.c:79` 一次进一枚
   字节、`:103` 的 `%c` 原样写出，与上一支 `split` 同词）；
@@ -137,7 +137,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   ④ **改写之后**那枚 token 里的字节——`-1<ff>2` 被 C 拼成 `-n-1<ff>2`，`ARG` 的 `*p` 停在 `ff`
   上，于是回声带的是 `-1<ff>2`（带符号、带那枚高字节）。**这是本族第一条「回声里的值不是 argv
   原样、而是程序自己造出来的」腿**；
-  ⑤ 诊断行里的**档名**（`ierr()` 念全局 `fname`，`:169` 与 `forward.c:196`）；
+  ⑤ 诊断行里的**档名**（`ierr()` 念全局 `fname`，`:169` 与 `forward.c:196-198`）；
   ⑥ 多操作数时那行 `==> %s <==` 横幅（`:173-174`）——它走的是**标准输出**，不是诊断腿。
   usage 只有一行、大写 `Usage:`、带程序名、退 1（`:299-305`）。
 - **判据这一面：折叠改不了 `obsolete()` 的判决**。C 的判据全是单字节 ASCII 比较
@@ -400,7 +400,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   是 `"Fb:c:fn:r"`（`minix3/usr.bin/tail/tail.c:108`，注意 `n` **不带冒号**），除了字母位之外有两条
   值得先看的腿：一是 `tail.c:90` 的 `xerrx(1, "illegal offset -- %s", optarg)`（值进报文），
   二是 `obsolete()`（`tail.c:217-`）——它在 getopt 之前**就地重写 argv**，判据全是按字节比
-  token 的尾字符（`:246` 的 `*t == 'f' || *t == 'r'`、`:251-260` 的 `case 'b'/'c'/'l'`），
+  token 的尾字符（`:248` 的 `*t == 'f' || *t == 'r'`、`:252-261` 的 `case 'b'/'c'/'l'`），
   所以这一支的参数缝有可能真的翻出**判据**分岔，而不只是报文分岔。参照件用前先打 `-Z` 验归属。**另两笔建议**：
   一是把上一笔记登记的读缝 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE` 插一小轮收掉；
   二是把 `JOT-EMPTY-OPERAND-READS-OOB`、`JOT-PREC-MINUS-ONE-FORMAT`、
