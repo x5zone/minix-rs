@@ -3767,10 +3767,11 @@ fn idle(
         //      and its APs enter `scheduler_loop` (C2D-APENTRY); riscv64's
         //      APs enter `scheduler_loop` and open SSIE/STIE
         //      (C2D-RVAPENTRY), though its SSI cross-hart delivery is still
-        //      firmware-blocked, and it clears `sip.SSIP` without applying
-        //      the pending scheduler flags, and keeps the local-only
-        //      `fence.i` contract, whose remote-fence arm is this unclamp's
-        //      precondition.
+        //      firmware-blocked; its SWI arm now applies the pending
+        //      scheduler flags via `sched_handler_full` +
+        //      `preempt_current_on_ipi` (C2D-RVFLAGS), and it keeps the
+        //      local-only `fence.i` contract, whose remote-fence arm is this
+        //      unclamp's precondition.
         //   2. Producer: LANDED. `sched_enqueue_with` sends the C
         //      `proc.c:1647` SCHED IPI when the target CPU is idle — inert
         //      while the clamp below keeps every process on the BSP.

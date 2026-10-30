@@ -1898,25 +1898,18 @@ unsafe fn riscv64_pagefault_body(
 ///    controller claim — see the `dispatch_claimed_hardware_irq` note below),
 /// 3. quantum enforcement for this CPU's running process
 ///    (C proc.c:418-424).
-/// riscv64 SWI arm (scause=1, Supervisor Software interrupt): first clear
-/// this hart's CLINT msip pending bit (ssip is read-only to S-mode, so the
-/// ack must write back to the msip storage cell), then drain this CPU's
-/// scheduling IPI data under BKL inherit/acquire. The counter print is
-/// capped at 8 (the same discipline as tf-guard); the boot self-loop
-/// self-check (a one-shot send→trap→this-arm at the end of smp_init)
-/// leaves a greppable execution record. Evidence boundary: during the
-/// clamp period there is no producer, so the drain is always empty — this
-/// arm lands before the clamp is lifted, ensuring SSI no longer falls into
-/// the diagnostic panic or gets counted as a tick (this closes one of the
-/// registered gaps).
+/// riscv64 SWI arm (scause=1, Supervisor Software interrupt): clear this
+/// hart's SSIP, then apply this CPU's scheduling-IPI policy under the BKL.
+/// Same shape as the aarch64 SGI arm: `sched_handler_full` applies and
+/// clears STOP/SAVE_CTX/VM_INHIBIT, and `preempt_current_on_ipi` marks the
+/// interrupted process preempted (no-op for IDLE). `context_stop_idle_current`
+/// clears the idle flag and restarts the one-shot first.
+///
+/// SSI delivery itself is still firmware-blocked (the forensic note in
+/// `riscv64::smp`); this is the receive half, exercised when a delegated or
+/// SSWI platform delivers, or by the boot self-loop.
 #[cfg(target_arch = "riscv64")]
 fn riscv64_swi_arm() {
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
-    static ACKS: AtomicU64 = AtomicU64::new(0);
-    static PRINTED: AtomicUsize = AtomicUsize::new(0);
-    let topo = minix_platform::platform_desc().cpu_topology();
-    let cpu = crate::current_cpu_id().index();
-    let _ = topo;
     // SAFETY: CSR write that clears only this hart's SSIP pending bit (an
     // S-mode self-clear the privileged spec allows; this platform's
     // aclint-mswi has no SSWI device, and CLINT msip cannot be relied on
@@ -1925,24 +1918,22 @@ fn riscv64_swi_arm() {
     unsafe {
         minix_arch::riscv64::smp::clear_self_ssip();
     }
-    let n = ACKS.fetch_add(1, AtomicOrd::AcqRel);
     let acquired = crate::smp::bkl_lock_or_inherit();
     // C context_stop_idle at interrupt entry: clear the idle flag and
     // restart the one-shot before the scheduler-IPI policy runs.
     crate::context_stop_idle_current();
     {
         let section = unsafe { crate::smp::BklSection::assume_held() };
+        let table = crate::proc_table_with(&section);
         let smp = crate::smp_state_with(&section);
-        let cur = crate::current_cpu_id();
-        while let Some((flags, _nr)) = smp.handle_sched_ipi(cur) {
-            let _ = flags; // flags is always empty until the clamp is lifted; consume on receipt to avoid a backlog
-        }
+        let cpu = crate::current_cpu_id();
+        // Apply the pending scheduler flags (STOP/SAVE_CTX/VM_INHIBIT) and
+        // preempt the interrupted process — the aarch64 SGI arm's policy.
+        smp.sched_handler_full(table, cpu);
+        smp.preempt_current_on_ipi(table, cpu);
     }
-    if PRINTED.fetch_add(1, AtomicOrd::AcqRel) < 8 {
-        use crate::kmess::{EarlyConsole, KernelConsole as Console};
-        Console::write_str("nk4c: swi-ack n=");
-        Console::write_hex(n + 1);
-        Console::write_str("\n");
+    if acquired {
+        crate::smp::bkl_unlock();
     }
 }
 
