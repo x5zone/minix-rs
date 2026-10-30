@@ -3286,6 +3286,20 @@ a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 的期望升到逐字�
 `rewrite-notes/18-stage-commands/` 与 `rewrite-notes/coordination/` 三处都没有在制改动。
 快进之后的主树复跑读数另记一笔合回补记。
 
+**合回读数（第一百八十六笔补记，批次四百七十二）**：快进前复跑上面两条命令，
+`git log --oneline 1366871e6..rewrite` 仍交回空、`git merge-base --is-ancestor 1366871e6 rewrite`
+退 0 ⇒ `git merge --ff-only claim/GETOPT-REPORT-BYTE-LETTER-qoder` 纯快进成功
+（`7 files changed, 399 insertions(+), 56 deletions(-)`，主树 `rewrite` 顶到里程碑笔 `990e535ad`）。
+逐笔验祖先三笔全 ✓（码笔 `f726ac054`、文档笔 `a6f8364f1`、里程碑笔 `990e535ad`）。主树当场复跑
+`cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → 退出码 0、**69 段 / 1284 / 0**，
+与领取树最终态逐数相同（`vis_face` 21，`/home/xzhao/github/minix-rs/tmp/vis-472-maintree.log`）。
+取证目录 `tmp/vis-472/`（参照件与其配方、`measure.py` 与改前/改后两份读数、负控六枚两遍、
+门日志、`post/md5-final.txt`）已在主树 `tmp/` 下，无需另抄。本笔留在读数里的教训：`-e` 值位
+那枚判决腿是本族八支里第一次让「折叠改判决」落在一个**编码答案**而不是报文上——量它靠的是
+把差分腿从无到有配出来，而配出来之后顺手翻正的两处旧账面（`-d` 带值、操数报文两段）都是
+「只有读码、没有参照件」时代留下的口径；差分腿缺位时写下的期望要标注判据来源，配齐之后
+第一批事就是把旧期望全部重测一遍。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
