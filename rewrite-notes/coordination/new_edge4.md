@@ -3864,3 +3864,11 @@ SGI/timer、riscv SWI/timer 入口执行 clear+restart。读数：x86
 `test-smp-aps` PASS（AP local LAPIC ticks observed）、aarch64/riscv 全镜像
 `ap-irq-ready=1 / panic=0`、`run_all` 39/0/0。C2D 余 riscv flag 应用、
 riscv 远端 `fence.i`、READY 有界 ack；钳制继续兜底。
+
+**C2D-RVFLAGS 里程碑（riscv SWI 臂应用 flags）**：码笔 `dac9c2237`、
+合并 `308af6a6f`。`riscv64_swi_arm` 在 BKL 内由“只 drain flags”改为
+`sched_handler_full`（应用并清除 STOP/SAVE_CTX/VM_INHIBIT）+
+`preempt_current_on_ipi`，删除 `nk4c: swi-ack` 诊断并补上缺失的
+`bkl_unlock`。读数：`test-smp-aps-riscv64` PASS（ap-irq-ready=1 /
+panic=0）、`test-smp-ipi-riscv64`（aclint=on）PASS、`run_all` 39/0/0。
+C2D 余 riscv 远端 `fence.i`、READY 有界 ack；钳制继续兜底。
