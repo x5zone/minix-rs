@@ -364,9 +364,11 @@ fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
 /// set, and never to the current CPU), but the receive side is not complete:
 /// aarch64 now opens the BSP's SGI gate, sends through
 /// `ICC_SGI1R_EL1`/`GICD_SGIR` by ARE state, and its APs enter
-/// `scheduler_loop` (C2D-APENTRY); riscv64's APs still park in `wfi` (no
-/// tail yet) and riscv64 clears `sip.SSIP` without applying the pending
-/// scheduler flags; and no architecture clears `cpu_is_idle` plus restarts
+/// `scheduler_loop` (C2D-APENTRY); riscv64's APs enter `scheduler_loop` and
+/// open `sie.SSIE`/`sie.STIE` (C2D-RVAPENTRY), though its SSI cross-hart
+/// delivery is still firmware-blocked, and riscv64 clears `sip.SSIP` without
+/// applying the pending scheduler flags; and no architecture clears
+/// `cpu_is_idle` plus restarts
 /// the AP's local timer on the wake path — an AP that idled once therefore
 /// never ticks again. riscv64 also still runs its boot-loaded images under a
 /// local-only `fence.i` (`os/arch/src/riscv64/cache_sync.rs`), whose

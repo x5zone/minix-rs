@@ -32,12 +32,17 @@ TRIPLE="riscv64gc-unknown-none-elf"
 REL="$ROOT/target/$TRIPLE/release"
 IMG="$ROOT/target/image/riscv64"
 RUN="${RUN:-jfull1}"
-TIMEOUT_BOOT="${TIMEOUT_BOOT:-160}"
+TIMEOUT_BOOT="${TIMEOUT_BOOT:-300}"
 SERIAL="$ROOT/target/$TRIPLE/boot-full-serial.$RUN.log"
 MARKER="minix-rs rc: minimal boot script marker"
 # P-A64RV-01 riscv 半（§续-398/399/400）：次级核真醒判据＝smp_init 汇聚点
-# 到达标记。rc marker 为辅证。
+# 到达标记。rc marker 为辅证。C2D-RVAPENTRY 起 AP 还要交给 kernel tail 进
+# scheduler_loop：tail 打开 sie.SSIE/STIE 并置 `ap_irq_ready`，BSP 在
+# `wait_for_aps` 后打印 `nk4c: ap-irq-ready cpu=<logical> sgi=1 timer=1`。
+# 两个标记都在且 panic=0 / ap-timeout=0 才算 PASS；SSI 的实际跨核投递仍受
+# 固件未委托限制（脚本只证门状态与进环，不伪称唤醒已通）。
 AP_MARKER="nk4c: ap-arrived"
+AP_IRQ_MARKER="nk4c: ap-irq-ready"
 
 skip() { echo "SKIP: $1"; exit 2; }
 fail() { echo "FAIL: $1"; exit 1; }
@@ -157,7 +162,10 @@ timeout "$TIMEOUT_BOOT" qemu-system-riscv64 \
 QPID=$!
 trap 'kill $QPID 2>/dev/null || true; wait $QPID 2>/dev/null || true' EXIT
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
-    grep -qaF "$AP_MARKER" "$SERIAL" 2>/dev/null && break
+    if grep -qaF "$AP_MARKER" "$SERIAL" 2>/dev/null \
+        && grep -qaF "$AP_IRQ_MARKER" "$SERIAL" 2>/dev/null; then
+        break
+    fi
     kill -0 "$QPID" 2>/dev/null || break
     sleep 1
 done
@@ -168,17 +176,25 @@ echo "----- boot 推进证据（关键相位计数）-----"
 echo "arch_boot step0 validate ok : $(grep -ac 'step0 validate ok' "$SERIAL")"
 echo "kmain 相位 (kernel: kmain)  : $(grep -ac 'kernel: kmain\|vm_handoff\|birth' "$SERIAL")"
 echo "server rt-init / run enter  : $(grep -ac 'rt-init\|run enter' "$SERIAL")"
+echo "ap-arrived                  : $(grep -acF "$AP_MARKER" "$SERIAL")"
+echo "ap-irq-ready                : $(grep -acF "$AP_IRQ_MARKER" "$SERIAL")"
+echo "ap-timeout                  : $(grep -ac 'ap-timeout' "$SERIAL")"
 echo "panic 计数                  : $(grep -ac 'panic\|PANIC' "$SERIAL")"
 echo "marker 计数                 : $(grep -acF "$MARKER" "$SERIAL")"
 echo "----- 串口尾 30 行 -----"
 tail -30 "$SERIAL"
-AP_OK=0; RC_OK=0
+AP_OK=0; IRQ_OK=0; RC_OK=0
 grep -qaF "$AP_MARKER" "$SERIAL" && AP_OK=1
+grep -qaF "$AP_IRQ_MARKER" "$SERIAL" && IRQ_OK=1
 grep -qaF "$MARKER" "$SERIAL" && RC_OK=1
-if [ "$AP_OK" = "1" ] && [ "$RC_OK" = "1" ]; then
-    echo "### TEST_RESULT: PASS test-smp-aps-riscv64 (secondary hart arrived + BSP full chain) ###"; exit 0
-elif [ "$AP_OK" = "1" ]; then
-    echo "### TEST_RESULT: PASS test-smp-aps-riscv64 (ap-arrived; BSP chain incomplete) ###"; exit 0
+PANIC_N=$(grep -ac 'panic\|PANIC' "$SERIAL")
+TIMEOUT_N=$(grep -ac 'ap-timeout' "$SERIAL")
+if [ "$AP_OK" = "1" ] && [ "$IRQ_OK" = "1" ] \
+    && [ "$PANIC_N" -eq 0 ] && [ "$TIMEOUT_N" -eq 0 ]; then
+    if [ "$RC_OK" = "1" ]; then
+        echo "### TEST_RESULT: PASS test-smp-aps-riscv64 (secondary hart entered scheduler; SGI+timer gates open; BSP full chain) ###"; exit 0
+    fi
+    echo "### TEST_RESULT: PASS test-smp-aps-riscv64 (secondary hart entered scheduler; SGI+timer gates open; BSP chain incomplete) ###"; exit 0
 fi
-echo "### TEST_RESULT: FAIL test-smp-aps-riscv64 (no ap-arrived marker) ###"
+echo "### TEST_RESULT: FAIL test-smp-aps-riscv64 (ap-arrived/ap-irq-ready/panic/ap-timeout check) ###"
 exit 1

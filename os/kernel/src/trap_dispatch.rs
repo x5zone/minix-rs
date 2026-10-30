@@ -2455,9 +2455,20 @@ fn riscv64_diag_panic(
     Console::write_hex(frame.sepc);
     Console::write_str(" sstatus=");
     Console::write_hex(frame.sstatus);
+    // Identity + stack pointer make an AP-side fault distinguishable from a
+    // BSP-side one (the AP identity is stack-based; a wrong id here is the
+    // first thing to check).
+    let cpu = crate::current_cpu_id().raw();
+    let sp: usize;
+    // SAFETY: reading sp has no side effects.
+    unsafe { core::arch::asm!("mv {}, sp", out(reg) sp) };
+    Console::write_str(" cpu=");
+    Console::write_hex(cpu as u64);
+    Console::write_str(" sp=");
+    Console::write_hex(sp as u64);
     Console::write_str("\n");
     panic!(
-        "riscv64 {origin}: scause {scause:#x} stval {stval:#x} sepc {:#x}",
+        "riscv64 {origin}: scause {scause:#x} stval {stval:#x} sepc {:#x} cpu {cpu} sp {sp:#x}",
         frame.sepc
     );
 }

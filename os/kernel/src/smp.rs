@@ -491,8 +491,9 @@ impl SmpState {
     /// The C2C stop-loss therefore restores the BSP affinity clamp; the
     /// enqueue wake producer remains in place but inert (no process is homed
     /// on an AP). aarch64's BSP SGI gate, scheduler-flag application, and AP
-    /// entry into `scheduler_loop` are now wired (C2D-A64SGI/C2D-APENTRY);
-    /// the remaining arms — riscv AP entry into the scheduler, clear plus
+    /// entry into `scheduler_loop` are wired (C2D-A64SGI/C2D-APENTRY), and
+    /// riscv's AP entry plus SSIE/STIE gates are wired (C2D-RVAPENTRY, with
+    /// SSI delivery still firmware-blocked); the remaining arms — clear plus
     /// timer restart on wake, riscv64's flag application, and riscv64's
     /// remote `fence.i` — must land together before the clamp is removed.
     pub fn clear_idle_flag(&mut self, cpu: CpuId) -> bool {
@@ -547,6 +548,9 @@ impl SmpState {
     /// BSP's logical id comes from matching `hw_id == bsp_id` in the
     /// topology (MADT/DTB order does not guarantee slot 0 — never assume).
     pub fn seed_bsp_masks(&self, bsp_logical_id: u32) {
+        // Record the BSP's logical slot for the riscv stack-based identity
+        // (the BSP's stack is outside the AP stack ranges).
+        BSP_LOGICAL.store(bsp_logical_id, Ordering::Release);
         let bit = 1u64 << bsp_logical_id;
         self.boot_ack_mask.fetch_or(bit, Ordering::Release);
         self.online_mask.fetch_or(bit, Ordering::Release);
@@ -953,6 +957,37 @@ pub fn ap_irq_ready(cpu: CpuId) -> bool {
         .is_some_and(|slot| slot.load(Ordering::Acquire))
 }
 
+/// The BSP's logical slot, recorded when `smp_init` seeds the CPU masks.
+/// riscv identifies APs by their kernel stack (no readable S-mode hart id);
+/// the BSP's stack is not one of those ranges, so its fallback identity comes
+/// from this slot.
+static BSP_LOGICAL: AtomicU32 = AtomicU32::new(0);
+
+/// The BSP's logical slot as recorded by `seed_bsp_masks`.
+pub fn bsp_logical() -> u32 {
+    BSP_LOGICAL.load(Ordering::Acquire)
+}
+
+/// Identify the CPU that owns `sp` from the per-CPU AP kernel-stack ranges.
+///
+/// riscv has no readable S-mode hart id, `tp` is restored from the trap frame
+/// on user return, and `sscratch` already carries the user sp. The kernel
+/// stack is the stable per-CPU anchor: the AP stub sets SP to its own stack
+/// top, and every kernel entry switches to that stack before Rust code runs.
+/// Returns `None` for the BSP (its stack is outside these ranges).
+#[cfg(target_arch = "riscv64")]
+pub fn cpu_id_for_stack_pointer(sp: usize) -> Option<CpuId> {
+    for i in 0..AP_STACK_COUNT {
+        // `addr_of!` forms the address without a reference to the static mut;
+        // the bytes are this CPU's live stack, never read as data here.
+        let base = unsafe { core::ptr::addr_of!(AP_KERNEL_STACKS[i]) } as usize;
+        if sp > base && sp <= base + AP_KERNEL_STACK_SIZE {
+            return Some(CpuId::new_unchecked(i as u32));
+        }
+    }
+    None
+}
+
 /// AP-side finish handshake — C `ap_finish_booting` (arch_smp.c:222 parity:
 /// boot_lock + online self-report; the fuller per-CPU work that C also does
 /// inside this critical section is not part of it yet).
@@ -1311,7 +1346,9 @@ pub fn smp_init() {
     /// riscv half of the kernel wiring: with multiple harts configured, wake
     /// secondary cores through SBI HSM hart_start — the stub (ap_early_entry)
     /// reads the record, installs the BSP root, jumps to the convergence point,
-    /// sets the AP_ARRIVED marker and then stays in wfi.
+    /// sets the AP_ARRIVED marker and hands off to the kernel-registered AP
+    /// tail, which installs the per-CPU stack/trap entry, opens SSIE/STIE and
+    /// enters the shared scheduler loop.
     ///
     /// - Single-hart configurations are silent (ATF/cmd all use -smp 1):
     ///   nr_cpus<=1 returns immediately with zero production behavior change;
@@ -1319,10 +1356,11 @@ pub fn smp_init() {
     ///   (a DTB dump must also use -smp 2 — topology truth = DTB).
     /// - Serial reuse: one record is filled per hart, started, awaited within
     ///   the bound, then the next.
-    /// - Respect the main-core clamp red line: an AP stays in wfi on arrival
-    ///   and never enters the scheduler — the clamp has not been removed, so
-    ///   this wiring only establishes the prerequisite fact "the secondary core
-    ///   really wakes"; it does not place processes.
+    /// - The main-core clamp is still in force: APs enter the scheduler and
+    ///   idle, but `sched_proc` rewrites every requested affinity to the BSP.
+    ///   SSI delivery itself is still firmware-blocked (see the SWI note
+    ///   below); opening `sie.SSIE` records the gate state without pretending
+    ///   a wake can be delivered on this platform yet.
     /// - Degraded continuation (C arch_smp.c semantics): if some hart does not
     ///   arrive within the bound, print and continue single-core, without
     ///   blocking boot.
@@ -1331,6 +1369,7 @@ pub fn smp_init() {
         use minix_arch::riscv64::ap_early_entry::ap_early_entry;
         use minix_arch::riscv64::ap_early_entry::{
             AP_ARRIVED, BOOT_HART_ELECTED, entry_start_pa, record as ap_record,
+            register_ap_tail,
         };
         use minix_arch::{CurrentSmpArch, SmpArch};
         use minix_plat::EarlyConsole as _;
@@ -1382,6 +1421,9 @@ pub fn smp_init() {
         let entry_pa = entry_start_pa();
         let convergence_va = ap_early_entry as usize;
 
+        // Register the kernel continuation before the first hart_start.
+        register_ap_tail(smp_ap_tail);
+
         for logical in 0..topo.nr_cpus as u32 {
             if logical == bsp_logical {
                 continue;
@@ -1398,7 +1440,10 @@ pub fn smp_init() {
                 r.kernel_stack_top_va = stack_top;
                 r.rust_entry_va = convergence_va as u64;
             }
-            // Producer-side fence: record write → SBI hart_start.
+            // AP_ARRIVED is one shared cell: clear it before this hart_start
+            // so the wait below observes THIS hart's arrival. The fence
+            // orders the record write and the clear before the SBI call.
+            AP_ARRIVED.store(0, Ordering::Release);
             unsafe { core::arch::asm!("fence rw, rw", options(nomem, nostack)) };
             <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, entry_pa);
 
@@ -1430,6 +1475,32 @@ pub fn smp_init() {
                 crate::kmess::KernelConsole::write_str("nk4c: ap-timeout\n");
             }
         }
+
+        // C wait_for_APs parity: release the BKL, wait for every AP's online
+        // self-report, then re-acquire. The APs block on the BKL inside
+        // ap_finish_booting until this release.
+        smp.wait_for_aps::<CurrentSmpArch>();
+
+        // AP-side bring-up reading: each AP latches `ap_irq_ready` after
+        // opening SSIE/STIE, before publishing online. The BSP holds the BKL
+        // again here, so the print is serialized.
+        {
+            use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+            for logical in 0..topo.nr_cpus as u32 {
+                if logical == bsp_logical {
+                    continue;
+                }
+                let cpu = crate::proc::CpuId::new_unchecked(logical);
+                let ready = crate::smp::ap_irq_ready(cpu);
+                Console::write_str(if ready {
+                    "nk4c: ap-irq-ready cpu="
+                } else {
+                    "nk4c: ap-irq-not-ready cpu="
+                });
+                Console::write_hex(logical as u64);
+                Console::write_str(if ready { " sgi=1 timer=1\n" } else { "\n" });
+            }
+        }
     }
 }
 
@@ -1440,12 +1511,21 @@ pub fn smp_init() {
     target_arch = "aarch64"
 ))]
 const AP_KERNEL_STACK_SIZE: usize = 0x4000;
+/// Number of static per-AP kernel stacks (the array bound; the stack-based
+/// riscv identity walks the same count).
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "riscv64",
     target_arch = "aarch64"
 ))]
-static mut AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; 8] = [[0; AP_KERNEL_STACK_SIZE]; 8];
+const AP_STACK_COUNT: usize = 8;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    target_arch = "aarch64"
+))]
+static mut AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; AP_STACK_COUNT] =
+    [[0; AP_KERNEL_STACK_SIZE]; AP_STACK_COUNT];
 
 #[cfg(any(
     target_arch = "x86_64",
@@ -1546,6 +1626,51 @@ unsafe extern "C" fn smp_ap_tail(
     // the BSP's BKL; the BSP reaches wait_for_aps after seeing boot_ack and
     // releases it there.
     crate::irq_manager::enable_ap_irq_sources(hw_id as usize);
+    crate::smp::mark_ap_irq_ready(crate::proc::CpuId::new_unchecked(logical_id));
+    crate::clock::init_ap_local_timer();
+    // boot_lock → BKL (kept held into the loop) → online self-report.
+    ap_finish_booting(logical_id);
+    crate::scheduler_loop(crate::proc::CpuId::new_unchecked(logical_id));
+}
+
+/// riscv64 AP tail — the counterpart of the x86/aarch64 tails, reached from
+/// `riscv64::ap_early_entry` after the SBI stub installed the BSP root.
+///
+/// Identity is stack-based (`current_cpu_id`): the stub already loaded this
+/// AP's stack top, so no register setup is needed. `enable_ap_interrupts`
+/// opens `sie.SSIE`/`sie.STIE`; the timer gate is armed after the trap
+/// vector is installed.
+#[cfg(target_arch = "riscv64")]
+unsafe extern "C" fn smp_ap_tail(
+    logical_id: u32,
+    _hw_id: u64,
+    kernel_stack_top_va: u64,
+) -> ! {
+    use minix_arch::ProtectionArch;
+    // Ack first: the record has been consumed into locals.
+    unsafe { crate::smp_state_boot_unchecked() }.publish_boot_ack(logical_id);
+    // Per-CPU stack base (`sscratch`) and this AP's `stvec`.
+    crate::with_protection(|prot| {
+        prot.init_ap(
+            logical_id,
+            minix_types::VirBytes::new(kernel_stack_top_va),
+        )
+    });
+    {
+        use minix_arch::TrapEntryArch;
+        crate::with_trap_entry(|trap| trap.load_ap());
+    }
+    // C arch_post_init parity: this CPU's ptproc slot = VM.
+    {
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        if let Some(local) = smp.cpu_local_mut(crate::proc::CpuId::new_unchecked(logical_id)) {
+            local.ptproc = Some(crate::proc::proc_nr::VM_PROC_NR);
+        }
+    }
+    // Open SSIE/STIE before arming the one-shot. The SWI forensic note in
+    // `riscv64::smp` still governs whether firmware delivers a cross-hart
+    // SSIP; the gate state itself is honest.
+    minix_arch::riscv64::smp::enable_ap_interrupts();
     crate::smp::mark_ap_irq_ready(crate::proc::CpuId::new_unchecked(logical_id));
     crate::clock::init_ap_local_timer();
     // boot_lock → BKL (kept held into the loop) → online self-report.

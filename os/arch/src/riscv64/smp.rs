@@ -300,3 +300,32 @@ pub unsafe fn raise_self_ssip() {
 pub unsafe fn clear_self_ssip() {
     core::arch::asm!("csrc sip, {m}", m = const 2, options(nomem, nostack));
 }
+
+/// Open this hart's supervisor software-interrupt (`SSIE`, bit 1) and timer
+/// (`STIE`, bit 5) delivery gates.
+///
+/// aarch64 does the equivalent through its GIC redistributor. riscv has no
+/// per-hart controller enable for these two lines: the BSP opens STIE via
+/// `TimerIrqGate`, and each AP's tail calls this before arming its one-shot.
+/// `sstatus.SIE` (the global supervisor enable) is opened separately by the
+/// idle halt path.
+///
+/// # SWI caveat
+///
+/// `SSIE` is the delivery gate, not proof that firmware can deliver a
+/// cross-hart SSIP: the existing SWI forensic note in this module records
+/// that the current OpenSBI/ACLINT combination does not translate the SBI
+/// send into a taken S-interrupt. The gate is opened so the state is honest
+/// and a delegated/SSWI platform can deliver; the clamp keeps APs off user
+/// work either way.
+pub fn enable_ap_interrupts() {
+    // SAFETY: `sie` is a per-hart S-mode CSR; the write only sets the two
+    // supervisor interrupt-enable bits.
+    unsafe {
+        core::arch::asm!(
+            "csrs sie, {bits}",
+            bits = in(reg) (1u64 << 1) | (1u64 << 5),
+            options(nomem, nostack)
+        );
+    }
+}
