@@ -3576,3 +3576,11 @@ skipped + 0 failed）**，csc 内容不一致 0、mset 零 HIT，ptwb 命中均�
 `FIXTURE ps=0x... argc=1 argv0=probe-argv` PASS；x86_64/aarch64/riscv64
 三架构 `startup-minix.c` 均可编译。C4 仍门控于 glibc 启动/系统调用桥与
 x86_64 ATF 36/36，`ATF_BOOT_LEG_READY` 暂不放行。
+
+**C4GLIBC 取证（未合入）**：x86_64 ATF 的 glibc 启动桥在临时 claim 里做到
+「libc 静态归档定义改写 + 隐藏 `__write` 拦截 + freestanding p1 `P1-OK` 真机
+出现」，但 glibc TLS 需要每进程 FS base：Minix-RS 的 x86_64 上下文没有
+FS base 字段/MSR 切换，`arch_prctl(ARCH_SET_FS)` 无对应内核调用，用户 `fs`
+基址保持 0，`init_cpu_features`/TLS 访问 fault（串口到 SHIM/PREJUMP 为止）。
+结论：C4 客态运行面要打通需先加内核每进程 FS base 或改用非 TLS 的
+x86_64 libc；半成品已弃树，未合入，`ATF_BOOT_LEG_READY` 仍不放行。
