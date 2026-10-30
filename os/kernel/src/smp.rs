@@ -1020,6 +1020,48 @@ pub fn ap_finish_booting(logical_id: u32) {
 /// Boot-phase caller (before the scheduler exists); x86-64 lane wired
 /// (install_at/fill_bootstrap/INIT-SIPI), other architectures' bring-up
 /// lanes are still outstanding.
+/// Bounded wait for an AP's `boot_ack`, then set READY on its behalf.
+///
+/// C: arch_smp.c:131-141 (`cpu_set_flag(..., CPU_READY)` after the ack).
+/// Shared by all three per-arch `smp_init` blocks: the AP publishes
+/// `boot_ack` from its tail, and a single sample can lose the race to a slow
+/// publish, leaving READY clear and making `wait_for_aps` print a false
+/// "not all CPUs booted" warning. The dual-clock bound is the x86 original's
+/// window (500 uptime ticks or a 20e9-cycle TSC backstop). Caller holds the
+/// BKL.
+fn wait_ap_boot_ack(smp: &mut SmpState, logical: u32) -> bool {
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let up0 = crate::clock::get_monotonic(&section);
+    let tsc0 = crate::clock::read_tsc();
+    while !smp.observe_boot_ack(logical) {
+        let uptime_elapsed = {
+            let section = unsafe { crate::smp::BklSection::assume_held() };
+            crate::clock::get_monotonic(&section)
+        } >= up0 + 500;
+        let tsc_elapsed = crate::clock::read_tsc()
+            .wrapping_sub(tsc0)
+            > 20_000_000_000u64;
+        if uptime_elapsed || tsc_elapsed {
+            return false;
+        }
+        <minix_arch::CurrentSmpArch as minix_arch::SmpArch>::pause();
+    }
+    smp.cpu_set_flag(
+        crate::proc::CpuId::new_unchecked(logical),
+        CpuFlags::READY,
+    );
+    true
+}
+
+/// The C `printf("WARNING: CPU ... didn't boot in time")` line, shared by
+/// the three per-arch `smp_init` blocks.
+fn warn_ap_boot_timeout(hw_id: u64) {
+    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+    Console::write_str("WARNING: CPU ");
+    Console::write_hex(hw_id);
+    Console::write_str(" didn't boot in time — skipping\n");
+}
+
 pub fn smp_init() {
     #[cfg(target_arch = "x86_64")]
     {
@@ -1090,45 +1132,11 @@ pub fn smp_init() {
             // lives at 0x5000 (vector 0x05).
             <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA as usize);
 
-            // Bounded per-AP ack wait (C arch_smp.c:131-141 parity). The AP
-            // publishes boot_ack (Release) from the ladder's Rust entry.
-            // TSC-rate floor: calibration (set_tsc_per_ms) is not wired yet —
-            // the raw global reads 0, which would make this timeout 5000 raw
-            // ticks (≈2µs) and expire before a healthy AP can wake (observed
-            // flake: "CPU 1 didn't boot in time"). Any real x86-64 TSC runs
-            // ≥ 1 MHz, so flooring the rate at 1e6 cycles/ms yields a ≥5s
-            // window; once boot calibration lands, the measured rate wins.
-            // Deadline (§3.4 "bounded per-AP startup timeout", mechanism
-            // arch-owned): dual clock — 500 uptime ticks (5 s wall when the
-            // PIT flows; the test driver arms it pre-smp_init) OR a 2e10
-            // raw-TSC backstop (production path where uptime is frozen —
-            // C's LAPIC one-shot per arch_clock.c:131-141 is the long-term
-            // mechanism, tracked in smp_todo §24). A late ack still counts:
-            // the masks read the atomic bitmap, not this timeout decision.
-            let section = unsafe { crate::smp::BklSection::assume_held() };
-            let up0 = crate::clock::get_monotonic(&section);
-            let tsc0 = crate::clock::read_tsc();
-            while !smp.observe_boot_ack(logical) {
-                let uptime_elapsed = {
-                    let section = unsafe { crate::smp::BklSection::assume_held() };
-                    crate::clock::get_monotonic(&section)
-                } >= up0 + 500;
-                let tsc_elapsed = crate::clock::read_tsc()
-                    .wrapping_sub(tsc0)
-                    > 20_000_000_000u64;
-                if uptime_elapsed || tsc_elapsed {
-                    use crate::kmess::{EarlyConsole, KernelConsole as Console};
-                    Console::write_str("WARNING: CPU ");
-                    Console::write_hex(hw_id);
-                    Console::write_str(" didn't boot in time — skipping\n");
-                    break;
-                }
-                <CurrentSmpArch as SmpArch>::pause();
-            }
-            if smp.observe_boot_ack(logical) {
-                // The BSP sets READY on the AP's behalf (C arch_smp.c:137
-                // cpu_set_flag parity).
-                smp.cpu_set_flag(crate::proc::CpuId::new_unchecked(logical), CpuFlags::READY);
+            // Bounded per-AP ack wait and READY publication (C
+            // arch_smp.c:131-141). The helper carries the dual-clock window
+            // and the single-sample-race rationale.
+            if !wait_ap_boot_ack(smp, logical) {
+                warn_ap_boot_timeout(hw_id);
             }
         }
         } // inner block ends — boot_lock released here (guard drop), C arch_smp.c:247
@@ -1303,6 +1311,12 @@ pub fn smp_init() {
                 }
                 crate::kmess::KernelConsole::write_str(core::str::from_utf8(&hex).unwrap_or("?"));
                 crate::kmess::KernelConsole::write_str("\n");
+                // Bounded ack wait + READY publication: AP_ARRIVED and
+                // boot_ack are published by different instructions, so a
+                // single sample can lose the race.
+                if !wait_ap_boot_ack(smp, logical) {
+                    warn_ap_boot_timeout(hw_id);
+                }
             } else {
                 crate::kmess::KernelConsole::write_str("nk4c: ap-timeout\n");
             }
@@ -1465,6 +1479,12 @@ pub fn smp_init() {
                 }
                 crate::kmess::KernelConsole::write_str(core::str::from_utf8(&hex).unwrap_or("?"));
                 crate::kmess::KernelConsole::write_str("\n");
+                // Bounded ack wait + READY publication (same race as the
+                // aarch64/x86 blocks: AP_ARRIVED and boot_ack are separate
+                // publications).
+                if !wait_ap_boot_ack(smp, logical) {
+                    warn_ap_boot_timeout(hw_id);
+                }
             } else {
                 crate::kmess::KernelConsole::write_str("nk4c: ap-timeout\n");
             }
