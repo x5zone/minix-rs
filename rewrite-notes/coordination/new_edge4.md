@@ -3499,6 +3499,20 @@ exclude」的分域读数。
 **读数**：`cargo test -p minix-ds` → **115 / 0**（3 段）。四族的**端到端联调**归 C 板真机窗
 （E5(f) 首份终态在册），本板不代做。本笔只动一行摘要、一行板行与本里程碑。
 
+### 第一百九十四笔（A 板 A20 首轮 · 15 文件系统：第一家 vbfs 的静默桩改为响亮拒绝，fsdriver 环照 pfs 模板待接）
+
+**四家按「有真盘才接」的次序执行，本轮把第一家的现状量清并做了一处求实**：
+`os/fs/vbfs/src` 的 lib 只有 `default_params()`（sffs 参数集）与空 `init()`；`main.rs` 原本是
+`init(); loop {}`——对 RS 和操作者都像「服务在跑」的**静默挂起**，正是 SD-19「假装」那一族的
+原型。现改为带计划锚的 panic：RS 今天不启 vbfs，panic 在引导路径上是惰性的，而把一个假活进程
+换成一个明确「还没造好」的拒绝。
+
+**下一轮的第一切片已量准**：vbfs 的 fsdriver 环照 `os/fs/pfs/src/{lib,main}.rs`（836 行，
+`#![no_std]`，`cargo check --target x86_64-unknown-none -p minix-fs-pfs --bins` 退 0 已验证是
+可行模板）整条移植；ext2/isofs 等 `E-FSBDEV` 真镜像（本仓 ext2 现为只读语义层），hgfs 与 vbfs
+同量级。判据：`cargo test -p minix-fs-vbfs` → **2 / 0**；vbfs 的**三架构门当前不适用**
+（其 binary 是宿主态桩），接环时随 pfs 模板一并转 `no_std`。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端

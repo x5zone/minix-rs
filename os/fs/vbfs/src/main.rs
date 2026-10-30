@@ -1,7 +1,21 @@
-//! FS server (vbfs) entry point (placeholder).
+//! FS server (vbfs) entry point — registered stub (A 板 A20 第一缺).
+//!
+//! The server body is **not** implemented yet: `minix-fs-vbfs` today carries only
+//! the `minix-sffs` parameter set (`lib.rs::default_params`) and its two constant
+//! tests. The real entry is the pfs-shaped fsdriver loop (block-cache + inode
+//! operations + the FS driver protocol, `os/fs/pfs/src/{lib,main}.rs`, ~800 lines);
+//! `15-stage-fs/todo.md:3` 的「四家入口未接」把 vbfs 列为第一家。
+//!
+//! This binary used to park in `loop {}` after an empty `init()` — a silent hang
+//! that looks like a running service to RS and to any operator. SD-19's genus in
+//! its purest form: the process *pretends*. Until the loop exists, refuse loudly:
+//! RS never launches vbfs today, so a panic here is inert on the boot path and
+//! turns "why is my mount hanging" into "this server is not built yet".
 
 fn main() {
-    // Stub: replace with a real service process (event loop + RS startup protocol).
     minix_fs_vbfs::init();
-    loop {}
+    panic!(
+        "vbfs: the fsdriver loop is not implemented (registered on A 板 A20, \
+         15-stage-fs/todo.md:3; the pfs server is the template)"
+    );
 }
