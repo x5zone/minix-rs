@@ -119,6 +119,152 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百六十八（A2 参数缝半切片 50：`split` 的操作数、输出前缀与四处值回显交回原字节；这一支没有判据分岔，量出的却是「宿主全绿、真机编译红」）
+
+- **先把形状说清**：`minix3/usr.bin/split/split.c:80` 的 optstring 是
+  `"0123456789b:l:a:n:"`——十个数字字母（遗留的 `-<数字>` 形，`:82-98` 从
+  `argv[optind] + 1` 起取数）加四个带值字母 `-l`/`-b`/`-a`/`-n`。值与操作数一共通向五条腿：
+  ① 字母位由 libc 打印（`minix3/lib/libc/stdlib/getopt.c:79` 的 `optopt = *place++` 一次进
+  一枚字节、`:103` 的 `%c` 原样写出，措辞是 `unknown option`，与上一支 `pr` 自带
+  `egetopt.c:148` 的 `illegal option` 不同词）；
+  ② 四句 `errx(1, "%s: illegal … count.", optarg)`（`:99-108` 字节数、`:109-116` 行数、
+  `:117-121` 后缀长度、`:123-127` 分片数）各把**值本身**打进句子；
+  ③ 第一枚操作数是输入档名，开不成即 `err(1, "%s", *argv)`（`:135-139`）；
+  ④ 第二枚操作数是输出前缀（`:143` 的 `base = *argv++`，缺省 `"x"`），它加上 26 进制的
+  两位后缀就是每一枚分片的名字，而这个名字既进 `creat`、又失败时进
+  `err(1, "%s", fname)`（`:332-333`）；
+  ⑤ 字母位之外还有一条**只在报错时才看得见**的腿：`-a`/`-b`/`-n`/`-l` 的值同时是②的句子内容。
+  决定半（取数与切块）住在库里（`os/commands/usr-bin/textfilter/src/split.rs:fn parse_split_args`），
+  所以库门本轮有牙；报文与拼名住在壳里（`src/bin/split.rs:fn err3`、`fn out_path`）。
+- **这一支没有「判据分岔」，这一点本身是读数**：前三支都翻出过判断被字节改写的活例
+  （`join` 的 `-t` 按字节数判长度、`jot` 的尾字节经带符号 `char`、`sort` 的 `-R` 两条赋值路径
+  符号性不同）。`split` 这边把三侧读数摆齐之后，一条都没有：它的判据只认 ASCII 数字与
+  小写 `k`/`m`（`split.c:100-105` 的 `strtoull` + `*ep` 判尾），非法字节在折叠前后都不数字，
+  所以**接受与拒绝的形状一模一样**， differing 的只有「报出去的那串字节」与「拼出来的档名」。
+  现量在 `tmp/split-468/measure.log`（十一形 × 三侧）：改前的件 10 形与参照件不同、只有
+  `plain-ok` 同；改后的件 10 形同、只有盘上档名那一形不同。于是这一支的射程干净地落在
+  「渲染」而不是「判据」上——这是同族里少见的形状，值得与上面三支并记。
+- **唯一一处真分岔是编译器给的**：三架构门
+  `cargo check --offline -j 1 --target x86_64-unknown-none -p minix-textfilter --bins` 当场红，
+  报 `no method named 'to_string' found for struct 'Strerror'`——本轮新写的 `err3` 用
+  `minix_sys::Strerror(code).to_string()` 取那句 `strerror` 文本，而 `no_std` 下
+  `to_string()` 来自 `alloc::string::ToString`，本文件只 import 了 `String`。宿主侧因为
+  std 把 `ToString` 预lude 进来了，整包 1276 全绿也看不见这件事（与批次四百六十七的
+  `bin/sort.rs` 同一课，本轮再犯一次说明它必须写进判据而不仅写进记忆）：**只要动了
+  `src/bin/*.rs` 里的字符串拼装，就必须跑三架构门，不能等收尾**。补 import 后三架构各退 0、错误 0。
+- **落码层**：库侧 `SplitArgs.operands` 改 `Vec<&'a [u8]>`、四枚
+  `SplitError::Illegal*` 的值位改 `&'a [u8]`、`line_count`/`byte_count` 收 `&[u8]`
+  并新立 `fn decimal`（逐位 `checked_mul(10)` + `checked_add`，装不进 `usize` 的超长数字串
+  交回 `None`，与既有实现同判——与 C 不同判，见下面「顺手量出」那条）；壳侧走
+  `args_bytes()`/`prog_name_bytes()`，
+  `out_path` 交回 `Vec<u8>`、`ChunkWriter.prefix` 是 `&[u8]`、`fn err3` 自己拼三段形
+  （程序名、标签、`strerror` 句子），标签位按字节。程序名那一处仍折一次（`line_bytes` 与
+  `err_line` 两条 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`），另有三条开档口
+  （`create_sink`/`stream_input`/`input_size`）折的是路径——**盘上的分片名因此还是折过的**：
+  参照件对 `-l 1 - q<ff>` 落 `q` + `377` + `aa`，本壳落 `q` + `357 277 275` + `aa`
+  （`tmp/split-468/ab.log` 末行按类分开计数）。同一条腿的另一半现在翻正了：**报出去的**
+  分片名是原字节（`-l 1 - p<ff>/` 现量 `split: p\xff/aa: No such file or directory`，
+  与参照件逐字节相同）。
+- **顺手量出一处取值判据的分岔，本轮不动、只登记**：`split.c:110-112` 的
+  `numlines = strtoull(optarg, &p, 10); if (*p != '\0' || numlines == 0) errx(…)`
+  对「一串全是数字、但装不进 `unsigned long long`」的取值是**饱和之后接受**——这一支只看
+  `*p` 与是否为零，不看 `errno`，也没有上界可查。参照件现量四形（`tmp/split-468/overflow.log`）：
+  `-l 99999999999999999999`、`-l 18446744073709551616`（正好是 `ULLONG_MAX + 1`）、
+  `-l 9999999999999999999999999999999` 三形都退 **0** 且只切出一枚 `xaa`；
+  同位置的 `-l 4294967296`（装得进）两侧都退 0，不构成分岔。本层 `fn decimal` 用逐位
+  `checked_mul`/`checked_add`，装不进就交回 `None`，于是这三形报
+  `split: <原文>: illegal line count.` 退 1。**这条分岔与本轮的参数缝无关**
+  （改前的件同判，两份读数一并记在同一份日志里）。登记
+  `SPLIT-OVERFLOW-COUNT-ACCEPTED`：要么按 C 的饱和语义接受，要么把「本层不复制饱和」写成
+  一条显式契约并在文档里同时标注——**这需要一个口径裁决，不在本片的射程**。
+- **门账（先对测试名集合再对总数）**：库内 `split` 模块 **29 → 30**（新立
+  `the_value_and_the_operand_legs_hand_back_the_argv_bytes`，六段：四句值位、字母位取
+  `ff` 交回 U+00FF、前缀原字节跟着操作数一起交回；名字集合用
+  `cargo test --offline -j 1 -p minix-textfilter --lib split::tests -- --list | grep -c ': test'`
+  现量 = 30），壳内单测 **10 → 11**（新立 `a_raw_byte_in_the_prefix_survives_into_the_chunk_name`
+  两段，钉拼名这一腿），`split_face` **30 → 31**
+  （新立 `the_diagnostic_and_the_chunk_name_carry_the_argv_bytes`，八段：字母位、聚簇、
+  四句值位、遗留形、报出去的分片名、输入档名，外加钉住盘上折名那一形），跨壳表十九行 →
+  **二十行**（`("split", SPLIT, 1, b"split: unknown option -- \xff\n")`，usage 一行、退 1，
+  `split.c:355-361`），整包 69 段 **1273 → 1276 passed / 0 failed**。夹具侧 50 处
+  `parse_split_args` 的字面量数组包进新立的 `fn argv<'a>(words: &[&'a str]) -> Vec<&'a [u8]>`，
+  其中 7 处结果要留用的拆成两行（`let w_x = argv(&[…]);` + `let x = parse_split_args(&w_x);`），
+  10 处操作数期望改 `vec![b"…".as_slice()]`、10 处错误值位改字节面量；`é` 的三形
+  （`-é`、`-Zé`、`-lé`）写成字面字节 `c3 a9`，因为那两枚字节就是要断言的东西。
+- **负控五枚（`tmp/split-468/negctl.py`，逐枚读数 `negctl-K1.log`..`negctl-K5.log` 与
+  `negctl-summary.txt`）各咬 2/4/1/2/1 档**：K1（壳侧 argv 退回文本缝）咬跨壳表与
+  `split_face` 各一枚，**库内 628 全绿**——「库门对 argv 缝没有牙」第七次量化；
+  K2（字母位改按**字符**取，即 `String::from_utf8_lossy(&bytes[1..]).chars().next()`）
+  咬库内两枚（既有那枚按字节的字母位门 + 本轮新立那枚）+ 跨壳表 + 面门两枚，是本轮唯一
+  穿透到库里的注入；K3（`-l` 那句的值位折一次）只咬面门——**报文里的值位住在壳里，
+  库门看不到**，与 `sort` 的 Q4 同形；K4（`out_path` 里折前缀一次）咬壳内新门 + 面门；
+  K5（`err3` 的标签位折一次）只咬面门。每枚前后按整文件 md5 与 `tmp/split-468/post/`
+  （完整相对路径）成对复核，跑完 `git status` 只剩改动的那四件。
+- **A/B 对参照件 `tmp/split-311/split`（同名软链起，程序名段自然对齐）跑矩阵五十三形，
+  SAME=53 / DIFF=0**（`tmp/split-468/ab.log`），另计 1 形在册分叉（盘上分片名）。比对的是
+  退码、标准输出、标准错误、目录里的档名（按字节）与各档内容五件事。非空跑核验照批次
+  四百六十七那条先做：五十三形里两侧同退 0 的有 17 形，免得「两侧都报错」的同形混进全等数。
+  参照件归属当场验过（`-Z` 交回 `split: unknown option -- Z` 加一行 usage，是 Minix 的
+  `getopt.c`  lineage，不是 glibc 那句带引号的 `invalid option`）。
+- **四起工具自错，同一族：没跑或被截断的东西被当成读数**。① **夹具转换脚本把
+  `src/split.rs` 整个截成 0 字节**（`git diff --numstat` 交回 `0 1186`，库里一次 `#[test]`
+  都不剩）：脚本把链式正则替换的结果直接写回，没有先断言「新内容非空、尺寸在合理带内」。
+  本轮起所有写回类脚本必须先过两道断言（非空 + 尺寸带），本轮的两个脚本都已带上并留下
+  `tmp/split-468/fixture.py`、`fixture2.py` 供复用。② **负控驱动第一次跑出来的五枚全是
+  「没编译过」**：cargo 的 `Running …` 行走 **stderr**，而 `test result:` 行走 **stdout**，
+  脚本分开读两股流、只解析 stdout，于是「目标名 → 结果」永远配不上对。改成
+  `stderr=STDOUT` 合流再解析，五枚读数才落地。③ **第一次三侧现量把改前的件当成了改后的件**：
+  造「改前件」时从 HEAD 覆写了那两个源文件去编译，还原源码之后**没有重编**，
+  所以 `target/debug/split` 还是改前那枚——读数是 AFTER 与 BEFORE 逐形相同、只有程序名不同，
+  一眼可疑才查出来。判据：任何「三侧对照」之前先 `cargo build` 并把件复制出来命名
+  （本轮是 `bin-after/split` 与 `bin-before/split`，同名放置以便逐字节直比），
+  并核对复制件的 md5 与构建目录里那枚一致。④ 新立的那枚壳内门第一版把 `out_path` 后缀
+  猜成 index 27 = `ab`，实测是 `bb`（`-a` 的两位后缀按 26 进制展开，27 = 1×26+1）——
+  又一次「期望值必须先量后写」。
+- **门读数（全部 L1，`2026-10-30`，基线快照 `934bf04df`）**：宿主整包
+  `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1276 / 0**
+  （`tmp/split-468/pkg-1.log`；负控还原后 `pkg-2.log`、格式化后 `pkg-3.log` 三次同读数，
+  退出码各 0）；容器权威门按 §7.3 三挂载配方 → 退 0、**69 段 / 1276 / 0** 与宿主同读数
+  （`tmp/split-468/container-gate.log`）；三架构 `cargo check --offline -j 1 --target
+  {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}
+  -p minix-textfilter --bins` 各退 0、错误 0（`arch-*.log`；中途一次三架构同红是真错，见上）；
+  `rustfmt --edition 2024 --check` **原地**量：HEAD 那三份各 0 处 `Diff in`、本轮改出的
+  三份现件在格式化前分别是 6 / 4 / 3 处（`tmp/split-468/fmt-head-*.log` 对照
+  `fmt-*.log`），格式化之后四件全 0 处；`cargo clippy --offline -j 1 --all-targets
+  -p minix-textfilter` 退 0，与主树同参数对照：两树都是 **149** 行警告、去重后 61 条、
+  位置 44 处，集合差只有 `src/bin/split.rs` 那两条既有的（`items_after_test_module`、
+  `io::Error::other`）在 414/375 → 442/403 的**位移**，本轮零新警。
+- **进度与余量（全部现量）**：参数缝半已落 **二十三支**（`rev`、`paste`、`yes`、`tee`、`seq`、
+  `tr`、`colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、
+  `head`、`join`、`jot`、`nl`、`pr`、`sort`、`split`）；
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **16**，
+  整个命令面口径 → **86**；渲染半那条 grep 仍 **0** 行。`line_bytes` 这一轮把口径固定成
+  「整包含测试」：`grep -rn line_bytes os/commands/usr-bin/textfilter --include=*.rs` →
+  **82 处 / 34 件**（`split` 未新增调用点；上一笔记的「40 处 / 29 件」是另一口径、未写命令，
+  两个数不可直接比较，此后一律按上面这条命令复现）。余下 16 支里带字母位诊断面的有 **4** 支
+  （`tail`、`unexpand`、`unifdef`、`vis`），**切片 51 建议 `tail`**：字母序第一支。它的 optstring
+  是 `"Fb:c:fn:r"`（`minix3/usr.bin/tail/tail.c:108`，注意 `n` **不带冒号**），除了字母位之外有两条
+  值得先看的腿：一是 `tail.c:90` 的 `xerrx(1, "illegal offset -- %s", optarg)`（值进报文），
+  二是 `obsolete()`（`tail.c:217-`）——它在 getopt 之前**就地重写 argv**，判据全是按字节比
+  token 的尾字符（`:246` 的 `*t == 'f' || *t == 'r'`、`:251-260` 的 `case 'b'/'c'/'l'`），
+  所以这一支的参数缝有可能真的翻出**判据**分岔，而不只是报文分岔。参照件用前先打 `-Z` 验归属。**另两笔建议**：
+  一是把上一笔记登记的读缝 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE` 插一小轮收掉；
+  二是把 `JOT-EMPTY-OPERAND-READS-OOB`、`JOT-PREC-MINUS-ONE-FORMAT`、
+  `JOT-WORD-TOOLONG-ON-MACHINE` 三枚一起拿到真机上量一次。独立轮在册不碰：
+  `ARGV-BYTE-PATH-IN-LIBS`（本轮新增一条腿的读数：分片名落盘那一条）、
+  `CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-*` 三枚、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、
+  五枚 `*-NON-PERMUTE-OPERAND-TAIL`、`CUT-*` 两枚、`COL-CLIPPY-STOCK-LINT`、
+  `BIN_SUPPORT-FMT-DRIFT-STOCK`、`REV-MULTIBYTE-ERROR-LEG`、`NL-*` 四枚、`HEAD-*` 两枚、
+  `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`、`JOT-*` 三枚、`PR-*` 三枚、`SORT-*` 三枚、
+  `TEXTFILTER-07-TABLE-UNESCAPED-PIPES`，**本轮新立** `SPLIT-OVERFLOW-COUNT-ACCEPTED`
+  （上面「顺手量出」那条：一串全数字但装不进 `unsigned long long` 的取值，参照件饱和接受、
+  本层报 illegal，读数 `tmp/split-468/overflow.log`）。
+- **一处台账更正**：码笔 `339b4932f` 的提交信息里写「库内 split 28→29」，与现量不符：
+  应为**库内 `split` 模块 29 → 30**（命令与读数见上面「门账」那条）。提交信息不改写
+  （不重写历史），以本条为准。
+
+---
+
 ## 批次四百六十七（A2 参数缝半切片 49：`sort` 的字段分隔符、记录分隔符、操作数与四处回显交回原字节；同一枚 `ff` 走 `-R` 的两条路径有两种下场）
 
 - **先把形状说清**：`minix3/usr.bin/sort/sort.c:148` 的 optstring 是
