@@ -15,7 +15,7 @@
 | 编号 | 目录 | 对应服务 | 正式文档数 |
 |---|---|---|---|
 | 00 | [00-master-plan/](00-master-plan/) | — 顶层规划与决策记录（**规划期档案**：仅本目录 README 的阶段表在维护，其余 15 篇不可当现状来源，见其 README 顶部的可用性表） | 15 |
-| 01 | [01-stage-kernel/](01-stage-kernel/) | Kernel | 38 |
+| 01 | [01-stage-kernel/](01-stage-kernel/) | Kernel | 23 |
 | 02 | [02-stage-vm/](02-stage-vm/) | VM | 28 |
 | 03 | [03-stage-rs/](03-stage-rs/) | RS | 22 |
 | 04 | [04-stage-pm/](04-stage-pm/) | PM | 22 |
@@ -41,13 +41,38 @@
 - `archive/` — 该阶段已被取代的历史稿。
 - `.design/` — 评审流程用的可复用设计快照（中间产物，正式文档不引用，已被 `.gitignore` 排除）。
 
+**“正式文档数”的计数口径**：只数该阶段目录**顶层**的两位编号 Markdown 文件（`NN-*.md`），排除 `NN-todo.md`；不数 `README.md`、`todo.md`、`checklist.md`、`doc_rerank_*`、`smp_*` 等未编号工件，也不数 `draft/`、`archive/`、`.design/` 子目录。复算：
+
+```bash
+for d in rewrite-notes/[0-9][0-9]-*; do
+  printf '%s %s\n' "$(basename "$d")" \
+    "$(find "$d" -maxdepth 1 -name '[0-9][0-9]-*.md' -type f ! -name '*-todo.md' | wc -l)"
+done
+```
+
+按此口径 01 阶段现为 **23**（14 篇编号章节 + 9 个带编号的辅助文件）；旧表的 38 是迁移前的陈旧读数，已按现算改正。
+
+## 文档改名与拆分的前置
+
+阶段文档名被 `os/**/*.rs` 的生产占位注释按文件名引用（`tools/check-rs-unwired.sh` 要求生产占位符前五行注释含文档引用）。因此：
+
+- **改名或拆分必须与全部代码注释在同一笔提交里完成**；不允许先改文档名、再补代码引用。
+- 提交前重跑 `tools/check-rs-unwired.sh`（当前 PASS），并复算引用分布：
+
+  ```bash
+  grep -rhoE "[0-9]{2}-[a-z0-9-]+\.md" --include='*.rs' os | sort | uniq -c | sort -rn
+  ```
+
+  当前头部读数：`06-proc-init-boot-proc.md` 63、`04-platform-discovery.md` 24、`19-rs-external-interfaces.md` 23、`05-clock-interrupt-init.md` 23、`16-smp.md` 18。
+- 改名台账登记在 `rewrite-notes/coordination/TODO-LEDGER-OPEN.md:29`；本轮只登记规则与读数，不动任何文档名。
+
 ## 其他子区
 
 | 目录 | 是什么 | 数量 |
 |---|---|---|
 | [concepts/](concepts/) | 跨阶段的概念词条与知识：capability、endpoint、fail-stop、typestate、内核内替换的风险、陷入边界上的消息物化，另有取证方法论与开发机环境两篇知识条目（子类划分与入库判据见其 README） | 9 |
 | [misc/](misc/) | 不属于单一阶段的重写工程文档：项目规划、结构设计、纵向切片策略、语义冻结策略、内核不变量、异步消息表、SENDREC 原子性、ELF 加载、架构机制映射、现代硬件与 Rust，以及伞目录退役时归档进来的两份说明 | 16 |
-| [coordination/](coordination/) | 多会话协作区。`2026-10-08` 做过一次清理归并：七十六个过程产物降为二十八个——评审报告归并进 `REVIEW-HISTORY.md`、开场与接续提示词及交接件归并进 `SESSION-HISTORY.md`、aarch64 案卷归并进 `CASE-AARCH64.md`、riscv 静态扫描线归并进 `CASE-RISCV64.md`（未结案卷作为工作现场保留）；并发开发的规则范例抽成 `CONCURRENT-WORK-PROTOCOL.md`。**待办的唯一入查点是 `TODO-LEDGER-OPEN.md`（未完成）与 `TODO-LEDGER-DONE.md`（已完成与已定案），两者的入口与权威归属声明在 `TODO-LEDGER-INDEX.md`**；`01-stage-kernel` 能不能定稿看 `STAGE-KERNEL-FREEZE-READY-20261008.md`。工单、台账、案卷、工作记录仍只读为主，新批次产物请写进对应的活台账而不是新建文件 | 28 |
+| [coordination/](coordination/) | 多会话协作区。`2026-10-08` 做过一次清理归并：七十六个过程产物降为二十八个——评审报告归并进 `REVIEW-HISTORY.md`、开场与接续提示词及交接件归并进 `SESSION-HISTORY.md`、aarch64 案卷归并进 `CASE-AARCH64.md`、riscv 静态扫描线归并进 `CASE-RISCV64.md`（未结案的案卷单独保留）；并发开发的规则范例抽成 `CONCURRENT-WORK-PROTOCOL.md`。**待办的唯一入查点是 `TODO-LEDGER-OPEN.md`（未完成）与 `TODO-LEDGER-DONE.md`（已完成与已定案），两者的入口与权威归属声明在 `TODO-LEDGER-INDEX.md`**；`01-stage-kernel` 能不能定稿看 `STAGE-KERNEL-FREEZE-READY-20261008.md`。工单、台账、案卷、工作记录仍只读为主，新批次产物请写进对应的活台账而不是新建文件 | 28 |
 | [tmp/evidence/](tmp/evidence/) | 按日期与任务命名的实验取证（串口日志、设备树、脚本输出）。审计证据，不做改写 | 276 |
 | [archive/legacy-fork-bak/](archive/legacy-fork-bak/) | 以 fork 系统调用为主线时期的备份稿 | 40 |
 
