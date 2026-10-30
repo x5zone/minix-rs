@@ -119,6 +119,135 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百七十一（A2 参数缝半切片 53：`unifdef` 的操数名与 `-o` 名交回原字节；`-d` 的调试输出与 `-o` 的缺号句子两条在册分叉又被 A/B 撞见）
+
+- **形状**：`minix3/usr.bin/unifdef/unifdef.c:273` 的 optstring 是 `"i:D:U:I:o:cdeklst"`——
+  五个带值字母加七个不带值的，大小写混排（`D`/`d`、`U` 与不在串里的 `u` 是两回事）。
+  三处 `%s` 回声都在字节上：`err(2, "can't open %s", filename)`（`:337`，输入操数）、
+  `err(2, "can't open %s", ofilename)`（`:365`，`-o` 的值）、
+  `errx(2, "%s unchanged", ofilename)`（`:509`、`:514`、`:1034`，本壳未建模那条支路）。
+  `-o` 的值同时也是 `fopen` 的参数（`:364`）。符号名那一族有两处判据按字节走：
+  `addsym` 先经 `skipsym`（定义 `:928`，靠 `:262` 的 `endsym` 只放过字母、数字与 `_`）吃一串
+  合法字符、以它的落点当尾巴起点（`val = sym + (skipsym(sym) - sym)`，`:977`），再看尾巴
+  （`*val` 必须是
+  `'\0'` 或 `'='`，否则 `usage()`），而 `-i` 那一支先吃**一个字节**选边（`opt = *optarg++`，
+  `:281`）。`usage()` 那一句程序名**写死在串里**（`:375-377` 没有 `getprogname()`），
+  而 libc 那两行与 `err`/`warnx` 的前缀跟着 `getprogname()`；`exit(2)`（`:378`）——
+  **这一支的 usage 退 2**，跨壳表那一行因此钉的是 2 而不是同族常见的 1。
+- **三侧现量**（`tmp/unifdef-471/measure.log` 十三形）：改前的件 **9/13** 与参照件
+  `tmp/unifdef-318/unifdef_ref`（本轮经软链 `tmp/unifdef-471/bin-ref-unifdef` 起，程序名段与本壳
+  一致）逐字节同形，改后的件 **11/13**。翻正的是字母位与输入操数那句
+  `can't open`；`-o` 的名字位现在也按字节（`unifdef: can't open d\xff/x: …`，参照件同形，
+  只有句子那一段不同，见下面第二条在册分叉）。三形判据核实为同判：`-D\xffA` 与 `-i\xff`
+  两侧都只打 usage 一行，`-DA=\xff` 两侧都接受。
+- **A/B 撞见的两形在册分叉都有主人，不当成本轮的账**（`tmp/unifdef-471/ab.log` 末段）：
+  ① `UNIFDEF-D-DEBUG-OUTPUT`——`-d` 在 C 不是纯忽略，它把 `findsym` 与状态机每一步用
+  `debug()` 打到标准错误，本壳只当合法空字母；② `-o` 失败那一句的第三段——本层
+  `bin_support::write_file` 交回的是 `Result<(), ()>`，没有 errno 通道，于是本壳打
+  `Undefined error: 0`（这正是 C 的 `err` 在 `errno == 0` 时的句子形状）而参照件打
+  `No such file or directory`，名字位两边都是原字节；登记仍在 `UNIFDEF-O-ERRNO-LEG`。
+  矩阵四十五形 **SAME=45 / DIFF=0**，非空跑核验：两侧同退 0 的有 5 形。
+- **落码层**：库侧 `parse_unifdef_args` 收 `&'a [&'a [u8]]`、`UnifdefArgs.operands` 改
+  `Vec<&'a [u8]>`、`Sym.name`/`Sym.value` 与 `Options.output` 改 `Vec<u8>`（比较改按字节，
+  对位 C 的 `strlcmp`——`findsym` 里那句 `strlcmp(symname[symind], str, cp-str)`（`:951`）
+  比的是字节，定义在 `:998`），壳侧走 `args_bytes()`/`prog_name_bytes()` 并新立 `fn err_can_open`
+  自己拼三段形。开档与 `-o` 创建那两条腿仍走 `&str` 口（在册），折只发生在递给
+  `fopen`/`File::create` 的那一刻。
+- **`-s` 那一族本轮把话量准了**（`tmp/unifdef-471/symcheck.log`，二十次调用、两侧对照）：C 在 `-s` 下唯一的
+  标准输出打印点是 `findsym` 里那句 `printf("%.*s\n", (int)(cp-str), str)`（`unifdef.c:948-949`），
+  于是**每次 `findsym` 调用出一行**，而调用点有两族：`addsym` 在建表之初就先 `findsym(sym)`
+  （`:969`）⇒ 命令行每个 `-D`/`-U`/`-iD`/`-iU` 的名字都回声一行，且发生在 `=` 拆值之前
+  （现量 `-s -DFOO=BAR` 打 `FOO`）；`evalstr` 扫档时对每个标识符调 `findsym`（`:760`、`:771`）⇒
+  同一符号出现几次打几次、与表里有没有它无关（现量 `-s -DA` 扫 `#ifdef A`/`#ifdef B` 那档打
+  `A`/`A`/`B` 三行，本壳打空，两侧同退 0）。这一族的差**全在「本壳不打」那一边**（在册
+  `UNIFDEF-SYMLIST-OUTPUT`，批次三百一十八、四百零三各现量过一次，本轮读数是第三次且加细了
+  「命令行名字也回声」这一条）。名字位那处按**读码**应无差：C 打的是 `skipsym` 停住之前那段
+  （`:262` 的 `endsym` 只放过字母、数字与 `_`，裸字节是截断点），参照件那一侧也确实是这么量的
+  ——档里 `#ifdef A\xffB` 在 `-s` 下打 `A`、`-s -DA=\xff` 打 `A`（`symcheck.log` 里这两形），
+  即裸字节**截断**名字而不是让符号消失；而本壳那一侧**无法对照**（`-s` 根本不打），
+  `src/unifdef.rs:fn find_sym` 里 `core::str::from_utf8(...).ok()?` 的失败支因此**未量到**，
+  这里写成「按源码应如此」而**不立册**。**⛔ 上一稿在这里编了一条不存在的册项**：只读了
+  `find_sym` 那句 `ok()?` 就写成「档名里带裸字节的符号在 `-s` 那一形里整个消失」并新立
+  `UNIFDEF-SYMBOL-LIST-TEXTSEAM`，一次都没量；实测把它否掉（本壳 `-s` 根本不打，谈不上
+  「某个符号消失」），册项已删、码内注释同步改掉。判据照上一笔：**读码得到的「应该如此」
+  不是观察**，立册之前必须有一条跑过的命令兜着。
+- **真正立住的那条内容半册项是档里的行**（`tmp/unifdef-471/content-seam.log`）：同一份档
+  （`#ifdef A / x / #else / one \xff tail / #endif / plain \xff line`）四形对照，参照件把
+  保留下来的那行原样交回单个 `377`，本壳交回 `357 277 275`（U+FFFD 三字节），退码两侧同 1：
+  `-DA`、`-iDA`、`-l -DA` 三形都是这个差，`-c -DB` 那形两侧都空。**成因是缝在决定半的入口**
+  ——`src/unifdef.rs:fn run` 收 `&str`，壳侧 `src/bin/unifdef.rs` 递进去之前先
+  `String::from_utf8_lossy(&input)`，折发生在读档那一刻、比任何选项都早。登记
+  `UNIFDEF-LINE-CONTENT-TEXTSEAM`（与 `UNEXPAND-LINE-CONTENT-TEXTSEAM`、`SORT-RECORD-CONTENT-TEXTSEAM`
+  同族），本轮不碰：那是内容半，比参数缝半大一片。
+- **一处覆盖面有洞，按判据当场补**：负控 K2（字母位改按字符取）第一遍**库内全绿**，
+  只咬跨壳表与面门。查下来是本轮新立的库门只覆盖了 `usage()` 那两支与值位/档名位，
+  没覆盖字母臂的取法。补一段 `parse_unifdef_args(&[b"-\xff"]) ⇒ Getopt(UnknownOption('\u{00ff}'))`
+  之后重跑同一枚注入，**咬库内一枚**（`negctl-K2.log`）。判据还是那条：
+  一整段全绿先怀疑覆盖面有洞，而不是先相信「这条腿没差」。
+- **门账**：库内 `unifdef` **+1**（新立 `the_symbol_and_path_legs_hand_back_the_argv_bytes`，
+  七段：名字位、值位、`-o` 名、操数、字母位、`-i` 臂、环不重排），`unifdef_face` **14 → 15**
+  （新立 `the_operand_and_output_names_carry_the_argv_bytes`，六段，末段按当前形状钉住
+  `-o` 落盘时那个折过的档名），跨壳表二十二行 → **二十三条**（`("unifdef", UNIFDEF, 2, …)`），
+  整包 69 段 **1281 → 1283 passed / 0 failed**。夹具侧 27 处 `parse_unifdef_args` 包进新立的
+  `fn argv`、13 处 `add_symbol` 的 spec 与 6 处期望位改字节面量、6 处绑定形拆两行。
+- **负控三枚（`tmp/unifdef-471/negctl.py`）按红门数各咬 2/4/1**：K1（壳侧 argv 退回文本缝）
+  咬跨壳表 + 面门而**库内 631 全绿**（第十次量化）；K2（字母位按字符取）在补覆盖面之后
+  咬库内 + 跨壳表 + 面门两枚；K3（`can't open` 的档名位折一次）只咬面门。
+  改掉两处注释、台账补完之后再跑一遍三枚（`negctl-driver2.log`），读数**一字不差**照旧
+  2/4/1，注入还原后四件 md5 与跑前清单相符（`post2/md5-before-negctl.txt`）。
+- **六起工具自错**：① **bash 里的 `$FFx` 被当成变量名**——构造 `"no$FFx"` 时那枚裸字节
+  根本没进 argv，第一轮「三侧同形」的读数是假的；判据：**变量后紧跟字母必须写 `${FF}`**，
+  且第一次跑要先确认「非法字节确实进了 argv」（本例的自检是改前改后必须不同）。② 同一枚
+  混淆还让我把 `bin-before` 与 `bin-after` 的 md5 与源码 md5 串着看，判据同上笔：
+  **md5 只复核同一对象前后一致，配对要靠行为**。③ 负控驱动是从上一笔复制的，
+  目标标签还写着 `bin_unexpand`，读的其实是 `unittests src/bin/unifdef.rs`——
+  读数没错、标签会误导，已在汇总里注明。④ `parse_unifdef_args(&[b"-D\xff"])` 的期望我
+  先写成「接受并带字节的名字」，当场红：C 的 `skipsym` 只吃 `[A-Za-z0-9_]`，`ff` 是尾巴，
+  判的是 usage；期望按实测改写并把这个性质写进注释。同一类毛病还犯了第二次，而且更大：
+  台账初稿把 `-s` 那一形写成「带裸字节的符号整个消失」并新立一枚册项，那是只读 `find_sym`
+  的 `from_utf8(...).ok()?` 编出来的因果、一次都没量；补跑 `symcheck.log` 才看清本壳 `-s`
+  一行都不打（差全在「不打」那一边，早已在册），而那枚 `ok()?` 的失败支按两边同一取法
+  根本不可达。**读码得到的「应该如此」不是观察**，立册之前必须有一条跑过的命令兜着。⑤ 快照打早了——`post/` 是在面门与
+  跨壳表那两笔改动**之前**打的，负控跑完拿它复验时那两件报 FAILED；不是损坏，是快照时机，
+  判据：**每次动完四件就重打一次 md5 清单**（本轮已重打并复验全 OK）。⑥ 本轮还有一起是
+  **日志自己少了半栏**：A/B 脚本末尾那几行在册形的打印语句里压根没有 `out=`，标准输出的
+  差异落不进日志，而我在它旁边写了一句把它解释掉（「早先两形的标准输入是空的，所以那两形
+  不构成观察」——那两形带的是档名操数，`in.txt` 非空，连前提都不对）。**少了的那一栏会让
+  读日志的人以为看见了全部**，而含糊的解释又是自己写的，就更看不见。补 `out=` 重跑（原日志
+  存档 `ab-stdout-blind.log`）：`-s in.txt` 这一形参照件打 `A\nB\n`、本壳打空、退码两侧同 0
+  （`ab.log` 第 49 行），这才是那句该有的形状。
+- **门读数（全部 L1，`2026-10-30`，基线快照 `ae4aadcfb`）**：以下每一枚都是**最后一次动完源码之后**
+  复跑的（本轮改掉两处注释与三处 C 行号锚之后又全量重跑一遍，汇总 `final-gates.log`）：宿主整包
+  **69 段 / 1283 / 0**（`pkg-2.log`、`pkg-3.log`、`pkg-4.log`、`pkg-5.log` 四次同读数、退出码 0）；
+  容器权威门按 §7.3 三挂载配方 → 退 0、**69 段 / 1283 / 0**（`container-gate3.log`，
+  第一次的 `container-gate.log` 与第二次 `container-gate2.log` 同读数）；三架构各退 0、错误 0
+  （`arch3-*.log`，动壳侧字符串拼装后当场跑，一次通过）；`rustfmt --edition 2024 --check` 原地量：
+  HEAD 三件各 0 处 `Diff in`（`fmt-head-*.log`），本轮三件格式化前 7 / 2 / 1 处，格式化后四件
+  复量各 0 处（`fmt3-*.log`）；`cargo clippy --offline -j 1 --all-targets -p minix-textfilter`
+  退 0、**149** 行警告（`clippy3.log`），去掉路径后的唯一句子主树与本树都是 **37** 条且 `diff`
+  为空，位置清单两侧都是 **80** 处、差集只有 `unifdef.rs` 的四处行号漂移（八行 `<>`，本轮改注释
+  所致），零新警。
+- **一处账面用字要更正**：码笔 `3d0497ead` 的提交信息把跨壳表写成「二十二行 → 二十三轮」，
+  正字是「二十三条」（本台账与协调板 A2 行都按正字写）。数字与内容没错，是同一个键打错了字，
+  按上一笔的同一口径不改历史、在这里更正。
+- **进度与余量（全部现量）**：参数缝半已落 **二十六支**；`textfilter` 余 **13** 支
+  （`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l`）、
+  命令面 **86** 支（`grep -rl "support::args()" os/commands --include=*.rs | wc -l`）；
+  `line_bytes` 同口径 **86 处 / 34 件**（`grep -rn "line_bytes" os/commands --include=*.rs | wc -l`
+  与 `grep -rl … | wc -l`；本笔给 `unifdef` 的壳添了一处调用点，上一笔写的 85 是改前的数）。**带字母位诊断面的只剩 `vis` 一支**（`unvis` 与
+  `vis` 是同族两支，`unvis` 不走 getopt 报文那一支），切片 54 = `vis` 是本族参数缝半的最后一支。
+  独立轮在册不碰：`ARGV-BYTE-PATH-IN-LIBS`（本笔再添一条腿：`-o` 落盘的档名）、
+  `UNIFDEF-O-ERRNO-LEG`、`UNIFDEF-D-DEBUG-OUTPUT`、`UNIFDEF-SYMLIST-OUTPUT`（本轮第三次现量，
+  读数见上「`-s` 那一族」那条，`tmp/unifdef-471/symcheck.log`）、本笔新立
+  `UNIFDEF-LINE-CONTENT-TEXTSEAM`（现量 `tmp/unifdef-471/content-seam.log`）、
+  `TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE`
+  （自拼三段形的份数升到 `err3`/`warn_bytes`/`err_can_open` 三份助手加 `sort` 的内联一处，
+  现量 `grep -rln "err3\|warn_bytes\|err_can_open" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → 3）、
+  `SPLIT-*` 两枚、`TAIL-OFFSET-SATURATION-OUTCOME`（与 `SPLIT-OVERFLOW-COUNT-ACCEPTED` 的
+  裁决按上一笔的结论**逐命令照各自那一句**）、其余各本在册项不变。
+
+---
+
 ## 批次四百七十（A2 参数缝半切片 52：`unexpand` 的六形 tabstop 回声与操作数档名交回原字节；顺手量清内容半的一处双重编码，比 `sort` 那条更严重）
 
 - **先把形状说清**：`minix3/usr.bin/unexpand/unexpand.c:86` 的 optstring 是 `"at:"`——只有
