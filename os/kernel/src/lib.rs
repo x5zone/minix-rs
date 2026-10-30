@@ -3734,20 +3734,13 @@ fn idle(
         //   1. `context_stop_idle` at interrupt entry (arch_clock.c:351-369) —
         //      clears `cpu_is_idle` and restarts the local timer, so a woken AP
         //      resumes ticking (this mask is otherwise permanent);
-        //   2. the enqueue wake arm (proc.c:1641-1650) — when a runnable process
-        //      is placed on an idle CPU's queue, `if (cpu_is_idle) smp_schedule()`
-        //      sends the SCHED IPI to rouse it. `sched_enqueue_with` (proc_table)
-        //      only preempts same-CPU targets today, so a process routed to an AP
-        //      would never wake (its timer is masked and no IPI is sent);
-        //   3. [LANDED] a `SYS_SCHEDCTL`/`SYS_SCHEDULE` cpu-affinity
-        //      guard — `sched_proc` now clamps any non-BSP request to the BSP
-        //      (see `clamp_cpu_to_bsp` in sched.rs), so no user-reachable path
-        //      pins a process onto a masked AP. Arms 1-2 (context_stop_idle +
-        //      enqueue wake IPI) remain outstanding and are REQUIRED before this
-        //      clamp is removed and APs may run user work.
-        // Today none is reachable: every process keeps `p_sched.cpu == 0` (boot
-        // never migrates, `SchedFields::new` defaults cpu 0, children inherit),
-        // so APs only ever reach `idle` and the mask is safe. Their local tick is
+        //   2. [LANDED] the enqueue wake arm (proc.c:1641-1650) — when a runnable
+        //      process is placed on an idle CPU's queue, `sched_enqueue_with`
+        //      sends the SCHED IPI to rouse it;
+        //   3. [LANDED] the former BSP affinity clamp is removed, so
+        //      `SYS_SCHEDCTL`/`SYS_SCHEDULE` may home a process on an AP.
+        // All three arms are now in place; APs may run user work.
+        // Their local tick is
         // observability-only (`local_tick` clock.rs) and preemption is BSP-driven
         // via the SCHED IPI. Enabling AP scheduling REQUIRES arms 1-3 first.
         crate::clock::stop_local_timer();

@@ -951,6 +951,16 @@ impl ProcessTable {
             }
         }
 
+        // C proc.c:1647-1650 — enqueueing onto an idle CPU wakes it with a
+        // scheduling IPI. The same-CPU case cannot be idle (the current
+        // process is running), so checking the target CPU's flag directly is
+        // equivalent to C's `else if` on the preemption branch.
+        if let Some(smp) = unsafe { crate::try_smp_state() }
+            && smp.cpu_local(cpu_id).is_some_and(|local| local.cpu_is_idle)
+        {
+            <minix_arch::CurrentSmpArch as minix_arch::SmpArch>::send_sched_ipi(cpu_id.raw());
+        }
+
         // Phase 4: record enter_queue for the enqueued process
         // Design decision §3.6: fix Minix3 bug
         let tsc = read_tsc();
@@ -960,10 +970,9 @@ impl ProcessTable {
 
         // C proc.c:1657: `#if DEBUG_SANITYCHECKS
         // assert(runqueues_ok_local())`. runqueues_ok_local() ==
-        // runqueues_ok_cpu(cpuid) (proto.h:138) — the CURRENT cpu. Under the
-        // BKL + clamp_cpu_to_bsp design this enqueue runs on the owning cpu,
-        // so cpu_id == current_cpu_id() and this validates the just-modified
-        // queue; using current_cpu_id() stays C-faithful for future x-cpu.
+        // runqueues_ok_cpu(cpuid) (proto.h:138) — the CURRENT cpu. The enqueue
+        // may target another CPU's queue (C does the same), so this sanity
+        // check validates the current CPU's queue as C does.
         #[cfg(all(feature = "sanity-checks", not(test)))]
         if let Some(smp) = unsafe { crate::try_smp_state() } {
             assert!(
