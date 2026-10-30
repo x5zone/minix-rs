@@ -3513,6 +3513,19 @@ exclude」的分域读数。
 同量级。判据：`cargo test -p minix-fs-vbfs` → **2 / 0**；vbfs 的**三架构门当前不适用**
 （其 binary 是宿主态桩），接环时随 pfs 模板一并转 `no_std`。
 
+### 第一百九十五笔（A 板 A21 · 17 网络：`N1-P1-4` 的「主循环占位」已过期，循环半在；余协议栈本体与 E-NETSTART）
+
+板上落码注要求「先复核 `N1-P1-2`/`N1-P1-4` 的落地行是否覆盖生产主循环」。答案：**覆盖了**。
+`os/net/lwip/src/main.rs` 与 `os/net/uds/src/main.rs` 都以 `ProductionHandler` +
+`minix_netdriver::socktable::SockTable` + `server::run(…)` 起真环：lwip 侧带 7 段映射 C 十三步的
+`Startup` 链（`lwip.c:203-263`）、`-dev` 参数收集与 `wait_for_init` 的 RS 生命期门，handler 里
+stack/mcast/routes/pending/wake_replies 各面齐备；`grep -rn "unimplemented!()|todo!()" os/net`
+生产区零命中。
+
+**剩下的两条**：① **协议栈本体**——`ProductionHandler.stack: Option<Box<dyn Stack>>` 在启动链
+第 2 步建，smoltcp 适配的落地随 `25-smoltcp-shim.md` 的设计（本轮不代做）；② **SF/RS 启动链**
+挂 **E-NETSTART**（跨板）。判据：`cargo test -p minix-net-lwip -p minix-net-uds` → **148 / 0**（6 段）。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
