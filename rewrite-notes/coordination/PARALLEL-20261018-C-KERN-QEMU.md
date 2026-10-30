@@ -49,7 +49,7 @@
 | C18 | `SD-22`/`PD-21` 防线边界的文档半 | `TODO-LEDGER-OPEN.md:28` | `✅ 2026-10-30（01TODO-C7ARCH）` | 裁决（`PD-21`）已定：「软件层不直接解引用用户虚拟地址」承担同一防线、硬件屏蔽位随写下沉批次再谈，且要求把这条边界写进文档，否则会被后来者读成「忘了设位」。先对账 01 篇（含 `14-exception-interrupt.md`）是否已写：已写则标 `✅` 附行号；未写则补一段；落点若在别的阶段文档，先在 §6 登记再移交。**落点**：14 篇 §3.3 处置表之后补「用户地址的防线边界（PD-21）」一段，锚 `cross_space.rs` 与 `direct_map.rs`，明写 SMAP/SMEP 位不在本轮承担防线 | 只改文档不改码（码侧裁决已定）；`doc-style-lint` 零 error |
 | C19 | `P-ALL-04`/`SD-25`/`T8` 取证探针滚除（结案批 `CC-INSTRUMENT`） | `TODO-LEDGER-OPEN.md:43`、`:159` | `✅ CC-INSTRUMENT 结案批已复核：可滚 0 枚；余 29 行 nk4 读数均为测试/长期观察资产，保留` | `PD-10` 三档已定、逐站分类已完成：**真正可动的 0 枚**——余下探针全是 riscv64 污染案（`PD-16`）与主核钳位（`SD-24`）的在案取证。本行只在 C1 定案后随 `CC-INSTRUMENT` 结案批执行：先重跑一次逐站归类（含 `:159` 说的站外三式并扫），再滚 | 归类读数随结案批一并记；提前滚探针＝毁 C1 的取证现场 |
 | C20 | `KernelInfo.bootstrap_*` 哨兵字段的去留 | `TODO-LEDGER-OPEN.md:30` | `🚫 维持登记` | 已临时裁决「保留 + guard 为现状」；删字段要动 `KernelInfo` 公共 API 与 40+ 个 qemu bootstrap 测试内核，按「等第二个真实使用者（独立 ELF 自引导 `TODO-02-3`）出现再裁」搁置。本行不许被翻成 `☐` 提前删 | 裁决换向时由编排线补锚点 |
-| C21 | 地址常量清扫的低危残余 | `TODO-LEDGER-OPEN.md:138` | `🚫 低危不排期` | 高/中危已修并带断言（`:138` 已定 adjudicated）；余量是注释层卫生与 `#[cfg(test)]` 夹内字面量（如 `A12` 的 x86 心智模型注释），落点可能跨 A 板的 `os/servers/vm` 注释——动前先判归属。下次复扫（`python3 tools/address-constant-scan.py os`，按审计豁免清单过滤）时顺带判读 | 复扫输出与豁免清单的对照读数 |
+| C21 | 地址常量清扫的低危残余 | `TODO-LEDGER-OPEN.md:138` | `✅ 复扫完成：剔除 .dockercargo 后 LITERAL 604 / SHIFT 107 / FAMILY 314 / CONST 3260；0 项新高危/中危，差量全落 E1–E5 豁免` | 高/中危已修并带断言（`:138` 已定 adjudicated）；余量是注释层卫生与 `#[cfg(test)]` 夹内字面量（如 `A12` 的 x86 心智模型注释），落点可能跨 A 板的 `os/servers/vm` 注释——动前先判归属。下次复扫（`python3 tools/address-constant-scan.py os`，按审计豁免清单过滤）时顺带判读 | 复扫输出与豁免清单的对照读数 |
 
 **`P-ALL-07` 的 55 个 `loop {}` 分工**：52 个在 `os/drivers/`（B 板），2 个在 `os/fs/`（A 板），1 个是 `os/boot-shim/` 的末态空转（不是服务入口，不排期）。三块板都不要把 boot-shim 那一个算成未竟的服务接线。
 
