@@ -3593,3 +3593,12 @@ armed 在、零 HIT，ptwb 命中均为既有已知良性形状。覆盖完成�
 csc 含挂起前缀 / mset / ptwb）+ N=3 零命中同时成立，PD-16 止损线达成，
 C1 由 `🔄` 转 `✅（转长期观察）`，C2b 前置解除。串口：
 `tmp/pd16-n3/round{1,2,3}/serial.log`。
+
+**C2B / C15 里程碑（AP 唤醒与撤钳）**：码笔 `3626b52d5`（C2B）、合并
+`8b4c51514`；C15 完成边 `C15BARRIER`。`sched_enqueue_with` 在目标 CPU
+`cpu_is_idle` 时发 `send_sched_ipi`，并在 IPI 前 `fence(Release)` 发布
+运行队列写（PD-19 完成边）；删除 `clamp_cpu_to_bsp` 及其调用/测试，cpu
+亲和可落到 AP。门读数：kernel mock **849/0/8**、HEAD `run_all`
+**39/0/0**（含 `-smp 4` 的 test-smp-aps 与 e5-ds；此前 38/1 的 e5-ds
+取指故障未再现）。C 板 C2b/C5/C13/C15 置 ✅；C19 由绑 C1/C2 改为可执行
+CC-INSTRUMENT 结案批。
