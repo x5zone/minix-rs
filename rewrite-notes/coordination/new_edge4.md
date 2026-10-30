@@ -3890,3 +3890,14 @@ PASS、`run_all` 39/0/0。C2D 只剩 READY 有界 ack；钳制继续兜底。
 PASS，`WARNING: not all CPUs booted` 计数 0，`run_all` 39/0/0。C2D
 前置至此全绿；撤钳实施另列 C2E（riscv 默认固件 SSI 投递限制仍在，
 按实测决定窄钳/固件门）。
+
+**C2E 里程碑（撤钳：x86/aarch64 撤除、riscv 窄钳）**：码笔
+`dcf99d197`、合并 `558352fa0`。`sched_proc` 删除全局
+`clamp_cpu_to_bsp` 调用/函数/测试；x86_64/aarch64 的 cpu 经 Step 3.5
+迁移与 Step 7 affinity 落到 AP（保留范围/就绪校验）。riscv 默认固件
+不投递跨 hart SSIP（`test-smp-ipi-riscv64` 仅 `aclint=on` PASS），
+保留 `cfg(riscv64)` 窄钳：校验后重写回 BSP，防 AP-homed 进程饿死。
+读数：`run_all` 39/0/0（x86 `test-smp-aps`/`test-smp-ipi` PASS、
+e5-ds `chain ok`）、aarch64/riscv 全镜像 PASS（ap-irq-ready=1 /
+panic=0）、kernel mock 849/0/8、三架构 check 0 error、riscv pin 6/0。
+C2b/C2E 至此收口；riscv SSI 固件门保留为平台前置。
