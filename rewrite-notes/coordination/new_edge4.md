@@ -3801,3 +3801,25 @@ C2b/C5/C13 转 ⏸，新增 C2C 行；接收侧四件同批落地并经三架构
 `os/libs/minix-types/src/types/boot.rs:const KERNINFO_USER_VA` 并注明内核侧
 是再导出。08 篇锚点 **134/134**、断链 **0**、`doc-style-lint --diff`
 error 0。C7b 余项收窄为正式文档计数口径与改名前置。
+
+**C2D-A64SGI 里程碑（aarch64 SGI 片）**：码笔 `4e6a73f13`、合并笔
+`426212ff6`。先定位到一个真实
+接线缺陷：`os/arch/src/arm64/smp.rs` 的 `set_gicd_base` 全仓无调用者，
+`GICD_BASE` 恒 0；基线全镜像的晚段 panic 正是首次 IPI 在 `GICD_SGIR`
+偏移 `0xF00` 处取指/数据中止（ESR `0x96000046`、FAR `0xf00`）。本片：
+① `arch_init` 从 `Gicv3Desc` 把 GICD 物理基址经 `set_gicd_base` 接入
+（`gicd_base()` 在未初始化时显式 panic，不再写 0 地址）；② 控制器保存
+`gicr_stride`，新增 `enable_sgi` 按 `hw_id` 写该 CPU 重分发器的
+`GICR_WAKER`/`GICR_IGROUPR0`/`GICR_ISENABLER0` 并打开 CPU 接口；
+③ `send_sched_ipi` 按 `GICD_CTLR.ARE_NS` 选 `ICC_SGI1R_EL1` 或
+GICD_SGIR；④ aarch64 IRQ 分派特判 SGI 0，走
+`sched_handler_full` + `preempt_current_on_ipi` + `complete_hardware_irq`
+（不再让通用路径 mask 后返回 Spurious）；⑤ `sched_enqueue_with` 补 C 的
+`else` 语义，只对**别的** CPU 发唤醒 IPI。真机全镜像
+`test-smp-aps-aarch64.sh`：`ap-arrived=1`、`panic=0`、PASS 并走到 rc
+marker。**新 blocker**：aarch64/riscv 的生产 AP 在 `ap_early_entry` 里
+`wfi` 停车，从未进入 `scheduler_loop`（只有 x86 有 `smp_ap_tail`），
+故 AP 侧 SGI 使能与端到端调度仍不能验；C2D 余下三件（riscv flag 应用、
+唤醒后重启 AP 定时器、riscv 远端 `fence.i`）与两架构 AP 进环同批后才能
+撤钳。门读数：kernel mock 850/0/8、minix-arch pin 4/0、aarch64 check
+0 error、`run_all` 39/0/0（`tmp/c2d-runall.log`）。
