@@ -3031,6 +3031,19 @@ K4（壳侧值位折一次）与 K5（档名折一次）各只咬面门。
 退 0 ⇒ 纯快进、零冲突；主树合并路径的 `git status --porcelain` 交回空。快进之后的主树复跑
 读数另记一笔合回补记。
 
+**合回读数（第一百八十四笔补记，批次四百七十）**：快进前复跑上面两条命令，仍分别是空与退 0
+⇒ `git merge --ff-only claim/GETOPT-REPORT-BYTE-LETTER-qoder` 纯快进成功
+（`8 files changed, 562 insertions(+), 92 deletions(-)`，主树 `rewrite` 顶到里程碑笔 `2f7c4134a`）。
+逐笔验祖先三笔全 ✓（码笔 `40b3974bb`、文档笔 `7596f0d29`、里程碑笔 `2f7c4134a`）。主树当场复跑
+`cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → 退出码 0、**69 段 / 1281 / 0**，
+与领取树最终态逐数相同（库内 630、`unexpand_face` 15，
+`/home/xzhao/github/minix-rs/tmp/unexpand-470-maintree.log`）。本笔的另一处教训也留在读数里：
+主树第一次复跑时我用 `awk -F'[ ;]' '{s+=$5}'` 求总通过数，读出 `passed=0`——分隔符切出来的字段
+位置不对，退出码 0 与 `test result` 行数 69 才是可信的那两项，改回按空白分列取第 4 字段才得到 1281。
+判据：**汇总口径的读数要与它的字段定义一起复核，一次切错就把整段总和读成 0**。
+取证目录 `tmp/unexpand-470/`（三侧现量、A/B、负控五枚、门日志、`post/` 快照、改前与改后两枚件、
+`overflow.log`）已在主树 `tmp/` 下，无需另抄。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
