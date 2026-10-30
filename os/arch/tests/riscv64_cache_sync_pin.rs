@@ -8,15 +8,14 @@
 //!    hart's earlier writes become visible to its own later instruction
 //!    fetches — the loader scenario is exactly "this hart writes, the same
 //!    hart fetches afterwards");
-//! 2. this file must **not** grow an SBI remote-fence ecall on its own:
-//!    `remote_fence_i` across harts is a hard prerequisite of the batch that
-//!    removes the main-core clamp (in this tree processes run only on the
-//!    BSP, so a local fence is complete for the current execution model); its
-//!    implementation needs a hart mask from the kernel topology and is not
-//!    held at the arch layer. Half-wiring it (passing a bogus mask) would
-//!    reach M-mode firmware and be worse than not doing it at all. That
-//!    binding is part of the file documentation; this pin freezes it together
-//!    with the code shape.
+//! 2. a hart that did not perform the stores needs its own fence, so the
+//!    implementor must issue the SBI RFENCE `remote_fence_i` broadcast after
+//!    the local fence. `hart_mask_base = -1` addresses every available hart,
+//!    which is the portable form the arch layer can use without a kernel
+//!    hart-mask table; a nonzero SBI status fails fast;
+//! 3. the file documentation must record the RFENCE platform prerequisite
+//!    and the broadcast shape, so a later reader cannot mistake it for an
+//!    optional optimization or "half-wired" remote arm.
 //!
 //! The real-hardware judgment boundary matches `arm64_cache_sync_pin.rs`:
 //! QEMU does not model this class of cache mismatch, so a green gate only
@@ -44,20 +43,27 @@ fn code() -> String {
 #[test]
 fn local_fence_i_is_the_synchronization_action() {
     let c = code();
-    assert!(c.contains(r#"asm!("fence.i")"#), "本地同步动作不是 FENCE.I");
+    assert!(c.contains(r#"asm!("fence.i")"#), "local sync action is not FENCE.I");
 }
 
 #[test]
-fn no_sbi_remote_fence_in_body_until_unclamp_batch() {
+fn remote_fence_i_broadcasts_to_all_harts() {
     let c = code();
+    for needle in [
+        "ecall",
+        "SBI_RFENCE_EID",
+        "SBI_RFENCE_REMOTE_FENCE_I_FID",
+        "SBI_HART_MASK_ALL",
+        "0x5246_4E43",
+    ] {
+        assert!(
+            c.contains(needle),
+            "remote-fence shape missing: {needle}"
+        );
+    }
     assert!(
-        !c.contains("ecall"),
-        "契约体里出现了 SBI ecall——跨 hart 的 remote_fence_i 属撤主核钳制批次的\
-         硬前置（需内核拓扑提供 hart 掩码），不得在 arch 层半接"
-    );
-    assert!(
-        !c.contains("remote_fence_i(") || !c.contains("asm!(\"ecall\""),
-        "远端栅栏调用形态越界"
+        c.contains("remote_fence_i"),
+        "the SBI failure path lost its remote_fence_i diagnostic"
     );
 }
 
@@ -65,13 +71,15 @@ fn no_sbi_remote_fence_in_body_until_unclamp_batch() {
 fn smp_binding_is_documented_in_file() {
     let s = src();
     assert!(
-        s.contains("remote_fence_i"),
-        "文件未记录远端栅栏的归属（SMP 撤钳批次）——绑定说明丢失会让下轮\
-         把它当成漏实现重做"
+        s.contains("remote_fence_i") && s.contains("RFENCE"),
+        "file does not record the SBI RFENCE remote-fence contract"
     );
     assert!(
-        s.contains("clamp_cpu_to_bsp") && s.contains("SMP"),
-        "文件未写明「当前只有 BSP 执行装载镜像」的判据（clamp_cpu_to_bsp/SMP），\
-         这是本地栅栏完备性的前提"
+        s.contains("all available harts") || s.contains("hart_mask_base"),
+        "file does not document the broadcast form (hart_mask_base = -1)"
+    );
+    assert!(
+        !s.contains("local fence is complete for the current execution model"),
+        "stale BSP-only rationale survived: the remote arm is now implemented"
     );
 }

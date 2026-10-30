@@ -34,9 +34,10 @@
 //! Cross-hart synchronization for secondary CPUs. On aarch64 the by-VA
 //! operations broadcast to the inner shareable domain (`IC IVAU` is a
 //! domain operation), so one hart's sequence covers the others. On riscv64
-//! `FENCE.I` is hart-local; the remote-fence arm (SBI `remote_fence_i`)
-//! belongs to the SMP milestone and is bound to the main-core clamp removal
-//! — see `riscv64::cache_sync` for the binding note.
+//! `FENCE.I` is hart-local, so the implementor issues it locally and then the
+//! SBI RFENCE `remote_fence_i` broadcast (`hart_mask_base = -1`, every
+//! available hart); the RFENCE extension is a platform prerequisite and a
+//! nonzero SBI status fails fast. See `riscv64::cache_sync`.
 
 use core::ops::Range;
 

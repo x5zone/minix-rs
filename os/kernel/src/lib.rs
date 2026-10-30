@@ -3769,9 +3769,8 @@ fn idle(
         //      (C2D-RVAPENTRY), though its SSI cross-hart delivery is still
         //      firmware-blocked; its SWI arm now applies the pending
         //      scheduler flags via `sched_handler_full` +
-        //      `preempt_current_on_ipi` (C2D-RVFLAGS), and it keeps the
-        //      local-only `fence.i` contract, whose remote-fence arm is this
-        //      unclamp's precondition.
+        //      `preempt_current_on_ipi` (C2D-RVFLAGS), and its cache-sync now
+        //      issues the SBI RFENCE broadcast (C2D-RVFENCE).
         //   2. Producer: LANDED. `sched_enqueue_with` sends the C
         //      `proc.c:1647` SCHED IPI when the target CPU is idle — inert
         //      while the clamp below keeps every process on the BSP.
