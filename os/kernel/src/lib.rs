@@ -3348,11 +3348,30 @@ pub fn set_vm_running(v: bool) {
 ///
 /// x86-64: the per-CPU GS area (`gs:0x10`), programmed by `program_gs` —
 /// the BSP's area is filled in `init_protection` (from the topology match),
-/// each AP's in its `init_ap`. Mock/hosted builds return BSP (CpuId 0) —
-/// single-CPU semantics, matching the mock's whole-world view.
+/// each AP's in its `init_ap`. aarch64 reads `MPIDR_EL1.Aff0` through the
+/// bring-up map; riscv64 derives the logical id from the per-CPU kernel
+/// stack (see the cfg-specific bodies). Mock/hosted builds return BSP
+/// (CpuId 0) — single-CPU semantics, matching the mock's whole-world view.
+#[cfg(not(target_arch = "riscv64"))]
 pub fn current_cpu_id() -> crate::proc::CpuId {
     let id = minix_arch::ap_cpu_id_readback();
     crate::proc::CpuId::new_unchecked(id as u32)
+}
+
+/// riscv has no readable S-mode hart id, `tp` is restored from the trap frame
+/// on user return, and `sscratch` already carries the user sp. The kernel
+/// stack is the stable per-CPU anchor: an AP's stub loads its own stack top,
+/// and every kernel entry runs on that stack. The BSP falls back to the slot
+/// recorded by `seed_bsp_masks`.
+#[cfg(target_arch = "riscv64")]
+pub fn current_cpu_id() -> crate::proc::CpuId {
+    let sp: usize;
+    // SAFETY: reading the stack pointer has no side effects.
+    unsafe { core::arch::asm!("mv {}, sp", out(reg) sp) };
+    if let Some(cpu) = crate::smp::cpu_id_for_stack_pointer(sp) {
+        return cpu;
+    }
+    crate::proc::CpuId::new_unchecked(crate::smp::bsp_logical())
 }
 
 /// Read THIS CPU's ptproc proc-nr.
@@ -3744,11 +3763,12 @@ fn idle(
         //      timer on the wake path, so this mask is permanent after the
         //      first idle. aarch64 now opens the BSP's SGI 0 gate, sends via
         //      ICC_SGI1R/GICD_SGIR by ARE state, and its APs enter
-        //      `scheduler_loop` (C2D-APENTRY); riscv64's APs still park in
-        //      `wfi` (no tail yet), clear `sip.SSIP` without applying the
-        //      pending scheduler flags, and keep the local-only `fence.i`
-        //      contract, whose remote-fence arm is this unclamp's
-        //      precondition.
+        //      `scheduler_loop` (C2D-APENTRY); riscv64's APs enter
+        //      `scheduler_loop` and open SSIE/STIE (C2D-RVAPENTRY), though
+        //      its SSI cross-hart delivery is still firmware-blocked, and it
+        //      clears `sip.SSIP` without applying the pending scheduler
+        //      flags, and keeps the local-only `fence.i` contract, whose
+        //      remote-fence arm is this unclamp's precondition.
         //   2. Producer: LANDED. `sched_enqueue_with` sends the C
         //      `proc.c:1647` SCHED IPI when the target CPU is idle — inert
         //      while the clamp below keeps every process on the BSP.

@@ -532,6 +532,14 @@ pub struct Riscv64PteWalk;
 
 impl PteWalkArch for Riscv64PteWalk {
     fn walk(root_paddr: PhysBytes, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
+        // A zero root means "this CPU has no page table" (a kernel task, or
+        // an AP that has not switched address spaces yet). There is nothing
+        // to walk: reading the DM alias of physical 0 as an L2 entry faults
+        // (live: an AP's first copy path hit stval=DM+0x7f8). Translation
+        // semantics: not mapped.
+        if root_paddr.0 == 0 {
+            return None;
+        }
         walk_translate(root_paddr.0, vaddr.0)
     }
 }

@@ -33,7 +33,8 @@
 //!
 //! The asm body below implements the obligation list
 //! above (satp sequencing per §3.3 riscv row); the Rust convergence point
-//! parks secondaries pending SMP unclamp (see `ap_early_entry`).
+//! snapshots the record, publishes `AP_ARRIVED`, and hands off to the
+//! kernel-registered AP tail (or parks in a bare-ladder test kernel).
 
 /// Unit-test sentinel: proves the module's contract constants stay in sync
 /// with the SBI channel (`boot_ap` passes the bootstrap cookie in a1/a2).
@@ -51,6 +52,19 @@ pub const OPAQUE_IS_BOOTSTRAP_COOKIE: bool = true;
 /// — the happens-before on both sides is formed by the two fences
 /// bracketing SBI's inter-hart handoff).
 use crate::arch::ap_early_entry::ApBootstrap;
+use core::sync::atomic::{AtomicPtr, Ordering};
+
+/// Kernel-registered AP continuation (the same split as the x86 ladder and
+/// the aarch64 half). Before registration the AP parks, so no tail can run
+/// before the kernel installed one.
+type ApTailFn = unsafe extern "C" fn(logical_id: u32, hw_id: u64, kernel_stack_top_va: u64) -> !;
+static AP_TAIL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Register the kernel-side AP tail. Must run before the first SBI
+/// `hart_start` (`smp_init` does).
+pub fn register_ap_tail(f: ApTailFn) {
+    AP_TAIL.store(f as *mut (), Ordering::Release);
+}
 
 // #[no_mangle]: the stub asm refers to the record by literal symbol name
 // (`la t2, AP_BOOTSTRAP_RECORD`) across the crate symbol surface, so it
@@ -173,15 +187,9 @@ pub static AP_ARRIVED: core::sync::atomic::AtomicUsize = core::sync::atomic::Ato
 /// back into locals (the riscv version of the single-image serial-reuse
 /// discipline — the static record needs no return to the BSP, but the field
 /// snapshot is still taken into locals so a BSP rewrite for the next hart
-/// cannot race it), set the arrival marker, then **park** (a wfi parking
-/// loop).
-///
-/// Parking instead of continuing kernel initialization is the honest
-/// boundary of this increment: the primary-core clamp is not yet lifted, and
-/// per-core run queues / preemption delivery are not powered — the AP is
-/// "awake but idle" at this point, and pushing on would cross the red line:
-/// lifting the clamp without first providing per-core queues means a process
-/// could be placed on a core that has no queue.
+/// cannot race it), set the arrival marker, then hand off to the
+/// kernel-registered AP tail if one is installed; otherwise **park** in a
+/// wfi loop (the bare-ladder test-kernel form).
 pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
     // UART step marker "A3" = Rust convergence entered. Write through the
     // identity-mapped PA (the same route as step A2 in the stub: A2 already
@@ -200,14 +208,22 @@ pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
     // a0 = the record's high-half VA (converted by the stub; reachable
     // through the kernel root once the MMU is on).
     let record = unsafe { &*(bootstrap_pa as *const ApBootstrap) };
-    // Consumption snapshot (volatile reads: prevent coalescing with a
-    // potential BSP rewrite).
-    let _logical = unsafe { core::ptr::read_volatile(&record.logical_id) };
-    let _hw_id = unsafe { core::ptr::read_volatile(&record.hw_id) };
-    let _ = (_logical, _hw_id);
+    // Consumption snapshot before publishing arrival: the BSP is serial and
+    // may rewrite the record for the next hart the moment it sees
+    // AP_ARRIVED. All three fields the tail needs are local from here on.
+    let logical = unsafe { core::ptr::read_volatile(&record.logical_id) };
+    let hw_id = unsafe { core::ptr::read_volatile(&record.hw_id) };
+    let stack_top = unsafe { core::ptr::read_volatile(&record.kernel_stack_top_va) };
     // Arrival marker (Release: when the BSP later reads 1, the snapshot
     // reads above have completed).
     core::sync::atomic::AtomicUsize::store(&AP_ARRIVED, 1, core::sync::atomic::Ordering::Release);
+
+    let tail = AP_TAIL.load(Ordering::Acquire);
+    if !tail.is_null() {
+        // Tail divergence — the kernel continuation owns the CPU from here.
+        let f = unsafe { core::mem::transmute::<*mut (), ApTailFn>(tail) };
+        unsafe { f(logical, hw_id, stack_top) }
+    }
     loop {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));

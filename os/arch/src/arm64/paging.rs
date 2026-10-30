@@ -435,6 +435,11 @@ pub struct AArch64PteWalk;
 
 impl PteWalkArch for AArch64PteWalk {
     fn walk(root_paddr: PhysBytes, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
+        // Zero root = no page table (kernel task / AP before its first
+        // space switch); there is nothing to walk. Same guard as riscv64.
+        if root_paddr.0 == 0 {
+            return None;
+        }
         walk_translate(root_paddr.0, vaddr.0)
     }
 }
