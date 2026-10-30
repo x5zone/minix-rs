@@ -189,6 +189,10 @@ impl SchedServer {
                     // warning on failure; the crate has no logging
                     // facility, and the no-reply behavior is the
                     // observable part.)
+                    //[SD19-gate] C 73-74 对 do_noquantum 的失败只印一行、照样
+                    // 不回话；诊断句没有 Rust 归宿，不回话是可观察的那一半，
+                    // 吞掉返回值与 C 同义
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.do_noquantum(&message, kernel);
                     return Step::Handled;
                 }
@@ -216,6 +220,9 @@ impl SchedServer {
             // C 101-106: a failed reply is logged and dropped — the loop
             // moves on. The print has no Rust home (no logging facility);
             // continue-on-failure is the observable half.
+            //[SD19-gate] C 101-106 把失败的 reply 记一行就丢掉、循环继续——
+            // 「继续跑」是同一件事，返回值不参与任何判决
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.sendnb(sender, &reply);
         }
         Step::Handled
@@ -235,6 +242,9 @@ impl SchedServer {
             if let Some(up) = rebalance_one(self.procs[index].max_priority, self.procs[index].priority)
             {
                 self.procs[index].priority = up; // C 361
+                //[SD19-gate] C 362 明写不查返回值（那一处 `(void)` 的原文
+                // 注释就是 unchecked）；拒绝与否都不改这一轮的扇出
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.fanout_local(index, kernel); // C 362: unchecked
             }
         }

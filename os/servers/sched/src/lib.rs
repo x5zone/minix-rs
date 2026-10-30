@@ -1,4 +1,7 @@
 #![cfg_attr(not(test), no_std)]
+//[SD19-gate] 静默吞错门（与 minix-sys/minix-rt 同款）：`let _ =` 落在 `#[must_use]` 上
+// 时编译期报警；每一处按 C 对应行处置（允许并写理由，或改成真处置）。
+#![warn(clippy::let_underscore_must_use)]
 
 //! Minix-RS scheduler (SCHED): policy upstairs, mechanism downstairs.
 //!
