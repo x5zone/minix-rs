@@ -1910,6 +1910,14 @@ pub fn init_clock_and_interrupts() {
             Some(crate::irq_manager::IrqManager::new(intr));
     }
 
+    // aarch64: `init()` masks every SGI in the BSP's redistributor. Open the
+    // scheduler SGI gate on the BSP now; an AP opens its own gate in its
+    // bring-up path (when that path enters the kernel scheduler — see
+    // C2D-A64SGI on the C board). The clamp keeps all processes on the BSP,
+    // so this is the only CPU that can currently receive one.
+    #[cfg(target_arch = "aarch64")]
+    crate::irq_manager::enable_sched_sgi_for_cpu(pd.cpu_topology().bsp_id as usize);
+
     // Step 3: Architecture-specific initialization.
     // C: arch_init() — arch_system.c:246 / earm/arch_system.c:101
     //
@@ -3734,11 +3742,12 @@ fn idle(
         // local timer at interrupt entry so a woken AP resumes ticking.
         //   1. Receive side: NOT complete. No architecture restarts the AP
         //      timer on the wake path, so this mask is permanent after the
-        //      first idle; aarch64 never enables SGI 0 (`GICR_ISENABLER0`
-        //      starts masked and IPI bring-up does not exist); riscv64 clears
-        //      `sip.SSIP` without applying the pending scheduler flags.
-        //      riscv64 also keeps the local-only `fence.i` contract, whose
-        //      remote-fence arm is documented as this unclamp's precondition.
+        //      first idle. aarch64 now opens the BSP's SGI 0 gate and sends
+        //      via ICC_SGI1R/GICD_SGIR by ARE state, but its APs park in
+        //      `wfi` before `scheduler_loop` (only x86 has `smp_ap_tail`);
+        //      riscv64 clears `sip.SSIP` without applying the pending
+        //      scheduler flags and keeps the local-only `fence.i` contract,
+        //      whose remote-fence arm is this unclamp's precondition.
         //   2. Producer: LANDED. `sched_enqueue_with` sends the C
         //      `proc.c:1647` SCHED IPI when the target CPU is idle — inert
         //      while the clamp below keeps every process on the BSP.

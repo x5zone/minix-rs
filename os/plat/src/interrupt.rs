@@ -217,6 +217,15 @@ pub trait PerCpuInterruptUnit: Send {
     /// global LAPIC EOI, and it happens even when `claim` returned `None`,
     /// because the gate-driven flow has no claim token to pair with.
     fn complete(&mut self, claimed: Option<u32>);
+
+    /// Enable a software-generated interrupt (SGI) on the CPU whose
+    /// architecture hardware id is `hw_id`.
+    ///
+    /// Only aarch64 GICv3 needs this per-CPU gate (`GICR_ISENABLER0` in
+    /// that CPU's redistributor). x86 delivers IPIs through the LAPIC ICR
+    /// and riscv64 through SBI `send_ipi`; neither has an enable bit, so
+    /// their default is a no-op.
+    fn enable_sgi(&mut self, _hw_id: usize, _intid: u8) {}
 }
 
 /// Maximum number of IRQ vectors.

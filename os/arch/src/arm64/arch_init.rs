@@ -77,8 +77,22 @@ impl ArchInit for AArch64ArchInit {
 
         // 2. Board-specific initialization
         // C: bsp_init()
-        // Platform-specific setup (e.g., GIC base address) is now provided
-        // via PlatformDesc → Gicv3Desc, consumed by
-        // AArch64InterruptController::new(desc).
+        //
+        // The SGI send path is a zero-sized trait impl and cannot hold a
+        // reference to the interrupt-controller instance, so it keeps the
+        // distributor base in a static. Seed that static from the same
+        // `Gicv3Desc` the controller consumes; without this call the first
+        // scheduler IPI reads/writes a null-derived MMIO address (live on
+        // the aarch64 full image: faults at 0xF00 in the GICD_SGIR path).
+        use minix_platform::{InterruptControllerDesc, PlatformDesc};
+        let controller = minix_platform::platform_desc().interrupt_controller();
+        if let Some(gicv3) = controller
+            .as_any()
+            .downcast_ref::<minix_platform::arch::aarch64::Gicv3Desc>()
+        {
+            // SAFETY: boot is single-threaded here and no IPI sender exists
+            // before `smp_init`.
+            unsafe { crate::arm64::smp::set_gicd_base(gicv3.gicd_base) };
+        }
     }
 }

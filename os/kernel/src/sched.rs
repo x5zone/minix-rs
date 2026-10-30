@@ -361,12 +361,13 @@ fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
 ///
 /// The enqueue producer exists (`sched_enqueue_with` sends the C
 /// `proc.c:1647` scheduling IPI when the target CPU's `cpu_is_idle` is
-/// set), but the receive side is not complete: aarch64 never enables SGI 0
-/// (`GICR_ISENABLER0` starts fully masked and IPI bring-up does not exist),
-/// riscv64 clears `sip.SSIP` without applying the pending scheduler flags,
-/// and no architecture clears `cpu_is_idle` plus restarts the AP's local
-/// timer on the wake path — an AP that idled once therefore never ticks
-/// again. riscv64 also still runs its boot-loaded images under a local-only
+/// set, and never to the current CPU), but the receive side is not complete:
+/// aarch64 now opens the BSP's SGI gate and sends through
+/// `ICC_SGI1R_EL1`/`GICD_SGIR` by ARE state, yet its APs park in `wfi`
+/// before `scheduler_loop` (only x86 has `smp_ap_tail`); riscv64 clears
+/// `sip.SSIP` without applying the pending scheduler flags; and no
+/// architecture clears `cpu_is_idle` plus restarts the AP's local timer on
+/// the wake path — an AP that idled once therefore never ticks again. riscv64 also still runs its boot-loaded images under a local-only
 /// `fence.i` (`os/arch/src/riscv64/cache_sync.rs`), whose remote-fence arm
 /// is the documented precondition of unclamping. Until those receive-side
 /// arms land, `params.cpu` is clamped to the BSP by
