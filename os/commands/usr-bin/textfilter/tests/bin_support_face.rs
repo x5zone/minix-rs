@@ -13,10 +13,10 @@
 //! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
 //! （`tr_ref: unknown option -- \xff`），而文本缝先把命令行 lossy 成 U+FFFD，各支再按自己的
 //! 取法渲染：按字节取到的是 `ef`（U+FFFD 的第一字节），按 `char` 取再渲染的是 `c3 af` 两字节。
-//! 参数缝半逐支把这一位翻正——本表二十一行（`rev`、`paste`、`seq`、`tr`、`fold`、`col`、
-//! `uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、`jot`、`nl`、`pr`、`sort`、`split`、`tail`，末十二行随批次四百五十八、
+//! 参数缝半逐支把这一位翻正——本表二十二行（`rev`、`paste`、`seq`、`tr`、`fold`、`col`、
+//! `uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、`jot`、`nl`、`pr`、`sort`、`split`、`tail`、`unexpand`，末十三行随批次四百五十八、
 //! 四百五十九、四百六十、四百六十一、四百六十二、四百六十三、四百六十四、四百六十五、四百六十六、
-//! 四百六十七、四百六十八、四百六十九落地）**至此全是原字节** `ff`，与参照件同形；表外那些仍走文本缝的壳交回的仍是 `ef`。
+//! 四百六十七、四百六十八、四百六十九、四百七十落地）**至此全是原字节** `ff`，与参照件同形；表外那些仍走文本缝的壳交回的仍是 `ef`。
 //! 字母位之外还有一条**操作数当文件路径**的腿：路径进了 `os/libs` 里的 `&str` 口就非折
 //! 一次不可（在册 `ARGV-BYTE-PATH-IN-LIBS`）。因此下面的断言既钉住
 //! 「不再 abort、两条腿一致」，也钉住**当前那一串字节**：等这些腿落地，这几枚会当场变红，
@@ -47,6 +47,7 @@ const PR: &str = env!("CARGO_BIN_EXE_pr");
 const SORT: &str = env!("CARGO_BIN_EXE_sort");
 const SPLIT: &str = env!("CARGO_BIN_EXE_split");
 const TAIL: &str = env!("CARGO_BIN_EXE_tail");
+const UNEXPAND: &str = env!("CARGO_BIN_EXE_unexpand");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
 const FF: u8 = 0xFF;
@@ -77,13 +78,13 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     (code, output.stdout, output.stderr)
 }
 
-/// 二十一支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 getopt 报文。
+/// 二十二支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 getopt 报文。
 /// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
 /// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 21] = [
+    let cases: [(&str, &str, i32, &[u8]); 22] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
         // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
         // 字母位是原字节 `ff`。
@@ -158,6 +159,17 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         // 档名）由 `tail_face` 的
         // `the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes` 承载。
         ("tail", TAIL, 1, b"tail: unknown option -- \xff\n"),
+        // unexpand 随批次四百七十落地：`unexpand.c:86` 的 `getopt(argc, argv, "at:")` 吃的
+        // 是 libc 那一份，句子仍是 `unknown option`；它的 usage 一行、大写 `Usage:`、退 1
+        //（`unexpand.c:69-73`）。字母位之外那六形 tabstop 回声与操作数那句 `Cannot open` 的
+        // 档名位由 `unexpand_face` 的
+        // `the_tabstop_echoes_and_the_operand_name_carry_the_argv_bytes` 承载。
+        (
+            "unexpand",
+            UNEXPAND,
+            1,
+            b"unexpand: unknown option -- \xff\n",
+        ),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");

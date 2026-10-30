@@ -34,20 +34,21 @@ pub struct UnexpandOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopRejection<'a> {
     /// `unexpand.c:101-103`：`strtoul` 剩下尾巴字符，或溢出到 `ULONG_MAX`
-    /// （`errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`）。
-    Invalid(&'a str),
+    /// （`errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`）。带的是那一支档位的
+    /// **原字节**——C 交给 `%s` 的就是 `strsep` 切出来的那个词。
+    Invalid(&'a [u8]),
     /// `unexpand.c:108-112`：不比前一支大
     /// （`errx(... "Bad tabstop spec `%s', must be greater than the previous `%zu'", ...)`）。
-    NotIncreasing { spec: &'a str, previous: usize },
+    NotIncreasing { spec: &'a [u8], previous: usize },
 }
 
 /// 按 C 的 `strsep(&optarg, ", \t")` 切档位表：逗号、空格、制表符都是分隔符，
 /// 空字段跳过（所以 `-t ""` 与 `-t ,` 都是「一支都没有」，C 那边 `nstops` 保持 0，
 /// 行为与不给 `-t` 相同），每支按 **base 0** 解析（`0x` 是十六进制、`0` 前缀是八进制，
 /// `unexpand.c:100` 的 `strtoul(tab, &ep, 0)`；参照件现量 `-t 010` 得 8、`-t 0x10` 得 16）。
-pub fn parse_stops(spec: &str) -> Result<Vec<usize>, StopRejection<'_>> {
+pub fn parse_stops(spec: &[u8]) -> Result<Vec<usize>, StopRejection<'_>> {
     let mut stops: Vec<usize> = Vec::new();
-    for piece in spec.split([',', ' ', '\t']) {
+    for piece in spec.split(|byte| matches!(byte, b',' | b' ' | b'\t')) {
         if piece.is_empty() {
             continue;
         }
@@ -70,10 +71,9 @@ pub fn parse_stops(spec: &str) -> Result<Vec<usize>, StopRejection<'_>> {
 /// C 的 `strtoul(piece, &ep, 0)` 加上「`*ep` 非零就拒」与「`ERANGE` 且回 `ULONG_MAX` 就拒」。
 /// base 0 的前缀规则照 C：`0x`/`0X` 走十六进制，前导 `0` 走八进制，其余十进制。
 /// 溢出用 `checked_*` 挡（本壳与 C 都是 64 位无符号宽），落回 `None` 即 C 的 Invalid。
-fn base_zero(piece: &str) -> Option<usize> {
-    let bytes = piece.as_bytes();
-    let (radix, rest) = if bytes.len() > 1 && bytes[0] == b'0' {
-        match bytes[1] {
+fn base_zero(piece: &[u8]) -> Option<usize> {
+    let (radix, rest) = if piece.len() > 1 && piece[0] == b'0' {
+        match piece[1] {
             b'x' | b'X' => (16usize, &piece[2..]),
             _ => (8usize, &piece[1..]),
         }
@@ -84,8 +84,8 @@ fn base_zero(piece: &str) -> Option<usize> {
         return None;
     }
     let mut value: usize = 0;
-    for byte in rest.bytes() {
-        let digit = (byte as char).to_digit(radix as u32)?;
+    for &byte in rest {
+        let digit = char::from(byte).to_digit(radix as u32)?;
         value = value.checked_mul(radix)?.checked_add(digit as usize)?;
     }
     Some(value)
@@ -225,8 +225,9 @@ pub fn unexpand(input: &str, options: &UnexpandOptions) -> Vec<String> {
 pub struct UnexpandArgs<'a> {
     /// `-a` / `-t` options (which columns to tabify).
     pub options: UnexpandOptions,
-    /// File operands in order.
-    pub operands: Vec<&'a str>,
+    /// File operands in order. Bytes, because C hands `argv[0]` to `freopen`
+    /// (`unexpand.c:129`) and prints it inside `Cannot open \`%s'` (`:130`).
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// `unexpand` argument-parsing failure.
@@ -257,17 +258,19 @@ pub enum UnexpandError<'a> {
 /// 里的 `-a` 是被当第二个档名去 `freopen` 的，报 `Cannot open `-a'`）。
 /// `--` 结束选项环且自身不算操作数（`getopt.c:81-85`），裸 `-` 是操作数
 /// （`getopt.c:87-92` 不推进 `optind`，而 C `unexpand.c:129` 会拿它去 `freopen`）。
-pub fn parse_unexpand_args<'a>(args: &'a [&'a str]) -> Result<UnexpandArgs<'a>, UnexpandError<'a>> {
+pub fn parse_unexpand_args<'a>(
+    args: &'a [&'a [u8]],
+) -> Result<UnexpandArgs<'a>, UnexpandError<'a>> {
     let mut options = UnexpandOptions::default();
-    let mut operands: Vec<&'a str> = Vec::new();
+    let mut operands: Vec<&'a [u8]> = Vec::new();
     let mut index = 0usize;
     while index < args.len() {
         let arg = args[index];
-        if arg == "--" {
+        if arg == b"--" {
             operands.extend_from_slice(&args[index + 1..]);
             break;
         }
-        let bytes = arg.as_bytes();
+        let bytes = arg;
         if bytes.len() < 2 || bytes[0] != b'-' {
             operands.extend_from_slice(&args[index..]);
             break;
@@ -316,6 +319,12 @@ pub fn parse_unexpand_args<'a>(args: &'a [&'a str]) -> Result<UnexpandArgs<'a>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 夹具的 argv：`std::env::args_os()` 交回的就是字节，所以这里把可读的
+    /// 词转成字节向量；值位本身要断言字节的两形（`é` 与裸 `ff`）写成字面字节。
+    fn argv<'a>(words: &[&'a str]) -> Vec<&'a [u8]> {
+        words.iter().map(|word| word.as_bytes()).collect()
+    }
 
     #[test]
     fn test_leading_blank_run_becomes_tabs_at_eight() {
@@ -381,39 +390,39 @@ mod tests {
     /// 递减那支报的是**后写的那一支**与前一支的值。
     #[test]
     fn the_stop_list_follows_strtoul_base_zero_and_two_sentences() {
-        assert_eq!(parse_stops("1,2"), Ok(vec![1, 2]));
-        assert_eq!(parse_stops("4 8"), Ok(vec![4, 8]), "空格也是分隔符");
-        assert_eq!(parse_stops("4,\t8"), Ok(vec![4, 8]), "制表符也是分隔符");
-        assert_eq!(parse_stops(""), Ok(vec![]), "空表合法，行为同不给 -t");
-        assert_eq!(parse_stops(",,"), Ok(vec![]), "空字段跳过");
+        assert_eq!(parse_stops(b"1,2"), Ok(vec![1, 2]));
+        assert_eq!(parse_stops(b"4 8"), Ok(vec![4, 8]), "空格也是分隔符");
+        assert_eq!(parse_stops(b"4,\t8"), Ok(vec![4, 8]), "制表符也是分隔符");
+        assert_eq!(parse_stops(b""), Ok(vec![]), "空表合法，行为同不给 -t");
+        assert_eq!(parse_stops(b",,"), Ok(vec![]), "空字段跳过");
         assert_eq!(
-            parse_stops("0"),
+            parse_stops(b"0"),
             Ok(vec![0]),
             "C 不挡零档（参照件印 `0 0`）"
         );
-        assert_eq!(parse_stops("0x10"), Ok(vec![16]), "base 0 认十六进制");
-        assert_eq!(parse_stops("010"), Ok(vec![8]), "前导零是八进制");
+        assert_eq!(parse_stops(b"0x10"), Ok(vec![16]), "base 0 认十六进制");
+        assert_eq!(parse_stops(b"010"), Ok(vec![8]), "前导零是八进制");
         // 第一支句子：尾巴有字符、八进制位越界、溢出。
-        assert_eq!(parse_stops("x"), Err(StopRejection::Invalid("x")));
-        assert_eq!(parse_stops("3x"), Err(StopRejection::Invalid("3x")));
-        assert_eq!(parse_stops("08"), Err(StopRejection::Invalid("08")));
+        assert_eq!(parse_stops(b"x"), Err(StopRejection::Invalid(b"x")));
+        assert_eq!(parse_stops(b"3x"), Err(StopRejection::Invalid(b"3x")));
+        assert_eq!(parse_stops(b"08"), Err(StopRejection::Invalid(b"08")));
         assert_eq!(
-            parse_stops("18446744073709551616"),
-            Err(StopRejection::Invalid("18446744073709551616")),
+            parse_stops(b"18446744073709551616"),
+            Err(StopRejection::Invalid(b"18446744073709551616")),
             "溢出在 C 是 ERANGE 且回 ULONG_MAX，同判 Invalid"
         );
         // 第二支句子：不比前一支大，报的是后写的那一支与前一支的值。
         assert_eq!(
-            parse_stops("8,4"),
+            parse_stops(b"8,4"),
             Err(StopRejection::NotIncreasing {
-                spec: "4",
+                spec: b"4",
                 previous: 8
             })
         );
         assert_eq!(
-            parse_stops("4,4"),
+            parse_stops(b"4,4"),
             Err(StopRejection::NotIncreasing {
-                spec: "4",
+                spec: b"4",
                 previous: 4
             }),
             "相等也不算「更大」"
@@ -424,76 +433,91 @@ mod tests {
     /// `-a` 与 `-t` 谁后到谁触 usage、非选项 token 一到后面的整个当操作数。
     #[test]
     fn the_option_ring_reports_libc_letters_and_stops_at_the_first_operand() {
-        assert!(parse_unexpand_args(&["-a"]).unwrap().options.all);
+        assert!(parse_unexpand_args(&argv(&["-a"])).unwrap().options.all);
         assert_eq!(
-            parse_unexpand_args(&["-t", "4"]).unwrap().options.stops,
+            parse_unexpand_args(&argv(&["-t", "4"]))
+                .unwrap()
+                .options
+                .stops,
             vec![4]
         );
         assert_eq!(
-            parse_unexpand_args(&["-t4,8"]).unwrap().options.stops,
+            parse_unexpand_args(&argv(&["-t4,8"]))
+                .unwrap()
+                .options
+                .stops,
             vec![4, 8],
             "附值形是 C 合法的（旧前门只整段比对，会把 `-t8 file` 判成 usage）"
         );
-        assert_eq!(parse_unexpand_args(&["-at4"]), Err(UnexpandError::Usage));
+        assert_eq!(
+            parse_unexpand_args(&argv(&["-at4"])),
+            Err(UnexpandError::Usage)
+        );
         // `-ta` 不是「两支冲突」而是「`-t` 取到附值 `a'」：C 的 getopt 一见 `t:` 就把
         // 同一串里剩下的 `a` 当 optarg 交回（`getopt.c:117-118`），于是走
         // `Invalid tabstop `a'`（参照件现量同一句）。
         assert_eq!(
-            parse_unexpand_args(&["-ta"]),
-            Err(UnexpandError::BadStops(StopRejection::Invalid("a")))
+            parse_unexpand_args(&argv(&["-ta"])),
+            Err(UnexpandError::BadStops(StopRejection::Invalid(b"a")))
         );
         // 互斥也管分开的写法：`-a` 之后再来 `-t`，或档位表之后再来 `-a`。
         assert_eq!(
-            parse_unexpand_args(&["-a", "-t", "8"]),
+            parse_unexpand_args(&argv(&["-a", "-t", "8"])),
             Err(UnexpandError::Usage)
         );
         assert_eq!(
-            parse_unexpand_args(&["-t", "8", "-a"]),
+            parse_unexpand_args(&argv(&["-t", "8", "-a"])),
             Err(UnexpandError::Usage)
         );
         assert_eq!(
-            parse_unexpand_args(&["-z", "f"]),
+            parse_unexpand_args(&argv(&["-z", "f"])),
             Err(UnexpandError::UnknownOption('z'))
         );
         assert_eq!(
-            parse_unexpand_args(&["-Za"]),
+            parse_unexpand_args(&argv(&["-Za"])),
             Err(UnexpandError::UnknownOption('Z')),
             "聚簇只报第一个字母"
         );
         assert_eq!(
-            parse_unexpand_args(&["--x"]),
+            parse_unexpand_args(&argv(&["--x"])),
             Err(UnexpandError::UnknownOption('-'))
         );
         assert_eq!(
-            parse_unexpand_args(&["-t"]),
+            parse_unexpand_args(&argv(&["-t"])),
             Err(UnexpandError::MissingValue('t')),
             "缺值是 libc 的另一句而不是 usage"
         );
         assert_eq!(
-            parse_unexpand_args(&["-t", "8,4"]),
+            parse_unexpand_args(&argv(&["-t", "8,4"])),
             Err(UnexpandError::BadStops(StopRejection::NotIncreasing {
-                spec: "4",
+                spec: b"4",
                 previous: 8
             }))
         );
         // 不重排：`unexpand f -a` 里的 `-a` 是第二支档名（C 会去 freopen 它）。
         assert_eq!(
-            parse_unexpand_args(&["f", "-a"]).unwrap().operands,
-            vec!["f", "-a"]
+            parse_unexpand_args(&argv(&["f", "-a"])).unwrap().operands,
+            vec![b"f".as_slice(), b"-a".as_slice()]
         );
         assert!(
-            !parse_unexpand_args(&["f", "-a"]).unwrap().options.all,
+            !parse_unexpand_args(&argv(&["f", "-a"]))
+                .unwrap()
+                .options
+                .all,
             "操作数之后的 -a 不再被当选项读"
         );
         // `--` 自身不是操作数，裸 `-` 是。
         assert_eq!(
-            parse_unexpand_args(&["--", "-a"]).unwrap().operands,
-            vec!["-a"]
+            parse_unexpand_args(&argv(&["--", "-a"])).unwrap().operands,
+            vec![b"-a".as_slice()]
         );
-        assert_eq!(parse_unexpand_args(&["-"]).unwrap().operands, vec!["-"]);
         assert_eq!(
-            parse_unexpand_args(&["--"]).unwrap().operands,
-            Vec::<&str>::new()
+            parse_unexpand_args(&argv(&["-"])).unwrap().operands,
+            vec![b"-".as_slice()]
+        );
+        assert_eq!(
+            parse_unexpand_args(&argv(&["--"])).unwrap().operands,
+            Vec::<&[u8]>::new()
         );
     }
 
@@ -504,31 +528,80 @@ mod tests {
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
-            parse_unexpand_args(&["-\u{e9}"]),
+            parse_unexpand_args(&argv(&["-\u{e9}"])),
             Err(UnexpandError::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
         // `a` 是选项串里合法且不带值的字母，聚簇继续吃到下一字节。
         assert_eq!(
-            parse_unexpand_args(&["-a\u{e9}"]),
+            parse_unexpand_args(&argv(&["-a\u{e9}"])),
             Err(UnexpandError::UnknownOption('\u{00c3}')),
             "-a\u{e9}"
         );
         // 环停在第一个坏字母上：`-Zé` 只报 `Z`。
         assert_eq!(
-            parse_unexpand_args(&["-Z\u{e9}"]),
+            parse_unexpand_args(&argv(&["-Z\u{e9}"])),
             Err(UnexpandError::UnknownOption('Z'))
         );
         // ASCII 那一形不许被这次改动波及。
         assert_eq!(
-            parse_unexpand_args(&["-q"]),
+            parse_unexpand_args(&argv(&["-q"])),
             Err(UnexpandError::UnknownOption('q'))
         );
         // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
         // `Invalid tabstop `a\303\251'`）。
         assert_eq!(
-            parse_unexpand_args(&["-t\u{e9}"]),
-            Err(UnexpandError::BadStops(StopRejection::Invalid("é")))
+            parse_unexpand_args(&argv(&["-t\u{e9}"])),
+            Err(UnexpandError::BadStops(StopRejection::Invalid(b"\xc3\xa9")))
+        );
+    }
+
+    /// 值位、分隔串与操作数交回的都是 argv 的**原字节**，字母位是短横后的第一枚字节。
+    /// C 那三句都在字节上：`errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`
+    /// （`unexpand.c:101-103`）与 `errx(... "Bad tabstop spec `%s', must be greater than
+    /// the previous `%zu'", tab, ...)`（`:108-112`）打的是 `strsep` 切出来的那一支词，
+    /// `err(EXIT_FAILURE, "Cannot open `%s'", argv[0])`（`:129-130`）打的是操作数本身，
+    /// 而分隔判据（`:96` 的 `strsep(&optarg, ", \t")`）是**字节集**。`getopt.c:79` 的
+    /// `optopt = *place++` 一次进一枚字节、`:103` 的 `%c` 原样写出，所以 `-\xff` 报的是
+    /// `ff` 而不是 U+FFFD；`char::from(0xff)` 就是 U+00FF，与 `%c` 打出的那一枚同值。
+    #[test]
+    fn the_stop_spec_and_the_operand_carry_the_argv_bytes() {
+        assert_eq!(
+            parse_stops(b"4\xff"),
+            Err(StopRejection::Invalid(b"4\xff")),
+            "坏档位的回声带的是那一支的原字节，包括那枚 ff"
+        );
+        assert_eq!(
+            parse_stops(b"8,4\xff"),
+            Err(StopRejection::Invalid(b"4\xff")),
+            "回声带的是 `strsep` 切出来的那一支，不是整张 `-t` 值（参照件同形见 \
+             `tmp/unexpand-470/measure.log` 的 `tabstop-list-mixed` 那一档）"
+        );
+        assert_eq!(
+            parse_stops(b"8,4"),
+            Err(StopRejection::NotIncreasing {
+                spec: b"4",
+                previous: 8
+            }),
+            "第二支的回声位也是字节——但注意这一臂**不可能**带非法字节：走到「不比前一支大」\
+             之前那一支必须已经按 base 0 解析成数，而解析只认 ASCII 数字与 `0x`/八进制前缀。\
+             所以这句的字节缝是「形状对得上」而不是「有可观察差」，与批次四百六十七那枚\
+             无分辨力探针同一类"
+        );
+        assert_eq!(
+            parse_unexpand_args(&[b"-\xff"]).err(),
+            Some(UnexpandError::UnknownOption('\u{00ff}')),
+            "短横后第一枚字节 ff 交回 U+00FF，不是 U+FFFD"
+        );
+        assert_eq!(
+            parse_unexpand_args(&[b"-t\xff"]).err(),
+            Some(UnexpandError::BadStops(StopRejection::Invalid(b"\xff"))),
+            "带值字母收走的值位同样是原字节"
+        );
+        assert_eq!(
+            parse_unexpand_args(&[b"in\xff", b"-a"]).unwrap().operands,
+            vec![b"in\xff".as_slice(), b"-a".as_slice()],
+            "操作数是 `freopen` 的参数，也是 `Cannot open` 那句话里的字"
         );
     }
 
@@ -545,28 +618,28 @@ mod tests {
     fn test_parse_unexpand_flags_and_attach() {
         use alloc::vec;
         assert_eq!(
-            parse_unexpand_args(&["f"]).map(|a| (a.options, a.operands)),
-            Ok((UnexpandOptions::default(), vec!["f"]))
+            parse_unexpand_args(&argv(&["f"])).map(|a| (a.options, a.operands)),
+            Ok((UnexpandOptions::default(), vec![b"f".as_slice()]))
         );
         // `-a` valueless, `-t` separate value.
         assert!(
-            parse_unexpand_args(&["-a", "f"])
+            parse_unexpand_args(&argv(&["-a", "f"]))
                 .map(|a| a.options.all)
                 .unwrap()
         );
         assert_eq!(
-            parse_unexpand_args(&["-t", "8", "f"]).map(|a| a.options.stops),
+            parse_unexpand_args(&argv(&["-t", "8", "f"])).map(|a| a.options.stops),
             Ok(vec![8])
         );
         // The regression: attached `-t8` is accepted (was a usage error).
         assert_eq!(
-            parse_unexpand_args(&["-t8", "f"]).map(|a| (a.options.stops, a.operands)),
-            Ok((vec![8], vec!["f"]))
+            parse_unexpand_args(&argv(&["-t8", "f"])).map(|a| (a.options.stops, a.operands)),
+            Ok((vec![8], vec![b"f".as_slice()]))
         );
         // A lone `-` is an operand; `--` ends options.
         assert_eq!(
-            parse_unexpand_args(&["--", "-a"]).map(|a| a.operands),
-            Ok(vec!["-a"])
+            parse_unexpand_args(&argv(&["--", "-a"])).map(|a| a.operands),
+            Ok(vec![b"-a".as_slice()])
         );
     }
 
@@ -576,8 +649,8 @@ mod tests {
         // 那两处 `tabstops[n] - 1` 都是 `size_t` 的减法：档位给 0 时它们回绕成最大值，
         // C 不停下也不报错。参照件现量 `-t 0` 与 `-t 0,8` 都是**整行原样交回、退 0**
         // （`tmp/unexpand-425/ref-matrix.log`），所以本壳也不许在 0 这一档上崩掉。
-        assert_eq!(parse_stops("0"), Ok(vec![0]));
-        assert_eq!(parse_stops("0,8"), Ok(vec![0, 8]));
+        assert_eq!(parse_stops(b"0"), Ok(vec![0]));
+        assert_eq!(parse_stops(b"0,8"), Ok(vec![0, 8]));
         let zero = UnexpandOptions {
             stops: vec![0],
             all: false,

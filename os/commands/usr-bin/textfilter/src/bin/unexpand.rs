@@ -13,7 +13,7 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
@@ -24,12 +24,14 @@ use minix_textfilter::unexpand::{
 };
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名折一次（`line_bytes` 与 `err_line` 两条 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`）；
+    // 两句 tabstop 报文的值位与 `Cannot open` 的档名位都另有按字节拼的腿。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let refs: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let UnexpandArgs { options, operands } = match parse_unexpand_args(&refs[1..]) {
         Ok(parsed) => parsed,
-        Err(error) => arg_error(prog, error),
+        Err(error) => arg_error(&prog, error),
     };
     // C 在选项环之后、读输入之前把档位表打到 stderr（`unexpand.c:124-125` 的
     // `for (i = 0; i < nstops; i++) fprintf(stderr, "%lu %zu\n", i, tabstops[i])`）——
@@ -49,11 +51,21 @@ fn run() -> ! {
     for operand in &operands {
         // C 的 `freopen(argv[0], "r", stdin)` 失败是 `err(EXIT_FAILURE, "Cannot open `%s'")`
         // （`unexpand.c:129-130`）：程序名、带反引号的档名、`strerror` 句子三段齐备
-        // （旧写法少了第三段），退 1。
-        match support::read_file(operand) {
+        // （旧写法少了第三段），退 1。档名位是 argv 的**原字节**，所以这一句自己拼；
+        // 递给 `read_file` 的那一份要过 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`），
+        // 折只发生在那一刻，报文不受影响。
+        let shown = String::from_utf8_lossy(operand);
+        match support::read_file(&shown) {
             Ok(input) => emit_tabified(&input, &options),
             Err(code) => {
-                support::warn_line(prog, &format!("Cannot open `{operand}'"), code);
+                let mut line = Vec::new();
+                line.extend_from_slice(prog.as_bytes());
+                line.extend_from_slice(b": Cannot open `");
+                line.extend_from_slice(operand);
+                line.extend_from_slice(b"': ");
+                line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+                line.push(b'\n');
+                support::warn(&line);
                 support::terminate(1);
             }
         }
@@ -96,14 +108,27 @@ fn arg_error(prog: &str, error: UnexpandError<'_>) -> ! {
             usage(prog)
         }
         UnexpandError::BadStops(StopRejection::Invalid(piece)) => {
-            // C `errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`：两段形、不缀 strerror。
-            support::warn(format!("{prog}: Invalid tabstop `{piece}'\n").as_bytes());
+            // C `errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`：两段形、不缀 strerror，
+            // 而 `%s` 打的是 `strsep` 切出来的那一支的**原字节**。
+            support::warn(
+                &[
+                    format!("{prog}: Invalid tabstop `").as_bytes(),
+                    piece,
+                    b"'\n".as_slice(),
+                ]
+                .concat(),
+            );
             support::terminate(1);
         }
         UnexpandError::BadStops(StopRejection::NotIncreasing { spec, previous }) => {
+            // 同一族第二句（`unexpand.c:108-112`）：词位按原字节，尾巴那枚是**数**。
             support::warn(
-                format!("{prog}: Bad tabstop spec `{spec}', must be greater than the previous `{previous}'\n")
-                    .as_bytes(),
+                &[
+                    format!("{prog}: Bad tabstop spec `").as_bytes(),
+                    spec,
+                    format!("', must be greater than the previous `{previous}'\n").as_bytes(),
+                ]
+                .concat(),
             );
             support::terminate(1);
         }

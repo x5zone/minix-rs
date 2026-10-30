@@ -384,3 +384,128 @@ fn a_tab_past_the_last_stop_and_a_blank_final_line_reach_stdout() {
     let (out, status, err) = run_bytes(&["-t", "8"], b"\t");
     assert_eq!((out, status, err), (b"\t".to_vec(), 0, b"0 8\n".to_vec()));
 }
+
+/// 与 `run_bytes` 同一条命令缝，但 **argv 交的是原始字节**：一枚裸 `0xff` 进不了 `&str`，
+/// 所以这一腿不能借道任何按 `str` 收参数的夹具。在临时目录里跑，目录中摆一枚
+/// **档名本身带裸字节**的真档与一枚普通 `in.txt`，让「操作数既进 `freopen` 又进报文」
+/// 这两件事都能摆上台面。
+fn run_raw(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("unexpand-raw-{}-{}", std::process::id(), seq));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    std::fs::write(dir.join("in.txt"), b"    a\n").expect("in.txt");
+    std::fs::write(dir.join(OsStr::from_bytes(b"a\xff.txt")), b"    x\n").expect("raw name file");
+    let mut child = Command::new(UNEXPAND)
+        .args(args.iter().map(|a| OsStr::from_bytes(a)))
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the unexpand binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    let read = (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    read
+}
+
+/// 参数缝的字节判据（三侧现量 `tmp/unexpand-470/measure.log` 十八形：改前壳 9/18 与参照件
+/// 逐字节同，改后 17/18）。翻正的八形是字母位与六形 tabstop 回声（附值、分词、数字尾巴、
+/// 混合表、空格分隔、逗号分隔），外加操作数那句 `Cannot open \`%s'` 的档名位。
+/// C 那两句的回声位都是 `strsep(&optarg, ", \t")` 切出来的那一支词
+///（`unexpand.c:96-112`），而 `err(EXIT_FAILURE, "Cannot open \`%s'", argv[0])`
+///（`:129-130`）打的是操作数本身。最后钉的是**仍留在册**的那条腿：一枚档名带裸字节的
+/// 真档，参照件开得了（`freopen` 拿的是 argv 的原字节）而本壳开不了——档名进的是
+/// `os/libs` 那条 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`），所以这里按当前形状钉住：
+/// 报文里的名字是原字节，成败却仍是「没有这个档」。
+#[test]
+fn the_tabstop_echoes_and_the_operand_name_carry_the_argv_bytes() {
+    let (out, status, err) = run_raw(&[b"-\xff"], b"  a\n");
+    assert_eq!(out, Vec::new(), "字母位那一行不走标准输出");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"unexpand: unknown option -- \xff\n".as_slice(),
+            USAGE.as_bytes()
+        ]
+        .concat(),
+        "字母该是那一枚字节本身，不是折过的第一字节 ef"
+    );
+
+    // 六形回声：同一枚 ff 落在值的哪个位置都照原样打出来。
+    for (args, want) in [
+        (
+            vec![b"-t\xff".as_slice()],
+            b"unexpand: Invalid tabstop `\xff'\n".to_vec(),
+        ),
+        (
+            vec![b"-t".as_slice(), b"\xff".as_slice()],
+            b"unexpand: Invalid tabstop `\xff'\n".to_vec(),
+        ),
+        (
+            vec![b"-t4\xff".as_slice()],
+            b"unexpand: Invalid tabstop `4\xff'\n".to_vec(),
+        ),
+        (
+            vec![b"-t8,4\xff".as_slice()],
+            b"unexpand: Invalid tabstop `4\xff'\n".to_vec(),
+        ),
+        (
+            vec![b"-t8 \xff".as_slice()],
+            b"unexpand: Invalid tabstop `\xff'\n".to_vec(),
+        ),
+        (
+            vec![b"-t,\xff".as_slice()],
+            b"unexpand: Invalid tabstop `\xff'\n".to_vec(),
+        ),
+    ] {
+        let (_out, status, err) = run_raw(&args, b"  a\n");
+        assert_eq!(status, 1, "{args:?} 的退码");
+        assert_eq!(err, want, "{args:?} 的回声位该是原字节");
+        assert!(_out.is_empty(), "{args:?} 报错时不写标准输出");
+    }
+
+    // 打不开的档名：`err()` 那句里的名字是原字节，三段形（程序名、带反引号的词、句子）。
+    let (_out, status, err) = run_raw(&[b"no\xff/such"], b"  a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"unexpand: Cannot open `no\xff/such': ".as_slice(),
+            b"No such file or directory\n".as_slice()
+        ]
+        .concat()
+    );
+
+    // 在册那条形：档名带裸字节的**真档**在本壳开不了，参照件开得了。
+    let (out, status, err) = run_raw(&[b"-t", b"4", b"a\xff.txt"], b"");
+    assert_eq!(
+        status, 1,
+        "参照件这里退 0 并打出 `\tx`；本壳要等那条 &str 口才翻正"
+    );
+    assert_eq!(
+        out,
+        Vec::new(),
+        "开不了就没有任何输出（C 那一形交回的是 `\tx`）"
+    );
+    assert_eq!(
+        err,
+        [
+            b"0 4\n".as_slice(),
+            b"unexpand: Cannot open `a\xff.txt': ".as_slice(),
+            b"No such file or directory\n".as_slice()
+        ]
+        .concat(),
+        "档位表那行调试输出在前（`unexpand.c:124-125`），报文里的档名仍是原字节"
+    );
+}
