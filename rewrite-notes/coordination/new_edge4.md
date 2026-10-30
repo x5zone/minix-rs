@@ -3539,6 +3539,18 @@ A22 是跨阶段传输族的**家庭行**（板上自注「逐项领，一次一
 判据：`cargo test -p minix-devman --lib` → **90 / 0**（hooks 过滤下 5/0）。A22 其余成员照旧逐项领，
 E1/E6/E7/E8/E9 的内核半边与真机腿归 C 板。
 
+### 第一百九十七笔（A 板 A22 成员 `E-INWIRE`：输入服务器的传输与 serve 循环现查已落，本成员闭）
+
+`os/servers/input/src/serve.rs` 带 `Transport` 缝（`:40`）与真循环 `serve()`（`:388` 的 `loop`，
+按到达逐个分类/分发/执行）；`main.rs` 的注记自陈「E-INWIRE: the transport is landed（minix-sys
+direct verbs）；the loop classifies, dispatches, and performs through serve.rs」，SEF 切换点
+（`receive → sef_receive_status`）写在 `KernelTransport::receive`；生产区 `unimplemented!`/`todo!`
+零命中。判据：`cargo test -p minix-input` → **99 / 0**（3 段）。
+
+A22 家庭行至此已有两个成员闭（`E-ISWIRE`、`E-INWIRE`）；其余成员（E1/E6/E7/E8/E9 的内核半边与
+真机腿、E-ISPROD/E-ISBOOT/E-RMIBWIRE/E-MIBPROD/E-NETSTART/E-INITSYS/E-IPCWIRE/E-VMTLB/
+E-PREEMPTFLAG）照旧逐项领。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端

@@ -1,6 +1,7 @@
 # 12-stage-input Rust 实现架构级 Review TODO
 
 > **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`；`2026-10-09` 回勾）：阶段内未闭合 `open` 0——原记的“边界测试族缺口”（正式条目 `IN-P3-2`）已闭（见下行回勾：`cargo test -p minix-input` 99/0）；残余四条 edge（E-INWIRE/E-CDRCONV/E-TTYEVENT/E-PCKBDREG）归并行 edge 线程，不在本清单计数。
+> **`2026-10-31` 现查（A 板 A22 成员 `E-INWIRE`，claim/E-INWIRE-qoder）：传输与循环已落**——`os/servers/input/src/serve.rs` 有 `Transport` 缝（`:40`）与真循环 `serve()`（`:388` 的 `loop`），`main.rs` 的注记自陈「transport is landed（minix-sys direct verbs）；loop 经 serve.rs 分类/分发/执行」，SEF 切换点写在 `KernelTransport::receive`；`grep -rn "unimplemented!()|todo!()" os/servers/input/src` 生产区零命中。判据 `cargo test -p minix-input` → **99 / 0**（3 段）。
 > **回勾账面滞后（`2026-10-09`，qoder，claim/INPUT-EDGE-TESTS-qoder）**：上行的“边界测试族缺口”与本文件下方“13 条 IN-* 条目全部完成”白相矛盾——`IN-P3-2`（就是本缺口的正式条目编号，见 §0 速览表）已标 `已完成`（日期见下方 §2 本体行），其正文修复记录列出的 12 条新增测试与本行描述完全对得上。核实命令：`cargo test -p minix-input`（docker `minix-ci:1.94 -m 2g -j 1`）→ 99 通过 / 0 失败（比修复记录里写的 98 又多 1 个，属代码继续领先账面的同方向漂移，不是回归）。因此本行更正为：未闭合 `open` 0；`edge` 四条（E-INWIRE/E-CDRCONV/E-TTYEVENT/E-PCKBDREG）仍归并行 edge 线程，不在本清单计数内。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
