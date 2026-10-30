@@ -40,6 +40,7 @@ struct startup_ps_strings {
     int    n_env;
 };
 
+#ifndef STARTUP_MINIX_TEST
 /* argc<1 时给 tp_main 一个可活着的 argv[0]（否则 strrchr(NULL) 直接死）；
  * 空名字保持与 C crt0-common "empty_string" 同语义。存为非 const：
  * environ/argv 的标准类型就是 `char **`，const 化会触发赋值处
@@ -103,6 +104,7 @@ void startup_c_main(unsigned long ps_addr) {
     exit(main(argc, argv));
     _exit(127);
 }
+#endif /* !STARTUP_MINIX_TEST */
 
 /* ── 架构入口 stub（不建帧，保住内核放好的 x0/a0 与 sp） ──
  * aarch64 TLS 初始化内联在此：逐字节摹写 picolibc crt0.o 反汇序列
@@ -164,6 +166,24 @@ __asm__(
     ".option pop\n"
     "   call startup_c_main\n"    /* a0=ps_strings 按 RISC-V ABI 传参 */
     "   j    .\n"
+    ".size _start, .-_start\n");
+
+#elif defined(__x86_64__)
+
+/* The kernel enters a process with RBX = ps_strings (Minix C i386 soft-int
+ * convention widened to 64 bits; see `os/arch/src/x86_64/boot.rs`). The SysV
+ * ABI wants the first argument in RDI, so pass RBX through and align RSP for
+ * the call (call pushes 8, giving the callee the ABI's 8-mod-16 entry state). */
+__asm__(
+    ".text\n"
+    ".globl _start\n"
+    ".type _start, @function\n"
+    "_start:\n"
+    "   movq %rbx, %rdi\n"
+    "   andq $-16, %rsp\n"
+    "   call startup_c_main\n"
+    "   hlt\n"
+    "   jmp .\n"
     ".size _start, .-_start\n");
 
 #else
