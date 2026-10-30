@@ -35,7 +35,7 @@ fn main() -> Status {
     //    Internally: GetMemoryMap → AllocatePages → load kernel ELF from ESP
     //    → load boot modules → build KernelInfo → ExitBootServices
     // 1024 pages (4 MiB): the identity mapping, the kernel high mapping,
-    // DM coverage establishment (kernel + VM windows), the NK4-A
+    // DM coverage establishment (kernel + VM windows), the
     // boot-identity eviction (ELF segment pages + the 64 MiB VM heap
     // window at 4 KiB granularity ≈ one PT page per 2 MiB slice ≈ 33
     // pages) and the handoff page's fresh chain all draw lower-level
@@ -44,35 +44,39 @@ fn main() -> Status {
     // one PT page per 2 MiB region per window — which the former 16/64
     // pages cannot cover (the kernel's fallback bump is 1 MiB = 256
     // pages, FALLBACK_BUMP_LEN — this pool stays in the same order).
-    // NK4-C 1.55 B30: 128 pages sufficed for boot alone, but B26 fix-B
-    // also draws the kerninfo-injection chain (1–3 pages) from this
-    // pool at EVERY new-root bind, and the pool has no free path — the
-    // real machine died `AllocationFailed` after ~40 binds (bn9m).
+    // 128 pages sufficed for boot alone, but the kerninfo-injection
+    // chain (1–3 pages) is also drawn from this pool at EVERY new-root
+    // bind, and the pool has no free path — the real machine died with
+    // `AllocationFailed` after ~40 binds.
     // 1024 = boot needs (~100) + per-bind chain (≤3) × bind ceiling
-    // (exec 重建根每子进程一次;数百量级) × safety; runway is not
-    // free though: vm_handoff deducts the WHOLE region from the VM free
-    // list whether used or not (vm_handoff.rs 模块 doc), so this costs
-    // every boot 4 MiB of VM-selectable memory. Before the structural
-    // fix lands (reclaimable page-table pages / moving the kerninfo
-    // mapping responsibility to VM per kerninfo.rs doc — WORKLOG 1.55
-    // follow-up) this pool only postpones the deterministic panic.
-    // §1.115 方案 A / T1 2c/3b / T2: the shim builds the bootstrap root
-    // itself, serializes the v1 handoff arena (address space, five payloads,
-    // pairing loop) and absolutely jumps into the standalone high-half
-    // `kernel.elf` `_start`. aarch64 passes the arena in `x0`; x86-64 passes
-    // it in `rbx` (the image trampoline moves it to `rdi`). riscv64 keeps its
-    // direct-boot face until D-73 wires an independent shim leg.
+    // (one root rebuild per child process on exec; hundreds) × safety;
+    // the runway is not free though: vm_handoff deducts the WHOLE region
+    // from the VM free list whether used or not (vm_handoff.rs module
+    // doc), so this costs every boot 4 MiB of VM-selectable memory.
+    // Before the structural fix lands (reclaimable page-table pages /
+    // moving the kerninfo mapping responsibility to VM per kerninfo.rs
+    // doc) this pool only postpones the deterministic panic.
+    // The shim builds the bootstrap root itself, serializes the v1 handoff
+    // arena (address space, five payloads, pairing loop) and absolutely
+    // jumps into the standalone high-half `kernel.elf` `_start`. aarch64
+    // passes the arena in `x0`; x86-64 passes it in `rbx` (the image
+    // trampoline moves it to `rdi`). riscv64 keeps its direct-boot face
+    // until an independent shim leg is wired.
     boot_shim::uefi_helpers::prepare_and_enter_kernel_image(1024)
 }
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // NK4-A 首亮诊断：本 bin 的原实现是 `loop {}`——静默挂死。内核代码
-    // 进程内链在本 shim 里（main() 直调 arch_boot/kmain），所以 Phase A
-    // 的任何 panic 都走这里，串口上什么都看不到，"真 hang"与"panic 被
-    // 吞"无法区分。改为：①栈缓冲格式化 panic 位置+消息（无堆依赖，EBS
-    // 前后都可用）经 raw_serial 打出；②触发内核诊断钩（arch_boot 入口
-    // 已注册，带 CPU 号 + backtrace）；③驻留。
+    // First-light diagnostic: this binary's original implementation was
+    // `loop {}` — a silent hang. The kernel code is linked in-process into
+    // this shim (main() calls arch_boot/kmain directly), so any Phase A
+    // panic lands here and nothing appears on the serial line, making a
+    // "real hang" indistinguishable from a "swallowed panic". Now: (1)
+    // format the panic location + message into a stack buffer (no heap
+    // dependency, usable before and after EBS) and print it through
+    // raw_serial; (2) fire the kernel diagnostic hook (registered at the
+    // arch_boot entry; includes the CPU number + backtrace); (3) stay
+    // resident.
     struct StackWriter<'a> {
         buf: &'a mut [u8; 256],
         len: usize,
@@ -83,22 +87,24 @@ fn panic(info: &PanicInfo) -> ! {
                 if self.len < self.buf.len() {
                     self.buf[self.len] = b;
                     self.len += 1;
-                } // 超出 256B 的尾部丢弃即可：诊断信息截断好于静默。
+                } // Dropping the tail beyond 256 B is fine: truncated diagnostics beat silence.
             }
             Ok(())
         }
     }
     let mut buf = [0u8; 256];
     let mut writer = StackWriter { buf: &mut buf, len: 0 };
-    // PanicInfo 的 Display 输出 "panicked at file:line:\nmessage"。
+    // PanicInfo's Display output is "panicked at file:line:\nmessage".
     let _ = core::fmt::Write::write_fmt(&mut writer, format_args!("{}", info));
-    // 先取出长度结束对 buf 的可变借用，再按字节切读。
+    // Take the length first to end the mutable borrow of buf, then slice by byte.
     let written = writer.len;
     let message = core::str::from_utf8(&buf[..written])
         .unwrap_or("boot-shim panic: (non-utf8 message)");
     raw_serial_line("boot-shim panic: ");
     raw_serial_line(message);
-    // 钩子与 panic 路径同址空间：arch_boot 入口注册过则补打内核格式。
+    // The hook lives in the same address space as the panic path: if the
+    // arch_boot entry registered one, also print the kernel-formatted
+    // message.
     if !minix_types::run_panic_diagnostic_hook(message) {
         raw_serial_line("boot-shim panic: diagnostic hook not registered");
     }

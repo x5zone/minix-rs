@@ -60,10 +60,13 @@ unsafe fn ser_init() { unsafe {
 /// would otherwise force Rust's name resolver to disambiguate between the trait
 /// method and a same-named free function inside the `impl` block.
 fn com1_write_byte(byte: u8) {
-    // SD-5 / P-X86-02（2026-10-06）：原实现是无界 `while (LSR.THRE==0) {}`
-    //——UART 异常（或被模拟器禁写）时内核首条输出即永久挂死。改用共享
-    // `tx_wait_then_send`（aarch64 同范式）：有界等 LSR bit5（THRE，0x3FD），
-    // 到限放行宁丢字节（与 boot-shim `emit_byte` 的 NK4-A 取证语义一致）。
+    // The original implementation was an unbounded `while (LSR.THRE==0) {}`
+    // — the kernel hung forever on its first output whenever the UART
+    // misbehaved (or was write-disabled by the emulator). Switch to the
+    // shared `tx_wait_then_send` (same pattern as aarch64): bounded wait on
+    // LSR bit 5 (THRE, port 0x3FD), and at the bound the byte is written
+    // anyway — dropping a byte beats hanging (same semantics as the
+    // boot-shim `emit_byte` forensic runs established).
     const COM1_LSR: u16 = COM1_BASE + 5; // Line Status Register
     const COM1_LSR_THRE: u8 = 0x20; // Transmit Holding Register Empty
     const COM1_TX_POLL_LIMIT: u32 = 100_000;

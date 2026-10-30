@@ -34,8 +34,8 @@
 //! - riscv64: no Minix3 port ([ARCH: K-2]); RISC-V Privileged Spec 1.12 §4.1.3
 //!   (Supervisor Interrupt Registers, `sie.STIE` bit 5).
 //!
-//! # Three-architecture coverage (FIX-22, Phase 2 → TimerIrqGate; semantics
-//! refined by D-59, 2026-09-09 `[ARCH: gate-semantics]`)
+//! # Three-architecture coverage (the `[ARCH: gate-semantics]` decision of
+//! 2026-09-09)
 //!
 //! `enable_timer_irq` / `disable_timer_irq` open and close the *module-local*
 //! gate of the current boot clock source. The gate genuinely differs across
@@ -79,8 +79,8 @@ pub trait TimerIrqGate: Sized {
     /// `boot_cpu_init_timer` (clock.c:294: `init_local_timer` then
     /// `register_local_timer_handler`, whose `put_irq_handler` caller rule
     /// enables the line). Opening the gate before the handler exists
-    /// leaves a live interrupt source with nothing to serve it (the
-    /// pre-D-59 defect). See 05-clock-interrupt-init.md §3.7.
+    /// leaves a live interrupt source with nothing to serve it — the defect
+    /// the gate exists to prevent. See 05-clock-interrupt-init.md §3.7.
     fn enable_timer_irq();
 
     /// Mask the timer IRQ.
@@ -102,7 +102,7 @@ mod tests {
         _check::<crate::CurrentTimerIrqGate>();
     }
 
-    // FIX-22 (Phase 2) heritage: three-architecture compile-time coverage.
+    // Three-architecture compile-time coverage.
     // Each architecture's TimerIrqGate impl must exist and satisfy the
     // trait bound. Real hardware programming (LAPIC/CNTP/sie) is verified
     // via QEMU integration tests, not unit tests.

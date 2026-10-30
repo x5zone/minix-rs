@@ -54,7 +54,7 @@ impl BootAlloc {
     }
 
     /// Resume a bump allocator whose region was already partly consumed by a
-    /// previous stage (§1.115 方案 A cross-image handoff).
+    /// previous stage (the cross-image handoff).
     ///
     /// The boot-shim builds the bootstrap page tables from this bump region and
     /// then hands off to the high-half kernel image, which links its *own* copy
@@ -168,8 +168,8 @@ pub fn boot_alloc_region() -> Option<(u64, u64)> {
 /// Bytes handed out by the global boot allocator so far.
 ///
 /// Zero before [`init_boot_pt_alloc`]. Consumed by the VM boot handoff
-/// (`kernel_allocated_bytes_dynamic`) and by the §1.115 方案 A cross-image
-/// handoff (the boot-shim records the cursor so the kernel image can resume).
+/// (`kernel_allocated_bytes_dynamic`) and by the cross-image handoff (the
+/// boot-shim records the cursor so the kernel image can resume).
 pub fn boot_alloc_used_bytes() -> u64 {
     BOOT_ALLOC.used_bytes()
 }
@@ -181,7 +181,7 @@ pub fn boot_alloc_next() -> u64 {
     base + BOOT_ALLOC.used_bytes()
 }
 
-/// Resume the global boot allocator from a cross-image handoff (§1.115 方案 A).
+/// Resume the global boot allocator from a cross-image handoff.
 ///
 /// Aarch64-only entry used by the high-half kernel image to continue the bump
 /// region the boot-shim left off in. Must be called before the image's first

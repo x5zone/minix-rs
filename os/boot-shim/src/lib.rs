@@ -34,7 +34,7 @@ pub use minix_boot::{BootShim, BootPrepareResult};
 pub use minix_elf;
 
 /// Single construction surface for the `KernelInfo` a boot surface hands over
-/// (D-69: the UEFI and OpenSBI helpers previously carried two drifting
+/// (the UEFI and OpenSBI helpers previously carried two drifting
 /// 8/9-parameter copies of this function).
 ///
 /// `reserved_regions` is the surface's non-conventional list (UEFI-classified
@@ -110,8 +110,7 @@ pub mod opensbi_helpers;
 // Re-exports the *active firmware implementation's* type — callers still
 // write the concrete type (e.g. `UefiBootShim::prepare_boot(...)` in
 // src/main.rs). The Cargo.toml feature selection determines which impl is
-// compiled (I-20: resolved by fixing this comment; the forwarding-fn
-// alternative was not taken).
+// compiled (no forwarding fn is provided; callers use the concrete type).
 
 #[cfg(feature = "uefi")]
 pub use uefi_helpers::{find_platform_sources, UefiBootShim};
@@ -119,29 +118,36 @@ pub use uefi_helpers::{find_platform_sources, UefiBootShim};
 #[cfg(all(feature = "opensbi", not(feature = "uefi")))]
 pub use opensbi_helpers::OpenSbiBootShim;
 
-/// 裸写 QEMU 串口（COM1 数据口 0x3F8；OVMF 已完成 16550 初始化）。
+/// Raw-write the QEMU serial port (COM1 data port 0x3F8; OVMF has already
+/// initialized the 16550).
 ///
-/// 用途：EBS 之后 uefi::println! 的日志路径不再可靠（见
-/// uefi_helpers::exit_boot_services 的注释），裸端口写不依赖任何
-/// UEFI 状态——NK4-A 首亮诊断的 post-EBS 专用通道。
+/// Purpose: after EBS the logging path of `uefi::println!` is no longer
+/// reliable (see the comment in `uefi_helpers::exit_boot_services`); a raw
+/// port write does not depend on any UEFI state — the dedicated post-EBS
+/// channel for first-light diagnostics.
 ///
-/// x86 语义保留原样：逐字节直写、不等发送侧腾空（需要等待的路径见
-/// [`raw_serial_line`]）。
+/// x86 semantics stay as they are: byte-by-byte direct writes, without
+/// waiting for the transmitter to drain (for the waiting path see
+/// [`raw_serial_line`]).
 #[cfg(target_arch = "x86_64")]
 pub fn raw_serial(text: &str) {
     for byte in text.bytes() {
-        // SAFETY: COM1 数据口是 QEMU/PC 平台的固定 I/O 资源；boot-shim
-        // 是唯一所有者（固件交棒后无并发写者），out 指令无副作用泄漏。
+        // SAFETY: the COM1 data port is a fixed I/O resource of the QEMU/PC
+        // platform; boot-shim is its sole owner (no concurrent writer after
+        // the firmware hands over), and the `out` instruction leaks no side
+        // effects.
         unsafe {
             core::arch::asm!("out dx, al", in("dx") 0x3f8u16, in("al") byte, options(nomem, nostack));
         }
     }
 }
 
-/// aarch64：EBS 后只能直接摸 PL011。寄存器布局与发送节流都住在
-/// `minix-plat` 的 early_console 里（一处真相），本函数不重写一遍。
-/// 本架构上「等腾空」与「不等」没有区别（两条通道共用同一个带节流的
-/// 发射器），所以这里直接逐字节走 [`emit_byte`]。
+/// aarch64: after EBS the only option is to touch PL011 directly. The
+/// register layout and transmit throttling both live in `minix-plat`'s
+/// early_console (single source of truth), so this function does not
+/// re-implement them. On this architecture "wait for drain" and "don't wait"
+/// are indistinguishable (both channels share the same throttled emitter), so
+/// this goes byte-by-byte through [`emit_byte`].
 #[cfg(target_arch = "aarch64")]
 pub fn raw_serial(text: &str) {
     for byte in text.bytes() {
@@ -149,19 +155,24 @@ pub fn raw_serial(text: &str) {
     }
 }
 
-/// 其余目标：无已证实的裸机串口通道，退化为空实现。
+/// All other targets: no verified bare-metal serial channel; degrade to an
+/// empty implementation.
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub fn raw_serial(_text: &str) {}
 
-/// 逐字节裸写串口（带发送侧有界等待 + `\n` 自动补 `\r`）。
+/// Raw-write the serial port byte by byte (bounded wait on the transmit side
+/// + automatic `\r` after `\n`).
 ///
-/// 与 [`raw_serial`] 的区别：本函数不要求调用方自带 `\r\n`、且等传输
-/// 就绪（原实现快速连写会撞满 16550 发送缓冲丢字），并且只吃 `&str` 的
-/// 字节流——panic 路径上无分配、无 UTF-8 重切分风险。panic handler 用它。
+/// Difference from [`raw_serial`]: this function does not require the caller
+/// to supply `\r\n`, waits for transmit readiness (the original implementation
+/// writing back-to-back overflowed the 16550 transmit buffer and dropped
+/// characters), and consumes only the byte stream of `&str` — no allocation
+/// and no UTF-8 re-slicing risk on the panic path. The panic handler uses it.
 ///
-/// 住在库里而不是 bin 里（NK4-B P3 M3.3）：架构分道只需要一个落点，
-/// 否则 `raw_serial` 与 `raw_serial_line` 各自要写一遍 cfg。x86 腿的
-/// 指令与轮询上限逐字未变。
+/// It lives in the library rather than in the binary so the architecture
+/// split has a single home; otherwise `raw_serial` and `raw_serial_line`
+/// would each have to write their own cfg. The x86 leg's instructions and
+/// polling bound are unchanged verbatim.
 pub fn raw_serial_line(text: &str) {
     for byte in text.bytes() {
         let mut emit = [byte, 0];
@@ -178,18 +189,22 @@ pub fn raw_serial_line(text: &str) {
     }
 }
 
-/// [`raw_serial_line`] 的单字节发射器：先等发送侧腾空（有界）再写。
+/// [`raw_serial_line`]'s single-byte emitter: first wait (bounded) for the
+/// transmitter to drain, then write.
 #[cfg(target_arch = "x86_64")]
 fn emit_byte(b: u8) {
-    // SAFETY: COM1（0x3F8 基址）是 QEMU/PC 平台固定 I/O 资源；
-    // boot-shim 交棒后是唯一所有者。LSR（0x3FD = 基址+5）bit5＝THRE
-    //（发送保持寄存器空）：置位才写 THR，保证每个字节都进得了发送
-    // 寄存器。
-    // NK4-A 取证：轮询有界（~10 万次即放弃，字节照写）——LSR
-    // 异常时丢个别字节，绝不把 panic 消息整个吞掉。
-    // SD-5 / P-X86-02 勘误（2026-10-06）：旧实现读的是 0x3F9＝IER
-    //（中断使能寄存器，仅 bit0-3 有效，bit5 恒 0）——每字节空转满
-    // 上限再照写。端口勘误后 THRE 真正被等到（早期串口提速数量级）。
+    // SAFETY: COM1 (base 0x3F8) is a fixed I/O resource of the QEMU/PC
+    // platform; after the handover boot-shim is the sole owner. LSR (0x3FD =
+    // base+5) bit5 = THRE (transmit holding register empty): write THR only
+    // when set, which guarantees every byte reaches the transmit register.
+    // Evidence: polling is bounded (~100k iterations then give up, the byte
+    // is still written) — if LSR misbehaves individual bytes are dropped,
+    // never the whole panic message.
+    // Errata (2026-10-06): the old implementation read 0x3F9 = IER (interrupt
+    // enable register, only bits 0-3 valid, bit5 always 0) — every byte spun
+    // to the full limit and was then written anyway. After the port
+    // correction THRE is really awaited (early serial speedup by an order of
+    // magnitude).
     unsafe {
         let mut spins: u32 = 0;
         loop {
@@ -204,14 +219,15 @@ fn emit_byte(b: u8) {
     }
 }
 
-/// aarch64：发射器 = `minix-plat` 的早期控制台写入（自带「有界等
-/// TXFF」，上限与位定义都在那里，本文件不重复一份寄存器语义）。
+/// aarch64: emitter = `minix-plat`'s early-console write (it has its own
+/// bounded "wait for TXFF"; the limit and the bit definitions live there, so
+/// this file does not repeat a copy of the register semantics).
 #[cfg(target_arch = "aarch64")]
 fn emit_byte(b: u8) {
     use minix_plat::EarlyConsole;
     <minix_plat::CurrentEarlyConsole as EarlyConsole>::write_byte(b);
 }
 
-/// 其余目标：空实现（与 [`raw_serial`] 同调）。
+/// Other targets: empty implementation (same tune as [`raw_serial`]).
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 fn emit_byte(_b: u8) {}

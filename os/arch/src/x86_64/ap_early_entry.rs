@@ -1,4 +1,4 @@
-//! x86 AP early entry ladder — S-3b/S-3c/S-3d (real 16→32→64 climb).
+//! x86 AP early entry ladder — real 16→32→64 climb.
 //!
 //! # Design (one paragraph)
 //!
@@ -8,7 +8,7 @@
 //! no relocations, no linker-gap dependencies — because the scratch page
 //! it consumes sits at the FIXED linear address 0x9000, written by the BSP
 //! before `boot_ap` (C: trampoline data at a fixed low address,
-//! arch_smp.c:130 publisher `mfence` belongs on the boot_ap side, S-3c).
+//! arch_smp.c:130 publisher `mfence` belongs on the boot_ap side).
 //!
 //! # Scratch page layout (linear, written by the BSP)
 //!
@@ -30,7 +30,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use minix_types::PhysBytes;
 use crate::X86_64DirectMap;
 
-// ── S-5: AP tail gate ──
+// ── AP tail gate ──
 //
 // The ladder's Rust convergence hands off to a kernel-registered tail (the
 // kernel owns the per-CPU bring-up policy — same split as the trap
@@ -41,7 +41,7 @@ static AP_TAIL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Register the kernel-side AP tail. Must run before the first INIT/SIPI
 /// (`smp_init` does); an unregistered tail parks the AP at the convergence
-/// point (S-3d behavior).
+/// point.
 pub fn register_ap_tail(f: ApTailFn) {
     AP_TAIL.store(f as *mut (), Ordering::Release);
 }
@@ -55,7 +55,7 @@ pub const AP_STARTUP_PA: u64 = 0x5000;
 /// Bring-up diagnostic: the ladder writes a stage byte here after each
 /// mode transition (values 0xA1..0xA7, 0 = no progress). The BSP clears
 /// it before `boot_ap` and reads it on timeout — the dead stage is then
-/// directly observable from the BSP (S-3d).
+/// directly observable from the BSP.
 pub const AP_STAGE_MARK: u32 = 0x6F00;
 /// SIPI vector field value.
 pub const AP_STARTUP_VECTOR: u32 = 0x05;
@@ -85,7 +85,8 @@ core::arch::global_asm!(
     ".section .ap_early_entry, \"ax\"",
     // Run-linear base of the installed blob — label-derived far-jump
     // offsets are section-relative and must add this base to become the
-    // run-linear targets the AP needs (S-3d root cause, 2026-09-09).
+    // run-linear targets the AP needs (root cause of the 2026-09-09 AP
+    // entry failure).
     ".set AP_BASE, 0x5000",
     ".globl ap_early_entry_start",
     ".globl ap_early_entry_code",
@@ -103,7 +104,8 @@ core::arch::global_asm!(
     // 0x16 (mod=00 reg=/2 rm=110): in 16-bit addressing rm=101 is [DI],
     // only rm=110 with mod=00 is [disp16] — the 32-bit-form modrm 0x15
     // silently fetched from [DI=0] = the IVT, loading
-    // GDTR={0xFF53, 0xFF53F000} (S-3d round 10 root cause of #GP(0x10)).
+    // GDTR={0xFF53, 0xFF53F000} (root cause of the #GP(0x10) during the
+    // tenth bring-up round).
     "  .byte 0x66, 0x0F, 0x01, 0x16",
     "  .word 0x6030",
     // Protected mode (paging still off — linear = PA).
@@ -116,7 +118,8 @@ core::arch::global_asm!(
     // assembler-resolved from the same-section label difference (= the
     // run-linear offset, since the blob installs at AP_STARTUP_PA) —
     // hand-written immediates desynced from the real layout and landed the
-    // AP inside the FJ32 operand bytes (the S-3d root cause, fixed 2026-09-09).
+    // AP inside the FJ32 operand bytes (root cause of the 2026-09-09 AP
+    // entry failure).
     "  .byte 0xEA",
     "  .word (ap_protected - ap_early_entry_start) + AP_BASE",
     "  .word 0x0010",
@@ -147,7 +150,7 @@ core::arch::global_asm!(
     // kernel DM window leaves and VM-mapped user data/stack pages carry
     // NX) faults with #PF err=8 (RSVD) on that AP while the identical
     // access succeeds on the BSP. That CPU-dependent split produced the
-    // NK4-C iteration-28 err=8 storm (RS "self=0" refault cascade) and
+    // err=8 storm (RS "self=0" refault cascade) and
     // the boot-to-boot "crash point drift" race (whichever CPU reaches
     // the NX leaf first decides the failure shape).
     "  mov ecx, 0xC0000080",
@@ -211,8 +214,8 @@ pub fn image_bytes() -> &'static [u8] {
 }
 
 /// BSP side: copy the image blob to `pa` (page-aligned, <1 MiB, inside
-/// the boot identity map). The memory choice belongs to the caller (S-5
-/// `smp_init` scans the free map, mirroring C `alloc_lowest`).
+/// the boot identity map). The memory choice belongs to the caller
+/// (`smp_init` scans the free map, mirroring C `alloc_lowest`).
 ///
 /// # Safety
 ///
@@ -244,10 +247,10 @@ pub unsafe fn install_at(pa: usize) {
 /// `scratch_lin` must be the fixed linear address the ladder reads
 /// ([`SCRATCH_LIN`]), backed by writable identity RAM. No AP may be
 /// consuming the record yet (single-image serial reuse — the BSP owns it
-/// until the AP publishes its handshake, S-3d).
+/// until the AP publishes its handshake).
 ///
 /// The publisher fence (x86 `mfence`, §3.9) belongs to `SmpArch::boot_ap`
-/// before the firmware call (S-3c).
+/// before the firmware call.
 pub unsafe fn fill_bootstrap(scratch_lin: u32, record: &ApBootstrap) {
     assert_eq!(scratch_lin as usize, SCRATCH_LIN as usize);
     assert!(
@@ -288,15 +291,15 @@ pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
     // AP runs on the adopted bootstrap root, which maps low RAM identity but
     // NOT the kernel DM window — the DM conversion here produced a #PF →
     // triple fault the moment the production tail first ran on hardware
-    // (S-5 L4: CR2=0xffff8080_00006f00). The ladder's own marks (A1..A6)
-    // already write through the identity map; this is the same channel.
-    // S-7 switches the AP to the full kernel environment, where the DM
-    // conversion becomes the right tool.
+    // (CR2=0xffff8080_00006f00). The ladder's own
+    // marks (A1..A6) already write through the identity map; this is the
+    // same channel. Once the AP moves to the full kernel environment, the
+    // DM conversion becomes the right tool.
     unsafe {
         core::ptr::write_volatile(AP_STAGE_MARK as *mut u8, 0xA7);
     }
     // Magic lives at S_MAGIC (+0); the record follows at S_RECORD (+8).
-    // (The pre-S-5 code read the magic at +8 — the record's first field —
+    // (The earlier code read the magic at +8 — the record's first field —
     // and asserted against BOOT_MAGIC_SENT; the DM-window #PF above always
     // fired first, so this off-by-slot bug never executed.)
     let magic = unsafe { core::ptr::read_volatile((SCRATCH_LIN as usize + S_MAGIC) as *const u64) };
@@ -305,7 +308,7 @@ pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
     };
     assert_eq!(magic, BOOT_MAGIC_SENT, "AP entered with unpublished bootstrap record");
     // §3.9: everything needed after this point lives in locals — the
-    // record belongs back to the BSP the moment boot_ack publishes (S-3d).
+    // record belongs back to the BSP the moment boot_ack publishes.
     let tail = AP_TAIL.load(Ordering::Acquire);
     if tail.is_null() {
         // Unregistered (bare ladder tests): park with interrupts off.
@@ -314,7 +317,8 @@ pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
         }
     }
     // Tail divergence — the kernel continuation owns the CPU from here
-    // (S-5: init_ap + finish handshake; S-7: scheduler loop).
+    // (first the per-CPU init plus handshake finish, then the scheduler
+    // loop).
     let f = unsafe { core::mem::transmute::<*mut (), ApTailFn>(tail) };
     unsafe { f(record.logical_id, record.hw_id, record.kernel_stack_top_va) }
 }
@@ -325,9 +329,9 @@ mod tests {
 
     #[test]
     fn test_placement_constants_within_low_identity() {
-        // S-3d (2026-09-09): vector page moved to 0x05 — PA 0x8000 is
+        // 2026-09-09: vector page moved to 0x05 — PA 0x8000 is
         // OVMF's own AP park/jump-table area under QEMU (monitor `xp`
-        // evidence, see smp_todo S-3d).
+        // evidence; see smp_todo.md).
         assert_eq!(AP_STARTUP_PA, 0x5000);
         assert_eq!(AP_STARTUP_VECTOR, 0x05);
         assert!(AP_STARTUP_PA < 0x10_0000);
@@ -373,8 +377,9 @@ mod tests {
             kernel_stack_top_va: 0x0000_0000_0001_8000,
             rust_entry_va: 0x0000_0000_0002_0000,
         };
-        // fill_bootstrap 本尊经 Direct Map 写硬件 scratch（hosted 无 DM），
-        // 这里镜像其存储序列验证布局契约。
+        // The real fill_bootstrap writes the hardware scratch through the
+        // Direct Map (hosted builds have no DM), so this mirrors its store
+        // sequence to verify the layout contract.
         unsafe {
             core::ptr::write_volatile(scratch.as_mut_ptr() as *mut u64, BOOT_MAGIC_SENT);
             core::ptr::write_volatile(
@@ -419,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_far_jump_targets_hit_real_instruction_boundaries() {
-        // S-3d root-cause pin (2026-09-09): the ladder's two far jumps
+        // Root-cause pin (2026-09-09): the ladder's two far jumps
         // used hand-written offsets that had desynced from the emitted
         // layout — the AP landed inside the FJ32 operand bytes and
         // executed garbage. The assembler now derives both offsets from
@@ -470,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_ladder_absolute_reads_match_record_layout() {
-        // S-3d round 10 (2026-09-14): three byte-level ladder defects that
+        // Tenth bring-up round (2026-09-14): three byte-level ladder defects that
         // hosted tests could not see because the AP never got past the
         // LGDT — ① the LGDT modrm used the 32-bit addressing form (rm=101
         // = [DI] in 16-bit mode, descriptor fetched from the IVT at
@@ -513,7 +518,7 @@ mod tests {
             pat[4..].copy_from_slice(&((BASE + S_RECORD + field_off) as u32).to_le_bytes());
             assert!(contains(&pat), "{what} read must target record+{field_off:#x}");
         }
-        // The hand-loaded bootstrap PA must equal AP_STARTUP_PA (B9 = mov ecx, imm32).
+        // The hand-loaded bootstrap PA must equal AP_STARTUP_PA (0xB9 = mov ecx, imm32).
         let mut rcx = [0u8; 5];
         rcx[0] = 0xB9;
         rcx[1..].copy_from_slice(&(AP_STARTUP_PA as u32).to_le_bytes());

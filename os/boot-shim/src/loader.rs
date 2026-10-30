@@ -30,9 +30,12 @@ use minix_boot::{BootModule, NR_BOOT_MODULES};
 /// converts to backslashes before passing to UEFI's `SimpleFileSystem`.
 pub const KERNEL_PATH: &str = "/EFI/minix/kernel.elf";
 
-/// SD-3 D1：平台 DTB 描述符 blob（可选件——ESP 上存在时参与内存图出界
-/// 闸与源打印，缺省=现行为；构建侧由 `xtask image`（待 A 板让路）或
-/// 测试脚本 mcopy 注入，来源 `qemu-system-aarch64 -machine virt,dumpdtb=`）。
+/// Platform DTB descriptor blob (optional): when present on the ESP it takes
+/// part in the memmap out-of-bounds gate and in source printing; when absent
+/// the behavior is unchanged. On the build side it is injected by
+/// `xtask image` (once that side is free to do so) or by a test-script
+/// mcopy, and originates from
+/// `qemu-system-aarch64 -machine virt,dumpdtb=`.
 pub const DUMPDTB_PATH: &str = "/dumpdtb.dtb";
 
 /// Directory containing boot modules (same convention for both paths).

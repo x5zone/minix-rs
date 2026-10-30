@@ -1,4 +1,4 @@
-//! Test: timer IRQ hardware half-loop on riscv64 (E-3ARCHTRAP / NK3 — the
+//! Test: timer IRQ hardware half-loop on riscv64 (the
 //! riscv64 leg of the x86 `test-timer-irq` carrier; OpenSBI carrier).
 //!
 //! Verifies the full interrupt delivery chain with the REAL production
@@ -10,7 +10,7 @@
 //! `IrqManager` hook chain → `clock_irq_handler` → uptime advances.
 //!
 //! Boot flow mirrors the x86 sibling: OpenSBI (-bios default) → `-kernel`
-//! at 0x80200000 → BSS zero + stack setup (K10 carrier shape) →
+//! at 0x80200000 → BSS zero + stack setup (carrier shape) →
 //! hand-built `BootPrepareResult` (DTB from OpenSBI's a1) → paging
 //! (arch_boot_impl) → platform desc → init_protection (production trap
 //! legs registered + stvec loaded) → init_clock_and_interrupts →
@@ -184,13 +184,13 @@ static VM_ELF_STUB: PageAlignedStub = PageAlignedStub({
 
 const PASS_TICKS: u64 = 5;
 
-// ── Boot assembly (K10 carrier shape: BSS zero before any flag read) ──
+// ── Boot assembly (carrier shape: BSS zero before any flag read) ──
 core::arch::global_asm!(
     ".section .text.init",
     ".global _start",
     "_start:",
     // Zero .bss: OpenSBI hands over without clearing the kernel image's
-    // BSS (K10 round-1 finding — garbage reads fake readiness).
+    // BSS (a finding from the carrier work: garbage reads fake readiness).
     "    la t0, __bss_start",
     "    la t1, __bss_end",
     "1:",
@@ -275,7 +275,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery — the DTB pointer OpenSBI passed in
-    // a1 feeds the same parse the kernel lane uses (K10 carrier shape).
+    // a1 feeds the same parse the kernel lane uses (carrier shape).
     {
         use minix_boot::PlatformDescSource;
         use minix_platform::kind::{DTB, parse_by_kind};
@@ -330,8 +330,10 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     }
     early_console::write_str("  SIE=1 — polling uptime\n");
 
-    // 8. SD-41/C3 首源触发：UART RX（PLIC IRQ 10）回环自证——MCR.LOOP 内环
-    // 免外部输入，SEI 全链（UART 设备→PLIC→claim→钩子链→complete）真机点亮。
+    // 8. First-source trigger: UART RX (PLIC IRQ 10) loopback self-proof —
+    // the MCR.LOOP internal loop needs no external input, lighting up the
+    // whole SEI chain on real hardware (UART device→PLIC→claim→hook
+    // chain→complete).
     early_console::write_str("  uart-rx selftest arming...\n");
     minix_kernel::uart_irq::enable_uart_rx_selftest(b'C');
     early_console::write_str("  uart-rx selftest armed (loopback 'C')\n");
@@ -359,7 +361,8 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
             }
         }
         if now >= target + 10 {
-            // 首源超窗：uptime 已证但 SEI 设备链未亮——显式 FAIL 标记。
+            // First source missed the window: uptime is proven but the SEI
+            // device chain never lit — emit an explicit FAIL marker.
             early_console::write_str("### uart-rx: no first-source within window (fired=");
             early_console::write_hex(fired as u64);
             early_console::write_str(") ###\n");

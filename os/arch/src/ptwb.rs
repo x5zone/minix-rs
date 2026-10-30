@@ -1,69 +1,83 @@
-//! SD-10 候选 3 改形仪器：页表写「记录-静点走查」采样器（riscv64）。
+//! Page-table write "record - quiescent-point walk" sampler (riscv64).
 //!
-//! # 谱系（为什么是这形状）
+//! # Lineage (why it has this shape)
 //!
-//! `2026-10-19` 晚第一试形（leaf 写后 inline walk-back 四钩：map/remap/
-//! unmap/update_flags 写毕当即走表复读）上线即 riscv ATF boot leg 挂死
-//! （sig manager 致命 SIGSEGV）——观测装置在被测写窗内重入走表（walk_read
-//! 与写窗交互），扰动被测系统活形（案卷 4.2 教训一真机现形）。已全量
-//! 还原。改形把「走查」从写窗内挪到**静点**（timer tick 臂，单 hart +
-//! BKL 下页表写者必然不在飞），写点只留一条有界记录（环推入）；排水侧
-//! 以重入守卫挡 tick 嵌套进 kcall 的二次重入。
+//! The first shape tried on the evening of `2026-10-19` (an inline walk-back
+//! hooking all four leaf writes: map/remap/unmap/update_flags re-read the
+//! table immediately after writing) hung the riscv ATF boot leg as soon as it
+//! shipped (fatal SIGSEGV in the sig manager): the observation apparatus
+//! re-entered the page walk inside the write window under test (walk_read
+//! interacting with the write window) and perturbed the live shape of the
+//! system under test (case-file 4.2 lesson one manifesting on real hardware).
+//! It was fully reverted. The reshape moves the walk out of the write window to
+//! a **quiescent point** (the timer tick arm: a single hart plus the BKL means
+//! page-table writers cannot be in flight), leaving only one bounded record at
+//! the write point (a ring push); the drain side uses a reentrancy guard to
+//! block the second reentry that occurs when a tick nests into kcall.
 //!
-//! # 覆盖面（v1 边界，诚实声明）
+//! # Coverage (v1 boundary, stated honestly)
 //!
-//! - **KernelDm 叶写（走查级）**：内核侧四个叶写方法（map/remap/unmap/
-//!   update_flags）写毕记录 {root, vaddr, want, op}，静点排水时从 root
-//!   重走并逐类比对。内核侧手工映射/启动装载走这条。
-//! - **网关 PteWrite（槽级）**：VM 经 SYS_VMCTL PteWrite 的内核代写
-//!   （KDM 直写+全局 sfence，`syscall.rs` 臂）写毕记录 {槽物理址, 值}，
-//!   静点排水时槽复读。wire 只带槽址与值（m1p1/m1p2），vaddr/root 不在
-//!   射程（扩 wire = 动 `[ARCH: riscv-vmddm]` 契约，v1 不做）。
-//! - **不覆盖**：未注册 VmDm 态的启动期直写（契约论证=not-present→
-//!   present，无陈旧项可陈）；`split_huge` 的子表叶复制（启动期一次性）；
-//!   PteZero 整页零填（新表无翻译）。SMP 撤钳（C2b）后本仪器须按每 hart
-//!   槽位再战（同 tf_guard 前置③）。
+//! - **KernelDm leaf writes (walk level)**: the four kernel-side leaf-write
+//!   methods (map/remap/unmap/update_flags) record {root, vaddr, want, op}
+//!   after writing; a quiescent-point drain walks again from root and compares
+//!   class by class. Kernel-side manual mapping and boot loading use this path.
+//! - **Gateway PteWrite (slot level)**: kernel-proxied writes made by VM via
+//!   SYS_VMCTL PteWrite (KDM direct write plus global sfence, the
+//!   `syscall.rs` arm) record {slot physical address, value}; a
+//!   quiescent-point drain re-reads the slot. The wire carries only the slot
+//!   address and the value (m1p1/m1p2); vaddr/root are out of scope (widening
+//!   the wire would change the `[ARCH: riscv-vmddm]` contract, not done in v1).
+//! - **Not covered**: boot-time direct writes in the unregistered VmDm state
+//!   (the contract argument is not-present->present, so there is no stale entry
+//!   to report); the child-table leaf copy in `split_huge` (one-time at boot);
+//!   the PteZero whole-page zero fill (a new table has no translation). Once
+//!   SMP is unclamped this instrument must be revisited per hart slot (the same
+//!   precondition tf_guard carries).
 //!
-//! # 扰动预算（对 4.2 教训一的正面回答）
+//! # Perturbation budget (a direct answer to case-file 4.2 lesson one)
 //!
-//! 记录侧**无条件自武装**（tf_guard LIVE 同款先例：N=7 轮实证无害量级），
-//! 每次叶写 3–4 条 Relaxed 写 + 环绕计数，无 disarm 分支——有界性由环
-//! 容量与排水预算承担，不靠开关。排水侧每 tick 预算内走查 ≤8 条（每条
-//! 3 次槽读）+ 槽复读 ≤32 次；打印全 boot ≤1 行活性 + ≤8 行 HIT（封顶
-//! 同 tf_guard 房规，串口写是 ATF 瓶颈故零周期打印）。
+//! The record side **arms itself unconditionally** (the same precedent as
+//! tf_guard LIVE: harmless magnitude over N=7 rounds of evidence), each leaf
+//! write costs 3-4 Relaxed writes plus the wrap counter, with no disarm
+//! branch: boundedness is borne by the ring capacity and the drain budget, not
+//! by a switch. The drain side walks <=8 entries within the per-tick budget
+//! (3 slot reads each) plus <=32 slot re-reads; printing over the whole boot is
+//! <=1 liveness line plus <=8 HIT lines (the cap follows the tf_guard house
+//! rule; serial writes are the ATF bottleneck, hence zero periodic printing).
 //!
-//! 纯逻辑层（环/分类/预算批取）不依赖 Direct Map 与 CSR，宿主可测
-//! （`riscv64_walk` 同款非门控先例）；走查/打印接线在
-//! `riscv64::paging::ptwb_drain_budgeted`（门内）。
+//! The pure logic layer (ring/classification/budgeted batch take) depends on
+//! neither the Direct Map nor CSRs and is host-testable (the same non-gated
+//! precedent as `riscv64_walk`); the walk/print wiring lives in
+//! `riscv64::paging::ptwb_drain_budgeted` (inside the gate).
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// KernelDm 叶写环容量（条）。
+/// KernelDm leaf-write ring capacity (entries).
 pub const RING_LEAF: usize = 64;
-/// 网关写槽级环容量（条）。
+/// Gateway write slot-level ring capacity (entries).
 pub const RING_SLOT: usize = 128;
-/// 每 tick 走查级预算（条）。
+/// Per-tick walk-level budget (entries).
 pub const DRAIN_WALK_BUDGET: usize = 8;
-/// 每 tick 槽级预算（条）。
+/// Per-tick slot-level budget (entries).
 pub const DRAIN_SLOT_BUDGET: usize = 32;
-/// HIT 打印封顶（房规 8，超出只计数）。
+/// HIT print cap (house rule of 8; anything beyond is only counted).
 pub const PRINT_CAP: usize = 8;
 
-/// 叶写操作标签（记录用；HIT 行打印为静态串）。
+/// Leaf-write operation tag (for recording; HIT lines print the static string).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LeafOp {
     /// `Paging::map`
     Map,
     /// `Paging::remap`
     Remap,
-    /// `Paging::unmap`（want = 0）
+    /// `Paging::unmap` (want = 0)
     Unmap,
     /// `Paging::update_flags`
     UpdateFlags,
 }
 
 impl LeafOp {
-    /// HIT 行的静态名字（避免运行期格式化）。
+    /// Static name for HIT lines (avoids runtime formatting).
     pub fn name(self) -> &'static str {
         match self {
             LeafOp::Map => "map",
@@ -74,21 +88,24 @@ impl LeafOp {
     }
 }
 
-/// 走查分类：表态与写时意图的分歧形状。
+/// Walk classification: the divergence shapes between the reported state and
+/// the write-time intent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HitClass {
-    /// 写时意图 = 无效（unmap），表里 V=1——「幽灵复活」。
+    /// Write-time intent = invalid (unmap), yet the table has V=1: "ghost revival".
     Revived,
-    /// 写时意图 = 有效（map/remap/update_flags），表里 V=0 或走表不命中。
+    /// Write-time intent = valid (map/remap/update_flags), yet the table has
+    /// V=0 or the walk does not hit.
     Gone,
-    /// 两边都有效但 PTE 值不同（PPN 或旗标位漂移）。
+    /// Both sides valid but the PTE values differ (PPN or flag-bit drift).
     Changed,
-    /// 槽级复读：网关写下的值在静点已不是写入值。
+    /// Slot-level re-read: the value written by the gateway is no longer the
+    /// written value at the quiescent point.
     SlotDrift,
 }
 
 impl HitClass {
-    /// HIT 行的静态名字。
+    /// Static name for HIT lines.
     pub fn name(self) -> &'static str {
         match self {
             HitClass::Revived => "REVIVED",
@@ -99,22 +116,25 @@ impl HitClass {
     }
 }
 
-/// Sv39 有效位（与 `Sv39PteFlags::V` 同值；纯层不依赖门内 bitflags）。
+/// Sv39 valid bit (same value as `Sv39PteFlags::V`; the pure layer does not
+/// depend on the in-gate bitflags).
 pub const PTE_V: u64 = 1 << 0;
 
-// ── 走查级环：{root, vaddr, want, op} × RING_LEAF ──
+// ── Walk-level ring: {root, vaddr, want, op} × RING_LEAF ──
 static LEAF_ROOT: [AtomicUsize; RING_LEAF] = [const { AtomicUsize::new(0) }; RING_LEAF];
 static LEAF_VADDR: [AtomicUsize; RING_LEAF] = [const { AtomicUsize::new(0) }; RING_LEAF];
 static LEAF_WANT: [AtomicUsize; RING_LEAF] = [const { AtomicUsize::new(0) }; RING_LEAF];
 static LEAF_OP: [AtomicUsize; RING_LEAF] = [const { AtomicUsize::new(0) }; RING_LEAF];
 
-// ── 槽级环：{槽物理址, 写入值} × RING_SLOT ──
+// ── Slot-level ring: {slot physical address, written value} × RING_SLOT ──
 static SLOT_PA: [AtomicUsize; RING_SLOT] = [const { AtomicUsize::new(0) }; RING_SLOT];
 static SLOT_VAL: [AtomicUsize; RING_SLOT] = [const { AtomicUsize::new(0) }; RING_SLOT];
 
-// head = 下一条写入槽位；tail = 最旧未排水样本槽位；COUNT = 在环样本数
-//（0..=容量，满环写入选最旧覆盖——「抽查」语义：排水预算追不上时保最新
-// 样本）；WRAPS = 环绕次数。计数式环避开口/满歧义（head==tail 既形）。
+// head = slot for the next write; tail = slot of the oldest not-yet-drained
+// sample; COUNT = samples in the ring (0..=capacity; when the ring is full a
+// write overwrites the oldest, which is "spot-check" semantics: keep the newest
+// samples when the drain budget cannot keep up); WRAPS = wrap count. A
+// count-based ring avoids the empty/full ambiguity (head==tail in both shapes).
 static LEAF_HEAD: AtomicUsize = AtomicUsize::new(0);
 static LEAF_TAIL: AtomicUsize = AtomicUsize::new(0);
 static LEAF_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -124,7 +144,7 @@ static SLOT_TAIL: AtomicUsize = AtomicUsize::new(0);
 static SLOT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static SLOT_WRAPS: AtomicUsize = AtomicUsize::new(0);
 
-// ── 读数计数（结账行/负控用）与排水重入守卫 ──
+// ── Reading counters (for the settlement line / negative control) and the drain reentrancy guard ──
 static VERIFIED_LEAF: AtomicUsize = AtomicUsize::new(0);
 static VERIFIED_SLOT: AtomicUsize = AtomicUsize::new(0);
 static DRAINS: AtomicUsize = AtomicUsize::new(0);
@@ -133,36 +153,46 @@ static DRAINING: AtomicBool = AtomicBool::new(false);
 static LIVE: AtomicBool = AtomicBool::new(false);
 static PRINTED: AtomicUsize = AtomicUsize::new(0);
 
-/// 活性行一次性凭证：首个有核验的排水打印一行执行记录（swap 保证只发
-/// 一次；打印本体在门内排水 fn，串口写不进纯层）。
+/// One-shot voucher for the liveness line: the first drain that verified
+/// something prints one execution record (swap guarantees it fires exactly
+/// once; the printing itself sits in the in-gate drain fn, serial writes do not
+/// enter the pure layer).
 pub fn first_live() -> bool {
     !LIVE.swap(true, Ordering::AcqRel)
 }
 
-/// HIT 打印全局许可（v3：封顶是**全 boot** ≤8 行，不是每排水 8 行——
-/// v1/v2 按次重置让串口在 HIT 面前刷屏，串口写是 ATF 瓶颈，观测装置
-/// 自扰动正是第一试形负结果的教训形状）。取到许可才打。
+/// Global HIT print permit (v3: the cap is <=8 lines for the **whole boot**,
+/// not 8 per drain -- in v1/v2 a per-drain reset let the serial console flood
+/// whenever HITs appeared; serial writes are the ATF bottleneck, and apparatus
+/// self-perturbation is exactly the lesson shape behind the first failed
+/// attempt). Print only after obtaining a permit.
 pub fn take_print_permit() -> bool {
     PRINTED.fetch_add(1, Ordering::AcqRel) < PRINT_CAP
 }
 
-/// 排水重入守卫：tick 嵌套进 kcall 时第二重排水直接退（失败试形的
-/// 教训正是重入；swap 保证嵌套者拿不到）。返回 true = 本重是外层。
+/// Drain reentrancy guard: when a tick nests into kcall the second drain exits
+/// immediately (reentrancy was precisely the lesson of the failed attempt; swap
+/// guarantees the nested caller gets nothing). Returns true = this call is the
+/// outer one.
 pub fn drain_guard_enter() -> bool {
     !DRAINING.swap(true, Ordering::AcqRel)
 }
 
-/// 外层排水结束放行。
+/// Release once the outer drain has finished.
 pub fn drain_guard_exit() {
     DRAINING.store(false, Ordering::Release);
 }
 
-/// KernelDm 叶写记录（BKL 临界区单写者，原子只为 SMP 撤钳前卫生）。
-/// 同键（root,vaddr）在环即**就地更新期望值**（v2：后续合法写刷新期望，
-/// 不堆新样本）——去重后静点仍漂移 = 「无记录写者改了表」，正是污染
-/// 签名；满环覆盖最旧，tail 前移保持排水侧只读未覆盖样本。
+/// KernelDm leaf-write record (single writer inside the BKL critical section;
+/// the atomics are only hygiene for a future SMP unclamp).
+/// A same key (root,vaddr) already in the ring means the expectation is
+/// **updated in place** (v2: later legal writes refresh the expectation instead
+/// of stacking a new sample) -- drift at the quiescent point after dedup means
+/// "an unrecorded writer changed the table", which is the contamination
+/// signature itself; a full ring overwrites the oldest and advances tail so the
+/// drain side only ever reads samples that were not overwritten.
 pub fn record_leaf(root: u64, vaddr: u64, want: u64, op: LeafOp) {
-    // 同键去重：只在在环（tail..tail+count）里扫。
+    // Same-key dedup: scan only what is in the ring (tail..tail+count).
     let count = LEAF_COUNT.load(Ordering::Acquire);
     let tail = LEAF_TAIL.load(Ordering::Acquire);
     for k in 0..count {
@@ -185,7 +215,7 @@ pub fn record_leaf(root: u64, vaddr: u64, want: u64, op: LeafOp) {
     if head_after == 0 {
         LEAF_WRAPS.fetch_add(1, Ordering::Relaxed);
     }
-    // 满环：覆盖最旧（tail 同步前移），count 封顶在容量。
+    // Full ring: overwrite the oldest (tail advances in step), count capped at capacity.
     let count = LEAF_COUNT.load(Ordering::Acquire);
     if count < RING_LEAF {
         LEAF_COUNT.store(count + 1, Ordering::Release);
@@ -194,7 +224,8 @@ pub fn record_leaf(root: u64, vaddr: u64, want: u64, op: LeafOp) {
     }
 }
 
-/// 网关 PteWrite 槽级记录（同键=槽物理址，去重语义同 `record_leaf` v2）。
+/// Gateway PteWrite slot-level record (same key = slot physical address; the
+/// dedup semantics are those of `record_leaf` v2).
 pub fn record_slot(slot_pa: u64, val: u64) {
     let count = SLOT_COUNT.load(Ordering::Acquire);
     let tail = SLOT_TAIL.load(Ordering::Acquire);
@@ -221,8 +252,9 @@ pub fn record_slot(slot_pa: u64, val: u64) {
     }
 }
 
-/// 排水侧取一批走查级样本（最旧先出，至多 `out.len()` 条）。返回实取
-/// 条数，样本写进 `out`（每条 {root, vaddr, want, op}）。
+/// Drain side takes one batch of walk-level samples (oldest first, at most
+/// `out.len()`). Returns the number actually taken; the samples are written
+/// into `out` (each {root, vaddr, want, op}).
 pub fn take_leaf_batch(out: &mut [[u64; 4]]) -> usize {
     let mut n = 0;
     while n < out.len() {
@@ -244,8 +276,9 @@ pub fn take_leaf_batch(out: &mut [[u64; 4]]) -> usize {
     n
 }
 
-/// 排水侧取一批槽级样本（最旧先出，至多 `out.len()` 条）。返回实取
-/// 条数，样本写进 `out`（每条 {槽物理址, 写入值}）。
+/// Drain side takes one batch of slot-level samples (oldest first, at most
+/// `out.len()`). Returns the number actually taken; the samples are written
+/// into `out` (each {slot physical address, written value}).
 pub fn take_slot_batch(out: &mut [[u64; 2]]) -> usize {
     let mut n = 0;
     while n < out.len() {
@@ -265,7 +298,8 @@ pub fn take_slot_batch(out: &mut [[u64; 2]]) -> usize {
     n
 }
 
-/// 叶级分类（纯函数）：写时意图 vs 静点表态。
+/// Leaf-level classification (pure function): write-time intent vs the state
+/// reported at the quiescent point.
 pub fn classify_leaf(want: u64, got: u64) -> Option<HitClass> {
     if want & PTE_V == 0 {
         if got & PTE_V != 0 {
@@ -282,7 +316,8 @@ pub fn classify_leaf(want: u64, got: u64) -> Option<HitClass> {
     }
 }
 
-/// 槽级分类（纯函数）：静点复读值 ≠ 写入值即漂移。
+/// Slot-level classification (pure function): a quiescent-point re-read that
+/// differs from the written value means drift.
 pub fn classify_slot(want: u64, got: u64) -> Option<HitClass> {
     if want == got {
         None
@@ -291,7 +326,7 @@ pub fn classify_slot(want: u64, got: u64) -> Option<HitClass> {
     }
 }
 
-/// 排水一次记一笔（活性/结账读数）。
+/// Record one drain (liveness / settlement readings).
 pub fn note_drain(verified_leaf: usize, verified_slot: usize, hits: usize) {
     DRAINS.fetch_add(1, Ordering::Relaxed);
     VERIFIED_LEAF.fetch_add(verified_leaf, Ordering::Relaxed);
@@ -299,8 +334,9 @@ pub fn note_drain(verified_leaf: usize, verified_slot: usize, hits: usize) {
     HITS.fetch_add(hits, Ordering::Relaxed);
 }
 
-/// 活性/结账读数（结账行四件套用）：（排水次数, 走查级核验数, 槽级
-/// 核验数, HIT 数, 环绕次数和）。
+/// Liveness/settlement readings (for the four-part settlement line): (drain
+/// count, walk-level verifications, slot-level verifications, HIT count, sum of
+/// wrap counts).
 pub fn readings() -> (usize, usize, usize, usize, usize) {
     (
         DRAINS.load(Ordering::Relaxed),
@@ -315,8 +351,8 @@ pub fn readings() -> (usize, usize, usize, usize, usize) {
 mod ptwb_tests {
     use super::*;
 
-    // 环是全进程静态，测试间互相污染——每个用例先清场再跑（单线程
-    // 测试语义下安全）。
+    // The ring is a process-wide static and tests contaminate each other, so
+    // every case clears state first (safe under single-threaded test semantics).
     fn reset_ring() {
         LEAF_HEAD.store(0, Ordering::Relaxed);
         LEAF_TAIL.store(0, Ordering::Relaxed);
@@ -341,15 +377,15 @@ mod ptwb_tests {
 
     #[test]
     fn classify_leaf_matrix() {
-        // unmap 意图（want V=0）
+        // unmap intent (want V=0)
         assert_eq!(classify_leaf(0, 0), None);
         assert_eq!(classify_leaf(0, PTE_V | 0x123), Some(HitClass::Revived));
-        // map 意图（want V=1）
-        let want = PTE_V | (1 << 10) | (1 << 6) | (1 << 7); // V|R|A|D 一帧
+        // map intent (want V=1)
+        let want = PTE_V | (1 << 10) | (1 << 6) | (1 << 7); // one frame of V|R|A|D
         assert_eq!(classify_leaf(want, want), None);
         assert_eq!(classify_leaf(want, 0), Some(HitClass::Gone));
         assert_eq!(classify_leaf(want, want ^ (1 << 10)), Some(HitClass::Changed));
-        // 旗标位单比特漂移同为 Changed
+        // a single-bit flag drift also classifies as Changed
         assert_eq!(classify_leaf(want, want | (1 << 4)), Some(HitClass::Changed));
     }
 
@@ -373,7 +409,7 @@ mod ptwb_tests {
             assert_eq!(e[1], (k as u64) * 0x1000);
             assert_eq!(e[3], LeafOp::Map as u64);
         }
-        // 排空后再取 = 0
+        // a take after the ring is drained = 0
         assert_eq!(take_leaf_batch(&mut out), 0);
     }
 
@@ -386,7 +422,7 @@ mod ptwb_tests {
         assert!(LEAF_WRAPS.load(Ordering::Relaxed) >= 1);
         let mut out = [[0u64; 4]; RING_LEAF];
         let n = take_leaf_batch(&mut out);
-        // 环满覆盖后只剩最新 RING_LEAF 条：seq 3 … RING_LEAF+2（0..2 被挤掉）
+        // after the full-ring overwrite only the newest RING_LEAF remain: seq 3 … RING_LEAF+2 (0..2 pushed out)
         assert_eq!(n, RING_LEAF);
         assert_eq!(out[0][0], 3);
         assert_eq!(out[RING_LEAF - 1][0], (RING_LEAF as u64 + 2));
@@ -402,7 +438,7 @@ mod ptwb_tests {
         assert_eq!(take_slot_batch(&mut out), DRAIN_SLOT_BUDGET);
         assert_eq!(out[0][0], 0x1000);
         assert_eq!(out[0][1], 0xdead);
-        // 余 8 条一次收干
+        // the remaining 8 drained in one take
         let mut out2 = [[0u64; 2]; DRAIN_SLOT_BUDGET];
         assert_eq!(take_slot_batch(&mut out2), 8);
         assert_eq!(out2[7][0], 0x1000 + 39 * 8);
@@ -428,7 +464,7 @@ mod ptwb_tests {
         reset_ring();
         record_leaf(0x8000_0000, 0x1000, PTE_V | 1, LeafOp::Map);
         record_leaf(0x8000_0000, 0x2000, PTE_V | 2, LeafOp::Map);
-        // 同键重写：期望值就地刷新，不追加样本
+        // same-key rewrite: the expectation is refreshed in place, no sample appended
         record_leaf(0x8000_0000, 0x1000, PTE_V | 9, LeafOp::UpdateFlags);
         let mut out = [[0u64; 4]; RING_LEAF];
         assert_eq!(take_leaf_batch(&mut out), 2, "去重后仍只 2 条在环");
@@ -456,8 +492,8 @@ mod ptwb_tests {
         reset_ring();
         record_slot(0x9000, 0x1);
         let mut out = [[0u64; 2]; RING_SLOT];
-        take_slot_batch(&mut out); // 排干
-        // 再记同键：旧条目已排水，应作为新样本入环
+        take_slot_batch(&mut out); // drain fully
+        // record the same key again: the old entry was drained, so it should enter as a new sample
         record_slot(0x9000, 0x2);
         assert_eq!(take_slot_batch(&mut out), 1);
     }
@@ -466,26 +502,28 @@ mod ptwb_tests {
     fn drain_guard_blocks_recursion() {
         reset_ring();
         assert!(drain_guard_enter());
-        // 嵌套者拿不到守卫
+        // the nested caller does not get the guard
         assert!(!drain_guard_enter());
         drain_guard_exit();
-        // 放行后可再入
+        // reentry is allowed after the release
         assert!(drain_guard_enter());
         drain_guard_exit();
     }
 
     #[test]
     fn print_permit_is_global_boot_cap() {
-        // 注意：PRINTED 是全进程静态，与真机共享此测试进程内先发计数——
-        // 清零后取满 PRINT_CAP 张、第 9 张拒绝。
+        // Note: PRINTED is a process-wide static, so permits already handed out
+        // (including on real hardware) are shared within this test process --
+        // take the remainder up to PRINT_CAP, and the 9th is refused.
         let start = PRINTED.load(Ordering::Relaxed);
         let budget = if start < PRINT_CAP { PRINT_CAP - start } else { 0 };
         for _ in 0..budget {
             assert!(take_print_permit());
         }
         assert!(!take_print_permit(), "第 {} 张后必须拒绝", PRINT_CAP);
-        // 旧读数还原（测试间卫生；超出部分不再回收——本测试进程内后续
-        // 用例不再依赖打印许可）。
+        // Old readings are not restored (inter-test hygiene; the excess is never
+        // reclaimed -- later cases in this test process do not depend on the
+        // print permit any more).
     }
 
     #[test]

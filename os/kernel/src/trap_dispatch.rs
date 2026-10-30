@@ -1,4 +1,4 @@
-//! Kernel-side trap/syscall dispatch bodies — S-8 (smp_todo.md §3.7).
+//! Kernel-side trap/syscall dispatch bodies.
 //!
 //! The x86-64 asm stubs (`minix_arch::x86_64::trap_stub`) save context and
 //! call the two bodies registered here at `init_protection` time. This
@@ -13,7 +13,7 @@
 //!   `BklSection::assume_held()` — the same root contract
 //!   `dispatch_hardware_irq` and `clock_irq_handler` already witness. C's
 //!   interrupt handlers take no lock for the same reason.
-//! - **User-origin traps** (S-6/S-7 wired): the body captures the per-CPU
+//! - **User-origin traps**: the body captures the per-CPU
 //!   current process, acquires the BKL (user code runs without it —
 //!   `finish_and_restore` released it), and acts on the outcome:
 //!   `ForwardToVm` sets RTS_PAGEFAULT and sends the `VM_PAGEFAULT`
@@ -22,7 +22,7 @@
 //!   VM's own fault panics (C: "pagefault in VM" — exception.c:101-118).
 //!   Both acting arms end in the scheduling loop (C: mpx.S
 //!   `jmp switch_to_user`).
-//! - **Recovery-class outcomes** (NK2-A ②③④ wired): `SpuriousNmi` prints
+//! - **Recovery-class outcomes**: `SpuriousNmi` prints
 //!   and returns (C: exception.c:191-194); `ClearTrapFlag` clears the
 //!   trace bit in the frame and returns (C: exception.c:243-245, fed by
 //!   the saved-PSW/trap-style legitimacy inputs); `RedirectToRecovery` /
@@ -81,13 +81,13 @@ fn exception_frame_of(frame: &TrapFrame) -> X86_64ExceptionFrame {
 /// a callee-saved GP are the same register, ipcconst.h:10) and records
 /// `p_kern_trap_style`, BEFORE any scheduling policy runs.
 ///
-/// NK4-A Task C fix: the IRQ/tick arms of this port never saved the frame
+/// The fix: the IRQ/tick arms of this port never saved the frame
 /// (the old comment at the profile-clock handoff admitted it), so a
 /// process moved by quantum expiry or the user scheduler woke through
 /// `finish_and_restore` (kernel/lib.rs, "rebuild the frame from the
 /// arch-private context") with a stale register file — RBX's live
 /// callee-saved value rolled back to whatever the last trap-entry save or
-/// the IPC-status/ps_strings semantics left there (real machine c19a-c21a:
+/// the IPC-status/ps_strings semantics left there (on hardware:
 /// RS step2 saw `&self.table` = 0x0 after a pf/IPC round trip, crashing
 /// in `endpoint_slot`). Kernel-origin interrupts skip: the frame holds
 /// kernel registers there, and the process's user context was already
@@ -95,7 +95,7 @@ fn exception_frame_of(frame: &TrapFrame) -> X86_64ExceptionFrame {
 ///
 /// # Safety
 /// Mirrors the interrupted frame into the shared `PROC_TABLE`, so it must
-/// run under the BKL. NK4-C B27: it acquires the lock itself via
+/// run under the BKL. It acquires the lock itself via
 /// [`crate::smp::bkl_lock_or_inherit`] (inheriting only when THIS CPU's
 /// interrupted kernel frame already owns it) — the previous "user-origin
 /// IRQs run under the interrupted context's lock" premise was false: a CPU
@@ -124,9 +124,9 @@ unsafe fn save_irq_frame_to_context(frame: &TrapFrame) {
 /// the full-context mirror. Returns whether the frame was mirrored (the
 /// host-side test pins both branches without boot-global fixtures).
 ///
-/// x86-64 only: the parameter is the x86 `TrapFrame`（`cs`/`rip`/`rbx` 字段）,
-/// 本函数与它的调用点都服务于 NK4-A/NK4-B 的 x86_64 取证，
-/// 按架构门编译（NK4-B M3.1 补上这道门）。
+/// x86-64 only: the parameter is the x86 `TrapFrame` (`cs`/`rip`/`rbx`
+/// fields); this function and its call sites serve x86_64 evidence work and
+/// are compiled under an architecture gate.
 #[cfg(target_arch = "x86_64")]
 fn mirror_irq_frame_into_proc(
     frame: &TrapFrame,
@@ -161,10 +161,11 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // (SENDA: count), RBX = message pointer (SENDA: table pointer),
     // RCX = IPC call number (design doc 18, decision 2; C:
     // usermapped_glo_ipc.S IPCARGS/SENDA_ARGS). errno returns in RAX;
-    // IPC status rides the saved-context R10 channel（NK4-C Task C/§1.40
-    // 从 RBX 迁至 caller-saved 的 R10；MINIX_KERNINFO secondary 同车道
-    // 兼任，1.54/B26），随返回同步进帧（sync_status_register_to_frame，
-    // or_ipc_status_reg / set_secondary_ipc_return）。
+    // IPC status rides the saved-context R10 channel (moved from RBX to the
+    // caller-saved R10; the MINIX_KERNINFO secondary shares the same lane),
+    // and is synchronized into the frame on return
+    // (sync_status_register_to_frame, or_ipc_status_reg /
+    // set_secondary_ipc_return).
     if vector == IPC_VECTOR_GATE {
         let cur_nr = current_ipc_proc_nr();
         x86_ipc_dispatch_body(frame, cur_nr);
@@ -177,15 +178,15 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         return;
     }
 
-    // S-10: scheduler IPI (C SMP_SCHED_IPI_VECTOR) → the target CPU's own
+    // Scheduler IPI (C SMP_SCHED_IPI_VECTOR) → the target CPU's own
     // sched_handler_full (loads flags, applies STOP/SAVE_CTX/VM_INHIBIT,
     // clears pending — the schedule_sync waiter's completion signal).
     // BKL: `sched_handler_full` mutates the shared proc table (RTS_SET), so
-    // it must run under the lock. NK4-C B27: use owner-aware inherit-or-acquire
+    // it must run under the lock. Use owner-aware inherit-or-acquire
     // — inherit only if THIS CPU's interrupted frame owns the BKL (kernel
     // origin), otherwise spin-acquire it even when a peer holds it. The old
     // bare `bkl_try_lock` mis-inherited a peer's lock, letting two CPUs
-    // `&mut PROC_TABLE` at once (the early-SMP corruption behind B27).
+    // `&mut PROC_TABLE` at once (the early-SMP corruption).
     if vector == minix_arch::x86_64::smp::SCHED_IPI_VECTOR as u8 {
         let acquired = crate::smp::bkl_lock_or_inherit();
         {
@@ -201,13 +202,13 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         return;
     }
 
-    // LAPIC local timer (edge1 K6): the per-CPU one-shot tick never
+    // LAPIC local timer: the per-CPU one-shot tick never
     // enters the hook chains — its handler re-arms the ICR and services
     // per-CPU work directly (C: `lapic_timer_int_handler`, apic.c:913,
     // registered straight in the IDT, with its own EOI). The local-tick
     // body owns the EOI via the arch `local_timer_eoi`.
     //
-    // K6-v2 quantum enforcement: after the re-arm + EOI, evaluate
+    // Quantum enforcement: after the re-arm + EOI, evaluate
     // quantum expiry for this CPU's running process (C: clock_handler
     // per-CPU arm, proc.c:418-424 — if the quantum is exhausted, call
     // sched_proc_no_time to notify the user scheduler or transition to
@@ -218,11 +219,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // C: every clock/IRQ stub in mpx.S runs SAVE_PROCESS_CTX at entry
         // before any policy code (mpx.S:77/137/355/540) — do it before the
         // quantum check so a preempt-and-wake dispatch never reads a stale
-        // register file (NK4-A Task C).
+        // register file.
         unsafe { save_irq_frame_to_context(frame) };
 
-        // NK4-A C-3 迭代8 取证（一次性）：LAPIC tick 存活证明——RS 用户态
-        // 裸转期间若 tick 从未触发，则无抢占、自旋独占 CPU。
+        // One-shot LAPIC tick liveness proof: if the tick never fires while
+        // RS spins bare in user mode, there is no preemption and the spin
+        // owns the CPU.
         #[cfg(not(feature = "mock"))]
         {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -235,14 +237,14 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // Quantum enforcement (C proc.c:418-424): the tick CPU evaluates
         // its own running process — if the quantum is exhausted, the
         // process is preempted (NO_QUANTUM set, scheduler notified).
-        // NK4-C B27: the quantum check mutates the shared proc table, so it
+        // The quantum check mutates the shared proc table, so it
         // must run under the BKL. Inherit only if THIS CPU's interrupted
         // frame owns it, otherwise spin-acquire — a bare `assume_held` here
         // ran lock-free on a user/idle-origin tick and let two CPUs `&mut`
-        // the table at once (the early-SMP corruption behind B27).
+        // the table at once (the early-SMP corruption).
         let tick_acquired = crate::smp::bkl_lock_or_inherit();
         let section = unsafe { crate::smp::BklSection::assume_held() };
-        // SD-24 arm 1 (C `context_stop_idle` clearing half, arch_clock.c:351-359):
+        // C `context_stop_idle` clearing half, arch_clock.c:351-359:
         // a tick landing on a halted CPU marks it busy again. Runs under the BKL
         // acquired just above, mirroring C's interrupt-entry placement.
         crate::smp_state_with(&section).clear_idle_flag(crate::current_cpu_id());
@@ -254,11 +256,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         if let Some(nr) = cur_nr {
             let table = crate::proc_table_with(&section);
             let priv_table = crate::priv_table_with(&section);
-            // NK4-C 1.10 取证探针（task1-close 裁决删除）：PM 恢复后静默
-            // 270s（s14k）且无任何 pick/tick 迹象。本探针在 tick>5000 后
-            // 对 current==PM(0) 的 tick 打保存上下文栈回溯（cap 2）：
-            // 有输出 ⇒ tick 活着、PM 在用户态自旋（栈回溯给出 fmt 调用
-            // 链）；零输出 ⇒ timer 中断死（另一独立 bug）。
+            // Diagnostic probe: PM stays silent for 270s after resuming,
+            // with no sign of any pick/tick. After tick > 5000 this probe
+            // takes a saved-context stack trace (cap 2) on ticks where
+            // current == PM(0): output ⇒ the tick is alive and PM is
+            // spinning in user mode (the trace shows the fmt call chain);
+            // no output ⇒ the timer interrupt is dead (a separate bug).
             #[cfg(not(feature = "mock"))]
             {
                 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
@@ -266,8 +269,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 static PMST_N: AtomicUsize = AtomicUsize::new(0);
                 static PMST_K: AtomicUsize = AtomicUsize::new(0);
                 let tick = PMST_TICK.fetch_add(1, AtomicOrd::Relaxed);
-                // s14n：每 1000 tick 打点（计数+current ep）——定位 timer
-                // 死亡的精确事件（死亡点前后 log 对齐）。
+                // Every 1000 ticks, print a marker (count + current ep) — to
+                // pin down the exact event of timer death (align logs from
+                // before and after the death point).
                 if tick % 1000 == 0
                     && PMST_K.fetch_add(1, AtomicOrd::Relaxed) < 20
                 {
@@ -298,19 +302,22 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // full interrupted user context at entry (SAVE_PROCESS_CTX,
         // sconst.h:75-89) before irq_int's policy code — the PIT clock line
         // lands here, so the save must happen before anything that can lead
-        // to a quantum/preemption decision (NK4-A Task C).
+        // to a quantum/preemption decision.
         unsafe { save_irq_frame_to_context(frame) };
-        // NK4-C 1.10c 修复（timer bring-up 缺口）：PIT(IRQ0→0x50) 落本臂
-        // 而非 clock 臂——本臂此前只推进软件时钟（clock_irq_handler），
-        // **缺 local_tick + check_quantum 调度半**：quantum 永不过期，
-        // 任何用户态自旋即永久垄断（s14k/s14m/s14n 实锤：PM fmt 自旋
-        // 静默 270s、tick 臂 <1000 次/150s、无 pick 无抢占）。补齐
-        // clock 臂（702）同款 tick 语义：bill + quantum 到期抢占
-        // （C proc.c:418-424）。save_irq_frame_to_context 已在本臂入口
-        // 保存被中断现场，抢占恢复安全。
+        // The PIT (IRQ0 → 0x50) lands on this arm, not on the clock arm —
+        // this arm used to advance only the software clock
+        // (clock_irq_handler), **lacking the local_tick + check_quantum
+        // scheduling half**: the quantum never expired and any user-mode
+        // spin could monopolize the CPU forever (observed: PM's fmt spin
+        // silent for 270s, the tick arm firing <1000 times/150s, no pick
+        // and no preemption). It now carries the same tick semantics as the
+        // clock arm: bill + preempt on quantum expiry (C proc.c:418-424).
+        // save_irq_frame_to_context has already saved the interrupted
+        // context at this arm's entry, so preemption recovery is safe.
         if irq == minix_plat::TIMER_IRQ.get() {
-            // s14t：通用臂 tick 计数打点（clock 臂的 tick k= 只覆盖专用
-            // stub 路径；本臂的 tick 此前不可见）。
+            // Generic-arm tick counter (the clock arm's `tick k=` only covers
+            // the dedicated stub path; this arm's ticks were previously
+            // invisible).
             #[cfg(not(feature = "mock"))]
             {
                 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
@@ -324,12 +331,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 }
             }
             crate::clock::local_tick(crate::current_cpu_id());
-            // NK4-C B27: same lock discipline as the LAPIC 0xF1 arm — the
+            // Same lock discipline as the LAPIC 0xF1 arm — the
             // quantum check below mutates the shared proc table, so acquire
             // the BKL (or inherit it only if this CPU already owns it).
             let tick_acquired = crate::smp::bkl_lock_or_inherit();
             let tick_section = unsafe { crate::smp::BklSection::assume_held() };
-            // SD-24 arm 1: same idle-clearing half as the LAPIC 0xF1 arm — the
+            // Same idle-clearing half as the LAPIC 0xF1 arm — the
             // PIT-origin tick also wakes a halted CPU (C context_stop_idle).
             crate::smp_state_with(&tick_section).clear_idle_flag(crate::current_cpu_id());
             let tick_cur = {
@@ -340,7 +347,8 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             if let Some(nr) = tick_cur {
                 let table = crate::proc_table_with(&tick_section);
                 let priv_table = crate::priv_table_with(&tick_section);
-                // s14u：PM 唯一可跑自旋的调用链采样（g>5000 后 cap 2）。
+                // Sample the only call chain in which PM can spin (cap 2
+                // after g>5000).
                 #[cfg(not(feature = "mock"))]
                 {
                     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
@@ -364,8 +372,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             if tick_acquired {
                 crate::smp::bkl_unlock();
             }
-            // LAPIC EOI：edge 交付的 tick 处理完必须回执，否则 LAPIC 拒收
-            // 后续 tick（C: lapic_eoi，apic.c）。
+            // LAPIC EOI: an edge-delivered tick must be acknowledged once
+            // handled, or the LAPIC refuses further ticks (C: lapic_eoi,
+            // apic.c).
             minix_plat::lapic_eoi();
         }
         // Profile-clock PC handoff (C reads p->p_reg.pc, which the asm
@@ -379,7 +388,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         {
             crate::misc::stash_profile_pc(frame.rip);
         }
-        // D-46 hardware half-loop: ack → mask → hook chain → unmask → eoi,
+        // Hardware half-loop: ack → mask → hook chain → unmask → eoi,
         // under the interrupted context's BKL (C: IRQ handlers run with the
         // BKL owned by the interrupted context; no lock is taken here).
         // Spurious lines are logged-and-dropped (C irq_handle's spurious
@@ -394,15 +403,16 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             }
             Err(e) => panic!("trap_dispatch: IRQ dispatch error {e:?} (vector {vector:#04x})"),
         }
-        // NK4-C 1.10c：8259 EOI（C i8259.c pic_eoi 对位）——每个被服务的
-        // IRQ 必须回执，否则 PIC 不再投递后续中断。
+        // 8259 EOI (C i8259.c pic_eoi counterpart) — every serviced
+        // IRQ must be acknowledged, or the PIC stops delivering further
+        // interrupts.
         minix_plat::pic_eoi(irq);
         return;
     }
 
     // Exception / user soft-int gate → arch-generic dispatcher.
     //
-    // S-9 (D-38①) — BKL ownership at the exception entry, per origin:
+    // BKL ownership at the exception entry, per origin:
     // - **Kernel-origin** (is_user = false): the interrupted context owns
     //   the BKL, so the body INHERITS it via `assume_held` (C parity: trap
     //   handlers run with the BKL owned by the interrupted context; trap.c
@@ -550,8 +560,8 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_hex(crate::current_cpu_id().raw() as u64);
             Console::write_str(" rip ");
             Console::write_hex(frame.rip);
-            // NK4-A 首亮取证（临时）：CR2 = 真实缺页地址。rip 只能说明
-            // 执行到了哪，判定"哪个 VA 没映射"必须看 cr2。
+            // CR2 = the real faulting address. rip only shows how far
+            // execution got; deciding "which VA is unmapped" requires cr2.
             let cr2: u64;
             unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)); }
             Console::write_str(" cr2 ");
@@ -576,10 +586,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("pagefault from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
-                // C 对位：异常入口与 trap 入口同记返回样式（mpx.S 保存半
-                // p_kern_trap_style=KTS_FULLCONTEXT；restore 消费）。缺它则
-                // 转发后重入队的进程在下次 dispatch 撞 "no entry trap style
-                // known"（NK4-A C-3 真机 2026-09-22：RS fault 填充恢复后）。
+                // C parity: the exception entry records the return style
+                // just like the trap entry (mpx.S save half sets
+                // p_kern_trap_style=KTS_FULLCONTEXT; restore consumes it).
+                // Without it, a process re-enqueued after forwarding hits
+                // "no entry trap style known" on its next dispatch (observed
+                // on hardware once RS resumed from fault filling).
                 proc.trap_style = minix_arch::TrapStyle::FullContext;
             }
             // C: pagefault() tail — RTS_PAGEFAULT, VM_PAGEFAULT message,
@@ -633,8 +645,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("exception from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
-                // 同 ForwardToVm 臂：异常入口记返回样式（C mpx.S 对位），
-                // 信号暂停后的下次 dispatch 恢复需要它。
+                // Same as the ForwardToVm arm: the exception entry records
+                // the return style (C mpx.S parity); the next dispatch after
+                // the signal park needs it for the restore.
                 proc.trap_style = minix_arch::TrapStyle::FullContext;
             }
             // C: cause_sig(proc_nr(saved_proc), ep->signum) —
@@ -705,16 +718,20 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             if let Some(local) = smp.cpu_local_mut(cpu) {
                 local.fpu_owner = Some(cur_fpu);
             }
-            // SD-41/C12 修复（sysboot 脸冻结定案）：本臂经 stub 的 iretq
-            // **直返用户**——不经 switch_to_user 的「持锁移交/释放」惯例。
-            // BklSection 是不随 drop 释放的见证（smp.rs must_use 注），
-            // 用户源入口 bkl_lock_section acquire 的 BKL 若不在此显式释放
-            // 将跨 iretq 持有（BKL=me=0）：下一 int-33 的 park/resched
-            // 分支 fresh `bkl_lock()` 自旋死锁（sysboot 脸实测冻结，gdb
-            // 三抓 [BKL]=0=BSP 自持、IF=0 自旋无时钟救援）。用户期 BKL
-            // 空闲=文档语义（finish_and_restore 在 context restore 前释放
-            // ——arch_clock.c:226-233 parity，同 Signal 臂经
-            // switch_to_user 释放的净效果）。
+            // This arm returns **straight to the user** through the stub's
+            // iretq — it does not go through switch_to_user's
+            // "hand over / release while holding the lock" convention.
+            // BklSection is a witness that does not release on drop (see the
+            // must_use note in smp.rs); if the BKL acquired by the
+            // user-origin entry's bkl_lock_section is not explicitly
+            // released here, it stays held across iretq (BKL=me=0): the next
+            // int-33 park/resched branch's fresh `bkl_lock()` spins forever
+            // (observed: the sysboot face froze; gdb caught [BKL]=0=BSP
+            // self-held, IF=0 spinning with no clock rescue). BKL free
+            // during user mode is the documented semantics
+            // (finish_and_restore releases before the context restore —
+            // arch_clock.c:226-233 parity, the same net effect as the
+            // Signal arm releasing via switch_to_user).
             crate::smp::bkl_unlock();
             // Fall through: the stub's iretq re-executes the FP instruction
             // against the now-enabled FPU.
@@ -783,14 +800,17 @@ fn forward_pagefault_to_vm(
         .ok_or(crate::ipc::IpcError::DeadSrcDst)?;
     let mut engine = IpcEngine::new(proc_table.procs_slice_mut(), priv_table, &KernelUserCopy);
     let outcome = engine.send(cur_nr, dst_endpoint, &msg, SendFlags::FROM_KERNEL);
-    // C: RTS_UNSET(dst, RTS_RECEIVING) 的入队半——引擎侧只清 RTS 标志
-    // （primitive setter，见 ipc.rs 投递臂），入队必须由调用方补齐
-    // （syscall.rs dispatch_ipc_entry 的 take_wake_target →
-    // enqueue_if_woken 同款）。漏掉这半：VM 被解锁但从未入就绪队列，
-    // 调度器无人可选 → idle 停机（NK4-A C-3 真机：fwd Delivered 后全静默，
-    // 2026-09-22）。
-    // 1.12：engine 多槽 wake 记录全量入队（同 syscall 多唤醒不互覆）。
-    // 先收集（engine 借用 procs slice），后入队（规避叠加可变借用）。
+    // The enqueue half of C: RTS_UNSET(dst, RTS_RECEIVING) — the engine only
+    // clears the RTS flag (a primitive setter, see the ipc.rs delivery arm);
+    // the caller must supply the enqueue (the same shape as
+    // syscall.rs dispatch_ipc_entry's take_wake_target → enqueue_if_woken).
+    // Missing this half means VM is unlocked but never put on a ready queue,
+    // so the scheduler has nobody to pick and the system idles to a halt
+    // (observed on hardware: everything went silent after fwd Delivered).
+    // The engine records every wake slot and they are all enqueued (multiple
+    // wakeups from one syscall do not overwrite each other).
+    // Collect first (the engine borrows the procs slice), enqueue after (to
+    // avoid a second mutable borrow).
     let mut woken = [None; 4];
     for slot in woken.iter_mut() {
         *slot = engine.take_wake_target();
@@ -798,7 +818,8 @@ fn forward_pagefault_to_vm(
     for woken_nr in woken.into_iter().flatten() {
         proc_table.enqueue_if_woken(woken_nr);
     }
-    // 锚点括值：本函数运行时地址（一次性，供 #GP rip 离线定位）。
+    // Anchor: this function's runtime address (one-shot, for offline #GP
+    // rip resolution).
     #[cfg(not(feature = "mock"))]
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -806,10 +827,11 @@ fn forward_pagefault_to_vm(
         if ANCHOR.fetch_add(1, AtomicOrd::Relaxed) == 0 {
         }
     }
-    // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：出生服务器
-    // （p_nr 1,3,4,5,6,7,9,10,11）的缺页转发结果三分——D=Path A 直接投递、
-    // B=Path B 入 VM caller_q、E=错误。真机尾态这 9 个进程全停纯
-    // PAGEFAULT(0x400)+to=VM，本探针裁决「消息从未投递」还是「投递后被丢」。
+    // Birth-server (p_nr 1,3,4,5,6,7,9,10,11) page-fault forwarding outcomes
+    // fall into three classes — D = Path A direct delivery, B = Path B into
+    // VM's caller_q, E = error. In the observed tail state all 9 processes
+    // sit on pure PAGEFAULT(0x400)+to=VM, so this probe decides "the message
+    // was never delivered" vs "delivered and then dropped".
     #[cfg(not(feature = "mock"))]
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -868,18 +890,18 @@ fn current_ipc_proc_nr() -> crate::proc::ProcNr {
 /// TrapFrame built by the asm stub on this CPU's kernel stack, and the
 /// per-CPU `proc_ptr` anchor names the interrupted process.
 unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::ProcNr) {
-    // NK4-C B27: the int-33 IPC trap arrives from USER mode, where this CPU
+    // The int-33 IPC trap arrives from USER mode, where this CPU
     // does NOT own the BKL. The entry below mutates the shared PROC_TABLE
     // (saves the register file into `caller.cpu_context`, sets `trap_style`,
     // `p_defer.r2/r3`, `p_delivermsg_vir`) before `dispatch_ipc_entry`
     // acquires the lock. Under early SMP that left two CPUs writing the same
     // slot at once — the aliasing that corrupted a per-proc table pointer and
-    // crashed `IpcEngine::send` (B27). Acquire here (inherit only if a nested
+    // crashed `IpcEngine::send`. Acquire here (inherit only if a nested
     // caller already owns it), and hand the lock to `dispatch_ipc_entry` by
     // releasing just before it (which acquires fresh — the BKL is
     // non-reentrant, so we must not hold it across that call).
     let ipc_bkl = crate::smp::bkl_lock_or_inherit();
-    // NK4-C B27 review guard: int-33 reaches this body only from the DPL=3
+    // Review guard: int-33 reaches this body only from the DPL=3
     // IPC gate, so this CPU never owns the BKL on entry and `ipc_bkl` must be
     // true (we always freshly acquire). If a future bug let int-33 fire from
     // kernel context, `ipc_bkl` would be false and `dispatch_ipc_entry`'s
@@ -905,13 +927,13 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         // resumes through finish_and_restore's entry-style gate — without
         // a fresh record the wake dispatch finds NoEntry and panics
         // ("no entry trap style known", arch_system.c:597-598; observed
-        // on real machine waking a parked receiver, test-sysboot C-27).
+        // on real machine waking a parked receiver).
         // The int-33 gate pushes a full frame, so the style is
         // FullContext — same record the carrier seeds for the first run.
         caller.trap_style = TrapStyle::FullContext;
     }
 
-    // K20 (caller-by-nr): no laundering — the caller travels as its nr and
+    // (caller-by-nr): no laundering — the caller travels as its nr and
     // every access re-borrows the slot from `table` at the point of use.
 
     // Pre-decode: unknown call numbers exit before the BKL is taken —
@@ -919,7 +941,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     // (EBADCALL without acquiring), so kernel_call_finish must not run.
     // C: proc.c:602-606 — do_ipc's default branch, same effect.
     let call_nr = frame.rcx as i32;
-    // C-3 迭代10 取证：int-33 IPC 入口（限 16）。
+    // int-33 IPC entry counter (capped at 16).
     #[cfg(not(feature = "mock"))]
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -930,7 +952,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         }
     }
     if crate::ipc::IpcCall::from_raw(call_nr).is_none() {
-        // NK4-C B27: release the entry acquisition before this early exit
+        // Release the entry acquisition before this early exit
         // (no dispatch_ipc_entry runs, so nothing else will drop the lock).
         if ipc_bkl {
             crate::smp::bkl_unlock();
@@ -948,13 +970,13 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     // C `ipc_minix_kerninfo.S:8-10` zeroes eax/ebx before `int`, and the
     // notify stub passes 0 the same way ("notify without a message body").
     // KernInfo's result returns through the secondary R10 channel
-    // (NK4-C 1.54/B26: the int-33 return arm syncs RAX + R10, and R10
+    // (the int-33 return arm syncs RAX + R10, and R10
     // doubles as the status lane — the two roles are per-call exclusive,
-    // same sharing as C's i386 %ebx); the
+    // the same sharing as C's i386 %ebx); the
     // service arm documents "No message buffer is read or written"
     // (syscall.rs). Copying 64 bytes from VA 0 was the SIGSEGV this door
     // delivered to every birth-time kerninfo query on real machine
-    // (test-sysboot C-27 carrier, first real-machine birth through this
+    // (the first real-machine birth through this
     // gate).
     let is_bodyless =
         is_senda
@@ -972,22 +994,25 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         // stores m_user, system.c:141). The door previously dropped rbx, so
         // a parked receiver's wake delivery copied the message to a stale
         // syscall buffer and the receive buffer kept its pre-call content
-        // (test-sysboot C-27: rx read Message::default poison, then its
+        // (rx read Message::default poison, then its
         // sendnb(m_source) failed with EDEADSRCDST on the garbage source).
         // SENDA carries the table pointer in rbx instead (p_defer.r3 above).
-        // NK4-C S2g 现场打印（task1-close 裁决删除）：抹写窗口已钉死
-        // 在单次 int33 内核代执行段（s2e），候选抹写者是
-        // kernel_call_finish 的 DM 直写。判别 fresh/stale：本次入口的 r2、
-        // 调用号、是否 SENDA（SENDA 不存 delivermsg，fx 目标必为旧值）与
-        // 旧 p_delivermsg_vir 一并打出（仅 RS，与 fx 记录离线对账）。
-        // S2h：移出 !is_senda 块——s2g 零输出本身就是证据（窗口那次
-        // int33 疑似 SENDA），加 senda= 字段直接裁决。
+        // Print the site live: the overwrite window is pinned to the single
+        // int33 kernel-proxy execution segment, and the candidate writer is
+        // kernel_call_finish's DM direct store. To tell fresh from stale,
+        // print this entry's r2, the call number, whether it is SENDA (SENDA
+        // stores no delivermsg, so the fx target is necessarily stale) and
+        // the old p_delivermsg_vir (RS only, reconciled offline against the
+        // fx record). Moved out of the `!is_senda` block: zero output there
+        // was itself evidence (that window's int33 was probably SENDA), and
+        // the senda= field decides it directly.
         #[cfg(not(feature = "mock"))]
         if caller.p_endpoint.0 == 2 {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static XIN: AtomicUsize = AtomicUsize::new(0);
-            // S2h 评审修复：4096→512 + 触顶现形标记（串口是同步 PIO，
-            // 最坏量级不能拖穿复跑 timeout）。
+            // Cap at 512 and add a marker when the cap is hit (the serial
+            // port is synchronous PIO; the worst-case volume must not blow
+            // the rerun timeout).
             let xn = XIN.fetch_add(1, AtomicOrd::Relaxed);
             if xn == 512 {
                 use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
@@ -1003,11 +1028,13 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         if !is_senda {
             caller.p_delivermsg_vir = VirBytes(r2);
         }
-        // NK4-C 1.48 取证探针（c39，task1-close 裁决删除）：INIT（ep 0xb）
-        // 的 int33 陷入腿全量现形——c38 复盘实锤 INIT 停在 RECEIVING+gf=0
-        // 但没有 rcvblk ep=0xb（全局 probe_mark 上限 8 被早期耗尽不可信），
-        // 本探针独立计数器，打印陷入时的调用号/RBX/入口前 pdmv/getfrom/
-        // rts，直接裁决「INIT 到底进没进过 int33、停车时消息指针是什么」。
+        // INIT (ep 0xb) int33 trap leg in full: a retrospective showed INIT
+        // parked in RECEIVING+gf=0 but without rcvblk ep=0xb (the global
+        // probe_mark cap of 8 was exhausted early and is untrustworthy).
+        // This probe keeps its own counter and prints the call number / RBX /
+        // pre-entry pdmv / getfrom / rts at trap time, deciding directly
+        // "did INIT ever enter int33, and what was the message pointer when
+        // it parked".
         #[cfg(not(feature = "mock"))]
         if caller.p_endpoint.0 == 0xb {
             use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
@@ -1035,7 +1062,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
                     table,
                     unsafe { crate::priv_table_boot_unchecked() },
                 );
-                // NK4-C B27: release the entry acquisition before this
+                // Release the entry acquisition before this
                 // SIGSEGV/EFAULT early exit.
                 if ipc_bkl {
                     crate::smp::bkl_unlock();
@@ -1045,9 +1072,10 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             }
         }
     }
-    // NK4-C 第 31 轮判别探针（task1-close 裁决删除）：int-33 入口「保存
-    // 即采到的 RBX」——与 pre-restore 的交付 rbx 对照裁决：入口非 0 而
-    // 交付 0 ⇒ 停车期间被内核改写；入口即 0 ⇒ stub/帧/用户侧来源。
+    // Compare the RBX captured at int-33 entry against the rbx delivered
+    // pre-restore: non-zero at entry but 0 at delivery ⇒ the kernel
+    // overwrote it while the process was parked; 0 already at entry ⇒ the
+    // value came from the stub / frame / user side.
     #[cfg(not(feature = "mock"))]
     if cur_nr == crate::proc::ProcNr(2) {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -1064,15 +1092,16 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
 
     // BKL: dispatch_ipc_entry acquires and transfers out (held across
     // kernel_call_finish, which releases it on every non-VmSuspend path).
-    // NK4-C B27: release the entry's acquisition here so `dispatch_ipc_entry`
+    // Release the entry's acquisition here so `dispatch_ipc_entry`
     // can take a fresh lock (the BKL is non-reentrant — holding ours across
     // its internal acquire would self-deadlock). Mutual exclusion is never
     // broken: the table is unlocked only for the instant between this release
     // and dispatch_ipc_entry's acquire, and we do not touch it in between.
-    // NK4-C S3 门纪律：陷阱腿用 `kernel_call_finish_ipc_door`——C 的
-    // proc.c mini_* 从不执行 kernel_call 腿的 eager 回执直写（状态经
-    // h_errno/寄存器，真回执经 MF_DELIVERMSG 投递），陈旧
-    // p_delivermsg_vir（SENDA 不刷新）因此在结构上不可达。
+    // Gate discipline: the trap leg uses `kernel_call_finish_ipc_door` — C's
+    // proc.c mini_* never performs the kernel_call leg's eager reply direct
+    // write (state travels through h_errno/registers, the real reply goes
+    // through MF_DELIVERMSG), so a stale p_delivermsg_vir (SENDA does not
+    // refresh it) is structurally unreachable.
     if ipc_bkl {
         crate::smp::bkl_unlock();
     }
@@ -1105,7 +1134,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
 /// x86-only: the int-33 leg diverges here safely because every later trap
 /// reloads RSP from TSS.sp0. The aarch64 leg cannot do this on its single
 /// EL1h stack and stops with an explicit panic until the switch-after-pop
-/// asm lands (NK4-C §1.113).
+/// asm lands.
 fn reenter_scheduler() -> ! {
     // scheduler_loop consumes the held-BKL convention (assume_held witness
     // inside); the guard is forgotten deliberately — ownership passes to
@@ -1132,10 +1161,10 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
     // Per-CPU anchor read before any lock — C parity: `proc_ptr` is read at
     // trap entry without the BKL (it is the dispatch anchor itself). The
     // BKL is acquired inside `kernel_call` → `kernel_call_dispatch`
-    // (R-03/R-05 guard transfer) and released by `kernel_call_finish`.
+    // (guard transfer) and released by `kernel_call_finish`.
     //
-    // Pre-S-6 reality: no scheduler step ever ran, so `proc_ptr` is None and
-    // no user code could have executed SYSCALL — panic = wiring bug alarm.
+    // With no scheduler step ever run, `proc_ptr` is None and no user code
+    // could have executed SYSCALL — panic is the wiring-bug alarm.
     let smp = unsafe { crate::smp_state_boot_unchecked() };
     let bsp = smp.bsp_cpu_id();
     let cur_nr = smp
@@ -1152,7 +1181,7 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
     let m_user = VirBytes::new(frame.rdi);
 
     let table = unsafe { crate::proc_table_boot_unchecked() };
-    // K20 (caller-by-nr): no laundering — the caller travels as its nr.
+    // (caller-by-nr): no laundering — the caller travels as its nr.
     let result = crate::syscall::kernel_call(
         cur_nr,
         table,
@@ -1162,23 +1191,30 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
         &crate::ipc::KernelUserCopy,
     );
 
-    // Reply code → RAX for the sysret leg. VmSuspend：调用已通过
-    // vm_suspend 停排（RTS_VMREQUEST + memreq 入队 + VM 收 SIGKMEM）——
-    // 保存完整上下文（RDI=消息指针经 saved_m_user 另存）、记返回样式、
-    // 重入调度器；VM 服务完成后 KCALL_RESUME 阶段重派调用并经
-    // set_ipc_return_code 交付 RAX（NK4-A C-3 迭代6，此前此臂 panic）。
-    // NoReply 不在此腿出现（receive 型调用走 int-33）。
-    // NK4-C F10b（P0-wire）：SYSCALL 腿线上取负由 `reply_wire()` 统一处理：
-    // 错误码（Ok）取负，数据码（Data）原样传递；int33 腿不取负（rax 携带 IPC
-    // 状态位语义，用户态按正 errno 消费）。
+    // Reply code → RAX for the sysret leg. VmSuspend: the call has already
+    // been parked by vm_suspend (RTS_VMREQUEST + memreq enqueued + VM sent
+    // SIGKMEM) — save the full context (RDI = message pointer, stashed
+    // separately in saved_m_user), record the return style, and re-enter the
+    // scheduler; once VM has serviced it, the KCALL_RESUME stage re-dispatches
+    // the call and delivers RAX via set_ipc_return_code (this arm used to
+    // panic).
+    // NoReply does not occur on this leg (receive-type calls go through
+    // int-33).
+    // On the SYSCALL leg the wire-level negation is handled uniformly by
+    // `reply_wire()`: error codes (Ok) are negated, data codes (Data) pass
+    // through as-is; the int33 leg does not negate (rax carries IPC status
+    // bit semantics, and user space consumes a positive errno).
     match result.reply_wire() {
         Some(wire) => frame.rax = wire as i64 as u64,
         None => {
-            // C: system.c:76 `if (result != EDONTREPLY)` — EDONTREPLY 是不交付
-            // 回执、不写回返回寄存器的契约形态（do_exit/SYS_EXIT 即此路；
-            // 调用者状态机已由 dispatch 内 cause_sig 推进）。旧注释假设
-            // “NoReply 不在此腿出现”被真机 C 测试的 _exit 兑底腿证伪
-            // （NK4C 续-277：aarch64 腿同形态直接 panic 卡死退出）。
+            // C: system.c:76 `if (result != EDONTREPLY)` — EDONTREPLY is the
+            // contract form that delivers no reply and writes no return
+            // register (do_exit/SYS_EXIT takes this path; the caller state
+            // machine has already been advanced by cause_sig inside
+            // dispatch). The old comment assumed "NoReply does not occur on
+            // this leg"; the real-machine C test's _exit catch-all leg
+            // disproved it (the aarch64 leg panicked and hung on exit with
+            // the same shape).
             if matches!(result, KcallResult::NoReply) {
                 return;
             }
@@ -1194,8 +1230,9 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                 if let Some(ctx) = proc.p_vm_suspend.as_mut() {
                     ctx.saved_m_user = Some(m_user.0);
                 }
-                // C-3 迭代8 取证：停车时打印挂起态与 VMREQUEST（一次性）——
-                // 判别"挂起后未入队/未通知"导致 VM 永不服务的死等。
+                // Print the suspend state and VMREQUEST at park time
+                // (one-shot) — to tell a "suspended but never enqueued /
+                // never notified" VM starvation wait from other causes.
                 #[cfg(not(feature = "mock"))]
                 {
                     use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
@@ -1217,45 +1254,53 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                         })
                         .unwrap_or((false, false));
                 }
-                // NK4-C 1.4 根因修复：入链 / 出队 / 通知 VM 三半不在这里做。
-                // C 的 vm_suspend（proc.c:241）对同一挂起只跑一次（其
-                // assert(!RTS_VMREQUEST) 保证）；Rust 把它拆成 suspend_for_vm
-                // （置标志 + 建 ctx）+ vm_enqueue_and_notify_vm（入链 + 出队 +
-                // 通知）。本腿（kernel_call / SYSCALL）入链的唯一归属是
-                // kernel_call_finish（syscall.rs:3446），而 kernel_call
-                // （syscall.rs:600）对 VmSuspend 必调 finish，故本 SYSCALL 快路径
-                // 同样已经过一次入链。（另一条腿 DeliverMsg 挂起在
-                // process_misc_flags（proc_table.rs）自持一次入链，不经 finish，
-                // 两腿互斥。）此处（迭代 7 50ee0e470 在“快路径不走 finish”
-                // 的旧假设下补的）再次入链会让同一节点被头插两次 → p_next[nr]
-                // 自指成环 → vm_memreq_get 摘头后 head 仍落回该自环节点、永不归
-                // None → was_empty 恒 false → 后续请求者入链不再唤醒 VM，VM 停在
-                // RECEIVING 空等 = 稳定死锁（取证时间线与删除的 s13g 探针记录见
-                // NK4C-WORKLOG 1.4b 节）。停车出队 / 入链 / 通知已由 finish 承担，
-                // 本臂只补 SYSCALL 腿特有的上下文保存（save_frame_to_context /
-                // trap_style / saved_m_user），不重复簿记。
+                // The three halves — chain insertion / dequeue / VM
+                // notification — are NOT done here. C's vm_suspend
+                // (proc.c:241) runs once per suspension (guaranteed by its
+                // assert(!RTS_VMREQUEST)); Rust splits it into
+                // suspend_for_vm (set the flag + build the ctx) and
+                // vm_enqueue_and_notify_vm (insert + dequeue + notify). On
+                // this leg (kernel_call / SYSCALL) the single owner of chain
+                // insertion is kernel_call_finish (syscall.rs:3446), and
+                // kernel_call (syscall.rs:600) always calls finish for
+                // VmSuspend, so this SYSCALL fast path has already been
+                // through one insertion. (The other leg — a DeliverMsg
+                // suspension in process_misc_flags (proc_table.rs) — performs
+                // its own insertion and does not go through finish; the two
+                // legs are mutually exclusive.) Inserting again here (as an
+                // earlier revision did under the stale assumption that "the
+                // fast path skips finish") head-inserts the same node twice
+                // → p_next[nr] points at itself → after vm_memreq_get pops
+                // the head, head falls back onto the self-linked node and
+                // never becomes None → was_empty stays false forever → later
+                // requesters' inserts no longer wake VM, and VM waits in
+                // RECEIVING = a stable deadlock. Parking dequeue, insertion
+                // and notification are all owned by finish; this arm only
+                // adds the SYSCALL-leg-specific context save
+                // (save_frame_to_context / trap_style / saved_m_user) and
+                // does not duplicate the bookkeeping.
             }
             crate::scheduler_loop(crate::current_cpu_id());
         }
     }
 }
 
-// ── riscv64 / aarch64 production trap bodies (E-3ARCHTRAP) ─────────────
+// ── riscv64 / aarch64 production trap bodies ─────────────
 //
 // The kernel-side policy half of the production trap legs. The arch asm
 // legs (frame save + stack strategy) live in `minix_arch::{riscv64,arm64}
 // ::trap_stub`; these bodies receive the frame and decide:
 // - **timer arm**: SBI re-arm + per-CPU tick (riscv64) / GIC claim-route
-//   (aarch64) → the clock hook chain advances uptime (D-46) → quantum
+//   (aarch64) → the clock hook chain advances uptime → quantum
 //   enforcement (C proc.c:418-424, the x86 0xF1 shape).
 // - **syscall arm**: the KERNEL_CALL message leg (a7/x8 == 0, message at
 //   a0/x0 per `minix_sys::arch_trap`) → `kernel_call`, reply code in
 //   a0/x0. The raw IPC legs (a7/x8 1..16): both aarch64 and riscv64 now
 //   dispatch through their `*_ipc_dispatch_body` mirrors of the x86 int-33
-//   bridge (aarch64 NK4-C §1.112, riscv64 续-75); the -ENOSYS placeholder
+//   bridge; the -ENOSYS placeholder
 //   and its `ENOSYS_CODE` constant are retired with the riscv wiring.
-// - **faults**: U-mode page faults (riscv64 scause 12/13/15, 续-76b) and
-//   lower-EL aborts (aarch64 EC 0x20/0x24, §1.116) forward to VM through
+// - **faults**: U-mode page faults (riscv64 scause 12/13/15) and
+//   lower-EL aborts (aarch64 EC 0x20/0x24) forward to VM through
 //   the shared `forward_pagefault_to_vm` leg; the signal arms
 //   (cause_signal/SIGSEGV/SIGILL) remain riscv-side panic-leg registered
 //   gaps — riscv causes 1/4/5/6/7 (misalign/access/illegal…) and the
@@ -1272,11 +1317,12 @@ const KERNEL_CALL_TRAP: u64 = 0;
 #[cfg(target_arch = "riscv64")]
 const RISCV64_CAUSE_SUPERVISOR_TIMER: u64 = 5;
 /// riscv64 scause: Supervisor Software interrupt (privileged spec §5.2.1,
-/// interrupt code 1 under the interrupt bit) —— IPI 车道（SD-41 SWI 臂）。
+/// interrupt code 1 under the interrupt bit) — the IPI lane.
 #[cfg(target_arch = "riscv64")]
 const RISCV64_CAUSE_SUPERVISOR_SOFTWARE: u64 = 1;
-/// riscv64 scause: Supervisor External interrupt（privileged spec §5.2.4，
-/// interrupt code 9 under the interrupt bit）——PLIC 外设中断车道（SD-41）。
+/// riscv64 scause: Supervisor External interrupt (privileged spec §5.2.4,
+/// interrupt code 9 under the interrupt bit) — the PLIC peripheral interrupt
+/// lane.
 #[cfg(target_arch = "riscv64")]
 const RISCV64_CAUSE_SUPERVISOR_EXTERNAL: u64 = 9;
 /// riscv64 scause: Environment Call from U-mode (exception code 8).
@@ -1289,47 +1335,50 @@ const RISCV64_CAUSE_ECALL_UMODE: u64 = 8;
 #[cfg(any(target_arch = "riscv64", test))]
 const RISCV64_CAUSE_INST_PF: u64 = 12;
 /// Illegal instruction (scause=2): with `sstatus.FS = Off` (the lazy-FPU
-/// gate, 续-133) every FP instruction raises this — the lazy-restore
+/// gate) every FP instruction raises this — the lazy-restore
 /// trigger. C i386: #NM → copr_not_available_handler.
 #[cfg(any(target_arch = "riscv64", test))]
 const RISCV64_CAUSE_ILLEGAL_INSN: u64 = 2;
-/// 续-133（CodeReview P1-4）：scause=2 的 FP 懒门控判别——入口
-/// `sstatus.FS`（bits 13:14）==Off(0b00) 才是门控陷阱；FS≠Off 的非法
-/// 指令是真 SIGILL（特权 CSR/坏编码），交给诊断腿。host 可测（先例
-/// `riscv64_pf_error_code`）。
+/// scause=2 discrimination for the FP lazy gate: only an entry
+/// `sstatus.FS` (bits 13:14) == Off (0b00) makes it a gate trap; an illegal
+/// instruction with FS != Off is a real SIGILL (privileged CSR / bad
+/// encoding) and goes to the diagnostic leg. Host-testable (precedent
+/// `riscv64_pf_error_code`).
 #[cfg(any(target_arch = "riscv64", test))]
 pub(crate) fn riscv64_illegal_insn_is_fpu_trap(entry_sstatus: u64) -> bool {
     entry_sstatus & (0b11 << 13) == 0
 }
-/// Misaligned fetch (scause=0)。C i386: "Alignment check" → SIGBUS。
+/// Misaligned fetch (scause=0). C i386: "Alignment check" -> SIGBUS.
 #[cfg(any(target_arch = "riscv64", test))]
 const RISCV64_CAUSE_MISALIGNED_FETCH: u64 = 0;
-/// Breakpoint (scause=3)。C i386: "Debug exception" → SIGTRAP。
+/// Breakpoint (scause=3). C i386: "Debug exception" -> SIGTRAP.
 #[cfg(any(target_arch = "riscv64", test))]
 const RISCV64_CAUSE_BREAKPOINT: u64 = 3;
-/// Misaligned load (scause=4) / store (scause=6)。C: "Alignment check" → SIGBUS。
+/// Misaligned load (scause=4) / store (scause=6). C: "Alignment check" -> SIGBUS.
 #[cfg(any(target_arch = "riscv64", test))]
 const RISCV64_CAUSE_MISALIGNED_LOAD: u64 = 4;
 #[cfg(any(target_arch = "riscv64", test))]
 const RISCV64_CAUSE_MISALIGNED_STORE: u64 = 6;
 
-/// SD-41（C3 信号腿）：riscv64 用户同步异常 → 信号映射（纯函数，宿主
-/// 可测，先例 `riscv64_pf_error_code`）。C 真源=exception.c 异常表的用户
-/// 源 parity：user 起源即 `cause_sig(proc_nr(saved_proc), ep->signum)`
-/// （exception.c:275），非内核 panic。None = 非用户可投递面（管理态
-/// 成因/保留编码），保持诊断 panic 车道。页故障三因与 FP 门控（scause=2
-/// 且 FS=Off）在更早的臂已处理，不进本映射。
+/// riscv64 user synchronous exception → signal mapping (pure function,
+/// host-testable; precedent `riscv64_pf_error_code`). The C ground truth is
+/// exception.c's exception table, user-origin parity: a user origin means
+/// `cause_sig(proc_nr(saved_proc), ep->signum)` (exception.c:275), not a
+/// kernel panic. None = not deliverable to the user (supervisor-state
+/// cause / reserved encoding), which stays on the diagnostic panic lane.
+/// The three page-fault causes and the FP gate (scause=2 with FS=Off) are
+/// handled by earlier arms and do not enter this mapping.
 #[cfg(any(target_arch = "riscv64", test))]
 fn riscv64_sync_fault_signal(scause: u64) -> Option<u32> {
     use crate::syscall_signal::{SIGBUS, SIGILL, SIGTRAP};
     match scause {
-        // Misaligned fetch/load/store → C "Alignment check" → SIGBUS。
+        // Misaligned fetch/load/store → C "Alignment check" → SIGBUS.
         RISCV64_CAUSE_MISALIGNED_FETCH
         | RISCV64_CAUSE_MISALIGNED_LOAD
         | RISCV64_CAUSE_MISALIGNED_STORE => Some(SIGBUS),
-        // 真非法指令（FS≠Off 的门内 FP 已在更早臂接管）→ C "Invalid opcode" → SIGILL。
+        // Real illegal instruction (gated FP with FS!=Off is taken by an earlier arm) → C "Invalid opcode" → SIGILL.
         RISCV64_CAUSE_ILLEGAL_INSN => Some(SIGILL),
-        // Breakpoint → C "Debug exception" → SIGTRAP。
+        // Breakpoint → C "Debug exception" → SIGTRAP.
         RISCV64_CAUSE_BREAKPOINT => Some(SIGTRAP),
         _ => None,
     }
@@ -1364,7 +1413,7 @@ fn riscv64_read_stval() -> u64 {
 
 /// Kernel-leg body (S-origin): supervisor timer ticks + kernel-fault
 /// diagnostics. The SSI (IPI) and SEI (PLIC external) interrupt arms are
-/// registered gaps — S-10/K11 own the riscv64 IPI lane on this leg.
+/// registered gaps; the riscv64 IPI lane is owned on this leg.
 ///
 /// # Safety
 ///
@@ -1397,13 +1446,13 @@ pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::tr
 /// User-leg body (U-origin): ecall kernel calls + raw IPC bridge +
 /// U-mode page-fault forwarding + user-fault diagnostics. Page faults
 /// (scause 12/13/15) park the caller and forward to VM
-/// ([`riscv64_pagefault_body`], 续-76b); the remaining synchronous
+/// ([`riscv64_pagefault_body`]); the remaining synchronous
 /// faults (misalign/illegal/breakpoint/access…) still land on the
 /// diagnostics panic — the acting signal arms arrive with the next
 /// three-arch wave.
 ///
-/// The `u64` return is the park decision (续-75, the riscv mirror of
-/// aarch64 §1.113): `PARK_NONE` → the epilogue restores and `sret`s;
+/// The `u64` return is the park decision (the riscv mirror of the aarch64
+/// park contract): `PARK_NONE` → the epilogue restores and `sret`s;
 /// `PARK_RESCHEDULE` → the epilogue unwinds the frame and enters the
 /// resched thunk (the caller was parked by the IPC engine).
 ///
@@ -1427,7 +1476,7 @@ pub unsafe extern "C" fn riscv64_user_body(
             return riscv64_kernel_call_leg(frame);
         }
         // Raw IPC legs (SEND..SENDA) + MINIX_KERNINFO: the riscv
-        // mirror of the x86 int-33 / aarch64 EL1 bridge (续-75).
+        // mirror of the x86 int-33 / aarch64 EL1 bridge.
         // An unknown call number is rejected inside the body
         // (EBADCALL); the park decision rides a0 back to asm.
         return riscv64_ipc_dispatch_body(frame);
@@ -1438,7 +1487,7 @@ pub unsafe extern "C" fn riscv64_user_body(
         // Only the supervisor timer has an arm here — same scause-code
         // gate as the kernel leg; SSI (IPI) / SEI (PLIC) remain
         // registered gaps and must NOT be mis-counted as a tick
-        // (CodeReview 续-75 S2: treating every interrupt as a timer
+        // (treating every interrupt as a timer
         // would pollute uptime and never EOI a PLIC line).
         if scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_TIMER {
             riscv64_timer_arm();
@@ -1454,7 +1503,7 @@ pub unsafe extern "C" fn riscv64_user_body(
         }
         return riscv64_diag_panic(frame, scause, "user-leg trap");
     }
-    // U-mode page faults (续-76b, the riscv twin of aarch64 §1.116):
+    // U-mode page faults (the riscv twin of the aarch64 lower-EL abort leg):
     // the three Sv39 fault causes route through the forward-to-VM leg
     // instead of dying on the diagnostic panic. RISC-V separates the
     // access type by cause code — no syndrome register needed.
@@ -1464,26 +1513,32 @@ pub unsafe extern "C" fn riscv64_user_body(
     ) {
         return riscv64_pagefault_body(frame, scause);
     }
-    // 续-133：FS=Off 懒门控的 FP 陷阱（scause=2）——save 旧 owner /
-    // restore 当前者 / 归属移交 / 帧内 FS 重启用，随后 epc 原地重执行
-    // （riscv 非法指令陷阱不推进 sepc）。CodeReview B-2：scause=2 是
-    // 万能非法指令（特权 CSR/未定义编码/FS=Initial 下的坏 FP 编码全部
-    // 报 2）——只有入口 FS=Off 才是懒门控陷阱（老 Linux riscv entry.S
-    // 同款 FS==OFF 门），FS≠Off 的真非法指令落回诊断 panic（SIGILL 面）。
+    // FS=Off lazy-gate FP trap (scause=2) — save the old owner / restore
+    // the current one / hand over ownership / re-enable FS in the frame,
+    // then re-execute at the same epc (riscv illegal-instruction traps do
+    // not advance sepc). scause=2 is the generic illegal instruction
+    // (privileged CSR / undefined encoding / bad FP encoding under
+    // FS=Initial all report 2) — only an entry FS=Off is the lazy gate (the
+    // same FS==OFF gate as the old Linux riscv entry.S); a real illegal
+    // instruction with FS!=Off falls back to the diagnostic panic (SIGILL
+    // surface).
     if scause == RISCV64_CAUSE_ILLEGAL_INSN
         && riscv64_illegal_insn_is_fpu_trap(frame.sstatus)
     {
         return riscv64_fpu_trap_body(frame);
     }
-    // SD-41（C3 信号腿）：剩余用户同步异常的 acting 臂（C:
-    // exception.c:275 `cause_sig(proc_nr(saved_proc), ep->signum)` 用户源
-    // parity——此前的 registered gap「acting SIGSEGV/SIGILL arms arrive
-    // with the next three-arch wave」本笔落地）。形状镜像 aarch64 Segv
-    // 臂（本文件 aarch64 页故障腿）：BKL 获取 → 存帧到 cpu_context +
-    // FullContext（信号管理器 SYS_SIGSEND 在其上建 handler 帧）→
-    // cause_signal → 解锁 → PARK_RESCHEDULE（cause_signal 置 RTS_SIGNALED
-    // 已出队，eret 回用户会活锁同一陷阱；x86 孪生腿落在 scheduler_loop）。
-    // None 映射（管理态成因/保留编码）保持诊断 panic 车道。
+    // The acting arm for the remaining user synchronous exceptions (C:
+    // exception.c:275 `cause_sig(proc_nr(saved_proc), ep->signum)`, user
+    // origin parity — this closes the former registered gap "acting
+    // SIGSEGV/SIGILL arms arrive with the next three-arch wave"). The shape
+    // mirrors the aarch64 Segv arm (this file's aarch64 page-fault leg):
+    // acquire the BKL → save the frame into cpu_context + FullContext (the
+    // signal manager's SYS_SIGSEND builds the handler frame on top) →
+    // cause_signal → unlock → PARK_RESCHEDULE (cause_signal has set
+    // RTS_SIGNALED and dequeued the process; returning to the user would
+    // livelock on the same trap; the x86 twin lives in scheduler_loop).
+    // A None mapping (supervisor-state cause / reserved encoding) stays on
+    // the diagnostic panic lane.
     if let Some(sig) = riscv64_sync_fault_signal(scause) {
         use minix_arch::riscv64::trap_stub::PARK_RESCHEDULE;
         let ipc_bkl = crate::smp::bkl_lock_or_inherit();
@@ -1518,12 +1573,11 @@ pub unsafe extern "C" fn riscv64_user_body(
 }
 
 /// PFEC (page-fault error code) lanes the VM's decode expects — the
-/// lane convention this project fixed with aarch64 §1.116 (present or
+/// lane convention this project fixed for the aarch64 leg (present or
 /// not, the VM side only consumes the W lane; see `ipc/vm.rs` decode),
 /// NOT the x86 CR2 bit0=present semantics. Gated to the riscv leg +
 /// host tests; the aarch64/x86 legs keep their established spellings
-/// (single migration point registered in NK4C-WORKLOG 续-76b 新前沿;
-/// the cross-leg equality is pinned by
+/// (single migration point; the cross-leg equality is pinned by
 /// `riscv_pf_error_code_matches_the_aarch64_lane_table`).
 #[cfg(any(target_arch = "riscv64", test))]
 const PFEC_PRESENT: u32 = 1;
@@ -1558,7 +1612,7 @@ pub(crate) fn riscv64_pf_error_code(scause: u64) -> u32 {
     err
 }
 
-/// The riscv64 page-fault leg (续-76b): the U-mode instruction/load/store
+/// The riscv64 page-fault leg: the U-mode instruction/load/store
 /// page-fault twin of [`aarch64_pagefault_body`] and the x86 vector-14
 /// `ForwardToVm` arm. Saves the user register file (`FullContext`),
 /// records RTS_PAGEFAULT + p_fault_addr, and `mini_send`s VM_PAGEFAULT
@@ -1572,7 +1626,8 @@ pub(crate) fn riscv64_pf_error_code(scause: u64) -> u32 {
 ///
 /// `frame` is the live user-leg frame and the scheduler has a current
 /// process (same contract as [`riscv64_ipc_dispatch_body`]).
-/// 续-298 krewalk 配套（用后即滚）：最后一次 fill-root 的 ptroot/pte_pa。
+/// Companion of the krewalk (rolled out after use): the ptroot/pte_pa of
+/// the last fill-root.
 pub static LAST_FILL_PTROOT: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 pub static LAST_FILL_LEAF_PA: core::sync::atomic::AtomicU64 =
@@ -1609,9 +1664,11 @@ unsafe fn riscv64_pagefault_body(
         Console::write_str(" stval ");
         Console::write_hex(fault_addr);
         Console::write_str("\n");
-        // 续-153b 探针（用后即滚）：stval 机器推导——VM_DM_BASE=1<<36，
-        // pa = stval-基，页基/槽偏移拆分。槽偏移非 8 倍数 ⇒ 非槽读而是
-        // 数据访问（区分 walk_read 槽读 vs 叶数据访问两类崩坏形态）。
+        // One-shot probe: machine derivation of stval — VM_DM_BASE = 1<<36,
+        // pa = stval - base, split into page base and slot offset. A slot
+        // offset that is not a multiple of 8 ⇒ not a slot read but a data
+        // access (separating the two failure shapes: walk_read slot read vs
+        // leaf data access).
         {
             let mut pa = fault_addr.wrapping_sub(1u64 << 36);
             Console::write_str("pfvm: pa=");
@@ -1619,8 +1676,9 @@ unsafe fn riscv64_pagefault_body(
             Console::write_str(" off=");
             Console::write_hex(pa & 0xfff);
             Console::write_str("\n");
-            // 续-154：walk 真根——fault 时 satp 仍是被困进程（VM）的，
-            // 内核不在 trap 入口换根。satp.PPN<<12 = VM 地址空间根表。
+            // The true walk root — at fault time satp still belongs to the
+            // trapped process (VM); the kernel does not switch roots at the
+            // trap entry. satp.PPN << 12 = VM's address-space root table.
             let satp: u64;
             unsafe { core::arch::asm!("csrr {}, satp", out(reg) satp) };
             Console::write_str("pfvm: satp=");
@@ -1628,23 +1686,30 @@ unsafe fn riscv64_pagefault_body(
             Console::write_str(" root=");
             Console::write_hex(satp & 0x00000FFFFFFFFFFF << 12);
             Console::write_str("\n");
-            // 续-298 故障时刻再走（用后即滚）：经内核 KDM 重读 **walk 目标
-            // vaddr**（GPR x12=query 的 vaddr 参数，r1 dump 实证）的页表链
-            // 槽值（l2e/l1e/l0e 三级原始值）。判据：child 链槽此刻在 RAM 中
-            // 的内容=0/正常 ⇒ poison 从未在 RAM（视图错位）；=poison 值 ⇒
-            // RAM 脏-at-fault（存在内存写者）。注意：不可走 fault_addr（DM
-            // 窗 VA）——DM 窗不含伪帧映射是故障的成因本身，走了是同义反
-            // 复（§续-298 首版误走，已纠正）。冷路径，KDM=减基址直读。
+            // Walk again at fault time (rolled out after use): re-read the
+            // page-table chain slot values (raw l2e/l1e/l0e of all three
+            // levels) of the **walk target vaddr** (GPR x12 = the query's
+            // vaddr argument) through the kernel direct map (KDM). The
+            // criterion: content == 0/normal in the child chain slot at this
+            // moment ⇒ the poison was never in RAM (a view mismatch);
+            // == the poison value ⇒ RAM dirty-at-fault (there is a memory
+            // writer). Note: do not walk fault_addr (the DM-window VA) — the
+            // DM window not mapping the pseudo frame IS the cause of the
+            // fault, so walking it is tautological (an early version did
+            // exactly that and was corrected). Cold path; KDM = direct read
+            // at the base-subtracted address.
             {
                 const KDM: u64 = 0xFFFF_FFC0_4000_0000;
                 let root = (satp & 0x00000FFFFFFFFFFF) << 12;
-                let walk_va = frame.gpr[12]; // x12 = a2 = vaddr（query 签名第 3 参）
+                let walk_va = frame.gpr[12]; // x12 = a2 = vaddr (3rd arg of the query signature)
                 Console::write_str("krewalk: va=");
                 Console::write_hex(walk_va);
                 Console::write_str("\n");
-                // v3：根改用 fill-root 刚用的 ptroot（child 根，自 diagctl
-                // 捕获）——VM 自根不含 child vaddr（同义反复已纠）。另直读
-                // fill-root 刚写的叶槽 pte_pa 现值。
+                // v3: the root switched to the ptroot the fill-root just used
+                // (the child root, captured from diagctl) — VM's own root
+                // does not contain the child vaddr (that tautology was
+                // corrected). Also read directly the current leaf slot
+                // pte_pa the fill-root just wrote.
                 let ptroot = LAST_FILL_PTROOT.load(
                     core::sync::atomic::Ordering::Relaxed,
                 );
@@ -1665,9 +1730,11 @@ unsafe fn riscv64_pagefault_body(
                     Console::write_str("\n");
                 }
                 if ptroot >= 0x8000_0000 && ptroot < 0xA000_0000 {
-                    // 续-305：child 链走 ptroot（v3 的 pa=ptroot 被
-                    // `let mut pa = root` 重绑定覆盖=同义反复误读根因，本笔
-                    // 改为绑定点择根——ptroot 有效即走 child 链）。
+                    // The child chain walks ptroot (in v3 the `let mut pa =
+                    // root` rebinding overwrote pa = ptroot — that is the
+                    // root cause of the tautological misread; the root is now
+                    // chosen at the binding point — a valid ptroot means
+                    // walking the child chain).
                     pa = ptroot;
                 } else {
                     Console::write_str("krewalk: ptroot out-of-range\n");
@@ -1698,7 +1765,8 @@ unsafe fn riscv64_pagefault_body(
                 }
             }
         }
-        // 续-138 探针（用后即滚）：全 GPR 帧 dump——寄存器残缺恢复定位。
+        // One-shot probe: full GPR frame dump — locating partial register
+        // restores.
         for (idx, val) in frame.gpr.iter().enumerate() {
             Console::write_str("x");
             Console::write_hex(idx as u64);
@@ -1712,32 +1780,36 @@ unsafe fn riscv64_pagefault_body(
         Console::write_str("\n");
         panic!("pagefault in VM");
     }
-    // §续-334 P0.5 探针（GPT 建议，用后即滚）：非 VM 进程页故障时打印
-    // satp 全量（MODE/ASID/PPN 拆分）——「PTE 有效但 CPU 仍故障」的
-    // satp 对账：CPU 当时真的在用 fill-root 那张根吗？ASID 是多少？
-    // 封顶 32 防洪流。
+    // One-shot probe: on a non-VM page fault print the full satp
+    // (MODE/ASID/PPN split) — the satp reconciliation for "the PTE is valid
+    // yet the CPU still faults": was the CPU really using the fill-root
+    // root at that moment? What was the ASID? Capped at 32 to prevent a
+    // flood.
     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as P5Console};
         use core::sync::atomic::{AtomicUsize, Ordering as P5Ord};
         static P5_N: AtomicUsize = AtomicUsize::new(0);
-        // §续-327 修正：只观测 rc(0xc) 的 fault（CAP=32 被早期 demand-fill
-        // 吃光导致 rc 的 fault 未被观测——p5b 实证）。
+        // Only observe faults from rc(0xc) (the CAP=32 budget was consumed
+        // by early demand-fill, leaving rc's faults unobserved).
         if cur_nr.0 == 0xc && P5_N.fetch_add(1, P5Ord::Relaxed) < 32 {
             let satp: u64;
-            // SAFETY: 读 CSR，无副作用。
+            // SAFETY: CSR read, no side effects.
             unsafe { core::arch::asm!("csrr {}, satp", out(reg) satp) };
             let mode = satp >> 60;
             let asid = (satp >> 44) & 0xFFFF;
             let ppn = satp & 0xF_FFFF_FFFF;
-            // §续-338 判别探针（用后即滚）：故障来源态——sepc 落点 +
-            // sstatus.SPP(bit8)/SUM(bit18) + 中断时 sp（frame.gpr[2]）。
-            // sstatus 取帧内入口快照（trap_stub 契约：值取自 entry 时刻），
-            // 不读实时 CSR。判读树：SPP=0 且 sepc 落用户码区 ⇒ 用户态存储
-            // 触发（本案实测即此，随后由地址规范性检查定案：故障 VA
-            // 0x7fff_ffff_f000 之上非 Sv39 规范）；SPP=1 ⇒ 内核代用户内存
-            // 访问（SUM=0 时对 U 页的 S 态存储是架构合法故障，属 guest
-            // 侧缺陷）。
+            // Fault-origin probe: sepc landing point +
+            // sstatus.SPP(bit8)/SUM(bit18) + sp at interrupt time
+            // (frame.gpr[2]). sstatus comes from the in-frame entry snapshot
+            // (trap_stub contract: the value is captured at entry), not a
+            // live CSR read. Decision tree: SPP=0 and sepc inside the user
+            // code region ⇒ triggered by a user-mode store (this is what was
+            // observed; the address-normativity check then settled it: the
+            // faulting VA 0x7fff_ffff_f000 lies above the canonical Sv39
+            // range); SPP=1 ⇒ the kernel accessing user memory on the user's
+            // behalf (an S-mode store to a U page with SUM=0 is an
+            // architecturally legal fault and a guest-side defect).
             let sst = frame.sstatus;
             P5Console::write_str(" sepc=");
             P5Console::write_hex(frame.sepc);
@@ -1746,9 +1818,10 @@ unsafe fn riscv64_pagefault_body(
             P5Console::write_str(" sp=");
             P5Console::write_hex(frame.gpr[2]);
             P5Console::write_str("\n");
-            // §续-337 核心判据（GPT P1/P2 要求的同 fault 闭合）：用本次
-            // fault 的 satp root 走三级链读叶 PTE——26 次 refault 中叶值
-            // 序列直接裁决「RAM 中叶 PTE 循环期间到底是什么」。
+            // Core criterion (closing on the same fault): walk the three
+            // levels from this fault's satp root and read the leaf PTE — the
+            // leaf value sequence over 26 refaults decides "what the leaf PTE
+            // in RAM actually is during the loop".
             if ppn << 12 >= 0x8000_0000 {
                 const KDM: u64 = 0xFFFF_FFC0_4000_0000;
                 let kdm = |pa: u64| unsafe {
@@ -1794,11 +1867,13 @@ unsafe fn riscv64_pagefault_body(
         proc.trap_style = TrapStyle::FullContext;
     }
     let priv_table = unsafe { crate::priv_table_boot_unchecked() };
-    // §续-383/§续-384 判别探针（用后即滚）已于本轮回勾滚除——两处此前已被掏空成
-    // 纯计数器自增 + 空 `if` 体（读数消费面早前就摘掉了，只剩自娱自乐的
-    // `LETHAL_PF`/`FA0_N` 静态计数无人读取），属 `§续-385`/`task1-close`
-    // 同族「空体残骸」，滚除零行为风险，与 PD-16 本体探针无关。真正仍依赖
-    // PD-16 结案才能滚的探针（krewalk/sfence-exec 等）仍在原处，未动。
+    // Two diagnostic probes were rolled out this round — both had already
+    // been hollowed out into pure counter increments plus empty `if` bodies
+    // (their readers were removed earlier, leaving unread `LETHAL_PF`/`FA0_N`
+    // static counters), the same "empty-body remnant" family; removal
+    // carries zero behavior risk and is unrelated to the main probe still
+    // under investigation. The probes that still genuinely depend on it
+    // closing (krewalk, sfence-exec, etc.) stay where they are, untouched.
     if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, fault_addr, errcode) {
         // C: panic("WARNING: pagefault: mini_send returned %d")
         panic!("pagefault: mini_send returned {e:?}");
@@ -1815,17 +1890,21 @@ unsafe fn riscv64_pagefault_body(
 ///    `ClockArch::local_timer_eoi` — the one-shot stops dead unless the
 ///    body re-arms, apic.c:578 parity),
 /// 2. the clock hook chain under `minix_plat::TIMER_IRQ` (advances
-///    uptime, expires alarms — D-46; the CPU-local timer bypasses the
+///    uptime, expires alarms; the CPU-local timer bypasses the
 ///    controller claim — see the `dispatch_claimed_hardware_irq` note below),
 /// 3. quantum enforcement for this CPU's running process
 ///    (C proc.c:418-424).
-/// SD-41 SWI 臂（scause=1，Supervisor Software interrupt）：先清本 hart
-/// 的 CLINT msip 挂起位（ssip 对 S 模式只读，ack 必须写回 msip 存储
-/// 格），再在 BKL 继承/获取下排空本 CPU 的调度 IPI 数据。计数打印封顶
-/// 8（与 tf-guard 同纪律）；boot 自环自检（smp_init 尾一次性
-/// send→trap→本臂）给出可 grep 的执行记录行。取证边界：钳位期无
-/// producer，排空恒空——本臂先于撤钳落地，保证 SSI 不再误入诊断
-/// panic 或被当 tick 计数（SD-41 台账的 registered gap 之一就此闭）。
+/// riscv64 SWI arm (scause=1, Supervisor Software interrupt): first clear
+/// this hart's CLINT msip pending bit (ssip is read-only to S-mode, so the
+/// ack must write back to the msip storage cell), then drain this CPU's
+/// scheduling IPI data under BKL inherit/acquire. The counter print is
+/// capped at 8 (the same discipline as tf-guard); the boot self-loop
+/// self-check (a one-shot send→trap→this-arm at the end of smp_init)
+/// leaves a greppable execution record. Evidence boundary: during the
+/// clamp period there is no producer, so the drain is always empty — this
+/// arm lands before the clamp is lifted, ensuring SSI no longer falls into
+/// the diagnostic panic or gets counted as a tick (this closes one of the
+/// registered gaps).
 #[cfg(target_arch = "riscv64")]
 fn riscv64_swi_arm() {
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
@@ -1834,9 +1913,11 @@ fn riscv64_swi_arm() {
     let topo = minix_platform::platform_desc().cpu_topology();
     let cpu = crate::current_cpu_id().index();
     let _ = topo;
-    // SAFETY: CSR 写，仅清本 hart 的 SSIP 挂起位（特权规范许可的 S 模式
-    // 自清；本平台 aclint-mswi 无 SSWI 设备，CLINT msip 不可由 S 模式
-    // 依赖——见 arch 侧 clear_self_ssip 的契约注）。
+    // SAFETY: CSR write that clears only this hart's SSIP pending bit (an
+    // S-mode self-clear the privileged spec allows; this platform's
+    // aclint-mswi has no SSWI device, and CLINT msip cannot be relied on
+    // from S-mode — see the contract note on the arch side's
+    // clear_self_ssip).
     unsafe {
         minix_arch::riscv64::smp::clear_self_ssip();
     }
@@ -1847,7 +1928,7 @@ fn riscv64_swi_arm() {
         let smp = crate::smp_state_with(&section);
         let cur = crate::current_cpu_id();
         while let Some((flags, _nr)) = smp.handle_sched_ipi(cur) {
-            let _ = flags; // 撤钳（C2b）前 flags 恒空；收到即消费，防积压
+            let _ = flags; // flags is always empty until the clamp is lifted; consume on receipt to avoid a backlog
         }
     }
     if PRINTED.fetch_add(1, AtomicOrd::AcqRel) < 8 {
@@ -1858,19 +1939,22 @@ fn riscv64_swi_arm() {
     }
 }
 
-/// SD-41 EI 臂（scause=9，Supervisor External interrupt）：PLIC claim 读
-/// （源号即 IRQ 号）→ 按向量走 `dispatch_claimed` 完整握手（mask→链→
-/// unmask→complete，D-61）。PLIC 窗已进用户根（I-22 前置 `c63b08058`），
-/// claim/complete 的 MMIO 读写在双腿地址空间皆可达。无链源 → Spurious
-/// 计数（PLIC claim 读已消源挂起，无风暴风险，同 timer 臂 Spurious 打印
-/// 口径）；源使能由首个设备驱动经 IRQ 管理器 unmask 自选（本臂为通道，
-/// 不自开源）。
+/// riscv64 EI arm (scause=9, Supervisor External interrupt): PLIC claim read
+/// (the source number is the IRQ number) → dispatch by vector through the
+/// full `dispatch_claimed` handshake (mask→chain→unmask→complete). The
+/// PLIC window is already in the user roots, so the claim/complete MMIO
+/// accesses are reachable in both legs' address spaces. A source without a
+/// chain → Spurious counter (the PLIC claim read has already cleared the
+/// source pending bit, so there is no storm risk; same Spurious print
+/// convention as the timer arm); source enabling is chosen by the first
+/// device driver through the IRQ manager's unmask (this arm is the channel,
+/// it does not enable sources itself).
 #[cfg(target_arch = "riscv64")]
 fn riscv64_external_arm() {
     use core::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
     static ACKS: AtomicU64 = AtomicU64::new(0);
     let Some(id) = crate::irq_manager::claim_hardware_irq() else {
-        return; // claim=0：假中断（无线索），静默吞同 timer 口径
+        return; // claim=0: spurious interrupt (no source), swallowed silently per the timer convention
     };
     let irq = minix_plat::IrqVector::new(id as u8);
     match crate::irq_manager::dispatch_claimed_hardware_irq(irq, Some(id)) {
@@ -1900,8 +1984,9 @@ fn riscv64_external_arm() {
 }
 
 fn riscv64_timer_arm() {
-    // SD-10 候选 3 改形仪器：静点排水（写窗外的走查与槽复读；见
-    // minix_arch::ptwb 模块文档与 riscv64::paging::ptwb_drain_budgeted）。
+    // Quiet-point drain instrumentation (a walk and slot re-read outside
+    // the write window; see the minix_arch::ptwb module docs and
+    // riscv64::paging::ptwb_drain_budgeted).
     #[cfg(target_arch = "riscv64")]
     minix_arch::riscv64::paging::ptwb_drain_budgeted();
     crate::clock::local_tick(crate::clock::current_cpuid());
@@ -1914,10 +1999,12 @@ fn riscv64_timer_arm() {
     // MMIO register `read_volatile(plic_base + 0x200004 + context*0x1000)` —
     // an address the port does not map, so the very first tick that interrupts
     // a process whose page table omits the PLIC window load-faults (scause 13).
-    // 续-105 坐实：`sepc` 落在 `dispatch_hardware_irq`（`dispatch()` 的 `claim`
-    // 臂内联），`stval=0xc201004` = PLIC base `0xc000000` + `PLIC_CLAIM 0x200004`
-    // + `context(1)×0x1000`（三架构对照：x86 `claim()` 返 `None`、aarch64 读
-    // 系统寄存器 `icc_iar1_el1`，二者皆不需页表映射，故同段不挂）。
+    // Confirmed: `sepc` lands in `dispatch_hardware_irq` (the `claim` arm of
+    // `dispatch()` is inlined), `stval=0xc201004` = PLIC base `0xc000000` +
+    // `PLIC_CLAIM 0x200004` + `context(1)×0x1000` (three-arch comparison:
+    // x86's `claim()` returns `None` and aarch64 reads the system register
+    // `icc_iar1_el1`; neither needs a page-table mapping, so the same
+    // segment does not fault there).
     // Mirror the x86 shape (`X86_64InterruptController::claim` → `None`): route
     // through the already-claimed entry with `claimed = None`, which skips the
     // controller claim and leaves `complete(None)` a no-op (early return) — the
@@ -1935,7 +2022,7 @@ fn riscv64_timer_arm() {
         Err(e) => panic!("riscv64 timer arm: IRQ dispatch error {e:?}"),
     }
     // Quantum check under owner-aware inherit-or-acquire BKL (the SCHED_IPI
-    // shape, NK4-C B27): inherit only if THIS CPU's interrupted kernel frame
+    // shape): inherit only if THIS CPU's interrupted kernel frame
     // owns the lock, else spin-acquire it even when a peer holds it.
     let acquired = crate::smp::bkl_lock_or_inherit();
     {
@@ -1961,7 +2048,7 @@ fn riscv64_timer_arm() {
 /// The KERNEL_CALL leg: message pointer at a0, call number in
 /// `m_type` — `kernel_call` parity with the x86 SYSCALL body.
 ///
-/// Returns the park decision (续-75, aarch64 §1.116 mirror): a reply
+/// Returns the park decision (the aarch64 park contract mirror): a reply
 /// code rides a0 out and returns `PARK_NONE`; a `VmSuspend` outcome
 /// saves the caller's context (the KCALL_RESUME redispatch delivers the
 /// reply into it later) and parks through the switch-after-pop path.
@@ -2000,22 +2087,23 @@ unsafe fn riscv64_kernel_call_leg(
         unsafe { crate::clock_state_boot_unchecked() },
         &crate::ipc::KernelUserCopy,
     );
-    // Reply → a0 on the wire form (NK4-C F10b: negative errno lanes go
-    // out through `reply_wire`, not the raw positive code — the same P1
-    // gap this leg carried until 续-75, closed with the aarch64 mirror).
+    // Reply → a0 on the wire form (negative errno lanes go out through
+    // `reply_wire`, not the raw positive code — the same gap this leg
+    // carried before, closed together with the aarch64 mirror).
     match result.reply_wire() {
         Some(wire) => {
             frame.gpr[10] = wire as i64 as u64;
             PARK_NONE
         }
         None => {
-            // C: system.c:76 `if (result != EDONTREPLY)` — NoReply 不交付回执、
-            // 不写 a0（NK4C 续-277 三腿同步；旧 panic 假设被真机 C 测试的
-            // _exit 兑底腿证伪）。
+            // C: system.c:76 `if (result != EDONTREPLY)` — NoReply delivers
+            // no reply and writes no a0 (all three legs synchronized; the old
+            // panic assumption was disproved by the real-machine C test's
+            // _exit catch-all leg).
             if matches!(result, crate::syscall::KcallResult::NoReply) {
                 return PARK_NONE;
             }
-            // VmSuspend (aarch64 §1.116 mirror): the call parked the
+            // VmSuspend (aarch64 mirror): the call parked the
             // caller on RTS_VMREQUEST — enqueue/dequeue/notify VM were
             // already done by kernel_call_finish (the single owner of
             // that bookkeeping on this leg, x86 SYSCALL parity). This
@@ -2042,8 +2130,8 @@ unsafe fn riscv64_kernel_call_leg(
     }
 }
 
-/// The diverging park-and-reschedule thunk (the riscv mirror of
-/// aarch64 §1.113 / x86 `reenter_scheduler`), reached via
+/// The diverging park-and-reschedule thunk (the riscv mirror of the aarch64
+/// park contract / x86 `reenter_scheduler`), reached via
 /// `riscv64_resched_entry` after the user-leg asm unwound a blocked-
 /// receiver frame back to the clean kernel-stack base. Re-acquires the
 /// BKL that `kernel_call_finish_ipc_door` released (`scheduler_loop`
@@ -2063,7 +2151,7 @@ pub unsafe extern "C" fn riscv64_resched_thunk() -> ! {
 }
 
 /// The raw-IPC leg (ecall with a7 = 1..16): the riscv mirror of
-/// [`aarch64_ipc_dispatch_body`] (NK4-C §1.112) and the x86 int-33
+/// [`aarch64_ipc_dispatch_body`] and the x86 int-33
 /// bridge. Register ABI per `minix-sys::arch_trap::ipc_trap` (riscv64):
 /// a7 = call number, a0 = src/dst endpoint (SENDA: count), a1 = message
 /// pointer (SENDA: table pointer); errno returns in a0 and the IPC
@@ -2093,7 +2181,7 @@ unsafe fn riscv64_ipc_dispatch_body(
 
     // The ecall arrives from U-mode where this CPU does NOT own the BKL.
     // The entry below mutates the shared PROC_TABLE before
-    // dispatch_ipc_entry acquires it fresh — acquire now (x86 B27 shape),
+    // dispatch_ipc_entry acquires it fresh — acquire now (the x86 shape),
     // release just before the dispatch hand-off (the BKL is
     // non-reentrant).
     let ipc_bkl = crate::smp::bkl_lock_or_inherit();
@@ -2156,15 +2244,18 @@ unsafe fn riscv64_ipc_dispatch_body(
         match crate::ipc::KernelUserCopy.copy_msg_from_user(VirBytes(r2)) {
             Ok(m) => msg = m,
             Err(_) => {
-                // 续-191b 取证探针 IPC-door-eault（riscv64·VM 自身
-                // SIGSEGV 产地候选）：kernel_call 腿已有 kc-efault 探针
-                // （syscall.rs:596，gh61 零命中＝排除），但 IPC 陷阱门
-                // （mini_send/receive 经本 riscv64_ipc_dispatch_body）的
-                // copy_msg_from_user 失败腿无探针——续-188 定论“投递
-                // 拷贝 EFAULT→cause_sig(8,11)”但“kc-efault 未盖”本腿，
-                // gh61 又证 resume-Fault 家族全清（零 rvflt/mrr-Fault/sf-*）。
-                // 现场打 caller ep + msg 用户 VA r2 + current_root，一次
-                // 定谳 VM IPC 拷贝为何 EFAULT。C-61 前不滚。
+                // IPC-door-EFAULT probe (riscv64; candidate source of VM's
+                // own SIGSEGV): the kernel_call leg already has the kc-efault
+                // probe (syscall.rs:596, ruled out with zero hits), but the
+                // IPC trap door (mini_send/receive through this
+                // riscv64_ipc_dispatch_body) had no probe on its
+                // copy_msg_from_user failure leg — the conclusion was
+                // "delivery copy EFAULT → cause_sig(8,11)" but kc-efault did
+                // not cover this leg, and the resume-Fault family was proven
+                // clear (zero rvflt/mrr-Fault/sf-*). Print the caller ep +
+                // the message's user VA r2 + current_root here to settle once
+                // why the VM IPC copy returns EFAULT. Do not roll out before
+                // it is closed.
                 #[cfg(not(feature = "mock"))]
                 {
                     use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
@@ -2173,8 +2264,10 @@ unsafe fn riscv64_ipc_dispatch_body(
                     if IPE.fetch_add(1, AtomicOrd::Relaxed) < 16 {
                         let ep = table.get(cur_nr).map_or(0i32, |p| p.p_endpoint.0);
                         let root = crate::current_root_phys().map(|r| r.0).unwrap_or(0);
-                        // 全 a0..a7 参数窗口 dump：区分“VM 真传 null 指针”
-                        // vs“trap frame GPR 槽位错位”（a1 应=gpr[11]=msg ptr）。
+                        // Dump the whole a0..a7 argument window: distinguishes
+                        // "VM really passed a null pointer" from "the trap
+                        // frame GPR slots are misplaced" (a1 should be
+                        // gpr[11] = msg ptr).
                         C0::write_str(" a0=0x");
                         C0::write_hex(frame.gpr[10]);
                         C0::write_str(" a2=0x");
@@ -2328,12 +2421,15 @@ unsafe fn riscv64_fpu_trap_body(frame: &mut minix_arch::riscv64::trap_stub::Risc
         local.fpu_owner = Some(cur_nr);
     }
     fpu.enable(); // live write: inert past this trap's sret (frame patch carries), kept for symmetry.
-    // CodeReview B-1：riscv 的 FS 位住在 sstatus 里，而 trap stub 出口
-    // `csrw sstatus` 整体写回入口捕获的帧值——活写 enable() 活不到
-    // sret。承载者＝patch 帧 FS=Dirty（保守选值：硬件在 Initial 下本
-    // 就允许执行并自动 Initial→Dirty，不会重复陷阱；Dirty 使状态语义
-    // 与「刚执行过 FP」一致，下一次 switch-out 捕获即如实上报）。
-    frame.sstatus = (frame.sstatus & !(0b11 << 13)) | (0b11 << 13); // FS=Dirty (AF-9: 0b10 was Clean, mislabeled)
+    // The riscv FS bits live in sstatus, and the trap stub's exit does a
+    // whole `csrw sstatus` write-back of the frame values captured at entry
+    // — a live enable() write does not survive to sret. The carrier is the
+    // patched frame with FS=Dirty (a conservative value: with Initial the
+    // hardware already permits execution and moves Initial→Dirty
+    // automatically, so there is no repeated trap; Dirty makes the state
+    // semantics equal to "FP just executed", and the next switch-out
+    // capture reports it truthfully).
+    frame.sstatus = (frame.sstatus & !(0b11 << 13)) | (0b11 << 13); // FS=Dirty (0b10 would be Clean, mislabeled)
     if fpu_bkl {
         crate::smp::bkl_unlock();
     }
@@ -2368,7 +2464,7 @@ fn riscv64_diag_panic(
 
 /// Current-EL (kernel) body: GIC claim → route → dispatch, kernel-fault
 /// diagnostics. IRQ: the claim read IS the identification register on
-/// GIC (D-61), so the INTID routes the chain and travels to
+/// GIC, so the INTID routes the chain and travels to
 /// `dispatch_claimed_hardware_irq` for the completion half. Sync: a
 /// kernel-origin synchronous exception is a kernel bug at this stage —
 /// panic with the syndrome (the EL0 page-fault arm lands with the
@@ -2389,7 +2485,7 @@ pub unsafe extern "C" fn aarch64_kernel_body(
     if class == minix_arch::arm64::trap_stub::TRAP_CLASS_IRQ {
         let claimed = crate::irq_manager::claim_hardware_irq();
         match claimed {
-            // Spurious: nothing claimable, nothing to complete (K8).
+            // Spurious: nothing claimable, nothing to complete.
             None => return PARK_NONE,
             Some(id) if id == GIC_SPURIOUS_INTID => return PARK_NONE,
             Some(id) => {
@@ -2500,7 +2596,7 @@ pub unsafe extern "C" fn aarch64_user_body(
             return aarch64_kernel_call_leg(frame);
         }
         // Raw IPC legs + MINIX_KERNINFO (x8 = 1..16): the EL1 mirror
-        // of the x86 int-33 bridge (NK4-C §1.112). An unknown call
+        // of the x86 int-33 bridge. An unknown call
         // number is rejected inside the body (EBADCALL). The body's
         // park decision (§1.113) rides x0 back to `EL0BODY`.
         return aarch64_ipc_dispatch_body(frame);
@@ -2511,10 +2607,12 @@ pub unsafe extern "C" fn aarch64_user_body(
     if ec == EC_SIMD_FP_LOWER_EL {
         return aarch64_fpu_trap_body();
     }
-    // SD-41（C3 信号腿）：剩余用户同步 EC 的 acting 臂（C:
-    // exception.c:275 用户源 cause_sig parity）。形状镜像本腿 Segv 臂。
-    // EC=0x2f（SError）等异步/硬件级保持诊断 panic 车道（C: "Machine
-    // check" → SIGBUS 的 i386 语义在本项目的旧取证里归内核停止）。
+    // The acting arm for the remaining user synchronous ECs (C:
+    // exception.c:275 user-origin cause_sig parity). The shape mirrors this
+    // leg's Segv arm. EC=0x2f (SError) and other asynchronous/hardware-level
+    // ECs stay on the diagnostic panic lane (the i386 semantics of
+    // "Machine check" → SIGBUS were classified as a kernel stop in this
+    // project's earlier evidence work).
     if let Some(sig) = aarch64_sync_ec_signal(ec) {
         use minix_arch::arm64::trap_stub::PARK_RESCHEDULE;
         let ipc_bkl = crate::smp::bkl_lock_or_inherit();
@@ -2548,13 +2646,14 @@ pub unsafe extern "C" fn aarch64_user_body(
     aarch64_diag_panic(frame, "user sync exception");
 }
 
-/// SD-41（C3 信号腿）：aarch64 用户同步 EC → 信号映射（纯函数，宿主可
-/// 测）。C 真源=exception.c 异常表用户源 parity：EC 0x00（Unknown）/
-/// 0x0e（Illegal execution state）→ "Invalid opcode" → SIGILL；0x26
-/// （SP alignment）/0x27（PC alignment）→ "Alignment check" → SIGBUS；
-/// 0x3c（BRK）→ "Debug exception" → SIGTRAP。None = 保持诊断 panic
-/// 车道（SError 0x2f、管理态/保留 EC）。页故障（0x20/0x24）、FP 门控
-/// （0x07）、SVC（0x15）在更早臂处理，不进本映射。
+/// aarch64 user synchronous EC → signal mapping (pure function, host-
+/// testable). The C ground truth is exception.c's exception table,
+/// user-origin parity: EC 0x00 (Unknown) / 0x0e (Illegal execution state)
+/// → "Invalid opcode" → SIGILL; 0x26 (SP alignment) / 0x27 (PC alignment)
+/// → "Alignment check" → SIGBUS; 0x3c (BRK) → "Debug exception" → SIGTRAP.
+/// None = stay on the diagnostic panic lane (SError 0x2f, supervisor-state
+/// / reserved EC). Page faults (0x20/0x24), the FP gate (0x07) and SVC
+/// (0x15) are handled by earlier arms and do not enter this mapping.
 #[cfg(any(target_arch = "aarch64", test))]
 fn aarch64_sync_ec_signal(ec: u64) -> Option<u32> {
     use crate::syscall_signal::{SIGBUS, SIGILL, SIGTRAP};
@@ -2678,15 +2777,16 @@ mod abort_classification_tests {
 
     #[test]
     fn illegal_insn_fpu_trap_predicate_gates_on_fs_off() {
-        // 续-133（CodeReview P1-4）：FS=00（Off）→ 懒门控陷阱；其余
-        // 三臂（Initial/Clean/Dirty）→ 真 SIGILL 落诊断腿——与 aarch64
-        // EC=0x07 只在 FPEN 门控时报的语义对位（riscv scause 不分道，
-        // 门即判别）。
+        // FS=00 (Off) → lazy gate trap; the other three arms
+        // (Initial/Clean/Dirty) → a real SIGILL falling to the diagnostic
+        // leg — matching the aarch64 semantics where EC=0x07 is only
+        // reported when FPEN gates it (riscv scause does not separate the
+        // lanes; the gate is the discriminator).
         assert!(riscv64_illegal_insn_is_fpu_trap(0b00 << 13));
         assert!(!riscv64_illegal_insn_is_fpu_trap(0b01 << 13));
         assert!(!riscv64_illegal_insn_is_fpu_trap(0b10 << 13));
         assert!(!riscv64_illegal_insn_is_fpu_trap(0b11 << 13));
-        // 其余 sstatus 位不影响判别。
+        // The remaining sstatus bits do not affect the discrimination.
         assert!(riscv64_illegal_insn_is_fpu_trap(
             (0b00 << 13) | 0x8000000000000000 | 0x100
         ));
@@ -2697,19 +2797,21 @@ mod abort_classification_tests {
 
     #[test]
     fn riscv64_sync_fault_signal_maps_c_exception_table() {
-        // SD-41（C3 信号腿）：映射对 C exception.c 异常表用户源 parity。
+        // The mapping follows C exception.c's exception table, user-origin parity.
         use crate::syscall_signal::{SIGBUS, SIGILL, SIGTRAP};
-        // Misaligned fetch/load/store → SIGBUS（C "Alignment check"）。
+        // Misaligned fetch/load/store → SIGBUS (C "Alignment check").
         assert_eq!(riscv64_sync_fault_signal(0), Some(SIGBUS));
         assert_eq!(riscv64_sync_fault_signal(4), Some(SIGBUS));
         assert_eq!(riscv64_sync_fault_signal(6), Some(SIGBUS));
-        // 真非法指令 → SIGILL（C "Invalid opcode"）；FS=Off 门控 FP 陷阱
-        // 在更早臂接管，不经本映射。
+        // Real illegal instruction → SIGILL (C "Invalid opcode"); the
+        // FS=Off gated FP trap is taken by an earlier arm and does not go
+        // through this mapping.
         assert_eq!(riscv64_sync_fault_signal(2), Some(SIGILL));
-        // Breakpoint → SIGTRAP（C "Debug exception"）。
+        // Breakpoint → SIGTRAP (C "Debug exception").
         assert_eq!(riscv64_sync_fault_signal(3), Some(SIGTRAP));
-        // 页故障三因在更早臂走 VM 前转；管理态成因/保留编码 → None（保
-        // 持诊断 panic 车道）。
+        // The three page-fault causes are forwarded to VM by earlier arms;
+        // supervisor-state causes / reserved encodings → None (diagnostic
+        // panic lane).
         for handled in [12u64, 13, 15, 8] {
             assert_eq!(riscv64_sync_fault_signal(handled), None, "scause {handled}");
         }
@@ -2720,15 +2822,15 @@ mod abort_classification_tests {
     #[test]
     fn aarch64_sync_ec_signal_maps_c_exception_table() {
         use crate::syscall_signal::{SIGBUS, SIGILL, SIGTRAP};
-        // EC 0x00（Unknown）/0x0e（Illegal execution state）→ SIGILL。
+        // EC 0x00 (Unknown) / 0x0e (Illegal execution state) → SIGILL.
         assert_eq!(aarch64_sync_ec_signal(0x00), Some(SIGILL));
         assert_eq!(aarch64_sync_ec_signal(0x0e), Some(SIGILL));
-        // EC 0x26（SP alignment）/0x27（PC alignment）→ SIGBUS。
+        // EC 0x26 (SP alignment) / 0x27 (PC alignment) → SIGBUS.
         assert_eq!(aarch64_sync_ec_signal(0x26), Some(SIGBUS));
         assert_eq!(aarch64_sync_ec_signal(0x27), Some(SIGBUS));
-        // EC 0x3c（BRK）→ SIGTRAP。
+        // EC 0x3c (BRK) → SIGTRAP.
         assert_eq!(aarch64_sync_ec_signal(0x3c), Some(SIGTRAP));
-        // 已有专臂的 EC 与 SError/保留编码 → None。
+        // ECs with dedicated arms and SError/reserved encodings → None.
         for handled in [0x15u64, 0x07, 0x20, 0x24, 0x2f, 0x01] {
             assert_eq!(aarch64_sync_ec_signal(handled), None, "ec {handled:#x}");
         }
@@ -2750,8 +2852,8 @@ mod abort_classification_tests {
 
     #[test]
     fn riscv_pf_error_code_matches_the_aarch64_lane_table() {
-        // 续-76b cross-arch consistency, pinned two ways (CodeReview
-        // 续-76b S2): (1) the bare privileged-spec cause codes are the
+        // Cross-arch consistency, pinned two ways: (1) the bare
+        // privileged-spec cause codes are the
         // architecture contract — a constant typo must turn this red
         // even though the dispatch arm consumes the same constant;
         // (2) the lane table is compared against the aarch64 converter
@@ -2921,10 +3023,12 @@ unsafe fn aarch64_pagefault_body(
                 proc.trap_style = TrapStyle::FullContext;
             }
             let priv_table = unsafe { crate::priv_table_boot_unchecked() };
-            // 临时诊断（§续-277 目标③ t_memchr 野地址案，结案滚除）：非 VM 的
-            // U 态 abort 转发前打 (proc, elr, far, lr)——pf-exit wro 只有 cr2，无 PC。
-            // 计数封顶 40（CodeReview 续-277b P1-1：同文件其它探针均有上界，
-            // 无界洪流在 BKL 持有时逐字符忙等串口，放大 boot 时长）。
+            // Temporary diagnostic (rolled out once the stray-address case
+            // closed): print (proc, elr, far, lr) before forwarding a
+            // non-VM U-mode abort — pf-exit logs only cr2, no PC.
+            // Capped at 40 (the other probes in this file all have bounds;
+            // an unbounded flood busy-waits on the serial port character by
+            // character while the BKL is held, inflating boot time).
             #[cfg(not(feature = "mock"))]
             {
                 static PFA_N: core::sync::atomic::AtomicUsize =
@@ -2945,7 +3049,7 @@ unsafe fn aarch64_pagefault_body(
     }
 }
 
-/// The diverging park-and-reschedule thunk (NK4-C §1.113), registered with
+/// The diverging park-and-reschedule thunk, registered with
 /// the aarch64 `EL0BODY` entry stub. Reached via `aarch64_resched_entry`
 /// after asm has unwound a blocked-receiver's EL0 frame back to the clean
 /// entry base, so the rest of the switch runs on a non-drifting EL1h
@@ -3012,9 +3116,10 @@ unsafe fn aarch64_kernel_call_leg(
             PARK_NONE
         }
         None => {
-            // C: system.c:76 `if (result != EDONTREPLY)` — NoReply 不交付回执、
-            // 不写 x0（NK4C 续-277 三腿同步；本臂旧 panic 假设被真机 C 测试
-            // 的 _exit 证伪：trap_dispatch.rs:3055 现场）。
+            // C: system.c:76 `if (result != EDONTREPLY)` — NoReply delivers
+            // no reply and writes no x0 (all three legs synchronized; this
+            // arm's old panic assumption was disproved by the real-machine C
+            // test's _exit).
             if matches!(result, crate::syscall::KcallResult::NoReply) {
                 return PARK_NONE;
             }
@@ -3046,7 +3151,7 @@ unsafe fn aarch64_kernel_call_leg(
 }
 
 /// The raw-IPC leg (SVC with x8 = 1..16): the EL1 mirror of
-/// [`x86_ipc_dispatch_body`] (NK4-C §1.112). Register ABI per
+/// [`x86_ipc_dispatch_body`]. Register ABI per
 /// `minix-sys::arch_trap::ipc_trap` (aarch64): x8 = call number, x0 =
 /// src/dst endpoint (SENDA: count), x1 = message pointer (SENDA: table
 /// pointer); errno returns in x0 and IPC status rides x1 (the X1 status
@@ -3076,7 +3181,7 @@ unsafe fn aarch64_ipc_dispatch_body(
 
     // The SVC arrives from EL0 where this CPU does NOT own the BKL. The
     // entry below mutates the shared PROC_TABLE before dispatch_ipc_entry
-    // acquires it fresh — acquire now (x86 B27 shape), release just before
+    // acquires it fresh — acquire now (same shape as x86), release just before
     // the dispatch hand-off (the BKL is non-reentrant).
     let ipc_bkl = crate::smp::bkl_lock_or_inherit();
     debug_assert!(
@@ -3364,7 +3469,7 @@ mod tests {
 
     #[test]
     fn spurious_vector_dispatch_completes() {
-        // S-9 (D-38①): the LAPIC spurious vector (0xFF) returns WITHOUT
+        // The LAPIC spurious vector (0xFF) returns WITHOUT
         // dispatching and without panicking — exercises the full entry path
         // (asm→thunk contract aside, the body's early-return arm) hosted,
         // including the BKL witness acquisition.
@@ -3381,18 +3486,20 @@ mod tests {
 
     #[test]
     fn irq_entry_mirrors_user_frame_but_skips_kernel_origin() {
-        // NK4-A Task C 防回归（C: mpx.S 每个 IRQ/clock stub 入口
-        // SAVE_PROCESS_CTX — sconst.h:75-89）：user-origin tick/IRQ 必须在
-        // 任何调度决定前把全量寄存器（含 RBX 活值）镜像进进程 ctx，否则
-        // 被抢占/挪动后 finish_and_restore 从陈旧 ctx 恢复（真机 c19a-c21a
-        // RS step2 &self.table=0x0）；kernel-origin 中断不得镜像（frame 是
-        // 内核寄存器）。判别性：删 user 镜像 → 第一组断言失败；删 CPL 门 →
-        // 第二组（陈旧 rip 保留）失败。
+        // Regression guard (C: every IRQ/clock stub entry in mpx.S runs
+        // SAVE_PROCESS_CTX — sconst.h:75-89): a user-origin tick/IRQ must
+        // mirror the full register file (including RBX live values) into the
+        // process ctx before any scheduling decision, or a preempted/moved
+        // process is restored from a stale ctx by finish_and_restore (on
+        // hardware: RS step2's &self.table = 0x0); a kernel-origin interrupt
+        // must not mirror (the frame holds kernel registers). Discriminating:
+        // removing the user mirror fails the first assertion group; removing
+        // the CPL gate fails the second group (stale rip retained).
         let mut table = crate::test_helpers::test_proc_table();
         let proc = table.get_mut(crate::proc::ProcNr(0)).unwrap();
         // Pre-seed the context through the write seam (save with a
         // sentinel frame): the kernel-visible read seams are
-        // ipc_status_register（NK4-C Task C A 案后 = R10 状态车道）/
+        // ipc_status_register (the R10 status lane) /
         // ipc_return_code (RAX) / callee_saved_rbx (RBX)。
         let seed = TrapFrame {
             rax: 7,

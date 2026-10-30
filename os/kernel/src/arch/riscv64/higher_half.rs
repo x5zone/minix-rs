@@ -33,7 +33,7 @@ impl HigherHalf for Riscv64HigherHalf {
         //
         // The inline asm performs the higher-half transition.
         //
-        // NK4-C 续-101/102 fix (root cause §1.120续-100): under the default
+        // Jump-target fix under the medany code model: under the default
         // `riscv64gc-unknown-none-elf` medany code model, `la` expands to a
         // PC-relative `auipc + addi`. Because this boot code still executes at
         // the identity (low) load address, `la t0, {kmain}` resolved to kmain's
@@ -60,7 +60,7 @@ impl HigherHalf for Riscv64HigherHalf {
         // IMPORTANT: Do NOT use a0/a7/a6 inside this asm block!
         // a0 holds kinfo (passed via in("a0") constraint), and must
         // be preserved until kmain is reached. SBI ecall clobbers a0.
-        // N3 (续-103 CodeReview NIT): `checked_sub` makes the
+        // Code-review note: `checked_sub` makes the
         // `kern_virt_base >= kern_phys_base` invariant explicit — a violated
         // higher-half layout panics here at boot instead of wrapping to a bogus
         // delta that would mis-target the jump (under the release build
@@ -68,7 +68,7 @@ impl HigherHalf for Riscv64HigherHalf {
         // rather than fault — `checked_sub` decouples the guard from the build
         // profile). The invariant always holds for the higher-half image
         // (virt ≫ phys), so this is behavior-preserving.
-        // (N1 — declaring the asm's register writes (`sp`, `t0`, `t1`, and the
+        // (Declaring the asm's register writes (`sp`, `t0`, `t1`, and the
         // intentionally-zeroed frame pointer `s0`) as outputs — is not
         // expressible: rustc rejects "asm outputs are not allowed with the
         // `noreturn` option". `options(noreturn)` (jump to kmain, never return

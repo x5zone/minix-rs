@@ -1,31 +1,41 @@
-//! I-22 丁案 A：`MemoryMapSource` —— 三引导链内存图的单一语义出口。
+//! `MemoryMapSource` — the single semantic exit for the memory map of all
+//! three boot chains.
 //!
-//! 语义契约（公理 3 的正面用法）：每条引导链向 OS 语义层暴露**同一**形状
-//! —— conventional（PMM 可直分）与 reserved（运行期经 Direct Map 会访问
-//! 但不得重分配）两张 `'static` 表。三链各自的固件形状（UEFI
-//! `GetMemoryMap`、DTB `/memory`、未来的 Multiboot）留在各自 impl 内，
-//! 不再泄漏进消费方（此前 opensbi 腿把「硬编码的 QEMU virt DRAM 单区」
-//! 直接递给内核，即本 trait 要收口的泄漏）。
+//! Semantic contract (the positive use of axiom 3): every boot chain exposes
+//! the **same** shape to the OS semantic layer — two `'static` tables,
+//! conventional (the PMM may allocate from it directly) and reserved (touched
+//! through the Direct Map at run time but never reallocated). Each chain's own
+//! firmware shape (UEFI `GetMemoryMap`, DTB `/memory`, a future Multiboot) stays
+//! inside its own impl and no longer leaks into consumers (previously the
+//! opensbi leg handed the kernel a "hard-coded single QEMU virt DRAM region"
+//! directly — exactly the leak this trait closes).
 //!
-//! 引导形态层**不**在本 trait 范围内合并（公理 3：`BootShim` 独立可执行体
-//! 与 `bootface` 自举面对应不同机器状态；本层只统一下沉 memmap 源）。
+//! The boot-form layer is **not** merged within this trait's scope (axiom 3: the
+//! standalone `BootShim` executable and the `bootface` self-boot face
+//! correspond to different machine states; this layer only unifies the memmap
+//! source underneath).
 //!
-//! 实现落位：`DtbMemoryMap` 住本库（DTB 解析对所有裸机引导面同构，且
-//! `fdt` 依赖已在本库清单内）；`UefiMemoryMap` 住 boot-shim（UEFI
-//! `GetMemoryMap` 需要 `uefi` crate，不得反向进本库，孤儿规则下由
-//! boot-shim 本地类型实现外来 trait）；`MultibootMemoryMap` 为 BIOS 腿
-//! 占位，形态出现时补真实现（丁案 F：不为漂亮提前改契约）。
+//! Implementation placement: `DtbMemoryMap` lives in this library (DTB parsing
+//! is isomorphic for every bare-metal boot face, and the `fdt` dependency is
+//! already on this library's list); `UefiMemoryMap` lives in boot-shim (UEFI
+//! `GetMemoryMap` needs the `uefi` crate, which must not come into this library
+//! in reverse — under the orphan rule a boot-shim local type implements the
+//! foreign trait); `MultibootMemoryMap` is a placeholder for the BIOS leg, to be
+//! given a real implementation when that form appears (do not change contracts
+//! early for elegance).
 
 use crate::kernel_info::MemoryRegion;
 use minix_types::PhysBytes;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// DTB 内存图容量。与 kernel-image bootface 旧 `MEMMAP_MAX = 8` 对称
-///（容量随迁移走，消费方语义不变）。
+/// Capacity of the DTB memory map. Symmetric with kernel-image bootface's old
+/// `MEMMAP_MAX = 8` (the capacity moved with the migration; consumer semantics
+/// are unchanged).
 const DTB_MEMMAP_MAX: usize = 8;
 
-// `static mut`：bootface MEMMAP_STORAGE 同款形态——单 hart boot 面
-// 写一次后只读；读侧从不出 &mut（addr_of! 基址 + from_raw_parts）。
+// `static mut`: the same form as bootface's MEMMAP_STORAGE — the single-hart
+// boot face writes once and the storage is read-only afterwards; the read side
+// never hands out `&mut` (addr_of! base plus from_raw_parts).
 static mut DTB_FREE: [MemoryRegion; DTB_MEMMAP_MAX] =
     [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
 static mut DTB_RESERVED: [MemoryRegion; DTB_MEMMAP_MAX] =
@@ -33,13 +43,17 @@ static mut DTB_RESERVED: [MemoryRegion; DTB_MEMMAP_MAX] =
 static DTB_FREE_N: AtomicUsize = AtomicUsize::new(0);
 static DTB_RESERVED_N: AtomicUsize = AtomicUsize::new(0);
 
-/// 把 `[start, start+len)` 中落在固件常驻区（`[0, fw_end)`，PA 从 0 计的
-/// 下界语义）的部分削进 reserved，其余归还 conventional。返回
-/// `(free_start, free_len)`；`None` = 整段都是固件区（free 无剩余）。
+/// Clip the part of `[start, start+len)` that falls inside the resident
+/// firmware area (`[0, fw_end)`, a lower-bound semantic measured in PAs from
+/// zero) into reserved, and return the rest as conventional. Returns
+/// `(free_start, free_len)`; `None` = the whole span is firmware area (no free
+/// remainder).
 ///
-/// 纯函数——bootface 腿削界算术的编译期护栏（本模块底部）钉住单字符
-/// 变异（语义迁移自原 bootface `clip_firmware`，`fw_end` 参数化后
-/// riscv 腿传 `KERN_PHYS_BASE`、opensbi boot-shim 腿传 0＝不削）。
+/// A pure function — the compile-time guards at the bottom of this module pin
+/// down its single-character mutations (the arithmetic was migrated from the
+/// original bootface `clip_firmware`; with `fw_end` parameterized, the riscv leg
+/// passes `KERN_PHYS_BASE` and the opensbi boot-shim leg passes 0 = no
+/// clipping).
 const fn clip_reserved(
     start: u64,
     len: u64,
@@ -50,20 +64,22 @@ const fn clip_reserved(
     }
     let drop = fw_end - start;
     if drop >= len {
-        return None; // 整段在固件区下（含恰等 len==drop）
+        return None; // the whole span sits below the firmware area
+                     // (including the exact len==drop case)
     }
     Some((fw_end, len - drop))
 }
 
-// 削界算术的编译期护栏（语义迁移自原 bootface `clip_firmware` 断言组，
-// `fw_end` 显式传 0x8020_0000＝riscv 腿 `KERN_PHYS_BASE` 的真值）：
-//   • 纯固件段 `[DRAM, FW_END)` → None
+// Compile-time guards for the clipping arithmetic (migrated from the original
+// bootface `clip_firmware` assertion group; `fw_end` is passed explicitly as
+// 0x8020_0000 = the true value of the riscv leg's `KERN_PHYS_BASE`):
+//   • a pure firmware span `[DRAM, FW_END)` → None
 const _FW_PURE: () = assert!(clip_reserved(0x8000_0000, 0x20_0000, 0x8020_0000).is_none());
-//   • 完全在镜像之上的段 → 原样保留
+//   • a span entirely above the image → kept as is
 const _FW_ABOVE: () = assert!(
     matches!(clip_reserved(0x8020_0000, 0x1000, 0x8020_0000), Some((0x8020_0000, 0x1000)))
 );
-//   • 跨界段 → 削掉固件区、保留其余
+//   • a straddling span → clip off the firmware area, keep the rest
 const _FW_CROSS: () = assert!(
     matches!(
         clip_reserved(0x8000_0000, 0x20_1000, 0x8020_0000),
@@ -71,22 +87,26 @@ const _FW_CROSS: () = assert!(
     )
 );
 
-/// 三引导链内存图的单一语义出口（模块头有全量论证）。
+/// The single semantic exit for the memory map of all three boot chains (the
+/// module header carries the full argument).
 pub trait MemoryMapSource {
-    /// 返回 `(conventional, reserved)` 两张 `'static` 表。
+    /// Return the two `'static` tables `(conventional, reserved)`.
     fn collect(&self) -> (&'static [MemoryRegion], &'static [MemoryRegion]);
 }
 
-/// DTB 腿：解析 `/memory` 与 `/memory@<unit>`（unit-address 变体）的
-/// `reg`，经 [`clip_reserved`] 削掉固件常驻区后产出两表。查找走
-/// `all_nodes` 全树遍历而非 `find_node`（上游 fdt 0.1.5 的 `find_node`
-/// 对部分固件重建 blob 会漏节点——SD-38 实证，消费方 bootface 两侧
-/// 统一绕行形）。
+/// DTB leg: parse `reg` of `/memory` and `/memory@<unit>` (the unit-address
+/// variant), clip off the resident firmware area through [`clip_reserved`], and
+/// produce the two tables. Lookup walks the whole tree through `all_nodes`
+/// rather than `find_node` (upstream fdt 0.1.5's `find_node` misses nodes in
+/// some firmware-rebuilt blobs — demonstrated in practice, so both consuming
+/// bootfaces take the same detour).
 ///
-/// `firmware_reserve_end`：固件常驻区上界（PA）。riscv bootface 腿传
-/// `KERN_PHYS_BASE`（OpenSBI 常驻 `[DRAM_BASE, KERN_PHYS_BASE)` 且
-/// VM 位图元数据会 memset 整段——续-91 实钉，削除是功能必需）；
-/// opensbi boot-shim 腿传 0＝不削（该腿内核侧 `cut_memmap` 自切）。
+/// `firmware_reserve_end`: upper bound (PA) of the resident firmware area. The
+/// riscv bootface leg passes `KERN_PHYS_BASE` (OpenSBI resides in
+/// `[DRAM_BASE, KERN_PHYS_BASE)` and the VM bitmap metadata memsets that whole
+/// span — confirmed on real hardware, so clipping is functionally required); the
+/// opensbi boot-shim leg passes 0 = no clipping (that leg's kernel side cuts the
+/// map itself through `cut_memmap`).
 pub struct DtbMemoryMap<'a> {
     fdt: &'a fdt::Fdt<'a>,
     firmware_reserve_end: u64,
@@ -103,14 +123,15 @@ impl<'a> DtbMemoryMap<'a> {
 
 impl MemoryMapSource for DtbMemoryMap<'_> {
     fn collect(&self) -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
-        // 单 hart boot 面写一次后只读；计数器归零重入（同面二次 collect）
-        // 也只是覆盖同一批格。
+        // Single-hart boot face: written once, then read-only; a re-entry that
+        // zeroes the counters (a second collect on the same face) merely
+        // overwrites the same cells.
         DTB_FREE_N.store(0, Ordering::Relaxed);
         DTB_RESERVED_N.store(0, Ordering::Relaxed);
         let mut free_n = 0usize;
         let mut reserved_n = 0usize;
         for node in self.fdt.all_nodes() {
-                // `/memory` 或 `/memory@80000000`（unit-address 变体）。
+                // `/memory` or `/memory@80000000` (the unit-address variant).
                 if node.name.split('@').next() != Some("memory") {
                     continue;
                 }
@@ -125,7 +146,7 @@ impl MemoryMapSource for DtbMemoryMap<'_> {
                         clip_reserved(start, len as u64, self.firmware_reserve_end)
                     {
                         if free_n < DTB_MEMMAP_MAX {
-                            // SAFETY: free_n < 数组长度；boot 单 hart。
+                            // SAFETY: free_n < the array length; single-hart boot.
                             unsafe {
                                 DTB_FREE[free_n] =
                                     MemoryRegion { base: PhysBytes(free_start), len: free_len as usize };
@@ -135,7 +156,7 @@ impl MemoryMapSource for DtbMemoryMap<'_> {
                     }
                     if start < self.firmware_reserve_end && reserved_n < DTB_MEMMAP_MAX {
                         let r_len = (self.firmware_reserve_end - start).min(len as u64) as usize;
-                        // SAFETY: reserved_n < 数组长度；boot 单 hart。
+                        // SAFETY: reserved_n < the array length; single-hart boot.
                         unsafe {
                             DTB_RESERVED[reserved_n] =
                                 MemoryRegion { base: PhysBytes(start), len: r_len };
@@ -146,8 +167,9 @@ impl MemoryMapSource for DtbMemoryMap<'_> {
             }
         DTB_FREE_N.store(free_n, Ordering::Release);
         DTB_RESERVED_N.store(reserved_n, Ordering::Release);
-        // SAFETY: 两静态数组长度 DTB_MEMMAP_MAX；n ≤ DTB_MEMMAP_MAX（上面
-        // 入队前钳位）；boot 单 hart 写完才读。
+        // SAFETY: both static arrays have length DTB_MEMMAP_MAX; n ≤
+        // DTB_MEMMAP_MAX (clamped above before enqueueing); on the single-hart
+        // boot face the read only happens after the write.
         unsafe {
             (
                 core::slice::from_raw_parts(
@@ -163,8 +185,10 @@ impl MemoryMapSource for DtbMemoryMap<'_> {
     }
 }
 
-/// BIOS/Multiboot 腿占位：本仓尚无该引导形态，空表实现保 trait 完整；
-/// 形态出现时补真实现（丁案 F：不为漂亮提前改契约）。
+/// Placeholder for the BIOS/Multiboot leg: this repository has no such boot
+/// form yet, and the empty-table implementation keeps the trait complete; give
+/// it a real implementation when the form appears (do not change contracts
+/// early for elegance).
 pub struct MultibootMemoryMap;
 
 impl MemoryMapSource for MultibootMemoryMap {
@@ -173,15 +197,21 @@ impl MemoryMapSource for MultibootMemoryMap {
     }
 }
 
-/// SD-3 D1（aarch64 UEFI 链 DTB 描述符源）的出界闸（纯函数，宿主可测）：
-/// 固件 `GetMemoryMap` 快照的每一条 conventional 段必须被 DTB `/memory`
-/// 全景（`DtbMemoryMap` 产出，`firmware_reserve_end=0`＝不削）完全覆盖；
-/// 出界＝固件快照与平台真值打架（自占区记账缺失或固件谎报），调用方
-/// fail-fast（shim 还能打印的窗口里）。返回 `Err(出界段基址, 长度)`。
+/// Out-of-bounds gate for the aarch64 UEFI chain's DTB descriptor source (a
+/// pure function, host-testable): every conventional span of the firmware
+/// `GetMemoryMap` snapshot must be fully covered by the DTB `/memory` panorama
+/// (produced by `DtbMemoryMap` with `firmware_reserve_end=0` = no clipping).
+/// Out of bounds = the firmware snapshot contradicts platform truth (missing
+/// accounting for self-occupied areas, or firmware lying); the caller then
+/// fails fast (while the shim can still print). Returns `Err(base, len)` of the
+/// offending span.
 ///
-/// v1 语义=闸+源打印，不换源——DTB `/memory` 是 DRAM 全景（含 shim 自占
-/// 的 LOADER_DATA 页），直接当 conventional 源会把自占页交给内核 PMM
-/// （C17 行登记的 self-allocation 记账风险）；换源待记账方案另裁。
+/// The v1 semantics are gate plus source printing, not source replacement — the
+/// DTB `/memory` is the DRAM panorama (including the LOADER_DATA pages the shim
+/// occupies itself), so using it directly as the conventional source would hand
+/// those self-occupied pages to the kernel PMM (the self-allocation accounting
+/// risk already on record); replacing the source awaits a separate accounting
+/// decision.
 pub fn dtb_covers_conventional(
     dtb_free: &[MemoryRegion],
     conventional: &[MemoryRegion],
@@ -206,17 +236,18 @@ mod tests {
     use super::*;
     use alloc::{format, vec::Vec};
 
-    /// 按规范形手搓最小 FDT blob：header(40) + memrsv(16) + 结构块 +
-    /// strings。根节点带 `#address-cells=2`/`#size-cells=2`，`/memory`
-    /// 子节点（unit-address 变体可选）挂 128 位 `reg`。
+    /// Hand-build a minimal FDT blob in canonical form: header(40) + memrsv(16)
+    /// + structure block + strings. The root node carries
+    /// `#address-cells=2`/`#size-cells=2`, and each `/memory` child node (with or
+    /// without the unit-address variant) hangs a 128-bit `reg`.
     fn build_fdt(memory_regs: &[(u64, u64)], unit_address: bool) -> Vec<u8> {
         let mut strings: Vec<u8> = Vec::new();
         strings.extend_from_slice(b"#address-cells\0");
         strings.extend_from_slice(b"#size-cells\0");
         let nameoff_cells = 0usize;
-        let nameoff_size = 15usize; // "#address-cells\0" 恰 15 字节
+        let nameoff_size = 15usize; // "#address-cells\0" is exactly 15 bytes
         strings.extend_from_slice(b"reg\0");
-        let nameoff_reg = 27usize; // 15 + 12（"#size-cells\0" 恰 12 字节）
+        let nameoff_reg = 27usize; // 15 + 12 ("#size-cells\0" is exactly 12 bytes)
         let mut struct_blk: Vec<u8> = Vec::new();
         let push_u32 = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
         let push_prop = |out: &mut Vec<u8>, nameoff: u32, val: &[u8]| {
@@ -226,7 +257,7 @@ mod tests {
             out.extend_from_slice(val);
             while out.len() % 4 != 0 { out.push(0); }
         };
-        push_u32(&mut struct_blk, 1); // FDT_BEGIN_NODE（根，名空）
+        push_u32(&mut struct_blk, 1); // FDT_BEGIN_NODE (root, empty name)
         struct_blk.push(0);
         while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
         push_prop(&mut struct_blk, nameoff_cells as u32, &2u32.to_be_bytes());
@@ -240,9 +271,10 @@ mod tests {
             };
             struct_blk.extend_from_slice(name.as_bytes());
             while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
-            // 根已声明 cells 2/2，reg 按其语义全编码（128 位：
-            // [hi(base)=0, base, hi(size)=0, size]）。真机教训：1/1 短编码
-            // 在 2/2 语义下被截断（size=None）→ 区域被静默跳过。
+            // The root declares cells 2/2, so reg is fully encoded for that
+            // semantic (128 bits: [hi(base)=0, base, hi(size)=0, size]). A
+            // lesson from real hardware: a short 1/1 encoding is truncated under
+            // 2/2 semantics (size=None) → the region is silently skipped.
             let mut reg: Vec<u8> = Vec::new();
             reg.extend_from_slice(&0u32.to_be_bytes());
             reg.extend_from_slice(&(*base as u32).to_be_bytes());
@@ -251,7 +283,7 @@ mod tests {
             push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
             push_u32(&mut struct_blk, 2); // FDT_END_NODE
         }
-        push_u32(&mut struct_blk, 2); // FDT_END_NODE（根）
+        push_u32(&mut struct_blk, 2); // FDT_END_NODE (root)
         push_u32(&mut struct_blk, 9); // FDT_END
 
         let struct_off = 40u32 + 16u32;
@@ -259,7 +291,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let push = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
         push(&mut out, 0xd00d_feed);          // magic
-        push(&mut out, 0);                    // totalsize（回填）
+        push(&mut out, 0);                    // totalsize (patched in later)
         push(&mut out, struct_off);
         push(&mut out, strings_off);
         push(&mut out, 40);                   // off_memrsv
@@ -300,8 +332,8 @@ mod tests {
 
     #[test]
     fn dtb_fw_clip_moves_tail_to_reserved() {
-        // /memory = [0x8000_0000, +64MiB)，fw_end = 0x8020_0000（OpenSBI 2MiB）
-        // → free = [0x8020_0000, +62MiB)，reserved = [0x8000_0000, 2MiB)
+        // /memory = [0x8000_0000, +64MiB), fw_end = 0x8020_0000 (2MiB OpenSBI)
+        // → free = [0x8020_0000, +62MiB), reserved = [0x8000_0000, 2MiB)
         let blob = build_fdt(&[(0x8000_0000, 0x400_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
         let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000).collect();
@@ -315,8 +347,9 @@ mod tests {
 
     #[test]
     fn dtb_fully_reserved_region_drops_from_free() {
-        // /memory = [0x8000_0000, +1MiB) 全在 fw_end=0x8020_0000 之下
-        // → free 空、reserved 全段（bootface 侧消费方见空表走诚实停机）。
+        // /memory = [0x8000_0000, +1MiB) lies entirely below fw_end=0x8020_0000
+        // → free is empty and reserved holds the whole span (a bootface-side
+        // consumer seeing an empty table halts honestly).
         let blob = build_fdt(&[(0x8000_0000, 0x10_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
         let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000).collect();
@@ -335,7 +368,7 @@ mod tests {
 
     #[test]
     fn dtb_gate_covers_contained_and_multi_region() {
-        // conventional 两段都落在 /memory [0x4000_0000, +512MiB) 内 → Ok
+        // both conventional spans fall inside /memory [0x4000_0000, +512MiB) → Ok
         let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x2000_0000 }];
         let conv = [
             MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x1000_0000 },
@@ -346,7 +379,8 @@ mod tests {
 
     #[test]
     fn dtb_gate_reports_out_of_bounds_region() {
-        // 出界段（ conventional 高于 /memory 上界）→ Err(基址, 长度)
+        // an out-of-bounds span (conventional above the /memory upper bound) →
+        // Err(base, len)
         let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x1000_0000 }];
         let conv = [
             MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 },
@@ -360,7 +394,8 @@ mod tests {
 
     #[test]
     fn dtb_gate_rejects_partial_overlap() {
-        // 跨界段（下半在 /memory 内、上半在外）不算覆盖
+        // a straddling span (lower half inside /memory, upper half outside) does
+        // not count as covered
         let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 }];
         let conv = [MemoryRegion { base: PhysBytes(0x4040_0000), len: 0x800_0000 }];
         assert_eq!(

@@ -70,7 +70,7 @@ use crate::vm::{
 // =========================================================================
 
 // ── Minix3 error codes ──
-// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Centralized in `crate::errno` to prevent value drift.
 // Previously ELOOP=40 here (should be 62).
 use crate::errno::*;
 
@@ -153,7 +153,7 @@ impl SafecopyAccess {
     }
 }
 
-// ── Helper: access typed message payloads (FIX-08: R-04) ──
+// ── Helper: access typed message payloads ──
 //
 // All helpers use `Message::debug_check_m_type_any()` to verify `m_type`
 // before the `unsafe` union access. In debug builds, a mismatch panics —
@@ -318,7 +318,7 @@ fn dispatch_copy(
         .get(caller_nr)
         .map(|c| c.p_seg.phys_root)
         .expect("syscall_copy: caller slot must exist");
-    // K20: value-capturing closure (the callee asks only for src's endpoint;
+    // Value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
         if endpt == caller_endpt {
@@ -474,7 +474,7 @@ fn safecopy_common_impl(
         .get(caller_nr)
         .map(|c| c.p_seg.phys_root)
         .expect("syscall_copy: caller slot must exist");
-    // K20: value-capturing closure (the callee asks only for src's endpoint;
+    // Value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
         if endpt == caller_endpt {
@@ -612,10 +612,13 @@ fn write_soft_fault_marker(
             endpoint: sfinfo.endpoint,
             offset: VirBytes(sfinfo.addr),
         };
-        // NK4-C 1.51 (B27 残留根因): marker 是内核栈局部（image 高半区，两个 DM
-        // 窗口之外），`virt_to_phys` 产伪物理地址。改用 AddressRef::Process（
-        // granter 的 CR3 已映射内核 higher-half，dst 本就走它）。语义等价 C
-        // `data_copy(KERNEL, (vir_bytes)&sfinfo.value, ...)`（内核栈地址直用）。
+        // `marker` is a kernel-stack local (in the higher-half image region,
+        // outside both DM windows), so `virt_to_phys` produces a bogus physical
+        // address. Use AddressRef::Process instead (the granter's CR3 already
+        // maps the kernel higher-half, and dst already goes through it).
+        // Semantically equivalent to C `data_copy(KERNEL,
+        // (vir_bytes)&sfinfo.value, ...)` (using the kernel stack address
+        // directly).
         let src = AddressRef::Process {
             endpoint: sfinfo.endpoint,
             offset: VirBytes(&marker as *const i32 as u64),
@@ -714,7 +717,7 @@ pub fn dispatch_vsafecopy(
         .get(caller_nr)
         .map(|c| c.p_seg.phys_root)
         .expect("syscall_copy: caller slot must exist");
-    // K20: value-capturing closure (the callee asks only for src's endpoint;
+    // Value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
         if endpt == caller_endpt {
@@ -726,9 +729,10 @@ pub fn dispatch_vsafecopy(
         }
     };
 
-    // NK4-C 1.51 (B27 残留根因): vec 是内核栈局部数组（image 高半区），
-    // `virt_to_phys` 产伪物理地址。改用 AddressRef::Process（caller CR3 映射
-    // 内核 higher-half）。
+    // `vec` is a kernel-stack local array (image higher-half), so
+    // `virt_to_phys` produces a bogus physical address. Use
+    // AddressRef::Process instead (the caller's CR3 maps the kernel
+    // higher-half).
     let copy_result = crate::cross_space::data_copy_vmcheck(
         caller_nr,
         proc_table,
@@ -907,7 +911,7 @@ fn dispatch_umap_remote_impl(
     };
 
     // C: do_umap_remote.c:47-55 — grantee validation
-    // R-18 (2026-08-13): Two distinct EINVAL checks (invalid grantee + non-grant
+    // Two distinct EINVAL checks (invalid grantee + non-grant
     // segment type) intentionally kept separate for readability. Allowed per
     // clippy::if_same_then_else.
     #[allow(clippy::if_same_then_else)]
@@ -947,7 +951,7 @@ fn dispatch_umap_remote_impl(
             .get(caller_nr)
             .map(|c| c.p_seg.phys_root)
             .expect("syscall_copy: caller slot must exist");
-        // K20: value-capturing closure (see the 8-space variant note).
+        // Value-capturing closure (see the 8-space variant note).
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt {
                 Some(caller_cr3)
@@ -1124,7 +1128,7 @@ pub fn dispatch_vumap(
         .get(caller_nr)
         .map(|c| c.p_seg.phys_root)
         .expect("syscall_copy: caller slot must exist");
-    // K20: value-capturing closure (the callee asks only for src's endpoint;
+    // Value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
         if endpt == caller_endpt {
@@ -1138,9 +1142,10 @@ pub fn dispatch_vumap(
 
     // Copy vvec from caller's user space.
     // C: data_copy(endpt, vaddr, KERNEL, (vir_bytes) vvec, size).
-    // NK4-C 1.51 (B27 残留根因): vvec 是内核栈局部数组（image 高半区），
-    // `virt_to_phys` 产伪物理地址。改用 AddressRef::Process（caller CR3 映射内核
-    // higher-half，等价 C 的 KERNEL 端点不切页表）。
+    // `vvec` is a kernel-stack local array (image higher-half), so
+    // `virt_to_phys` produces a bogus physical address. Use AddressRef::Process
+    // instead (the caller's CR3 maps the kernel higher-half, equivalent to C's
+    // KERNEL endpoint not switching page tables).
     let vvec_copy = crate::cross_space::data_copy_vmcheck(
         caller_nr,
         proc_table,
@@ -1271,9 +1276,10 @@ pub fn dispatch_vumap(
 
     // C: do_vumap.c:123-125 — data_copy_vmcheck of pvec[] from KERNEL to caller.
     let pvec_bytes = pcount * core::mem::size_of::<VumapPhys>();
-    // NK4-C 1.51 (B27 残留根因): pvec 是内核栈局部数组（image 高半区），
-    // `virt_to_phys` 产伪物理地址。改用 AddressRef::Process（caller CR3 映射内核
-    // higher-half，等价 C 的 KERNEL 源端点）。
+    // `pvec` is a kernel-stack local array (image higher-half), so
+    // `virt_to_phys` produces a bogus physical address. Use AddressRef::Process
+    // instead (the caller's CR3 maps the kernel higher-half, equivalent to C's
+    // KERNEL source endpoint).
     let pvec_copy = crate::cross_space::data_copy_vmcheck(
         caller_nr,
         proc_table,
@@ -1406,7 +1412,8 @@ pub fn dispatch_memset(
     // C: vm_memset:543 — pattern & 0xFF (truncate to single byte).
     let pattern_byte = (pattern & 0xFF) as u8;
 
-    // Zero-byte memset is a no-op (C vm_memset:553 while(left > 0) 自然处理 count=0).
+    // Zero-byte memset is a no-op (C vm_memset:553 while(left > 0) naturally
+    // handles count=0).
     if count == 0 {
         return KcallResult::Ok(OK);
     }
@@ -1435,7 +1442,7 @@ pub fn dispatch_memset(
         .get(caller_nr)
         .map(|c| c.p_seg.phys_root)
         .expect("syscall_copy: caller slot must exist");
-    // K20: value-capturing closure (the callee asks only for src's endpoint;
+    // Value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
         if endpt == caller_endpt {
@@ -1459,8 +1466,9 @@ pub fn dispatch_memset(
 
     match result {
         CrossSpaceResult::Completed(Ok(())) => {
-            // SD-10 候选 4 观测点：memset 通道内容级校验（riscv 真机形态；
-            // 帧清零「写了但没落对」的直接暴露面，与 csc-verify 并排）。
+            // Memset-channel content-level verification (riscv bare-metal
+            // shape; the direct exposure surface for "wrote but did not land
+            // correctly" frame clearing, alongside csc-verify).
             #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
             {
                 let verify_dst = if process == NONE {
@@ -1553,7 +1561,7 @@ pub fn dispatch_safememset(
         .get(caller_nr)
         .map(|c| c.p_seg.phys_root)
         .expect("syscall_copy: caller slot must exist");
-    // K20: value-capturing closure (the callee asks only for src's endpoint;
+    // Value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
         if endpt == caller_endpt {
@@ -2335,7 +2343,7 @@ mod tests {
         // (we replace the panic with a graceful EFAULT return).
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the NONE endpoint lives on the caller's slot.
+        // The caller is identified by number: the NONE endpoint lives on its slot.
         proc_table.get_mut(ProcNr(0)).unwrap().p_endpoint = Endpoint(NONE);
         let msg = build_vsafecopy_msg(0x1000, 1);
         let result = dispatch_vsafecopy(ProcNr(0), &mut proc_table, &msg, &priv_table);
@@ -2530,10 +2538,12 @@ mod tests {
 
     #[test]
     fn test_self_replacement_at_dispatcher() {
-        // C do_copy.c:64-65 — SELF → caller.p_endpoint 替换发生在 dispatcher 层。
-        // 判据：dst=SELF 时校验必须通过（走到拷贝层，CP_FLAG_TRY 下页失败 →
-        // EFAULT）；若无替换，endpoint_to_nr(SELF) 找不到 → EINVAL。
-        // 对照组：dst=非 SELF 且不在表中 → EINVAL（证明 EFAULT 判据有效）。
+        // C do_copy.c:64-65 — the SELF → caller.p_endpoint replacement happens
+        // at the dispatcher layer. Criterion: with dst=SELF the validation must
+        // pass (control reaches the copy layer, and under CP_FLAG_TRY a page
+        // failure → EFAULT); without the replacement, endpoint_to_nr(SELF)
+        // finds nothing → EINVAL. Control group: dst=non-SELF and absent from
+        // the table → EINVAL (proving the EFAULT criterion is effective).
         let mut proc_table = crate::test_helpers::test_proc_table();
         {
             let p = proc_table.get_mut(ProcNr(0)).unwrap();
@@ -2541,15 +2551,16 @@ mod tests {
             p.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
         }
 
-        // dst=SELF：替换后校验通过，未映射用户地址在 TRY 模式下 EFAULT。
+        // dst=SELF: after the replacement validation passes; an unmapped user
+        // address yields EFAULT in TRY mode.
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
-        // SAFETY: m_type 已设置；测试侧 union 写。
+        // SAFETY: m_type is set; the test side writes the union.
         unsafe {
-            msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE; // 物理源
+            msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE; // physical source
             msg.m_u.m_lsys_krn_sys_copy.src_addr = 0x2000;
             msg.m_u.m_lsys_krn_sys_copy.dst_endpt = SELF;
-            msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0x1000; // 未映射
+            msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0x1000; // unmapped
             msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 4;
             msg.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
         }
@@ -2560,7 +2571,7 @@ mod tests {
             "SELF 已替换为 caller endpoint（校验通过 → TRY 拷贝页失败 → EFAULT）"
         );
 
-        // 对照：dst=777（非 SELF 且不在表）→ EINVAL。
+        // Control: dst=777 (non-SELF and absent from the table) → EINVAL.
         let mut msg2 = Message::default();
         msg2.m_type = Syscall::Vircopy as i32;
         unsafe {

@@ -1,10 +1,9 @@
-//! aarch64 AP early stub — S-4 body landed (§续-405, mirrors the riscv64
-//! half of §续-398).
+//! aarch64 AP early stub — its assembly body mirrors the riscv64 half.
 //!
 //! # Entry state (PSCI CPU_ON, SMC64 form — see `smp.rs::boot_ap`)
 //!
 //! - x0 = context_id (the bootstrap cookie; `boot_ap` hands the entry
-//!   cookie through — §3.1)
+//!   cookie through)
 //! - PC = the physical entry address `boot_ap` passed as x2
 //! - EL1, MMU **off**, caches in their reset state
 //!
@@ -15,10 +14,10 @@
 //! the kernel's identity anchor (`current_cpu_id`) instead of an election
 //! cell.
 //!
-//! # Stub obligations (frozen §3.1)
+//! # Stub obligations (frozen)
 //!
-//! 1. `dsb ish` — consumer-side ordering barrier (§3.9 first-read).
-//! 2. Read the `ApBootstrap` record (arch-local static storage, v7 #4;
+//! 1. `dsb ish` — consumer-side ordering barrier before the first read.
+//! 2. Read the `ApBootstrap` record (arch-local static storage;
 //!    `adrp+add` PC-relative resolves to the runtime address — a
 //!    physical address while the MMU is off, same argument as the
 //!    riscv64 `la`).
@@ -31,7 +30,7 @@
 //! 5. `sp` ← the record's per-AP stack; x0 ← the record's high VA;
 //!    branch to the `ap_early_entry` Rust convergence point.
 //!
-//! # Identity-coverage verification (S-3c 核验记录，aarch64 半)
+//! # Identity-coverage verification (aarch64 half)
 //!
 //! The stub and record live inside the kernel image; the boot-shim root
 //! covers the image **both at its high VMA and identity** plus the DM
@@ -43,28 +42,31 @@
 //!
 //! # Deviation from the riscv64 half (deliberate)
 //!
-//! No UART step marker anywhere: §续-403② proved on the riscv half that
-//! device-address assumptions break with the root-table shape (the A3
-//! write faulted there), and `AP_ARRIVED` is the gate's authoritative
-//! marker anyway. The convergence goes straight to the arrival store.
+//! No UART step marker anywhere: on the riscv half, device-address
+//! assumptions broke with the root-table shape (the A3 write faulted
+//! there), and `AP_ARRIVED` is the gate's authoritative marker anyway.
+//! The convergence goes straight to the arrival store.
 
 use crate::arch::ap_early_entry::ApBootstrap;
 
-/// 早期 hart 选举格（§续-406：QEMU 直核 `-kernel` ELF＝全 CPU 进同一
-/// 入口，与 riscv fw_dynamic 同模型——kernel-image `_start` 以 LD/EXCL
-/// 选主，存 MPIDR+1；0=未选）。UEFI/boot-shim 链单 CPU 进入口，选举恒
-/// 由它赢，格语义不变。.data（loader 按 filesz 写初值 0，非 NOBITS
-/// 侥幸），no_mangle 供 kernel-image 桩 asm 字面引用与内核读取。
+/// Early hart election cell. On a QEMU direct `-kernel` ELF boot every CPU
+/// enters at the same entry, the same model as riscv fw_dynamic — the
+/// kernel-image `_start` elects a leader with LD/EXCL and stores MPIDR+1;
+/// 0 = not elected. On the UEFI/boot-shim chain a single CPU enters the
+/// entry point, so the election always goes to it and the cell's semantics
+/// are unchanged. Placed in .data (the loader writes the initial value 0
+/// per filesz — not a NOBITS accident); no_mangle so the kernel-image
+/// stub's asm can reference it literally and the kernel can read it.
 #[unsafe(link_section = ".data")]
 #[unsafe(no_mangle)]
 pub static BOOT_HART_ELECTED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
-/// Per-AP bootstrap record — arch-local static storage (v7 #4; the arm
-/// form has no <1MiB copy constraint, firmware starts the AP directly at
-/// an image physical address). BSP fills via [`record`] before
-/// `boot_ap`; the AP-side stub reads it PC-relative (`adrp+add`
-/// resolves to the runtime address while the MMU is off).
+/// Per-AP bootstrap record — arch-local static storage (the arm form has
+/// no <1MiB copy constraint, firmware starts the AP directly at an image
+/// physical address). BSP fills via [`record`] before `boot_ap`; the
+/// AP-side stub reads it PC-relative (`adrp+add` resolves to the runtime
+/// address while the MMU is off).
 #[unsafe(no_mangle)]
 pub static mut AP_BOOTSTRAP_RECORD: ApBootstrap = ApBootstrap {
     logical_id: 0,
@@ -91,28 +93,34 @@ pub fn record() -> &'static mut ApBootstrap {
 /// entry_point must be physical (the AP starts with the MMU off).
 pub fn entry_start_pa() -> usize {
     const KVIRT: usize = 0xFFFF_8000_0000_0000;
-    // KPHYS = 0x4020_0000（aarch64.ld 的 KERNEL_PHYS_BASE）。§续-406 定谳：
-    // 曾误写 0x0402_0000（下划线错位＝差一个 0，值差 16 倍）——AP 被送进
-    // 垃圾地址 undef 死，桩/记录/通道全对也白搭。常量必须与链接脚本对表。
+    // KPHYS = 0x4020_0000 (KERNEL_PHYS_BASE in aarch64.ld). This constant
+    // was once mistyped as 0x0402_0000 (one underscore slot off = one
+    // missing zero, a 16x value error): the AP was sent to a garbage
+    // address and died with an undef, and stub, record and channel all
+    // being correct did not help. The constant must be checked against
+    // the linker script.
     const KPHYS: usize = 0x4020_0000;
     let va = ap_early_entry_start as usize;
     va - (KVIRT - KPHYS)
 }
 
 unsafe extern "C" {
-    /// 桩物理入口（`boot_ap` 的 start_addr）。
+    /// Physical entry of the stub (`boot_ap`'s `start_addr`).
     fn ap_early_entry_start();
 }
 
-// ── AP 早期桩（义务清单 §3.1 的汇编体，§续-405 落地）──────────────────
+// ── AP early stub (the assembly body of the obligations list) ──────────────
 //
-// 入口态（PSCI CPU_ON SMC64）：x0=cookie、PC=start_addr、EL1、MMU off。
+// Entry state (PSCI CPU_ON SMC64): x0 = cookie, PC = start_addr, EL1, MMU off.
 //
-// 五步义务：dsb ish（消费侧栅栏）→ adrp+add 取记录运行位址并读三字段 →
-// TTBR0/TTBR1 同根 + MAIR 0xFF + TCR 常量（与 paging.rs::enable 同值，
-// 常量经 global_asm 的 const 模板参数注入——手写立即数已被 §续-403①
-// 的心算教训封死）→ dsb sy + isb、SCTLR.M=1、isb（镜像 enable() 的
-// 使能序列：只置 M 位，RES1 位保持复位值）→ sp/x0/br 进汇聚点。
+// Five obligations: dsb ish (consumer-side fence) → adrp+add the record's
+// runtime address and read its three fields → TTBR0/TTBR1 to one root +
+// MAIR 0xFF + the TCR constant (same value as paging.rs::enable; the
+// constant is injected through global_asm const template parameters —
+// hand-written immediates are ruled out by a past head-arithmetic mistake)
+// → dsb sy + isb, SCTLR.M = 1, isb (mirrors enable()'s enabling sequence:
+// only the M bit is set, RES1 bits keep their reset values) → sp/x0/br
+// into the convergence point.
 core::arch::global_asm!(
     r#"
     .section .text.ap_early_entry, "ax"
@@ -186,30 +194,39 @@ const AP_TCR: u64 = (16u64 << 0)
     | (0 << 37);
 
 /// Record PA → record high-VA delta, identical to `entry_start_pa`'s
-/// link-model constants (KVIRT − KPHYS). KPHYS 同款 typo（0x0402_0000）
-/// 曾在此第二处存活：x0 被算到无效高半地址，汇聚点首读 fault，AP_ARRIVED
-/// 永不置位（§续-406 smpd9 定谳）。常量与 aarch64.ld 对表。
+/// link-model constants (KVIRT − KPHYS). The same KPHYS typo (0x0402_0000)
+/// once survived at this second site: x0 was computed to an invalid
+/// high-half address, the convergence point's first read faulted, and
+/// AP_ARRIVED never got set. Check the constants against aarch64.ld.
 const VA_DELTA: usize = 0xFFFF_8000_0000_0000 - 0x4020_0000;
 
-/// 汇聚点到达标记（门判据「次级核可观测汇聚点到达」的观测面，与 riscv
-/// 半同名同义）。0 = 未到；1 = 已到（Release 之后的 Rust 视图）。
+/// Convergence-point arrival marker (the observation surface for the gate
+/// criterion "a secondary core observably reaches the convergence point";
+/// same name and meaning as the riscv half). 0 = not arrived; 1 = arrived
+/// (the Rust view after the Release store).
 pub static AP_ARRIVED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-/// 汇聚点——AP 从桩跳入（x0 = 记录高半 VA）。
+/// Convergence point — the AP jumps here from the stub (x0 = the record's
+/// high VA).
 ///
-/// riscv 同名函数的 aarch64 形：快照记录字段进局部（防 BSP 为下一 hart
-/// 复写），置到达标记（Release），然后**驻留**（wfi 停车环）。
+/// The aarch64 form of the same-named riscv function: snapshot the record
+/// fields into locals (so a BSP rewrite for the next hart cannot interfere),
+/// set the arrival marker (Release), then **park** (wfi parking loop).
 ///
-/// 与 riscv 半的两点刻意差异：①无 UART 标记（§续-403② 教训：设备地址
-/// 依赖根表形状不可靠；AP_ARRIVED 才是权威判据）；②a0/x0 传记录**高半
-/// VA**（桩已换算），内核根映射可达。
+/// Two deliberate differences from the riscv half: (1) no UART marker (a
+/// lesson: device addresses depend on the root-table shape and are
+/// unreliable; AP_ARRIVED is the authoritative criterion); (2) a0/x0
+/// carries the record's **high VA** (the stub already converted it), which
+/// the kernel root mapping can reach.
 pub unsafe extern "C" fn ap_early_entry(bootstrap_va: usize) -> ! {
     let record = unsafe { &*(bootstrap_va as *const ApBootstrap) };
-    // 消费快照（volatile 读：防与 BSP 的潜在复写合并）。
+    // Consume the snapshot (volatile reads: prevent merging with a
+    // potential BSP rewrite).
     let _logical = unsafe { core::ptr::read_volatile(&record.logical_id) };
     let _hw_id = unsafe { core::ptr::read_volatile(&record.hw_id) };
     let _ = (_logical, _hw_id);
-    // 到达标记（Release：后续 BSP 读到 1 时，上方的快照读已完成）。
+    // Arrival marker (Release: when a later BSP read sees 1, the snapshot
+    // reads above have completed).
     core::sync::atomic::AtomicUsize::store(&AP_ARRIVED, 1, core::sync::atomic::Ordering::Release);
     loop {
         unsafe {

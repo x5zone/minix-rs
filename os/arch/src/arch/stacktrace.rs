@@ -75,7 +75,7 @@ pub trait StacktraceArch: CpuContextArch {
 
     /// Walk the frame-pointer chain starting at `fp` (without emitting a
     /// leading current-PC). Shared by [`Self::walk_frames`] (saved
-    /// context) and the kernel self-trace `util_stacktrace` (D-47, C
+    /// context) and the kernel self-trace `util_stacktrace` (C
     /// libsys/stacktrace.c:17-37 — `bp = get_bp()` then walk `bp[1]`).
     ///
     /// `already_emitted` counts frames already emitted by the caller so

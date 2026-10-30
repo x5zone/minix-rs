@@ -136,7 +136,7 @@ impl IrqNotify for KernelNotifier {
         // repeatedly with no effect, making debugging very hard).
         //
         // A1 chain root: `IrqManager::dispatch` runs from the trap entry
-        // path, which holds the BKL (S-9 will lock it explicitly). The
+        // path, which holds the BKL. The
         // trait method signature is fixed, so the witness is rooted here —
         // debug builds panic if the lock was lost.
         let section = unsafe { crate::smp::BklSection::assume_held() };
@@ -185,7 +185,7 @@ impl IrqNotify for KernelNotifier {
         // clear with no scheduler access, so the caller must supply the
         // enqueue half — otherwise a device-IRQ-notified server parked in
         // RECEIVE is woken but left `runnable=yes queued=no` and never picked
-        // (NK4-C B6 lost-wakeup family; runs on every hardware IRQ).
+        // (a lost-wakeup hazard that runs on every hardware IRQ).
         let proc_table = crate::proc_table_with(&section);
         if let Some(nr) = proc_table.endpoint_to_nr(dst) {
             proc_table.enqueue_if_woken(nr);
@@ -225,20 +225,23 @@ impl IrqNotify for KernelNotifier {
 ///   The caller should panic.
 pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
     let mut notifier = KernelNotifier;
-    // A1 chain root + S-10 + NK4-C B27: this handler mutates shared state
+    // The chain root: this handler mutates shared state
     // (the global IrqManager, and via the hook chain the proc tables), so it
     // must run under the BKL. Use owner-aware inherit-or-acquire: inherit
     // ONLY when THIS CPU's interrupted kernel frame already owns the lock
     // (the timer-inside-kernel case), otherwise spin-acquire it even while a
     // peer CPU holds it. The old bare `bkl_try_lock` conflated "peer holds
     // it" with "inherited", letting two CPUs enter the chain at once under
-    // early SMP (the aliasing behind B27).
+    // early SMP.
     let acquired = crate::smp::bkl_lock_or_inherit();
     let section = unsafe { crate::smp::BklSection::assume_held() };
-    // C-26：中断入口的 context_stop 半。`acquired` 为真说明打断的是**用户态或
-    // idle**（BKL 空闲）——按 C `hwint_master` 的 `TEST_INT_IN_KERNEL` 语义把
-    // "被打断段"结清给被打断的进程；继承（打断内核态）则不记，那段留给
-    // switch_to_user 尾的 KERNEL 站点（两站点共用同一 TSC 基线，不重不漏）。
+    // The context_stop half of the interrupt entry. `acquired` being true
+    // means the interrupt hit **user mode or idle** (the BKL was free) —
+    // per C `hwint_master`'s `TEST_INT_IN_KERNEL` semantics, settle the
+    // interrupted segment into the interrupted process; on inheritance
+    // (interrupting kernel mode) nothing is recorded, that segment belongs
+    // to the KERNEL site at the tail of switch_to_user (both sites share the
+    // same TSC baseline, so nothing is double- or under-counted).
     if acquired {
         crate::account_interrupt_stop(&section);
     }
@@ -252,9 +255,9 @@ pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
 
 /// Take the controller's claim (GIC ICC_IAR1 / PLIC claim register) without
 /// dispatching — the identification half of the aarch64 entry path, where
-/// the INTID must be known before the chain can be picked (E-3ARCHTRAP).
+/// the INTID must be known before the chain can be picked.
 /// The claim travels to [`dispatch_claimed_hardware_irq`], which completes
-/// it — the D-61 pairing is preserved across the split.
+/// it — the claim/completion pairing is preserved across the split.
 ///
 /// BKL: try-or-inherit, the same contract as `dispatch_hardware_irq` (the
 /// claim may run while the interrupted context holds the BKL, or during an
@@ -274,7 +277,7 @@ pub fn claim_hardware_irq() -> Option<u32> {
 
 /// Dispatch an IRQ whose claim the caller already took via
 /// [`claim_hardware_irq`] — the routing half of the aarch64 entry path.
-/// The claim/completion pairing (D-61) travels intact: the identity this
+/// The claim/completion pairing travels intact: the identity this
 /// call completes is exactly the one the caller read.
 pub fn dispatch_claimed_hardware_irq(irq: IrqVector, claimed: Option<u32>) -> Result<(), IrqError> {
     let mut notifier = KernelNotifier;
@@ -345,8 +348,10 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
         self.controller.init();
     }
 
-    /// Set the controller-side priority for an IRQ line（riscv64 PLIC；
-    /// SD-41/C3 首源触发的使能半之一）。无优先级寄存器的控制器为 no-op。
+    /// Set the controller-side priority for an IRQ line (the riscv64 PLIC;
+    /// one of the enable halves that must be in place to light up the first
+    /// interrupt source). Controllers without a priority register treat this
+    /// as a no-op.
     pub fn set_irq_priority(&mut self, irq: IrqVector, priority: u32) {
         self.controller.set_irq_priority(irq, priority);
     }
@@ -513,7 +518,7 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
     /// that INTID; on PLIC the claim read moves the interrupt to
     /// in-progress. Skipping the claim left those captures at their reset
     /// value 0, so `eoi` completed INTID 0 — the interrupt never retired
-    /// and refired (D-61). On x86 APIC the claim is a documented no-op
+    /// and refired. On x86 APIC the claim is a documented no-op
     /// (there is no claim register; the EOI is the whole handshake).
     ///
     /// The `notifier` is injected into each handler's [`IrqHookContext`]
@@ -542,10 +547,10 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
 
     /// Dispatch against a claim the caller already took.
     ///
-    /// The claim/completion pairing (D-61) requires that `complete` writes
+    /// The claim/completion pairing requires that `complete` writes
     /// exactly the identity `claim` returned. On GIC the ICC_IAR1_EL1 read
     /// IS the identification register — an entry path that must route on
-    /// the INTID (E-3ARCHTRAP: the aarch64 trap body reads the claim first
+    /// the INTID (the aarch64 trap body reads the claim first
     /// to decide which chain this interrupt belongs to) would otherwise
     /// leave dispatch's own claim reading spurious 1023, never completing
     /// the real INTID, and the interrupt refiring forever. The claim
@@ -939,7 +944,7 @@ mod tests {
 
     impl PerCpuInterruptUnit for MockController {
         fn claim(&mut self) -> Option<u32> {
-            // The dispatched vector is not an argument anymore (I-13: the
+            // The dispatched vector is not an argument anymore (the
             // claim is per-CPU state, x86 has none) — log with a zero
             // vector; the ordering assertion below keys on the call NAME
             // and the mask/unmask vectors.
@@ -998,14 +1003,14 @@ mod tests {
 
     #[test]
     fn dispatch_claims_before_mask_and_completes_last() {
-        // D-61: dispatch must drive the acknowledge/complete protocol in
+        // Dispatch must drive the acknowledge/complete protocol in
         // the order the hardware requires — the claim (`ack`, the GIC IAR
         // read / PLIC claim read whose captured INTID `eoi` writes back)
         // happens before the line is masked and before any handler runs,
         // and the completion (`eoi`) happens exactly once, after the
         // handlers and the re-unmask (C parity: the asm entry claims, then
         // `irq_handle` masks/handles/unmasks, then the asm tail sends
-        // EOI — interrupt.c:116-140). The pre-D-61 dispatch never called
+        // EOI — interrupt.c:116-140). A dispatch that never called
         // `ack`, so on aarch64/riscv64 the completion would have written
         // the captured-reset value 0 and the interrupt would never retire.
         let ctrl = MockController::new_mock();
@@ -1025,7 +1030,7 @@ mod tests {
         mgr.dispatch(IrqVector::new(3), &mut notifier).unwrap();
 
         let ctrl = &mgr.controller;
-        // Exactly one claim and one completion (I-13: claim/complete are
+        // Exactly one claim and one completion (claim/complete are
         // per-CPU ops without a vector argument — the dispatched vector is
         // asserted via the mask/unmask log entries below).
         assert_eq!(ctrl.ack_log.len(), 1, "exactly one claim");
@@ -1154,8 +1159,8 @@ mod tests {
 
     /// Verify that `generic_notify_handler` actually delivers the
     /// `mini_notify(HARDWARE, proc_endpoint)` side-effect via the injected
-    /// notifier. This is the regression test for the P1 TODO that previously
-    /// lived at this site.
+    /// notifier. This is the regression test for a previously missing
+    /// delivery at this site.
     #[test]
     fn generic_notify_handler_sends_notification() {
         let ctrl = MockController::new_mock();

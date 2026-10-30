@@ -47,7 +47,7 @@ use minix_types::Endpoint;
 use crate::kpriv::{PrivId, PrivTable};
 use crate::proc::{CpuId, KProcess, MiscFlagsBits};
 
-// ── Global clock mirrors — declarations live in `globals.rs` (D-62③) ──
+// ── Global clock mirrors — declarations live in `globals.rs` ──
 // `CLOCK_UPTIME` / `CLOCK_REALTIME` / `CLOCK_BOOTTIME` / `TSC_PER_MS` are
 // imported below. Contract: the write side is only `ClockState::tick_with`
 // / `set_boottime` / `set_realtime` (BKL-held, Release stores into both the
@@ -56,18 +56,18 @@ use crate::proc::{CpuId, KProcess, MiscFlagsBits};
 // C ground truth is single-source (`kclockinfo`, clock.c:189); the Rust
 // mirror exists so lock-free readers need no `&ClockState` threading.
 // Full convergence (threading `&BklSection` through `IpcEngine`) is
-// registered as a follow-up refactor in todo.md D-62.
+// registered as a follow-up refactor in todo.md.
 use crate::globals::TSC_PER_MS;
 
-/// Calibrated ICR count for one local tick (edge1 K6). Written once by
+/// Calibrated ICR count for one local tick. Written once by
 /// `init_ap_local_timer` after the arch calibration, read by every tick's
 /// re-arm.
 static LOCAL_TICK_ICR: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
-/// Per-CPU local tick counters (edge1 K6 carrier observability): each AP's
+/// Per-CPU local tick counters (carrier observability): each AP's
 /// local tick increments its own slot, so a test can verify that secondary
-/// harts actually receive their local timer ticks (the K6 gap: without the
+/// harts actually receive their local timer ticks (without the
 /// local timer, AP-side timekeeping is silent).
 pub static LOCAL_TICK_COUNT: [core::sync::atomic::AtomicU64; 16] = [
     core::sync::atomic::AtomicU64::new(0),
@@ -88,12 +88,12 @@ pub static LOCAL_TICK_COUNT: [core::sync::atomic::AtomicU64; 16] = [
     core::sync::atomic::AtomicU64::new(0),
 ];
 
-/// The per-CPU local tick body (edge1 K6; C `timer_int_handler` AP arm).
+/// The per-CPU local tick body (C `timer_int_handler` AP arm).
 ///
 /// Re-arms the one-shot (a one-shot LAPIC timer stops dead unless the
 /// handler re-programs ICR — apic.c:578) and bumps this CPU's tick
 /// counter. Quantum-expiry enforcement plugs in here once the scheduling
-/// main loop (I-6) gives it a consumer; until then the tick is
+/// main loop gives it a consumer; until then the tick is
 /// observability-only by design (a tick that mutates scheduling state
 /// with no scheduler loop reading it would be a second decision point
 /// racing the placeholder).
@@ -120,7 +120,7 @@ const DEFAULT_TSC_PER_MS: u64 = 1_000_000;
 ///
 /// C: `get_monotonic()` — clock.c:203 (`return kclockinfo.uptime`).
 /// Safe to call from any context (BKL or not) — only reads an atomic.
-/// I-15 (S-6.2 收敛轮): single source — read `ClockState.uptime` under the
+/// Single source — read `ClockState.uptime` under the
 /// BKL witness. The lock-free atomic mirrors (CLOCK_UPTIME/REALTIME/
 /// BOOTTIME) are deleted; C is single-source (`kclockinfo`, clock.c:189).
 pub fn get_monotonic(_section: &crate::smp::BklSection<'_>) -> u64 {
@@ -164,7 +164,7 @@ pub fn ms_to_cpu_time(ms: u32) -> u64 {
 pub fn cpu_time_to_ms(cycles: u64) -> u32 {
     let tsc_per_ms = TSC_PER_MS.load(Ordering::Acquire);
     let factor = if tsc_per_ms == 0 { DEFAULT_TSC_PER_MS } else { tsc_per_ms };
-    // R-16 (2026-08-12): SAFETY: `cycles / factor` yields milliseconds. Used for
+    // SAFETY: `cycles / factor` yields milliseconds. Used for
     // per-quantum `time_in_queue` accounting (notify_scheduler), which is bounded
     // well below u32::MAX (~49 days) in practice; no hard proof against overflow
     // for pathological multi-day accumulated cycle counts.
@@ -177,7 +177,7 @@ pub fn cpu_time_to_ms(cycles: u64) -> u32 {
 /// always the BSP (0). SMP builds (16-smp.md) will read it from a CPU-local
 /// register (x86-64: GS base; riscv64: scratch CSR). AArch64 must **not**
 /// use TPIDR_EL1 for this — it is claimed by the per-CPU kernel-stack base
-/// as of NK4-C §1.113 (`arch/arm64/protection.rs::set_entry_sp`); a future
+/// as set by `arch/arm64/protection.rs::set_entry_sp`; a future
 /// aarch64 SMP id needs another vehicle.
 ///
 /// Returns 0 until `SMP_STATE` is initialized (e.g. in test contexts).
@@ -201,7 +201,7 @@ pub fn current_cpuid() -> CpuId {
 /// Returns 0 on the first call (no baseline) or if `SMP_STATE` is not yet
 /// initialized (tests). The result is clamped to 100.
 ///
-/// # Design (D-notify-scheduler / 11-scheduling-primitives.md §4.5)
+/// # Design (11-scheduling-primitives.md §4.5)
 ///
 /// Made possible by storing `SmpState` in the global `SMP_STATE` so that
 /// per-CPU `cpu_last_tsc` / `cpu_last_idle` are reachable from the clock
@@ -339,9 +339,9 @@ pub fn stop_local_timer() {
 /// CLINT on RISC-V) to generate interrupts at `hz` Hz for statistical
 /// profiling. Returns `Err(ProfileClockError::Unsupported)` if the
 /// hardware does not support profiling.
-// R-18 (2026-08-13): single failure mode (hardware lacks profiling
-// support), no diagnostic info to carry. Propagates the arch trait's
-// `ProfileClockError` (C-D-5 cleanup: named error type replaces `()`).
+// Single failure mode (hardware lacks profiling support), no diagnostic
+// info to carry. Propagates the arch trait's `ProfileClockError` (a named
+// error type replaces the former `()`).
 pub fn init_profile_clock(hz: u32) -> Result<(), minix_arch::clock::ProfileClockError> {
     #[cfg(not(test))]
     {
@@ -434,12 +434,14 @@ fn unregister_profile_hook() {
         return;
     }
     let section = unsafe { crate::smp::BklSection::assume_held() };
-    //[SD19-gate] 拆 profile hook：remove_hook 失败对本就在拆除的钩子无可行动，非静默吞错
+    // Profile-hook teardown: a remove_hook failure on a hook already being
+    // torn down leaves nothing actionable; this is not silently swallowing
+    // an error.
     #[allow(clippy::let_underscore_must_use)]
     let _ = crate::irq_manager_with(&section).remove_hook(IrqId(raw as u32), PROFILE_CLOCK_IRQ);
 }
 
-/// Arm the current CPU's LAPIC local timer (edge1 K6; C
+/// Arm the current CPU's LAPIC local timer (C
 /// `app_cpu_init_timer` — clock.c:308, called at AP bring-up before the
 /// scheduling loop). The one-shot arms for one `system_hz` tick and is
 /// re-armed by the local tick itself. Caller holds the BKL (AP tail
@@ -584,7 +586,7 @@ pub(crate) fn decrement_quantum_in(
     exhausted
 }
 
-/// D-9: [`decrement_quantum_in`] plus the context_stop TSC delta
+/// [`decrement_quantum_in`] plus the context_stop TSC delta
 /// (C arch_clock.c:276 — `tsc_delta = tsc - *__tsc_ctr_switch`). The
 /// kbill_kcall consumption (C :279-281) attributes this same whole
 /// delta to the in-flight kernel call's process. Delta is `0` when no
@@ -592,7 +594,7 @@ pub(crate) fn decrement_quantum_in(
 /// advance — consumers skip a zero delta. The delta is returned even on
 /// the kernel/idle-task exempt path (endpoint < 0): C's kbill block is
 /// the common tail of context_stop, outside the quantum branches.
-// ── Per-state CPU tick accounting (S-6.4 tick-1) ──
+// ── Per-state CPU tick accounting ──
 //
 // C: sys/sys/sched.h — CP_USER=0, CP_NICE=1, CP_SYS=2, CP_INTR=3, CP_IDLE=4;
 // CPUSTATES=5. context_stop (arch_clock.c:314-340) classifies the just-
@@ -684,9 +686,11 @@ pub(crate) fn decrement_quantum_in_with_delta(
 
 /// Default clock frequency in Hz.
 /// C: `DEFAULT_HZ` — include/arch/i386/include/archconst.h:4 (60) / earm (1000)
-/// 架构演进标注：[ARCH: K-3]（doc 05-clock-interrupt-init.md §3.8：60/1000 → 100 Hz）
-/// Rust 选择 100 作为默认（doc 15 §3.7 D7 设计决策），与 C 的 60 不同；
-/// 需与 C 完全一致时可在 boot 阶段用 `with_hz(60)` 指定。
+/// Architecture-evolution annotation: [ARCH: K-3] (doc
+/// 05-clock-interrupt-init.md §3.8: 60/1000 → 100 Hz).
+/// Rust picks 100 as the default (design decision D7 in doc 15 §3.7), which
+/// differs from C's 60; boot code can request `with_hz(60)` when exact C
+/// parity is required.
 pub const DEFAULT_HZ: u32 = 100;
 
 /// Timer "never expires" sentinel.
@@ -1393,8 +1397,9 @@ impl ClockState {
             self.load_info.proc_last_slot = slot;
         }
 
-        // u16 与 C 的 `u16_t` 对齐；C 无符号加法回绕，这里用 wrapping_add 保持一致
-        // （实际值 = 6s 窗口内可运行进程数，远小于 65535）。
+        // u16 matches C's `u16_t`; C's unsigned addition wraps, so
+        // wrapping_add keeps the same behavior (the actual value is the
+        // number of runnable processes in a 6 s window, far below 65535).
         let slot_idx = slot as usize;
         self.load_info.proc_load_history[slot_idx] =
             self.load_info.proc_load_history[slot_idx].wrapping_add(ready_count as u16);
@@ -1408,7 +1413,7 @@ impl Default for ClockState {
     }
 }
 
-// ── Timer IRQ handler (D-46 software half + D-15 alarm notify) ──────────
+// ── Timer IRQ handler (software half + alarm notify) ────────────────────
 
 /// Timer IRQ handler: advance the software clock for the CURRENT process
 /// and deliver expired alarm notifications from the CLOCK source.
@@ -1438,13 +1443,13 @@ impl Default for ClockState {
 /// `Completed` under `IrqPolicy::REENABLE` (the timer re-arms in
 /// hardware), matching C `generic_handler` (do_irqctl.c:171).
 pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
-    // A1 chain root (D-63①): this handler runs on the IRQ dispatch path,
+    // A1 chain root: this handler runs on the IRQ dispatch path,
     // which holds the BKL — the same root `dispatch_hardware_irq`
     // (irq_manager.rs) witnesses from. The `IrqHandler` fn-pointer
     // signature cannot carry a witness parameter (same constraint as
     // `KernelNotifier::notify_hardware`), so the root re-takes it here;
-    // debug builds assert the lock. This is NOT a boot path: before
-    // D-63① these accesses went through `*_boot_unchecked` accessors
+    // debug builds assert the lock. This is NOT a boot path: previously
+    // these accesses went through `*_boot_unchecked` accessors
     // whose contract is "single-threaded init before BKL exists", which a
     // runtime timer IRQ violates.
     let section = unsafe { crate::smp::BklSection::assume_held() };
@@ -1465,7 +1470,7 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
         .filter(|n| Some(*n) != cur_nr)
         .and_then(crate::proc_table::nr_to_idx);
 
-    // D-15: expired alarm notifications are collected in a stack array
+    // Expired alarm notifications are collected in a stack array
     // during the tick (tick_with holds `&mut priv_table`, so the CLOCK
     // notify must run after it returns), then delivered from the CLOCK
     // source — C do_setalarm.c:69-76 (`cause_alarm` →
@@ -1512,8 +1517,9 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
     // alarm timers (BSP). No current process (pre-idle boot edge) →
     // account against a scratch kernel-exempt process (endpoint < 0 is
     // quantum-exempt, arch_clock.c:314) so uptime/alarm expiry still run.
-    // 无 current（pre-idle boot edge）→ 记账对象退化为 IDLE 槽拷贝
-    // （endpoint < 0 = quantum 豁免，arch_clock.c:314）。
+    // No current process (pre-idle boot edge) → accounting falls back to a
+    // copy of the IDLE slot (endpoint < 0 = quantum exemption,
+    // arch_clock.c:314).
     let mut scratch = KProcess::new(
         crate::proc::proc_nr::IDLE,
         Endpoint::from_generation_slot(0, crate::proc::proc_nr::IDLE.0),
@@ -1534,7 +1540,7 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
     // `mini_notify_core` here is the primitive slice clear with no
     // scheduler access, so the caller must supply the enqueue half—otherwise
     // the expired-alarm process ends up `runnable=yes queued=no` and is
-    // never picked (NK4-C B6: clock notify bare-cleared p_nr=4 without
+    // never picked (the clock notify once bare-cleared p_nr=4 without
     // enqueue, the system's only runnable process → picknone → whole-boot
     // deadlock).
     for ep in batch.iter().flatten().take(n_batch) {
@@ -1560,7 +1566,7 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
 
 
 
-// ── Tests (D-46 software half + D-15) ──
+// ── Tests (software half + alarm notify) ──
 
 #[cfg(test)]
 mod clock_irq_handler_tests {
@@ -1570,14 +1576,15 @@ mod clock_irq_handler_tests {
     use crate::proc_table::ProcessTable;
     use minix_plat::{IrqAction, IrqId, IrqNotifyId, IrqVector};
 
-    /// 本地 notifier：直调 handler 的测试不经过 IrqManager::dispatch，
-    /// notifier 为空实现（通知走 D-15 的 CLOCK 闭包路径）。
+    /// Local notifier: tests that call the handler directly bypass
+    /// IrqManager::dispatch, so the notifier is a no-op (notification goes
+    /// through the CLOCK closure path).
     struct RecordingNotifier;
     impl crate::irq_manager::IrqNotify for RecordingNotifier {
         fn notify_hardware(&mut self, _dst: Endpoint, _id: IrqNotifyId) {}
     }
 
-    /// 全局装配：IRQ_MANAGER/CLOCK_STATE/SMP_STATE/PROC_TABLE/PRIV_TABLE。
+    /// Global assembly: IRQ_MANAGER/CLOCK_STATE/SMP_STATE/PROC_TABLE/PRIV_TABLE.
     fn setup_globals() -> (&'static mut ProcessTable, &'static mut PrivTable) {
         // SAFETY: single-threaded test (workspace forces --test-threads=1);
         // each test re-initializes the globals it reads.
@@ -1585,8 +1592,9 @@ mod clock_irq_handler_tests {
             crate::init_irq_manager_for_test();
             *crate::SMP_STATE.get() = Some(crate::smp::SmpState::new_single_cpu());
             *crate::CLOCK_STATE.get() = Some(ClockState::new());
-            // 共享 PROC_TABLE/PRIV_TABLE 不整体替换（整体替换会 Drop 既有
-            // 占用槽触发 A3 防御 panic）——只显式重置本测试用到的槽位。
+            // Do not replace the shared PROC_TABLE/PRIV_TABLE wholesale
+            // (dropping occupied slots would trip the A3 defensive panic);
+            // explicitly reset only the slots this test uses.
             let table = crate::proc_table();
             let priv_table = crate::priv_table();
             for slot in table.procs_slice_mut() {
@@ -1594,7 +1602,7 @@ mod clock_irq_handler_tests {
                 slot.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
             }
             // A real alarm expiry now wakes its owner through the notify
-            // enqueue half (NK4-C B6), so `clock_irq_handler` can leave a
+            // enqueue half, so `clock_irq_handler` can leave a
             // process on the shared run queue. Reset the queue here too —
             // RTS-flag reset alone does not, and the residue would pollute
             // this table's next reader.
@@ -1605,12 +1613,13 @@ mod clock_irq_handler_tests {
 
 
 
-    /// D-46 软件半环 + D-15 端到端：SETALARM(1 tick) → clock_irq_handler
-    /// 一次 tick → 到期通知从 CLOCK 源直投（订阅者 RECEIVE+ANY →
-    /// DELIVERMSG），ctx 按 REENABLE 返回 Completed，uptime 推进。
+    /// Software half-loop plus end to end: SETALARM(1 tick) → one tick
+    /// through clock_irq_handler → the expiry notification is delivered
+    /// straight from the CLOCK source (subscriber RECEIVE+ANY → DELIVERMSG);
+    /// the ctx returns Completed per REENABLE and uptime advances.
     #[test]
     fn test_clock_irq_handler_delivers_alarm_notification() {
-        // D-63①: the handler now witnesses the BKL via `assume_held`
+        // The handler now witnesses the BKL via `assume_held`
         // (debug builds assert the lock) — take it like the IRQ entry
         // would (lib.rs `bkl_acquire_for_test` pattern).
         crate::smp::bkl_lock_reset_for_test();
@@ -1658,18 +1667,21 @@ mod clock_irq_handler_tests {
 
         let r = table.get(ProcNr(4)).unwrap();
         assert!(r.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
-        // 通知消息按 m_type 识别（NOTIFY_MESSAGE，com.h:90）——接收方不读
-        // m_source（build_notify_message 置零，C memset 语义一致）。
+        // The notification message is identified by m_type (NOTIFY_MESSAGE,
+        // com.h:90) — the receiver does not read m_source
+        // (build_notify_message zeroes it, matching C's memset semantics).
         assert_eq!(r.p_delivermsg.m_type, crate::ipc::NOTIFY_MESSAGE);
         assert!(unsafe { crate::clock_state() }.uptime() > 0);
     }
 
-    /// D-46：register_hook 落地验证——hook 挂着 clock_irq_handler
-    /// （CLOCK 拥有者 + notify_id 0），find_hook_by_owner_notify 可定位。
+    /// register_hook lands as expected: the hook carries clock_irq_handler
+    /// (CLOCK owner + notify_id 0) and find_hook_by_owner_notify can locate
+    /// it.
     ///
-    /// #[ignore]：register_hook 尾部 `controller.unmask(irq)` 会写 PIC/
-    /// LAPIC 端口——hosted 无 iopl 即 SIGSEGV（D-45/D-47 同类 gate）。
-    /// 真机/QEMU 上 `cargo test -- --ignored` 验证。
+    /// #[ignore]: register_hook ends with `controller.unmask(irq)`, which
+    /// writes PIC/LAPIC ports — a hosted run without iopl takes SIGSEGV
+    /// (the same gate as other port-writing tests).
+    /// Verify on real hardware/QEMU with `cargo test -- --ignored`.
     #[test]
     #[ignore = "register_hook unmasks via the real controller (port I/O) — needs iopl/QEMU"]
     fn test_clock_hook_registered_in_manager() {
@@ -2065,11 +2077,11 @@ mod tests {
         assert_eq!(timers_len(&privs, &clock), 0);
     }
 
-    // ── tick_with: zero-allocation callback API (R-06) ──
+    // ── tick_with: zero-allocation callback API ──
 
     #[test]
     fn test_tick_with_invokes_callback_on_expiry() {
-        // R-06: `tick_with` should invoke the callback once per expired timer,
+        // `tick_with` should invoke the callback once per expired timer,
         // without allocating a collection.
         let mut clock = make_bsp_clock();
         let mut privs = make_priv_table();
@@ -2095,7 +2107,7 @@ mod tests {
 
     #[test]
     fn test_tick_with_no_callback_on_empty_expiry() {
-        // R-06: When no timers expire, `tick_with` should not invoke the
+        // When no timers expire, `tick_with` should not invoke the
         // callback at all. This is the zero-allocation hot path.
         let mut clock = make_bsp_clock();
         let mut privs = make_priv_table();
@@ -2364,7 +2376,8 @@ mod tests {
     fn test_set_boottime() {
         let mut clock = make_bsp_clock();
         clock.set_boottime(1700000000);
-        // I-15 单源：镜像原子已删除，读本地 ClockState 字段。
+        // Single source: the mirror atomics are gone; read the local
+        // ClockState field.
         assert_eq!(clock.boottime(), 1700000000);
     }
 
@@ -2372,7 +2385,8 @@ mod tests {
     fn test_set_realtime() {
         let mut clock = make_bsp_clock();
         clock.set_realtime(12345);
-        // I-15 单源：直接断言本地字段（镜像原子已删除，无跨测试竞态）。
+        // Single source: assert the local field directly (mirror atomics are
+        // gone, so there is no cross-test race).
         assert_eq!(clock.realtime(), 12345);
     }
 

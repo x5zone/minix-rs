@@ -1,5 +1,5 @@
-//! `sysboot-tx` — the send half of the S42 ④ multi-process boot carrier
-//! (C-27). Loaded into the RS slot by the carrier kernel (endpoint 2,
+//! `sysboot-tx` — the send half of the S42 ④ multi-process boot carrier.
+//! Loaded into the RS slot by the carrier kernel (endpoint 2,
 //! generation 0). It fires the first user↔user `sendrec` at the receive
 //! half parked in the VM boot slot (endpoint 8).
 //!
@@ -29,9 +29,11 @@ fn emit(message: &[u8]) {
     );
 }
 
-/// C12 FP 交替探针原语：xmm0 ← bits（裸字节 `66 48 0F 6E C1` = movq
-/// xmm0, rcx——x86_64-unknown-none 未开 SSE target feature，xmm_reg 寄
-/// 存器类不可用；CPU 侧 SSE 执行由内核懒 FPU 臂兜住，这正是被测对象）。
+/// C12 FP alternation probe primitive: xmm0 ← bits (raw bytes
+/// `66 48 0F 6E C1` = movq xmm0, rcx — `x86_64-unknown-none` does not enable
+/// the SSE target feature, so the `xmm_reg` register class is unusable; SSE
+/// execution on the CPU side is covered by the kernel's lazy-FPU arm, which
+/// is exactly what is under test).
 #[inline(never)]
 fn fp_set(bits: u64) {
     unsafe {
@@ -44,7 +46,7 @@ fn fp_set(bits: u64) {
         );
     }
 }
-/// bits ← xmm0（裸字节 `66 48 0F 7E C1` = movq rcx, xmm0）。
+/// bits ← xmm0 (raw bytes `66 48 0F 7E C1` = movq rcx, xmm0).
 #[inline(never)]
 fn fp_get() -> u64 {
     unsafe {
@@ -77,12 +79,14 @@ extern "Rust" fn main() -> i32 {
 
     let mut msg = Message::default();
     msg.m_type = 0x42;
-    // C12 FP 交替探针（tx 腿）：异值 7.5（rx 持 42.0）——sendrec 阻塞半
-    // 触发切换后，归属恢复必须把 7.5 原样带回（与 rx 的 42.0 互异即证
-    // 明保存/恢复按进程隔离）。
+    // C12 FP alternation probe (tx leg): a distinct value 7.5 (rx holds
+    // 42.0) — after the blocking half of sendrec triggers a context switch,
+    // ownership restoration must bring 7.5 back unchanged (being distinct
+    // from rx's 42.0 proves save/restore is isolated per process).
     fp_set(7.5f64.to_bits());
     {
-        // C12 诊断切面：同 stint 立即回读（切开「写即失」vs「excursion 丢」）。
+        // C12 diagnostic slice: read back immediately within the same stint
+        // (separates "write lost" from "excursion lost").
         let chk = fp_get();
         let mut b: [u8; 27] = *b"SYSBOOT TX SETCHK ????????\n";
         let bits = chk;

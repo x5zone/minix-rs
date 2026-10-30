@@ -25,7 +25,7 @@
 //! - **D3**: `AddressRef` enum (Process/Physical) replaces C's `vir_addr`
 //!   struct + sentinel `proc_nr_e` values
 //! - **D4**: the caller is named explicitly (`caller_nr` + `&mut ProcessTable`,
-//!   K20 caller-by-nr, uniform parameter order) — VMSUSPEND requires setting
+//!   passed by number, uniform parameter order) — VMSUSPEND requires setting
 //!   RTS_VMREQUEST on the caller, so the borrow must be mutable
 //! - **D7**: `dispatch_datacopy` is **deleted** — Minix3 has no
 //!   `SYS_DATACOPY` call number; `sys_datacopy` is a user-space macro that
@@ -108,7 +108,7 @@ use minix_arch::CurrentDirectMap;
 /// C takes `struct proc * caller` (raw pointer) and resolves `from_proc` /
 /// `to_proc` to `struct proc *` internally via `isokendpt()` + `proc_addr()`.
 /// Rust takes `AddressRef` values (endpoint + offset, or physical address)
-/// plus a `proc_cr3` closure. Since K20 (caller-by-nr) the caller travels
+/// plus a `proc_cr3` closure. Since the caller is identified by number, it
 /// as `caller_nr: ProcNr` (with `proc_table` in the uniform second slot)
 /// and the suspend side effect re-borrows its slot at the point of use —
 /// the closure captures only copied field values, never a table borrow.
@@ -430,13 +430,14 @@ mod tests {
         let _: Option<KcallResult> = None;
     }
 
-    // ── T-7: data_copy_vmcheck 行为矩阵（doc 24 §5.2 计划）──
+    // ── data_copy_vmcheck behavior matrix ──
 
-    /// L1 奇偶：C virtual_copy_vmcheck（memory.c:507-535）三态——OK /
-    /// EFAULT / VMSUSPEND。Rust 对应 Completed(Ok) / Completed(Err) /
-    /// Suspended。宿主可安全触发：零字节物理→物理 = Ok；closure 返 None =
-    /// UnknownEndpoint(Err)；未映射用户地址 = Suspended。
-    /// caller-by-nr 夹具（K20）：调用者占表槽 `ProcNr(0)`。
+    /// C parity: `virtual_copy_vmcheck` (memory.c:507-535) has three
+    /// states — OK / EFAULT / VMSUSPEND. Rust maps them to
+    /// Completed(Ok) / Completed(Err) / Suspended. The host can trigger
+    /// each safely: zero bytes physical→physical = Ok; closure returning
+    /// None = UnknownEndpoint(Err); unmapped user address = Suspended.
+    /// The caller-by-nr fixture places the caller in table slot `ProcNr(0)`.
     fn caller_table() -> crate::test_helpers::TestProcTable {
         crate::test_helpers::test_proc_table()
     }
@@ -461,7 +462,7 @@ mod tests {
             CrossSpaceResult::Completed(Err(crate::vm::VmCopyError::Domain))
         );
 
-        // EFAULT 态：endpoint 无 cr3 → Completed(Err(UnknownEndpoint))。
+        // EFAULT state: endpoint without a cr3 → Completed(Err(UnknownEndpoint)).
         let fault = data_copy_vmcheck(
             ProcNr(0),
             &mut table,
@@ -472,7 +473,7 @@ mod tests {
         );
         assert!(matches!(fault, CrossSpaceResult::Completed(Err(_))));
 
-        // VMSUSPEND 态：未映射用户目标 → Suspended(Dst)。
+        // VMSUSPEND state: unmapped user destination → Suspended(Dst).
         let suspend = data_copy_vmcheck(
             ProcNr(0),
             &mut table,
@@ -484,8 +485,8 @@ mod tests {
         assert!(matches!(suspend, CrossSpaceResult::Suspended(_)));
     }
 
-    /// VMSUSPEND 副作用：caller.p_rts_flags 置 RTS_VMREQUEST 且
-    /// p_vm_suspend 就绪（C vm_suspend() proc.c:234-257 内联）。
+    /// VMSUSPEND side effects: caller.p_rts_flags gets RTS_VMREQUEST and
+    /// p_vm_suspend is populated (C vm_suspend() proc.c:234-257, inlined).
     #[test]
     fn test_data_copy_vmcheck_sets_rts_vmrequest() {
         use crate::proc::RtsFlagsBits;
@@ -505,9 +506,9 @@ mod tests {
         assert!(caller.p_vm_suspend.is_some(), "挂起必须保存 VmSuspendContext");
     }
 
-    /// VMSUSPEND 后 copy_context 保全：VmCopyContext(src, dst, bytes,
-    /// fault_type) + VmCheckParams{start, length, write_flag} 与故障面一致
-    /// （kernel_call_resume 重试依据）。
+    /// copy_context preserved across VMSUSPEND: VmCopyContext(src, dst,
+    /// bytes, fault_type) + VmCheckParams{start, length, write_flag} match
+    /// the faulting side (the basis for kernel_call_resume's retry).
     #[test]
     fn test_data_copy_vmcheck_preserves_copy_context() {
         use crate::proc::RtsFlagsBits;
@@ -531,7 +532,7 @@ mod tests {
         assert_eq!(params.start.0, 0x1000, "check_params.start = 故障侧虚拟地址");
         assert_eq!(params.length.0, 4);
         assert!(params.write_flag, "Dst 故障 → write_flag = true");
-        let _ = RtsFlagsBits::VMREQUEST; // 引用避免未用告警（本测试聚焦上下文）
+        let _ = RtsFlagsBits::VMREQUEST; // reference to avoid an unused warning (this test focuses on the context)
     }
 
     /// Boundary: a zero-byte copy is rejected with EDOM before either

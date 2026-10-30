@@ -1,5 +1,5 @@
 //! Test: first minix-rt freestanding user binary on real machine (edge E1
-//! slice 5 acceptance; 14-stage-runtime V1-P1-1 step 2; E-KERNINFO
+//! slice 5 acceptance; runtime bring-up step 2; E-KERNINFO
 //! end-to-end).
 //!
 //! The kernel loads the `rt-birth` ELF through the production boot path —
@@ -105,9 +105,10 @@ static MEMMAP: [MemoryRegion; 2] = [
 /// docs for the build contract). The kernel identity-maps its own image,
 /// so the blob is readable through VA = PA during `load_vm_elf` — the same
 /// mechanism the UEFI stub relied on in the other bootstrap tests.
-/// 页对齐包裹（vm_handoff/DM 覆盖安装契约：boot module 起址必须页对齐
-/// ——修正 run_all rt-birth-x86 腿的 `boot DM: VM window module coverage
-/// failed: InvalidAddress`；riscv/aarch64 姊妹载体同款修复）。
+/// Page-aligned wrapper (vm_handoff/DM coverage install contract: the boot
+/// module start address must be page-aligned — this fixes the run_all
+/// rt-birth-x86 leg's `boot DM: VM window module coverage failed:
+/// InvalidAddress`; the riscv/aarch64 sibling carriers got the same fix).
 #[repr(C, align(4096))]
 struct PageAlignedElf<const N: usize>([u8; N]);
 static RT_BIRTH_ELF_BYTES: PageAlignedElf<{ include_bytes!(env!("RT_BIRTH_ELF_PATH")).len() }> =

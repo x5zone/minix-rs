@@ -213,7 +213,7 @@ pub enum IpcError {
 //
 // Design decision §3.4 / AT-4: `bitflags!` macro (not bare `u32`).
 //
-// # P0 FIX (FIX-1 / FIX-2)
+// # P0 fix: correct flag values
 //
 // Previous code defined `NON_BLOCKING=0x01` and `FROM_KERNEL=0x02`,
 // both wrong. The correct values aligned with C source are
@@ -278,7 +278,7 @@ pub enum DeadlockDirection {
     Receive,
 }
 
-// ── User-space copy abstraction (FIX-10 / AT-8) ──
+// ── User-space copy abstraction (AT-8) ──
 
 /// User-space memory copy abstraction.
 ///
@@ -369,11 +369,14 @@ pub struct KernelUserCopy;
 /// segment limit, so the bound must be checked explicitly before any
 /// user-buffer access.
 ///
-/// T13 R1：单一权威 = `minix_types::USER_VA_LIMIT`（x86_64=2^47
-/// PML4[256] 基址；aarch64=2^48 由 TCR T0SZ=16 推导、arch 模块交叉断言；
-/// riscv64=2^38 Sv39 用户半区上界）。此前 aarch64 分支私有值 2^47 与
-/// TCR 推导的 2^48 不一致（保守方向，审计 A4），且注释「TTBR1 region
-/// base」表述错误——两处一并由权威常量接管。
+/// Single source of truth = `minix_types::USER_VA_LIMIT` (x86_64 = 2^47,
+/// the PML4[256] base; aarch64 = 2^48 derived from TCR T0SZ=16 and
+/// cross-asserted by the arch module; riscv64 = 2^38, the upper bound of
+/// the Sv39 user half). The aarch64 branch used to carry a private 2^47
+/// that disagreed with the 2^48 derived from TCR (a conservative
+/// direction, but still inconsistent), and its comment called it the
+/// "TTBR1 region base", which is wrong — the authoritative constant now
+/// owns both.
 use minix_types::USER_VA_LIMIT as USER_ADDRESS_SPACE_LIMIT;
 
 /// Validate a user buffer range for a kernel-side user copy, software-walk
@@ -388,11 +391,13 @@ use minix_types::USER_VA_LIMIT as USER_ADDRESS_SPACE_LIMIT;
 /// kernel-mode fault. Same discipline as the cross-space copy paths, which
 /// software-walk the page table before their Direct Map window access.
 ///
-/// 续-76（[ARCH: user-copy-via-dm]）：`copy_msg_from_user`/`copy_msg_to_
-/// user` 的落地访问已全部改经 `copy_via_root_pages`（walk→PA→DM 窗口），
-/// 不再直接解引用用户 VA（riscv 无 SUM 会当场 store/load fault，x86/
-/// aarch64 属 SMAP/PAN 同型隐患）。本验证函数仍是写腿的前置把关，
-/// 并继续作为可注入的宿主测试面。
+/// [ARCH: user-copy-via-dm] `copy_msg_from_user`/`copy_msg_to_user` now
+/// perform every landing access through `copy_via_root_pages`
+/// (walk → PA → DM window); they no longer dereference user VAs directly
+/// (riscv without SUM would fault at once on the store/load, and
+/// x86/aarch64 carry the same SMAP/PAN class of hazard). This validation
+/// function remains the gate ahead of the write leg and still serves as
+/// the injectable surface for hosted tests.
 ///
 /// Checks, in order:
 /// 1. The range lies entirely in the user half (`USER_ADDRESS_SPACE_LIMIT`)
@@ -448,11 +453,14 @@ fn user_copy_range_mapped(
 /// tables) and `buf`. Read direction (`to_kernel = false`) fills `buf` from
 /// user memory; write direction stores `buf` into user memory.
 ///
-/// NK4-C 1.12：跨地址空间访问的唯一正确姿势——每页经 `walk(root, va)`
-/// 翻译为物理地址，再经 Direct Map 窗口访问（`kernel_phys_to_virt`）。
-/// 直接解引用用户 VA 只在「current root == 该 root」时成立；deliver_async
-/// 等跨进程场景在接收者陷入里运行，同一 VA 落到错误地址空间（s17t
-/// vector 13 根因）。C 同形：umap(sender) + phys 拷贝（proc.c:1244）。
+/// There is exactly one correct shape for cross-address-space access:
+/// translate each page through `walk(root, va)` to a physical address,
+/// then access it through the Direct Map window (`kernel_phys_to_virt`).
+/// Directly dereferencing a user VA is valid only when the current root
+/// IS that root; cross-process sites such as deliver_async run inside the
+/// receiver's trap, where the same VA lands in the wrong address space
+/// (the vector 13 root cause). C has the same shape: umap(sender) plus a
+/// physical copy (proc.c:1244).
 #[cfg(not(test))]
 fn copy_via_root_pages<D: minix_arch::DirectMapArch>(
     root: minix_types::PhysBytes,
@@ -464,7 +472,8 @@ fn copy_via_root_pages<D: minix_arch::DirectMapArch>(
 
     const PAGE: u64 = 4096;
     let len = buf.len() as u64;
-    // User-half bound（同 user_copy_range_mapped：checked_add 防回绕）。
+    // User-half bound (same as user_copy_range_mapped: checked_add
+    // defeats wraparound).
     match va.checked_add(len) {
         Some(end) if va < USER_ADDRESS_SPACE_LIMIT && end <= USER_ADDRESS_SPACE_LIMIT => {}
         _ => return Err(CopyError::OutOfBounds),
@@ -482,24 +491,30 @@ fn copy_via_root_pages<D: minix_arch::DirectMapArch>(
         if !flags.contains(PageFlags::USER_ACCESSIBLE) {
             return Err(CopyError::PageFault);
         }
-        // walk 返回 cur 的完整物理地址（页内偏移已折入，x86_64
-        // walk_translate：pte&ADDR_MASK | vaddr&0xFFF）——DV 即 cur 的
-        // DM 窗口映照，不再加页内偏移。
+        // walk returns the full physical address of cur (the page offset
+        // is already folded in by x86_64 walk_translate: pte&ADDR_MASK |
+        // vaddr&0xFFF) — DV is therefore the DM-window image of cur, and
+        // the page offset must not be added again.
         let dv = D::kernel_phys_to_virt(pa);
         let _ = page_off;
-        // SAFETY: DM 窗口 VA 由内核直映，pa 来自页表 walk（该页
-        // USER_ACCESSIBLE）；chunk 不越过 cur 所在页。
+        // SAFETY: the DM-window VA is directly mapped by the kernel and
+        // pa comes from a page-table walk (that page is USER_ACCESSIBLE);
+        // chunk never crosses the page containing cur.
         unsafe {
             let page = dv.0 as *mut u8;
-            // 只保留一次可变再借用（commit 后评审 P1：同时构造
-            // as_ptr/as_mut_ptr 按 Stacked Borrows 会使前者标签失效）；
-            // 可变指针可作 *const 读源，两臂共用 base。
+            // Keep exactly one mutable reborrow (a post-commit review P1:
+            // constructing as_ptr/as_mut_ptr together would invalidate
+            // the former's tag under Stacked Borrows); a mutable pointer
+            // is usable as a *const read source, so both arms share base.
             let base = buf.as_mut_ptr().add(done as usize);
-            // NK4-C 1.12e：方向按 doc 契约——to_kernel=true 把 buf 写入
-            // 用户页，false 把用户页读进 buf。此前两臂互换：读腿
-            // （read_senda_entry/write_senda_result 的 head 预读传 false）
-            // 实际把清零缓冲写进用户槽位（A_RETR 变破坏性写），flags
-            // 恒解出 0=AMF_EMPTY → senda 一条不投（s18 系列全零签名）。
+            // Direction follows the doc contract: to_kernel=true writes
+            // buf into the user page, false reads the user page into buf.
+            // The two arms were previously swapped: the read leg (the
+            // head pre-read of read_senda_entry/write_senda_result passes
+            // false) actually wrote a zeroed buffer into the user slot
+            // (turning A_RETR into a destructive write), so flags always
+            // decoded as 0 = AMF_EMPTY and senda delivered nothing (the
+            // all-zero signature seen across that whole series of runs).
             if to_kernel {
                 core::ptr::copy_nonoverlapping(base, page, chunk);
             } else {
@@ -514,24 +529,36 @@ fn copy_via_root_pages<D: minix_arch::DirectMapArch>(
 impl UserCopy for KernelUserCopy {
     #[cfg(not(test))]
     fn copy_msg_from_user(&self, src: VirBytes) -> Result<Message, CopyError> {
-        // NK4-C 续-76（roadmap 3.2 丙案，[ARCH: user-copy-via-dm]）：
-        // 不再直接解引用用户 VA。旧形态（validate-first + `read_volatile
-        // (src)`）靠「内核 PTE 与用户 PTE 同表、特权态可读 U=1 页」成立：
-        // x86 无 SMAP、aarch64 PAN 未强制时侥幸；riscv 监督态读 U 页必须
-        // sstatus.SUM=1，首用户 ecall 的消息拷贝当场 scause=0xd 死在内核
-        // 腿（NK4B 载体实锤，riscv-reviewlog §A.6 缺口二）。丙案统一三
-        // 架构的唯一正确姿势＝每页 walk(root)→PA→Direct Map 窗口访问，
-        // 与 senda 腿 `copy_via_root_pages` 同源（该腿已在真机走通同窗）；
-        // x86/aarch64 语义等价（root==current root，DM 覆盖全部常规内存）。
-        // 越界/非用户页在触碰内存前判死（Bounds + U 位逐页校验），一个
-        // 字节都不读——fault-redirection 的 C 契约用先验证代替。
+        // [ARCH: user-copy-via-dm]: no more direct dereference of user
+        // VAs. The old shape (validate-first + `read_volatile(src)`)
+        // depended on "kernel PTEs and user PTEs share one table and
+        // privileged mode may read U=1 pages" holding: it worked only by
+        // luck on x86 (no SMAP) and on aarch64 while PAN was not
+        // enforced. On riscv, supervisor-mode reads of U pages require
+        // sstatus.SUM=1, so the very first user ecall's message copy died
+        // in the kernel leg with scause=0xd (confirmed on target
+        // hardware; the riscv review log records it as gap two). The
+        // unified answer for all three architectures is: walk(root) each
+        // page to a PA, then access through the Direct Map window — the
+        // same mechanism the senda leg's `copy_via_root_pages` uses (that
+        // leg already worked through the same window on target hardware);
+        // x86/aarch64 are semantically equivalent (root == current root,
+        // and DM covers all regular memory). Out-of-bounds or non-user
+        // pages are rejected before any memory is touched (bounds check
+        // plus per-page U-bit validation), so not a single byte is read —
+        // this replaces C's fault-redirection contract with
+        // validation-first.
         let root = crate::current_root_phys().ok_or(CopyError::PageFault)?;
-        // CodeReview 续-76 N1：目标直接取 `Message`（天然 align 8、全 POD
-        // 无非法位模式），按字节切片回填——对齐由类型系统保证，不依赖
-        // 栈数组的 `[u8; N]` 对齐假设（与写腿的栈副本通道对称）。
-        // SAFETY: msg 是本函数栈上的 `Message`，切片只覆盖其字段字节，
-        // 无 padding 读风险（全初始化）；写入由 copy_via_root_pages 逐页
-        // 完成后再被调用方按值取用。
+        // Fill `Message` directly as the destination (naturally 8-byte
+        // aligned, pure POD with no invalid bit patterns) and write it
+        // back through a byte slice: alignment is guaranteed by the type
+        // system rather than by assuming the alignment of a stack
+        // `[u8; N]` array (symmetric with the write leg's stack-copy
+        // channel).
+        // SAFETY: msg is a `Message` living on this function's stack; the
+        // slice covers only its field bytes, with no padding-read risk
+        // (fully initialized); copy_via_root_pages fills it page by page
+        // before the caller takes it by value.
         let mut msg = Message::default();
         copy_via_root_pages::<minix_arch::CurrentDirectMap>(
             root,
@@ -554,17 +581,24 @@ impl UserCopy for KernelUserCopy {
     }
     #[cfg(not(test))]
     fn copy_msg_to_user(&self, dst: VirBytes, msg: &Message) -> Result<(), CopyError> {
-        // 续-76 丙案镜像读腿（[ARCH: user-copy-via-dm]）：每页
-        // walk(current root)→PA→DM 窗口写，不再直接解引用用户 VA
-        // （riscv 无 SUM 写 U 页＝scause 0xd store fault；x86/aarch64
-        // 语义等价）。与旧 validate-first 相比保留「写方向逐页要求可写」
-        // 的把关——现在由下面的 walk 显式校验 WRITABLE 位，非呈现的
-        // 只读映射不会被供应商写入。
+        // Mirror of the read leg ([ARCH: user-copy-via-dm]): walk the
+        // current root per page to a PA, then write through the DM
+        // window, no longer dereferencing user VAs directly (on riscv
+        // without SUM a write to a U page is a scause 0xd store fault;
+        // x86/aarch64 are semantically equivalent). Compared with the old
+        // validate-first version, the write direction still requires each
+        // page to be writable — the walk below now checks the WRITABLE
+        // bit explicitly, so a read-only mapping is never written by a
+        // supplier.
         let root = crate::current_root_phys().ok_or(CopyError::PageFault)?;
-        // NK4-C 第 33 轮守卫探针（task1-close 裁决保留）：消息投递写的
-        // (VA, 当前 root, walk 得到的物理页)。清零者必在内核侧且本函数
-        // 是停车-唤醒窗口里唯一直写用户内存的路径——若 pa 落在 PT 页
-        // （与同轮 pf dump 的 lvl1pa 对账），即「消息写错树/错页」实锤。
+        // Guard probe kept from the original bring-up: the (VA, current
+        // root, walked physical page) of every message-delivery write.
+        // Whoever clears the message must be on the kernel side, and this
+        // function is the only path that writes user memory directly
+        // inside the park/wake window — if pa lands on a page-table page
+        // (compare with the lvl1pa in the same round's page-fault dump),
+        // that is hard evidence of "message written to the wrong tree or
+        // the wrong page".
         {
             use core::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
             static NW: AtomicU64 = AtomicU64::new(0);
@@ -574,9 +608,11 @@ impl UserCopy for KernelUserCopy {
                     .unwrap_or(0);
             }
         }
-        // Validate-first（同旧契约）：用户半定界 + 逐页 present/U/W 校验，
-        // 然后才经 DM 窗口落笔。need_write=true 保留旧形态独有的写方向
-        // 可写位把关（copy_via_root_pages 只校 U 位，不含 W）。
+        // Validate-first (same as the old contract): user-half bounds plus
+        // per-page present/U/W checks, and only then write through the DM
+        // window. need_write=true keeps the write-direction writability
+        // gate that only the old shape had (copy_via_root_pages checks
+        // only the U bit, not W).
         user_copy_range_mapped(
             Some(root),
             dst,
@@ -584,9 +620,10 @@ impl UserCopy for KernelUserCopy {
             /* need_write = */ true,
             minix_arch::CurrentPteWalk::walk,
         )?;
-        // SAFETY: 校验已过，下面只是字节粒度搬运；buf 是 msg 的按值栈
-        // 副本（Message: Copy + repr(C)，align≤8），与 read_senda_entry 的
-        // WireAsyncSlot 判例同构——先物化再按字节传输。
+        // SAFETY: validation has passed; what remains is byte-granular
+        // movement. buf is a by-value stack copy of msg (Message: Copy +
+        // repr(C), align <= 8), isomorphic to the WireAsyncSlot precedent
+        // in read_senda_entry — materialize first, then transfer as bytes.
         let mut buf = *msg;
         copy_via_root_pages::<minix_arch::CurrentDirectMap>(
             root,
@@ -612,28 +649,37 @@ impl UserCopy for KernelUserCopy {
         table: VirBytes,
         index: usize,
     ) -> Result<(Endpoint, Message, i32), CopyError> {
-        // NK4-C 1.12：真实现。C A_RETR（proc.c:1244）按发送者的段读
-        // `asynmsg_t`。关键：**读走「发送者 root 翻译 → 物理 → Direct Map
-        // 窗口」**，绝不直接解引用用户 VA——deliver_async 跑在接收者的
-        // receive 陷入里，current CR3 是接收者的，同一用户 VA 落到错误
-        // 地址空间（s17t GP fault vector 13 根因）。布局对位 C ipc.h:2745
-        // `asynmsg`：flags@0 / dst@4 / result@8 / msg@16，槽距 =
-        // `size_of::<WireAsyncSlot>()`（本项目 `Message`=80B → 槽 96B）；
-        // WireAsyncSlot 镜像 + offset_of 守卫钉死（同 RS WirePrivUpdate
-        // 判例）。C 用 `sizeof(asynmsg_t)` 由类型推导步长（proc.c:1176
-        // A_RETR），这里同样必须派生自类型：旧版硬编码 `SLOT=80`（C 32 位
-        // 旧布局凑出来的值）会让 slot[i≥1] 按 80 错位读、并用 80 字节缓冲
-        // `read_volatile` 一个 96 字节结构（越界 UB）——NK4-C B7 启动死锁
-        // 真根因（RS_INIT→VFS 落 slot≥1 永读不出 → VFS 永停 receive(RS)）。
+        // Real implementation. C's A_RETR (proc.c:1244) reads
+        // `asynmsg_t` through the sender's segment. Key point: **the read
+        // goes through "sender root translation -> physical -> Direct Map
+        // window"** and never dereferences a user VA directly —
+        // deliver_async runs inside the receiver's receive trap, current
+        // CR3 is the receiver's, and the same user VA would land in the
+        // wrong address space (the root cause of the GP-fault vector 13).
+        // Layout matches C ipc.h:2745 `asynmsg`: flags@0 / dst@4 /
+        // result@8 / msg@16, with the slot stride =
+        // `size_of::<WireAsyncSlot>()` (this project's `Message` = 80B,
+        // hence a 96B slot); the WireAsyncSlot mirror is pinned by
+        // offset_of guards (same precedent as RS's WirePrivUpdate). C
+        // derives the stride from `sizeof(asynmsg_t)` (type-driven,
+        // proc.c:1176 A_RETR), and this code must derive it from the type
+        // the same way: the old hardcoded `SLOT=80` (a value that came
+        // from C's 32-bit layout) misread slot[i>=1] at an 80-byte offset
+        // and `read_volatile`d a 96-byte structure through an 80-byte
+        // buffer (out-of-bounds UB) — the true root cause of the boot
+        // deadlock in which RS_INIT to VFS landed at slot>=1, was never
+        // read, and VFS parked in receive(RS) forever.
         const SLOT: usize = core::mem::size_of::<WireAsyncSlot>();
         let base: u64 = table.0 + (index as u64) * (SLOT as u64);
         let mut out = [0u8; SLOT];
         copy_via_root_pages::<minix_arch::CurrentDirectMap>(
             root, base, &mut out, false,
         )?;
-        // SAFETY: out 是本函数栈上的 `size_of::<WireAsyncSlot>()` 字节缓冲，
-        // 由上面的分页拷贝填充；WireAsyncSlot 为 repr(C) 且 size 断言
-        // == 16+size_of::<Message>()（与 minix-sys AsyncSlot 逐字节一致）。
+        // SAFETY: out is a `size_of::<WireAsyncSlot>()`-byte buffer on
+        // this function's stack, filled by the paged copy above;
+        // WireAsyncSlot is repr(C) and size-asserted
+        // == 16 + size_of::<Message>() (byte-identical to minix-sys's
+        // AsyncSlot).
         let slot = unsafe { core::ptr::read_volatile(out.as_ptr() as *const WireAsyncSlot) };
         Ok((slot.destination, slot.message, slot.flags as i32))
     }
@@ -644,7 +690,7 @@ impl UserCopy for KernelUserCopy {
         _table: VirBytes,
         _index: usize,
     ) -> Result<(Endpoint, Message, i32), CopyError> {
-        // Hosted test: no real address space (同 copy_msg_from_user)。
+        // Hosted test: no real address space (same as copy_msg_from_user).
         Err(CopyError::PageFault)
     }
     #[cfg(not(test))]
@@ -656,12 +702,15 @@ impl UserCopy for KernelUserCopy {
         result: i32,
         flags: i32,
     ) -> Result<(), CopyError> {
-        // C A_INSRT（proc.c:1307）：回写 result + AMF_DONE——只写槽头
-        // flags@0 与 result@8 两域（dst/msg 不动）。同读腿：发送者 root
-        // 翻译 → DM 窗口写，不解引用用户 VA。步长同样派生自
-        // `size_of::<WireAsyncSlot>()`（旧硬编码 80 会让 slot[i≥1] 写错地址，
-        // 见 `read_senda_entry` 注释）。flags/result 偏移不变（flags@0、
-        // result@8 仍落在槽头 12 字节内）。
+        // C A_INSRT (proc.c:1307): write back result + AMF_DONE — only
+        // the two slot-header fields flags@0 and result@8 (dst/msg are
+        // untouched). Same as the read leg: sender root translation ->
+        // DM-window write, no user-VA dereference. The stride likewise
+        // derives from `size_of::<WireAsyncSlot>()` (the old hardcoded 80
+        // would write slot[i>=1] at the wrong address; see the
+        // `read_senda_entry` comment). The flags/result offsets are
+        // unchanged (flags@0 and result@8 still fall inside the 12-byte
+        // slot header).
         const SLOT: usize = core::mem::size_of::<WireAsyncSlot>();
         let base: u64 = table.0 + (index as u64) * (SLOT as u64);
         let mut head = [0u8; 12];
@@ -684,14 +733,15 @@ impl UserCopy for KernelUserCopy {
         _result: i32,
         _flags: i32,
     ) -> Result<(), CopyError> {
-        // Hosted test: no-op stub。
+        // Hosted test: no-op stub.
         Ok(())
     }
 }
 
-/// SENDA 用户表槽位的内核侧镜像（C `asynmsg_t` — ipc.h:2745-2751）。
-/// 仅在 `read_senda_entry`/`write_senda_result` 解码用户表用；`repr(C)`
-/// + offset_of 守卫保证与 minix-sys `AsyncSlot`（同序字段）逐字节一致。
+/// Kernel-side mirror of a SENDA user-table slot (C `asynmsg_t` —
+/// ipc.h:2745-2751). Used only by `read_senda_entry`/`write_senda_result`
+/// to decode the user table; `repr(C)` plus offset_of guards guarantee it
+/// is byte-identical to minix-sys's `AsyncSlot` (same field order).
 #[repr(C)]
 struct WireAsyncSlot {
     flags: u32,
@@ -757,8 +807,8 @@ pub fn delivermsg(proc: &mut crate::proc::KProcess, user_copy: &dyn UserCopy) ->
             // MF_DELIVERMSG; the return code lands here, when the pending
             // delivery is flushed at dispatch time (C switch_to_user's
             // delivermsg stage). Without it a blocked receiver woken by a
-            // notify restores with whatever RAX held at trap entry (real
-            // machine NK4-A C-3: VM woken by the SYSTEM SIGKMEM notify saw
+            // notify restores with whatever RAX held at trap entry (on
+            // hardware: VM woken by the SYSTEM SIGKMEM notify saw
             // its src argument, ANY=31744, as the receive result and
             // dropped the wake — RS starved on VMREQUEST).
             // MF_CONTEXT_SET means the kernel deliberately rewrote the
@@ -884,7 +934,7 @@ pub(crate) fn caller_q_push(procs: &mut [KProcess], dst_idx: usize, caller_idx: 
 ///
 /// C: `while (*xpp) { if (CANRECEIVE(...)) break; }` — proc.c:1077-1105.
 /// `accept` plugs in at exactly the `CANRECEIVE` position of the C loop
-/// (in C the filter check lives inside `CANRECEIVE`; in Rust D-16 splits
+/// (in C the filter check lives inside `CANRECEIVE`; in Rust it splits
 /// it into `can_receive`). `Endpoint::ANY` matches the head (C: first
 /// queue entry).
 pub(crate) fn caller_q_find(
@@ -1004,8 +1054,8 @@ pub struct IpcEngine<'a> {
     priv_table: &'a mut PrivTable,
     /// User-space copy abstraction (arch-specific impl injected).
     user_copy: &'a dyn UserCopy,
-    /// IPC filter pool (D-16, optional — `None` = no filtering available
-    /// and every message is allowed, the pre-D-16 behavior; production
+    /// IPC filter pool (optional — `None` = no filtering available and
+    /// every message is allowed, i.e. the unfiltered behavior; production
     /// dispatch wires the global `IPC_FILTER_POOL` via
     /// [`Self::with_filter_pool`]).
     filter_pool: Option<&'a crate::ipc_filter::IpcFilterPool>,
@@ -1028,11 +1078,13 @@ pub struct IpcEngine<'a> {
     /// [`Self::take_wake_target`] — the wake-direction mirror of
     /// `ProcessTable::dequeue_if_blocked` (the block direction).
     ///
-    /// NK4-C 1.12：单槽 Option 会被同一次 syscall 内的第二次唤醒覆盖
-    /// （sendrec = send 腿唤醒目的地 + receive 腿 drain 唤醒发送者；
-    /// 丢掉的进程 rts 已清却永不入队 → runnable=yes queued=no，F10d
-    /// 同族，s17p 实锤 sched 卡死）。C 的 RTS_UNSET 在每个 clear 现场
-    /// 立即入队，无此丢失窗口；这里以 4 槽记录 + 调用方 drain 全部。
+    /// A single-slot `Option` is overwritten by a second wake inside the
+    /// same syscall (sendrec wakes the destination on its send leg and
+    /// the sender on its receive-leg drain; a dropped process has its RTS
+    /// already cleared yet is never enqueued → runnable=yes queued=no,
+    /// which wedged the scheduler). C's `RTS_UNSET` enqueues at every
+    /// clear site, so it has no such loss window; here we record into
+    /// four slots and let the caller drain all of them.
     wake_targets: [Option<ProcNr>; 4],
 }
 
@@ -1053,16 +1105,16 @@ impl<'a> IpcEngine<'a> {
         }
     }
 
-    /// Wire the IPC filter pool (D-16). Production dispatch passes the
+    /// Wire the IPC filter pool. Production dispatch passes the
     /// global `IPC_FILTER_POOL`; without it no filtering is applied.
     pub(crate) fn with_filter_pool(mut self, pool: &'a crate::ipc_filter::IpcFilterPool) -> Self {
         self.filter_pool = Some(pool);
         self
     }
 
-    /// D-16 (C ipc.h:17-22 CANRECEIVE 的过滤半边): the receiver's filter
-    /// chain decides whether a message from `src_e` with `m_type` is
-    /// acceptable. C forces `m_source = src_e` (system.c:847) and walks
+    /// The filter half of C's CANRECEIVE (ipc.h:17-22): the receiver's
+    /// filter chain decides whether a message from `src_e` with `m_type`
+    /// is acceptable. C forces `m_source = src_e` (system.c:847) and walks
     /// the chain — see `ipc_filter::chain_allowed`. No pool wired, no
     /// chain head (`s_ipcf == None`), or filters not configured → allow.
     fn can_receive(&self, receiver_idx: usize, src_e: Endpoint, m_type: i32) -> bool {
@@ -1083,7 +1135,7 @@ impl<'a> IpcEngine<'a> {
                 .iter()
                 .position(|p| p.p_endpoint == ep && !p.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE))?;
             let p = &procs[idx];
-            // C: iskerneln（proc.h）——任务区槽号 <= 0。
+            // C: iskerneln (proc.h) — a slot number in the task region, <= 0.
             if p.p_nr.0 <= 0 {
                 return Some(crate::ipc_filter::EndpointClass::Task);
             }
@@ -1104,7 +1156,7 @@ impl<'a> IpcEngine<'a> {
         crate::ipc_filter::chain_allowed(pool, Some(head), src_e, m_type, &mut class_of)
     }
 
-    /// D-16: filter-aware `caller_q_find` — C proc.c:1053-1058. Walks
+    /// Filter-aware `caller_q_find` — C proc.c:1053-1058. Walks
     /// the caller queue via the shared [`caller_q_find`] walk; a sender
     /// whose cached message (`p_sendmsg`, C: `m_src_p = &sender->p_sendmsg`)
     /// fails the receiver's filter chain stays queued (retried on a later
@@ -1142,8 +1194,10 @@ impl<'a> IpcEngine<'a> {
     /// Record a wake target (engine-internal helper for the primitive
     /// flag clears at the delivery sites).
     fn record_wake_target(&mut self, nr: ProcNr) {
-        // 1.12：满了就丢最旧的（4 槽上限远超单次 IPC 的真实唤醒数——
-        // sendrec 最坏 2 个；保留防御性容量），不静默覆盖最新。
+        // If the slots are full, drop the oldest (the 4-slot capacity is
+        // far above the real number of wakes in one IPC — sendrec has at
+        // most 2 — so the extra capacity is defensive); never silently
+        // overwrite the newest.
         if let Some(slot) = self.wake_targets.iter_mut().find(|s| s.is_none()) {
             *slot = Some(nr);
         }
@@ -1164,7 +1218,7 @@ impl<'a> IpcEngine<'a> {
     /// C: `P_BLOCKEDON(p)` macro — proc.h:187-194. Returns the endpoint
     /// this process is blocked on, or `None` if it is runnable.
     ///
-    /// # P0 FIX (FIX-3 / AT-6)
+    /// # P0 fix (AT-6)
     ///
     /// The previous `detect_deadlock` fixed the field via the `function`
     /// argument (SEND→`p_sendto_e`, RECEIVE→`p_getfrom_e`). That could
@@ -1255,9 +1309,9 @@ impl<'a> IpcEngine<'a> {
                     // SEND↔RECEIVE (normal request/reply) and NOT a deadlock.
                     let xp_rts = self.procs[target_idx].p_rts_flags.get().bits();
                     let function_shifted = (function as u32) << 2;
-                    // NK4-C 1.10m 取证探针（task1-close 裁决删除）：2-cycle
-                    // 判定现场（caller/fn/xp/xp_rts）——PM send ELOCKED 误报
-                    // 定位。
+                    // Evidence probe (no-op): the 2-cycle decision site
+                    // (caller/fn/xp/xp_rts), used to localize the false
+                    // ELOCKED reported for a PM send.
                     #[cfg(not(feature = "mock"))]
                     {
                         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -1269,9 +1323,11 @@ impl<'a> IpcEngine<'a> {
                         return None;
                     }
                 }
-                // NK4-C 1.10n 逐环仪器化（task1-close 裁决删除）：死锁判定
-                // 现场补发双方消息类型——caller 在发的 m_type 与 xp 在发的
-                // m_type（p_sendmsg），定位协议互撞的具体消息。
+                // Per-cycle instrumentation (no-op): at the deadlock
+                // decision site, also emit both parties' message types —
+                // the m_type the caller is sending and the m_type xp is
+                // sending (p_sendmsg) — to identify the exact protocol
+                // collision.
                 #[cfg(not(feature = "mock"))]
                 {
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -1330,9 +1386,10 @@ impl<'a> IpcEngine<'a> {
         }
 
         // Phase 2: WILLRECEIVE check (path A — direct delivery).
-        // D-16: C 的 WILLRECEIVE 含 CANRECEIVE（ipc.h:19-22）——被过滤的
-        // 消息不投递，发送方落入 Path B（阻塞/排队，proc.c:895→925+），
-        // 即被过滤的发送者在队列中等待，与"未命中 receive"同形。
+        // C's WILLRECEIVE includes CANRECEIVE (ipc.h:19-22): a filtered
+        // message is not delivered, so the sender falls into Path B
+        // (block/queue, proc.c:895→925+). A filtered sender therefore
+        // waits in the queue exactly as if the receive had not matched.
         if Self::is_willing_to_receive(&self.procs[dst_idx], caller_endpoint) {
             // C: `copy_msg_from_user` (user path) or direct copy (FROM_KERNEL).
             let m = if !flags.contains(SendFlags::FROM_KERNEL) {
@@ -1378,10 +1435,10 @@ impl<'a> IpcEngine<'a> {
             self.procs[dst_idx].p_rts_flags.clear(RtsFlagsBits::RECEIVING);
             let woken = self.procs[dst_idx].p_nr;
             self.record_wake_target(woken);
-            // E1 slice 2: the woken receiver's RECEIVE completes with OK
+            // The woken receiver's RECEIVE completes with OK
             // (same completion-path return-code rule as the sender wake).
             crate::proc::set_ipc_return_code(&mut self.procs[dst_idx], OK as i64);
-            // NK4-C B12: Path A delivery completing a sendrec's receive half.
+            // Path A delivery completing a sendrec's receive half.
             // In C, `mini_sendrec` ends with `MF_CLREPLYPRIV(pr)` (proc.c) that
             // clears MF_REPLY_PEND unconditionally at sendrec completion.  In the
             // Rust async model, the sendrec's receive half completes exactly here
@@ -1429,7 +1486,7 @@ impl<'a> IpcEngine<'a> {
 
     /// Sync receive. C: `mini_receive()` — proc.c:967-1117.
     ///
-    /// # P0 FIX (FIX-5) + P0-12-5 (REPLY_PEND semantics)
+    /// # REPLY_PEND semantics
     ///
     /// Previous implementation was a 30-line stub that skipped all three
     /// message-source checks and unconditionally blocked the caller.
@@ -1456,7 +1513,7 @@ impl<'a> IpcEngine<'a> {
         caller_nr: ProcNr,
         src_endpoint: Endpoint,
     ) -> IpcOutcome {
-        // C-3 迭代10 取证：引擎 receive 进入（限 8）。
+        // Evidence probe (no-op): engine receive entry (capped at 8).
         let caller_idx = match self.idx_of(caller_nr) {
             Some(i) => i,
             None => return IpcOutcome::Error(IpcError::DeadSrcDst),
@@ -1471,23 +1528,28 @@ impl<'a> IpcEngine<'a> {
             .p_misc_flags
             .is_set(MiscFlagsBits::REPLY_PEND);
 
-        // B24（NK4-C 1.48）：C `mini_receive` 的整段扫描都在
-        // `if (!RTS_ISSET(caller_ptr, RTS_SENDING))` 之内（proc.c:999）——
-        // 阻塞 SENDREC 的陷入腿（do_ipc SENDREC 臂在 send 半停车后仍
-        // fall through 到 mini_receive，proc.c:569-583）带着 SENDING 进来，
-        // 跳过 notify/async/caller_q 三面检查直接落到停车臂
-        // （getfrom=src_e + RECEIVING）。少了这道门，sendrec 的 receive 半
-        // 会在自己请求还在队上时扫 caller_q 抢第三方排队消息冒充 reply
-        // （s17j 同型）。真机 c35/c37 实锤的连锁：receive 半从不在陷入腿
-        // 停车 → drain 腿代停车但不存 p_delivermsg_vir → 回包投递砸在
-        // 从未存值的 0x0 上 → DeliverMsg 挂起 start=0x0 → VM 必失 →
-        // 代投者（PM）吃 SIGSEGV 全系统崩。
+        // C's entire scan in `mini_receive` sits inside
+        // `if (!RTS_ISSET(caller_ptr, RTS_SENDING))` (proc.c:999) — the
+        // trap leg of a blocking SENDREC (do_ipc's SENDREC arm still falls
+        // through to mini_receive after the send half parks, proc.c:569-583)
+        // enters with SENDING set, skips the notify/async/caller_q checks
+        // and lands directly on the parking arm (getfrom=src_e +
+        // RECEIVING). Without this gate, the receive half of a sendrec
+        // would scan caller_q while its own request is still queued and
+        // grab a third party's queued message as if it were the reply.
+        // Real-machine chain of failures this caused: the receive half
+        // never parked in the trap leg, the drain leg parked on its
+        // behalf but did not save p_delivermsg_vir, so the reply delivery
+        // hit the never-written 0x0, DeliverMsg hung with start=0x0, VM
+        // was inevitably lost, and the delivering process (PM) took a
+        // SIGSEGV and crashed the whole system.
         if self.procs[caller_idx]
             .p_rts_flags
             .is_set(RtsFlagsBits::SENDING)
         {
-            // NK4-C 1.48 取证探针（c39，task1-close 裁决删除）：INIT 经
-            // SENDING 门停车（B24 receive 半）的现场：src + pdmv。
+            // Evidence probe (no-op): the site where INIT parks through
+            // the SENDING gate (the receive half of a blocking SENDREC):
+            // src + pdmv.
             #[cfg(not(feature = "mock"))]
             if self.procs[caller_idx].p_endpoint.0 == 0xb {
             }
@@ -1498,25 +1560,31 @@ impl<'a> IpcEngine<'a> {
             return IpcOutcome::Blocked;
         }
 
-        // Phase 0: an already-deposited delivery (C: mini_receive 首检
-        // MF_DELIVERMSG——proc.c:999 之前，notify/send 先于 receive 到达
-        // 时把消息留在 p_delivermsg 并唤醒；重入的 receive 必须先把它
-        // 返回，否则接收者带着已投递消息重新阻塞，死等永不到来的唤醒——
-        // NK4-A C-3 真机：RS memreq 服务后 VM 唤醒却未返回 SIGKMEM
-        // notify，do_memory 永不执行，系统静默，2026-09-22）。
+        // Phase 0: an already-deposited delivery (C: mini_receive first
+        // checks MF_DELIVERMSG — before proc.c:999, since notify/send
+        // arriving ahead of the receive leaves the message in
+        // p_delivermsg and wakes the receiver). A re-entering receive must
+        // return it first, otherwise the receiver blocks again while
+        // already holding a delivered message and waits forever for a
+        // wake that never comes — real-machine evidence: after RS served
+        // memreq, VM was woken but did not return the SIGKMEM notify, so
+        // do_memory never ran and the system went silent (2026-09-22).
         if self.procs[caller_idx]
             .p_misc_flags
             .is_set(MiscFlagsBits::DELIVERMSG)
         {
-            // C-3 迭代10 取证：Phase 0 消费（一次性）。
+            // Evidence probe (no-op): Phase 0 consumption (once).
             self.procs[caller_idx]
                 .p_misc_flags
                 .clear(MiscFlagsBits::DELIVERMSG);
-            // C: receive_done（proc.c:1113-1115）对**所有**完成腿统一撤销
-            // MF_REPLY_PEND。§1.119 修复使 sendrec 在 REPLY_PEND 置位状态下
-            // 从 Phase 0 沉降腿完成 receive 半成为可达路径（回复在调用者真正
-            // park 前已经 Path-A 沉降进 p_delivermsg），此处不清会让
-            // REPLY_PEND 残留到该进程下次 plain receive（误跳 notify 扫描）。
+            // C: receive_done (proc.c:1113-1115) revokes MF_REPLY_PEND
+            // uniformly on **every** completion leg. Because sendrec can
+            // now complete its receive half from the Phase 0 settle path
+            // while REPLY_PEND is set (the reply was Path-A deposited into
+            // p_delivermsg before the caller actually parked), not
+            // clearing it here leaves REPLY_PEND set until that process's
+            // next plain receive (which would wrongly skip the notify
+            // scan).
             if reply_pend {
                 self.procs[caller_idx]
                     .p_misc_flags
@@ -1529,8 +1597,9 @@ impl<'a> IpcEngine<'a> {
         // C: `has_pending` (NOTIFY) — proc.c:1000-1030.
         if !reply_pend && let Some(notify_src) = self.pick_allowed_notify(caller_nr, src_endpoint) {
             self.build_notify_message(caller_idx, NotifySource::from_caller_nr(notify_src));
-            // NK4-C B9（RS boot panic 根因的 notify 同型臂）：沉降 +
-            // 同步交付（见 deliver_pending_to_user）。
+            // Deposit + synchronous delivery (see deliver_pending_to_user):
+            // the notify arm has the same stale-buffer hazard as the other
+            // phases.
             self.deliver_pending_to_user(caller_idx);
             // C: proc.c:1033 — `IPC_STATUS_ADD_CALL(caller_ptr, NOTIFY)`
             crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::Notify);
@@ -1544,18 +1613,21 @@ impl<'a> IpcEngine<'a> {
         if let Some(async_src) = self.take_pending_async(caller_nr, src_endpoint)
             && self.deliver_async(caller_idx, async_src, src_endpoint)
         {
-            // NK4-C B9（RS boot panic 根因）：沉降 + 同步交付（见
-            // deliver_pending_to_user）——deliver_async 只写内核侧
-            // p_delivermsg，而 receive 自返腿不经 pick，F14 实锤的
-            // 「陈旧缓冲」在异步臂同样成立：VM 的 RS_INIT (mt=0x714)
-            // 落到 p_delivermsg，RS 用户缓冲仍是旧内容 (m_type=0) →
-            // boot.rs:1254 panic。真机 serial_b8a/b9p2 实锤（b9p2：
-            // h2 delivmt=0x714 而 buf64 m_type=0）。
+            // Deposit + synchronous delivery (see
+            // deliver_pending_to_user): deliver_async only writes the
+            // kernel-side p_delivermsg, and the receive self-return leg
+            // never goes through pick, so the stale-buffer hazard holds
+            // for the async arm too: VM's RS_INIT (mt=0x714) landed in
+            // p_delivermsg while RS's user buffer still held the old
+            // content (m_type=0) → boot.rs:1254 panic. Confirmed on
+            // hardware (h2 delivmt=0x714 while buf64 m_type=0).
             self.deliver_pending_to_user(caller_idx);
             crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
-            // C: receive_done（proc.c:1113-1115）统一撤销 MF_REPLY_PEND；
-            // §1.119 修复后异步臂完成 sendrec 的 receive 半也可携带置位态，
-            // 与 Phase 3（L1761）同形清除，以免 REPLY_PEND 残留。
+            // C: receive_done (proc.c:1113-1115) revokes MF_REPLY_PEND
+            // uniformly. After the sendrec fix, the async arm can also
+            // complete a sendrec receive half while the flag is set, so
+            // clear it here exactly as the Phase 3 leg does, keeping
+            // REPLY_PEND from lingering.
             if reply_pend {
                 self.procs[caller_idx]
                     .p_misc_flags
@@ -1571,46 +1643,61 @@ impl<'a> IpcEngine<'a> {
         // head/tail). The old VecDeque split find/remove existed to work
         // around queue-owns-subobject aliasing — with links living in the
         // sender slots, the borrows are ordinary sequential slot accesses.
-        // D-16: filtered find — C proc.c:1053-1058 checks CANRECEIVE
+        // Filtered find — C proc.c:1053-1058 checks CANRECEIVE
         // inside the queue walk (m_src_p = &sender->p_sendmsg, the
         // kernel-cached blocked-send message); a filtered sender stays
         // queued and the scan continues with the next one.
         if let Some(sender_idx) = self.caller_q_find_allowed(caller_idx, src_endpoint) {
             caller_q_remove(self.procs, caller_idx, sender_idx);
-            // NK4-C 1.11d（getuid 无回执根因）：同步拷贝前必须盖 m_source。
-            // C proc.c:1071-1075 把 sender->p_sendmsg 拷进 p_delivermsg 后
-            // `p_delivermsg.m_source = sender->p_endpoint`——发送者的用户
-            // 缓冲里 m_source 恒为 0（用户态不填，内核投递时盖章）。F14
-            // 同步拷贝绕过 p_delivermsg 直写用户缓冲时漏了这一步：PM 收到
-            // init 的 GETUID 但 m_source=0 → 回错槽位 → init 永停 receive
-            // 半（s17n `pm 00600` 实锤：mt=6 src=00，而 init 实际端点 0xb）。
-            // 拷贝失败回退臂（下方）早已盖章，唯同步臂漏。
+            // m_source must be stamped before the synchronous copy (root
+            // cause of the missing GETUID reply). C proc.c:1071-1075 copies
+            // sender->p_sendmsg into p_delivermsg and then sets
+            // `p_delivermsg.m_source = sender->p_endpoint`: the sender's
+            // user buffer always carries m_source = 0 (user space never
+            // fills it; the kernel stamps it on delivery). The synchronous
+            // copy writes the user buffer directly, bypassing
+            // p_delivermsg, and originally missed this step: PM received
+            // init's GETUID with m_source=0 → replied to the wrong slot →
+            // init parked in its receive half forever (observed as
+            // `pm 00600`: mt=6 src=00 while init's real endpoint is 0xb).
+            // The copy-failure fallback arm below already stamped it; only
+            // the synchronous arm was missing it.
             let mut sender_msg = self.procs[sender_idx].p_sendmsg;
             let sender_ep = self.procs[sender_idx].p_endpoint;
             sender_msg.m_source = sender_ep;
             let sender_from_kernel = self.procs[sender_idx]
                 .p_misc_flags
                 .is_set(MiscFlagsBits::SENDING_FROM_KERNEL);
-            // NK4-C F14（449-livelock 根因修复）：排队消息在 drain 时同步
-            // 拷入接收者用户缓冲。C proc.c:1071-1095 的语义：receive 入口
-            // 已存 m_buff_usr（proc.c:983），队列命中（CANRECEIVE 检查拿的
-            // 就是 m_src_p=&sender->p_sendmsg）即把该消息直拷用户缓冲——
-            // 一个 drain 恰好交付一条消息。旧实现只做内核侧 p_delivermsg
-            // 沉降 + MF_DELIVERMSG，把用户拷贝推迟到接收者下次被挑中时
-            // （process_misc_flags DELIVERMSG 臂）；而 receive 是接收者
-            // 自己的陷入（完成后直接 restore、不经 pick），沉降的拷贝不会
-            // 在返回前发生：接收者拿到 OK 却读到旧缓冲内容，于是立即再收，
-            // 连续 drain 把单条 p_delivermsg 反复覆盖，除最后一条外全部
-            // 销毁。真机 s14a 实锤：9 台出生服务器的 VM_PAGEFAULT 被
-            // 背靠背 drain（p3drain×9）而无一次 dispatch（vm-pf recv 零
-            // 新增），9 进程永停 PAGEFAULT(0x400)+to=VM，VM 正常
-            // receive(ANY) 空等 → 全系统 449-livelock。
-            // 地址空间正确性：Phase 3 只运行在接收者自身的 IPC 陷入里
-            // （当前 root 即接收者页表），copy_msg_to_user 走
-            // current_root_phys 命中正确地址空间。拷贝失败（目标页未
-            // 映射）才退回沉降+DELIVERMSG，由 pick 时 delivermsg 臂
-            // （含 VmSuspend 映射重试）兜底——与 C「copy 失败进
-            // delivermsg」的分流同形（proc.c:278-282）。
+            // The queued message is copied synchronously into the
+            // receiver's user buffer at drain time (root cause of the
+            // 449 livelock). C proc.c:1071-1095: the receive entry already
+            // saved m_buff_usr (proc.c:983), and a queue hit (the
+            // CANRECEIVE check uses m_src_p = &sender->p_sendmsg) copies
+            // that message straight to the user buffer — one drain
+            // delivers exactly one message. The old implementation only
+            // deposited into the kernel-side p_delivermsg and set
+            // MF_DELIVERMSG, deferring the user copy to the receiver's
+            // next pick (the process_misc_flags DELIVERMSG arm); but
+            // receive runs in the receiver's own trap and returns directly
+            // via restore, without pick, so the deferred copy never
+            // happens before the return: the receiver gets OK but reads
+            // stale buffer content, immediately receives again, and the
+            // consecutive drains overwrite the single p_delivermsg over
+            // and over, destroying all but the last message. Observed on
+            // hardware: the VM_PAGEFAULT messages of 9 boot servers were
+            // drained back to back (nine drains, one per server) with no
+            // dispatch at all
+            // (no new vm-pf recv), the 9 processes stayed parked in
+            // PAGEFAULT(0x400)+to=VM, VM waited in receive(ANY) forever →
+            // system-wide 449 livelock.
+            // Address-space correctness: Phase 3 only runs inside the
+            // receiver's own IPC trap (the current root is the receiver's
+            // page table), and copy_msg_to_user goes through
+            // current_root_phys, hitting the right address space. Only a
+            // failed copy (target page unmapped) falls back to deposit +
+            // DELIVERMSG, covered by the delivermsg arm at pick time
+            // (including the VmSuspend mapping retry) — the same split as
+            // C's "copy failure goes to delivermsg" (proc.c:278-282).
             if self
                 .user_copy
                 .copy_msg_to_user(self.procs[caller_idx].p_delivermsg_vir, &sender_msg)
@@ -1622,46 +1709,60 @@ impl<'a> IpcEngine<'a> {
                     .p_misc_flags
                     .set(MiscFlagsBits::DELIVERMSG);
             }
-            // NK4-C 1.10l（SENDREC 原子性缺口修复）：REPLY_PEND 发送者的
-            // send 半被取走后 syscall 未完成——转入 receive 半（RECEIVING +
-            // getfrom=ANY 停车，等 REPLY 经 Path A 直投），不写 retreg、
-            // 不唤醒。C 对位：blocked sendrec 在 send 半被取走后于自身
-            // mini_sendrec 内 `goto receive` 重阻塞等 REPLY（proc.c:
-            // 1084-1093）——其 retreg/唤醒只在 REPLY 交付时发生。普通
-            // SEND 发送者维持 F15 现状（retreg OK + 唤醒，syscall 完成）。
+            // A REPLY_PEND sender's send half was taken but its syscall is
+            // not complete — it transitions into its receive half
+            // (RECEIVING with getfrom parked, waiting for the REPLY to be
+            // delivered directly via Path A); this leg writes no retreg and
+            // does not wake. C equivalence: a blocked sendrec whose send
+            // half was taken re-blocks inside its own mini_sendrec with
+            // `goto receive` waiting for the REPLY (proc.c:1084-1093) — its
+            // retreg/wakeup happens only when the REPLY is delivered. A
+            // plain SEND sender keeps the current behavior (retreg OK +
+            // wake, syscall complete).
             let sender_reply_pend = self.procs[sender_idx]
                 .p_misc_flags
                 .is_set(MiscFlagsBits::REPLY_PEND);
             // Wake up the sender. C: `RTS_UNSET(sender, RTS_SENDING)`.
             self.procs[sender_idx].p_rts_flags.clear(RtsFlagsBits::SENDING);
             let woken_sender = self.procs[sender_idx].p_nr;
-            // B24（NK4-C 1.48）：此处曾在 drain 腿代 SENDREC 发送者停
-            // receive 半（RECEIVING + getfrom=接收者）—— C 的 receive 半
-            // 在发送者自己的陷入腿里早已停完（do_ipc fall-through，
-            // proc.c:569-583；上方 B24 修复），drain 腿（proc.c:1069）只
-            // `RTS_UNSET(sender, RTS_SENDING)`，不碰 RECEIVING/getfrom。
-            // 代停反而制造污染：接收者永远以「自己收过的每个消息源」
-            // 覆写停车发送者的 getfrom（真机 c37 实锤：init sendrec(PM)
-            // 被 PM drain 停成 gf=0，后又被 VFS drain 覆成 gf=1，PM 真
-            // reply 到达时 getfrom 错位）。
+            // This drain leg must not park the SENDREC sender's receive
+            // half on its behalf (RECEIVING + getfrom=receiver): C's
+            // receive half is already parked inside the sender's own trap
+            // leg (do_ipc fall-through, proc.c:569-583), and the drain leg
+            // (proc.c:1069) only does `RTS_UNSET(sender, RTS_SENDING)` —
+            // it never touches RECEIVING/getfrom. Parking here instead
+            // pollutes state: the receiver would keep overwriting the
+            // parked sender's getfrom with every message source it
+            // receives from (observed on hardware: init's sendrec(PM) was
+            // parked with gf=0 by PM's drain, then overwritten to gf=1 by
+            // VFS's drain, so PM's real reply arrived with the wrong
+            // getfrom).
             if !sender_reply_pend {
                 self.record_wake_target(woken_sender);
             }
-            // E1 slice 2 + NK4-C F15 修订：被队列唤醒的发送者的完成码交付
-            // 按「发送者是谁」分流。C 的阻塞 send 在停车时即写 retreg=OK
-            // （mini_send blocked 臂 return OK，proc.c:960），唤醒处不写
-            // （proc.c:1082-1093）；Rust 的 int33 door 对 Blocked「leave
-            // RAX untouched」，故真实 IPC 陷入的发送者（SEND/SENDREC）的
-            // OK 必须由本 drain 补写——否则恢复后 RAX 是垃圾（F15 首版
-            // 删除后 PM↔VFS 握手 NoPerm 回归，s14h）。而 kernel 内部
-            // FROM_KERNEL 伪发送者（缺页腿 forward_pagefault_to_vm 的
-            // Path B）没有 IPC 陷阱帧——其保存上下文是用户态陷阱现场，
-            // 写 OK=0 恰清掉 xchg 的锁地址寄存器：恢复重试读 [0] →
-            // cr2=0 → VM noaddr → SIGSEGV（1.9b/c 九进程全灭根因）。
-            // ⇒ 门控：SENDING_FROM_KERNEL 的发送者不写（其"syscall"不
-            // 经任何返回路径，PF 恢复由 VMCTL_CLEAR_PAGEFAULT 交付）。
-            // NK4-C 1.10l：REPLY_PEND（SENDREC）发送者的 syscall 未完成，
-            // 不写完成码——其 retreg 由 REPLY 到达时的 Path A 交付写入。
+            // The completion code delivered to a queue-woken sender is
+            // routed by "who the sender is". C's blocking send writes
+            // retreg=OK at park time (mini_send's blocked arm returns OK,
+            // proc.c:960) and does not write at the wake site
+            // (proc.c:1082-1093); the Rust int33 door "leaves RAX
+            // untouched" for Blocked, so the OK of a sender that really
+            // entered the IPC trap (SEND/SENDREC) must be written by this
+            // drain — otherwise RAX holds garbage after restore (removing
+            // that write once regressed the PM↔VFS handshake to NoPerm).
+            // The kernel-internal FROM_KERNEL pseudo-sender (Path B of the
+            // page-fault leg's forward_pagefault_to_vm), by contrast, has
+            // no IPC trap frame: its saved context is the user-mode trap
+            // site, and writing OK=0 clobbers exactly the register holding
+            // the xchg lock address: the retried instruction then reads
+            // [0] → cr2=0 → VM reports noaddr → SIGSEGV (root cause of the
+            // nine-process wipeout).
+            // ⇒ Gate: never write the completion code for a
+            // SENDING_FROM_KERNEL sender (its "syscall" has no return
+            // path; page-fault recovery is delivered by
+            // VMCTL_CLEAR_PAGEFAULT).
+            // A REPLY_PEND (SENDREC) sender's syscall is not complete
+            // either, so no completion code is written — its retreg is
+            // delivered by Path A when the REPLY arrives.
             if !sender_reply_pend
                 && !sender_from_kernel
             {
@@ -1699,10 +1800,10 @@ impl<'a> IpcEngine<'a> {
             if self.procs[sender_idx].p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY) {
                 self.sig_delay_sender = Some(self.procs[sender_idx].p_nr);
             }
-            // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：caller_q
-            // drain 命中出生服务器（p_nr 1,3,4,5,6,7,9,10,11）的现场。若
-            // 本探针有输出而串口无对应服务器的 vm-pf recv，即 drain 后消息
-            // 丢失的直接证据。
+            // Evidence probe: caller_q drain hit a boot server (p_nr
+            // 1,3,4,5,6,7,9,10,11). Output from this probe with no matching
+            // vm-pf recv for that server on the serial line is direct
+            // evidence that the message was lost after the drain.
             #[cfg(not(feature = "mock"))]
             {
                 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -1718,10 +1819,12 @@ impl<'a> IpcEngine<'a> {
         }
 
         // Phase 4: block. C: proc.c:1096-1110.
-        // C-3 迭代10 取证：Phase 4 阻塞到达（一次性）。
-        // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：receive 停车
-        // 时 caller_q 非空 = Phase 3 刚扫过全队却没取走任何条目（全部被
-        // 过滤或幽灵），直接证据。健康系统停车前队列应为空。
+        // Evidence probes (one-shot):
+        // - Phase 4 blocking was reached.
+        // - A non-empty caller_q at receive park time means Phase 3 just
+        //   scanned the whole queue without taking any entry (all filtered
+        //   or ghost) — direct evidence. On a healthy system the queue is
+        //   empty before parking.
         #[cfg(not(feature = "mock"))]
         {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -1778,7 +1881,7 @@ impl<'a> IpcEngine<'a> {
                 if let Some(sender_idx) = self.procs.iter().position(|p| p.priv_id == Some(bit as u16)) {
                     let sender_ep = self.procs[sender_idx].p_endpoint;
                     if src_endpoint == Endpoint::ANY || src_endpoint == sender_ep {
-                        // D-16: CANRECEIVE filter half — C ipc.h:19-22.
+                        // CANRECEIVE filter half — C ipc.h:19-22.
                         // Notify messages are kernel-built with
                         // m_type = NOTIFY_MESSAGE (com.h:90).
                         if !self.can_receive(caller_idx, sender_ep, NOTIFY_MESSAGE) {
@@ -1823,9 +1926,9 @@ impl<'a> IpcEngine<'a> {
             let caller_priv = self.priv_table.get(caller_priv_id)?;
             caller_priv.signals.s_asyn_pending
         };
-        // NK4-C 1.12 取证探针（task1-close 裁决删除）：asyn pending 位图
-        // 非 0 的每次 receive（caller + 位图 + 请求源）——RS_INIT pending
-        // 是否到 VFS、是否被取走。
+        // Evidence probe: every receive whose asyn pending bitmap is
+        // non-zero (caller + bitmap + requested source) — did RS_INIT's
+        // pending entry reach VFS, and was it taken?
         #[cfg(not(feature = "mock"))]
         if bitmap != 0 {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -1875,7 +1978,7 @@ impl<'a> IpcEngine<'a> {
     ///
     /// `receive_src` is the source filter of the receive trap that
     /// triggered this call (C: `try_one(src_e, …)` — the `receive_e`
-    /// first argument, mini_receive proc.c:1042). NK4-C B8: the
+    /// first argument, mini_receive proc.c:1042). The
     /// per-entry source check must use it, **not** the caller's
     /// `p_getfrom_e`/`RTS_RECEIVING` — Phase 2 runs inside the
     /// receiver's own receive trap, before the blocking leg (below
@@ -1915,8 +2018,9 @@ impl<'a> IpcEngine<'a> {
         let mut do_notify = false;
         let mut delivered = false;
 
-        // 1.12：A_RETR 按发送者 root 读（deliver_async 跑在接收者的
-        // receive 陷入里，current root 是接收者——C 用 umap(sender) 同理）。
+        // A_RETR is read through the sender's root (deliver_async runs in
+        // the receiver's receive trap where the current root is the
+        // receiver — C uses umap(sender) for the same reason).
         let sender_root = self.procs[sender_idx].p_seg.phys_root;
         for i in 0..size {
             // C: A_RETR(i) — per-entry copy-in; failure skips the entry.
@@ -1929,16 +2033,19 @@ impl<'a> IpcEngine<'a> {
             if flags == AMF_EMPTY {
                 continue;
             }
-            // D-16 + NK4-C B8: CANRECEIVE 两半边（C ipc.h:19-22）——
-            // 源过滤半边用本次 receive 的 `receive_e` 实参（C try_one
-            // proc.c:1457 传的是形参 receive_e，**不是** dst->p_getfrom_e；
-            // 读 p_getfrom_e 的是 WILLRECEIVE 宏 ipc.h:14-17，只用于第三方
-            // 已阻塞接收者的判定，如 mini_senda 直投臂）。本函数跑在接收
-            // 者自己 receive 陷入的 Phase 2，p_getfrom_e/RECEIVING 尚未被
-            // 阻塞腿写入（下方 Phase 3 之后才写），旧版误用
-            // is_willing_to_receive 读到握手期过期值 → RS_INIT 永拒 →
-            // VFS 睡死（B8 boot 死锁）。RECEIVING/SENDING 两谓词在 receive
-            // 陷入内部天然成立，不需搬入。
+            // CANRECEIVE, both halves (C ipc.h:19-22). The source-filter
+            // half uses this receive's `receive_e` argument (C try_one
+            // proc.c:1457 passes the receive_e formal, **not**
+            // dst->p_getfrom_e; p_getfrom_e is read by the WILLRECEIVE
+            // macro, ipc.h:14-17, and only for judging a third party that
+            // is already a blocked receiver, as in mini_senda's direct
+            // delivery arm). This function runs in Phase 2 of the
+            // receiver's own receive trap, before the blocking leg (below
+            // Phase 3) records p_getfrom_e/RECEIVING; the old code used
+            // is_willing_to_receive there and read handshake-era stale
+            // values → RS_INIT was always rejected → VFS slept forever
+            // (boot deadlock). The RECEIVING/SENDING predicates hold
+            // naturally inside a receive trap and need no relocation.
             if !(receive_src == Endpoint::ANY || receive_src == sender_ep_final) {
                 continue;
             }
@@ -1957,7 +2064,10 @@ impl<'a> IpcEngine<'a> {
 
             if invalid {
                 // C: goto store_result with r = EINVAL (proc.c:1451-1452).
-                //[SD19-gate] C proc.c store_result 写回：EINVAL 已是结果、OK 已投递，copy 失败对内核无可回滚动作（C 同位亦忽略）
+                // C proc.c store_result write-back: EINVAL already is the
+                // result and OK has been delivered, so a failed copy leaves
+                // the kernel nothing to roll back (C ignores it at the same
+                // site too).
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self
                     .user_copy
@@ -1973,8 +2083,9 @@ impl<'a> IpcEngine<'a> {
             if dst_ep != caller_endpoint {
                 continue;
             }
-            // C: CANRECEIVE 的源过滤/接收者意愿判定已上移到表扫描入口
-            // （receive_src + can_receive 两半，B8）。
+            // C: CANRECEIVE's source filter / receiver willingness has
+            // moved up to the table-scan entry (the receive_src +
+            // can_receive halves).
             // C: AMF_NOREPLY must not satisfy the receive part of a
             // SENDREC (proc.c:1463-1468).
             let noreply_block = (flags & AMF_NOREPLY) != 0
@@ -1994,7 +2105,10 @@ impl<'a> IpcEngine<'a> {
             delivered = true;
 
             // C: store_result (proc.c:1479-1488) — result OK + AMF_DONE.
-            //[SD19-gate] C proc.c store_result 写回：EINVAL 已是结果、OK 已投递，copy 失败对内核无可回滚动作（C 同位亦忽略）
+            // C proc.c store_result write-back: EINVAL already is the
+            // result and OK has been delivered, so a failed copy leaves the
+            // kernel nothing to roll back (C ignores it at the same site
+            // too).
             #[allow(clippy::let_underscore_must_use)]
             let _ = self
                 .user_copy
@@ -2013,7 +2127,7 @@ impl<'a> IpcEngine<'a> {
             // Go through `Self::notify` (not the bare `mini_notify_core`)
             // so the ASYNCM-woken sender is recorded via
             // `record_wake_target` and enqueued by the dispatcher's wake
-            // drain (NK4-C B6 family: a primitive slice clear leaves it
+            // drain (a primitive slice clear would leave it
             // `runnable=yes queued=no`).
             let _ = self.notify(ProcNr(-5), sender_ep_final);
         }
@@ -2026,12 +2140,14 @@ impl<'a> IpcEngine<'a> {
                 priv_.signals.s_asynsize = 0;
             }
         } else {
-            // C: try_one 尾部 else 重挂臂（proc.c:1499-1501）：表里仍有
-            // 未投递条目（被过滤/被 NOREPLY 拦/单次投递上限未到条目），
-            // 把 sender 位在接收者 s_asyn_pending 上重挂回去——
-            // take_pending_async 入口已清位（对齐 C proc.c:1409），不重挂
-            // 则未投递消息成孤儿（NK4-C B8 必修次缺陷：与 willing 误判
-            // 相乘把 RS_INIT 永久吞掉）。
+            // C: try_one tail else re-arm (proc.c:1499-1501): undelivered
+            // entries remain in the table (filtered / blocked by NOREPLY /
+            // not reached by the one-message-per-receive limit), so the
+            // sender bit is re-armed on the receiver's s_asyn_pending —
+            // take_pending_async clears the bit on entry (matching C
+            // proc.c:1409), and without the re-arm the undelivered message
+            // would become an orphan (multiplied by the willingness
+            // misjudgement, this swallowed RS_INIT for good).
             let receiver_priv_id = self.procs[caller_idx].priv_id;
             if let Some(receiver_priv_id) = receiver_priv_id
                 && let Some(cpriv) = self.priv_table.get_mut(receiver_priv_id)
@@ -2052,19 +2168,24 @@ impl<'a> IpcEngine<'a> {
         build_notify_message(self.procs, self.priv_table, dst_idx, src);
     }
 
-    /// NK4-C B9（RS boot panic 根因修复的共享腿）：把已沉降在
-    /// `p_delivermsg` 的消息交付给接收者并清 DELIVERMSG 标志。
-    /// receive 是接收者自己的陷入，返回用户态不经 pick，纯沉降的拷贝
-    /// （process_misc_flags 的 delivermsg 臂）不会在本次陷阱返回前发生
-    /// ——F14 在 Phase 3（caller_q drain）已实锤并修过的「陈旧缓冲」同族
-    /// 缺陷，在 Phase 1（notify）/ Phase 2（try_async）继续存在：真机
-    /// serial_b8a/b9p2，VM 的 RS_INIT (mt=0x714) 落内核 p_delivermsg，
-    /// RS 用户缓冲仍读 m_type=0 → boot.rs:1254 panic。
-    /// 先置 MF_DELIVERMSG（pick 兜底路径仍认它，含 VmSuspend 重试），
-    /// 同步拷贝成功则清回。C 对位：所有臂统一置 MF_DELIVERMSG，出口
-    /// `switch_to_user` 的 `check_misc_flags` 总消费（proc.c:356-365）；
-    /// Rust 自返腿需臂内自行交付。地址空间正确性同 Phase 3：本腿只在
-    /// 接收者自身的 IPC 陷入里运行（当前 root 即接收者页表）。
+    /// Deliver the message already deposited in `p_delivermsg` to the
+    /// receiver and clear the DELIVERMSG flag.
+    /// receive is the receiver's own trap, and the return to user mode
+    /// does not go through pick, so a pure deposit (the delivermsg arm of
+    /// process_misc_flags) never happens before this trap returns — the
+    /// same stale-buffer defect that Phase 3 (caller_q drain) already
+    /// exhibited and fixed still exists in Phase 1 (notify) / Phase 2
+    /// (try_async): on hardware, VM's RS_INIT (mt=0x714) landed in the
+    /// kernel p_delivermsg while RS's user buffer still read m_type=0 →
+    /// panic in boot.rs:1254.
+    /// Set MF_DELIVERMSG first (the pick fallback still honours it,
+    /// including the VmSuspend retry) and clear it back on a successful
+    /// synchronous copy. C equivalence: every arm sets MF_DELIVERMSG
+    /// uniformly and `check_misc_flags` at the `switch_to_user` exit
+    /// always consumes it (proc.c:356-365); Rust's self-return leg must
+    /// deliver within the arm itself. Address-space correctness is as in
+    /// Phase 3: this leg only runs inside the receiver's own IPC trap
+    /// (the current root is the receiver's page table).
     fn deliver_pending_to_user(&mut self, caller_idx: usize) {
         self.procs[caller_idx]
             .p_misc_flags
@@ -2104,18 +2225,21 @@ impl<'a> IpcEngine<'a> {
 
     // ── SendRec ──
 
-    /// Atomic SEND + RECEIVE. C: `do_ipc` 的 SENDREC 臂 — proc.c:569-583
-    /// （`mini_send` 后无论送达与否都 fall through 到 `mini_receive`）。
+    /// Atomic SEND + RECEIVE. C: `do_ipc`'s SENDREC arm — proc.c:569-583
+    /// (after `mini_send`, delivered or not, fall through to
+    /// `mini_receive`).
     ///
-    /// 1. `send(caller, dst, msg, NONE)`。
+    /// 1. `send(caller, dst, msg, NONE)`.
     /// 2. If send delivered synchronously (dst was in RECEIVE), proceed
-    ///    to `receive(caller, dst)`。
+    ///    to `receive(caller, dst)`.
     /// 3. If send blocked caller (SENDING set), still proceed to
-    ///    `receive(caller, dst)`：mini_receive 顶部的 SENDING 门（B24）
-    ///    让它只落停车臂（getfrom=dst + RECEIVING），与 C 同形。
-    ///    `MF_REPLY_PEND` 保留至 reply 到达（跳过 notify 检查）。
+    ///    `receive(caller, dst)`: the SENDING gate at the top of
+    ///    mini_receive lets it take only the park arm (getfrom=dst +
+    ///    RECEIVING), the same shape as C.
+    ///    `MF_REPLY_PEND` is kept until the reply arrives (skipping the
+    ///    notify check).
     ///
-    /// # MF_REPLY_PEND semantics (P0-12-5 fix)
+    /// # MF_REPLY_PEND semantics
     ///
     /// `MF_REPLY_PEND` only skips the *notify* check in `receive`; it
     /// does NOT skip async or caller_q. The reply arrives via the
@@ -2133,21 +2257,29 @@ impl<'a> IpcEngine<'a> {
             None => return IpcOutcome::Error(IpcError::DeadSrcDst),
         };
 
-        // NK4-C §1.119 根因修复：C do_ipc 的 SENDREC 臂在 `mini_send` 之前
-        // 无条件 `caller_ptr->p_misc_flags |= MF_REPLY_PEND`（proc.c:569-571，
-        // 注释原文 “A flag is set so that notifications cannot interrupt
-        // SENDREC”）。此标志使 receive 半跳过 Phase-1 notify 扫描（proc.c:1003
-        // / 本文件 `receive` 的 `if !reply_pend`），只接 sendrec 目的地的真
-        // 回复。此前本函数只在 send 半 `Blocked` 臂、且晚于 send 置 REPLY_PEND，
-        // `Delivered` 臂（目的地恰已 parked receive、send 秒达）从不置位 →
-        // receive 半可被一个挂起 notify 窃取冒充回复 → taskcall 读到 notify
-        // 的 m_type≠0 → `sched_start_user` 误判 Err → INIT 收 EPERM。走
-        // Delivered 还是 Blocked 取决于目的地此刻是否 parked＝调度时序＝
-        // §1.119 观测的 build-layout 敏感翻转源（内置 p4a 探针直证 sched
-        // 回复到达时 PM 的 REPLY_PEND=n）。置位提前到 send 之前、两腿共用，
-        // 与 C 一致；顺带修正 send 半的 delivered_call 分类（L1389 据此应
-        // 判 SENDREC 而非误判 SEND）。回复经 Path-A 送达时由 L1413 清除，
-        // 与既有 Blocked 腿收敛到完全相同的 park+冲刷流程。
+        // Root-cause fix: C's do_ipc SENDREC arm sets
+        // `caller_ptr->p_misc_flags |= MF_REPLY_PEND` unconditionally
+        // *before* `mini_send` (proc.c:569-571; the C comment reads
+        // "A flag is set so that notifications cannot interrupt
+        // SENDREC"). The flag makes the receive half skip the Phase-1
+        // notify scan (proc.c:1003 / the `if !reply_pend` in this file's
+        // `receive`), so only the real reply from the sendrec destination
+        // is accepted. Previously this function set REPLY_PEND only in the
+        // send half's `Blocked` arm and only after send, so the
+        // `Delivered` arm (destination already parked in receive, send
+        // delivered instantly) never set it → the receive half could be
+        // stolen by a pending notify posing as the reply → taskcall read
+        // the notify's m_type != 0 → `sched_start_user` misjudged Err →
+        // INIT got EPERM. Whether the send takes Delivered or Blocked
+        // depends on whether the destination is parked at that moment =
+        // scheduling timing = the build-layout-sensitive flip source
+        // observed here (an in-tree probe showed PM's REPLY_PEND=n
+        // when sched's reply arrived). Setting the flag before send and
+        // sharing it between both legs matches C; it also fixes the send
+        // half's delivered_call classification (which must be judged
+        // SENDREC, not a misjudged SEND). When the reply arrives via
+        // Path A the flag is cleared, converging on exactly the same
+        // park+flush flow as the existing Blocked leg.
         self.procs[caller_idx]
             .p_misc_flags
             .set(MiscFlagsBits::REPLY_PEND);
@@ -2158,35 +2290,45 @@ impl<'a> IpcEngine<'a> {
             IpcOutcome::Delivered => {
                 // SEND phase delivered; now receive the reply. C: the
                 // SENDREC arm falls through to RECEIVE with the SAME
-                // src_dst_e（proc.c:569-583——send 半与 receive 半共用
-                // src_dst_e，reply 只能来自 sendrec 目的地）。ANY 会把
-                // caller_q 上其它进程的排队请求当 reply 消费（真机 s17j
-                // 实锤：PM sendrec(sched) 秒达后 receive(ANY) 抢走 init
-                // 的排队请求，sched 真 reply 落进 PM 主循环成野请求，
-                // ENOSYS ping-pong livelock）。
-                // REPLY_PEND 已在 send 前置位（见上），receive 半据此跳过
-                // notify 扫描、只等 sendrec 目的地的真回复。
+                // src_dst_e (proc.c:569-583 — the send and receive
+                // halves share src_dst_e; a reply can only come from the
+                // sendrec destination). ANY would consume queued requests
+                // from other processes on caller_q as the reply (observed
+                // on hardware: after PM's sendrec(sched) delivered
+                // instantly, receive(ANY) stole init's queued request and
+                // sched's real reply landed in PM's main loop as a stray
+                // request — ENOSYS ping-pong livelock).
+                // REPLY_PEND was set before send (see above), so the
+                // receive half skips the notify scan and waits only for
+                // the real reply from the sendrec destination.
                 self.receive(caller_nr, dst_endpoint)
             }
             IpcOutcome::Blocked => {
-                // B24（NK4-C 1.48）：C do_ipc 的 SENDREC 臂在 mini_send 停车
-                // 后仍 fall through 到 mini_receive（proc.c:569-583）——
-                // receive 半在发送者自己的陷入腿里就地停车：存
-                // p_delivermsg_vir（int33 入口已存 m_ptr）、置
-                // getfrom=dst（停车臂）。mini_receive 顶部的 SENDING 门
-                // （proc.c:999，上方 B24 注释）保证此处只落停车臂，不会
-                // 扫到自己还在队列上的发送半。此前这里直接 return
-                // Blocked，把 receive 半推迟到 drain 腿代停——而代停腿
-                // 无法存 p_delivermsg_vir（消息指针在发送者陷入帧里），
-                // 回包投递因此砸在从未存值的 0x0 上（真机 c35/c37）。
-                // REPLY_PEND 已在 send 前置位（见上），此处不再重复置位。
+                // C's do_ipc SENDREC arm still falls through to
+                // mini_receive after mini_send parks (proc.c:569-583): the
+                // receive half parks in place inside the sender's own trap
+                // leg — saving p_delivermsg_vir (already stored by the
+                // int33 entry from m_ptr) and setting getfrom=dst (the
+                // park arm). The SENDING gate at the top of mini_receive
+                // (proc.c:999, see above) guarantees only the park arm is
+                // taken here, so the still-queued send half cannot be
+                // scanned. Previously this returned Blocked directly and
+                // deferred the receive half to the drain leg — but that
+                // leg cannot save p_delivermsg_vir (the message pointer
+                // lives in the sender's trap frame), so reply delivery
+                // landed on a never-stored 0x0 (observed on hardware).
+                // REPLY_PEND was set before send (see above); do not set it
+                // again here.
                 self.receive(caller_nr, dst_endpoint)
             }
             IpcOutcome::Error(e) => {
-                // send 半出错：调用方不再 receive，就地撤销 REPLY_PEND，以免
-                // 残留（否则该进程下次 receive 会误跳 notify 扫描）。C 的
-                // SEND 错误臂虽不清标志，但每次都重新置位（L571）；此处清除
-                // 以保持本修复前 sendrec 错误腿既有的无-REPLY_PEND 语义。
+                // send half failed: the caller will not receive, so revoke
+                // REPLY_PEND in place to avoid a residue (otherwise the
+                // process's next receive would wrongly skip the notify
+                // scan). C's SEND error arm does not clear the flag but
+                // re-sets it every time (proc.c:571); clearing here keeps
+                // the error leg's existing semantics of leaving REPLY_PEND
+                // unset.
                 self.procs[caller_idx]
                     .p_misc_flags
                     .clear(MiscFlagsBits::REPLY_PEND);
@@ -2215,8 +2357,9 @@ impl<'a> IpcEngine<'a> {
     /// or the duplicated size sanity check (C: `EDOM`, proc.c:1233;
     /// primary check is the SENDA syscall path — proc.c:681).
     pub fn senda(&mut self, caller_nr: ProcNr, table: VirBytes, size: usize) -> IpcOutcome {
-        // NK4-C 1.12 取证探针（task1-close 裁决删除）：senda 入口前 4 次
-        // （caller/count）——s18f/g 零 saent：入口未达还是循环前早退。
+        // Evidence probe: first 4 senda entries (caller/count) — zero
+        // probe output meant either the entry was never reached or the
+        // function returned before the loop.
         #[cfg(not(feature = "mock"))]
         {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -2285,8 +2428,9 @@ impl<'a> IpcEngine<'a> {
             // C: A_RETR(i) — per-entry copy-in. On copy failure C
             // complains and skips the entry (asyn_error has no result
             // write-back); the entry stays un-DONE for retry.
-            // 1.12：senda 的 caller 即发送者，root 取其进程表值（与
-            // current root 一致，显式传递防漂移）。
+            // senda's caller is the sender; take its root from the
+            // process table (identical to the current root, passed
+            // explicitly to prevent drift).
             let (mut dst_ep, msg, flags) =
                 match self
                     .user_copy
@@ -2294,7 +2438,8 @@ impl<'a> IpcEngine<'a> {
                 {
                 Ok(t) => t,
                 Err(_) => {
-                    // NK4-C 1.12 取证探针：表读失败（errno root/walk 类别）。
+                    // Evidence probe: table read failure (errno
+                    // root/walk class).
                     #[cfg(not(feature = "mock"))]
                     {
                         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -2362,8 +2507,9 @@ impl<'a> IpcEngine<'a> {
                 r = EDEADSRCDST;
             }
 
-            // NK4-C 1.12 取证探针（task1-close 裁决删除）：senda 逐条去向
-            // （cap 16，含错误臂）——RS_INIT 落 pending 位还是被错臂吞掉。
+            // Evidence probe: per-entry senda destination (cap 16, error
+            // arms included) — does RS_INIT land on a pending bit or get
+            // swallowed by a wrong arm?
             #[cfg(not(feature = "mock"))]
             {
                 use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
@@ -2387,7 +2533,7 @@ impl<'a> IpcEngine<'a> {
             // receive part of a SENDREC (MF_REPLY_PEND).
             let delivered = match dst_idx_opt {
                 Some(di) if r == OK => {
-                    // D-16: WILLRECEIVE includes CANRECEIVE (C ipc.h:14-16)
+                    // WILLRECEIVE includes CANRECEIVE (C ipc.h:14-16)
                     // — the entry's message is in hand, so the filter check
                     // is free. Filtered → treated as not-willing → pending
                     // path (no AMF_DONE, retried later).
@@ -2436,7 +2582,10 @@ impl<'a> IpcEngine<'a> {
             // C: store results (proc.c:1300-1307).
             //   tabent.result = r; tabent.flags = flags | AMF_DONE;
             //   A_INSRT ignores copy errors.
-            //[SD19-gate] C proc.c store_result 写回：EINVAL 已是结果、OK 已投递，copy 失败对内核无可回滚动作（C 同位亦忽略）
+            // C proc.c store_result write-back: EINVAL already is the
+            // result and OK has been delivered, so a failed copy leaves the
+            // kernel nothing to roll back (C ignores it at the same site
+            // too).
             #[allow(clippy::let_underscore_must_use)]
             let _ = self
                 .user_copy
@@ -2447,9 +2596,10 @@ impl<'a> IpcEngine<'a> {
                     r,
                     flags | AMF_DONE,
                 );
-            // C: proc.c:1301-1305 — AMF_NOTIFY 恒通知；AMF_NOTIFY_ERR 仅
-            // 失败项通知。C 原文两分支同为 `do_notify = TRUE`（宏展开遗留），
-            // Rust 重写合并为单一布尔表达式（V12-A3）。
+            // C: proc.c:1301-1305 — AMF_NOTIFY always notifies;
+            // AMF_NOTIFY_ERR notifies only on failed entries. C spells both
+            // branches as `do_notify = TRUE` (macro-expansion leftover);
+            // the Rust rewrite collapses them into one boolean expression.
             do_notify |= (flags & AMF_NOTIFY) != 0
                 || (r != OK && (flags & AMF_NOTIFY_ERR) != 0);
         }
@@ -2460,7 +2610,7 @@ impl<'a> IpcEngine<'a> {
             //
             // Route through `Self::notify` so the ASYNCM-woken caller is
             // recorded and enqueued by the dispatcher's wake drain
-            // (NK4-C B6 family — a bare primitive clear leaves it
+            // (a bare primitive clear would leave it
             // `runnable=yes queued=no`).
             let _ = self.notify(ProcNr(-5), caller_endpoint);
         }
@@ -2483,7 +2633,7 @@ impl<'a> IpcEngine<'a> {
     /// C: `delivermsg()` — proc.c:263-294. Called by `switch_to_user`
     /// before restoring user context.
     ///
-    /// # P0 FIX (FIX-7)
+    /// # P0 fix
     ///
     /// Previous implementation was missing entirely. This version
     /// implements the two-failure policy:
@@ -2507,7 +2657,7 @@ impl<'a> IpcEngine<'a> {
             None => return DeliverResult::Segfault,
         };
 
-        // Delegate to the free function `delivermsg` (FIX-20, Phase 1B).
+        // Delegate to the free function `delivermsg`.
         // This shares the two-failure policy logic with
         // `ProcessTable::process_misc_flags`, which also calls `delivermsg`.
         delivermsg(&mut self.procs[idx], self.user_copy)
@@ -2518,7 +2668,7 @@ impl<'a> IpcEngine<'a> {
     /// Check IPC permission. C: `do_sync_ipc` permission layers —
     /// proc.c:479-597.
     ///
-    /// # P0 FIX (FIX-9)
+    /// # P0 fix
     ///
     /// Previous implementation was missing. This version implements
     /// four layers aligned with C:
@@ -2542,7 +2692,7 @@ impl<'a> IpcEngine<'a> {
         // A real endpoint must resolve (`isokendpt` → EDEADSRCDST on miss,
         // NO_ENDPOINT slots included). Without the ANY special case every
         // `receive(ANY)` — the standard server receive form — died here
-        // with EDEADSRCDST (observed on real machine: test-sysboot C-27
+        // with EDEADSRCDST (observed on hardware: the test-sysboot
         // carrier's first blocking receive).
         let is_receive = matches!(call, IpcCall::Receive);
         let dst_idx = if dst_endpoint == minix_types::Endpoint::ANY {
@@ -2604,9 +2754,9 @@ impl<'a> IpcEngine<'a> {
     /// IPC entry point. C: `do_ipc(r1, r2, r3)` — proc.c:599-698.
     ///
     /// Dispatches to `send`/`receive`/`sendrec`/`notify`/`senda` based
-    /// on `call`. Performs permission check first (FIX-9).
+    /// on `call`. Performs the permission check first.
     ///
-    /// # SENDA table passing (P0-12-3 fix)
+    /// # SENDA table passing
     ///
     /// C passes the SENDA table pointer and size via trap-frame registers
     /// `r3` and `r2` (proc.c:673, 683), NOT via message fields. The Rust
@@ -2629,12 +2779,14 @@ impl<'a> IpcEngine<'a> {
         flags: SendFlags,
         senda_table: Option<(VirBytes, usize)>,
     ) -> IpcOutcome {
-        // C: do_ipc 的 SENDA 臂（proc.c:673-684）在同步端点/权限校验层
-        // 之前拦截——r2 对 SENDA 是表元素个数而非端点，走
-        // check_ipc_permission 会对 ANY 伪端点报 EINVAL（C: proc.c:508）。
-        // mini_senda 自带 SYS_PROC 与逐条目检查，权限语义自洽。真机
-        // NK4-A C-3 c13a 轮：RS boot step2 的 RS_INIT asynsend 到 VM
-        // 死于此处（Errno 22 → RS boot failed）。
+        // C: do_ipc's SENDA arm (proc.c:673-684) intercepts before the
+        // synchronous endpoint/permission check — r2 for SENDA is the
+        // table element count, not an endpoint, and running
+        // check_ipc_permission on it would report EINVAL for the ANY
+        // pseudo-endpoint (C: proc.c:508). mini_senda carries its own
+        // SYS_PROC and per-entry checks, so its permission semantics are
+        // self-contained. On hardware, RS boot step2's RS_INIT asynsend to
+        // VM died here (Errno 22 → RS boot failed).
         if let IpcCall::SendA = call {
             let (table_ptr, count) = match senda_table {
                 Some(tc) => tc,
@@ -2660,9 +2812,9 @@ impl<'a> IpcEngine<'a> {
 
         match call {
             IpcCall::Send | IpcCall::SendNb => {
-                // NK4-C 1.10 取证探针（task1-close 裁决删除）：进入 sched
-                // (ep 4) 的每条 send 前 8 条（caller + m_type）——m_type
-                // 0x4e(ENOSYS) 泛滥的发送方定位。
+                // Evidence probe: first 8 sends into sched (ep 4)
+                // (caller + m_type) — locating the sender behind the flood
+                // of m_type 0x4e (ENOSYS).
                 #[cfg(not(feature = "mock"))]
                 if dst_endpoint.0 == 4 {
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -2687,8 +2839,8 @@ impl<'a> IpcEngine<'a> {
                 // carries the user message pointer from trap entry, so
                 // without the clear the completion-time OR-merge lands on
                 // a pointer and the user-side `is_ipc_notify` check
-                // (com.h:92, 6-bit mask) fails — real machine NK4-A C-3
-                // 迭代11: VM's SYSTEM SIGKMEM notify surfaced with
+                // (com.h:92, 6-bit mask) fails — on hardware: VM's SYSTEM
+                // SIGKMEM notify surfaced with
                 // status = ptr|NOTIFY and was never routed to
                 // handle_signal, starving RS on VMREQUEST.
                 if let Some(ci) = nr_to_idx(caller_nr) {
@@ -2700,8 +2852,8 @@ impl<'a> IpcEngine<'a> {
                 self.receive(caller_nr, dst_endpoint)
             }
             IpcCall::SendRec => {
-                // NK4-C 1.10 取证探针：同 s4in，SENDREC 腿（boot taskcall
-                // 走这条）。
+                // Evidence probe: the SENDREC counterpart of the send
+                // probe (boot taskcall goes through here).
                 #[cfg(not(feature = "mock"))]
                 if dst_endpoint.0 == 4 {
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -2801,13 +2953,13 @@ fn build_notify_message(
     procs[dst_idx].p_delivermsg.m_type = NOTIFY_MESSAGE;
 
     // Fill m_notify payload. Safe because MessNotify is Copy + zeroable.
-    // C: m_notify.timestamp = get_monotonic() — I-15: single source, read
+    // C: m_notify.timestamp = get_monotonic() — single source: read
     // ClockState directly (the atomic mirrors are deleted). Dispatch-path
     // callers hold the BKL; hosted notify tests are single-threaded.
     let timestamp = unsafe { crate::clock_state_boot_unchecked() }.uptime();
     let mut interrupts = 0u64;
-    // SD-39: 全宽 4×u32（C sigset_t）——内核内部信号族 71..=74 住
-    // `bits[2]`，随 notify 到达管理器。
+    // Full width: 4×u32 (C sigset_t) — the kernel-internal signal family
+    // 71..=74 lives in `bits[2]` and reaches the manager with the notify.
     let mut sigset = [0u32; 4];
 
     match src {
@@ -2821,8 +2973,9 @@ fn build_notify_message(
         }
         NotifySource::System => {
             // C: m_notify.sigset = priv(dst)->s_sig_pending; clear it.
-            // SD-39: `SigSet` 已拓宽到 128 位，全四字都可能有值
-            // （位 70..73 即内核信号族 71..=74 住 `bits[2]`）。
+            // `SigSet` has been widened to 128 bits, so all four words can
+            // carry values (bits 70..73, i.e. the kernel signal family
+            // 71..=74, live in `bits[2]`).
             if let Some(dst_priv_id) = procs[dst_idx].priv_id
                 && let Some(dst_priv) = priv_table.get_mut(dst_priv_id) {
                     sigset = dst_priv.signals.s_sig_pending.to_words();
@@ -2882,7 +3035,7 @@ pub fn mini_notify_core(
     // `is_willing_to_receive` alone would let a stray notify be delivered
     // straight into that parked receive and consumed as if it were the
     // SENDREC *reply* — the caller then reads the notify's m_type instead
-    // of the awaited answer. NK4C-WORKLOG §1.119's sendrec fix sets
+    // of the awaited answer. The sendrec fix sets
     // MF_REPLY_PEND unconditionally before the send half, so this guard is
     // the half that stops a notify from stealing that parked reply half
     // (C proc.c:570 comment: "A flag is set so that notifications cannot
@@ -2896,12 +3049,14 @@ pub fn mini_notify_core(
         // carry a pending delivery when we write the notify into it.
         debug_assert!(!procs[dst_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
         build_notify_message(procs, priv_table, dst_idx, src);
-        // C mini_notify（proc.c:1147 对位）：m_source = 调用者端点。
-        // build_notify_message 置 Message::default() 后未补 m_source，
-        // 通知以 src=NONE(0x7bff) 投递——sef 的 SYSTEM 信号路由
-        // （source == SYSTEM_ENDPOINT → on_signal）失配，VM 的
-        // SIGKMEM 唤醒被当普通消息丢弃（NK4-A C-3 迭代9 真机：
-        // RS 挂起后 VM 收到 src=NONE/type=0 空消息无限自旋、RS 饿死）。
+        // C mini_notify (cf. proc.c:1147): m_source = caller endpoint.
+        // build_notify_message zeroes the message with Message::default()
+        // and did not fill m_source, so the notify was delivered with
+        // src=NONE(0x7bff) — sef's SYSTEM signal routing
+        // (source == SYSTEM_ENDPOINT → on_signal) missed, and VM's
+        // SIGKMEM wakeup was dropped as an ordinary message (on hardware:
+        // after RS hung, VM received an empty src=NONE/type=0 message and
+        // spun forever while RS starved).
         procs[dst_idx].p_delivermsg.m_source = caller_endpoint;
         procs[dst_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         // C: proc.c:1154 — `IPC_STATUS_ADD_CALL(dst_ptr, NOTIFY)`
@@ -2940,7 +3095,7 @@ pub fn mini_notify_core(
 pub fn kernel_mini_notify(caller_nr: ProcNr, dst_endpoint: Endpoint) -> IpcOutcome {
     // A1 chain root: the trap entry path acquires the BKL before
     // exception/IRQ dispatch and the syscall path holds it throughout
-    // (S-8/S-9 will thread real witnesses). Debug builds assert the lock.
+    // Debug builds assert the lock; real witnesses are not threaded yet.
     let section = unsafe { crate::smp::BklSection::assume_held() };
     let procs = crate::proc_table_with(&section).procs_slice_mut();
     let priv_table = crate::priv_table_with(&section);
@@ -3015,7 +3170,7 @@ mod tests {
 
     #[test]
     fn test_send_flags_p0_fix_values() {
-        // FIX-1 / FIX-2: values must align with C `ipc.h:11-12`.
+        // Values must align with the C `ipc.h:11-12` flags.
         assert_eq!(SendFlags::NON_BLOCKING.bits(), 0x0080);
         assert_eq!(SendFlags::FROM_KERNEL.bits(), 0x0100);
         // The previous wrong values must NOT be present.
@@ -3224,7 +3379,7 @@ mod tests {
 
     #[test]
     fn test_deadlock_mixed_chain_cycle() {
-        // P0 FIX-3 regression test: mixed-chain deadlock.
+        // P0 fix regression test: mixed-chain deadlock.
         // A send→B, B receive←C, C send→A.
         let mut a = make_test_proc(0, Endpoint(1));
         let mut b = make_test_proc(1, Endpoint(2));
@@ -3247,7 +3402,7 @@ mod tests {
         assert_eq!(cycle.group_size, 3);
     }
 
-    // ── Send tests (P0-12-1) ──
+    // ── Send tests ──
 
     #[test]
     fn test_send_when_target_receiving() {
@@ -3318,7 +3473,7 @@ mod tests {
         assert_eq!(outcome.err(), Some(IpcError::Deadlock));
     }
 
-    // ── Receive tests (P0-12-1 + P0-12-5) ──
+    // ── Receive tests ──
 
     #[test]
     fn test_receive_picks_notify_first() {
@@ -3491,14 +3646,18 @@ mod tests {
         assert!(procs[0].p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
     }
 
-    /// NK4-C F14（449-livelock 根因修复）判别测试：Phase 3 drain 必须把
-    /// 排队消息同步拷入接收者用户缓冲（C proc.c:1071-1095，m_buff_usr 直
-    /// 拷），且成功时**不**沉降 p_delivermsg/DELIVERMSG——沉降路径把用户
-    /// 拷贝推迟到接收者下次被挑中（process_misc_flags DELIVERMSG 臂），
-    /// 而 receive 是接收者自己的陷入、返回不经 pick：连续 drain 会把单条
-    /// p_delivermsg 反复覆盖，除最后一条外全部销毁（s14a 实锤：9 台服务
-    /// 器的 VM_PAGEFAULT 被 drain 后零 dispatch，永停 PAGEFAULT）。
-    /// 拷贝失败（目标页未映射）才允许沉降+DELIVERMSG 兜底。
+    /// Discriminating test for the 449-livelock root-cause fix: the
+    /// Phase 3 drain must copy the queued message synchronously into the
+    /// receiver's user buffer (C proc.c:1071-1095 copies m_buff_usr
+    /// directly) and must **not** deposit into p_delivermsg/DELIVERMSG on
+    /// success — the deposit path defers the user copy to the receiver's
+    /// next pick (process_misc_flags DELIVERMSG arm), while receive is the
+    /// receiver's own trap and its return does not go through pick:
+    /// consecutive drains overwrite the single p_delivermsg, destroying
+    /// all but the last message (observed on hardware: after the 9 boot
+    /// servers' VM_PAGEFAULT messages were drained with zero dispatch,
+    /// they stayed parked in PAGEFAULT forever). Only a failed copy
+    /// (target page unmapped) may fall back to deposit + DELIVERMSG.
     #[test]
     fn test_receive_caller_q_drain_copies_to_user_buffer_not_deposit() {
         use core::cell::Cell as CoreCell;
@@ -3560,7 +3719,8 @@ mod tests {
             }
         }
 
-        // 成功拷贝形态：消息走用户缓冲，接收者无 DELIVERMSG 沉降。
+        // Success shape: the message travels through the user buffer and
+        // no DELIVERMSG deposit is left behind.
         let mut a = make_test_proc(0, Endpoint(1));
         let mut b = make_test_proc(1, Endpoint(2));
         a.p_rts_flags = RtsFlags::with(RtsFlagsBits::SENDING);
@@ -3590,7 +3750,8 @@ mod tests {
             "successful sync copy must not deposit into p_delivermsg"
         );
 
-        // 拷贝失败形态：退回沉降 + DELIVERMSG（delivermsg 臂兜底）。
+        // Copy-failure shape: fall back to the deposit + DELIVERMSG (the
+        // delivermsg arm covers it).
         let mut a = make_test_proc(0, Endpoint(1));
         let mut b = make_test_proc(1, Endpoint(2));
         a.p_rts_flags = RtsFlags::with(RtsFlagsBits::SENDING);
@@ -3688,10 +3849,12 @@ mod tests {
         let outcome = engine.receive(ProcNr(2), Endpoint::ANY);
         assert!(outcome.is_delivered(), "receive must pick pending async");
         let b_idx = nr_to_idx(ProcNr(2)).unwrap();
-        // NK4-C B9：receive 自返腿同步拷入用户缓冲成功（SuccessCopy）后
-        // 必须清 DELIVERMSG——若仍沉降，接收者用户态读到旧缓冲内容
-        // （真机 RS boot.rs:1254 panic 根因）。消息内容留在
-        // p_delivermsg（供失败回退腿/pick 兜底），m_source 已盖章。
+        // After the receive self-return leg copied successfully into the
+        // user buffer (SuccessCopy), DELIVERMSG must be cleared — a
+        // lingering deposit would make the receiver read stale buffer
+        // content in user mode (root cause of the RS boot.rs:1254 panic).
+        // The message content stays in p_delivermsg (for the failure
+        // fallback leg / pick fallback) with m_source already stamped.
         assert!(
             !engine.procs[b_idx]
                 .p_misc_flags
@@ -3701,7 +3864,7 @@ mod tests {
         assert_eq!(engine.procs[b_idx].p_delivermsg.m_source, a_endpoint);
     }
 
-    // ── Notify tests (P0-12-1) ──
+    // ── Notify tests ──
 
     #[test]
     fn test_notify_delivers_when_target_receiving() {
@@ -3732,7 +3895,7 @@ mod tests {
     /// delivered straight into that parked receive (which the caller would
     /// mis-read as the SENDREC answer). It must fall through to the deferred
     /// `s_notify_pending` bitmap. Pre-fix, `is_willing_to_receive` alone let
-    /// the notify steal the sendrec reply half — a §1.119 EPERM candidate.
+    /// the notify steal the sendrec reply half — an EPERM candidate.
     #[test]
     fn test_notify_defers_when_target_reply_pend() {
         let mut pt = crate::test_helpers::test_proc_table();
@@ -3776,7 +3939,7 @@ mod tests {
         );
     }
 
-    /// E1 slice 2: when a send completes a blocked receiver, the woken
+    /// When a send completes a blocked receiver, the woken
     /// caller's saved-context RAX must carry the syscall return code (OK).
     /// C: the completion path sets the return before marking runnable —
     /// without this a resumed caller observes stale trap-entry RAX.
@@ -3842,7 +4005,7 @@ mod tests {
         assert!(!result.is_blocked(), "notify must never block");
     }
 
-    // ── Deliver message tests (P0-12-1) ──
+    // ── Deliver message tests ──
 
     /// A UserCopy impl that always succeeds. SENDA reads return a
     /// single VALID entry aimed at `Endpoint(2)`.
@@ -3856,11 +4019,13 @@ mod tests {
         fn write_senda_result(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
     }
 
-    // ── D-16: receive 侧过滤集成测试 ─────────────────────────────────
+    // ── Receive-side filter integration tests ────────────────────────
 
-    /// D-16: whitelist filter（只允许 A）挂在接收方 R 上——A 的消息照常
-    /// 直投（Path A 放行），B 的消息被过滤 → B 阻塞入队且**留在队列中**
-    /// （C proc.c:1053-1058 的 CANRECEIVE 失败 = 扫描继续，非错误）。
+    /// Whitelist filter (only A allowed) installed on receiver R — A's
+    /// messages are delivered directly as usual (Path A passes), B's
+    /// messages are filtered → B blocks and **stays in the queue**
+    /// (C proc.c:1053-1058: a failed CANRECEIVE means continue the scan,
+    /// not an error).
     #[test]
     fn test_d16_whitelist_allows_listed_blocks_unlisted() {
         let mut pt = crate::test_helpers::test_proc_table();
@@ -3923,9 +4088,10 @@ mod tests {
             .is_set(RtsFlagsBits::SENDING));
     }
 
-    /// D-16: 被过滤的 notify 保持 pending（位不清除）——C proc.c:1013 的
-    /// CANRECEIVE 逐位检查：不过滤的候选照常投递，过滤的候选留待 filter
-    /// 变化后的下一轮 receive。
+    /// A filtered notify stays pending (the bit is not cleared) — C
+    /// proc.c:1013 checks CANRECEIVE bit by bit: unfiltered candidates are
+    /// delivered as usual, filtered ones wait for the next receive after
+    /// the filter changes.
     #[test]
     fn test_d16_notify_filtered_stays_pending() {
         let mut pt = crate::test_helpers::test_proc_table();
@@ -3977,9 +4143,10 @@ mod tests {
             .is_set(MiscFlagsBits::DELIVERMSG));
     }
 
-    /// D-16: 被过滤的 SENDA 表项走 pending 路径——无结果写回（非
-    /// AMF_DONE，留待重试），目标置 s_asyn_pending 位（C proc.c:1280 的
-    /// WILLRECEIVE 含 CANRECEIVE；proc.c:1293-1297 的 pending 分支）。
+    /// A filtered SENDA entry takes the pending path — no result
+    /// write-back (not AMF_DONE, left for retry) and the target gets the
+    /// s_asyn_pending bit set (C proc.c:1280's WILLRECEIVE includes
+    /// CANRECEIVE; proc.c:1293-1297 is the pending branch).
     #[test]
     fn test_d16_senda_filtered_entry_stays_pending() {
         use core::cell::Cell;
@@ -4019,9 +4186,10 @@ mod tests {
             b.p_endpoint = b_ep;
             b.priv_id = Some(b_priv);
         }
-        // L1 掩码层放行（B 的 s_ipc_to 有 R 位——may_asynsend_to 通过；
-        // senda 还要求 SYS_PROC），拒绝发生在 L2 filter 层：白名单只允许
-        // 来源 0x31（≠ B 的 0x32）。
+        // The L1 mask layer allows it (B's s_ipc_to has R's bit —
+        // may_asynsend_to passes; senda also requires SYS_PROC); the
+        // rejection happens at the L2 filter layer: the whitelist only
+        // allows source 0x31 (≠ B's 0x32).
         priv_table.get_mut(b_priv).unwrap().flags.s_flags.insert(
             crate::capability::ProcessCapability::SYS_PROC,
         );
@@ -4053,7 +4221,7 @@ mod tests {
         assert!(!copy.delivered.get(), "filtered entry must not be marked AMF_DONE");
     }
 
-    /// D-17 fixture: the single table entry is addressed to SELF
+    /// Fixture: the single table entry is addressed to SELF
     /// (resolves to the caller's own endpoint — proc.c:1183-1185).
     struct SelfEntryCopy;
     impl UserCopy for SelfEntryCopy {
@@ -4065,7 +4233,7 @@ mod tests {
         fn write_senda_result(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
     }
 
-    /// D-17 fixture: entry aimed at a fixed endpoint; captures the
+    /// Fixture: entry aimed at a fixed endpoint; captures the
     /// per-entry result written back by `write_senda_result`.
     struct CapturingCopy {
         target: Endpoint,
@@ -4099,7 +4267,7 @@ mod tests {
         // Poison the return register first: the delivery must overwrite it
         // with OK (C: proc.c:291 — the completed IPC returns OK to the
         // caller). Without the write the resumed caller sees the stale
-        // trap-entry value (real machine NK4-A C-3: VM saw its src arg).
+        // trap-entry value (on hardware: VM saw its src arg).
         crate::proc::set_ipc_return_code(&mut a, 0x7c00);
         let mut procs = crate::test_helpers::scratch_procs([a]);
         let mut priv_table = crate::test_helpers::test_priv_table();
@@ -4169,7 +4337,7 @@ mod tests {
         assert!(!engine.procs[0].p_misc_flags.is_set(MiscFlagsBits::MSGFAILED));
     }
 
-    // ── Permission check tests (P0-12-1) ──
+    // ── Permission check tests ──
 
     #[test]
     fn test_check_ipc_permission_target_kernel_task_restriction() {
@@ -4284,7 +4452,7 @@ mod tests {
         assert_eq!(engine.procs[b_idx].p_delivermsg.m_source, Endpoint(1));
     }
 
-    /// D-17 (priv.h:87): `may_asynsend_to = may_send_to || self` — a
+    /// priv.h:87: `may_asynsend_to = may_send_to || self` — a
     /// SENDA entry addressed to SELF (resolving to the caller's own
     /// endpoint) passes the IPC mask gate even though the caller's own
     /// `s_ipc_to` bit is clear (the boot convention deliberately keeps
@@ -4325,7 +4493,7 @@ mod tests {
         }
     }
 
-    /// D-17 asymmetry counterpart: the same EMPTY `s_ipc_to` DENIES an
+    /// Asymmetry counterpart: the same EMPTY `s_ipc_to` DENIES an
     /// entry aimed at a different process (the sync-path rule
     /// `may_send_to` has no self exception — priv.h:86 vs :87). The
     /// denial is per-entry: the aggregate outcome stays OK and the
@@ -4411,9 +4579,9 @@ mod tests {
         // delivered (C: try_one / caller_q retry). Hosted stubs cannot
         // re-read the user SENDA table (`read_senda_entry` is a
         // PageFault stub under cfg(test) — the pure Phase-2 leg is
-        // covered on real hardware, serial_b8a/b9p2), so the retry
+        // covered on real hardware), so the retry
         // observable here is the pending-bit consumption + delivery via
-        // the receive leg with the F14/B9 sync copy.
+        // the receive leg with the synchronous user copy.
         let b_idx = nr_to_idx(ProcNr(2)).unwrap();
         let a_idx = nr_to_idx(ProcNr(1)).unwrap();
         {
@@ -4427,7 +4595,7 @@ mod tests {
         // Hosted stub cannot re-read the sender's table (asynendpoint
         // unset → deliver_async guard fails), so the Phase-2 attempt
         // leaves nothing delivered — C try_one's tail re-arm (proc.c:
-        // 1499-1501, NK4-C B8) puts the sender's bit back. The bit is
+        // 1499-1501) puts the sender's bit back. The bit is
         // still there for the *async* retry to be picked up, while the
         // sender itself was drained from caller_q by the sync leg.
         {
@@ -4440,8 +4608,8 @@ mod tests {
             let sp = engine.priv_table.get(a_priv).unwrap();
             assert_ne!(sp.signals.s_asynsize, 0, "sender table kept for retry");
         }
-        // NK4-C B9: sync copy delivered the message (SuccessCopy → no
-        // deposit left behind).
+        // Sync copy delivered the message (SuccessCopy → no deposit left
+        // behind).
         assert!(
             !engine.procs[b_idx]
                 .p_misc_flags
@@ -4465,7 +4633,8 @@ mod tests {
         let _msg = copier.copy_msg_from_user(VirBytes::new(0)).unwrap();
         copier.copy_msg_to_user(VirBytes::new(0), &Message::default()).unwrap();
         // SENDA stub: reads fault (no real user table in tests), writes
-        // succeed (C ignores A_INSRT errors). 1.12：root 参数（PhysBytes）。
+        // succeed (C ignores A_INSRT errors). The root argument is a
+        // PhysBytes.
         let root = minix_types::PhysBytes(0);
         assert!(copier.read_senda_entry(root, VirBytes::new(0), 0).is_err());
         copier.write_senda_result(root, VirBytes::new(0), 0, 0, 0).unwrap();
@@ -4618,11 +4787,11 @@ mod tests {
         assert_eq!(write_rw, Ok(()));
     }
 
-    // ── C-27 multi-process boot exchange (test-sysboot real-machine regression) ──
+    // ── Multi-process boot exchange (test-sysboot hardware regression) ──
 
     #[test]
     fn test_sendrec_to_blocked_receiver_stamps_source_endpoint() {
-        // C-27 real machine (test-sysboot): the woken receiver observed
+        // On hardware (test-sysboot): the woken receiver observed
         // m_source = Message::default() poison and failed its sendnb reply
         // with EDEADSRCDST(202). Engine half of the contract: a sendrec
         // into a parked receive(ANY) delivers with the SENDER's boot
@@ -4665,10 +4834,12 @@ mod tests {
         }
     }
 
-    /// NK4-C 1.10x：SENDREC 发送半被 drain 后停车的 receive 半必须以
-    /// sendrec 目的地为 getfrom（C proc.c:1104-1107，src_e 阻塞），不得
-    /// ANY——否则第三方发往该发送者的消息经 Path A 直投冒充 reply，
-    /// 完成一个语义上未完成的 sendrec（s16g 真机互卡根因）。
+    /// After a SENDREC send half is drained away, the parked receive half
+    /// must use the sendrec destination as getfrom (C proc.c:1104-1107,
+    /// blocks on src_e), never ANY — otherwise a third party's message to
+    /// that sender would be delivered directly via Path A and pass for the
+    /// reply, completing a sendrec that is semantically unfinished (root
+    /// cause of the mutual deadlock seen on hardware).
     #[test]
     fn test_sendrec_parked_receive_half_getfrom_locks_to_destination() {
         // pm = idx 0 (ep 10), sched = idx 1 (ep 11), init = idx 2 (ep 12).
@@ -4683,7 +4854,8 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
 
-        // 1. pm sendrec(sched)：sched 未收 → 发送半阻塞，REPLY_PEND。
+        // 1. pm sendrec(sched): sched is not receiving yet → the send
+        //    half blocks, REPLY_PEND.
         let mut req = Message::default();
         req.m_type = 0x21;
         assert!(matches!(
@@ -4696,8 +4868,9 @@ mod tests {
                 .is_set(MiscFlagsBits::REPLY_PEND)
         );
 
-        // 2. sched receive(ANY)：Phase 3 drain 取走 pm 的发送半 → pm 转入
-        //    receive 半停车，getfrom 锁定为目的地 sched 的端点。
+        // 2. sched receive(ANY): the Phase 3 drain takes pm's send half →
+        //    pm transitions into its receive half, parked, with getfrom
+        //    locked to the destination sched's endpoint.
         assert!(matches!(
             engine.receive(test_nr(1), Endpoint::ANY),
             IpcOutcome::Delivered
@@ -4706,8 +4879,10 @@ mod tests {
         assert!(engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
         assert_eq!(engine.procs[0].p_getfrom_e, Endpoint(11));
 
-        // 3. init 发往 pm：getfrom 锁定 → 不得直投冒充 reply，init 阻塞。
-        //    （测试态 user copy 恒返回零消息，判定靠 m_source 盖章。）
+        // 3. init sends to pm: getfrom is locked → it must not be
+        //    delivered directly as a reply, so init blocks. (In test mode
+        //    the user copy always returns a zeroed message; the verdict
+        //    rests on the m_source stamp.)
         let mut stray = Message::default();
         stray.m_type = 0x33;
         assert!(matches!(
@@ -4717,7 +4892,8 @@ mod tests {
         assert!(engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
         assert_ne!(engine.procs[0].p_delivermsg.m_source, Endpoint(12));
 
-        // 4. sched 回复：getfrom 命中 → Path A 直投完成 pm 的 sendrec。
+        // 4. sched replies: getfrom matches → Path A delivers directly
+        //    and completes pm's sendrec.
         let mut reply = Message::default();
         reply.m_type = 0x7c;
         assert!(matches!(
@@ -4728,10 +4904,12 @@ mod tests {
         assert_eq!(engine.procs[0].p_delivermsg.m_source, Endpoint(11));
     }
 
-    /// NK4-C 1.10x b：SENDREC 秒达（发送半 Path A 直投）时，receive 半必须
-    /// 只收 sendrec 目的地（C proc.c:571-583 同一 src_dst_e）——不得
-    /// receive(ANY) 把 caller_q 上第三方排队请求当 reply 消费（s17j 实锤
-    /// 的 PM↔sched ENOSYS ping-pong 根因）。
+    /// When a SENDREC send half is delivered instantly (Path A direct
+    /// delivery), the receive half must accept only the sendrec
+    /// destination (C proc.c:571-583 uses the same src_dst_e) — never
+    /// receive(ANY), which would consume a third party's queued request on
+    /// caller_q as the reply (root cause of the PM↔sched ENOSYS ping-pong
+    /// seen on hardware).
     #[test]
     fn test_sendrec_fast_path_receive_half_scopes_to_destination() {
         // pm = idx 0 (ep 10), sched = idx 1 (ep 11), init = idx 2 (ep 12).
@@ -4746,20 +4924,23 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
 
-        // 1. sched receive(ANY) 停车（待命收 taskcall）。
+        // 1. sched parks in receive(ANY) (standing by for taskcalls).
         assert!(matches!(
             engine.receive(test_nr(1), Endpoint::ANY),
             IpcOutcome::Blocked
         ));
-        // 2. init send(pm)：pm 未收 → init 阻塞入 pm 的 caller_q。
+        // 2. init sends to pm: pm is not receiving → init blocks into
+        //    pm's caller_q.
         let mut stray = Message::default();
         stray.m_type = 0x33;
         assert!(matches!(
             engine.send(test_nr(2), Endpoint(10), &stray, SendFlags::NONE),
             IpcOutcome::Blocked
         ));
-        // 3. pm sendrec(sched)：发送半秒达（Path A）→ receive 半以目的地
-        //    sched 过滤：init 的排队请求（src 12 ≠ 11）不得消费 → 阻塞。
+        // 3. pm sendrec(sched): the send half is delivered instantly
+        //    (Path A) → the receive half filters by the destination sched:
+        //    init's queued request (src 12 ≠ 11) must not be consumed →
+        //    block.
         let mut req = Message::default();
         req.m_type = 0x21;
         assert!(matches!(
@@ -4769,29 +4950,36 @@ mod tests {
         assert!(engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
         assert_eq!(engine.procs[0].p_getfrom_e, Endpoint(11));
         assert_ne!(engine.procs[0].p_delivermsg.m_source, Endpoint(12));
-        // CONSIDER（CR）：钉死 send 半确实走了快路径（已秒达、不再
-        // SENDING），否则若 step 1 的 receive 失效使 send 退化为 Path B 阻
-        // 塞，新断言在 Blocked 腿上照样通过→§1.119 覆盖静默失效。
+        // CONSIDER: pin down that the send half really took the fast path
+        // (already delivered, no longer SENDING); otherwise, if step 1's
+        // receive failed and the send degenerated into blocking on Path B,
+        // the new assertions would pass on the Blocked leg too and the
+        // coverage would silently evaporate.
         assert!(
             !engine.procs[0]
                 .p_rts_flags
                 .is_set(RtsFlagsBits::SENDING),
             "send 半必须已秒达（走 Path A Delivered 腿）"
         );
-        // §1.119 回归：send 半秒达（Path A Delivered）也必须像 C
-        // proc.c:569-571 那样在 send 之前已无条件置 REPLY_PEND，使 receive
-        // 半跳过 Phase-1 notify 扫描、只等 sendrec 目的地（sched）的真回复。
-        // 修复前此腿从不置位 → 挂起 notify/杂散消息可冒充 sendrec 回复被
-        // 抢先消费 → sched 真回复落 PM 主循环成野请求 → taskcall 读到
-        // 错 m_type → sched_start_user 误判 Err → INIT EPERM 活锁。此断言
-        // 修复前必失败（Delivered 臂漏置），修复后通过。
+        // Sendrec regression: an instantly delivered send half (Path A
+        // Delivered) must also have set REPLY_PEND unconditionally before
+        // send, as C proc.c:569-571 does, so that the receive half skips
+        // the Phase-1 notify scan and waits only for the real reply from
+        // the sendrec destination (sched). Before the fix this leg never
+        // set the flag → a pending notify or stray message could pass for
+        // the sendrec reply and be consumed first → sched's real reply
+        // landed in PM's main loop as a stray request → taskcall read the
+        // wrong m_type → sched_start_user misjudged Err → INIT EPERM
+        // livelock. This assertion must fail before the fix (the Delivered
+        // arm missed the set) and passes after it.
         assert!(
             engine.procs[0]
                 .p_misc_flags
                 .is_set(MiscFlagsBits::REPLY_PEND),
             "sendrec 的 send 半即使秒达也必须置 REPLY_PEND（C proc.c:571）"
         );
-        // 4. sched 回复 → Path A 命中 getfrom 完成 sendrec。
+        // 4. sched replies → Path A matches getfrom and completes the
+        //    sendrec.
         let mut reply = Message::default();
         reply.m_type = 0x7c;
         assert!(matches!(

@@ -23,7 +23,7 @@ use crate::syscall::{KcallResult, Syscall};
 use minix_plat::{InterruptRouter, PerCpuInterruptUnit};
 
 // ── Minix3 error codes ──
-// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Centralized in `crate::errno` to prevent value drift.
 // Previously ENOSYS=38 here (should be 78).
 use crate::errno::*;
 
@@ -154,7 +154,7 @@ struct PvLongPair {
 /// I/O batch buffer with `align(8)` — the widest alignment any view cast
 /// onto it needs (`PvLongPair` align 4, `u16` align 2).
 ///
-/// # SAFETY (why this type exists — V12-B2 audit)
+/// # SAFETY (why this type exists)
 ///
 /// `slice::from_raw_parts` on a `*const PvLongPair` requires a 4-aligned
 /// pointer, but a bare `[u8; N]` only guarantees alignment 1 — the
@@ -191,8 +191,8 @@ impl<const N: usize> core::ops::DerefMut for IoBatchBuf<N> {
 // ── Helper ──
 
 fn msg_m1(msg: &Message) -> MessageM1 {
-    // SAFETY: `m_type` has been validated by the caller to select the M1
-    // format. All union variants share the same size and `#[repr(C)]`
+    // SAFETY: `m_type` has been validated by the caller to select the
+    // `MessageM1` format. All union variants share the same size and `#[repr(C)]`
     // layout, so reading a different variant is sound.
     unsafe { msg.m_u.m_m1 }
 }
@@ -246,7 +246,7 @@ pub fn dispatch_irqctl<IC: InterruptRouter + PerCpuInterruptUnit>(
 ) -> KcallResult {
     // C: do_irqctl.c:24-25 — extract parameters from mess_lsys_krn_sys_irqctl.
     //
-    // IMPORTANT: Do NOT use the M1 overlay here. The C struct layout is:
+    // IMPORTANT: Do NOT use the `MessageM1` overlay here. The C struct layout is:
     //   request@0, vector@4, policy@8, hook_id@12
     // while MessageM1 has m1i1@0, m1i2@4, m1i3@8, then 4 bytes padding for
     // 8-byte alignment, then m1p1@16. Reading `m1p1` for `hook_id` would
@@ -435,7 +435,7 @@ pub fn dispatch_devio<PI: PortIo>(
 ) -> KcallResult {
     // C: do_devio.c:22-24 — extract parameters from mess_lsys_krn_sys_devio.
     //
-    // IMPORTANT: Do NOT use the M1 overlay here. The C struct layout is:
+    // IMPORTANT: Do NOT use the `MessageM1` overlay here. The C struct layout is:
     //   request@0, port@4, value@8
     // while MessageM1 has m1i1@0, m1i2@4, m1i3@8, then 4 bytes padding,
     // then m1p1@16. Reading `m1p1` for `value` would read offset 16
@@ -504,7 +504,7 @@ pub fn dispatch_devio<PI: PortIo>(
             };
             // C: do_devio.c:71-80 — write result to m_krn_lsys_sys_devio.value
             // Reply value lives at offset 0 (`MessKrnLsysSysDevio`), NOT at
-            // M1's `m1p1` @16 — same field-mapping reasoning as above.
+            // `MessageM1`'s `m1p1` @16 — same field-mapping reasoning as above.
             msg.debug_check_m_type_any(&[Syscall::Devio as i32]);
             // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
             msg.m_u.m_krn_lsys_sys_devio.value = result;
@@ -548,7 +548,7 @@ pub fn dispatch_vdevio<PI: PortIo>(
 ) -> KcallResult {
     // C: do_vdevio.c:44-52 — extract parameters from mess_lsys_krn_sys_vdevio.
     //
-    // IMPORTANT: Do NOT use the M1 overlay here. The C struct layout is:
+    // IMPORTANT: Do NOT use the `MessageM1` overlay here. The C struct layout is:
     //   request@0, vec_size@4, vec_addr@8 (vir_bytes)
     // while MessageM1 has m1i1@0, m1i2@4, m1i3@8, then 4 bytes padding,
     // then m1p1@16. Reading `m1p1` for `vec_addr` would read offset 16
@@ -622,9 +622,11 @@ pub fn dispatch_vdevio<PI: PortIo>(
         .map(|p| p.p_seg.phys_root)
         .expect("dispatch_vdevio: caller slot must exist");
 
-    // NK4-C 1.51 (B27 残留根因): buf 是内核栈局部数组（image 高半区，两个 DM
-    // 窗口之外），`virt_to_phys` 产伪物理地址。改用 AddressRef::Process（caller
-    // CR3 映射内核 higher-half，resolve_physical 走真页表得正确 PA）。
+    // buf is a kernel-stack local array (in the image's higher half, outside
+    // both DM windows), so `virt_to_phys` would produce a bogus physical
+    // address. Use AddressRef::Process instead (the caller CR3 maps the
+    // kernel higher half, so resolve_physical walks the real page tables and
+    // yields the correct PA).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
@@ -767,8 +769,8 @@ pub fn dispatch_vdevio<PI: PortIo>(
     // Uses `data_copy_vmcheck` (kernel→user direction) for the same
     // reasons as the user→kernel copy above.
     if dir == IoDirection::Input {
-        // NK4-C 1.51 (B27 残留根因): buf 内核栈局部（image 高半区），改用
-        // AddressRef::Process（caller CR3 映射内核 higher-half）。
+        // buf is a kernel-stack local (image higher half); use
+        // AddressRef::Process (the caller CR3 maps the kernel higher half).
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
@@ -1073,10 +1075,12 @@ pub fn dispatch_sdevio<PI: PortIo>(
         // `total_bytes > SDEVIO_BUF_MAX → E2BIG` check above bounds the
         // cast's `vec_size * 2` within the buffer.
         let mut buf = IoBatchBuf::<SDEVIO_BUF_MAX>::zeroed();
-        // NK4-C 1.51 (B27 残留根因): buf 是内核栈局部数组（image 高半区，两个
-        // DM 窗口之外），`virt_to_phys` 产伪物理地址。拷贝两侧都走 Process，
-        // 其中 buf 侧复用 granter endpoint（granter 的 CR3 已映射内核 higher-half，
-        // 且 src 本就走 granter）。
+        // buf is a kernel-stack local array (in the image's higher half,
+        // outside both DM windows), so `virt_to_phys` would produce a bogus
+        // physical address. Both sides of the copy go through Process; the
+        // buf side reuses the granter endpoint (the granter's CR3 already
+        // maps the kernel higher half, and src goes through the granter
+        // anyway).
 
         // For output: copy grant buffer → kernel, then write to I/O port.
         if !is_input {
@@ -1516,7 +1520,7 @@ mod tests {
 
         let mut priv_table = crate::test_helpers::test_priv_table();
         let priv_id: crate::kpriv::PrivId = 0;
-        // K20 caller-by-nr: the caller's priv_id lives on its table slot.
+        // The caller's priv_id lives on its table slot.
         let mut proc_table = crate::test_helpers::test_proc_table();
         proc_table.get_mut(ProcNr(0)).unwrap().priv_id = Some(priv_id);
         if let Some(priv_) = priv_table.get_mut(priv_id) {
@@ -1542,7 +1546,7 @@ mod tests {
 
         let mut priv_table = crate::test_helpers::test_priv_table();
         let priv_id: crate::kpriv::PrivId = 0;
-        // K20 caller-by-nr: the caller's priv_id lives on its table slot.
+        // The caller's priv_id lives on its table slot.
         let mut proc_table = crate::test_helpers::test_proc_table();
         proc_table.get_mut(ProcNr(0)).unwrap().priv_id = Some(priv_id);
         if let Some(priv_) = priv_table.get_mut(priv_id) {
@@ -2003,7 +2007,7 @@ mod tests {
 
 
 
-    /// Build a SYS_IRQCTL message using the dedicated struct (not M1).
+    /// Build a SYS_IRQCTL message using the dedicated struct (not `MessageM1`).
     fn build_irqctl_msg(request: i32, vector: i32, policy: i32, hook_id: i32) -> Message {
         let mut msg = Message::default();
         msg.m_type = Syscall::Irqctl as i32;
@@ -2026,7 +2030,7 @@ mod tests {
         let mut msg = build_irqctl_msg(99, 0, 0, 0);
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: caller identities live on table slots.
+        // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
         let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -2045,7 +2049,7 @@ mod tests {
         );
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: caller identities live on table slots.
+        // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
         let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -2064,7 +2068,7 @@ mod tests {
         );
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: caller identities live on table slots.
+        // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
         let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -2086,7 +2090,7 @@ mod tests {
         );
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: caller identities live on table slots.
+        // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
         let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
@@ -2115,25 +2119,26 @@ mod tests {
         let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(OK));
         // The first installed hook gets 1-based id = 1.
-        // Read back via the dedicated irqctl variant (not M1).
+        // Read back via the dedicated irqctl variant (not `MessageM1`).
         msg.debug_check_m_type_any(&[Syscall::Irqctl as i32]);
         // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
         let hook_id = unsafe { msg.m_u.m_lsys_krn_sys_irqctl.hook_id };
         assert_eq!(hook_id, 1, "hook_id must be written to the dedicated irqctl field");
     }
 
-    // ── T-9: RMPOLICY / ENABLE / DISABLE owner 校验（doc 20 §5.2 缺口）──
+    // ── RMPOLICY / ENABLE / DISABLE owner checks (gap in doc 20 §5.2) ───
 
-    /// SETPOLICY 安装 hook 后：RMPOLICY 非 owner → EPERM；owner → OK 且槽位
-    /// 清空（do_irqctl.c:111-120）；空槽再删 → EINVAL。
+    /// After SETPOLICY installs a hook: RMPOLICY by a non-owner → EPERM; by
+    /// the owner → OK and the slot is cleared (do_irqctl.c:111-120);
+    /// removing an empty slot again → EINVAL.
     #[test]
     fn test_dispatch_irqctl_rmpolicy_owner_check_and_removes() {
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: caller identities live on table slots.
+        // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
 
-        // owner (ep 100) 安装 hook → 1-based id = 1
+        // owner (ep 100) installs a hook → 1-based id = 1
         {
             let owner = proc_table.get_mut(ProcNr(0)).unwrap();
             owner.p_endpoint = Endpoint(100);
@@ -2144,7 +2149,7 @@ mod tests {
             KcallResult::Ok(OK));
         assert_eq!(irq_mgr.hook_owner(0), Some(Endpoint(100)));
 
-        // 非 owner (ep 200) 删除 → EPERM（do_irqctl.c:113 owner 校验）
+        // non-owner (ep 200) removes → EPERM (do_irqctl.c:113 owner check)
         {
             let intruder = proc_table.get_mut(ProcNr(1)).unwrap();
             intruder.p_endpoint = Endpoint(200);
@@ -2155,25 +2160,27 @@ mod tests {
             KcallResult::Ok(EPERM));
         assert_eq!(irq_mgr.hook_owner(0), Some(Endpoint(100)), "EPERM 后槽位不动");
 
-        // owner 删除 → OK 且槽位清空
+        // owner removes → OK and the slot is cleared
         let mut msg = build_irqctl_msg(IrqctlRequest::RmPolicy as i32, 5, 0, 1);
         assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
             KcallResult::Ok(OK));
         assert_eq!(irq_mgr.hook_owner(0), None, "删除后槽位必须清空");
 
-        // 空槽再删 → EINVAL（do_irqctl.c:111-114 hook 未占用）
+        // removing the empty slot again → EINVAL (do_irqctl.c:111-114: hook
+        // not occupied)
         let mut msg = build_irqctl_msg(IrqctlRequest::RmPolicy as i32, 5, 0, 1);
         assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
             KcallResult::Ok(EINVAL));
     }
 
-    /// ENABLE：hook_id 无效 → EINVAL；非 owner → EPERM；owner → OK
-    /// （do_irqctl.c:31-32 owner 校验 + enable_irq 调用 IC unmask 路径）。
+    /// ENABLE: invalid hook_id → EINVAL; non-owner → EPERM; owner → OK
+    /// (do_irqctl.c:31-32 owner check + enable_irq calls the IC unmask
+    /// path).
     #[test]
     fn test_dispatch_irqctl_enable_owner_check() {
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: caller identities live on table slots.
+        // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
         {
             let owner = proc_table.get_mut(ProcNr(0)).unwrap();
@@ -2186,17 +2193,17 @@ mod tests {
             intruder.priv_id = Some(0);
         }
 
-        // 安装 hook 1（owner）
+        // install hook 1 (owner)
         let mut msg = build_irqctl_msg(IrqctlRequest::SetPolicy as i32, 5, 0, 0);
         assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
             KcallResult::Ok(OK));
 
-        // hook_id = 0（< 1）→ EINVAL
+        // hook_id = 0 (< 1) → EINVAL
         let mut msg = build_irqctl_msg(IrqctlRequest::Enable as i32, 5, 0, 0);
         assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
             KcallResult::Ok(EINVAL));
 
-        // 非 owner ENABLE → EPERM
+        // non-owner ENABLE → EPERM
         let mut msg = build_irqctl_msg(IrqctlRequest::Enable as i32, 5, 0, 1);
         assert_eq!(dispatch_irqctl(ProcNr(1), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
             KcallResult::Ok(EPERM));
@@ -2207,13 +2214,13 @@ mod tests {
             KcallResult::Ok(OK));
     }
 
-    /// DISABLE：非 owner → EPERM；owner → OK（do_irqctl.c:31-32 owner 校验 +
-    /// disable_irq 调用 IC mask 路径）。
+    /// DISABLE: non-owner → EPERM; owner → OK (do_irqctl.c:31-32 owner check
+    /// + disable_irq calls the IC mask path).
     #[test]
     fn test_dispatch_irqctl_disable_owner_check() {
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: caller identities live on table slots.
+        // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
         {
             let owner = proc_table.get_mut(ProcNr(0)).unwrap();

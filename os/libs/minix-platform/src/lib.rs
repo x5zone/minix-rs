@@ -25,8 +25,8 @@
 //!   BKL held), read-only thereafter. SMP-safe without locks.
 //! - **Opaque kind tags**: `KernelInfo.platform_sources` carries
 //!   `&'static [PlatformDescSource]` — each source is pure data
-//!   `(u32 kind, u64 phys_addr)`, safe to pass across binary boundaries
-//!   (TODO-02-3). [`kind::parse_by_kind`] dispatches on the kind tag.
+//!   `(u32 kind, u64 phys_addr)`, safe to pass across binary boundaries.
+//!   [`kind::parse_by_kind`] dispatches on the kind tag.
 
 pub mod arch;
 pub mod desc;
@@ -36,7 +36,7 @@ pub mod kind;
 pub mod qemu_virt;
 pub mod test_support;
 
-// S-2b: aarch64 joins the ACPI discovery chain (AAVMF exposes the ACPI 2.0
+// aarch64 joins the ACPI discovery chain (AAVMF exposes the ACPI 2.0
 // RSDP via config table; AcpiDesc::parse handles MADT GICC for topology).
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub mod acpi;

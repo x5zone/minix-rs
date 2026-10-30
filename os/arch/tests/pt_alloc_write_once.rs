@@ -1,6 +1,6 @@
-//! M7 write-once contract for the page-table allocator singletons
-//! (`TODO-02`): a second `register` / `register_free` must abort in debug
-//! builds and be refused (not overwrite) in release builds.
+//! Write-once contract for the page-table allocator singletons: a second
+//! `register` / `register_free` must abort in debug builds and be refused
+//! (not overwrite) in release builds.
 //!
 //! This lives in `tests/` on purpose: the singleton state is process-global,
 //! and the in-crate test binary already registers an allocator for the

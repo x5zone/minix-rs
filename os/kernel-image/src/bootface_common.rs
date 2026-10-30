@@ -94,7 +94,7 @@ pub(crate) fn table_magic_ok(pa: u64) -> bool {
 /// `/chosen`'s `opensbi,boot-file-table` property as a physical address
 /// (big-endian 4/8-byte cell). Lookup walks `all_nodes` instead of
 /// `find_node`: fdt 0.1.5's `find_node` misses the node in blobs rebuilt by
-/// the QEMU `-kernel` path (SD-38), while `all_nodes` sees it.
+/// the QEMU `-kernel` path, while `all_nodes` sees it.
 pub(crate) fn fdt_table_pa(fdt: &fdt::Fdt<'_>) -> Option<u64> {
     let chosen = fdt
         .all_nodes()
@@ -103,7 +103,7 @@ pub(crate) fn fdt_table_pa(fdt: &fdt::Fdt<'_>) -> Option<u64> {
     be_cell(prop.value)
 }
 
-/// `/chosen`'s `bootargs` string, via `all_nodes` for the same SD-38 reason
+/// `/chosen`'s `bootargs` string, via `all_nodes` for the same reason
 /// (the crate's `chosen()` helper panics when `find_node` misses the node).
 pub(crate) fn fdt_bootargs<'a>(fdt: &fdt::Fdt<'a>) -> Option<&'a str> {
     let chosen = fdt

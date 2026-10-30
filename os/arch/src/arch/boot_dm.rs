@@ -14,8 +14,8 @@
 //!
 //! # Coverage follows resource ranges, not `[0, max_phys)`
 //!
-//! The mapping candidate set is a two-source union
-//! (`07-paging_init_design` §6.1 "映射候选的两源并集"):
+//! The mapping candidate set is a two-source union (`07-paging_init_design`
+//! §6.1):
 //!
 //! 1. **Resource-classified memmap ranges** — the conventional-RAM regions
 //!    reported by boot (source of VM PMM RAM);

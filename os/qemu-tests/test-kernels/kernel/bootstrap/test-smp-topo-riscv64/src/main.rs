@@ -1,10 +1,10 @@
-//! Test: topology discovery pin (SMP bring-up S-2, ladder L1) — riscv64/DTB.
+//! Test: topology discovery pin — riscv64/DTB.
 //!
-//! Pins the D-36 upper half under real QEMU `-smp 4`: OpenSBI hands the
-//! supervisor the device-tree blob pointer in `a1` at entry, `parse_by_kind`
-//! walks the `cpus` node, and the resulting `CpuTopology` must describe
-//! exactly the harts QEMU exposed — four of them, unique hart IDs, BSP among
-//! the discovered set.
+//! Pins the upper half of topology discovery under real QEMU `-smp 4`:
+//! OpenSBI hands the supervisor the device-tree blob pointer in `a1` at
+//! entry, `parse_by_kind` walks the `cpus` node, and the resulting
+//! `CpuTopology` must describe exactly the harts QEMU exposed — four of
+//! them, unique hart IDs, BSP among the discovered set.
 //!
 //! Unlike the x86_64/aarch64 variants this is not a UEFI binary: riscv64 has
 //! no Rust UEFI target, so QEMU loads this ELF directly (`-bios default`,

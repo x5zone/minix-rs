@@ -1,5 +1,5 @@
-//! Test: first minix-rt freestanding user binary on aarch64 (edge1 K12b —
-//! the aarch64 leg of the three-arch CPL3 birth chain; AAVMF carrier).
+//! Test: first minix-rt freestanding user binary on aarch64 (the
+//! aarch64 leg of the three-arch CPL3 birth chain; AAVMF carrier).
 //!
 //! Mirrors the x86 `test-rt-birth` and riscv64 carriers: the kernel loads
 //! the embedded `rt-birth` ELF through the production boot path
@@ -11,9 +11,9 @@
 //! kernel console through SYS_DIAGCTL, and finally forces a panic whose
 //! render routes through the same diagnostic channel.
 //!
-//! # aarch64 trap leg (the K12b deliverable)
+//! # aarch64 trap leg
 //!
-//! The production aarch64 `VBAR_EL1` vector (K9) is a diagnostic-only stub
+//! The production aarch64 `VBAR_EL1` vector is a diagnostic-only stub
 //! — no EL0 syscall entry exists in the production kernel yet. This carrier
 //! supplies the missing leg itself: after `init_protection` it re-points
 //! `VBAR_EL1` at a carrier vector table whose EL0-sync slot handles SVC:
@@ -33,7 +33,7 @@
 //! `BootPrepareResult` → production phases in kmain order. Deviations from
 //! the x86 sibling, each bounded: clock init skipped (a no-tick,
 //! single-process story), `smp_init` skipped (one core runs everything; SMP
-//! parity rides the K11 round). The platform global is installed through
+//! parity is deferred). The platform global is installed through
 //! `init_from_kinfo` (aarch64 uses ACPI/UEFI handoff, not a raw DTB pointer).
 //!
 //! PASS = the run script (qemu-tests/test-rt-birth-aarch64.sh) finds the
@@ -130,16 +130,17 @@ static mut BOOT_MODULES: [BootModule; 12] = [
 /// builds `rt-birth` for aarch64-unknown-none first and passes the artifact
 /// path in `RT_BIRTH_ELF_PATH`). The kernel identity-maps its own image, so
 /// the blob is readable through VA = PA during `load_vm_elf`.
-/// 页对齐包裹（vm_handoff 扣减契约：boot module 起址必须页对齐——
-/// 修正 run_all rt-birth-aarch64 腿的 `deduction start 0x4c42c43e must
-/// be page-aligned`；riscv 姊妹载体同款修复）。
+/// Page-alignment wrapper (the vm_handoff deduction contract: the boot
+/// module start must be page-aligned — this fixes the `deduction start
+/// 0x4c42c43e must be page-aligned` failure in the run_all
+/// rt-birth-aarch64 leg; the riscv sibling carrier has the same fix).
 #[repr(C, align(4096))]
 struct PageAlignedElf<const N: usize>([u8; N]);
 static RT_BIRTH_ELF_BYTES: PageAlignedElf<{ include_bytes!(env!("RT_BIRTH_ELF_PATH")).len() }> =
     PageAlignedElf(*include_bytes!(env!("RT_BIRTH_ELF_PATH")));
 static RT_BIRTH_ELF: &[u8] = &RT_BIRTH_ELF_BYTES.0;
 
-// ── EL0 SVC vector table (the K12b aarch64 trap leg) ──
+// ── EL0 SVC vector table (the aarch64 trap leg) ──
 //
 // VBAR_EL1 must be 2 KiB aligned. Sixteen 128-byte slots; only the
 // EL0-sync slot (index 8, offset 0x400) carries real work — the others
@@ -326,8 +327,8 @@ const ESR_EC_SHIFT: u64 = 26;
 const ESR_EC_MASK: u64 = 0x3F;
 /// EC 0x15 = SVC instruction execution in AArch64 state.
 const EC_SVC_AARCH64: u64 = 0x15;
-/// EC=0b000111：SIMD/FP 访问陷阱（FPEN 门控时报；对位生产
-/// `trap_dispatch.rs::aarch64_fpu_trap_body` 接的同一 EC）。
+/// EC=0b000111: SIMD/FP access trap (raised when FPEN gates it; the same
+/// EC handled by `trap_dispatch.rs::aarch64_fpu_trap_body` in production).
 const EC_FP_TRAP: u64 = 0x07;
 
 static mut KMSG: [u8; 64] = [0u8; 64];
@@ -347,13 +348,17 @@ unsafe extern "C" fn rt_birth_svc_dispatch(frame: *mut u64) {
     }
     let ec = (esr >> ESR_EC_SHIFT) & ESR_EC_MASK;
     if ec == EC_FP_TRAP {
-        // FPEN 懒陷阱臂（单进程载体形状）：生产模型下用户类 FPEN=0b01、
-        // 首次 FP 访问陷阱后由内核懒接管（生产臂=
-        // `trap_dispatch.rs::aarch64_fpu_trap_body`，含归属切换）。本载体
-        // 自装 VBAR 绕开生产向量表，且只有一个用户任务——服务即置
-        // FPEN=0b11 后返回，asm 尾部恢复寄存器并 eret 重执行陷阱指令，
-        // 无归属切换可言。此前本 EC 落 fatal（rt-birth-aarch64 腿红的
-        // 第三层签名）。
+        // FPEN lazy-trap arm (single-process carrier shape): in the
+        // production model user-class FPEN=0b01, and the kernel takes over
+        // lazily after the first FP access traps (production arm =
+        // `trap_dispatch.rs::aarch64_fpu_trap_body`, including ownership
+        // switching). This carrier installs its own VBAR and bypasses the
+        // production vector table, and it has only one user task — it
+        // serves the trap by setting FPEN=0b11 and returning; the asm tail
+        // restores the registers and eret-re-executes the trapping
+        // instruction, so there is no ownership switch to speak of.
+        // Previously this EC fell through to fatal (the third-layer
+        // signature of the red rt-birth-aarch64 leg).
         unsafe {
             let mut cpacr: u64;
             core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr, options(nomem, nostack));
@@ -579,7 +584,7 @@ fn main() -> Status {
     // with SPSel=1 on its own EL1 stack) and the write is rejected; the
     // probe bracketing pinned the fault to exactly that instruction
     // (fault PC == the `msr`, no output between the two markers). This is
-    // the same root cause fixed in the production tree (NK4-C §1.109):
+    // the same root cause fixed in the production tree:
     // `AArch64Protection::init` is now a no-op under the EL1h model, since
     // `msr SP_EL1` is architecturally UNDEFINED when SPSel=1.
     //
@@ -590,8 +595,8 @@ fn main() -> Status {
     // required at all. The production SP_EL1 hand-over belongs to the
     // real `jump_to_kmain` path, not to this bootstrap carrier.
     early_console::write_str("  protection: skipped (SP_EL1 is firmware-owned on AAVMF)\n");
-    // The carrier's EL0-sync vector takes over VBAR_EL1 (the K9 diagnostic
-    // table keeps no state).
+    // The carrier's EL0-sync vector takes over VBAR_EL1 (the production
+    // diagnostic table keeps no state).
     // SAFETY: the vector table is 2-KiB aligned (asm .align 11); VBAR_EL1
     // takes the base address with the low 11 bits ignored.
     unsafe {
@@ -629,13 +634,16 @@ fn main() -> Status {
 
     // 7. Hand the CPU over — eret into the ELF entry at 5 GiB, EL0.
     //
-    // CPACR_EL1.FPEN = 0b11（续-406 生产同语义，非新语义）：本载体的极简
-    // 启动不走 `arch_init`（CPACR 写点在 `arch_init::init`，见
-    // arch/src/arm64/arch_init.rs:41），而 rt-birth 的 crt0 序言
-    // `stp d8-d15`（AArch64 ABI FP callee-saves）与预编译 core 的 NEON
-    // memset 残差（SD-23 build-std 待办，smpd5 实证 elr=memset+0xe0、
-    // EC=0x7）都会在 FPEN 门控下抛 EC=0x7——生产脸由 arch_init 兜住，
-    // 本脸在交棒前补同一写。懒门（FPEN=0b01+陷阱臂）仍按续-130 待未来。
+    // CPACR_EL1.FPEN = 0b11 (the production code uses the same semantics,
+    // not new semantics): this carrier's minimal bring-up does not call
+    // `arch_init` (CPACR is written in `arch_init::init`, see
+    // arch/src/arm64/arch_init.rs:41), while rt-birth's crt0 prologue
+    // `stp d8-d15` (AArch64 ABI FP callee-saves) and the NEON memset
+    // residue of the precompiled core (a build-std item still pending;
+    // observed as elr=memset+0xe0, EC=0x7) both raise EC=0x7 under FPEN
+    // gating — the production face is covered by arch_init, and this face
+    // adds the same write before the handoff. The lazy gate
+    // (FPEN=0b01 + trap arm) remains future work.
     unsafe {
         let mut cpacr: u64;
         core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr, options(nomem, nostack));

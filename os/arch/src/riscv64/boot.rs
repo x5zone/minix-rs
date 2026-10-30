@@ -47,12 +47,15 @@ pub struct Riscv64CpuContext {
 }
 
 impl Riscv64CpuContext {
-    /// NK4-C 续-133 / 续-197 AF-8：patch sstatus.FS 字段（懒 FPU 归属策
-    /// 略的 riscv 载体——FS 在 sstatus/帧内）。kernel finish_and_restore 按
-    /// 归属写 **Dirty(0b11, owner：不陷阱、活寄存器延续+需保存) / Off(0b00,
-    /// 非 owner：令首条 FP 陷阱进轮转腿)**；`fs` 传已移位值（`0b00/0b11 <<
-    /// 13`）。非 owner 必须是 Off——Initial/Clean/Dirty 均不陷阱，写它们会
-    /// 让轮转腿死代码（AF-8 根因）。先清后置掩码，传 `0` 确实清零 bits13:14。
+    /// Patch the sstatus.FS field (the riscv carrier of the lazy FPU ownership
+    /// policy — FS lives inside sstatus/the frame). kernel finish_and_restore
+    /// writes according to ownership: **Dirty(0b11, owner: no trap, live
+    /// registers carry over and must be saved) / Off(0b00, non-owner: makes the
+    /// first FP instruction trap into the rotation leg)**; `fs` is passed
+    /// pre-shifted (`0b00/0b11 << 13`). A non-owner must be Off — Initial/Clean/
+    /// Dirty all fail to trap, and writing them turns the rotation leg into dead
+    /// code (that was the root cause). The mask clears before it sets, so
+    /// passing `0` really zeroes bits 13:14.
     pub fn set_fs_field(&mut self, fs: u64) {
         self.sstatus = (self.sstatus & !(0b11 << 13)) | fs;
     }
@@ -99,14 +102,17 @@ impl CpuContextArch for Riscv64CpuContextArch {
         frame.regs[2] = ctx.sp;
         frame.regs[10] = ctx.a0;
 
-        // NK4-C 续-133（CodeReview B-1 同源裁决）：本函数的无条件
-        // FS=Initial 写已移除——riscv 的 FS 位住在 sstatus/帧内（ctx 是
-        // 唯一载体），per-dispatch 覆写会摧毁 finish_and_restore 的归属
-        // 策略（owner==picked → ctx FS=Dirty 不陷阱、活寄存器延续；
-        // 非 owner → FS=Initial 首条 FP 陷阱轮转）。策略唯一所有者＝
-        // kernel finish_and_restore 的 ctx-patch riscv 臂 + scause=2
-        // 懒陷阱腿。首次 dispatch 的 ctx 由 build_cpu_context 构造（初
-        // 始 FS=Off，首条 FP 同样陷阱取得归属）。
+        // The unconditional FS=Initial write this function used to perform has
+        // been removed (a ruling from the same root cause as the code review) —
+        // riscv's FS bits live inside sstatus/the frame (ctx is the only
+        // carrier), and a per-dispatch overwrite would destroy
+        // finish_and_restore's ownership policy (owner==picked → ctx FS=Dirty,
+        // no trap, live registers carry over; non-owner → FS=Initial, the first
+        // FP instruction traps into the rotation). The policy has a single
+        // owner: the ctx-patch riscv arm of kernel finish_and_restore plus the
+        // scause=2 lazy-trap leg. The ctx for the first dispatch is built by
+        // build_cpu_context (initially FS=Off, so the first FP instruction also
+        // traps to acquire ownership).
     }
 
     // enable_user_io: default no-op (riscv64 has no IOPL concept).
@@ -181,7 +187,7 @@ impl CpuContextArch for Riscv64CpuContextArch {
         // secondary lane = A1 (`gp_regs[GP_A1]`), the same register
         // `ipc_trap` reads back as its second return value and
         // `sync_status_register_to_frame` pulls into the outgoing frame
-        // (续-75, mirroring the aarch64 §1.112 CodeReview W2 fix: the
+        // (mirroring the aarch64 §1.112 code-review fix: the
         // trait default no-op would drop the page address and make
         // `query_kerninfo_page` falsely return Ok(0)).
         ctx.gp_regs[crate::riscv64::signal::GP_A1] = value;

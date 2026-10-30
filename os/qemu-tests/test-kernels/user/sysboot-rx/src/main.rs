@@ -1,6 +1,6 @@
-//! `sysboot-rx` — the receive half of the S42 ④ multi-process boot carrier
-//! (C-27). Loaded into the VM boot slot by the carrier kernel, so its boot
-//! endpoint is 8 (generation 0: endpoint == proc_nr).
+//! `sysboot-rx` — the receive half of the multi-process boot carrier. Loaded
+//! into the VM boot slot by the carrier kernel, so its boot endpoint is 8
+//! (generation 0: endpoint == proc_nr).
 //!
 //! It parks in `receive(ANY)` — the first real blocking user receive — and
 //! on the peer's message answers with a non-blocking send, emitting the
@@ -31,9 +31,11 @@ fn emit(message: &[u8]) {
     );
 }
 
-/// C12 FP 交替探针原语：xmm0 ← bits（裸字节 `66 48 0F 6E C1` = movq
-/// xmm0, rcx——x86_64-unknown-none 未开 SSE target feature，xmm_reg 寄
-/// 存器类不可用；CPU 侧 SSE 执行由内核懒 FPU 臂兜住，这正是被测对象）。
+/// FP preservation probe primitive: xmm0 ← bits (raw bytes `66 48 0F 6E C1`
+/// = movq xmm0, rcx — x86_64-unknown-none does not enable the SSE target
+/// feature, so the xmm_reg register class is unavailable; SSE execution on
+/// the CPU side is covered by the kernel's lazy FPU arm, which is exactly what
+/// this test exercises).
 #[inline(never)]
 fn fp_set(bits: u64) {
     unsafe {
@@ -46,7 +48,7 @@ fn fp_set(bits: u64) {
         );
     }
 }
-/// bits ← xmm0（裸字节 `66 48 0F 7E C1` = movq rcx, xmm0）。
+/// bits ← xmm0 (raw bytes `66 48 0F 7E C1` = movq rcx, xmm0).
 #[inline(never)]
 fn fp_get() -> u64 {
     unsafe {
@@ -73,10 +75,13 @@ extern "Rust" fn main() -> i32 {
 
     let ipc = DirectTrapTransport;
     loop {
-        // C12 FP 交替探针（rx 腿）：xmm0 = 42.0 经裸字节 movq 直写（编
-        // 译器不可知、不可溢出）——阻塞 receive 触发调度切换后，懒 FPU
-        // 臂的归属保存/恢复必须把 42.0 原样带回来。TX 腿持异值 7.5：两
-        // 进程异值即证明状态确按进程保存，而非全局恒开。
+        // FP preservation probe (rx leg): xmm0 = 42.0 written straight through
+        // a raw-byte movq (invisible to the compiler, impossible to spill) —
+        // after the blocking receive triggers a context switch, the lazy-FPU
+        // arm's ownership save/restore must bring 42.0 back unchanged. The TX
+        // leg holds a different value, 7.5: differing values across the two
+        // processes prove the state really is saved per process rather than
+        // kept globally enabled.
         fp_set(42.0f64.to_bits());
         let mut msg = Message::default();
         match ipc.receive(Endpoint::ANY, &mut msg) {

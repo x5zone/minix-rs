@@ -43,8 +43,8 @@
 //!
 //! The fine-grained `Current*` aliases remain the dispatch mechanism for
 //! existing call sites; both styles may coexist long-term. New kernel-side
-//! code (S-4/S-5 SMP work onward) should prefer `CurrentArch` as the
-//! single anchor.
+//! code written during SMP bring-up and later should prefer `CurrentArch` as
+//! the single anchor.
 
 use crate::arch::{
     arch_init::ArchInit, boot::CpuContextArch, cache_sync::CacheSyncArch, clock::ClockArch,
@@ -73,7 +73,7 @@ pub trait Arch: Sized {
     /// CPU-wide TLB invalidation (the `Paging`-independent flush path).
     type Tlb: TlbArch;
     /// Instruction-cache synchronization across the data→instruction
-    /// transition (the ELF-loader tail, SD-20).
+    /// transition (the ELF-loader tail).
     type CacheSync: CacheSyncArch;
     /// "Which CPU am I running on" probe.
     type CpuId: CpuIdentityArch;

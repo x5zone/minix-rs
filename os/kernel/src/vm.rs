@@ -24,15 +24,20 @@ use minix_arch::PteWalkArch;
 
 use crate::proc::{KProcess, ProcNr, RtsFlagsBits, MiscFlagsBits};
 
-/// NK4-C 第 33 轮守卫探针（task1-close 裁决删除）：内核跨空间写的每个
-/// §续-367 双走表对账探针：同一 (root, va) 两次独立 walk 的 PA 不一致=
-/// 走表非确定性直接证据（写者候选头位=跨空间拷贝走表偶发错 PA）。
-/// CAP=32 去重（同 (root,va,pa1,pa2) 四元组只记一次）。
+/// Double-walk reconciliation probe for kernel cross-space writes: for one
+/// (root, va), two independent walks yielding different PAs is direct
+/// evidence of page-table-walk nondeterminism (the leading candidate for
+/// the sporadic wrong PA in cross-space copies). Deduplicated with CAP=32
+/// (the same (root,va,pa1,pa2) tuple is recorded once).
 ///
-/// 判据边界（GPT 实验戊盲区注记，防「零命中=走表清白」误读）：
-/// 零命中**只排除「同一次拷贝内两次走表不一致」**，不排除
-/// ①两次都错到同一错 PA（确定性错译）②Some→None 的 mapped-ness 翻转
-/// ③首页之后的后续页（仅首页对账）。探针不报 ≠ 走表清白。
+/// Criterion boundary (blind-spot note from the experiment; guards against
+/// misreading "zero hits = walks are clean"): zero hits **only excludes
+/// "two walks within the same copy disagree"**; it does not exclude
+/// 1. both walks being wrong to the same wrong PA (deterministic
+///    mistranslation),
+/// 2. a Some→None mapped-ness flip,
+/// 3. pages after the first page (only the first page is reconciled).
+/// A silent probe does not mean the walk is clean.
 #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
 pub(crate) fn nk4a_walk_reconcile(root: u64, va: u64, pa1: u64, pa2: u64) {
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
@@ -61,19 +66,27 @@ pub(crate) fn nk4a_walk_reconcile(root: u64, va: u64, pa1: u64, pa2: u64) {
 }
 
 
-/// SD-10 仪器轮二（C1 下一片）：跨空间拷贝通道的逐次内容校验观测点。
+/// Instrument round two: per-operation content verification observation
+/// point on the cross-space copy channel.
 ///
-/// 与 §续-367 双走表对账并排：对账探针抓「同一次拷贝内两次走表不一致」，
-/// 本仪器抓「走表一致但字节没落对」——拷贝完成后经同一条 chunk 迭代把
-/// src/dst 字节重读比对（2× 读流量，诊断期可接受）。不一致 = 走表/搬运
-/// 层的直接现行线索（打印 拷贝序号/chunk 序号/首异偏移/期望/实际，封顶
-/// 8 次；打印不消费被测数据流）。命中是线索不是判决：src 在诊断窗口内
-/// 被第三方改写也会命中，需与对账探针/陷帧守卫读数共同定性。
+/// Side by side with the double-walk reconciliation: that probe catches
+/// "two walks within one copy disagree"; this instrument catches "the walks
+/// agree but the bytes did not land correctly" — after the copy completes,
+/// the same chunk iteration re-reads and compares the src/dst bytes (2x read
+/// traffic, acceptable during diagnosis). A mismatch is a direct lead to the
+/// walk/transport layer (prints copy number / chunk number / first-differing
+/// offset / expected / actual, capped at 8; printing does not consume the
+/// data stream under test). A hit is a lead, not a verdict: src rewrite by a
+/// third party inside the diagnostic window also hits, so it must be
+/// characterized together with the reconciliation probe / trap-frame guard
+/// readings.
 ///
-/// 判据边界：覆盖 Completed(Ok) 的全量完成路径，以及挂起前的已拷贝前缀
-/// ——分片挂起时先核 `done` 字节，恢复后的重试再走全量路径，两段合起来
-/// 覆盖这次拷贝搬过的每个字节。挂起点本身（未映射页）不读，避免把
-/// "本来就没拷"的页算成不一致。
+/// Criterion boundary: covers the full Completed(Ok) path and the
+/// already-copied prefix before a suspend — on a partial suspend it first
+/// checks the `done` bytes, and the retry after resume takes the full path;
+/// together the two segments cover every byte this copy moved. The suspend
+/// point itself (an unmapped page) is not read, avoiding counting a page
+/// that "was never copied" as a mismatch.
 #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
 fn nk4a_copy_verify(
     src: &AddressRef,
@@ -108,11 +121,12 @@ fn nk4a_copy_verify(
         let (dp, drun) = dst_side.chunk::<minix_arch::CurrentDirectMap>(done, remaining);
         let chunk = core::cmp::min(srun, drun);
         if chunk == 0 {
-            return; // 半程挂起形态不覆盖
+            return; // the half-copy suspend shape is not covered
         }
         let sv = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(sp);
         let dv = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(dp);
-        // SAFETY: DM 别名只读，与拷贝主路径同一窗口来源。
+        // SAFETY: the DM alias is read-only, from the same window source as
+        // the main copy path.
         let srcb = unsafe { core::slice::from_raw_parts(sv.0 as *const u8, chunk) };
         let dstb = unsafe { core::slice::from_raw_parts(dv.0 as *const u8, chunk) };
         if srcb != dstb {
@@ -146,7 +160,7 @@ fn nk4a_copy_verify(
                 Console::write_str(core::str::from_utf8(&hx(dstb[diff] as u64)).unwrap_or("?"));
                 Console::write_str("\n");
             }
-            return; // 每次拷贝只报首异
+            return; // report only the first mismatch per copy
         }
         done += chunk;
         chunk_no += 1;
@@ -364,8 +378,8 @@ const VM_LOOKUP_PAGE_SIZE: u64 = 4096;
 /// Walk the page table to find the largest contiguous physical range
 /// starting at `vaddr`, up to `max_bytes`.
 ///
-/// C: `vm_lookup_range` — minix3/minix/kernel/arch/i386/memory.c（earm 变体：
-///    minix3/minix/kernel/arch/earm/memory.c，同名函数）
+/// C: `vm_lookup_range` — minix3/minix/kernel/arch/i386/memory.c (earm
+///    variant: minix3/minix/kernel/arch/earm/memory.c, same-named function)
 ///
 /// Returns `Some((phys_addr, chunk))` where `chunk` is the number of
 /// contiguous bytes (≤ `max_bytes`) starting at `vaddr` that map to
@@ -395,8 +409,10 @@ pub fn lookup_range_in_table<D: DirectMapArch>(
 
     let (phys_base, _flags) = minix_arch::CurrentPteWalk::walk(root_paddr, vaddr)?;
 
-    // §续-367 双走表对账：同 (root,va) 立即重走一次，PA 不一致=走表层
-    // 非确定性（写者候选头位的直接证据）；仅 riscv64 真机构建生效。
+    // Double-walk reconciliation: immediately re-walk the same (root,va);
+    // differing PAs directly evidence walk-layer nondeterminism (the
+    // leading candidate for the writer); effective only in riscv64
+    // non-mock builds.
     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
     if let Some((pa2, _)) = minix_arch::CurrentPteWalk::walk(root_paddr, vaddr) {
         if pa2.0 != phys_base.0 {
@@ -437,7 +453,7 @@ pub fn lookup_range_in_table<D: DirectMapArch>(
     Some((phys_base, chunk as usize))
 }
 
-/// K20: the `proc_cr3` closure receives the process table as a parameter
+/// The `proc_cr3` closure receives the process table as a parameter
 /// (it no longer captures it) — a caller holding `&mut ProcessTable` for
 /// the suspend tail can therefore still call the closure through a shared
 /// reborrow, and closures that only need copied field values simply
@@ -516,7 +532,7 @@ enum ResolveError {
 /// base (contiguous by definition) or a process virtual base plus the
 /// page-table root to walk.
 ///
-/// B39 (§1.70): the copy path advances each side one *physically-contiguous
+/// Design note (§1.70): the copy path advances each side one *physically-contiguous
 /// run* at a time via [`lookup_range_in_table`], so a virtual range whose pages
 /// are scattered in physical memory is never written linearly off its first
 /// frame (the Direct Map is linear in *physical*). This mirrors C's `vm_copy`
@@ -591,7 +607,7 @@ pub fn cross_space_copy<D: DirectMapArch>(
         return CrossSpaceResult::Completed(Err(VmCopyError::Domain));
     }
 
-    // B39 (§1.70): both sides may be *virtual* ranges whose pages map to
+    // Design note (§1.70): both sides may be *virtual* ranges whose pages map to
     // non-adjacent physical frames. A single-shot resolve + linear
     // `copy_nonoverlapping(bytes)` runs off each first frame into neighbouring
     // physical memory. Walk each side one physically-contiguous run at a time
@@ -680,22 +696,30 @@ pub fn cross_space_copy<D: DirectMapArch>(
         done += chunk;
     }
 
-    // SD-10 仪器轮二：内容级逐次校验（riscv 真机形态；对账探针抓走表
-    // 不一致，本仪器抓字节未落对——两观测点并排互补）。
+    // Instrument round two: content-level verification per operation (riscv
+    // hardware form; the reconciliation probe catches walk disagreement,
+    // this instrument catches bytes not landing correctly — the two
+    // observation points complement each other).
     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
     nk4a_copy_verify(src, dst, bytes, proc_table, &proc_cr3);
 
     CrossSpaceResult::Completed(Ok(()))
 }
 
-/// SD-10 候选 4 观测点（C1 下一片，帧复用残留族）：SYS_MEMSET 通道的
-/// 内容级校验。VM 分配器带 CLEAR 位的帧清零走本通道——fresh 帧必须读回
-/// 全零（`cow_exec_pf.rs` 注记钉死的不变量）；本仪器抓「填充写了但字节
-/// 没落对」，与 csc-verify（拷贝通道）同族并排。Completed(Ok) 全量完成
-/// 路径逐 chunk 重读比对（2× 读流量，诊断期可接受，同 csc-verify 论证）；
-/// 大区（>1 MiB）只核头尾各 64 KiB，读流量有界。命中是线索不是判决：
-/// 诊断窗内第三方改写也会命中，需与对账探针/tf-guard/ptwb 读数共同定性。
-/// 打印封顶 8（全 boot 全局，房规同 tf-guard/ptwb）。
+/// Observation point for the SYS_MEMSET channel (frame-reuse residue
+/// family): content-level verification. The VM allocator's clearing of
+/// frames carrying the CLEAR bit goes through this channel — a fresh frame
+/// must read back all zeros (the invariant pinned by the note in
+/// `cow_exec_pf.rs`); this instrument catches "the fill was written but the
+/// bytes did not land correctly", the same family as csc-verify (the copy
+/// channel) and side by side with it. The full Completed(Ok) path is
+/// re-read and compared chunk by chunk (2x read traffic, acceptable during
+/// diagnosis, same argument as csc-verify); large regions (>1 MiB) check
+/// only the first and last 64 KiB each, bounding read traffic. A hit is a
+/// lead, not a verdict: a third-party rewrite inside the diagnostic window
+/// also hits, so it must be characterized together with the reconciliation
+/// probe / tf-guard / ptwb readings. Printing is capped at 8 (global for
+/// the whole boot, same house rule as tf-guard/ptwb).
 #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
 pub(crate) fn nk4a_memset_verify(
     dst: &AddressRef,
@@ -718,7 +742,8 @@ pub(crate) fn nk4a_memset_verify(
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("nk4c: mset-verify armed (SD-10 candidate-4 observation)\n");
     }
-    // 大区只核头尾各 64 KiB（读流量有界）；常规帧（≤1 MiB）全量核。
+    // Large regions check only the first and last 64 KiB (bounded read
+    // traffic); regular frames (<= 1 MiB) are checked fully.
     const TAIL_WINDOW: usize = 64 * 1024;
     let (verify_bytes, skip_tail) = if bytes > 1024 * 1024 {
         (bytes.min(TAIL_WINDOW), bytes.saturating_sub(TAIL_WINDOW))
@@ -735,10 +760,11 @@ pub(crate) fn nk4a_memset_verify(
             let remaining = to - done;
             let (dp, drun) = side.chunk::<minix_arch::CurrentDirectMap>(done, remaining);
             if drun == 0 {
-                return; // 半程形态不覆盖（同 csc-verify 边界）
+                return; // the half-copy shape is not covered (same boundary as csc-verify)
             }
             let dv = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(dp);
-            // SAFETY: DM 别名只读，与 memset 主路径同一窗口来源。
+            // SAFETY: the DM alias is read-only, from the same window source
+            // as the memset main path.
             let dstb = unsafe { core::slice::from_raw_parts(dv.0 as *const u8, drun) };
             if let Some(off) = dstb.iter().position(|&b| b != pattern) {
                 let h = hits.fetch_add(1, AtomicOrd::AcqRel);
@@ -784,7 +810,7 @@ pub fn cross_space_memset<D: DirectMapArch>(
     proc_table: &crate::proc_table::ProcessTable,
     proc_cr3: impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
-    // B39 (§1.70): a `Process` destination is a *virtual* range whose pages are
+    // Design note (§1.70): a `Process` destination is a *virtual* range whose pages are
     // scattered across non-adjacent physical frames. The Direct Map is linear in
     // *physical*, so a single-shot resolve + `write_bytes(count)` runs off the
     // first frame into whatever physical memory follows it — this is what
@@ -802,7 +828,7 @@ pub fn cross_space_memset<D: DirectMapArch>(
         }
     };
 
-    // NK4-C 第 33 轮守卫探针（task1-close 裁决删除；门与定义一致）
+    // Keep `dst_phys` used so the gate and its definition stay consistent.
     #[cfg(not(feature = "mock"))]
     let _ = dst_phys;
 
@@ -895,11 +921,11 @@ pub fn cross_space_write<D: DirectMapArch>(
             return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
         }
     };
-    // NK4-C 第 33 轮守卫探针（task1-close 裁决删除；门与定义一致）
+    // Keep `dst_phys` used so the gate and its definition stay consistent.
     #[cfg(not(feature = "mock"))]
     let _ = dst_phys;
 
-    // B39 (§1.70): a `Process` destination is virtual and its pages are
+    // Design note (§1.70): a `Process` destination is virtual and its pages are
     // physically scattered — walk it one contiguous run at a time from the
     // contiguous kernel-local `src` (C: `virtual_copy` dst-side `createpde`
     // re-translation). A `Physical` destination is contiguous by definition.
@@ -1171,19 +1197,23 @@ pub struct VmSuspendContext {
     /// C: `p_vmrequest.params.check.*`
     pub check_params: VmCheckParams,
 
-    /// NK4-A C-3 迭代6：SYSCALL 快路径挂起时保存的用户消息指针
-    /// （syscall ABI：RDI）。KCALL_RESUME 恢复阶段用它重派 kernel_call
-    /// （内存此时已由 VM 填充，重读用户消息缓冲可行）。IPC 陷阱腿不经
-    /// 此字段（saved_msg 承载）。
+    /// User message pointer saved when the SYSCALL fast path suspends
+    /// (syscall ABI: RDI). The KCALL_RESUME restore stage uses it to
+    /// re-dispatch `kernel_call` (memory has been filled in by VM by then,
+    /// so re-reading the user message buffer is viable). The IPC trap leg
+    /// does not use this field (`saved_msg` carries it).
     pub saved_m_user: Option<u64>,
 
-    /// NK4-C S3 门纪律标记：本次挂起是否源自 int-33 IPC 腿
-    /// （`kernel_call_finish_ipc_door`，门语义见其文档）。C 对位：
-    /// `copy_msg_to_user(p_delivermsg_vir)` 只存在于 `kernel_call()` 腿
-    /// （system.c:83）——该腿每次入口都先刷新 p_delivermsg_vir
-    /// （system.c:141），陷阱腿（proc.c mini_*）从不写调用者消息缓冲。
-    /// 置真时 stage 3a 补完成同样跳过 eager 回执直写，杜绝恢复后向陈旧
-    /// p_delivermsg_vir（如 SENDA 窗内不刷新者）落写 80 字节。
+    /// Gate-discipline marker: whether this suspend originated from the
+    /// int-33 IPC leg (`kernel_call_finish_ipc_door`, see its documentation
+    /// for the gate semantics). C counterpart:
+    /// `copy_msg_to_user(p_delivermsg_vir)` exists only in the
+    /// `kernel_call()` leg (system.c:83) — that leg refreshes
+    /// `p_delivermsg_vir` on every entry (system.c:141), while the trap legs
+    /// (proc.c mini_*) never write the caller's message buffer. When set,
+    /// the stage 3a completion also skips the eager reply direct write,
+    /// preventing an 80-byte write into a stale `p_delivermsg_vir` after
+    /// resume (e.g. one not refreshed inside the SENDA window).
     pub resume_skip_eager_reply: bool,
 
     /// Current state of the suspend request.
@@ -1321,7 +1351,7 @@ impl VmRequestQueue {
     ///
     /// Separates the "enqueue" and "notify" concerns from Minix3's combined
     /// `vm_suspend()` function. Design decision: §3.9.
-    // R-18 (2026-08-13): `()` error type delegates to `send_sig()` closure
+    // The `()` error type delegates to `send_sig()` closure
     // (SYS_SIGSEND to VM). Single failure mode — VM notification send failed.
     // No diagnostic info to carry beyond "failed". Allowed per clippy.
     #[allow(clippy::result_unit_err)]
@@ -1381,65 +1411,73 @@ fn endpoint_to_proc_nr(endpoint: Endpoint, procs: &[KProcess]) -> Option<ProcNr>
 // which hold BKL throughout. No additional synchronization needed.
 // ── 09-vm-boot-protocol types ──
 
-/// VMCTL 子命令参数。
+/// VMCTL subcommand parameter.
 ///
-/// C: `SVMCTL_PARAM` 字段，`minix/com.h` 中 `VMCTL_*` 定义。
-/// `do_vmctl.c:17-173` 中的 switch 分支。
+/// C: the `SVMCTL_PARAM` field; `VMCTL_*` is defined in `minix/com.h`,
+/// with the switch branches in `do_vmctl.c:17-173`.
 ///
-/// 架构特定命令（GetPdbr, SetAddrSpace, FlushTlb, InvlPg）在
-/// `arch_do_vmctl()` 中处理（arch_do_vmctl.c:38-65）。
+/// Architecture-specific commands (GetPdbr, SetAddrSpace, FlushTlb, InvlPg)
+/// are handled in `arch_do_vmctl()` (arch_do_vmctl.c:38-65).
 ///
-/// Design decision: enum + match 替代 C 的 switch/case（09-vm-boot-protocol.md §3）。
+/// Design decision: enum + match instead of C's switch/case
+/// (09-vm-boot-protocol.md §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmCtlParam {
-    /// 清除进程的页错误标志。
+    /// Clear the process's page-fault flag.
     /// C: `VMCTL_CLEAR_PAGEFAULT`, do_vmctl.c:32-35
     ClearPageFault,
-    /// VM 获取下一个挂起的内存请求。
+    /// VM fetches the next suspended memory request.
     /// C: `VMCTL_MEMREQ_GET`, do_vmctl.c:36-72
     MemReqGet,
-    /// VM 回复内存请求结果。
+    /// VM replies with the memory-request result.
     /// C: `VMCTL_MEMREQ_REPLY`, do_vmctl.c:73-104
     MemReqReply,
-    /// 内核声明需映射的物理区（32 位遗留，64 位 noop）。
+    /// Kernel declares a physical region that needs mapping (32-bit
+    /// legacy, no-op on 64-bit).
     /// C: `VMCTL_KERN_PHYSMAP`, do_vmctl.c:105-112
     KernPhysMap,
-    /// VM 返回虚拟地址（32 位遗留，64 位 noop）。
+    /// VM returns the virtual address (32-bit legacy, no-op on 64-bit).
     /// C: `VMCTL_KERN_MAP_REPLY`, do_vmctl.c:113-118
     KernMapReply,
-    /// 设置 VMINHIBIT 标志，阻止进程调度。
+    /// Set the VMINHIBIT flag, preventing the process from being scheduled.
     /// C: `VMCTL_VMINHIBIT_SET`, do_vmctl.c:119-131
     VmInhibitSet,
-    /// 清除 VMINHIBIT 标志，允许进程调度。
+    /// Clear the VMINHIBIT flag, allowing the process to be scheduled.
     /// C: `VMCTL_VMINHIBIT_CLEAR`, do_vmctl.c:132-160
     VmInhibitClear,
-    /// 清除映射缓存。
+    /// Clear the mapping cache.
     /// C: `VMCTL_CLEARMAPCACHE`, do_vmctl.c:161-164
     ClearMapCache,
-    /// 清除 BOOTINHIBIT 标志。
+    /// Clear the BOOTINHIBIT flag.
     /// C: `VMCTL_BOOTINHIBIT_CLEAR`, do_vmctl.c:165-167
     BootInhibitClear,
-    /// 获取进程 CR3/PDBR（x86 特定）。
+    /// Get the process CR3/PDBR (x86-specific).
     /// C: `VMCTL_GET_PDBR`, arch_do_vmctl.c:50-52
     GetPdbr,
-    /// 设置进程地址空间（CR3 + 虚拟地址）。
+    /// Set the process address space (CR3 + virtual address).
     /// C: `VMCTL_SETADDRSPACE`, arch_do_vmctl.c:53-55
     SetAddrSpace,
-    /// 刷新 TLB。
+    /// Flush the TLB.
     /// C: `VMCTL_FLUSHTLB`, arch_do_vmctl.c:56-59
     FlushTlb,
-    /// 单页 TLB 失效（x86 特定）。
+    /// Invalidate a single TLB entry (x86-specific).
     /// C: `VMCTL_I386_INVLPG`, arch_do_vmctl.c:60-63
     InvlPg,
-    /// 续-311 内核代写/零填旁路（[ARCH: riscv-vmddm] 同族）：内核代写 pa
-    /// 处 u64（PteWrite，wire=21，val 走 m1p2）与整页零填（PteZero，wire=22，
-    /// pa 走 m1p1，KDM 写 4096 零）。无 C 对位。
+    /// Kernel write-on-behalf / zero-fill bypass (same family as the
+    /// riscv-vmddm arch note): write a u64 at physical address `pa`
+    /// (PteWrite, wire=21, value in m1p2) and zero-fill a whole page
+    /// (PteZero, wire=22, pa in m1p1, KDM writes 4096 zeros). No C
+    /// counterpart.
     PteWrite,
     PteZero,
-    /// 续-311 内核代读旁路（[ARCH: riscv-vmddm]，用后即滚纪律随 (A) 结案）：
-    /// 内核代读物理地址处 u64（KDM 直读）——riscv64 VmDm 窗读在特定时序
-    /// 被 QEMU 平移层误导（§续-291..310 穷举），VM 的页表槽读改经本腿由
-    /// S 态直读。无 C 对位（C 无此症状）。wire=20，pa 走 m1p1、值回 m1p1。
+    /// Kernel read-on-behalf bypass (riscv-vmddm arch note; the
+    /// use-then-remove discipline ends with that work): read a u64 at a
+    /// physical address (direct KDM read) — the riscv64 VmDm window read is
+    /// misled by QEMU's translation layer at certain timings (exhaustively
+    /// enumerated in the continuation notes), so the VM's page-table-slot
+    /// read goes through this leg as a direct S-mode read. No C counterpart
+    /// (C does not have this symptom). wire=20, pa in m1p1, value back in
+    /// m1p1.
     PteRead,
 }
 
@@ -1475,25 +1513,26 @@ impl TryFrom<i32> for VmCtlParam {
     }
 }
 
-/// VMCTL 系统调用返回值。
+/// VMCTL system call return value.
 ///
-/// C: `do_vmctl()` 返回 `int`，含义：
-/// - `OK` (0): 成功
-/// - `ENOENT` (2): 无匹配请求
-/// - `EINVAL` (22): 无效参数
-/// - `VMSUSPEND` (-996): 需 VM 协助
-/// - `VMPTYPE_CHECK` (1): 请求类型
+/// C: `do_vmctl()` returns an `int` with these meanings:
+/// - `OK` (0): success
+/// - `ENOENT` (2): no matching request
+/// - `EINVAL` (22): invalid argument
+/// - `VMSUSPEND` (-996): VM assistance required
+/// - `VMPTYPE_CHECK` (1): request type
 ///
-/// Design decision: enum 替代 C 的魔术数返回值（09-vm-boot-protocol.md §3）。
+/// Design decision: enum instead of C's magic-number return values
+/// (09-vm-boot-protocol.md §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmCtlResult {
-    /// 操作成功，附带返回值。
+    /// Operation succeeded, with a return value.
     /// C: `return OK` (0), `return ENOENT` (2), `return EINVAL` (22)
     Ok(i32),
-    /// 操作需要 VM 协助（VMSUSPEND）。
+    /// The operation needs VM assistance (VMSUSPEND).
     /// C: `return VMSUSPEND` (-996)
     VmSuspend,
-    /// 无效的 VMCTL 参数。
+    /// Invalid VMCTL parameter.
     /// C: `return EINVAL` from arch_do_vmctl default case
     BadParam,
 }
@@ -1592,7 +1631,7 @@ pub fn kernel_call_resume(
     caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
 ) -> VmCheckResult {
-    // K20 caller-by-nr: the caller slot is re-borrowed at each use — a
+    // caller-by-nr: the caller slot is re-borrowed at each use — a
     // short read for the state, then a short write to clear the flag.
     let (kcall_resume, vmrequest, completed) = {
         let caller = proc_table
@@ -2077,7 +2116,8 @@ mod tests {
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
 
-        //[SD19-gate] 单元测试 setup：先置 Fetched 态再触发第二次断前置检查，本次返回值在下一行才校验
+        // Unit-test setup: set the Fetched state first, then trigger the
+        // second precheck; the return value is checked on the next line.
         #[allow(clippy::let_underscore_must_use)]
         let _ = VmRequestHandler::memreq_reply(&mut proc, VmCheckResult::Ok);
 
@@ -2113,7 +2153,7 @@ mod tests {
 
     #[test]
     fn kernel_call_resume_returns_ok_on_success() {
-        // K20 caller-by-nr: build the suspended state directly on the
+        // caller-by-nr: build the suspended state directly on the
         // caller's table slot (the standalone handle no longer applies).
         let mut table = crate::test_helpers::test_proc_table();
         {
@@ -2143,7 +2183,7 @@ mod tests {
 
     #[test]
     fn kernel_call_resume_returns_fault_on_failure() {
-        // K20 caller-by-nr: build the suspended state directly on the
+        // caller-by-nr: build the suspended state directly on the
         // caller's table slot (the standalone handle no longer applies).
         let mut table = crate::test_helpers::test_proc_table();
         {

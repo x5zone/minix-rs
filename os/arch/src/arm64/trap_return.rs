@@ -62,7 +62,7 @@ impl TrapReturnArch for AArch64TrapReturn {
         //   before `eret` — see the liveness notes in the module docs.
         // - The BKL has been released by the caller before this call.
         core::arch::asm!(
-            // NK4-C §1.113: mask all async exceptions (D/A/I/F) for the rest
+            // Mask all async exceptions (D/A/I/F) for the rest
             // of this context switch. Rebasing `SP_EL1` below (the EL1h stack
             // fix) moves the active SP *up* to the stack base, so any incoming
             // exception would push its frame on top of the frame/register-file
@@ -79,7 +79,7 @@ impl TrapReturnArch for AArch64TrapReturn {
             // Park the register-file pointer in X2 (its user slot is
             // gp_regs[GP_X2], loaded last as a self-referential load).
             "mov x2, x1",
-            // NK4-C §1.113: reload SP_EL1 from this CPU's kernel-stack base
+            // Reload SP_EL1 from this CPU's kernel-stack base
             // (TPIDR_EL1, programmed by protection::init) before eret. The
             // EL1h model has no hardware switch-to-kernel-stack: x86 reloads
             // RSP from TSS.sp0 on every CPL3→0, but aarch64 keeps running on

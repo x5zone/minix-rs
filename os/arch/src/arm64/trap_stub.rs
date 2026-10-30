@@ -19,7 +19,7 @@
 //! SError: no handler contract yet) keep the print-and-halt diagnostic —
 //! "observable, never silent".
 //!
-//! # Mechanics / policy split (S-8, mirrored from x86_64::trap_stub)
+//! # Mechanics / policy split (mirrored from x86_64::trap_stub)
 //!
 //! This module owns the *mechanics*: full register file + `elr`/`spsr`
 //! frame ([`AArch64TrapFrame`]), the per-group stack strategies above,
@@ -28,8 +28,7 @@
 //! bodies (the *policy*: GIC claim/route, timer tick, SVC kernel calls,
 //! fault diagnostics — kernel `trap_dispatch`). Registration happens in
 //! the kernel's `init_protection` strictly before `TrapEntryArch::load()`;
-//! an unregistered dispatch panics instead of silently returning (the
-//! S-3d lesson).
+//! an unregistered dispatch panics instead of silently returning.
 //!
 //! # Frame layout (the build↔run contract)
 //!
@@ -142,7 +141,7 @@ pub fn sync_status_register_to_frame(
 // x86 vector number in the frame): the sync and IRQ slots of a group
 // share one thunk/body pair, and ARM64 has no IRQ syndrome register, so
 // the class travels as an explicit operand instead.
-/// The `u64` return is the park decision (NK4-C §1.113): `0` means
+/// The `u64` return is the park decision: `0` means
 /// "restore this frame and `eret` normally"; nonzero means the dispatcher
 /// already saved the process context and requests a switch-after-pop (a
 /// blocked IPC receiver) — `EL0BODY` then unwinds the frame without
@@ -161,7 +160,7 @@ pub const TRAP_CLASS_IRQ: u64 = 1;
 static KERNEL_DISPATCH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static USER_DISPATCH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-/// The park-and-reschedule entry (NK4-C §1.113). Registered by the kernel
+/// The park-and-reschedule entry. Registered by the kernel
 /// with a diverging thunk (re-acquire BKL + `scheduler_loop`); `EL0BODY`
 /// branches here after unwinding a blocked-receiver frame instead of
 /// `eret`-ing back to the parked process.
@@ -217,7 +216,7 @@ unsafe extern "C" fn aarch64_user_trap_dispatch(frame: &mut AArch64TrapFrame, cl
     unsafe { (core::mem::transmute::<*mut (), DispatchFn>(f))(frame, class) }
 }
 
-/// The park branch's destination (NK4-C §1.113). `EL0BODY` jumps here
+/// The park branch's destination. `EL0BODY` jumps here
 /// (tail, `b`) after unwinding a blocked-receiver frame; it forwards to
 /// the kernel-registered diverging thunk. `-> !`, so the never-returning
 /// `b` in the asm is well-formed.
@@ -244,7 +243,7 @@ unsafe extern "C" fn aarch64_resched_entry() -> ! {
 // (VBAR + 0x400) is the SVC entry.
 //
 // No `.size` directive: LLVM's integrated assembler rejects the GNU
-// `.size` pseudo-op in inline asm on this target (live finding, K9); the
+// `.size` pseudo-op in inline asm on this target (live finding); the
 // table's extent is fixed by construction — `.align 11` plus sixteen
 // 128-byte slots.
 core::arch::global_asm! {
@@ -372,7 +371,7 @@ core::arch::global_asm! {
     "mov x0, sp",
     "mov x1, #\\class",
     "bl  \\handler",
-    // NK4-C §1.113 switch-after-pop: a nonzero return (x0) from the
+    // Switch-after-pop: a nonzero return (x0) from the
     // handler is a park-and-reschedule request (blocked IPC receiver).
     // The dispatcher already saved this process's register state into its
     // cpu_context, so discard the EL0 frame WITHOUT restoring registers
@@ -497,7 +496,7 @@ unsafe extern "C" {
 /// Table base address (the `load()` operand).
 pub fn vector_table_va() -> VirBytes {
     // SAFETY: address-only symbol read; the symbol is defined by the
-    // `global_asm!` above (K9 pattern — definition in the same module).
+    // `global_asm!` above (definition in the same module).
     VirBytes::new(unsafe { &exc_vector_table as *const u8 as usize } as u64)
 }
 

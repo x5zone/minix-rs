@@ -6,7 +6,7 @@
 //! concrete sub-descriptor fields (`ApicDesc` / `Gicv3Desc` / `PlicDesc`,
 //! etc.) — no `#[cfg(target_arch)]` inside method bodies.
 //!
-//! # Design (TODO-01-2 fix, 2026-07-16)
+//! # Design
 //!
 //! Previously `QemuVirtDesc` was a unit struct with `#[cfg(target_arch)]`
 //! scattered across 4 method bodies. The fix moves each arch's implementation

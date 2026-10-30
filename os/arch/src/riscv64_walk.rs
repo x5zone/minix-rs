@@ -1,67 +1,81 @@
-//! Sv39 软件走表的纯逻辑层（NK4C §续-349 污染取证产物）。
+//! Pure-logic Sv39 software page-table walk (a product of the pollution
+//! forensics).
 //!
-//! `walk_read_with` 把「按物理地址读一个 PTE」抽成闭包，走表逻辑本身与
-//! Direct Map 窗口、硬件指令完全解耦——宿主测试可用合成页表内存直接驱
-//! 动（真机形态由 `riscv64::paging::walk_read` 提供读取闭包）。
+//! `walk_read_with` abstracts "read one PTE by physical address" into a
+//! closure, so the walk logic itself is fully decoupled from the Direct Map
+//! window and hardware instructions — host tests can drive it directly with
+//! synthetic page-table memory (the real-machine form supplies the read
+//! closure via `riscv64::paging::walk_read`).
 //!
-//! # 与硬件语义对齐（§续-349 修复）
+//! # Alignment with hardware semantics
 //!
-//! 1. **规范性检查**：Sv39 要求 VA[63:39] 全等于 VA[38]。硬件在走表
-//!    *开始之前* 就拒绝非规范地址（QEMU `target/riscv/cpu_helper.c`
-//!    masked_msbs 门）；此前软件走表不查规范性，会顺着共享根表的内核
-//!    半区（root[256..512]）给非规范 VA「翻译」出错误 PA——内核代写
-//!    （finw 回执/跨空间拷贝）拿到它即随机腐蚀内存。现在非规范 VA 一律
-//!    `NotPresent`（与硬件 fault 对齐，fail-closed）。
-//! 2. **错粒度巨叶（misaligned huge page）**：2MB/1GB 叶 PTE 的低位
-//!    PPN 必须为 0，非零=保留形态（硬件必 fault）。此前软件走表直接 OR
-//!    折叠偏移给出垃圾 PA；现在按硬件语义返回 `NotPresent`。
-//! 3. **L0 指针形态**：L0 表项 V=1 而 R=W=X=0 在末级是保留形态（硬件
-//!    必 fault）；`walk_translate`（riscv64::paging）裁决该形态为 None。
+//! 1. **Canonicality check**: Sv39 requires VA[63:39] to equal VA[38].
+//!    Hardware rejects non-canonical addresses *before* starting the walk
+//!    (the masked_msbs gate in QEMU `target/riscv/cpu_helper.c`); the
+//!    software walk used to skip the check and "translate" a non-canonical
+//!    VA through the shared root table's kernel half (root[256..512]) to a
+//!    bogus PA — kernel on-behalf writes (finw replies / cross-space
+//!    copies) then corrupted memory at random. Non-canonical VAs now
+//!    always yield `NotPresent` (aligned with the hardware fault,
+//!    fail-closed).
+//! 2. **Misaligned huge pages**: the low PPN bits of a 2MB/1GB leaf PTE
+//!    must be zero; nonzero means a reserved encoding (hardware always
+//!    faults). The software walk used to OR-and-fold the offset directly,
+//!    yielding a garbage PA; it now returns `NotPresent` per hardware
+//!    semantics.
+//! 3. **L0 pointer shape**: at the last level, an L0 entry with V=1 and
+//!    R=W=X=0 is a reserved encoding (hardware always faults);
+//!    `walk_translate` (riscv64::paging) rules that shape out as None.
 //!
-//! 单一真源：位移/掩码常量与 `pte_is_leaf`/`pte_to_paddr` 由本模块导出，
-//! `riscv64::paging` 委托使用（不再各持一份）。
+//! Single source of truth: the shift/mask constants and
+//! `pte_is_leaf`/`pte_to_paddr` are exported by this module and used by
+//! `riscv64::paging` through delegation (no more duplicate copies).
 
-/// Sv39 页表级位移。
+/// Sv39 page-table level shifts.
 pub const L2_SHIFT: u32 = 30;
 pub const L1_SHIFT: u32 = 21;
 pub const L0_SHIFT: u32 = 12;
 
-/// PPN 字段掩码（pte[53:10]；bits 63:54 为保留/PBMT，不进 PA）。
+/// PPN field mask (pte[53:10]; bits 63:54 are reserved/PBMT and do not
+/// enter the PA).
 pub const PTE_PPN_MASK: u64 = 0x003F_FFFF_FFFF_FC00;
 
-/// V（Valid）位。
+/// V (Valid) bit.
 pub const PTE_V: u64 = 1 << 0;
-/// R|W|X 位掩码（任一置位=叶；全零=表指针）。
+/// R|W|X bit mask (any set = leaf; all zero = table pointer).
 pub const PTE_RWX_MASK: u64 = 0b1110;
 
-/// Sv39 规范性检查：VA[63:39] 必须全等于 VA[38]。
-/// 用户半区（VA[38]=0）：高位 39 位全 0；内核半区（VA[38]=1）：全 1。
+/// Sv39 canonicality check: VA[63:39] must all equal VA[38].
+/// User half (VA[38]=0): the upper 39 bits are all 0; kernel half
+/// (VA[38]=1): all 1.
 #[inline]
 pub fn is_canonical_sv39(vaddr: u64) -> bool {
     let msbs = vaddr & 0xFFFF_FF80_0000_0000;
     msbs == 0 || msbs == 0xFFFF_FF80_0000_0000
 }
 
-/// 叶判定：任一 R/W/X 置位（V 位由调用方先行检查）。
+/// Leaf test: any of R/W/X set (the caller checks the V bit first).
 #[inline]
 pub fn pte_is_leaf(pte: u64) -> bool {
     pte & PTE_RWX_MASK != 0
 }
 
-/// 物理地址 → PTE（PPN 字段 = paddr[53:12]<<... 即 (paddr>>2)&MASK；
-/// 保留高位与页内偏移不进 PTE）。
+/// Physical address → PTE (the PPN field is paddr[53:12] placed in
+/// pte[53:10], i.e. (paddr>>2)&MASK; reserved high bits and the page
+/// offset do not enter the PTE).
 #[inline]
 pub fn paddr_to_pte(paddr: u64) -> u64 {
     (paddr >> 2) & PTE_PPN_MASK
 }
 
-/// PTE → 物理地址（PPN<<12；保留高位不进 PA）。
+/// PTE → physical address (PPN<<12; reserved high bits do not enter the PA).
 #[inline]
 pub fn pte_to_paddr(pte: u64) -> u64 {
     ((pte & PTE_PPN_MASK) >> 10) << 12
 }
 
-/// 三级索引提取（真机 walk_alloc 与纯走表共用）。
+/// Extract the three level indices (shared by the real-machine walk_alloc
+/// and the pure walk).
 #[inline]
 pub fn l2_index(vaddr: u64) -> usize {
     ((vaddr >> L2_SHIFT) & 0x1FF) as usize
@@ -75,42 +89,53 @@ pub fn l0_index(vaddr: u64) -> usize {
     ((vaddr >> L0_SHIFT) & 0x1FF) as usize
 }
 
-/// 巨叶对齐检查：L2（1GB）叶要求 PTE[27:10]（=PPN[17:0]=paddr[29:12]）
-/// 为 0；L1（2MB）叶要求 PTE[18:10]（=PPN[8:0]=paddr[20:12]）为 0。
-/// 非零=保留形态（硬件必 fault）。注意掩码宽度是 **PPN 位宽**（9/18 位）：
-/// PPN[9]=paddr[21]（2MB 页）/PPN[17]=paddr[30]（1GB 页）是合法非零位——
-/// 掩码多含一位就会把 0x80400000 这类合法 2MB 帧误判为错粒度
-/// （§续-350 委托回归真因：掩码写成了 10/19 位）。
+/// Huge-leaf alignment check: an L2 (1GB) leaf requires PTE[27:10]
+/// (= PPN[17:0] = paddr[29:12]) to be zero; an L1 (2MB) leaf requires
+/// PTE[18:10] (= PPN[8:0] = paddr[20:12]) to be zero. Nonzero means a
+/// reserved encoding (hardware always faults). Note the mask width is the
+/// **PPN width** (9/18 bits): PPN[9]=paddr[21] (2MB page) / PPN[17]=paddr[30]
+/// (1GB page) are legal nonzero bits — a mask one bit too wide would
+/// misjudge legal 2MB frames such as 0x80400000 as misaligned (the true
+/// cause of the delegation regression: the mask had been written as
+/// 10/19 bits).
 #[inline]
 fn huge_leaf_misaligned(pte: u64, level2: bool) -> bool {
     let low_mask: u64 = if level2 { (1 << 18) - 1 } else { (1 << 9) - 1 };
     ((pte & PTE_PPN_MASK) >> 10) & low_mask != 0
 }
 
-/// 走表结果。`Leaf` 的 PTE 原样返回（V 位/叶形态/旗标由上层按需裁决）。
+/// Walk result. The `Leaf` PTE is returned as-is (the upper layer rules on
+/// the V bit / leaf shape / flags as needed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalkResult {
-    /// L0 叶 PTE 的物理地址与原始 PTE 值（V/叶形态由上层裁决）。
+    /// Physical address of the L0 leaf PTE plus the raw PTE value (the upper
+    /// layer rules on V/leaf shape).
     Leaf(u64, u64),
-    /// L2 1GB 叶：物理地址已按 Sv39 规则折叠 VA 低位，附原始 PTE。
+    /// L2 1GB leaf: the physical address has the low VA bits folded in per
+    /// Sv39 rules, plus the raw PTE.
     Huge1G(u64, u64),
-    /// L1 2MB 叶：物理地址已折叠 VA 低位，附原始 PTE。
+    /// L1 2MB leaf: the physical address has the low VA bits folded in, plus
+    /// the raw PTE.
     Huge2M(u64, u64),
-    /// 某级不命中（含非规范 VA——硬件在该地址上必然 fault，软件对齐）。
+    /// A level missed (including non-canonical VAs — hardware always
+    /// faults there; the software aligns).
     NotPresent,
 }
 
-/// 纯逻辑 Sv39 三级走表。
+/// Pure-logic Sv39 three-level walk.
 ///
-/// * `read_pte` —— 按**物理地址**读一个 u64 PTE（真机=Direct Map 窗口
-///   读取；宿主测试=合成页表内存闭包）。
-/// * `root_paddr` —— 根表物理地址。
-/// * `vaddr` —— 待翻译 VA（非规范 → `NotPresent`，对齐硬件 fault）。
+/// * `read_pte` — reads one u64 PTE by **physical address** (real machine =
+///   a Direct Map window read; host test = a synthetic page-table memory
+///   closure).
+/// * `root_paddr` — root table physical address.
+/// * `vaddr` — the VA to translate (non-canonical → `NotPresent`, aligned
+///   with the hardware fault).
 pub fn walk_read_with<F>(read_pte: &mut F, root_paddr: u64, vaddr: u64) -> WalkResult
 where
     F: FnMut(u64) -> u64,
 {
-    // §续-356 A/B：加固默认关（旧语义），walk-hardening 特性开=fail-closed。
+    // Hardening is off by default (legacy semantics); the walk-hardening
+    // feature turns on fail-closed behavior.
     if cfg!(feature = "walk-hardening") && !is_canonical_sv39(vaddr) {
         return WalkResult::NotPresent;
     }
@@ -122,7 +147,7 @@ where
     }
     if pte_is_leaf(l2e) {
         if cfg!(feature = "walk-hardening") && huge_leaf_misaligned(l2e, true) {
-            return WalkResult::NotPresent; // 保留形态：硬件必 fault，软件对齐
+            return WalkResult::NotPresent; // reserved encoding: hardware always faults; software aligns
         }
         return WalkResult::Huge1G(pte_to_paddr(l2e) | (vaddr & 0x3FFF_FFFF), l2e);
     }
@@ -148,14 +173,16 @@ where
 }
 
 #[cfg(all(test, feature = "runtime-window"))]
-// `root + 8 * 0` 是刻意的 stride 可读写法（第 0 号表项 × 8B 步长），与
-// 相邻的 `8 * 1`/`8 * 2` 对仗；clippy 的 identity/erasing 噪声在此豁免
-// （P-RV-03 裁决：不改写、保留步长文档价值）。
+// `root + 8 * 0` is a deliberate, readable-stride spelling (entry 0 × the
+// 8-byte stride) that parallels the adjacent `8 * 1`/`8 * 2`; the clippy
+// identity/erasing noise is waived here (decision: keep the spelling for
+// its stride documentation value).
 #[allow(clippy::erasing_op, clippy::identity_op)]
 mod tests {
     use super::*;
 
-    // ── 合成页表区：一块泄漏内存当「物理内存」，phys = REGION_PHYS + 偏移 ──
+    // ── Synthetic page-table region: one leaked allocation stands in for
+    // "physical memory", phys = REGION_PHYS + offset ──
     const REGION_PHYS: u64 = 0x9000_0000;
     const PAGE_ENTRIES: usize = 512;
 
@@ -174,8 +201,10 @@ mod tests {
             let off = (phys - REGION_PHYS) as usize / 8;
             &mut self.region[off]
         }
-        /// 按物理地址读 PTE 的闭包（真机 read_pte_dm 的宿主替身）。
-        /// 区外物理地址返回 0（对齐真实内存语义：非独占地址空间）。
+        /// Closure that reads a PTE by physical address (the host stand-in
+        /// for the real-machine read_pte_dm). Addresses outside the region
+        /// return 0 (matching real memory semantics: the address space is
+        /// not exclusive).
         fn reader(&self) -> impl FnMut(u64) -> u64 + '_ {
             let region = &*self.region;
             move |phys: u64| {
@@ -193,7 +222,8 @@ mod tests {
         }
     }
 
-    // ── 参考实现（按 Sv39 规范独立写就，不 import 被测代码）──
+    // ── Reference implementation (written independently from the Sv39 spec;
+    // does not import the code under test) ──
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum RefWalk {
         NotPresent,
@@ -224,7 +254,7 @@ mod tests {
             if cfg!(feature = "walk-hardening")
                 && (l2e & PTE_PPN_MASK) >> 10 & ((1 << 18) - 1) != 0
             {
-                return RefWalk::NotPresent; // 错粒度 1GB 叶
+                return RefWalk::NotPresent; // misaligned 1GB leaf
             }
             return RefWalk::Leaf { pa: pte_to_paddr(l2e) | (vaddr & 0x3FFF_FFFF) };
         }
@@ -237,20 +267,22 @@ mod tests {
             if cfg!(feature = "walk-hardening")
                 && (l1e & PTE_PPN_MASK) >> 10 & ((1 << 9) - 1) != 0
             {
-                return RefWalk::NotPresent; // 错粒度 2MB 叶（仅加固态拒；关态=旧语义接受并折叠）
+                return RefWalk::NotPresent; // misaligned 2MB leaf (rejected only with hardening; off = legacy accept-and-fold)
             }
             return RefWalk::Leaf { pa: pte_to_paddr(l1e) | (vaddr & 0x1F_FFFF) };
         }
         let l0_base = pte_to_paddr(l1e);
         let pte = rd(l0_base + (((vaddr >> L0_SHIFT) & 0x1FF) as u64) * 8);
         if pte & PTE_V == 0 || pte & PTE_RWX_MASK == 0 {
-            // V=0 不命中；V=1 而 RWX=0 是末级保留形态（硬件必 fault）。
+            // V=0 is a miss; V=1 with RWX=0 is the last-level reserved
+            // encoding (hardware always faults).
             return RefWalk::NotPresent;
         }
         RefWalk::Leaf { pa: pte_to_paddr(pte) | (vaddr & 0xFFF) }
     }
 
-    /// 被测走表折叠成参考形态（Leaf 的 V/叶形态裁决 = walk_translate 语义）。
+    /// Fold the walk under test into the reference shape (the V/leaf-shape
+    /// ruling for Leaf = walk_translate semantics).
     fn walk_under(s: &Synth, root: u64, va: u64) -> RefWalk {
         match s.walker(root, va) {
             WalkResult::Leaf(_, pte) => {
@@ -288,11 +320,12 @@ mod tests {
 
     #[test]
     fn v0_with_rwx_set_is_not_present_at_every_level() {
-        // 腐蚀/保留形态：V=0 但 R|W|X 置位——规范：V=0 一律不命中，
-        // 绝不许按叶处理、也绝不许下降。
+        // Corrupted/reserved encoding: V=0 but R|W|X set — per spec, V=0 is
+        // always a miss; it must never be treated as a leaf or descended
+        // through.
         let mut s = Synth::new(4);
         let (root, l1, l0) = (s.page_phys(0), s.page_phys(1), s.page_phys(2));
-        let ghost = R | W | X; // V=0, RWX 全 1
+        let ghost = R | W | X; // V=0, all RWX bits set
         *s.entry_mut(root + 8 * 2) = paddr_to_pte(l1) | V;
         *s.entry_mut(l1 + 8 * 6) = paddr_to_pte(l0) | V;
         *s.entry_mut(root + 8 * 1) = paddr_to_pte(l1) | ghost; // L2 ghost
@@ -306,13 +339,14 @@ mod tests {
         assert_eq!(
             walk_under(&s, root, (2 << 30) | (6 << 21) | (5 << 12)),
             ref_walk(&s.region, root, (2 << 30) | (6 << 21) | (5 << 12))
-        ); // 真表仍在
+        ); // the real table is still intact
     }
 
     #[test]
     fn w_without_r_is_leaf_shape_at_l0() {
-        // 保留编码 W=1,R=0：硬件在「访问」时 fault，但形态上是叶——
-        // 走表（翻译）阶段返回叶 PTE，与硬件走表阶段对齐。
+        // Reserved encoding W=1, R=0: hardware faults on "access", but the
+        // shape is a leaf — the walk (translation) stage returns the leaf
+        // PTE, aligned with the hardware walk stage.
         let mut s = Synth::new(4);
         let (root, l1, l0) = (s.page_phys(0), s.page_phys(1), s.page_phys(2));
         *s.entry_mut(root + 8 * 0) = paddr_to_pte(l1) | V;
@@ -327,16 +361,17 @@ mod tests {
     #[cfg(feature = "walk-hardening")]
     #[test]
     fn misaligned_huge_leaf_is_not_present() {
-        // 错粒度巨叶：2MB 叶 PPN[9:0]≠0 / 1GB 叶 PPN[18:0]≠0 = 保留形态，
-        // 硬件必 fault——此前软件直接 OR 折叠出垃圾 PA（fail-open），现对齐。
+        // Misaligned huge leaf: 2MB leaf PPN[9:0]≠0 / 1GB leaf PPN[18:0]≠0
+        // is a reserved encoding; hardware always faults — the software used
+        // to OR-fold a garbage PA (fail-open), and now aligns.
         let mut s = Synth::new(4);
         let (root, l1) = (s.page_phys(0), s.page_phys(1));
-        *s.entry_mut(root + 8 * 4) = paddr_to_pte(0x8000_1000) | V | R | W; // 1GB 错粒度（PPN[0]=1）
+        *s.entry_mut(root + 8 * 4) = paddr_to_pte(0x8000_1000) | V | R | W; // misaligned 1GB (PPN[0]=1)
         assert_eq!(walk_under(&s, root, 4 << 30), RefWalk::NotPresent);
         *s.entry_mut(root + 8 * 4) = paddr_to_pte(l1) | V;
-        *s.entry_mut(l1 + 8 * 4) = paddr_to_pte(0x8040_1000) | V | R | W; // 2MB 错粒度（PPN[0]=1）
+        *s.entry_mut(l1 + 8 * 4) = paddr_to_pte(0x8040_1000) | V | R | W; // misaligned 2MB (PPN[0]=1)
         assert_eq!(walk_under(&s, root, (4 << 30) | (4 << 21)), RefWalk::NotPresent);
-        // 对照：对齐 2MB 巨叶正常折叠。
+        // Control: an aligned 2MB huge leaf folds normally.
         *s.entry_mut(l1 + 8 * 4) = paddr_to_pte(0x8040_0000) | V | R | W;
         match walk_under(&s, root, (4 << 30) | (4 << 21) | 0x1234) {
             RefWalk::Leaf { pa } => assert_eq!(pa, 0x8040_0000 | 0x1234),
@@ -347,18 +382,21 @@ mod tests {
     #[cfg(feature = "walk-hardening")]
     #[test]
     fn non_canonical_va_is_not_present() {
-        // §续-349 头号形状：共享根表的内核半区在 root[256..512]——非规范
-        // VA（历史栈顶 0x7fff_ffff_f000、run8 的 0x7ffff48b124e6）硬件必
-        // fault；此前软件会顺 root[511] 「翻译」成功并给内核代写喂错 PA。
+        // The foremost shape from the forensics: the shared root table's
+        // kernel half sits at root[256..512] — non-canonical VAs (the
+        // historical stack top 0x7fff_ffff_f000, run8's 0x7ffff48b124e6)
+        // always fault in hardware; the software used to "translate"
+        // successfully through root[511] and feed a wrong PA to kernel
+        // on-behalf writes.
         let mut s = Synth::new(4);
         let (root, l1) = (s.page_phys(0), s.page_phys(1));
-        *s.entry_mut(root + 8 * 511) = paddr_to_pte(l1) | V; // 内核半区真在用的表项
+        *s.entry_mut(root + 8 * 511) = paddr_to_pte(l1) | V; // an entry actually in use in the kernel half
         *s.entry_mut(l1 + 8 * 511) = paddr_to_pte(0x8700_0000) | V | R;
-        // 非规范 VA（bits 63:39 = 0 ≠ bit38 = 1）：一律 NotPresent。
+        // Non-canonical VA (bits 63:39 = 0 ≠ bit38 = 1): always NotPresent.
         assert_eq!(walk_under(&s, root, 0x7fff_ffff_f000), RefWalk::NotPresent);
         assert_eq!(walk_under(&s, root, 0x7fff_f48b_1000), RefWalk::NotPresent);
-        // 对照：内核半区规范 VA（高位全 1）仍可走（i2=i1=511，2MB 巨叶）。
-        // 对照：内核半区规范 VA（全 1 页，i2=i1=511）仍可走。
+        // Control: a canonical VA in the kernel half (all-ones page,
+        // i2=i1=511) still walks (2MB huge leaf).
         let kva = 0xFFFF_FFFF_FFFF_F000;
         match s.walker(root, kva) {
             WalkResult::Huge2M(pa, _) => assert_eq!(pa, 0x8700_0000 | (kva & 0x1F_FFFF)),
@@ -368,8 +406,9 @@ mod tests {
 
     #[test]
     fn l0_pointer_shape_is_not_present_semantics() {
-        // 末级 V=1 而 RWX=0 = 保留形态：walk_read 原样上报 Leaf，由
-        // walk_translate 裁决为 None（本测试锁 walk_under 的对齐语义）。
+        // Last level V=1 with RWX=0 = reserved encoding: walk_read reports
+        // Leaf as-is and walk_translate rules it out as None (this test pins
+        // walk_under's alignment semantics).
         let mut s = Synth::new(4);
         let (root, l1, l0) = (s.page_phys(0), s.page_phys(1), s.page_phys(2));
         *s.entry_mut(root + 8 * 0) = paddr_to_pte(l1) | V;
@@ -380,22 +419,22 @@ mod tests {
 
     #[test]
     fn boundary_indices() {
-        // 索引边界：i2/i1/i0 全 0 与全 511 的角。
+        // Index boundaries: the corners where i2/i1/i0 are all 0 and all 511.
         let mut s = Synth::new(8);
         let (root, l1, l0, l1k, l0k) =
             (s.page_phys(0), s.page_phys(1), s.page_phys(2), s.page_phys(3), s.page_phys(4));
         *s.entry_mut(root + 0) = paddr_to_pte(l1) | V;
-        *s.entry_mut(root + 8 * 511) = paddr_to_pte(l1k) | V; // 内核半区角（规范 VA 才可达）
+        *s.entry_mut(root + 8 * 511) = paddr_to_pte(l1k) | V; // kernel-half corner (reachable only via a canonical VA)
         *s.entry_mut(l1 + 0) = paddr_to_pte(l0) | V;
         *s.entry_mut(l1k + 8 * 511) = paddr_to_pte(l0k) | V;
         *s.entry_mut(l0 + 0) = paddr_to_pte(0x8100_0000) | V | R;
         *s.entry_mut(l0k + 8 * 511) = paddr_to_pte(0x8200_0000) | V | R;
-        // 用户半区零角：i2=i1=i0=0。
+        // User-half zero corner: i2=i1=i0=0.
         match walk_under(&s, root, 0x0) {
             RefWalk::Leaf { pa } => assert_eq!(pa & !0xFFF, 0x8100_0000),
             other => panic!("零角应命中，得 {other:?}"),
         }
-        // 内核半区满角：全 1 页（i2=i1=i0=511）。
+        // Kernel-half full corner: the all-ones page (i2=i1=i0=511).
         let kva = 0xFFFF_FFFF_FFFF_F000;
         match walk_under(&s, root, kva) {
             RefWalk::Leaf { pa } => assert_eq!(pa & !0xFFF, 0x8200_0000),
@@ -405,32 +444,35 @@ mod tests {
 
     #[test]
     fn aligned_huge_leaf_with_high_ppn_bits_is_accepted() {
-        // §续-350 委托回归真因回归测试：2MB 叶在 paddr 0x80400000
-        // （PPN[8]=paddr[21]=1，合法）必须被接受——掩码多含 PPN[9] 会把
-        // 它误判为错粒度（真机=kernel 高半区 2MB 映射全灭→kerninfo panic）。
-        // 1GB 叶同理：paddr 0xC0000000（PPN[17]=paddr[30]=1）合法。
+        // Regression test for the true cause of the delegation regression:
+        // a 2MB leaf at paddr 0x80400000 (PPN[8]=paddr[21]=1, legal) must be
+        // accepted — a mask that also includes PPN[9] misjudges it as
+        // misaligned (on real hardware this wiped out every 2MB mapping in
+        // the kernel higher half, then kerninfo panicked). The same holds
+        // for a 1GB leaf: paddr 0xC0000000 (PPN[17]=paddr[30]=1) is legal.
         let mut s = Synth::new(4);
         let (root, l1) = (s.page_phys(0), s.page_phys(1));
         *s.entry_mut(root + 8 * 2) = paddr_to_pte(l1) | V; // i2=2
-        *s.entry_mut(l1 + 8 * 2) = paddr_to_pte(0x8040_0000) | V | R | W; // 2MB 叶，bit21=1
+        *s.entry_mut(l1 + 8 * 2) = paddr_to_pte(0x8040_0000) | V | R | W; // 2MB leaf, bit21=1
         let va = (2 << 30) | (2 << 21) | 0x4567;
         match walk_under(&s, root, va) {
             RefWalk::Leaf { pa } => assert_eq!(pa, 0x8040_0000 | (va & 0x1F_FFFF)),
             other => panic!("合法 2MB 叶（PPN[8]=1）应被接受，得 {other:?}"),
         }
-        // 1GB 叶：paddr 0xC000_0000（PPN[17]=paddr[30]=1，合法）。
+        // 1GB leaf: paddr 0xC000_0000 (PPN[17]=paddr[30]=1, legal).
         *s.entry_mut(root + 8 * 3) = paddr_to_pte(0xC000_0000) | V | R;
         let va3 = (3 << 30) | 0x89AB;
         match walk_under(&s, root, va3) {
             RefWalk::Leaf { pa } => assert_eq!(pa, 0xC000_0000 | (va3 & 0x3FFF_FFFF)),
             other => panic!("合法 1GB 叶（PPN[17]=1）应被接受，得 {other:?}"),
         }
-        // 边界内侧拒绝（错粒度）仅加固态成立；关态=旧语义（接受并折叠）。
+        // Rejection just inside the boundary (misaligned) holds only with
+        // hardening; off = legacy semantics (accept and fold).
         *s.entry_mut(l1 + 8 * 2) = paddr_to_pte(0x8040_1000) | V | R | W;
         if cfg!(feature = "walk-hardening") {
             assert_eq!(walk_under(&s, root, va), RefWalk::NotPresent);
         }
-        // 1GB 叶 paddr[29:12]≠0（paddr 0xC000_1000）。
+        // 1GB leaf with paddr[29:12]≠0 (paddr 0xC000_1000).
         *s.entry_mut(root + 8 * 3) = paddr_to_pte(0xC000_1000) | V | R;
         if cfg!(feature = "walk-hardening") {
             assert_eq!(walk_under(&s, root, va3), RefWalk::NotPresent);
@@ -439,7 +481,8 @@ mod tests {
 
     #[test]
     fn fuzz_against_reference() {
-        // 随机 PTE 场 × 随机 VA 扫描：被测走表与独立参考实现全等。
+        // Random PTE field × random VA sweep: the walk under test and the
+        // independent reference implementation agree completely.
         let mut s = Synth::new(16);
         let mut seed: u64 = 0x2026_1005;
         let mut rng = || {
@@ -456,15 +499,21 @@ mod tests {
             }
         }
         *s.entry_mut(root + 8 * 2) = s.page_phys(3) | V;
-        *s.entry_mut(root + 8 * 5) = rng(); // L2 随机形态（叶/表/无效都可能）
-        // 确定性覆盖错粒度 2MB 叶（J1：此前参考实现的 2MB 拒绝分支漏了
-        // `walk-hardening` 门控，与被测（两种形态都门控）不同形——随机种子
-        // 恰好不命中则绿、一扩就炸。现在两边一致，此例在开/关两态都同形。
+        *s.entry_mut(root + 8 * 5) = rng(); // random L2 shape (leaf/table/invalid all possible)
+        // Deterministic coverage of a misaligned 2MB leaf (previously the
+        // reference implementation's 2MB rejection branch missed the
+        // `walk-hardening` gate and took a different shape from the code
+        // under test, which gates both shapes — the random seed happened to
+        // miss it, so the test stayed green until the sweep grew. The two
+        // sides now agree, and this case has the same shape with the
+        // feature on or off).
         let l1_for_i2 = s.page_phys(3);
-        // 把 i2=2 真接指向 page3（用 paddr_to_pte 保证 pte_to_paddr 回映同一页），
-        // 否则行 456 的裸 page_phys 会下降到另一基址、下面的错粒度叶读不到。
+        // Point i2=2 at page3 for real (paddr_to_pte guarantees
+        // pte_to_paddr maps back to the same page); otherwise the bare
+        // `page_phys` assignment above descends to a different base and the
+        // misaligned leaf below is never reached.
         *s.entry_mut(root + 8 * 2) = paddr_to_pte(l1_for_i2) | V;
-        *s.entry_mut(l1_for_i2 + 8 * 7) = paddr_to_pte(0x8040_1000) | V | R | W; // PPN[0]=1 错粒度 2MB 叶
+        *s.entry_mut(l1_for_i2 + 8 * 7) = paddr_to_pte(0x8040_1000) | V | R | W; // PPN[0]=1, misaligned 2MB leaf
         let misaligned_2m_va = (2u64 << 30) | (7u64 << 21) | 0x21;
         assert_eq!(
             walk_under(&s, root, misaligned_2m_va),
@@ -472,7 +521,7 @@ mod tests {
             "错粒度 2MB 叶：参考与被测在当前 walk-hardening 态下必须同形"
         );
         for _ in 0..4000 {
-            let va = rng() & 0x0000_3FFF_FFFF_FFFF; // 用户半区规范域
+            let va = rng() & 0x0000_3FFF_FFFF_FFFF; // canonical range of the user half
             assert_eq!(
                 walk_under(&s, root, va),
                 ref_walk(&s.region, root, va),
@@ -480,7 +529,7 @@ mod tests {
             );
         }
         for _ in 0..1000 {
-            let va = 0xFFFF_FFC0_0000_0000 | (rng() & 0x0000_3FFF_FFFF_FFFF); // 内核半区
+            let va = 0xFFFF_FFC0_0000_0000 | (rng() & 0x0000_3FFF_FFFF_FFFF); // kernel half
             assert_eq!(
                 walk_under(&s, root, va),
                 ref_walk(&s.region, root, va),

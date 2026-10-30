@@ -68,11 +68,13 @@ pub struct Riscv64InterruptController {
 
 impl Riscv64InterruptController {
     fn threshold_offset(context: usize) -> usize {
-        // PLIC context 寄存器步长=0x1000（规范 CONTEXT 0@0x200000、
-        // CONTEXT 1@0x201000…；QEMU sifive_plic.c CONTEXT_STRIDE=0x1000；
-        // DTB interrupts-extended <0x0b,0x09> 证 hart0-S=context 1）。
-        // 历史：曾误修 0x2000（=context 2=不存在的 hart1-M），claim 指向
-        // 空地址恒 0——UART 首源轮次实测反转定案后回滚。
+        // PLIC context register stride = 0x1000 (spec: CONTEXT 0@0x200000,
+        // CONTEXT 1@0x201000…; QEMU sifive_plic.c CONTEXT_STRIDE=0x1000;
+        // DTB interrupts-extended <0x0b,0x09> proves hart0-S = context 1).
+        // History: 0x2000 (= context 2 = nonexistent hart1-M) was once used
+        // by mistake, making claim point at an empty address that always
+        // read 0 — rolled back once the first-source round of UART
+        // measurements settled the matter.
         PLIC_THRESHOLD + context * 0x1000
     }
 
@@ -157,8 +159,9 @@ impl InterruptRouter for Riscv64InterruptController {
         }
     }
 
-    /// SD-41/C3 首源触发：写 PLIC priority（0=永不投递；QEMU 复位值 0，
-    /// 不写则线即使 unmask 也永不上升）。
+    /// First-source trigger: write the PLIC priority (0 = never delivered;
+    /// the QEMU reset value is 0, and without the write the line never
+    /// rises even when unmasked).
     fn set_irq_priority(&mut self, irq: IrqVector, priority: u32) {
         let irq_num = irq.get() as usize;
         if irq_num == 0 {
@@ -202,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_timer_irq_is_the_reserved_pseudo_vector() {
-        // D-59: the S-mode timer never crosses the PLIC (it is a CPU-local
+        // The S-mode timer never crosses the PLIC (it is a CPU-local
         // interrupt gated by sie.STIE), so its dispatch identity is the
         // reserved pseudo-vector 0 — the same value the PLIC mask/unmask
         // paths special-case as "no controller line". If the constant ever
@@ -238,7 +241,7 @@ impl PerCpuInterruptUnit for Riscv64InterruptController {
         // SAFETY: write the claimed ID to the complete register (the
         // complete register shares the claim offset; write = complete).
         // The ID is exactly what claim returned — the pairing is the
-        // protocol (D-61).
+        // protocol.
         unsafe {
             self.plic_write32(PLIC_COMPLETE + self.context * 0x1000, id);
         }

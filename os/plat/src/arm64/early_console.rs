@@ -6,35 +6,47 @@ use crate::early_console::{tx_wait_then_send, EarlyConsole};
 use core::sync::atomic::{AtomicBool, Ordering};
 use minix_platform::arch::aarch64::mmio_translate;
 
-/// PL011 UART0 物理基址 on QEMU `virt`（与 `os/qemu-tests/` 的 aarch64 载体一致）。
+/// PL011 UART0 physical base on QEMU `virt` (matching the aarch64 carriers
+/// under `os/qemu-tests/`).
 const PL011_PA_BASE: u64 = 0x0900_0000;
-/// 内核高半（TTBR1）MMIO 窗口是否已生效。
+/// Whether the higher-half (TTBR1) MMIO window is live.
 ///
-/// §1.114：设备 MMIO 只在会被 `switch_address_space` 切走的 TTBR0 低半身份
-/// 映射里可达，首真切根后 `tlbi alle1is` 清掉缓存的身份条目，之后再摸
-/// `PL011_PA_BASE` 即同步异常。修法是把 MMIO 窗口另映射进 bootstrap 根的高半
-/// （TTBR1，永不随进程切换），运行时改走高半别名。本标志区分两个阶段：
-/// - `false`：`enable()` 之前（boot-shim EBS + arch_boot Step 1/2）——此时
-///   跑在固件页表下，只有 `VA==PA` 身份可达，高半别名尚未建立。
-/// - `true`：`enable()` 之后——高半窗口已随 bootstrap 根装入 TTBR1，切根
-///   持久，控制台改走高半别名。
+/// Device MMIO is reachable only through the TTBR0 low-half identity mapping,
+/// which is switched away by `switch_address_space`; after the first real
+/// root switch, `tlbi alle1is` drops the cached identity entries, and
+/// touching `PL011_PA_BASE` afterwards raises a synchronous exception. The
+/// fix maps the MMIO window separately into the bootstrap root's higher half
+/// (TTBR1, never switched with processes), and the runtime uses the
+/// higher-half alias. This flag distinguishes the two phases:
+/// - `false`: before `enable()` (boot-shim EBS + arch_boot steps 1/2) — the
+///   code runs under firmware page tables where only the identity `VA==PA`
+///   alias is reachable and the higher-half alias does not exist yet.
+/// - `true`: after `enable()` — the higher-half window has been installed in
+///   TTBR1 together with the bootstrap root, persists across root switches,
+///   and the console uses the higher-half alias.
 ///
-/// 由内核在 `arch_boot` 装好高半 MMIO 窗口并 `enable()` 后调用
-/// [`use_high_mmio_window`] 置位。默认 `false` 保证极早期输出不丢。
+/// Set by the kernel after `arch_boot` installs the higher-half MMIO window
+/// and calls `enable()`, via [`use_high_mmio_window`]. The default `false`
+/// guarantees the very earliest output is not lost.
 ///
-/// Ordering：当前置位/读取全在 bootstrap 核顺序执行（AP bring-up 尚为
-/// 骨架），`Relaxed` 无可见性缺口。**S-4 经 PSCI `CPU_ON` 放行次级核时重新
-/// 评估**：须保证置位先于任何 `CPU_ON`（否则次级核入口指令流可能被重排到
-/// 看到 `HIGH_MMIO_LIVE==true` 之前，落回已被切根清除的身份路径），届时改用
-/// `Release`/`Acquire`。
+/// Ordering: for now the set and the read both run sequentially on the
+/// bootstrap core (AP bring-up is still skeletal), so `Relaxed` leaves no
+/// visibility gap. **Re-evaluate when the bootstrap core releases secondary
+/// cores via PSCI `CPU_ON`**: the set must be ordered before any `CPU_ON`
+/// (otherwise the secondary core's entry instruction stream could be
+/// reordered to see `HIGH_MMIO_LIVE == true` too early and fall back to the
+/// identity path already cleared by the root switch); use
+/// `Release`/`Acquire` then.
 static HIGH_MMIO_LIVE: AtomicBool = AtomicBool::new(false);
 
-/// 将早期控制台切到 TTBR1 常驻的高半 MMIO 别名（幂等，仅置标志）。
+/// Switch the early console to the TTBR1-resident higher-half MMIO alias
+/// (idempotent; only sets the flag).
 pub fn use_high_mmio_window() {
     HIGH_MMIO_LIVE.store(true, Ordering::Relaxed);
 }
 
-/// 当前生效的 PL011 访问基址：高半窗口生效后走 TTBR1 别名，否则走身份 `VA==PA`。
+/// The PL011 access base currently in effect: the TTBR1 alias once the
+/// higher-half window is live, otherwise the identity `VA==PA` address.
 #[inline]
 fn pl011_base() -> u64 {
     if HIGH_MMIO_LIVE.load(Ordering::Relaxed) {
@@ -43,38 +55,47 @@ fn pl011_base() -> u64 {
         PL011_PA_BASE
     }
 }
-/// UARTFR（Flag Register）偏移 0x18。
+/// UARTFR (Flag Register) offset 0x18.
 const PL011_FR_OFFSET: u64 = 0x18;
-/// UARTFR bit5 = TXFF：发送 FIFO 满（PL011 的 FIFO 深度 16 字节）。
+/// UARTFR bit5 = TXFF: transmit FIFO full (the PL011 FIFO is 16 bytes deep).
 const PL011_FR_TXFF: u8 = 1 << 5;
-/// 发送前的有界轮询上限。数量级跟 x86 侧对位实现（`os/boot-shim/src/lib.rs`
-/// 的 `emit_byte`，~10 万次即放弃）一致：设备状态位异常时宁丢字节。
+/// Bounded polling limit before sending. The magnitude matches the x86
+/// counterpart (`emit_byte` in `os/boot-shim/src/lib.rs`, which gives up
+/// after ~100k iterations): drop bytes rather than spin forever if a device
+/// status bit misbehaves.
 const PL011_TX_POLL_LIMIT: u32 = 100_000;
 
-/// 读 UARTFR 的 TXFF 位：发送 FIFO 是否已满。
+/// Read the UARTFR TXFF bit: whether the transmit FIFO is full.
 fn tx_full() -> bool {
-    // SAFETY: PL011 UARTFR（BASE+0x18）在 ARM v8-A 平台上是固定 MMIO 只读
-    // 寄存器；early console 在 boot 阶段由当前核独占，无并发写者。单字节读
-    // 与下方单字节 DR 写走同一设备解码路径（aarch64 载体串口日志已实证该
-    // 访问宽度在本项目用的 QEMU virt + PL011 上可用）。
+    // SAFETY: PL011 UARTFR (BASE+0x18) is a fixed read-only MMIO register on
+    // the ARM v8-A platform; the early console is owned by the current core
+    // during boot and has no concurrent writer. The single-byte read shares
+    // the device decode path with the single-byte DR write below (the
+    // aarch64 carrier's serial log already demonstrates this access width
+    // works on the QEMU virt + PL011 combination used by this project).
     let fr = unsafe { core::ptr::read_volatile((pl011_base() + PL011_FR_OFFSET) as *const u8) };
     fr & PL011_FR_TXFF != 0
 }
 
 /// Write a single byte to PL011 UART.
 ///
-/// 先等发送 FIFO 腾空再写（有界，见 [`tx_wait_then_send`]）。原实现是无条件
-/// `write_volatile`：连写超过 16 字节就会撞满 FIFO 丢字（x86 侧同位置原实现
-/// 同构踩过，已在 NK4-A 取证中修正）。QEMU 下不显现（串口同步排空，M3.1 归档
-/// 日志里 64 字节的长行完整），但交棒后的诊断通道不能把正确性押在“模拟器排空
-/// 够快”上。
+/// Wait for the transmit FIFO to drain before writing (bounded; see
+/// [`tx_wait_then_send`]). The original implementation called
+/// `write_volatile` unconditionally: writing more than 16 bytes back to back
+/// filled the FIFO and dropped characters (the x86 counterpart had the same
+/// shape and was fixed during forensics). It does not show under QEMU (the
+/// serial port drains synchronously, and the 64-byte long lines in the
+/// archived log come out complete), but the diagnostic channel after
+/// hand-off must not stake correctness on "the emulator drains fast enough".
 pub fn write_byte(byte: u8) {
     tx_wait_then_send(
         byte,
         tx_full,
         |b| unsafe {
-            // SAFETY: DR（BASE+0x00）同上：固定 MMIO，写一个字节即入发送
-            // FIFO。已先等过 TXFF（或到达上限后放行）。
+            // SAFETY: DR (BASE+0x00) is the same fixed MMIO register: writing
+            // one byte enqueues it into the transmit FIFO. TXFF has already
+            // been waited on (or the limit was reached and the write is let
+            // through).
             core::ptr::write_volatile(pl011_base() as *mut u8, b);
         },
         PL011_TX_POLL_LIMIT,

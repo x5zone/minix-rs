@@ -17,8 +17,8 @@
 //!
 //! # Candidate union (four sources)
 //!
-//! Mapping candidates are the union of (§6.1 "映射候选的两源并集", extended
-//! by source 3 in fix16 and by source 4 in NK4-C 续-50):
+//! Mapping candidates are the union of (the two-source union of §6.1,
+//! extended by source 3 and by source 4):
 //!
 //! 1. **Resource-classified memmap ranges** — `KernelInfo.memmap`; the boot
 //!    shim already restricts it to conventional RAM (the source of VM PMM
@@ -38,7 +38,7 @@
 //!    The identity mapping covers `[0, IDENTITY_MAP_END)` so instruction
 //!    and data fetches flow there, but a `kernel_phys_to_virt` (DM alias)
 //!    access into a region outside sources 1–3 faults not-present
-//!    (NK4-C 续-49 forensics: the `-smp4` early-boot #PFs had CR2 = DM of
+//!    (forensics from the `-smp4` early-boot #PFs: CR2 was the DM alias of
 //!    stack PAs in the gap between installed candidates — `covered_by=NONE`
 //!    on every reproducing round). Source 4 overlaps a live source-2/3
 //!    candidate whenever one UEFI descriptor spans both (they are all
@@ -53,7 +53,8 @@
 //! `AlreadyMapped` reason.
 //!
 //! All PTE writes go through the bootstrap root's identity write channel
-//! (`VA = PA`, §6.1 "DM 建立的自举写通道闭环"); on x86-64 the VM DM window
+//! (`VA = PA`, the boot write-channel closure that establishes the DM); on
+//! x86-64 the VM DM window
 //! overlaps `PDPTE[2]` and its split path rewrites only VA [2 GiB, 3 GiB)
 //! translation, orthogonal to the `VA < 1 GiB` write channel.
 //!
@@ -179,12 +180,15 @@ pub unsafe fn establish_boot_dm<A: BootArch>(
         // SAFETY: as above.
         unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
     }
-    // NK4-C 第 27 轮取证探针（task1-close 裁决删除）：打印 VM DM 窗口的
-    // 实际覆盖清单（三源候选、窗口裁剪后的有效范围）。第 18 轮层级 dump
-    // 实锤故障 PT 页落在低内存 PA（lvl2=0x7d027 / lvl1=0），本探针裁决
-    // 该页是否在 VM 窗口覆盖内——不在则 VM 的 PTE 写静默丢失（refault
-    // 循环的直接机制）。mock 门：宿主测试无端口 I/O 控制台（其余探针
-    // 同一惯例），不带门 = 测试进程 SIGSEGV。
+    // Forensics probe: print the VM DM window's actual coverage list (the
+    // three-source candidates and their effective ranges after window
+    // clipping). An earlier hierarchical dump proved the faulting PT page sat
+    // at a low-memory PA (lvl2=0x7d027 / lvl1=0), so this probe decides
+    // whether that page is inside the VM window's coverage -- when it is not,
+    // VM's PTE writes are silently lost (the direct mechanism behind the
+    // refault loop). Mock gate: host tests have no port-I/O console (the same
+    // convention as the other probes); without the gate the test process
+    // SIGSEGVs.
     #[cfg(not(feature = "mock"))]
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
@@ -216,8 +220,7 @@ pub unsafe fn establish_boot_dm<A: BootArch>(
     validate_bootstrap_tree(root);
     Ok(())
 }
-/// Highest PA the per-process window mapping must reach (handoff v5,
-/// fix26).
+/// Highest PA the per-process window mapping must reach (handoff v5).
 ///
 /// Reuses exactly the candidate set [`establish_boot_dm`] installs into
 /// the kernel window (unlimited PA bound): memmap ∪ bootstrap tree ∪
@@ -260,8 +263,8 @@ pub fn kernel_dm_pa_end(kernel_info: &KernelInfo, root: PhysBytes) -> u64 {
 /// (that is exactly how the VM PMM never hands out blob memory). But the
 /// VM's `exec_bootproc` reads each image straight through the VM Direct
 /// Map (`vm_server.rs` "no copy needed, unlike C") — an un-covered blob
-/// page is a DM hole and the first ELF-magic read #PFs at CPL3 (fix16
-/// first-light forensics 2026-09-21: cr2 0x9de0e000 = DM of PA
+/// page is a DM hole and the first ELF-magic read #PFs at CPL3 (first-light
+/// forensics 2026-09-21: cr2 0x9de0e000 = DM of PA
 /// 0x1de0e000, a module blob page).
 ///
 /// Coverage is PTE-only and does not alter memmap semantics: the pages
@@ -278,7 +281,7 @@ pub fn kernel_dm_pa_end(kernel_info: &KernelInfo, root: PhysBytes) -> u64 {
 ///
 /// Heap-free by necessity: this runs inside `arch_boot` before the kernel
 /// heap exists — a `collect` here is a 64-byte `handle_alloc_error` boot
-/// failure (fix16 self-inflicted regression, 2026-09-21).
+/// failure (a self-inflicted regression fixed on 2026-09-21).
 fn boot_module_candidates<'a>(
     kernel_info: &'a KernelInfo,
     root: PhysBytes,
@@ -320,14 +323,15 @@ fn boot_module_candidates<'a>(
 /// through `kernel_phys_to_virt` (e.g. interrupt-path copies reading a
 /// stack slot) then faulted not-present whenever the UEFI allocator had
 /// landed the stack in a gap between installed candidates — the exact
-/// `covered_by=NONE` CR2s of NK4-C 续-49 (`0x5d96360`/`0x5d92360`).
+/// `covered_by=NONE` CR2s observed from the crashing rounds
+/// (`0x5d96360`/`0x5d92360`).
 ///
 /// Union semantics: a range partially overlapping an earlier candidate
 /// (memmap ∪ root/bump ∪ surviving modules) is dropped whole — leaf
 /// slots are disjoint, so any overlap would make a later
 /// `install_boot_dm_range` hit `AlreadyMapped` and refuse boot.
 ///
-/// Known residual gap (NK4-C 续-51 review, open item not closed by this
+/// Known residual gap (an open item not closed by this
 /// change): the shim's own root page, bump region and module loads are
 /// `LOADER_DATA` allocations (`boot-shim/src/uefi_helpers.rs` pool +
 /// `allocate_pages`), and `build_memmaps` puts every non-conventional,
@@ -343,7 +347,8 @@ fn boot_module_candidates<'a>(
 /// shape cannot arise from the partition itself.
 ///
 /// Kernel DM only: the VM DM intentionally stays on sources 1–3 so PMM
-/// resource qualification semantics are unchanged (§6.1 资格过滤).
+/// resource qualification semantics are unchanged (§6.1 eligibility
+/// filtering).
 ///
 /// Heap-free by necessity — same `arch_boot`-before-heap constraint as
 /// [`boot_module_candidates`].
@@ -426,7 +431,8 @@ fn bootstrap_tree_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> [Opti
     out
 }
 
-/// Boot-time validation (§6.1 资格过滤 ②): the bootstrap tree must be
+/// Boot-time validation (§6.1 eligibility filtering, condition 2): the
+/// bootstrap tree must be
 /// representable in both windows — the identity write channel requires
 /// `PA < IDENTITY_MAP_END`, and VM self page-table walks read/write the
 /// root and PT pages through the VM DM window. Violation refuses boot.
@@ -554,7 +560,7 @@ mod tests {
 
     // ── Boot-flow integration: arch_boot_impl Step 4 establishes DM coverage ──
 
-    /// fix16: boot module blobs are LOADER_DATA (absent from the
+    /// Boot module blobs are LOADER_DATA (absent from the
     /// conventional-only memmap) yet the VM reads them through the VM DM
     /// window (`exec_bootproc` "no copy needed, unlike C"). They must
     /// surface as explicit candidates; a module overlapping an earlier
@@ -581,7 +587,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
         };
-        // Real fix16 shape (blob at PA 0x1de0e000, above the 16 MiB
+        // Real-world shape (blob at PA 0x1de0e000, above the 16 MiB
         // memmap) plus a hypothetical in-memmap module (dropped).
         static MODS: &[BootModule] = &[
             BootModule { name: "rs", start: PhysBytes(0x1de0_e000), len: 0x42_000 },
@@ -594,7 +600,7 @@ mod tests {
             "out-of-memmap module kept, overlapping module dropped");
     }
 
-    /// fix26: `kernel_dm_pa_end` returns the page-rounded highest end of
+    /// `kernel_dm_pa_end` returns the page-rounded highest end of
     /// the same candidate union `establish_boot_dm` installs into the
     /// kernel window — here the out-of-memmap module blob (0x1de0e000 +
     /// 0x42000), which the old 4-page sentinel never covered.
@@ -630,8 +636,8 @@ mod tests {
             "module end 0x1de0e000+0x42000=0x1de50000 is the highest candidate");
     }
 
-    /// 续-50: reserved regions (source 4) fill the kernel-DM gap that the
-    /// three-source union left open — the shape of the 续-49 crash rounds
+    /// Reserved regions (source 4) fill the kernel-DM gap that the
+    /// three-source union left open — the shape behind the crash rounds
     /// (stack PAs in `[bump end, next conventional block)`). A reserved
     /// range outside every earlier candidate is kept; ranges overlapping
     /// the memmap or a surviving module are dropped whole (union
@@ -648,7 +654,7 @@ mod tests {
             len: 0x42_000,
         }];
         static RESERVED: &[MemoryRegion] = &[
-            // 续-49 crash-gap shape: above the memmap, outside every
+            // crash-gap shape: above the memmap, outside every
             // other source — must be kept.
             MemoryRegion {
                 base: PhysBytes(0x1f00_0000),
@@ -694,7 +700,7 @@ mod tests {
         );
     }
 
-    /// 续-50 leaf-set proof: establishing the kernel window over the
+    /// Leaf-set proof: establishing the kernel window over the
     /// source-4 candidates installs the gap range's DM alias as a leaf and
     /// double-installs nothing (no `AlreadyMapped`); the dropped overlap
     /// range gains no separate leaf (its surviving coverage comes from the
@@ -760,7 +766,7 @@ mod tests {
         );
     }
 
-    /// 续-51 (review W4): end-to-end guard on `establish_boot_dm` itself for
+    /// End-to-end guard on `establish_boot_dm` itself for
     /// the two load-bearing source-4 semantics the candidate-level tests
     /// cannot see — reserved ranges stay out of the **VM** DM (PMM resource
     /// qualification keeps its memmap-based meaning), and `kernel_dm_pa_end`
@@ -778,7 +784,7 @@ mod tests {
         use minix_boot::MemoryRegion;
 
         static RESERVED: &[MemoryRegion] = &[
-            // 续-49 crash-gap shape: no other source covers it.
+            // crash-gap shape: no other source covers it.
             MemoryRegion {
                 base: PhysBytes(0x1f00_0000),
                 len: 0x4000,

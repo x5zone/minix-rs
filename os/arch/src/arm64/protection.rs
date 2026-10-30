@@ -25,7 +25,7 @@
 //!
 //! | OS concern (trait method) | ARM64 mechanism (this file's impl) |
 //! |---------------------------|--------------------------------------|
-//! | `init` (establish protection) | program `TPIDR_EL1` with this CPU's kernel-stack base — the EL1h model has no hardware stack switch (x86 reloads `RSP` from `TSS.sp0` on every CPL3→0), so `restore_to_user` reloads `SP_EL1` from `TPIDR_EL1` before `eret` (NK4-C §1.113); `SPSel=1` makes `SP_EL1` the *active* stack pointer, so a banked `msr SP_EL1, ...` is architecturally UNDEFINED at `SPSel=1` and traps |
+//! | `init` (establish protection) | program `TPIDR_EL1` with this CPU's kernel-stack base — the EL1h model has no hardware stack switch (x86 reloads `RSP` from `TSS.sp0` on every CPL3→0), so `restore_to_user` reloads `SP_EL1` from `TPIDR_EL1` before `eret`; `SPSel=1` makes `SP_EL1` the *active* stack pointer, so a banked `msr SP_EL1, ...` is architecturally UNDEFINED at `SPSel=1` and traps |
 //! | `set_kernel_stack` (switch kernel stack) | no-op under EL1h — the active SP is the exception stack, so relocating it from a returning Rust fn would orphan the caller frame; the stack base rides `TPIDR_EL1` and is reloaded per trap return (see `init`) |
 //! | `load` (make protection effective) | `isb` (instruction synchronization barrier) — no separate load needed since SP_EL1 is active immediately |
 //! | `init_ap` (AP startup) | program this AP's `TPIDR_EL1` with its own kernel-stack base (per-CPU register; run on the AP so it writes its own bank) |
@@ -66,7 +66,7 @@ impl AArch64PrivilegeLevel {
 /// On ARM64, the primary protection configuration is:
 /// - Kernel stack: the active `SP_EL1` (`SPSel=1`), whose per-CPU base is
 ///   recorded in `TPIDR_EL1` and reloaded by `restore_to_user` before every
-///   `eret` (NK4-C §1.113) — there is no hardware bank switch like x86 TSS.
+///   `eret` — there is no hardware bank switch like x86 TSS.
 /// - VBAR_EL1: Exception vector base address (set by TrapEntryArch)
 ///
 /// Unlike x86-64, there is no GDT, IDT, or TSS. The CPU handles
@@ -76,7 +76,7 @@ pub struct AArch64Protection {
     cpu_count: u32,
 }
 
-/// Program this CPU's kernel-stack base into `TPIDR_EL1` (NK4-C §1.113).
+/// Program this CPU's kernel-stack base into `TPIDR_EL1`.
 ///
 /// The EL1h model (`SPSel=1`) has no hardware switch-to-kernel-stack: x86
 /// reloads `RSP` from `TSS.sp0` on every CPL3→0 transition, but aarch64
@@ -87,7 +87,7 @@ pub struct AArch64Protection {
 /// deeper toward `.bss`.
 ///
 /// **Register ownership**: `TPIDR_EL1` is claimed *exclusively* by this
-/// per-CPU kernel-stack base as of NK4-C §1.113. An earlier plan used it as
+/// per-CPU kernel-stack base. An earlier plan used it as
 /// a per-CPU id carrier (see `arch/smp.rs` / `kernel/clock.rs` notes, which
 /// must not `msr tpidr_el1, cpu_id`); any future per-CPU id must pick a
 /// different vehicle (e.g. `TPIDR_EL0`, an MPIDR lookup table, or
@@ -141,15 +141,15 @@ impl ProtectionArch for AArch64Protection {
         // EL1h model (`SPSel=1`): `SP_EL1` *is* the active stack pointer, so
         // it is not bank-accessible via `msr SP_EL1, Xt` — ARMv8 D1.5 declares
         // that encoding UNDEFINED when `SPSel=1`, and executing it raises a
-        // synchronous exception (this is exactly the boot trap that pinned
-        // NK4-C §1.109). The kernel stack the exception entry uses is the
+        // synchronous exception (this is exactly the boot trap observed
+        // during bring-up). The kernel stack the exception entry uses is the
         // running SP, which the higher-half transition already established
         // with `mov sp, kern_stack_top`
         // (kernel/src/arch/aarch64/higher_half.rs). Because EL1h has no
         // hardware stack switch on trap entry (contrast x86 `TSS.sp0`), the
         // per-CPU base is parked in `TPIDR_EL1` here so `restore_to_user` can
         // reload `SP_EL1` from it before every `eret` — closing the scheduler
-        // stack ratchet that NK4-C §1.113 pinned.
+        // stack ratchet.
         //
         // `base == 0` is a sentinel, not a stack: the non-x86 `with_protection`
         // helper fabricates a throwaway `init(0, VirBytes::new(0))` purely to

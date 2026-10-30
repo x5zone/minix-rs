@@ -1,21 +1,21 @@
-//! Test: timer IRQ hardware half-loop (SMP bring-up S-8, L3).
+//! Test: timer IRQ hardware half-loop.
 //!
-//! Verifies the full D-46 interrupt delivery chain with the real production
-//! wiring: PIT → IOAPIC RTE (vector 0x50) → CPU → S-8 asm stub →
+//! Verifies the full interrupt delivery chain with the real production
+//! wiring: PIT → IOAPIC RTE (vector 0x50) → CPU → asm trap stub →
 //! `IrqManager::dispatch` → `clock_irq_handler` → uptime advances.
 //!
-//! Boot flow: UEFI → paging (arch_boot_impl) → protection load → S-8 trap
+//! Boot flow: UEFI → paging (arch_boot_impl) → protection load → trap
 //! entry (install_trap_stubs + register kernel dispatch bodies + load) →
 //! init_clock_and_interrupts → init_proc_and_boot → boot_init_timer →
 //! BKL held → sti → poll `get_monotonic()`.
 //!
 //! PASS = uptime reaches 5 ticks with interrupts delivered through the
-//! S-8 stub path (the scheduler is NOT entered; BKL held throughout, which
+//! trap stub path (the scheduler is NOT entered; BKL held throughout, which
 //! is the C "IRQ handlers run under the interrupted context's BKL" model).
 //!
-//! S-8 boundary (honest scope): the syscall leg (LSTAR body) and user-frame
+//! Coverage boundary (honest scope): the syscall leg (LSTAR body) and user-frame
 //! reschedule exits are wired but unreachable here — no CPL3 code exists
-//! before S-6/S-7.
+//! before the scheduler hands out user contexts.
 
 #![no_std]
 #![no_main]
@@ -180,10 +180,10 @@ fn main() -> Status {
     prot.load();
     early_console::write_str("  protection loaded\n");
 
-    // 4. S-8 trap entry: real stubs into every gate, kernel dispatch bodies
+    // 4. Trap entry: real stubs into every gate, kernel dispatch bodies
     // registered, LSTAR pointed at the kernel's own SYSCALL asm entry, and
     // only then lidt. Order matters: registration strictly before load (no
-    // live gate may have an empty handler — S-8 stage invariant).
+    // live gate may have an empty handler — the stage invariant).
     let mut trap = CurrentTrapEntry::init();
     minix_arch::install_trap_stubs(&mut trap);
     minix_arch::register_trap_dispatchers(
@@ -195,7 +195,8 @@ fn main() -> Status {
     early_console::write_str("  IDT live with S-8 stubs (no empty gate)\n");
 
     // 5. Clock + interrupt controller (kmain Phase B order) — PIT IRQ line
-    // stays masked here; the controller mask_all is the D-59 boot contract.
+    // stays masked here; the controller's mask_all state is the boot-time
+    // starting state.
     unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
     minix_kernel::init_clock_and_interrupts();
     early_console::write_str("  clock + controller initialized (all lines masked)\n");

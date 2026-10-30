@@ -129,12 +129,11 @@ pub enum IrqAction {
 /// Global routing plane — owns IRQ-line enable/disable state (BSP-owned,
 /// BKL-serialized, lives in the global `IrqManager`).
 ///
-/// I-13 (S-12 code-excellence, 2026-09-15): this trait was split out of the
-/// old monolithic `InterruptController` along the semantic seam that its own
-/// implementations already exhibited — all six `ack`/`eoi` impls across the
-/// three architectures ignored the `irq` parameter, while `mask`/`unmask`
-/// genuinely route lines. Routing is *global* state (one routing table per
-/// machine); the claim/complete pair moved to
+/// This trait was split out of the old monolithic `InterruptController` along
+/// the semantic seam its own implementations already exhibited -- all six
+/// `ack`/`eoi` impls across the three architectures ignored the `irq`
+/// parameter, while `mask`/`unmask` genuinely route lines. Routing is *global*
+/// state (one routing table per machine); the claim/complete pair moved to
 /// [`PerCpuInterruptUnit`].
 ///
 /// C: intr_init + hw_intr enable/disable ops (kernel/interrupt.h driver
@@ -165,19 +164,20 @@ pub trait InterruptRouter: Sized + Send + Sync {
     /// Mask all IRQ lines.
     fn mask_all(&mut self);
 
-    /// Set a hardware priority for an IRQ line（riscv64 PLIC：0=永不投递，
-    /// ≥1=超 context threshold 可投递）。无优先级寄存器的控制器（x86
-    /// 8259 平坦、aarch64 GIC 默认）保持 no-op 默认。
+    /// Set a hardware priority for an IRQ line (riscv64 PLIC: 0 = never
+    /// delivered, >=1 = deliverable once above the context threshold).
+    /// Controllers without a priority register (x86 8259 is flat, aarch64 GIC
+    /// uses its defaults) keep the no-op default.
     fn set_irq_priority(&mut self, _irq: IrqVector, _priority: u32) {}
 }
 
 /// Per-CPU interrupt unit — the claim/complete half of the protocol
-/// (I-13 split; called on the interrupting CPU).
+/// (called on the interrupting CPU).
 ///
 /// The claim identity is *per-CPU* state: two CPUs claiming simultaneously
 /// must never share it. The current single instance lives in the global
 /// `IrqManager` and is safe because the BKL serializes every dispatch;
-/// when per-CPU dispatch lands (S-6 CpuLocal migration), instances move to
+/// when per-CPU dispatch lands, instances move to
 /// `CpuLocal` and this trait's ownership follows.
 ///
 /// C: the claim/complete ops of the arch APIC/GIC/PLIC driver.
@@ -192,7 +192,7 @@ pub trait PerCpuInterruptUnit: Send {
     /// identity (the gate delivered the vector; the LAPIC EOI is the whole
     /// handshake), so `None` — but here `None` means "nothing to write
     /// back", not "nothing to complete": [`PerCpuInterruptUnit::complete`]
-    /// still EOIs. D-61 (2026-09-09): the x86 implementation previously
+    /// still EOIs. The x86 implementation previously
     /// wrote the LAPIC EOI in `claim` — that is the *completion*, not a
     /// claim, and dispatching it early would have re-opened the interrupt
     /// before handling.
@@ -202,18 +202,17 @@ pub trait PerCpuInterruptUnit: Send {
     /// ranges — truncating it through a `u8` vector would corrupt the
     /// paired completion), and the two namespaces are distinct — the
     /// routing vector keys the hook chains, the claim token is what the
-    /// completion register expects back. OQ-13a (edge1 K8, 2026-09-18):
-    /// the typed claim→completion pairing hardens the D-61 protocol
-    /// lesson and lets `IrqManager::dispatch` skip completing spurious
-    /// claims; an intid-driven dispatch lane (arm64/riscv64 trap entries)
-    /// can later consume the same return value directly.
+    /// completion register expects back. The typed claim->completion pairing
+    /// hardens that protocol lesson and lets `IrqManager::dispatch` skip
+    /// completing spurious claims; an intid-driven dispatch lane (arm64/riscv64
+    /// trap entries) can later consume the same return value directly.
     fn claim(&mut self) -> Option<u32>;
 
     /// Signal end-of-interrupt processing, paired with `claim`.
     ///
     /// GIC/PLIC: write back the SAME identity `claim` returned — the
     /// pairing is the protocol (completing identity 0 or a foreign INTID
-    /// is not a legal completion, D-61); `None` (spurious claim read)
+    /// is not a legal completion); `None` (spurious claim read)
     /// completes nothing. x86: the value is ignored — the write is the
     /// global LAPIC EOI, and it happens even when `claim` returned `None`,
     /// because the gate-driven flow has no claim token to pair with.
@@ -233,12 +232,16 @@ pub const NR_IRQ_HOOKS: usize = 64;
 
 #[cfg(test)]
 mod tests {
-    // 注：本模块原 10 个测试多为"包装器往返 + 平凡派生属性"（Pattern #38
-    // 自指测试），例如 `IrqVector::new(32).get() == 32`、`policy.bits() == 0x001`、
-    // `NR_IRQ_VECTORS == 64` 等。这些断言永远通过，对发现回归无价值。
-    // Newtype 包装正确性由其构造/访问器签名（`pub const fn new/get`）保证，
-    // 编译期即可检测类型错位；bitflags 的 bits() 行为由 `bitflags!` 宏保证；
-    // enum 派生 trait 由 `#[derive(...)]` 保证。本模块**目前无行为可单元测试**——
-    // 真实行为测试在各架构 `interrupt.rs` 的 `test_new_from_*_descriptor` /
-    // `test_new_clamps_nr_irqs_to_max` 中。
+    // Note: this module's original 10 tests were mostly "wrapper round-trip +
+    // trivial derived property" self-referential tests, e.g.
+    // `IrqVector::new(32).get() == 32`, `policy.bits() == 0x001`,
+    // `NR_IRQ_VECTORS == 64`, and similar. Such assertions always pass and are
+    // worthless for catching regressions. Newtype wrapper correctness is
+    // guaranteed by its constructor/accessor signatures
+    // (`pub const fn new/get`) and a type mix-up is caught at compile time; the
+    // bits() behavior of bitflags is guaranteed by the `bitflags!` macro; enum
+    // derived traits are guaranteed by `#[derive(...)]`. This module currently
+    // has **no behavior to unit-test** -- the real behavior tests live in each
+    // arch's `interrupt.rs` as `test_new_from_*_descriptor` /
+    // `test_new_clamps_nr_irqs_to_max`.
 }

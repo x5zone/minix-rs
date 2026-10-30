@@ -29,7 +29,7 @@ use crate::proc_table::ProcessTable;
 use crate::syscall::{KcallResult, Syscall};
 
 // ── Minix3 error codes ──
-// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Centralized in `crate::errno` to prevent value drift.
 use crate::errno::*;
 
 // ── Virtual timer types ──
@@ -72,22 +72,22 @@ pub const CLOCK_REALTIME: i32 = 0;
 /// fields (callers send `minix_types::Endpoint::SELF.0`, e.g.
 /// ipc-server boundary.rs:108 / is acquire.rs:353) never matched and the
 /// do_times.c:33-34 SELF replacement silently never fired
-/// (E-MIBGRANT constant class; see `syscall_copy.rs::SELF`, `grant.rs::ANY`).
+/// (constant-class note; see `syscall_copy.rs::SELF`, `grant.rs::ANY`).
 const SELF: i32 = minix_types::Endpoint::SELF.0;
 
 // ── Helpers ──
 
 #[allow(dead_code)] // message accessor; unused for now
 fn msg_m1(msg: &Message) -> MessageM1 {
-    // SAFETY: `m_type` has been validated by the caller to select the M1
-    // format. All union variants share the same size and `#[repr(C)]`
+    // SAFETY: `m_type` has been validated by the caller to select the
+    // `MessageM1` format. All union variants share the same size and `#[repr(C)]`
     // layout, so reading a different variant is sound.
     unsafe { msg.m_u.m_m1 }
 }
 
 fn msg_m2(msg: &Message) -> MessageM2 {
-    // SAFETY: `m_type` has been validated by the caller to select the M2
-    // format. All union variants share the same size and `#[repr(C)]`
+    // SAFETY: `m_type` has been validated by the caller to select the
+    // `MessageM2` format. All union variants share the same size and `#[repr(C)]`
     // layout, so reading a different variant is sound.
     unsafe { msg.m_u.m_m2 }
 }
@@ -150,7 +150,8 @@ pub fn dispatch_times(
     };
 
     // C: do_times.c:40-42 — always fill these fields.
-    // I-15 单源直读 ClockState（生产持 BKL；hosted 测试单线程）。
+    // Single-source direct read of ClockState (production holds the BKL;
+    // hosted tests are single-threaded).
     let clock = unsafe { crate::clock_state_boot_unchecked() };
     let reply = MessKrnLsysSysTimes {
         boot_ticks: clock.uptime(),
@@ -202,9 +203,11 @@ pub fn dispatch_setalarm(
     let sa_caller_sys = proc_table
         .get(caller_nr)
         .is_some_and(|c| caller_has_sys_proc_with_table(c, priv_table));
-    // NK4-C 1.10y 取证探针（task1-close 裁决删除）：每次 setalarm 的
-    // caller/priv_id/生效 flags——boot 首臂 OK 而 5s 平衡轮 re-arm EPERM
-    // 的「中途剥旗」定位（s17c：SET_SYS 落 0x12 后 re-arm 仍死）。
+    // Forensic probe for every setalarm call: caller/priv_id/effective
+    // flags — it localized the mid-flight flag stripping behind "boot's
+    // first arm returns OK but the 5 s balance-round re-arm gets EPERM"
+    // (trace: after SET_SYS stored 0x12, re-arm still failed). A task close
+    // ruled it deleted.
     #[cfg(not(feature = "mock"))]
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
@@ -469,7 +472,7 @@ pub fn dispatch_vtimer(
     priv_table: &PrivTable,
     proc_table: &ProcessTable,
 ) -> KcallResult {
-    // C: do_vtimer.c:33-71 — M2 parameters read inline (VT_WHICH:33,
+    // C: do_vtimer.c:33-71 — `MessageM2` parameters read inline (VT_WHICH:33,
     // VT_ENDPT:37, VT_SET:60, VT_VALUE:63/71)
     msg.debug_check_m_type_any(&[Syscall::Vtimer as i32]);
     let m2 = msg_m2(msg);
@@ -567,7 +570,7 @@ pub fn dispatch_vtimer(
 
     // C: do_vtimer.c:71 — return old value in VT_VALUE
     // Write old_value back into the message's m2_l1 field
-    // SAFETY: `m_type == SYS_VTIMER` guarantees the M2 format is active.
+    // SAFETY: `m_type == SYS_VTIMER` guarantees the `MessageM2` format is active.
     // Writing to `m_m2.m2l1` is sound per `#[repr(C)]` union layout.
     msg.m_u.m_m2.m2l1 = old_value as i64;
 
@@ -601,7 +604,7 @@ mod tests {
         assert_eq!(CLOCK_REALTIME, 0);
     }
 
-    // ── KSC-1 / KSC-2 SYS_PROC permission tests ─────────────────────
+    // ── SYS_PROC permission tests ───────────────────────────────────
 
     use crate::capability::ProcessCapability;
     use crate::proc::KProcess;
@@ -661,10 +664,13 @@ mod tests {
 
     #[test]
     fn test_dispatch_times_self_replacement() {
-        // SELF（endpoint.h:56 权威哨兵）必须替换为 caller 自身 endpoint：
-        // caller 槽 ProcNr(0) 携带专属 endpoint 与非零 user_time，仅当替换
-        // 真实发生才会把该值读回 reply（历史化石值 -2 使替换谓词永假，
-        // 走 else 分支按具体端点解析 → 回 0）。do_times.c:33-34。
+        // SELF (the authoritative sentinel at endpoint.h:56) must be
+        // replaced by the caller's own endpoint: slot ProcNr(0) carries a
+        // dedicated endpoint and a non-zero user_time, and only if the
+        // replacement really happens does that value come back in the reply
+        // (the historical fossil value -2 made the replacement predicate
+        // forever false, taking the else branch and resolving by concrete
+        // endpoint → 0). do_times.c:33-34.
         let mut proc_table = crate::test_helpers::test_proc_table();
         // SAFETY: test-only; single-threaded under the harness. Installs a
         // fresh ClockState so the unconditional clock fill (dispatch_times →
@@ -691,8 +697,8 @@ mod tests {
 
         // Verify reply fields are populated
         let reply = unsafe { &msg.m_u.m_krn_lsys_sys_times };
-        // user_time 必须经 SELF → caller endpoint(100) → 槽 0 解析读回 777；
-        // system_time 未填充保持 0。
+        // user_time must resolve through SELF → caller endpoint(100) → slot 0
+        // and read back 777; system_time is unfilled and stays 0.
         assert_eq!(
             reply.user_time, 777,
             "SELF 替换必须解析到 caller 的 user_time"
@@ -700,16 +706,18 @@ mod tests {
         assert_eq!(reply.system_time, 0);
     }
 
-    /// C 绝对值 pin：SELF 必须等于 endpoint.h:56 的 `_ENDPOINT_SLOT_TOP - 3`
-    /// = 32768 - MAX_NR_TASKS（com.h:55，1023）- 3 = 31742。历史本地化石值
-    /// -2 恰为 SYSTEM 任务 endpoint（com.h:50），而 ipc-server/is 实发权威值
-    /// （boundary.rs:108 / acquire.rs:353），替换谓词永假。对位
-    /// `grant.rs::test_magic_granter_endpoints_match_c_com_h`。
+    /// C absolute-value pin: SELF must equal `_ENDPOINT_SLOT_TOP - 3` from
+    /// endpoint.h:56 = 32768 - MAX_NR_TASKS (com.h:55, 1023) - 3 = 31742.
+    /// The historical local fossil value -2 is exactly the SYSTEM task
+    /// endpoint (com.h:50), while ipc-server/is actually send the
+    /// authoritative value (boundary.rs:108 / acquire.rs:353), so the
+    /// replacement predicate was forever false. Counterpart of
+    /// `grant.rs::test_magic_granter_endpoints_match_c_com_h`.
     #[test]
     fn test_sys_times_self_sentinel_authority_pin() {
         assert_eq!(SELF, 31742); // endpoint.h:56 + com.h:55
         assert_eq!(SELF, minix_types::Endpoint::SELF.0);
-        assert_ne!(SELF, Endpoint::SYSTEM.0); // 化石值 -2 是 SYSTEM，不是 SELF
+        assert_ne!(SELF, Endpoint::SYSTEM.0); // the fossil value -2 is SYSTEM, not SELF
     }
 
     #[test]
@@ -726,12 +734,14 @@ mod tests {
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
-    // ── T-6: STIME / SETTIME / SETALARM / VTIMER 非 EPERM 行为测试 ──
+    // ── STIME / SETTIME / SETALARM / VTIMER non-EPERM behavior tests ──
 
-    /// SYS_PROC 调用者构造（caller-by-nr 形态）：调用者**占表槽**
-    /// `ProcNr(0)`——新 API 按号码回查进程表，独立的 `KProcess` 不再是
-    /// 合法调用者。priv_id 指向带 SYS_PROC 能力的静态 priv 槽；SLOT_FREE
-    /// 一并清除（`endpoint_to_nr` 跳过自由槽）。
+    /// Build a SYS_PROC caller (caller-by-nr form): the caller **occupies
+    /// table slot** `ProcNr(0)` — the new API looks the caller up in the
+    /// process table by number, so a standalone `KProcess` is no longer a
+    /// valid caller. priv_id points at a static priv slot carrying the
+    /// SYS_PROC capability; SLOT_FREE is cleared as well (`endpoint_to_nr`
+    /// skips free slots).
     fn t6_sys_proc_caller() -> (crate::test_helpers::TestProcTable, crate::test_helpers::TestPrivTable) {
         let mut table = crate::test_helpers::test_proc_table();
         let mut privs = crate::test_helpers::test_priv_table();
@@ -746,11 +756,12 @@ mod tests {
 
     #[test]
     fn test_t6_stime_sets_boottime() {
-        // C do_stime.c:17 — set_boottime(boot_time) 后 boottime 可读回。
+        // C do_stime.c:17 — after set_boottime(boot_time), boottime is
+        // readable.
         let mut cs = ClockState::new();
         let mut msg = Message::default();
         msg.m_type = Syscall::Stime as i32;
-        // SAFETY: m_type 已设置；测试侧 union 写。
+        // SAFETY: m_type is set; the union write is test-side.
         unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
         let result = dispatch_stime(&msg, &mut cs);
         assert_eq!(result, KcallResult::Ok(OK));
@@ -759,7 +770,8 @@ mod tests {
 
     #[test]
     fn test_t6_stime_last_write_wins() {
-        // 二次 STIME 覆盖前值（C set_boottime 直接赋值，无累积语义）。
+        // A second STIME overwrites the previous value (C set_boottime
+        // assigns directly, with no accumulation semantics).
         let mut cs = ClockState::new();
         let mut msg = Message::default();
         msg.m_type = Syscall::Stime as i32;
@@ -772,12 +784,12 @@ mod tests {
 
     #[test]
     fn test_t6_settime_rejects_non_realtime_clock() {
-        // C do_settime.c:25-26 — clock_id != CLOCK_REALTIME → EINVAL。
+        // C do_settime.c:25-26 — clock_id != CLOCK_REALTIME → EINVAL.
         let mut cs = ClockState::new();
         let mut msg = Message::default();
         msg.m_type = Syscall::Settime as i32;
         unsafe {
-            msg.m_u.m_lsys_krn_sys_settime.clock_id = 99; // 非 CLOCK_REALTIME
+            msg.m_u.m_lsys_krn_sys_settime.clock_id = 99; // not CLOCK_REALTIME
             msg.m_u.m_lsys_krn_sys_settime.now = 100;
         }
         let result = dispatch_settime(&msg, &mut cs);
@@ -786,8 +798,8 @@ mod tests {
 
     #[test]
     fn test_t6_settime_correction_when_boottime_wrong() {
-        // C do_settime.c:43-48 — sec <= boottime 判定 boottime 错误：
-        // 纠正 boottime = sec 并置 realtime = 1，仍返回 OK。
+        // C do_settime.c:43-48 — sec <= boottime is judged a wrong boottime:
+        // correct boottime = sec and set realtime = 1, still returning OK.
         let mut cs = ClockState::new();
         cs.set_boottime(5000);
         let mut msg = Message::default();
@@ -805,14 +817,15 @@ mod tests {
 
     #[test]
     fn test_t6_settime_adjtime_mode_sets_delta() {
-        // C do_settime.c:29-34 — now=0 走 adjtime：ticks = sec*hz + nsec/(1e9/hz)。
+        // C do_settime.c:29-34 — now = 0 takes the adjtime path:
+        // ticks = sec*hz + nsec/(1e9/hz).
         let mut cs = ClockState::new();
         let hz = cs.system_hz();
         let mut msg = Message::default();
         msg.m_type = Syscall::Settime as i32;
         unsafe {
             msg.m_u.m_lsys_krn_sys_settime.clock_id = CLOCK_REALTIME;
-            msg.m_u.m_lsys_krn_sys_settime.now = 0; // adjtime 模式
+            msg.m_u.m_lsys_krn_sys_settime.now = 0; // adjtime mode
             msg.m_u.m_lsys_krn_sys_settime.sec = 2;
             msg.m_u.m_lsys_krn_sys_settime.nsec = 0;
         }
@@ -823,8 +836,8 @@ mod tests {
 
     #[test]
     fn test_t6_settime_normal_sets_realtime() {
-        // C do_settime.c:51-53 — now!=0 正常路径：realtime = (sec-boottime)*hz
-        // + nsec 折算 ticks。
+        // C do_settime.c:51-53 — now != 0 normal path:
+        // realtime = (sec-boottime)*hz + nsec converted to ticks.
         let mut cs = ClockState::new();
         cs.set_boottime(0);
         let hz = cs.system_hz();
@@ -843,8 +856,9 @@ mod tests {
 
     #[test]
     fn test_t6_setalarm_first_set_returns_ok_and_arms() {
-        // C do_setalarm.c:56-62 — 相对 100 tick 武装闹钟（uptime=0 时
-        // exp_time = 100），前一闹钟未设置故 time_left = TMR_NEVER。
+        // C do_setalarm.c:56-62 — arm the alarm 100 ticks relative (with
+        // uptime = 0, exp_time = 100); no previous alarm was set, so
+        // time_left = TMR_NEVER.
         let (table, mut privs) = t6_sys_proc_caller();
         let mut cs = ClockState::new();
         let mut msg = Message::default();
@@ -863,8 +877,9 @@ mod tests {
 
     #[test]
     fn test_t6_setalarm_second_set_returns_previous_time_left() {
-        // C do_setalarm.c:39-46 — 已有闹钟（exp=100 > uptime=0）时再次
-        // SETALARM 返回前一闹钟剩余时间 100 - 0 = 100。
+        // C do_setalarm.c:39-46 — with an existing alarm (exp = 100 >
+        // uptime = 0), a second SETALARM returns the previous alarm's
+        // remaining time, 100 - 0 = 100.
         let (table, mut privs) = t6_sys_proc_caller();
         let mut cs = ClockState::new();
 
@@ -879,29 +894,31 @@ mod tests {
 
         let second = dispatch_setalarm(ProcNr(0), &mut msg, &mut privs, &mut cs, &table);
         assert_eq!(second, KcallResult::Ok(OK));
-        // time_left 经消息结构体回填（msg.m_lsys_krn_sys_setalarm），非 KcallResult。
+        // time_left is written back through the message struct
+        // (msg.m_lsys_krn_sys_setalarm), not KcallResult.
         let time_left = unsafe { msg.m_u.m_lsys_krn_sys_setalarm.time_left };
         assert_eq!(time_left, 100, "第二次数值须回填前一闹钟剩余 100-0");
     }
 
     #[test]
     fn test_t6_vtimer_invalid_type_returns_einval() {
-        // C do_vtimer.c:33-34 — VT_WHICH 非 VT_VIRTUAL/VT_PROF → EINVAL。
+        // C do_vtimer.c:33-34 — VT_WHICH other than VT_VIRTUAL/VT_PROF →
+        // EINVAL.
         // caller-by-nr: the caller IS table slot ProcNr(0) (t6 fixture
         // clears SLOT_FREE so SELF → nr 0 resolves).
         let (proc_table, privs) = t6_sys_proc_caller();
         let mut msg = Message::default();
         msg.m_type = Syscall::Vtimer as i32;
-        // SAFETY: m_type 已设置；测试侧 union 写。
-        unsafe { msg.m_u.m_m2.m2i1 = 99; } // 非 1/2
+        // SAFETY: m_type is set; the union write is test-side.
+        unsafe { msg.m_u.m_m2.m2i1 = 99; } // neither 1 nor 2
         let result = dispatch_vtimer(ProcNr(0), &mut msg, &privs, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
     #[test]
     fn test_t6_vtimer_virtual_set_then_get_roundtrip() {
-        // C do_vtimer.c:60-71 — VT_SET 写入 virt_left 并置 VIRT_TIMER；
-        // 再 VT_GET 返回旧值（m2l1 回填）。
+        // C do_vtimer.c:60-71 — VT_SET writes virt_left and sets VIRT_TIMER;
+        // a subsequent VT_GET returns the old value (written back in m2l1).
         let (proc_table, privs) = t6_sys_proc_caller();
         let mut msg = Message::default();
         msg.m_type = Syscall::Vtimer as i32;
@@ -914,7 +931,7 @@ mod tests {
         let first = dispatch_vtimer(ProcNr(0), &mut msg, &privs, &proc_table);
         assert_eq!(first, KcallResult::Ok(0));
 
-        // VT_GET：set=false → 回填旧值 500。
+        // VT_GET: set = false → writes back the old value 500.
         let mut msg2 = Message::default();
         msg2.m_type = Syscall::Vtimer as i32;
         unsafe {

@@ -45,12 +45,12 @@ pub const DEFAULT_HZ: u32 = 100;
 /// Number of load history slots for load average calculation.
 ///
 /// C: _LOAD_HISTORY — include/minix/type.h:95 (150 = 60s*15min/6s)
-/// 与 os/kernel/src/clock.rs 的 `LOAD_HISTORY` 保持一致（C 对齐）。
+/// Kept in sync with `LOAD_HISTORY` in os/kernel/src/clock.rs (C parity).
 pub const LOAD_HISTORY_SIZE: usize = 150;
 
 /// Failure configuring the statistical profiling timer.
 ///
-/// Replaces the former `Result<(), ()>` (C-D-5): a single variant today,
+/// Replaces the former `Result<(), ()>`: a single variant today,
 /// but a named type self-documents the failure mode in the signature and
 /// leaves room for variants (e.g. a busy timer channel) without breaking
 /// callers.
@@ -117,7 +117,7 @@ pub trait ClockArch: Sized + Send + Sync {
     fn init_timer(&mut self, hz: u32, cpu_id: u32);
 
     /// Arm the per-CPU local timer as a one-shot for the next tick
-    /// (edge1 K6, per smp_todo §28).
+    /// (see smp_todo.md §28).
     ///
     /// C: `lapic_set_timer_one_shot(1000000 / system_hz)` —
     /// arch_clock.c:139, programmed at AP bring-up

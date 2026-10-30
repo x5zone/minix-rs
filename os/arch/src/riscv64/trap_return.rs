@@ -40,8 +40,8 @@
 //! handoff's own stack, while riscv64 (like aarch64's EL1h model) runs on one
 //! kernel stack chosen by software — and `stvec`/`sscratch` ARE that choice.
 //!
-//! Why the mask is load-bearing (NK4C 续-373/续-374, arm condition stated
-//! exactly): the window is armed on chains that run in S-mode with `SIE` ON.
+//! Why the mask is load-bearing (the arm condition stated exactly): the
+//! window is armed on chains that run in S-mode with `SIE` ON.
 //! That happens after `idle_halt` enables SIE (`csrs sstatus, SIE; wfi` in
 //! `riscv64::smp`) and the tick that wakes it returns to S-mode through the
 //! kernel leg, whose `sret` copies `SPIE`(=1) back into `SIE` — from then on,
@@ -67,13 +67,12 @@
 //! once `sret` restores `SIE` from `SPIE` — nothing is lost, only deferred
 //! past the handoff.
 //!
-//! The §续-368 `NK4C_CLI` experiment flag does NOT belong to this guarantee:
-//! it only ever skipped the `csrs` that SETS `SPIE`, and hardware already
-//! left `SPIE`=1 (entry stores the pre-trap enable; `sret` sets it to 1 per
-//! the privileged spec) — so that arm suppressed nothing and its "interrupts
-//! off" reading is void (CodeReview on 续-373; 续-374 now clears `SPIE`
-//! explicitly before the conditional re-set, which is what makes the flag
-//! mean what its name says).
+//! The CLI experiment flag does NOT belong to this guarantee: it only ever
+//! skipped the `csrs` that SETS `SPIE`, and hardware already left `SPIE`=1
+//! (entry stores the pre-trap enable; `sret` sets it to 1 per the privileged
+//! spec) — so that arm suppressed nothing and its "interrupts off" reading is
+//! void. The current code clears `SPIE` explicitly before the conditional
+//! re-set, which is what makes the flag mean what its name says.
 
 use crate::arch::trap_return::TrapReturnArch;
 use crate::riscv64::boot::Riscv64CpuContext;
@@ -97,17 +96,19 @@ const SSTATUS_SPIE: u64 = 1 << 5;
 /// The bit values and the instruction order that makes this mask effective
 /// are pinned by the HOST test `arch/tests/riscv64_return_leg_pin.rs` —
 /// a `#[test]` in this module would never run, because `pub mod riscv64` is
-/// `#[cfg(target_arch = "riscv64")]` (NK4C 续-370 登记的同一陷阱).
+/// `#[cfg(target_arch = "riscv64")]` (the host-test reachability trap).
 const SSTATUS_SIE: u64 = 1 << 1;
 
 /// riscv64 implementation marker (no state; the mode switch is a pure
 /// register/CSR operation).
 pub struct Riscv64TrapReturn;
 
-/// §续-368 实验丁旗标（riscv64 真机诊断，默认 0）：1 = 本 hart 的下一次
-/// 及后续用户返回**跳过 SPIE 置位**（sret 后 U 态中断关）。由内核
-/// `dispatch_diagctl` 的魔术串置/清；`set_active_root_tracked`（每次地址
-/// 空间切换）自动清零——粘滞窗不越过任何调度点，测试进程 abort 也安全。
+/// CLI experiment flag (riscv64 on-hardware diagnostics, default 0): 1 = this
+/// hart's next and subsequent user returns **skip setting SPIE** (interrupts
+/// stay off in U-mode after sret). Set/cleared by the kernel through
+/// `dispatch_diagctl`'s magic string; `set_active_root_tracked` (every
+/// address-space switch) clears it automatically — the sticky window never
+/// spans a scheduling point, so a test-process abort is safe too.
 pub static NK4C_CLI: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 impl TrapReturnArch for Riscv64TrapReturn {
@@ -123,7 +124,7 @@ impl TrapReturnArch for Riscv64TrapReturn {
         //   the module docs.
         // - The BKL has been released by the caller before this call.
         core::arch::asm!(
-            // NK4C 续-373: mask supervisor interrupts for the whole leg, mirroring
+            // Mask supervisor interrupts for the whole leg, mirroring
             // aarch64's opening `msr daifset, #0xf`. `t1` is free here (the only
             // bound inputs are a0/a1/t0) and its user value is reloaded from the
             // context later. See the module docs for why the window is real.
@@ -132,8 +133,8 @@ impl TrapReturnArch for Riscv64TrapReturn {
             // Park the register-file pointer in t6 (its user slot is
             // gp_regs[GP_T6], loaded last as a self-referential load).
             "mv t6, a1",
-            // sscratch re-anchor (续-75, the riscv form of the aarch64
-            // §1.113 SP rebase before `eret`): after a park-and-resched
+            // sscratch re-anchor (the riscv form of the aarch64 §1.113 SP
+            // rebase before `eret`): after a park-and-resched
             // switch the register holds the PARKED process's user sp, not
             // a kernel-stack top — and this leg's own `sp` is about to
             // become a user sp, so nothing here else heals it. Load the
@@ -161,14 +162,13 @@ impl TrapReturnArch for Riscv64TrapReturn {
             // goes through t0.
             //
             // SPIE must be CLEARED first and only then re-set when the
-            // experiment flag is off (NK4C 续-374, CodeReview on 续-373):
-            // hardware already leaves SPIE=1 — trap entry stores the pre-trap
-            // enable into it, and `sret` sets it to 1 per the privileged spec
-            // — so merely SKIPPING the `csrs`, which is all §续-368's arm did,
-            // is a no-op: `sret` would hand U-mode an enabled SIE anyway. The
-            // 续-368 "interrupts off" reading is void (those three boots are
-            // ordinary samples, not an arm); this branch is what makes the
-            // flag actually suppress U-mode delivery.
+            // experiment flag is off: hardware already leaves SPIE=1 — trap
+            // entry stores the pre-trap enable into it, and `sret` sets it to
+            // 1 per the privileged spec — so merely SKIPPING the `csrs` is a
+            // no-op: `sret` would hand U-mode an enabled SIE anyway. The
+            // earlier "interrupts off" reading of the flag is void (those
+            // boots were ordinary samples, not an armed run); this branch is
+            // what makes the flag actually suppress U-mode delivery.
             "li t0, {spp}",
             "csrc sstatus, t0",
             "li t0, {spie}",
@@ -238,11 +238,13 @@ mod tests {
 
     #[test]
     fn sstatus_bits_are_spp_and_spie() {
-        // NOTE (NK4C 续-370 登记的同一陷阱): 宿主 `cargo test` 不编译本模块
-        // （`pub mod riscv64` 带 `#[cfg(target_arch = "riscv64")]`），所以这两条
-        // 断言只在交叉编译测试时才会跑。权威断言在宿主集成测试
-        // `arch/tests/riscv64_return_leg_pin.rs`（它额外覆盖 SSTATUS_SIE 与本腿
-        // 的指令次序），本测试只当交叉编译路径的重复保险。
+        // NOTE (the same reachability trap applies here): the host
+        // `cargo test` does not compile this module (`pub mod riscv64` is
+        // `#[cfg(target_arch = "riscv64")]`), so these two assertions only run
+        // in a cross-compiled test. The authoritative assertions live in the
+        // host integration test `arch/tests/riscv64_return_leg_pin.rs` (it
+        // additionally covers SSTATUS_SIE and this leg's instruction order);
+        // this test is only belt-and-braces for the cross-compile path.
         // SPP = bit 8 (previous privilege), SPIE = bit 5 (previous
         // interrupt enable) — RISC-V privileged spec, sstatus register.
         assert_eq!(SSTATUS_SPP, 0x100);

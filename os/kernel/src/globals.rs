@@ -1,10 +1,10 @@
 //! Global kernel statics — the crate's single audit point for
-//! `static` state (A2, todo §1).
+//! `static` state.
 //!
 //! Every process-global lives here: the `SyncUnsafeCell` wrapper, the
 //! sealed `BklProtected` trait with its approved-type list (the friction
 //! point for wrapping a new type), and the 24 statics themselves
-//! (13 as of A2 + 11 collected in by D-62, 2026-09-09).
+//! (13 originally, 11 more collected in later).
 //! Accessor families (`*_with` / `*_boot_unchecked` / raw) stay in
 //! `lib.rs` — they are the crate's API surface and consume these via
 //! re-export, so the audit point for "what globals exist" and the
@@ -28,7 +28,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
 /// This type makes the `Sync` requirement explicit, replacing `static mut` +
 /// `addr_of_mut!` for Rust 2024 compliance — no `static_mut_refs` involved.
 ///
-/// # Soundness contract (FIX-07: R-01)
+/// # Soundness contract
 ///
 /// The `unsafe impl<T: BklProtected + ?Sized> Sync` below is sound because:
 /// 1. `BklProtected` is a sealed trait — only types in this file's
@@ -52,7 +52,7 @@ pub(crate) struct SyncUnsafeCell<T: ?Sized> {
 // SAFETY: See "Soundness contract" above. `T: BklProtected` restricts the
 // impl to types whose mutation is serialized by the BKL (or which are
 // write-once-read-only after boot). Without this bound, any `!Sync` type
-// could be wrapped — that was the original soundness hole (R-01).
+// could be wrapped — that was the original soundness hole.
 unsafe impl<T: BklProtected + ?Sized> Sync for SyncUnsafeCell<T> {}
 
 impl<T> SyncUnsafeCell<T> {
@@ -81,7 +81,7 @@ impl<T> SyncUnsafeCell<T> {
     }
 }
 
-// ── BklProtected: sealed marker trait gating `SyncUnsafeCell` (FIX-07: R-01)
+// ── BklProtected: sealed marker trait gating `SyncUnsafeCell`
 //
 // Without this trait, the old blanket `unsafe impl<T: ?Sized> Sync` let any
 // type (including `RefCell<T>` / `Rc<T>` / `Cell<T>`) be silently promoted
@@ -140,16 +140,16 @@ mod bkl_protected {
         // publishing the post-deduction free list for multi-image boot
         // loaders), read-only afterwards — same contract as MemMapEntry.
         minix_types::HandoffMemRegion,
-        // fix27c `.bss` landing pad payload (plain u64+usize pair). Written
+        // `.bss` landing pad payload (plain u64+usize pair). Written
         // once by `store_kernel_info` during boot, read-only afterwards —
         // same contract as KernelInfo itself.
         minix_boot::MemoryRegion,
-        // NK4-C landing-pad payload for the `boot_modules` slice (POD: a
+        // Landing-pad payload for the `boot_modules` slice (POD: a
         // `&'static str` name fat-pointer plus a u64+usize pair — the name
         // bytes themselves land in `BOOT_MODULE_NAME_STORE`). Written once
         // by `store_kernel_info`, read-only afterwards.
         minix_boot::BootModule,
-        // D-70 landing-pad payload for `platform_sources` (POD: kind tag +
+        // Landing-pad payload for `platform_sources` (POD: kind tag +
         // physical address). Written once by `store_kernel_info`, read-only
         // afterwards — same contract as KernelInfo itself.
         minix_boot::PlatformDescSource,
@@ -173,7 +173,7 @@ mod bkl_protected {
         u8,
     }
 
-    // S-5 (2026-09-14): the live GDT/TSS and IDT images (protection.rs /
+    // The live GDT/TSS and IDT images (protection.rs /
     // trap_entry.rs). Mutation surface: written once by init_protection
     // BEFORE the first lgdt/lidt; afterwards only set_kernel_stack
     // (sp0 + stamp), which runs under the BKL — same contract as the other
@@ -216,7 +216,7 @@ mod bkl_protected_tests {
     ///
     /// If any of these fails to compile, a `SyncUnsafeCell<NewType>` static
     /// was added without extending the `bkl_protected_impls!` macro in
-    /// `bkl_protected` module — that is the intended friction point (R-01).
+    /// `bkl_protected` module — that is the intended friction point.
     #[test]
     fn bkl_protected_approved_types_implement_trait() {
         fn assert_impl<T: BklProtected>() {}
@@ -261,7 +261,9 @@ mod bkl_protected_tests {
 
         // String is NOT in the approved list — would fail to compile:
         // let _ = SyncUnsafeCell::new(String::new());
-        //[SD19-gate] 编译期负例夹具（下方注释：String 不在批准清单会编译失败）：let _ 只为压未用导入告警
+        // Compile-time negative fixture (the comment below notes that String is
+        // outside the approved list and would fail to compile): `let _` here only
+        // silences the unused-import warning.
         #[allow(clippy::let_underscore_must_use)]
         let _ = String::new(); // suppress unused import warning
     }
@@ -292,8 +294,7 @@ pub(crate) static FREE_MEMMAP: SyncUnsafeCell<[crate::memmap::MemMapEntry; crate
 /// After boot, read-only under BKL protection.
 pub(crate) static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCell::new(None);
 
-/// fix27c `.bss` landing pad for the [`KERNEL_INFO`] `reserved_regions`
-/// payload.
+/// `.bss` landing pad for the [`KERNEL_INFO`] `reserved_regions` payload.
 ///
 /// The boot-shim builds that list in its (UEFI-pool-backed) heap and hands
 /// over a `&'static [MemoryRegion]`. Under the link-in execution model the
@@ -303,9 +304,11 @@ pub(crate) static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCe
 /// store in `arch_boot`/`kmain` deep-copies the bytes here (kernel `.bss`,
 /// mapped for the whole run) and repoints the slice.
 ///
-/// 256 = `vm_handoff::build_identity_windows::MAX_CANDIDATES`（F6：单一
-/// 常量双引用——本常量是该耦合的唯一权威，vm_handoff 侧引用它，编译期
-/// 消除两处 256 手工对齐的漂移面）；overflow fails fast in
+/// 256 = the `MAX_CANDIDATES` of
+/// `vm_handoff::build_identity_windows` (one constant referenced twice: this
+/// constant is the single authority for that coupling, the vm_handoff side
+/// refers to it, which removes at compile time the drift surface of two
+/// hand-aligned 256s); overflow fails fast in
 /// `store_kernel_info`, never truncates.
 pub(crate) const RESERVED_REGION_STORE_LEN: usize = 256;
 
@@ -318,9 +321,9 @@ pub(crate) static RESERVED_REGION_STORE: SyncUnsafeCell<
     }; RESERVED_REGION_STORE_LEN],
 );
 
-/// NK4-C (2026-09-25) `.bss` landing pads for the [`KERNEL_INFO`] `memmap`
-/// and `boot_modules` payloads — the same disease fix27c landed
-/// `reserved_regions` for, now with real-machine proof.
+/// `.bss` landing pads for the [`KERNEL_INFO`] `memmap` and `boot_modules`
+/// payloads -- the same disease the `reserved_regions` pad fixed, now with
+/// real-machine proof.
 ///
 /// All three slices are built in the boot-shim's UEFI-pool heap and handed
 /// over as `&'static`. Those pages do not survive the rest of boot: real
@@ -344,7 +347,7 @@ pub(crate) static MEMMAP_REGION_STORE: SyncUnsafeCell<
 );
 
 /// Module-name byte pool backing the [`KERNEL_INFO`] `boot_modules` names
-/// after the NK4-C landing (one fixed slot per module). Names are copied
+/// after the landing (one fixed slot per module). Names are copied
 /// truncated to `BOOT_MODULE_NAME_LEN - 1` bytes — the same strlcpy-style
 /// bound as `vm_handoff::copy_name`'s 16-byte `proc_name` field, so the
 /// landing never tightens any existing length contract.
@@ -364,8 +367,8 @@ pub(crate) static BOOT_MODULE_NAME_STORE: SyncUnsafeCell<
     [[u8; BOOT_MODULE_NAME_LEN]; minix_boot::NR_BOOT_MODULES],
 > = SyncUnsafeCell::new([[0u8; BOOT_MODULE_NAME_LEN]; minix_boot::NR_BOOT_MODULES]);
 
-/// `.bss` landing pad for the [`KERNEL_INFO`] `platform_sources` payload
-/// (D-70): the list also lives in the boot surface's pool and must be copied
+/// `.bss` landing pad for the [`KERNEL_INFO`] `platform_sources` payload:
+/// the list also lives in the boot surface's pool and must be copied
 /// before any higher-half consumer reads it.
 ///
 /// 4 = the verified real-world upper bound (2: one DTB or ACPI source plus one
@@ -382,9 +385,9 @@ pub(crate) static PLATFORM_SOURCE_STORE: SyncUnsafeCell<
     ); PLATFORM_SOURCE_STORE_LEN],
 );
 
-/// `.bss` landing pad for the [`KERNEL_INFO`] `param_buf` payload (D-70),
-/// matching C's `param_buf[MULTIBOOT_PARAM_BUF_SIZE]`. The store zeroes the
-/// pad before copying (fixed-length, NUL-terminated semantics).
+/// `.bss` landing pad for the [`KERNEL_INFO`] `param_buf` payload, matching
+/// C's `param_buf[MULTIBOOT_PARAM_BUF_SIZE]`. The store zeroes the pad before
+/// copying (fixed-length, NUL-terminated semantics).
 pub(crate) const PARAM_BUF_STORE_LEN: usize = 1024;
 
 pub(crate) static PARAM_BUF_STORE: SyncUnsafeCell<[u8; PARAM_BUF_STORE_LEN]> =
@@ -431,8 +434,8 @@ pub(crate) static PRIV_TABLE: SyncUnsafeCell<crate::kpriv::PrivTable> = SyncUnsa
 /// C's global `irq_hooks[]` + `irq_actids[]` + `intr_*` globals.
 pub(crate) static IRQ_MANAGER: SyncUnsafeCell<Option<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>>> = SyncUnsafeCell::new(None);
 
-/// D-9 (C glo.h:44 + system.c:160) — the process whose kernel call is
-/// currently in flight (`kbill_kcall`). Set unconditionally after
+/// The process whose kernel call is currently in flight (`kbill_kcall`);
+/// C glo.h:44 + system.c:160. Set unconditionally after
 /// `kernel_call_dispatch_inner` returns (C sets it after dispatch, before
 /// finish; a failed call's kernel work is still the caller's — and
 /// `kernel_call_resume` does not re-set it). Consumed at the
@@ -445,15 +448,18 @@ pub(crate) static IRQ_MANAGER: SyncUnsafeCell<Option<crate::irq_manager::IrqMana
 /// lands.
 pub(crate) static KBILL_KCALL: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
 
-/// D-9 的 IPC 半（C glo.h 的 `kbill_ipc` + `proc.c:607`）——当前正在做
-/// IPC 的进程。`do_ipc` 入口无条件置上（C `kbill_ipc = caller_ptr`，在权限
-/// 与跟踪检查**之前**）；在 context_stop 等价处与 [`KBILL_KCALL`] 用**同一
-/// 个 TSC delta** 分别记账（C `arch_clock.c:274-281` 是两块并列的 `if`：
-/// 两个标记都消费、都清——同一次切换可能给同一进程的 `kipc` 与 `kcall`
-/// 各加一份 delta，这是 C 的粗估法，照抄）。
+/// The IPC half of the same kill-billing pair (C glo.h's `kbill_ipc` +
+/// `proc.c:607`) -- the process currently performing IPC. `do_ipc` sets it
+/// unconditionally on entry (C `kbill_ipc = caller_ptr`, **before** the
+/// privilege and tracing checks); at the context_stop equivalent it is billed
+/// separately from [`KBILL_KCALL`] using the **same TSC delta** (C
+/// `arch_clock.c:274-281` is two side-by-side `if` blocks: both markers are
+/// consumed and both cleared -- one switch can add a delta to the same
+/// process's `kipc` and `kcall`; that is C's coarse estimation, copied
+/// verbatim).
 pub(crate) static KBILL_IPC: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
 
-/// D-46 (software half, 2026-09-06): the global software clock state —
+/// The global software clock state (software half): the
 /// uptime/realtime/alarm-timer ring live here. C: `kclockinfo` +
 /// `clock_timers` (clock.c globals). Initialized in
 /// `init_clock_and_interrupts` (Phase B); consumed by the timer IRQ
@@ -567,10 +573,12 @@ pub(crate) const KERNINFO_USER_UNSET: u64 = 0;
 pub(crate) static MINIX_KERNINFO_USER: AtomicU64 = AtomicU64::new(KERNINFO_USER_UNSET);
 
 
-// ── V13 D-62（2026-09-09）收编的漏网静态 ──
-// A2 的"单一审计点"此前被 4 组静态打破（本体散在 krandom/smp/clock/misc）。
-// 本体全部迁入本文件；声明即登记，包装类型必须已在 `bkl_protected_impls!`
-// 审批清单或泛型复合 impl 覆盖范围内。
+// ── Statics that had escaped the single audit point ──
+// The "single audit point" was previously broken by four groups of statics
+// (their bodies scattered across krandom/smp/clock/misc). All bodies moved into
+// this file; declaring a static here registers it, and its wrapper type must
+// already be on the `bkl_protected_impls!` approval list or covered by a generic
+// composite impl.
 
 /// Randomness state. C: `krandom` — random.h/krandom.c.
 /// Access is BKL-protected: the IRQ path (single-writer via
@@ -591,13 +599,16 @@ pub(crate) static KRANDOM_INIT: AtomicBool = AtomicBool::new(false);
 pub(crate) static CPU_INFO: SyncUnsafeCell<crate::smp::CpuInfoTable> =
     SyncUnsafeCell::new(crate::smp::CpuInfoTable::new());
 
-// Clock mirrors (D-62③ 裁决：显式双源契约，见 clock.rs 模块 doc)。
-// 写侧：仅 `ClockState::tick_with`/`set_boottime`/`set_realtime`（持 BKL，
-// Release）；读侧：`clock::get_monotonic` 等无锁 Acquire。两源允许相差
-// ≤1 tick（写点相邻且在 BKL 内）。C ground truth 是单源 `kclockinfo`
-// （clock.c:189 直写），Rust 双源是无 `&ClockState` 读取的 ergonomics
-// 产物；收敛需穿透 IpcEngine 签名（build_notify_message 等），登记为
-// 独立重构路径，未在本批实施。
+// Clock mirrors (an explicit two-source contract, see the clock.rs module
+// doc). Write side: only `ClockState::tick_with`/`set_boottime`/`set_realtime`
+// (holding the BKL, Release); read side: `clock::get_monotonic` and friends,
+// lock-free Acquire. The two sources may differ by <=1 tick (the write points
+// are adjacent and inside the BKL). The C ground truth is the single-source
+// `kclockinfo` (clock.c:189 writes it directly); the Rust two-source form is an
+// ergonomics by-product of reading without `&ClockState`. Converging it
+// requires threading through IpcEngine signatures (build_notify_message etc.),
+// which is registered as a separate refactoring path and was not attempted
+// here.
 
 /// Monotonic uptime in ticks (mirror of `ClockState::uptime`).
 /// C: `kclockinfo.uptime` — read by `get_monotonic()` (clock.c:203).
@@ -636,7 +647,7 @@ pub(crate) static SPROF_DATA_ADDR: core::sync::atomic::AtomicU64 = core::sync::a
 pub(crate) static SPROF_MEM_SIZE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// Global profiling record (PROF_START resets, PROF_STOP reads).
-/// Upgraded from `static mut` (D-62④): the `SyncUnsafeCell` wrapper keeps
+/// Upgraded from `static mut`: the `SyncUnsafeCell` wrapper keeps
 /// the same raw-pointer access shape (`get()` replaces `addr_of_mut!`)
 /// while putting the static under the BklProtected audit list.
 pub(crate) static SPROF_INFO: SyncUnsafeCell<crate::misc::SprofInfo> =
@@ -650,6 +661,6 @@ pub(crate) static SPROF_INFO: SyncUnsafeCell<crate::misc::SprofInfo> =
 
 /// Static sample buffer (BSS-allocated, zero-initialized).
 /// C: `char sprof_sample_buffer[SAMPLE_BUFFER_SIZE]` — profile.c:16.
-/// Upgraded from `static mut` (D-62④), same wrapper rationale as SPROF_INFO.
+/// Upgraded from `static mut`, same wrapper rationale as SPROF_INFO.
 pub(crate) static SPROF_SAMPLE_BUFFER: SyncUnsafeCell<[u8; crate::misc::SAMPLE_BUFFER_SIZE]> =
     SyncUnsafeCell::new([0; crate::misc::SAMPLE_BUFFER_SIZE]);

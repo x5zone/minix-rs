@@ -5,7 +5,7 @@
 //! `Gicv3`, `Plic`, `DeviceTree`, `Acpi` never appear here — they live in
 //! `minix-platform`'s `arch/` submodules and are invisible to upper layers.
 //!
-//! # Design (TODO-01-2 fix, 2026-07-16)
+//! # Design (2026-07-16)
 //!
 //! Three layers:
 //!
@@ -20,7 +20,7 @@
 //! A function pointer (`fn(PhysBytes) -> Result<...>`) would couple
 //! `minix-boot` to `minix-platform` at the binary level — the pointer's
 //! address is resolved in the boot-shim binary, but the function body lives
-//! in `minix-platform`. Once TODO-02-3 makes the kernel an independent ELF,
+//! in `minix-platform`. Once the kernel becomes an independent ELF,
 //! the boot-shim's memory is reclaimed and the function pointer becomes a
 //! dangling reference. An opaque `u32` tag + physical address is pure data
 //! — safe to pass across binaries.
@@ -50,7 +50,7 @@ use minix_types::PhysBytes;
 ///
 /// `PlatformDescKind` is `Copy` and contains only a `u32` — safe to embed
 /// in `KernelInfo` and pass from boot-shim to kernel even when they are
-/// separate ELF binaries (TODO-02-3).
+/// separate ELF binaries.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlatformDescKind(u32);
 
@@ -272,20 +272,22 @@ pub trait PlatformDesc: Send + Sync + fmt::Debug {
     fn sswi_setip_base(&self) -> Option<usize> {
         None
     }
-    /// PSCI 调用通道（ARM64；`None`＝DTB 未声明或非 DTB 源——调用方回落
-    /// arch 默认）。Linux 同位读 DTB `/psci/method`：conduit 选错＝CPU_ON
-    /// 静默无效或以未分类异常弹回（§续-405 实证两态都见过）。
+    /// PSCI conduit (ARM64; `None` = not declared by the DTB, or the source
+    /// is not a DTB — the caller falls back to the arch default). The
+    /// counterpart in Linux reads DTB `/psci/method`: picking the wrong
+    /// conduit makes CPU_ON either silently ineffective or bounce back as an
+    /// unclassified exception (both states have been observed empirically).
     fn psci_conduit(&self) -> Option<PsciConduit> {
         None
     }
 }
 
-/// PSCI 调用通道（ARM DEN 0022D §5.1／DTB `/psci/method` 字符串）。
+/// PSCI conduit (ARM DEN 0022D §5.1 / the DTB `/psci/method` string).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PsciConduit {
-    /// `hvc #0`（直核 `-kernel` 引导：QEMU 内建 PSCI）。
+    /// `hvc #0` (direct `-kernel` boot: QEMU's built-in PSCI).
     Hvc,
-    /// `smc #0`（固件引导：pflash/TF-A 驻 EL3）。
+    /// `smc #0` (firmware boot: pflash/TF-A resident in EL3).
     Smc,
 }
 

@@ -1,18 +1,22 @@
-//! 双架构分页编码位钉住（P-ALL-01 深度审计批：paging 双架构 25 枚门内测试
-//! 的宿主可见面）。
+//! Two-architecture page-table encoding bit pins (host-visible face of the 25
+//! in-module paging tests for both architectures).
 //!
-//! 门内的 paging 测试是纯逻辑断言（旗标编码、索引提取），宿主不可达的根因
-//! 是整模块架构门。本文件把其中**承重的 MMU 硬件契约**以源码文本钉住：位
-//! 位置写错对软件 walk 不可见、对 MMU 致命（arm64 描述符类型位就是 live-
-//! found bug 的先例，见门内 test_page_leaf_descriptor_type_bits 的注释）。
-//! 钉法＝整行/常量文本匹配（本项目纪律：防「偶然子串骗过计数」）。
+//! The in-module paging tests are pure logic assertions (flag encoding, index
+//! extraction); the reason they are unreachable on the host is the whole-module
+//! architecture gate. This file pins the **load-bearing MMU hardware contracts**
+//! among them as source text: a wrong bit position is invisible to a software
+//! walk but fatal to the MMU (the arm64 descriptor type bits are the precedent
+//! of a live-found bug; see the comment on the in-module
+//! test_page_leaf_descriptor_type_bits). The pinning method = whole-line or
+//! constant text matching (project discipline: prevent "an accidental substring
+//! fooling the count").
 
-// ── riscv64（Sv39）───────────────────────────────────────────────
+// ── riscv64 (Sv39) ───────────────────────────────────────────────
 
 #[test]
 fn riscv64_pte_flag_bits_are_hardware_frozen() {
     let src = include_str!("../src/riscv64/paging.rs");
-    // Sv39 PTE 位布局（Privileged Spec 4.3c）：V/R/W/X/U/G/A/D = 0..7。
+    // Sv39 PTE bit layout (Privileged Spec 4.3c): V/R/W/X/U/G/A/D = 0..7.
     for (lit, bit) in [
         ("const V = 1 << 0;", 0),
         ("const R = 1 << 1;", 1),
@@ -33,8 +37,9 @@ fn riscv64_pte_flag_bits_are_hardware_frozen() {
 #[test]
 fn riscv64_ppn_mask_and_shifts_are_frozen() {
     let walk = include_str!("../src/riscv64_walk.rs");
-    // PPN 载荷位 [53:10]（Sv39，PA ≤ 56 位）；paddr→pte 右移 2、pte→paddr
-    // 右移 10 再左移 12。三级移位 30/21/12。
+    // PPN payload bits [53:10] (Sv39, PA ≤ 56 bits); paddr→pte shifts right
+    // by 2, pte→paddr shifts right by 10 then left by 12. The three-level
+    // shifts are 30/21/12.
     assert!(
         walk.contains("pub const PTE_PPN_MASK: u64 = 0x003F_FFFF_FFFF_FC00;"),
         "PTE_PPN_MASK 漂移（Sv39 PPN 位 [53:10] 契约）"
@@ -55,7 +60,8 @@ fn riscv64_ppn_mask_and_shifts_are_frozen() {
 #[test]
 fn riscv64_nonleaf_is_rwx_zero_w_requires_r() {
     let src = include_str!("../src/riscv64/paging.rs");
-    // 非叶判定与 W⊆R 约束是 free_child_tables/expand 系的判别根据。
+    // The non-leaf decision and the W⊆R constraint are what the
+    // free_child_tables/expand family discriminates on.
     assert!(
         src.contains("R=W=X=0 indicates a non-leaf (table pointer) entry"),
         "非叶判定的规格注释漂移"
@@ -66,7 +72,7 @@ fn riscv64_nonleaf_is_rwx_zero_w_requires_r() {
     );
 }
 
-// ── aarch64（AArch64 VMSA）──────────────────────────────────────
+// ── aarch64 (AArch64 VMSA) ──────────────────────────────────────
 
 #[test]
 fn arm64_pte_flag_bits_are_hardware_frozen() {
@@ -91,8 +97,9 @@ fn arm64_pte_flag_bits_are_hardware_frozen() {
 #[test]
 fn arm64_leaf_vs_block_descriptor_type_bits_are_frozen() {
     let src = include_str!("../src/arm64/paging.rs");
-    // 4 KiB 页叶＝0b11（VALID|PAGE），块描述符＝0b01：软件 walk 对此不可见、
-    // MMU 致命（门内 test_page_leaf_descriptor_type_bits 的 live-found bug）。
+    // 4 KiB page leaf = 0b11 (VALID|PAGE), block descriptor = 0b01: invisible
+    // to a software walk, fatal to the MMU (the live-found bug behind the
+    // in-module test_page_leaf_descriptor_type_bits).
     assert!(
         src.contains("const PAGE  = 1 << 1;"),
         "PAGE 位（叶描述符类型位的 L3 语义）漂移"
@@ -122,13 +129,16 @@ fn arm64_addr_mask_and_shifts_are_frozen() {
 #[test]
 fn arm64_aptable_polarity_and_intermediate_reclaim_are_frozen() {
     let src = include_str!("../src/arm64/paging.rs");
-    // grant 用户 walk 的 APTABLE 极性（负语义：清位而非置位，P-A64-01 批）。
+    // APTABLE polarity for user-walk grants (negative semantics: clear the bit
+    // rather than set it).
     assert!(
         src.contains("const APTABLE: u64 = 1 << 60;"),
         "APTABLE 位（L0 表项的 APTable 字段高位）漂移"
     );
-    // 中间页表回收（P-A64-01，§续-387）：四级收口在 level>=3、判别位
-    // VALID+TABLE、根页归还。文本钉住让「谁动了回收契约」在宿主可见。
+    // Intermediate page-table reclamation: the four-level cutoff is level>=3,
+    // the discriminator bits are VALID+TABLE, and root pages are returned.
+    // Pinning the text makes "whoever touched the reclamation contract" visible
+    // on the host.
     assert!(
         src.contains("unsafe fn free_child_tables(&self, table_paddr: u64, level: u8)"),
         "free_child_tables（中间页表回收）被改名/删除——回收契约变动必须过 P-A64-01 评审"

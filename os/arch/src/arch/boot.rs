@@ -129,13 +129,13 @@ pub enum VmLoadError {
     /// (image PA ∈ segment VA range). Boot-identity eviction would
     /// destroy not-yet-copied bytes; a real UEFI layout never produces
     /// this overlap, so it is rejected explicitly rather than read
-    /// through a stale mapping (NK4-A first-light, 2026-09-21).
+    /// through a stale mapping.
     ImageInsideSegments,
 }
 
 /// Why a user register write (T_SETUSER) failed.
 ///
-/// Replaces the former `Result<(), ()>` (C-D-5): the arch layer knows the
+/// Replaces the former `Result<(), ()>`: the arch layer knows the
 /// reason, the syscall layer decides the errno (both variants map to
 /// EFAULT today, matching C's do_trace.c).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,8 +290,9 @@ pub trait CpuContextArch {
     /// status above — because each call returns one whole address.
     ///
     /// The channel is the same register family as the IPC status register
-    /// (x86-64: R10 — NK4-C 1.54/B26; C i386 的 bx 兼两职，状态迁 R10 后
-    /// secondary 随同), mirroring C. No cross-use hazard: each use's consumer
+    /// (x86-64: R10 — C i386's bx doubles as both, and the secondary
+    /// channel moves to R10 along with the status register), mirroring C.
+    /// No cross-use hazard: each use's consumer
     /// is the library wrapper of its own call, which reads the register
     /// before the process issues any further IPC — status after a delivery,
     /// the info page address after a kerninfo query.
@@ -312,7 +313,7 @@ pub trait CpuContextArch {
     /// on x86-64). Callers must not hard-code a `write_user_register`
     /// offset here, because the byte-offset-to-register map is arch-
     /// private (offset 80 is RAX on x86-64 but X7 on aarch64 — the
-    /// NK4-C §1.113 code-review BLOCKER that motivated this method).
+    /// code-review blocker that motivated this method).
     ///
     /// Default: no-op (arch must override to enable IPC wake return).
     fn set_ipc_return_reg(_ctx: &mut Self::CpuContext, _value: u64) {
@@ -409,7 +410,7 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     /// runs out because `reservedqueue.mappedin` (alloc.c) lets VM grow
     /// its OWN stack on demand at runtime. This port has no VM stack
     /// self-grow yet — `vm_self_mappages` is wired only to HeapArena heap
-    /// expansion, never to the stack (§1.55 family) — so a descent past
+    /// expansion, never to the stack — so a descent past
     /// the eager runway becomes a `pagefault in VM` recursive panic
     /// (VM is the fault server, cannot serve itself; C parity
     /// exception.c:101-118). `load_vm_elf` itself is VM-only (the VM boot
@@ -418,8 +419,8 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     /// (e.g. test-sysboot loading RS directly) also gets a 256 KiB initial
     /// user stack — +48 physical pages per such load, harmless (still well
     /// under `install_boot_stack`'s 4 MiB window, and eager). 256 KiB
-    /// covers the measured ~65 KiB VM boot descent (§1.92
-    /// cr2=0x7ffffffeef88, ~4 KiB past the old 64 KiB) with ~4x margin.
+    /// covers the measured ~65 KiB VM boot descent
+    /// (cr2=0x7ffffffeef88, ~4 KiB past the old 64 KiB) with ~4x margin.
     /// Stopgap until VM stack self-map lands.
     const VM_STACK_SIZE: u64 = 256 * 1024;
 
@@ -430,13 +431,17 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     const PS_STRINGS_SIZE: u64 = 32;
 
     /// The three words below ps_strings — argc, argv, envp — each one
-    /// full pointer word (SD-17 对齐轮 2026-10-06：旧值 `2*usize + i32`＝
-    /// 20B，argc 槽只有 4B 且令出生 sp 落在 4-mod-8 非全字对齐上；exec 腿
-    /// minix-sys/stack.rs 早已是 WORD 槽。上游只有 i386/ARM32 的
-    /// protect.c（int 与指针同宽故两形重合），64 位无 C 真源可抄——统一
-    /// 取 LP64 全字，与 exec 腿同形，出生 sp 回到 8 字节对齐。消费端
-    /// startup-minix.c 只读 ps_strings 描述符（字段序与下方写入逐字
-    /// 对位），argc 槽字本身无读者，改动对现行行为惰性）。
+    /// full pointer word. (An earlier value, `2*usize + i32` = 20B, gave
+    /// argc only a 4B slot and left the birth sp 4-mod-8, not aligned to a
+    /// full word; the exec leg in minix-sys/stack.rs had long used full
+    /// WORD slots. Upstream has only the i386/ARM32 protect.c (where int
+    /// and pointer are the same width, so both shapes coincide); there is
+    /// no 64-bit C ground truth to copy — so this settles on the LP64 full
+    /// word, same shape as the exec leg, putting the birth sp back on
+    /// 8-byte alignment. The consumer, startup-minix.c, only reads the
+    /// ps_strings descriptor (field order matches the writes below word
+    /// for word); the argc slot word itself has no reader, so the change
+    /// is inert for current behavior.)
     const ARGC_ARGV_ENVP: u64 = 3 * core::mem::size_of::<usize>() as u64;
 
     // SAFETY: `module.start` points to the VM ELF image in physical
@@ -460,7 +465,7 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     let page_size = P::PAGE_SIZE as u64;
     let mut total_allocated: usize = 0;
 
-    // SD-20: kernel-accessible VA span of every *executable* segment byte
+    // Kernel-accessible VA span of every *executable* segment byte
     // written by the loop below. The tail-of-loader instruction-cache sync
     // runs over this span (see the call after the loop). Tracked per frame
     // (`dst`), not per user VA: the maintenance instructions translate
@@ -623,7 +628,7 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
                 }
             }
 
-            // SD-20: this page's bytes are written; remember its
+            // This page's bytes are written; remember its
             // kernel-accessible frame span when the segment is executable
             // (only code needs the I-side of the sync; the whole frame is
             // recorded — over-invalidation is harmless, the trait says so).
@@ -636,12 +641,12 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
         }
     }
 
-    // SD-20 [ARCH: cache-sync] tail-of-loader instruction-cache sync: the
+    // [ARCH: cache-sync] tail-of-loader instruction-cache sync: the
     // executable bytes above are now written into frames the CPU is about
     // to fetch as instructions. aarch64/riscv64 need explicit maintenance
     // here (I-caches are not coherent with these writes); x86_64's
-    // implementor is a no-op. Frozen design: register SD-20, "called at
-    // the ELF-loader tail".
+    // implementor is a no-op. Frozen design: called at the ELF-loader
+    // tail.
     if icache_lo < icache_hi {
         crate::CurrentCacheSyncArch::sync_icache_range(icache_lo..icache_hi);
     }
@@ -649,8 +654,8 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // Map the user stack: [stack_high - VM_STACK_SIZE, stack_high).
     // C kernel seeds 64 KiB and lets VM self-grow (reservedqueue.mappedin);
     // we lack the self-grow, so the eager runway IS the whole allowance
-    // (see VM_STACK_SIZE doc above for the §1.55 rationale).
-    // R-07 (2026-08-12): Use getter method (preferred API).
+    // (see VM_STACK_SIZE doc above for the rationale).
+    // Use the getter method (preferred API).
     let stack_high = kernel_info.user_sp();
     // Defensive: a caller-supplied `user_sp` below the runway clamps the
     // window to [0, stack_high) rather than underflowing the subtraction
@@ -684,7 +689,7 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // `stack_high`, and the SP is taken down a further 20 bytes (two
     // pointers + one int) so the startup code sees argc/argv/envp.
     let ps_strings = VirBytes(stack_high.0 - PS_STRINGS_SIZE); // stack_high - 32
-    let sp = VirBytes(ps_strings.0 - ARGC_ARGV_ENVP);          // 全字三槽，8 字节对齐
+    let sp = VirBytes(ps_strings.0 - ARGC_ARGV_ENVP);          // three full words, 8-byte aligned
 
     // Resolve the kernel VA of the *top* stack page (`stack_high -
     // page_size`). The bootstrap allocator's frame order is
@@ -706,7 +711,7 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     unsafe {
         let frame_offset = ps_strings.0 - (stack_high.0 - page_size);
         let psp = (top_frame_kva.0 + frame_offset) as *mut u8;
-        let argvstr = sp.0 + core::mem::size_of::<usize>() as u64;  // argc word 之后
+        let argvstr = sp.0 + core::mem::size_of::<usize>() as u64;  // after the argc word
         let envstr = argvstr + core::mem::size_of::<usize>() as u64;
         (psp as *mut u64).write(argvstr);        // ps_argvstr
         (psp.add(8) as *mut i32).write(0);       // ps_nargvstr
@@ -761,9 +766,9 @@ pub struct ProcessLoad {
 /// (`servers/vm/main.c:510` boot-image walk skipping itself;
 /// `pagetable.c:807/:933` `VMCTL_VMINHIBIT` release). This primitive is
 /// the boot-side equivalent of that per-process-root capability: it lets
-/// the kernel's boot loader host multiple images (multi-image carriers,
-/// C-27) without a VM server in the loop. Loading the production boot
-/// modules remains VM's job (T2 wave), which will reuse this same
+/// the kernel's boot loader host multiple images (multi-image carriers)
+/// without a VM server in the loop. Loading the production boot
+/// modules remains VM's job, which will reuse this same
 /// per-image-root shape rather than a shared root.
 ///
 /// # Parameters
@@ -1032,7 +1037,7 @@ mod tests {
 
         // Public geometry the loader contract promises.
         assert_eq!(result.ps_strings.0, user_sp.0 - 32); // stack_high - 32
-        // stack_high - (32 ps_strings + 3 全字槽)＝SD-17 对齐后的 56
+        // stack_high - (32 ps_strings + 3 full-word slots) = 56 after alignment
         assert_eq!(result.sp.0, user_sp.0 - 56);
         assert!(result.allocated_bytes >= 256 * 1024);
 
@@ -1075,7 +1080,7 @@ mod tests {
         }
     }
 
-    /// Regression for the C-27 carrier collision: two images at the SAME
+    /// Regression for the multi-image carrier collision: two images at the SAME
     /// segment VA and SAME `user_sp` stack window both load — each into
     /// its own root. Under the shared-bootstrap-root shape the second
     /// `load_vm_elf` would hit an already-mapped stack page
@@ -1240,7 +1245,7 @@ mod tests {
         build_bss_elf_with_phflags(filesz, memsz, vaddr, 6 /* PF_R|PF_W */)
     }
 
-    /// [`build_bss_elf`] with a selectable PT_LOAD `p_flags` — the SD-20
+    /// [`build_bss_elf`] with a selectable PT_LOAD `p_flags` — the
     /// instruction-cache tests need an executable segment (`PF_X`) and a
     /// non-executable control.
     fn build_bss_elf_with_phflags(
@@ -1549,7 +1554,7 @@ mod tests {
         assert_eq!(result.err(), Some(VmLoadError::OutOfMemory));
     }
 
-    /// SD-20: the loader must run the instruction-cache sync exactly once,
+    /// The loader must run the instruction-cache sync exactly once,
     /// over the kernel-accessible frame span of the executable segment(s).
     #[cfg(feature = "runtime-window")]
     #[test]
@@ -1627,7 +1632,7 @@ mod tests {
         mock_reset_cache_sync();
     }
 
-    /// SD-20 negative control: an image whose only PT_LOAD is
+    /// Negative control: an image whose only PT_LOAD is
     /// non-executable (PF_R|PF_W) is data, not code — the loader must not
     /// run the icache sync for it (this also proves the call above is
     /// conditional on the executable flag, not unconditional).

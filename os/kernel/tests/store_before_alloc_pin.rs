@@ -1,4 +1,4 @@
-//! M4 (TODO-01): `store_kernel_info` must run before anything in a boot entry
+//! `store_kernel_info` must run before anything in a boot entry
 //! can allocate a page-table page or read the free list.
 //!
 //! The three production entries are architecture-gated and reach the mapping

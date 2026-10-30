@@ -1,6 +1,6 @@
-//! Test: topology discovery pin (SMP bring-up S-2/S-2b, ladder L1) — aarch64/ACPI.
+//! Test: topology discovery pin — aarch64/ACPI.
 //!
-//! **S-2b unblocked (2026-09-07): the discovery path is ACPI, not DTB.**
+//! **2026-09-07: the discovery path is ACPI, not DTB.**
 //!
 //! Empirically verified on QEMU virt + AAVMF (Ubuntu 2024.02, `-smp 4`):
 //! the config table carries **no FDT entry** under either the boot-shim's
@@ -11,7 +11,7 @@
 //! three-step shape as the x86_64 variant of this test, with GICC instead
 //! of LAPIC records.
 //!
-//! S-2b changes that made this work (all in minix-platform):
+//! Changes that made this work (all in minix-platform):
 //! 1. `kind.rs`: the `RSDP` arm of `parse_by_kind` now compiles in for
 //!    aarch64 (was x86_64-only).
 //! 2. `acpi.rs`: `GicdNotFound` error variant added (the aarch64 MADT
@@ -49,19 +49,21 @@ fn fail(msg: &str) -> ! {
     loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
 }
 
-/// 诊断打印（NK4-B P3 M3.4 取证）：`parse_by_kind` 把内层错误压成
-/// `PlatformParseError::AcpiParse`，红灯在串口上只剩一句「parse failed」，
-/// 无法区分是 RSDP 取不到、MADT 没有，还是 `check_gic_madt`（C-38 引入的
-/// aarch64 GIC 门）拒绝。这里对同一个 RSDP 再走一次 `AcpiDesc::parse`，把
-/// 变体逐个打出来。**判据不变**——打印完仍然走原来的 fail 分支。
+/// Diagnostic print: `parse_by_kind` flattens inner errors into
+/// `PlatformParseError::AcpiParse`, so a failing serial log shows only
+/// "parse failed" and cannot distinguish a missing RSDP, an absent MADT, or a
+/// rejection by `check_gic_madt` (the aarch64 GIC gate). Here the same RSDP
+/// goes through `AcpiDesc::parse` again to print each variant. **The criterion
+/// is unchanged** — after printing, the original fail branch still runs.
 fn dump_acpi_parse_error(source: &PlatformDescSource) {
     if !matches!(source.kind(), minix_platform::RSDP) {
         early_console::write_str("  diag: source kind is not RSDP, acpi dump skipped\n");
         return;
     }
     early_console::write_str("  diag: AcpiParseError = ");
-    // SAFETY: 同一个 phys_addr，parse_by_kind 刚刚解引用过且仍在 boot
-    // services 存活窗口内（本测试内核不退出 boot services）。
+    // SAFETY: the same phys_addr that `parse_by_kind` just dereferenced, and
+    // still inside the boot-services lifetime window (this test kernel never
+    // exits boot services).
     match unsafe { minix_platform::AcpiDesc::parse(source.phys_addr().0 as usize) } {
         Ok(_) => early_console::write_str("unexpected Ok (dispatch/parser disagree)\n"),
         Err(minix_platform::AcpiParseError::BadRsdpSignature) => {

@@ -38,13 +38,17 @@ impl ArchInit for AArch64ArchInit {
     fn init(&mut self) {
         // C: arch_init() — earm/arch_system.c:101-132
 
-        // 0. CPACR_EL1.FPEN = 0b11（§续-406：直核链等价化）。续-130 裁决
-        // 的「复位 0b00 窗口内内核 -neon 无 EL1 FP 使用」前提被直核链
-        // 打破——QEMU reset 后 FPEN=00，预编译 core 的 NEON memset 残差
-        // （SD-23 build-std 待办）在 kmain 后首次 4 字节 memset 即 undef
-        // （smpd5 实证 elr=memset+0xe0、EC=0x7）；UEFI 链同代码从未暴露
-        // 是因 AAVMF 固件留下 FPEN=0b11。本写与其等价（零新语义：用户态
-        // FP 同样不 trap，懒门接线仍按续-130 待未来），UEFI 链幂等。
+        // 0. CPACR_EL1.FPEN = 0b11, matching the direct-kernel chain. The
+        // earlier decision assumed the kernel makes no EL1 FP use inside the
+        // reset window where FPEN is 0b00; the direct-kernel chain breaks
+        // that premise. After QEMU reset FPEN=00, and the NEON memset in the
+        // precompiled core (build-std, still an open item) takes an undef on
+        // the first 4-byte memset after kmain (observed on run smpd5:
+        // elr=memset+0xe0, EC=0x7). The same code on the UEFI chain never
+        // exposed this because AAVMF firmware leaves FPEN=0b11. This write is
+        // equivalent (no new semantics: user-mode FP likewise does not trap;
+        // wiring the lazy gate is still future work), and idempotent on the
+        // UEFI chain.
         unsafe {
             let mut cpacr: u64;
             core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr);

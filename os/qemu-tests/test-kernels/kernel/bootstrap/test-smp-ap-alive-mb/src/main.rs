@@ -1,12 +1,16 @@
-//! Test: AP alive verification (SMP bring-up S-3d, ladder L2) — x86_64,
-//! **multiboot 直启变体**（QEMU `-kernel`，绕开 OVMF；见 smp_todo.md S-3d
-//! V13 续诊：OVMF(TCG) 的 MpInitLib AP 停放/跳表区与低内存 trampoline 冲突，
-//! 且存在 #UD 游走核）。multiboot 路径下 AP 天然 wait-for-SIPI，无固件干扰。
+//! Test: AP alive verification (SMP bring-up ladder) — x86_64,
+//! **multiboot direct-boot variant** (QEMU `-kernel`, bypassing OVMF;
+//! OVMF(TCG)'s MpInitLib AP parking / jump-table area conflicts with the
+//! low-memory trampoline, and there are wandering #UD cores on that path).
+//! Under multiboot the APs naturally wait-for-SIPI with no firmware
+//! interference.
 //!
-//! BSP：multiboot 进入（32 位）→ 32→64 跳板（恒等页表 + GDT）→ rust_main64：
-//! 开 LAPIC → 建恒等页表（跳板已建）→ install blob @0x5000 → fill bootstrap
-//! @0x6000 → INIT-SIPI。AP：爬 16→32→64 阶梯（AP_STAGE_MARK 逐级写 0x6F00）
-//! → ap_entry → BOOT_ACK。PASS = BSP 观察到 ack 位。
+//! BSP: multiboot entry (32-bit) → 32→64 trampoline (identity page tables
+//! + GDT) → rust_main64: enable LAPIC → build identity page tables (the
+//! trampoline already built them) → install blob @0x5000 → fill bootstrap
+//! @0x6000 → INIT-SIPI. AP: climbs the 16→32→64 ladder (AP_STAGE_MARK
+//! writes 0x6F00 rung by rung) → ap_entry → BOOT_ACK. PASS = the BSP
+//! observes the ack bit.
 
 #![no_std]
 #![no_main]
@@ -23,8 +27,10 @@ use minix_arch::x86_64::smp::X86_64SmpArch;
 use minix_plat::x86_64::early_console;
 use minix_types::VirBytes;
 
-// ── 跳板页表（32 位入口填写；.bss 由加载器清零）──
-// CR3 装载要求 4KB 对齐（bits 11:0 保留，非对齐即 #GP——S-3d 跳板首障）。
+// ── Trampoline page tables (filled by the 32-bit entry; .bss is zeroed
+// by the loader) ──
+// Loading CR3 requires 4KB alignment (bits 11:0 are reserved; a misaligned
+// value raises #GP — the trampoline's first trap).
 #[repr(align(4096))]
 pub struct PageTable {
     pub entries: [u64; 512],
@@ -42,17 +48,18 @@ pub static mut MB_PD2: PageTable = PageTable { entries: [0; 512] };
 #[unsafe(no_mangle)]
 pub static mut MB_PD3: PageTable = PageTable { entries: [0; 512] };
 
-/// AP 专属栈（恒等，<4GB）。
+/// AP-dedicated stack (identity-mapped, <4GB).
 #[repr(align(16))]
 struct ApStack(pub [u8; 0x10000]);
 static mut AP_STACK: ApStack = ApStack([0u8; 0x10000]);
-/// AP 栈顶（BSP 算好经此传给 AP——bootstrap record 的同值旁路）。
+/// AP stack top (computed by the BSP and handed to the AP through this —
+/// the same-value bypass of the bootstrap record).
 static AP_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 
 /// Bit n set == AP logical_id n reached the Rust entry.
 static BOOT_ACK: AtomicU64 = AtomicU64::new(0);
 
-/// Shared per-CPU protection instance (S-4): the BSP builds it (all 8 TSS
+/// Shared per-CPU protection instance: the BSP builds it (all 8 TSS
 /// descriptors at stable addresses), stamps the AP slot via
 /// set_kernel_stack before the SIPI, and the AP runs `init_ap` on its own
 /// core — lgdt the shared GDT image, ltr its own TSS, program its GS MSRs.
@@ -62,8 +69,10 @@ static mut PROTECTION: Option<X86_64Protection> = None;
 /// AP (gs:0x10 travels through that CPU's own GS_BASE MSR).
 static AP_CPU_ID_READBACK: AtomicU64 = AtomicU64::new(0);
 
-// 本测试零堆；此空分配器仅为满足依赖链的 alloc 符号需求（永不调用，
-// 调用即空指针——若未来真出现分配，链接期后的首次分配会立刻暴露）。
+// This test has no heap; this null allocator only satisfies the alloc
+// symbol requirements of the dependency chain (it is never called, and a
+// call would hand back a null pointer — if an allocation ever does happen,
+// the first one after link time exposes it immediately).
 struct NullAlloc;
 unsafe impl core::alloc::GlobalAlloc for NullAlloc {
     unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
@@ -78,10 +87,10 @@ static ALLOCATOR: NullAlloc = NullAlloc;
 unsafe extern "C" fn ap_entry(_bootstrap_pa: usize) -> ! {
     early_console::write_str("### AP IN RUST (ladder complete)\n");
 
-    // S-4 L2 extension: per-CPU protection bring-up on THIS core —
+    // Per-CPU protection bring-up on THIS core —
     // lgdt/ltr the shared GDT (cpu 1's 16-byte TSS descriptor), program the
     // GS area + both GS_BASE MSRs, re-write the per-CPU SYSCALL MSRs (the
-    // BSP's MSR writes do not propagate — §3.3), then prove the identity:
+    // BSP's MSR writes do not propagate), then prove the identity:
     // gs:0x10 must read back the value program_gs stored for cpu 1.
     let ap_stack_top = AP_STACK_TOP.load(Ordering::Acquire);
     unsafe {
@@ -106,8 +115,9 @@ fn fail(msg: &str) -> ! {
     early_console::write_str("### FAIL: ");
     early_console::write_str(msg);
     early_console::write_str("\n");
-    // S-3d 诊断：AP 最后到达的阶梯级标（0 = 连 SIPI 都没响应；
-    // 0xA1..0xA7 = 模式梯子进度，见 AP_STAGE_MARK 文档）。
+    // Diagnostic: the last ladder rung the AP reached (0 = it did not even
+    // respond to the SIPI; 0xA1..0xA7 = mode-ladder progress, see the
+    // AP_STAGE_MARK documentation).
     let stage = unsafe { core::ptr::read_volatile(0x6F00 as *const u8) };
     early_console::write_str("### AP stage: 0x");
     early_console::write_hex(stage as u64);
@@ -118,7 +128,8 @@ fn fail(msg: &str) -> ! {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC\n");
-    // 不读 loc.file()（S-3d：字符串指针可能坏 → FF 风暴），只打行号。
+    // Do not read loc.file() (the string pointer may be corrupt → FF
+    // storm); print the line number only.
     if let Some(loc) = info.location() {
         early_console::write_str("### PANIC line: ");
         early_console::write_hex(loc.line() as u64);
@@ -127,26 +138,28 @@ fn panic(info: &PanicInfo) -> ! {
     loop { unsafe { asm!("cli", options(nomem, nostack)); } }
 }
 
-// ── multiboot 头 + 32→64 跳板 ──
+// ── multiboot header + 32→64 trampoline ──
 core::arch::global_asm!(
-    // 多重启动头：AOUT kludge（位16）——QEMU -kernel 的 multiboot 装载器只认
-    // 32 位 ELF，kludge 使其按"文件镜像 → load_addr"整体装载并以 header 的
-    // entry_addr 进入（mb.ld 提供 mb_load_end/mb_bss_end/mb_entry 边界符号；
-    // .bss 由装载方按 [load_end, bss_end) 清零）。镜像前 8KB、4 字节对齐。
+    // Multiboot header: AOUT kludge (bit 16) — QEMU -kernel's multiboot
+    // loader only accepts 32-bit ELF; the kludge makes it load the whole
+    // "file image → load_addr" and enter at the header's entry_addr (mb.ld
+    // provides the mb_load_end/mb_bss_end/mb_entry boundary symbols; .bss is
+    // zeroed by the loader over [load_end, bss_end)). The header occupies the
+    // first 8KB of the image, 4-byte aligned.
     ".section .multiboot_header, \"a\"",
     ".align 4",
     ".long 0x1BADB002",
-    ".long 0x00010003",          // 位0 页对齐模块 + 位1 mem_info + 位16 AOUT kludge
+    ".long 0x00010003",          // bit0 page-align modules + bit1 mem_info + bit16 AOUT kludge
     ".long -(0x1BADB002 + 0x00010003)",
-    ".long 0x100000",            // header_addr：.mbh 的运行地址（kludge seek 补偿后 = 0x100000）
-                                 // （QEMU 以 seek = 头文件偏移 − (header_addr − load_addr) 装载；
-                                 //  写成 = load_addr 会使整幅镜像 +0x1000 错位——S-3d mb 变体的最后一个根因）
-    ".long 0x100000",            // load_addr（文件首字节装载于此）
-    ".long mb_load_end",         // load_end_addr（文件背书内容终点）
-    ".long mb_bss_end",          // bss_end_addr（[load_end, bss_end) 清零）
-    ".long mb_entry",            // entry_addr（32 位 _start）
+    ".long 0x100000",            // header_addr: the .mbh run address (= 0x100000 after kludge seek compensation)
+                                 // (QEMU loads with seek = header file offset − (header_addr − load_addr);
+                                 //  writing it equal to load_addr shifts the whole image by +0x1000 — the mb variant's last root cause)
+    ".long 0x100000",            // load_addr (the first file byte is loaded here)
+    ".long mb_load_end",         // load_end_addr (end of the file-backed content)
+    ".long mb_bss_end",          // bss_end_addr ([load_end, bss_end) is zeroed)
+    ".long mb_entry",            // entry_addr (the 32-bit _start)
     "",
-    // AP 用的 64 位 GDT（null / code64 / data64）+ 描述符。
+    // 64-bit GDT used by the AP (null / code64 / data64) + descriptor.
     ".section .mb_gdt, \"a\"",
     ".align 8",
     "mb_gdt:",
@@ -155,31 +168,31 @@ core::arch::global_asm!(
     "  .quad 0x00CF920000000000", // data64: P1 DPL0 S1 Type0010 W, 4K G D0
     "mb_gdt_desc:",
     "  .word 0x17",               // limit = 3*8-1
-    "  .long mb_gdt",             // base <4GB（低链接保证）
+    "  .long mb_gdt",             // base <4GB (guaranteed by the low link address)
     "",
-    // 32 位多重启动入口（QEMU multiboot：EAX=0x2BADB002 EBX=info，平坦段，分页关）。
+    // 32-bit multiboot entry (QEMU multiboot: EAX=0x2BADB002 EBX=info, flat segments, paging off).
     ".section .text",
     ".code32",
     ".globl _start",
     "_start:",
     "  cli\n  mov byte ptr [0x6F00], 0x81",
     "  mov esp, offset mb_stack_top",
-    // 恒等页表：PML4[0]=PDPT|3；PDPT[0..4]=PD0..3|0x83；
-    // 每个 PD 512 项 2MB 页（低 dword = 基址|0x83，高 dword 已清零）。
+    // Identity page tables: PML4[0]=PDPT|3; PDPT[0..4]=PD0..3|0x83;
+    // each PD holds 512 2MB pages (low dword = base|0x83, high dword already zeroed).
     "  mov eax, offset MB_PDPT",
     "  or eax, 3",
     "  mov [offset MB_PML4], eax",
     "  mov eax, offset MB_PD0",
-    "  or eax, 3",   // PDPT 非叶表项：P|RW，无 PS（PS 在 PDPT 是 1GB 页，qemu64 无此能力）
+    "  or eax, 3",   // PDPT non-leaf entry: P|RW, no PS (PS at PDPT would be a 1GB page, which qemu64 lacks)
     "  mov [offset MB_PDPT], eax",
     "  mov eax, offset MB_PD1",
-    "  or eax, 3",   // PDPT 非叶表项：P|RW，无 PS（PS 在 PDPT 是 1GB 页，qemu64 无此能力）
+    "  or eax, 3",   // PDPT non-leaf entry: P|RW, no PS (PS at PDPT would be a 1GB page, which qemu64 lacks)
     "  mov [offset MB_PDPT + 8], eax",
     "  mov eax, offset MB_PD2",
-    "  or eax, 3",   // PDPT 非叶表项：P|RW，无 PS（PS 在 PDPT 是 1GB 页，qemu64 无此能力）
+    "  or eax, 3",   // PDPT non-leaf entry: P|RW, no PS (PS at PDPT would be a 1GB page, which qemu64 lacks)
     "  mov [offset MB_PDPT + 16], eax",
     "  mov eax, offset MB_PD3",
-    "  or eax, 3",   // PDPT 非叶表项：P|RW，无 PS（PS 在 PDPT 是 1GB 页，qemu64 无此能力）
+    "  or eax, 3",   // PDPT non-leaf entry: P|RW, no PS (PS at PDPT would be a 1GB page, which qemu64 lacks)
     "  mov [offset MB_PDPT + 24], eax",
     "  mov edi, offset MB_PD0",
     "  mov eax, 0x00000083",
@@ -213,7 +226,7 @@ core::arch::global_asm!(
     "  add eax, 0x200000",
     "  add edi, 8",
     "  loop 4b\n  mov byte ptr [0x6F01], 0x82",
-    // GDT（含 64 位码段）→ PAE → EFER.LME → PG → 远跳 64 位。
+    // GDT (including the 64-bit code segment) → PAE → EFER.LME → PG → far jump to 64-bit.
     "  lgdt [mb_gdt_desc]\n  mov byte ptr [0x6F02], 0x83",
     "  mov eax, cr4",
     "  or eax, 0x20",
@@ -236,7 +249,7 @@ core::arch::global_asm!(
     "  .byte 0xEA",
     "  .long mb64",
     "  .word 0x08",
-    // ── 64 位 ──
+    // ── 64-bit ──
     ".code64",
     "mb64:\n  mov dx, 0x3f8\n  mov al, 0x46\n  out dx, al",
     "  mov ax, 0x10",
@@ -251,14 +264,14 @@ core::arch::global_asm!(
     "  jmp mb_halt",
 );
 
-/// 真正的 64 位测试体。
+/// The real 64-bit test body.
 #[unsafe(no_mangle)]
 extern "C" fn rust_main64() -> ! {
     early_console::write_str("R64-START\n");
     early_console::write_str("### test_smp_ap_alive-mb (x86_64): S-3d via multiboot\n");
     early_console::write_str("STEP1\n");
 
-    // 开 LAPIC（spurious = enable + vector 0xFF）。
+    // Enable LAPIC (spurious = enable + vector 0xFF).
     early_console::write_str("STEP2\n");
     unsafe {
         let spur = (0xFEE0_0000_usize + 0xF0_usize) as *mut u32;
@@ -266,13 +279,16 @@ extern "C" fn rust_main64() -> ! {
     }
     early_console::write_str("STEP3\n");
 
-    // 跳板恒等页表根（<4GB，AP 阶梯的 CR3 直接可用）。
+    // Trampoline identity page-table root (<4GB, directly usable as the AP
+    // ladder's CR3).
     let root = core::ptr::addr_of!(MB_PML4) as u64;
 
-    // S-4 L2：构建共享 protection 实例（全部 8 个 TSS 描述符地址即此定格），
-    // 并在 SIPI 前用 set_kernel_stack 给 AP 槽写 sp0 + cpu-id 戳。
-    // BSP 槽的占位栈顶（本测试的 BSP 继续用跳板 GDT，sp0 值仅满足布局）；
-    // 不能取 asm 标号 mb_stack_top（不在 Rust 符号表），用 AP_STACK 页代替。
+    // Build the shared protection instance (all 8 TSS descriptor addresses
+    // are fixed here) and, before the SIPI, write sp0 + the cpu-id stamp
+    // into the AP slot with set_kernel_stack. The BSP slot's stack top is a
+    // stand-in (this test's BSP keeps using the trampoline GDT; the sp0
+    // value only has to satisfy the layout); the asm label mb_stack_top is
+    // not in the Rust symbol table, so an AP_STACK page stands in.
     let bsp_stack_top = core::ptr::addr_of!(AP_STACK) as usize as u64 + 0x8000;
     let ap_stack_top = core::ptr::addr_of!(AP_STACK) as usize as u64 + 0x10000;
     AP_STACK_TOP.store(ap_stack_top, Ordering::Release);
@@ -287,7 +303,7 @@ extern "C" fn rust_main64() -> ! {
     }
     early_console::write_str("STEP3.5\n");
 
-    // 安装阶梯 blob @0x5000，填充 bootstrap @0x6000。
+    // Install the ladder blob @0x5000 and fill bootstrap @0x6000.
     unsafe { install_at(0x5000) };
 
     let record = ApBootstrap {
@@ -301,7 +317,8 @@ extern "C" fn rust_main64() -> ! {
     early_console::write_str("STEP4\n");
     unsafe { minix_arch::x86_64::ap_early_entry::fill_bootstrap(0x6000, &record); }
     early_console::write_str("STEP5\n");
-    // S-3d 诊断：GDT 页回读（desc@0x6030 的 6 字节 + code32 表项@0x6120 的 8 字节）。
+    // Diagnostic: read back the GDT page (6 bytes of desc@0x6030 + 8 bytes
+    // of the code32 entry@0x6120).
     early_console::write_str("GDT DESC@6030: ");
     for off in 0x30..0x36 {
         let b = unsafe { core::ptr::read_volatile((0x6000 + off) as *const u8) };
@@ -309,8 +326,9 @@ extern "C" fn rust_main64() -> ! {
         early_console::write_str(" ");
     }
     early_console::write_str("\nGDT C32@6120: ");
-    // code32 表项 = GDT base 0x6110 + selector 0x10 = 0x6120（九轮清单③：
-    // 原来误读 0x6130 = data 表项，把 data 内容当成 code32 误判"正确在位"）。
+    // code32 entry = GDT base 0x6110 + selector 0x10 = 0x6120 (an earlier
+    // revision misread 0x6130 = the data entry, mistaking data bytes for a
+    // correct code32 entry).
     for off in 0x10..0x18 {
         let b = unsafe { core::ptr::read_volatile((0x6110 + off) as *const u8) };
         early_console::write_hex(b as u64);
@@ -318,13 +336,13 @@ extern "C" fn rust_main64() -> ! {
     }
     early_console::write_str("\n");
 
-    // 清级标，发 INIT-SIPI。
+    // Clear the rung markers and send INIT-SIPI.
     unsafe { core::ptr::write_volatile(0x6F00 as *mut u8, 0); }
     early_console::write_str("STEP6\n");
     <X86_64SmpArch as SmpArch>::boot_ap(1, 0x5000);
     early_console::write_str("STEP7 (SIPI sent)\n");
 
-    // 观察握手。
+    // Observe the handshake.
     let mut spins: u64 = 0;
     while BOOT_ACK.load(Ordering::Acquire) == 0 {
         spins += 1;
@@ -334,8 +352,9 @@ extern "C" fn rust_main64() -> ! {
         core::hint::spin_loop();
     }
 
-    // S-4 L2 判定：AP 的 GS cpu_id 读回必须 == 1（该值经 AP 自己的
-    // GS_BASE MSR 才可见——读回成功即 per-CPU MSR/GS 布线在该核成立）。
+    // Verdict: the AP's GS cpu_id readback must == 1 (the value is visible
+    // only through the AP's own GS_BASE MSR — a successful readback proves
+    // the per-CPU MSR/GS wiring holds on that core).
     let readback = AP_CPU_ID_READBACK.load(Ordering::Acquire);
     early_console::write_str("### AP cpu_id readback = ");
     early_console::write_hex(readback);

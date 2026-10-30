@@ -42,7 +42,7 @@ impl AArch64ClockArch {
         let interval = TICK_INTERVAL.load(core::sync::atomic::Ordering::Relaxed);
         let interval = if interval == 0 {
             // `local_timer_eoi` before any `init_timer` would be a wiring
-            // bug (D-59: the gate opens only after the source is armed);
+            // bug (the gate opens only after the source is armed);
             // fall back to CNTFRQ at DEFAULT_HZ rather than arming a zero
             // interval (an interrupt storm).
             let freq: u64;
@@ -117,8 +117,8 @@ impl ClockArch for AArch64ClockArch {
             // `TimerIrqGate::enable_timer_irq`'s job, done at the C
             // `boot_cpu_init_timer` position (bsp_finish_booting Step 6)
             // AFTER the handler is registered — not here. Arming + opening
-            // in one step (the pre-D-59 behavior) left the timer live
-            // through the rest of boot with no handler attached.
+            // in one step left the timer live through the rest of boot
+            // with no handler attached.
             // C parity: init_local_timer only programs the source; the
             // enable is register_local_timer_handler's `enable_irq`
             // (arch_clock.c:177-196 / interrupt.c:65).

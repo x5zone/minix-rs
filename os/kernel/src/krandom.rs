@@ -169,7 +169,7 @@ impl Default for KRandomness {
 /// Access is BKL-protected. The IRQ path (single-writer via
 /// `get_randomness`) and the syscall path (single-reader via
 /// `dispatch_getinfo`) never run concurrently under BKL.
-// D-62①: the `KRANDOM` / `KRANDOM_INIT` declarations moved to
+// The `KRANDOM` / `KRANDOM_INIT` declarations moved to
 // `globals.rs` (the single audit point for kernel statics). Imported here.
 use crate::globals::{KRANDOM, KRANDOM_INIT};
 
@@ -261,7 +261,7 @@ pub fn get_randomness(source: i32) {
 mod tests {
     use super::*;
 
-    /// D-33: get_randomness fills the source bin ring in order
+    /// `get_randomness` fills the source bin ring in order
     /// (r_next advances, r_size saturates at RANDOM_ELEMENTS). Hosted
     /// read_tsc returns 0 — the ring/advance semantics are still fully
     /// observable (the recorded VALUE is hardware-dependent).
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(bin.r_buf[0], 0);
     }
 
-    /// D-33: the source index wraps over RANDOM_SOURCES (no panic on
+    /// The source index wraps over RANDOM_SOURCES (no panic on
     /// arbitrary IRQ vectors).
     #[test]
     fn test_get_randomness_source_index_wraps() {

@@ -26,12 +26,15 @@ pub mod x86_64;
 pub mod arm64;
 #[cfg(target_arch = "riscv64")]
 pub mod riscv64;
-// Sv39 走表纯逻辑层：真机随 riscv64 编译；宿主测试（runtime-window 默认
-// 特性）单编译，供 walk_read 对抗测试（NK4C §续-349）。
+// Sv39 page-table walk as a pure-logic layer: on real hardware it is
+// compiled with riscv64; host tests (the default `runtime-window` feature)
+// compile it standalone so the `walk_read` adversarial tests can drive it.
 #[cfg(any(target_arch = "riscv64", all(test, feature = "runtime-window")))]
 pub mod riscv64_walk;
-// SD-10 候选 3 改形仪器纯逻辑层（记录-静点走查）：真机随 riscv64 编译；
-// 宿主测试单编译（环/分类/预算纯逻辑，无 DM 与 CSR 依赖）。
+// Page-table write-back instrumentation as a pure-logic layer
+// (record/static-point walk): compiled with riscv64 on real hardware;
+// host tests compile it standalone (loop/classification/budget logic only,
+// no DM or CSR dependencies).
 #[cfg(any(target_arch = "riscv64", test))]
 pub mod ptwb;
 
@@ -49,9 +52,11 @@ pub use arch::paging;
 pub use arch::paging_ext;
 pub use arch::pt_alloc;
 
-/// Compile-time form marker for the U-1/SD-30 形态对账绊线（见
-/// `minix_kernel::form_contract`）：`runtime-window` 开启即宿主/替身形态，
-/// 否则生产形态。`SelectedForm` 反映本包当前**实际选出**的形态（两态标记不并陈任选）。
+/// Compile-time form marker for the form-reconciliation tripwire (see
+/// `minix_kernel::form_contract`): with `runtime-window` enabled the package
+/// is built in host/mock form, otherwise in production form. `SelectedForm`
+/// reflects the form this package **actually selects** (the two form markers
+/// are never both present).
 pub mod form {
     /// Built with `runtime-window` (host/mock-capable form).
     pub struct RuntimeWindowForm;
@@ -180,8 +185,7 @@ pub type CurrentBootDmInstaller = <CurrentBootArch as BootArch>::DmInstaller;
 // Selects the architecture-specific `PteWalkArch` implementor at compile
 // time. The kernel's cross-space copy code (`vm.rs::lookup_in_table`)
 // uses `CurrentPteWalk` as the generic type parameter, so no
-// `#[cfg(target_arch)]` leaks into kernel code (Phase 2 of the
-// TODO/DEFERRED completion plan).
+// `#[cfg(target_arch)]` leaks into kernel code.
 #[cfg(feature = "runtime-window")]
 pub type CurrentPteWalk = MockPteWalk;
 #[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
@@ -194,7 +198,7 @@ pub type CurrentPteWalk = crate::riscv64::paging::Riscv64PteWalk;
 // ── CurrentProtection type aliases ──
 //
 // Mock branch prevents tests on x86_64 host from touching real GDT/TSS
-// registers (FIX-06: R-11). Matches the pattern used by CurrentPaging,
+// registers. Matches the pattern used by CurrentPaging,
 // CurrentDirectMap, CurrentClockArch, etc.
 #[cfg(feature = "runtime-window")]
 pub type CurrentProtection = MockProtection;
@@ -223,7 +227,8 @@ pub const BOOT_IDENTITY_MAP_END: u64 = 0x1_0000_0000;
 /// - representable in the VM DM window — VM self page-table walks can
 ///   read/write root and PT pages through the window
 ///
-/// (07-paging_init_design §6.1 资格过滤 ②). The boot-shims enforce this at
+/// (07-paging_init_design §6.1, eligibility filter item 2). The boot-shims
+/// enforce this at
 /// allocation time; the kernel re-validates at DM establishment time.
 pub const fn boot_dm_admissible_end() -> u64 {
     // `core::cmp::min` is not const-stable; compare explicitly.
@@ -235,8 +240,8 @@ pub const fn boot_dm_admissible_end() -> u64 {
 }
 
 /// MMIO pages the kernel keeps touching through LOW virtual addresses
-/// (VA = PA) while running on a VM-built process page table (NK4-A
-/// fix27, complements `KernelInfo::reserved_regions`).
+/// (VA = PA) while running on a VM-built process page table
+/// (complements `KernelInfo::reserved_regions`).
 ///
 /// These are NOT in the UEFI memory map's RAM descriptors (device
 /// memory is `EfiMemoryMappedIO`, deliberately excluded from the
@@ -259,19 +264,22 @@ pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
     ]
 }
 
-/// riscv64: QEMU virt PLIC（2 MiB 窗）。SD-41 EI 臂前置：S 外中断的
-/// claim/complete 必须经 PLIC MMIO（`0x0C00_0000 + PLIC_CLAIM(0x200004)
-/// + context*0x1000`），而用户进程根此窗未映射 → S 陷阱臂内读 claim
-/// 即 Load fault（续-105 stval=0xc201004 实证）。窗口随
-/// `kernel_identity_mmio_regions` 进 A2 分类 → 用户根恒等映射，与 x86
-/// IO-APIC/LAPIC 同机制。
+/// riscv64: QEMU virt PLIC (2 MiB window). External-interrupt leg
+/// precondition: S-mode external-interrupt claim/complete must go through
+/// PLIC MMIO (`0x0C00_0000 + PLIC_CLAIM(0x200004) + context*0x1000`), yet a
+/// user process root does not map this window, so reading the claim register
+/// inside the S trap leg is an immediate load fault (observed
+/// `stval=0xc201004`). The window enters the A2 classification through
+/// `kernel_identity_mmio_regions`, hence is identity-mapped into user roots —
+/// the same mechanism as x86 IO-APIC/LAPIC.
 #[cfg(target_arch = "riscv64")]
 pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
     &[(0x0C00_0000, 0x0020_0000)]
 }
 
-/// aarch64: 本仓 aarch64 中断控制器走系统寄存器（GIC 系统寄存器接口），
-/// 无固定低 VA MMIO 引用面（见 x86-64 doc）。
+/// aarch64: in this repository the aarch64 interrupt controller is accessed
+/// through system registers (the GIC system-register interface), so there is
+/// no fixed low-VA MMIO surface to dereference (see the x86-64 doc).
 #[cfg(target_arch = "aarch64")]
 pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
     &[]
@@ -280,7 +288,7 @@ pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
 // ── CurrentTrapEntry type aliases ──
 //
 // Mock branch prevents tests on x86_64 host from touching real IDT
-// registers (FIX-06: R-11).
+// registers.
 #[cfg(feature = "runtime-window")]
 pub type CurrentTrapEntry = MockTrapEntry;
 #[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
@@ -290,22 +298,22 @@ pub type CurrentTrapEntry = crate::arm64::trap_entry::AArch64TrapEntry;
 #[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentTrapEntry = crate::riscv64::trap_entry::Riscv64TrapEntry;
 
-// ── S-8 trap-stub facade (smp_todo.md §3.7) ──
+// ── trap-stub facade (smp_todo.md §3.7) ──
 //
 // `install_trap_stubs` writes the arch's real asm entry addresses into every
 // gate of the table; `syscall_entry_va` reports the SYSCALL entry address for
 // `TrapEntryArch::configure_syscall` (x86-64 LSTAR). Together they turn
 // `TrapEntryArch::load()` from "deferred" into a safe call: after both run,
-// no gate has an empty handler (the S-8 stage invariant).
+// no gate has an empty handler (the stage invariant).
 //
-// aarch64/riscv64 entry shape (updated by E-3ARCHTRAP, 2026-09-20): both
+// aarch64/riscv64 entry shape (as of the three-arch trap revision): both
 // archs use a single fixed asm vector (VBAR_EL1 table / stvec direct mode
 // with kernel+user legs), where `set_handler` is already a documented no-op
 // — there is nothing to install per-vector, so `install_trap_stubs` is a
 // documented no-op there. Their asm symbols (`exc_vector_table`,
 // `riscv64_{kernel,user}_trap_vector`) are defined by `global_asm!` in the
-// same modules that declare them (the K9 defusal; the earlier S-8
-// inventory finding "declared but never defined" is historical), and the
+// same modules that declare them (the earlier inventory finding "declared
+// but never defined" is historical), and the
 // production frame-save legs + dispatch thunks live in each arch's
 // `trap_stub`.
 #[cfg(feature = "runtime-window")]
@@ -319,7 +327,7 @@ pub fn install_trap_stubs(_entry: &mut CurrentTrapEntry) {
     // Fixed asm tables (VBAR_EL1 / stvec): nothing per-vector to install —
     // `set_handler` is a documented no-op on both archs, and the asm
     // symbols are defined by `global_asm!` in the same modules that
-    // declare them (K9), so `load()` cannot link-fail. The production
+    // declare them, so `load()` cannot link-fail. The production
     // frame-save legs + dispatch thunks live in each arch's `trap_stub`.
 }
 
@@ -420,8 +428,8 @@ pub fn sync_status_register_to_frame(_ctx: &CurrentCpuContext, _frame: &mut ()) 
 /// `set_ipc_return_code`, which goes through the arch's
 /// `set_ipc_return_reg` trait method; the register file itself is
 /// arch-private). Routed through the same trait so the readback matches
-/// the write on every arch (NK4-C §1.113: the old x86-only `offset 80`
-/// reader returned 0 on aarch64, masking the X0/X7 write mismatch).
+/// the write on every arch (the old x86-only `offset 80` reader returned 0
+/// on aarch64, masking the X0/X7 write mismatch).
 pub fn ipc_return_code(ctx: &CurrentCpuContext) -> u64 {
     use crate::arch::boot::CpuContextArch as _;
     <CurrentCpuContextArch as CpuContextArch>::ipc_return_reg(ctx)
@@ -474,7 +482,7 @@ pub fn register_trap_dispatchers(
 }
 
 /// Register the diverging park-and-reschedule entry for the lower-EL
-/// (user) dispatch legs (NK4-C §1.113 aarch64, 续-75 riscv64) with the
+/// (user) dispatch legs on aarch64 and riscv64 with the
 /// arch's `EL0BODY`/user-leg entry stub; the park branch jumps here after
 /// unwinding a blocked-receiver frame. No-op elsewhere: the switch-after-
 /// pop path is an EL1h/single-kernel-stack concern (x86 diverges safely
@@ -501,7 +509,8 @@ pub fn register_trap_dispatchers(
 ) {
     // Slot semantics: `trap` = kernel leg (S-origin), `syscall` = user
     // leg (U-origin) — the stvec legs split by interrupted privilege. The
-    // user leg's u64 return is the 续-75 park decision (§1.113 twin); the
+    // user leg's u64 return is the park decision (riscv64 counterpart of
+    // the aarch64 leg); the
     // kernel leg never parks and keeps the unit shape.
     crate::riscv64::trap_stub::register_dispatchers(trap, syscall);
 }
@@ -509,7 +518,7 @@ pub fn register_trap_dispatchers(
 #[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub use x86_64::trap_stub::TrapFrame;
 
-/// S-4 per-CPU bring-up helpers (§3.3 per-CPU MSR contract). No-ops on the
+/// Per-CPU bring-up helpers (each CPU writes its own MSRs). No-ops on the
 /// mock/other-arch branches; on x86-64 these write the CURRENT CPU's MSRs —
 /// the AP wiring calls them from the AP itself.
 #[cfg(feature = "runtime-window")]
@@ -521,7 +530,7 @@ pub fn ap_write_syscall_msrs(entry: minix_types::VirBytes) {
 #[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn ap_write_syscall_msrs(_entry: minix_types::VirBytes) {}
 
-/// Enable THIS CPU's LAPIC (S-10: the AP-side per-CPU half of controller
+/// Enable THIS CPU's LAPIC (the AP-side per-CPU half of controller
 /// init — the LAPIC is disabled after INIT and deaf to IPIs until enabled).
 /// No-op on mock/other-arch branches.
 #[cfg(feature = "runtime-window")]
@@ -537,7 +546,7 @@ pub fn ap_enable_lapic() {}
 
 /// Read this CPU's per-CPU identity (x86-64: `gs:0x10` written by
 /// `program_gs`; other archs return 0 — their identity path is per-CPU
-/// register based and lands with their own S-4 lanes).
+/// register based and lands with their own per-CPU bring-up work).
 #[cfg(feature = "runtime-window")]
 pub fn ap_cpu_id_readback() -> u64 {
     0
@@ -654,8 +663,8 @@ pub type CurrentTimerIrqGate = crate::riscv64::timer_irq_gate::Riscv64TimerIrqGa
 
 // ── CurrentCacheSyncArch type aliases ──
 //
-// Selects the architecture-specific `CacheSyncArch` implementor (SD-20
-// instruction-cache synchronization). Under the host test form
+// Selects the architecture-specific `CacheSyncArch` implementor
+// (instruction-cache synchronization). Under the host test form
 // (`runtime-window`) the mock is selected: the loader's host tests assert
 // that the tail call happened and with which range, without executing
 // cache-maintenance instructions against a synthetic address space.
@@ -709,7 +718,7 @@ pub type CurrentSmpArch = crate::arm64::smp::AArch64SmpArch;
 #[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentSmpArch = crate::riscv64::smp::Riscv64SmpArch;
 
-// ── TlbArch re-exports + CurrentTlbArch type alias (FIX-24, Phase 5) ──
+// ── TlbArch re-exports + CurrentTlbArch type alias ──
 //
 // `TlbArch` provides CPU-wide TLB invalidation (flush_all / flush_addr)
 // as static methods, used by `dispatch_vmctl` for SVMCTL_FLUSHTLB and

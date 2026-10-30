@@ -38,7 +38,7 @@
 //! Caller must hold the Big Kernel Lock. The BKL guarantees no concurrent
 //! mutation of `cpu_context` (read here) or the kernel stack of the
 //! target process while we walk it. For SMP deployment this same rule
-//! applies; the per-CPU `CpuLocal.ptproc` (kernel/smp.rs, D-40) also blocks
+//! applies; the per-CPU `CpuLocal.ptproc` (kernel/smp.rs) also blocks
 //! stale direct-map writes during cross-CPU stack walks.
 
 use core::cell::Cell;
@@ -146,7 +146,7 @@ pub fn proc_stacktrace(rp: &KProcess) {
 /// walk returns `None`, the walker prints its placeholder and stops.
 ///
 /// Shared by [`proc_stacktrace`]'s kernel branch (via
-/// [`make_read_word`]) and [`util_stacktrace`]'s self-walk (D-47).
+/// [`make_read_word`]) and [`util_stacktrace`]'s self-walk.
 fn kernel_direct_read_word() -> impl Fn(u64) -> Option<u64> {
     move |vaddr: u64| -> Option<u64> {
         // Active root absent (pre-paging / fault storm) → None so the walk
@@ -169,7 +169,7 @@ fn kernel_direct_read_word() -> impl Fn(u64) -> Option<u64> {
 }
 
 /// Kernel self-backtrace: walk the CURRENT kernel stack's frame-pointer
-/// chain and emit each return address (D-47).
+/// chain and emit each return address.
 ///
 /// C: `util_stacktrace()` — `minix3/minix/lib/libsys/stacktrace.c:17-37`
 /// (`USE_SYSDEBUG` gated; kernel call sites: utility.c:39 panic path,
@@ -253,12 +253,13 @@ fn make_read_word(
         // cell and use it as the destination, then read the bytes back
         // from the same address.
         //
-        // NK4-C 1.51 (B27 残留根因): `scratch_ptr` 是 `proc_stacktrace` 帧的
-        // 内核栈局部（image 高半区，两个 Direct Map 窗口之外），
-        // `virt_to_phys` 会产伪物理地址（真机 c61 实测该伪 dst 经
-        // `cross_space_copy` 写坏 → 级联出 `rip=0xffff7fff…` 野值）。改用
-        // `AddressRef::Process`：target 的 CR3 已映射内核 higher-half，
-        // `resolve_physical` 走真页表得正确 PA。
+        // `scratch_ptr` is a kernel-stack local of the `proc_stacktrace` frame
+        // (in the image's high half, outside both Direct Map windows), so
+        // `virt_to_phys` produces a bogus physical address (measured on real
+        // hardware: the bogus dst was corrupted through `cross_space_copy` →
+        // cascading into a wild `rip=0xffff7fff…`). Use `AddressRef::Process`
+        // instead: the target's CR3 already maps the kernel higher half, so
+        // `resolve_physical` walks the real page table and gets the correct PA.
         let scratch_ptr = scratch_cell.get();
         let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == target_endpt { Some(target_cr3) } else { None }
@@ -300,7 +301,7 @@ fn make_read_word(
 
 #[cfg(test)]
 mod util_stacktrace_tests {
-    /// D-47 end-to-end: util_stacktrace walks the CURRENT kernel stack
+    /// End-to-end: util_stacktrace walks the CURRENT kernel stack
     /// (hosted this is the TEST process stack through mock DirectMap,
     /// whose phys→virt mapping produces unmapped host addresses — the
     /// same reason `proc_stacktrace_empty_chain_does_not_panic` is
@@ -383,7 +384,8 @@ mod tests {
         // assert the closure's *type* matches `Fn`, not invoke it on a
         // mock-only unmapped address. The walker never calls read_word
         // when fp=0, so we never get here in practice.
-        //[SD19-gate] 闭包类型断言（let _: &dyn Fn… = &read）：证明类型匹配 Fn 而非调用/吞错
+        // Closure type assertion (`let _: &dyn Fn… = &read`): proves the type
+        // matches `Fn` rather than invoking it or swallowing an error
         #[allow(clippy::let_underscore_must_use)]
         let _: &dyn Fn(u64) -> Option<u64> = &read;
     }

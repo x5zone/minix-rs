@@ -200,17 +200,21 @@ impl BootShim for OpenSbiBootShim {
             .expect("boot-shim: U-Boot did not pass a BootFileTable in a0");
         let file_loader = UbootFileLoader::new(table);
 
-        // I-22 丁案 C：memmap 源 = DTB（OpenSBI/U-Boot 经 a1 递 DTB，
-        // `install_dtb_ptr` 已在位；`fw_end = 0` 不削——该腿 OpenSBI 区
-        // 可回收、模块域由内核侧 `cut_memmap` 自切，行为与原单区硬编码
-        // 等价、源由硬编码换 DTB 真值）。缺 DTB = 诚实停机（无回退，
-        // 单区硬编码正是本条要收口的泄漏面）。
+        // memmap source = DTB (OpenSBI/U-Boot pass the DTB in a1 and
+        // `install_dtb_ptr` is already in place; `fw_end = 0` is not
+        // trimmed — on this leg the OpenSBI region is reclaimable and the
+        // module region is cut by the kernel-side `cut_memmap`, which is
+        // equivalent to the former single-region hardcoding while taking the
+        // source from the real DTB). A missing DTB means an honest halt (no
+        // fallback; the single-region hardcoding is exactly the leak surface
+        // being closed here).
         let (memmap, reserved, param_buf) = {
             let dtb_pa = dtb_ptr().expect(
                 "boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）",
             );
-            // SAFETY: a1 由固件递入；头 8 字节读 totalsize（bootface
-            // 同款），`Fdt::new` 过 magic/size 闸，坏 blob → expect 停机。
+            // SAFETY: a1 is passed in by firmware; the first 8 bytes give
+            // totalsize (same as bootface), `Fdt::new` checks the magic/size
+            // gates, and a bad blob → expect halts.
             let head = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, 8) };
             let total = u32::from_be_bytes(head[4..8].try_into().expect("dtb header totalsize"))
                 as usize;
@@ -218,7 +222,7 @@ impl BootShim for OpenSbiBootShim {
             let fdt = fdt::Fdt::new(bytes)
                 .expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
             let (memmap, reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect();
-            // T3: the SBI leg's parameter source is the standard firmware
+            // The SBI leg's parameter source is the standard firmware
             // channel — DTB `/chosen/bootargs` (QEMU `-append` fills it).
             let landing: &'static mut [u8] =
                 alloc::boxed::Box::leak(
@@ -397,7 +401,7 @@ const BUMP_END: u64 = MODULE_REGION_BASE + MODULE_REGION_SIZE;
 // Compile-time proof (riscv64 target) that every bump allocation — root
 // page, page-table pages, modules — ends at or below the DM-admissible
 // bound `min(BOOT_IDENTITY_MAP_END, VM DM window PA end)` per target
-// architecture (07-paging_init_design §6.1 资格过滤 ①). OpenSBI has no
+// architecture (07-paging_init_design §6.1 eligibility filter ①). OpenSBI has no
 // AllocateMaxAddress; the fixed pool location must satisfy the bound by
 // construction. The kernel re-validates at DM establishment
 // (`os/kernel/src/dm_coverage.rs`).
@@ -421,26 +425,31 @@ fn bump_alloc(num_pages: usize) -> Option<u64> {
     }
 }
 
-/// NK4-C 续-88 甲案：导出给 kernel-image 自引导面（同一 bump 池的第二个
-/// 合法消耗者）。`prepare_boot` 那条腿是「独立 shim 装 kernel.elf」，自引导
-/// 镜像不能走它（会重拷自己）；但取页纪律必须同源——池基/池尾/单调游标
-/// 只有这份实现，复制一份就是双漂移源。
+/// Exported for the kernel-image self-boot side (the second legitimate
+/// consumer of the same bump pool). The `prepare_boot` leg is "a standalone
+/// shim loads kernel.elf", which a self-boot image cannot use (it would copy
+/// itself again); yet the page-allocation discipline must stay single-source
+/// — the pool base/end and the monotonic cursor exist only in this
+/// implementation, and a copy would be a second source of drift.
 pub fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
     bump_alloc(num_pages)
 }
 
-/// 池尾公开值（装配边界检查用：`MODULE_REGION_BASE + MODULE_REGION_SIZE`）。
+/// Public pool-end value (for assembly-time bound checks:
+/// `MODULE_REGION_BASE + MODULE_REGION_SIZE`).
 pub const fn bump_end_bound() -> u64 {
     BUMP_END
 }
 
-/// 池基公开值（CodeReview NIT-7：接上「模块源区间不得与 bump 池相交」
-/// 的防重叠闸——`copy_nonoverlapping` 的重叠是 UB，静默出乱码）。
+/// Public pool-base value (wired to the overlap guard asserting that a
+/// module source range must not intersect the bump pool — overlap in
+/// `copy_nonoverlapping` is UB and silently produces garbage).
 pub const fn bump_pool_base() -> u64 {
     MODULE_REGION_BASE
 }
 
-/// 表魔数公开访问器（kernel-image 侧做 magic 闸，不在第二处写死字面量）。
+/// Public accessor for the table magic (the kernel-image side checks the
+/// magic; the literal is not hard-coded a second time).
 pub const fn boot_file_table_magic() -> u64 {
     BOOT_FILE_TABLE_MAGIC
 }
@@ -597,9 +606,10 @@ mod tests {
             &[],                   // platform_sources (empty = no source)
             &[],                   // param_buf (no source in this unit test)
         );
-        // 接线断言：builder 发布的必须是单一权威常量本身（宿主测试取非
-        // riscv 分支=48 位值；Sv39 取值范围由 minix_types 的编译期
-        // 不变式在 riscv64 目标上钉扎，§续-338b CodeReview P0 修正）。
+        // Wiring assertion: the builder must publish the single authority
+        // constant itself (host tests take the non-riscv branch = the 48-bit
+        // value; the Sv39 value range is pinned on riscv64 targets by
+        // minix_types' compile-time invariant).
         assert_eq!(info.user_sp.0, minix_types::USER_STACK_TOP);
         assert_eq!(info.kern_phys_base, PhysBytes(0x8000_0000));
         assert!(info.platform_sources.is_empty());
@@ -626,19 +636,21 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // 集成测试覆盖层（单元层）
+    // Integration-test coverage layer (unit level)
     //
-    // 这些测试不依赖 U-Boot/OpenSBI 真实启动链，仅验证 boot-shim
-    // 的内部接口契约（memmap 形状、字段映射、bump 分配器不变量）。
-    // 真实集成测试（QEMU+OpenSBI+U-Boot）需要外部工具链 + 串口监控，
-    // 见 01-boot-shim-bootstrap.md §5.1.1 B。
+    // These tests do not depend on the real U-Boot/OpenSBI boot chain; they
+    // only verify the boot-shim's internal interface contracts (memmap
+    // shape, field mapping, bump-allocator invariants). The real integration
+    // test (QEMU+OpenSBI+U-Boot) needs an external toolchain plus serial
+    // monitoring; see 01-boot-shim-bootstrap.md §5.1.1 B.
     // ─────────────────────────────────────────────────────────────────
 
-    /// `build_kernel_info` 8 个字段全部按入参精确映射。
+    /// `build_kernel_info` maps all 8 fields exactly from the inputs.
     ///
-    /// 生产路径中 `bootstrap_start/len` 始终是 `(PhysBytes(0), 0)`（见 §3.5.1）。
-    /// 此测试使用非零值仅为验证字段映射，不验证语义（语义在
-    /// `test_build_kernel_info_bootstrap_zero_means_no_reclaim` 中覆盖）。
+    /// On the production path `bootstrap_start/len` are always
+    /// `(PhysBytes(0), 0)` (see §3.5.1). This test uses nonzero values only
+    /// to verify field mapping, not semantics (semantics are covered by
+    /// `test_build_kernel_info_bootstrap_zero_means_no_reclaim`).
     #[test]
     fn test_build_kernel_info_riscv64_fields_match_input() {
         let modules: &'static [minix_boot::BootModule] = &[];
@@ -661,33 +673,36 @@ mod tests {
         assert_eq!(info.memmap.len(), 1);
         assert_eq!(info.memmap[0].base, PhysBytes(0x8000_0000));
         assert_eq!(info.memmap[0].len, 0x80_0000);
-        // kern_* 字段
+        // kern_* fields
         assert_eq!(info.kern_virt_base, VirBytes(0xFFFF_FFFF_8000_0000));
         assert_eq!(info.kern_phys_base, PhysBytes(0x8000_0000));
         assert_eq!(info.kern_size, 0x100_000);
-        // 派生字段
+        // Derived fields
         assert_eq!(
             info.kern_stack_top,
             VirBytes(0xFFFF_FFFF_8000_0000u64 + 0x100_000)
         );
         assert_eq!(info.syscall_entry, VirBytes(0xFFFF_FFFF_8000_0000));
-        // user_sp 是单一权威常量（与入参无关）；宿主测试取非 riscv 分支，
-        // Sv39 取值范围由 minix_types 的编译期不变式在 riscv64 上钉扎。
+        // user_sp is the single authority constant (independent of the
+        // inputs); host tests take the non-riscv branch, and the Sv39 value
+        // range is pinned on riscv64 by minix_types' compile-time invariant.
         assert_eq!(info.user_sp.0, minix_types::USER_STACK_TOP);
         // module + platform_sources
         assert_eq!(info.boot_modules.len(), 0);
         assert!(info.platform_sources.is_empty());
-        // bootstrap 直通
+        // bootstrap passthrough
         assert_eq!(info.bootstrap_start, PhysBytes(0x8000_0000));
         assert_eq!(info.bootstrap_len, 0x200_000);
     }
 
-    /// 回归保护：`build_kernel_info` 接受 `(PhysBytes(0), 0)` 作为 bootstrap
-    /// 参数，且该值在 `KernelInfo` 中保持不变（no-op 回收语义，见 §3.5.1）。
+    /// Regression guard: `build_kernel_info` accepts `(PhysBytes(0), 0)` as
+    /// the bootstrap arguments and the value stays unchanged in `KernelInfo`
+    /// (no-op reclaim semantics, see §3.5.1).
     ///
-    /// 若误用 `(PhysBytes(0), kern_phys_base.0)`，会导致 `add_memmap(0,
-    /// kern_phys_base)` 过度回收 `[0, kern_phys_base)` 整段低内存，覆盖
-    /// OpenSBI/DTB/U-Boot。本测试确保该 no-op 语义不被回归。
+    /// Passing `(PhysBytes(0), kern_phys_base.0)` by mistake would make
+    /// `add_memmap(0, kern_phys_base)` over-reclaim the entire low-memory
+    /// range `[0, kern_phys_base)`, covering OpenSBI/DTB/U-Boot. This test
+    /// keeps that no-op semantics from regressing.
     #[test]
     fn test_build_kernel_info_bootstrap_zero_means_no_reclaim() {
         let info = build_kernel_info(
@@ -697,18 +712,18 @@ mod tests {
             PhysBytes(0x8000_0000),
             0x100_000,
             &[],
-            PhysBytes(0), // 生产路径值（见 §3.5.1）
-            0,           // 生产路径值
+            PhysBytes(0), // production-path value (see §3.5.1)
+            0,           // production-path value
             &[],
             &[],
         );
         assert_eq!(info.bootstrap_start, PhysBytes(0));
         assert_eq!(info.bootstrap_len, 0);
-        // 与 kern_phys_base 不相等（若相等则是 over-reclaim bug）
+        // Not equal to kern_phys_base (equality would be an over-reclaim bug)
         assert_ne!(info.bootstrap_len, info.kern_phys_base.0);
     }
 
-    /// `alloc_bump_region(n)` 返回的 `(base, end)` 满足：
+    /// The `(base, end)` returned by `alloc_bump_region(n)` satisfies:
     /// 1. `end - base == n * 4096`
     /// 2. `base >= MODULE_REGION_BASE`
     /// 3. `end <= BUMP_END`
@@ -720,13 +735,14 @@ mod tests {
         assert!(end <= BUMP_END, "end must be inside bump region");
     }
 
-    /// `alloc_root_page()` 返回 4KB 对齐的物理页。
-    /// root 页表地址必须页对齐，否则 Sv39 页表遍历会触发 #PF。
+    /// `alloc_root_page()` returns a 4 KiB-aligned physical page.
+    /// The root page-table address must be page-aligned; otherwise the Sv39
+    /// page-table walk raises #PF.
     #[test]
     fn test_alloc_root_page_is_4k_aligned() {
         let paddr = alloc_root_page();
         assert_eq!(paddr.0 % 4096, 0, "root page must be 4K aligned");
-        // 必须位于 bump region 内（不应超出 BUMP_END）
+        // Must lie inside the bump region (must not exceed BUMP_END)
         assert!(paddr.0 + 4096 <= BUMP_END, "root page must fit in bump region");
     }
 }

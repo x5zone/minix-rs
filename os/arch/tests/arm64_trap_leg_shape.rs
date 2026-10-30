@@ -1,23 +1,31 @@
-//! aarch64 陷入腿（trap_stub.rs）的形状钉住测试（P-A64-02，仿 riscv64_trap_leg_shape）。
+//! Shape-pinning test for the aarch64 trap leg (trap_stub.rs), modelled on
+//! riscv64_trap_leg_shape.
 //!
-//! 宿主（x86_64）不编译 arm64 模块，门内 `#[test]` 永不运行（P-ALL-01）——
-//! 本文件用 `include_str!` 读源码文本，把两条宏腿的承重次序钉在宿主可跑处。
+//! The host (x86_64) does not compile the arm64 module, so an in-gate `#[test]`
+//! there would never run -- this file reads the source text with `include_str!`
+//! and pins the load-bearing ordering of both macro legs somewhere the host can
+//! run.
 //!
-//! 钉住的四件事：
+//! The four pinned facts:
 //!
-//! 1. **EL0 腿的口袋先于取 sp**：`stp x9, x10, [sp, #-16]!` 必须是宏体第一条
-//!    指令——x9/x10 在读 SP_EL0 之前要有地方放；次序颠倒会把用户 x9/x10 踩掉。
-//! 2. **EL0 sp 先于开帧**：`mrs x9, sp_el0` 必须在 `sub sp, sp, #(34*8)` 之前
-//!    ——开帧后 sp 就不再是那个 sp。
-//! 3. **停车腿的双段退栈**：park 分支（`cbz x0, 9f` 之外）必须同时退
-//!    `34*8` 帧与 `16` 口袋再跳 `aarch64_resched_entry`——漏掉任何一段都会让
-//!    SP_EL1 逐次棘轮下坠进 .bss（§1.113 EL1h 单栈模型）。
-//! 4. **SP_EL0 交换回与口袋回载在 eret 前**：恢复尾必须 `ldr x9, [sp, #248]`
-//!    + `msr sp_el0, x9`（用户 sp 回用户侧寄存器）、最后 `ldp x9, x10, [sp], #16`
-//!    收口袋，`eret` 收尾。
+//! 1. **The EL0 leg's pocket precedes the sp fetch**: `stp x9, x10, [sp, #-16]!`
+//!    must be the first instruction in the macro body -- x9/x10 need somewhere
+//!    to live before SP_EL0 is read; reversing the order clobbers the user's
+//!    x9/x10.
+//! 2. **EL0 sp before opening the frame**: `mrs x9, sp_el0` must precede
+//!    `sub sp, sp, #(34*8)` -- once the frame is open, sp is no longer that sp.
+//! 3. **The park leg's two-segment unwind**: the park branch (the instructions
+//!    after `cbz x0, 9f`) must unwind both the `34*8` frame and the `16` pocket
+//!    before jumping to `aarch64_resched_entry` -- missing either segment lets
+//!    SP_EL1 ratchet downward into .bss (the EL1h single-stack model).
+//! 4. **The SP_EL0 exchange-back and the pocket reload precede eret**: the
+//!    restore tail must do `ldr x9, [sp, #248]` + `msr sp_el0, x9` (return the
+//!    user sp to the user-side register) and finally `ldp x9, x10, [sp], #16` to
+//!    close the pocket, with `eret` last.
 //!
-//! 向量表分组也在这里钉：Group1=el1_*（内核源）、Group2=el0_*（用户源）、
-//! Group0/Group3=exc_bad_mode——分组漂移即中断源走错腿。
+//! The vector-table grouping is pinned here as well: Group1=el1_* (kernel
+//! origin), Group2=el0_* (user origin), Group0/Group3=exc_bad_mode -- a grouping
+//! drift means an interrupt source takes the wrong leg.
 
 fn macro_body(src: &str, name: &str) -> Vec<String> {
     let open = format!(".macro {name}");
@@ -133,7 +141,7 @@ fn el1body_frames_below_interrupted_kernel_sp() {
 #[test]
 fn vector_table_groups_are_frozen() {
     let src = include_str!("../src/arm64/trap_stub.rs");
-    // 向量表段：从第一行 VEC 到 DIAGBODY 宏定义之前。
+    // Vector-table section: from the first VEC line to just before the DIAGBODY macro definition.
     let begin = src.find("\"VEC ").expect("向量表找不到");
     let end = src.find(".macro EL1BODY").expect("EL1BODY 宏找不到（向量表段的右界）");
     let vecs: Vec<String> = src[begin..end]
@@ -169,8 +177,9 @@ fn vector_table_groups_are_frozen() {
 
 #[test]
 fn frame_size_is_34_slots_in_both_legs() {
-    // 帧布局 34×8（gpr 0–30、sp 31、elr 32、spsr 33）由腿内全部 34*8 字面量
-    // 与槽偏移 264（=33*8）共同表达；本测试钉住「宏体内不再出现其它帧大写」。
+    // The 34x8 frame layout (gpr 0-30, sp 31, elr 32, spsr 33) is expressed by
+    // the 34*8 literals throughout the leg plus slot offset 264 (=33*8); this
+    // test pins that no other frame size appears in the macro bodies.
     let src = include_str!("../src/arm64/trap_stub.rs");
     for name in ["EL0BODY handler class", "EL1BODY handler class"] {
         let body = macro_body(src, name).join("\n");

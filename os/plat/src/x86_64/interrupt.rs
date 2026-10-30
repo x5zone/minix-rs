@@ -33,60 +33,63 @@ pub const IRQ0_VECTOR: u8 = 0x50;
 /// unmasked by the first-handler rule (interrupt.c:65).
 pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
 
-// ── 8259A PIC bring-up（NK4-C 1.10c，C i8259.c intr_init 对位）──
+// ── 8259A PIC bring-up (counterpart of C i8259.c intr_init) ────────────────
 //
-// 历史：本文件曾按 IOAPIC 首入引脚对待 PIT 时钟（实为 ISA IRQ 0、经
-// `isa_irq_to_pin` 落 pin 2）、由 register_hook 的
-// first-handler 规则解 mask（TimerIrqGate 的 no-op 注释）。但单核
-// QEMU+OVMF boot 走的是 **legacy 8259A**：固件把 PIC 留在 BIOS 向量
-// 或 mask 态，ICW 重映射/IMR/EOI 全部缺位 ⇒ IRQ0 从未到达 0x50 门
-// （s14n 实锤：150s 全程 tick 臂 <1000 次调用）。quantum 抢占被孤儿
-// 化，任何用户态自旋即永久垄断。
+// History: this file once treated the PIT clock as an IOAPIC first-entry
+// pin (it is actually ISA IRQ 0, landing on pin 2 through
+// `isa_irq_to_pin`) and relied on register_hook's first-handler rule to
+// unmask it (the no-op comment in TimerIrqGate). But a single-core
+// QEMU+OVMF boot goes through the **legacy 8259A**: the firmware leaves
+// the PIC in BIOS vector or masked state, with ICW remapping/IMR/EOI all
+// missing ⇒ IRQ0 never reached the 0x50 gate (hard evidence: over 150 s
+// the tick arm was called fewer than 1000 times). Quantum preemption was
+// orphaned, so any user-space spin loop monopolized the CPU forever.
 
 const PIC1_CMD: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
 const PIC2_CMD: u16 = 0xA0;
 const PIC2_DATA: u16 = 0xA1;
-const ICW1_INIT: u8 = 0x11; // 边沿触发 + 级联 + ICW4
-const ICW4_8086: u8 = 0x01; // 8086 模式
-const OCW2_EOI: u8 = 0x20; // 非 specific EOI
+const ICW1_INIT: u8 = 0x11; // edge-triggered + cascaded + ICW4
+const ICW4_8086: u8 = 0x01; // 8086 mode
+const OCW2_EOI: u8 = 0x20; // non-specific EOI
 
-/// 向 I/O 端口写字节。
+/// Write a byte to an I/O port.
 fn outb(port: u16, val: u8) {
-    // SAFETY: 仅写 PIC 的标准 I/O 端口（0x20/0x21/0xA0/0xA1）。
+    // SAFETY: writes only the PIC's standard I/O ports (0x20/0x21/0xA0/0xA1).
     unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") val) };
 }
 
-/// 初始化 8259A：重映射 master→0x50、slave→0x70（与 IDT 门一致，
-/// C: intr_init 的 ICW 序列），随后除 IRQ0（PIT）与 IRQ2（级联）外
-/// 全部 mask。必须在 `init_timer`（PIT 开始计数）之前调用。
+/// Initialize the 8259A: remap master→0x50, slave→0x70 (matching the IDT
+/// gates; the ICW sequence of C intr_init), then mask everything except
+/// IRQ0 (PIT) and IRQ2 (cascade). Must be called before `init_timer`
+/// (before the PIT starts counting).
 pub fn pic_init() {
     unsafe {
         outb(PIC1_CMD, ICW1_INIT);
         io_wait();
         outb(PIC2_CMD, ICW1_INIT);
         io_wait();
-        outb(PIC1_DATA, IRQ0_VECTOR); // master ICW2：向量基 0x50
+        outb(PIC1_DATA, IRQ0_VECTOR); // master ICW2: vector base 0x50
         io_wait();
-        outb(PIC2_DATA, IRQ0_VECTOR + 8); // slave ICW2：向量基 0x70
+        outb(PIC2_DATA, IRQ0_VECTOR + 8); // slave ICW2: vector base 0x70
         io_wait();
-        outb(PIC1_DATA, 0x04); // master ICW3：IRQ2 接 slave
+        outb(PIC1_DATA, 0x04); // master ICW3: IRQ2 wired to the slave
         io_wait();
-        outb(PIC2_DATA, 0x02); // slave ICW3：级联身份 = 2
+        outb(PIC2_DATA, 0x02); // slave ICW3: cascade identity = 2
         io_wait();
         outb(PIC1_DATA, ICW4_8086);
         io_wait();
         outb(PIC2_DATA, ICW4_8086);
         io_wait();
-        // IMR：全 mask（IRQ0/IRQ2 由 unmask_irq 按需打开）。
+        // IMR: mask everything (IRQ0/IRQ2 are opened on demand by unmask_irq).
         outb(PIC1_DATA, 0xFF);
         outb(PIC2_DATA, 0xFF);
     }
     unmask_irq(0); // PIT
-    unmask_irq(2); // 级联线
+    unmask_irq(2); // cascade line
 }
 
-/// 打开指定 IRQ 线（清 IMR 位）。
+/// Unmask the given IRQ line (clear its IMR bit).
 pub fn unmask_irq(irq: u8) {
     let (port, bit) = if irq < 8 {
         (PIC1_DATA, irq)
@@ -98,8 +101,9 @@ pub fn unmask_irq(irq: u8) {
     outb(port, imr);
 }
 
-/// EOI：每个被服务的 IRQ 必须回执，否则 PIC 不再投递后续中断
-/// （level 锁死）。slave 线（IRQ>=8）需向两级各发一次。
+/// EOI: every serviced IRQ must be acknowledged, or the PIC stops
+/// delivering further interrupts (level lock-up). Slave lines (IRQ >= 8)
+/// need one EOI to each of the two PICs.
 pub fn pic_eoi(irq: u8) {
     if irq >= 8 {
         outb(PIC2_CMD, OCW2_EOI);
@@ -107,16 +111,18 @@ pub fn pic_eoi(irq: u8) {
     outb(PIC1_CMD, OCW2_EOI);
 }
 
-/// 读 IMR（0x21/0xA1 数据口在 ICW/OCW 之外即为 IMR，可直读）。
+/// Read the IMR (outside ICW/OCW cycles the 0x21/0xA1 data ports are the
+/// IMR and can be read directly).
 unsafe fn read_imr(port: u16) -> u8 {
     let v: u8;
     unsafe { core::arch::asm!("in al, dx", out("al") v, in("dx") port) };
     v
 }
 
-/// LAPIC EOI——IOAPIC 交付的 edge 中断（PIT→8259→IOAPIC pin 2→LAPIC）
-/// 每次处理后必须回执，否则 LAPIC 拒收后续同类中断（整 boot 只见一次
-/// tick 的直接原因）。C: lapic_eoi()（apic.c）。
+/// LAPIC EOI — an edge interrupt delivered by the IOAPIC (PIT→8259→IOAPIC
+/// pin 2→LAPIC) must be acknowledged after each service, or the LAPIC
+/// refuses further interrupts of the same kind (the direct cause of seeing
+/// only one tick per boot). C: lapic_eoi() (apic.c).
 pub fn lapic_eoi() {
     unsafe {
         let apic_base = wrmsr_msr_read(MSR_IA32_APIC_BASE) & IA32_APIC_BASE_ADDR_MASK;
@@ -124,7 +130,8 @@ pub fn lapic_eoi() {
     }
 }
 
-/// 短等待（AT 时代 PIC 需要的 ~100ns 恢复间隔；现代平台无害）。
+/// Short delay (the ~100 ns recovery interval AT-era PICs need; harmless on
+/// modern platforms).
 fn io_wait() {
     unsafe { core::arch::asm!("out dx, al", in("dx") 0x80u16, in("al") 0u8) };
 }
@@ -243,8 +250,8 @@ impl X86_64InterruptController {
         wrmsr_msr_write(MSR_IA32_APIC_BASE, apic_base | IA32_APIC_BASE_EN);
         lapic_write(self.lapic_base, LAPIC_REG_SVR, LAPIC_SPURIOUS_VECTOR as u32 | LAPIC_SVR_ENABLE);
         // Mask every LVT entry (C apic.c init parity: all LVTs masked until
-        // their owner opens them — the LAPIC timer gate is S-3c/D-59
-        // territory; the LINT lines must not inherit firmware state). OVMF
+        // their owner opens them — the LAPIC timer gate is handled
+        // separately; the LINT lines must not inherit firmware state). OVMF
         // leaves LINT0 in ExtINT mode routing the 8259 PIC into the LAPIC,
         // so an unmasked LINT0 delivers leftover PIC vectors after `sti`.
         for lvt in [LAPIC_REG_LVT_TIMER, LAPIC_REG_LVT_LINT0, LAPIC_REG_LVT_LINT1, LAPIC_REG_LVT_ERROR] {
@@ -261,7 +268,7 @@ impl X86_64InterruptController {
     /// Program redirection entry `pin` with its C-parity delivery vector and
     /// keep the line masked.
     ///
-    /// S-8 (2026-09-14): QEMU/hardware reset leaves every RTE with vector 0
+    /// QEMU/hardware reset leaves every RTE with vector 0
     /// and the mask bit set. The first-handler unmask rule
     /// (`IrqManager::register_hook` → `unmask`) only toggles the mask bit,
     /// so a line unmasked without a programmed vector would deliver to IDT
@@ -328,7 +335,7 @@ impl X86_64InterruptController {
         lapic_read(self.lapic_base, LAPIC_REG_ID) >> 24
     }}
 
-    /// Enable THIS CPU's LAPIC — the per-CPU half of `init_lapic` (S-10).
+    /// Enable THIS CPU's LAPIC — the per-CPU half of `init_lapic`.
     ///
     /// The LAPIC is disabled after INIT (SDM Vol. 3 §10.4.3 / §10.9), so an
     /// AP woken by INIT+SIPI boots with a deaf LAPIC: it cannot receive any
@@ -455,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_timer_irq_is_ioapic_input_zero() {
-        // D-59: the boot clock source (8254 PIT) is ISA IRQ 0, which
+        // The boot clock source (8254 PIT) is ISA IRQ 0, which
         // virtual-wire mode routes to IOAPIC pin 2, but the kernel addresses it
         // by the ISA number, so the boot-end hook registration targets vector 0
         // (TIMER_IRQ).
@@ -480,8 +487,8 @@ impl PerCpuInterruptUnit for X86_64InterruptController {
         // or PLIC (read claim), nothing must be read before the handler
         // runs, and there is no claim token to hand back — the IDT vector
         // already names the line. The LAPIC EOI register is the
-        // *completion* only — writing it here (the pre-D-61
-        // implementation) would send the EOI before the handler and
+        // *completion* only — writing it here (an earlier implementation)
+        // would send the EOI before the handler and
         // re-open the interrupt early.
         None
     }

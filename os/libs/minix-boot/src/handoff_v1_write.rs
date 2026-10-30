@@ -12,7 +12,7 @@
 //! the leg), while host tests exercise the exact same serializer against a
 //! stack buffer. Byte order is pinned little-endian by the protocol.
 //!
-//! Timing (design §1.5 (六).5): the envelope and all non-memory-map payloads
+//! Timing (design §1.5 (6).5): the envelope and all non-memory-map payloads
 //! are written before `ExitBootServices`; memory-map entries are pushed from
 //! the EBS pairing loop; the runtime fields (`root_page`, bump triple) are
 //! patched in place after the root switch.

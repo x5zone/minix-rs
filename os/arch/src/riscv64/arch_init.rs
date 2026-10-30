@@ -44,14 +44,14 @@ impl ArchInit for Riscv64ArchInit {
         // over the whole address space, so the allow-all intent this
         // entry once tried to program is satisfied by the firmware.
         //
-        // 2. (Removed by D-59, 2026-09-09.) This step used to set
+        // 2. (Deliberately not done here.) This step used to set
         // `sie = STIE | SSIE` (0x22) here — enabling the S-mode timer gate
         // before any handler is registered. Both bits now have owners:
         //   - STIE (timer): opened by `TimerIrqGate::enable_timer_irq` at
         //     bsp_finish_booting Step 6, after the handler registration
         //     (C `boot_cpu_init_timer` position, clock.c:294).
         //   - SSIE (software/IPI): belongs to the SMP IPI bring-up
-        //     (smp_todo.md S-7/S-10) — enabling it before an IPI producer
+        //     (see smp_todo.md) — enabling it before an IPI producer
         //     and handler exist would arm a second unhandled source.
         // SEIE (external) stays per-source via `InterruptController::unmask`.
     }

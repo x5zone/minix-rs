@@ -54,7 +54,7 @@ pub const NR_SYS_CALLS: usize = 58;
 /// All processes with `SYS_PROC` flag have their IPC targets filtered.
 /// User processes share `USER_PRIV` which has limited `s_ipc_to`.
 #[inline]
-#[allow(dead_code)] // R-19 (2026-08-13): Wrapper is tested directly; will be
+#[allow(dead_code)] // Wrapper is tested directly; will be
                     // wired into dispatch path when IPC filter pool is enabled.
 pub(crate) fn ipc_filter_check(caller_priv: &KPriv, target_sys_id: u16) -> bool {
     caller_priv.may_send_to(target_sys_id)
@@ -127,10 +127,11 @@ impl IpcFilterElFlags {
     pub const MATCH_M_TYPE: u32 = 0x2;
 }
 
-// ── D-16/D-18: filter match/check semantics (2026-09-06) ────────────────
+// ── filter match/check semantics ────────────────────────────────────────
 //
-// C: minix3/minix/kernel/ipc_filter.h:10-41 (IPCF_EL_CHECK / IPCF_EL_MATCH
-// 宏链) + system.c:803-874 (allow_ipc_filtered_msg 链式遍历)。
+// C: minix3/minix/kernel/ipc_filter.h:10-41 (the IPCF_EL_CHECK /
+// IPCF_EL_MATCH macro chain) + system.c:803-874 (allow_ipc_filtered_msg
+// chain walk).
 
 /// Special filter endpoints matching a whole class.
 /// C: `ANY_USR/ANY_SYS/ANY_TSK` — include/minix/ipc_filter.h:10-12
@@ -157,9 +158,10 @@ pub(crate) fn is_any_ep(ep: minix_types::Endpoint) -> bool {
     ep == ANY_USR || ep == ANY_SYS || ep == ANY_TSK
 }
 
-/// `IPCF_EL_CHECK(E)` — ipc_filter.h:19-25. 设置期元素合法性：至少设一个
-/// MATCH 标志；设了 MATCH_M_SOURCE 时 m_source 必须是 ANY_* 或
-/// `source_ok`（调用方预算的 isokendpt 结果——需要进程表解析）。
+/// `IPCF_EL_CHECK(E)` — ipc_filter.h:19-25. Element validity at set-up time:
+/// at least one MATCH flag must be set; when MATCH_M_SOURCE is set, m_source
+/// must be an ANY_* endpoint or `source_ok` (the caller's pre-computed
+/// isokendpt result -- resolving it needs the process table).
 pub(crate) fn el_check(el: &IpcFilterElement, source_ok: bool) -> bool {
     let has_match = (el.flags & (IpcFilterElFlags::MATCH_M_SOURCE | IpcFilterElFlags::MATCH_M_TYPE)) != 0;
     let source_resolves = (el.flags & IpcFilterElFlags::MATCH_M_SOURCE) == 0
@@ -168,10 +170,12 @@ pub(crate) fn el_check(el: &IpcFilterElement, source_ok: bool) -> bool {
     has_match && source_resolves
 }
 
-/// `IPCF_EL_MATCH(E, M)` — ipc_filter.h:40-41（= MATCH_M_TYPE && 
-/// MATCH_M_SOURCE）。`class_of` 解析消息来源端点的特权类别（ANY_* 类别
-/// 匹配需要它）。生产链（`chain_allowed`）与单测共用这一个实现——
-/// V12-A2 收敛前曾存在"公开 `el_match` 委托内部 `el_match_with`"的双表示。
+/// `IPCF_EL_MATCH(E, M)` — ipc_filter.h:40-41 (= MATCH_M_TYPE &&
+/// MATCH_M_SOURCE). `class_of` resolves the privilege class of the message
+/// source endpoint (ANY_* class matching needs it). The production chain
+/// (`chain_allowed`) and the unit tests share this single implementation --
+/// before it converged, a public `el_match` delegated to an internal
+/// `el_match_with`, a double representation.
 pub(crate) fn el_match(
     el: &IpcFilterElement,
     m_source: minix_types::Endpoint,
@@ -195,16 +199,19 @@ pub(crate) fn el_match(
     type_ok && source_ok
 }
 
-/// 消息来源端点的特权类别解析器（由 IpcEngine 注入：需要进程表 + 特权表）。
+/// Privilege-class resolver for a message source endpoint (injected by the
+/// IpcEngine: it needs the process table and the privilege table).
 pub(crate) type ClassResolver<'a> = dyn FnMut(minix_types::Endpoint) -> Option<EndpointClass> + 'a;
 
-/// D-16: `allow_ipc_filtered_msg` 的链式判定（C system.c:849-865）。
+/// The chain decision of `allow_ipc_filtered_msg` (C system.c:849-865).
 ///
-/// 语义（逐行对照 C）：初始 `allow = (head.type == IPCF_BLACKLIST)`；
-/// 沿 `next` 链遍历每个 filter，当 `allow != (filter 是白名单)` 时扫描其
-/// 元素，首个 `IPCF_EL_MATCH` 命中即翻转 `allow = (filter 是白名单)`
-/// （内层 break；**外层链遍历继续**——后序异类 filter 可再次翻转，顺序
-/// 即优先级）。无 filter（head 为 None）→ 恒允许（C :810-812）。
+/// Semantics (line by line against C): start with
+/// `allow = (head.type == IPCF_BLACKLIST)`; walk every filter along the `next`
+/// chain, and when `allow != (filter is a whitelist)` scan that filter's
+/// elements -- the first `IPCF_EL_MATCH` hit flips
+/// `allow = (filter is a whitelist)` (inner break; **the outer chain walk
+/// continues** -- a later filter of the other kind can flip it again, so order
+/// is priority). No filter (head is None) means always allowed (C :810-812).
 pub(crate) fn chain_allowed(
     pool: &IpcFilterPool,
     head: Option<usize>,
@@ -234,8 +241,9 @@ pub(crate) fn chain_allowed(
     allow
 }
 
-/// 释放从 `head` 开始的整条 filter 链（C `clear_ipc_filters`，
-/// system.c:751-770 的链遍历语义）。返回释放的槽位数。
+/// Frees the whole filter chain starting at `head` (C `clear_ipc_filters`,
+/// the chain-walk semantics of system.c:751-770). Returns the number of slots
+/// freed.
 pub(crate) fn free_chain(pool: &mut IpcFilterPool, head: Option<usize>) -> usize {
     let mut freed = 0;
     let mut cur = head;
@@ -248,9 +256,10 @@ pub(crate) fn free_chain(pool: &mut IpcFilterPool, head: Option<usize>) -> usize
     freed
 }
 
-/// 在链尾追加一个槽位（C add_ipc_filter system.c:742-745 的
-/// "for (*ipcfp = &priv->s_ipcf; *ipcfp != NULL; ipcfp = &(*ipcfp)->next)"
-/// 尾插语义）。返回新的链头（调用方回写 `s_ipcf`）。
+/// Appends one slot at the tail of the chain (the tail-insert semantics of C
+/// add_ipc_filter system.c:742-745,
+/// "for (*ipcfp = &priv->s_ipcf; *ipcfp != NULL; ipcfp = &(*ipcfp)->next)").
+/// Returns the new chain head (the caller writes it back to `s_ipcf`).
 pub(crate) fn append_to_chain(
     pool: &mut IpcFilterPool,
     head: Option<usize>,
@@ -300,13 +309,13 @@ pub(crate) struct IpcFilterSlot {
     pub num_elements: usize,
     /// C: `flags` field in `ipc_filter_s` (ipc_filter.h:45). Reserved for
     /// future filter-chain flags (IPCF_MATCH_M_SOURCE etc.). Currently
-    /// unused — filter chaining not yet implemented (FIX-02: R-13).
+    /// unused — filter chaining not yet implemented.
     #[allow(dead_code)]
     pub flags: i32,
     /// Index of next filter in chain, if any. C: `struct ipc_filter_s *next`
     /// (ipc_filter.h:48). Stored as Option<usize> index into the pool
     /// instead of a raw pointer. Currently unused — filter chaining not
-    /// yet implemented (FIX-02: R-13).
+    /// yet implemented.
     #[allow(dead_code)]
     pub next: Option<usize>,
     pub elements: [IpcFilterElement; IPCF_MAX_ELEMENTS],
@@ -506,9 +515,10 @@ mod tests {
         assert_eq!(pool.allocated_count(), 0);
     }
 
-    // ── D-16/D-18: match/check/chain 单元测试（2026-09-06）──
+    // ── match/check/chain unit tests ──
 
-    /// canned 类别解析器：usr 端点 → Usr，sys/task 由测试直接给定。
+    /// Canned class resolver: a usr endpoint resolves to Usr; sys/task are
+    /// supplied directly by each test.
     fn usr_class(_ep: minix_types::Endpoint) -> Option<EndpointClass> {
         Some(EndpointClass::Usr)
     }
@@ -516,14 +526,14 @@ mod tests {
     #[test]
     fn test_el_check_requires_a_match_flag() {
         let no_flags = IpcFilterElement { flags: 0, m_source: 0, m_type: 0 };
-        // C ipc_filter.h:19-25 — 无任何 MATCH 标志 → 非法。
+        // C ipc_filter.h:19-25 -- no MATCH flag at all means invalid.
         assert!(!el_check(&no_flags, true));
         let with_type = IpcFilterElement { flags: IpcFilterElFlags::MATCH_M_TYPE, m_source: 0, m_type: 5 };
         assert!(el_check(&with_type, true));
-        // MATCH_M_SOURCE + 不可解析来源（isokendpt 失败）→ 非法。
+        // MATCH_M_SOURCE + an unresolvable source (isokendpt fails) -> invalid.
         let bad_source = IpcFilterElement { flags: IpcFilterElFlags::MATCH_M_SOURCE, m_source: 0x7FFF, m_type: 0 };
         assert!(!el_check(&bad_source, false));
-        // MATCH_M_SOURCE + ANY_* → 免 isokendpt。
+        // MATCH_M_SOURCE + ANY_* -> isokendpt is not needed.
         let any_source = IpcFilterElement { flags: IpcFilterElFlags::MATCH_M_SOURCE, m_source: ANY_USR.0, m_type: 0 };
         assert!(el_check(&any_source, false));
     }
@@ -532,19 +542,19 @@ mod tests {
     fn test_el_match_type_and_source() {
         let el = IpcFilterElement {
             flags: IpcFilterElFlags::MATCH_M_SOURCE | IpcFilterElFlags::MATCH_M_TYPE,
-            m_source: 0x100, // 具体来源
+            m_source: 0x100, // concrete source
             m_type: 42,
         };
         assert!(el_match(&el, minix_types::Endpoint(0x100), 42, &mut usr_class));
-        // 类型不匹配 → 不命中。
+        // Type mismatch -> no hit.
         assert!(!el_match(&el, minix_types::Endpoint(0x100), 43, &mut usr_class));
-        // 来源不匹配 → 不命中。
+        // Source mismatch -> no hit.
         assert!(!el_match(&el, minix_types::Endpoint(0x200), 42, &mut usr_class));
     }
 
     #[test]
     fn test_el_match_any_class_endpoints() {
-        // ANY_USR 命中 Usr 类消息来源；对 Sys/Task 不命中。
+        // ANY_USR hits Usr-class message sources; it does not hit Sys/Task.
         let el = IpcFilterElement {
             flags: IpcFilterElFlags::MATCH_M_SOURCE,
             m_source: ANY_USR.0,
@@ -553,14 +563,14 @@ mod tests {
         assert!(el_match(&el, minix_types::Endpoint(0x100), 0, &mut |_| Some(EndpointClass::Usr)));
         assert!(!el_match(&el, minix_types::Endpoint(0x100), 0, &mut |_| Some(EndpointClass::Sys)));
         assert!(!el_match(&el, minix_types::Endpoint(0x100), 0, &mut |_| Some(EndpointClass::Task)));
-        // ANY_TSK 对 Task 命中。
+        // ANY_TSK hits Task.
         let el_tsk = IpcFilterElement { flags: IpcFilterElFlags::MATCH_M_SOURCE, m_source: ANY_TSK.0, m_type: 0 };
         assert!(el_match(&el_tsk, minix_types::Endpoint(0x100), 0, &mut |_| Some(EndpointClass::Task)));
     }
 
     #[test]
     fn test_chain_allowed_whitelist_blocks_unlisted() {
-        // 链 = [whitelist{m_source=A}]：A 允许，B 拒绝。
+        // Chain = [whitelist{m_source=A}]: A allowed, B refused.
         let mut pool = IpcFilterPool::new();
         let idx = pool.allocate(IpcFilterType::Whitelist).unwrap();
         if let Some(slot) = pool.get_mut(idx) {
@@ -577,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_chain_allowed_blacklist_and_order_flip() {
-        // 单黑名单：命中即拒。
+        // A single blacklist: a hit refuses.
         let mut pool = IpcFilterPool::new();
         let bl = pool.allocate(IpcFilterType::Blacklist).unwrap();
         if let Some(slot) = pool.get_mut(bl) {
@@ -591,8 +601,9 @@ mod tests {
         assert!(!chain_allowed(&pool, Some(bl), minix_types::Endpoint(0x100), 0, &mut usr_class));
         assert!(chain_allowed(&pool, Some(bl), minix_types::Endpoint(0x200), 0, &mut usr_class));
 
-        // 链 [wl{A}, bl{A}]：白名单放行后被黑名单翻回——顺序即优先级
-        // （C system.c:849-865 的外层遍历不因翻转提前退出）。
+        // Chain [wl{A}, bl{A}]: the whitelist lets it through and the blacklist
+        // flips it back -- order is priority (the outer walk in C
+        // system.c:849-865 does not stop early on a flip).
         let wl = pool.allocate(IpcFilterType::Whitelist).unwrap();
         {
             let slot = pool.get_mut(wl).unwrap();

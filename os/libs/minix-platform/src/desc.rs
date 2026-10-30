@@ -5,7 +5,7 @@
 //! `minix_platform::PlatformDesc` / `minix_platform::InterruptControllerDesc`
 //! / etc. continues to work without changes.
 //!
-//! # Design (TODO-01-2 fix, 2026-07-16)
+//! # Design
 //!
 //! Previously this file defined `InterruptControllerDesc`, `TimerDesc`, and
 //! `ConsoleDesc` as enums with brand-name variants (`Apic` / `Gicv3` / `Plic`,

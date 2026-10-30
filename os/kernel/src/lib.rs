@@ -10,17 +10,20 @@
 
 #![no_std]
 #![cfg_attr(not(test), no_main)]
-// R-19 (2026-08-13): Test helpers across syscall_*.rs build `Message` via
+// Test helpers across syscall_*.rs build `Message` via
 // `default() + assign m_type` then fill union fields under `unsafe`.
 // Struct-literal form would still need `unsafe` for union writes — marginal
 // gain, large churn across 70+ tests. Allowed per clippy::field_reassign_with_default.
 #![cfg_attr(test, allow(clippy::field_reassign_with_default))]
-// SD-19 静默吞错家族机械化门（第四家 crate，与 minix-sys/minix-rt/minix-fs 同
-// 程序，也是最大的一家）：内核里的 `let _ =` 全属登记处置表的 maintain+comment
-// 或类型见证/测试setup——IPC store_result（C 明确不消费 copy 错）、恒等映射的
-// 无 backing 区间、固定格式串的不可失败 write!、BklSection RAII 见证、
-// 钩子拆除/特权继承的"无可行动失败"、以及两处编译期负例/类型断言。新开一个
-// 无理由的 `let _ =` 会当场多报一条。
+// Mechanical gate for the silent-error-swallowing family (the fourth crate,
+// same procedure as minix-sys/minix-rt/minix-fs, and the largest one): every
+// `let _ =` in the kernel belongs to the maintain+comment disposition of the
+// registry or to type witnesses/test setup — IPC store_result (C
+// deliberately does not consume copy errors), identity-mapped regions with
+// no backing, infallible write! with fixed format strings, the BklSection
+// RAII witness, hook teardown/privilege-inheritance "no actionable failure"
+// cases, and two compile-time negative examples/type assertions. Introducing
+// a new unjustified `let _ =` is reported on the spot.
 #![warn(clippy::let_underscore_must_use)]
 
 // Zero-heap contract: the C kernel has no `malloc` (the minix3 kernel
@@ -71,7 +74,7 @@ use minix_arch::arch::frame::PhysAccess;
 use minix_arch::{
     BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END, DirectMapArch, ReturnSequence, TrapStyle, pt_alloc,
 };
-// E1 slice 5: QEMU test kernels build a user context directly and must
+// QEMU test kernels build a user context directly and must
 // record the full-context return style (`test-user-trap`).
 pub use minix_arch::TrapStyle as PublicTrapStyle;
 pub use kerninfo::init_kerninfo;
@@ -81,17 +84,25 @@ pub mod proc;
 pub mod proc_table;
 pub mod kpriv;
 
-/// U-1 / SD-30 编译期形态对账绊线（tripwire，不是修复——修复是三包 `default = []`）。
+/// Compile-time form reconciliation tripwire (a tripwire, not a fix — the
+/// fix is `default = []` in the three packages).
 ///
-/// 用 `Option::<T>::None` 赋给 `Option<期望具体型>`：仅当两类型相同才编译通过，
-/// 无需 unsafe。内核按自身 `mock` 特性**同时**要求 minix-arch 与 minix-plat 的实际
-/// 形态一致；一旦未来某条依赖路径经 cargo 特性统一重新交叉两包形态，这处绊线先报出
-/// 「期望型 vs 实到型」，不必等到去猜当初散布在 `Current*` 别名消费面的类型错。
-/// 绊线不是报错过滤器：裸 `cargo test -p minix-kernel`（dev-deps 强 mock 而本包 `mock`
-/// 关）除本处之外还会在 `store_protection`、`store_trap_entry`、
-/// `CurrentDirectMap::default` 三处消费面同时报同一形态错配，四者指向同一个原因。
-/// 正解是把宿主测的形态写清楚——`cargo test -p minix-kernel --features mock`（CI 作业
-/// `kernel-tests.yml` 的 `host-default-form` 腿即此命令），不是去放宽绊线。
+/// Assign `Option::<T>::None` to an `Option<expected concrete type>`: it only
+/// compiles when the two types are identical, with no unsafe involved. The
+/// kernel, through its own `mock` feature, requires the actual forms of
+/// minix-arch and minix-plat to agree **simultaneously**; if a future
+/// dependency path ever re-crosses the two packages' forms through cargo
+/// feature unification, this tripwire reports "expected form vs actual form"
+/// first, instead of leaving someone to guess the type error that would
+/// otherwise scatter across the `Current*` alias consumption sites.
+/// The tripwire is not an error filter: a bare `cargo test -p minix-kernel`
+/// (dev-deps force mock while this package's `mock` is off) additionally
+/// reports the same form mismatch from `store_protection`,
+/// `store_trap_entry` and `CurrentDirectMap::default` — four sites pointing
+/// at one cause. The right answer is to state the host-test form explicitly
+/// — `cargo test -p minix-kernel --features mock` (the CI job
+/// `kernel-tests.yml` runs exactly this as its `host-default-form` leg) —
+/// not to relax the tripwire.
 #[doc(hidden)]
 pub mod form_contract {
     #[cfg(feature = "mock")]
@@ -208,16 +219,20 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::x86_64::paging::X86_64Paging;
     use crate::x86_64::higher_half::X86_64HigherHalf;
     use crate::boot::HigherHalf;
-    // NK4-A 首亮修复（根因）：KernelInfo 在函数入口即按值收进内核 .bss
-    // 全局，后续一切（建页表、跳 kmain）都用全局副本的引用。原实现把
-    // shim 栈上的 `&KernelInfo` 经 `noreturn` asm 的 `in("rdi")` 直传给
-    // kmain——x86-64 System V 里 RDI 是 caller-saved，BOOTX64.EFI 的
-    // codegen 直接复用入口 RDI 跨过了中间的 call，寄存器被调用方覆写后
-    // kmain 拿到的是 .rdata 字符串地址（现场：kinfo=0x1ddda2ee，恰为
-    // "…jumping to kmain\n" 串首 + 串长），validate 读到 ASCII 垃圾即
-    // panic。全局副本的地址是链接期 RIP 相对常量，不经任何寄存器交接。
-    // NK4-A 首亮取证（临时）：入口第一时间打原始参数指针——判定
-    // shim main → arch_boot 的第一跳交接是否已经坏（.bss 收存之前）。
+    // Boot-visibility fix (root cause): KernelInfo is taken by value into the
+    // kernel .bss global at fn entry, and everything afterwards (building page
+    // tables, jumping to kmain) uses a reference to the global copy. The
+    // original implementation handed the shim-stack `&KernelInfo` straight to
+    // kmain through a `noreturn` asm `in("rdi")` — in x86-64 System V RDI is
+    // caller-saved, and BOOTX64.EFI's codegen reused the entry RDI across the
+    // intervening call, so after the callee overwrote the register kmain
+    // received a .rdata string address (observed: kinfo=0x1ddda2ee, exactly
+    // the "…jumping to kmain\n" string start plus its length); validate read
+    // ASCII garbage and panicked. The global copy's address is a link-time
+    // RIP-relative constant, handed over through no register at all.
+    // Boot-visibility evidence capture (temporary): print the raw argument
+    // pointer at the very first instruction — determine whether the first hop
+    // from shim main → arch_boot was already broken (before the .bss store).
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: arch_boot arg=");
@@ -225,7 +240,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
         Console::write_str(" blen=");
         Console::write_hex(kernel_info.bootstrap_len);
         Console::write_str("\n");
-        // fix27 forensic (2026-09-21): shim printed memmaps conv=12
+        // Forensics: shim printed memmaps conv=12
         // reserved=127 but the handoff saw zero identity candidates.
         // Split "lost before arch_boot" (reslen=0 here) from "lost in
         // store/copy" (reslen=127 here) — and print the first entry to
@@ -247,16 +262,18 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     store_kernel_info(kernel_info);
     let kinfo: &'static KernelInfo = crate::kernel_info()
         .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
-    // NK4-A 首亮诊断：内核侧第一根路标（EarlyConsole=COM1，与 boot-shim
-    // 的 raw_serial 同口；EBS 已过、无并发写者）。
+    // Kernel-side first marker (EarlyConsole=COM1, the same port as
+    // boot-shim's raw_serial; EBS has passed, no concurrent writers).
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: arch_boot entered\n");
     }
-    // 诊断注册前移（原在 kmain Step -1）：arch_boot 阶段的任何 panic
-    // 必须可见——诊断依赖（EarlyConsole / SMP_STATE boot_unchecked 回退
-    // 0 / util_stacktrace）此刻全部可用，注册点没有理由晚于第一个
-    // 可 panic 的校验。kmain 的同名调用幂等。
+    // Move diagnostic registration earlier (it was at kmain Step -1): any
+    // panic during arch_boot must be visible — the diagnostic dependencies
+    // (EarlyConsole / SMP_STATE boot_unchecked falling back to 0 /
+    // util_stacktrace) are all available at this point, so there is no reason
+    // to register later than the first check that can panic. kmain's
+    // same-named call is idempotent.
     register_panic_diagnostic();
     arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(kinfo, root_page);
     {
@@ -275,9 +292,10 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::arm64::paging::AArch64Paging;
     use crate::aarch64::higher_half::AArch64HigherHalf;
     use crate::boot::HigherHalf;
-    // NK4-A 首亮修复：同 x86_64——入口即把 KernelInfo 按值收进内核 .bss
-    // 全局，跳转与建页表一律用全局副本引用，杜绝引用跨 `noreturn` asm
-    // 的调用者保存寄存器交接（aarch64 对应 x0）。
+    // Same as x86_64: take KernelInfo by value into the kernel .bss global at
+    // entry; jumps and page-table builds all use the global copy, eliminating
+    // any reference handed across a `noreturn` asm call in a caller-saved
+    // register (x0 on aarch64).
     store_kernel_info(kernel_info);
     let kinfo: &'static KernelInfo = crate::kernel_info()
         .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
@@ -290,7 +308,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     unsafe { AArch64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
 
-/// §1.115 方案 A kernel-image-side high-half boot resume (aarch64 only).
+/// Kernel-image-side high-half boot resume (aarch64 only).
 ///
 /// The boot-shim already built the bootstrap page-table root and enabled
 /// paging; that root is *currently loaded* in TTBR0/TTBR1 and maps *this* code.
@@ -303,7 +321,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 /// instruction fetch would fault. Because this image links in the TTBR1 high
 /// half, `jump_to_kmain`'s `{kmain}` resolves to the real high virtual address
 /// and execution proceeds immune to the first `switch_address_space` — the
-/// §1.114 root cause, fixed at its source.
+/// original root cause, fixed at its source.
 #[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
 pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use crate::aarch64::higher_half::AArch64HigherHalf;
@@ -591,9 +609,10 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::riscv64::paging::Riscv64Paging;
     use crate::riscv64::higher_half::Riscv64HigherHalf;
     use crate::boot::HigherHalf;
-    // NK4-A 首亮修复：同 x86_64——入口即把 KernelInfo 按值收进内核 .bss
-    // 全局，跳转与建页表一律用全局副本引用，杜绝引用跨 `noreturn` asm
-    // 的调用者保存寄存器交接（riscv64 对应 a0）。
+    // Same as x86_64: take KernelInfo by value into the kernel .bss global at
+    // entry; jumps and page-table builds all use the global copy, eliminating
+    // any reference handed across a `noreturn` asm call in a caller-saved
+    // register (a0 on riscv64).
     store_kernel_info(kernel_info);
     let kinfo: &'static KernelInfo = crate::kernel_info()
         .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
@@ -625,7 +644,8 @@ fn mock_kmain_ok() -> ! {
 }
 
 fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageSupport<A> {
-    // NK4-A 逐断言路标（首亮诊断；方法同 arch_boot 入口）。
+    // Per-assertion markers (boot-visibility diagnostics; same approach as
+    // the arch_boot entry).
     macro_rules! vmark {
         ($msg:expr) => {{
             #[cfg(not(feature = "mock"))]
@@ -636,7 +656,7 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
         }};
     }
     vmark!("kernel: v0 enter\n");
-    // R-07 (2026-08-12): Use getter methods (preferred API).
+    // Use getter methods (preferred API).
     // `validate()` is called later in `kmain`; the assertions here are
     // defense-in-depth — they fail-fast before paging setup begins.
     let kv = kernel_info.kern_virt_base().0;
@@ -663,8 +683,9 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
     // The fallback region must satisfy the DM-admissible bound
     // `min(IDENTITY_MAP_END, VM_DIRECT_MAP_SIZE)` — the bootstrap tree (self
     // root + bump pages) has to stay DM-covered (07-paging_init_design §6.1
-    // 资格过滤 ②), and `establish_boot_dm` fails fast otherwise. Enforcing
-    // the bound here turns a late validate panic into an early, clearer one.
+    // eligibility filter (2)), and `establish_boot_dm` fails fast otherwise.
+    // Enforcing the bound here turns a late validate panic into an early,
+    // clearer one.
     vmark!("kernel: v1 asserts ok\n");
     if boot_alloc::boot_alloc_region().is_none() {
         const FALLBACK_BUMP_LEN: u64 = 0x100_000;
@@ -714,8 +735,8 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
 ///
 /// C: pg_clear() + pg_identity() + pg_mapkernel() + pg_load() + vm_enable_paging()
 ///    pre_init.c:230-236, pg_utils.c:162/186/204/247
-/// NK4-A 首亮诊断：boot 逐阶段路标（EarlyConsole=COM1，方法同
-/// debug.rs 的 CurrentEarlyConsole 用法；mock 构建下整体编译出局）。
+/// Boot per-stage markers (EarlyConsole=COM1, same approach as debug.rs's
+/// CurrentEarlyConsole usage; compiled out entirely under mock builds).
 macro_rules! boot_stage {
     ($msg:expr) => {{
         #[cfg(not(feature = "mock"))]
@@ -747,12 +768,12 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
 
     // Steps 1-3: build the bootstrap root (identity + kernel high half + the
     // aarch64 MMIO window), enable paging, and record the active root. Shared
-    // verbatim with the §1.115 方案 A boot-shim→kernel-image handoff so both
+    // verbatim with the boot-shim→kernel-image handoff so both
     // paths build byte-identical tables.
     build_bootstrap_root_and_enable::<A>(root_page, &policy.kernel());
 
     // Step 4: Establish Direct Map coverage on the bootstrap root.
-    // 07-paging_init_design §6.1 (D8-②): every candidate is preflighted
+    // 07-paging_init_design §6.1: every candidate is preflighted
     // before the first leaf write; both windows share the same policy.
     boot_stage!("kernel: step4 DM coverage (preflight + install)\n");
     // SAFETY: paging is enabled with the bootstrap root active, all table
@@ -767,7 +788,7 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
 }
 
 /// Build the bootstrap page-table root and enable paging (Steps 1-3 of the
-/// generic boot). Extracted from [`arch_boot_impl`] so the §1.115 方案 A
+/// generic boot). Extracted from [`arch_boot_impl`] so the
 /// boot-shim→high-half-kernel-image handoff can run the exact same table
 /// construction without also running Step 4 (DM) or entering `kmain` — both of
 /// which the standalone kernel image performs itself, in the high half.
@@ -797,7 +818,7 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
     // identity mapping must be supervisor-only.
     let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
 
-    // SD-42 [ARCH: mmio-device] (aarch64 only): the device MMIO window must
+    // [ARCH: mmio-device] (aarch64 only): the device MMIO window must
     // map Device-nGnRnE, not Normal. MMIO registers require strongly-ordered
     // access (no speculation, no gathering, no reordering); a Normal WBWA
     // mapping satisfies that on QEMU but not on real hardware. The window
@@ -843,7 +864,6 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
             let piece_flags = id_flags;
             // Ignore errors — some ranges may not be backed by physical memory,
             // but that's fine; the CPU won't access them.
-            //[SD19-gate] 恒等映射：无 backing 的区间属正常（map_huge 失败即跳过，紧邻注释已陈明）
             #[allow(clippy::let_underscore_must_use)]
             let _ = paging.map_huge(
                 VirBytes(piece_addr),
@@ -865,7 +885,7 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
     // VPN[2] slot would be written twice with potentially different
     // page sizes, corrupting the identity mapping).
     // See 02-higher-half-kernel.md for the full analysis.
-    // R-07 (2026-08-12): Use getter methods (preferred API).
+    // Use getter methods (preferred API).
     let kern_virt = layout.virtual_base;
     let kern_phys = layout.physical_base;
     if kern_virt != kern_phys {
@@ -880,7 +900,7 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
         }
     }
 
-    // Step 2b (§1.114, aarch64 only): map the device MMIO window into the
+    // Step 2b (aarch64 only): map the device MMIO window into the
     // kernel high half (TTBR1) of the bootstrap root.
     //
     // aarch64 has no PIO — the PL011 console and GICv3 are MMIO-only. During
@@ -894,7 +914,7 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
     // (it is already supervisor-only). NOTE: `kernel_read_write` maps to
     // XN(bit54), which only gates EL0 fetch; forbidding EL1 fetch would need
     // PXN(bit53), which `flags_to_pte` does not currently emit. The alias is
-    // mapped with `PageFlags::DEVICE` (SD-42): these are MMIO registers, and
+    // mapped with `PageFlags::DEVICE`: these are MMIO registers, and
     // Step 1's identity alias of the same window carries the same Device
     // attributes so the two mappings of one physical page agree (mismatched
     // attributes are UNPREDICTABLE per the ARM ARM).
@@ -943,7 +963,7 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
     // address). The parameter is always the raw physical address.
     set_current_root_phys(root_page);
 
-    // §1.114: the high-half MMIO window (mapped in Step 2b) is now live in
+    // The high-half MMIO window (mapped in Step 2b) is now live in
     // TTBR1 (both TTBR0 and TTBR1 point at the bootstrap root until the first
     // switch, and TTBR1 keeps it forever). Route the early console to the
     // TTBR1-resident alias so serial output survives `switch_address_space`.
@@ -960,7 +980,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
     // SAFETY: boot is single-threaded (before BKL exists); one write, then
     // read-only for the rest of the run.
     unsafe {
-        // fix27c: the `reserved_regions` payload lives in the boot-shim's
+        // The `reserved_regions` payload lives in the boot-shim's
         // UEFI-pool heap — a `&'static` slice whose backing pages are only
         // mapped by the firmware's 1:1 table. After the higher-half jump
         // the kernel's own tables do not replay that mapping and the same
@@ -978,7 +998,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
         if src.as_ptr() != store.as_ptr() {
             core::ptr::copy(src.as_ptr(), store.as_mut_ptr(), src.len());
         }
-        // NK4-C (2026-09-25): the same disease takes the `memmap` and
+        // The same disease takes the `memmap` and
         // `boot_modules` payloads — both live in the boot-shim's UEFI-pool
         // heap and their pages do not survive the rest of boot (real
         // machine vh1: all conventional memmap entries read back length 0
@@ -1023,7 +1043,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
                 };
             }
         }
-        // D-70: the platform-source list and the boot parameter bytes live
+        // The platform-source list and the boot parameter bytes live
         // in the same firmware pool as the three payloads above, so they get
         // the same landing treatment.
         let pstore = &mut *crate::globals::PLATFORM_SOURCE_STORE.get();
@@ -1092,32 +1112,38 @@ fn dtb_blob_len(dtb_pa: u64) -> Option<usize> {
 /// It orchestrates the six-phase boot sequence:
 ///
 /// Phase A (this function): Entry — validate kinfo, allow kernel alloc
-/// Phase B: cstart — prot_init + clock + intr (software only; D-59) + arch_init
+/// Phase B: cstart — prot_init + clock + intr (software only) + arch_init
 /// Phase C: proc_init + arch_boot_proc
 /// Phase D: arch_post_init + memory_init
 /// Phase E: (no boot-time action — C `system_init` became the `enum Syscall`
 ///          dispatch; per-call work runs when syscalls arrive)
-/// Phase F: bsp_finish_booting (timer program+register+gate, D-59) + switch_to_user
+/// Phase F: bsp_finish_booting (timer program+register+gate) + switch_to_user
 ///
 /// C: main.c:115-147
 #[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
 pub fn kmain(kernel_info: &KernelInfo) -> ! {
     use minix_platform::platform_desc;
 
-    // NK4-A 首亮修复（根因，消费侧收口）：改用 arch_boot 收进 .bss 全局的
-    // KernelInfo 副本，不再信任经内核栈落地的 `kernel_info` 参数引用。
-    // 取证（fix3）：入口 RDI 已正确（jump 走 .bss RIP 相对地址），全局槽
-    // 内容 bootstrap_len==0 完好；但参数引用被编译器 spill 到内核栈
-    // （kern_stack_top 附近）后 reload，该栈槽遭别名/覆写破坏——经参数读
-    // 到的字段全是 .rdata ASCII 垃圾，validate 遂 panic。全局槽位于 .bss、
-    // 不经那块栈，是唯一可信来源。下方诊断证实后可删本 shadow。
+    // Root-cause fix on the consuming side: switch to the KernelInfo copy that
+    // arch_boot stored in the .bss global; stop trusting the `kernel_info`
+    // parameter reference that lands on the kernel stack. Evidence: the entry
+    // RDI was already correct (the jump uses the .bss RIP-relative address)
+    // and the global slot's content bootstrap_len==0 was intact; but the
+    // parameter reference was spilled by the compiler to the kernel stack
+    // (near kern_stack_top) and reloaded from a stack slot corrupted by
+    // aliasing/overwrites — every field read through the parameter was .rdata
+    // ASCII garbage, so validate panicked. The global slot lives in .bss, does
+    // not go through that stack area, and is the only trustworthy source.
+    // This shadow can be deleted once the diagnostics below confirm it.
     let kernel_info: &KernelInfo = crate::kernel_info()
         .expect("kmain: KERNEL_INFO must be stored by arch_boot before jump");
-    // NK4-A 首亮取证（临时，v3）：入口 asm 强读 RDI（真实交接值）+ 全局槽
-    // 指针 + 当前 RSP + 经槽读到的 bootstrap_len。
-    // x86_64 门：rdi/rdx 交接寄存器是 x86 SysV 语义（AArch64 在 x0、
-    // riscv64 在 a0），裸 asm 无架构门曾打断 aarch64/riscv64 载体编译
-    //（NK4-A 评审 F1，基线 940ad8363 对照证回归）。
+    // Evidence capture (temporary, v3): read RDI in entry asm (the real
+    // handoff value) plus the global slot pointer, the current RSP and the
+    // bootstrap_len read through the slot.
+    // x86_64 gate: rdi/rdx are the x86 SysV handoff registers (aarch64 uses
+    // x0, riscv64 uses a0); bare asm without an arch gate once broke the
+    // aarch64/riscv64 carrier builds (review finding F1; regression confirmed
+    // against baseline 940ad8363).
     #[cfg(target_arch = "x86_64")]
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
@@ -1137,14 +1163,18 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     }
     boot_stage!("kernel: kmain Phase A enter\n");
     // Phase A: Entry
-    // R-07 (2026-08-12): Validate KernelInfo invariants before any use.
+    // Validate KernelInfo invariants before any use.
     // Fail-fast on boot-shim bugs (e.g. non-zero bootstrap_len would
     // trigger add_memmap and reclaim firmware regions).
     kernel_info.validate();
-    // SD-1 / PD-07 债①：跨启动形态的后置条件等价断言。`validate()` 只校非地址不变量，
-    // 这一层再校 higher-half 地址空间分隔关系（入口在镜像内 / 用户栈低于内核基 / 内核
-    // 栈不落到用户半区），专抓 `entry_start_pa` 类 paper constant 错字与 §1.115 类越界。
-    // kmain 是五种启动形态共用的唯一收口，故此处调用即对所有形态等价生效。
+    // Cross-boot-form postcondition equivalence assertions. `validate()` only
+    // checks non-address invariants; this layer additionally checks the
+    // higher-half address-space separation (entry inside the image / user
+    // stack below the kernel base / kernel stack not landing in the user
+    // half), specifically catching `entry_start_pa`-style paper-constant typos
+    // and out-of-range values of the high-half boot-resume kind. kmain is the
+    // single common end point of all five boot forms, so calling it here
+    // applies to every form.
     kernel_info.check_boot_postconditions();
     boot_stage!("kernel: kmain A.1 validate ok\n");
 
@@ -1199,7 +1229,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
             );
         }
         boot_stage!("kernel: kmain A.2b module cuts ok\n");
-        // Step 3: Cut the kernel image itself (D-64①). C parity: pre_init
+        // Step 3: Cut the kernel image itself. C parity: pre_init
         // appends the kernel as an extra boot module (`kern_mod`) and cuts
         // it together with the real modules (pre_init.c:196-216). On the
         // UEFI path this is a no-op — the kernel image is LOADER_DATA and
@@ -1213,7 +1243,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
             kernel_info.kern_phys_base().0,
             kernel_info.kern_size(),
         );
-        // Step 4 (D-68 / T4): cut the DTB blob itself. The aarch64
+        // Step 4: cut the DTB blob itself. The aarch64
         // direct-core and the OpenSBI-shim surfaces report `/memory` with
         // `firmware_reserve_end = 0`, so the DTB's own pages arrive as
         // conventional; platform discovery parses that blob in Phase A.5, so
@@ -1250,13 +1280,13 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
 
     boot_stage!("kernel: kmain A.5 platform ok\n");
     // Phase B: cstart — protection + clock + interrupt
-    // C-3 F0 取证（task1-close 裁决删除）：GS.BASE 三点采样（kmain 入口/
-    // init_protection 后/RS 切换前）。current_cpu_id 的 gs:0x10 身份锚在
-    // RS 首次切换后 PF@cr2=0x10（NK4-A 评审 F0，C-3 迭代1 M1-M2 二分），
-    // 本采样判定 GS 是"从未编程"还是"中途被清"。
-    // GS_BASE/KERNEL_GS_BASE 是 x86 专属 MSR，rdmsr 只在 x86_64 编译
-    // （NK4-B P3 M3.1：aarch64 载体的 kernel lib 曾因本块缺架构门而
-    // 编译失败，见 NK4B-WORKLOG M3.1 节）。
+    // GS.BASE three-point sampling (kmain entry / after init_protection /
+    // before the RS switch). current_cpu_id's gs:0x10 identity anchor took a
+    // PF@cr2=0x10 after the first RS switch; this sampling determines whether
+    // GS was "never programmed" or "cleared midway".
+    // GS_BASE/KERNEL_GS_BASE are x86-only MSRs and rdmsr compiles only on
+    // x86_64 (the aarch64 carrier's kernel lib once failed to compile because
+    // this block lacked an arch gate).
     #[cfg(target_arch = "x86_64")]
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
@@ -1270,14 +1300,14 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     init_protection(kernel_info);        // prot_init equivalent
     init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
 
-    // The boot clock source's D-59 three-part sequence — program the source,
+    // The boot clock source's three-part sequence — program the source,
     // register the local-timer hook, open the delivery gate — runs EXACTLY
     // ONCE, at the C `boot_cpu_init_timer` position, inside
     // `bsp_finish_booting` Step 6 (the terminal Phase-F call below).
-    // An interim `boot_init_timer()` here was the NK4-C 1.10c root-cause fix
-    // from when `bsp_finish_booting` was still a `#[allow(dead_code)]`
-    // divergent path the live boot never took (timer hook unregistered, pin2
-    // mask never opened, ticks never arrived — s14r). Now that Phase F wires
+    // An interim `boot_init_timer()` here was the root-cause fix from when
+    // `bsp_finish_booting` was still a `#[allow(dead_code)]` divergent path
+    // the live boot never took (timer hook unregistered, pin2 mask never
+    // opened, ticks never arrived). Now that Phase F wires
     // `bsp_finish_booting`, that interim call is a redundant double-init and
     // is removed so `boot_init_timer` stays the single touch point, matching
     // C (§26 #7: the "dead-code" comment contradicted the live Phase-F call).
@@ -1348,7 +1378,8 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // (start..end linker symbols in kernel.lds). In the Rust port this is
     // always a no-op because the kernel is higher-half from instruction #1 —
     // boot-shim passes `bootstrap_start=PhysBytes(0), bootstrap_len=0` and
-    // the guard skips reclaim. See TODO-01-1 in 01-boot-shim-bootstrap.md
+    // the guard skips reclaim. See the over-reclaim note in
+    // 01-boot-shim-bootstrap.md
     // §X for the over-reclaim bug that motivated this.
     if kernel_info.bootstrap_len() > 0 {
         // SAFETY: Boot is single-threaded; FREE_MEMMAP is only accessed here
@@ -1361,7 +1392,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
                 kernel_info.bootstrap_len(),
             )
         };
-        // Pattern §31 (返回值完整性): C add_memmap returns void; errors are
+        // Pattern §31 (return-value completeness): C add_memmap returns void; errors are
         // fatal (panic) in C. Rust explicitly handles the Result. Two failure modes:
         //   - `Err(MemMapError::ZeroLength)`: bootstrap_len is not
         //     page-aligned and rounds down to zero. The default
@@ -1413,7 +1444,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // `notify_scheduler()` can reach per-CPU state without it being
     // threaded through every call site.
     //
-    // D-36 (2026-09-06): query the platform's CPU topology (MADT/DTB
+    // Query the platform's CPU topology (MADT/DTB
     // parsed by minix-platform) instead of hardcoding single-CPU. The
     // SmpState records the total CPU count, but only the BSP is marked
     // READY — APs join the scheduler after boot_ap completes
@@ -1447,8 +1478,8 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
 }
 
 /// Assemble the global SMP state from the platform topology — single file
-/// kmain Phase D block (D-36: topology from MADT/DTB, BSP marked READY,
-/// APs join later), extracted so the S-8 L3 bring-up test driver
+/// kmain Phase D block (topology from MADT/DTB, BSP marked READY,
+/// APs join later), extracted so the L3 bring-up test driver
 /// (`test-timer-irq`) replays the production phase in the production order.
 ///
 /// C: the BSP-only SMP state assembly in main()/bsp_finish_booting's
@@ -1463,7 +1494,7 @@ pub fn init_smp_state() {
             crate::proc::CpuId::new_unchecked(topo.bsp_id),
         ));
     }
-    // D-40 (S-6.1): the BSP's ptproc slot = VM (C: arch_post_init
+    // The BSP's ptproc slot = VM (C: arch_post_init
     // `get_cpulocal_var(ptproc) = vm` — protect.c:372; each AP installs its
     // own in smp_ap_tail). The SMP state must exist before the slot can be
     // written — hence this install lives in Phase D, not Phase C.
@@ -1628,7 +1659,7 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
 /// C: prot_init() — protect.c:321 (x86) / protect.c:77 (ARM)
 #[cfg(not(feature = "mock"))]
 /// Protection + trap-entry bring-up — C prot_init/idt_init parity (kmain
-/// Phase B). `pub` since S-5: production phase reused verbatim by the L4
+/// Phase B). `pub`: the production phase is reused verbatim by the L4
 /// bring-up test driver (`test-smp-aps`) — the AP tail's init_ap consumes
 /// the PROTECTION global this function fills.
 pub fn init_protection(kernel_info: &KernelInfo) {
@@ -1637,7 +1668,7 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // Step 1: Initialize protection structures.
     // x86-64: GDT + TSS; aarch64: SP_EL1; riscv64: sscratch
     // C: tss_init(0, &k_boot_stktop) — protect.c:338
-    // S-5 lifetime fix (2026-09-14): the instance moves into the PROTECTION
+    // Lifetime fix: the instance moves into the PROTECTION
     // global BEFORE load() — the trait's load() contract requires the tables
     // to stay put for as long as they are loaded ("kept in a static/global
     // location"), and a stack local dropped here would leave lgdt/lidt
@@ -1657,7 +1688,7 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     with_protection_mut(|prot| prot.refresh_tss_descriptors());
     with_protection(|prot| prot.load());
 
-    // S-6.1 (D-40 identity anchor): program the BSP's GS area so
+    // Program the BSP's GS area so
     // `current_cpu_id()` works on the BSP too. The BSP's logical id comes
     // from the topology match (MADT/DTB order does not guarantee slot 0).
     // Ordering contract: kmain runs `init_from_kinfo` (Phase A.5) before
@@ -1681,7 +1712,7 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // C: SYSCALL MSR setup — protect.c:189-205
     let mut trap = CurrentTrapEntry::init();
 
-    // S-8 (2026-09-14): the entry stubs exist — install their addresses into
+    // The entry stubs exist — install their addresses into
     // every gate (C: idt_init() fills real entry addresses, protect.c:245-268),
     // point LSTAR at the kernel's own SYSCALL asm entry (C parity: tss_init
     // uses the asm label, protect.c:189-205 — KernelInfo.syscall_entry is
@@ -1696,8 +1727,8 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // The dispatch bodies are arch-shaped: each arch registers its
     // production bodies for its own frame type (E-3ARCHTRAP — before
     // this, only x86_64 had a production dispatch entry and the
-    // aarch64/riscv64 legs were diagnostic stubs; the K12b carriers
-    // supplied their own trap legs instead).
+    // aarch64/riscv64 legs were diagnostic stubs; those carriers supplied
+    // their own trap legs instead).
     // x86_64: exceptions/IRQs + SYSCALL over the IDT TrapFrame shape.
     #[cfg(target_arch = "x86_64")]
     register_trap_dispatchers(
@@ -1705,9 +1736,9 @@ pub fn init_protection(kernel_info: &KernelInfo) {
         trap_dispatch::x86_syscall_dispatch_body,
     );
     // riscv64: kernel leg (S-origin: timer ticks, kernel faults) + user
-    // leg (U-origin: ecall kernel calls + raw IPC bridge, 续-75). The
+    // leg (U-origin: ecall kernel calls + raw IPC bridge). The
     // user leg's u64 return is the park decision; the diverging thunk
-    // below is its switch-after-pop destination (§1.113 twin).
+    // below is its switch-after-pop destination (the aarch64 twin).
     #[cfg(target_arch = "riscv64")]
     register_trap_dispatchers(
         trap_dispatch::riscv64_kernel_body,
@@ -1723,7 +1754,7 @@ pub fn init_protection(kernel_info: &KernelInfo) {
         trap_dispatch::aarch64_kernel_body,
         trap_dispatch::aarch64_user_body,
     );
-    // aarch64 §1.113: the diverging thunk `EL0BODY`'s park branch jumps to
+    // aarch64: the diverging thunk `EL0BODY`'s park branch jumps to
     // after unwinding a blocked-receiver frame (switch-after-pop).
     #[cfg(target_arch = "aarch64")]
     minix_arch::register_resched_entry(trap_dispatch::aarch64_resched_thunk);
@@ -1731,7 +1762,7 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     with_trap_entry(|trap| trap.load());
 }
 
-/// The live protection instance (GDT/TSS image) — 驻留 static, per the
+/// The live protection instance (GDT/TSS image) — a resident static, per the
 /// `ProtectionArch::load` lifetime contract. `None` before init_protection.
 #[cfg(target_arch = "x86_64")]
 pub(crate) static PROTECTION: SyncUnsafeCell<Option<minix_arch::x86_64::protection::X86_64Protection>> =
@@ -1818,7 +1849,7 @@ pub(crate) fn with_trap_entry<R>(f: impl FnOnce(&mut CurrentTrapEntry) -> R) -> 
 /// C: init_clock() + intr_init(0) + arch_init() — main.c:403-481
 /// Covered in detail in 05-clock-interrupt-init.md.
 ///
-/// **Hardware timer programming is NOT done here** (D-59, 2026-09-09):
+/// **Hardware timer programming is NOT done here**:
 /// C `init_clock()` (clock.c:48-66) is pure software, and the hardware
 /// timer is programmed + its handler registered + its gates opened — in
 /// that order — at the C `boot_cpu_init_timer` position
@@ -1830,16 +1861,16 @@ pub(crate) fn with_trap_entry<R>(f: impl FnOnce(&mut CurrentTrapEntry) -> R) -> 
 /// **Order still matters** (cf. 05-clock-interrupt-init.md §1.1):
 /// 1. The controller is initialized with every line masked
 ///    (`init` calls `mask_all` internally) — C `intr_init` parity.
-/// 2. `arch_init` runs after the controller is live; since D-59 it no
+/// 2. `arch_init` runs after the controller is live; it no
 ///    longer enables any interrupt (the riscv64 `sie = STIE | SSIE` write
 ///    moved to its gate owners: the timer gate to
 ///    `TimerIrqGate::enable_timer_irq` at Step 6, the IPI gate to the SMP
-///    bring-up S-7/S-10).
+///    bring-up).
 #[cfg(not(feature = "mock"))]
 /// Initialize clock software state, the interrupt controller (every line
 /// masked), and arch-init. C: init_clock() + intr_init(0) + arch_init().
 ///
-/// `pub` since S-8 (2026-09-14): a production boot phase (kmain Phase B)
+/// `pub`: a production boot phase (kmain Phase B)
 /// that the L3 bring-up test driver (`test-timer-irq`) calls in the same
 /// kmain order — the test must exercise the production sequence, not a
 /// re-implementation of it.
@@ -1887,7 +1918,7 @@ pub fn init_clock_and_interrupts() {
     let mut arch_init = CurrentArchInit::new(&pd.arch_misc());
     arch_init.init();
 
-    // D-46 (software half, 2026-09-06): store the software clock into the
+    // Store the software clock into the
     // global — the timer IRQ handler (`clock::clock_irq_handler`) reads it
     // at dispatch time to advance uptime and expire alarm timers.
     // SAFETY: boot is single-threaded before BKL exists.
@@ -1953,7 +1984,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     let priv_table = unsafe { crate::priv_table_boot_unchecked() };
 
     // C: NR_BOOT_MODULES check — main.c:160-162
-    // R-07 (2026-08-12): Use getter method (preferred API).
+    // Use getter method (preferred API).
     assert_eq!(
         kernel_info.boot_modules().len(),
         NR_BOOT_MODULES,
@@ -2121,7 +2152,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 .unwrap_or_else(|e| {
                     panic!("load_vm_elf: VM ELF is required at boot: {e:?}")
                 });
-                // FIX-23 (Phase 4): Reclaim VM module physical memory after
+                // Reclaim VM module physical memory after
                 // ELF segments have been copied into the VM process's page
                 // tables. C: protect.c:450-451 — mod->mod_start = mod_end = 0.
                 // This undoes the cut_memmap done in Phase A.2, returning the
@@ -2135,7 +2166,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
             }
             #[cfg(not(feature = "mock"))]
             {
-                // FIX-24 (Phase 9): Real VM ELF loading at boot.
+                // Real VM ELF loading at boot.
                 //
                 // Previously this branch was DEFERRED — VM started with
                 // PC=0 and RS was expected to load the VM ELF later.
@@ -2216,7 +2247,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     let _ = memmap::add_memmap(mmap, module.start.0, module.len as u64);
                 }
 
-                // NK4-A (2026-09-21): vacate the boot-identity leftovers under
+                // Vacate the boot-identity leftovers under
                 // VM's runtime user VA layout. ELF segment VAs are handled
                 // inside `load_elf_into` (per-page eviction). The remaining
                 // window is VM's HeapArena [VM_HEAP_BASE, +VM_HEAP_SIZE): VM
@@ -2258,9 +2289,10 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     }
                 }
 
-                // NK4-A 取证（fix10 临时）：ELF 驱逐 + 堆窗口驱逐都跑完后，
-                // 直接 query VM entry 页，区分"loader 驱逐未命中"（flags 无
-                // USER 或仍 HUGE）与"装好后又被重映射"。
+                // After both the ELF eviction and the heap-window eviction
+                // have run, query the VM entry page directly to distinguish
+                // "the loader eviction missed" (flags lack USER or are still
+                // HUGE) from "it was remapped after installation".
                 {
                     use crate::kmess::{EarlyConsole as _, KernelConsole as DiagC};
                     let probe = vm_result.pc;
@@ -2302,7 +2334,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                         PageFlags::read_only(),
                     )
                     .expect("init_proc_and_boot: failed to map VM boot handoff page");
-                // Classification point (A2, 07-paging_init_design §6.0):
+                // Classification point (07-paging_init_design §6.0):
                 // every bootstrap allocation — ELF segments, the PT
                 // hierarchy, stacks, the handoff frame itself, and any
                 // page-table page the `map` above just installed — is now
@@ -2435,7 +2467,7 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
     // Direct Map), so it survives Direct Map (07-cross-space-init.md §1.4, P9-4).
     //
     // SAFETY: BKL is held during boot, only this CPU accesses the global.
-    // S-6.1 D-40: the slot lives in CpuLocal — installed for the BSP in
+    // The slot lives in CpuLocal — installed for the BSP in
     // `init_smp_state` (the SMP state must exist first; C: arch_post_init
     // per-CPU parity).
 
@@ -2482,19 +2514,19 @@ pub fn kernel_may_alloc() -> bool {
 /// Caller must hold the BKL (the timer IRQ handler runs with it held —
 /// same contract as the other global accessors).
 ///
-/// **Prefer [`clock_state_with`]** which takes a `BklSection` witness (R-03).
+/// **Prefer [`clock_state_with`]** which takes a `BklSection` witness.
 pub unsafe fn clock_state() -> &'static mut crate::clock::ClockState {
     // SAFETY: raw-pointer read/write avoids the `static_mut_refs` lint.
     unsafe { (*CLOCK_STATE.get()).as_mut().expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first") }
 }
 
-/// Clock state with BKL witness (R-03, A1 migration).
+/// Clock state with BKL witness.
 pub fn clock_state_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::clock::ClockState {
     // SAFETY: BklSection witness proves the BKL is held.
     unsafe { (*CLOCK_STATE.get()).as_mut().expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first") }
 }
 
-/// Boot-time clock state accessor (A1 migration): init paths run before
+/// Boot-time clock state accessor: init paths run before
 /// the BKL exists and before any IRQ can fire — single-threaded boot.
 ///
 /// # Safety
@@ -2512,7 +2544,7 @@ pub fn try_clock_state() -> Option<&'static mut crate::clock::ClockState> {
     unsafe { (*CLOCK_STATE.get()).as_mut() }
 }
 
-/// Set the kbill_kcall marker (D-9, C system.c:160) with BKL witness.
+/// Set the kbill_kcall marker (C system.c:160) with BKL witness.
 pub fn set_kbill_kcall_with(nr: crate::proc::ProcNr, _section: &crate::smp::BklSection<'_>) {
     // SAFETY: BklSection witness proves the BKL is held.
     unsafe { *KBILL_KCALL.get() = Some(nr) };
@@ -2525,13 +2557,13 @@ pub fn set_kbill_kcall_with(nr: crate::proc::ProcNr, _section: &crate::smp::BklS
 /// Caller must hold the BKL (production hooks run between BKL-acquiring
 /// dispatch and `bkl_unlock`); tests are single-threaded.
 ///
-/// **Prefer [`kbill_kcall_raw_with`]** which takes a `BklSection` witness (R-03).
+/// **Prefer [`kbill_kcall_raw_with`]** which takes a `BklSection` witness.
 pub unsafe fn kbill_kcall_raw() -> Option<crate::proc::ProcNr> {
     // SAFETY: static is never re-assigned to an invalid value (Option<ProcNr>).
     unsafe { *KBILL_KCALL.get() }
 }
 
-/// kbill_kcall marker read with BKL witness (R-03, A1 migration).
+/// kbill_kcall marker read with BKL witness.
 pub fn kbill_kcall_raw_with(_section: &crate::smp::BklSection<'_>) -> Option<crate::proc::ProcNr> {
     // SAFETY: BklSection witness proves the BKL is held; static is never
     // re-assigned to an invalid value (Option<ProcNr>).
@@ -2540,7 +2572,7 @@ pub fn kbill_kcall_raw_with(_section: &crate::smp::BklSection<'_>) -> Option<cra
 
 /// Consume the kbill_kcall marker: attribute `delta` TSC cycles to the
 /// in-flight kernel call's process `p_cycles.kcall`, then clear the
-/// marker (D-9, C arch_clock.c:279-281). Returns `true` if a marker was
+/// marker (C arch_clock.c:279-281). Returns `true` if a marker was
 /// present and consumed.
 ///
 /// Called from the context_stop equivalents (`finish_and_restore` /
@@ -2564,12 +2596,13 @@ pub(crate) fn consume_kbill_kcall(
     true
 }
 
-/// Set the kbill_ipc marker (C-25, C `proc.c:607`) with BKL witness.
+/// Set the kbill_ipc marker (C `proc.c:607`) with BKL witness.
 ///
-/// `dispatch_ipc` 在权限/跟踪检查**之前**置上（C 在 `do_ipc` 入口
-/// `kbill_ipc = caller_ptr`），与 `kbill_kcall` 是两个独立标记——内核调用
-/// 里再发起 IPC 时两者会同时在场，C 的消费块给同一进程的 `kipc` 与
-/// `kcall` 各加一份同一个 delta（`arch_clock.c:274-281` 的粗估法）。
+/// `dispatch_ipc` sets it **before** the permission/trace checks (C sets
+/// `kbill_ipc = caller_ptr` at `do_ipc` entry); it is a separate marker from
+/// `kbill_kcall` — when IPC is issued inside a kernel call both are present,
+/// and C's consumption block adds the same delta once each to the same
+/// process's `kipc` and `kcall` (`arch_clock.c:274-281` rough estimate).
 pub fn set_kbill_ipc_with(nr: crate::proc::ProcNr, _section: &crate::smp::BklSection<'_>) {
     // SAFETY: BklSection witness proves the BKL is held.
     unsafe { *KBILL_IPC.get() = Some(nr) };
@@ -2588,12 +2621,13 @@ pub unsafe fn kbill_ipc_raw() -> Option<crate::proc::ProcNr> {
 
 /// Consume the kbill_ipc marker: attribute `delta` TSC cycles to the
 /// in-flight IPC's process `p_cycles.kipc`, then clear the marker
-/// (C-25, C arch_clock.c:274-277). Returns `true` if a marker was
+/// (C arch_clock.c:274-277). Returns `true` if a marker was
 /// present and consumed.
 ///
 /// Called from the same context_stop equivalents as
-/// [`consume_kbill_kcall`] and with the **same delta** — C 的两块是并列的
-/// `if`，先 `kbill_ipc` 后 `kbill_kcall`，各自消费、各自清零。
+/// [`consume_kbill_kcall`] and with the **same delta** — C's two blocks are
+/// parallel `if`s, `kbill_ipc` first and `kbill_kcall` second, each
+/// consuming and clearing its own marker.
 pub(crate) fn consume_kbill_ipc(
     table: &mut crate::proc_table::ProcessTable,
     delta: u64,
@@ -2603,7 +2637,8 @@ pub(crate) fn consume_kbill_ipc(
     let Some(nr) = (unsafe { kbill_ipc_raw() }) else {
         return false;
     };
-    //[SD19-gate] BklSection RAII 见证：参数 section 本函数不需要，仅用 let _ 表达所有权存在
+    // The section parameter exists only as a BklSection RAII witness; this
+    // function does not otherwise need it, so `let _` just asserts ownership.
     #[allow(clippy::let_underscore_must_use)]
     let _ = section;
     if let Some(p) = table.get(nr) {
@@ -2614,50 +2649,62 @@ pub(crate) fn consume_kbill_ipc(
     true
 }
 
-/// **中断入口的 context_stop 半**（C-26）：把"被打断段"结清给被打断的进程。
+/// **The context_stop half of the interrupt entry**: settle the
+/// "interrupted segment" against the interrupted process.
 ///
-/// C 的 `context_stop` 有两条来源，本函数是第二条：汇编中断入口
-/// （`hwint_master`，`mpx.S:76-90`）先 `TEST_INT_IN_KERNEL` 判中断来自用户态
-/// 还是内核态——来自用户态就把**被打断的进程**压栈当实参调 `context_stop`
-/// （记用户段），来自内核态则走 `context_stop_idle` 那条路（不动用户账）。
-/// 处理完中断后在 `switch_to_user` 尾再调一次 `context_stop(proc_addr(KERNEL))`
-/// 记内核段——两个站点共用同一个 TSC 基线，所以两段不重不漏。
+/// C's `context_stop` has two sources; this function is the second one: the
+/// assembly interrupt entry (`hwint_master`, `mpx.S:76-90`) first uses
+/// `TEST_INT_IN_KERNEL` to tell whether the interrupt came from user mode or
+/// kernel mode — from user mode it pushes the **interrupted process** as the
+/// argument and calls `context_stop` (accounting the user segment); from
+/// kernel mode it takes the `context_stop_idle` route (no user accounting).
+/// After the interrupt is handled, the tail of `switch_to_user` calls
+/// `context_stop(proc_addr(KERNEL))` once more to account the kernel segment
+/// — both sites share the same TSC baseline, so the two segments neither
+/// overlap nor leave a gap.
 ///
-/// Rust 的对应判据是 BKL 的两态（[`crate::irq_manager::dispatch_hardware_irq`]
-/// 里 `bkl_try_lock` 的 acquired/inherited）：**空闲 = 打断的是用户态或 idle**
-/// （要结清被打断者），**继承 = 打断的是内核态**（不记，留给切换站点）。
+/// Rust's counterpart criterion is the BKL's two states
+/// (`bkl_try_lock`'s acquired/inherited in
+/// [`crate::irq_manager::dispatch_hardware_irq`]): **free = the interrupt hit
+/// user mode or idle** (settle the interrupted party), **inherited = it hit
+/// kernel mode** (do not account here; leave it to the switch site).
 ///
-/// 结清四件事（全部照 C 的 `context_stop`）：quantum 递减
-/// （[`crate::clock::decrement_quantum_in_with_delta`]，`arch_clock.c:326-330`）、
-/// 状态桶 + 总周期 + cpuavg（[`account_process_stop`]）、以及 kcall/kipc 标记
-/// 的消费（C 在两个站点都消费，粗估法照抄）。
+/// Settling does four things (all following C's `context_stop`): quantum
+/// decrement ([`crate::clock::decrement_quantum_in_with_delta`],
+/// `arch_clock.c:326-330`), state bucket + total cycles + cpuavg
+/// ([`account_process_stop`]), and consumption of the kcall/kipc markers
+/// (C consumes at both sites; the rough-estimate method is copied verbatim).
 ///
-/// 被记账的进程取该 CPU 的 `proc_ptr`——idle 期间它是 IDLE（C 的
-/// `context_stop_idle` 正是 `context_stop(idle_proc)`，状态桶落 CP_IDLE）。
+/// The accounted process is the CPU's `proc_ptr` — during idle it is IDLE
+/// (C's `context_stop_idle` is exactly `context_stop(idle_proc)`, and the
+/// state bucket lands in CP_IDLE).
 pub(crate) fn account_interrupt_stop(section: &crate::smp::BklSection<'_>) {
     account_interrupt_stop_with(section, crate::clock::read_tsc());
 }
 
-/// [`account_interrupt_stop`] 的可注入 TSC 版本（宿主测试用——`cfg(test)`
-/// 下 `read_tsc()` 恒 0，真实 delta 只能由调用方给）。
+/// Inject-TSC version of [`account_interrupt_stop`] (for host tests — under
+/// `cfg(test)` `read_tsc()` is always 0, so the real delta can only come from
+/// the caller).
 pub(crate) fn account_interrupt_stop_with(
     section: &crate::smp::BklSection<'_>,
     current_tsc: u64,
 ) {
     let smp = crate::smp_state_with(section);
-    // 与 `decrement_quantum_in_with_delta` 用**同一个** CPU id——基线是
-    // per-CPU 的（`CpuLocal::tsc_ctr_switch`），取错 CPU 就取错基线。
+    // Use **the same** CPU id as `decrement_quantum_in_with_delta` — the
+    // baseline is per-CPU (`CpuLocal::tsc_ctr_switch`), so the wrong CPU
+    // yields the wrong baseline.
     let cpu = smp.bsp_cpu_id();
     let Some(nr) = smp.cpu_local(cpu).and_then(|l| l.proc_ptr) else {
-        return; // 早启动窗口：还没有"当前进程"，无账可结
+        return; // early-boot window: no "current process" yet, nothing to settle
     };
     let table = crate::proc_table_with(section);
     let delta = {
         let Some(p) = table.get_mut(nr) else {
             return;
         };
-        // C `arch_clock.c:314`：kernel/idle 任务 quantum 豁免，但 delta 照返
-        // （总周期与 cpuavg 对它们也记——C 的公共尾不分类型）。
+        // C `arch_clock.c:314`: kernel/idle tasks are quantum-exempt, but the
+        // delta is still returned (total cycles and cpuavg are recorded for
+        // them too — C's common tail does not distinguish types).
         let (_exhausted, delta) = crate::clock::decrement_quantum_in_with_delta(smp, p, current_tsc);
         delta
     };
@@ -2665,20 +2712,24 @@ pub(crate) fn account_interrupt_stop_with(
         return;
     }
     account_process_stop(table, smp, nr, delta, section);
-    // C 的 `arch_clock.c:274-281`：两个标记在**每个** context_stop 都消费。
+    // C `arch_clock.c:274-281`: both markers are consumed at **every**
+    // context_stop.
     consume_kbill_ipc(table, delta, section);
     consume_kbill_kcall(table, delta, section);
 }
 
-// ── Panic diagnostic (D-48, C utility.c:22-50) ─────────────────────────
+// ── Panic diagnostic (C utility.c:22-50) ───────────────────────────────
 
-/// Re-entrancy guard for [`kernel_panic_diagnostic`] (NK4-A 首亮实证)：
-/// panic 上下文里的 `util_stacktrace` 帧链读一旦触发缺页，IDT 分发会再
-/// panic（exception 臂取 SMP 状态），而 SMP 在 proc_init 前必然未初始化
-/// ——钩子自身成为无限递归的第二故障源，串口被同一消息刷屏淹没。
-/// 钩子入口 `swap(true)`：已在本钩子内则跳过 stacktrace（消息本身仍
-/// 打，第一现场不被吞）。钩子不存在"正常退出后复用"——panic 尾部是
-/// 死循环，标志无需复位。
+/// Re-entrancy guard for [`kernel_panic_diagnostic`] (borne out at first
+/// boot): if a `util_stacktrace` frame-chain read in the panic context takes
+/// a page fault, IDT dispatch panics again (the exception arm reads SMP
+/// state), and SMP is necessarily uninitialized before proc_init — the hook
+/// itself becomes a second fault source through infinite recursion, and the
+/// serial port is flooded with the same message. Hook entry does
+/// `swap(true)`: if already inside this hook, skip the stacktrace (the
+/// message itself is still printed; the original crash site is not
+/// swallowed). The hook never "exits normally and is reused" — the panic
+/// tail is an infinite loop, so the flag needs no reset.
 static PANIC_DIAG_ACTIVE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
@@ -2701,21 +2752,24 @@ fn kernel_panic_diagnostic(message: &str) {
     Console::write_str("kernel panic: ");
     Console::write_str(message);
     // C utility.c:38 — "kernel on CPU %d: ". Single-CPU build: always
-    // the BSP (per-CPU id lands with todo D-40); SMP_STATE uninitialized
-    // (panic before init_proc_and_boot) falls back to 0.
-    // NK4-A 取证修正：原实现用 smp_state_boot_unchecked()（未初始化即
-    // panic），与本函数"诊断不得成为第二故障、panic 路径禁 expect"的
-    // 契约（上方注释）直接冲突——proc_init 之前的任何 panic 都会经钩子
-    // 递归再 panic，串口被重复刷屏淹没。改用 try 形态 + BSP 回退。
+    // the BSP (per-CPU id lands with the pending todo item); SMP_STATE
+    // uninitialized (panic before init_proc_and_boot) falls back to 0.
+    // Correction: the original implementation used
+    // smp_state_boot_unchecked() (which panics when uninitialized), directly
+    // contradicting this function's contract "the diagnostic must not become
+    // the second fault; no expect on the panic path" (comment above) — any
+    // panic before proc_init would recurse through the hook and panic again,
+    // flooding the serial port. Switched to the try form with a BSP fallback.
     let cpu = unsafe { try_smp_state() }
         .map(|smp| smp.bsp_cpu_id().raw() as u64)
         .unwrap_or(0);
     Console::write_str("kernel on CPU ");
     Console::write_hex(cpu);
     Console::write_str(": ");
-    // C utility.c:39 — util_stacktrace()。防重入：钩子里再进来的 panic
-    // （典型：栈走查缺页 → exception 臂 SMP 未初始化）只终止走查，不再
-    // 展开第二份诊断。
+    // C utility.c:39 — util_stacktrace(). Re-entrancy guard: a panic that
+    // enters again inside the hook (typical: a page fault during the stack
+    // walk → the exception arm sees SMP uninitialized) only stops the walk
+    // and does not expand a second diagnostic.
     if PANIC_DIAG_ACTIVE.swap(true, Ordering::AcqRel) {
         Console::write_str("(stacktrace skipped: recursive panic)\n");
         return;
@@ -2739,7 +2793,8 @@ pub fn register_panic_diagnostic() {
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
 ///
 /// **Prefer [`proc_table_with`]** which takes a `BklSection` witness for
-/// compile-time BKL proof (R-03). This unsafe version is retained for
+/// compile-time BKL proof (see the review rule on witness parameters). This
+/// unsafe version is retained for
 /// paths that have not yet been migrated.
 pub unsafe fn proc_table() -> &'static mut crate::proc_table::ProcessTable {
     // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
@@ -2748,7 +2803,7 @@ pub unsafe fn proc_table() -> &'static mut crate::proc_table::ProcessTable {
     unsafe { &mut *PROC_TABLE.get() }
 }
 
-/// Get a reference to the global process table with BKL witness (R-03).
+/// Get a reference to the global process table with BKL witness.
 ///
 /// The `BklSection` parameter is a compile-time capability token proving
 /// the caller holds the BKL. See [`crate::smp::BklGuard::section`] and
@@ -2776,7 +2831,7 @@ pub unsafe fn proc_table_boot_unchecked() -> &'static mut crate::proc_table::Pro
 ///
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
 ///
-/// **Prefer [`priv_table_with`]** which takes a `BklSection` witness (R-03).
+/// **Prefer [`priv_table_with`]** which takes a `BklSection` witness.
 pub unsafe fn priv_table() -> &'static mut crate::kpriv::PrivTable {
     // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
     // pointer dereference (not `&mut PRIV_TABLE`) to avoid the
@@ -2784,7 +2839,7 @@ pub unsafe fn priv_table() -> &'static mut crate::kpriv::PrivTable {
     unsafe { &mut *PRIV_TABLE.get() }
 }
 
-/// Get a reference to the global privilege table with BKL witness (R-03).
+/// Get a reference to the global privilege table with BKL witness.
 pub fn priv_table_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::kpriv::PrivTable {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *PRIV_TABLE.get() }
@@ -2813,7 +2868,7 @@ pub unsafe fn priv_table_boot_unchecked() -> &'static mut crate::kpriv::PrivTabl
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
 /// Concurrent access from multiple CPUs without BKL is a data race.
 ///
-/// **Prefer [`irq_manager_with`]** which takes a `BklSection` witness (R-03).
+/// **Prefer [`irq_manager_with`]** which takes a `BklSection` witness.
 pub unsafe fn irq_manager() -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
     // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
     // pointer dereference to avoid the `static_mut_refs` lint.
@@ -2822,7 +2877,7 @@ pub unsafe fn irq_manager() -> &'static mut crate::irq_manager::IrqManager<minix
         .expect("IRQ_MANAGER not initialized — init_clock_and_interrupts must run first")
 }
 
-/// Get a reference to the global IRQ manager with BKL witness (R-03).
+/// Get a reference to the global IRQ manager with BKL witness.
 ///
 /// # Panics
 ///
@@ -2834,7 +2889,7 @@ pub fn irq_manager_with(_section: &crate::smp::BklSection<'_>) -> &'static mut c
         .expect("IRQ_MANAGER not initialized — init_clock_and_interrupts must run first")
 }
 
-/// Boot-time IRQ manager accessor (A1 migration): hook registration in
+/// Boot-time IRQ manager accessor: hook registration in
 /// `bsp_finish_booting` runs before the BKL exists and before any IRQ can
 /// fire — single-threaded boot.
 ///
@@ -2860,13 +2915,13 @@ pub unsafe fn irq_manager_boot_unchecked() -> &'static mut crate::irq_manager::I
 ///
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
 ///
-/// **Prefer [`try_irq_manager_with`]** which takes a `BklSection` witness (R-03).
+/// **Prefer [`try_irq_manager_with`]** which takes a `BklSection` witness.
 pub unsafe fn try_irq_manager() -> Option<&'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> {
     // SAFETY: caller guarantees BKL (or single-threaded boot).
     unsafe { &mut *IRQ_MANAGER.get() }.as_mut()
 }
 
-/// Try to get a reference to the global IRQ manager with BKL witness (R-03).
+/// Try to get a reference to the global IRQ manager with BKL witness.
 pub fn try_irq_manager_with(_section: &crate::smp::BklSection<'_>) -> Option<&'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *IRQ_MANAGER.get() }.as_mut()
@@ -2920,7 +2975,7 @@ fn new_test_interrupt_controller() -> minix_plat::CurrentInterruptController {
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
 /// Concurrent access from multiple CPUs without BKL is a data race.
 ///
-/// **Prefer [`smp_state_with`]** which takes a `BklSection` witness (R-03).
+/// **Prefer [`smp_state_with`]** which takes a `BklSection` witness.
 pub unsafe fn smp_state() -> &'static mut crate::smp::SmpState {
     // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
     // pointer dereference to avoid the `static_mut_refs` lint.
@@ -2929,7 +2984,7 @@ pub unsafe fn smp_state() -> &'static mut crate::smp::SmpState {
         .expect("SMP_STATE not initialized — init_proc_and_boot must run first")
 }
 
-/// Get a reference to the global SMP state with BKL witness (R-03).
+/// Get a reference to the global SMP state with BKL witness.
 ///
 /// # Panics
 ///
@@ -2964,13 +3019,13 @@ pub unsafe fn smp_state_boot_unchecked() -> &'static mut crate::smp::SmpState {
 ///
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
 ///
-/// **Prefer [`try_smp_state_with`]** which takes a `BklSection` witness (R-03).
+/// **Prefer [`try_smp_state_with`]** which takes a `BklSection` witness.
 pub unsafe fn try_smp_state() -> Option<&'static mut crate::smp::SmpState> {
     // SAFETY: caller guarantees BKL (or single-threaded boot).
     unsafe { &mut *SMP_STATE.get() }.as_mut()
 }
 
-/// Try to get a reference to the global SMP state with BKL witness (R-03).
+/// Try to get a reference to the global SMP state with BKL witness.
 pub fn try_smp_state_with(_section: &crate::smp::BklSection<'_>) -> Option<&'static mut crate::smp::SmpState> {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *SMP_STATE.get() }.as_mut()
@@ -2995,7 +3050,7 @@ pub(crate) fn kernel_info() -> Option<&'static KernelInfo> {
 /// Caller must ensure BKL is held if called after boot initialization.
 /// C: `ipc_filter_pool` global array access.
 ///
-/// Get a mutable reference to the global IPC filter pool with BKL witness (R-03).
+/// Get a mutable reference to the global IPC filter pool with BKL witness.
 pub(crate) fn ipc_filter_pool_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::ipc_filter::IpcFilterPool {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *IPC_FILTER_POOL.get() }
@@ -3022,10 +3077,10 @@ pub(crate) fn ipc_filter_pool_with(_section: &crate::smp::BklSection<'_>) -> &'s
 /// step 4 (RTS_PROC_STOP unset) operate on it.
 /// Program the boot clock source, register the clock IRQ hook, and open the
 /// timer gate — the C `boot_cpu_init_timer(system_hz)` three-part sequence
-/// (clock.c:294), extracted from `bsp_finish_booting` Step 6 so the S-8 L3
+/// (clock.c:294), extracted from `bsp_finish_booting` Step 6 so the L3
 /// bring-up test (`test-timer-irq`) reuses the production wiring verbatim.
 ///
-/// Order contract (D-59, 2026-09-09 — the reason this is one function):
+/// Order contract (the reason this is one function):
 /// program the source, register the handler, open the gate. Reordering any
 /// two steps leaves a live, unhandled interrupt source across boot.
 ///
@@ -3034,7 +3089,7 @@ pub(crate) fn ipc_filter_pool_with(_section: &crate::smp::BklSection<'_>) -> &'s
 pub fn boot_init_timer() {
     // Step 6: boot_cpu_init_timer(system_hz)
     // C: boot_cpu_init_timer(system_hz) — clock.c:294, called from
-    // bsp_finish_booting (main.c:73). Since D-59 (2026-09-09) this is the
+    // bsp_finish_booting (main.c:73). This is the
     // ONLY place the boot clock source's hardware is touched, and it
     // mirrors the C three-part sequence exactly:
     //   (a) program the source — C `init_local_timer(freq)`:
@@ -3052,7 +3107,7 @@ pub fn boot_init_timer() {
     //       CNTP_CTL_EL0 = Enable=1/IMASK=0, on riscv64 it sets
     //       `sie.STIE`, and on x86_64 it is a documented no-op (the PIT
     //       has no module-local gate; `[ARCH: gate-semantics]`).
-    // Before D-59, (a) ran early in Phase B with (c) folded into it — a
+    // Previously (a) ran early in Phase B with (c) folded into it — a
     // live, unhandled timer across the whole boot.
     //
     // Instance-based design (04-platform-discovery.md §3.4): construct a
@@ -3068,12 +3123,12 @@ pub fn boot_init_timer() {
     {
     }
 
-    // D-46 (Step 1.5.7 landed, 2026-09-06 — software half): register the
+    // Software clock half: register the
     // clock IRQ hook with the global IrqManager. The handler
     // (`clock::clock_irq_handler`) advances the software clock and
     // delivers expired alarm notifications from the CLOCK source.
     // Hardware half (x86_64 asm IRQ stubs + IDT load + entry routing)
-    // remains deferred — see todo.md D-46.
+    // remains deferred — see todo.md.
     let clock_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0);
     // A1: boot context — no BKL, no IRQs yet; boot_unchecked accessor.
     unsafe { crate::irq_manager_boot_unchecked() }
@@ -3089,22 +3144,26 @@ pub fn boot_init_timer() {
     // for the per-architecture semantics of this call).
     <CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq();
 
-    // x86_64 timer bring-up 缺口修复（C i8259.c intr_init 对位）：8259A PIC
-    // 此前从未初始化——固件遗留的向量基/mask 使 PIT 的 IRQ0 永远到不了
-    // 0x50 门（s14n：150s 全程 tick 臂 <1000 次调用）。重映射 master→0x50 /
-    // slave→0x70 并只放行 IRQ0+级联线。
+    // x86_64 timer bring-up gap fix (counterpart of C i8259.c intr_init): the
+    // 8259A PIC was never initialized before — the firmware-left vector base/
+    // mask kept the PIT's IRQ0 from ever reaching the 0x50 gate (over 150 s
+    // the tick arm was called fewer than 1000 times). Remap master→0x50 /
+    // slave→0x70 and unmask only IRQ0 + the cascade line.
     //
-    // 调用位置在本阶段末尾（init_timer 编程 PIT + register_hook +
-    // enable_timer_irq 之后）：PIC 重映射只改 8259 的向量基/mask，与 PIT
-    // 计数器编程、IrqManager hook 注册互不依赖；只要在实际投递 timer IRQ
-    // 前（此处 timer 门已开，但 IRQ 需 EOI 循环驱动，pic_init 紧随其后即
-    // 时生效）完成即可，故放在最后不改变正确性。
+    // The call site is at the end of this phase (after init_timer programs the
+    // PIT + register_hook + enable_timer_irq): PIC remapping only changes the
+    // 8259's vector base/mask and does not depend on PIT counter programming
+    // or IrqManager hook registration. It only has to finish before the timer
+    // IRQ is actually delivered (the timer gate is already open here, but the
+    // IRQ needs the EOI loop to drive it and pic_init takes effect right
+    // afterwards), so placing it last does not affect correctness.
     //
-    // 仅 x86_64：aarch64/riscv64 无 8259 PIC——ARM generic timer 走 GIC PPI
-    // 30、riscv64 S-mode timer 是 CPU-local 中断（gated by sie.STIE，无 PLIC
-    // source），二者的时钟门控由上面 enable_timer_irq() 完成，无需 PIC 重映射
-    // （ground truth：minix3 i8259.c 属 arch/i386；per-arch TIMER_IRQ 语义见
-    // plat/src/lib.rs:60-69）。
+    // x86_64 only: aarch64/riscv64 have no 8259 PIC — the ARM generic timer
+    // uses GIC PPI 30, and the riscv64 S-mode timer is a CPU-local interrupt
+    // (gated by sie.STIE, no PLIC source); their clock gating is done by
+    // enable_timer_irq() above and needs no PIC remapping (ground truth:
+    // minix3 i8259.c belongs to arch/i386; per-arch TIMER_IRQ semantics are
+    // in plat/src/lib.rs:60-69).
     #[cfg(target_arch = "x86_64")]
     minix_plat::pic_init();
 }
@@ -3117,7 +3176,7 @@ fn bsp_finish_booting(
 ) -> ! {
     use crate::proc::{ProcNr, RtsFlagsBits, proc_nr};
 
-    // Step -1: register the kernel panic diagnostic (D-48, C
+    // Step -1: register the kernel panic diagnostic (C
     // utility.c:22-50) — as early as the diagnostic context (EarlyConsole,
     // SMP_STATE, util_stacktrace) is usable. Panics before this point fall
     // back to minix-rt's stage-1 sink path (message only).
@@ -3137,7 +3196,7 @@ fn bsp_finish_booting(
 
     // Step 1: vm_running = 0
     // C: vm_running = 0 — main.c:47 (declared glo.h:74)
-    // Rust: global `VM_RUNNING: AtomicBool` (definition below, L2121).
+    // Rust: global `VM_RUNNING: AtomicBool` (definition below).
     // C keeps vm_running as a plain global (glo.h:74) — the Rust mirror is
     // a global AtomicBool with identical semantics. A future per-CPU split
     // would diverge from C and needs an [ARCH] marker if ever proposed.
@@ -3190,8 +3249,8 @@ fn bsp_finish_booting(
     // `tsc_ctr_switch` on the first context switch. This matches the
     // deferred-but-functional behavior: the BSP gets a clean TSC baseline.
 
-    // S-8 (2026-09-14): the three-part sequence moved to the standalone
-    // `boot_init_timer` (same order, D-59 contract intact) so the
+    // The three-part sequence moved to the standalone
+    // `boot_init_timer` (same order, contract intact) so the
     // test-timer-irq bring-up kernel reuses the production wiring instead
     // of duplicating it.
     boot_init_timer();
@@ -3208,13 +3267,14 @@ fn bsp_finish_booting(
     // `sstatus.FS` on riscv64 — see 06-proc-init-boot-proc.md §4.1)
     // (already built for every boot process — see init_proc_and_boot).
     //
-    // NK4-C 续-130（CodeReview S1 裁决：不接线 arch FpuArch::init）：
-    // aarch64 的 CPACR_EL1.FPEN 懒陷阱门控由**首次 finish_and_restore 的
-    // disable()** 建立（任何用户首条 FP 指令之前），`FpuArch::init()`
-    // （0b01）保持未接线——firmware 复位值 0b00 期间的窗口内内核 -neon
-    // 无 EL1 FP 使用，安全；真机接线实验（a64-fix-7）伴随早期 PM↔VFS
-    // 握手墙复发（pm fb201 洪流），不冒险。x86_64/riscv64 的 init 语义
-    // 同样由各自启动路径的既有策略位承担。
+    // aarch64's CPACR_EL1.FPEN lazy-trap gating is established by the **first
+    // finish_and_restore's disable()** (before any user FP instruction), and
+    // `FpuArch::init()` (0b01) stays unwired — during the window where the
+    // firmware reset value 0b00 holds, the kernel is built without NEON, so no
+    // EL1 FP use exists and this is safe; wiring it on real hardware came with
+    // a recurrence of the early PM↔VFS handshake wall (a pm fb201 flood), so
+    // it is not worth the risk. x86_64/riscv64 init semantics are likewise
+    // carried by their boot paths' existing policy bits.
     if let Some(bsp_local) = smp_state.cpu_local_mut(bsp_id) {
         bsp_local.fpu_presence = true;
     }
@@ -3224,11 +3284,11 @@ fn bsp_finish_booting(
     // Rust: AtomicBool store.
     KERNEL_MAY_ALLOC.store(false, Ordering::Release);
 
-    // Step 8.5: BKL held (S-5 realignment).
+    // Step 8.5: BKL held.
     // C: BKL_LOCK() — main.c:149, early in main(). The acquisition moved to
     // kmain before smp_init (this function's only caller): wait_for_aps's
     // UNLOCK→wait→LOCK dance ends with the BKL held, so re-acquiring here
-    // (the pre-S-5 single-CPU arrangement) would deadlock the non-reentrant
+    // (the former single-CPU arrangement) would deadlock the non-reentrant
     // CAS lock. Debug-pinned so a future second caller cannot skip the
     // acquisition silently.
     debug_assert!(smp::bkl_is_locked(), "bsp_finish_booting requires the BKL (kmain acquires it before smp_init)");
@@ -3265,7 +3325,7 @@ pub fn set_vm_running(v: bool) {
 }
 
 
-/// D-40 (S-6.1): the ptproc proc-nr moved from the `CURRENT_PTPROC_NR`
+/// The ptproc proc-nr moved from the `CURRENT_PTPROC_NR`
 /// global atomic to the `CpuLocal.ptproc` field — C is per-CPU
 /// (`get_cpulocal_var(ptproc)`, protect.c:372); the global was a
 /// single-CPU-era simplification. Each CPU's own slot is written by its own
@@ -3334,7 +3394,7 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {
 //
 // We record it in this global right after `enable()` succeeds.
 //
-// The global's role (post NK4-C 续-56): it is the **bootstrap page-table
+// The global's role: it is the **bootstrap page-table
 // root seed** — written once by `arch_boot_impl`. The *active* root is per
 // CPU (`CpuLocal::root_phys`), matching C, which reads the live CR3 register
 // in `__switch_address_space` (klib.S:618) — a hardware register that is
@@ -3352,8 +3412,8 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {
 //
 // # SMP
 //
-// Per-CPU root tracking IS installed for runtime switches (NK4-C 续-56,
-// mirroring the D-40 ptproc migration): `current_root_phys()` reads this
+// Per-CPU root tracking IS installed for runtime switches,
+// mirroring the ptproc migration: `current_root_phys()` reads this
 // CPU's `CpuLocal::root_phys`, and `set_active_root_tracked` / the
 // `switch_address_space` same-root sync update only that slot. The global
 // `CURRENT_ROOT_PHYS` remains the shared **bootstrap seed** — written once
@@ -3375,7 +3435,7 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {
 /// BKL, the value may be stale — but stale reads are safe because the
 /// bootstrap root is never freed during normal operation.
 pub fn current_root_phys() -> Option<minix_types::PhysBytes> {
-    // NK4-C 续-56: the active root is per-CPU (C reads the live CR3/TTBR0/
+    // The active root is per-CPU (C reads the live CR3/TTBR0/
     // satp register). Prefer THIS CPU's installed root; fall back to the
     // shared bootstrap seed (`CURRENT_ROOT_PHYS`, written only by
     // `arch_boot_impl`) for a CPU that has not switched yet and for the
@@ -3421,7 +3481,7 @@ pub fn set_current_root_phys(phys: minix_types::PhysBytes) {
 
 /// Record `root` as the active page-table root on the **current** CPU only.
 ///
-/// NK4-C 续-56: runtime address-space switches (`set_active_root_tracked`,
+/// Runtime address-space switches (`set_active_root_tracked`,
 /// the `switch_address_space` same-root sync) update the owning CPU's slot
 /// without touching the shared bootstrap seed — so a switch on one CPU can
 /// no longer clobber what another CPU's IPC/VM cross-address-space copy
@@ -3459,9 +3519,10 @@ pub(crate) fn set_this_cpu_root_phys(root: minix_types::PhysBytes) {
 /// Callers hold the BKL (single-writer guarantee for the mirror).
 pub(crate) fn set_active_root_tracked(root: PhysBytes) {
     use minix_arch::TlbArch;
-    // §续-368 实验丁安全网：实验旗标（关中断粘滞窗）不越过任何地址
-    // 空间切换——测试进程 abort/exit 后旗标必被清零，系统不会带关中断
-    // 状态继续调度其他进程。
+    // Experiment safety net: the experiment flag (an interrupts-off sticky
+    // window) must not survive any address-space switch — after a test
+    // process aborts/exits the flag is always cleared, so the system never
+    // keeps scheduling other processes with interrupts off.
     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
     minix_arch::riscv64::trap_return::NK4C_CLI
         .store(0, core::sync::atomic::Ordering::Relaxed);
@@ -3471,7 +3532,7 @@ pub(crate) fn set_active_root_tracked(root: PhysBytes) {
     unsafe {
         minix_arch::CurrentTlbArch::set_active_root(root);
     }
-    // NK4-C 续-56: update only THIS CPU's slot — the shared
+    // Update only THIS CPU's slot — the shared
     // `CURRENT_ROOT_PHYS` stays the pure bootstrap seed (never clobbered by
     // a runtime switch), matching C's per-CPU CR3 semantics.
     set_this_cpu_root_phys(root);
@@ -3586,7 +3647,7 @@ fn requeue_if_preempted(
 ///    it is skipped, exactly like a C build without SMP.
 /// 3. `cpu_is_idle = 1` (C:192); on the multi-CPU build the AP branch masks
 ///    the local timer (`stop_local_timer()`, C:194-196) so a halted AP stays
-///    quiet until an interrupt wakes it — NK4-C 续-72 restored this (it had
+///    quiet until an interrupt wakes it — this was restored (it had
 ///    been omitted alongside the adjacent proc.c:190 step). The BSP branch
 ///    calls `restart_local_timer()` (C:198-204) — see that helper: on the
 ///    periodic PIT clock source it is a no-op in C too.
@@ -3658,15 +3719,16 @@ fn idle(
     //    at interrupt entry then restarts it). The one-shot local timer is
     //    re-armed unconditionally by `local_tick` on every CPU, so without this
     //    mask a halted AP keeps taking timer ticks forever and never truly
-    //    idles. NK4-C 续-72: the mask was omitted when 续-56 restored the
-    //    adjacent `switch_address_space_idle` (proc.c:190) — completing
-    //    proc.c:176-206 parity. The BSP branch keeps `restart_local_timer`
+    //    idles. The mask was originally omitted while the adjacent
+    //    `switch_address_space_idle` (proc.c:190) was restored — parity with
+    //    proc.c:176-206 is only completed now. The BSP branch keeps
+    //    `restart_local_timer`
     //    (a no-op on the auto-reloading clock sources — see the helper).
     if let Some(local) = smp.cpu_local_mut(cpu) {
         local.cpu_is_idle = true;
     }
     if smp.ncpus() > 1 && cpu != smp.bsp_cpu_id() {
-        // CONTRACT (NK4-C 续-72, CodeReview): masking the AP timer here is only
+        // CONTRACT (CodeReview): masking the AP timer here is only
         // one half of C's design. C pairs it with three arms that this port has
         // NOT yet wired, and every one must land before APs may run user work:
         //   1. `context_stop_idle` at interrupt entry (arch_clock.c:351-369) —
@@ -3677,7 +3739,7 @@ fn idle(
         //      sends the SCHED IPI to rouse it. `sched_enqueue_with` (proc_table)
         //      only preempts same-CPU targets today, so a process routed to an AP
         //      would never wake (its timer is masked and no IPI is sent);
-        //   3. [LANDED — NK4-C 续-73] a `SYS_SCHEDCTL`/`SYS_SCHEDULE` cpu-affinity
+        //   3. [LANDED] a `SYS_SCHEDCTL`/`SYS_SCHEDULE` cpu-affinity
         //      guard — `sched_proc` now clamps any non-BSP request to the BSP
         //      (see `clamp_cpu_to_bsp` in sched.rs), so no user-reachable path
         //      pins a process onto a masked AP. Arms 1-2 (context_stop_idle +
@@ -3696,25 +3758,28 @@ fn idle(
     // 4. context_stop(KERNEL) — charge the kernel-execution delta and
     // advance the TSC baseline (C:207; the quantum decrement itself is
     // skipped for the endpoint < 0 pseudo-process, arch_clock.c:314).
-    // # I-6① resolution (2026-09-09): C also accumulates `kernel_ticks[cpu]`
+    // # Resolution note: C also accumulates `kernel_ticks[cpu]`
     // and `p->p_cycles` here (arch_clock.c:231-232). `kernel_ticks[cpu]`
     // (glo.h:86) is deliberately NOT wired — a whole-C-tree grep shows no
     // reader anywhere (declare-only in glo.h, accumulate-only in
-    // arch_clock.c), so wiring it would be write-only state (the D-34
-    // standard). `p_cycles` IS observable (GET_PROC, misc.rs) and the
+    // arch_clock.c), so wiring it would be write-only state (the
+    // no-write-only-state standard). `p_cycles` IS observable (GET_PROC, misc.rs) and the
     // KERNEL-branch delta is accumulated below.
     let tsc = crate::clock::read_tsc();
     let kernel = table
         .get_mut(proc_nr::KERNEL)
         .expect("idle: KERNEL pseudo-process slot must exist");
     let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
-    // S-6.4/I-16 + C-25/C-26: context_stop KERNEL 分支的**全部**周期账
-    // （状态桶 + 总周期 + cpuavg）——单点、不重不漏。
+    // The context_stop KERNEL branch's **entire** cycle accounting
+    // (state bucket + total cycles + cpuavg) — a single point, no double
+    // counting and no gaps.
     account_process_stop(table, smp, crate::proc::proc_nr::KERNEL, tsc_delta, section);
-    // D-9 — idle 的 context_stop 等价同样消费 kbill（C 的消费块是
-    // context_stop 公共尾部，不区分 USER/KERNEL/IDLE 分支）。
+    // idle's context_stop equivalent also consumes kbill (C's consumption
+    // block is the common context_stop tail and does not distinguish
+    // USER/KERNEL/IDLE branches).
     if tsc_delta > 0 {
-        // C-25：C 的两块并列（先 ipc 后 kcall），同一个 delta 各记一份。
+        // C's two blocks are parallel (ipc first, then kcall); the same delta
+        // is recorded once in each.
         consume_kbill_ipc(table, tsc_delta, section);
         consume_kbill_kcall(table, tsc_delta, section);
     }
@@ -3762,7 +3827,7 @@ fn restart_local_timer() {
 ///    tasks run in the kernel's address space.
 /// 2. `p_cr3 == current CR3`: no-op — reloading the same root would only
 ///    cost a pointless TLB flush (klib.S:614-620). `ptproc` IS updated
-///    defensively (NK4-C 续-18: the C asm skips ptproc on this path,
+///    defensively (the C asm skips ptproc on this path,
 ///    but the Rust version cannot distinguish "already the current
 ///    ptproc" from "mirror diverged from HW" without the extra store;
 ///    a redundant store is harmless).
@@ -3773,12 +3838,12 @@ fn restart_local_timer() {
 /// via `TlbArch::get_active_root()` — eliminating the previous mirror-
 /// based check that could produce a false skip when the software mirror
 /// (`CURRENT_ROOT_PHYS`) diverged from the actual hardware root
-/// (NK4-C 续-18 root-cause: boot-path `set_current_root_phys` writing
+/// (root cause: boot-path `set_current_root_phys` writing
 /// only the mirror while the scheduler relied on it for the comparison).
 ///
-/// `ptproc` and the active root are tracked **per CPU** (D-40 migrated
-/// ptproc to `CpuLocal::ptproc`; NK4-C 续-56 migrated the root to
-/// `CpuLocal::root_phys`), matching C's `get_cpulocal_var(ptproc)` and its
+/// `ptproc` and the active root are tracked **per CPU** (`ptproc` migrated
+/// to `CpuLocal::ptproc`, the root to `CpuLocal::root_phys`), matching C's
+/// `get_cpulocal_var(ptproc)` and its
 /// read of the live per-CPU CR3. `dispatch_vmctl(VMCTL_SETADDRSPACE)`
 /// compares against the same per-CPU slots.
 ///
@@ -3801,7 +3866,7 @@ fn switch_address_space(
     if root.0 == 0 {
         return; // kernel task — keep the kernel address space (klib.S:611-612)
     }
-    // NK4-C 续-18 fix: read the LIVE hardware register (CR3/TTBR0/satp)
+    // Read the LIVE hardware register (CR3/TTBR0/satp)
     // instead of the software mirror `CURRENT_ROOT_PHYS`. The C scheduler
     // does `mov %cr3, %ecx` (klib.S:618) — comparing against the actual
     // loaded root. The mirror could diverge from hardware when
@@ -3879,27 +3944,34 @@ fn switch_address_space(
 /// pseudo-process's TSC delta lands in the CP_INTR per-state bucket
 /// (arch_clock.c:340) and in its `p_cycles` (arch_clock.c:232/250).
 ///
-/// I-16 closure note: before this helper the per-state bucket was
-/// `context_stop` 公共尾的**周期账**（C `arch_clock.c:290-340` 的 cpuavg
-/// 块与状态桶两块），按进程记账。
+/// Closure note: before this helper the per-state bucket was missing. This
+/// helper performs the **cycle accounting of the context_stop common tail**
+/// (C `arch_clock.c:290-340`: the cpuavg block and the state bucket) and
+/// charges it per process.
 ///
-/// 三件事，全部照 C 的形态：
-/// 1. **状态桶**：`tsc_per_state[cpu][classify_cpu_state(p)] += delta`
-///    （C 按进程类别分 CP_USER/CP_NICE/CP_SYS/CP_INTR/CP_IDLE，见
-///    [`crate::clock::classify_cpu_state`]）——`getcputicks` 那族读的就是它；
-/// 2. **总周期**：`p_cycles.total += delta`（C `p->p_cycles += tsc_delta`）；
-/// 3. **CPU 均值**：delta 累进 `p_cycles.tick`（C 的 `p_tick_cycles`），
-///    每攒够一个滴答的周期数（`tpt = tsc_per_ms * 1000 / hz`，C i386 的
-///    `tsc_per_tick[cpu]`）就推进一次（[`minix_types::cpuavg::increment`]）。
+/// Three things, all following C's shape:
+/// 1. **State bucket**: `tsc_per_state[cpu][classify_cpu_state(p)] += delta`
+///    (C splits by process class CP_USER/CP_NICE/CP_SYS/CP_INTR/CP_IDLE, see
+///    [`crate::clock::classify_cpu_state`]) — this is what the `getcputicks`
+///    family reads;
+/// 2. **Total cycles**: `p_cycles.total += delta` (C `p->p_cycles +=
+///    tsc_delta`);
+/// 3. **CPU average**: accumulate delta into `p_cycles.tick` (C's
+///    `p_tick_cycles`); each time a tick's worth of cycles has accumulated
+///    (`tpt = tsc_per_ms * 1000 / hz`, C i386's `tsc_per_tick[cpu]`) advance
+///    once ([`minix_types::cpuavg::increment`]).
 ///
-/// **调用点**（C 的两条 context_stop 来源，Rust 一一对应）：
-/// - 内核上下文的三个站点（`proc.c:208` idle / `:440` `switch_to_user` 尾 /
-///   `:1956`）→ 记 **KERNEL**（见 `idle`/`finish_and_restore` 的调用）；
-/// - 汇编中断入口（`mpx.S:77-90` 把被打断的进程压栈）→ 记**被打断的进程**
-///   （见 [`account_interrupt_stop_with`]）。
+/// **Call sites** (C's two context_stop sources, mirrored one-to-one):
+/// - the three kernel-context sites (`proc.c:208` idle / `:440`
+///   `switch_to_user` tail / `:1956`) → charge **KERNEL** (see the calls in
+///   `idle`/`finish_and_restore`);
+/// - the assembly interrupt entry (`mpx.S:77-90` pushes the interrupted
+///   process) → charge **the interrupted process** (see
+///   [`account_interrupt_stop_with`]).
 ///
-/// 两站点共用同一个 TSC 基线（`CpuLocal::tsc_ctr_switch`），所以"用户段 +
-/// 内核段 = 总时间、不重不漏"是结构保证的。
+/// Both sites share the same TSC baseline (`CpuLocal::tsc_ctr_switch`), so
+/// "user segment + kernel segment = total time, with no overlap and no gap"
+/// is structurally guaranteed.
 fn account_process_stop(
     table: &mut crate::proc_table::ProcessTable,
     smp: &mut crate::smp::SmpState,
@@ -3910,10 +3982,11 @@ fn account_process_stop(
     if tsc_delta == 0 {
         return;
     }
-    // 1. 状态桶 + 2. 总周期：C `arch_clock.c:271`（`p->p_cycles += delta`）
-    //    与 `:334-340`（`tsc_per_state[cpu][counter] += delta`）。
-    //    `smp` 由调用方传入（不能再 `smp_state_with` 取一次——那是第二个
-    //    `&mut` 别名，Rust 的别名规则不允许）。
+    // 1. State bucket + 2. total cycles: C `arch_clock.c:271` (`p->p_cycles +=
+    //    delta`) and `:334-340` (`tsc_per_state[cpu][counter] += delta`).
+    //    `smp` is passed in by the caller (it cannot be fetched again through
+    //    `smp_state_with` — that would be a second `&mut` alias, which Rust's
+    //    aliasing rules forbid).
     let bucket = {
         let priv_table = crate::priv_table_with(section);
         table
@@ -3933,19 +4006,22 @@ fn account_process_stop(
     }
     let uptime = clock.uptime();
     let tsc_per_ms = crate::globals::TSC_PER_MS.load(core::sync::atomic::Ordering::Acquire);
-    // C earm 的 `tsc_per_tick[0] = tsc_per_ms[0] * 1000 / system_hz`
-    // （arch_clock.c:44）；i386 是 `cpu_get_freq(cpu) / system_hz` 的同一量。
+    // C earm's `tsc_per_tick[0] = tsc_per_ms[0] * 1000 / system_hz`
+    // (arch_clock.c:44); i386's `cpu_get_freq(cpu) / system_hz` is the same
+    // quantity.
     let tpt = tsc_per_ms.saturating_mul(1000) / hz;
 
     let Some(p) = table.get_mut(nr) else {
         return;
     };
-    // C 的 `p->p_tick_cycles += tsc_delta` 在 while **之前**、无条件执行；
-    // `tpt == 0`（周期/滴答未标定，例如宿主测试）只让 while 不跑，累加照旧。
+    // C's `p->p_tick_cycles += tsc_delta` runs unconditionally **before** the
+    // while loop; `tpt == 0` (cycles/tick not calibrated, e.g. host tests)
+    // only keeps the loop from running, and the accumulation still happens.
     let mut tick_cycles = p.p_cycles.tick.load(core::sync::atomic::Ordering::Acquire)
         .saturating_add(tsc_delta);
-    // C 的 `while (tpt > 0 && p->p_tick_cycles >= tpt)`：攒够一个滴答就推一次
-    // 均值（时钟频率不精确时可能连推多次，C 注释明说这是预期）。
+    // C's `while (tpt > 0 && p->p_tick_cycles >= tpt)`: advance the average
+    // once per full tick's worth of cycles (an imprecise clock frequency can
+    // advance it several times in a row — C's comment says that is expected).
     let mut snapshot = minix_types::CpuAvgSnap {
         ca_base: p.p_cpuavg.ca_base.load(core::sync::atomic::Ordering::Acquire),
         ca_run: p.p_cpuavg.ca_run.load(core::sync::atomic::Ordering::Acquire),
@@ -3954,9 +4030,10 @@ fn account_process_stop(
         _padding: 0,
     };
     let mut bumped = false;
-    // C 的条件是 `while (tpt > 0 && p->p_tick_cycles >= tpt)` —— **`tpt > 0`
-    // 这个守卫不能省**：宿主测试下 `TSC_PER_MS` 为 0 时 `tpt == 0`，
-    // `tick_cycles -= 0` 永不递减就成了死循环（本批踩过，见 FIXLOG #115）。
+    // C's condition is `while (tpt > 0 && p->p_tick_cycles >= tpt)` — the
+    // **`tpt > 0` guard must not be dropped**: in host tests `TSC_PER_MS` is
+    // 0 so `tpt == 0`, and `tick_cycles -= 0` never decreases, making an
+    // infinite loop (hit in this batch; see FIXLOG #115).
     while tpt > 0 && tick_cycles >= tpt {
         tick_cycles -= tpt;
         minix_types::cpuavg::increment(&mut snapshot, uptime, hz);
@@ -3997,20 +4074,23 @@ fn consume_flush_tlb_flag(
     }
 }
 
-/// riscv64 懒 FPU 归属门控：`finish_and_restore` 在返回 user 前按归属
-/// patch `ctx.sstatus.FS`（sstatus bits 13:14）。RISC-V Priv ISA FS 语义
-/// （见 `arch/src/riscv64/fpu.rs` 头 doc）：
-/// - `Off(0b00)`：FPU 指令陷阱（门控用）。
-/// - `Initial(0b01)` / `Clean(0b10)` / `Dirty(0b11)`：FPU 可用、不陷阱；
-///   Dirty 标「已修改需保存」。
+/// riscv64 lazy FPU ownership gating: before returning to user,
+/// `finish_and_restore` patches `ctx.sstatus.FS` according to ownership
+/// (sstatus bits 13:14). RISC-V Priv ISA FS semantics (see the header doc of
+/// `arch/src/riscv64/fpu.rs`):
+/// - `Off(0b00)`: FPU instructions trap (this is what gating uses).
+/// - `Initial(0b01)` / `Clean(0b10)` / `Dirty(0b11)`: FPU available, no
+///   trap; Dirty marks "modified, needs saving".
 ///
-/// 与门控谓词 `riscv64_illegal_insn_is_fpu_trap`（trap_dispatch.rs）严格
-/// 对齐：只有 `FS==Off` 才把 scause=2 判成 FP 轮转陷阱。故非 owner 必须
-/// 写 `Off`（首条 FP 陷阱→轮转腿），写 Initial/Clean/Dirty 都会让轮转腿
-/// 不可达（AF-8：旧实现误写 Initial 的根因）。owner 写 Dirty（活寄存器
-/// 延续 + 需保存）。
+/// Strictly aligned with the gating predicate
+/// `riscv64_illegal_insn_is_fpu_trap` (trap_dispatch.rs): only `FS == Off`
+/// makes scause=2 count as an FP rotation trap. A non-owner must therefore
+/// write `Off` (first FP traps → rotation leg); writing Initial/Clean/Dirty
+/// makes the rotation leg unreachable (root cause of the old implementation
+/// writing Initial). The owner writes Dirty (live registers continue + need
+/// saving).
 ///
-/// 纯函数，host 可测（AF-10 回归钉）。
+/// Pure function, host-testable (regression pin).
 #[cfg(any(target_arch = "riscv64", test))]
 fn riscv_lazy_fs_field(is_owner: bool) -> u64 {
     const FS_OFF: u64 = 0b00 << 13;
@@ -4053,15 +4133,16 @@ fn finish_and_restore(
         .get_mut(crate::proc::proc_nr::KERNEL)
         .expect("finish_and_restore: KERNEL pseudo-process slot must exist");
     let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
-    // S-6.4/I-16 + C-25/C-26: shared context_stop KERNEL-branch accounting
-    // (C:440 site — the pre-S-6.4 code here missed BOTH the per-state bucket
-    // and the p_cycles accumulation that the idle site had).
+    // Shared context_stop KERNEL-branch accounting (C:440 site — the earlier
+    // code here missed BOTH the per-state bucket and the p_cycles accumulation
+    // that the idle site had).
     account_process_stop(table, smp, crate::proc::proc_nr::KERNEL, tsc_delta, section);
-    // D-9 (C arch_clock.c:279-281) — consume kbill_kcall with the same
+    // C arch_clock.c:279-281 — consume kbill_kcall with the same
     // whole-delta context_stop uses; must run before the BKL release
     // below (see consume_kbill_kcall doc).
     if tsc_delta > 0 {
-        // C-25：与上面 idle 同序（C arch_clock.c:274-281 的两块并列）。
+        // Same order as idle above (C arch_clock.c:274-281, the two parallel
+        // blocks).
         consume_kbill_ipc(table, tsc_delta, section);
         consume_kbill_kcall(table, tsc_delta, section);
     }
@@ -4083,21 +4164,25 @@ fn finish_and_restore(
     } else {
         fpu.enable(); // owner keeps the FPU — C: disable_fpu_exception (clts)
     }
-    // NK4-C 续-133（riscv 臂）/续-197 AF-8 修正：riscv 的 FS 位住在
-    // sstatus/帧内——活写被 trap stub 出口的帧回装冲销，user 模式的 FP
-    // 门控载体是 ctx。归属策略：owner==picked → FS=Dirty(0b11)，不陷阱且
-    // 标「需保存」（活寄存器延续——自它上次 trap-restore 后无其他 FP 用户，
-    // 物理寄存器仍是它的）；非 owner → **FS=Off(0b00)**，令其首条 FP 指令
-    // 陷阱进轮转腿（`riscv64_fpu_trap_body`：保存旧 owner、restore 自己、
-    // 移交归属）。
-    // AF-8（P0·回溯审计 2026-10-01 定谳）：旧实现非 owner 误写 FS=Initial
-    // (0b01)。但本 crate 门控谓词 `riscv64_illegal_insn_is_fpu_trap`
-    // （trap_dispatch.rs）要求 `sstatus.FS==Off(0b00)` 才判 FP 门控陷阱；
-    // FS=Initial 时「FPU available 不陷阱」（fpu.rs 头 doc + RISC-V Priv
-    // ISA FS 字段语义）⇒ 非 owner 返回 user 后首条 FP **不陷阱**⇒ 轮转腿
-    // 不可达死代码、riscv user↔user FP 未受保护（禁 FP 只护 kernel↔user）。
-    // 修正＝非 owner 用 FS_OFF。aarch64 的活写足够（CPACR 不在帧内），riscv
-    // 必须走 ctx——两架构策略点在各自载体上对位 C proc.c:443-446。
+    // riscv FS bits live in sstatus / the frame — a live write is undone by
+    // the trap stub's exit-time frame reload, so for user mode the FP gating
+    // carrier is ctx. Ownership policy: owner == picked → FS=Dirty(0b11), no
+    // trap, and marked "needs saving" (live registers continue — no other FP
+    // user has run since its last trap-restore, so the physical registers are
+    // still its own); non-owner → **FS=Off(0b00)**, so its first FP
+    // instruction traps into the rotation leg (`riscv64_fpu_trap_body`: save
+    // the old owner, restore itself, hand over ownership).
+    // Old bug (P0, pinned by the retrospective audit of 2026-10-01): the
+    // non-owner path wrongly wrote FS=Initial (0b01). But this crate's gating
+    // predicate `riscv64_illegal_insn_is_fpu_trap` (trap_dispatch.rs) requires
+    // `sstatus.FS==Off(0b00)` to classify an FP gating trap; with FS=Initial
+    // "FPU available, no trap" (fpu.rs header doc + RISC-V Priv ISA FS field
+    // semantics) ⇒ the first FP after a non-owner returns to user does **not**
+    // trap ⇒ the rotation leg is unreachable dead code and riscv user↔user FP
+    // is unprotected (FP disabling only covered kernel↔user). The fix is
+    // FS_OFF for a non-owner. A live write suffices on aarch64 (CPACR is not
+    // in the frame); riscv must go through ctx — both architectures' policy
+    // points sit in their respective carriers, mirroring C proc.c:443-446.
     #[cfg(target_arch = "riscv64")]
     if let Some(p) = table.get_mut(picked) {
         let fs = riscv_lazy_fs_field(fpu_owner == Some(picked));
@@ -4135,12 +4220,14 @@ fn finish_and_restore(
         // Consume the record so the next dispatch cannot reuse this entry's
         // style (C:585 — p_kern_trap_style = KTS_NONE before branching).
         p.trap_style = TrapStyle::NoEntry;
-        // NK4-A C-3 迭代4（F2 内核辅助 flush 的 clear 点最小闭合）：故障
-        // 填充恢复时，在本进程 CR3 已激活的此刻 invlpg 其故障页。INVLPG
-        // 只击落当前 CR3 标签的非 G 项——clear 时点（VM 的 CR3）杀不到
-        // 本进程的陈旧项，必须在 iretq 前的原上下文里做（2026-09-22 真机
-        // 证据：RS 同址 0x2246c0 err=0x15 永久重震，内存 PTE 已是
-        // P|U|X）。
+        // F2 minimal closure of the clear point for the kernel-assisted
+        // flush: when restoring after fault-fill, invlpg the faulting page
+        // right now, with this process's CR3 active. INVLPG only shoots down
+        // non-G entries tagged with the current CR3 — the clear point (VM's
+        // CR3) cannot kill this process's stale entry, so it must happen in
+        // the original context before iretq (real-hardware evidence from
+        // 2026-09-22: RS at the same 0x2246c0 addr err=0x15 kept recurring
+        // permanently while the memory PTE was already P|U|X).
         let fault_flush_va = p.p_fault_addr;
         p.p_fault_addr = None;
         (p.cpu_context, style.return_sequence(), fault_flush_va)
@@ -4150,7 +4237,7 @@ fn finish_and_restore(
         // Fast-syscall entries save a skinny frame; returning through the
         // full-context path would feed the mode switch user-influenced
         // garbage. The pairing fast return lands with the asm entry work
-        // (smp_todo S-8) — until then no entry path records Syscall, so
+        // (see the SMP todo list) — until then no entry path records Syscall, so
         // this arm converts silent corruption into a loud stop.
         Some(ReturnSequence::FastSyscall) => {
             panic!("restore_user_context: fast-syscall return sequence lands with S-8")
@@ -4161,8 +4248,9 @@ fn finish_and_restore(
     let mut frame = <CurrentCpuContextArch as CpuContextArch>::TrapFrame::default();
     <CurrentCpuContextArch as CpuContextArch>::apply_to_trap_frame(&ctx, &mut frame);
 
-    // NK4-A C-3 迭代4：故障页 invlpg——此刻 CR3 即被恢复进程自己的根
-    // （switch_address_space 在 stage 2 已装），iretq 前的最后一点。
+    // Fault-page invlpg — at this point CR3 is the restored process's own
+    // root (switch_address_space installed it in stage 2); the last point
+    // before iretq.
     #[cfg(target_arch = "x86_64")]
     if let Some(va) = fault_flush_va {
         // SAFETY: invlpg is a privileged single-line TLB invalidation; the
@@ -4171,17 +4259,22 @@ fn finish_and_restore(
             core::arch::asm!("invlpg [{0}]", in(reg) va, options(nostack, preserves_flags));
         }
     }
-    // NK4-C §续-334（(A) 成修）：riscv64 的同一恢复点 flush——fill-root 写
-    // PTE 走 VmDm 直写（无 sfence，write_pte_dm 只对 KernelDm 门控 flush），
-    // 被恢复进程的 TLB 里缓存着 fill 前的旧 NP 平移；恢复后 CPU 重跑同
-    // 指令仍命中旧 NP ⇒ 反复 fault 循环（§续-319 长窗 + §续-327 P0.5：
-    // satp root 与 fill ptroot 一致、RAM PTE 有效、CPU 仍故障 26 次）。
-    // sfence.vma zero, zero = 全地址空间全 VA 刷新（RISC-V Priv ISA），
-    // 此刻本 hart 即将切回被恢复进程，语义与 x86 invlpg 等价且更宽。
+    // The same restore-point flush on riscv64: the fill-root PTE write goes
+    // through VmDm direct writes (no sfence — write_pte_dm only gates the
+    // flush for KernelDm), so the restored process's TLB still caches the old
+    // NP translation from before the fill; after the restore the CPU re-runs
+    // the same instruction, still hits the old NP, and faults in a loop
+    // (long-window evidence: satp root and fill ptroot agree, the RAM PTE is
+    // valid, yet the CPU still faulted 26 times). sfence.vma zero, zero =
+    // flush every VA in the whole address space (RISC-V Priv ISA); at this
+    // point this hart is about to switch back to the restored process, so its
+    // semantics are equivalent to x86 invlpg and broader.
     #[cfg(target_arch = "riscv64")]
     if fault_flush_va.is_some() {
-        // §续-336 判别探针（用后即滚）：确认 sfence 真的在 refault 循环里
-        // 被执行——执行了但 rc 仍 fault=QEMU 层实锤；没执行=成修位置错误。
+        // Discriminating probe (meant to be removed after use): confirm the
+        // sfence really executes in the refault loop — executed but still
+        // faulting = QEMU-level hard evidence; not executed = the fix is in
+        // the wrong place.
         #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
         {
             use core::sync::atomic::{AtomicUsize, Ordering as SOrd};
@@ -4267,18 +4360,19 @@ fn finish_and_restore(
 /// production `kmain` tail does (C main.c:73 `bsp_finish_booting`).
 #[allow(dead_code)] // reachable only from the divergent boot path / asm entry
 pub fn switch_to_user() -> ! {
-    // T1 契约标记（test-cmd-smoke.sh stage-3 门）：内核进入调度循环、
-    // 将 CPU 交接给用户态进程排程的落点（C main.c:73 bsp_finish_booting
-    // 尾部进入调度循环）。
+    // T1 contract marker (test-cmd-smoke.sh stage-3 gate): the point where
+    // the kernel enters the scheduling loop and hands the CPU over to
+    // user-mode process scheduling (C main.c:73 bsp_finish_booting tails into
+    // the scheduling loop).
     boot_stage!("entering scheduler\n");
     // C main.c:73 — bsp_finish_booting tails into switch_to_user with the
-    // BKL held. S-7: the loop body is the shared `scheduler_loop`; the BSP
+    // BKL held. The loop body is the shared `scheduler_loop`; the BSP
     // flavor only names its own CPU (seed + loop are per-CPU now).
     let cpu = unsafe { crate::smp_state_boot_unchecked() }.bsp_cpu_id();
     scheduler_loop(cpu)
 }
 
-/// The scheduling loop — shared by the BSP (switch_to_user) and, since S-7,
+/// The scheduling loop — shared by the BSP (switch_to_user) and
 /// every AP (the kernel-registered AP tail enters here after ap_finish_
 /// booting). §3.6: the entering CPU satisfies the same BKL-ownership
 /// precondition as the BSP (kernel runs with the BKL held; the guard is
@@ -4287,14 +4381,11 @@ pub fn switch_to_user() -> ! {
 ///
 /// C: smp.c AP main loop parity — init_ap → ap_boot_finished → the same
 /// `main()` loop body as the BSP.
-/// NK4-A C-3 锚点括值（task1-close 删除）：见 finish_and_restore 内同名
-/// 说明。
 #[cfg(not(feature = "mock"))]
 pub fn scheduler_loop_addr() -> u64 {
     scheduler_loop as *const () as u64
 }
 
-/// NK4-A C-3 锚点括值（task1-close 删除）。
 #[cfg(not(feature = "mock"))]
 pub fn finish_and_restore_addr() -> u64 {
     finish_and_restore as *const () as u64
@@ -4313,7 +4404,7 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
     let smp = crate::smp_state_with(&section);
     let priv_table = crate::priv_table_with(&section);
 
-    // S-7 L5 observability: record that this CPU entered the loop (the L5
+    // Observability: record that this CPU entered the loop (the L5
     // assertion reads these flags from the BSP after smp_init).
     if let Some(local) = smp.cpu_local_mut(cpu) {
         local.sched_loop_entered = true;
@@ -4375,21 +4466,25 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
         }
         let picked = current.expect("scheduler loop: proc_ptr seeded or picked above");
 
-        // ── Stage 3a: KCALL_RESUME consume（C system.c:612-638
-        // kernel_call_resume）──
-        // VM 服务完成（memreq_reply 置 KCALL_RESUME + 清 VMREQUEST）后，
-        // 被挂起的内核调用在此重派：内核侧重跑 kernel_call（此刻目标内存
-        // 已由 VM 填充，check_resumed_caller 短路二次挂起），结果经
-        // set_ipc_return_code 写回 RAX，随后正常 restore。Fault 臂对位
-        // C 的 vmresult≠OK → SIGSEGV。须在 process_misc_flags 之前消费
-        //（其后同名臂只做 Fault 兜底）。
+        // ── Stage 3a: KCALL_RESUME consume (C system.c:612-638
+        // kernel_call_resume) ──
+        // After VM finishes servicing (memreq_reply sets KCALL_RESUME and
+        // clears VMREQUEST), a suspended kernel call is re-dispatched here:
+        // the kernel re-runs kernel_call (the target memory has now been
+        // filled by VM, and check_resumed_caller short-circuits a second
+        // suspension), the result is written back to RAX via
+        // set_ipc_return_code, and then the normal restore follows. The Fault
+        // arm mirrors C's vmresult≠OK → SIGSEGV. Must be consumed before
+        // process_misc_flags (the same-named arm there only provides a Fault
+        // fallback).
         if table
             .get(picked)
             .is_some_and(|p| p.p_misc_flags.is_set(crate::proc::MiscFlagsBits::KCALL_RESUME))
         {
-            // 状态守卫：仅在 Completed（VM 已回复）时重派；Pending/Fetched
-            // 说明 VM 仍在服务——本轮跳过派发（continue 重挑，VM 可运行、
-            // 会被轮到），等下一轮 Completed 再恢复。
+            // State guard: re-dispatch only when Completed (VM has replied);
+            // Pending/Fetched means VM is still servicing — skip dispatch this
+            // round (continue re-picks; VM is runnable and will get a turn)
+            // and resume when a later round sees Completed.
             let state_completed = table
                 .get(picked)
                 .and_then(|p| p.p_vm_suspend.as_ref())
@@ -4400,11 +4495,11 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             let resumed = crate::vm::kernel_call_resume(picked, table);
             match resumed {
                 crate::vm::VmCheckResult::Ok => {
-                    // C: kernel_call_resume 重派用的是 saved.reqmsg
-                    // （system.c:627：assert m_source 后直接
-                    // kernel_call_dispatch(caller, &saved.reqmsg)），不是
-                    // 重新从用户空间拷贝——saved_msg 由上一轮 finish 的
-                    // VmSuspend 臂存下。
+                    // C: kernel_call_resume re-dispatches with saved.reqmsg
+                    // (system.c:627: assert m_source then directly
+                    // kernel_call_dispatch(caller, &saved.reqmsg)), not by
+                    // copying again from user space — saved_msg was stored by
+                    // the VmSuspend arm of the previous finish.
                     let mut msg = match table
                         .get(picked)
                         .and_then(|p| p.p_vm_suspend.as_ref())
@@ -4414,14 +4509,18 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                         None => continue,
                     };
                     let clock_state = unsafe { crate::clock_state_boot_unchecked() };
-                    // C: kernel_call_dispatch 本体不取 BKL（BKL_LOCK 只在
-                    // mpx.S 陷入入口）；Rust 的 kernel_call/kernel_call_
-                    // dispatch 把 bkl_lock() 打包在 dispatch 前——调度循环
-                    // 已持锁（&section，loop 前一次 assume_held），经它们
-                    // 重派 = 非重入自旋锁自死锁（真机 c8a 轮实证：memreq
-                    // 服务完成后 RS 挂死在 sa1-after 与 pre-restore 之间，
-                    // 无任何输出）。故走 inner + 环境 BKL 见证；finish 用
-                    // 持锁变体（两处 bkl_unlock 会丢掉调度循环的锁）。
+                    // C: kernel_call_dispatch itself does not take the BKL
+                    // (BKL_LOCK exists only in the mpx.S trap entry); Rust's
+                    // kernel_call/kernel_call_dispatch package bkl_lock()
+                    // before dispatch — the scheduler loop already holds the
+                    // lock (&section, assume_held once before the loop), so
+                    // re-dispatching through them = non-reentrant spinlock
+                    // self-deadlock (borne out on real hardware: after memreq
+                    // service completed, RS hung between sa1-after and
+                    // pre-restore with no output at all). Therefore use the
+                    // inner form with the ambient BKL witness; finish uses
+                    // the lock-holding variant (both bkl_unlock calls would
+                    // drop the scheduler loop's lock).
                     let result = crate::syscall::kernel_call_dispatch_inner(
                         picked,
                         table,
@@ -4430,14 +4529,18 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                         clock_state,
                         &section,
                     );
-                    // C: kernel_call_resume 尾部 kernel_call_finish
-                    // （system.c:636）——完成半的 reply 拷贝 / VmSuspend
-                    // 再挂起簿记 / NoReply 出队都由它做。
-                    // S3 评审修复（P1）：门归属从挂起上下文读出后驱动
-                    // finish——IPC 腿挂起的调用补完成时不 eager 直写；
-                    // 重派再次挂起时（suspend_for_vm 新建 ctx，不继承
-                    // 门标记）finish 的 VmSuspend 臂凭 eager=false 在
-                    // 新 ctx 上重新置位，封死多段挂起路径。
+                    // C: kernel_call_resume tail kernel_call_finish
+                    // (system.c:636) — it performs the completion half's
+                    // reply copy / VmSuspend re-suspension bookkeeping /
+                    // NoReply dequeue.
+                    // Review fix (P1): the door ownership read from the
+                    // suspended context drives finish — a call suspended on
+                    // the IPC leg does not eagerly write its completion
+                    // directly; when the re-dispatch suspends again
+                    // (suspend_for_vm creates a new ctx and does not inherit
+                    // the door flag), finish's VmSuspend arm re-sets it on the
+                    // new ctx based on eager=false, closing multi-stage
+                    // suspension paths.
                     let door_skip = table
                         .get(picked)
                         .and_then(|p| p.p_vm_suspend.as_ref())
@@ -4446,10 +4549,12 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                         picked, table, &msg, result, priv_table, false, !door_skip,
                     );
                     match result.reply_wire() {
-                        // 完成：交付 RAX + 清挂起态，随后正常 restore。
-                        // NK4-C F10b（P0-wire）：本路径是 SYSCALL 腿的延迟
-                        // 完成，RAX 与同腿 eager 回执同号（`reply_wire()` 已
-                        // 按错误码/数据码约定处理，不再取负）。
+                        // Complete: deliver RAX + clear the suspension state,
+                        // then the normal restore follows.
+                        // This path is the SYSCALL leg's deferred completion;
+                        // RAX uses the same sign as that leg's eager reply
+                        // (`reply_wire()` already applies the error/data-code
+                        // convention, so no negation here).
                         Some(wire) => {
                             if let Some(p) = table.get_mut(picked) {
                                 crate::proc::set_ipc_return_code(
@@ -4461,24 +4566,30 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                                 p.clear_vm_suspend();
                             }
                         }
-                        // 重派再次挂起（多页/多区间）：finish 的 VmSuspend
-                        // 臂已存 saved_msg + 置 KCALL_RESUME + 入队通知 VM
-                        // （持锁变体，锁仍归调度循环）。此处不得递归重入
-                        // scheduler_loop（每层挂起嵌套一整层调度器帧，内核
-                        // 栈会耗尽）——continue 平级重挑：本进程已停排
-                        // 不会被选中，VM 可运行、会得到 CPU。
+                        // Re-dispatch suspended again (multiple pages/ranges):
+                        // finish's VmSuspend arm has stored saved_msg, set
+                        // KCALL_RESUME and queued the VM notification (the
+                        // lock-holding variant, so the lock still belongs to
+                        // the scheduler loop). Here we must not recursively
+                        // re-enter scheduler_loop (each suspension level nests
+                        // a whole scheduler frame and the kernel stack would
+                        // run out) — `continue` re-picks at the same level:
+                        // this process is now stopped and will not be picked,
+                        // while VM is runnable and will get the CPU.
                         None => {
                             continue;
                         }
                     }
                 }
                 crate::vm::VmCheckResult::Fault => {
-                    // 续-191 取证探针 P3a（riscv64·SIGSEGV 消费腿 stage 3a）：
-                    // 确认 resume-Fault 是从 stage 3a 消费（而非
-                    // proc_table.rs process_misc_flags 兜底腿），并现场打
-                    // caller ep + p_delivermsg_vir + 当前页表根，与 P2
-                    // (mrr) + P1 (sf-*) 对账：Fault 的 requestor 是否停在
-                    // console ecall、其 delivermsg 页是否已被自填。C-61 前不滚。
+                    // Evidence probe P3a (riscv64, the SIGSEGV consuming leg,
+                    // stage 3a): confirm the resume-Fault is consumed from
+                    // stage 3a (not from proc_table.rs process_misc_flags'
+                    // fallback leg), and print the caller ep + p_delivermsg_vir
+                    // + the current page-table root on the spot, reconciling
+                    // with P2 (mrr) + P1 (sf-*): whether the Fault's requestor
+                    // sits on a console ecall and whether its delivermsg page
+                    // has been self-filled. Do not remove yet.
                     #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
                     {
                         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -4531,19 +4642,21 @@ mod tests {
     use minix_arch::paging::mock::MockPaging;
     use minix_arch::paging::Paging;
 
-    /// AF-10（回溯审计 2026-10-01）：钉住 riscv 懒 FPU 归属门控的位语义，
-    /// 封 AF-8 复发——非 owner 必为 FS=Off(0b00<<13)（否则首条 FP 不陷阱、
-    /// 轮转腿不可达），owner 必为 FS=Dirty(0b11<<13)。并与门控谓词
-    /// `riscv64_illegal_insn_is_fpu_trap`（trap_dispatch.rs）交叉对账：
-    /// 只有非 owner 的 Off 会被判成门控陷阱。
+    /// Pin the bit semantics of the riscv lazy FPU ownership gating, so the
+    /// old bug cannot recur — non-owner must be FS=Off(0b00<<13) (otherwise
+    /// the first FP does not trap and the rotation leg is unreachable), owner
+    /// must be FS=Dirty(0b11<<13). Cross-checks the gating predicate
+    /// `riscv64_illegal_insn_is_fpu_trap` (trap_dispatch.rs): only a
+    /// non-owner's Off is classified as a gating trap.
     #[test]
     fn test_riscv_lazy_fs_field_gating() {
-        // 非 owner → Off（sstatus bits13:14 == 0b00）。
+        // non-owner → Off (sstatus bits13:14 == 0b00).
         assert_eq!(riscv_lazy_fs_field(false) & (0b11 << 13), 0b00 << 13);
-        // owner → Dirty（0b11）。
+        // owner → Dirty (0b11).
         assert_eq!(riscv_lazy_fs_field(true) & (0b11 << 13), 0b11 << 13);
-        // 交叉谓词对账：非 owner 的 FS 会被判为 FP 门控陷阱（轮转腿可达），
-        // owner 的 FS 不陷阱（活寄存器延续、不重入轮转）。
+        // Cross-check with the predicate: a non-owner's FS is classified as an
+        // FP gating trap (rotation leg reachable), an owner's FS does not trap
+        // (live registers continue, no rotation re-entry).
         assert!(crate::trap_dispatch::riscv64_illegal_insn_is_fpu_trap(
             riscv_lazy_fs_field(false)
         ));
@@ -4554,7 +4667,7 @@ mod tests {
 
     /// Full boot-flow integration test with MockPaging.
     /// Verifies: identity mapping + kernel mapping + enable → no panic.
-    /// D-9 (C arch_clock.c:279-281): consuming the kbill marker
+    /// C arch_clock.c:279-281: consuming the kbill marker
     /// attributes the whole context_stop delta to the in-flight call's
     /// process `p_cycles.kcall` and clears the marker; with no marker
     /// the consumption is a no-op.
@@ -4583,8 +4696,9 @@ mod tests {
         );
     }
 
-    /// C-25：kipc 半与 kcall 半同型——置标记、按 delta 记到
-    /// `p_cycles.kipc`、清标记；第二次消费不再记账。C `arch_clock.c:274-277`。
+    /// The kipc half is shaped like the kcall half — set the marker, record
+    /// delta into `p_cycles.kipc`, clear the marker; a second consumption
+    /// records nothing. C `arch_clock.c:274-277`.
     #[test]
     fn test_consume_kbill_ipc_attributes_delta() {
         let mut table = crate::test_helpers::test_proc_table();
@@ -4598,7 +4712,8 @@ mod tests {
             table.get(nr).unwrap().p_cycles.kipc.load(core::sync::atomic::Ordering::Acquire),
             700
         );
-        // 标记已清 → 第二次消费返回 false、不记账。
+        // Marker cleared → the second consumption returns false and records
+        // nothing.
         // SAFETY: single-threaded test.
         assert!(unsafe { kbill_ipc_raw() }.is_none());
         let section = crate::smp::bkl_lock_section();
@@ -4610,8 +4725,9 @@ mod tests {
         );
     }
 
-    /// C-25：两个标记**互不干扰**——C 的消费块是两块并列 `if`，各自记各自
-    /// 的桶（`kipc` vs `kcall`），同一个 delta 各加一份。
+    /// The two markers **do not interfere** — C's consumption block is two
+    /// parallel `if`s, each recording into its own bucket (`kipc` vs `kcall`),
+    /// adding the same delta once in each.
     #[test]
     fn test_kbill_ipc_and_kcall_are_independent() {
         let mut table = crate::test_helpers::test_proc_table();
@@ -4630,10 +4746,11 @@ mod tests {
         assert_eq!(p.p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire), 300);
     }
 
-    /// D-48: registration wires the kernel renderer into the minix-rt
+    /// Registration wires the kernel renderer into the minix-rt
     /// hook slot; the slot is cleared afterwards so a later test panic
     /// never routes through the EarlyConsole renderer (hosted tests
-    /// would SIGSEGV on UART port I/O — same gate as D-45/D-47).
+    /// would SIGSEGV on UART port I/O — the same gate as other port-I/O
+    /// tests).
     #[test]
     fn test_register_panic_diagnostic_sets_hook() {
         assert!(minix_types::panic_diagnostic_hook().is_none());
@@ -4712,7 +4829,7 @@ mod tests {
         assert_eq!(root_phys, PhysBytes(0));
     }
 
-    /// NK4-C regression: `store_kernel_info` must deep-land the
+    /// Regression: `store_kernel_info` must deep-land the
     /// firmware-heap payloads (`memmap`, `boot_modules`) into the kernel
     /// `.bss` pads — the published global copy may never keep pointing at
     /// boot-shim heap memory (real machine vh1: every conventional memmap
@@ -4769,7 +4886,7 @@ mod tests {
         assert_eq!(stored.boot_modules()[0].name, "rs");
         assert_eq!(stored.boot_modules()[1].start, PhysBytes(0x21_0000));
         assert_eq!(stored.boot_modules()[1].len, 0x2000);
-        // D-70: the platform-source list and the parameter bytes are landed
+        // The platform-source list and the parameter bytes are landed
         // by the same store.
         assert_ne!(
             stored.platform_sources().as_ptr(),
@@ -4820,7 +4937,7 @@ mod tests {
         }
     }
 
-    /// M8 fail-fast: `reserved_regions` over the `.bss` landing pad aborts
+    /// Fail-fast: `reserved_regions` over the `.bss` landing pad aborts
     /// before any copy — it never truncates.
     #[test]
     #[should_panic(expected = "reserved_regions exceeds the .bss landing pad")]
@@ -4834,7 +4951,7 @@ mod tests {
         store_kernel_info(&info);
     }
 
-    /// M8 fail-fast: `memmap` over `MEMMAP_REGION_STORE_LEN` aborts before
+    /// Fail-fast: `memmap` over `MEMMAP_REGION_STORE_LEN` aborts before
     /// the copy loop — a truncating store would publish a wrong free list.
     #[test]
     #[should_panic(expected = "memmap exceeds the .bss landing pad")]
@@ -4848,7 +4965,7 @@ mod tests {
         store_kernel_info(&info);
     }
 
-    /// M8 fail-fast: more boot modules than `NR_BOOT_MODULES` aborts before
+    /// Fail-fast: more boot modules than `NR_BOOT_MODULES` aborts before
     /// the name-pool copy.
     #[test]
     #[should_panic(expected = "boot_modules exceeds the .bss landing pad")]
@@ -4862,7 +4979,7 @@ mod tests {
         store_kernel_info(&info);
     }
 
-    /// M8/D-70 fail-fast: more platform sources than the landing pad aborts
+    /// Fail-fast: more platform sources than the landing pad aborts
     /// before any copy.
     #[test]
     #[should_panic(expected = "platform_sources exceeds the .bss landing pad")]
@@ -4879,7 +4996,7 @@ mod tests {
         store_kernel_info(&info);
     }
 
-    /// M8/D-70 fail-fast: parameter bytes over the C-sized pad abort before
+    /// Fail-fast: parameter bytes over the C-sized pad abort before
     /// the zero-and-copy step.
     #[test]
     #[should_panic(expected = "param_buf exceeds the .bss landing pad")]
@@ -4986,7 +5103,7 @@ mod tests {
     /// Verify that IDENTITY_MAP_END is aligned for huge-page mapping loops.
     #[test]
     fn test_identity_map_end_alignment() {
-        // R-19 (2026-08-13): const assertions moved into `const {}` block so
+        // const assertions moved into `const {}` block so
         // they're checked at compile time, not at test runtime.
         const { assert!(MockPaging::HUGE_PAGE_SIZE.bytes() > 0, "HUGE_PAGE_SIZE must be positive"); }
         const { assert!(MockPaging::HUGE_PAGE_SIZE.bytes().is_power_of_two(), "HUGE_PAGE_SIZE must be a power of two"); }
@@ -5237,10 +5354,12 @@ mod tests {
         assert!(bsp_local.fpu_presence, "fpu_init must set fpu_presence = true");
     }
 
-    /// C-26 测试的全局装配：`account_interrupt_stop_with` 读的是
-    /// `SMP_STATE`/`CLOCK_STATE`/`PROC_TABLE`/`PRIV_TABLE` 四个全局
-    /// （`PROC_TABLE` 是内联构造，另三个要装）——与 clock.rs 的
-    /// `setup_globals` 同法，只装本组测试读到的。
+    /// Global setup for the interrupt-stop tests:
+    /// `account_interrupt_stop_with` reads four globals
+    /// `SMP_STATE`/`CLOCK_STATE`/`PROC_TABLE`/`PRIV_TABLE` (`PROC_TABLE` is
+    /// constructed inline; the other three must be installed) — same approach
+    /// as clock.rs's `setup_globals`, installing only what this test group
+    /// reads.
     fn setup_c26_globals() {
         crate::smp::bkl_lock_reset_for_test();
         // SAFETY: single-threaded test (workspace forces --test-threads=1);
@@ -5251,8 +5370,9 @@ mod tests {
         }
     }
 
-    /// 把槽位铺成"被打断的普通用户进程"：endpoint ≥ 0（不豁免 quantum）、
-    /// 指定剩余 quantum、`proc_ptr` 指向它、基线设在 `baseline`。
+    /// Lay out the slot as an "interrupted ordinary user process":
+    /// endpoint ≥ 0 (quantum not exempt), the given remaining quantum,
+    /// `proc_ptr` pointing at it, and the baseline set to `baseline`.
     fn arm_interrupted_user(nr: crate::proc::ProcNr, quantum_left: u64, baseline: u64) {
         let section = crate::smp::bkl_lock_section();
         {
@@ -5261,9 +5381,10 @@ mod tests {
             p.p_nr = nr;
             p.p_endpoint = minix_types::Endpoint(7);
             p.p_rts_flags = crate::proc::RtsFlags::with(crate::proc::RtsFlagsBits::empty());
-            // 给 USER 特权，让状态桶落 CP_USER（C 的判据是
-            // `p->p_priv != priv_addr(USER_PRIV_ID)` → CP_SYS；priv_id 为
-            // None 的进程也算"非 USER"，所以必须显式给）。
+            // Give it USER privilege so the state bucket lands in CP_USER (C's
+            // criterion is `p->p_priv != priv_addr(USER_PRIV_ID)` → CP_SYS; a
+            // process with priv_id None also counts as "not USER", so this
+            // must be set explicitly).
             p.priv_id = Some(crate::kpriv::USER_PRIV_ID);
             p.p_sched
                 .quantum
@@ -5279,15 +5400,16 @@ mod tests {
         crate::smp::bkl_unlock();
     }
 
-    /// C-26：中断入口站把"被打断段"结清给被打断的进程——四件事一次到位：
-    /// quantum 递减（C `arch_clock.c:326-330`）、状态桶（CP_USER）、总周期、
-    /// cpuavg 的滴答累加（`p_cycles.tick`）。
+    /// The interrupt entry settles the "interrupted segment" against the
+    /// interrupted process — four things in one shot: quantum decrement (C
+    /// `arch_clock.c:326-330`), state bucket (CP_USER), total cycles, and the
+    /// cpuavg tick accumulation (`p_cycles.tick`).
     #[test]
     fn test_interrupt_stop_charges_interrupted_process() {
         setup_c26_globals();
         let nr = crate::proc::ProcNr(1);
         arm_interrupted_user(nr, 10_000, 1000);
-        // 中断读到的 TSC = 3000，基线 1000 → delta 2000。
+        // The TSC read at the interrupt = 3000, baseline 1000 → delta 2000.
         let section = crate::smp::bkl_lock_section();
         super::account_interrupt_stop_with(&section, 3000);
         crate::smp::bkl_unlock();
@@ -5322,9 +5444,10 @@ mod tests {
         crate::smp::bkl_unlock();
     }
 
-    /// C-26：quantum 用尽 → 下一次 `switch_to_user` 的 Stage 4 判
-    /// `check_quantum` 为假并置 `RTS_NO_QUANTUM`（C `proc.c:418-428`）——
-    /// 消费半接通后这条抢占链才真的会触发。
+    /// quantum exhaustion → the next `switch_to_user`'s Stage 4 sees
+    /// `check_quantum` return false and sets `RTS_NO_QUANTUM` (C
+    /// `proc.c:418-428`) — only with the consuming half wired does this
+    /// preemption chain actually trigger.
     #[test]
     fn test_interrupt_stop_exhausts_quantum_then_policy_applies() {
         setup_c26_globals();
@@ -5348,12 +5471,15 @@ mod tests {
             );
             crate::smp::bkl_unlock();
         }
-        // Stage 4：`check_quantum` 现在真的看得到"用尽"（此前 cpu_time_left
-        // 从不递减，这一支在生产路径上不可达），并按 C `proc_no_time` 的**政策**
-        // 处置：本进程 `p_sched.scheduler` 为 None（内核调度）→ else 支补满
-        // quantum、不置 NO_QUANTUM（C proc.c:1893-1910）。
-        // 用户调度 + 可抢占那一支（置 NO_QUANTUM + 通知调度器）需要活的调度器
-        // 进程与 IPC，由 proc_table.rs 的 `sched_proc_no_time` 既有测试覆盖。
+        // Stage 4: `check_quantum` now really sees "exhausted" (previously
+        // cpu_time_left never decreased and this arm was unreachable on the
+        // production path), and applies C `proc_no_time`'s **policy**: this
+        // process has `p_sched.scheduler == None` (kernel scheduling) → the
+        // else arm tops the quantum back up and does not set NO_QUANTUM (C
+        // proc.c:1893-1910).
+        // The user-scheduled + preemptible arm (set NO_QUANTUM + notify the
+        // scheduler) needs a live scheduler process and IPC, and is covered
+        // by proc_table.rs's existing `sched_proc_no_time` tests.
         let section = crate::smp::bkl_lock_section();
         let priv_table = crate::priv_table_with(&section);
         let _ = crate::proc_table_with(&section).check_quantum(nr, priv_table, &section);
@@ -5371,7 +5497,8 @@ mod tests {
         crate::smp::bkl_unlock();
     }
 
-    /// C-26：`proc_ptr` 缺席（早启动窗口）安全退出——无账可结，连基线都不动。
+    /// A missing `proc_ptr` (early-boot window) exits safely — nothing to
+    /// settle, not even the baseline is touched.
     #[test]
     fn test_interrupt_stop_no_current_proc_is_noop() {
         setup_c26_globals();
@@ -5416,7 +5543,7 @@ mod tests {
 
     // ── ptproc tracking tests (P9-4: SetAddrSpace write_cr3 support) ──
 
-    /// Install a fresh two-CPU global SmpState for ptproc tests (D-40: the
+    /// Install a fresh two-CPU global SmpState for ptproc tests (the
     /// accessors are per-CPU CpuLocal reads/writes now — the test drives the
     /// BSP slot, which `current_cpu_id()` names on hosted builds).
     fn fresh_ptproc_state() {
@@ -5433,7 +5560,7 @@ mod tests {
     #[test]
     #[test]
     fn test_account_process_stop_accumulates_p_cycles() {
-        // I-16: the helper is the single KERNEL-branch accounting point —
+        // The helper is the single KERNEL-branch accounting point —
         // both context_stop equivalents route through it; the delta lands
         // in KERNEL.p_cycles (GET_PROC observable) and the CP_INTR bucket.
         fresh_ptproc_state();
@@ -5483,7 +5610,7 @@ mod tests {
 
     /// After `set_current_ptproc_nr(VM_PROC_NR)`, `current_ptproc_nr()`
     /// returns `Some(VM_PROC_NR)`. This mirrors C's
-    /// `get_cpulocal_var(ptproc) = vm` in `arch_post_init()` (D-40: per-CPU
+    /// `get_cpulocal_var(ptproc) = vm` in `arch_post_init()` (per-CPU
     /// CpuLocal slot, BSP's here).
     #[test]
     fn test_ptproc_set_returns_vm_proc_nr() {
@@ -5493,7 +5620,7 @@ mod tests {
             "ptproc must be VM_PROC_NR after init_post_and_memory");
     }
 
-    /// D-40: the write lands in THIS CPU's CpuLocal slot only — a second
+    /// The write lands in THIS CPU's CpuLocal slot only — a second
     /// CPU's slot stays untouched (C: `get_cpulocal_var(ptproc)` is
     /// per-CPU; the global atomic leaked the write across CPUs).
     #[test]
@@ -5543,7 +5670,7 @@ mod tests {
     /// Helper for root-phys tests so they don't leak state across each other.
     fn reset_root_phys_for_test() {
         CURRENT_ROOT_PHYS.store(ROOT_PHYS_UNSET, Ordering::Release);
-        // NK4-C 续-56: `current_root_phys()` now prefers the per-CPU slot,
+        // `current_root_phys()` now prefers the per-CPU slot,
         // so the reset must clear this CPU's slot too — otherwise a stale
         // value from a prior test would shadow the unset seed.
         let smp = unsafe { crate::try_smp_state() };
@@ -5648,7 +5775,7 @@ mod tests {
     //
     // Global-state hygiene: BKL/root-mirror/ptproc mirrors are reset at
     // each test's start (tests run with RUST_TEST_THREADS=1 — see
-    // .cargo/config.toml R-17 — so no parallel interference).
+    // .cargo/config.toml — so no parallel interference).
 
     use crate::kpriv::PrivTable;
     use crate::proc::{CpuId, ProcNr, RtsFlagsBits, proc_nr};
@@ -5839,7 +5966,7 @@ mod tests {
 
     #[test]
     fn test_switch_address_space_same_root_syncs_ptproc_and_mirror() {
-        // NK4-C 续-18: when the new root equals the live HW register,
+        // When the new root equals the live HW register,
         // the switch skips the TLB flush but still syncs mirror and
         // ptproc (defensive consistency — C's asm skips both, but the
         // hardware-read comparison makes the skip safe; updating ptproc
@@ -5910,7 +6037,7 @@ mod tests {
         table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
         // Simulate a prior kernel entry: the return gate refuses to dispatch
         // on NoEntry (C: arch_system.c:597-598), so the fixture records the
-        // full-context style the entry path would stamp (smp_todo S-8).
+        // full-context style the entry path would stamp.
         table.get_mut(ProcNr(0)).unwrap().trap_style = TrapStyle::IntHard;
 
         let section = unsafe { crate::smp::BklSection::assume_held() };
@@ -5944,9 +6071,9 @@ mod tests {
     fn test_finish_and_restore_fast_syscall_style_is_loud_placeholder() {
         // A skinny-frame fast entry pairs a sysret-class return; taking the
         // full-context path with a mismatched frame would be silent
-        // corruption. The pairing return lands with the asm entry work
-        // (smp_todo S-8) — until then the recorded Syscall style must stop
-        // loudly, which this pins.
+        // corruption. The pairing return lands with the asm entry work —
+        // until that lands, the recorded Syscall style must stop loudly,
+        // which this pins.
         bkl_acquire_for_test();
         reset_root_mirrors_for_test();
         let mut table = crate::test_helpers::test_proc_table();
@@ -5960,11 +6087,12 @@ mod tests {
         super::finish_and_restore(&mut table, &mut smp, ProcNr(0), false, &section);
     }
 
-    // ── E-VMTLB（edge_todo.md）：MF_FLUSH_TLB 的 pick 点判定与 switch_to_user 消费 ──
+    // ── MF_FLUSH_TLB: the pick-point decision and the switch_to_user consume ──
 
-    /// C: proc.c:345-347 — 判定两半缺一不可:旗标置位且被选进程就是本 CPU
-    /// 的 ptproc(翻译常驻)才需要刷新;旗标在但 ptproc 是别的进程,刷新归
-    /// 那个 CPU 的调度点。
+    /// C: proc.c:345-347 — both halves are required: the flag must be set
+    /// and the picked process must be this CPU's ptproc (translations
+    /// resident) before a refresh is needed; if the flag is set but ptproc is
+    /// another process, the refresh belongs to that CPU's scheduling point.
     #[test]
     fn test_needs_tlb_refresh_requires_flag_and_ptproc() {
         let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
@@ -5980,7 +6108,8 @@ mod tests {
 
     #[test]
     fn test_consume_flush_tlb_flag_flushes_and_clears() {
-        // C: proc.c:459-463 — 旗标在 + pick 点判定常驻 → 刷新执行,旗标清除。
+        // C: proc.c:459-463 — flag set + pick point says resident → flush
+        // runs, flag cleared.
         let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
         p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
         let mut flushed = false;
@@ -5991,8 +6120,10 @@ mod tests {
 
     #[test]
     fn test_consume_flush_tlb_flag_clears_without_flush() {
-        // 旗标在但翻译不常驻本 CPU:这里跳过刷新(ptproc CPU 在自己的调度点
-        // 刷),旗标仍然清除——两个 CPU 各消费一次是 C 语义的一部分。
+        // Flag set but the translations are not resident on this CPU: skip
+        // the flush here (the ptproc CPU flushes at its own scheduling
+        // point), but still clear the flag — each CPU consuming it once is
+        // part of C's semantics.
         let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
         p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
         let mut flushed = false;
@@ -6003,7 +6134,8 @@ mod tests {
 
     #[test]
     fn test_consume_flush_tlb_flag_noop_when_unset() {
-        // 无旗标:既不刷新也不写旗标(C 的 if 只在 MF_FLUSH_TLB 置位时进入)。
+        // No flag: neither flush nor write the flag (C's `if` is only entered
+        // when MF_FLUSH_TLB is set).
         let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
         let mut flushed = false;
         super::consume_flush_tlb_flag(&mut p, true, || flushed = true);
@@ -6032,11 +6164,11 @@ mod tests {
         {
             let table = unsafe { crate::proc_table_boot_unchecked() };
             let priv_table = unsafe { crate::priv_table_boot_unchecked() };
-            // Global-state hygiene (B6): the shared scheduler run queue is
+            // Global-state hygiene: the shared scheduler run queue is
             // not part of the root-mirror reset. A prior test that drives a
             // real scheduler-aware primitive against the shared PROC_TABLE
             // (e.g. `clock_irq_handler` waking an expired-alarm owner through
-            // the notify enqueue half, NK4-C B6) legitimately leaves a process
+            // the notify enqueue half) legitimately leaves a process
             // queued. Drain every run queue so this loop's pick sees only the
             // single runnable+queued process seeded below (the test's stated
             // precondition), immune to upstream ordering.

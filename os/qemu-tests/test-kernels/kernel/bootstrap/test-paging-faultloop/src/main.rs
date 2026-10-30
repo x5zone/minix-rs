@@ -1,18 +1,18 @@
-//! Test: E5(d) page-fault complete loop smoke (edge1 K17, C-4).
+//! Test: E5(d) page-fault complete loop smoke.
 //!
-//! Mechanically replays the VM paging acceptance loop from edge_todo.md
-//! (E5(d), 2026-09-08 addition): a process page-faults → the kernel arm
+//! Mechanically replays the VM paging acceptance loop: a process
+//! page-faults → the kernel arm
 //! resolves the fault → **the handler writes the process's hardware PTE**
 //! → resume → the faulting instruction re-executes successfully. The
 //! explicit assertion item is the anti-livelock property: without the PTE
 //! write the same address re-faults forever, which this carrier turns
 //! into a deterministic FAIL (fault counter cap) instead of a hang.
 //!
-//! # VM participation boundary (C-4)
+//! # VM participation boundary
 //!
 //! The real loop hands the fault to the VM server over IPC (VM_PAGEFAULT
-//! → VM resolves → VM writes the PTE). That leg needs VM 参战 and hangs
-//! on edge4 真机联调. VM's paging API (`pagetable`/`vm_self_map`) is
+//! → VM resolves → VM writes the PTE). That leg needs VM participation
+//! and hangs during hardware bring-up. VM's paging API (`pagetable`/`vm_self_map`) is
 //! `pub(crate)` (only `VmServer`/`BootMemRegion`/`boot` are exported), so
 //! a test kernel cannot link it — this carrier keeps every mechanical
 //! stage of the loop but plays the VM role in the kernel arm: adopt the
@@ -21,7 +21,8 @@
 //! set/clear + `build_vm_pagefault_msg`) standing at the kernel↔VM
 //! boundary. The produced `Message` is consumed by the carrier's
 //! stand-in resolver — the shape that the real VM handler will consume
-//! once edge3 exposes a linkable surface (gap registered per C-4).
+//! once the VM exposes a linkable surface (the gap stays tracked as a
+//! known limitation).
 //!
 //! # Boot flow
 //!
@@ -447,7 +448,7 @@ fn carrier_pagefault(frame: &mut TrapFrame) {
         }
     }
 
-    // (d) THE G-V12-8 leg: write the process's hardware PTE. The leaf
+    // (d) THE hardware-PTE leg: write the process's hardware PTE. The leaf
     // maps FAULT_VA → the resolved frame, user-writable, non-exec.
     let root = adopted_root();
     let leaf = match walk_leaf(root, fault_va, true) {

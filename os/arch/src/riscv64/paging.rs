@@ -190,7 +190,7 @@ enum PteChannel {
 
 #[inline]
 fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
-    // V11/E4: in this crate's own test build (mock feature), the VM window
+    // In this crate's own test build (mock feature), the VM window
     // routes through MockDirectMap so tests can point it at real leaked
     // memory via `set_mock_vm_base` — mirroring the x86_64 funnel.
     // Production keeps the riscv64 constant base.
@@ -213,9 +213,11 @@ fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
 /// a valid 8-byte aligned PTE address.
 #[inline]
 unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
-    // 续-311 [ARCH: riscv-vmddm]：VmDm 槽读走内核代读钩子（VM 注册后），
-    // 绕开 QEMU 平移层对 DM 窗 VA 的时序性误导；KernelDm（S 态 KDM 直读，
-    // krewalk 实证无此症状）与未注册态维持直读。
+    // [ARCH: riscv-vmddm] VmDm slot reads go through the kernel
+    // read-on-behalf hook (once the VM registers it), bypassing the
+    // timing-dependent misdirection of DM-window VAs by QEMU's translation
+    // layer; KernelDm (an S-mode KDM direct read, which shows no such symptom
+    // in practice) and the unregistered state keep reading directly.
     #[cfg(all(target_arch = "riscv64", not(test)))]
     if matches!(channel, PteChannel::VmDm) {
         if let Some(v) = vmdm::read(paddr) {
@@ -227,7 +229,7 @@ unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
 
 /// Write a PTE at the given physical address via the Direct Map, with
 /// a TLB invalidation for the affected virtual address — **gated on the
-/// channel** (续-77, the riscv twin of the aarch64 §1.111 fix and the
+/// channel** (the riscv twin of the aarch64 §1.111 fix and the
 /// x86 `invlpg` gate, mirroring `arm64::paging::write_pte_dm`).
 ///
 /// `sfence.vma` is a supervisor instruction: executed from U-mode it
@@ -252,8 +254,10 @@ unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
 /// intermediate tables where no leaf TLB entry exists yet).
 #[inline]
 unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: PteChannel) {
-    // 续-311 [ARCH: riscv-vmddm]：VmDm 腿 PTE 写走内核代写钩子（KDM 直写
-    // +sfence），绕开平移层时序性误导；KernelDm 与未注册态维持直写。
+    // [ARCH: riscv-vmddm] VmDm-leg PTE writes go through the kernel
+    // write-on-behalf hook (KDM direct write plus sfence), bypassing the
+    // timing-dependent misdirection of the translation layer; KernelDm and the
+    // unregistered state keep writing directly.
     #[cfg(all(target_arch = "riscv64", not(test)))]
     if matches!(channel, PteChannel::VmDm) {
         if vmdm::write(paddr, value).is_some() {
@@ -275,15 +279,21 @@ unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: Pt
 }
 
 /// Result of a read-only walk down the 3-level Sv39 page table.
-/// WalkResult 由纯逻辑层定义（巨叶附原始 PTE）：
+/// `WalkResult` is defined by the pure-logic layer (huge leaves carry the raw
+/// PTE):
 use crate::riscv64_walk::WalkResult;
 
-// ── NK4-C 续-311 内核代读旁路（[ARCH: riscv-vmddm]；(A) 结案时裁决去留）──
-// VM 的 VmDm 槽读在特定时序被 QEMU 平移层误导（§续-291..310 穷举收口：
-// RAM 恒净/链健全/绑定正确，而 VM 读到 poison）。本钩子让 VM 注册代读
-// fn（实现=gateway kernel-call，内核 S 态 KDM 直读，绕开平移层），
-// read_pte_dm 的 VmDm 腿改经此。None=直读（未注册/测试态）。KernelDm
-// （内核自读）不经此——S 态 KDM 直读无此症状（krewalk 实证）。
+// ── Kernel read-on-behalf bypass ([ARCH: riscv-vmddm]; keep-or-drop to be
+// decided at close-out) ──
+// At certain timings the VM's VmDm slot reads are misdirected by QEMU's
+// translation layer (an exhaustive sweep settled it: RAM is always clean, the
+// chain is sound and the binding is correct, yet the VM reads poison). This
+// hook lets the VM register a read-on-behalf fn (implemented as a gateway
+// kernel-call, so the kernel reads directly in S mode through KDM, bypassing
+// the translation layer), and `read_pte_dm`'s VmDm leg goes through it.
+// None = read directly (unregistered/test state). KernelDm (the kernel reading
+// its own tables) does not use it — S-mode KDM direct reads show no such
+// symptom (verified in practice).
 #[cfg(all(target_arch = "riscv64", not(test)))]
 pub mod vmdm {
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -291,14 +301,15 @@ pub mod vmdm {
     type VmDmRead = fn(paddr: u64) -> u64;
     static VMDM_READ: AtomicUsize = AtomicUsize::new(0);
 
-    /// VM init 注册（write-once，先于任何子进程 walk；契约同
-    /// pt_alloc::register）。
+    /// Registered by VM init (write-once, before any child process walks; the
+    /// same contract as `pt_alloc::register`).
     pub fn register_read(f: VmDmRead) {
         VMDM_READ.store(f as usize, Ordering::Relaxed);
     }
 
-    /// 续-311 写/零填钩子（同 read 生命周期）：VM 注册后 VmDm 腿的 PTE
-    /// 写与整页零填改经内核代执行（KDM 直写+sfence 齐备）。
+    /// Write/zero-fill hooks (the same lifetime as the read hook): once the VM
+    /// registers them, VmDm-leg PTE writes and whole-page zero fills are
+    /// executed by the kernel instead (KDM direct write with sfence).
     type VmDmWrite = fn(paddr: u64, val: u64);
     type VmDmZero = fn(paddr: u64);
     static VMDM_WRITE: AtomicUsize = AtomicUsize::new(0);
@@ -317,7 +328,8 @@ pub mod vmdm {
         if f == 0 {
             return None;
         }
-        // SAFETY: 同型 fn 由 register_write 存入；注册先于任何 walk。
+        // SAFETY: a fn of the same type was stored by register_write; the
+        // registration precedes any walk.
         unsafe {
             (core::mem::transmute::<usize, VmDmWrite>(f))(paddr, val)
         };
@@ -329,31 +341,36 @@ pub mod vmdm {
         if f == 0 {
             return None;
         }
-        // SAFETY: 同上。
+        // SAFETY: as above.
         unsafe {
             (core::mem::transmute::<usize, VmDmZero>(f))(paddr)
         };
         Some(())
     }
 
-    /// 钩子未注册返回 None（调用方回落直读）。
+    /// Returns None while the hook is unregistered (the caller falls back to a
+    /// direct read).
     pub(crate) fn read(paddr: u64) -> Option<u64> {
         let f = VMDM_READ.load(Ordering::Relaxed);
         if f == 0 {
             return None;
         }
-        // SAFETY: 同型 fn 由 register_read 存入；注册先于任何 walk，
-        // VM 单线程无写竞争。
+        // SAFETY: a fn of the same type was stored by register_read; the
+        // registration precedes any walk, and the single-threaded VM has no
+        // write race.
         Some(unsafe { (core::mem::transmute::<usize, VmDmRead>(f))(paddr) })
     }
 }
 
-/// SD-10 候选 3 改形仪器的静点排水（riscv64 timer 臂每 tick 调用；
-/// 纯逻辑见 `crate::ptwb` 模块文档）。预算内取走查级样本从 root 重走、
-/// 槽级样本 KDM 复读；分歧按类打印（封顶 8），首个有核验的排水打一行
-/// 活性证据。单 hart + BKL 下 tick 与 kcall 串行，页表写者必然不在飞；
-/// tick 嵌套进 kcall 的重入由 `ptwb::drain_guard_enter` 挡住（失败试形
-/// 的教训正是重入）。
+/// Quiescent-point drain for the instrumentation (called every tick by the
+/// riscv64 timer arm; the pure logic lives in the `crate::ptwb` module docs).
+/// Within budget it takes walk-level samples and re-walks them from the root,
+/// and takes slot-level samples for a KDM re-read; disagreements are printed by
+/// class (capped at 8), and the first verified drain prints one line of
+/// liveness evidence. With a single hart plus the BKL, ticks and kcalls are
+/// serialized, so a page-table writer is necessarily not in flight; a tick
+/// re-entering a kcall is blocked by `ptwb::drain_guard_enter` (re-entrancy is
+/// exactly the lesson the failed trial shape taught).
 #[cfg(target_arch = "riscv64")]
 pub fn ptwb_drain_budgeted() {
     use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
@@ -366,8 +383,9 @@ pub fn ptwb_drain_budgeted() {
     let n_slot = crate::ptwb::take_slot_batch(&mut slot_buf);
     let mut hits = 0usize;
 
-    // 走查级：从记录的 root 重走（内核 S 态走 KernelDm，与写者通道无
-    // 关——root 是同一份物理表）；巨叶表态给原始 PTE，不命中折叠 0。
+    // Walk level: re-walk from the recorded root (in kernel S mode this uses
+    // KernelDm, independent of the writer's channel — the root is the same
+    // physical table); a huge leaf reports its raw PTE, and a miss folds to 0.
     for e in leaf_buf.iter().take(n_leaf) {
         let (root, vaddr, want, op) = (e[0], e[1], e[2], e[3]);
         let got = match walk_read(root, vaddr, PteChannel::KernelDm) {
@@ -398,11 +416,14 @@ pub fn ptwb_drain_budgeted() {
         }
     }
 
-    // 槽级：网关写下的槽 KDM 复读，值漂移即 HIT。
+    // Slot level: re-read through KDM the slot the gateway wrote; any drift in
+    // the value is a HIT.
     for e in slot_buf.iter().take(n_slot) {
         let (pa, want) = (e[0], e[1]);
-        // SAFETY: 槽址来自网关 PteWrite 的 m1p1（合法 PTE 槽物理址），
-        // 内核 DM 常开；对已回收页的复读只是读，无副作用。
+        // SAFETY: the slot address comes from the gateway PteWrite's m1p1 (a
+        // valid PTE-slot physical address) and the kernel DM is always on; a
+        // re-read of an already-recycled page is a pure read with no side
+        // effects.
         let got = unsafe { read_pte_dm(pa, PteChannel::KernelDm) };
         if let Some(class) = crate::ptwb::classify_slot(want, got) {
             hits += 1;
@@ -420,7 +441,8 @@ pub fn ptwb_drain_budgeted() {
         }
     }
 
-    // 活性行：首个有核验的排水打一行（证明排水在真机真跑；全 boot 一行）。
+    // Liveness line: one line for the first verified drain (proving the drain
+    // really runs on hardware; one line per boot).
     if (n_leaf + n_slot) > 0 && crate::ptwb::first_live() {
         Console::write_str("nk4c: ptwb live (first drain leaf=");
         Console::write_hex(n_leaf as u64);
@@ -453,9 +475,12 @@ pub fn ptwb_drain_budgeted() {
 /// `KERNEL_DIRECT_MAP_BASE`; VM: the VM Direct Map window). Callers must
 /// not invoke this before paging is enabled.
 fn walk_read(root_paddr: u64, vaddr: u64, channel: PteChannel) -> WalkResult {
-    // §续-349：走表逻辑抽到纯逻辑层 `riscv64_walk::walk_read_with`（宿主
-    // 对抗测试直驱同一实现）；本函数只提供真机的 PTE 读取闭包（Direct
-    // Map 窗口）。规范性检查/错粒度巨叶拒绝在纯逻辑层实现并对账。
+    // The walk logic was extracted into the pure-logic layer as
+    // `riscv64_walk::walk_read_with` (host adversarial tests drive the same
+    // implementation); this function only supplies the hardware PTE-read
+    // closure (Direct Map window). The conformance checks and the wrong-granule
+    // huge-leaf rejection are implemented and reconciled in the pure-logic
+    // layer.
     let mut read = |pa: u64| unsafe { read_pte_dm(pa, channel) };
     walk_read_with(&mut read, root_paddr, vaddr)
 }
@@ -480,13 +505,15 @@ pub(crate) fn walk_translate(root_paddr: u64, vaddr: u64) -> Option<(PhysBytes, 
             if pte & Sv39PteFlags::V.bits() != 0 && pte_is_leaf(pte) =>
         {
             // For 4KB leaf pages, the offset within the page comes from
-            // the low 12 bits of vaddr. §续-358 单变量对照：恢复 fcb8c542e
-            // 的末级叶形态检查（L0 指针形 fail-closed）。
+            // the low 12 bits of vaddr. A single-variable comparison restores
+            // the final-level leaf shape check (an L0 table pointer fails
+            // closed).
             let offset = vaddr & 0xFFF;
             Some((PhysBytes(pte_to_paddr(pte) | offset), pte_to_flags(pte)))
         }
         WalkResult::Huge1G(paddr, pte) | WalkResult::Huge2M(paddr, pte) => {
-            // Huge-page offset 已由纯逻辑层折叠；flags 从原始 PTE 重建。
+            // The huge-page offset is already folded by the pure-logic layer;
+            // the flags are rebuilt from the raw PTE.
             let mut flags = pte_to_flags(pte);
             flags |= PageFlags::HUGE_PAGE;
             Some((PhysBytes(paddr), flags))
@@ -741,7 +768,7 @@ impl Paging for Riscv64Paging {
     }
 
     unsafe fn destroy(&mut self) {
-        // V11/E4: full three-level reclaim when a pt_free function is
+        // Full three-level reclaim when a pt_free function is
         // registered (C pagetable.c:1427-1437 `pt_free` parity — previously
         // "accept the intermediate-table leak"). Without pt_free (boot-stage
         // tables with no allocator domain), keep the zero-root-only legacy
@@ -790,8 +817,10 @@ impl Paging for Riscv64Paging {
         // SAFETY: see above. Flush TLB for the target vaddr in case a
         // stale entry lingers from a prior unmap.
         unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
-        // SD-10 候选 3 改形仪器（记录-静点走查）：只记 KernelDm（内核侧
-        // 静态才被内核排水看见；VM 副本经网关臂记录，见 syscall.rs PteWrite）。
+        // Instrumentation (record, then drain at a quiescent point): record
+        // only KernelDm (only the kernel-side static is seen by the kernel
+        // drain; the VM copy is recorded by the gateway arm, see `PteWrite` in
+        // syscall.rs).
         if matches!(self.channel, PteChannel::KernelDm) {
             crate::ptwb::record_leaf(self.root_paddr, vaddr.0, new_pte, crate::ptwb::LeafOp::Map);
         }
@@ -877,24 +906,29 @@ impl Paging for Riscv64Paging {
     }
 
     fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
-        // 续-155/续-173 q-badroot/l1raw 类调试探针已除（用后即滚）：本
-        // query/walk_read 被 VM(U 态)与内核(S 态)共用，而 `CurrentEarlyConsole`
-        // 的 riscv 后端是 SBI putchar `ecall a7=1`——在 U 态 ecall 会陷入
-        // 内核 IPC 陷阱门被误当 `IpcCall::Send`（dst=a0=字符、消息指针
-        // =a1=0）→ copy_msg_from_user(0) EFAULT → cause_signal(VM,SIGSEGV)
-        // 致命（gh63 定谳的真身）。wrong-root 家族早已定谳（续-116/117
-        // 零命中），无生产行为影响。
+        // The q-badroot/l1raw-style debug probes have been removed (gone once
+        // used): this query/walk_read is shared by the VM (U mode) and the
+        // kernel (S mode), while the riscv backend of `CurrentEarlyConsole` is
+        // the SBI putchar `ecall a7=1` — an ecall from U mode traps into the
+        // kernel IPC trap gate and is mistaken for `IpcCall::Send`
+        // (dst=a0=the character, message pointer=a1=0) →
+        // copy_msg_from_user(0) EFAULT → cause_signal(VM,SIGSEGV), which is
+        // fatal (the real cause of that failure). The wrong-root family was
+        // settled long ago (zero hits across repeated probes) and has no impact
+        // on production behavior.
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(_leaf_paddr, pte)
                 if pte & Sv39PteFlags::V.bits() != 0 && pte_is_leaf(pte) =>
             {
                 // For 4KB leaf pages, the offset within the page comes from
-                // the low 12 bits of vaddr. §续-358 单变量对照：恢复 L0 检查。
+                // the low 12 bits of vaddr. A single-variable comparison
+                // restores the L0 check.
                 let offset = vaddr.0 & 0xFFF;
                 Some((PhysBytes(pte_to_paddr(pte) | offset), pte_to_flags(pte)))
             }
             WalkResult::Huge1G(paddr, pte) | WalkResult::Huge2M(paddr, pte) => {
-                // Huge-page offset 已由纯逻辑层折叠；flags 从原始 PTE 重建。
+                // The huge-page offset is already folded by the pure-logic
+                // layer; the flags are rebuilt from the raw PTE.
                 let mut flags = pte_to_flags(pte);
                 flags |= PageFlags::HUGE_PAGE;
                 Some((PhysBytes(paddr), flags))
@@ -924,8 +958,8 @@ impl Paging for Riscv64Paging {
     /// Split the huge leaf (1 GiB at L2 / 2 MiB at L1) covering `vaddr`
     /// into the next level's 512 entries, preserving every translation
     /// (same frames, same leaf flags) so individual 4 KiB pages become
-    /// page-granular unmappable. NK4-C 续-90: the riscv mirror of
-    /// aarch64/x86 `split_huge` — boot-identity leaves stand at 2 MiB
+    /// page-granular unmappable. The riscv mirror of aarch64/x86
+    /// `split_huge`: boot-identity leaves stand at 2 MiB
     /// granularity (Sv39 huge = 2 MiB when DRAM base is not 1-GiB aligned),
     /// and the boot ELF loader (`arch::boot::load_elf_into`) must evict
     /// them under user segment VAs or the fresh user `map` fails with
@@ -1170,7 +1204,8 @@ impl HugePages for Riscv64Paging {
 /// incremental mapping — no demotion path exists: any present slot inside a
 /// DM window on the bootstrap root is a boot-layout bug and fails fast.
 /// All table access goes through the identity mapping (`VA = PA`), which
-/// stays untouched by these writes (§6.1 "DM 建立的自举写通道闭环").
+/// stays untouched by these writes (§6.1, "the bootstrap write channel that
+/// establishes the DM is closed-loop").
 pub struct Riscv64BootDmInstaller;
 
 impl crate::arch::boot_dm::BootDmInstaller for Riscv64BootDmInstaller {

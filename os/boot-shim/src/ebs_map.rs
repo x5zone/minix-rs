@@ -1,6 +1,6 @@
 //! UEFI-leg descriptor walker + classifier for the v1 handoff pairing loop.
 //!
-//! The EBS pairing loop (design §1.5 (六).4, scheme B) obtains the memory map
+//! The EBS pairing loop (design §1.5 (6).4, scheme B) obtains the memory map
 //! into a caller-owned raw buffer while Boot Services are still alive, then
 //! classifies every descriptor and dual-writes the result into the handoff
 //! arena: conventional memory becomes the free list (`WireMemoryRegion`
@@ -23,9 +23,9 @@
 //!
 //! Skipped descriptors (MMIO windows) are not range-validated: no region is
 //! produced from them, and firmware MMIO apertures may legitimately sit far
-//! above RAM. The ceiling rule matches the pre-T1 collector: reserved
-//! descriptors above the conventional RAM top are dropped (fix27d: the QEMU
-//! high chipset hole); descriptors are collected in two passes because
+//! above RAM. The ceiling rule matches the earlier collector: reserved
+//! descriptors above the conventional RAM top are dropped (the QEMU high
+//! chipset hole); descriptors are collected in two passes because
 //! GetMemoryMap order is not type-sorted.
 
 use minix_boot::{HandoffV1WriteError, MemoryRegion, Serializer};
