@@ -482,17 +482,17 @@ impl SmpState {
     /// idle. This is the clearing half of C `context_stop_idle()`
     /// (arch_clock.c:351-359: `is_idle = cpu_is_idle; cpu_is_idle = 0;`),
     /// invoked at the timer-interrupt entry so a tick that lands on a halted
-    /// CPU marks it busy again. The paired `if (is_idle) restart_local_timer()`
-    /// is already satisfied here: `clock::local_tick` rearms the one-shot local
-    /// timer unconditionally on every CPU, and C's own restart is a no-op on
-    /// auto-reloading clock sources.
+    /// CPU marks it busy again.
     ///
-    /// Arm 1 (the clearing arm). The wake *producer* — sending the SCHED
-    /// IPI when a runnable process is enqueued onto an idle CPU (C
-    /// proc.c:1641-1650) — is the separate outstanding arm 2, gated behind the
-    /// BSP clamp removal. Until then this cleared flag has no downstream
-    /// consumer, which is the expected state for a prerequisite building
-    /// block landed ahead of the milestone that reads it.
+    /// The paired `if (is_idle) restart_local_timer()` is **not** satisfied:
+    /// `clock::local_tick` only rearms a timer that already fired, and every
+    /// architecture's `stop_local_timer` masks the AP timer in `idle()`, so an
+    /// AP woken by a scheduling IPI would stay masked and never tick again.
+    /// The C2C stop-loss therefore restores the BSP affinity clamp; the
+    /// enqueue wake producer remains in place but inert (no process is homed
+    /// on an AP). The receive-side arms — clear plus timer restart on wake,
+    /// scheduler-flag application on aarch64/riscv64, and riscv64's remote
+    /// `fence.i` — must land together before the clamp is removed.
     pub fn clear_idle_flag(&mut self, cpu: CpuId) -> bool {
         match self.cpu_locals.get_mut(cpu.index()) {
             Some(local) => core::mem::replace(&mut local.cpu_is_idle, false),

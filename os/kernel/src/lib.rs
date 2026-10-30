@@ -3728,21 +3728,24 @@ fn idle(
         local.cpu_is_idle = true;
     }
     if smp.ncpus() > 1 && cpu != smp.bsp_cpu_id() {
-        // CONTRACT (CodeReview): masking the AP timer here is only
-        // one half of C's design. C pairs it with three arms that this port has
-        // NOT yet wired, and every one must land before APs may run user work:
-        //   1. `context_stop_idle` at interrupt entry (arch_clock.c:351-369) —
-        //      clears `cpu_is_idle` and restarts the local timer, so a woken AP
-        //      resumes ticking (this mask is otherwise permanent);
-        //   2. [LANDED] the enqueue wake arm (proc.c:1641-1650) — when a runnable
-        //      process is placed on an idle CPU's queue, `sched_enqueue_with`
-        //      sends the SCHED IPI to rouse it;
-        //   3. [LANDED] the former BSP affinity clamp is removed, so
-        //      `SYS_SCHEDCTL`/`SYS_SCHEDULE` may home a process on an AP.
-        // All three arms are now in place; APs may run user work.
-        // Their local tick is
-        // observability-only (`local_tick` clock.rs) and preemption is BSP-driven
-        // via the SCHED IPI. Enabling AP scheduling REQUIRES arms 1-3 first.
+        // CONTRACT (C2C stop-loss): masking the AP timer here is only one
+        // half of C's design. C pairs it with `context_stop_idle`
+        // (arch_clock.c:351-369), which clears `cpu_is_idle` and restarts the
+        // local timer at interrupt entry so a woken AP resumes ticking.
+        //   1. Receive side: NOT complete. No architecture restarts the AP
+        //      timer on the wake path, so this mask is permanent after the
+        //      first idle; aarch64 never enables SGI 0 (`GICR_ISENABLER0`
+        //      starts masked and IPI bring-up does not exist); riscv64 clears
+        //      `sip.SSIP` without applying the pending scheduler flags.
+        //      riscv64 also keeps the local-only `fence.i` contract, whose
+        //      remote-fence arm is documented as this unclamp's precondition.
+        //   2. Producer: LANDED. `sched_enqueue_with` sends the C
+        //      `proc.c:1647` SCHED IPI when the target CPU is idle — inert
+        //      while the clamp below keeps every process on the BSP.
+        //   3. Affinity clamp: RESTORED (stop-loss), so `SYS_SCHEDCTL` /
+        //      `SYS_SCHEDULE` accept but rewrite any requested CPU to the BSP.
+        // Keep APs off user work until the receive-side arms land; only then
+        // remove the clamp and this mask becomes safe again.
         crate::clock::stop_local_timer();
     } else {
         restart_local_timer();
