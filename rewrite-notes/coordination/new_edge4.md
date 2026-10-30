@@ -3484,6 +3484,21 @@ exclude」的分域读数。
 
 **读数**：`cargo test -p minix-devman --lib` → **90 / 0**。本笔只动一行 §6 表与一行板行。
 
+### 第一百九十三笔（A 板 A18 · 07 数据存储：四族测试载体与 `E-DSWIRE` 客户端面现查都已落，本行 by-audit 闭合）
+
+- **四族的测试载体**：`os/servers/ds/src` 里已有具名载体——`test_publish_check_roundtrip_through_transport`
+  （subscribe → publish → check 三信一封的跨族全链）、`test_delete_wakes_through_transport`、
+  `test_first_subscribe_takes_seat_zero` / `test_second_subscribe_without_overwrite_refuses`、
+  `notify.rs::test_publish_wakes_matching_subscriber`、
+  `test_label_delete_wakes_matching_subscriber_before_clear`；全链跑在 `server.rs` 的 `wired()`
+  夹具上逐封 `run_once`。
+- **`E-DSWIRE` 客户端面**：`minix-sys/src/ds.rs` 的 `publish_label`/`publish_u32`/`publish_mem`/
+  `publish_str` 与 `retrieve_u32`/`retrieve_label_name`/`retrieve_label_endpt`（`:300`、`:349`）
+  齐备——`ds_retrieve_label_endpt` 不再是缺口。
+
+**读数**：`cargo test -p minix-ds` → **115 / 0**（3 段）。四族的**端到端联调**归 C 板真机窗
+（E5(f) 首份终态在册），本板不代做。本笔只动一行摘要、一行板行与本里程碑。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端

@@ -1,6 +1,7 @@
 # 07-stage-ds Rust 实现架构级 Review TODO（第一轮）
 
 > **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 2。标签发布与事件编码的纯逻辑已备，但无生产调用方（属接线而非缺实现）。
+> **`2026-10-31` 现查（A 板 A18，claim/A18-DS-qoder）——两条都已在服务端/客户端落地，无本板待办**：① 发布/删除/订阅/notify 四族的**可具名测试载体已在**：`test_publish_check_roundtrip_through_transport`（subscribe → publish → check 三信一封）、`test_delete_wakes_through_transport`、`test_first_subscribe_takes_seat_zero`/`test_second_subscribe_without_overwrite_refuses`、`notify.rs::test_publish_wakes_matching_subscriber`、`test_label_delete_wakes_matching_subscriber_before_clear`（跨族全链在 `server.rs` 的 `wired()` 夹具上跑 `run_once`），判据 `cargo test -p minix-ds` → **115 / 0**；② `E-DSWIRE` 的客户端消费面也已落——`minix-sys/src/ds.rs` 的 `publish_label/u32/mem/str`、`retrieve_u32/label_name/label_endpt`（`:300`、`:349`）齐备，`ds_retrieve_label_endpt` 不再是缺口；真机终态首份读数在 E5(f)，四族的**端到端联调**仍归 C 板窗（本板不代做）。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > 来源：2026-09-14 首轮架构级审查（cmd-04 主体 + full-review 的 coverage 强制方法查漏补缺）。本轮 scan-only，未改任何生产代码与测试。
