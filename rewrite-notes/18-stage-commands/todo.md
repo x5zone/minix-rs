@@ -119,6 +119,106 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+
+## 批次四百七十二（A2 参数缝半切片 54：`vis` 的 `-e` 值、字母位与操数名交回原字节；本族第一枚「折叠改判决」的腿；新配的参照件还翻正了两处旧账面）
+
+- **这一支先配出了本族的第九支参照件，也是 `vis` 的第一支**：批次四百零四写的是「宿主没有
+  `vis(3)`，本支没有差分腿」——那句话只对了一半：宿主确实没有现成的 `vis(3)`，但**引擎本身
+  就在本仓库里**（`minix3/lib/libc/gen/vis.c` 的 `strsenvisx` 一族）。本轮把它连同
+  `minix3/usr.bin/vis/{vis.c,foldit.c}` 与 Minix 的 `getopt.c` 一起链成宿主参照件
+  `tmp/vis-472/vis_ref`（垫片 `visshim.h` 供 `__RENAME`/`CTASSERT`/`_DIAGASSERT`/程序名/`strlcpy`，
+  空的 `namespace.h`，`-include` 预载；配方 `tmp/vis-472/build.sh`）。归属验过：经同名软链起，
+  `-Z` 交回 `vis: unknown option -- Z` 加一行 usage、退 1，与 C 源一致（`vis.c:136-139` 的
+  usage 带 `getprogname()`，与 unifdef 那支写死的正相反）。**两侧现量都钉 `LC_ALL=C`**：
+  参照件的 `process()` 走 `getwc`/`wctomb`，只有在 C locale 下才是按字节的答案，而本壳的引擎
+  自始按字节（`-N` 那一支的道理，见 07 篇 `vis` 行）。
+- **形状**：`vis.c:73` 的 optstring 是 `"bcde:F:fhlMmNnoSstw"`——十六个字母里带值的只有
+  `e` 与 `F`（冒号挂在它们身上，`d` 是**不带值**的字母，见下面翻正的第二处）。三处 `%s`
+  都在字节上：`warn("%s", *argv)`（`:157`，开不了的操数，三段形 `vis: 档名: strerror`、
+  打完**继续跑下一个操数**并把退码定成 1〔`:158`〕）、libc 那句的字母位
+  （`getopt.c:79` 的 `optopt = *place++` 一次进一个字节）、以及 `-e` 的值——
+  `extra = optarg`（`:87`）进 `makeextralist`（`lib/libc/gen/vis.c:351-384`），在
+  `VIS_NOLOCALE` 或多字节解码失败时把 `-e` 串按 `(wchar_t)(u_char)src[i]` **逐字节**上榜，
+  于是 extra 表是一张**字节的集合**。
+- **`-e` 的值位是本族第一枚「折叠改判决」的腿**：`-e $'\xff'` 扫输入 `x\xffy`，参照件交回
+  `x\377y`（ff 上榜、走三位八进制），改前的本壳交回 `x\M^?y`（折过的值 `ef bf bd` 上榜、
+  ff 不在名单上）——**折叠换掉的是编码的答案本身**，不是报文里的哪一段字节。这一支因此
+  归 join/pr/sort 那一族，而不是 split/tail/unexpand/`unifdef` 那条「折叠不改判决」的结论；
+  理由也同源：判决判据（extra 表的成员）不是 ASCII 谓词，而是一张按原字节比较的集合。
+  反面形同测：`-e y` 时 y 进八进制而 ff 退回 M- 记法，名单换一枚答案就换一次
+  （`tmp/vis-472/measure.log`）。`-F` 的值位**按构造改不了判决**：`atoi` 只认 ASCII 数字、
+  折前折后都不是数字，而且那句 `can't fold lines to less than 5 cols` 不带 `%s`，
+  值位根本不出现在报文里——这条写进了门注释。
+- **参照件现量翻正了两处旧账面**（改前的件 **16/26** 与参照件逐字节同形，改后的件 **26/26**）：
+  ① **`-d` 是不带值的字母**。07 篇与本壳注释长期写的是「C 的选项串里是 `d:`（带值）」——
+  对照 `vis.c:73` 的字面，冒号挂在 `e` 与 `F` 上；非 `DEBUG` 构建里 `case 'd'` 被编译掉，
+  getopt 认 `d`（不报缺值行）于是落到 `default:`。参照件四形现量：`-d`、`-d x`、`-cd`、
+  `-dZ` **都只有 usage 一行、退 1**。本壳此前把 `d` 当带值字母，`-d` 排在末尾时多打了
+  libc 的缺值行（两行）；已改为一行并**有意识翻正**那枚面门期望（旧期望是错的，
+  参照件与 optstring 字面两处一致）。② **开不了的操数是三段形**：C 的 `warn("%s", *argv)`
+  交回 `vis: 档名: strerror` 三段，本壳此前只打两段（`vis: 档名`），strerror 那一段整个
+  缺失。落码 `fn warn_can_open` 自己拼（本族**第四份**自拼的三段形助手，`TEXTFILTER-WARN-BYTES-
+  DUPLICATES-ERR-LINE` 的计数随本笔更新），档名位按原字节。
+- **落码层**：壳侧 `args_bytes()`/`prog_name_bytes()`，`parse_vis_args` 收 `&'a [&'a [u8]]`、
+  `Plan.operands` 改 `Vec<&'a [u8]>`、`-e` 的两处取值臂（附值与下一词）都交原字节；开档口仍走
+  `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在递给它的那一刻，报文里的档名是原字节。
+  **库侧零改动**：`VisOptions.extra` 自始就是 `Vec<u8>`、`extra_set` 按字节建表，vis 的选项环
+  也**没有提库**（`parse_vis_args` 住在 `src/bin/vis.rs`）——这是与 unifdef/unexpand/split 三支
+  的一个结构性差别，负控 K1 因此注定「库内全绿」，见下。
+- **门账**：面侧 `vis_face` **20 → 21**（新立
+  `the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes`，六段：`-e` 分词形、
+  `-e` 附值形、反面形、字母位、操数名、`-F` 按构造无差）；跨壳表二十三行 → **二十四行**
+  （`("vis", VIS, 1, b"vis: unknown option -- \xff\n")`；本支此前不在表上，因为渲染半那笔
+  （四百零四）时参数缝还没落）；既有的 `-d` 期望与操数报文期望按参照件**有意识翻正**；
+  整包 69 段 **1283 → 1284 passed / 0 failed**。
+- **负控六枚（`tmp/vis-472/negctl.py`）按红掉的测试枚数各咬 2/3/1/1/1/2**（`negctl-summary.txt`
+  与逐枚 `negctl-K1.log`..`negctl-K6.log`）：K1（壳侧 argv 退回文本缝）咬跨壳表 + 面门而
+  **库内 631 全绿**——「库门对壳侧 argv 缝没有牙」第十一次量化，且这一支是**结构性**的：
+  vis 的选项环没有提库（`parse_vis_args` 住在 `src/bin/vis.rs`），上一支 unifdef 那种
+  「K2 穿透库内」的形状在这里造不出来；K2（字母位按字符取整簇）咬库外表 + 面门两枚；
+  K3/K4（`-e` 的两个取值臂各折一次）各咬面门一枚——**两枚分开注入是有意的**，只折一臂时
+  另一臂的形还绿着，红名清单会漏；K5（`warn` 档名位折一次）咬面门一枚；K6（撤掉三段形的
+  strerror 段）咬面门两枚（既有那枚操数门与新立门各一）。改 `ToString` import 之后六枚
+  重跑一遍（`negctl-driver2.log`），读数一字不差，注入还原后三件 md5 与跑前清单相符
+  （`post/md5-final.txt`）。
+- **三起工具自错**：① **no_std 的 `ToString` 又漏了一次**——`warn_can_open` 里
+  `Strerror(code).to_string()` 需要 `alloc::string::ToString` 在作用域里，宿主测试看不见
+  它，三架构第一遍各报 2 个 `E0599`（`arch-*.log`）；这是批次四百六十八立下的判据第三次
+  兑现，而且本轮把它排在了负控**之后**才跑，多等了一轮——判据加严一档：**动壳侧字符串
+  拼装后三架构当场跑，排在负控之前**。② 量具第一版有一枚形状写坏：想造 `-é` 却用
+  `C3.join([b"-", b""])` 拼出 `-` 加一枚孤字节 `c3` 的两个 token，BEFORE 的 15/25 建立
+  在错形上；把形状改成字面 `b"-\xc3\xa9"` 并重跑后才得到 16/26——**形状的注释与它构造的
+  字节要一次核对**。③ bash 探针里 `cmd | head` 之后的 `$?` 是 `head` 的退出码，`-d` 那次
+  探针显示 `rc=0` 是假的；读退码要么直接跑、要么 `${PIPESTATUS[0]}`（`measure.py` 里
+  `proc.returncode` 才是本轮作账的口径）。
+- **门读数（全部 L1，`2026-10-30`，基线快照 `1366871e6`）**：宿主整包 **69 段 / 1284 / 0**
+  （`pkg-1.log`、`pkg-2.log` 同读数、退出码 0）；容器权威门按 §7.3 三挂载配方 → 退 0、
+  **69 段 / 1284 / 0**（`container-gate2.log`，第一次 `container-gate.log` 同读数）；三架构
+  各退 0、错误 0（`arch2-*.log`，`ToString` import 补上之后复跑）；`rustfmt --edition 2024
+  --check` 触及三件各 0 处（`fmt2-*.log`、`fmt3-*.log`；`bin_support.rs` 的四块存量不在
+  本笔触碰范围，批次四百零四那条规矩继续有效）；`cargo clippy --offline -j 1 --all-targets
+  -p minix-textfilter` 退 0、警告 **149** 行与主树同数，去路径后的唯一句两树都是 **37** 条
+  且 `diff` 为空（`clippy2.log` 对 `clippy-main.log`），零新警。
+- **进度与余量（全部现量）**：参数缝半已落 **二十七支**——`textfilter` 的「字母位诊断面」
+  至此清零（逐支数 `grep -c Getopt`：余下十二支全零）；`textfilter` 余 **12** 支
+  （`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l`）、命令面
+  **85** 支（`grep -rl "support::args()" os/commands --include=*.rs | wc -l`）；`line_bytes`
+  **87 处 / 34 件**；`bin_support::prog_name()` 的文本形全命令面余 **16** 个文件
+  （`grep -rl "support::prog_name(" os/commands --include=*.rs | wc -l`），本包清零；三段形
+  自拼助手 **4** 份（`sort` 的内联一处、`tail` 的 `warn_bytes`、`unifdef` 的 `err_can_open`、
+  本笔的 `warn_can_open`，现量
+  `grep -rln "err3\|warn_bytes\|err_can_open\|warn_can_open" …/src/bin/ | wc -l` → 4），
+  `TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE` 计数随本笔更新。**族终笔的射程**：三个文本口
+  `bin_support::args()`（本包十二支 + `text-games` 三支）、`bin_support::prog_name()`（全命令面
+  16 文件）、`minix_textfilter::empty_optstring_operands` 的 `&str` 形（仍只剩 `src/lib.rs`
+  自己七处门断言），加 `text-games` 那枚 `argv_seam_face` 门升到逐字节全等——
+  下一轮首动作 `bash tools/claim.sh claim GETOPT-REPORT-BYTE-LETTER qoder`（族终笔，
+  支级切片已尽）。在册不变者：`ARGV-BYTE-PATH-IN-LIBS`（本笔再添 vis 的开档口一条腿）、
+  `VIS-USAGE-PROGNAME-HARDCODED`、`TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE`、
+  `SPLIT-*` 两枚、`TAIL-OFFSET-SATURATION-OUTCOME`、`UNIFDEF-*` 四枚、其余各本不变。
+
+---
+
 ## 批次四百七十一（A2 参数缝半切片 53：`unifdef` 的操数名与 `-o` 名交回原字节；`-d` 的调试输出与 `-o` 的缺号句子两条在册分叉又被 A/B 撞见）
 
 - **形状**：`minix3/usr.bin/unifdef/unifdef.c:273` 的 optstring 是 `"i:D:U:I:o:cdeklst"`——
