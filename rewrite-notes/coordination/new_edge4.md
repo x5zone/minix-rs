@@ -3567,3 +3567,12 @@ skipped + 0 failed）**，csc 内容不一致 0、mset 零 HIT，ptwb 命中均�
 良性形状。C 板 C5 行更新为 `-smp ≥3` 已验三轮，余量只剩 AP 并行调度
 （绑 C2b/PD-16）。PD-16 的止损线要求 N 在首次执行前登记，这三轮只作
 观察读数，不构成结案；C1 仍按裁决保持开放，C2b 维持回滚。
+
+**C4STUB 里程碑（x86_64 ATF 出生腿）**：码笔 `04326fb44`、合并笔
+`04ba75d4f`。`tools/atf-c-compat/startup-minix.c` 新增 x86_64 入口：
+内核出生契约的 RBX（ps_strings）转 SysV 第一参数 RDI，16 字节对齐后调
+`startup_c_main`；新增 `tools/atf-c-compat/tests/` 的静态 ET_EXEC 子进程
+与 ptrace spawn 夹具（exec 后写入合成 ps_strings 并设 RBX），实测
+`FIXTURE ps=0x... argc=1 argv0=probe-argv` PASS；x86_64/aarch64/riscv64
+三架构 `startup-minix.c` 均可编译。C4 仍门控于 glibc 启动/系统调用桥与
+x86_64 ATF 36/36，`ATF_BOOT_LEG_READY` 暂不放行。
