@@ -3559,3 +3559,11 @@ passed / 0 failed、minix-vm 四形态 543/562/543/561、kernel mock
 850/0/8、arch 286/0、boot-shim test-all 53/0、三架构 check 0 error、
 kernel-image check-layout PASS、`run_all` 39/0/0。审计落
 `tmp/i25-final-audit.md`；I-25 至此全仓闭合。
+
+**C5SMP 里程碑（riscv ATF -smp 4 复跑）**：码笔 `a97dde870`、合并笔
+`d0371b561`。`test-atf-riscv64.sh` 增加 `RS_ATF_SMP`（默认 2），拓扑 dump
+与点火共用同一 CPU 数；`RS_ATF_SMP=4` 全量三轮均 **36/36（34 passed + 2
+skipped + 0 failed）**，csc 内容不一致 0、mset 零 HIT，ptwb 命中均为已知
+良性形状。C 板 C5 行更新为 `-smp ≥3` 已验三轮，余量只剩 AP 并行调度
+（绑 C2b/PD-16）。PD-16 的止损线要求 N 在首次执行前登记，这三轮只作
+观察读数，不构成结案；C1 仍按裁决保持开放，C2b 维持回滚。
