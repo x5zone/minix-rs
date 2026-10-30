@@ -1,17 +1,20 @@
-//! 双架构 signal 腿的宿主静态审计（P-ALL-01 深度迁移批：signal 双架构
-//! 12 枚门内测试的宿主可见面）。
+//! Host-side static audit of the signal legs on both architectures: the
+//! host-visible surface of the 12 in-gate signal tests.
 //!
-//! sigcontext 是用户可见 ABI（信号处理器收到的恢复上下文），其承重契约
-//! 以源码文本钉在宿主可跑处：
-//! 1. **SC_MAGIC 权威值**（C arch/i386/include/signal.h:115 的 0xc0ffee1）
-//!    ——`check_magic` 拒收非魔数上下文，魔数漂移＝静默接受垃圾帧。
-//! 2. **MF_CONTEXT_SET**（proc.h:251 的 0x4000）。
-//! 3. **build/restore/setup_handler 的行为断言**无法在宿主执行（函数住在
-//!    架构门内），但它们的调用契约（`sc_magic` 写入点、`check_magic` 门、
-//!    handler 入腿的 LR=signreturn/X0=signo/X2=sigcontext 形状）以结构
-//!    存在性＋调用形状文本钉住——漂移即红。
+//! sigcontext is a user-visible ABI (the restore context a signal handler
+//! receives), and its load-bearing contract is pinned in source text where the
+//! host can run it:
+//! 1. **SC_MAGIC authoritative value** (0xc0ffee1 at C arch/i386/include/signal.h:115)
+//!    — `check_magic` rejects contexts that lack the magic value; a magic
+//!    drift silently accepts garbage frames.
+//! 2. **MF_CONTEXT_SET** (0x4000 at proc.h:251).
+//! 3. **Behavioral assertions of build/restore/setup_handler** cannot run on
+//!    the host (the functions live behind the arch gate), but their call
+//!    contracts (the `sc_magic` write site, the `check_magic` gate, the
+//!    handler entry shape LR=signreturn/X0=signo/X2=sigcontext) are pinned as
+//!    structural existence plus call shape in source text — drift turns red.
 
-// ── 权威常量（arch/signal_context.rs，三架构共享）──
+// ── Authoritative constants (arch/signal_context.rs, shared by all three architectures) ──
 
 #[test]
 fn sc_magic_matches_c_ground_truth() {
@@ -28,17 +31,18 @@ fn sc_magic_matches_c_ground_truth() {
     );
 }
 
-// ── arm64：check_magic 门与三段调用契约 ──
+// ── arm64: the check_magic gate and the three-part call contract ──
 
 #[test]
 fn arm64_check_magic_gates_on_sc_magic() {
     let src = include_str!("../src/arm64/signal.rs");
-    // check_magic 的实现体必须比较 sc_magic 与 SC_MAGIC（整行级，防偶然子串）。
+    // The check_magic body must compare sc_magic with SC_MAGIC (whole line,
+    // so an accidental substring cannot satisfy it).
     assert!(
         src.contains("sctx.sc_magic == SC_MAGIC"),
         "arm64 check_magic 必须以 sc_magic == SC_MAGIC 判定（漂移＝静默接受垃圾帧）"
     );
-    // build 腿必须写入魔数。
+    // The build leg must write the magic value.
     assert!(
         src.contains("sctx.sc_magic = SC_MAGIC;"),
         "arm64 build_sigcontext 必须写 SC_MAGIC"
@@ -48,10 +52,11 @@ fn arm64_check_magic_gates_on_sc_magic() {
 #[test]
 fn arm64_handler_entry_contract_is_frozen() {
     let src = include_str!("../src/arm64/signal.rs");
-    // setup_handler 的形状：LR=signreturn、X0=signo、X1=0（sf_code）、
-    // X2=sigcontext 指针——用户处理器返回时经 LR 进 sigreturn。
+    // setup_handler shape: LR=signreturn, X0=signo, X1=0 (sf_code),
+    // X2=sigcontext pointer — the user handler returns through LR into
+    // sigreturn.
     for contract in [
-        "gp_regs[GP_X30], 0x5000", // LR = sigreturn（测试锚值）
+        "gp_regs[GP_X30], 0x5000", // LR = sigreturn (anchor value in the test)
         "ctx.r0, 6",               // X0 = signo
         "gp_regs[GP_X1], 0",       // X1 = 0 (sf_code)
     ] {
@@ -63,7 +68,7 @@ fn arm64_handler_entry_contract_is_frozen() {
     }
 }
 
-// ── riscv64：同一契约的 Sv39 形 ──
+// ── riscv64: the same contract in Sv39 form ──
 
 #[test]
 fn riscv64_check_magic_gates_on_sc_magic() {
@@ -81,7 +86,8 @@ fn riscv64_check_magic_gates_on_sc_magic() {
 #[test]
 fn riscv64_handler_entry_contract_is_frozen() {
     let src = include_str!("../src/riscv64/signal.rs");
-    // riscv 形：a0=signo、a1=sf_code、a2=sigcontext（C 传导约定的 Sv39 版）。
+    // riscv form: a0=signo, a1=sf_code, a2=sigcontext (the Sv39 version of
+    // the C calling convention).
     for contract in ["test_setup_handler_entry_riscv64", "test_restore_sigcontext_riscv64"] {
         assert!(
             src.contains(contract),

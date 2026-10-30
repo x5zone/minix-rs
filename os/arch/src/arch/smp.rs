@@ -44,7 +44,7 @@
 /// - `ipi_ack()` — smp.c:58,198
 /// - AP boot protocol — arch/i386/smp.c
 pub trait SmpArch {
-    /// Bounded per-AP startup timeout in milliseconds (S-5 §3.4).
+    /// Bounded per-AP startup timeout in milliseconds.
     ///
     /// x86_64: 5000 — C `arch_smp.c:131-141` LAPIC one-shot parity ("CPU
     /// didn't boot" warning + skip; boot continues). aarch64/riscv64 have no
@@ -130,7 +130,7 @@ pub trait SmpArch {
     ///
     /// - x86_64: read from GS segment base (per-CPU GSBASE stores CPU ID)
     /// - aarch64: **not** TPIDR_EL1 (that register is claimed by the
-    ///   per-CPU kernel-stack base as of NK4-C §1.113; see
+    ///   per-CPU kernel-stack base; see
     ///   `arch/arm64/protection.rs::set_entry_sp`). A future aarch64 SMP
     ///   implementation must pick another vehicle (TPIDR_EL0, an MPIDR
     ///   lookup, or `SmpState::cpu_local`); today

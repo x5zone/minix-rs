@@ -18,9 +18,9 @@
 //! - 0b10 (Clean): FPU available, registers unchanged since last save
 //! - 0b11 (Dirty): FPU available, registers modified (must save on switch)
 //!
-//! The kernel gates FS=Off at boot (续-133 lazy model: the user's first
-//! FP instruction traps into the rotation leg) and uses explicit save/restore
-//! during context switch.
+//! The kernel gates FS=Off at boot (the lazy model: the user's first FP
+//! instruction traps into the rotation leg) and uses explicit save/restore
+//! during a context switch.
 //!
 //! C: No Minix3 equivalent (Minix3 has no RISC-V port). Based on the
 //! RISC-V Privileged ISA Specification v1.11.
@@ -77,20 +77,22 @@ impl Riscv64FpuState {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Riscv64FpuArch;
 
-// Raw FPU save/restore——`global_asm!` 实现（riscv 的
-// `target_feature(enable="f")` 在 stable 不可用；裸 asm 无需特性门）。
-// 序言 `csrs sstatus, fsm` 把 FS 提到 ≥Initial（FS=Off 时 fsd/fld 自
-// 身非法；C 的 disable_fpu_exception-then-fxsave 对位）。restore 覆
-// 写全部 32 个 f 寄存器=违反 extern "C" 的 fs0-fs11 保留约定——内核
-// 全 `-f,-d` 编译、无任何存活 FP 值，违约无害（aarch64 v8-v15 豁免
-// 同款前提）。
+// Raw FPU save/restore — implemented with `global_asm!` (riscv's
+// `target_feature(enable="f")` is unavailable on stable; raw asm needs no
+// feature gate). The prologue `csrs sstatus, fsm` raises FS to ≥Initial (with
+// FS=Off, fsd/fld are themselves illegal; this mirrors C's
+// disable_fpu_exception-then-fxsave). restore overwrites all 32 f registers =
+// a violation of extern "C"'s fs0-fs11 preservation convention — harmless
+// because the kernel is compiled entirely with `-f,-d` and no FP value is live
+// (the aarch64 v8-v15 exemption rests on the same premise).
 core::arch::global_asm! {
     ".section .text.rv_fpu, \"ax\"",
     ".globl minix_rv_fpu_save",
     "minix_rv_fpu_save:",           // a0 = dst ptr, a1 = &fcsr_out
-    // 续-133：`.option arch, +d` 提升 asm 汇编视角的特性集——rustc 的
-    // riscv64gc-unknown-none-elf 内联 asm 默认不含 D，fsd 直接被汇编器
-    // 拒收（最小复现实证）；内核 -f,-d 构建下模块特性同样无 D。
+    // `.option arch, +d` raises the feature set seen by the assembler —
+    // rustc's riscv64gc-unknown-none-elf inline asm excludes D by default, so
+    // fsd is rejected outright by the assembler (confirmed with a minimal
+    // repro); under the kernel's -f,-d build the module features lack D too.
     "   .option arch, +d",
     "   li      t2, 0x2000",        // 0b01 << 13 (FS = Initial)
     "   csrs    sstatus, t2",
@@ -181,13 +183,14 @@ impl FpuArch for Riscv64FpuArch {
     type State = Riscv64FpuState;
 
     fn init(&self) {
-        // NK4-C 续-133：懒门控默认 FS = Off (0b00)——用户首条 FP 指令
-        // 陷阱（scause=2 illegal-instruction）→ riscv64_fpu_trap_body
-        // 轮转归属（C copr_not_available_handler 对位；归属先于任何活
-        // 值建立）。FS=Off 同时陷阱 S 模式——内核必须真无 FP（xtask
-        // kernel-image 注入 `-C target-feature=-f,-d`）；fpu.rs 原语经
-        // 自启用序言（csrs FS=Initial）与 per-function target_feature
-        // 合法执行。
+        // Lazy gating defaults FS = Off (0b00) — the user's first FP
+        // instruction traps (scause=2 illegal-instruction) →
+        // riscv64_fpu_trap_body rotates ownership (the counterpart of C's
+        // copr_not_available_handler; ownership is established before any live
+        // values exist). FS=Off also traps in S mode — the kernel must genuinely
+        // use no FP (xtask injects `-C target-feature=-f,-d` into the kernel
+        // image); fpu.rs primitives execute legally through their self-enabling
+        // prologue (csrs FS=Initial) and per-function target_feature.
         // C: No Minix3 equivalent; based on RISC-V Privileged ISA v1.11
         unsafe {
             // sstatus.FS is bits 13:14. Set to 0b00 (Off).
@@ -201,9 +204,10 @@ impl FpuArch for Riscv64FpuArch {
     fn save(&self, dst: &mut Self::State) {
         // Save FPU state: 32 f registers + FCSR.
         //
-        // 续-133：实现在 global_asm（riscv 的 target_feature 门 stable
-        // 不可用）；序言 `csrs` 把 FS 提到 ≥Initial——FS=Off 下 fsd 本
-        // 身会陷阱（C 的 disable_fpu_exception-then-fxsave 对位）。
+        // Implemented in global_asm (riscv's target_feature gate is
+        // unavailable on stable); the prologue `csrs` raises FS to ≥Initial —
+        // with FS=Off, fsd itself would trap (the counterpart of C's
+        // disable_fpu_exception-then-fxsave).
         //
         // SAFETY: `dst` is 8-byte aligned. Caller must hold BKL.
         unsafe {
@@ -215,11 +219,12 @@ impl FpuArch for Riscv64FpuArch {
     fn restore(&self, src: &Self::State) {
         // Restore FPU state: 32 f registers + FCSR.
         //
-        // 续-133：实现在 global_asm（`minix_rv_fpu_restore`），一次
-        // fld 覆写全部 32 个 f 寄存器=违反 extern "C" 的 fs0-fs11
-        // callee-saved 保留约定——安全前提＝内核全 `-f,-d` 编译、任何
-        // 调用点无存活 FP 值（终版 kernel ELF FP=0 实证）；论证全文在
-        // global_asm 头注释。
+        // Implemented in global_asm (`minix_rv_fpu_restore`); one fld pass
+        // overwrites all 32 f registers = a violation of extern "C"'s
+        // fs0-fs11 callee-saved convention — safe because the kernel is
+        // compiled entirely with `-f,-d` and no FP value is live at any call
+        // site (the final kernel ELF shows FP=0); the full argument lives in
+        // the global_asm header comment.
         //
         // SAFETY: `src` is 8-byte aligned and contains valid FPU data.
         // Caller must hold BKL.

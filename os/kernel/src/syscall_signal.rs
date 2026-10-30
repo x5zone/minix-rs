@@ -10,8 +10,9 @@
 //!
 //! # Design Decisions (19-syscall-signal.md §3)
 //!
-//! - **D1**: `SigSet` 128 位位图（C `sigset_t` 对位，SD-39 拓宽；`_NSIG = 64`
-//!   仍是用户可见信号上界，内核内部信号 70..=74 同图承载）
+//! - **D1**: `SigSet` is a 128-bit bitmap (mirrors C `sigset_t`; `_NSIG = 64`
+//!   remains the user-visible signal upper bound, kernel-internal signals
+//!   70..=74 are carried in the same bitmap)
 //! - **D4**: `cause_signal()` as KProcess method
 //! - **D5**: Linear scan for GETKSIG (matches C, process count < 128)
 //! - **D6**: `trait SignalContext` for architecture-specific sigframe/sigcontext
@@ -28,7 +29,7 @@ use crate::vm::{AddressRef, CrossSpaceResult};
 use minix_arch::{CurrentSignalContext, SignalContext, SignalInfo, TrapStyle};
 
 // ── Minix3 error codes ──
-// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Centralized in `crate::errno` to prevent value drift.
 // Previously ENOSYS=38 here (should be 78).
 use crate::errno::*;
 
@@ -83,14 +84,16 @@ pub const SIGKSIG: u32 = 74;
 /// `RTS_SIGNALED | RTS_SIG_PENDING` + `mini_notify` to the manager, which
 /// drives the manager to `SYS_GETKSIG`.
 ///
-/// # SD-39（已落地）：128 位位图
+/// # 128-bit bitmap
 ///
-/// C 的 `sigset_t` 是 128 位（`__uint32_t __bits[4]`，sigtypes.h:60-62），
-/// bit 70 落在 `p_pending` 并随 GETKSIG map 到达管理器（`m_sigcalls.map =
-/// rp->p_pending`，do_getksig.c:33）。Rust `SigSet` 已拓宽到同款 128 位：
-/// `p_pending.add(70)` 不再是 no-op，信号号对管理器可见（SD-39 前只有
-/// 唤醒可见）。GETKSIG wire 字段（`MessSigcalls.map`）同步拓宽为 4×u32，
-/// PM 侧循环 1..=128（pm/signal.rs）。
+/// C's `sigset_t` is 128 bits (`__uint32_t __bits[4]`, sigtypes.h:60-62).
+/// Bit 70 lands in `p_pending` and reaches the manager with the GETKSIG map
+/// (`m_sigcalls.map = rp->p_pending`, do_getksig.c:33). Rust's `SigSet` is
+/// widened to the same 128 bits: `p_pending.add(70)` is no longer a no-op and
+/// the signal number is visible to the manager (before the widening only the
+/// wakeup was visible). The GETKSIG wire field (`MessSigcalls.map`) is
+/// widened to 4×u32 in step, and the PM side loops over 1..=128
+/// (pm/signal.rs).
 pub const SIGSNDELAY: u32 = 70;
 
 // ── Endpoint constants ──
@@ -102,8 +105,8 @@ pub const SIGSNDELAY: u32 = 70;
 // `SigSet` is the newtype defined in `proc.rs` (`pub struct SigSet(u128)` with
 // `#[repr(transparent)]`). We reuse it here instead of a local alias so that
 // signal bitmaps have one canonical type across the kernel. The 128-bit
-// width matches C's `sigset_t` = `{__uint32_t __bits[4]}` (sigtypes.h:59-62;
-// SD-39): the IPC wire form is the 4×u32 word array via `SigSet::to_words()`
+// width matches C's `sigset_t` = `{__uint32_t __bits[4]}` (sigtypes.h:59-62):
+// the IPC wire form is the 4×u32 word array via `SigSet::to_words()`
 // / `from_words()` (`MessSigcalls.map`, see minix-types `SigSetBits`), and
 // the PM pull loop consumes it signal-by-signal with `sigset_contains`.
 
@@ -182,9 +185,10 @@ pub fn dispatch_kill(
     }
 
     // C: do_kill.c:35 — cause_sig(proc_nr, sig_nr)
-    // 续-191b 取证探针 kill-tag（riscv64）：排除“VM 被外部 SIGSEGV
-    // 杀死”与“IPC-door EFAULT”两种可能——若此处命中且 sig=11
-    // 且 target=VM，则真因为某 server 主动 kill VM；C-61 前不滚。
+    // Kill-tag forensic probe (riscv64): rules out "VM killed by an external
+    // SIGSEGV" and "IPC-door EFAULT"; if this hits with sig=11 and
+    // target=VM, a server is actively killing the VM. Kept until the root
+    // cause is settled.
     #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -213,21 +217,26 @@ pub fn dispatch_kill(
 ///
 /// # Signal manager notification
 ///
-/// C: `cause_sig()` (system.c:389-449) — 双路径 + 致命子路径：
-/// - SELF 路径（`rp->p_endpoint == sig_mgr`，目标进程是自身信号管理器）：
-///   致命信号（`SIGS_IS_LETHAL`，见 [`is_lethal`]）先尝试提升 `s_bak_sig_mgr`
-///   为 primary 后递归走外部路径；无 backup 则 panic（system.c:417-432）。
-///   非致命信号：`sigaddset(&priv(rp)->s_sig_pending, sig_nr)` +
-///   `send_sig(SIGKSIGSM)` 唤醒目标自身（system.c:433-436）。
-/// - 外部路径（其余）：`sigaddset(&rp->p_pending, sig_nr)` + `RTS_SIGNALED|RTS_SIG_PENDING`
-///   + `send_sig(sig_mgr, SIGKSIG)` 唤醒目标进程的信号管理器。
+/// C: `cause_sig()` (system.c:389-449) — two paths plus the lethal sub-path:
+/// - SELF path (`rp->p_endpoint == sig_mgr`, the target process is its own
+///   signal manager): a lethal signal (`SIGS_IS_LETHAL`, see [`is_lethal`])
+///   first tries to promote `s_bak_sig_mgr` to primary and then re-delivers
+///   through the external path recursively; without a backup it panics
+///   (system.c:417-432). Non-lethal signals: `sigaddset(&priv(rp)->s_sig_pending, sig_nr)`
+///   + `send_sig(SIGKSIGSM)` to wake the target itself (system.c:433-436).
+/// - External path (everything else): `sigaddset(&rp->p_pending, sig_nr)` +
+///   `RTS_SIGNALED|RTS_SIG_PENDING` + `send_sig(sig_mgr, SIGKSIG)` to wake the
+///   target process's signal manager.
 ///
-/// 两条路径的唤醒均经 `mini_notify_core`（源 = SYSTEM，目标 = 需被唤醒者，
-/// C: `mini_notify(proc_addr(SYSTEM), rp->p_endpoint)` — system.c:381）实现。
-/// `s_sig_pending` 在本模块只写不读：其消费方在 ipc 通知投递路径
-///（SYSTEM 源通知送达时编码进 `m_notify.sigset` 并清空，ipc.rs:1776-1782）；
-/// SD-39 后位图与 C `sigset_t` 同为 128 位，内核内部信号（SIGKSIG=74 等，
-/// 落 word 2）与 C 同样可编码，唤醒动作即 C 语义的完整内核行为。
+/// The wakeup on both paths goes through `mini_notify_core` (source = SYSTEM,
+/// target = the process to wake; C: `mini_notify(proc_addr(SYSTEM),
+/// rp->p_endpoint)` — system.c:381). `s_sig_pending` is write-only in this
+/// module: its consumer is the IPC notification delivery path (encoded into
+/// `m_notify.sigset` and cleared when a SYSTEM-source notification is
+/// delivered, ipc.rs:1776-1782). The bitmap is 128 bits like C `sigset_t`, so
+/// kernel-internal signals (SIGKSIG=74 etc., landing in word 2) are encodable
+/// exactly as in C; the wakeup action is then the complete kernel behavior of
+/// the C semantics.
 pub(crate) fn cause_signal(
     target_nr: ProcNr,
     sig_nr: u32,
@@ -239,15 +248,17 @@ pub(crate) fn cause_signal(
     let sig_mgr = proc_table.sig_mgr(target_nr, priv_table);
     let target_endpoint = proc_table.get(target_nr).map(|p| p.p_endpoint);
 
-    // ── SELF 路径：目标进程是自己的信号管理器 ──
-    // C: system.c:416 — if (rp->p_endpoint == sig_mgr) → 直接自管理，不走外部通知
+    // ── SELF path: the target process is its own signal manager ──
+    // C: system.c:416 — if (rp->p_endpoint == sig_mgr) → self-managed, no external notification
     if let (Some(ep), Some(mgr)) = (target_endpoint, sig_mgr)
         && ep == mgr
     {
-        // C: system.c:417 — if (SIGS_IS_LETHAL(sig_nr)) → 备份管理器切换 / panic。
-        // 自管理进程收到致命信号（SIGILL/ABRT/EMT/FPE/BUS/SEGV）意味着它无法再
-        // 自我管理——它是"没有人能替我处理信号"的角色。要么把预设的 backup
-        // 管理器提升为 primary 后重投（走外部路径，让 backup 收割），要么 panic。
+        // C: system.c:417 — if (SIGS_IS_LETHAL(sig_nr)) → backup manager switch / panic.
+        // A self-managed process receiving a lethal signal (SIGILL/ABRT/EMT/FPE/BUS/SEGV)
+        // can no longer manage itself — it is the "nobody can handle signals on my
+        // behalf" role. Either a preassigned backup manager is promoted to primary and
+        // the signal is re-delivered (through the external path, so the backup reaps
+        // it), or the kernel panics.
         if is_lethal(sig_nr) {
             // C: system.c:418-419 — sig_mgr = priv(rp)->s_bak_sig_mgr
             let pid = proc_table.get(target_nr).and_then(|p| p.priv_id);
@@ -256,8 +267,8 @@ pub(crate) fn cause_signal(
                 .map(|priv_| priv_.signals.s_bak_sig_mgr);
 
             // C: system.c:420 — if (sig_mgr != NONE && isokendpt(sig_mgr, &sig_mgr_proc_nr))
-            // endpoint_to_nr 仅在 slot 非 SLOT_FREE 时命中（proc_table.rs:435-437），
-            // 等价 C 的 isokendpt + isemptyn。
+            // endpoint_to_nr only hits when the slot is not SLOT_FREE
+            // (proc_table.rs:435-437), equivalent to C's isokendpt + isemptyn.
             if let Some(bak_ep) = backup
                 && bak_ep != Endpoint::NONE
                 && let Some(bak_nr) = proc_table.endpoint_to_nr(bak_ep)
@@ -272,25 +283,30 @@ pub(crate) fn cause_signal(
                 }
 
                 // C: system.c:424 — RTS_UNSET(sig_mgr_rp, RTS_NO_PRIV)
-                // backup 进程可能因 RTS_NO_PRIV 被挂起（提升前不参与调度），
-                // 接管前必须解除，它才能作为管理器被唤醒。
+                // The backup process may be suspended with RTS_NO_PRIV (not
+                // scheduled before promotion); it must be released before it
+                // can take over so that it can be woken as the manager.
                 proc_table.rts_unset(bak_nr, RtsFlagsBits::NO_PRIV);
 
                 // C: system.c:425-426 — cause_sig(proc_nr, sig_nr); return
-                // 递归重投：target 的 s_sig_mgr 现为 backup（≠ target），走外部路径
-                //（p_pending + RTS_SIGNALED + 通知 backup）。递归深度恒为 1。
+                // Recursive re-delivery: the target's s_sig_mgr is now the backup
+                // (≠ target), so the external path runs (p_pending +
+                // RTS_SIGNALED + notify the backup). Recursion depth is always 1.
                 cause_signal(target_nr, sig_nr, proc_table, priv_table);
                 return;
             }
 
             // C: system.c:429 — proc_stacktrace(rp)
-            // 自管理进程是 KERNEL/SYSTEM 角色（目前仅 SYSTEM = proc_nr(-2) 可见，
-            // 它的栈在内核 Direct Map；本路径在用户态进程接入前不可达——见
-            // 19-design.v2 §D-3b）。栈回溯的"诊断路径必须比崩溃更健壮"原则保证
-            // proc_stacktrace 不会因读取失败二次崩溃，最多打印占位符后停止。
-            // SAFETY-equivalent: proc_stacktrace 在 BKL 持有期内调用，读路径
-            // （Direct Map alias 对内核栈；cross_space_copy 对用户栈）受 BKL
-            // 保护的可见性约束。
+            // A self-managed process is a KERNEL/SYSTEM role (currently only
+            // SYSTEM = proc_nr(-2) is reachable, its stack lives in the kernel
+            // Direct Map; this path is unreachable until user-mode processes are
+            // attached). The "the diagnostic path must be more robust than the
+            // crash" principle ensures proc_stacktrace cannot crash a second time
+            // on a read failure; at worst it prints a placeholder and stops.
+            // SAFETY-equivalent: proc_stacktrace is called while the BKL is held,
+            // so its read paths (Direct Map alias for kernel stacks;
+            // cross_space_copy for user stacks) are constrained by the
+            // visibility guarantees of the BKL.
             //
             // Production-only: `proc_stacktrace` invokes the kernel
             // EarlyConsole, which on x86_64 writes to the COM1 UART
@@ -307,8 +323,9 @@ pub(crate) fn cause_signal(
             if let Some(rp) = proc_table.get(target_nr) {
                 crate::stacktrace::proc_stacktrace(rp);
             }
-            // 续-186 探针（用后即滚）：SIGSEGV 投递时的 fault 现场——
-            // VM 死因的缺失拼图（异常臂不打印 stval）。
+            // SIGSEGV probe (temporary): the fault site at delivery time — the
+            // missing piece of the VM death investigation (the exception arm
+            // does not print stval).
             #[cfg(not(test))]
             if sig_nr == crate::syscall_signal::SIGSEGV {
                 use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
@@ -327,8 +344,9 @@ pub(crate) fn cause_signal(
         }
 
         // C: system.c:433 — sigaddset(&priv(rp)->s_sig_pending, sig_nr)
-        // 自管理进程的信号记入其自身 s_sig_pending（内核侧写记录，无内核读者；
-        // SD-39 拓宽后 128 位内全可编码）。
+        // A self-managed process's signals are recorded in its own
+        // s_sig_pending (a kernel-side write record with no kernel reader;
+        // every number below 128 is encodable).
         if let Some(pid) = proc_table.get(target_nr).and_then(|p| p.priv_id)
             && let Some(priv_) = priv_table.get_mut(pid)
         {
@@ -336,10 +354,12 @@ pub(crate) fn cause_signal(
         }
 
         // C: system.c:434 — send_sig(rp->p_endpoint, SIGKSIGSM) → mini_notify(proc_addr(SYSTEM), rp->p_endpoint)
-        // SIGKSIGSM=73 的内核动作仅是"唤醒自管理进程去处理自身待决状态"。
-        // SIGKSIGSM 号本身经 s_sig_pending.add 记录（SD-39 拓宽后可编码），
-        // 而唤醒本身由 mini_notify 完成，故直接 mini_notify_core
-        // （源 = SYSTEM，目标 = 自身），无需单独 SIGKSIGSM 常量。
+        // The only kernel action of SIGKSIGSM=73 is "wake the self-managed
+        // process so it handles its own pending state". The SIGKSIGSM number
+        // itself is recorded via s_sig_pending.add (encodable in the 128-bit
+        // bitmap), while the wakeup is done by mini_notify, so call
+        // mini_notify_core directly (source = SYSTEM, target = itself); no
+        // separate SIGKSIGSM constant is needed.
         let _ = crate::ipc::mini_notify_core(
             proc_table.procs_slice_mut(),
             priv_table,
@@ -348,25 +368,26 @@ pub(crate) fn cause_signal(
         );
         // C: `mini_notify`'s `RTS_UNSET(..., RTS_RECEIVING)` carries the
         // enqueue half; `mini_notify_core` is the primitive slice clear, so
-        // supply it here (NK4-C B6 family — a woken-but-not-enqueued process
-        // is `runnable=yes queued=no` and never picked).
+        // supply it here (a woken-but-not-enqueued process is
+        // `runnable=yes queued=no` and is never picked).
         if let Some(nr) = proc_table.endpoint_to_nr(ep) {
             proc_table.enqueue_if_woken(nr);
         }
         return;
     }
 
-    // ── 外部路径：目标由外部信号管理器管理 ──
+    // ── External path: the target is managed by an external signal manager ──
     // C: system.c:439 — s = sigismember(&rp->p_pending, sig_nr)
-    // Rust 以 RTS_SIGNALED 判定 was_signaled + 无条件 p_pending.add：
-    // sigaddset 幂等，与 C 的 sigismember 门控语义等价。
+    // Rust decides was_signaled from RTS_SIGNALED and adds to p_pending
+    // unconditionally: sigaddset is idempotent, which is semantically
+    // equivalent to C's sigismember gate.
     let was_signaled = proc_table.get(target_nr)
         .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
 
     // C: system.c:442 — sigaddset(&rp->p_pending, sig_nr)
     if let Some(target) = proc_table.get_mut(target_nr) {
-        // R-16 (2026-08-12): SAFETY: `sig_nr` (u32) was validated `< NSIG` (64)
-        // at the do_kill call site (syscall_signal.rs:119), so it fits in u8.
+        // SAFETY: `sig_nr` (u32) was validated `< NSIG` (64) at the do_kill
+        // call site (syscall_signal.rs:119), so it fits in u8.
         target.p_pending.add(sig_nr as u8);
     }
 
@@ -375,21 +396,21 @@ pub(crate) fn cause_signal(
         // C: system.c:444 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
         proc_table.rts_set(target_nr, RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING);
 
-        // C: system.c:445-446 — send_sig(sig_mgr, SIGKSIG) → 唤醒信号管理器
+        // C: system.c:445-446 — send_sig(sig_mgr, SIGKSIG) → wake the signal manager
         // send_sig (system.c:364-382): sigaddset(&priv(sig_mgr)->s_sig_pending, SIGKSIG)
-        // + mini_notify(proc_addr(SYSTEM), rp->p_endpoint) —— 通知目标是**信号管理器自身**，
-        // 源是 SYSTEM。
+        // + mini_notify(proc_addr(SYSTEM), rp->p_endpoint) — the notification
+        // target is the **signal manager itself** and the source is SYSTEM.
         if let Some(sig_mgr_ep) = sig_mgr {
             // C: system.c:380 — sigaddset(&priv->s_sig_pending, sig_nr)
-            // SIGKSIG=74 记入 s_sig_pending（SD-39 拓宽后可编码，随 notify
-            // sigset 到达管理器）。
+            // SIGKSIG=74 is recorded in s_sig_pending (encodable in the 128-bit
+            // bitmap; it reaches the manager with the notify sigset).
             if let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep)
                 && let Some(sig_mgr_proc) = proc_table.get(sig_mgr_nr)
                     && let Some(pid) = sig_mgr_proc.priv_id
                         && let Some(sig_mgr_priv) = priv_table.get_mut(pid) {
-                            // R-16 (2026-08-12): SAFETY: `SIGKSIG` is a
-                            // compile-time `u32` constant (= 74, < 256), so
-                            // `as u8` cannot truncate.
+                            // SAFETY: `SIGKSIG` is a compile-time `u32`
+                            // constant (= 74, < 256), so `as u8` cannot
+                            // truncate.
                             sig_mgr_priv.signals.s_sig_pending.add(SIGKSIG as u8);
                         }
 
@@ -400,9 +421,9 @@ pub(crate) fn cause_signal(
                 crate::proc::proc_nr::SYSTEM,
                 sig_mgr_ep,
             );
-            // Same enqueue half as C's RTS_UNSET (B6 family): the notify may
-            // have cleared the sig manager's RECEIVING, so it must be pushed
-            // onto the run queue if it just became runnable.
+            // Same enqueue half as C's RTS_UNSET: the notify may have cleared
+            // the sig manager's RECEIVING, so it must be pushed onto the run
+            // queue if it just became runnable.
             if let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep) {
                 proc_table.enqueue_if_woken(sig_mgr_nr);
             }
@@ -454,8 +475,8 @@ pub fn dispatch_getksig(
         }
 
         // Found a process with a pending signal for this signal manager.
-        // SD-39: full 128-bit map — kernel-internal signals (70..=74) ride
-        // the map just like C (`m_sigcalls.map = rp->p_pending`).
+        // The map is the full 128-bit bitmap — kernel-internal signals
+        // (70..=74) ride the map just like C (`m_sigcalls.map = rp->p_pending`).
         found = Some((rp.p_endpoint, rp.p_pending.to_words()));
         break;
     }
@@ -606,7 +627,8 @@ pub fn dispatch_sigsend(
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
     // C: do_sigsend.c:31,37 — m_sigcalls.endpt / m_sigcalls.sigctx
-    // C 无 SELF 替换：endpoint 原样传 isokendpt（负 endpoint 如 SYSTEM → EINVAL）。
+    // C does no SELF substitution: the endpoint is passed to isokendpt as-is
+    // (a negative endpoint such as SYSTEM → EINVAL).
     let endpt = sc.endpt;
     let sigctx_addr = sc.sigctx;
 
@@ -659,9 +681,11 @@ pub fn dispatch_sigsend(
             endpoint: caller_endpt,
             offset: VirBytes(sigctx_addr),
         };
-        // NK4-C 1.51 (B27 残留根因): smsg 是内核栈局部，VA 落在 higher-half 内核
-        // image 段（两个 DM 窗口之外），`virt_to_phys` 产伪物理地址 → copy 野写。
-        // 改用 AddressRef::Process（caller CR3 映射内核 higher-half，走真页表）。
+        // smsg is a kernel-stack local whose VA falls in the higher-half kernel
+        // image segment (outside both DM windows), so `virt_to_phys` would
+        // produce a bogus physical address and the copy would write wild
+        // memory. Use AddressRef::Process instead (the caller CR3 maps the
+        // kernel higher-half, so the real page tables are walked).
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(&smsg as *const SigMsg as u64),
@@ -735,8 +759,10 @@ pub fn dispatch_sigsend(
                     .map(|p| p.p_seg.phys_root)
             }
         };
-        // NK4-C 1.51: frame 是内核栈局部（image 高半区），`virt_to_phys` 产伪物理
-        // 地址。改用 AddressRef::Process（caller CR3 映射内核 higher-half）。
+        // frame is a kernel-stack local (higher-half image segment), so
+        // `virt_to_phys` would produce a bogus physical address. Use
+        // AddressRef::Process instead (the caller CR3 maps the kernel
+        // higher-half).
         let src = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(&frame as *const _ as u64),
@@ -815,7 +841,8 @@ pub fn dispatch_sigreturn(
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
     // C: do_sigreturn.c:28,33 — m_sigcalls.endpt / m_sigcalls.sigctx
-    // C 无 SELF 替换：endpoint 原样传 isokendpt（负 endpoint 如 SYSTEM → EINVAL）。
+    // C has no SELF substitution: the endpoint goes to isokendpt as-is
+    // (a negative endpoint such as SYSTEM → EINVAL).
     let endpt = sc.endpt;
     let sigctx_addr = sc.sigctx;
 
@@ -858,8 +885,10 @@ pub fn dispatch_sigreturn(
             endpoint: Endpoint(endpt),
             offset: VirBytes(sigctx_addr),
         };
-        // NK4-C 1.51: sctx 是内核栈局部（image 高半区），`virt_to_phys` 产伪物理
-        // 地址。改用 AddressRef::Process（caller CR3 映射内核 higher-half）。
+        // sctx is a kernel-stack local (higher-half image segment), so
+        // `virt_to_phys` would produce a bogus physical address. Use
+        // AddressRef::Process instead (the caller CR3 maps the kernel
+        // higher-half).
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(&sctx as *const _ as u64),
@@ -934,8 +963,8 @@ mod tests {
         assert_eq!(sig_mask(2).get(), 2u64);
         assert_eq!(sig_mask(64).get(), 1u64 << 63);
         assert_eq!(sig_mask(0).get(), 0u64);
-        // SD-39: 128 位拓宽后 65..=128 可编码（内核内部信号族），
-        // >128 仍为空集。
+        // After the widening to 128 bits, 65..=128 are encodable (the
+        // kernel-internal signal family); >128 is still the empty set.
         assert_eq!(sig_mask(65).bits(), 1u128 << 64);
         assert_eq!(sig_mask(70).bits(), 1u128 << 69);
         assert_eq!(sig_mask(74).bits(), 1u128 << 73);
@@ -1027,14 +1056,15 @@ mod tests {
 
     #[test]
     fn test_is_lethal() {
-        // C: SIGS_IS_LETHAL — signal.h:280-282（SIGILL/ABRT/EMT/FPE/BUS/SEGV）
+        // C: SIGS_IS_LETHAL — signal.h:280-282 (SIGILL/ABRT/EMT/FPE/BUS/SEGV)
         assert!(is_lethal(SIGILL)); // 4
         assert!(is_lethal(SIGABRT)); // 6
         assert!(is_lethal(SIGEMT)); // 7
         assert!(is_lethal(SIGFPE)); // 8
         assert!(is_lethal(SIGBUS)); // 10
         assert!(is_lethal(SIGSEGV)); // 11
-        // 非致命（含 SIGKILL=9 / SIGTERM=15 / SIGSYS=12）与内核信号（SIGKSIG=74）
+        // Non-lethal (including SIGKILL=9 / SIGTERM=15 / SIGSYS=12) and kernel
+        // signals (SIGKSIG=74)
         assert!(!is_lethal(SIGTRAP)); // 5
         assert!(!is_lethal(9)); // SIGKILL
         assert!(!is_lethal(12)); // SIGSYS
@@ -1042,15 +1072,17 @@ mod tests {
         assert!(!is_lethal(SIGKSIG)); // 74
     }
 
-    // ── cause_signal 行为测试（外部路径 / 去重 / SELF / 致命 SELF）──
+    // ── cause_signal behavior tests (external path / dedup / SELF / lethal SELF) ──
     //
-    // 通知可观测性说明：cause_signal 的 mini_notify_core 副作用在目标
-    // "正在 RECEIVE 且 p_getfrom_e == ANY" 时是直接投递（置 DELIVERMSG +
-    // 清 RECEIVING）。测试把 manager 置于监听态来观测"通知发生过"，用
-    // DELIVERMSG 的置位与否判定 cause_signal 的 RTS_SIGNALED 门控。
+    // Notification observability: the mini_notify_core side effect of
+    // cause_signal is a direct delivery (sets DELIVERMSG + clears RECEIVING)
+    // when the target is "RECEIVing with p_getfrom_e == ANY". The tests put
+    // the manager in the listening state to observe that "a notification
+    // happened", using whether DELIVERMSG got set to decide cause_signal's
+    // RTS_SIGNALED gate.
 
-    /// 占用 target/manager 两个进程槽并绑定 priv 0/1。
-    /// target 默认自管理（s_sig_mgr = 自身 endpoint）。
+    /// Occupy the target/manager process slots and bind priv 0/1.
+    /// The target is self-managed by default (s_sig_mgr = its own endpoint).
     fn occupy_two_slots(
         target_nr: ProcNr,
         manager_nr: ProcNr,
@@ -1078,7 +1110,8 @@ mod tests {
         (target_ep, manager_ep, procs, privs)
     }
 
-    /// 让进程进入监听态：RECEIVING + p_getfrom_e == ANY（可被 mini_notify 直接投递）。
+    /// Put a process into the listening state: RECEIVING + p_getfrom_e == ANY
+    /// (it can then be delivered to directly by mini_notify).
     fn listen(procs: &mut ProcessTable, nr: ProcNr) {
         let p = procs.get_mut(nr).unwrap();
         p.p_rts_flags.set(RtsFlagsBits::RECEIVING);
@@ -1089,9 +1122,11 @@ mod tests {
     fn test_cause_signal_external_path_notifies_manager() {
         let (target_ep, manager_ep, mut procs, mut privs) =
             occupy_two_slots(ProcNr(0), ProcNr(1));
-        // 目标由外部 manager 管理（C system.c:412：s_sig_mgr = manager endpoint）
+        // The target is managed by an external manager (C system.c:412:
+        // s_sig_mgr = manager endpoint)
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
-        // manager 监听 → 通知以直接投递（DELIVERMSG）形式可观测
+        // manager listening → the notification is observable as a direct
+        // delivery (DELIVERMSG)
         listen(&mut procs, ProcNr(1));
 
         cause_signal(ProcNr(0), SIGTRAP, &mut procs, &mut privs);
@@ -1115,19 +1150,21 @@ mod tests {
             occupy_two_slots(ProcNr(0), ProcNr(1));
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
 
-        // 第一次投递：RTS_SIGNALED 未置 → 通知 manager
+        // First delivery: RTS_SIGNALED not set → notify the manager
         listen(&mut procs, ProcNr(1));
         cause_signal(ProcNr(0), SIGTRAP, &mut procs, &mut privs);
         assert!(procs.get(ProcNr(1)).unwrap()
             .p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
 
-        // 清掉可观测状态并重新置 manager 为监听
+        // Clear the observable state and put the manager back into the
+        // listening state
         procs.get_mut(ProcNr(1)).unwrap()
             .p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
         listen(&mut procs, ProcNr(1));
 
-        // C system.c:443 — if (!RTS_ISSET(rp, RTS_SIGNALED)) 才通知；
-        // 第二次 cause_signal（不同信号）只加 p_pending 位，不重复通知。
+        // C system.c:443 — notify only if (!RTS_ISSET(rp, RTS_SIGNALED));
+        // the second cause_signal (a different signal) only adds the
+        // p_pending bit and does not notify again.
         cause_signal(ProcNr(0), SIGPROF, &mut procs, &mut privs);
 
         let target = procs.get(ProcNr(0)).unwrap();
@@ -1141,18 +1178,19 @@ mod tests {
 
     #[test]
     fn test_cause_signal_self_path_non_lethal() {
-        // fixture 默认 target 自管理（s_sig_mgr = 自身 endpoint）
+        // fixture default: the target manages itself (s_sig_mgr = its own endpoint)
         let (_, _, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
 
-        // C system.c:416 — rp->p_endpoint == sig_mgr → 自管理路径
-        // SIGTERM = 15（signal.h:67）
+        // C system.c:416 — rp->p_endpoint == sig_mgr → self-managed path
+        // SIGTERM = 15 (signal.h:67)
         cause_signal(ProcNr(0), 15, &mut procs, &mut privs);
 
         // C system.c:433 — sigaddset(&priv(rp)->s_sig_pending, sig)
         let priv0 = privs.get(0).unwrap();
         assert!(priv0.signals.s_sig_pending.contains(15_u8),
             "自管理非致命信号应记入进程自身 priv 的 s_sig_pending");
-        // C 自管理路径不设 RTS_SIGNALED（进程不被挂起，由自身处理）
+        // C: the self-managed path does not set RTS_SIGNALED (the process
+        // is not suspended; it handles the signal itself)
         let target = procs.get(ProcNr(0)).unwrap();
         assert!(!target.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
         assert!(!target.p_pending.contains(15_u8),
@@ -1163,16 +1201,17 @@ mod tests {
     fn test_cause_signal_self_lethal_promotes_backup() {
         let (_, manager_ep, mut procs, mut privs) =
             occupy_two_slots(ProcNr(0), ProcNr(1));
-        // 自管理 + 预设 backup（C system.c:418-419 — s_bak_sig_mgr）
+        // Self-managed + backup preassigned (C system.c:418-419 — s_bak_sig_mgr)
         privs.get_mut(0).unwrap().signals.s_bak_sig_mgr = manager_ep;
-        // backup 以 RTS_NO_PRIV 挂起（C system.c:424 提升时解除）
+        // The backup is suspended with RTS_NO_PRIV (cleared on promotion,
+        // C system.c:424)
         procs.get_mut(ProcNr(1)).unwrap()
             .p_rts_flags.set(RtsFlagsBits::NO_PRIV);
         listen(&mut procs, ProcNr(1));
 
         cause_signal(ProcNr(0), SIGABRT, &mut procs, &mut privs);
 
-        // C system.c:421-422 — 提升：s_sig_mgr ← backup，s_bak_sig_mgr ← NONE
+        // C system.c:421-422 — promotion: s_sig_mgr ← backup, s_bak_sig_mgr ← NONE
         let priv0 = privs.get(0).unwrap();
         assert_eq!(priv0.signals.s_sig_mgr, manager_ep);
         assert_eq!(priv0.signals.s_bak_sig_mgr, Endpoint::NONE);
@@ -1181,7 +1220,8 @@ mod tests {
         let backup = procs.get(ProcNr(1)).unwrap();
         assert!(!backup.p_rts_flags.is_set(RtsFlagsBits::NO_PRIV));
 
-        // 递归重投走外部路径：p_pending + RTS_SIGNALED + 通知新管理器
+        // Recursive re-delivery takes the external path: p_pending +
+        // RTS_SIGNALED + notify the new manager
         let target = procs.get(ProcNr(0)).unwrap();
         assert!(target.p_pending.contains(SIGABRT as u8));
         assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
@@ -1193,49 +1233,51 @@ mod tests {
     #[test]
     #[should_panic(expected = "cause_sig: sig manager")]
     fn test_cause_signal_self_lethal_no_backup_panics() {
-        // 自管理 + 致命信号 + 无 backup → C system.c:429-431 panic
+        // Self-managed + lethal signal + no backup → panic (C system.c:429-431)
         let (_, _, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         cause_signal(ProcNr(0), SIGABRT, &mut procs, &mut privs);
     }
 
-    // ── T-1: GETKSIG / ENDKSIG / sigsend / sigreturn 行为矩阵 ──
+    // ── Behavior matrix: GETKSIG / ENDKSIG / sigsend / sigreturn ──
 
     #[test]
     fn test_getksig_delivers_pending_then_reports_none() {
-        // C do_getksig.c:27-40 — 第一次调用：找到 SIGNALED 目标，回填
-        // (endpt, map) 并清 SIGNALED + p_pending；第二次调用：无待处理 →
-        // endpt = NONE。
+        // C do_getksig.c:27-40 — first call: finds the SIGNALED target,
+        // fills in (endpt, map) and clears SIGNALED + p_pending; second
+        // call: nothing pending → endpt = NONE.
         let (target_ep, manager_ep, mut procs, mut privs) =
             occupy_two_slots(ProcNr(0), ProcNr(1));
-        // 目标的信号管理器改为 manager（C: priv(rp)->s_sig_mgr）
+        // Point the target's signal manager at manager (C: priv(rp)->s_sig_mgr)
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
         {
             let t = procs.get_mut(ProcNr(0)).unwrap();
             t.p_rts_flags.set(RtsFlagsBits::SIGNALED);
             t.p_pending.add(SIGTRAP as u8);
         }
-        // K20 caller-by-nr: the caller is slot ProcNr(1); its endpoint must
-        // live on the slot (the standalone handle no longer applies).
+        // The caller is addressed by slot ProcNr(1); its endpoint must live
+        // on the slot (the standalone handle no longer applies).
         procs.get_mut(ProcNr(1)).unwrap().p_endpoint = manager_ep;
         let mut msg = Message::default();
         msg.m_type = Syscall::Getksig as i32;
 
         let result = dispatch_getksig(ProcNr(1), &mut procs, &mut msg, &privs);
         assert_eq!(result, KcallResult::Ok(OK));
-        // SAFETY: 回填变体由 dispatch_getksig 写入；测试侧 unsafe 读。
+        // SAFETY: the union variant is filled in by dispatch_getksig; the
+        // test reads it through unsafe.
         let (got_endpt, got_map) = unsafe { (msg.m_u.m_sigcalls.endpt, msg.m_u.m_sigcalls.map) };
         assert_eq!(got_endpt, target_ep.get());
-        // SigSet 位编码与 C sigset_t 同款：信号号 s → bit (s-1)（POSIX sigaddset）。
-        // SD-39: map 是 4×u32 全宽位图；SIGTRAP=5 → 字 0 位 4。
+        // SigSet bit encoding matches C sigset_t: signal number s → bit
+        // (s-1) (POSIX sigaddset).
+        // The map is the full-width 4×u32 bitmap; SIGTRAP=5 → word 0, bit 4.
         let mut expect = [0u32; 4];
         expect[0] = 1 << (SIGTRAP - 1);
         assert_eq!(got_map, expect);
-        // C do_getksig.c:33-34 — 消费后清 p_pending + RTS_SIGNALED
+        // C do_getksig.c:33-34 — consumption clears p_pending + RTS_SIGNALED
         let t = procs.get(ProcNr(0)).unwrap();
         assert!(!t.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
         assert_eq!(t.p_pending.get(), 0);
 
-        // 第二次调用：无 SIGNALED 目标 → endpt = NONE（C do_getksig.c:40）
+        // Second call: no SIGNALED target → endpt = NONE (C do_getksig.c:40)
         let mut msg2 = Message::default();
         msg2.m_type = Syscall::Getksig as i32;
         let result2 = dispatch_getksig(ProcNr(1), &mut procs, &mut msg2, &privs);
@@ -1246,19 +1288,20 @@ mod tests {
 
     #[test]
     fn test_endksig_clears_sig_pending_when_no_new_signal() {
-        // C do_endksig.c:35-36 — SIG_PENDING 置位且无新信号（SIGNALED 清）→
-        // 清 RTS_SIG_PENDING，返回 OK。
+        // C do_endksig.c:35-36 — SIG_PENDING set and no new signal
+        // (SIGNALED clear) → clear RTS_SIG_PENDING and return OK.
         let (target_ep, manager_ep, mut procs, mut privs) =
             occupy_two_slots(ProcNr(0), ProcNr(1));
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
         procs.get_mut(ProcNr(0)).unwrap()
             .p_rts_flags.set(RtsFlagsBits::SIG_PENDING);
-        // K20 caller-by-nr: the caller is slot ProcNr(1); its endpoint must
-        // live on the slot (the standalone handle no longer applies).
+        // The caller is addressed by slot ProcNr(1); its endpoint must live
+        // on the slot (the standalone handle no longer applies).
         procs.get_mut(ProcNr(1)).unwrap().p_endpoint = manager_ep;
         let mut msg = Message::default();
         msg.m_type = Syscall::Endksig as i32;
-        // SAFETY: m_type set above; test-only union write (msg_sigcalls 读侧同款).
+        // SAFETY: m_type set above; test-only union write (same as the
+        // msg_sigcalls read side).
         unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
 
         let result = dispatch_endksig(ProcNr(1), &mut procs, &msg, &privs);
@@ -1270,8 +1313,9 @@ mod tests {
 
     #[test]
     fn test_endksig_keeps_sig_pending_when_new_signal_arrived() {
-        // C do_endksig.c:35 — 若 ENDKSIG 处理期间新信号到达（SIGNALED 置位），
-        // RTS_SIG_PENDING 保留（管理器需再次 GETKSIG）。
+        // C do_endksig.c:35 — if a new signal arrived during ENDKSIG
+        // processing (SIGNALED set), RTS_SIG_PENDING stays (the manager
+        // must GETKSIG again).
         let (target_ep, manager_ep, mut procs, mut privs) =
             occupy_two_slots(ProcNr(0), ProcNr(1));
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
@@ -1280,12 +1324,13 @@ mod tests {
             t.p_rts_flags.set(RtsFlagsBits::SIG_PENDING);
             t.p_rts_flags.set(RtsFlagsBits::SIGNALED);
         }
-        // K20 caller-by-nr: the caller is slot ProcNr(1); its endpoint must
-        // live on the slot (the standalone handle no longer applies).
+        // The caller is addressed by slot ProcNr(1); its endpoint must live
+        // on the slot (the standalone handle no longer applies).
         procs.get_mut(ProcNr(1)).unwrap().p_endpoint = manager_ep;
         let mut msg = Message::default();
         msg.m_type = Syscall::Endksig as i32;
-        // SAFETY: m_type set above; test-only union write (msg_sigcalls 读侧同款).
+        // SAFETY: m_type set above; test-only union write (same as the
+        // msg_sigcalls read side).
         unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
 
         let result = dispatch_endksig(ProcNr(1), &mut procs, &msg, &privs);
@@ -1297,10 +1342,12 @@ mod tests {
 
     #[test]
     fn test_sigsend_unmapped_sigctx_returns_vmsuspend() {
-        // C do_sigsend.c:36-39 — Step 1 从调用者用户空间拷贝 sigmsg；
-        // sigctx 指向未映射地址 → PTE walk 页失败 → VmSuspend（VM 协助）。
+        // C do_sigsend.c:36-39 — step 1 copies sigmsg from the caller's
+        // user space; sigctx points at an unmapped address → the PTE walk
+        // faults → VmSuspend (the VM assists).
         let (target_ep, _, mut procs, _privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
-        // 目标必须有已记录的内核入口（NoEntry → EINVAL，到不了拷贝）
+        // The target must have a recorded kernel entry (NoEntry → EINVAL,
+        // never reaches the copy)
         procs.get_mut(ProcNr(0)).unwrap().trap_style =
             minix_arch::TrapStyle::IntHard;
         procs.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
@@ -1309,7 +1356,7 @@ mod tests {
         // SAFETY: m_type set above; test-only union write.
         unsafe {
             msg.m_u.m_sigcalls.endpt = target_ep.get();
-            msg.m_u.m_sigcalls.sigctx = 0x1000; // 未映射
+            msg.m_u.m_sigcalls.sigctx = 0x1000; // unmapped
         }
 
         let result = dispatch_sigsend(ProcNr(0), &mut procs, &msg);
@@ -1319,9 +1366,10 @@ mod tests {
 
     #[test]
     fn test_sigreturn_unmapped_sigctx_returns_vmsuspend() {
-        // C do_sigreturn.c:33-35 — Step 1 从目标用户空间拷回 sigcontext；
-        // sigctx 未映射 → VmSuspend（Rust 统一用 data_copy_vmcheck，
-        // 用户栈可页失败——doc 注释明示与 C data_copy 的差异）。
+        // C do_sigreturn.c:33-35 — step 1 copies sigcontext back from the
+        // target's user space; an unmapped sigctx → VmSuspend (Rust uses
+        // data_copy_vmcheck uniformly — the user stack may fault; the doc
+        // comment states the difference from C's data_copy).
         let (target_ep, _, mut procs, _privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         procs.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
         let mut msg = Message::default();
@@ -1329,7 +1377,7 @@ mod tests {
         // SAFETY: m_type set above; test-only union write.
         unsafe {
             msg.m_u.m_sigcalls.endpt = target_ep.get();
-            msg.m_u.m_sigcalls.sigctx = 0x1000; // 未映射
+            msg.m_u.m_sigcalls.sigctx = 0x1000; // unmapped
         }
 
         let result = dispatch_sigreturn(ProcNr(0), &mut procs, &msg);

@@ -26,7 +26,7 @@
 //! | reserved module blobs (deduction record) | `KernelInfo.boot_modules()`
 //!   — **every** blob including VM's own (VM's segment frames come from this
 //!   free list before VM starts, so reclaiming its blob corrupts VM before
-//!   entry; 续-187) |
+//!   entry) |
 //!
 //! Note the two module lists are different on purpose: the deduction record
 //! keeps every blob, while the handoff module list (`VmBootHandoff.modules`,
@@ -60,7 +60,7 @@ const PAGE_SIZE: u64 = 0x1000;
 /// classification point.
 ///
 /// Consumers that allocate frames AFTER the first boot-image load —
-/// multi-image boot loaders (the C-27 carrier's second image) — must
+/// multi-image boot loaders (a boot loader's second image) — must
 /// select from this list, not from the raw `KernelInfo::memmap()`: the
 /// raw map still advertises the frames the first load consumed
 /// (segments, stack, page-table pages, handoff page), and handing them
@@ -172,7 +172,7 @@ impl DeductionCollector {
 /// them is a no-op there. The no-shim fallback path registers its bump
 /// region *from* the memmap, and the cut is what keeps it out of VM's free
 /// list. Either way the whole registered range is deducted (kernel-reserved
-/// includes the bump remainder, §6.0-A2 构成表).
+/// includes the bump remainder, §6.0-A2 composition table).
 pub fn classify(
     kernel_info: &KernelInfo,
     root_paddr: PhysBytes,
@@ -204,7 +204,7 @@ pub fn classify(
     record.push(kernel_info.kern_phys_base().0, kernel_info.kern_size());
 
     // Kernel-reserved: VM's self root page (A1 identity — the handoff value
-    // itself, §6.0-A2 构成表 "root page（handoff 值本身）").
+    // itself, §6.0-A2 composition table "root page (the handoff value itself)").
     record.push(root_paddr.0, PAGE_SIZE);
 
     // Kernel-reserved: the boot bump region, whole range.
@@ -233,11 +233,13 @@ pub fn classify(
     }
 
     // Kernel-reserved: every boot module blob INCLUDING VM's own.
-    // 续-187 成修：旧逻辑对 VM 模块做 reclaim（为 exec copy-out 腾帧），
-    // 但 kernel 的 boot-exec 在 VM 启动前逐台装载服务器 0..7——它们的段
-    // 帧从本 free list 取，VM blob 被取走即 VM 镜像启动前被覆写（gh53/
-    // 58：VM text 页非法指令→SIGSEGV-for-itself，p_fault_addr=None 非
-    // PF）。625KB 的让利不值得换启动前腐坏：全量保留。
+    // Correction: the old logic reclaimed the VM module (to free frames for
+    // exec copy-out), but the kernel's boot-exec loads servers 0..7 one by one
+    // before VM starts — their segment frames come from this free list, so
+    // taking VM's blob away means it is overwritten before the VM image starts
+    // (gh53/58: VM text pages take illegal instructions → SIGSEGV-for-itself,
+    // with p_fault_addr=None rather than a page fault). The 625KB concession is
+    // not worth corruption before startup: keep the whole blob reserved.
     assert!(
         vm_module_idx < kernel_info.boot_modules().len(),
         "vm_handoff: VM module index {} out of bounds",
@@ -283,10 +285,11 @@ pub fn classify(
         free_count += 1;
     }
 
-    // NK4-A 取证（fix18 临时路标，task1-close 裁决去留）：分类幸存区可见
-    // 性——VM PMM 只有 ~133 页可用（grow(229) PhysicalAllocFailed，
-    // 2026-09-21 栈取证），需要知道是 memmap 快照本来就小，还是扣减切多
-    // 了。只打前 8 条，避免刷屏。
+    // Forensic visibility for the surviving classified regions: VM PMM had only
+    // ~133 usable pages (grow(229) PhysicalAllocFailed, 2026-09-21 stack
+    // forensics), so it must be known whether the memmap snapshot was already
+    // small or the deduction cut too much. Print the first 8 only, to avoid
+    // flooding the console.
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: vm_handoff free n=");
@@ -384,17 +387,17 @@ pub fn build_vm_handoff(
     }
     debug_assert_eq!(n, NR_BOOT_PROCS, "kernel tasks + boot modules must fill the boot image table");
 
-    // fix27 (handoff v6): kernel runtime identity windows — the VM's
+    // Handoff v6: kernel runtime identity windows — the VM's
     // `map_kernel` replays them into every process page table so the
     // link-in execution model's low VA=PA code/data/MMIO accesses
     // survive the first CR3 switch (see version history v6).
     let (kern_ident, kern_ident_count) = build_identity_windows();
 
-    // D-72: production reaches here after kmain Phase B.5 initialized the
+    // Production reaches here after kmain Phase B.5 initialized the
     // kernel-information page. Staged bootstrap test kernels call
     // `arch_boot_impl`/`init_proc_and_boot` directly and skip that phase;
-    // they report 0 and VM skips the per-root mapping, preserving the
-    // pre-D-72 test shape. Production correctness is gated by the
+    // they report 0 and VM skips the per-root mapping, preserving the earlier
+    // test shape. Production correctness is gated by the
     // rt-birth/user-trap QEMU legs, which read the page at CPL3: a
     // production 0 would fail those gates instead of silently passing.
     let kerninfo_pa = crate::kerninfo::kerninfo_page_phys().unwrap_or(0);
@@ -403,13 +406,13 @@ pub fn build_vm_handoff(
         magic: VM_BOOT_HANDOFF_MAGIC,
         version: VM_BOOT_HANDOFF_VERSION,
         root_paddr: root_paddr.0,
-        // D-72: the kernel owns the page; VM builds the per-root mapping at
+        // The kernel owns the page; VM builds the per-root mapping at
         // `KERNINFO_USER_VA` and owns only the intermediate page-table pages.
         kerninfo_pa,
         vm_allocated_bytes: vm_alloc.used_frames() * PAGE_SIZE,
         kernel_allocated_static: kernel_info.kern_size(),
         kernel_allocated_dynamic: boot_alloc_used_bytes(),
-        // V11/E3: kernel layout for VM's per-process kernel mappings —
+        // Kernel layout for VM's per-process kernel mappings —
         // C kinfo carries the same role (kernel text/data base + pages).
         // minix-rs maps the whole contiguous image span as "text"
         // (data_pages = 0); the VM's map_kernel walks text_pages then
@@ -418,7 +421,7 @@ pub fn build_vm_handoff(
         kern_phys_base: kernel_info.kern_phys_base().0,
         kern_text_pages: (kernel_info.kern_size() / 4096) as u32,
         kern_data_pages: 0,
-        // fix26 (handoff v5): the real kernel Direct Map window. VM's
+        // Handoff v5: the real kernel Direct Map window. VM's
         // `map_kernel` replays this window into every process page
         // table; the first CR3 switch to a VM-built table makes it the
         // kernel's own DM access path, so base AND coverage must equal
@@ -443,8 +446,8 @@ pub fn build_vm_handoff(
     }
 }
 
-/// Build the kernel runtime identity windows for the handoff (fix27,
-/// version 6) — the physical regions `map_kernel` must replay identity
+/// Build the kernel runtime identity windows for the handoff (version 6) —
+/// the physical regions `map_kernel` must replay identity
 /// (VA = PA, supervisor-only) into every VM-built process page table.
 ///
 /// Sources:
@@ -508,7 +511,8 @@ pub(crate) fn build_identity_windows() -> ([HandoffMemRegion; VM_BOOT_HANDOFF_MA
     for &(base, size) in minix_arch::kernel_identity_mmio_regions() {
         push(base, size, &mut n);
     }
-    // 结束闭包对计数器的可变借用，之后才能再读它们。
+    // The closure's mutable borrow of the counters ends here; they can only be
+    // read afterwards.
     drop(push);
     let _ = max_end;
 
@@ -550,9 +554,11 @@ pub(crate) fn build_identity_windows() -> ([HandoffMemRegion; VM_BOOT_HANDOFF_MA
         i = j;
     }
 
-    // NK4-A fix27 取证路标（task1-close 裁决删除）：身份窗口真值必须
-    // 在真机上可见——数量决定 rs 切换后低段取指是否活着。mock（宿主
-    // 测试）下 console 是真实端口写，必须编译掉（同 lib.rs 路标惯例）。
+    // Forensic landmark (removed once the item was closed): the identity-window
+    // truth must be visible on real hardware — the count decides whether
+    // low-half instruction fetch stays alive after the rs switch. Under the mock
+    // (host test) the console writes a real port, so this must be compiled out
+    // (same landmark convention as lib.rs).
     #[cfg(not(feature = "mock"))]
     {
     }

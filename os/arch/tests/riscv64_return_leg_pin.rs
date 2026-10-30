@@ -1,25 +1,35 @@
-//! riscv64 `restore_to_user` 返回腿的钉住测试（NK4C §续-373）。
+//! Pinning test for the riscv64 `restore_to_user` return leg.
 //!
-//! 为什么单开一个文件而不是复用 `riscv64_trap_leg_shape.rs` 的规则：那条腿的
-//! 汇编形状与陷入腿不同——寄存器文件指针住在 **t6** 里做自引用回载，步长用
-//! `GP_*` 常量而不是「槽号=寄存器号」，`{sepc_off}` 一类占位符也混在操作数里。
-//! 硬套陷入腿的槽位规则会一片假红，所以这里只钉这条腿真正承重的三件事：
+//! Why a separate file instead of reusing the rules in
+//! `riscv64_trap_leg_shape.rs`: this leg's assembly shape differs from the trap
+//! leg's -- the register-file pointer lives in **t6** and reloads itself by
+//! self-reference, the stride uses `GP_*` constants instead of
+//! "slot number = register number", and placeholders such as `{sepc_off}` are
+//! interleaved with the operands. Applying the trap leg's slot rules verbatim
+//! would light up a field of false failures, so this file pins only the three
+//! things this leg genuinely bears:
 //!
-//! 1. **屏蔽先于换腿**：本腿必须先清掉 `sstatus.SIE`，再写 `stvec`。否则
-//!    S 态带着开着的 SIE 走进只适用于 U-origin 的用户腿，一拍时钟就会把
-//!    34 槽帧写进 `[内核栈顶-272, 内核栈顶)`——那正是调度器活帧占的地盘
-//!    （aarch64 同族实现第一句 `msr daifset, #0xf` 就是为这个，且注释里记着
-//!    它当年观测到的症状「首次返回后静默挂死」）。
-//! 2. **换腿先于回载**：`stvec` 写必须在任何用户寄存器回载之前——那一写要
-//!    一个暂存寄存器，回载之后每个寄存器都属于被打断的用户上下文。
-//! 3. **回载之后不再挪用**：`t0`/`t6` 从上下文取回用户值之后到 `sret` 之间
-//!    不得再被写（`t6` 的自引用回载必须是最后一次写它）。
+//! 1. **Mask before switching legs**: this leg must clear `sstatus.SIE` before
+//!    writing `stvec`. Otherwise S-mode enters a user leg that is valid only for
+//!    U-origin with SIE still open, and one clock tick writes the 34-slot frame
+//!    into `[kernel stack top - 272, kernel stack top)` -- exactly where the
+//!    scheduler's live frames live (the aarch64 sibling implementation opens
+//!    with `msr daifset, #0xf` for this very reason, and its comments record the
+//!    symptom observed back then: "silent hang after the first return").
+//! 2. **Switch the vector before reloading**: the `stvec` write must precede
+//!    any user-register reload -- that write needs a scratch register, and after
+//!    the reload every register belongs to the interrupted user context.
+//! 3. **No repurposing after the reload**: between taking back the user values
+//!    of `t0`/`t6` and `sret`, neither may be written again (t6's self-reference
+//!    reload must be the last write to it).
 //!
-//! 位定义也在这里钉：`SIE` 是 bit 1（现行使能），`SPIE` 是 bit 5（由 `sret`
-//! 消费）；把屏蔽写成清 bit 5 会同时留下窗口并让返回后的上下文根本没有中断
-//! （§续-108/109 的老形状）。
+//! The bit definitions are pinned here too: `SIE` is bit 1 (current enable),
+//! `SPIE` is bit 5 (consumed by `sret`); writing the mask as a clear of bit 5
+//! would both leave a window open and leave the post-return context with
+//! interrupts disabled entirely (an older shape that was tried before).
 
-/// 抽出 `core::arch::asm!( … )` 里的指令行（按顺序），去掉缩进与 Rust 注释。
+/// Extracts the instruction lines out of the `core::arch::asm!( … )` block in
+/// order, dropping indentation and Rust comments.
 fn asm_instructions(src: &str) -> Vec<String> {
     let at = src
         .find("core::arch::asm!(")
@@ -40,7 +50,9 @@ fn asm_instructions(src: &str) -> Vec<String> {
             }
         })
         .collect();
-    // fail-closed：表外助记符当场失败（静默当作不写寄存器 = 生命期钉住有盲区）。
+    // fail-closed: a mnemonic outside the table fails immediately (silently
+    // treating it as "does not write a register" would leave a blind spot in
+    // the lifetime pinning).
     if let Some(bad) = out.iter().find(|i| {
         i.split_whitespace()
             .next()
@@ -52,25 +64,29 @@ fn asm_instructions(src: &str) -> Vec<String> {
     out
 }
 
-/// 本腿允许出现的助记符（fail-closed：表外就当场失败，而不是当作「不写寄存器」
-/// 静默放过——§续-373 评审回执第二条：同族的形状测试已经论证过这条纪律，两个
-/// 文件不能一个严一个松）。
+/// Mnemonics allowed on this leg (fail-closed: anything outside the table fails
+/// on the spot rather than being silently treated as "does not write a
+/// register" -- the shape test for the sibling leg already argued this
+/// discipline, and the two files must not differ in strictness).
 const KNOWN_MNEMONICS: &[&str] = &[
     "li", "mv", "la", "add", "ld", "csrw", "csrc", "csrs", "bnez", "j", "sret",
 ];
 
-/// 这些寄存器在本腿里只当暂存用（它们的用户值在后面才回载），所以它们出现在
-/// 回载哨兵里不算回载。
+/// These registers serve only as scratch on this leg (their user values are
+/// reloaded later), so their appearance in the reload sentinel does not count
+/// as a reload.
 const SCRATCH_REGS: &[&str] = &["t0", "t1", "a4"];
 
-/// 这条指令是否写了寄存器 `name`（首操作数形式）。占位符 `{..}` 不影响判定，
-/// 因为被写的都是寄存器名。
+/// Whether this instruction writes register `name` (destination-first form).
+/// Placeholders `{..}` do not affect the decision, because everything written is
+/// a register name.
 fn writes(ins: &str, name: &str) -> bool {
     const DEST_FIRST: &[&str] = &[
         "li", "mv", "la", "ld", "csrr", "csrrw", "add", "addi", "sub", "and", "andi", "or", "ori",
         "srli", "slli", "csrc", "csrs",
     ];
-    // csrc/csrs 的 CSR 名不是寄存器，首操作数按 ',' 切开后仍是寄存器名。
+    // The CSR name in csrc/csrs is not a register; after splitting the first
+    // operand on ',' the result is still a register name.
     let (mn, rest) = match ins.split_once(char::is_whitespace) {
         Some(pair) => pair,
         None => return false,
@@ -89,8 +105,9 @@ fn rpos(leg: &[String], pred: impl Fn(&str) -> bool) -> Option<usize> {
     leg.iter().rposition(|i| pred(i))
 }
 
-/// 首个「真回载」：写一个不属于暂存集的寄存器的 `ld`。拿 `ld sp,` 当唯一哨兵
-/// 不够——若有人把顺序改成先回载 a1，哨兵就会晚报（§续-373 评审回执第三条）。
+/// The first "real reload": an `ld` that writes a register outside the scratch
+/// set. Using `ld sp,` as the only sentinel is not enough -- if someone reorders
+/// the leg to reload a1 first, the sentinel reports late.
 fn first_real_reload(leg: &[String]) -> Option<usize> {
     leg.iter().position(|i| {
         if !i.starts_with("ld ") {
@@ -101,9 +118,10 @@ fn first_real_reload(leg: &[String]) -> Option<usize> {
     })
 }
 
-/// 本仓 asm 写 CSR 位段的固定套式：`li <r>, {标志}` 紧接 `csrc sstatus, <r>`。
-/// 按这个套式找，而不拿寄存器名定位——寄存器名会被重写，而「先装掩码再清」
-/// 这个形式不会变。
+/// The fixed idiom this repo uses for clearing CSR bit fields in asm:
+/// `li <r>, {flag}` immediately followed by `csrc sstatus, <r>`. Match on that
+/// idiom rather than on a register name -- register names get rewritten, but the
+/// "load the mask then clear" form does not change.
 fn sstatus_clear(leg: &[String], symbol: &str) -> Option<usize> {
     let li = pos(leg, |i| i.starts_with("li ") && i.contains(symbol))?;
     let reg = leg[li].split_whitespace().nth(1)?.split(',').next()?;
@@ -115,8 +133,9 @@ const SRC: &str = include_str!("../src/riscv64/trap_return.rs");
 
 #[test]
 fn sstatus_bits_match_the_privileged_spec() {
-    // 位定义从源码文本里读出来对账（源码在 cfg(riscv64) 模块里，宿主单编译
-    // 跑不到它的 #[test]，所以在这里读文本）。
+    // The bit definitions are read out of the source text and reconciled (the
+    // source sits in a cfg(riscv64) module, so a host-only build cannot run its
+    // #[test]; hence reading the text here).
     for (needle, want) in [
         ("SSTATUS_SPP", 1u64 << 8),
         ("SSTATUS_SPIE", 1u64 << 5),
@@ -147,13 +166,16 @@ fn return_leg_masks_interrupts_before_switching_the_vector() {
 
     let mask = sstatus_clear(&leg, "{sie}")
         .expect("本腿必须先清 sstatus.SIE（与 aarch64 的 msr daifset 对齐）");
-    // 拿 {spp} 那对装/清当反例：它清的是 SPP（特权级位），不能被当成屏蔽。
+    // The {spp} load/clear pair serves as the counter-example: it clears SPP
+    // (the privilege-level bit) and must not be mistaken for the mask.
     let spp_clear = sstatus_clear(&leg, "{spp}").expect("本腿必须清 SPP（返回 U 态）");
     assert_ne!(mask, spp_clear, "屏蔽与清 SPP 应当是两笔不同的写");
     let anchor =
         pos(&leg, |i| i.starts_with("csrw sscratch,")).expect("本腿必须重锚 sscratch 为内核栈顶");
-    // 钉的是**最后一次** stvec 写：若将来有人在本腿尾部再加一次换腿，早先那一次
-    // 就不再决定「返回后谁接下一个陷入」（与形状测试规则 5 同一纪律）。
+    // What is pinned is the **last** stvec write: if someone later adds another
+    // vector switch at the tail of this leg, the earlier one no longer decides
+    // "who receives the next trap after the return" (the same discipline as rule
+    // 5 of the shape test).
     let vector = rpos(&leg, |i| i.starts_with("csrw stvec,")).expect("本腿必须把 stvec 指向用户腿");
     let first_reload = first_real_reload(&leg).expect("首个真回载找不到");
     let sret = pos(&leg, |i| i == "sret").expect("本腿必须以 sret 收尾");
@@ -175,7 +197,8 @@ fn return_leg_masks_interrupts_before_switching_the_vector() {
     );
     assert_eq!(sret, leg.len() - 1, "sret 必须是本腿最后一条指令");
 
-    // 回载之后不得再挪用：t0（x5）与 t6（x31，寄存器文件指针，自引用收尾）。
+    // No repurposing after the reload: t0 (x5) and t6 (x31, the register-file
+    // pointer, which closes with a self-reference).
     let t0_back = pos(&leg, |i| i.starts_with("ld t0, 3*8")).expect("t0 的用户值回载");
     if let Some(bad) = (t0_back + 1..sret).find(|&k| writes(&leg[k], "t0")) {
         panic!(
@@ -198,8 +221,9 @@ fn return_leg_masks_interrupts_before_switching_the_vector() {
 
 #[test]
 fn controls_fire_when_the_mask_is_missing_or_misplaced() {
-    // 正控制（防「解析器什么都没匹配所以全绿」）：删掉屏蔽、或把屏蔽挪到换腿
-    // 之后，主测试的判据必须失效。
+    // Positive control (guards against "the parser matched nothing, so
+    // everything is green"): delete the mask, or move it after the vector
+    // switch, and the main test's predicate must stop holding.
     let mut leg = asm_instructions(SRC);
     let mask = sstatus_clear(&leg, "{sie}").expect("屏蔽写必须在位");
     let vector = rpos(&leg, |i| i.starts_with("csrw stvec,")).expect("换腿写在位");
@@ -208,7 +232,8 @@ fn controls_fire_when_the_mask_is_missing_or_misplaced() {
         "现次序应为「先屏蔽后换腿」，实测 {mask} vs {vector}"
     );
 
-    // ①删掉屏蔽那一写：判据应当再也找不到屏蔽（而不是认错到清 SPP 那笔）。
+    // (1) Delete the mask write: the predicate must no longer find a mask (and
+    // must not mis-identify the SPP clear as one).
     let mut dropped = leg.clone();
     dropped.remove(mask);
     assert!(
@@ -220,7 +245,8 @@ fn controls_fire_when_the_mask_is_missing_or_misplaced() {
         "清 SPP 那笔应当还在（这一步只证判据分得清屏蔽与清特权位两事）"
     );
 
-    // ②把屏蔽挪到换腿之后：次序判据必须翻脸。
+    // (2) Move the mask after the vector switch: the ordering predicate must
+    // flip.
     leg.swap(mask, vector);
     let mask_after = sstatus_clear(&leg, "{sie}").expect("换位后屏蔽写仍在，只是位置变了");
     let vector_after = rpos(&leg, |i| i.starts_with("csrw stvec,")).expect("换位后换腿写仍在");

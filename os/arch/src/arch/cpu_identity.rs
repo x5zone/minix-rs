@@ -8,7 +8,7 @@
 //!   (implementer/variant/arch/part/revision + hardcoded freq)
 //! - `glo.h` — `EXTERN struct cpu_info cpu_info[CONFIG_MAX_CPUS]`
 //!
-//! # Design (08-system-init-boot-finish.md §4.6, D-53)
+//! # Design (08-system-init-boot-finish.md §4.6)
 //!
 //! The three ISAs report *different shapes* of identity data (x86's
 //! family/model decomposition does not exist on ARM; ARM's MIDR fields do

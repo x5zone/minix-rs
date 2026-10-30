@@ -298,11 +298,12 @@ fn validate_cpu_param(
     Ok(())
 }
 
-/// NK4-C 续-73 过渡守卫核心：在 C 的 AP 唤醒三件套接线之前，把
-/// SYS_SCHEDCTL / SYS_SCHEDULE 请求的 CPU 一律钳到 BSP。`None` 保留 C
-/// 的 `-1 = keep-current` 语义不动。抽成注入 `bsp` 的纯函数，以便
-/// hosted test 直接覆盖（真机上 `try_smp_state()` 为 `Some` 时钳制
-/// 才可达，故不能靠已有 host 用例触及内联版）。
+/// Core of the transitional guard: until C's AP wake-up trio is wired, clamp
+/// every CPU requested by SYS_SCHEDCTL / SYS_SCHEDULE to the BSP. `None` keeps
+/// C's `-1 = keep-current` semantics untouched. Extracted into a pure function
+/// that takes `bsp` as an argument so hosted tests can cover it directly (on
+/// hardware the clamp is reachable only once `try_smp_state()` returns `Some`,
+/// so the inlined version cannot be reached from the existing host cases).
 #[inline]
 fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
     cpu.map(|_| bsp)
@@ -355,7 +356,7 @@ fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
 /// runtime-reachable only on a multi-CPU machine, mirroring C's
 /// CONFIG_SMP gating by data rather than by cfg.
 ///
-/// # Transitional deviation (NK4-C 续-73)
+/// # Transitional deviation
 ///
 /// Until the AP wake-up trio (`context_stop_idle` + enqueue wake IPI +
 /// AP timer restart) is wired, `params.cpu` is clamped to the BSP by
@@ -372,7 +373,7 @@ pub fn sched_proc(
 ) -> Result<(), SchedProcError> {
     use crate::proc::{MiscFlagsBits, RtsFlagsBits};
 
-    // D-52 (2026-09-06, 用户裁决"完全对齐 C"): the scheduler-aware
+    // Per the decision to align fully with C: the scheduler-aware
     // rts_set/rts_unset wrappers (dequeue/enqueue side effects) replace
     // the former raw flag writes. C: RTS_SET/RTS_UNSET macros
     // (proc.h:51-52 via system.c:671-698) — updating a QUEUED process
@@ -411,19 +412,26 @@ pub fn sched_proc(
         None => validate_cpu_param(params.cpu, 1, |v: u32| v == 0)?,
     }
 
-    // NK4-C 续-73 过渡守卫（对位 lib.rs idle() CONTRACT arm#3）：本 port 尚未
-    // 接入 C 的 AP 唤醒三件套——context_stop_idle(arch_clock.c:351-369，中断
-    // 入口清 cpu_is_idle + restart_local_timer)、enqueue 唤醒 IPI(proc.c:1647)、
-    // AP timer 重装。idle AP 的 LAPIC timer 被 idle()(续-72) 掩蔽且无唤醒臂，
-    // 把进程路由到 AP 会永久饿死(-smp4 boot 死锁在 INIT)；arm#2 单发唤醒 IPI
-    // 实测令 AP 跑用户进程后触发 VM 跨 CPU 服务腐蚀崩溃(pagefault-for-VM +
-    // #UD flood)。故在 AP 可安全承载用户进程之前，把 SYS_SCHEDCTL 与
-    // SYS_SCHEDULE 两条腿请求的 cpu 一律钳到 BSP——其可观测效果(接受请求、
-    // 进程留 BSP)对位 C non-SMP(system.c:686-689 整段在 #ifdef CONFIG_SMP 内，
-    // 忽略 cpu 参数并返回 OK)；错误码路径仍按 C CONFIG_SMP 校验(越界 EINVAL /
-    // 未就绪 EBADCPU，见上 Step 3)。真 SMP(补齐三件套 + 根治跨 CPU 腐蚀)落地
-    // 后移除本钳制。过渡期已知副作用：SCHED 服务端账本仍记进程在被请求的 AP，
-    // 而内核/MIB 读 p_sched.cpu 恒为 BSP——取证以内核为权威。
+    // Transitional guard (counterpart of lib.rs idle()'s CONTRACT arm #3):
+    // this port has not yet wired C's AP wake-up trio — context_stop_idle
+    // (arch_clock.c:351-369, whose interrupt entry clears cpu_is_idle and
+    // restarts the local timer), the enqueue wake IPI (proc.c:1647), and the AP
+    // timer re-arm. An idle AP's LAPIC timer is masked by idle() and has no
+    // wake-up arm, so routing a process to an AP starves it forever (a -smp4
+    // boot deadlocks on INIT); a single wake IPI delivered to arm #2 was
+    // measured to make the AP run user processes and then trigger cross-CPU VM
+    // service corruption (pagefault-for-VM plus a #UD flood). Therefore, before
+    // an AP can safely host user processes, the cpu requested by both the
+    // SYS_SCHEDCTL and SYS_SCHEDULE legs is clamped to the BSP — its observable
+    // effect (accept the request, keep the process on the BSP) matches C's
+    // non-SMP build (system.c:686-689 sits entirely inside #ifdef CONFIG_SMP,
+    // ignores the cpu parameter and returns OK); the error-code path still
+    // validates as C's CONFIG_SMP does (out of range EINVAL / not ready
+    // EBADCPU, see Step 3 above). Remove this clamp once real SMP (the trio plus
+    // the cross-CPU corruption fix) lands. Known side effect during the
+    // transition: the SCHED server's ledger still records the process on the
+    // requested AP, while the kernel/MIB reads p_sched.cpu as always the BSP —
+    // take the kernel as authoritative.
     let bsp = smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0);
     params.cpu = clamp_cpu_to_bsp(params.cpu, bsp);
 
@@ -471,7 +479,8 @@ pub fn sched_proc(
         Some(v) => v != table.get(nr).map(|p| p.p_sched.priority.load(Ordering::Acquire)).unwrap_or(v),
         None => false,
     };
-    let _ = priority_changed; // C 的 changed 检查仅是注释语义；守卫是 runnable
+    let _ = priority_changed; // C's changed check is comment-only semantics;
+                              // the actual guard is `runnable`
 
     // Step 5: apply priority (if Some).
     // C: system.c:684-685:
@@ -519,7 +528,7 @@ pub fn sched_proc(
         }
     }
 
-    // Step 9 (D-52, C system.c:698): RTS_UNSET via the scheduler-aware
+    // Step 9 (C system.c:698): RTS_UNSET via the scheduler-aware
     // wrapper — a queued process is re-enqueued (tail) with the NEW
     // parameters; a blocked process just has the flag cleared.
     table.rts_unset(nr, RtsFlagsBits::NO_QUANTUM);
@@ -543,8 +552,9 @@ pub enum SchedProcError {
 
 impl minix_types::ToErrno for SchedProcError {
     fn to_errno(&self) -> minix_types::Errno {
-        // D2: 映射逻辑归属错误类型自身（替代手写 sched_proc_error_to_errno
-        // 自由函数的裸魔法数 22/42 写法）。
+        // The mapping logic belongs to the error type itself (replacing the
+        // hand-written sched_proc_error_to_errno free function and its bare
+        // magic numbers 22/42).
         match self {
             SchedProcError::InvalidArgument => minix_types::Errno::EINVAL,
             SchedProcError::BadCpu => minix_types::Errno::EBADCPU,
@@ -794,13 +804,15 @@ mod tests {
         assert!(table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
     }
 
-    // ── E-PREEMPTFLAG（edge_todo.md）：抢占门读特权标志，不读优先级 ──
+    // ── The preemption gate reads the privilege flag, not the priority ──
 
-    /// MAX_USER_Q == TASK_Q == 0（config.h:67-68）：优先级 0 的用户进程
-    /// 合法可抢占。旧实现以 `priority != 0` 近似 PREEMPTIBLE，把这类进程
-    /// 永久挡在 NO_QUANTUM 之外（SCHED 接管后经 START/NICE 可达优先级 0，
-    /// 从此被内核无限续量）。C 的判据是 priv 标志位（proc.c:1895）——
-    /// USR_F 携带 PREEMPTIBLE（priv.h:49），本测试钉住修正后的行为。
+    /// MAX_USER_Q == TASK_Q == 0 (config.h:67-68): a user process at priority
+    /// 0 is legitimately preemptible. The old implementation approximated
+    /// PREEMPTIBLE with `priority != 0`, which kept such processes permanently
+    /// out of NO_QUANTUM (after SCHED takes over, priority 0 is reachable via
+    /// START/NICE, so the kernel kept renewing them indefinitely). C's
+    /// criterion is the priv flag bit (proc.c:1895) — USR_F carries PREEMPTIBLE
+    /// (priv.h:49) — and this test pins the corrected behavior.
     #[test]
     fn test_proc_no_time_priority_zero_preemptible_notifies_scheduler() {
         let mut table = crate::test_helpers::test_proc_table();
@@ -822,9 +834,10 @@ mod tests {
             table.get(ProcNr(0)).unwrap().p_rts_flags);
     }
 
-    /// 用户调度的进程若特权标志缺 PREEMPTIBLE（如 TSK_F = SYS_PROC，
-    /// priv.h:44），必须走续量分支不发通知——位测试是唯一判据
-    /// （C: proc.c:1895 `priv(p)->s_flags & PREEMPTIBLE` 不成立 → else）。
+    /// A user-scheduled process whose privilege flags lack PREEMPTIBLE (e.g.
+    /// TSK_F = SYS_PROC, priv.h:44) must take the quantum-renewal branch without
+    /// a notification — the bit test is the sole criterion (C: proc.c:1895, the
+    /// `priv(p)->s_flags & PREEMPTIBLE` test failing → else).
     #[test]
     fn test_proc_no_time_non_preemptible_priv_renews_quantum() {
         let mut table = crate::test_helpers::test_proc_table();
@@ -847,7 +860,7 @@ mod tests {
 
     // ── sched_proc tests (2026-06-16) ────────────────────────────────
 
-    /// 统一 fixture：R 槽位占用 + endpoint 设置（SLOT_FREE 清除）。
+    /// Shared fixture: occupy slot R plus set the endpoint (clear SLOT_FREE).
     fn sched_proc_fixture(table: &mut crate::proc_table::ProcessTable) {
         let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
@@ -875,7 +888,8 @@ mod tests {
 
     #[test]
     fn test_sched_proc_priority_overflow_rejected() {
-        // u8 类型编译期拒绝负值；运行时 > MIN_USER_Q (15) → EINVAL。
+        // The u8 type rejects negative values at compile time; at run time a
+        // value > MIN_USER_Q (15) → EINVAL.
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
         let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: Some(16), quantum: None, cpu: None, niced: false });
@@ -973,8 +987,9 @@ mod tests {
 
     #[test]
     fn test_clamp_cpu_to_bsp_transitional_guard() {
-        // NK4-C 续-73 过渡守卫纯函数覆盖：任何请求的 cpu 被钳到 BSP，
-        // 已在 BSP 保持幂等，`None`（keep-current）不受影响。
+        // Coverage for the transitional guard's pure function: any requested
+        // cpu is clamped to the BSP, a request already on the BSP stays
+        // idempotent, and `None` (keep-current) is unaffected.
         assert_eq!(clamp_cpu_to_bsp(Some(1), 0), Some(0));
         assert_eq!(clamp_cpu_to_bsp(Some(3), 0), Some(0));
         assert_eq!(clamp_cpu_to_bsp(Some(0), 0), Some(0));
@@ -984,7 +999,8 @@ mod tests {
 
     #[test]
     fn test_sched_proc_error_to_errno() {
-        // D2: ToErrno trait 断言（以 errno 常量对照，非魔法数）。
+        // ToErrno trait assertion (compared against errno constants, not magic
+        // numbers).
         use minix_types::ToErrno as _;
         assert_eq!(
             SchedProcError::InvalidArgument.to_errno().to_i32(),
@@ -996,11 +1012,11 @@ mod tests {
         );
         assert_eq!(
             SchedProcError::BadCpu.to_errno().to_i32(),
-            crate::errno::EBADCPU // = 217（errno.h:213）
+            crate::errno::EBADCPU // = 217 (errno.h:213)
         );
     }
 
-    /// D-52 (C system.c:671-698): the NO_QUANTUM toggle around a queued
+    /// C system.c:671-698: the NO_QUANTUM toggle around a queued
     /// process's parameter update is now done through the scheduler-aware
     /// `rts_set`/`rts_unset` — a runnable queued process is dequeued then
     /// re-enqueued with the new parameters.
@@ -1013,7 +1029,7 @@ mod tests {
         assert!(!table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
     }
 
-    /// D-52 core acceptance: a runnable process whose parameters change
+    /// Core acceptance test: a runnable process whose parameters change
     /// is dequeued (RTS_SET NO_QUANTUM) then re-enqueued (RTS_UNSET) —
     /// observable as NO_QUANTUM ending clear AND the scheduler having
     /// processed the transition (sched_enqueue ran; queue non-empty for

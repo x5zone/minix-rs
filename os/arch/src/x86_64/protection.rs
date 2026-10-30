@@ -6,7 +6,7 @@
 //! # x86-64 specific: GDT/TSS in long mode
 //!
 //! See `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`
-//! §1.7 ("x86 为什么还保留 GDT") for the architectural rationale of why
+//! §1.7 ("why x86 still keeps a GDT") for the architectural rationale of why
 //! GDT/TSS are still required in 64-bit long mode: the TSS descriptor
 //! must be referenced via a GDT entry (an ISA constraint), so GDT cannot
 //! be eliminated entirely. This is INTENTIONALLY hidden from OS code via
@@ -268,10 +268,11 @@ impl X86_64Protection {
         let desc = make_tss_desc64(tss_addr, TSS64_SIZE as u16 - 1, 0);
 
         // BOTH halves go into the GDT image — long-mode TSS descriptors are
-        // 16 bytes (two consecutive entries). The pre-S-4 code kept the high
+        // 16 bytes (two consecutive entries). Earlier code kept the high
         // dword in a separate array that `load()` never exposed, so `ltr`
         // read base[63:32]=0 and any ring crossing would have died on a
-        // garbage TSS (latent: nothing crossed rings before S-4).
+        // garbage TSS (latent: nothing crossed privilege rings until
+        // per-CPU TSS setup landed).
         let gdt_idx = GDT_TSS_FIRST_INDEX + idx * GDT_SLOTS_PER_TSS;
         self.gdt[gdt_idx] = desc[0];
         self.gdt[gdt_idx + 1] = desc[1];
@@ -317,7 +318,7 @@ fn stamp_cpu_id(usable_top: u64, cpu_id: u32) {
     let _ = (usable_top, cpu_id);
 }
 
-/// Per-CPU IST stacks (S-4 §3.3): static, fixed-address, zero-heap —
+/// Per-CPU IST stacks: static, fixed-address, zero-heap —
 /// `IST_STACKS[slot][cpu]`, top = base + size. Slot 0 serves IST1 (NMI),
 /// slot 1 serves IST2 (#DF), matching the shared IDT's gate ist fields.
 const IST_STACK_SIZE: usize = 0x2000; // 8 KiB per stack
@@ -368,7 +369,7 @@ impl ProtectionArch for X86_64Protection {
         }
         // BSP's sp0 gets the real stack top + the cpu-id stamp; other slots
         // keep the placeholder until their `set_kernel_stack` runs during
-        // SMP bring-up (S-5) — which stamps them.
+        // SMP bring-up — which stamps them.
         let bsp_usable = kernel_stack_top.get() - X86_64_STACK_TOP_RESERVED as u64;
         prot.tss[cpu_id as usize].sp0 = bsp_usable;
         stamp_cpu_id(bsp_usable, cpu_id);
@@ -389,7 +390,7 @@ impl ProtectionArch for X86_64Protection {
         self.load_with_tss(self.boot_cpu_id);
     }
 
-    /// AP-side per-CPU protection bring-up (S-4, D-39 closed).
+    /// AP-side per-CPU protection bring-up.
     ///
     /// Runs ON the AP after the early ladder. The shared instance's GDT
     /// already carries this CPU's 16-byte TSS descriptor (built by `init()`
@@ -397,7 +398,7 @@ impl ProtectionArch for X86_64Protection {
     /// before the SIPI — so this is a pure load:
     /// lgdt (per-CPU GDT image, C "no global GDT sync" semantics) →
     /// ltr this CPU's TSS → reload data segments → program the arch GS area
-    /// and both GS_BASE MSR variants (the S-8 SYSCALL entry reads its kernel
+    /// and both GS_BASE MSR variants (the SYSCALL entry reads its kernel
     /// stack top from `gs:0x0`; §3.3 per-CPU MSR contract).
     ///
     /// The per-CPU SYSCALL MSRs (STAR/LSTAR/SFMASK/EFER.SCE) are written by
@@ -424,7 +425,7 @@ impl ProtectionArch for X86_64Protection {
         // IVT bytes at base 0).
         self.load_with_tss(cpu_id);
         // Arch GS area + both MSR variants. IA32_KERNEL_GS_BASE gets the same
-        // pointer: no user mode exists before S-6/S-7, so swapgs has nothing
+        // pointer: no user mode exists at this stage, so swapgs has nothing
         // to swap yet — the invariant is documented at the stub.
         crate::x86_64::trap_stub::program_gs(cpu_id, kernel_stack_top);
     }
@@ -614,7 +615,7 @@ mod tests {
         );
 
         prot.set_kernel_stack(0, VirBytes::new(0xA000));
-        // S-4 consistency fix: set_kernel_stack applies the same reserved-area
+        // set_kernel_stack applies the same reserved-area
         // subtraction as init()/C tss_init — sp0 must point BELOW the reserved
         // top (the old code stored the raw top, contradicting init's layout).
         assert_eq!(
@@ -689,8 +690,8 @@ mod tests {
 
     #[test]
     fn init_creates_tss_descriptor_in_gdt() {
-        // S-4: long-mode TSS descriptors are 16 bytes — BOTH halves live in
-        // the GDT image (the pre-S-4 code kept the high dword in a separate
+        // Long-mode TSS descriptors are 16 bytes — BOTH halves live in
+        // the GDT image (earlier code kept the high dword in a separate
         // array `load()` never exposed, so ltr read base[63:32]=0).
         let prot = X86_64Protection::init(0, VirBytes::new(0x8000));
         for cpu in 0..MAX_CPUS {
@@ -716,7 +717,7 @@ mod tests {
 
     #[test]
     fn tss_descriptor_high_half_carries_base_above_4gib() {
-        // Regression pin for the S-4 layout fix: the descriptor's upper dword
+        // Regression pin for the TSS descriptor layout: the descriptor's upper dword
         // (GDT slot +1) must carry base[63:32] of the TSS — a higher-half
         // address has nonzero base[63:32] (0xFFFF_8000), which the old
         // tss_desc_high-side-array layout lost.

@@ -1,15 +1,15 @@
-//! riscv64 AP early stub — S-3c (two-arch stub deliverable, riscv half).
+//! riscv64 AP early stub — the riscv half of the two-arch stub.
 //!
 //! # Entry state (SBI hart_start, HSM extension — see `smp.rs::boot_ap`)
 //!
 //! - a0 = hartid
-//! - a1 = the `opaque` cookie (`boot_ap` passes the bootstrap pointer —
-//!   S-3c fixed the old "priv mode" mislabel)
+//! - a1 = the `opaque` cookie (`boot_ap` passes the bootstrap pointer;
+//!   an earlier draft mislabeled it "priv mode")
 //! - PC = the physical entry address `boot_ap` passed as a1's neighbor
 //!   start_addr
 //! - S-mode, MMU **off**
 //!
-//! # Stub obligations (frozen §3.1; the body lands with S-4)
+//! # Stub obligations (frozen contract)
 //!
 //! 1. Read the `ApBootstrap` record (the riscv form is **arch-local static
 //!    storage** — v7 #4; record address = PC-relative from the stub inside
@@ -20,7 +20,7 @@
 //! 4. Branch to the `ap_early_entry` Rust convergence point (high VA via
 //!    the kernel mapping the new satp establishes).
 //!
-//! # Identity-coverage verification (S-3c 核验记录)
+//! # Identity-coverage verification (stub verification record)
 //!
 //! Same argument as the arm half: the stub and record live inside the
 //! kernel image; the BSP root (boot-shim) maps the kernel image identity
@@ -31,7 +31,7 @@
 //!
 //! # Status
 //!
-//! S-4 body landed — the asm body below implements the obligation list
+//! The asm body below implements the obligation list
 //! above (satp sequencing per §3.3 riscv row); the Rust convergence point
 //! parks secondaries pending SMP unclamp (see `ap_early_entry`).
 
@@ -39,22 +39,28 @@
 /// with the SBI channel (`boot_ap` passes the bootstrap cookie in a1/a2).
 pub const OPAQUE_IS_BOOTSTRAP_COOKIE: bool = true;
 
-/// Per-AP bootstrap record — arch-local static storage（义务清单 v7 #4：aarch64/
-/// riscv64 形态无 1MiB 拷贝约束，固件直接把 AP 起到镜像物理位址，记录随镜像
-/// 驻留）。BSP 在 `SbiEidHsm` hart_start 之前经 [`record`] 填字段；AP 侧桩
-/// 用 PC 相对取址读取（MMU off 时 `la` 解析为运行位址＝物理）。
+/// Per-AP bootstrap record — arch-local static storage. The aarch64/riscv64
+/// forms have no 1 MiB copy constraint: firmware starts the AP directly at
+/// the image's physical address, so the record resides with the image. The
+/// BSP fills the fields through [`record`] before `SbiEidHsm` hart_start;
+/// the AP-side stub reads them with PC-relative addressing (with the MMU off,
+/// `la` resolves to the run-time address, which equals the physical address).
 ///
-/// 消费纪律（§3.9）：AP 侧先 `fence rw, rw` 再首读（BSP 侧写后同样先栅栏
-/// 再 hart_start——两面的 happens-before 由两道 fence 夹 SBI 的 hart 间
-/// 交接构成）。
+/// Consumption discipline (§3.9): the AP issues `fence rw, rw` before its
+/// first read (the BSP likewise fences after writing, then issues hart_start
+/// — the happens-before on both sides is formed by the two fences
+/// bracketing SBI's inter-hart handoff).
 use crate::arch::ap_early_entry::ApBootstrap;
 
-// #[no_mangle]：桩 asm 以字面符号名 `la t2, AP_BOOTSTRAP_RECORD` 引用
-//（跨 crate 符号面），必须有未修饰的导出名。
-/// 早期 hart 选举格（§续-400 定谳：OpenSBI QEMU virt＝全 hart 进 payload，
-/// 每个 hart 都带 a0=自身 hartid 进 _start——先到者当选 BSP）。0=未选；
-/// 否则=当选 hartid+1。住在 .data（loader 按 filesz 写初值 0，非 NOBITS
-/// 侥幸），no_mangle 供 kernel-image 桩 asm 字面引用与内核读取。
+// #[no_mangle]: the stub asm refers to the record by literal symbol name
+// (`la t2, AP_BOOTSTRAP_RECORD`) across the crate symbol surface, so it
+// must have an undecorated exported name.
+/// Early hart election cell. On OpenSBI QEMU virt all harts enter the
+/// payload, each carrying a0 = its own hartid into `_start`, so the first
+/// arrival is elected BSP. 0 = not elected; otherwise the elected hartid + 1.
+/// Lives in `.data` (the loader writes the initial 0 as part of filesz, not
+/// as a NOBITS accident); `no_mangle` lets kernel-image stub asm refer to it
+/// literally and lets the kernel read it.
 #[unsafe(link_section = ".data")]
 #[unsafe(no_mangle)]
 pub static BOOT_HART_ELECTED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -69,41 +75,49 @@ pub static mut AP_BOOTSTRAP_RECORD: ApBootstrap = ApBootstrap {
     rust_entry_va: 0,
 };
 
-/// BSP 侧填充窗（hart_start 之前调用）。`&mut` 访问的安全性由调用序列
-/// 独占保证：BSP 在 AP 未到（boot_ack 语义在 riscv 形态＝convergence 点
-/// 的到达标记）之前独占写。
+/// BSP-side fill window (called before hart_start). The safety of the `&mut`
+/// access is guaranteed by exclusive use in the call sequence: the BSP
+/// writes exclusively before the AP arrives (in the riscv form the boot_ack
+/// semantics are the convergence-point arrival marker).
 #[allow(static_mut_refs)]
 pub fn record() -> &'static mut ApBootstrap {
     unsafe { &mut AP_BOOTSTRAP_RECORD }
 }
 
-/// AP 早期桩的物理入口地址（`boot_ap` 的 `entry` 实参）。
+/// Physical entry address of the AP early stub (the `entry` argument of
+/// `boot_ap`).
 ///
-/// 桩住在内核镜像内（`.text.ap_early_entry` 段），镜像被装载到物理内存：
-/// 符号地址按链接视图（medany＝物理）即物理地址——与 kernel-image 的
-/// 执行视图（§续-88「执行视图 = 物理基址」）一致。
+/// The stub lives inside the kernel image (`.text.ap_early_entry` section),
+/// and the image is loaded into physical memory: under the link view
+/// (medany = physical) the symbol address is the physical address — matching
+/// the kernel-image execution view (execution view = physical base).
 pub fn entry_start_pa() -> usize {
-    // 链接视图＝高半（kernel-image riscv64.ld：VMA=0xFFFFFFC0_…，
-    // PA=0x80200000 起）；hart_start 的 start_addr 必须是**物理**地址
-    //（目标 hart MMU off 起跳）。换算 = 减 (KERNEL_VIRT - KERNEL_PHYS)。
+    // Link view = high half (kernel-image riscv64.ld: VMA = 0xFFFFFFC0_…,
+    // PA starting at 0x80200000); hart_start's start_addr must be a
+    // **physical** address (the target hart starts with the MMU off).
+    // Conversion = subtract (KERNEL_VIRT - KERNEL_PHYS).
     const KVIRT: usize = 0xFFFF_FFC0_0000_0000 as usize;
     const KPHYS: usize = 0x8020_0000;
     let va = ap_early_entry_start as usize;
     va - (KVIRT - KPHYS)
 }
 
-// ── AP 早期桩（义务清单 §3.1 的汇编体，S-4 落地）──────────────────
+// ── AP early stub (asm body of the stub obligations §3.1) ─────────────
 //
-// 入口态（SBI HSM hart_start）：a0=hartid、a1=opaque cookie、PC=start_addr、
-// S-mode、MMU off。
+// Entry state (SBI HSM hart_start): a0 = hartid, a1 = opaque cookie,
+// PC = start_addr, S-mode, MMU off.
 //
-// 四步义务（frozen §3.1）：
-// 1. `la t2, AP_BOOTSTRAP_RECORD`——PC 相对取记录物理位址（MMU off）；
-// 2. `fence rw, rw`——消费侧首读栅栏（§3.9）；
-// 3. satp ← 记录 page_table_root_pa（Sv39 模式位 8<<60）+ `sfence.vma`；
-// 4. 跳 `ap_early_entry`（Rust 汇聚点，链接位址经记录 rust_entry_va 携带
-//    ——kernel-image 执行视图为物理，链接位址即运行位址；未来高半形态
-//    改由 BSP 写高位值，字段不变）。
+// Four-step obligation list (frozen §3.1):
+// 1. `la t2, AP_BOOTSTRAP_RECORD` — PC-relative fetch of the record's
+//    physical address (MMU off);
+// 2. `fence rw, rw` — consumer-side first-read barrier (§3.9);
+// 3. satp ← the record's page_table_root_pa (Sv39 mode bits 8<<60) +
+//    `sfence.vma`;
+// 4. jump to `ap_early_entry` (the Rust convergence point; the link address
+//    travels in the record's rust_entry_va — the kernel-image execution view
+//    is physical, so the link address is the run-time address; a future
+//    high-half form has the BSP write the high value, with unchanged
+//    fields).
 core::arch::global_asm!(
     r#"
     .section .text.ap_early_entry, "ax"
@@ -143,42 +157,56 @@ core::arch::global_asm!(
 );
 
 unsafe extern "C" {
-    /// 桩物理入口（`boot_ap` 的 start_addr）。
+    /// Physical stub entry (the `start_addr` of `boot_ap`).
     fn ap_early_entry_start();
 }
 
-/// 汇聚点到达标记（§续-398 交付：门判据「次级核打印/可观测汇聚点到达」
-/// 的观测面）。0 = 未到；1 = 已到（fence 之后的 Rust 视图）。
+/// Convergence-point arrival marker (the observable surface for the gate
+/// criterion "secondary core prints / is observed reaching the convergence
+/// point"). 0 = not arrived; 1 = arrived (the Rust view after the fence).
 pub static AP_ARRIVED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-/// 汇聚点——AP 从桩跳入（a0 = 记录物理位址）。
+/// Convergence point — the AP jumps here from the stub (a0 = the record's
+/// physical address).
 ///
-/// x86 同名函数的 riscv 形：读回记录字段进局部（单镜像串行复用纪律的
-/// riscv 版＝静态记录无需归还 BSP，但字段快照仍取进局部，防 BSP 为下一
-/// hart 复写），置到达标记，然后**驻留**（wfi 停车环）。
+/// The riscv form of the same-named x86 function: read the record fields
+/// back into locals (the riscv version of the single-image serial-reuse
+/// discipline — the static record needs no return to the BSP, but the field
+/// snapshot is still taken into locals so a BSP rewrite for the next hart
+/// cannot race it), set the arrival marker, then **park** (a wfi parking
+/// loop).
 ///
-/// 驻留而非继续内核初始化是本增量的诚实边界：SD-24（钳主核）未撤，
-/// 每核运行队列/抢占下发未通电——AP 此刻「醒着但无所事事」，继续推进
-/// 会踩 P-ALL-03 红线（撤钳不先补每核队列＝进程被安到无队列的核）。
+/// Parking instead of continuing kernel initialization is the honest
+/// boundary of this increment: the primary-core clamp is not yet lifted, and
+/// per-core run queues / preemption delivery are not powered — the AP is
+/// "awake but idle" at this point, and pushing on would cross the red line:
+/// lifting the clamp without first providing per-core queues means a process
+/// could be placed on a core that has no queue.
 pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
-    // UART step marker "A3" = Rust convergence entered。走恒等映射 PA 写
-    //（与桩内 A2 同路：内核根恒等映射已由 A2 上过串口实证）。不得走
-    // KDM 窗 VA——§续-403 GDB 实证：根表（BSP current_root_phys 交给 AP
-    // 的这张）不含 KDM 窗，store fault（scause=15 stval=0xffffffc050000000）；
-    // 又因 OpenSBI hart_start 交接把 stvec 设成 start_addr（＝桩入口），
-    // 一次 fault 即弹回桩起点无限洪流。
+    // UART step marker "A3" = Rust convergence entered. Write through the
+    // identity-mapped PA (the same route as step A2 in the stub: A2 already
+    // proved on the serial line that the kernel root identity-maps it). Do
+    // not use the KDM window VA: GDB evidence showed that the root table
+    // (the one the BSP hands to the AP as current_root_phys) does not contain
+    // the KDM window, so the store faults (scause=15
+    // stval=0xffffffc050000000); and because the OpenSBI hart_start handoff
+    // sets stvec to start_addr (= the stub entry), one fault bounces back to
+    // the stub start in an endless flood.
     unsafe {
         let uart = 0x1000_0000u64 as *mut u8;
         core::ptr::write_volatile(uart, b'A');
         core::ptr::write_volatile(uart.add(1), b'3');
     }
-    // a0 = 记录高半 VA（桩换算；MMU on 后经内核根可达）。
+    // a0 = the record's high-half VA (converted by the stub; reachable
+    // through the kernel root once the MMU is on).
     let record = unsafe { &*(bootstrap_pa as *const ApBootstrap) };
-    // 消费快照（volatile 读：防与 BSP 的潜在复写合并）。
+    // Consumption snapshot (volatile reads: prevent coalescing with a
+    // potential BSP rewrite).
     let _logical = unsafe { core::ptr::read_volatile(&record.logical_id) };
     let _hw_id = unsafe { core::ptr::read_volatile(&record.hw_id) };
     let _ = (_logical, _hw_id);
-    // 到达标记（Release：后续 BSP 读到 1 时，上方的快照读已完成）。
+    // Arrival marker (Release: when the BSP later reads 1, the snapshot
+    // reads above have completed).
     core::sync::atomic::AtomicUsize::store(&AP_ARRIVED, 1, core::sync::atomic::Ordering::Release);
     loop {
         unsafe {

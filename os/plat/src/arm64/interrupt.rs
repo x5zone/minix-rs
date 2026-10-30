@@ -140,8 +140,8 @@ impl AArch64InterruptController {
             // init: firmware may leave PPIs (e.g. the timer, INTID 30)
             // enabled. Each line is re-enabled per-consumer — the timer
             // via `IrqManager::register_hook`'s unmask, SGIs at IPI
-            // bring-up (S-7/S-10). This is the redistributor half of the
-            // "init masks everything" invariant (D-61; the SPI half is
+            // bring-up. This is the redistributor half of the
+            // "init masks everything" invariant (the SPI half is
             // GICD_ICENABLER in `init_distributor`).
             self.gicr_write32(GICR_ICENABLER0, 0xFFFF_FFFF);
             // Group all SGIs/PPIs into Group 1 (non-secure) to match the
@@ -173,10 +173,12 @@ impl InterruptRouter for AArch64InterruptController {
         let gicv3 = desc.as_any()
             .downcast_ref::<Gicv3Desc>()
             .expect("AArch64InterruptController::new: expected Gicv3Desc");
-        // §1.114 review(SF1)：先判零再翻译——descriptor 缺 GICD/GICR base
-        // （物理 `0`，ACPI/UEFI 表解析失败后结构体零初始化的最常见故障形态）
-        // 时给精准诊断，避免被 `mmio_translate` 的越界 const-assert 抢先 panic
-        // 成泛化的「address outside the mapped MMIO window」。
+        // Check for zero before translating: when the descriptor carries no
+        // GICD/GICR base (physical `0`, the most common failure shape after a
+        // failed ACPI/UEFI table parse leaves the struct zero-initialized),
+        // emit a precise diagnostic instead of letting `mmio_translate`'s
+        // out-of-range const-assert panic first with the generic "address
+        // outside the mapped MMIO window".
         assert!(
             gicv3.gicd_base != 0,
             "AArch64InterruptController::new: descriptor did not provide GICD base"
@@ -185,12 +187,15 @@ impl InterruptRouter for AArch64InterruptController {
             gicv3.gicr_base != 0,
             "AArch64InterruptController::new: descriptor did not provide GICR base"
         );
-        // 路由到内核高半（TTBR1）MMIO 别名。descriptor 里的
-        // `gicd_base`/`gicr_base` 是物理地址；本控制器在 `enable()` 之后才
-        // 构造（bsp_finish_booting），高半窗口已装入 bootstrap 根的 TTBR1，
-        // 因而 mask/unmask/init 的 MMIO 访问跨切根持久。若仍存物理地址，
-        // 首次 `switch_address_space` + `tlbi alle1is` 后就会因 TTBR0 身份
-        // 映射被切走而同步异常。
+        // Route to the kernel higher-half (TTBR1) MMIO alias. The
+        // descriptor's `gicd_base`/`gicr_base` are physical addresses; this
+        // controller is constructed only after `enable()`
+        // (bsp_finish_booting), when the higher-half window is already
+        // installed in the bootstrap root's TTBR1, so the mask/unmask/init
+        // MMIO accesses persist across root switches. Keeping the physical
+        // addresses would raise a synchronous exception after the first
+        // `switch_address_space` + `tlbi alle1is` switches the TTBR0
+        // identity mapping away.
         Self {
             gicd_base: minix_platform::arch::aarch64::mmio_translate(gicv3.gicd_base as u64)
                 as usize,
@@ -201,7 +206,8 @@ impl InterruptRouter for AArch64InterruptController {
     }
 
     fn init(&mut self) {
-        // 零值/窗内合法性已在 `new()` 前置判定；此处仅 debug 层兜底。
+        // Zero-value and in-window validity were checked up front in `new()`;
+        // this is only a debug-level backstop.
         debug_assert!(self.gicd_base != 0, "AArch64InterruptController: gicd_base is zero");
         debug_assert!(self.gicr_base != 0, "AArch64InterruptController: gicr_base is zero");
         self.init_distributor();
@@ -258,7 +264,7 @@ impl InterruptRouter for AArch64InterruptController {
             }
         }
         // SGI (0-15) + PPI (16-31) live in the banked GICR_ICENABLER0 —
-        // GICD writes never reach them. Disabling them here (D-61) is what
+        // GICD writes never reach them. Disabling them here is what
         // makes "init leaves every line masked" hold: PPIs such as the
         // timer (INTID 30) otherwise keep their firmware-enabled state and
         // can fire with no handler registered. The timer PPI is unmasked
@@ -283,25 +289,31 @@ mod tests {
             nr_irqs: 64,
         };
         let ic = AArch64InterruptController::new(&desc);
-        // §1.114：new() 将物理基址路由到高半（TTBR1）MMIO 别名，跨切根持久。
-        // 钉字面量常量（非 `mmio_translate` 自身表达式）：若 `MMIO_VA_BASE`
-        // 被误改到与内核镜像/DM 冲突的 L0 slot，本测试应能捕获。
+        // new() routes the physical base to the higher-half (TTBR1) MMIO
+        // alias, which persists across root switches. Pin literal constants
+        // (not an `mmio_translate` expression): if `MMIO_VA_BASE` is ever
+        // changed to an L0 slot that collides with the kernel image or the
+        // Direct Map, this test must catch it.
         assert_eq!(ic.gicd_base, 0xFFFF_C000_0000_0000_usize);
         assert_eq!(ic.gicr_base, (0xFFFF_C000_0000_0000 + 0x000A_0000) as usize);
     }
 
-    // 注：本文件原 3 个测试中 2 个是常量自指/平凡表达式，删除 (Pattern #38)：
-    // - `test_gic_register_offsets`：6 个 GICD/GICR 偏移常量与字面量 self-reference。
-    //   真值由 arm ARM / GICv3 spec 保证，编译期 constant eval 已确认正确。
-    //   运行时正确性（GIC 寄存器读写）由 QEMU 集成测试验证。
-    // - `test_ppi_bit_calculation`：测的是 `1u32 << (N % 32)` 这条 Rust 表达式
-    //   语义，不是项目代码。无价值。
+    // Note: 2 of this file's original 3 tests were constant self-references or
+    // trivial expressions and were deleted:
+    // - `test_gic_register_offsets`: 6 GICD/GICR offset constants compared
+    //   against literals. The truth is guaranteed by the Arm ARM / GICv3
+    //   spec, and compile-time constant evaluation already confirms it.
+    //   Runtime correctness (GIC register reads/writes) is verified by the
+    //   QEMU integration test.
+    // - `test_ppi_bit_calculation`: tested the semantics of the Rust
+    //   expression `1u32 << (N % 32)`, not project code. No value.
     //
-    // 保留 `test_new_from_gicv3_descriptor`（验证 new() 正确填充字段）。
+    // Kept `test_new_from_gicv3_descriptor` (verifies new() fills the fields
+    // correctly).
 
     #[test]
     fn test_timer_irq_is_the_ns_physical_timer_ppi() {
-        // D-59: the boot clock source (CNTP at EL1, non-secure) is PPI
+        // The boot clock source (CNTP at EL1, non-secure) is PPI
         // INTID 30. This pin carries the GIC PPI assignment fact — if the
         // constant is ever changed, the change must cite the timer bank
         // actually used by `ArmGenericTimerDesc` / `CNTP_CTL_EL0`, not
@@ -330,7 +342,7 @@ impl PerCpuInterruptUnit for AArch64InterruptController {
         }
         let intid = (iar as u32) & 0x00FF_FFFF;
         // GIC spurious INTID (1023): nothing claimable — handling and
-        // completion are both skipped (K8 pairing).
+        // completion are both skipped.
         (intid != 1023).then_some(intid)
     }
 
@@ -339,7 +351,7 @@ impl PerCpuInterruptUnit for AArch64InterruptController {
             return; // spurious claim: nothing to complete
         };
         // SAFETY: write back the claimed INTID — the completion register
-        // expects exactly the identity the claim read returned (D-61).
+        // expects exactly the identity the claim read returned.
         unsafe {
             core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) intid as u64);
         }

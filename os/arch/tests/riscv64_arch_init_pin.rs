@@ -1,32 +1,42 @@
-//! riscv64 架构初始化接线的形状钉住测试（P-ALL-01 方案乙：宿主可跑审计）。
+//! Shape-pinning test for the riscv64 architecture-init wiring (the
+//! host-runnable audit variant).
 //!
-//! `os/arch/src/riscv64/arch_init.rs` 被 `#[cfg(target_arch = "riscv64")]`
-//! 整模块门住（`os/arch/src/lib.rs`），宿主（x86_64）`cargo test` 不编译它——
-//! in-module 单测写了也永不运行（本项目两次踩过的可达性纪律坑，见
-//! `arm64_arch_init_pin.rs` 同族）。本文件用 `include_str!` 在宿主侧钉住
-//! riscv64 `Riscv64ArchInit` 的承重形状：
+//! The whole `os/arch/src/riscv64/arch_init.rs` module is gated behind
+//! `#[cfg(target_arch = "riscv64")]` (`os/arch/src/lib.rs`), so a host (x86_64)
+//! `cargo test` does not compile it — in-module unit tests would be written and
+//! never run (a reachability discipline this project has tripped over twice;
+//! see the same family in `arm64_arch_init_pin.rs`). This file uses
+//! `include_str!` to pin the load-bearing shape of riscv64 `Riscv64ArchInit` on
+//! the host side:
 //!
-//! 1. 实例化契约——`new` 是无字段空构造（riscv 无架构杂项参数），返回单元结构；
-//! 2. `init` 体必须保持空——两处历史写入都已移除，重新出现＝启动静默回退：
-//!    - PMP CSR（`pmpcfg*`/`pmpaddr*`）是 M-mode-only，S-mode 写入触发非法指令
-//!      陷入（首枚定时器中断载体实跑 scause=2、stval=`csrw pmpaddr0` 的现场），
-//!      该 allow-all 意图由 OpenSBI 固件 Domain0 委托 S/U 满足；
-//!    - `sie = STIE | SSIE`（0x22）由 D-59 移除——提前打开 S-mode 定时器门会把
-//!      尚无处理器的中断源武装起来；STIE 现由 `TimerIrqGate::enable_timer_irq`
-//!      认领、SSIE 属 SMP IPI 拉起（smp_todo S-7/S-10）。
+//! 1. Construction contract — `new` is a fieldless empty constructor (riscv
+//!    has no architecture misc parameters) that returns a unit struct;
+//! 2. The `init` body must stay empty — both historical writes have been
+//!    removed, and their reappearance means a silent boot regression:
+//!    - the PMP CSRs (`pmpcfg*`/`pmpaddr*`) are M-mode-only, and writing them
+//!      from S mode traps as an illegal instruction (observed while running the
+//!      first timer-interrupt carrier: scause=2, stval=`csrw pmpaddr0`); that
+//!      allow-all intent is satisfied by the OpenSBI firmware Domain0
+//!      delegating S/U;
+//!    - `sie = STIE | SSIE` (0x22) was removed — opening the S-mode timer gate
+//!      early arms interrupt sources that have no handler yet; STIE is now
+//!      claimed by `TimerIrqGate::enable_timer_irq`, and SSIE belongs to the SMP
+//!      IPI bring-up.
 //!
-//! C 对位：无 Minix3 等价（Minix3 无 RISC-V 端口）——架构演进 `[ARCH: K-2]`
-//! （05-clock-interrupt-init.md §3.8），故本钉守护的是「移除的写入不再回来」
-//! 与「实例化契约形状」，不是对 C 行为的一致性。
+//! C counterpart: none (Minix3 has no RISC-V port) — an architectural
+//! evolution `[ARCH: K-2]` (05-clock-interrupt-init.md §3.8), so what this pin
+//! guards is "the removed writes do not come back" and "the construction
+//! contract shape", not consistency with C behavior.
 
-/// 原始文件全文（含注释与文档）。
+/// The whole original file (comments and docs included).
 fn src() -> &'static str {
     include_str!("../src/riscv64/arch_init.rs")
 }
 
-/// 剥去所有 `//` 注释（整行 `//!`/`//` 与行内尾注释），再把连续空白折叠为
-/// 单个空格——留下的是「可执行代码骨架」，用于判定某段是否真的写成了指令，
-/// 而不是只在注释里被提及。
+/// Strip every `//` comment (whole-line `//!`/`//` and trailing ones), then
+/// collapse runs of whitespace into single spaces — what remains is the
+/// "executable code skeleton", used to decide whether something is really
+/// written as an instruction rather than merely mentioned in a comment.
 fn code() -> String {
     let mut out = String::new();
     for line in src().lines() {
@@ -37,7 +47,8 @@ fn code() -> String {
         out.push_str(cut);
         out.push(' ');
     }
-    // 折叠连续空白，让 `{ Self }`、`{ }` 这类跨行的结构可比对。
+    // Collapse runs of whitespace so multiline constructs like `{ Self }` and
+    // `{ }` become comparable.
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -60,7 +71,8 @@ fn new_is_noop_unit_constructor() {
 
 #[test]
 fn init_body_stays_empty_of_csr_writes() {
-    // 主闸：init 体在剥注释后必须为空——任何重新出现的指令都从这里报警。
+    // Main gate: the init body must be empty once comments are stripped — any
+    // reappearing instruction trips this check.
     let c = code();
     assert!(
         c.contains("fn init(&mut self) { }"),
@@ -77,7 +89,8 @@ fn init_stays_free_of_m_mode_pmp_writes() {
             "init 出现 M-mode-only 的 PMP 写入 {hazard:?}（S-mode 写入触发非法指令陷入，实跑 scause=2）"
         );
     }
-    // 移除的理由必须留在注释里，供未来编辑者看见（承重事实的出处不丢）。
+    // The reason for the removal must stay in the comments for future editors
+    // to see (the provenance of a load-bearing fact is not lost).
     assert!(
         src().contains("M-mode-only"),
         "PMP 写入被移除的理由（M-mode-only）说明消失"
@@ -93,7 +106,8 @@ fn init_stays_free_of_premature_sie_enable() {
             "init 出现提前打开 S-mode 中断门的写入 {hazard:?}（D-59 移除：武装尚无处理器的中断源）"
         );
     }
-    // STIE / SSIE 的现归属要在注释里留名，否则下一轮会当成缺口补回来。
+    // The current owner of STIE / SSIE must be named in the comments, or the
+    // next round will take it for a gap and add it back.
     let s = src();
     assert!(
         s.contains("enable_timer_irq"),

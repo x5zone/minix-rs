@@ -19,7 +19,7 @@
 //! - **AP boot**: PSCI `CPU_ON` (SMC64/HVC64 function ID 0xC4000003) is
 //!   invoked via `hvc #0` (default conduit; `set_psci_conduit_smc` switches to
 //!   `smc`) to power on a secondary CPU at a given entry point. The 64-bit form
-//!   keeps the full entry address (S-3c; the older 0x84000003 SMC32 form
+//!   keeps the full entry address (the older 0x84000003 SMC32 form
 //!   truncated it — see `PSCI_CPU_ON_64`).
 //!
 //! # Anti-translate vs C
@@ -60,7 +60,7 @@ const SCHED_SGI_INTID: u32 = 0;
 /// PSCI `CPU_ON` function ID, **SMC64/HVC64 calling convention**
 /// (0xC400_0003; ARM DEN 0022D (PSCI) §5.4.3).
 ///
-/// S-3c fix: this used to be the SMC32/HVC32 form (0x8400_0003). Under the
+/// This used to be the SMC32/HVC32 form (0x8400_0003). Under the
 /// 32-bit convention the firmware reads the entry address and context as
 /// *w2/w3* — upper 32 bits of x2/x3 are zeroed — which truncates any entry
 /// above 4 GiB. The kernel image is linked at 0x1400_0000+ (>4 GiB), so
@@ -68,13 +68,15 @@ const SCHED_SGI_INTID: u32 = 0;
 /// the full x2/x3 widths; arguments are identical otherwise.
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
 
-/// PSCI 通道选择（§续-405）：`false`＝hvc（默认，直核引导），`true`＝smc
-/// （固件引导：pflash/TF-A 驻 EL3）。内核接线在 boot_ap 前按 DTB
-/// `/psci/method` 设定；hvc 默认保持「无 DTB 设定时的旧行为」。
+/// PSCI conduit selection: `false` = hvc (default, direct-kernel boot), `true`
+/// = smc (firmware boot: pflash/TF-A resident at EL3). The kernel wiring sets
+/// it from DTB `/psci/method` before `boot_ap`; the hvc default preserves "the
+/// old behavior when no DTB sets it".
 static PSCI_CONDUIT_SMC: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-/// 接线侧设定 PSCI 通道（`true`＝smc）。必须在任何 `boot_ap` 之前调用。
+/// Set the PSCI conduit from the wiring side (`true` = smc). Must be called
+/// before any `boot_ap`.
 pub fn set_psci_conduit_smc(smc: bool) {
     PSCI_CONDUIT_SMC.store(smc, core::sync::atomic::Ordering::Release);
 }
@@ -82,7 +84,7 @@ pub fn set_psci_conduit_smc(smc: bool) {
 /// GIC distributor base address, populated during `arch_init`.
 ///
 /// This is the only mutable global in the ARM64 SMP backend: the GIC
-/// distributor MMIO base **as reached at runtime**. §1.114: that is not the
+/// distributor MMIO base **as reached at runtime**. That is not the
 /// raw physical address but the kernel high-half (TTBR1) MMIO alias produced
 /// by [`mmio_translate`] in `set_gicd_base`, so `send_sched_ipi`'s write to
 /// GICD_SGIR survives `switch_address_space` (the low-half identity mapping
@@ -114,11 +116,13 @@ static mut GICD_BASE: usize = 0;
 #[inline]
 #[allow(dead_code)]
 pub(crate) unsafe fn set_gicd_base(base: usize) {
-    // §1.114：`base` 是物理 GICD 基址；存高半（TTBR1）MMIO 别名，使
-    // `send_sched_ipi` 写 GICD_SGIR 跨切根持久（否则首真切根后该
-    // 物理地址在 TTBR0 身份映射被切走 -> 同步异常）。`0` 是未设置
-    // 哨兵（见本函数说明），保持原值不走 translate（物理 `0`
-    // 落在窗口外会触发 const-assert）。
+    // `base` is the physical GICD base; store the high-half (TTBR1) MMIO alias
+    // so `send_sched_ipi`'s GICD_SGIR write stays valid across a root switch
+    // (otherwise, after the first root switch, that physical address is cut
+    // away from the TTBR0 identity mapping -> synchronous exception). `0` is
+    // the "not set" sentinel (see this function's description) and keeps its
+    // original value without going through translate (a physical `0` falls
+    // outside the window and would trigger a const-assert).
     GICD_BASE = if base == 0 {
         0
     } else {
@@ -255,7 +259,7 @@ impl SmpArch for AArch64SmpArch {
         // (Power State Coordination Interface, ARM DEN 0022D). We issue the
         // SMC64 `CPU_ON` call via `hvc #0` (hypervisor conduit) — the SMC64
         // form keeps the full 64-bit entry address (see PSCI_CPU_ON_64 for
-        // the S-3c truncation rationale).
+        // the truncation rationale).
         //
         // PSCI CPU_ON parameters (SMC64/HVC64 calling convention):
         //   x0 = function ID  (0xC4000003)
@@ -286,10 +290,12 @@ impl SmpArch for AArch64SmpArch {
         // synchronize with the incoming AP, so `nomem` is deliberately not
         // set; `nostack` is set because hvc does not access the stack. x0
         // carries the PSCI return code.
-        // §续-405：通道按 DTB `/psci/method` 选择（内核接线经
-        // `set_psci_conduit_smc` 设定，Linux 同法读 FDT）。实证两态：
-        // hvc 在固件引导链上被静默吞掉（ret=0 假成功、AP 无踪影）；smc
-        // 打错层则以未分类异常弹回。写死任何一个都只对一种引导链成立。
+        // The conduit is chosen from DTB `/psci/method` (the kernel wiring sets
+        // it through `set_psci_conduit_smc`; Linux reads the FDT the same way).
+        // Both states are empirically established: on the firmware boot chain
+        // hvc is silently swallowed (ret=0 fake success, no AP ever appears);
+        // smc issued at the wrong level bounces back as an unclassified
+        // exception. Hard-coding either one only works for one boot chain.
         if PSCI_CONDUIT_SMC.load(core::sync::atomic::Ordering::Acquire) {
             unsafe {
                 core::arch::asm!(
@@ -316,9 +322,11 @@ impl SmpArch for AArch64SmpArch {
         // Non-zero return indicates a PSCI error (e.g. already_on,
         // invalid_params). We do not propagate it: the trait contract is
         // best-effort fire-and-forget, mirroring the C port.
-        // §续-405 带回执诊断（用后即滚，riscv sbi-hs 同形）：CPU_ON 结果
-        // 不落盘＝AP 不达时无法区分「固件拒了」与「桩死了」；实参同行落盘
-        // 防「我们递错了入口」这类静态查不出的错。
+        // Receipt diagnostics (removed after use; same shape as riscv sbi-hs):
+        // without recording the CPU_ON result, an AP that never arrives cannot
+        // be split into "firmware refused" vs "the stub died"; recording the
+        // arguments on the same line guards against static-undetectable errors
+        // like "we passed the wrong entry".
         let _ = ret;
         {
             use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};

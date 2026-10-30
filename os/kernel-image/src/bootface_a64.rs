@@ -1,40 +1,53 @@
-//! aarch64 自引导面（§续-406：QEMU `-kernel` ELF 直核引导的 Rust 面，§续-88
-//! 甲案 riscv `bootface.rs` 的 aarch64 镜像）。
+//! aarch64 self-boot face (the Rust side of QEMU `-kernel` direct-ELF kernel
+//! boot; the aarch64 mirror of the riscv `bootface.rs`).
 //!
-//! `[ARCH: FW_PAYLOAD 直核形态（Minix3 无对应）]`：本面是 aarch64 的辅助
-//! 启动路径，覆盖测试为主（QEMU `-kernel`）；真板启动一般仍经 UEFI/U-Boot。
-//! 主线是独立 boot-shim + 独立内核镜像，落位矩阵见 01 篇 §3.7。
+//! `[ARCH: FW_PAYLOAD direct-kernel form (Minix3 has no counterpart)]`: this
+//! face is the auxiliary aarch64 boot path, aimed mainly at coverage tests
+//! (QEMU `-kernel`); real-board boot normally still goes through UEFI/U-Boot.
+//! The mainline is an independent boot-shim plus an independent kernel image;
+//! the placement matrix is in chapter 01 §3.7.
 //!
-//! # 引导模型（与 riscv 半的差异全部源自固件，不是设计分叉）
+//! # Boot model (every difference from the riscv half comes from firmware, not
+//! from a design fork)
 //!
-//! QEMU mach-virt 对非 Linux ELF `-kernel` 走 `do_cpu_reset` 的
-//! `!info->is_linux` 路径（hw/arm/boot.c）。**次级核不进 ELF 入口**：只有
-//! first_cpu 被 `cpu_set_pc` 送进入口，其余保持复位悬挂，由内核经 QEMU
-//! 内建 PSCI CPU_ON（conduit 按 DTB `/psci/method`，直核链＝hvc）交付
-//! ——门读数为准：`test-smp-aps-aarch64` 在 `AP_GO` 写入为 0 的前提下
-//! `ap-arrived=1 / ap-timeout=0`（`2026-10-18` 基线，交付通道＝PSCI 的
-//! 实证）。因此：
+//! For a non-Linux ELF passed to `-kernel`, QEMU mach-virt takes the
+//! `!info->is_linux` path of `do_cpu_reset` (hw/arm/boot.c). **Secondary cores do
+//! not enter the ELF entry point**: only first_cpu is sent to the entry by
+//! `cpu_set_pc`; the rest stay held in reset and are delivered by the kernel
+//! through QEMU's built-in PSCI CPU_ON (conduit per DTB `/psci/method`, hvc on
+//! the direct-kernel chain) — the gate reading decides it:
+//! `test-smp-aps-aarch64` reports `ap-arrived=1 / ap-timeout=0` with `AP_GO`
+//! never written (`2026-10-18` baseline, the proof that the delivery channel is
+//! PSCI). Therefore:
 //!
-//! - BSP 由 `_start` 的早期选举格记录（MPIDR+1 存 [`BOOT_HART_ELECTED`]，
-//!   与 riscv 半同格同名）；落选者本地 wfi 停车（SD-37 乙案：`AP_GO`
-//!   停车邮箱已删——它以「全部 CPU 进入口」为前提，该前提被上读数
-//!   否证；见本仓库 `PARALLEL-20261018-C-KERN-QEMU.md` C2 行）。
-//! - DTB 由 QEMU `arm_load_dtb` 放在 RAM 基址（`info->dtb_start =
-//!   loader_start`，hw/arm/boot.c ELF 臂源码锚定）＝[`DTB_PA`] 定值。
-//! - `x0` 在直核入口为 0（QEMU 不设参）；boot-shim UEFI 链则以 `x0` 递
-//!   `BootHandoffV1` arena 的物理地址——`rust_image_main` 以 `x0==0` 分道两形。
+//! - The BSP is recorded by `_start`'s early election cell (MPIDR+1 stored into
+//!   [`BOOT_HART_ELECTED`], same cell and same name as the riscv half); losers
+//!   park locally in wfi (the `AP_GO` parking mailbox was deleted: it presupposed
+//!   "all CPUs enter the entry point", and the reading above disproves that
+//!   premise).
+//! - QEMU `arm_load_dtb` places the DTB at the RAM base (`info->dtb_start =
+//!   loader_start`, anchored in hw/arm/boot.c's ELF arm) = the fixed value
+//!   [`DTB_PA`].
+//! - `x0` is 0 at the direct-kernel entry (QEMU passes no arguments); the
+//!   boot-shim UEFI chain instead passes the physical address of the
+//!   `BootHandoffV1` arena in `x0` — `rust_image_main` splits the two forms on
+//!   `x0==0`.
 //!
-//! # 与 riscv bootface 的镜像关系
+//! # Mirror relationship with the riscv bootface
 //!
-//! 流程逐段同构（DTB→memmap→BootFileTable→bump 池→12 模块→KernelInfo→
-//! `minix_kernel::arch_boot`）。本文件自包含（bootface.rs 被 riscv64 cfg
-//! 门住，aarch64 构建不编译它）；两门全绿后的去重收敛留给独立清理增量，
-//! 届时以两份串口输出逐行对账。
+//! The flow is section-by-section isomorphic (DTB→memmap→BootFileTable→bump
+//! pool→12 modules→KernelInfo→`minix_kernel::arch_boot`). This file is
+//! self-contained (bootface.rs is gated behind riscv64 cfg and an aarch64 build
+//! does not compile it); deduplication convergence after both gates are green is
+//! left to a separate cleanup increment, reconciling line by line against the two
+//! serial outputs.
 //!
-//! # 字符串纪律（承 riscv 半 续-88 jiaf 链）
+//! # String discipline (inherited from the riscv half)
 //!
-//! MMU-off 物理视图下只有调用点直接物化的字面量可解引用；本面全部输出走
-//! 定长字节缓冲＋`early_console::write_str`，不留 baked 指针腿。
+//! Under the MMU-off physical view only literals materialized directly at the
+//! call site can be dereferenced; all output on this face goes through
+//! fixed-size byte buffers plus `early_console::write_str`, leaving no
+//! baked-pointer legs.
 
 use core::slice;
 
@@ -49,55 +62,65 @@ use boot_shim::opensbi_helpers::BootFileTable;
 
 use minix_plat::arm64::early_console;
 
-// ── 布局契约常量（与 aarch64.ld 同源：KERNEL_VIRT_BASE=0xFFFF800000000000、
-//    KERNEL_PHYS_BASE=0x40200000；QEMU virt DRAM 基 0x40000000）──
+// ── Layout contract constants (same source as aarch64.ld:
+//    KERNEL_VIRT_BASE=0xFFFF800000000000, KERNEL_PHYS_BASE=0x40200000;
+//    QEMU virt DRAM base 0x40000000) ──
 //
-// 本组是架构真值，与 riscv 半不同源，各留一份互指；两份共用的名字池与
-// 纯函数闸在 `bootface_common`（N-4 处置）。
+// This group is architectural truth originating separately from the riscv half;
+// each half keeps its own copy with cross-references. The name pool and pure
+// function gates shared by both live in `bootface_common`.
 
-/// QEMU virt（aarch64）DRAM 基址。
+/// QEMU virt (aarch64) DRAM base address.
 const DRAM_BASE: u64 = 0x4000_0000;
 
-/// 镜像物理基址（`aarch64.ld` `KERNEL_PHYS_BASE`：DRAM+2MiB，2MiB 对齐）。
+/// Image physical base (`aarch64.ld` `KERNEL_PHYS_BASE`: DRAM+2MiB,
+/// 2MiB-aligned).
 const KERN_PHYS_BASE: u64 = 0x4020_0000;
 
-/// 镜像链接高半基址（`aarch64.ld` `KERNEL_VIRT_BASE`）。
+/// Image link-time high-half base (`aarch64.ld` `KERNEL_VIRT_BASE`).
 const KERN_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
 
-/// 镜像跨距（末段收口后的 LMA 尾差；riscv 半同值 4 MiB）。
+/// Image span (LMA tail difference after the last segment is clamped; the riscv
+/// half uses the same 4 MiB).
 const KERN_SIZE: u64 = 0x40_0000;
 
-/// QEMU `arm_load_dtb` 对 ELF `-kernel` 的 DTB 落点＝RAM 基址
-/// （`info->dtb_start = info->loader_start`，hw/arm/boot.c ELF 臂）。
+/// Where QEMU `arm_load_dtb` places the DTB for an ELF `-kernel` = the RAM base
+/// (`info->dtb_start = info->loader_start`, hw/arm/boot.c ELF arm).
 const DTB_PA: u64 = DRAM_BASE;
 
-/// bump 物理池基址（DRAM+64MiB；避开镜像 4MiB 与 DTB 页，32MiB 收口
-/// 与 riscv 半同宽——root/页表 bump/名字池/12 模块取页都在其内）。
+/// Bump physical pool base (DRAM+64MiB; clear of the 4MiB image and the DTB
+/// page; the 32MiB extent matches the riscv half — the root page, the page-table
+/// bump area, the name pool and the 12 module pages all come from here).
 const BUMP_BASE: u64 = DRAM_BASE + 0x0400_0000;
 
-/// bump 池宽 32MiB（riscv 半同宽）。
+/// Bump pool width 32MiB (same width as the riscv half).
 const BUMP_SIZE: u64 = 0x0200_0000;
 
-/// 页表 bump 区页数（1 MiB，256 页；riscv 半同宽——VMSv9 四级与 Sv39
-/// 的中间表用量同阶，池枯竭走显式 halt 臂）。
+/// Number of pages in the page-table bump area (1 MiB, 256 pages; same width as
+/// the riscv half — VMSv9 four-level and Sv39 mid-table usage is the same order
+/// of magnitude, and pool exhaustion takes an explicit halt arm).
 const PT_BUMP_PAGES: usize = 256;
 
-// 名字池/槽宽与纯函数闸（`be_cell`/`in_memmap*`/`table_magic_ok`/
-// `fdt_table_pa`）由两个自引导面共用，住在 `bootface_common`（N-4）。
+// The name pool/slot width and the pure function gates (`be_cell`/
+// `in_memmap*`/`table_magic_ok`/`fdt_table_pa`) are shared by both self-boot
+// faces and live in `bootface_common`.
 use crate::bootface_common::{
     NAME_POOL, NAME_SLOT, fdt_table_pa, in_memmap, in_memmap_range, table_magic_ok,
 };
 
-// ── bump 池（aarch64 自有游标；opensbi_helpers 的池基是 riscv DRAM）──
+// ── bump pool (aarch64's own cursor; opensbi_helpers' pool base is riscv DRAM) ──
 
-/// 单调游标（.bss；与 opensbi_helpers 同纪律：池基/池尾/游标只有这一份）。
+/// Monotonic cursor (.bss; same discipline as opensbi_helpers: pool base, pool
+/// end and cursor exist exactly once).
 static mut BUMP_PTR: u64 = BUMP_BASE;
 
-/// 取 `num_pages` 页；0 页请求拒绝（防重复地址破坏不重叠不变量）。
+/// Allocate `num_pages` pages; a zero-page request is refused (it would hand out
+/// duplicate addresses and break the non-overlap invariant).
 fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
     assert!(num_pages > 0, "bump_alloc: num_pages must be > 0");
-    // SAFETY: 单线程 boot 面（次级核经 PSCI CPU_ON 交付后停内核汇聚点，
-    // 不进本面；落选者即使出现也本地 wfi 停车）。
+    // SAFETY: single-threaded boot face (secondary cores stop at the kernel
+    // rendezvous after PSCI CPU_ON delivery and never enter this face; even a
+    // stray loser parks locally in wfi).
     unsafe {
         let need = (num_pages as u64) * 4096;
         let ptr = core::ptr::addr_of_mut!(BUMP_PTR);
@@ -110,29 +133,32 @@ fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
     }
 }
 
-// ── .bss 装配格（boot 面独占写、随后只读）──────────────────────
+// ── .bss assembly slots (the boot face writes them exclusively, then read-only) ──
 
-/// 平台描述符源格（DTB 单源）。
+/// Platform descriptor source slot (DTB is the sole source).
 static mut PLATFORM_SOURCE: PlatformDescSource = PlatformDescSource::new(DTB, PhysBytes(0));
 
-/// 12 模块落地描述表。
+/// Landing descriptor table for the 12 modules.
 static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
     BootModule { name: "", start: PhysBytes(0), len: 0 }
 }; NR_BOOT_MODULES];
 
-// ── 入口 ────────────────────────────────────────────────────────
+// ── Entry ──────────────────────────────────────────────────────
 
-/// aarch64 自引导面入口（`main.rs` aarch64 `_start` 清零 .bss、立栈、
-/// `x0==0` 判道后 `bl` 进来）。
+/// aarch64 self-boot face entry (the aarch64 `_start` in `main.rs` zeroes
+/// .bss, establishes the stack, branches on `x0==0`, then `bl`s into here).
 pub extern "C" fn bootface_a64() -> ! {
     core::hint::black_box(crate::KERNEL_ENTRY_ANCHOR as usize);
     say("### minix-rs kernel image: aarch64 self-boot (NK4-C sec-406)\n");
 
-    // 1. DTB → memmap。QEMU `arm_load_dtb` 把 DTB 放在 RAM 基址（源码
-    //    锚定，见模块头注）；40B 定长头取 totalsize，`dtb_bounded` 证整
-    //    块落在 DRAM 形内后才建切窗（riscv 半 SF2 同款防越界）。
-    // SAFETY: DTB_PA 由 QEMU 装载器写入且在本面之前稳定；读 40B 只取
-    // 魔数/长度，真实使用范围由 `dtb_bounded` 界闸卡死。
+    // 1. DTB → memmap. QEMU `arm_load_dtb` puts the DTB at the RAM base
+    //    (anchored in the source, see the module header); the fixed-size
+    //    40-byte header yields totalsize, and only after `dtb_bounded` proves
+    //    the whole block lies inside the DRAM shape do we build the window
+    //    (the same out-of-bounds guard as the riscv half).
+    // SAFETY: DTB_PA is written by the QEMU loader and is stable before this
+    // face runs; the 40-byte read takes only the magic/length, and the real
+    // extent is pinned down by the `dtb_bounded` bound gate.
     let head = unsafe { slice::from_raw_parts(DTB_PA as *const u8, 40) };
     if u32::from_be_bytes(head[0..4].try_into().unwrap_or([0; 4])) != 0xd00d_feed {
         say("### minix-rs kernel image: DTB magic bad — halting\n");
@@ -143,7 +169,8 @@ pub extern "C" fn bootface_a64() -> ! {
         say("### minix-rs kernel image: DTB blob escapes DRAM bound — halting\n");
         crate::halt();
     }
-    // SAFETY: `dtb_bounded` 已证整块落在 DRAM 形内；MMU-off 恒等视图可读。
+    // SAFETY: `dtb_bounded` has proven the whole block lies inside the DRAM
+    // shape; the MMU-off identity view can read it.
     let fdt_bytes = unsafe { slice::from_raw_parts(DTB_PA as *const u8, fdt_total) };
     let fdt = match fdt::Fdt::new(fdt_bytes) {
         Ok(f) => f,
@@ -153,11 +180,14 @@ pub extern "C" fn bootface_a64() -> ! {
         }
     };
 
-    // I-22 丁案 / D-68：memmap 源统一到 minix-boot 的 `DtbMemoryMap`
-    // （与 opensbi 腿同一 impl，取件车道的第四链收口）。`fw_end = 0` 是
-    // 本形态前提：aarch64 直核链的 DRAM 里没有固件常驻区（QEMU 只放 DTB
-    // 与镜像），因此不削界；DTB 自身由内核 Phase A.2 按真实 totalsize
-    // 永久扣除——两条机制不替岗：本处只产出语义列表，扣除是内核记账。
+    // The memmap source is unified on minix-boot's `DtbMemoryMap` (the same
+    // impl as the opensbi leg; this closes the fourth link of the acquisition
+    // lane). `fw_end = 0` is a premise of this form: the DRAM of the aarch64
+    // direct-kernel chain has no resident firmware area (QEMU places only the
+    // DTB and the image), so nothing is trimmed here; the DTB itself is
+    // permanently subtracted by kernel phase A.2 using the real totalsize —
+    // the two mechanisms do not substitute for each other: this site only
+    // produces the semantic list, the subtraction is kernel accounting.
     let (memmap, reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect();
     if memmap.is_empty() {
         say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
@@ -171,8 +201,9 @@ pub extern "C" fn bootface_a64() -> ! {
     say_hex(memmap[0].len as u64);
     say("\n");
 
-    // 2. BootFileTable：DTB /chosen 通道，先过 DRAM 界闸再过 magic 闸
-    //    才解引用（riscv 半 M4.3 纪律同款）。
+    // 2. BootFileTable: the DTB /chosen channel; pass the DRAM bound gate and
+    //    then the magic gate before dereferencing (the same discipline as the
+    //    riscv half).
     let table_pa = fdt_table_pa(&fdt).filter(|pa| in_memmap(memmap, *pa) && table_magic_ok(*pa));
     let Some(table_pa) = table_pa else {
         say("### minix-rs kernel image: no BootFileTable (chosen) — halting\n");
@@ -181,12 +212,14 @@ pub extern "C" fn bootface_a64() -> ! {
     say("  boot file table pa 0x");
     say_hex(table_pa);
     say("\n");
-    // SAFETY: `table_magic_ok` 已在 memmap 界内核对 magic；表由门装配工
-    // 具放在启动期独占的物理 RAM，本面是首个也是唯一读者。
+    // SAFETY: `table_magic_ok` has checked the magic inside the memmap bound;
+    // the gate assembly tool places the table in physical RAM that boot owns
+    // exclusively, and this face is its first and only reader.
     let table = unsafe { &*(table_pa as *const BootFileTable) };
 
-    // 3. bump 物理池：root 页 → 页表 bump 区 → 名字池（顺序无重叠；
-    //    Option+诚实停机，不留 expect/panic 腿——riscv 半 SF5 同款）。
+    // 3. Bump physical pool: root page → page-table bump area → name pool
+    //    (sequential and non-overlapping; Option plus an honest halt, with no
+    //    expect/panic leg — the same shape as the riscv half).
     let pool_exhaust = "### minix-rs kernel image: bump pool exhausted — halting\n";
     let Some(cur_root) = bump_alloc_pages(1) else { say(pool_exhaust); crate::halt() };
     let root_page = PhysBytes(cur_root);
@@ -203,22 +236,26 @@ pub extern "C" fn bootface_a64() -> ! {
     say_hex(pt_end);
     say("\n");
 
-    // 4. 12 模块：表定位（名对位校验）→ 源直拷进 bump 页。
+    // 4. The 12 modules: locate the table (name alignment check) → copy the
+    //    source straight into bump pages.
     if place_modules(table, memmap, names_pool).is_none() {
         say("### minix-rs kernel image: module placement failed — halting\n");
         crate::halt();
     }
-    // SAFETY: `place_modules` 刚按契约序写满 12 槽；此后只读。
+    // SAFETY: `place_modules` has just filled all 12 slots in contract order;
+    // read-only from here on.
     let modules: &'static [BootModule] = unsafe { &*core::ptr::addr_of!(MODULE_TABLE) };
     say("  boot modules placed 12\n");
 
-    // 5. 平台描述符源：DTB 单源（槽位住 .bss）。
-    // SAFETY: boot 面单 hart，写一次后只读。
+    // 5. Platform descriptor source: DTB as the sole source (the slot lives
+    //    in .bss).
+    // SAFETY: single hart on the boot face; written once, read-only afterwards.
     unsafe {
         *core::ptr::addr_of_mut!(PLATFORM_SOURCE) =
             PlatformDescSource::new(DTB, PhysBytes(DTB_PA));
     }
-    // SAFETY: 同上——写完之后的静态引用，数组单格与切片长度 1 同源。
+    // SAFETY: as above — the static reference is taken after the write; the
+    // single array cell and the length-1 slice have the same origin.
     let platform_sources: &'static [PlatformDescSource] = unsafe {
         core::slice::from_raw_parts(core::ptr::addr_of!(PLATFORM_SOURCE), 1)
     };
@@ -247,8 +284,8 @@ pub extern "C" fn bootface_a64() -> ! {
         unsafe { core::slice::from_raw_parts(ptr, stats.bytes) }
     };
 
-    // 6. KernelInfo + arch_boot 真门槛（validate → 建根 → DM →
-    //    jump_to_kmain，不再返回本面）。
+    // 6. KernelInfo plus the real arch_boot gate (validate → build the root
+    //    → DM → jump_to_kmain; it never returns to this face).
     let kernel_info: KernelInfo = build_kernel_info(
         memmap,
         reserved,
@@ -265,25 +302,32 @@ pub extern "C" fn bootface_a64() -> ! {
     minix_kernel::arch_boot(&kernel_info, root_page)
 }
 
-// ── DTB 面 ──────────────────────────────────────────────────────
+// ── DTB face ───────────────────────────────────────────────────
 
-/// 读 `/chosen` 的 `opensbi,boot-file-table`（大端 cell；4/8 字节都认；
-/// 属性名沿用 riscv 门装配工具的同一约定，门脚本 fdtput 同形）。
+/// Read `/chosen`'s `opensbi,boot-file-table` (big-endian cells; both 4- and
+/// 8-byte forms are accepted; the property name follows the same convention as
+/// the riscv gate assembly tool, whose gate script writes it with the same
+/// `fdtput` shape).
 ///
-/// 查找走 `all_nodes` 而非 `find_node`（§续-406 定谳：fdt 0.1.5 的
-/// `find_node` 对 QEMU `-kernel` 直核链重建出的 blob 返回 None——
-/// all_nodes 与宿主 python 解析都能看到 /chosen，find_node 看不到；
-/// 名对位用「去 @ 后缀」比对，与 find_node 的宽松语义一致）。
-/// DTB 区块界闸：totalsize 自描述，但整块必须落在 DRAM 形内。
+/// Lookup goes through `all_nodes` rather than `find_node` (a settled finding:
+/// fdt 0.1.5's `find_node` returns None for the blob QEMU rebuilds for a
+/// `-kernel` direct-kernel chain — `all_nodes` and a host-side python parse both
+/// see /chosen, while `find_node` does not; names are matched with the `@`
+/// suffix stripped, consistent with `find_node`'s lenient semantics).
+/// DTB block bound gate: totalsize is self-described, but the whole block must
+/// lie inside the DRAM shape.
 fn dtb_bounded(dtb_pa: u64, total: usize) -> bool {
     dtb_pa >= DRAM_BASE && dtb_pa + total as u64 <= 0x1_0000_0000
 }
 
-/// 12 模块的落地描述表（`.bss`，装配后只读）。
+/// Landing descriptor table for the 12 modules (`.bss`, read-only once
+/// assembled).
 ///
-/// 位置为主、名为辅／源区间三道闸／名字入池——语义与 riscv 半
-/// `place_modules` 逐条同形（续-89 直拷定案、SF3/SF4 全宽与对位闸），
-/// 不在此复述；差异仅 bump 池基（aarch64 形）。
+/// Position is primary and the name is secondary / the source range must clear
+/// three gates / names go into the pool — the semantics match the riscv half's
+/// `place_modules` item by item (straight copy, full-width and alignment gates)
+/// and are not repeated here; the only difference is the bump pool base (the
+/// aarch64 form).
 fn place_modules(
     table: &BootFileTable,
     memmap: &[MemoryRegion],
@@ -340,24 +384,28 @@ fn place_modules(
         }
         let pages = len.div_ceil(4096);
         let dest = bump_alloc_pages(pages)?;
-        // SAFETY: 源刚过 memmap 全宽闸且与 bump 池不相交；dest = 独占
-        // bump 页（游标单调），拷贝长度 ≤ 两端区间长。
+        // SAFETY: the source just passed the full-width memmap gate and does
+        // not overlap the bump pool; dest = exclusive bump pages (monotonic
+        // cursor), and the copy length is ≤ the length of both intervals.
         unsafe {
             core::ptr::copy_nonoverlapping(entry.phys_addr as *const u8, dest as *mut u8, len);
             core::ptr::write_bytes((dest as *mut u8).add(len), 0, pages * 4096 - len);
         }
         let slot = names_pool + (i as u64) * NAME_SLOT as u64;
-        // SAFETY: 源 = NAME_POOL 字节格（base 调用点物化）；目的 = 名字池
-        // 第 i 槽（i < 12 ⇒ 偏移 < 一页）。
+        // SAFETY: source = the NAME_POOL byte cells (materialized at the base
+        // call site); destination = name-pool slot i (i < 12 ⇒ offset < one
+        // page).
         unsafe {
             core::ptr::copy_nonoverlapping(NAME_POOL[i].as_ptr(), slot as *mut u8, NAME_SLOT);
         }
         let n = NAME_POOL[i].iter().position(|&b| b == 0).unwrap_or(NAME_SLOT);
         let landed: &'static str = unsafe {
-            // SAFETY: 字节来自 ASCII 字面量池；backing 是独占物理页。
+            // SAFETY: the bytes come from the ASCII literal pool; the backing
+            // is an exclusive physical page.
             core::str::from_utf8_unchecked(core::slice::from_raw_parts(slot as *const u8, n))
         };
-        // SAFETY: 单 hart boot 面逐槽写一次后只读。
+        // SAFETY: single hart on the boot face; each slot is written once and
+        // then read-only.
         unsafe {
             MODULE_TABLE[i] = BootModule {
                 name: landed,
@@ -369,7 +417,8 @@ fn place_modules(
     Some(())
 }
 
-// ── 串口面（无堆：定长字符串 + 手写 hex；PL011 恒等 PA 路径）──
+// ── Serial face (no heap: fixed-size strings plus hand-rolled hex; PL011
+// identity PA path) ──
 
 fn say(msg: &str) {
     early_console::write_str(msg);

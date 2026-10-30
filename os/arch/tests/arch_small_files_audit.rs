@@ -1,17 +1,20 @@
-//! P-ALL-01 深度迁移收尾批：fpu / protection / trap_entry / plat interrupt
-//! 四组小文件（13 枚门内测试）的宿主静态审计。
+//! Host-side static audit of the deep-migration wrap-up batch: four groups of
+//! small files (13 in-gate tests) covering fpu / protection / trap_entry /
+//! plat interrupt.
 //!
-//! fpu：`AArch64FpuState` 528B/16 对齐（`FPSIMD_SIZE`，arm64 FPSIMD 现场帧
-//! 尺寸——`SD-23` 记 Q0-Q31 从不存恢复，帧尺寸是未来接通保存路径的地基）。
-//! protection：双架构特权级 ↔ `Privilege` 映射（EL1/S_MODE→Kernel、
-//! EL0/U_MODE→User）。
-//! trap_entry：双架构 `TrapEntryArch` trait bound 存在性（门内原烟雾测试
-//! 已精简为 bound 断言，宿主侧同形钉住）。
-//! plat interrupt：arm64 `TIMER_IRQ`=INTID 30（CNTPNSIRQ，QEMU virt 设备树
-//! PPI 14+16）、双架构统计时钟 pseudo-vector 0、riscv64 PLIC `nr_irqs`
-//! 钳位到 `NR_IRQ_VECTORS`。
+//! fpu: `AArch64FpuState` is 528B and 16-aligned (`FPSIMD_SIZE`, the arm64
+//! FPSIMD context frame size — Q0-Q31 are never saved or restored yet, and
+//! the frame size is the foundation for wiring that save path up later).
+//! protection: the privilege-level ↔ `Privilege` mapping on both
+//! architectures (EL1/S_MODE→Kernel, EL0/U_MODE→User).
+//! trap_entry: existence of the `TrapEntryArch` trait bound on both
+//! architectures (the original in-gate smoke tests have been trimmed to
+//! bound assertions, pinned the same way on the host side).
+//! plat interrupt: arm64 `TIMER_IRQ`=INTID 30 (CNTPNSIRQ, PPI 14+16 in the
+//! QEMU virt device tree), the statistics-clock pseudo-vector 0 on both
+//! architectures, and riscv64 PLIC `nr_irqs` clamped to `NR_IRQ_VECTORS`.
 
-// ── fpu（arm64）──
+// ── fpu (arm64) ──
 
 #[test]
 fn arm64_fpu_state_geometry_is_frozen() {
@@ -20,19 +23,20 @@ fn arm64_fpu_state_geometry_is_frozen() {
         src.contains("const FPSIMD_SIZE: usize = 528;"),
         "FPSIMD_SIZE 漂移（528B＝arm64 FPSIMD 现场帧：31×16B Q 寄存器 + FPCR/FPSR + 头部）"
     );
-    // 门内断言：尺寸==FPSIMD_SIZE、对齐 16（Q 寄存器要求）、默认全零
-    //（fpsr/fpcr/reg 皆零）。三点的源码锚：
+    // In-gate assertions: size == FPSIMD_SIZE, alignment 16 (a Q-register
+    // requirement), and all-zero default (fpsr/fpcr/regs all zero). Source
+    // pins for those three points:
     assert!(src.contains("core::mem::size_of::<AArch64FpuState>(), FPSIMD_SIZE"));
     assert!(src.contains("core::mem::align_of::<AArch64FpuState>(), 16"));
 }
 
-// ── protection（双架构特权映射）──
+// ── protection (privilege mapping on both architectures) ──
 
 #[test]
 fn protection_privilege_mapping_is_frozen() {
     let a64 = include_str!("../src/arm64/protection.rs");
     let rv = include_str!("../src/riscv64/protection.rs");
-    // arm64：EL1→Kernel、EL0→User；riscv64：S_MODE→Kernel、U_MODE→User。
+    // arm64: EL1→Kernel, EL0→User; riscv64: S_MODE→Kernel, U_MODE→User.
     for (src, kernel, user) in [
         (a64, "AArch64PrivilegeLevel::EL1", "AArch64PrivilegeLevel::EL0"),
         (rv, "Riscv64PrivilegeLevel::S_MODE", "Riscv64PrivilegeLevel::U_MODE"),
@@ -49,7 +53,7 @@ fn protection_privilege_mapping_is_frozen() {
     }
 }
 
-// ── trap_entry（双架构 trait bound）──
+// ── trap_entry (trait bound on both architectures) ──
 
 #[test]
 fn trap_entry_trait_bounds_are_frozen() {
@@ -65,13 +69,14 @@ fn trap_entry_trait_bounds_are_frozen() {
     );
 }
 
-// ── plat interrupt（时钟 IRQ 派发身份）──
+// ── plat interrupt (clock IRQ dispatch identity) ──
 
 #[test]
 fn arm64_timer_irq_is_ns_physical_timer_intid_30() {
     let src = include_str!("../../plat/src/arm64/interrupt.rs");
-    // CNTPNSIRQ＝INTID 30（QEMU virt 设备树 PPI 14 + PPI 基 16）；29 是
-    // 安全态 EL1 定时器、27 是虚拟定时器——错一位即时钟永不到达。
+    // CNTPNSIRQ = INTID 30 (QEMU virt device tree PPI 14 + PPI base 16); 29
+    // is the secure-state EL1 timer and 27 the virtual timer — one wrong
+    // bit and the clock never arrives.
     assert!(
         src.contains("pub const TIMER_IRQ: IrqVector = IrqVector::new(30);"),
         "arm64 TIMER_IRQ 漂移（INTID 30 = CNTPNSIRQ）"
@@ -85,8 +90,9 @@ fn arm64_timer_irq_is_ns_physical_timer_intid_30() {
 #[test]
 fn riscv64_timer_irq_is_reserved_pseudo_vector() {
     let src = include_str!("../../plat/src/riscv64/interrupt.rs");
-    // riscv 的 S 态定时器是 CPU 本地中断（sip.STIP），不经 PLIC——派发
-    // 身份＝保留伪向量 0（§续-376：claim() 读不到的地址）。
+    // The RISC-V S-mode timer is a CPU-local interrupt (sip.STIP) and does
+    // not go through the PLIC — its dispatch identity is reserved
+    // pseudo-vector 0 (an address that claim() cannot read).
     assert!(
         src.contains("pub const TIMER_IRQ: IrqVector = IrqVector::new(0);"),
         "riscv64 TIMER_IRQ 漂移（保留伪向量 0）"

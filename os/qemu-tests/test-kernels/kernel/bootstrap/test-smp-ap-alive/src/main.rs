@@ -1,4 +1,4 @@
-//! Test: AP alive verification (SMP bring-up S-3d, ladder L2) — x86_64.
+//! Test: AP alive verification (SMP bring-up, AP ladder level 2) — x86_64.
 //!
 //! BSP installs the ladder blob at 0x8000, fills the bootstrap record in
 //! the scratch page at 0x9000, sends INIT-SIPI. The AP climbs 16→32→64
@@ -39,7 +39,7 @@ fn fail(msg: &str) -> ! {
     early_console::write_str("### FAIL: ");
     early_console::write_str(msg);
     early_console::write_str("\n");
-    // S-3d diagnostic: the ladder's stage-mark byte at 0x7000 names the
+    // Diagnostic: the ladder's stage-mark byte at 0x7000 names the
     // dead stage (0xA1 real-mode entry .. 0xA7 Rust entry, 0 = never ran).
     let stage = unsafe { core::ptr::read_volatile(0x6F00 as *const u8) };
     let ip = unsafe { core::ptr::read_volatile(0x6F04 as *const u16) };
@@ -62,7 +62,7 @@ fn main() -> Status {
     early_console::write_hex(minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA);
     early_console::write_str("\n");
 
-    // Enable LAPIC — and diagnose its mode first (S-3d): if OVMF left the
+    // Enable LAPIC — and diagnose its mode first: if OVMF left the
     // LAPIC in x2APIC mode (IA32_APIC_BASE bit 10), xAPIC MMIO writes are
     // ignored and the INIT-SIPI below would silently never send. Print
     // APIC_BASE and an MMIO round-trip (LAPIC_ID read).
@@ -103,7 +103,7 @@ fn main() -> Status {
         kernel_stack_top_va: (unsafe { core::ptr::addr_of!(AP_STACK) as usize } as u64) + 0x10000,
         rust_entry_va: ap_entry as u64,
     };
-    // S-3d root cause #2 (2026-09-09): the hand-rolled stores above wrote
+    // An earlier root cause: the hand-rolled stores above wrote
     // only record + magic — the GDT descriptor/table at 0x9030/0x9110
     // stayed garbage, so the ladder's lgdt loaded a broken descriptor and
     // the CS load at the far jump triple-faulted the AP (stage mark stuck
@@ -112,7 +112,7 @@ fn main() -> Status {
     unsafe { install_at(0x5000) };
     unsafe { minix_arch::x86_64::ap_early_entry::fill_bootstrap(0x6000, &record); }
 
-    // S-3d diagnosis: arm a real-mode #UD collector. IVT[6] (0x18) gains a
+    // Diagnosis: arm a real-mode #UD collector. IVT[6] (0x18) gains a
     // handler at 0x7400 that pops FLAGS/CS/IP off the real-mode frame,
     // records the faulting CS:IP at 0x7004/0x7006, marks 0x7000 = 0xEE and
     // halts. If the AP #UDs anywhere in the ladder, the BSP timeout print
@@ -166,8 +166,9 @@ fn panic(info: &PanicInfo) -> ! {
     }
     let msg = info.message();
     early_console::write_str("### msg: ");
-    // core::fmt Arguments 不能轻易手打：打印其 pieces 指针不足以诊断，
-    // 直接用 format 不行（no_std 无 alloc）——退而打印 location 已够。
+    // A core::fmt Arguments value cannot be hand-built easily: printing its
+    // pieces pointer is not enough to diagnose, and using format directly is out
+    // (no alloc under no_std) — printing the location is enough instead.
     let _ = msg;
     early_console::write_str("\n");
     loop { unsafe { asm!("cli", options(nomem, nostack)); } }

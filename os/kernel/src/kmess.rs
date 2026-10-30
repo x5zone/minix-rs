@@ -8,12 +8,12 @@
 //! Server's `kmessages_dmp` (dmp_kernel.c:60-93) replays the ring from
 //! `(km_next - km_size) mod SIZE`.
 //!
-//! E-ISKMESS (A-3): the ring was previously absent — the W-7 evolution
-//! replaced the C kmess consumption path with direct EarlyConsole output
-//! (write-and-discard). This module restores the recordable buffer so
-//! `GET_KMESSAGES` (04 §4.1) has a data source, while console output
-//! continues unchanged: recording and display run in parallel (C's
-//! `kputc` under DEBUG_SERIAL writes both, utility.c:64-75).
+//! The ring was previously absent: an earlier evolution replaced the C kmess
+//! consumption path with direct EarlyConsole output (write-and-discard). This
+//! module restores the recordable buffer so `GET_KMESSAGES` (04 §4.1) has a
+//! data source, while console output continues unchanged: recording and
+//! display run in parallel (C's `kputc` under DEBUG_SERIAL writes both,
+//! utility.c:64-75).
 //!
 //! Concurrency: writes happen with the BKL held (all diagnostic paths in
 //! minix-rs run under it, matching C's implicit single-printf-at-a-time).
@@ -23,15 +23,17 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::globals::SyncUnsafeCell;
 use minix_plat::CurrentEarlyConsole as Console;
 
-// 收口与 trait 必须同一来源：内核里那些 `use crate::kmess::{KernelConsole as
-// Console, EarlyConsole as _};` 的调用点靠这条 re-export 拿到 trait（否则每个
-// 文件要写两条 use，缩进与 rustfmt 打架）。trait 本体仍归 minix-plat。
+// The choke-point type and the trait must come from the same source: call
+// sites in the kernel that write `use crate::kmess::{KernelConsole as
+// Console, EarlyConsole as _};` obtain the trait through this re-export
+// (otherwise every file needs two `use` lines and the indentation fights
+// rustfmt). The trait itself still belongs to minix-plat.
 pub use minix_plat::EarlyConsole;
 
 /// Ring capacity. C: `_KMESS_BUF_SIZE 10000` — sys_config.h:22.
 pub const KMESS_BUF_SIZE: usize = 10000;
 
-/// Wire layout of the `GET_KMESSAGES` payload (E-ISKMESS, 04 §4.1):
+/// Wire layout of the `GET_KMESSAGES` payload (04 §4.1):
 /// `km_next` (i32) + `km_size` (i32) + the 10000-byte buffer = 10008
 /// bytes, copied as one block.
 pub const KMESS_SNAPSHOT_SIZE: usize = 8 + KMESS_BUF_SIZE;
@@ -133,20 +135,26 @@ pub fn record_bytes(bytes: &[u8]) {
 /// to the real console. Recording and display are parallel, never
 /// alternative.
 pub fn console_write_str(s: &str) {
-    // 统一走收口类型（下方 [`KernelConsole`]）：它只覆写 `write_byte`，
-    // 因此字符串路径上的转义（`\n` → `\r\n`）与十六进制路径上的展开
-    // 都被同一处记录——环里存的字节串与控制台看到的字节串同形。
+    // Go through the choke-point type (the [`KernelConsole`] below): it only
+    // overrides `write_byte`, so the escaping on the string path (`\n` →
+    // `\r\n`) and the expansion on the hex path are recorded in one place —
+    // the byte stream in the ring has the same shape as the one on the console.
     <KernelConsole as EarlyConsole>::write_str(s);
 }
 
-/// 内核诊断的唯一收口（C: `kputc`，`minix3/minix/kernel/utility.c:55-90）。
+/// The single choke point for kernel diagnostics (C: `kputc`,
+/// `minix3/minix/kernel/utility.c:55-90`).
 ///
-/// **只覆写 `write_byte`** 是刻意的：`EarlyConsole` 的 `write_str`/`write_hex`
-/// 默认体最终逐字节走 `Self::write_byte`，所以在 `write_byte` 这一处记录就
-/// 等于「控制台上出现的每个字节都进环」——包括 `\n` 前插的 `\r` 与 `write_hex`
-/// 的展开。若在 `write_str` 里另记一次，环与控制台就会因转义而不同形（两个
-/// 真相）。E-ISKMESS 当时恢复了环却没接喂入者（台账 §8 那条），本类型就是
-/// 那个喂入者：内核里所有诊断打印的 `Console` 别名都指向它。
+/// **Overriding only `write_byte`** is deliberate: the default bodies of
+/// `EarlyConsole`'s `write_str`/`write_hex` ultimately go byte by byte
+/// through `Self::write_byte`, so recording at `write_byte` alone means
+/// "every byte that appears on the console enters the ring" — including the
+/// `\r` inserted before `\n` and the expansion performed by `write_hex`.
+/// Recording a second time inside `write_str` would make the ring and the
+/// console differ in shape because of the escaping (two sources of truth).
+/// The ring had been restored without a feeder attached at one point; this
+/// type is that feeder: every diagnostic-printing `Console` alias in the
+/// kernel points at it.
 pub struct KernelConsole;
 
 impl EarlyConsole for KernelConsole {
@@ -173,20 +181,22 @@ pub fn snapshot_ordered(dst: &mut [u8]) -> (usize, usize, usize) {
     (next, size, moved)
 }
 
-/// 读取游标(快照拷贝的元数据半)。C: `km_next`/`km_size`。
+/// Read the cursors (the metadata half of a snapshot copy). C: `km_next`/`km_size`.
 pub fn cursor() -> (usize, usize) {
     // SAFETY: same BKL/single-writer contract as `record_str`.
     let ring = unsafe { &mut *KMESS_RING.get() };
     (ring.next(), ring.size())
 }
 
-/// 把 `GET_KMESSAGES` 快照(km_next/km_size 头 + 顺序展开的 ring 体,
-/// 共 [`KMESS_SNAPSHOT_SIZE`] 字节)拷到调用方缓冲。C 的 do_getinfo
-/// kmess 臂在 32 位下不存在(04 §2.1);A-3 决策的 LP64 新臂。
+/// Copy the `GET_KMESSAGES` snapshot (the km_next/km_size header plus the
+/// ring body expanded in stream order, [`KMESS_SNAPSHOT_SIZE`] bytes in
+/// total) into the caller's buffer. C's do_getinfo kmess arm does not exist
+/// on 32-bit systems; this is the LP64 arm added by design.
 ///
-/// `val_len < 快照大小` → E2BIG(调用方缓冲不足,C do_getinfo 对整表类
-/// 臂的同款语义)。快照经内核堆中转一次拷出(ring 环形 → 顺序流),
-/// 不占内核栈大缓冲。
+/// `val_len < snapshot size` → E2BIG (the caller's buffer is too small; the
+/// same semantics C do_getinfo applies to the whole-table arms). The snapshot
+/// is staged out through one kernel-heap copy (ring order → stream order)
+/// rather than a large kernel-stack buffer.
 pub fn copy_snapshot_to_caller(
     caller_nr: crate::proc::ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -205,18 +215,22 @@ pub fn copy_snapshot_to_caller(
         return KcallResult::Ok(E2BIG);
     }
 
-    // 顺序展开快照(kernel 堆中转一次跨空间拷;环形→流式展开与 C
-    // kmessages_dmp 的 print_buf 组装等价,dmp_kernel.c:77-85)。
+    // Expand the snapshot in stream order (staged through one kernel-heap
+    // cross-space copy; ring → stream expansion matches C kmessages_dmp's
+    // print_buf assembly, dmp_kernel.c:77-85).
     let mut snap = alloc::vec![0u8; KMESS_SNAPSHOT_SIZE];
     let (next, size, _) = snapshot_ordered(&mut snap[8..]);
     snap[..4].copy_from_slice(&(next as i32).to_le_bytes());
     snap[4..8].copy_from_slice(&(size as i32).to_le_bytes());
 
-    // SAFETY: 快照缓冲在内核堆 `IMAGE_HEAP`(`.bss`,落 image 高半区，两个
-    // Direct Map 窗口之外)——`virt_to_phys` 会产伪物理地址(NK4-C 1.51 B27 残留
-    // 根因)。改用 AddressRef::Process(caller CR3 映射内核 higher-half，
-    // resolve_physical 走真页表得正确 PA)。拷至调用方缓冲为单次跨空间拷，
-    // caller 的 cr3 由 proc_cr3 解析(与 dispatch_trace 同款)。
+    // SAFETY: the snapshot buffer lives on the kernel heap (`IMAGE_HEAP`,
+    // `.bss`, in the image's higher-half region outside both Direct Map
+    // windows) — `virt_to_phys` would produce a bogus physical address. Use
+    // AddressRef::Process instead (the caller CR3 maps the kernel
+    // higher-half, so resolve_physical walks the real page tables and gets
+    // the correct PA). The copy into the caller's buffer is a single
+    // cross-space copy; the caller's cr3 is resolved by proc_cr3 (same as
+    // dispatch_trace).
     let caller_endpt = proc_table
         .get(caller_nr)
         .map(|p| p.p_endpoint)
@@ -249,7 +263,8 @@ pub fn copy_snapshot_to_caller(
 mod tests {
     use super::*;
 
-    /// C utility.c:71-75 — 顺序写入不环绕:size 增至写入量,next 线性推进。
+    /// C utility.c:71-75 — sequential writes do not wrap: size grows to the
+    /// amount written, next advances linearly.
     #[test]
     fn test_putc_sequential_accumulates() {
         let mut ring = KmessRing::new();
@@ -264,12 +279,13 @@ mod tests {
         assert_eq!(&dst[..14], b"kernel boot ok");
     }
 
-    /// 环绕语义(C kputc 的 % _KMESS_BUF_SIZE):容量 10000,写 10005 字节
-    /// 后 size 封顶 10000、next=5;快照按 (next-size)%SIZE 从最旧字节展开。
+    /// Wraparound semantics (C kputc's % _KMESS_BUF_SIZE): capacity 10000,
+    /// so after writing 10005 bytes size caps at 10000 and next=5; the
+    /// snapshot starts from the oldest byte at (next-size)%SIZE.
     #[test]
     fn test_putc_wraps_and_snapshot_reorders() {
         let mut ring = KmessRing::new();
-        // 写 10005 个不同字节(取模标记)。
+        // Write 10005 distinct bytes (modulo marker).
         for i in 0..10005u64 {
             ring.putc((i % 251) as u8);
         }
@@ -278,24 +294,29 @@ mod tests {
         let mut dst = [0u8; 10000];
         let moved = ring.snapshot_ordered(&mut dst);
         assert_eq!((ring.next(), ring.size(), moved), (5, 10000, 10000));
-        // 展开顺序:dst[0] 应为写入序第 5 字节的值。
+        // Expansion order: dst[0] must hold the value of write-order byte 5.
         assert_eq!(dst[0], (5 % 251) as u8);
         assert_eq!(dst[9999], (10004 % 251) as u8);
     }
 
-    /// E-ISKMESS 快照大小约定:GET_KMESSAGES 应答体 = 8 字节头 + 10000。
+    /// Snapshot size contract: the GET_KMESSAGES reply body is an 8-byte
+    /// header plus 10000 bytes.
     #[test]
     fn test_kmess_snapshot_size_constant() {
         assert_eq!(KMESS_SNAPSHOT_SIZE, 10008);
         assert_eq!(KMESS_BUF_SIZE, 10000); // sys_config.h:22
     }
 
-    /// 喂入者不变量（台账 §8「消息环的字符写入口没有喂入者」的回归）。
+    /// Feeder invariant (a regression pin for "the message ring's character
+    /// write path had no feeder").
     ///
-    /// 收口类型只覆写 `write_byte`：`write_str`/`write_hex` 的默认体逐字节走
-    /// `Self::write_byte`，故「控制台看到的每个字节都进环」在一处成立（含
-    /// `\n` 前插的 `\r` 与十六进制展开）。在 `write_str` 里另记一次就会让
-    /// 环与控制台不同形（两个真相），故本钉同时禁止那种写法。
+    /// The choke-point type overrides only `write_byte`: the default bodies
+    /// of `write_str`/`write_hex` go byte by byte through `Self::write_byte`,
+    /// so "every byte seen on the console enters the ring" holds in one
+    /// place (including the `\r` inserted before `\n` and hex expansion).
+    /// Recording a second time inside `write_str` would make the ring and
+    /// the console differ in shape (two sources of truth), so this pin also
+    /// forbids that form.
     #[test]
     fn test_kernel_console_is_the_single_choke_point() {
         let src = include_str!("kmess.rs");

@@ -239,20 +239,24 @@ impl CpuContextArch for X86_64CpuContextArch {
     }
 
     fn or_ipc_status_reg(ctx: &mut Self::CpuContext, value: u64) {
-        // NK4-C Task C A 案（[ARCH]）：x86_64 的 IPC_STATUS_REG = R10
-        // （gp_regs[GP_R10]，caller-saved）。C 无 x86_64 定义（仅 i386=bx /
-        // earm=r1，ipcconst.h:7/:10）；本端口曾沿用 i386 的 bx——但 RBX 是
-        // callee-saved，内核在任意恢复点把状态写进它即摧毁用户 callee-
-        // saved 活值（真机 NK4A Task C：RS 的 &self.table 被交付成 0，
-        // 六轮取证 c19a-c27a）。caller-saved 的 R10 跨调用本就不保活，
-        // 状态写不再有破坏面；C earm=r1 同思路先例。
-        // R10 载体 = gp_regs[GP_R10=8]（与 trap_return 恢复序列同源）。
+        // [ARCH] x86_64's IPC_STATUS_REG = R10 (gp_regs[GP_R10],
+        // caller-saved). C defines no x86_64 lane (only i386=bx /
+        // earm=r1, ipcconst.h:7/:10); this port used to follow i386's
+        // bx -- but RBX is callee-saved, so the kernel writing status into
+        // it at any resumption point destroys the user's callee-saved live
+        // values (on hardware: RS's &self.table was delivered as 0). The
+        // caller-saved R10 is not preserved across calls in the first
+        // place, so status writes no longer have a destruction surface;
+        // C's earm=r1 is the same-idea precedent.
+        // R10 carrier = gp_regs[GP_R10=8] (same origin as the trap_return
+        // restore sequence).
         ctx.gp_regs[crate::x86_64::signal::GP_R10] |= value;
     }
 
     fn clear_ipc_status_reg(ctx: &mut Self::CpuContext) {
-        // C: `IPC_STATUS_CLEAR(p)` — plain RECEIVE 序言清状态寄存器
-        // （ipc.h:45；proc.c:581）。R10 载体（见 or_ipc_status_reg）。
+        // C: `IPC_STATUS_CLEAR(p)` — the plain RECEIVE prologue clears the
+        // status register (ipc.h:45; proc.c:581). R10 carrier (see
+        // or_ipc_status_reg).
         ctx.gp_regs[crate::x86_64::signal::GP_R10] = 0;
     }
 
@@ -260,14 +264,17 @@ impl CpuContextArch for X86_64CpuContextArch {
         // C: `arch_set_secondary_ipc_return` — arch_system.c:184-186,
         // i386 body `p->p_reg.bx = val`. Plain assignment (whole address,
         // not a flag merge).
-        // NK4-C 1.54（B26）：车道从 RBX 改 R10。int33 立即返回臂只把
-        // rax + R10（sync_status_register_to_frame）同步进返回帧，
-        // ctx.rbx 永远达不到用户——写在 RBX 的页地址实测丢失（bn2/bn3：
-        // 用户 r10 拿陷阱残留垃圾→ deref 崩）。C 的 i386 bx 本就是
-        // 「返回路径同步的那条」且兼状态+secondary 两职；Task C 把
-        // 状态迁到 caller-saved 的 R10 后，secondary 的 64 位对位就是
-        // 同一条 R10：两职按调用互斥（状态只在交付 OR，secondary 只在
-        // KERNINFO 写），与 C 同一语义。
+        // The lane moved from RBX to R10. The int33 immediate-return arm
+        // synchronizes only rax + R10 (sync_status_register_to_frame) into
+        // the return frame, so ctx.rbx never reaches the user — a page
+        // address written to RBX was observed to be lost (the user's r10
+        // got trap-residue garbage and crashed on deref). C's i386 bx is by
+        // construction the lane synchronized on the return path and doubles
+        // as both status and secondary; after status moved to the
+        // caller-saved R10, secondary's 64-bit counterpart is that same
+        // R10: the two roles are mutually exclusive per call (status is
+        // OR'd only on delivery, secondary is written only for KERNINFO),
+        // matching C's semantics.
         ctx.gp_regs[crate::x86_64::signal::GP_R10] = value;
     }
 
@@ -322,9 +329,10 @@ mod tests {
     #[test]
     fn set_secondary_ipc_return_assigns_status_lane() {
         // C: arch_set_secondary_ipc_return — arch_system.c:184-186, i386
-        // body `p->p_reg.bx = val`；x86-64 对位车道 = R10（NK4-C 1.54：
-        // int33 返回路径只同步 rax+R10，RBX 写法实测丢值，见 boot.rs
-        // 实现注释）。Whole-value assignment (used by the
+        // body `p->p_reg.bx = val`; x86-64 counterpart lane = R10 (the
+        // int33 return path synchronizes only rax+R10, so a value written
+        // to RBX was measured to be lost — see the boot.rs implementation
+        // comment). Whole-value assignment (used by the
         // MINIX_KERNINFO arm, proc.c:691): a second call overwrites the
         // first — an OR-merge would corrupt the address.
         let mut ctx = X86_64CpuContextArch::build_cpu_context(
@@ -449,7 +457,7 @@ mod stacktrace_tests {
     }
 
     /// C: proc_stacktrace_execute — chain walk emits pc + each return address.
-    /// D-47: current_frame_pointer reads the host (or kernel) rbp via
+    /// current_frame_pointer reads the host (or kernel) rbp via
     /// asm — plausible on any x86_64 with frame pointers: non-zero and
     /// 8-aligned. Safe on hosted Linux (a plain register read).
     #[test]
@@ -459,7 +467,7 @@ mod stacktrace_tests {
         assert_eq!(fp % 8, 0, "rbp must be 8-aligned");
     }
 
-    /// D-47: the shared `walk_frames_from` loop (used by util_stacktrace
+    /// The shared `walk_frames_from` loop (used by util_stacktrace
     /// without a saved context) walks the same [saved_fp, ret] layout.
     /// Fake chain hosted on local arrays.
     #[test]

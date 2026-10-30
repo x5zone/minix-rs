@@ -42,8 +42,10 @@ pub use interrupt::{
 };
 pub use port_io::PortIo;
 
-/// Compile-time form marker for the U-1/SD-30 形态对账绊线：`mock` 开启即替身
-/// 形态，否则生产形态。`SelectedForm` 反映本包当前实际选出的形态。
+/// Compile-time form marker for the mock/production form reconciliation
+/// tripwire: `mock` enabled selects the substitute form, otherwise the
+/// production form. `SelectedForm` reflects the form this package actually
+/// selected.
 pub mod form {
     /// Built with `mock` (substitute form).
     pub struct MockForm;
@@ -150,7 +152,7 @@ pub type CurrentPortIo = MockPortIo;
 #[cfg(target_arch = "x86_64")]
 pub type CurrentPortIo = crate::x86_64::port_io::X86_64PortIo;
 
-// ── S-11: QEMU test shutdown backends (§3.8) ──
+// ── QEMU test shutdown backends ──
 //
 // `shutdown_qemu(status)` terminates the test VM: x86-64 isa-debug-exit
 // (exit code (status<<1)|1 — always odd; run_qemu's shutdown test special-
@@ -158,7 +160,8 @@ pub type CurrentPortIo = crate::x86_64::port_io::X86_64PortIo;
 // riscv64 sifive_test FINISHER_PASS (exit 0). Requires the corresponding
 // QEMU option/device (isa-debug-exit device / -semihosting / none for
 // sifive_test). The real-hardware backends (ACPI S5 / PSCI SYSTEM_OFF /
-// SBI SRST) are separate later lanes — §3.8's two-layer rule.
+// SBI SRST) are separate later lanes: the two-layer rule keeps the QEMU-only
+// exit here and the hardware poweroff paths apart.
 #[cfg(target_arch = "x86_64")]
 pub fn shutdown_qemu(status: u32) -> ! {
     crate::x86_64::shutdown::qemu_exit(status)

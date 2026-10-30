@@ -1,4 +1,4 @@
-//! D-72: the kernel must not inject the kernel-information page mapping in
+//! The kernel must not inject the kernel-information page mapping in
 //! `vmctl_set_addr_space` any more.
 //!
 //! Ownership moved to VM: every new root maps `KERNINFO_USER_VA` in

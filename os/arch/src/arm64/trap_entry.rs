@@ -47,7 +47,7 @@ use crate::trap_entry::{TrapEntryArch, InterruptVector};
 use minix_types::VirBytes;
 use core::arch::asm;
 
-// ── Exception vector table (production legs — E-3ARCHTRAP) ──────────────
+// ── Exception vector table (production legs) ──────────────────────────────
 //
 // The 2 KiB table (16 entries × 128 bytes, `.align 11`) is defined in
 // `trap_stub`, together with the frame layout and the dispatch thunks —
@@ -56,8 +56,8 @@ use core::arch::asm;
 // SP_EL0 exchange happens in the lower-EL legs), while the never-legal
 // groups (current EL with SP0, lower EL AArch32) and the non-deliverable
 // classes (FIQ/SError) branch to the print-and-halt diagnostic. The
-// stage invariant "after S-8 no empty handler exists anywhere" now holds
-// with production legs, not diagnostic ones.
+// stage invariant "no empty handler exists anywhere" now holds with
+// production legs, not diagnostic ones.
 //
 // Alignment proof obligations: the table symbol must be 2 KiB-aligned
 // (`VBAR_EL1` mandates bits [10:0] zero) and every slot exactly 128
@@ -113,8 +113,8 @@ impl TrapEntryArch for AArch64TrapEntry {
     fn load(&self) {
         // Set VBAR_EL1 to the exception vector table address.
         // The table (all 16 slots wired) is defined in the `global_asm!`
-        // in `trap_stub` (edge1 K9 defused the S-8 link landmine;
-        // E-3ARCHTRAP replaced the diagnostic slots with the production
+        // in `trap_stub` (a former link-time landmine, since defused; the
+        // diagnostic slots were later replaced with the production
         // frame-save legs).
         let vbar = super::trap_stub::vector_table_va().get();
         // SAFETY: VBAR_EL1 write is safe because:
@@ -154,15 +154,16 @@ mod tests {
     use super::*;
     use crate::trap_entry::TrapEntryArch;
 
-    // 注：原 4 个烟雾测试（trap_entry_init_returns_unit_struct /
+    // Note: the original four smoke tests (trap_entry_init_returns_unit_struct /
     // configure_syscall_is_noop / set_handler_is_noop /
-    // configure_ipc_entry_is_noop_on_arm64）改为编译期约束检查 —— 验证
-    // AArch64TrapEntry 满足 TrapEntryArch trait bound。`set_handler` 等在
-    // ARM64 上为 noop，运行时无可观察行为；这些方法的存在与正确编译即可
-    // 替代运行时断言。
+    // configure_ipc_entry_is_noop_on_arm64) became compile-time constraint
+    // checks — they verify that AArch64TrapEntry satisfies the TrapEntryArch
+    // trait bound. `set_handler` and friends are no-ops on ARM64 with no
+    // observable run-time behavior; the existence and successful compilation of
+    // these methods replaces the run-time assertions.
     //
-    // 运行时正确性（异常向量表布局、VBAR_EL1 装载、SVC dispatch）由 QEMU
-    // 集成测试覆盖。
+    // Run-time correctness (exception vector table layout, VBAR_EL1 loading,
+    // SVC dispatch) is covered by the QEMU integration tests.
 
     #[test]
     fn aarch64_trap_entry_arch_impl_satisfies_trait_bound() {

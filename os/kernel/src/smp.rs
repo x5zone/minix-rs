@@ -23,10 +23,10 @@
 //! - **D3**: bitflags `CpuFlags` replaces raw `u32_t flags`
 //! - **D4**: `AtomicU32` replaces `volatile u32_t` for IPI data
 //! - **D5**: bitflags `SchedIpiFlags` replaces raw bit operations
-//! - **D6**: BKL release/reacquire pattern preserved from C. R-05 (2026-08-12)
-//!   unified `BklGuard` and `BklGuardRaii` into a single RAII type — `Drop`
-//!   releases the BKL. Cross-function BKL transfer uses `BklGuard::transfer()`;
-//!   explicit early release uses `BklGuard::release()`.
+//! - **D6**: BKL release/reacquire pattern preserved from C; `BklGuard` is a
+//!   single RAII type — `Drop` releases the BKL. Cross-function BKL transfer
+//!   uses `BklGuard::transfer()`; explicit early release uses
+//!   `BklGuard::release()`.
 //! - **D7**: `SmpArch` trait for hardware abstraction (no `#[cfg(target_arch)]`)
 //! - **D8**: `ProcNr` index replaces raw `struct proc *` pointers
 //! - **D9**: Runtime CAS for single-CPU fallback (no cfg gate, zero overhead)
@@ -148,7 +148,7 @@ pub struct CpuLocal {
     /// C: `ptproc` — used for CR3-load tracking on x86-64.
     pub ptproc: Option<ProcNr>,
     /// Physical root of the page tables currently loaded on THIS CPU.
-    /// NK4-C 续-56: completes the ptproc-style per-CPU migration for the
+    /// Completes the ptproc-style per-CPU migration for the
     /// active-root mirror — C reads the live per-CPU CR3/TTBR0/satp
     /// (`mov %cr3, %ecx`, klib.S:618), so "the active root" is inherently
     /// per-CPU. The former global `CURRENT_ROOT_PHYS` mirror was a
@@ -179,11 +179,11 @@ pub struct CpuLocal {
     /// C: `tsc_per_state[CONFIG_MAX_CPUS][CPUSTATES]` (arch_clock.c:43) —
     /// context_stop adds the just-consumed TSC delta into the state bucket
     /// (arch_clock.c:340), and `get_cpu_ticks` divides by `tsc_per_tick`
-    /// for GET_CPU_TICKS. Tick-1 (S-6.4): was implicitly global-zero —
+    /// for GET_CPU_TICKS. Previously this was implicitly global-zero —
     /// `getinfo_cpu_ticks` returned zeros.
     pub tsc_per_state: [u64; crate::misc::MINIX_CPUSTATES],
-    /// S-7 L5: this CPU has entered the shared scheduling loop (set once at
-    /// `scheduler_loop` entry; the L5 test reads it per-CPU from the BSP).
+    /// This CPU has entered the shared scheduling loop (set once at
+    /// `scheduler_loop` entry; the test reads it per-CPU from the BSP).
     pub sched_loop_entered: bool,
 }
 
@@ -213,14 +213,14 @@ impl CpuLocal {
 
     /// Mark this CPU as currently running `nr`.
     ///
-    /// I-6② (2026-09-09): this primitive no longer writes `bill_ptr`. In
+    /// This primitive no longer writes `bill_ptr`. In
     /// C, every `bill_ptr` write is BILLABLE-gated at its call site
     /// (`proc.c:186-188` in `idle`, `proc.c:1808-1809` in `pick_proc`;
     /// the boot write `main.c:56` targets idle, whose privilege carries
     /// BILLABLE). Billing is therefore call-site policy, and this crate's
     /// gated billing paths are `ProcessTable::set_bill_to_idle`,
     /// `pick_and_bill` and `idle` — all of which check `is_billable`.
-    /// An unconditional write here (the pre-I-6② behavior) would have
+    /// An unconditional write here (the earlier behavior) would have
     /// billed non-billable processes the moment a future caller reused
     /// this primitive.
     pub fn set_running(&mut self, nr: ProcNr) {
@@ -364,23 +364,23 @@ pub struct SmpState {
     cpu_locals: [CpuLocal; MAX_CPUS],
     /// IPI scheduling data. C: `sched_ipi_data[CONFIG_MAX_CPUS]`
     sched_ipi_data: [SchedIpiData; MAX_CPUS],
-    /// S-5 (§3.4 double-bitmap): BSP bit + every AP that finished init_ap
+    /// Online bitmap: BSP bit + every AP that finished init_ap
     /// (C `ap_cpus_booted` counter retired — a bitmap pins identity,
-    /// duplicates and absences at once, §3.4 v3 #1). Bit index = logical id.
+    /// duplicates and absences at once). Bit index = logical id.
     online_mask: AtomicU64,
-    /// AP handshake bitmap (S-3d): bit n set == AP with logical_id n has
+    /// AP handshake bitmap: bit n set == AP with logical_id n has
     /// finished reading the bootstrap record and published its ack
-    /// (Release). BSP observes with Acquire. **Distinct from online** —
-    /// v3 #1 two-state split: ack ≠ "AP is running init_ap"; the online
-    /// state arrives with S-4/S-7.
+    /// (Release). BSP observes with Acquire. **Distinct from online**:
+    /// ack ≠ "AP is running init_ap"; the online state is a separate
+    /// lifecycle.
     boot_ack_mask: AtomicU64,
 }
 
 impl SmpState {
     /// AP publishes its handshake: "I have finished reading the bootstrap
-    /// record" (S-3d, §3.9). Release so the BSP's Acquire observation also
-    /// sees every byte the AP consumed. Only the handshake bit — the
-    /// online state is a separate lifecycle (S-4/S-7).
+    /// record". Release so the BSP's Acquire observation also sees every
+    /// byte the AP consumed. Only the handshake bit — the online state is
+    /// a separate lifecycle.
     pub fn publish_boot_ack(&self, logical_id: u32) {
         self.boot_ack_mask.fetch_or(1u64 << logical_id, Ordering::Release);
     }
@@ -487,14 +487,12 @@ impl SmpState {
     /// timer unconditionally on every CPU, and C's own restart is a no-op on
     /// auto-reloading clock sources.
     ///
-    /// SD-24 arm 1 (the clearing arm). The wake *producer* — sending the SCHED
+    /// Arm 1 (the clearing arm). The wake *producer* — sending the SCHED
     /// IPI when a runnable process is enqueued onto an idle CPU (C
     /// proc.c:1641-1650) — is the separate outstanding arm 2, gated behind the
     /// BSP clamp removal. Until then this cleared flag has no downstream
-    /// consumer, which is the expected state for a prerequisite building block
-    /// landed ahead of the milestone that reads it (see
-    /// `01-stage-kernel/todo.md` SD-24 and
-    /// `TODO-LEDGER-OPEN.md` §1).
+    /// consumer, which is the expected state for a prerequisite building
+    /// block landed ahead of the milestone that reads it.
     pub fn clear_idle_flag(&mut self, cpu: CpuId) -> bool {
         match self.cpu_locals.get_mut(cpu.index()) {
             Some(local) => core::mem::replace(&mut local.cpu_is_idle, false),
@@ -555,8 +553,8 @@ impl SmpState {
     /// Check if all APs have finished booting.
     /// C: `ap_cpus_booted != (n - 1)` in `wait_for_APs_to_finish_booting()`
     pub fn all_aps_booted(&self) -> bool {
-        // S-5 (§3.4 v7 #8): production completion = every ACKed AP finished
-        // init_ap (`online == boot_ack`). Deliberately tolerant of a FAILED
+        // Production completion = every ACKed AP finished init_ap
+        // (`online == boot_ack`). Deliberately tolerant of a FAILED
         // AP that never acked — C parity (wait_for_APs waits for
         // `ap_cpus_booted == n-1` over READY CPUs only). Tests additionally
         // assert `== expected_cpu_mask` for health (v4 #3).
@@ -680,14 +678,14 @@ impl SmpState {
             while self.sched_ipi_data[target_cpu.index()].has_pending() {
                 // Reentrant: handle our own IPI if pending
                 if self.sched_ipi_data[current_cpu.index()].has_pending() {
-                    // R-05: forget guard — explicit bkl_unlock() below
+                    // Keep the BKL held across the handler; unlock below.
                     bkl_lock().transfer();
                     self.sched_handler_full(proc_table, current_cpu);
                     bkl_unlock();
                 }
                 A::pause();
             }
-            // R-05: forget guard — BKL stays held, released later by caller
+            // Keep the BKL held; the caller releases it later.
             bkl_lock().transfer();
         }
 
@@ -703,14 +701,14 @@ impl SmpState {
         bkl_unlock();
         while self.sched_ipi_data[target_cpu.index()].has_pending() {
             if self.sched_ipi_data[current_cpu.index()].has_pending() {
-                // R-05: forget guard — explicit bkl_unlock() below
+                // Keep the BKL held across the handler; unlock below.
                 bkl_lock().transfer();
                 self.sched_handler_full(proc_table, current_cpu);
                 bkl_unlock();
             }
             A::pause();
         }
-        // R-05: forget guard — BKL stays held, released later by caller
+        // Keep the BKL held; the caller releases it later.
         bkl_lock().transfer();
     }
 
@@ -843,7 +841,7 @@ impl SmpState {
         // C: smp.c:44
         bkl_unlock();
 
-        // Wait for APs — S-5 bitmap semantics (§3.4): every AP that acked
+        // Wait for APs — bitmap semantics: every AP that acked
         // must finish init_ap. `pause()` is the C arch_pause parity.
         // C: smp.c:45-46
         while self.online_mask.load(Ordering::Acquire)
@@ -854,7 +852,7 @@ impl SmpState {
 
         // Reacquire BKL
         // C: smp.c:48
-        // R-05: forget guard — BKL stays held, released later by caller
+        // Keep the BKL held; the caller releases it later.
         bkl_lock().transfer();
     }
 }
@@ -865,13 +863,13 @@ impl Default for SmpState {
     }
 }
 
-// ── S-5: boot_lock + AP finish handshake + smp_init orchestration ──
+// ── boot_lock + AP finish handshake + smp_init orchestration ──
 //
 // Lock-order facts (§3.4 — a staged startup protocol, NOT a global lock-order
 // rule; v6 #5):
 //   BSP : BKL(held since boot) → boot_lock → release boot_lock → (wait_for_aps)
 //         release BKL → spin → re-acquire BKL.
-//   AP  : boot_lock → (BKL, in later init steps — S-7).
+//   AP  : boot_lock → BKL (taken in the later init steps).
 // Deadlock freedom is phase-based: the BSP releases boot_lock (C
 // arch_smp.c:247) before any AP can take it, and releases the BKL
 // (wait_for_APs, smp.c:44) before APs need the BKL.
@@ -916,9 +914,9 @@ impl Drop for BootLockGuard<'_> {
 /// each AP in [`ap_finish_booting`].
 pub(crate) static BOOT_LOCK: BootLock = BootLock::new();
 
-/// AP-side finish handshake — C `ap_finish_booting` (arch_smp.c:222 parity,
-/// S-5 scope: boot_lock + online self-report; the fuller per-CPU init work
-/// that C also does inside this critical section arrives with S-6/S-7).
+/// AP-side finish handshake — C `ap_finish_booting` (arch_smp.c:222 parity:
+/// boot_lock + online self-report; the fuller per-CPU work that C also does
+/// inside this critical section is not part of it yet).
 ///
 /// Runs ON the AP. Publishes `online_mask` (Release) under the boot_lock;
 /// the BSP's `wait_for_aps` observes it with Acquire.
@@ -944,7 +942,7 @@ pub fn ap_finish_booting(logical_id: u32) {
 /// + `wait_for_APs` (smp.c:30), §3.4 serial per-AP handshake:
 /// per AP — mark BOOTING → install bootstrap → INIT/SIPI → bounded ack wait
 /// (`SmpArch::STARTUP_TIMEOUT_MS`, C arch_smp.c:131-141 LAPIC one-shot
-/// parity) → READY 代置 (BSP sets CpuFlags.READY after observing the ack —
+/// parity) → BSP sets READY on the AP's behalf after observing the ack —
 /// NOT the AP) or WARNING + skip (C "CPU didn't boot" parity — the failed
 /// AP is skipped, boot continues).
 ///
@@ -953,7 +951,7 @@ pub fn ap_finish_booting(logical_id: u32) {
 ///
 /// Boot-phase caller (before the scheduler exists); x86-64 lane wired
 /// (install_at/fill_bootstrap/INIT-SIPI), other architectures' bring-up
-/// lanes land with their own S-4 records.
+/// lanes are still outstanding.
 pub fn smp_init() {
     #[cfg(target_arch = "x86_64")]
     {
@@ -968,9 +966,9 @@ pub fn smp_init() {
         use minix_platform::{platform_desc, PlatformDesc};
 
         // Register the kernel AP tail BEFORE waking anyone: the ladder's Rust
-        // convergence calls it with the bootstrap record fields. S-5 tail =
-        // S-4 per-CPU protection (init_ap) + the finish handshake; S-7
-        // extends it with the scheduler loop.
+        // convergence calls it with the bootstrap record fields. The tail is
+        // per-CPU protection (init_ap) + the finish handshake, followed by
+        // the scheduler loop.
         minix_arch::x86_64::ap_early_entry::register_ap_tail(smp_ap_tail);
 
         let topo = platform_desc().cpu_topology();
@@ -983,7 +981,7 @@ pub fn smp_init() {
         smp.seed_bsp_masks(bsp_logical);
 
         // Trampoline + ladder install once (single-image serial reuse).
-        // SAFETY: low-identity RAM reserved for AP bring-up (S-3b contract).
+        // SAFETY: low-identity RAM reserved for AP bring-up.
         unsafe { install_at(minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA as usize) };
 
         // boot_lock critical section (C arch_smp.c:227-247). The guard's
@@ -1001,11 +999,12 @@ pub fn smp_init() {
             }
             let hw_id = topo.cpus[logical as usize].hw_id;
             // Per-AP kernel stack: static per-CPU arrays (§3.3 decision —
-            // no_std predictable). S-6's CpuLocal migration may move this.
+            // no_std predictable). The CpuLocal migration may move this later.
             let stack_top = ap_kernel_stack_top(logical);
 
-            // CpuFlags.READY 代置 happens on ack; the send itself marks the
-            // attempt (§3.4 state machine: DISCOVERED → BOOTING).
+            // CpuFlags.READY is set on the AP's behalf when the ack arrives;
+            // the send itself marks the attempt (§3.4 state machine:
+            // DISCOVERED → BOOTING).
             let record = ApBootstrap {
                 logical_id: logical,
                 _pad: 0,
@@ -1019,8 +1018,8 @@ pub fn smp_init() {
             // SAFETY: scratch page is identity RAM reserved for AP bring-up.
             unsafe { fill_bootstrap(SCRATCH_LIN, &record) };
             // Trait contract: `entry` is the trampoline PHYSICAL address
-            // (x86 derives vector = entry >> 12 internally) — the S-3d
-            // relocation moved it to 0x5000 (vector 0x05).
+            // (x86 derives vector = entry >> 12 internally); the trampoline
+            // lives at 0x5000 (vector 0x05).
             <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA as usize);
 
             // Bounded per-AP ack wait (C arch_smp.c:131-141 parity). The AP
@@ -1059,7 +1058,8 @@ pub fn smp_init() {
                 <CurrentSmpArch as SmpArch>::pause();
             }
             if smp.observe_boot_ack(logical) {
-                // BSP 代置 READY (C arch_smp.c:137 cpu_set_flag parity).
+                // The BSP sets READY on the AP's behalf (C arch_smp.c:137
+                // cpu_set_flag parity).
                 smp.cpu_set_flag(crate::proc::CpuId::new_unchecked(logical), CpuFlags::READY);
             }
         }
@@ -1068,27 +1068,39 @@ pub fn smp_init() {
         smp.wait_for_aps::<CurrentSmpArch>();
     }
 
-    // riscv64 已有自己的接线块（下方 cfg(riscv64)），只剩 aarch64 没接——
-    // §续-403 前 riscv64 也误射此警告（cfg 范围未随接线收窄）。
-    // 三架构（x86_64/riscv64/aarch64）各自有接线块，此警告块已无可达
-    // 目标架构——新架构接入时其接线块即职责所在，不再走全局警告。
+    // riscv64 already has its own wiring block (cfg(riscv64) below), and only
+    // aarch64 had none left — before that block existed riscv64 also fired this
+    // warning spuriously (the cfg range had not been narrowed along with the
+    // wiring). All three architectures (x86_64/riscv64/aarch64) now have their
+    // own wiring blocks, so this warning block no longer has a reachable target
+    // architecture — a newly wired architecture owns its block, and the global
+    // warning is no longer used.
 
-    /// NK4-C 续-405（P-A64RV-01 aarch64 半）：多 CPU 配置下经 PSCI CPU_ON
-    /// 唤醒次级核——桩（ap_early_entry）读记录装 BSP 的 TTBR/MAIR/TCR 后
-    /// 开 MMU 跳汇聚点，置 AP_ARRIVED 到达标记后 wfi 驻留。与 riscv 半的
-    /// 三点刻意差异：
-    /// - BSP 身份＝`current_cpu_id()` 身份锚点（谁在跑本内核谁就是 BSP，
-    ///   C arch_smp.c 的寄存器读 self-skip 同形）——UEFI 载体只派一个 CPU
-    ///   进 boot services，无 riscv 的全 hart 进 payload 选举问题。
-    /// - 桩无 UART 标记（§续-403② 教训：设备地址依赖根表形状不可靠），
-    ///   AP_ARRIVED 是唯一权威判据。
-    /// - 栅栏用 `dmb ish`（ARM 语义）。
-    /// - 单 CPU 配置静默：nr_cpus<=1 直接返回，生产行为零变化；专用门
-    ///   test-smp-aps-aarch64.sh 用 -smp 2 激活（拓扑真值=DTB）。
-    /// - SD-24 红线尊重：AP 到达即 wfi 驻留，绝不入调度——钳主核未撤，
-    ///   本接线只做「次级核真醒」的前置事实，不做进程安放。
-    /// - 降级续行（C arch_smp.c 语义）：某 CPU 有界超时未到达，打印后
-    ///   继续单核推进，不阻塞启动。
+    /// aarch64 half: with multiple CPUs configured, wake secondary cores
+    /// through PSCI CPU_ON — the stub (ap_early_entry) reads the record,
+    /// installs the BSP's TTBR/MAIR/TCR, enables the MMU and jumps to the
+    /// convergence point; it sets the AP_ARRIVED marker and then stays in wfi.
+    /// Three deliberate differences from the riscv half:
+    /// - BSP identity = the `current_cpu_id()` identity anchor (whoever runs
+    ///   this kernel is the BSP, the same shape as C arch_smp.c's register-read
+    ///   self-skip) — the UEFI carrier only dispatches one CPU into boot
+    ///   services, so there is no riscv-style "all harts enter the payload and
+    ///   elect" problem.
+    /// - The stub has no UART marker (lesson: UART device addresses depend on
+    ///   the root table shape and are unreliable), so AP_ARRIVED is the only
+    ///   authoritative criterion.
+    /// - The fence is `dmb ish` (ARM semantics).
+    /// - Single-CPU configurations are silent: nr_cpus<=1 returns immediately,
+    ///   with zero production behavior change; the dedicated gate
+    ///   test-smp-aps-aarch64.sh activates it with -smp 2 (topology truth =
+    ///   DTB).
+    /// - Respect the main-core clamp red line: an AP stays in wfi on arrival
+    ///   and never enters the scheduler — the clamp has not been removed, so
+    ///   this wiring only establishes the prerequisite fact "the secondary core
+    ///   really wakes"; it does not place processes.
+    /// - Degraded continuation (C arch_smp.c semantics): if some CPU does not
+    ///   arrive within the bound, print and continue single-core, without
+    ///   blocking boot.
     #[cfg(target_arch = "aarch64")]
     {
         use core::sync::atomic::Ordering;
@@ -1105,11 +1117,13 @@ pub fn smp_init() {
         }
 
         let smp = unsafe { crate::smp_state_boot_unchecked() };
-        // BSP 身份＝选举真值优先（§续-406，riscv 半 §续-404 同形）：直核
-        // 链的选举格存当选 MPIDR+1（kernel-image _start LD/EXCL 选主）。
-        // 锚点/current_cpu_id 是「谁在跑本内核」的 C self-skip 语义——两
-        // 者一致时取锚点，不一致（异常形态）回退 bsp_id 槽位；皆失诚实
-        // panic。
+        // BSP identity = election truth first (same shape as the riscv half):
+        // the direct-kernel chain's election cell holds the elected MPIDR+1
+        // (kernel-image _start LD/EXCL elects the master). The
+        // anchor/current_cpu_id is the C self-skip semantics of "who is running
+        // this kernel" — use the anchor when the two agree, fall back to the
+        // bsp_id slot when they disagree (an abnormal shape), and panic
+        // honestly if neither resolves.
         let elected_hw = BOOT_HART_ELECTED.load(Ordering::Acquire);
         let self_logical = crate::current_cpu_id().index();
         let bsp_logical = if elected_hw != 0 {
@@ -1130,15 +1144,17 @@ pub fn smp_init() {
         };
         smp.seed_bsp_masks(bsp_logical);
 
-        // PSCI 通道：DTB `/psci/method`（§续-405 管线；直核链 QEMU 生成
-        // 节为 hvc）。conduit 回执一行（诊断资产，随门绿滚除）。
+        // PSCI conduit: DTB `/psci/method` (direct-kernel chain: QEMU generates
+        // an hvc node). One line of conduit receipt (a diagnostic asset,
+        // removed once the gate is green).
         let smc = platform_desc().psci_conduit() == Some(minix_platform::PsciConduit::Smc);
         minix_arch::arm64::smp::set_psci_conduit_smc(smc);
         crate::kmess::KernelConsole::write_str("nk4c: psci conduit=");
         crate::kmess::KernelConsole::write_str(if smc { "smc\n" } else { "hvc\n" });
 
-        // BSP 当前根（§3.2：交给 AP 的就是 BSP 正在用的这张表；aarch64
-        // 桩把 TTBR0/TTBR1 钉同一根，与 paging.rs::enable 同约定）。
+        // The BSP's current root (§3.2: the AP gets exactly the table the BSP
+        // is using; the aarch64 stub pins TTBR0/TTBR1 to the same root, the
+        // same convention as paging.rs::enable).
         let root = crate::current_root_phys().expect("aarch64 smp_init: active root");
         let entry_pa = minix_arch::arm64::ap_early_entry::entry_start_pa();
         let convergence_va = ap_early_entry as usize;
@@ -1159,23 +1175,27 @@ pub fn smp_init() {
                 r.kernel_stack_top_va = stack_top;
                 r.rust_entry_va = convergence_va as u64;
             }
-            // 生产者侧栅栏：记录写入 → PSCI CPU_ON。交付通道裁定
-            // （§续-406）：QEMU 直核 `-kernel` 的 !is_linux 臂只派
-            // first_cpu 进入口（QEMU 侧 `hw/arm/boot.c:731`，非 minix3 仓内
-            // 文件——次级核走未设置的
-            // secondary_cpu_reset_hook＝保持复位 PC）；
-            // 直核链的次级核交付＝QEMU 内建 PSCI CPU_ON（无固件记账层，
-            // §续-405 的 UEFI 链 ret=0-但-不动 是 EDK2/TF-A 特有，且其
-            // 真根因 KPHYS 错位已在桩侧修复）。kernel-image 的 AP_GO 停车
-            // 邮箱已按 SD-37 乙案删除（`2026-10-18`：门基线 ap-arrived=1
-            // 坐实本通道是唯一交付面，邮箱零消费者、零停车者；kernel-image
-            // 落选臂改本地 wfi 兜底）。
+            // Producer-side fence: record write → PSCI CPU_ON. Delivery-channel
+            // decision: QEMU's direct-kernel `-kernel` !is_linux arm dispatches
+            // only first_cpu into the entry (QEMU side `hw/arm/boot.c:731`, a
+            // file outside the minix3 repo — secondary cores take the unset
+            // secondary_cpu_reset_hook = keep the reset PC); on the
+            // direct-kernel chain secondary-core delivery = QEMU's built-in
+            // PSCI CPU_ON (no firmware bookkeeping layer; the UEFI chain's
+            // ret=0-but-no-progress is EDK2/TF-A specific, and its real KPHYS
+            // root cause has been fixed on the stub side). kernel-image's AP_GO
+            // parking mailbox has been removed (on 2026-10-18 the gate baseline
+            // ap-arrived=1 confirmed this channel is the only delivery surface:
+            // the mailbox had zero consumers and zero parkers; kernel-image's
+            // non-elected arm now falls back to a local wfi).
             unsafe { core::arch::asm!("dmb ish", options(nomem, nostack)) };
             <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, entry_pa);
 
-            // 有界等到达（AP_ARRIVED Release / 此处 Acquire）。§续-406：
-            // u32 2 亿在 aarch64 TCG 直核链上不够（UEFI 链同形教训），扩
-            // 到 20 亿并升 u64——AP 慢到≠没到，把「迟到」从误报里救出来。
+            // Bounded wait for arrival (AP_ARRIVED Release / Acquire here).
+            // A u32 count of 200 million was not enough on the aarch64 TCG
+            // direct-kernel chain (same lesson as the UEFI chain), so the bound
+            // is 2 billion in u64 — a slow AP is not a missing AP, and this
+            // keeps "late" out of the false-positive bucket.
             let mut spins: u64 = 0;
             let mut arrived = false;
             while spins < 2_000_000_000 {
@@ -1201,18 +1221,24 @@ pub fn smp_init() {
         }
     }
 
-    /// NK4-C 续-400（P-A64RV-01 riscv 半内核接线 / P-RV-01 前置）：多 hart
-    /// 配置下经 SBI HSM hart_start 唤醒次级核——桩（ap_early_entry）读记录
-    /// 装 BSP 根后跳汇聚点，置 AP_ARRIVED 到达标记后 wfi 驻留。
+    /// riscv half of the kernel wiring: with multiple harts configured, wake
+    /// secondary cores through SBI HSM hart_start — the stub (ap_early_entry)
+    /// reads the record, installs the BSP root, jumps to the convergence point,
+    /// sets the AP_ARRIVED marker and then stays in wfi.
     ///
-    /// - 单 hart 配置静默（ATF/cmd 全部 -smp 1）：nr_cpus<=1 直接返回，
-    ///   生产行为零变化；专用门 test-smp-aps-riscv64.sh 用 -smp 2 激活
-    ///   （DTB dump 也必须 -smp 2——拓扑真值=DTB，§续-399 现场教训）。
-    /// - 串行复用：单记录逐 hart 填写→启动→有界等到达→下一个。
-    /// - SD-24 红线尊重：AP 到达即 wfi 驻留，绝不入调度——钳主核未撤，
-    ///   本接线只做「次级核真醒」的前置事实，不做进程安放。
-    /// - 降级续行（C arch_smp.c 语义）：某 hart 有界超时未到达，打印后
-    ///   继续单核推进，不阻塞启动。
+    /// - Single-hart configurations are silent (ATF/cmd all use -smp 1):
+    ///   nr_cpus<=1 returns immediately with zero production behavior change;
+    ///   the dedicated gate test-smp-aps-riscv64.sh activates it with -smp 2
+    ///   (a DTB dump must also use -smp 2 — topology truth = DTB).
+    /// - Serial reuse: one record is filled per hart, started, awaited within
+    ///   the bound, then the next.
+    /// - Respect the main-core clamp red line: an AP stays in wfi on arrival
+    ///   and never enters the scheduler — the clamp has not been removed, so
+    ///   this wiring only establishes the prerequisite fact "the secondary core
+    ///   really wakes"; it does not place processes.
+    /// - Degraded continuation (C arch_smp.c semantics): if some hart does not
+    ///   arrive within the bound, print and continue single-core, without
+    ///   blocking boot.
     #[cfg(target_arch = "riscv64")]
     {
         use minix_arch::riscv64::ap_early_entry::ap_early_entry;
@@ -1229,13 +1255,16 @@ pub fn smp_init() {
         }
 
         let smp = unsafe { crate::smp_state_boot_unchecked() };
-        // BSP 身份＝选举真值优先（§续-404）：kernel-image _start 的 amoswap
-        // 选举格存当选 hartid+1（§续-400），它才是真正在跑本内核的 hart。
-        // DTB bsp_id 只是拓扑槽位标注——§续-403 ③ 实证两者可以不一致
-        // （hart 1 当选时按 bsp_id=0 推会 hart_start 到自己，SBI ret=-6，
-        // 次级核永远起不来）。选举格为 0（异常形态：本内核未经 _start
-        // 选举启动）才回退 bsp_id 槽位；两路都找不到则诚实 panic（C
-        // arch_smp.c 同位是寄存器读 cpuid，无此歧义面）。
+        // BSP identity = election truth first: kernel-image _start's amoswap
+        // election cell holds the elected hartid+1, and that is the hart really
+        // running this kernel. The DTB bsp_id is only a topology slot label —
+        // on real hardware the two can disagree (with hart 1 elected, inferring
+        // from bsp_id=0 makes hart_start target itself, SBI returns -6, and the
+        // secondary core never comes up). Only when the election cell is 0 (an
+        // abnormal shape: this kernel was not started through _start's election)
+        // does it fall back to the bsp_id slot; if neither resolves, panic
+        // honestly (the same site in C arch_smp.c reads cpuid from a register,
+        // so it has no such ambiguity).
         let elected_hw = BOOT_HART_ELECTED.load(Ordering::Acquire);
         let bsp_hw = if elected_hw != 0 {
             elected_hw - 1
@@ -1249,15 +1278,19 @@ pub fn smp_init() {
             })
             .expect("smp_init: BSP hart not found in topology") as u32;
         smp.seed_bsp_masks(bsp_logical);
-        // SD-41 SWI 臂真机定谳（2026-10-18，本行注释保留取证结论）：SSI 在本
-        // 固件不可交付——自环三通道全实证（SBI send_ipi 不转换[K10 轮 3]；
-        // sip.SSIP 直写置位成功但 SIE=1 窗内不取入、wfi 永不唤醒[本轮，
-        // 门 300s 超时 FAIL 实证]）＝SSI 未获 mideleg 委派。SWI 分发臂与
-        // ack 原语保持在位（对误入 SSI 不 panic、不误计 tick），交付恢复
-        // 依赖固件委派或 SSWI 设备；EI(PLIC) 臂为下一片。
+        // SWI arm settled on real hardware (the forensic conclusion is kept
+        // here): SSI cannot be delivered on this firmware — all three loopback
+        // channels were proven out (SBI send_ipi does not translate; writing
+        // sip.SSIP sets the bit, but a SIE=1 window never takes it in and wfi
+        // never wakes, observed as a 300s gate timeout FAIL) = SSI got no
+        // mideleg delegation. The SWI dispatch arm and the ack primitive stay in
+        // place (no panic on a stray SSI, no miscounted tick); restoring
+        // delivery depends on firmware delegation or an SSWI device; the
+        // EI(PLIC) arm is the next slice.
 
 
-        // BSP 当前根（§3.2：交给 AP 的就是 BSP 正在用的这张表）。
+        // The BSP's current root (§3.2: the AP gets exactly the table the BSP
+        // is using).
         let root = crate::current_root_phys().expect("riscv64 smp_init: active root");
         let entry_pa = entry_start_pa();
         let convergence_va = ap_early_entry as usize;
@@ -1278,13 +1311,15 @@ pub fn smp_init() {
                 r.kernel_stack_top_va = stack_top;
                 r.rust_entry_va = convergence_va as u64;
             }
-            // 生产者侧栅栏：记录写入 → SBI hart_start。
+            // Producer-side fence: record write → SBI hart_start.
             unsafe { core::arch::asm!("fence rw, rw", options(nomem, nostack)) };
             <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, entry_pa);
 
-            // 有界等到达（AP_ARRIVED Release / 此处 Acquire）。§续-406：
-            // u32 2 亿在 aarch64 TCG 直核链上不够（UEFI 链同形教训），扩
-            // 到 20 亿并升 u64——AP 慢到≠没到，把「迟到」从误报里救出来。
+            // Bounded wait for arrival (AP_ARRIVED Release / Acquire here).
+            // A u32 count of 200 million was not enough on the aarch64 TCG
+            // direct-kernel chain (same lesson as the UEFI chain), so the bound
+            // is 2 billion in u64 — a slow AP is not a missing AP, and this
+            // keeps "late" out of the false-positive bucket.
             let mut spins: u64 = 0;
             let mut arrived = false;
             while spins < 2_000_000_000 {
@@ -1337,51 +1372,50 @@ fn ap_kernel_stack_top(logical_id: u32) -> u64 {
     (base + AP_KERNEL_STACK_SIZE) as u64
 }
 
-/// The kernel-registered AP tail (S-5 scope): S-4 per-CPU protection on this
-/// core, then the finish handshake, then park (S-7 replaces the park with
-/// the scheduler loop).
+/// The kernel-registered AP tail: per-CPU protection on this core, then the
+/// finish handshake, then the scheduler loop.
 #[cfg(target_arch = "x86_64")]
 unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_va: u64) -> ! {
     use minix_arch::ProtectionArch;
     // Ack FIRST (C ap_cpu_ready parity): "finished reading the bootstrap
     // record" — everything the ladder needed is in locals now.
     unsafe { crate::smp_state_boot_unchecked() }.publish_boot_ack(logical_id);
-    // S-10: the AP's LAPIC is disabled after INIT — enable it before
-    // anything can address this CPU with an IPI (C apic_init parity).
+    // The AP's LAPIC is disabled after INIT — enable it before anything can
+    // address this CPU with an IPI (C apic_init parity).
     minix_arch::ap_enable_lapic();
     crate::with_protection(|prot| prot.init_ap(logical_id, minix_types::VirBytes::new(kernel_stack_top_va)));
-    // S-10: per-CPU IDT attach — IDTR is per-CPU state; without this lidt
+    // Per-CPU IDT attach — IDTR is per-CPU state; without this lidt
     // the AP still points at the firmware's IDT and the first interrupt
     // (the 0xF0 IPI) enters firmware gates (observed: schedule_sync hangs,
-    // AP never processes the vector). The table is the S-8 shared image —
-    // one lidt per CPU gives the complete trap path (§3.3).
+    // AP never processes the vector). The table is shared — one lidt per
+    // CPU gives the complete trap path (§3.3).
     {
         use minix_arch::TrapEntryArch;
         crate::with_trap_entry(|trap| trap.load_ap());
     }
     minix_arch::ap_write_syscall_msrs(minix_arch::syscall_entry_va());
     // C arch_post_init parity (protect.c:372): each CPU installs VM as its
-    // own ptproc (D-40: per-CPU CpuLocal slot; the global atomic is gone).
+    // own ptproc (per-CPU CpuLocal slot; the global atomic is gone).
     {
         let smp = unsafe { crate::smp_state_boot_unchecked() };
         if let Some(local) = smp.cpu_local_mut(crate::proc::CpuId::new_unchecked(logical_id)) {
             local.ptproc = Some(crate::proc::proc_nr::VM_PROC_NR);
         }
     }
-    // edge1 K6: the AP's LAPIC local timer (C `app_cpu_init_timer` —
+    // The AP's LAPIC local timer (C `app_cpu_init_timer` —
     // clock.c:308, the AP-side arm of C's per-CPU local clock). Arms the
     // one-shot AFTER the IDT attach above so the 0xF1 tick has a live
     // trap path; the tick itself re-arms (one-shot semantics).
     crate::clock::init_ap_local_timer();
     // C ap_finish_booting parity: boot_lock → BKL (held into the loop) →
-    // online self-report. S-7: enter the shared scheduling loop with the
+    // online self-report. Enter the shared scheduling loop with the
     // BKL held (§3.6 precondition). Diverges into the idle halt on this
-    // CPU until IPI/interrupt-driven work arrives (S-10+).
+    // CPU until IPI/interrupt-driven work arrives.
     ap_finish_booting(logical_id);
     crate::scheduler_loop(crate::proc::CpuId::new_unchecked(logical_id));
 }
 
-// ── CPU identity table (D-53: 08-system-init-boot-finish.md §4.6) ──
+// ── CPU identity table (08-system-init-boot-finish.md §4.6) ──
 //
 // C's split: `cpu_identify()` (arch code, arch_system.c:212 i386 / :85 earm)
 // fills the kernel global `cpu_info[CONFIG_MAX_CPUS]` (glo.h). The register
@@ -1443,8 +1477,8 @@ impl CpuInfoTable {
 /// process runs); the C AP path records under boot_lock + BKL
 /// (arch_smp.c:227-232) and will do the same when SMP bring-up lands
 /// (16-smp.md). Post-boot readers (GET_CPUINFO) hold the BKL.
-// D-62②: the `CPU_INFO` declaration moved to `globals.rs` (the single
-// audit point for kernel statics). Imported here.
+// The `CPU_INFO` declaration lives in `globals.rs` (the single audit point for
+// kernel statics). Imported here.
 use crate::globals::CPU_INFO;
 
 /// Probe and record the identity of the currently executing CPU.
@@ -1499,7 +1533,7 @@ pub(crate) fn cpu_identity(cpu: CpuId) -> Option<CpuIdentity> {
 /// Single-CPU builds are unaffected: `bkl_lock` CAS succeeds on first
 /// try (no contention), spin loop body never executes.
 ///
-/// # Representation (NK4-C BKL hard gate)
+/// # Representation (BKL hard gate)
 ///
 /// A single `AtomicIsize` encodes both "is the lock held" and "who holds
 /// it" in one word: `-1` = free, `>= 0` = the id of the owning CPU. Merging
@@ -1543,15 +1577,14 @@ const BKL_MOCK_HOLDER: isize = -2;
 
 /// Guard returned by [`bkl_lock`]. RAII: dropping releases the BKL.
 ///
-/// R-05 (2026-08-12): `BklGuard` is now RAII by default — `Drop` calls
-/// `bkl_unlock()`. This eliminates the "forgot to call `bkl_unlock()`"
+/// `BklGuard` is RAII by default — `Drop` calls `bkl_unlock()`. This eliminates the "forgot to call `bkl_unlock()`"
 /// class of deadlocks. For code paths that need to keep the BKL held
 /// after the guard's scope (e.g. `kernel_call_dispatch` →
 /// `kernel_call_finish`), use `BklGuard::transfer()`. For explicit
 /// early release, use [`BklGuard::release`].
 ///
-/// D6 update: The old design had two types — `BklGuard` (non-RAII) and
-/// `BklGuardRaii` (RAII). R-05 unifies them into a single RAII type.
+/// D6: The old design had two types — `BklGuard` (non-RAII) and
+/// `BklGuardRaii` (RAII); they are now a single RAII type.
 /// Cross-function BKL transfer uses `BklGuard::transfer()`; blocking-IPC release/
 /// reacquire uses `release()`/`bkl_lock()`.
 ///
@@ -1566,7 +1599,7 @@ impl BklGuard {
     /// Obtain a BKL section witness that borrows this guard.
     ///
     /// The witness can be passed to `proc_table_with()` etc. to prove
-    /// BKL ownership at compile time (R-03 capability token pattern).
+    /// BKL ownership at compile time (capability-token pattern).
     /// The witness borrows this guard, so it cannot outlive the guard.
     pub fn section(&self) -> BklSection<'_> {
         BklSection { _lifetime: core::marker::PhantomData }
@@ -1576,7 +1609,7 @@ impl BklGuard {
     /// suppressing the `Drop` release — the lock stays held and is released
     /// by an explicit `bkl_unlock()` further up the chain.
     ///
-    /// B1 (todo §1): this replaces the former `core::mem::forget(guard)`
+    /// This replaces the former `core::mem::forget(guard)`
     /// idiom at every cross-function transfer point. Mechanics are
     /// identical (ManuallyDrop suppresses Drop), but the transfer is now a
     /// named, greppable API on the guard's own type instead of a raw
@@ -1586,7 +1619,7 @@ impl BklGuard {
     pub fn transfer(self) {
         // `mem::forget` suppresses `Drop` (which would `bkl_unlock`), so the
         // guard leaks and the BKL simply stays held. This is the ONE
-        // deliberate `forget` in the entire codebase (B1): every
+        // deliberate `forget` in the entire codebase: every
         // cross-function BKL transfer goes through here instead of a
         // scattered `core::mem::forget` at call sites.
         core::mem::forget(self);
@@ -1656,7 +1689,7 @@ pub struct BklSection<'a> {
 /// BKL is held. The section does NOT release the BKL — call
 /// `bkl_unlock()` explicitly when leaving the section.
 pub fn bkl_lock_section<'a>() -> BklSection<'a> {
-    // Acquire the BKL. R-05: BklGuard is now RAII (Drop releases BKL),
+    // Acquire the BKL. BklGuard is RAII (Drop releases BKL),
     // so we must forget the guard to keep the BKL held. The caller must
     // call bkl_unlock() explicitly. The BklSection witness proves to the
     // type system that the BKL was acquired.
@@ -1672,13 +1705,12 @@ impl BklSection<'static> {
     /// self-deadlock).
     ///
     /// This is the witness-level analogue of the `*_boot_unchecked`
-    /// accessors (A1, todo §1): call chains whose BKL ownership is
-    /// established somewhere up the stack produce their section here, in
-    /// ONE auditable place per chain root, and everything below consumes
-    /// `*_with(&section)` accessors. When the trap entry lands (smp_todo
-    /// S-8) and starts threading real `bkl_lock_section()` witnesses down
-    /// the dispatch chains, these roots are replaced by threaded
-    /// sections — a one-line change per root.
+    /// accessors: call chains whose BKL ownership is established somewhere
+    /// up the stack produce their section here, in ONE auditable place per
+    /// chain root, and everything below consumes `*_with(&section)`
+    /// accessors. Once the trap entry threads real `bkl_lock_section()`
+    /// witnesses down the dispatch chains, these roots are replaced by
+    /// threaded sections — a one-line change per root.
     ///
     /// # Safety
     ///
@@ -1737,7 +1769,7 @@ pub fn smp_state_with<'a, 'b>(
 /// the caller will busy-wait until the lock is released by another
 /// CPU.
 ///
-/// R-05 (2026-08-12): The returned [`BklGuard`] is RAII — `Drop` calls
+/// The returned [`BklGuard`] is RAII — `Drop` calls
 /// [`bkl_unlock`]. For most critical sections, simply let the guard go
 /// out of scope. For cross-function BKL transfer (e.g. `kernel_call_dispatch`
 /// → `kernel_call_finish`), use `BklGuard::transfer()` to keep the BKL
@@ -1756,7 +1788,7 @@ pub fn smp_state_with<'a, 'b>(
 ///    `Drop` (RAII), `BklGuard::transfer()` + explicit `bkl_unlock()`, or
 ///    `BklGuard::release()`. Do NOT mix explicit `bkl_unlock()` with
 ///    RAII drop on the same guard (double unlock).
-/// Non-blocking BKL acquisition — S-10's interrupt-context emulation of
+/// Non-blocking BKL acquisition — interrupt-context emulation of
 /// C's reentrant per-process BKL: an IRQ handler that fires while the BKL
 /// is FREE takes ownership (and must release before returning); one that
 /// fires while the interrupted context holds it INHERITS ownership (no
@@ -1778,7 +1810,7 @@ pub fn bkl_try_lock() -> bool {
         .is_ok()
 }
 
-/// Interrupt-context BKL entry (NK4-C B27 fix; C parity).
+/// Interrupt-context BKL entry (C parity).
 ///
 /// Returns `true` when the caller newly acquired the lock and therefore
 /// owes a [`bkl_unlock`] before returning; `false` when it INHERITED a lock
@@ -1873,7 +1905,7 @@ pub fn bkl_unlock() {
     BKL.store(BKL_FREE, Ordering::Release);
 }
 
-// R-05: bkl_lock_raii() and BklGuardRaii have been removed.
+// bkl_lock_raii() and BklGuardRaii have been removed.
 // BklGuard is now RAII (Drop releases BKL). Use bkl_lock() for all
 // critical sections. For cross-function BKL transfer, use bkl_lock().transfer().
 // For explicit early release, use guard.release().
@@ -1885,7 +1917,7 @@ pub fn bkl_unlock() {
 ///
 /// Available in all builds: `debug_assert!` type-checks its payload even
 /// in release (where the branch is codegen'd out), so the release kernel
-/// must still be able to *name* this function — the A1/B1 assertion sites
+/// must still be able to *name* this function — the assertion sites
 /// (`assume_held`, `kernel_call_finish`) depend on it. For control flow,
 /// the witness (`BklSection`) remains the compile-time proof.
 pub fn bkl_is_locked() -> bool {
@@ -1912,7 +1944,7 @@ mod tests {
 
         #[test]
     fn test_boot_ack_publish_and_observe() {
-        // S-3d: the AP publishes its handshake bit (Release); the BSP
+        // The AP publishes its handshake bit (Release); the BSP
         // observes it (Acquire). Only the addressed logical_id's bit moves.
         let smp = SmpState::new_single_cpu();
         assert!(!smp.observe_boot_ack(1));
@@ -1959,7 +1991,7 @@ mod tests {
 
     #[test]
     fn test_clear_idle_flag() {
-        // SD-24 arm 1: read-clear of C `context_stop_idle`'s cpu_is_idle half.
+        // Arm 1: read-clear of C `context_stop_idle`'s cpu_is_idle half.
         let mut smp = SmpState::new_single_cpu();
         smp.cpu_local_mut(CpuId::BSP).unwrap().cpu_is_idle = true;
         assert!(smp.clear_idle_flag(CpuId::BSP), "first clear reports was-idle");
@@ -2002,7 +2034,7 @@ mod tests {
 
     #[test]
     fn test_cpu_local_set_running_does_not_bill() {
-        // I-6②: `set_running` is the proc_ptr primitive only — `bill_ptr`
+        // `set_running` is the proc_ptr primitive only — `bill_ptr`
         // writes are BILLABLE-gated call-site policy (set_bill_to_idle /
         // pick_and_bill / idle), never an unconditional side effect here.
         let mut local = CpuLocal::new();
@@ -2042,10 +2074,11 @@ mod tests {
 
     #[test]
     fn test_online_mask_completion() {
-        // S-5 §3.4: production completion = online == boot_ack (v7 #8).
+        // Production completion = online == boot_ack.
         // Degenerate case first: only the BSP seeded → nothing outstanding →
         // completes immediately. C-faithful: wait_for_APs with zero READY
-        // APs waits for ap_cpus_booted == 0 and returns at once (降级继续).
+        // APs waits for ap_cpus_booted == 0 and returns at once (degraded
+    // continuation).
         let smp = SmpState::with_ncpus(4, CpuId::BSP);
         smp.seed_bsp_masks(0);
         assert!(smp.all_aps_booted(), "BSP-only: nothing to wait for");
@@ -2089,7 +2122,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // ── CPU identity table tests (D-53) ──
+    // ── CPU identity table tests ──
 
     /// record + get round-trip on a local table; out-of-range CPU ids are
     /// ignored (bounded by MAX_CPUS, mirroring C's fixed CONFIG_MAX_CPUS
@@ -2162,7 +2195,7 @@ mod tests {
         let _lock = bkl_test_setup();
         // Single-CPU build: BKL is initially free, lock + unlock round-trip
         // must leave it free again.
-        // R-05: forget guard since we unlock explicitly.
+        // Transfer keeps the BKL held; we unlock explicitly below.
         assert!(!bkl_is_locked());
         bkl_lock().transfer();
         assert!(bkl_is_locked());
@@ -2171,7 +2204,7 @@ mod tests {
         bkl_test_teardown();
     }
 
-    // R-05: test_bkl_guard_raii_releases_on_drop was removed — it duplicated
+    // test_bkl_guard_raii_releases_on_drop was removed — it duplicated
     // test_bkl_guard_releases_on_drop (both test RAII Drop releases BKL).
     // The explicit `drop(_g)` variant added no coverage over scope-based drop.
 
@@ -2184,7 +2217,7 @@ mod tests {
         // spin loop is a no-op, so the test simply verifies the BKL
         // *can* be re-acquired after explicit unlock (re-entry protocol
         // is the caller's responsibility — see SAFETY contract).
-        // R-05: forget guards since we unlock explicitly.
+        // Transfers keep the BKL held; we unlock explicitly below.
         bkl_lock().transfer();
         bkl_unlock();
         // After explicit unlock, a fresh lock must succeed.
@@ -2239,12 +2272,12 @@ mod tests {
         bkl_test_teardown();
     }
 
-    // ── BklGuard::section() + *_with() accessor tests (R-03) ──
+    // ── BklGuard::section() + *_with() accessor tests ──
 
     #[test]
     fn test_bkl_guard_section_enables_with_accessors() {
         let _lock = bkl_test_setup();
-        // R-03: BklGuard::section() produces a BklSection witness that
+        // BklGuard::section() produces a BklSection witness that
         // can be passed to proc_table_with() etc. for compile-time BKL proof.
         let guard = bkl_lock();
         assert!(bkl_is_locked());
@@ -2254,11 +2287,12 @@ mod tests {
             // proc_table_with(&section) would prove BKL ownership at compile time.
             // (Cannot call proc_table_with here because PROC_TABLE may not be
             // initialized in this test, but the type system proof is the point.)
-            //[SD19-gate] BklSection RAII 见证：let _ = &section 让 section 活到此处以证所有权，非吞错
+            // BklSection RAII witness: `let _ = &section` keeps the section alive up to
+    // this point to witness ownership; it is not swallowing an error.
             #[allow(clippy::let_underscore_must_use)]
             let _ = &section; // use the section
         } // section dropped here, guard no longer borrowed
-        // R-05: BklGuard is RAII — use release() for explicit early release
+        // BklGuard is RAII — use release() for explicit early release
         // (equivalent to drop(guard) but more explicit at the release point).
         guard.release();
         assert!(!bkl_is_locked());
@@ -2279,17 +2313,17 @@ mod tests {
         }
         // guard is still alive, BKL still held
         assert!(bkl_is_locked());
-        // R-05: release() consumes the guard and releases the BKL.
+        // release() consumes the guard and releases the BKL.
         guard.release();
         bkl_test_teardown();
     }
 
-    // ── BklGuard RAII tests (R-05: BklGuard is now RAII) ──
+    // ── BklGuard RAII tests ──
 
     #[test]
     fn test_bkl_guard_releases_on_drop() {
         let _lock = bkl_test_setup();
-        // R-05: BklGuard is now RAII — Drop releases BKL automatically.
+        // BklGuard is RAII — Drop releases BKL automatically.
         assert!(!bkl_is_locked());
         {
             let _guard = bkl_lock();
@@ -2304,7 +2338,7 @@ mod tests {
         let _lock = bkl_test_setup();
         // Verify RAII + explicit unlock can coexist:
         // explicit unlock → RAII reacquire → RAII release.
-        // R-05: forget the first guard since we unlock explicitly.
+        // Transfer the first guard; we unlock explicitly below.
         bkl_lock().transfer();
         bkl_unlock();
         assert!(!bkl_is_locked());
@@ -2319,7 +2353,7 @@ mod tests {
     #[test]
     fn test_bkl_guard_release_method() {
         let _lock = bkl_test_setup();
-        // R-05: guard.release() explicitly releases BKL and consumes the guard.
+        // guard.release() explicitly releases BKL and consumes the guard.
         let guard = bkl_lock();
         assert!(bkl_is_locked());
         guard.release();
@@ -2415,7 +2449,7 @@ mod tests {
         let smp = SmpState::new_single_cpu();
         smp.seed_bsp_masks(0);
         // Acquire BKL first (wait_for_APs releases and reacquires).
-        // R-05: BklGuard is RAII — guard.release() at end releases BKL.
+        // BklGuard is RAII — guard.release() at end releases BKL.
         let guard = bkl_lock();
         smp.wait_for_aps::<MockSmpArch>();
         // BKL should be reacquired after wait.
@@ -2467,7 +2501,7 @@ mod tests {
 mod d36_tests {
     use super::*;
 
-    /// D-36: with_ncpus sets ncpus/bsp_cpu_id correctly; only BSP is
+    /// with_ncpus sets ncpus/bsp_cpu_id correctly; only BSP is
     /// READY (APs join after boot_ap). Matches C smp.c boot flow where
     /// non-BSP CPUs stay out of the scheduler until booted.
     #[test]
@@ -2485,14 +2519,14 @@ mod d36_tests {
         }
     }
 
-    /// D-36: with_ncpus clamps to MAX_CPUS.
+    /// with_ncpus clamps to MAX_CPUS.
     #[test]
     fn test_with_ncpus_clamps_to_max() {
         let smp = SmpState::with_ncpus(9999, CpuId::BSP);
         assert_eq!(smp.ncpus, MAX_CPUS as u32);
     }
 
-    /// D-36: with_ncpus(1) equals new_single_cpu (backward compat).
+    /// with_ncpus(1) equals new_single_cpu (backward compat).
     #[test]
     fn test_with_ncpus_single_cpu_compat() {
         let a = SmpState::with_ncpus(1, CpuId::BSP);

@@ -98,7 +98,7 @@ impl TrapReturnArch for X86_64TrapReturn {
             // first VM-built process table went live with GS.BASE zeroed by
             // this restore (silent: nothing read `gs:0x10` while the VM
             // server ran), and the scheduler's next `current_cpu_id()`
-            // faulted at CR2=0x10 → #PF-storm (NK4-A C-3 F0 root cause,
+            // faulted at CR2=0x10 → #PF-storm (the root cause, observed
             // 2026-09-21). FS/GS bases are MSR-owned; a future user-TLS
             // contract must use wr{f,g}sbase, not selector restores.
             "mov ax, [rsi + {ds_off}]",

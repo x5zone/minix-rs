@@ -1,4 +1,4 @@
-//! Test: multi-process boot carrier (S42 ④ / C-27) — the kernel boots TWO
+//! Test: multi-process boot carrier — the kernel boots TWO
 //! user images through the production boot path and the two exchange the
 //! first user↔user IPC round trip on real machine.
 //!
@@ -209,14 +209,14 @@ fn main() -> Status {
     early_console::write_str("  smp_init completed\n");
 
     // 7. Load sysboot-tx into the RS slot with the production machinery —
-    // a PER-IMAGE root (`load_process_elf`, OQ-N6 ② verdict): the fresh
+    // a PER-IMAGE root (`load_process_elf`, the design verdict): the fresh
     // root inherits the supervisor half of the live bootstrap root, then
     // maps the image's segments + stack. Unlike the old shared-root
     // recipe the VM branch runs (which can host exactly one image — the
-    // second stack mapping collided, C-27 real-machine evidence), the TX
+    // second stack mapping collided, per real-machine evidence), the TX
     // image may reuse the same stack window and link base as RX. The
     // slot's `p_seg.phys_root` records the new root; the scheduler's
-    // address-space switch (C proc.c:349 对位) installs it at dispatch.
+    // address-space switch (C proc.c:349 counterpart) installs it at dispatch.
     {
         use minix_arch::CurrentPaging;
         use minix_arch::frame::{VmBootAllocator, VmBootRegion};
@@ -324,8 +324,8 @@ fn main() -> Status {
                 );
             // Record the fresh root so the scheduler's address-space
             // switch (C `switch_address_space(p)`, proc.c:349 — klib.S
-            // __switch_address_space 对位) installs it when the RS slot
-            // is dispatched. C 对位: `p_seg.p_cr3` (x86) / `p_ttbr` (ARM).
+            // __switch_address_space counterpart) installs it when the RS slot
+            // is dispatched. C counterpart: `p_seg.p_cr3` (x86) / `p_ttbr` (ARM).
             rs.p_seg.phys_root = tx.root;
             rs.trap_style = minix_kernel::PublicTrapStyle::FullContext;
         }

@@ -182,26 +182,31 @@ pub struct UefiBootShim;
 
 impl BootShim for UefiBootShim {
     fn prepare_boot(bump_pages: usize) -> BootPrepareResult {
-        // 阶段打印（NK4-A 首亮诊断）：shim 的 panic handler 是无声死循环，
-        // 没有这些行任何一步卡死都等于整机静默。ConOut 已实证落在 QEMU
-        // 串口（固件倒计时文案可见）。
+        // Stage prints (first-light diagnostics): the shim's panic handler is a
+        // silent infinite loop, so without these lines any stuck step makes the
+        // whole machine appear silent. ConOut is confirmed to land on the QEMU
+        // serial port (the firmware countdown text is visible).
         uefi::println!("boot-shim: prepare_boot enter");
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
         uefi::println!("boot-shim: root+bump allocated");
-        // D-64② 顺序修正（NK4-A 首亮实证；D-64 的登记与三件窄项见
-        // rewrite-notes/01-stage-kernel/todo.md 的 D-64 段）：快照必须在
-        // **全部** LOADER_DATA 分配之后——root 页、bump 区之外，还有
-        // kernel 段与 12 个 boot module 的 allocate_pages（NK4-A 首亮第二
-        // 层教训：原修正只覆盖前两次分配，module 占页在快照里仍被列为
-        // conventional，内核 VM bootstrap 侧要再拿 13 个 exclusion 去切
-        // 这些洞，切出的碎片直接超过 VmBootRegions 容量）。UEFI 从
-        // conventional 空闲内存里满足分配、并把所分页在活图中改标
-        // LOADER_DATA——后拍 = 活图已改标，conventional-only 快照天然
-        // 排除全部占用段，传给内核的 PMM 图即 EBS 前的最终空闲态
-        // （对齐 C：kinfo.memmap 是 cut 完的版本）。
-        // 两处 uefi::println 之间的文件访问都依赖 SimpleFileSystem，
-        // 必须在 ExitBootServices 前完成；快照只依赖活图，放在最后。
+        // Ordering correction: the snapshot must come after **all** LOADER_DATA
+        // allocations — besides the root page and the bump region, that includes
+        // the allocate_pages for the kernel segments and the 12 boot modules
+        // (second-layer lesson: the original correction only covered the first
+        // two allocations, so module pages were still listed as conventional in
+        // the snapshot and the kernel's VM bootstrap side needed 13 more
+        // exclusions to cut those holes, producing fragments that directly
+        // exceeded the VmBootRegions capacity). UEFI satisfies allocations from
+        // conventional free memory and re-labels the allocated pages as
+        // LOADER_DATA in the live map — snapshotting after that means the live
+        // map is already re-labeled, so a conventional-only snapshot naturally
+        // excludes every occupied range, and the PMM map handed to the kernel is
+        // the final pre-EBS free state (matching C: kinfo.memmap is the cut
+        // version).
+        // The file accesses between the uefi::println calls depend on
+        // SimpleFileSystem and must complete before ExitBootServices; the
+        // snapshot only depends on the live map, so it goes last.
         // Both file accesses must happen before ExitBootServices because
         // they depend on the SimpleFileSystem protocol.
         let file_loader = UefiFileLoader;
@@ -230,12 +235,12 @@ impl BootShim for UefiBootShim {
             param_stats.dropped
         );
 
-        // fix27: one snapshot, two lists — conventional (free) plus the
+        // One snapshot, two lists — conventional (free) plus the
         // non-conventional remainder that hosts everything the kernel
         // executes and touches through low addresses at runtime.
         let (memmap, reserved_regions) = UefiMemoryMap.collect();
         uefi::println!("boot-shim: memmap ok (final pre-EBS snapshot)");
-        // D-64②: wire the bootstrap-outside-memmap defense (it existed as
+        // Wire the bootstrap-outside-memmap defense (it existed as
         // an uncalled helper). The two LOADER_DATA allocations above must
         // never sit in a page the memmap snapshot reports as conventional
         // — otherwise the kernel's A2 handoff classification would hand
@@ -243,14 +248,17 @@ impl BootShim for UefiBootShim {
         // §6.0-A2). Fail fast while the boot-shim can still print.
         assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
         assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
-        // ── SD-3 D1（aarch64 UEFI 链 DTB 描述符源，blob 腿）──
-        // ESP /dumpdtb.dtb 存在时：经 `DtbMemoryMap` 解 /memory 得 DRAM
-        // 全景，对 GetMemoryMap 快照的每条 conventional 段做出界闸
-        // （`minix_boot::dtb_covers_conventional`）——出界=固件快照与
-        // 平台真值打架，趁 shim 还能打印 fail-fast。v1 语义=闸+源打印，
-        // 不换 conventional 源（DTB 全景含 shim 自占 LOADER_DATA 页，直
-        // 换会把自占区交给内核 PMM——self-allocation 记账为待裁项，见
-        // C 板 C17 行）；blob 缺省=现行为原样（按形态 opt-in 灰度）。
+        // ── aarch64 UEFI chain DTB descriptor source (blob leg) ──
+        // When ESP /dumpdtb.dtb exists: parse /memory through `DtbMemoryMap` to
+        // get the full DRAM picture, and bound-gate every conventional range in
+        // the GetMemoryMap snapshot (`minix_boot::dtb_covers_conventional`) —
+        // out of bounds means the firmware snapshot and the platform truth
+        // disagree, so fail fast while the shim can still print. v1 semantics =
+        // gate + source print, without replacing the conventional source (the
+        // DTB full picture includes the LOADER_DATA pages the shim occupies
+        // itself; swapping directly would hand that self-occupied area to the
+        // kernel PMM — self-allocation accounting is pending a decision); with
+        // no blob the behavior is unchanged (per-form opt-in rollout).
         #[cfg(target_arch = "aarch64")]
         match file_loader.read(loader::DUMPDTB_PATH) {
             Some(blob) => {
@@ -279,13 +287,16 @@ impl BootShim for UefiBootShim {
                 );
             }
         }
-        // 真机取证更正（曾按错误假设加过逐段断言）：kernel 段与 boot 模块段
-        // **不在**本断言范围——本装载模型是「shim 直写 conventional RAM
-        // （不经 UEFI 分配），内核 A2 分类按 boot 占用逐段扣除」
-        // （vm_handoff `deducted` 计数）。真机一发即误炸（conventional
-        // [0x100000,0x800000) 含 kernel [0x200000,0x400000) 属预期形状）。
-        // root/bump 两笔是真正的 UEFI LOADER_DATA 分配，D-64② 快照顺序
-        // 保证其被排除，断言保持。
+        // Real-hardware correction (per-range assertions were once added on a
+        // wrong assumption): the kernel segments and boot module segments are
+        // **not** in scope for this assertion — this load model is "the shim
+        // writes conventional RAM directly (without UEFI allocation), and the
+        // kernel's A2 classification deducts boot occupancy range by range" (the
+        // `deducted` count in vm_handoff). On real hardware it blew up on the
+        // first run (conventional [0x100000,0x800000) containing kernel
+        // [0x200000,0x400000) is the expected shape). root/bump are the real
+        // UEFI LOADER_DATA allocations; the snapshot ordering guarantees they
+        // are excluded, so the assertion stays.
 
         uefi::println!("boot-shim: building KernelInfo…");
 
@@ -323,8 +334,9 @@ impl BootShim for UefiBootShim {
 
         uefi::println!("boot-shim: exiting boot services…");
         exit_boot_services();
-        // EBS 之后不再走 uefi::println!（crate 的日志路径可能依赖已消失的
-        // boot services 状态）——改裸写 COM1（0x3F8，OVMF 已初始化 16550）。
+        // After EBS, uefi::println! is no longer used (the crate's logging path
+        // may depend on boot-services state that no longer exists) — write COM1
+        // directly instead (0x3F8, OVMF has already initialized the 16550).
         crate::raw_serial("boot-shim: [raw] boot services exited\r\n");
 
         BootPrepareResult {
@@ -346,7 +358,7 @@ impl BootShim for UefiBootShim {
 ///
 /// `build_memmap()` semantics for the conventional list are unchanged
 /// (free RAM only, kernel/module occupancy NOT cut — the kernel's A2
-/// classification does that). The reserved list (fix27) is everything
+/// classification does that). The reserved list is everything
 /// else EXCEPT the MMIO descriptor types (`MMIO` / `MMIO_PORT_SPACE`):
 /// the running kernel's code,
 /// static data, GDT/IDT/TSS, the `KernelInfo` heap object, ACPI tables,
@@ -354,7 +366,7 @@ impl BootShim for UefiBootShim {
 /// windows are excluded because they are huge device ranges nobody may
 /// identity-map cacheably; the two local-APIC/IO-APIC pages the kernel
 /// touches on every tick are added kernel-side as arch constants
-/// (fix27, `kernel_identity_mmio_regions`).
+/// (`kernel_identity_mmio_regions`).
 ///
 /// Leaks the allocations so they have `'static` lifetime — acceptable
 /// for boot-stage code that runs exactly once.
@@ -371,10 +383,11 @@ impl BootShim for UefiBootShim {
 /// BEFORE its `GetMemoryMap` call, so it is LOADER_DATA-classified in the
 /// snapshot and conservatively absent from the free list. Keep both
 /// orderings if this function is ever restructured.
-/// I-22 丁案 B：UEFI 腿的 `MemoryMapSource` 实现——委托
-/// [`build_memmaps`]（GetMemoryMap 快照 → conventional + reserved 两表）。
-/// 类型住 boot-shim（`uefi` crate 依赖不得反向进 minix-boot，孤儿规则
-/// 下由本 crate 本地类型实现外来 trait）。
+/// UEFI-leg `MemoryMapSource` implementation — delegates to [`build_memmaps`]
+/// (GetMemoryMap snapshot → conventional + reserved lists). The type lives in
+/// boot-shim (the `uefi` crate dependency must not point back into minix-boot,
+/// and the orphan rule makes this crate implement the foreign trait with a
+/// local type).
 use minix_boot::MemoryMapSource as _;
 
 pub struct UefiMemoryMap;
@@ -392,7 +405,7 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let mut regions: Vec<MemoryRegion> = Vec::new();
     let mut reserved: Vec<MemoryRegion> = Vec::new();
     // RAM ceiling from the conventional list — descriptors entirely above
-    // it (fix27d forensics: a 192 MiB `RESERVED` hole at 0xfd0000_0000,
+    // it (forensics: a 192 MiB `RESERVED` hole at 0xfd0000_0000,
     // the QEMU i440fx high chipset hole) are not memory the kernel can
     // ever run in or touch; identity-mapping device space at 4 KiB
     // granularity is waste at best. Collected in pass 1, applied in
@@ -416,7 +429,7 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
             if desc.phys_start >= ram_top {
                 continue;
             }
-            // fix27d forensic (2026-09-21): fix27c landed the payload and
+            // Forensic note (2026-09-21): the payload landed and
             // the kernel's 512 MiB sanity cap fired — something in this
             // list is enormous despite the MMIO exclusions. Dump every
             // ≥ 4 MiB descriptor (there are only a handful) with its raw
@@ -433,7 +446,7 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
             });
         }
     }
-    // fix27 forensic (2026-09-21): real machine showed ident-windows n=2
+    // Forensic note (2026-09-21): real machine showed ident-windows n=2
     // (= arch MMIO only) → reserved list arrives empty at the kernel.
     // Count both lists at the source to split "collection loop finds
     // nothing" from "forwarding loses it".
@@ -451,7 +464,7 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
 /// Convert UEFI memory map to a static slice of MemoryRegion.
 ///
 /// Only includes CONVENTIONAL memory (free RAM). See `build_memmaps()`
-/// for the fix27 reserved-list companion.
+/// for the reserved-list companion.
 pub fn build_memmap() -> &'static [MemoryRegion] {
     build_memmaps().0
 }
@@ -461,8 +474,8 @@ const PAGE_SIZE: u64 = 4096;
 
 /// Physical address ceiling assumed by the map classification. aarch64 writes
 /// `TCR_EL1.IPS = 5` (48-bit PA); x86-64 4-level paging tops out at 52-bit.
-/// D-59 replaces this with `Paging::phys_addr_limit`; until then the constant
-/// keeps the classifier from rejecting high-DRAM descriptors.
+/// The planned `Paging::phys_addr_limit` accessor replaces this; until then the
+/// constant keeps the classifier from rejecting high-DRAM descriptors.
 #[cfg(target_arch = "aarch64")]
 const PA_LIMIT: u64 = 1 << 48;
 #[cfg(target_arch = "x86_64")]
@@ -494,7 +507,7 @@ fn assert_bootstrap_outside_memmap(memmap: &[MemoryRegion], base: u64, len: u64)
 /// passing `bound - size` keeps the whole region under the bound.
 ///
 /// The bound is `min(BOOT_IDENTITY_MAP_END, VM DM window PA end)` per
-/// target architecture (07-paging_init_design §6.1 资格过滤 ①): below it the
+/// target architecture (07-paging_init_design §6.1 qualification filter ①): below it the
 /// bootstrap tree is simultaneously identity-write-reachable and
 /// representable in the VM DM window. The kernel re-validates at DM
 /// establishment (`os/kernel/src/dm_coverage.rs`).
@@ -507,7 +520,7 @@ fn bootstrap_alloc_limit(size: u64) -> u64 {
 /// Allocate a single physical page for the root page table.
 ///
 /// MaxAddress keeps the page below the DM-admissible bound so the identity
-/// write channel and the VM DM window both cover it (§6.1 资格过滤 ①).
+/// write channel and the VM DM window both cover it (§6.1 qualification filter ①).
 pub fn alloc_root_page() -> PhysBytes {
     let ptr = boot::allocate_pages(
         AllocateType::MaxAddress(bootstrap_alloc_limit(PAGE_SIZE)),
@@ -522,7 +535,7 @@ pub fn alloc_root_page() -> PhysBytes {
 ///
 /// The region backs the VM self page-table tree's lower-level pages, which
 /// the identity write channel constructs and the VM DM window must cover —
-/// it must sit below the DM-admissible bound (§6.1 资格过滤 ①②).
+/// it must sit below the DM-admissible bound (§6.1 qualification filter ①②).
 pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
     let size = (num_pages as u64) * PAGE_SIZE;
     let ptr = boot::allocate_pages(
@@ -536,7 +549,7 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
     (base, end)
 }
 
-// ── T1 2c/3b: aarch64 handoff-v1 producer ─────────────────────────────
+// ── aarch64 handoff-v1 producer ────────────────────────────────────────
 //
 // The aarch64 UEFI leg no longer snapshots the map and hands over a
 // `BootHandoff` blob. It allocates one handoff arena on the loader-data
@@ -544,7 +557,7 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
 // the EBS pairing loop, builds the bootstrap root, patches the runtime
 // fields in place and jumps into the standalone image with `x0 = arena_pa`.
 // The whole flow lives behind `target_arch = "aarch64"`; x86/riscv keep the
-// in-process `arch_boot` path until T2/D-73 move them.
+// in-process `arch_boot` path until the handoff conversion reaches them.
 
 /// Allocate the handoff arena: exactly [`ARENA_CAP`] bytes of loader data
 /// below the identity/DM-admissible bound (the receiver reads it through the
@@ -693,7 +706,7 @@ fn raw_serial_hex(value: u64) {
     }
 }
 
-/// Print the memmap-source line (and enforce the SD-3 D1 gate) after EBS.
+/// Print the memmap-source line (and enforce the DTB bound gate) after EBS.
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn report_memmap_source(dtb_free: Option<&[MemoryRegion]>, conventional: &[MemoryRegion]) {
     match dtb_free {

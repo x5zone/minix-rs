@@ -37,7 +37,7 @@ use crate::clock::ClockState;
 use minix_arch::cpu_identity::{CpuIdentity, X86Vendor};
 
 // ── Minix3 error codes ──
-// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Centralized in `crate::errno` to prevent value drift.
 // Previously EBUSY=27 (should be 16) and ENOSYS=38 (should be 78) here.
 use crate::errno::*;
 
@@ -71,8 +71,9 @@ pub enum GetInfoRequest {
     Randomness = 3,
     /// Boot monitor parameters. C: `GET_MONPARAMS = 4` (com.h:320)
     MonParams = 4,
-    /// Kernel message ring. C: com.h:315-345 未分配孔 7(E-ISKMESS A-3
-    /// 新臂——04 篇 §4.1,取未用孔;取号见 kmess.rs doc)。
+    /// Kernel message ring. C: com.h:315-345 leaves slot 7 unassigned; this
+    /// is the new arm (chapter 04 §4.1, taking an unused slot; the number is
+    /// documented in kmess.rs).
     KMessages = 7,
     /// IRQ hook table. C: `GET_IRQHOOKS = 6` (com.h:322)
     IrqHooks = 6,
@@ -407,10 +408,11 @@ impl ProcInfoBuild for ProcInfoStruct {
             p_name: *p.p_name.as_bytes(),
             p_priv_id: p.priv_id.map(|id| id as i32).unwrap_or(-1),
             _padding: [0; 4],
-            // C-25 四格：C 的 GET_PROCTAB 拷整个 `struct proc`
-            // （do_getinfo.c:96-100），本行是 A-4 窄行；这四格是 MIB 的
-            // `l_slptime`/`l_pctcpu`/`mpd_*_cycles` 列的唯一来源
-            // （C `mib/proc.c:438/453/1277-1279`）。
+            // Four extra fields: C's GET_PROCTAB copies the whole
+            // `struct proc` (do_getinfo.c:96-100), while this row is the narrow
+            // variant; these four fields are the only source for the MIB's
+            // `l_slptime`/`l_pctcpu`/`mpd_*_cycles` columns
+            // (C `mib/proc.c:438/453/1277-1279`).
             p_kipc_cycles: p.p_cycles.kipc.load(Ordering::Acquire),
             p_kcall_cycles: p.p_cycles.kcall.load(Ordering::Acquire),
             p_dequeued: p.p_dequeued.load(Ordering::Acquire),
@@ -683,7 +685,7 @@ fn getinfo_whoami(
 /// GET_KINFO — kernel info snapshot (struct copy).
 ///
 /// C: do_getinfo.c:41-70 — copy `sizeof(kinfo)` to the caller
-/// (param.h:14-54). The former Rust encoding packed five fields into M4
+/// (param.h:14-54). The former Rust encoding packed five fields into
 /// message registers, which could not carry `release`/`version` and
 /// diverged from the C struct-copy contract; E-ISPROD replaced it with a
 /// [`KinfoStruct`] copy (used-fields subset, minix-types single authority
@@ -962,12 +964,12 @@ fn getinfo_regs(
         None => return KcallResult::Ok(EINVAL),
     };
     // Extract the virtual address and size of cpu_context before calling
-    // data_copy_vmcheck. NK4-C 1.51 (B27 残留根因): the process table is a
-    // kernel static array living in the higher-half image segment — OUTSIDE
-    // both Direct Map windows — so `virt_to_phys` on it yields a bogus
-    // physical. Route the copy through `AddressRef::Process` with the
-    // caller's CR3 (which maps the kernel higher-half too), so
-    // `resolve_physical` walks a real page table to the correct PA.
+    // data_copy_vmcheck. The process table is a kernel static array living in
+    // the higher-half image segment — OUTSIDE both Direct Map windows — so
+    // `virt_to_phys` on it yields a bogus physical. Route the copy through
+    // `AddressRef::Process` with the caller's CR3 (which maps the kernel
+    // higher-half too), so `resolve_physical` walks a real page table to the
+    // correct PA.
     let (reg_kva, reg_size) = match proc_table.get(target_nr) {
         Some(p) => {
             let size = core::mem::size_of_val(&p.cpu_context);
@@ -1029,7 +1031,7 @@ fn getinfo_cpu_ticks(
         return KcallResult::Ok(EINVAL);
     }
     // C: get_cpu_ticks(cpu, ticks) (arch_clock.c:433) — ticks[i] =
-    // tsc_per_state[cpu][i] / tsc_per_tick[cpu]. S-6.4 tick-1: the Rust
+    // tsc_per_state[cpu][i] / tsc_per_tick[cpu]. The Rust
     // per-CPU accumulator lives in `CpuLocal.tsc_per_state`; the divisor
     // derives from the calibrated TSC rate (TSC_PER_MS cycles/ms) and the
     // configured HZ: cycles-per-tick = TSC_PER_MS * 1000 / HZ.
@@ -1606,8 +1608,9 @@ fn trace_copy_word_from_proc(
         endpoint: target_endpoint,
         offset: VirBytes(tr_addr),
     };
-    // NK4-C 1.51: buf 是内核栈局部（image 高半区），`virt_to_phys` 产伪物理地址。
-    // 改用 AddressRef::Process（target CR3 映射内核 higher-half）。
+    // `buf` is a kernel-stack local (in the image's high half), so
+    // `virt_to_phys` yields a bogus physical address. Use AddressRef::Process
+    // instead (the target CR3 maps the kernel higher half).
     let dst = AddressRef::Process {
         endpoint: target_endpoint,
         offset: VirBytes(&mut buf as *mut u64 as u64),
@@ -1637,8 +1640,8 @@ fn trace_copy_word_to_proc(
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
         if ep == target_endpoint { Some(target_cr3) } else { None }
     };
-    // NK4-C 1.51: buf 是内核栈局部，改用 AddressRef::Process（target CR3 映射
-    // 内核 higher-half）。
+    // `buf` is a kernel-stack local; use AddressRef::Process instead (the
+    // target CR3 maps the kernel higher half).
     let src = AddressRef::Process {
         endpoint: target_endpoint,
         offset: VirBytes(&buf as *const u64 as u64),
@@ -1675,8 +1678,9 @@ fn trace_copy_byte_from_proc(
         endpoint: target_endpoint,
         offset: VirBytes(tr_addr),
     };
-    // NK4-C 1.51: buf 是内核栈局部，改用 AddressRef::Process（target CR3 映射内核
-    // higher-half）。R-16: 64-bit kernel, `*mut u8` is 64-bit, `as u64` no truncation.
+    // `buf` is a kernel-stack local; use AddressRef::Process instead (the
+    // target CR3 maps the kernel higher half). 64-bit kernel: `*mut u8` is
+    // 64-bit, so `as u64` does not truncate.
     let dst = AddressRef::Process {
         endpoint: target_endpoint,
         offset: VirBytes(&mut buf as *mut u8 as u64),
@@ -1706,8 +1710,8 @@ fn trace_copy_byte_to_proc(
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
         if ep == target_endpoint { Some(target_cr3) } else { None }
     };
-    // NK4-C 1.51: buf 是内核栈局部，改用 AddressRef::Process（target CR3 映射内核
-    // higher-half）。
+    // `buf` is a kernel-stack local; use AddressRef::Process instead (the
+    // target CR3 maps the kernel higher half).
     let src = AddressRef::Process {
         endpoint: target_endpoint,
         offset: VirBytes(&buf as *const u8 as u64),
@@ -1871,13 +1875,13 @@ pub fn dispatch_update(
     msg: &Message,
     priv_table: &mut PrivTable,
 ) -> KcallResult {
-    // C: do_update.c:9-11 — SYS_UPDATE uses the M1 message format:
+    // C: do_update.c:9-11 — SYS_UPDATE uses message format 1:
     //   m1i1 = SYS_UPD_SRC_ENDPT
     //   m1i2 = SYS_UPD_DST_ENDPT
     //   m1i3 = SYS_UPD_FLAGS
     // SAFETY: union member read. `msg` is the kernel's own stack copy
-    // (kernel_call TOCTOU discipline — copied from user before dispatch,
-    // D-8), and the dispatch table routed here on `m_type == SYS_UPDATE`,
+    // (kernel_call TOCTOU discipline — copied from user before dispatch),
+    // and the dispatch table routed here on `m_type == SYS_UPDATE`,
     // which selects the `m_m1` member; reading m1i1/m1i2/m1i3 therefore
     // touches initialized bytes of the active variant.
     let (src_e, dst_e, flags): (i32, i32, i32) = unsafe {
@@ -1971,17 +1975,23 @@ pub fn dispatch_update(
         // Now add each to dst's priv (mutable borrow is safe — src borrow ended)
         if let Some(dst_priv) = priv_table.get_mut(dst_pid) {
             for irq in irqs.iter().take(irq_count) {
-                //[SD19-gate] 特权继承 add_irq/io/mem 失败多为'资源已存在/已授予'，无回滚语义（对齐 C 逐条尽力）
+                // Privilege inheritance: add_irq/io/mem failures are mostly
+                // "resource exists / already granted" and carry no rollback
+                // semantics (matching C's best-effort per-item behavior)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = dst_priv.add_irq(*irq);
             }
             for ior in io_tab.iter().take(io_count) {
-                //[SD19-gate] 特权继承 add_irq/io/mem 失败多为'资源已存在/已授予'，无回滚语义（对齐 C 逐条尽力）
+                // Privilege inheritance: add_irq/io/mem failures are mostly
+                // "resource exists / already granted" and carry no rollback
+                // semantics (matching C's best-effort per-item behavior)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = dst_priv.add_io(ior);
             }
             for memr in mem_tab.iter().take(mem_count) {
-                //[SD19-gate] 特权继承 add_irq/io/mem 失败多为'资源已存在/已授予'，无回滚语义（对齐 C 逐条尽力）
+                // Privilege inheritance: add_irq/io/mem failures are mostly
+                // "resource exists / already granted" and carry no rollback
+                // semantics (matching C's best-effort per-item behavior)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = dst_priv.add_mem(memr);
             }
@@ -2293,7 +2303,7 @@ pub const SAMPLE_BUFFER_SIZE: usize = 256 * 1024;
 /// C: `sprof_ep`, `sprof_info_addr_vir`, `sprof_data_addr_vir`,
 /// `sprof_mem_size`, `sprof_info` — profile.h:15-18, do_sprofile.c:23.
 ///
-// D-62④: the `SPROF_*` declarations moved to `globals.rs` (the single
+// The `SPROF_*` declarations moved to `globals.rs` (the single
 // audit point for kernel statics) and the two `static mut`s were upgraded
 // to `SyncUnsafeCell` wrappers (access shape: `get()` replaces
 // `addr_of_mut!`). Imported here.
@@ -2465,9 +2475,10 @@ pub fn dispatch_profile(
             // SAFETY: BKL is held; SPROF_INFO is a static that was reset during
             // PROF_START and is only written by the profiling ISR
             // (`profile_clock_hook`, via `profile_sample`).
-            // NK4-C 1.51 (B27 残留根因): SPROF_INFO 是内核静态（image 高半区），
-            // `virt_to_phys` 产伪物理地址。改用 AddressRef::Process（sprof_ep
-            // 的 CR3=caller_cr3 映射内核 higher-half）。
+            // SPROF_INFO is a kernel static (in the image's high half), so
+            // `virt_to_phys` yields a bogus physical address. Use
+            // AddressRef::Process instead (sprof_ep's CR3, equal to caller_cr3,
+            // maps the kernel higher half).
             let info_src_kva = SPROF_INFO.get() as u64;
             let info_proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
                 if ep == sprof_ep { Some(caller_cr3) } else { None }
@@ -2496,8 +2507,9 @@ pub fn dispatch_profile(
             //
             // If no samples were collected (mem_used == 0), this is a no-op.
             if mem_used > 0 {
-                // NK4-C 1.51: SPROF_SAMPLE_BUFFER 是内核静态，改用
-                // AddressRef::Process（sprof_ep 的 CR3 映射内核 higher-half）。
+                // SPROF_SAMPLE_BUFFER is a kernel static; use
+                // AddressRef::Process instead (sprof_ep's CR3 maps the kernel
+                // higher half).
                 let buf_src_kva = SPROF_SAMPLE_BUFFER.get() as u64;
                 let buf_proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
                     if ep == sprof_ep { Some(caller_cr3) } else { None }
@@ -2875,14 +2887,14 @@ mod tests {
         assert_eq!(GetInfoRequest::try_from(15), Ok(GetInfoRequest::LoadInfo));
         assert_eq!(GetInfoRequest::try_from(19), Ok(GetInfoRequest::WhoAmI));
         assert_eq!(GetInfoRequest::try_from(25), Ok(GetInfoRequest::CpuTicks));
-        // E-ISKMESS: 7 = GET_KMESSAGES(04 §4.1 新臂)→ Ok(KMessages)。
+        // 7 = GET_KMESSAGES (the new arm in chapter 04 §4.1) → Ok(KMessages).
         assert_eq!(GetInfoRequest::try_from(7), Ok(GetInfoRequest::KMessages));
         assert_eq!(GetInfoRequest::try_from(9), Err(()));   // GET_KADDRESSES (not handled)
         assert_eq!(GetInfoRequest::try_from(10), Err(()));  // GET_SCHEDINFO (not handled)
         assert_eq!(GetInfoRequest::try_from(99), Err(()));
     }
 
-    // ── GET_CPUINFO wire record (D-53) ──
+    // ── GET_CPUINFO wire record ──
 
     /// C ABI layout: `struct cpu_info` (i386 archtypes.h:39-46) is
     /// 4 × u8 + u32 + u32[2] with natural (unpacked) alignment — 16 bytes,
@@ -3043,7 +3055,7 @@ mod tests {
         // the common tail (do_getinfo.c:210-212) E2BIGs when val_len is
         // shorter. A full-size buffer passes the E2BIG gate and reaches the
         // cross-space copy, which in mock mode misses the PTE walk →
-        // VmSuspend. (Pre-C-3 this arm returned EINVAL unconditionally.)
+        // VmSuspend. (Earlier revisions returned EINVAL unconditionally.)
         use crate::proc::RtsFlagsBits;
         let mut proc_table = crate::test_helpers::test_proc_table();
         if let Some(target) = proc_table.get_mut(ProcNr(0)) {

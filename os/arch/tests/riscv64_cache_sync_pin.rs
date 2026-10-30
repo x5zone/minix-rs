@@ -1,25 +1,33 @@
-//! riscv64 指令缓存同步（SD-20）的宿主形状钉住测试。
+//! Host-shape pin test for riscv64 instruction-cache synchronization.
 //!
-//! `os/arch/src/riscv64/cache_sync.rs` 被 `#[cfg(target_arch = "riscv64")]`
-//! 整模块门住，宿主不编译它；本文件用 `include_str!` 钉住承重形状：
+//! `os/arch/src/riscv64/cache_sync.rs` is gated wholesale behind
+//! `#[cfg(target_arch = "riscv64")]`, so the host never compiles it; this
+//! file pins the load-bearing shape with `include_str!`:
 //!
-//! 1. 本 hart 的同步动作必须是 `FENCE.I`（本地 hart 的先前写入对后续取指
-//!    可见——装载器场景正好是「本 hart 写、本 hart 随后取」）；
-//! 2. 本文件**不得**自行长出 SBI 远端栅栏 ecall：跨 hart 的
-//!    `remote_fence_i` 是撤主核钳制批次的硬前置（本树进程只落 BSP，
-//!    本地栅栏对当前执行模型是完备的），其实现需要内核拓扑提供 hart 掩码，
-//!    不在 arch 层自持。半接（乱传掩码）会打进 M 态固件，比不做更糟。
-//!    该绑定是文件文档的一部分，本钉把它连同代码形状一起冻住。
+//! 1. the local hart's synchronization action must be `FENCE.I` (a local
+//!    hart's earlier writes become visible to its own later instruction
+//!    fetches — the loader scenario is exactly "this hart writes, the same
+//!    hart fetches afterwards");
+//! 2. this file must **not** grow an SBI remote-fence ecall on its own:
+//!    `remote_fence_i` across harts is a hard prerequisite of the batch that
+//!    removes the main-core clamp (in this tree processes run only on the
+//!    BSP, so a local fence is complete for the current execution model); its
+//!    implementation needs a hart mask from the kernel topology and is not
+//!    held at the arch layer. Half-wiring it (passing a bogus mask) would
+//!    reach M-mode firmware and be worse than not doing it at all. That
+//!    binding is part of the file documentation; this pin freezes it together
+//!    with the code shape.
 //!
-//! 真机判读边界同 `arm64_cache_sync_pin.rs`：QEMU 不建模此类缓存失配，
-//! 门禁跑绿只证明「没写坏」。
+//! The real-hardware judgment boundary matches `arm64_cache_sync_pin.rs`:
+//! QEMU does not model this class of cache mismatch, so a green gate only
+//! proves "nothing was written wrong".
 
-/// 原始文件全文（含注释与文档）。
+/// Full source text of the file (comments and docs included).
 fn src() -> &'static str {
     include_str!("../src/riscv64/cache_sync.rs")
 }
 
-/// 剥注释后的代码骨架（同 `arm64_cache_sync_pin.rs::code`）。
+/// Code skeleton with comments stripped (same as `arm64_cache_sync_pin.rs::code`).
 fn code() -> String {
     let mut out = String::new();
     for line in src().lines() {

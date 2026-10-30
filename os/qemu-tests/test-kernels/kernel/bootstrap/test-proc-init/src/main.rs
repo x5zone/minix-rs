@@ -45,8 +45,10 @@ static mut HEAP: [u8; 0x200000] = [0u8; 0x200000]; // 2 MiB
 /// Set to true after exit_boot_services() is called.
 static mut BOOT_SERVICES_EXITED: bool = false;
 
-/// U-2 真机负控门用的独立 `.bss` 进程表（const-fn 初始化，不占启动栈/堆），
-/// 以便确定性地验证 `runqueues_ok_cpu` 既对空表返 true、又对损坏表返 false。
+/// Dedicated `.bss` process table for the real-machine negative-control gate
+/// (const-fn initialized, taking neither boot stack nor heap), so that
+/// `runqueues_ok_cpu` can be verified deterministically for both directions:
+/// true on an empty table and false on a corrupted one.
 static mut RQ_TEST_TABLE: minix_kernel::proc_table::ProcessTable =
     minix_kernel::proc_table::ProcessTable::new();
 
@@ -223,7 +225,7 @@ fn main() -> Status {
     // 3. Phase B: protection only (no clock/interrupt needed for proc table init)
     let prot = CurrentProtection::init(0, info.kern_stack_top);
     prot.load();
-    // S-8 (2026-09-14): the IDT may only go live with real handlers in
+    // As of 2026-09-14, the IDT may only go live with real handlers in
     // every present gate (the no-empty-gate stage invariant) — install the
     // arch stubs + kernel dispatch bodies, point LSTAR at the kernel's own
     // SYSCALL asm entry, then load.
@@ -399,9 +401,11 @@ fn main() -> Status {
     }
     early_console::write_str("  P1-c sentinel: CPU reads sentinel via fresh VA (OK)\n");
 
-    // 8. U-2 真机负控门：qemu 下 KernelConsole 经 COM1 打印正常，故可确定性地
-    //    验证 `runqueues_ok_cpu`——空 .bss 表→true；把某槽清成 runnable-but-未入队
-    //    →false（非空转证据，补上宿主因 COM1 SIGSEGV 跑不了的那一半）。
+    // 8. Real-machine negative-control gate: under qemu KernelConsole prints
+    //    through COM1 normally, so `runqueues_ok_cpu` can be verified
+    //    deterministically -- empty .bss table -> true; clearing a slot to
+    //    runnable-but-unqueued -> false (proof it is not a no-op, covering the
+    //    half the host cannot run because of the COM1 SIGSEGV).
     {
         use minix_kernel::debug::runqueues_ok_cpu;
         use minix_kernel::proc::{CpuId, ProcNr, RtsFlagsBits};
@@ -412,7 +416,7 @@ fn main() -> Status {
             early_console::write_str("  FAIL: runqueues_ok rejected the empty table\n");
             fail();
         }
-        // 造违规：一个可运行进程未在任何就绪队列上。
+        // Create the violation: one runnable process is on no ready queue.
         if let Some(p) = rq.get_mut(ProcNr(0)) {
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }

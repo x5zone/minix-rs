@@ -34,8 +34,8 @@
 //! its own VA. Routing the kernel stack variable through
 //! `DirectMapArch::virt_to_phys` (as earlier revisions did) is wrong — kernel
 //! data sits outside the Direct Map window, so its alias faults as
-//! `DstPageFault` (the NK4-C B4 root cause). Source page faults suspend via
-//! VMSUSPEND.
+//! `DstPageFault` (the root cause of the boot failure this rewrite fixed).
+//! Source page faults suspend via VMSUSPEND.
 //!
 //! C's `verify_grant` returns `int` (OK or errno). Rust returns
 //! `VerifyGrantOutcome` which separates `Suspended` from `Err` — this is
@@ -51,10 +51,11 @@ use crate::proc_table::ProcessTable;
 use crate::vm::{AddressRef, CrossSpaceResult, VmFaultType};
 
 // ── Grant ID manipulation ──
-// E-DSWIRE:the grant wire vocabulary(ID 打包、CPF_* 旗标、cp_grant_t
-// 布局)下沉到共享权威 `minix-types::types::grant`(用户态授权库是它的
-// 第二消费者,双份定义正是 E-REQWIRE 退役的模式)。以下 re-export 保持
-// 本 crate 的 `crate::grant::*` 路径不变。
+// The grant wire vocabulary (ID packing, the CPF_* flags, the cp_grant_t
+// layout) lives in the shared authority `minix-types::types::grant` (the
+// user-space grant library is its second consumer; a duplicated definition
+// is the pattern that was retired for the request wire vocabulary). The
+// re-export below keeps this crate's `crate::grant::*` paths unchanged.
 pub use minix_types::{
     grant_idx, grant_seq, grant_valid, CpFlags, CpGrant, CpGrantDirect, CpGrantFree,
     CpGrantIndirect, CpGrantMagic, CpGrantUnion, GRANT_INVALID,
@@ -117,15 +118,15 @@ pub struct GrantVerifyResult {
 
 /// C: `ANY` — endpoint.h:55, `_ENDPOINT_SLOT_TOP - 1` (= 31744 with
 /// com.h:55 `MAX_NR_TASKS 1023`; the former local `-3` made the grantee
-/// gate below deny every who_to=ANY grant with EPERM — the E-MIBGRANT
-/// constant class). Derived from the minix-types authority so the two
+/// gate below deny every who_to=ANY grant with EPERM — the magic-grant
+/// endpoint-constant bug). Derived from the minix-types authority so the two
 /// cannot drift (`may_create_magic_grant`'s Endpoint::VFS/MIB pattern).
 const ANY: i32 = minix_types::Endpoint::ANY.0;
 
 /// Only VFS and MIB may create magic grants.
 ///
 /// C: do_safecopy.c:218-226 — hardcoded as `granter != VFS_PROC_NR &&
-/// granter != MIB_PROC_NR` (C leaves a TODO to make this a system.conf
+/// granter != MIB_PROC_NR` (C leaves a note to make this a system.conf
 /// flag; the rewrite keeps the hardcoded policy). `Endpoint::VFS`/`MIB`
 /// are the com.h:60/:66 authority (`minix-types` single source — the
 /// same pattern as the kernel's errno re-export).
@@ -139,7 +140,7 @@ fn may_create_magic_grant(granter: Endpoint) -> bool {
 }
 
 // ── Error codes ──
-// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Centralized in `crate::errno` to prevent value drift.
 // Previously ELOOP=40 here (should be 62).
 use crate::errno::*;
 
@@ -190,15 +191,15 @@ const MEM_TOP: u64 = u64::MAX;
 /// source copied one contiguous physical run at a time into a kernel-local
 /// `&mut [u8]` destination. It does NOT route the kernel stack variable
 /// through `DirectMapArch::virt_to_phys` — kernel data sits outside the Direct
-/// Map window, so that alias faults as `DstPageFault` (the NK4-C B4 root
-/// cause of the EPERM that stalled boot).
+/// Map window, so that alias faults as `DstPageFault` (the root cause of
+/// the EPERM that stalled boot).
 ///
 /// C's loop `do { ... } while(g.cp_flags & CPF_INDIRECT)` is replaced
 /// with an explicit `for depth in 0..MAX_INDIRECT_DEPTH` loop that
 /// `break`s when the grant is not indirect.
-// R-18 (2026-08-13): Mirrors C `verify_grant()` signature (do_safecopy.c:41-266)
-// exactly — 10 params including 2 closures. Extracting a param struct would
-// diverge from C and hurt grep-ability. Allowed per clippy::too_many_arguments.
+// Mirrors C `verify_grant()` signature (do_safecopy.c:41-266) exactly — 10
+// params including 2 closures. Extracting a param struct would diverge from C
+// and hurt grep-ability. Allowed per clippy::too_many_arguments.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_grant(
     caller_nr: ProcNr,
@@ -288,8 +289,8 @@ pub fn verify_grant(
         // grant_entry_addr. Dest: `&mut grant_entry` accessed DIRECTLY by
         // its own kernel virtual address.
         //
-        // NK4-C 1.13 root cause: the previous code routed the kernel stack
-        // destination through `CurrentDirectMap::virt_to_phys` and
+        // Historical root cause fixed by this rewrite: the previous code
+        // routed the kernel stack destination through `CurrentDirectMap::virt_to_phys` and
         // `AddressRef::Physical`, but a kernel stack/data VA sits OUTSIDE the
         // Direct Map window, so its "physical" is bogus and `cross_space_copy`
         // rejects the DM alias as `DstPageFault` → EPERM (VM's RS_INIT
@@ -532,7 +533,7 @@ mod tests {
 
     #[test]
     fn test_grantee_gate_any_authority_value() {
-        // E-MIBGRANT constant class: the grantee gate (three sites below)
+        // Constant-class history: the grantee gate (three sites below)
         // must compare against C's ANY — endpoint.h:55, `_ENDPOINT_SLOT_TOP
         // - 1`, i.e. 32768 - 1023 - 1 with com.h:55 `MAX_NR_TASKS 1023` —
         // not a small negative. The former local `-3` denied every
@@ -584,40 +585,44 @@ mod tests {
         assert!(matches!(result, VerifyGrantOutcome::Err(EINVAL)));
     }
 
-    // ── T-8（doc 18 §5.2）：verify_grant 宿主可测面——priv 字段级校验分支 ──
+    // ── Host-testable surface of verify_grant: priv field-level check branches ──
 
-    /// 范围超限：grant 表只有 2 项，grant_id=10（idx=10 >= 2）→ EPERM
-    /// （do_safecopy.c:103-114 grant 索引越界）。宿主可测：该分支只读
-    /// granter 的 priv 字段，先于授权条目的跨空间读取。
+    /// Range exceeded: the grant table holds only 2 entries and
+    /// grant_id=10 (idx=10 >= 2) → EPERM (do_safecopy.c:103-114, grant
+    /// index out of bounds). Host-testable: this branch reads only the
+    /// granter's priv fields, before the cross-space read of the grant entry.
     #[test]
     fn test_t8_verify_grant_range_exceeded_returns_eperm() {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
 
-        // caller（发起 safecopy 的一方）与 granter（ep 200）均在表中。
+        // Both the caller (the side initiating the safecopy) and the granter
+        // (ep 200) are in the table.
         proc_table.get_mut(ProcNr(0)).unwrap()
             .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
         proc_table.get_mut(ProcNr(1)).unwrap()
             .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
         proc_table.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
 
-        // granter 的 priv：表非空、2 项、临时表 endpoint = 自身（跳过临时表分支）。
+        // The granter's priv: table non-null, 2 entries, temp-table endpoint
+        // = itself (skips the temp-table branch).
         let pid = priv_table.assign_static(ProcNr(1)).expect("priv slot");
         {
             let kp = priv_table.get_mut(pid).unwrap();
-            kp.runtime.s_grant_table = 0x4000; // 非零 → HASGRANTTABLE 通过
-            kp.runtime.s_grant_entries = 2;    // 只有 2 项
+            kp.runtime.s_grant_table = 0x4000; // nonzero → HASGRANTTABLE passes
+            kp.runtime.s_grant_entries = 2;    // only 2 entries
             kp.runtime.s_grant_endpoint = Endpoint(200);
         }
         proc_table.get_mut(ProcNr(1)).unwrap().priv_id = Some(pid);
 
         // grant_id=10 → g_idx=10 >= s_grant_entries=2 → EPERM。
-        // 闭包返 None 即可：越界分支先于授权条目的跨空间读取触发。
+        // The closure may return None: the out-of-bounds branch fires before
+        // the cross-space read of the grant entry.
         let result = verify_grant(
             ProcNr(0), &mut proc_table,
             Endpoint(200),   // granter
             Endpoint(100),   // grantee
-            10,              // grant_id → idx 10，越界
+            10,              // grant_id → idx 10, out of bounds
             16,              // bytes
             CpFlags::READ,
             0,
@@ -628,8 +633,9 @@ mod tests {
             "越界 grant 索引必须返回 EPERM，实际 {:?}", result);
     }
 
-    /// 临时授权表分支：granter 的 s_grant_endpoint ≠ 自身且不匹配 grantee
-    /// → ENOTREADY（do_safecopy.c:83-90）。
+    /// Temporary grant table branch: the granter's s_grant_endpoint differs
+    /// from itself and does not match the grantee → ENOTREADY
+    /// (do_safecopy.c:83-90).
     #[test]
     fn test_t8_verify_grant_temp_table_mismatch_enotready() {
         let mut proc_table = crate::test_helpers::test_proc_table();
@@ -646,7 +652,7 @@ mod tests {
             let kp = priv_table.get_mut(pid).unwrap();
             kp.runtime.s_grant_table = 0x4000;
             kp.runtime.s_grant_entries = 8;
-            // 临时表 endpoint = 300（≠ granter 自身 200，≠ grantee 100）
+            // Temp-table endpoint = 300 (≠ granter itself 200, ≠ grantee 100)
             kp.runtime.s_grant_endpoint = Endpoint(300);
         }
         proc_table.get_mut(ProcNr(1)).unwrap().priv_id = Some(pid);
@@ -655,7 +661,7 @@ mod tests {
             ProcNr(0), &mut proc_table,
             Endpoint(200),
             Endpoint(100),
-            0,               // idx 0，在 s_grant_entries=8 范围内
+            0,               // idx 0, within s_grant_entries=8
             16,
             CpFlags::READ,
             0,
@@ -666,30 +672,33 @@ mod tests {
             "临时授权表 grantee 不匹配必须返回 ENOTREADY，实际 {:?}", result);
     }
 
-    // ── E-MIBGRANT（edge_todo.md）：magic grant 门端点权威 ──
+    // ── Magic-grant gate endpoint authority ──
 
-    /// C 绝对值 pin：`Endpoint::VFS`/`Endpoint::MIB` 必须等于 com.h 的
-    /// VFS_PROC_NR=1（com.h:60）/ MIB_PROC_NR=7（com.h:66）。历史上
-    /// grant.rs 曾手抄出 VFS=4/MIB=8（恰为 SCHED/VM 的槽号），magic
-    /// grant 门语义反转——此测试防止 minix-types 权威值漂移，也固定
-    /// 门谓词依赖的常量身份。
+    /// Absolute-value pin against C: `Endpoint::VFS`/`Endpoint::MIB` must
+    /// equal com.h's VFS_PROC_NR=1 (com.h:60) / MIB_PROC_NR=7 (com.h:66).
+    /// Historically grant.rs hand-copied VFS=4/MIB=8 (exactly the SCHED/VM
+    /// slot numbers), which inverted the magic-grant gate semantics. This
+    /// test prevents the minix-types authority from drifting and pins the
+    /// constant identity the gate predicate relies on.
     #[test]
     fn test_magic_granter_endpoints_match_c_com_h() {
         assert_eq!(Endpoint::VFS.get(), 1); // com.h:60
         assert_eq!(Endpoint::MIB.get(), 7); // com.h:66
     }
 
-    /// 门策略（do_safecopy.c:218-226）：仅 VFS/MIB 可建 magic grant。
-    /// 显式覆盖 SCHED(4)/VM(8)——旧错误常量恰好误放行的两个端点。
+    /// Gate policy (do_safecopy.c:218-226): only VFS/MIB may create magic
+    /// grants. Explicitly covers SCHED(4)/VM(8) — the two endpoints the old
+    /// wrong constants happened to let through.
     #[test]
     fn test_may_create_magic_grant_vfs_mib_only() {
         assert!(may_create_magic_grant(Endpoint::VFS));
         assert!(may_create_magic_grant(Endpoint::MIB));
 
-        // 旧错误值 4/8 对应的端点（SCHED/VM）必须被拒。
+        // The endpoints corresponding to the old wrong values 4/8 (SCHED/VM)
+        // must be rejected.
         assert!(!may_create_magic_grant(Endpoint::SCHED));
         assert!(!may_create_magic_grant(Endpoint::VM));
-        // 其余权威端点与任意端点同样被拒。
+        // Other authority endpoints and arbitrary endpoints are rejected too.
         assert!(!may_create_magic_grant(Endpoint::PM));
         assert!(!may_create_magic_grant(Endpoint::RS));
         assert!(!may_create_magic_grant(Endpoint(100)));

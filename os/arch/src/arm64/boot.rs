@@ -7,7 +7,7 @@
 //! at all" was correct about the data layout but **wrong** about the
 //! per-process distinction: a kernel task runs at EL1 with FP
 //! unconditionally trapped, while a user process runs at EL0 with FP
-//! enabled. Per the §12.1 review, `fpu_enable_el0` must be a per-process
+//! enabled. Per review, `fpu_enable_el0` must be a per-process
 //! field that the trait's `apply_to_trap_frame` consults.
 
 use crate::arch::boot::{
@@ -90,16 +90,20 @@ impl CpuContextArch for AArch64CpuContextArch {
         frame.sp_el0 = ctx.sp;
         frame.regs[0] = ctx.r0;
 
-        // NK4-C 续-130：CPACR_EL1.FPEN 的 per-dispatch 写已移除。旧实现
-        // 每次 dispatch 无条件重写 0b01（注释还误标 0b01/实写 0b11），
-        // 与 kernel `finish_and_restore` 的 C:443-446 归属策略
-        // （owner==picked → enable=0b11；否则 disable=0b01）打架——后者
-        // 被本函数覆盖后，持有 FPU 的进程每次重调度都会在自己的下一条
-        // FP 指令上触发 EC=0x07，而其缓冲从未保存过（owner 一直是自己）
-        // → 零恢复摧毁活寄存器。策略唯一所有者 = `finish_and_restore`
-        // （enable/disable）+ EC=0x07 懒陷阱腿（轮转）；本函数不再触碰
-        // CPACR。`fpu_enable_el0` 标志保留（fork 继承语义），不再驱动
-        // 硬件寄存器。
+        // The per-dispatch write of CPACR_EL1.FPEN has been removed. The
+        // old implementation unconditionally rewrote 0b01 on every dispatch
+        // (and the comment mislabeled it: it said 0b01 but wrote 0b11),
+        // fighting the ownership policy in the kernel's
+        // `finish_and_restore` (C:443-446: owner==picked → enable=0b11,
+        // otherwise disable=0b01). With this function overriding the latter,
+        // a process holding the FPU hit EC=0x07 on its own next FP
+        // instruction at every reschedule while its buffer had never been
+        // saved (the owner was always itself) → a zero restore destroyed the
+        // live registers. The single policy owner is `finish_and_restore`
+        // (enable/disable) plus the EC=0x07 lazy-trap leg (the rotation);
+        // this function no longer touches CPACR. The `fpu_enable_el0` flag is
+        // kept (fork-inheritance semantics) but no longer drives the
+        // hardware register.
     }
 
     // enable_user_io: default no-op (aarch64 has no IOPL concept).
@@ -177,9 +181,9 @@ impl CpuContextArch for AArch64CpuContextArch {
         // aarch64 secondary lane = X1 (`gp_regs[GP_X1]`), the same register
         // `ipc_trap` reads back as its second return value and
         // `sync_status_register_to_frame` pulls into the outgoing frame.
-        // NK4-C §1.112 CodeReview W2: without this override the trait
-        // default no-op dropped the page address, so aarch64
-        // `query_kerninfo_page` would falsely return Ok(0).
+        // Without this override the trait default no-op dropped the page
+        // address, so aarch64 `query_kerninfo_page` would falsely return
+        // Ok(0).
         ctx.gp_regs[crate::arm64::signal::GP_X1] = value;
     }
 
@@ -188,9 +192,8 @@ impl CpuContextArch for AArch64CpuContextArch {
         // aarch64 the return lane is X0, stored separately as `ctx.r0`
         // (NOT in `gp_regs`) — the restore path loads it via
         // `ldr x0, [ctx, #r0_off]` (trap_return.rs). Hard-coded
-        // `write_user_register(offset 80)` would land on X7 here
-        // (NK4-C §1.113 CodeReview BLOCKER); this method keeps the OS
-        // layer off the arch-private register map.
+        // `write_user_register(offset 80)` would land on X7 here; this
+        // method keeps the OS layer off the arch-private register map.
         ctx.r0 = value;
     }
 

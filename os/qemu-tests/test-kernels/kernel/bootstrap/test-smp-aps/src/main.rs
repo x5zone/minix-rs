@@ -1,9 +1,9 @@
-//! Test: multi-AP bring-up (SMP bring-up S-5, L4).
+//! Test: multi-AP bring-up.
 //!
 //! Verifies the production `smp_init` orchestration end-to-end: the BSP runs
 //! the C-parity serial handshake (bootstrap install → INIT/SIPI → bounded
-//! ack wait → READY 代置) for EVERY AP in the topology; each AP executes the
-//! kernel-registered tail (S-4 init_ap on its own core → per-CPU SYSCALL
+//! ack wait → READY set on the AP's behalf) for EVERY AP in the topology; each AP executes the
+//! kernel-registered tail (init_ap on its own core → per-CPU SYSCALL
 //! MSRs → ap_finish_booting online bit); `wait_for_aps` completes via the
 //! BKL dance.
 //!
@@ -264,7 +264,7 @@ fn main() -> Status {
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 
-    // 6. S-5 orchestration: serial per-AP handshake + wait_for_aps BKL
+    // 6. Orchestration: serial per-AP handshake + wait_for_aps BKL
     // dance. C main.c:149 parity — the BKL is acquired ONCE before
     // smp_init and stays held (wait_for_aps's dance preserves it).
     minix_kernel::smp::bkl_lock().transfer();
@@ -301,23 +301,31 @@ fn main() -> Status {
     }
     early_console::write_str("  boot_ack == online == expected (all APs online)\n");
 
-    // S-7 L5 + edge1 K6 的**确定性**判据段：每个 AP 都进了共享调度循环
-    // （`scheduler_loop` 入口置 per-CPU 标志），且每个 AP 的本地 LAPIC
-    // one-shot（向量 0xF1）至少服务过一次。BSP 不置该标志——它跑的是本
-    // 测试体。中断保持开（IF=1），tick 处理链的继承 BKL 约定与 test-timer-irq
-    // 同形；但下面的等待**不再持锁**，见紧邻的解锁注记。
+    // **Deterministic** criterion section for the scheduler hand-off and the
+    // per-CPU local timer: every AP has
+    // entered the shared scheduling loop (`scheduler_loop` sets a per-CPU flag
+    // at entry), and every AP's local LAPIC one-shot (vector 0xF1) has been
+    // serviced at least once. The BSP does not set that flag — it runs this
+    // test body. Interrupts stay enabled (IF=1); the BKL-inheritance convention
+    // of the tick handler chain matches test-timer-irq, but the wait below **no
+    // longer holds the lock**; see the unlock note immediately after.
     unsafe {
         core::arch::asm!("sti", options(nomem, nostack));
     }
-    // BKL 见证：上面两个健康断言不读锁保护数据，下面的等待**必须先放开 BKL**。
-    // 旧形状是持锁轮询，于是两件事同时失真：AP 进 `scheduler_loop` 要抢 BKL，
-    // AP 的 0xF1 本地 tick 处理器更要继承 BKL 才能服务与重装 one-shot——被饿死的
-    // AP 可以 `in_loop=1` 而 `ticks=0`（真机复现过）。正因如此旧版只打印不断言
-    // （台账 §1 K6 行与 §7 那行）。现形状：放开 BKL → 按 TSC 预算轮询 → 断言。
+    // BKL witness: the two health assertions above do not read lock-protected
+    // data, and the wait below **must release the BKL first**. The old shape
+    // polled while holding it, which distorted two things at once: an AP must
+    // contend for the BKL to enter `scheduler_loop`, and an AP's 0xF1 local tick
+    // handler must inherit the BKL to service and rearm the one-shot — a starved
+    // AP could show `in_loop=1` with `ticks=0` (reproduced on real hardware).
+    // That is why the old version only printed and never asserted. The current
+    // shape: release the BKL → poll against the TSC budget → assert.
     minix_kernel::smp::bkl_unlock();
-    // 预算按 TSC（放开 BKL 后没有加锁可用的时钟）：120 G cycles——QEMU TSC
-    // 常见 1–3.5 GHz，约合 35–120s 挂钟。超预算不是环内模糊而是直接判 FAIL——
-    // 那个「TCG 饿死」的 WARNING 就是本条台账项要消灭的东西。
+    // The budget is in TSC cycles (after releasing the BKL there is no
+    // lock-protected clock available): 120G cycles — QEMU TSC commonly runs
+    // 1–3.5 GHz, so roughly 35–120s of wall time. Exceeding the budget is not a
+    // fuzzy in-loop outcome but an immediate FAIL — the "TCG starvation"
+    // WARNING is exactly what this gate item exists to eliminate.
     const WAIT_BUDGET_CYCLES: u64 = 120_000_000_000;
     let tsc0 = minix_kernel::clock::read_tsc();
     let (aps_in_loop, aps_ticked) = loop {
@@ -334,8 +342,9 @@ fn main() -> Status {
                 aps_in_loop = false;
             }
             if ticks > 0 {
-                // 「至少一个次级核计到本地 tick」——见下方判据注释：逐核都计到
-                // 今天是已知缺陷（cpu3 恒 0，台账 §7 新行），不在本门射程。
+                // "At least one secondary core counted a local tick" — see the
+                // criterion comment below: counting on every core is a known
+                // defect today (cpu3 is always 0), outside this gate's scope.
                 aps_ticked = true;
             }
         }
@@ -368,14 +377,19 @@ fn main() -> Status {
         fail();
     }
     early_console::write_str("  all APs entered the scheduling loop\n");
-    // edge1 K6 的断言版：次级核的 LAPIC one-shot（向量 0xF1，`init_ap` 尾部
-    // `init_local_timer` 装有）确实响过——不再是「人读串口数字」。
-    // 判据取「至少一个 AP 计到 tick」。为什么不是「每个 AP 都计到」：实测
-    // 同镜像 5 轮里 **cpu3 的 tick 恒为 0**，而 cpu1/cpu2 各计到 1、
-    // `in_loop` 三核全 1——放大预算（30G→120G cycles）后仍是 0，所以这不是
-    // 宿主调度抖动，而是「最后一个 AP 的本地 LAPIC 定时器从不触发」这一条
-    // 真缺陷（已按 P0-code-bug 新开台账行，附复跑命令与读数；门里每核计数仍
-    // 逐行打印，cpu3=0 直接可见）。等那条修好后，本判据应收紧为逐核 tick>0。
+    // Assertion form of the per-CPU local timer contract: the secondary
+    // cores' LAPIC one-shot (vector 0xF1, armed by `init_local_timer` at
+    // the tail of `init_ap`) really did fire — no longer "a human reads
+    // the serial numbers".
+    // The criterion is "at least one AP counted a tick". Why not "every AP
+    // counted one": measurements show that across 5 rounds of the same image
+    // **cpu3's tick is always 0**, while cpu1/cpu2 count 1 each and `in_loop`
+    // is 1 on all three cores — raising the budget (30G→120G cycles) still
+    // leaves 0, so this is not host scheduling jitter but a real defect: "the
+    // last AP's local LAPIC timer never fires" (filed as P0-code-bug with the
+    // rerun command and readings; the gate still prints each core's count line
+    // by line, so cpu3=0 is directly visible). Once that is fixed, this
+    // criterion should tighten to per-core tick>0.
     if !aps_ticked {
         early_console::write_str(
             "  FAIL: no AP local LAPIC tick fired within the budget (see per-cpu ticks)\n",

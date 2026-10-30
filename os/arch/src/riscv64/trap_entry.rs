@@ -43,7 +43,7 @@
 //! dispatch table). Vectored mode would marginally speed up interrupts
 //! at the cost of a larger vector table. See
 //! `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`
-//! §1.3 (跨特权级的统一流程) for the OS-level trap flow.
+//! §1.3 (the unified flow across privilege levels) for the OS-level trap flow.
 
 use crate::trap_entry::{TrapEntryArch, InterruptVector};
 use minix_types::VirBytes;
@@ -119,9 +119,10 @@ impl TrapEntryArch for Riscv64TrapEntry {
         // Set stvec to the KERNEL leg (the production default: until a
         // `sret` targets U-mode, every trap is a kernel trap — the U-return
         // path re-points stvec at the user leg). The legs are defined in
-        // the `global_asm!` in `trap_stub` (edge1 K9 defused the S-8 link
-        // landmine; E-3ARCHTRAP replaced the K9 diagnostic stub with the
-        // production frame-save legs).
+        // the `global_asm!` in `trap_stub` (the symbol and its definition
+        // live in the same module, so the "declared but never defined"
+        // link landmine cannot reappear; the earlier diagnostic stub has
+        // been replaced by the production frame-save legs).
         let stvec_addr = super::trap_stub::kernel_trap_vector_va().get();
         // SAFETY: CSR write to stvec is safe because:
         // - We are in S-mode (supervisor), required for CSR access.
@@ -157,14 +158,17 @@ mod tests {
     use super::*;
     use crate::trap_entry::TrapEntryArch;
 
-    // 注：原 4 个烟雾测试（trap_entry_init_returns_unit_struct /
+    // Note: the four former smoke tests (trap_entry_init_returns_unit_struct /
     // configure_syscall_is_noop / set_handler_is_noop /
-    // configure_ipc_entry_is_noop_on_riscv64）改为编译期约束检查 —— 验证
-    // Riscv64TrapEntry 满足 TrapEntryArch trait bound。RISC-V 上这些方法
-    // 都是 noop（unit struct + Direct-mode stvec），运行时无可观察行为；
-    // 方法的存在与正确编译即可替代运行时断言。
+    // configure_ipc_entry_is_noop_on_riscv64) became a compile-time
+    // constraint check — verifying that Riscv64TrapEntry satisfies the
+    // TrapEntryArch trait bound. On RISC-V these methods are all no-ops
+    // (unit struct + Direct-mode stvec) with no observable runtime behavior;
+    // the existence and successful compilation of the methods replaces the
+    // runtime assertions.
     //
-    // 运行时正确性（stvec 装载、ecall dispatch）由 QEMU 集成测试覆盖。
+    // Runtime correctness (stvec loading, ecall dispatch) is covered by the
+    // QEMU integration tests.
 
     #[test]
     fn riscv64_trap_entry_arch_impl_satisfies_trait_bound() {

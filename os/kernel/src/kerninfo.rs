@@ -96,9 +96,9 @@ static KERNINFO_PAGE: SyncUnsafeCell<KerninfoPage> = SyncUnsafeCell::new(Kerninf
 /// Physical frame of [`KERNINFO_PAGE`], cached by [`map_and_publish`].
 ///
 /// `0` = not yet established (pre-`init_kerninfo`). Consumers that must
-/// re-map the page into a *foreign* root (VMCTL SetAddrSpace, NK4-C 1.54
-/// B26) read this instead of re-translating the static VA through the
-/// caller's CR3 — the frame never moves, so one boot-time store suffices.
+/// re-map the page into a *foreign* root (VMCTL SetAddrSpace) read this
+/// instead of re-translating the static VA through the caller's CR3 — the
+/// frame never moves, so one boot-time store suffices.
 static KERNINFO_PAGE_PHYS: AtomicU64 = AtomicU64::new(0);
 
 /// Fill the page content from boot information.
@@ -177,7 +177,7 @@ pub fn init_kerninfo(kernel_info: &KernelInfo) {
 
 /// Cached physical frame of the kernel info page, or `None` before
 /// [`init_kerninfo`] established it. Read by the VMCTL SetAddrSpace
-/// replication hook (NK4-C 1.54 B26: C maps `.usermapped` into every
+/// replication hook (C maps `.usermapped` into every
 /// process address space via the VMCTL_KERN_PHYSMAP protocol, i386
 /// memory.c `arch_phys_map`; this rewrite keeps the kernel as the
 /// mapper — see the module doc's mapping-responsibility note).

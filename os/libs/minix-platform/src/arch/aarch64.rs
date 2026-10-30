@@ -19,7 +19,7 @@ use minix_boot::{
 // `switch_address_space` replaces with a per-process root — and the switch
 // issues `tlbi alle1is`, flushing the cached identity entry. Any kernel MMIO
 // access through the low-half identity VA after the first switch therefore
-// faults (NK4-C §1.114: the boot dies on the very first `set_active_root`).
+// faults (observed: the boot dies on the very first `set_active_root`).
 //
 // Fix: map the device MMIO range once into the kernel high half (TTBR1)
 // of the bootstrap root. TTBR1 is pinned to the bootstrap root and never

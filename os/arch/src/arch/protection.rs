@@ -46,8 +46,9 @@
 //!   an associated type, not a fixed enum
 //! - §3.3 (OS-semantic method names) — why methods describe OS needs, not
 //!   architecture concepts
-//! - §1.4 (CPU 视角三问) — the OS-level questions the trait answers
-//! - §1.7 (x86 为什么还保留 GDT) — why GDT/TSS still exist on x86-64
+//! - §1.4 (the three questions from the CPU perspective) — the OS-level
+//!   questions the trait answers
+//! - §1.7 (why x86 still keeps a GDT) — why GDT/TSS still exist on x86-64
 //!   (TSS descriptor must be referenced via GDT entry — this is an ISA
 //!   constraint that is INTENTIONALLY hidden from OS code via the trait)
 
@@ -162,7 +163,7 @@ pub trait ProtectionArch: Sized {
     fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes);
 }
 
-/// Mock implementation for testing — no hardware interaction (FIX-06: R-11).
+/// Mock implementation for testing — no hardware interaction.
 ///
 /// All methods are no-ops. `PrivilegeLevel` uses `u8` to match x86-64's
 /// ring encoding (0=kernel, 3=user) for simplicity.

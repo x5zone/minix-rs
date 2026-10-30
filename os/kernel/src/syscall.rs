@@ -31,7 +31,7 @@ use minix_types::Message;
 pub const NR_SYS_CALLS: usize = 58;
 
 // ── Minix3 error codes used in dispatch ──
-// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Centralized in `crate::errno` to prevent value drift.
 use crate::errno::*;
 
 /// Kernel system call number.
@@ -178,7 +178,7 @@ impl TryFrom<u16> for Syscall {
 /// C: map() macro's assert(call_index >= 0 && call_index < NR_SYS_CALLS)
 /// Design decision D2: const assert replaces C's runtime assert in map() macro.
 const _: () = {
-    // R-16 (2026-08-12): SAFETY: `Syscall` is `#[repr(u16)]` (see enum decl
+    // SAFETY: `Syscall` is `#[repr(u16)]` (see enum decl
     // above), so every discriminant is stored as a u16 and `as u16` is a
     // lossless no-op that cannot truncate.
     assert!(Syscall::Fork as u16 == 0);
@@ -197,13 +197,18 @@ const _: () = {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KcallResult {
     /// Call completed with an **error** return code (C: `return(EPERM)` etc.).
-    /// SYSCALL 腿线上交付时取负（见 `syscall_leg_wire`），用户态 `reply < 0` 拦截。
+    /// Negated on the wire when delivered on the SYSCALL leg (see
+    /// `syscall_leg_wire`), so user space intercepts it with `reply < 0`.
     Ok(i32),
-    /// Call completed with a **data** return code (C: `VMPTYPE_CHECK` 等正值语义码）。
-    /// SYSCALL 腿线上交付时**不取负**——用户态用 `reply == expected_data` 判别，
-    /// 与 C 的 `m_type = result` 直接传递正值等价。NK4-C F10b：与 `Ok(i32)` 区分，
-    /// 使 ENOENT（空队列数据信号）、VMPTYPE_CHECK（1）、GetPdbr 物理地址等正值
-    /// 不被 F10 取负，从而保持 `reply == ENOENT` 等 C 语义的用户态判断有效。
+    /// Call completed with a **data** return code (C: positive semantic
+    /// codes such as `VMPTYPE_CHECK`).
+    /// It is **not negated** when delivered on the SYSCALL leg — user space
+    /// discriminates with `reply == expected_data`, equivalent to C's
+    /// `m_type = result` passing the positive value straight through. This
+    /// is distinguished from `Ok(i32)` so that positive values such as
+    /// ENOENT (an empty-queue data signal), VMPTYPE_CHECK (1), and the
+    /// GetPdbr physical address are not negated, keeping user-space
+    /// judgements built on C semantics (`reply == ENOENT` etc.) valid.
     Data(i32),
     /// Call requires VM assistance (C: VMSUSPEND = -996).
     VmSuspend,
@@ -233,14 +238,18 @@ impl KcallResult {
         }
     }
 
-    /// SYSCALL 腿的**线上值**（F10b）：已按交付约定处理完毕，写入
-    /// `frame.rax`/eager `m_type`/`set_ipc_return_code` 时直接使用，不再取负。
+    /// The **wire value** on the SYSCALL leg: already processed per the
+    /// delivery convention, so writing it into `frame.rax` / eager `m_type`
+    /// / `set_ipc_return_code` uses it directly without negating again.
     ///
-    /// - `Ok(code)`：错误码，线上取负（`syscall_leg_wire`）→ 用户态 `reply < 0` 拦截。
-    /// - `Data(v)`：数据码（VMPTYPE_CHECK、ENOENT-as-empty、GetPdbr 地址等正值），
-    ///   原样传递 → 用户态 `reply == expected` 判别，与 C 的 `m_type = result` 同义。
-    /// - `BadCall`/`CallDenied`：簿记错误码，同样取负。
-    /// - `NoReply`/`VmSuspend`：`None`（本腿不交付回执）。
+    /// - `Ok(code)`: error code; negated on the wire
+    ///   (`syscall_leg_wire`) → user space intercepts with `reply < 0`.
+    /// - `Data(v)`: data code (positive values such as VMPTYPE_CHECK,
+    ///   ENOENT-as-empty, GetPdbr addresses); passed through unchanged →
+    ///   user space discriminates with `reply == expected`, the same
+    ///   meaning as C's `m_type = result`.
+    /// - `BadCall`/`CallDenied`: bookkeeping error codes, negated as well.
+    /// - `NoReply`/`VmSuspend`: `None` (this leg delivers no reply).
     pub(crate) fn reply_wire(&self) -> Option<i32> {
         match self {
             KcallResult::Ok(ret) => Some(syscall_leg_wire(*ret)),
@@ -252,21 +261,27 @@ impl KcallResult {
     }
 }
 
-/// NK4-C F10（P0-wire）：SYSCALL 腿（kernel_call）回执的**线上形式**。
+/// The **wire form** of a SYSCALL leg (kernel_call) reply.
 ///
-/// 内核内部统一携带正 errno（C `do_privctl` 等 handler 的 `return(EPERM)`
-/// 同形）；但交付给用户态的那一腿按本项目 ABI 契约走**负 errno**——
-/// `servers/rs/src/trap_api.rs` 头注第 2 条「`sys_*` 内核调用 wrapper：
-/// 裸 i32，负 = errno」，用户态 21+ 处 `reply < 0` 门控都建在这条契约上
-///（s13b 实证：privctl SET_SYS 的 EFAULT=14 以正数上线后被 `< 0` 门控
-/// 吞掉，RS 静默把失败当成功，boot 尾 10 服务器卡 NO_PRIV）。
+/// Inside the kernel everything carries positive errno values (the same
+/// shape as C handlers such as `do_privctl` returning `(EPERM)`); but the
+/// leg that delivers to user space follows the project ABI contract of
+/// **negative errno** — `servers/rs/src/trap_api.rs` header note item 2,
+/// "`sys_*` kernel-call wrapper: raw i32, negative = errno", on which the
+/// 21+ user-space `reply < 0` gates are built (hardware evidence: the
+/// privctl SET_SYS EFAULT=14 was delivered as a positive value and
+/// swallowed by the `< 0` gate, so RS silently treated the failure as
+/// success and 10 servers ended boot stuck at NO_PRIV).
 ///
-/// 与 C 的关系如实登记：C 线上是正 errno + 调用方 `!= OK` 判定
-///（system.c:79 `msg->m_type = result` + libsys 全仓 `r != OK`）；minix-rs
-/// 用户态选择负 errno 契约后，腿内取负是两边自洽的最小改动面（改动点
-/// 集中在这一条腿的交付侧，而不是散落的用户态判定）。int33 陷阱腿
-/// 不取负——它的 rax 车道携带 IPC 状态位（正 bitfield，见
-/// `kernel_call_finish_ipc_door` 的门纪律文档）。
+/// The relationship to C is recorded honestly: C's wire form is positive
+/// errno plus caller checks of `!= OK` (system.c:79 `msg->m_type = result`
+/// plus `r != OK` throughout libsys); once minix-rs user space chose the
+/// negative-errno contract, negating inside this leg is the minimal
+/// consistent change on both sides (the change is concentrated on the
+/// delivery side of this one leg rather than scattered across user-space
+/// checks). The int33 trap leg does not negate — its rax lane carries IPC
+/// status bits (a positive bitfield; see the gate-discipline documentation
+/// of `kernel_call_finish_ipc_door`).
 pub(crate) const fn syscall_leg_wire(code: i32) -> i32 {
     code.wrapping_neg()
 }
@@ -290,7 +305,7 @@ pub(crate) const fn syscall_leg_wire(code: i32) -> i32 {
 pub trait ArchSyscall {
     /// SYS_DEVIO — port I/O (x86-only). C: do_devio.c
     ///
-    /// K20: carries `proc_table` (uniform second slot).
+    /// Carries `proc_table` (uniform second slot).
     fn dispatch_devio(
         caller_nr: crate::proc::ProcNr,
         proc_table: &mut ProcessTable,
@@ -314,7 +329,7 @@ pub trait ArchSyscall {
 
     /// SYS_VDEVIO — vectored port I/O (x86-only). C: do_vdevio.c
     ///
-    /// K20: carries `proc_table` (uniform second slot) — the converted
+    /// Carries `proc_table` (uniform second slot) — the converted
     /// callee re-borrows the caller slot from it for the VMSUSPEND tail.
     fn dispatch_vdevio(
         caller_nr: crate::proc::ProcNr,
@@ -338,7 +353,7 @@ pub trait ArchSyscall {
 
     /// SYS_READBIOS — read BIOS memory (x86-only). C: do_readbios.c
     ///
-    /// K20: carries `proc_table` (see `dispatch_vdevio`).
+    /// Carries `proc_table` (see `dispatch_vdevio`).
     fn dispatch_readbios(
         caller_nr: crate::proc::ProcNr,
         proc_table: &mut ProcessTable,
@@ -473,11 +488,12 @@ impl ArchSyscall for DefaultSyscall {}
 /// registers, `minix3/minix/include/minix/padconf.h` — there is no
 /// aarch64/riscv64 counterpart to port), so returning `EBADREQUEST` for
 /// every arch-specific call on those architectures **is the correct
-/// behavior, not a pending implementation**. (P-X86-04 注释腐化勘误
-/// 2026-10-06：旧文写「not yet implemented，见 todo.md B-X」，而
-/// B-X 已关闭——两者矛盾已按上游定谳收敛为本段。若未来某架构真有
-/// 专属调用面，按 `ArmSyscall` 的样式新增一个显式类型，而非复用
-/// `DefaultSyscall`。）
+/// behavior, not a pending implementation**. (Note on stale commentary:
+/// older text said "not yet implemented, see the todo list", but that entry
+/// had already been closed — the contradiction was converged into this
+/// paragraph per upstream ground truth. If some architecture ever really
+/// has an architecture-specific call surface, add an explicit type in the
+/// style of `ArmSyscall` instead of reusing `DefaultSyscall`.)
 #[cfg(target_arch = "x86_64")]
 pub type CurrentArchSyscall = X86_64Syscall;
 #[cfg(target_arch = "arm")]
@@ -511,7 +527,7 @@ pub type CurrentArchSyscall = DefaultSyscall;
 /// `kernel_call_dispatch` + `kernel_call_finish`. The only exception
 /// is the `VmSuspend` path in `kernel_call_finish`, which releases
 /// the BKL before waiting for VM (see `kernel_call_finish` docs).
-/// D-8: `kernel_call()` wrapper — C system.c:136-163.
+/// `kernel_call()` wrapper — C system.c:136-163.
 ///
 /// The full kernel call sequence: save user msg address → copy message
 /// from user space (TOCTOU defense: the kernel works on its own copy,
@@ -553,7 +569,7 @@ pub fn kernel_call(
         Err(_) => {
             // C system.c:152-155 — printf WARNING + cause_sig(SIGSEGV).
             // Rust: route to cause_signal(SIGSEGV) — same signal closed
-            // loop as D-45/D-43 in process_misc_flags.
+            // loop as in process_misc_flags.
             crate::syscall_signal::cause_signal(
                 caller_nr,
                 crate::syscall_signal::SIGSEGV,
@@ -574,7 +590,7 @@ pub fn kernel_call(
     // C system.c:149 — dispatch.
     let result = kernel_call_dispatch(caller_nr, proc_table, &mut msg, priv_table, clock_state);
 
-    // C system.c:160 — kbill_kcall = caller (D-9, inside dispatch).
+    // C system.c:160 — kbill_kcall = caller (inside dispatch).
 
     // C system.c:162 — finish (VMSUSPEND / reply / BKL release).
     kernel_call_finish(caller_nr, proc_table, &msg, result, priv_table);
@@ -589,9 +605,9 @@ pub fn kernel_call_dispatch(
     clock_state: &mut ClockState,
 ) -> KcallResult {
     // Acquire BKL — C: BKL_LOCK() in mpx.S kernel_call_entry_common
-    // R-03: Keep the guard alive and derive a BklSection witness for
+    // Keep the guard alive and derive a BklSection witness for
     // compile-time BKL proof on global accessor calls (irq_manager_with, etc.).
-    // R-05/B1: BklGuard is RAII (Drop releases BKL); transfer() hands
+    // BklGuard is RAII (Drop releases BKL); transfer() hands
     // ownership to the ambient held-BKL scope because BKL must stay held
     // until kernel_call_finish() releases it.
     let bkl_guard = crate::smp::bkl_lock();
@@ -599,7 +615,7 @@ pub fn kernel_call_dispatch(
         let bkl_section = bkl_guard.section();
         kernel_call_dispatch_inner(caller_nr, proc_table, msg, priv_table, clock_state, &bkl_section)
     };
-    // D-9 (C system.c:160) — the kernel call is in flight for `caller`:
+    // C system.c:160 — the kernel call is in flight for `caller`:
     // attribute kernel time to it at the next context_stop. C sets the
     // marker after dispatch, before finish, unconditionally (a failed
     // call's kernel work is still the caller's); kernel_call_resume does
@@ -628,7 +644,7 @@ pub(crate) fn kernel_call_dispatch_inner(
     clock_state: &mut ClockState,
     bkl_section: &crate::smp::BklSection<'_>,
 ) -> KcallResult {
-    // R-16 (2026-08-12): SAFETY: `msg.m_type` is `i32`; the cast keeps the low
+    // SAFETY: `msg.m_type` is `i32`; the cast keeps the low
     // 16 bits. All legitimate kernel-call numbers are `< NR_SYS_CALLS` which
     // fits in u16, so valid calls survive intact. Any out-of-range (or
     // truncated) value is rejected by `Syscall::try_from` below as `BadCall`,
@@ -764,13 +780,13 @@ pub fn dispatch_ipc_entry(
         None => return KcallResult::Ok(crate::errno::EBADCALL),
     };
 
-    // Extract caller_idx before borrowing the procs slice (FIX-21, Phase
-    // 1C: avoids split-borrow aliasing).
+    // Extract caller_idx before borrowing the procs slice (avoids
+    // split-borrow aliasing).
     let caller_idx = crate::proc_table::nr_to_idx(caller_nr)
         .expect("dispatch_ipc_entry: caller_nr out of range") as usize;
 
     // Acquire BKL — C: BKL_LOCK() in mpx.S ipc_entry assembly.
-    // R-05/B1: the guard is RAII; `transfer()` hands ownership to the
+    // the guard is RAII; `transfer()` hands ownership to the
     // ambient held-BKL scope because BKL must stay held until
     // kernel_call_finish() releases it.
     let bkl_guard = crate::smp::bkl_lock();
@@ -855,7 +871,7 @@ pub(crate) fn dispatch_ipc(
     // Read caller fields by index (avoiding split-borrow issue — the caller
     // lives inside `proc_table`, so we derive it by index and copy the
     // fields out before constructing the `IpcEngine` over the process
-    // slice). FIX-21, Phase 1C: refactored from
+    // slice). Refactored from
     // (caller: &mut KProcess, proc_table) to (procs, caller_idx); this
     // variant takes `ProcessTable` directly so the delay-end signal
     // protocol below can run scheduler-aware.
@@ -881,7 +897,7 @@ pub(crate) fn dispatch_ipc(
         }
         _ => {
             // Sync IPC: r2 = src_dst endpoint
-            // R-16 SAFETY: p_defer.r2 is `usize`; casting to i32 preserves the
+            // SAFETY: p_defer.r2 is `usize`; casting to i32 preserves the
             // low 32 bits. Endpoints are i32 in Minix3, so valid endpoints
             // survive intact. Invalid values are caught by IpcEngine's
             // endpoint validity check (Layer 1: idx_by_endpoint returns None).
@@ -897,16 +913,17 @@ pub(crate) fn dispatch_ipc(
     // block ends that borrow so the `sig_delay_done` protocol below can
     // touch `proc_table` again (the scheduler-aware `cause_signal`).
     let (outcome, pending_sig_delay, woken_target) = {
-        // D-16: wire the global IPC filter pool. A1 chain root (D-63②):
-        // this is the kernel_call dispatch path — the BKL is held by the
+        // Wire the global IPC filter pool. This is the kernel_call dispatch
+        // path — the BKL is held by the
         // kernel_call contract (kernel_call_dispatch acquires it); the
         // fn signature cannot carry the witness, so the root takes
-        // `assume_held` (debug builds assert the lock). S-8 will thread a
-        // real witness from the trap entry.
+        // `assume_held` (debug builds assert the lock). A future change will
+        // thread a real witness from the trap entry.
         let section = unsafe { crate::smp::BklSection::assume_held() };
-        // C-25（C `proc.c:607`）：`do_ipc` 入口无条件把 kbill_ipc 记到调用者
-        // ——在权限与跟踪检查**之前**（C 的位置在 do_ipc 第一行），这样连
-        // 被拒的 IPC 的核内时间也算在发起者头上。
+        // C: proc.c:607 — the `do_ipc` entry unconditionally charges
+        // kbill_ipc to the caller **before** the permission and trace checks
+        // (C does this on do_ipc's first line), so even rejected IPC's
+        // kernel time is accounted to the originator.
         crate::set_kbill_ipc_with(caller_nr, &section);
         let mut engine = IpcEngine::new(proc_table.procs_slice_mut(), priv_table, &KernelUserCopy)
             .with_filter_pool(crate::ipc_filter_pool_with(&section));
@@ -925,7 +942,8 @@ pub(crate) fn dispatch_ipc(
         // The engine may also have WOKEN a parked process (clearing
         // RTS_RECEIVING/RTS_SENDING with the primitive setter) — take the
         // record so the ProcessTable-level code below can enqueue it.
-        // 1.12：收集全部 wake 记录（多唤醒不互覆）。
+        // Collect every wake record (multiple wakes must not overwrite
+        // each other).
         let mut woken = [None; 4];
         for slot in woken.iter_mut() {
             *slot = engine.take_wake_target();
@@ -941,9 +959,10 @@ pub(crate) fn dispatch_ipc(
         IpcOutcome::Delivered => KcallResult::Ok(OK),
         IpcOutcome::Blocked => KcallResult::NoReply,
         IpcOutcome::Error(e) => {
-            // NK4-C 1.10j 取证探针（task1-close 裁决删除）：IPC 错误返回
-            // 现场（caller 端点 + 错误类别）——SCHED/PM「receive 连续失败」
-            // fail-fast 的错误类别定位。
+            // Forensic probe on the IPC error return site (caller endpoint +
+            // error class) — localizes the error class behind the
+            // SCHED/PM "receive keeps failing" fail-fast. A task close ruled
+            // it deleted.
             #[cfg(not(feature = "mock"))]
             {
                 use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
@@ -991,9 +1010,10 @@ pub(crate) fn dispatch_ipc(
     // Complete the wake ENQUEUE half for a process the engine unparked
     // (C: RTS_UNSET's enqueue — see ProcessTable::enqueue_if_woken). Runs
     // under the same BKL discipline as sig_delay_done above.
-    // 1.12：engine 的 wake 记录为 4 槽（同一次 syscall 可能唤醒多个
-    // 进程——sendrec 的 send 腿 + receive 腿 drain），必须全部入队；
-    // 旧的单次 if let 丢多 wake。
+    // The engine's wake record has 4 slots (one syscall may wake several
+    // processes — the send leg and the receive-leg drain of sendrec), and
+    // all of them must be enqueued; the old single if-let dropped multiple
+    // wakes.
     for woken_nr in woken_target.into_iter().flatten() {
         proc_table.enqueue_if_woken(woken_nr);
     }
@@ -1020,7 +1040,7 @@ fn dispatch_exit(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_ta
 /// Sets scheduling parameters (priority, quantum, CPU) for a process.
 /// This is an internal kernel call used by the scheduler process.
 ///
-/// # Implementation status (FIX-25, 2026-08-13)
+/// # Implementation status
 ///
 /// Fully implemented — all 4 validation steps + `sched_proc()` body.
 ///   1. **SYS_PROC permission check**: `caller_has_sys_proc(caller)`.
@@ -1041,14 +1061,15 @@ fn dispatch_exit(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_ta
 ///
 /// Earlier revisions of this doc comment stated "Returns ENOSYS" — that was
 /// stale: the body has called `sched_proc()` since 2026-06-16. The doc is
-/// now aligned with the actual implementation (Pattern 11: 设计与实现一致).
+/// now aligned with the actual implementation (design and implementation
+/// agree).
 fn dispatch_schedule(
     caller_nr: crate::proc::ProcNr,
     proc_table: &mut ProcessTable,
     msg: &Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    // FIX-25: Use `caller_has_sys_proc_with_table` (consults the caller-provided
+    // Use `caller_has_sys_proc_with_table` (consults the caller-provided
     // `priv_table`) instead of the legacy `caller_has_sys_proc` (which builds a
     // fresh empty `PrivTable::new()` internally and always returns false,
     // breaking all privileged callers — same latent bug as `dispatch_privctl`).
@@ -1060,10 +1081,11 @@ fn dispatch_schedule(
     }
 
     // C: do_schedule.c:14-27 — extract parameters from mess_lsys_krn_schedule.
-    // IMPORTANT: Do NOT use the M1 overlay here. The C struct layout is:
+    // IMPORTANT: Do NOT use the `MessageM1` overlay here. The C struct layout is:
     //   endpoint@0, quantum@4, priority@8, cpu@12, niced@16
-    // while MessageM1 has m1p1@16 (would read `niced` as `cpu`) — a P1
-    // field-mapping bug. Always use the dedicated `MessLsysKrnSchedule`.
+    // while MessageM1 has m1p1@16 (would read `niced` as `cpu`) — a
+    // priority-1 field-mapping bug. Always use the dedicated
+    // `MessLsysKrnSchedule`.
     msg.debug_check_m_type_any(&[Syscall::Schedule as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let sched = unsafe { msg.m_u.m_lsys_krn_schedule };
@@ -1105,7 +1127,7 @@ fn dispatch_schedule(
     // ("keep current") to Option. Negative values other than -1 are rejected
     // early to match C semantics (system.c:644-648).
     //
-    // R-16-fix (2026-08-12): The original `v as u8` silently truncated
+    // The original `v as u8` silently truncated
     // priorities ≥ 256. Combined with the downstream `sched_proc` check
     // (`v > MIN_USER_Q`), this created a privilege escalation: `priority = 256`
     // truncated to `0` (TASK_Q, highest priority) and passed validation.
@@ -1125,7 +1147,7 @@ fn dispatch_schedule(
     };
     let cpu_opt = if sched.cpu == -1 { None } else { Some(sched.cpu as u32) };
 
-    // D-52: sched_proc takes the table (scheduler-aware rts_set/rts_unset
+    // sched_proc takes the table (scheduler-aware rts_set/rts_unset
     // dequeue/re-enqueue the process around the parameter update — C
     // system.c:671-698 RTS_SET/RTS_UNSET semantics).
     match crate::sched::sched_proc(
@@ -1172,13 +1194,17 @@ fn copy_struct_from_user(
         endpoint: caller_endpt,
         offset: VirBytes(user_ptr),
     };
-    // NK4-C F10c：kernel_buf 是内核栈上的局部变量，VA 在 higher-half 段
-    // [KERN_VIRT_BASE, KERNEL_DIRECT_MAP_BASE)——`virt_to_phys` 的 DM 算术
-    // 在该段越界得到错误 PA（`0xffff7fff...` 形态）→ `Completed(Err(_))`
-    // → EFAULT。改为 AddressRef::Process：caller 的 CR3 同时映射了内核
-    // higher-half（SYSCALL 不切页表），`resolve_physical` 走真实页表得正确
-    // PA，`kernel_phys_to_virt` 再经 DM 访问同一物理内存。语义等价 C
-    // `vircopyf(VMIO_READ, user_ptr, size, &priv)`（&priv 是内核栈地址）。
+    // kernel_buf is a local variable on the kernel stack whose VA lies in
+    // the higher-half range [KERN_VIRT_BASE, KERNEL_DIRECT_MAP_BASE) —
+    // `virt_to_phys`'s DM arithmetic underflows to a wrong PA in that range
+    // (`0xffff7fff...` shape) → `Completed(Err(_))` → EFAULT. Use
+    // AddressRef::Process instead: the caller's CR3 also maps the kernel
+    // higher-half (SYSCALL does not switch page tables), so
+    // `resolve_physical` walks the real page table to the correct PA, and
+    // `kernel_phys_to_virt` then reaches the same physical memory through
+    // the DM. Semantically equivalent to C's
+    // `vircopyf(VMIO_READ, user_ptr, size, &priv)` (&priv is a kernel-stack
+    // address).
     let dst = AddressRef::Process {
         endpoint: caller_endpt,
         offset: VirBytes(kernel_buf as u64),
@@ -1485,14 +1511,14 @@ pub(crate) fn clear_endpoint(
 ///
 /// # Message fields (C: mess_lsys_krn_sys_privctl, ipc.h:1227-1235)
 ///
-/// Maps to M1 overlay:
+/// Field mapping (`MessageM1` layout):
 /// - `m1i1` = request (SYS_PRIV_* sub-command)
 /// - `m1i2` = endpt (target endpoint)
 /// - `m1p1` = arg_ptr (pointer to argument data in caller's address space)
 /// - `m1p2` = phys_start (physical address start, QUERY_MEM only)
 /// - `m1p3` = phys_len (physical address length, QUERY_MEM only)
 ///
-/// # Sub-commands implemented (FIX-25, Phase 5+6)
+/// # Sub-commands implemented
 ///
 /// - `SYS_PRIV_ALLOW` (1): clear RTS_NO_PRIV on target
 /// - `SYS_PRIV_DISALLOW` (2): set RTS_NO_PRIV on target
@@ -1517,7 +1543,7 @@ fn dispatch_privctl(
 ) -> KcallResult {
     // C: do_privctl.c:47 — caller must be SYS_PROC
     //
-    // FIX-25: Use `caller_has_sys_proc_with_table` (which consults the
+    // Use `caller_has_sys_proc_with_table` (which consults the
     // caller-provided `priv_table`) instead of the legacy
     // `caller_has_sys_proc` (which builds a fresh empty `PrivTable::new()`
     // internally and always returns false, breaking all privileged callers).
@@ -1528,9 +1554,9 @@ fn dispatch_privctl(
         return KcallResult::Ok(EPERM);
     }
 
-    // Parse message fields via M1 overlay.
+    // Parse message fields via the `MessageM1` overlay.
     // C: mess_lsys_krn_sys_privctl { request, endpt, arg_ptr, phys_start, phys_len }
-    // Maps to M1: m1i1=request, m1i2=endpt, m1p1=arg_ptr, m1p2=phys_start, m1p3=phys_len
+    // Fields: m1i1=request, m1i2=endpt, m1p1=arg_ptr, m1p2=phys_start, m1p3=phys_len
     msg.debug_check_m_type_any(&[Syscall::Privctl as i32]);
     // SAFETY: m_type verified above (debug) / guaranteed by dispatch (release).
     let m1 = unsafe { &msg.m_u.m_m1 };
@@ -1625,11 +1651,13 @@ fn dispatch_privctl(
         // C: do_privctl.c:270-273 — printf + return EINVAL
         _ => KcallResult::Ok(EINVAL),
     };
-    // NK4-C 1.3 取证探针（task1-close 裁决删除）：boot 尾停点裁决——
-    // s13a tail-dump 坐死 10 个服务器终态 flags=0x80（NO_PRIV 未清），
-    // 而 RS 侧 post-privctl 照打（`?` 未拦截）。本探针打出每次 privctl
-    // 分发的 request/target/结果/目标终态 flags，分清「Allow 返回 EPERM
-    // 但错误没传到 RS」与「Allow 成功但事后被重设」两种形态。
+    // Forensic probe for the boot-end stall: the tail dump pinned 10
+    // servers with final flags=0x80 (NO_PRIV not cleared), while the RS side
+    // kept logging post-privctl (`?` was not intercepted). This probe prints
+    // each privctl dispatch's request/target/result/target final flags to
+    // separate "Allow returned EPERM but the error never reached RS" from
+    // "Allow succeeded but the flags were reset afterwards". A task close
+    // ruled it deleted.
     #[cfg(not(feature = "mock"))]
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -1678,7 +1706,7 @@ fn privctl_allow(
     }
     // C: RTS_UNSET(rp, RTS_NO_PRIV) — clear + enqueue when the process
     // transitions non-runnable → runnable. A raw flag clear left the woken
-    // server runnable but off the run queue forever (real machine NK4-C 1.3:
+    // server runnable but off the run queue forever (on real machine:
     // 8 servers runnable=yes queued=no after Allow returned OK).
     proc_table.rts_unset(target_nr, crate::proc::RtsFlagsBits::NO_PRIV);
     KcallResult::Ok(0)
@@ -1923,9 +1951,10 @@ fn privctl_set_sys(
                 && priv_table.update_priv(actual_id, &priv_id).is_err() {
                     return KcallResult::Ok(EINVAL);
                 }
-            // NK4-C 1.10y 取证探针（task1-close 裁决删除）：SET_SYS 落点
-            // ——目标端点 + 覆盖后的生效 flags（sched setalarm EPERM 判定：
-            // RS 下发的 SRV_F(0x12) 是否真的落到 priv 槽）。
+            // Forensic probe of the SET_SYS landing: target endpoint plus
+            // the effective flags after the overwrite (for the scheduler
+            // setalarm EPERM ruling: did the SRV_F(0x12) sent by RS really
+            // land in the priv slot?). A task close ruled it deleted.
             #[cfg(not(feature = "mock"))]
             {
                 use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
@@ -2146,7 +2175,7 @@ fn dispatch_irqctl(
     //
     // The global `IrqManager<CurrentInterruptController>` is acquired via
     // `crate::irq_manager_with(bkl_section)`. The BklSection witness proves
-    // BKL is held (R-03 compile-time capability token). The same pattern is
+    // BKL is held (compile-time capability token). The same pattern is
     // used by `dispatch_hardware_irq` (irq_manager.rs:215).
     //
     // C: do_irqctl.c — full IRQ control handler.
@@ -2189,7 +2218,7 @@ fn dispatch_abort(
 ) -> KcallResult {
     // C: do_abort.c:21 — int how = m_ptr->m_lsys_krn_sys_abort.how
     // The abort message layout (ipc.h:1115-1119) is a single int `how` at
-    // offset 0, which maps to M1's m1i1 field on all architectures.
+    // offset 0, which maps to `MessageM1`'s m1i1 field on all architectures.
     let m1 = unsafe { &msg.m_u.m_m1 };
     let how: i32 = m1.m1i1;
 
@@ -2244,7 +2273,7 @@ fn dispatch_setgrant(
     msg: &Message,
     priv_table: &mut PrivTable,
 ) -> KcallResult {
-    // C: do_setgrant.c:22 — check RTS_NO_PRIV (K20: slot read).
+    // C: do_setgrant.c:22 — check RTS_NO_PRIV (slot read).
     if proc_table
         .get(caller_nr)
         .is_some_and(|c| c.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV))
@@ -2316,7 +2345,7 @@ fn dispatch_vmctl(
     // Permission check: only system processes may call VMCTL.
     // C: implicit — only VM calls this, and VM always has SYS_PROC.
     //
-    // FIX-25 (2026-08-14): use `caller_has_sys_proc_with_table` — the legacy
+    // Use `caller_has_sys_proc_with_table` — the legacy
     // `caller_has_sys_proc` builds a fresh empty `PrivTable::new()` internally
     // and always returns false, rejecting every privileged caller (same
     // latent bug as `dispatch_privctl`/`dispatch_schedule`, now fixed).
@@ -2358,13 +2387,14 @@ fn dispatch_vmctl(
     let param = match VmCtlParam::try_from(param_raw) {
         Ok(p) => p,
         Err(()) => {
-            // X-7 对齐（P-ALL-05，2026-10-06 定谳）：C 的未知 VMCTL param
-            // 落到 switch 收尾的 arch_do_vmctl()，其无匹配臂返回 EINVAL
-            // （minix3/minix/kernel/arch/i386/arch_do_vmctl.c:56 收尾
-            // `return EINVAL`；本仓 i386 专属 VMCTL 已在 32-bit legacy
-            // 臂返回 ENOSYS——那是有真源形状的臂，与本臂不同）。此前
-            // 「ENOSYS 区分未识别 vs 合法未实现」的论证不成立：上游对
-            // 两者一律 EINVAL。
+            // C's unknown VMCTL param falls through to arch_do_vmctl() at
+            // the end of the switch, whose no-match arm returns EINVAL
+            // (minix3/minix/kernel/arch/i386/arch_do_vmctl.c:56 ends with
+            // `return EINVAL`; this repo's i386-only VMCTL returns ENOSYS
+            // from the 32-bit legacy arm — that arm has a real upstream
+            // shape, unlike this one). The earlier argument that "ENOSYS
+            // distinguishes unrecognized from valid-but-unimplemented" does
+            // not hold: upstream returns EINVAL for both.
             return KcallResult::Ok(EINVAL);
         }
     };
@@ -2409,7 +2439,7 @@ fn dispatch_vmctl(
 
         // ── ClearMapCache: clear cached mappings ──
         // C: do_vmctl.c:161-164 — mem_clear_mapcache()
-        // WONTFIX (FIX-24): mem_clear_mapcache() is a 32-bit-only optimization
+        // Not implemented on 64-bit: mem_clear_mapcache() is a 32-bit-only optimization
         // that flushes the kernel's cached physical-to-virtual mapping table
         // used by the 32-bit Direct Map implementation. On 64-bit minix-rs,
         // the Direct Map covers all physical memory with a static offset
@@ -2422,10 +2452,13 @@ fn dispatch_vmctl(
         // C: arch_do_vmctl.c:48-50 → setcr3(p, SVMCTL_PTROOT, SVMCTL_PTROOT_V)
         // (see vmctl_set_addr_space for the full 5-step C mapping and
         // the vm_running C-bug correction note)
-        // 续-311 内核代读旁路（[ARCH: riscv-vmddm]）：KDM 直读 m1p1 处
-        // u64 回填 m1p1。仅 riscv64 生产形态使用（VM 的 VmDm 读钩子）。
-        // 续-311 内核代写/零填旁路（[ARCH: riscv-vmddm] 同族）：KDM 直写
-        // m1p1 处 u64（值=m1p2）/整页零填。仅 riscv64 生产形态使用。
+        // Kernel read-on-behalf bypass (riscv-vmddm arch note): KDM
+        // directly reads a u64 at m1p1 and writes it back to m1p1. Only the
+        // riscv64 production form uses this (VM's VmDm read hook).
+        // Kernel write-on-behalf / zero-fill bypass (same riscv-vmddm
+        // family): KDM directly writes a u64 at m1p1 (value = m1p2) or
+        // zero-fills a whole page. Only the riscv64 production form uses
+        // this.
         VmCtlParam::PteWrite => {
             #[cfg(all(target_arch = "riscv64", not(test)))]
             {
@@ -2434,8 +2467,9 @@ fn dispatch_vmctl(
                 let val = unsafe { msg.m_u.m_m1.m1p2 } as u64;
                 unsafe { ((KDM + pa) as *mut u64).write_volatile(val) };
                 unsafe { core::arch::asm!("sfence.vma zero, zero") };
-                // SD-10 候选 3 改形仪器：网关代写槽级记录（静点由 timer
-                // 臂排水复读；见 minix_arch::ptwb 模块文档）。
+                // Slot-level record of gateway writes on behalf (drained
+                // and re-read at static points by the timer arm; see the
+                // minix_arch::ptwb module documentation).
                 minix_arch::ptwb::record_slot(pa, val);
                 KcallResult::Ok(0)
             }
@@ -2484,12 +2518,12 @@ fn dispatch_vmctl(
         // ── Arch-specific commands: GetPdbr, FlushTlb, InvlPg ──
         // C: handled by arch_do_vmctl() in arch_do_vmctl.c:38-65
         //
-        // FIX-24 (Phase 5): Implemented via `TlbArch` trait (flush_all /
+        // Implemented via `TlbArch` trait (flush_all /
         // flush_addr) + direct field read (GetPdbr). Three architectures
         // covered: x86_64 (CR3/INVLPG), aarch64 (TLBI ALLE1IS/VAAE1IS),
         // riscv64 (SFENCE.VMA).
         //
-        // V13-P2-1 (02-stage-vm): the VM server has ZERO callers of
+        // The VM server has ZERO callers of
         // FlushTlb/InvlPg — that is by design, not a missing wire. C's VM
         // flushed itself at 4 sites (pagetable.c:119/255/319/430) because it
         // aliased process memory into its own address space; minix-rs's
@@ -2564,11 +2598,13 @@ fn vmctl_clear_page_fault(
         // C: assert(RTS_ISSET(p, RTS_PAGEFAULT)) — convert to error return
         return KcallResult::Ok(EINVAL);
     }
-    // TLB 失效半的时点说明（2026-09-22）：INVLPG 只击落当前 CR3 标签的
-    // 非 G 项——clear 时点执行在 VM 的 CR3 上下文里，杀不到故障进程自己
-    // 的陈旧项。真正的 invlpg 在 finish_and_restore（被恢复进程的 CR3 已
-    // 激活、iretq 之前）以其 p_fault_addr 执行；本臂只负责保留
-    // p_fault_addr（不再清 None）供恢复点使用。
+    // Timing note for the TLB-invalidation half: INVLPG only evicts
+    // non-global entries tagged with the current CR3 — the clear point runs
+    // in VM's CR3 context, so it cannot kill the faulting process's own
+    // stale entry. The real invlpg runs in finish_and_restore (with the
+    // resumed process's CR3 active, before iretq) using its p_fault_addr;
+    // this arm only preserves p_fault_addr (no longer clearing it to None)
+    // for the resume point.
     proc_table.rts_unset(target_nr, crate::proc::RtsFlagsBits::PAGEFAULT);
     KcallResult::Ok(0)
 }
@@ -2641,7 +2677,7 @@ fn vmctl_memreq_reply(
 /// VmInhibitSet — set RTS_VMINHIBIT on the target.
 ///
 /// C: do_vmctl.c:119-131.
-/// D-35 (C do_vmctl.c:118-130): if SMP and target on a different
+/// C: do_vmctl.c:118-130: if SMP and target on a different
 /// CPU, send IPI via schedule_vminhibit; else set locally.
 /// Single-CPU build: always local (target_cpu == current_cpu).
 ///
@@ -2653,7 +2689,7 @@ fn vmctl_memreq_reply(
 /// RTS_VMINHIBIT in the IPI handler, no FLUSH_TLB), so this
 /// unconditional set is what completes the remote path — without it a
 /// process parked over IPI would resume with stale translations
-/// (edge1 K3 / E-VMTLB 余件 (a)).
+/// (the remaining remote-IPI path).
 fn vmctl_vminhibit_set(
     proc_table: &mut crate::proc_table::ProcessTable,
     target_nr: ProcNr,
@@ -2693,15 +2729,12 @@ fn vminhibit_park_local(proc_table: &mut crate::proc_table::ProcessTable, target
 /// Request a TLB refresh at the target's next restore.
 /// C: do_vmctl.c:133-135 — `p->p_misc_flags |= MF_FLUSH_TLB`, outside
 /// the local/IPI if/else. Consumed by the pick-point/restore pair
-/// (`needs_tlb_refresh` / `consume_flush_tlb_flag`, E-VMTLB 机制半).
+/// (the mechanism half: `needs_tlb_refresh` / `consume_flush_tlb_flag`).
 fn mark_flush_tlb(proc_table: &mut crate::proc_table::ProcessTable, target_nr: ProcNr) {
     if let Some(p) = proc_table.get_mut(target_nr) {
         p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
     }
 }
-
-/// NK4-A 首亮取证路标（task1-close 裁决删除）：每个调度抑制腿走完后
-
 
 /// VmInhibitClear — clear RTS_VMINHIBIT on the target.
 ///
@@ -2710,8 +2743,8 @@ fn mark_flush_tlb(proc_table: &mut crate::proc_table::ProcessTable, target_nr: P
 ///
 /// The clear goes through `rts_unset` (C: RTS_UNSET carries the
 /// ready-queue check, proc.h:216-224): without it a process whose last
-/// blocking bit was VMINHIBIT never reaches the run queue (NK4-A fix24
-/// found the same shape on BootInhibitClear below).
+/// blocking bit was VMINHIBIT never reaches the run queue (the same shape
+/// was found on BootInhibitClear below).
 fn vmctl_vminhibit_clear(
     proc_table: &mut crate::proc_table::ProcessTable,
     target_nr: ProcNr,
@@ -2735,7 +2768,7 @@ fn vmctl_vminhibit_clear(
 /// processes were already released from PROC_STOP by bsp_finish_booting,
 /// so clearing BOOTINHIBIT is the event that makes them runnable — a
 /// bare flag clear left every exec'd boot process parked forever
-/// (NK4-A fix24 forensics 2026-09-21: VM's `exec X ok` landmarks all
+/// (forensics: VM's `exec X ok` landmarks all
 /// passed, no boot process ever reached `_start`).
 fn vmctl_boot_inhibit_clear(
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -2762,7 +2795,7 @@ fn vmctl_boot_inhibit_clear(
 /// Rust implements all 5 steps:
 ///   - Steps 1-2: data layer (p_seg.phys_root / virt_root).
 ///   - Step 3: `TlbArch::set_active_root` when target is current ptproc
-///     (tracked by the per-CPU `CpuLocal.ptproc` slot (D-40), initialized in
+///     (tracked by the per-CPU `CpuLocal.ptproc` slot, initialized in
 ///     `init_post_and_memory`). The arch impls write CR3/TTBR0/satp.
 ///   - Step 4: no-op on 64-bit (paging enabled at boot via
 ///     `Paging::enable`).
@@ -2785,8 +2818,8 @@ fn vmctl_set_addr_space(
     // SVMCTL_PTROOT_V = m1_p1 (virtual address of page table root)
     //
     // `as u32 as u64` preserves the C bit pattern: C assigns the `int`
-    // field to a `u32_t` cr3 parameter (modular conversion, NK4-A
-    // fix25 note — the previous plain `as u64` sign-extended physical
+    // field to a `u32_t` cr3 parameter (modular conversion — the previous
+    // plain `as u64` sign-extended physical
     // roots ≥ 0x8000_0000 into 0xFFFFFFFF_8xxxxxxx). Wire width keeps
     // the C i386 constraint: physical roots above 4 GB cannot travel
     // this field (boot-allocated page tables are low; same as C).
@@ -2813,7 +2846,7 @@ fn vmctl_set_addr_space(
             None
         };
 
-        // D-72: the kerninfo page mapping is no longer injected here. VM owns
+        // The kerninfo page mapping is no longer injected here. VM owns
         // it in `init_page_table` (every new root gets
         // `KERNINFO_USER_VA -> kerninfo_pa` read-only), so this kernel-side
         // path no longer draws page-table pages from the boot bump pool at
@@ -2857,7 +2890,7 @@ fn vmctl_set_addr_space(
     // C: RTS_UNSET(p, RTS_VMINHIBIT) (arch_do_vmctl.c:32), fired for
     // every pt_bind → VMCTL_SETADDRSPACE (exec_bootproc main.c:355,
     // do_clear exit.c:137, …). The `rts_unset` wrapper carries the
-    // ready-queue check (NK4-A fix24/25: a bare clear left boot
+    // ready-queue check (a bare clear left boot
     // processes VMINHIBIT-parked even after BOOTINHIBIT was lifted —
     // this arm was the third instance of that shape). For boot
     // processes the enqueue does not fire yet here (BOOTINHIBIT still
@@ -2883,7 +2916,7 @@ fn vmctl_set_addr_space(
 /// - `m_lsys_krn_sys_diagctl.len`: buffer length (DIAG only)
 /// - `m_lsys_krn_sys_diagctl.endpt`: target endpoint (STACKTRACE only)
 
-/// 在 diagbuf 里找 `field=0x…` 并解析 hex（至非 hex 字符止）。
+/// Find `field=0x…` in diagbuf and parse the hex (until a non-hex character).
 fn find_hex_field(buf: &[u8], field: &[u8]) -> Option<u64> {
     let pos = buf.windows(field.len()).position(|w| w == field)?;
     let mut i = pos + field.len();
@@ -2903,9 +2936,6 @@ fn find_hex_field(buf: &[u8], field: &[u8]) -> Option<u64> {
     }
     Some(v)
 }
-
-/// §续-375 遥测读数行：在测试计算窗的两个边界上各打一行七项计数——
-
 
 fn dispatch_diagctl(
     caller_nr: ProcNr,
@@ -2983,21 +3013,29 @@ fn dispatch_diagctl(
 
             match data_copy_vmcheck(caller_nr, proc_table, src, dst, len, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {
-                    // NK4C 续-279a：minix-rt 的 OOM 诊断行只走裸 kernel call 腿（拿不到
-                    // 自身 pid），在内核侧补打 caller proc 号完成归因——**必须在
-                    // data_copy 成功后**检查内容（拷贝前 diagbuf 全零，前置检查永不
-                    // 命中），仅命中前缀时多打一行，普通 bootmark 零影响；结案随
-                    // 诊断 mark 族一并滚除。
+                    // minix-rt's OOM diagnostic line travels only the bare
+                    // kernel-call leg (it cannot obtain its own pid), so the
+                    // kernel prints the caller proc number to complete the
+                    // attribution — the content check **must happen after**
+                    // the successful data_copy (diagbuf is all zero before
+                    // the copy, so a pre-check would never hit); a hit adds
+                    // one extra line only when the prefix matches, with zero
+                    // impact on ordinary bootmarks. The whole diagnostic
+                    // mark family is to be removed together when settled.
 
-                    // §续-316 krewalk 扩展（用后即滚）：VM 报「not a valid
-                    // ELF」时，内核侧重读 handoff 的 boot_procs 镜像首 16B
-                    // ——证「RAM=有效 ELF vs VM 裸 DM 直读视图=垃圾」分歧。
+                    // krewalk extension (use-then-remove): when VM reports
+                    // "not a valid ELF", the kernel re-reads the first 16
+                    // bytes of the handoff boot_procs image — proving the
+                    // disagreement "RAM = valid ELF vs VM's bare DM direct
+                    // read view = garbage".
                     if diagbuf[..len].windows(15).any(|w| w == b"not a valid ELF") {
                         use crate::kmess::{EarlyConsole as _, KernelConsole as ElfConsole};
                         const KDM: u64 = 0xFFFF_FFC0_4000_0000;
-                        // 直接解析 boot 文件表（TABLE_PA=0x85000000，MNXBOOT1
-                        // 格式=MAGIC u64+count u32+pad u32+16×(path[64]+pa
-                        // u64+len u64)）——内核 bootface 同源数据。
+                        // Parse the boot file table directly
+                        // (TABLE_PA=0x85000000, MNXBOOT1 format = MAGIC u64
+                        // + count u32 + pad u32 + 16 x (path[64] + pa u64 +
+                        // len u64)) — the same source data as the kernel
+                        // bootface.
                         let tbl = 0x8500_0000u64;
                         let magic = unsafe {
                             ((KDM + tbl) as *const u64).read_volatile()
@@ -3030,18 +3068,25 @@ fn dispatch_diagctl(
                             }
                         }
                     }
-                    // §续-368 实验丁（关中断臂）魔术串：探针在测试计算窗
-                    // 口前后各发一条，内核置/清 arch 旗标（riscv64 用户返回
-                    // 处跳过 SPIE 置位）。旗标由 set_active_root_tracked
-                    // 在任何地址空间切换时自动清零——粘滞窗不越过调度点，
-                    // 测试进程 abort/exit 也安全。
-                    // §续-375 顺手把这两条串当遥测边界用：它们是一次整串
-                    // DIAGCTL 写（探针直发 kcall，不经 stdio 分块），前缀判定
-                    // 稳；于是每 boot 只在窗口起/终各多一行陷入腿计数，探针与
-                    // 镜像都不用重编（§续-361 教训：插桩量本身就是变量）。
+                    // Magic strings for the no-interrupt-arm experiment:
+                    // the probe sends one before and one after the test
+                    // computation window, and the kernel sets/clears an arch
+                    // flag (the riscv64 user-return path skips setting
+                    // SPIE). The flag is cleared automatically by
+                    // set_active_root_tracked on any address-space switch,
+                    // so the sticky window never crosses a scheduling point
+                    // and a test process abort/exit is safe too.
+                    // These two strings double as telemetry boundaries: they
+                    // are a single whole-string DIAGCTL write (the probe
+                    // sends a kcall directly, without stdio chunking), so
+                    // prefix detection is reliable; hence each boot adds only
+                    // one extra trap-leg count line at the window start/end
+                    // and neither the probe nor the image needs rebuilding
+                    // (the lesson: the amount of instrumentation is itself a
+                    // variable).
 
-                    // C: do_diagctl.c:38-42 — kputc each byte. E-ISKMESS:
-                    // the kmess ring is the C kputc accumulation half —
+                    // C: do_diagctl.c:38-42 — kputc each byte. The kmess
+                    // ring is the C kputc accumulation half —
                     // record here so the IS `kmessages_dmp` replay
                     // (GET_KMESSAGES) has the same content the console
                     // shows.
@@ -3052,9 +3097,10 @@ fn dispatch_diagctl(
                     KcallResult::Ok(0)
                 }
                 CrossSpaceResult::Completed(Err(_)) => {
-                    // NK4-C 1.10y2 取证探针（task1-close 裁决删除）：diagctl
-                    // 拷贝失败（源页未映射）——sched 侧诊断打点静默失败的
-                    // 机制定位。
+                    // Forensic probe: diagctl copy failure (source page
+                    // unmapped) — localizes the mechanism behind silently
+                    // failing diagnostic output on the scheduler side. A
+                    // task close ruled it deleted.
                     #[cfg(not(feature = "mock"))]
                     {
                     }
@@ -3118,22 +3164,28 @@ fn dispatch_diagctl(
                         return KcallResult::Ok(EPERM);
                     }
                     p.mem.s_diag_sig = true;
-                    // D-14 (2026-09-06 设计 no-op，W-7 连带结论)：
-                    // C do_diagctl.c:54-56 — `if (kmess.km_size > 0 &&
-                    // !kinfo.do_serial_debug) send_sig(caller->p_endpoint,
-                    // SIGKMESS)`（目标是注册者自身，非 todo 原文所写 PM）。
-                    // 两个条件输入在 W-7 演进下均不存在：kmess 缓冲已被
-                    // EarlyConsole 直出替代（km_size 恒无意义），唯一消费
-                    // 者 log 驱动（log.c:115 读 kmess）角色同被替代。
-                    // SIGKMESS=72（sys/sys/signal.h:272）落在 SigSet 位图
-                    // 内（SD-39 后 128 位），位宽不再是理由——本通知仍按
-                    // C 自身条件恒不触发（km_size 恒无意义）。订阅状态
-                    // （s_diag_sig 置位/复位/SET_SYS 清除，kpriv.rs
-                    // reset_pending_ipc）完整保留。update 状态转移的
-                    // s_diag_sig 保全已闭合（misc.rs:1845 捕获、:1887
-                    // 回写，对齐 C do_update.c:293 adjust_priv_slot）；
-                    // 同点对账发现 s_alarm_timer 未保全为真实缺口
-                    // （C do_update.c:292，Rust 侧零处理），见 todo §22 U-1。
+                    // Design note: C's do_diagctl.c:54-56 reads
+                    // `if (kmess.km_size > 0 && !kinfo.do_serial_debug)
+                    // send_sig(caller->p_endpoint, SIGKMESS)` (the target is
+                    // the registrant itself, not PM as the old todo text
+                    // said). Neither condition input exists any more: the
+                    // kmess buffer has been replaced by direct EarlyConsole
+                    // output (km_size is always meaningless), and the role
+                    // of its only consumer, the log driver (log.c:115 reads
+                    // kmess), has been replaced as well. SIGKMESS=72
+                    // (sys/sys/signal.h:272) falls inside the SigSet bitmap
+                    // (128 bits), so bit width is no longer a reason — this
+                    // notification still never fires under C's own condition
+                    // (km_size is always meaningless). The subscription state
+                    // (s_diag_sig set/clear/removal by SET_SYS, kpriv.rs
+                    // reset_pending_ipc) is fully preserved. Preservation of
+                    // s_diag_sig across update state transitions is closed
+                    // (captured at misc.rs:1845, written back at :1887,
+                    // matching C do_update.c:293 adjust_priv_slot); the
+                    // reconciliation at that point found the missing
+                    // preservation of s_alarm_timer to be a real gap (C
+                    // do_update.c:292, zero handling on the Rust side), see
+                    // the pending-work list §22.
                     KcallResult::Ok(0)
                 }
                 None => KcallResult::Ok(EPERM),
@@ -3223,17 +3275,21 @@ fn dispatch_getmcontext(
 
     let mut mc = <SC as SignalContext>::Mcontext::default();
     let mc_size = core::mem::size_of_val(&mc);
-    // NK4-C F10c：mc 是内核栈局部变量，VA 在 higher-half 段 [KERN_VIRT_BASE,
-    // KERNEL_DM_BASE)，`virt_to_phys` 对该段做 VM_DM 减法得到错误 PA。
-    // 改为 AddressRef::Process：caller 的 CR3 同时映射内核 higher-half，
-    // resolve_physical 走真实页表得正确 PA（同 copy_struct_from_user 修法）。
-    // addr_of_mut! 不构造 shared 引用（评审 P1）：copy 向 mc 写入不应与 &mc 共存。
+    // mc is a kernel-stack local whose VA lies in the higher-half range
+    // [KERN_VIRT_BASE, KERNEL_DM_BASE); `virt_to_phys` does the VM_DM
+    // subtraction on that range and yields a wrong PA. Use
+    // AddressRef::Process instead: the caller's CR3 also maps the kernel
+    // higher-half, so resolve_physical walks the real page table to the
+    // correct PA (the same fix as copy_struct_from_user).
+    // addr_of_mut! does not construct a shared reference (review point):
+    // the copy writing into mc must not coexist with &mc.
     let mc_vaddr = core::ptr::addr_of_mut!(mc) as u64;
 
     // First copy: user → kernel.
     {
-        // K20: value-capturing closure — `src` 和 `dst` 均使用 caller_endpt，
-        // 闭包直接返回 caller_cr3，不咨询 proc_table。
+        // Value-capturing closure — both `src` and `dst` use caller_endpt,
+        // so the closure returns caller_cr3 directly without consulting
+        // proc_table.
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ept: Endpoint| {
             if ept == caller_endpt {
                 Some(caller_cr3)
@@ -3264,7 +3320,7 @@ fn dispatch_getmcontext(
 
     // C: do_mcontext.c:60-65 — data_copy mcontext from kernel → user.
     {
-        // K20: value-capturing closure (see the getmcontext note).
+        // value-capturing closure (see the getmcontext note).
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ept: Endpoint| {
             if ept == caller_endpt {
                 Some(caller_cr3)
@@ -3340,14 +3396,18 @@ fn dispatch_setmcontext(
 
     let mut mc = <SC as SignalContext>::Mcontext::default();
     let mc_size = core::mem::size_of_val(&mc);
-    // NK4-C F10c：mc 是内核栈局部变量，VA 在 higher-half 段 [KERN_VIRT_BASE,
-    // KERNEL_DM_BASE)，`virt_to_phys` 对该段做 VM_DM 减法得到错误 PA。
-    // 改为 AddressRef::Process：caller 的 CR3 同时映射内核 higher-half，
-    // resolve_physical 走真实页表得正确 PA（同 copy_struct_from_user 修法）。
-    // addr_of_mut! 不构造 shared 引用（评审 P1）：copy 向 mc 写入不应与 &mc 共存。
+    // mc is a kernel-stack local whose VA lies in the higher-half range
+    // [KERN_VIRT_BASE, KERNEL_DM_BASE); `virt_to_phys` does the VM_DM
+    // subtraction on that range and yields a wrong PA. Use
+    // AddressRef::Process instead: the caller's CR3 also maps the kernel
+    // higher-half, so resolve_physical walks the real page table to the
+    // correct PA (the same fix as copy_struct_from_user).
+    // addr_of_mut! does not construct a shared reference (review point):
+    // the copy writing into mc must not coexist with &mc.
     let mc_vaddr = core::ptr::addr_of_mut!(mc) as u64;
 
-    // K20: value-capturing closure — src 和 dst 均使用 caller_endpt，闭包返回 caller_cr3，不咨询 proc_table。
+    // Value-capturing closure — both src and dst use caller_endpt, so the
+    // closure returns caller_cr3 directly without consulting proc_table.
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ept: Endpoint| {
             if ept == caller_endpt {
                 Some(caller_cr3)
@@ -3388,7 +3448,7 @@ fn dispatch_safememset(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::p
 use crate::proc::{MiscFlagsBits, RtsFlagsBits};
 use minix_types::Endpoint;
 
-// EBADREQUEST and ECALLDENIED now come from `crate::errno` (FIX-01: R-09).
+// EBADREQUEST and ECALLDENIED now come from `crate::errno`.
 // SYSTEM endpoint source for kernel replies. C: SYSTEM = -2 (proc.h)
 // Use Endpoint::SYSTEM constant from minix-types instead of raw i32.
 
@@ -3447,7 +3507,7 @@ pub fn kernel_call_finish(
 /// `kernel_call_finish` for the int-33 IPC trap door (mini_send /
 /// mini_receive / mini_senda leg in `trap_dispatch`).
 ///
-/// C parity (NK4-C S3 根因修复): the eager reply copy
+/// C parity (root-cause fix for the trap-door discipline): the eager reply copy
 /// `copy_msg_to_user(msg, p_delivermsg_vir)` exists ONLY on the
 /// `kernel_call()` leg (system.c:83) — that leg always refreshes
 /// `p_delivermsg_vir` at entry (system.c:141), so the target is by
@@ -3489,7 +3549,7 @@ pub(crate) fn kernel_call_finish_holding_bkl(
     release_bkl: bool,
     eager_reply_copy: bool,
 ) {
-    // B1: the dispatch entry transferred a held BKL into this chain
+    // the dispatch entry transferred a held BKL into this chain
     // (kernel_call_dispatch / dispatch_ipc_entry via `transfer()`); the
     // VmSuspend branch below releases it. A lost lock must fail loudly.
     debug_assert!(crate::smp::bkl_is_locked(), "kernel_call_finish entered without the BKL held");
@@ -3504,11 +3564,14 @@ pub(crate) fn kernel_call_finish_holding_bkl(
             .as_mut()
         {
             ctx.saved_msg = Some(*msg);
-            // 门纪律（NK4-C S3）：IPC 陷阱腿的挂起要把门标记带上——
-            // 补完成时同样不得 eager 直写回执（否则恢复后向陈旧
-            // p_delivermsg_vir 落写）。重派再次挂起时新建的 ctx 不继承
-            // 此标记，门归属由 stage 3a 从旧 ctx 读出后以 eager=false
-            // 重新落到新 ctx 上（见 lib.rs KCALL_RESUME 消费块）。
+            // Door discipline: a suspend on the IPC trap leg must carry the
+            // door marker — completing later must likewise skip the eager
+            // reply direct write (otherwise it writes into a stale
+            // p_delivermsg_vir after resume). A new ctx created by a
+            // re-dispatch that suspends again does not inherit this marker;
+            // the door ownership is read from the old ctx by stage 3a and
+            // re-stamped onto the new ctx with eager=false (see the
+            // KCALL_RESUME consumer block in lib.rs).
             if !eager_reply_copy {
                 ctx.resume_skip_eager_reply = true;
             }
@@ -3518,13 +3581,14 @@ pub(crate) fn kernel_call_finish_holding_bkl(
             .expect("kernel_call_finish: caller slot must exist")
             .p_misc_flags
             .set(MiscFlagsBits::KCALL_RESUME);
-        // D-20 (C vm_suspend proc.c:253-257): enqueue into the global VM
-        // request chain + wake up VM via mini_notify(SYSTEM→VM). A1: the
+        // C vm_suspend proc.c:253-257: enqueue into the global VM
+        // request chain + wake up VM via mini_notify(SYSTEM→VM). The
         // tables arrive as parameters (split borrows established by
         // kernel_call's own caller) — no global accessor needed.
-        // c41 探针（task1-close 裁决删除）：SYSCALL 腿每次挂起的完整现场
-        // ——caller 端点/nr + ctx.target + 故障范围 + m_type + pdmv，
-        // 定位 c40 崩溃 memreq（target=11 start=0x0 len=0x90）的请求者。
+        // Forensic probe of every SYSCALL-leg suspend: the full scene —
+        // caller endpoint/nr + ctx.target + fault range + m_type + pdmv, to
+        // locate the requester of the crash's memreq (target=11 start=0x0
+        // len=0x90). A task close ruled it deleted.
         #[cfg(not(feature = "mock"))]
         #[cfg(target_arch = "x86_64")]
         {
@@ -3578,18 +3642,20 @@ pub(crate) fn kernel_call_finish_holding_bkl(
     // the dequeue half of C's `RTS_SET` macro. Without this the blocked
     // caller stays queued and the scheduler spin-picks it forever
     // (observed on real machine: 86k picks of a receiver parked in
-    // `RTS_RECEIVING`, test-sysboot C-27 carrier). Both IPC doors
+    // `RTS_RECEIVING`, the test-sysboot witness). Both IPC doors
     // (int-33 and the syscall leg) route their NoReply through here.
     if matches!(result, KcallResult::NoReply) {
         proc_table.dequeue_if_blocked(caller_nr);
     }
 
     if let Some(wire) = result.reply_wire().filter(|_| {
-        // 门纪律（NK4-C S3，见 `kernel_call_finish_ipc_door` 文档）：
-        // eager 回执直写只属于 kernel_call()/SYSCALL 腿；IPC 陷阱腿
-        //（eager_reply_copy=false）与被它挂起的调用恢复重派
-        //（resume_skip_eager_reply）都不写——错误已经随 RAX 交付，
-        // 真回执由 MF_DELIVERMSG 投递机制负责。
+        // Door discipline (see the `kernel_call_finish_ipc_door` docs):
+        // the eager reply direct write belongs only to the
+        // kernel_call()/SYSCALL leg; the IPC trap leg
+        // (eager_reply_copy=false) and the resumed re-dispatch of a call it
+        // suspended (resume_skip_eager_reply) do not write — the error has
+        // already been delivered via RAX, and the real reply is the
+        // MF_DELIVERMSG delivery machinery's job.
         let door_skip = proc_table.get(caller_nr).is_some_and(|p| {
             p.p_vm_suspend
                 .as_ref()
@@ -3599,20 +3665,24 @@ pub(crate) fn kernel_call_finish_holding_bkl(
     }) {
         let mut reply = *msg;
         reply.m_source = Endpoint::SYSTEM;
-        // NK4-C F10b（P0-wire）：SYSCALL 腿线上值由 `reply_wire()` 给出：
-        // 错误码（Ok）取负，数据码（Data，如 VMPTYPE_CHECK/ENOENT-as-data）原样传递。
+        // The SYSCALL leg's wire value comes from `reply_wire()`: error
+        // codes (Ok) are negated, data codes (Data, e.g.
+        // VMPTYPE_CHECK/ENOENT-as-data) pass through unchanged.
         reply.m_type = wire;
-        // C system.c:71-77 对位：结果消息 phys_copy 直写调用者用户缓冲
-        // （p_delivermsg_vir），不经 DELIVERMSG。旧实现经 p_delivermsg+
-        // DELIVERMSG 投递——调用者（VM）的 sef_receive 随即消费自己的
-        // 回执（src=SYSTEM/type=errno）形成接收自旋，饿死其他进程
-        // （NK4-A C-3 真机：VM exec 后 receive 空转、RS 永久饿死，
-        // 2026-09-22）。
+        // C system.c:71-77 counterpart: the result message is phys_copied
+        // directly into the caller's user buffer (p_delivermsg_vir),
+        // bypassing DELIVERMSG. The old implementation delivered through
+        // p_delivermsg + DELIVERMSG — the caller (VM) then consumed its own
+        // reply (src=SYSTEM/type=errno) in sef_receive, forming a receive
+        // spin that starved other processes (on real hardware: after VM exec
+        // the receive spun and RS starved permanently).
         let root = proc_table.get(caller_nr).map(|p| p.p_seg.phys_root);
         let buf_va = proc_table.get(caller_nr).map(|p| p.p_delivermsg_vir.0);
-        // NK4-C S2c 哨兵（task1-close 裁决删除）：若调用者是 RS，直写
-        // 前重读监视 PTE——回执 DM 直写自身就是候选抹写者，写前观测
-        // 能自证清白/有罪。LAST 状态全局，必须按 ep==2 门控。
+        // Sentinel (a task close ruled it deleted): if the caller is RS,
+        // re-read the monitored PTE before the direct write — the reply's
+        // own DM direct write is a candidate clobberer, and a pre-write
+        // observation either clears it or convicts it. The LAST state is
+        // global and must be gated on ep==2.
         #[cfg(not(feature = "mock"))]
         #[cfg(target_arch = "x86_64")]
         if let Some(r) = root.filter(|_| {
@@ -3623,10 +3693,11 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         }
         if let (Some(root), Some(buf_va)) = (root, buf_va) {
             let bytes = core::mem::size_of::<minix_types::Message>();
-            // NK4-C S2e 现场打印（task1-close 裁决删除）：RS 回执直写的
-            // 每 chunk 目标与写入首字——去重探针会掩盖重复写，抹写
-            // 收尾阶段需要无条件逐次证据（S2g 提到 4096：48 条在启动期
-            // 耗尽，崩溃窗口无现场）。
+            // Live print for RS reply direct writes: each chunk's target and
+            // the first written word — a deduplicating probe would mask
+            // repeated writes, and the clobber end-game needs unconditional
+            // per-write evidence (raising the cap to 4096: 48 lines were
+            // exhausted during boot, leaving no scene at the crash window).
             #[cfg(not(feature = "mock"))]
             #[cfg(target_arch = "x86_64")]
             let rs_trace = proc_table
@@ -3635,13 +3706,17 @@ pub(crate) fn kernel_call_finish_holding_bkl(
             let mut off = 0usize;
             while off < bytes {
                 let va = buf_va + off as u64;
-                // 调用者页表翻译（其 CR3 未激活时经 DM 直写物理页）。
+                // Caller page-table translation (when its CR3 is not active,
+                // write the physical page through the DM).
                 match crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(va)) {
                     Some((pa, _fl)) => {
-                        // §续-369 双走表对账扩到 finw 路径：回执直写是
-                        // per-kcall 的用户内存写（腐蚀嫌疑头位，§续-368 定位
-                        // 命中在 printf 边界）——同 (root,va) 立即重走比对，
-                        // PA 不一致=走表非确定性直击证据。
+                        // Double-walk reconciliation extended to the finw
+                        // path: the reply direct write is a per-kcall user
+                        // memory write (leading corruption suspect; the
+                        // earlier localization hit at the printf boundary)
+                        // — immediately re-walk the same (root,va) and
+                        // compare; differing PAs are direct evidence of walk
+                        // nondeterminism.
                         #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
                         if let Some((pa2, _)) = crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(va)) {
                             if pa2.0 != pa.0 {
@@ -3654,10 +3729,13 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                         if rs_trace {
                             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                             static TXN: AtomicUsize = AtomicUsize::new(0);
-                            // S2h 评审修复：cap 4096→512（最坏串口耗时量级
-                            // 降到秒级，不拖穿 timeout）+ 触顶现形标记 +
-                            // 守卫字节读（S2f 旧形态按 [u8;8] 读在 buf_va 非
-                            // 8 对齐时会造未对齐引用并越出 reply 尾端）。
+                            // Review fix: cap 4096 -> 512 (worst-case serial
+                            // time drops to the order of seconds and does
+                            // not blow the timeout) + a visible marker on
+                            // hitting the cap + guarded byte reads (the old
+                            // shape read [u8;8], which creates an unaligned
+                            // reference when buf_va is not 8-aligned and
+                            // runs past the reply tail).
                             let tn = TXN.fetch_add(1, AtomicOrd::Relaxed);
                             if tn == 512 {
                                 use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
@@ -3668,7 +3746,7 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                                     let base =
                                         &reply as *const minix_types::Message as *const u8;
                                     let mut b = [0u8; 8];
-                                    unsafe { // SAFETY: o+i<bytes 保证在 Message(80B) 对象内，逐字节读避免未对齐，越界部分补 0
+                                    unsafe { // SAFETY: o+i<bytes keeps the read inside the Message (80B) object; per-byte reads avoid unaligned access, out-of-range bytes are filled with 0
                                         for i in 0..8 {
                                             if o + i < bytes {
                                                 b[i] = *base.add(o + i);
@@ -3677,9 +3755,11 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                                     }
                                     u64::from_le_bytes(b)
                                 };
-                                // NK4-C S2g：抹写点落在 buf+56（self 槽），
-                                // 把回执行对 buf 基址 +56/+64 的字也打出来
-                                // （仅首 chunk），离线直接对照被写入的值。
+                                // The clobber point lands at buf+56 (the
+                                // self slot); also print the reply word at
+                                // buf base +56/+64 (first chunk only) so it
+                                // can be compared offline against the value
+                                // written.
                                 if off == 0 {
                                     C0::write_str(" t56=");
                                     C0::write_hex(rb(56));
@@ -3690,8 +3770,9 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                             }
                         }
                         let dm = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(minix_types::PhysBytes(pa.0)).0;
-                        // SAFETY: DM 窗口覆盖全部物理内存；页为调用者
-                        // 驻留的消息缓冲；跨页按页界分块。
+                        // SAFETY: the DM window covers all physical memory;
+                        // the page holds the caller-resident message buffer;
+                        // a cross-page copy is chunked at page boundaries.
                         unsafe {
                             core::ptr::copy_nonoverlapping(
                                 (&reply as *const minix_types::Message as *const u8).add(off),
@@ -3701,12 +3782,14 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                         }
                         off += chunk;
                     }
-                    None => break, // 尾页未驻留：C phys_copy 同样静默失败
+                    None => break, // tail page not resident: C phys_copy fails silently too
                 }
             }
         }
-        // NK4-C S2c 哨兵点（task1-close 裁决删除）：直写循环结束后再读
-        // 一次——与写前观测夹住本通路，它自身若是抹写者必现形。
+        // Sentinel point (a task close ruled it deleted): read once more
+        // after the direct-write loop — together with the pre-write
+        // observation this brackets the path, so a clobberer here must show
+        // itself.
         #[cfg(not(feature = "mock"))]
         #[cfg(target_arch = "x86_64")]
         if let Some(r) = root.filter(|_| {
@@ -3745,7 +3828,7 @@ pub fn kernel_call_resume(
     clock_state: &mut ClockState,
 ) {
     // C: system.c:616-619 — three invariants + our MF_KCALL_RESUME marker.
-    // K20 caller-by-nr: the slot is re-borrowed for each read.
+    // caller-by-nr: the slot is re-borrowed for each read.
     let caller = proc_table
         .get(caller_nr)
         .expect("kernel_call_resume: caller slot must exist");
@@ -3849,7 +3932,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_schedule_sys_proc_caller_passes_priv_check() {
-        // FIX-25 regression: confirm that a SYS_PROC caller is no longer
+        // Regression check: confirm that a SYS_PROC caller is no longer
         // rejected by the legacy caller_has_sys_proc() that built a fresh
         // empty PrivTable internally. With caller_has_sys_proc_with_table,
         // a caller whose priv_id is USER_PRIV_ID and whose priv has
@@ -3860,7 +3943,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -3919,7 +4002,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_schedule_niced_wire_bit_sets_mf_niced() {
-        // E-SCHEDNICED: C do_schedule.c:27 — `niced = !!(...)` coerces the
+        // C do_schedule.c:27 — `niced = !!(...)` coerces the
         // SYS_SCHEDULE wire field; sched_proc Step 8 maps it onto MF_NICED
         // (system.c:695-698). The old dispatch hard-coded `niced = false`,
         // so the wire value was dropped and NICED could never be set from
@@ -3930,7 +4013,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -3962,7 +4045,7 @@ mod tests {
 
     #[test]
     fn test_syscall_enum_tracks_minix_types_kernel_call_family() {
-        // E-MINTYPES-SYS: the dispatch enum keeps C's relative-to-KERNEL_CALL
+        // The dispatch enum keeps C's relative-to-KERNEL_CALL
         // discriminants (internal idiom); the wire authority is minix-types'
         // kernel_call family (com.h:208-269). Every member must land on its
         // C number — the pin fires on the first drift on either side.
@@ -4033,7 +4116,7 @@ mod tests {
         }
     }
 
-    // ── dispatch_privctl tests (FIX-25, Phase 5) ──────────────────────
+    // ── dispatch_privctl tests ────────────────────────────────────────
 
     #[test]
     fn test_dispatch_privctl_rejects_non_sys_proc_caller() {
@@ -4056,7 +4139,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         // Make the caller a SYS_PROC by assigning a priv with SYS_PROC flag.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
@@ -4089,7 +4172,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -4124,7 +4207,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -4156,7 +4239,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -4191,7 +4274,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -4228,7 +4311,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -4290,7 +4373,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -4322,7 +4405,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -4355,7 +4438,7 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot;
+        // caller-by-nr: the caller identity lives on its table slot;
         // the dispatch re-borrows `proc_table.get(caller_nr)` at use point.
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
@@ -4454,7 +4537,7 @@ mod tests {
             p.p_endpoint = minix_types::Endpoint(50);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
-        // K20 caller-by-nr: the caller occupies its own slot (slot 0 is
+        // caller-by-nr: the caller occupies its own slot (slot 0 is
         // the KERNEL target here).
         if let Some(c) = proc_table.get_mut(ProcNr(1)) {
             c.p_endpoint = minix_types::Endpoint(100);
@@ -4531,7 +4614,7 @@ mod tests {
 
     #[test]
     fn test_kernel_call_dispatch_sets_kbill_marker() {
-        // D-9 (C system.c:160): the kbill_kcall marker is set after
+        // C system.c:160: the kbill_kcall marker is set after
         // dispatch, before finish — unconditionally, even for a denied
         // call (the kernel work of handling the denial is still the
         // caller's).
@@ -4553,7 +4636,7 @@ mod tests {
         crate::smp::bkl_unlock();
     }
 
-    /// D-8: kernel_call wrapper — TOCTOU defense + SIGSEGV on bad copy.
+    /// kernel_call wrapper — TOCTOU defense + SIGSEGV on bad copy.
     /// The wrapper copies the user message via UserCopy::copy_msg_from_user
     /// (TOCTOU defense: kernel works on its own copy), then dispatches.
     #[test]
@@ -4566,7 +4649,7 @@ mod tests {
         // Use an invalid syscall → BadCall deterministically. The wrapper
         // mechanics (p_delivermsg_vir save + dispatch + finish) are what
         // we're testing, not the dispatch semantics.
-        // K20 caller-by-nr: the caller is slot ProcNr(0).
+        // caller-by-nr: the caller is slot ProcNr(0).
         proc_table.get_mut(ProcNr(0)).unwrap().p_endpoint = minix_types::Endpoint(100);
         proc_table.get_mut(ProcNr(0)).unwrap().priv_id = Some(0);
         let result = kernel_call(
@@ -4585,7 +4668,7 @@ mod tests {
         );
         // kernel_call_finish already released BKL (CallDenied → non-VmSuspend → unlock).
 
-        // Cleanup: D-9 marker
+        // Cleanup: the kbill_kcall marker
         let section = crate::smp::bkl_lock_section();
         let _ = crate::consume_kbill_kcall(&mut proc_table, 0, &section);
         crate::smp::bkl_unlock();
@@ -4679,8 +4762,8 @@ mod tests {
         // page address goes out through the secondary IPC return channel.
         // C: proc.c:690-692 — `arch_set_secondary_ipc_return(caller_ptr,
         // minix_kerninfo_user); return OK;`. The register write itself
-        // (x86-64: saved R10 状态车道按调用兼任, whole-value assignment;
-        // NK4-C 1.54/B26) is pinned at the arch layer —
+        // (x86-64: the saved R10 status lane is dual-purpose per call,
+        // whole-value assignment) is pinned at the arch layer —
         // `set_secondary_ipc_return_assigns_status_lane` in
         // arch/src/x86_64/boot.rs; this test pins the dispatch decision
         // and the OK outcome (no message is read or written either way).
@@ -4716,7 +4799,7 @@ mod tests {
         msg.m_type = 1; // IpcCall::Send
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
-        // K20 caller-by-nr: the caller identity lives on its table slot.
+        // caller-by-nr: the caller identity lives on its table slot.
         // p_defer.r2 = dst endpoint (required by the SEND path); use a
         // valid-looking endpoint — the permission check fails before
         // endpoint validity is examined.
@@ -4767,7 +4850,7 @@ mod tests {
         crate::smp::bkl_unlock();
     }
 
-    /// End-to-end (D-13): `dispatch_ipc` → `IpcEngine::receive` delivers
+    /// End-to-end: `dispatch_ipc` → `IpcEngine::receive` delivers
     /// a message from a `MF_SIG_DELAY` sender → `dispatch_ipc` runs
     /// `sig_delay_done` for it. C: proc.c:1082-1083 → system.c:454-464.
     ///
@@ -4781,7 +4864,7 @@ mod tests {
         use crate::proc_table::nr_to_idx;
         use crate::ipc::caller_q_push;
 
-        // D-63②: dispatch_ipc's A1 chain root asserts the BKL — hold it
+        // dispatch_ipc's chain root asserts the BKL — hold it
         // via RAII (drops unlocked at test end).
         let _bkl = {
             crate::smp::bkl_lock_reset_for_test();
@@ -4871,10 +4954,10 @@ mod tests {
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
-    /// D-14: DIAGCTL REGISTER/UNREGISTER lifecycle — a SYS_PROC caller
+    /// DIAGCTL REGISTER/UNREGISTER lifecycle — a SYS_PROC caller
     /// sets `s_diag_sig` (C do_diagctl.c:51), a non-SYS_PROC caller gets
     /// EPERM (:50), and UNREGISTER clears it (:61). The SIGKMESS
-    /// notification itself is a W-7 no-op (see the comment in the
+    /// notification itself is a no-op (see the comment in the
     /// REGISTER arm): its condition inputs (kmess buffer) were removed
     /// by the EarlyConsole ARCH evolution.
     #[test]
@@ -4885,7 +4968,7 @@ mod tests {
         priv_table.get_mut(a_priv).unwrap().flags.s_flags.insert(
             crate::capability::ProcessCapability::SYS_PROC,
         );
-        // K20 caller-by-nr: the caller IS slot ProcNr(0) — its priv_id
+        // caller-by-nr: the caller IS slot ProcNr(0) — its priv_id
         // must live on the slot (the standalone handle is gone).
         proc_table.get_mut(ProcNr(0)).unwrap().priv_id = Some(a_priv);
 
@@ -4904,7 +4987,7 @@ mod tests {
         assert!(!priv_table.get(a_priv).unwrap().mem.s_diag_sig);
     }
 
-    /// D-14: a caller without SYS_PROC privilege gets EPERM at REGISTER
+    /// A caller without SYS_PROC privilege gets EPERM at REGISTER
     /// (C do_diagctl.c:50) and the flag stays clear.
     #[test]
     fn test_dispatch_diagctl_register_denied_without_sys_proc() {
@@ -5009,36 +5092,42 @@ mod tests {
         );
     }
 
-    /// NK4-C F10/F10b（P0-wire）判别测试：SYSCALL 腿线上交付约定。
+    /// Discriminating test for the SYSCALL leg's wire delivery convention.
     ///
-    /// s13b 真机实证的吞错形态：privctl SET_SYS 失败返 EFAULT=14，正数
-    /// 上线后被用户态 `reply < 0` 门控吞掉（RS 把失败当成功，boot 尾
-    /// 10 服务器静默卡 NO_PRIV）。
+    /// Swallowed-error shape observed on real hardware: a privctl SET_SYS
+    /// failure returning EFAULT=14 was delivered as a positive value and
+    /// swallowed by the user-space `reply < 0` gate (RS treated the failure
+    /// as success, and 10 servers silently stalled at NO_PRIV at boot end).
     ///
-    /// s13c 真机实证的破坏形态：F10 对所有码一视同仁取负，
-    /// VMCTL_MEMREQ_GET 的数据码 ENOENT=2 取负后变为 -2，
-    /// 触发 `reply < 0` 误入错误分支 → do_memory 不服务 → RS 永久 VMREQUEST。
+    /// Breakage shape observed on real hardware: negating every code
+    /// indiscriminately turned the VMCTL_MEMREQ_GET data code ENOENT=2 into
+    /// -2, which tripped `reply < 0` into the error branch → do_memory
+    /// served nothing → RS stayed in VMREQUEST forever.
     ///
-    /// F10b 修复：`reply_wire()` 区分 Ok(错误码)→取负 和 Data(数据码)→原样传递。
+    /// Fix: `reply_wire()` distinguishes Ok (error code) → negate from
+    /// Data (data code) → pass through unchanged.
     #[test]
     fn test_syscall_leg_wire_negates_nonzero_errno() {
-        // 内部携正 errno（C handler `return(EPERM)` 同形）……
+        // Internally carries a positive errno (the same shape as the C
+        // handler's `return(EPERM)`) ...
         assert_eq!(KcallResult::Ok(EFAULT).reply_code(), Some(EFAULT));
-        // ……线上必须负：14 → -14，用户态 `reply < 0` 才能拦截。
+        // ... and the wire value must be negative: 14 -> -14, so that the
+        // user-space `reply < 0` gate can intercept it.
         assert_eq!(syscall_leg_wire(EFAULT), -EFAULT);
         assert_eq!(syscall_leg_wire(EPERM), -EPERM);
-        // 成功/数据零码不变号。
+        // Success / zero data code keep their sign.
         assert_eq!(syscall_leg_wire(0), 0);
-        // 簿记类回执（EBADREQUEST/ECALLDENIED）同样取负。
+        // Bookkeeping replies (EBADREQUEST/ECALLDENIED) are negated as well.
         assert_eq!(syscall_leg_wire(EBADREQUEST), -(EBADREQUEST as i32));
         assert!(syscall_leg_wire(ECALLDENIED) < 0);
-        // F10b：`reply_wire()` 错误码取负……
+        // `reply_wire()` negates error codes ...
         assert_eq!(KcallResult::Ok(EFAULT).reply_wire(), Some(-EFAULT));
         assert_eq!(KcallResult::Ok(EPERM).reply_wire(), Some(-EPERM));
-        // ……数据码原样传递（C 语义：`reply == ENOENT` / `reply == VMPTYPE_CHECK`）。
+        // ... and passes data codes through unchanged (C semantics:
+        // `reply == ENOENT` / `reply == VMPTYPE_CHECK`).
         assert_eq!(KcallResult::Data(ENOENT).reply_wire(), Some(ENOENT));
         assert_eq!(KcallResult::Data(1).reply_wire(), Some(1)); // VMPTYPE_CHECK
-        // 数据码 OK(0) 等价于成功，reply_wire() = Some(0)
+        // Data code OK(0) is equivalent to success, reply_wire() = Some(0).
         assert_eq!(KcallResult::Data(0).reply_wire(), Some(0));
     }
 }

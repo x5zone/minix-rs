@@ -1,6 +1,5 @@
 //! Instruction-cache synchronization across the data→instruction
-//! transition (SD-20, register item "cache maintenance on data→instruction
-//! transitions").
+//! transition ("cache maintenance on data→instruction transitions").
 //!
 //! # Why this contract exists
 //!
@@ -24,10 +23,11 @@
 //! C has no counterpart to call: Minix3's kernel C has no aarch64 port and
 //! no cache-maintenance call anywhere in its loader path (checked:
 //! `minix3/minix/kernel/` has no `icache`/`cache_sync`/`cvau` call site).
-//! This contract is therefore an `[ARCH]` addition, frozen by the design
-//! register (`rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md`,
-//! SD-20): "a per-arch `sync_icache(range)` contract in the arch-trait
-//! family; called at the ELF-loader tail".
+//! This contract is therefore an `[ARCH]` addition, recorded in the
+//! structural-debt register
+//! (`rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md`):
+//! "a per-arch `sync_icache(range)` contract in the arch-trait family;
+//! called at the ELF-loader tail".
 //!
 //! # What is *not* this contract's job
 //!
@@ -63,7 +63,7 @@ pub trait CacheSyncArch {
     /// calling. An empty range (`start >= end`) is a defined no-op.
     ///
     /// C: none — no counterpart exists in the Minix3 C tree (see module
-    /// docs); this is the `[ARCH: cache-sync]` addition frozen by SD-20.
+    /// docs); this is the `[ARCH: cache-sync]` addition described above.
     fn sync_icache_range(range: Range<u64>);
 }
 

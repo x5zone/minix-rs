@@ -19,8 +19,8 @@
 //! entry — it never writes IDT entries or MSRs directly.
 //!
 //! See `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`
-//! §1.3 (跨特权级的统一流程) for the OS-level trap flow these mechanisms
-//! implement.
+//! §1.3 (the unified cross-privilege-level flow) for the OS-level trap flow
+//! these mechanisms implement.
 //!
 //! # 64-bit long mode specifics
 //!
@@ -136,9 +136,9 @@ impl X86_64TrapEntry {
 
     /// Set only the IST field of an existing gate (0-7).
     ///
-    /// S-4: `set_handler` writes IST=0; the two C-parity exceptions that run
+    /// `set_handler` writes IST=0; the two C-parity exceptions that run
     /// on dedicated stacks — NMI (vector 2, IST1) and #DF (vector 8, IST2) —
-    /// get their IST re-applied after stub installation, now that S-4's
+    /// get their IST re-applied after stub installation, now that the
     /// per-CPU TSS programs the IST arrays.
     pub(crate) fn set_gate_ist(&mut self, vector: u8, ist: u8) {
         self.idt[vector as usize].ist = ist & 0x7;
@@ -146,7 +146,7 @@ impl X86_64TrapEntry {
 
     /// Whether `vector` carries a present gate in this table.
     ///
-    /// S-8 load-safety half of the "no empty vector" stage invariant: the
+    /// Load-safety half of the "no empty vector" stage invariant: the
     /// stub installer cross-checks its coverage against this before the
     /// table may go live via `load()`.
     pub fn gate_present(&self, vector: u8) -> bool {
@@ -247,11 +247,11 @@ impl TrapEntryArch for X86_64TrapEntry {
         // without the gate, a spurious interrupt would triple-fault.
         entry.set_gate(0xFF, 0, 0, 0, false);
 
-        // Inter-processor interrupt: scheduler (S-10). C: SMP_SCHED_IPI
+        // Inter-processor interrupt: scheduler. C: SMP_SCHED_IPI
         // vector gate in apic_idt_init (arch_clock.c/apic.c).
         entry.set_gate(0xF0, 0, 0, 0, false);
 
-        // LAPIC local timer (edge1 K6; C apic.c:913 int_gate_idt for
+        // LAPIC local timer (C apic.c:913 int_gate_idt for
         // APIC_TIMER_INT_VECTOR): per-CPU one-shot tick gate. Unmasked
         // by the LVT entry itself, re-armed by the handler every tick.
         entry.set_gate(0xF1, 0, 0, 0, false);

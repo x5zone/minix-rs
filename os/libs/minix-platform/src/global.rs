@@ -23,18 +23,18 @@ use crate::qemu_virt::QemuVirtDesc;
 /// Global platform context — owns the descriptor.
 ///
 /// Stored in kernel BSS as a `static`. Frozen once at T2.5 (single-threaded,
-/// BKL held, IRQs off), read-only thereafter — **on every CPU**: S-6.2 (D-41)
-/// APs read `platform_desc()` concurrently with the BSP, and the D-36-era
+/// BKL held, IRQs off), read-only thereafter — **on every CPU**: APs read
+/// `platform_desc()` concurrently with the BSP, and the former
 /// `AssumeSyncCell` ("single-threaded `UnsafeCell` with manual `Sync`")
 /// promised more than the AP world delivers — its safety proof shape
 /// ("no concurrent access, ever") became false the moment APs went online.
 ///
 /// We use [`Frozen`] from `minix-types` — the project's boot-frozen cell
 /// (`freeze` once with `Release`; every reader `Acquire`s; the value is then
-/// shared immutable `&T`). The D-41 design note preferred the "frozen"
-/// argument over locks: C's globals are boot-write-once/read-only by
-/// convention with no mechanism; the Rust rewrite makes that convention a
-/// checked protocol instead of an assumption.
+/// shared immutable `&T`). The design preferred the "frozen" argument over
+/// locks: C's globals are boot-write-once/read-only by convention with no
+/// mechanism; the Rust rewrite makes that convention a checked protocol
+/// instead of an assumption.
 ///
 /// # Why `Frozen` and not `Mutex`/`OnceLock`/`static mut`?
 ///
@@ -110,7 +110,7 @@ pub enum PlatformDescEnum {
     /// Parsed from a Flattened Device Tree (ARM64/RISC-V only).
     #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     DeviceTree(DeviceTreeDesc),
-    /// Parsed from ACPI tables (x86-64, and aarch64 since S-2b).
+    /// Parsed from ACPI tables (x86-64 and aarch64).
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     Acpi(AcpiDesc),
     /// Hardcoded QEMU `virt` fallback (always available).
@@ -337,9 +337,11 @@ mod tests {
         }
     }
 
-    // 注：原 `test_platform_desc_panics_before_init` 是空 body placeholder
-    // (无 assert、无行为断言)，本自我承认是 "no-op placeholder documenting
-    // the contract"。按 Pattern #38 已删除（2026-08-16 review）。
-    // 真实 INIT-before-use 验证应在进程隔离的集成测试中进行（每个测试在
-    // fresh process 跑），超出单元测试范畴。
+    // Note: the former `test_platform_desc_panics_before_init` was an
+    // empty-body placeholder (no assert, no behavioral assertion); it
+    // admitted to being a "no-op placeholder documenting the contract".
+    // It was removed as a hollow test during review.
+    // Real INIT-before-use verification belongs in a process-isolated
+    // integration test (each test running in a fresh process), which is
+    // outside the scope of unit tests.
 }

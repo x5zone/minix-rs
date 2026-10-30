@@ -139,7 +139,7 @@ const PAGE_SIZE: u64 = PhysFrame::SIZE;
 /// Sized for the UEFI path: the memmap is a live-map snapshot whose
 /// CONVENTIONAL entry count is firmware-determined (OVMF splits DRAM at
 /// every loader/firmware allocation), so surviving slices can far exceed
-/// the multiboot-E820 assumption of 4–6. NK4-A first-light evidence: an
+/// the multiboot-E820 assumption of 4–6. First-light evidence: an
 /// early snapshot + 13 exclusions produced > 8 slices and failed
 /// selection outright (boot-shim now snapshots after all LOADER_DATA
 /// allocations; this ceiling is the remaining defense for fragmented
@@ -313,7 +313,7 @@ impl VmBootRegion {
         // to 12 modules), so 28 split points is typical; 64 leaves
         // headroom. Overflow is a hard capacity error — NOT a
         // `debug_assert` only: in release the assert compiles away and
-        // the write would go out of bounds (NK4-A review, pattern:
+        // the write would go out of bounds (review pattern:
         // illegal state must be sealed in every profile).
         const MAX_REGIONS_SPLITS: usize = 64;
         let mut splits = [0u64; MAX_REGIONS_SPLITS];

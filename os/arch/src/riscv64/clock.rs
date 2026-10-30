@@ -127,7 +127,7 @@ impl ClockArch for Riscv64ClockArch {
         // under OpenSBI — see `sbi_set_timer`). CNTP-style module gates
         // do not exist here: arming alone never raises an interrupt
         // while `sie.STIE` is clear, and opening that gate is
-        // `TimerIrqGate::enable_timer_irq`'s job (D-59 ordering —
+        // `TimerIrqGate::enable_timer_irq`'s job (ordering:
         // handler registered first, gate opened at bsp_finish_booting
         // Step 6).
         //
@@ -181,7 +181,7 @@ impl ClockArch for Riscv64ClockArch {
         let interval = TICK_INTERVAL.load(core::sync::atomic::Ordering::Relaxed);
         let interval = if interval == 0 {
             // `local_timer_eoi` before any `init_timer` would be a wiring
-            // bug (D-59: the gate opens only after the source is armed);
+            // bug (the gate opens only after the source is armed);
             // fall back to the descriptor frequency at DEFAULT_HZ rather
             // than arming a zero interval (an interrupt storm).
             self.freq / crate::clock::DEFAULT_HZ as u64

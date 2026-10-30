@@ -1,11 +1,15 @@
-//! aarch64 架构初始化接线的形状钉住测试（P-ALL-01 方案乙：宿主可跑审计）。
+//! Shape-pinning test for the aarch64 architecture-init wiring (host-runnable
+//! audit).
 //!
-//! `os/arch/src/arm64/arch_init.rs` 被 `#[cfg(target_arch = "aarch64")]`
-//! 整模块门住，宿主（x86_64）`cargo test` 不编译它——in-module 单测写了
-//! 也永不运行（本项目两次踩过的可达性纪律坑）。本文件用 `include_str!`
-//! 在宿主侧钉住三处承重形状：构造接线（PMU 开关进实例字段）、FPEN
-//! 等价值（§续-406）、PMU 使能块的门控与三 msr。任一漂移＝启动行为静默
-//! 改变（FP undef 回归，或用户态周期计数器语义变）。
+//! `os/arch/src/arm64/arch_init.rs` is gated off wholesale by
+//! `#[cfg(target_arch = "aarch64")]`, so the host (x86_64) `cargo test` does
+//! not compile it — in-module unit tests would never run even if written (a
+//! reachability-discipline trap this project has hit twice). This file uses
+//! `include_str!` to pin three load-bearing shapes host-side: the constructor
+//! wiring (PMU switch stored in an instance field), the FPEN equivalence
+//! sequence, and the PMU-enable block's gating plus its three msr writes. Any
+//! drift silently changes boot behavior (FP undef regression, or changed
+//! user-mode cycle-counter semantics).
 
 fn src() -> &'static str {
     include_str!("../src/arm64/arch_init.rs")

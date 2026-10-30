@@ -61,14 +61,14 @@ pub enum MemMapError {
 /// minix-rs, Direct Map can access all physical memory, so this truncation
 /// is unnecessary and has been removed.
 ///
-/// # Known Gaps (RESOLVED as design no-op, D-34 2026-09-06)
+/// # Known Gaps (RESOLVED as design no-op, 2026-09-06)
 ///
 /// The C version also updates two `kinfo` fields that this function does
 /// not handle:
 /// - `cbi->mmap_size` (pg_utils.c:110-111) — tracks highest used memmap index
 /// - `cbi->mem_high_phys` (pg_utils.c:112-115) — tracks highest physical address
 ///
-/// **D-34 resolution (design no-op)**: both C consumers are absorbed by
+/// **Resolution (design no-op)**: both C consumers are absorbed by
 /// replacement designs in Rust —
 /// - `mmap_size` (count of used slots): `FREE_MEMMAP` scans empty slots
 ///   implicitly (`memmap.rs` scan loop), so a separate counter would be a
@@ -79,7 +79,7 @@ pub enum MemMapError {
 ///   (`os/servers/vm/src/boot.rs:141-144`).
 ///
 ///   No Rust code reads either value — maintaining them would be write-only
-///   state. Verified 2026-09-06; see todo.md D-34 and 08-system-init-boot-finish.md §4.5.
+///   state. Verified 2026-09-06; see 08-system-init-boot-finish.md §4.5.
 ///
 /// # Arguments
 ///
@@ -226,7 +226,9 @@ pub fn cut_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], start: u64, len: u64) -> 
             let prefix_len = substart - memaddr;
             // Ignore ZeroLength (shouldn't happen since substart > memaddr
             // and both are page-aligned, but defensive).
-            //[SD19-gate] 加回前/后缀块：ZeroLength 本不该发生、防御性忽略，add 失败无补救路径
+            //[SD19-gate] Adding back the prefix/suffix block: ZeroLength cannot
+            //occur here, and a failed add has no remediation path either, so
+            //the error is dropped defensively.
             #[allow(clippy::let_underscore_must_use)]
             let _ = add_memmap(mmap, memaddr, prefix_len);
         }
@@ -436,7 +438,7 @@ mod tests {
         assert_eq!(total_before - total_after, 0x2000, "total free memory must decrease by cut size");
     }
 
-    /// T4/D-68 end-to-end accounting: the aarch64 direct-core leg reports
+    /// End-to-end accounting for the aarch64 direct-core leg: the leg reports
     /// `/memory` as [0x4000_0000, 512 MiB) (`fw_end = 0`) and its DTB sits at
     /// the DRAM base. The real QEMU blob is 7699 bytes, so Phase A.2's cut
     /// must remove exactly the two page-rounded pages and leave the rest as

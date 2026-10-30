@@ -12,7 +12,7 @@
 //! services fields (identical calling convention on every supported 64-bit
 //! target).
 //!
-//! Hard contracts enforced here (design §1.5 (六).4):
+//! Hard contracts enforced here (design §1.5 (6).4):
 //! - retry only on `EFI_INVALID_PARAMETER`, total EBS attempts = 2;
 //! - other statuses fail immediately (no blanket "MapKey expired" retry);
 //! - the buffer can grow only *before* the first EBS attempt

@@ -84,7 +84,7 @@ pub struct DeviceTreeDesc {
     cpu_topology: CpuTopology,
     /// Architecture miscellany.
     arch_misc: ArchMiscDesc,
-    /// PSCI 调用通道（ARM64；`None`＝DTB 无 /psci 节）。
+    /// PSCI call conduit (ARM64; `None` means the DTB has no /psci node).
     psci_conduit: Option<PsciConduit>,
 }
 
@@ -133,7 +133,7 @@ impl DeviceTreeDesc {
         }
     }
 
-    /// PSCI 调用通道（`None`＝DTB 未声明）。
+    /// PSCI call conduit (`None` means the DTB does not declare it).
     pub fn psci_conduit(&self) -> Option<PsciConduit> {
         self.psci_conduit
     }
@@ -444,17 +444,21 @@ impl DeviceTreeDesc {
         let mut nr_cpus = 0u32;
         let mut bsp_id = 0u32;
 
-        // §续-406：走 all_nodes 过滤而非 `Fdt::cpus()`——后者内部
-        // `find_node("/cpus")` 在 QEMU `-kernel` 直核链重建出的 blob 上
-        // 返回 None 并 expect panic（fdt 0.1.5 find_node 对该 blob 的
-        // 既有缺陷，chosen 同症）；all_nodes 遍历无此问题。节点名 "cpu"
-        // 按 DT 规范只出现在 /cpus 下，过滤语义等价（两架构同形）。
+        // Filter over all_nodes instead of `Fdt::cpus()`: the latter calls
+        // `find_node("/cpus")` internally, which returns None and panics on
+        // expect for the blob QEMU rebuilds from a `-kernel` direct-chain
+        // boot (a pre-existing defect of fdt 0.1.5 find_node; /chosen shows
+        // the same symptom). all_nodes traversal has no such problem. Per
+        // the DT spec the node name "cpu" only occurs under /cpus, so the
+        // filter is semantically equivalent (both architectures alike).
         for cpu in fdt.all_nodes().filter(|n| n.name.split('@').next() == Some("cpu")) {
             if (nr_cpus as usize) >= MAX_CPUS {
                 break;
             }
-            // §续-406：hw_id 直读 `reg` 首 cell（等价原 `Cpu::ids().first()`，
-            // 见上 all_nodes 过滤注释）。#address-cells 1/2（u32/u64 形）都认。
+            // Read hw_id straight from the first `reg` cell (equivalent to
+            // the former `Cpu::ids().first()`; see the all_nodes filter
+            // comment above). Both #address-cells 1 and 2 (u32/u64 form)
+            // are accepted.
             let hw_id = match cpu.properties().find(|p| p.name == "reg") {
                 Some(p) if p.value.len() == 8 => {
                     u64::from_be_bytes(p.value.try_into().unwrap()) as u64

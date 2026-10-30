@@ -1,38 +1,51 @@
-//! SD-1 / PD-07 采甲（债①）：**启动形态登记 + 跨形态后置条件等价电池**。
+//! **Boot-form registry + cross-form postcondition equivalence battery**.
 //!
-//! 本树的内核启动入口「形态家族」已从三长成五（见 STRUCTURAL-DEBT-REGISTER §SD-1
-//! Current state）。PD-07 裁的是保留多形态（乙案）＋**显式接口 + boot-postcondition
-//! 等价断言 + 形态计数**，而不是强行统一。此前缺的正是「等价断言层」和「计数在一处
-//! 记账」——每次新增一种形态都无断言可拦，还三度复发 `entry_start_pa` 类 paper
-//! constant 错字。本模块把两半补齐：
+//! The kernel boot entry "form family" in this tree has grown from three
+//! to five. The decision was to keep the multiple forms and add an
+//! **explicit interface + boot-postcondition equivalence assertions + a
+//! form count**, rather than forcing unification. What was missing before
+//! was exactly the "equivalence assertion layer" and "the count accounted
+//! for in one place" — every new form used to arrive with nothing to stop
+//! it, and the `entry_start_pa` class of paper-constant typo recurred
+//! three times. This module supplies both halves:
 //!
-//! 1. [`BootForm`] 把五种形态收在一处枚举，`ALL_BOOT_FORMS` 是唯一的形态计数源；
-//!    新增/删除形态必须同步改这里，否则 `test_boot_form_count_is_accounted` 当场红。
-//! 2. [`KernelInfo::check_boot_postconditions`]（kernel_info.rs）是跨形态共享的
-//!    后置条件谓词；下面的电池对每种形态逐一跑它，落实 PD-07「等价后置断言（非
-//!    入口结构相等）」——绝对地址随固件而定，能等价的是同一组 higher-half 地址空间关系。
+//! 1. [`BootForm`] collects the five forms in one enum, and
+//!    `ALL_BOOT_FORMS` is the single source for the form count; adding or
+//!    removing a form must change it too, or
+//!    `test_boot_form_count_is_accounted` fails on the spot.
+//! 2. [`KernelInfo::check_boot_postconditions`] (kernel_info.rs) is the
+//!    postcondition predicate shared across forms; the battery below runs
+//!    it against each form, realizing "equivalent post-assertions, not
+//!    entry-structure equality" — absolute addresses depend on firmware,
+//!    so what can be equivalent is the same set of higher-half
+//!    address-space relations.
 
 use crate::kernel_info::KernelInfo;
 
-/// 一种内核启动形态。变体顺序即 `STRUCTURAL-DEBT-REGISTER` §SD-1 Current state 的
-/// (a)–(e)，逐一可回勾到在树源码。
+/// One kernel boot form. The variant order is (a)–(e), each traceable back
+/// to in-tree source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootForm {
-    /// (a) x86_64 UEFI 内联：`arch_boot` 在 boot-shim 进程内直跑，kernel 静态链进 PE。
+    /// (a) x86_64 UEFI inline: `arch_boot` runs directly inside the
+    /// boot-shim process; the kernel is statically linked into the PE.
     X86UefiInline,
-    /// (b) aarch64 UEFI 跨镜像：shim 产出 `BootHandoffV1` arena，交棒 `kernel.elf`。
+    /// (b) aarch64 UEFI cross-image: the shim produces a `BootHandoffV1`
+    /// arena and hands over to `kernel.elf`.
     Aarch64UefiCrossImage,
-    /// (c) riscv64 OpenSBI 自举：`os/kernel-image/src/bootface.rs`（续-88）。
+    /// (c) riscv64 OpenSBI self-boot: `os/kernel-image/src/bootface.rs`.
     RiscvOpensbiSelfBoot,
-    /// (d) aarch64 QEMU 直核自举：`os/kernel-image/src/bootface_a64.rs`（续-406，
-    ///     经 `-kernel` 装载的第四独立入口）。
+    /// (d) aarch64 QEMU direct-core boot:
+    ///     `os/kernel-image/src/bootface_a64.rs` (the fourth independent
+    ///     entry, loaded via `-kernel`).
     Aarch64QemuDirectCore,
-    /// (e) riscv64 早期 hart 过滤停放邮箱（续-400，出生即登记为本家族成员）。
+    /// (e) riscv64 early-hart filter park mailbox (registered as a family
+    ///     member from birth).
     RiscvEarlyHartMailbox,
 }
 
-/// 唯一的形态计数源。加一种形态就往这里加一个元素，计数测试自动把「家族又长但没记账」
-/// 拦在编译/测试阶段，而非靠人肉记忆。
+/// The single source of the form count. Adding a form adds one element
+/// here, and the count test stops "the family grew without being accounted
+/// for" at compile/test time instead of relying on human memory.
 pub const ALL_BOOT_FORMS: &[BootForm] = &[
     BootForm::X86UefiInline,
     BootForm::Aarch64UefiCrossImage,
@@ -42,8 +55,9 @@ pub const ALL_BOOT_FORMS: &[BootForm] = &[
 ];
 
 impl BootForm {
-    /// 该形态在树上的落点（源码路径）。用于把登记与真实代码对齐；缺失即说明某形态
-    /// 被搬走或改名而台账未跟上。
+    /// Where this form lives in tree (the source path). Used to keep the
+    /// registry aligned with the real code; a missing path means some form
+    /// was moved or renamed and this record did not follow.
     pub const fn source_path(self) -> &'static str {
         match self {
             BootForm::X86UefiInline => "os/boot-shim/src/main.rs",
@@ -54,7 +68,8 @@ impl BootForm {
         }
     }
 
-    /// 人类可读短名，供诊断/文档引用。
+    /// Human-readable short name, for diagnostics and documentation
+    /// references.
     pub const fn label(self) -> &'static str {
         match self {
             BootForm::X86UefiInline => "x86_64 UEFI inline",
@@ -72,8 +87,9 @@ mod tests {
     use crate::kernel_info::{BootModule, MemoryRegion};
     use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 
-    /// PD-07 债①：形态计数在一处记账。五是从 §SD-1 Current state 数出来的；
-    /// 任何「悄悄长了第六形态而没改登记」都会让此测红。
+    /// The form count is accounted for in one place. The five were counted
+    /// from the current state; any "a sixth form quietly appeared and the
+    /// registry did not change" turns this test red.
     #[test]
     fn test_boot_form_count_is_accounted() {
         assert_eq!(
@@ -83,12 +99,15 @@ mod tests {
         );
     }
 
-    /// 每形态都有非空落点，落点互不重复（两种形态指向同一文件＝家族定义出错），
-    /// 且落点在磁盘上真实存在（路径被搬走或改名时当场红）。
+    /// Every form has a non-empty landing path, the landing paths are
+    /// distinct (two forms pointing at the same file means the family
+    /// definition is wrong), and each path really exists on disk (moving or
+    /// renaming one turns this red immediately).
     #[test]
     fn test_each_boot_form_has_distinct_source() {
-        // `source_path()` 是仓库根相对路径；本包清单目录在 os/libs/minix-boot，
-        // 因此仓库根是清单目录的上三级。
+        // `source_path()` is a repo-root-relative path; this package's
+        // manifest directory is os/libs/minix-boot, so the repo root is
+        // three levels above the manifest directory.
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         for form in ALL_BOOT_FORMS {
             assert!(
@@ -116,9 +135,11 @@ mod tests {
         }
     }
 
-    /// 构造一份 generic higher-half 几何的 `KernelInfo`（绝对地址是固件相关的，故 PD-07
-    /// 要的是跨形态的后置条件**等价**而非入口结构相等——这里用同一组内部关系即可
-    /// 覆盖每种形态都必须满足的谓词）。
+    /// Build a `KernelInfo` with generic higher-half geometry (absolute
+    /// addresses are firmware-dependent, so what is required is cross-form
+    /// postcondition **equivalence**, not entry-structure equality — the
+    /// same set of internal relations is enough to cover the predicate
+    /// every form must satisfy).
     fn canonical_higher_half_info() -> KernelInfo {
         KernelInfo {
             memmap: &[MemoryRegion {
@@ -145,29 +166,37 @@ mod tests {
         }
     }
 
-    /// 等价电池：每种启动形态产出的 `KernelInfo` 都必须依次通过 `validate()`
-    /// （非地址不变量）与 `check_boot_postconditions()`（higher-half 地址空间关系）。
+    /// The equivalence battery: the `KernelInfo` produced by each boot form
+    /// must pass `validate()` (non-address invariants) and then
+    /// `check_boot_postconditions()` (higher-half address-space relations).
     #[test]
     fn test_boot_postconditions_hold_for_every_form() {
         for form in ALL_BOOT_FORMS {
-            // 逐形态用同一内部关系构造，证明谓词与具体形态无关、可等价套用。
+            // Constructed per form from the same internal relations, proving
+            // the predicate is independent of the concrete form and applies
+            // equivalently.
             canonical_higher_half_info().validate();
             canonical_higher_half_info().check_boot_postconditions();
             let _ = form.label();
         }
     }
 
-    /// 负控：入口被指到镜像外（`entry_start_pa` 类错字）——后置条件谓词必须当场红，
-    /// 而 `validate()`（只校非地址不变量）抓不到它，正说明本层的独立价值。
+    /// Negative control: the entry points outside the image (the
+    /// `entry_start_pa` class of typo) — the postcondition predicate must
+    /// turn red on the spot, while `validate()` (which only checks
+    /// non-address invariants) cannot catch it, which is exactly this
+    /// layer's independent value.
     #[test]
     #[should_panic(expected = "syscall_entry")]
     fn test_postcond_rejects_entry_outside_image() {
         let mut info = canonical_higher_half_info();
-        info.syscall_entry = VirBytes(0xFFFF_8000_00FF_0000); // 越过 base+kern_size
+        info.syscall_entry = VirBytes(0xFFFF_8000_00FF_0000); // past base+kern_size
         info.check_boot_postconditions();
     }
 
-    /// 负控：用户栈高到与内核半区重叠（§1.115 类越界的形状）——必须红。
+    /// Negative control: the user stack reaches up so high that it overlaps
+    /// the kernel half (the shape of that class of out-of-range bug) — must
+    /// turn red.
     #[test]
     #[should_panic(expected = "user_sp")]
     fn test_postcond_rejects_user_sp_in_kernel_half() {
@@ -176,7 +205,8 @@ mod tests {
         info.check_boot_postconditions();
     }
 
-    /// 负控：内核栈掉到用户半区——必须红。
+    /// Negative control: the kernel stack drops into the user half — must
+    /// turn red.
     #[test]
     #[should_panic(expected = "kern_stack_top")]
     fn test_postcond_rejects_kernel_stack_below_base() {

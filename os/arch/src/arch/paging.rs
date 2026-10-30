@@ -58,7 +58,7 @@ bitflags::bitflags! {
         //   I/O; the LAPIC MMIO window keeps its current treatment).
         // riscv64: no encoding — Sv39 PTEs carry no cacheability bits.
         //
-        // SD-42 [ARCH: mmio-device].
+        // [ARCH: mmio-device].
         const DEVICE          = 1 << 11;
     }
 }
@@ -132,7 +132,7 @@ impl PageFlags {
         )
     }
 
-    /// Kernel read-write-**execute** page (global). fix27e: the identity
+    /// Kernel read-write-**execute** page (global). The identity
     /// windows replayed into every VM-built process table mix the running
     /// kernel's text, data and heap in one supervisor region — the UEFI
     /// memory map carries no W^X intent, so the only sound common flag set
@@ -426,10 +426,13 @@ pub trait Paging {
 
 
 
-    /// （P-ALL-06 2026-10-06：原 `unsafe fn switch(&self)` 成员移除——内核
-    /// 实际换根走 `TlbArch::set_active_root`（kernel/src/lib.rs:3103），
-    /// 本成员三架构零具体调用方（仅 Mock 自引用），属被取代的死契约面。
-    /// [ARCH: trait-surface refactor，无语义变化；三 impl 同批移除。]
+    /// The former `unsafe fn switch(&self)` member was removed: the kernel
+    /// switches roots through `TlbArch::set_active_root` (kernel/src/lib.rs:3103),
+    /// and no concrete caller of this member existed on any of the three
+    /// architectures (only Mock referenced itself), so it was a superseded dead
+    /// contract surface.
+    /// [ARCH: trait-surface refactor, no semantic change; all three impls
+    /// removed in the same batch.]
     ///
     /// Flush TLB entries associated with this page table.
     ///
@@ -612,7 +615,7 @@ pub fn clone_range<P: Paging>(
 /// 1. Kernel code segment (executable in real impl)
 /// 2. Kernel data segment (non-executable in real impl)
 /// 3. Kernel direct map (all physical memory, supervisor-only in real impl)
-/// 4. Kernel runtime identity windows (fix27): occupied physical regions
+/// 4. Kernel runtime identity windows (handoff v6): occupied physical regions
 ///    mapped identity (VA = PA, supervisor-only) — on the UEFI link-in
 ///    execution model the kernel's live code/GDT/IDT/TSS sit at the
 ///    firmware-relocated low addresses these regions describe, so a
@@ -641,17 +644,17 @@ pub fn map_kernel<P: Paging>(
     for i in 0..kernel_text_pages {
         let vaddr = VirBytes(kernel_text_vbase + i as u64 * page_size);
         let paddr = PhysBytes(kernel_text_pbase + i as u64 * page_size);
-        // NK4-C 续-103: kernel TEXT must carry the execute bit. RISC-V (Sv39)
+        // Kernel TEXT must carry the execute bit. RISC-V (Sv39)
         // unconditionally requires X on a leaf to fetch from it — unlike x86
         // (EFER.NXE may be off, and the immediate post-`switch` fetch lands in
-        // the RWX fix27e identity windows below, so the no-X text alias was
-        // never the fetched path there). Mapping text `kernel_read_write()`
+        // the RWX identity windows below, so the no-X text alias was
+        // never the fetched path there). Mapping text `kernel_read_write()
         // (present|write|global, no X) faulted the very first instruction
         // fetch after `switch_address_space` loaded a process's map_kernel root
         // — the riscv RS birth-chain death. Adding X to already-present text is
         // purely additive (it can only enable a fetch, never restrict one), so
         // x86_64/aarch64 behavior is unchanged. RWX matches the RWX boot/identity
-        // mapping already used for the running kernel image (see fix27e below).
+        // mapping already used for the running kernel image (see segment 4 below).
         pt.map(vaddr, paddr, PageFlags::kernel_executable_writable())?;
     }
 
@@ -669,7 +672,7 @@ pub fn map_kernel<P: Paging>(
         pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
     }
 
-    // Segment 4 (fix27): identity windows. The producer
+    // Segment 4: identity windows. The producer
     // (`vm_handoff::build_identity_windows`) guarantees page-aligned,
     // sorted, NON-OVERLAPPING regions, so the 4 KiB walks below can
     // never hit `AlreadyMapped` within this segment; a hit means that
@@ -677,12 +680,12 @@ pub fn map_kernel<P: Paging>(
     // above — fail fast either way (the error propagates out of
     // `init_page_table` and VM refuses the process).
     //
-    // fix27e flags: PRESENT|WRITABLE|EXECUTABLE|GLOBAL (supervisor).
+    // Flags: PRESENT|WRITABLE|EXECUTABLE|GLOBAL (supervisor).
     // The UEFI snapshot describes occupancy, not W^X intent — one window
     // mixes the running kernel's text, data and heap, and OVMF boots with
     // EFER.NXE set, so a non-executable identity window #PFs (present
     // violation, err=0x11) on the first instruction fetch after the CR3
-    // switch (real machine 2026-09-21, int_fix33 IP=CR2=0x1daf0d9d).
+    // switch (real machine 2026-09-21, IP=CR2=0x1daf0d9d).
     // [ARCH]: narrowing this to per-section windows needs section-level
     // provenance from the loader, not a memory-map snapshot.
     let ident_flags = PageFlags::kernel_executable_writable();
@@ -1204,7 +1207,7 @@ pub mod mock {
                 MOCK_KERNEL_DATA_PAGES,
                 MOCK_DM_VBASE,
                 MOCK_DM_SENTINEL_PAGES,
-                // fix27 segment 4: one two-page identity window.
+                // Segment 4: one two-page identity window.
                 &[
                     minix_types::HandoffMemRegion {
                         base: 0x1da0_0000,
@@ -1214,7 +1217,7 @@ pub mod mock {
             ).unwrap();
 
             // Segment 4: identity windows are mapped VA == PA, supervisor
-            // RWX (fix27e: EXECUTABLE required — OVMF boots with EFER.NXE).
+            // RWX (EXECUTABLE required — OVMF boots with EFER.NXE).
             for i in 0..2u64 {
                 let addr = VirBytes(0x1da0_0000 + i * PAGE_SIZE_CONST);
                 let (paddr, flags) = pt
@@ -1225,7 +1228,7 @@ pub mod mock {
             }
 
             // Segment 1: Kernel code segment (8 pages at MOCK_KERNEL_TEXT_VBASE)
-            // NK4-C 续-103: kernel text carries the execute bit (RISC-V Sv39
+            // Kernel text carries the execute bit (RISC-V Sv39
             // requires X on a leaf to fetch; adding X is purely additive for
             // x86/aarch64). Data segment below stays read_write (no X).
             const PAGE_SIZE: u64 = MockPaging::PAGE_SIZE as u64;

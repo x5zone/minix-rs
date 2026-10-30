@@ -15,7 +15,7 @@
 //!
 //! C: none — C has the same "no instruction exists" property; this file
 //! exists so the loader calls one contract on all three architectures
-//! (`[ARCH: cache-sync]`, SD-20).
+//! (`[ARCH: cache-sync]`).
 
 use crate::arch::cache_sync::CacheSyncArch;
 use core::ops::Range;

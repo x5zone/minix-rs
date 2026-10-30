@@ -1,45 +1,59 @@
-//! NK4-C 续-88 甲案（riscv64 装机面）：kernel-image 自当引导体。
+//! riscv64 install face (self-boot form): kernel-image acts as its own bootloader.
 //!
-//! `[ARCH: FW_PAYLOAD 直核形态（Minix3 无对应）]`：本面是 riscv64 的辅助
-//! 启动路径——真板 `FW_PAYLOAD` 极简装机与 QEMU `-kernel` 测试共用它；
-//! 主线仍是独立 boot-shim + 独立内核镜像。三架构落位矩阵见 01 篇 §3.7。
+//! `[ARCH: FW_PAYLOAD direct-kernel form (no Minix3 counterpart)]`: this face is
+//! the riscv64 auxiliary boot path — shared by the minimal `FW_PAYLOAD` install
+//! on real boards and by QEMU `-kernel` tests; the mainline remains a separate
+//! boot-shim plus a separate kernel image. The three-architecture placement
+//! matrix is in doc 01 §3.7.
 //!
-//! 裁决源：`rewrite-notes/coordination/NK4C-OPENING-PROMPT.md` 阶段
-//! 3.1——「kernel-image riscv64 接 a1 DTB → 解 memmap + 模块装载源 + .bss
-//! 清零 → 调 arch_boot（过 validate 真门槛）」。本模块是那条裁决的 Rust 面
-//! 落地（`.bss` 清零在 `main.rs` 的入口 asm；甲案三件缺件的另外两半都在
-//! 这里）：
+//! Decision: kernel-image on riscv64 takes the `a1` DTB → parses memmap +
+//! module load sources + zeroes `.bss` → calls arch_boot (through the real
+//! validate gate). This module is the Rust landing of that decision (`.bss`
+//! zeroing happens in `main.rs` entry asm; the other two of the three missing
+//! pieces are here):
 //!
-//! 1. **memmap**：OpenSBI 递入 `a1` 的 DTB 物理址解析 `/memory` 节点的
-//!    `reg`——与 opensbi 腿共享同一个 `minix_boot::DtbMemoryMap`（trait
-//!    `MemoryMapSource` 在 `minix-boot`；I-22 三链收口，引导形态层不合并）。
-//! 2. **模块装载源**：`BootFileTable`（magic `MNXBOOT1` 把关）。两个通道：
-//!    U-Boot 腿的 `a2` 寄存器约定，与 DTB `/chosen` 的
-//!    `opensbi,boot-file-table` 属性（后者让 OpenSBI `-kernel` 直载 +
-//!    `-device loader` 注入也能全链自测，不必等 xtask 装机腿）。表项携
-//!    U-Boot `fatload` 放好的物理址/长度，本面按契约序（`MODULE_NAMES` =
-//!    C `table.c:44-64` 的 12 名；位置为主、表内名对期望字面量校验为辅）
-//!    把模块字节搬进 bump 物理页。
-//! 3. **arch_boot 真门槛**：组 `KernelInfo`（复用 boot-shim 库的
-//!    `build_kernel_info` 车道：Sv39 `user_sp`、`bootstrap=(0,0)` no-op
-//!    回收语义）后调 `minix_kernel::arch_boot`——走 `validate()` 与
-//!    `jump_to_kmain`，这是三份仓内载体（hello-boot / test-rt-birth 等）
-//!    都没碰过的那半（NK4B M4.4 事实三）。
+//! 1. **memmap**: the DTB physical address OpenSBI passes in `a1`; parse the
+//!    `/memory` node's `reg` — sharing `minix_boot::DtbMemoryMap` with the
+//!    opensbi leg (trait `MemoryMapSource` lives in `minix-boot`; the three
+//!    boot-source chains converge there, and the boot-form layer is not
+//!    merged).
+//! 2. **module load source**: `BootFileTable` (gated by magic `MNXBOOT1`). Two
+//!    channels: the U-Boot leg's `a2` register convention, and the DTB
+//!    `/chosen` `opensbi,boot-file-table` property (the latter also lets
+//!    OpenSBI `-kernel` direct load plus `-device loader` injection self-test
+//!    the whole chain, without waiting for the xtask install leg). Entries
+//!    carry the physical address/length that U-Boot `fatload` placed; this
+//!    face copies module bytes into bump physical pages in contract order
+//!    (`MODULE_NAMES` = the 12 names in C `table.c:44-64`; position is
+//!    primary, checking the in-table name against the expected literal is
+//!    secondary).
+//! 3. **real arch_boot gate**: build `KernelInfo` (reusing the boot-shim
+//!    library's `build_kernel_info` lane: Sv39 `user_sp`, `bootstrap=(0,0)`
+//!    no-op reclaim semantics), then call `minix_kernel::arch_boot` — which
+//!    runs through `validate()` and `jump_to_kmain`; that is the half none of
+//!    the three in-repo carriers (hello-boot / test-rt-birth etc.) ever
+//!    exercised.
 //!
-//! 执行视图不变量（M4.3 实测钉死）：riscv64 medany 下镜像内引用全部被
-//! 松弛成 PC 相对，OpenSBI 跳的是**最低物理装载址**（`Domain0 Next
-//! Address` = PT_LOAD 最低 `p_paddr`），所以本模块运行在「链接期 VMA −
-//! 运行期 PA = 0xFFFFFFC000000000 − 0x80200000」的平移视图里：Rust 取到
-//! 的一切地址值 = 物理址（satp=0 恒等可访），DTB、表、模块字节都按物理
-//! 指针直读；`KernelInfo` 里的 `kern_virt_base` / `kern_stack_top` 用
-//! `.ld` 常量（高半视图值），它们只在 `arch_boot` 建表并 `enable()` 之后
-//! 才被解引用——顺序由 `arch_boot` 自身保证。
+//! Execution-view invariant (pinned by real-hardware measurement): under
+//! riscv64 medany all intra-image references are relaxed to PC-relative, and
+//! OpenSBI jumps to the **lowest physical load address** (`Domain0 Next
+//! Address` = lowest PT_LOAD `p_paddr`), so this module runs in a translation
+//! view where "link-time VMA − runtime PA = 0xFFFFFFC000000000 − 0x80200000":
+//! every address value Rust obtains is a physical address (accessible
+//! identically with satp=0), and DTB, table and module bytes are read directly
+//! through physical pointers; `kern_virt_base` / `kern_stack_top` in
+//! `KernelInfo` use the `.ld` constants (high-half view values) and are
+//! dereferenced only after `arch_boot` has built the tables and called
+//! `enable()` — the ordering is guaranteed by `arch_boot` itself.
 //!
-//! 与 boot-shim `OpenSbiBootShim::prepare_boot` 的分界：那条腿是「独立
-//! shim 装 kernel.elf 再跳」，会重新拷贝**本镜像自己的段**并清 NOBITS——
-//! 对自引导镜像是自我破坏；本面只搬**模块**、绝不重拷自己。模块拷贝走
-//! 物理 bump 暂存页而非堆 `Vec`（堆只有 `IMAGE_HEAP` 一格 1 MiB，而 U-Boot
-//! 字节本就在 RAM——直读直拷少一层，也不受堆宽约束）。
+//! Boundary with boot-shim `OpenSbiBootShim::prepare_boot`: that leg is
+//! "standalone shim installs kernel.elf then jumps", which re-copies **this
+//! image's own segments** and clears NOBITS — self-destructive for a self-boot
+//! image; this face copies only **modules** and never re-copies itself. Module
+//! copies go through physical bump scratch pages rather than a heap `Vec` (the
+//! heap has a single `IMAGE_HEAP` block of 1 MiB, while the U-Boot bytes are
+//! already in RAM — reading and copying directly saves a layer and is not
+//! bound by heap width).
 
 use core::slice;
 
@@ -56,65 +70,80 @@ use boot_shim::opensbi_helpers::{
 
 use crate::early_console;
 
-// 甲案的字符串纪律（续-88 jiaf3–jiaf9 真机取证链定枢）：satp=0 物理视图下，
-// 只有「调用点直接物化的字面量」（`auipc` 松弛）可解引用；任何经数据格
-// 的 `&str`——静态胖指针、match 切换表（`.Lswitch.table` 携 baked VMA，
-// jiaf5/jiaf6 反证实锤）——解引用即 Load access fault → OpenSBI 热重入。
-// 名单因此以定长字节池（纯数据，无 baked 指针）+字面量校验形状存在；
-// `BootModule.name` 的 backing 必须是物理名字池（内核 `store_kernel_info`
-// 在物址腿读它，kernel/src/lib.rs:734）。
+// String discipline for this self-boot form (pinned by real-hardware forensics
+// under satp=0): only literals materialized directly at the call site (`auipc`
+// relaxation) are dereferenceable; any `&str` that goes through a data cell —
+// static fat pointers, match jump tables (`.Lswitch.table` carries baked VMAs,
+// confirmed by disassembly) — dereferences as a Load access fault → OpenSBI
+// warm re-entry. The name list therefore exists as a fixed-size byte pool
+// (pure data, no baked pointers) plus literal-check shapes; the backing of
+// `BootModule.name` must be the physical name pool (the kernel's
+// `store_kernel_info` reads it on the physical-address leg, kernel/src/lib.rs:734).
 const _: () = assert!(NR_BOOT_MODULES == 12);
 
-// 名字池/槽宽与纯函数闸（`be_cell`/`in_memmap*`/`table_magic_ok`/
-// `fdt_table_pa`）由两个自引导面共用，住在 `bootface_common`（N-4）。
+// The name pool/slot width and the pure-function gates (`be_cell`/
+// `in_memmap*`/`table_magic_ok`/`fdt_table_pa`) are shared by both self-boot
+// faces and live in `bootface_common`.
 use crate::bootface_common::{
     NAME_POOL, NAME_SLOT, fdt_table_pa, in_memmap, in_memmap_range, table_magic_ok,
 };
 
-// ── 布局契约常量（与 riscv64.ld 同源；check-layout.sh L0/L9/A1 与真机
-//    `Domain0 Next Address` 对账防漂移）──
+// ── Layout contract constants (same source as riscv64.ld; check-layout.sh
+//    L0/L9/A1 reconcile them with the real board's `Domain0 Next Address`
+//    to prevent drift) ──
 //
-// 本组是架构真值（DRAM 基址/镜像物理基址/池基），与 aarch64 半不同源，
-// 因此各留一份、互指而非共享；两份共用的名字池与纯函数闸在
-// `bootface_common`（N-4 处置）。
+// This group holds architecture truth (DRAM base / image physical base / pool
+// base) and does not share a source with the aarch64 half, so each keeps its
+// own copy and they point at each other instead of sharing; the name pool and
+// pure-function gates shared by both live in `bootface_common`.
 
-/// QEMU virt DRAM 基址（DTB/表界闸的下界；与 `riscv64.ld` 头注、
-/// `opensbi_helpers::DRAM_BASE` 同值，L0/A1 已护基址不漂）。
+/// QEMU virt DRAM base (lower bound of the DTB/table bound gates; same value
+/// as the `riscv64.ld` header note and `opensbi_helpers::DRAM_BASE`; L0/A1
+/// already protect the base from drifting).
 const DRAM_BASE: u64 = 0x8000_0000;
 
-/// 镜像物理基址（`riscv64.ld` `KERNEL_PHYS_BASE`：装载器按 PT_LOAD 的
-/// LMA 放置，跨距 2MiB 收口同脚本）。
+/// Image physical base (`riscv64.ld` `KERNEL_PHYS_BASE`: the loader places by
+/// PT_LOAD LMA; the span is rounded to 2MiB by the same script).
 const KERN_PHYS_BASE: u64 = 0x8020_0000;
 
-/// 镜像链接高半基址（`riscv64.ld` `KERNEL_VIRT_BASE`）。
+/// Image link-time high-half base (`riscv64.ld` `KERNEL_VIRT_BASE`).
 const KERN_VIRT_BASE: u64 = 0xFFFF_FFC0_0000_0000;
 
-/// 镜像跨距（= 末段 2MiB 收口后的 LMA 尾差，当前工件 4 MiB）。CodeReview
-/// BLOCKER-1：硬写 2MiB 副本时 `IMAGE_HEAP` 扩容已把真实跨距推到 4MiB——
-/// 高半会少映半张镜像、`kern_stack_top` 落在 .bss 中段（静默腐坏）。本
-/// 字面量是单一真值源，`check-layout.sh` L9 拿 ELF 实测跨距与之对账（堆
-/// 宽变→跨距变→L9 当场红）；不另在 `.ld` 开符号节（曾试，多一个 PT_LOAD
-/// 把跨距推成非 2MiB 整数倍，反破 L5/L7）。
+/// Image span (= tail LMA delta after the 2MiB rounding of the last segment;
+/// currently 4 MiB). Hard-coding the 2MiB copy once let an `IMAGE_HEAP` growth
+/// push the real span to 4MiB — the high half then mapped only half the image
+/// and `kern_stack_top` landed mid-.bss (silent corruption). This literal is
+/// the single source of truth; `check-layout.sh` L9 reconciles the measured ELF
+/// span against it (heap width change → span change → L9 goes red on the spot);
+/// no separate symbol section in `.ld` (tried before: one extra PT_LOAD pushed
+/// the span off a 2MiB multiple, breaking L5/L7 instead).
 const KERN_SIZE: u64 = 0x40_0000;
 
-/// boot 暂存页预算已取消（续-89）：早期两段式拷贝的 1 MiB scratch 与模块
-/// 尺寸上限均由「源直拷 + `in_memmap_range` 全宽闸」取代，见 `place_modules`。
+/// The boot scratch page budget is gone: the 1 MiB scratch and the module size
+/// cap of the early two-stage copy were replaced by "copy directly from source
+/// + full-width `in_memmap_range` gate"; see `place_modules`.
 
-/// 页表 bump 区页数：1 MiB（256 页，= boot-shim 库 fallback 同宽）。Sv39
-/// 建根+身份低半+高半+DM 两窗的中间表用量在 QEMU virt 单段 memmap 下
-/// 实测未及此数；池枯竭走显式 halt 臂（CodeReview SF5：不留 `.expect`
-/// ——panic 渲染腿携 baked-VMA fmt pieces，物址视图里正好踩本模块定枢）。
+/// Page-table bump region size: 1 MiB (256 pages, same width as the boot-shim
+/// library fallback). Under QEMU virt's single-region memmap the intermediate
+/// tables for Sv39 root + identity low half + high half + two DM windows
+/// measured below this; pool exhaustion takes an explicit halt arm (no
+/// `.expect` — the panic render path carries baked-VMA format pieces, which
+/// under the physical address view hits exactly the invariant pinned in this
+/// module).
 const PT_BUMP_PAGES: usize = 256;
 
-/// memmap 条目上限（QEMU virt / 真板的多段 `/memory` 都远少于此）。
+/// Upper bound on memmap entries (multi-region `/memory` on QEMU virt and real
+/// boards is far below this).
 
-// ── 入口 ────────────────────────────────────────────────────────
+// ── Entry ───────────────────────────────────────────────────────
 
-/// 甲案 Rust 面入口（`main.rs` riscv64 `_start` 清零 .bss、立栈后
-/// `call` 进来；a0/a1/a2 依 RV64 ABI 落为三个入参，`call` 不动它们）。
+/// Rust-side entry of the self-boot form (`main.rs` riscv64 `_start` zeroes
+/// .bss, sets up the stack and `call`s in; a0/a1/a2 become the three
+/// parameters per the RV64 ABI, and `call` does not touch them).
 pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
-    // 触达锚点：运行路径上引用一次，保证内核启动图在归档成员粒度上
-    // 也被拉入链接（链接脚本 KEEP 是第二道保险）。
+    // Touch the anchor: reference it once on the running path so the kernel
+    // boot graph is pulled into the link at archive-member granularity (the
+    // linker script KEEP is the second safeguard).
     core::hint::black_box(crate::KERNEL_ENTRY_ANCHOR as usize);
     say("### minix-rs kernel image: riscv64 self-boot (NK4-C jia-an)\n");
     say("  boot hart 0x");
@@ -123,19 +152,22 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say_hex(dtb_pa);
     say("\n");
 
-    // 1. DTB → memmap（OpenSBI 规范保证 a1 递 DTB；为 0 说明固件配置
-    //    异常，诚实停机）。
+    // 1. DTB → memmap (the OpenSBI spec guarantees a1 carries the DTB; zero
+    //    means the firmware configuration is abnormal, so halt honestly).
     if dtb_pa == 0 {
         say("### minix-rs kernel image: OpenSBI passed no DTB in a1 — halting\n");
         crate::halt();
     }
-    // SAFETY: `dtb_pa` 是 OpenSBI 放在 DRAM 高段的 FDT 物理址（规范
-    // 承诺 + M4.3 固件串口实证 `Domain0 Next Arg1`）；satp=0 恒等视图
-    // 可读。CodeReview SF2：不按 2MiB 假窗建切窗（窗尾会越出 DRAM 顶），
-    // 先读 40B 定长头取 totalsize，`fdt_bounded` 证整块落在 memmap 内
-    // 后才按真实宽度建切窗。
-    // SAFETY: 40B 头部——`dtb_pa` 非零且 OpenSBI 保证 blob 在 DRAM 内，
-    // 读前 40B 仅取魔数/长度字段；真正的使用范围由下面的区间闸卡死。
+    // SAFETY: `dtb_pa` is the physical address of the FDT that OpenSBI places
+    // in high DRAM (spec promise, confirmed on the firmware console as
+    // `Domain0 Next Arg1`); it is readable in the satp=0 identity view. Do not
+    // build a slice from an assumed 2MiB window (its tail would run past the
+    // top of DRAM): read the fixed 40B header for totalsize first, and only
+    // after `fdt_bounded` proves the whole blob lies inside memmap build a
+    // slice of the real width.
+    // SAFETY: 40B header — `dtb_pa` is non-zero and OpenSBI guarantees the
+    // blob is in DRAM; reading the first 40B only takes the magic/length
+    // fields; the real use range is pinned by the range gate below.
     let head = unsafe { slice::from_raw_parts(dtb_pa as *const u8, 40) };
     if u32::from_be_bytes(head[0..4].try_into().unwrap_or([0; 4])) != 0xd00d_feed {
         say("### minix-rs kernel image: DTB magic bad — halting\n");
@@ -155,8 +187,9 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         }
     };
 
-    // I-22 丁案 C：memmap 源经 `DtbMemoryMap`（minix-boot），固件常驻区
-    // 削界语义不变（fw_end = KERN_PHYS_BASE，续-91 实钉的功能性削除）。
+    // The memmap source goes through `DtbMemoryMap` (minix-boot); the firmware
+    // reserved-region clipping semantics are unchanged (fw_end =
+    // KERN_PHYS_BASE, a functional trim pinned on real hardware).
     let (memmap, reserved) = DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect();
     if memmap.is_empty() {
         say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
@@ -170,9 +203,11 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say_hex(memmap[0].len as u64);
     say("\n");
 
-    // 2. BootFileTable：a2 约定通道与 DTB /chosen 通道，都要先过
-    //    DRAM 界闸再过 magic 闸才解引用（hartid/垃圾指针直读 = Load
-    //    fault；M4.3 与 U-Boot 取证的一贯纪律）。
+    // 2. BootFileTable: both the a2 convention channel and the DTB /chosen
+    //    channel must pass the DRAM bound gate and then the magic gate before
+    //    dereference (reading a hartid or a garbage pointer directly is a Load
+    //    fault; the discipline established by real-hardware and U-Boot
+    //    forensics).
     let chosen_pa = fdt_table_pa(&fdt);
     let table_pa = [Some(table_pa_a2), chosen_pa].into_iter().flatten().find(|pa| {
         in_memmap(memmap, *pa) && table_magic_ok(*pa)
@@ -184,22 +219,27 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say("  boot file table pa 0x");
     say_hex(table_pa);
     say("\n");
-    // SAFETY: 上一步的 `table_magic_ok` 已在 `in_memmap` 界内核对
-    // magic；表由 U-Boot/宿主注入工具放在启动期独占的物理 RAM，本面是
-    // 它的首个也是唯一读者（单 hart，无并发写者）。
+    // SAFETY: the preceding `table_magic_ok` already checked the magic inside
+    // the `in_memmap` bound; U-Boot or the host injection tool places the table
+    // in physical RAM exclusive to the boot phase, and this face is its first
+    // and only reader (single hart, no concurrent writers).
     let table = unsafe { &*(table_pa as *const BootFileTable) };
 
-    // 3. bump 物理池（boot-shim 库 `MODULE_REGION_BASE` 车道：DRAM+32M
-    //    起 32MiB，`BUMP_END <= boot_dm_admissible_end()` 编译期已证）：
-    //    root 页 → 页表 bump 区 → 名字池，顺序无重叠；模块取页在其后。
-    //    CodeReview SF5：全部走 Option+诚实停机，不留 `.expect`/panic 腿
-    //    （panic 渲染携 baked-VMA fmt pieces，物址视图里正好踩定枢）。
+    // 3. Bump physical pool (boot-shim library `MODULE_REGION_BASE` lane: 32MiB
+    //    starting at DRAM+32M, `BUMP_END <= boot_dm_admissible_end()` proven at
+    //    compile time): root page → page-table bump region → name pool, in that
+    //    order with no overlap; module page takes come after.
+    //    Every path goes through Option plus an honest halt, leaving no
+    //    `.expect`/panic leg (the panic render path carries baked-VMA fmt
+    //    pieces, which under the physical-address view hits exactly that
+    //    invariant).
     let pool_exhaust = "### minix-rs kernel image: bump pool exhausted — halting\n";
     let Some(cur_root) = bump_alloc_pages(1) else { say(pool_exhaust); crate::halt() };
     let root_page = PhysBytes(cur_root);
     let Some(pt_base) = bump_alloc_pages(PT_BUMP_PAGES) else { say(pool_exhaust); crate::halt() };
     let pt_end = pt_base + (PT_BUMP_PAGES as u64) * 4096;
-    // 名字池：单页物址 bump 区，12×16B 槽（详 `place_modules` 视图论）。
+    // Name pool: one physical-address bump page, 12 slots of 16B (see the view
+    // discussion in `place_modules`).
     let Some(names_pool) = bump_alloc_pages(1) else { say(pool_exhaust); crate::halt() };
     minix_kernel::boot_alloc::init_boot_pt_alloc(pt_base, pt_end);
     minix_arch::pt_alloc::register(minix_kernel::boot_alloc::boot_pt_alloc);
@@ -211,25 +251,30 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say_hex(pt_end);
     say("\n");
 
-    // 4. 12 模块：表定位（名对位校验）→ 源直拷进 bump 页（源已过与池
-    //    不相交闸，`copy_nonoverlapping` 无重叠）。
+    // 4. 12 modules: locate the table (basename check) → copy each source
+    //    straight into bump pages (the source has passed the disjointness gate
+    //    against the pool, so `copy_nonoverlapping` cannot overlap).
     if place_modules(table, memmap, names_pool).is_none() {
         say("### minix-rs kernel image: module placement failed — halting\n");
         crate::halt();
     }
-    // SAFETY: `place_modules` 刚按契约序写满 12 槽；此后只读。
+    // SAFETY: `place_modules` has just filled all 12 slots in contract order;
+    // read-only from here on.
     let modules: &'static [BootModule] = unsafe { &*core::ptr::addr_of!(MODULE_TABLE) };
     say("  boot modules placed 12\n");
 
-    // 5. 平台描述符源：riscv 只有 DTB（boot-shim 库同款车道；槽位住
-    //    .bss，避开堆 leak 面）。
-    // SAFETY: boot 面单 hart，写一次后只读（下一步起）。
+    // 5. Platform descriptor source: riscv has only the DTB (same lane as the
+    //    boot-shim library; the slot lives in .bss, avoiding the heap leak
+    //    surface).
+    // SAFETY: a single hart on the boot face; written once, then read-only
+    // (from the next step on).
     unsafe {
         *core::ptr::addr_of_mut!(PLATFORM_SOURCE) =
             PlatformDescSource::new(DTB, PhysBytes(dtb_pa));
     }
-    // SAFETY: 同上——写完之后的静态引用，无并发改写；数组单格与切片
-    // 长度 1 同源。
+    // SAFETY: as above — a static reference after the write, with no concurrent
+    // rewriting; the single array cell and the length-1 slice share the same
+    // storage.
     let platform_sources: &'static [PlatformDescSource] = unsafe {
         core::slice::from_raw_parts(core::ptr::addr_of!(PLATFORM_SOURCE), 1)
     };
@@ -259,8 +304,9 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         unsafe { core::slice::from_raw_parts(ptr, stats.bytes) }
     };
 
-    // 6. KernelInfo（boot-shim `build_kernel_info` 车道）+ arch_boot 真
-    //    门槛（validate → 建根 → DM → jump_to_kmain，不再返回本面）。
+    // 6. KernelInfo (boot-shim `build_kernel_info` lane) + the real arch_boot
+    //    gate (validate → build root → DM → jump_to_kmain, never returning to
+    //    this face).
     let kernel_info: KernelInfo = build_kernel_info(
         memmap,
         reserved,
@@ -277,66 +323,92 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     minix_kernel::arch_boot(&kernel_info, root_page)
 }
 
-// ── DTB 面 ──────────────────────────────────────────────────────
+// ── DTB face ────────────────────────────────────────────────────
 
-// （fill_memmap 已迁 minix-boot `DtbMemoryMap`——I-22 丁案 B；削界纯函数
-// 同批迁移为参数化 `clip_reserved`，编译期护栏随迁。）
+// (fill_memmap has moved to minix-boot `DtbMemoryMap`; the bound-clipping pure
+// functions moved in the same batch as the parameterized `clip_reserved`, with
+// their compile-time guards.)
 
-// （clip_firmware 已迁 minix-boot 参数化 `clip_reserved`，其三枚编译期
-// 护栏断言随迁（_FW_PURE/_FW_CROSS/原样保留三形）——I-22 丁案 B。）
+// (clip_firmware has moved to minix-boot's parameterized `clip_reserved`, and
+// its three compile-time guard assertions moved along (_FW_PURE/_FW_CROSS/
+// pass-through unchanged).)
 
-/// 读 `/chosen` 的 `opensbi,boot-file-table`（大端 cell；4/8 字节都认；
-/// 属性名沿用 riscv 门装配工具的同一约定，门脚本 fdtput 同形）。
+/// Read `/chosen`'s `opensbi,boot-file-table` (big-endian cell; both 4- and
+/// 8-byte widths accepted; the property name follows the same convention as
+/// the riscv gate assembly tool, and the gate script's fdtput uses the same
+/// shape).
 ///
-/// 查找走 `all_nodes` 而非 `find_node`，与 aarch64 半同形（SD-38）：
-/// 本函数是 OpenSBI 链的承重读（表址主通道），上游 fdt 0.1.5 的
-/// `find_node` 在姊妹链上对固件重建 blob 返回 None（aarch64 直核链
-/// 实证）；riscv 现链门读数证明 find_node 在本链 blob 上可用，换
-/// 全树遍历属零行为变化的兜底统一，防未来 DTB 形态漂移踩同一缺陷。
-/// DTB 区块界闸（CodeReview SF2）：totalsize 自描述，但必须验证整块
-/// 落在可寻 DRAM 形内——`[DRAM_BASE, 0x1_0000_0000)` 是本平台（QEMU virt
-/// 基址 + 4GiB 下界）的保守物理内存上界，更大 blob 或高位址一律拒收，
-/// 不给 `Fdt::new` 递越界切窗。memmap 真解析在其后（鸡生蛋：先有
-/// 头部才能解树），所以这里用物理形不用车道值。
+/// The lookup goes through `all_nodes` rather than `find_node`, matching the
+/// aarch64 half: this function is the load-bearing read of the OpenSBI chain
+/// (the main table-address channel), and upstream fdt 0.1.5's `find_node`
+/// returns None for a firmware-rebuilt blob on the sibling chain (observed on
+/// the aarch64 direct-kernel chain); readings on the current riscv chain show
+/// find_node works on this chain's blob, and switching to the full-tree walk is
+/// a zero-behavior-change fallback unification that guards against future DTB
+/// shape drift hitting the same defect.
+/// DTB blob bound gate: totalsize is self-describing, but the whole blob must
+/// be proven to lie inside the addressable DRAM shape — `[DRAM_BASE,
+/// 0x1_0000_0000)` is this platform's (QEMU virt base + 4GiB lower bound)
+/// conservative physical memory upper bound; larger blobs or higher addresses
+/// are rejected outright rather than handing `Fdt::new` an out-of-bounds
+/// window. The real memmap parse happens afterwards (chicken and egg: the tree
+/// can only be walked once the header is known), so this uses the physical form
+/// rather than the lane's values.
 fn dtb_bounded(dtb_pa: u64, total: usize) -> bool {
     dtb_pa >= DRAM_BASE && dtb_pa + total as u64 <= 0x1_0000_0000
 }
 
-// ── BootFileTable 消费（kernel-image 形状：源直拷入物理 bump 页、零堆）──
+// ── BootFileTable consumption (kernel-image shape: sources copied straight
+//    into physical bump pages, zero heap) ──
 
-/// 12 模块的落地描述表（`.bss`，装配后只读）。
+/// Landing descriptor table for the 12 modules (`.bss`, read-only after
+/// assembly).
 static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
     BootModule { name: "", start: PhysBytes(0), len: 0 }
 }; NR_BOOT_MODULES];
 
-/// 按契约位置消费表前 `NR_BOOT_MODULES` 项、源直拷进 bump 页；条目不足/
-/// 名不对位/源越界/源与池相交/池枯竭都点名并返回 `None`（对位 loader.rs
-/// `load_boot_modules_with_loader` 的 fail-fast 语义——装机错误在这条腿
-/// 上暴露，不给内核递半套模块）。
+/// Consume the first `NR_BOOT_MODULES` entries at their contract positions and
+/// copy the sources straight into bump pages; too few entries, a misplaced
+/// name, a source escaping the memmap, a source overlapping the pool, or pool
+/// exhaustion are each reported by name and return `None` (matching the
+/// fail-fast semantics of `load_boot_modules_with_loader` in loader.rs —
+/// install errors surface on this leg instead of handing the kernel half a
+/// module set).
 ///
-/// 为什么源直拷而不经暂存中转（续-89 真机定案）：早期设计留了一格 1 MiB
-/// 物理 scratch 做两段式拷贝，但 mfs 嵌 8 MiB imgrd 后单模块达 ~8.9 MiB，
-/// 超死 scratch 预算——而中转本仅为「拷前核长度」，`in_memmap_range` 已把
-/// 源全宽验在 memmap 内、不相交闸已排除与 bump 池重叠，`copy_nonoverlapping`
-/// 直拷已充分（无重叠 UB）；去掉中转既省内存又消除尺寸上限。
+/// Why copy directly from the source instead of through staging: the early
+/// design kept a 1 MiB physical scratch for a two-stage copy, but once mfs
+/// embeds an 8 MiB imgrd a single module reaches ~8.9 MiB, blowing the scratch
+/// budget — and the staging existed only to check the length before copying.
+/// `in_memmap_range` already proves the whole source width lies inside the
+/// memmap and the disjointness gate already rules out overlap with the bump
+/// pool, so `copy_nonoverlapping` directly is sufficient (no overlap UB);
+/// dropping the staging both saves memory and removes the size ceiling.
 ///
-/// 位置为主、名为辅（CodeReview SF4）：表格式本身不承诺顺序（槽宽 16
-/// 可含 kernel 槽），纯位置消费会把错位的字节流安静地当成某个模块。
-/// 校验用「表内 path 的最后一段（`/` 分界，对位 loader.rs 的 ESP 语义）
-/// 逐字节对期望名字面量」——表 RAM 字节与调用点字面量都是视图安全形，
-/// 不引入任何 baked 指针解引用。
+/// Position primary, name secondary: the table format itself promises no
+/// ordering (a 16-byte slot may hold a kernel slot), so pure positional
+/// consumption would silently treat a misplaced byte stream as some module.
+/// The check compares "the last segment of the in-table path (split on `/`,
+/// matching loader.rs's ESP semantics) byte-for-byte against the expected name
+/// literal" — both the table RAM bytes and the call-site literals are view-safe
+/// shapes and introduce no baked-pointer dereference.
 ///
-/// 源区间三道闸（CodeReview SF3）：len 非零；`phys_addr..+len` 整体落在
-/// memmap 内（越界读 = fault→热重入）；不与 bump 池相交（直拷重叠即 UB）。
+/// Three gates on the source range: len non-zero; the whole `phys_addr..+len`
+/// inside the memmap (an out-of-range read = fault → warm re-entry); no overlap
+/// with the bump pool (overlapping a direct copy is UB).
 ///
-/// `names_pool` 是物理 bump 页基址：`BootModule.name` 的指针字段必须也
-/// 是物理址——内核 `store_kernel_info` 在 `arch_boot` 入口（satp 写入后、
-/// enable 前的物址腿）就 `module.name.as_bytes()` 读一次（kernel/src/
-/// lib.rs:734），baked VMA 递进去同样当场炸。字节池槽（纯数据，调用点
-/// `auipc` base）拷进物理名字池后，胖指针现场拼装——两份视图都可达。
+/// `names_pool` is the physical bump page base: the pointer field of
+/// `BootModule.name` must also be a physical address — the kernel's
+/// `store_kernel_info` reads `module.name.as_bytes()` once at the `arch_boot`
+/// entry (the physical-address leg after satp is written and before enable;
+/// kernel/src/lib.rs:734), and a baked VMA handed in there blows up on the spot
+/// as well. After the byte-pool slot (pure data, call-site `auipc` base) is
+/// copied into the physical name pool, the fat pointer is assembled in place —
+/// reachable from both views.
 ///
-/// aarch64 半 [`place_modules`] 与本函数逐条同形（差异仅 bump 池基），
-/// 两份互指、改对位闸时同步（N-4 判据：结构性合并超出射程）。
+/// The aarch64 half's [`place_modules`] is clause-by-clause identical to this
+/// function (the only difference is the bump pool base); the two point at each
+/// other, so keep them in sync when changing the name gate (structural merging
+/// is out of scope).
 fn place_modules(
     table: &BootFileTable,
     memmap: &[MemoryRegion],
@@ -353,7 +425,8 @@ fn place_modules(
     }
     for i in 0..NR_BOOT_MODULES {
         let entry = &entries[i];
-        // 名对位闸：表内 path 基名 == 字节池第 i 槽前缀。
+        // Name check gate: the in-table path basename == the prefix of
+        // byte-pool slot i.
         let expect = &NAME_POOL[i];
         let want_n = expect.iter().position(|&b| b == 0).unwrap_or(NAME_SLOT);
         let base = entry
@@ -394,19 +467,24 @@ fn place_modules(
         }
         let pages = len.div_ceil(4096);
         let dest = bump_alloc_pages(pages)?;
-        // SAFETY: 源区间刚过 memmap 全宽闸且与 bump 池（dest 所在）不相交；
-        // dest = 独占 bump 页（游标单调互不重叠），拷贝长度恒 ≤ 两端区间长。
+        // SAFETY: the source range has just passed the full-width memmap gate
+        // and does not overlap the bump pool (where dest lives); dest = exclusive
+        // bump pages (the cursor advances monotonically without overlap), and the
+        // copy length never exceeds either range's length.
         unsafe {
             core::ptr::copy_nonoverlapping(entry.phys_addr as *const u8, dest as *mut u8, len);
             core::ptr::write_bytes((dest as *mut u8).add(len), 0, pages * 4096 - len);
         }
-        // 名字入池：字节池第 i 槽（16B，含零填充）拷进物理名字池，胖
-        // 指针指向池槽——纯数据读，不踩 baked 指针。
+        // Name into the pool: byte-pool slot i (16B, zero padding included) is
+        // copied into the physical name pool and the fat pointer points at the
+        // pool slot — a pure data read that never touches a baked pointer.
         let slot = names_pool + (i as u64) * NAME_SLOT as u64;
-        // SAFETY: 源 = `NAME_POOL` 字节格（base 经调用点 `auipc` 物化，
-        // 非 baked 指针；读 16B 不越池尾）；目的 = 独占名字池内第 i 槽
-        // （i < 12 ⇒ 偏移 < 192 ≤ 一页）。长度取池中第一条非零边界前
-        // 的字节数：零填充不入 `&str`（内核 strlcpy 语义只需前缀）。
+        // SAFETY: source = the `NAME_POOL` byte cell (base materialized by the
+        // call-site `auipc`, not a baked pointer; reading 16B stays within the
+        // pool); destination = slot i inside the exclusive name pool (i < 12 ⇒
+        // offset < 192 ≤ one page). The length is the byte count before the
+        // first zero boundary in the pool: zero padding never enters the `&str`
+        // (the kernel's strlcpy semantics only need the prefix).
         unsafe {
             core::ptr::copy_nonoverlapping(
                 NAME_POOL[i].as_ptr(),
@@ -416,11 +494,13 @@ fn place_modules(
         }
         let n = NAME_POOL[i].iter().position(|&b| b == 0).unwrap_or(NAME_SLOT);
         let landed: &'static str = unsafe {
-            // SAFETY: 字节来自 ASCII 字面量池（零截断前全 < 0x80）；
-            // backing 是独占物理页，与 `MODULE_TABLE` 同寿命。
+            // SAFETY: the bytes come from an ASCII literal pool (all < 0x80
+            // before the zero truncation); the backing is an exclusive physical
+            // page with the same lifetime as `MODULE_TABLE`.
             core::str::from_utf8_unchecked(core::slice::from_raw_parts(slot as *const u8, n))
         };
-        // SAFETY: 单 hart boot 面逐槽写一次后只读。
+        // SAFETY: single hart on the boot face; each slot is written once and
+        // read-only afterwards.
         unsafe {
             MODULE_TABLE[i] = BootModule {
                 name: landed,
@@ -432,11 +512,13 @@ fn place_modules(
     Some(())
 }
 
-// ── 串口面（无堆：定长字符串 + 手写 hex）──────────────────────
+// ── Console face (no heap: fixed-length strings + hand-written hex) ─────────
 //
-// `say` / `say_hex` 与 aarch64 半逐字同形，但 console 实现按架构不同
-// （riscv 走本文件顶部的 `early_console`，aarch64 走 `minix_plat::arm64`），
-// 故不下沉到 `bootface_common`；两份互指，改语义时同步。
+// `say` / `say_hex` are character-for-character identical to the aarch64 half,
+// but the console implementation differs per architecture (riscv uses
+// `early_console` at the top of this file, aarch64 uses `minix_plat::arm64`),
+// so they are not pushed down into `bootface_common`; the two point at each
+// other, so keep them in sync when changing semantics.
 
 fn say(msg: &str) {
     early_console::write_str(msg);
@@ -450,13 +532,16 @@ fn say_hex(v: u64) {
         buf[i] = HEX[((v >> ((15 - i) * 4)) & 0xf) as usize];
         i += 1;
     }
-    // hex 字面量恒 ASCII。
+    // Hex literals are always ASCII.
     early_console::write_str(core::str::from_utf8(&buf).unwrap_or(""));
 }
 
-// ── .bss 装配格（boot 面独占写、随后只读）──────────────────────
+// ── .bss assembly cells (exclusive writes on the boot face, read-only
+//    afterwards) ──
 
-/// memmap 条目存储格。（旧 `fill_memmap` 已迁 minix-boot `DtbMemoryMap`——I-22。）
+/// memmap entry storage cell. (The old `fill_memmap` has moved to minix-boot
+/// `DtbMemoryMap`.)
 
-/// 平台描述符源格（DTB 单源；先于 `arch_boot` 写一次）。
+/// Platform descriptor source cell (DTB is the only source; written once before
+/// `arch_boot`).
 static mut PLATFORM_SOURCE: PlatformDescSource = PlatformDescSource::new(DTB, PhysBytes(0));

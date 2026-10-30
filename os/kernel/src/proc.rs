@@ -464,10 +464,10 @@ impl Quantum {
 /// `CpuMask` needs the array size.
 ///
 /// Defined BEFORE `CpuId` because `CpuId::new()` references it in a
-/// `const fn` (R-10).
+/// `const fn`.
 pub const MAX_CPUS: usize = 32;
 
-/// CPU identifier (R-10, 2026-08-12: newtype for type safety).
+/// CPU identifier (newtype for type safety).
 ///
 /// Wraps a `u32` CPU id. Use `CpuId::new(n)` to validate at construction
 /// (rejects `n >= MAX_CPUS`), or `CpuId::new_unchecked(n)` when the caller
@@ -480,7 +480,7 @@ pub const MAX_CPUS: usize = 32;
 /// adds type safety: prevents accidental mixing with raw `u32` arithmetic
 /// results, and centralizes the `MAX_CPUS` bound check.
 ///
-/// redox 对照: redox `LogicalCpuId(u32)` newtype — same pattern.
+/// Redox comparison: Redox's `LogicalCpuId(u32)` newtype — the same pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CpuId(u32);
 
@@ -919,13 +919,12 @@ pub struct KProcess {
     /// `None` means no pending page fault. Set by `page_fault::set_pagefault_pending`,
     /// cleared by `page_fault::clear_pagefault_pending`.
     ///
-    /// Diagnostic record only (PD-04,
-    /// `rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md`): the
-    /// address that reaches VM travels in `VM_PAGEFAULT` straight from the
-    /// hardware register (`forward_pagefault_to_vm` in `trap_dispatch.rs`),
-    /// never through this field. Real readers are the x86_64 return-to-user
-    /// flush point (`lib.rs` `finish_and_restore`, invlpg) and diagnostic
-    /// prints — read the field directly; there is deliberately no getter.
+    /// Diagnostic record only: the address that reaches VM travels in
+    /// `VM_PAGEFAULT` straight from the hardware register
+    /// (`forward_pagefault_to_vm` in `trap_dispatch.rs`), never through this
+    /// field. Real readers are the x86_64 return-to-user flush point (`lib.rs`
+    /// `finish_and_restore`, invlpg) and diagnostic prints — read the field
+    /// directly; there is deliberately no getter.
     pub p_fault_addr: Option<u64>,
 
     pub p_defer: DeferArgs,
@@ -1022,7 +1021,7 @@ pub struct KProcess {
     pub cpu_context: CurrentCpuContext,
 
     /// How the process most recently entered the kernel. Recorded by the
-    /// trap-entry path (asm bridge, smp_todo S-8), consumed and cleared by
+    /// trap-entry path (the asm bridge), consumed and cleared by
     /// the return-to-user dispatch (`finish_and_restore`), and carried
     /// through the signal round-trip: sigsend stamps it into the sigframe,
     /// sigreturn validates and re-records it.
@@ -1157,7 +1156,7 @@ impl ProcName {
 
     /// Creates process name from string.
     /// If string exceeds max length, it will be truncated.
-    // R-18 (2026-08-13): Renamed from `from_str` to avoid confusion with
+    // Renamed from `from_str` to avoid confusion with
     // `std::str::FromStr::from_str` (different signature — no Result return).
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
@@ -1225,7 +1224,7 @@ impl core::fmt::Display for ProcName {
 /// `SIGKSIG` = 74, `SIGKSIGSM` = 73 — sys/sys/signal.h) rides the same map
 /// as the user-visible 1..=64 POSIX signals (`_NSIG` = 64 is a libc-level
 /// check only; system code uses the unchecked `__sig*` macros).
-/// SD-39: widened from 64 to 128 bits — `add(70)` used to be a silent no-op.
+/// Widened from 64 to 128 bits — `add(70)` used to be a silent no-op.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct SigSet(u128);
@@ -1528,10 +1527,11 @@ impl KProcess {
     /// Replaces the previous `set_boot_initial_reg_state` +
     /// `set_boot_pc_sp` pair (06-proc-init-boot-proc.md §3.5).
     ///
-    /// NK4-A 首亮修复：与 C 的 `arch_proc_reset`（arch_system.c:181，
-    /// boot 与 exec 两条路都经它）对位——装完整新上下文的同时必须种
-    /// `KTS_FULLCONTEXT`，否则首次调度在返回门撞上
-    /// `panic("no entry trap style known")`（arch_system.c:597-598）。
+    /// Counterpart of C's `arch_proc_reset` (arch_system.c:181; both the boot
+    /// and exec paths go through it) — installing the complete new context must
+    /// also seed `KTS_FULLCONTEXT`, or the first dispatch hits
+    /// `panic("no entry trap style known")` at the return gate
+    /// (arch_system.c:597-598).
     pub fn set_boot_cpu_context(&mut self, cpu_context: CurrentCpuContext) {
         self.cpu_context = cpu_context;
         self.trap_style = minix_arch::TrapStyle::FullContext;
@@ -1748,7 +1748,8 @@ impl KProcess {
             // zeroed `cpu_context` + `NoEntry` trap style would make the
             // return-to-user dispatch hit `panic("no entry trap style known")`
             // (arch_system.c:597-598 / lib.rs:3382) the moment the scheduler
-            // picks the child — which is exactly the B20 kernel #GP.
+            // picks the child — which is exactly the kernel #GP that was
+            // observed.
             cpu_context: parent.cpu_context,
             trap_style: parent.trap_style,
             fpu_state: CurrentFpuState::default(),
@@ -1855,15 +1856,14 @@ pub fn complete_fork_setup(child: &mut KProcess, parent_is_sys_proc: bool, flags
 /// before marking it runnable — a blocked RECEIVE completes with OK when a
 /// sender delivers (proc.c:969 wake site), and a blocked SEND completes
 /// with OK when a receiver picks the message up (proc.c:1097 wake site).
-/// E1 slice 2: the Rust engine's wake sites now do the same; without it a
+/// The Rust engine's wake sites do the same; without it a
 /// resumed caller observes whatever RAX held at trap entry.
 ///
 /// The register write goes through the arch's `set_ipc_return_reg` trait
 /// method, which owns the arch-private return-lane mapping (x86-64 RAX,
 /// aarch64 X0, riscv64 A0). Hard-coding `write_user_register(offset 80)`
-/// would be RAX on x86-64 but X7 on aarch64 — the NK4-C §1.113 code-
-/// review BLOCKER, live for the first time now that aarch64 receivers can
-/// park and be woken.
+/// would be RAX on x86-64 but X7 on aarch64 — a code-review blocker, live
+/// for the first time now that aarch64 receivers can park and be woken.
 pub fn set_ipc_return_code(proc: &mut KProcess, code: i64) {
     <CurrentCpuContextArch as CpuContextArch>::set_ipc_return_reg(
         &mut proc.cpu_context,
@@ -2261,7 +2261,7 @@ mod tests {
     fn test_fork_from_inherits_register_frame_and_trap_style() {
         // C: do_fork.c:63 `*rpc = *rpp` copies the parent's saved register
         // frame and `p_kern_trap_style`; do_fork.c:74 then zeroes only
-        // retreg. Regression guard for B20: a zeroed `cpu_context` +
+        // retreg. Regression guard: a zeroed `cpu_context` +
         // `TrapStyle::NoEntry` child panics the return-to-user dispatch
         // (`no entry trap style known`, lib.rs:3382) the instant the
         // scheduler picks it.

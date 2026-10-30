@@ -1,15 +1,19 @@
-//! riscv64 AP 早期桩的形状钉住测试（P-A64RV-01 第一增量 §续-398）。
+//! Shape pin test for the riscv64 AP early stub (the first increment of the
+//! AP early-entry work).
 //!
-//! 桩的承重次序（义务清单 §3.1 的汇编体）：fence 首读栅栏先于记录读取、
-//! satp 装载（Sv39 模式位）先于 sfence、栈与汇聚点跳转在 MMU on 之后。
-//! 次序漂移＝AP 在错误地址翻译下取指（静默挂死或三术异常）。
+//! The load-bearing order of the stub's assembly: the fence (first-read
+//! barrier) before the record read, the satp load (Sv39 mode bits) before
+//! the sfence, and the stack plus convergence-point jump after the MMU is
+//! on. Any order drift means the AP fetches instructions under a wrong
+//! address translation (a silent hang or a triple fault).
 
 fn stub_instructions() -> Vec<String> {
     let src = include_str!("../src/riscv64/ap_early_entry.rs");
     let begin = src
         .find("ap_early_entry_start:")
         .expect("桩入口标号找不到（改名？本审计须同步）");
-    // 右界＝raw string 收尾（r#"…"# 后的 ",\n);）；行内 # 注释先剥再判空。
+    // Right bound = the raw-string closing (the ",\n); after r#"…"#); inline
+    // # comments are stripped before the emptiness test.
     let end = src[begin..]
         .find("\"#,\n);")
         .map(|n| begin + n)
@@ -17,7 +21,8 @@ fn stub_instructions() -> Vec<String> {
     src[begin..end]
         .lines()
         .filter_map(|line| {
-            // raw string 形态：行即指令（无引号包裹）；行内 # 注释剥离。
+            // Raw-string form: a line is an instruction (no surrounding
+            // quotes); inline # comments are stripped.
             let ins = line.split('#').next()?.trim();
             if ins.is_empty()
                 || ins.starts_with('.')
@@ -64,7 +69,8 @@ fn stub_satp_uses_sv39_mode_and_fences_after() {
         .position(|i| i == "csrw satp, t3")
         .expect("satp 写入找不到");
     assert!(ld_root < csrw, "根页必须先于 satp 装载");
-    // Sv39 模式位（bit63）与 PPN 提取（>>12）必须都在写 satp 之前。
+    // The Sv39 mode bits (bit63) and the PPN extraction (>>12) must both
+    // happen before satp is written.
     let ppn = ins
         .iter()
         .position(|i| i == "srli t3, t3, 12")
@@ -83,8 +89,10 @@ fn stub_satp_uses_sv39_mode_and_fences_after() {
 #[test]
 fn stub_stack_and_jump_prepared_before_mmu_on() {
     let ins = stub_instructions();
-    // 栈顶与汇聚点链接位址在 MMU on 之前从记录读入寄存器（MMU on 后记录
-    // 仍可达，但读进寄存器消除了切换窗口内的记录依赖）。
+    // The stack top and convergence-point link address are read from the
+    // record into registers before the MMU is on (the record stays reachable
+    // after MMU on, but loading it into registers removes the record
+    // dependency inside the switch window).
     let ld_stack = ins
         .iter()
         .position(|i| i == "ld t4, 24(t2)")

@@ -1,4 +1,4 @@
-//! RISC-V instruction-cache synchronization (SD-20).
+//! RISC-V instruction-cache synchronization.
 //!
 //! `FENCE.I` synchronizes the *local hart's* instruction stream with the
 //! stores that same hart has already made to instruction memory — which is
@@ -19,12 +19,12 @@
 //! is **a precondition of removing the main-core clamp** and lands with the
 //! SMP unclamp batch, where the kernel's hart topology can supply the
 //! hart-mask the arch layer does not own by itself. Same binding shape as
-//! the IPC delivery-barrier (SD-13 bound to the unclamp milestone).
+//! the IPC delivery-barrier, also bound to the unclamp milestone.
 //!
 //! C: none — Minix3 has no RISC-V port; the boot-leg scatter in
 //! `os/kernel/src/arch/riscv64/higher_half.rs` already contains the only
 //! other `fence.i` in the tree. This contract is the `[ARCH: cache-sync]`
-//! addition frozen by the design register SD-20.
+//! addition described in `arch::cache_sync`'s module docs.
 
 use crate::arch::cache_sync::CacheSyncArch;
 use core::arch::asm;

@@ -183,14 +183,17 @@ impl FpuArch for AArch64FpuArch {
     fn init(&self) {
         // Enable FPSIMD access — FPEN = 0b01: trap EL0 FPSIMD, EL1 unaffected.
         //
-        // NK4-C 续-130：懒模型要求**归属先于任何活值建立**（C i386 init 把
-        // CR0.TS 置 1 同理）：FPEN=0b11 下进程的首批 FP 指令（aarch64 编译
-        // 器的字面量池装载）会在无归属状态写入活值，首次 disable+陷阱即
-        // 零恢复清掉活常量（真机：VFS 消息头 m_type=0x60d 变 0）。本函数
-        // 当前**未被内核接线**（CodeReview S1 裁决）：aarch64 的 0b01 门控
-        // 由首次 finish_and_restore 的 disable() 在任何用户 FP 之前建立，
-        // 效果等价；本 init 保持 0b01 语义作为 future-proofing（若未来接
-        // 线，行为不变）。
+        // The lazy model requires that ownership be established before any
+        // live value exists (the same reason C i386 init sets CR0.TS=1):
+        // with FPEN=0b11 a process's first FP instructions (the aarch64
+        // compiler's literal-pool loads) write live values while unowned, so
+        // the first disable+traps wipes live constants with a zero restore
+        // (observed on hardware: the VFS message header m_type=0x60d became
+        // 0). This function is currently **not wired into the kernel**:
+        // aarch64's 0b01 gating is established by the first
+        // finish_and_restore's disable() before any user FP runs, which is
+        // equivalent; this init keeps 0b01 semantics as future-proofing
+        // (wiring it later would not change behavior).
         //
         // SAFETY: CPACR_EL1 is a side-effect-free EL1 system-register write.
         unsafe {
@@ -205,8 +208,8 @@ impl FpuArch for AArch64FpuArch {
 
     fn save(&self, dst: &mut Self::State) {
         // Save FPSIMD state: 32 Q registers + FPSR + FPCR.
-        // C: earm arch_system.c:save_local_fpu 对位（i386: fxsave；ARM64:
-        // stp q0..q31 显式保存）。
+        // C: earm arch_system.c:save_local_fpu counterpart (i386: fxsave;
+        // ARM64: explicit stp q0..q31).
         //
         // SAFETY: `dst` is 16-byte aligned. Caller must hold BKL.
         unsafe {
@@ -219,8 +222,8 @@ impl FpuArch for AArch64FpuArch {
 
     fn restore(&self, src: &Self::State) {
         // Restore FPSIMD state: 32 Q registers + FPSR + FPCR.
-        // C: earm arch_system.c:restore_fpu 对位（i386: frstor；ARM64:
-        // ldp q0..q31 显式恢复）。
+        // C: earm arch_system.c:restore_fpu counterpart (i386: frstor;
+        // ARM64: explicit ldp q0..q31).
         //
         // SAFETY: `src` is 16-byte aligned and contains valid FPSIMD data.
         // Caller must hold BKL.

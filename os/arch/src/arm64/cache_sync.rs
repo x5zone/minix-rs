@@ -1,4 +1,4 @@
-//! AArch64 instruction-cache synchronization (SD-20).
+//! AArch64 instruction-cache synchronization.
 //!
 //! Implements the ARMv8 by-VA maintenance sequence of the ARM ARM,
 //! section "Cache maintenance for instruction coherency":
@@ -23,7 +23,7 @@
 //!
 //! C: none — Minix3 has no aarch64 kernel port and no cache-maintenance
 //! call in its loader path; this is the `[ARCH: cache-sync]` addition
-//! frozen by the design register SD-20.
+//! recorded in `arch::cache_sync`'s module docs.
 
 use crate::arch::cache_sync::CacheSyncArch;
 use core::arch::asm;

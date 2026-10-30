@@ -1,25 +1,32 @@
-//! 双架构 boot 出生契约与 exception 帧判定的宿主静态审计（P-ALL-01 深度
-//! 迁移批：boot 9 枚 + exception 8 枚门内测试的宿主可见面）。
+//! Host-side static audit of the two-architecture boot birth contract and
+//! the exception-frame judgement (the host-visible surface of the 9 boot and
+//! 8 exception in-gate tests).
 //!
-//! **boot 的承重契约**：出生 PSR/sstatus 决定「进程第一次被调度回到哪个
-//! 特权态、中断开不开」——写错一位就是用户进程以内核特权出生（或反之）。
-//! FPU 继承（fork 时父 FP 使能传子）是 aarch64 FPEN 懒陷阱模型的接缝。
+//! **The load-bearing boot contract**: the birth PSR/sstatus decides which
+//! privilege state the process is first scheduled back into and whether
+//! interrupts are enabled — one wrong bit means a user process is born with
+//! kernel privilege (or vice versa). FPU inheritance (the parent's FP
+//! enable propagating to the child on fork) is the seam of the aarch64 FPEN
+//! lazy-trap model.
 //!
-//! **exception 的承重契约**：帧尺寸冻结（34 槽系列的 build↔run 契约）与
-//! is_user_mode 判定位（arm64 看 SPSR.M[3:0]、riscv64 看 sstatus.SPP bit8）
-//! ——判定位写错＝用户/内核源的整个分派树走错腿。
+//! **The load-bearing exception contract**: the frame size is frozen (the
+//! build↔run contract of the 34-slot family) and so is the is_user_mode
+//! predicate bit (arm64 reads SPSR.M[3:0], riscv64 reads sstatus.SPP bit 8)
+//! — a wrong predicate bit sends the whole user/kernel-origin dispatch tree
+//! down the wrong leg.
 
-// ── boot：出生 PSR/sstatus ──
+// ── boot: birth PSR/sstatus ──
 
 #[test]
 fn arm64_init_psr_constants_are_frozen() {
     let src = include_str!("../src/arm64/boot.rs");
-    // 内核任务：EL1h + F/I/A/D 全屏蔽（C earm/include/archconst.h:12）。
+    // Kernel task: EL1h with F/I/A/D all masked
+    // (C earm/include/archconst.h:12).
     assert!(
         src.contains("const INIT_TASK_PSR: u64 = 0x0000_03C5;"),
         "INIT_TASK_PSR 漂移（0x3C5 = EL1h | D|A|I|F）——内核任务将以错误特权/屏蔽态出生"
     );
-    // 用户进程：EL0t、无屏蔽（C archconst.h:11）。
+    // User process: EL0t, nothing masked (C archconst.h:11).
     assert!(
         src.contains("const INIT_PSR: u64 = 0x0000_0000;"),
         "INIT_PSR 漂移（EL0t 无屏蔽）——用户进程将带内核屏蔽位出生"
@@ -29,8 +36,9 @@ fn arm64_init_psr_constants_are_frozen() {
 #[test]
 fn arm64_fpu_inheritance_contract_is_frozen() {
     let src = include_str!("../src/arm64/boot.rs");
-    // FPEN 懒陷阱模型的接缝：内核任务 FPEN=0（门内 kernel_task 用例）、
-    // 全部用户类 FPEN=0b01、fork 子继承父的使能（门内 inherit 用例）。
+    // Seam of the FPEN lazy-trap model: kernel tasks FPEN=0 (in-gate
+    // kernel_task case), all user-class entries FPEN=0b01, and fork
+    // children inherit the parent's enable (in-gate inherit case).
     for contract in [
         "\"kernel task must keep FPEN=0\"",
         "\"user process must have FPEN=0b01\"",
@@ -46,7 +54,8 @@ fn arm64_fpu_inheritance_contract_is_frozen() {
 #[test]
 fn riscv64_init_sstatus_constants_are_frozen() {
     let src = include_str!("../src/riscv64/boot.rs");
-    // 内核任务：SPP=1（sret 回 S 态）；用户进程：SPP=0、SPIE=1（中断开）。
+    // Kernel task: SPP=1 (sret returns to S-mode); user process: SPP=0,
+    // SPIE=1 (interrupts enabled).
     assert!(
         src.contains("const INIT_TASK_SSTATUS: u64 = 0x0000_0100;"),
         "INIT_TASK_SSTATUS 漂移（SPP=1）——内核任务 sret 后落 U 态"
@@ -66,13 +75,14 @@ fn riscv64_fpu_inheritance_via_sstatus_copy_is_frozen() {
     );
 }
 
-// ── exception：帧尺寸与判定位 ──
+// ── exception: frame size and predicate bit ──
 
 #[test]
 fn exception_frame_size_296_is_frozen_both_archs() {
     let a64 = include_str!("../src/arm64/exception.rs");
     let rv = include_str!("../src/riscv64/exception.rs");
-    // 双架构同为 296B＝34 槽系列（与 trap stub 的 34*8 帧契约对齐）。
+    // Both architectures are 296B = the 34-slot family (aligned with the
+    // trap stub's 34*8 frame contract).
     assert!(
         a64.contains("size_of::<AArch64ExceptionFrame>(), 296"),
         "arm64 异常帧尺寸漂移（296B 契约，build↔run 对齐）"
@@ -86,12 +96,13 @@ fn exception_frame_size_296_is_frozen_both_archs() {
 #[test]
 fn arm64_is_user_mode_reads_spsr_m_nibble() {
     let src = include_str!("../src/arm64/exception.rs");
-    // 判定式：SPSR_EL1.M[3:0]==0 ⇒ EL0。整行钉（防改成比较别的位）。
+    // Predicate: SPSR_EL1.M[3:0]==0 ⇒ EL0. Pinned as a whole line (so it
+    // cannot be changed to compare some other bit).
     assert!(
         src.contains("(frame.spsr_el1 & 0xF) == 0"),
         "arm64 is_user_mode 判定位漂移（SPSR.M[3:0]）——用户/内核源分派树会走错腿"
     );
-    // 门内测试的两点锚（EL0t=0 真、EL1h=5 假）仍在。
+    // The two in-gate anchors (EL0t=0 true, EL1h=5 false) are still present.
     assert!(src.contains("f.spsr_el1 = 0; // M=EL0t"));
     assert!(src.contains("f.spsr_el1 = 5; // M=EL1h"));
 }
@@ -99,7 +110,7 @@ fn arm64_is_user_mode_reads_spsr_m_nibble() {
 #[test]
 fn riscv64_is_user_mode_reads_spp_bit() {
     let src = include_str!("../src/riscv64/exception.rs");
-    // 判定式：sstatus.SPP（bit 8）==0 ⇒ U-mode。
+    // Predicate: sstatus.SPP (bit 8) == 0 ⇒ U-mode.
     assert!(
         src.contains("(frame.sstatus & (1 << 8)) == 0"),
         "riscv64 is_user_mode 判定位漂移（SPP bit8）——§续-375 哨兵（S-origin 陷入）也依赖同一位语义"
@@ -110,7 +121,8 @@ fn riscv64_is_user_mode_reads_spp_bit() {
 fn exception_setters_target_the_documented_slots() {
     let a64 = include_str!("../src/arm64/exception.rs");
     let rv = include_str!("../src/riscv64/exception.rs");
-    // arm64：IP→elr_el1、返回值→X0；riscv64：IP→sepc、返回值→a0(regs[10])。
+    // arm64: IP→elr_el1, return value→X0; riscv64: IP→sepc,
+    // return value→a0(regs[10]).
     assert!(a64.contains("fn set_instruction_pointer_writes_elr_el1"));
     assert!(a64.contains("fn set_return_value_writes_x0"));
     assert!(a64.contains("f.elr_el1, 0xCAFE"));

@@ -8,9 +8,8 @@
 //! round-trips through `x86_ipc_dispatch_body` — an undefined call number
 //! (99) must come back as EBADCALL(209) in RAX, and a MINIX_KERNINFO probe
 //! (call 6) must return OK(0) in RAX with the user-mapped page address in
-//! R10 (C: proc.c:685-693 secondary return channel; x86-64 lane per
-//! NK4-C 1.54/B26 — the int-33 return arm syncs RAX + R10 only) once
-//! `init_kerninfo` has published the page.
+//! R10 (C: proc.c:685-693 secondary return channel; the int-33 return arm
+//! syncs RAX + R10 only) once `init_kerninfo` has published the page.
 //!
 //! Boot flow: identical to test-smp-aps through smp_init (multi-AP online,
 //! both schedulers live), then: user pages mapped via the live root
@@ -161,7 +160,7 @@ const HZ_BUF_VA: u64 = 0x0400_1200; // hz result buffer (identity VA = PA, E8 id
 /// mov  [0x4001_0000 + 0x28], rax   ; mailbox[5] = kerninfo page VA
 /// mov  rax, [r10]                  ; CPL3 read of the published page
 /// mov  [0x4001_0000 + 0x30], rax   ; mailbox[6] = KERNINFO_MAGIC
-/// mov  eax, 42                     ; SSE lazy-FPU probe (NK4-C x86 FPU wave)
+/// mov  eax, 42                     ; SSE lazy-FPU probe
 /// cvtsi2sd xmm0, eax               ; int→double: FIRST FP touch → user #NM
 ///                                    ; (CR0.TS is set for a non-owner, so
 ///                                    ; this traps; the kernel's FpuTrap arm
@@ -173,7 +172,7 @@ const HZ_BUF_VA: u64 = 0x0400_1200; // hz result buffer (identity VA = PA, E8 id
 /// Register ABI per the approved E1 design (decision 2): RCX = call
 /// number, RAX = errno return, R10 = secondary return channel (status /
 /// kerninfo page address, same lane sharing as C's i386 %ebx — the two
-/// roles are mutually exclusive per call, NK4-C 1.54/B26). The mailbox
+/// roles are mutually exclusive per call). The mailbox
 /// stores after the first trap prove
 /// the kernel dispatched, returned through the stub, and the payload kept
 /// running in CPL3; the two stores after the second trap prove the

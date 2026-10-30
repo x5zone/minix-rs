@@ -1,40 +1,54 @@
-//! riscv64 trap 腿的 asm 形状契约（NK4C §续-370）。
+//! Instruction-shape contract for the riscv64 trap legs.
 //!
-//! 为什么这是一个**宿主集成测试**而不是 `trap_stub.rs` 里的 `#[test]`：
-//! `minix-arch` 的 `pub mod riscv64` 带 `#[cfg(target_arch = "riscv64")]`，
-//! 宿主 `cargo test` 根本不编译那个模块——写在里面的测试永远不会跑（=假绿）。
-//! 本文件走 `include_str!` 读同一份源码文本做静态对账：不链接、不启动，
-//! 只在宿主测试里检查 asm 的**指令顺序**。
+//! Why this is a **host integration test** instead of a `#[test]` in
+//! `trap_stub.rs`: `minix-arch`'s `pub mod riscv64` is gated by
+//! `#[cfg(target_arch = "riscv64")]`, so a host `cargo test` never compiles that
+//! module — tests written there would never run (= false green). This file uses
+//! `include_str!` to read the same source text and reconcile it statically: no
+//! linking, no boot, only the asm's **instruction order** is checked from a host
+//! test.
 //!
-//! 检查的六条形状规则（都直接源自本案踩过的坑）：
-//! 0. **词表 fail-closed**：腿里只允许已知助记符——表外指令无法证明它不写
-//!    首操作数，直接算违规（否则将来新增一条指令就静默绕过下面几条）。
-//! 1. **帧覆盖**：槽 1..=33 每槽恰好被 `sd` 一次——漏写一槽=返回时把一个
-//!    从未保存的寄存器留给被打断的上下文；重复写一槽=某个被打断的寄存器
-//!    没有家。
-//! 2. **保存侧暂存纪律**：帧要携带的寄存器必须先落进**自己的槽**，随后才允许
-//!    被本腿当作暂存使用。顺序反了就等于异步地把被打断上下文的一个寄存器
-//!    换成腿内临时值——不报异常、不留日志（§续-370 的内核腿正是这种形状：
-//!    `t0` 先被 `addi t0, sp, 34*8` 挪用去求被打断的 `sp`，之后才
-//!    `sd t0, 5*8(sp)`，于是每一次监管态定时器中断都把内核的 `t0` 换成栈
-//!    指针地址）。
-//! 3. **恢复侧生命期**：从自己的槽回载之后，到 `sret` 之间不得再被当作暂存。
-//!    §续-371 的评审就是在本条上拓出第二个同形缺陷：用户腿在 `ld t0, 5*8(sp)`
-//!    之后又用 t0 写 `stvec`，返回用户态时 t0 等于自己的栈指针——而本案被
-//!    击中的正是用户进程。
-//! 4. **回载覆盖**：存进帧的每个寄存器都必须从自己的槽送回。
-//! 5. **关键 CSR 写的存在与次序**：两条腿都必须先写帧里的 `sstatus`（硬件
-//!    在陷入时已清 SIE，所以那一写就是尾声的屏蔽闩）、再装 `stvec`，且装在
-//!    任何 GPR 回载之前。把向量写挪到闩之前会重新打开「S 态带 SIE=1 重入
-//!    只适用于 U-origin 的腿」的窗口（§续-371 评审回执 P2-2/P2-4），而形状
-//!    判定若不钉次序就拦不住这种「整理」。
+//! The six shape rules checked here (all derived directly from defects this code
+//! has already hit):
+//! 0. **Fail-closed mnemonic list**: only known mnemonics are allowed in a leg —
+//!    an instruction outside the list cannot be proven not to write its first
+//!    operand, so it counts as a violation (otherwise a newly added instruction
+//!    would silently bypass the rules below).
+//! 1. **Frame coverage**: each slot 1..=33 is stored exactly once by `sd` — a
+//!    missing slot means the return path leaves a register that was never saved
+//!    to the interrupted context; a duplicated slot means some interrupted
+//!    register has no home.
+//! 2. **Save-side scratch discipline**: a register the frame must carry has to
+//!    land in **its own slot** first, and only afterwards may the leg use it as
+//!    scratch. Reversing the order asynchronously replaces a register of the
+//!    interrupted context with a leg-local temporary — no exception, no log (the
+//!    kernel leg had exactly this shape: `t0` was first repurposed by
+//!    `addi t0, sp, 34*8` to compute the interrupted `sp`, and only later stored
+//!    with `sd t0, 5*8(sp)`, so every supervisor timer interrupt replaced the
+//!    kernel's `t0` with a stack pointer address).
+//! 3. **Restore-side lifetime**: once reloaded from its own slot, a register must
+//!    not be used as scratch again up to `sret`. The review of this rule
+//!    uncovered a second defect of the same shape: the user leg used t0 to write
+//!    `stvec` after `ld t0, 5*8(sp)`, so on return to user mode t0 held its own
+//!    stack pointer — and here the victim was the user process itself.
+//! 4. **Reload coverage**: every register stored into the frame must be restored
+//!    from its own slot.
+//! 5. **Existence and order of the critical CSR writes**: both legs must write
+//!    the frame's `sstatus` first (hardware has already cleared SIE on trap entry,
+//!    so that write is the epilogue's masking latch) and install `stvec` after
+//!    it, before any GPR reload. Moving the vector write ahead of the latch
+//!    reopens the window where S-mode re-entry with SIE=1 is only safe for a
+//!    U-origin leg, and a shape check that does not pin the order cannot stop
+//!    such a "tidy-up".
 //!
-//! 正控制测试（`checker_fires_on_the_regression_it_exists_for` 与
-//! `negative_controls_make_each_rule_fire`）逐条给规则配已知坏样本，
-//! 保证解析器不是「什么都没匹配所以全绿」。
+//! Positive-control tests (`checker_fires_on_the_regression_it_exists_for` and
+//! `negative_controls_make_each_rule_fire`) pair each rule with a known-bad
+//! sample, guaranteeing the parser is not merely "green because nothing
+//! matched".
 
-/// 帧槽 ↔ 架构寄存器名。`gpr[i]` 就是 `x_i`；`sp`(x2) 是唯一从不由
-/// `sd <自己的名字>` 写入的槽（两腿都经暂存寄存器把它送进槽 2，属设计）。
+/// Frame slot ↔ architectural register name. `gpr[i]` is `x_i`; `sp`(x2) is the
+/// only slot never written by `sd <its own name>` (both legs route it through a
+/// scratch register into slot 2, by design).
 const ABI_SLOT: &[(&str, usize)] = &[
     ("ra", 1),
     ("gp", 3),
@@ -68,15 +82,18 @@ const ABI_SLOT: &[(&str, usize)] = &[
     ("t6", 31),
 ];
 
-/// 本腿允许出现的助记符白名单。**fail-closed**：表外的助记符＝无法证明它
-/// 不写首操作数，直接计违规——逼后来的人把它加进表并归类，而不是让新指令
-/// 静默躲过形状判定（§续-371 评审回执 P2：原表不全会悄悄盲）。
+/// Whitelist of mnemonics allowed in these legs. **Fail-closed**: a mnemonic
+/// outside the list cannot be proven not to write its first operand, so it is
+/// counted as a violation immediately — whoever adds such an instruction has to
+/// put it in the list and classify it, rather than letting the new instruction
+/// silently slip past the shape check (the original incomplete list went quietly
+/// blind).
 const KNOWN_MNEMONICS: &[&str] = &[
     "addi", "sd", "ld", "csrr", "csrw", "csrrw", "mv", "la", "call", "beqz", "jr", "srli", "andi",
     "sret", "j", "b", "jal", "jalr", "ret", "nop",
 ];
 
-/// 首操作数被该指令写入的助记符表。
+/// Mnemonics that write their first operand.
 const DEST_FIRST: &[&str] = &[
     "addi", "li", "mv", "la", "ld", "lw", "lh", "lb", "csrr", "csrrw", "add", "sub", "and", "andi",
     "or", "ori", "srli", "slli", "srai", "neg", "not", "seqz", "sltz", "mul", "jal", "jalr",
@@ -94,7 +111,7 @@ fn written_reg(ins: &str) -> Option<&str> {
     rest.split(',').next().map(|r| r.trim())
 }
 
-/// `sd <reg>, <slot>*8(sp)` → (reg, slot)。
+/// `sd <reg>, <slot>*8(sp)` → (reg, slot).
 fn stored_slot(ins: &str) -> Option<(&str, usize)> {
     let (mn, rest) = ins.split_once(char::is_whitespace)?;
     if mn != "sd" {
@@ -110,15 +127,18 @@ fn stored_slot(ins: &str) -> Option<(&str, usize)> {
     Some((reg, n))
 }
 
-/// 取一条腿的指令序列：从入口标号到它的 `sret`。指令文本嵌在 Rust
-/// `global_asm!` 的字符串字面量里，因此只取「以引号开始」的行并截到下一个
-/// 引号；伪指令（`.align`/`.globl`/`.size`）与字面量之间的 Rust 注释自然被
-/// 过滤掉。
+/// Extract one leg's instruction sequence: from the entry label up to its
+/// `sret`. The instruction text lives inside Rust string literals passed to
+/// `global_asm!`, so only lines that start with a quote are taken, cut at the
+/// next quote; pseudo-ops (`.align`/`.globl`/`.size`) and Rust comments between
+/// literals are filtered out naturally.
 ///
-/// 锚点故意定在**带引号的标号行**（`"riscv64_kernel_trap_vector:"`）而不是裸
-/// 标号名：否则将来有人在文档注释里写出同一个带冒号的名字，用户腿切片就会
-/// 从文件更早处开始并停在内核腿的 `sret`，五条规则全绿而真正的用户腿从未被
-/// 检查过（§续-371 评审回执 P2-5：要让锚点具有判别力，不能靠巧合）。
+/// The anchor is deliberately the **quoted label line**
+/// (`"riscv64_kernel_trap_vector:"`) rather than a bare label name: otherwise
+/// someone writing the same colon-suffixed name in a doc comment would make the
+/// user-leg slice start earlier in the file and end at the kernel leg's `sret`,
+/// leaving all five rules green while the real user leg is never checked (an
+/// anchor must be discriminating by construction, not by coincidence).
 fn leg_instructions(src: &str, entry: &str) -> Vec<String> {
     let anchor = format!("\"{entry}\"");
     let at = src
@@ -136,7 +156,8 @@ fn leg_instructions(src: &str, entry: &str) -> Vec<String> {
             if ins.is_empty()
                 || ins.starts_with('.')
                 || ins.starts_with('#')
-                // 数字标号（`8:`/`9:`/`1:`）不是指令，不参与判定
+                // numeric labels (`8:`/`9:`/`1:`) are not instructions and take
+                // no part in the check
                 || (ins.ends_with(':') && !ins.contains(' '))
             {
                 None
@@ -147,11 +168,12 @@ fn leg_instructions(src: &str, entry: &str) -> Vec<String> {
         .collect()
 }
 
-/// 形状规则的判定；返回违规清单（空=清白）。独立成函数是为了能被
-/// 「已知坏样本」正向对照。六条规则都只读指令序列，不碰硬件。
+/// Shape-rule checking; returns the violation list (empty = clean). It is a
+/// separate function so the "known-bad sample" controls can drive it directly.
+/// All six rules read only the instruction sequence and never touch hardware.
 fn leg_shape_violations(leg: &[String]) -> Vec<String> {
     let mut bad = Vec::new();
-    // 规则 0（fail-closed 词表）：未知助记符一律当可疑。
+    // Rule 0 (fail-closed list): any unknown mnemonic is treated as suspect.
     for ins in leg {
         if let Some(mn) = mnemonic(ins)
             && !KNOWN_MNEMONICS.contains(&mn)
@@ -159,7 +181,7 @@ fn leg_shape_violations(leg: &[String]) -> Vec<String> {
             bad.push(format!("未知助记符 {mn}（不能证明它不写首操作数）：{ins}"));
         }
     }
-    // 规则 1：帧覆盖
+    // Rule 1: frame coverage
     let mut counts = [0u8; 34];
     for ins in leg {
         if let Some((_, slot)) = stored_slot(ins) {
@@ -176,8 +198,9 @@ fn leg_shape_violations(leg: &[String]) -> Vec<String> {
     for &(name, slot) in ABI_SLOT {
         let own_store = format!("sd {name}, {slot}*8(sp)");
         let own_load = format!("ld {name}, {slot}*8(sp)");
-        // 规则 2（保存侧暂存纪律）：帧要携带的寄存器先落进自己的槽，
-        // 之后才允许被本腿当作暂存使用。
+        // Rule 2 (save-side scratch discipline): a register the frame must carry
+        // lands in its own slot first, and only then may the leg use it as
+        // scratch.
         let save_at = leg.iter().position(|i| i.as_str() == own_store);
         let use_at = leg
             .iter()
@@ -190,9 +213,10 @@ fn leg_shape_violations(leg: &[String]) -> Vec<String> {
             }
             (Some(_), Some(_)) => {}
         }
-        // 规则 3（恢复侧生命期）：从自己的槽回载之后，到 `sret` 之间不得
-        // 再被当作暂存——那一笔就是被打断上下文的值（§续-371：用户腿在
-        // `ld t0, 5*8(sp)` 之后又用 t0 写 stvec，返回用户态时 t0=用户 sp）。
+        // Rule 3 (restore-side lifetime): after reloading from its own slot, a
+        // register must not be used as scratch again up to `sret` — its value
+        // is the interrupted context's (the user leg wrote stvec through t0
+        // after `ld t0, 5*8(sp)`, returning to user mode with t0 = user sp).
         let reload_at = leg.iter().position(|i| i.as_str() == own_load);
         if let Some(r) = reload_at {
             let after = leg[r + 1..]
@@ -205,16 +229,20 @@ fn leg_shape_violations(leg: &[String]) -> Vec<String> {
                 ));
             }
         } else {
-            // 规则 4（回载覆盖）：保存过的寄存器必须有人把它送回去。
+            // Rule 4 (reload coverage): a saved register must be put back.
             bad.push(format!("{name} 没有从自己槽（{slot}）回载就 sret"));
         }
     }
-    // 规则 5（关键 CSR 写的存在与次序，§续-371 评审回执 P2-2/P2-4）：
-    // 两条腿都靠「先写帧里的 sstatus（硬件在陷入时已清 SIE）、再装 stvec」
-    // 把尾声变成屏蔽窗口。用户腿会写 stvec 两次（进处理体前交还内核腿、
-    // 出去前换回用户腿），内核腿只写一次，所以这里钉的是**最后一次**的位置：
-    // 它必须在闩之后、任何 GPR 回载之前（否则它用的暂存寄存器已属于被打断
-    // 上下文，且 S 态带 SIE=1 重入只适用于 U-origin 腿的窗口被打开）。
+    // Rule 5 (existence and order of the critical CSR writes): both legs make
+    // the epilogue a masked window by writing the frame's sstatus first (hardware
+    // cleared SIE on trap entry) and installing stvec afterwards. The user leg
+    // writes stvec twice (handing back to the kernel leg before entering the
+    // handler, and switching back to the user leg before leaving), the kernel leg
+    // only once, so what is pinned here is the position of the **last** write: it
+    // must come after the latch and before any GPR reload (otherwise the scratch
+    // register it uses already belongs to the interrupted context, and the window
+    // where S-mode re-entry with SIE=1 is only safe for a U-origin leg is
+    // reopened).
     let stvec_writes: Vec<usize> = leg
         .iter()
         .enumerate()
@@ -256,8 +284,10 @@ fn leg_shape_violations(leg: &[String]) -> Vec<String> {
             ));
         }
     }
-    // 用户腿专属：进处理体之前必须先把向量交还内核腿（处理体内的故障不得
-    // 再走一次 sscratch 交换，否则会在同一个内核栈顶再叠一帧）。
+    // User-leg only: the vector must be handed back to the kernel leg before
+    // entering the handler (a fault inside the handler must not go through the
+    // sscratch swap again, or it stacks a second frame on the same kernel stack
+    // top).
     if leg.iter().any(|i| i.starts_with("csrrw sp, sscratch")) {
         let back = leg
             .iter()
@@ -279,7 +309,9 @@ const SRC: &str = include_str!("../src/riscv64/trap_stub.rs");
 fn legs_save_scratch_before_using_it() {
     for entry in ["riscv64_kernel_trap_vector:", "riscv64_user_trap_vector:"] {
         let leg = leg_instructions(SRC, entry);
-        // 解析器自证：一条腿至少几十条指令；只抓到几行=匹配失效，测试会假绿。
+        // parser self-check: a leg has at least dozens of instructions; catching
+        // only a few lines means matching broke and the test would go falsely
+        // green.
         assert!(
             leg.len() > 60,
             "{entry}: 只解析出 {} 条指令，解析器失效",
@@ -292,8 +324,9 @@ fn legs_save_scratch_before_using_it() {
 
 #[test]
 fn checker_fires_on_the_regression_it_exists_for() {
-    // 正控制（防「测试代码自己就是错的」）：把内核腿恢复成 §续-370 修复前
-    // 的顺序（先挪用 t0 再存它），检查器必须开火。
+    // Positive control (guards against "the test code is itself wrong"): restore
+    // the kernel leg to the order that preceded the fix (repurpose t0 before
+    // storing it); the checker must fire.
     let mut leg = leg_instructions(SRC, "riscv64_kernel_trap_vector:");
     let rebased = leg
         .iter()
@@ -317,8 +350,9 @@ fn checker_fires_on_the_regression_it_exists_for() {
 
 #[test]
 fn parser_sees_both_legs_and_their_frame_slots() {
-    // 第三条自证：槽覆盖规则真的在数满 33 槽——若某个 `sd` 行因格式变动
-    // 没被解析，规则 1 会立刻报「存了 0 次」，但这里正向确认一次。
+    // Third self-check: the slot-coverage rule really does count all 33 slots —
+    // if an `sd` line stops being parsed because the format changed, rule 1
+    // immediately reports "stored 0 times", but confirm the positive side here.
     for entry in ["riscv64_kernel_trap_vector:", "riscv64_user_trap_vector:"] {
         let leg = leg_instructions(SRC, entry);
         let stored: Vec<usize> = leg
@@ -335,7 +369,8 @@ fn parser_sees_both_legs_and_their_frame_slots() {
     }
 }
 
-/// 把一条指令从腿里摸出来（找不到就是解析器失效，测试直接崩）。
+/// Fish an instruction out of a leg (not finding it means the parser broke and
+/// the test panics outright).
 fn find(leg: &[String], want: &str, why: &str) -> usize {
     leg.iter()
         .position(|i| i == want)
@@ -344,12 +379,13 @@ fn find(leg: &[String], want: &str, why: &str) -> usize {
 
 #[test]
 fn negative_controls_make_each_rule_fire() {
-    // 逐条给规则配一个已知坏样本（§续-371 评审回执 P2：正控制只盖住了
-    // 保存侧倒序一种，其余规则一旦写错就会静默假绿）。
+    // Pair every rule with a known-bad sample (the positive control only covered
+    // the reversed save-side order; any other rule written wrongly would go
+    // silently green).
     let kernel = "riscv64_kernel_trap_vector:";
     let user = "riscv64_user_trap_vector:";
 
-    // 规则 1a——漏一个 `sd`：槽 19 没人存。
+    // Rule 1a — drop one `sd`: slot 19 is never stored.
     let mut leg = leg_instructions(SRC, kernel);
     let at = find(&leg, "sd s3, 19*8(sp)", "内核腿必须把 s3 存进槽 19");
     leg.remove(at);
@@ -359,7 +395,8 @@ fn negative_controls_make_each_rule_fire() {
         "删掉 s3 的存写后规则 1 未开火：{bad:?}"
     );
 
-    // 规则 1b——重复一个 `sd`：槽 19 被存两次（等于另一个寄存器没了家）。
+    // Rule 1b — duplicate one `sd`: slot 19 is stored twice (equivalent to
+    // another register losing its home).
     let mut leg = leg_instructions(SRC, kernel);
     let at = find(&leg, "sd s3, 19*8(sp)", "内核腿必须把 s3 存进槽 19");
     leg.insert(at, leg[at].clone());
@@ -369,7 +406,7 @@ fn negative_controls_make_each_rule_fire() {
         "重复 s3 的存写后规则 1 未开火：{bad:?}"
     );
 
-    // 规则 2——保存侧倒序（§续-370 那个缺陷）。
+    // Rule 2 — reversed save-side order (the defect this check exists for).
     let mut leg = leg_instructions(SRC, kernel);
     let a = find(&leg, "addi t0, sp, 34*8", "内核腿要拿 t0 回算被打断的 sp");
     let b = find(&leg, "sd t0, 5*8(sp)", "内核腿必须把 t0 存进自己的槽 5");
@@ -380,7 +417,8 @@ fn negative_controls_make_each_rule_fire() {
         "把 t0 换回旧顺序后规则 2 未开火：{bad:?}"
     );
 
-    // 规则 3——恢复侧挪用（§续-371 那个缺陷）：在 t0 回载之后再拿它写 stvec。
+    // Rule 3 — restore-side repurposing: write stvec through t0 after t0 was
+    // reloaded.
     let mut leg = leg_instructions(SRC, user);
     let reload = find(&leg, "ld t0, 5*8(sp)", "用户腿必须把 t0 从槽 5 回载");
     leg.insert(reload + 1, "la t0, riscv64_user_trap_vector".to_string());
@@ -391,7 +429,7 @@ fn negative_controls_make_each_rule_fire() {
         "把 stvec 写放回 t0 回载之后（§续-371 的旧形状）规则 3 未开火：{bad:?}"
     );
 
-    // 规则 4——保存了却没人送回：删掉 s7 的回载。
+    // Rule 4 — saved but never put back: drop the reload of s7.
     let mut leg = leg_instructions(SRC, kernel);
     let at = find(&leg, "ld s7, 23*8(sp)", "内核腿必须把 s7 从槽 23 送回");
     leg.remove(at);
@@ -401,8 +439,9 @@ fn negative_controls_make_each_rule_fire() {
         "删掉 s7 回载后规则 4 未开火：{bad:?}"
     );
 
-    // 规则 5a——删掉用户腿最后一次 stvec 写（出去前换回用户腿那一笔）：
-    // 剩下的只有入口处交还内核腿那一笔，它排在闩之前，规则 5 必须开火。
+    // Rule 5a — drop the user leg's last stvec write (the one switching back to
+    // the user leg before leaving): only the entry-time hand-back to the kernel
+    // leg remains, and it sits ahead of the latch, so rule 5 must fire.
     let mut leg = leg_instructions(SRC, user);
     let writes: Vec<usize> = leg
         .iter()
@@ -422,9 +461,11 @@ fn negative_controls_make_each_rule_fire() {
         "删掉出口 stvec 写后规则 5 未开火：{bad:?}"
     );
 
-    // 规则 5b——把**出口那一笔** stvec 写挪到 sstatus 写之前（「把 CSR 集中到
-    // 一段」式整理就仍会长这样）：屏蔽闩未先落，S 态重入窗口被重新打开。
-    // 这里取的是最后一次（入口那笔本来就该在闩之前）。
+    // Rule 5b — move the **exit** stvec write ahead of the sstatus write (a
+    // "collect the CSR writes in one block" tidy-up still looks like this): the
+    // masking latch did not land first, reopening the S-mode re-entry window.
+    // The last write is taken here (the entry one belongs before the latch
+    // anyway).
     let mut leg = leg_instructions(SRC, user);
     let v = leg
         .iter()
@@ -442,7 +483,8 @@ fn negative_controls_make_each_rule_fire() {
         "把 stvec 写换到闩之前后规则 5 未开火：{bad:?}"
     );
 
-    // 规则 0——词表 fail-closed：塞一条表外指令，必须报「未知助记符」而不是静默通过。
+    // Rule 0 — fail-closed list: insert an instruction not in the table; it must
+    // be reported as an unknown mnemonic rather than pass silently.
     let mut leg = leg_instructions(SRC, kernel);
     let at = find(&leg, "sd ra, 1*8(sp)", "内核腿必须把 ra 存进槽 1");
     leg.insert(at + 1, "gorgeous t9, 4(t0)".to_string());

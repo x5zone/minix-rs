@@ -31,7 +31,7 @@ use crate::syscall::{KcallResult, Syscall};
 use crate::syscall_signal::{cause_signal, SIGABRT};
 
 // ── Minix3 error codes ──
-// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Centralized in `crate::errno` to prevent value drift.
 use crate::errno::*;
 
 // ── Runctl actions ──
@@ -90,8 +90,8 @@ impl TryFrom<i32> for StatectlRequest {
 
 /// Read m1 format fields from a message.
 fn msg_m1(msg: &Message) -> MessageM1 {
-    // SAFETY: `m_type` has been validated by the caller to select the M1
-    // format. All union variants share the same size and `#[repr(C)]`
+    // SAFETY: `m_type` has been validated by the caller to select the
+    // `MessageM1` format. All union variants share the same size and `#[repr(C)]`
     // layout, so reading a different variant is sound.
     unsafe { msg.m_u.m_m1 }
 }
@@ -145,11 +145,11 @@ pub fn dispatch_fork(
     msg: &mut Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    // E-FORKMSG: the C fork wire has a dedicated request struct
+    // The C fork wire has a dedicated request struct
     // (`m_lsys_krn_sys_fork` — ipc.h:1173-1177, endpt/slot/flags); the
-    // former M1 overlay happened to align with its first three fields,
-    // but the dedicated arm is the contract (same discipline as
-    // dispatch_schedule's FIX-25 note).
+    // former `MessageM1` overlay happened to align with its first three
+    // fields, but the dedicated arm is the contract (same discipline as
+    // the dispatch_schedule field-layout note).
     msg.debug_check_m_type_any(&[Syscall::Fork as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let fork_req = unsafe { msg.m_u.m_lsys_krn_sys_fork };
@@ -283,7 +283,7 @@ pub fn dispatch_exec(
     msg: &Message,
 ) -> KcallResult {
     // C: do_exec.c:27 — extract fields from mess_lsys_krn_sys_exec.
-    // Use the typed message (not M1) because SYS_EXEC's layout differs
+    // Use the typed message (not `MessageM1`) because SYS_EXEC's layout differs
     // from MessageM1 on 64-bit (ip at offset 8, not m1p1 at offset 16).
     msg.debug_check_m_type_any(&[Syscall::Exec as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
@@ -330,15 +330,19 @@ pub fn dispatch_exec(
             endpoint: caller_endpt,
             offset: VirBytes(name_ptr),
         };
-        // NK4-C 1.51 (B27 残留根因): name_buf 是内核栈局部，VA 落在 higher-half
-        // 内核 image 段 [KERN_VIRT_BASE, KERNEL_DIRECT_MAP_BASE)——该段在两个
-        // Direct Map 窗口之外，`CurrentDirectMap::virt_to_phys` 的 DM 减法得到伪
-        // 物理地址（真机 c57 实锤 `virt=0xffff8000003ffb30 -> phys=0xffff7fff803ffb30`，
-        // c56 `ktorn dst=phys` 带 bit47）→ cross_space_copy 野写 → 早期 boot
-        // panic。改为 AddressRef::Process：caller 的 CR3 同时映射内核
-        // higher-half（SYSCALL 不切页表），resolve_physical 走真实页表得正确 PA。
-        // 语义等价 C `data_copy(..., (vir_bytes)&name, ...)`（内核栈地址直用）。
-        // 与 syscall.rs copy_struct_from_user 的 F10c 修复同款。
+        // Root cause of the boot panic: `name_buf` is a kernel-stack local whose
+        // VA lands in the higher-half kernel image segment [KERN_VIRT_BASE,
+        // KERNEL_DIRECT_MAP_BASE). That segment lies outside both Direct Map
+        // windows, so `CurrentDirectMap::virt_to_phys`'s DM subtraction yields a
+        // bogus physical address (real hardware showed `virt=0xffff8000003ffb30
+        // -> phys=0xffff7fff803ffb30`, i.e. bit 47 carried through) →
+        // cross_space_copy writes into the wrong place → early boot panic. Use
+        // AddressRef::Process instead: the caller's CR3 also maps the kernel
+        // higher-half (SYSCALL does not switch page tables), so
+        // `resolve_physical` walks the real page table and gets the correct PA.
+        // Semantically equivalent to C `data_copy(..., (vir_bytes)&name, ...)`
+        // (using a kernel stack address directly), and the same shape as the
+        // `copy_struct_from_user` fix in syscall.rs.
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(name_buf.as_mut_ptr() as u64),
@@ -358,9 +362,8 @@ pub fn dispatch_exec(
             // previously returned EFAULT here, so every boot-module exec
             // with name_ptr=0 (VM's exec_bootproc convention) aborted
             // BEFORE the context install — the process restored with its
-            // zero seed context and #PF'd at rip=0 (NK4-A C-3 F0 follow-up,
-            // 2026-09-22; masked on the wire by the positive-errno reply,
-            // see FIXLOG Fix #9 新发现 F10).
+            // zero seed context and #PF'd at rip=0 (2026-09-22; on the wire
+            // the positive-errno reply masked that fault).
             CrossSpaceResult::Completed(Err(_)) => {
                 const UNSET: &[u8] = b"<unset>";
                 name_buf[..UNSET.len()].copy_from_slice(UNSET);
@@ -398,10 +401,11 @@ pub fn dispatch_exec(
             entry,
         );
         if let Some(rp) = proc_table.get_mut(target_nr) {
-            // NK4-A 首亮修复：走 set_boot_cpu_context（对位 C
-            // arch_proc_init → arch_proc_reset → setcontext(KTS_FULLCONTEXT)
-            // 的 memory.c:725）——exec 装新上下文同样必须种 style，
-            // 否则被 exec 的进程首次调度撞返回门 panic。
+            // Use `set_boot_cpu_context` here (matching C arch_proc_init →
+            // arch_proc_reset → setcontext(KTS_FULLCONTEXT) at memory.c:725):
+            // installing a new context through exec must seed the style as
+            // well, otherwise the first scheduling of the exec'd process hits
+            // the return gate and panics.
             rp.set_boot_cpu_context(cpu_context);
         }
     }
@@ -431,8 +435,8 @@ pub fn dispatch_exec(
 /// self path: promote the backup manager if one was designated, else panic.
 /// Returns EDONTREPLY (no reply to the caller).
 ///
-/// The "自杀 → 委托 → 回收" three-phase contract is preserved: the kernel
-/// does not free resources here; it only makes the death observable.
+/// The "self-kill → delegate → reclaim" three-phase contract is preserved: the
+/// kernel does not free resources here; it only makes the death observable.
 pub fn dispatch_exit(
     caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
@@ -440,8 +444,9 @@ pub fn dispatch_exit(
     priv_table: &mut PrivTable,
 ) -> KcallResult {
     // C: do_exit.c:21 — cause_sig(caller->p_nr, SIGABRT); EDONTREPLY
-    // SIGABRT ∈ SIGS_IS_LETHAL（signal.h:280-282），因此自管理进程的 exit
-    // 会进入 cause_signal 的致命 SELF 子路径（backup 提升或 panic）。
+    // SIGABRT ∈ SIGS_IS_LETHAL (signal.h:280-282), so an exit from a
+    // self-managed process takes the lethal SELF sub-path of cause_signal
+    // (promote the backup manager or panic).
     cause_signal(caller_nr, SIGABRT, proc_table, priv_table);
 
     // C: do_exit.c:23 — return EDONTREPLY
@@ -464,8 +469,8 @@ pub fn dispatch_exit(
 ///
 /// # Operation status (re-inventoried 2026-09-08 — all C do_clear.c steps live)
 ///
-/// Every C operation is implemented; the former "subsystem deferrals"
-/// (D-3/D-4) were closed when VM and IPC integration landed:
+/// Every C operation is implemented; the former "subsystem deferrals" were
+/// closed when VM and IPC integration landed:
 /// - `release_address_space(rc)` — `syscall::release_address_space`
 ///   (C do_clear.c:35)
 /// - IRQ hook cleanup (`rm_irq_handler`) — global `irq_manager()`
@@ -491,11 +496,13 @@ pub fn dispatch_clear(
 
     // C: do_clear.c:29 — isokendpt(endpt, &exit_p)
     //
-    // C 的 isokendpt 不排除已释放槽位（仅校验 proc 范围 + endpoint 匹配），
-    // 因此重复 clear 幂等：第一次清空槽位后，第二次 isokendpt 仍解析到该
-    // 槽并走 isemptyp → OK（do_clear.c:38）。Rust 的 endpoint_to_nr 跳过
-    // SLOT_FREE 槽，会让第二次 clear 变成 EINVAL（C 行为偏离），故此处用
-    // 不排除释放槽的解析。
+    // C's isokendpt does not exclude freed slots (it only checks the proc range
+    // and the endpoint match), so repeated clear is idempotent: after the first
+    // clear empties the slot, the second isokendpt still resolves to that slot
+    // and falls through isemptyp → OK (do_clear.c:38). Rust's endpoint_to_nr
+    // skips SLOT_FREE slots, which would turn the second clear into EINVAL (a
+    // deviation from C), so this uses a resolution that does not exclude freed
+    // slots.
     let target_endpoint = Endpoint(endpt);
     let target_nr = match proc_table.iter()
         .find(|p| p.p_endpoint == target_endpoint)
@@ -510,7 +517,7 @@ pub fn dispatch_clear(
     // would mark the PM's own slot as SLOT_FREE — a P0 semantic drift.
 
     // C: do_clear.c:38 — if(isemptyp(rc)) return OK
-    // （幂等路径：重复 clear 命中此处 → OK）
+    // (idempotent path: a repeated clear lands here → OK)
     if proc_table.get(target_nr).is_none_or(|p| {
         p.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE)
     }) {
@@ -529,7 +536,7 @@ pub fn dispatch_clear(
     // C iterates: `for (i=0; i < NR_IRQ_HOOKS; i++)` if `irq_hooks[i].proc_nr_e == rc->p_endpoint`.
     // Rust: use the global IrqManager (same accessor as dispatch_irqctl).
     // A1 chain root: syscall dispatch holds the BKL (dispatch entry
-    // convention); S-8 will thread real witnesses through dispatch.
+    // convention); real witnesses are not threaded through dispatch yet.
     {
         let section = unsafe { crate::smp::BklSection::assume_held() };
         let irq_mgr = crate::irq_manager_with(&section);
@@ -537,7 +544,9 @@ pub fn dispatch_clear(
         for slot in 0..crate::syscall_device::NR_IRQ_HOOKS {
             if let Some(owner) = irq_mgr.hook_owner(slot)
                 && owner == target_endpoint {
-                    //[SD19-gate] 端点析构清 hook 循环：目标正在消亡，remove_hook_by_slot 失败无可回报
+                    // Endpoint teardown clears the hook loop: the target is
+                    // dying, so a failed remove_hook_by_slot has nowhere to be
+                    // reported.
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = irq_mgr.remove_hook_by_slot(slot);
                 }
@@ -769,7 +778,7 @@ pub fn dispatch_schedctl(
         // Non-negative i32 fits in u32 without truncation.
         let cpu_opt = if cpu == -1 { None } else { Some(cpu as u32) };
 
-        // D-52: pass the table (scheduler-aware rts wrappers).
+        // Pass the table (the scheduler-aware rts wrappers need it).
         match crate::sched::sched_proc(
             proc_table,
             target_nr,
@@ -862,7 +871,7 @@ pub(crate) fn dispatch_statectl(
         // C: do_statectl.c:32-36 — add_ipc_filter(caller, IPCF_BLACKLIST, address, length)
         StatectlRequest::AddIpcBlFilter => {
             // C: do_statectl.c:34-36 — add_ipc_filter(caller, IPCF_BLACKLIST,
-            // address, length)。D-16/D-18 实现见 add_ipc_filter_arm。
+            // address, length); the implementation is in add_ipc_filter_arm.
             return add_ipc_filter_arm(caller_nr, proc_table, sc, priv_table, pool,
                 crate::ipc_filter::IpcFilterType::Blacklist);
         }
@@ -873,8 +882,8 @@ pub(crate) fn dispatch_statectl(
         }
         StatectlRequest::ClearIpcFilters => {
             // C clear_ipc_filters (system.c:751-770) — free the WHOLE
-            // filter chain (D-16: filters chain via `next`; clearing only
-            // the head would orphan the rest).
+            // filter chain (filters link through `next`; clearing only the
+            // head would orphan the rest).
             if let Some(pid) = proc_table.get(caller_nr).and_then(|c| c.priv_id)
                 && let Some(priv_) = priv_table.get_mut(pid)
                 && let Some(head) = priv_.mem.s_ipcf.take()
@@ -888,11 +897,13 @@ pub(crate) fn dispatch_statectl(
 }
 
 
-/// D-16/D-18: SYS_STATECTL ADD_IPC_{BL,WL}_FILTER — C `add_ipc_filter`
-/// (system.c:705-747): 校验（length 按元素字节对齐、1..=MAX 个 → E2BIG）→
-/// 分配新槽 → data_copy 元素进槽 → EL_CHECK 逐元素校验 + MATCH 标志聚合
-/// （fill_flags）→ **链尾追加**（C system.c:742-745；修复旧实现"替换非
-/// 追加"的偏离）。失败路径只释放新槽位，链上既有 filter 不受影响。
+/// SYS_STATECTL ADD_IPC_{BL,WL}_FILTER — C `add_ipc_filter` (system.c:705-747):
+/// validate (length byte-aligned to the element size, 1..=MAX elements →
+/// E2BIG) → allocate a new slot → data_copy the elements into the slot →
+/// EL_CHECK each element + aggregate the MATCH flags (fill_flags) → **append at
+/// the chain tail** (C system.c:742-745; this fixes the old implementation's
+/// deviation of replacing instead of appending). Failure paths free only the
+/// new slot; filters already on the chain are unaffected.
 fn add_ipc_filter_arm(
     caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -913,7 +924,7 @@ fn add_ipc_filter_arm(
         return KcallResult::Ok(EINVAL);
     }
     let num_elements = length / el_size;
-    // C system.c:713-716 — num_elements <= 0 或超上限 → E2BIG。
+    // C system.c:713-716 — num_elements <= 0 or above the cap → E2BIG.
     if num_elements == 0 || num_elements > crate::ipc_filter::IPCF_MAX_ELEMENTS {
         return KcallResult::Ok(E2BIG);
     }
@@ -935,9 +946,11 @@ fn add_ipc_filter_arm(
         .expect("syscall_process: caller slot must exist");
 
     // C system.c:729-731 — data_copy elements directly into the slot.
-    // NK4-C 1.51 (B27 残留根因): pool slot 元素缓冲是内核静态数据（image 高半
-    // 区，两个 DM 窗口之外），`virt_to_phys` 产伪物理地址。改用 AddressRef::Process
-    // （caller CR3 映射内核 higher-half，resolve_physical 走真页表得正确 PA）。
+    // The pool slot's element buffer is kernel static data (in the higher-half
+    // image region, outside both DM windows), so `virt_to_phys` produces a bogus
+    // physical address. Use AddressRef::Process instead (the caller's CR3 maps
+    // the kernel higher-half, so resolve_physical walks the real page table and
+    // gets the correct PA).
     let dst_kva = match pool.get_mut(new_idx) {
         Some(slot) => slot.elements.as_mut_ptr() as u64,
         None => unreachable!("slot was just allocated"),
@@ -967,10 +980,11 @@ fn add_ipc_filter_arm(
         }
     }
 
-    // D-18 (C check_ipc_filter, system.c:776-798) — EL_CHECK each element
-    // (isokendpt 经 proc_table 解析) + MATCH 标志聚合（fill_flags）+
-    // 链尾追加（C system.c:742-745）。校验失败：finalize 不释放，由本
-    // 函数释放新槽位后返回 EINVAL。
+    // C check_ipc_filter (system.c:776-798) — EL_CHECK each element
+    // (isokendpt resolved through proc_table) + aggregate the MATCH flags
+    // (fill_flags) + append at the chain tail (C system.c:742-745). On
+    // validation failure finalize does not free; this function frees the new
+    // slot and then returns EINVAL.
     let caller_priv_id = match proc_table.get(caller_nr).and_then(|c| c.priv_id) {
         Some(id) => id,
         None => return KcallResult::Ok(EPERM),
@@ -985,11 +999,12 @@ fn add_ipc_filter_arm(
     }
 }
 
-/// D-18: C `check_ipc_filter(ipcf, TRUE)`（system.c:776-798）+ 链尾追加
-/// （system.c:742-745）。校验每个元素（EL_CHECK，isokendpt 经
-/// `proc_table` 解析）、聚合 MATCH 标志进 `slot.flags`，然后把 `new_idx`
-/// 追加到 `caller_priv_id` 的 filter 链尾。校验失败返回 `Err(EINVAL)`
-/// 且**不释放**槽位（由调用方决定）——链上既有 filter 不受影响。
+/// C `check_ipc_filter(ipcf, TRUE)` (system.c:776-798) + append at the chain
+/// tail (system.c:742-745). Validate each element (EL_CHECK with isokendpt
+/// resolved through `proc_table`), aggregate the MATCH flags into `slot.flags`,
+/// then append `new_idx` to the filter chain tail of `caller_priv_id`.
+/// Validation failure returns `Err(EINVAL)` and does **not** free the slot (the
+/// caller decides) — filters already on the chain are unaffected.
 pub(crate) fn finalize_ipc_filter(
     proc_table: &crate::proc_table::ProcessTable,
     caller_priv_id: u16,
@@ -998,7 +1013,7 @@ pub(crate) fn finalize_ipc_filter(
     num_elements: usize,
     caller_priv_table: &mut PrivTable,
 ) -> Result<(), i32> {
-    let _ = caller_priv_id; // 链头读取走 caller_priv_table
+    let _ = caller_priv_id; // the chain head is read through caller_priv_table
     if let Some(slot) = pool.get_mut(new_idx) {
         slot.num_elements = num_elements;
         let mut aggregated = 0i32;
@@ -1064,7 +1079,7 @@ mod tests {
     /// dispatch_statectl can update `s_ipcf`.
     #[test]
     fn test_dispatch_statectl_add_ipc_filter_rejects_unaligned_length() {
-        // C system.c:710-712 — length 不按元素大小对齐 → EINVAL。
+        // C system.c:710-712 — length not aligned to the element size → EINVAL.
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
@@ -1078,7 +1093,8 @@ mod tests {
 
     #[test]
     fn test_dispatch_statectl_add_ipc_filter_rejects_zero_length() {
-        // C system.c:713-716 — num_elements <= 0 → E2BIG（长度 0 = 0 个元素）。
+        // C system.c:713-716 — num_elements <= 0 → E2BIG (length 0 = 0
+        // elements).
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
@@ -1092,8 +1108,9 @@ mod tests {
 
     #[test]
     fn test_dispatch_statectl_add_ipc_filter_suspends_and_frees_on_copy_fault() {
-        // data_copy_vmcheck 在 hosted mock 下不可解（PteWalk None →
-        // Suspended）→ VmSuspend 且新槽位已释放（不跨挂起泄漏）。
+        // data_copy_vmcheck cannot resolve under the hosted mock (PteWalk None
+        // → Suspended) → VmSuspend, and the new slot has already been freed (no
+        // leak across the suspension).
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
@@ -1105,14 +1122,16 @@ mod tests {
         assert_eq!(pool.allocated_count(), 0, "suspend must free the new slot");
     }
 
-    /// D-18: finalize 校验元素（EL_CHECK）+ 聚合 MATCH 标志 + 链尾追加。
-    /// 非法来源（isokendpt 失败）→ Err(EINVAL) 且槽位保留（由调用方释放）。
+    /// finalize validates the elements (EL_CHECK), aggregates the MATCH flags,
+    /// and appends at the chain tail. An illegal source (isokendpt failure) →
+    /// Err(EINVAL) with the slot retained (the caller frees it).
     #[test]
     fn test_finalize_ipc_filter_appends_and_aggregates() {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
-        // 目标端点：slot ProcNr(1) 占用（清除 SLOT_FREE）→ isokendpt 通过。
+        // Target endpoint: slot ProcNr(1) occupied (SLOT_FREE cleared) →
+        // isokendpt passes.
         proc_table
             .get_mut(ProcNr(1))
             .unwrap()
@@ -1129,22 +1148,24 @@ mod tests {
             };
         }
         assert!(finalize_ipc_filter(&proc_table, 0, &mut pool, idx, 1, &mut priv_table).is_ok());
-        // 链头已设置；MATCH 标志聚合进 slot.flags。
+        // The chain head is set; the MATCH flags are aggregated into
+        // slot.flags.
         assert_eq!(priv_table.get(0).unwrap().mem.s_ipcf, Some(idx));
         assert_eq!(
             pool.get(idx).unwrap().flags,
             crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE as i32
         );
 
-        // 第二个 filter 追加到链尾（D-16 链式语义：链长 2）。
+        // The second filter is appended at the chain tail (chained semantics:
+        // chain length 2).
         let idx2 = pool.allocate(crate::ipc_filter::IpcFilterType::Blacklist).unwrap();
         assert!(finalize_ipc_filter(&proc_table, 0, &mut pool, idx2, 0, &mut priv_table).is_ok());
         assert_eq!(pool.get(idx).unwrap().next, Some(idx2));
         assert_eq!(priv_table.get(0).unwrap().mem.s_ipcf, Some(idx), "链头不变");
     }
 
-    /// D-18 负例：MATCH_M_SOURCE 指向不可解析端点（isokendpt 失败）→
-    /// Err(EINVAL)，槽位由调用方释放。
+    /// Negative case: MATCH_M_SOURCE points at an unresolvable endpoint
+    /// (isokendpt failure) → Err(EINVAL), and the caller frees the slot.
     #[test]
     fn test_finalize_ipc_filter_invalid_source_rejected() {
         let mut proc_table = crate::test_helpers::test_proc_table();
@@ -1154,7 +1175,7 @@ mod tests {
         if let Some(slot) = pool.get_mut(idx) {
             slot.elements[0] = crate::ipc_filter::IpcFilterElement {
                 flags: crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE,
-                m_source: 0x7FFF, // 无占用槽解析到它
+                m_source: 0x7FFF, // no occupied slot resolves to this
                 m_type: 0,
             };
         }
@@ -1162,7 +1183,7 @@ mod tests {
             finalize_ipc_filter(&proc_table, 0, &mut pool, idx, 1, &mut priv_table),
             Err(EINVAL)
         );
-        // finalize 不释放——调用方（add_ipc_filter_arm）负责。
+        // finalize does not free — the caller (add_ipc_filter_arm) does.
         assert_eq!(pool.allocated_count(), 1);
     }
 
@@ -1199,7 +1220,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_exit_returns_no_reply() {
-        // C: do_exit.c:23 — return EDONTREPLY（不写回消息）
+        // C: do_exit.c:23 — return EDONTREPLY (no message written back)
         let mut procs = crate::test_helpers::test_proc_table();
         let mut privs = crate::test_helpers::test_priv_table();
         let mgr_ep = occupy_exiting_proc(
@@ -1209,7 +1230,8 @@ mod tests {
             0,
             Endpoint::from_generation_slot(0, 1),
         );
-        // manager slot（nr 1）须占用，否则外部路径的通知目标无效
+        // The manager slot (nr 1) must be occupied, otherwise the notification
+        // target of the external path is invalid.
         let _ = occupy_exiting_proc(
             &mut procs,
             &mut privs,
@@ -1228,8 +1250,9 @@ mod tests {
     #[test]
     fn test_dispatch_exit_sets_sigabrt_and_notifies_manager() {
         // C: do_exit.c:21 — cause_sig(caller, SIGABRT)
-        // 外部管理路径：SIGABRT 记入 target 的 p_pending，置
-        // RTS_SIGNALED|RTS_SIG_PENDING，并通知信号管理器（PM 典型场景）。
+        // External-manager path: SIGABRT is recorded in the target's p_pending,
+        // RTS_SIGNALED|RTS_SIG_PENDING is set, and the signal manager is
+        // notified (the typical PM scenario).
         let mut procs = crate::test_helpers::test_proc_table();
         let mut privs = crate::test_helpers::test_priv_table();
         let mgr_ep = occupy_exiting_proc(
@@ -1239,7 +1262,8 @@ mod tests {
             0,
             Endpoint::from_generation_slot(0, 1),
         );
-        // manager（PM 角色）监听 → 通知以 DELIVERMSG 直接投递
+        // The manager (playing PM) is listening → the notification is delivered
+        // directly as DELIVERMSG.
         let _ = occupy_exiting_proc(&mut procs, &mut privs, ProcNr(1), 1, mgr_ep);
         {
             let m = procs.get_mut(ProcNr(1)).unwrap();
@@ -1253,12 +1277,13 @@ mod tests {
             KcallResult::NoReply
         );
 
-        // 目标（退出的进程）槽位状态
+        // State of the target (the exiting process) slot
         let target = procs.get(ProcNr(0)).unwrap();
         assert!(target.p_pending.contains(SIGABRT as u8));
         assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
         assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING));
-        // 管理器收到 SIGKSIG 通知（system.c:445-446 + 381）
+        // The manager has received the SIGKSIG notification (system.c:445-446 +
+        // 381)
         let manager = procs.get(ProcNr(1)).unwrap();
         assert!(manager.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
     }
@@ -1595,7 +1620,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_schedctl_kernel_flag_priority_256_truncation_rejected() {
-        // R-16-fix (2026-08-12): Regression test for priority truncation bug.
+        // Regression test for priority truncation bug.
         // Before fix: `priority = 256` → `256 as u8 = 0` (TASK_Q) → passed
         // sched_proc validation → privilege escalation.
         // After fix: `priority = 256` → rejected at syscall layer because
@@ -1636,7 +1661,7 @@ mod tests {
         let target_ep = install_target(&mut proc_table, target_nr);
 
         // Caller is process at slot 7 (e.g., the sched server); with
-        // K20 caller-by-nr its identity lives on that slot.
+        // The caller is identified by number; its identity lives on that slot.
         let caller_nr = ProcNr(7);
         proc_table.get_mut(caller_nr).unwrap().p_endpoint =
             Endpoint::from_generation_slot(1, caller_nr.0);
@@ -1680,16 +1705,18 @@ mod tests {
         assert_eq!(target.p_sched.scheduler, None);
     }
 
-    // ── T-12: doc 17 §5.2 五测试（fork ×3 / runctl RC_DELAY / clear 幂等）──
+    // ── doc 17 §5.2 five tests (fork ×3 / runctl RC_DELAY / clear idempotence) ──
 
     #[test]
     fn test_t12_fork_creates_child_with_new_endpoint() {
-        // C do_fork.c:69-72 — 子 endpoint 代际 +1：gen0 slot3 → (1<<15)+3。
-        // E-FORKMSG:应答形状对齐 C do_fork.c:111-112 + :135 —— 返回 OK(0),
-        // endpt/msgaddr 原地写进 m_krn_lsys_sys_fork 应答臂(msgaddr 是父进程
-        // 的 p_delivermsg_vir；本测 caller 即父，slot 0)。
+        // C do_fork.c:69-72 — the child endpoint generation is bumped by one:
+        // gen0 slot3 → (1<<15)+3.
+        // The reply shape matches C do_fork.c:111-112 + :135 — returns OK(0),
+        // with endpt/msgaddr written in place into the m_krn_lsys_sys_fork
+        // reply arm (msgaddr is the parent's p_delivermsg_vir; in this test the
+        // caller is the parent, slot 0).
         let mut proc_table = crate::test_helpers::test_proc_table();
-        // K20 caller-by-nr: the caller's identity/state lives on slot 0.
+        // The caller is identified by number: its identity/state lives on slot 0.
         {
             let caller = proc_table.get_mut(ProcNr(0)).unwrap();
             caller.p_endpoint = Endpoint(100);
@@ -1698,13 +1725,14 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
 
         let mut msg = Message::default();
-        msg.m_u.m_lsys_krn_sys_fork.endpt = 100; // 父 endpoint
-        msg.m_u.m_lsys_krn_sys_fork.slot = 3;    // 子槽位
+        msg.m_u.m_lsys_krn_sys_fork.endpt = 100; // parent endpoint
+        msg.m_u.m_lsys_krn_sys_fork.slot = 3;    // child slot
         msg.m_u.m_lsys_krn_sys_fork.flags = 0;   // flags
 
         let result = dispatch_fork(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(0), "C do_fork 返回 OK");
-        // SAFETY(测试):m_type 未变(SYS_FORK),读应答臂是构造的镜像。
+        // SAFETY(test): m_type is unchanged (SYS_FORK), so reading the reply
+        // arm is a constructed mirror.
         let reply_arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
         assert_eq!(reply_arm.endpt, (1 << 15) + 3, "应答臂 endpt = (gen+1)<<15 | slot");
         assert_eq!(
@@ -1719,7 +1747,7 @@ mod tests {
 
     #[test]
     fn test_t12_fork_resolves_parent_from_endpt_not_caller() {
-        // B17 regression. In minix-rs VM issues SYS_FORK *on the parent's
+        // Regression: in minix-rs VM issues SYS_FORK *on the parent's
         // behalf*, so `caller_nr` (VM) is a different, non-receiving process
         // from the forking parent. C `do_fork` derives `rpp` from the request
         // endpt (do_fork.c:41,44) and keys the RECEIVING check, the struct
@@ -1757,7 +1785,8 @@ mod tests {
             "fork must key off parent, not caller"
         );
 
-        // SAFETY(测试):m_type 未变(SYS_FORK),读应答臂是构造的镜像。
+        // SAFETY(test): m_type is unchanged (SYS_FORK), so reading the reply
+        // arm is a constructed mirror.
         let reply_arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
         assert_eq!(
             reply_arm.msgaddr, 0xBEEF_0000u64,
@@ -1775,15 +1804,16 @@ mod tests {
 
     #[test]
     fn test_t12_fork_rejects_non_receiving_parent() {
-        // C do_fork.c:51 — 父进程非 RECEIVING（非同步 fork 点）→ EINVAL。
-        // 让父槽可解析（occupied、端点匹配）但不置 RECEIVING，控制流才会
-        // 落到 RECEIVING 这道闸（而非更早的端点解析 EINVAL）。
+        // C do_fork.c:51 — the parent is not RECEIVING (not a synchronous fork
+        // point) → EINVAL. Make the parent slot resolvable (occupied, endpoint
+        // matching) but do not set RECEIVING, so control flow reaches the
+        // RECEIVING gate rather than the earlier endpoint-resolution EINVAL.
         let mut proc_table = crate::test_helpers::test_proc_table();
         {
             let parent = proc_table.get_mut(ProcNr(0)).unwrap();
             parent.p_endpoint = Endpoint(100);
             parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-            // 故意不置 RECEIVING
+            // deliberately not RECEIVING
         }
         let priv_table = crate::test_helpers::test_priv_table();
 
@@ -1798,8 +1828,9 @@ mod tests {
 
     #[test]
     fn test_t12_fork_rejects_unresolvable_parent_endpt() {
-        // C do_fork.c:41 — isokendpt 失败（端点解析不到占用槽）→ EINVAL，
-        // 早于 RECEIVING 校验。端点 999 无对应占用槽。
+        // C do_fork.c:41 — isokendpt fails (the endpoint does not resolve to an
+        // occupied slot) → EINVAL, earlier than the RECEIVING check. Endpoint
+        // 999 has no corresponding occupied slot.
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
 
@@ -1814,8 +1845,9 @@ mod tests {
 
     #[test]
     fn test_t12_fork_downgrades_sys_proc_child() {
-        // C do_fork.c:105-107 — SYS_PROC 父 → 子挂 USER_PRIV_ID 且置
-        // RTS_NO_PRIV（运行前需重新授权）。
+        // C do_fork.c:105-107 — a SYS_PROC parent → the child is attached to
+        // USER_PRIV_ID and gets RTS_NO_PRIV (it needs re-authorization before
+        // it can run).
         let mut proc_table = crate::test_helpers::test_proc_table();
         {
             let caller = proc_table.get_mut(ProcNr(0)).unwrap();
@@ -1844,8 +1876,8 @@ mod tests {
 
     #[test]
     fn test_t12_runctl_rc_delay_returns_ebusy() {
-        // C do_runctl.c:44-50 — RC_DELAY + 目标 SENDING → 置 MF_SIG_DELAY
-        // 并返回 EBUSY（延迟停止，等待 IPC 完成）。
+        // C do_runctl.c:44-50 — RC_DELAY + target SENDING → set MF_SIG_DELAY
+        // and return EBUSY (delayed stop, waiting for the IPC to complete).
         let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr = ProcNr(1);
         if let Some(target) = proc_table.get_mut(target_nr) {
@@ -1868,8 +1900,9 @@ mod tests {
 
     #[test]
     fn test_t12_clear_idempotent_on_empty_slot() {
-        // C do_clear.c:38 — 已 clear 的槽位再 clear → isemptyp → OK（幂等）。
-        // C isokendpt 不排除已释放槽位，故第二次仍解析到该槽。
+        // C do_clear.c:38 — clearing an already-cleared slot → isemptyp → OK
+        // (idempotent). C isokendpt does not exclude freed slots, so the second
+        // call still resolves to that slot.
         let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr = ProcNr(1);
         if let Some(target) = proc_table.get_mut(target_nr) {
@@ -1879,9 +1912,11 @@ mod tests {
 
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut clock_state = crate::clock::ClockState::new();
-        // IRQ-hook 清理读全局 IRQ_MANAGER（同既有 clear 测试的初始化）。
+        // IRQ-hook cleanup reads the global IRQ_MANAGER (same initialization as
+        // the existing clear tests).
         unsafe { crate::init_irq_manager_for_test(); }
-        // clear 的 IRQ-hook 清理路径需要 BKL witness（A1 约定，同既有测试）。
+        // The IRQ-hook cleanup path of clear needs a BKL witness (the dispatch
+        // entry convention, same as the existing tests).
         let bkl_section = crate::smp::bkl_lock_section();
 
         let mut msg = Message::default();
@@ -1891,7 +1926,8 @@ mod tests {
             &mut priv_table, &mut clock_state);
         assert_eq!(first, KcallResult::Ok(OK), "第一次 clear 应成功");
 
-        // C isokendpt 不排除释放槽 → 第二次命中 isemptyp → OK（非 EINVAL）。
+        // C isokendpt does not exclude freed slots → the second call hits
+        // isemptyp → OK (not EINVAL).
         let second = dispatch_clear(ProcNr(0), &mut proc_table, &msg,
             &mut priv_table, &mut clock_state);
         assert_eq!(second, KcallResult::Ok(OK),

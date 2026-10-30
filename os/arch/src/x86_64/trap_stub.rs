@@ -1,4 +1,4 @@
-//! x86-64 trap entry stubs — S-8 (asm trap stub + SYSCALL entry).
+//! x86-64 trap entry stubs — asm trap stub + SYSCALL entry.
 //!
 //! # Design (one paragraph)
 //!
@@ -24,7 +24,7 @@
 //! [`TrapFrame`], and the assembly exits with `iretq`/`sysretq` after the
 //! Rust dispatcher returns. The *rescheduling* exit (a trap that switches to
 //! another process instead of returning) is the `switch_to_user` wiring and
-//! arrives with the per-CPU scheduler steps (S-6/S-7) — until then the
+//! arrives with the per-CPU scheduler steps — until then the
 //! kernel dispatcher treats user-origin traps as unreachable (no CPL3 code
 //! can exist before the scheduler hands out user contexts).
 //!
@@ -34,18 +34,19 @@
 //! there is no empty-vector / empty-handler gate left, and every gate is an
 //! interrupt gate (IF auto-cleared on entry), so the kernel runs with IF=0
 //! except at explicitly controlled `sti` points. NMI/DF keep their C IST
-//! slots only after S-4 programs the per-CPU TSS IST table; `set_handler`
-//! writes IST=0, so until S-4 those two run on the interrupted stack (they
+//! slots only after the per-CPU TSS IST table is programmed; `set_handler`
+//! writes IST=0, so until then those two run on the interrupted stack (they
 //! are never delivered during bring-up: NMI only via QEMU monitor, #DF only
 //! after an already-fatal first fault).
 //!
-//! # GS contract (B path; S-4 programs the MSRs)
+//! # GS contract (B path; the per-CPU init programs the MSRs)
 //!
 //! `x86_syscall_entry` reads the per-CPU kernel stack top from `gs:0x0` and
-//! parks the user RSP at `gs:0x8`. S-4 (init_ap / BSP per-CPU init) writes
+//! parks the user RSP at `gs:0x8`. The per-CPU init (init_ap / BSP) writes
 //! IA32_GS_BASE / IA32_KERNEL_GS_BASE before any entry path can run, and
 //! the entry is only reachable via SYSCALL from CPL3, which no code can
-//! execute before S-6/S-7 — the dependency order is safe by construction.
+//! execute before the scheduler hands out user contexts — the dependency
+//! order is safe by construction.
 
 use crate::trap_entry::{InterruptVector, TrapEntryArch};
 use crate::x86_64::trap_entry::X86_64TrapEntry;
@@ -56,14 +57,14 @@ use minix_types::VirBytes;
 // ── Dispatcher registration gate ──
 //
 // The asm stubs call `x86_trap_dispatch` / `x86_syscall_dispatch`, which are
-// defined HERE so the arch crate stays independently linkable (the S-8
-// inventory: a direct `call` of a kernel symbol would break every hosted
-// test link). The thunks forward to the kernel-registered bodies — the
+// defined HERE so the arch crate stays independently linkable (a direct
+// `call` of a kernel symbol would break every hosted test link). The thunks
+// forward to the kernel-registered bodies — the
 // policy lives with the BKL/IrqManager owner (kernel crate), the entry
 // mechanics live here. Registration happens in the kernel's
 // `init_protection`, strictly before `TrapEntryArch::load()`; an unregistered
-// dispatch panics instead of silently returning (the S-3d lesson: silent
-// misrouting costs ten debugging rounds).
+// dispatch panics instead of silently returning (silent misrouting costs
+// many debugging rounds).
 type DispatchFn = unsafe extern "C" fn(&mut TrapFrame);
 static TRAP_DISPATCH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static SYSCALL_DISPATCH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
@@ -110,7 +111,7 @@ unsafe extern "C" fn x86_syscall_dispatch(frame: &mut TrapFrame) {
 /// `rsp`/`ss` are valid only when the trap came from user mode
 /// (`cs & 3 == 3`); for a same-ring (kernel) trap the CPU did not push them
 /// and the fields read stack garbage — the same contract as C's frame
-/// (doc 14 §1.3: "嵌套异常时无效").
+/// (doc 14 §1.3: "invalid for a nested exception").
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TrapFrame {
@@ -142,9 +143,11 @@ pub struct TrapFrame {
     pub ss: u64,
 }
 
-// ── Per-CPU GS slot layout (B path; S-4 programs GS_BASE to this struct) ──
+// ── Per-CPU GS slot layout (B path; the per-CPU init programs GS_BASE to
+// this struct) ──
 
-/// GS-relative slot holding the per-CPU kernel stack top (S-4 writes it).
+/// GS-relative slot holding the per-CPU kernel stack top (the per-CPU init
+/// writes it).
 pub const GS_SLOT_KERNEL_STACK: u64 = 0x0;
 /// GS-relative slot where the entry parks the user RSP.
 pub const GS_SLOT_USER_RSP: u64 = 0x8;
@@ -202,9 +205,9 @@ const STUB_VECTORS: &[(u8, bool)] = &[
     (0x77, false),
     // IPI: scheduler (C arch_smp.c SCHED_IPI_VECTOR = 0xF0).
     (0xF0, false),
-    // LAPIC local timer (edge1 K6): one-shot per-CPU tick, C
+    // LAPIC local timer: one-shot per-CPU tick, C
     // APIC_TIMER_INT_VECTOR = 0xf0 — relocated to 0xf1 here because the
-    // landed S-10 scheduler-IPI lane owns 0xF0 on the Rust side; the
+    // scheduler-IPI lane owns 0xF0 on the Rust side; the
     // local timer never enters the hook chains, so the exact number is
     // a carrier convention, not external behavior.
     (0xF1, false),
@@ -251,7 +254,7 @@ pub const fn irq_of_vector(vector: u8) -> Option<u8> {
 core::arch::global_asm!(
     ".section .text.trap_stub, \"ax\"",
     // Per-vector stub: normalize the error-code slot (the CPU pushes it only
-    // for vectors 8,10-14,17 — S-8 §3.7) so the common stub always finds the
+    // for vectors 8,10-14,17) so the common stub always finds the
     // same layout, then push the vector number and jump to the common tail.
     // Byte contract pinned by test_stub_bytes_errcode_normalization.
     ".macro TRAPSTUB vec err",
@@ -307,9 +310,9 @@ core::arch::global_asm!(
     "TRAPSTUB 119 0",
     // LAPIC spurious interrupt (C: apic.c apic_spurious_interrupt).
     "TRAPSTUB 255 0",
-    // LAPIC local timer (edge1 K6): vector 0xF1 = 241.
+    // LAPIC local timer: vector 0xF1 = 241.
     "TRAPSTUB 241 0",
-    // Inter-processor interrupt: scheduler (S-10; C: SMP_SCHED_IPI_VECTOR).
+    // Inter-processor interrupt: scheduler (C: SMP_SCHED_IPI_VECTOR).
     "TRAPSTUB 240 0",
     // Common tail: save every GPR, hand the frame to the kernel dispatcher,
     // restore, drop the (vector, errcode) pair and return with iretq —
@@ -370,7 +373,7 @@ core::arch::global_asm!(
     "x86_syscall_entry:",
     "  swapgs",
     "  mov qword ptr gs:{gs_user_rsp}, rsp",  // park user RSP
-    "  mov rsp, gs:{gs_kern_stack}",          // per-CPU kernel stack top (S-4)
+    "  mov rsp, gs:{gs_kern_stack}",          // per-CPU kernel stack top
     "  push {user_ss}",                       // frame.ss (flat user data) —
                                               // pushed FIRST so the CPU-tail
                                               // matches the hardware int
@@ -561,8 +564,7 @@ pub fn save_frame_to_context(frame: &TrapFrame, ctx: &mut super::boot::X86_64Cpu
 /// but only RBX was pulled into the frame — so userspace's `mov status,
 /// r10` read the stale (RECEIVE-prologue-cleared) R10, `is_ipc_notify`
 /// misfired, and a notification fell through to endpoint validation.
-/// NK4-C B21 root cause: sync the status lane the userspace actually
-/// reads.
+/// Root cause: sync the status lane the userspace actually reads.
 pub fn sync_status_register_to_frame(
     ctx: &super::boot::X86_64CpuContext,
     frame: &mut TrapFrame,
@@ -577,10 +579,10 @@ pub fn ipc_return_code(ctx: &super::boot::X86_64CpuContext) -> u64 {
     ctx.gp_regs[0]
 }
 
-/// Read back the saved IPC status register（NK4-C Task C A 案：R10，
-/// gp_regs[GP_R10=8]——C ipcconst.h:10 的 bx 车道迁移；`or_ipc_status_reg`
-/// OR-merges into it、plain-RECEIVE 序言清它——C proc.c:581）。同
-/// [`ipc_return_code`] 测试缝形态。
+/// Read back the saved IPC status register (R10, gp_regs[GP_R10=8] — the bx
+/// lane from C ipcconst.h:10 migrated here; `or_ipc_status_reg` OR-merges into
+/// it and the plain-RECEIVE prologue clears it — C proc.c:581). Same test-seam
+/// shape as [`ipc_return_code`].
 pub fn ipc_status_register(ctx: &super::boot::X86_64CpuContext) -> u64 {
     ctx.gp_regs[crate::x86_64::signal::GP_R10]
 }
@@ -605,8 +607,8 @@ pub fn syscall_entry_va() -> VirBytes {
 /// Called by the kernel's `init_protection` (C parity: `idt_init()` fills
 /// the table with real entry addresses, protect.c:245-268) immediately
 /// before `load()`. Gates are written as interrupt gates (IF auto-cleared),
-/// which realizes the stage invariant "after S-8 the kernel runs IF=0
-/// except at controlled points".
+/// which realizes the stage invariant "the kernel runs IF=0 except at
+/// controlled points".
 pub fn install_idt_handlers(entry: &mut X86_64TrapEntry) {
     let mut i = 0;
     while i < STUB_VECTORS.len() {
@@ -618,7 +620,7 @@ pub fn install_idt_handlers(entry: &mut X86_64TrapEntry) {
             user_accessible(vector),
         );
         // C gate_table_exceptions parity: NMI and #DF run on dedicated IST
-        // stacks (IST1/IST2, programmed into the per-CPU TSS by S-4) — a
+        // stacks (IST1/IST2, programmed into the per-CPU TSS) — a
         // gate with IST≠0 must not have it flattened by set_handler.
         match vector {
             2 => entry.set_gate_ist(2, 1),
@@ -629,26 +631,26 @@ pub fn install_idt_handlers(entry: &mut X86_64TrapEntry) {
     }
 }
 
-// ── Per-CPU GS area + SYSCALL MSR reprogramming (S-4 §3.3) ──
+// ── Per-CPU GS area + SYSCALL MSR reprogramming (per-CPU MSR contract) ──
 
 /// Per-CPU GS area read by the entry stubs. Layout is the frozen build↔run
 /// contract with `x86_syscall_entry` (offsets pinned by
 /// `test_gs_area_layout_frozen`); `gs_cpu_id` extends it for per-CPU
-/// identity readback (S-4 L2 acceptance).
+/// identity readback (AP self-identity acceptance).
 #[repr(C, align(16))]
 pub struct GsArea {
     /// Kernel stack top the SYSCALL entry switches to (GS_SLOT_KERNEL_STACK).
     pub kernel_stack_top: u64,
     /// Scratch slot where the entry parks the user RSP (GS_SLOT_USER_RSP).
     pub user_rsp: u64,
-    /// This CPU's logical id (S-4 L2: AP self-identity readback).
+    /// This CPU's logical id (AP self-identity readback).
     pub cpu_id: u64,
 }
 
 const GS_AREA_CPU_ID: u64 = 0x10;
 
 /// One area per CPU slot (arch-owned static: fixed addresses, zero-heap —
-/// §3.3 "per-CPU statics" decision). S-6's per-CPU migration may repoint
+/// §3.3 "per-CPU statics" decision). A later per-CPU migration may repoint
 /// GS_BASE at richer per-CPU blocks; the first three fields' offsets are
 /// frozen by the asm.
 static mut GS_AREAS: [GsArea; 8] = [const { GsArea {
@@ -666,12 +668,13 @@ const MSR_IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
 ///
 /// Runs on the AP itself (per-CPU MSRs are per-CPU state — only this CPU's
 /// MSRs are touched). IA32_KERNEL_GS_BASE gets the same pointer until user
-/// mode exists (S-6/S-7): `swapgs` has nothing to swap, and the stub reads
+/// mode exists: `swapgs` has nothing to swap, and the stub reads
 /// the kernel view at entry.
 pub fn program_gs(cpu_id: u32, kernel_stack_top: VirBytes) {
     // SAFETY: the GS area for this cpu is written before the CPU's own
     // MSRs point at it and before any entry path can run on this CPU
-    // (no CPL3 code before S-6/S-7) — single-writer by ordering.
+    // (no CPL3 code before the scheduler hands out user contexts) —
+    // single-writer by ordering.
     unsafe {
         let area = &mut GS_AREAS[cpu_id as usize];
         area.kernel_stack_top = kernel_stack_top.get();
@@ -685,7 +688,7 @@ pub fn program_gs(cpu_id: u32, kernel_stack_top: VirBytes) {
 
 /// Read this CPU's logical id from its GS area (`gs:0x10`).
 ///
-/// S-4 L2 acceptance helper: the AP proves its per-CPU identity by reading
+/// Per-CPU identity acceptance helper: the AP proves its per-CPU identity by reading
 /// back what `program_gs` wrote — the value travels through the CPU's own
 /// GS_BASE MSR, so a match means the MSR + area wiring works on that CPU.
 pub fn gs_cpu_id() -> u64 {
@@ -698,7 +701,7 @@ pub fn gs_cpu_id() -> u64 {
 }
 
 /// Write the four SYSCALL MSRs for the CURRENT CPU (STAR/LSTAR/SFMASK +
-/// EFER.SCE) — the per-CPU reprogramming half of S-4 §3.3: values the BSP
+/// EFER.SCE) — the per-CPU reprogramming half of the MSR contract: values the BSP
 /// wrote via `configure_syscall` do not propagate to APs, and an AP without
 /// them faults on its first `syscall`.
 ///
@@ -736,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_trap_frame_layout_frozen() {
-        // The asm pushes in exactly this order (S-8 build↔run contract).
+        // The asm pushes in exactly this order (build↔run contract).
         let base = core::mem::size_of::<u64>();
         assert_eq!(offset_of!(TrapFrame, rax), 0);
         assert_eq!(offset_of!(TrapFrame, r15), 14 * base);
@@ -780,7 +783,7 @@ mod tests {
 
     #[test]
     fn test_stub_bytes_errcode_normalization() {
-        // S-3d lesson: absolute byte-level contracts need byte pins. The
+        // Lesson from a live byte-level defect: absolute byte contracts need byte pins. The
         // no-errcode stubs must open with `push 0` (6A 00) before
         // `push <vector>` (6A imm8); the error-code stubs must NOT normalize.
         let stub0 = unsafe {
@@ -801,7 +804,7 @@ mod tests {
 
     #[test]
     fn test_syscall_entry_opens_with_swapgs() {
-        // v3 #11: the first swapgs in the kernel is the S-8 entry stub, and
+        // v3 #11: the first swapgs in the kernel is the SYSCALL entry stub, and
         // it must be the first instruction at LSTAR.
         let entry = unsafe {
             core::slice::from_raw_parts(&x86_syscall_entry as *const u8, 8)
@@ -901,7 +904,7 @@ mod save_frame_tests {
         assert_ne!(saved_psw(&ctx) & 0x0100, 0);
     }
 
-    /// NK4-C B21 regression guard: the IPC status lane is R10
+    /// Regression guard: the IPC status lane is R10
     /// (`gp_regs[GP_R10]`), not RBX. On a receive-trap return the kernel
     /// ORs the delivery's `IpcCall` bits into `gp_regs[GP_R10]`; the sync
     /// that feeds the stub's `pop r10` must copy *that* lane into the
@@ -948,8 +951,9 @@ mod save_frame_tests {
     }
 }
 
-/// Read back the saved RBX（callee-saved 存活钉——NK4-C Task C A 案防回归：
-/// IPC 状态迁 R10 后，RBX 不得再被状态写触碰）。同 [`ipc_return_code`] 形态。
+/// Read back the saved RBX (a callee-saved liveness pin — regression guard
+/// after the IPC status moved to R10: status writes must never touch RBX
+/// again). Same shape as [`ipc_return_code`].
 pub fn callee_saved_rbx(ctx: &super::boot::X86_64CpuContext) -> u64 {
     ctx.rbx
 }

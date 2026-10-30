@@ -96,7 +96,7 @@ impl ProcessTable {
         let idle_idx = (proc_nr::IDLE.0 as isize + NR_TASKS as isize) as usize;
         procs[idle_idx].p_endpoint = Endpoint::from_generation_slot(0, proc_nr::IDLE.0);
         procs[idle_idx].p_rts_flags = crate::proc::RtsFlags::with_raw_bits(PROC_STOP_BITS);
-        // D-65①: name = "idle0" — C `set_idle_name(name, cpu)` writes
+        // name = "idle0" — C `set_idle_name(name, cpu)` writes
         // "idle" + the decimal CPU number (proc.c:66-90), and the boot
         // image loop calls it with `i` (proc.c:157); single-CPU BSP is
         // "idle0". GET_PROC exports this name verbatim, so the C spelling
@@ -271,10 +271,11 @@ impl ProcessTable {
         let proc = self.get_mut(target_nr)
             .ok_or(crate::vm::VmCtlError::InvalidEndpoint)?;
         crate::vm::VmRequestHandler::memreq_reply(proc, result)?;
-        // C RTS_UNSET 的入队半：memreq_reply 清 VMREQUEST 后进程重新
-        // 可调度，但 primitive clear 不入队——漏掉则被挂起进程永远
-        // 不再被 pick（与 ForwardToVm 漏 enqueue_if_woken 同类，
-        // NK4-A C-3 迭代6，2026-09-22）。
+        // The enqueue half of C's RTS_UNSET: after memreq_reply clears
+        // VMREQUEST the process becomes runnable again, but a primitive
+        // clear does not enqueue — omitting this leaves the suspended
+        // process never picked again (the same class of bug as ForwardToVm
+        // omitting enqueue_if_woken).
         self.enqueue_if_woken(target_nr);
         Ok(())
     }
@@ -287,14 +288,14 @@ impl ProcessTable {
     /// Note: `VmRequestQueue` uses array indices internally, so we convert
     /// ProcNr to index before enqueuing.
     pub fn vm_enqueue(&mut self, proc_nr: ProcNr) -> bool {
-        // R-15 (2026-08-12): INVARIANT: `proc_nr` is a caller-validated ProcNr
+        // INVARIANT: `proc_nr` is a caller-validated ProcNr
         // resolved from the process table; `nr_to_idx` only returns None for
         // out-of-range slots, which cannot occur for an in-table ProcNr.
         let idx = nr_to_idx(proc_nr).expect("vm_enqueue: invalid ProcNr");
         self.vm_request_queue.enqueue(ProcNr(idx as i32), &mut self.procs)
     }
 
-    /// D-20: enqueue the suspended process into the global VM request
+    /// Enqueue the suspended process into the global VM request
     /// chain and, if the chain was empty (first requestor), send the
     /// SIGKMEM wake-up notification to the VM process from SYSTEM.
     ///
@@ -307,20 +308,24 @@ impl ProcessTable {
     ///
     /// The `send_sig(VM, SIGKMEM)` is split: the wake-up half is
     /// `mini_notify_core(SYSTEM→VM)` (works); the sigset half now encodes
-    /// SIGKMEM=71 into the 128-bit bitmap (SD-39) — VM discovers the
+    /// SIGKMEM=71 into the 128-bit bitmap — VM discovers the
     /// details via MEMREQ_GET, not the signal number.
     pub fn vm_enqueue_and_notify_vm(&mut self, nr: ProcNr, priv_table: &mut crate::kpriv::PrivTable) {
         let vm_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::VM_PROC_NR.0);
-        // C RTS_SET(RTS_VMREQUEST) 的出队半（proc.h:216-224；vm_suspend 置位
-        // 点 proc.c:245）：挂起进程必须同时离开就绪队列。缺此半则进程留在
-        // 队列被 spin-pick——调度器每次选中它、发现 VMREQUEST 未清又跳过，
-        // 高优先级进程独占 CPU 饿死 VM（真机 NK4-A C-3 c9a 轮：stage 3a
-        // 重派再挂起后 RS spin-pick 10.6 万次，VM 得不到 CPU 服务后续
-        // memreq，2026-09-22）。幂等：SYSCALL 停车臂等调用方此前的显式
-        // dequeue 与此重复无副作用。
+        // The dequeue half of C's RTS_SET(RTS_VMREQUEST) (proc.h:216-224;
+        // vm_suspend sets the bit at proc.c:245): a suspended process must
+        // also leave the ready queue. Without this half the process stays on
+        // the queue and is spin-picked — the scheduler selects it every
+        // time, sees VMREQUEST still set, and skips it, so a high-priority
+        // process monopolizes the CPU and starves the VM (on real hardware:
+        // after a stage 3a re-dispatch followed by another suspend, the
+        // scheduler spin-picked 106,000 times and the VM got no CPU to serve
+        // subsequent memreqs). Idempotent: an earlier explicit dequeue by
+        // callers such as the SYSCALL park leg makes the repeat here
+        // side-effect free.
         self.dequeue_if_blocked(nr);
         let was_empty = {
-            // R-15 (2026-09-07): INVARIANT: `nr` is a caller-validated ProcNr
+            // INVARIANT: `nr` is a caller-validated ProcNr
             // resolved from the process table (the just-suspended process);
             // `nr_to_idx` only returns None for out-of-range slots, which
             // cannot occur for an in-table ProcNr.
@@ -332,7 +337,7 @@ impl ProcessTable {
             // panic("send_sig failed")`. The wake-up notify is kernel-internal
             // (SYSTEM→VM); its failure means the VM slot is dead or the table
             // is inconsistent — a kernel integrity bug with no recovery path.
-            // R-15 (2026-09-07) audit: the previous `let _ =` silently
+            // Audit: the previous `let _ =` silently
             // swallowed this failure, diverging from C; tests exercising
             // this path must arrange the VM slot, exactly as the
             // `notify_scheduler` contract requires for the scheduler slot.
@@ -348,8 +353,9 @@ impl ProcessTable {
                     panic!("vm_enqueue_and_notify_vm: wake-up notify to VM failed: {e:?}");
                 }
             }
-            // NK4-A C-3 迭代8 取证：通知投递形态（1=Delivered VM 在收，
-            // 2=Blocked VM 忙——两者都靠下面的 enqueue 补队）。
+            // Delivery shape of the notification (1 = Delivered, the VM is
+            // receiving; 2 = Blocked, the VM is busy — both rely on the
+            // enqueue below to restore the queue entry).
             #[cfg(not(feature = "mock"))]
             {
                 let o: u8 = match notify_outcome {
@@ -358,11 +364,13 @@ impl ProcessTable {
                     crate::ipc::IpcOutcome::Error(_) => 3,
                 };
             }
-            // C mini_notify 尾部的入队半：notify 清 RTS_RECEIVING（primitive
-            // clear）后必须补 enqueue，否则 VM 可调度却永不在就绪队列——
-            // do_memory 不运行、RS 的 memreq 永不完成（NK4-A C-3 真机：
-            // sys-susp 后系统静默，2026-09-22；dequeue_if_blocked 文档
-            // 记录的对偶症状）。
+            // The enqueue half at the tail of C's mini_notify: after the
+            // notify clears RTS_RECEIVING (a primitive clear) the process
+            // must be enqueued again, or the VM is runnable yet never on the
+            // ready queue — do_memory never runs and the scheduler's memreq
+            // never completes (on real hardware: the system went silent
+            // after sys-susp; the dual symptom is recorded in
+            // dequeue_if_blocked's documentation).
             self.enqueue_if_woken(crate::proc::proc_nr::VM_PROC_NR);
         }
     }
@@ -467,7 +475,8 @@ impl ProcessTable {
     /// `== RTS_SLOT_FREE`) sees the freed slot and `fork` can reuse it.
     /// Reaching here with `rts_set` instead left `SLOT_FREE | NO_ENDPOINT`,
     /// which never equals `SLOT_FREE` — a semantic divergence from C that
-    /// stranded exited slots out of `is_empty` (§26 #8, doc-gen v3 复核).
+    /// stranded exited slots out of `is_empty` (§26 #8, doc-generation v3
+    /// recheck).
     pub fn rts_setflags(&mut self, nr: ProcNr, flags: RtsFlagsBits) {
         // C: dequeue first (only when the process is runnable and the new
         // value is nonzero), then overwrite the flags wholesale.
@@ -495,8 +504,8 @@ impl ProcessTable {
     /// If `nr` is now non-runnable but still linked into its CPU's run
     /// queue, remove it. Without this the blocked caller stays queued and
     /// the scheduler spin-picks it forever (observed on real machine:
-    /// 86k picks of a receiver parked in `RTS_RECEIVING`, test-sysboot
-    /// C-27 carrier).
+    /// 86k picks of a receiver parked in `RTS_RECEIVING`, the test-sysboot
+    /// witness).
     pub fn dequeue_if_blocked(&mut self, nr: ProcNr) {
         let runnable = self.get(nr).is_some_and(|p| p.is_runnable());
         if !runnable && self.is_in_scheduler(nr) {
@@ -518,7 +527,7 @@ impl ProcessTable {
     /// scheduling queues and the system idles with a runnable process
     /// (observed on real machine: a sender's sendrec completed its SEND
     /// half, the parked receiver was flagged runnable but never enqueued —
-    /// test-sysboot C-27 carrier).
+    /// test-sysboot witness).
     pub fn enqueue_if_woken(&mut self, nr: ProcNr) {
         let runnable = self.get(nr).is_some_and(|p| p.is_runnable());
         if runnable && !self.is_in_scheduler(nr) {
@@ -533,8 +542,8 @@ impl ProcessTable {
     ///
     /// Tests that drive a *real* scheduler-aware primitive against the
     /// shared global `PROC_TABLE` (e.g. `clock_irq_handler` expiring an
-    /// alarm, which now wakes its owner through the notify enqueue half —
-    /// NK4-C B6) legitimately leave a process on the run queue. Because
+    /// alarm, which now wakes its owner through the notify enqueue half)
+    /// legitimately leave a process on the run queue. Because
     /// the table is a `static` shared across the sequential test run
     /// (`--test-threads=1`), that residue pollutes any later test that
     /// assumes a clean queue. Popping by queue head (rather than scanning
@@ -563,8 +572,9 @@ impl ProcessTable {
             p.p_rts_flags.clear(flags);
         }
         let is_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
-        // NK4-C 1.9 取证探针（task1-close 裁决删除）：RS 的 rts_unset 全
-        // 轨迹——重点看跃迁 runnable 后 enqueue 是否发生、目标 CPU 是谁。
+        // Forensic probe for every scheduler rts_unset: the full trace,
+        // focusing on whether enqueue happens after the runnable transition
+        // and which CPU it targets. A task close ruled it deleted.
         #[cfg(not(feature = "mock"))]
         {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -636,7 +646,7 @@ impl ProcessTable {
     /// 2. Notify PM via `cause_sig(proc_nr(rp), SIGSNDELAY)` (system.c:463)
     ///    so it can re-attempt the stop, which now succeeds immediately.
     ///
-    /// # Signal number on the GETKSIG map (SD-39)
+    /// # Signal number on the GETKSIG map
     ///
     /// `SIGSNDELAY` = 70 rides the GETKSIG map like any other signal:
     /// `SigSet` is a 128-bit bitmap matching C's `sigset_t` (4×u32,
@@ -766,12 +776,12 @@ impl ProcessTable {
     /// table through their own parameter — the two references never use
     /// the same bytes for the same field at the same time, matching C.
     ///
-    /// This is THE single audited escape for that laundering (edge1 K7):
+    /// This is THE single audited escape for that laundering:
     /// every new entry body must route through here instead of re-deriving
     /// its own raw-pointer split, so the aliasing contract has exactly one
     /// home. The full disjoint-API refactor (caller-by-nr through the
     /// ~139 `caller: &mut KProcess` signatures in the syscall layer) is a
-    /// separate architecture campaign — registered as edge1 K20.
+    /// separate architecture campaign.
     ///
     /// # Safety
     ///
@@ -853,9 +863,9 @@ impl ProcessTable {
     /// before the BKL exists) and runtime (the `rts_unset` syscall/signal
     /// sites and the scheduler-loop requeue hold the BKL); its safety
     /// contract covers exactly these two. With `SMP_STATE` not yet
-    /// installed (early boot, unit tests) or `proc_ptr` still `None`
-    /// (pre-S-6) there is no running process to preempt and the check is
-    /// skipped — the behavior this branch had while it was dead.
+    /// installed (early boot, unit tests) or `proc_ptr` still `None`,
+    /// there is no running process to preempt and the check is skipped —
+    /// the behavior this branch had while it was dead.
     pub fn sched_enqueue(&mut self, nr: ProcNr, cpu_id: CpuId) {
         // C proc.c:1633 — per-CPU anchor read; C takes no lock for it
         // either, and the anchor itself is the dispatch identity.
@@ -864,7 +874,7 @@ impl ProcessTable {
             .and_then(|l| l.proc_ptr);
         // C proc.c:1638 — the gate is the CURRENT process's PREEMPTIBLE
         // privilege flag. `current` is `Some` only once the scheduler
-        // hands out contexts (post-S-6), where every enqueue path runs
+        // hands out contexts, where every enqueue path runs
         // under the BKL; [`crate::priv_table`] is the matching
         // dual-context accessor.
         let current_preemptible =
@@ -898,14 +908,14 @@ impl ProcessTable {
         {
             let procs = &mut self.procs;
             // Clear p_nextready of enqueued process
-            // R-15 (2026-08-12): INVARIANT: `nr` is a caller-validated ProcNr
+            // INVARIANT: `nr` is a caller-validated ProcNr
             // already resolved from the table; `nr_to_idx` cannot fail.
             let nr_idx = nr_to_idx(nr).unwrap();
             procs[nr_idx].p_nextready.store(NONE_PROC_NR, Ordering::Relaxed);
 
             // Link old tail to new process
             if let Some(tail_nr) = info.old_tail {
-                // R-15 (2026-08-12): INVARIANT: `tail_nr` came from
+                // INVARIANT: `tail_nr` came from
                 // `enqueue_queue_tail`, which only returns ProcNrs already
                 // present in the table; `nr_to_idx` cannot fail.
                 let tail_idx = nr_to_idx(tail_nr).unwrap();
@@ -926,7 +936,7 @@ impl ProcessTable {
         // self-preemption (equal queue → not greater).
         if let Some((cur_nr, cur_preemptible)) = current {
             let (cur_prio, cur_cpu) = {
-                // R-15 (2026-08-12): INVARIANT: `cur_nr` is the currently-running
+                // INVARIANT: `cur_nr` is the currently-running
                 // process passed by the caller; it must be a valid in-table ProcNr,
                 // so `get()` cannot return None.
                 let cur = self.get(cur_nr).expect("sched_enqueue: invalid current nr");
@@ -944,11 +954,11 @@ impl ProcessTable {
         // Phase 4: record enter_queue for the enqueued process
         // Design decision §3.6: fix Minix3 bug
         let tsc = read_tsc();
-        // R-15 (2026-08-12): INVARIANT: `nr` was just enqueued above, so its
+        // INVARIANT: `nr` was just enqueued above, so its
         // slot exists in `self.procs`; `get_mut()` cannot return None.
         self.get_mut(nr).unwrap().p_accounting.record_enqueue(tsc);
 
-        // U-2 / C proc.c:1657: `#if DEBUG_SANITYCHECKS
+        // C proc.c:1657: `#if DEBUG_SANITYCHECKS
         // assert(runqueues_ok_local())`. runqueues_ok_local() ==
         // runqueues_ok_cpu(cpuid) (proto.h:138) — the CURRENT cpu. Under the
         // BKL + clamp_cpu_to_bsp design this enqueue runs on the owning cpu,
@@ -978,7 +988,7 @@ impl ProcessTable {
 
         // Phase 2: update process fields
         {
-            // R-15 (2026-08-12): INVARIANT: `nr` is a caller-validated ProcNr
+            // INVARIANT: `nr` is a caller-validated ProcNr
             // resolved from the table; `nr_to_idx` cannot fail.
             let nr_idx = nr_to_idx(nr).unwrap();
             let old_head_val = old_head.map(|nr| nr.0).unwrap_or(NONE_PROC_NR);
@@ -987,14 +997,14 @@ impl ProcessTable {
 
         // Phase 3: accounting (dequeues--, preempted++)
         let tsc = read_tsc();
-        // R-15 (2026-08-12): INVARIANT: `nr` was just enqueued via
+        // INVARIANT: `nr` was just enqueued via
         // `enqueue_queue_head`, so its slot exists; `get_mut()` cannot return None.
         let acc = &mut self.get_mut(nr).unwrap().p_accounting;
         acc.record_enqueue(tsc);
         acc.dequeues.fetch_sub(1, Ordering::AcqRel);
         acc.preempted.fetch_add(1, Ordering::AcqRel);
 
-        // U-2 / C proc.c:1709 (enqueue_head tail): assert(runqueues_ok_local()).
+        // C proc.c:1709 (enqueue_head tail): assert(runqueues_ok_local()).
         #[cfg(all(feature = "sanity-checks", not(test)))]
         if let Some(smp) = unsafe { crate::try_smp_state() } {
             assert!(
@@ -1022,20 +1032,20 @@ impl ProcessTable {
 
         // Phase 2: accounting
         let tsc = read_tsc();
-        // R-15 (2026-08-12): INVARIANT: `nr` was validated by the caller and is
+        // INVARIANT: `nr` was validated by the caller and is
         // present in the table (dequeue only operates on existing processes);
         // `get_mut()` cannot return None.
         let acc = &mut self.get_mut(nr).unwrap().p_accounting;
         acc.record_dequeue(tsc);
 
-        // R-15 (2026-08-12): INVARIANT: same as above — `nr` is an in-table
+        // INVARIANT: same as above — `nr` is an in-table
         // ProcNr; `get_mut()` cannot return None.
         self.get_mut(nr).unwrap().p_dequeued.store(
             get_monotonic(),
             Ordering::Release,
         );
 
-        // U-2 / C proc.c:1778 (dequeue tail): assert(runqueues_ok_local()).
+        // C proc.c:1778 (dequeue tail): assert(runqueues_ok_local()).
         #[cfg(all(feature = "sanity-checks", not(test)))]
         if let Some(smp) = unsafe { crate::try_smp_state() } {
             assert!(
@@ -1071,7 +1081,7 @@ impl ProcessTable {
         section: &crate::smp::BklSection<'_>,
     ) {
         let (kernel_scheduled, quantum_ms) = {
-            // R-15 (2026-08-12): INVARIANT: `nr` is a runnable process that
+            // INVARIANT: `nr` is a runnable process that
             // exhausted its quantum, so it must be in the table; `get()` cannot
             // return None.
             let p = self.get(nr).expect("sched_proc_no_time: invalid proc nr");
@@ -1092,7 +1102,7 @@ impl ProcessTable {
         } else {
             // Kernel-scheduled or non-preemptible: reset quantum
             let cpu_time = ms_to_cpu_time(quantum_ms);
-            // R-15 (2026-08-12): INVARIANT: `nr` was just read above in the same
+            // INVARIANT: `nr` was just read above in the same
             // function and is in the table; `get_mut()` cannot return None.
             self.get_mut(nr)
                 .unwrap()
@@ -1131,7 +1141,7 @@ impl ProcessTable {
         // Phase 1: resolve scheduler + read accounting (immutable borrow).
         let (scheduler_nr, scheduler_ep, acnt_queue, acnt_deqs, acnt_ipc_sync,
              acnt_ipc_async, acnt_preempt) = {
-            // R-15 (2026-08-12): INVARIANT: `nr` is a process that exhausted its
+            // INVARIANT: `nr` is a process that exhausted its
             // quantum (caller is `sched_proc_no_time`); it is in the table, so
             // `get()` cannot return None.
             let p = self.get(nr).expect("notify_scheduler: invalid proc nr");
@@ -1179,7 +1189,7 @@ impl ProcessTable {
         // Phase 3: reset accounting (C: `reset_proc_accounting(p)` — proc.c:1885).
         // C: proc.c:1912-1917.
         {
-            // R-15 (2026-08-12): INVARIANT: `nr` was resolved in Phase 1 above
+            // INVARIANT: `nr` was resolved in Phase 1 above
             // and is in the table; `get_mut()` cannot return None.
             let p = self.get_mut(nr).expect("notify_scheduler: invalid proc nr");
             p.p_accounting.reset();
@@ -1192,7 +1202,7 @@ impl ProcessTable {
         // `m_source` is set to the depleted process's endpoint inside
         // `IpcEngine::send` (it overwrites `m_source` with `caller_endpoint`).
         let _ = scheduler_nr; // resolved to scheduler_ep above; nr is the caller
-        // D-16: wire the global IPC filter pool (BKL held by
+        // Wire the global IPC filter pool (BKL held by
         // process_misc_flags contract — SAFETY per raw accessor doc).
         let mut engine = IpcEngine::new(
             self.procs_slice_mut(),
@@ -1201,7 +1211,7 @@ impl ProcessTable {
             crate::priv_table_with(section),
             &KernelUserCopy,
         )
-        // D-16: wire the global IPC filter pool (BKL held — same proof).
+        // Wire the global IPC filter pool (BKL held — same proof).
         .with_filter_pool(crate::ipc_filter_pool_with(section));
         let outcome = engine.send(nr, scheduler_ep, &msg, SendFlags::FROM_KERNEL);
 
@@ -1211,7 +1221,7 @@ impl ProcessTable {
         match outcome {
             IpcOutcome::Delivered | IpcOutcome::Blocked => {}
             IpcOutcome::Error(e) => {
-                // R-15 (2026-08-12): INVARIANT: `mini_send` with `FROM_KERNEL`
+                // INVARIANT: `mini_send` with `FROM_KERNEL`
                 // can only fail if the scheduler endpoint is dead or the kernel
                 // process table is inconsistent. Both are kernel integrity bugs
                 // with no recovery path, matching C's `panic()` in proc.c:1890.
@@ -1230,28 +1240,29 @@ impl Default for ProcessTable {
 // ── 10-switch-to-user methods ──
 
 impl ProcessTable {
-    /// 处理进程的 misc 标志。
+    /// Handle a process's misc flags.
     ///
-    /// C: check_misc_flags 循环 — proc.c:351-415
+    /// C: the check_misc_flags loop — proc.c:351-415
     ///
-    /// 返回 true 表示进程仍可运行，false 表示不可运行（需重新选择）。
+    /// Returns true if the process is still runnable, false if it is not
+    /// (the caller must re-pick).
     ///
     /// # C semantic alignment
     ///
     /// In C, each branch calls a handler function (kernel_call_resume,
     /// delivermsg, arch_do_syscall) which clears the corresponding flag.
     /// In Rust:
-    /// - `DELIVERMSG` (FIX-20): wired to `crate::ipc::delivermsg`; its
+    /// - `DELIVERMSG`: wired to `crate::ipc::delivermsg`; its
     ///   `Segfault` outcome routes to `cause_signal(SIGSEGV)` here
-    ///   (D-45) — the signal is raised in-loop, matching C proc.c:278
-    /// - `KCALL_RESUME` (FIX-21): wired to `crate::vm::kernel_call_resume`
+    ///   — the signal is raised in-loop, matching C proc.c:278
+    /// - `KCALL_RESUME`: wired to `crate::vm::kernel_call_resume`
     ///   (simple version — clears flag + reads VM result; full re-dispatch
     ///   is done by `switch_to_user` which has access to priv_table +
     ///   clock_state + proc_table)
-    /// - `SC_DEFER` (FIX-21): wired to `self.arch_do_syscall()`
-    /// - `SC_TRACE` / `SC_ACTIVE` (D-43): SIGTRAP wired to
+    /// - `SC_DEFER`: wired to `self.arch_do_syscall()`
+    /// - `SC_TRACE` / `SC_ACTIVE`: SIGTRAP wired to
     ///   `cause_signal` (proc.c:398); `PageFault` still routes to
-    ///   nothing (D-44, blocked on the D-20 VM notification chain)
+    ///   nothing (deferred, blocked on the VM notification chain)
     pub fn process_misc_flags(
         &mut self,
         nr: ProcNr,
@@ -1270,17 +1281,17 @@ impl ProcessTable {
                 break;
             }
 
-            // 按优先级处理（与 C 的 if-else chain 一致）
+            // Handle in priority order (matching C's if-else chain).
             if flags.contains(MiscFlagsBits::KCALL_RESUME) {
                 // C: kernel_call_resume(p) — system.c:612-638.
-                // FIX-21 (Phase 1C): wired to crate::vm::kernel_call_resume
+                // Wired to crate::vm::kernel_call_resume
                 // (simple version — reads VM result + clears MF_KCALL_RESUME).
                 // The full re-dispatch (syscall::kernel_call_resume) is
                 // deferred to switch_to_user which has priv_table +
                 // clock_state + proc_table access. This split is a Rust
                 // design deviation from C (documented in 10-switch-to-user.md
                 // §4.2), caused by Rust's borrow checker: process_misc_flags
-                // holds &mut self — with K20 (caller-by-nr) the resume now
+                // holds &mut self — with caller-by-nr the resume now
                 // takes (nr, &mut table) and re-borrows the slot itself, so
                 // the old "cannot pass self as proc_table" limitation is gone.
                 if self.get(nr).is_none() {
@@ -1294,9 +1305,12 @@ impl ProcessTable {
                 // path sets vmresult; the kernel_call_resume in C sends
                 // SIGSEGV when VM cannot resolve the fault.
                 if result == crate::vm::VmCheckResult::Fault {
-                    // 续-191 取证探针 P3b（riscv64·SIGSEGV 消费腿 pmf 兜底）：
-                    // 若 VM 死在此而非 stage 3a，即两消费腿竞争——现场打
-                    // nr/ep/pdmv/root 供对账。C-61 前不滚，task-close 删。
+                    // Forensic probe on the riscv64 SIGSEGV consumption leg
+                    // (process_misc_flags fallback): if the VM dies here
+                    // rather than at stage 3a, the two consumption legs are
+                    // racing — dump nr/ep/pdmv/root for reconciliation. Not
+                    // to be removed until the corresponding C-side fix;
+                    // deleted at task close.
                     #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
                     {
                         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -1319,7 +1333,7 @@ impl ProcessTable {
                 // C: delivermsg(p) — proc.c:263-294. Clears MF_DELIVERMSG
                 // on success or fatal failure; sets MF_MSGFAILED on first
                 // page fault (caller routes to vm_suspend).
-                // FIX-20 (Phase 1B): wired to crate::ipc::delivermsg.
+                // Wired to crate::ipc::delivermsg.
                 let result = match self.get_mut(nr) {
                     Some(p) => crate::ipc::delivermsg(p, user_copy),
                     None => break,
@@ -1330,10 +1344,10 @@ impl ProcessTable {
                         // process remaining flags.
                     }
                     crate::ipc::DeliverResult::PageFault => {
-                        // D-44: first page fault → route to
+                        // First page fault → route to
                         // vm_suspend(VMS_PAGEFAULT) (C proc.c:281-282).
                         // Blocks the process until VM resolves the fault;
-                        // the D-20 enqueue+notify chain (wired below) wakes
+                        // the enqueue+notify chain (wired below) wakes
                         // VM so it can process the request.
                         let msg_size = core::mem::size_of::<minix_types::Message>();
                         let target_ep = self.get(nr).map(|p| p.p_delivermsg_vir);
@@ -1342,7 +1356,7 @@ impl ProcessTable {
                             0, crate::proc::proc_nr::CLOCK.0,
                         );
                         let _ = clock_ep;
-                        // R-15 (2026-09-07): INVARIANT: `nr` is the process
+                        // INVARIANT: `nr` is the process
                         // being dispatched (`process_misc_flags` is called
                         // with the picked/current process's nr, resolved
                         // from the table by the scheduler loop), so its slot
@@ -1350,10 +1364,12 @@ impl ProcessTable {
                         // preceding `self.get(nr)` read at the loop top
                         // proves the slot is present.
                         let r = self.get_mut(nr).unwrap();
-                        // c40 探针（task1-close 裁决删除）：DeliverMsg 挂起
-                        // 时 start(pdmv)==0 且接收者是 INIT（ep 0xb）即现形，
-                        // 打全量现场（gf/to/rpv）——与 pdmv-set krn-i 双向夹住
-                        // 「谁把 INIT pdmv 清 0」。
+                        // Probe: DeliverMsg suspension with start(pdmv) == 0
+                        // and the receiver being INIT (ep 0xb) is the
+                        // smoking gun; dump the full context (gf/to/rpv) —
+                        // together with the pdmv-set kernel-i trace this
+                        // brackets "who cleared INIT's pdmv to 0". A task
+                        // close ruled it deleted.
                         #[cfg(not(feature = "mock"))]
                         #[cfg(target_arch = "x86_64")]
                         if r.p_delivermsg_vir.0 == 0 {
@@ -1381,7 +1397,7 @@ impl ProcessTable {
                             },
                             None,
                         );
-                        // D-20: enqueue into global VM request chain +
+                        // Enqueue into global VM request chain +
                         // wake VM (mini_notify SYSTEM→VM).
                         self.vm_enqueue_and_notify_vm(
                             nr,
@@ -1389,12 +1405,12 @@ impl ProcessTable {
                         );
                     }
                     crate::ipc::DeliverResult::Segfault => {
-                        // D-45: second consecutive fault or out-of-bounds —
+                        // Second consecutive fault or out-of-bounds —
                         // delivermsg cleared MF_DELIVERMSG; the receiver gets
                         // SIGSEGV. C calls `cause_sig(rp->p_nr, SIGSEGV)`
                         // inside delivermsg (proc.c:278); the Rust routing
                         // lives here at the consumer because `ipc::delivermsg`
-                        // deliberately holds no table access (FIX-20 extraction
+                        // deliberately holds no table access (extraction
                         // contract: `&mut KProcess` + `&dyn UserCopy` only).
                         // cause_signal's external path sets RTS_SIGNALED |
                         // RTS_SIG_PENDING, so the runnability re-check below
@@ -1432,7 +1448,7 @@ impl ProcessTable {
                 }
             } else if flags.contains(MiscFlagsBits::SC_DEFER) {
                 // C: arch_do_syscall(p) — arch_system.c:485 (i386) / 141 (earm)
-                // FIX-21 (Phase 1C): wired to self.arch_do_syscall().
+                // Wired to self.arch_do_syscall().
                 // arch_do_syscall clears MF_SC_DEFER + re-dispatches IPC.
                 let _ = self.arch_do_syscall(nr, priv_table);
                 // C: proc.c:379-381 — if (MF_SIG_DELAY) && !RTS_SENDING →
@@ -1454,7 +1470,7 @@ impl ProcessTable {
                 if !flags.contains(MiscFlagsBits::SC_ACTIVE) {
                     break;
                 }
-                // D-43: C clears both MF_SC_TRACE and MF_SC_ACTIVE, then
+                // C clears both MF_SC_TRACE and MF_SC_ACTIVE, then
                 // raises SIGTRAP to stop the process for its tracer
                 // (proc.c:392-398). No `break` after the signal: C falls
                 // through to the runnability re-check (proc.c:413). An
@@ -1474,7 +1490,7 @@ impl ProcessTable {
                 break;
             }
 
-            // 检查进程是否仍可运行
+            // Check whether the process is still runnable.
             if !self.get(nr).is_some_and(|p| p.is_runnable()) {
                 return false;
             }
@@ -1553,19 +1569,19 @@ impl ProcessTable {
             ..Default::default()
         };
 
-        // Dispatch IPC. FIX-21 (Phase 1C) avoided split-borrow aliasing by
-        // passing self.procs + caller_idx; since D-13 (2026-09-05) dispatch_ipc
+        // Dispatch IPC. The earlier split-borrow workaround passed
+        // self.procs + caller_idx; dispatch_ipc
         // takes `&mut ProcessTable` (to run the scheduler-aware sig_delay_done),
         // we pass `self` directly — no aliasing because caller access is by index.
         crate::syscall::dispatch_ipc(self, caller_idx, &msg, priv_table, ipc_call)
     }
 
-    /// 检查进程时间片并处理。
+    /// Check the process's time quantum and handle expiry.
     ///
     /// C: proc.c:418-424
-    /// 如果进程无剩余时间片，调用 sched_proc_no_time。
+    /// When the process has no time left, call sched_proc_no_time.
     ///
-    /// 返回 true 表示进程仍可运行，false 表示不可运行。
+    /// Returns true if the process is still runnable, false if it is not.
     pub fn check_quantum(
         &mut self,
         nr: ProcNr,
@@ -1599,7 +1615,7 @@ impl ProcessTable {
 /// C: `proc_addr(n)` returns `&proc[NR_TASKS + n]` — but Rust returns
 /// `Option<usize>` for bounds safety (06-proc-init-boot-proc.md §3.1).
 ///
-/// FIX-21 (Phase 1C): made `pub(crate)` so `syscall::dispatch_ipc_entry`
+/// Made `pub(crate)` so `syscall::dispatch_ipc_entry`
 /// and `syscall::dispatch_ipc` can compute caller_idx without taking a
 /// `&mut KProcess` parameter (avoids split-borrow aliasing).
 pub(crate) const fn nr_to_idx(nr: ProcNr) -> Option<usize> {
@@ -1619,8 +1635,9 @@ fn read_tsc() -> u64 {
 /// Get monotonic uptime via clock subsystem.
 /// C: `get_monotonic()` — clock.c:202.
 fn get_monotonic() -> u64 {
-    // I-15 单源：直读 ClockState（镜像原子已删除）。生产调用方持 BKL；
-    // hosted 测试单线程——直读无竞态。
+    // Single source: read ClockState directly (the mirror atomics are gone).
+    // Production callers hold the BKL; hosted tests are single-threaded, so
+    // the direct read is race-free.
     unsafe { crate::clock_state_boot_unchecked() }.uptime()
 }
 
@@ -1660,8 +1677,8 @@ mod tests {
 
     #[test]
     fn test_process_table_const_init_idle_name() {
-        // IDLE slot's name must be "idle0" (D-65①: C `set_idle_name`
-        // parity — "idle" + the decimal CPU number, proc.c:66-90; the
+        // IDLE slot's name must be "idle0" (C `set_idle_name` parity —
+        // "idle" + the decimal CPU number, proc.c:66-90; the
         // const fn from_array sets it).
         let table = crate::test_helpers::test_proc_table();
         let idle = table.get(proc_nr::IDLE).unwrap();
@@ -1677,7 +1694,7 @@ mod tests {
         assert!(idle.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
     }
 
-    /// K6-v2 tick-path gate (the function the 0xF1 LAPIC arm calls):
+    /// Tick-path gate (the function the 0xF1 LAPIC arm calls):
     /// a process with quantum left must be left untouched — the gate is a
     /// pure read, it must NOT delegate to sched_proc_no_time.
     #[test]
@@ -1703,7 +1720,7 @@ mod tests {
         assert!(!p.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
     }
 
-    /// K6-v2 tick-path gate, exhausted half: zero time left must delegate
+    /// Tick-path gate, exhausted half: zero time left must delegate
     /// to `sched_proc_no_time`. Kernel-scheduled process → the renewal
     /// branch (cpu_time_left refilled from size_ms, no NO_QUANTUM); the
     /// delegation is proven by the refill itself (the gate never writes
@@ -2311,8 +2328,8 @@ mod tests {
         assert!(table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
     }
 
-    /// Test: process_misc_flags KCALL_RESUME branch calls `vm::kernel_call_resume`
-    /// (FIX-21, Phase 1C). With a Completed VmSuspendState, MF_KCALL_RESUME
+    /// Test: process_misc_flags KCALL_RESUME branch calls `vm::kernel_call_resume`.
+    /// With a Completed VmSuspendState, MF_KCALL_RESUME
     /// is cleared and the process stays runnable.
     #[test]
     fn test_process_misc_flags_clears_kcall_resume() {
@@ -2323,7 +2340,7 @@ mod tests {
             let proc = table.get_mut(nr).unwrap();
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
             // Set up a Completed VmSuspendContext so vm::kernel_call_resume
-            // can read the result (FIX-21). Use suspend_for_vm then advance
+            // can read the result. Use suspend_for_vm then advance
             // to Completed state (matching vm.rs test pattern).
             proc.suspend_for_vm(
                 crate::vm::VmSuspendType::KernelCall,
@@ -2347,8 +2364,8 @@ mod tests {
         assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
     }
 
-    /// Test: process_misc_flags DELIVERMSG branch calls `ipc::delivermsg`
-    /// (FIX-20, Phase 1B). With `KernelUserCopy` (no-op stub returning
+    /// Test: process_misc_flags DELIVERMSG branch calls `ipc::delivermsg`.
+    /// With `KernelUserCopy` (no-op stub returning
     /// `Ok(())`), the message is "delivered" successfully and
     /// `MF_DELIVERMSG` is cleared.
     #[test]
@@ -2368,12 +2385,12 @@ mod tests {
         assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::MSGFAILED));
     }
 
-    /// Test: process_misc_flags SC_DEFER branch calls `arch_do_syscall`
-    /// (FIX-21, Phase 1C). With p_defer.r1 = SEND(1) and a valid destination,
+    /// Test: process_misc_flags SC_DEFER branch calls `arch_do_syscall`.
+    /// With p_defer.r1 = SEND(1) and a valid destination,
     /// MF_SC_DEFER is cleared and IPC is dispatched.
     #[test]
     fn test_process_misc_flags_clears_sc_defer() {
-        // D-63②: the exercised path reaches A1 chain roots
+        // The exercised path reaches A1 chain roots
         // (`notify_scheduler`) whose `assume_held` asserts the BKL — hold
         // it via RAII (drops unlocked at test end).
         let _bkl = {
@@ -2408,7 +2425,7 @@ mod tests {
             proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
             // Make the process unrunnable by setting SENDing.
             proc.p_rts_flags.set(RtsFlagsBits::SENDING);
-            // Set up Completed state for vm::kernel_call_resume (FIX-21).
+            // Set up Completed state for vm::kernel_call_resume.
             proc.suspend_for_vm(
                 crate::vm::VmSuspendType::KernelCall,
                 minix_types::Endpoint::from_generation_slot(1, 99),
@@ -2427,14 +2444,14 @@ mod tests {
         assert!(!table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
     }
 
-    // ── sig_delay_done tests (D-13: PM stop-delay end, system.c:454-464) ──
+    // ── sig_delay_done tests (PM stop-delay end, system.c:454-464) ──
 
     /// C: system.c:461-463 — `sig_delay_done` clears `MF_SIG_DELAY` and
     /// causes `SIGSNDELAY` to the process (external path: `RTS_SIGNALED` +
     /// notify the signal manager).
     ///
     /// Note: `SIGSNDELAY` = 70 is a *system* signal outside `_NSIG = 64`;
-    /// since SD-39 the `SigSet` bitmap is the C `sigset_t` 128 bits, so
+    /// since the `SigSet` bitmap is the C `sigset_t` 128 bits, so
     /// `add(70)` encodes word-2 bit 6 (unchecked `__sigaddset` under
     /// `_SYSTEM`, sigtypes.h:71) — same as `SIGKSIG`/`SIGKSIGSM`. What this
     /// test pins is the wakeup protocol: `RTS_SIGNALED` +
@@ -2487,7 +2504,7 @@ mod tests {
     /// non-runnable — the scheduler must pick another process (C: proc.c:413).
     #[test]
     fn test_process_misc_flags_sc_defer_ends_sig_delay() {
-        // D-63②: hold the BKL via RAII for the `assume_held` chain roots
+        // Hold the BKL via RAII for the `assume_held` chain roots
         // (same reason as test_process_misc_flags_clears_sc_defer).
         let _bkl = {
             crate::smp::bkl_lock_reset_for_test();
@@ -2527,7 +2544,7 @@ mod tests {
         assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SC_DEFER));
         assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
         // SIGSNDELAY delivery (wakeup): SIGNALED → non-runnable → false.
-        // (bit 70 encodable since SD-39's 128-bit SigSet, see sig_delay_done test.)
+        // (bit 70 encodable since the 128-bit SigSet, see sig_delay_done test.)
         assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
         // Manager notified.
         assert!(table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
@@ -2539,7 +2556,7 @@ mod tests {
     /// when the message is finally taken by the receiver.
     #[test]
     fn test_process_misc_flags_sc_defer_blocked_in_send_keeps_sig_delay() {
-        // D-63②: hold the BKL via RAII for the `assume_held` chain roots
+        // Hold the BKL via RAII for the `assume_held` chain roots
         // (same reason as test_process_misc_flags_clears_sc_defer).
         let _bkl = {
             crate::smp::bkl_lock_reset_for_test();
@@ -2583,7 +2600,7 @@ mod tests {
         assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
     }
 
-    // ── D-43 / D-45: cause_sig routing inside process_misc_flags ──
+    // ── cause_sig routing inside process_misc_flags ──
 
     /// UserCopy stub whose `copy_msg_to_user` always reports an
     /// out-of-bounds user pointer. `ipc::delivermsg` maps that to the
@@ -2625,7 +2642,7 @@ mod tests {
     }
 
     /// UserCopy stub whose `copy_msg_to_user` always reports a page
-    /// fault — the retryable first-failure class (D-44's vm_suspend
+    /// fault — the retryable first-failure class (vm_suspend
     /// routing, still deferred).
     struct PageFaultCopy;
     impl crate::ipc::UserCopy for PageFaultCopy {
@@ -2705,7 +2722,7 @@ mod tests {
         priv_table.get_mut(1).unwrap().identity.s_proc_nr = Some(manager_nr);
     }
 
-    /// D-45: a receiver whose message buffer is unusable (OutOfBounds →
+    /// A receiver whose message buffer is unusable (OutOfBounds →
     /// fatal Segfault on first attempt) must be hit with SIGSEGV through
     /// the standard kernel signal closed loop, and the scheduler must be
     /// told to re-pick (return false). C: delivermsg → cause_sig(SIGSEGV)
@@ -2735,12 +2752,13 @@ mod tests {
         assert!(table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
     }
 
-    /// D-45 boundary (D-44 stays deferred): the FIRST page fault must not
+    /// Boundary case (first-fault routing stays deferred): the FIRST page
+    /// fault must not
     /// raise a signal — MF_MSGFAILED is armed, MF_DELIVERMSG survives for
     /// the retry, and the process stays schedulable (`true`) because
     /// vm_suspend(VMS_PAGEFAULT) is not wired yet. C blocks the process
-    /// here via vm_suspend (proc.c:281-282); the Rust gap is tracked as
-    /// todo D-44 and must not silently escalate to SIGSEGV.
+    /// here via vm_suspend (proc.c:281-282); the Rust gap is tracked as a
+    /// pending work item and must not silently escalate to SIGSEGV.
     #[test]
     fn test_process_misc_flags_delivermsg_first_fault_no_signal() {
         let mut table = crate::test_helpers::test_proc_table();
@@ -2750,7 +2768,7 @@ mod tests {
         setup_signaled_process(&mut table, &mut priv_table, nr, manager_nr);
         table.get_mut(nr).unwrap().p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
 
-        // D-44 wired: first fault now routes to vm_suspend(DeliverMsg) →
+        // First fault now routes to vm_suspend(DeliverMsg) →
         // RTS_VMREQUEST set → process blocked (returns false) → scheduler
         // re-picks. No signal raised (that's the Segfault arm, not this).
         assert!(!table.process_misc_flags(nr, &PageFaultCopy, &mut priv_table));
@@ -2763,12 +2781,12 @@ mod tests {
             crate::vm::VmSuspendType::DeliverMsg
         );
         assert!(proc.p_misc_flags.is_set(MiscFlagsBits::MSGFAILED));
-        // No signal on first fault — that's D-45/D-47 territory.
+        // No signal on first fault — that is the deferred boundary.
         assert!(proc.p_pending.is_empty());
         assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
     }
 
-    /// D-43: SC_TRACE + SC_ACTIVE (leaving a syscall under trace) must
+    /// SC_TRACE + SC_ACTIVE (leaving a syscall under trace) must
     /// raise SIGTRAP, clear both flags, and report the process as
     /// non-runnable. C: proc.c:392-398 — `cause_sig(proc_nr(p), SIGTRAP)`
     /// blocks the traced process until its manager harvests it.
@@ -2793,7 +2811,7 @@ mod tests {
         assert!(table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
     }
 
-    /// D-43 negative branch: SC_TRACE without SC_ACTIVE means "not
+    /// Negative branch: SC_TRACE without SC_ACTIVE means "not
     /// leaving a syscall" — C breaks out of the loop without signalling
     /// (proc.c:389-390). Flags survive for a later pass and the process
     /// stays runnable.

@@ -1,9 +1,10 @@
-//! Test: topology discovery pin (SMP bring-up S-2, ladder L1) — x86_64/MADT.
+//! Test: topology discovery pin — x86_64/MADT.
 //!
-//! Pins the D-36 upper half under real QEMU `-smp 4`: the UEFI configuration
-//! table hands us the RSDP, `parse_by_kind` walks XSDT → MADT, and the
-//! resulting `CpuTopology` must describe exactly the CPUs QEMU exposed —
-//! four of them, unique APIC IDs, BSP among the discovered set.
+//! Pins the upper half of topology discovery under real QEMU `-smp 4`:
+//! the UEFI configuration table hands us the RSDP, `parse_by_kind` walks
+//! XSDT → MADT, and the resulting `CpuTopology` must describe exactly the
+//! CPUs QEMU exposed — four of them, unique APIC IDs, BSP among the
+//! discovered set.
 //!
 //! Contract vs. observation: `nr_cpus == 4`, ID uniqueness and BSP membership
 //! are the test contract. The concrete APIC ID values (QEMU default {0,1,2,3})

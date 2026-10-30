@@ -130,7 +130,8 @@ pub trait FpuArch: Sized + Send + Sync + Default {
     /// Returns `true` after `init()` has been called successfully.
     /// Used by the kernel to set `CpuLocal::fpu_presence`.
     ///
-    /// C: `is_fpu()` — main.c:518（fpu_init 写入每 CPU fpu_presence，cpulocals.h:72）
+    /// C: `is_fpu()` — main.c:518 (fpu_init writes the per-CPU fpu_presence,
+    /// cpulocals.h:72)
     fn is_present(&self) -> bool;
 }
 

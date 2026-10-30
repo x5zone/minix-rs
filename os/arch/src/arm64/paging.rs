@@ -60,7 +60,7 @@ bitflags::bitflags! {
         /// L3 and the MMU takes a translation fault at level 3 on it.
         const PAGE  = 1 << 1;
         // AP[2:1] live at bits [7:6] (ARM ARM D8.3.1, stage-1 4 KiB page
-        // descriptor); bit 5 is NS, NOT an AP bit. The pre-K12b values
+        // descriptor); bit 5 is NS, NOT an AP bit. The earlier values
         // (1<<5 / 1<<6) were each shifted one bit low: USER_ACCESSIBLE
         // set NS (granting nothing) and read-only marked AP[1] (granting
         // EL0!). Live-found by the aarch64 birth-chain carrier: the EL0
@@ -71,8 +71,8 @@ bitflags::bitflags! {
         const AF    = 1 << 10;  // Access Flag
         const NG    = 1 << 11;  // non-Global: 0=global, 1=process-local
         /// AttrIndx (bits [4:2]) = 1: selects MAIR_EL1 Attr1, whose byte
-        /// is 0x00 = Device-nGnRnE. Emitted for `PageFlags::DEVICE`
-        /// (SD-42); AttrIndx = 0 (the default, bits all clear) selects
+        /// is 0x00 = Device-nGnRnE. Emitted for `PageFlags::DEVICE`;
+        /// AttrIndx = 0 (the default, bits all clear) selects
         /// MAIR Attr0 = Normal WBWA.
         const ATTR_IDX_DEVICE = 1 << 2;
         const PXN   = 1 << 53;  // Privileged Execute Never
@@ -125,7 +125,7 @@ fn flags_to_pte(flags: PageFlags) -> u64 {
     if !flags.contains(PageFlags::EXECUTABLE) {
         pte |= Arm64PteFlags::XN;
     }
-    // DEVICE [ARCH: mmio-device] (SD-42): select the Device MAIR byte
+    // DEVICE [ARCH: mmio-device]: select the Device MAIR byte
     // instead of Attr0's Normal WBWA. See `Arm64PteFlags::ATTR_IDX_DEVICE`
     // and `enable()` for the MAIR layout.
     if flags.contains(PageFlags::DEVICE) {
@@ -136,7 +136,7 @@ fn flags_to_pte(flags: PageFlags) -> u64 {
 
 /// `flags_to_pte` for a 4 KiB **page** leaf (L3): adds the page bit.
 ///
-/// Live-found on the aarch64 birth-chain carrier (edge1 K12b): the loader
+/// Live-found on the aarch64 birth-chain carrier: the loader
 /// mapped the user ELF with plain `flags_to_pte`, the software walk found
 /// every entry (`query()` returned the right PA and flags), and the MMU
 /// still refused the EL0 fetch — translation fault level 3 — because the
@@ -179,7 +179,7 @@ fn pte_to_flags(pte: u64) -> PageFlags {
     if !hw.contains(Arm64PteFlags::XN) {
         flags |= PageFlags::EXECUTABLE;
     }
-    // AttrIndx=1 means the Device MAIR byte (SD-42).
+    // AttrIndx=1 means the Device MAIR byte.
     if hw.contains(Arm64PteFlags::ATTR_IDX_DEVICE) {
         flags |= PageFlags::DEVICE;
     }
@@ -631,8 +631,8 @@ impl Paging for AArch64Paging {
         unsafe {
             // MAIR_EL1 = 0x0000_0000_0000_00FF:
             //   Attr0 = 0xFF — Normal, Write-Back Write-Allocate (RAM).
-            //   Attr1 = 0x00 — Device-nGnRnE (MMIO; `PageFlags::DEVICE`,
-            //            SD-42). The byte is zero by construction of the
+            //   Attr1 = 0x00 — Device-nGnRnE (MMIO; `PageFlags::DEVICE`).
+            //            The byte is zero by construction of the
             //            value, and 0x00 is the architecturally defined
             //            Device-nGnRnE encoding, so the device attribute
             //            is available without a second non-zero byte.
@@ -651,9 +651,9 @@ impl Paging for AArch64Paging {
             // reconfigure it for ours (same granule/size is typical but not
             // guaranteed by the UEFI spec).
             //
-            // T13 R1 交叉断言锚点：`minix_types::USER_VA_LIMIT`（aarch64
-            // 分支 = 2^48）就是从同一个 T0SZ 推导的——本模块与常量任一侧
-            // 漂移都会在编译期失败。
+            // Cross-assertion anchor: `minix_types::USER_VA_LIMIT` (the aarch64
+            // branch = 2^48) is derived from the same T0SZ -- a drift on either
+            // side (this module or the constant) fails at compile time.
             const TCR_T0SZ: u64 = 16;
             const _: () = assert!(
                 minix_types::USER_VA_LIMIT == 1u64 << (64 - TCR_T0SZ),
@@ -666,9 +666,11 @@ impl Paging for AArch64Paging {
                 | (1 << 10)
                 | (3 << 12)
                 | (0 << 14)
-                // T1SZ 槽位：此处与 T0SZ 恒等（同 16 → 双 48-bit 半区）。
-                // 若将来两半区尺寸要分道，必须拆成独立常量并重推
-                // `USER_VA_LIMIT` 的 aarch64 分支（含交叉断言）。
+                // T1SZ slot: here it is identical to T0SZ (both 16 -> two 48-bit
+                // halves). If the two halves ever need different sizes, they must
+                // become separate constants and the aarch64 branch of
+                // `USER_VA_LIMIT` (including the cross assertion) must be
+                // re-derived.
                 | (TCR_T0SZ << 16)
                 | (0 << 22)
                 | (0 << 23)
@@ -729,10 +731,12 @@ impl Paging for AArch64Paging {
     }
 
     unsafe fn destroy(&mut self) {
-        // P-A64-01（V11-P2-8 余件收口，移植自 riscv64/paging.rs 的同族分支）：
-        // 未注册 free 钩子时退化为只清零根 L0（防重用后 use-after-free）；
-        // 注册后先深度优先回收全部中间表帧（L1/L2/L3），再清零并归还根页。
-        // 数据页（块/页描述符）归 region/exit 路径所有，这里绝不触碰。
+        // Without a registered free hook this degrades to zeroing only the root
+        // L0 (preventing use-after-free on reuse); once one is registered, all
+        // intermediate table frames (L1/L2/L3) are reclaimed depth-first before
+        // the root page is zeroed and returned. Data pages (block/page
+        // descriptors) belong to the region/exit paths and are never touched
+        // here.
         //
         // SAFETY: the handle's Direct Map channel must be active;
         // root_paddr is the physical address of our L0 (PGD) page. The
@@ -1209,7 +1213,8 @@ impl HugePages for AArch64Paging {
 /// incremental mapping — no demotion path exists: any present slot inside a
 /// DM window on the bootstrap root is a boot-layout bug and fails fast.
 /// All table access goes through the identity mapping (`VA = PA`), which
-/// stays untouched by these writes (§6.1 "DM 建立的自举写通道闭环").
+/// stays untouched by these writes (the boot write-channel closure that
+/// establishes the DM).
 pub struct AArch64BootDmInstaller;
 
 impl crate::arch::boot_dm::BootDmInstaller for AArch64BootDmInstaller {
@@ -1329,7 +1334,7 @@ impl crate::arch::boot_dm::BootDmInstaller for AArch64BootDmInstaller {
 mod tests {
     use super::*;
 
-    /// Descriptor-type encoding witness (live-found bug, edge1 K12b):
+    /// Descriptor-type encoding witness (live-found bug):
     /// 4 KiB page leaves must carry bits[1:0] = 0b11; block descriptors
     /// (plain `flags_to_pte`) keep 0b01. Getting this wrong is invisible
     /// to the software walk and fatal to the MMU.

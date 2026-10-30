@@ -1,49 +1,62 @@
-//! 生产内核镜像 bin（NS8-A / NK4-B P3 M3.2 多架构 / P4 M4.2 三架构）：把
-//! minix-kernel 链接成 boot-shim 契约位的内核 ELF。boot-shim 从
-//! `/EFI/minix/kernel.elf`（`os/boot-shim/src/loader.rs`
-//! `KERNEL_PATH`）读它做两件事：`compute_kernel_layout` 取布局填
-//! `KernelInfo`（kern_virt_base / kern_phys_base / kern_size），
-//! `load_segments_into_phys_memory` 按 PT_LOAD 的物理地址拷段体、清 BSS。
-//! 布局契约由同目录的架构脚本定（高 VMA + 低物理 LMA，段间偏移一致）：
-//! x86_64 用 `x86_64.ld`，aarch64 用 `aarch64.ld`，riscv64 用 `riscv64.ld`，
-//! 由 `build.rs` 按 `--target` 选一份。Rust 面架构无关，只有入口指令序列
-//! 与早期控制台按 `target_arch` 分道。
+//! Production kernel image binary (multi-arch: x86_64, aarch64, riscv64):
+//! links minix-kernel into a kernel ELF at the boot-shim contract location.
+//! boot-shim reads it from `/EFI/minix/kernel.elf`
+//! (`os/boot-shim/src/loader.rs` `KERNEL_PATH`) and does two things:
+//! `compute_kernel_layout` reads the layout into `KernelInfo`
+//! (kern_virt_base / kern_phys_base / kern_size), and
+//! `load_segments_into_phys_memory` copies segment bodies to their PT_LOAD
+//! physical addresses and zeroes BSS. The layout contract is fixed by the
+//! per-arch script in this directory (high VMA + low physical LMA, consistent
+//! inter-segment offsets): `x86_64.ld` for x86_64, `aarch64.ld` for aarch64,
+//! `riscv64.ld` for riscv64, selected by `build.rs` from `--target`. The Rust
+//! surface is architecture-independent; only the entry instruction sequence
+//! and the early console split by `target_arch`.
 //!
-//! 取件方按架构不同：x86_64 / aarch64 走 UEFI 装机面（xtask image →
-//! boot-shim 读契约位）；riscv64 不是 UEFI 盘形，今天只由
-//! `os/kernel-image/check-layout.sh riscv64` 产出并校验静态布局，装机面
-//! 属 M4.3（`os/xtask/src/image.rs:195-203` 对该架构仍 honest bail）。
+//! The consumer differs per architecture: x86_64 / aarch64 go through the UEFI
+//! install path (xtask image → boot-shim reads the contract location);
+//! riscv64 is not a UEFI disk image, so today it is only produced and
+//! statically layout-checked by `os/kernel-image/check-layout.sh riscv64`, and
+//! its install path is not implemented yet (`os/xtask/src/image.rs:195-203`
+//! still bails honestly for that architecture).
 //!
-//! ## 交付边界（诚实登记）
+//! ## Delivery boundary (honest status)
 //!
-//! `_start` 目前立栈后驻留（halt）——boot-shim → 内核镜像的跳转交接
-//! 协议（KernelInfo 怎么递、入口态怎么约定）已由 OQ-N6 裁决（每进程
-//! 独立根原语，aarch64 的 `BootHandoffV1` arena 交接即其实现），本镜像的收口 =
-//! NK1（C-29）实施。当前 UEFI 产线仍是 boot-shim 内联内核、
-//! 进程内调 `arch_boot`（`os/boot-shim/src/main.rs:56`）；本镜像使其
-//! 契约位从"无产出者"变"按布局契约产出"，NK4-A 装机链即可走通。
+//! `_start` currently sets up the stack and parks (halt). The boot-shim →
+//! kernel image jump handoff protocol (how KernelInfo is passed, what the
+//! entry state is) has been settled (per-process independent root primitive;
+//! aarch64's `BootHandoffV1` arena handoff is its implementation), and this
+//! image's closure is that implementation. The current UEFI production line
+//! still runs boot-shim with an inlined kernel, calling `arch_boot` in-process
+//! (`os/boot-shim/src/main.rs:56`); this image turns the contract location
+//! from "no producer" into "produced per the layout contract", which is what
+//! the x86_64 install chain needs.
 //!
-//! ## 链接保留（防裁剪）
+//! ## Link retention (anti-strip)
 //!
-//! 镜像的存在意义是"含内核本体"。`KERNEL_ENTRY_ANCHOR` 持有
-//! `minix_kernel::arch_boot` 的 fn 指针：链接脚本 `KEEP` 该节 +
-//! `rust_image_main` 运行路径触达，双保险防止 `--gc-sections`/
-//! 归档成员粒度裁剪把整个内核启动图裁出镜像。
+//! The point of the image is "contains the kernel body". `KERNEL_ENTRY_ANCHOR`
+//! holds a fn pointer to `minix_kernel::arch_boot`: the link script `KEEP`s
+//! that section and `rust_image_main` touches it on the run path — redundant
+//! protection against `--gc-sections` or archive-member granularity stripping
+//! the entire kernel boot graph out of the image.
 //!
-//! C 对位：Minix3 C 内核镜像由 kernel Makefile + 链接脚本产出
-//! （`minix3/minix/kernel/`），boot 模块（bootx64.efi）装载它——
-//! 本 bin 是同一形态的 Rust 侧重表达（Rewrite not Translate）。
+//! C counterpart: the Minix3 C kernel image is produced by the kernel Makefile
+//! plus link script (`minix3/minix/kernel/`), and the boot module (bootx64.efi)
+//! loads it — this bin is the Rust-side expression of the same shape
+//! (Rewrite, not Translate).
 
 #![no_std]
 #![no_main]
 
-// aarch64 内核禁 NEON/FP 门（SD-23）：lazy-FPU 模型的「内核不用 FPU」前提
-// 由构建旗标保证（xtask/src/image.rs 对本包的 aarch64 构建注入
-// `-C target-feature=-neon,-fp-armv8`）。绕过 xtask 的直接 cargo 构建会
-// 静默产出会踩用户 Q 寄存器的内核——在此编译期拒收。minix-arch 的显式
-// FPSIMD 原语（fpu.rs）经 per-function target_feature 保留，不触发本门；
-// boot-shim 的 UEFI 载体构建不编译本包（且载体上下文无用户进程，无踩踏
-// 面），宿主测试与其它架构不受影响。
+// aarch64 kernel NEON/FP ban gate: the lazy-FPU model's "the kernel never uses
+// the FPU" premise is enforced by build flags (xtask/src/image.rs injects
+// `-C target-feature=-neon,-fp-armv8` for this package's aarch64 build). A
+// direct cargo build that bypasses xtask would silently produce a kernel that
+// clobbers user Q registers — reject it at compile time here. minix-arch's
+// explicit FPSIMD primitives (fpu.rs) survive via per-function
+// target_feature and do not trip this gate; boot-shim's UEFI carrier build does
+// not compile this package (and the carrier context has no user processes, so
+// there is no clobber surface), while host tests and other architectures are
+// unaffected.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 compile_error!(
     "aarch64 kernel image must be built with -C target-feature=-neon,-fp-armv8 \
@@ -51,8 +64,9 @@ compile_error!(
      see SD-23 and xtask/src/image.rs)"
 );
 
-// riscv64 同族门（续-133）：sstatus.FS=Off 门控无 per-mode 分裂——内核
-// 任何 FP 执行（含预编译 core 残差）都会自陷阱，必须真无 FP。
+// riscv64 sibling gate: sstatus.FS=Off gating has no per-mode split — any FP
+// execution in the kernel (including precompiled core residue) traps itself,
+// so the kernel must be truly FP-free.
 #[cfg(all(target_arch = "riscv64", target_feature = "f"))]
 compile_error!(
     "riscv64 kernel image must be built with -C target-feature=-f,-d \
@@ -63,7 +77,8 @@ compile_error!(
 extern crate alloc;
 
 use core::arch::asm;
-// riscv64 腿的锚点触达住在 `bootface`（续-88 甲案），本入口不用 black_box。
+// The riscv64 leg's anchor touch lives in `bootface`; this entry does not use
+// black_box.
 #[cfg(not(target_arch = "riscv64"))]
 use core::hint::black_box;
 use core::panic::PanicInfo;
@@ -74,9 +89,10 @@ use alloc::alloc::{GlobalAlloc, Layout};
 use minix_boot::KernelInfo;
 use minix_types::PhysBytes;
 
-// 早期控制台按架构取板级实现（三者同名 `write_str`，因此 Rust 面无需
-// 分道）：x86_64 = COM1 串口，aarch64 = PL011，riscv64 = QEMU virt 的
-// 16550 UART（`os/plat/src/riscv64/early_console.rs`）。
+// The early console picks a board implementation per architecture (all three
+// expose a same-named `write_str`, so the Rust surface needs no branching):
+// x86_64 = COM1 serial, aarch64 = PL011, riscv64 = the QEMU virt 16550 UART
+// (`os/plat/src/riscv64/early_console.rs`).
 #[cfg(target_arch = "aarch64")]
 use minix_plat::arm64::early_console;
 #[cfg(target_arch = "riscv64")]
@@ -84,30 +100,36 @@ use minix_plat::riscv64::early_console;
 #[cfg(target_arch = "x86_64")]
 use minix_plat::x86_64::early_console;
 
-// ── 内核启动图锚点 ──────────────────────────────────────────────
+// ── Kernel boot graph anchor ──────────────────────────────────────
 //
-// 类型即契约：`arch_boot(&KernelInfo, PhysBytes) -> !` 是 boot-shim
-// 进程内产线（`os/boot-shim/src/main.rs:56`）与未来跳转产线共用的
-// 内核启动面。锚点被链接脚本 `KEEP(*(.rodata.kernel_anchor))` 钉住。
+// The type is the contract: `arch_boot(&KernelInfo, PhysBytes) -> !` is the
+// kernel boot surface shared by the boot-shim in-process production line
+// (`os/boot-shim/src/main.rs:56`) and the future jump production line. The
+// anchor is pinned by the link script's `KEEP(*(.rodata.kernel_anchor))`.
 
 #[used]
 #[unsafe(link_section = ".rodata.kernel_anchor")]
 static KERNEL_ENTRY_ANCHOR: fn(&KernelInfo, PhysBytes) -> ! = minix_kernel::arch_boot;
 
-// ── 入口（global_asm：先立栈，再进 Rust 面）──────────────────────
+// ── Entry (global_asm: set up the stack first, then enter the Rust surface) ──
 //
-// 栈区由链接脚本在 .bss 里预留（kernel_boot_stack_bottom/top，
-// 64 KiB）——与 Linux 内核 init_stack 同形。`.text.boot` 段置于
-// 镜像首个可执行页（链接脚本 KEEP + 首位）。
+// The stack area is reserved in .bss by the link script
+// (kernel_boot_stack_bottom/top, 64 KiB) — same shape as the Linux kernel
+// init_stack. The `.text.boot` section is placed in the image's first
+// executable page (link script KEEP + first position).
 //
-// `kernel_boot_stack_top` 是链接脚本符号：在此处之外它无 Rust 声明，
-// 交给链接器解析（符号不存在时链接期即失败，符合 fail-fast）。
+// `kernel_boot_stack_top` is a link-script symbol: it has no Rust declaration
+// here, leaving resolution to the linker (a missing symbol fails at link time,
+// which is the fail-fast we want).
 //
-// 三个架构各一份指令序列，语义逐条对应：取栈顶 → 清帧指针 → 调 Rust
-// 面 → 停机驻留。aarch64 的 `adrp` + `add :lo12:` 取符号写法抄仓内既有
-// 载体（`os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs:250-251`）；
-// riscv64 用 `la`（链接器松弛为 PC 相对的 `auipc` + `addi`），这样低半/
-// 高半两个执行视图下都能取到栈顶符号（NK4-B P4 M4.2 决策四）。
+// Each architecture has its own instruction sequence with a one-to-one
+// semantic correspondence: load stack top → clear frame pointer → call the
+// Rust surface → halt and park. The aarch64 `adrp` + `add :lo12:` symbol
+// addressing copies an existing carrier in the repo
+// (`os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs:250-251`);
+// riscv64 uses `la` (relaxed by the linker to PC-relative `auipc` + `addi`) so
+// the stack-top symbol resolves under both low-half and high-half execution
+// views.
 
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
@@ -267,19 +289,24 @@ mod bootface;
 #[cfg(target_arch = "aarch64")]
 mod bootface_a64;
 
-/// Rust 面入口（x86_64 形态；aarch64/riscv64 各有接线版见下）：横幅 +
-/// x86-64 镜像入口：boot-shim 建表、开分页后绝对跳进本镜像高半 `_start`，
-/// 交接寄存器 `rbx`＝T1 handoff arena 的物理地址。`_start` 的入口 trampoline
-/// 在清 `.bss` 之后把 `rbx` 转到 SysV 第一参数 `rdi`，因此 Rust 面按普通
-/// 函数接收；`arena_pa == 0` 只表示跳转方没有交棒（x86 没有直核自引导面），
-/// 此时诚实停机而不是解引用空指针。
+/// Rust-surface entry (x86_64 shape; aarch64/riscv64 have their own wiring
+/// below): banner + x86-64 image entry: boot-shim builds the tables, enables
+/// paging, then jumps absolutely into this image's high-half `_start` with
+/// handoff register `rbx` = physical address of the T1 handoff arena. After
+/// clearing `.bss`, `_start`'s entry trampoline moves `rbx` into the SysV first
+/// argument `rdi`, so the Rust surface receives it like an ordinary function
+/// argument; `arena_pa == 0` only means the jumper did not hand off (x86 has no
+/// direct-boot self-bootstrap face), in which case we halt honestly instead of
+/// dereferencing a null pointer.
 ///
-/// 交接协议未接线时这里曾是"打印一行后驻留"的观测点；现在它调用
-/// `arch_boot_resume_v1`，与 aarch64 共用同一套 v1 解码与 additive resume。
+/// Before the handoff protocol was wired up this used to be an "print one line
+/// and park" observation point; it now calls `arch_boot_resume_v1`, sharing the
+/// same v1 decoding and additive resume with aarch64.
 #[cfg(target_arch = "x86_64")]
 fn rust_image_main(arena_pa: usize) -> ! {
-    // 触达锚点：运行路径上引用一次，保证锚点静态与其指向的内核
-    // 启动图在归档成员粒度上也被拉入链接（KEEP 是链接期第二道保险）。
+    // Touch the anchor: reference it once on the run path so the anchor static
+    // and the kernel boot graph it points to are pulled into the link even at
+    // archive-member granularity (KEEP is the second, link-time safeguard).
     let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
 
     if arena_pa == 0 {
@@ -294,26 +321,32 @@ fn rust_image_main(arena_pa: usize) -> ! {
     minix_kernel::arch_boot_resume_v1(arena_pa as u64)
 }
 
-/// §1.115 方案 A aarch64 镜像入口：boot-shim 建表 + enable 后绝对跳进本镜像
-/// 高半 `_start`，`x0`＝T1 handoff arena 的物理地址（identity 可达）。
-/// `_start` 的 `bl` 不改动 `x0`，故它作为首参传入。
+/// aarch64 image entry: boot-shim builds the tables + enables translation,
+/// then jumps absolutely into this image's high-half `_start` with `x0` =
+/// physical address of the T1 handoff arena (identity reachable). `_start`'s
+/// `bl` leaves `x0` untouched, so it arrives as the first argument.
 ///
-/// 本镜像链接在高半（`aarch64.ld` 的 `KERN_VIRT_BASE`），故 `x0 != 0` 时
-/// 交给 `minix_kernel::arch_boot_resume_v1`：它从 arena 解码五块载荷、
-/// 落进本镜像 `.bss` 的 T5 落地区、验证 `KernelInfo`，再走只增量的
-/// 高半 resume（记录根、建 DM、跳 kmain），**绝不重建根**——根已被
-/// boot-shim 建好且此刻正激活，`new_from_page` 清零会当场摧毁自身取指映射。
+/// This image links at the high half (`aarch64.ld`'s `KERN_VIRT_BASE`), so
+/// when `x0 != 0` we hand over to `minix_kernel::arch_boot_resume_v1`: it
+/// decodes the five payload blocks from the arena, copies them into the T5
+/// landing area inside this image's `.bss`, validates `KernelInfo`, then runs
+/// the additive-only high-half resume (record root, build DM, jump to kmain)
+/// and **never rebuilds the root** — the root was built by boot-shim and is
+/// active right now; zeroing it via `new_from_page` would immediately destroy
+/// our own instruction-fetch mapping.
 ///
-/// `x0 == 0` 是直核 `-kernel`（QEMU 不设参）路径，走 `bootface_a64`
-/// 自引导面；两条链共用本入口与 `.text.boot`。
+/// `x0 == 0` is the direct-kernel `-kernel` path (QEMU passes no arguments),
+/// which uses the `bootface_a64` self-bootstrap face; both chains share this
+/// entry and `.text.boot`.
 #[cfg(target_arch = "aarch64")]
 fn rust_image_main(arena_pa: usize) -> ! {
     let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
     if arena_pa == 0 {
         bootface_a64::bootface_a64();
     }
-    // 走 §1.114 的 TTBR1 高半 MMIO 别名（本镜像自己的 HIGH_MMIO_LIVE 全局），
-    // 证明跨镜像高半控制台可用；resume 路径内部会再次置位（幂等）。
+    // Use the TTBR1 high-half MMIO alias (this image's own HIGH_MMIO_LIVE
+    // global) to prove the cross-image high-half console works; the resume
+    // path sets it again internally (idempotent).
     early_console::use_high_mmio_window();
     early_console::write_str(
         "### minix-rs kernel-image: resuming high-half boot (handoff v1 arena)\n",
@@ -321,11 +354,12 @@ fn rust_image_main(arena_pa: usize) -> ! {
     minix_kernel::arch_boot_resume_v1(arena_pa as u64)
 }
 
-/// NK4-C 续-88 甲案 riscv64 镜像入口：kernel-image 自当引导体（无跨镜像
-/// 交接、无 BootHandoff）。入口 asm 已清 `.bss`（甲案共同前置，NK4B M4.4
-/// 事实五），a0/a1/a2 依次落为三个入参；真活在 `bootface`：a1 DTB 解
-/// memmap → BootFileTable（a2/chosen 双通道，magic 闸）→ 12 模块装载 →
-/// `minix_kernel::arch_boot` 过 validate 真门槛。
+/// riscv64 image entry: kernel-image is its own bootstrapper (no cross-image
+/// handoff, no BootHandoff). The entry asm has already cleared `.bss` (the
+/// common precondition), and a0/a1/a2 land as three arguments; the real work is
+/// in `bootface`: decode the DTB memmap from a1 → BootFileTable (a2/chosen
+/// dual channel, gated by magic) → load 12 modules → `minix_kernel::arch_boot`
+/// passes the validation gate.
 #[cfg(target_arch = "riscv64")]
 fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! {
     bootface::bootface(boot_hart, dtb_phys, boot_file_table_pa)
@@ -333,12 +367,15 @@ fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! 
 
 fn halt() -> ! {
     loop {
-        // 中断全关的停机驻留。不改内存、不碰栈。
-        // - x86_64：`cli` + `hlt`；
-        // - aarch64：`wfi`（本镜像未开 WFI 陷入控制，且入口态由未来的
-        //   交接协议定，属 NK1/OQ-N6 裁决范围；此处只需保证驻留）；
-        // - riscv64：同名 `wfi`（S-mode 可用；是否被 `mstatus.TW` 陷入
-        //   取决于 OpenSBI 配置，同属入口态未接线那条边界）。
+        // Halt and park with interrupts disabled. No memory writes, no stack
+        // use.
+        // - x86_64: `cli` + `hlt`;
+        // - aarch64: `wfi` (this image does not enable WFI trap control, and
+        //   the entry state will be defined by the future handoff protocol;
+        //   here we only need to guarantee parking);
+        // - riscv64: the same-named `wfi` (usable in S-mode; whether
+        //   `mstatus.TW` traps it depends on the OpenSBI configuration, the
+        //   same unwired entry-state boundary).
         #[cfg(target_arch = "x86_64")]
         unsafe {
             asm!("cli", "hlt", options(nomem, nostack))
@@ -356,9 +393,10 @@ fn halt() -> ! {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // 镜像期 panic 面走不进格式化 machinery（无堆依赖）：用定长栈缓冲
-    // 把 panic 消息 + 位置写进早期控制台再驻留（§1.115 调试需求：仅一行
-    // "PANIC" 无助于定位，必须带 payload）。
+    // The image-time panic surface cannot reach the formatting machinery (no
+    // heap dependency): write the panic message + location into the early
+    // console through a fixed-size stack buffer, then park (debugging need: a
+    // bare "PANIC" line cannot locate anything, the payload is mandatory).
     early_console::write_str("### minix-rs kernel image: PANIC — ");
     struct StackWriter<'a> {
         buf: &'a mut [u8],
@@ -394,30 +432,38 @@ fn panic(info: &PanicInfo) -> ! {
     halt()
 }
 
-// ── 镜像期最小 bump 分配器 ──────────────────────────────────────
+// ── Minimal image-time bump allocator ──────────────────────────────
 //
-// 内核启动图经锚点拉入链接后，alloc 面符号（__rust_alloc 等）随之
-// 进入链接需求，bin 必须提供 global_allocator。这里只满足"镜像
-// 链接面"：静态区域一次性 bump、不回收（dealloc 按契约安全空转）。
-// 内核运行面的真实堆初始化（C 对位：kmalloc/mempool 初始化半）属
-// NK1 入口接线波次的设计范围，不在此代决。
+// Once the kernel boot graph is pulled into the link through the anchor, the
+// alloc-surface symbols (__rust_alloc etc.) enter the link requirements, and
+// the bin must supply a global_allocator. This one only satisfies the "image
+// link surface": a one-shot bump over a static region, never reclaimed
+// (dealloc is a contract-safe no-op). The real heap initialization for the
+// running kernel (C counterpart: the kmalloc/mempool init half) belongs to the
+// entry-wiring work and is not decided here.
 
-/// 1 MiB：兜链接面与最小启动期的量级，非运行面配额承诺。NK4-C 续-88
-/// 甲案把 128 KiB 提到 1 MiB：`.bss` 已由入口 asm 清零（游标可信），而
-/// 任何走堆的 boot 腿（含 panic 诊断旁路）都需要模块量级的宽裕；模块
-/// 拷贝本身走物理 bump 暂存页、不消耗堆（见 `bootface`）。注意堆宽会
-/// 移动镜像跨距：`check-layout.sh` L9 用 readelf 实测 ELF 跨距（末段
-/// VMA+memsz − 首段 VMA）与 `bootface.rs` 的 `KERN_SIZE` 字面量对账
-/// （堆宽变→跨距变→L9 当场红）；不在 `.ld` 开符号节（多一个 PT_LOAD
-/// 会把跨距推成非 2MiB 整数倍，反破 L5/L7，续-88 实试过已回退）。
+/// 1 MiB: sized for the link surface and minimal early boot, not a runtime
+/// quota promise. Raised from 128 KiB to 1 MiB: `.bss` is zeroed by the entry
+/// asm (so the cursor is trustworthy), and any boot leg that uses the heap
+/// (including panic diagnostics) needs module-scale headroom; module copying
+/// itself goes through physical bump scratch pages and does not consume the
+/// heap (see `bootface`). Note that heap width moves the image span:
+/// `check-layout.sh` L9 measures the ELF span with readelf (last segment
+/// VMA+memsz − first segment VMA) and reconciles it against the `KERN_SIZE`
+/// literal in `bootface.rs` (wider heap → wider span → L9 fails immediately);
+/// do not open a symbol section in `.ld` (one more PT_LOAD pushes the span off
+/// a 2 MiB multiple and breaks L5/L7 — tried and reverted).
 const IMAGE_HEAP_LEN: usize = 1024 * 1024;
 
-/// 镜像堆本体。CodeReview NIT-8 实锤：`static IMAGE_HEAP = [0; N]` 只经
-/// `as_ptr()` 取址，rustc 把它当只读常量落进 `.rodata`——而 bump 分配器
-/// 往里写！改为 `static mut`（无安全引用、只经 `&raw` 地址算术使用），
-/// 零初始化对象落 `.bss`，与「可写堆」语义一致，也消除页保护生效后
-/// 写只读段的潜伏坏形（三架构同益：x86/aarch64 今天走 boot-shim 产线
-/// 未暴露，属潜伏债）。
+/// The image heap body. Confirmed issue: `static IMAGE_HEAP = [0; N]` that is
+/// only addressed via `as_ptr()` is treated by rustc as a read-only constant
+/// placed in `.rodata` — and the bump allocator writes into it! Use
+/// `static mut` instead (no safe references, only `&raw` address arithmetic);
+/// the zero-initialized object lands in `.bss`, matching "writable heap"
+/// semantics and removing the latent misbehavior of writing a read-only
+/// section once page protection is active (all three architectures benefit:
+/// x86/aarch64 currently go through boot-shim and do not expose it — latent
+/// debt).
 static mut IMAGE_HEAP: [u8; IMAGE_HEAP_LEN] = [0; IMAGE_HEAP_LEN];
 
 struct ImageBump {
@@ -434,8 +480,10 @@ impl ImageBump {
 
 unsafe impl GlobalAlloc for ImageBump {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: 无前置并发契约的镜像期单线程阶段（引导 CPU 独占），
-        // 原子游标仅为满足 GlobalAlloc 的 &self 契约；边界全部显式检查。
+        // SAFETY: image-time single-threaded phase with no prior concurrency
+        // contract (the boot CPU is exclusive); the atomic cursor only
+        // satisfies GlobalAlloc's &self contract; all bounds are checked
+        // explicitly.
         let old = self
             .cursor
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
@@ -444,9 +492,10 @@ unsafe impl GlobalAlloc for ImageBump {
                 (end <= IMAGE_HEAP_LEN).then_some(end)
             });
         match old {
-            // SAFETY: `IMAGE_HEAP` 是独占的镜像期堆区，仅本分配器经地址
-            // 算术写入（无并发引用）；偏移已由上面的 `end <= IMAGE_HEAP_LEN`
-            // 显式限界。
+            // SAFETY: `IMAGE_HEAP` is the exclusive image-time heap region,
+            // written only by this allocator through address arithmetic (no
+            // concurrent references); the offset is explicitly bounded by
+            // `end <= IMAGE_HEAP_LEN` above.
             Ok(new_end) => unsafe {
                 (&raw const IMAGE_HEAP).cast::<u8>().add(new_end - layout.size()) as *mut u8
             },
@@ -457,8 +506,9 @@ unsafe impl GlobalAlloc for ImageBump {
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-        // 镜像期 bump 不回收：一次性阶段无配对释放需求；真回收面随
-        // NK1 波次的堆设计落地（届时本分配器整体退役）。
+        // The image-time bump never reclaims: the one-shot phase has no
+        // paired-free need; the real reclamation surface lands with the heap
+        // design (at which point this allocator retires entirely).
     }
 }
 

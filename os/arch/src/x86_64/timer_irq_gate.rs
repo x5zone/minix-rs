@@ -1,7 +1,7 @@
 //! x86-64 `TimerIrqGate` implementation: the boot clock source has no
 //! module-local gate.
 //!
-//! # Semantics (D-59, 2026-09-09) — `[ARCH: gate-semantics]`
+//! # Semantics — `[ARCH: gate-semantics]` (settled 2026-09-09)
 //!
 //! `TimerIrqGate::enable_timer_irq` / `disable_timer_irq` open and close
 //! the *module-local* gate of the current boot clock source. On x86-64 the
@@ -17,7 +17,7 @@
 //! path installs the hook on `CLOCK_IRQ` (IRQ 0) and `put_irq_handler`'s
 //! caller rule enables the line; there is no separate timer-module
 //! register to program. `[ARCH: gate-semantics]` is recorded in
-//! 05-clock-interrupt-init.md §3.7 and todo.md §23 D-59.
+//! 05-clock-interrupt-init.md §3.7.
 //!
 //! # Why clearing the LAPIC LVT Timer mask here was a trap
 //!
@@ -26,9 +26,8 @@
 //! timer*, which is not the boot clock source (and is not programmed):
 //! unmasking it would have let an unconfigured timer deliver interrupts
 //! with no handler. The LVT gate comes back with the LAPIC timer clock
-//! source itself (see 05-clock-interrupt-init.md §3.7 and the S-4/S-8
-//! SMP batches; the mask-write idiom survives in
-//! `X86_64ClockArch::stop_local_timer`).
+//! source itself (see 05-clock-interrupt-init.md §3.7; the mask-write
+//! idiom survives in `X86_64ClockArch::stop_local_timer`).
 //!
 //! # Call timing invariant
 //!

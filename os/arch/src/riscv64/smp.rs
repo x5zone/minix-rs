@@ -39,7 +39,7 @@ use crate::smp::SmpArch;
 
 /// SBI IPI extension ID (EID 0x735049, ASCII "sPI"). RISC-V SBI
 /// specification §11. The v0.1 legacy `send_ipi` (EID 0, FID 3) that this
-/// replaced is not implemented by modern OpenSBI — S-3c fix.
+/// replaced is not implemented by modern OpenSBI.
 const SBI_IPI_EID: u64 = 0x73_5049;
 
 /// SBI IPI extension `send_ipi` function ID (FID 0). RISC-V SBI
@@ -74,11 +74,11 @@ impl SmpArch for Riscv64SmpArch {
         // working injection path on aclint-mswi firmware: OpenSBI 1.3's
         // MSIP→SSIP conversion runs inside M-mode windows, so an S-mode
         // target hart never sees the SBI send_ipi raise as an S-trap
-        // (K10 round-3 finding — SBI accepted the call, MSIP stayed
-        // M-level, no SSIP conversion, live on QEMU).
+        // (observed on QEMU: SBI accepted the call, MSIP stayed M-level, no
+        // SSIP conversion was performed).
         //
-        // `platform_desc` is initialized during boot (T2.5) — strictly
-        // before any IPI sender can run (smp_init or later).
+        // `platform_desc` is initialized during boot — strictly before any
+        // IPI sender can run (smp_init or later).
         if let Some(sswi_base) = minix_platform::platform_desc().sswi_setip_base() {
             // SAFETY: MMIO write to the ACLINT SSWI device described by
             // the platform DTB; the register is S-mode-writable by spec
@@ -96,7 +96,7 @@ impl SmpArch for Riscv64SmpArch {
         //   a0 = hart mask   (one bit per hart; bit n = hart n)
         //   a1 = hart_mask_base (hart id of bit 0; 0 for hart 0)
         //
-        // S-3c fix: this used to call the SBI v0.1 LEGACY send_ipi
+        // This used to call the SBI v0.1 LEGACY send_ipi
         // (EID 0, FID 3), which modern OpenSBI no longer implements —
         // every ecall silently failed (a0 = SBI_ERR_NOT_SUPPORTED) and no
         // IPI was ever raised. The v0.2 IPI extension takes the same
@@ -156,7 +156,7 @@ impl SmpArch for Riscv64SmpArch {
         // is `SPIE` (the *saved* prior-enable, consumed by `sret`), NOT the
         // live enable — setting bit 5 here leaves `SIE` clear, so a pending
         // `sip.STIP` is never taken and `wfi` sleeps with the timer masked.
-        // That was the 续-108/109 root cause: kernel/idle context runs with
+        // That was the frozen-clock root cause: kernel/idle context runs with
         // SIE=0 (`INIT_TASK_SSTATUS` sets only SPP, so `sret` restores SIE=0;
         // unlike user context where `INIT_USER_SSTATUS` sets SPIE so `sret`
         // enables SIE) — the idle loop must therefore enable SIE *directly*
@@ -200,7 +200,7 @@ impl SmpArch for Riscv64SmpArch {
         //   a2 = opaque     (handed to the AP in a1 — §2.1/§3.1: carries
         //                    the bootstrap pointer so the stub can locate
         //                    its record; the old comment mislabeled this
-        //                    "priv mode" — S-3c fix, it is a pass-through
+        //                    "priv mode" — it is a pass-through
         //                    cookie, not a privilege selector; S-mode is
         //                    implied by hart_start semantics)
         // On success a0 = 0; otherwise a0 holds an SBI error code (e.g.
@@ -229,8 +229,9 @@ impl SmpArch for Riscv64SmpArch {
         }
         // Discard the SBI return code: the trait contract is
         // fire-and-forget, mirroring the C port's best-effort AP boot.
-        // NK4-C 续-400 取证（SMP 接线调试，随结案滚除）：返回码打串口——
-        // 0=成功；负数=SBI 错误（-6 ALREADY_STARTED / -5 INVALID_PARAM 等）。
+        // Debug aid kept until SMP bring-up settles: print the return code
+        // to serial — 0 = success; negative = SBI error (-6 ALREADY_STARTED /
+        // -5 INVALID_PARAM, etc.).
         {
             use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
             Console::write_str("nk4c: sbi-hs ret=");
@@ -271,27 +272,31 @@ impl SmpArch for Riscv64SmpArch {
     }
 }
 
-/// 本 hart SSIP 软件中断挂起位的直写原语（SD-41 SWI 臂）。
+/// Direct-write primitive for this hart's SSIP software-interrupt pending bit
+/// (the SWI arm).
 ///
-/// 特权规范卷 II：`sip.SSIP` 是 S 模式**可写**位——`csrs sip, 2` 置起、
-/// `csrc sip, 2` 清除，无需任何设备通道。这是本平台（aclint-mswi，
-/// 无 SSWI 设备）上唯一可用的 S 模式软中断通道：跨 hart 发送仍走
-/// SBI `send_ipi`/ACLINT SSWI（其 S 模式转换缺口见 K10 轮 3 取证，
-/// 撤钳后由 C2b 一并裁），本原语只服务「本 hart 自环」与「收到即
-/// 清」两处。
+/// Privileged spec Volume II: `sip.SSIP` is a supervisor-mode **writable**
+/// bit — `csrs sip, 2` sets it, `csrc sip, 2` clears it, with no device
+/// channel needed. This is the only S-mode software-interrupt channel
+/// available on this platform (aclint-mswi, no SSWI device): cross-hart sends
+/// still go through SBI `send_ipi`/ACLINT SSWI (whose S-mode conversion gap
+/// is described in `send_sched_ipi` above, and is left for the unclamp batch
+/// to decide), so this primitive serves only two ends: "this hart loops to
+/// itself" and "clear on receipt".
 ///
 /// # Safety
 ///
-/// CSR 写，仅动本 hart 的 SSIP 位，无其他副作用。
+/// A CSR write that touches only this hart's SSIP bit, with no other side
+/// effects.
 pub unsafe fn raise_self_ssip() {
     core::arch::asm!("csrs sip, {m}", m = const 2, options(nomem, nostack));
 }
 
-/// 清本 hart 的 SSIP 挂起位（SWI 臂的 ack 半）。
+/// Clear this hart's SSIP pending bit (the ack half of the SWI arm).
 ///
 /// # Safety
 ///
-/// CSR 写，仅动本 hart 的 SSIP 位。
+/// A CSR write that touches only this hart's SSIP bit.
 pub unsafe fn clear_self_ssip() {
     core::arch::asm!("csrc sip, {m}", m = const 2, options(nomem, nostack));
 }

@@ -55,10 +55,12 @@ core::arch::global_asm!(
     // Exception vector table with recoverable sync exception handler.
     // Entry 4 (offset 0x200): Current EL with SPx, synchronous
     //   — this is where HCR_EL2 / SP_EL1 traps land when SPSel=1
-    // 符号名带 _probe 后缀：minix-arch 的生产 K9 表（trap_stub.rs）同名
-    // `.globl exc_vector_table` 会与本载体的测试表在链接期撞重复符号
-    // （rust-lld duplicate symbol，run_all 基线的既有 build-fail 红根因）；
-    // 本测试装自己的可恢复探针表，生产表不被引用，改名即分家。
+    // The symbol names carry a _probe suffix: the production exception vector
+    // table in minix-arch (trap_stub.rs) also defines `.globl exc_vector_table`, which
+    // would collide with this harness's test table at link time (rust-lld
+    // duplicate symbol, a pre-existing build-fail root cause of the run_all
+    // baseline); this test installs its own recoverable probe table, the
+    // production table is never referenced, so renaming splits the two.
     ".section .text",
     ".balign 2048",
     ".global exc_vector_table_probe",

@@ -1,28 +1,40 @@
-//! aarch64 `restore_to_user` 返回腿的钉住测试（P-A64-02，仿 riscv64_return_leg_pin）。
+//! Pin test for the aarch64 `restore_to_user` return leg (modeled on
+//! riscv64_return_leg_pin).
 //!
-//! 为什么要在宿主单开一份：住在 `os/arch/src/arm64/` 里的 `#[cfg(test)]` 被
-//! `#[cfg(target_arch = "aarch64")]` 整模块门住，宿主（x86_64）的 `cargo test`
-//! 根本不编译它们——「全绿」是假象（P-ALL-01 可达性纪律）。本文件用
-//! `include_str!` 读源码文本做形状对账，宿主原生可跑。
+//! Why a separate copy on the host: the `#[cfg(test)]` items living under
+//! `os/arch/src/arm64/` are gated by a whole-module
+//! `#[cfg(target_arch = "aarch64")]`, so `cargo test` on the host (x86_64)
+//! never compiles them — "all green" is an illusion (reachability
+//! discipline). This file reads the source text with `include_str!` and
+//! reconciles shapes, so it runs natively on the host.
 //!
-//! 钉住的三件事（每一条都对应一次真实事故形状）：
+//! The three things pinned here (each one corresponds to a real incident
+//! shape):
 //!
-//! 1. **屏蔽先于一切**：本腿第一条指令必须是 `msr daifset, #0xf`。§1.113：
-//!    SP_EL1 随后被重锚到栈基（TPIDR_EL1），此刻若 D/A/I/F 任一异步异常打进
-//!    来，它的帧会压在本腿还要读的 frame/寄存器文件指针地盘上——观测症状是
-//!    「首次返回后静默挂死」。riscv 同族测试头注点名过这条。
-//! 2. **SP_EL1 重锚先于系统寄存器三联写**：`mrs x16, tpidr_el1` + `mov sp, x16`
-//!    必须在 `msr elr_el1` 之前——重锚用的是 x16（系统寄存器暂存），三联写也
-//!    用 x16，次序颠倒会把栈基址写进 ELR。
-//! 3. **可中断用户上下文**：SPSR 装载前必须有 `bic x16, x16, #<mask>`，且
-//!    掩码常量 = 0x1E0（A(5)|I(6)|F(7)|D(9)）——漏哪一位，用户态就带着那类
-//!    异常被屏蔽运行（aarch64 版的 IF=0 进用户态）。
+//! 1. **Masking before anything else**: the first instruction of this leg
+//!    must be `msr daifset, #0xf`. §1.113: SP_EL1 is then re-anchored to the
+//!    stack base (TPIDR_EL1); if any of the D/A/I/F asynchronous exceptions
+//!    arrives at that moment, its frame lands on top of the frame/register
+//!    file pointers this leg still has to read — the observed symptom is a
+//!    silent hang after the first return. The riscv sibling test's header
+//!    calls this out.
+//! 2. **SP_EL1 rebase before the system-register triple write**:
+//!    `mrs x16, tpidr_el1` + `mov sp, x16` must precede `msr elr_el1` — the
+//!    rebase uses x16 (system-register scratch), and the triple write also
+//!    uses x16, so reversing the order writes the stack base into ELR.
+//! 3. **Interruptible user context**: before SPSR is loaded there must be a
+//!    `bic x16, x16, #<mask>`, and the mask constant must equal 0x1E0
+//!    (A(5)|I(6)|F(7)|D(9)) — miss one bit and user mode runs with that class
+//!    of exception masked (the aarch64 version of entering user mode with
+//!    IF=0).
 //!
-//! 尾部纪律：`eret` 是最后一条指令；x2 的自引用回载（`ldr x2, [x2, 1*8]`）
-//! 是 eret 前对 x2 的最后一次写。fail-closed：出现表外助记符当场失败。
+//! Tail discipline: `eret` is the last instruction; the self-referential
+//! reload of x2 (`ldr x2, [x2, 1*8]`) is the last write to x2 before eret.
+//! Fail-closed: an out-of-table mnemonic fails on the spot.
 
-/// 抽出 `core::arch::asm!( … )` 到第一个 `in("…")` 操作数之间的指令行，
-/// 去缩进、去注释，按顺序返回（助记符 + 操作数压成单空格分隔）。
+/// Extract the instruction lines of `core::arch::asm!( … )` up to the first
+/// `in("…")` operand, de-indented and with comments stripped, returned in
+/// order (mnemonic + operands joined with single spaces).
 fn asm_instructions(src: &str, anchor: &str) -> Vec<String> {
     let at = src.find(anchor).expect("asm 锚点找不到（函数改名/格式漂移？）");
     let tail = &src[at..];
@@ -43,7 +55,8 @@ fn asm_instructions(src: &str, anchor: &str) -> Vec<String> {
         .collect()
 }
 
-/// 本腿允许的助记符（fail-closed：表外助记符 = 钉不住，当场失败）。
+/// Mnemonics allowed on this leg (fail-closed: an out-of-table mnemonic
+/// cannot be pinned by this test and fails on the spot).
 const KNOWN_MNEMONICS: &[&str] = &["msr", "mrs", "mov", "ldr", "add", "bic", "eret"];
 
 fn return_leg_instructions() -> Vec<String> {
@@ -138,7 +151,8 @@ fn return_leg_eret_is_last_and_x2_self_load_is_last_write() {
 
 #[test]
 fn spsr_mask_bits_constant_covers_aifd() {
-    // 原本住在架构门内（宿主跑不到）的断言，搬到宿主：A(5)|I(6)|F(7)|D(9)。
+    // An assertion that used to live behind the arch gate (unreachable on the
+    // host), moved to the host: A(5)|I(6)|F(7)|D(9).
     const SRC: &str = include_str!("../src/arm64/trap_return.rs");
     assert!(
         SRC.contains("const SPSR_MASK_BITS: u64 = 0x1E0;"),

@@ -21,7 +21,7 @@
 //! kernel fault raised *inside* the dispatcher nests cleanly on the kernel
 //! leg instead of recursing through the swap.
 //!
-//! # Mechanics / policy split (S-8, mirrored from x86_64::trap_stub)
+//! # Mechanics / policy split (mirrored from x86_64::trap_stub)
 //!
 //! This module owns the *mechanics*: full GPR file + `sepc`/`sstatus`
 //! frame ([`Riscv64TrapFrame`]), the stack strategies above, and the two
@@ -30,8 +30,8 @@
 //! bodies (the *policy*: timer tick, kernel calls, fault diagnostics —
 //! kernel `trap_dispatch`). Registration happens in the kernel's
 //! `init_protection` strictly before `TrapEntryArch::load()`; an
-//! unregistered dispatch panics instead of silently returning (the S-3d
-//! lesson: silent misrouting costs ten debugging rounds).
+//! unregistered dispatch panics instead of silently returning (a lesson:
+//! silent misrouting costs ten debugging rounds).
 //!
 //! # Frame layout (the build↔run contract)
 //!
@@ -54,7 +54,7 @@
 //! before `sret`, or the call re-traps forever. Documented on the user-side
 //! half in `minix-sys/src/arch_trap.rs`; the kernel body owns the step.
 //!
-//! # Park decision ABI (NK4-C 续-75, the riscv twin of aarch64 §1.113)
+//! # Park decision ABI (the riscv twin of the aarch64 one)
 //!
 //! The user-leg dispatch body returns a `u64` park decision: `PARK_NONE`
 //! restores the frame and `sret`s normally; `PARK_RESCHEDULE` means the
@@ -63,7 +63,7 @@
 //! back to the clean kernel-stack top and branches to the registered
 //! resched entry instead of returning to the parked process. Without the
 //! unwind the kernel stack would ratchet down one frame per blocked
-//! receive (the aarch64 §1.112 CodeReview Critical-1 shape: riscv runs
+//! receive (the aarch64 CodeReview Critical-1 shape: riscv runs
 //! the EL1h-like single-kernel-stack model, no TSS.sp0 reload exists).
 //!
 //! # `stvec` describes the mode the CPU is about to run in
@@ -132,12 +132,12 @@ impl Riscv64TrapFrame {
 // SYSCALL) is privilege-based here because RISC-V routes both call types
 // through one `ecall` boundary.
 //
-// The user leg returns the park decision (§1.113 twin, see module docs);
+// The user leg returns the park decision (see module docs);
 // the kernel leg never parks (a blocked IPC is a U-origin event) and its
 // epilogue ignores returns, so it stays unit-shaped.
 type KernelDispatchFn = unsafe extern "C" fn(&mut Riscv64TrapFrame);
-/// The `u64` return is the park decision (NK4-C 续-75, the riscv mirror
-/// of aarch64 §1.113): [`PARK_NONE`] restores and `sret`s;
+/// The `u64` return is the park decision (the riscv mirror of the aarch64
+/// one): [`PARK_NONE`] restores and `sret`s;
 /// [`PARK_RESCHEDULE`] unwinds the frame and enters the resched thunk.
 type DispatchFn = unsafe extern "C" fn(&mut Riscv64TrapFrame) -> u64;
 /// Park decision: return to the interrupted context normally (`sret`).
@@ -147,7 +147,7 @@ pub const PARK_RESCHEDULE: u64 = 1;
 static KERNEL_DISPATCH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static USER_DISPATCH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-/// The park-and-reschedule entry (the riscv twin of aarch64 §1.113).
+/// The park-and-reschedule entry (the riscv twin of the aarch64 one).
 /// Registered by the kernel with a diverging thunk (re-acquire BKL +
 /// `scheduler_loop`); the user leg branches here after unwinding a
 /// blocked-receiver frame.
@@ -169,21 +169,29 @@ pub fn register_resched_entry(f: ReschedFn) {
     RESCHED_ENTRY.store(f as *mut (), Ordering::Release);
 }
 
-// ── NK4C 实验丁·子件二：用户陷入帧逐次完整性守卫（SD-10/PD-16 仪器轮）──────
+// ── User trap-frame per-trap integrity guard (instrumentation round) ──────
 //
-// 案卷 `NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md` 第 7 章子件二的仪器本体：
-// 中断源用户陷阱在入口把 34 字快照存档，dispatch 返回后逐字比对——
-// 「被保存的寄存器值在内核托管期内是否被改」的唯一直接观测点（案卷 6.2
-// 第 1 候选 = 用户态陷入路径，68 次/计算窗）。三条武装边界：
-// ① 只武装异步中断源（scause[63]=1）——ecall 路径内核合法改帧（sepc
-//   推进、a0 回写），比对无意义；异常源同理不武装。
-// ② 比对点在 dispatch 返回处——park 分支的 ctx 托管在 asm 落盘之后，
-//   不在本仪器射程（那半由 finish_and_restore/apply_to_trap_frame 的
-//   ctx→帧重建链另测）。
-// ③ 单用户腿 hart 前置：本树 riscv 配置（钳位 + ATF 单核/双核单 BSP）
-//   只有 BSP 走用户腿；SMP 撤钳后本守卫须改为每 hart 槽位再战。
-// 打印只在字不一致时发生且封顶 8 次（案卷 4.2 教训一：观测不消费被测
-// 数据流、打印量封顶）；首武装打印一行作执行记录。
+// The instrument body from the memory-corruption case file's chapter 7,
+// sub-item 2: for interrupt-origin user traps, save a 34-word snapshot at
+// entry and compare word by word after dispatch returns — the only direct
+// observation point for "were the saved register values modified while the
+// kernel owned the frame" (case file 6.2, first candidate = the user trap
+// path, 68 per compute window). Three arming boundaries:
+// (1) arm only asynchronous interrupt origins (scause[63] = 1) — the ecall
+//     path legitimately edits the frame in the kernel (sepc advance, a0
+//     write-back), so comparison is meaningless; exception origins are
+//     likewise not armed.
+// (2) the comparison point is at the dispatch return — the park branch's
+//     ctx is handed over after the asm stores the frame and is out of this
+//     instrument's range (that half is tested separately through the
+//     finish_and_restore/apply_to_trap_frame ctx→frame rebuild chain).
+// (3) single-user-leg hart precondition: this tree's riscv configuration
+//     (clamping + ATF single-core/dual-core single BSP) has only the BSP
+//     running the user leg; once SMP clamping is lifted this guard must be
+//     redone as per-hart slots.
+// Printing happens only on a word mismatch and is capped at 8 (case file
+// 4.2 lesson 1: observation must not consume the observed data flow, print
+// volume capped); the first arming prints one line as an execution record.
 static TF_GUARD_ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static TF_GUARD_LIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static TF_GUARD_GEN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -192,12 +200,15 @@ static TF_GUARD_SNAP: [core::sync::atomic::AtomicU64; 34] =
     [const { core::sync::atomic::AtomicU64::new(0) }; 34];
 static TF_GUARD_HITS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-/// 入口钩：中断源陷阱则存快照并武装，返回是否武装。`scause` 在 asm 落帧
-/// 后、内核体改写前仍然有效，这里读的是本次陷阱的因。
+/// Entry hook: for interrupt-origin traps, store the snapshot and arm;
+/// returns whether it armed. `scause` is still valid after the asm stores
+/// the frame and before the kernel body rewrites it, so this reads the
+/// current trap's cause.
 fn tf_guard_entry(frame: &Riscv64TrapFrame) -> bool {
     let scause: usize;
-    // SAFETY: scause 为只读 CSR，读取无副作用；本钩是 dispatch 的第一条
-    // 语句，内核体尚未运行，读到的就是本次陷阱的因。
+    // SAFETY: scause is a read-only CSR; reading it has no side effects.
+    // This hook is the first statement of dispatch, so the kernel body has
+    // not run yet and the value read is this trap's cause.
     unsafe { core::arch::asm!("csrr {}, scause", out(reg) scause) };
     if scause & (1usize << 63) == 0 {
         TF_GUARD_ARMED.store(false, Ordering::Release);
@@ -208,9 +219,10 @@ fn tf_guard_entry(frame: &Riscv64TrapFrame) -> bool {
         core::ptr::addr_of!(frame.sepc) as *const u64,
         core::ptr::addr_of!(frame.sstatus) as *const u64,
     ];
-    // SAFETY: gpr 是 32 元内联数组、sepc/sstatus 是结构体字段，三段连续
-    // 读出 34 字快照；仅在本 hart 的 dispatch 顶部执行（单用户腿 hart
-    // 前置，见模块注释③）。
+    // SAFETY: gpr is a 32-element inline array and sepc/sstatus are struct
+    // fields, so three contiguous reads yield the 34-word snapshot; this
+    // runs only at the top of this hart's dispatch (single-user-leg hart
+    // precondition, module note (3)).
     unsafe {
         for i in 0..32 {
             TF_GUARD_SNAP[i].store(*words[0].add(i), Ordering::Relaxed);
@@ -228,14 +240,17 @@ fn tf_guard_entry(frame: &Riscv64TrapFrame) -> bool {
     true
 }
 
-/// 返回钩：武装过的陷阱在 dispatch 返回处逐字比对，首处不一致按
-/// 「gen/字/入口值/出口值/scause」打印（封顶 8 次，超出只计数）。
+/// Return hook: for an armed trap, compare word by word at the dispatch
+/// return; the first mismatch is printed as
+/// "gen/word/entry value/exit value/scause" (capped at 8; beyond the cap
+/// only counted).
 fn tf_guard_verify(frame: &Riscv64TrapFrame) {
     if !TF_GUARD_ARMED.swap(false, Ordering::AcqRel) {
         return;
     }
     let mut words = [0u64; 34];
-    // SAFETY: 与 tf_guard_entry 同一帧布局（34 字），读回出口侧真值。
+    // SAFETY: same frame layout as tf_guard_entry (34 words); reads back the
+    // true exit-side values.
     unsafe {
         for i in 0..32 {
             words[i] = *frame.gpr.as_ptr().add(i);
@@ -340,11 +355,12 @@ unsafe extern "C" fn riscv64_kernel_trap_dispatch(frame: &mut Riscv64TrapFrame) 
 ///
 /// Forwarded from the asm stub: `frame` points at the live frame this leg
 /// built at the kernel-stack top (parked user sp in slot 2). The body's
-/// park decision (a0) is forwarded to the user-leg epilogue (续-75).
+/// park decision (a0) is forwarded to the user-leg epilogue.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn riscv64_user_trap_dispatch(frame: &mut Riscv64TrapFrame) -> u64 {
-    // SD-10 仪器轮：中断源陷阱武装帧守卫（入口快照），dispatch 返回后
-    // 比对（边界与封顶见上方守卫块的模块注释）。
+    // Instrumentation: arm the frame guard for interrupt-origin traps (entry
+    // snapshot); compare after dispatch returns (boundaries and cap are
+    // documented in the guard block's comment above).
     let guard = tf_guard_entry(frame);
     let f = USER_DISPATCH.load(Ordering::Acquire);
     assert!(
@@ -358,7 +374,7 @@ unsafe extern "C" fn riscv64_user_trap_dispatch(frame: &mut Riscv64TrapFrame) ->
     decision
 }
 
-/// The park branch's destination (the riscv twin of aarch64 §1.113).
+/// The park branch's destination (the riscv twin of the aarch64 one).
 /// Reached by the user leg after unwinding a blocked-receiver frame; it
 /// forwards to the kernel-registered diverging thunk. `-> !`, so the
 /// never-returning `b` in the asm is well-formed.
@@ -387,7 +403,7 @@ unsafe extern "C" fn riscv64_resched_entry() -> ! {
 // restore mirrors the saves exactly; the CSR trio (sstatus/sepc/stvec) is
 // written first on the way out because all three need a scratch register.
 //
-// This ordering is LOAD-BEARING, not style (NK4C 续-370). The kernel leg
+// This ordering is LOAD-BEARING, not style. The kernel leg
 // recovers the interrupted `sp` by arithmetically rebasing `t0`, so the
 // moment `t0` is used as scratch before its own `sd` the interrupted
 // context's `t0` is gone: slot 5 would hold a stack-shaped value and the
@@ -448,7 +464,7 @@ core::arch::global_asm! {
     // Restore: CSR pair first (through t0), then the GPRs; sp (slot 2)
     // loads last and IS the frame-pop.
     //
-    // stvec re-anchor (续-75): `load()` points stvec at this leg while
+    // stvec re-anchor: `load()` points stvec at this leg while
     // the kernel runs, but a user-leg entry flipped it here for the
     // dispatcher — any S-origin trap nested below a user frame returns
     // through THIS epilogue to S-mode, and leaving stvec on the user leg
@@ -456,8 +472,8 @@ core::arch::global_asm! {
     // SBI) through the sscratch swap: sp := sscratch - 272, the frame
     // written over the band `sscratch` points at — under the `load()`
     // invariant that is this CPU's kernel-stack top, i.e. the scheduler's
-    // own live frames at that depth (the same collision 续-373 closes on
-    // the `restore_to_user` side). Pick the vector
+    // own live frames at that depth (the same collision closed on the
+    // `restore_to_user` side). Pick the vector
     // from the saved SPP instead — the kernel leg for an S-return, the
     // user leg for a U-return (the latter mirrors the old unconditional
     // `la` below; an SPP==1 return still on the kernel leg is exactly
@@ -562,7 +578,7 @@ core::arch::global_asm! {
     "    csrw stvec, t0",
     "    mv a0, sp",
     "    call riscv64_user_trap_dispatch",
-    // Park decision (续-75, riscv mirror of aarch64 §1.113): a nonzero
+    // Park decision (riscv mirror of the aarch64 one): a nonzero
     // return means the body saved this process's context and parked it
     // (blocked IPC receiver) — unwind the frame to the clean kernel-stack
     // base and branch to the resched entry instead of restoring. Skipping
@@ -575,7 +591,7 @@ core::arch::global_asm! {
     // `la`+`jr`, not `j`: the thunk lives in its own `.text.riscv64_
     // resched_entry` section (Rust per-function sectioning), and `j`
     // would emit a pc-relative R_RISCV_JAL (±1 MiB) whose reach the
-    // linker layout does not guarantee (CodeReview 续-75 S3). t0 is
+    // linker layout does not guarantee (CodeReview S3). t0 is
     // dead here (reloaded from slot 5 only on the restore path) and
     // the target is `-> !`, so no return address is needed.
     "    la t0, riscv64_resched_entry",
@@ -583,7 +599,7 @@ core::arch::global_asm! {
     "1:",
     // Restore. CSR pair first (they read through t0), then stvec — the
     // vector write ALSO goes through t0 and MUST stay ahead of the GPR
-    // reload (NK4C 续-371): the user leg returns to U-mode, so every
+    // reload: the user leg returns to U-mode, so every
     // register it touches after that register's own `ld` is a user value
     // it destroys. Doing the `stvec` write here is free precisely because
     // t0's user value is still in memory, waiting at slot 5.
@@ -594,15 +610,15 @@ core::arch::global_asm! {
     // S-mode code with `SIE` still set — `idle_halt` enables it — re-enters
     // THIS leg, whose frame would then be built at `sscratch` − 272, i.e. on
     // top of live kernel stack; moving it AFTER the reloads would steal a
-    // restored user register (the 续-371 bug exactly).
+    // restored user register (exactly the old bug).
     //
     // The user `sp` is NOT fetched from slot 2 on this path: the parked
     // value lives in `sscratch` (the leg's own entry exchange put it there
     // and nothing between then and here writes `sscratch` — the kernel leg
     // documentedly never touches it, and `restore_to_user`, which does
-    // re-anchor it, never returns here). 续-371 removed a `ld t0, 2*8(sp)`
-    // that this exchange never consumed: it was dead AND it left the
-    // returning user context with `t0` = its own stack pointer.
+    // re-anchor it, never returns here). An earlier revision removed a
+    // `ld t0, 2*8(sp)` that this exchange never consumed: it was dead AND it
+    // left the returning user context with `t0` = its own stack pointer.
     "    ld t0, 33*8(sp)",
     "    csrw sstatus, t0",
     "    ld t0, 32*8(sp)",
@@ -661,9 +677,9 @@ unsafe extern "C" {
 /// Address of the kernel-leg entry (the `load()` default).
 pub fn kernel_trap_vector_va() -> VirBytes {
     // SAFETY: address-only symbol read; the symbol is defined by the
-    // `global_asm!` above (K9 pattern: the symbol and its definition live
-    // in the same module, so the old "declared but never defined" link
-    // landmine cannot reappear).
+    // `global_asm!` above (the symbol and its definition live in the same
+    // module, so the old "declared but never defined" link landmine cannot
+    // reappear).
     VirBytes::new(unsafe { &riscv64_kernel_trap_vector as *const u8 as usize } as u64)
 }
 
@@ -674,8 +690,8 @@ pub fn user_trap_vector_va() -> VirBytes {
 }
 
 // ── Frame ↔ saved-context translation (the riscv twins of x86/aarch64
-// `save_frame_to_context` / `sync_status_register_to_frame`, NK4-C
-// §1.112/§1.113 — wired for the 续-75 IPC bridge) ────────────────────────
+// `save_frame_to_context` / `sync_status_register_to_frame`, wired for the
+// IPC bridge) ───────────────────────────────────────────────────────────
 
 /// Frame `gpr` slot → `Riscv64CpuContext::gp_regs` index, one entry per
 /// architectural register x0..x31; `None` for the three registers the
@@ -795,7 +811,7 @@ mod tests {
         // comment documents it). The slot map must be defined on every
         // mappable register and land each on a DISTINCT live index. A
         // wrong entry here silently corrupts one register per
-        // blocked-then-resumed IPC (aarch64 §1.113 CodeReview BLOCKER
+        // blocked-then-resumed IPC (an aarch64 CodeReview BLOCKER
         // shape — hard-coded offsets drifting from the GP_* constants).
         const LIVE: usize = crate::riscv64::signal::GP_T6 + 1;
         let mut seen = [false; super::super::boot::Riscv64CpuContext::GP_REGS_LEN];
@@ -859,7 +875,8 @@ mod tests {
         // The delivery path ORs IpcCall bits into gp_regs[GP_A1]; the
         // reply leg must pull THAT lane back into frame slot 11 — pulling
         // the wrong slot would return a stale A1 and re-trigger the x86
-        // B21 family (is_ipc_notify misfire on the receiver's own return).
+        // IPC-notify misfire (is_ipc_notify firing on the receiver's own
+        // return).
         use super::super::boot::Riscv64CpuContext;
         let mut ctx = Riscv64CpuContext::new();
         ctx.gp_regs[crate::riscv64::signal::GP_A1] = 0x0000_1100;
@@ -878,13 +895,15 @@ mod tests {
     fn test_park_decision_values() {
         // The asm epilogue tests the return with `beqz`: PARK_NONE must
         // be exactly 0 and PARK_RESCHEDULE exactly nonzero — the same
-        // values the aarch64 §1.113 legs use (one ABI across the twins).
+        // values the aarch64 legs use (one ABI across the twins).
         assert_eq!(PARK_NONE, 0);
         assert_eq!(PARK_RESCHEDULE, 1);
     }
 
-    // 两腿 asm 的形状契约（帧覆盖 + scratch 纪律）由宿主集成测试
-    // `arch/tests/riscv64_trap_leg_shape.rs` 把守：本模块带
-    // `#[cfg(target_arch = "riscv64")]`，写在这里的 `#[test]` 在宿主
-    // `cargo test` 下根本不编译（=假绿），故测试不住这儿（§续-370）。
+    // The two legs' asm shape contract (frame coverage + scratch
+    // discipline) is enforced by the host integration test
+    // `arch/tests/riscv64_trap_leg_shape.rs`: this module is built with
+    // `#[cfg(target_arch = "riscv64")]`, so a `#[test]` written here
+    // would not compile at all under a host `cargo test` (= false
+    // green); tests therefore do not live here.
 }

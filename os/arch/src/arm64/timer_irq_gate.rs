@@ -20,7 +20,8 @@
 //! `AArch64InterruptController::init` (os/plat/src/arm64/interrupt.rs),
 //! invoked in Phase B of `init_clock_and_interrupts` — NOT to the timer
 //! IRQ gate. `TimerIrqGate` only controls the per-CPU timer module
-//! (CNTP_CTL_EL0). See 05-clock-interrupt-init.md §4.7.1 "aarch64 真硬件路径".
+//! (CNTP_CTL_EL0). See 05-clock-interrupt-init.md §4.7.1 "aarch64 real
+//! hardware path and responsibility boundary".
 
 use crate::arch::timer_irq_gate::TimerIrqGate;
 

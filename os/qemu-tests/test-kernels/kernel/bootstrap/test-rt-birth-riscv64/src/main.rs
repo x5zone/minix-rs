@@ -1,5 +1,5 @@
-//! Test: first minix-rt freestanding user binary on riscv64 (edge1 K12b —
-//! the riscv64 leg of the three-arch CPL3 birth chain; OpenSBI carrier).
+//! Test: first minix-rt freestanding user binary on riscv64 (the
+//! riscv64 leg of the three-arch CPL3 birth chain; OpenSBI carrier).
 //!
 //! Mirrors the x86 `test-rt-birth` carrier: the kernel loads the embedded
 //! `rt-birth` ELF through the production boot path (`init_proc_and_boot`'s
@@ -11,9 +11,9 @@
 //! kernel console through SYS_DIAGCTL, and finally forces a panic whose
 //! render routes through the same diagnostic channel.
 //!
-//! # riscv64 trap leg (the K12b deliverable)
+//! # riscv64 trap leg
 //!
-//! The production riscv64 `stvec` entry (K9) is a Direct-mode diagnostic
+//! The production riscv64 `stvec` entry is a Direct-mode diagnostic
 //! stub — no U-mode syscall entry exists in the production kernel yet.
 //! This carrier supplies the missing leg itself: after `init_protection`
 //! it re-points `stvec` at a U-ecall handler (`csrrw sp, sscratch, sp`
@@ -29,11 +29,11 @@
 //! # Boot flow
 //!
 //! OpenSBI (-bios default) → `-kernel` at 0x80200000 → BSS zero + stack
-//! setup (K10 carrier shape) → hand-built `BootPrepareResult` (no
+//! setup (carrier shape) → hand-built `BootPrepareResult` (no
 //! U-Boot/BootFileTable in this scenario — hello-boot-riscv64 shape) →
 //! production phases in kmain order. Deviations from the x86 sibling,
 //! each bounded: `smp_init` skipped (no AP bring-up — one hart runs
-//! everything; AP parity rides the K11 round), and no `boot_init_timer`
+//! everything; AP parity rides a later round), and no `boot_init_timer`
 //! (the birth chain is a no-tick, single-process story). The clock itself
 //! is NOT skipped any more — see step 4.
 //!
@@ -121,22 +121,24 @@ static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
 /// builds `rt-birth` for riscv64gc-unknown-none-elf first and passes the
 /// artifact path in `RT_BIRTH_ELF_PATH`). The kernel identity-maps its own
 /// image, so the blob is readable through VA = PA during `load_vm_elf`.
-/// 页对齐包裹（vm_handoff 扣减契约：boot module 起址必须页对齐——真
-/// bootloader 放置的模块皆页对齐，carrier 内嵌镜像同契约；修正
-/// run_all 两 riscv 腿的 `deduction start … must be page-aligned`）。
+/// Page-aligned wrapper (the vm_handoff deduction contract requires boot
+/// module start addresses to be page-aligned — real bootloaders place every
+/// module page-aligned, and the carrier's embedded image follows the same
+/// contract; this fixes the `deduction start … must be page-aligned` failure on
+/// both riscv legs of run_all).
 #[repr(C, align(4096))]
 struct PageAlignedElf<const N: usize>([u8; N]);
 static RT_BIRTH_ELF_BYTES: PageAlignedElf<{ include_bytes!(env!("RT_BIRTH_ELF_PATH")).len() }> =
     PageAlignedElf(*include_bytes!(env!("RT_BIRTH_ELF_PATH")));
 static RT_BIRTH_ELF: &[u8] = &RT_BIRTH_ELF_BYTES.0;
 
-// ── Boot assembly (K10 carrier shape: BSS zero before any flag read) ──
+// ── Boot assembly (carrier shape: BSS zero before any flag read) ──
 core::arch::global_asm!(
     ".section .text.init",
     ".global _start",
     "_start:",
     // Zero .bss: OpenSBI hands over without clearing the kernel image's
-    // BSS (K10 round-1 finding — garbage reads fake readiness).
+    // BSS (an earlier finding — garbage reads fake readiness).
     "    la t0, __bss_start",
     "    la t1, __bss_end",
     "1:",
@@ -161,7 +163,7 @@ core::arch::global_asm!(
     stack_top = sym STACK,
 );
 
-// ── U-mode ecall handler (the K12b riscv64 trap leg) ──
+// ── U-mode ecall handler (the riscv64 trap leg) ──
 //
 // Frame layout on the kernel stack (34 × 8 bytes): x1..x31 at indices
 // 1..=31 (x0 is hardwired zero and has no slot), sepc at 32, sstatus at
@@ -492,7 +494,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery — the DTB pointer OpenSBI passed in
-    // a1 feeds the same parse the kernel lane uses (K10 carrier shape).
+    // a1 feeds the same parse the kernel lane uses (same carrier shape).
     // Later phases (scheduler anchors, timer gates) read the frozen
     // global; skipping this freeze is the Frozen::get-before-freeze panic.
     {
@@ -508,7 +510,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         early_console::write_str("  platform desc installed (DTB)\n");
     }
 
-    // 3. Protection + trap entry (production Phase B — stvec = the K9
+    // 3. Protection + trap entry (production Phase B — stvec = the
     //    diagnostic vector). The carrier's U-ecall handler takes over
     //    stvec right after; the diagnostic vector keeps no state.
     minix_kernel::init_protection(&result.kernel_info);
@@ -545,7 +547,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     //    before the scheduler hand-off, because `account_process_stop` on
     //    the dispatch path reads CLOCK_STATE unconditionally
     //    (`kernel/src/lib.rs:3147`) — a carrier that skips this panics in
-    //    `switch_to_user`. It opens no interrupt source (D-59: `arch_init`
+    //    `switch_to_user`. It opens no interrupt source (`arch_init`
     //    no longer enables `sie.STIE`; the timer gate is `boot_init_timer`'s,
     //    which this carrier deliberately does not call), so the
     //    carrier-owned `stvec` uecall handler stays the only live leg.

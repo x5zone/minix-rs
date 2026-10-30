@@ -1,11 +1,11 @@
-//! TODO-04: the post-EBS boundary audit for the UEFI boot surface.
+//! The post-EBS boundary audit for the UEFI boot surface.
 //!
 //! After `ExitBootServices` succeeds, no Boot Services call, allocation or
-//! free may occur — the three-zero discipline (design §1.5 (六).4). A full
+//! free may occur — the three-zero discipline (design §1.5 (6).4). A full
 //! call-graph check needs the pairing loop's final shape; this is the
-//! text-level guard the work order allows to land first ("lint 脚本或文本级
-//! 检查先行"): it slices the `prepare_boot` body from the source and asserts
-//! that the statements after the `exit_boot_services()` call contain no
+//! text-level guard that may land first (a lint script or text-level check
+//! before the full one): it slices the `prepare_boot` body from the source and
+//! asserts that the statements after the `exit_boot_services()` call contain no
 //! `uefi::`/`boot::` path, no allocator entry points and no destructor calls.
 //!
 //! Comments are stripped before scanning: the source legitimately names

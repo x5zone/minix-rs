@@ -182,7 +182,7 @@ enum PteChannel {
 
 #[inline]
 fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
-    // V11/E4: in this crate's own test build (mock feature), the VM window
+    // In this crate's own test build (mock feature), the VM window
     // routes through MockDirectMap so tests can point it at real leaked
     // memory via `set_mock_vm_base` — mirroring the VM-side test funnel.
     // Production keeps the x86_64 constant base.
@@ -192,7 +192,7 @@ fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
         }
         #[cfg(not(all(test, feature = "runtime-window")))]
         PteChannel::VmDm => X86_64DirectMap::vm_phys_to_virt(PhysBytes(phys)).0 as *mut u64,
-        // V11/E4: in this crate's own test build (mock feature), the VM
+        // In this crate's own test build (mock feature), the VM
         // window routes through MockDirectMap so tests can point it at
         // real leaked memory via `set_mock_vm_base` — mirroring the
         // VM-side test funnel. Production keeps the x86_64 constant base.
@@ -220,8 +220,8 @@ unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 { unsafe {
 /// - `KernelDm` handles run at CPL0, so a conservative `invlpg` is
 ///   always legal and kept for present→X transitions defense-in-depth.
 /// - `VmDm` handles are exercised by VM at CPL3, where `invlpg` is a
-///   privileged instruction (#GP(0) — the fix14 first-light forensics,
-///   2026-09-21: `user exception: vector 0xd rip <map+578>`). No flush
+///   privileged instruction (#GP(0) -- first-light forensics on 2026-09-21:
+///   `user exception: vector 0xd rip <map+578>`). No flush
 ///   is needed there: the only writes such a handle performs are
 ///   not-present → present (`map` refuses `AlreadyMapped`, and
 ///   `walk_alloc` only creates absent intermediates), and x86 never
@@ -250,7 +250,7 @@ unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: Pt
 }}
 
 /// Read the current page-table root physical address (CR3, address bits
-/// cleared). S-5: the AP bootstrap record's `page_table_root_pa` must be the
+/// cleared). The AP bootstrap record's `page_table_root_pa` must be the
 /// root the BSP is actually translating with — reading CR3 at orchestration
 /// time is the ground truth (the adopted root lives in kernel boot state,
 /// not in a form arch can name).
@@ -482,15 +482,20 @@ fn walk_alloc(
     Ok(pt + pt_idx * 8)
 }
 
-/// NK4-A C-3（2026-09-22）：用户叶被映射进 supervisor 身份层级的影子下
-/// （bootstrap 身份叶 P|W|X|G 覆盖低 4GiB，VM 拆叶后新 PT 链继承父叶的
-/// U=0）时，硬件按 AND 语义在任一中间层缺 U 即拒绝 CPL3 访问——
-/// #PF(err=0x15)，与叶子自身的 P|U|X 无关；软件 walk 只读叶级故不可见
-/// （真机：RS 入口 0x2246c0 永久 err=0x15，walk=0xd）。本助手沿路径把 U
-/// OR 进既存中间层（Linux 同法：既存 PMD/PUD 补 _PAGE_USER）。安全性：
-/// 叶级 U 仍逐页把门——supervisor 身份页自身叶 U=0 继续拒绝，无新暴露
-/// 面；G 位不动。调用后调用方需保证对 vaddr 的 TLB/paging-structure
-/// 缓存失效（恢复点 invlpg 已在 finish_and_restore 以 p_fault_addr 落地）。
+/// When a user leaf gets mapped under the shadow of a supervisor identity level
+/// (the bootstrap identity leaf P|W|X|G covers the low 4GiB, and a PT chain
+/// created after VM splits a leaf inherits the parent leaf's U=0), the hardware
+/// applies AND semantics: a missing U at any intermediate level rejects CPL3
+/// access with #PF(err=0x15), regardless of the leaf's own P|U|X; a software
+/// walk only reads the leaf level and therefore cannot see it (on real
+/// hardware: the RS entry at 0x2246c0 stayed at err=0x15 forever while
+/// walk=0xd). This helper ORs U into the existing intermediate levels along the
+/// path (the same approach as Linux: add _PAGE_USER to existing PMD/PUD).
+/// No new exposure surface: leaf-level U still gates page by page --
+/// supervisor identity pages keep leaf U=0 and remain refused; the G
+/// bit is untouched. After the call the caller must ensure the TLB /
+/// paging-structure cache is invalidated for vaddr (the restore point invlpg is
+/// already in place in finish_and_restore with p_fault_addr).
 ///
 /// # Safety
 ///
@@ -502,7 +507,8 @@ unsafe fn propagate_user_to_intermediates(root_paddr: u64, vaddr: u64, channel: 
     let i4 = pml4_index(vaddr);
     let pml4e = unsafe { read_pte_dm(root_paddr + (i4 as u64) * 8, channel) };
     if pml4e & X64PteFlags::PRESENT.bits() == 0 {
-        // 空树：walk_alloc 以 mid_flags 建新链，天然带 U，无既存层可升。
+        // Empty tree: walk_alloc builds a fresh chain with mid_flags, which
+        // carries U naturally; there are no existing levels to raise.
         return;
     }
     if pml4e & want == 0 {
@@ -516,7 +522,8 @@ unsafe fn propagate_user_to_intermediates(root_paddr: u64, vaddr: u64, channel: 
     if pdpte & (X64PteFlags::PRESENT | X64PteFlags::PS).bits()
         == (X64PteFlags::PRESENT | X64PteFlags::PS).bits()
     {
-        // 1GiB 叶占位：map 自身已报 AlreadyMapped，无中间层可升。
+        // 1GiB leaf in place: map itself already reports AlreadyMapped, and
+        // there is no intermediate level to raise.
         return;
     }
     if pdpte & X64PteFlags::PRESENT.bits() == 0 {
@@ -533,7 +540,7 @@ unsafe fn propagate_user_to_intermediates(root_paddr: u64, vaddr: u64, channel: 
     if pde & (X64PteFlags::PRESENT | X64PteFlags::PS).bits()
         == (X64PteFlags::PRESENT | X64PteFlags::PS).bits()
     {
-        // 2MiB 叶占位：同上。
+        // 2MiB leaf in place: same as above.
         return;
     }
     if pde & X64PteFlags::PRESENT.bits() == 0 {
@@ -544,7 +551,7 @@ unsafe fn propagate_user_to_intermediates(root_paddr: u64, vaddr: u64, channel: 
             write_pte_dm(pd_pa + (i2 as u64) * 8, pde | want, 0, channel);
         }
     }
-    // PT 级无需：叶子本身携带 U。
+    // The PT level needs nothing: the leaf itself carries U.
 }
 
 impl Paging for X86_64Paging {
@@ -730,10 +737,10 @@ impl Paging for X86_64Paging {
 
 
     unsafe fn destroy(&mut self) {
-        // V11/E4: full four-level reclaim when a pt_free function is
+        // Full four-level reclaim when a pt_free function is
         // registered (the VM process-exit path — C pagetable.c:1427-1437
         // `pt_free` parity, previously "accept the intermediate-table
-        // leak", G-V12-6-era gap E4). Without pt_free (boot-stage tables
+        // leak"). Without pt_free (boot-stage tables
         // with no allocator domain), keep the zero-root-only legacy shape:
         // zero the root PML4 to prevent use-after-free if the physical
         // page is reused, and leave intermediates unreclaimed.
@@ -777,8 +784,8 @@ impl Paging for X86_64Paging {
         // per level — see walk_alloc).
         let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte(flags);
         let leaf_paddr = walk_alloc(self.root_paddr, vaddr.0, self.channel, new_pte)?;
-        // 用户叶：把 U 升进既存 supervisor 中间层（NK4-A C-3，见
-        // propagate_user_to_intermediates 文档）。
+        // User leaf: raise U into the existing supervisor intermediate levels
+        // (see propagate_user_to_intermediates).
         if flags.contains(PageFlags::USER_ACCESSIBLE) {
             // SAFETY: same DM channel contract as walk_alloc above.
             unsafe {
@@ -842,8 +849,8 @@ impl Paging for X86_64Paging {
         vaddr: VirBytes,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
-        // 用户叶：中间层 U 升级与 map 同理（NK4-A C-3，见
-        // propagate_user_to_intermediates）。
+        // User leaf: the intermediate-level U raise works exactly as in map
+        // (see propagate_user_to_intermediates).
         if flags.contains(PageFlags::USER_ACCESSIBLE) {
             // SAFETY: same DM channel contract as walk_alloc.
             unsafe {
@@ -923,12 +930,12 @@ impl Paging for X86_64Paging {
                 unsafe {
                     write_pte_dm(
                         pd_phys.0 + (i as u64) * 8,
-                        // F7（NK4-C 阶段0，优先级实证后由风格项升级为潜伏
-                        // bug）：Rust 中 `+` 结合紧于 `<<`，裸写
-                        // `leaf_pa + i << PD_SHIFT` 解析为 `(leaf_pa+i)<<21`
-                        // ——对非零 1 GiB 对齐 leaf_pa 写出越界 PA（仅
-                        // leaf_pa==0 时侥幸等价）。显式括号钉死期望语义：
-                        // 目标 PA = leaf 基址 + i×2 MiB。
+                        // In Rust `+` binds tighter than `<<`, so the bare
+                        // `leaf_pa + i << PD_SHIFT` parses as `(leaf_pa+i)<<21`
+                        // -- for a non-zero 1 GiB aligned leaf_pa that writes an
+                        // out-of-bounds PA (it coincidentally matched only when
+                        // leaf_pa==0). Explicit parentheses pin the intended
+                        // semantics: target PA = leaf base + i x 2 MiB.
                         leaf_pa + ((i as u64) << PD_SHIFT) | leaf_bits,
                         0,
                         ch,
@@ -963,7 +970,7 @@ impl Paging for X86_64Paging {
                 unsafe {
                     write_pte_dm(
                         pt_phys.0 + (i as u64) * 8,
-                        // F7：同上——显式括号钉死「leaf 基址 + i×4 KiB」。
+                        // Same as above: pin "leaf base + i x 4 KiB" with explicit parentheses.
                         leaf_pa + ((i as u64) << 12) | leaf_bits,
                         0,
                         ch,
@@ -1236,7 +1243,8 @@ unsafe fn flush_cr3(root_paddr: u64) { unsafe {
 ///
 /// All table access goes through the bootstrap root's identity mapping
 /// (`VA = PA`): the DM windows being established must not be load-bearing
-/// for their own construction (§6.1 "DM 建立的自举写通道闭环"). Writes that
+/// for their own construction (the boot write-channel closure that establishes
+/// the DM). Writes that
 /// touch PA < 1 GiB translate through `PDPTE[0]` (`VA < 1 GiB`), so
 /// replacing/splitting `PDPTE[2]` (VA [2 GiB, 3 GiB)) never disturbs the
 /// write channel itself — no circular dependency.
@@ -1549,16 +1557,18 @@ mod tests {
         ));
     }
 
-    /// F7 防回归（NK4-C 阶段0）：`leaf_pa + i << SHIFT` 在 Rust 里解析为
-    /// `(leaf_pa + i) << SHIFT`（`+` 结合紧于 `<<`），对非零对齐 leaf_pa
-    /// 写出越界 PA——split_huge 两处已改显式括号。本测试钉住语义差可判别：
-    /// 删括号还原裸写法时第一断言失败。
+    /// Regression guard for the `+`/`<<` precedence trap: in Rust
+    /// `leaf_pa + i << SHIFT` parses as `(leaf_pa + i) << SHIFT` (`+` binds
+    /// tighter than `<<`), which for a non-zero aligned leaf_pa writes an
+    /// out-of-bounds PA -- both split_huge sites now use explicit parentheses.
+    /// This test pins that the semantic difference is detectable: with the
+    /// parentheses removed (bare form restored) the first assertion fails.
     #[test]
     fn split_huge_leaf_entry_arithmetic_is_base_plus_index_times_page() {
-        let leaf_pa: u64 = 0x4000_0000; // 1 GiB 对齐的非零基址
+        let leaf_pa: u64 = 0x4000_0000; // non-zero 1 GiB aligned base address
         let i: u64 = 1;
-        let naive = (leaf_pa + i) << 21; // 修复前的裸解析形态
-        let fixed = leaf_pa + (i << 21); // 期望语义：基址 + i×2 MiB
+        let naive = (leaf_pa + i) << 21; // the bare parse before the fix
+        let fixed = leaf_pa + (i << 21); // intended semantics: base + i x 2 MiB
         assert_ne!(naive, fixed, "两种形态必须可判别，否则测试无效");
         assert_eq!(fixed, leaf_pa + 0x20_0000);
     }
@@ -1661,12 +1671,14 @@ mod tests {
         // The flag encoding tests above validate the PTE interpretation
         // logic that walk_read depends on.
     }
-    // ── V11/E4: destroy 四级回收（宿主可验证版）──────────────────────
+    // ── destroy's four-level reclaim (host-verifiable version) ─────────
     //
-    // 手写 PTE 树（绕过 map()——其 write_pte_dm 含 invlpg 特权指令，
-    // 宿主必然 SIGSEGV）。destroy 本体只做 read_volatile + write_bytes
-    // + pt_alloc free，宿主完整可验证。T26 技巧：泄漏真实缓冲 +
-    // `set_mock_vm_base` 指向它。状态放 static（register 收 fn 指针）。
+    // Hand-built PTE tree (bypassing map() -- its write_pte_dm contains the
+    // invlpg privileged instruction, which would SIGSEGV on the host). destroy
+    // itself only does read_volatile + write_bytes + pt_alloc free, so the host
+    // can verify it fully. The trick: leak a real buffer and point
+    // `set_mock_vm_base` at it. State goes in statics (the registered closure
+    // takes a fn pointer).
 
     static E4_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     static E4_FREED: std::sync::Mutex<alloc::vec::Vec<u64>> = std::sync::Mutex::new(alloc::vec::Vec::new());
@@ -1749,8 +1761,8 @@ mod tests {
         }
     }
 
-    /// fix14 regression: a `VmDm` handle's `map()` must reach the leaf
-    /// PTE write without executing `invlpg` — VM exercises this channel
+    /// Regression guard: a `VmDm` handle's `map()` must reach the leaf
+    /// PTE write without executing `invlpg` -- VM exercises this channel
     /// at CPL3 where the flush is a privileged instruction (#GP(0)
     /// serial forensics 2026-09-21, rip = leaf write + 4 inside `map`).
     /// On the host the same instruction SIGSEGVs the test process, so
@@ -1759,7 +1771,7 @@ mod tests {
     /// Intermediate levels are hand-built (same reason E4 hand-builds:
     /// `pt_alloc::register` is one-shot across the test binary), so the
     /// production code under test is exactly the leaf write + flush
-    /// point from the fix14 crash.
+    /// point from that crash.
     #[test]
     fn test_vmdm_channel_map_writes_pte_without_invlpg() {
         // Fresh leaked pool: zeroed root + hand-built intermediates.

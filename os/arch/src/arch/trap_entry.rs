@@ -53,10 +53,10 @@
 //! - §3.1 (Two-trait split) — why `TrapEntryArch` is separate from
 //!   `ProtectionArch` (entry mechanism vs access control are different
 //!   concerns with different init order)
-//! - §1.3 (跨特权级的统一流程) — the OS-level trap flow (user→kernel
-//!   transition) the trait implements
-//! - §1.4 (CPU 视角三问 / 第二问) — "异常/syscall 跳哪" is exactly what
-//!   this trait answers
+//! - §1.3 (the unified cross-privilege flow) — the OS-level trap flow
+//!   (user→kernel transition) the trait implements
+//! - §1.4 (the three CPU-perspective questions / question two) — "where does
+//!   an exception/syscall jump to" is exactly what this trait answers
 
 use minix_types::VirBytes;
 
@@ -196,7 +196,7 @@ pub trait TrapEntryArch: Sized {
     );
 }
 
-/// Mock implementation for testing — no hardware interaction (FIX-06: R-11).
+/// Mock implementation for testing — no hardware interaction.
 ///
 /// All methods are no-ops. Allows tests to run `TrapEntryArch` code paths
 /// without touching real IDT/VBAR_EL1/stvec registers.

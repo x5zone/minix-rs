@@ -10,8 +10,8 @@ use crate::platform::PlatformDescSource;
 // ── Data structures ──
 
 // `#[repr(C)]` pins the field ORDER (and each POD field's offset) so the
-// boot-shim's by-value write and the high-half kernel image's read (§1.115
-// 方案 A cross-image handoff) agree. Same-toolchain/profile builds are already
+// boot-shim's by-value write and the high-half kernel image's read (the
+// cross-image handoff) agree. Same-toolchain/profile builds are already
 // deterministic, but making it explicit removes the compiler's freedom to
 // reorder fields between the two separate `cargo` invocations. NOTE: the
 // `&'static [T]` fields' internal (ptr, len) order is still toolchain-defined;
@@ -31,7 +31,7 @@ pub struct KernelInfo {
     /// tables, LOADER_DATA allocations including the bump region and
     /// module blobs).
     ///
-    /// NK4-A fix27: the kernel EXECUTES from these addresses — it is
+    /// The kernel EXECUTES from these addresses — it is
     /// statically linked into the boot-shim PE image, so after EDKII
     /// relocation its code / GDT / IDT / TSS live at low physical
     /// addresses (~0x1da-0x1db_xxxxxx under QEMU OVMF), not at the
@@ -39,8 +39,8 @@ pub struct KernelInfo {
     /// kernel.elf copy. The VM-built process page tables must replay
     /// these windows identity (VA = PA, supervisor-only) or the first
     /// CR3 switch to such a table fault-triples on the next instruction
-    /// fetch (forensics: tmp/nk4a/int_fix26f.log — #PF at
-    /// IP=0x1dac5748 == CR2 right after `mov cr3`).
+    /// fetch (forensics: a #PF at IP=0x1dac5748 == CR2 right after
+    /// `mov cr3`).
     ///
     /// OpenSBI/U-Boot and host tests pass `&[]` (no runtime identity
     /// window; those platforms do not link the kernel into the shim).
@@ -100,7 +100,7 @@ pub struct KernelInfo {
     /// instruction — no separate unpaged section exists. Callers therefore
     /// pass `(PhysBytes(0), 0)` and the kernel's `if bootstrap_len > 0`
     /// guard skips the reclaim entirely. See 01-boot-shim-bootstrap.md
-    /// §X (TODO-01-1 fix) for the rationale.
+    /// for the rationale.
     pub bootstrap_start: PhysBytes,
 
     /// Length of the bootstrap (unpaged-kernel) memory region.
@@ -118,11 +118,11 @@ pub struct KernelInfo {
     /// Empty slice means boot-shim did not provide any — kernel falls back
     /// to `QemuVirtDesc` (dev) or panics (release). See 04-platform-discovery.md §4.6.
     ///
-    /// # Cross-binary safety (TODO-01-2 fix, 2026-07-16)
+    /// # Cross-binary safety
     ///
     /// Each `PlatformDescSource` is pure data `(u32 kind, u64 phys_addr)` —
     /// safe to pass from boot-shim to kernel even when they are separate
-    /// ELF binaries (TODO-02-3). No function pointers cross the boundary.
+    /// ELF binaries. No function pointers cross the boundary.
     ///
     /// # DTB + RSDP coexistence
     ///
@@ -165,7 +165,7 @@ pub struct KernelInfo {
 impl KernelInfo {
     /// Validate kernel-info invariants. Called by `kmain` at entry.
     ///
-    /// R-07 (2026-08-12): `KernelInfo` fields remain `pub` for cross-crate
+    /// `KernelInfo` fields remain `pub` for cross-crate
     /// access (boot-shim constructs, kernel reads, tests assert), but this
     /// method enforces runtime invariants that the type system cannot:
     ///
@@ -231,26 +231,38 @@ impl KernelInfo {
         );
     }
 
-    /// SD-1 / PD-07 采甲（债①）：**跨启动形态等价的 boot 后置条件断言**。
+    /// **Boot-postcondition assertions equivalent across boot forms** (the
+    /// chosen resolution for this debt).
     ///
-    /// PD-07 裁的是「等价后置断言」而非「入口结构相等」——五种启动形态（见
-    /// [`crate::boot_form`]）各从不同固件面（UEFI 内联 / UEFI 跨镜像 / OpenSBI 自举 /
-    /// QEMU 直核自举 / hart 邮箱）产出 `KernelInfo`，其绝对地址随固件而定，天然不可
-    /// 逐一相等；能等价的是**同一组 higher-half 地址空间关系**。本方法把这些关系收
-    /// 成一处、每形态同校，专抓历史上三度复发的「paper constant」类缺陷（`entry_start_pa`
-    /// 错字）与 §1.115「共享 helper 假设单一 `.bss` 世界、把在用的 root 页清零」类越界。
+    /// The decision is "equivalent postcondition assertions", not "equal
+    /// entry structure" — the five boot forms (see [`crate::boot_form`])
+    /// each produce `KernelInfo` from a different firmware surface
+    /// (inlined UEFI / cross-image UEFI / OpenSBI bring-up / direct QEMU
+    /// kernel load / hart mailbox), and their absolute addresses depend on
+    /// the firmware, so they can never be equal one by one; what can be
+    /// equivalent is **the same set of higher-half address-space
+    /// relations**. This method gathers those relations in one place and
+    /// checks them per form, specifically catching the "paper constant"
+    /// class of defect that recurred three times (`entry_start_pa` typos)
+    /// and the overreach where a shared helper assumed a single `.bss`
+    /// world and zeroed a root page still in use.
     ///
-    /// 与 [`Self::validate`] 互补：`validate` 校非地址不变量（bootstrap_len/kern_size/
-    /// 对齐/非空/param_buf 上界），本方法校**地址空间分隔关系**，故各形态构造点都应
-    /// 依次调用二者。所有断言只依赖字段间的相对关系，宿主测试与真机同判据成立。
+    /// Complementary to [`Self::validate`]: `validate` checks non-address
+    /// invariants (bootstrap_len/kern_size/alignment/non-empty/param_buf
+    /// bound), while this method checks the **address-space separation
+    /// relations**, so every form's construction site should call both in
+    /// order. All assertions depend only on relative relations between
+    /// fields, so host tests and hardware share the same criterion.
     ///
     /// # Panics
     ///
-    /// 任一后置条件不成立即 fail-fast（启动期无恢复面，与 `validate` 同权）。
+    /// Any failing postcondition fails fast (there is no recovery surface
+    /// during boot; same weight as `validate`).
     pub fn check_boot_postconditions(&self) {
-        // 1. syscall entry 落在内核镜像内：文档（`syscall_entry` 字段）自陈
-        //    "= kern_virt_base + offset"，任何形态都不得把入口指到镜像外——正是
-        //    `entry_start_pa` 类错字的捕获点。
+        // 1. The syscall entry lies inside the kernel image: the field's own
+        //    doc says "= kern_virt_base + offset", and no form may point the
+        //    entry outside the image — exactly where an `entry_start_pa`
+        //    style typo is caught.
         let entry_off = self
             .syscall_entry
             .0
@@ -264,8 +276,9 @@ impl KernelInfo {
             self.kern_virt_base.0.saturating_add(self.kern_size)
         );
 
-        // 2. 内核初始栈顶落在 higher-half（≥ 内核虚拟基）：三形态都是
-        //    higher-half 内核，栈不得低到用户半区。
+        // 2. The kernel's initial stack top lies in the higher half (≥ the
+        //    kernel virtual base): all three forms are higher-half kernels,
+        //    so the stack must not drop into the user half.
         assert!(
             self.kern_stack_top.0 >= self.kern_virt_base.0,
             "KernelInfo postcond: kern_stack_top (0x{:x}) 低于 higher-half 内核基 (0x{:x})",
@@ -273,8 +286,10 @@ impl KernelInfo {
             self.kern_virt_base.0
         );
 
-        // 3. 用户栈顶严格低于内核 higher-half 基：用户/内核地址空间分隔的底线，
-        //    也是 §1.115「把内核在用页当空闲区清零」那类重叠错位的捕获点。
+        // 3. The user stack top is strictly below the kernel's higher-half
+        //    base: the bottom line of user/kernel address-space separation,
+        //    and where overlapping misplacement (zeroing a kernel page in
+        //    use as if it were free) is caught.
         assert!(
             self.user_sp.0 < self.kern_virt_base.0,
             "KernelInfo postcond: user_sp (0x{:x}) 未严格低于内核基 (0x{:x})",
@@ -283,7 +298,7 @@ impl KernelInfo {
         );
     }
 
-    // ── Getter methods (R-07: preferred API over direct field access) ──
+    // ── Getter methods (preferred API over direct field access) ──
     //
     // These getters are the recommended API. Direct field access remains
     // `pub` for backward compatibility with boot-shim construction and
@@ -305,7 +320,7 @@ impl KernelInfo {
     pub fn memmap(&self) -> &'static [MemoryRegion] { self.memmap }
 
     /// Non-conventional (occupied) physical regions — the kernel runtime
-    /// identity windows fix27 replays into every process page table.
+    /// identity windows replayed into every process page table.
     /// See the `reserved_regions` field doc.
     #[inline]
     pub fn reserved_regions(&self) -> &'static [MemoryRegion] { self.reserved_regions }
@@ -416,7 +431,7 @@ mod tests {
     use super::*;
     use minix_types::USER_STACK_TOP;
 
-    /// R-07: Helper to build a valid KernelInfo for testing.
+    /// Helper to build a valid KernelInfo for testing.
     fn make_valid_info() -> KernelInfo {
         KernelInfo {
             memmap: &[MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 }],
@@ -442,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_validate_accepts_valid_info() {
-        // R-07: A valid KernelInfo should pass validate() without panic.
+        // A valid KernelInfo should pass validate() without panic.
         make_valid_info().validate();
     }
 
@@ -509,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_getters_return_field_values() {
-        // R-07: Getter methods should return the same values as direct field access.
+        // Getter methods should return the same values as direct field access.
         // Slice types lack PartialEq, so compare lengths and first elements.
         let info = make_valid_info();
         // Scalar fields: direct equality.
