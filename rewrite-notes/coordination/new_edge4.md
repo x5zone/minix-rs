@@ -3188,6 +3188,104 @@ HEAD 三份各 0 处 `Diff in`，本轮三份格式化前 7 / 2 / 1 处、格式
 而我还在旁边写了一句把它解释掉、连前提都不对——补栏重跑才看见参照件打 `A`/`B` 两行而本壳打空。
 少了的那一栏会让读日志的人以为看见了全部，而含糊的解释又是自己写的，就更看不见。
 
+### 第一百八十六笔（批次四百七十二 · A2 参数缝半切片 54：`vis` 的 `-e` 值、字母位与操数名交回原字节；本族第一枚「折叠改判决」的腿；支级切片至此走完，下一笔是族终笔）
+
+**这一笔先把差分腿从无到有配了出来**。批次四百零四写的是「宿主没有 `vis(3)`，本支没有差分腿」——
+那句话只对了一半：宿主确实没有现成的 `vis(3)`，但引擎本身就在本仓库里
+（`minix3/lib/libc/gen/vis.c` 的 `strsenvisx` 一族）。本轮把它连同
+`minix3/usr.bin/vis/{vis.c,foldit.c}` 与 Minix 的 `getopt.c` 一起链成宿主参照件
+`tmp/vis-472/vis_ref`（垫片 `visshim.h` 供 `__RENAME`、`CTASSERT`、`_DIAGASSERT`、程序名与
+`strlcpy`，空的 `namespace.h`，配方 `tmp/vis-472/build.sh`）。归属验过：经同名软链起 `-Z`
+交回 `vis: unknown option -- Z` 加 usage、退 1；**两侧现量都钉 `LC_ALL=C`**——参照件的
+`process()` 走 `getwc`/`wctomb`，只有在 C locale 下才是按字节的答案，而本壳的引擎自始按字节。
+
+**这一支的形状与它独有的判决腿**：`vis.c:73` 的 optstring 是 `"bcde:F:fhlMmNnoSstw"`，
+带值的只有 `e` 与 `F`。三处 `%s` 都在字节上：libc 句的字母位（`getopt.c:79`、`:103`）、
+开不了的操数（`warn("%s", *argv)`〔`:157`〕，三段形 `vis: 档名: strerror`，打完继续跑下一个
+并把退码定成 1〔`:158`〕）、以及 `-e` 的值——`extra = optarg`（`:87`）进 `makeextralist`
+（`lib/libc/gen/vis.c:351-384`），C-locale 路径把 `-e` 串按 `(wchar_t)(u_char)src[i]`
+**逐字节**上榜。于是 **`-e` 的值位是本族第一枚「折叠改判决」的腿**：extra 表是一张字节集合，
+`-e $'\377'` 扫 `x\377y` 参照件交回 `x\377y`（ff 上榜、走三位八进制），折过的本壳交回
+`x\M^?y`（名单变成 `ef bf bd` 三枚而 ff 不在）——折叠换掉的是**编码的答案本身**。
+至此这族两分：`split`/`tail`/`unexpand`/`unifdef` 四支的判据是 ASCII 谓词、折叠只改报文，
+`join`/`pr`/`sort`/`vis` 四支的判据是按字节比较的集合或串、折叠连答案一起改；
+`-F` 的值位按构造无差（`atoi` 只认 ASCII 数字、那句报文不带 `%s`），写进了门注释。
+
+**参照件现量翻正了两处旧账面**（改前的件 **16/26** 与参照件逐字节同形，改后的件 **26/26**）：
+① `-d` 是**不带值**的字母——07 篇与本壳注释长期写「C 的选项串里是 `d:`（带值）」，对照
+`vis.c:73` 的字面，冒号挂在 `e` 与 `F` 上；非 `DEBUG` 构建里 `case 'd'` 被编译掉，getopt 认
+`d`（不报缺值行）于是落到 `default:`。参照件四形现量：`-d`、`-d x`、`-cd`、`-dZ` 都只有
+usage 一行、退 1。本壳此前把 `d` 当带值字母，`-d` 排在末尾时多打了 libc 的缺值行（两行）；
+面门期望**有意识翻正**。② 开不了的操数是 `warn("%s", *argv)` 的三段形，本壳此前只打两段、
+strerror 那一段整个缺失；落码 `fn warn_can_open` 自己拼（本族第四份自拼的三段形助手，
+`TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE` 的计数随本笔更新），档名位按原字节。
+
+**落码层**：壳侧 `args_bytes()`/`prog_name_bytes()`，`parse_vis_args` 收 `&'a [&'a [u8]]`、
+`Plan.operands` 改 `Vec<&'a [u8]>`、`-e` 的两个取值臂（附值与下一词）都交原字节；开档口仍走
+`&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在递给它的那一刻。**库侧零改动**：
+`VisOptions.extra` 自始就是 `Vec<u8>`、`extra_set` 按字节建表，且 vis 的选项环**没有提库**
+（`parse_vis_args` 住在 `src/bin/vis.rs`）——这是与 unifdef/unexpand/split 三支的结构性差别，
+负控 K1 因此注定「库内全绿」。
+
+**门账**：面侧 `vis_face` **20 → 21**（新立
+`the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes`，六段：`-e` 分词形、
+`-e` 附值形、反面形、字母位、操数名、`-F` 按构造无差），跨壳表二十三行 → **二十四行**
+（`("vis", VIS, 1, b"vis: unknown option -- \xff\n")`；本支此前不在表上，因为渲染半那笔
+落地时参数缝还没落），整包 69 段 **1283 → 1284 passed / 0 failed**。既有的 `-d` 期望与操数
+报文期望按参照件翻正。
+
+**负控六枚（`tmp/vis-472/negctl.py`，逐枚 `negctl-K1.log`..`negctl-K6.log`）按红掉的测试
+枚数各咬 2/3/1/1/1/2**：K1（壳侧 argv 退回文本缝）咬跨壳表 + 面门而**库内 631 全绿**——
+「库门对壳侧 argv 缝没有牙」第十一次量化，且这一支是结构性的：环没提库，unifdef 那种
+「K2 穿透库内」的形状在这里造不出来；K2（字母位按字符取整簇）咬三枚；K3/K4（`-e` 的两个
+取值臂各折一次）各咬一枚——**两枚分开注入是有意的**，只折一臂时另一臂的形还绿着，红名
+清单会漏；K5（`warn` 档名位折一次）咬一枚；K6（撤掉三段形的 strerror 段）咬两枚。
+`ToString` import 补上之后六枚重跑一遍（`negctl-driver2.log`），读数一字不差，注入还原后
+三件 md5 与跑前清单相符（`post/md5-final.txt`）。
+
+**三起工具自错**：① **no_std 的 `ToString` 第三次**——`warn_can_open` 里
+`Strerror(code).to_string()` 需要 `alloc::string::ToString` 在作用域里，宿主测试看不见它，
+三架构第一遍各报 2 个 `E0599`（`arch-*.log`）；批次四百六十八的判据第三次兑现，而且本轮把
+三架构排在了负控之后才跑、白等一轮——**判据加严：动壳侧字符串拼装后三架构当场跑，排在
+负控之前**。② 量具第一版有一枚形状写坏：想造 `-é` 却拼出 `-` 加一枚孤字节 `c3` 的两个
+token，改前读数 15/25 建立在错形上；改成字面 `b"-\xc3\xa9"` 重跑才得 16/26——**形状的
+注释与它构造的字节要一次核对**。③ bash 探针里 `cmd | head` 之后的 `$?` 是 `head` 的退出码，
+`-d` 那次探针显示 `rc=0` 是假的；读退码要么直接跑、要么 `${PIPESTATUS[0]}`。
+
+**门读数（全部 L1，`2026-10-30`，基线快照 `1366871e6`）**：宿主整包 **69 段 / 1284 / 0**
+（`pkg-1.log`、`pkg-2.log` 同读数、退出码 0）；容器权威门按 §7.3 三挂载配方 → 退 0、
+**69 段 / 1284 / 0**（`container-gate2.log`，第一次同读数）；三架构各退 0、错误 0
+（`arch2-*.log`）；`rustfmt --edition 2024 --check` 触及三件各 0 处（`fmt2-*.log`、
+`fmt3-*.log`；`bin_support.rs` 的四块存量不在本笔触碰范围）；`cargo clippy --offline -j 1
+--all-targets -p minix-textfilter` 退 0、警告 **149** 行与主树同数，去路径后的唯一句两树
+都是 **37** 条且 `diff` 为空（`clippy2.log` 对 `clippy-main.log`），零新警。
+
+**五道收尾门逐条读数**：① `bash tools/todo-reconcile-scan.sh` → 十三项里 2 项 DRIFT
+（探针两项），与主树同读数、非本线引入；② `python3 tools/notes-link-check.py rewrite-notes/`
+→ 764 个 md、断链 131（连续六笔同数），本轮三件文档按窄口径做改前/改后集合对照，两侧都是
+**6** 条、目标串集相同 ⇒ 新增 0；③ `bash tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md`
+→ **PASS（0 项）**；④ `bash tools/doc-style-lint.sh --diff` → 3 个文件 / 102 个新增行、
+**error 级 0**；⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条未触碰。
+
+**进度与在册（全部现量）**：**参数缝半已落二十七支，`textfilter` 的字母位诊断面至此清零**
+（逐支数 `grep -c Getopt`：余下十二支全零）；`textfilter` 余 **12** 支、命令面 **85** 支；
+`line_bytes` **87 处 / 34 件**；`bin_support::prog_name()` 的文本形全命令面余 **16** 个文件
+（本包清零）；三段形自拼助手 **4** 份。在册不变者：`ARGV-BYTE-PATH-IN-LIBS`（本笔再添 vis
+的开档口一条腿）、`VIS-USAGE-PROGNAME-HARDCODED`、`TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE`、
+`SPLIT-*` 两枚、`TAIL-OFFSET-SATURATION-OUTCOME`、`UNIFDEF-*` 四枚。
+**下一笔是族终笔**（支级切片已尽）：删三个文本口（`bin_support::args()`、
+`bin_support::prog_name()`、`minix_textfilter::empty_optstring_operands` 的 `&str` 形——
+现量那形只剩 `src/lib.rs` 自己七处门断言在用）、迁 `text-games` 三支壳（`random`、`wtf`、
+`fortune`）、把 `os/commands/games/text-games/tests/argv_seam_face.rs:fn
+a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 的期望升到逐字节等于原字节，
+该笔闭本行。
+
+**合回条件（本笔当场量）**：`git log --oneline 1366871e6..rewrite` 交回空、
+`git merge-base --is-ancestor 1366871e6 rewrite` 退 0 ⇒ 纯快进、零冲突；主树
+`git status --porcelain` 里本笔涉及的 `os/commands/usr-bin/textfilter/`、
+`rewrite-notes/18-stage-commands/` 与 `rewrite-notes/coordination/` 三处都没有在制改动。
+快进之后的主树复跑读数另记一笔合回补记。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
