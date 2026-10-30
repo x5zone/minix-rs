@@ -481,21 +481,15 @@ impl SmpState {
     /// Read-and-clear this CPU's `cpu_is_idle`, returning whether it *was*
     /// idle. This is the clearing half of C `context_stop_idle()`
     /// (arch_clock.c:351-359: `is_idle = cpu_is_idle; cpu_is_idle = 0;`),
-    /// invoked at the timer-interrupt entry so a tick that lands on a halted
-    /// CPU marks it busy again.
+    /// invoked by `context_stop_idle_current` at interrupt entry, which also
+    /// performs the paired `if (is_idle) restart_local_timer()`.
     ///
-    /// The paired `if (is_idle) restart_local_timer()` is **not** satisfied:
-    /// `clock::local_tick` only rearms a timer that already fired, and every
-    /// architecture's `stop_local_timer` masks the AP timer in `idle()`, so an
-    /// AP woken by a scheduling IPI would stay masked and never tick again.
-    /// The C2C stop-loss therefore restores the BSP affinity clamp; the
-    /// enqueue wake producer remains in place but inert (no process is homed
-    /// on an AP). aarch64's BSP SGI gate, scheduler-flag application, and AP
-    /// entry into `scheduler_loop` are wired (C2D-A64SGI/C2D-APENTRY), and
-    /// riscv's AP entry plus SSIE/STIE gates are wired (C2D-RVAPENTRY, with
-    /// SSI delivery still firmware-blocked); the remaining arms — clear plus
-    /// timer restart on wake, riscv64's flag application, and riscv64's
-    /// remote `fence.i` — must land together before the clamp is removed.
+    /// The C2C stop-loss still holds the BSP affinity clamp. The AP entries
+    /// (C2D-APENTRY/C2D-RVAPENTRY) and the wake-time timer restart
+    /// (C2D-WAKETIMER) are in place; riscv64's scheduler-flag application,
+    /// riscv64's remote `fence.i`, and the READY bounded ack wait remain
+    /// before the clamp can be removed. SSI delivery on riscv is additionally
+    /// firmware-blocked (see `riscv64::smp`).
     pub fn clear_idle_flag(&mut self, cpu: CpuId) -> bool {
         match self.cpu_locals.get_mut(cpu.index()) {
             Some(local) => core::mem::replace(&mut local.cpu_is_idle, false),

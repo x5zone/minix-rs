@@ -195,6 +195,21 @@ impl ClockArch for X86_64ClockArch {
         }
     }
 
+    fn restart_local_timer(&mut self, _cpu_id: u32, icr: u32) {
+        // `stop_local_timer` set LVT.Mask; clear exactly that bit (the
+        // one-shot vector and mode bits stay as init wrote them) and reload
+        // the calibrated count. Both writes are per-CPU LAPIC MMIO.
+        let lapic_base = self.lapic_base as *mut u32;
+        unsafe {
+            let lvt_timer = lapic_base.add(0x320 / 4);
+            let v = core::ptr::read_volatile(lvt_timer);
+            core::ptr::write_volatile(lvt_timer, v & !(1 << 16));
+            if icr != 0 {
+                core::ptr::write_volatile(lapic_base.add(LAPIC_TIMER_ICR_OFF), icr);
+            }
+        }
+    }
+
     fn init_profile_clock(&mut self, hz: u32) -> Result<(), ProfileClockError> {
         // Statistical profiling uses the RTC (Real Time Clock) on x86-64.
         // The RTC can generate interrupts at 2..8192 Hz via IRQ8.

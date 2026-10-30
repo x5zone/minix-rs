@@ -367,13 +367,12 @@ fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
 /// `scheduler_loop` (C2D-APENTRY); riscv64's APs enter `scheduler_loop` and
 /// open `sie.SSIE`/`sie.STIE` (C2D-RVAPENTRY), though its SSI cross-hart
 /// delivery is still firmware-blocked, and riscv64 clears `sip.SSIP` without
-/// applying the pending scheduler flags; and no architecture clears
-/// `cpu_is_idle` plus restarts
-/// the AP's local timer on the wake path — an AP that idled once therefore
-/// never ticks again. riscv64 also still runs its boot-loaded images under a
+/// applying the pending scheduler flags. The wake entries now clear
+/// `cpu_is_idle` and restart the AP's local timer via `context_stop_idle`
+/// (C2D-WAKETIMER). riscv64 still runs its boot-loaded images under a
 /// local-only `fence.i` (`os/arch/src/riscv64/cache_sync.rs`), whose
-/// remote-fence arm is the documented precondition of unclamping. Until those
-/// receive-side arms land, `params.cpu` is clamped to the BSP by
+/// remote-fence arm is the documented precondition of unclamping. Until the
+/// remaining receive-side arms land, `params.cpu` is clamped to the BSP by
 /// [`clamp_cpu_to_bsp`]: the request is accepted (returns `Ok`), but the
 /// process stays on the BSP. This mirrors C's non-SMP build
 /// (`system.c:686-689` ignores the cpu parameter and returns OK) and keeps
