@@ -31,7 +31,8 @@ pub struct ExpandOptions {
 /// rejects as stop zero). `None` marks any violation.
 pub fn parse_stops(spec: &[u8]) -> Option<Vec<usize>> {
     let mut stops: Vec<usize> = Vec::new();
-    // 分隔符与 C 同为逗号与空格；空字段照跳（expand.c 的 getstops 同形）。
+    // The separators are comma and space, as in C; empty fields are skipped the same
+    // way (`getstops` in expand.c has this shape).
     for piece in spec.split(|&b| b == b',' || b == b' ') {
         let bytes: &[u8] = piece;
         let mut value = 0usize;
@@ -121,7 +122,7 @@ pub fn expand(input: &str, stops: &[usize]) -> String {
 pub struct ExpandArgs<'a> {
     /// Tab stop columns from `-t`/obsolete `-N`; empty means the default 8.
     pub stops: Vec<usize>,
-    /// File operands in order——按 argv 的原字节交回（A2 参数缝半）。
+    /// File operands in order, handed back as the raw argv bytes.
     pub operands: Vec<&'a [u8]>,
 }
 

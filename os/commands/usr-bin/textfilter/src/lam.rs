@@ -3,7 +3,7 @@
 //! Deciding half: the per-stream specs (separator, width format, pad
 //! flag, line terminator character) and the row assembly loop over
 //! in-memory line streams. File opening stays behind the hosted
-//! command seam (registered as 待开放路径 like tee/split).
+//! command seam (a path still to be opened, like tee/split).
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -155,7 +155,8 @@ pub fn parse_width(arg: &[u8]) -> Result<LamWidth, LamError> {
         Some(at) => (&body[..at], &body[at + 1..]),
         None => (body, b""),
     };
-    // 两段都已被判据验证为 ASCII 数字，`from_utf8` 在这里不会失败。
+    // Both segments were already validated as ASCII digits by the guard, so
+    // `from_utf8` cannot fail here.
     let min_digits = core::str::from_utf8(min_s).unwrap_or("");
     let max_digits = core::str::from_utf8(max_s).unwrap_or("");
     Ok(LamWidth {

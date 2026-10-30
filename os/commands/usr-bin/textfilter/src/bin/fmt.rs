@@ -114,7 +114,8 @@ fn run() -> ! {
             if *f == b"-" {
                 input.extend(read_stdin());
             } else {
-                // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻。
+                // The open call takes `&str` (registered `ARGV-BYTE-PATH-IN-LIBS`), so
+                // the fold happens only at this point.
                 let shown = String::from_utf8_lossy(f).into_owned();
                 input.extend(
                     support::read_file(&shown).unwrap_or_else(|_| fail("cannot open input")),

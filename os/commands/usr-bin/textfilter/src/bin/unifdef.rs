@@ -9,20 +9,24 @@
 //! input was already clean, 1 when lines were dropped, 2 on trouble.
 //! `-d` (debugging) and `-e` (obfuscated-directive tolerance) are
 //! accepted and ignored — the DODGY table columns they gate are a
-//! registered corner. File access goes through `bin_support` 的双生面
-//! （标准输入走 `read_stdin`，操数档走 `read_file`，`-o` 走 `write_file`）。
+//! registered corner. File access goes through `bin_support`'s twins (standard input
+//! through `read_stdin`, operand files through `read_file`, `-o` through `write_file`).
 //! The hosted-versus-target seams are the echo template's
 //! (`os/commands/bin/fileops/src/bin/echo.rs`).
 //!
-//! 前门有三类出口，句式各有主人，而且**这一支的 usage 退的是 2 不是 1**
-//! （`unifdef.c:373-379` 那句 `exit(2)`）：① 集外字母与带值字母缺值都先由 libc 印一行
-//! （`getopt.c:101-104`、`:132-136`），后面必接 usage；② `-i` 的后随字母不是 `D`/`U`、
-//! `-D`/`-U` 的符号名不合 `addsym` 的形，两处 C 都**只打 usage 一行**，没有自己的句子；
-//! ③ 环结束后先查「一个符号都没有且没给 `-s`」——`warnx` 一句 + usage 共两行，这一支排在
-//! 操数判定之前；两个以上操数是一句 `unifdef: can only do one file`，开不了的操数档名是
-//! `err(2, "can't open %s", …)` 的三段形。usage 那一行的程序名**写死在串里**
-//! （`unifdef.c:375-377` 没有 `getprogname()`），而 libc 那两行与 `err`/`warnx` 的前缀
-//! 跟着 `getprogname()`——同一支命令里两行来历不同。
+//! The front door has three kinds of exits, each with its own owner, and this branch's
+//! usage exits with 2 rather than 1 (`unifdef.c:373-379` has `exit(2)`):
+//! ① an unknown letter and a value-taking letter missing its value are both preceded by
+//! a libc line (`getopt.c:101-104`, `:132-136`), always followed by usage; ② when `-i`
+//! is followed by a letter other than `D`/`U`, or a `-D`/`-U` symbol name does not fit
+//! `addsym`'s shape, C prints only the usage line, with no sentence of its own; ③ after
+//! the loop it first checks "no symbol at all and no `-s`" — one `warnx` line plus usage,
+//! two lines, and this branch comes before the operand test; more than one operand is
+//! one `unifdef: can only do one file` line, and an operand that cannot be opened is the
+//! three-part `err(2, "can't open %s", ...)` form. The program name in the usage line is
+//! hard-coded in the string (`unifdef.c:375-377` has no `getprogname()`), while the libc
+//! lines and the `err`/`warnx` prefixes follow `getprogname()` — two lines in one command
+//! come from different places.
 //!
 //! The command line reaches the library as bytes (`args_bytes`), so the operand
 //! name, the `-o` name and each `-D`/`-U` symbol name and value are the exact
@@ -48,17 +52,20 @@ use minix_textfilter::unifdef::{Unifdef, UnifdefArgError, UnifdefError, parse_un
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名那一处折一次（`line_bytes` 与 `err_line` 两条 `&str` 口，在册
-    // `ARGV-BYTE-PATH-IN-LIBS`）；操数名与 `-o` 名另有按字节拼的腿，不经过这里。
+    // The program name folds once here (the two `&str` mouths of `line_bytes` and
+    // `err_line`, registered `ARGV-BYTE-PATH-IN-LIBS`); operand names and the `-o` name
+    // have their own byte-built legs and do not pass through this point.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
-    // 选项环（`unifdef.c:273` 的 `"i:D:U:I:o:cdeklst"`）。libc 那两行后面必接 usage，
-    // 而 `-i` 的后随字母坏了、符号名不合 `addsym` 的形这两支，C 只有 usage 一行。
+    // The option loop (`unifdef.c:273`'s `"i:D:U:I:o:cdeklst"`). The two libc lines are
+    // always followed by usage, whereas for a broken letter after `-i` and a symbol name
+    // that does not fit `addsym`'s shape, C prints only the usage line.
     //
-    // 字母位走 `line_bytes`：`src/unifdef.rs` 的取法本就按字节（`char::from(bytes[pos])`），
-    // 非 ASCII 字母经 `line` 会被 UTF-8 编成两字节。参照件 `tmp/unifdef-318/unifdef_ref` 现量
-    // `-é` 与 `-cé` 都是 `unifdef: unknown option -- ` + 单个 `c3` + 换行再跟 usage，
-    // 机制在 `getopt.c:79` 的 `optopt = *place++` 与 `:103` 的 `%c`。
+    // The letter slot goes through `line_bytes`: `src/unifdef.rs` already takes bytes
+    // (`char::from(bytes[pos])`), and a non-ASCII letter would be UTF-8 encoded into two
+    // bytes by `line`. C `unifdef` prints, for both `-é` and `-cé`,
+    // `unifdef: unknown option -- ` + a single `c3` + newline followed by usage; the
+    // mechanism is `optopt = *place++` at `getopt.c:79` and `%c` at `:103`.
     let (options, operands) = match parse_unifdef_args(&args[1..]) {
         Ok(parsed) => (parsed.options, parsed.operands),
         Err(UnifdefArgError::Getopt(report)) => {
@@ -72,27 +79,32 @@ fn run() -> ! {
         }
     };
 
-    // `unifdef.c:327-330`：符号表空且没给 `-s` 时先 `warnx` 一句再接 usage，
-    // 这一支排在操数判定之前，所以 `unifdef -- -z` 报的是它而不是「只能一个档」。
+    // `unifdef.c:327-330`: with an empty symbol table and no `-s`, one `warnx` line
+    // comes first and then usage; this branch precedes the operand test, so
+    // `unifdef -- -z` reports it rather than "can only do one file".
     if options.symbols.is_empty() && !options.symlist {
         support::warn(format!("{prog}: must -D or -U at least one symbol\n").as_bytes());
         usage();
     }
-    // `unifdef.c:331-332`：两个以上操数是 `errx(2, "can only do one file")` 单独一行。
+    // `unifdef.c:331-332`: more than one operand is a single
+    // `errx(2, "can only do one file")` line.
     if operands.len() > 1 {
         support::warn(format!("{prog}: can only do one file\n").as_bytes());
         support::terminate(2);
     }
 
-    // `unifdef.c:333-341`：一个操数且不是裸 `-` 才开档；裸 `-` 与没有操数同样读标准输入。
-    // 开不了的那句是 `err(2, "can't open %s", filename)` 三段形（程序名、操数原文、
-    // `strerror` 句子），退码是 2 而不是 1。
+    // `unifdef.c:333-341`: only one operand that is not a bare `-` opens a file; a bare
+    // `-` and no operand both read standard input. The unopenable sentence is the
+    // three-part `err(2, "can't open %s", filename)` form (program name, operand text,
+    // `strerror` sentence), and the exit code is 2 rather than 1.
     let input = match operands.first().copied() {
-        // `unifdef.c:333` 的 `strcmp(*argv, "-") != 0`：裸 `-` 按字节比那一个字节。
+        // `unifdef.c:333`'s `strcmp(*argv, "-") != 0`: a bare `-` is compared as that one
+        // byte.
         None | Some(b"-") => support::read_stdin(),
         Some(path) => {
-            // 开档那条 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`）：折的只是递给 `fopen`
-            // 的那个名字，`err(2, "can't open %s", filename)` 的档名位仍是原字节。
+            // The `&str` mouth of the open call (registered `ARGV-BYTE-PATH-IN-LIBS`):
+            // only the name handed to `fopen` is folded, while the name slot of
+            // `err(2, "can't open %s", filename)` keeps the original bytes.
             let shown = String::from_utf8_lossy(path);
             match support::read_file(&shown) {
                 Ok(bytes) => bytes,
@@ -101,17 +113,19 @@ fn run() -> ! {
         }
     };
     let text = String::from_utf8_lossy(&input).into_owned();
-    // `-o` 的值在操数判定之前就被环收下（`unifdef.c:311-312`），这里先抄一份，
-    // 因为 `options` 整体交进决定半之后就拿不到了。
+    // The `-o` value is taken by the loop before the operand test
+    // (`unifdef.c:311-312`); copy it here because `options` is no longer reachable once
+    // it is handed to the deciding half as a whole.
     let output_path = options.output.clone();
 
     match Unifdef::new(options).run(&text) {
         Ok(outcome) => {
             match output_path.as_deref() {
                 Some(path) => {
-                    // C 那句是 `err(2, "can't open %s", ofilename)` 三段形；本层的
-                    // `write_file` 没有 errno 通道（`Result<(), ()>`），所以这里只能打两段，
-                    // 差的那一段登记为 `UNIFDEF-O-ERRNO-LEG`。
+                    // C's sentence is the three-part
+                    // `err(2, "can't open %s", ofilename)` form; this layer's `write_file`
+                    // has no errno channel (`Result<(), ()>`), so only two parts can be
+                    // printed; the missing part is registered as `UNIFDEF-O-ERRNO-LEG`.
                     let shown = String::from_utf8_lossy(path);
                     if support::write_file(&shown, &outcome.output).is_err() {
                         err_can_open(&prog, path, minix_sys::Errno::from_i32(0));
@@ -161,12 +175,14 @@ fn error_text(err: &UnifdefError) -> String {
     }
 }
 
-/// C 的 `err(2, "can't open %s", …)` 那一句按**字节**渲染：`prog: can't open <名>: <句子>`
-/// 然后退 2。名是 argv 递进来的档名（输入操数与 `-o` 的值两处都用它），经
-/// `support::warn_line` → `minix_sys::err_line(&str)` 会把裸字节折成 U+FFFD，参照件同形
-/// 逐字节对不上（`split`/`tail` 两轮都量过这一形）。`code` 为 0 的那一支是本层的
-/// 诚实读数：`write_file` 没有 errno 通道，C 那一段是 `strerror(0)` 的句子，
-/// 差异登记在 `UNIFDEF-O-ERRNO-LEG`。
+/// Renders C's `err(2, "can't open %s", ...)` sentence by bytes:
+/// `prog: can't open <name>: <sentence>`, then exit 2. The name is the file name argv
+/// supplied (both the input operand and the `-o` value use it); going through
+/// `support::warn_line` -> `minix_sys::err_line(&str)` would fold a bare byte into
+/// U+FFFD and no longer match C byte for byte (the `split` and `tail` work measured this
+/// shape). The branch with `code` 0 is this layer's honest reading: `write_file` has no
+/// errno channel, while C prints the `strerror(0)` sentence there; the difference is
+/// registered as `UNIFDEF-O-ERRNO-LEG`.
 fn err_can_open(prog: &str, name: &[u8], code: minix_sys::Errno) -> ! {
     let mut line = Vec::new();
     line.extend_from_slice(prog.as_bytes());

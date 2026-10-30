@@ -65,9 +65,11 @@ struct Plan<'a> {
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名折一次（`line_bytes` 与 usage 行都收 `&str`，在册 `ARGV-BYTE-PATH-IN-LIBS`；
-    // usage 那一行的名字另有册项 `VIS-USAGE-PROGNAME-HARDCODED`）。操数名与 `-e` 的值
-    // 不走这里：前者按原字节拼进三段形的 `warn`，后者整串按原字节进 extra 表。
+    // The program name folds once (both `line_bytes` and the usage line take `&str`,
+    // registered `ARGV-BYTE-PATH-IN-LIBS`; the usage line's name is a separate registered
+    // item, `VIS-USAGE-PROGNAME-HARDCODED`). Operand names and the `-e` value do not pass
+    // through here: the former is built bytewise into the three-part `warn`, the latter
+    // goes into the extra list as the whole raw string.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let refs: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let plan = match parse_vis_args(&refs, &prog) {
@@ -130,15 +132,17 @@ fn run() -> ! {
         consume(&support::read_stdin());
     } else {
         for &operand in operands {
-            // 开档那一口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在递给它的
-            // 这一刻；报文里念出去的是**原字节**。
+            // The open mouth takes `&str` (registered `ARGV-BYTE-PATH-IN-LIBS`), so the
+            // fold happens only at the moment of the call; what the message reads out is
+            // the original bytes.
             let shown = String::from_utf8_lossy(operand).into_owned();
             match support::read_file(&shown) {
                 Ok(data) => consume(&data),
                 Err(code) => {
-                    // C 是 `warn("%s", *argv)`（`vis.c:157`）：三段形 `vis: 档名: strerror`，
-                    // 然后**继续跑下一个操数**并把退码定成 1（`:158`）。本壳此前只打两段
-                    // （`vis: 档名`），少的是 `strerror` 那一段。
+                    // C calls `warn("%s", *argv)` (`vis.c:157`): the three-part
+                    // `vis: file: strerror`, then it continues with the next operand and
+                    // sets the exit status to 1 (`:158`). An earlier version printed only
+                    // two parts (`vis: file`), missing the `strerror` part.
                     warn_can_open(&prog, operand, code);
                     rval = 1;
                 }
@@ -149,8 +153,9 @@ fn run() -> ! {
     support::terminate(rval);
 }
 
-/// C `warn("%s", *argv)` 的三段形，档名位交回 argv 的原字节（本族第四份自拼的助手，
-/// 形状的权威仍是 `minix-types::err_line`，那条 `&str` 口在册）。
+/// The three-part form of C's `warn("%s", *argv)`, with the file-name slot handed back
+/// as the raw argv bytes (the fourth hand-assembled helper in this family; the shape's
+/// authority is still `minix-types::err_line`, whose `&str` mouth is registered).
 fn warn_can_open(prog: &str, name: &[u8], code: minix_sys::Errno) {
     let mut line = Vec::new();
     line.extend_from_slice(prog.as_bytes());
@@ -173,15 +178,17 @@ fn main() {
     run()
 }
 
-/// C 的 usage 文本（`vis.c:136-139`，注意那个大写 `U`；退 1）。
+/// C's usage text (`vis.c:136-139`, note the capital `U`; exit 1).
 const USAGE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
 
-/// 把 libc `getopt` 的那一行与自己的 usage 拼成两行（句子单源住在
-/// [`GetoptReport`]，与同族其它壳共用一份文本）。
+/// Joins the libc `getopt` line and this program's usage into two lines (the sentence
+/// has a single source in [`GetoptReport`], shared with the rest of the family).
 ///
-/// 交回的是**字节串**而不是 `String`：libc 那一行的字母位是一个裸字节（`getopt.c:79` 的
-/// `optopt = *place++` 一次进一个字节、`:103` 的 `%c` 原样写出），参照不了 `vis` 的宿主没有
-/// `vis(3)`，所以这一支的判据来源是同族已用参照件钉过的九支壳与 C 源本身。
+/// It returns a byte string rather than a `String`: the letter slot of the libc line is
+/// one bare byte (`optopt = *place++` at `getopt.c:79` takes one byte at a time, and
+/// `%c` at `:103` writes it unchanged). A host without `vis(3)` cannot serve as a
+/// reference, so the truth for this branch comes from the nine shells of the family
+/// already pinned against C references, plus the C source itself.
 fn libc_line(report: GetoptReport, prog: &str) -> Vec<u8> {
     [report.line_bytes(prog), USAGE.as_bytes().to_vec()].concat()
 }
@@ -282,8 +289,9 @@ fn parse_vis_args<'a>(argv: &'a [&'a [u8]], prog: &str) -> Result<Plan<'a>, Vec<
                     } else if index < argv.len() {
                         argv[index].to_vec()
                     } else {
-                        // C 的 getopt 在缺值时先自己印一行（`getopt.c:132-136`），
-                        // 才把 `?` 交给开项环落到 `default: usage()`——所以这里是**两行**。
+                        // C's getopt prints a line of its own on a missing value
+                        // (`getopt.c:132-136`) and only then hands `?` to the option loop,
+                        // which falls into `default: usage()` — so this is two lines.
                         return Err(libc_line(GetoptReport::MissingValue('e'), prog));
                     };
                     pos = bytes.len();
@@ -314,18 +322,22 @@ fn parse_vis_args<'a>(argv: &'a [&'a [u8]], prog: &str) -> Result<Plan<'a>, Vec<
                     pos = bytes.len();
                     continue;
                 }
-                // `-d` 是**不带值**的字母：`vis.c:73` 那张串里 `:` 挂在 `e` 上而不是 `d` 上
-                // （`"bcde:F:fhlMmNnoSstw"` 切出来是 `b c d e: F: f h l M m N n o S s t w`），
-                // 所以 getopt 认它、也不报缺值行；但 `case 'd'` 只在 `DEBUG` 构建里存在，
-                //  shipped 构建里它落到 `default:` 打一行 usage 退 1（参照件现量 `-d`、
-                // `-d x`、`-cd`、`-dZ` 四形全是**只有 usage 一行**，`tmp/vis-472/measure.log`）。
-                // 本壳此前把它当带值字母，`-d` 排在末尾时多打了 libc 那句缺值行。
+                // `-d` takes no value: in `vis.c:73`'s string the `:` hangs on `e`, not
+                // on `d` (`"bcde:F:fhlMmNnoSstw"` splits into
+                // `b c d e: F: f h l M m N n o S s t w`), so getopt recognizes it and
+                // reports no missing-value line; but `case 'd'` exists only in a `DEBUG`
+                // build, so in a shipped build it falls into `default:` and prints one
+                // usage line with exit 1 (all four shapes `-d`, `-d x`, `-cd` and `-dZ`
+                // print only the usage line). An earlier version treated it as a
+                // value-taking letter, so a trailing `-d` produced libc's extra
+                // missing-value line.
                 b'd' => return Err(USAGE.as_bytes().to_vec()),
                 _ => {
-                    // 集外字母：libc 的 `getopt` 先印一行（`getopt.c:101-104`，选项串不以
-                    // `:` 开头所以 `opterr` 生效），再由 `case '?'`/`default` 接 usage。
-                    // 本壳此前只打 usage，把这个命令同族的其它五支（head/tail/uniq/cut/join/sort）
-                    // 都有的那一行弄丢了。
+                    // Unknown letter: libc's `getopt` prints one line first
+                    // (`getopt.c:101-104`; the option string does not start with `:`, so
+                    // `opterr` is in effect), and then `case '?'`/`default` adds usage.
+                    // An earlier version printed only usage, losing the line the other
+                    // shells of this family (head/tail/uniq/cut/join/sort) all have.
                     return Err(libc_line(
                         GetoptReport::UnknownOption(bytes[pos] as char),
                         prog,

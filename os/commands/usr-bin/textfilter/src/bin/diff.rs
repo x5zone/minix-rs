@@ -25,7 +25,8 @@ mod support;
 use minix_sys::read;
 use minix_textfilter::diff::{DiffFormat, DiffOptions, DiffStatus, diff_lines, split_text};
 
-/// `-U` 的取值判据照 C 的 `atoi` 只认 ASCII 数字；折前折后同判，只改报文里的字节。
+/// The `-U` value test follows C's `atoi` and accepts ASCII digits only; the fold
+/// changes neither verdict, only the bytes in the message.
 fn parse_usize(bytes: &[u8]) -> Option<usize> {
     if bytes.is_empty() {
         return None;
@@ -86,7 +87,7 @@ fn run() -> ! {
                     break;
                 }
                 _ => {
-                    // 集外字母的字母位按原字节（C 的 `%c`）。
+                    // The off-letter's letter slot is the raw byte (C's `%c`).
                     let mut line: Vec<u8> = b"diff: illegal option -- ".to_vec();
                     line.push(flags[k]);
                     line.push(b'\n');
@@ -117,8 +118,9 @@ fn run() -> ! {
                 }
             }
         } else {
-            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
-            // 报文里念出去的是原字节。
+            // The open entry wants `&str` (registered under `ARGV-BYTE-PATH-IN-LIBS`),
+            // so the fold happens only at this point; the message still reports the
+            // raw bytes.
             let shown = String::from_utf8_lossy(operand).into_owned();
             match support::read_file(&shown) {
                 Ok(data) => sides[side] = data,
@@ -140,9 +142,9 @@ fn run() -> ! {
     let la = split_text(&text_a);
     let lb = split_text(&text_b);
 
-    // 输出报头里的两个档名是内容半的一条腿（在册 `DIFF-LABEL-CONTENT-TEXTSEAM`）：
-    // `diff_lines` 的标签口收 `&str`，折只发生在这一刻，带裸字节的档名在报头里
-    // 仍是折过的。
+    // The two file names in the output header are a leg of the content half:
+    // the `diff_lines` label entry takes `&str`, so the fold happens only at this
+    // point, and a name carrying raw bytes still appears folded in the header.
     let label_a = String::from_utf8_lossy(operands[0]).into_owned();
     let label_b = String::from_utf8_lossy(operands[1]).into_owned();
     let result = diff_lines(&la, &lb, &label_a, &label_b, &options);

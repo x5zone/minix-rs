@@ -66,7 +66,8 @@ fn run() -> ! {
         out.extend(colcrt(&read_stdin(), &opts));
     } else {
         for f in &files {
-            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻。
+            // The open entry wants `&str` (registered under `ARGV-BYTE-PATH-IN-LIBS`),
+            // so the lossy fold happens only at this point.
             let shown = String::from_utf8_lossy(f).into_owned();
             let data = support::read_file(&shown).unwrap_or_else(|_| fail("cannot open input"));
             out.extend(colcrt(&data, &opts));

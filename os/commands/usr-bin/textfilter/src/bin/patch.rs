@@ -26,7 +26,8 @@ mod support;
 use minix_sys::read;
 use minix_textfilter::patch::{PatchOptions, apply_patch, parse_patch};
 
-/// `-F` 的取值判据照 C 的 `atoi` 只认 ASCII 数字；折前折后同判，只改报文里的字节。
+/// The `-F` value test follows C's `atoi` and accepts ASCII digits only; the verdict is
+/// the same before and after folding, and only the bytes in the message change.
 fn parse_usize(bytes: &[u8]) -> Option<usize> {
     if bytes.is_empty() {
         return None;
@@ -107,7 +108,8 @@ fn run() -> ! {
         usage();
     }
     if let Some(target) = operands.first() {
-        // 档名位按原字节（那条 seam 在册 E-CMDSYSFACE）。
+        // The file-name slot carries the raw bytes (that seam is registered as
+        // E-CMDSYSFACE).
         let mut line: Vec<u8> = b"patch: target file `".to_vec();
         line.extend_from_slice(target);
         line.extend_from_slice(b"' waits on the open-existing seam (edge E-CMDSYSFACE)\n");
@@ -117,8 +119,9 @@ fn run() -> ! {
 
     let text = match &patchfile {
         Some(path) => {
-            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
-            // 报文里念出去的是原字节。
+            // The open call takes `&str` (registered `ARGV-BYTE-PATH-IN-LIBS`), so the
+            // fold happens only at this point; what the message reads out is the original
+            // bytes.
             let shown = String::from_utf8_lossy(path).into_owned();
             match support::read_file(&shown) {
                 Ok(v) => String::from_utf8_lossy(&v).into_owned(),

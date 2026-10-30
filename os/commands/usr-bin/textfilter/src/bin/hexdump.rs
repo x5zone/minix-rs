@@ -125,7 +125,8 @@ fn run() -> ! {
         }
     } else {
         for operand in &operands {
-            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻。
+            // The open entry wants `&str` (registered under `ARGV-BYTE-PATH-IN-LIBS`),
+            // so the lossy fold happens only at this point.
             let shown = String::from_utf8_lossy(operand).into_owned();
             match support::read_file(&shown) {
                 Ok(data) => input.extend_from_slice(&data),
@@ -168,7 +169,8 @@ fn run() -> ! {
     support::terminate(rval);
 }
 
-/// `-n`/`-s` 的取值：本 token 剩下的那段，或下一个词——都按 argv 的**原字节**交回。
+/// The `-n`/`-s` value: the rest of this token, or the next word — both handed
+/// back as argv's **raw bytes**.
 fn flag_value<'a>(
     argv: &'a [Vec<u8>],
     i: &mut usize,
@@ -183,8 +185,10 @@ fn flag_value<'a>(
     argv.get(*i).map(Vec::as_slice)
 }
 
-/// `-n` 的取值判据照 C 的 `strtoll` 只认 ASCII：可带一枚符号、读到非数字为止；
-/// 一枚裸字节折前折后都不是数字，所以这一腿折叠改不了判决、只改报文里的那串字节。
+/// The `-n` value test follows C's `strtoll` and accepts ASCII only: an optional
+/// sign, then digits up to the first non-digit. A bare byte is not a digit either
+/// before or after the fold, so folding cannot change the verdict on this leg,
+/// only the byte string in the message.
 fn parse_i64(bytes: &[u8]) -> Option<i64> {
     let mut i = 0usize;
     let negative = match bytes.first() {
