@@ -3044,6 +3044,133 @@ K4（壳侧值位折一次）与 K5（档名折一次）各只咬面门。
 取证目录 `tmp/unexpand-470/`（三侧现量、A/B、负控五枚、门日志、`post/` 快照、改前与改后两枚件、
 `overflow.log`）已在主树 `tmp/` 下，无需另抄。
 
+### 第一百八十五笔（批次四百七十一 · A2 参数缝半切片 53：`unifdef` 的操数名、符号名与 `-o` 名交回原字节；一处「读码读出来的因果」被实测否掉，一处内容半的分叉按现量立住）
+
+**这一支的形状**：`minix3/usr.bin/unifdef/unifdef.c:273` 的 optstring 是
+`"i:D:U:I:o:cdeklst"`——五个带值字母（`i`、`D`、`U`、`I`、`o`）加七个不带的，大小写混排。
+三处 `%s` 回声都在字节上：`err(2, "can't open %s", filename)`（`:337`，输入操数）、
+`err(2, "can't open %s", ofilename)`（`:365`，`-o` 的值，它同时也是 `fopen` 的参数〔`:364`〕）、
+`errx(2, "%s unchanged", ofilename)`（`:509`、`:514`、`:1034`，本壳未建模那条支路）。
+符号名那一族的判据也按字节：`skipsym`（`:928`，判据是 `:262` 的 `endsym`，只放过字母、数字与 `_`）
+吃出一段名字，`addsym` 以它的落点当尾巴起点（`:977`）再看尾巴是 `'\0'` 还是 `'='`，
+查表比的是 `strlcmp`（`:951`，定义 `:998`）；`-i` 那一支先吃**一个字节**选边（`:281`）。
+`usage()` 那一行的程序名**写死在串里**（`:375-377` 没有 `getprogname()`），而 libc 那两行与
+`err`/`warnx` 的前缀跟着 `getprogname()`，且 `exit(2)`（`:378`）——**这一支的 usage 退 2**，
+跨壳表那一行钉的是 2 而不是同族常见的 1。
+
+**参照件归属本轮现核了两遍**（`tmp/unifdef-471/attribution.log`）：同一个件经**同名软链**
+`tmp/unifdef-318/unifdef` 起时 `-Z` 交回 `unifdef: unknown option -- Z` + usage 行、退 2；
+经本轮那个改名软链 `bin-ref-unifdef` 起时**第一行跟着 argv[0] 变成 `bin-ref-unifdef`、
+第二行的 `unifdef` 一个字都不动**。上面那句「两行来历不同」以前是读码得到的，这次是量到的。
+
+**三侧现量**（`tmp/unifdef-471/measure.log`，十三形 × 三侧）：改前的件 **9/13** 与参照件
+`tmp/unifdef-318/unifdef_ref` 逐字节同形，改后的件 **11/13**。翻正的是字母位与输入操数那句
+`can't open`；`-o` 的名字位现在也按字节（句子那一段还差一截，见下面第一条在册分叉）。
+三形判据核实为同判：`-D\xffA` 与 `-i\xff` 两侧都只打 usage 一行、`-DA=\xff` 两侧都接受。
+**这一支也没有「折叠改了判决」的形**，理由与上一笔同源且更硬：名字的合法字符集是 ASCII 三类，
+裸字节是**截断点**而不是名字的一部分，所以折叠既不改接受也不改拒绝，只改报出去的那串字节。
+
+**本轮最值钱的是一处自纠**：台账初稿只读了 `src/unifdef.rs:fn find_sym` 里那句
+`core::str::from_utf8(&b[cp..end]).ok()?`，就写成「档名里带裸字节的符号在 `-s` 那一形里整个消失」，
+并据此新立一枚在册项——一次都没量。补跑之后两头都不成立：本壳 `-s` **一行都不打**（谈不上
+「某个符号消失」），而名字位按两边的同一取法恒为 ASCII（参照件现量：`-s -DA=\xff` 与档里的
+`#ifdef A\xffB` 都只打 `A`）。册项删除、码内注释同步改掉，判据入台账：**读码得到的「应该如此」
+不是观察，立册之前必须有一条跑过的命令兜着**；给不出观察的分支只能写成「按源码应如此、未量」。
+
+**`-s` 那一族因此被量准了**（`tmp/unifdef-471/symcheck.log`，二十次调用、两侧对照）：C 在 `-s` 下
+唯一的打印点就是 `findsym` 里那句 `printf`（`:948-949`），于是**每次 `findsym` 调用出一行**，
+而调用点有两族——`addsym` 在建表之初先 `findsym(sym)`（`:969`）⇒ 命令行每个 `-D`/`-U`/`-iD`/`-iU`
+的名字各回声一行、且发生在 `=` 拆值之前（现量 `-s -DFOO=BAR` 打 `FOO`、`-s -UFOO` 打 `FOO`）；
+`evalstr` 扫档时对每个标识符调它（`:760`、`:771`）⇒ 同一符号出现几次打几次、与表里有没有它无关
+（现量 `-s -DA` 扫 `#ifdef A`/`#ifdef B` 那份档打 `A`/`A`/`B` 三行，本壳打空，两侧同退 0）。
+在册项 `UNIFDEF-SYMLIST-OUTPUT` 第三次现量，且比批次三百一十八那次多出「命令行名字也回声」这一条。
+
+**真正立住的内容半分叉在档里的行**（`tmp/unifdef-471/content-seam.log`）：同一份档
+（`#ifdef A / x / #else / one \xff tail / #endif / plain \xff line`）四形对照，参照件把保留下来的
+那行原样交回单个 `377`，本壳交回 `357 277 275`（U+FFFD 三字节），退码两侧同 1——`-DA`、`-iDA`、
+`-l -DA` 三形都是这个差，`-c -DB` 那形两侧都空。成因是缝在决定半的入口：壳读档先
+`String::from_utf8_lossy`，而 `Unifdef::run` 收 `&str`，折发生在读档那一刻、比任何选项都早。
+登记 `UNIFDEF-LINE-CONTENT-TEXTSEAM`（与 `UNEXPAND-LINE-CONTENT-TEXTSEAM`、
+`SORT-RECORD-CONTENT-TEXTSEAM` 同族），本轮不碰。
+
+**落码层**：库侧 `parse_unifdef_args` 收 `&'a [&'a [u8]]`、`UnifdefArgs.operands` 改
+`Vec<&'a [u8]>`、`Sym.name`/`Sym.value`/`Options.output` 改 `Vec<u8>`、`symbol_run` 与
+`add_symbol` 的 spec 收 `&[u8]`、`-i` 臂按一枚字节选；壳侧走 `args_bytes()`/`prog_name_bytes()`，
+开不了的操数那一句由新立的 `fn err_can_open` 自己拼三段形（本族第三份自拼助手，`sort` 另有内联
+一处，`TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE` 的计数随本笔更新）。
+
+**门账**：库内 `unifdef` 模块 **21 → 22**（现量 `grep -c '#\[test\]' src/unifdef.rs`；新立
+`the_symbol_and_path_legs_hand_back_the_argv_bytes`，七段：名字位、值位、`-o` 名、操数、字母位、
+`-i` 臂、环不重排），`unifdef_face` **14 → 15**（新立
+`the_operand_and_output_names_carry_the_argv_bytes`，六段，末段按当前形状钉住 `-o` 落盘时那个折过
+的档名），跨壳表二十二行 → **二十三条**（`("unifdef", UNIFDEF, 2, b"unifdef: unknown option -- \xff\n")`），
+整包 69 段 **1281 → 1283 passed / 0 failed**。篇首那句「库测试 630 个」随本笔回填 **631**
+（现量 `cargo test --offline -j 1 -p minix-textfilter --lib`）。夹具侧 27 处 `parse_unifdef_args`
+包进新立的 `fn argv`、13 处 `add_symbol` 的 spec 与 6 处期望位改字节面量。
+
+**负控三枚（`tmp/unifdef-471/negctl.py`，逐枚 `negctl-K1.log`..`negctl-K3.log`）按红门数各咬 2/4/1**：
+K1（壳侧 argv 退回文本缝）咬跨壳表 + 面门而**库内 631 全绿**——「库门对壳侧 argv 缝没有牙」第十次量化；
+K2（字母位改按字符取）**第一遍库内全绿**，按判据先怀疑覆盖面有洞而不是相信这条腿没差，查出新立的库门
+只覆盖了 `usage()` 那两支与值位/档名位、没覆盖字母臂的取法，补一段 `parse_unifdef_args(&[b"-\xff"])`
+的断言后重跑同一枚注入，**当场咬库内一枚**；K3（`can't open` 的档名位折一次）只咬面门。
+改完注释与台账之后三枚重跑一遍（`negctl-driver2.log`），读数一字不差仍是 2/4/1，注入还原后四件 md5
+与跑前清单相符（`post2/md5-before-negctl.txt`）。
+
+**A/B 对参照件跑矩阵四十五形 SAME=45 / DIFF=0**（`tmp/unifdef-471/ab.log`；两侧同退 0 的 5 形先数过），
+撞见的两形在册分叉都有主人：① `UNIFDEF-D-DEBUG-OUTPUT`——`-d` 在 C 不是纯忽略，它把 `findsym` 与
+状态机每一步用 `debug()` 刷到标准错误（参照件对那枚三行的小档刷了 **13** 行，`findsym` 一句加六对
+`parser`/`process`，`tmp/unifdef-471/debug-ref.err`），本壳只当合法空字母；
+② `UNIFDEF-O-ERRNO-LEG`——`-o` 开不了时 C 那句 `err` 的第三段是 `strerror`，本层 `write_file` 交回
+`Result<(), ()>` 没有 errno 通道，于是本壳打 `Undefined error: 0`（恰是 C 的 `err` 在 `errno == 0`
+时的句子形状）而参照件打 `No such file or directory`，名字位两边都是原字节。
+
+**六起工具自错**（逐条见 18 篇台账本笔）：① bash 里 `$FFx` 被当成变量名，那枚裸字节根本没进 argv，
+第一轮「三侧同形」是假的；② 同一枚混淆把改前件/改后件与源码的 md5 串着看；③ 负控驱动的目标标签
+还写着上一笔的 `bin_unexpand`（读数没错、标签会误导）；④ `parse_unifdef_args(&[b"-D\xff"])` 的期望
+先写成「接受」，当场红；⑤ `post/` 快照打早了，负控跑完拿它复验时报 FAILED；⑥ **A/B 脚本末尾那几行
+在册形的打印语句里压根没有 `out=` 栏**，标准输出的差异落不进日志，而我在它旁边写了一句把它解释掉
+（「早先两形的标准输入是空的」——那两形带的是档名操数、`in.txt` 非空，连前提都不对）。补栏重跑，
+原日志存档 `ab-stdout-blind.log`。判据：**少了的那一栏会让读日志的人以为看见了全部**，而含糊的解释
+又是自己写的，就更看不见。另有一处账面用字要更正：码笔 `3d0497ead` 的提交信息把跨壳表写成
+「二十三轮」，正字是「二十三条」。
+
+**门读数（全部 L1，`2026-10-30`，基线快照 `ae4aadcfb`）**：宿主整包 **69 段 / 1283 / 0** 四次同读数
+（`pkg-2.log`、`pkg-3.log`、`pkg-4.log`、`pkg-5.log`，退出码各 0）；容器权威门按 §7.3 三挂载配方
+→ 退 0、**69 段 / 1283 / 0**（`container-gate3.log`，前两次同读数）；三架构各退 0、错误 0
+（`arch3-*.log`，动壳侧字符串拼装后当场跑，一次通过）；`rustfmt --edition 2024 --check` 原地量：
+HEAD 三份各 0 处 `Diff in`，本轮三份格式化前 7 / 2 / 1 处、格式化后四件复量各 0 处（`fmt3-*.log`）；
+`cargo clippy --offline -j 1 --all-targets -p minix-textfilter` 退 0、警告 **149** 行与主树同数，
+去路径后的唯一句子两树都是 **37** 条、`diff` 为空，位置清单两树都是 **80** 处、差集只有 `unifdef.rs`
+的四处行号漂移（本轮改注释所致），零新警。
+
+**五道收尾门逐条读数**：① `bash tools/todo-reconcile-scan.sh` → 十三项里 2 项 DRIFT（探针两项），
+与主树同读数、非本线引入；② `python3 tools/notes-link-check.py rewrite-notes/` → 764 个 md、
+**断链 131**（连续五笔同数），本轮三件文档另按窄口径做过改前/改后集合对照，两侧都是 **6** 条、
+目标串集相同 ⇒ **新增 0**；③ `bash tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md` →
+**PASS（0 项）**；④ `bash tools/doc-style-lint.sh --diff` → 3 个文件 / 132 个新增行、**error 级 0**；
+⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条未触碰。
+
+**进度与在册（全部现量）**：参数缝半已落 **二十六支**；`textfilter` 余 **13** 支
+（`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l`）、命令面 **86** 支
+（`grep -rl "support::args()" os/commands --include=*.rs | wc -l`）；`line_bytes` **86 处 / 34 件**
+（本笔给 `unifdef` 的壳添了一处调用点，上一笔写的 85 是改前的数）。**带字母位诊断面的只剩 `vis` 一支**
+——逐支数 `grep -c Getopt`：`vis.rs` 七处，其余十三支（含同件的 `unvis`）全零。**切片 54 = `vis`**
+（批次四百七十二）是本族参数缝半的最后一支，做完接着落那笔族终笔：删三个文本口
+（`bin_support::args()`、`bin_support::prog_name()` 与 `minix_textfilter::empty_optstring_operands`
+的 `&str` 形——现量本树里那形只剩 `src/lib.rs` 自己的七处门断言还在用），并把
+`os/commands/games/text-games/tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent`
+的期望从「raw 与 lossy 同形」升到逐字节等于原字节；`text-games` 三支壳（`random`、`wtf`、`fortune`）
+与 `textfilter` 余下十三支同批迁字节缝。在册不变者：
+`ARGV-BYTE-PATH-IN-LIBS`（本笔再添 `-o` 落盘的档名一条腿）、`UNIFDEF-O-ERRNO-LEG`、
+`UNIFDEF-D-DEBUG-OUTPUT`、`UNIFDEF-SYMLIST-OUTPUT`、本笔新立 `UNIFDEF-LINE-CONTENT-TEXTSEAM`、
+`TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE`、`SPLIT-*` 两枚与 `TAIL-OFFSET-SATURATION-OUTCOME`
+（饱和裁决按上一笔的结论**逐命令照各自那一句**）。
+
+**合回条件（本笔当场量）**：`git log --oneline ae4aadcfb..rewrite` 交回空、
+`git merge-base --is-ancestor ae4aadcfb rewrite` 退 0 ⇒ 纯快进、零冲突；主树 `git status --porcelain`
+里本笔涉及的 `rewrite-notes/18-stage-commands/`、`rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md`
+与 `os/commands/usr-bin/textfilter/` 三处都没有在制改动。快进之后的主树复跑读数另记一笔合回补记。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
