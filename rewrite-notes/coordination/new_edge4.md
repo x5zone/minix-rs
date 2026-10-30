@@ -2727,6 +2727,23 @@ SAME=53 / DIFF=0**（`tmp/split-468/ab.log`），另计 1 形在册分叉（盘�
 `os/commands/usr-bin/textfilter/`）的 `git status --porcelain` 四处交回空。快进之后的主树复跑
 读数另记一笔合回补记（沿用批次四百六十七那两笔的做法）。
 
+**合回读数（第一百八十二笔补记，批次四百六十八）**：快进前又核一遍——`git log --oneline
+934bf04df..rewrite` 仍交回空、`git merge-base --is-ancestor 934bf04df rewrite` 退 0 ⇒ `git merge
+--ff-only claim/GETOPT-REPORT-BYTE-LETTER-qoder` 纯快进成功（`8 files changed, 768 insertions(+),
+171 deletions(-)`，主树 `rewrite` 顶到 `ae3fc1c6e`），主树合回前后各跑一次 `git status --porcelain`：两侧都是 **29** 条别线在制项
+（`prompt/`、`AI-chats/`、`rewrite-notes/01-stage-kernel/` 三族），本线四个路径
+（`rewrite-notes/18-stage-commands/`、`rewrite-notes/coordination/new_edge4.md`、
+`rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md`、`os/commands/usr-bin/textfilter/`）
+一条都没被牵进暂存区。逐笔验祖先三笔全 ✓（码笔 `339b4932f`、
+文档笔 `4636310f7`、里程碑笔 `ae3fc1c6e`）。主树当场复跑
+`cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1276 / 0**，其中库内 628、
+`split_face` 31、`bin_support_face` 4，与领取树最终态逐数相同
+（`/home/xzhao/github/minix-rs/tmp/split-468-maintree.log`）。**这一笔自己也踩了那条老坑**：第一次
+复跑是在仓库根发起的，cargo 当场报 `could not find 'Cargo.toml' in /home/xzhao/github/minix-rs`，
+退出码 101 而「test result」行数 0——正是「0 命中先问跑没跑成」的第五次实例；把命令挪进 `os/`
+重跑才是上面那串数。取证 `tmp/split-468/`（三侧现量、A/B、负控五枚日志、门日志、改前与改后两枚件）
+与主树门日志都在主树 `tmp/` 下，无需回抄。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
