@@ -70,8 +70,10 @@ pub(crate) fn nk4a_walk_reconcile(root: u64, va: u64, pa1: u64, pa2: u64) {
 /// 8 次；打印不消费被测数据流）。命中是线索不是判决：src 在诊断窗口内
 /// 被第三方改写也会命中，需与对账探针/陷帧守卫读数共同定性。
 ///
-/// 判据边界：只覆盖 Completed(Ok) 全量完成路径（Suspended 半程的
-/// src/dst 生命周期语义不同，不覆盖）。
+/// 判据边界：覆盖 Completed(Ok) 的全量完成路径，以及挂起前的已拷贝前缀
+/// ——分片挂起时先核 `done` 字节，恢复后的重试再走全量路径，两段合起来
+/// 覆盖这次拷贝搬过的每个字节。挂起点本身（未映射页）不读，避免把
+/// "本来就没拷"的页算成不一致。
 #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
 fn nk4a_copy_verify(
     src: &AddressRef,
@@ -626,6 +628,13 @@ pub fn cross_space_copy<D: DirectMapArch>(
         let chunk = core::cmp::min(srun, drun);
         if chunk == 0 {
             // A side stopped at an unmapped / run-breaking page; suspend on it.
+            // Verify the prefix that was copied before the suspension: the
+            // retried call will verify the full range on completion, so the
+            // two observations together cover every copied byte.
+            #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+            if done > 0 {
+                nk4a_copy_verify(src, dst, done, proc_table, &proc_cr3);
+            }
             return if srun == 0 {
                 CrossSpaceResult::Suspended(VmFaultType::Src)
             } else {
