@@ -3854,3 +3854,13 @@ ap-irq-ready=1 / ap-timeout=0 / panic=0`（BSP rc marker 未达，脚本按
 AP 判据 PASS）、`run_all` 39/0/0。SSI 跨核投递仍受固件未委托限制，
 脚本只证门状态与进环；唤醒后定时器重启、riscv flag 应用与远端
 `fence.i` 仍是 C2D 余项。
+
+**C2D-WAKETIMER 里程碑（唤醒后重启 AP 定时器）**：码笔 `49a373a21`、
+合并 `3bbe4132d`。`ClockArch::restart_local_timer(cpu_id, icr)` 三架构
+落地（x86 LVT 解屏蔽+ICR、arm64 `rearm_next_tick`+CNTP enable、riscv
+STIE+SBI 重装），kernel `restart_local_timer` 加 BSP-PIT 守卫并读校准
+ICR；`context_stop_idle_current` 在 x86 SCHED IPI/0xF1/PIT、aarch64
+SGI/timer、riscv SWI/timer 入口执行 clear+restart。读数：x86
+`test-smp-aps` PASS（AP local LAPIC ticks observed）、aarch64/riscv 全镜像
+`ap-irq-ready=1 / panic=0`、`run_all` 39/0/0。C2D 余 riscv flag 应用、
+riscv 远端 `fence.i`、READY 有界 ack；钳制继续兜底。
