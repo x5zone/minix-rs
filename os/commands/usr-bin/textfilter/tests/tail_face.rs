@@ -275,6 +275,144 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_tail() {
     );
 }
 
+/// 与 `run_bytes` 同一条腿，但 **argv 交的是原始字节**：一枚裸 `0xff` 进不了 `&str`，
+/// 所以这一腿不能借道任何按 `str` 收参数的夹具。在临时目录里跑，目录中放一枚
+/// **档名本身带裸字节**的真档（`a\xff.txt`）与一枚普通 `in.txt`，这样横幅那条腿
+/// 也能摆到台面上。交回标准输出、退码、逐字节的标准错误。
+fn run_raw(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    let dir = std::env::temp_dir().join(format!(
+        "tail-raw-{}-{}",
+        std::process::id(),
+        RAW_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    std::fs::write(dir.join("in.txt"), b"line1\nline2\nline3\n").expect("in.txt");
+    std::fs::write(dir.join(OsStr::from_bytes(b"a\xff.txt")), b"raw1\nraw2\n")
+        .expect("a raw-byte file name can be created on the host");
+    let mut child = Command::new(TAIL)
+        .args(args.iter().map(|a| OsStr::from_bytes(a)))
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the tail binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    let code = (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    code
+}
+
+static RAW_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// 参数缝的字节判据（逐形取自参照件 `tmp/tail-416/tail` 经同名软链起，
+/// `tmp/tail-469/measure.log` 三侧对照）：改前的件 22 形里只有 10 形与参照件同，
+/// 改后 19 形同。这五形是本轮翻正的那五类：
+/// ① 字母位一枚裸 `ff`（`getopt.c:79` 的 `optopt = *place++` 一次进一枚字节、`:103`
+///    的 `%c` 原样写出）；② 三句 `illegal offset -- %s` 的值位（`tail.c:90` 打的是
+///    `optarg` 本身）；③ `obsolete()` 那句 `illegal option -- %s` 带的是**整段 token**
+///    （`tail.c:269`）；④ 遗留形**改写之后**的那枚 token 里的字节——C 用 `malloc` +
+///    `strcpy` 现拼（`:238-273`），`-1<ff>2` 拼成 `-n-1<ff>2`，于是回声带的是 `-1<ff>2`
+///    而不是原 token；⑤ 诊断行里的**档名**（`ierr()` 打的是全局 `fname`）。
+/// 最后钉的是仍留在册的那一条腿：一枚档名本身带裸字节的**真档**，参照件开得了并打出
+/// `==> a\xff.txt <==`，本壳开不了（档名进的是 `os/libs` 那条 `&str` 口，在册
+/// `ARGV-BYTE-PATH-IN-LIBS`），所以只能报「没有这个档」——按当前形状钉住，等那条口
+/// 换字节形时这枚门当场变红。
+#[test]
+fn the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes() {
+    const USAGE: &[u8] = b"Usage: tail [-f | -F | -r] [-b # | -c # | -n #] [file ...]\n";
+    let (out, status, err) = run_raw(&[b"-\xff"], b"a\n");
+    assert_eq!(out, Vec::new(), "字母位那一行不走标准输出");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"tail: unknown option -- \xff\n".as_slice(), USAGE].concat(),
+        "字母该是那一枚字节本身，不是折过的第一字节 ef"
+    );
+
+    // 聚簇里排在最前面的高字节就是报出来的那一枚。
+    let (_out, status, err) = run_raw(&[b"-\xffn"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"tail: unknown option -- \xff\n".as_slice(), USAGE].concat()
+    );
+
+    // 三句 illegal offset 的值位：附值、分词、`-c` 各一形。
+    for flag in [b"-n\xff".as_slice(), b"-c\xff".as_slice()] {
+        let (_out, status, err) = run_raw(&[flag], b"a\n");
+        assert_eq!(status, 1, "{flag:?} 的退码");
+        assert_eq!(
+            err,
+            b"tail: illegal offset -- \xff\n".to_vec(),
+            "{flag:?} 的值位该是原字节"
+        );
+    }
+    let (_out, status, err) = run_raw(&[b"-n", b"\xff"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"tail: illegal offset -- \xff\n".to_vec(),
+        "分词形同样按字节"
+    );
+
+    // `obsolete()` 自己那一句带整段 token。
+    let (_out, status, err) = run_raw(&[b"-20\xffx"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"tail: illegal option -- -20\xffx\n".to_vec(),
+        "这一句的回声位是 token 而不是它的尾巴"
+    );
+
+    // 改写之后的 token：`-1<ff>2` 被 C 拼成 `-n-1<ff>2`，回声因此带着符号与那枚 ff。
+    let (_out, status, err) = run_raw(&[b"-1\xff2"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"tail: illegal offset -- -1\xff2\n".to_vec(),
+        "回声带的是改写之后的值位，其中那枚 ff 仍是 ff"
+    );
+
+    // 打不开的档名：`ierr()` 念的是 argv 的原字节。
+    let (_out, status, err) = run_raw(&[b"no\xff/such"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"tail: no\xff/such: ".as_slice(),
+            b"No such file or directory\n".as_slice()
+        ]
+        .concat()
+    );
+
+    // 在册那条形：档名带裸字节的**真档**在本壳开不了，参照件开得了并打横幅。
+    let (out, status, err) = run_raw(&[b"-n", b"1", b"a\xff.txt", b"in.txt"], b"a\n");
+    assert_eq!(
+        err,
+        [
+            b"tail: a\xff.txt: ".as_slice(),
+            b"No such file or directory\n".as_slice()
+        ]
+        .concat(),
+        "报文里的档名是原字节，而开档那条口还在折"
+    );
+    assert_eq!(status, 1);
+    assert_eq!(
+        out,
+        [b"==> in.txt <==\n".as_slice(), b"line3\n".as_slice()].concat(),
+        "参照件这里有两段横幅（第一段带的是那枚裸字节），本壳只有 in.txt 那一段"
+    );
+}
+
 #[test]
 fn unknown_letters_and_bad_counts_are_refused_not_leaked() {
     // `-x` 是 C 的 `case '?'` → `usage()`（`tail.c:128-130`），但前面还有一行是

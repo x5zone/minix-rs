@@ -13,8 +13,6 @@
 
 use crate::TextError;
 
-use alloc::format;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 /// 一行：内容（**按字节**）加上它在输入里到底有没有那枚换行。
@@ -402,8 +400,9 @@ pub struct TailArgs {
     /// C's `fflag` (`extern.h:51`, set by `-f`/`-F` at `tail.c:110-121`).
     pub follow: Follow,
     /// File operands in order; `-` is a literal file name (`tail` opens operands
-    /// through `fopen`, unlike `cut`).
-    pub operands: Vec<String>,
+    /// through `fopen`, unlike `cut`). Bytes, because an operand is both a
+    /// `fopen` argument and the text of the `==> … <==` banner (`tail.c:173`).
+    pub operands: Vec<Vec<u8>>,
 }
 
 /// `tail` 的跟随三态，对位 C 的整型全局 `fflag`（`extern.h:51`）：`-f` 置 1、`-F` 置 2、
@@ -504,21 +503,25 @@ pub enum TailError {
     /// `misc.c:78-89`），且排在 `-r` 的用法检查之前。
     FollowMultiFile,
     /// A `-b`/`-c`/`-n` count that is not a decimal integer (C `ARG`'s `*p` test
-    /// on the leftover of `strtoll`, `tail.c:89-90`); carries the text. A zero
-    /// count is *not* this error: C accepts it and selects nothing (see
-    /// [`TailStyle::selects_nothing`]).
-    IllegalCount(String),
+    /// on the leftover of `strtoll`, `tail.c:89-90`); carries the bytes, because
+    /// C prints `optarg` itself. A zero count is *not* this error: C accepts it
+    /// and selects nothing (see [`TailStyle::selects_nothing`]).
+    IllegalCount(Vec<u8>),
     /// An old-style `-<digit>…` token whose trailing unit letter is none of
     /// `b`/`c`/`l`/digit — C `obsolete()`'s `default:` fatal arm
-    /// (`xerrx(1, "illegal option -- %s", *argv)`, `tail.c`); carries the token.
-    IllegalOption(String),
+    /// (`xerrx(1, "illegal option -- %s", *argv)`, `tail.c:269`); carries the
+    /// whole token as the bytes `argv` handed over.
+    IllegalOption(Vec<u8>),
 }
 
 /// One token's outcome in C's `obsolete()` pre-pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ObsoleteStep {
-    /// The token is an old-style option and was rewritten for `getopt`.
-    Rewritten(String),
+    /// The token is an old-style option and was rewritten for `getopt`. The
+    /// rewrite is a **byte** token: C builds it with `malloc` + `strcpy` out of
+    /// `argv` bytes (`tail.c:238-273`), so an illegible byte in the operand stays
+    /// in the token that later reaches the diagnostics.
+    Rewritten(Vec<u8>),
     /// A recognised letter option (`f`, `r`, or `b`/`c`/`n` with its value
     /// attached): kept verbatim, and the scan continues.
     Verbatim,
@@ -546,8 +549,8 @@ enum ObsoleteStep {
 /// the first ordinary option, it keeps scanning past `f`/`r` and past the letter
 /// of a value-taking option (skipping only that option's value). So `tail -r -3c`
 /// rewrites `-3c`, while `tail f -3c` does not — an operand ends the pre-pass.
-fn obsolete_step(arg: &str) -> ObsoleteStep {
-    let bytes = arg.as_bytes();
+fn obsolete_step(arg: &[u8]) -> ObsoleteStep {
+    let bytes = arg;
     // C: `ap[0] != '-' && ap[0] != '+'` returns, and so does `ap[1] == '-'`
     // (`--`). A lone `-`/`+` reads the terminator and falls to `default:`.
     if bytes.first() != Some(&b'-') && bytes.first() != Some(&b'+') {
@@ -560,33 +563,38 @@ fn obsolete_step(arg: &str) -> ObsoleteStep {
         return ObsoleteStep::StopScan;
     }
     if second.is_ascii_digit() {
-        let mut body = &arg[1..];
-        let mut trail = "";
-        match body.as_bytes().last() {
+        let mut body = &bytes[1..];
+        let mut trail: &[u8] = b"";
+        match body.last() {
             Some(&b'f') | Some(&b'r') => {
                 trail = &body[body.len() - 1..];
                 body = &body[..body.len() - 1];
             }
             _ => {}
         }
-        let unit = match body.as_bytes().last() {
+        let unit = match body.last() {
             Some(b'b') => {
                 body = &body[..body.len() - 1];
-                'b'
+                b'b'
             }
             Some(b'c') => {
                 body = &body[..body.len() - 1];
-                'c'
+                b'c'
             }
             Some(b'l') => {
                 body = &body[..body.len() - 1];
-                'n'
+                b'n'
             }
-            Some(c) if c.is_ascii_digit() => 'n',
+            Some(c) if c.is_ascii_digit() => b'n',
             // C `default: xerrx(1, "illegal option -- %s", *argv)` — fatal.
             Some(_) | None => return ObsoleteStep::IllegalOption,
         };
-        return ObsoleteStep::Rewritten(format!("-{trail}{unit}{}{body}", &arg[0..1]));
+        // C 拼的那五段依次是 `-`、被提前搬走的 `f`/`r`、单位字母、原 token 的第一个
+        // 字符（符号位），然后才是剩下的数字（`*t`/`*t--` 把单位与尾字母在原串上
+        // 就地打成 `'\0'`，所以 `strcpy(p, ap)` 只会带到数字为止）。
+        return ObsoleteStep::Rewritten(
+            [b"-".as_slice(), trail, &[unit], &bytes[0..1], body].concat(),
+        );
     }
     match second {
         b'b' | b'c' | b'n' => {
@@ -601,6 +609,26 @@ fn obsolete_step(arg: &str) -> ObsoleteStep {
         // usage), so the pre-pass stops without raising its own error.
         _ => ObsoleteStep::StopScan,
     }
+}
+
+/// A decimal digit run folded one byte at a time: empty, any non-digit byte, or a
+/// run that no longer fits `usize` all give `None`, which is exactly the accept
+/// set `str::parse::<usize>()` had, so moving the value leg onto bytes does not
+/// change what is rejected. C does **not** reject an over-wide run: `strtoll`
+/// saturates (`tail.c:88`) and the huge offset goes on to select or to fail an
+/// allocation — that divergence is a separate range, registered as
+/// `TAIL-OFFSET-SATURATION-OUTCOME` with its readings.
+fn digits_to_usize(digits: &[u8]) -> Option<usize> {
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let mut value = 0usize;
+    for &byte in digits {
+        value = value
+            .checked_mul(10)?
+            .checked_add(usize::from(byte - b'0'))?;
+    }
+    Some(value)
 }
 
 /// Split `tail`'s argv tail into [`TailArgs`], faithful to C's `obsolete(argv)`
@@ -621,38 +649,39 @@ fn obsolete_step(arg: &str) -> ObsoleteStep {
 /// `off` by one unit first, so `+1` skips nothing and prints the whole file. A
 /// `-N` value takes the other arm: `ARG` negates the parsed number and keeps the
 /// backward style, so `-c -3` means the same as `-c 3`.
-pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
+pub fn parse_tail_args(args: &[&[u8]]) -> Result<TailArgs, TailError> {
     // Phase 1 — obsolete(): walk the tokens the way C does. The walk outlives
     // ordinary options and skips only a value-taking option's value; it stops at
     // the first token C returns on, and everything from there on is handed to
-    // `getopt` unchanged.
-    let mut scanned: Vec<String> = Vec::new();
+    // `getopt` unchanged. Tokens are owned byte vectors because the rewrite
+    // mints new ones (`tail.c:238-273`), exactly like C's `malloc`ed replacement.
+    let mut scanned: Vec<Vec<u8>> = Vec::new();
     let mut rest = args;
     let mut frozen = false;
     while let Some((head, tail)) = rest.split_first() {
         rest = tail;
         if frozen {
-            scanned.push(String::from(*head));
+            scanned.push((*head).to_vec());
             continue;
         }
         match obsolete_step(head) {
             ObsoleteStep::Rewritten(token) => scanned.push(token),
-            ObsoleteStep::Verbatim => scanned.push(String::from(*head)),
+            ObsoleteStep::Verbatim => scanned.push((*head).to_vec()),
             ObsoleteStep::SkipsValue => {
-                scanned.push(String::from(*head));
+                scanned.push((*head).to_vec());
                 // C `if (!ap[1]) ++argv`: the value word is consumed by the
                 // option, so it is copied through without being scanned.
                 if let Some((value, tail2)) = rest.split_first() {
-                    scanned.push(String::from(*value));
+                    scanned.push((*value).to_vec());
                     rest = tail2;
                 }
             }
             ObsoleteStep::StopScan => {
                 frozen = true;
-                scanned.push(String::from(*head));
+                scanned.push((*head).to_vec());
             }
             ObsoleteStep::IllegalOption => {
-                return Err(TailError::IllegalOption(String::from(*head)));
+                return Err(TailError::IllegalOption((*head).to_vec()));
             }
         }
     }
@@ -665,15 +694,15 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
     // C 的 `fflag` 是 0/1/2 三值而不是布尔（`-f` 置 1、`-F` 置 2，`tail.c:110-121`），
     // 后到者覆盖前者：`tail -f -F` 在 C 就是 `fflag = 2`，所以这里也是赋值。
     let mut follow = Follow::Off;
-    let mut operands: Vec<String> = Vec::new();
+    let mut operands: Vec<Vec<u8>> = Vec::new();
     let mut index = 0;
     while index < scanned.len() {
-        let token = scanned[index].as_str();
-        if token == "--" {
+        let token = scanned[index].as_slice();
+        if token == b"--" {
             operands.extend_from_slice(&scanned[index + 1..]);
             break;
         }
-        let bytes = token.as_bytes();
+        let bytes = token;
         if bytes.len() > 1 && bytes[0] == b'-' {
             let mut pos = 1usize;
             while pos < bytes.len() {
@@ -701,12 +730,12 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                         // Value attaches to this token (`-n10`) or is the next
                         // word (`-n 10`).
                         let value = if pos + 1 < bytes.len() {
-                            String::from(&token[pos + 1..])
+                            bytes[pos + 1..].to_vec()
                         } else {
                             index += 1;
                             if index >= scanned.len() {
                                 return Err(TailError::Getopt(crate::GetoptReport::MissingValue(
-                                    letter as char,
+                                    char::from(letter),
                                 )));
                             }
                             scanned[index].clone()
@@ -717,20 +746,19 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                         // (only when `off` is non-zero), anything else is the
                         // backward style. `-b` is `ARG(512, FBYTES, RBYTES)`, so
                         // it shares `-c`'s two styles at 512-byte units.
-                        let forward = value.starts_with('+');
+                        let forward = value.first() == Some(&b'+');
                         // C `ARG`'s `case '-'`: `off = -off`, which lands on the
                         // same backward style as an unsigned value, so only the
                         // sign prefix is stripped here.
-                        let backward_negated = !forward && value.starts_with('-');
+                        let backward_negated = !forward && value.first() == Some(&b'-');
                         let digits = &value[if forward || backward_negated { 1 } else { 0 }..];
                         let (units, fwd, bwd) = match letter {
                             b'n' => (1usize, RawStyle::SkipLines, RawStyle::LastLines),
                             b'c' => (1, RawStyle::SkipBytes, RawStyle::LastBytes),
                             _ /* b */ => (512, RawStyle::SkipBytes, RawStyle::LastBytes),
                         };
-                        let parsed = digits
-                            .parse::<usize>()
-                            .map_err(|_| TailError::IllegalCount(value.clone()))?;
+                        let parsed = digits_to_usize(digits)
+                            .ok_or_else(|| TailError::IllegalCount(value.clone()))?;
                         // C `ARG` does not reject zero: `off = 0 * units` stays
                         // zero and the style is set anyway, which is the
                         // "selects nothing" shape of [`TailStyle::selects_nothing`].
@@ -743,7 +771,7 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                     }
                     _ => {
                         return Err(TailError::Getopt(crate::GetoptReport::UnknownOption(
-                            bytes[pos] as char,
+                            char::from(bytes[pos]),
                         )));
                     }
                 }
@@ -967,11 +995,6 @@ mod tests {
         words.iter().map(|w| w.as_bytes()).collect()
     }
 
-    /// `tail` 的操数期望仍是文本形（`TailArgs.operands: Vec<String>` 未在本轮射程内）。
-    fn operands(words: &[&str]) -> Vec<String> {
-        words.iter().map(|w| String::from(*w)).collect()
-    }
-
     /// head 的操数期望：`HeadArgs.operands` 是 argv 的原字节，所以这里逐条转字节。
     fn operands_bytes(words: &[&str]) -> Vec<Vec<u8>> {
         words.iter().map(|w| w.as_bytes().to_vec()).collect()
@@ -1057,7 +1080,7 @@ mod tests {
     #[test]
     fn the_tail_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
-            parse_tail_args(&["-\u{e9}"]).err(),
+            parse_tail_args(&argv(&["-\u{e9}"])).err(),
             Some(TailError::Getopt(crate::GetoptReport::UnknownOption(
                 '\u{00c3}'
             ))),
@@ -1065,7 +1088,7 @@ mod tests {
         );
         // `r` 在选项串里合法且不带值，聚簇继续吃到第一字节。
         assert_eq!(
-            parse_tail_args(&["-r\u{e9}"]).err(),
+            parse_tail_args(&argv(&["-r\u{e9}"])).err(),
             Some(TailError::Getopt(crate::GetoptReport::UnknownOption(
                 '\u{00c3}'
             ))),
@@ -1073,15 +1096,53 @@ mod tests {
         );
         // 环停在第一个坏字母上。
         assert_eq!(
-            parse_tail_args(&["-Z\u{e9}"]).err(),
+            parse_tail_args(&argv(&["-Z\u{e9}"])).err(),
             Some(TailError::Getopt(crate::GetoptReport::UnknownOption('Z'))),
             "-Z\u{e9}"
         );
         // 反面：`n` 是带值字母，其后的字节整个被当值收走，轮不到字母位。
         assert_eq!(
-            parse_tail_args(&["-n\u{e9}"]).err(),
-            Some(TailError::IllegalCount("\u{e9}".to_string())),
+            parse_tail_args(&argv(&["-n\u{e9}"])).err(),
+            Some(TailError::IllegalCount(b"\xc3\xa9".to_vec())),
             "-n\u{e9} 走的是 `illegal offset` 那一句"
+        );
+    }
+
+    /// 值位、整段 token 位与操作数位交回的都是 argv 的**原字节**。C 那三句都直接打
+    /// argv 的内容：`ARG` 的 `xerrx(1, "illegal offset -- %s", optarg)`（`tail.c:90`，
+    /// 打的是** optarg 本身**，不是它解析出来的数）、`obsolete()` 的
+    /// `xerrx(1, "illegal option -- %s", *argv)`（`:269`，打的是**整段 token**），
+    /// 而操作数既进 `fopen`（`:167`）又进那行 `==> %s <==` 横幅（`:173`）。
+    /// `tail` 还有一条别的命令没有的腿：遗留形是 C 用 `malloc` + `strcpy` **现拼**
+    /// 出来的串（`:238-273`），所以一枚高字节会跟着拼进新 token，再一路走进取报文——
+    /// 下面 `-1<ff>2` 那一枚钉的就是这条腿（C 拼出 `-n-1<ff>2`，`ARG` 的 `*p` 停在
+    /// `ff` 上，于是回声带的是改写**之后**的值）。
+    #[test]
+    fn the_tail_value_and_operand_legs_hand_back_the_argv_bytes() {
+        assert_eq!(
+            parse_tail_args(&[b"-n\xff"]).err(),
+            Some(TailError::IllegalCount(vec![0xff])),
+            "附值形的高字节原样进回声"
+        );
+        assert_eq!(
+            parse_tail_args(&[b"-n", b"\xff"]).err(),
+            Some(TailError::IllegalCount(vec![0xff])),
+            "分词形的值同样是原字节"
+        );
+        assert_eq!(
+            parse_tail_args(&[b"-20\xffx"]).err(),
+            Some(TailError::IllegalOption(b"-20\xffx".to_vec())),
+            "遗留形的回声带的是整段 token"
+        );
+        assert_eq!(
+            parse_tail_args(&[b"-1\xff2"]).err(),
+            Some(TailError::IllegalCount(b"-1\xff2".to_vec())),
+            "改写之后的 token 里那枚 ff 仍按原字节走到回声位"
+        );
+        assert_eq!(
+            parse_tail_args(&[b"in\xff", b"-r"]).unwrap().operands,
+            vec![b"in\xff".to_vec(), b"-r".to_vec()],
+            "操作数是文件名，也是横幅里的字"
         );
     }
 
@@ -1293,11 +1354,10 @@ mod tests {
 
     #[test]
     fn test_parse_tail_args_faithful_getopt() {
-        use alloc::string::String;
         use alloc::vec;
         // Defaults: no args → ten lines, no operands (`tail.c:161-162`).
         assert_eq!(
-            parse_tail_args(&[]),
+            parse_tail_args(&argv(&[])),
             Ok(TailArgs {
                 style: TailStyle::LastLines { off: 10 },
                 follow: Follow::Off,
@@ -1308,104 +1368,104 @@ mod tests {
         // `tail_ref a.txt -r` 现量 `tail: -r: No such file or directory`，输出仍按
         // 正序取后十行）。
         assert_eq!(
-            parse_tail_args(&["f", "-r"]),
+            parse_tail_args(&argv(&["f", "-r"])),
             Ok(TailArgs {
                 style: TailStyle::LastLines { off: 10 },
                 follow: Follow::Off,
-                operands: vec![String::from("f"), String::from("-r")],
+                operands: vec![b"f".to_vec(), b"-r".to_vec()],
             })
         );
         assert_eq!(
-            parse_tail_args(&["-r", "f", "-n", "3"]),
+            parse_tail_args(&argv(&["-r", "f", "-n", "3"])),
             Ok(TailArgs {
                 style: TailStyle::ReverseAll,
                 follow: Follow::Off,
-                operands: vec![String::from("f"), String::from("-n"), String::from("3")],
+                operands: vec![b"f".to_vec(), b"-n".to_vec(), b"3".to_vec()],
             })
         );
         // `-n` attached (regression: the old matcher leaked `-n10` to operands)
         // and next-word forms both select `RLINES` with that count.
         assert_eq!(
-            parse_tail_args(&["-n10", "f"]),
+            parse_tail_args(&argv(&["-n10", "f"])),
             Ok(TailArgs {
                 style: TailStyle::LastLines { off: 10 },
                 follow: Follow::Off,
-                operands: operands(&["f"]),
+                operands: operands_bytes(&["f"]),
             })
         );
         assert_eq!(
-            parse_tail_args(&["-n", "10", "f"]).unwrap().style,
+            parse_tail_args(&argv(&["-n", "10", "f"])).unwrap().style,
             TailStyle::LastLines { off: 10 }
         );
         // obsolete leading digit `-N` rewrites to `-n<N>`.
         assert_eq!(
-            parse_tail_args(&["-5", "f"]).unwrap().style,
+            parse_tail_args(&argv(&["-5", "f"])).unwrap().style,
             TailStyle::LastLines { off: 5 }
         );
         // `-c`/`-b` attached values reach the byte style (`-b` counts 512-byte
         // blocks, C `ARG(512, FBYTES, RBYTES)`).
         assert_eq!(
-            parse_tail_args(&["-c100", "f"]).unwrap().style,
+            parse_tail_args(&argv(&["-c100", "f"])).unwrap().style,
             TailStyle::LastBytes { off: 100 }
         );
         assert_eq!(
-            parse_tail_args(&["-b3", "f"]).unwrap().style,
+            parse_tail_args(&argv(&["-b3", "f"])).unwrap().style,
             TailStyle::LastBytes { off: 1536 }
         );
         // clustering: `-r` then an attached `-n` is C `RLINES` under `reverse()`.
         assert_eq!(
-            parse_tail_args(&["-rn3", "f"]).unwrap().style,
+            parse_tail_args(&argv(&["-rn3", "f"])).unwrap().style,
             TailStyle::ReverseLines { off: 3 }
         );
         // bare `-r` is C `REVERSE` (whole file, `tail.c:157-159`), and bare `-r`
         // with `-c`/`-b` is `RBYTES`.
         assert_eq!(
-            parse_tail_args(&["-r", "f"]).unwrap().style,
+            parse_tail_args(&argv(&["-r", "f"])).unwrap().style,
             TailStyle::ReverseAll
         );
         assert_eq!(
-            parse_tail_args(&["-rc", "8"]).unwrap().style,
+            parse_tail_args(&argv(&["-rc", "8"])).unwrap().style,
             TailStyle::ReverseBytes { off: 8 }
         );
         // `--` ends scanning; a bare `-` is a literal operand.
         assert_eq!(
-            parse_tail_args(&["--", "-n"]).unwrap().operands,
-            vec![String::from("-n")]
+            parse_tail_args(&argv(&["--", "-n"])).unwrap().operands,
+            vec![b"-n".to_vec()]
         );
         assert_eq!(
-            parse_tail_args(&["-"]).unwrap().operands,
-            vec![String::from("-")]
+            parse_tail_args(&argv(&["-"])).unwrap().operands,
+            vec![b"-".to_vec()]
         );
         // error paths
         // 集外字母与缺值都带着 libc 那一行走（句子单源在 `GetoptReport`）。
         assert_eq!(
-            parse_tail_args(&["-x", "f"]).err(),
+            parse_tail_args(&argv(&["-x", "f"])).err(),
             Some(TailError::Getopt(crate::GetoptReport::UnknownOption('x')))
         );
         assert_eq!(
-            parse_tail_args(&["-n"]).err(),
+            parse_tail_args(&argv(&["-n"])).err(),
             Some(TailError::Getopt(crate::GetoptReport::MissingValue('n')))
         );
         assert_eq!(
-            parse_tail_args(&["-c"]).err(),
+            parse_tail_args(&argv(&["-c"])).err(),
             Some(TailError::Getopt(crate::GetoptReport::MissingValue('c')))
         );
         assert_eq!(
-            parse_tail_args(&["-n", "x"]).err(),
-            Some(TailError::IllegalCount(String::from("x")))
+            parse_tail_args(&argv(&["-n", "x"])).err(),
+            Some(TailError::IllegalCount(b"x".to_vec()))
         );
         // C `ARG` does not reject a zero count — it selects nothing. Refusing
         // `-c 0`/`-b 0` as `illegal offset` is not C behavior.
         assert_eq!(
-            parse_tail_args(&["-c", "0"]).unwrap().style,
+            parse_tail_args(&argv(&["-c", "0"])).unwrap().style,
             TailStyle::LastBytes { off: 0 }
         );
         assert_eq!(
-            parse_tail_args(&["-b", "0"]).unwrap().style,
+            parse_tail_args(&argv(&["-b", "0"])).unwrap().style,
             TailStyle::LastBytes { off: 0 }
         );
         assert_eq!(
-            parse_tail_args(&["-n", "0"]).unwrap().style,
+            parse_tail_args(&argv(&["-n", "0"])).unwrap().style,
             TailStyle::LastLines { off: 0 }
         );
     }
@@ -1435,37 +1495,37 @@ mod tests {
         // when non-zero, gives back one unit — so `+1` skips nothing and `+N`
         // starts *at* line/byte N.
         assert_eq!(
-            parse_tail_args(&["-n", "+1"]).unwrap().style,
+            parse_tail_args(&argv(&["-n", "+1"])).unwrap().style,
             TailStyle::SkipLines { off: 0 }
         );
         assert_eq!(
-            parse_tail_args(&["-n", "+20"]).unwrap().style,
+            parse_tail_args(&argv(&["-n", "+20"])).unwrap().style,
             TailStyle::SkipLines { off: 19 }
         );
         assert_eq!(
-            parse_tail_args(&["-c", "+3"]).unwrap().style,
+            parse_tail_args(&argv(&["-c", "+3"])).unwrap().style,
             TailStyle::SkipBytes { off: 2 }
         );
         // The attached form (`-c+3`, and the clustered `-rc+3`) goes through the
         // same `ARG` path as the next-word form.
         assert_eq!(
-            parse_tail_args(&["-c+3"]).unwrap().style,
+            parse_tail_args(&argv(&["-c+3"])).unwrap().style,
             TailStyle::SkipBytes { off: 2 }
         );
         // `-b` counts 512-byte blocks, so `+2` starts at byte 512.
         assert_eq!(
-            parse_tail_args(&["-b", "+2"]).unwrap().style,
+            parse_tail_args(&argv(&["-b", "+2"])).unwrap().style,
             TailStyle::SkipBytes { off: 512 }
         );
         // `+0` keeps `off` at zero (C skips the decrement when `off` is zero).
         assert_eq!(
-            parse_tail_args(&["-n", "+0"]).unwrap().style,
+            parse_tail_args(&argv(&["-n", "+0"])).unwrap().style,
             TailStyle::SkipLines { off: 0 }
         );
         // A count past the ring's declared cap is not the ring's business: C
         // `forward()` + `FLINES` walks the file with `getc` and needs no buffer.
         assert_eq!(
-            parse_tail_args(&["-n", "+40"]).unwrap().style,
+            parse_tail_args(&argv(&["-n", "+40"])).unwrap().style,
             TailStyle::SkipLines { off: 39 }
         );
     }
@@ -1476,22 +1536,22 @@ mod tests {
         // becomes `RLINES`, `off` unchanged — `tail -r -n +5` is the last four
         // lines bottom-up, not a forward walk.
         assert_eq!(
-            parse_tail_args(&["-r", "-n", "+5"]).unwrap().style,
+            parse_tail_args(&argv(&["-r", "-n", "+5"])).unwrap().style,
             TailStyle::ReverseLines { off: 4 }
         );
         assert_eq!(
-            parse_tail_args(&["-r", "-c", "+9"]).unwrap().style,
+            parse_tail_args(&argv(&["-r", "-c", "+9"])).unwrap().style,
             TailStyle::ReverseBytes { off: 8 }
         );
         // `-r -n +1` folds to `RLINES` with `off == 0`, which C prints as
         // nothing (`reverse.c:79-80`) — the shape must not collapse into
         // `ReverseAll`, which prints the whole file.
         assert_eq!(
-            parse_tail_args(&["-r", "-n", "+1"]).unwrap().style,
+            parse_tail_args(&argv(&["-r", "-n", "+1"])).unwrap().style,
             TailStyle::ReverseLines { off: 0 }
         );
         assert_eq!(
-            parse_tail_args(&["-r", "-c", "+1"]).unwrap().style,
+            parse_tail_args(&argv(&["-r", "-c", "+1"])).unwrap().style,
             TailStyle::ReverseBytes { off: 0 }
         );
     }
@@ -1501,12 +1561,12 @@ mod tests {
         // C `if (*p) xerrx(1, "illegal offset -- %s", optarg)` (`tail.c:89-90`)
         // applies to the `+` form too: a bare `+` is not a number.
         assert_eq!(
-            parse_tail_args(&["-n", "+"]).err(),
-            Some(TailError::IllegalCount(String::from("+")))
+            parse_tail_args(&argv(&["-n", "+"])).err(),
+            Some(TailError::IllegalCount(b"+".to_vec()))
         );
         assert_eq!(
-            parse_tail_args(&["-c", "+x"]).err(),
-            Some(TailError::IllegalCount(String::from("+x")))
+            parse_tail_args(&argv(&["-c", "+x"])).err(),
+            Some(TailError::IllegalCount(b"+x".to_vec()))
         );
     }
 
@@ -1517,45 +1577,45 @@ mod tests {
         // backward count. So `-3c` is `tail -c 3`, `-3b` three 512-byte blocks,
         // `-3l` and a bare `-3` are lines.
         assert_eq!(
-            parse_tail_args(&["-3c"]).unwrap().style,
+            parse_tail_args(&argv(&["-3c"])).unwrap().style,
             TailStyle::LastBytes { off: 3 }
         );
         assert_eq!(
-            parse_tail_args(&["-3b"]).unwrap().style,
+            parse_tail_args(&argv(&["-3b"])).unwrap().style,
             TailStyle::LastBytes { off: 1536 }
         );
         assert_eq!(
-            parse_tail_args(&["-3l"]).unwrap().style,
+            parse_tail_args(&argv(&["-3l"])).unwrap().style,
             TailStyle::LastLines { off: 3 }
         );
         assert_eq!(
-            parse_tail_args(&["-3"]).unwrap().style,
+            parse_tail_args(&argv(&["-3"])).unwrap().style,
             TailStyle::LastLines { off: 3 }
         );
         // A trailing `r` is lifted to the front, so `-3r` ≡ `-r -n 3` and
         // `-3cr` ≡ `-r -c 3`.
         assert_eq!(
-            parse_tail_args(&["-3r"]).unwrap().style,
+            parse_tail_args(&argv(&["-3r"])).unwrap().style,
             TailStyle::ReverseLines { off: 3 }
         );
         assert_eq!(
-            parse_tail_args(&["-3cr"]).unwrap().style,
+            parse_tail_args(&argv(&["-3cr"])).unwrap().style,
             TailStyle::ReverseBytes { off: 3 }
         );
         // The `+` first char runs through the same machine: `tail +10` ≡
         // `tail -n +10`, and `+4c` ≡ `tail -c +4`.
         assert_eq!(
-            parse_tail_args(&["+10"]).unwrap().style,
+            parse_tail_args(&argv(&["+10"])).unwrap().style,
             TailStyle::SkipLines { off: 9 }
         );
         assert_eq!(
-            parse_tail_args(&["+4c"]).unwrap().style,
+            parse_tail_args(&argv(&["+4c"])).unwrap().style,
             TailStyle::SkipBytes { off: 3 }
         );
         // A trailing `f` lifts to the front of the rewritten token (`-3f` becomes
         // `-fn-3`, `tail.c:247-251`), so the old-style form sets the follow flag
         // and the count together instead of leaking away as an operand.
-        let oldstyle = parse_tail_args(&["-3f"]).unwrap();
+        let oldstyle = parse_tail_args(&argv(&["-3f"])).unwrap();
         assert_eq!(oldstyle.style, TailStyle::LastLines { off: 3 });
         assert_eq!(oldstyle.follow, Follow::ByHandle);
     }
@@ -1565,50 +1625,59 @@ mod tests {
     fn test_parse_tail_args_follow_flags_and_gates() {
         // `-f` 与 `-F` 是两个不同的值，不是同一个布尔
         assert_eq!(
-            parse_tail_args(&["-f", "f"]).unwrap().follow,
+            parse_tail_args(&argv(&["-f", "f"])).unwrap().follow,
             Follow::ByHandle
         );
         assert_eq!(
-            parse_tail_args(&["-F", "f"]).unwrap().follow,
+            parse_tail_args(&argv(&["-F", "f"])).unwrap().follow,
             Follow::ByName
         );
         // C 的 switch 对两个字母都是赋值，所以后到者覆盖前者
         assert_eq!(
-            parse_tail_args(&["-f", "-F", "f"]).unwrap().follow,
+            parse_tail_args(&argv(&["-f", "-F", "f"])).unwrap().follow,
             Follow::ByName
         );
         // 同一 token 里的聚簇也认（`-Ff` 是两个无值选项）
         assert_eq!(
-            parse_tail_args(&["-Ff", "f"]).unwrap().follow,
+            parse_tail_args(&argv(&["-Ff", "f"])).unwrap().follow,
             Follow::ByHandle
         );
         // 单文件门只看操作数个数，0 个（读标准输入）与 1 个都不拦
-        assert_eq!(parse_tail_args(&["-f"]).unwrap().follow, Follow::ByHandle);
-        assert_eq!(parse_tail_args(&["-f", "a"]).unwrap().operands.len(), 1);
         assert_eq!(
-            parse_tail_args(&["-f", "a", "b"]).err(),
+            parse_tail_args(&argv(&["-f"])).unwrap().follow,
+            Follow::ByHandle
+        );
+        assert_eq!(
+            parse_tail_args(&argv(&["-f", "a"])).unwrap().operands.len(),
+            1
+        );
+        assert_eq!(
+            parse_tail_args(&argv(&["-f", "a", "b"])).err(),
             Some(TailError::FollowMultiFile)
         );
         assert_eq!(
-            parse_tail_args(&["-F", "a", "b"]).err(),
+            parse_tail_args(&argv(&["-F", "a", "b"])).err(),
             Some(TailError::FollowMultiFile)
         );
         // 单文件门排在 `-r` 的用法检查之前，所以 `-r -f a b` 报的是前一句
         assert_eq!(
-            parse_tail_args(&["-r", "-f", "a", "b"]).err(),
+            parse_tail_args(&argv(&["-r", "-f", "a", "b"])).err(),
             Some(TailError::FollowMultiFile)
         );
         // `-r` 与跟随互斥，带不带计数都一样
         assert_eq!(
-            parse_tail_args(&["-r", "-f", "a"]).err(),
+            parse_tail_args(&argv(&["-r", "-f", "a"])).err(),
             Some(TailError::Usage)
         );
         // 互斥只在 `rflag` 那一支里查（`tail.c:143-145`），所以只给计数与 `-F`
         // 不报错——这一条是本轮自己写错过一次期望、由门反证回来的
-        let counted = parse_tail_args(&["-n", "3", "-F", "a"]).unwrap();
+        let counted = parse_tail_args(&argv(&["-n", "3", "-F", "a"])).unwrap();
         assert_eq!(counted.style, TailStyle::LastLines { off: 3 });
         assert_eq!(counted.follow, Follow::ByName);
-        assert_eq!(parse_tail_args(&["-rF", "a"]).err(), Some(TailError::Usage));
+        assert_eq!(
+            parse_tail_args(&argv(&["-rF", "a"])).err(),
+            Some(TailError::Usage)
+        );
     }
 
     #[test]
@@ -1618,35 +1687,31 @@ mod tests {
         // `+<digit>` token then reaches the tail as a plain operand, and because
         // `getopt` does not permute (`getopt.c:71-74`) the operand run ends
         // option scanning there — everything after it is a file name too.
-        let frozen = parse_tail_args(&["f", "+10"]).unwrap();
+        let frozen = parse_tail_args(&argv(&["f", "+10"])).unwrap();
         assert_eq!(frozen.style, TailStyle::LastLines { off: 10 });
-        assert_eq!(
-            frozen.operands,
-            alloc::vec![String::from("f"), String::from("+10")]
-        );
+        assert_eq!(frozen.operands, alloc::vec![b"f".to_vec(), b"+10".to_vec()]);
         // 冻在环里的 `-3c` 也不再是「未知字母 3」：参照件 `tail_ref f -3c` 现量
         // `tail: -3c: No such file or directory` 退 1，一句选项错都不打。
-        let after = parse_tail_args(&["f", "-3c"]).unwrap();
+        let after = parse_tail_args(&argv(&["f", "-3c"])).unwrap();
         assert_eq!(after.style, TailStyle::LastLines { off: 10 });
-        assert_eq!(
-            after.operands,
-            alloc::vec![String::from("f"), String::from("-3c")]
-        );
+        assert_eq!(after.operands, alloc::vec![b"f".to_vec(), b"-3c".to_vec()]);
         // Before the freeze point the rewrite does apply, and the operand list is
         // just the file name.
-        let live = parse_tail_args(&["-3c", "f"]).unwrap();
+        let live = parse_tail_args(&argv(&["-3c", "f"])).unwrap();
         assert_eq!(live.style, TailStyle::LastBytes { off: 3 });
-        assert_eq!(live.operands, alloc::vec![String::from("f")]);
+        assert_eq!(live.operands, alloc::vec![b"f".to_vec()]);
         // `--` is the other stop signal, and it still ends option scanning.
         assert_eq!(
-            parse_tail_args(&["-3c", "--", "f"]).unwrap().operands,
-            alloc::vec![String::from("f")]
+            parse_tail_args(&argv(&["-3c", "--", "f"]))
+                .unwrap()
+                .operands,
+            alloc::vec![b"f".to_vec()]
         );
         // A lone `-` is an operand, not a rewrite — and must not index past the
         // token's end while deciding that.
         assert_eq!(
-            parse_tail_args(&["-"]).unwrap().operands,
-            alloc::vec![String::from("-")]
+            parse_tail_args(&argv(&["-"])).unwrap().operands,
+            alloc::vec![b"-".to_vec()]
         );
     }
 
@@ -1655,14 +1720,14 @@ mod tests {
         // C's `default:` inside the rewrite is fatal and quotes the whole token:
         // `xerrx(1, "illegal option -- %s", *argv)`.
         assert_eq!(
-            parse_tail_args(&["-3x"]).err(),
-            Some(TailError::IllegalOption(String::from("-3x")))
+            parse_tail_args(&argv(&["-3x"])).err(),
+            Some(TailError::IllegalOption(b"-3x".to_vec()))
         );
         // Only one trailing letter is lifted, so a second one lands on the same
         // arm (`-3ff` → after lifting `f`, the unit char is `f`).
         assert_eq!(
-            parse_tail_args(&["-3ff"]).err(),
-            Some(TailError::IllegalOption(String::from("-3ff")))
+            parse_tail_args(&argv(&["-3ff"])).err(),
+            Some(TailError::IllegalOption(b"-3ff".to_vec()))
         );
     }
 
@@ -1671,25 +1736,25 @@ mod tests {
         // C `ARG`'s `case '-'` (`tail.c:97-102`): `off = -off` and the backward
         // style, so `-c -3` means the same as `-c 3`.
         assert_eq!(
-            parse_tail_args(&["-c", "-3"]).unwrap().style,
+            parse_tail_args(&argv(&["-c", "-3"])).unwrap().style,
             TailStyle::LastBytes { off: 3 }
         );
         assert_eq!(
-            parse_tail_args(&["-n", "-7"]).unwrap().style,
+            parse_tail_args(&argv(&["-n", "-7"])).unwrap().style,
             TailStyle::LastLines { off: 7 }
         );
         // A value that is not a plain number still reaches `ARG`'s `*p` test with
         // its sign attached: `tail -n -3c` takes `-3c` as the number, and C
         // reports `illegal offset -- -3c`.
         assert_eq!(
-            parse_tail_args(&["-n", "-3c"]).err(),
-            Some(TailError::IllegalCount(String::from("-3c")))
+            parse_tail_args(&argv(&["-n", "-3c"])).err(),
+            Some(TailError::IllegalCount(b"-3c".to_vec()))
         );
         // A lone `-` after the sign is not a number either; the message carries
         // the whole option argument.
         assert_eq!(
-            parse_tail_args(&["-n", "-"]).err(),
-            Some(TailError::IllegalCount(String::from("-")))
+            parse_tail_args(&argv(&["-n", "-"])).err(),
+            Some(TailError::IllegalCount(b"-".to_vec()))
         );
     }
 
@@ -1700,19 +1765,21 @@ mod tests {
         // So `-r -3c` rewrites: `-c-3` under `rflag` is the three trailing bytes
         // bottom-up (`RBYTES`), not a usage error.
         assert_eq!(
-            parse_tail_args(&["-r", "-3c"]).unwrap().style,
+            parse_tail_args(&argv(&["-r", "-3c"])).unwrap().style,
             TailStyle::ReverseBytes { off: 3 }
         );
         assert_eq!(
-            parse_tail_args(&["-r", "-5"]).unwrap().style,
+            parse_tail_args(&argv(&["-r", "-5"])).unwrap().style,
             TailStyle::ReverseLines { off: 5 }
         );
         // The value word is consumed by its option, so an old-style number after
         // `-n` is *not* rewritten: `-n -3c` above is the proof, and here the
         // operand is untouched.
         assert_eq!(
-            parse_tail_args(&["-n", "3", "file"]).unwrap().operands,
-            alloc::vec![String::from("file")]
+            parse_tail_args(&argv(&["-n", "3", "file"]))
+                .unwrap()
+                .operands,
+            alloc::vec![b"file".to_vec()]
         );
     }
 
@@ -1722,20 +1789,20 @@ mod tests {
         // options of any kind — repeated or mixed — are a usage error, never a
         // silent override.
         assert_eq!(
-            parse_tail_args(&["-n", "3", "-n", "5"]).err(),
+            parse_tail_args(&argv(&["-n", "3", "-n", "5"])).err(),
             Some(TailError::Usage)
         );
         assert_eq!(
-            parse_tail_args(&["-c10", "-b2"]).err(),
+            parse_tail_args(&argv(&["-c10", "-b2"])).err(),
             Some(TailError::Usage)
         );
         assert_eq!(
-            parse_tail_args(&["-n", "3", "-c", "5"]).err(),
+            parse_tail_args(&argv(&["-n", "3", "-c", "5"])).err(),
             Some(TailError::Usage)
         );
         // One number option alongside `-r` is still fine.
         assert_eq!(
-            parse_tail_args(&["-r", "-n", "3"]).unwrap().style,
+            parse_tail_args(&argv(&["-r", "-n", "3"])).unwrap().style,
             TailStyle::ReverseLines { off: 3 }
         );
     }

@@ -47,7 +47,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::vec;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
@@ -275,13 +275,13 @@ impl Drop for FollowSource {
 }
 
 /// C `forward()` 手上那三样：开着的句柄、它的身份（`sbp`）、以及操作数名字
-/// （全局 `fname`）。标准输入没有名字，所以这里是 `Option<&str>`——C 用
+/// （全局 `fname`，argv 的原字节）。标准输入没有名字，所以这里是 `Option<&[u8]>`——C 用
 /// `fp != stdin` 表达同一件事（`forward.c:255`），而决定半的
 /// [`Follow::probes_identity`] 就是那道判据的模型。
 struct FollowTarget<'a> {
     source: FollowSource,
     opened: StatIdentity,
-    path: Option<&'a str>,
+    path: Option<&'a [u8]>,
 }
 
 impl<'a> FollowTarget<'a> {
@@ -290,9 +290,10 @@ impl<'a> FollowTarget<'a> {
     }
 
     /// 诊断行里念的那个名字：C 的 `ierr()` 用的是全局 `fname`，无操作数时
-    /// `tail.c:186` 把它写成字面量 `"stdin"`。
-    fn label(&self) -> &'a str {
-        self.path.unwrap_or("stdin")
+    /// `tail.c:186` 把它写成字面量 `"stdin"`。名字是 argv 的原字节，所以这里交回
+    /// 字节而不是 `&str`。
+    fn label(&self) -> &'a [u8] {
+        self.path.unwrap_or(b"stdin".as_slice())
     }
 }
 
@@ -363,11 +364,13 @@ fn flush_output() {
 fn flush_output() {}
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
     // C 的每一句诊断都以 `getprogname()` 开头（`misc.c:66-91` 的 vwarn/vwarnx），
-    // 所以下面不再写死「tail」。
-    let prog = support::prog_name(&argv);
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // 所以下面不再写死「tail」。程序名那一处折一次（`line_bytes` 与 `err_line` 两条
+    // `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`）；操作数、横幅与三句回显都另有按字节
+    // 的腿，不经过这里。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // argv folding lives in the deciding half (`parse_tail_args`): BSD
     // `obsolete()` + `getopt("Fb:c:fn:r")`, with attached-or-next counts and
     // option clustering. The old inline whole-token matcher leaked attached
@@ -375,11 +378,11 @@ fn run() -> ! {
     // into the operand list, silently treating them as file names.
     let parsed = match parse_tail_args(&args[1..]) {
         Ok(parsed) => parsed,
-        Err(e) => arg_error(e, prog),
+        Err(e) => arg_error(e, &prog),
     };
     let style = parsed.style;
     let follow = parsed.follow;
-    let operands: Vec<String> = parsed.operands;
+    let operands: Vec<Vec<u8>> = parsed.operands;
 
     // C `for each file: fopen+fstat (ierr on failure), banner when argc>1,
     // forward()`. No operands read stdin. The banner comes after the successful
@@ -395,7 +398,9 @@ fn run() -> ! {
         let opened = match source.identity() {
             Ok(opened) => opened,
             Err(code) => {
-                support::warn_line(prog, "stdin", code);
+                // C 的 `ierr()` 打的是全局 `fname`，而标准输入那一形 `tail.c:186` 把
+                // 它写成字面量 `"stdin"`——五个字节，不是折过的东西。
+                warn_bytes(&prog, b"stdin", code);
                 support::terminate(1);
             }
         };
@@ -408,12 +413,12 @@ fn run() -> ! {
         let data = match target.source.collect() {
             Ok(data) => data,
             Err(code) => {
-                support::warn_line(prog, target.label(), code);
+                warn_bytes(&prog, target.label(), code);
                 support::terminate(1);
             }
         };
         tail_stream(&data, style);
-        if follow.active() && !follow_rounds(&mut target, follow, prog) {
+        if follow.active() && !follow_rounds(&mut target, follow, &prog) {
             support::terminate(1);
         }
         support::terminate(0);
@@ -422,10 +427,13 @@ fn run() -> ! {
         // C `tail.c:167-171`：`fopen` 失败**或** `fstat` 失败都是 `ierr(); continue`，
         // 那句诊断是 `tail: <名>: <句子>`（`misc.c:53-57` 走的是带 `errno` 的
         // `xerr`/`vwarn`，不是 `warnx`）。
-        let source = match FollowSource::open(operand) {
+        // 开档那条 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`）：折的只是递给 `open`
+        // 的那个名字，诊断位与横幅位用的仍是 `operand` 的原字节。
+        let shown = String::from_utf8_lossy(operand);
+        let source = match FollowSource::open(&shown) {
             Ok(source) => source,
             Err(code) => {
-                support::warn_line(prog, operand, code);
+                warn_bytes(&prog, operand, code);
                 status = 1;
                 continue;
             }
@@ -433,7 +441,7 @@ fn run() -> ! {
         let opened = match source.identity() {
             Ok(opened) => opened,
             Err(code) => {
-                support::warn_line(prog, operand, code);
+                warn_bytes(&prog, operand, code);
                 status = 1;
                 continue;
             }
@@ -441,26 +449,25 @@ fn run() -> ! {
         let mut target = FollowTarget {
             source,
             opened,
-            path: Some(operand),
+            path: Some(operand.as_slice()),
         };
         let data = match target.source.collect() {
             Ok(data) => data,
             Err(code) => {
-                support::warn_line(prog, operand, code);
+                warn_bytes(&prog, operand, code);
                 status = 1;
                 continue;
             }
         };
         if show_banner {
-            let sep = if first { "" } else { "\n" };
-            support::emit(format!("{sep}==> {operand} <==\n").as_bytes());
+            support::emit(&banner(first, operand));
         }
         first = false;
         tail_stream(&data, style);
         if follow.active() {
             // C 的 `forward()` 在跟随时永不返回，能回到这里只有 `ierr()` 那一条腿；
             // 后面的操作数早在 `tail.c:135-137` 被单文件门挡住了，所以收尾直接退。
-            if !follow_rounds(&mut target, follow, prog) {
+            if !follow_rounds(&mut target, follow, &prog) {
                 status = 1;
             }
             break;
@@ -485,14 +492,18 @@ fn follow_rounds(target: &mut FollowTarget, follow: Follow, prog: &str) -> bool 
             // 能走到这里 `path` 必是 `Some`：`probes_identity` 对标准输入恒为 false。
             // 不 `unwrap`，那个不可达状态不值得一个panic。
             if let Some(name) = target.path {
-                match stat_by_path(name) {
+                // 按名字查身份与重开这两条腿都走 `&str` 的路径口（在册
+                // `ARGV-BYTE-PATH-IN-LIBS`）；`freopen(fname, …)`（`forward.c:261`）
+                // 报出来用的还是 `fname` 的原字节，所以诊断位不跟着折。
+                let shown = String::from_utf8_lossy(name);
+                match stat_by_path(&shown) {
                     // C 的 `stat(fname, &statbuf) != -1`：名字认不出来（换档后
                     // 被删掉）就这一拍什么都不做，下一拍继续睡——不报错也不退出。
                     Err(_) => {}
                     Ok(current) => {
                         if reopen_needed(&target.opened, &current) {
-                            if let Err(code) = target.source.reopen(name) {
-                                support::warn_line(prog, name, code);
+                            if let Err(code) = target.source.reopen(&shown) {
+                                warn_bytes(prog, name, code);
                                 return false;
                             }
                             // C 的 `*sbp = statbuf`：新档的身份接手，下一拍比的是它。
@@ -505,7 +516,7 @@ fn follow_rounds(target: &mut FollowTarget, follow: Follow, prog: &str) -> bool 
         let pumped = target.source.pump();
         if let Err(code) = pumped {
             let label = target.label();
-            support::warn_line(prog, label, code);
+            warn_bytes(prog, label, code);
             return false;
         }
         flush_output();
@@ -643,7 +654,7 @@ fn arg_error(e: TailError, prog: &str) -> ! {
             // 句子单源住在 `GetoptReport`，本族其它命令拿到的是同一份文本。字母位走
             // `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103`
             // 与 `:134` 的 `%c` 原样写出，所以 `-é`（`c3 a9`）报的是 `c3`；取法在
-            // `src/window.rs` 的环里已经是 `bytes[pos] as char`，两边同形才成立。
+            // `src/window.rs` 的环里是 `char::from(bytes[pos])`，两边同形才成立。
             support::warn(&report.line_bytes(prog));
             usage(prog)
         }
@@ -657,16 +668,69 @@ fn arg_error(e: TailError, prog: &str) -> ! {
             support::terminate(1);
         }
         TailError::IllegalCount(v) => {
-            // C `xerrx(1, "illegal offset -- %s", optarg)` (`tail.c:90`).
-            support::warn(format!("{prog}: illegal offset -- {v}\n").as_bytes());
+            // C `xerrx(1, "illegal offset -- %s", optarg)` (`tail.c:90`)：`%s` 打的是
+            // `optarg` 的每一枚字节。值位是 argv 的原字节（遗留形那里还是改写**之后**的
+            // 那串字节，见 `src/window.rs` 的 `obsolete_step`），所以这一行自己拼。
+            support::warn(
+                &[
+                    format!("{prog}: illegal offset -- ").as_bytes(),
+                    v.as_slice(),
+                    b"\n".as_slice(),
+                ]
+                .concat(),
+            );
             support::terminate(1);
         }
         TailError::IllegalOption(v) => {
-            // C `obsolete()`'s fatal arm: `xerrx(1, "illegal option -- %s", *argv)`.
-            support::warn(format!("{prog}: illegal option -- {v}\n").as_bytes());
+            // C `obsolete()`'s fatal arm: `xerrx(1, "illegal option -- %s", *argv)`
+            // （`tail.c:269`）——带的是**整段 token**，同样按原字节。
+            support::warn(
+                &[
+                    format!("{prog}: illegal option -- ").as_bytes(),
+                    v.as_slice(),
+                    b"\n".as_slice(),
+                ]
+                .concat(),
+            );
             support::terminate(1);
         }
     }
+}
+
+/// C `tail.c:173-174` 的 `printf("%s==> %s <==\n", first ? "" : "\n", fname)`：
+/// 多个操作数时每个档前一行横幅，第一档前面不加空行。`fname` 是 argv 的那枚字节，
+/// 而且这行走的是**标准输出**（不是诊断腿）。拆成纯函数是为了给那枚「档名里带裸字节
+/// 的真档」留一条能钉住的门：横幅本身在宿主上开不了那种档（开档那条 `&str` 口，在册
+/// `ARGV-BYTE-PATH-IN-LIBS`），端到端只能看到失败的那一句，所以「名字按字节进横幅」
+/// 这一条只能在拼字的这一步钉。
+fn banner(first: bool, name: &[u8]) -> Vec<u8> {
+    let mut line: Vec<u8> = Vec::new();
+    if !first {
+        line.extend_from_slice(b"\n");
+    }
+    line.extend_from_slice(b"==> ");
+    line.extend_from_slice(name);
+    line.extend_from_slice(b" <==\n");
+    line
+}
+
+/// C 的 `warn(3)` 那一行按**字节**渲染：`prog: label: <strerror 句子>` 加换行，写完不退
+/// （对位 C 的 `ierr()`：`tail.c:169` 与 `forward.c:196` 都只报不终止，退码最后才变 1）。
+/// 形状与句子仍照 `minix-types` 里那份权威（`verrc.c` 的三段：程序名、`": "`、调用者的串、
+/// `": "`、`strerror(code)`）。之所以在这里再拼一次而不是用 `support::warn_line`：那条口
+/// 的 label 是 `&str`（`minix_sys::err_line` 至今只有文本形，在册 `ARGV-BYTE-PATH-IN-LIBS`），
+/// 而 `tail` 的 label 全是 argv 递进来的档名——经 `err_line` 会把一枚裸 `ff` 折成
+/// `ef bf bd` 三枚，参照件同形逐字节对不上（`split`/`sort` 两轮都量过这一形）。
+/// 等 `err_line` 那条口换成字节形，这一份就并回去。
+fn warn_bytes(prog: &str, label: &[u8], code: minix_sys::Errno) {
+    let mut line = Vec::new();
+    line.extend_from_slice(prog.as_bytes());
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(label);
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+    line.push(b'\n');
+    support::warn(&line);
 }
 
 /// C `tail.c:299-305`：那一行是大写 `Usage:`、带 `getprogname()`，而且选项列表里
@@ -691,7 +755,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{bytes_after_lines, bytes_from, last_bytes_of, reverse_bytes, reversed_lines};
+    use super::{
+        banner, bytes_after_lines, bytes_from, last_bytes_of, reverse_bytes, reversed_lines,
+    };
     use minix_textfilter::window::Line;
 
     #[test]
@@ -807,5 +873,36 @@ mod tests {
         assert_eq!(texts(&reverse_bytes(input, 99)), ["ccc", "bbb", "aaa"]);
         // -r -c +1 folds to RBYTES with off 0, whose empty window holds no line.
         assert!(reverse_bytes(input, 0).is_empty());
+    }
+
+    /// 横幅那一行走的是标准输出，而它的名字位是 argv 的原字节（`tail.c:173-174` 把
+    /// `fname` 直接交给 `%s`）。这一枚钉的是**拼字**这一腿：一枚裸 `ff` 既不折成
+    /// `ef bf bd` 三枚，也不因「必须是文本」而被挡在拼字之前。端到端看不到这一形——
+    /// 档名带裸字节的真档在本壳开不了（开档那条 `&str` 口，在册
+    /// `ARGV-BYTE-PATH-IN-LIBS`），所以横幅只能在纯函数上钉，而失败那一句的档名归
+    /// `tests/tail_face.rs`。`first` 那两形钉的是 C 的空行规则：第一档前不空，
+    /// 其后每档前一个空行（`first ? "" : "\n"`）。
+    #[test]
+    fn the_banner_names_the_operand_bytes_and_only_the_second_one_gets_a_blank_line() {
+        assert_eq!(
+            banner(true, b"a\xff.txt"),
+            [
+                b"==> ".as_slice(),
+                b"a\xff.txt".as_slice(),
+                b" <==\n".as_slice()
+            ]
+            .concat(),
+            "第一档前面不空行，而档名里那枚 ff 还是 ff"
+        );
+        assert_eq!(
+            banner(false, b"a\xff.txt"),
+            [
+                b"\n==> ".as_slice(),
+                b"a\xff.txt".as_slice(),
+                b" <==\n".as_slice()
+            ]
+            .concat()
+        );
+        assert_eq!(banner(true, b"in.txt"), b"==> in.txt <==\n".to_vec());
     }
 }
