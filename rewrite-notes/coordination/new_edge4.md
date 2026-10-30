@@ -2724,3 +2724,20 @@ arch/dm_coverage|establish_dm_range' os` 零命中、arch **286/0**、kernel moc
 0 failed/broken）**；串口 `nk4c: csc-verify armed` 在、csc 内容不一致 **0** 条；
 `nk4c: mset-verify armed` 在、零 HIT；ptwb HIT 3 条均为既有已知良性形状。串口存
 `tmp/c1-atf/rs64/serial.log`。C1 按 PD-16 仍保持开放（仪器覆盖已补到内容级）。
+
+**I25 里程碑（C 板领地注释英文化与锚点内联）**：码笔 `0d235964a`、合并笔
+`e754ea77a`。范围是 C 板领地（`os/kernel`、`os/arch`、`os/plat`、
+`os/libs/minix-platform`、`os/libs/minix-boot`、`os/boot-shim`、
+`os/kernel-image`、`os/qemu-tests`）的 **155 个 `.rs` 文件**：全部中文注释
+译为技术英文，删除不可达的协作/工单锚点（NK4-*、D-*、SD-*、§续/续-*、
+C-/I-/L####、TODO-*、P-XXX-*、S-/K/M/B/R/FIX-/V 系列、edgeN、甲/乙/丙案）
+并把技术背景写回注释本身；`[ARCH: ...]` 与活约定 `[SD19-gate]` 保留，
+`rewrite-notes/` 章节引用与 C 真值源行号保留。安全门为非注释 token 与
+HEAD 逐文件对比：**0 个 `CODE-CHANGED`**。读数：
+`check_comments.py` → `files=155 cjk_comment_lines=0 anchor_kinds=0 bad=0`；
+`check_broad.py` → `BROAD-ANCHOR-LINES=0`；三架构生产 check 各 0 error、
+kernel mock 850/0/8、minix-arch runtime-window 286/0、kernel-image
+check-layout all PASS、`run_all` **39/0/0**（`tmp/i25-batches/run-all.log`）。
+A/B 领地未越界编辑：578 文件 / 24,816 条注释 CJK 行的移交清单、按目录批次
+与归属建议落在 `tmp/i25-cross-territory-handoff.md`；I-25 在全仓口径下只剩
+这份 A/B 移交面，C 板领地已清零。
