@@ -2901,6 +2901,18 @@ aarch64-unknown-none, riscv64gc-unknown-none-elf} -p minix-textfilter --bins` �
 退 0 ⇒ 纯快进、零冲突；主树合并路径的 `git status --porcelain` 四处交回空。快进之后的主树复跑
 读数另记一笔合回补记。
 
+**合回读数（第一百八十三笔补记，批次四百六十九）**：快进动作之前把上面那两条命令复跑一遍
+——`git log --oneline 6ea1eae7e..rewrite` 仍交回空、`git merge-base --is-ancestor 6ea1eae7e rewrite`
+仍退 0 ⇒ `git merge --ff-only claim/GETOPT-REPORT-BYTE-LETTER-qoder` 纯快进成功
+（`8 files changed, 814 insertions(+), 193 deletions(-)`，主树 `rewrite` 顶到里程碑笔 `991e8638f`），
+主树 29 条别线在制项一件没被牵进暂存区（本线四路径的 `git status --porcelain` 合并前后都交回空）。
+逐笔验祖先四笔全 ✓（码笔 `77f7c8f56`、文档笔 `b9fdf9706`、锚点更正 `a37988e4c`、里程碑笔
+`991e8638f`）。主树当场复跑 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter`
+→ **69 段 / 1279 / 0**、退出码 0（`/home/xzhao/github/minix-rs/tmp/tail-469-maintree.log`），
+逐目标与领取树同数：库内 629、`bin/tail` 18、`tail_face` 25、`bin_support_face` 4。
+取证目录 `tmp/tail-469/`（三侧现量、A/B、负控六枚日志与汇总、门日志、`post/` 四件源码快照、
+改前与改后两枚件）本来就在主树 `tmp/` 下，无需回抄。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
