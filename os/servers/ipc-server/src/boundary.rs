@@ -1,23 +1,27 @@
-//! 生产 [`IpcBoundary`] 与 [`EventLoopTransport`]——trap 后端实现。
+//! Production [`IpcBoundary`] and [`EventLoopTransport`] — the trap backend.
 //!
-//! C 对应:`minix3/minix/servers/ipc/main.c` 的 libsys 调用面
-//! (`clock_time`/`getnuid`/`proceventmask`/`ipc_sendnb`)、`sem.c`/
-//! `shm.c` 的 `sys_datacopy` 搬运与 VM 消息(`vm_remap`/`vm_getphys`/
-//! `vm_getrefcount`/`vm_unmap`)、`mmap.c:113-118` 的匿名 backing。
+//! C correspondence: the libsys call surface of
+//! `minix3/minix/servers/ipc/main.c`
+//! (`clock_time`/`getnuid`/`proceventmask`/`ipc_sendnb`), the `sys_datacopy`
+//! transfers and VM messages of `sem.c`/`shm.c` (`vm_remap`/`vm_getphys`/
+//! `vm_getrefcount`/`vm_unmap`), and the anonymous backing of
+//! `mmap.c:113-118`.
 //!
-//! # 错误约定
+//! # Error convention
 //!
-//! trait 的 `i32` 错误是**正 errno**(reply 的 `m_type` 直接取负发回,
-//! 与 Errno 常量同域);minix-sys 的 `sys_*` wrapper 返回负 errno,
-//! 边界统一 `-e` 折正。VM/PM 的 `*_via` 返回 `Errno`,取 `to_i32()`。
+//! The trait's `i32` error is a **positive errno** (the reply's `m_type` is
+//! sent back negated, the same domain as the Errno constants); the minix-sys
+//! `sys_*` wrappers return negative errnos, and the boundary folds them
+//! positive with `-e`. The VM/PM `*_via` calls return `Errno`; take
+//! `to_i32()`.
 //!
-//! # MIB 面状态
+//! # MIB face state
 //!
-//! [`IpcBoundary::mib_process`] 的 RMIB 协议走查器(libsys `rmib.c`
-//! 的服务端半)是 S26 余件:决策层已备(`mib_tree.rs` 的
-//! `KernIpcChild`/`InfoRoute` + sem/shm 的两个 info 装配器),协议半
-//! 待接——当前按 fail-closed 回 `EOPNOTSUPP`,与 C 的未知请求出口
-//! 同型。
+//! The RMIB protocol walker behind [`IpcBoundary::mib_process`] (the server
+//! half of libsys `rmib.c`) is not wired yet: the decision layer is ready
+//! (`KernIpcChild`/`InfoRoute` in `mib_tree.rs` plus the two sem/shm info
+//! assemblers) while the protocol half is pending — for now it answers
+//! `EOPNOTSUPP`, failing closed like C's unknown-request exit.
 
 use alloc::vec::Vec;
 use minix_sys::ipc::{
@@ -39,7 +43,7 @@ use crate::shm::segment::Backing;
 use crate::shm::ShmIdView;
 use crate::shm::attach::{ShmInfoAgg, ShmSummary};
 
-/// `semop` 数组的元素字节长(C `struct sembuf`:三个 short)。
+/// Byte length of one `semop` array element (C `struct sembuf`: three shorts).
 const SEMBUF_SIZE: usize = 6;
 
 fn positive(e: i32) -> i32 {
@@ -50,8 +54,9 @@ fn positive(e: i32) -> i32 {
     }
 }
 
-/// 生产边界:IPC 腿(PEER taskcall 与异步发送)+ 内核调用腿(safecopy、
-/// 时间与凭证)。两腿结构与 rs 的 `TrapKernelApi`、input 的 serve 同型。
+/// Production boundary: the IPC leg (PEER taskcall plus asynchronous sends) and
+/// the kernel-call leg (safecopy, time, and credentials). The two legs follow
+/// the same shape as rs's `TrapKernelApi` and input's serve.
 pub struct SysBoundary {
     ipc: DirectTrapTransport,
     kernel: DirectKernelCallTransport,
@@ -73,7 +78,8 @@ impl Default for SysBoundary {
 }
 
 impl SysBoundary {
-    /// Caller → 本地缓冲的 `sys_datacopy`(sem.c:680-682 形状)。
+    /// `sys_datacopy` from the caller into a local buffer (the sem.c:680-682
+    /// shape).
     fn copy_in_raw(&self, from: Endpoint, ptr: u32, buf: &mut [u8]) -> Result<(), i32> {
         syscall::sys_datacopy(
             &self.kernel,
@@ -86,7 +92,7 @@ impl SysBoundary {
         .map_err(positive)
     }
 
-    /// 本地缓冲 → caller 地址空间的 `sys_datacopy`。
+    /// `sys_datacopy` from a local buffer into the caller's address space.
     fn copy_out_raw(&self, to: Endpoint, ptr: u32, buf: &[u8]) -> Result<(), i32> {
         syscall::sys_datacopy(
             &self.kernel,
@@ -102,9 +108,10 @@ impl SysBoundary {
 
 impl IpcBoundary for SysBoundary {
     fn now(&self) -> u64 {
-        // C clock_time(NULL)(clock_time.c):wall 秒 = boottime +
-        // realtime_ticks / hz。错误时 0(时钟未初始化的时间戳,与 C 的
-        // "bad, but what's better" 分支同型——时间戳不应让调用方死)。
+        // C clock_time(NULL) (clock_time.c): wall seconds = boottime +
+        // realtime_ticks / hz. On error, 0 (an uninitialized-clock timestamp,
+        // the same shape as C's "bad, but what's better" branch — a timestamp
+        // must not kill the caller).
         let ticks = syscall::sys_times(&self.kernel, Endpoint::SELF.0);
         let hz = syscall::sys_get_hz(&self.kernel);
         match (ticks, hz) {
@@ -122,10 +129,11 @@ impl IpcBoundary for SysBoundary {
     }
 
     fn credentials_of(&self, endpoint: Endpoint) -> Option<Credentials> {
-        // C main.c:265-268 的 getnuid/getngid + getnpid:一次
-        // PM_GETEPINFO 全带回(taskcall 返回值即 pid)。真实 uid/gid 在
-        // 应答臂的 uid/gid 域(minix-sys 的 GetepInfo 只露 euid/egid,
-        // 权限判定需要真实身份,故此处读完整臂)。
+        // The getnuid/getngid plus getnpid of C main.c:265-268: one
+        // PM_GETEPINFO brings them all back (the taskcall return value is the
+        // pid). The real uid/gid are in the reply arm's uid/gid fields
+        // (minix-sys's GetepInfo exposes only euid/egid, while permission
+        // checks need the real identity, so the whole arm is read here).
         let mut msg = Message::default();
         msg.m_u.m_lsys_pm_getepinfo = MessLsysPmGetepinfo {
             endpt: endpoint.0,
@@ -141,7 +149,8 @@ impl IpcBoundary for SysBoundary {
         if reply < 0 {
             return None;
         }
-        // SAFETY: 应答臂在成功 taskcall 后由 PM 填写(ipc.h mess_pm_lsys_getepinfo)。
+        // SAFETY: PM fills the reply arm after a successful taskcall
+        // (ipc.h mess_pm_lsys_getepinfo).
         let arm = unsafe { &msg.m_u.m_pm_lsys_getepinfo };
         Some(Credentials {
             identity: Identity {
@@ -215,7 +224,7 @@ impl IpcBoundary for SysBoundary {
     }
 
     fn copy_out_seminfo(&self, to: Endpoint, ptr: u32, info: &SemInfo) -> Result<(), i32> {
-        // C `struct seminfo`(sys/sem.h:69-79):十个 int,按 C 域序。
+        // C `struct seminfo` (sys/sem.h:69-79): ten ints in C field order.
         let fields = [
             info.map,
             info.identifiers,
@@ -236,8 +245,9 @@ impl IpcBoundary for SysBoundary {
     }
 
     fn copy_in_set_options(&self, from: Endpoint, ptr: u32) -> Result<SetOptions, i32> {
-        // C sem.c:551-553:IPC_SET 拷入的是 perm 草稿半(uid/gid/mode,
-        // 即 24 字节 `ipc_perm` 的前三个域口径)。
+        // C sem.c:551-553: IPC_SET copies in the permission draft half
+        // (uid/gid/mode, i.e. the first three fields of the 24-byte
+        // `ipc_perm`).
         let mut raw = [0u8; core::mem::size_of::<IpcPerm>()];
         self.copy_in_raw(from, ptr, &mut raw)?;
         Ok(SetOptions {
@@ -282,8 +292,9 @@ impl IpcBoundary for SysBoundary {
         ptr: u32,
         summary: &ShmSummary,
     ) -> Result<(), i32> {
-        // C shm.c:349-352:shminfo 全常量块(summarize 的裁决面)。
-        // sys/shm.h shminfo 域序:shmmax/shmmin/shmmni/shmseg/shmall。
+        // C shm.c:349-352: the all-constant shminfo block (the summarize
+        // decision face). sys/shm.h shminfo field order:
+        // shmmax/shmmin/shmmni/shmseg/shmall.
         let fields: [u32; 5] = [
             summary.max as u32,
             summary.min,
@@ -304,7 +315,8 @@ impl IpcBoundary for SysBoundary {
         ptr: u32,
         agg: &ShmInfoAgg,
     ) -> Result<(), i32> {
-        // C shm.c:354-364:shm_info 聚合块(sys/shm.h:208-216 域序)。
+        // C shm.c:354-364: the shm_info aggregate block (sys/shm.h:208-216
+        // field order).
         let fields = [
             agg.used_ids,
             (agg.total_pages & 0x7fff_ffff) as i32,
@@ -321,32 +333,35 @@ impl IpcBoundary for SysBoundary {
     }
 
     fn set_proceventmask(&self, subscribe: bool) {
-        // C main.c:163-168:订阅 = EXIT|SIGNAL,退订 = 0。best-effort
-        // (C 不查 proceventmask 的失败)。
+        // C main.c:163-168: subscribe = EXIT|SIGNAL, unsubscribe = 0. Best
+        // effort (C does not check proceventmask's failure).
         let mask = if subscribe {
             PROC_EVENT_EXIT | PROC_EVENT_SIGNAL
         } else {
             0
         };
-        //[SD19-gate] SD-19: C kernel.c exit 设事件掩码，进程已走失败无面
+        //[SD19-gate] C kernel.c exit sets the event mask; the process is gone,
+        // so a failure has no surface
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::pm::proceventmask_via(&self.ipc, mask);
     }
 
     fn send_wakeup(&self, endpoint: Endpoint, code: i32) {
-        // C send_reply(sem.c:207-215):NO_REPLY 吞掉,其余清空消息后
-        // ipc_sendnb,m_type = code。
+        // C send_reply (sem.c:207-215): NO_REPLY is swallowed; otherwise clear
+        // the message and `ipc_sendnb` it with m_type = code.
         if code == crate::sem::NO_REPLY {
             return;
         }
         let msg = Message { m_type: code, ..Message::default() };
-        //[SD19-gate] SD-19: sendnb 非阻塞 kill/signal 投递，失败丢一条
+        //[SD19-gate] sendnb delivers a kill/signal without blocking; a failure
+        // drops one message
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.sendnb(endpoint, &msg);
     }
 
     fn rmib_copyin(&self, from: Endpoint, grant: i32, off: usize, dst: &mut [u8]) -> Result<(), i32> {
-        // C rmib 框架的 sys_safecopyfrom(grant 所有方 = MIB 服务)。
+        // `sys_safecopyfrom` of the C rmib framework (grant owner = the MIB
+        // service).
         syscall::sys_safecopyfrom(
             &self.kernel,
             from.0,
@@ -371,15 +386,17 @@ impl IpcBoundary for SysBoundary {
     }
 
     fn send_mib_reply(&mut self, to: Endpoint, msg: &Message) {
-        // C rmib.c:1067-1068 — SENDREC 到达的请求 → ipc_sendnb。
-        //[SD19-gate] SD-19: C rmib.c:1067 ipc_sendnb 无回复
+        // C rmib.c:1067-1068 — a request that arrived via SENDREC →
+        // ipc_sendnb.
+        //[SD19-gate] C rmib.c:1067 ipc_sendnb has no reply
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.sendnb(to, msg);
     }
 
     fn send_mib_reply_async(&mut self, to: Endpoint, msg: &Message) {
-        // C rmib.c:1069-1070 — 异步到达 → asynsend3(AMF_NOREPLY);
-        // 单槽 senda 承载(EventLoopTransport::send_async 同形)。
+        // C rmib.c:1069-1070 — an asynchronous arrival →
+        // asynsend3(AMF_NOREPLY), carried by a single-slot senda (the same
+        // shape as EventLoopTransport::send_async).
         let slot = minix_sys::ipc::AsyncSlot {
             flags: minix_sys::ipc::AsyncSlotFlags(minix_sys::ipc::AsyncSlotFlags::VALID.0
                 | minix_sys::ipc::AsyncSlotFlags::NO_REPLY.0),
@@ -387,13 +404,15 @@ impl IpcBoundary for SysBoundary {
             message: *msg,
             result: 0,
         };
-        //[SD19-gate] SD-19: senda 异步回复发后即忘，无等待端
+        //[SD19-gate] an asynchronous senda reply is fire-and-forget; nothing
+        // waits for it
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.senda(&[slot]);
     }
 
     fn back_segment(&self, bytes: u64) -> Result<Backing, i32> {
-        // C shm.c:113-118:mmap(MAP_ANON) 匿名段 + vm_getphys 取物理快照。
+        // C shm.c:113-118: an anonymous mmap(MAP_ANON) segment plus
+        // vm_getphys for the physical snapshot.
         use minix_sys::vm::MapRequest;
         let request = MapRequest {
             beneficiary: Endpoint::SELF,
@@ -404,8 +423,9 @@ impl IpcBoundary for SysBoundary {
             file: -1,
             offset: 0,
         };
-        // mmap_via(caller=SELF):受益人即调用者自己(MapRequest 内已带
-        // beneficiary,caller 域是协议的"谁在发起"半)。
+        // mmap_via(caller=SELF): the beneficiary is the caller itself (the
+        // MapRequest already carries `beneficiary`; the caller field is the
+        // protocol's "who initiates" half).
         let local = sys_vm::mmap_via(&self.ipc, Endpoint::SELF, request)
             .map_err(|e| e.to_i32())?;
         let phys = sys_vm::physical_address_via(&self.ipc, Endpoint::SELF, local)
@@ -417,8 +437,8 @@ impl IpcBoundary for SysBoundary {
     }
 
     fn remap(&self, caller: Endpoint, addr: u64, local: u64, bytes: u64) -> Option<u64> {
-        // C shm.c:158-160:vm_remap(caller, addr, local, bytes) 段映射进
-        // 调用方空间;MAP_FAILED = None。
+        // C shm.c:158-160: vm_remap(caller, addr, local, bytes) maps the
+        // segment into the caller's space; MAP_FAILED = None.
         let placed = sys_vm::remap_via(
             &self.ipc,
             sys_vm::VM_CALL_REMAP,
@@ -433,15 +453,16 @@ impl IpcBoundary for SysBoundary {
     }
 
     fn phys_of(&self, caller: Endpoint, addr: u64) -> Option<u64> {
-        // C shm.c:215-216:vm_getphys;零哨兵 = EINVAL(调用方口径)。
+        // C shm.c:215-216: vm_getphys; the zero sentinel = EINVAL (as the
+        // caller reads it).
         let phys = sys_vm::physical_address_via(&self.ipc, caller, minix_types::VirBytes(addr))
             .ok()?;
         (phys.0 != 0).then_some(phys.0)
     }
 
     fn unmap(&self, caller: Endpoint, addr: u64) {
-        // C shm.c:232:vm_unmap(caller, addr) —— VM_SHM_UNMAP
-        // (libc mmap.c:131-142:forwhom + addr 两域)。
+        // C shm.c:232: vm_unmap(caller, addr) — VM_SHM_UNMAP
+        // (libc mmap.c:131-142: the forwhom + addr fields).
         let mut msg = Message::default();
         msg.m_u.m_lc_vm_shm_unmap = MessLcVmShmUnmap {
             forwhom: caller.0,
@@ -449,7 +470,8 @@ impl IpcBoundary for SysBoundary {
             addr,
             _padding: [0; 40],
         };
-        //[SD19-gate] SD-19: 段销毁 taskcall 尽力而为，失败无恢复面
+        //[SD19-gate] the segment-destroy taskcall is best effort; a failure
+        // has no recovery surface
         #[allow(clippy::let_underscore_must_use)]
         let _ = syscall::perform_taskcall(
             &self.ipc,
@@ -460,14 +482,16 @@ impl IpcBoundary for SysBoundary {
     }
 
     fn refcount_of(&self, local: u64) -> Option<u8> {
-        // 段在我们自己的空间里:vm_getrefcount(SELF, local)。
+        // The segment is in our own space: vm_getrefcount(SELF, local).
         sys_vm::reference_count_via(&self.ipc, Endpoint::SELF, minix_types::VirBytes(local)).ok()
     }
 
     fn release_mapping(&self, addr: u64, len: u64) {
-        // 段销毁的本地半:退掉自己的匿名映射(C munmap 语义);错误
-        // 无可恢复处,静默(与 C 忽略 munmap 返回同型)。
-        //[SD19-gate] SD-19: C 忽略 munmap 返回，错误无可恢复处
+        // Local half of segment destruction: drop our own anonymous mapping
+        // (C munmap semantics); an error here has nowhere to recover, so it is
+        // silent (the same shape as C ignoring munmap's return).
+        //[SD19-gate] C ignores munmap's return; an error has nowhere to
+        // recover
         #[allow(clippy::let_underscore_must_use)]
         let _ = sys_vm::munmap_via(
             &self.ipc,
@@ -477,39 +501,42 @@ impl IpcBoundary for SysBoundary {
     }
 
     fn warn(&self, line: &str) {
-        // C printf → 控制台;本树的控制台面是 SYS_DIAGCTL 桥(IS 的
-        // DiagWriter 同款),失败静默(C 的 printf 同样无可恢复处)。
-        //[SD19-gate] SD-19: C printf 控制台失败静默，无可恢复处
+        // C printf → console; the console face in this tree is the
+        // SYS_DIAGCTL bridge (the same as IS's DiagWriter), and a failure is
+        // silent (C's printf likewise has nowhere to recover).
+        //[SD19-gate] C's console printf fails silently; nowhere to recover
         #[allow(clippy::let_underscore_must_use)]
         let _ = syscall::sys_diagctl_write(&DirectKernelCallTransport, line);
     }
 
     fn statectl(&self, request: i32, address: u64, length: i32) -> Result<i32, i32> {
-        // C `sys_statectl` 的真接线（trap 直连）——出生协议段一。
+        // The real wiring of C's `sys_statectl` (a direct trap) — the birth
+        // protocol.
         let r = syscall::sys_statectl(&DirectKernelCallTransport, request, address, length);
         if r == minix_types::OK { Ok(r) } else { Err(r) }
     }
 }
 
-// ── 生产事件循环传输 ────────────────────────────────────────────────
+// ── production event-loop transport ────────────────────────────────
 
-/// 生产 `EventLoopTransport`:receive = SEF 分类器前置的内核接收(ANY,
-/// `minix_sef::sef_receive_status`——ping 作答、信号请求在库内拦截交回调,
-/// 与 C `sef.c:149-260` 同一契约),reply = `ipc_sendnb`(main.c:273),
-/// async = 单槽 `senda` 的 `AMF_NOREPLY`(main.c:207-208 的 asynsend3
-/// 形状,照 input serve.rs 先例)。
+/// Production `EventLoopTransport`: receive = the kernel receive prefixed by the
+/// SEF classifier (ANY, `minix_sef::sef_receive_status` — pings answered and
+/// signal requests intercepted inside the library and handed to the callback,
+/// the same contract as C `sef.c:149-260`), reply = `ipc_sendnb` (main.c:273),
+/// async = single-slot `senda` with `AMF_NOREPLY` (the asynsend3 shape of
+/// main.c:207-208, following the input serve.rs precedent).
 pub struct SysEventLoopTransport {
     inner: DirectTrapTransport,
 }
 
-/// `DirectTrapTransport` → [`minix_sef::SefIpc`] 适配(devman 的
-/// `SefBridge` 同款一族一行)。
+/// `DirectTrapTransport` → [`minix_sef::SefIpc`] adapter (one line of the same
+/// family as devman's `SefBridge`).
 struct TrapSefBridge<'a>(&'a mut DirectTrapTransport);
 
 impl minix_sef::SefIpc for TrapSefBridge<'_> {
     fn receive(&mut self, src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
-        // minix-sys 的 `IpcStatus` 是状态字的元组结构;错误端
-        // `TrapStatus(pub i32)` 直接展开为 errno。
+        // minix-sys's `IpcStatus` is a tuple struct over the status word; the
+        // error side `TrapStatus(pub i32)` expands directly into an errno.
         self.0
             .receive(src, msg)
             .map(|sts| sts.0 as i32)
@@ -539,15 +566,19 @@ impl EventLoopTransport for SysEventLoopTransport {
         on_signal: &mut dyn FnMut(i32),
         cancel: &minix_sef::SefCancel,
     ) -> Result<(Message, IpcStatus), TransportError> {
-        // SEF 分类器前置（C `sef.c:149-260` 同一契约）：ping 在库内作答，
-        // 信号请求在库内拦截并把号码交给回调后吞帧（notify 形升序逐位，
-        // sef_signal.c:94-113；管理器形单号，:115-128）。TrapSefBridge
-        // 的一薄层是必需的：库入口按 `impl SefIpc` 泛型收，而 `inner`
-        // 是字段借用。
+        // SEF classifier in front (the same contract as C `sef.c:149-260`):
+        // pings are answered inside the library, and signal requests are
+        // intercepted inside the library, handing the number to the callback and
+        // swallowing the frame (notify form in ascending bit order,
+        // sef_signal.c:94-113; manager form a single number, :115-128). The thin
+        // TrapSefBridge layer is required: the library entry takes
+        // `impl SefIpc` generically while `inner` is a field borrow.
         let mut msg = Message::default();
         let mut bridge = TrapSefBridge(&mut self.inner);
-        // 一薄层闭包是必需的：库入口按 `impl FnMut` 单态化，而 trait 侧
-        // 只能收不定长 `dyn FnMut`，直传撞 E0277（IS/§续-417 同坑）。
+        // The one-line closure is required: the library entry monomorphizes
+        // over `impl FnMut` while the trait side can only take an unsized
+        // `dyn FnMut`, and passing it straight through hits E0277 (the same trap
+        // as IS).
         let mut handoff = |signo: i32| on_signal(signo);
         let recv = minix_sef::sef_receive_status(
             &mut bridge,
@@ -569,7 +600,7 @@ impl EventLoopTransport for SysEventLoopTransport {
     }
 
     fn send_rec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), TransportError> {
-        // NK4-C B9b：出生回报腿 C `ipc_sendrec`（sef_init.c:458-466）。
+        // The birth-reply leg is C's `ipc_sendrec` (sef_init.c:458-466).
         self.inner.sendrec(dest, msg).map_err(|_| TransportError)
     }
 

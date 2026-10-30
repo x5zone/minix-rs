@@ -198,7 +198,8 @@ impl FbdService {
         };
         wire::write_i32(&mut reply, wire::reply::STATUS, status);
         wire::write_i32(&mut reply, wire::reply::ID, id);
-        //[SD19-gate] 回复发送尽力而为：C 的 send_panic 失败即 panic；单线程泵按文档丢弃而不是卡死。
+        //[SD19-gate] Reply send is best effort: C's `send_panic` panics on
+        // failure; the single-threaded pump drops instead of stalling.
         #[allow(clippy::let_underscore_must_use)]
         let _ = transport.asynsend(caller, &mut reply);
     }

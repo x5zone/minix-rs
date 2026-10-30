@@ -362,7 +362,9 @@ fn count_clear_bits<S: BlockSource>(
             )
             .map_err(|_| MetaError::Invalid)?;
         let bytes = cache.slot_data(slot).to_vec();
-        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        // [SD19-gate] best-effort release of the read-ahead cache slot; a
+        // failure is a self-disabling policy and does not change the primary
+        // result (same as minix-fs bio cache.release)
         #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(slot);
         free += crate::superblock::count_clear_bits_in_image(
@@ -408,7 +410,10 @@ fn release<S: BlockSource>(
     io: &crate::inode::InodeIo,
     slot: usize,
 ) {
-    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    // [SD19-gate] best-effort write-back of the inode after the primary
+    // operation succeeded; the corresponding put_inode in C's
+    // minix3/minix/fs/mfs is void and returns no error (a failure does not
+    // change the established result)
     #[allow(clippy::let_underscore_must_use)]
     let _ = table.put(cache, slot, io);
 }
@@ -491,7 +496,10 @@ mod tests {
         let number = fixture.table.slot(slot).number;
         // Release the opener reference: metadata calls open by number.
         let io = fixture.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort write-back of the inode after the primary
+        // operation succeeded; the corresponding put_inode in C's
+        // minix3/minix/fs/mfs is void and returns no error (a failure does not
+        // change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = fixture.table.put(&mut fixture.cache, slot, &io);
         let mode = change_mode(
@@ -542,7 +550,10 @@ mod tests {
         let slot = open_file(&mut fixture, TYPE_REGULAR as u16 | 0o4755);
         let number = fixture.table.slot(slot).number;
         let io = fixture.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort write-back of the inode after the primary
+        // operation succeeded; the corresponding put_inode in C's
+        // minix3/minix/fs/mfs is void and returns no error (a failure does not
+        // change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = fixture.table.put(&mut fixture.cache, slot, &io);
         let mode = change_owner(
@@ -572,7 +583,10 @@ mod tests {
         let slot = open_file(&mut fixture, TYPE_REGULAR as u16);
         let number = fixture.table.slot(slot).number;
         let io = fixture.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort write-back of the inode after the primary
+        // operation succeeded; the corresponding put_inode in C's
+        // minix3/minix/fs/mfs is void and returns no error (a failure does not
+        // change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = fixture.table.put(&mut fixture.cache, slot, &io);
         // Explicit stamps land; change time always stamps via pending.
@@ -596,7 +610,10 @@ mod tests {
         // ...but modification only flagged (lazy): stamp it through stat.
         assert!(fixture.table.slot(check).pending_updates & crate::inode::UPDATE_MODIFY == 0);
         // "Now" arms flags instead of stamping.
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort write-back of the inode after the primary
+        // operation succeeded; the corresponding put_inode in C's
+        // minix3/minix/fs/mfs is void and returns no error (a failure does not
+        // change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = fixture.table.put(&mut fixture.cache, check, &io);
         update_times(
@@ -625,7 +642,10 @@ mod tests {
         fixture.table.slot_mut(slot).zones[0] = 9;
         let number = fixture.table.slot(slot).number;
         let io = fixture.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort write-back of the inode after the primary
+        // operation succeeded; the corresponding put_inode in C's
+        // minix3/minix/fs/mfs is void and returns no error (a failure does not
+        // change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = fixture.table.put(&mut fixture.cache, slot, &io);
         let stat = read_stat(
@@ -654,7 +674,10 @@ mod tests {
         fixture.table.slot_mut(slot).nlinks = 1;
         let number = fixture.table.slot(slot).number;
         let io = fixture.io;
-        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        // [SD19-gate] best-effort write-back of the inode after the primary
+        // operation succeeded; the corresponding put_inode in C's
+        // minix3/minix/fs/mfs is void and returns no error (a failure does not
+        // change the established result)
         #[allow(clippy::let_underscore_must_use)]
         let _ = fixture.table.put(&mut fixture.cache, slot, &io);
         let stat = read_stat(

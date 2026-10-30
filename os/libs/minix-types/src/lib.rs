@@ -1,9 +1,11 @@
 #![doc = include_str!("../README.md")]
 #![no_std]
-// SD-19 静默吞错家族机械化门（本 crate 接手）：错误句子渲染里的 `write!`
-// 返回 `fmt::Result`，掉空即静默；这个 restriction lint 让它在 `cargo clippy`
-// 当场现形。已定性的站点按同族惯例写 `//[SD19-gate] <理由>` + 语句级
-// `#[allow]`。
+// Mechanized gate for the silent-error-swallowing family (owned by this
+// crate): the `write!` calls that render error sentences return
+// `fmt::Result`, which fails silently when dropped; this restriction lint
+// exposes it immediately in `cargo clippy`. Classified sites follow the
+// family convention and carry `//[SD19-gate] <reason>` plus a
+// statement-level `#[allow]`.
 #![warn(clippy::let_underscore_must_use)]
 
 //! Minix3 core protocol types.

@@ -20,32 +20,41 @@ use alloc::vec::Vec;
 
 /// What went wrong building a sequence.
 ///
-/// 出口分三家，退码不同：`Usage` 与 `Zero*`/`Needs*`/`BadFormat*` 走 C 的
-/// `exit(1)`/`errx(1, ...)` 一族，`InvalidNumber`/`OutOfRange` 走 `e_atof()` 的
-/// `err(2, "%s", num)` 与 `errx(2, "invalid floating point argument: %s", num)` 一族
-/// （`seq.c:383-400`）——退 2 不是退 1 的变体，两族的句子主人也不同。
+/// The exits split three ways and the exit codes differ: `Usage` and
+/// `Zero*`/`Needs*`/`BadFormat*` follow C's `exit(1)`/`errx(1, ...)` family, while
+/// `InvalidNumber`/`OutOfRange` follow `e_atof()`'s `err(2, "%s", num)` and
+/// `errx(2, "invalid floating point argument: %s", num)` family (`seq.c:383-400`) —
+/// exit 2 is not a variant of exit 1, and the two families have different sentence
+/// owners.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeqError {
-    /// `errflg` 攒出来的那一支：libc 的行（可能零条、一条或多条）之后**一行** usage。
-    /// `-h`、操作数个数不对、环内字母落 `default` 都是 `reports` 为空的这一支。
+    /// The branch `errflg` accumulates into: **one** usage line after libc's lines (zero,
+    /// one or many). `-h`, a wrong operand count and an in-ring letter falling into
+    /// `default` all land here with an empty `reports`.
     Usage { reports: Vec<crate::GetoptReport> },
-    /// 操作数过不了 `strtod` 的「尾巴必须有字符」判据（`seq.c:394-396`）。
+    /// An operand failing `strtod`'s "the tail must have characters" criterion
+    /// (`seq.c:394-396`).
     InvalidNumber(Vec<u8>),
-    /// 操作数溢出或下溢到 `ERANGE`（`seq.c:391-393`，`err` 的三段形带 `strerror`）。
+    /// An operand overflowing or underflowing to `ERANGE` (`seq.c:391-393`; the
+    /// three-part `err` form appends `strerror`).
     OutOfRange(Vec<u8>),
-    /// 第三个操作数给的是零步长，`first < last` 那一支（`seq.c:147-148`）。
+    /// A zero stride given as the third operand in the `first < last` branch
+    /// (`seq.c:147-148`).
     ZeroIncrement,
-    /// 零步长的另一支名（`(first < last) ? "in" : "de"`，所以 `2 0 2` 也叫 `decrement`）。
+    /// The other zero-stride name (`(first < last) ? "in" : "de"`, so `2 0 2` also
+    /// reports `decrement`).
     ZeroDecrement,
     /// `first < last` with a non-positive increment (seq.c:155-156).
     NeedsPositiveIncrement,
     /// `first > last` with a non-negative increment (seq.c:158-159).
     NeedsNegativeDecrement,
-    /// `-f` 的串过不了 `valid_format`，句子带原文（`seq.c:162-163`）。
+    /// The `-f` string fails `valid_format`; the sentence carries the original text
+    /// (`seq.c:162-163`).
     BadFormat(Vec<u8>),
-    /// `unescape` 之后再判一次不过，句子**不带**原文（`seq.c:165-166`）。
-    /// 本机没能构造出触发它的串（转义只会把 `\X` 收成单字符，改不出新的 `%`），
-    /// 所以这一支只有句子没有门钉。
+    /// Fails the second check, after `unescape`; the sentence does **not** carry the
+    /// original text (`seq.c:165-166`). No input could be constructed that triggers it here
+    /// (unescaping only collapses `\X` into a single character and cannot create a new
+    /// `%`), so this branch has a sentence but no test pinning it.
     BadFormatPlain,
     /// `-f`  requested a floating render, declared unsupported.
     FloatNotModelled,
@@ -59,9 +68,10 @@ pub struct SeqOptions {
     /// `last` (seq.c:151-153).
     pub incr: Option<i64>,
     pub last: i64,
-    /// `-w`（第一次）：补位到共同宽度。
+    /// `-w` (first occurrence): pad to the common width.
     pub equalize: bool,
-    /// 补的字符：`-w` 一次是 `0`，两次起是空格（`seq.c:115-120` 的 `equalize++` 后置 `pad = SPACE`）。
+    /// The padding character: `0` on the first `-w`, a space from the second on (after
+    /// `equalize++` in `seq.c:115-120`, `pad = SPACE`).
     pub pad: char,
     /// `-s`: separator between numbers (default newline).
     pub separator: Vec<u8>,
@@ -69,29 +79,34 @@ pub struct SeqOptions {
     pub terminator: Option<Vec<u8>>,
 }
 
-/// 一次 `seq` 调用跑完选项环之后手上有的东西（`seq.c:101-125` 的 `switch` 各支置的量）。
+/// What one `seq` invocation holds after running the option ring (the quantities each arm
+/// of `seq.c:101-125`'s `switch` sets).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeqArgs<'a> {
-    /// `-f` 的**原文**：C 在环里只存 `optarg`，`valid_format`/`unescape` 排在读操作数之后。
+    /// The **original text** of `-f`: C stores only `optarg` in the ring and runs
+    /// `valid_format`/`unescape` after reading the operands.
     pub fmt: Option<&'a [u8]>,
-    /// `-s` 的值，环内就过了 `unescape`（`seq.c:110`）。
+    /// The `-s` value; `unescape` runs inside the ring (`seq.c:110`).
     pub separator: Vec<u8>,
-    /// `-t` 的值，环内就过了 `unescape`（`seq.c:113`）。
+    /// The `-t` value; `unescape` runs inside the ring (`seq.c:113`).
     pub terminator: Option<Vec<u8>>,
-    /// `-w` 在环里出现的次数。C 写的是 `if (!fmt) if (equalize++) pad = SPACE;`，
-    /// 所以第一次只把 `equalize` 置起来（补 `0`），**第二次起**才换成补空格。
+    /// How many times `-w` appeared in the ring. C writes
+    /// `if (!fmt) if (equalize++) pad = SPACE;`, so the first occurrence only sets
+    /// `equalize` (pad `0`) and **from the second on** the pad becomes a space.
     pub equalize: u32,
-    /// 环之后的操作数原词（C 的 `argv += optind`）。
+    /// The raw operand words after the ring (C's `argv += optind`).
     pub operands: Vec<&'a [u8]>,
 }
 
-/// C 的 `numeric()`（`seq.c` 环前护栏 `!numeric(argv[optind])`）。
+/// C's `numeric()` (the pre-ring guard `!numeric(argv[optind])` in `seq.c`).
 ///
-/// 它**不是**「能解析成数」：先跳一个符号，吃一串十进制数字，允许一个小数点，
-/// 而 `e`/`E` 之后**必须紧跟符号**才算数字。参照件量出的两形因此分道：
-/// `-1e-2` 是数字（护栏放行，`-5` 那一类以短横开头的操作数就是靠它护住的），
-/// 而 `1e2` 不是数字——护栏不挡它，但 getopt 自己在首字符不是 `-` 处立刻收环
-/// （`getopt.c:74-78`），所以 `seq 1e2` 照样把 `1e2` 当操作数。
+/// It is **not** "parses as a number": it skips one sign, consumes a run of decimal
+/// digits, allows one decimal point, and after `e`/`E` a sign **must** follow
+/// immediately for the word to count as numeric. The two shapes the reference measured
+/// therefore diverge: `-1e-2` is numeric (the guard lets it through — that is what
+/// protects `-5`-style operands starting with a dash), while `1e2` is not numeric — the
+/// guard does not stop it, but getopt itself ends the ring at the first character that
+/// is not `-` (`getopt.c:74-78`), so `seq 1e2` still takes `1e2` as an operand.
 #[must_use]
 pub fn numeric(word: &[u8]) -> bool {
     let bytes = word;
@@ -120,9 +135,11 @@ pub fn numeric(word: &[u8]) -> bool {
     true
 }
 
-/// C 的 `unescape()`：`\a \b \e \f \n \r \t \v \\ \' \"`、`\` 后最多三位八进制、
-/// `\x` 后最多两位十六进；**认不出的转义把反斜杠原样留着**（参照件 `-s '\q' 1 3`
-/// 打的是 `1\q2\q3\q`），串尾单个反斜杠则整个丢掉（`-t '\'` 打得出来但没有 terminator）。
+/// C's `unescape()`: `\a \b \e \f \n \r \t \v \\ \' \"`, up to three octal digits
+/// after `\`, and up to two hex digits after `\x`; **an unrecognised escape keeps the
+/// backslash as it is** (the reference prints `1\q2\q3\q` for `-s '\q' 1 3`), while a
+/// single trailing backslash is dropped entirely (`-t '\'` prints, but has no
+/// terminator).
 #[must_use]
 pub fn unescape(text: &[u8]) -> Vec<u8> {
     let bytes = text;
@@ -135,7 +152,7 @@ pub fn unescape(text: &[u8]) -> Vec<u8> {
             continue;
         }
         let Some(&esc) = bytes.get(i + 1) else {
-            break; // 收尾的单个反斜杠：C 的循环条件让下一个字符是 `\0`，整段不再产出
+            break; // trailing single backslash: C's loop condition makes the next character `\0`, so nothing more is produced
         };
         i += 2;
         match esc {
@@ -151,7 +168,8 @@ pub fn unescape(text: &[u8]) -> Vec<u8> {
             b'\'' => out.push(b'\''),
             b'"' => out.push(b'"'),
             b'0'..=b'7' => {
-                // `\\101` → `A`：反斜杠后最多三位八进制，且**转义后的那位就是第一位**
+                // `\\101` → `A`: at most three octal digits after the backslash, and the
+                // escaped digit **is the first one**
                 let mut j = i - 1;
                 let mut value = 0u32;
                 let mut count = 0usize;
@@ -164,8 +182,9 @@ pub fn unescape(text: &[u8]) -> Vec<u8> {
                 out.push(value as u8);
             }
             b'x' => {
-                // `\\xd0` → 0xD0：最多两位十六进（`isxdigit` 认大写**数字**，
-                // 但引导字母只有小写 `x` 一支——C 的 `switch` 没有 `case 'X'`）
+                // `\\xd0` → 0xD0: at most two hex digits (`isxdigit` accepts upper-case
+                // **digits**, but the introducer letter is only lower-case `x` — C's
+                // `switch` has no `case 'X'`)
                 let mut j = i;
                 let mut value = 0u32;
                 let mut count = 0usize;
@@ -192,10 +211,12 @@ pub fn unescape(text: &[u8]) -> Vec<u8> {
     out
 }
 
-/// C 的 `valid_format()`：**只有** `A a E e F G g` 算转换，`%%` 跳过且不计数，
-/// 结尾判据是 `conversions <= 1`。参照件量出的接受集因此反直觉：
-/// `-f '%d'` 与 `-f '%d\n'` **都是坏的**（`d` 不是浮点转换，落 `default: return 0`），
-/// `-f 'abc'`、`-f '%%'` 倒是合法（零个转换），`-f '%g%g'` 坏在两个转换。
+/// C's `valid_format()`: **only** `A a E e F G g` count as conversions, `%%` is skipped
+/// without counting, and the final criterion is `conversions <= 1`. The accepted set the
+/// reference measured is therefore counter-intuitive: `-f '%d'` and `-f '%d\n'` are
+/// **both bad** (`d` is not a float conversion, so it hits `default: return 0`), while
+/// `-f 'abc'` and `-f '%%'` are legal (zero conversions) and `-f '%g%g'` is bad for
+/// having two conversions.
 #[must_use]
 pub fn valid_format(fmt: &[u8]) -> bool {
     let bytes = fmt;
@@ -228,24 +249,30 @@ pub fn valid_format(fmt: &[u8]) -> bool {
                 conversions += 1;
                 i += 1;
             }
-            // 包括 `%` 收尾（C 在 `switch (*fmt)` 上看到 `\0` 走 default）
+            // including a trailing `%` (C sees `\0` in `switch (*fmt)` and takes default)
             _ => return false,
         }
     }
     conversions <= 1
 }
 
-/// `seq.c:101` 的选项环：`while ((optind < argc) && !numeric(argv[optind]) && (c = getopt(...)) != -1)`。
+/// `seq.c:101`'s option ring: `while ((optind < argc) && !numeric(argv[optind]) && (c =
+/// getopt(...)) != -1)`.
 ///
-/// 这一支与同族其它环有三处不同，全部经参照件现量：
-/// ① 环**不在第一个坏字母处停**——`errflg` 是累加的，`seq -+- 3` 打两行 libc
-///    （`+` 与 `-`，第二个 `+` 已在 `-+-` 这个 token 之外）再加一行 usage；
-/// ② `h` 在 optstring 里，libc 不会为它印任何东西，而 C 的 `case 'h': /* help (GNU) */`
-///    后面没有 `break`，**直接落进 `default: errflg++`**，所以 `-h` 是「只有 usage 一行」；
-/// ③ 环前那道 `!numeric(argv[optind])` 护栏只作用于**当前 token 是不是 `-` 开头**——
-///    不以 `-` 开头的 token 由 libc 自己收环（`getopt.c:74-78` 不推进 `optind`），
-///    所以 `seq 1e2`（`e` 后无符号，护栏认它不是数字）照旧打出 1..100；
-/// ④ 于是护栏真正挡的是负数操作数：`-1` 是操作数，而 `-5e310` 进环被拆成一串集外字母。
+/// This branch differs from its siblings' rings in four ways, all measured against the
+/// reference:
+/// (1) the ring **does not stop at the first bad letter** — `errflg` accumulates, so
+///     `seq -+- 3` prints two libc lines (`+` and `-`; the second `+` lies outside the
+///     `-+-` token) plus one usage line;
+/// (2) `h` is in the optstring so libc prints nothing for it, while C's
+///     `case 'h': /* help (GNU) */` has no `break` and **falls straight into
+///     `default: errflg++`**, so `-h` is "only the usage line";
+/// (3) the pre-ring `!numeric(argv[optind])` guard only cares about whether the
+///     **current token starts with `-`** — a token that does not is ended by libc itself
+///     (`getopt.c:74-78` does not advance `optind`), so `seq 1e2` (no sign after `e`, so
+///     the guard says it is not numeric) still prints 1..100;
+/// (4) hence what the guard really blocks is negative operands: `-1` is an operand,
+///     while `-5e310` enters the ring and is split into a run of out-of-set letters.
 pub fn parse_seq_args<'a>(args: &[&'a [u8]]) -> Result<SeqArgs<'a>, SeqError> {
     const OPTSTRING: &[u8] = b"f:hs:t:w";
     let mut parsed = SeqArgs {
@@ -260,8 +287,9 @@ pub fn parse_seq_args<'a>(args: &[&'a [u8]]) -> Result<SeqArgs<'a>, SeqError> {
     let mut i = 0usize;
     while i < args.len() && !numeric(args[i]) {
         let token = args[i];
-        // getopt 自己的收环判据：没有首字符 `-`、或光一个 `-`，都算「不是选项」，
-        // 且**不推进** `optind`（`getopt.c:74-78`、`:87-92`）；`--` 结束环并吃掉自身（`:81-85`）。
+        // getopt's own end-of-ring criteria: no leading `-`, or a lone `-`, both mean
+        // "not an option" and **do not advance** `optind` (`getopt.c:74-78`, `:87-92`);
+        // `--` ends the ring and consumes itself (`:81-85`).
         if token.len() < 2 || token[0] != b'-' {
             break;
         }
@@ -273,8 +301,9 @@ pub fn parse_seq_args<'a>(args: &[&'a [u8]]) -> Result<SeqArgs<'a>, SeqError> {
         while k < token.len() {
             let letter = token[k];
             k += 1;
-            // `getopt.c:95-104`：集外字母**不叫环停下来**。libc 印一行，`optind` 只在
-            // token 见底的那一次推进，于是 `-ABC` 是三行、`-wé` 是两个裸字节各一行。
+            // `getopt.c:95-104`: an out-of-set letter **does not stop the ring**. libc
+            // prints one line, and `optind` advances only when the token is exhausted, so
+            // `-ABC` yields three lines and `-wé` yields one line per raw byte.
             let Some(slot) = OPTSTRING.iter().position(|&o| o == letter && o != b':') else {
                 reports.push(crate::GetoptReport::UnknownOption(char::from(letter)));
                 errflg = true;
@@ -291,7 +320,7 @@ pub fn parse_seq_args<'a>(args: &[&'a [u8]]) -> Result<SeqArgs<'a>, SeqError> {
                     match args.get(i) {
                         Some(next) => *next,
                         None => {
-                            // `getopt.c:127-136`：值不存在 → libc 一行 + BADCH，`optind` 已越过末尾
+                            // `getopt.c:127-136`: no value → one libc line + BADCH, `optind` is past the end
                             reports.push(crate::GetoptReport::MissingValue(char::from(letter)));
                             errflg = true;
                             break;
@@ -304,19 +333,22 @@ pub fn parse_seq_args<'a>(args: &[&'a [u8]]) -> Result<SeqArgs<'a>, SeqError> {
                     b't' => parsed.terminator = Some(unescape(value)),
                     _ => {}
                 }
-                // 值若是下一个 token 吃进来的，`optind` 要越过它（`getopt.c:138-139`）；
-                // 值若紧贴在本 token 上，这一跳就是移到下一个 token。两种情形都只加一次。
+                // If the value came from the next token, `optind` must skip it
+                // (`getopt.c:138-139`); if the value sits on this token, this step moves to
+                // the next token. Either way exactly one increment.
                 i += 1;
                 break;
             }
             match letter {
-                // `if (!fmt) if (equalize++) pad = SPACE;`：计数交给壳去分成两级
+                // `if (!fmt) if (equalize++) pad = SPACE;`: the count is handed to the
+                // shell, which splits it into two levels
                 b'w' => {
                     if parsed.fmt.is_none() {
                         parsed.equalize += 1;
                     }
                 }
-                // `-h` 在集内，libc 无话可说；C 让它落进 default 置 errflg
+                // `-h` is in the set so libc says nothing; C lets it fall into default
+                // and sets errflg
                 b'h' => errflg = true,
                 _ => {}
             }
@@ -335,27 +367,33 @@ pub fn parse_seq_args<'a>(args: &[&'a [u8]]) -> Result<SeqArgs<'a>, SeqError> {
     Ok(parsed)
 }
 
-/// C 的 `e_atof()`：`strtod` 之后**尾巴必须到结尾**，否则
-/// `errx(2, "invalid floating point argument: %s", num)`；`errno == ERANGE` 走
-/// `err(2, "%s", num)` 的三段形（参照件 `seq 1e310` → rc 2，`seq 1e-40000` 同形）。
-/// 判序也照 C：先看 `ERANGE` 再看杂字符。值为 `-0.0` 时 C 抹掉符号（`seq.c:e_atof`
-/// 的「zero shall have no sign」那一支），这里同一处理。
+/// C's `e_atof()`: after `strtod` the **tail must reach the end**, otherwise
+/// `errx(2, "invalid floating point argument: %s", num)`; `errno == ERANGE` takes the
+/// three-part `err(2, "%s", num)` form (the reference: `seq 1e310` → rc 2, and
+/// `seq 1e-40000` takes the same shape). The test order is C's too: `ERANGE` first, then
+/// leftover characters. For the value `-0.0` C wipes the sign (the "zero shall have no
+/// sign" branch of `seq.c:e_atof`), and the same handling applies here.
 ///
-/// 两处量不出来只能登记的差：① 下溢到**非零**次正规数（`1e-310`）在本机链的 glibc
-/// 上仍置 `ERANGE`，而 Minix 用的 gdtoa 那份实现不在本仓库里（`minix3/lib/libc/
-/// arch/x86_64/gdtoa/` 只有头文件），所以这条规则只按「结果为 0」来判——登记
-/// `SEQ-SUBNORMAL-ERANGE`；② `inf`/`nan` 在 C 是一路走到底的形状（`seq inf` 因
-/// `first <= last` 永真而刷不完，参照件被 `timeout` 杀掉；`seq nan` 打空并退 0），
-/// 本层的整数引擎把非有限值挡在渲染之前——登记 `SEQ-NONFINITE-OPERAND`。
+/// Two differences that could not be measured and are only registered: (1) underflow to a
+/// **non-zero** subnormal (`1e-310`) still sets `ERANGE` in this host's glibc, while the
+/// gdtoa implementation Minix uses is not in this repository
+/// (`minix3/lib/libc/arch/x86_64/gdtoa/` has headers only), so this rule is decided
+/// purely by "the result is 0" — registered as `SEQ-SUBNORMAL-ERANGE`; (2) `inf`/`nan`
+/// run all the way through in C (`seq inf` never finishes because `first <= last` always
+/// holds, so the reference is killed by `timeout`; `seq nan` prints nothing and exits 0),
+/// while this integer engine blocks non-finite values before rendering — registered as
+/// `SEQ-NONFINITE-OPERAND`.
 pub fn e_atof(word: &[u8]) -> Result<f64, SeqError> {
-    // 空串是合法的 0：`strtod` 一个字符都没转时把 `endptr` 停在**起点**，而起点就是
-    // 那个 `\0`，于是 `*endp != '\0'` 这一判过得了（参照件 `seq ""` 打 `1\n0\n`，
-    // `tmp/seq-320/measure5.log`）。非空而转不出前缀的（`-Z`、`3x`）才落 `errx`。
+    // The empty string is a legal 0: when `strtod` converts no character it leaves
+    // `endptr` at the **start**, and the start is that `\0`, so `*endp != '\0'` passes
+    // (the reference prints `1\n0\n` for `seq ""`). Only a non-empty word with no
+    // convertible prefix (`-Z`, `3x`) lands on `errx`.
     if word.is_empty() {
         return Ok(0.0);
     }
-    // 数字文法在 ASCII 上：一枚不属于任何数字的字节本来就落在「尾巴有杂字符」那一支，
-    // 所以只有 `parse_float_prefix` 这一步需要 `&str`，交回的错携带的是**原字节**。
+    // The number grammar is over ASCII: a byte that belongs to no number already lands on
+    // the "tail has leftover characters" branch, so only `parse_float_prefix` needs `&str`,
+    // and the error it returns carries the **original bytes**.
     let text = String::from_utf8_lossy(word);
     match crate::floatfmt::parse_float_prefix(&text) {
         Some((value, consumed)) if consumed == text.len() => {
@@ -376,9 +414,10 @@ pub fn e_atof(word: &[u8]) -> Result<f64, SeqError> {
 }
 
 /// Parses the operand words (`last` | `first last` | `first incr last`)
-/// and the flag words. 前门是 [`parse_seq_args`]，这一支只做 C 在环之后那一串：
-/// 操作数按 `last`→`first`→`incr` 的次序解析（所以报错先报最后一个操作数）、
-/// 零步长与反方向两判、`-f` 的两道 `valid_format`。
+/// and the flag words. The front door is [`parse_seq_args`]; this branch only does what C
+/// does after the ring: operands are parsed in the order `last`→`first`→`incr` (so the
+/// error names the last operand first), the zero-stride and wrong-direction checks, and
+/// `-f`'s two `valid_format` passes.
 pub fn parse(args: &[&[u8]]) -> Result<SeqOptions, SeqError> {
     let parsed = parse_seq_args(args)?;
     let operands = &parsed.operands;
@@ -409,11 +448,13 @@ pub fn parse(args: &[&[u8]]) -> Result<SeqOptions, SeqError> {
         if !valid_format(&unescaped) {
             return Err(SeqError::BadFormatPlain);
         }
-        // 说明符本身合法之后，按 `%g`/`%.2f` 之类渲染浮点是另一件事：
-        // 与 printf 家同一处裁决，本引擎只走整数。
+        // Once the specifier itself is legal, rendering a float with `%g`/`%.2f` and the
+        // like is a separate matter: the same adjudication as the printf family, and this
+        // engine stays integer-only.
         return Err(SeqError::FloatNotModelled);
     }
-    // `f64::fract` 不在 core 里，整数性改用截断回读判；先由 `is_finite` 与上限挡住越界。
+    // `f64::fract` is not in core, so integrality is decided by truncating back;
+    // `is_finite` and the bound keep out-of-range values out first.
     let whole =
         |v: f64| v.is_finite() && v.abs() <= (i64::MAX as f64) && (v - v as i64 as f64) == 0.0;
     if !whole(first) || !whole(last) || incr.is_some_and(|i| !whole(i)) {
@@ -448,8 +489,10 @@ fn width_of(value: i64) -> usize {
     digits
 }
 
-/// `generate_format` 的向下取整除法（`seq.c:440-442` 的 `floor((last - first) / incr)`）。
-/// Rust 的 `/` 是截断，`-2.67` 会得 `-2`，而 C 要 `-3`，所以余数非零且两数异号时退一格。
+/// The floor division of `generate_format` (`floor((last - first) / incr)` at
+/// `seq.c:440-442`). Rust's `/` truncates, so `-2.67` would give `-2` while C wants `-3`;
+/// hence step down one when the remainder is non-zero and the two operands have opposite
+/// signs.
 fn floor_div(a: i128, b: i128) -> i128 {
     let q = a / b;
     if a % b != 0 && (a < 0) != (b < 0) {
@@ -459,10 +502,11 @@ fn floor_div(a: i128, b: i128) -> i128 {
     }
 }
 
-/// **实际被打印的最后一个数**：C 在算宽度之前先把它折回来
-/// （`if (first > last) last = first - incr * floor((first - last) / incr); else last =
-/// first + incr * floor((last - first) / incr);`，`seq.c:439-442`）。
-/// 参照件 `seq -w 1 5 10` 打 `1`、`6` 两个一位数 ⇒ 宽度是 1 而不是 `10` 的 2。
+/// **The last number actually printed**: C folds it back before computing the width
+/// (`if (first > last) last = first - incr * floor((first - last) / incr); else last =
+/// first + incr * floor((last - first) / incr);`, `seq.c:439-442`).
+/// The reference prints `1` and `6`, two one-digit numbers, for `seq -w 1 5 10`, so the
+/// width is 1, not the 2 of `10`.
 fn printed_last(first: i64, incr: i64, last: i64) -> i64 {
     let (first, incr) = (i128::from(first), i128::from(incr));
     let gap = i128::from(last) - first;
@@ -476,11 +520,13 @@ fn printed_last(first: i64, incr: i64, last: i64) -> i64 {
 
 /// Renders one value, filled to `width` when equalising.
 ///
-/// 两级的补位不对称，因为 C 只是把 `pad` 塞进 printf 的格式串
-/// （`sprintf(buf, "%%%c%d%c", pad, MAX(width1, width2), 'g')`，`seq.c:467-469`）：
-/// `0` 那一级是 `%0<width>g`，零填在符号之后；空格那一级是 `% <width>g`，**非负数也占一个
-/// 符号位**，宽度不足时才再补空格，所以 `seq -w -w 8 10` 的 `10` 打成三列的 `" 10"`
-/// （超宽不截），`seq -w -w -10 10` 的 `0` 打成 `"  0"` 而 `-9` 打成 `" -9"`。
+/// The two padding levels are asymmetric because C merely puts `pad` into printf's format
+/// string (`sprintf(buf, "%%%c%d%c", pad, MAX(width1, width2), 'g')`, `seq.c:467-469`): the
+/// `0` level is `%0<width>g` with zeros after the sign; the space level is `% <width>g`,
+/// where **even a non-negative number occupies a sign slot**, and spaces are added only
+/// when the width is still short, so `seq -w -w 8 10` prints the `10` as the three-column
+/// `" 10"` (over-wide input is not truncated), while `seq -w -w -10 10` prints `0` as
+/// `"  0"` and `-9` as `" -9"`.
 fn render(value: i64, width: usize, equalize: bool, pad: char) -> String {
     let magnitude = value.unsigned_abs().to_string();
     if !equalize {
@@ -568,7 +614,8 @@ pub fn render_output(values: &[String], options: &SeqOptions) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// 文本夹具交给字节前门的那一跳：`str` 字面量的字节形就是命令行上的字节。
+    /// The hop from the text fixture to the byte front door: a `str` literal's bytes are
+    /// exactly the bytes on the command line.
     fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
         list.iter().map(|word| word.as_bytes()).collect()
     }
@@ -592,12 +639,13 @@ mod tests {
         assert_eq!(generate_words(&["3"]), Ok("1\n2\n3\n".to_string()));
     }
 
-    /// 集外字母交回的是短横后的**每一个字节**，而且这一支的环是累加形：`-\u{e9}`
-    /// （`c3 a9`）交回**两枚**报告（U+00C3、U+00A9），与参照件
-    /// `tmp/seq-320/seq_ref` 现量的两行 `303`/`251` 同形（`getopt.c:79` 的
-    /// `optopt = *place++` 一次进一个字节、`seq.c:101-113` 的 `errflg` 累加不叫环停）。
-    /// 环那一侧本来就是 `token = args[i]`（字节切片）+ `char::from(letter)`，所以这一枚
-    /// 钉的是**已经是那样**的取法；逐字节面门在 `tests/seq_face.rs`。
+    /// An out-of-set letter returns **every byte** after the dash, and this branch's ring
+    /// accumulates: `-\u{e9}` (`c3 a9`) returns **two** reports (U+00C3, U+00A9), the same
+    /// shape as the reference's measured two lines `303`/`251` (`getopt.c:79`'s
+    /// `optopt = *place++` consumes one byte at a time, and `errflg` accumulation in
+    /// `seq.c:101-113` does not stop the ring). The ring side is already
+    /// `token = args[i]` (a byte slice) + `char::from(letter)`, so this test pins the fetch
+    /// rule **as it already is**; the per-byte face door is `tests/seq_face.rs`.
     #[test]
     fn the_unknown_letters_are_the_first_bytes_not_the_first_characters() {
         use crate::GetoptReport;
@@ -611,7 +659,8 @@ mod tests {
             }),
             "`é` 是两个字节，libc 两行各报一枚"
         );
-        // 坏字母在前也一样：`-Zé` 三行（`Z`、`c3`、`a9`）。
+        // The same holds with the bad letter first: `-Zé` yields three lines (`Z`, `c3`,
+        // `a9`).
         assert_eq!(
             seq_args(&["-Z\u{e9}"]).err(),
             Some(SeqError::Usage {
@@ -623,14 +672,15 @@ mod tests {
             }),
             "-Z\u{e9}"
         );
-        // ASCII 那一形不许被波及。
+        // The ASCII shape must not be affected.
         assert_eq!(
             seq_args(&["-v"]).err(),
             Some(SeqError::Usage {
                 reports: vec![GetoptReport::UnknownOption('v')]
             })
         );
-        // 反面：带值字母把其后的字节整个当值收走（`-s` 的值可以是任意串）。
+        // The reverse: a value-taking letter swallows the following bytes as its value
+        // (`-s`'s value may be any string).
         assert_eq!(
             seq_args(&["-s\u{e9}", "3"]).err(),
             None,
@@ -641,21 +691,23 @@ mod tests {
     #[test]
     fn test_ring_keeps_going_after_a_bad_letter() {
         use crate::GetoptReport;
-        // 单个集外字母：libc 一行 + 调用方的一行 usage
+        // A single out-of-set letter: one libc line + the caller's usage line
         assert_eq!(
             seq_args(&["-Z"]).err(),
             Some(SeqError::Usage {
                 reports: vec![GetoptReport::UnknownOption('Z')]
             })
         );
-        // 聚簇里合法字母先被吃掉，坏的照报（`seq -wZ` 与 `-Zw` 同一形）
+        // Legal letters in a cluster are consumed first and a bad one is still reported
+        // (`seq -wZ` and `-Zw` share this shape)
         assert_eq!(
             seq_args(&["-wZ"]).err(),
             Some(SeqError::Usage {
                 reports: vec![GetoptReport::UnknownOption('Z')]
             })
         );
-        // errflg 是累加的，环不在第一个坏字母处停：`-+- 3` 的两行都留得住
+        // errflg accumulates, so the ring does not stop at the first bad letter:
+        // `-+- 3` keeps both lines
         assert_eq!(
             seq_args(&["-+-", "3"]).err(),
             Some(SeqError::Usage {
@@ -680,21 +732,23 @@ mod tests {
                 "{flag}"
             );
         }
-        // 聚簇里 `-w` 先被吃掉，缺值报的是 `f`（`seq -wf` 的现量同一形）
+        // `-w` is consumed first inside the cluster, so the missing value reports `f`
+        // (`seq -wf` measures the same way)
         assert_eq!(
             seq_args(&["-wf"]).err(),
             Some(SeqError::Usage {
                 reports: vec![GetoptReport::MissingValue('f')]
             })
         );
-        // `w` 自己不带值，所以它永远不会触发这一支
+        // `w` takes no value, so it can never trigger this branch
         assert_eq!(seq_args(&["-w", "3"]).err(), None);
     }
 
     #[test]
     fn test_h_is_in_the_set_and_says_nothing() {
-        // `h` 在 optstring 里 ⇒ libc 不印任何东西；C 的 `case 'h'` 没有 break，
-        // 直接落进 `default: errflg++`，所以这一支只有 usage 一行、reports 为空。
+        // `h` is in the optstring ⇒ libc prints nothing; C's `case 'h'` has no break and
+        // falls straight into `default: errflg++`, so this branch has only the usage line
+        // and empty `reports`.
         assert_eq!(
             seq_args(&["-h"]).err(),
             Some(SeqError::Usage { reports: vec![] })
@@ -711,7 +765,8 @@ mod tests {
 
     #[test]
     fn test_operand_count_face_and_double_dash() {
-        // 操作数必须是 1..3 个；`--` 被吃掉、自身不是操作数（`getopt.c:81-85`）
+        // Operands must be 1..3; `--` is consumed and is not an operand itself
+        // (`getopt.c:81-85`)
         assert_eq!(
             seq_args(&[]).err(),
             Some(SeqError::Usage { reports: vec![] })
@@ -725,34 +780,39 @@ mod tests {
             Some(SeqError::Usage { reports: vec![] })
         );
         assert_eq!(seq_args(&["--", "3"]).unwrap().operands, argv_of(&["3"]));
-        // 裸 `-` 结束环却不推进，于是它自己是操作数（`getopt.c:87-92`）
+        // A bare `-` ends the ring without advancing, so it is an operand itself
+        // (`getopt.c:87-92`)
         assert_eq!(seq_args(&["-"]).unwrap().operands, argv_of(&["-"]));
     }
 
     #[test]
     fn test_numeric_guard_is_not_number_parsing() {
-        // 护栏认的是「这个 token 会不会被误当选项」，`e`/`E` 后必须紧跟符号才算数字
+        // The guard decides "would this token be mistaken for an option"; after `e`/`E` a
+        // sign must follow immediately for the word to count as numeric
         assert!(numeric("-5".as_bytes()));
         assert!(numeric("-1e-2".as_bytes()));
-        // `e` 后紧跟数字（无符号）⇒ 护栏**不认**它是数字；但参照件 `seq 1e2` 照旧
-        // 打出 1..100——不以 `-` 开头的 token 由 libc 自己收环，护栏只在负号形上起作用
+        // `e` followed directly by a digit (no sign) ⇒ the guard does **not** treat it as
+        // numeric; but the reference still prints 1..100 for `seq 1e2` — a token that does
+        // not start with `-` is ended by libc itself, and the guard only acts on the
+        // dash-prefixed shape
         assert!(!numeric("1e2".as_bytes()));
         assert!(
             !numeric("-5e310".as_bytes()),
             "e 后无符号 ⇒ 不是 numeric ⇒ 进环被拆成集外字母"
         );
         assert!(!numeric("-w".as_bytes()));
-        // 空 token：C 的 `while (*s)` 一步不走，判据是 `*s == '\0'` ⇒ 反而是数字
+        // Empty token: C's `while (*s)` never loops and the criterion is `*s == '\0'` ⇒
+        // it counts as numeric
         assert!(numeric("".as_bytes()));
-        // `-5` 因此是操作数而不是选项
+        // `-5` is therefore an operand, not an option
         assert_eq!(seq_args(&["-5"]).unwrap().operands, argv_of(&["-5"]));
     }
 
     #[test]
     fn test_unescape_matches_the_c_table() {
         assert_eq!(unescape("a\\tb".as_bytes()), "a\tb".as_bytes());
-        assert_eq!(unescape("\\101".as_bytes()), "A".as_bytes()); // 八进制最多三位
-        assert_eq!(unescape("\\x41z".as_bytes()), "Az".as_bytes()); // 十六进最多两位
+        assert_eq!(unescape("\\101".as_bytes()), "A".as_bytes()); // at most three octal digits
+        assert_eq!(unescape("\\x41z".as_bytes()), "Az".as_bytes()); // at most two hex digits
         assert_eq!(
             unescape("\\X41".as_bytes()),
             "\\X41".as_bytes(),
@@ -795,7 +855,8 @@ mod tests {
 
     #[test]
     fn test_zero_stride_and_direction_sentences_split() {
-        // 三个操作数是 first、incr、last；零步长那支的名随 `first < last` 变
+        // Three operands are first, incr, last; the zero-stride branch's name follows
+        // `first < last`
         assert_eq!(
             opts_of(&["1", "0", "3"]).err(),
             Some(SeqError::ZeroIncrement)
@@ -809,8 +870,9 @@ mod tests {
             Some(SeqError::ZeroDecrement),
             "相等走 de 支"
         );
-        // 反方向两判排在零步长之后（`seq.c:155-159`），落在默认步长选定之后的
-        // `generate` 一侧，所以这两枚走 `generate_words` 而不是 `parse`
+        // The two wrong-direction checks come after the zero-stride one (`seq.c:155-159`)
+        // and live on `generate`'s side, after the default stride is chosen, so these two
+        // go through `generate_words` rather than `parse`
         assert_eq!(
             generate_words(&["1", "-1", "5"]),
             Err(SeqError::NeedsPositiveIncrement)
@@ -823,8 +885,9 @@ mod tests {
 
     #[test]
     fn test_operand_errors_name_the_last_operand_first() {
-        // C 的解析次序是 last→first→incr，所以 `seq 3 -w` 报的是 `-w`（环不重排，
-        // `-w` 落在操作数里）。退码由壳按 `errx(2, ...)` 一族给。
+        // C parses in the order last→first→incr, so `seq 3 -w` reports `-w` (the ring does
+        // not reorder, and `-w` lands among the operands). The exit code is supplied by the
+        // shell along the `errx(2, ...)` family.
         assert_eq!(
             opts_of(&["3", "-w"]).err(),
             Some(SeqError::InvalidNumber("-w".as_bytes().to_vec()))
@@ -846,8 +909,9 @@ mod tests {
             opts_of(&["--", "-Z"]).err(),
             Some(SeqError::InvalidNumber("-Z".as_bytes().to_vec()))
         );
-        // 空串是合法的 0：`strtod` 转不出任何东西时把 endptr 停在起点，而起点就是
-        // 那个 `\0` ⇒ 「尾巴有杂字符」判据过得了
+        // The empty string is a legal 0: when `strtod` converts nothing it leaves endptr at
+        // the start, and the start is that `\0` ⇒ the "tail has leftover characters"
+        // criterion passes
         assert_eq!(e_atof("".as_bytes()), Ok(0.0));
         assert_eq!(
             e_atof("-Z".as_bytes()).err(),
@@ -857,18 +921,20 @@ mod tests {
 
     #[test]
     fn test_equalize_width_follows_the_last_printed_value() {
-        // C 的 floor 与 Rust 的截断除法在异号时差一格
+        // C's floor and Rust's truncating division differ by one when the signs differ
         assert_eq!(floor_div(8, -3), -3);
         assert_eq!(floor_div(9, -3), -3);
         assert_eq!(floor_div(8, 3), 2);
         assert_eq!(floor_div(-8, 3), -3);
-        // 宽度取自**实际打印的**首尾两值：`seq -w 1 5 10` 只打 1 与 6
+        // The width comes from the **actually printed** first and last values:
+        // `seq -w 1 5 10` prints only 1 and 6
         assert_eq!(printed_last(1, 5, 10), 6);
         assert_eq!(printed_last(10, -3, 1), 1);
         assert_eq!(printed_last(1, 1, 10), 10);
         assert_eq!(width_of(printed_last(1, 5, 10)), 1);
         assert_eq!(width_of(printed_last(1, 1, 10)), 2);
-        // `% 2g` 让非负数也占符号位，超宽不截；`%02g` 把零填在符号之后
+        // `% 2g` makes even non-negative numbers occupy a sign slot and does not
+        // truncate over-wide values; `%02g` puts the zeros after the sign
         assert_eq!(render(10, 2, true, ' '), String::from(" 10"));
         assert_eq!(render(10, 2, true, '0'), String::from("10"));
         assert_eq!(render(0, 3, true, ' '), String::from("  0"));
@@ -887,7 +953,8 @@ mod tests {
             Some(SeqError::BadFormat("%d".as_bytes().to_vec())),
             "参照件对 `%d' 报的是同一句，不是「浮点未接上」"
         );
-        // 说明符合法之后才轮到浮点渲染那处裁决（本引擎只走整数，登记为 SEQ-FORMAT-RENDER）
+        // Only after the specifier is legal does the float-rendering adjudication apply
+        // (this engine is integer-only, registered as SEQ-FORMAT-RENDER)
         assert_eq!(
             opts_of(&["-f", "%g", "3"]).err(),
             Some(SeqError::FloatNotModelled)
@@ -911,7 +978,8 @@ mod tests {
                 .pad,
             ' '
         );
-        // `-f` 已给定时 `-w` 整个作废（`if (!fmt)` 那一层），但 C 仍会因浮点支先退
+        // When `-f` is given, `-w` is void entirely (the `if (!fmt)` layer), but C still
+        // exits early on the float branch
         assert_eq!(
             opts_of(&["-f", "%g", "-w", "1", "3"]).err(),
             Some(SeqError::FloatNotModelled)
@@ -1008,11 +1076,12 @@ mod tests {
             Err(SeqError::FloatNotModelled)
         );
     }
-    /// `-s` 与 `-t` 的值**就是打出去的内容**：一枚裸 `ff` 是一位分隔符，不是折叠后的
-    /// 三个字节。参照件 `tmp/seq-320/seq_ref` 现量 `seq -s<ff> 1 3` 打 `1\xff2\xff3\xff`、
-    /// `seq -t<ff> 1 3` 打 `1\n2\n3\n\xff`（`seq.c:110` 的 `sep = unescape(optarg)` 配
-    /// `:174-186` 的 `fputs(sep, stdout)`）；文本缝在同一形上打的是 `ef bf bd` 三位
-    /// （现量 `tmp/argv-443/measure.log`）。
+    /// The `-s` and `-t` values **are exactly what gets printed**: a bare `ff` is one
+    /// separator byte, not the three bytes of its folded form. The reference measured
+    /// `seq -s<ff> 1 3` printing `1\xff2\xff3\xff` and `seq -t<ff> 1 3` printing
+    /// `1\n2\n3\n\xff` (`seq.c:110`'s `sep = unescape(optarg)` together with `:174-186`'s
+    /// `fputs(sep, stdout)`); the text seam prints `ef bf bd` (three bytes) on the same
+    /// shape.
     #[test]
     fn a_raw_ff_separator_and_terminator_are_one_byte_each() {
         let parsed = parse_seq_args(&[b"-s\xff".as_slice(), b"1".as_slice(), b"3".as_slice()])
@@ -1029,10 +1098,12 @@ mod tests {
         );
     }
 
-    /// 集外字母交回的是命令行上的**那一枚字节**：`-\xff` 是一个字母（`getopt.c:79` 的
-    /// `optopt = *place++` 一次进一个字节），报文里是一位裸 `ff`（`:103` 的 `%c`）。
-    /// 累加环在这一形只走一轮——折叠形把同一枚参数变成三个字母各报一行，那是缝的形状
-    /// 不是 C 的形状，因此两形的差别直接钉进断言。
+    /// An out-of-set letter returns **that one byte** from the command line: `-\xff` is one
+    /// letter (`getopt.c:79`'s `optopt = *place++` consumes one byte at a time) and the
+    /// message carries one bare `ff` (`:103`'s `%c`). The accumulating ring makes only one
+    /// pass on this shape — the folded shape turns the same argument into three letters with
+    /// one line each, which is the seam's shape, not C's, so the difference between the two
+    /// shapes is pinned directly in the assertion.
     #[test]
     fn parse_seq_names_a_raw_ff_option_letter_by_that_byte() {
         use crate::GetoptReport;

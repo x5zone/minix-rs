@@ -367,19 +367,21 @@ pub fn map_physical_via(
     physical: PhysBytes,
     length: VirBytes,
 ) -> Result<VirBytes, Errno> {
-    // CodeReview S2：C i386 wire 的 phaddr 是 u32——PA ≥ 4 GiB 会静默
-    // 截断映射到错误物理页（比报错更危险），高位直接拒绝。
+    // C's i386 wire carries phaddr as a u32—a PA ≥ 4 GiB would be silently
+    // truncated and mapped to the wrong physical page (more dangerous than an
+    // error), so the high bits are rejected outright.
     if physical.0 > u32::MAX as u64 {
         return Err(Errno::from_i32(minix_types::EINVAL));
     }
     let mut message = crate::syscall::cleared_message();
-    // NK4-C 续-132 修：请求走 `m_lsys_vm_map_phys` 臂（`VmMapPhysIn::
-    // decode_message` 的对偶，C `mess_lsys_vm_map_phys` ipc.h:1504-1510：
-    // ep@0/phaddr@4/len@8，phaddr 与 len 都是 **u32**——C i386 wire 的
-    // 32 位宽；64 位 phys/len 按同语义截断）。旧实现手写 raw 覆盖
-    // （target@0/phys u64@8/len u64@16），VM 按 u32@4 解出 phaddr=0——
-    // 真机首个消费者（tty PL011）映射到 phys 0，DIRECT 缺页臂
-    // zerobase 拒绝。
+    // The request rides the `m_lsys_vm_map_phys` arm (the counterpart of
+    // `VmMapPhysIn::decode_message`; C `mess_lsys_vm_map_phys` ipc.h:1504-1510:
+    // ep@0/phaddr@4/len@8, with both phaddr and len **u32**—the 32-bit width of
+    // C's i386 wire; 64-bit phys/len are truncated per the same semantics). The
+    // old implementation hand-wrote raw fields (target@0/phys u64@8/len u64@16),
+    // so VM decoded phaddr=0 from u32@4—the first real-machine consumer (tty
+    // PL011) mapped phys 0, and the DIRECT fault arm rejected it through
+    // zerobase.
     // SAFETY: the documented payload arm for VM_MAP_PHYS requests.
     unsafe {
         let mp = &mut message.m_u.m_lsys_vm_map_phys;
@@ -391,10 +393,11 @@ pub fn map_physical_via(
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
-    // NK4-C 续-132 修：VM 侧回包经 `EncodeToM1` 把地址放 **m1.p1**
-    // （VmMapPhysOut::encode → m1p1），不在 raw[0..8]（那里是
-    // m_source/m_type）——旧解码读出的「地址」= m_type<<32|m_source，
-    // 真机首个消费者（tty PL011 臂）即拿垃圾指针崩死（cr2=0x7c16）。
+    // VM's reply puts the address in **m1.p1** through `EncodeToM1`
+    // (VmMapPhysOut::encode → m1p1), not in raw[0..8] (where m_source/m_type
+    // live)—the old decoding read an "address" of m_type<<32|m_source, and the
+    // first real-machine consumer (the tty PL011 arm) crashed on that garbage
+    // pointer (cr2=0x7c16).
     // SAFETY: VM's MapPhys reply rides the m1 arm; the union read is the
     // documented payload lane.
     let placed = unsafe { message.m_u.m_m1.m1p1 };
@@ -1036,8 +1039,8 @@ mod tests {
     fn test_map_physical_returns_virtual_address() {
         let mut transport = CannedTransport::new();
         let mut reply = reply_with_type(0);
-        // 续-132：与 VM 的 EncodeToM1 对齐——地址走 m1.p1 车道（旧脚本
-        // 写 raw[0..8] 验证的是错误 wire）。
+        // Aligned with VM's EncodeToM1: the address travels on the m1.p1 lane
+        // (the old script wrote raw[0..8], which validated the wrong wire).
         // SAFETY: test-only payload setup through the documented m1 arm.
         unsafe {
             reply.m_u.m_m1.m1p1 = 0xA000;
@@ -1047,8 +1050,8 @@ mod tests {
             map_physical_via(&transport, Endpoint(6), PhysBytes(0xF0000), VirBytes(4096)),
             Ok(VirBytes(0xA000))
         );
-        // 续-132：请求 wire——m_lsys_vm_map_phys 臂（ep/phaddr/len 全
-        // 32 位，VM 按 u32 解码）。
+        // The request wire: the `m_lsys_vm_map_phys` arm (ep/phaddr/len are all
+        // 32-bit; VM decodes them as u32).
         let sent = transport.sent.borrow();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].0, vm_endpoint());
@@ -1233,7 +1236,8 @@ mod tests {
         // C: vm_cachecall panics on a block size that is not a page
         // multiple (vm_cache.c:17-19) — a caller bug, not a runtime error.
         let transport = CannedTransport::new();
-        //[SD19-gate] 测试 #[should_panic]：本行必须触发 panic，回复值无可消费
+        //[SD19-gate] test has #[should_panic]: this line must trigger a panic;
+        // there is no reply value to consume
         #[allow(clippy::let_underscore_must_use)]
         let _ = map_cacheblock_via(&transport, 1, 0, 0, 0, &mut 0u32, 100);
     }
@@ -1243,12 +1247,14 @@ mod tests {
     fn test_cache_call_panics_on_no_device() {
         // C: assert(dev != NO_DEV) (vm_cache.c:31) with NO_DEV = 0.
         let transport = CannedTransport::new();
-        //[SD19-gate] 测试 #[should_panic]：本行必须触发 panic，回复值无可消费
+        //[SD19-gate] test has #[should_panic]: this line must trigger a panic;
+        // there is no reply value to consume
         #[allow(clippy::let_underscore_must_use)]
         let _ = map_cacheblock_via(&transport, NO_DEVICE, 0, 0, 0, &mut 0u32, 4096);
     }
 
-    /// E9 VmApi:VM_RS_SET_PRIV M2 载荷域断言(target/mask_ptr/is_sys)。
+    /// E9 VmApi:VM_RS_SET_PRIV m2-payload field assertions
+    /// (target/mask_ptr/is_sys).
     #[test]
     fn test_vm_rs_set_priv_m2_fields() {
         let mut msg = Message::default();
@@ -1266,7 +1272,8 @@ mod tests {
         assert_eq!(unsafe { msg.m_u.m_m2 }.m2i2, 1);
     }
 
-    /// E9 SchedApi:SCHEDULING_START 消息域断言(endpoint/parent/maxprio/quantum)。
+    /// E9 SchedApi:SCHEDULING_START message field assertions
+    /// (endpoint/parent/maxprio/quantum).
     #[test]
     fn test_sched_scheduling_start_fields() {
         let m = minix_types::ipc::MessLsysSchedSchedulingStart {
@@ -1282,7 +1289,7 @@ mod tests {
         assert_eq!(m.quantum, 200);
     }
 
-    /// E9 SchedApi:SCHEDULING_STOP 消息域断言(endpoint)。
+    /// E9 SchedApi:SCHEDULING_STOP message field assertions (endpoint).
     #[test]
     fn test_sched_scheduling_stop_fields() {
         let m = minix_types::ipc::MessLsysSchedSchedulingStop {
@@ -1291,8 +1298,8 @@ mod tests {
         };
         assert_eq!(m.endpoint, 9);
     }
-    /// E-IPCWIRE 第 5 项:shm_unmap_via 载荷域断言
-    /// (forwhom@0/addr@8 u64——E-VMMCPWIRE 扫描续加宽)。
+    /// E-IPCWIRE item 5: shm_unmap_via payload field assertions
+    /// (forwhom@0/addr@8 u64—widened by the E-VMMCPWIRE sweep).
     #[test]
     fn test_shm_unmap_via_fields() {
         let mut msg = Message::default();
@@ -1301,7 +1308,7 @@ mod tests {
             msg.m_u.m_lc_vm_shm_unmap = minix_types::ipc::MessLcVmShmUnmap {
                 forwhom: 12,
                 _pad: 0,
-                addr: 0x0000_0001_4000_0000, // MMAP 窗口内(>4GiB)
+                addr: 0x0000_0001_4000_0000, // inside the MMAP window (>4GiB)
                 _padding: [0; 40],
             };
         }
@@ -1311,10 +1318,10 @@ mod tests {
     }
 }
 
-// ── E9 VmApi 分域:RS 服务进程管理的 VM 消息构造面 ──
+// ── E9 VmApi sub-domain: the VM message construction face of RS service process management ──
 
-/// VM_RS_SET_PRIV(0xC25):RS 设置目标进程的特权结构。
-/// M2 载荷:m2i1=target, m2l1=mask buf ptr, m2i2=is_sys_proc。
+/// VM_RS_SET_PRIV(0xC25): RS sets the target process's privilege structure.
+/// m2 payload: m2i1=target, m2l1=mask buf ptr, m2i2=is_sys_proc.
 pub fn vm_rs_set_priv_via(
     transport: &impl IpcTransport,
     target: Endpoint,
@@ -1323,7 +1330,7 @@ pub fn vm_rs_set_priv_via(
 ) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     {
-        // SAFETY: m_m2 是 VM_RS_SET_PRIV 的文档化载荷。
+        // SAFETY: m_m2 is the documented payload for VM_RS_SET_PRIV.
         let m2 = unsafe { &mut message.m_u.m_m2 };
         m2.m2i1 = target.0;
         m2.m2l1 = mask_buf as i64;
@@ -1341,8 +1348,8 @@ pub fn vm_rs_set_priv_via(
     Ok(())
 }
 
-/// VM_RS_MEMCTL(0xC2A):RS 内存控制(pin/heap/map 预分配等)。
-/// M1 载荷:m1i1=endpt, m1i2=req。
+/// VM_RS_MEMCTL(0xC2A): RS memory control (pin/heap/map preallocation, etc.).
+/// m1 payload: m1i1=endpt, m1i2=req.
 pub fn vm_rs_memctl_via(
     transport: &impl IpcTransport,
     endpt: Endpoint,
@@ -1352,10 +1359,10 @@ pub fn vm_rs_memctl_via(
 ) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     {
-        // SAFETY: m_m1 是 VM_RS_MEMCTL 的文档化载荷。VM 解码
-        // (vm dispatcher decode_rs_memctl_request):m1i1=endpt,
-        // m1i2=req,m1i3=len(HeapPrealloc/MapPrealloc 消费),
-        // m1p1=addr;Pin/MakeVm/GetPreallocMap 忽略 addr/len。
+        // SAFETY: m_m1 is the documented payload for VM_RS_MEMCTL. VM decodes
+        // (vm dispatcher decode_rs_memctl_request): m1i1=endpt,
+        // m1i2=req, m1i3=len (consumed by HeapPrealloc/MapPrealloc),
+        // m1p1=addr; Pin/MakeVm/GetPreallocMap ignore addr/len.
         let m1 = unsafe { &mut message.m_u.m_m1 };
         m1.m1i1 = endpt.0;
         m1.m1i2 = req;
@@ -1374,8 +1381,8 @@ pub fn vm_rs_memctl_via(
     Ok(())
 }
 
-/// VM_RS_UPDATE(0xC29):RS live-update 更新进程。
-/// M2 载荷:m2i1=src, m2i2=dst, m2i3=flags。
+/// VM_RS_UPDATE(0xC29): RS live-update of a process.
+/// m2 payload: m2i1=src, m2i2=dst, m2i3=flags.
 pub fn vm_rs_update_via(
     transport: &impl IpcTransport,
     src: Endpoint,
@@ -1384,7 +1391,7 @@ pub fn vm_rs_update_via(
 ) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     {
-        // SAFETY: m_m2 是 VM_RS_UPDATE 的文档化载荷。
+        // SAFETY: m_m2 is the documented payload for VM_RS_UPDATE.
         let m2 = unsafe { &mut message.m_u.m_m2 };
         m2.m2i1 = src.0;
         m2.m2i2 = dst.0;
@@ -1402,10 +1409,12 @@ pub fn vm_rs_update_via(
     Ok(())
 }
 
-/// VM_SHM_UNMAP(0xC22,com.h:718):解除共享内存段映射。
-/// `m_lc_vm_shm_unmap` 载荷:forwhom@0(i32)、addr@8(u64——E-VMMCPWIRE
-/// 扫描续:vir_bytes 按 x86_64 加宽,MMAP 窗口地址 u32 恒截断)。
-/// C: `vm_shm_unmap`(libsys)——ipc-server SweepPlan::unmaps 的执行动词。
+/// VM_SHM_UNMAP(0xC22,com.h:718): unmaps a shared-memory segment mapping.
+/// `m_lc_vm_shm_unmap` payload: forwhom@0 (i32), addr@8 (u64—widened by the
+/// E-VMMCPWIRE sweep: vir_bytes grows to x86_64 width, while MMAP-window
+/// addresses are always truncated to u32).
+/// C: `vm_shm_unmap` (libsys)—the execution verb of ipc-server
+/// SweepPlan::unmaps.
 pub fn shm_unmap_via(
     transport: &impl IpcTransport,
     forwhom: Endpoint,
@@ -1429,9 +1438,10 @@ pub fn shm_unmap_via(
 mod remap_layout_tests {
     use super::*;
 
-    /// remap_via 的 raw 直写布局见证：五个 u64 域依次落在消息载荷的
-    /// 0/8/16/24/32（dst/src/dst_addr/src_addr/size——C mess_lsys_vm_vmremap，
-    /// ipc.h:1537）。raw 直写没有结构体可断言，用域写入后的字节检查锁定。
+    /// Layout witness for remap_via's raw direct write: five u64 fields land in
+    /// order at payload offsets 0/8/16/24/32 (dst/src/dst_addr/src_addr/size—C
+    /// mess_lsys_vm_vmremap, ipc.h:1537). A raw direct write has no struct to
+    /// assert on, so byte checks after the field writes pin the layout.
     #[test]
     fn test_remap_via_raw_layout_order() {
         // SAFETY: test-local message, single-threaded.
@@ -1444,7 +1454,8 @@ mod remap_layout_tests {
             message.m_u.raw[24..32].copy_from_slice(&4u64.to_ne_bytes());
             message.m_u.raw[32..40].copy_from_slice(&5u64.to_ne_bytes());
         }
-        // 五域连续、无重叠、无间隙：读回一致即布局锁定。
+        // The five fields are contiguous, non-overlapping, and gap-free: a
+        // consistent read-back pins the layout.
         // SAFETY: raw field read, test-local.
         unsafe {
             assert_eq!(message.m_u.raw[0..8], 1u64.to_ne_bytes());

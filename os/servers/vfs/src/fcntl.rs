@@ -671,8 +671,8 @@ pub fn revive_all(procs: &[SuspendedProc]) -> Vec<u32> {
         .collect()
 }
 
-/// `struct flock` 的解码（LP64 布局，`minix_types::flock_off`）。
-/// 返回 `(l_start, l_len, l_pid, l_type, l_whence)`。
+/// Decode `struct flock` (LP64 layout, `minix_types::flock_off`).
+/// Returns `(l_start, l_len, l_pid, l_type, l_whence)`.
 pub fn decode_flock(raw: &[u8; minix_types::FLOCK_SIZE]) -> (i64, i64, i32, i32, i16) {
     let rd64 = |at: usize| -> i64 {
         i64::from_le_bytes(raw[at..at + 8].try_into().unwrap())
@@ -688,7 +688,8 @@ pub fn decode_flock(raw: &[u8; minix_types::FLOCK_SIZE]) -> (i64, i64, i32, i32,
     )
 }
 
-/// `struct flock` 的编码（GETLK 的报告面：冲突锁回填或 `F_UNLCK`）。
+/// Encode `struct flock` (the GETLK reporting side: the conflicting lock is
+/// filled in, or `F_UNLCK`).
 pub fn encode_flock(
     raw: &mut [u8; minix_types::FLOCK_SIZE],
     l_start: i64,
@@ -705,20 +706,22 @@ pub fn encode_flock(
     wr(minix_types::flock_off::WHENCE, &l_whence.to_le_bytes());
 }
 
-/// `struct flock` 的取/存缝（C `lock_op:37-39` 与 `:147-149` 的两向
-/// `sys_datacopy_wrapper`）——与 `socket::MsgHdrFetcher` 同一套路：生产件
-/// 走跨空间拷贝（宿主不可达），脚本替身让锁臂的门与三个结局在宿主可测。
+/// The fetch/store seam for `struct flock` (the two directions of
+/// `sys_datacopy_wrapper` at C `lock_op:37-39` and `:147-149`) — the same
+/// approach as `socket::MsgHdrFetcher`: the production piece copies across
+/// address spaces (unreachable on the host), and a scripted stand-in makes the
+/// lock arm's door and its three outcomes testable on the host.
 pub trait FlockIo {
-    /// 从用户内存取 24 字节（`EINVAL` 失败面）。
+    /// Fetch 24 bytes from user memory (the failing face is `EINVAL`).
     fn fetch(&self, addr: u64) -> Result<[u8; minix_types::FLOCK_SIZE], i32>;
-    /// 把 24 字节存回用户内存。
+    /// Store 24 bytes back into user memory.
     fn store(&self, addr: u64, bytes: &[u8; minix_types::FLOCK_SIZE]) -> Result<(), i32>;
 }
 
-/// 生产实现：跨空间 `sys_datacopy`。
+/// Production implementation: cross-space `sys_datacopy`.
 #[derive(Debug, Clone, Copy)]
 pub struct SysFlockIo {
-    /// 调用方端点（C 的 `who_e`）。
+    /// Caller endpoint (C's `who_e`).
     pub who: minix_types::Endpoint,
 }
 
@@ -749,14 +752,14 @@ impl FlockIo for SysFlockIo {
     }
 }
 
-/// 内存替身：把"用户内存"放进一个 24 字节缓冲（测试用；与生产件
-/// `SysFlockIo` 行为不同——脚本化 vs 跨空间拷贝——满足 trait 的
-/// 双实现规则）。
+/// In-memory stand-in: keeps "user memory" in a 24-byte buffer (for tests; it
+/// behaves differently from the production piece `SysFlockIo` — scripted vs
+/// cross-space copy — satisfying the trait's two-implementation rule).
 #[derive(Debug, Default, Clone)]
 pub struct MemoryFlockIo {
-    /// 取方向的"用户内存"。
+    /// The "user memory" for the fetch direction.
     pub source: core::cell::RefCell<[u8; minix_types::FLOCK_SIZE]>,
-    /// 存储日志（地址 + 字节）。
+    /// Log of stores (address + bytes).
     pub stored: core::cell::RefCell<alloc::vec::Vec<(u64, [u8; minix_types::FLOCK_SIZE])>>,
 }
 

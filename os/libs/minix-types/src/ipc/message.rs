@@ -239,8 +239,9 @@ pub union MessageUnion {
     pub m_lsys_pm_proceventmask: MessLsysPmProceventmask,
     /// PM: process event (PM → subscriber). C: `mess_pm_lsys_proc_event` — ipc.h:1800-1813
     pub m_pm_lsys_proc_event: MessPmLsysProcEvent,
-    /// PM/RS 信号管理器转发的信号号（信号管理器 → 目标服务）。
-    /// C: `mess_pm_lsys_sigs_signal` — ipc.h:1815-1819，union 成员 :2611
+    /// The signal number forwarded by the PM/RS signal manager (signal
+    /// manager → target service).
+    /// C: `mess_pm_lsys_sigs_signal` — ipc.h:1815-1819, union member :2611
     pub m_pm_lsys_sigs_signal: MessPmLsysSigsSignal,
     /// PM: srv_fork params (RS → PM). C: `mess_lsys_pm_srv_fork` — ipc.h:1422-1428
     pub m_lsys_pm_srv_fork: MessLsysPmSrvFork,
@@ -338,7 +339,7 @@ impl Message {
         }
     }
 
-    // ── Safe payload accessors (FIX-08: R-04) ──
+    // ── Safe payload accessors ──
     //
     // These methods centralize the `debug_assert!` on `m_type` before
     // accessing the `m_u` union. In debug builds, a mismatch panics —
@@ -347,7 +348,7 @@ impl Message {
     //
     // The `unsafe` union access is still inside the closure, but the
     // `m_type` verification is guaranteed by this method. This is the
-    // "at least centralize" option from R-04's improvement plan.
+    // "at least centralize" option, chosen over per-field accessors.
     //
     // # Why not per-field accessors?
     //
@@ -379,9 +380,9 @@ impl Message {
     /// `m_type`, so `None` is a program error there). Per-field safe
     /// accessor for the RS pair: the RS server crate is zero-`unsafe`, so
     /// the closure form of [`payload_ref`](Self::payload_ref) is unusable at
-    /// its call sites — the union read is contained here (FIX-08
-    /// centralization; two accessors do not hit the volume argument that
-    /// rejected per-field methods).
+    /// its call sites — the union read is contained here (the
+    /// centralization argument; two accessors do not hit the volume
+    /// objection that rejected per-field methods).
     #[inline]
     pub fn rs_init_result(&self) -> Option<i32> {
         if self.m_type == crate::RS_INIT {
@@ -444,7 +445,7 @@ impl Message {
     /// status word, not in the message, so it cannot be asserted here (an
     /// earlier `debug_assert` on `m_type` was wrong and has been removed:
     /// C stamps `m_type = NOTIFY_MESSAGE` when it fills this arm —
-    /// `ipc.h:1715` 与 `os/kernel/src/ipc.rs:2793` — yet the classification
+    /// `ipc.h:1715` and `os/kernel/src/ipc.rs:2793` — yet the classification
     /// never consults `m_type`). Walk the result with
     /// [`crate::ipc::notify::sigset_contains`] (bit `signo - 1`).
     #[inline]
@@ -1847,8 +1848,9 @@ pub struct MessKrnLsysSysFork {
 ///
 /// Layout matches C `mess_sigcalls` (ipc.h:1917-1923): `sigset_t map`
 /// (16 bytes, `__uint32_t __bits[4]`), `endpt` @16, `sig` @20, `sigctx`
-/// @24, 24 bytes padding to the 56-byte payload. SD-39 widened `map` from
-/// `u64` to the full `sigset_t` shape so kernel-internal signals
+/// @24, 24 bytes padding to the 56-byte payload. The `map` field was
+/// widened from `u64` to the full `sigset_t` shape so kernel-internal
+/// signals
 /// (`SIGSNDELAY`=70, `SIGKSIG`=74) ride the GETKSIG map (C:
 /// `m_ptr->m_sigcalls.map = rp->p_pending`, do_getksig.c:33) — the
 /// pre-widening layout put `endpt` @8 (a deviation from C offsets, both
@@ -2568,11 +2570,13 @@ impl Default for MessLsysVmUnmapPhys {
 pub struct MessLcVmShmUnmap {
     /// Target process endpoint. C: `mess_lc_vm_shm_unmap.forwhom` (payload offset 0)
     pub forwhom: i32,
-    /// LP64 对齐垫(addr 拓宽后)。
+    /// LP64 alignment pad (after `addr` was widened).
     pub _pad: u32,
     /// Address of the shared region to unmap. C: `mess_lc_vm_shm_unmap.addr`
-    /// (E-VMMCPWIRE 扫描续:vir_bytes 按 x86_64 加宽为 u64 @8——共享区
-    /// 挂 MMAP 窗口,≥4GiB 地址经 u32 恒截断,与 vmmcp block 同类)。
+    /// (E-VMMCPWIRE follow-up: `vir_bytes` is widened to u64 @8 for
+    /// x86_64 — shared regions live in the MMAP window, and a u32 would
+    /// always truncate addresses ≥ 4 GiB, the same class as the vmmcp
+    /// block).
     pub addr: u64,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 40],
@@ -2598,13 +2602,14 @@ impl Default for MessLcVmShmUnmap {
 ///
 /// Wire layout follows the 32-bit C sender (`vm_procctl`, libsys/vm_procctl.c;
 /// `vm_vfs_procctl_handlemem`, vfs/comm.c:198-217): on i386 `long` is 4 bytes,
-/// so `VMPCTL_PARAM` is at offset 16, `VMPCTL_WHO` at 20, `VMPCTL_M1` at 24,
-/// `VMPCTL_LEN` at 28, `VMPCTL_FLAGS` at 32. The 64-bit Rust receiver reads
-/// the 32-bit fields from the same offsets.
+/// so `VMPCTL_PARAM` is at offset 16, `VMPCTL_WHO` at 20, the user-pointer
+/// slot at 24, `VMPCTL_LEN` at 28, `VMPCTL_FLAGS` at 32. The 64-bit Rust
+/// receiver reads the 32-bit fields from the same offsets.
 ///
-/// Do NOT decode VM_PROCCTL from `MessageM1` — same wire-format family as
-/// 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode re-mapped the five fields
-/// to different offsets, breaking C-layout compatibility).
+/// Do NOT decode VM_PROCCTL from `MessageM1` — it belongs to the same
+/// wire-format defect family as the earlier payload mistakes (the old
+/// `MessageM1` decode re-mapped the five fields to different offsets,
+/// breaking C-layout compatibility).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct MessLcVmProcctl {
@@ -2616,8 +2621,8 @@ pub struct MessLcVmProcctl {
     pub param: i32,
     /// Target endpoint. C: `VMPCTL_WHO` = `m9_l2` (payload offset 20)
     pub who: i32,
-    /// User-space pointer / extra parameter. C: `VMPCTL_M1` = `m9_l3`
-    /// (payload offset 24; `vir_bytes` is 4 bytes on i386)
+    /// User-space pointer / extra parameter. C: the `VMPCTL` third long
+    /// (`m9_l3`) (payload offset 24; `vir_bytes` is 4 bytes on i386)
     pub m1: u32,
     /// Byte count. C: `VMPCTL_LEN` = `m9_l4` (payload offset 28)
     pub len: i32,
@@ -2643,10 +2648,10 @@ pub struct MessLcVmProcctl {
 /// `VMV_FD` at 28, `VMV_SIZE_PAGES` at 32. The 64-bit Rust receiver reads
 /// the fields from the same offsets.
 ///
-/// Do NOT decode VM_VFS_REPLY from `MessageM1` — same wire-format family as
-/// 22-P0-1 / 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode read the m10
-/// payload at mess_1 offsets, shifting every field and mapping `reqid` to
-/// the real `VMV_ENDPOINT`).
+/// Do NOT decode VM_VFS_REPLY from `MessageM1` — it belongs to the same
+/// wire-format defect family as the earlier payload mistakes (the old
+/// `MessageM1` decode read the m10 payload at mess_1 offsets, shifting
+/// every field and mapping `reqid` to the real `VMV_ENDPOINT`).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct MessVmVfsReply {
@@ -2736,9 +2741,10 @@ pub struct MessVmVfsCall {
 /// `flags` @41 (u8), padding @42..56. The 64-bit Rust receiver reads the
 /// same offsets.
 ///
-/// Do NOT decode cache requests from `MessageM1` — same wire-format family
-/// as 23-P0-1 / 22-P0-1 / 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode
-/// read `dev` from `m1p1` @16 and hardcoded `ino`/`ino_offset`/`block` to 0).
+/// Do NOT decode cache requests from `MessageM1` — it belongs to the same
+/// wire-format defect family as the earlier payload mistakes (the old
+/// `MessageM1` decode read `dev` from `m1p1` @16 and hardcoded
+/// `ino`/`ino_offset`/`block` to 0).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct MessVmmcp {
@@ -2752,12 +2758,13 @@ pub struct MessVmmcp {
     /// C: `mess_vmmcp.ino` (payload offset 24)
     pub ino: u64,
     /// User-space block address (setcache only). C: `mess_vmmcp.block`
-    /// (payload offset 32). E-VMMCPWIRE 余件:`void *` 在 x86_64 wire 上
-    /// 是 8 字节——cache block VA 落在 MMAP 窗口(≥ 2^32),u32 会恒截断
-    /// 高 32 位(与 reply.addr 同类必现 bug,宽存同批修正)。
+    /// (payload offset 32). E-VMMCPWIRE follow-up: a `void *` is 8 bytes
+    /// on the x86_64 wire — the cache block VA falls in the MMAP window
+    /// (≥ 2^32), so a u32 would always truncate the high 32 bits (the same
+    /// always-reproducible bug as reply.addr; widened in the same change).
     pub block: u64,
     /// Flags pointer (unused by VM handlers). C: `mess_vmmcp.flags_ptr`
-    /// (payload offset 40;指针域按 x86_64 加宽)。
+    /// (payload offset 40; the pointer field is widened for x86_64).
     pub flags_ptr: u64,
     /// Number of pages. C: `mess_vmmcp.pages` (payload offset 48)
     pub pages: u8,
@@ -2984,11 +2991,12 @@ impl Default for MessLcPmWait4 {
 ///
 /// # Semantics
 ///
-/// C 的 wait4 回复是"tag + typed body"契约的典型：`do_wait4` 把
-/// `W_EXITCODE/W_STOPCODE` 写入 `mp_reply.m_pm_lc_wait4.status`
-///（`forkexit.c:528/707-708/748-749`），把子进程 pid 作为返回值交给
-/// 主循环 `reply(parent, pid)`（`main.c:106`）——m_type 是 tag（pid），
-/// 该载荷才是 wait status 本体。libc 的 wait4 包装按此布局读取。
+/// C's wait4 reply is the typical "tag + typed body" contract: `do_wait4`
+/// writes `W_EXITCODE/W_STOPCODE` into `mp_reply.m_pm_lc_wait4.status`
+/// (`forkexit.c:528/707-708/748-749`) and hands the child pid to the main
+/// loop as the return value of `reply(parent, pid)` (`main.c:106`) —
+/// `m_type` is the tag (the pid), and this payload is the wait status
+/// proper. libc's wait4 wrapper reads this layout.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MessPmLcWait4 {
@@ -3009,22 +3017,25 @@ impl Default for MessPmLcWait4 {
 
 /// PM: ptrace params (tracer → PM) — `mess_lc_pm_ptrace`.
 ///
-/// C: ipc.h:492-501（LP64 布局，56 字节）：
+/// C: ipc.h:492-501 (LP64 layout, 56 bytes):
 /// ```c
 /// typedef struct {
 ///     pid_t pid;        /* offset 0 */
-///     int req;          /* offset 4，T_* 命令（sys/ptrace.h:226-250） */
-///     vir_bytes addr;   /* offset 8（LP64 为 8 字节） */
-///     long data;        /* offset 16，T_RESUME 等携带的信号号或透传读值 */
+///     int req;          /* offset 4, a T_* command (sys/ptrace.h:226-250) */
+///     vir_bytes addr;   /* offset 8 (8 bytes under LP64) */
+///     long data;        /* offset 16, the signal number carried by T_RESUME
+///                          etc., or a pass-through read value */
 ///     uint8_t padding[];
 /// } mess_lc_pm_ptrace;
 /// ```
-/// C 头的 `padding[40]` 是 i386（ILP32，data 落在 offset 12）尺寸；
-/// 本仓统一按 LP64 钉偏移（rs_start 先例）：data 落在 offset 16，
-/// padding 取 32 使载荷恰为 `_ASSERT_MSG_SIZE` 的 56 字节。
-/// `do_trace` 的解码契约（trace.c:48/63/106 等）。`data` 为 C `long`
-///（有符号）：负值在 T_RESUME/T_DETACH 是合法入参（"无信号"），解码
-/// 后不得回绕成大正数。
+/// The C header's `padding[40]` is the i386 size (ILP32, data lands at
+/// offset 12); this repository pins offsets under LP64 throughout (the
+/// rs_start precedent): data lands at offset 16 and padding is 32, so the
+/// payload is exactly `_ASSERT_MSG_SIZE`'s 56 bytes. This is `do_trace`'s
+/// decoding contract (trace.c:48/63/106 etc.). `data` is a C `long`
+/// (signed): negative values are legal inputs for T_RESUME/T_DETACH
+/// ("no signal"), and decoding must not wrap them into large positive
+/// numbers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MessLcPmPtrace {
@@ -3034,25 +3045,26 @@ pub struct MessLcPmPtrace {
     pub req: i32,
     /// Trace address. C: `vir_bytes addr` (payload offset 8).
     pub addr: u64,
-    /// Request data. C: `long data` (payload offset 16，有符号).
+    /// Request data. C: `long data` (payload offset 16, signed).
     pub data: i64,
-    /// Padding to 56 bytes（LP64：字段占 24 字节，padding 32）.
+    /// Padding to 56 bytes (LP64: the fields take 24 bytes, padding 32).
     pub _padding: [u8; 32],
 }
 
 /// PM: ptrace reply (PM → tracer) — `mess_pm_lc_ptrace`.
 ///
-/// C: ipc.h:1749-1757：`{ long data; uint8_t padding[]; }`——LP64 下
-/// data 为 8 字节（offset 0），padding 取 48 使载荷为 56 字节
-///（C 头的 padding[52] 是 i386 尺寸）。
-/// `do_trace` 的 OK 回复把读值/0 写入 data（trace.c:59/92/110/133/164/
-/// 187/233/248），主循环 `reply(tracer, result)` 以 m_type 携带返回码。
+/// C: ipc.h:1749-1757: `{ long data; uint8_t padding[]; }` — under LP64
+/// data is 8 bytes (offset 0) and padding is 48 so the payload is 56 bytes
+/// (the C header's padding[52] is the i386 size).
+/// `do_trace`'s OK reply writes the read value or 0 into data
+/// (trace.c:59/92/110/133/164/187/233/248); the main loop's
+/// `reply(tracer, result)` carries the return code in m_type.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessPmLcPtrace {
-    /// Reply data. C: `long data` (payload offset 0，有符号).
+    /// Reply data. C: `long data` (payload offset 0, signed).
     pub data: i64,
-    /// Padding to 56 bytes（LP64：data 占 8 字节，padding 48）.
+    /// Padding to 56 bytes (LP64: data takes 8 bytes, padding 48).
     pub _padding: [u8; 48],
 }
 
@@ -3927,19 +3939,22 @@ impl Default for MessLcIpcShmctl {
 }
 
 #[cfg(test)]
-    // 本模块测试内的 0x0000_7fff_ffff_f000 字面量为 wire 编码语义
-    //（64 位车道装得下），非翻译语义——A9 清扫豁免（ADDRESS-CONSTANT-AUDIT A9）。
+    // The 0x0000_7fff_ffff_f000 literal inside this module's tests is a
+    // wire-encoding semantic (it fits in the 64-bit lane), not a
+    // translation semantic — an exemption from the address-constant audit.
 mod tests {
     use super::*;
     use core::mem::size_of;
 
     #[test]
     fn test_pm_wait4_message_layouts() {
-        // C: ipc.h `_ASSERT_MSG_SIZE` — request 与 reply 载荷均为 56 字节；
-        // status/pid 字段偏移是 libc wait4 包装的读取契约。
+        // C: ipc.h `_ASSERT_MSG_SIZE` — the request and reply payloads are
+        // both 56 bytes; the status/pid field offsets are libc's wait4
+        // wrapper read contract.
         assert_eq!(size_of::<MessLcPmWait4>(), 56);
         assert_eq!(size_of::<MessPmLcWait4>(), 56);
-        // 字段序固定 C 布局：请求 pid@0/options@4/addr@8；回复 status@0。
+        // Field order is fixed to the C layout: request
+        // pid@0/options@4/addr@8; reply status@0.
         let req = MessLcPmWait4 {
             pid: -1,
             options: 1,
@@ -3957,15 +3972,17 @@ mod tests {
 
     #[test]
     fn test_pm_ptrace_message_layouts() {
-        // C: ipc.h:501/1757 `_ASSERT_MSG_SIZE`——请求与回复载荷均为 56 字节。
+        // C: ipc.h:501/1757 `_ASSERT_MSG_SIZE` — the request and reply
+        // payloads are both 56 bytes.
         assert_eq!(size_of::<MessLcPmPtrace>(), 56);
         assert_eq!(size_of::<MessPmLcPtrace>(), 56);
-        // 字段序固定 C 布局：请求 pid@0/req@4/addr@8/data@16；回复 data@0。
+        // Field order is fixed to the C layout: request
+        // pid@0/req@4/addr@8/data@16; reply data@0.
         let req = MessLcPmPtrace {
             pid: 42,
             req: 9, // T_ATTACH
             addr: 0x1000,
-            data: -1, // C long：负值合法（"无信号"）
+            data: -1, // C long: negative values are legal ("no signal")
             ..Default::default()
         };
         assert_eq!(req.pid, 42);
@@ -3978,18 +3995,20 @@ mod tests {
 
     #[test]
     fn test_vmmcp_request_64bit_block_addr() {
-        // E-VMMCPWIRE 余件(宽度对账扫描):`mess_vmmcp.block` 在 C 是
-        // `void *`——x86_64 wire 上必须 8 字节。cache block VA 落在
-        // MMAP 窗口(基址 0x1_0000_0000,≥4 GiB),u32 会恒截断高 32 位
-        // (与 reply.addr 同类;consumer:cache_handlers.rs 以 block 构造
-        // VirBytes 后做 region 查找,截断即查无此区域)。
+        // E-VMMCPWIRE follow-up (width reconciliation sweep): in C
+        // `mess_vmmcp.block` is a `void *` — it must be 8 bytes on the
+        // x86_64 wire. The cache block VA falls in the MMAP window (base
+        // 0x1_0000_0000, ≥ 4 GiB), so a u32 would always truncate the high
+        // 32 bits (the same class as reply.addr; consumer:
+        // cache_handlers.rs builds `VirBytes` from block and then does a
+        // region lookup, so truncation means no such region).
         assert_eq!(size_of::<MessVmmcp>(), 56);
         let call = MessVmmcp {
             dev: 0x2_0000,
             dev_offset: 0x10_0000,
             ino_offset: 0x20_0000,
             ino: 0x30_0000,
-            block: 0x0000_0002_8000_0000, // MMAP 窗口内(>4 GiB)
+            block: 0x0000_0002_8000_0000, // inside the MMAP window (>4 GiB)
             flags_ptr: 0x0000_0001_0000_0010,
             pages: 2,
             flags: 1,
@@ -3997,7 +4016,8 @@ mod tests {
         };
         assert_eq!(call.block, 0x0000_0002_8000_0000, "block 高位保全");
         assert_eq!(call.flags_ptr, 0x0000_0001_0000_0010);
-        // 布局:指针加宽后 pages/flags 移至 48/49,padding 6 → 总 56。
+        // Layout: after the pointer widening, pages/flags move to 48/49,
+        // padding 6 → 56 total.
         assert_eq!(
             core::mem::offset_of!(MessVmmcp, pages),
             48
@@ -4283,8 +4303,9 @@ mod signal_request_accessor_tests {
     use super::*;
     use crate::ipc::notify::SigSetBits;
 
-    /// 管理器消息形:`SIGS_SIGNAL_RECEIVED` 携带单号码(C `sef_signal.c:117`
-    /// 读 `m_pm_lsys_sigs_signal.num`),其余 m_type 一律拒答(两形不串台)。
+    /// The manager message form: `SIGS_SIGNAL_RECEIVED` carries a single
+    /// number (C `sef_signal.c:117` reads `m_pm_lsys_sigs_signal.num`);
+    /// every other m_type is refused (the two forms do not cross).
     #[test]
     fn test_sigs_signal_num_accessor() {
         let mut m = Message {
@@ -4292,15 +4313,16 @@ mod signal_request_accessor_tests {
             m_type: crate::SIGS_SIGNAL_RECEIVED,
             m_u: Default::default(),
         };
-        assert_eq!(m.sigs_signal_num(), Some(0)); // 默认臂 = 零值
+        assert_eq!(m.sigs_signal_num(), Some(0)); // default arm = zero value
         m.m_u.m_pm_lsys_sigs_signal.num = crate::SIGNAL_TERMINATE;
         assert_eq!(m.sigs_signal_num(), Some(crate::SIGNAL_TERMINATE));
-        m.m_type = crate::RS_INIT; // 错臂 → None
+        m.m_type = crate::RS_INIT; // wrong arm → None
         assert_eq!(m.sigs_signal_num(), None);
     }
 
-    /// 通知形位图:16 字节(C `sigset_t`)能容下内核信号族的字(bit 70..73),
-    /// 访问器往返无损。
+    /// The notification-form bitmap: 16 bytes (C `sigset_t`) hold the words
+    /// of the kernel signal family (bits 70..73), and the accessor round
+    /// trips losslessly.
     #[test]
     fn test_notify_sigset_accessor_round_trip() {
         let mut m = Message {
@@ -4319,28 +4341,30 @@ mod signal_request_accessor_tests {
 
 /// Pin the wire size of `Message` and its payload so that "how big is the
 /// kernel's per-syscall stack copy" stays a checked fact instead of a
-/// guess. V12-B3 (2026-09-07): measured at Message = 72 bytes (m_source +
-/// m_type headers plus the 56-byte payload and struct padding, align 8) —
-/// far below the
+/// guess. Message measures 72 bytes (m_source + m_type headers plus the
+/// 56-byte payload and struct padding, align 8) — far below the
 /// 512-byte stack-pressure threshold; `VmReply`'s 1560-byte warning
 /// (ipc/vm.rs) is a VM-server-side type and does not ride the kernel's
 /// syscall copy path.
 ///
 /// The "72 bytes / largest member 64" reading above is stale: six payload
-/// members are wider than the nominal `MESSAGE_PAYLOAD_SIZE` (measured this
-/// round: `MessLsysGetsysinfo` = 72, `MessageM7`, `MessLsysKrnSysTrace`,
+/// members are wider than the nominal `MESSAGE_PAYLOAD_SIZE` (measured:
+/// `MessLsysGetsysinfo` = 72, `MessageM7`, `MessLsysKrnSysTrace`,
 /// `MessLsysKrnSysMcontext`, `MessLsysFiCtl`, `MessLcVmShmUnmap` = 64 each),
 /// which is what makes the union 72 and the whole message 80. The two
 /// assertions below pin today's truth; the shape violation itself is
-/// tracked as `P-ALL-12` in
-/// `rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md`
+/// tracked in the three-architecture parity worklist under
+/// `rewrite-notes/coordination/`
 /// (C pins every payload member at 56 bytes via `_ASSERT_MSG_SIZE`).
 
-// P-ALL-12 / PD-20 定稿形态：全成员严格相等 56（C ipc.h 每个载荷成员的
-// `_ASSERT_MSG_SIZE` 在 i386 上全为 56；本仓 LP64 布局以调 padding 保持
-// 56）。此块是三层断言链的内层——成员全 56 ∧ MessageUnion 56 ∧ Message
-// 64；`test_message_total_size_pinned` 钉外两层。新增/修改载荷成员必须
-// 过这一关，`<=` 会默许成员被裁小而协议不变量静默破坏。
+// Finalized shape: every member is exactly 56 (in C ipc.h every payload
+// member's `_ASSERT_MSG_SIZE` is 56 on i386; this repository's LP64 layout
+// keeps 56 by adjusting the padding). This block is the inner layer of a
+// three-layer assertion chain — every member 56 ∧ MessageUnion 56 ∧
+// Message 64; `test_message_total_size_pinned` pins the outer two layers.
+// Any newly added or modified payload member must pass this gate; `<=`
+// would silently tolerate a shrunken member and quietly break the protocol
+// invariant.
 #[test]
 fn test_every_union_member_is_exactly_56_bytes() {
     assert!(
@@ -4783,9 +4807,10 @@ fn test_every_union_member_is_exactly_56_bytes() {
 
 #[test]
 fn test_message_total_size_pinned() {
-    // PD-20 定稿后的目标三层：Message 64（C 的 `message` = 头 8 + 载荷 56，
-    // ipc.h 的 `_ASSERT_MSG_SIZE` 族锚定）、MessageUnion 56、常量 56。内层
-    // 全成员断言见 `test_every_union_member_is_exactly_56_bytes`。
+    // The three target layers: Message 64 (C's `message` = 8-byte header +
+    // 56-byte payload, anchored by ipc.h's `_ASSERT_MSG_SIZE` family),
+    // MessageUnion 56, constant 56. The inner all-members assertion is in
+    // `test_every_union_member_is_exactly_56_bytes`.
     assert_eq!(core::mem::size_of::<Message>(), 64);
     assert_eq!(core::mem::size_of::<MessageUnion>(), 56);
     assert_eq!(MESSAGE_PAYLOAD_SIZE, 56);
@@ -4793,9 +4818,11 @@ fn test_message_total_size_pinned() {
 
 #[test]
 fn test_is_rs_req_arm_covers_exactly_c_family() {
-    // E-MINTYPES-RS:C com.h:463-492 的 RS 族是 base+0..=+24,其中 +10..+19
-    // 上游未分配、+20/+21 是类型化臂(m_rs_init/m_rs_update)。表驱动守卫
-    // 必须精确覆盖其余 13 个成员,并拒绝类型化臂、未分配孔洞与族外号码。
+    // E-MINTYPES-RS: the RS family at C com.h:463-492 is base+0..=+24,
+    // where +10..+19 are unallocated upstream and +20/+21 are the typed
+    // arms (m_rs_init/m_rs_update). The table-driven guard must cover
+    // exactly the other 13 members and reject the typed arms, the
+    // unallocated holes, and numbers outside the family.
     for offset in 0..=24 {
         let v = crate::RS_RQ_BASE + offset;
         let is_member = !(10..=21).contains(&offset);
@@ -4810,10 +4837,12 @@ fn test_is_rs_req_arm_covers_exactly_c_family() {
 
 #[test]
 fn test_fork_request_reply_layouts() {
-    // E-FORKMSG:C ipc.h:1173-1177(请求)与 :283-287(应答)的 LP64 布局
-    // 见证。请求侧全 4 字节字段,与 i386 逐字节同布局;应答侧 msgaddr
-    // 加宽 8 字节、尾 padding 缩至 40([ARCH: A-FORKWIRE],rs_start 判例),
-    // 字段偏移由 repr(C) 派生并在此钉死。
+    // E-FORKMSG: witness for the LP64 layout of C ipc.h:1173-1177
+    // (request) and :283-287 (reply). The request side is all 4-byte
+    // fields, byte-for-byte the same layout as i386; on the reply side
+    // msgaddr is widened to 8 bytes and the trailing padding shrinks to 40
+    // ([ARCH: A-FORKWIRE], the rs_start precedent); the field offsets are
+    // derived by repr(C) and pinned here.
     assert_eq!(core::mem::size_of::<MessLsysKrnSysFork>(), 56);
     assert_eq!(core::mem::size_of::<MessKrnLsysSysFork>(), 56);
     assert_eq!(core::mem::offset_of!(MessLsysKrnSysFork, endpt), 0);
@@ -4821,7 +4850,7 @@ fn test_fork_request_reply_layouts() {
     assert_eq!(core::mem::offset_of!(MessLsysKrnSysFork, flags), 8);
     assert_eq!(core::mem::offset_of!(MessKrnLsysSysFork, endpt), 0);
     assert_eq!(core::mem::offset_of!(MessKrnLsysSysFork, msgaddr), 8);
-    // 两者都必须装进 union payload。
+    // Both must fit in the union payload.
     assert!(core::mem::size_of::<MessLsysKrnSysFork>() <= MESSAGE_PAYLOAD_SIZE);
     assert!(core::mem::size_of::<MessKrnLsysSysFork>() <= MESSAGE_PAYLOAD_SIZE);
 }

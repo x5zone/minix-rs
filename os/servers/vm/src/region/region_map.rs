@@ -35,7 +35,7 @@ impl RegionMap {
         }
     }
 
-    // V10-P2-1: `len`/`is_empty`/`find_less`/`traverse`/`find_all_overlaps`
+    // `len`/`is_empty`/`find_less`/`traverse`/`find_all_overlaps`
     // are test-only today (production uses `find`/`find_mut`/`find_slot`/
     // `find_overlap`/`iter`). Kept as the documented lookup surface; no
     // production caller yet.
@@ -48,8 +48,9 @@ impl RegionMap {
         self.regions.is_empty()
     }
 
-    /// 线性兜底扫描：BTreeMap `range` 结果与 `iter` 全访不一致（键序不变量
-    /// 破坏，续-159 判别）时，沿 iter 找包含 `addr` 的 region。
+    /// Linear fallback scan: when the BTreeMap `range` result disagrees with
+    /// a full `iter` walk (the key-order invariant is broken), find the
+    /// region containing `addr` by walking `iter`.
     fn scan_contains(&self, addr: VirBytes) -> Option<&VirRegion> {
         self.regions
             .iter()
@@ -64,9 +65,12 @@ impl RegionMap {
             .next_back()
             .filter(|(_, r)| r.contains_addr(addr))
             .map(|(_, r)| r);
-        // 续-160（防御性兜底，续-159 判别后落地）：range 派 None 而 iter
-        // 可见 → 键序不变量已破坏。返回 iter 结果保住本次查询，打点入库
-        // 不掩盖（腐败源仍在逃，后续轮追捕）。地址门控前 3 次。
+        // Defensive fallback: `range` yields None while `iter` can see the
+        // region → the key-order invariant is already broken. Returning the
+        // `iter` result keeps this query correct; the counter is recorded
+        // without masking the problem (the corruption source is still at
+        // large and later rounds hunt it). The counter branch fires only for
+        // the first 3 hits.
         if hit.is_none() {
             if let Some(fallback) = self.scan_contains(addr) {
                 #[cfg(not(feature = "mock"))]
@@ -93,9 +97,12 @@ impl RegionMap {
         if let Some(key) = key {
             return self.regions.get_mut(&key);
         }
-        // §续-334 成修：视图摆动缓解——range None 时重试至多 8 次（J 批
-        // 实测=同一 VA 连续读结果 None→Some 翻转且 iter 稍后必恢复=坏视图
-        // 自愈；重试穿越坏窗）。若 8 次全 None 才真返回 None。判读探针 CAP8。
+        // View-flapping mitigation: when `range` gives None, retry up to 8
+        // times (measured on riscv64: consecutive reads of the same VA flip
+        // None→Some, and `iter` later recovers on its own — a bad view
+        // healing itself; the retries cross the bad window). A real None is
+        // returned only if all 8 retries miss. The reading probe is capped
+        // at 8.
         #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
         {
             static FMF_N: core::sync::atomic::AtomicUsize =
@@ -115,9 +122,12 @@ impl RegionMap {
                 }
             }
         }
-        // 续-160（防御性重建）：range 派 None 而 iter 可见 → pop_first 全量
-        // 重灌（按当前键值重排 = 结构合法化）；重建打点入库不掩盖。重建后
-        // 用 iter 同款线性查找定位（find_slot 语义等价）。
+        // Defensive rebuild: `range` yields None while `iter` can see the
+        // region → drain everything with `pop_first` and reinsert (re-sorting
+        // by the current keys = structural legalization); recording the
+        // rebuild does not mask the problem. After the rebuild the same
+        // linear `iter` search locates the region (semantically equivalent to
+        // `find_slot`).
         let fallback_key =
             self.regions.iter().find(|(_, r)| r.contains_addr(addr)).map(|(k, _)| *k)?;
         #[cfg(not(feature = "mock"))]
@@ -159,7 +169,7 @@ impl RegionMap {
 
     /// Find the first region overlapping `[start, end)`.
     ///
-    /// V12-P2-9: a vaddr-keyed BTreeMap only needs two probes for this —
+    /// A vaddr-keyed BTreeMap only needs two probes for this —
     /// the predecessor (whose extent may reach past `start`) and the
     /// entries starting inside `[start, end)`. The former front-to-back
     /// scan walked the whole map before reaching the relevant keys
@@ -252,7 +262,7 @@ impl RegionMap {
     /// The caller is responsible for handling the overlap (e.g., unmapping
     /// the overlapping range first, as MAP_FIXED does).
     ///
-    /// V12-P2-9: zero-length regions are rejected (`Err`) as well. A
+    /// Zero-length regions are rejected (`Err`) as well. A
     /// zero-length region overlaps nothing (its span is empty), so the old
     /// guard passed it through to `BTreeMap::insert`, which silently
     /// REPLACED an existing region at the same vaddr — an unrequested
@@ -364,7 +374,7 @@ mod tests {
         assert!(map.find_overlap(VirBytes(0x5000), VirBytes(0x6000)).is_none());
     }
 
-    /// V12-P2-9: the overlap probe must find a STRADDLING predecessor
+    /// The overlap probe must find a STRADDLING predecessor
     /// without walking the map from the front — here the answer sits at
     /// the highest key, so a front-to-back scan is distinguishable from
     /// the neighbor probe by work done, and correctness is asserted by
@@ -389,7 +399,7 @@ mod tests {
         assert!(map.find_overlap(VirBytes(0x9000), VirBytes(0xF_0000)).is_none());
     }
 
-    /// V12-P2-9: zero-length regions are rejected on insert — the old path
+    /// Zero-length regions are rejected on insert — the old path
     /// let them slip past the overlap guard (an empty span overlaps
     /// nothing) into `BTreeMap::insert`, which silently REPLACED the
     /// region already living at that vaddr.

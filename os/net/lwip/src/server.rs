@@ -65,10 +65,12 @@ pub trait NetHandler {
     /// no reply leaves for it.
     fn unexpected(&mut self, msg: &Message, is_notify: bool);
 
-    /// 排空挂起续答的待发回执（C 的 `reply` 可在事件处理的任意点发出
-    /// ——定时器到点、套接字事件唤醒；本模型的每条路只回一条，挂起
-    /// 续答的回执由此口在每趟循环尾统一发出）。实现方返回自上次排空
-    /// 以来积累的 `(调用方, 回复)` 对。
+    /// Drain the queued receipts of suspended-answer requests (C's `reply` can
+    /// go out at any point in event handling—when a timer expires, when a socket
+    /// event wakes the server; each road in this model answers at most once, so
+    /// the receipts for suspended answers leave through this outlet at the tail
+    /// of every loop turn). The implementor returns the `(caller, reply)` pairs
+    /// accumulated since the last drain.
     fn take_wake_replies(&mut self) -> Vec<(Endpoint, Message)>;
 }
 
@@ -77,17 +79,18 @@ pub trait NetHandler {
 /// bound is the only honest failure handling inside the loop.
 pub const BROKEN_BUDGET: u32 = 3;
 
-/// C `sef_startup` 的握手半：等 RS 的 `SEF_INIT` 通知（`CALL_NOTIFY`
-/// 加 `RS_INIT` 号，sef.h:32/:122 的通知分类）到达，回 OK 给 RS，服务
-/// 才算加载完成。握手期间的其他到达按协议不该发生——照主循环的意外
-/// 路丢弃（打印后不回复）。
+/// The handshake half of C `sef_startup`: wait for RS's `SEF_INIT` notification
+/// (a `CALL_NOTIFY` with the `RS_INIT` number, the notification taxonomy of
+/// sef.h:32/:122), answer OK to RS, and only then is the service loaded. Other
+/// arrivals during the handshake should not happen per protocol—they take the
+/// main loop's unexpected road (print, then no reply).
 fn wait_for_init<I: SefIpc + ReplyIpc, H: NetHandler>(
     ipc: &mut I,
     handler: &mut H,
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     let mut broken = 0u32;
-    let cancel = minix_sef::SefCancel::new(); // 握手期无信号退出路
+    let cancel = minix_sef::SefCancel::new(); // no signal-driven exit during the handshake
     loop {
         let mut on_signal = |_: i32| {};
         let received =
@@ -129,8 +132,9 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
     table: &mut SockTable,
     startup: &mut Startup,
 ) -> Result<(), i32> {
-    // C `sef_startup`：RS 的 `SEF_INIT` 到达、OK 回给 RS 之后，服务才算
-    // 加载完成——初始化链与主循环都在握手之后。
+    // C `sef_startup`: RS's `SEF_INIT` arrives, OK goes back to RS, and only
+    // then is the service loaded—both the init chain and the main loop run after
+    // the handshake.
     wait_for_init(ipc, handler)?;
 
     while !startup.is_running() {
@@ -143,21 +147,23 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
     let mut msg = Message::default();
     let mut broken = 0u32;
     let mut terminated = false;
-    // 逃生门（PD-27，C `sef_cancel()` — netdriver.c:949 + sef.c:161-162）：
-    // 终止决定在回调里取消挂起/下一次收信，库返 `EINTR`，下方 `Err(EINTR)
-    // => continue` 走到循环顶的 terminated 检查——管理器形信号帧被库吞掉
-    // 也不再「吞完继续阻塞在下一收」。
+    // Escape hatch (C `sef_cancel()` — netdriver.c:949 + sef.c:161-162): the
+    // termination decision cancels the parked/next receive from inside the
+    // callback, the library returns `EINTR`, and the `Err(EINTR) => continue`
+    // below reaches the terminated check at the top of the loop—so even when the
+    // library swallows a manager-shaped signal frame, the loop no longer
+    // "swallows it and blocks in the next receive".
     let cancel = minix_sef::SefCancel::new();
     loop {
         if terminated || !handler.keep_running() {
             return Ok(());
         }
         let mut on_signal = |signo: i32| {
-            // C `got_signal`（`minix3/minix/lib/libnetdriver/netdriver.c:956-963`）：
-            // `if (sig != SIGTERM) return;` 然后才 `netdriver_terminate()`。
-            // 不筛号码就是一条内核唤醒通知（今天递来的是
-            // `SEF_SIGNAL_REQUEST_TYPE`，将来是 71..=74）会把网络服务打掉，
-            // 而 C 在那种情况下继续服务。
+            // C `got_signal` (`minix3/minix/lib/libnetdriver/netdriver.c:956-963`):
+            // `if (sig != SIGTERM) return;` and only then `netdriver_terminate()`.
+            // Without filtering the number, a kernel wake-up notification (today
+            // delivered as `SEF_SIGNAL_REQUEST_TYPE`, later 71..=74) would knock
+            // the network service down, whereas C keeps serving in that case.
             if signo == minix_types::SIGNAL_TERMINATE {
                 terminated = true;
                 cancel.cancel();
@@ -185,8 +191,8 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
             } else if source == Endpoint::DS {
                 handler.notify_dev_mgr();
             } else {
-                // C 的通知 default 分支就是意外路径（printf 后丢弃，
-                // `lwip.c:336-343`），不另设路。
+                // C's notification default branch *is* the unexpected path
+                // (printf, then drop, `lwip.c:336-343`); no separate road.
                 handler.unexpected(&received.message, true);
             }
             continue;
@@ -215,10 +221,11 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
         if let Some(reply) = reply {
             ipc.send_reply(source, &reply)?;
         }
-        // 挂起续答的回执在每趟循环尾发出（C 的 `reply` 非阻塞发送，
-        // 失败仅 printf 后继续——对端已死不是服务的错误面）。
+        // Receipts for suspended answers leave at the tail of every loop turn
+        // (C's `reply` is a non-blocking send; on failure it only printfs and
+        // continues—a dead peer is not an error face of the service).
         for (dest, wake_reply) in handler.take_wake_replies() {
-            //[SD19-gate] SD-19: wake_reply 发后即忘通知
+            //[SD19-gate] wake_reply is a fire-and-forget notification
             #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.send_reply(dest, &wake_reply);
         }
@@ -266,15 +273,17 @@ mod tests {
     const SYSTEM: Endpoint = minix_sef::SYSTEM_ENDPOINT;
     const RS_INIT: i32 = minix_sef::SEF_INIT_REQUEST_TYPE;
 
-    /// 脚本化传输：接收走 CannedSefIpc（含 ping 吞掉），回复入账。
+    /// Scripted transport: receives go through CannedSefIpc (pings swallowed),
+    /// replies are recorded.
     struct ScriptedIpc {
         sef: CannedSefIpc,
         replies: Vec<(Endpoint, i32)>,
     }
 
     impl ScriptedIpc {
-        /// 按到达顺序给脚本；CannedSefIpc 从队尾弹出（`Vec::pop`），
-        /// 这里先反转一次，测试里就能按到达顺序写。
+        /// Scripts are given in arrival order; CannedSefIpc pops from the tail
+        /// (`Vec::pop`), so reverse once here and tests can write in arrival
+        /// order.
         fn script(script: &[(i32, Endpoint, i32)]) -> ScriptedIpc {
             ScriptedIpc::script_signalled(
                 &script
@@ -284,9 +293,10 @@ mod tests {
             )
         }
 
-        /// 同上，但每帧可带一个 `m_pm_lsys_sigs_signal.num`——信号管理器
-        /// 转发的 SIGTERM 就是那个形状（C `pm/signal.c:470-473`、
-        /// `rs/main.c:699-701`），不写它就只能测到内核通知那一形。
+        /// Same as above, but each frame may carry an
+        /// `m_pm_lsys_sigs_signal.num`—a SIGTERM forwarded by the signal
+        /// manager has that shape (C `pm/signal.c:470-473`, `rs/main.c:699-701`);
+        /// without it only the kernel-notification shape can be tested.
         fn script_signalled(script: &[(i32, Endpoint, i32, Option<i32>)]) -> ScriptedIpc {
             ScriptedIpc {
                 sef: CannedSefIpc {
@@ -333,7 +343,8 @@ mod tests {
         }
     }
 
-    /// 记录型处理器：每条路来一次记一笔；启动链走满七步。
+    /// Recording handler: records one entry per road visit; the startup chain
+    /// runs all seven steps.
     #[derive(Default)]
     struct RecordingHandler {
         roads: Vec<&'static str>,
@@ -414,7 +425,8 @@ mod tests {
 
     #[test]
     fn test_init_handshake_replies_ok_to_rs() {
-        // RS 的 SEF_INIT 到达 → OK 回给 RS（sef_startup 的应答面）。
+        // RS's SEF_INIT arrives → OK goes back to RS (the answering face of
+        // sef_startup).
         let mut ipc = ScriptedIpc::script(&[(CALL_NOTIFY, RS, RS_INIT)]);
         let mut handler = RecordingHandler {
             stop_after: 0,
@@ -430,9 +442,10 @@ mod tests {
 
     #[test]
     fn test_kernel_notify_does_not_terminate_the_loop() {
-        // C `got_signal` 的第一句就是 `if (sig != SIGTERM) return;`。SYSTEM
-        // 通知今天递来的是唤醒兜底值（不是 15），所以循环必须活着把后面的
-        // 请求照常服务完——旧形状（不筛号码）会在这里直接退出。
+        // The first sentence of C `got_signal` is `if (sig != SIGTERM) return;`.
+        // A SYSTEM notification today delivers the wake-up fallback value (not
+        // 15), so the loop must stay alive and serve the following requests as
+        // usual—the old shape (no number filtering) would exit right here.
         let mut ipc = ScriptedIpc::script(&[
             (CALL_NOTIFY, RS, RS_INIT),
             (CALL_NOTIFY, SYSTEM, 0),
@@ -455,15 +468,19 @@ mod tests {
 
     #[test]
     fn test_manager_sigterm_terminates_the_loop() {
-        // 终止的真形状：信号管理器转发的 `SIGS_SIGNAL_RECEIVED` 携 num=SIGTERM
-        // （C pm/signal.c:470-473、rs/main.c:699-701）。C 的 `got_signal`
-        // 转手叫 `netdriver_terminate()` 置 running=FALSE 并无条件
-        // `sef_cancel()`（netdriver.c:947-949），库在收信循环顶看到该标记
-        // 就返 EINTR（sef.c:161-162）——那一趟根本收不到下一帧。PD-27
-        // 落地后本树与该 C 终态同形：主循环闭包在 TERM 时置 terminated 并
-        // `cancel.cancel()`，库返 EINTR，循环顶直接离开——SIGTERM 之后
-        // 一帧都不再服务（roads 保持空）。若逃生门被拆（cancel 不生效），
-        // 库吞帧后继续收第 4 帧，roads 会变成 ["management"]，本断言即红。
+        // The real shape of termination: the signal manager forwards
+        // `SIGS_SIGNAL_RECEIVED` carrying num=SIGTERM (C pm/signal.c:470-473,
+        // rs/main.c:699-701). C's `got_signal` then calls
+        // `netdriver_terminate()` to set running=FALSE and unconditionally calls
+        // `sef_cancel()` (netdriver.c:947-949); the library sees that mark at the
+        // top of the receive loop and returns EINTR (sef.c:161-162)—so that turn
+        // never receives the next frame. With the escape hatch in place this
+        // tree matches C's final state: the main-loop closure sets terminated on
+        // TERM and calls `cancel.cancel()`, the library returns EINTR, and the
+        // loop top exits directly—not one frame is served after SIGTERM (roads
+        // stays empty). If the escape hatch were removed (cancel had no effect),
+        // the library would swallow the frame and receive a 4th frame, roads
+        // would become ["management"], and this assertion would go red.
         let mut ipc = ScriptedIpc::script_signalled(&[
             (CALL_NOTIFY, RS, RS_INIT, None),
             (
@@ -509,13 +526,13 @@ mod tests {
     #[test]
     fn test_roads_dispatch_and_replies_reach_sources() {
         let script = [
-            (CALL_NOTIFY, RS, RS_INIT),        // 握手
-            (0, VFS, 0x1234),                  // 意外（VFS 陌生号）
-            (CALL_NOTIFY, Endpoint::CLOCK, 0), // 时钟
-            (CALL_NOTIFY, Endpoint::DS, 0),    // 设备上下线
-            (0, MIB, 0x501),                   // 管理
-            (0, VFS, 0x1900),                  // SDEV 建户（is_sdev_request 判定范围）
-            (CALL_NOTIFY, Endpoint::PM, 0),    // 意外通知
+            (CALL_NOTIFY, RS, RS_INIT),        // handshake
+            (0, VFS, 0x1234),                  // unexpected (unknown VFS number)
+            (CALL_NOTIFY, Endpoint::CLOCK, 0), // clock
+            (CALL_NOTIFY, Endpoint::DS, 0),    // device up/down
+            (0, MIB, 0x501),                   // management
+            (0, VFS, 0x1900),                  // SDEV create (within is_sdev_request)
+            (CALL_NOTIFY, Endpoint::PM, 0),    // unexpected notification
         ];
         let mut ipc = ScriptedIpc::script(&script);
         let mut handler = RecordingHandler {
@@ -548,8 +565,9 @@ mod tests {
 
     #[test]
     fn test_sdev_request_is_routed_by_range_not_sender_guess() {
-        // VFS 来源 + SDEV 范围号 → 套接字路；同号非 VFS 来源 → 设备回复路
-        // 或意外，由守卫决定。这里锁住范围判定本身。
+        // VFS source + an SDEV range number → socket road; the same number from
+        // a non-VFS source → device reply road or unexpected, decided by the
+        // guard. This pins the range decision itself.
         assert!(minix_sockdriver::sdev::is_sdev_request(0x1900));
         assert!(minix_netdriver::protocol::is_net_reply(0x1A80));
         assert!(!minix_netdriver::protocol::is_net_reply(0x1900));

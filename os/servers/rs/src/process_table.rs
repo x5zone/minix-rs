@@ -199,10 +199,11 @@ impl RProcTable {
         self.by_endpoint[slot as usize]
     }
 
-    /// Every indexed endpoint with its slot, in slot order. Born as an
-    /// forensic dump for the NK4-A C-3 boot incident; kept because the step-2
-    /// panic in `boot.rs` now names the missing service through it, which makes
-    /// it part of the production diagnostic path (PD-10 第二档：转正式机制）。
+    /// Every indexed endpoint with its slot, in slot order. Born as a forensic
+    /// dump for an earlier boot incident; kept because the step-2 panic in
+    /// `boot.rs` now names the missing service through it, which makes it part
+    /// of the production diagnostic path (a diagnostic promoted to a formal
+    /// mechanism).
     pub fn indexed_endpoints(&self) -> alloc::vec::Vec<(i32, usize)> {
         let mut out = alloc::vec::Vec::new();
         for (slot, id) in self.by_endpoint.iter().enumerate() {
@@ -395,10 +396,12 @@ impl RProcTable {
         slot.flags = RFlags::empty(); // manager.c:2105
         slot.pid = None; // manager.c:2106 (r_pid = -1)
         // C: rproc_ptr[_ENDPOINT_P(rpub->endpoint)] = NULL — manager.c:2108.
-        // 续-179 成修：补上界守卫——slot() 上界=ENDPOINT_GENERATION_SIZE
-        // 派生（可 > NR_PROCS=256），越界 index 直写 by_endpoint 即 panic；
-        // gh54 的「len 64 index 64」panic（138 行 pub_wire 写）系同族
-        // 越界索引的行归属偏移（release 内联），此处收敛后一并消解。
+        // Upper-bound guard added: slot()'s upper bound is derived from
+        // ENDPOINT_GENERATION_SIZE (which can exceed NR_PROCS=256), and an
+        // out-of-range index written straight into by_endpoint panics; an earlier
+        // "len 64 index 64" panic (the pub_wire write) belonged to the same
+        // family of out-of-range indexing misattributed by release-mode
+        // inlining, and it is resolved together here.
         if !endpoint.is_none() {
             let s = endpoint.slot();
             if s >= 0 && (s as usize) < self.by_endpoint.len() {
@@ -988,7 +991,8 @@ mod tests {
     #[should_panic(expected = "out of range")]
     fn test_get_rejects_out_of_range_id() {
         let table = RProcTable::new();
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort tail; dropping the Result does not change an
+        // established primary result (C is void/ignores at the same site).
         #[allow(clippy::let_underscore_must_use)]
         let _ = table.get(SlotId::new(table.len() + 1));
     }

@@ -2,7 +2,6 @@
 //!
 //! Covers `minix3/sbin/init/init.c:229-367` (`main`) and the device-probe
 //! entry point `minix3/sbin/init/init.c:1703-1788` (`mfs_dev`).
-//! Design contract: `.design/01-design.v1.md §1.1-§1.4`.
 //!
 //! The module is intentionally free of side effects: argument parsing
 //! and entry decisions answer questions, and the machine answers
@@ -278,7 +277,8 @@ mod tests {
         let mut host = ScriptHost::default();
         host.fork_outcomes.push(Ok(0));
         host.exec_outcomes.push(Errno::EPERM);
-        //[SD19-gate] SD-19: init 尽力而为
+        // init does best effort here: a panicking or erroring effort must
+        // not take the boot down.
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| {
             assert!(!ensure_console(&mut host, "/dev/console"));

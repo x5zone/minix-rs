@@ -27,10 +27,12 @@ use minix_textfilter::sort::{ParseError, compare, merge_sorted, parse_options};
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // C 的每一句诊断都从 `getprogname()` 开头（`sort.c:401-412` 的 usage、
-    // `:261-285` 的 errx/err），所以不能写死「sort」。
-    // `err_line` 与 `line_bytes` 两条 `&str` 口要程序名（在册 `ARGV-BYTE-PATH-IN-LIBS`），
-    // 折这一处；操作数与记录分隔符回显那些名字/值位都另有按原字节拼的腿，不经过这里。
+    // Every C diagnostic line starts with `getprogname()` (`sort.c:401-412`
+    // usage, `:261-285` errx/err), so the name cannot be hard-coded as "sort".
+    // The two `&str` doors `err_line` and `line_bytes` need the program name
+    // (a registered limitation); this is the one fold site. Operand and record
+    // delimiter echoes have their own byte-assembled legs and do not pass
+    // through here.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let words: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let (options, operands) = match parse_options(&words) {
@@ -41,8 +43,9 @@ fn run() -> ! {
     // dash names standard input) and concatenates their lines; no operand reads
     // standard input. `-c` accepts at most one input file (sort.c too-many guard).
     if options.check && operands.len() > 1 {
-        // `errx(2, "too many input files for -c option")`（`sort.c:261`）：只这一句，
-        // 没 usage、也【不】缀 `errno` 句子。
+        // `errx(2, "too many input files for -c option")` (`sort.c:261`): that
+        // sentence alone, no usage, and it does **not** append an `errno`
+        // sentence.
         support::warn(format!("{prog}: too many input files for -c option\n").as_bytes());
         support::terminate(2);
     }
@@ -70,11 +73,15 @@ fn run() -> ! {
         let refs: Vec<&[String]> = runs.iter().map(|r| r.as_slice()).collect();
         lines = merge_sorted(&refs, &options);
     } else {
-        // C 的并列键规则要在排序这一步才完整：比较半只在 `-S` 之下拿整条记录
-        // 破并列，否则返回平。平局怎么走要看 C 的方向位：默认稳定保持输入序
-        //（参照件对四行同键的 `-k 2,2` 给出 `b a c d`，正是输入序），而带全局 `-r`
-        // 时同一组读数倒装成 `d c a b`。`sort_by` 本身稳定，拿不到“倒装”这一半，
-        // 所以这里显式把输入序号带进比较：正序取升号，`-r` 取降号。
+        // C's key tie rule is only complete at the sorting step: the comparison
+        // half breaks ties by whole record only under `-S`, otherwise it returns
+        // Equal. Which way a tie goes depends on C's direction bit: by default
+        // it stably keeps input order (the reference binary's `-k 2,2` on four
+        // lines with the same key gives `b a c d`, exactly input order), while
+        // with global `-r` the same readings invert to `d c a b`. `sort_by` is
+        // stable by itself and cannot produce the inverted half, so the input
+        // index is carried into the comparison explicitly: ascending index
+        // forward in normal order, descending under `-r`.
         let mut indexed: Vec<(usize, String)> = lines.drain(..).enumerate().collect();
         indexed.sort_by(|(ia, a), (ib, b)| {
             compare(a, b, &options).then_with(|| {
@@ -96,10 +103,12 @@ fn run() -> ! {
     let mut payload: Vec<u8> = Vec::new();
     for line in &lines {
         payload.extend_from_slice(line.as_bytes());
-        // C 的 `putrec`（`files.c:194`/`:215`）是「写完记录再补一个 `REC_D`」，而不是
-        // 「除最后一条外补分隔符」：带 `-R` 时输出**以分隔符收尾**（参照件对
-        // `b,a,d,c\n` 做 `-R ,` 给 `a,b,c\n,d,`，末尾那个逗号是真源写的）。
-        // `putchar(REC_D)`：`int` 进、`unsigned char` 出，所以 -1 写出的是 `0xff`。
+        // C's `putrec` (`files.c:194`/`:215`) is "write the record and then
+        // append one `REC_D`", not "append a separator except after the last
+        // record": with `-R` the output **ends with the delimiter** (the
+        // reference binary turns `b,a,d,c\n` with `-R ,` into `a,b,c\n,d,`, and
+        // that trailing comma is written by the ground truth).
+        // `putchar(REC_D)`: `int` in, `unsigned char` out, so -1 writes `0xff`.
         payload.push(options.record_delim as u8);
     }
     write_output(&prog, &options, &payload);
@@ -133,17 +142,18 @@ fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: 
                 // exit can fail just as silently, so no message is invented here.
                 let _ = sink.finish(payload);
             }
-            // C `sort.c:354-355` 是 `err(2, "output file %s", outfile)`：那句后面还缀
-            // 着 `strerror` 的句子（旧写法只印到名字为止）。
+            // `sort.c:354-355` in C is `err(2, "output file %s", outfile)`: the
+            // sentence is followed by the `strerror` sentence (the old form
+            // printed only up to the name).
             Err(code) => {
                 support::warn_line(prog, &format!("output file {target}"), code);
                 support::terminate(2);
             }
         },
         Output::ViaTemp { mode, .. } => {
-            // `access(outpath, W_OK)` 先走（`sort.c:336-337`）。那一支是
-            // `err(2, "%s", outpath)`：程序名、路径、`strerror` 句子三件齐备，
-            // 不是一句裸路径。
+            // `access(outpath, W_OK)` runs first (`sort.c:336-337`). That arm is
+            // `err(2, "%s", outpath)`: program name, path and the `strerror`
+            // sentence — all three, not a bare path.
             if let Err(code) = support::writable(&target) {
                 support::warn_line(prog, &target, code);
                 support::terminate(2);
@@ -151,10 +161,13 @@ fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: 
             let seed = support::epoch_micros().unwrap_or(0);
             let mut temp = target.clone();
             let mut sink = None;
-            // 最后一次的号要留着报：C 是 `err(2, "Cannot create temporary file `%s'", toutpath)`
-            // （`sort.c:340-341`），那句后面缀的是 `strerror`。试名过程中的失败不报，
-            // 只有整个循环跑空才报（与 C 的 `mkstemp` 只试一次不同：本树拿
-            // 时种推候选名，所以上面那六个字符的碰撞要自己跳）。
+            // Keep the last attempt's number for the report: C is
+            // `err(2, "Cannot create temporary file `%s'", toutpath)`
+            // (`sort.c:340-341`), followed by `strerror`. Failures while trying
+            // names are not reported; only an exhausted loop is (unlike C's
+            // `mkstemp`, which tries once, this tree derives candidate names
+            // from a time seed, so collisions in those six characters must be
+            // skipped here).
             let mut last_error = minix_sys::Errno::EEXIST;
             for attempt in 0..64 {
                 temp = String::from_utf8_lossy(&temp_candidate(target.as_bytes(), seed, attempt))
@@ -176,22 +189,28 @@ fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: 
                 support::terminate(2);
             };
             if sink.finish(payload).is_err() {
-                // 本壳把写失败报在这里；C 那一支是 `fdopen(outfd, "w")` 失败（`:350-351`），
-                // 两者不是同一个事件（写失败在 C 里由 stdio 在 exit 时默默丢弃）。
-                // 本轮不动这个形状，只登记。
+                // This shell reports the write failure here; C's arm is a
+                // failed `fdopen(outfd, "w")` (`:350-351`). The two are not the
+                // same event (in C a write failure is silently discarded by
+                // stdio at exit). The shape is left alone this round; only
+                // registered.
                 support::warn(format!("sort: Cannot open temporary file `{temp}'\n").as_bytes());
                 support::terminate(2);
             }
-            // `access(outfile, F_OK)` 在换 mode 之前（`sort.c:364-365`），然后原档自己的
-            // 权限位落到临时档上（`:373-374`），最后才换名字（`:376-380`）。
+            // `access(outfile, F_OK)` before the mode change (`sort.c:364-365`),
+            // then the original file's permission bits are applied to the
+            // temporary (`:373-374`), and only then does it change names
+            // (`:376-380`).
             if let Err(code) = support::exists(&temp) {
-                // C 这一支也是 `err(2, "%s", outfile)`：临时档不见了也要报出号。
+                // C's arm is also `err(2, "%s", outfile)`: a vanished temporary
+                // must still report its errno number.
                 support::warn_line(prog, &temp, code);
                 support::terminate(2);
             }
             if let Err(code) = support::set_mode(&temp, mode) {
                 // `err(2, "cannot chmod %s: output left in %s", outpath, outfile)`
-                // （`sort.c:373-374`）：两个名字都在句子里，后面还缀号。
+                // (`sort.c:373-374`): both names are in the sentence, followed
+                // by the errno number.
                 support::warn_line(
                     prog,
                     &format!("cannot chmod {target}: output left in {temp}"),
@@ -199,11 +218,11 @@ fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: 
                 );
                 support::terminate(2);
             }
-            // C 对 `unlink(outpath)` 的失败不看（`:376`），这里也不看。
+            // C ignores a failed `unlink(outpath)` (`:376`); so does this.
             let _ = support::remove_path(&target);
             if let Err(code) = support::hard_link(&temp, &target) {
                 // `err(2, "cannot link %s: output left in %s", outpath, outfile)`
-                // （`sort.c:379-380`）。
+                // (`sort.c:379-380`).
                 support::warn_line(
                     prog,
                     &format!("cannot link {target}: output left in {temp}"),
@@ -218,18 +237,22 @@ fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: 
 
 /// Splits collected input into records on C's `REC_D` (`-R`, default `'\n'`),
 /// dropping the delimiter itself and the final empty piece after a terminating
-/// delimiter — that is what C's `getrec`（`files.c:113-124`）do：读到分隔符就收尾这一条，
-/// 而 EOF 前一个字节也没读到就返回 0（所以 `a,b,` 是两条记录不是三条）。
-/// 记录内容本身不去任何东西：`-R ,` 下 `b,a,d,c\n` 的最后一条就是 `c\n`（带着换行），
-/// 因为换行在这一形里只是普通字节。
+/// delimiter — that is what C's `getrec` (`files.c:113-124`) does: reaching a
+/// delimiter closes the current record, and returning 0 when not a single byte
+/// was read before EOF (so `a,b,` is two records, not three). The record
+/// content itself is left untouched: under `-R ,` the last record of
+/// `b,a,d,c\n` is `c\n` (newline included), because a newline is just an
+/// ordinary byte in that shape.
 fn split_records(input: &[u8], rec_d: i32) -> Vec<String> {
     if input.is_empty() {
         return Vec::new();
     }
-    // C 的 `getrec` 比的是 `int ch = getc(f)`（字节的 0..=255）与 `int REC_D`
-    // （`files.c:113-124`），而 `REC_D` 从 `-R` 的字符路径来时是**带符号 `char` 提升**来的
-    // ——所以 `-R<ff>` 在 C 里得到一个永不命中的负数，整份输入是一条记录。两侧同形才谈得上
-    // 逐字节对账，这里因此不能按 `u8` 相等来切。
+    // C's `getrec` compares `int ch = getc(f)` (the bytes 0..=255) with
+    // `int REC_D` (`files.c:113-124`), and `REC_D` arriving via the `-R`
+    // character path is a **sign-extended `char`** — so `-R<ff>` gives a
+    // negative number in C that never matches, making the whole input one
+    // record. Byte-for-byte reconciliation requires both sides to share that
+    // shape, so this cannot split by `u8` equality.
     let cuts = |byte: u8| i32::from(byte) == rec_d;
     let mut pieces: Vec<String> = input
         .split(|byte| cuts(*byte))
@@ -246,14 +269,18 @@ fn split_records(input: &[u8], rec_d: i32) -> Vec<String> {
 /// in `files.c`). The open-and-read itself is the shared `bin_support` twin, so the
 /// hosted door and the target run take the same path through the seam.
 fn read_operand(prog: &str, path: &[u8]) -> Vec<u8> {
-    // 只有开档那一步折一次（`minix_sys::open` 的 `&str` 口，在册）；报文那一支不折。
+    // Only the open step folds once (the `&str` door of `minix_sys::open`, a
+    // registered limitation); the message leg does not fold.
     let shown = String::from_utf8_lossy(path);
     match support::read_file(&shown) {
         Ok(data) => data,
-        // C `sort.c:285` 是 `err(2, "%s", argv[i])`：程序名、操作数、`strerror` 句子
-        // 三件齐备（旧写法把 `err(3)` 当成 `errx(3)` 用，只留了前两件）。三件自己拼，
-        // 名字位因此是 argv 的原字节——`warn_line` 那条经 `err_line(&str)` 会把裸字节
-        // 折成 U+FFFD，与参照件逐字节对不上（`pr` 那轮量过同一形状）。
+        // C `sort.c:285` is `err(2, "%s", argv[i])`: program name, operand and
+        // the `strerror` sentence — all three (the old form used `err(3)` as if
+        // it were `errx(3)` and kept only the first two). The three parts are
+        // assembled here, so the name slot carries the raw argv bytes;
+        // `warn_line` goes through `err_line(&str)` and would fold raw bytes
+        // into U+FFFD, which does not match the reference binary byte for byte
+        // (the same shape was measured for `pr`).
         Err(code) => {
             let mut line = Vec::new();
             line.extend_from_slice(prog.as_bytes());
@@ -268,17 +295,24 @@ fn read_operand(prog: &str, path: &[u8]) -> Vec<u8> {
     }
 }
 
-/// 把决定半的 [`ParseError`] 落成 C 那一条腿的报文。三条腿各不相同：
-/// - libc 先印一行，再是**整个 usage 块**，退 2（`sort.c:252` 的 `usage(NULL)`，
-///   报文本体在 `getopt.c:101-104`/`:132-136`）；
-/// - `sort: <那五句之一>`，退 2，**没 usage**（`init.c:159-217` 的 `errx`，句文本单源在
-///   `sort.rs:KeySpecError::sentence`）——旧写法把五句挤成了一句 `illegal field descriptor`；
-/// - `sort: multiple field delimiters` 紧跟整个 usage 块，退 2（`sort.c:214-215` 的
-///   `usage("multiple field delimiters")`，走的是 `usage()` 的 `%s: %s` 那头一句）。
+/// Turns the deciding half's [`ParseError`] into the messages of C's matching
+/// arm. The three arms differ:
+/// - libc prints one line first, then the **whole usage block**, exit 2
+///   (`sort.c:252`'s `usage(NULL)`; the message body lives in
+///   `getopt.c:101-104`/`:132-136`);
+/// - `sort: <one of the five sentences>`, exit 2, **no usage** (the `errx` calls
+///   at `init.c:159-217`; the sentence text has a single source in
+///   `sort.rs:KeySpecError::sentence`) — the old form squeezed the five
+///   sentences into one `illegal field descriptor`;
+/// - `sort: multiple field delimiters` followed by the whole usage block, exit
+///   2 (`sort.c:214-215`'s `usage("multiple field delimiters")`, through
+///   `usage()`'s `%s: %s` first sentence).
 fn parse_fail(prog: &str, error: ParseError) -> ! {
     match error {
         ParseError::Getopt(report) => {
-            // 字母位走 `line_bytes`：取法已在 `src/sort.rs` 的环里改成按字节，两边同形才成立。
+            // The letter slot goes through `line_bytes`: the extraction inside
+            // the ring in `src/sort.rs` has already switched to bytes, and the
+            // two sides only agree in that shape.
             support::warn(&report.line_bytes(prog));
             usage(prog, None)
         }
@@ -287,17 +321,20 @@ fn parse_fail(prog: &str, error: ParseError) -> ! {
             support::terminate(2);
         }
         ParseError::MultipleFieldDelimiters => usage(prog, Some("multiple field delimiters")),
-        // 下面三支都是 `sort.c:223-242` 与 `:217-218` 的形状：`multiple record
-        // delimiters` 走 `usage()`（一句话 + 整个 usage 块），而两句 `errx`（clash 与
-        // invalid）只有一行、**不接 usage**；三者都退 2。
+        // The three arms below follow the shapes of `sort.c:223-242` and
+        // `:217-218`: `multiple record delimiters` goes through `usage()` (one
+        // sentence plus the whole usage block), while the two `errx` sentences
+        // (clash and invalid) are one line with **no usage**; all three exit 2.
         ParseError::MultipleRecordDelimiters => usage(prog, Some("multiple record delimiters")),
         ParseError::RecordFieldDelimiterClash => {
             support::warn(format!("{prog}: record/field delimiter clash\n").as_bytes());
             support::terminate(2);
         }
         ParseError::InvalidRecordDelimiter(value) => {
-            // C 是 `errx(2, "invalid record delimiter %s", optarg)`（`sort.c:233-238`）：
-            // 回显位是 argv 的原字节（反斜缀已被 `optarg++` 跳过，所以报的是剩下的那段）。
+            // C is `errx(2, "invalid record delimiter %s", optarg)`
+            // (`sort.c:233-238`): the echo slot is the raw argv bytes (the
+            // backslash prefix was already skipped by `optarg++`, so what is
+            // reported is the remaining segment).
             let mut line = Vec::new();
             line.extend_from_slice(prog.as_bytes());
             line.extend_from_slice(b": invalid record delimiter ");
@@ -309,10 +346,12 @@ fn parse_fail(prog: &str, error: ParseError) -> ! {
     }
 }
 
-/// C `usage()`（`sort.c:399-412`）：可选的 `"%s: %s\n"` 头一句，然后是那**一个**输出行。
-/// 那一行由两条 `fprintf` 拼成，第一条不带换行、第二条以十三个空格开头，所以真源的
-/// usage 看上去是「一行里裂了一段大间距」——间距与列项都逐字保留（那十三个空格是从
-/// 编译产物 `sort.o` 的 `.rodata` 里数出来的，不是手抄）。退 2。
+/// C `usage()` (`sort.c:399-412`): an optional `"%s: %s\n"` first sentence, then
+/// that **one** output line. The line is assembled from two `fprintf` calls, the
+/// first without a newline and the second starting with thirteen spaces, so the
+/// ground truth's usage looks like "one line with a wide gap in it" — spacing
+/// and column items are preserved verbatim (those thirteen spaces were counted
+/// out of the `.rodata` of the compiled `sort.o`, not copied by hand). Exit 2.
 fn usage(prog: &str, message: Option<&str>) -> ! {
     if let Some(message) = message {
         support::warn(format!("{prog}: {message}\n").as_bytes());
@@ -327,22 +366,27 @@ fn usage(prog: &str, message: Option<&str>) -> ! {
 }
 
 /// The `-c` mode: every adjacent pair must be in order, and with `-u`
-/// no pair may compare equal. The first violation is reported by name
-/// `-c` 那一路的两句话，逐字对位 C 的 `msort.c:order()`：失序是
-/// `errx(1, "found disorder: %s", …)`（`msort.c:403`），`-u` 下键相等是
-/// `errx(1, "found non-uniqueness: %s", …)`（`:405-407`）。两句都退 1、都**不接
-/// usage**，程序名走 `argv[0]` 的最后一段（`errx` 自己加），而那一个 `%s` 装的是
-/// **被报出的后一条记录**——C 在打印前先把记录尾部分隔符写成 `\0`
-/// （`crec->data[crec->length-1] = 0;`，`:402`/`:406`），所以输出正好是一行一条。
-/// 本壳之前写的是 `sort: disorder: ` 与 `sort: duplicate: `，两句都是自创措辞，
-/// 且程序名写死成 `sort`（本轮批次二百九十二按参照件读数改掉：`sort: found disorder: a`
-/// 与 `sort: found non-uniqueness: a`，两者退码都是 1）。
+/// no pair may compare equal. The first violation is reported by name.
+/// The two sentences of the `-c` leg correspond word for word to C's
+/// `msort.c:order()`: disorder is `errx(1, "found disorder: %s", …)`
+/// (`msort.c:403`), and under `-u` an equal key is
+/// `errx(1, "found non-uniqueness: %s", …)` (`:405-407`). Both exit 1 and
+/// **append no usage**; the program name comes from the last segment of
+/// `argv[0]` (`errx` adds it), and the single `%s` holds the **later record**
+/// being reported — C writes a `\0` over the record's trailing delimiter
+/// before printing (`crec->data[crec->length-1] = 0;`, `:402`/`:406`), so the
+/// output is exactly one line per record. The shell used to write
+/// `sort: disorder: ` and `sort: duplicate: `, both invented wording, with the
+/// program name hard-coded as `sort`; this round changed them according to the
+/// reference binary's readings: `sort: found disorder: a` and
+/// `sort: found non-uniqueness: a`, both exiting 1.
 fn check(prog: &str, lines: &[String], options: &minix_textfilter::sort::Options) {
     let mut previous: Option<&str> = None;
     for line in lines {
         if let Some(prev) = previous {
-            // 判据的先后照 C：先 `0 < cmp(prec, crec)`（失序），再看
-            // `UNIQUE && !c`（重复）。两者都对**同一次**比较取值，所以不会各比一遍。
+            // The criteria follow C's order: first `0 < cmp(prec, crec)`
+            // (disorder), then `UNIQUE && !c` (duplicate). Both read the **same**
+            // comparison, so the pair is not compared twice.
             match compare(prev, line, options) {
                 core::cmp::Ordering::Greater => {
                     support::warn(format!("{prog}: found disorder: {line}\n").as_bytes());

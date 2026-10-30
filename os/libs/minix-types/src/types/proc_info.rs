@@ -16,50 +16,54 @@
 //! fields (C i386 `clock_t` is 32-bit; the LP64 rewrite widens, the
 //! rs_start precedent).
 //!
-//! **C-25 扩面（2026-09-20）**：C 的 `GET_PROCTAB` 拷的是**整个
-//! `struct proc`**（`kernel/system/do_getinfo.c:96-100`：`length =
-//! sizeof(struct proc) * (NR_PROCS + NR_TASKS)`），本行是 A-4 窄行，先前
-//! 漏了四格——`p_kipc_cycles`/`p_kcall_cycles`（CPU 周期账）、
-//! `p_dequeued`（最近一次出队时刻，MIB 的 `l_slptime` 靠它）与
-//! `p_cpuavg`（衰减 CPU 均值，`l_pctcpu`/`l_cpticks` 靠它）。四格**追加在
-//! 尾部**（既有 0..96 偏移不动，`_padding` 保持原位），消费者按
-//! `size_of` 取行宽，无硬编码尺寸。
+//! **Widened surface**: C's `GET_PROCTAB` copies the **entire
+//! `struct proc`** (`kernel/system/do_getinfo.c:96-100`: `length =
+//! sizeof(struct proc) * (NR_PROCS + NR_TASKS)`), while this row is a narrow
+//! row that previously missed four cells — `p_kipc_cycles`/`p_kcall_cycles`
+//! (CPU cycle accounting), `p_dequeued` (time of the last dequeue, which
+//! MIB's `l_slptime` depends on), and `p_cpuavg` (the decaying CPU average,
+//! which `l_pctcpu`/`l_cpticks` depend on). The four cells are **appended at
+//! the tail** (the existing 0..96 offsets do not move, `_padding` stays where
+//! it is), and consumers take the row width from `size_of` with no hardcoded
+//! size.
 
-// p_rts_flags 的位值与 C kernel/proc.h:142-166 逐位一致（内核的
-// RtsFlagsBits 同源）；此前 SENDING/RECEIVING 误记 0x100/0x200 —— 真值是
-// 0x04/0x08，错误值当时无消费者（IS dump_kernel.rs 用自己的正确副本），
-// C-21 随 MIB 取表半把权威钉对。
-/// C: `p_rts_flags` bit — SLOT_FREE（kernel/proc.h:142）。
+// The `p_rts_flags` bit values match C kernel/proc.h:142-166 bit for bit
+// (the kernel's RtsFlagsBits has the same source); SENDING/RECEIVING were
+// previously misrecorded as 0x100/0x200 — the true values are 0x04/0x08. The
+// wrong values had no consumers at the time (IS dump_kernel.rs uses its own
+// correct copy), and the MIB table-fetch half now pins the authority to the
+// true values.
+/// C: `p_rts_flags` bit — SLOT_FREE (kernel/proc.h:142).
 pub const RTS_SLOT_FREE: u32 = 0x001;
-/// C: `p_rts_flags` bit — PROC_STOP（kernel/proc.h:143）。
+/// C: `p_rts_flags` bit — PROC_STOP (kernel/proc.h:143).
 pub const RTS_PROC_STOP: u32 = 0x002;
-/// C: `p_rts_flags` bit — SENDING（kernel/proc.h:144）。
+/// C: `p_rts_flags` bit — SENDING (kernel/proc.h:144).
 pub const RTS_SENDING: u32 = 0x004;
-/// C: `p_rts_flags` bit — RECEIVING（kernel/proc.h:145）。
+/// C: `p_rts_flags` bit — RECEIVING (kernel/proc.h:145).
 pub const RTS_RECEIVING: u32 = 0x008;
-/// C: `p_rts_flags` bit — SIGNALED（kernel/proc.h:146）。
+/// C: `p_rts_flags` bit — SIGNALED (kernel/proc.h:146).
 pub const RTS_SIGNALED: u32 = 0x010;
-/// C: `p_rts_flags` bit — SIG_PENDING（kernel/proc.h:147）。
+/// C: `p_rts_flags` bit — SIG_PENDING (kernel/proc.h:147).
 pub const RTS_SIG_PENDING: u32 = 0x020;
-/// C: `p_rts_flags` bit — P_STOP（kernel/proc.h:148，被跟踪停止）。
+/// C: `p_rts_flags` bit — P_STOP (kernel/proc.h:148, stopped by a tracer).
 pub const RTS_P_STOP: u32 = 0x040;
-/// C: `p_rts_flags` bit — NO_PRIV（kernel/proc.h:149）。
+/// C: `p_rts_flags` bit — NO_PRIV (kernel/proc.h:149).
 pub const RTS_NO_PRIV: u32 = 0x080;
-/// C: `p_rts_flags` bit — NO_ENDPOINT（kernel/proc.h:150）。
+/// C: `p_rts_flags` bit — NO_ENDPOINT (kernel/proc.h:150).
 pub const RTS_NO_ENDPOINT: u32 = 0x100;
-/// C: `p_rts_flags` bit — VMINHIBIT（kernel/proc.h:151）。
+/// C: `p_rts_flags` bit — VMINHIBIT (kernel/proc.h:151).
 pub const RTS_VMINHIBIT: u32 = 0x200;
-/// C: `p_rts_flags` bit — PAGEFAULT（kernel/proc.h:152）。
+/// C: `p_rts_flags` bit — PAGEFAULT (kernel/proc.h:152).
 pub const RTS_PAGEFAULT: u32 = 0x400;
-/// C: `p_rts_flags` bit — VMREQUEST（kernel/proc.h:153）。
+/// C: `p_rts_flags` bit — VMREQUEST (kernel/proc.h:153).
 pub const RTS_VMREQUEST: u32 = 0x800;
-/// C: `p_rts_flags` bit — VMREQTARGET（kernel/proc.h:154）。
+/// C: `p_rts_flags` bit — VMREQTARGET (kernel/proc.h:154).
 pub const RTS_VMREQTARGET: u32 = 0x1000;
-/// C: `p_rts_flags` bit — PREEMPTED（kernel/proc.h:155）。
+/// C: `p_rts_flags` bit — PREEMPTED (kernel/proc.h:155).
 pub const RTS_PREEMPTED: u32 = 0x4000;
-/// C: `p_rts_flags` bit — NO_QUANTUM（kernel/proc.h:162）。
+/// C: `p_rts_flags` bit — NO_QUANTUM (kernel/proc.h:162).
 pub const RTS_NO_QUANTUM: u32 = 0x8000;
-/// C: `p_rts_flags` bit — BOOTINHIBIT（kernel/proc.h:166）。
+/// C: `p_rts_flags` bit — BOOTINHIBIT (kernel/proc.h:166).
 pub const RTS_BOOTINHIBIT: u32 = 0x10000;
 
 #[repr(C)]
@@ -101,35 +105,39 @@ pub struct ProcInfoStruct {
     pub p_priv_id: i32,
     /// Padding to align the struct to 8 bytes.
     pub _padding: [u8; 4],
-    /// C: `p_kipc_cycles` — cycles spent in IPC (C-25 扩面).
+    /// C: `p_kipc_cycles` — cycles spent in IPC.
     ///
-    /// MIB 的 `mpd_kipc_cycles` 列直接读它（C `mib/proc.c:1278`）。
+    /// MIB's `mpd_kipc_cycles` column reads it directly (C `mib/proc.c:1278`).
     pub p_kipc_cycles: u64,
-    /// C: `p_kcall_cycles` — cycles spent in kernel calls (C-25 扩面).
+    /// C: `p_kcall_cycles` — cycles spent in kernel calls.
     ///
-    /// MIB 的 `mpd_kcall_cycles` 列直接读它（C `mib/proc.c:1279`）。
+    /// MIB's `mpd_kcall_cycles` column reads it directly (C `mib/proc.c:1279`).
     pub p_kcall_cycles: u64,
-    /// C: `p_dequeued` — uptime at the last dequeue (C-25 扩面)。
+    /// C: `p_dequeued` — uptime at the last dequeue.
     ///
-    /// MIB 用它算 `l_slptime`：`(uptime - p_dequeued) / hz`
-    /// （C `mib/proc.c:438`）。进程可运行时它被抬到"当前时刻"。
+    /// MIB uses it to compute `l_slptime`: `(uptime - p_dequeued) / hz`
+    /// (C `mib/proc.c:438`). While the process is runnable it is raised to
+    /// "now".
     pub p_dequeued: u64,
-    /// C: `p_cpuavg` — decaying CPU utilisation average (C-25 扩面)。
+    /// C: `p_cpuavg` — decaying CPU utilisation average.
     ///
-    /// MIB 的 `l_pctcpu`/`l_cpticks` 靠 `cpuavg_getstats` 读它
-    /// （C `mib/proc.c:453`）。
+    /// MIB's `l_pctcpu`/`l_cpticks` read it through `cpuavg_getstats`
+    /// (C `mib/proc.c:453`).
     pub p_cpuavg: CpuAvgSnap,
 }
 
-/// `struct cpuavg` 的线上快照（C `kernel/type.h:80-85`）。
+/// Wire snapshot of `struct cpuavg` (C `kernel/type.h:80-85`).
 ///
-/// 内核侧的原生类型是原子版（`os/kernel/src/proc.rs` 的 `CpuAvg`：
-/// `AtomicU64`/`AtomicU32` 四格）；跨进程行只能是纯数据，故在此单点定义
-/// 线上形。字段宽度按内核侧原生类型（`ca_base` 是 `clock_t`，LP64 重写
-/// 拓宽成 `u64`——与 `p_user_time` 一族同一裁决）。
+/// The kernel-side native type is the atomic version (`CpuAvg` in
+/// `os/kernel/src/proc.rs`: four fields of `AtomicU64`/`AtomicU32`); a
+/// cross-process row can only carry plain data, so the wire form is defined
+/// here in one place. Field widths follow the kernel-side native type
+/// (`ca_base` is `clock_t`, widened to `u64` by the LP64 rewrite — the same
+/// ruling as the `p_user_time` family).
 ///
-/// `ca_*` 三个 `u32` 是 FSCALE 定点数（C `cpuavg.c` 的衰减算术），
-/// `ca_base` 是当前"每秒槽"的起点（0 = 未初始化）。
+/// The three `u32` fields `ca_*` are FSCALE fixed-point values (the decay
+/// arithmetic in C `cpuavg.c`), and `ca_base` is the start of the current
+/// "per-second slot" (0 = uninitialised).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuAvgSnap {
@@ -141,13 +149,13 @@ pub struct CpuAvgSnap {
     pub ca_last: u32,
     /// C: `ca_avg` — decaying utilisation average, FSCALE.
     pub ca_avg: u32,
-    /// Tail padding: C 结构体尾部对齐到 `clock_t` 的 8 字节。
+    /// Tail padding: the C struct tail-aligns to `clock_t`'s 8 bytes.
     pub _padding: u32,
 }
 
 impl Default for CpuAvgSnap {
-    /// 全零 = C 的"未初始化"形（`ca_base == 0` 是 `cpuavg_update` 的
-    /// 首用判据，C `cpuavg.c:154-160`）。
+    /// All zeros = C's "uninitialised" form (`ca_base == 0` is the
+    /// first-use test in `cpuavg_update`, C `cpuavg.c:154-160`).
     fn default() -> Self {
         Self {
             ca_base: 0,
@@ -199,12 +207,15 @@ mod tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// E-ISPROD 布局见证:GET_PROCTAB 按元素大小做 chunked 拷贝,IS 侧按
-    /// 同一布局解释字节——任一字段偏移/宽度漂移即跨进程数据错位。
-    /// offsets: i32×2 → p_cpu 前 8 字节对齐 → u64×5 → 4 字节×3 → 16 字节名
-    /// → i32 → 尾 4 字节,总 104。
-    /// rts 位值与 C kernel/proc.h:142-166 逐位 pin（C-21：此前
-    /// SENDING/RECEIVING 误记 0x100/0x200，与内核 RtsFlagsBits 分叉）。
+    /// E-ISPROD layout witness: GET_PROCTAB copies in chunks sized by the
+    /// element, and the IS side interprets the bytes with this same layout —
+    /// any field offset/width drift means cross-process data misalignment.
+    /// offsets: i32×2 → 8-byte alignment before p_cpu → u64×5 → 4 bytes×3 →
+    /// 16-byte name → i32 → 4-byte tail = 104 before the appended cpu-cycle
+    /// cells (152 total).
+    /// The rts bit values are pinned bit for bit against C
+    /// kernel/proc.h:142-166 (SENDING/RECEIVING were previously misrecorded
+    /// as 0x100/0x200, diverging from the kernel RtsFlagsBits).
     #[test]
     fn test_rts_bits_match_kernel() {
         assert_eq!(RTS_SLOT_FREE, 0x001);
@@ -244,17 +255,19 @@ mod tests {
         assert_eq!(offset_of!(ProcInfoStruct, p_sendto_e), 76);
         assert_eq!(offset_of!(ProcInfoStruct, p_name), 80);
         assert_eq!(offset_of!(ProcInfoStruct, p_priv_id), 96);
-        // C-25 追加四格：既有偏移一个不动（104 起）。
+        // The four appended cells: no existing offset moves (they start at
+        // 104).
         assert_eq!(offset_of!(ProcInfoStruct, p_kipc_cycles), 104);
         assert_eq!(offset_of!(ProcInfoStruct, p_kcall_cycles), 112);
         assert_eq!(offset_of!(ProcInfoStruct, p_dequeued), 120);
         assert_eq!(offset_of!(ProcInfoStruct, p_cpuavg), 128);
     }
 
-    /// `struct cpuavg` 的线上形（C `kernel/type.h:80-85`）：`clock_t` +
-    /// 三个 FSCALE `u32`，尾部补齐到 8 字节 = 24。内核原生版是原子四格
-    /// （`os/kernel/src/proc.rs` 的 `CpuAvg`），宽度必须与这里逐格一致，
-    /// 否则生产者拷出来的 `ca_*` 在 MIB 的衰减算术里全错位。
+    /// Wire form of `struct cpuavg` (C `kernel/type.h:80-85`): `clock_t` +
+    /// three FSCALE `u32`, tail-padded to 8 bytes = 24. The kernel native
+    /// version is the four atomic fields (`CpuAvg` in `os/kernel/src/proc.rs`),
+    /// and the widths must match this one cell for cell, or the `ca_*` values
+    /// the producer copies out are all misaligned in MIB's decay arithmetic.
     #[test]
     fn test_cpuavg_snap_layout() {
         assert_eq!(size_of::<CpuAvgSnap>(), 24);
@@ -262,12 +275,14 @@ mod tests {
         assert_eq!(offset_of!(CpuAvgSnap, ca_run), 8);
         assert_eq!(offset_of!(CpuAvgSnap, ca_last), 12);
         assert_eq!(offset_of!(CpuAvgSnap, ca_avg), 16);
-        // 未初始化形：`ca_base == 0` 是 C `cpuavg_update` 的首用判据。
+        // Uninitialised form: `ca_base == 0` is the first-use test in C
+        // `cpuavg_update`.
         assert_eq!(CpuAvgSnap::default().ca_base, 0);
     }
 
-    /// Default 语义:p_priv_id = -1(无特权),其余零——kernel
-    /// `from_kprocess`/`GET_PROC` 的 `unwrap_or_default()` 空槽依赖此形。
+    /// Default semantics: p_priv_id = -1 (no privilege), everything else
+    /// zero — the empty slots from the kernel's
+    /// `from_kprocess`/`GET_PROC` `unwrap_or_default()` depend on this shape.
     #[test]
     fn test_proc_info_default_priv_none() {
         let d = ProcInfoStruct::default();

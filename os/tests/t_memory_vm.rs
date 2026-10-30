@@ -1,30 +1,36 @@
-//! minix3/minix/tests Rust 腿翻译 —— 内存域(test6/44/64/75)。
+//! Rust-leg translation of the memory-domain tests from minix3/minix/tests
+//! (test6/44/64/75).
 //!
-//! # 翻译映射
+//! # Translation mapping
 //!
-//! VM 服务器本体 crate 外不可链接(模块全 `pub(crate)`),本文件钉的是
-//! **用户态半的字节契约**:C libc(`libsys`/`libc/sys`)的 brk/mmap/munmap/
-//! vm_fork 包装把哪些字段放上 wire、失败如何回传——用 `CannedTransport`
-//! 脚本应答并在宿主真跑。VM 服务器消费半由 `minix-vm` crate 内单测覆盖
-//! (mmap 19 测、brk 8 测、fork 10 测),两侧对账即完整链路。
+//! The VM server crate itself is not linkable from outside (all modules are
+//! `pub(crate)`), so this file pins the **byte contract of the user-space
+//! half**: which fields the C libc (`libsys`/`libc/sys`) brk/mmap/munmap/
+//! vm_fork wrappers put on the wire and how failures come back — using
+//! `CannedTransport` to script replies and really running on the host. The VM
+//! server's consuming half is covered by unit tests inside the `minix-vm` crate
+//! (19 mmap tests, 8 brk tests, 10 fork tests); reconciling the two sides is
+//! the complete chain.
 //!
-//! | C 测试 | 语义归宿 |
+//! | C test | Semantic home |
 //! |---|---|
 //! | test6(brk/sbrk) | [`brk_short_circuits_and_adopts_approved_boundary`] |
 //! | test44(mmap) | [`mmap_carries_seven_lanes_and_third_party_flag`] |
 //! | test44(munmap) | [`munmap_carries_addr_and_len`] |
-//! | test64(mmap 跨 fork 的内核半) | [`fork_address_space_carries_endpoint_and_slot`] |
-//! | test75(getrusage)/test85(块设备 EOF) | getrusage 归 PM time 面(未翻译,挂账);块设备 EOF 归 `t_fs_special` 后续条目 |
+//! | test64(mmap across fork, kernel half) | [`fork_address_space_carries_endpoint_and_slot`] |
+//! | test75(getrusage)/test85(block device EOF) | getrusage belongs to the PM time face (not translated; on the books); block device EOF belongs to a later `t_fs_special` item |
 //!
-//! # 曾钉住的 C↔Rust 语义缺口(已修)
+//! # C↔Rust semantic gap previously pinned (now fixed)
 //!
-//! `minix_sys::vm::fork_address_space_via` 曾用裸偏移(载荷 0/4 写、0 读),
-//! 而本树 `include/minix/ipc.h` 的 `mess_1` 首成员是 `uint64_t m1ull1`,
-//! `vm_fork.c:21` 的 `VMF_CHILD_ENDPOINT`(= m1i3,`com.h:635`)不在偏移 0。
-//! 现已改为命名 `mess_1` 车道(VMF_ENDPOINT/VMF_SLOTNO/VMF_CHILD_ENDPOINT),
-//! 与 VM 侧 `VmForkIn`/`VmForkOut` 的命名解码一致。
+//! `minix_sys::vm::fork_address_space_via` once used raw offsets (payload
+//! written at 0/4, read at 0), while this tree's `include/minix/ipc.h`
+//! `mess_1` first member is `uint64_t m1ull1`, and `vm_fork.c:21`'s
+//! `VMF_CHILD_ENDPOINT` (= m1i3, `com.h:635`) does not sit at offset 0. It now
+//! uses the named `mess_1` lanes (VMF_ENDPOINT/VMF_SLOTNO/VMF_CHILD_ENDPOINT),
+//! consistent with the VM side's named `VmForkIn`/`VmForkOut` decode.
 //!
-//! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
+//! Delivery gate = compilation; all tests are `#[ignore]`, and each test's
+//! attribute states the precondition for enabling it.
 
 use minix_sys::ipc::CannedTransport;
 use minix_sys::vm::{
@@ -43,23 +49,26 @@ fn ok_reply() -> Message {
 }
 
 // ---------------------------------------------------------------------------
-// test6 —— brk:捷径、采纳与拒绝
+// test6 — brk: shortcut, adoption and rejection
 // ---------------------------------------------------------------------------
 
-/// C 语义(`libc/sys/brk.c:22-34`):请求等于缓存边界时不发服务器直接成功;
-/// 否则上 wire 请裁决,成功才采纳新边界;失败原边界不动。
+/// C semantics (`libc/sys/brk.c:22-34`): when the request equals the cached
+/// boundary, succeed directly without sending to the server; otherwise put it
+/// on the wire for a decision and adopt the new boundary only on success; on
+/// failure the old boundary is untouched.
 #[test]
 #[ignore = "点亮前提:VM brk 消费半随载体点亮后复核"]
 fn brk_short_circuits_and_adopts_approved_boundary() {
     let cached = VirBytes(0x1000_0000);
 
-    // 捷径:请求 == 缓存 → 不产生任何 round trip。
+    // Shortcut: request == cache → no round trip at all.
     let transport = CannedTransport::new();
     let got = break_via(&transport, cached, cached).expect("捷径直接成功");
     assert_eq!(got, cached);
     assert!(transport.sent.borrow().is_empty(), "捷径不上 wire");
 
-    // 服务器批准:出站载荷首 8 字节 = 请求边界,成功后返回请求值。
+    // Server approves: the first 8 bytes of the outbound payload are the
+    // requested boundary, and on success the request value comes back.
     let requested = VirBytes(0x1001_0000);
     let mut transport = CannedTransport::new();
     transport.reply_sendrec(Ok(ok_reply()));
@@ -72,7 +81,7 @@ fn brk_short_circuits_and_adopts_approved_boundary() {
     let wire = unsafe { &msg.m_u.raw[..8] };
     assert_eq!(wire, &requested.0.to_ne_bytes(), "载荷首 8 字节 = 请求边界");
 
-    // 服务器拒绝:Err 携带 errno,调用方不得采纳。
+    // Server rejects: `Err` carries the errno and the caller must not adopt.
     let mut transport = CannedTransport::new();
     transport.reply_sendrec(Ok(Message {
         m_type: -ENOMEM,
@@ -83,20 +92,21 @@ fn brk_short_circuits_and_adopts_approved_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// test44 —— mmap:七条字段车道与第三方旗
+// test44 — mmap: seven field lanes and the third-party flag
 // ---------------------------------------------------------------------------
 
-/// C 语义(`libc/sys/mmap.c:21-47` 的 `minix_mmap_for`):七个映射字段入
-/// `mess_mmap` 车道;受益者非调用者时自动加 MAP_THIRDPARTY;应答从 retaddr
-/// 车道读回选定地址。
+/// C semantics (`libc/sys/mmap.c:21-47`'s `minix_mmap_for`): seven mapping
+/// fields enter the `mess_mmap` lanes; when the beneficiary is not the caller,
+/// MAP_THIRDPARTY is added automatically; the reply reads the chosen address
+/// from the retaddr lane.
 #[test]
 #[ignore = "点亮前提:VM mmap 消费半随载体点亮后复核"]
 fn mmap_carries_seven_lanes_and_third_party_flag() {
-    // 自映射:不带第三方旗。
+    // Self mapping: no third-party flag.
     let mut transport = CannedTransport::new();
     let mut reply = ok_reply();
-    // 应答的活跃车道是 retaddr(C mmap.c:46);union 字段赋值无读,
-    // 不需要 unsafe。
+    // The reply's active lane is retaddr (C mmap.c:46); writing a union field
+    // has no read, so no unsafe is needed.
     reply.m_u.m_mmap.retaddr = 0x5000_0000;
     transport.reply_sendrec(Ok(reply));
 
@@ -105,7 +115,7 @@ fn mmap_carries_seven_lanes_and_third_party_flag() {
         address: VirBytes(0),
         length: VirBytes(0x10_0000),
         protection: 0x3, // PROT_READ|PROT_WRITE
-        flags: 0x1000,   // MAP_ANON(minix 侧旗)
+        flags: 0x1000,   // MAP_ANON (minix-side flag)
         file: -1,
         offset: 0,
     };
@@ -114,7 +124,7 @@ fn mmap_carries_seven_lanes_and_third_party_flag() {
 
     let sent = transport.sent.borrow();
     let (_, msg) = &sent[0];
-    // SAFETY(test): m_mmap 是 VM_MMAP 的文档化载荷臂。
+    // SAFETY(test): m_mmap is VM_MMAP's documented payload arm.
     let m: &MessMmap = unsafe { &msg.m_u.m_mmap };
     assert_eq!(m.addr, 0, "提示地址车道");
     assert_eq!(m.len, 0x10_0000, "长度车道");
@@ -123,7 +133,8 @@ fn mmap_carries_seven_lanes_and_third_party_flag() {
     assert_eq!(m.forwhom, CALLER.0, "受益者 = 调用者");
     assert_eq!(m.flags as u32 & MAP_FLAG_THIRD_PARTY, 0, "自映射无第三方旗");
 
-    // 为他人映射:自动加 MAP_THIRDPARTY(C mmap.c:36-38)。
+    // Mapping for someone else: MAP_THIRDPARTY is added automatically
+    // (C mmap.c:36-38).
     let mut transport = CannedTransport::new();
     transport.reply_sendrec(Ok(ok_reply()));
     let request = MapRequest {
@@ -143,11 +154,12 @@ fn mmap_carries_seven_lanes_and_third_party_flag() {
 }
 
 // ---------------------------------------------------------------------------
-// test44 —— munmap:地址与长度车道
+// test44 — munmap: address and length lanes
 // ---------------------------------------------------------------------------
 
-/// C 语义(`libc/sys/mmap.c:76-85`):munmap 把地址与长度放上同一 overlay
-/// 的 addr/len 车道,应答只看成败。
+/// C semantics (`libc/sys/mmap.c:76-85`): munmap puts the address and length on
+/// the addr/len lanes of the same overlay, and the reply only reports
+/// success/failure.
 #[test]
 #[ignore = "点亮前提:VM munmap 消费半随载体点亮后复核"]
 fn munmap_carries_addr_and_len() {
@@ -164,13 +176,13 @@ fn munmap_carries_addr_and_len() {
 }
 
 // ---------------------------------------------------------------------------
-// test64 —— vm_fork:端点与槽位车道
+// test64 — vm_fork: endpoint and slot lanes
 // ---------------------------------------------------------------------------
 
-/// C 语义(`libsys/vm_fork.c:10-24`;`mess_1` 命名车道):端点与槽位走
-/// `VMF_ENDPOINT`/`VMF_SLOTNO`(m1i1/m1i2,`com.h:633-634`);应答的子端点
-/// 在 `VMF_CHILD_ENDPOINT` = m1i3(`com.h:635`,`vm_fork.c:21` 读取);
-/// 负回码转 errno。
+/// C semantics (`libsys/vm_fork.c:10-24`; named `mess_1` lanes): the endpoint
+/// and slot go on `VMF_ENDPOINT`/`VMF_SLOTNO` (m1i1/m1i2, `com.h:633-634`); the
+/// reply's child endpoint is read from `VMF_CHILD_ENDPOINT` = m1i3 (`com.h:635`,
+/// read at `vm_fork.c:21`); a negative reply code turns into the errno.
 #[test]
 fn fork_address_space_carries_endpoint_and_slot() {
     let parent = minix_types::Endpoint(0x102);
@@ -189,7 +201,7 @@ fn fork_address_space_carries_endpoint_and_slot() {
     let sent = transport.sent.borrow();
     let (dest, msg) = &sent[0];
     assert_eq!(*dest, vm_endpoint());
-    // SAFETY(test): m1i1/m1i2 是请求的活跃车道(vm_fork.c:16-17)。
+    // SAFETY(test): m1i1/m1i2 are the request's active lanes (vm_fork.c:16-17).
     let m1 = unsafe { &msg.m_u.m_m1 };
     assert_eq!(m1.m1i1, 0x102, "父端点走 VMF_ENDPOINT 车道");
     assert_eq!(m1.m1i2, 7, "槽位走 VMF_SLOTNO 车道");

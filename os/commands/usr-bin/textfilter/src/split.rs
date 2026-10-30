@@ -143,15 +143,19 @@ pub struct SplitArgs<'a> {
 /// can reproduce C's message and exit code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SplitError<'a> {
-    /// `split.c:80-130` 的 `default: usage()`（两个都算过：`-l 3 -l 4` 的
-    /// `if (numlines != 0) usage()`、多于两个操作数的 `if (*argv != NULL) usage()`）。
+    /// The `default: usage()` of `split.c:80-130` (both cases are counted:
+    /// `-l 3 -l 4` reaches `if (numlines != 0) usage()`, and more than two
+    /// operands reaches `if (*argv != NULL) usage()`).
     Usage,
-    /// 集外字母：libc 在返回 `'?'` **之前**先印一行（`getopt.c:101-104`），C 的
-    /// `default:` 才接 usage —— 于是**两行**。`-Z`、`-Zb`、`--x`（报 `-`）都走这一支。
+    /// A letter outside the set: libc prints one line **before** returning
+    /// `'?'` (`getopt.c:101-104`), and C's `default:` then appends the usage —
+    /// hence **two lines**. `-Z`, `-Zb` and `--x` (which reports `-`) all take
+    /// this branch.
     UnknownOption(char),
-    /// 带值选项缺值（`-l`/`-b`/`-a`/`-n` 后面没有下一段）：libc 印
-    /// `option requires an argument -- <字母>`（`getopt.c:132-136`）后返回 `'?'`，
-    /// 调用者的 `default:` 再接 usage —— 同样两行。
+    /// A value-taking option without its value (`-l`/`-b`/`-a`/`-n` with no
+    /// next word): libc prints `option requires an argument -- <letter>`
+    /// (`getopt.c:132-136`) and then returns `'?'`; the caller's `default:`
+    /// appends the usage — two lines again.
     MissingValue(char),
     /// A `-l`/`-N` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal line count.", …)`; carries the offending value for the message.
@@ -234,10 +238,13 @@ pub fn parse_split_args<'a>(args: &'a [&'a [u8]]) -> Result<SplitArgs<'a>, Split
         let bytes = arg;
         if bytes.len() > 1 && bytes[0] == b'-' {
             let tail = &arg[1..];
-            // C 的遗留形 `-<数字>`：optstring 里 `0-9` 六个都是**合法字母**，第一个数字回来后
-            // `split.c:86-90` 从 `argv[optind] + 1`（整段 token 去掉那个 `-`）取数字，
-            // 所以 `-1000` 的列数是 1000、`-12x` 落 `12x: illegal line count.`，
-            // 而 `-3b5` 的整段 `3b5` 一起交给 `strtoull`（不是只认「全数字尾巴」）。
+            // C's legacy form `-<digits>`: all six letters `0-9` are **legal**
+            // in the optstring, and once the first digit comes back,
+            // `split.c:86-90` takes the digits from `argv[optind] + 1` (the
+            // whole token minus that `-`), so `-1000` sets 1000 lines and
+            // `-12x` lands on `12x: illegal line count.`, while `-3b5` hands
+            // the whole `3b5` to `strtoull` (it is not just "an all-digit
+            // tail").
             if bytes[1].is_ascii_digit() {
                 if !set {
                     match line_count(tail) {
@@ -253,7 +260,7 @@ pub fn parse_split_args<'a>(args: &'a [&'a [u8]]) -> Result<SplitArgs<'a>, Split
             }
             match bytes[1] {
                 b'l' => {
-                    // C `case 'l'`: `if (numlines != 0) usage()`。
+                    // C `case 'l'`: `if (numlines != 0) usage()`.
                     if set {
                         return Err(SplitError::Usage);
                     }
@@ -264,7 +271,8 @@ pub fn parse_split_args<'a>(args: &'a [&'a [u8]]) -> Result<SplitArgs<'a>, Split
                         index += 1;
                         match args.get(index) {
                             Some(v) => *v,
-                            // `-l` 后面没有下一段：libc 先印一行缺值（`getopt.c:132-136`）。
+                            // `-l` with no next word: libc prints the
+                            // missing-value line first (`getopt.c:132-136`).
                             None => return Err(SplitError::MissingValue('l')),
                         }
                     } else {
@@ -330,11 +338,14 @@ pub fn parse_split_args<'a>(args: &'a [&'a [u8]]) -> Result<SplitArgs<'a>, Split
                         None => return Err(SplitError::IllegalChunkCount(value)),
                     }
                 }
-                // 集外字母：`getopt.c:95-104` 先印一行，再由 `split.c:128-129` 的
-                // `default: usage()` 接第二行。递出去的是 `-` 后面的**第一个字节**
-                // （聚簇与 `--x` 都只报第一个：量过 `-Zb` 报 `Z`、`--x` 报 `-`；
-                // `getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 的 `%c`
-                // 把它原样写出，所以 `é`（`c3 a9`）报的是 `c3`）。
+                // A letter outside the set: `getopt.c:95-104` prints one line,
+                // then `split.c:128-129`'s `default: usage()` appends the
+                // second. What is handed on is the **first byte** after the
+                // `-` (both a cluster and `--x` report only the first:
+                // measured, `-Zb` reports `Z` and `--x` reports `-`;
+                // `getopt.c:79`'s `optopt = *place++` takes one byte at a time
+                // and `:103`'s `%c` writes it out verbatim, so `é` (`c3 a9`)
+                // reports `c3`).
                 _ => {
                     return Err(SplitError::UnknownOption(char::from(bytes[1])));
                 }
@@ -342,20 +353,26 @@ pub fn parse_split_args<'a>(args: &'a [&'a [u8]]) -> Result<SplitArgs<'a>, Split
             index += 1;
             continue;
         }
-        // **不重排**：非选项 token 一到，C 的选项环就当场结束（`getopt.c:74-78` 见不到
-        // `-` 即返 -1），它和它后面的 token 整个落进 `argv += optind` 的那一段——
-        // 第一个是输入档、第二个是前缀、还有第三个就 usage（`split.c:135-150`）。
-        // 所以 `split in -Z` 里的 `-Z` 是**前缀**而不是选项（参照件现量：它去开 `in`
-        // 而报 `split: in: No such file or directory`）。
+        // **No rearrangement**: as soon as a non-option token arrives, C's
+        // option loop ends on the spot (`getopt.c:74-78` returns -1 when it
+        // does not see `-`), and that token plus everything after it fall into
+        // the `argv += optind` slice — the first is the input file, the second
+        // the prefix, and a third one is usage (`split.c:135-150`). So the `-Z`
+        // in `split in -Z` is a **prefix**, not an option (reference
+        // measurement: it tries to open `in` and reports
+        // `split: in: No such file or directory`).
         operands.extend_from_slice(&args[index..]);
         break;
     }
 
-    // 第三支操作数在这一腿**不判**。C 的先后是：先把输入开出来（`split.c:135-139`，
-    // 开不成当场 `err(1, "%s", *argv)`），再取前缀（`:143`），最后才
-    // `if (*argv != NULL) usage()`（`:148-149`）。取数这一层看不见开档的成败，
-    // 在这里判就会把 `split 开不了的档名 前缀 第三支` 报成 usage，而参照件报的是那个档名
-    // （读数 `tmp/split-427/ref-shapes.log`）。这一判因此在壳侧、开档之后。
+    // The third operand is **not** judged on this leg. C's order is: open the
+    // input first (`split.c:135-139`, where a failed open calls
+    // `err(1, "%s", *argv)` on the spot), then take the prefix (`:143`), and
+    // only then `if (*argv != NULL) usage()` (`:148-149`). This layer cannot
+    // see whether the open succeeded, so judging here would report
+    // `split <unopenable> <prefix> <third>` as usage, whereas the reference
+    // reports that file name. The check therefore lives on the shell side,
+    // after the open.
     // C: `if (numlines == 0) numlines = DEFLINE; else if (bytecnt || chunks) usage()`;
     // `if (bytecnt && chunks) usage()` — the three modes are mutually exclusive.
     if set && (byte_size.is_some() || chunk_count.is_some()) {
@@ -373,21 +390,29 @@ pub fn parse_split_args<'a>(args: &'a [&'a [u8]]) -> Result<SplitArgs<'a>, Split
     })
 }
 
-/// 按字节定长切分的**流式**切块器：把一块一块读进来的输入切成「写给当前分片」与
-/// 「另起一枚分片」两种片段，语义照 `minix3/usr.bin/split/split.c:175-236` 的 `split1`。
+/// A **streaming** cutter for fixed-size byte chunks: it turns each read
+/// buffer into pieces of two kinds, "write to the current chunk" and "start a
+/// new chunk", following `split1` in
+/// `minix3/usr.bin/split/split.c:175-236`.
 ///
-/// C 跨两次 `read` 留下的只有一个计数器（`bcnt`：当前分片已经写了多少字节），
-/// 不留任何数据，所以这一层要复写的也只有这两个数：已写字节与「当前分片是否还开着」。
-/// 一条关键细节来自 C 的 `else file_open = 0`（`split.c:228-230`）：**正好切满**之后当前
-/// 分片就算关掉了，下一次读到的头几个字节属于**新的一枚**分片，而不是接着往刚写完的文件里灌。
+/// The only thing C carries across two `read` calls is one counter (`bcnt`:
+/// how many bytes the current chunk already holds); it keeps no data, so the
+/// same two numbers are all this layer needs: bytes written and whether the
+/// current chunk is still open.
+/// One key detail comes from C's `else file_open = 0` (`split.c:228-230`):
+/// after a chunk is filled **exactly**, that chunk counts as closed, and the
+/// first bytes of the next read belong to a **new** chunk rather than
+/// continuing into the file just finished.
 pub struct ByteCutter {
     size: usize,
     filled: usize,
     open: bool,
 }
 
-/// 一段要写出去的字节，以及它该落在哪一枚分片：`opens_new_file` 为真就先把上一枚
-/// 关掉、后缀推进一位再新建（C 的 `newfile()`，`split.c:309-335`）。
+/// One stretch of bytes to write out and the chunk it belongs in: when
+/// `opens_new_file` is true, the previous chunk is closed first, the suffix
+/// advances by one, and a new file is created (C's `newfile()`,
+/// `split.c:309-335`).
 #[derive(Debug, PartialEq, Eq)]
 pub struct CutPiece<'a> {
     pub bytes: &'a [u8],
@@ -395,8 +420,9 @@ pub struct CutPiece<'a> {
 }
 
 impl ByteCutter {
-    /// 以每片 `size` 字节建一个切块器。`size` 为零按调用方的错处理，
-    /// 与 [`chunk_bytes`] 对 `n == 0` 交出空结果同一个口径。
+    /// Build a cutter of `size` bytes per chunk. A zero `size` is the
+    /// caller's error, the same convention as [`chunk_bytes`] returning an
+    /// empty result for `n == 0`.
     pub fn new(size: usize) -> Self {
         Self {
             size,
@@ -405,7 +431,8 @@ impl ByteCutter {
         }
     }
 
-    /// 把一次读到的 `piece` 切成若干片段，顺序就是写出顺序。
+    /// Cut one read buffer `piece` into several pieces; their order is the
+    /// write order.
     pub fn take<'a>(&mut self, piece: &'a [u8]) -> Vec<CutPiece<'a>> {
         let mut out = Vec::new();
         if self.size == 0 {
@@ -435,13 +462,18 @@ impl ByteCutter {
     }
 }
 
-/// 按行数定长切分的**流式**切块器：把一块一块读进来的输入切成「写给当前分片」与
-/// 「另起一枚分片」两种片段，语义照 `minix3/usr.bin/split/split.c:242-282` 的 `split2`。
+/// A **streaming** cutter for fixed-line-count chunks: it turns each read
+/// buffer into pieces of two kinds, "write to the current chunk" and "start a
+/// new chunk", following `split2` in
+/// `minix3/usr.bin/split/split.c:242-282`.
 ///
-/// 与 [`ByteCutter`] 同一个协议，只是切点从字节计数换成换行计数。跨两次 `read`
-/// 留下的还是两个数（当前分片已数到几整行、当前分片是否还开着），**一段数据都不留**：
-/// 横跨两个缓冲的那一行分两次写进同一枚还开着的分片，所以这里没有、也不该有
-/// 拼接缓存——那会把驻留量重新拉回「最长那一行」。
+/// The protocol is the same as [`ByteCutter`]'s; only the cut point changes
+/// from a byte count to a newline count. Two numbers are still all that
+/// crosses a `read` boundary (how many whole lines the current chunk has
+/// counted, and whether it is still open), and **no data at all** is kept: a
+/// line spanning two buffers is written into the same still-open chunk in two
+/// pieces, so there is no reassembly buffer here, and there should not be one
+/// — it would drag the resident footprint back up to "the longest line".
 pub struct LineCutter {
     numlines: usize,
     lines: usize,
@@ -449,8 +481,9 @@ pub struct LineCutter {
 }
 
 impl LineCutter {
-    /// 以每片 `numlines` 行建一个切块器。`numlines` 为零按调用方的错处理，
-    /// 与 [`ByteCutter::new`] 对 `size` 为零同一个口径。
+    /// Build a cutter of `numlines` lines per chunk. A zero `numlines` is the
+    /// caller's error, the same convention as [`ByteCutter::new`] for a zero
+    /// `size`.
     pub fn new(numlines: usize) -> Self {
         Self {
             numlines,
@@ -459,7 +492,8 @@ impl LineCutter {
         }
     }
 
-    /// 把一次读到的 `piece` 切成若干片段，顺序就是写出顺序。
+    /// Cut one read buffer `piece` into several pieces; their order is the
+    /// write order.
     pub fn take<'a>(&mut self, piece: &'a [u8]) -> Vec<CutPiece<'a>> {
         let mut out = Vec::new();
         if self.numlines == 0 {
@@ -479,8 +513,10 @@ impl LineCutter {
                 bytes: &piece[start..index + 1],
                 opens_new_file: !self.open,
             });
-            // 切点之后就不再有「还开着的分片」了：下一段自己按 `!open` 决定要不要
-            // 另起一枚，于是「切点落在片段正中」与「切点正好压在片段末」共用一条路。
+            // After a cut point there is no "still-open chunk" any more: the
+            // next piece decides for itself via `!open` whether to start a new
+            // one, so "the cut point falls in the middle of a piece" and "the
+            // cut point lands exactly at the end of a piece" share one path.
             self.open = false;
             start = index + 1;
         }
@@ -541,7 +577,8 @@ mod tests {
     #[test]
     fn lines_bytes_carries_the_terminator_with_its_line() {
         assert_eq!(lines_bytes(b"a\nb\n"), vec![&b"a\n"[..], &b"b\n"[..]]);
-        // 空行是它自己的一行，终止符就是它的全部内容；末行不带换行则保持不带。
+        // An empty line is a line of its own, with its terminator as its whole
+        // content; a last line without a newline stays without one.
         assert_eq!(
             lines_bytes(b"a\n\nb\n"),
             vec![&b"a\n"[..], &b"\n"[..], &b"b\n"[..]]
@@ -553,7 +590,8 @@ mod tests {
 
     #[test]
     fn lines_bytes_is_not_an_encoding_check() {
-        // 不可解码的字节只是普通数据（C 数的是读缓冲里的换行）。
+        // Undecodable bytes are ordinary data (C counts the newlines in the
+        // read buffer).
         assert_eq!(
             lines_bytes(b"aa\xffbb\ncc\xfe\n"),
             vec![&b"aa\xffbb\n"[..], &b"cc\xfe\n"[..]]
@@ -562,7 +600,8 @@ mod tests {
 
     #[test]
     fn test_suffix_enumerates_two_letters() {
-        // 默认 width=2：aa..zz 逐字不变（零回归铉）。
+        // Default width=2: aa..zz unchanged character for character (zero
+        // regression).
         assert_eq!(suffix(0, 2).as_deref(), Some("aa"));
         assert_eq!(suffix(1, 2).as_deref(), Some("ab"));
         assert_eq!(suffix(25, 2).as_deref(), Some("az"));
@@ -573,22 +612,23 @@ mod tests {
 
     #[test]
     fn test_suffix_width_follows_sfxlen() {
-        // -a 1：单字母 a..z（容量 26）。
+        // -a 1: a single letter a..z (capacity 26).
         assert_eq!(suffix(0, 1).as_deref(), Some("a"));
         assert_eq!(suffix(25, 1).as_deref(), Some("z"));
         assert_eq!(suffix(26, 1), None);
-        // -a 3：三字母 aaa..；index 26 = "aab"。
+        // -a 3: three letters starting at aaa; index 26 = "aab".
         assert_eq!(suffix(0, 3).as_deref(), Some("aaa"));
         assert_eq!(suffix(1, 3).as_deref(), Some("aab"));
         assert_eq!(suffix(26 * 26 - 1, 3).as_deref(), Some("azz"));
-        assert_eq!(suffix(26 * 26 * 26, 3), None); // 超 26^3 穷举
-        // width 0 非法 → None。
+        assert_eq!(suffix(26 * 26 * 26, 3), None); // past the 26^3 enumeration
+        // width 0 is illegal → None.
         assert_eq!(suffix(0, 0), None);
     }
 
     #[test]
     fn parse_default_and_separated_value() {
-        // 无参：缺省 1000 行。分离值（向后兼容）。
+        // No arguments: the default of 1000 lines. Separated values (still
+        // accepted).
         let w_d = argv(&[]);
         let d = parse_split_args(&w_d).unwrap();
         assert_eq!(d.lines_per_chunk, DEFAULT_LINES);
@@ -601,7 +641,7 @@ mod tests {
 
     #[test]
     fn parse_attached_and_obsolete_accepted() {
-        // 关键回归：旧前门拒这两个合法形。
+        // Key regression: the old front door rejected these two legal forms.
         let w_a = argv(&["-l100", "f"]);
         let a = parse_split_args(&w_a).unwrap();
         assert_eq!(a.lines_per_chunk, 100);
@@ -610,14 +650,15 @@ mod tests {
         let b = parse_split_args(&w_b).unwrap();
         assert_eq!(b.lines_per_chunk, 1000);
         assert_eq!(b.operands, vec![b"in".as_slice(), b"out".as_slice()]);
-        // 裸 `-` 为操数、`--` 终止扫描。
+        // A bare `-` is an operand; `--` ends scanning.
         let w_c = argv(&["-l", "5", "-", "pfx"]);
         let c = parse_split_args(&w_c).unwrap();
         assert_eq!(c.operands, vec![b"-".as_slice(), b"pfx".as_slice()]);
         let w_e = argv(&["--", "-l", "-x"]);
         let e = parse_split_args(&w_e).unwrap();
         assert_eq!(e.operands, vec![b"-l".as_slice(), b"-x".as_slice()]);
-        // obsolete 在 `-l` 之后再出现被忽略（C 只 `if (numlines == 0)` 才解）。
+        // The obsolete form after a `-l` is ignored (C only interprets it
+        // `if (numlines == 0)`).
         let w_f = argv(&["-l", "3", "-5"]);
         let f = parse_split_args(&w_f).unwrap();
         assert_eq!(f.lines_per_chunk, 3);
@@ -625,23 +666,26 @@ mod tests {
 
     #[test]
     fn parse_suffix_length_minus_a() {
-        // -a 接值：附值 `-a3` 与分词 `-a 3` 都置 sfxlen=3；默认 2。
+        // -a takes a value: attached `-a3` and separated `-a 3` both set
+        // sfxlen=3; the default is 2.
         assert_eq!(parse_split_args(&argv(&["-a3", "f"])).unwrap().sfxlen, 3);
         assert_eq!(
             parse_split_args(&argv(&["-a", "3", "f"])).unwrap().sfxlen,
             3
         );
-        // -a 吃值后，`3` 不泄为操作数：`-a3 f` 只剩一个操数 `f`。
+        // Once -a consumes its value, the `3` does not leak out as an operand:
+        // `-a3 f` leaves just the one operand `f`.
         assert_eq!(
             parse_split_args(&argv(&["-a3", "f"])).unwrap().operands,
             vec![b"f".as_slice()]
         );
-        // 未给 -a 时 sfxlen 默认 2。
+        // Without -a, sfxlen defaults to 2.
         assert_eq!(
             parse_split_args(&argv(&["f"])).unwrap().sfxlen,
             DEFAULT_SFXLEN
         );
-        // 非法后缀长度（0 / 非全数字）：对位 C "illegal suffix length"。
+        // Illegal suffix length (0 / not all digits): matches C's "illegal
+        // suffix length".
         assert_eq!(
             parse_split_args(&argv(&["-a0"])).err(),
             Some(SplitError::IllegalSuffixLength(b"0"))
@@ -654,7 +698,8 @@ mod tests {
 
     #[test]
     fn parse_byte_count_minus_b() {
-        // -b 接值：附值/分词、k/m 单位。行数保持默认（字节模式不数行）。
+        // -b takes a value: attached or separated, with k/m units. The line
+        // count stays at its default (byte mode does not count lines).
         assert_eq!(
             parse_split_args(&argv(&["-b", "100"])).unwrap().byte_size,
             Some(100)
@@ -671,9 +716,9 @@ mod tests {
             parse_split_args(&argv(&["-b2m"])).unwrap().byte_size,
             Some(2 * 1024 * 1024)
         );
-        // 未给 -b 时 byte_size 为 None（行模式）。
+        // Without -b, byte_size is None (line mode).
         assert_eq!(parse_split_args(&argv(&["f"])).unwrap().byte_size, None);
-        // 非法字节数（0 / 非数字）："illegal byte count"。
+        // Illegal byte count (0 / non-digit): "illegal byte count".
         assert_eq!(
             parse_split_args(&argv(&["-b0"])).err(),
             Some(SplitError::IllegalByteCount(b"0"))
@@ -682,7 +727,8 @@ mod tests {
             parse_split_args(&argv(&["-b", "x"])).err(),
             Some(SplitError::IllegalByteCount(b"x"))
         );
-        // -l 与 -b 并存（任一侧）：C 在收尾 `else if (bytecnt…)` 判 usage。
+        // -l together with -b (either order): C rules usage in the closing
+        // `else if (bytecnt…)`.
         assert_eq!(
             parse_split_args(&argv(&["-l", "3", "-b", "10"])).err(),
             Some(SplitError::Usage)
@@ -713,13 +759,13 @@ mod tests {
         assert_eq!(c.len(), 3);
         assert_eq!(c[0], b"abc"); // 10/3 = 3
         assert_eq!(c[1], b"def");
-        assert_eq!(c[2], b"ghij"); // 末段吸收余数
-        // n == len：逐字节。
+        assert_eq!(c[2], b"ghij"); // the last chunk absorbs the remainder
+        // n == len: one byte per chunk.
         assert_eq!(
             chunks_n(b"abc", 3).unwrap(),
             vec![&b"a"[..], &b"b"[..], &b"c"[..]]
         );
-        // n > len → None（C "can't split into more than %d files"）。
+        // n > len → None (C "can't split into more than %d files").
         assert_eq!(chunks_n(b"ab", 3), None);
         assert_eq!(chunks_n(b"", 1), None);
         assert_eq!(chunks_n(b"abc", 0), None);
@@ -740,7 +786,8 @@ mod tests {
             parse_split_args(&argv(&["-n0"])).err(),
             Some(SplitError::IllegalChunkCount(b"0"))
         );
-        // 三模式两两互斥：-n 与 -l / -b 并存均 usage。
+        // The three modes are pairwise exclusive: -n together with -l / -b is
+        // usage.
         assert_eq!(
             parse_split_args(&argv(&["-l", "3", "-n", "4"])).err(),
             Some(SplitError::Usage)
@@ -751,11 +798,12 @@ mod tests {
         );
     }
 
-    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
-    /// `char` 域里是 U+00C3。绝对读数有两处：机制层是 `getopt.c:79` 的
-    /// `optopt = *place++`（步进在 `char *` 上，一次一个字节）与 `:103` 的 `%c`，
-    /// 参照件那侧是 `tmp/split-413/split_ref` 现量 `-é` 打的是单个 `303`
-    /// （逐字节门在 `tests/split_face.rs`）。
+    /// The unknown letter handed back is the **first byte** after the hyphen,
+    /// not the first character: `-\u{e9}` (`c3 a9`) is U+00C3 in a `char`
+    /// field. Two absolute readings: on the mechanism side, `getopt.c:79`'s
+    /// `optopt = *place++` (stepping over a `char *`, one byte at a time) and
+    /// `:103`'s `%c`; on the reference side, `-é` printed a single `303` (the
+    /// byte-wise gate is in `tests/split_face.rs`).
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
@@ -763,18 +811,20 @@ mod tests {
             Some(SplitError::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
-        // 环停在第一个坏字母上：`-Zé` 只报 `Z`。
+        // The loop stops at the first bad letter: `-Zé` reports only `Z`.
         assert_eq!(
             parse_split_args(&[b"-Z\xc3\xa9"]).err(),
             Some(SplitError::UnknownOption('Z'))
         );
-        // ASCII 那一形不许被这次改动波及。
+        // The ASCII shape must not be disturbed by this change.
         assert_eq!(
             parse_split_args(&argv(&["-q"])).err(),
             Some(SplitError::UnknownOption('q'))
         );
-        // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
-        // `split: é: illegal line count.`，退 1、不接 usage）。
+        // Counter-case: a value-taking letter swallows every following byte as
+        // its value, so the letter position never comes up (the reference gives
+        // the same sentence, `split: é: illegal line count.`, exit 1, no
+        // usage).
         assert_eq!(
             parse_split_args(&[b"-l\xc3\xa9"]).err(),
             Some(SplitError::IllegalLineCount(b"\xc3\xa9"))
@@ -783,12 +833,15 @@ mod tests {
 
     #[test]
     fn parse_error_paths() {
-        // 集外字母交回字母本身，由壳先印 libc 那一行再接 usage（参照件：`-Z` 两行）。
+        // The unknown letter is handed back as the letter itself, and the shell
+        // prints the libc line before the usage (reference: `-Z` gives two
+        // lines).
         assert_eq!(
             parse_split_args(&argv(&["-z", "f"])).err(),
             Some(SplitError::UnknownOption('z'))
         );
-        // 聚簇与 `--x` 只报第一个字节（参照件：`-Zb` 报 `Z`、`--x` 报 `-`）。
+        // A cluster and `--x` report only the first byte (reference: `-Zb`
+        // reports `Z`, `--x` reports `-`).
         assert_eq!(
             parse_split_args(&argv(&["-Zb"])).err(),
             Some(SplitError::UnknownOption('Z'))
@@ -797,7 +850,8 @@ mod tests {
             parse_split_args(&argv(&["--x"])).err(),
             Some(SplitError::UnknownOption('-'))
         );
-        // 缺值是 libc 的另一句（`getopt.c:132-136`），不是 usage 自己那一行。
+        // A missing value is libc's other sentence (`getopt.c:132-136`), not
+        // the usage line itself.
         assert_eq!(
             parse_split_args(&argv(&["-l"])).err(),
             Some(SplitError::MissingValue('l'))
@@ -814,8 +868,9 @@ mod tests {
             parse_split_args(&argv(&["-n"])).err(),
             Some(SplitError::MissingValue('n'))
         );
-        // 遗留形取的是整段 token 去掉那个 `-`（C 的 `argv[optind] + 1`）：尾巴有杂字符
-        // 就整段报成 illegal line count，而不是当成集外字母。
+        // The legacy form takes the whole token minus that `-` (C's
+        // `argv[optind] + 1`): a stray trailing character makes the whole
+        // token an illegal line count rather than an unknown letter.
         assert_eq!(
             parse_split_args(&argv(&["-12x"])).err(),
             Some(SplitError::IllegalLineCount(b"12x"))
@@ -824,8 +879,9 @@ mod tests {
             parse_split_args(&argv(&["-3b5"])).err(),
             Some(SplitError::IllegalLineCount(b"3b5"))
         );
-        // **不重排**：非选项 token 一到，它和后面的整个交回当操作数，
-        // 所以 `split in -Z` 里的 `-Z` 是前缀而不是选项（参照件现量）。
+        // **No rearrangement**: as soon as a non-option token arrives, it and
+        // everything after it are handed back as operands, so the `-Z` in
+        // `split in -Z` is a prefix, not an option (reference measurement).
         assert_eq!(
             parse_split_args(&argv(&["in", "-Z"])).unwrap().operands,
             vec![b"in".as_slice(), b"-Z".as_slice()]
@@ -874,10 +930,13 @@ mod tests {
         );
     }
 
-    /// 切块器与整档切块必须逐字节等价：同一份输入，随便按哪些边界切成几次读，
-    /// 把片段按 `opens_new_file` 归成文件，结果要与 `chunk_bytes` 一次切完完全相同。
-    /// 这一枚就是流式化「不改可见行为」的证明，读边界取的是「跨片」「正好切满」
-    /// 「一次读横跨好几片」三种形状。
+    /// The cutter and the whole-buffer cut must be byte-for-byte equivalent:
+    /// for the same input, no matter which boundaries split it into how many
+    /// reads, grouping the pieces into files by `opens_new_file` must give
+    /// exactly the result of one `chunk_bytes` cut. This test is the proof that
+    /// streaming does not change visible behaviour; the read boundaries cover
+    /// "across a piece", "exactly filling a chunk", and "one read spanning
+    /// several pieces".
     #[test]
     fn the_cutter_agrees_with_the_whole_buffer_cut_at_any_read_boundary() {
         let data: Vec<u8> = (0u8..40).collect();
@@ -917,8 +976,10 @@ mod tests {
         }
     }
 
-    /// 正好切满之后当前分片就算关掉：下一次读到的头几个字节必须属于**新的一枚**分片。
-    /// 这条来自 `split.c:228-230` 的 `else file_open = 0`，是本层最容易写错的一形。
+    /// After an exact fill the current chunk counts as closed: the first bytes
+    /// of the next read must belong to a **new** chunk. This comes from C's
+    /// `else file_open = 0` (`split.c:228-230`) and is the shape this layer is
+    /// most likely to get wrong.
     #[test]
     fn an_exact_fill_closes_the_file_so_the_next_read_starts_a_new_one() {
         let head = [1u8, 2, 3, 4];
@@ -943,8 +1004,9 @@ mod tests {
         );
     }
 
-    /// 一次读横跨好几片时每片各起一枚文件，且**不留零长度的尾巴**
-    /// （C 的 `if (len)` 就是这个意思，`split.c:221-230`）。
+    /// When one read spans several chunks, each chunk starts its own file, and
+    /// **no zero-length tail** is left behind (that is what C's `if (len)`
+    /// means, `split.c:221-230`).
     #[test]
     fn one_read_spanning_several_chunks_leaves_no_empty_tail() {
         let mut cutter = ByteCutter::new(4);
@@ -958,8 +1020,9 @@ mod tests {
         assert!(!pieces.iter().any(|p| p.bytes.is_empty()));
     }
 
-    /// 读进来的不足一片时，后来的那一块要**接在同一枚**分片里：
-    /// 这是跨读留存面唯一真正起作用的一形（C 用 `bcnt` 记这一步）。
+    /// When a read is shorter than one chunk, the next block must **continue
+    /// inside the same chunk file**: this is the only shape in which
+    /// cross-read state really matters (C keeps it in `bcnt`).
     #[test]
     fn a_short_read_continues_inside_the_same_chunk_file() {
         let head = [1u8, 2, 3];
@@ -976,8 +1039,9 @@ mod tests {
         assert_eq!(second[1].bytes, &[9, 10]);
     }
 
-    /// `size` 为零是调用方的错，与 `chunk_bytes` 同一个口径：什么都切不出来，
-    /// 而不是把输入静默吃掉或原地打转。
+    /// A zero `size` is the caller's error, the same convention as
+    /// `chunk_bytes`: nothing is cut at all, rather than silently swallowing
+    /// the input or spinning in place.
     #[test]
     fn a_zero_sized_cutter_produces_no_pieces() {
         let mut cutter = ByteCutter::new(0);
@@ -985,9 +1049,11 @@ mod tests {
         assert_eq!(chunk_bytes(&[1u8, 2, 3], 0), Vec::<&[u8]>::new());
     }
 
-    /// 把 [`LineCutter`] 逐片交回的片段**严格按 `opens_new_file`** 归成文件。字节腿那枚
-    /// 等价门留了 `|| files.is_empty()` 的逃逸，这里不留：第一片就该自己说得出「另起
-    /// 一枚」，否则「一枚文件都没开」与「开档时机写错了」在门里长得一样。
+    /// Group the pieces [`LineCutter`] hands back **strictly by
+    /// `opens_new_file`**. The byte-leg equivalence gate kept an
+    /// `|| files.is_empty()` escape; this one does not: the first piece must
+    /// say for itself that it starts a new chunk, otherwise "no file was
+    /// opened" and "the open timing is wrong" look the same to the gate.
     fn streaming_files(data: &[u8], piece_len: usize, numlines: usize) -> Vec<Vec<u8>> {
         let mut cutter = LineCutter::new(numlines);
         let mut files: Vec<Vec<u8>> = Vec::new();
@@ -1009,8 +1075,9 @@ mod tests {
         files
     }
 
-    /// 整档一次切完的文件序列，即流式那条腿的参照半（与 `chunk_bytes` 给字节腿
-    /// 当参照同一个办法）。
+    /// The file sequence of one whole-buffer cut, i.e. the reference half of
+    /// the streaming leg (the same method as `chunk_bytes` serving as the
+    /// reference for the byte leg).
     fn whole_files(data: &[u8], numlines: usize) -> Vec<Vec<u8>> {
         chunks_bytes(&lines_bytes(data), numlines)
             .into_iter()
@@ -1018,9 +1085,10 @@ mod tests {
             .collect()
     }
 
-    /// 形状集合：空、无换行的一行、单个空行、末行不带换行、正好切在换行上、
-    /// 空行夹在中间、不可解码的字节当数据。这一组长度都在 40 字节以内，
-    /// 所以下面那枚门能把片长**逐个**试过来。
+    /// The shape set: empty, one line without a newline, a single empty line, a
+    /// last line without a newline, cuts exactly on a newline, empty lines in
+    /// the middle, and undecodable bytes as data. Every length here is at most
+    /// 40 bytes, so the gate below can try every piece length **one by one**.
     fn small_shapes() -> Vec<Vec<u8>> {
         vec![
             Vec::new(),
@@ -1036,10 +1104,13 @@ mod tests {
         ]
     }
 
-    /// 等价门（流式化「不改可见行为」的证明，小形状逐个片长扫）：同一份输入，
-    /// 随便按哪个边界成块读进来，交回的文件必须与整档一次切完**逐字节**相同。
-    /// 片长取遍 `1..=len+1`，于是「切点正好压在片段末」「一行跨两片」「末字节就是
-    /// 换行」这些形状不需要人挨个点。
+    /// The equivalence gate (proof that streaming does not change visible
+    /// behaviour, small shapes scanned over every piece length): for the same
+    /// input, no matter which boundaries form the read blocks, the files handed
+    /// back must be **byte for byte** the same as one whole-buffer cut. Piece
+    /// lengths run over `1..=len+1`, so shapes like "the cut lands exactly at
+    /// the end of a piece", "one line spans two pieces", and "the last byte is
+    /// the newline" need no hand-picked cases.
     #[test]
     fn the_line_cutter_agrees_with_the_whole_buffer_cut_at_any_read_boundary() {
         for data in small_shapes() {
@@ -1057,10 +1128,14 @@ mod tests {
         }
     }
 
-    /// 同一件事在大形状上再走一遍：这些形状长到没法逐个试片长，于是取一组
-    /// 有代表性的读边界——一字节一读、跨过切点、正好压在行末、跨读块、比输入还长。
-    /// 其中 97 字节一行与 60 字节一行是专门留给「一行横跨两次读」的。小形状不在
-    /// 此列：上一枚门已把它们按每个片长扫过，重复扫一遍只是把同一件事测两次。
+    /// The same check again on the large shapes: they are too long to try every
+    /// piece length, so a representative set of read boundaries is used — one
+    /// byte per read, across the cut point, exactly at a line end, across read
+    /// blocks, and longer than the input. The 97-byte line and the 60-byte line
+    /// are there specifically for "one line spanning two reads". Small shapes
+    /// are not in this list: the previous gate already scanned them at every
+    /// piece length, and scanning them again would only test the same thing
+    /// twice.
     #[test]
     fn the_line_cutter_agrees_on_the_big_shapes_at_the_awkward_read_sizes() {
         let lines = |width: usize, count: usize, mark: u8| -> Vec<u8> {
@@ -1110,9 +1185,11 @@ mod tests {
         }
     }
 
-    /// 真实读块形状：C 每次 `read` 一个 `MAXBSIZE`（本壳 `STREAM_CHUNK` = 64 KiB），
-    /// 1 KiB 的行凑满 64 行正好是 64 KiB。于是切点**恰好**压在两次的读边界上——
-    /// 这一形只能有两枚分片，多出第三枚（空尾）就是把「切点占末字节」写错了。
+    /// The real read-block shape: C reads one `MAXBSIZE` per `read` (this
+    /// shell's `STREAM_CHUNK` = 64 KiB), and 64 lines of 1 KiB fill exactly
+    /// 64 KiB. So the cut point lands **exactly** on the boundary between two
+    /// reads — this shape must produce exactly two chunks, and a third (empty)
+    /// one means "the cut point owns the last byte" was implemented wrongly.
     #[test]
     fn the_real_read_block_shape_makes_two_files_not_three() {
         let data: Vec<u8> = (0..(1024 * 128u32))
@@ -1124,8 +1201,10 @@ mod tests {
         assert_eq!(files, whole_files(&data, 64));
     }
 
-    /// 一行横跨两次读：两截必须写进**同一枚**还开着的分片（C 的 `if (Cs < Ce)`
-    /// 就是这一形，`split.c:276-280`），不许因为换行还没来就另起一枚。
+    /// A line spanning two reads: both halves must go into the **same** chunk,
+    /// which stays open (that is what C's `if (Cs < Ce)` means,
+    /// `split.c:276-280`); a new chunk must not start just because the newline
+    /// has not arrived yet.
     #[test]
     fn a_line_straddling_two_reads_stays_in_one_chunk_file() {
         let mut cutter = LineCutter::new(1);
@@ -1157,9 +1236,11 @@ mod tests {
         );
     }
 
-    /// 切点正好压在片段末：此刻下一枚分片**还不该开**，要等下一次真读到字节才开
-    /// （C 的 `if (len) newfile(); else file_open = 0;`，`split.c:271-274`）。
-    /// 读到这里就失手也就停在这一枚上，不会多出一枚空文件。
+    /// A cut landing exactly on the last byte of a piece: the next chunk must
+    /// **not** be opened yet; it opens only when the next read actually brings
+    /// bytes (C's `if (len) newfile(); else file_open = 0;`,
+    /// `split.c:271-274`). If the run stops here, it stops on this chunk
+    /// without leaving an extra empty file behind.
     #[test]
     fn a_cut_on_the_last_byte_of_a_read_leaves_the_next_file_unopened() {
         let mut cutter = LineCutter::new(1);
@@ -1184,7 +1265,8 @@ mod tests {
         );
     }
 
-    /// 一次读里没有换行：整段灌进当前分片，且只有当前没有开着的分片时才另起一枚。
+    /// A piece with no newline at all: the whole stretch is poured into the
+    /// current chunk, and a new one starts only when no chunk is open.
     #[test]
     fn a_piece_without_any_newline_fills_the_open_chunk() {
         let mut cutter = LineCutter::new(2);
@@ -1204,8 +1286,9 @@ mod tests {
         );
     }
 
-    /// 一次读横跨好几个切点时每个切点各起一枚文件，且段段非空
-    /// （`numlines` 为一是最容易写出零长度尾巴的形状）。
+    /// One read spanning several cut points opens one file per cut point, and
+    /// every piece is non-empty (`numlines` of one is the shape most likely to
+    /// produce a zero-length tail).
     #[test]
     fn several_cuts_in_one_piece_open_one_file_each() {
         let mut cutter = LineCutter::new(1);
@@ -1222,7 +1305,8 @@ mod tests {
         );
     }
 
-    /// `numlines` 为零是调用方的错，与字节腿同一个口径：什么都切不出来。
+    /// A zero `numlines` is the caller's error, the same convention as the byte
+    /// leg: nothing is cut at all.
     #[test]
     fn a_zero_line_count_cutter_produces_no_pieces() {
         let mut cutter = LineCutter::new(0);
@@ -1230,11 +1314,14 @@ mod tests {
         assert!(whole_files(b"a\nb\n", 0).is_empty());
     }
 
-    /// 值位与操作数交回的是 argv 的**原字节**，字母位是短横后的第一枚字节。C 那一侧
-    /// 这三条腿都在字节上：`split.c:112` 的 `errx(1, "%s: illegal line count.", optarg)`
-    /// 打的是 `optarg` 本身的每一枚字节，`getopt.c:79` 的 `optopt = *place++` 一次进一枚，
-    /// 而档名 `*argv++`（`:143`）是直接进 `creat` 的。折过一次，值位上的裸 `ff` 就变成
-    /// `ef bf bd` 三枚，前缀那一条则在 `open` 之前就不是那个名字了。
+    /// The value and operand legs hand back the **raw bytes** of argv, and the
+    /// letter position is the first byte after the hyphen. On the C side all
+    /// three legs work on bytes: `split.c:112`'s `errx(1, "%s: illegal line
+    /// count.", optarg)` prints every byte of `optarg` itself, `getopt.c:79`'s
+    /// `optopt = *place++` takes one byte at a time, and the file name
+    /// `*argv++` (`:143`) goes straight into `creat`. After one fold, a bare
+    /// `ff` at a value position becomes the three bytes `ef bf bd`, and the
+    /// prefix is no longer that name before `open` is even reached.
     #[test]
     fn the_value_and_the_operand_legs_hand_back_the_argv_bytes() {
         assert_eq!(
@@ -1253,14 +1340,15 @@ mod tests {
             parse_split_args(&[b"-n\xff"]).err(),
             Some(SplitError::IllegalChunkCount(b"\xff".as_slice()))
         );
-        // 字母位：`char::from(0xff)` 就是 U+00FF，与 libc 交回 `optopt` 后 `%c` 打出的
-        // 那一枚字节同值——高字节因此不该在这里被折成替换字符。
+        // Letter position: `char::from(0xff)` is U+00FF, the same value as the
+        // byte libc's `%c` prints after handing back `optopt`, so a high byte
+        // must not be folded into the replacement character here.
         assert_eq!(
             parse_split_args(&[b"-\xff"]).err(),
             Some(SplitError::UnknownOption('\u{00ff}')),
             "短横后第一枚字节 ff 交回 U+00FF，不是 U+FFFD"
         );
-        // 操作数腿：前缀原字节跟着档名一起交回。
+        // Operand leg: the raw prefix bytes come back along with the file name.
         assert_eq!(
             parse_split_args(&[b"in", b"p\xff"]).unwrap().operands,
             vec![b"in".as_slice(), b"p\xff".as_slice()]

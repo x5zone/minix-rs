@@ -103,9 +103,9 @@ pub const fn match_kernel(req: Proc2Req, arg: i64, tty_nodev: i64) -> bool {
 /// Whether one table row matches this query.
 ///
 /// C: the per-row `switch (req)` — proc.c:860-898. Session and process
-/// group share the process-group field (job control is still a TODO in
+/// group share the process-group field (job control is still unimplemented in
 /// C, :865, so both compare against it). Terminal matching: a revoked
-/// terminal matches nothing (revoke(2) is still a TODO in C, :871-872);
+/// terminal matches nothing (revoke(2) is still unimplemented in C, :871-872);
 /// the caller passes the zombies' terminal as "no device" already
 /// (C never reads a zombie's file slot, :873-875), so this function only
 /// applies the no-device rule.
@@ -202,7 +202,7 @@ pub const fn carry_sinter(lwp_stat: i32, sinter: bool) -> bool {
 ///
 /// C: `p->p_eflag` — proc.c:709-713. A zombie has no terminal, so the
 /// caller resolves that first (see [`zombie_tty`]); session leadership
-/// is "PID equals process group" today (job control is still a TODO in
+/// is "PID equals process group" today (job control is still unimplemented in
 /// C, :712).
 pub const fn eflag(has_tty: bool, is_leader: bool) -> u32 {
     let mut flags = 0;

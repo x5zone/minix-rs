@@ -1,22 +1,32 @@
 //! End-to-end face for the `random` binary's operand step, checked against
-//! `minix3/games/random/random.c`（个数判 `:89-104`、`err(1, "%s", *argv)` `:96-97`、
-//! `errx(1, "denominator is not valid.")` `:98-99`、`usage()` `:143-147`）。
+//! `minix3/games/random/random.c` (operand-count check `:89-104`,
+//! `err(1, "%s", *argv)` `:96-97`, `errx(1, "denominator is not valid.")`
+//! `:98-99`, `usage()` `:143-147`).
 //!
-//! 期望值全部从参照件 `tmp/random-342/random_ref` 现量，逐形读数在
-//! `tmp/random-343/ab343-ref.log`。量出来的形状有四条：
-//! ① 零枚操作数**不是**缺参数：C 的 `case 0` 把分母定成 2 然后照常过滤，退 0。
-//! ② 一枚被否的操作数报 `random: denominator is not valid.`——前缀跟着 `argv[0]`，
-//!    句子逐字带句尾的点，**不含操作数**（`errx` 没有 `%s` 位）。
-//! ③ 撞上数值范围那一枚报三段形 `random: <操作数>: <句子>`（`err`），与 ② 是两句话。
-//! ④ `usage()` 那一行不缀程序名：`random` 是写死在串里的字面量（`:144`），改名调用它
-//!    也不动，而 ② 与 ③ 的前缀会跟着动——`a_renamed_invocation_moves_the_err_prefixes_only`
-//!    钉的就是这一对差异。
+//! All expected values were measured from the reference binary
+//! `tmp/random-342/random_ref`; the per-shape readings are in
+//! `tmp/random-343/ab343-ref.log`. Four shapes came out of the measurements:
+//! ① Zero operands is **not** a missing argument: C's `case 0` fixes the
+//!    denominator at 2 and filters as usual, exiting 0.
+//! ② A single rejected operand reports `random: denominator is not valid.` —
+//!    the prefix follows `argv[0]`, and the sentence carries its trailing period
+//!    verbatim and **no operand** (`errx` has no `%s` slot).
+//! ③ An operand that hits the numeric range reports the three-part shape
+//!    `random: <operand>: <sentence>` (`err`), a different sentence from ②.
+//! ④ The `usage()` line carries no program-name prefix: `random` is a literal
+//!    hardwired into the string (`:144`) and stays put under a renamed
+//!    invocation, while the prefixes of ② and ③ follow it —
+//!    `a_renamed_invocation_moves_the_err_prefixes_only` pins exactly that
+//!    difference.
 //!
-//! 分母那一枚读的是 C 的 `double`（`strtod` 的十进制腿）：`1e3`、`1e-3`、`.5`、`-2`、
-//! `inf`、`nan` 都认；`18e308`（溢出）与 `1e-400`（下溢成 0）都立 `errno == ERANGE`
-//! 走 ③。还敞着的是十六进制浮点 `0x1p3` 与 `nan(0x…)` 载荷两形。写标准输出那一腿已经
-//! 按 C 落定：失手报 `random: stdout: <句子>` 退 2（`random.c:131-133`），门是
-//! `a_stdout_that_stops_taking_bytes_is_blamed_by_name_and_exits_two`。
+//! The denominator operand is read as C's `double` (the decimal leg of
+//! `strtod`): `1e3`, `1e-3`, `.5`, `-2`, `inf` and `nan` are all accepted;
+//! `18e308` (overflow) and `1e-400` (underflow to 0) both set
+//! `errno == ERANGE` and take ③. Still open are the two shapes hexadecimal
+//! float `0x1p3` and the `nan(0x...)` payload. The stdout leg is already
+//! settled per C: on failure it reports `random: stdout: <sentence>` and exits
+//! 2 (`random.c:131-133`), gated by
+//! `a_stdout_that_stops_taking_bytes_is_blamed_by_name_and_exits_two`.
 
 use std::fs::File;
 use std::io::Write as _;
@@ -27,11 +37,14 @@ fn random_bin() -> &'static str {
     env!("CARGO_BIN_EXE_random")
 }
 
-/// 喂标准输入。**只有 `BrokenPipe` 可以容忍**：`random` 有若干形在碰到输入之前就先退
-/// （`-Z` 落 `usage()` 退 1、`-e` 在 `random.c:109-111` 读标准输入之前就返回），于是父子
-/// 谁先被调度决定这一写拿不拿得到 EPIPE——那是夹克的时序，不是被测代码的缺陷。其余写错
-/// 仍然当场失败。textfilter 那边同一件事已经定过口径（`tests/face_support/mod.rs::write_stdin`），
-/// 这里按同一判据落本 crate 的一份（两个 crate 之间没有共件测试模块可引）。
+/// Feed stdin. **Only `BrokenPipe` is tolerable**: several shapes of `random`
+/// exit before touching input (`-Z` falls into `usage()` and exits 1, `-e`
+/// returns before reading stdin at `random.c:109-111`), so which side gets
+/// scheduled first decides whether this write sees EPIPE — that is harness
+/// timing, not a defect of the code under test. Other write errors still fail
+/// on the spot. textfilter settled the same rule on its side
+/// (`tests/face_support/mod.rs::write_stdin`); this is this crate's copy under
+/// the same criterion (the two crates share no test-support module).
 fn feed_stdin(child: &mut Child, input: &[u8]) {
     let mut stdin = child.stdin.take().expect("stdin pipe");
     if let Err(err) = stdin.write_all(input) {
@@ -43,8 +56,9 @@ fn feed_stdin(child: &mut Child, input: &[u8]) {
     }
 }
 
-/// 用给定的 `argv[0]` 跑一腿：标准输入喂 `input`，收回三路。文本按 lossy 收——报文本身
-/// 是 ASCII，而标准输出可能带任意字节。
+/// Run one leg with the given `argv[0]`: feed `input` on stdin and collect the
+/// three streams. Text is collected lossily — the messages themselves are
+/// ASCII, but stdout may carry arbitrary bytes.
 fn run_with_argv0(arg0: &str, args: &[&str], input: &[u8]) -> (String, i32, String) {
     let mut child = Command::new(random_bin())
         .arg0(arg0)
@@ -67,9 +81,11 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     run_with_argv0("random", args, input)
 }
 
-/// 同 `run_with_argv0`，但三路都按**原始字节**收回。逐字节的字母位与 lossy 后的码位
-/// 在文本形态里分不开：`c3` 与 `c3 83` 经 `from_utf8_lossy` 都是「一个字符」，
-/// 拿 `String` 断言的门钉不住多出来的那一个字节（textfilter 那边同一课，见 18 篇批次四百二十）。
+/// Same as `run_with_argv0`, but all three streams come back as **raw bytes**.
+/// A per-byte letter position and a lossy-converted code point are
+/// indistinguishable in text form: `c3` and `c3 83` are both "one character"
+/// after `from_utf8_lossy`, so a gate asserting on `String` cannot pin the
+/// extra byte (the same lesson as textfilter).
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(random_bin())
         .arg0("random")
@@ -91,7 +107,8 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
 const INPUT: &[u8] = b"aa\nbb\ncc\ndd\nee\nff\n";
 const INPUT_TEXT: &str = "aa\nbb\ncc\ndd\nee\nff\n";
 
-/// `count` 行 `line-0`…`line-(count-1)`，用来把「确实在掷」与「一行都没掷中」分开。
+/// `count` lines `line-0`...`line-(count-1)`, used to tell "it really draws"
+/// apart from "it drew nothing".
 fn many_lines(count: usize) -> String {
     let mut text = String::new();
     for index in 0..count {
@@ -100,7 +117,8 @@ fn many_lines(count: usize) -> String {
     text
 }
 
-/// 输出必须是输入行的一个子集：过滤器整行写出去，不造新行。
+/// Output must be a subset of the input lines: the filter writes whole lines
+/// out and never invents new ones.
 fn assert_subset_of_input(stdout: &str, input: &str, shape: &str) {
     let pool: Vec<&str> = input.lines().collect();
     for line in stdout.lines() {
@@ -110,15 +128,20 @@ fn assert_subset_of_input(stdout: &str, input: &str, shape: &str) {
 
 #[test]
 fn no_operand_filters_with_denominator_two_instead_of_complaining() {
-    // C 的 `case 0`（`random.c:90-92`）：一枚操作数都没有时分母取 2，照常读标准输入。
-    // 参照件现量退 0、吐出输入行的一个子集、不写标准错误
-    // 六行输入只用来验「输出是输入行的子集」，**不验退码**：这具过滤体还有一枚
-    // 「一行都没掷中就说 nothing selected 并退 1」的发明（`random.c:127-137` 没有这一形，
-    // 它是过滤体那一片的账），六行下「全不中」的概率是 2 的 -6 次方，钉不住退码。
-    // 退码交给下面 200 行那一形，那里「全不中」的概率是 2 的 -200 次方
+    // C's `case 0` (`random.c:90-92`): with zero operands the denominator is 2
+    // and stdin is read as usual. The reference binary measured exit 0, a
+    // subset of the input lines printed, and nothing on stderr.
+    // The six-line input only checks "output is a subset of the input"; it does
+    // **not** check the exit code: this filter body also has an invention that
+    // says nothing selected and exits 1 when no line is drawn (`random.c:127-137`
+    // has no such shape; that is the filter body's own account), and with six
+    // lines the probability of "nothing drawn" is 2^-6, too weak to pin the exit
+    // code. The exit code is left to the 200-line shape below, where "nothing
+    // drawn" has probability 2^-200.
     let six = run(&[], INPUT);
     assert_subset_of_input(&six.0, INPUT_TEXT, "零枚操作数");
-    // 掷 200 行而一行都不中，概率是 2 的 -200 次方：非空就是「过滤器确实在跑」的证据
+    // Drawing 200 lines and hitting none has probability 2^-200: non-empty
+    // output is proof that the filter is really running.
     let text = many_lines(200);
     let (out, code, err) = run(&[], text.as_bytes());
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
@@ -131,12 +154,16 @@ fn no_operand_filters_with_denominator_two_instead_of_complaining() {
 
 #[test]
 fn one_operand_still_feeds_the_filter() {
-    // 分母 1 ⇒ 每行必中（`draw` 恒为 0），于是这一形是确定的：输出与输入**逐字节相同**。
-    // 上一笔这条只敢验「非空且是输入行的子集」，因为那时身体只留最后一枚中者（实测只吐
-    // `ff\n`）；过滤体接成 C 的过流形状之后，这里可以钉全等
+    // Denominator 1 ⇒ every line is drawn (`draw` is always 0), so this shape
+    // is deterministic: output and input are **byte-identical**. An earlier
+    // attempt only dared check "non-empty and a subset of the input lines",
+    // because the body then kept only the last drawn line (it printed just
+    // `ff\n`); now that the filter body is wired into C's streaming shape, the
+    // equality can be pinned here.
     let (out, code, err) = run(&["1"], INPUT);
     assert_eq!((out.as_str(), code, err.as_str()), (INPUT_TEXT, 0, ""));
-    // 分母 6 落在「全中」与「全不中」之间：只要求退 0、不报错、输出是输入行的子集
+    // Denominator 6 lies between "all drawn" and "none drawn": only exit 0, no
+    // error, and output as a subset of the input lines are required.
     let (out, code, err) = run(&["6"], INPUT);
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
     assert_subset_of_input(&out, INPUT_TEXT, "分母 6");
@@ -144,8 +171,9 @@ fn one_operand_still_feeds_the_filter() {
 
 #[test]
 fn a_rejected_operand_says_the_errx_sentence_without_naming_itself() {
-    // 参照件现量：`0`、`abc`、`-` 三形都是 `random_ref: denominator is not valid.`、退 1、
-    // 标准输出空。前缀在这里是 `random`（即 `argv[0]`），句子不含操作数
+    // Measured from the reference binary: `0`, `abc` and `-` all give
+    // `random_ref: denominator is not valid.`, exit 1, empty stdout. The prefix
+    // here is `random` (i.e. `argv[0]`), and the sentence carries no operand.
     for word in ["0", "", "abc", "-", "6x"] {
         let (out, code, err) = run(&[word], INPUT);
         assert_eq!(
@@ -154,9 +182,11 @@ fn a_rejected_operand_says_the_errx_sentence_without_naming_itself() {
             "{word:?}"
         );
     }
-    // ② 的射程由 C 的两判据划定：`e5`（一个字符都没吃）、`1e`（指数位空着、`ep` 停在
-    // `e`）、`infi`（`inity` 比到第一格就退回）、`3 `（尾巴不吃）、`0e99999`（全零不立
-    // ERANGE，落回「不是有效分母」而不是 ③）
+    // The scope of ② is drawn by two C criteria: `e5` (not one character
+    // consumed), `1e` (exponent slot empty, `ep` stops at `e`), `infi`
+    // (`inity` fails at the first cell), `3 ` (the tail is not consumed) and
+    // `0e99999` (all zeros do not set ERANGE, so it falls back to "not a valid
+    // denominator" rather than ③).
     for word in ["e5", "1e", "infi", "3 ", "0e99999"] {
         let (out, code, err) = run(&[word], INPUT);
         assert_eq!(
@@ -169,13 +199,18 @@ fn a_rejected_operand_says_the_errx_sentence_without_naming_itself() {
 
 #[test]
 fn an_overflowed_operand_uses_the_three_part_err_shape() {
-    // `err(1, "%s", *argv)`（`:96-97`）比 ② 多一个位：操作数坐在中间，尾巴是号对应的句子。
-    // 句子出自 `minix-types` 的 `SYS_ERRLIST`（`os/libs/minix-types/src/types/errno.rs:426`
-    // 的第 34 项 `Result too large or too small`）；宿主上的参照件走 glibc 那张表
-    // （`Numerical result out of range`），那是承载差异，`errno.rs:383` 已把这一对写下
-    // 溢出（`strtod.c` 的 `ovfl`）与非零数字串下溢成 0（`undfl`）汇到同一个 `range_err`，
-    // 两形都报 ③。`4294967296` 不在这一列：它是 `double` 里精确的 2^32，参照件现量退 0
-    // （`tmp/random-343/ab343-ref.log`）——这条门过去钉的是实现的 u32 溢出，不是参照件
+    // `err(1, "%s", *argv)` (`:96-97`) has one more slot than ②: the operand
+    // sits in the middle, and the tail is the sentence for the errno. The
+    // sentence comes from `SYS_ERRLIST` in `minix-types`
+    // (`os/libs/minix-types/src/types/errno.rs:426`, entry 34,
+    // `Result too large or too small`); the reference binary on the host uses
+    // glibc's table (`Numerical result out of range`), which is a carrier
+    // difference. `errno.rs:383` records this pair: overflow (`strtod.c`'s
+    // `ovfl`) and underflow of a non-zero digit string to 0 (`undfl`) merge into
+    // the same `range_err`, and both shapes report ③. `4294967296` is not in
+    // this column: it is exactly 2^32 in `double`, and the reference binary
+    // measures exit 0 (`tmp/random-343/ab343-ref.log`) — this gate used to pin
+    // the implementation's u32 overflow, not the reference behavior.
     for word in ["18e308", "1e-400"] {
         let (out, code, err) = run(&[word], INPUT);
         let want = format!("random: {word}: Result too large or too small\n");
@@ -184,7 +219,8 @@ fn an_overflowed_operand_uses_the_three_part_err_shape() {
             ("", 1, want.as_str()),
             "{word:?}"
         );
-        // 只有一行：三段形之后不跟 usage 块，也不追加第二句
+        // Only one line: the three-part shape is not followed by the usage block
+        // and no second sentence is appended.
         assert_eq!(
             err.lines().filter(|line| !line.is_empty()).count(),
             1,
@@ -195,8 +231,9 @@ fn an_overflowed_operand_uses_the_three_part_err_shape() {
 
 #[test]
 fn two_or_more_operands_print_the_hardwired_usage_line() {
-    // 参照件现量 `usage: random [-er] [denominator]\n`、退 1、标准输出空——注意这一行
-    // **没有**程序名前缀，且把 `-er` 写了出来
+    // The reference binary measures `usage: random [-er] [denominator]\n`,
+    // exit 1, empty stdout — note that this line has **no** program-name prefix
+    // and spells out `-er`.
     for args in [&["3", "4"][..], &["3", ""][..], &["3", "4", "5"][..]] {
         let (out, code, err) = run(args, INPUT);
         assert_eq!(
@@ -205,7 +242,8 @@ fn two_or_more_operands_print_the_hardwired_usage_line() {
             "{args:?}"
         );
     }
-    // 个数判的是个数，不是内容：一枚空串仍走 ②，绝不落到 usage
+    // The count is about the count, not the content: one empty string still
+    // takes ② and never falls through to usage.
     let (_, code, err) = run(&[""], INPUT);
     assert_eq!(
         (code, err.as_str()),
@@ -215,14 +253,17 @@ fn two_or_more_operands_print_the_hardwired_usage_line() {
 
 #[test]
 fn a_renamed_invocation_moves_the_err_prefixes_only() {
-    // 同一支命令里两种前缀来历：`errx`/`err` 走 `getprogname()`（即 `argv[0]`），
-    // `usage()` 把 `random` 写死在串里（`:144`）。参照件里被否那一形的确带着 `random_ref:`
+    // Two prefix origins within the same command: `errx`/`err` use
+    // `getprogname()` (i.e. `argv[0]`), while `usage()` hardwires `random` into
+    // the string (`:144`). In the reference binary the rejected shape indeed
+    // carries `random_ref:`.
     let (_, code, err) = run_with_argv0("renamed-random", &["abc"], INPUT);
     assert_eq!(
         (code, err.as_str()),
         (1, "renamed-random: denominator is not valid.\n")
     );
-    // 溢出那一枚换成 `18e308`：`4294967296` 在 `double` 里是精确的 2^32，认下了不报错
+    // Swap the overflow operand for `18e308`: `4294967296` is exactly 2^32 in
+    // `double` and is accepted without an error.
     let (_, code, err) = run_with_argv0("renamed-random", &["18e308"], INPUT);
     assert_eq!(
         (code, err.as_str()),
@@ -236,8 +277,10 @@ fn a_renamed_invocation_moves_the_err_prefixes_only() {
 }
 #[test]
 fn selected_lines_come_out_in_input_order() {
-    // C 是一趟过流（`random.c:126-137`）：选中就 `putchar`，所以输出必然是输入行的
-    // **保序子序列**。「只留最后一枚中者」在这种输入下当场被照出来
+    // C is a single streaming pass (`random.c:126-137`): it `putchar`s each
+    // selected line, so output is necessarily an **order-preserving
+    // subsequence** of the input lines. "Keep only the last drawn line" is
+    // exposed immediately by this input.
     let text = many_lines(200);
     let (out, code, err) = run(&[], text.as_bytes());
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
@@ -258,19 +301,24 @@ fn selected_lines_come_out_in_input_order() {
 
 #[test]
 fn an_empty_selection_is_silent_and_exits_zero() {
-    // C 没有「一行都没掷中」这一说：环走完直接 `exit(0)`（`random.c:114-137`）。
-    // 分母 40 亿配一行输入，掷中的概率是 2.5e-10，因此这一形是确定的空输出。
-    // 薄壳曾自创一句 `random: nothing selected` 并退 1，参照件里没有这一形
+    // C has no notion of "no line drawn": after the loop it just `exit(0)`s
+    // (`random.c:114-137`). Denominator 4 billion with one input line gives a
+    // draw probability of 2.5e-10, so this shape deterministically yields empty
+    // output. The thin shell once invented a `random: nothing selected`
+    // sentence and exited 1; the reference binary has no such shape.
     let (out, code, err) = run(&["4000000000"], b"aa\n");
     assert_eq!((out.as_str(), code, err.as_str()), ("", 0, ""));
 }
 
 #[test]
 fn an_unreadable_stdin_blames_the_stdin_word_and_exits_two() {
-    // `ferror(stdin)` 那一路是 `err(2, "stdin")`（`random.c:135-136`）：三段形，位上是
-    // `stdin` 这个词而不是档名，退码是 2。参照件现量把目录当标准输入递进去 →
-    // `random_ref: stdin: Is a directory`、退 2（`tmp/random-345/ab345-ref.log` 末行）。
-    // 句子在本树取 `minix-types` 的表第 21 项（`errno.rs:413`），与 glibc 同字
+    // The `ferror(stdin)` path is `err(2, "stdin")` (`random.c:135-136`): the
+    // three-part shape, with the word `stdin` in the slot instead of a file
+    // name, and exit code 2. Measured with a directory passed as stdin, the
+    // reference binary gives `random_ref: stdin: Is a directory`, exit 2 (last
+    // line of `tmp/random-345/ab345-ref.log`). This tree takes the sentence
+    // from entry 21 of the `minix-types` table (`errno.rs:413`), the same
+    // wording as glibc.
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("stdin-is-a-dir");
     std::fs::create_dir_all(&dir).expect("create dir");
     let handle = std::fs::File::open(&dir).expect("open a directory read-only");
@@ -295,12 +343,17 @@ fn an_unreadable_stdin_blames_the_stdin_word_and_exits_two() {
 }
 #[test]
 fn an_unknown_letter_gets_the_libc_line_then_the_usage_line() {
-    // 两句的顺序与前缀各不相同：第一行走 `getprogname()`，第二行的 `random` 写死在串里。
-    // 字样取 Minix 自己的 `minix3/lib/libc/stdlib/getopt.c:101-104`（`unknown option -- %c`，
-    // 字母不带引号）。本仓早期的参照件 `tmp/random-342/random_ref` 链的是宿主 glibc 的
-    // `getopt`，那句是 `invalid option -- 'Z'`，承不了这条真值；批次四百二十一重链了一份
-    // 带 Minix `getopt.c` 的参照件 `tmp/random-421/random`（经同名软链起，程序名与本壳一致），
-    // 现量 `-Z`/`-eZ`/`-Ze` 三形都是这一句 + usage 一行、退 1。
+    // The two sentences differ in order and prefix: the first line uses
+    // `getprogname()`, the second line's `random` is hardwired into the string.
+    // The wording comes from Minix's own
+    // `minix3/lib/libc/stdlib/getopt.c:101-104` (`unknown option -- %c`, letter
+    // unquoted). This repo's early reference binary `tmp/random-342/random_ref`
+    // linked the host glibc `getopt`, whose sentence is
+    // `invalid option -- 'Z'` and cannot carry this ground truth; the reference
+    // binary `tmp/random-421/random` was relinked against Minix's `getopt.c`
+    // (started through a same-name symlink so the program name matches this
+    // shell), and it measures all three shapes `-Z`/`-eZ`/`-Ze` as this
+    // sentence + the usage line, exit 1.
     for args in [&["-Z"][..], &["-eZ"][..], &["-Ze"][..]] {
         let (out, code, err) = run(args, INPUT);
         assert_eq!(
@@ -315,11 +368,14 @@ fn an_unknown_letter_gets_the_libc_line_then_the_usage_line() {
     }
 }
 
-/// 字母位是短横后的**第一个字节**：参照件 `tmp/random-421/random` 现量 `-é`（`c3 a9`）
-/// 与 `-eé` 都是 `random: unknown option -- ` + `303`（=`c3`）+ 换行 + usage 一行、退 1
-/// （`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出）。
-/// 本支的环是「停在第一个坏字母」那一族（`random.c:80-83` 的 `default: case '?': usage();`
-/// 坐在环里当场退出），所以与 `seq` 相反，这里只有**一行** libc。
+/// The letter slot is the **first byte** after the dash: the reference binary
+/// `tmp/random-421/random` measures both `-é` (`c3 a9`) and `-eé` as
+/// `random: unknown option -- ` + `303` (=`c3`) + newline + the usage line,
+/// exit 1 (`getopt.c:79`'s `optopt = *place++` advances one byte at a time,
+/// and `:103` writes it out raw with `%c`). This branch's loop belongs to the
+/// "stop at the first bad letter" family (`random.c:80-83`'s
+/// `default: case '?': usage();` sits in the loop and exits on the spot), so
+/// unlike `seq` there is only **one** libc line here.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_random() {
     let want: Vec<u8> = [
@@ -335,8 +391,9 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_random() {
         assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
     }
 
-    // U+0080 那一格是这条渲染规则的判据位：它的 UTF-8 编码是 `c2 80` 两个字节，
-    // C 打的是第一个 `c2`；按字符装会打成 `c2 80` 两个字节都出来（差一个字节）。
+    // The U+0080 cell is the criterion for this rendering rule: its UTF-8
+    // encoding is two bytes `c2 80`, and C prints the first one, `c2`; packing
+    // by characters would emit both `c2 80` (one byte too many).
     let (out, code, err) = run_bytes(&["-\u{80}"], INPUT);
     assert_eq!(out, Vec::new());
     assert_eq!(code, 1);
@@ -350,7 +407,9 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_random() {
         .concat()
     );
 
-    // ASCII 那一形不许被换渲染波及；聚簇里合法字母在先、坏字母在后也仍停在第一个坏的上
+    // The ASCII shape must not be affected by the rendering change; a cluster
+    // with a valid letter first and a bad letter after still stops at the first
+    // bad one.
     for (form, letter) in [("-x", b"x"), ("-Z\u{e9}", b"Z")] {
         let (_out, code, err) = run_bytes(&[form], INPUT);
         assert_eq!(code, 1, "{form}");
@@ -369,14 +428,17 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_random() {
 
 #[test]
 fn dash_dash_ends_the_ring_and_the_rest_are_operands() {
-    // `-- 1`：环在 `--` 处结束，后面那枚才是分母 ⇒ 每行必中，输出与输入逐字节相同
+    // `-- 1`: the loop ends at `--`, and the following operand is the
+    // denominator ⇒ every line is drawn, output byte-identical to input.
     let (out, code, err) = run(&["--", "1"], INPUT);
     assert_eq!((out.as_str(), code, err.as_str()), (INPUT_TEXT, 0, ""));
-    // 光写 `--` 等于零枚操作数：分母取 2，照常过滤；这一形**允许**空输出（掷不中不是错误），
-    // 所以只钉退码与标准错误，不去钉那些随机量
+    // Bare `--` equals zero operands: denominator 2, filtering as usual; this
+    // shape **allows** empty output (not drawing is not an error), so only the
+    // exit code and stderr are pinned, not the random quantities.
     let (_, code, err) = run(&["--"], INPUT);
     assert_eq!((code, err.as_str()), (0, ""));
-    // 裸 `-` 不是结束标记也不是旗标：它就是那枚被否掉的操作数（三百四十三的门里也有这一形）
+    // A bare `-` is neither a terminator nor a flag: it is simply the rejected
+    // operand (the same shape appears in the earlier gate).
     let (_, code, err) = run(&["-e", "-"], INPUT);
     assert_eq!(
         (code, err.as_str()),
@@ -386,8 +448,10 @@ fn dash_dash_ends_the_ring_and_the_rest_are_operands() {
 
 #[test]
 fn the_e_flag_returns_a_draw_and_reads_nothing() {
-    // `random.c:109-111`：这一支在 `getchar()` 环之前就 return，所以标准输出必然为空、
-    // 标准错误必然为空，退码落在 `(denom * random()) / RANDOM_MAX` 的闭区间 [0, denom] 里
+    // `random.c:109-111`: this branch returns before the `getchar()` loop, so
+    // stdout is necessarily empty and stderr necessarily empty, and the exit
+    // code falls in the closed interval [0, denom] of
+    // `(denom * random()) / RANDOM_MAX`.
     let (out, code, err) = run(&["-e", "1"], INPUT);
     assert_eq!((out.as_str(), code, err.as_str()), ("", 0, ""));
     for _ in 0..12 {
@@ -401,15 +465,18 @@ fn the_e_flag_returns_a_draw_and_reads_nothing() {
             "`-e 4` 打出退码 {code}，越出闭区间 [0, 4]"
         );
     }
-    // `-r` 只是关缓冲：写缝本来就逐行落盘，因此它与不加 `-r` 同形（六行全中）
+    // `-r` only disables buffering: the write seam already flushes line by line,
+    // so it has the same shape as without `-r` (all six lines drawn).
     let (out, code, err) = run(&["-r", "1"], INPUT);
     assert_eq!((out.as_str(), code, err.as_str()), (INPUT_TEXT, 0, ""));
 }
 
 #[test]
 fn a_scientific_denominator_is_accepted_as_a_double() {
-    // `1e3` 走 C 的指数分支（`strtod.c` 的 `if (c == 'e' || c == 'E')`）：认下之后照常
-    // 过滤。1/1000 的掷中率下六行输入可能一行都不中，所以钉的是「不退 1、不报错」这一对
+    // `1e3` takes C's exponent branch (`strtod.c`'s
+    // `if (c == 'e' || c == 'E')`): once accepted, filtering proceeds as usual.
+    // With a 1/1000 draw rate six input lines may well draw none, so what is
+    // pinned is the pair "does not exit 1, does not report an error".
     let (out, code, err) = run(&["1e3"], INPUT);
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
     assert_subset_of_input(&out, INPUT_TEXT, "分母 1e3");
@@ -417,8 +484,10 @@ fn a_scientific_denominator_is_accepted_as_a_double() {
 
 #[test]
 fn a_small_fraction_denominator_prints_every_line() {
-    // `1e-3`：`(int)(1e-3 * random() / RANDOM_MAX)` 商最大约 4.7e-13，向零截恒为 0，
-    // 于是每一行都掷中——输出与输入逐字节相同。分母小于 1 在 C 里是一条合法的「全通过」
+    // `1e-3`: `(int)(1e-3 * random() / RANDOM_MAX)` gives a quotient of at most
+    // about 4.7e-13, which truncates toward zero to 0, so every line is drawn —
+    // output byte-identical to input. A denominator below 1 is a legal
+    // "pass everything" in C.
     let text = many_lines(60);
     let (out, code, err) = run(&["1e-3"], text.as_bytes());
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
@@ -427,8 +496,10 @@ fn a_small_fraction_denominator_prints_every_line() {
 
 #[test]
 fn a_negative_denominator_is_accepted_and_prints_every_line() {
-    // 负数不是「非法分母」：C 从没说过 `denom` 必须为正，只说它不能为 0、尾巴必须吃干净。
-    // `-1e-3` 的商落进 [-4.7e-13, 0]，向零截恒为 0 → 每行都掷中
+    // A negative number is not an "invalid denominator": C never says `denom`
+    // must be positive, only that it must not be 0 and that the tail must be
+    // fully consumed. The quotient of `-1e-3` lands in [-4.7e-13, 0], truncating
+    // toward zero to 0 → every line is drawn.
     let text = many_lines(60);
     let (out, code, err) = run(&["--", "-1e-3"], text.as_bytes());
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
@@ -437,8 +508,9 @@ fn a_negative_denominator_is_accepted_and_prints_every_line() {
 
 #[test]
 fn a_big_integer_denominator_is_not_out_of_range() {
-    // `2^32` 在 `double` 里精确表示，`strtod` 不立 ERANGE：本支过去按 u32 面判成溢出，
-    // 于是把参照件退 0 的一形报成了三段形
+    // `2^32` is exactly representable in `double`, and `strtod` does not set
+    // ERANGE: this branch used to judge it as overflow on the u32 surface,
+    // reporting the reference's exit-0 shape as the three-part shape.
     let (out, code, err) = run(&["4294967296"], INPUT);
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
     assert_subset_of_input(&out, INPUT_TEXT, "分母 2^32");
@@ -446,9 +518,12 @@ fn a_big_integer_denominator_is_not_out_of_range() {
 
 #[test]
 fn infinity_and_nan_are_accepted_and_never_select_a_line() {
-    // `inf`/`nan` 靠 `INFNAN_CHECK`（`gdtoaimp.h:191` 与 `:643-645` 都开着）认下。
-    // C 的判据是「截成整数再与 0 比」：非有限值→整数在 C 是未定义行为，参照件所在的
-    // x86-64 给 `0x80000000`，不为 0 → 一行都不掷中，但退码仍是 0、不报错
+    // `inf`/`nan` are accepted via `INFNAN_CHECK` (enabled at
+    // `gdtoaimp.h:191` and `:643-645`). C's criterion is "truncate to integer
+    // and compare against 0": for a non-finite value that conversion is
+    // undefined behavior in C, and the x86-64 the reference ran on yields
+    // `0x80000000`, which is not 0 → no line is drawn, but the exit code is
+    // still 0 and no error is reported.
     let text = many_lines(40);
     for word in ["inf", "nan"] {
         let (out, code, err) = run(&[word], text.as_bytes());
@@ -458,8 +533,10 @@ fn infinity_and_nan_are_accepted_and_never_select_a_line() {
 
 #[test]
 fn leading_whitespace_is_skipped_and_trailing_is_not() {
-    // C 的开头 `switch (*s)` 吃掉空白，尾巴上的不吃：`" 3"` 认下、`"3 "` 因 `*ep != '\0'`
-    // 落到 ②。两形只差一个空格，走的是两条出口
+    // C's leading `switch (*s)` eats whitespace but the trailing whitespace is
+    // not eaten: `" 3"` is accepted, while `"3 "` falls to ② because
+    // `*ep != '\0'`. The two shapes differ by one space and take two different
+    // exits.
     let (out, code, err) = run(&[" 3"], INPUT);
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
     assert_subset_of_input(&out, INPUT_TEXT, "前导空白");
@@ -472,8 +549,10 @@ fn leading_whitespace_is_skipped_and_trailing_is_not() {
 
 #[test]
 fn a_hex_denominator_is_accepted_without_a_binary_exponent() {
-    // `0x10` 是 16：`gethex` 的 `pcheck:` 那个 `switch (*s)` 只有 `p`/`P` 两个 `case`、
-    // 没有 `default` 拒绝分支（`minix3/lib/libc/gdtoa/gethex.c:110-112`），所以省掉指数不扣分
+    // `0x10` is 16: the `pcheck:` `switch (*s)` in `gethex` has only the two
+    // `case`s `p`/`P` and no `default` rejection branch
+    // (`minix3/lib/libc/gdtoa/gethex.c:110-112`), so omitting the exponent costs
+    // nothing.
     let (out, code, err) = run(&["0x10"], INPUT);
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
     assert_subset_of_input(&out, INPUT_TEXT, "分母 0x10");
@@ -481,8 +560,9 @@ fn a_hex_denominator_is_accepted_without_a_binary_exponent() {
 
 #[test]
 fn a_hex_denominator_with_a_binary_exponent_is_accepted() {
-    // `0x1p3` 是 8：二进制指数的权是「二幂」，`gethex.c:111-137` 把指数按十进制数字读、
-    // 再折进二幂
+    // `0x1p3` is 8: the binary exponent's weight is a power of two, and
+    // `gethex.c:111-137` reads the exponent as decimal digits and then folds it
+    // into a power of two.
     let (out, code, err) = run(&["0x1p3"], INPUT);
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
     assert_subset_of_input(&out, INPUT_TEXT, "分母 0x1p3");
@@ -490,10 +570,14 @@ fn a_hex_denominator_with_a_binary_exponent_is_accepted() {
 
 #[test]
 fn a_hex_overflow_is_accepted_rather_than_reported_out_of_range() {
-    // 与十进制的 `18e308` 分流：`strtod.c` 的十六进制那一支 `switch` 只分 `NoNumber`/`Zero`，
-    // 其余走 `ULtod` 后直接 `goto ret`，从不进 `range_err`，所以 `errno` 不动——分母是
-    // 认下的无穷大，一行都不掷中、退 0、不报错。参照件在宿主上编的是 glibc，它给这一形
-    // 立 ERANGE 并报 `Numerical result out of range`，那是承载差异，不是本支该抄的行为
+    // Diverges from the decimal `18e308`: the hexadecimal branch of `strtod.c`
+    // distinguishes only `NoNumber`/`Zero` in its `switch`, and everything else
+    // goes through `ULtod` and straight to `goto ret`, never entering
+    // `range_err`, so `errno` is untouched — the denominator is an accepted
+    // infinity, no line is drawn, exit 0, no error. The reference binary is
+    // compiled against the host glibc, which sets ERANGE for this shape and
+    // reports `Numerical result out of range`; that is a carrier difference, not
+    // behavior to copy.
     let text = many_lines(30);
     let (out, code, err) = run(&["0x1p99999999"], text.as_bytes());
     assert_eq!((out.as_str(), code, err.as_str()), ("", 0, ""));
@@ -501,8 +585,9 @@ fn a_hex_overflow_is_accepted_rather_than_reported_out_of_range() {
 
 #[test]
 fn a_hex_operand_without_any_digit_is_not_valid() {
-    // `0x` 与 `0xg` 一个十六进制数字都没有：`gethex` 回 `STRTOG_Zero` 且 `*sp = s0 - 1`，
-    // 于是 `denom == 0` 挡住，报 ② 而不是 ③
+    // `0x` and `0xg` contain no hexadecimal digit at all: `gethex` returns
+    // `STRTOG_Zero` with `*sp = s0 - 1`, so `denom == 0` blocks it and ② is
+    // reported rather than ③.
     for word in ["0x", "0xg"] {
         let (out, code, err) = run(&[word], INPUT);
         assert_eq!(
@@ -515,9 +600,11 @@ fn a_hex_operand_without_any_digit_is_not_valid() {
 
 #[test]
 fn a_nan_payload_is_consumed_and_never_selects_a_line() {
-    // `nan(0x1f)`：`strtod.c:314` 那块（`#ifndef No_Hex_NaN`，本仓库从没定义过这个宏）把载荷
-    // 交给 `hexnan`，命中右括号就整串吃掉——于是 `*ep == '\0'`、`denom == 0` 恒假，认下。
-    // 载荷的位样对 `random` 不可见：所有 NaN 都不掷中、都退 0
+    // `nan(0x1f)`: the block at `strtod.c:314` (`#ifndef No_Hex_NaN`, a macro
+    // this repository never defines) hands the payload to `hexnan`, which eats
+    // the whole string when it hits the closing parenthesis — so `*ep == '\0'`,
+    // `denom == 0` is always false, and it is accepted. The payload's bit
+    // pattern is invisible to `random`: every NaN draws nothing and exits 0.
     let text = many_lines(25);
     for word in ["nan(0x1f)", "nan()", "nan(xy)"] {
         let (out, code, err) = run(&[word], text.as_bytes());
@@ -527,8 +614,10 @@ fn a_nan_payload_is_consumed_and_never_selects_a_line() {
 
 #[test]
 fn an_unclosed_nan_payload_is_rejected_at_the_open_parenthesis() {
-    // 没有右括号时 `hexnan` 不动游标（`gdtoa/hexnan.c:146-147` 那条 `return STRTOG_NaN` 不写
-    // `*sp`），`ep` 留在左括号那一格 → `*ep != '\0'` → 报「不是有效分母」，不报三段形
+    // Without a closing parenthesis `hexnan` leaves the cursor alone (the
+    // `return STRTOG_NaN` at `gdtoa/hexnan.c:146-147` does not write `*sp`), so
+    // `ep` stays at the opening parenthesis → `*ep != '\0'` → "not a valid
+    // denominator" is reported, not the three-part shape.
     for word in ["nan(0x1f", "nan("] {
         let (out, code, err) = run(&[word], INPUT);
         assert_eq!(
@@ -541,11 +630,15 @@ fn an_unclosed_nan_payload_is_rejected_at_the_open_parenthesis() {
 
 #[test]
 fn a_stdout_that_stops_taking_bytes_is_blamed_by_name_and_exits_two() {
-    // C 每写完一行查一次 `ferror(stdout)`，失手走 `err(2, "stdout")`（`random.c:131-133`）：
-    // 三段形的位上是 `stdout` 这个词而不是档名（这一支的输出腿只有标准输出），退码 2。
-    // 宿主用 `/dev/full` 注入这一形——写它必回「设备没有空间」，句子由号表渲染。
-    // 分母取 1：`denom * draw / RANDOM_MAX` 恒小于 1，每行都掷中，第一行就撞上去。
-    // 期望读数取自现跑（`od -c` 见 rewrite-notes/18-stage-commands/todo.md 批次三百五十九）
+    // C checks `ferror(stdout)` after each written line and, on failure, takes
+    // `err(2, "stdout")` (`random.c:131-133`): the three-part shape carries the
+    // word `stdout` in the slot instead of a file name (stdout is this branch's
+    // only output leg), and the exit code is 2. The host injects this shape via
+    // `/dev/full` — writing it always answers "no space left on device", and the
+    // sentence is rendered from the errno table. Denominator 1:
+    // `denom * draw / RANDOM_MAX` is always below 1, so every line is drawn and
+    // the first line hits it. The expected reading was taken from a live run
+    // (`od -c`; see rewrite-notes/18-stage-commands/todo.md).
     let mut child = Command::new(random_bin())
         .arg0("random")
         .args(["1"])

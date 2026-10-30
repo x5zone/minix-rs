@@ -50,8 +50,8 @@ pub const MIB_ENDPOINT_NUMBER: i32 = 7;
 
 /// System control query. C: `MIB_SYSCTL (MIB_BASE + 0)`
 /// (`com.h:1022/:1026`, `MIB_BASE 0x1800`) — derived from the single
-/// authority in `minix-types` rather than a local literal (C-41/NK8
-/// 判例): the old local `0x600` never matched the MIB service's own
+/// authority in `minix-types` rather than a local literal: the old
+/// local `0x600` never matched the MIB service's own
 /// `MIB_SYSCTL`, so every wire send landed in the server's unknown-call
 /// bucket while both sides' canned tests stayed green.
 pub const MIB_CALL_SYSCTL: i32 = minix_types::MIB_SYSCTL;
@@ -227,8 +227,9 @@ pub const fn wall_clock_time(snapshot: ClockSnapshot) -> (u64, u64) {
     }
     let seconds = snapshot.boottime_seconds + snapshot.realtime_ticks / snapshot.ticks_per_second;
     let remainder = snapshot.realtime_ticks % snapshot.ticks_per_second;
-    // const fn 限制:Option::and_then 尚未 const-stable,嵌套 match 是
-    // const 兼容的表达(collapsible-if 的 if-let 形状在这里不可用)。
+    // const fn restriction: Option::and_then is not const-stable yet, so
+    // nested matches are the const-compatible form (the collapsible-if
+    // if-let shape is unavailable here).
     let fraction = match remainder.checked_mul(40_000) {
         Some(scaled) => match scaled.checked_div(snapshot.ticks_per_second) {
             Some(per_unit) => match per_unit.checked_mul(25_000) {
@@ -326,7 +327,7 @@ mod tests {
     #[test]
     fn test_constants_match_c_headers() {
         assert_eq!(MIB_ENDPOINT_NUMBER, 7);
-        // C 绝对值 pin：MIB_BASE 0x1800 + 0（com.h:1022/:1026）。
+        // C absolute-value pin: MIB_BASE 0x1800 + 0 (com.h:1022/:1026).
         assert_eq!(MIB_CALL_SYSCTL, 0x1800);
         assert_eq!(MIB_CALL_SYSCTL, minix_types::MIB_SYSCTL);
         assert_eq!(MessLcMibSysctl::INLINE_NAME_COMPONENTS, 2);

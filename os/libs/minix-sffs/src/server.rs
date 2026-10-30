@@ -5,9 +5,9 @@
 //! mount), `lookup.c`/`path.c` (path building and resolution),
 //! `inode.c`/`handle.c` (lazy host-handle open with the write-then-read
 //! fallback), `read.c` (reads through open handles), `stat.c`
-//! (attribute mapping) — the parts the V1 audit marks as the
+//! (attribute mapping) — the parts the audit marks as the
 //! unimplemented semantic layer. The write half (namespace operations
-//! through the table's mutating verbs) is the F3d follow-up wave.
+//! through the table's mutating verbs) is a follow-up wave.
 //!
 //! **Host seam**: every host contact goes through the [`SffsTable`] —
 //! the same boundary C draws with `struct sffs_table`. The real
@@ -224,14 +224,15 @@ impl<T: SffsTable> FsDriver for SffsServer<T> {
         );
         let mut index = *position as u32;
         while let Ok(entry) = self.table.readdir(handle, index) {
-            // 目录列举出错即到尾（search_dir walk 语义）。
+            // A readdir error means end-of-directory (search_dir walk semantics).
             let kind = if attr_is_directory(&entry.attr) {
                 DirentType::Directory
             } else {
                 DirentType::Regular
             };
-            // 宿主目录没有稳定 inode 号——readdir 序号充当 getdents
-            // 位置语义下的替身（C 侧同样由 VFS 按名解析）。
+            // Host directories have no stable inode numbers — the readdir index
+            // stands in for getdents position semantics (on the C side VFS likewise
+            // resolves by name).
             if encoder.add(u64::from(index) + 2, entry.name.as_bytes(), kind).is_err() {
                 break;
             }
@@ -254,9 +255,10 @@ impl<T: SffsTable> FsDriver for SffsServer<T> {
         stat.nlinks = 1;
         stat.owner = u32::from(self.params.uid);
         stat.group = u32::from(self.params.gid);
-        // 时间字段：宿主 attr 带秒+纳秒，但框架 Stat 的时间通道归
-        // 05-stage-vfs 的 wire 面（本批只落只读核心）——时间如实丢弃，
-        // 不用零冒充。
+        // Time fields: the host attr carries seconds+nanoseconds, but the
+        // framework Stat's time channel belongs to the 05-stage-vfs wire face (this
+        // slice lands only the read-only core) — times are discarded honestly, not
+        // faked as zero.
         let _ = (&attr.atime, &attr.mtime);
         Ok(())
     }
@@ -266,9 +268,10 @@ impl<T: SffsTable> FsDriver for SffsServer<T> {
     fn unmounted(&mut self) {
         for node in &self.nodes {
             if let Some(handle) = node.handle {
-                //[SD19-gate] C put_handle（libsffs/handle.c:57-77）对 close 失败
-                // 只打一行诊断后照常清位；本框架的 unmounted 返回 ()、无诊断
-                // 通道，按 C 的忽略档收编。
+                //[SD19-gate] C put_handle (libsffs/handle.c:57-77) prints one
+                // diagnostic line on a close failure and clears the bit anyway; this
+                // framework's unmounted returns () and has no diagnostic channel, so
+                // the C behavior of ignoring the failure is adopted.
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.table.close(handle);
             }
@@ -277,7 +280,7 @@ impl<T: SffsTable> FsDriver for SffsServer<T> {
     }
 }
 
-/// 目录判定（`SffsAttr` 的类型位提取）。
+/// Directory test (extracting the type bits of `SffsAttr`).
 fn attr_is_directory(attr: &SffsAttr) -> bool {
     attr.is_directory() == Some(true)
 }
@@ -369,8 +372,9 @@ mod tests {
             Ok(self.next_handle)
         }
         fn readdir(&mut self, handle: u64, index: u32) -> Result<DirEntry, i32> {
-            // 确定性列表：按名字排序后取第 index 个（宿主协议只给
-            // "第 index 条"语义，顺序由替身自定）。
+            // Deterministic listing: sort by name and take entry index (the host
+            // protocol only defines "the index-th entry" semantics; the stand-in
+            // picks the order).
             let path = self.open_handles.get(&handle).cloned().ok_or(EBADF_C)?;
             let mut names: Vec<String> = Vec::new();
             for file in self.files.keys() {
@@ -511,12 +515,14 @@ mod tests {
     #[test]
     fn test_getdents_lists_host_entries() {
         let mut server = mounted();
-        // 第二个文件进宿主文件夹（lookup 直接穿 table 查宿主，无需入树）。
+        // A second file goes into the host folder (lookup queries the host directly
+        // through table; no tree entry needed).
         server
             .table
             .mkdir("host/share", 0o755)
             .unwrap();
-        // 直接往宿主文件夹里再放一个文件（脚本替身的注入面）。
+        // Put one more file directly into the host folder (the scripted stand-in's
+        // injection face).
         let mut collected = Vec::new();
         let mut position = 0i64;
         let n = server

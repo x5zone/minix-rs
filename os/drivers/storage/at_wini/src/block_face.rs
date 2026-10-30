@@ -1,4 +1,4 @@
-//! Block control-plane service face (U-6 阶段二 increment 10).
+//! Block control-plane service face.
 //!
 //! Assembles at_wini into a [`BlockDriver`]: the disk-kind routing, the
 //! open/close reference counting (delegated to [`crate::service`]), and the
@@ -10,8 +10,8 @@
 //! defaults: the physical grant copy between a caller buffer and the drive, and
 //! the IDE IRQ14 / synchronous-alarm wiring, are the same registered driver
 //! data-plane seam the reference `memory` driver carries (`memory/src/service.rs`
-//! documents "a real boot still needs that copy"). They are wired in the真机
-//! launch increment, not fabricated here.
+//! documents "a real boot still needs that copy"). They are wired in the
+//! on-target launch increment, not fabricated here.
 
 use crate::pio::IdentifyInfo;
 use crate::service::{Drives, compute_geometry, resolve_minor};
@@ -55,9 +55,9 @@ impl WiniBlock {
         }
     }
 
-    /// Record a successful probe for `drive` (the真机 identify/partition path
-    /// calls this once it has IDENTIFY + the partition table). Marks the drive
-    /// identified so opens are admitted.
+    /// Record a successful probe for `drive` (the on-target
+    /// identify/partition path calls this once it has IDENTIFY + the
+    /// partition table). Marks the drive identified so opens are admitted.
     pub fn install_probe(&mut self, drive: usize, probed: ProbedDrive) {
         if drive < crate::service::MAX_DRIVES {
             self.probed[drive] = Some(probed);
@@ -93,8 +93,9 @@ impl BlockDriver for WiniBlock {
     }
 
     fn close(&mut self, minor: DeviceMinor) -> i32 {
-        // The ATAPI close signal is consumed by the真机 interrupt/service loop;
-        // the reference-count bookkeeping is what the control plane owns here.
+        // The ATAPI close signal is consumed by the on-target interrupt/service
+        // loop; the reference-count bookkeeping is what the control plane owns
+        // here.
         match self.drives.close(minor.0 as i32) {
             Ok(_atapi_close) => OK,
             Err(errno) => errno,

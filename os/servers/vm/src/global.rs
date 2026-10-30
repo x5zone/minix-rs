@@ -6,8 +6,8 @@
 //!
 //! Boot images (`kernel_boot_info.boot_procs[]`) are NOT global here —
 //! `VmServer.boot_procs` (from `BootParams`) is the single source of truth
-//! (V9-P3-1, todo: BOOT_INFO/find_boot_image/set_boot_image were dead code
-//! with no production callers).
+//! (BOOT_INFO/find_boot_image/set_boot_image were dead code with no production
+//! callers).
 
 use minix_types::{KernelLayout, AssumeSyncCell};
 
@@ -35,7 +35,7 @@ static VM_INSTANCE_COUNT: AssumeSyncCell<u32> = AssumeSyncCell::new(0);
 /// silently mapping memory incorrectly.
 static KERNEL_LAYOUT: AssumeSyncCell<Option<KernelLayout>> = AssumeSyncCell::new(None);
 
-/// Physical address of the kernel-information page (handoff v7, D-72).
+/// Physical address of the kernel-information page (handoff v7).
 ///
 /// `init_page_table()` maps it read-only at
 /// `minix_types::KERNINFO_USER_VA` in every new root. Set once during
@@ -56,7 +56,7 @@ pub(crate) unsafe fn init(total_pages: usize) {
     }
 }
 
-// V12-P2-4: `total_pages()` is production again — the VMIW_STATS query
+// `total_pages()` is production again — the VMIW_STATS query
 // reads it (`vsi_total = total_pages`, utility.c:118), because the global
 // includes the boot-module extras that `page_alloc.total_pages()` lacks.
 pub(crate) fn total_pages() -> usize {
@@ -103,7 +103,7 @@ pub(crate) unsafe fn set_kernel_layout(layout: KernelLayout) {
     }
 }
 
-/// Sets the kernel-information page physical address (D-72).
+/// Sets the kernel-information page physical address.
 ///
 /// # Safety
 /// Must be called before the first `init_page_table()` call (during
@@ -153,8 +153,8 @@ pub(crate) fn inc_vm_instance() {
 }
 
 /// Decrements VM instance count.
-// V11/T23: cfg(test) 归零助手——全局计数测试（跨模块）必须自平衡，
-// 不得依赖声明顺序（P2-4 顺序脆弱性家族）。
+// cfg(test) zeroing helper: global-counter tests (which span modules) must
+// balance themselves and must not depend on declaration order.
 #[cfg(test)]
 pub(crate) fn reset_vm_instance_count_for_test() {
     // SAFETY: single-threaded test; no concurrent access.
@@ -180,10 +180,9 @@ pub(crate) fn vm_instance_count() -> u32 {
 mod tests {
     use super::*;
 
-    // V9-P3-1 (todo): BOOT_INFO/find_boot_image/set_boot_image removed —
-    // boot images live in `VmServer.boot_procs` (BootParams), the single
-    // source of truth. BootImage::empty()/name() are covered by
-    // minix-types tests instead.
+    // BOOT_INFO/find_boot_image/set_boot_image were removed — boot images live
+    // in `VmServer.boot_procs` (BootParams), the single source of truth.
+    // BootImage::empty()/name() are covered by minix-types tests instead.
 
     #[test]
     fn test_vm_instance_count() {
@@ -327,8 +326,8 @@ mod tests {
         // size > ARENA_BYTES with no registered page allocator has no
         // supplier (the early pool hands out arena-sized chunks only), so
         // `alloc_oversize` must fail explicitly with null — never touch
-        // the HeapArena (fix18 semantics; the pre-fix18 guard returned
-        // null unconditionally, which killed `PageFrames` at boot).
+        // the HeapArena (the guard used to return null unconditionally,
+        // which killed `PageFrames` at boot).
         unregister_page_alloc();
         let (allocator, _) = bump_allocator_with_fake_arena(0);
         unsafe {
@@ -339,10 +338,10 @@ mod tests {
 
     #[test]
     fn test_bump_oversize_grows_heap_arena() {
-        // fix18: an oversize request with a registered page allocator
-        // takes the dedicated HeapArena grow arm instead of failing —
-        // the null this used to return made `PageFrames` (933888 bytes,
-        // fix17 forensics 2026-09-21) a boot-killing handle_alloc_error.
+        // An oversize request with a registered page allocator takes the
+        // dedicated HeapArena grow arm instead of failing — the null this used
+        // to return made `PageFrames` (933888 bytes) a boot-killing
+        // handle_alloc_error.
         crate::pagetable::vm_self_map::reset_vm_self_pt_for_test();
         crate::pagetable::vm_self_map::init_vm_self_pt(minix_types::PhysBytes(0x900_000));
         // 933888 B ≈ 228 pages plus block rounding — the fake bitmap
@@ -410,7 +409,7 @@ mod tests {
         crate::pagetable::vm_self_map::reset_vm_self_pt_for_test();
     }
 
-    /// NK4-A first-light regression: before `register_page_alloc()` the
+    /// First-light regression: before `register_page_alloc()` the
     /// allocator must still serve requests — `read_boot_params` and the
     /// `VmServer` constructor allocate in that window (2888 bytes was the
     /// first real request, panicking at `refill_arena`'s old null-PMM
@@ -427,7 +426,7 @@ mod tests {
             free_head: AssumeSyncCell::new(core::ptr::null_mut()),
         };
         unsafe {
-            // The exact observed boot-request size (fix13 forensics).
+            // The exact boot-request size observed on the first light-up.
             let layout = Layout::from_size_align(2888, 8).unwrap();
             let p = allocator.alloc(layout);
             assert!(!p.is_null(), "pre-registration alloc must use the early pool");
@@ -565,7 +564,7 @@ mod tests {
 /// `VmAllocator` (the `GLOBAL` static below). This is guaranteed by the
 /// VM lifecycle: `register_page_alloc()` is called at the top of
 /// `VmServer::init()` (against the final, no-longer-moving address —
-/// fix21: registering in `new()` dangled the pointer into the
+/// registering in `new()` dangled the pointer into the
 /// constructor's dead stack frame) and `unregister_page_alloc()` in
 /// `VmServer::drop()`. Since VmServer
 /// owns the VmPageAllocator, the allocator lives as long as VmServer,
@@ -615,13 +614,13 @@ pub(crate) fn unregister_page_alloc() {
     PAGE_ALLOC_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
 }
 
-/// Batch size for one page-cache reclaim pass (V11/T30; C `cache_freepages`
+/// Batch size for one page-cache reclaim pass (C `cache_freepages`
 /// is called with `CLICKS_PER_PAGE`-scaled batches — alloc.c:242-270 passes
 /// the whole request through; the Rust funnel drains up to this many
 /// single-reference cached pages per retry round).
 pub(crate) const RECLAIM_BATCH: usize = 1024;
 
-// ── V11/T30: page-cache reclaim sink ─────────────────────────────────
+// ── Page-cache reclaim sink ──────────────────────────────────────────
 //
 // The allocation funnel's reclaim-retry (C `alloc_mem`'s
 // `while(NO_MEM && cache_freepages(clicks) > 0)` loop, alloc.c:242-270)
@@ -705,7 +704,7 @@ pub(crate) fn page_alloc_mut() -> &'static mut VmPageAllocator {
     );
     // SAFETY: 1. Single-threaded VM event loop: no concurrent access to
     // PAGE_ALLOC_PTR or the allocator it points to. 2. Outlive constraint:
-    // the pointer is set at the top of VmServer::init() (fix21: registered
+    // the pointer is set at the top of VmServer::init() (registered
     // against the final address, after all moves are done) and cleared
     // during VmServer::drop(); callers never dereference after it is nulled
     // (checked above). 3. No aliasing `&mut` exists: callers of this
@@ -993,7 +992,7 @@ impl VmAllocator {
         // SAFETY:
         // 1. Single-threaded VM event loop: no concurrent access to PAGE_ALLOC_PTR.
         // 2. Outlive constraint: PAGE_ALLOC_PTR is set by `register_page_alloc()`
-        //    at the top of `VmServer::init()` (fix21: the final, stable address)
+        //    at the top of `VmServer::init()` (the final, stable address)
         //    and only cleared by `unregister_page_alloc()`
         //    during VmServer::drop. Since VmServer owns the VmPageAllocator field,
         //    the allocator is guaranteed to outlive all arena refills — refills
@@ -1060,8 +1059,8 @@ impl VmAllocator {
     /// Grows [`HEAP_ARENA`] by exactly the pages the request needs —
     /// `grow` accepts any page count, only the bump/free-list paths are
     /// arena-sized. `PageFrames` (the whole-RAM bookkeeping table,
-    /// 933888 bytes on the first-light VM: fix17 forensics 2026-09-21)
-    /// is the first real consumer; before this arm existed the oversize
+    /// 933888 bytes on the first-light VM) is the first real consumer;
+    /// before this arm existed the oversize
     /// guard returned null and the table's allocation killed the boot.
     ///
     /// Returning null when no page allocator is registered is deliberate:
@@ -1108,15 +1107,15 @@ impl VmAllocator {
 // [`HEAP_ARENA`], which needs the registered `VmPageAllocator` — but the
 // registration itself happens inside `VmServer::new_with_boot_params`,
 // and both that constructor and the `read_boot_params` call preceding it
-// allocate. The first VM boot ever reached that window on 2026-09-21
-// (first-light fix13 forensics: `memory allocation of 2888 bytes failed`
+// allocate. That window was first hit on 2026-09-21
+// (observed on the first light-up: `memory allocation of 2888 bytes failed`
 // panic inside `read_boot_params`, exit spin after it). The pool below is
 // the C-shape answer: an image-resident (`.bss`) initial break, drawn
 // from only while the PMM is not yet registered; the same staged
 // evolution minix-rt documents for its own embedded pool
 // (`libs/minix-rt/src/lib.rs` "The C heap starts at the linker-provided
 // `_end` symbol … until that server channel lands"), and the shape
-// NL3① (new_edge2) will replace with a real VM_BRK taskcall.
+// a real VM_BRK taskcall will replace.
 //
 // Four arenas (256 KiB) bound the pre-registration phase with headroom:
 // the known consumers are the `free_regions`/`modules` vectors copied off
@@ -1146,7 +1145,7 @@ static EARLY_POOL: EarlyPool = EarlyPool(core::cell::UnsafeCell::new(
 
 /// Bytes of [`EARLY_POOL`] already carved into arenas (monotonic bump;
 /// early arenas are never returned — like every other arena, they live
-/// until process exit, matching the V1 note on `VmAllocator`).
+/// until process exit, matching the note on `VmAllocator`).
 static EARLY_POOL_USED: AssumeSyncCell<usize> = AssumeSyncCell::new(0);
 
 /// Opt-in switch for the early-pool arm.
@@ -1183,8 +1182,7 @@ unsafe impl GlobalAlloc for VmAllocator {
             // bump path — they take a dedicated HeapArena run (see
             // `alloc_oversize`; the plain null this guard used to return
             // is what made `PageFrames` — a >64 KiB global bookkeeping
-            // table — a boot-killing handle_alloc_error, fix17 forensics
-            // 2026-09-21).
+            // table — a boot-killing handle_alloc_error).
             if payload + align - 1 > Self::ARENA_BYTES {
                 return self.alloc_oversize(payload, align);
             }
@@ -1205,7 +1203,8 @@ unsafe impl GlobalAlloc for VmAllocator {
                 // The current arena's tail is still mapped — keep it usable
                 // before switching to a fresh arena.
                 self.free_tail();
-                // refill 失败 = 物理页分配器（HEAP_ARENA.grow）耗尽。
+                // A refill failure means the physical page allocator
+                // (HEAP_ARENA.grow) is exhausted.
                 if !self.refill_arena() {
                     return core::ptr::null_mut();
                 }

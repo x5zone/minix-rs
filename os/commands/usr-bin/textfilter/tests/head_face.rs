@@ -4,9 +4,11 @@
 //!
 //! Two limits on the differential leg against the host's GNU `head`: the
 //! `-n 0`/`-c 0` cases are pinned to C alone, since `head.c:90-103` rejects a
-//! non-positive count where GNU accepts zero. 末行的换行状态不再是限制：行腿把「输入里
-//! 有没有那枚换行」记在行上（`minix_textfilter::window::Line`），与 C 的逐字符搬运同形，
-//! 参照件 `tmp/head-415/head_ref` 的无尾换行读数已进门。
+//! non-positive count where GNU accepts zero. The newline state of the final
+//! line is no longer a limit: the line leg records "did the input carry that
+//! newline" on the line itself (`minix_textfilter::window::Line`), the same
+//! shape as C's character-by-character copy, and the no-trailing-newline
+//! reading of the reference `tmp/head-415/head_ref` has passed the gate.
 
 mod face_support;
 
@@ -37,9 +39,11 @@ fn run_with(program: &str, args: &[&str], input: &str) -> (String, i32, String) 
     )
 }
 
-/// argv 形态的**字节形**夹具：一枚裸 `ff` 写不成 `&str`，所以参数经 `OsStr::from_bytes`
-/// 交下去，比的是子进程实际收到的那串字节（文本形夹具里 `from_utf8_lossy` 会把裸 `ff`
-/// 与 `ef bf bd` 弄成同一个串，那正是被测的缝）。
+/// The **byte-shaped** fixture for argv forms: a bare `ff` cannot be written as
+/// a `&str`, so the arguments go down through `OsStr::from_bytes` and the
+/// comparison is against the byte string the child actually received (in the
+/// text-shaped fixture `from_utf8_lossy` turns a bare `ff` and `ef bf bd` into
+/// the same string, which is exactly the seam under test).
 fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::os::unix::ffi::OsStrExt as _;
     let mut child = Command::new(HEAD)
@@ -58,8 +62,10 @@ fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 按**原字节名**落一份档，交回它的路径字节；同一份内容也以它的 `from_utf8_lossy` 折叠名
-/// 落一份（`fn raw_twin` 的注释里写了为什么两份都要）。
+/// Writes a file under its **raw byte name** and returns its path bytes; the
+/// same content is also written under its `from_utf8_lossy` folded name (both
+/// copies are needed so the open leg succeeds whichever name the reader
+/// resolves).
 fn write_raw(dir: &Path, name: &[u8], body: &[u8]) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt as _;
     let path = dir.join(std::ffi::OsStr::from_bytes(name));
@@ -67,17 +73,25 @@ fn write_raw(dir: &Path, name: &[u8], body: &[u8]) -> Vec<u8> {
     path.as_os_str().as_bytes().to_vec()
 }
 
-/// 命令行参数那一半也按字节了（批次四百六十二）。`head` 在本族里独有一处：**`-c`/`-n` 的
-/// 值被 C 回显**——`head.c:96-97`、`:102-103` 的 `errx(1, "illegal byte count -- %s", optarg)`
-/// 把 optarg 整串打进句子（`cut` 那两句 errx 不带值、`column`/`comm` 的回显位在 `err_line`
-/// 的 `&str` 口上，所以本支是唯一一条「值既进解析又进报文」的腿）。文本缝折一次之后
-/// `ff` 变 `ef bf bd` 三枚，报文就与参照件差两字节。参照件 `tmp/head-415/head` 现量：
-/// `-c<ff>` → `head: illegal byte count -- <ff>`；`-c 5<ff>` → 同句带尾巴那枚；
-/// obsolete 形 `-5<ff>` 重写之后报的是 `5<ff>`（`head.c:188-192` 拼的是 `-n` + 原串去掉短横
-/// 的全部字节，非 UTF-8 那枚跟着走）。第四段钉字母位、第五段钉**横幅**：横幅是本壳自己
-/// `printf` 的（`head.c:130-131`），不经 `&str`，所以档名必须逐字节回显；盘上同时放原字节名
-/// 与其折叠孪生件（内容相同），把在册的开档腿（`ARGV-BYTE-PATH-IN-LIBS`）从读数里排除掉——
-/// 只放原名时本壳必然 `ENOENT` 而参照件读得到，那读数量的是开档腿不是这条缝。
+/// The command-line half is byte-based too. `head` is unique in this family:
+/// **the `-c`/`-n` value is echoed back by C** — `head.c:96-97`, `:102-103`'s
+/// `errx(1, "illegal byte count -- %s", optarg)` puts the whole optarg into the
+/// sentence (`cut`'s two errx lines carry no value, and the echo slot of
+/// `column`/`comm` sits on `err_line`'s `&str` mouth, so this is the only leg
+/// where the value enters both the parse and the diagnostic). Once the text
+/// seam folds, `ff` becomes the three bytes `ef bf bd` and the diagnostic
+/// differs from the reference by two bytes. Measured against `tmp/head-415/head`:
+/// `-c<ff>` → `head: illegal byte count -- <ff>`; `-c 5<ff>` → the same
+/// sentence with the trailing byte; the obsolete form `-5<ff>` after rewriting
+/// reports `5<ff>` (`head.c:188-192` builds `-n` plus all bytes of the original
+/// string minus the dash, so the non-UTF-8 byte rides along). One section pins
+/// the option-letter slot, another pins the **banner**: the banner is printed
+/// by this shell itself (`head.c:130-131`), not through `&str`, so the file
+/// name must be echoed byte for byte; the disk holds both the raw byte name and
+/// its folded twin (same content), which removes the registered open-path leg
+/// (`ARGV-BYTE-PATH-IN-LIBS`) from the reading — with only the raw name, this
+/// shell would necessarily hit `ENOENT` while the reference can read it, so the
+/// reading would measure the open leg rather than this seam.
 #[test]
 fn an_illegal_count_value_is_echoed_as_the_argv_bytes_and_so_is_the_banner() {
     use std::os::unix::ffi::OsStrExt as _;
@@ -100,7 +114,8 @@ fn an_illegal_count_value_is_echoed_as_the_argv_bytes_and_so_is_the_banner() {
         assert_eq!(err, want, "{args:?} 的报文该带 argv 原字节");
     }
 
-    // obsolete 形：`-5<ff>` 先被改写成 `-n5<ff>`，值里那枚裸字节仍跟着走。
+    // The obsolete form: `-5<ff>` is first rewritten to `-n5<ff>`, and the bare
+    // byte in the value still rides along.
     let dir = scratch("obsolete");
     let plain = dir.join("f1.txt");
     fs::write(&plain, b"one\ntwo\n").expect("写 f1");
@@ -108,7 +123,8 @@ fn an_illegal_count_value_is_echoed_as_the_argv_bytes_and_so_is_the_banner() {
     assert_eq!((out.as_slice(), code), (&b""[..], 1));
     assert_eq!(err, b"head: illegal line count -- 5\xff\n".as_slice());
 
-    // 字母位：`-<ff>` 交回那一枚裸字节，libc 行在前、usage 在后。
+    // Option-letter slot: `-<ff>` hands back that bare byte, with the libc line
+    // first and usage after.
     let (out, code, err) = run_argv(&[&b"-\xff"[..]], b"alpha\n");
     assert_eq!(out, Vec::new(), "集外字母不打数据");
     assert_eq!(code, 1);
@@ -121,12 +137,14 @@ fn an_illegal_count_value_is_echoed_as_the_argv_bytes_and_so_is_the_banner() {
         .concat(),
     );
 
-    // 横幅：`-v` 之下单操数也出横幅，档名按原字节回显；开档走的是折叠孪生件。
+    // Banner: under `-v` a single operand also gets a banner, the file name is
+    // echoed as raw bytes, and the open goes through the folded twin.
     let raw = write_raw(&dir, b"name\xff", b"one\ntwo\n");
     fs::write(dir.join("name\u{fffd}"), b"one\ntwo\n").expect("写折叠孪生件");
     let (out, code, err) = run_argv(&[b"-v".as_slice(), &raw], b"");
-    // 横幅里打的是 argv 那一整串（C 打的是 `*argv`，即调用者给的**路径**而非末段名），
-    // 所以期望按「==> 」+ 路径原字节 + 「 <==\n」+ 内容拼。
+    // The banner prints the whole argv string (C prints `*argv`, i.e. the
+    // **path** the caller gave rather than the last component), so the
+    // expectation is built as "==> " + raw path bytes + " <==\n" + content.
     let want = [b"==> ".as_slice(), raw.as_slice(), b" <==\none\ntwo\n"].concat();
     assert_eq!(
         (out.as_slice(), code, err.as_slice()),
@@ -206,8 +224,10 @@ fn non_positive_counts_reject_with_c_wording() {
     }
 }
 
-/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
-/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+/// The same command seam as `run`, but standard error comes back **byte for
+/// byte**: `from_utf8_lossy` renders a bare `c3` as the three bytes of U+FFFD,
+/// and the text form cannot tell "one byte" apart from "two bytes" as failure
+/// modes.
 fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(HEAD)
         .args(args)
@@ -225,15 +245,21 @@ fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**。期望逐形取自本轮新配的参照件
-/// `tmp/head-415/head_ref`（`minix3/usr.bin/head/head.c` + Minix 的 `getopt.c` + 垫片，
-/// 经同名软链 `head` 起 ⇒ 程序名段与本壳一致、整条 stderr 直比）：`-é` 与 `-qé` 都是
-/// `head: unknown option -- ` + 单个 `c3` + 换行再跟那一行 usage（`head.c:199-203`）、
-/// 退 **1**；`-Zé` 停在 `Z`；反面的 `-cé` 里 `é` 是**值**而不是字母，走命令自己的
-/// `head: illegal byte count -- é`（`head.c:92-102`）**单独一行、不接 usage**。
-/// 现成的 `tmp/family-diag-ref/head_ref` 不能用：它打 `-Z` 交回 glibc 那句带引号的
-/// `invalid option -- 'Z'`，usage 里的程序名还是 `?`（批次四百零七那条验归属规矩第三次兑现）。
-/// ASCII 那几形（`-x`、`-5`、`-n` 缺值）本文件已有主人，不重复承载。
+/// The option-letter slot on the out-of-set-letter line is **one bare byte**.
+/// The expectations are taken form by form from the freshly built reference
+/// `tmp/head-415/head_ref` (`minix3/usr.bin/head/head.c` + Minix's `getopt.c` +
+/// the shim, started through a same-named `head` symlink so the program-name
+/// segment matches this shell and the whole stderr is compared directly): `-é`
+/// and `-qé` both give `head: unknown option -- ` + a single `c3` + newline
+/// followed by the usage line (`head.c:199-203`), exiting **1**; `-Zé` stops at
+/// `Z`; conversely, in `-cé` the `é` is a **value**, not an option letter, and
+/// goes through the command's own `head: illegal byte count -- é`
+/// (`head.c:92-102`) **on a line of its own, with no usage**. The existing
+/// `tmp/family-diag-ref/head_ref` cannot be used: it prints `-Z` returning
+/// glibc's quoted `invalid option -- 'Z'`, and the program name in the usage
+/// line is still `?` (the third time this ownership rule has been honoured).
+/// The ASCII forms (`-x`, `-5`, `-n` missing its value) already have their owner
+/// in this file and are not duplicated.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_head() {
     const USAGE: &[u8] = b"usage: head [-n lines] [file ...]\n";
@@ -269,16 +295,17 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_head() {
 
 #[test]
 fn unknown_option_prints_the_libc_line_then_the_usage_line() {
-    // C 是**两行**：`getopt` 先印 `"<prog>: unknown option -- <字母>"`
-    // （`minix3/lib/libc/stdlib/getopt.c:101-104`，字母不带引号），再由
-    // `head.c:115-117` 的 `case '?'` 走 usage。usage 那一行逐字对位
-    // `head.c:199-203`，而且 C 的清单里本来就没有 `-c`/`-q`/`-v`。
+    // C emits **two lines**: `getopt` first prints `"<prog>: unknown option --
+    // <letter>"` (`minix3/lib/libc/stdlib/getopt.c:101-104`, the letter without
+    // quotes), and then `head.c:115-117`'s `case '?'` runs usage. That usage
+    // line matches `head.c:199-203` verbatim, and C's list never had
+    // `-c`/`-q`/`-v` anyway.
     const USAGE: &str = "usage: head [-n lines] [file ...]\n";
     let (out, status, err) = run(&["-x"], "a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);
     assert_eq!(err, format!("head: unknown option -- x\n{USAGE}"));
-    // 缺值是同一形状的另一句（`getopt.c:132-136`）。
+    // A missing value is another sentence of the same shape (`getopt.c:132-136`).
     let (out, status, err) = run(&["-n"], "a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);
@@ -290,13 +317,15 @@ fn unknown_option_prints_the_libc_line_then_the_usage_line() {
 
 #[test]
 fn an_operand_ends_option_scanning_like_c() {
-    // C 的 `getopt` **不重排**：`minix3/lib/libc/stdlib/getopt.c:71-74` 在第一个
-    // 非选项 token 上直接交回 -1 且不推进 `optind`，`head.c:118-119` 的
-    // `argv += optind` 于是把那个 token 与其后的**全部**当操作数。参照件八形现量
-    // （`python3 tmp/head-424/matrix.py`，读数 `tmp/head-424/matrix-ref.log`）：
-    // `head a.txt -5` 打 `==> a.txt <==` 加十行内容，再 `head: -5: No such file or
-    // directory` 退 1——`unknown option` 那一句根本不会出现。改前本壳报的是那句
-    // 加 usage，且**一行内容都不打**。
+    // C's `getopt` does **not** permute: `minix3/lib/libc/stdlib/getopt.c:71-74`
+    // returns -1 at the first non-option token without advancing `optind`, so
+    // `head.c:118-119`'s `argv += optind` treats that token and **everything**
+    // after it as operands. Measured over eight forms against the reference
+    // (`python3 tmp/head-424/matrix.py`, readings in `tmp/head-424/matrix-ref.log`):
+    // `head a.txt -5` prints `==> a.txt <==` plus ten lines of content, then
+    // `head: -5: No such file or directory` and exits 1 — the `unknown option`
+    // sentence never appears. Before the change this shell reported that
+    // sentence plus usage, and printed **not a single line of content**.
     let good = written("operand-first", b"a1\na2\n");
     let good_text = text(good.as_path());
     let (out, status, err) = run(&[&good_text, "-5"], "");
@@ -304,23 +333,26 @@ fn an_operand_ends_option_scanning_like_c() {
     assert_eq!(status, 1);
     assert_eq!(err, "head: -5: No such file or directory\n");
 
-    // 真旗标也一样落不进选项面：`-q` 在此是一个叫 `-q` 的档名，横幅照打（操作数
-    // 两个），静默旗标不生效。
+    // Real flags do not reach the option face either: `-q` here is a file named
+    // `-q`, the banner prints as usual (two operands), and the quiet flag has no
+    // effect.
     let (out, status, err) = run(&[&good_text, "-q"], "");
     assert_eq!(out, format!("==> {good_text} <==\na1\na2\n"));
     assert_eq!(status, 1);
     assert_eq!(err, "head: -q: No such file or directory\n");
 
-    // 选项在前仍照常生效，只是环撞上操作数就再也回不来：`-n 1` 取了一行，
-    // 其后的 `-5` 只是又一个档名。
+    // Options before an operand still take effect, but once the loop hits an
+    // operand it never comes back: `-n 1` takes one line, and the `-5` after it
+    // is just another file name.
     let (out, status, err) = run(&["-n", "1", &good_text, "-5"], "");
     assert_eq!(out, format!("==> {good_text} <==\na1\n"));
     assert_eq!(status, 1);
     assert_eq!(err, "head: -5: No such file or directory\n");
 
-    // 操作数之后的 `--` 不是「选项结束」而是一个档名（C 的环没走到它）；单个 `-`
-    // 也在同一处收 -1（`getopt.c:96-104`：`head` 的选项串里没有 `-`），于是它与
-    // 后面的都是操作数。两形参照件读数同形。
+    // A `--` after an operand is not "end of options" but a file name (C's loop
+    // never reaches it); a lone `-` also takes -1 at the same place
+    // (`getopt.c:96-104`: `head`'s option string has no `-`), so it and what
+    // follows are operands. Both forms read the same against the reference.
     let (out, status, err) = run(&[&good_text, "--", "-5"], "");
     assert_eq!(
         out,
@@ -373,8 +405,9 @@ fn an_unopenable_operand_warns_without_a_banner_and_sets_the_status() {
     let missing = format!("head-face-{}-missing", std::process::id());
     let (out, status, err) = run(&[&missing, &good_text], "");
     assert_eq!(status, 1);
-    // `warn("%s", *argv)`（`head.c:124-126`）的三个成分：程序名、操作数、
-    // `strerror` 句子。旧写法只印前两个。
+    // The three components of `warn("%s", *argv)` (`head.c:124-126`): program
+    // name, operand, `strerror` sentence. The old form printed only the first
+    // two.
     assert_eq!(err, format!("head: {missing}: No such file or directory\n"));
     assert_eq!(out, format!("==> {good_text} <==\ng1\n"));
 
@@ -412,10 +445,13 @@ fn agrees_with_the_host_head_on_the_shared_forms() {
     }
 }
 
-/// 无尾换行的末行原样交回，本壳不给它造一枚换行。C 的行形是逐字符搬运
-/// （`minix3/usr.bin/head/head.c:169-172` 的 `getc`/`putchar`），参照件
-/// `tmp/head-415/head_ref` 对 `alpha\nbeta\ngamma` 现量交回的正是这串、末尾没有换行；
-/// 中间行仍各带一枚换行。登记项 `HEAD-FINAL-LINE-ADDS-NEWLINE` 由此闭合。
+/// An unterminated final line is handed back as is; this shell does not
+/// manufacture a newline for it. C's line shape is a character-by-character copy
+/// (`minix3/usr.bin/head/head.c:169-172`'s `getc`/`putchar`), and the reference
+/// `tmp/head-415/head_ref` for `alpha\nbeta\ngamma` hands back exactly this
+/// string with no newline at the end; intermediate lines still each carry a
+/// newline. The register entry `HEAD-FINAL-LINE-ADDS-NEWLINE` is thereby
+/// closed.
 #[test]
 fn an_unterminated_final_line_reaches_stdout_without_a_newline() {
     let (out, code, err) = run(&[], "alpha\nbeta\ngamma");
@@ -423,7 +459,8 @@ fn an_unterminated_final_line_reaches_stdout_without_a_newline() {
         (out.as_str(), code, err.as_str()),
         ("alpha\nbeta\ngamma", 0, "")
     );
-    // 计数截到中间行时，那一行本来带着换行，所以照样有。
+    // When the count cuts at an intermediate line, that line already carried a
+    // newline, so it still has one.
     let (two, _, _) = run(&["-n", "2"], "alpha\nbeta\ngamma");
     assert_eq!(two, "alpha\nbeta\n");
 }

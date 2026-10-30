@@ -33,9 +33,10 @@ pub enum Guardianship {
         parent: UserSlot,
         /// Tracer process index.
         tracer: UserSlot,
-        /// Trace options (mp_trace_flags 的 TO_* 选项位；TRACE_EXIT 状态位
-        /// 由 `TraceState.exit_pending` 承载——C 同一个字的两个语义在 Rust
-        /// 分列，写只读死的 `trace_exit` 双份状态已删（V3-P1-1）。
+        /// Trace options (the `TO_*` option bits of `mp_trace_flags`). The
+        /// `TRACE_EXIT` state bit lives in `TraceState.exit_pending` instead:
+        /// C packs both meanings into one word, Rust keeps them apart, so the
+        /// write-only duplicate state is gone.
         trace_options: TraceOptions,
     },
 }
@@ -105,7 +106,8 @@ impl Guardianship {
     }
 
     /// Tries to set tracer (`T_OK`, `trace.c:58`).
-    /// 单元错误仅表达"已有 tracer"的成败（调用方转换为 `EPERM`）。
+    /// The unit error only reports whether "a tracer already exists"
+    /// (the caller maps it to `EPERM`).
     #[allow(clippy::result_unit_err)]
     pub fn try_set_tracer(&mut self, parent: UserSlot) -> Result<(), ()> {
         if self.tracer().is_some() {

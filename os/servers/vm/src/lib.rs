@@ -1,10 +1,12 @@
 #![cfg_attr(not(test), no_std)]
 
-// SD-19 机械化门（静默吞错家族）：本 crate 内新增无理由的 `let _ =`
-// 会当场多报一条 `clippy::let_underscore_must_use` 警告。不做 crate 级
-// `#![allow]` blanket，保门有效；已定性的历史站点逐站在语句级 `#[allow]`
-// 上方留 `//[SD19-gate] <理由>`。参考 `os/libs/minix-sys/src/lib.rs` 同
-// 族头部注释。
+// Mechanized gate (the silent-error-swallowing family): an unjustified
+// `let _ =` added in this crate immediately raises an extra
+// `clippy::let_underscore_must_use` warning. There is no crate-level
+// `#![allow]` blanket, so the gate stays effective; historical sites already
+// vetted carry a statement-level `#[allow]` with a `//[SD19-gate] <reason>`
+// marker above it. See the same-family header comment in
+// `os/libs/minix-sys/src/lib.rs`.
 #![warn(clippy::let_underscore_must_use)]
 
 //! Minix-RS Virtual Memory (VM) server.
@@ -50,13 +52,13 @@ macro_rules! audit_log {
     };
 }
 
-/// Audit emission (V12-P3-2①): `--features vm_acl_audit` routes events to
-/// the no_std sink (`audit::emit`; output pending VM ↔ syslog IPC).
+/// Audit emission: `--features vm_acl_audit` routes events to the no_std
+/// sink (`audit::emit`; output pending VM ↔ syslog IPC).
 ///
 /// Release observability WITHOUT the feature is carried by the VmContext
-/// counters instead — `pagefault_errors` (V9-P1-1) and `dropped_messages`
-/// (V10-P0-2) — both surfaced through VM_INFO; allocation failures via
-/// `alloc_failures` (V11/T18). See 24/26 for the query wiring.
+/// counters instead — `pagefault_errors` and `dropped_messages` — both
+/// surfaced through VM_INFO; allocation failures via `alloc_failures`.
+/// See 24/26 for the query wiring.
 #[cfg(all(not(test), feature = "vm_acl_audit"))]
 macro_rules! audit_log {
     ($($arg:tt)*) => {

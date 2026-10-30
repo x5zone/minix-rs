@@ -11,18 +11,26 @@ use crate::GameError;
 /// Largest bound accepted (keeps the sieve working set small).
 pub const MAX_BOUND: u32 = 1_000_000;
 
-/// 一支边界串的两类转换失手。C 在 `primes.c:136-148` 就按这两类分岔，而**只有一类会缀句子**：
-/// `errno` 被置起时走 `err(1, "%s", argv[i])`，而本命令能走到那里的只有 `_strtol.h:157`/`:172`
-/// 的 `ERANGE`（溢出与下溢）。「一个数字也转不出」不在这里——真源不置 errno（`_strtol.h:69` 那个
-/// `EINVAL` 是 base 参数非法的分支，base 恒为 0 根到不了），只把 `endptr` 停在最初的 `nptr`
-/// （`:184-186` 的 `any ? s - 1 : nptr`），因此它与「转出了前缀而后可非终止符」同属
-/// `*p != '\0'` 那一支，走 `errx(1, "%s: illegal numeric format.")`（`primes.c:140`）。
+/// The two kinds of conversion failure for a bound string. C splits them the
+/// same way at `primes.c:136-148`, and **only one kind appends a sentence**:
+/// when `errno` is set it goes through `err(1, "%s", argv[i])`, and the only
+/// path this command can take there is `ERANGE` (overflow and underflow) from
+/// `_strtol.h:157`/`:172`. "Not one digit converted" is not in that group — the
+/// real source sets no errno (the `EINVAL` at `_strtol.h:69` is the
+/// invalid-base branch, unreachable since base is always 0) and only leaves
+/// `endptr` at the original `nptr` (`:184-186`'s `any ? s - 1 : nptr`), so it
+/// belongs with "converted a prefix, then a non-terminator" in the
+/// `*p != '\0'` branch, taking `errx(1, "%s: illegal numeric format.")`
+/// (`primes.c:140`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundError {
-    /// 转出来了但超出可表示范围：`_strtol.h:157`/`:172` 的 `errno = ERANGE`。
+    /// Converted but outside the representable range: `errno = ERANGE` at
+    /// `_strtol.h:157`/`:172`.
     OutOfRange,
-    /// `endptr` 没有落在终止符上：可能是尾字符，也可能是**一个位都没转出的**形
-    /// （真源把 `endptr` 留在原处，所以从 `*p` 看来两者不二）。走 `errx` 那句。
+    /// `endptr` did not land on the terminator: either a trailing character or
+    /// a shape where **not one digit was converted** (the real source leaves
+    /// `endptr` in place, so from `*p` the two are indistinguishable). Takes the
+    /// `errx` sentence.
     TrailingJunk,
 }
 
@@ -37,20 +45,24 @@ pub fn parse_bound(word: &str) -> Result<u64, BoundError> {
     if overflowed {
         return Err(BoundError::OutOfRange);
     }
-    // 无转换（consumed == 0）在真源里就是「endptr 停在原处」= `*p != '\0'` 成立，
-    // 与尾字符同属一支，所以交回 TrailingJunk 而不是另造一句。
+    // No conversion (consumed == 0) means, in the real source, "endptr left in
+    // place" = `*p != '\0'` holds, the same branch as trailing characters, so
+    // report TrailingJunk rather than inventing another sentence.
     if consumed != word.len() {
         return Err(BoundError::TrailingJunk);
     }
     Ok(value)
 }
 
-/// C `strtoumax(text, &end, 0)` 的取值部分：跳前导空白、可带一个符号，再看前缀——
-/// `0x`/`0X` 走十六进制、单一个前导 `0` 后接八进制位走八进制、其余走十进制。
-/// 返回（值，吃掉的字节数，是否溢出）。**一个数字也没吃到时返回 `(0, 0, false)`**（与 C 一致：
-/// `end` 停在最初的 `nptr`），而本仓真源 `_strtol.h:69` 在「无转换」时置 `EINVAL`，
-/// 所以上层用 `consumed == 0` 当作那个错（宿主 glibc 不置这个号，参照件在 `abc` 那形
-/// 因此与真源不同落点，以真源为准）。
+/// The value part of C `strtoumax(text, &end, 0)`: skip leading whitespace,
+/// allow one sign, then look at the prefix — `0x`/`0X` goes hexadecimal, a
+/// single leading `0` followed by octal digits goes octal, everything else goes
+/// decimal. Returns (value, bytes consumed, overflowed). **When not one digit
+/// is consumed it returns `(0, 0, false)`** (matching C: `end` stays at the
+/// original `nptr`), whereas this repo's real source `_strtol.h:69` sets
+/// `EINVAL` on "no conversion", so the layer above uses `consumed == 0` as that
+/// error (host glibc does not set this errno, so the reference binary lands
+/// elsewhere on the `abc` shape; the real source wins).
 fn scan_unsigned_base0(text: &str) -> (u64, usize, bool) {
     let bytes = text.as_bytes();
     let mut at = 0usize;
@@ -64,10 +76,14 @@ fn scan_unsigned_base0(text: &str) -> (u64, usize, bool) {
     if matches!(bytes.get(at), Some(b'+') | Some(b'-')) {
         at += 1;
     }
-    // 前缀判定逐字对位 `_strtol.h:102-109`：`0x`/`0X` 直接跳两位走十六进制（**不要求**
-    // 后面真有十六进制位——`0x` 那形靠「一个位都没吃」落到 endptr 回原处）；否则当前字符
-    // 是 `0` 就切八进制，不是才用十进制。八进制分支不预先吃掉那个 `0`，让它作为合法位
-    // 进循环，于是 `08` 停在 `8` 上（真源同形：`i >= base` 就 break）。
+    // Prefix detection mirrors `_strtol.h:102-109` byte for byte: `0x`/`0X`
+    // skips two characters and goes hexadecimal (**without** requiring an
+    // actual hexadecimal digit after it — the `0x` shape lands back on
+    // "endptr returned to its original place" via "not one digit consumed");
+    // otherwise a current character of `0` switches to octal and anything else
+    // uses decimal. The octal branch does not consume that `0` up front, so it
+    // enters the loop as a legal digit and `08` stops at `8` (same shape as the
+    // real source: `i >= base` breaks).
     let radix: u64 =
         if bytes.get(at) == Some(&b'0') && matches!(bytes.get(at + 1), Some(b'x') | Some(b'X')) {
             at += 2;
@@ -77,8 +93,10 @@ fn scan_unsigned_base0(text: &str) -> (u64, usize, bool) {
         } else {
             10
         };
-    // 起点算在**前缀之后**：真源的 `any` 只由「累计到一个位」置起（`:170`/`:178`），单跳掉
-    // `0x` 前缀不算，所以 `0x` 那形的 endptr 仍回原处（consumed = 0）。
+    // The start counts **after the prefix**: the real source's `any` is set
+    // only by "accumulated one digit" (`:170`/`:178`), and skipping the `0x`
+    // prefix alone does not count, so the `0x` shape still returns endptr to
+    // its original place (consumed = 0).
     let digits_start = at;
     let mut value: u64 = 0;
     let mut overflow = false;
@@ -92,48 +110,62 @@ fn scan_unsigned_base0(text: &str) -> (u64, usize, bool) {
         {
             Some(next) => value = next,
             None => {
-                // C 的 `strtoumax` 饱和到 `UINTMAX_MAX` 并置 `ERANGE`（`_strtol.h:157`/`:172`）。
+                // C's `strtoumax` saturates to `UINTMAX_MAX` and sets `ERANGE`
+                // (`_strtol.h:157`/`:172`).
                 overflow = true;
             }
         }
         at += 1;
     }
     if at == digits_start {
-        // 一个位也没转出：真源 `any` 仍为 0 → `*endptr = nptr`（`_strtol.h:184-186`），
-        // 连前导空白与符号都不算已消费，而且**不动 errno**；调用方靠「`endptr` 没落在
-        // 终止符上」把它交回 `errx` 那一句，因此不单独成支。
+        // Not one digit converted: the real source's `any` is still 0 ->
+        // `*endptr = nptr` (`_strtol.h:184-186`); even leading whitespace and
+        // the sign do not count as consumed, and **errno is untouched**; the
+        // caller hands it back to the `errx` sentence through "endptr did not
+        // land on the terminator", so it is not a separate branch.
         return (0, 0, false);
     }
     if minus {
-        // `strtoumax` 遇到负值：`__INT` 是无符号型，所以 `_strtol.h:152-157` 的下溢判据
-        // `acc == cutoff && i > cutlim` 首枚位就成立 → 返 0 并置 `ERANGE`。
-        // （glibc 在这里是安静回绕，参照件因此与真源不同落点。）primes 两条路都在转换前先拒
-        // 负号（`primes.c:133`/`:193`），所以命令路上不可达；这里只为让库本身与真源一致。
+        // `strtoumax` meets a negative value: `__INT` is unsigned, so the
+        // underflow criterion at `_strtol.h:152-157`
+        // (`acc == cutoff && i > cutlim`) holds on the first digit -> returns 0
+        // and sets `ERANGE`. (glibc wraps silently here, so the reference
+        // binary lands elsewhere than the real source.) Both primes roads
+        // reject the minus sign before converting (`primes.c:133`/`:193`), so
+        // this is unreachable from the command road; it exists only to keep the
+        // library consistent with the real source.
         return (0, at, true);
     }
     (value, at, overflow)
 }
 
-/// C `read_num_buf` 对一块 `buf` 的判定（`primes.c:186-204`）。本函数只算这一条腿该走
-/// 哪个分支，读与写都在壳里，所以四条腿都能用纯测抛真。
+/// C `read_num_buf`'s verdict on one `buf` (`primes.c:186-204`). This function
+/// only decides which branch this leg takes; reading and writing stay in the
+/// shell, so all four legs can be tested purely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumVerdict<'a> {
-    /// 空白行（或只有一个换行）：C `continue` 再读下一行。
+    /// Blank line (or just a newline): C `continue`s and reads the next line.
     SkipLine,
-    /// 跳完空白后行首是 `-`：`errx(1, "negative numbers aren't permitted.")`（`:193-194`）。
+    /// After skipping whitespace the line starts with `-`:
+    /// `errx(1, "negative numbers aren't permitted.")` (`:193-194`).
     Negative,
-    /// 转换置起了 errno，因此走 `err(1, "%s", buf)`（`:198-199`）——缀句子，且 `buf`
-    /// **含换行**，那一行会断成两物理行。本条腿不带错型载荷：本命令里能置起 errno 的
-    /// 只有 `strtoumax` 的越范围一种（见 [`BoundError`] 那段），无转换不置号。
+    /// The conversion set errno, so it goes through `err(1, "%s", buf)`
+    /// (`:198-199`) — a suffixed sentence, and `buf` **contains the newline**,
+    /// so that line breaks into two physical lines. This leg carries no error
+    /// payload: the only thing in this command that can set errno is
+    /// `strtoumax`'s out-of-range case (see the [`BoundError`] block); no
+    /// conversion sets nothing.
     RangeError,
-    /// 转出了数字但紧跟的不是换行：`errx(1, "%s: illegal numeric format.", buf)`（`:200-201`）。
-    /// 注意 C 这一支的实参也是整块 `buf`，不是剩下的那几个字符。
+    /// Digits converted but not followed by a newline:
+    /// `errx(1, "%s: illegal numeric format.", buf)` (`:200-201`). Note that C
+    /// passes the whole `buf` here too, not just the remaining characters.
     TrailingJunk(&'a str),
-    /// 收下一个起始值。
+    /// Accepted a starting value.
     Start(u64),
 }
 
-/// 见 [`NumVerdict`]。`line` 是 C 的 `buf`：包含结尾的换行（上一行除外）。
+/// See [`NumVerdict`]. `line` is C's `buf`: it includes the trailing newline
+/// (except for the last line).
 pub fn judge_number_line(line: &str) -> NumVerdict<'_> {
     let trimmed = line.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
     if trimmed.is_empty() || trimmed.starts_with('\n') {
@@ -146,36 +178,49 @@ pub fn judge_number_line(line: &str) -> NumVerdict<'_> {
     if overflowed {
         return NumVerdict::RangeError;
     }
-    // 无转换不单独成支：真源把 `endptr` 留在原处，所以下面那道「不是换行」的判据天然接住它。
+    // No conversion is not a separate branch: the real source leaves `endptr`
+    // in place, so the "not a newline" check below catches it naturally.
     let rest = &trimmed[consumed..];
     if !rest.starts_with('\n') {
-        // C 比的是 `*p != '\n'`：行尾无换行的最后一块、或数字后还有任何东西，都算此支。
+        // C compares `*p != '\n'`: the last chunk without a trailing newline,
+        // or anything after the digits, both count as this branch.
         return NumVerdict::TrailingJunk(line);
     }
     NumVerdict::Start(value)
 }
 
-/// C 的那支上限检查（`primes.c:149`：`stop > SPSPMAX`）。本树的上限是
-/// `MAX_BOUND`，不是 C 的近 2^32（声明的差异，见 22 篇），但报文形状同形。
+/// C's upper-bound check (`primes.c:149`: `stop > SPSPMAX`). This tree's cap is
+/// `MAX_BOUND`, not C's near-2^32 (a declared difference), but the message
+/// shape is the same.
 #[must_use]
 pub fn over_cap(value: u64) -> bool {
     value > MAX_BOUND as u64
 }
 
-/// C 存表的最后一个素数（`minix3/games/primes/pr_tbl.c` 的 `pr_limit` 指向表尾，
-/// 实测表里最大的数就是 65537）。它不是本树的容量参数，而是 `-d` 一条形分岔的支点：
-/// C 的打印分两条路——表内路（`primes.c:251-262`，条件 `start <= *pr_limit`）与筛子路
-/// （`:322-332`），后者守卫是 `dflag && (prev || start <= *pr_limit)`，而走到筛子路时
-/// `start` 要么被表内路改写成 `*pr_limit+2`、要么本来就在表外，两种情况下半个条件都为假，
-/// 所以守卫实际只剩 `prev != 0`。拿参照进程验过的两个形：`primes -d 65537 65560` 打
-/// `65537 (16)`（表内，有前驱），`primes -d 70000 70100` 第一个 `70001` **不带差值列**。
+/// C's last stored prime (`pr_limit` in `minix3/games/primes/pr_tbl.c` points
+/// at the end of the table, and the largest number measured in it is 65537).
+/// It is not this tree's capacity parameter but the pivot of the `-d` shape's
+/// split: C's printing has two roads — the in-table road
+/// (`primes.c:251-262`, condition `start <= *pr_limit`) and the sieve road
+/// (`:322-332`), the latter guarded by `dflag && (prev || start <= *pr_limit)`.
+/// When the sieve road is reached, `start` has either been rewritten by the
+/// in-table road to `*pr_limit+2` or was already outside the table, so half the
+/// condition is false either way and the guard is effectively just
+/// `prev != 0`. Two shapes checked against the reference process:
+/// `primes -d 65537 65560` prints `65537 (16)` (in table, has a predecessor),
+/// and `primes -d 70000 70100` prints the first `70001` **without the delta
+/// column**.
 pub const TABLE_LAST_PRIME: u32 = 65_537;
 
-/// `-d` 差值列用的「前一个素数」，逐格对位 C 的 `prev`（`primes.c:220` 起值为 0，
-/// 表内路每走一格 `prev = factor`，`:261`）。因此整张表的第一个素数 2 的差是
-/// `2 - 0 = 2`——参照进程实跑 `primes -d 2 10` 得 `2 (2)|3 (1)|5 (2)|7 (2)`，那个看着
-/// 像错的 `2 (2)` 是 C 自己的形状，不是本树的疏漏。大于 2 的素数取它下面最大的素数；
-/// 表是 2 开始的连续素数序列，所以「表里上一个」与「真前驱」同一件事。
+/// The "previous prime" used by the `-d` delta column, aligned cell by cell
+/// with C's `prev` (`primes.c:220` starts at 0 and the in-table road sets
+/// `prev = factor` on each step, `:261`). So the delta of the table's first
+/// prime 2 is `2 - 0 = 2` — the reference process running `primes -d 2 10`
+/// prints `2 (2)|3 (1)|5 (2)|7 (2)`, and that `2 (2)`, which looks wrong, is
+/// C's own shape, not an oversight in this tree. A prime above 2 takes the
+/// largest prime below it; the table is the consecutive prime sequence starting
+/// at 2, so "the previous one in the table" and "the true predecessor" are the
+/// same thing.
 #[must_use]
 pub fn previous_prime(value: u32) -> u32 {
     if value <= 2 {
@@ -278,14 +323,20 @@ mod tests {
     #[test]
     fn test_bounds_checked() {
         assert_eq!(parse_bound("100"), Ok(100));
-        // 空串在 C 里是**合法值 0**：`strtoumax("")` 不置 errno 且 `endptr` 就停在终止符上，
-        // 所以 `*p != '\0'` 不成立（参照件 `primes "" 5` → 2/3，与本树同读数）。
+        // An empty string is a **legal value 0** in C: `strtoumax("")` sets no
+        // errno and `endptr` stops right on the terminator, so `*p != '\0'`
+        // does not hold (the reference `primes "" 5` -> 2/3, the same reading
+        // as this tree).
         assert_eq!(parse_bound(""), Ok(0));
         assert_eq!(parse_bound("12a"), Err(BoundError::TrailingJunk));
-        // base 0 带符号时 C 不报错也不置 errno：`strtoumax` 在 `__INT` 就是无符号型的
-        // 情形下直接回绕（`_strtol.h:129-157` 的 cutoff 用的就是无符号边界），所以库函数
-        // 交出回绕值才是真源行为。操数路看不到这一形，因为 C 在转换前就查 `argv[i][0] ==
-        // '-'`（`primes.c:133`/`:155`），那一守卫在壳里，端到端门已钉（`primes -5` 落 usage）。
+        // With base 0 and a sign C reports no error and sets no errno:
+        // `strtoumax` wraps directly when `__INT` is unsigned
+        // (`_strtol.h:129-157` uses the unsigned boundary for its cutoff), so
+        // the library returning the wrapped value is the real-source behavior.
+        // The operand road cannot see this shape, because C checks
+        // `argv[i][0] == '-'` before converting (`primes.c:133`/`:155`); that
+        // guard lives in the shell and is pinned end to end (`primes -5` falls
+        // into usage).
         assert_eq!(parse_bound("-5"), Err(BoundError::OutOfRange));
         assert_eq!(parse_bound("+12"), Ok(12));
         assert_eq!(parse_bound("2000000"), Ok(2_000_000));
@@ -301,32 +352,36 @@ mod tests {
 
     #[test]
     fn test_difference_predecessors() {
-        // 逐条对位参照进程（宿主编译的 `minix3/games/primes/*.c`）的 `-d` 读数。
-        assert_eq!(previous_prime(2), 0); // → `2 (2)`：C 的 prev 从 0 起，那个看着像错的形状是它自己的
+        // Each line matches the `-d` readings of the reference process (the
+        // host-compiled `minix3/games/primes/*.c`).
+        assert_eq!(previous_prime(2), 0); // -> `2 (2)`: C's prev starts at 0; that odd-looking shape is C's own
         assert_eq!(previous_prime(3), 2); // → `3 (1)`
         assert_eq!(previous_prime(5), 3); // → `5 (2)`
         assert_eq!(previous_prime(7), 5);
-        assert_eq!(previous_prime(100), 97); // 101 印 `101 (4)`
-        assert_eq!(previous_prime(TABLE_LAST_PRIME), 65_521); // 表尾印 `65537 (16)`
+        assert_eq!(previous_prime(100), 97); // 101 prints `101 (4)`
+        assert_eq!(previous_prime(TABLE_LAST_PRIME), 65_521); // the last table entry prints `65537 (16)`
     }
 
     #[test]
     fn test_base_zero_conversions() {
-        // C 两条路用的都是 `strtoumax(…, 0)`，所以三个进位前缀都得认。
-        // 读数逐条来自参照进程（`primes 0x10 0x20` 与 `primes 010 014` 的实跑）。
+        // Both C roads use `strtoumax(..., 0)`, so all three carry prefixes must
+        // be recognized. The readings come one by one from the reference process
+        // (`primes 0x10 0x20` and `primes 010 014` live runs).
         assert_eq!(parse_bound("0x1f"), Ok(31));
         assert_eq!(parse_bound("0X1F"), Ok(31));
         assert_eq!(parse_bound("010"), Ok(8));
         assert_eq!(parse_bound("0"), Ok(0));
         assert_eq!(parse_bound("  7"), Ok(7));
-        // `0x` 后无十六进制位：C 只吃掉那个 `0`，剩下 `x` 算尾字符（不是「无转换」）。
+        // No hexadecimal digit after `0x`: C only consumes the `0` and treats
+        // the remaining `x` as a trailing character (not "no conversion").
         assert_eq!(parse_bound("0x"), Err(BoundError::TrailingJunk));
         assert_eq!(parse_bound("08"), Err(BoundError::TrailingJunk));
     }
 
     #[test]
     fn test_stdin_line_legs_split_as_c_does() {
-        // `read_num_buf` 的四支，逐字对位 `primes.c:186-204`。
+        // The four branches of `read_num_buf`, verbatim against
+        // `primes.c:186-204`.
         assert_eq!(judge_number_line(""), NumVerdict::SkipLine);
         assert_eq!(judge_number_line("\n"), NumVerdict::SkipLine);
         assert_eq!(judge_number_line("  \n"), NumVerdict::SkipLine);
@@ -341,7 +396,8 @@ mod tests {
             judge_number_line("999999999999999999999999\n"),
             NumVerdict::RangeError
         );
-        // 两支持的都是整块 `buf`（含换行），不是剩下的那几个字符。
+        // Both branches receive the whole `buf` (newline included), not just
+        // the remaining characters.
         assert_eq!(
             judge_number_line("10x\n"),
             NumVerdict::TrailingJunk("10x\n")
@@ -350,7 +406,8 @@ mod tests {
             judge_number_line("12 34\n"),
             NumVerdict::TrailingJunk("12 34\n")
         );
-        // 行尾无换行的最后一块也算「后面不是换行」（C 比的就是 `'\n'`）。
+        // The last chunk with no trailing newline also counts as "not followed
+        // by a newline" (C compares against `'\n'`).
         assert_eq!(judge_number_line("12"), NumVerdict::TrailingJunk("12"));
         assert_eq!(judge_number_line("12\n"), NumVerdict::Start(12));
         assert_eq!(judge_number_line("0x10\n"), NumVerdict::Start(16));

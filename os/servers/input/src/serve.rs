@@ -33,7 +33,7 @@ use minix_types::{
 };
 
 /// CDEV reply message types. C: `com.h:935-937` —
-/// `CDEV_REPLY = CDEV_RS_BASE(0x480)`、`CDEV_SEL2_REPLY = CDEV_RS_BASE + 2`.
+/// `CDEV_REPLY = CDEV_RS_BASE(0x480)`, `CDEV_SEL2_REPLY = CDEV_RS_BASE + 2`.
 pub const CDEV_REPLY: i32 = 0x480;
 pub const CDEV_SEL2_REPLY: i32 = 0x482;
 
@@ -126,9 +126,10 @@ impl Transport for KernelTransport {
     }
 
     fn publish_label(&mut self, name: &str) -> Result<(), i32> {
-        // DsClient 的双腿已参数化分离（ds.rs，T7 约束放宽）：IPC 腿消费
-        // 本聚合的 `ipc` 载体，grant 腿直接挂 SYSCALL 载体——两载体均为
-        // 零尺寸，按值重组免费。
+        // DsClient's two legs are already parameterized apart (`ds.rs`, the T7
+        // constraint relaxed): the IPC leg consumes this aggregate's `ipc`
+        // carrier, the grant leg attaches the SYSCALL carrier directly — both
+        // carriers are zero-sized, so reassembling by value is free.
         let mut ds = DsClient::new(self.ipc, self.kernel, Endpoint::DS);
         let mut grants = minix_sys::grant::GrantTable::new();
         ds.publish_label(
@@ -268,7 +269,7 @@ fn reply_select_msg(self_ep: Endpoint, minor: i32) -> Message {
 /// Stamp the server's own endpoint and send asynsend-style.
 fn send_from(t: &mut dyn Transport, dst: Endpoint, message: &mut Message, self_ep: Endpoint) {
     message.m_source = self_ep;
-    //[SD19-gate] SD-19: asynsend 异步事件投递，无等待端
+    //[SD19-gate] asynsend is asynchronous delivery with no waiting peer
     #[allow(clippy::let_underscore_must_use)]
     let _ = t.asynsend(dst, message);
 }
@@ -287,27 +288,27 @@ pub fn perform(effect: &Effect, t: &mut dyn Transport, self_ep: Endpoint) {
                 crate::effects::ReplyValue::Code(code) => *code,
             };
             let mut msg = reply_task_msg(self_ep, *request_id, status);
-            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            //[SD19-gate] asynchronous delivery is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = t.asynsend(*caller, &mut msg);
         }
         Effect::ReplySelect { selector, minor } => {
             let mut msg = reply_select_msg(self_ep, minor.0 as i32);
-            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            //[SD19-gate] asynchronous delivery is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = t.asynsend(*selector, &mut msg);
         }
         Effect::SendDriverAsync { to, message } => {
             let mut m = *message;
             m.m_source = self_ep;
-            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            //[SD19-gate] asynchronous delivery is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = t.asynsend(*to, &mut m);
         }
         Effect::SendTerminalBlocking { message } => {
             let mut m = *message;
             m.m_source = self_ep;
-            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            //[SD19-gate] asynchronous delivery is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = t.send(Endpoint::TTY, &mut m);
         }
@@ -330,14 +331,14 @@ pub fn perform(effect: &Effect, t: &mut dyn Transport, self_ep: Endpoint) {
             // client reads it right back (`fkey_ctl_via`).
             m.m_u.m_tty_lsys_fkey_ctl.fkeys = *fkeys;
             m.m_u.m_tty_lsys_fkey_ctl.sfkeys = *sfkeys;
-            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            //[SD19-gate] asynchronous delivery is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = t.sendnb(*caller, &mut m);
         }
         Effect::NotifyFkeyObserver { target } => {
             // C `func_key` tail: `ipc_notify(proc_nr)` when a registered
             // observer's key was pressed (keyboard.c:566-568).
-            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            //[SD19-gate] asynchronous delivery is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = t.notify(*target);
         }
@@ -425,7 +426,8 @@ mod serve_tests {
     use super::*;
     use minix_types::input_event_msg;
 
-    /// 分类：INPUT_EVENT → DriverReport（m_source 自消息回填）。
+    /// Classification: INPUT_EVENT → DriverReport (`m_source` back-filled from
+    /// the message).
     #[test]
     fn test_classify_input_event() {
         let mut msg = input_event_msg(3, 1, 30, 2, 1);
@@ -448,7 +450,7 @@ mod serve_tests {
         }
     }
 
-    /// 分类：TTY_FKEY_CONTROL → FkeyControl（三字段解码）。
+    /// Classification: TTY_FKEY_CONTROL → FkeyControl (three-field decode).
     #[test]
     fn test_classify_fkey_control() {
         let mut msg = Message {
@@ -456,8 +458,8 @@ mod serve_tests {
             m_source: Endpoint(9),
             ..Message::default()
         };
-        // union 字段写是 safe 的（只有读才 unsafe）；请求臂
-        // `m_lsys_tty_fkey_ctl`（ipc.h:1447-1454）。
+        // Writing union fields is safe (only reads are unsafe); the request arm
+        // is `m_lsys_tty_fkey_ctl` (ipc.h:1447-1454).
         msg.m_u.m_lsys_tty_fkey_ctl.request = minix_types::FKEY_MAP;
         msg.m_u.m_lsys_tty_fkey_ctl.fkeys = 0b10;
         msg.m_u.m_lsys_tty_fkey_ctl.sfkeys = 0;
@@ -477,9 +479,9 @@ mod serve_tests {
         }
     }
 
-    /// 回路：MAP 注册 → 回复效果（result=OK、位图清零）→
-    /// EVENTS 拉取带回 pending 位。C `do_fkey_ctl` 的三动词经
-    /// `handle_arrival` 的观察者语义。
+    /// The round trip: MAP registers → reply effect (result=OK, bitmap cleared)
+    /// → an EVENTS fetch brings back the pending bits. The three verbs of C
+    /// `do_fkey_ctl` go through `handle_arrival`'s observer semantics.
     #[test]
     fn test_fkey_control_map_then_events_roundtrip() {
         let mut server = crate::dispatcher::Server::fresh();
@@ -490,7 +492,7 @@ mod serve_tests {
                 m_source: Endpoint(9),
                 ..Message::default()
             };
-            // SAFETY(test): 请求臂 `m_lsys_tty_fkey_ctl`（ipc.h:1447-1454）。
+            // SAFETY(test): request arm `m_lsys_tty_fkey_ctl` (ipc.h:1447-1454).
             unsafe {
                 msg.m_u.m_lsys_tty_fkey_ctl.request = request;
                 msg.m_u.m_lsys_tty_fkey_ctl.fkeys = fkeys;
@@ -498,7 +500,7 @@ mod serve_tests {
             }
             msg
         };
-        // MAP F1：回复 OK、位图清零。
+        // MAP F1: reply OK, bitmap cleared.
         match handle_arrival(
             &mut server,
             classify(&mk(minix_types::FKEY_MAP, 0b10, 0)).unwrap(),
@@ -521,7 +523,7 @@ mod serve_tests {
             },
             other => panic!("expected Done, got {other:?}"),
         }
-        // 事件域 F1 按下 → 注册者收到 notify。
+        // Event domain: F1 pressed → the registrant receives a notify.
         match handle_arrival(
             &mut server,
             Arrival::DriverReport {
@@ -540,7 +542,8 @@ mod serve_tests {
             }
             other => panic!("expected Done, got {other:?}"),
         }
-        // EVENTS：pending 位回到 IS 手里，计数清零。
+        // EVENTS: the pending bits come back into IS's hands, the count is
+        // cleared.
         match handle_arrival(
             &mut server,
             classify(&mk(minix_types::FKEY_EVENTS, 0, 0)).unwrap(),
@@ -562,7 +565,8 @@ mod serve_tests {
         }
     }
 
-    /// 通知家族（0x1000 基 + 低字节源）→ DriverStoreChanged 提示。
+    /// Notification family (0x1000 base + low-byte source) → a
+    /// DriverStoreChanged hint.
     #[test]
     fn test_classify_notify_is_store_changed() {
         let mut msg = Message::default();
@@ -570,13 +574,15 @@ mod serve_tests {
         assert!(matches!(classify(&msg), Some(Arrival::DriverStoreChanged)));
     }
 
-    /// 传输打包：每个事件恰好 `EVENT_BYTES`（20）字节、连续排列，第二段
-    /// 从步幅处开始（C `input.c:144-151` 两段拷贝合起来的镜像）。步幅写错
-    /// 会同时破坏字节布局与回信口径（回信按 `EVENT_BYTES × n` 计）。
+    /// Transport packing: every event is exactly `EVENT_BYTES` (20) bytes,
+    /// laid out back to back, with the second segment starting at the stride
+    /// (the image of C `input.c:144-151`'s two copies combined). A wrong stride
+    /// would break both the byte layout and the reply accounting (the reply
+    /// counts `EVENT_BYTES × n`).
     #[test]
     fn test_pack_events_for_grant_is_event_sized_and_contiguous() {
         let stride = crate::structs::EVENT_BYTES;
-        assert_eq!(stride, 20); // 权威值：test_event_layout_matches_c 锁定
+        assert_eq!(stride, 20); // authoritative: pinned by test_event_layout_matches_c
         let mut first = InputEvent::zero();
         first.page = 0x0007;
         first.code = 0x003A;

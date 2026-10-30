@@ -40,19 +40,21 @@ pub trait UdsHandler {
     /// suspend it through the table, reply by the request's reply shape.
     fn socket_device(&mut self, table: &mut SockTable, msg: &Message) -> Option<Message>;
 
-    /// Termination signal (SIGTERM，`uds.c:1349-1365` 的 `uds_signal`——置
-    /// running=0；排水规则随后决定是立即退出还是清完套接字再退)。
+    /// Termination signal (SIGTERM; `uds_signal` at `uds.c:1349-1365` — sets
+    /// running=0; the drain rule then decides between exiting now and finishing
+    /// the sockets first).
     ///
-    /// 送达渠道是信号管理器的转发消息（C `pm/signal.c:470-473`、
-    /// `rs/main.c:699-701` 的 `SIGS_SIGNAL_RECEIVED`）而不是内核通知：
-    /// `uds_signal` 对非 SIGTERM 直接返回，所以内核唤醒不触发本路。
+    /// The delivery path is the signal manager's forwarded message (C
+    /// `SIGS_SIGNAL_RECEIVED` in `pm/signal.c:470-473` and `rs/main.c:699-701`),
+    /// not a kernel notification: `uds_signal` returns immediately for non-SIGTERM,
+    /// so a kernel wake-up does not trigger this path.
     fn on_terminate(&mut self);
 
     /// Unexpected arrival: dropped, no reply.
     fn unexpected(&mut self, msg: &Message, is_notify: bool);
 }
 
-/// Consecutive transport failures tolerated; lwip 循环同款界。
+/// Consecutive transport failures tolerated; the same bound as the lwip loop.
 pub const BROKEN_BUDGET: u32 = 3;
 
 /// The service event loop. Startup work belongs to the handler before the
@@ -62,23 +64,27 @@ pub fn run<I: SefIpc + ReplyIpc, H: UdsHandler>(
     handler: &mut H,
     table: &mut SockTable,
 ) -> Result<(), i32> {
-    // C `sef_startup`：RS 的 `SEF_INIT` 到达、OK 回给 RS 之后，主循环
-    // 才开始（lwip 循环同款握手，`sef.h:32` 的 RS_INIT 通知）。
+    // C `sef_startup`: the main loop starts only after RS's `SEF_INIT` arrives and
+    // OK is sent back to RS (the same handshake as the lwip loop, the RS_INIT
+    // notification of `sef.h:32`).
     wait_for_init(ipc, handler)?;
 
     let mut msg = Message::default();
     let mut broken = 0u32;
     let mut signalled = false;
-    // 逃生门（PD-27，C `sef_cancel()` — uds.c:1360 + sef.c:161-162）：终止
-    // 决定在回调里取消挂起/下一次收信，库返 `EINTR`，下方 `Err(EINTR) =>
-    // continue` 走到循环顶的 signalled 检查——管理器形信号帧被库吞掉后
-    // 不再「吞完继续阻塞在下一收」。C 在 `uds_in_use == 0` 时才 cancel
-    //（uds.c:1359-1360），排水语义由 `keep_running` 承担。
+    // Escape hatch (C `sef_cancel()` — uds.c:1360 + sef.c:161-162): a termination
+    // decision cancels the pending/next receive in the callback, the library
+    // returns `EINTR`, and the `Err(EINTR) => continue` below reaches the signalled
+    // check at the top of the loop — after the library swallows a manager-shaped
+    // signal frame, the loop no longer "swallows it and blocks on the next receive".
+    // C cancels only when `uds_in_use == 0` (uds.c:1359-1360); the drain semantics
+    // is carried by `keep_running`.
     let cancel = minix_sef::SefCancel::new();
     loop {
         if signalled {
-            // `uds_signal`（`uds.c` 的终止信号）：置 running=0，排水规则
-            // （`loop_keeps_running`）随后决定是清完再退还是立即退。
+            // `uds_signal` (the termination signal in `uds.c`): set running=0; the
+            // drain rule (`loop_keeps_running`) then decides between draining first
+            // and exiting immediately.
             handler.on_terminate();
             signalled = false;
         }
@@ -86,17 +92,19 @@ pub fn run<I: SefIpc + ReplyIpc, H: UdsHandler>(
             return Ok(());
         }
         let mut on_signal = |signo: i32| {
-            // C `uds_signal`（`minix3/minix/net/uds/uds.c:1349-1356`）：
+            // C `uds_signal` (`minix3/minix/net/uds/uds.c:1349-1356`):
             // "Only check for the termination signal. Ignore anything else."
-            // ——非 SIGTERM 一律直接返回。不筛号码的话，一条内核唤醒通知
-            // （今天递来的是 `SEF_SIGNAL_REQUEST_TYPE`，将来是 71..=74）
-            // 就会把服务打掉，而 C 在这种情况下仍然继续服务。
+            // — anything that is not SIGTERM returns immediately. Without the number
+            // filter, a kernel wake-up notification (today it delivers
+            // `SEF_SIGNAL_REQUEST_TYPE`, in the future 71..=74) would kill the
+            // service here, while C keeps serving in that situation.
             if signo == minix_types::SIGNAL_TERMINATE {
                 signalled = true;
                 // C uds.c:1357-1360 — `uds_running = FALSE; if (uds_in_use ==
-                // 0) sef_cancel();`：无人用时取消挂起收信立即走，有人在途
-                // 时继续收着排空（靠 while 条件退出，不靠逃生门——逃生门
-                // 的 EINTR 会让排空永远等不到下一帧）。
+                // 0) sef_cancel();`: with nobody using the socket, cancel the pending
+                // receive and leave at once; with clients in flight, keep receiving to
+                // drain (exit via the while condition, not via the escape hatch — its
+                // EINTR would leave the drain waiting forever for the next frame).
                 if !handler.draining() {
                     cancel.cancel();
                 }
@@ -139,16 +147,17 @@ pub fn run<I: SefIpc + ReplyIpc, H: UdsHandler>(
     }
 }
 
-/// C `sef_startup` 的握手半（lwip 循环同款）：等 RS 的 `SEF_INIT`
-/// 通知（`CALL_NOTIFY` 加 `RS_INIT` 号，sef.h:32/:122）到达，回 OK 给
-/// RS。握手期间的其他到达照主循环的意外路丢弃。
+/// The handshake half of C `sef_startup` (the same as the lwip loop): wait for
+/// RS's `SEF_INIT` notification (`CALL_NOTIFY` with the `RS_INIT` number,
+/// sef.h:32/:122) to arrive, then reply OK to RS. Other arrivals during the
+/// handshake are dropped via the main loop's unexpected path.
 fn wait_for_init<I: SefIpc + ReplyIpc, H: UdsHandler>(
     ipc: &mut I,
     handler: &mut H,
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     let mut broken = 0u32;
-    let cancel = minix_sef::SefCancel::new(); // 握手期无信号退出路
+    let cancel = minix_sef::SefCancel::new(); // no signal-exit path during the handshake
     loop {
         let mut on_signal = |_: i32| {};
         let received =
@@ -182,7 +191,8 @@ fn wait_for_init<I: SefIpc + ReplyIpc, H: UdsHandler>(
 }
 
 /// Production transport: kernel traps behind the SEF and reply verbs
-/// （lwip 循环的同名适配器，类型归属各自 crate 以免服务间互相依赖）。
+/// (the same-named adapter as the lwip loop; the types belong to each crate so
+/// services do not depend on each other).
 pub struct KernelIpc<T: minix_sys::ipc::IpcTransport> {
     pub transport: T,
 }
@@ -216,13 +226,17 @@ mod tests {
     const SYSTEM: Endpoint = minix_sef::SYSTEM_ENDPOINT;
     const RS_INIT: i32 = minix_sef::SEF_INIT_REQUEST_TYPE;
 
-    /// 脚本化传输（lwip 循环的同名夹具）：接收走 `CannedSefIpc`，回复只计数
-    /// （uds 的库是纯 `no_std` 无 allocator，测试里不引 `Vec`）。
-    /// 每帧可带一个 `m_pm_lsys_sigs_signal.num`——信号管理器转发的 SIGTERM
-    /// 就是那个形状（C `pm/signal.c:470-473`、`rs/main.c:699-701`）。
-    /// 脚本耗尽后收信回 `EINTR`（与生产一致：收信失败不累计到
-    /// BROKEN_BUDGET），否则 `CannedSefIpc::new()` 的默认 EFAULT 会把
-    /// 「循环正常结束」的本意伪装成错误退出（lwip 夹具同款处置）。
+    /// Scripted transport (the same-named fixture as the lwip loop): receives go
+    /// through `CannedSefIpc`, replies are only counted (the uds library is pure
+    /// `no_std` with no allocator, so tests do not pull in `Vec`).
+    /// Each frame may carry an `m_pm_lsys_sigs_signal.num` — the shape of the
+    /// SIGTERM forwarded by the signal manager (C `pm/signal.c:470-473`,
+    /// `rs/main.c:699-701`).
+    /// Once the script is exhausted, receive returns `EINTR` (consistent with
+    /// production: receive failures do not accumulate towards BROKEN_BUDGET);
+    /// otherwise the default EFAULT of `CannedSefIpc::new()` would disguise
+    /// "the loop ended normally" as an error exit (the same treatment as the lwip
+    /// fixture).
     struct ScriptedIpc {
         sef: CannedSefIpc,
         replies: u32,
@@ -232,7 +246,7 @@ mod tests {
         fn new(script: &[(i32, Endpoint, i32, Option<i32>)]) -> Self {
             let mut sef = CannedSefIpc::new();
             sef.empty_error = minix_types::EINTR;
-            // CannedSefIpc 从队尾弹出，所以按到达顺序的反序压栈。
+            // CannedSefIpc pops from the back, so push in reverse arrival order.
             for (status, source, m_type, signo) in script.iter().rev() {
                 let mut m = Message {
                     m_source: *source,
@@ -267,8 +281,9 @@ mod tests {
         }
     }
 
-    /// 记录型处理器：`served` 到 `stop_after` 就交还主循环；`terminations`
-    /// 记录终止路被走过的次数。
+    /// Recording handler: hands control back to the main loop once `served`
+    /// reaches `stop_after`; `terminations` counts how often the termination
+    /// path ran.
     #[derive(Default)]
     struct RecordingHandler {
         clocks: u32,
@@ -276,16 +291,18 @@ mod tests {
         served: u32,
         stop_after: u32,
         terminations: u32,
-        /// C `uds_in_use > 0` 的测试形：终止时有无在途客户端。
+        /// Test shape of C `uds_in_use > 0`: whether a client is in flight at
+        /// termination.
         in_flight: bool,
-        /// C `uds_running` 的测试形：终止路已把 running 清零。
+        /// Test shape of C `uds_running`: the termination path has cleared running.
         terminated: bool,
     }
 
     impl UdsHandler for RecordingHandler {
         fn keep_running(&mut self) -> bool {
-            // `terminated` 对位 C `uds_running=FALSE`（终止后不再续收），
-            // 配额对位「脚本还有几帧要服务」的测试界。
+            // `terminated` mirrors C `uds_running=FALSE` (no more receiving after
+            // termination); the quota mirrors the test bound "how many frames the
+            // script still has to serve".
             !self.terminated && self.served < self.stop_after
         }
 
@@ -312,16 +329,19 @@ mod tests {
 
     #[test]
     fn test_kernel_notify_does_not_terminate_the_service() {
-        // C `uds_signal`（uds.c:1349-1356）第一句是「非 SIGTERM 直接返回」。
-        // SYSTEM 通知今天递来的是唤醒兜底值，所以终止路一次都不该被走到，
-        // 后面的时钟 tick 仍照常处理。旧形状（不筛号码）会在这里把服务打掉。
+        // The first line of C `uds_signal` (uds.c:1349-1356) is "return immediately
+        // for non-SIGTERM". A SYSTEM notification today delivers a wake-up fallback
+        // value, so the termination path must never run and the following clock tick
+        // is still handled as usual. The old shape (no number filter) would kill the
+        // service here.
         let mut ipc = ScriptedIpc::new(&[
             (CALL_NOTIFY, RS, RS_INIT, None),
             (CALL_NOTIFY, SYSTEM, 0, None),
             (CALL_NOTIFY, Endpoint::CLOCK, 0, None),
         ]);
-        // 额度 2：通知帧本身走意外路也要占一次（它仍是“服务过一趟”），
-        // 所以留给时钟 tick 的余额得算上它。
+        // Quota 2: the notification frame itself spends one pass through the
+        // unexpected path (it still counts as "served once"), so the budget left
+        // for the clock tick must include it.
         let mut handler = RecordingHandler {
             stop_after: 2,
             ..Default::default()
@@ -338,15 +358,19 @@ mod tests {
 
     #[test]
     fn test_manager_sigterm_idle_cancels_the_pending_receive() {
-        // 终止的真形状（闲）：管理器转发的 `SIGS_SIGNAL_RECEIVED` 携
-        // num=SIGTERM（C pm/signal.c:470-473、rs/main.c:699-701）。C
-        // `uds_signal`（uds.c:1357-1360）：`uds_running = FALSE; if
-        // (uds_in_use == 0) sef_cancel();`——无人用套接字时取消挂起收信，
-        // 库在循环顶返 EINTR（sef.c:161-162），循环立即离开，一帧都不再
-        // 服务。PD-27 落地后本树与该 C 终态同形：回调置终止位并 cancel，
-        // `Err(EINTR) => continue` 到循环顶走终止路、keep_running 因
-        // terminated 而假、退出。若逃生门或 draining 门任一失效，库会吞帧
-        // 续收 CLOCK（clocks 变 1），本断言即红。
+        // The real termination shape (idle): the manager forwards
+        // `SIGS_SIGNAL_RECEIVED` with num=SIGTERM (C pm/signal.c:470-473,
+        // rs/main.c:699-701). C `uds_signal` (uds.c:1357-1360):
+        // `uds_running = FALSE; if (uds_in_use == 0) sef_cancel();` — with nobody
+        // using the socket, cancel the pending receive,
+        // the library returns EINTR at the top of the loop (sef.c:161-162), and the
+        // loop leaves immediately without serving another frame.
+        // This tree matches that C end state: the callback sets the termination bit
+        // and cancels, `Err(EINTR) => continue` reaches the loop top, the termination
+        // path runs, keep_running is false because of
+        // terminated, and the loop exits. If either the escape hatch or the draining
+        // gate fails, the library swallows the frame and goes on to receive CLOCK
+        // (clocks becomes 1), turning this assertion red.
         let mut ipc = ScriptedIpc::new(&[
             (CALL_NOTIFY, RS, RS_INIT, None),
             (
@@ -359,7 +383,7 @@ mod tests {
         ]);
         let mut handler = RecordingHandler {
             stop_after: 1,
-            in_flight: false, // 闲：uds_in_use == 0
+            in_flight: false, // idle: uds_in_use == 0
             ..Default::default()
         };
         let mut table = SockTable::new();
@@ -370,10 +394,12 @@ mod tests {
 
     #[test]
     fn test_manager_sigterm_with_client_in_flight_drains_first() {
-        // 终止的真形状（忙）：有在途客户端时 C 不调 sef_cancel
-        // （uds.c:1358-1360 的 `uds_in_use == 0` 门）——循环继续收着把在途
-        // 的排完，靠 while 条件退出。本树同形：不取消 → 库吞信号帧后送来
-        // 下一帧（时钟 tick）照常服务，随后循环顶走终止路退出。
+        // The real termination shape (busy): with clients in flight C does not call
+        // sef_cancel (the `uds_in_use == 0` gate at uds.c:1358-1360) — the loop keeps
+        // receiving and drains what is in flight, exiting via the while condition.
+        // This tree matches: no cancel → after the library swallows the signal frame
+        // it delivers the next frame (the clock tick), which is served as usual, and
+        // the loop top then takes the termination path and exits.
         let mut ipc = ScriptedIpc::new(&[
             (CALL_NOTIFY, RS, RS_INIT, None),
             (
@@ -386,7 +412,7 @@ mod tests {
         ]);
         let mut handler = RecordingHandler {
             stop_after: 1,
-            in_flight: true, // 忙：uds_in_use > 0
+            in_flight: true, // busy: uds_in_use > 0
             ..Default::default()
         };
         let mut table = SockTable::new();

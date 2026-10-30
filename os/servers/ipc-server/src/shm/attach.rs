@@ -359,10 +359,10 @@ pub fn record_attach(
 /// C: shm.c:228-229 — and read carefully: the refreshed field is
 /// `shm_atime`, NOT `shm_dtime`. That looks like a bug and is not one we
 /// are allowed to fix: the ground truth updates the *attach* timestamp on
-/// the detach path, and document 08 records it as-is (2.2 节). Rewriting
+/// the detach path, and document 08 records it as-is (section 2.2). Rewriting
 /// it to `detach_time` would change observable behavior (`ipcs -p`'s
 /// ATIME column becomes DTIME) — a translate-adjacent "fix" this codebase
-/// declines (13-stage-ipc/todo.md IPC-P1-5).
+/// declines (recorded in `13-stage-ipc/todo.md`).
 pub fn record_detach(
     table: &mut ShmTable,
     index: usize,
@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn apply_set_keeps_alloc_bit() {
         // C: shm.c:322-327 — owner replaced, permission lanes swapped under
-        // the status bits, ctime refreshed (IPC-P1-3). The draft's
+        // the status bits, ctime refreshed. The draft's
         // non-permission bit (0o1000) must be dropped.
         let mut table = one_segment();
         let options = SetOptions {
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn mark_destroy_sets_pending_bit() {
         // C: shm.c:330-336 — RMID sets SHM_DEST; the slot survives the
-        // mark, only the sweep frees it (IPC-P1-4).
+        // mark, only the sweep frees it.
         let mut table = one_segment();
         mark_destroy(&mut table, 0).unwrap();
         let seg = table.get(0).unwrap();
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn record_detach_refreshes_atime_not_dtime() {
         // C: shm.c:228-229 — the detach path refreshes shm_ATIME (the C
-        // quirk, kept on purpose; IPC-P1-5). detach_time is never written.
+        // quirk, kept on purpose). detach_time is never written.
         let mut table = one_segment();
         record_detach(&mut table, 0, 88, 111).unwrap();
         let seg = table.get(0).unwrap();

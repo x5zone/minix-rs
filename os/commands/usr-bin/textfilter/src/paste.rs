@@ -1,28 +1,35 @@
 //! Stream merging for `paste`.
 //!
 //! Ground truth: `minix3/usr.bin/paste/paste.c` (NetBSD):
-//! `paste [-s] [-d list] file ...`. 环写作 `paste.c:70` 的
-//! `while ((ch = getopt(argc, argv, "d:s")) != -1)`，而 `paste.c:80-82` 的
-//! `case '?': default: usage();` 是**在环里直接退出**的——这一点让它与同族的
-//! `seq`（`errflg++` 之后环继续扫）正相反：本支的环**只可能累积一行** libc 报文——`jot` 也在这
-//! 一列里（`jot.c:150-152` 是 `default: usage();`，参照件现量 `-ZQ` 与 `-Z -Q` 都只报 `Z`）。
+//! `paste [-s] [-d list] file ...`. The loop is written as `paste.c:70`'s
+//! `while ((ch = getopt(argc, argv, "d:s")) != -1)`, and `paste.c:80-82`'s
+//! `case '?': default: usage();` **exits right inside the loop** — which makes it
+//! the exact opposite of its sibling `seq` (which does `errflg++` and keeps
+//! scanning): this branch's loop **can accumulate only one** libc report line —
+//! `jot` sits in the same column (`jot.c:150-152` is `default: usage();`; the
+//! reference measures both `-ZQ` and `-Z -Q` reporting only `Z`).
 //!
-//! 分隔符表由 `tr()`（`paste.c:199-226`）就地转换并计数：`\n`、`\t`、`\0` 三个转义，
-//! **认不出的转义把反斜杠丢掉**（`default: *arg = ch;`，与 `seq` 的 `unescape` 相反），
-//! 表为空则 `errx(1, "no delimiters specified.")`。表里的每一项是**一个字节**，
-//! 值为 0 的那项照样占一个位但什么都不打（`if (ch) putchar(ch)`），所以
-//! `-d '\0'` 是「两列之间不留任何东西」而不是「少一列」。
+//! The delimiter table is converted and counted in place by `tr()` (`paste.c:199-226`):
+//! three escapes `\n`, `\t`, `\0`, and an **unrecognized escape drops the
+//! backslash** (`default: *arg = ch;`, the opposite of `seq`'s `unescape`); an
+//! empty table yields `errx(1, "no delimiters specified.")`. Each item in the
+//! table is **one byte**; a zero-valued item still occupies a slot but prints
+//! nothing (`if (ch) putchar(ch)`), so `-d '\0'` means "nothing between the two
+//! columns", not "one fewer column".
 
 use alloc::vec;
 use alloc::vec::Vec;
 
-/// 一列之间的分隔符位：`None` 表示这一位存在但打不出东西（`-d '\0'` 那一项）。
+/// One inter-column delimiter slot: `None` means the slot exists but prints
+/// nothing (the `-d '\0'` item).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasteOptions {
-    /// 分隔符表（按字节），环内由 [`tr_delims`] 转换并计数；没给 `-d` 时是
-    /// 一个制表符（C 的 `dflt_delim`，`paste.c:61-63`）。
+    /// The delimiter table (by byte), converted and counted in the loop by
+    /// [`tr_delims`]; without `-d` it is one tab (C's `dflt_delim`,
+    /// `paste.c:61-63`).
     pub delimiters: Vec<u8>,
-    /// `-s`：把每个操作数的行**顺序**并成一行，而不是跨操作数并行合并。
+    /// `-s`: merge each operand's lines **in sequence** into one line instead of
+    /// merging in parallel across operands.
     pub serial: bool,
 }
 
@@ -35,42 +42,52 @@ impl Default for PasteOptions {
     }
 }
 
-/// 环跑完之后手上有的东西。
+/// What is on hand once the loop has run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasteArgs<'a> {
     pub options: PasteOptions,
-    /// 环**不重排**：第一个不是选项的 token 及其后所有 token 都是操作数
-    /// （`paste.c:85-86` 的 `argc -= optind; argv += optind;`）。
+    /// The loop **does not reorder**: the first non-option token and every token
+    /// after it are operands (`argc -= optind; argv += optind;` at
+    /// `paste.c:85-86`).
     pub operands: Vec<&'a [u8]>,
 }
 
-/// 前门的错，按 C 的出口分两支。
+/// Front-door errors, split into two branches per C's exits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasteError {
-    /// 集外字母或 `-d` 缺值：libc 先印一行，紧跟一行 usage，退 1（`paste.c:80-82`、`:229-233`）。
-    /// 本支的环在这里就退出，所以 `reports` 至多一条。
+    /// An option letter outside the set, or `-d` missing its value: libc prints
+    /// one line followed immediately by one usage line, exit 1
+    /// (`paste.c:80-82`, `:229-233`). This branch's loop exits right here, so
+    /// `reports` holds at most one entry.
     Usage { reports: Vec<crate::GetoptReport> },
-    /// `-d ''`：`tr()` 数到零个分隔符（`paste.c:221-223`），`errx(1, "no delimiters specified.")`，
-    /// 句子**自带句号**且不带 `strerror`。
+    /// `-d ''`: `tr()` counts zero delimiters (`paste.c:221-223`),
+    /// `errx(1, "no delimiters specified.")`; the sentence **carries its own
+    /// period** and no `strerror`.
     NoDelimiters,
 }
 
-/// `paste.c:70` 的选项环 + 操作数判定。`optstring` 是 `"d:s"`：`d` 带值，`s` 是旗标。
+/// The option loop of `paste.c:70` plus the operand decision. `optstring` is
+/// `"d:s"`: `d` takes a value, `s` is a flag.
 ///
-/// 三处与同族不同，都经参照件现量（`tmp/paste-321/measure.log`）：
-/// ① 环在**第一个**坏字母处就退出（`usage()` 在 `switch` 里被直接调用），于是
-///    `paste -sZ` 只有一行 libc 加一行 usage，`-d ''` 之后跟着坏字母时报的是「没有分隔符」
-///    而不是集外字母——错误出口的**先后**就是扫描的先后；
-/// ② 操作数**没有个数判**：`paste` 不带操作数既不读标准输入也不报错，退 0 打空；
-/// ③ `-d` 的值可以紧贴本 token（`-d,`、`-ds` 的 `s` 是值而不是旗标）。
+/// Three points differ from the siblings, all measured against the reference:
+/// ① the loop exits at the **first** bad letter (`usage()` is called directly
+///    inside the `switch`), so `paste -sZ` prints one libc line plus one usage
+///    line, and a bad letter after `-d ''` reports "no delimiters" rather than
+///    the unknown letter — the **order** of the error exits is the order of the
+///    scan;
+/// ② operands have **no count check**: `paste` with no operand neither reads
+///    standard input nor errors; it exits 0 printing nothing;
+/// ③ the `-d` value may be attached to this token (`-d,`; in `-ds` the `s` is
+///    the value, not a flag).
 pub fn parse_paste_args<'a>(args: &[&'a [u8]]) -> Result<PasteArgs<'a>, PasteError> {
     const OPTSTRING: &[u8] = b"d:s";
     let mut options = PasteOptions::default();
     let mut i = 0usize;
     while i < args.len() {
         let token = args[i];
-        // `getopt.c:74-78`：首字符不是 `-`（或整个 token 就是一个 `-`）⇒ 收环且不推进 `optind`；
-        // `getopt.c:81-85`：`--` 结束环并吃掉自身。
+        // `getopt.c:74-78`: the first character is not `-` (or the whole token is
+        // a single `-`) ⇒ end the loop and do not advance `optind`;
+        // `getopt.c:81-85`: `--` ends the loop and consumes itself.
         if token.len() < 2 || token[0] != b'-' {
             break;
         }
@@ -83,7 +100,8 @@ pub fn parse_paste_args<'a>(args: &[&'a [u8]]) -> Result<PasteArgs<'a>, PasteErr
             let letter = token[k];
             k += 1;
             let Some(slot) = OPTSTRING.iter().position(|&o| o == letter && o != b':') else {
-                // `getopt.c:95-104` 印那一行，随后 C 的 `default: usage()` 立刻退出
+                // `getopt.c:95-104` prints that line; C's `default: usage()` then
+                // exits immediately
                 return Err(PasteError::Usage {
                     reports: vec![crate::GetoptReport::UnknownOption(char::from(letter))],
                 });
@@ -104,8 +122,9 @@ pub fn parse_paste_args<'a>(args: &[&'a [u8]]) -> Result<PasteArgs<'a>, PasteErr
                         }
                     }
                 };
-                // `tr(delim)` 就在 `case 'd'` 里跑（`paste.c:73-75`），所以空表在这一刻就退出，
-                // 后面的字母与操作数都轮不到。
+                // `tr(delim)` runs right inside `case 'd'` (`paste.c:73-75`), so
+                // an empty table exits at this instant and the remaining letters
+                // and operands never get their turn.
                 options.delimiters = tr_delims(value)?;
                 i += 1;
                 break;
@@ -124,8 +143,10 @@ pub fn parse_paste_args<'a>(args: &[&'a [u8]]) -> Result<PasteArgs<'a>, PasteErr
     })
 }
 
-/// C 的 `tr()`：就地转换 `\n`、`\t`、`\0`，认不出的转义**丢掉反斜杠**留下后随字符，
-/// 返回**位数**（值 0 的那项照样计一位）。空串 ⇒ [`PasteError::NoDelimiters`]。
+/// C's `tr()`: convert `\n`, `\t`, `\0` in place; an unrecognized escape
+/// **drops the backslash** and keeps the character that follows; return the
+/// **slot count** (a zero-valued item still counts as one slot). The empty
+/// string ⇒ [`PasteError::NoDelimiters`].
 pub fn tr_delims(list: &[u8]) -> Result<Vec<u8>, PasteError> {
     let bytes = list;
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -137,8 +158,9 @@ pub fn tr_delims(list: &[u8]) -> Result<Vec<u8>, PasteError> {
             out.push(byte);
             continue;
         }
-        // 串尾的反斜杠：C 的 `(ch = *p++)` 读到那个 `\0` 就**结束整个循环**，
-        // 反斜杠自己不成一项（`paste.c:204` 的循环条件）。
+        // A trailing backslash: C's `(ch = *p++)` reads that `\0` and **ends the
+        // whole loop**, so the backslash itself never becomes an item (the loop
+        // condition at `paste.c:204`).
         let Some(&esc) = bytes.get(i) else { break };
         i += 1;
         out.push(match esc {
@@ -154,23 +176,30 @@ pub fn tr_delims(list: &[u8]) -> Result<Vec<u8>, PasteError> {
     Ok(out)
 }
 
-/// 第 `gap` 个分隔符位的**字节**（表按位循环）。值为 0 的那位与空表都返回 `None`——
-/// C 的 `if (ch) putchar(ch)`（`paste.c:131-133`、`:148-150`、`:184-185`）就是
-/// 「占一位而不打任何东西」。交回 `u8` 而不是 `char`：`putchar` 收的是那一字节本身，
-/// 经 `char` 域再落进 `String` 会把裸 `ff` 写成 `c3 bf` 两字节。
+/// The **byte** of the `gap`-th delimiter slot (the table cycles by slot). A
+/// zero-valued slot and an empty table both return `None` — C's
+/// `if (ch) putchar(ch)` (`paste.c:131-133`, `:148-150`, `:184-185`) is exactly
+/// "occupy a slot and print nothing". Returns `u8` rather than `char`:
+/// `putchar` takes that byte itself, and routing it through a `char` field into
+/// a `String` would write a bare `ff` as the two bytes `c3 bf`.
 fn delimiter_byte(delimiters: &[u8], gap: usize) -> Option<u8> {
     let byte = *delimiters.get(gap % delimiters.len())?;
     if byte == 0 { None } else { Some(byte) }
 }
 
-/// 顺序模式（`-s`）：把一个流的行用循环的分隔符并成一行（`paste.c:177-191`）。
+/// Serial mode (`-s`): merge one stream's lines into one line using the cycling
+/// delimiters (`paste.c:177-191`).
 ///
-/// 这里的游标从表的**第一项**开始（与并行模式不同，见 [`join_parallel`]），
-/// 且每发出一个分隔符就前进一位、走满一轮回到表头；值为 0 的位不打印但仍然占位。
+/// The cursor here starts at the table's **first item** (unlike parallel mode,
+/// see [`join_parallel`]), advances one slot per emitted delimiter, and returns
+/// to the head after a full cycle; a zero-valued slot prints nothing but still
+/// consumes a slot.
 ///
-/// 行与分隔符都是字节：C 的 `sequential` 用 `fgets` 拿行、`printf("%s", buf)` 发行内容
-/// （`paste.c:175-191`），全程不解码，所以一个非 UTF-8 字节照样留在它那一行的原位
-/// （值为 0 的字节是那一条腿的另一件事：`%s` 在那里截断，另册登记）。
+/// Lines and delimiters are all bytes: C's `sequential` takes lines with `fgets`
+/// and emits line content with `printf("%s", buf)` (`paste.c:175-191`), decoding
+/// nothing throughout, so a non-UTF-8 byte stays in its original place on that
+/// line (a zero byte is a separate matter on that leg: `%s` truncates there,
+/// registered elsewhere).
 pub fn join_serial(lines: &[&[u8]], options: &PasteOptions) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     for (index, line) in lines.iter().enumerate() {
@@ -185,30 +214,39 @@ pub fn join_serial(lines: &[&[u8]], options: &PasteOptions) -> Vec<u8> {
     out
 }
 
-/// 并行模式：每行从每**列**各取一行（`paste.c:111-140`）。
+/// Parallel mode: each row takes one line from each **column** (`paste.c:111-140`).
 ///
-/// `columns[k]` 是第 `k` 列指向的**已打开的流**（`fpp[cnt]`）：同一个流可以出现在多列上，
-/// 此时它们**共用一个游标**——参照件 `paste - -`（两列都是 stdin）对 `p\nq\n` 打的是
-/// `p\tq\n`（一行两列各取一行），而两次 `open` 同一个档名是两个游标
-/// （`paste a.txt a.txt` 打 `1\t1`，实测同形）。
+/// `columns[k]` is the **already-open stream** that column `k` points at
+/// (`fpp[cnt]`): the same stream may appear in several columns, and then they
+/// **share one cursor** — the reference `paste - -` (both columns stdin) on
+/// `p\nq\n` prints `p\tq\n` (one row, one line per column), whereas opening the
+/// same file twice yields two cursors (`paste a.txt a.txt` prints `1\t1`,
+/// measured to the same shape).
 ///
-/// 游标的起点是**表尾那个 NUL**（`dp = delim + delimcnt`，`paste.c:112`），所以每行第一列
-/// 之前补的那一位是打不出东西的 NUL，从第二列起才用到 `delim[0]`。更要紧的是两处补齐：
-/// 某条流提前见底时，后面的列会**为见底的那一列也补一个分隔符**（`paste.c:127-133` 的
-/// 「追平」环按列号而不是按实际发出数走），行尾再给剩下的每一列各补一个
-/// （`paste.c:144-150`）。参照件 `paste -d '+:' a.txt b.txt a.txt`（a 三行、b 两行）
-/// 的第三行是 `3+:3`：`+` 是给见底的 b 补的，`:` 才是第三列自己前面的那一位。
+/// The cursor starts at the **NUL past the table's end** (`dp = delim + delimcnt`,
+/// `paste.c:112`), so the slot padded before the first column of each row is a
+/// NUL that prints nothing, and `delim[0]` is first used from the second column
+/// on. More to the point, there are two padding rules: when some stream runs out
+/// early, the following columns **pad a delimiter for the exhausted column too**
+/// (`paste.c:127-133`'s "catch-up" loop walks by column number, not by how many
+/// were actually emitted), and at end of line each remaining column gets one more
+/// (`paste.c:144-150`). The reference `paste -d '+:' a.txt b.txt a.txt` (a has
+/// three lines, b two) gives `3+:3` for the third row: the `+` is padded for the
+/// exhausted b, and the `:` is the slot in front of the third column itself.
 ///
-/// 行与分隔符都是字节（同 [`join_serial`]）：`parallel` 的 `fgetln` 拿到含换行的整行
-/// （`paste.c:121`），减掉末尾那枚换行（`:138-139`），再按**量出来的长度**发出
-/// （`:140` 的 `printf("%.*s", (int)line_len, line)`）——长度由 `fgetln` 交回，不由编码算出。
+/// Lines and delimiters are bytes (as in [`join_serial`]): `parallel`'s `fgetln`
+/// returns the whole line including its newline (`paste.c:121`), the trailing
+/// newline is subtracted (`:138-139`), and the line is emitted at the **measured
+/// length** (`printf("%.*s", (int)line_len, line)` at `:140`) — the length comes
+/// from `fgetln`, not from an encoding calculation.
 pub fn join_parallel(columns: &[usize], sources: &[&[&[u8]]], options: &PasteOptions) -> Vec<u8> {
     let slots = &options.delimiters;
     let count = slots.len();
     let mut out: Vec<u8> = Vec::new();
     let mut cursor: Vec<usize> = vec![0; sources.len()];
     loop {
-        // C 的 `dp`：从「表尾之后」开始，读到那里就当作 NUL 并回卷到表头
+        // C's `dp`: start "past the table's end", treat landing there as NUL and
+        // wrap to the table head
         let mut dp = count;
         let mut output = 0usize;
         let mut cnt = 0usize;
@@ -258,7 +296,8 @@ pub fn join_parallel(columns: &[usize], sources: &[&[&[u8]]], options: &PasteOpt
     out
 }
 
-/// 只要选项的一瞥（操作数由前门 [`parse_paste_args`] 给出）。
+/// An options-only peek (operands are produced by the front door
+/// [`parse_paste_args`]).
 pub fn parse_args(args: &[&[u8]]) -> Result<PasteOptions, PasteError> {
     Ok(parse_paste_args(args)?.options)
 }
@@ -273,21 +312,22 @@ mod tests {
 
     #[test]
     fn test_ring_only_says_once() {
-        // 集外字母：libc 一行 + usage，且**只有一行 libc**（`usage()` 在环里就退出）
+        // Unknown letter: one libc line + usage, and **only one libc line**
+        // (`usage()` exits inside the loop)
         assert_eq!(
             parse_paste_args(&["-Z".as_bytes(), "-h".as_bytes()]),
             Err(PasteError::Usage {
                 reports: vec![crate::GetoptReport::UnknownOption('Z')]
             })
         );
-        // `-d` 缺值走的是 libc 的第二种报文
+        // A missing `-d` value takes libc's second report form
         assert_eq!(
             parse_paste_args(&["-d".as_bytes()]),
             Err(PasteError::Usage {
                 reports: vec![crate::GetoptReport::MissingValue('d')]
             })
         );
-        // 坏字母排在好字母之后也一样只报坏的那个
+        // A bad letter after good ones also reports only the bad one
         assert_eq!(
             parse_paste_args(&["-sZ".as_bytes(), "a.txt".as_bytes()]),
             Err(PasteError::Usage {
@@ -298,12 +338,13 @@ mod tests {
 
     #[test]
     fn test_error_order_follows_the_scan() {
-        // `-d ''` 在环内就撞上 `tr()` ⇒ 「没有分隔符」先报，后面的集外字母轮不到
+        // `-d ''` hits `tr()` inside the loop ⇒ "no delimiters" is reported
+        // first, the later unknown letter never gets its turn
         assert_eq!(
             parse_paste_args(&["-d".as_bytes(), "".as_bytes(), "-Z".as_bytes()]),
             Err(PasteError::NoDelimiters)
         );
-        // 反过来，坏字母在前时就轮不到 `-d`
+        // Conversely, with the bad letter first, `-d` never gets its turn
         assert_eq!(
             parse_paste_args(&["-Z".as_bytes(), "-d".as_bytes(), "".as_bytes()]),
             Err(PasteError::Usage {
@@ -314,21 +355,24 @@ mod tests {
 
     #[test]
     fn test_operands_are_not_reordered() {
-        // 第一个非选项 token 及其后一切全是操作数：`paste a.txt -s` 的 `-s` 是第二个档名
+        // The first non-option token and everything after it are operands: in
+        // `paste a.txt -s` the `-s` is the second file name
         let parsed = args(&["a.txt".as_bytes(), "-s".as_bytes()]);
         assert_eq!(parsed.operands, vec!["a.txt".as_bytes(), "-s".as_bytes()]);
         assert!(!parsed.options.serial);
-        // `--` 结束环且自身不是操作数
+        // `--` ends the loop and is not itself an operand
         let parsed = args(&["--".as_bytes(), "-s".as_bytes()]);
         assert_eq!(parsed.operands, vec!["-s".as_bytes()]);
-        // 裸 `-` 是操作数（C 拿它当标准输入），且它**不**结束环之前的扫描
+        // A bare `-` is an operand (C treats it as standard input), and it does
+        // **not** end the scan before the loop
         let parsed = args(&["-".as_bytes(), "b.txt".as_bytes()]);
         assert_eq!(parsed.operands, vec!["-".as_bytes(), "b.txt".as_bytes()]);
     }
 
     #[test]
     fn test_no_operand_is_not_an_error() {
-        // C 对零个操作数既不读标准输入也不报错：退 0 打空（`paste.c:88-92` 把 argc 交给 parallel）
+        // C neither reads standard input nor errors on zero operands: exit 0
+        // printing nothing (`paste.c:88-92` hands argc to parallel)
         let parsed = args(&[]);
         assert!(parsed.operands.is_empty());
         assert_eq!(parsed.operands.len(), 0);
@@ -338,14 +382,14 @@ mod tests {
 
     #[test]
     fn test_attached_values_and_clusters() {
-        // `-d,` 的值紧贴本 token
+        // The value of `-d,` is attached to this token
         let parsed = args(&["-d,".as_bytes(), "a.txt".as_bytes()]);
         assert_eq!(parsed.options.delimiters, vec![b',']);
-        // `-ds`：`s` 是 `d` 的值，不是旗标
+        // `-ds`: the `s` is `d`'s value, not a flag
         let parsed = args(&["-ds".as_bytes(), "a.txt".as_bytes()]);
         assert_eq!(parsed.options.delimiters, vec![b's']);
         assert!(!parsed.options.serial);
-        // 值取自下一个 token 时，`optind` 要越过它
+        // When the value comes from the next token, `optind` must step over it
         let parsed = args(&[
             "-s".as_bytes(),
             "-d".as_bytes(),
@@ -365,13 +409,14 @@ mod tests {
     fn test_tr_matches_the_c_table() {
         assert_eq!(tr_delims(b"\\n".as_slice()).unwrap(), vec![b'\n']);
         assert_eq!(tr_delims(b"\\t".as_slice()).unwrap(), vec![b'\t']);
-        // `\0` 是一**位**，值为 0
+        // `\0` is one **slot** with value 0
         assert_eq!(tr_delims(b"\\0".as_slice()).unwrap(), vec![0]);
-        // 认不出的转义丢掉反斜杠（与 `seq` 的 unescape 相反）
+        // An unrecognized escape drops the backslash (the opposite of `seq`'s
+        // unescape)
         assert_eq!(tr_delims(b"\\q".as_slice()).unwrap(), vec![b'q']);
-        // `a\0b` 是三位：'a'、值为 0 的一位、'b'
+        // `a\0b` is three slots: 'a', a zero-valued one, 'b'
         assert_eq!(tr_delims(b"a\\0b".as_slice()).unwrap(), vec![b'a', 0, b'b']);
-        // 串尾孤零零一个反斜杠：反斜杠不成位
+        // A lone trailing backslash: the backslash never becomes a slot
         assert_eq!(tr_delims(b"x\\".as_slice()).unwrap(), vec![b'x']);
         assert_eq!(tr_delims(b"".as_slice()), Err(PasteError::NoDelimiters));
         assert_eq!(tr_delims(b"\\".as_slice()), Err(PasteError::NoDelimiters));
@@ -385,14 +430,15 @@ mod tests {
         };
         let four: [&[u8]; 4] = [b"a", b"b", b"c", b"d"];
         assert_eq!(join_serial(&four, &options), b"a+b:c+d\n".as_slice());
-        // 值为 0 的一位照样占位但什么都不打
+        // A zero-valued slot still occupies a slot but prints nothing
         let options = PasteOptions {
             delimiters: vec![0],
             serial: true,
         };
         let three: [&[u8]; 3] = [b"a", b"b", b"c"];
         assert_eq!(join_serial(&three, &options), b"abc\n".as_slice());
-        // 空流：C 的 sequential 一个字符都不打（连换行也没有）
+        // Empty stream: C's sequential prints not a single character (not even a
+        // newline)
         let options = PasteOptions::default();
         assert_eq!(join_serial(&[], &options), b"".as_slice());
     }
@@ -405,13 +451,15 @@ mod tests {
             delimiters: vec![b'+', b':'],
             serial: false,
         };
-        // 第三行：b 见底 ⇒ `+` 是给 b 补的，`:` 才是第三列前面那一位（参照件同形）
+        // Third row: b is exhausted ⇒ the `+` is padded for b, the `:` is the
+        // slot in front of the third column (same shape in the reference)
         let c: [&[u8]; 3] = [b"x", b"y", b"z"];
         assert_eq!(
             join_parallel(&[0, 1, 2], &[&a[..], &b[..], &c[..]], &options),
             b"1+a:x\n2+b:y\n3+:z\n".as_slice()
         );
-        // 两列共用一个流（`paste - -` 的形状）：游标只有一个
+        // Two columns share one stream (the `paste - -` shape): there is only
+        // one cursor
         assert_eq!(
             join_parallel(&[0, 0], &[&a[..]], &options),
             b"1+2\n3+\n".as_slice()
@@ -431,7 +479,8 @@ mod tests {
 
     #[test]
     fn test_nul_slot_still_counts_as_a_gap() {
-        // `-d '\0'`：两列之间不留任何东西，但占一位（参照件 `1a\n2b\n3\n`）
+        // `-d '\0'`: nothing between the two columns, but the slot is occupied
+        // (reference `1a\n2b\n3\n`)
         let options = PasteOptions {
             delimiters: vec![0],
             serial: false,
@@ -442,7 +491,8 @@ mod tests {
             join_parallel(&[0, 1], &[&a[..], &b[..]], &options),
             b"1a\n2b\n3\n".as_slice()
         );
-        // `a\0b` 三位时，两列的第一位是 'a' ⇒ `1aa`（b 的首行本身就是一个 `a`）
+        // With three slots `a\0b`, the first slot for both columns is 'a' ⇒
+        // `1aa` (b's first line is itself an `a`)
         let options = PasteOptions {
             delimiters: vec![b'a', 0, b'b'],
             serial: false,
@@ -453,9 +503,10 @@ mod tests {
         );
     }
 
-    /// 分隔符位发出的是一**字节**：`putchar` 收下表项本身（`paste.c:131-133`、`:148-150`、`:184-185`），
-    /// 裸 `ff` 写出去就是 `ff`。旧写法 `slots[dp] as char` 把它升成 U+00FF，落进 `String`
-    /// 变成 `c3 bf` 两字节——比 C 多一字节。
+    /// A delimiter slot emits one **byte**: `putchar` takes the table item
+    /// itself (`paste.c:131-133`, `:148-150`, `:184-185`), so a bare `ff` goes
+    /// out as `ff`. The old spelling `slots[dp] as char` promoted it to U+00FF,
+    /// which lands in a `String` as the two bytes `c3 bf` — one byte more than C.
     #[test]
     fn a_delimiter_slot_is_one_byte_not_a_codepoint() {
         let left: [&[u8]; 1] = [b"p"];
@@ -476,9 +527,10 @@ mod tests {
         assert_eq!(join_serial(&both, &options), b"p\xffq\n".as_slice());
     }
 
-    /// 行内容里的非 UTF-8 字节照常是那一行的字节：旧写法在壳里
-    /// `from_utf8(input).unwrap_or("")` 让整个档的行一起消失（现量见
-    /// `tmp/paste-comm-434/ab.log`：参照件打 `a\xffb\ta\xffb`，本壳交回空）。
+    /// Non-UTF-8 bytes in the line content stay the bytes of that line: the old
+    /// shell spelling `from_utf8(input).unwrap_or("")` made every line of the
+    /// whole file vanish (measured: the reference prints `a\xffb\ta\xffb`,
+    /// while this shell returned empty).
     #[test]
     fn a_byte_that_is_not_utf8_is_still_part_of_the_line() {
         let options = PasteOptions::default();
@@ -507,11 +559,15 @@ mod tests {
         );
     }
 
-    /// 集外字母那一行的字母位是 argv 里的**那一枚字节**：`minix3/lib/libc/stdlib/getopt.c:79`
-    /// 的 `optopt = *place++` 取的是字节，`minix3/usr.bin/paste/paste.c:80-82` 的
-    /// `default: usage()` 就地退出，所以一枚裸 `ff` 只有一个字母位可报。参数缝按字节交回之后
-    /// 这一条腿不再经过 `from_utf8_lossy`——旧写法把 `ff` 折叠成 `ef bf bd`，报文里因此是 `ef`；
-    /// 参照件 `tmp/paste-321/paste_ref` 现量同为单个 `ff`（`tmp/argv-441/measure-ref.log`）。
+    /// The letter position of the unknown-letter line is **that one byte** in
+    /// argv: `optopt = *place++` at
+    /// `minix3/lib/libc/stdlib/getopt.c:79` takes a byte, and
+    /// `minix3/usr.bin/paste/paste.c:80-82`'s `default: usage()` exits on the
+    /// spot, so a bare `ff` has only one letter position to report. Since the
+    /// argument seam hands bytes through, this leg no longer passes through
+    /// `from_utf8_lossy` — the old spelling folded `ff` into `ef bf bd`, which is
+    /// why `ef` appeared in the report; the reference measures a single `ff` as
+    /// well.
     #[test]
     fn parse_paste_names_a_raw_ff_option_letter_by_that_byte() {
         let flag: Vec<u8> = [b"-".as_slice(), b"\xff".as_slice()].concat();
@@ -532,10 +588,12 @@ mod tests {
         );
     }
 
-    /// `-d` 的**值**同样是一串字节：C 的 `tr()` 按位扫过那张表（`paste.c:199-226`），
-    /// 非 UTF-8 字节只是表里的**一位**。旧写法经 lossy 把一枚 `ff` 变成 `ef bf bd` **三位**，
-    /// 于是 `paste -d\xff a.txt b.txt` 交出 `1\xefa`（`ef` 用在这一行，`bf`、`bd` 轮到后面
-    /// 两行），参照件现量是每行一枚 `ff`。
+    /// The `-d` **value** is likewise a byte string: C's `tr()` scans that table
+    /// slot by slot (`paste.c:199-226`), so a non-UTF-8 byte is just **one slot**
+    /// in the table. The old spelling went through lossy decoding and turned one
+    /// `ff` into the **three** bytes `ef bf bd`, so `paste -d\xff a.txt b.txt`
+    /// yielded `1\xefa` (`ef` was used on that line, `bf` and `bd` fell to the
+    /// next two lines), whereas the reference measures one `ff` per line.
     #[test]
     fn parse_paste_keeps_a_nonutf8_delimiter_byte_as_one_slot() {
         let attached: Vec<u8> = [b"-d".as_slice(), b"\xff".as_slice()].concat();
@@ -545,11 +603,11 @@ mod tests {
             parsed.operands,
             vec!["a.txt".as_bytes(), "b.txt".as_bytes()]
         );
-        // 紧贴 ASCII 时是**两位**：一枚 `ff`、一个 `+`
+        // Attached to ASCII it is **two slots**: one `ff`, one `+`
         let two: Vec<u8> = [b"-d".as_slice(), b"\xff".as_slice(), b"+".as_slice()].concat();
         let parsed = args(&[two.as_slice(), "a.txt".as_bytes()]);
         assert_eq!(parsed.options.delimiters, vec![0xff, b'+']);
-        // 值取自下一个 token 时同样按字节
+        // Taking the value from the next token is byte-wise as well
         let separate: Vec<u8> = [b"\xff".as_slice(), b"+".as_slice()].concat();
         let parsed = args(&["-d".as_bytes(), separate.as_slice(), "a.txt".as_bytes()]);
         assert_eq!(parsed.options.delimiters, vec![0xff, b'+']);

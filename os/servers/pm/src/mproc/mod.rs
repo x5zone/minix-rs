@@ -36,7 +36,8 @@
 
 mod constants;
 mod pid_gen;
-#[allow(clippy::module_inception)] // C 亦为 mproc.c/mproc.h：state 层与父模块同名是有意的分层命名
+#[allow(clippy::module_inception)] // C is mproc.c/mproc.h as well: the state layer
+// sharing the parent module's name is a deliberate layering choice
 mod mproc;
 mod table;
 mod lifecycle;

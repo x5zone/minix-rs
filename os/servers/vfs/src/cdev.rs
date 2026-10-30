@@ -18,8 +18,9 @@
 //! (`asynsend3`), waiting (`worker_wait`/`suspend`), and revival stay with
 //! the kernel side and 08/09; PFS node creation stays with 12.
 
-// CDEV 线上常量（R_BIT/W_BIT/NOCTTY/NONBLOCK/CLONED/CTTY）单一权威住
-// `minix_types::types::device`（edge E-DEVWIRE），经下方 use 消费。
+// The single authority for the CDEV wire constants (R_BIT/W_BIT/NOCTTY/
+// NONBLOCK/CLONED/CTTY) lives in `minix_types::types::device` (edge E-DEVWIRE)
+// and is consumed by the `use` below.
 pub use minix_types::{
     CDEV_CLONED, CDEV_CTTY, CDEV_NOCTTY, CDEV_NONBLOCK, CDEV_R_BIT, CDEV_W_BIT,
 };
@@ -151,27 +152,29 @@ pub fn access_bits(read: bool, write: bool, noctty: bool) -> u8 {
     acc
 }
 
-/// `CDEV_OPEN` 请求消息（C `cdev_opcl:198-208`：`memset` 之后填
-/// `minor` 与 `id`，开方向再填 `user` 与 `access`）。
+/// A `CDEV_OPEN` request message (C `cdev_opcl:198-208`: after `memset`, fill
+/// `minor` and `id`; the open direction then fills `user` and `access`).
 ///
-/// 偏移表 [`minix_types::lchardriver_openclose_off`]——`minor` **不在
-/// 首位**，`id`/`user` 在前；位次发错，驱动收到的就是次设备号 0。
+/// The offset table [`minix_types::lchardriver_openclose_off`] — `minor` is
+/// **not** first; `id`/`user` come first. With the wrong positions the driver
+/// reads a minor device number of 0.
 pub fn open_request(
     minor: u32,
     user: minix_types::Endpoint,
     access: u8,
 ) -> minix_types::Message {
     let mut m = minix_types::Message {
-        // `CdevRequest` 的判别值是 0..6 的**索引**（非线路类型号），
-        // `as i32` 会得到 0——驱动 `CdevRequest::decode(0)` 解不出、
-        // 归类 `Route::Other` 直接不回，VFS 卡等 CDEV_OPEN 回复（§1.105
-        // boot 死锁根因）。线路类型号 = base(0x400)+索引，必走
-        // `message_type()`（C `cdev_opcl:195` `m_type = op`）。
+        // The `CdevRequest` discriminant is an **index** in 0..6 (not a wire type
+        // number), and `as i32` would give 0 — the driver's
+        // `CdevRequest::decode(0)` fails, classifies it as `Route::Other` and
+        // never replies, so VFS waits forever for the CDEV_OPEN reply (§1.105, the
+        // root cause of the boot deadlock). Wire type number = base(0x400) + index,
+        // so `message_type()` is mandatory (C `cdev_opcl:195` `m_type = op`).
         m_type: minix_chardriver::protocol::CdevRequest::Open.message_type(),
         ..minix_types::Message::default()
     };
-    // SAFETY: `mess_vfs_lchardriver_openclose` 无专属 union 成员，按共享
-    // 偏移表写字节（ipc.h:2228-2235）。
+    // SAFETY: `mess_vfs_lchardriver_openclose` has no dedicated union member, so
+    // bytes are written through the shared offset table (ipc.h:2228-2235).
     unsafe {
         let raw = &mut m.m_u.raw;
         raw[minix_types::lchardriver_openclose_off::ID
@@ -496,11 +499,12 @@ mod tests {
         }
     }
 
-    /// §1.105 回归钉：`CDEV_OPEN` 的线路类型号必须是 `message_type()`
-    /// （base 0x400 + 索引 0），**不是**枚举判别值 `as i32`（=0）。曾犯
-    /// `as i32` 使驱动 `CdevRequest::decode(0)` 归类 `Route::Other` 直接
-    /// 不回，VFS 永等 CDEV_OPEN 回复 → boot 死锁。同时钉 payload 布局
-    /// （id/user=端点、minor 第三位、access 第四位）。
+    /// §1.105 regression pin: the `CDEV_OPEN` wire type number must be
+    /// `message_type()` (base 0x400 + index 0), **not** the enum discriminant
+    /// `as i32` (= 0). `as i32` used to make the driver's
+    /// `CdevRequest::decode(0)` classify as `Route::Other` and never reply, so VFS
+    /// waited forever for the CDEV_OPEN reply → boot deadlock. The payload layout is
+    /// pinned too (id/user = endpoint, minor third, access fourth).
     #[test]
     fn test_open_request_wire_type_is_cdev_open_not_index() {
         use minix_chardriver::protocol::CdevRequest;
@@ -508,11 +512,12 @@ mod tests {
         let user = minix_types::Endpoint(0x800c);
         let access = (CDEV_R_BIT | CDEV_W_BIT) as u8;
         let m = open_request(3, user, access);
-        // 线路类型号 = 0x400，驱动侧能解回 Open（否则收到即丢、永不回复）。
+        // Wire type number = 0x400, so the driver can decode Open (otherwise it
+        // drops the message and never replies).
         assert_eq!(m.m_type, minix_types::CDEV_REQUEST_BASE);
         assert_eq!(m.m_type, CdevRequest::Open.message_type());
         assert_eq!(CdevRequest::decode(m.m_type), Some(CdevRequest::Open));
-        // payload 四个 4 字节域逐格回读。
+        // The four 4-byte payload fields are read back cell by cell.
         let raw = unsafe { m.m_u.raw };
         let rd_i32 = |off: usize| i32::from_le_bytes(raw[off..off + 4].try_into().unwrap());
         let rd_u32 = |off: usize| u32::from_le_bytes(raw[off..off + 4].try_into().unwrap());

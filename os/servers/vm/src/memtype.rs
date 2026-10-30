@@ -4,7 +4,7 @@
 
 use minix_types::{Endpoint, VirBytes};
 use minix_arch::paging::PageFlags;
-// V12-P2-2 (判定闭合，2026-09-09): this "reverse" dependency on the process
+// (Decision closed, 2026-09-09): this "reverse" dependency on the process
 // table is C-parity, not layering drift — C's memtype.h callbacks take
 // `struct vmproc *vmp` directly (memtype.h:18/:21/:22), because the policy
 // hooks legitimately need cross-process lookup (shared_memory's getsrc) and
@@ -14,7 +14,7 @@ use crate::vmproc::{ActiveProc, VmProcTable};
 use crate::region::{PageFrames, PageSlot, PfnAllocator, PAGE_SIZE};
 use crate::page_cache::PageCache;
 
-// Callback status (V11/T31/T33 refresh): `ev_pagefault`, `ev_delete`,
+// Callback status: `ev_pagefault`, `ev_delete`,
 // `ev_unreference`, `ev_reference`, `ev_copy`, `writable` are all on live
 // production paths. `ev_new`/`ev_resize`/`ev_split`/`ev_low_shrink`/
 // `ev_sanitycheck`/`pt_flags` remain contract-complete but await their
@@ -37,7 +37,7 @@ pub(crate) trait MemType {
     }
 
     // C NULL → skip cleanup. Default no-op: framework releases resources.
-    // NOTE (G-V12-7): C's `shared_delete` decrements the *source* region's
+    // NOTE: C's `shared_delete` decrements the *source* region's
     // `remaps` across the process table. In minix-rs that step cannot live
     // here: the deletion funnels hold an `ActiveProc`/`ExitingProc` (an
     // exclusive `&mut VmProc`) for the slot being torn down, so a memtype
@@ -56,13 +56,13 @@ pub(crate) trait MemType {
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
 
     // All C types implement this (no NULL callback in memtype.h).
-    // **Required, no default** (V10-P1-3): a default `Ok(Handled)` made a
+    // **Required, no default**: a default `Ok(Handled)` made a
     // forgotten implementation silently "handle" page faults as no-ops —
     // no mapping, no error. `table` provides cross-process region lookup
     // (needed by SharedMemory); `alloc` provides page allocation for
     // memtypes that need to fault in pages from other regions (e.g.
     // SharedMemory's recursive source pagefault).
-    #[allow(clippy::too_many_arguments)] // V10-P2-1 (DEFERRED): fold into a PagefaultCtx struct when the cross-region fault path lands
+    #[allow(clippy::too_many_arguments)] // DEFERRED: fold into a PagefaultCtx struct when the cross-region fault path lands
     fn ev_pagefault(
         &self,
         _proc_endpoint: Endpoint,
@@ -220,7 +220,7 @@ pub(crate) enum MemTypeError {
     NoMemory,
     InvalidParam,
     NotSupported,
-    // V10-P2-1 (DEAD/DEFERRED): VFS IO failures propagate via
+    // DEAD/DEFERRED: VFS IO failures propagate via
     // `CowError`/`VfsQueueError` today; these variants are kept for the
     // future file-memtype fault-in path.
     #[allow(dead_code)]
@@ -265,7 +265,7 @@ pub(crate) struct AnonymousMemory;
 
 // SAFETY: shared through `&'static dyn MemType` statics (MEM_TYPE_*); the
 // structs hold no interior mutability and are only read via MemType
-// methods within the single-threaded VM server (V10-P1-3, cf. global.rs
+// methods within the single-threaded VM server (cf. global.rs
 // AssumeSyncCell rationale).
 unsafe impl Sync for AnonymousMemory {}
 
@@ -774,7 +774,7 @@ impl MemType for ContiguousAnonymous {
 
     /// C `anon_contig_resize` (mem_anon_contig.c:97) is a non-NULL callback
     /// that always returns ENOMEM — physically contiguous memory cannot grow
-    /// in place. SD-43: the [ARCH: A-12] resize fold would otherwise let the
+    /// in place. The [ARCH: A-12] resize fold would otherwise let the
     /// brk resize leg `extend` this region and succeed, diverging from C.
     fn rejects_in_place_resize(&self) -> bool {
         true
@@ -824,7 +824,7 @@ impl MemType for ContiguousAnonymous {
         // C: anon_contig_new (mem_anon_contig.c:78-96) — ONE
         // `alloc_mem(pages, allocflags)` request hands back a contiguous
         // run, and each page's phys address is base + offset. The Rust
-        // mirror is a single `alloc_contiguous(pages)` call (V12-P2-7):
+        // mirror is a single `alloc_contiguous(pages)` call:
         // the real allocator's backends return contiguous runs by
         // construction, so contiguity is guaranteed rather than
         // verified. (The former allocate-then-windows(2)-check lived
@@ -918,7 +918,7 @@ impl MemType for CacheMemory {
     }
 
     /// C `cache_resize` (mem_cache.c:83) is a non-NULL callback that always
-    /// returns ENOMEM — cache blocks cannot grow in place. SD-43: the
+    /// returns ENOMEM — cache blocks cannot grow in place. The
     /// [ARCH: A-12] resize fold would otherwise let the brk resize leg extend
     /// a cache region and succeed, diverging from C.
     fn rejects_in_place_resize(&self) -> bool {
@@ -971,7 +971,7 @@ impl MemType for CacheMemory {
         Err(MemTypeError::NotSupported)
     }
 
-    // V11/T28: no `ev_delete` override — C's `mem_type_cache.ev_delete`
+    // No `ev_delete` override — C's `mem_type_cache.ev_delete`
     // is NULL (cache cleanup lives in rmcache/the PageCache index). The
     // former override only cleared the removed `PbCache` param.
 
@@ -1105,8 +1105,8 @@ impl MemType for MappedFile {
                         //     `cow_block(…, clearend)` — copy the cached
                         //     frame into a PRIVATE anon page and zero the
                         //     `clearend` bytes past EOF; the cache's stale
-                        //     tail must never become visible (G-V12-11:
-                        //     clearend zeroing modeled as of 2026-09-09).
+                        //     tail must never become visible (clearend
+                        //     zeroing modeled as of 2026-09-09).
                         //   * write on a non-tail page: `cow_block(…, 0)` —
                         //     private copy without zeroing.
                         //   * read on a non-tail page: the link alone, OK.
@@ -1145,7 +1145,8 @@ impl MemType for MappedFile {
                         }
                     }
                     // One-shot hit or miss → VFS round-trip (C: mem_file.c:120
-                    // `!cb || !VMSF_ONCE` 的保守侧：不消费 one-shot 页)。
+                    // conservative side of `!cb || !VMSF_ONCE`: do not consume
+                    // one-shot pages).
                     _ => Ok(PagefaultResult::NeedVfsIo),
                 }
             }
@@ -1272,7 +1273,7 @@ mod tests {
 
     #[test]
     fn test_resize_predicates_match_mem_type_tables() {
-        // SD-43 / C ground truth (mem_type tables + region.c:1037).
+        // C ground truth (mem_type tables + region.c:1037).
         // supports_resize models "ev_resize field non-NULL"; the two facts are
         // orthogonal — anon_contig/cache are non-NULL (supports_resize) AND
         // always reject (rejects_in_place_resize → the callback returns ENOMEM).
@@ -1396,7 +1397,7 @@ mod tests {
         assert_eq!(result, Ok(PagefaultResult::NeedNewPage));
     }
 
-    /// G-V12-11: the region's LAST page (when `clearend > 0`) never serves
+    /// The region's LAST page (when `clearend > 0`) never serves
     /// the file tail from the shared cache frame — C `cow_block(…,
     /// clearend)` (mem_file.c:131-134, zeroing at :73-79) copies the cached
     /// frame into a private anon page and scrubs the bytes past EOF. A
@@ -1723,7 +1724,7 @@ mod tests {
 
     #[test]
     fn test_cache_pagefault_unmapped_slot_fails_closed() {
-        // V11/T28: cache regions are fully mapped at creation (eager
+        // Cache regions are fully mapped at creation (eager
         // MAPCACHE), so a fault on an unmapped slot is a contract
         // violation — the analog of C's
         // `assert(region->param.pb_cache)` (mem_cache.c:188) — and the
@@ -1833,7 +1834,7 @@ mod tests {
         assert_eq!(result, Err(MemTypeError::InvalidParam));
     }
 
-    // ── V11/T22 (V11-P2-2): ev_delete × 6 implementations ─────────────
+    // ── ev_delete × 6 implementations ────────────────────────────────
     //
     // C's `memtype.h` delete callbacks: anon/direct/shared/contig have no
     // delete hook (NULL); cache clears the cached PFN (PFN-model addition:
@@ -1862,7 +1863,7 @@ mod tests {
         assert!(matches!(region.param, VrParam::Direct { phys } if phys.0 == 0));
 
         // 5. CacheMemory — no-op delete (C ev_delete is NULL; cache
-        // cleanup lives in the PageCache index, V11/T28).
+        // cleanup lives in the PageCache index).
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
         MEM_TYPE_CACHE.ev_delete(&mut region);
         assert!(matches!(region.param, VrParam::Direct { phys } if phys.0 == 0));
@@ -1877,7 +1878,7 @@ mod tests {
         ));
     }
 
-    // ── V11/T22 (V11-P2-2): ContiguousAnonymous — the only previously
+    // ── ContiguousAnonymous — the only previously
     // untested implementation. Contract: post-creation mutation ops are
     // NotSupported, faults panic (all pages are pre-allocated in ev_new).
     #[test]
@@ -1898,7 +1899,7 @@ mod tests {
             Err(MemTypeError::NotSupported)
         );
 
-        let slot = PageSlot::Empty; // V12-P2-4: reserved() constructor deleted
+        let slot = PageSlot::Empty; // the reserved() constructor was deleted
         assert_eq!(
             MEM_TYPE_CONTIG_ANON.ev_reference(&mut make_frames_contig(), slot),
             Err(MemTypeError::NotSupported)
@@ -1917,7 +1918,10 @@ mod tests {
     #[should_panic(expected = "contiguous anonymous pagefault")]
     fn test_contig_ev_pagefault_panics() {
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
-        //[SD19-gate] `should_panic` 下回不到结果处：ev_pagefault 将 panic 在断言前，Result 不存在。属测试夹具，与 minix-sys 测试档同处理
+        //[SD19-gate] Under `should_panic` execution never reaches the result:
+        // ev_pagefault panics before the assertion, so the Result does not
+        // exist. This is test fixture code, handled like the minix-sys test
+        // tier.
         #[allow(clippy::let_underscore_must_use)]
         let _ = MEM_TYPE_CONTIG_ANON.ev_pagefault(
             minix_types::Endpoint(1),
@@ -1931,7 +1935,7 @@ mod tests {
         );
     }
 
-    // ── V11/T22 (V11-P2-2): ContiguousAnonymous::ev_new — the pre-allocation
+    // ── ContiguousAnonymous::ev_new — the pre-allocation
     // contract (C anon_contig_new, mem_anon_contig.c:52-96): consecutive
     // PFNs mapped into every slot; a gap or exhaustion rolls everything back.
     #[test]
@@ -1965,7 +1969,7 @@ mod tests {
         assert_eq!(alloc.freed, 3, "all 3 allocated PFNs must be freed on rollback");
     }
 
-    // Minimal doubles for the contig tests (V11/T22).
+    // Minimal doubles for the contig tests.
     fn make_frames_contig() -> PageFrames {
         PageFrames::new(minix_types::PhysBytes(4096 * 4))
     }

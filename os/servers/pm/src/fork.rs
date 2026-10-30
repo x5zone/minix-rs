@@ -15,7 +15,8 @@ use crate::ipc::{vm_fork, IpcTransport, tell_vfs};
 /// # Arguments
 /// * `table` - PM process table
 /// * `parent_endpoint` - Parent process endpoint
-/// * `transport` - IPC 传输（用于向 VFS 异步发送 fork 请求，见 `tell_vfs`）
+/// * `transport` - IPC transport (used to send the fork request to VFS
+///   asynchronously, see `tell_vfs`)
 ///
 /// # Returns
 /// * `Ok(child_pid)` - Child process PID (returned in parent)
@@ -38,18 +39,20 @@ pub fn do_fork<T: IpcTransport>(
 
     // 3. Find free slot via round-robin next_child (forkexit.c:68-75)
     // C: do { next_child=(next_child+1)%NR_PROCS; n++; } while(IN_USE && n<=NR_PROCS)
-    // Rust: find_free_slot 先递增后检查，与 C 同序
+    // Rust: find_free_slot increments before checking, same order as C
     let child_slot = table
         .find_free_slot()
         .ok_or(ForkCoordError::ProcTableFull)?;
 
     // 4. VM copy address space (forkexit.c:77-79 vm_fork, sync taskcall)
-    // C: vm_fork 失败直接 return s（errno 传播）；成功后进入不可失败窗口
-    //（forkexit.c:83 "PM may not fail fork after call to vm_fork()"）。
-    // 真实 wire：sendrec(VM, VM_FORK)，回复子 endpoint 在 m1i3（vm_fork 文档）。
+    // C: a failed vm_fork returns s directly (errno propagation); success
+    // enters the non-failable window (forkexit.c:83 "PM may not fail fork
+    // after call to vm_fork()"). Real wire: sendrec(VM, VM_FORK), with the
+    // child endpoint in the reply at m1i3 (see the vm_fork docs).
     let child_endpoint = vm_fork(transport, parent_endpoint, UserSlot::new(child_slot))?;
-    // VM 的 sys_fork 使用 PM 传入的槽位，回复 endpoint 的 slot 必然等于
-    // next_child；开发期断言守卫该契约（release 下信任 VM，与 C 一致）。
+    // VM's sys_fork uses the slot PM passed in, so the reply endpoint's slot
+    // must equal next_child; a development-time assertion guards that
+    // contract (release trusts VM, same as C).
     debug_assert_eq!(
         child_endpoint.slot() as usize,
         child_slot,
@@ -57,8 +60,10 @@ pub fn do_fork<T: IpcTransport>(
     );
 
     // 5. Occupy slot + full copy (forkexit.c:84-116)
-    // C: procs_in_use++ (86) 在 *rmc=*rmp (87) 之前；Rust 的 alloc_slot 已在 step 3 前做 find，
-    // 此处手动 ++ 以对齐 C 的"vm_fork成功后才占位"时序（vm_fork失败时不占位，无需回滚）
+    // C: procs_in_use++ (86) precedes *rmc=*rmp (87); Rust's alloc_slot has
+    // already done the find before step 3, so the ++ is manual here to match
+    // C's "occupy only after vm_fork succeeds" timing (a failed vm_fork
+    // occupies nothing, so no rollback is needed).
     table.procs_in_use.set(table.procs_in_use.get() + 1);
     // Copy mproc fields (forkexit.c:87-95) — explicit construction, not *rmc=*rmp
     // Temporarily generate pid for copy_mproc to use, but pid will be overwritten
@@ -71,25 +76,28 @@ pub fn do_fork<T: IpcTransport>(
     table.procs[child_slot].identity.id.pid = child_pid;
 
     // 7. VFS copy fd table (forkexit.c:122-130 tell_vfs)
-    // VFS_CALL 置于子进程槽 (rmc)，载荷 m7i1=child/m7i2=parent/m7i3=pid/m7i4/m7i5=-1
+    // VFS_CALL is placed on the child's slot (rmc); payload
+    // m7i1=child/m7i2=parent/m7i3=pid/m7i4/m7i5=-1
     let vfs_call = VfsCall::Fork {
         child: child_endpoint,
         parent: parent_endpoint,
         child_pid,
     };
-    // tell_vfs 失败即 panic（utility.c 同型；V2-P2-3：不变式违规或传输
-    // 损坏不是用户可见的 fork 错误码）。
+    // A tell_vfs failure panics (same shape as utility.c; an invariant
+    // violation or a corrupt transport is not a user-visible fork error code).
     tell_vfs(table, UserSlot::new(child_slot), vfs_call, transport);
 
     // 8. Tracer SIGSTOP (forkexit.c:132-135)
     // C: if (rmc->mp_tracer != NO_TRACER) sig_proc(rmc, SIGSTOP, TRUE /*trace*/, FALSE);
-    // 子进程是否持有 tracer 由 copy_mproc 的 TO_TRACEFORK 条件继承决定
-    //（forkexit.c:91-96）；trace=TRUE 使 sig_proc 走 ptrace 停止分支
-    //（signal.c:384），子进程进入 stopped 态等待 tracer 恢复。
+    // Whether the child holds a tracer is decided by copy_mproc's conditional
+    // TO_TRACEFORK inheritance (forkexit.c:91-96); trace=TRUE makes sig_proc
+    // take the ptrace stop branch (signal.c:384), so the child enters the
+    // stopped state and waits for the tracer to resume it.
     if table.procs[child_slot].state.guardianship.tracer().is_some() {
-        // C 忽略此处的 sig_proc 返回值（forkexit.c:135）——子进程刚建、
-        // tracer 槽位有效、SIGSTOP 合法，失败在本调用点不可达。
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        // C ignores the sig_proc return value here (forkexit.c:135) — the
+        // child was just created, the tracer slot is valid, and SIGSTOP is
+        // legal, so a failure is unreachable at this call site.
+        //[SD19-gate] PM send/notify/reply: fire and forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(
             table,
@@ -137,7 +145,7 @@ pub fn do_srv_fork<T: IpcTransport>(
     // 3. Find slot (174-181, private static next_child per srv_fork — shared Cell in Rust)
     let child_slot = table.find_free_slot().ok_or(ForkCoordError::ProcTableFull)?;
 
-    // 4. VM fork (183-185) — 同 do_fork 步骤 4：真实 sendrec(VM, VM_FORK)
+    // 4. VM fork (183-185) — same as do_fork step 4: real sendrec(VM, VM_FORK)
     let child_endpoint = vm_fork(transport, parent_endpoint, UserSlot::new(child_slot))?;
     debug_assert_eq!(child_endpoint.slot() as usize, child_slot);
 
@@ -153,14 +161,16 @@ pub fn do_srv_fork<T: IpcTransport>(
             child_endpoint,
             parent_slot,
             params,
-            // [E6: 内核 uptime 未接线] C 的 `getticks()`（forkexit.c:114）
-            // 依赖内核 uptime；minix-sys 落地前显式取 0（todo.md §6 D-24）。
+            // [E6: kernel uptime not wired] C's `getticks()` (forkexit.c:114)
+            // depends on kernel uptime; this explicitly takes 0 until
+            // minix-sys lands (todo.md §6).
             0,
         );
         table.procs[child_slot] = child;
     }
-    // srv_fork_from 构造 Normal 监护；TO_TRACEFORK 条件继承在此覆盖
-    //（forkexit.c:187-216 复制 + 91-96 同型条件清除，见 inherit_guardianship）。
+    // srv_fork_from builds a Normal guardianship; the conditional
+    // TO_TRACEFORK inheritance overwrites it here (forkexit.c:187-216 copy +
+    // the same conditional clearing at 91-96, see inherit_guardianship).
     let inherited =
         inherit_guardianship(&table.procs[parent_slot].state.guardianship, UserSlot::new(parent_slot));
     table.procs[child_slot].state.guardianship = inherited;
@@ -175,16 +185,17 @@ pub fn do_srv_fork<T: IpcTransport>(
         reuid: params.uid as i32,
         regid: params.gid as i32,
     };
-    // tell_vfs 失败即 panic（utility.c 同型；V2-P2-3：不变式违规或传输
-    // 损坏不是用户可见的 fork 错误码）。
+    // A tell_vfs failure panics (same shape as utility.c; an invariant
+    // violation or a corrupt transport is not a user-visible fork error code).
     tell_vfs(table, UserSlot::new(child_slot), vfs_call, transport);
 
-    // 7. Tracer SIGSTOP (forkexit.c:231-234) — 与 do_fork 步骤 8 同构；
-    // 子进程的 tracer 继承同样走 TO_TRACEFORK 条件（forkexit.c:187-216 的
-    // *rmc=*rmp 复制 + 91-96 同型清除，srv_fork_from 的 Normal 构造在此
-    // 之后被条件继承覆盖）。
+    // 7. Tracer SIGSTOP (forkexit.c:231-234) — isomorphic to do_fork step 8;
+    // the child's tracer inheritance likewise follows the TO_TRACEFORK
+    // condition (the *rmc=*rmp copy at forkexit.c:187-216 + the same clearing
+    // at 91-96; srv_fork_from's Normal construction is overwritten by the
+    // conditional inheritance afterwards).
     if table.procs[child_slot].state.guardianship.tracer().is_some() {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply: fire and forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(
             table,
@@ -204,7 +215,7 @@ pub fn do_srv_fork<T: IpcTransport>(
     };
     // Child is now Running with VFS_CALL still set; reply does not clear VFS_CALL
     // (VFS reply 0x988 is empty, 05 handle_vfs_reply SrvFork → {} )
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    //[SD19-gate] PM send/notify/reply: fire and forget
     #[allow(clippy::let_underscore_must_use)]
     let _ = transport.send(child_endpoint, &ok_msg);
 
@@ -240,15 +251,17 @@ const FORK_INHERIT_FLAGS: crate::mproc::RemainingFlags = crate::mproc::Remaining
 /// Copies parent's mproc fields to child.
 ///
 /// Corresponds to Minix3's `do_fork` mproc copy logic.
-/// 子进程监护继承决策（forkexit.c:87-96 的 Rust 表达，`do_fork` 与
-/// `do_srv_fork` 共享）。
+/// Child guardianship inheritance decision (the Rust expression of
+/// forkexit.c:87-96, shared by `do_fork` and `do_srv_fork`).
 ///
-/// C 经 `*rmc = *rmp` 整体复制 `mp_tracer`/`mp_trace_flags`/`mp_sigtrace`，
-/// 再按 `TO_TRACEFORK` 条件清除：仅当父进程 trace_flags **不含**
-/// `TO_TRACEFORK` 时，子进程的 tracer 才被置 NO_TRACER。Rust 侧父为
-/// `Traced` 且 `trace_options` 含 `TRACEFORK` → 子继承 `Traced`
-///（`TRACE_EXIT` 不继承——C 的 `FORK_INHERIT_FLAGS` 不含该位，且 Rust 侧
-/// 新子进程的强制退出标记必须为否）；其余情形一律 `Normal`。
+/// C copies `mp_tracer`/`mp_trace_flags`/`mp_sigtrace` wholesale via
+/// `*rmc = *rmp`, then clears them conditionally by `TO_TRACEFORK`: only
+/// when the parent's trace_flags **lack** `TO_TRACEFORK` is the child's
+/// tracer set to NO_TRACER. On the Rust side a parent that is `Traced` with
+/// `trace_options` containing `TRACEFORK` → the child inherits `Traced`
+/// (`TRACE_EXIT` is not inherited — C's `FORK_INHERIT_FLAGS` lacks that bit,
+/// and a new Rust child's forced-exit flag must be false); every other case
+/// is `Normal`.
 fn inherit_guardianship(
     parent: &crate::mproc::Guardianship,
     parent_slot: UserSlot,
@@ -307,9 +320,10 @@ fn copy_mproc(
         // Clone signal actions (corresponds to Minix3's mp_sigact copy)
         signal_actions = parent.resources.signals.actions.clone();
         signal_mask = parent.resources.signals.mask;
-        // C: *rmc=*rmp 整体复制 mp_tracer/mp_trace_flags/mp_sigtrace，随后
-        // 条件清除——仅当父进程 trace_flags 不含 TO_TRACEFORK 时，子进程的
-        // tracer 才被清空（forkexit.c:91-96）。决策由共享 helper 表达。
+        // C: *rmc=*rmp copies mp_tracer/mp_trace_flags/mp_sigtrace wholesale,
+        // then clears them conditionally — only when the parent's trace_flags
+        // lack TO_TRACEFORK is the child's tracer cleared (forkexit.c:91-96).
+        // The decision is expressed by the shared helper.
         child_guardianship =
             inherit_guardianship(&parent.state.guardianship, UserSlot::new(parent_slot));
     }
@@ -392,7 +406,8 @@ impl From<ForkCoordError> for PmError {
 #[cfg(test)]
 mod tests {
 
-    /// fork.rs 测试用内核网关 mock（sys_times 脚本化计账值）。
+    /// Kernel gateway mock for fork.rs tests (scripted sys_times accounting
+    /// values).
     struct TestKernelTimes {
         pub user: minix_types::Clock,
         pub sys: minix_types::Clock,
@@ -436,11 +451,13 @@ mod tests {
         table
     }
 
-    /// 向 mock 传输入队一条 VM_FORK 应答（OK + 子 endpoint 在 m1i3）。
+    /// Enqueue one VM_FORK reply on the mock transport (OK + child endpoint in
+    /// m1i3).
     ///
-    /// 真实协议中 VM 的 sys_fork 使用 PM 传入的槽位并递增代际；测试
-    /// 用 `child_endpoint` 显式给出期望的子 endpoint，`vm_fork` 的
-    /// debug_assert 槽位守卫依赖两者一致。
+    /// In the real protocol VM's sys_fork uses the slot PM passed in and bumps
+    /// the generation; the test passes the expected child endpoint explicitly
+    /// as `child_endpoint`, and `vm_fork`'s debug_assert slot guard relies on
+    /// the two agreeing.
     fn queue_vm_fork_reply(transport: &mut crate::ipc::TestIpcTransport, child_endpoint: Endpoint) {
         let mut reply = minix_types::Message { m_type: OK, ..minix_types::Message::default() };
         reply.m_u.m_m1.m1i3 = child_endpoint.0;
@@ -469,8 +486,9 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut transport = crate::ipc::TestIpcTransport::default();
         let mut kern = TestKernelTimes::default();
-        // 脚本化 VM_FORK 应答：空表 + 游标 0 → 首个空闲槽为 1；
-        // 子 endpoint 代际 = 父(1) + 1（VM sys_fork 的代际递增契约）。
+        // Scripted VM_FORK reply: empty table + cursor 0 → first free slot is
+        // 1; the child endpoint generation = parent(1) + 1 (VM sys_fork's
+        // generation-bump contract).
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
 
         let result = do_fork(
@@ -483,7 +501,8 @@ mod tests {
 
         let child_pid = result.unwrap();
         assert!(child_pid > 0);
-        // 真实 wire：VM_FORK 任务调用已发出（sendrec 记录在 sent 里）。
+        // Real wire: the VM_FORK task call has been sent (the sendrec is
+        // recorded in sent).
         assert_eq!(transport.sent()[0].0, Endpoint::VM);
         assert_eq!(transport.sent()[0].1.m_type, minix_types::VM_FORK as i32);
     }
@@ -568,7 +587,7 @@ mod tests {
         let mut kern = TestKernelTimes::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
         let params = crate::mproc::SrvForkParams { uid: 42, gid: 43 };
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply: fire and forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport, &mut kern).unwrap();
         // VFS call should carry real uid/gid, not -1
@@ -583,11 +602,12 @@ mod tests {
         assert_eq!(m7.m7i5, 43);
     }
 
-    // ── D-10：tracer SIGSTOP 与 TO_TRACEFORK 条件继承（forkexit.c:87-96/132-135）──
+    // ── tracer SIGSTOP and conditional TO_TRACEFORK inheritance
+    // ── (forkexit.c:87-96/132-135)
 
     use crate::mproc::{Guardianship, TraceOptions};
 
-    /// 在 `parent` 槽位播种一个被 `tracer` 跟踪的进程。
+    /// Seed the `parent` slot with a process traced by `tracer`.
     fn seed_traced_parent(table: &mut ProcTable, parent: usize, tracer: usize, tracefork: bool) {
         let mut opts = TraceOptions::empty();
         if tracefork {
@@ -605,9 +625,10 @@ mod tests {
 
     #[test]
     fn test_do_fork_tracefork_child_inherits_tracer_and_stops() {
-        // C: 父 Traced + TO_TRACEFORK → 子继承 tracer（91-96 条件不清除），
-        // do_fork 对子 sig_proc(SIGSTOP, trace=TRUE)（132-135）→ 子进入
-        // ptrace 停止态，sigtrace 记 SIGSTOP 位。
+        // C: parent Traced + TO_TRACEFORK → the child inherits the tracer
+        // (the 91-96 condition does not clear it), and do_fork calls
+        // sig_proc(SIGSTOP, trace=TRUE) on the child (132-135) → the child
+        // enters the ptrace-stopped state, with sigtrace recording SIGSTOP.
         let mut table = ProcTable::new();
         seed_traced_parent(&mut table, 3, 7, true);
         let mut transport = crate::ipc::TestIpcTransport::default();
@@ -634,8 +655,8 @@ mod tests {
 
     #[test]
     fn test_do_fork_without_tracefork_child_untraced_and_running() {
-        // C: 父 Traced 但无 TO_TRACEFORK → 子 tracer 清空（91-96），
-        // 不发 SIGSTOP，子进程照常 Running。
+        // C: parent Traced but without TO_TRACEFORK → the child's tracer is
+        // cleared (91-96), no SIGSTOP is sent, and the child stays Running.
         let mut table = ProcTable::new();
         seed_traced_parent(&mut table, 3, 7, false);
         let mut transport = crate::ipc::TestIpcTransport::default();
@@ -660,15 +681,17 @@ mod tests {
 
     #[test]
     fn test_do_srv_fork_tracefork_child_inherits_tracer_and_stops() {
-        // C: do_srv_fork 的复制段同型（187-216 + 231-234）——srv 子进程
-        // 同样按 TO_TRACEFORK 继承并收到 trace SIGSTOP。
+        // C: do_srv_fork's copy section has the same shape (187-216 +
+        // 231-234) — an srv child likewise inherits by TO_TRACEFORK and
+        // receives the trace SIGSTOP.
         let mut table = ProcTable::new();
         table.procs[2].identity.endpoint = Endpoint::RS;
         table.procs[2].identity.id.pid = 2;
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         table.procs[2].resources.scheduler = Endpoint::NONE;
-        // RS（此处即父进程）被 tracer=7 跟踪且带 TO_TRACEFORK。
+        // RS (the parent here) is traced by tracer=7 and carries
+        // TO_TRACEFORK.
         table.procs[2].state.guardianship = Guardianship::Traced {
             parent: UserSlot::new(0),
             tracer: UserSlot::new(7),

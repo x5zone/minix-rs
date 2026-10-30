@@ -149,7 +149,7 @@ fn wait_icr_idle() {
 
 /// Spin until the TSC advances by at least `ticks`.
 ///
-/// S-3d (2026-09-09): the INIT-SIPI sequence previously had NO timed
+/// The INIT-SIPI sequence previously had NO timed
 /// waits — ICR-idle spins only prove the ICR accepted the write, not that
 /// the target AP finished processing the INIT. A SIPI sent while the INIT
 /// is still pending is discarded (SDM Vol 3A §8.4.4), which made AP
@@ -278,7 +278,7 @@ impl SmpArch for X86_64SmpArch {
         );
         let sipi_vector = (entry >> 12) as u32;
 
-        // §3.9 publisher fence (S-3c fix): the BSP has filled the early
+        // §3.9 publisher fence: the BSP has filled the early
         // entry image / bootstrap record before calling boot_ap — `mfence`
         // pushes those stores to the coherence point so the woken AP
         // cannot observe stale bytes. C: arch_smp.c:130 `mfence()` before

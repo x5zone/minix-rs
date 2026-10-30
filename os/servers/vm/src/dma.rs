@@ -1,33 +1,46 @@
-//! DMA 连续内存——[`DmaMemory`] 契约的 VM 侧实现(edge E-DMABUF)。
+//! DMA contiguous memory -- the VM-side implementation of the [`DmaMemory`]
+//! contract (the E-DMABUF edge).
 //!
-//! C 驱动直接向内核要 DMA 内存(`alloc_contig`,virtio/ahdi/usb_storage
-//! 同型,`minix3/minix/drivers/lib/libvirtio/virtio.c:319`)并把总线地址
-//! 填进设备描述符。用户态驱动服务器做不到:物理分配器在 VM 手里。契约
-//! 半在 minix-types(`DmaMemory`/`DmaRegion`,edge2 L9 定稿,先例是
-//! rcore `virtio-drivers` 的 `Hal` 与 Redox `common/src/dma.rs`);本模块
-//! 是消费该契约的 VM 侧行为实现,让驱动库保持对 trait 泛型、永不自触
-//! 页表或总线地址。
+//! C drivers ask the kernel for DMA memory directly (`alloc_contig`, the same
+//! shape as virtio/ahdi/usb_storage,
+//! `minix3/minix/drivers/lib/libvirtio/virtio.c:319`) and fill the bus address
+//! into the device descriptor. A user-space driver server cannot do that: the
+//! physical allocator lives in VM. Half of the contract sits in minix-types
+//! (`DmaMemory`/`DmaRegion`, following the precedent of rcore
+//! `virtio-drivers`' `Hal` and Redox `common/src/dma.rs`); this module is the
+//! VM-side behavior implementation that consumes it, so the driver library
+//! stays generic over the trait and never touches page tables or bus
+//! addresses itself.
 //!
-//! 生产消费方(16-stage 驱动服务层、USB 存储服务)在后续阶段接线;
-//! 接线前 lib 构建只见测试消费,按 handle_signal 先例标注 dead_code 门。
+//! The production consumers (the 16-stage driver service layer, the USB
+//! storage service) are wired up in a later stage; before that, lib builds
+//! see only test consumers, hence the dead_code gate marked after the
+//! handle_signal precedent.
 
 #![cfg_attr(not(test), allow(dead_code))]
 //!
-//! # 为什么实现是"簿记 + 纯算术"
+//! # Why the implementation is "bookkeeping + pure arithmetic"
 //!
-//! VM 持有 Direct Map(`[ARCH: A-1]`):物理内存线性可见,
-//! `vm_phys_to_virt`/`virt_to_phys` 是常数偏移换算——DMA 一致性地址不
-//! 需要建任何映射。因此 [`VmDmaMemory`] 的全部工作只有三件:
+//! VM holds the Direct Map (`[ARCH: A-1]`): physical memory is linearly
+//! visible, and `vm_phys_to_virt`/`virt_to_phys` are constant-offset
+//! conversions -- a DMA-coherent address needs no mapping at all. So all of
+//! [`VmDmaMemory`]'s work comes down to three things:
 //!
-//! 1. 经 [`PfnAllocator::alloc_contiguous`](单次多页请求,V12-P2-7 的
-//!    漏斗语义,回收重试随之自带)拿连续页运行;
-//! 2. 维护在役区域的簿记(翻译只对"本生产者发出的区域"成立——契约
-//!    要求窗外/外区返回 `None`,纯线性映射不区分归属,簿记补上这层);
-//! 3. 对齐裁剪:`align` 超过页大小时多要 `align/PAGE_SIZE - 1` 页松弛,
-//!    把运行起点推进到对齐线,释放时按实际基址整段归还。
+//! 1. obtain a contiguous page run through [`PfnAllocator::alloc_contiguous`]
+//!    (one multi-page request; the funnel semantics -- and the reclaim retry
+//!    that comes with it -- apply unchanged);
+//! 2. keep the bookkeeping of live regions (translation only holds for
+//!    regions this producer handed out -- the contract requires `None` for
+//!    anything outside the window or region, and a pure linear map does not
+//!    distinguish ownership, so the bookkeeping supplies that layer);
+//! 3. trim for alignment: when `align` exceeds the page size, request
+//!    `align/PAGE_SIZE - 1` extra pages of slack, advance the run start to
+//!    the alignment line, and return the whole run from the actual base
+//!    address on free.
 //!
-//! 缓存一致性:x86-64 目标设备 DMA 一致,无需显式 sync(契约文档同
-//! 结论);非一致移植在契约侧生长 sync 操作,不在这里。
+//! Cache coherency: x86-64 target devices are DMA-coherent, so no explicit
+//! sync is needed (the contract document reaches the same conclusion);
+//! non-coherent ports grow sync operations on the contract side, not here.
 
 use alloc::vec::Vec;
 use minix_types::{DmaMemory, DmaRegion, Errno, PhysBytes, VirBytes};
@@ -36,26 +49,30 @@ use crate::direct_map::vm_phys_to_virt;
 use crate::phys_mem::AlignedPhysBytes;
 use crate::region::PfnAllocator;
 
-/// 页大小(与 `region::page_state::PAGE_SIZE` 一致;PFN 的粒度)。
+/// Page size (matching `region::page_state::PAGE_SIZE`; the PFN granularity).
 const PAGE_SIZE: u64 = 4096;
 
-/// 一个在役 DMA 区域的簿记。
+/// Bookkeeping for one live DMA region.
 #[derive(Debug, Clone, Copy)]
 struct DmaEntry {
-    /// 发给调用方的区域(phys/cpu_addr/len;len 是契约承诺的可用长度)。
+    /// The region handed to the caller (phys/cpu_addr/len; len is the usable
+    /// length the contract promises).
     region: DmaRegion,
-    /// 实际占用的运行基 PFN(对齐裁剪前的起点,释放按它整段归还)。
+    /// The base PFN of the run actually occupied (the start before alignment
+    /// trimming; free returns the whole run from it).
     base_pfn: u32,
-    /// 实际占用的页数(含对齐松弛)。
+    /// The number of pages actually occupied (alignment slack included).
     pages: u32,
 }
 
-/// VM 侧 [`DmaMemory`] 实现——泛型在页分配器上,测试可注入记录型
-/// mock;服务器集成时包住 [`VmPageAllocator`](crate::alloc_page::VmPageAllocator)。
+/// VM-side [`DmaMemory`] implementation -- generic over the page allocator so
+/// tests can inject a recording mock; the server integration wraps
+/// [`VmPageAllocator`](crate::alloc_page::VmPageAllocator).
 ///
-/// 簿记用普通 `Vec`:DMA 分配是低频事件(每个 virtqueue/缓冲区一次),
-/// 线性查找的常数成本可忽略;上限即物理内存能承载的并发 DMA 区域数,
-/// 不需要额外设界。
+/// The bookkeeping uses a plain `Vec`: DMA allocation is a low-frequency event
+/// (once per virtqueue/buffer), so the constant cost of a linear scan is
+/// negligible; the upper bound is however many concurrent DMA regions physical
+/// memory can hold, so no extra limit is needed.
 pub(crate) struct VmDmaMemory<A: PfnAllocator> {
     alloc: A,
     live: Vec<DmaEntry>,
@@ -69,7 +86,7 @@ impl<A: PfnAllocator> VmDmaMemory<A> {
         }
     }
 
-    /// 直接测试簿记(在役区域数)。
+    /// Directly observe the bookkeeping (the number of live regions).
     #[cfg(test)]
     pub(crate) fn live_count(&self) -> usize {
         self.live.len()
@@ -78,16 +95,19 @@ impl<A: PfnAllocator> VmDmaMemory<A> {
 
 impl<A: PfnAllocator> DmaMemory for VmDmaMemory<A> {
     fn dma_alloc(&mut self, size: u32, align: u32) -> Result<DmaRegion, Errno> {
-        // 契约的对齐前提是 2 的幂(设备描述符与环形缓冲的天然形状);
-        // 非幂对齐无法用"推进起点"表达,按不可服务拒绝。零长度没有
-        // 可用语义,同理 EINVAL。
+        // The contract's alignment precondition is a power of two (the natural
+        // shape of device descriptors and ring buffers); a non-power alignment
+        // cannot be expressed by "advance the start", so it is refused as
+        // unserviceable. Zero length has no usable semantics, hence EINVAL as
+        // well.
         if size == 0 || align == 0 || !align.is_power_of_two() {
             return Err(Errno::EINVAL);
         }
         let align = (align as u64).max(PAGE_SIZE);
         let pages = (size as u64).div_ceil(PAGE_SIZE) as u32;
-        // 对齐超出页粒度时,多要 align/PAGE - 1 页松弛,运行起点最多
-        // 推进这么多页就能命中对齐线。
+        // When alignment is coarser than a page, ask for align/PAGE - 1 extra
+        // pages of slack; advancing the run start by at most that many pages
+        // then hits the alignment line.
         let slack = ((align / PAGE_SIZE) - 1) as u32;
         let total = pages + slack;
 
@@ -104,8 +124,8 @@ impl<A: PfnAllocator> DmaMemory for VmDmaMemory<A> {
         };
         let phys = base_phys + skip as u64 * PAGE_SIZE;
 
-        // Direct Map 线性可见:CPU 侧首地址 = 窗口基 + 物理(常数偏移,
-        // 不建映射——[ARCH: A-1])。
+        // The Direct Map makes it linearly visible: CPU-side base = window base
+        // + physical (a constant offset, no mapping built -- `[ARCH: A-1]`).
         let cpu_addr = vm_phys_to_virt(AlignedPhysBytes::new(phys));
         let region = DmaRegion {
             phys,
@@ -121,9 +141,11 @@ impl<A: PfnAllocator> DmaMemory for VmDmaMemory<A> {
     }
 
     fn dma_free(&mut self, region: DmaRegion) {
-        // 契约:free 不可能失败,双重释放/外来区域是生产者自身的 bug。
-        // 生产者自检:找不到簿记条目时防御性不动物理页(放开会导致
-        // 任意物理页被归还),debug 构建直接断言暴露调用方错误。
+        // Contract: free cannot fail; a double free or a foreign region is the
+        // producer's own bug. The producer self-checks: when no bookkeeping
+        // entry is found, defensively leave physical pages alone (releasing
+        // them would let arbitrary pages be returned), and debug builds assert
+        // outright to expose the caller's error.
         let pos = self.live.iter().position(|e| e.region.phys == region.phys);
         debug_assert!(
             pos.is_some(),
@@ -163,9 +185,11 @@ mod tests {
     use super::*;
     use crate::region::PfnAllocError;
 
-    /// 记录型页分配器 mock:脚本化连续运行,记录释放序列。
+    /// Recording page-allocator mock: scripted contiguous runs, plus the
+    /// release sequence recorded.
     struct MockPfn {
-        /// 依次出队的"连续运行基 PFN"(None = 资源耗尽)。
+        /// The "contiguous-run base PFNs" dequeued in order (None = resources
+        /// exhausted).
         script: alloc::collections::VecDeque<Result<u32, ()>>,
         freed: Vec<u32>,
     }
@@ -194,7 +218,8 @@ mod tests {
         }
     }
 
-    /// 挂一个 4 页窗口的 direct map(translation 断言需要真窗口)。
+    /// Attach a direct-map window of 4 pages (the translation assertions need
+    /// a real window).
     fn with_window<F: FnOnce() -> R, R>(f: F) -> R {
         crate::direct_map::with_test_window(16, f)
     }
@@ -218,8 +243,9 @@ mod tests {
     #[test]
     fn dma_alloc_trims_alignment_within_slack() {
         with_window(|| {
-            // 基址落在 0x21 页(非 2 页对齐),要 2 页对齐 → 松弛 1 页,
-            // 起点推进到 0x22。
+            // The base lands on page 0x21 (not 2-page aligned); asking for
+            // 2-page alignment gives 1 page of slack, advancing the start to
+            // 0x22.
             let mut dma = VmDmaMemory::new(MockPfn::scripted(&[Ok(0x21)]));
             let r = dma
                 .dma_alloc(PAGE_SIZE as u32, 2 * PAGE_SIZE as u32)
@@ -227,7 +253,8 @@ mod tests {
             let want = 0x22u64 * PAGE_SIZE;
             assert_eq!(r.phys, want, "运行起点推进到对齐线");
             assert_eq!(r.cpu_addr, crate::direct_map::test_vm_base() + want);
-            // 释放按实际基址整段归还(0x21..0x23,含松弛)。
+            // Free returns the whole run from the actual base (0x21..0x23,
+            // slack included).
             dma.dma_free(r);
             assert_eq!(dma.live_count(), 0);
         });
@@ -253,12 +280,13 @@ mod tests {
         with_window(|| {
             let mut dma = VmDmaMemory::new(MockPfn::scripted(&[Ok(0x30)]));
             let r = dma.dma_alloc(0x2000, PAGE_SIZE as u32).expect("fits");
-            // 区内偏移双向平移。
+            // In-region offsets shift in both directions.
             let inside = VirBytes(r.cpu_addr + 0x123);
             let phys = dma.virtual_to_physical(inside).expect("区内");
             assert_eq!(phys.0, r.phys + 0x123);
             assert_eq!(dma.physical_to_virtual(phys), Some(inside));
-            // 区外(含 DMA 长度之外与完全无关地址)双向 None。
+            // Out of region (both past the DMA length and fully unrelated
+            // addresses) maps to None in both directions.
             assert_eq!(dma.virtual_to_physical(VirBytes(r.cpu_addr + 0x2000)), None);
             assert_eq!(dma.physical_to_virtual(PhysBytes(r.phys + 0x2000)), None);
             assert_eq!(dma.virtual_to_physical(VirBytes(0x7000_0000)), None);
@@ -280,7 +308,8 @@ mod tests {
                 "释放后翻译即失效"
             );
 
-            // 正常释放路径:整段页归还分配器。
+            // The normal release path: the whole page run goes back to the
+            // allocator.
             let r2 = dma
                 .dma_alloc(PAGE_SIZE as u32, PAGE_SIZE as u32)
                 .expect("second");
@@ -289,8 +318,9 @@ mod tests {
         });
     }
 
-    /// 外来区域是生产者自身的 bug(契约原文)——debug 构建的断言就是
-    /// "生产者自检"的落地;release 构建防御性不动物理页。
+    /// A foreign region is the producer's own bug (the contract's words) -- the
+    /// debug-build assertion is where "producer self-check" lands; release
+    /// builds defensively leave physical pages alone.
     #[test]
     #[should_panic(expected = "dma_free: region not allocated")]
     fn dma_free_of_foreign_region_is_a_producer_bug() {

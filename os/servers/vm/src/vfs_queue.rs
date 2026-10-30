@@ -50,7 +50,7 @@ pub(crate) type VfsCallbackFn = fn(
 
 #[derive(Debug)]
 pub(crate) struct VfsRequest {
-    // V10-P2-1: `request_type`/`caller_endpoint`/`fd`/`offset`/`length`
+    // These fields (`request_type`/`caller_endpoint`/`fd`/`offset`/`length`)
     // are write-only today — the queue matches on `req_id` and hands
     // `state`+`callback` to the handler, which re-reads the original data
     // from `VfsRequestState`. Kept for the VFS message-build path when
@@ -81,7 +81,7 @@ pub(crate) struct VfsRequest {
 pub(crate) struct VfsReply {
     pub(crate) req_id: u32,
     pub(crate) result: i32,
-    // V10-P2-1: `data_phys`/`size_pages` mirror the C VMV_REPLY payload
+    // `data_phys`/`size_pages` mirror the C VMV_REPLY payload
     // but are write-only today — the FDIO consumer (mappedfile pagefault
     // retry) is not wired to read them.
     #[allow(dead_code)]
@@ -196,8 +196,9 @@ impl VfsRequestQueue {
     }
 
     /// Clear the sent mark after a transport failure — the request stays
-    /// active and the next drain round retries (design: 无回归, pre-E1
-    /// the send always failed).
+    /// Clear the sent mark after a transport failure — the request stays active and the
+    /// next drain round retries (no regression: before the transport was wired, the send
+    /// always failed).
     pub(crate) fn mark_send_failed(&mut self) {
         if let Some(req) = self.active.as_mut() {
             req.sent = false;
@@ -205,7 +206,7 @@ impl VfsRequestQueue {
     }
 
     #[cfg(test)]
-    /// V11/T10: test inspection of the active request (the send half is
+    /// Test inspection of the active request (the send half is
     /// edge E-VFSWIRE; this asserts the enqueue half).
     pub(crate) fn active_fd_close(&self) -> Option<(VfsRequestType, i32, Endpoint)> {
         let req = self.active.as_ref()?;
@@ -220,7 +221,7 @@ impl VfsRequestQueue {
         reply: VfsReply,
     ) -> Result<Option<(VfsCallbackFn, VfsReply, VfsRequestState)>, VfsQueueError> {
         // Late reply for a purged request: the caller exited after the
-        // request was sent — drop it (V13-P3-1之2 dead-caller path).
+        // Late reply for a purged request: the caller exited after the request was sent — drop it (the dead-caller path).
         if let Some(pos) = self.cancelled.iter().position(|&id| id == reply.req_id) {
             self.cancelled.remove(pos);
             return Ok(None);
@@ -251,7 +252,7 @@ impl VfsRequestQueue {
     }
 
     /// Cancel every pending request owned by `owner` — the exit-side
-    /// cleanup (V13-P3-1之2; §9.4 Redox lesson: the "caller died first"
+    /// cleanup (the dead-caller path; §9.4 Redox lesson: the "caller died first"
     /// branch must cancel in-flight slots too, not only driver death).
     ///
     /// Queued requests are dropped outright. An already-sent active request
@@ -282,17 +283,17 @@ impl VfsRequestQueue {
         n
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
+    #[cfg_attr(not(test), allow(dead_code))] // test-only
     pub(crate) fn has_active(&self) -> bool {
         self.active.is_some()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
+    #[cfg_attr(not(test), allow(dead_code))] // test-only
     pub(crate) fn active_req_id(&self) -> Option<u32> {
         self.active.as_ref().map(|req| req.req_id)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
+    #[cfg_attr(not(test), allow(dead_code))] // test-only
     pub(crate) fn queued_count(&self) -> usize {
         self.queued.len()
     }
@@ -465,7 +466,7 @@ mod tests {
         let n = q.purge_by_owner(Endpoint(10));
         assert_eq!(n, 2);
         assert!(q.has_active());
-        // 唯一幸存者是 owner 20 的请求:active + 队列都应与 10 无关
+        // The only survivor is owner 20's request: active and queue should both be unrelated to 10
         let active = q.test_active_request().unwrap();
         assert_eq!(active.caller_endpoint, Endpoint(20));
         assert_eq!(q.queued_count(), 0);
@@ -475,11 +476,11 @@ mod tests {
     fn purge_of_unsent_active_frees_slot_without_tombstone() {
         let mut q = VfsRequestQueue::new();
         q.request(mk_req(VfsRequestType::FdIo, Endpoint(10), 1)).unwrap();
-        // 未发送(mark_send_failed 未经过 take_pending_vfs_call,sent=false)
+        // Not sent (mark_send_failed without take_pending_vfs_call, sent=false)
         assert_eq!(q.purge_by_owner(Endpoint(10)), 1);
         assert!(!q.has_active());
         assert!(q.is_empty());
-        // 无墓碑:该 req_id 的回复按正常 Unknown 路径报错(VFS 从未见过请求)
+        // No tombstone: a reply for that req_id reports through the normal Unknown path (VFS never saw the request)
         assert!(matches!(
             q.handle_reply(VfsReply {
                 req_id: 1,
@@ -499,15 +500,15 @@ mod tests {
         let mut q = VfsRequestQueue::new();
         q.request(mk_req(VfsRequestType::FdLookup, Endpoint(10), 1)).unwrap();
         q.request(mk_req(VfsRequestType::FdIo, Endpoint(20), 2)).unwrap();
-        // 发送半:取走 wire 消息 → active.sent = true
+        // Send half: take the wire message → active.sent = true
         assert!(q.take_pending_vfs_call().is_some());
         let sent_id = q.active_req_id().unwrap();
 
         assert_eq!(q.purge_by_owner(Endpoint(10)), 1);
-        // 下一个请求被激活
+        // The next request is activated
         assert_eq!(q.active_req_id(), Some(sent_id + 1));
 
-        // 迟到的 VFS 回复被墓碑吞掉,激活的下一个请求不受影响
+        // The late VFS reply is swallowed by the tombstone; the newly activated request is unaffected
         let r = q.handle_reply(VfsReply {
             req_id: sent_id,
             result: 0,
@@ -526,7 +527,7 @@ mod tests {
         let mut q = VfsRequestQueue::new();
         q.request(mk_req(VfsRequestType::FdIo, Endpoint(10), 1)).unwrap();
         q.purge_by_owner(Endpoint(10));
-        // exit 路径 purge 之后才入队的 FdClose 存活(handle_vm_exit 顺序契约)
+        // An FdClose enqueued after the exit path's purge survives (the handle_vm_exit ordering contract)
         q.request(mk_req(VfsRequestType::FdClose, Endpoint(10), 1)).unwrap();
         assert!(q.has_active());
         assert_eq!(q.active_fd_close().map(|(_, fd, _)| fd), Some(1));

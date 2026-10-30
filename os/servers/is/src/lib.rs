@@ -1,5 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-// SD-19 机械化门
+// Mechanized gate: no silent dropping of must-use results.
 #![warn(clippy::let_underscore_must_use)]
 
 
@@ -164,20 +164,23 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
         // C: get_work() — main.c:46,121-130. Receive failure is fatal
         // (main.c:126-127 `panic`), so transport errors panic here too.
         // The sender/type travel as locals into classify (C writes globals
-        // main.c:126-129; call_nr has no vestigial state copy — the V1
+        // main.c:126-129; call_nr has no vestigial state copy — an earlier
         // review removed it as write-only).
         //
-        // 信号面：C 把 handler 注册给 SEF（main.c:85），SEF 在
-        // `sef_receive_status` 内逐个信号号同调它（sef_signal.c:96-128），
-        // 所以决定不能走 `receive` 的返回值——只能跟着回调现场做。
-        // 回调里只动 `fkey`（与 `transport` 不申同一个可变借用），退出
-        // 决定与解注册告警先落在局部量上。
+        // Signals: C registers the handler with SEF (main.c:85), and SEF calls it
+        // for each signal number inside `sef_receive_status` (sef_signal.c:96-128),
+        // so the decision cannot ride `receive`'s return value — it has to happen
+        // at the callback site. The callback touches only `fkey` (it does not
+        // claim the same mutable borrow as `transport`); the shutdown decision
+        // and the unmap warning land in locals first.
         let mut shutdown = false;
         let mut unmap_warning: Option<i32> = None;
-        // 逃生门（PD-27）：C 的 IS handler 在 SIGTERM 时 exit(0)（main.c:115）
-        // ——决定与进程终结同在拦截现场。本树的退出落在 run()，取消令牌让
-        // `receive` 在决定当场以 `Err(EINTR)` 返回，拍点对齐；下方错误臂
-        // 对「已决 shutdown 的 EINTR」返 Shutdown 而不 panic。
+        // Escape hatch: C's IS handler calls exit(0) on SIGTERM (main.c:115) —
+        // the decision and process termination happen at the interception site
+        // itself. This tree leaves the exit to run(); the cancel token makes
+        // `receive` return `Err(EINTR)` right at the decision, aligning the beat.
+        // The error arm below returns Shutdown (not a panic) for an EINTR after
+        // shutdown was decided.
         let cancel = minix_sef::SefCancel::new();
         let (caller, call_nr) = {
             let IsServer {
@@ -200,24 +203,27 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 },
                 &cancel,
             );
-            // C 的那句 printf 在 handler 内（dmp.c:63-65）；当时 transport
-            // 正被借用，告警顺延到收信返回后——二者之间 C 只剩 exit(0)，
-            // 输出顺序与可见行为都不变。
+            // That printf of C's runs inside the handler (dmp.c:63-65); here the
+            // transport is borrowed at that moment, so the warning is deferred
+            // until receive returns — between the two C only does exit(0), so the
+            // output order and visible behavior are unchanged.
             if let Some(status) = unmap_warning.take() {
                 transport.warn_fkey_ctl(status);
             }
             match frame {
                 Ok(pair) => pair,
-                // 逃生门的中断＝退出决定已在回调里做出（C 的 handler 此刻
-                // 已经 exit(0)，那一帧永不报给循环）——返回 Shutdown 而非
-                // 按收信失败 panic。其余错误仍是 C main.c:126-127 的 fatal。
+                // An interrupt from the escape hatch means the shutdown decision
+                // was already made in the callback (C's handler has exit(0)'d by
+                // now, so that frame never reaches the loop) — return Shutdown
+                // instead of panicking as a receive failure. Other errors remain
+                // fatal as in C main.c:126-127.
                 Err(minix_types::EINTR) if shutdown => return LifecycleAction::Shutdown,
                 Err(status) => panic!("sef_receive failed!: {status}"),
             }
         };
-        // C: handler 里的 exit(0)（main.c:115）使那一帧永不进入分派，
-        // globals `who_e`/`callnr` 也不写——所以这里先于 `state.caller`
-        // 写回之前返回。
+        // C: the exit(0) in the handler (main.c:115) keeps that frame out of
+        // dispatch and does not write the `who_e`/`callnr` globals either — so
+        // return here before `state.caller` is written back.
         if shutdown {
             return LifecycleAction::Shutdown;
         }
@@ -226,27 +232,33 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
         let result = match classify(call_nr, caller) {
             DispatchAction::HandleFkey => self.handle_fkey_pressed(),
             DispatchAction::Birth => {
-                // E-BIRTHFACE（NS1）出生臂：C 的 RS_INIT 在 sef_local_startup
-                // 内消费（main.c:79-87），主循环不见；本树 startup() 已跑过
-                // fresh 体（main.rs 构造序），此处补应答半——按 process_init
-                // 尾部（sef_init.c:113-117）回 RS_INIT+result。C 注册面
-                // fresh/LU/restart 三回调同为 sef_cb_init_fresh
-                //（main.c:80-82），任何出生类型都跑同体（[ARCH: A-10]
-                // STATELESS 已文档化）。应答失败 = do_sef_init_request 失败，
-                // C 一路 panic（vm/main.c:151 同款 "do_sef_init_request
-                // failed!"），Rust 同款 fail-fast。已自带应答，suppressing
-                // 通用回复路。
+                // E-BIRTHFACE (NS1) birth arm: C consumes RS_INIT inside
+                // sef_local_startup (main.c:79-87), so the main loop never sees it;
+                // this tree's startup() already ran the fresh body (main.rs
+                // construction order), and here we supply the reply half — reply
+                // RS_INIT+result per the process_init tail (sef_init.c:113-117). On
+                // the C registration side the fresh/LU/restart callbacks are all
+                // sef_cb_init_fresh (main.c:80-82), so every birth type runs the
+                // same body ([ARCH: A-10] STATELESS is documented). A reply failure
+                // = do_sef_init_request failure; C panics all the way (vm/main.c:151
+                // has the same "do_sef_init_request failed!" fail-fast). The response
+                // is sent here, suppressing the generic reply path.
                 let init_type = unsafe { self.state.inbox.m_u.m_rs_init.type_ };
-                // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
-                // 第一段 sef_init.c:59-60 的 `assert(r == OK)`，经
-                // `SefTransport::statectl`）、回报消息由库构造；分派语义
-                // （C 注册面 fresh/LU/restart 三回调同为 sef_cb_init_fresh，
-                // main.c:80-82，[ARCH: A-10] STATELESS 已文档化）保持原样。
-                // 两个闭包各持不同字段的借用（编排面同步序：段一 → 分派）：
-                // statectl 借 transport、init 体借 fkey——注册失败的 warn
-                // 暂存到 `pending_warn`，编排面返回后、回报发送前补发（C 的
-                // warn 在 init 回调内即时打印；这里相对回报的序不变，相对
-                // 注册的序延后一行，无后续 warn 可与其交错）。
+                // Birth-protocol orchestration belongs to the library — the first
+                // segment clears the IPC filter (the `assert(r == OK)` of C
+                // `process_init`'s first segment, sef_init.c:59-60, through
+                // `SefTransport::statectl`) and the library builds the report message;
+                // the dispatch semantics (C's fresh/LU/restart callbacks are all
+                // sef_cb_init_fresh, main.c:80-82, [ARCH: A-10] STATELESS is
+                // documented) stay as they were.
+                // The two closures hold borrows of different fields (orchestration,
+                // then dispatch):
+                // statectl borrows transport, the init body borrows fkey — a
+                // registration failure's warn is stashed in `pending_warn` and
+                // replayed after orchestration returns and before the report is sent
+                // (C's warn prints immediately inside the init callback; the order
+                // relative to the report is unchanged here, and relative to
+                // registration it is one line later; no later warn can interleave).
                 let IsServer {
                     transport, fkey, ..
                 } = self;
@@ -259,7 +271,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                             0 => SefInitType::Fresh, // sef.h:93-95
                             1 => SefInitType::Lu,
                             _ => SefInitType::Restart,
-                        }; // [ARCH: A-10] STATELESS — 三型同体
+                        }; // [ARCH: A-10] STATELESS — one body for all three types
                         let keys = HOOKS.map(|hook| hook.key);
                         if let Err(e) = map_unmap_keys(fkey, true, &keys) {
                             pending_warn = Some(e.status);
@@ -272,11 +284,12 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 }
                 let mut birth_reply = match birth_reply {
                     Ok(m) => m,
-                    // C 段一 assert ＝ 出生失败一路 panic（vm/main.c:151
-                    // 同款 "do_sef_init_request failed!" 的 fail-fast 家族）。
+                    // C's first-segment assert = birth failure panics all the way
+                    // (the same "do_sef_init_request failed!" fail-fast family as
+                    // vm/main.c:151).
                     Err(e) => panic!("IS: birth statectl failed: {e}"),
                 };
-                // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）。
+                // Birth report leg = C `ipc_sendrec` (not a plain send).
                 if self
                     .transport
                     .send_rec(Endpoint::RS, &mut birth_reply)
@@ -300,9 +313,11 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
         };
 
         // C: if (result != EDONTREPLY) reply(who_e, result) — main.c:65-68.
-        // 线序符号：C 的 IS 以 `_SYSTEM` 编译（inc.h:7），main.c 写回的错码
-        // 本就带负号；本树判定面用正号常量，在回复边界折一次（单源
-        // `minix_types::reply_status`，与 DS/SCHED/VFS 同纪律）。
+        // Wire sign: C's IS compiles with `_SYSTEM` (inc.h:7), so the error codes
+        // main.c writes back already carry a negative sign; this tree's decision
+        // surface uses positive constants and folds once at the reply boundary
+        // (single source `minix_types::reply_status`, same discipline as
+        // DS/SCHED/VFS).
         if !is_reply_suppressed(result) {
             self.state.reply_buf.m_type = minix_types::reply_status(result);
             let dest = self.state.caller;
@@ -316,9 +331,9 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
     /// The main loop. C: `while (TRUE)` — main.c:44-69.
     pub fn run(&mut self) -> ! {
         loop {
-            // C: SIGTERM 的退出发生在收信内部的 exit(0)（main.c:115）；
-            // 本树把退出动作留在主循环这一层（[ARCH: A-10] 的清理半段），
-            // 返回前 unmap 已做完。
+            // C: the SIGTERM exit happens as exit(0) inside receive (main.c:115);
+            // this tree leaves the exit action to the main-loop layer (the cleanup
+            // half of [ARCH: A-10]), with the unmap already done before returning.
             if self.step() == LifecycleAction::Shutdown {
                 minix_sys::exit(0);
             }
@@ -351,7 +366,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [ProcInfoStruct::default(); PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -359,7 +374,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_proctab(out, &tab, &mut self.dump_state.proctab);
             }
@@ -367,7 +382,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [ProcInfoStruct::default(); PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -375,7 +390,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_procstack(
                     out,
@@ -388,7 +403,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut privs = [PrivInfoStruct::default(); dump_kernel::NR_SYS_PROCS];
                 let r = self.acquires.get_privtab(&mut privs);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -399,7 +414,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [ProcInfoStruct::default(); PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -407,7 +422,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_privileges(
                     out,
@@ -420,7 +435,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut image = [BootImageStruct::default(); NR_BOOT_PROCS];
                 let r = self.acquires.get_image(&mut image);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -428,7 +443,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_image(out, &image);
             }
@@ -436,7 +451,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut hooks = [IrqHookStruct::default(); NR_IRQ_HOOKS];
                 let r = self.acquires.get_irqhooks(&mut hooks);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -447,7 +462,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut actids = [0i32; NR_IRQ_HOOKS];
                 let r = self.acquires.get_irqactids(&mut actids);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -455,7 +470,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_irqtab(out, &hooks, &actids);
             }
@@ -464,7 +479,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut ring = [0u8; dump_kernel::KMESS_BUF_SIZE as usize];
                 let r = self.acquires.kmessages(&mut meta, &mut ring);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -472,7 +487,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_kmessages(out, &meta, &ring);
             }
@@ -480,7 +495,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut blob = [0u8; MULTIBOOT_PARAM_BUF];
                 let r = self.acquires.get_monparams(&mut blob);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -488,7 +503,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_monparams(out, &blob);
             }
@@ -496,7 +511,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut kinfo = KinfoStruct::default();
                 let r = self.acquires.get_kinfo(&mut kinfo);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -504,7 +519,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_kenv(out, &kinfo);
             }
@@ -512,18 +527,18 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [MProcSnap::default(); dump_kernel::NR_PROCS as usize];
                 let r = self.acquires.pm_proc_tab(&mut tab);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from PM. Perhaps recompile IS?");
                     return;
                 }
                 if dump == DumpId::Mproc {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = render_mproc(out, &tab, &mut self.dump_state.pm_table);
                 } else {
                     let uptime = self.acquires.uptime();
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = render_sigaction(out, &tab, &mut self.dump_state.sigaction, uptime);
                 }
@@ -532,12 +547,12 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [FProcSnap::default(); dump_kernel::NR_PROCS as usize];
                 let r = self.acquires.vfs_proc_tab(&mut tab);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from VFS. Perhaps recompile IS?");
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_fproc(out, &tab, &mut self.dump_state.vfs);
             }
@@ -545,12 +560,12 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [DmapSnap::default(); NR_DEVICES];
                 let r = self.acquires.vfs_dmap_tab(&mut tab);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from VFS. Perhaps recompile IS?");
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_dtab(out, &tab);
             }
@@ -559,12 +574,12 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut privt = [RprocSnap::default(); dump_rs::RS_TABLE_LEN];
                 let r = self.acquires.rs_tables(&mut pubt, &mut privt);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from RS. Perhaps recompile IS?");
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_rproc(out, &pubt, &privt, &mut self.dump_state.rs);
             }
@@ -572,12 +587,12 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [DsEntrySnap::default(); dump_ds::NR_DS_KEYS];
                 let r = self.acquires.ds_data_store(&mut tab);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from DS. Perhaps recompile IS?");
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_data_store(out, &tab, &mut self.dump_state.ds);
             }
@@ -585,7 +600,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [ProcInfoStruct::default(); dump_kernel::PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
-                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    //[SD19-gate] diagnostic output/rendering is best-effort
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
@@ -593,7 +608,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_vm(
                     out,
@@ -604,7 +619,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 );
             }
             DumpId::Mapping => {
-                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                //[SD19-gate] diagnostic output/rendering is best-effort
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = render_mapping(out);
             }
@@ -644,12 +659,14 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
         Self::request_fkey_map_on(&mut self.fkey, &mut self.transport, map);
     }
 
-    /// [`Self::request_fkey_map`] 的拆字段形状——出生臂（PD-34 编排面的
-    /// init 闭包）与生命周期方法各持不同字段的借用，经由这份单一实现
-    /// 共享（两处手抄同一句注册序是本任务线登记过的病灶形状）。
+    /// The split-field shape of [`Self::request_fkey_map`] — the birth arm (the
+    /// init closure of the orchestration face) and the lifecycle methods each
+    /// hold a borrow of a different field, and share this one implementation
+    /// (hand-copying the same registration order in two places was the defect
+    /// shape registered on this task line).
     fn request_fkey_map_on(fkey: &mut F, transport: &mut T, map: bool) {
-        // The registered set is the hooks table itself (02 §2.6 "注册集合 =
-        // 转储能力集合"): derive the key list by `map`, so the array length
+        // The registered set is the hooks table itself (02 §2.6 "the registered
+        // set = the dump capability set"): derive the key list by `map`, so the array length
         // travels with HOOKS' type and a table edit can never leave prefill
         // residue behind.
         let keys = HOOKS.map(|hook| hook.key);
@@ -689,13 +706,15 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> SefCallbacks for IsServe
     }
 }
 
-/// C: `sef_cb_signal_handler` 的实体 — main.c:107-116（由 `sef_local_startup`
-/// 在 :85 注册给 SEF，再由 `sef_receive_status` 逐号同调）。
+/// The body of C's `sef_cb_signal_handler` — main.c:107-116 (registered with
+/// SEF at :85 by `sef_local_startup`, then called for each signal number by
+/// `sef_receive_status`).
 ///
-/// 返回值是「退出决定」与「解注册失败的状态码」（C 只 printf 不改变退出
-/// 路径，dmp.c:63-65）。生产面的收信回调与测试面的
-/// [`SefCallbacks::signal_handler`] 共用这一份判定，避开两处手抄同一句
-/// `signo != SIGTERM`。
+/// The return value is the "shutdown decision" plus "the status code of a failed
+/// unmap" (C only printf's and does not change the exit
+/// path, dmp.c:63-65). The production receive callback and the test-side
+/// [`SefCallbacks::signal_handler`] share this one decision, avoiding copying
+/// `signo != SIGTERM` by hand in two places.
 fn signal_decision<F: FkeyCtlTransport>(
     fkey: &mut F,
     signo: i32,
@@ -703,8 +722,9 @@ fn signal_decision<F: FkeyCtlTransport>(
     if signo != SIGTERM {
         return (LifecycleAction::Continue, None);
     }
-    // 顺序照 C：先 `map_unmap_fkeys(FALSE)`（main.c:113），后 exit(0)（:115）。
-    // 注册集与 init 臂同源（HOOKS 派生），失败不阻断退出（C 是 void）。
+    // Order follows C: `map_unmap_fkeys(FALSE)` first (main.c:113), then
+    // exit(0) (:115). The registered set comes from the same source as the init
+    // arm (derived from HOOKS); failure does not block the exit (C's is void).
     let keys = HOOKS.map(|hook| hook.key);
     let warn = map_unmap_keys(fkey, false, &keys).err().map(|e| e.status);
     (LifecycleAction::Shutdown, warn)
@@ -724,8 +744,9 @@ mod tests {
     struct FakeTransport {
         /// Scripted (caller, call_nr) frames; pings are `None` and skipped.
         script: Vec<Option<(Endpoint, i32)>>,
-        /// 脚本化的待决信号：在同一次 `receive` 内全部交给回调（C 的 SEF
-        /// 就是在 `sef_receive_status` 里逐号调 handler）。
+        /// Scripted pending signals: all handed to the callback within the same
+        /// `receive` (C's SEF calls the handler per number inside
+        /// `sef_receive_status`).
         pub signals: Vec<i32>,
         startups: u32,
         pub sends: Vec<(Endpoint, i32)>,
@@ -769,9 +790,11 @@ mod tests {
             if self.fail_receive {
                 return Err(-1);
             }
-            // 收信现场的信号投递：先逐个交给回调（与库内的形状同形），
-            // 再报本轮真正取到的帧；回调若取消了（PD-27 逃生门），与库
-            // 同拍地返 `Err(EINTR)` 而不再报帧。
+            // Signal delivery at the receive site: hand each one to the callback
+            // first (the same shape as in the library), then report the frame
+            // actually taken this round; if the callback cancelled (the escape
+            // hatch), return `Err(EINTR)` on the same beat as the library without
+            // reporting a frame.
             for signo in core::mem::take(&mut self.signals) {
                 on_signal(signo);
             }
@@ -912,13 +935,16 @@ mod tests {
 
     #[test]
     fn test_step_sigterm_unmaps_then_shuts_down() {
-        // C: handler 由 SEF 在收信内部调用（main.c:85），实体先
-        // map_unmap_fkeys(FALSE)（:113）再 exit(0)（:115）；那一帧永不进入
-        // 分派表。本测试钉的是接线：信号从收信回调一路跑到退出决定。
-        // 脚本帧故意用一个可分派的非通知号（而不是真实现场的
-        // `NOTIFY_MESSAGE`）：那样的帧若不先查退出位就会落进
-        // classify 的告警臂，于是 `warnings.is_empty()` 从「恒真」变成
-        // 「能区分顺序」的铜钉——丢掉 `if shutdown` 守卫本测试就会红。
+        // C: SEF calls the handler inside receive (main.c:85); the body does
+        // map_unmap_fkeys(FALSE) (:113) and then exit(0) (:115), so that frame
+        // never enters the dispatch table. This test pins the wiring: the signal
+        // travels from the receive callback all the way to the shutdown decision.
+        // The scripted frame deliberately uses a dispatchable non-notify number
+        // (not the real site's `NOTIFY_MESSAGE`): without checking the shutdown
+        // bit first, such a frame would land in classify's warn arm, turning
+        // `warnings.is_empty()` from "always true" into
+        // a nail that distinguishes order — drop the `if shutdown` guard and this
+        // test goes red.
         let mut t = FakeTransport::new(Vec::from([Some((Endpoint::SYSTEM, 0x42))]));
         t.signals.push(SIGTERM);
         let mut s = IsServer::new(t, FakeFkey::new(), FakeAcquires::ok());
@@ -934,7 +960,8 @@ mod tests {
 
     #[test]
     fn test_step_non_term_signal_leaves_the_main_loop_running() {
-        // C: if (signo != SIGTERM) return — main.c:110；本轮收信照常继续分派。
+        // C: if (signo != SIGTERM) return — main.c:110; this round's receive keeps
+        // dispatching as usual.
         let mut t = FakeTransport::new(Vec::from([Some((Endpoint::SYSTEM, FKEY_NOTIFY))]));
         t.signals.push(minix_types::SIGNAL_KERNEL_MEMORY);
         let mut s = IsServer::new(t, FakeFkey::new(), FakeAcquires::ok());
@@ -944,7 +971,8 @@ mod tests {
 
     #[test]
     fn test_step_sigterm_shuts_down_even_if_unmap_fails() {
-        // C: dmp.c:63-65 只 printf，main.c:115 的 exit 仍执行——失败不吞也不阻断。
+        // C: dmp.c:63-65 only printf's; the exit at main.c:115 still runs — failure
+        // is neither swallowed nor blocking.
         let mut t = FakeTransport::new(Vec::from([Some((Endpoint::SYSTEM, FKEY_NOTIFY))]));
         t.signals.push(SIGTERM);
         let mut fk = FakeFkey::new();
@@ -961,15 +989,17 @@ mod tests {
 
     #[test]
     fn test_step_birth_request_answers_rs_init_report() {
-        // E-BIRTHFACE（NS1）：RS_INIT from RS → Birth 臂——跑 init 体并按
-        // process_init 尾部（sef_init.c:113-117）回 RS_INIT+OK；不再落
-        // Suppress 的 illegal-warning 路（C 侧该请求由 sef_local_startup
-        // 消费，main.c:79-87）。fake 的 inbox 为默认零值 → type = FRESH。
+        // E-BIRTHFACE (NS1): RS_INIT from RS → Birth arm — runs the init body and
+        // replies RS_INIT+OK per the process_init tail (sef_init.c:113-117); it no
+        // longer falls into Suppress's illegal-warning path (on the C side that
+        // request is consumed by sef_local_startup, main.c:79-87). The fake inbox
+        // defaults to zero → type = FRESH.
         let mut s = server(Vec::from([Some((Endpoint::RS, minix_types::RS_INIT))]));
         assert_eq!(s.step(), LifecycleAction::Continue);
         assert!(s.transport.warnings.is_empty(), "出生请求不走 illegal 路");
         assert_eq!(s.transport.sends, Vec::from([(Endpoint::RS, minix_types::RS_INIT)]));
-        // 下一条消息照常分类——出生臂不吞循环。
+        // The next message is classified as usual — the birth arm does not swallow
+        // the loop.
         let mut s2 = server(Vec::from([
             Some((Endpoint::RS, minix_types::RS_INIT)),
             Some((Endpoint::RS, 0x42)),
@@ -996,7 +1026,7 @@ mod tests {
             FakeFkey::new(),
             FakeAcquires::ok(),
         );
-        //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+        //[SD19-gate] diagnostic output/rendering is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = s.step();
     }

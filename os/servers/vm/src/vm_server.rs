@@ -56,7 +56,7 @@ use minix_types::VirBytes;
 /// queue. These four live and die with the server and are needed together
 /// at every dispatch site.
 ///
-/// V9-P1-3 step 1 (02-stage-vm todo): grouping them makes that invariant
+/// Grouping them makes that invariant
 /// structural — callers destructure `&mut VmContext` into disjoint `&mut`
 /// fields (the borrow checker enforces the split) — and retires the
 /// former `parts_mut()` 4-tuple, whose existence was a borrow-checker
@@ -72,10 +72,10 @@ pub(crate) struct VmContext {
     pub(crate) page_frames: Option<PageFrames>,
     pub(crate) page_cache: PageCache,
     pub(crate) vfs_queue: VfsRequestQueue,
-    /// Kernel-call gateway (V11/T9 step 2): the single exit point for
+    /// Kernel-call gateway: the single exit point for
     /// kernel syscalls (sys_fork today; safecopy/update/exec/diag join
     /// with their consumers). `Rc<RefCell<…>>` follows the transport
-    /// pattern (V10-P0-2): tests keep a mock behind the same shape the
+    /// pattern: tests keep a mock behind the same shape the
     /// production `TrapKernelGateway` uses.
     pub(crate) gateway: alloc::rc::Rc<
         core::cell::RefCell<alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>>,
@@ -90,8 +90,9 @@ pub(crate) struct VmContext {
     pub(crate) pagefault_errors: u64,
     /// Main-loop dropped-message count ([ARCH: A-14], saturating).
     pub(crate) dropped_messages: u64,
-    /// V11/T16 (`sanity_checks` feature): dispatches since the last
-    /// refcount verification. C: SANITYCHECKS 周期校验 (alloc.c)。
+    /// Dispatches since the last refcount verification, counted only under
+    /// the `sanity_checks` feature. C: the periodic SANITYCHECKS pass
+    /// (alloc.c).
     #[cfg(feature = "sanity_checks")]
     pub(crate) sanity_ticks: u32,
     /// Initial user stack top (E-BOOTFRAME). C: `kernel_boot_info.user_sp`
@@ -115,7 +116,7 @@ impl VmContext {
                 transport: minix_sys::syscall::DirectKernelCallTransport,
             },
         )));
-        // V11/T15: audit records route through this gateway (SYS_DIAGCTL).
+        // Audit records route through this gateway (SYS_DIAGCTL).
         #[cfg(all(not(test), feature = "vm_acl_audit"))]
         crate::audit::register_gateway(gateway.clone());
 
@@ -156,7 +157,7 @@ pub struct VmServer {
     initialized: bool,
     /// Count of kernel pagefault messages whose handling failed.
     ///
-    /// V9-P1-1 (todo): the main loop previously dropped the
+    /// The main loop previously dropped the
     /// `dispatch_pagefault` result (`let _ =`), so CoW / allocation /
     /// region-lookup failures were unobservable in release builds. Each
     /// `VmReply::Error` from a pagefault is now counted here and surfaced
@@ -173,10 +174,10 @@ pub struct VmServer {
     /// [`BootParams`] so `init()` does not borrow external memory; the
     /// kernel→VM boot protocol is a one-shot hand-off.
     boot_procs: [BootImage; NR_BOOT_PROCS],
-    /// Kernel layout from the boot handoff (V11/E3): `None` = pre-E3
+    /// Kernel layout from the boot handoff: `None` = an older-than-v3
     /// handoff/test shape → `init_global_state` keeps the mock constants.
     kernel_layout: Option<minix_types::KernelLayout>,
-    /// Kernel-information page physical address (handoff v7, D-72).
+    /// Kernel-information page physical address (handoff v7).
     /// Every new root maps it read-only at `minix_types::KERNINFO_USER_VA`.
     kerninfo_pa: minix_types::PhysBytes,
     /// Pages to charge to the global page total during init.
@@ -192,11 +193,11 @@ pub struct VmServer {
     /// highest absolute page index) and must span address space with a
     /// non-zero RAM base (aarch64 @ PA 0x40000000). Using the capacity for
     /// the accounting total would inflate `vsi_total` by every reserved hole
-    /// below the highest free page (NK4-C §1.111 CodeReview P1).
+    /// below the highest free page (CodeReview P1).
     boot_usable_pages: usize,
     /// IPC transport for the main loop.
     ///
-    /// `Rc<RefCell<...>>` (V10-P0-2, V9-P1-2): the previous process-global
+    /// `Rc<RefCell<...>>`: the previous process-global
     /// `AtomicPtr` + `Box::into_raw` slot always constructed a
     /// `KernelIpcTransport` (even in tests), never marked it initialized,
     /// and leaked the allocation — the main loop was untestable and would
@@ -212,9 +213,10 @@ pub struct VmServer {
 impl VmServer {
     /// Test-facing constructor over [`BootParams::simple`].
     ///
-    /// T13 审计 A5 同门：生产入口是
-    /// [`Self::new_with_boot_params`]（真 boot 契约）；`new()` 只服务
-    /// 宿主测试，编译期门控防止生产误用 mock 形状的 boot 参数。
+    /// The production entry point, gated the same way, is
+    /// [`Self::new_with_boot_params`] (the real boot contract); `new()` serves
+    /// host tests only, behind a compile-time gate that prevents production from
+    /// using mock-shaped boot parameters.
     #[cfg(test)]
     pub fn new(total_pages: usize, free_regions: &[BootMemRegion]) -> Self {
         Self::new_with_boot_params(BootParams::simple(total_pages, free_regions))
@@ -230,7 +232,7 @@ impl VmServer {
     }
 
     /// Test constructor: inject a mock transport so the main loop can be
-    /// driven end-to-end on the host (V10-P0-2). The boot contract is the
+    /// driven end-to-end on the host. The boot contract is the
     /// simplified `BootParams::simple` form used by `new()`.
     #[cfg(test)]
     fn new_for_test(
@@ -262,7 +264,7 @@ impl VmServer {
 
         let phys_alloc = Self::create_default_allocator(params.total_pages, params.free_regions);
         let page_alloc = VmPageAllocator::new(phys_alloc);
-        // fix21 (P0-code-bug): the global registration used to happen HERE,
+        // The global registration used to happen HERE,
         // against the local `page_alloc` — which is then MOVED into
         // `VmContext` and out through the return value, leaving
         // PAGE_ALLOC_PTR dangling into this dead stack frame. Everything
@@ -271,7 +273,7 @@ impl VmServer {
         // boot procs "worked" off leftover bits (double-allocating pages
         // the post-relocate allocator still counted free), and `rs` died
         // with `AllocationFailed free=0 … self_pages=0` once the frame was
-        // recycled (forensics 2026-09-21, serial_fix21.log). The
+        // recycled (seen in the boot serial log). The
         // registration now targets the FINAL address, at the top of
         // `init()`, where `self` is the caller's stable local
         // (`main.rs:57`) and never moves again. Heap requests in the
@@ -288,16 +290,19 @@ impl VmServer {
         if !minix_arch::pt_alloc::is_registered() {
             minix_arch::pt_alloc::register(crate::alloc_page::vm_pt_alloc);
         }
-        // E4 余件:配对的归还钩子。注册后 `destroy()` 的
-        // free_child_tables + 根页回收才激活(未注册时退化为只清零根,
-        // 中间页表页随进程退出泄漏——C pt_free pagetable.c:1427-1437
-        // 的 Rust 对应物至此闭环)。
+        // The paired release hook. Only after registration does `destroy()`
+        // activate free_child_tables and root-page reclaim (without it the
+        // behavior degrades to clearing the root alone, and intermediate page
+        // table pages leak on process exit — the Rust counterpart of C pt_free
+        // pagetable.c:1427-1437 closes here).
         if !minix_arch::pt_alloc::is_free_registered() {
             minix_arch::pt_alloc::register_free(crate::alloc_page::vm_pt_free);
         }
-        // 续-311 内核代读旁路：walk_read 的 VmDm 槽读改经 kernel-call 由
-        // 内核 KDM 直读（riscv-only 生产机制，T8 探针滚除时随 vmdm_bridge 落位）。时机对齐
-        // pt_alloc::register——先于任何 Paging walk。
+        // The kernel-side read bypass: walk_read's VmDm slot reads go through a
+        // kernel call so the kernel's KDM reads them directly (a riscv-only
+        // production mechanism, placed with vmdm_bridge when the T8 probe was
+        // removed). It is timed with pt_alloc::register — before any Paging
+        // walk.
         #[cfg(all(target_arch = "riscv64", not(test)))]
         crate::vmdm_bridge::register_vmdm_read();
 
@@ -358,7 +363,7 @@ impl VmServer {
             .expect("no free region in Direct Map range large enough for allocator metadata");
 
         let meta_phys_base = meta_region.base;
-        // V11/T26: one path for both profiles — `vm_phys_to_virt` is
+        // One path for both profiles — `vm_phys_to_virt` is
         // window-aware in test builds too (per-thread window base), so the
         // former cfg split (arch global read vs funnel) is unnecessary.
         let meta_va = vm_phys_to_virt(AlignedPhysBytes::new(meta_phys_base as u64));
@@ -373,7 +378,7 @@ impl VmServer {
         // ALL chunks, alloc.c:306-331). Passing only the donor — what this
         // line used to do — left the PMM with the donor's remainder only
         // (~133 pages on first light, so the `PageFrames` oversize grow hit
-        // PhysicalAllocFailed; fix19 forensics 2026-09-21, the vm_handoff
+        // PhysicalAllocFailed; the vm_handoff
         // serial landmark showing `free n=10` vs a 24-page pool).
         let mut adjusted_regions = alloc::vec::Vec::with_capacity(free_regions.len());
         for r in free_regions {
@@ -399,12 +404,12 @@ impl VmServer {
     /// Select the boot-time allocator backend ([ARCH: A-5]).
     ///
     /// This function is the **single precedence authority** (the contradictory
-    /// `DefaultAllocator` alias in `phys_mem/mod.rs` was removed in V11-P1-3):
+    /// `DefaultAllocator` alias in `phys_mem/mod.rs` was removed):
     ///
     /// - `segment_tree_alloc` selects the segment-tree backend outright,
-    ///   including when the `buddy_alloc` feature is also enabled (V10-P0-1
-    ///   wired the previously-never-selected backend; V11-P1-3 pinned the
-    ///   combined-feature semantics with tests).
+    ///   including when the `buddy_alloc` feature is also enabled (that wiring
+    ///   selected the previously-never-selected backend, and the
+    ///   combined-feature semantics are pinned by tests).
     /// - `buddy_alloc` (without segment-tree) keeps the documented adaptive
     ///   threshold — at or below `BUDDY_THRESHOLD_PAGES` (1M pages ≈ 4GB) the
     ///   compact bitmap is used even when the feature is enabled
@@ -477,7 +482,7 @@ impl VmServer {
         // allocator), so `PhysAllocType` stays feature-independent while
         // `PhysAlloc` construction matches the compiled-in backend.
         //
-        // V12-P1-1: under the current `choose_allocator_type` the fallback
+        // Under the current `choose_allocator_type` the fallback
         // arms are UNREACHABLE — it only names a backend whose feature is
         // on, so each `#[cfg(not(...))]` fallback never runs in any feature
         // combination. They keep the match exhaustive without making
@@ -532,7 +537,7 @@ impl VmServer {
             }
         };
 
-        // V12-P1-1: the relocation's backend decision is otherwise
+        // The relocation's backend decision is otherwise
         // unobservable in production — one audit line makes "asked for X,
         // got Y" diagnosable after the fact.
         audit_log!(
@@ -551,13 +556,13 @@ impl VmServer {
     }
 
     pub fn init(&mut self) {
-        // fix21: register the global PMM pointer against the FINAL address
+        // Register the global PMM pointer against the FINAL address
         // of the allocator. `self` here is `main.rs:57`'s `let mut server`
         // local — it never moves again after this point, so PAGE_ALLOC_PTR
         // (read by the `vm_pt_alloc` hook, `refill_arena`, `alloc_oversize`)
         // stays valid for the server's whole lifetime. Registering earlier
         // (in `new_inner`, against a pre-move local) dangled the pointer
-        // into a dead stack frame — see the fix21 comment there.
+        // into a dead stack frame — see the comment there.
         // `relocate()` below replaces the allocator's `phys_alloc` field
         // IN PLACE, so this registration survives it.
         crate::global::register_page_alloc(&mut self.ctx.page_alloc);
@@ -570,9 +575,9 @@ impl VmServer {
         //   main.c:465      acl_init()                  → AclState::Uninitialized (compile-time default)
         //   main.c:468      map_region_init()           → RegionMap::new() lazily per process
         //   main.c:474-475  init_proc(VM_PROC_NR)+pt_init → init_vm_slot() + init_vm_self_pt() (new)
-        //   main.c:480      __minix_init()              → mark_initialized() (V10-P0-2; real trap wiring → E1)
+        //   main.c:480      __minix_init()              → mark_initialized() (real trap wiring → E1)
         //   main.c:485-495  mem_add_total_pages()       → account_boot_memory()
-        //   main.c:497-520  boot procs (exec_bootproc)  → init_boot_procs() + exec_bootproc (V11/T14; stack frame → E-BOOTFRAME)
+        //   main.c:497-520  boot procs (exec_bootproc)  → init_boot_procs() + exec_bootproc (stack frame → E-BOOTFRAME)
         //   main.c:522-572  CALLMAP                     → compile-time match (MessageDispatcher)
         //   main.c:577-579  VM instance mark            → mark_vm_instance()
         //
@@ -594,13 +599,13 @@ impl VmServer {
         // this mirrors) ahead of the `exec_bootproc` pass (main.c:498-520),
         // and exec_bootproc consumes page_frames for segment pages. The
         // former placement after init_boot_procs() was an unreachable-order
-        // latent bug the fix16 forensics exposed ("page_frames not
+        // latent bug that forensics exposed ("page_frames not
         // initialized" panic from exec_bootproc, 2026-09-21).
         let total_phys =
             PhysBytes(self.ctx.page_alloc.total_pages() as u64 * crate::region::PAGE_SIZE);
         self.ctx.page_frames = Some(PageFrames::new(total_phys));
 
-        // V11/T30: the reclaim-retry funnel needs kernel-visible access to
+        // The reclaim-retry funnel needs kernel-visible access to
         // the cache/frames pair (C alloc_mem reads the global cache). Same
         // registration lifetime as the audit gateway and page allocator.
         if let Some(frames) = self.ctx.page_frames.as_mut() {
@@ -608,7 +613,7 @@ impl VmServer {
         }
 
         // Phase 2c: boot process slots — main.c:497-520 (exec_bootproc
-        // landed in V11/T14; the initial stack frame ABI waits on edge
+        // landed; the initial stack frame ABI waits on edge
         // E-BOOTFRAME).
         self.init_boot_procs();
 
@@ -616,7 +621,7 @@ impl VmServer {
         self.mark_vm_instance();
 
         // C: __minix_init() (main.c:480) — SEF startup makes the IPC
-        // channel ready before the main loop. V10-P0-2: without this, a
+        // channel ready before the main loop. Without this, a
         // `KernelIpcTransport` stays uninitialized and `run()` would
         // busy-loop on `Err(Unimplemented)` instead of blocking on
         // `sef_receive_status`.
@@ -646,7 +651,7 @@ impl VmServer {
         // but provided no way to supply correct values. Now the layout is
         // set here, once, during `VmServer::init()`.
         //
-        // TODO (boot-info integration): Replace these mock values with real
+        // Open item (boot-info integration): replace these mock values with real
         // values parsed from the multiboot2 / stivale2 boot headers or linker
         // symbols. The kernel text physical base, text/data sizes, and direct
         // map size all come from boot-time information. Until then, these mock
@@ -654,16 +659,18 @@ impl VmServer {
         // unchanged, but the mechanism is now in place to supply correct
         // values without touching `init_page_table()`.
         //
-        // V11/E3: a version ≥ 3 handoff carries the real kernel layout —
+        // A version ≥ 3 handoff carries the real kernel layout —
         // consume it. `None` (pre-E3 handoffs, host tests via
         // `BootParams::simple`) keeps the historical mock constants.
         let layout = self.kernel_layout.unwrap_or_else(|| {
             audit_log!(
                 "[VM BOOT] handoff lacks kernel layout (version < 3) — mock constants in use"
             );
-            // T13 审计 A6：mock 形状是 x86 的（dm_vbase=0xFFFF_8000_0000_0000
-            // 在 Sv39 非规范）——riscv64 guest 上真 handoff 恒 v5 携带真布局，
-            // 走到本回退说明 handoff 版本逻辑已破，硬失败而非静默套错形状。
+            // The mock shape is x86's (dm_vbase=0xFFFF_8000_0000_0000 is
+            // non-canonical under Sv39) — on a riscv64 guest a real handoff is
+            // always v5 and carries the real layout, so reaching this fallback
+            // means the handoff version logic is broken: fail hard rather than
+            // silently applying the wrong shape.
             #[cfg(all(target_arch = "riscv64", not(test)))]
             panic!("handoff lacks kernel layout on riscv64 — a real handoff is v5 and carries it");
             #[cfg(not(all(target_arch = "riscv64", not(test))))]
@@ -672,8 +679,8 @@ impl VmServer {
                 0x100_0000,            // kernel_text_pbase (16 MiB, mock)
                 8,                     // kernel_text_pages (mock)
                 8,                     // kernel_data_pages (mock)
-                0xFFFF_8000_0000_0000, // dm_vbase (legacy sentinel — host-test shape only; a real handoff is v5 and carries the arch's true KERNEL_DIRECT_MAP_BASE, fix26)
-                4,                     // dm_pages (legacy sentinel — see fix26)
+                0xFFFF_8000_0000_0000, // dm_vbase (legacy sentinel — host-test shape only; a real handoff is v5 and carries the arch's true KERNEL_DIRECT_MAP_BASE)
+                4,                     // dm_pages (legacy sentinel — see above)
             )
         });
         // SAFETY: Called before any `init_page_table()` call (process table
@@ -683,7 +690,7 @@ impl VmServer {
             crate::global::set_kernel_layout(layout);
         }
 
-        // D-72: the kernel-information page's physical address. Every new
+        // The kernel-information page's physical address. Every new
         // root maps it read-only at `minix_types::KERNINFO_USER_VA`; the
         // page itself stays kernel-owned.
         // SAFETY: same single-threaded, pre-page-table window as above.
@@ -694,7 +701,7 @@ impl VmServer {
 
     /// init_proc(VM_PROC_NR) — main.c:262-283, called at main.c:474.
     fn init_vm_slot(&self) {
-        let table = self.ctx.proc_table; // V12-P2-5: ctx 字段即全局别名，语法统一
+        let table = self.ctx.proc_table; // the ctx field is the global alias; one spelling
         if let Some(ip) = self.boot_procs.iter().find(|ip| ip.proc_nr == VM_PROC_NR) {
             Self::init_proc(table, *ip);
         }
@@ -703,13 +710,13 @@ impl VmServer {
     /// Boot process slots — main.c:497-520.
     ///
     /// C also runs `exec_bootproc()` + `free_mem()` per boot process here;
-    /// both are implemented (V11/T14 — ELF segment loading through the
+    /// both are implemented (ELF segment loading through the
     /// Direct Map + `Gateway::sys_exec`, blob freed back to the allocator).
     /// The minimal initial stack frame is edge E-BOOTFRAME (VM↔libc↔kernel
     /// shared ABI), so `stack`/`ps_str` report 0 until it lands; real
     /// kernel traffic for `sys_exec` waits on edge E2.
     fn init_boot_procs(&mut self) {
-        let table = self.ctx.proc_table; // V12-P2-5: 语法统一（同对象）
+        let table = self.ctx.proc_table; // one spelling (the same object)
         // Own a copy: exec_bootproc needs &mut self while iterating.
         let boot_procs = self.boot_procs;
         for ip in &boot_procs {
@@ -745,7 +752,7 @@ impl VmServer {
         }
     }
 
-    /// V11/T14: `exec_bootproc` (C: main.c:331-426) — load a boot image
+    /// `exec_bootproc` (C: main.c:331-426) — load a boot image
     /// process's ELF segments into its fresh address space and hand the
     /// entry point to the kernel.
     ///
@@ -779,7 +786,7 @@ impl VmServer {
         const PS: usize = crate::region::PAGE_SIZE as usize;
         use crate::region::page_state::PfnAllocator as _;
 
-        let table = self.ctx.proc_table; // V12-P2-5: 语法统一（同对象）
+        let table = self.ctx.proc_table; // one spelling (the same object)
         let slot = table
             .vm_isokendpt(ip.endpoint)
             .map_err(|_| "boot proc endpoint not registered")?;
@@ -820,7 +827,7 @@ impl VmServer {
         // ONLY boot-path VMINHIBIT clear leg (the kernel sets
         // VMINHIBIT|BOOTINHIBIT on every non-VM boot proc,
         // kernel/src/lib.rs:1666); without it the exec'd processes stay
-        // parked even after BOOTINHIBIT lifts (NK4-A fix25 forensics).
+        // parked even after BOOTINHIBIT lifts (confirmed on the real machine).
         // `pdes` (the kernel-visible PDE alias) has no meaning under the
         // Direct Map — 0 travels as `virt_root = None` (documented
         // deviation, exit.rs `handle_procctl_clear` Step-4 note).
@@ -839,57 +846,74 @@ impl VmServer {
             if seg_len == 0 {
                 continue;
             }
-            // NK4-A C-3 迭代5（2026-09-22）：段基页对齐向下取整。RS 的入口
-            // 段 vaddr=0x2246c0 非页对齐——旧实现以未对齐段基为 region 零点
-            // 铺页，硬件 PTE 却按 4KiB 页界安装，页内内容整体错位
-            // (seg.vaddr & 0xfff)——RS 首指令在错位字节上 #GP(0)。
-            // C libexec 对位：p_offset ≡ p_vaddr (mod page) 的 ELF 约定下，
-            // 对齐页的文件源 = seg.offset - (seg.vaddr & 0xfff)。
+            // Round the segment base down to a page boundary. RS's entry
+            // segment has vaddr=0x2246c0, which is not page-aligned — the old
+            // implementation laid pages from the unaligned segment base as the
+            // region origin while hardware PTEs install on 4KiB boundaries, so
+            // page contents shifted wholesale by (seg.vaddr & 0xfff) and RS's
+            // first instruction faulted with #GP(0) on a displaced byte.
+            // C libexec correspondence: under the ELF convention
+            // p_offset ≡ p_vaddr (mod page), the file source for an aligned
+            // page is seg.offset - (seg.vaddr & 0xfff).
             let va_base = seg.vaddr & !(PS as u64 - 1);
             let va_end = seg.vaddr + seg_len;
             let pages = (va_end - va_base).div_ceil(PS as u64) as usize;
-            // NK4-C §1.101 boot-OOM 根因修复：region 覆盖整段 memsz（含
-            // heap/BSS 预留尾，读 elf 末段 FileSiz=64K / MemSiz=4M），但只有
-            // 文件页需要 eager 实体化；memsz 与 filesz 之间的页对齐尾部（未
-            // 初始化 .bss + 堆）留给按需缺页（对位 C libexec：exec_image 只对
-            // 文件页 physcopy，其余 demand-fault）。旧实现对 0..pages 全量
-            // alloc_pfn + map_page，12 台 boot server 各 eager 铺 ~4MB → 12×
-            // 1041 页撑爆 14319 帧池于第 8 台（mib）报 "boot segment page
-            // allocation failed"（exec 只到 7）。首/末页页内 .bss 空洞由下方
-            // write_bytes 显式清零（对位 C clearmem 头/尾）；页对齐整页尾的零
-            // 填依赖 ANON demand-fault 给零页——boot 期无页缓存可回收、
-            // alloc_pfn_reclaiming 退化为全新帧，故行为不变；把 demand-fault
-            // 显式接 PAF_CLEAR（对位 C VR_UNINITIALIZED）列为后续加固项。
+            // The root cause of the boot OOM: the region covers the whole
+            // memsz (including the heap/BSS reserve tail — the last elf segment
+            // reads FileSiz=64K / MemSiz=4M), but only file pages need eager
+            // materialization; the page-aligned tail between memsz and filesz
+            // (uninitialized .bss plus heap) is left to demand paging (C libexec
+            // correspondence: exec_image physcopies only file pages and leaves
+            // the rest demand-faulted). The old implementation ran alloc_pfn +
+            // map_page over all of 0..pages, so twelve boot servers eagerly laid
+            // out ~4MB each → 12×1041 pages exhausted the 14319-frame pool at
+            // the eighth (mib) with "boot segment page allocation failed" (exec
+            // got only to 7). The in-page .bss holes of the first and last pages
+            // are explicitly zeroed by the write_bytes below (matching C
+            // clearmem head/tail); zero fill of a page-aligned whole-page tail
+            // relies on ANON demand-fault handing out a zero page — during boot
+            // there is no page cache to reclaim and alloc_pfn_reclaiming
+            // degrades to fresh frames, so behavior is unchanged. Wiring
+            // demand-fault explicitly to PAF_CLEAR (matching C VR_UNINITIALIZED)
+            // is recorded as a later hardening item.
             let file_pages = if seg.filesz == 0 {
                 0
             } else {
                 ((seg.vaddr + seg.filesz - va_base) as usize)
                     .div_ceil(PS)
-                    // SHOULD（CodeReview）：minix-elf SegmentIter 不校验
-                    // filesz<=memsz；畸形末段会让 file_pages 超出 region
-                    // 长度 pages，map_page 裸下标 index-OOB panic（VM 起不来
-                    // = 全系统停摆）。钳到 pages 保持旧「静默丢多余文件字节」
-                    // 的容错语义。
+                    // CodeReview SHOULD: minix-elf's SegmentIter does not check
+                    // filesz<=memsz, so a malformed last segment would push
+                    // file_pages past the region length `pages` and make
+                    // map_page's bare index go out of bounds (a panic here means
+                    // VM cannot start and the whole system stalls). Clamping to
+                    // `pages` keeps the old tolerant semantics of silently
+                    // dropping excess file bytes.
                     .min(pages)
             };
             let vaddr = minix_types::VirBytes(va_base);
 
             // Region per segment (C: libexec_alloc_vm_prealloc → map_page_region).
-            // Writable flag 来自 ELF 段旗标（PF_W=2）：C 的 map_page_region
-            // 对 PT_LOAD RW 段建可写 region。此前全部段只给 ANON——数据段
-            // region 不可写 → is_page_writable 恒 false → sync_slot_pte 把
-            // .data 页映射成只读，用户态首次写即 PF(err=7) → VM 判违例 →
-            // SIGSEGV（真机 NK4-A C-3 c10a 轮：RS ensure_global_allocator
-            // 的分配器旗标 xchg 于 0x229708 二连故障，2026-09-22）。
+            // The writable flag comes from the ELF segment flags (PF_W=2): C's
+            // map_page_region builds a writable region for a PT_LOAD RW segment.
+            // Previously every segment got only ANON — the data segment's region
+            // was not writable → is_page_writable was always false →
+            // sync_slot_pte mapped .data pages read-only, and the first user
+            // write faulted (err=7) → VM judged a violation → SIGSEGV (on the
+            // real machine: RS's ensure_global_allocator allocator-flag xchg at
+            // 0x229708 failed twice in a row).
             //
-            // B42（§1.77）：可执行性同理必须从 ELF 段旗标（PF_X=1）承接——
-            // C 在 i386 无 NX，boot 文本天然全可执行；x86-64 NXE 下若 boot
-            // 段 region 不置 EXECUTABLE，则 sync_slot_pte（cow_exec_pf.rs:129-
-            // 135）对文本页组 read_only 且不加 EXECUTABLE → PTE present 但 NX
-            // → boot server 取指恒 #PF 活锁（真机 bn60b：RS 入口文本 0x227980
-            // 命中 71287 次）。此即 B41 present-but-NX 同型缺陷换到 boot 腿，
-            // B41 只修了动态 exec_worker→to_vr_flags 腿。数据段无 PF_X 保持
-            // NX（正确 W^X），文本段 PF_X → EXECUTABLE，行为等价 C。
+            // Executability must likewise be inherited from the ELF segment
+            // flags (PF_X=1) — C on i386 has no NX, so boot text is executable by
+            // nature; under x86-64 NXE, if the boot segment's region does not set
+            // EXECUTABLE, then sync_slot_pte (cow_exec_pf.rs:129-135) groups the
+            // text pages read_only without EXECUTABLE → the PTE is present but
+            // NX → the boot server's instruction fetch faults forever and
+            // livelocks (on the real machine: RS entry text at 0x227980 was hit
+            // 71287 times). That is the same present-but-NX defect as in the
+            // dynamic path, moved to the boot leg; only the
+            // exec_worker→to_vr_flags leg had been fixed. A data segment without
+            // PF_X stays NX (correct W^X), and a text segment with PF_X becomes
+            // EXECUTABLE, equivalent to C.
             let mut seg_flags = crate::region::VrFlags::ANON;
             if seg.flags & minix_elf::PF_W != 0 {
                 seg_flags |= crate::region::VrFlags::WRITABLE;
@@ -911,7 +935,7 @@ impl VmServer {
             // `vm_region_top = startv + length` (region.c:391). Mirror it per
             // segment; segments are walked in ascending phdr order, so after
             // the loop the hint sits at the data end (C:402-415 slot-packing
-            // semantics — a hint, not a break value, §续-279m).
+            // semantics — a hint, not a break value).
             proc.set_region_top(VirBytes(vaddr.0 + (pages * PS) as u64));
 
             // Materialize pages eagerly and copy segment bytes through the
@@ -925,10 +949,11 @@ impl VmServer {
                     .map_err(|_| "boot segment page allocation failed")?;
                 seg_vr.map_page(frames, offset, pfn, &crate::memtype::MEM_TYPE_ANON);
 
-                // Copy file bytes into the fresh physical page. Page i 覆盖
-                // [va_base+i*PS, +PS)，与 [seg.vaddr, seg.vaddr+filesz) 的
-                // 交集才有效：ELF 对齐约定下文件源 = seg.offset +
-                // (页内起点 - seg.vaddr)，未对齐首部的尾部零填。
+                // Copy file bytes into the fresh physical page. Page i covers
+                // [va_base+i*PS, +PS), and only its intersection with
+                // [seg.vaddr, seg.vaddr+filesz) is valid: under the ELF
+                // convention the file source is seg.offset + (in-page start -
+                // seg.vaddr), with the tail of an unaligned head zero-filled.
                 let dst_phys = pfn as u64 * PS as u64;
                 let dst_va = crate::direct_map::vm_phys_to_virt(
                     crate::phys_mem::AlignedPhysBytes::new(dst_phys),
@@ -951,19 +976,23 @@ impl VmServer {
                         );
                     }
                 }
-                // NK4-C §1.101 CodeReview MUST-1(b)：页内 .bss 空洞清零（对位
-                // C libexec clearmem 头/尾）。本页未被文件覆盖的前缀
-                // [page_va,lo) 与后缀 [hi,page_va+PS) 必须显式写零——该页已经
-                // map_page 置 present，首/末页页内 .bss 之后**永不再触发缺
-                // 页**，不在此清零则读到上一任物理帧脏数据。中间页
-                // lo==page_va && hi==page_va+PS ⇒ head_len=0/tail_len=0 为
-                // no-op，故统一处理无需分支。
+                // CodeReview MUST-1(b): zero the in-page .bss holes (matching C
+                // libexec clearmem head/tail). The prefix [page_va,lo) and
+                // suffix [hi,page_va+PS) that the file does not cover must be
+                // written as zeros explicitly — the page is already present via
+                // map_page, so after the in-page .bss of the first/last pages a
+                // fault is **never** raised again, and without this clearing it
+                // would read the previous physical frame's stale data. For a
+                // middle page lo==page_va && hi==page_va+PS gives
+                // head_len=0/tail_len=0, a no-op, so one path needs no branch.
                 {
                     let base_ptr = dst_va.0 as *mut u8;
                     let head_len = (lo - page_va) as usize;
                     let tail_start = (hi - page_va) as usize;
-                    // SAFETY: 同一新分配页 Direct Map 窗口 [0, PS) 内，
-                    // head_len <= tail_start <= PS，两段不重叠且不越页界。
+                    // SAFETY: inside the Direct Map window [0, PS) of the same
+                    // freshly allocated page, head_len <= tail_start <= PS, so
+                    // the two ranges neither overlap nor cross the page
+                    // boundary.
                     unsafe {
                         core::ptr::write_bytes(base_ptr, 0, head_len);
                         core::ptr::write_bytes(base_ptr.add(tail_start), 0, PS - tail_start);
@@ -1020,15 +1049,16 @@ impl VmServer {
         // whole limit and pages materialize on demand; only the frame page
         // is eagerly materialized below. The former one-page region made
         // any call-chain descent past the frame page leave the region —
-        // pf find_mut → InvalidAddress → SIGSEGV (real machine NK4-A C-3
+        // pf find_mut → InvalidAddress → SIGSEGV (real machine
         // c11a: RS main's stack read at 0x7fffffffd9c8, one page below the
         // frame page, 2026-09-22).
         const DEFAULT_STACK_LIMIT: u64 = 4 * 1024 * 1024;
-        // 下溢防护（NK4 回归评审 P2-2）：user_sp 低于限额时裸减回绕会把
-        // region 基址推到地址空间顶端。生产 user_sp 随架构（x86-64
-        // 0x7ffffffff000、riscv64 0x3fe0000000 一族，权威
-        // `minix_types::USER_STACK_TOP`）但都远高于限额；宿主测试的 mock
-        // user_sp 同样须满足该不变量。
+        // Underflow guard: a bare subtraction with user_sp below the limit
+        // would wrap and push the region base to the top of the address space.
+        // Production user_sp varies by architecture (0x7ffffffff000 on x86-64,
+        // the 0x3fe0000000 family on riscv64; the authority is
+        // `minix_types::USER_STACK_TOP`), but all are far above the limit; the
+        // mock user_sp in host tests must satisfy the same invariant.
         debug_assert!(
             self.ctx.user_sp.0 > DEFAULT_STACK_LIMIT,
             "user_sp {:#x} leaves no room for the {}-byte stack window",
@@ -1072,8 +1102,9 @@ impl VmServer {
             .alloc_pfn()
             .map_err(|_| "boot stack page allocation failed")?;
         {
-            // 帧页在 region 内的偏移：region 基址是 4MiB 窗口底，帧页是
-            // vsp 所在页（非 region 首页）。
+            // The frame page's offset inside the region: the region base is
+            // the bottom of the 4MiB window, and the frame page is the page
+            // holding vsp (not the region's first page).
             let frame_page = VirBytes(vsp & !(PS as u64 - 1));
             let vr = proc
                 .regions_mut()
@@ -1111,8 +1142,10 @@ impl VmServer {
         let dst_phys = pfn as u64 * PS as u64;
         let dst_va =
             crate::direct_map::vm_phys_to_virt(crate::phys_mem::AlignedPhysBytes::new(dst_phys));
-        // 页内偏移（vsp 所在页的页基 = vsp & !PS-1），region 基址是 4MiB
-        // 窗口底——用它会把帧写到页外物理内存（宿主测试实证）。
+        // The in-page offset (the page base holding vsp is vsp & !PS-1); the
+        // region base is the bottom of the 4MiB window, and using it would
+        // write the frame outside the page in physical memory (demonstrated by
+        // host tests).
         let write_off = (vsp & (PS as u64 - 1)) as usize;
         // The frame's byte 0 lands at `vsp`, which sits `write_off` bytes
         // into the mapped page — not at the page start.
@@ -1132,7 +1165,7 @@ impl VmServer {
         // C: sys_exec(endpoint, vsp, progname, pc, ps_str) — main.c:409-411.
         // `name` stays 0 (kernel-side name semantics are a separate edge);
         // stack/ps_str are now the real ABI values.
-        // fix20 probe: name the rejecting errno in the message (kernel
+        // Name the rejecting errno in the message (the kernel
         // answers negative errno; EINVAL = dead endpoint, EFAULT = the
         // name-copy arm — C do_exec.c:37-40 treats that one as NON-fatal
         // "<unset>", so an EFAULT here pinpoints the deviation).
@@ -1165,7 +1198,7 @@ impl VmServer {
         // forked with VMINHIBIT|BOOTINHIBIT (kernel/src/lib.rs:1666) and
         // stays parked after exec unless VM clears the inhibit. Without
         // this leg every `exec X ok` booted a permanently stopped
-        // process (NK4-A fix23b forensics 2026-09-21: 11 boot procs
+        // process (forensics on the real machine: 11 boot procs
         // exec'd, none ever reached `_start`).
         gateway
             .sys_vmctl_boot_inhibit_clear(endpoint)
@@ -1225,7 +1258,7 @@ impl VmServer {
         }
     }
 
-    /// Returns the count of failed kernel pagefault handlings (V9-P1-1).
+    /// Returns the count of failed kernel pagefault handlings.
     ///
     /// Every `VmReply::Error` produced while dispatching a `VM_PAGEFAULT`
     /// message increments this counter. Tests assert on it; the audit
@@ -1235,7 +1268,7 @@ impl VmServer {
     }
 
     /// Returns the count of IPC messages dropped at the main-loop boundary
-    /// (V9-P0-1, [ARCH: A-14]): receive failures + invalid callers.
+    /// ([ARCH: A-14]): receive failures + invalid callers.
     pub fn dropped_messages(&self) -> u64 {
         self.ctx.dropped_messages
     }
@@ -1252,19 +1285,21 @@ impl VmServer {
     /// (`[ARCH: A-1]`, 06-page-allocator.md §3.3). The cache-reclaim half is
     /// implemented below as a bounded batch (`page_cache.free_pages`);
     /// allocation-time reclaim-retry (the C `alloc_mem` half) lives in
-    /// `alloc_page::alloc_pfn_reclaiming` since V11/T30. The counter is
+    /// `alloc_page::alloc_pfn_reclaiming`. The counter is
     /// cleared here so the next failure re-arms the hook — the loop always
     /// gets a fresh replenishment attempt per pressure episode.
     /// Kernel-signal dispatch — the body of C's `sef_cb_signal_handler`
     /// (main.c:731-749).
     ///
-    /// C 那一臂只认一个号：`switch (signo) { case SIGKMEM: do_memory(); }`
-    ///（`minix3/minix/servers/vm/main.c:733-739`；SIGKMEM=71，
-    /// `minix3/sys/sys/signal.h:271`，号码的单一权威在 `minix-types`）。其余
-    /// 号一律忽略。本树 SYSTEM 通知即 C `send_sig(VM, SIGKMEM)` 的唤醒半
-    /// （sigset 半因内核 `SigSet` 宽度而无效，见
-    /// `os/kernel/src/proc_table.rs:vm_enqueue_and_notify_vm` 契约），所以
-    /// 到达这里的号码先经 [`VmServer::effective_kernel_signal`] 换算。
+    /// The C arm recognizes exactly one number: `switch (signo) { case SIGKMEM: do_memory(); }`
+    /// (`minix3/minix/servers/vm/main.c:733-739`; SIGKMEM=71,
+    /// `minix3/sys/sys/signal.h:271`, with the single authority for the number
+    /// living in `minix-types`). Every other number is ignored. In this tree the
+    /// SYSTEM notification is the wakeup half of C's `send_sig(VM, SIGKMEM)`
+    /// (the sigset half is a no-op because of the kernel `SigSet` width; see
+    /// the `os/kernel/src/proc_table.rs:vm_enqueue_and_notify_vm` contract), so
+    /// the number that arrives here is first translated by
+    /// [`VmServer::effective_kernel_signal`].
     ///
     /// C tail (main.c:744-748): after handling, a pending spare-page
     /// deficit triggers `alloc_cycle()`; `pt_clearmapcache()` has no
@@ -1274,28 +1309,34 @@ impl VmServer {
         if signo == minix_types::SIGNAL_KERNEL_MEMORY {
             self.do_memory();
         }
-        // V12-P2-4: C's tail here also ran `alloc_cycle()` on a pending
+        // C's tail here also ran `alloc_cycle()` on a pending
         // `missing_spares` deficit (main.c:118-119) — that chain is deleted
         // (no producer; the spare-pool mechanism it served is structurally
         // eliminated by the Direct Map, [ARCH: A-1], and allocation-time
-        // reclaim lives in `alloc_pfn_reclaiming` since V11/T30).
+        // reclaim lives in `alloc_pfn_reclaiming`).
     }
 
-    /// 把 `sef_receive_status` 交给回调的号码算成「该按哪个内核信号处理」。
+    /// Turns the number `sef_receive_status` hands to the callback into "which
+    /// kernel signal this should be handled as".
     ///
-    /// 两种形状都要认：C 的 notify 臂逐位展开后递的是真信号号（71..=74），
-    /// 而本树内核的 `SigSet` 仍是 64 位、那四位永远发不出来，所以空位图
-    /// 走的是 `minix-sef` 的唤醒兜底、递的是 `SEF_SIGNAL_REQUEST_TYPE`
-    /// （见 `os/libs/minix-sef/src/lib.rs` 的「The wake-up fallback」段）。
-    /// 兜底值等于说「目前只能知道有事」：VM 能收到的 `SYSTEM` 通知
-    /// 只可能来自 `vm_enqueue_and_notify_vm`（即 C 的 `send_sig(VM,
-    /// SIGKMEM)`），所以它按 SIGKMEM 处理；而真信号号进来时一律按号分派
-    /// （拿 SIGKSIG=74 当 SIGKMEM 用就是今天的形状在位宽拓宽后会错的那一步）。
+    /// Both shapes must be recognized: C's notify arm expands bits and passes
+    /// the real signal number (71..=74), while this tree's kernel `SigSet` is
+    /// still 64 bits wide and can never emit those four, so an empty bitmap
+    /// takes `minix-sef`'s wakeup fallback and passes
+    /// `SEF_SIGNAL_REQUEST_TYPE` (see "The wake-up fallback" section of
+    /// `os/libs/minix-sef/src/lib.rs`). The fallback value says only "something
+    /// happened": a `SYSTEM` notification VM can receive can only come from
+    /// `vm_enqueue_and_notify_vm` (that is, C's `send_sig(VM, SIGKMEM)`), so it
+    /// is handled as SIGKMEM; a real signal number is always dispatched by that
+    /// number (treating SIGKSIG=74 as SIGKMEM is exactly the step that today's
+    /// shape would get wrong once the bit width widens).
     pub(crate) fn effective_kernel_signal(arrived: Option<i32>) -> Option<i32> {
         match arrived {
-            // 唤醒兜底：无号可用，按唯一可能的来源处理。
+            // The wakeup fallback: no number is available, so handle it by
+            // its only possible source.
             Some(minix_sef::SEF_SIGNAL_REQUEST_TYPE) => Some(minix_types::SIGNAL_KERNEL_MEMORY),
-            // 真信号号（或库未递任何东西）：原样交出。
+            // A real signal number (or nothing delivered by the library):
+            // hand it through unchanged.
             other => other,
         }
     }
@@ -1330,15 +1371,18 @@ impl VmServer {
             };
 
             let ok = self.handle_kernel_memreq(&req);
-            // C-3 迭代8 取证：memreq 服务结果与目标范围。
-            // B23（1.48）：回包 WHO 必须是「请求者」（被挂起、持有 VMREQUEST
-            // 上下文的进程），不是「故障页所属空间」。C: pagefaults.c:206 —
-            // `sys_vmctl(state->requestor, VMCTL_MEMREQ_REPLY, result)`；内核
-            // do_vmctl.c MEMREQ_REPLY 臂按 WHO 槽位读挂起上下文并清
-            // RTS_VMREQUEST。此前误回 req.target：凡 target ≠ requestor
-            // （跨进程拷贝挂起，如 PM 向 INIT 消息缓冲写回包）回包砸在没
-            // 有挂起上下文的槽上 → EINVAL → 本循环 return 弃排空 → 真请求
-            // 者永卡 VMREQUEST = 全系统死锁（真机 c35/c36 终态）。
+            // The reply's WHO must be the **requestor** (the process that was
+            // suspended and holds the VMREQUEST context), not the space the
+            // faulting page belongs to. C: pagefaults.c:206 —
+            // `sys_vmctl(state->requestor, VMCTL_MEMREQ_REPLY, result)`; the
+            // kernel's do_vmctl.c MEMREQ_REPLY arm reads the suspended context
+            // by WHO's slot and clears RTS_VMREQUEST. The earlier code replied
+            // to req.target by mistake: whenever target != requestor (a
+            // cross-process copy suspension, e.g. PM writing a reply into INIT's
+            // message buffer) the reply landed on a slot with no suspended
+            // context → EINVAL → this loop returned and abandoned the drain →
+            // the real requestor stayed stuck in VMREQUEST = a system-wide
+            // deadlock (the terminal state on the real machine).
             if let Err(e) = self
                 .ctx
                 .gateway
@@ -1369,12 +1413,14 @@ impl VmServer {
     /// whole-system halt).
     #[cfg_attr(not(test), allow(dead_code))] // reached via handle_signal (E1)
     fn handle_kernel_memreq(&mut self, req: &crate::kernel_gateway::KernelMemReq) -> bool {
-        // 续-186 成修：target == VM 自身——VM 自己的槽不是本表的 active
-        // 行（VM 运行于自身地址空间，未在 VmProcTable 注册 active 视图），
-        // get_active 恒 None→false→kernel_call_resume Fault→SIGSEGV-for-
-        // itself（gh49-56 全家族）。自填路径：经 vm_self_map demand-fill
-        // VM 自身页（BSS/IPC 缓冲），内核重试拷贝即成功。C 对位：VM 对
-        // 自身页同样走 map_pf（pagefaults.c 的 vmp 即 VM）。
+        // target == VM itself: VM's own slot is not an active row of this table
+        // (VM runs in its own address space and never registers an active view
+        // in VmProcTable), so get_active always returns None → false →
+        // kernel_call_resume Fault → SIGSEGV against itself (the whole family).
+        // The self-fill path: demand-fill VM's own page (BSS/IPC buffers)
+        // through vm_self_map, and the kernel's retried copy succeeds. C
+        // correspondence: VM treats its own pages through map_pf as well (the
+        // vmp in pagefaults.c is VM).
         if req.target == minix_types::Endpoint::VM {
             let page_mask = crate::region::PAGE_SIZE as u64 - 1;
             let mut va = req.start & !page_mask;
@@ -1383,7 +1429,8 @@ impl VmServer {
                 let v = minix_types::VirBytes(va);
                 let present = crate::pagetable::vm_self_map::vm_self_query(v);
                 match present {
-                    // 已映射：自身页无 CoW 场景，RW 已足（BSS/堆页恒 RW）。
+                    // Already mapped: a self page has no CoW case, so RW is
+                    // enough (BSS and heap pages are always RW).
                     Some(_) => {}
                     None => {
                         match self
@@ -1433,14 +1480,17 @@ impl VmServer {
             Some(p) => p,
             None => return false,
         };
-        // C: VMPTYPE_CHECK 的 handle_memory_start（pagefaults.c:311-330）
-        // 逐页调 map_handle_memory——读故障（wrflag=false）同样保证页面
-        // 已映射进目标页表，wrflag 只决定 CoW 是否破解。此前经由
-        // handle_memory_once 的读路径只确认 region 存在就返回 Ok、不写
-        // 任何 PTE——内核重派 data_copy_vmcheck 仍 walk=NP，挂起-服务-
-        // 重派死循环（真机 NK4-A C-3 c9a 轮：memreq ok=1 后 DIAGCTL 重派
-        // 仍 susp-again，2026-09-22）。此处走缺页路径同一核心
-        // handle_pagefault（G-V12-8：映射必须落 PTE，记账与硬件表一致）。
+        // C: VMPTYPE_CHECK's handle_memory_start (pagefaults.c:311-330) calls
+        // map_handle_memory per page — a read fault (wrflag=false) likewise
+        // guarantees the page is mapped into the target page table, and wrflag
+        // only decides whether CoW is broken. The earlier read path through
+        // handle_memory_once merely confirmed the region existed and returned
+        // Ok without writing any PTE — the kernel re-issued
+        // data_copy_vmcheck and still walked to NP, giving a
+        // suspend/service/re-issue loop (on the real machine: after memreq ok=1
+        // the DIAGCTL re-issue still reported susp-again). Here the fault path
+        // runs the same core handle_pagefault (the mapping must land in the
+        // PTE, and accounting must agree with the hardware table).
         let (regions, pt) = proc.mem_parts_mut();
         let page_mask = crate::region::PAGE_SIZE as u64 - 1;
         let mut va = req.start & !page_mask;
@@ -1465,14 +1515,17 @@ impl VmServer {
                 Ok(crate::cow_exec_pf::PagefaultAction::Handled)
                 | Ok(crate::cow_exec_pf::PagefaultAction::MappedNewPage)
                 | Ok(crate::cow_exec_pf::PagefaultAction::CowResolved) => {}
-                // VFS 后备页需异步 I/O：C 在此处挂请求等 VFS 完成后再答；
-                // 本轮 fail closed（ok=0 → 内核按 Fault 处理），登记不假完成。
+                // A VFS-backed page needs asynchronous I/O: C suspends the
+                // request here and answers after VFS completes. This round fails
+                // closed (ok=0 → the kernel treats it as a Fault); it is
+                // recorded rather than falsely reported complete.
                 Ok(crate::cow_exec_pf::PagefaultAction::Suspended) => return false,
                 Ok(crate::cow_exec_pf::PagefaultAction::AccessViolation) => return false,
                 Err(_) => return false,
             }
-            // 单页步进；region 边界由下一轮 find_mut 重查（C
-            // map_handle_memory 逐页遍历同形）。
+            // Single-page step; the next find_mut re-checks the region
+            // boundary (the same shape as C map_handle_memory's per-page
+            // walk).
             va += crate::region::PAGE_SIZE as u64;
         }
         true
@@ -1481,11 +1534,11 @@ impl VmServer {
     /// Main event loop. Never returns (C: main.c:113-193).
     ///
     /// Per-iteration work lives in [`Self::run_once`] so tests can drive a
-    /// single dispatch→reply round without spawning the infinite loop
-    /// (V10-P0-2). The loop owns the receive-failure bound that prevents a
+    /// single dispatch→reply round without spawning the infinite loop. The
+    /// loop owns the receive-failure bound that prevents a
     /// busy-spin when the transport is broken. (C's per-iteration
     /// `if(missing_spares > 0) alloc_cycle()` replenishment hook is deleted
-    /// with its chain — V12-P2-4.)
+    /// with its chain.)
     pub fn run(&mut self) -> ! {
         assert!(self.initialized, "VmServer::run() called before init()");
 
@@ -1497,7 +1550,7 @@ impl VmServer {
                     // C: sef_receive_status blocks until a message arrives,
                     // so a receive `Err` means the transport itself is
                     // broken, not "no message". Busy-spinning at 100% CPU
-                    // would hide the failure (V10-P0-2) — fail fast instead.
+                    // would hide the failure — fail fast instead.
                     consecutive_recv_failures = consecutive_recv_failures.saturating_add(1);
                     if consecutive_recv_failures >= MAX_CONSECUTIVE_RECV_FAILURES {
                         panic!(
@@ -1514,18 +1567,19 @@ impl VmServer {
     ///
     /// Mirrors one iteration of C main.c:113-193. Extracted from `run()`
     /// so tests can drive the main loop one round at a time with a mock
-    /// transport (V10-P0-2); `run()` supplies the infinite loop, the
-    /// pressure hook, and the receive-failure bound.
+    /// transport; `run()` supplies the infinite loop, the pressure hook, and
+    /// the receive-failure bound.
     fn run_once(&mut self) -> RunStep {
-        // V14-P2-1 (plan A): the receive half goes through the shared
+        // The receive half goes through the shared
         // `minix_sef::sef_receive_status` — VM is minix-sef's fourth
         // consumer. SYSTEM notifies surface as signals, RS pings are
         // ponged and swallowed inside the library, everything else falls
         // through to the loop below (C sef.c:149-260 wrapping main.c:113).
         let mut raw_msg = minix_types::Message::default();
         let mut pending_signo: Option<i32> = None;
-        // VM 的信号面是 SIGKMEM 唤醒（不退出），逃生门令牌只为满足库契约
-        // ——无人取消。
+        // VM's signal face is a SIGKMEM wakeup (it does not exit), so the
+        // escape-hatch token only satisfies the library contract — nobody ever
+        // cancels it.
         let cancel = minix_sef::SefCancel::new();
         let rcv_sts_raw = {
             let mut guard = self.transport.borrow_mut();
@@ -1539,13 +1593,13 @@ impl VmServer {
             );
             match rcv {
                 Ok(r) => r,
-                // [ARCH: A-14] V9-P0-1: C panics (main.c:122-123); a
+                // [ARCH: A-14]: C panics (main.c:122-123); a
                 // user-space server must survive bad IPC — drop + audit.
                 Err(e) => {
                     drop(guard);
                     self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
-                    // C-3 迭代10 取证：receive Err 的错误码（限 4 次）——
-                    // 判别 VM 接收自旋的 Err 来源（EIO/EAGAIN/…）。
+                    // The errno of a receive Err (up to four of them) tells
+                    // apart the sources of VM's receive spin (EIO/EAGAIN/…).
                     #[cfg(not(feature = "mock"))]
                     audit_log!("[VM IPC] ipc_receive() failed — message dropped");
                     return RunStep::ReceiveFailed;
@@ -1553,13 +1607,17 @@ impl VmServer {
             }
         };
 
-        // 信号抵达裁决(V14-P2-1 影响②,按 kernel 侧既定契约):SYSTEM
-        // notify 是 `send_sig(VM, SIGKMEM)` 的唤醒半——sigset 半是文档化
-        // no-op(SIGKMEM=71 超出 64 位 SigSet,os/kernel/src/proc_table.rs
-        // vm_enqueue_and_notify_vm 契约),VM 经 MEMREQ_GET 探测细节而不
-        // 读信号号;SIGKSIG 信号管理器家族 VM 不消费。
-        // 号码换算只在一处（effective_kernel_signal）：今天递来的都是
-        // 唤醒兜底值，按 SIGKMEM 走；位宽拓宽后真号直接按号分派。
+        // Signal-arrival arbitration (per the kernel side's established
+        // contract): a SYSTEM notify is the wakeup half of
+        // `send_sig(VM, SIGKMEM)`, and the sigset half is a documented no-op
+        // (SIGKMEM=71 exceeds the 64-bit SigSet; see the
+        // os/kernel/src/proc_table.rs vm_enqueue_and_notify_vm contract). VM
+        // probes the details through MEMREQ_GET instead of reading a signal
+        // number; VM does not consume the SIGKSIG signal-manager family.
+        // The number conversion lives in exactly one place
+        // (effective_kernel_signal): everything delivered today is the wakeup
+        // fallback value, handled as SIGKMEM; once the bit width widens, real
+        // numbers are dispatched by number directly.
         if let Some(signo) = Self::effective_kernel_signal(pending_signo) {
             self.handle_signal(signo);
             return RunStep::Handled;
@@ -1574,21 +1632,22 @@ impl VmServer {
         // SEF already took the SYSTEM/RS-ping notifies; what reaches here
         // is a leftover notification from any other source — still an
         // async signal, not a request; skipped before endpoint validation
-        // (V10-P1-1). PingInvalid (RS notify that failed the ping test)
+        // PingInvalid (RS notify that failed the ping test)
         // lands here too, matching C's sef.c:208-214 fall-through.
         // C: if(is_ipc_notify(rcv_sts)) { continue; } (main.c:126-129).
         // SEF already took the SYSTEM/RS-ping notifies; what reaches here
         // is a leftover notification from any other source — still an
         // async signal, not a request; skipped before endpoint validation
-        // (V10-P1-1). PingInvalid (RS notify that failed the ping test)
+        // PingInvalid (RS notify that failed the ping test)
         // lands here too, matching C's sef.c:208-214 fall-through.
         //
-        // NK4-A C-3 迭代8：落入臂排空 memreq——SIGKMEM=71 超出 64 位
-        // SigSet，内核 D-20 唤醒通知的 sigset 为空，sef 提不出 signo 而
-        // 于此落入；D-20 契约（VM 经 MEMREQ_GET 探测而非读信号号）要求
-        // 此处排空，否则 RS 的挂起请求永不被服务（真机：sys-susp 后
-        // VM 静默死等，2026-09-22）。队列为空时 memreq_get 立即返回，
-        // 开销可忽略。
+        // This arm drains memreq: SIGKMEM=71 exceeds the 64-bit SigSet, so
+        // the kernel's wakeup notification carries an empty sigset, sef cannot
+        // extract a signo, and the message lands here; the contract (VM probes
+        // through MEMREQ_GET rather than reading a signal number) requires
+        // draining here, or RS's suspended request is never served (on the real
+        // machine VM waited silently after sys-susp). When the queue is empty
+        // memreq_get returns immediately, so the cost is negligible.
         if rcv_sts.is_notify() {
             self.do_memory();
             return RunStep::Handled;
@@ -1598,7 +1657,7 @@ impl VmServer {
         let who_e = msg.m_source;
         let caller_slot = match VmProcTable::get_global().vm_isokendpt(who_e) {
             Ok(slot) => slot,
-            // [ARCH: A-14] V9-P0-1: C panics (main.c:131-132); the
+            // [ARCH: A-14]: C panics (main.c:131-132); the
             // caller cannot be serviced either way, but VM must not
             // die with it — drop + audit.
             Err(_) => {
@@ -1710,7 +1769,7 @@ enum RunStep {
 }
 
 /// Consecutive receive failures before `run()` treats the transport as
-/// permanently broken and panics (V10-P0-2). C's `sef_receive_status`
+/// permanently broken and panics. C's `sef_receive_status`
 /// blocks, so errors cannot be transient "no message" conditions.
 const MAX_CONSECUTIVE_RECV_FAILURES: u32 = 64;
 
@@ -1756,20 +1815,25 @@ impl VmServer {
             let init = minix_types::RsInit::decode_message(msg);
             match self.rs_handshake(&init) {
                 Ok(()) => {
-                    // E-BIRTHFACE（NS1）出生应答半：C 的 process_init 尾部对
-                    // RS 回**唯一一次** RS_INIT+result（sef_init.c:110-119）。
-                    // VM 特殊——为避开 boot 死锁，这**第一次**应答走异步腿
-                    // `asynsend3(AMF_NOREPLY)`：VM 在 vm/main.c:225-229
-                    // 注册 sef_cb_init_response_rs_asyn_once（sef_init.c:471-483
-                    // = asynsend3 后恢复默认同步腿）。此刻 RS 仍在
-                    // PAGEFAULT|SENDING、未进 catch_boot_init_ready 的 receive，
-                    // 阻塞 send 会被内核判 2-cycle EDEADLOCK（NK4-C B5 根因）。
-                    // 异步腿把消息交给内核 senda 队列即返回，VM 随即回 receive
-                    // 替 RS 解缺页；内核在 RS 进 receive 时投递该消息。返回
-                    // Suspend 压掉主循环的第二回复（vm/main.c:150）。
-                    // 异步腿正常不会失败；仅在 senda 表满等极端情况按
-                    // asynsend.c:76-79 降级为计数+审计，不 panic（C 亦不会因
-                    // boot 死锁把 VM panic 掉）。
+                    // The birth answering half: C's process_init tail replies
+                    // RS_INIT+result to RS **exactly once** (sef_init.c:110-119).
+                    // VM is special — to avoid a boot deadlock this **first**
+                    // reply takes the asynchronous leg `asynsend3(AMF_NOREPLY)`:
+                    // VM registers sef_cb_init_response_rs_asyn_once at
+                    // vm/main.c:225-229 (sef_init.c:471-483 = asynsend3, after
+                    // which the default synchronous leg is restored). At this
+                    // moment RS is still in PAGEFAULT|SENDING and has not entered
+                    // catch_boot_init_ready's receive, so a blocking send would
+                    // be judged a 2-cycle EDEADLOCK by the kernel (the root
+                    // cause). The async leg hands the message to the kernel's
+                    // senda queue and returns at once; VM then goes back to
+                    // receive to resolve RS's page fault, and the kernel delivers
+                    // that message when RS enters its receive. Returning Suspend
+                    // suppresses the main loop's second reply (vm/main.c:150).
+                    // The async leg does not normally fail; only in extremes such
+                    // as a full senda table does it degrade, per asynsend.c:76-79,
+                    // to a count plus an audit line — never a panic (C likewise
+                    // would not panic VM over a boot deadlock).
                     if let Err(e) = self
                         .transport
                         .borrow_mut()
@@ -1788,7 +1852,7 @@ impl VmServer {
                     // (vm/main.c:225-229 registers sef_cb_init_response_rs_asyn_once,
                     // sef_init.c:471-483) precisely to "avoid a boot-time
                     // deadlock" — the same 2-cycle EDEADLOCK as the Ok arm
-                    // (NK4-C B5). Reply with the mapped errno first (async)
+                    // Reply with the mapped errno first (async)
                     // so RS's catch_boot_init_ready fails visibly on the
                     // non-OK result (main.c:805-807) without blocking.
                     if let Err(se) = self
@@ -1824,7 +1888,7 @@ impl VmServer {
 
         // Priority 3: VM_PAGEFAULT (main.c:153-164)
         if m_type == VM_PAGEFAULT {
-            // V13-P3-1: C logs a faked pagefault in release too (printf,
+            // C logs a faked pagefault in release too (printf,
             // main.c:154-157) and then handles it regardless — both sides
             // tolerate the forgery, C just stays observable. `debug_assert!`
             // alone compiles the whole check away in release; evaluating the
@@ -1835,7 +1899,7 @@ impl VmServer {
                 audit_log!("[VM PF] faked pagefault source: {:?}", source);
             }
             let reply = self.dispatch_pagefault(msg);
-            // V9-P1-1: never silently drop a pagefault failure — the faulting
+            // Never silently drop a pagefault failure — the faulting
             // process stays suspended and would otherwise re-fault forever
             // with no observable signal. Count + audit instead (the counter is
             // also surfaced by the `pagefault_errors()` accessor in tests).
@@ -1856,7 +1920,7 @@ impl VmServer {
         if let Some(c) = callnr(m_type) {
             // C: acl_check(&vmproc[caller_slot], c)
             let table = VmProcTable::get_global();
-            // V13-P2-3: `get_active` returns None once the caller is EXITING
+            // `get_active` returns None once the caller is EXITING
             // (or otherwise not active). The old `if let Some(..) && check`
             // shape made that state skip the gate entirely — fail-open, at
             // odds with the default-deny policy this module otherwise
@@ -1882,7 +1946,7 @@ impl VmServer {
                 // The audit feature is intentionally off by default:
                 // VM is `no_std`-only outside test cfg, so the audit
                 // channel is a no_std-compatible sink until IPC-grade
-                // logging lands (V10-P0-1).
+                // logging lands).
                 audit_log!(
                     "[VM ACL] denied: call=0x{:x} source={:?} caller_slot={:?}",
                     c,
@@ -1906,7 +1970,10 @@ impl VmServer {
             // requires us to defer it until after the vfs_queue borrow
             // is released).
             if let Some((callback, reply, state)) = result.vfs_callback {
-                //[SD19-gate] 与 C req_callback 内联丢弃同构：Rust 因 borrow checker 拆开后才可回调，失败面同内联丢弃，不另外接回
+                //[SD19-gate] isomorphic to C dropping req_callback's result
+                // inline: Rust splits the call out only for the borrow checker,
+                // and the failure surface is the same inline drop, with no
+                // separate re-attachment
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = callback(self, &reply, &state);
             }
@@ -1970,8 +2037,8 @@ impl VmServer {
     /// dispatch_procctl a fresh request would take.
     fn handle_vfs_transid(&mut self, _clean_type: u32, _transid: i32, msg: &Message) -> VmReply {
         // Decode the procctl request from the message body.
-        // C: do_procctl reads VMPCTL_PARAM, VMPCTL_WHO, VMPCTL_M1,
-        //    VMPCTL_LEN, VMPCTL_FLAGS from the m9 overlay (param@16/
+        // C: do_procctl reads VMPCTL_PARAM, VMPCTL_WHO, the third M-word,
+        //    VMPCTL_LEN and VMPCTL_FLAGS from the m9 overlay (param@16/
         //    who@20/m1@24/len@28/flags@32).
         let request = VmProcctlIn::decode_message(msg);
 
@@ -1988,14 +2055,17 @@ impl VmServer {
         MessageDispatcher::dispatch_procctl(&mut self.ctx, caller, request)
     }
 
-    /// C pagefaults.c `handle_pagefault` 的"不可服务"终局收口
-    /// （unknown region :99-104、ro-map 写 :112-116、map_pf 失败
-    /// :146-151 三处共享的同一段尾巴）：`sys_kill(SIGSEGV)` 投递给
-    /// 故障进程 + `sys_vmctl(VMCTL_CLEAR_PAGEFAULT)` 清其挂起位。
-    /// 两条缺一不可——C 对两者都 `panic` on error；漏清挂起位则故障
-    /// 进程永停 RTS_PAGEFAULT（NK4-A Task A 真机 c17a：cr2=0 的
-    /// noaddr 出口只回 Error 不清挂起 → 全系统静默死锁，2026-09-22）。
-    /// 失败仅审计不 panic（[ARCH: A-14] fail-closed 姿态，同 wro 臂旧实现）。
+    /// The terminal "cannot be served" close of C pagefaults.c
+    /// `handle_pagefault` (the one tail shared by three exits: unknown region
+    /// :99-104, write to a ro-map :112-116, map_pf failure :146-151):
+    /// `sys_kill(SIGSEGV)` delivered to the faulting process plus
+    /// `sys_vmctl(VMCTL_CLEAR_PAGEFAULT)` to clear its pending bit. Both are
+    /// required — C panics on an error from either; if the pending bit is left
+    /// set the faulting process sits in RTS_PAGEFAULT forever (on the real
+    /// machine: the cr2=0 noaddr exit returned Error without clearing the bit →
+    /// the whole system deadlocked silently). A failure here is only audited,
+    /// never a panic (the [ARCH: A-14] fail-closed posture, as in the old wro
+    /// arm).
     fn pf_fail_segv(&mut self, proc_endpoint: Endpoint) {
         if let Err(e) = self
             .ctx
@@ -2029,10 +2099,12 @@ impl VmServer {
             Ok(s) => s,
             Err(_) => return VmReply::Error(VmError::InvalidProcess),
         };
-        // C: vm_isokendpt 只验 in-use；IN_USE+EXITING 的槽（已过 VM_WILLEXT
-        // 的退出中进程）get_active 取不到 → 拒服务。退出链能走完时
-        // sys_clear 会释放整个槽位，这里无需代为解锁（§续-383 定谳：
-        // 解锁必须与终止语义一起做，此处补清位属半修）。
+        // C: vm_isokendpt only validates in-use; for an IN_USE+EXITING slot (a
+        // process that is exiting and has passed VM_WILLEXT) get_active finds
+        // nothing → refuse to serve. When the exit chain can run to completion
+        // sys_clear releases the whole slot, so nothing needs to be unlocked
+        // here (the settled ruling: unlocking must be done together with the
+        // termination semantics, so clearing a bit here would be a half fix).
         let mut proc = match table.get_active(slot) {
             Some(p) => p,
             None => return VmReply::Error(VmError::InvalidProcess),
@@ -2043,19 +2115,20 @@ impl VmServer {
         // servable fault: deliver SIGSEGV to the faulting process, clear its
         // kernel pagefault suspension (RTS_PAGEFAULT), and stop. Pre-E2 the
         // trap stub answers -EIO for both calls; the failure is audited and
-        // the error reply still counts the episode (G-V12-6).
+        // the error reply still counts the episode.
         let seg_writable = proc
             .regions()
             .find(fault_addr)
             .is_some_and(|r| r.is_writable());
         if request.write && !seg_writable {
-            // C: pagefaults.c:112-116 — SIGSEGV + CLEAR_PAGEFAULT 收口
-            // （原内联两段与 pf_fail_segv 同体，提取共用不改语义）。
+            // C: pagefaults.c:112-116 — the SIGSEGV + CLEAR_PAGEFAULT close
+            // (originally two inline blocks identical to pf_fail_segv;
+            // extracted for sharing without a semantic change).
             self.pf_fail_segv(proc_endpoint);
             return VmReply::Error(VmError::AccessViolation);
         }
 
-        // V9-P1-3 step 1: destructure the memory context into disjoint
+        // Destructure the memory context into disjoint
         // &mut fields instead of the former parts_mut() 4-tuple.
         let VmContext {
             page_alloc,
@@ -2065,28 +2138,32 @@ impl VmServer {
             ..
         } = &mut self.ctx;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        // G-V12-8: the fault path owns the process page table and must keep
+        // The fault path owns the process page table and must keep
         // it in sync with the bookkeeping slot (C: map_pf → pt_writemap).
         let (regions, pt) = proc.mem_parts_mut();
         let region = match regions.find_mut(fault_addr) {
             Some(r) => r,
             None => {
-                // NK4-A Task A 修复（C pagefaults.c:89-105 对位）：
-                // unknown region 的 fault 不可服务——SIGSEGV +
-                // CLEAR_PAGEFAULT 收口后才返回。旧实现只回
-                // Error(InvalidAddress)，挂起位无人清，故障进程永停
-                // RTS_PAGEFAULT（真机 c17a：cr2=0 → 全系统静默死锁）。
+                // Fix (matching C pagefaults.c:89-105): a fault on an unknown
+                // region cannot be served — it returns only after the SIGSEGV +
+                // CLEAR_PAGEFAULT close. The old implementation returned
+                // Error(InvalidAddress) alone, nobody cleared the pending bit,
+                // and the faulting process sat in RTS_PAGEFAULT forever (on the
+                // real machine: cr2=0 → the whole system deadlocked silently).
                 self.pf_fail_segv(proc_endpoint);
                 return VmReply::Error(VmError::InvalidAddress);
             }
         };
-        // NK4-C 续-132：DIRECT（设备透传）区域不走内容探针——MMIO 页
-        // 一不在 VM 的 DM 窗覆盖内（读即 VM 自缺页致命），二有读取副
-        // 作用（PL011 的 DR 读会弹走接收 FIFO、吞用户输入）。探针只为
-        // 校验 demand-paged 内容（file/anon），对透传页无语义。
-        // CodeReview S1：按 VrFlags::DIRECT 判（生产唯一设置点＝
-        // map_phys.rs），不能 matches!(param, Direct)——匿名/文件区域的
-        // param 默认值就是 Direct{phys:0}，那样会把全部匿名探针误杀。
+        // A DIRECT (device passthrough) region skips the content probe: an
+        // MMIO page is (a) outside VM's DM window coverage (reading it is a
+        // fatal self-fault for VM) and (b) has read side effects (reading
+        // PL011's DR pops the receive FIFO and swallows user input). The probe
+        // exists only to validate demand-paged content (file/anon) and means
+        // nothing for a passthrough page.
+        // CodeReview S1: decide by VrFlags::DIRECT (the only production setter
+        // is map_phys.rs), not by matches!(param, Direct) — the default param
+        // of an anonymous/file region is Direct{phys:0}, which would kill every
+        // anonymous probe.
         let is_direct_region = region.is_direct();
         let service_outcome = crate::cow_exec_pf::handle_pagefault(
             proc_endpoint,
@@ -2102,7 +2179,7 @@ impl VmServer {
         );
         match service_outcome {
             Ok(action) => {
-                // V11/T31: fault accounting. Minix3's VM has no fault
+                // Fault accounting. Minix3's VM has no fault
                 // counters — the fields are a minix-rs extension following
                 // Linux getrusage semantics: minor = satisfied without
                 // block I/O (fresh zero page, CoW copy, in-place handled);
@@ -2114,10 +2191,11 @@ impl VmServer {
                         proc.inc_major_fault()
                     }
                     crate::cow_exec_pf::PagefaultAction::AccessViolation => {
-                        // C map_pf 返回 EFAULT → pagefaults.c:144-151
-                        // "pagefault not handled"：SIGSEGV + 清挂起。
-                        // 旧实现只计数返回 Ok，挂起位永不清（同 noaddr
-                        // 缺陷类的未观测分支）。
+                        // C map_pf returns EFAULT → pagefaults.c:144-151
+                        // "pagefault not handled": SIGSEGV plus clear the
+                        // pending bit. The old implementation only counted and
+                        // returned Ok, never clearing the bit (an unobserved
+                        // branch of the same defect class as noaddr).
                         self.pf_fail_segv(proc_endpoint);
                     }
                     crate::cow_exec_pf::PagefaultAction::Handled
@@ -2129,8 +2207,9 @@ impl VmServer {
                 // message-shape arm (kernel VM_PAGEFAULT mini_send,
                 // exception.c:112-129) must unpark the same way — without
                 // it the faulting process stays RTS_PAGEFAULT forever and
-                // the system idles after the first user fault (NK4-A C-3
-                // 真机：fwd Delivered 后全静默的另一半，2026-09-22).
+                // the system idles after the first user fault (on the real
+                // machine: the other half of going silent after fwd
+                // Delivered).
                 if matches!(
                     action,
                     crate::cow_exec_pf::PagefaultAction::Handled
@@ -2150,8 +2229,10 @@ impl VmServer {
                 VmReply::Ok
             }
             Err(e) => {
-                // C pagefaults.c:144-151 — 服务失败同属"不可服务"终局：
-                // SIGSEGV + 清挂起（旧实现只回 Error，挂起位不清）。
+                // C pagefaults.c:144-151 — a service failure is the same
+                // "cannot be served" terminal case: SIGSEGV plus clearing the
+                // pending bit (the old implementation returned Error and left
+                // the bit set).
                 self.pf_fail_segv(proc_endpoint);
                 VmReply::Error(VmError::AccessViolation)
             }
@@ -2160,7 +2241,7 @@ impl VmServer {
 
     /// Returns mutable references to page_alloc, page_frames, page_cache, and vfs_queue simultaneously.
     /// This avoids double mutable borrow when dispatching VM calls that need multiple components.
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessor
+    #[cfg_attr(not(test), allow(dead_code))] // test-only accessor
     pub(crate) fn is_initialized(&self) -> bool {
         self.initialized
     }
@@ -2168,12 +2249,12 @@ impl VmServer {
 
 impl Drop for VmServer {
     fn drop(&mut self) {
-        // V11/T15: the audit gateway sink follows the server lifetime
+        // The audit gateway sink follows the server lifetime
         // (same test-isolation contract as unregister_page_alloc below).
         #[cfg(all(not(test), feature = "vm_acl_audit"))]
         crate::audit::clear_gateway();
 
-        // V11/T30: clear the reclaim sink with the same lifetime contract.
+        // Clear the reclaim sink with the same lifetime contract.
         crate::global::unregister_reclaim();
 
         // Clear the global page-allocator pointer so a subsequent VmServer
@@ -2216,7 +2297,7 @@ fn transid_extract(m_type: u32) -> i32 {
 /// #define TRNS_DEL_ID(t)  ((short)((t) >> 16))
 /// ```
 ///
-/// Note (V11/T32): for a genuine transid message (`m_type == 0xB00 | seq`)
+/// Note: for a genuine transid message (`m_type == 0xB00 | seq`)
 /// this yields **0** — the original call number does not travel in
 /// `m_type`; do_procctl re-reads its parameters from the message body.
 fn transid_strip(m_type: u32) -> u32 {
@@ -2241,9 +2322,10 @@ fn ipc_call_rs_init(server: &mut VmServer, rproctab_gid: i32) -> Result<RprocTab
     //   4. map_service(&rprocpub[i]) per in_use entry — the ACL loop in
     //      `rs_handshake` (main.c:249-255).
     const ENTRIES: usize = minix_types::NR_BOOT_PROCS;
-    // 行宽是共享快照 `RprocpubSnap`（`[ARCH: A-4]` 单一权威）：RS 的公共表
-    // 按 `rproctab_gid` 授权读出的就是这一行列，C 的 `struct rprocpub`
-    // 字节镜像（`rprocpub_off`）随对齐退役。
+    // The row width is that of the shared snapshot `RprocpubSnap` (the
+    // `[ARCH: A-4]` single authority): what RS's public table reads out under
+    // the `rproctab_gid` grant is exactly this row, and C's `struct rprocpub`
+    // byte mirror (`rprocpub_off`) is retired along with the alignment.
     const ENTRY_SIZE: usize = core::mem::size_of::<minix_types::RprocpubSnap>();
     let mut buf = alloc::vec![0u8; ENTRIES * ENTRY_SIZE];
     {
@@ -2253,8 +2335,9 @@ fn ipc_call_rs_init(server: &mut VmServer, rproctab_gid: i32) -> Result<RprocTab
     }
     let mut tab = RprocTab::EMPTY;
     for (i, entry) in tab.entries.iter_mut().enumerate() {
-        // SAFETY(读取): 快照行是 repr(C) POD，从授权捞回的字节位逐行读；
-        // `read_unaligned` 不假设缓冲对齐（内核 safecopy 写的是字节流）。
+        // SAFETY(read): a snapshot row is a repr(C) POD and is read row by row
+        // from the bytes fetched through the grant; `read_unaligned` assumes no
+        // buffer alignment (the kernel's safecopy writes a byte stream).
         let w: minix_types::RprocpubSnap =
             unsafe { core::ptr::read_unaligned(buf[i * ENTRY_SIZE..].as_ptr().cast()) };
         let endpoint = Endpoint(w.endpoint);
@@ -2282,7 +2365,7 @@ const RS_INIT: u32 = 0x714;
 const VM_PAGEFAULT: u32 = 0xCFF;
 // C: com.h:769 — NR_VM_CALLS 49. The highest call is VM_RS_PREPARE
 // (VM_RQ_BASE + 48), so relative indices are 0..=48. Derived from the
-// minix-types constant so the two cannot drift (V11-P3-1).
+// minix-types constant so the two cannot drift).
 const NR_VM_CALLS: usize = minix_types::NR_VM_CALLS as usize;
 
 // ==========================================================================
@@ -2312,7 +2395,7 @@ struct RprocEntry {
 }
 
 impl RprocEntry {
-    // V11/T9 step 3: unreachable until E-RSWIRE (the fake-success caller
+    // Unreachable until E-RSWIRE (the fake-success caller
     // `Ok(RprocTab::empty())` died; the wire decoder will construct real
     // entries). Kept + pinned by tests as the D8 stub shape.
     #[allow(dead_code)]
@@ -2344,7 +2427,7 @@ impl core::ops::Deref for RprocTab {
 }
 
 impl VmServer {
-    // V10-P2-1: the `handle_*` wrappers were superseded by
+    // The `handle_*` wrappers were superseded by
     // `dispatch_on_msg` → `MessageDispatcher::dispatch_*` (which routes
     // directly); they had zero callers and are removed.
 
@@ -2352,7 +2435,7 @@ impl VmServer {
         !self.ctx.vfs_queue.is_empty()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessors
+    #[cfg_attr(not(test), allow(dead_code))] // test-only accessors
     pub(crate) fn page_cache(&self) -> &PageCache {
         &self.ctx.page_cache
     }
@@ -2373,7 +2456,7 @@ mod tests {
     use super::*;
     use crate::boot::{BootModule, KernelAllocated};
 
-    // V11-P1-3: pin the backend-selection semantics for every feature
+    // Pin the backend-selection semantics for every feature
     // combination — this function is the single precedence authority since
     // the contradictory `DefaultAllocator` alias was removed.
     #[cfg(not(any(feature = "buddy_alloc", feature = "segment_tree_alloc")))]
@@ -2417,7 +2500,7 @@ mod tests {
     const TEST_TOTAL_PAGES: usize = 256;
 
     /// Run a test with the direct-map window pointed at a fresh per-thread
-    /// leaked buffer (V11/T26 — the former process-global mock base +
+    /// leaked buffer (the former process-global mock base +
     /// mutex serialization is replaced by thread-local windows).
     fn with_test_mock_base<F: FnOnce()>(f: F) {
         crate::direct_map::with_test_window(TEST_TOTAL_PAGES, f);
@@ -2590,7 +2673,7 @@ mod tests {
         });
     }
 
-    /// V10-P0-2: end-to-end main-loop round. A `TestIpcTransport` drives
+    /// End-to-end main-loop round. A `TestIpcTransport` drives
     /// `run_once()` through receive → caller validation → dispatch → reply,
     /// and the reply is observable via the test-side handle.
     #[test]
@@ -2656,7 +2739,7 @@ mod tests {
         });
     }
 
-    /// V13-P2-3: an EXITING caller is refused at the ACL gate with ENOSYS.
+    /// An EXITING caller is refused at the ACL gate with ENOSYS.
     /// `get_active` returns None for IN_USE+EXITING, and the old
     /// `if let Some(..) && check` shape treated that as "skip the check" —
     /// fail-open, contradicting the default-deny policy ([ARCH: A-11]).
@@ -2717,7 +2800,7 @@ mod tests {
         });
     }
 
-    /// V10-P1-1: a notification (IPC_STATUS_CALL == NOTIFY == 4) is skipped
+    /// A notification (IPC_STATUS_CALL == NOTIFY == 4) is skipped
     /// before endpoint validation — it must not be dropped nor answered.
     #[test]
     fn test_run_once_notify_skipped_before_dispatch() {
@@ -2759,11 +2842,13 @@ mod tests {
         });
     }
 
-    /// V14-P2-1 映射:SYSTEM notify 上浮为 `SefEvent::Signal` → 唤醒半
-    /// 契约(见 run_once 注释与 os/kernel/src/proc_table.rs
+    /// The mapping: a SYSTEM notify surfaces as `SefEvent::Signal` → the
+    /// wakeup-half contract (see the run_once comment and
+    /// os/kernel/src/proc_table.rs
     /// vm_enqueue_and_notify_vm)→ `handle_signal(SIGKMEM)` → do_memory
-    /// 探测。观测量:memreq 脚本被消费(GET/REPLY/终止 GET 三次内核调用,
-    /// verdict OK);V14 前该 notify 会被旧循环当普通 notify 吞掉。
+    /// probing. Observation: the memreq script is consumed (three kernel calls:
+    /// GET/REPLY/terminal GET, verdict OK); before this mapping the old loop
+    /// swallowed that notify as an ordinary one.
     #[test]
     fn sef_signal_notify_dispatches_sigset_bits() {
         with_test_mock_base(|| {
@@ -2790,8 +2875,9 @@ mod tests {
             drop(active);
             {
                 let mut proc = table.get_active(slot).unwrap();
-                // memtype 必须在位（C 的每个 VM region 都有类型；
-                // handle_pagefault 经 memtype 分派，None 即 NoMemType）。
+                // memtype must be present (every C VM region has a type;
+                // handle_pagefault dispatches on memtype, and None means
+                // NoMemType).
                 proc.regions_mut()
                     .insert(crate::region::VirRegion::with_memtype(
                         VirBytes(0x3000_0000),
@@ -2802,8 +2888,8 @@ mod tests {
                     .unwrap();
             }
 
-            // Scripted kernel: CHECK over the region, then queue empty(与
-            // test_handle_signal_routes_sigkmem_only 同脚本)。
+            // Scripted kernel: CHECK over the region, then the queue is empty
+            // (the same script as test_handle_signal_routes_sigkmem_only).
             let mut canned = minix_sys::syscall::CannedKernelCallTransport::new();
             let mut check = Message::default();
             check.m_type = 1; // VMPTYPE_CHECK
@@ -2814,8 +2900,9 @@ mod tests {
                 m1.m1p1 = 0x3000_0000;
                 m1.m1p2 = 0x2000;
                 m1.m1i3 = 1;
-                // B23 回归：requestor（挂起者）故意 ≠ target（故障空间），
-                // REPLY 的 WHO 必须跟随 requestor（C pagefaults.c:206）。
+                // Regression: requestor (the suspended process) is
+                // deliberately != target (the faulting space), and REPLY's WHO
+                // must follow the requestor (C pagefaults.c:206).
                 m1.m1p3 = 0x100;
             }
             canned.reply_message(check);
@@ -2824,8 +2911,8 @@ mod tests {
             let canned = alloc::rc::Rc::new(canned);
             install_canned_gateway(&mut server, alloc::rc::Rc::clone(&canned));
 
-            // SYSTEM notify(kernel send_sig 的唤醒半;sigset 半为 no-op,
-            // 不携带位)。
+            // SYSTEM notify (the wakeup half of the kernel's send_sig; the
+            // sigset half is a no-op and carries no bits).
             let mut notify = Message::default();
             notify.m_source = Endpoint::SYSTEM;
             notify.m_type = minix_types::NOTIFY_MESSAGE;
@@ -2845,11 +2932,12 @@ mod tests {
             );
             assert!(handle.sent().is_empty(), "signal must not be replied to");
 
-            // 内核可观测:排空循环真的跑了(GET/REPLY/终止 GET)。
+            // Kernel-observable: the drain loop really ran (GET/REPLY/terminal
+            // GET).
             let sent = canned.sent.borrow();
             assert_eq!(sent.len(), 3, "GET, REPLY, second GET");
             {
-                // SAFETY: reply wire inspection (SYS_VMCTL M1 fields).
+                // SAFETY: reply wire inspection (SYS_VMCTL parameter words).
                 let m1 = unsafe { &sent[1].m_u.m_m1 };
                 assert_eq!(
                     m1.m1i1, 0x100,
@@ -2863,8 +2951,9 @@ mod tests {
         });
     }
 
-    /// V14-P2-1 映射:RS ping 在 minix-sef 内被 pong 并吞掉(不上浮、不
-    /// 入分派);后续消息正常继续接收。
+    /// The mapping: an RS ping is ponged and swallowed inside minix-sef (it
+    /// never surfaces and never enters dispatch); later messages keep being
+    /// received normally.
     #[test]
     fn sef_ping_ponged_and_swallowed() {
         with_test_mock_base(|| {
@@ -2878,7 +2967,7 @@ mod tests {
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
             server.init();
 
-            // RS ping:RS 源 + NOTIFY_MESSAGE + notify 状态位。
+            // RS ping: RS source + NOTIFY_MESSAGE + the notify status bit.
             let mut ping = Message::default();
             ping.m_source = Endpoint::RS;
             ping.m_type = minix_types::NOTIFY_MESSAGE;
@@ -2888,8 +2977,9 @@ mod tests {
                     flags: 4, /* NOTIFY */
                 },
             );
-            // 后续:普通 notify(NONE 源)——sef 放行为 Call,主循环按
-            // main.c:126-129 吞掉。
+            // Afterwards: an ordinary notify (NONE source) — sef lets it
+            // through as a Call and the main loop swallows it per
+            // main.c:126-129.
             let mut stray = Message::default();
             stray.m_source = Endpoint::NONE;
             stray.m_type = 0;
@@ -2910,7 +3000,7 @@ mod tests {
         });
     }
 
-    /// V10-P0-2: a receive failure is dropped + counted, and reported as
+    /// A receive failure is dropped + counted, and reported as
     /// `RunStep::ReceiveFailed` so `run()` can bound consecutive failures.
     #[test]
     fn test_run_once_receive_failure_counts() {
@@ -2933,7 +3023,7 @@ mod tests {
         });
     }
 
-    /// V10-P2-4: the main-loop counters are observable via `InfoStats` —
+    /// The main-loop counters are observable via `InfoStats` —
     /// after N dropped receives, a VM_INFO (VMIW_STATS) query reports them.
     #[test]
     fn test_dropped_messages_observable_via_info_stats() {
@@ -3005,7 +3095,7 @@ mod tests {
         });
     }
 
-    /// V10-P0-2: a permanently broken transport must not busy-spin — after
+    /// A permanently broken transport must not busy-spin — after
     /// `MAX_CONSECUTIVE_RECV_FAILURES` consecutive failures `run()` panics
     /// instead of burning 100% CPU (C's `sef_receive_status` blocks).
     #[test]
@@ -3210,7 +3300,7 @@ mod tests {
 
     #[test]
     fn test_pagefault_errors_counted() {
-        // V9-P1-1: a pagefault whose handling fails (here: endpoint not in
+        // A pagefault whose handling fails (here: endpoint not in
         // the process table) must be counted, not silently dropped.
         with_test_mock_base(|| {
             let mut server = make_test_vm_server();
@@ -3242,7 +3332,7 @@ mod tests {
 
     #[test]
     fn test_pagefault_accounting_minor_and_violation() {
-        // V11/T31: a successfully served fault bumps minor (fresh anon
+        // A successfully served fault bumps minor (fresh anon
         // page); a write to a read-only region is an access violation and
         // counts nothing (Linux getrusage semantics — minix3 VM has no
         // counters, the fields are a minix-rs extension).
@@ -3299,7 +3389,7 @@ mod tests {
             assert_eq!(proc.minor_fault(), 1, "served fault counts minor");
             assert_eq!(proc.major_fault(), 0);
 
-            // V11/T35 (G-V12-6 closed): a write to the read-only region is
+            // A write to the read-only region is
             // not servable — SIGSEGV is delivered to the faulting process
             // and its kernel pagefault suspension is cleared; no fault is
             // counted. Swap in a Mock gateway (behind a shared delegate so
@@ -3334,12 +3424,14 @@ mod tests {
 
     #[test]
     fn test_pagefault_unknown_region_sigsegv_and_clears_park() {
-        // NK4-A Task A 防回归（C pagefaults.c:89-105 对位）：不属于任何
-        // region 的 fault 必须 SIGSEGV + CLEAR_PAGEFAULT 收口。修复前
-        // noaddr 出口只回 Error(InvalidAddress)——下面两条 mock 网关断言
-        // 皆为空，故障进程滞留 RTS_PAGEFAULT（真机 c17a：cr2=0 全系统
-        // 静默死锁）。既有 wro 测试只覆盖"写只读 region"路径，无断言
-        // 触及 unknown region 出口——判别性在此。
+        // Regression guard (matching C pagefaults.c:89-105): a fault outside
+        // every region must close with SIGSEGV + CLEAR_PAGEFAULT. Before the
+        // fix the noaddr exit returned Error(InvalidAddress) alone — the two
+        // mock-gateway assertions below were both empty and the faulting
+        // process stayed in RTS_PAGEFAULT (on the real machine, cr2=0 made the
+        // whole system deadlock silently). The existing wro test covers only
+        // the "write to a read-only region" path, and no assertion reached the
+        // unknown-region exit — that is what makes this test discriminating.
         use crate::region::{VirRegion, VrFlags};
         with_test_mock_base(|| {
             let mut server = make_test_vm_server();
@@ -3375,7 +3467,8 @@ mod tests {
                     as alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>,
             ));
 
-            // 读故障 @0x0：不落任何 region（真机 c17a 的 cr2=0 形态）。
+            // A read fault @0x0 belongs to no region (the cr2=0 shape seen on
+            // the real machine).
             let mut msg = Message::default();
             msg.m_source = ep;
             msg.m_type = minix_types::VM_PAGEFAULT as i32;
@@ -3408,7 +3501,7 @@ mod tests {
 
     #[test]
     fn test_vfs_transid_routes_to_procctl_clear() {
-        // V11/T32: a genuine VFS transid message carries m_type = 0xB00|seq
+        // A genuine VFS transid message carries m_type = 0xB00|seq
         // (the transid IS the type; TRNS_DEL_ID yields 0) and the procctl
         // parameters in the m9 body. P1 must route it to VM_PROCCTL: CLEAR
         // from VFS executes and empties the target's address space.
@@ -3440,7 +3533,7 @@ mod tests {
             }
 
             // Swap in a Mock gateway: CLEAR now ends with C's `pt_bind`
-            // leg (`sys_vmctl_set_addrspace`, NK4-C 续-35), which the host
+            // leg (`sys_vmctl_set_addrspace`), which the host
             // build's default `DirectKernelCallTransport` cannot service.
             // The shared handle lets the test assert the rebind fired.
             let mock = alloc::rc::Rc::new(core::cell::RefCell::new(
@@ -3554,7 +3647,7 @@ mod tests {
             let mut server = make_test_vm_server();
             server.init();
 
-            // V11/T32 (C parity): TRNS_DEL_ID on a genuine transid message
+            // C parity: TRNS_DEL_ID on a genuine transid message
             // yields 0 — the call number does not travel in m_type — so
             // clean_type carries no routing information and is not gated;
             // the message routes to do_procctl unconditionally and the
@@ -3572,7 +3665,7 @@ mod tests {
             server.init();
 
             // A zeroed body fails validation (VMPCTL_WHO = 0 → EINVAL;
-            // V11/T32: the former dedicated transid==0 gate is gone —
+            // The former dedicated transid==0 gate is gone —
             // a genuine transid message always carries the 0xB marker and
             // can never extract to 0).
             let msg = Message::default();
@@ -3594,7 +3687,7 @@ mod tests {
             let mut msg = Message::default();
             msg.m_u.m_lc_vm_procctl.param = 1; // VMPPARAM_CLEAR
             msg.m_u.m_lc_vm_procctl.who = 0; // VMPCTL_WHO = 0 (invalid)
-            msg.m_u.m_lc_vm_procctl.m1 = 0; // VMPCTL_M1
+            msg.m_u.m_lc_vm_procctl.m1 = 0; // the VMPCTL third M-word (m9_l3)
             msg.m_u.m_lc_vm_procctl.len = 0; // VMPCTL_LEN
             msg.m_u.m_lc_vm_procctl.flags = 0; // VMPCTL_FLAGS
 
@@ -3677,7 +3770,7 @@ mod tests {
             );
             server.init();
 
-            // Queue an FdClose via the enqueue half (V11/T10 seam).
+            // Queue an FdClose via the enqueue half.
             server.ctx.vfs_queue.request(crate::vfs_queue::VfsRequest {
                 request_type: crate::vfs_queue::VfsRequestType::FdClose,
                 req_id: 0,
@@ -3794,8 +3887,9 @@ mod tests {
                 .regions()
                 .find(minix_types::VirBytes(frame_page))
                 .expect("stack region registered");
-            // 栈 region 是 user_sp 下的 4MiB 窗口（C DEFAULT_STACK_LIMIT），
-            // 帧页在其中偏移 (frame_page - region.vaddr) 处。
+            // The stack region is a 4MiB window below user_sp (C
+            // DEFAULT_STACK_LIMIT), and the frame page sits at offset
+            // (frame_page - region.vaddr) inside it.
             let frame_off = frame_page - region.vaddr.0;
             let pfn = region
                 .get_slot(minix_types::VirBytes(frame_off))
@@ -3893,7 +3987,7 @@ mod tests {
         });
     }
 
-    /// V11/T23 (V11-P2-5): the invalid-caller drop branch (run_once
+    /// The invalid-caller drop branch (run_once
     /// :713-723) — an unregistered endpoint's message is dropped with a
     /// counter bump, no reply, no panic. Mirrors [ARCH: A-14].
     #[test]
@@ -3929,7 +4023,7 @@ mod tests {
         });
     }
 
-    /// V11/T23 (V11-P2-5): pins the reply-encode failure invariant that
+    /// Pins the reply-encode failure invariant that
     /// `run_once`'s Reply arm relies on (vm_server.rs:745-752) — a Reply
     /// E-RSWIRE flip: an RS_INIT from RS now runs the real handshake —
     /// the rproctab grant is copied through `sys_safecopyfrom`, decoded,
@@ -3986,7 +4080,8 @@ mod tests {
             vfs_pre.init_page_table().expect("vfs pt");
             vfs_pre.init_regions();
 
-            // 授权捞回的是 `NR_BOOT_PROCS` 行共享快照（A-4 行宽）。
+            // The grant fetches the shared snapshot of `NR_BOOT_PROCS` rows (the
+            // A-4 row width).
             let entry_size = core::mem::size_of::<minix_types::RprocpubSnap>();
             let table_bytes = minix_types::NR_BOOT_PROCS * entry_size;
             *mock.borrow_mut().safecopy_payload.borrow_mut() = vfs_rprocpub_entry_image();
@@ -4030,16 +4125,19 @@ mod tests {
             // (V13a: chunks beyond bit 32 are authorization, not noise).
             assert_eq!(vfs_rprocpub_call_mask(), 0x0000_0300_0000_00ff);
 
-            // E-BIRTHFACE（NS1）：成功握手的同轮必须回出生报告
-            //（process_init 尾部 sef_init.c:110-119）——RS boot step3
-            // 等的就是它；SUSPEND 只压主循环的第二回复。
+            // In the same round as a successful handshake a birth report must go
+            // back (process_init's tail, sef_init.c:110-119) — RS boot step3
+            // waits for exactly that; SUSPEND only suppresses the main loop's
+            // second reply.
             let sent = handle.sent();
             assert_eq!(sent.len(), 1, "恰好一条出生应答");
             assert_eq!(sent[0].0, Endpoint::RS);
             assert_eq!(sent[0].1.m_type, RS_INIT as i32);
             assert_eq!(sent[0].1.rs_init_result(), Some(minix_types::OK));
-            // NK4-C B5：出生报告必须走**异步腿**（asynsend3/AMF_NOREPLY），
-            // 不是阻塞 send——否则 RS 在 PAGEFAULT|SENDING 时 2-cycle EDEADLOCK。
+            // The birth report must take the **asynchronous leg**
+            // (asynsend3/AMF_NOREPLY), not a blocking send — otherwise a
+            // 2-cycle EDEADLOCK is judged while RS sits in
+            // PAGEFAULT|SENDING.
             assert_eq!(
                 handle.async_sends(),
                 1,
@@ -4231,7 +4329,8 @@ mod tests {
                 1,
                 "failed handshake must be counted"
             );
-            // NK4-C B5：失败臂的出生报告同样走异步腿（与 C 首次应答一致）。
+            // The failure arm's birth report likewise takes the asynchronous
+            // leg (the same as C's first reply).
             assert_eq!(
                 handle.async_sends(),
                 1,
@@ -4285,7 +4384,8 @@ mod tests {
             label,
             vm_call_mask: 0x0000_0300_0000_00ff,
         };
-        // SAFETY(test): 行是 repr(C) POD，取其字节视图拼进缓冲。
+        // SAFETY(test): a row is a repr(C) POD; take its byte view and splice
+        // it into the buffer.
         unsafe {
             core::slice::from_raw_parts(
                 (&row as *const minix_types::RprocpubSnap).cast::<u8>(),
@@ -4297,11 +4397,11 @@ mod tests {
 
     fn vfs_rprocpub_call_mask() -> u64 {
         let img = vfs_rprocpub_entry_image();
-        // SAFETY(test): 行字节位按同一结构读回。
+        // SAFETY(test): read the row's bytes back as the same structure.
         unsafe { core::ptr::read_unaligned(img.as_ptr().cast::<minix_types::RprocpubSnap>()) }
             .vm_call_mask
     }
-    // ── V11/T29: SIGKMEM signal seam + do_memory drain loop ──────────
+    // ── SIGKMEM signal seam + do_memory drain loop ──────────────────
 
     /// Swaps the server's gateway for a trap gateway over a scripted
     /// canned transport (kernel-observable wire assertions) and returns
@@ -4350,8 +4450,9 @@ mod tests {
             drop(active);
             {
                 let mut proc = table.get_active(slot).unwrap();
-                // memtype 必须在位（C 的每个 VM region 都有类型；
-                // handle_pagefault 经 memtype 分派，None 即 NoMemType）。
+                // memtype must be present (every C VM region has a type;
+                // handle_pagefault dispatches on memtype, and None means
+                // NoMemType).
                 proc.regions_mut()
                     .insert(crate::region::VirRegion::with_memtype(
                         VirBytes(0x3000_0000),
@@ -4373,7 +4474,8 @@ mod tests {
                 m1.m1p1 = 0x3000_0000;
                 m1.m1p2 = 0x2000;
                 m1.m1i3 = 1;
-                // B23 回归：requestor ≠ target（跨进程挂起形态）。
+                // Regression: requestor != target (the cross-process
+                // suspension shape).
                 m1.m1p3 = 0x100;
             }
             // Script per kernel call: GET (payload) → REPLY (OK) → GET
@@ -4395,7 +4497,7 @@ mod tests {
             assert_eq!(sent[0].m_type, crate::kernel_gateway::SYS_VMCTL_CALL);
             assert_eq!(sent[1].m_type, crate::kernel_gateway::SYS_VMCTL_CALL);
             {
-                // SAFETY: reply wire inspection (SYS_VMCTL M1 fields).
+                // SAFETY: reply wire inspection (SYS_VMCTL parameter words).
                 let m1 = unsafe { &sent[1].m_u.m_m1 };
                 assert_eq!(
                     m1.m1i1, 0x100,
@@ -4446,7 +4548,7 @@ mod tests {
                 m1.m1p1 = 0x5000_0000; // no region covers this
                 m1.m1p2 = 0x2000;
                 m1.m1i3 = 1;
-                m1.m1p3 = 0x100; // requestor ≠ target（跨进程形态，B23）
+                m1.m1p3 = 0x100; // requestor != target (cross-process shape)
             }
             // GET (payload) → REPLY (OK) → GET (ENOENT); see test above
             // for why every call is scripted explicitly.
@@ -4470,9 +4572,11 @@ mod tests {
 
     #[test]
     fn test_effective_kernel_signal_maps_the_wakeup_fallback() {
-        // 两种送达形状的分岔（§续-414 的兜底与位宽拓宽后的真号）：
-        // 兜底值只能按「唯一可能的来源」= SIGKMEM 处理；真号一律原样交出，
-        // 不再被当成 SIGKMEM（那条错分岔就是本函数存在的理由）。
+        // The fork between the two delivery shapes (the fallback, and the real
+        // number once the bit width widens): a fallback value can only be
+        // handled by its "only possible source" = SIGKMEM, while a real number
+        // is always handed through as is and no longer taken for SIGKMEM (that
+        // wrong fork is the reason this function exists).
         use minix_sef::SEF_SIGNAL_REQUEST_TYPE;
         use minix_types::{SIGNAL_KERNEL_MEMORY, SIGNAL_KERNEL_PENDING};
         assert_eq!(
@@ -4507,7 +4611,7 @@ mod tests {
 
             let mut canned = minix_sys::syscall::CannedKernelCallTransport::new();
             // SIGKMEM routes into the drain loop: GET (raw CHECK reply; no
-            // payload, so the request's own M1 fields read back) → REPLY →
+            // payload, so the request's own parameter words read back) → REPLY →
             // GET → ENOENT stops the loop. Every call scripted explicitly.
             canned.reply(1); // VMPTYPE_CHECK
             canned.reply(0); // REPLY acknowledged OK
@@ -4518,8 +4622,9 @@ mod tests {
             // Unknown signal → no kernel interaction (C ignores the rest).
             server.handle_signal(0);
             assert_eq!(canned.calls.get(), 0);
-            // 另一个真内核信号号（SIGKSIG=74）也不得误走排空环——那正是
-            // 唤醒兜底按号分派后新获得的那道区分。
+            // Another real kernel signal number (SIGKSIG=74) must not wrongly
+            // enter the drain ring either — that is exactly the distinction the
+            // numbered dispatch newly provides.
             server.handle_signal(minix_types::SIGNAL_KERNEL_PENDING);
             assert_eq!(
                 canned.calls.get(),
@@ -4538,7 +4643,7 @@ mod tests {
     }
     /// Shared-handle delegate around [`crate::kernel_gateway::MockGateway`]:
     /// the boxed trait object in `VmContext` and the test's inspection
-    /// handle point at the same concrete mock (V11/T35).
+    /// handle point at the same concrete mock.
     struct SharedMockGateway(
         alloc::rc::Rc<core::cell::RefCell<crate::kernel_gateway::MockGateway>>,
     );

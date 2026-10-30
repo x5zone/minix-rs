@@ -16,12 +16,13 @@ fn main() {
     {
         use minix_is::{IsServer, SysAcquires, sef::SysSefTransport, tty_fkey::SysFkeyCtl};
 
-        // S23 装配:`SysSefTransport`(receive 经 minix-sef ping 透明/
-        // send 阻塞/warn+diag 走 SYS_DIAGCTL 缝)、`SysFkeyCtl`
-        // (fkey_ctl → minix-sys tty::fkey_ctl_via)、`SysAcquires`
-        // (六通道全装:SYS_GETINFO 七 what + stacktrace + uptime +
-        // GET_KMESSAGES + getsysinfo 五腿 + VM_INFO 三查询——无 fail-closed
-        // 占位,取数失败按 C 的 warn-and-continue 报错继续)。
+        // Assembly: `SysSefTransport` (receive transparent through the minix-sef
+        // ping, send blocking, warn+diag through the SYS_DIAGCTL seam),
+        // `SysFkeyCtl` (fkey_ctl -> minix-sys tty::fkey_ctl_via), and
+        // `SysAcquires` (all six channels: SYS_GETINFO's seven whats + stacktrace +
+        // uptime + GET_KMESSAGES + getsysinfo's five legs + VM_INFO's three
+        // queries — no fail-closed placeholder; a failed fetch is reported and the
+        // run continues, C's warn-and-continue).
         let mut server = IsServer::new(SysSefTransport::new(), SysFkeyCtl, SysAcquires::default());
 
         // C: sef_local_startup() + boot anchor — main.c:40-41,94-102.

@@ -1,4 +1,4 @@
-//! MBR primary-partition table parser (U-6 阶段二 enabler).
+//! MBR primary-partition table parser (stage-two enabler).
 //!
 //! C correspondence: `drvlib.c` `partition()` reads the four-entry primary
 //! table at `PART_TABLE_OFF` and rejects a boot sector lacking the `0x55AA`

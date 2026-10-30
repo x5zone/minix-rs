@@ -1,19 +1,26 @@
-//! `fsck.mfs` 薄壳：对镜像文件跑只读的一致性检查与报告。
+//! `fsck.mfs` thin shell: runs a read-only consistency check over an image
+//! file and reports the result.
 //!
-//! C 对应物：`minix3/minix/commands/fsck.mfs/fsck.c` 的 `main`
-//! （1616-1668）与 `chkdev` 的装配序。决定半在 `minix_fs_mfs::fsck`
-//! （超块校验、走查、位图对照、计数对账都在格式库）；本程序只做四件
-//! 事——旗标解析、镜像读入、报告打印、退出码。
+//! C counterpart: `main` (1616-1668) in
+//! `minix3/minix/commands/fsck.mfs/fsck.c` plus the assembly order of
+//! `chkdev`. The decision half lives in `minix_fs_mfs::fsck` (superblock
+//! validation, walk, bitmap comparison and counter reconciliation all live in
+//! the format library); this program does four things only — flag parsing,
+//! reading the image, printing the report, and the exit code.
 //!
-//! 旗标面（只读决定半支持）：`-l` 走查列表、`-s` 超块列表、`-i N...`
-//! inode 观察单、`-z N...` 区块观察单、`-f` 空操作（C 同）。修复类
-//! 旗标（`-r`/`-y`/`-a`/`-p`/`-d`）与 `-c`（指定 inode 列表，C `lsi`
-//! 的问句面）属修复批——现在诚实拒绝，不做假成功。
+//! Flag face (what the read-only decision half supports): `-l` walk list, `-s`
+//! superblock listing, `-i N...` inode watch list, `-z N...` zone watch list,
+//! `-f` no-op (same as C). The repair flags (`-r`/`-y`/`-a`/`-p`/`-d`) and `-c`
+//! (explicit inode list, C `lsi`'s prompt face) belong to the repair face,
+//! which is not built — they are refused honestly rather than faked as
+//! success.
 //!
-//! 退出码照 C `sbin/fsck/exitvalues.h`：检查完成 0（发现不一致不改
-//! 退出码，C `main` 恒返 0；非交互消费方读报告文本）、用法 1、检查
-//! 致命 8（消息 + `fatal` 尾注）。多镜像逐个检查，观察单每镜像后
-//! 重置（C `chkdev` 后清列表同款）。
+//! Exit codes follow C `sbin/fsck/exitvalues.h`: check completed 0
+//! (inconsistencies do not change the exit code, C `main` always returns 0;
+//! non-interactive consumers read the report text), usage 1, check fatal 8
+//! (message plus a trailing `fatal`). Multiple images are checked one by one
+//! and the watch lists reset after each image (the same as C clearing the
+//! lists after `chkdev`).
 
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -43,8 +50,9 @@ fn run() -> ! {
     let mut images: Vec<String> = Vec::new();
     let mut bad_flag = false;
 
-    // C 的旗标形状：单破折线单字母（arg[2] == 0）；-i/-z 吃掉其后
-    // 连续的数字项，遇非数字交还外层（getlist 同形）。
+    // C's flag shape: a single dash and one letter (arg[2] == 0); -i/-z
+    // swallow the run of numeric items after them and hand back to the outer
+    // loop at the first non-number (same shape as getlist).
     let mut index = 1;
     while index < args.len() {
         let arg = &args[index];
@@ -94,10 +102,11 @@ fn run() -> ! {
     }
 
     for image_path in &images {
-        // C devopen 失败走 fatal（fsck.c:384-391）。
-        // 文件读取走 `support::read_file` 双形（宿主 std::fs，目标
-        // minix_sys open/read/close）；失败原因在缝上抹平为存在性——
-        // C 的 strerror 细节未建模，与 hosted io::Error 路径同。
+        // A failed C devopen goes to fatal (fsck.c:384-391).
+        // File reading goes through `support::read_file`'s dual form (host
+        // std::fs, target minix_sys open/read/close); the failure reason is
+        // flattened to a plain existence check at the seam — C's strerror
+        // detail is not modelled, as on the hosted io::Error path.
         let image = match support::read_file(image_path) {
             Ok(bytes) => bytes,
             Err(_) => {
@@ -114,8 +123,9 @@ fn run() -> ! {
             }
         };
         if want_super {
-            // C 的 lsuper 在读超块后立即打（fsck.c:577）；这里在静态
-            // 校验后打，字段面相同。
+            // C's lsuper prints right after the superblock is read
+            // (fsck.c:577); here it prints after the static validation, with
+            // the same field face.
             support::emit(format!("{}", checker.list_super()).as_bytes());
         }
         let options = FsckOptions {
@@ -137,7 +147,8 @@ fn run() -> ! {
                 support::terminate(fsck::EXIT_CHECK_FAILED);
             }
         }
-        // 多镜像：观察单每镜像后重置（fsck.c:1660-1662）。
+        // Multiple images: the watch lists reset after each image
+        // (fsck.c:1660-1662).
         watch_inodes.clear();
         watch_zones.clear();
     }

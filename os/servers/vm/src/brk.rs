@@ -10,7 +10,7 @@
 //!
 //! ## Design decisions vs Minix3
 //!
-//! **Extend-or-ENOENT, never shrink** (P0, NK4-C §续-279m): C's VM side only
+//! **Extend-or-ENOENT, never shrink** (P0): C's VM side only
 //! ever extends — a request already covered by the containing region returns
 //! OK as a no-op (region.c:1017 `if(vr->vaddr + vr->length >= v) return OK`),
 //! and there is *no* shrink leg at all in break.c. The previous minix-rs model
@@ -83,8 +83,8 @@ pub(crate) fn handle_brk(
     // brk leg in break.c — the request carries the ABSOLUTE new break and
     // the VM extends the region containing it. No delta against
     // vm_region_top: that field is a slot-placement hint in C (region.c:391),
-    // not a break value (§续-279m redesign, replacing the gh149/gh150
-    // derive/retry incidents).
+    // not a break value (the earlier design derived a break from it and
+    // retried, which lost data regions).
     extend_upto_v(&mut active, request.new_brk_addr)
         .map(|covered| BrkResponse { new_brk_addr: covered })
 }
@@ -106,9 +106,8 @@ fn extend_upto_v(
     // asserts `vr->vaddr <= offset` at :1020 and extends the region past its
     // own end across the gap). `find_mut` is a containing lookup and
     // `search(Less)` is a strict `<` — neither expresses AVL_LESS `<=`;
-    // `avl_less` below is the literal reading (§续-279m: the first port
-    // attempt used `find_mut` and reproduced C's "nothing to extend" path on
-    // every gap-crossing brk).
+    // `avl_less` below is the literal reading (using `find_mut` here
+    // reproduced C's "nothing to extend" path on every gap-crossing brk).
     let (base, limit) = avl_less(active.regions(), offset.0)
         .map(|r| (r.vaddr, r.end_addr()))
         .ok_or(BrkError::OutOfMemory)?; // C:1012-1013 "VM: nothing to extend"
@@ -145,10 +144,12 @@ fn extend_upto_v(
     let (supports_resize, rejects_resize) = avl_less(active.regions(), offset.0)
         .expect("brk: region present (checked above)")
         .def_memtype
-        // CodeReview 续-279m P2-3：`def_memtype==None` 是 C 不存在的形（每个
-        // region 都经 map_page_region 带 memtype 诞生）——若残留到此，resize 腿
-        // 原地 extend 产出的新页仍会同型 NoMemType 死；路由到 create 腿就地
-        // 新建带 MEM_TYPE_ANON 的可 fault 段才是防御性正解。
+        // `def_memtype == None` is a shape C does not have (every region is
+        // born through map_page_region carrying a memtype); if one survives
+        // to here, the pages the resize leg produces by extending in place
+        // would die with the same missing-memtype fault. Routing to the
+        // create leg, which builds a faultable MEM_TYPE_ANON region in
+        // place, is the defensive answer.
         .map(|m| (m.supports_resize(), m.rejects_in_place_resize()))
         .unwrap_or((false, false));
 
@@ -156,7 +157,7 @@ fn extend_upto_v(
         // C:1037 non-NULL ev_resize → grow physblocks then *call* the callback
         // and return its result. The anon_contig / cache callbacks reject with
         // ENOMEM (mem_anon_contig.c:97, mem_cache.c:83); the [ARCH: A-12] fold
-        // keeps that reject observable via `rejects_in_place_resize` (SD-43),
+        // keeps that reject observable via `rejects_in_place_resize`,
         // so the resize leg fails like C instead of silently `extend`-ing.
         if rejects_resize {
             return Err(BrkError::OutOfMemory);
@@ -240,7 +241,7 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
-        // Page tables stay in the software (SimPaging) model (V11/T21); the
+        // Page tables stay in the software (SimPaging) model; the
         // brk port itself is table-free — extension is demand-filled on
         // fault, mirroring C's anon ev_resize.
         active.init_page_table().unwrap();
@@ -298,8 +299,8 @@ mod tests {
     #[test]
     fn test_brk_shrink_is_noop_ok() {
         // C break.c has no shrink leg: a break already covered by the region
-        // returns OK and unmaps nothing (§续-279m: the old destructive
-        // shrink_arm deleted the data region under a lower brk()).
+        // returns OK and unmaps nothing (the earlier model's destructive
+        // shrink arm deleted the data region under a lower brk()).
         let slot = next_test_slot();
         let ep = init_data_proc(slot, 0x3000);
 
@@ -343,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_brk_rejects_in_place_resize_for_contig_and_cache() {
-        // SD-43: C's anon_contig_resize (mem_anon_contig.c:97) and cache_resize
+        // C's anon_contig_resize (mem_anon_contig.c:97) and cache_resize
         // (mem_cache.c:83) are NON-NULL ev_resize callbacks that unconditionally
         // return ENOMEM; region.c:1037 takes the in-place leg and propagates the
         // failure. The [ARCH: A-12] resize fold must keep that reject observable
@@ -414,8 +415,8 @@ mod tests {
         // C:1016 pinned: a brk whose AVL_LESS predecessor already reaches the
         // target returns OK untouched — even when the predecessor is NOT the
         // data region (a 1-page gap below an interleaved region is C's
-        // accepted no-op; the old delta-vs-region_top model destroyed data
-        // regions in shapes like this, §续-279m).
+        // accepted no-op; the earlier delta-vs-region_top model destroyed
+        // data regions in shapes like this).
         let slot = next_test_slot();
         let ep = init_data_proc(slot, 0x1000);
         {

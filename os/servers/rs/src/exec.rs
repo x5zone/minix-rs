@@ -140,7 +140,7 @@ impl ExecImageIo for VfsImageIo {
         minix_sys::read(fd, buf)
     }
     fn close(&mut self, fd: Fd) {
-        // [SD19-gate] 尽力而为关 fd（cleanup）
+        // [SD19-gate] Best-effort close: the fd is cleanup, not the result.
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
     }
@@ -255,7 +255,9 @@ mod tests {
         free_exec(&mut t, a);
         assert!(t.get(a).exec.is_none());
         // The Arc outlives the slot only in this test variable.
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] Best-effort teardown; dropping the `Result` cannot
+        // change an already established primary result (C is void/ignored
+        // at the same site).
         #[allow(clippy::let_underscore_must_use)]
         let _ = img;
     }

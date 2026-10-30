@@ -35,14 +35,19 @@
 //! | `pci`            | `pci`     | 16-stage-drivers (11-pci-driver.md)        | E-DEVWIRE          |
 
 #![no_std]
-// SD-19 静默吞错家族机械化门（本 crate 先行）：`ipc::IpcTransport`/各服务
-// wrapper 返回 `Result`，`let _ = ...` 是最常见的掉空手法。这个 restriction
-// lint 把家族从“需要人专门去审计才能发现”变成“每次 `cargo clippy` 自己就会
-// 报告”，与 `PATTERN-SCAN-REPORT-20260923.md` 的教训同族。首轮基线 27 处
-// 警告已于 `2026-10-09` 逐站定性收编（登记处置表的 maintain+comment 档）：
-// 每处 `let _ =` 上方现为 `//[SD19-gate] <理由>` + 语句级 `#[allow]`，理由均为
-// C 同位忽略/不返回语义/测试夹具断言三类。今后新写一个无理由的 `let _ =`
-// 会当场多报一条警告；新开一处带理由的则警告数不变、grep `SD19-gate` 计数 +1。
+// Mechanical gate for the silent-swallow family (this crate goes first):
+// `ipc::IpcTransport` and the service wrappers return `Result`, and
+// `let _ = ...` is the most common way to drop one on the floor. This
+// restriction lint turns the family from "someone has to audit for it" into
+// "every `cargo clippy` run reports it itself" — the same lesson as the
+// pattern scan report. An initial baseline of 27 warnings was triaged site by
+// site into the maintain+comment tier: each `let _ =` now carries a
+// `//[SD19-gate] <reason>` above it plus a statement-level `#[allow]`, and
+// every reason falls into one of three classes — C ignores the result at the
+// same spot, the callee does not return one, or it is a test fixture
+// assertion. From now on a new unjustified `let _ =` immediately adds one more
+// warning, while a new documented site keeps the warning count and raises the
+// grep count of `[SD19-gate]` by one.
 #![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
@@ -51,12 +56,15 @@ use ipc::IpcTransport;
 use minix_types::{Endpoint, IpcError, Message};
 
 pub use minix_types::{Gid, Pid, Uid};
-// 用户态 `struct stat` ABI 走显式路径再导出——minix-types 根上
-// `ipc::fs_driver::Stat`（VTreeFS 序列化载荷）同名，glob 会歧义。
+// The user-space `struct stat` ABI goes through an explicit re-export:
+// `ipc::fs_driver::Stat` (the VTreeFS serialization payload) has the same name
+// at the `minix-types` root, so a glob would be ambiguous.
 pub use minix_types::types::stat::Stat;
-// 文件系统统计 ABI 同理走显式再导出：`statvfs`/`getvfsstat` 本就在签名里用
-// `minix_types::StatvfsBuf`，而命令层只允许 `use minix_sys::…`（边界守卫
-// `tools/check-command-boundary.sh`），所以缓冲类型与它的字节偏移模块一并转交。
+// The filesystem statistics ABI likewise takes an explicit re-export:
+// `statvfs`/`getvfsstat` already use `minix_types::StatvfsBuf` in their
+// signatures, and the command layer may only `use minix_sys::…` (the boundary
+// guard `tools/check-command-boundary.sh`), so the buffer type and its byte
+// offset module are handed over here as well.
 pub use minix_types::{StatvfsBuf, statvfs_off};
 
 /// The errno constant table at the crate root — the position `<errno.h>`
@@ -237,14 +245,17 @@ pub fn exit(status: i32) -> ! {
 /// means the restoration did not happen; like [`exit`], the function then
 /// parks instead of unwinding into a signal frame that is no longer valid.
 pub fn sigreturn(ctx: u64) -> ! {
-    //[SD19-gate] C sigreturn.c:27-29 sigprocmask 先屏蔽，返回值按 C 不消费
+    //[SD19-gate] C sigreturn.c:27-29 blocks the mask first; the return value is
+    // not consumed in C either
     #[allow(clippy::let_underscore_must_use)]
     let _ = pm::sigprocmask_via(
         &ipc::DirectTrapTransport,
         pm::SIG_SETMASK,
         Some(&[u32::MAX; 4]),
     );
-    //[SD19-gate] 成功回合不返回（内核换上下文）；可达返回=恢复未发生，与 exit 同 parked
+    //[SD19-gate] a successful round trip does not return (the kernel swaps the
+    // context); a reachable return means the restore did not happen — parked
+    // like exit
     #[allow(clippy::let_underscore_must_use)]
     let _ = pm::sigreturn_via(&ipc::DirectTrapTransport, ctx);
     loop {
@@ -323,9 +334,10 @@ pub fn pipe2(flags: i32) -> Result<(Fd, Fd), Errno> {
     vfs::pipe2_via(&ipc::DirectTrapTransport, flags)
 }
 
-// 文件操作族（NL4 高优先批）：路径参数一律 `&str`，上线时按 C 惯例
-// 携带 NUL —— 地址 = 首字节指针，长度 = `len + 1`（strlen+1 对位的
-// wire 语义，见 `vfs::path_request_via` 等处的 C 包装器锚点）。
+// The file-operation family: path arguments are `&str` throughout and carry a
+// NUL on the wire, following the C convention — address = pointer to the first
+// byte, length = `len + 1` (the strlen+1 wire semantics whose C wrappers anchor
+// at `vfs::path_request_via` and companions).
 
 /// Deletes a directory entry (C: `unlink`).
 pub fn unlink(path: &str) -> Result<(), Errno> {
@@ -486,7 +498,7 @@ pub fn mkfifo(path: &str, mode: u32) -> Result<(), Errno> {
 
 /// Returns the process id of the caller (C: `getpid`,
 /// `minix3/minix/lib/libc/sys/getpid.c:12-19`; the module-only
-/// `pm::getpid_via` topled per the C-44 leftover list).
+/// `pm::getpid_via` is delegated to here).
 pub fn getpid() -> Result<Pid, Errno> {
     pm::getpid_via(&ipc::DirectTrapTransport)
 }
@@ -601,7 +613,8 @@ pub fn nanosleep(seconds: i64, nanoseconds: i64) -> Result<(), Errno> {
 /// (C: `sync`, `minix3/minix/lib/libc/sys/sync.c:12-17` — the C
 /// wrapper discards the return value, so this cannot fail).
 pub fn sync() {
-    //[SD19-gate] C sync.c:12-17 包装器丢弃返回值（cannot fail 语义对齐）
+    //[SD19-gate] C sync.c:12-17 the wrapper drops the return value (aligned
+    // with the cannot-fail semantics)
     #[allow(clippy::let_underscore_must_use)]
     let _ = vfs::sync_via(&ipc::DirectTrapTransport);
 }
@@ -850,7 +863,7 @@ pub fn fpathconf(fd: Fd, name: i32) -> Result<i64, Errno> {
 pub fn pathconf(path: &str, name: i32) -> Result<i64, Errno> {
     let fd = open(path, 0, 0)?;
     let value = fpathconf(fd, name);
-    //[SD19-gate] C pathconf.c:37-45 close 结果按 C 忽略（ordering included）
+    //[SD19-gate] C pathconf.c:37-45 ignores the close result (ordering included)
     #[allow(clippy::let_underscore_must_use)]
     let _ = close(fd);
     value
@@ -1095,9 +1108,12 @@ pub fn setitimer(
 /// `EGENERIC`/`ERESTART` (errno.h:78/211/199/200/196); two Errno types force
 /// a conversion at every `KernelApi` boundary (todo §11 N4).
 pub use minix_types::Errno;
-// `Strerror` 与 `Errno` 同行：它是 C `strerror(3)` 完整形状（表内句子、表外
-// `Unknown error: %u`）的唯一权威，命令侧拼 `warn`/`err` 那一句时要它而不能自己另抄一份。
-// 这样再导出的理由与形状同 `Errno` 本身（二线权威、三线经本通道取用）。
+// `Strerror` sits next to `Errno`: it is the single authority for the full
+// shape of C `strerror(3)` (table sentences plus the out-of-table
+// `Unknown error: %u`), and the command side needs it to assemble its
+// `warn`/`err` line rather than copying one of its own. The reason and shape of
+// this re-export are the same as for `Errno` itself (second-tier authority,
+// third tier takes it through this channel).
 pub use minix_types::Strerror;
 
 /// The kernel information page layout and its user-ABI substructure.
@@ -1140,16 +1156,17 @@ mod tests {
     }
 }
 
-/// `TIOCGETA`/`TIOCSETA` 请求号按 `ttycom.h:88-89` 的 `_IOR/_IOW('t', …,
-/// struct termios)` 编码钉值：44 字节参数长度进第 16 到 27 位，组 `'t'`
-/// 在第 8 到 15 位，方向位（`IOC_OUT`/`IOC_IN`）在最高两位。
+/// `TIOCGETA`/`TIOCSETA` request numbers pinned per the `_IOR/_IOW('t', …,
+/// struct termios)` encoding at `ttycom.h:88-89`: the 44-byte parameter length
+/// goes into bits 16 to 27, the group `'t'` into bits 8 to 15, and the
+/// direction bits (`IOC_OUT`/`IOC_IN`) into the top two bits.
 #[test]
 fn test_tty_ioctl_requests_match_ttycom() {
     assert_eq!(TIOCGETA, 0x4000_0000 | (44 << 16) | (0x74 << 8) | 19);
     assert_eq!(TIOCSETA, 0x8000_0000 | (44 << 16) | (0x74 << 8) | 20);
-    // 长度域：IOCPARM_LEN 语义 ((x >> 16) & 0x1fff) == sizeof(termios)。
+    // Length field: IOCPARM_LEN semantics ((x >> 16) & 0x1fff) == sizeof(termios).
     assert_eq!((TIOCGETA >> 16) & 0x1fff, 44);
-    // 组与序号。
+    // Group and number.
     assert_eq!((TIOCGETA >> 8) & 0xff, b't' as u64);
     assert_eq!(TIOCGETA & 0xff, 19);
     assert_eq!(TIOCSETA & 0xff, 20);

@@ -1,13 +1,17 @@
-//! `xtask qemu` — 用装配好的镜像启动 QEMU（E-IMGPKG / new_edge3 NS8）。
+//! `xtask qemu` — start QEMU with the assembled image.
 //!
-//! 参数形态对位 `os/qemu-tests/run_qemu.sh` 的 UEFI 路径：固件经
-//! pflash 双槽挂载（code 只读 + vars 可写），镜像作第二块盘，串口落
-//! 文件。`--dry-run` 只打印命令行——真机验证受 QEMU 串行纪律约束
-//! （new_edge4 §1 规则 7：全仓同一时刻只允许一方占 QEMU），本命令
-//! 不做占用仲裁，运行时机由调用方自行确认空闲窗口。
+//! The argument shape mirrors the UEFI path of `os/qemu-tests/run_qemu.sh`:
+//! the firmware is mounted as a two-slot pflash pair (code read-only, vars
+//! writable), the image is the second disk, and the serial port goes to a
+//! file. `--dry-run` only prints the command line — hardware verification
+//! is subject to the QEMU serial discipline (only one party may occupy
+//! QEMU at a time across the whole repository); this command performs no
+//! occupancy arbitration, so the caller must confirm a free window before
+//! running it.
 //!
-//! riscv64 honest bail：启动路径是 U-Boot fatload + BootFileTable，
-//! 不是 UEFI 直启，载体机制见 `os/qemu-tests/test-riscv64-uboot.sh`。
+//! riscv64 honest bail: the boot path is U-Boot fatload + BootFileTable,
+//! not a direct UEFI boot; the carrier mechanism is in
+//! `os/qemu-tests/test-riscv64-uboot.sh`.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -15,7 +19,8 @@ use std::process::Command;
 
 use super::image::Arch;
 
-/// 固件 code/vars 的候选路径（与 run_qemu.sh:14-36 同清单）。
+/// Candidate paths for the firmware code/vars (the same list as
+/// run_qemu.sh:14-36).
 fn firmware(arch: Arch) -> Option<(PathBuf, PathBuf)> {
     let (code_candidates, vars_candidates): (&[&str], &[&str]) = match arch {
         Arch::X86_64 => (
@@ -44,8 +49,10 @@ fn firmware(arch: Arch) -> Option<(PathBuf, PathBuf)> {
     Some((code, vars))
 }
 
-/// 组装 QEMU 命令行（不含执行）。参数先聚成向量再落 Command——
-/// 计划面（打印/dry-run）与执行面共享同一份参数文本。
+/// Assemble the QEMU command line (without running it). Arguments are
+/// collected into a vector first and only then handed to `Command` — the
+/// planning face (printing/dry-run) and the execution face share the same
+/// argument text.
 pub fn command(arch: Arch, image: &Path, serial: &Path) -> Result<(Command, Vec<String>)> {
     if arch == Arch::Riscv64 {
         bail!(
@@ -73,7 +80,7 @@ pub fn command(arch: Arch, image: &Path, serial: &Path) -> Result<(Command, Vec<
             // GICv3-only (per-CPU redistributor via GICR stride, ICCT
             // MMIO), and QEMU virt defaults to GICv2. Without this flag
             // the kernel panics in `init_from_kinfo` on "no platform
-            // source parsed successfully" (NK4-C §1.110 forensics).
+            // source parsed successfully".
             "virt,gic-version=3".into(),
             "-cpu".into(),
             "max".into(),
@@ -102,8 +109,9 @@ pub fn command(arch: Arch, image: &Path, serial: &Path) -> Result<(Command, Vec<
         "none".into(),
         "-no-reboot".into(),
     ]);
-    // isa-debug-exit 是 x86 ISA 设备（run_qemu.sh:117 的 x86 段独有），
-    // aarch64 virt 机器没有 ISA 总线，不通用。
+    // isa-debug-exit is an x86 ISA device (x86-only branch,
+    // run_qemu.sh:117); the aarch64 virt machine has no ISA bus, so it is
+    // not universal.
     if arch == Arch::X86_64 {
         args.extend(["-device".into(), "isa-debug-exit".into()]);
     }
@@ -113,8 +121,10 @@ pub fn command(arch: Arch, image: &Path, serial: &Path) -> Result<(Command, Vec<
     Ok((cmd, args))
 }
 
-/// vars 副本落在镜像产出目录旁（固件 vars 是可写槽，不能直接用系统
-/// 只读原件——run_qemu.sh:97-99 的 /tmp 副本策略，这里落 target 树内）。
+/// The vars copy lands next to the image output directory (firmware vars
+/// is a writable slot, so the system's read-only original cannot be used
+/// directly — the /tmp copy strategy of run_qemu.sh:97-99, landed inside
+/// the target tree here).
 fn vars_copy_target(arch: Arch, src_vars: PathBuf) -> Result<PathBuf> {
     let dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -133,7 +143,7 @@ fn vars_copy_target(arch: Arch, src_vars: PathBuf) -> Result<PathBuf> {
     Ok(dst)
 }
 
-/// `xtask qemu` 入口。
+/// The `xtask qemu` entry point.
 pub fn run(arch: Arch, image: Option<&Path>, serial: Option<&Path>, dry_run: bool) -> Result<()> {
     let layout_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -175,7 +185,7 @@ pub fn run(arch: Arch, image: Option<&Path>, serial: Option<&Path>, dry_run: boo
 mod tests {
     use super::*;
 
-    /// riscv64 honest bail：非 UEFI 路径不装样子。
+    /// riscv64 honest bail: no pretending on a non-UEFI path.
     #[test]
     fn riscv64_bails_honestly() {
         let err = command(
@@ -187,11 +197,14 @@ mod tests {
         assert!(err.to_string().contains("U-Boot"), "报错要点名 U-Boot 路径");
     }
 
-    /// 无固件环境（CI/容器常见）报错点名缺什么，而非 panic。
+    /// An environment without firmware (common in CI/containers) reports
+    /// what is missing instead of panicking.
     #[test]
     fn missing_firmware_errors_with_install_hint() {
-        // 不改文件系统，只在固件候选全缺失的机器上成立；有固件的机器
-        // 上本测试退化为只验证命令可组装。
+        // Does not modify the file system, so it only holds on machines
+        // where every firmware candidate is missing; on a machine that has
+        // firmware this test degrades to verifying that the command can be
+        // assembled.
         match command(
             Arch::X86_64,
             Path::new("/tmp/x.img"),

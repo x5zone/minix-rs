@@ -73,9 +73,11 @@ pub fn terminate(code: i32) -> ! {
 /// Best-effort write to standard error (the C `warnx` channel); write
 /// failures are ignored exactly as stdio's are in the C utilities.
 ///
-/// 双生两面（`caesar`/`factor` 那批的判例）：宿主侧必须走进程自己的 stderr，
-/// 因为 `minix_sys::write` 在宿主进的是替身传输——诊断会被吞掉，报文形状就无法在
-/// 宿主端到端验证。真机侧仍是那条 `write(2)`。
+/// Twin faces (the precedent set by the `caesar`/`factor` batch): the hosted
+/// side must go through the process's own stderr, because `minix_sys::write`
+/// on the host enters the stand-in transport — the diagnostic would be
+/// swallowed and the report shape could not be verified end to end on the
+/// host. The target side still uses that `write(2)`.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn warn(bytes: &[u8]) {
     use std::io::Write as _;
@@ -85,18 +87,21 @@ pub fn warn(bytes: &[u8]) {
 
 #[cfg(all(not(test), target_os = "none"))]
 pub fn warn(bytes: &[u8]) {
-    //[SD19-gate] SD-19: write stderr warn
+    //[SD19-gate] best-effort stderr warn: the write result is intentionally dropped
     #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::write(STDERR, bytes);
 }
 
 /// Writes the slice to standard output, exiting 1 on failure.
 ///
-/// 与上面 `warn` 同一双生面纪律（批次二百三十七登记的那一条）：`emit` 以真机两面各写
-/// 一次，因为 `minix_sys::write` 在宿主进的是替身传输——写会“成功”，而字节永远不会
-/// 出现在进程自己的 stdout 上，于是输出面（`getopt` 的选项表、`hostname` 无操作数时
-/// 印当前主机名、`sh` 的提示符）在宿主既看不到也钉不住。宿主面走进程自己的
-/// `stdout`，写失败退 1（与真机面同一条判据）。
+/// Same twin-face discipline as `warn` above: `emit` is written once per
+/// host/target face, because `minix_sys::write` on the host enters the
+/// stand-in transport — the write "succeeds", yet the bytes never appear on
+/// the process's own stdout, so the output face (the `getopt` option table,
+/// `hostname` printing the current name with no operand, `sh`'s prompt)
+/// could be neither seen nor pinned on the host. The hosted face goes
+/// through the process's own `stdout`, exiting 1 on a failed write (the same
+/// criterion as the target face).
 #[cfg(any(test, not(target_os = "none")))]
 pub fn emit(bytes: &[u8]) {
     use std::io::Write as _;
@@ -142,9 +147,11 @@ pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, ()> {
     Ok(out)
 }
 
-/// C 的 `getprogname()`：程序名是运行时刻从 `argv[0]` 上取的最后一个 `/` 之后那段
-/// （`minix3/lib/csu/common/crt0-common.c:156-165`），没有斜杠就整段用。`err(3)`/`warn(3)`
-/// 的那一行以它开头，所以这一层给的不是装饰而是 C 契约的一部分。
+/// C's `getprogname()`: the program name is the part of `argv[0]` after the
+/// last `/`, taken at run time
+/// (`minix3/lib/csu/common/crt0-common.c:156-165`); without a slash the whole
+/// string is used. The `err(3)`/`warn(3)` line begins with it, so this layer
+/// is part of the C contract, not decoration.
 pub fn prog_name(argv: &[alloc::string::String]) -> &str {
     let raw = argv
         .first()
@@ -153,14 +160,20 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
     minix_sys::prog_name(raw)
 }
 
-/// 按 C 的 `err(3)` 报一句就走：`prog: label: <strerror 的句子>` 加一个换行，然后以
-/// `eval` 终止。形状与句子都由 `minix-types` 那一份权威给出（`err_line` 转发到
-/// `verrc.c` 的写法，句子取自 C 的 `sys_errlist`），这里只负责写与退。
+/// Report one line the way C's `err(3)` does and leave: `prog: label: <strerror
+/// sentence>` plus a newline, then terminate with `eval`. Both the shape and
+/// the sentence come from the authority in `minix-types` (`err_line` forwards
+/// to the `verrc.c` form, the sentence is taken from C's `sys_errlist`); this
+/// function only writes and exits.
 pub fn err_exit(prog: &str, label: &str, code: minix_sys::Errno, eval: i32) -> ! {
-    // C 的 `vwarnc` 直接用 `vfprintf(stderr, fmt, ap)` 打调用者的串，长度不受一行栈缓冲
-    // 限制（`minix3/lib/libc/gen/vwarnc.c:62`；`perror.c:67` 也一样把调用者的串整个打出去，
-    // 只有句子走 `strerror_r` 的定长表）。权威交回的是「本该写多少字节」——缓冲装不下也照数
-    // ——所以这里先量一次、再按那个数渲染，超长操作数不会被截断。
+    // C's `vwarnc` prints the caller's string with `vfprintf(stderr, fmt, ap)`
+    // directly, so its length is not bounded by a one-line stack buffer
+    // (`minix3/lib/libc/gen/vwarnc.c:62`; `perror.c:67` likewise prints the
+    // caller's whole string, with only the sentence going through the
+    // fixed-size `strerror_r` table). The authority returns "how many bytes
+    // should have been written" — counted even when the buffer is too small —
+    // so size once here, then render to that size: an overlong operand is
+    // never truncated.
     let mut sizing: [u8; 0] = [];
     let need = minix_sys::err_line(prog, label, code, &mut sizing);
     let mut line = alloc::vec![0u8; need];
@@ -176,8 +189,10 @@ mod tests {
     use alloc::string::String;
     use alloc::vec::Vec;
 
-    /// `getprogname()` 取的是 `argv[0]` 去掉目录的那段：`/bin/hostname` 报 `hostname`，
-    /// 没有斜杠时整段照用（宿主侧跑测试时 `argv[0]` 是构建目录里的路径，同一条规则）。
+    /// `getprogname()` takes the directoryless segment of `argv[0]`:
+    /// `/bin/hostname` reports `hostname`, and without a slash the whole string
+    /// is used (when tests run on the host, `argv[0]` is a path inside the
+    /// build directory, under the same rule).
     #[test]
     fn test_prog_name_takes_the_last_slash_segment() {
         let argv: Vec<String> = ["/bin/hostname", "up"]
@@ -192,10 +207,14 @@ mod tests {
         assert_eq!(prog_name(&Vec::new()), "");
     }
 
-    /// `err_line` 报的是**需要的字节数**，写不满就只写进缓冲那么长（这是权威自己的 plumbing
-    /// 形状；C 本身不截断——`vwarnc` 与 `perror` 都把调用者的串整个 `fprintf` 出去）。钉两件事：
-    /// 放得下时逐字等于 `verrc.c` 的形状，放不下时写出的前缀仍是那一段且没有越界——调用方
-    /// 正是拿这个返回值先量长度、再按长度渲染（见 `err_exit`）。
+    /// `err_line` reports the **needed byte count**; if the buffer cannot hold
+    /// it, only that much is written (this is the authority's own plumbing
+    /// shape; C itself does not truncate — `vwarnc` and `perror` both print
+    /// the caller's whole string through `fprintf`). Two things are pinned:
+    /// when it fits, the bytes equal the `verrc.c` shape verbatim; when it does
+    /// not, the written prefix is still that segment and stays in bounds — the
+    /// caller uses this return value to size first and then render to size
+    /// (see `err_exit`).
     #[test]
     fn test_err_line_shape_and_truncation() {
         let mut line = [0u8; 128];

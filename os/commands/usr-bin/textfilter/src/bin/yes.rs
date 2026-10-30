@@ -6,9 +6,11 @@
 //! leaves with `EXIT_FAILURE`. There is no deciding half — the doing
 //! half is the whole command.
 //!
-//! 这一支的参数**不是**档名也不是旗标，它就是被重复打出的那段内容：`yes.c:52` 把
-//! `argv[1]` 存成 `const char *`，`puts` 按字节发出再加换行。因此命令行上的一枚裸
-//! `ff` 必须原样出现在每一行里；先折成 `ef bf bd` 再打，改的是输出内容本身。
+//! This branch's argument is **not** a file name or a flag; it is the content
+//! that gets repeated: `yes.c:52` stores `argv[1]` as a `const char *`, and
+//! `puts` emits it byte for byte plus a newline. So a bare `ff` on the command
+//! line must appear verbatim in every line; folding it to `ef bf bd` first
+//! would change the output content itself.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -20,8 +22,9 @@ mod support;
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // `yes.c:52` 的 `yes = (argc > 1) ? argv[1] : "y"` 取的是 argv 里那串**字节**，
-    // `puts` 也只写字节：参数就是输出内容，折一次就改的是被重复打出的那些字节。
+    // `yes = (argc > 1) ? argv[1] : "y"` at `yes.c:52` takes the **bytes** of
+    // that argv string, and `puts` also writes only bytes: the argument is the
+    // output content, and folding it once changes the very bytes being repeated.
     let word: &[u8] = argv.get(1).map_or(b"y", Vec::as_slice);
     let mut line = word.to_vec();
     line.push(b'\n');

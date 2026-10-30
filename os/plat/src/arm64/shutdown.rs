@@ -1,9 +1,9 @@
-//! QEMU test shutdown backend — AArch64 semihosting `SYS_EXIT` (S-11 §3.8).
+//! QEMU test shutdown backend — AArch64 semihosting `SYS_EXIT`.
 //!
 //! Requires QEMU started with semihosting enabled (`-semihosting`). The
 //! A64 semihosting call sequence is `hlt #0xF000` with X0 = operation
 //! (0x18 = SYS_EXIT) and X1 = the exit-status block. Real-hardware backend
-//! (PSCI SYSTEM_OFF) is a separate later lane (§3.8 two-layer rule).
+//! (PSCI SYSTEM_OFF) is a separate later lane (two-layer rule).
 
 const SEMIHOST_SYS_EXIT: u64 = 0x18;
 /// ADP_Stopped_ApplicationExit — the semihosting exit reason for a normal

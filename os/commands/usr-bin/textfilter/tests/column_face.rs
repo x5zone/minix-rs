@@ -1,36 +1,58 @@
 //! End-to-end face for the `column` binary, checked against
-//! `minix3/usr.bin/column/column.c`（选项环 `:93-110`、操作数段 `:112-127`、
-//! `input()` 的残行判 `:270-297`、`usage()` `:302-307`）与它驱动的 libc `getopt`
-//!（`minix3/lib/libc/stdlib/getopt.c:74-78`、`:81-92`、`:95-104`、`:132-136`）。
+//! `minix3/usr.bin/column/column.c` (the option loop `:93-110`, the operand
+//! section `:112-127`, `input()`'s long-line verdict `:270-297`, `usage()`
+//! `:302-307`) and the libc `getopt` it drives
+//! (`minix3/lib/libc/stdlib/getopt.c:74-78`, `:81-92`, `:95-104`, `:132-136`).
 //!
-//! `column.c:93` 的 optstring 是 `"c:s:tx"`：两个带值项加两个旗标，操数是**文件清单**
-//! （开得了就读，开不了就 `warn(3)` 继续）。参照件 `tmp/column-314/column_ref`
-//!（`column.c` 真源 + Minix 的 `getopt.c` + 程序名/`fgetln` 垫片，宿主现链）逐形量出的
-//! 形状是：
-//! ① 集外字母 = libc 一行 + usage 一行，退 1（`-Z`、聚簇 `-tZ` 报 `Z`、`--x` 报 `-`）；
-//! ② `-c`/`-s` 缺值 = libc 的 `option requires an argument -- <字母>` + usage，退 1
-//!    （旧写法把这一支并进自拟的 usage，少了 libc 那一行）；
-//! ③ usage 那一行是**大写 `Usage`、程序名跟着 `getprogname()`、末尾带 `[file ...]`**，
-//!    旧写法写成了小写自拟短式；
-//! ④ `-c` 的值是 `atoi`：`0`、`abc`、`-5` 都不是错，宽度塌成「每条一行」，退 0；
-//! ⑤ 不重排：第一个非选项 token 一到选项环就结束，它后面的 `-t` 是**档名**（参照件现量：
-//!    `column: Cannot open `-t': No such file or directory`），不是被悄悄吃掉的旗标；
-//! ⑥ 打不开的操数是三段形 `warn(3)` 且**不致命**：本条跳过、退出码置 1、继续下一个档；
-//! ⑦ 裸 `-` 与 `--` 之后的 token 都是操数，而 `--` 自身不是（`getopt.c:81-85` 先推进）；
-//! ⑧ 末行没有换行符时 C 判它「长行」：那句 `warnx(3)` 只有两段（不缀 strerror），
-//!    这一行不进条目池，退出码置 1——整条是空白的末行仍按空行处理，一句警告都没有；
-//! ⑨ 条目是**整行**：C 存的是行首的 `buf`，不是跳过前导空白后的那个指针，
-//!    所以前导空白既进池也占布局宽度。
-//!    而且是**字节**（批次四百三十五）：一枚非 UTF-8 字节照样进池、照样按 `strlen` 占布局宽度，
-//!    旧写法在壳侧解一次 UTF-8，一枚坏字节就让**整个档**一条条目都不交；
-//! ⑩ 表模式的最后一列原样发出（`column.c:252` 那句 `printf("%s\n", …)`），既不补齐也没有
-//!    裁尾那一步，所以字段尾随的回车留在行尾。
+//! The optstring at `column.c:93` is `"c:s:tx"`: two value-taking items plus
+//! two flags, and the operands are a **file list** (open and read it if
+//! possible, otherwise `warn(3)` and continue). The shapes measured one by one
+//! against a reference build (`column.c`'s real source + Minix's `getopt.c` +
+//! program-name/`fgetln` shims, linked on the host) are:
+//! ① A letter outside the set = one libc line + one usage line, exit 1 (`-Z`,
+//!    the cluster `-tZ` blames `Z`, `--x` blames `-`);
+//! ② `-c`/`-s` missing a value = libc's
+//!    `option requires an argument -- <letter>` + usage, exit 1 (the old
+//!    spelling folded this arm into a self-invented usage and lost the libc
+//!    line);
+//! ③ The usage line is **capital `Usage`, the program name follows
+//!    `getprogname()`, and the tail carries `[file ...]`**; the old spelling
+//!    was a self-invented lowercase short form;
+//! ④ `-c`'s value goes through `atoi`: `0`, `abc`, and `-5` are not errors;
+//!    the width collapses to "one entry per line" and the exit status is 0;
+//! ⑤ No reordering: the option loop ends at the first non-option token, and a
+//!    `-t` after it is a **file name** (measured on the reference build:
+//!    `column: Cannot open `-t': No such file or directory`), not a silently
+//!    swallowed flag;
+//! ⑥ An unopenable operand is the three-part `warn(3)` and is **not fatal**:
+//!    skip this one, set exit status 1, continue with the next file;
+//! ⑦ A bare `-` and the tokens after `--` are operands, while `--` itself is
+//!    not (`getopt.c:81-85` advances first);
+//! ⑧ When the last line has no newline, C calls it a "long line": that
+//!    `warnx(3)` line has only two parts (no strerror attached), the line does
+//!    not enter the entry pool, and the exit status is set to 1 -- an all-blank
+//!    last line is still treated as an empty line, with no warning at all;
+//! ⑨ An entry is the **whole line**: C stores the `buf` at the start of the
+//!    line, not the pointer after skipping leading blanks, so leading blanks
+//!    both enter the pool and occupy layout width.
+//!    And it is **bytes**: a non-UTF-8 byte still enters the pool and still
+//!    occupies layout width by `strlen`; the old spelling decoded UTF-8 once on
+//!    the shell side, so a single bad byte made the **whole file** yield no
+//!    entries at all;
+//! ⑩ The last column of table mode is emitted verbatim (`printf("%s\n", …)` at
+//!    `column.c:252`), with neither padding nor trimming, so a trailing
+//!    carriage return stays at the end of the line.
 //!
-//! ⑧⑨ 都是这扇新门第一次真正跑通布局时抓出来的：旧件的 `c_columnate`/`r_columnate`
-//! 把条目、制表符、换行当三段各自返回，壳侧又逐段补一个换行，于是纵向/横向填满两条
-//! 布局从来没打出过一行像样的输出——以前没有进程级门，没有任何测试看得见这一点。
+//! ⑧ and ⑨ were both caught the first time this new gate actually exercised
+//! layout end to end: the old `c_columnate`/`r_columnate` returned entries,
+//! tabs, and newlines as three separate pieces, and the shell added one
+//! newline per piece, so neither the vertical nor the horizontal fill ever
+//! printed a single proper line -- there was no process-level gate before, and
+//! no test could see it.
 //!
-//! 这扇门前不存在：`column` 的四类出口只有自拟的一行 usage，残行那一句连影子都没有。
+//! This gate did not exist before: `column`'s four exit classes had only a
+//! self-invented usage line, and the long-line sentence did not even have a
+//! shadow.
 
 mod face_support;
 
@@ -39,12 +61,16 @@ use std::fs;
 use std::process::{Command, Stdio};
 
 const COLUMN: &str = env!("CARGO_BIN_EXE_column");
-/// `column.c:304-305` 的那一行：大写 `Usage`、程序名跟着 `getprogname()`。
+/// The line from `column.c:304-305`: capital `Usage`, the program name
+/// following `getprogname()`.
 const USAGE: &str = "Usage: column [-tx] [-c columns] [-s sep] [file ...]\n";
-/// 参照件在无 `-c` 时用的默认宽度 80 下的布局（五条 5 字节条目一行放得下）。
-/// 逐字节比三条通道的夹具：`col`/`rev`/`colrm`/`column` 这一族要钉的都是
-/// 「字母位是一个裸字节」，而 `String::from_utf8_lossy` 会把裸 `c3` 与 `c3 83`
-/// 都渲染成替换字符，文本夹具分不开这两种错法。
+/// The layout the reference build produces at its default width of 80 when `-c`
+/// is absent (five 5-byte entries fit on one line).
+/// The fixture that compares all three channels byte by byte: the
+/// `col`/`rev`/`colrm`/`column` family all needs to pin "the letter slot is one
+/// raw byte", and `String::from_utf8_lossy` renders both a bare `c3` and
+/// `c3 83` as the replacement character, so a text fixture cannot tell the two
+/// failure modes apart.
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(COLUMN)
         .args(args)
@@ -62,9 +88,10 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// argv 形态的**字节形**夹具：一枚裸 `ff` 写不成 `&str`，所以参数经 `OsStr::from_bytes`
-/// 交下去，比的是子进程实际收到的那串字节（`String::from_utf8_lossy` 在文本形夹具里会把
-/// `ff` 与 `ef bf bd` 弄成同一串）。
+/// The **byte-shape** fixture for argv: a bare `ff` cannot be written as
+/// `&str`, so arguments go down through `OsStr::from_bytes` and the comparison
+/// is against the bytes the child actually received (a text fixture would let
+/// `String::from_utf8_lossy` turn `ff` and `ef bf bd` into the same string).
 fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::os::unix::ffi::OsStrExt as _;
     let mut child = Command::new(COLUMN)
@@ -83,12 +110,16 @@ fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 命令行参数那一半也按字节了（批次四百五十九）：`-s` 的值就是输出的分隔符，所以它是
-/// 本支唯一一条**改到数据面**的腿。参照件 `tmp/column-314/column` 现量两形——
-/// `-s<ff>` 之下 `a<ff>b` 切成两列打出 `a  b`，而输入里的 U+FFFD 三字节
-/// `a<ef bf bd>b` 原样一行。文本缝在这两形上同时错：一枚 `ff` 折成 `ef bf bd` 之后，
-/// 分隔符集成了「三枚字节」，真 `ff` 切不开、那三字节反倒被切开。
-/// 第三形钉字母位：`-\xff` 交回的是那一枚裸字节本身，与 usage 同一串、退 1。
+/// The command-line half is byte-shaped too: the value of `-s` is the output
+/// separator, so it is the only leg in this branch that **reaches the data
+/// plane**. The reference build measures two shapes -- under `-s<ff>`,
+/// `a<ff>b` splits into two columns and prints `a  b`, while `a<ef bf bd>b`
+/// (the three-byte U+FFFD in the input) stays one line as-is. A text seam gets
+/// both shapes wrong at once: once `ff` is folded to `ef bf bd`, the separator
+/// becomes "three bytes", so a real `ff` does not split and those three bytes
+/// split instead.
+/// A third shape pins the letter slot: `-\xff` returns that one bare byte
+/// itself, the same string as usage, and exits 1.
 #[test]
 fn an_option_value_of_column_splits_on_the_raw_byte_it_carries() {
     let (out, code, err) = run_argv(&[b"-t", b"-s\xff"], b"a\xffb\tz\n");
@@ -117,11 +148,14 @@ fn an_option_value_of_column_splits_on_the_raw_byte_it_carries() {
     assert_eq!(err, want, "字母位该是 argv 里那一枚原字节");
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/column-314/column`
-/// （`column.c` 真源 + Minix 的 `getopt.c`，经软链起，程序名与本壳一致）现量
-/// `column -é` 与 `column -té` 都打 `unknown option -- ` + `c3` + 换行 + usage、退 1
-/// （optstring 是 `"c:s:tx"`，`t` 合法所以聚簇继续吃到 `é` 的第一字节）。
-/// ASCII 的 `-Z` 与缺值的 `-c` 两形同时钉住：换渲染不许改动它们。
+/// The letter slot in an out-of-set letter's line is **one raw byte**: the
+/// reference build (`column.c`'s real source + Minix's `getopt.c`, started
+/// through a symlink so the program name matches this shell) measures that
+/// `column -é` and `column -té` both print `unknown option -- ` + `c3` +
+/// newline + usage and exit 1 (the optstring is `"c:s:tx"`, `t` is legal, so
+/// the cluster keeps consuming and reaches the first byte of `é`).
+/// The ASCII `-Z` and the missing-value `-c` shapes are pinned at the same time:
+/// changing the rendering must not move them.
 #[test]
 fn the_option_line_of_a_nonascii_letter_carries_one_raw_byte() {
     let want: Vec<u8> = [
@@ -173,27 +207,30 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
-/// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`column.c:107-109`）。
-/// 旧写法只有 usage 一行，libc 那一行整个缺失。
+/// Out-of-set letter: the libc line first, `usage()` after it, exit 1
+/// (`column.c:107-109`). The old spelling had only the usage line; the libc
+/// line was missing entirely.
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     let (out, status, err) = run(&["-Z"], FIVE);
     assert_eq!((out.as_str(), status), ("", 1), "stderr 是 {err:?}");
     assert_eq!(err, format!("column: unknown option -- Z\n{USAGE}"));
 
-    // 聚簇只报第一个集外字母（参照件：`-tZ` → `Z`）。
+    // The cluster reports only the first out-of-set letter (reference build:
+    // `-tZ` -> `Z`).
     let (_, status, err) = run(&["-tZ"], FIVE);
     assert_eq!(status, 1);
     assert_eq!(err, format!("column: unknown option -- Z\n{USAGE}"));
 
-    // `--x` 报的字母是第二个连字符：optstring 里没有 `-`。
+    // `--x` blames the second hyphen: the optstring has no `-`.
     let (_, status, err) = run(&["--x"], FIVE);
     assert_eq!(status, 1);
     assert_eq!(err, format!("column: unknown option -- -\n{USAGE}"));
 }
 
-/// 带值项后面没有那一段是 libc 的缺值句 + usage，**不是**本命令自拟的一句
-/// （`getopt.c:132-136` 先印，`column.c:107-109` 再 usage）。
+/// A value-taking item with no following segment gets libc's missing-value
+/// sentence + usage, **not** a sentence invented by this command
+/// (`getopt.c:132-136` prints first, `column.c:107-109` then prints usage).
 #[test]
 fn a_missing_option_value_prints_the_libc_line_then_the_usage() {
     for letter in ['c', 's'] {
@@ -205,7 +242,7 @@ fn a_missing_option_value_prints_the_libc_line_then_the_usage() {
             "缺值那支是两句、程序名跟着 `getprogname()`"
         );
     }
-    // 聚簇里落在串尾的 `-c` 同样走这一支。
+    // A `-c` that ends up at the tail of a cluster takes the same arm.
     let (_, status, err) = run(&["-tc"], FIVE);
     assert_eq!(status, 1);
     assert_eq!(
@@ -214,8 +251,10 @@ fn a_missing_option_value_prints_the_libc_line_then_the_usage() {
     );
 }
 
-/// `-c` 的值是 C 的 `atoi`（`column.c:96` 无守卫）：非正或非数字都不是错，
-/// 只是宽度塌到「每条一行」，退出码仍是 0。旧写法把这三种都判成 usage 退 1。
+/// `-c`'s value goes through C's `atoi` (`column.c:96`, unguarded): non-positive
+/// or non-numeric is not an error, the width just collapses to "one entry per
+/// line", and the exit status stays 0. The old spelling judged all three as
+/// usage and exited 1.
 #[test]
 fn an_unparsable_width_is_not_an_error() {
     let each_line = "alpha\nbeta\ngamma\ndelta\nepsilon\n";
@@ -233,23 +272,27 @@ fn an_unparsable_width_is_not_an_error() {
         );
         assert_eq!(err, "");
     }
-    // 尾巴上的杂字符 `atoi` 不管：`-c20x` 是宽度 20（参照件同受）。
+    // Trailing junk is ignored by `atoi`: `-c20x` is width 20 (the reference
+    // build agrees).
     let (out, status, _) = run(&["-c20x"], FIVE);
     assert_eq!(status, 0);
     assert_eq!(out, "alpha\tdelta\nbeta\tepsilon\ngamma\n");
 }
 
-/// 旗标逐字母生效、值可以附在本串里：`-tx` 与 `-t -c12 -s,` 都不该退化成操数。
+/// Flags act letter by letter and values may be attached to the same string:
+/// `-tx` and `-t -c12 -s,` must not degrade into operands.
 #[test]
 fn flags_cluster_and_values_attach() {
-    // 宽度 12 时 `numcols = 12 / 8 = 1`，`-x` 的横向填满也就是一条一行。
+    // At width 12, `numcols = 12 / 8 = 1`, so `-x`'s horizontal fill is also
+    // one entry per line.
     let (out, status, err) = run(&["-tx", "-c", "12"], FIVE);
     assert_eq!(
         (out.as_str(), status),
         ("alpha\nbeta\ngamma\ndelta\nepsilon\n", 0)
     );
     assert_eq!(err, "");
-    // `-s` 的分离器只影响 `-t` 的字段切分：附值形与分离形同解。
+    // `-s`'s separator only affects `-t`'s field splitting: the attached and
+    // separate forms resolve identically.
     let tabbed = b"aa,bb,cc\ndddddee,ff,ggg\n";
     let (attached, _, _) = run(&["-t", "-s,"], tabbed);
     let (separate, _, _) = run(&["-t", "-s", ","], tabbed);
@@ -257,8 +300,9 @@ fn flags_cluster_and_values_attach() {
     assert_eq!(attached, "aa       bb  cc\ndddddee  ff  ggg\n");
 }
 
-/// 不重排：第一个非选项 token 一到，选项环当场结束，它后面的 `-t` 是**档名**。
-/// 参照件现量 `column: Cannot open `-t': No such file or directory`，退 1。
+/// No reordering: the option loop ends the moment the first non-option token
+/// arrives, and a `-t` after it is a **file name**. The reference build
+/// measures `column: Cannot open `-t': No such file or directory`, exit 1.
 #[test]
 fn the_option_ring_stops_at_the_first_operand() {
     let dir = scratch("reorder");
@@ -267,12 +311,14 @@ fn the_option_ring_stops_at_the_first_operand() {
     let (out, status, err) = run(&[file.to_str().unwrap(), "-t"], b"should not be read\n");
     assert_eq!(status, 1);
     assert_eq!(err, "column: Cannot open `-t': No such file or directory\n");
-    // 条目池里只有那个档的五条（`-t` 没被当旗标吃掉，所以仍是纵向填满的布局）。
+    // The entry pool holds only the five entries of that file (`-t` was not
+    // eaten as a flag, so the layout is still vertical fill).
     assert_eq!(out, FIVE_LINE);
 }
 
-/// 打不开的操数是三段形 `warn(3)` 而**不是致命错**：跳过它继续下一个档，
-/// 退出码置 1（`column.c:119-122`）。
+/// An unopenable operand is the three-part `warn(3)` and **not a fatal
+/// error**: skip it, continue with the next file, and set exit status 1
+/// (`column.c:119-122`).
 #[test]
 fn an_unopenable_operand_warns_and_the_run_continues() {
     let dir = scratch("continue");
@@ -286,13 +332,16 @@ fn an_unopenable_operand_warns_and_the_run_continues() {
     );
     assert_eq!(out, "alpha\tbeta\n");
 
-    // 坏档在前也一样：好档的条目照样进池。
+    // A bad file first behaves the same: the good file's entries still enter
+    // the pool.
     let (out, status, _) = run(&["no-such-file", file.to_str().unwrap()], b"");
     assert_eq!((out.as_str(), status), ("alpha\tbeta\n", 1));
 }
 
-/// 裸 `-` 是档名不是标准输入的别名（`column.c:115` 直接 `fopen`）：
-/// 参照件现量 `column: Cannot open `-': No such file or directory`，标准输入不被读。
+/// A bare `-` is a file name, not an alias for standard input (`column.c:115`
+/// calls `fopen` directly): the reference build measures
+/// `column: Cannot open `-': No such file or directory`, and standard input is
+/// not read.
 #[test]
 fn a_solitary_dash_is_a_file_name_not_stdin() {
     let (out, status, err) = run(&["-"], FIVE);
@@ -300,8 +349,10 @@ fn a_solitary_dash_is_a_file_name_not_stdin() {
     assert_eq!(err, "column: Cannot open `-': No such file or directory\n");
 }
 
-/// `--` 结束选项环而自身不是操数：`column` 因此在 `!*argv` 那一判上回落读标准输入
-///（参照件 `--` 现量退 0 且输出标准输入的布局）；`--` 后面的 token 才是档名。
+/// `--` ends the option loop without being an operand itself: `column`
+/// therefore falls back to reading standard input at that `!*argv` test (the
+/// reference build with `--` exits 0 and prints the standard-input layout);
+/// only tokens after `--` are file names.
 #[test]
 fn the_double_dash_ends_the_ring_without_becoming_an_operand() {
     let (out, status, err) = run(&["--"], FIVE);
@@ -311,16 +362,20 @@ fn the_double_dash_ends_the_ring_without_becoming_an_operand() {
     let dir = scratch("dashdash");
     let file = dir.join("named.txt");
     fs::write(&file, b"one\ttwo\n").expect("write the operand file");
-    // `--` 之后的 `-c` 是字面档名（开不了 → warn），标准输入不被读。
+    // `-c` after `--` is a literal file name (unopenable -> warn); standard
+    // input is not read.
     let (out, status, err) = run(&["--", "-c", file.to_str().unwrap()], FIVE);
     assert_eq!(status, 1);
     assert_eq!(err, "column: Cannot open `-c': No such file or directory\n");
-    // 没有 `-t`，条目原样进布局：里面那个制表符不会被换成补齐的空格。
+    // Without `-t`, entries enter the layout as-is: the tab inside is not
+    // replaced by padding spaces.
     assert_eq!(out, "one\ttwo\n");
 }
 
-/// 末行没有换行符：C 判「长行」，丢这一条、打一句两段形的 `warnx`、退出码置 1
-///（`column.c:277-283`）。整条是空白的末行按空行处理，一句警告都没有。
+/// Last line without a newline: C calls it a "long line", drops that entry,
+/// prints one two-part `warnx` line, and sets exit status 1
+/// (`column.c:277-283`). An all-blank last line is treated as an empty line,
+/// with no warning at all.
 #[test]
 fn an_unterminated_last_line_warns_and_is_dropped() {
     let (out, status, err) = run(&[], b"one\ntwo");
@@ -330,17 +385,18 @@ fn an_unterminated_last_line_warns_and_is_dropped() {
         "`warnx` 不缀 strerror，所以只有两段"
     );
 
-    // 空白末行：没有条目被丢，也就没有警告。
+    // Blank last line: no entry is dropped, so there is no warning.
     let (out, status, err) = run(&[], b"one\n   ");
     assert_eq!((out.as_str(), status, err.as_str()), ("one\n", 0, ""));
 
-    // 换行结尾的输入一切正常。
+    // Input ending with a newline behaves normally.
     let (out, status, err) = run(&[], b"one\ntwo\n");
     assert_eq!((out.as_str(), status, err.as_str()), ("one\ttwo\n", 0, ""));
 }
 
-/// 条目池空则按 `eval` 直接返回（`column.c:125-127`）：全空白的输入加一个坏档，
-/// 只有 warn 那一行、没有输出，退码 1。
+/// An empty entry pool returns straight from `eval` (`column.c:125-127`):
+/// all-blank input plus one bad file yields only the warn line, no output, and
+/// exit status 1.
 #[test]
 fn an_empty_pool_keeps_only_the_exit_status() {
     let (out, status, err) = run(&["no-such-file"], b"\n  \n\t\n");
@@ -354,23 +410,27 @@ fn an_empty_pool_keeps_only_the_exit_status() {
     assert_eq!((out.as_str(), status, err.as_str()), ("", 0, ""));
 }
 
-/// 布局由宽度决定：最长条目取齐到 8 之后达到宽度就退成每条一行，
-/// 否则纵向填满（`column.c:128-137`）。
+/// The layout follows the width: once the longest entry rounded up to 8
+/// reaches the width, it falls back to one entry per line; otherwise it fills
+/// vertically (`column.c:128-137`).
 #[test]
 fn the_layout_follows_the_width() {
-    // 宽度 8 而条目长 5（取齐到 8）：`maxlength >= termwidth` 走每条一行。
+    // Width 8 with entries of length 5 (rounded to 8): `maxlength >= termwidth`
+    // gives one entry per line.
     let (out, status, err) = run(&["-c", "8"], FIVE);
     assert_eq!(status, 0);
     assert_eq!(err, "");
     assert_eq!(out, "alpha\nbeta\ngamma\ndelta\nepsilon\n");
-    // `-x` 换成横向填满。
+    // `-x` switches to horizontal fill.
     let (out, _, _) = run(&["-x", "-c", "24"], FIVE);
     assert_eq!(out, "alpha\tbeta\tgamma\ndelta\tepsilon\n");
 }
 
-/// 条目是整行：前导空白跟着进池、也跟着进布局。参照件现量
-/// `  lead` + 两个补齐制表符 + 以制表符开头的那一条 + 一个补齐制表符 + `plain`，
-/// 所以连着三个制表符里有一个属于条目本身——剥掉前导空白就少算一格宽度。
+/// An entry is the whole line: leading blanks enter the pool and the layout
+/// too. The reference build measures `  lead` + two padding tabs + the entry
+/// that starts with a tab + one padding tab + `plain`, so one of the three
+/// consecutive tabs belongs to the entry itself -- stripping leading blanks
+/// would undercount the width by one cell.
 #[test]
 fn an_entry_keeps_its_leading_blanks() {
     let (out, status, err) = run(&[], b"  lead\n\ttablead\nplain\n");
@@ -390,9 +450,13 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-/// 超长残行的告警按**来源计数**：两个来源各带一条残行 ⇒ 两句，同一个来源写两遍 ⇒ 还是两句
-/// （一次打开一次计数），好来源 + 残行来源 ⇒ 一句，`-` 这类开不了的来源先一句 `Cannot open`
-/// 再按它的残行补一句。下面四段的句数与退码全部取自参照件 `tmp/column-314/column_ref` 的现量。
+/// Long-tail-line warnings are counted **per source**: two sources each with a
+/// long line => two sentences; the same source given twice => still two
+/// sentences (one open, one count each); a good source plus a long-line source
+/// => one sentence; an unopenable source like `-` prints one `Cannot open`
+/// first and then adds one sentence for its long line. The sentence counts and
+/// exit statuses of the four sections below are all measured on the reference
+/// build.
 #[test]
 fn each_source_with_a_long_tail_line_warns_once() {
     let dir = std::env::temp_dir().join(format!("column-face-tail-{}", std::process::id()));
@@ -408,7 +472,7 @@ fn each_source_with_a_long_tail_line_warns_once() {
     let two = two.to_string_lossy().into_owned();
     let good = good.to_string_lossy().into_owned();
 
-    // 两档各一条残行 ⇒ 两句，退 1
+    // Two files with one long line each => two sentences, exit 1
     let (_, code, err) = run(&["-c", "20", one.as_str(), two.as_str()], b"x y\n");
     assert_eq!(code, 1);
     assert_eq!(
@@ -416,10 +480,10 @@ fn each_source_with_a_long_tail_line_warns_once() {
         2,
         "两个来源各该报一句，实际 stderr={err:?}"
     );
-    // 同一档给两遍 ⇒ 两次打开、还是两句
+    // The same file given twice => two opens, still two sentences
     let (_, _, err) = run(&["-c", "20", one.as_str(), one.as_str()], b"x y\n");
     assert_eq!(err.matches("column: line too long\n").count(), 2);
-    // 好档在前、残行档在后 ⇒ 只有一句
+    // Good file first, long-line file second => only one sentence
     let (_, code, err) = run(&["-c", "20", good.as_str(), one.as_str()], b"x y\n");
     assert_eq!(code, 1);
     assert_eq!(
@@ -427,7 +491,8 @@ fn each_source_with_a_long_tail_line_warns_once() {
         1,
         "实际 {err:?}"
     );
-    // `-` 不是标准输入的别名：C 先报开不了，再按残行档补一句
+    // `-` is not an alias for stdin: C first reports that it cannot be opened,
+    // then adds one sentence for its long line
     let (_, code, err) = run(&["-c", "20", "-", one.as_str()], b"x y\n");
     assert_eq!(code, 1);
     assert_eq!(
@@ -442,9 +507,12 @@ fn each_source_with_a_long_tail_line_warns_once() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// 条目池与布局都是字节：夹具 `raw.txt` = `61 ff 62 0a 7a 0a`，参照件
-/// `tmp/column-314/column`（同名软链起，程序名才对得上）现量三种布局都留住那一枚 `ff`，
-/// 而旧本壳在壳侧解一次 UTF-8 ⇒ 整个档交回空。期望逐字节取自 `tmp/column-435/ab.log`。
+/// Both the entry pool and the layout are bytes: the fixture `raw.txt` =
+/// `61 ff 62 0a 7a 0a`; the reference build (started through a same-named
+/// symlink so the program name matches) measures that all three layouts keep
+/// that one `ff`, while the old shell decoded UTF-8 on the shell side => the
+/// whole file returned nothing. The expected values are taken byte for byte
+/// from that measurement.
 #[test]
 fn an_entry_that_is_not_utf8_keeps_its_bytes_through_every_layout() {
     let dir = std::env::temp_dir().join(format!("column-435-nonutf8-{}", std::process::id()));
@@ -469,13 +537,15 @@ fn an_entry_that_is_not_utf8_keeps_its_bytes_through_every_layout() {
         "好档与坏档共用一个池，坏档不把自己的行抹掉"
     );
 
-    // `-t` 那一形要两行条目才看得出补齐：`a\xffb` 是 3 字节，比 `z` 长 2 字节
+    // The `-t` shape needs two entry lines to make padding visible: `a\xffb`
+    // is 3 bytes, 2 bytes longer than `z`
     let tb = dir.join("tb.txt");
     fs::write(&tb, b"a\xffb\tq\nz\tww\n").expect("write tb.txt");
     let (out, _, _) = run_bytes(&["-t", tb.to_str().expect("utf-8 temp path")], b"");
     assert_eq!(out, b"a\xffb  q\nz    ww\n", "表模式的补齐宽度按字节量");
 
-    // 表模式的最后一列原样发出：字段尾随的回车留在行尾（参照件同读数）
+    // Table mode's last column is emitted verbatim: a trailing carriage return
+    // stays at the end of the line (the reference build reads the same)
     let cr = dir.join("cr.txt");
     fs::write(&cr, b"a\tb\r\nzz\tq\r\n").expect("write cr.txt");
     let (out, _, _) = run_bytes(&["-t", cr.to_str().expect("utf-8 temp path")], b"");

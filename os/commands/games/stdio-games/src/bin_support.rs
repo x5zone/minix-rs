@@ -89,10 +89,12 @@ pub fn emit(bytes: &[u8]) {
     }
 }
 
-/// 与 [`emit`] 同一次写，但把失手那个号交回调用方：C 的 `caesar` 在 `putchar` 返回
-/// `EOF` 时立刻 `err(EXIT_FAILURE, "<stdout>")`（`caesar.c:103-107`、`:116-120`），
-/// 缀的就是那个号——擦成「退 1」会丢掉 C 唯一说出来的信息。宿主侧取
-/// `raw_os_error()`，没有它时退 `EIO`（与 `read_file`、`stdin_chunk` 那条双生面同口径）。
+/// The same single write as [`emit`], but handing the failing number back to the
+/// caller: C's `caesar` calls `err(EXIT_FAILURE, "<stdout>")` as soon as
+/// `putchar` returns `EOF` (`caesar.c:103-107`, `:116-120`), and the suffix
+/// carries that number — flattening it to "exit 1" would drop the only thing C
+/// says. The hosted side takes `raw_os_error()` and falls back to `EIO` when it
+/// is absent (the same rule as the twin seams `read_file` and `stdin_chunk`).
 #[cfg(any(test, not(target_os = "none")))]
 pub fn write_stdout(bytes: &[u8]) -> Result<(), Errno> {
     use std::io::Write as _;
@@ -106,10 +108,13 @@ pub fn write_stdout(bytes: &[u8]) -> Result<(), Errno> {
     write(STDOUT, bytes).map(|_| ())
 }
 
-/// C 的 `fflush(stdout)`：`arithmetic.c:231-232` 打完不带换行的提示语就冲刷一次，
-/// 否则读它的人看不见问题。宿主侧 `std::io::stdout()` 是行缓冲的，不冲刷则提示语
-/// 留在缓冲区里，交互式命令挂在管道上就永不返回（本轮的端到端门就是挂在这一点上）；
-/// 真机侧 `emit` 每调用一次就是一次 `write(2)`，无缓冲可冲，故为空动作。
+/// C's `fflush(stdout)`: `arithmetic.c:231-232` flushes once after printing a
+/// prompt without a trailing newline, otherwise whoever reads it never sees the
+/// question. The host's `std::io::stdout()` is line buffered, so without the
+/// flush the prompt stays in the buffer and an interactive command hanging on a
+/// pipe never returns (this is exactly what the end-to-end gate hangs on); on
+/// the target every `emit` call is one `write(2)` with nothing to flush, hence
+/// the no-op.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn flush_stdout() {
     use std::io::Write as _;
@@ -119,10 +124,13 @@ pub fn flush_stdout() {
 #[cfg(all(not(test), target_os = "none"))]
 pub fn flush_stdout() {}
 
-/// 读完整条标准输入，并区分「读到尽头」与「读失手」：C 的 `caesar` 读的时候不查，
-/// 到全部输出之后才看一眼 `ferror(stdin)`（`caesar.c:205-208`），那时它是 `errx`
-/// 而不是 `err`——因为 stdio 的错标志不带号。交回已读到的字节与那个号，正是为了让
-/// 调用方能保持这个次序与这一族之别。走的是已有的 `stdin_chunk` 缝，两面都不必重写。
+/// Reads all of standard input and tells "end of input" from "read failed":
+/// C's `caesar` does not check while reading and looks at `ferror(stdin)` only
+/// after all output (`caesar.c:205-208`), where it is `errx` rather than
+/// `err` — because the stdio error flag carries no number. Returning the bytes
+/// read so far together with that number is what lets the caller keep that
+/// order and that family distinction. Both sides ride the existing
+/// `stdin_chunk` seam, so neither needs rewriting.
 pub fn read_stdin_all() -> (alloc::vec::Vec<u8>, Option<Errno>) {
     let mut input = alloc::vec::Vec::new();
     let mut chunk = [0u8; 4096];
@@ -237,9 +245,10 @@ pub fn utoa(mut value: u32, out: &mut [u8]) -> usize {
 
 /// Renders `value` in **lowercase** hexadecimal into `out`, returning the written length.
 ///
-/// `primes -h` 的对位件（`primes.c:255`/`:327` 的 `printf("%" PRIx64, …)`）：C 用 `x`
-/// 而不是 `X`，也不带 `0x` 前缀，所以 17 打 `11`、11 打 `b`——与 `utoa` 同一双生面形状，
-/// 不把格式化栈拉进决定半。
+/// The counterpart of `primes -h` (`printf("%" PRIx64, …)` at
+/// `primes.c:255`/`:327`): C uses `x`, not `X`, and no `0x` prefix, so 17
+/// prints `11` and 11 prints `b` — the same twin-seam shape as `utoa`, keeping
+/// the formatting stack out of the deciding half.
 pub fn utox(mut value: u32, out: &mut [u8]) -> usize {
     if value == 0 {
         out[0] = b'0';
@@ -263,19 +272,25 @@ pub fn utox(mut value: u32, out: &mut [u8]) -> usize {
     count
 }
 
-/// C 的 `err(3)` 那一行的渲染，权威在 errno 表旁边：转发到 [`minix_sys::err_line`]，
-/// 免得每个命令族各留一份形状。
+/// Rendering of C's `err(3)` line, with the authority next to the errno table:
+/// forwards to [`minix_sys::err_line`] so each command family does not keep its
+/// own copy of the shape.
 pub use minix_sys::err_line;
 
-/// C 的 `warn(3)`/`err(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退
-/// （`vwarnc.c` 不退，退不退由调用者定）。形状与句子都在 `minix-types` 那一份
-/// 权威里（`err_line`），与不缀程序名的 `perror_line` 并列。本壳只有需要
-/// 缀号的腿（`primes` 的 `err(1, "%s", argv[i])`）才用它。
+/// C's `warn(3)`/`err(3)` line: `prog: label: <sentence>` plus one newline,
+/// written without exiting (`vwarnc.c` does not exit; the caller decides). Both
+/// the shape and the sentence live in the `minix-types` authority (`err_line`),
+/// alongside `perror_line`, which omits the program name. Only the arms that
+/// need an errno suffix (`primes`' `err(1, "%s", argv[i])`) use it.
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
-    // C 的 `vwarnc` 直接用 `vfprintf(stderr, fmt, ap)` 打调用者的串，长度不受一行栈缓冲
-    // 限制（`minix3/lib/libc/gen/vwarnc.c:62`；`perror.c:67` 也一样把调用者的串整个打出去，
-    // 只有句子走 `strerror_r` 的定长表）。权威交回的是「本该写多少字节」——缓冲装不下也照数
-    // ——所以这里先量一次、再按那个数渲染，超长操作数不会被截断。
+    // C's `vwarnc` prints the caller's string with a direct
+    // `vfprintf(stderr, fmt, ap)`, whose length is not capped by a one-line
+    // stack buffer (`minix3/lib/libc/gen/vwarnc.c:62`; `perror.c:67` likewise
+    // writes the caller's whole string, and only the sentence goes through
+    // `strerror_r`'s fixed-size table). The authority returns "how many bytes
+    // should be written", and that count holds even when the buffer does not
+    // fit — so this measures once, then renders to that size, and an oversized
+    // operand is never truncated.
     let mut sizing: [u8; 0] = [];
     let need = minix_sys::err_line(prog, label, code, &mut sizing);
     let mut line = alloc::vec![0u8; need];
@@ -284,10 +299,12 @@ pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
     warn(b"\n");
 }
 
-/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
-/// `minix3/lib/csu/common/crt0-common.c:156-165`，判定本身只住在那一份权威里。
-/// `usage()` 与 `err`/`warn` 那些行的程序名都从这里来；本层只把 `argv` 拆成
-/// 那一段交给它，与 `fileops`/`textfilter` 那两份同名入口同形。
+/// C's `getprogname()`: the last path component of `argv[0]` (the rule is at
+/// `minix3/lib/csu/common/crt0-common.c:156-165`, and the decision itself lives
+/// only in that authority). The program names in `usage()` and in the
+/// `err`/`warn` lines all come from here; this layer only splits `argv` into
+/// that component and hands it over, the same shape as the identically named
+/// entries in `fileops`/`textfilter`.
 pub fn prog_name(argv: &[alloc::string::String]) -> &str {
     let raw = argv
         .first()
@@ -421,8 +438,9 @@ pub fn epoch_micros() -> Option<u64> {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
-    // 只给 `test_err_line_writes_c_shape_with_the_tables_sentence` 用得上，
-    // 生产面的壳不需要这两个号，故在测试侧引入。
+    // Only `test_err_line_writes_c_shape_with_the_tables_sentence` needs these
+    // two numbers; the production shell does not, so they are imported on the
+    // test side.
     use minix_types::{EINVAL, EISDIR};
 
     /// Runs the reader over canned input, returning every delivered line.
@@ -458,8 +476,9 @@ mod tests {
 
     #[test]
     fn test_next_byte_takes_one_byte_after_the_pending_line() {
-        // C 的 `getchar()` 与 `fgets()` 共用同一个 stdio 游标：读完一行之后取一个字节，
-        // 拿到的是紧跟在那一行后面的那个字节，不是下一行的开头。
+        // C's `getchar()` and `fgets()` share one stdio cursor: taking one byte
+        // after reading a line yields the byte right after that line, not the
+        // start of the next line.
         let mut source: &[u8] = b"ab\ncd\ne";
         let mut storage = [0u8; 16];
         let mut reader = LineReader::new(
@@ -513,14 +532,17 @@ mod tests {
 
     #[test]
     fn test_err_line_writes_c_shape_with_the_tables_sentence() {
-        // `verrc.c` 的形状：程序名、冒号空格、调用者的串、冒号空格、`strerror` 的句子。
-        // 句子取自本树的表，所以 21 号是 `Is a directory`、22 号是 `Invalid argument`。
+        // The shape of `verrc.c`: program name, colon space, the caller's
+        // string, colon space, and the `strerror` sentence. The sentence comes
+        // from this tree's table, so 21 is `Is a directory` and 22 is
+        // `Invalid argument`.
         let mut out = [0u8; 96];
         let len = err_line("factor", "stdin", Errno::from_i32(EISDIR), &mut out);
         assert_eq!(&out[..len], b"factor: stdin: Is a directory");
         let len = err_line("ppt", "fgets", Errno::from_i32(EINVAL), &mut out);
         assert_eq!(&out[..len], b"ppt: fgets: Invalid argument");
-        // 表外的号走 C 那句 `Unknown error: %u`，读数是 `unsigned`（负号绕成大数）。
+        // A number outside the table takes C's `Unknown error: %u`, whose
+        // value is read as `unsigned` (a negative wraps into a large number).
         let len = err_line("ppt", "fgets", Errno::from_i32(200), &mut out);
         assert_eq!(&out[..len], b"ppt: fgets: Unknown error: 200");
         let len = err_line("factor", "stdin", Errno::from_i32(-1), &mut out);

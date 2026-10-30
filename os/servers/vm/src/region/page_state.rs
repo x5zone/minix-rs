@@ -23,7 +23,7 @@ pub(crate) trait PfnAllocator {
     /// a single multi-page request — its backends return contiguous runs
     /// by construction (bitmap scans a run, buddy hands out a block,
     /// segment-tree first-fits a range), so contiguity is guaranteed, not
-    /// verified (V12-P2-7).
+    /// verified.
     ///
     /// The default is the allocate-verify-rollback fallback for trivial
     /// allocators (test stubs that hand out bare PFNs): request pages one
@@ -95,7 +95,7 @@ impl PageState {
         self.refcount
     }
 
-    // V10-P2-1: no callers yet (`is_cached` reads the field directly).
+    // No callers yet (`is_cached` reads the field directly).
     #[allow(dead_code)]
     pub fn flags(&self) -> PageFlags {
         self.flags
@@ -120,7 +120,7 @@ impl PageState {
 /// indistinguishable from a `pfn`-less placeholder and caused `get_slot()`
 /// to hide slots it should have served (todo P0-1, 13-region-mapping §3.6).
 ///
-/// V12-P2-4: a third `Reserved` state (lazy placeholder, ARCH A-13) was
+/// A third `Reserved` state (lazy placeholder) was
 /// deleted — it never gained a production caller (demand paging shipped
 /// through `PagefaultResult::NeedNewPage` instead) and the dual query API
 /// (`get_slot` vs `get_slot_any`) existed only to route around it. Git
@@ -230,7 +230,7 @@ impl core::fmt::Debug for PageSlot {
 #[derive(Debug)]
 pub(crate) struct PageFrames {
     states: Vec<PageState>,
-    // V10-P2-1: read only by the test-only `total_pages()` accessor.
+    // Read only by the test-only `total_pages()` accessor.
     #[cfg_attr(not(test), allow(dead_code))]
     total_pages: u32,
 }
@@ -251,7 +251,7 @@ impl PageFrames {
         self.states.get_mut(pfn as usize)
     }
 
-    // V10-P2-1: test-only accessor (production reads the allocator's
+    // Test-only accessor (production reads the allocator's
     // `total_count()`); kept for layout-invariant assertions.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn total_pages(&self) -> u32 {

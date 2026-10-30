@@ -104,11 +104,13 @@ impl ProtFlags {
         if self.contains(Self::WRITE) {
             vr |= VrFlags::WRITABLE;
         }
-        // B41 (§1.74/§1.75)：承接 PROT_EXEC。C 的 VM（i386 无 NX）从不
-        // 消费可执行位；x86-64 NXE（[ARCH] fix27e W^X）下缺页/ fork 腿
-        // 需按此位显式给页表置 EXECUTABLE，否则可执行文本被判 NX 取指
-        // 恒 #PF 活锁。exec 装载每段 PROT_RWX（C 忠实）→ 本位使装载页
-        // 成 RWX（等价 C 无-NX），而 caller 未请求 EXEC 的映射保留 NX。
+        // Carries PROT_EXEC through. C's VM (i386, no NX) never consumes the
+        // executable bit; under x86-64 NXE ([ARCH] W^X) the fault-in and fork
+        // legs must set EXECUTABLE in the page table for this bit, or an
+        // executable text page judged NX faults on every instruction fetch and
+        // livelocks. The exec loader marks every segment PROT_RWX (faithful to
+        // C), so this bit makes loaded pages RWX (equivalent to C without NX),
+        // while mappings whose caller did not ask for EXEC stay NX.
         if self.contains(Self::EXEC) {
             vr |= VrFlags::EXECUTABLE;
         }
@@ -208,11 +210,12 @@ pub(crate) enum MmapResult {
 // In minix-rs (64-bit), the mmap window is a fixed generous range far
 // from brk/stack ([ARCH: A-6]: 32-bit scarcity → 64-bit headroom), but
 // its top is capped by the per-architecture user-half limit
-// (`minix_types::USER_VA_LIMIT`) — T13 审计 A1 的修复：此前无条件
-// 2^41 的窗口顶在 Sv39（用户半区 2^38）越界，依赖「first-fit 需
-// ~252GiB 分配史才可达」的动态巧合而非结构性保证。窗口与栈区在
-// region 树里的重叠由 find_slot 的 overlap 检查兜底，搜索窗只需是
-// 上界安全的超集。
+// (`minix_types::USER_VA_LIMIT`) — an audit fix: the previous unconditional
+// 2^41 window top overflowed Sv39 (a 2^38 user half) and relied on the
+// dynamic accident that "first-fit needs ~252GiB of allocation history to get
+// there" rather than on a structural guarantee. Overlap between the window and
+// the stack area in the region tree is caught by find_slot's overlap check, so
+// the search window only needs to be an upper-bound-safe superset.
 pub(crate) const MMAP_BASE: u64 = 0x0000_0001_0000_0000;
 pub(crate) const MMAP_TOP: u64 = if minix_types::USER_VA_LIMIT < 0x0000_0200_0000_0000 {
     minix_types::USER_VA_LIMIT
@@ -230,13 +233,15 @@ const _: () = assert!(
 /// check (`os/kernel/src/ipc.rs` `user_copy_range_mapped` step 1: a wrap
 /// must not read as "fits").
 ///
-/// T13 审计 A3/R2：mmap 的 MAP_FIXED 与 hint 分支此前完全无用户半区
-/// 上界校验——一条带提示的 guest 调用即可触发（13 项发现里唯一
-/// 「一条 guest 调用即触发」的口）。`limit` 由调用方传
-/// [`minix_types::USER_VA_LIMIT`]；抽成参数使宿主测试能同时覆盖
-/// x86（2^47）与 riscv（2^38）两族值（宿主测试只编译 x86 常量）。
-/// 续-344b N1：提为 `pub(crate)` 供 remap 显式 target 分支复用（单一
-/// 实现，防两份同形代码漂移）。
+/// Audit finding: mmap's MAP_FIXED and hint branches previously had no user
+/// half upper-bound check at all — one guest call with a hint was enough to
+/// trigger it (the only one of the thirteen findings reachable by a single
+/// guest call). The caller passes `limit` in
+/// [`minix_types::USER_VA_LIMIT`]; taking it as a parameter lets host tests
+/// cover both the x86 (2^47) and riscv (2^38) family values (host tests only
+/// compile the x86 constant). Raised to `pub(crate)` so the remap explicit
+/// target branch can reuse it (one implementation, so two copies of the same
+/// shape cannot drift).
 pub(crate) fn check_user_range(limit: u64, addr: u64, len: u64) -> Result<(), MmapError> {
     match addr.checked_add(len) {
         Some(end) if addr < limit && end <= limit => Ok(()),
@@ -282,7 +287,8 @@ fn mmap_region(
         if !addr.0.is_multiple_of(PAGE_SIZE) {
             return Err(MmapError::BadAddress);
         }
-        // T13 R2：MAP_FIXED 目标也必须整体落在用户半区（A3 的口子之一）。
+        // A MAP_FIXED target must also lie wholly inside the user half (one
+        // of the audit openings).
         check_user_range(minix_types::USER_VA_LIMIT, addr.0, len.0)?;
         // C mmap.c:60-68 — unmap whatever occupies [addr, addr+len).
         crate::munmap::unmap_range(active, page_alloc, frames, vfs_queue, addr, len)
@@ -295,8 +301,10 @@ fn mmap_region(
     // hint" — the C side would honor them exactly, but region slots are
     // page-aligned by construction in minix-rs (doc 20 §3.6).
     if addr.0 != 0 && addr.0.is_multiple_of(PAGE_SIZE) {
-        // T13 R2：hint 同样整体落在用户半区（A3 的口子之二）；越界
-        // 提示不静默回退窗口，直接拒——回退会让 guest 以为 hint 生效。
+        // A hint must likewise lie wholly inside the user half (the second
+        // audit opening); an out-of-range hint is rejected outright rather than
+        // silently falling back to the window — falling back would make the
+        // guest believe the hint took effect.
         check_user_range(minix_types::USER_VA_LIMIT, addr.0, len.0)?;
         let end = VirBytes(addr.0 + len.0);
         if active.regions().find_overlap(addr, end).is_none() {
@@ -401,7 +409,7 @@ pub(crate) fn handle_mmap(
         // immutable `mmap_region` above, so the hint is applied here at the
         // insert site instead. The hint steers later no-fixed `find_slot`
         // placements (bottom-up packing, C:402-415); it is explicitly **not**
-        // a break value — brk measures off the region table (§续-279m).
+        // a break value — brk measures off the region table.
         active.set_region_top(VirBytes(vaddr.0 + aligned_len.0));
 
         Ok(MmapResult::Complete(MmapResponse { mapped_addr: vaddr }))
@@ -524,7 +532,10 @@ fn mmap_file(
             state: None,
         
             sent: false,};
-        //[SD19-gate] vfs_queue.request 入队失败时区域已先建立，后续重试路径会重发 VFS 请求（与 C do_mmap 入队失败不撤区域同构）
+        //[SD19-gate] when the vfs_queue.request enqueue fails the region is
+        // already established, and the retry path re-sends the VFS request
+        // (isomorphic to C do_mmap, which does not withdraw the region when the
+        // enqueue fails)
         #[allow(clippy::let_underscore_must_use)]
         let _ = vfs_queue.request(vreq);
     }
@@ -543,7 +554,7 @@ fn mmap_file(
     // C: same common slot-recording leg as the anon path (region.c:391);
     // the VFS exec text/data mapping (do_vfs_mmap → mmap_file, mmap.c:154-158)
     // passes through here, so the hint must be updated at this insert too.
-    // (Hint-only semantics — see the anon-path note above for §续-279m.)
+    // (Hint-only semantics — see the anon-path note above.)
     active.set_region_top(VirBytes(vaddr.0 + len.0));
 
     Ok(MmapResponse {
@@ -625,7 +636,7 @@ pub(crate) fn mmap_file_cont(
     }
 
     let table = VmProcTable::get_global();
-    // V9-P1-3 step 1: disjoint &mut fields via VmContext destructuring.
+    // Disjoint &mut fields via VmContext destructuring.
     let crate::vm_server::VmContext { page_alloc, page_frames, page_cache: _, vfs_queue, .. } =
         &mut server.ctx;
     let frames = page_frames.as_mut().expect("page_frames not initialized");
@@ -674,35 +685,39 @@ mod tests {
     use crate::region::PAGE_SIZE as REGION_PAGE_SIZE;
     use minix_types::{PhysBytes, UserSlot};
 
-    /// T13 R2：用户半区上界校验的双架构族值覆盖（宿主测试只编译
-    /// x86 常量，riscv 族值经注入的 limit 参数覆盖）。
+    /// Covers the user-half upper-bound check across both architecture
+    /// families (host tests compile only the x86 constant; the riscv family
+    /// value comes in through the injected `limit` parameter).
     #[test]
     fn test_check_user_range_both_arch_families() {
         let x86_limit: u64 = 1 << 47;
         let riscv_limit: u64 = 1 << 38;
         let page: u64 = 0x1000;
 
-        // 窗口内 OK（两族各验一对）。
+        // Inside the window it is OK (one pair per family).
         assert_eq!(check_user_range(x86_limit, page, page), Ok(()));
         assert_eq!(check_user_range(riscv_limit, page, page), Ok(()));
-        // 下界穿透（addr ≥ limit）即拒。
+        // Passing the lower bound (addr >= limit) is rejected.
         assert_eq!(check_user_range(x86_limit, x86_limit, page), Err(MmapError::BadAddress));
         assert_eq!(check_user_range(riscv_limit, riscv_limit, page), Err(MmapError::BadAddress));
-        // 上界穿透（addr+len > limit）即拒——riscv 族用审计 A1 的
-        // 2^41 hint 复现：2^41 在 Sv39 越界，此前静默建 region。
+        // Passing the upper bound (addr+len > limit) is rejected — for the
+        // riscv family this replays the audited 2^41 hint: 2^41 is out of range
+        // on Sv39, yet the region used to be created silently.
         assert_eq!(
             check_user_range(riscv_limit, 0x0000_0200_0000_0000 - page, page * 2),
             Err(MmapError::BadAddress)
         );
-        // x86 族同地址合法（2^41 < 2^47）——证明值差异来自 limit 注入
-        // 而非常量误用。
+        // The same address is legal for the x86 family (2^41 < 2^47) —
+        // proving the difference comes from the injected limit and not from a
+        // misused constant.
         assert_eq!(check_user_range(x86_limit, 0x0000_0200_0000_0000 - page, page * 2), Ok(()));
-        // 回绕（checked_add）不读成 fits。
+        // A wrap in checked_add must not read as "fits".
         assert_eq!(
             check_user_range(x86_limit, u64::MAX - page / 2, page),
             Err(MmapError::BadAddress)
         );
-        // 产线常量自洽：MMAP 窗口整体落在用户半区内。
+        // The production constants are self-consistent: the MMAP window lies
+        // wholly inside the user half.
         assert!(MMAP_TOP <= minix_types::USER_VA_LIMIT && MMAP_BASE < MMAP_TOP);
     }
 
@@ -720,9 +735,9 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
-        // Test builds construct a software page table (V11/T21 SimPaging) —
-        // required now that the unmap paths hand a real `PageTable` to
-        // `free_region_pages` (V11/T25 flipped the old None stubs).
+        // Test builds construct a software page table (SimPaging) — required
+        // now that the unmap paths hand a real `PageTable` to
+        // `free_region_pages` (the old `None` stubs are gone).
         active.init_page_table().unwrap();
         active.init_regions();
         ep
@@ -1007,9 +1022,10 @@ mod tests {
         }
     }
 
-    /// 续-344b P2：越界 MAP_FIXED 的全链路校验（handle_mmap →
-    /// mmap_region），钉「先校验后 unmap」的次序性质——既有窗内映射
-    /// 必须在拒绝后仍然完好。
+    /// End-to-end check of an out-of-range MAP_FIXED (handle_mmap →
+    /// mmap_region), pinning the ordering property "validate before unmap" —
+    /// an existing in-window mapping must still be intact after the
+    /// rejection.
     #[test]
     fn test_mmap_fixed_out_of_range_rejected_without_unmap() {
         let table = VmProcTable::get_global();
@@ -1019,7 +1035,8 @@ mod tests {
         let slot = UserSlot::new(81);
         let ep = init_test_process(slot);
 
-        // 既有窗内映射（拒绝后必须还在）。
+        // An existing in-window mapping (it must still be there after the
+        // rejection).
         let keep = VmMmapIn {
             caller: ep,
             forwhom: Endpoint::NONE,
@@ -1032,8 +1049,9 @@ mod tests {
         };
         handle_mmap(table, &mut page_alloc, &mut frames, &mut queue, &keep).unwrap();
 
-        // 越界 MAP_FIXED：addr 恰在下界（== 用户半区上界，宿主 x86
-        // limit=2^47）——`addr < limit` 严格比较必须拒。
+        // Out-of-range MAP_FIXED: addr sits exactly on the lower bound (== the
+        // user-half upper limit, host x86 limit=2^47) — the strict `addr < limit`
+        // comparison must reject it.
         let req = VmMmapIn {
             caller: ep,
             forwhom: Endpoint::NONE,
@@ -1049,7 +1067,8 @@ mod tests {
             other => panic!("out-of-range MAP_FIXED must be BadAddress, got {:?}", other),
         }
 
-        // 次序性质：既有映射未被越界请求拆除。
+        // The ordering property: the existing mapping was not torn down by the
+        // out-of-range request.
         let active = table.get_active(table.vm_isokendpt(ep).unwrap()).unwrap();
         assert!(
             active
@@ -1063,7 +1082,8 @@ mod tests {
         );
     }
 
-    /// 续-344b P2：越界 hint 的全链路拒绝（handle_mmap → mmap_region）。
+    /// End-to-end rejection of an out-of-range hint (handle_mmap →
+    /// mmap_region).
     #[test]
     fn test_mmap_hint_out_of_range_rejected() {
         let table = VmProcTable::get_global();
@@ -1073,9 +1093,11 @@ mod tests {
         let slot = UserSlot::new(82);
         let ep = init_test_process(slot);
 
-        // 对齐 hint、end 越上界（limit-2页 处起 2 页 → end = limit）。
-        // `end <= limit` 含端：故意取 end 恰好压线之上（hint=limit-0x1000,
-        // len=0x2000 → end=limit+0x1000 > limit）必须拒，且不回退窗口。
+        // An aligned hint whose end passes the upper bound (two pages starting
+        // at limit-2 pages → end = limit). `end <= limit` includes the endpoint:
+        // deliberately take an end just past the line (hint=limit-0x1000,
+        // len=0x2000 → end=limit+0x1000 > limit), which must be rejected without
+        // falling back to the window.
         let req = VmMmapIn {
             caller: ep,
             forwhom: Endpoint::NONE,

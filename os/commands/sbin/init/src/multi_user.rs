@@ -138,14 +138,14 @@ pub fn start_getty(
                 host,
                 &format!("getty repeating too quickly on port `{}', sleeping", session.device),
             );
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init is best-effort
             #[allow(clippy::let_underscore_must_use)]
             let _ = host.sleep_secs(GETTY_SLEEP_SECS);
         }
 
     if session.window.is_some() {
         start_window_system(host, session);
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = host.sleep_secs(WINDOW_WAIT_SECS);
     }
@@ -173,7 +173,7 @@ pub fn multi_user(
     // C: level 0 means "kernel should enter secure mode" — raise it to
     // 1 (init.c:1540-1544). Note the == test, not >.
     if host.securitylevel().ok().flatten() == Some(0) {
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = host.set_securitylevel(1);
     }
@@ -265,7 +265,7 @@ pub fn collect_child(
             sp.process = Some(new_pid);
             sp.started_secs = host.now_secs().unwrap_or(0);
             sp.flags.clear(SE_SHUTDOWN);
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init is best-effort
             #[allow(clippy::let_underscore_must_use)]
             let _ = SE_SHUTDOWN; // flag bit reserved for the shutdown path
             db.insert(new_pid, sp.index);
@@ -319,7 +319,7 @@ mod tests {
             collector.collect(&mut host, 999, &WaitStatus::Exited { code: 0 }),
             CollectAction::Ignore
         );
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = (&mut no_clear, &mut cleared);
         assert_eq!(collector.sessions.len(), 1);
@@ -439,10 +439,10 @@ mod tests {
         host.exec_outcomes.push(Errno::EPERM);
         let mut session = sample(1, "tty1");
         session.started_secs = 98; // 2 s ago — inside the 5 s window
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| {
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init is best-effort
             #[allow(clippy::let_underscore_must_use)]
             let _ = start_getty(&mut host, &mut session, false, "/");
         }));
@@ -469,10 +469,10 @@ mod tests {
         let getty = build_session(1, "tty1", "/sbin/getty", Some("/usr/bin/X :0"), true).unwrap();
         let mut session = getty;
         session.started_secs = 190;
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] init is best-effort
         #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| {
-            //[SD19-gate] SD-19: init 尽力而为
+            //[SD19-gate] init is best-effort
             #[allow(clippy::let_underscore_must_use)]
             let _ = start_getty(&mut host, &mut session, false, "/");
         }));

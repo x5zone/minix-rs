@@ -1,5 +1,7 @@
 #![cfg_attr(not(test), no_std)]
-// [SD-19] 静默吞错家族编译门：无理由的新 let _ 会在每次 clippy 多报一条；有意丢弃逐站 [SD19-gate] 理由 + #[allow]。
+// Compile gate for the silent-swallow family: a new `let _` without a stated
+// reason reports one extra clippy hit on every run; intentional discards give
+// their [SD19-gate] reason at each site plus #[allow].
 #![warn(clippy::let_underscore_must_use)]
 
 //! Minix-RS Reincarnation Server.
@@ -184,12 +186,15 @@ pub struct ServerState<'a> {
     pub update: live_update::UpdateState,
 }
 
-/// `KernelApi` → `minix_sef::SefIpc` 适配（devman 的 `SefBridge` 同款一族）。
+/// `KernelApi` → `minix_sef::SefIpc` adaptation (the same family as devman's
+/// `SefBridge`).
 ///
-/// 通知时间戳由 `IpcApi::receive` 的实现方在守卫内提取（trap_api 的
-/// `m_notify` 臂读取），经 `Cell` 交给调用方——SEF 分类器内部会循环吞帧，
-/// cell 里留下的恰好是最终送达那一条的时间戳，与直收 `IpcApi::receive`
-/// 的返回值同值。
+/// The notification timestamp is extracted inside the guard by the
+/// `IpcApi::receive` implementation (read by trap_api's `m_notify` arm) and
+/// handed to the caller through a `Cell` — the SEF classifier loops over and
+/// swallows frames internally, and what the cell retains is exactly the
+/// timestamp of the finally delivered one, the same value a direct
+/// `IpcApi::receive` would return.
 struct SefKernelBridge<'a> {
     kernel: &'a mut dyn KernelApi,
     stamp: &'a core::cell::Cell<Clock>,
@@ -214,9 +219,10 @@ impl RsServer {
     /// C: `sys_getimage` (main.c:196) result. The SEF callback set is the
     /// [`SefCallbacks`] trait implemented by `RsServer` itself (N5 — no
     /// separate registration value to construct, main.c:51). The kernel API
-    /// is the production trap backend ([`trap_api::TrapKernelApi`], 19 号
-    /// 换装):每方法委托 minix-sys 真实 wrapper,宿主构建双腿回答 ±EIO
-    /// (fail-closed 可观察);测试用 `with_kernel` 注入 mock。
+    /// is the production trap backend ([`trap_api::TrapKernelApi`]: every
+    /// method delegates to the real minix-sys wrapper, and on a host build both
+    /// legs answer ±EIO so fail-closed stays observable); tests inject a mock
+    /// through `with_kernel`.
     pub fn new(tables: BootTables<'static>) -> Self {
         Self::with_kernel(tables, alloc::boxed::Box::new(trap_api::TrapKernelApi::new()))
     }
@@ -283,8 +289,8 @@ impl RsServer {
     /// - `RS_INIT`/`RS_LU_PREPARE` → the ready-message SEF callbacks (12) —
     ///   the payload decode lives in the callback impl (19 safe-receive seam);
     /// - `RS_*` request → the handler dispatch — every handler needs the
-    ///   message-payload decode (13/14/16 号, wired per-arm) or is already
-    ///   live ([`RsServer::do_shutdown`]).
+    ///   message-payload decode (wired per arm) or is already live
+    ///   ([`RsServer::do_shutdown`]).
     ///
     /// Handler results are replied to the caller unless `EDONTREPLY`
     /// (main.c:124-129); reply failures are fire-and-forget, as in C
@@ -301,8 +307,7 @@ impl RsServer {
             let (mut msg, rcv_sts, ts) = self.get_work()?;
             let who_e = msg.m_source;
             // C: main.c:63-66 — a message from a bogus source is a
-            // kernel-side program error; C panics and so does the rewrite
-            // (R34.20 gate).
+            // kernel-side program error; C panics and so does the rewrite.
             assert!(
                 dispatch::isokendpt(who_e),
                 "message from bogus source: {who_e:?}"
@@ -334,7 +339,7 @@ impl RsServer {
                 // C: main.c:102-114 + 124-129 — handler result replied to the
                 // caller unless EDONTREPLY. [`RsServer::do_request`] owns the
                 // arm table: wire-decode-free arms run live, the rest fail
-                // closed until their 19 decode lands (OQ-4).
+                // closed until their decode lands.
                 DispatchKind::Request(n) => {
                     let result = self
                         .do_request(who_e, n, &mut msg)
@@ -358,14 +363,20 @@ impl RsServer {
         msg: &minix_types::Message,
     ) {
         if result != minix_types::EDONTREPLY {
-            // 线序符号：C 的 RS 以 `_SYSTEM` 编译（`minix3/minix/servers/rs/inc.h:7`），
-            // `main.c:124-129` 的 `m_ptr->m_type = r; reply(...)` 写回的是带负号的
-            // 错码，而用户侧 `_taskcall` 按 `m_type < 0` 判错（仓内 RS 客户端
-            // `minix-sys/src/rs.rs` 就是这一约定）。本树判定面用正号常量，故在
-            // 交给回复腿之前折一次号（单源 `minix_types::reply_status`，与
-            // DS/SCHED/IS/VFS 同纪律）；`EDONTREPLY` 的静默判断仍在判定面，
-            // 用的是正号常量，两者不得混用。
-            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            // Wire-order sign: C's RS is compiled with `_SYSTEM`
+            // (`minix3/minix/servers/rs/inc.h:7`), so `m_ptr->m_type = r;
+            // reply(...)` at `main.c:124-129` writes the error code back with a
+            // negative sign, while the user side's `_taskcall` treats
+            // `m_type < 0` as an error (the in-repo RS client
+            // `minix-sys/src/rs.rs` follows that convention). This tree's
+            // decision face uses positive-signed constants, so the sign is
+            // folded once here before the reply leg (single source
+            // `minix_types::reply_status`, the same discipline as
+            // DS/SCHED/IS/VFS); the `EDONTREPLY` silence test stays on the
+            // decision face with positive constants, and the two must not be
+            // mixed.
+            // [SD19-gate] Best-effort epilogue; dropping the Result does not
+            // change the main result already established (C is void/ignored)
             #[allow(clippy::let_underscore_must_use)]
             let _ = self
                 .kernel
@@ -377,7 +388,7 @@ impl RsServer {
     /// `rproc_ptr[who_p] != NULL` → `r_alive_tm = m.m_notify.timestamp`. An
     /// unregistered source is a warning in C (rs_verbose print — the no_std
     /// diagnostics face is 19's) and a no-op here; the endpoint fast index
-    /// *is* C's `rproc_ptr` (Fix #43 raw-index semantics — no in-use
+    /// *is* C's `rproc_ptr` (raw-index semantics — no in-use
     /// filtering on top).
     fn do_heartbeat(&mut self, source: Endpoint, timestamp: Clock) {
         let Some(state) = self.state.as_mut() else {
@@ -396,7 +407,7 @@ impl RsServer {
     /// (request.c:968-970), the decision layer
     /// ([`monitor::period_decision`])
     /// classifies backoff tick / stop timeout / ping timeout / ping request /
-    /// free pass; the mutations apply once (R13) and the action executes:
+    /// free pass; the mutations apply once and the action executes:
     /// `Restart` → [`service_create::restart_service`] (request.c:977-978),
     /// the crash actions → [`recovery::crash_service`] (request.c:989/:1029),
     /// `PingRequest` → the notify seam (request.c:1035).
@@ -407,7 +418,7 @@ impl RsServer {
         // deadline (update_period — update.c:371-396): a timed-out prepare
         // ends the whole update with EINTR/RS_CANCEL so the old versions
         // resume. Without this arm a stalled prepare would hang the update
-        // forever (R36). The sweep below continues in the same tick, as in
+        // forever. The sweep below continues in the same tick, as in
         // C. `now` is the tick's own CLOCK timestamp — the same clock C's
         // end_update-internal getticks() reads.
         let updating_phase = state
@@ -499,7 +510,7 @@ impl RsServer {
                 // `ipc_notify` result.
                 PeriodAction::PingRequest => {
                     let ep = state.table.get(id).pub_.endpoint;
-                    // [SD19-gate] notify 发后即忘
+                    // [SD19-gate] notify is fire-and-forget
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.kernel.notify(ep);
                 }
@@ -512,29 +523,36 @@ impl RsServer {
     /// `KernelApi::receive` seam (18) — the production face is the 19 wiring;
     /// errors propagate so the caller fails closed instead of spinning.
     ///
-    /// 信号面（T2 接线）：C 的 `get_work` 体是 `sef_receive_status(ANY)`
-    /// （main.c:831），信号请求在库内拦截、号码交注册的 handler
-    /// （main.c:631-641：SIGCHLD→do_sigchld、SIGTERM→do_shutdown）后吞帧。
-    /// 本树经 `SefKernelBridge` 走同一条库腿；闭包只把号码记入待决缓冲，
-    /// `receive` 返回后、消息交还调用方前逐个应用（C 的 handler 在拦截点
-    /// 执行，其效果先于下一帧到达——这里先于本帧分派，序不变）。退出晚
-    /// 一拍的残余与 §续-418 红线同族（库层逃生门未定计），发方链未通电
-    /// 时不可达。
+    /// Signal face (T2 wiring): C's `get_work` body is `sef_receive_status(ANY)`
+    /// (main.c:831); signal requests are intercepted inside the library, the
+    /// number goes to the registered handler (main.c:631-641:
+    /// SIGCHLD→do_sigchld, SIGTERM→do_shutdown), and the frame is swallowed.
+    /// This tree takes the same library leg through `SefKernelBridge`; the
+    /// closure only records the number into a pending buffer, and the numbers
+    /// are applied one by one after `receive` returns and before the message is
+    /// handed back to the caller (C's handler runs at the interception point,
+    /// so its effects precede the next frame's arrival — here they precede this
+    /// frame's dispatch, so the order is unchanged). The one-tick-late exit
+    /// residue belongs to the same family as the escape-hatch red line (the
+    /// library-level escape hatch has no accounting yet) and is unreachable
+    /// while the send-side chain is unpowered.
     fn get_work(&mut self) -> Result<(minix_types::Message, dispatch::IpcStatus, Clock), Errno> {
         loop {
             let stamp = core::cell::Cell::new(0);
             let mut pending: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
             let mut msg = minix_types::Message::default();
-            // RS 的信号 handler 不退出进程（SIGTERM 走关机扫荡、循环继续），
-            // 逃生门令牌只为满足库契约——无人取消。
+            // RS's signal handler does not exit the process (SIGTERM runs the
+            // shutdown sweep and the loop continues), so the escape-hatch token
+            // exists only to satisfy the library contract — nobody cancels.
             let cancel = minix_sef::SefCancel::new();
             let recv = {
                 let mut bridge = SefKernelBridge {
                     kernel: self.kernel.as_mut(),
                     stamp: &stamp,
                 };
-                // 一薄层闭包是必需的：库入口按 `impl FnMut` 单态化，不定长
-                // `dyn FnMut` 直传撞 E0277（§续-417 同坑）。
+                // One thin closure layer is required: the library entry is
+                // monomorphized over `impl FnMut`, and passing an unsized
+                // `dyn FnMut` directly hits E0277 (the same pitfall).
                 let mut handoff = |signo: i32| pending.push(signo);
                 minix_sef::sef_receive_status(
                     &mut bridge,
@@ -545,17 +563,22 @@ impl RsServer {
                 )
                 .map_err(Errno::from_i32)?
             };
-            // C sef.c:231-235——被拦截的信号帧 `continue`，永不回到主循环。
-            // 库的契约把 notify 形的信号帧以 `SefEvent::Signal` 交还消费方
-            //（消费方各自跳过），RS 作为接线侧在此吞掉：handler 已在回调
-            // 里跑过，帧不上浮，循环继续收下一条（与管理器形库内 `continue`
-            // 的可观察行为对齐）。
+            // C sef.c:231-235 — an intercepted signal frame does `continue` and
+            // never returns to the main loop. The library contract hands
+            // notify-shaped signal frames back to the consumer as
+            // `SefEvent::Signal` (each consumer skips them); RS, as the wiring
+            // side, swallows them here: the handler has already run in the
+            // callback, the frame does not surface, and the loop goes on to the
+            // next message (matching the observable behavior of the
+            // manager-shaped library's internal `continue`).
             if matches!(recv.event, minix_sef::SefEvent::Signal(_)) {
                 continue;
             }
-            // bridge 已 drop：kernel 的可变借用归还，handler 可以动全服务。
-            // C 的 handler 在拦截点执行，其效果先于下一帧到达；这里先于本帧
-            // 交还调用方应用，序不变。
+            // The bridge is dropped now: the kernel's mutable borrow is
+            // returned, and the handler may touch the whole service. C's
+            // handler runs at the interception point, so its effects precede
+            // the next frame's arrival; here they are applied before this frame
+            // is handed back to the caller, so the order is unchanged.
             for signo in pending.drain(..) {
                 self.signal_handler(signo);
             }
@@ -605,7 +628,7 @@ impl SefCallbacks for RsServer {
             RestartCb::Stateful => {
                 // C: `sef_cb_init_restart_generic` — libsys/sef_init.c:317-330
                 // (identity transfer for a self LU, checkpoint-restart
-                // otherwise). The state-transfer machinery is 17/18 号;
+                // otherwise). The state-transfer machinery is still unwired;
                 // until it lands, fail closed.
                 Err(Errno::ENOSYS)
             }
@@ -725,7 +748,7 @@ impl SefCallbacks for RsServer {
 
     /// C: `sef_cb_init_response` — main.c:591-607: run the init-ready
     /// handler on the `RS_INIT` message, then normalize `EDONTREPLY` → OK
-    /// (R3: the sentinel means *success* in this callback — the reverse of
+    /// (the sentinel means *success* in this callback — the reverse of
     /// `sef_cb_lu_response`, which maps it to `EGENERIC`).
     fn init_response(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
         let r = self.do_init_ready(m).unwrap_or_else(|e| e.to_i32());
@@ -733,7 +756,7 @@ impl SefCallbacks for RsServer {
     }
 
     /// C: `sef_cb_lu_response` — main.c:614-626: run the update-ready
-    /// handler, then normalize `EDONTREPLY` → `EGENERIC` (R3: reaching the
+    /// handler, then normalize `EDONTREPLY` → `EGENERIC` (reaching the
     /// caller means the update did not happen). The wrapper for the RS
     /// self-update path (18); the main-loop `RS_LU_PREPARE` arm keeps the
     /// raw result ([`RsServer::do_upd_ready_shell`], main.c:117).
@@ -818,7 +841,7 @@ impl SefCallbacks for RsServer {
             let ticks = self.kernel.get_ticks()?;
             let shutting_down = state.shutting_down;
             // C: unpublish_service(rp) — the DS effect is the 19 seam; the
-            // aggregate decision face is publish.rs (R32). The USE_COPY fact
+            // aggregate decision face is publish.rs. The USE_COPY fact
             // is read up front (the target's sys_flags do not change between
             // entry and unpublish in this flow).
             let use_copy = state
@@ -828,7 +851,9 @@ impl SefCallbacks for RsServer {
                 .sys_flags
                 .contains(crate::service_slot::SysFlags::USE_COPY);
             let mut unpublish = |_rp: crate::service_slot::SlotId| {
-                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                // [SD19-gate] Best-effort epilogue; dropping the Result does
+                // not change the main result already established (C is
+                // void/ignored here)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = crate::publish::unpublish_result(use_copy, false, false, false);
             };
@@ -856,7 +881,7 @@ impl SefCallbacks for RsServer {
             };
             if outcome.self_terminate {
                 // C: `_exit(1)` — a core service died outside shutdown. The
-                // loop ends with the failure visible (R27's SelfTerminate
+                // loop ends with the failure visible (the SelfTerminate
                 // shape, update.c:883-887 sibling).
                 return Err(Errno::EGENERIC);
             }
@@ -894,14 +919,16 @@ impl SefCallbacks for RsServer {
     }
 }
 
-/// 把非终止类系统信号译成信号管理器转发形态的那条消息。
+/// Translate a non-termination system signal into the message shape the
+/// signal manager forwards.
 ///
-/// C: `rs/main.c:699-701` —— `m.m_type = SIGS_SIGNAL_RECEIVED;` 与
-/// `m.m_pm_lsys_sigs_signal.num = signo;`（载荷 `mess_pm_lsys_sigs_signal`，
-/// `ipc.h:1815-1819`），再由 `rs_asynsend` 单向投给目标服务（不等回报）。
-/// `m_source` 故意不填：内核投递时盖发送者章（`sef_init.c:114` 的同形道理，
-/// 定谳见 §续-408 的 T6），接收侧由 `minix-sef` 的信号臂把这个号码交给它的
-/// `on_signal` 回调（C `sef_signal.c:115-128`）。
+/// C: `rs/main.c:699-701` — `m.m_type = SIGS_SIGNAL_RECEIVED;` and
+/// `m.m_pm_lsys_sigs_signal.num = signo;` (payload `mess_pm_lsys_sigs_signal`,
+/// `ipc.h:1815-1819`), then `rs_asynsend` delivers it one-way to the target
+/// service (no reply awaited). `m_source` is deliberately left unset: the
+/// kernel stamps the sender on delivery (the same reasoning as
+/// `sef_init.c:114`), and on the receiving side `minix-sef`'s signal arm hands
+/// this number to its `on_signal` callback (C `sef_signal.c:115-128`).
 pub(crate) fn sigs_signal_message(signo: i32) -> minix_types::Message {
     minix_types::Message {
         m_type: minix_types::SIGS_SIGNAL_RECEIVED,
@@ -926,12 +953,12 @@ mod signal_handler_tests {
     use minix_types::{Endpoint, SIGNAL_CHILD, SIGNAL_TERMINATE};
 
     // Fixtures `booted`/`booted_with`/`booted_vfs_labeled`/`booted_vfs_kernel`/
-    // `two_entry_chain`/`rs_init_envelope` live in `crate::testutil` (R40 —
-    // shared with the shell modules' own test mods).
+    // `two_entry_chain`/`rs_init_envelope` live in `crate::testutil`, shared
+    // with the shell modules' own test mods.
 
     #[test]
     fn test_signal_chld_frees_exited_child_slot() {
-        // E-10/R34.21: the drain with actual exited children — waitpid
+        // E-10: the drain with actual exited children — waitpid
         // hands back pid 700, sigchld_cleanup frees its slot (and clears
         // the LU bits, request.c:1063-1073); an unknown pid (808) is a
         // no-op and the drain keeps going.
@@ -960,7 +987,7 @@ mod signal_handler_tests {
     fn test_run_clock_notify_drives_period_ping() {
         // E-10/06 wiring: the CLOCK tick drives do_period — the VFS service
         // has a due period, so the sweep pings it (request.c:1035-1037) and
-        // refreshes `r_check_tm` (R13 payload). The kernel-facing notify is
+        // refreshes `r_check_tm`. The kernel-facing notify is
         // asserted through the state effect: `check_tm` is written by the
         // PingRequest branch alone.
         let mut mock = crate::testutil::MockKernelApi::new(60);
@@ -977,7 +1004,7 @@ mod signal_handler_tests {
             s.check_tm = 0;
             s.alive_tm = 0;
         }
-        // [SD19-gate] SEF 事件循环退出返回
+        // [SD19-gate] SEF event loop exits and returns
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let state = server.state.as_ref().unwrap();
@@ -1009,7 +1036,7 @@ mod signal_handler_tests {
                 .table
                 .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
         }
-        // [SD19-gate] SEF 事件循环退出返回
+        // [SD19-gate] SEF event loop exits and returns
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let state = server.state.as_ref().unwrap();
@@ -1017,11 +1044,15 @@ mod signal_handler_tests {
         assert_eq!(state.table.get(id).alive_tm, 777);
     }
 
-    /// 回复边界的线序钉：RS 判定面用正号 errno 常量（本树约定），而 C 的 RS 以
-    /// `_SYSTEM` 编译（`minix3/minix/servers/rs/inc.h:7`），`main.c:124-129` 写回
-    /// 的是负错码。所以「交给回复腿之前折一次号」是结构不变量，不是可优化项：
-    /// 生厂商与消费者约定一旦被打破，客户端会把每个拒绝读成成功（F10 同族）。
-    /// 生产回复腿在宿主不可达（无内核 trap），故本钉校形状而非跑收发。
+    /// Wire-order pin for the reply boundary: the RS decision face uses positive
+    /// errno constants (this tree's convention), while C's RS is compiled with
+    /// `_SYSTEM` (`minix3/minix/servers/rs/inc.h:7`) and `main.c:124-129` writes
+    /// a negative error code back. So "fold the sign once before the reply leg"
+    /// is a structural invariant, not an optimization: once the producer and
+    /// consumer agreement is broken, the client reads every rejection as success
+    /// (the same family). The production reply leg is unreachable on the host
+    /// (no kernel trap), so this pin checks the shape rather than running a
+    /// round trip.
     #[test]
     fn reply_boundary_folds_errno_sign() {
         let src = include_str!("lib.rs");
@@ -1053,7 +1084,7 @@ mod signal_handler_tests {
         };
         mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
         let mut server = booted_with(alloc::boxed::Box::new(mock));
-        // [SD19-gate] SEF 事件循环退出返回
+        // [SD19-gate] SEF event loop exits and returns
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let state = server.state.as_ref().unwrap();
@@ -1069,7 +1100,7 @@ mod signal_handler_tests {
     #[test]
     #[should_panic(expected = "message from bogus source")]
     fn test_run_gates_bogus_source() {
-        // E-10/R34.20: main.c:63-66 — a message from a source that does not
+        // E-10: main.c:63-66 — a message from a source that does not
         // name a live process slot is a kernel-side program error; C panics.
         let mut mock = crate::testutil::MockKernelApi::new(60);
         let m = minix_types::Message {
@@ -1079,7 +1110,7 @@ mod signal_handler_tests {
         };
         mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
         let mut server = booted_with(alloc::boxed::Box::new(mock));
-        // [SD19-gate] SEF 事件循环退出返回
+        // [SD19-gate] SEF event loop exits and returns
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
     }
@@ -1107,7 +1138,7 @@ mod signal_handler_tests {
             s.pub_.in_use = true;
             s.pub_.endpoint = ep;
         }
-        // [SD19-gate] SEF 事件循环退出返回
+        // [SD19-gate] SEF event loop exits and returns
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let s = server
@@ -1122,7 +1153,7 @@ mod signal_handler_tests {
 
     #[test]
     fn test_init_response_normalizes_edontreply_to_ok() {
-        // R3: sef_cb_init_response maps EDONTREPLY → OK (the reverse of
+        // sef_cb_init_response maps EDONTREPLY → OK (the reverse of
         // sef_cb_lu_response) — the wrapper sits on the live handler now.
         let mut server = booted_with(alloc::boxed::Box::new(crate::testutil::MockKernelApi::new(
             60,
@@ -1172,7 +1203,7 @@ mod signal_handler_tests {
             // RS_DOWN targets a system process (request.c:104-105 gate).
             s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
         }
-        // [SD19-gate] SEF 事件循环退出返回
+        // [SD19-gate] SEF event loop exits and returns
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let s = server
@@ -1189,7 +1220,7 @@ mod signal_handler_tests {
 
     /// Builds the flat caller-space image do_up's safecopy chain reads:
     /// the `rs_start_t` struct at 0 (fields written at the pinned
-    /// `rs_start_off` offsets — Fix #81), the command string at 0x1000 and
+    /// `rs_start_off` offsets), the command string at 0x1000 and
     /// the label/progname text at 0x1100/0x1200 (rs.h:63 — labels are
     /// copied over separately).
     fn do_up_image(cmd: &[u8], label: &[u8]) -> alloc::vec::Vec<u8> {
@@ -1212,7 +1243,7 @@ mod signal_handler_tests {
         put64(&mut img, off::IPC_LEN, 3);
         img[0x1300..0x1303].copy_from_slice(b"ipc");
         // The state-data spec: the requester sets size to
-        // sizeof(struct rs_state_data) = 56 (manager.c:181-183, 17 号).
+        // sizeof(struct rs_state_data) = 56 (manager.c:181-183).
         put64(&mut img, off::STATE_DATA, 56);
         put64(&mut img, off::LABEL_ADDR, 0x1100);
         put64(&mut img, off::LABEL_LEN, label.len() as u64);
@@ -1226,7 +1257,7 @@ mod signal_handler_tests {
 
     #[test]
     fn test_do_update_schedules_self_update_batch() {
-        // 16/R6 wiring: RS_UPDATE (request.c:534-889) — self update,
+        // RS_UPDATE wiring (request.c:534-889) — self update,
         // batch mode (request.c:847-850 replies OK). The descriptor is
         // scheduled with the A-4 mirror (slot.upd), lu_flags carry SELF,
         // and the reply is immediate.
@@ -1398,18 +1429,20 @@ mod signal_handler_tests {
         assert!(entry.eval_buff.is_none(), "no EVAL state");
     }
 
-    /// 从镜像字节里按行拷出一个快照行（行是 repr(C) POD，可能未对齐）。
+    /// Copy one snapshot row out of the image bytes row by row (a row is
+    /// repr(C) POD and may be unaligned).
     fn row_at<T: Copy>(bytes: &[u8], i: usize) -> T {
         let row = core::mem::size_of::<T>();
-        // SAFETY(test): 镜像由生产者的行字节拼成，逐行 read_unaligned 取行。
+        // SAFETY(test): the image is assembled from the producer's row bytes;
+        // each row is taken with read_unaligned.
         unsafe { core::ptr::read_unaligned(bytes[i * row..].as_ptr().cast::<T>()) }
     }
 
     #[test]
     fn test_getsysinfo_procpub_copyout_serves_table() {
-        // 14/R7 wiring: SI_PROCPUB_TAB (request.c:1119-1121) — every row of
+        // SI_PROCPUB_TAB wiring (request.c:1119-1121) — every row of
         // the public table serializes to the pinned `struct rprocpub`
-        // layout (Fix #85) and goes out through the safecopy seam after the
+        // layout and goes out through the safecopy seam after the
         // exact-size gate (request.c:1134-1136).
         let mut mock = crate::testutil::MockKernelApi::new(60);
         mock.ticks = 500;
@@ -1441,7 +1474,7 @@ mod signal_handler_tests {
         assert_eq!(*addr, 0x5000);
         assert_eq!(bytes.len() as u64, size, "one snapshot row per slot");
         // Row 0 carries the live service: in_use, endpoint, label, sys
-        // flags, dev_nr, vm_call_mask（共享快照行的字段集，A-4）。
+        // flags, dev_nr, vm_call_mask (the field set of the shared snapshot row).
         let w0: minix_types::RprocpubSnap = row_at(bytes, 0);
         assert_eq!(w0.in_use, 1);
         assert_eq!(w0.endpoint, Endpoint::VFS.get());
@@ -1501,8 +1534,8 @@ mod signal_handler_tests {
 
     #[test]
     fn test_getsysinfo_rproc_copyout_serves_table() {
-        // R12: SI_PROC_TAB (request.c:1113-1115) — every row serializes to
-        // the shared `RprocSnap` layout (A-4 使用字段子集); the exact-size
+        // SI_PROC_TAB (request.c:1113-1115) — every row serializes to
+        // the shared `RprocSnap` layout (a subset of its fields is used); the exact-size
         // gate at :1134-1136.
         let mut mock = crate::testutil::MockKernelApi::new(60);
         let mut table = RProcTable::new();
@@ -1604,7 +1637,7 @@ mod signal_handler_tests {
 
     #[test]
     fn test_do_edit_updates_settings_in_sequence() {
-        // 13/R5 wiring: RS_EDIT (request.c:298-385) — struct decode, label
+        // RS_EDIT wiring (request.c:298-385) — struct decode, label
         // from rss_label, the E-7 sequence (getpriv sync → sched_stop →
         // edit_slot → privctl(UpdateSys) → vm_set_priv → sched_init_proc),
         // Ok(0).
@@ -1734,7 +1767,7 @@ mod signal_handler_tests {
 
     #[test]
     fn test_do_up_starts_service_and_arms_late_reply() {
-        // 13/R4 wiring: RS_UP (request.c:15-106) — struct decode (Fix #81),
+        // RS_UP wiring (request.c:15-106) — struct decode,
         // buffer fetches, check_request, init_slot, the duplicate gates and
         // start_service; the reply is deferred (LATEREPLY + EDONTREPLY,
         // request.c:98-105).
@@ -2155,7 +2188,7 @@ mod signal_handler_tests {
 
     #[test]
     fn test_signal_manager_routes_all_branches() {
-        // R34.22: the seven signal-manager branches (main.c:647-703) —
+        // The seven signal-manager branches (main.c:647-703) —
         // spurious clear, terminated EDEADEPT, inactive clear, the
         // termination executor (EDEADEPT + TERMINATED), the VM refusal, and
         // the SIGS_SIGNAL_RECEIVED forwarding via the asynsend seam.
@@ -2238,7 +2271,7 @@ mod signal_handler_tests {
 
     #[test]
     fn test_signal_manager_vm_and_stacktrace() {
-        // R34.22 continued: signals are never delivered to VM (main.c:694-697),
+        // Continued: signals are never delivered to VM (main.c:694-697),
         // and a lethal-but-not-ABRT signal triggers the stacktrace seam before
         // the termination path (main.c:681-683).
         let mut mock = crate::testutil::MockKernelApi::new(60);
@@ -2266,7 +2299,7 @@ mod signal_handler_tests {
 
     #[test]
     fn test_do_period_update_timeout_rolls_back() {
-        // R36: while updating (not initializing), a tick past the current
+        // While updating (not initializing), a tick past the current
         // preparer's deadline ends the update with EINTR/RS_CANCEL
         // (update.c:386-395) — the chain and the phase flags are cleared and
         // the old versions keep running. Without this arm a stalled prepare
@@ -2341,11 +2374,11 @@ mod signal_handler_tests {
     #[test]
     #[should_panic(expected = "run() requires a completed fresh boot")]
     fn test_run_requires_completed_boot() {
-        // E-10/R34.19: the main loop is unreachable without a completed
+        // E-10: the main loop is unreachable without a completed
         // boot — the panic is the fail-fast contract (C never reaches
         // main()'s loop with a half-booted RS, main.c:226).
         let mut server = RsServer::new(crate::boot::BootTables::placeholder());
-        // [SD19-gate] SEF 事件循环退出返回
+        // [SD19-gate] SEF event loop exits and returns
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
     }
@@ -2353,7 +2386,7 @@ mod signal_handler_tests {
     #[test]
     #[should_panic(expected = "boot machine present")]
     fn test_second_fresh_init_panics() {
-        // E-10/R34.19: the first successful boot consumes the boot machine
+        // E-10: the first successful boot consumes the boot machine
         // (T1 handover); a second init(Fresh) has nothing to boot — the
         // expect is the fail-fast contract.
         static IMAGE: &[minix_types::BootImage] = &[minix_types::BootImage {
@@ -2385,15 +2418,15 @@ mod signal_handler_tests {
         server
             .init(SefInitType::Fresh)
             .expect("RS-only boot completes (zero pending init-ready)");
-        // [SD19-gate] SEF init 返回
+        // [SD19-gate] SEF init returns
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.init(SefInitType::Fresh);
     }
 
     #[test]
     fn test_signal_term_runs_shutdown_sweep() {
-        // C: main.c:638-640 — SIGTERM → do_shutdown(NULL):全表 EXITING +
-        // shutting_down 置位（request.c:447-455）。
+        // C: main.c:638-640 — SIGTERM → do_shutdown(NULL): the whole table goes
+        // EXITING and `shutting_down` is set (request.c:447-455).
         let mut server = booted();
         server.signal_handler(SIGNAL_TERMINATE);
         let state = server.state.as_ref().unwrap();
@@ -2408,10 +2441,11 @@ mod signal_handler_tests {
 
     #[test]
     fn test_signal_chld_drains_exited_children() {
-        // C: main.c:635-637 — SIGCHLD → do_sigchld:每个 waitpid 到的子进程
-        // 走 sigchld_cleanup；pid 未命中时无副作用（request.c:1064-1065）。
+        // C: main.c:635-637 — SIGCHLD → do_sigchld: every child reaped by
+        // waitpid goes through sigchld_cleanup; a pid miss has no side effect
+        // (request.c:1064-1065).
         let mut server = booted();
-        // 无已退出子进程 → 空转，表不动。
+        // No exited children → spin empty, the table is untouched.
         server.signal_handler(SIGNAL_CHILD);
         let state = server.state.as_ref().unwrap();
         assert!(
@@ -2424,7 +2458,8 @@ mod signal_handler_tests {
 
     #[test]
     fn test_signal_unknown_ignored() {
-        // C: main.c:641 — switch 无 default：未知信号静默忽略。
+        // C: main.c:641 — the switch has no default: an unknown signal is
+        // silently ignored.
         let mut server = booted();
         server.signal_handler(9999);
         let state = server.state.as_ref().unwrap();
@@ -2463,9 +2498,11 @@ mod signal_handler_tests {
 
     #[test]
     fn test_get_work_applies_manager_sigterm_before_delivery() {
-        // C 控制流：handler 在拦截点执行（main.c:631-641），被吞帧之后的
-        // 下一条到达时其效果已落。这里 SIGTERM 帧被吞、shutting_down 在
-        // CLOCK 帧交还前已置位——先于分派的顺序由这条断言钉住。
+        // C control flow: the handler runs at the interception point
+        // (main.c:631-641), so by the time the next message arrives after a
+        // swallowed frame its effects have landed. Here the SIGTERM frame is
+        // swallowed and `shutting_down` is already set before the CLOCK frame is
+        // handed back — this assertion pins that order as preceding dispatch.
         let mut mock = crate::testutil::MockKernelApi::new(60);
         mock.inbox.push(manager_signal_envelope(SIGNAL_TERMINATE));
         mock.inbox.push(clock_envelope(99));
@@ -2479,8 +2516,9 @@ mod signal_handler_tests {
 
     #[test]
     fn test_get_work_nonterm_signal_ignored_loop_carries_on() {
-        // C main.c:631-641 — SIGCHLD/SIGTERM 之外的号直接忽略；帧照吞，
-        // 下一条照常送达。
+        // C main.c:631-641 — numbers other than SIGCHLD/SIGTERM are ignored
+        // outright; the frame is still swallowed and the next one is delivered
+        // as usual.
         let mut mock = crate::testutil::MockKernelApi::new(60);
         mock.inbox.push(manager_signal_envelope(71));
         mock.inbox.push(clock_envelope(7));
@@ -2493,9 +2531,11 @@ mod signal_handler_tests {
 
     #[test]
     fn test_get_work_notify_fallback_reaches_handler_once() {
-        // 生产可达形状钉：SYSTEM 通知位图恒空（内核 SigSet 位宽），库的
-        // 唤醒兜底值恰达 handler 一次；RS 的 handler 对未知号忽略
-        //（main.c:641 无 default），主循环对 notify 帧无观察变化。
+        // Production-reachable shape pin: the SYSTEM notify bitmap is always
+        // empty (the kernel SigSet bit width), so the library's wake-up fallback
+        // value reaches the handler exactly once; RS's handler ignores unknown
+        // numbers (main.c:641 has no default) and the main loop observes no
+        // change on a notify frame.
         let mut mock = crate::testutil::MockKernelApi::new(60);
         mock.inbox.push(system_notify_envelope());
         mock.inbox.push(clock_envelope(11));

@@ -83,8 +83,9 @@ fn across_flag_fills_row_major_and_requires_columns() {
     let (out, status, err) = run(&["-a", "-2", "-l", "8", "-w", "20", "-t"], &numbered(1, 4));
     assert_eq!(status, 0, "stderr was {err:?}");
     assert_eq!(out, "1\t  2\n3\t  4\n");
-    // `-a` 单独给是 C 那句具名拒答（`pr.c:1823-1828`），但退码 1 不是它自己给的：
-    // `setup` 返回 1 后 `main` 还会接上那三行 usage（`:142-157`）。
+    // A lone `-a` gets C's named refusal (`pr.c:1823-1828`), but the exit code 1
+    // does not come from it: after `setup` returns 1, `main` appends the three usage
+    // lines (`:142-157`).
     let (out, status, err) = run(&["-a"], b"a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1, "stderr was {err:?}");
@@ -92,7 +93,7 @@ fn across_flag_fills_row_major_and_requires_columns() {
         err,
         format!("pr: -a flag requires multiple columns\n{USAGE}")
     );
-    // `-m` cannot be combined with `-a` (`pr.c:1829-1832`), 同样后面跟 usage。
+    // `-m` cannot be combined with `-a` (`pr.c:1829-1832`); the usage follows here too.
     let (_, status, err) = run(&["-m", "-a", "-2"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(err, format!("pr: -m cannot be used with -a\n{USAGE}"));
@@ -205,9 +206,9 @@ fn start_page_counts_the_same_pages_the_output_shows() {
 
 #[test]
 fn numeric_option_diagnostics_are_c_named_messages_then_the_usage() {
-    // 每个数值选项各有一句自己的话（不是一律 usage），但 `main` 在任何 setup 错后
-    // 都接上那三行 usage（`pr.c:142-157`）——本轮之前这里错写成“只印自己那句”；
-    // `-w` 那句确实以一个空格结尾（`:1800`）。
+    // Each numeric option has its own sentence (not just usage), but `main` appends
+    // the three usage lines after any setup error (`pr.c:142-157`); `-w`'s sentence
+    // really does end with one space (`:1800`).
     let cases = [
         ("+0", "pr: +page number must be 1 or more\n"),
         ("-0", "pr: -columns must be 1 or more\n"),
@@ -232,13 +233,15 @@ fn numeric_option_diagnostics_are_c_named_messages_then_the_usage() {
     );
 }
 
-/// C `usage()`（`pr.c:1616-1627`）：三行，后两行各带十个前导空格，整句不靠
-/// `getprogname()`（C 把 `pr` 写死在串里）。当成一个字面量写，因为 Rust 的续行
-/// 会正好吃掉那十个空格。
+/// C `usage()` (`pr.c:1616-1627`): three lines, the last two carrying ten leading
+/// spaces each, and the whole thing does not rely on `getprogname()` (C hardcodes
+/// `pr` in the string). It is written as one literal because Rust's line
+/// continuation would eat exactly those ten spaces.
 const USAGE: &str = "usage: pr [+page] [-col] [-adFfmprt] [-e[ch][gap]] [-h header]\n          [-i[ch][gap]] [-l line] [-n[ch][width]] [-o offset]\n          [-s[ch]] [-T timefmt] [-w width] [-] [file ...]\n";
 
-/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
-/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+/// The same command seam as `run`, but standard error comes back **byte for byte**:
+/// `from_utf8_lossy` renders a bare `c3` as the three-byte U+FFFD, so the text form
+/// cannot tell "one byte" from "two bytes" among the error shapes.
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(PR)
         .args(args)
@@ -256,15 +259,20 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**，而且这一支的机制层证据不在 libc：`pr` 链的是
-/// 它自带的 `egetopt.c`（`:110` 的 `eoptopt = (int)*place++` 一次进一个字节、`:148` 的
-/// `%c` 原样写出），措辞也是它自己的 `illegal option -- <字母>`（不是同族其它命令的
-/// `unknown option`）。期望逐形取自本轮新配的参照件 `tmp/pr-419/pr_ref`（`pr.c` +
-/// `egetopt.c` + 垫片，含 `raise_default_signal` 的 NetBSD 四步语义；经同名软链 `pr` 起
-/// ⇒ 程序名段与本壳一致）：`-é` 与 `-dé` 都是 `pr: illegal option -- ` + 单个 `c3` +
-/// 换行再跟那**三行** usage（第二三行各带十个前导空格）、退 1；`-Zé` 停在 `Z`；反面的
-/// `-wé` 里 `é` 是**值**（`w` 带值）⇒ 命令自己那句以空格结尾的
-/// `pr: -w width must be 1 or more ` 再接三行 usage。ASCII 那几形本文件已有主人，不重复承载。
+/// The option-letter position of the outside-the-set line is **one bare byte**, and
+/// the mechanism-level evidence here is not libc: `pr` links its own `egetopt.c`
+/// (`eoptopt = (int)*place++` at `:110` takes one byte at a time, `%c` at `:148`
+/// writes it out unchanged), and the wording is its own `illegal option -- <letter>`
+/// (not the `unknown option` of the rest of the family). Expected shapes come from
+/// the reference build (`pr.c` + `egetopt.c` + shims, including the NetBSD four-step
+/// `raise_default_signal` semantics, started through a same-name `pr` symlink so the
+/// program-name segment matches this shell): `-é` and `-dé` both print
+/// `pr: illegal option -- ` + a single `c3` + newline, then those **three** usage
+/// lines (the second and third carrying ten leading spaces each) and exit 1; `-Zé`
+/// stops at `Z`; conversely, in `-wé` the `é` is a **value** (`w` takes one), so the
+/// command's own space-terminated `pr: -w width must be 1 or more ` follows, then the
+/// three usage lines. The ASCII shapes already have their owner in this file and are
+/// not repeated here.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_pr() {
     let want: Vec<u8> = [
@@ -303,15 +311,17 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_pr() {
 
 #[test]
 fn letters_outside_the_c_optstring_print_the_egetopt_line_then_the_usage() {
-    // `egetopt` 对不在 `"#adFfmrte?h:i?l:n?o:ps?T:w:"` 里的字母先印自己那一句
-    // （`egetopt.c:144-151`），再返回 `'?'`；`setup` 返回 1，`main` 接三行 usage
-    // （`pr.c:1616-1627`）后退 1。**两句都是两行起步**，而本枝之前只印 usage。
+    // For a letter outside `"#adFfmrte?h:i?l:n?o:ps?T:w:"`, `egetopt` prints its own
+    // line first (`egetopt.c:144-151`), then returns `'?'`; `setup` returns 1, and
+    // `main` appends the three usage lines (`pr.c:1616-1627`) before exiting 1. Both
+    // sentences are therefore at least two lines each.
     let (out, status, err) = run(&["-x"], b"a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1, "stderr was {err:?}");
     assert_eq!(err, format!("pr: illegal option -- x\n{USAGE}"));
-    // 缺值那一句：措辞与 libc 的 `getopt` 逐字相同（`egetopt.c:196-205`），
-    // 但集外字母那一句不同（libc 是 `unknown option`）——同一个事实的两个版本。
+    // The missing-value sentence: word for word identical to libc's `getopt`
+    // (`egetopt.c:196-205`), while the outside-the-set sentence differs (libc says
+    // `unknown option`) — two versions of the same fact.
     let (_, status, err) = run(&["-w"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(
@@ -320,7 +330,7 @@ fn letters_outside_the_c_optstring_print_the_egetopt_line_then_the_usage() {
     );
     // Letters C's optstring carries but this deciding half does not implement are
     // reported rather than ignored: `-p` pauses per page, which needs a terminal leg.
-    // 那一句是本壳的（C 接受 `-p`），所以也不扮 C 的形。
+    // That sentence belongs to this shell (C accepts `-p`), so it does not imitate C's shape either.
     let (_, status, err) = run(&["-p"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(err, "pr: option form not modelled yet\n");
@@ -389,10 +399,11 @@ fn multi_column_implies_both_transformations_and_a_tab_survives_the_round_trip()
 
 #[test]
 fn an_unreadable_operand_gets_the_comma_form_and_does_not_stop_the_run() {
-    // C 的开档失败腿（`pr.c:1364-1370`）是
-    // `fprintf(errf, "pr: Cannot open %s, %s\n", argv[…], strerror(errno))`：大写 C，
-    // 名字与句子之间是一个逗号（不是 `err(3)`/`warn(3)` 那个冒号形），然后 `continue`，
-    // 退码最后由 `errcnt` 推到 1（`:157-159`），而且**不接 usage**——它不是 setup 错。
+    // C's open-failure leg (`pr.c:1364-1370`) is
+    // `fprintf(errf, "pr: Cannot open %s, %s\n", argv[…], strerror(errno))`: capital
+    // C, a comma between the name and the sentence (not the colon form of
+    // `err(3)`/`warn(3)`), then `continue`; the exit code is raised to 1 by `errcnt`
+    // (`:157-159`) and **no usage follows** — this is not a setup error.
     let missing = format!("pr-face-{}-missing", std::process::id());
     let (out, status, err) = run(&[&missing], b"a\n");
     assert_eq!(out, "");
@@ -401,8 +412,10 @@ fn an_unreadable_operand_gets_the_comma_form_and_does_not_stop_the_run() {
         err,
         format!("pr: Cannot open {missing}, No such file or directory\n")
     );
-    // 后面的操作数照跑（C 是 `continue` 而不是致命），且句子只一个文件一条。
-    // 加 `-t` 是为了避开表头（pr 默认每页带 5+5 行头尾，本枝单测的是开档腿不是分页）。
+    // Later operands still run (C does `continue`, not a fatal stop), one sentence
+    // per file. `-t` is added to avoid the header (pr gives every page five header
+    // and five trailer lines by default; this test exercises the open leg, not
+    // pagination).
     let (out, status, err) = run(&["-t", &missing, "-"], b"a\n");
     assert_eq!(out, "a\n", "第二个操作数该照常输出，stderr 是 {err:?}");
     assert_eq!(status, 1);
@@ -460,17 +473,22 @@ fn form_feed_ends_every_header_page_and_no_header_cancels_it() {
     assert_eq!(f_out, "\n\nT Page 1\n\n\na\nb\nc\n\u{c}");
 }
 
-/// 门自身的契约，钉在这里而不是别处：命令在**读标准输入之前**就退出时，写输入不是失败。
+/// The gate's own contract, pinned here rather than elsewhere: when the command
+/// exits **before reading standard input**, writing the input is not a failure.
 ///
-/// 上面那枚诊断门用的都是这一形状（`pr.c:142-157` 的 setup 错排在任何读之前）。
-/// 该不该拿到 `BrokenPipe` 取决于父子谁先被调度——输入只有几个字节时父进程通常先写完，
-/// 于是同一条用例在负载下时红时绿（实测三连跑 1 红 2 绿）。这里**先等到子进程退出再写**，
-/// 确定性地造出「管道读端已关闭」那一状态：旧写法当场 panic，现写法安静放过
-/// （`face_support::write_stdin` 只容忍 `BrokenPipe`，其余写错仍然当场失败）。
+/// The diagnostic gates above all use this shape (the setup errors at
+/// `pr.c:142-157` come before any read). Whether the writer gets `BrokenPipe`
+/// depends on which side is scheduled first — with only a few input bytes the parent
+/// usually finishes writing first, so the same case is flaky under load. Here the
+/// test **waits for the child to exit before writing**, deterministically creating
+/// the "pipe read end already closed" state: the write is quietly ignored
+/// (`face_support::write_stdin` tolerates only `BrokenPipe`, any other write error
+/// still fails on the spot).
 ///
-/// 为什么用 `try_wait` 轮询而不是 `wait`：`Child::wait` 会先把 `child.stdin` 那个句柄
-/// 丢掉（std 这么做是为了别让子进程卡在输入上等不死），那样就没得写了。轮询带耐心上限，
-/// 超时明确报出来，不留无界自旋。
+/// Why poll with `try_wait` rather than `wait`: `Child::wait` drops the
+/// `child.stdin` handle first (std does that so a child cannot hang forever waiting
+/// for input), and then there is nothing to write to. The polling has a patience cap
+/// and reports the timeout explicitly, leaving no unbounded spin.
 #[test]
 fn writing_stdin_to_an_already_exited_child_is_not_a_gate_failure() {
     let mut child = Command::new(PR)
@@ -493,14 +511,16 @@ fn writing_stdin_to_an_already_exited_child_is_not_a_gate_failure() {
     face_support::write_stdin(&mut child, b"a\n");
 }
 
-/// 行腿端到端按字节：`fgetln` 交上来的记录从不解码，所以一枚不是 UTF-8 的字节
-/// 照样成行、照样参与制表符展开、照样随自定页眉那支持平布局出栈。期望逐字节取自
-/// 参照件 `tmp/pr-419/pr`（同名软链起，批次四百三十六 A/B 的 12/13 同形即此三形），
-/// 夹具一律写字面字节——把 `é` 的 UTF-8 转义当夹具会二次编码出假绿。
+/// The line legs are end-to-end byte-wise: the record `fgetln` hands over is never
+/// decoded, so a non-UTF-8 byte still makes a line, still takes part in tab
+/// expansion, and still comes out through the header layout of a custom page title.
+/// Expectations are byte-for-byte from the reference build (started through a
+/// same-name symlink); fixtures always write literal bytes, because using `é`'s UTF-8
+/// escape as a fixture would double-encode and go falsely green.
 #[test]
 fn a_nonutf8_line_keeps_its_bytes_through_the_line_legs() {
     let raw = b"a\xffb\tp\nq\xff\n";
-    // 缺省单列 + `-t`（无页眉页脚）：这一支就是原样搬运。
+    // Default single column plus `-t` (no header or trailer): this leg is a plain copy.
     let (out, status, err) = run_bytes(&["-t"], raw);
     assert_eq!(status, 0, "stderr was {err:?}");
     assert_eq!(
@@ -508,22 +528,27 @@ fn a_nonutf8_line_keeps_its_bytes_through_the_line_legs() {
         "the pass-through leg must not touch a single byte"
     );
 
-    // `-e` 把输入里的制表符按 8 列展开：`\t` 后面那三个字符之前先补五个空格，
-    // 而 `ff` 这一枚字节不参与任何计数之外的处理。
+    // `-e` expands input tabs on an eight-column pitch: five blanks are inserted
+    // before the three characters after `\t`, and the `ff` byte takes part in no
+    // processing beyond counting.
     let (expanded, status, err) = run_bytes(&["-t", "-e"], raw);
     assert_eq!(status, 0, "stderr was {err:?}");
     assert_eq!(expanded, b"a\xffb     p\nq\xff\n");
 
-    // `-h` 换掉页眉文本，多字节与裸字节混排的两行照旧逐字节出栈。
+    // `-h` replaces the header text; lines mixing multibyte and bare bytes still come
+    // out byte for byte.
     let mixed = b"caf\xc3\xa9 z\n\xff q\n";
     let (headed, status, err) = run_bytes(&["-t", "-h", "T"], mixed);
     assert_eq!(status, 0, "stderr was {err:?}");
     assert_eq!(headed, mixed);
 }
 
-/// 字节形 argv 的命令缝：`&str` 递不出裸 `ff`（`OsStr` 从 `str` 过来时那串已是合法 UTF-8）。
-/// 两路都逐字节交回——`pr` 的值有三支**直接是输出内容**（`-s` 的列分隔、`-n` 的行号后缀、
-/// `-h` 的页眉标题），一支是**输入侧的比较物**（`-e`），一支是**输出侧的比较物**（`-i`）。
+/// The command seam with byte-shaped argv: a `&str` cannot deliver a bare `ff` (an
+/// `OsStr` built from a `str` is already valid UTF-8). Both streams come back byte
+/// for byte — three of `pr`'s values are **output content** (the `-s` column
+/// separator, the `-n` line-number suffix, the `-h` header title), one is an
+/// **input-side comparison operand** (`-e`), and one an **output-side comparison
+/// operand** (`-i`).
 fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::os::unix::ffi::OsStrExt as _;
     let mut child = Command::new(PR)
@@ -542,22 +567,27 @@ fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 参数缝在 `pr` 上改到的是**输出内容与比较物**，不是报文渲染。参照件
-/// `tmp/pr-466/pr`（软链 `tmp/pr-419/pr_ref`）逐字节对过这五形（`tmp/pr-466/ab.log`）。
-/// ①`-s` 的值由 `vertcol`/`horzcol` 打在列间（`pr.c:487`、`:745`），两列之间就是那一枚
-///   `ff`，**没有别的字符**（`-s` 存在时列间不补空白）。
-/// ②`-n` 的值是 `nmchar`（`pr.c:95`），由 `addnum` 跟在行号后（`:215`）⇒ 行号后直接是 `ff`。
-/// ③`-h` 的值由 `prhead` 的 `printf(HDFMT, buf+offst, fname, pagcnt)`（`pr.h:59`、
-///   `pr.c:1511`）原样打在页眉行——本壳不渲染时间场，所以这一行是 `标题 + " Page 1"`，
-///   标题位仍是 argv 原字节。
-/// ④⑤`-e` 与 `-i` 这两支**符号性不同**，是本轮的量得：`inln` 比 `int ch = getc()`（0..=255）
-///   与 `int chk = (int)inchar`，而 `inchar` 是带符号 `char`（`pr.c:87`、`:1038`、`:1049`）
-///   ⇒ 高位字节被提升成负数，**永远配不上任何输入字节**；`otln` 比的是 `*buf == ochar`
-///   （`:1165`），两边都是 `char` ⇒ 同一枚高位字节在输出侧照常命中。缺省那枚制表符（0x09）
-///   不受影响，这一形同时是「没放宽」的控制形。
+/// On `pr` the argument seam changes **output content and comparison operands**, not
+/// message rendering. The reference build matched these five shapes byte for byte.
+/// ① `-s`'s value is printed between columns by `vertcol`/`horzcol` (`pr.c:487`,
+///   `:745`); between two columns it is that one `ff` and **no other character**
+///   (with `-s` present no blank padding is inserted between columns).
+/// ② `-n`'s value is `nmchar` (`pr.c:95`), placed after the line number by `addnum`
+///   (`:215`) ⇒ the `ff` follows the number directly.
+/// ③ `-h`'s value is printed unchanged on the header line by `prhead`'s
+///   `printf(HDFMT, buf+offst, fname, pagcnt)` (`pr.h:59`, `pr.c:1511`) — this shell
+///   does not render the time field, so the line is `title + " Page 1"` and the title
+///   position still holds the raw argv bytes.
+/// ④⑤ The `-e` and `-i` legs differ **in signedness**: `inln` compares
+///   `int ch = getc()` (0..=255) against `int chk = (int)inchar`, where `inchar` is a
+///   signed `char` (`pr.c:87`, `:1038`, `:1049`) ⇒ a high byte is promoted to a
+///   negative number and **never matches any input byte**; `otln` compares
+///   `*buf == ochar` (`:1165`), both `char`, so the same high byte does match on the
+///   output side. The default tab character (0x09) is unaffected, and this shape
+///   doubles as the control for "nothing was loosened".
 #[test]
 fn a_raw_byte_in_a_value_that_is_printed_reaches_the_output_as_that_byte() {
-    // ① 两列之间的分隔字节。
+    // ① The separator byte between two columns.
     let (out, status, err) = run_argv(&[b"-t", b"-2", b"-s\xff", b"-w", b"20"], b"a\nb\nc\nd\n");
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(
@@ -565,40 +595,46 @@ fn a_raw_byte_in_a_value_that_is_printed_reaches_the_output_as_that_byte() {
         [b"a\xff".as_slice(), b"c\nb\xff", b"d\n"].concat(),
         "列间只有 argv 那一枚字节，不补空白"
     );
-    // ② 行号后缀字节。
+    // ② The line-number suffix byte.
     let (out, status, err) = run_argv(&[b"-t", b"-n\xff2"], b"a\nb\n");
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(out, b" 1\xffa\n 2\xffb\n");
-    // ③ 页眉标题字节（本壳的时间场未渲染，那一行就是标题 + " Page 1"）。
+    // ③ The header title bytes (this shell does not render the time field, so that
+    // line is title + " Page 1").
     let (out, status, err) = run_argv(&[b"-l", b"20", b"-h\xff\xfe"], b"a\n");
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(
         out.split(|&b| b == b'\n').nth(2).unwrap(),
         b"\xff\xfe Page 1"
     );
-    // ④ -e 的字符带高位 ⇒ 一整条展开腿成为空操作（C 那里 chk 是负数）。
+    // ④ A high bit in -e's character ⇒ the whole expansion leg becomes a no-op
+    // (chk is negative in C).
     let (out, status, err) = run_argv(&[b"-t", b"-e\xff4"], b"x\xffy\n");
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(out, b"x\xffy\n", "高位字符配不上任何输入字节，字节原样通过");
-    // ④ 的控制形：字符位是缺省制表符时展开照旧发生。
+    // ④ Control: with the default tab in the character position, expansion still happens.
     let (out, _status, _err) = run_argv(&[b"-t", b"-e4"], b"x\ty\n");
     assert_eq!(out, b"x   y\n");
-    // ⑤ 同一枚高位字节在 -i 那一侧照常命中（C 的两边都是 char）。
+    // ⑤ The same high byte still matches on the -i side (both sides are char in C).
     let (out, status, err) = run_argv(&[b"-t", b"-i\xff4"], b"a\xff    b\n");
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(out, b"a\xff\xffb\n", "模拟 + 收缩都照走");
 }
 
-/// 四句 `invalid value for -X %s`（`pr.c:1726-1729` 的 `-e`、`:1757-1760` 的 `-n`、
-/// `:1785-1788` 的 `-s`、以及 `-i` 那一支 `:1710-1728`）与 `Cannot open %s` 那一句
-/// （`pr.c:1364-1370`）的回显位都是 argv 原字节。四句的**形状**也一并钉住：自己那一句
-/// 之后接 `usage()` 的三行（`main` 见 `setup` 返回非零才接，`pr.c:142-157`），退 1。
-/// `-s<é>` 那一形还钉住「只取首字节当值、剩下的按原字节回显」：`c3 a9` 里 `c3` 成了分隔符，
-/// 回显的是 `a9` 那一枚——文本缝之下这两枚都会先被折成三枚，谁也认不出来。
+/// The four `invalid value for -X %s` sentences (`pr.c:1726-1729` for `-e`,
+/// `:1757-1760` for `-n`, `:1785-1788` for `-s`, and `:1710-1728` for the `-i` leg)
+/// and the `Cannot open %s` sentence (`pr.c:1364-1370`) all echo raw argv bytes.
+/// Their **shape** is pinned as well: the command's own sentence is followed by
+/// `usage()`'s three lines (`main` appends them only when `setup` returns nonzero,
+/// `pr.c:142-157`), and the exit code is 1. The `-s<é>` shape also pins "take only the
+/// first byte as the value and echo the rest as raw bytes": in `c3 a9`, `c3` becomes
+/// the separator and the echo is the single `a9` — under the text seam both would be
+/// folded into three bytes and neither could be recognized.
 #[test]
 fn the_four_invalid_value_echoes_and_the_operand_message_carry_the_argv_bytes() {
-    // 那三行复用文件里既有的 `USAGE` 常量——它特意写成一个字面量，因为续行会吃掉
-    // 后两行各自的十个前导空格（本枚门第一版就栽在这里）。
+    // Those three lines reuse the file's existing `USAGE` constant — it is written as
+    // one literal precisely because line continuation would eat the ten leading
+    // spaces of the last two lines.
     let usage = USAGE.as_bytes();
     for (letter, want) in [
         ('e', b"pr: invalid value for -e \xff\n".as_slice()),
@@ -606,8 +642,9 @@ fn the_four_invalid_value_echoes_and_the_operand_message_carry_the_argv_bytes() 
         ('n', b"pr: invalid value for -n \xff\n".as_slice()),
         ('s', b"pr: invalid value for -s \xff\n".as_slice()),
     ] {
-        // 四支的 optstring 都是 `?`（可选值 ⇒ **只吃附着在本词里的那一段**，
-        // 另起一词会被当成操作数），所以这里必须把裸字节接在字母后面拼成一个 token。
+        // All four optstrings use `?` (an optional value ⇒ **only the part attached
+        // to the same word is consumed**; a separate word becomes an operand), so the
+        // bare byte must be appended right after the letter to form one token.
         let mut token = format!("-{letter}x").into_bytes();
         token.push(0xff);
         let (out, status, err) = run_argv(&[token.as_slice()], b"a\n");
@@ -619,7 +656,8 @@ fn the_four_invalid_value_echoes_and_the_operand_message_carry_the_argv_bytes() 
             "-{letter} 那一行带的是剩下的那一枚字节，且后面接三行 usage"
         );
     }
-    // 合法两字节序列：首字节当值、尾字节进回显。
+    // A valid two-byte sequence: the first byte becomes the value, the trailing byte
+    // goes into the echo.
     let (out, status, err) = run_argv(&[b"-s\xc3\xa9"], b"a\n");
     assert_eq!(out, Vec::new());
     assert_eq!(status, 1);
@@ -627,8 +665,9 @@ fn the_four_invalid_value_echoes_and_the_operand_message_carry_the_argv_bytes() 
         err.split(|&b| b == b'\n').next().unwrap(),
         b"pr: invalid value for -s \xa9"
     );
-    // 开不了的档名：C 那句是 `fprintf(errf, "pr: Cannot open %s, %s\\n", argv[…], strerror)`，
-    // 名字位是原字节（参照件同形逐字节相同；`tmp/pr-466/ab.log` 里它是回归项不是分叉）。
+    // An unopenable file name: C's sentence is
+    // `fprintf(errf, "pr: Cannot open %s, %s\\n", argv[…], strerror)`, and the name
+    // position holds raw bytes (a regression item, not a divergence).
     let (out, status, err) = run_argv(&[b"/tmp/nosuch-pr-\xff"], b"a\n");
     assert_eq!(out, Vec::new());
     assert_eq!(status, 1);

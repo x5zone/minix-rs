@@ -5,8 +5,8 @@
 //! - `minix3/minix/servers/pm/utility.c:91-103` (nice_to_priority)
 //! - `minix3/minix/servers/pm/main.c:276-289` (get_nice_value)
 //! - `minix3/minix/servers/pm/misc.c:239-286` (do_getsetpriority)
-//!   Design: `.design/16-design.v1.md` D1–D8.
-//!   Single-threaded — `&mut ProcTable` without `Arc`.
+//!
+//! Single-threaded — `&mut ProcTable` without `Arc`.
 
 use crate::ipc::IpcTransport;
 use minix_types::{Endpoint, Message, UserSlot, Pid, EINVAL, EPERM, EACCES, ESRCH};
@@ -32,11 +32,11 @@ pub const SCHED_PROC_NR: Endpoint = Endpoint(4);
 /// `PRIO_PROCESS` (`sys/resource.h: PRIO_PROCESS 0`).
 pub const PRIO_PROCESS: i32 = 0;
 
-/// `SCHEDULING_SET_NICE` — 单一真相取自 `minix-types`（C: `minix/com.h:806`，
-/// `SCHEDULING_BASE+4` = 0xF04）。
+/// `SCHEDULING_SET_NICE` — the single source of truth comes from
+/// `minix-types` (C: `minix/com.h:806`, `SCHEDULING_BASE+4` = 0xF04).
 pub use minix_types::SCHEDULING_SET_NICE;
 
-/// `SchedWhich` (`misc.c:251-252` `which` 仅 `PRIO_PROCESS`).
+/// `SchedWhich` (`misc.c:251-252`: `which` accepts only `PRIO_PROCESS`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchedWhich {
     Process,
@@ -77,8 +77,8 @@ pub enum SchedError {
     Perm,
     Acces,
     NiceInval,
-    /// 内核/调度器服务的原始负 errno（C 全程透传 `r`，schedule.c:108；
-    /// V3-P2-6：不再折叠为 EINVAL）。
+    /// The raw negative errno from the kernel/scheduler service (C passes `r`
+    /// through everywhere, schedule.c:108; it is no longer folded to EINVAL).
     Kernel(i32),
 }
 
@@ -95,7 +95,7 @@ impl SchedError {
     }
 }
 
-/// `NiceMapping` (`utility.c:95-96` + `main.c:284-285` D4, `16:41` linear).
+/// `NiceMapping` (`utility.c:95-96` + `main.c:284-285`, linear).
 #[derive(Debug, Clone, Copy)]
 pub struct NiceMapping {
     pub max_user_q: i32,
@@ -118,7 +118,7 @@ impl Default for NiceMapping {
 }
 
 impl NiceMapping {
-    /// `nice_to_priority` (`utility.c:91-103` D4).
+    /// `nice_to_priority` (`utility.c:91-103`).
     pub fn to_queue(&self, nice: i32) -> Result<u32, SchedError> {
         if nice < self.prio_min || nice > self.prio_max {
             return Err(SchedError::NiceInval);
@@ -133,7 +133,7 @@ impl NiceMapping {
         Ok(q as u32)
     }
 
-    /// `get_nice_value` (`main.c:276-289` D4) inverse.
+    /// `get_nice_value` (`main.c:276-289`) inverse.
     pub fn to_nice(&self, queue: i32) -> i32 {
         let mut nice = (queue - self.user_q) * (self.prio_max - self.prio_min + 1) / (self.min_user_q - self.max_user_q + 1);
         if nice > self.prio_max {
@@ -153,12 +153,15 @@ pub trait SchedCtl {
     fn set_nice(&mut self, sched: Endpoint, schedulee: Endpoint, maxprio: u32) -> i32;
 }
 
-/// 生产 `SchedCtl`：把三个动词折成 SCHEDULING_* 消息经 IPC 发给调度器
-/// （C libsys 的 `sched_start`/`sched_inherit`/`sched_nice`——schedule.c
-/// 的调用点走 `_taskcall(scheduler, …)`）。rv 约定沿用决策件：0 成功，
-/// 非 0 失败（传输失败折负 `EIO`，与 C `_taskcall` 的负 errno 同形）。
+/// The production `SchedCtl`: folds the three verbs into SCHEDULING_*
+/// messages and sends them to the scheduler over IPC (C libsys's
+/// `sched_start`/`sched_inherit`/`sched_nice` — schedule.c's call sites go
+/// through `_taskcall(scheduler, …)`). The rv convention is the agreed one: 0
+/// is success, non-zero failure (a transport failure folds to negative `EIO`,
+/// the same shape as C `_taskcall`'s negative errno).
 pub struct MinixSchedCtl<'a, T: IpcTransport> {
-    /// IPC 传输（PM 本地 trait；`vm_fork` 的手工组消息先例）。
+    /// The IPC transport (PM's local trait; the `vm_fork` hand-built message
+    /// sets the precedent).
     pub transport: &'a mut T,
 }
 
@@ -167,8 +170,8 @@ impl<'a, T: IpcTransport> MinixSchedCtl<'a, T> {
         Self { transport }
     }
 
-    /// 组 `MessLsysSchedSchedulingStart`（START/INHERIT 共用载荷：
-    /// endpoint/parent/maxprio(/quantum)）。
+    /// Build `MessLsysSchedSchedulingStart` (START/INHERIT share the payload:
+    /// endpoint/parent/maxprio(/quantum)).
     fn sched_start_msg(
         endpoint: Endpoint,
         parent: Endpoint,
@@ -187,28 +190,34 @@ impl<'a, T: IpcTransport> MinixSchedCtl<'a, T> {
         msg
     }
 
-    /// 一次 taskcall：发出 → 回复 `m_type` 即 rv（OK = 0，拒绝码非 0）。
+    /// One taskcall: send → the reply's `m_type` is the rv (OK = 0, a refusal
+    /// code is non-zero).
     fn taskcall(&mut self, sched: Endpoint, mut msg: Message) -> i32 {
-        // NK4-C 1.10w 修复：ELOCKED(208) 重试——对照 C `_taskcall` 的阻塞
-        // 直到投递/应答语义。PM↔sched 的应答/下一请求时序错位（1.10n/
-        // 1.10u elock 实锤）时，重试等 sched 的 receive 半就绪后自行
-        // 解开；tick 活跃提供抢占，不会永久互卡。
+        // ELOCKED (208) is retried, matching C `_taskcall`'s block-until-
+        // delivered/answered semantics. When the PM↔sched answer/next-request
+        // ordering slips (observed in practice), the retry waits for sched's
+        // receive half to become ready and then clears itself; the active tick
+        // provides preemption, so the two sides cannot jam forever.
         let mut retries: u32 = 0;
         loop {
             match self.transport.sendrec(sched, &mut msg) {
-                // C `_taskcall` 传输失败返回负 errno；这里折负 EIO。
+                // C `_taskcall` returns a negative errno on transport failure;
+                // this folds to negative EIO.
                 Err(_) => return -minix_types::EIO,
                 Ok(()) => {
                     let rv = msg.m_type;
-                    // ELOCKED 在线序上是**负**值：C 的 SCHED 以 `_SYSTEM`
-                    // 编译（sched.h:4），`_taskcall` 原样带回回复的 m_type，
-                    // 所以 C 的重试判据 `rv == ELOCKED` 比的是负数（本树
-                    // 判定面用正号常量，服务器在回复边界折号——单源
-                    // `minix_types::reply_status`）。
+                    // ELOCKED is **negative** on the wire: C's SCHED is
+                    // compiled with `_SYSTEM` (sched.h:4), and `_taskcall`
+                    // brings the reply's m_type back unchanged, so C's retry
+                    // test `rv == ELOCKED` compares a negative number (this
+                    // tree's decision face uses the positive constant, and the
+                    // server folds the sign at the reply boundary — single
+                    // source `minix_types::reply_status`).
                     if rv == -minix_types::ELOCKED {
-                        // ELOCKED：tick 抢占（133Hz）下 sched 取得 CPU 推进
-                        // 其 receive 半后本 send 即可投递——无界重试对位 C
-                        // `_taskcall` 的阻塞直到投递语义。
+                        // ELOCKED: under tick preemption (133Hz) sched gets
+                        // the CPU, advances its receive half, and this send can
+                        // then be delivered — unbounded retry matches C
+                        // `_taskcall`'s block-until-delivered semantics.
                         retries = retries.wrapping_add(1);
                         if retries > 1_000_000 {
                             return -minix_types::EIO;
@@ -244,15 +253,15 @@ impl<'a, T: IpcTransport> SchedCtl for MinixSchedCtl<'a, T> {
         parent: Endpoint,
         maxprio: u32,
     ) -> i32 {
-        // C sched_inherit（sched_start.c:24-33）：载荷同 START、
-        // quantum 留 0；消息号 SCHEDULING_INHERIT。
+        // C sched_inherit (sched_start.c:24-33): same payload as START,
+        // quantum left at 0; message number SCHEDULING_INHERIT.
         let mut msg = Self::sched_start_msg(schedulee, parent, maxprio as i32, 0);
         msg.m_type = minix_types::SCHEDULING_INHERIT;
         self.taskcall(sched, msg)
     }
 
     fn set_nice(&mut self, sched: Endpoint, schedulee: Endpoint, maxprio: u32) -> i32 {
-        // C sched_nice（schedule.c:103-107）：SET_NICE 两域。
+        // C sched_nice (schedule.c:103-107): SET_NICE has two fields.
         let mut msg = Message::default();
         msg.m_u.m_pm_sched_scheduling_set_nice =
             minix_types::ipc::MessPmSchedSchedulingSetNice {
@@ -265,12 +274,12 @@ impl<'a, T: IpcTransport> SchedCtl for MinixSchedCtl<'a, T> {
     }
 }
 
-/// `can_nice` (`schedule.c:98-99` D3).
+/// `can_nice` (`schedule.c:98-99`).
 pub fn can_nice(scheduler: Endpoint) -> bool {
     scheduler != Endpoint::KERNEL && scheduler != Endpoint::NONE
 }
 
-/// `inherit_parent` (`schedule.c:71-76` D2).
+/// `inherit_parent` (`schedule.c:71-76`).
 pub fn inherit_parent(table: &ProcTable, parent_slot: UserSlot) -> Endpoint {
     let parent = &table.procs[parent_slot.get()];
     if parent.is_kernel_process() {
@@ -286,7 +295,7 @@ pub fn inherit_parent_precise(table: &ProcTable, parent_slot: UserSlot) -> Endpo
     inherit_parent(table, parent_slot)
 }
 
-/// `sched_init` (`schedule.c:20-50` D1).
+/// `sched_init` (`schedule.c:20-50`).
 pub fn sched_init(table: &mut ProcTable, sched: &mut dyn SchedCtl) -> Vec<(UserSlot, i32)> {
     let mut results = Vec::new();
     for idx in 0..minix_types::NR_PROCS {
@@ -315,17 +324,21 @@ pub fn sched_init(table: &mut ProcTable, sched: &mut dyn SchedCtl) -> Vec<(UserS
     results
 }
 
-/// `sched_start_user` (`schedule.c:55-84` D2)。
+/// `sched_start_user` (`schedule.c:55-84`).
 ///
-/// `ep` 形参 = 目标进程自身的 endpoint（C: `rmp->mp_endpoint`），作为
-/// SCHEDULING_INHERIT 载荷的 schedulee 字段传给调度器。调度器地址
-///（C: `rmp->mp_scheduler`）由函数内部从 `resources.scheduler` 读取。
-/// KERNEL/NONE 表示父进程无用户态调度器，C 直接跳过（main.c:370-371）。
-/// V3-P2-3 之前硬编码 `SCHED_PROC_NR` 且无守卫——父调度器非 SCHED 时
-/// 语义分叉。成功后 `resources.scheduler` 回写实际调度器（C 的出参语义）。
+/// The `ep` parameter is the target process's own endpoint (C:
+/// `rmp->mp_endpoint`), passed to the scheduler as the schedulee field of the
+/// SCHEDULING_INHERIT payload. The scheduler address (C: `rmp->mp_scheduler`)
+/// is read inside the function from `resources.scheduler`. KERNEL/NONE means
+/// the parent has no user-space scheduler and C skips the call outright
+/// (main.c:370-371). An earlier version hardcoded `SCHED_PROC_NR` with no
+/// guard — the semantics diverged whenever the parent scheduler was not SCHED.
+/// On success `resources.scheduler` is written back with the actual scheduler
+/// (C's out-parameter semantics).
 pub fn sched_start_user(table: &mut ProcTable, ep: Endpoint, rmp_slot: UserSlot, sched: &mut dyn SchedCtl) -> Result<(), SchedError> {
     let scheduler = table.procs[rmp_slot.get()].resources.scheduler;
-    // C main.c:370-371：KERNEL/NONE 无用户态调度器可继承，直接跳过。
+    // C main.c:370-371: KERNEL/NONE has no user-space scheduler to inherit
+    // from, so skip outright.
     if scheduler == Endpoint::KERNEL || scheduler == Endpoint::NONE {
         return Ok(());
     }
@@ -336,14 +349,14 @@ pub fn sched_start_user(table: &mut ProcTable, ep: Endpoint, rmp_slot: UserSlot,
     let inherit_from = inherit_parent_precise(table, parent_slot);
     let res = sched.inherit(scheduler, ep, inherit_from, maxprio as u32);
     if res != 0 {
-        // C schedule.c:83 透传 rv（V3-P2-6：不折叠 EINVAL）。
+        // C schedule.c:83 passes the rv through (no folding to EINVAL).
         return Err(SchedError::Kernel(res));
     }
     table.procs[rmp_slot.get()].resources.scheduler = scheduler;
     Ok(())
 }
 
-/// `sched_nice` (`schedule.c:89-112` D3).
+/// `sched_nice` (`schedule.c:89-112`).
 pub fn sched_nice(table: &mut ProcTable, rmp_slot: UserSlot, nice: i32, sched: &mut dyn SchedCtl) -> Result<(), SchedError> {
     let scheduler = table.procs[rmp_slot.get()].resources.scheduler;
     if !can_nice(scheduler) {
@@ -354,18 +367,18 @@ pub fn sched_nice(table: &mut ProcTable, rmp_slot: UserSlot, nice: i32, sched: &
     let ep = table.procs[rmp_slot.get()].endpoint();
     let res = sched.set_nice(scheduler, ep, maxprio);
     if res != 0 {
-        // C schedule.c:108 透传 rv（V3-P2-6）。
+        // C schedule.c:108 passes the rv through.
         return Err(SchedError::Kernel(res));
     }
     Ok(())
 }
 
-/// `may_get_prio` (`misc.c:260-262` D6).
+/// `may_get_prio` (`misc.c:260-262`).
 pub fn may_get_prio(caller: &Credentials, target: &Credentials) -> bool {
     caller.is_superuser() || caller.user.effective == target.user.effective || caller.user.effective == target.user.real
 }
 
-/// `may_set_prio` (`misc.c:270-271` D6).
+/// `may_set_prio` (`misc.c:270-271`).
 pub fn may_set_prio(caller: &Credentials, target: &Credentials, target_nice: i32, arg_pri: i32) -> Result<(), SchedError> {
     if !may_get_prio(caller, target) {
         return Err(SchedError::Perm);
@@ -376,7 +389,7 @@ pub fn may_set_prio(caller: &Credentials, target: &Credentials, target_nice: i32
     Ok(())
 }
 
-/// `do_getsetpriority` (`misc.c:239-286` D5/D6).
+/// `do_getsetpriority` (`misc.c:239-286`).
 pub fn do_getsetpriority(
     table: &mut ProcTable,
     caller: UserSlot,
@@ -517,13 +530,14 @@ mod tests {
         let mut c = CaptureSched { last_sched: None, last_maxprio: None, last_parent: None };
         sched_start_user(&mut table, Endpoint::from_generation_slot(1,5), UserSlot::new(5), &mut c).unwrap();
         assert_eq!(c.last_parent, Some(Endpoint::INIT));
-        // V3-P2-3：调度器 endpoint = 继承值（slot 5 的 mp_scheduler = SCHED）。
+        // The scheduler endpoint is the inherited value (slot 5's
+        // mp_scheduler = SCHED).
         assert_eq!(c.last_sched, Some(Endpoint::SCHED));
     }
 
-    /// V3-P2-3 回归锚点：scheduler=NONE → C main.c:370-371 直接跳过
-    ///（不调内核、不回写）；scheduler=非 SCHED → 按继承值转发（旧代码
-    /// 硬编码 SCHED_PROC_NR 且无守卫）。
+    /// Regression anchor: scheduler=NONE → C main.c:370-371 skips outright (no
+    /// kernel call, no write-back); scheduler=non-SCHED → forward with the
+    /// inherited value (the older code hardcoded SCHED_PROC_NR with no guard).
     #[test]
     fn test_sched_start_user_skips_none_and_inherits_scheduler() {
         let mut table = ProcTable::new();
@@ -533,7 +547,8 @@ mod tests {
         assert_eq!(c.last_sched, None, "NONE scheduler must skip the kernel call");
         assert_eq!(table.procs[5].resources.scheduler, Endpoint::NONE);
 
-        // 父的调度器为自定义 endpoint → inherit 按继承值转发。
+        // The parent's scheduler is a custom endpoint → inherit forwards the
+        // inherited value.
         let custom = Endpoint::from_generation_slot(3, 30);
         table.procs[5].resources.scheduler = custom;
         sched_start_user(&mut table, Endpoint::from_generation_slot(1,5), UserSlot::new(5), &mut c).unwrap();
@@ -551,9 +566,10 @@ mod tests {
         assert_eq!(sched_nice(&mut table, UserSlot::new(5), 0, &mut s).unwrap_err(), SchedError::Inval);
     }
 
-    /// C taskcall.c:17-20：`_taskcall` 的 rv = 回复 m_type——SCHED 的拒绝
-    /// 码必须经 `MinixSchedCtl::taskcall` 透传为 `SchedError::Kernel`，
-    /// 而不是被传输成功掩盖成 0（schedule.c:108 透传给调用方）。
+    /// C taskcall.c:17-20: `_taskcall`'s rv is the reply's m_type — SCHED's
+    /// refusal code must be passed through by `MinixSchedCtl::taskcall` as
+    /// `SchedError::Kernel`, not masked into 0 by the transport succeeding
+    /// (schedule.c:108 passes it through to the caller).
     #[test]
     fn test_sched_nice_refusal_rv_is_reply_m_type() {
         let mut table = ProcTable::new();
@@ -570,8 +586,9 @@ mod tests {
         );
     }
 
-    /// sched_init 的拒绝分支（schedule.c:44-47 的 printf 同语义）由 rv
-    /// 驱动：SCHED 拒绝时结果里携带拒绝码、`mp_scheduler` 不被回写。
+    /// sched_init's refusal branch (same semantics as the printf at
+    /// schedule.c:44-47) is driven by the rv: when SCHED refuses, the result
+    /// carries the refusal code and `mp_scheduler` is not written back.
     #[test]
     fn test_sched_init_refusal_keeps_scheduler_unset() {
         let mut table = ProcTable::new();
@@ -676,8 +693,9 @@ mod tests {
         assert_eq!(PRIO_PROCESS, 0);
     }
 
-    /// C: `com.h:806` `SCHEDULING_SET_NICE = SCHEDULING_BASE+4` = 0xF04。
-    /// 锁住本模块的发送腿常量与 `minix-types` 单一真相一致（防再次出现本地 `=5`）。
+    /// C: `com.h:806` `SCHEDULING_SET_NICE = SCHEDULING_BASE+4` = 0xF04.
+    /// Locks this module's send-leg constant to the `minix-types` single source
+    /// of truth (so a local `=5` cannot come back).
     #[test]
     fn test_scheduling_set_nice_matches_c() {
         assert_eq!(SCHEDULING_SET_NICE, minix_types::SCHEDULING_SET_NICE);

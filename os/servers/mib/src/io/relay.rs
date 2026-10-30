@@ -101,7 +101,7 @@ impl RelayRegion {
 pub struct RelayRequest {
     /// The caller whose memory the service may touch. C: `endpoint`.
     pub caller: Endpoint,
-    /// Region base in the caller's space. C: `oldp->oldp_addr` 一带.
+    /// Region base in the caller's space. C: `oldp->oldp_addr` and kin.
     pub addr: u64,
     /// Region length. C: `*lenp`.
     pub len: u64,
@@ -243,11 +243,13 @@ mod tests {
     }
 }
 
-// ── The remote-call bundle (12's execution half) ──
+// ── The remote-call bundle (the execution half of 12) ──
 //
-// `RelayedCall`（minix-types，wire 包装视图）携带三个 grant id 与转发
-// 参数；`RemoteReplyWire` 承接应答。Send 本身是 `MibServices::remote_call`
-// 的体（P1-4 形状修订：这一动词初版漏列，walker 落地时补全并记录）。
+// `RelayedCall` (minix-types, a wire wrapper view) carries the three grant
+// ids and the forwarding arguments; `RemoteReplyWire` receives the reply.
+// Send itself is the body of `MibServices::remote_call` (the shape was
+// revised: the first version of this verb omitted it; the walker added it
+// and recorded the omission).
 
 use minix_types::MessMibLsysCall;
 

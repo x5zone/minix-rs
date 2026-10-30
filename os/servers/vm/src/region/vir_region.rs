@@ -10,7 +10,7 @@
 //!
 //! `PageSlot` is an explicit two-state machine (Empty / Mapped); demand
 //! paging materializes slots at fault time via `PagefaultResult::NeedNewPage`
-//! (the former Reserved/lazy-placeholder state was deleted, V12-P2-4).
+//! (the former Reserved/lazy-placeholder state was deleted).
 
 use super::page_state::{PageFrames, PageSlot, PageFlags, PAGE_SIZE};
 use minix_types::{AssumeSyncCell, PhysBytes, VirBytes, UserSlot};
@@ -74,13 +74,13 @@ impl VrFlags {
 pub(crate) enum VrParam {
     Direct { phys: PhysBytes },
     Shared { ep: i32, vaddr: VirBytes, id: i32 },
-    // V11/T28 judgment: C's `param.pb_cache` (mem_cache.c) was a one-shot
-    // mailbox between `do_mapcache`'s loop and `cache_pagefault` — set and
-    // consumed within the same syscall iteration. minix-rs fuses that loop
-    // into `dispatch_mapcache`'s eager `map_page` (the hit PFN goes
-    // directly into `PageSlot::Mapped`), so no cached-PFN param exists and
-    // none is needed. The former test-only `PbCache { pfn }` variant was
-    // plumbing without a driver and was removed.
+    // C's `param.pb_cache` (mem_cache.c) was a one-shot mailbox between
+    // `do_mapcache`'s loop and `cache_pagefault` — set and consumed within
+    // the same syscall iteration. minix-rs fuses that loop into
+    // `dispatch_mapcache`'s eager `map_page` (the hit PFN goes directly into
+    // `PageSlot::Mapped`), so no cached-PFN param exists and none is needed.
+    // The former test-only `PbCache { pfn }` variant was plumbing without a
+    // driver and was removed.
     File { inited: bool, fdref_id: Option<u32>, offset: u64, clearend: u16 },
 }
 
@@ -187,17 +187,19 @@ impl VirRegion {
         self.flags.contains(VrFlags::WRITABLE)
     }
 
-    /// B41 (§1.74/§1.75)：region 是否请求可执行性（承载 `PROT_EXEC`）。
-    /// C 在 i386 无 NX，`allocmem_prealloc_junk` 恒以 R|W|X 装载，故从不
-    /// 建模可执行位；x86-64 启用 NXE（[ARCH] fix27e W^X）后，取指缺页要求
-    /// 页表显式带 `EXECUTABLE`。该位由 `to_vr_flags` 从 `ProtFlags::EXEC`
-    /// 承接，供两条 PTE 构造路径（`sync_slot_pte` 缺页腿、
-    /// `write_page_table_mappings` fork 腿）按 caller 真实 prot 组 flags。
+    /// Whether the region requests executability (carries `PROT_EXEC`).
+    /// C on i386 has no NX and loads every `allocmem_prealloc_junk` mapping
+    /// as R|W|X, so it never models an executable bit; with NXE enabled on
+    /// x86-64 (W^X), an instruction-fetch fault requires the page table to
+    /// carry `EXECUTABLE` explicitly. `to_vr_flags` carries that bit over
+    /// from `ProtFlags::EXEC` so the two PTE construction paths (the fault
+    /// leg in `sync_slot_pte`, the fork leg in `write_page_table_mappings`)
+    /// can build flags from the caller's real prot.
     pub(crate) fn is_executable(&self) -> bool {
         self.flags.contains(VrFlags::EXECUTABLE)
     }
 
-    // V10-P2-1: no callers yet (flag checks are done via `flags()`
+    // No callers yet (flag checks are done via `flags()`
     // directly in the fork/CoW paths). Kept as the documented accessors.
     #[allow(dead_code)]
     pub(crate) fn is_anon(&self) -> bool {
@@ -289,7 +291,7 @@ impl VirRegion {
 
     /// C `pr_writable` (region.c:130-133): the page is writable only when
     /// the region carries VR_WRITABLE **and** the memory type says the page
-    /// itself is writable. The PTE-write paths (fault sync G-V12-8, fork's
+    /// itself is writable. The PTE-write paths (fault sync, fork's
     /// `write_page_table_mappings`) must consult this — a bare
     /// `self.is_writable() && refcount == 1` ignores the memtype and lets
     /// never-writable pages (e.g. MappedFile) get RW mappings.
@@ -368,9 +370,11 @@ impl VirRegion {
         // C: both halves are minted through `region_new(..., vr->def_memtype)`
         // (split_region, region.c:1174-1182) — the memtype is INHERITED by a
         // split. Losing it here made every fault into the split remainder die
-        // on CowError::NoMemType → SIGSEGV (真机 gh158 定谳：exec 二次
-        // MAP_FIXED 叠到 heap 段中部 → unmap_range 头切 → [0x40401000,+0x1000)
-        // 尾巴无 memtype → memset_nonzero 堆尾写 0x40402000 丢命，§续-279m）。
+        // on CowError::NoMemType → SIGSEGV (observed on real hardware gh158:
+        // a second exec MAP_FIXED stacked onto the middle of the heap segment
+        // → unmap_range cut off the head → the [0x40401000,+0x1000) tail had
+        // no memtype → memset_nonzero writing the heap tail at 0x40402000
+        // died).
         left.def_memtype = self.def_memtype;
         right.def_memtype = self.def_memtype;
         // The right half is a brand-new region identity: C's split_region
@@ -471,7 +475,7 @@ mod tests {
         fn free_pfn(&mut self, _pfn: u32) {}
     }
 
-    /// G-V12-7: C mints a fresh id per region (`region.c:445`,
+    /// C mints a fresh id per region (`region.c:445`,
     /// `newregion->id = id++`); shared-remap `getsrc` validates the recorded
     /// id against the survivor at the recorded vaddr, which only detects a
     /// recycled address if ids never repeat.
@@ -485,10 +489,12 @@ mod tests {
         assert_ne!(a.id, c.id);
     }
 
-    /// §续-279m regression: C's split_region passes `vr->def_memtype` into
-    /// BOTH `region_new` calls (region.c:1174-1182) — losing it made faults
-    /// into a split remainder die on CowError::NoMemType (真机 gh158: heap
-    /// 段被二次 MAP_FIXED 头切后堆尾页永不可服务，memset_nonzero SIGSEGV)。
+    /// Regression: C's split_region passes `vr->def_memtype` into BOTH
+    /// `region_new` calls (region.c:1174-1182) — losing it made faults into a
+    /// split remainder die on CowError::NoMemType (observed on real hardware
+    /// gh158: after a second MAP_FIXED cut the head off the heap segment, the
+    /// heap tail pages could never be served, and memset_nonzero raised
+    /// SIGSEGV).
     #[test]
     fn test_split_inherits_def_memtype() {
         let vr = VirRegion::with_memtype(
@@ -586,9 +592,10 @@ mod tests {
 
     #[test]
     fn test_vir_region_split() {
-        // §续-279m: split 现在要求母区有 memtype（C split_region 把
-        // vr->def_memtype 传进两半 region_new，region.c:1174-1182；无 memtype
-        // 的 region 是 C 不存在的形）——夹具同步取真形。
+        // split now requires the parent region to have a memtype (C's
+        // split_region passes `vr->def_memtype` into both `region_new` calls,
+        // region.c:1174-1182; a region without a memtype is a shape C never
+        // has) — the fixture takes the real shape accordingly.
         let region = VirRegion::with_memtype(
             VirBytes(0x1000),
             VirBytes(0x4000),
@@ -650,8 +657,8 @@ mod tests {
         // 1. Fresh slot reads as unmapped to every query.
         assert!(region.get_slot(VirBytes(0x1000)).is_none());
 
-        // 2. Materialize: backed page (V12-P2-4: the lazy/Reserved detour
-        //    is gone — demand paging materializes via NeedNewPage).
+        // 2. Materialize: backed page (the lazy/Reserved detour is gone —
+        //    demand paging materializes via NeedNewPage).
         let pfn = alloc.alloc_pfn().unwrap();
         region.map_page(&mut frames, VirBytes(0x1000), pfn, &crate::memtype::MEM_TYPE_ANON);
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);

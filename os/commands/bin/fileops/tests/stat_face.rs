@@ -7,9 +7,9 @@
 //!
 //! The first is the **four-field** report line. C's failure leg is
 //! `warn("%s: %s", name, usestat ? "stat" : "lstat")` (`stat.c:340-344`), and
-//! `vwarnc.c` renders `warn` as `<getprogname()>: <格式串输出>: <strerror(errno)>`, so
-//! the full line is `stat: <名>: lstat: <句子>` — program name, operand, the word C
-//! puts in the format string, and the sentence behind the number. Before this round
+//! `vwarnc.c` renders `warn` as `<getprogname()>: <format-output>: <strerror(errno)>`, so
+//! the full line is `stat: <name>: lstat: <sentence>` — program name, operand, the word C
+//! puts in the format string, and the sentence behind the number. Previously
 //! the shell stopped after the third field, which makes a permission denial and a
 //! vanished operand read alike; `-L` also has to say `stat`, not `lstat`, because
 //! that word follows the option and not the syscall that finally answered.
@@ -47,7 +47,8 @@ fn run(args: &[&str]) -> (String, i32, String) {
     run_at(Path::new(env!("CARGO_BIN_EXE_stat")), args)
 }
 
-/// The `<prog>: <operand>: <腿名>: <句子>` shape, checked field by field.
+/// The `<prog>: <operand>: <leg-name>: <sentence>` shape, checked field by
+/// field.
 fn assert_four_fields(err: &str, prog: &str, operand: &str, leg: &str) {
     let head = format!("{prog}: {operand}: {leg}: ");
     assert!(err.starts_with(&head), "`{err}` should start with `{head}`");
@@ -95,7 +96,7 @@ fn quiet_silences_the_leg_and_still_fails() {
 fn the_format_refusals_and_the_bad_format_are_errx_lines() {
     // Three `errx` legs, none of which consults `errno`: `stat.c:261-263`
     // (`can't use format '%c' with '%c'`), `:289-291` (`... with -F`), and
-    // `:555-556`/`:989` (`<子格式串>: bad format`). Each ends at the phrase.
+    // `:555-556`/`:989` (`<sub-format>: bad format`). Each ends at the phrase.
     let (_, status, err) = run(&["-F", "-f", "%N", "/tmp/stat-face-x"]);
     assert_eq!(status, 1);
     assert_eq!(err, "stat: can't use format 'f' with -F\n");

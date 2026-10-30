@@ -6,7 +6,8 @@
 //! attributes (`tcgetattr` → apply → `tcsetattr`), including whole
 //! `gfmt1:...` operands (`stty.c:143-146`). The C main loop prints and
 //! then consumes operands even in `-a`/`-g` mode; this shell keeps the
-//! mutually exclusive branch shape declared in 13-terminal-termios.md §5.
+//! mutually exclusive branch shape declared in
+//! `rewrite-notes/18-stage-commands/13-terminal-termios.md`.
 
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -28,10 +29,12 @@ const STDERR: i32 = 2;
 
 
 fn fail(message: &str) -> ! {
-    //[SD19-gate] SD-19: fail 路径写 stderr 后立即 terminate，write 失败不改变退出码
+    //[SD19-gate] fail path writes stderr then terminates at once; a write
+    // failure does not change the exit code
     #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::write(STDERR, message.as_bytes());
-    //[SD19-gate] SD-19: fail 路径写 stderr 后立即 terminate，write 失败不改变退出码
+    //[SD19-gate] fail path writes stderr then terminates at once; a write
+    // failure does not change the exit code
     #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::write(STDERR, b"\n");
     support::terminate(1)
@@ -43,13 +46,15 @@ fn run() -> ! {
     let args: Vec<&str> = all[1..].to_vec();
 
     if args.first().map(|a| *a == "-g").unwrap_or(false) {
-        // C 的 STTY_GFLAG 支路（stty.c:120-122）：tcgetattr 后 gprint 一行。
+        // C's STTY_GFLAG branch (stty.c:120-122): tcgetattr, then one gprint
+        // line.
         let mut t = minix_sys::Termios::new();
         tcgetattr(STDIN, &mut t).unwrap_or_else(|_| fail("stdin is not a terminal"));
         let mut out = [0u8; 512];
         match grep_print(&t, &mut out) {
             Ok(used) => {
-                //[SD19-gate] SD-19: stty config 输出，write 失败无可恢复处
+                //[SD19-gate] stty config output; a write failure has no
+                // recovery point
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = minix_sys::write(STDOUT, &out[..used]);
             }
@@ -63,7 +68,8 @@ fn run() -> ! {
         let mut out = [0u8; 512];
         match display_a(&t, &mut out) {
             Ok(used) => {
-                //[SD19-gate] SD-19: stty config 输出，write 失败无可恢复处
+                //[SD19-gate] stty config output; a write failure has no
+                // recovery point
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = minix_sys::write(STDOUT, &out[..used]);
             }
@@ -73,11 +79,11 @@ fn run() -> ! {
     }
 
     if args.is_empty() {
-        // 无操作数：只打速度行（C `stty` 的缺省面）。
+        // No operands: print only the speed line (C `stty`'s default face).
         let mut t = minix_sys::Termios::new();
         tcgetattr(STDIN, &mut t).unwrap_or_else(|_| fail("stdin is not a terminal"));
         let line = format!("speed {} baud\n", t.c_ospeed);
-        //[SD19-gate] SD-19: stty speed 输出，write 失败无可恢复处
+        //[SD19-gate] stty speed output; a write failure has no recovery point
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::write(STDOUT, line.as_bytes());
         support::terminate(0);

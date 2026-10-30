@@ -43,8 +43,8 @@ use minix_sys::{Errno, gethostname, sethostname};
 /// [`MAX_HOSTNAME_LEN`] plus a terminator.
 const HOSTNAME_BUF_LEN: usize = MAX_HOSTNAME_LEN + 1;
 
-/// C 的 `usage()`（`hostname.c:94-100`）：`usage: %s [-s] [name-of-host]` 里的 `%s` 就是
-/// `getprogname()`，所以程序名与 `err(3)` 那行同源；退码 1。
+/// C's `usage()` (`hostname.c:94-100`): the `%s` in `usage: %s [-s] [name-of-host]` is
+/// `getprogname()`, so the program name is the same source as the `err(3)` line; exit 1.
 fn usage(prog: &str) -> ! {
     support::warn(format!("usage: {prog} [-s] [name-of-host]\n").as_bytes());
     support::terminate(1);
@@ -52,11 +52,11 @@ fn usage(prog: &str) -> ! {
 
 /// Fold a transport-or-service errno into the C `err(1, "…")` shape: a
 /// one-line stderr report prefixed by the operation, then exit 1. C's
-/// C 的 `err(1, "sethostname")`/`err(1, "gethostname")`（`hostname.c:81`/`:84`）：
-/// 那一行的形状在 `minix3/lib/libc/gen/verrc.c`——`getprogname(): ` + 调用者的串 +
-/// `": "` + `strerror` 的句子，然后退 1。程序名按 C 从 `argv[0]` 去掉目录取
-/// （[`support::prog_name`]），句子取自本树的 `sys_errlist`（[`support::err_exit`] 转发到
-/// `minix_sys::err_line`）。
+/// `err(1, "sethostname")`/`err(1, "gethostname")` (`hostname.c:81`/`:84`): that line's
+/// shape is in `minix3/lib/libc/gen/verrc.c` — `getprogname(): ` + the caller's string +
+/// `": "` + the `strerror` sentence, then exit 1. The program name is taken from `argv[0]`
+/// with the directory stripped ([`support::prog_name`]), and the sentence comes from this
+/// tree's `sys_errlist` ([`support::err_exit`] forwards to `minix_sys::err_line`).
 fn report_err(prog: &str, operation: &str, errno: Errno) -> ! {
     support::err_exit(prog, operation, errno, 1);
 }

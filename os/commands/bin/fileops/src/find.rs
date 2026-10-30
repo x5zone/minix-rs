@@ -1,19 +1,29 @@
-//! `find` 的选项面与表达式解析（决定半第一包）。
+//! `find`'s option surface and expression parsing (the deciding half's first
+//! package).
 //!
-//! 真源是 `minix3/usr.bin/find/`（NetBSD 派，3315 行分七件）：`main.c` 收全局选项与
-//! 路径/表达式的分界，`option.c` 是那张按字典序排过的主表（51 项，带「要不要参数」一位），
-//! `find.c` 把命令行折成计划表并补隐式 `-print`，`operator.c` 再按优先级把 `()`、`!`、`-o`
-//! 三段「压实」成树。本包只做这套语法与位操作，不做取值：遍历与判据（`function.c` 的
-//! `f_*` 一族）在下一包，薄壳在其后。
+//! Ground truth: `minix3/usr.bin/find/` (the NetBSD family, 3315 lines in seven
+//! files): `main.c` takes the global options and the boundary between paths and
+//! the expression, `option.c` is the lexically sorted main table (51 entries
+//! with a "takes an argument" bit), `find.c` folds the command line into a plan
+//! and adds the implicit `-print`, and `operator.c` then compresses `()`, `!`,
+//! and `-o` into a tree by precedence. This package does only that syntax and
+//! bit manipulation, not the value semantics: traversal and predicates (the
+//! `f_*` family in `function.c`) are the next package, and the thin shell comes
+//! after it.
 //!
-//! 值得先讲清的一处结构：C 的计划表是**链表**，相邻节点天然是「与」——`find_execute`
-//! 一路求值到某个节点返回假就停（`find.c:252` 的 `for (p = plan; p && (p->eval)(p, ...); p = p->next)`），
-//! 所以 `-a`/`-and` 的构造函数是 `c_null`（返回空、不产生节点，`function.c:1867`）。本包
-//! 把这条隐式「与」显式成序列（`Plan`），语义与 C 同形；`!` 与 `-o` 才产生树节点。
+//! One structural point worth stating first: C's plan is a **linked list**, and
+//! adjacent nodes are implicitly "and" — `find_execute` stops evaluating as soon
+//! as some node returns false (`find.c:252`'s `for (p = plan; p &&
+//! (p->eval)(p, ...); p = p->next)`), so the constructor for `-a`/`-and` is
+//! `c_null` (returns empty and produces no node, `function.c:1867`). This
+//! package makes that implicit "and" explicit as a sequence (`Plan`), with the
+//! same semantics as C; only `!` and `-o` produce tree nodes.
 //!
-//! 另一处是 `find.c:104-107` 那条注释与代码不合：注释说只有 `-print`/`-ok`/`-fprint`/
-//! `-exec`/`-exit` 算「有输出」，代码里置 `isoutput` 的其实是九处（另含 `-delete`、
-//! `-execdir`、`-ls`、`-print0`、`-printx`）。按真值优先序取代码的行为。
+//! The other point is that the comment at `find.c:104-107` disagrees with the
+//! code: the comment says only `-print`/`-ok`/`-fprint`/`-exec`/`-exit` count as
+//! "producing output", but nine places actually set `isoutput` (including
+//! `-delete`, `-execdir`, `-ls`, `-print0`, and `-printx`). Per the truth
+//! precedence order, the code's behavior wins.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -22,92 +32,106 @@ use alloc::vec;
 use alloc::vec::Vec;
 use minix_sys::{Errno, Strerror};
 
-/// `fts_open` 的选项位。位值照 `minix3/include/fts.h:71-77`；本层不传给真的 fts，
-/// 下一包的遍历腿按这些位决定怎么走，所以位值只用来彼此区分。
+/// Option bits of `fts_open`. The bit values follow
+/// `minix3/include/fts.h:71-77`; this layer does not hand them to a real fts,
+/// and the next package's traversal leg decides how to walk from these bits, so
+/// the values only need to be mutually distinct.
 pub mod fts {
-    /// `fts.h:71`：跟随命令行上的符号链。
+    /// `fts.h:71`: follow symlinks given on the command line.
     pub const COMFOLLOW: u32 = 0x001;
-    /// `fts.h:72`：逻辑遍历（对符号链本身取 `stat` 后的目标）。
+    /// `fts.h:72`: logical walk (`stat` the target behind the symlink itself).
     pub const LOGICAL: u32 = 0x002;
-    /// `fts.h:74`：不为目录项取 `stat`。初值就带着它。
+    /// `fts.h:74`: do not `stat` directory entries. Part of the initial value.
     pub const NOSTAT: u32 = 0x008;
-    /// `fts.h:75`：物理遍历（对符号链本身取属性）。初值就带着它。
+    /// `fts.h:75`: physical walk (take the attributes of the symlink itself).
+    /// Part of the initial value.
     pub const PHYSICAL: u32 = 0x010;
-    /// `fts.h:77`：不跨越设备边界。
+    /// `fts.h:77`: do not cross device boundaries.
     pub const XDEV: u32 = 0x040;
 }
 
-/// 全局选项折叠出的遍历开关位，按 `main.c:88-124` 的位操作逐条照搬。
+/// The walk option bits folded from the global options, copied bit operation
+/// by bit operation from `main.c:88-124`.
 ///
-/// 关键的不显眼神：`-h` 与 `-L` 都做逻辑遍历，但 `-L` 先清 `COMFOLLOW|PHYSICAL`
-/// （`main.c:96`）而 `-h` 只清 `PHYSICAL`（`main.c:113`）——所以 `-H -h` 留下的
-/// `COMFOLLOW` 仍在，`-L -h` 则不带。把它们压成一个三值枚举就会丢掉这个差别。
+/// The key difference that is easy to miss: `-h` and `-L` both do logical
+/// walks, but `-L` clears `COMFOLLOW|PHYSICAL` first (`main.c:96`) while `-h`
+/// clears only `PHYSICAL` (`main.c:113`) — so `-H -h` still leaves `COMFOLLOW`
+/// set, whereas `-L -h` does not. Collapsing them into a three-value enum would
+/// lose that difference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalkOptions(pub u32);
 
 impl Default for WalkOptions {
-    /// `main.c:88`：初值 `FTS_NOSTAT | FTS_PHYSICAL`。
+    /// `main.c:88`: initial value `FTS_NOSTAT | FTS_PHYSICAL`.
     fn default() -> Self {
         WalkOptions(fts::NOSTAT | fts::PHYSICAL)
     }
 }
 
 impl WalkOptions {
-    /// `-H`（`main.c:91-94`）。
+    /// `-H` (`main.c:91-94`).
     pub fn set_capital_h(&mut self) {
         self.0 &= !fts::LOGICAL;
         self.0 |= fts::PHYSICAL | fts::COMFOLLOW;
     }
 
-    /// `-L`（`main.c:95-98`）。
+    /// `-L` (`main.c:95-98`).
     pub fn set_capital_l(&mut self) {
         self.0 &= !(fts::COMFOLLOW | fts::PHYSICAL);
         self.0 |= fts::LOGICAL;
     }
 
-    /// `-P`（`main.c:99-102`）。
+    /// `-P` (`main.c:99-102`).
     pub fn set_capital_p(&mut self) {
         self.0 &= !(fts::COMFOLLOW | fts::LOGICAL);
         self.0 |= fts::PHYSICAL;
     }
 
-    /// `-h`（`main.c:112-115`）：只清 `PHYSICAL`，不动 `COMFOLLOW`。
+    /// `-h` (`main.c:112-115`): clears only `PHYSICAL`, leaving `COMFOLLOW`
+    /// alone.
     pub fn set_lower_h(&mut self) {
         self.0 &= !fts::PHYSICAL;
         self.0 |= fts::LOGICAL;
     }
 
-    /// `-x`（`main.c:122-124`）：只加位，不清任何东西。
+    /// `-x` (`main.c:122-124`): sets a bit only, clears nothing.
     pub fn set_lower_x(&mut self) {
         self.0 |= fts::XDEV;
     }
 
-    /// 某位是否在。判据与下一包的遍历腿都用它。
+    /// Whether a bit is set. Used by the predicates and by the next package's
+    /// traversal leg.
     pub const fn has(&self, bit: u32) -> bool {
         self.0 & bit != 0
     }
 }
 
-/// 一个主表项的形态：需不需要紧跟一个参数。逐条抄 `option.c:59-110` 那张表的第四列。
+/// The shape of a main-table entry: whether it needs a following argument.
+/// Copied entry by entry from the fourth column of the table at
+/// `option.c:59-110`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arity {
-    /// 不带参数（`!`、`(`、`)`、`-print`、`-delete`…）。
+    /// No argument (`!`, `(`, `)`, `-print`, `-delete`, ...).
     None,
-    /// 带一个参数（`-name foo`、`-size +10`…）。
+    /// One argument (`-name foo`, `-size +10`, ...).
     One,
 }
 
-/// 主表的名字与元数（`option.c:59-110`）。`-exec`/`-ok`/`-execdir` 特殊：C 的第四列
-/// 是 1，但它们的「参数」是吃到 `;`/`+` 为止的一串，由 [`Prim::Exec`] 自己收。
+/// Name and arity of the main table (`option.c:59-110`).
+/// `-exec`/`-ok`/`-execdir` are special: C's fourth column says 1, but their
+/// "argument" is a run of tokens collected up to `;`/`+`, which [`Prim::Exec`]
+/// collects itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TableEntry {
     pub name: &'static str,
     pub arity: Arity,
-    /// 是否置 `isoutput`（决定要不要补隐式 `-print`）。
+    /// Whether it sets `isoutput` (which decides whether the implicit `-print`
+    /// is needed).
     pub produces_output: bool,
 }
 
-/// 那张表按字典序原样落一遍：C 用 `bsearch` 查它（`option.c:145-151`），顺序即语义前提。
+/// The table transcribed in lexical order: C searches it with `bsearch`
+/// (`option.c:145-151`), so the order is a semantic precondition.
 pub const OPTIONS: &[TableEntry] = &[
     entry("!", Arity::None, false),
     entry("(", Arity::None, false),
@@ -170,113 +194,146 @@ const fn entry(name: &'static str, arity: Arity, produces_output: bool) -> Table
     }
 }
 
-/// 查表。C 用 `bsearch`，本层线性扫同一张表——顺序一致就结果一致。
+/// Table lookup. C uses `bsearch`; this layer scans the same table linearly —
+/// the same order gives the same result.
 pub fn lookup(name: &str) -> Option<&'static TableEntry> {
     OPTIONS.iter().find(|e| e.name == name)
 }
 
-/// 一个叶子判据或动作。参数原样留着（`&'a str`），取值语义在下一包。
+/// One leaf predicate or action. Arguments are kept as-is (`&'a str`); the
+/// value semantics live in the next package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Prim<'a> {
-    /// 带一个字符串参数的表项：`-name`、`-path`、`-perm`、`-size`、`-type`、
-    /// `-inum`、`-links`、`-atime`、`-amin`、`-mmin`、`-newer`、`-user`… 一律按
-    /// 「表项名 + 原文」存，避免把下一包的取值口径提前塞进解析。
+    /// Entries with one string argument: `-name`, `-path`, `-perm`, `-size`,
+    /// `-type`, `-inum`, `-links`, `-atime`, `-amin`, `-mmin`, `-newer`,
+    /// `-user`, ... are all stored as "entry name + original text", keeping the
+    /// next package's value-interpretation rules out of the parser.
     Keyword { name: &'a str, arg: &'a str },
-    /// 不带参数的表项（`-print`、`-delete`、`-prune`、`-depth`、`-false`…）。
+    /// Entries without an argument (`-print`, `-delete`, `-prune`, `-depth`,
+    /// `-false`, ...).
     Bare(&'a str),
-    /// `-exec`/`-execdir`/`-ok`：C 从参数串一路吃到单独的 `;`（或紧跟 `{}` 之后的
-    /// `+`，`function.c:647-660`）。`is_ok` 记 `-ok`/`-okdir`（`create` 的第二实参）。
+    /// `-exec`/`-execdir`/`-ok`: C consumes the argument run up to a lone `;`
+    /// (or a `+` immediately after `{}`, `function.c:647-660`). `is_ok` records
+    /// `-ok`/`-okdir` (the second argument of `create`).
     Exec {
         name: &'a str,
         is_ok: bool,
         argv: Vec<&'a str>,
-        /// 收尾用的是 `+` 还是 `;`。
+        /// Whether the terminator is `+` or `;`.
         plus: bool,
     },
 }
 
-/// 表达式树的一个节点。
+/// One node of the expression tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Node<'a> {
-    /// 叶子。
+    /// A leaf.
     Leaf(Prim<'a>),
-    /// `!` 收下的那**一个**表达式（C 的 `c_not` 用 `yankexpr` 一次只取一个节点，
-    /// `operator.c:175-183`；分组靠 `Paren`）。
+    /// The **one** expression `!` takes (C's `c_not` uses `yankexpr`, which
+    /// takes one node at a time, `operator.c:175-183`; grouping goes through
+    /// `Paren`).
     Not(Box<Node<'a>>),
-    /// `( … )` 折成的子序列（C 的 `paren_squish` 把它变成 `N_EXPR`，`operator.c:95-112`）。
+    /// The sub-sequence `( … )` folds into (C's `paren_squish` turns it into
+    /// `N_EXPR`, `operator.c:95-112`).
     Paren(Vec<Node<'a>>),
-    /// `-o`：`left` 是它之前收下的那一段，`right` 是**余下的整个计划**
-    /// （`or_squish` 的 `next->p_data[1] = or_squish(plan)`，`operator.c:252-257`），
-    /// 所以 `-o` 右结合。两支各自是一段「与」序列。
+    /// `-o`: `left` is the segment collected before it, `right` is **the whole
+    /// rest of the plan** (`or_squish`'s `next->p_data[1] = or_squish(plan)`,
+    /// `operator.c:252-257`), so `-o` is right-associative. Each side is an
+    /// "and" sequence.
     Or {
         left: Vec<Node<'a>>,
         right: Vec<Node<'a>>,
     },
 }
 
-/// 解析好的整条命令行。
+/// A fully parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parsed<'a> {
-    /// 遍历开关位。
+    /// Walk option bits.
     pub walk: WalkOptions,
-    /// `-d`：目录在后序才输出（C 的 `isdepth`，`main.c:103-105`、`find.c:217-222`）。
+    /// `-d`: directories are emitted in post-order (C's `isdepth`,
+    /// `main.c:103-105`, `find.c:217-222`).
     pub depth_first: bool,
-    /// `-E`：正则用扩展式（C 把 `regcomp_flags` 设成 `REG_EXTENDED`，`main.c:106-108`）。
+    /// `-E`: regular expressions use extended syntax (C sets `regcomp_flags` to
+    /// `REG_EXTENDED`, `main.c:106-108`).
     pub extended_regex: bool,
-    /// `-s`：同层按名排序（`issort`）。
+    /// `-s`: sort each level by name (`issort`).
     pub sorted: bool,
-    /// `-X`：拒绝含 xargs 分隔符的路径（`isxargs`，判据在 `find.c:235-243`）。
+    /// `-X`: reject paths containing xargs separators (`isxargs`; the test is
+    /// at `find.c:235-243`).
     pub xargs_safe_only: bool,
-    /// `-f` 带上来的起始路径，按出现顺序排在位置参数之前（`main.c:109-111` 先塞进数组）。
+    /// Start paths carried in by `-f`, placed before the positional operands in
+    /// order of appearance (`main.c:109-111` pushes them into the array
+    /// first).
     pub extra_paths: Vec<&'a str>,
-    /// 表达式之前的位置参数。
+    /// Positional operands before the expression.
     pub paths: Vec<&'a str>,
-    /// 表达式。空表达式对应 C 的 `plan == NULL`。
+    /// The expression. An empty expression corresponds to C's
+    /// `plan == NULL`.
     pub expr: Vec<Node<'a>>,
-    /// 表达式里没有任何产生输出的表项，故要补隐式 `-print`（`find.c:115-133`）。
+    /// The expression has no output-producing entry, so the implicit `-print`
+    /// must be added (`find.c:115-133`).
     pub needs_implicit_print: bool,
 }
 
-/// 解析失败。`Usage` 对应 `main.c:155-163`，其余对应 `errx`/`err` 的每一支。
+/// Parse failure. `Usage` corresponds to `main.c:155-163`; the rest correspond
+/// to the individual `errx`/`err` branches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FindError<'a> {
-    /// 没有起始路径（`main.c:147-149`：`p == start` 就 usage）。
+    /// No start path (`main.c:147-149`: `p == start` means usage).
     Usage,
-    // 注：C 的 `main.c:128-129` 对不认识的字母是 `default: break`——getopt 继续扫下一个
-    // 参数，什么都不报。本层照此实现（见 `parse` 里的 `ignored`），故不设错误支。
-    /// 表达式里出现表外的词（`option.c:131-133`：`"%s: unknown option"`）。
+    // Note: C's `main.c:128-129` does `default: break` for an unrecognised
+    // letter — getopt keeps scanning the next argument and reports nothing.
+    // This layer does the same (see `ignored` in `parse`), so there is no error
+    // variant for it.
+    /// A word outside the table appears in the expression (`option.c:131-133`:
+    /// `"%s: unknown option"`).
     UnknownOption(&'a str),
-    /// 表项要参数而后面没有（`option.c:135-137`：`"%s: requires additional arguments"`）。
+    /// An entry needs an argument and none follows (`option.c:135-137`:
+    /// `"%s: requires additional arguments"`).
     NeedsArguments(&'a str),
-    /// `-exec` 一族没有收尾的 `;`/`+`（`function.c:649-651`）。
+    /// The `-exec` family has no terminating `;`/`+` (`function.c:649-651`).
     NoTerminator(&'a str),
-    /// `-ok ... +`：POSIX 说不必支持，C 直接拒（`function.c:666-669`）。
+    /// `-ok ... +`: POSIX says support is optional, and C refuses it outright
+    /// (`function.c:666-669`).
     OkWithPlus,
-    /// `(` 没有对应的 `)`（`operator.c:96-98`）。
+    /// `(` has no matching `)` (`operator.c:96-98`).
     UnclosedParen,
-    /// `()` 里是空的（`operator.c:106-108`）。
+    /// `()` is empty (`operator.c:106-108`).
     EmptyParens,
-    /// 表达式以 `)` 收尾却不在括号里（`yanknode` 把它原样交回，`find_create` 不认识
-    /// 落单 `)` 之后的算符——这一支由 `or_squish`/`not_squish` 的越界报错承担）。
+    /// The expression ends with a `)` that closes no group (`yanknode` hands it
+    /// back as-is, and `find_create` does not recognise an operator after a
+    /// stray `)` — this branch is covered by the out-of-bounds errors in
+    /// `or_squish`/`not_squish`).
     StrayCloseParen(&'a str),
-    /// `!` 后面没有可收的表达式（C 的 `operator.c:198-199`：`node == NULL`）。
-    /// C 让 `c_not` 收下 NULL、运行期才炸；本层在解析期就拒，免得交回一棵求值时才坏的树。
+    /// `!` has no expression to take (C's `operator.c:198-199`:
+    /// `node == NULL`). C lets `c_not` take NULL and blows up at run time; this
+    /// layer refuses at parse time, rather than returning a tree that only fails
+    /// when evaluated.
     NotWithoutOperand,
-    /// `!` 紧跟一个 `-o`（C 的 `operator.c:200-201`：yank 到的节点类型是 `N_OR`）——
-    /// 与上一支同属 `c_not`，但 C 分两句：「! 后没东西」与「! 与 -o 之间没东西」。
-    /// 连续 `!` 先被 C 的 `while (node->type == N_NOT)` 消合并计数，本层靠递归到达同一判据。
+    /// `!` immediately followed by `-o` (C's `operator.c:200-201`: the yanked
+    /// node type is `N_OR`) — the same `c_not` as the previous variant, but C
+    /// has two separate sentences: "nothing after !" and "nothing between ! and
+    /// -o". Consecutive `!` are first eliminated and counted by C's
+    /// `while (node->type == N_NOT)`; this layer reaches the same test by
+    /// recursion.
     NotBeforeOr,
-    /// `-o` 左边没有表达式（`operator.c:253-255`：`result == NULL`）。
+    /// `-o` has no expression on its left (`operator.c:253-255`:
+    /// `result == NULL`).
     OrWithoutLeft,
-    /// `-o` 右边没有表达式（`operator.c:257-259`：`or_squish(plan)` 交回 NULL）。
-    /// 两道守卫在 C 里有先后（先查左、后查右），所以 `find . -o` 报的是「左边没」而不是「右边没」。
+    /// `-o` has no expression on its right (`operator.c:257-259`:
+    /// `or_squish(plan)` returns NULL). The two guards are ordered in C (left
+    /// first, then right), so `find . -o` reports "nothing on the left", not
+    /// "nothing on the right".
     OrWithoutRight,
 }
 
-/// 扫全局选项、划出路径段、再把剩下的当表达式解析。
+/// Scan the global options, carve out the path section, and parse the rest as
+/// the expression.
 ///
-/// 分界判据照 `main.c:133-145`：从第一个「以 `-` 开头」或「恰为 `!`/`(`」的参数起，
-/// 后面的都算表达式；在此之前的一律是起始路径。
+/// The boundary test follows `main.c:133-145`: starting from the first argument
+/// that "starts with `-`" or "is exactly `!`/`(`", everything after it is the
+/// expression; everything before is a start path.
 pub fn parse<'a>(args: &'a [&'a str]) -> Result<Parsed<'a>, FindError<'a>> {
     let mut walk = WalkOptions::default();
     let mut depth_first = false;
@@ -297,8 +354,10 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Result<Parsed<'a>, FindError<'a>> {
         if bytes.len() < 2 || bytes[0] != b'-' {
             break;
         }
-        // 表达式里的 primary 也是 `-` 开头：全局段遇到任何「不认识成全局选项」的
-        // `-xxx` 就停下，交回位置参数扫描（C 的 getopt 只认那串 `"HLPdEf:hsXx"`）。
+        // Primary expressions in the expression also start with `-`: the global
+        // section stops at any `-xxx` it does not recognise as a global option
+        // and hands control back to the positional scan (C's getopt recognises
+        // only the string `"HLPdEf:hsXx"`).
         let mut k = 1usize;
         while k < bytes.len() {
             match bytes[k] {
@@ -319,7 +378,8 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Result<Parsed<'a>, FindError<'a>> {
                         i += 1;
                         extra_paths.push(args[i]);
                     } else {
-                        // getopt 缺参返 `?` → C 的 default 什么都不做（`main.c:128-129`）。
+                        // getopt returns `?` for a missing argument, and C's
+                        // default does nothing (`main.c:128-129`).
                         ignored.push('f');
                     }
                 }
@@ -328,17 +388,22 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Result<Parsed<'a>, FindError<'a>> {
             k += 1;
         }
         i += 1;
-        // 一个全局簇里出现非法字母，C 会就此停止吃选项吗？BSD getopt 不会（它跳过
-        // 非法项继续吃后面的 `-`），但它也绝不把 `-name` 当全局选项：整段以 `-n` 开
-        // 头时 getopt 视 `n` 为非法并跳过——于是 `find . -name foo` 的 `-name` 被
-        // 忽略掉了吗？不会：BSD getopt 在遇到第一个非选项参数前都算选项段，
-        // `-name` 里的 `n` 是非法项、`ame` 同样是，全部走 default。真正拦住它们的是
-        // 下面这条：C 在 getopt 之后才划路径/表达式，分界判据看的是 argv，
-        // 因此本层同样先按位置参数扫，再判分界——见 `paths` 那段。
+        // Does C stop consuming options when an illegal letter appears in a
+        // global cluster? BSD getopt does not (it skips the illegal item and
+        // keeps consuming later `-` tokens), but it also never treats `-name`
+        // as a global option: when the whole token starts with `-n`, getopt
+        // regards `n` as illegal and skips it — so is `-name` in
+        // `find . -name foo` ignored? No: BSD getopt treats everything up to
+        // the first non-option argument as the option section, and in `-name`
+        // both `n` and `ame` are illegal, all going through default. What really
+        // stops them is the next rule: C carves out paths/expression only after
+        // getopt, and the boundary test looks at argv, so this layer likewise
+        // scans positional operands first and tests the boundary afterwards —
+        // see the `paths` section.
         let _ = &ignored;
     }
 
-    // 起始路径段（`main.c:133-145`）。
+    // Start-path section (`main.c:133-145`).
     let mut paths: Vec<&'a str> = Vec::new();
     while i < args.len() {
         let a = args[i];
@@ -353,13 +418,14 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Result<Parsed<'a>, FindError<'a>> {
     }
     let rest = &args[i..];
 
-    // C 的起始路径表 = `-f` 攒下的 + 位置参数；两边都空就 usage（`main.c:147-149`）。
+    // C's start-path list = what `-f` accumulated + the positional operands;
+    // when both are empty it is usage (`main.c:147-149`).
     if paths.is_empty() && extra_paths.is_empty() {
         return Err(FindError::Usage);
     }
 
-    // `parse_plan` 交回的是「表达式里有没有产生输出的表项」，隐式 `-print` 是它的反面
-    // （`find.c:115-133`）。
+    // `parse_plan` returns "does the expression contain an output-producing
+    // entry", and the implicit `-print` is its negation (`find.c:115-133`).
     let (expr, has_output) = parse_plan(rest)?;
     let needs_implicit_print = !has_output;
     Ok(Parsed {
@@ -375,17 +441,20 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Result<Parsed<'a>, FindError<'a>> {
     })
 }
 
-/// 把表达式扫成树。
+/// Scan the expression into a tree.
 ///
-/// 递归下降一次成形，与 C 的三段压实等价，因为压实次序给出的优先级就是：`()` 最紧
-/// （`paren_squish` 先跑），`!` 收**一个**表达式（`operator.c:175-183` 的 `yankexpr`
-/// 一次只取一个节点），相邻是「与」（`find.c:252` 的求值循环一路短路），`-o` 最松且
-/// 右结合（`operator.c:252-257` 把余下整个计划挂成右支）。
+/// One recursive-descent pass, equivalent to C's three compression stages,
+/// because the precedence those stages produce is: `()` tightest
+/// (`paren_squish` runs first), `!` takes **one** expression
+/// (`operator.c:175-183`'s `yankexpr` takes one node at a time), adjacency is
+/// "and" (`find.c:252`'s evaluation loop short-circuits along it), and `-o` is
+/// loosest and right-associative (`operator.c:252-257` hangs the whole
+/// remaining plan on the right branch).
 fn parse_plan<'a>(argv: &'a [&'a str]) -> Result<(Vec<Node<'a>>, bool), FindError<'a>> {
     let mut cur = Cursor { argv, pos: 0 };
     let (nodes, produced) = cur.parse_or()?;
     if cur.pos != argv.len() {
-        // 只可能停在 `)` 上：落单的右括号。
+        // The only possible stop is a `)`: a stray closing parenthesis.
         return Err(FindError::StrayCloseParen(argv[cur.pos]));
     }
     Ok((nodes, produced))
@@ -401,31 +470,36 @@ impl<'a> Cursor<'a> {
         self.argv.get(self.pos).copied()
     }
 
-    /// 一层 `-o`：先收「与」序列，若后面是 `-o`/`-or`，右支递归取**余下的全部**。
+    /// One `-o` level: collect the "and" sequence first; if an `-o`/`-or`
+    /// follows, the right branch recursively takes **all the rest**.
     fn parse_or(&mut self) -> Result<(Vec<Node<'a>>, bool), FindError<'a>> {
         let (left, mut produced) = self.parse_and()?;
         if matches!(self.peek(), Some("-o") | Some("-or")) {
             self.pos += 1;
-            // C 的第一道守卫在赋值之前：`result == NULL` 就是「左支空」，
-            // 所以 `find . -o …` 报的是「-o: no expression before -o」而不是另一句。
+            // C's first guard runs before the assignment: `result == NULL`
+            // means "the left side is empty", so `find . -o …` reports
+            // "-o: no expression before -o" rather than the other sentence.
             if left.is_empty() {
                 return Err(FindError::OrWithoutLeft);
             }
             let (right, right_produced) = self.parse_or()?;
-            // 第二道守卫：`or_squish(plan)` 交回 NULL = 右边没表达式。
+            // Second guard: `or_squish(plan)` returning NULL means no
+            // expression on the right.
             if right.is_empty() {
                 return Err(FindError::OrWithoutRight);
             }
             produced |= right_produced;
-            // C 的 `or_squish` 把整个左链搬进 `p_data[0]`，计划表的头就此变成一个
-            // `N_OR` 节点——返回单元素序列正是那个形状。
+            // C's `or_squish` moves the whole left chain into `p_data[0]`, so
+            // the plan head becomes an `N_OR` node — returning a one-element
+            // sequence is exactly that shape.
             return Ok((vec![Node::Or { left, right }], produced));
         }
         Ok((left, produced))
     }
 
-    /// 「与」序列：一路吃主项，遇 `-o`/`-or`/`)`/串尾停。`-a`/`-and` 造不出节点
-    /// （C 的 `c_null`，`function.c:1867-1871`）——相邻本身就是与。
+    /// The "and" sequence: consume primaries until `-o`/`-or`/`)` or the end of
+    /// the argument list. `-a`/`-and` produce no node (C's `c_null`,
+    /// `function.c:1867-1871`) — adjacency itself is the "and".
     fn parse_and(&mut self) -> Result<(Vec<Node<'a>>, bool), FindError<'a>> {
         let mut out: Vec<Node<'a>> = Vec::new();
         let mut produced = false;
@@ -443,7 +517,8 @@ impl<'a> Cursor<'a> {
         Ok((out, produced))
     }
 
-    /// 一个主项。返回 `None` 表示这一项在 C 里产生不出节点（`-a`/`-and`）。
+    /// One primary. Returning `None` means this item produces no node in C
+    /// (`-a`/`-and`).
     fn parse_primary(&mut self, token: &'a str) -> Result<(Option<Node<'a>>, bool), FindError<'a>> {
         match token {
             "(" => {
@@ -453,7 +528,8 @@ impl<'a> Cursor<'a> {
                 }
                 self.pos += 1;
                 if inner.is_empty() {
-                    // C：`errx(1, "(): empty inner expression")`（`operator.c:106-108`）。
+                    // C: `errx(1, "(): empty inner expression")`
+                    // (`operator.c:106-108`).
                     return Err(FindError::EmptyParens);
                 }
                 Ok((Some(Node::Paren(inner)), produced))
@@ -462,18 +538,23 @@ impl<'a> Cursor<'a> {
                 let Some(operand) = self.peek() else {
                     return Err(FindError::NotWithoutOperand);
                 };
-                // C 的 `c_not` 先 yank 一个节点再问它的类型：`N_OR` 就是「! 与 -o 之间没东西」
-                // （`operator.c:200-201`）。本层递归下去，让里层 `!` 命中同一判据，
-                // 等价于 C 那个 `while (node->type == N_NOT)` 的先消合并再判断。
+                // C's `c_not` yanks one node and then asks for its type:
+                // `N_OR` means "nothing between ! and -o" (`operator.c:200-201`).
+                // This layer recurses, letting an inner `!` hit the same test,
+                // equivalent to C's `while (node->type == N_NOT)` eliminating and
+                // counting the nots first.
                 if matches!(operand, "-o" | "-or") {
                     return Err(FindError::NotBeforeOr);
                 }
                 self.pos += 1;
                 let (node, produced) = self.parse_primary(operand)?;
                 let Some(inner) = node else {
-                    // `! -a` 这种：C 的 yank 拿到的是一个 `N_AND`/`c_null` 节点（不是 NULL），
-                    // 所以 C **不报错**；本层交不回节点，只能拒在此——这是一处声明差，
-                    // 登记于本模块头注与 06 篇台账（要照搬 C 得先让 `-a` 也是个可参与的节点形）。
+                    // The `! -a` case: C's yank gets an `N_AND`/`c_null` node
+                    // (not NULL), so C does **not** report an error; this layer
+                    // cannot return a node and must refuse here — a declared
+                    // divergence, recorded in this module's head note and in the
+                    // document-06 ledger (copying C would first require `-a` to
+                    // be a participating node shape).
                     return Err(FindError::NotWithoutOperand);
                 };
                 Ok((Some(Node::Not(Box::new(inner))), produced))
@@ -507,8 +588,9 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    /// `-exec` 一族的参数：吃到单独的 `;` 为止，或紧跟 `{}` 的 `+`
-    /// （`function.c:647-660`）；`-ok … +` 被 C 拒掉（`function.c:666-669`）。
+    /// Arguments of the `-exec` family: consume up to a lone `;`, or a `+`
+    /// immediately after `{}` (`function.c:647-660`); C refuses `-ok … +`
+    /// (`function.c:666-669`).
     fn parse_exec_argv(&mut self, name: &'a str) -> Result<(Vec<&'a str>, bool), FindError<'a>> {
         let mut collected: Vec<&'a str> = Vec::new();
         let mut prev_brace = false;
@@ -550,7 +632,8 @@ mod tests {
 
     #[test]
     fn the_table_is_sorted_lexically_because_c_binary_searches_it() {
-        // `option.c:145-151` 用 `bsearch`，表序就是查找前提（表头的注释也这么要求）。
+        // `option.c:145-151` uses `bsearch`, so the table order is a
+        // precondition for lookup (the table's own comment says so too).
         let names: Vec<&str> = OPTIONS.iter().map(|e| e.name).collect();
         let mut sorted_copy = names.clone();
         sorted_copy.sort_unstable();
@@ -584,8 +667,9 @@ mod tests {
 
     #[test]
     fn capital_h_and_lower_h_leave_different_comfollow_bits() {
-        // `-H -h` 仍带 COMFOLLOW（`main.c:112-115` 只清 PHYSICAL），`-L -h` 不带
-        // （`-L` 在 `main.c:96` 就把它清了）。压成三值枚举就看不见这个差别。
+        // `-H -h` still carries COMFOLLOW (`main.c:112-115` clears only
+        // PHYSICAL), while `-L -h` does not (`-L` cleared it already at
+        // `main.c:96`). Collapsing into a three-value enum hides this.
         let mut a = WalkOptions::default();
         a.set_capital_h();
         a.set_lower_h();
@@ -612,16 +696,19 @@ mod tests {
         assert!(p.depth_first && p.extended_regex && p.sorted && p.xargs_safe_only);
         assert_eq!(p.extra_paths, vec!["/tmp/list"]);
         assert_eq!(p.paths, vec!["."]);
-        // `-fVALUE` 贴簇写法同值（getopt 的取值的两种写法）。
+        // The attached `-fVALUE` form gives the same value (getopt's two
+        // value-taking forms).
         let hug = parsed(&["-f/tmp/list", "."]);
         assert_eq!(hug.extra_paths, vec!["/tmp/list"]);
     }
 
     #[test]
     fn unknown_letters_before_the_path_list_are_swallowed_by_getopt() {
-        // C 的真实行为：`find -name foo .` 里 `-name` 落在 getopt 的选项段，四个字母
-        // 都不在 `"HLPdEf:hsXx"` 里，`main.c:128-129` 的 default 什么都不做，于是
-        // `-name` 被整段吞掉，`foo` 与 `.` 都成了起始路径，表达式为空。
+        // C's real behavior: in `find -name foo .` the `-name` lands in getopt's
+        // option section; none of its four letters is in `"HLPdEf:hsXx"`, and
+        // `main.c:128-129`'s default does nothing, so `-name` is swallowed
+        // whole, `foo` and `.` both become start paths, and the expression is
+        // empty.
         let p = parsed(&["-name", "foo", "."]);
         assert_eq!(p.paths, vec!["foo", "."]);
         assert!(p.expr.is_empty());
@@ -633,14 +720,16 @@ mod tests {
         let p = parsed(&[".", "-name", "foo"]);
         assert_eq!(p.paths, vec!["."]);
         assert_eq!(p.expr, vec![keyword("-name", "foo")]);
-        // `!` 与 `(` 单独成词也算表达式起点（POSIX 的分界判据，`main.c:138-143`）。
+        // A standalone `!` or `(` also starts the expression (the POSIX
+        // boundary test, `main.c:138-143`).
         assert_eq!(
             parsed(&[".", "!", "-print"]).expr,
             vec![Node::Not(Box::new(bare("-print")))]
         );
         let paren = parsed(&[".", "(", "-print", ")"]);
         assert_eq!(paren.expr, vec![Node::Paren(vec![bare("-print")])]);
-        // 而 `(` 后面紧跟别的东西（如 `(` 之外的 `(`x` 形态）不是分界，仍是路径。
+        // A token merely containing `(` with something else attached is not a
+        // boundary and remains a path.
         assert_eq!(parsed(&[".((", "-print"]).paths, vec![".(("]);
     }
 
@@ -648,7 +737,8 @@ mod tests {
     fn no_starting_path_at_all_is_usage() {
         assert_eq!(parse(&[]), Err(FindError::Usage));
         assert_eq!(parse(&["-print"]), Err(FindError::Usage));
-        // `-f` 带上来的也算起始路径（`main.c:109-111` 先塞进同一个数组）。
+        // What `-f` brings in also counts as a start path (`main.c:109-111`
+        // pushes it into the same array first).
         assert_eq!(
             parse(&["-f", "/etc", "-print"]).unwrap().paths,
             Vec::<&str>::new()
@@ -657,7 +747,8 @@ mod tests {
 
     #[test]
     fn the_implicit_print_wrap_follows_the_code_not_the_comment() {
-        // `find.c:104-107` 的注释只列了五项，代码里置 `isoutput` 的其实是九处。
+        // The comment at `find.c:104-107` lists only five items, but nine
+        // places actually set `isoutput`.
         assert!(parsed(&[".", "-name", "foo"]).needs_implicit_print);
         for emitter in [
             "-print", "-print0", "-printx", "-ls", "-fprint", "-delete", "-rm", "-exec", "-exit",
@@ -677,7 +768,7 @@ mod tests {
                 "{emitter} 该算有输出（args {with:?}）"
             );
         }
-        // `-ok` 与 `-exec` 共用构造函数，也算。
+        // `-ok` shares the constructor with `-exec`, so it counts too.
         assert!(!parsed(&[".", "-ok", "true", ";"]).needs_implicit_print);
     }
 
@@ -734,7 +825,8 @@ mod tests {
             }]
         );
         assert_eq!(rest, &bare("-print"));
-        // `!` 作用在整个括号上（区别于上一条：单主项只吃一个）。
+        // `!` applies to the whole group (unlike the previous case, where a
+        // single primary takes one item).
         let negated = parsed(&[".", "!", "(", "-false", ")"]);
         let Node::Not(inner) = &negated.expr[0] else {
             panic!("`!` 的一个主项若是括号，就该收下整组: {:?}", negated.expr)
@@ -755,8 +847,10 @@ mod tests {
             parse(&[".", "!", "-a", "-print"]),
             Err(FindError::NotWithoutOperand)
         );
-        // `c_not` 与 `c_or` 在 C 里各管两句，四支不能拢成两句：下面逐支钉自己的错型。
-        // （旧实现只能报 `NotWithoutOperand` 或不报错，三种坏形能一路走到求值。）
+        // `c_not` and `c_or` each own two sentences in C, and the four branches
+        // must not be folded into two: each branch pins its own error below.
+        // (The old implementation could only report `NotWithoutOperand` or
+        // nothing, letting three malformed shapes reach evaluation.)
         assert_eq!(
             parse(&[".", "!", "-o", "-print"]),
             Err(FindError::NotBeforeOr)
@@ -766,9 +860,11 @@ mod tests {
             parse(&[".", "-print", "-o"]),
             Err(FindError::OrWithoutRight)
         );
-        // C 的先查左后查右：孤立一个 `-o` 时左守卫先到，不能报成「after」那一句。
+        // C checks left before right: with a lone `-o` the left guard fires
+        // first, and it must not be reported as the "after" sentence.
         assert_eq!(parse(&[".", "-o"]), Err(FindError::OrWithoutLeft));
-        // 连续 `!` 消合并后碰到 `-o`，C 报的仍是「之间没东西」那一句。
+        // After consecutive `!` are eliminated and counted, hitting `-o` still
+        // reports C's "nothing in between" sentence.
         assert_eq!(
             parse(&[".", "!", "!", "-or", "-print"]),
             Err(FindError::NotBeforeOr)
@@ -813,13 +909,14 @@ mod tests {
         assert!(*plus);
         assert_eq!(argv, &vec!["grep", "{}"]);
 
-        // `+` 不在 `{}` 之后就不是收尾（C 的 `lastbrace` 判据，`function.c:647-660`），
-        // 于是它被当成普通参数收进去，随后因缺收尾而报错。
+        // A `+` not after `{}` is not a terminator (C's `lastbrace` test,
+        // `function.c:647-660`), so it is collected as an ordinary argument and
+        // the missing terminator is reported afterwards.
         assert_eq!(
             parse(&[".", "-exec", "grep", "+", "-print"]),
             Err(FindError::NoTerminator("-exec"))
         );
-        // `-ok … +` 被 C 明写拒绝（`function.c:666-669`）。
+        // C explicitly refuses `-ok … +` (`function.c:666-669`).
         assert_eq!(
             parse(&[".", "-ok", "grep", "{}", "+"]),
             Err(FindError::OkWithPlus)
@@ -836,96 +933,109 @@ mod tests {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 第二包：判据求值。真源 `minix3/usr.bin/find/function.c` 的 `f_*` 一族。
-// 目录项由走表腿备好交进来（`Entry`），本层不碰系统调用；需要问文件系统的
-// 三件事（`-newer` 的参照、`-empty` 的目录清单、`-xdev` 的起始设备）也都做成入参。
+// Second package: predicate evaluation. Ground truth: the `f_*` family in
+// `minix3/usr.bin/find/function.c`. Directory entries are prepared by the
+// table-walk leg and handed in (`Entry`), and this layer touches no system
+// calls; the three things that need the file system (`-newer`'s reference,
+// `-empty`'s directory listing, `-xdev`'s starting device) are inputs too.
 // ─────────────────────────────────────────────────────────────────────────
 
-/// `-size` 的默认单位：512 字节的块（`minix3/usr.bin/find/find.h` 的 `FIND_SIZE`）。
+/// `-size`'s default unit: 512-byte blocks (`FIND_SIZE` in
+/// `minix3/usr.bin/find/find.h`).
 pub const FIND_SIZE: i64 = 512;
 
-/// 一分钟的秒数（`function.c` 里的 `SECSPERMIN`）。
+/// Seconds in a minute (`SECSPERMIN` in `function.c`).
 pub const SECS_PER_MINUTE: i64 = 60;
-/// 一天的秒数（`SECSPERDAY`）。
+/// Seconds in a day (`SECSPERDAY`).
 pub const SECS_PER_DAY: i64 = 86_400;
 
-/// 一条目录项的视图。字段对应 `FTSENT::fts_statp` 与 `fts_level`、`fts_name`、
-/// `fts_path`（`minix3/include/fts.h`）。
+/// A view of one directory entry. The fields correspond to
+/// `FTSENT::fts_statp` plus `fts_level`, `fts_name`, and `fts_path`
+/// (`minix3/include/fts.h`).
 #[derive(Debug, Clone, Copy)]
 pub struct Entry<'a> {
-    /// 到目前为止的完整路径（`-path` 与 `-newer` 的落点）。
+    /// Full path so far (the target of `-path` and `-newer`).
     pub path: &'a str,
-    /// 目录项名（`-name` 的落点）。
+    /// Entry name (the target of `-name`).
     pub name: &'a str,
-    /// 搜索深度。`fts_level` 从 1 起（起始路径自身是 1）。
+    /// Search depth. `fts_level` starts at 1 (the start path itself is 1).
     pub level: usize,
-    /// `st_mode`。
+    /// `st_mode`.
     pub mode: u32,
-    /// `st_ino`。
+    /// `st_ino`.
     pub ino: u64,
-    /// `st_nlink`。
+    /// `st_nlink`.
     pub nlink: u32,
-    /// `st_size`。
+    /// `st_size`.
     pub size: i64,
-    /// `st_uid`。
+    /// `st_uid`.
     pub uid: u32,
-    /// `st_gid`。
+    /// `st_gid`.
     pub gid: u32,
-    /// `st_dev`（`-xdev` 比较用）。
+    /// `st_dev` (used by the `-xdev` comparison).
     pub dev: u64,
-    /// `st_atim.tv_sec`。
+    /// `st_atim.tv_sec`.
     pub atime: i64,
-    /// `st_mtim.tv_sec`。
+    /// `st_mtim.tv_sec`.
     pub mtime: i64,
-    /// `st_ctim.tv_sec`。
+    /// `st_ctim.tv_sec`.
     pub ctime: i64,
-    /// 该目次的条目名清单，`-empty` 判空目录用。拿不到（未走表或读失败）
-    /// 就交回 `None`，本层按 C 的 `opendir` 失败支判假。
+    /// The entry-name list for this directory, used by `-empty` to test for an
+    /// empty directory. When unavailable (no table walk or a failed read) it is
+    /// `None`, and this layer takes C's `opendir`-failure branch and answers
+    /// false.
     pub children: Option<&'a [&'a str]>,
 }
 
-/// 求值所需的世界状态。
+/// World state needed for evaluation.
 #[derive(Debug, Clone, Copy)]
 pub struct World {
-    /// `find` 起来的那一刻（C 在 `main.c:214` 用 `time(&now)` 取一次）。
+    /// The moment `find` started (C takes it once with `time(&now)` at
+    /// `main.c:214`).
     pub now: i64,
-    ///  effective uid：`-user`/`-nouser` 那两支缺口令库，这里只留给 `-newer` 之外的用途。
+    /// Effective uid: the `-user`/`-nouser` branches lack a password database,
+    /// so this is reserved for uses other than `-newer`.
     pub euid: u32,
-    /// effective gid。
+    /// Effective gid.
     pub egid: u32,
-    /// 起始路径所在设备，`-xdev` 用它比较（C 走 `FTS_XDEV`，即遍历腿的事）。
+    /// Device of the start path, used by the `-xdev` comparison (C goes through
+    /// `FTS_XDEV`, which is the traversal leg's business).
     pub root_dev: u64,
 }
 
-/// 比较方式。C 的 `F_EQUAL`/`F_LESSTHAN`/`F_GREATER` 三态（`function.c:68-79` 的
-/// `COMPARE`），另有 `-perm -mode` 用的 `F_ATLEAST`。
+/// Comparison mode. C's three states `F_EQUAL`/`F_LESSTHAN`/`F_GREATER` (the
+/// `COMPARE` enum at `function.c:68-79`), plus `F_ATLEAST` for `-perm -mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compare {
     Equal,
     LessThan,
     Greater,
-    /// `-perm -mode`：给定位必须都已置起。
+    /// `-perm -mode`: all the given bits must be set.
     AtLeast,
 }
 
-/// 一个带比较方式的整数参数（`find_parsenum`，`function.c:135-170`）。
+/// An integer argument with its comparison mode (`find_parsenum`,
+/// `function.c:135-170`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumArg {
     pub compare: Compare,
     pub value: i64,
 }
 
-/// 数字解析失败。C 的两支 `errx`：非法数值、非法尾随字符。
+/// Numeric parse failure. C's two `errx` branches: illegal numeric value and
+/// illegal trailing character.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NumError {
-    /// `"%s: %s: illegal numeric value"`。
+    /// `"%s: %s: illegal numeric value"`.
     IllegalValue(String),
-    /// `"%s: %s: illegal trailing character"`。尾字符非空时说明还带了别的东西。
+    /// `"%s: %s: illegal trailing character"`. A non-empty trailing character
+    /// means something else was attached.
     IllegalTrailing(String, char),
 }
 
-/// `find_parsenum`：可选的 `+`/`-` 定比较方式，其余必须是十进制整数。
-/// `suffix` 是允许的唯一尾字符（只有 `-size` 给 `'c'`）。
+/// `find_parsenum`: an optional `+`/`-` selects the comparison mode, and the
+/// rest must be a decimal integer. `suffix` is the only permitted trailing
+/// character (only `-size` passes `'c'`).
 pub fn parse_num(option: &str, text: &str, suffix: Option<char>) -> Result<NumArg, NumError> {
     let mut chars = text.chars().peekable();
     let compare = match chars.peek() {
@@ -942,14 +1052,17 @@ pub fn parse_num(option: &str, text: &str, suffix: Option<char>) -> Result<NumAr
     let digits: String = chars.collect();
     let number = digits.parse::<i64>();
     match number {
-        // C 用 `strtoq`：一个数字都没有时值为 0 且 `endchar == str`，即非法。
+        // C uses `strtoq`: with no digits at all the value is 0 and
+        // `endchar == str`, which is illegal.
         Ok(value) => Ok(NumArg { compare, value }),
-        // C 的判据是 `value == 0 && endchar == str`：一个数字都没吃到才算非法数值。
+        // C's test is `value == 0 && endchar == str`: only when no digit at all
+        // was consumed is it an illegal numeric value.
         Err(_) if digits.is_empty() || !digits.starts_with(|c: char| c.is_ascii_digit()) => {
             Err(NumError::IllegalValue(String::from(option)))
         }
         Err(_) => {
-            // 尾随字符：只有 `-size` 允许一个 `c`（`c_size` 把 `endch` 传成 'c'）。
+            // Trailing character: only `-size` permits a single `c` (`c_size`
+            // passes `endch` as 'c').
             let last = digits.chars().last().unwrap_or('\0');
             if suffix == Some(last)
                 && digits[..digits.len() - 1]
@@ -965,8 +1078,9 @@ pub fn parse_num(option: &str, text: &str, suffix: Option<char>) -> Result<NumAr
     }
 }
 
-/// `TIME_CORRECT`（`function.c:178-180`）：时间类判据的 `-n` 要再加一格，
-/// 否则「少于一分钟」那种文件会被判到「少于零分钟」外面去。
+/// `TIME_CORRECT` (`function.c:178-180`): a `-n` on a time predicate needs one
+/// more bucket, or a file "less than a minute old" would fall outside "less
+/// than zero minutes".
 pub fn time_correct(compare: Compare, value: i64) -> i64 {
     if compare == Compare::LessThan {
         value + 1
@@ -975,47 +1089,55 @@ pub fn time_correct(compare: Compare, value: i64) -> i64 {
     }
 }
 
-/// `COMPARE(a, b)` 的三态求值。
+/// Three-state evaluation of `COMPARE(a, b)`.
 fn compare_with(compare: Compare, a: i64, b: i64) -> bool {
     match compare {
         Compare::Equal => a == b,
         Compare::LessThan => a < b,
         Compare::Greater => a > b,
-        Compare::AtLeast => true, // 只有 -perm 用，另路处理
+        Compare::AtLeast => true, // only -perm uses it, handled on its own path
     }
 }
 
-/// 整除前先把差值抬高 `unit - 1`（C 的 `(now - t + UNIT - 1) / UNIT`），
-/// 也就是「不足一格按一格算」。Rust 的 `/` 与 C 一样向零取整。
+/// Raise the delta by `unit - 1` before dividing (C's
+/// `(now - t + UNIT - 1) / UNIT`), i.e. "a partial bucket counts as a full
+/// one". Rust's `/` truncates toward zero exactly like C's.
 fn in_units(delta: i64, unit: i64) -> i64 {
     (delta + unit - 1) / unit
 }
 
-/// 判据求值的失败面。两类：C 在建计划期就 `errx` 的参数，以及本树缺腿的动作。
+/// The failure surface of predicate evaluation. Two kinds: arguments C rejects
+/// with `errx` while building the plan, and actions this tree lacks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JudgeError {
-    /// 数字类参数不合法（`find_parsenum` 的两支 `errx`）。
+    /// An invalid numeric argument (`find_parsenum`'s two `errx` branches).
     BadNumber(NumError),
-    /// `-type` 的字母不在表里（`c_type` 的 default 支）。
+    /// The `-type` letter is not in the table (`c_type`'s default branch).
     UnknownType(String),
-    /// `-perm` 的模式串解析不了（`c_perm` 的 `setmode` 返回空）。
+    /// The `-perm` mode string cannot be parsed (`c_perm`'s `setmode` returns
+    /// empty).
     BadPerm(String),
-    /// 本树尚无该腿：`-user`/`-group`/`-nouser`/`-nogroup` 要口令库（同 `chown` 的前置），
-    /// `-exec`/`-ok`/`-execdir` 要进程创建，`-delete` 要写根盘，`-fstype` 要设备名对照，
-    /// `-flags` 要 Minix 的旗标字符表，`-regex`/`-iregex` 要 `minix-regex` 的接法。
-    /// 一律按名拒绝而不是悄悄判假。
+    /// This tree does not have that leg yet:
+    /// `-user`/`-group`/`-nouser`/`-nogroup` need a password database (the same
+    /// prerequisite as `chown`), `-exec`/`-ok`/`-execdir` need process creation,
+    /// `-delete` needs to write the root disk, `-fstype` needs a device-name
+    /// mapping, `-flags` needs Minix's flag character table, and
+    /// `-regex`/`-iregex` need the `minix-regex` wiring. Every one is refused by
+    /// name rather than silently answering false.
     Unwired(String),
 }
 
-/// `-perm` 的两位状态：模式位与是否 `-mode` 形。
+/// The two-part state of `-perm`: the mode bits and whether it is the `-mode`
+/// form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PermTest {
     pub compare: Compare,
     pub bits: u32,
 }
 
-/// 解析 `-perm` 的参数（`c_perm`，`function.c:1444-1470`）。前导 `-` 定 `F_ATLEAST`；
-/// 其余交给 `mode::apply_mode` 以 0 为基数，等价于 C 的 `getmode(set, 0)`。
+/// Parse the `-perm` argument (`c_perm`, `function.c:1444-1470`). A leading `-`
+/// selects `F_ATLEAST`; the rest goes to `mode::apply_mode` with base 0,
+/// equivalent to C's `getmode(set, 0)`.
 pub fn parse_perm(text: &str) -> Result<PermTest, JudgeError> {
     let (compare, rest) = match text.strip_prefix('-') {
         Some(tail) => (Compare::AtLeast, tail),
@@ -1026,8 +1148,9 @@ pub fn parse_perm(text: &str) -> Result<PermTest, JudgeError> {
     Ok(PermTest { compare, bits })
 }
 
-/// `-perm` 求值。C 只看那 12 位（setuid/setgid/sticky 加九位权限），
-/// 归档两位在 `S_IFMT` 之外故不参与（`f_perm` 的掩码，`function.c:1430-1441`）。
+/// `-perm` evaluation. C looks only at those 12 bits (setuid/setgid/sticky plus
+/// the nine permission bits); the two archive bits lie outside `S_IFMT` and do
+/// not participate (`f_perm`'s mask, `function.c:1430-1441`).
 const PERM_MASK: u32 = 0o7777;
 
 pub fn judge_perm(entry: &Entry, test: &PermTest) -> bool {
@@ -1039,7 +1162,7 @@ pub fn judge_perm(entry: &Entry, test: &PermTest) -> bool {
     }
 }
 
-/// `-type` 的字母到 `S_IF*` 的映射（`c_type`，`function.c:1668-1723`）。
+/// Mapping from `-type` letters to `S_IF*` (`c_type`, `function.c:1668-1723`).
 pub fn type_mask(letter: &str) -> Result<u32, JudgeError> {
     use crate::cp::*;
     Ok(match letter {
@@ -1050,36 +1173,41 @@ pub fn type_mask(letter: &str) -> Result<u32, JudgeError> {
         "l" => S_IFLNK,
         "p" => S_IFIFO,
         "s" => S_IFSOCK,
-        // Minix 定义了 `S_IFWHT`（`sys/stat.h:147`），C 在 `#ifdef` 里连给 `w` 与 `W` 两个字母。
+        // Minix defines `S_IFWHT` (`sys/stat.h:147`), and C provides both `w`
+        // and `W` under `#ifdef`.
         "w" | "W" => crate::mode::S_IFWHT,
         other => return Err(JudgeError::UnknownType(String::from(other))),
     })
 }
 
-/// 一条已求值的判据是否要求「跳过本目次」或「剪枝」。`-prune` 恒真并置标志，
-/// 与 C 的 `f_prune` 一样（`function.c:1542-1560`：设 `fts_function = FTS_SKIP` 后返 1）。
+/// Whether an evaluated predicate asks to "skip this directory" or "prune".
+/// `-prune` is always true and sets the flag, like C's `f_prune`
+/// (`function.c:1542-1560`: set `fts_function = FTS_SKIP`, then return 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// 什么都不做，只是真值。
+    /// Do nothing; only the truth value matters.
     None,
-    /// 不再下探这一支。
+    /// Do not descend into this branch.
     Prune,
-    /// 输出这一条的路径（`-print` 一族）。
+    /// Emit this entry's path (the `-print` family).
     Print(PrintForm),
 }
 
-/// 三种打印形（`f_print`/`f_print0`/`f_printx`，`function.c:1475-1500`）。
+/// The three print forms (`f_print`/`f_print0`/`f_printx`,
+/// `function.c:1475-1500`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrintForm {
-    /// 路径加换行。
+    /// Path plus newline.
     Line,
-    /// 路径加 NUL。
+    /// Path plus NUL.
     Nul,
-    /// 经 xargs 安全转义的形态：空格与控制字符前加反斜杠。
+    /// The xargs-safe escaped form: a backslash before spaces and control
+    /// characters.
     Xargs,
 }
 
-/// 求值一条叶子的结果：真假，外加本层要顺带记下的动作。
+/// The result of evaluating one leaf: the truth value plus any action this
+/// layer must record along the way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Outcome {
     pub truth: bool,
@@ -1095,22 +1223,27 @@ impl Outcome {
     }
 }
 
-/// `-newer` 三兄弟要问参照文件的时间。走表腿提供这个查询，本层保持无系统调用。
+/// The three `-newer` siblings ask for the reference file's times. The
+/// table-walk leg provides this query, keeping this layer free of system
+/// calls.
 pub trait ReferenceStat {
-    /// 参照路径的 `st_atim`/`st_mtim`/`st_ctim`，取不到交回 `None`
-    /// （C 在 `c_newer` 里就 `err(1)` 退出，故薄壳侧要先把失败当成建计划期错误处理）。
+    /// The reference path's `st_atim`/`st_mtim`/`st_ctim`, or `None` when
+    /// unavailable (C does `err(1)` and exits inside `c_newer`, so the thin
+    /// shell must treat a failure as a plan-building error first).
     fn times_of(&self, path: &str) -> Option<(i64, i64, i64)>;
 }
 
-/// 求值一条叶子判据。`spec` 来自第一包的解析结果，参数原样带着文本。
+/// Evaluate one leaf predicate. `spec` comes from the first package's parse
+/// result, with arguments still carrying their text.
 pub fn judge_leaf<'a>(
     world: &World,
     refs: &dyn ReferenceStat,
     entry: &Entry<'a>,
     name: &str,
     arg: Option<&'a str>,
-    // C 的那个全局旗标（`divsize`）的反面：整棵树里出现过 `-size Nc` 就按字节比。
-    // 做成入参是为了让「一处 `c` 影响全树」这条在调用处也看得见。
+    // The negation of C's global flag (`divsize`): if `-size Nc` appears
+    // anywhere in the tree, compare by bytes. It is an input so that "one `c`
+    // affects the whole tree" is visible at the call site too.
     size_counts_bytes: bool,
 ) -> Result<Outcome, JudgeError> {
     use crate::fnmatch as glob;
@@ -1127,7 +1260,8 @@ pub fn judge_leaf<'a>(
             glob::flags::CASEFOLD,
         ))),
         "-path" => Ok(Outcome::truthy(glob::matches_bool(text()?, entry.path, 0))),
-        // C 用 `FNM_CASEFOLD` 走 `fnmatch`，`-ipath` 这一支 Minix 没有，故不发明。
+        // C goes through `fnmatch` with `FNM_CASEFOLD`; Minix has no `-ipath`
+        // branch, so none is invented here.
         "-type" => {
             let mask = type_mask(text()?)?;
             Ok(Outcome::truthy(entry.mode & crate::cp::S_IFMT == mask))
@@ -1150,9 +1284,11 @@ pub fn judge_leaf<'a>(
         }
         "-size" => {
             let a = parse_num("-size", text()?, Some('c')).map_err(JudgeError::BadNumber)?;
-            // C 的 `divsize` 初值为 1（按块），任何一处 `-size Nc` 把它置成 0（按字节）
-            // 且**不再置回**（`c_size`，`function.c:1638-1654`）——于是一棵树里只要写过
-            // 一次 `c`，之后所有 `-size` 都按字节比。本层把该旗标算成整棵树的属性传入。
+            // C's `divsize` starts at 1 (by block); any `-size Nc` sets it to 0
+            // (by byte) and it is **never set back** (`c_size`,
+            // `function.c:1638-1654`) — so once a `c` is written anywhere in a
+            // tree, every later `-size` compares by byte. This layer computes
+            // that flag as a property of the whole tree and passes it in.
             let measured = if size_counts_bytes {
                 entry.size
             } else {
@@ -1241,8 +1377,10 @@ pub fn judge_leaf<'a>(
             if entry.mode & crate::cp::S_IFMT != crate::cp::S_IFDIR {
                 return Ok(Outcome::truthy(false));
             }
-            // 目录：C 逐条 `readdir`，凡是「不是只有 `.` 与 `..`」的条目都算不空
-            // （`f_empty`，`function.c:444-470`）。清单拿不到按 C 的 `opendir` 失败支判假。
+            // Directory: C calls `readdir` entry by entry, and anything other
+            // than "only `.` and `..`" counts as non-empty (`f_empty`,
+            // `function.c:444-470`). An unavailable list takes C's
+            // `opendir`-failure branch and answers false.
             let empty = match entry.children {
                 None => return Ok(Outcome::truthy(false)),
                 Some(list) => list.iter().all(|n| *n == "." || *n == ".."),
@@ -1275,10 +1413,11 @@ pub fn judge_leaf<'a>(
             truth: true,
             action: Action::Print(PrintForm::Xargs),
         }),
-        // 注：Minix3 的表里只有 `-false`，没有 bash 的 `-true`（`option.c:60-110`），
-        // 故这里不设 `-true` 一支——它会落到下面的按名拒绝里。
+        // Note: Minix3's table has only `-false`, not bash's `-true`
+        // (`option.c:60-110`), so there is no `-true` branch here — it falls
+        // into the by-name refusal below.
         "-false" => Ok(Outcome::truthy(false)),
-        // 缺腿的按名拒绝，绝不悄悄判假。
+        // Missing legs are refused by name and never silently answer false.
         "-user" | "-group" | "-nouser" | "-nogroup" | "-exec" | "-execdir" | "-ok" | "-delete"
         | "-rm" | "-fstype" | "-flags" | "-regex" | "-iregex" | "-newerest" | "-mindepth0" => {
             Err(JudgeError::Unwired(String::from(name)))
@@ -1287,9 +1426,10 @@ pub fn judge_leaf<'a>(
     }
 }
 
-/// 整棵树里是否出现过 `-size Nc`，即 C 的 `divsize` 是否已被置成「按字节」。
-/// 一旦置起就不再回落（`c_size`，`function.c:1638-1654`），所以扫的是整棵表达式
-/// 而不是当前正在求值的那一条 `-size`。
+/// Whether `-size Nc` appears anywhere in the tree, i.e. whether C's `divsize`
+/// has been set to "by byte". Once set it never falls back (`c_size`,
+/// `function.c:1638-1654`), so the scan covers the whole expression rather than
+/// the `-size` currently being evaluated.
 pub fn size_counts_bytes(nodes: &[Node<'_>]) -> bool {
     nodes.iter().any(node_asks_bytes)
 }
@@ -1372,7 +1512,7 @@ mod judge_tests {
             parse_num("-inum", "10k", None),
             Err(NumError::IllegalTrailing(_, 'k'))
         ));
-        // 只有 -size 带得动那个尾字符 c（c_size 把 endch 传成 'c'）。
+        // Only -size can carry that trailing c (c_size passes endch as 'c').
         assert_eq!(parse_num("-size", "10c", Some('c')).unwrap().value, 10);
         assert!(matches!(
             parse_num("-inum", "10c", None),
@@ -1390,14 +1530,15 @@ mod judge_tests {
     #[test]
     fn day_and_minute_buckets_round_up_before_dividing() {
         let mut e = entry("/etc/rc", "rc", 0o100644);
-        // 差 1.5 天：C 的 (delta + DAY - 1) / DAY 把它算成 2 天。
+        // A delta of 1.5 days: C's (delta + DAY - 1) / DAY makes it 2 days.
         e.atime = world().now - 86_400 - 43_200;
         assert!(judge(&e, "-atime", Some("2")).unwrap().truth);
         assert!(!judge(&e, "-atime", Some("1")).unwrap().truth);
-        // 差 90 秒：分钟格算成 2。
+        // A delta of 90 seconds: the minute bucket is 2.
         e.mtime = world().now - 90;
         assert!(judge(&e, "-mmin", Some("2")).unwrap().truth);
-        // `-amin -1` 经 TIME_CORRECT 变成「少于一分钟」，故 90 秒不算少于一分钟。
+        // `-amin -1` becomes "less than one minute" through TIME_CORRECT, so 90
+        // seconds does not count as less than one minute.
         e.ctime = world().now - 90;
         assert!(!judge(&e, "-cmin", Some("-1")).unwrap().truth);
         e.ctime = world().now - 30;
@@ -1411,7 +1552,7 @@ mod judge_tests {
         assert!(judge(&e, "-name", Some("rc.d")).unwrap().truth);
         assert!(judge(&e, "-iname", Some("RC.D")).unwrap().truth);
         assert!(!judge(&e, "-name", Some("RC.D")).unwrap().truth);
-        // -path 比的是整条路径，不是名字。
+        // -path compares the whole path, not the name.
         assert!(judge(&e, "-path", Some("/etc/*")).unwrap().truth);
         assert!(!judge(&e, "-name", Some("/etc/*")).unwrap().truth);
     }
@@ -1424,7 +1565,8 @@ mod judge_tests {
         let sock = entry("/dev/x", "x", crate::cp::S_IFSOCK);
         assert!(judge(&sock, "-type", Some("s")).unwrap().truth);
         let wht = entry("/w", "w", crate::mode::S_IFWHT);
-        // 白底条目两个字母都收（C 在 `#ifdef S_IFWHT` 里连给 w 与 W）。
+        // A whiteout entry accepts both letters (C provides w and W under
+        // `#ifdef S_IFWHT`).
         assert!(judge(&wht, "-type", Some("w")).unwrap().truth);
         assert!(judge(&wht, "-type", Some("W")).unwrap().truth);
         assert_eq!(
@@ -1445,11 +1587,12 @@ mod judge_tests {
 
     #[test]
     fn size_counts_512_byte_blocks_until_a_c_suffix_switches_the_flag() {
-        let e = entry("/etc/rc", "rc", 0o100644); // size 2048 → 4 块
+        let e = entry("/etc/rc", "rc", 0o100644); // size 2048 → 4 blocks
         assert!(judge(&e, "-size", Some("4")).unwrap().truth);
         assert!(!judge(&e, "-size", Some("2048")).unwrap().truth);
-        // divide_size = true：同一棵树里任何一处 `-size Nc` 都会把整棵切到按字节比。
-        // 全局旗标置起后：2048 就是 2048，块数 4 反而不成立。
+        // divide_size = true: any `-size Nc` in the same tree switches the
+        // whole tree to byte comparison. With the global flag set, 2048 is
+        // 2048, and a block count of 4 no longer holds.
         assert!(
             judge_leaf(&world(), &NoRefs, &e, "-size", Some("2048"), true)
                 .unwrap()
@@ -1460,7 +1603,7 @@ mod judge_tests {
                 .unwrap()
                 .truth
         );
-        // 不足一块按一块算：100 字节是 1 块。
+        // A partial block counts as a whole one: 100 bytes is 1 block.
         let mut small = entry("/etc/tiny", "tiny", 0o100644);
         small.size = 100;
         assert!(judge(&small, "-size", Some("1")).unwrap().truth);
@@ -1468,7 +1611,7 @@ mod judge_tests {
 
     #[test]
     fn the_divsize_scan_looks_through_groups_and_operators() {
-        // 直接拼一棵树：`( -size 1c -o -name x )`。
+        // Assemble a tree directly: `( -size 1c -o -name x )`.
         let tree = vec![Node::Or {
             left: vec![Node::Leaf(Prim::Keyword {
                 name: "-size",
@@ -1480,7 +1623,8 @@ mod judge_tests {
             })],
         }];
         assert!(size_counts_bytes(&tree));
-        // `( -size 3 )` 前面加一个 `!`：组里那条不带 c，故整棵树都不除。
+        // Put a `!` in front of `( -size 3 )`: the item in the group has no c,
+        // so the whole tree does not divide.
         let inner = vec![Node::Leaf(Prim::Keyword {
             name: "-size",
             arg: "3",
@@ -1494,15 +1638,18 @@ mod judge_tests {
         assert!(judge(&e, "-perm", Some("755")).unwrap().truth);
         assert!(!judge(&e, "-perm", Some("644")).unwrap().truth);
         assert!(judge(&e, "-perm", Some("-700")).unwrap().truth);
-        // `-perm -600` 在 755 上是**真**：`f_perm` 比的是「给定位都已置起」，
-        // 0600 两位都在 0755 里（`function.c:1430-1441`）。要假得挑一个没置起的位。
+        // `-perm -600` is **true** on 755: `f_perm` tests "all given bits are
+        // set", and both 0600 bits are in 0755 (`function.c:1430-1441`). For
+        // false, pick a bit that is not set.
         assert!(judge(&e, "-perm", Some("-600")).unwrap().truth);
         assert!(!judge(&e, "-perm", Some("-4000")).unwrap().truth);
-        e.mode = 0o104755; // setuid 也算进那 12 位
-        // 掩码是 07777，setuid 那四位参与精确比较。
+        e.mode = 0o104755; // setuid also counts in those 12 bits
+        // The mask is 07777, so the four setuid bits take part in exact
+        // comparison.
         assert!(judge(&e, "-perm", Some("4755")).unwrap().truth);
         assert!(!judge(&e, "-perm", Some("0755")).unwrap().truth);
-        // 符号式：以 0 为基数的 `getmode` 就是那几位被置起，`-perm u=s` 要求精确相等故假。
+        // Symbolic form: `getmode` with base 0 sets exactly those bits, and
+        // `-perm u=s` demands exact equality, hence false.
         assert!(!judge(&e, "-perm", Some("u=s")).unwrap().truth);
         assert!(judge(&e, "-perm", Some("-u=s")).unwrap().truth);
         assert!(matches!(
@@ -1530,11 +1677,12 @@ mod judge_tests {
         assert!(!judge(&d, "-empty", None).unwrap().truth);
         d.children = Some(&only_dots);
         assert!(judge(&d, "-empty", None).unwrap().truth);
-        // 只有一条 `.` 也算空：C 的 `readdir` 判据把「名字不是 . 开头，或者是
-        // `..` 之外还有内容」才算条目（`function.c:461-466`），单独的 `.` 被跳过。
+        // A list with just one `.` still counts as empty: C's `readdir` test
+        // only counts entries whose name is not `.` or that leave content
+        // besides `..` (`function.c:461-466`), and a lone `.` is skipped.
         d.children = Some(&dot_only);
         assert!(judge(&d, "-empty", None).unwrap().truth);
-        d.children = None; // opendir 失败 → C 判 0
+        d.children = None; // opendir failure → C decides 0
         assert!(!judge(&d, "-empty", None).unwrap().truth);
     }
 
@@ -1582,7 +1730,8 @@ mod judge_tests {
         e.atime = 11;
         e.mtime = 19;
         e.ctime = 31;
-        // atime 11 > 参照的 atime 10 → 真；mtime 19 < 参照的 20 → 假；ctime 31 > 30 → 真。
+        // atime 11 > reference atime 10 → true; mtime 19 < reference 20 →
+        // false; ctime 31 > 30 → true.
         assert!(judge(&e, "-anewer", Some("/ref")).unwrap().truth);
         assert!(judge(&e, "-cnewer", Some("/ref")).unwrap().truth);
         assert!(!judge(&e, "-newer", Some("/ref")).unwrap().truth);
@@ -1605,7 +1754,8 @@ mod judge_tests {
                 "{name} 该按名拒绝而不是悄悄判假"
             );
         }
-        // C 的表里也没有 -true（bash 的），同样落拒绝。
+        // C's table has no -true either (that is bash's), so it is refused
+        // too.
         assert_eq!(
             judge(&e, "-true", None),
             Err(JudgeError::Unwired(String::from("-true")))
@@ -1613,15 +1763,19 @@ mod judge_tests {
     }
 }
 
-/// 一条打印动作的产物（`f_print`/`f_print0`/`f_printx`，`function.c:1475-1507`）。
-/// 交回文本而不是直接写标准输出，是为了让求值器整族可在宿主测；薄壳负责落笔。
+/// The product of one print action (`f_print`/`f_print0`/`f_printx`,
+/// `function.c:1475-1507`). It returns text instead of writing standard output
+/// so the whole evaluator family is host-testable; the thin shell does the
+/// writing.
 pub fn printed(form: PrintForm, path: &str) -> String {
     match form {
         PrintForm::Line => format!("{path}\n"),
         PrintForm::Nul => format!("{path}\0"),
-        // `-printx` 给 xargs 用：这八个字符前各加一个反斜杠，行尾再加换行
-        // （`f_printx`，`function.c:1492-1507`）。注意它与 `-X` 的 `BADCH`
-        // （`find.c:236-237`，只有五字）不是同一套，别顺手合并。
+        // `-printx` is for xargs: prefix each of these eight characters with a
+        // backslash, then add a newline at the end of the line (`f_printx`,
+        // `function.c:1492-1507`). Note that this is not the same set as `-X`'s
+        // `BADCH` (`find.c:236-237`, only five characters); do not merge them
+        // casually.
         PrintForm::Xargs => {
             let mut out = String::new();
             for ch in path.chars() {
@@ -1636,19 +1790,24 @@ pub fn printed(form: PrintForm, path: &str) -> String {
     }
 }
 
-/// 一段表达式在一个目录项上的求值结果。
+/// The evaluation result of one expression segment on one directory entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evaluated {
-    /// 整段的真值（C 的求值循环：任一节点返假就停，整段为假）。
+    /// The truth value of the whole segment (C's evaluation loop: stop at the
+    /// first node that returns false, and the segment is false).
     pub truth: bool,
-    /// 是否要剪掉这一支（`-prune` 命中且整段为真时才生效，同 C 由 fts 侧看下一节点的走向）。
+    /// Whether to prune this branch (effective only when `-prune` hits and the
+    /// segment is true; as in C, the fts side looks at the next node's
+    /// direction).
     pub pruned: bool,
-    /// 该吐出去的行（可能多条：一串 `-print` 都会各印一次）。
+    /// Lines to emit (possibly several: a run of `-print`s each prints once).
     pub emitted: Vec<String>,
 }
 
-/// 求值一段序列（`Vec<Node>`）：与 C 的 `for (p = plan; p && (p->eval)(p, entry); p = p->next)`
-/// 同形——一路求值到某个节点返假并就此短路，其后的节点连输出都不该有（`find.c:252`）。
+/// Evaluate a sequence (`Vec<Node>`): the same shape as C's
+/// `for (p = plan; p && (p->eval)(p, entry); p = p->next)` — evaluate until
+/// some node returns false and short-circuit there; later nodes must not emit
+/// anything either (`find.c:252`).
 pub fn eval_plan(
     world: &World,
     refs: &dyn ReferenceStat,
@@ -1675,7 +1834,8 @@ fn eval_seq(
     for node in nodes {
         let truth = eval_node(world, refs, entry, node, size_bytes, out)?;
         if !truth {
-            // 短路：这一段的真值是假，后面的节点一个都不碰。
+            // Short-circuit: this segment is false, and no later node is
+            // touched.
             out.truth = false;
             return Ok(out.clone());
         }
@@ -1703,7 +1863,8 @@ fn eval_node(
             Ok(outcome.truth)
         }
         Node::Leaf(Prim::Exec { name, .. }) => {
-            // 执行腿尚未接：按名拒绝，且绝不让它把整段带成「真而无声」。
+            // The execution leg is not wired yet: refuse by name, and never let
+            // it turn the whole segment into "true but silent".
             Err(JudgeError::Unwired(String::from(*name)))
         }
         Node::Paren(inner) => {
@@ -1725,7 +1886,8 @@ fn eval_node(
             };
             let one = vec![(**inner).clone()];
             eval_seq(world, refs, entry, &one, size_bytes, &mut sub)?;
-            // C 的 `f_not` 只翻转子计划的结果；子计划里的输出该出的还是出了。
+            // C's `f_not` flips only the sub-plan's result; output produced
+            // inside the sub-plan is still emitted.
             let truth = !sub.truth;
             merge(sub, out);
             Ok(truth)
@@ -1769,11 +1931,14 @@ fn merge(sub: Evaluated, out: &mut Evaluated) {
 }
 
 // ============================================================================
-// 走表遍历腿（决定半第四包）——对位 `find_execute`（`minix3/usr.bin/find/find.c:201-273`）
+// Table-walk traversal leg (the deciding half's fourth package) — counterpart of
+// `find_execute` (`minix3/usr.bin/find/find.c:201-273`)
 // ============================================================================
 
-/// 一个路径的 `FTSENT` 承载位。求值半只看 `mode`/`ino`/`nlink`/`size`/`uid`/`gid`/`dev`
-/// 与三段时间，故这里只留这些（`minix3/include/fts.h` 的 `fts_statp`）。
+/// The `FTSENT` payload bits for one path. The evaluation half looks only at
+/// `mode`/`ino`/`nlink`/`size`/`uid`/`gid`/`dev` plus the three timestamps, so
+/// only those are kept here (the `fts_statp` fields of
+/// `minix3/include/fts.h`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StatBits {
     pub mode: u32,
@@ -1788,48 +1953,65 @@ pub struct StatBits {
     pub ctime: i64,
 }
 
-/// 走表腿向系统层要的两件事（并继承 `-newer` 的 `ReferenceStat`）。遍历核心只经它取数，
-/// 故在宿主可用合成树逐分支测；薄壳用 `minix_sys` 的 `lstat`/`getdents`/`stat` 实现同一份口。
+/// The two things the walk leg asks of the system layer (inheriting `-newer`'s
+/// `ReferenceStat`). The traversal core obtains all its data through this, so a
+/// synthetic tree can exercise every branch on the host; the thin shell
+/// implements the same surface with `minix_sys`'s `lstat`/`getdents`/`stat`.
 ///
-/// 两个 `stat` 口的分工照 `fts_stat`（`minix3/lib/libc/gen/fts.c:921-968`）：物理遍历只对
-/// 链本身取 `lstat_of`；逻辑（`-L`）或命令行跟随（`-H` 对起始路径）先取 `stat_of`（跟随链），
-/// `stat_of` 失败再退回 `lstat_of` 判断链（`FTS_SLNONE`）。
+/// The division of labour between the two `stat` entries follows `fts_stat`
+/// (`minix3/lib/libc/gen/fts.c:921-968`): a physical walk takes `lstat_of` on
+/// the link itself; a logical walk (`-L`) or a command-line follow (`-H` on the
+/// start path) takes `stat_of` first (following the link), and only when
+/// `stat_of` fails falls back to `lstat_of` to classify the link (`FTS_SLNONE`).
 ///
-/// 三个口都交回 `Result<_, Errno>` 而不是 `Option`：C 对 `FTS_NS`/`FTS_ERR`/`FTS_DNR`
-/// 三类都打 `warnx("%s: %s", fts_path, strerror(fts_errno))`（`find.c:230-231`），
-/// 那个**号就是报文的内容**；只交回「失败」二元信息的话，壳只能自己编一句话
-/// （旧形：`<路径>: stat failed`），那就是拿发明顶替真源。形状与同包 `pathchk.rs` 的
-/// `PathProbe` 同（它的三方法早就是 `Result<i64, Errno>`），所以这不是新开车道，而是把
-/// 走表腿补齐到同一契约上。
+/// All three entries return `Result<_, Errno>` rather than `Option`: C prints
+/// `warnx("%s: %s", fts_path, strerror(fts_errno))` for all of
+/// `FTS_NS`/`FTS_ERR`/`FTS_DNR` (`find.c:230-231`), and that **number is the
+/// content of the message**; returning only a binary "failed" would force the
+/// shell to invent a sentence (the old form: `<path>: stat failed`), replacing
+/// ground truth with invention. The shape matches `PathProbe` in the sibling
+/// `pathchk.rs` (whose three methods are already `Result<i64, Errno>`), so this
+/// is not a new lane but the walk leg brought up to the same contract.
 pub trait WalkProbe: ReferenceStat {
-    /// 链本身的 `lstat` 位（不跟随符号链）。失败 = C 的 `FTS_NS`，交回 `lstat` 的号。
+    /// The link's own `lstat` bits (do not follow symlinks). Failure = C's
+    /// `FTS_NS`, returning the `lstat` errno.
     fn lstat_of(&self, path: &str) -> Result<StatBits, Errno>;
-    /// 目标路径的 `stat` 位（跟随符号链）。失败仅在逻辑/跟随时被调；按 `fts_stat` 的规则，
-    /// 连 `lstat` 也失败时上报的是**这一次（stat）的号**（`fts.c:950-955` 的 `saved_errno`）。
+    /// The target path's `stat` bits (following symlinks). Only called on a
+    /// logical/following walk; per `fts_stat`'s rule, when `lstat` fails too the
+    /// number reported is **this call's (stat's) errno** (`fts.c:950-955`'s
+    /// `saved_errno`).
     fn stat_of(&self, path: &str) -> Result<StatBits, Errno>;
-    /// 目次里的条目名（C 的 `readdir`，可含 `.`/`..`）。打不开 = C 的 `FTS_DNR`，
-    /// 交回 `open`/`getdents` 的号。逻辑形下对一个符号链到目次的项，`open` 会跟随链
-    /// 读到目标目次，故本口应返回目标的子项。
+    /// Entry names inside a directory (C's `readdir`, may include `.`/`..`).
+    /// Cannot open = C's `FTS_DNR`, returning the `open`/`getdents` errno. In
+    /// logical mode, for an item that is a symlink to a directory, `open`
+    /// follows the link and reads the target directory, so this entry should
+    /// return the target's children.
     fn dir_children(&self, path: &str) -> Result<Vec<String>, Errno>;
 }
 
-/// `fts_stat` 对一个路径的判定位（`fts.c:921-968` 的返回码族）。走表腿据此决定求值与下探。
+/// The classification `fts_stat` assigns to one path (the return-code family at
+/// `fts.c:921-968`). The walk leg uses it to decide evaluation and descent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FtsKind {
-    /// 目标是一个可下探的目次（`FTS_D`）。
+    /// The target is a descendable directory (`FTS_D`).
     Dir,
-    /// 目标目次与某祖先同 `(dev,ino)`，成环（`FTS_DC`）——求值但不下探。
+    /// The target directory shares `(dev,ino)` with an ancestor, forming a
+    /// cycle (`FTS_DC`) — evaluate but do not descend.
     Cycle,
-    /// 非目次的普通项（`FTS_F`/`FTS_SL`/`FTS_DEFAULT`）——求值不下探。
+    /// An ordinary non-directory item (`FTS_F`/`FTS_SL`/`FTS_DEFAULT`) —
+    /// evaluate without descending.
     NotDir,
-    /// 逻辑形下符号链的目标不存在（`FTS_SLNONE`）——按链自身属性求值，不下探。
+    /// In logical mode the symlink's target does not exist (`FTS_SLNONE`) —
+    /// evaluate the link's own attributes without descending.
     BrokenLink,
-    /// `stat`/`lstat` 皆失败（`FTS_NS`）——报 warn、记错、跳过。带的就是 C 存进
-    /// `fts_errno`、由 `strerror(3)` 打成句子的那个数。
+    /// Both `stat` and `lstat` failed (`FTS_NS`) — warn, record an error, and
+    /// skip. The payload is the number C stores in `fts_errno` and renders into
+    /// a sentence with `strerror(3)`.
     Failed(Errno),
 }
 
-/// 一次走表的产出：待写出的行（含各自的换行/NUL）、告警文本、退出码贡献。
+/// The output of one walk: lines to write (each with its newline/NUL), warning
+/// text, and the exit-code contribution.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WalkResult {
     pub emitted: Vec<String>,
@@ -1837,13 +2019,18 @@ pub struct WalkResult {
     pub rval: u8,
 }
 
-/// 遍历起始路径集合，按 `Parsed` 抽出的选项走表并逐条求值。物理模式：符号链不被跟随，
-/// 目录只在自身 `dev` 与起始路径相等时才下探（`-x`）。`-d` 让目录落在后序求值，`-s` 让
-/// 同层按名排序，`-X` 拒含 xargs 分隔符的路径，无输出表项时补隐式 `-print`。
+/// Walk the start-path set, following the options extracted from `Parsed`, and
+/// evaluate each entry. Physical mode: symlinks are not followed, and a
+/// directory is descended into only when its own `dev` equals the start path's
+/// (`-x`). `-d` makes directories evaluate in post-order, `-s` sorts each level
+/// by name, `-X` rejects paths containing xargs separators, and the implicit
+/// `-print` is added when the expression has no output entry.
 pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> WalkResult {
-    // 隐式 `-print` 的成形照 `find_formplan` 尾部（`find.c:103-118`）：空表达式 → 只有
-    // `-print`；否则把表达式括进 `Paren` 再补一条 `-print`（括起来是为了让 `-o` 的短路
-    // 只在括号内发生，隐式 print 永远执行）。
+    // The implicit `-print` is formed per the tail of `find_formplan`
+    // (`find.c:103-118`): an empty expression becomes just `-print`; otherwise
+    // the expression is wrapped in `Paren` and a `-print` appended (the wrap
+    // keeps `-o`'s short-circuit inside the parentheses so the implicit print
+    // always runs).
     let effective: Vec<Node<'_>> = if parsed.needs_implicit_print {
         if parsed.expr.is_empty() {
             vec![Node::Leaf(Prim::Bare("-print"))]
@@ -1862,8 +2049,10 @@ pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> 
         sorted: parsed.sorted,
         xdev: parsed.walk.has(fts::XDEV),
         xargs_safe_only: parsed.xargs_safe_only,
-        // `-L` 走逻辑形（所有项都跟随）；`-H` 只对起始路径跟随（`fts.c:171` 对根传
-        // `ISSET(FTS_COMFOLLOW)`，子项 `fts_build` 传 follow=0），故 comfollow 只影响 visit_start。
+        // `-L` walks logically (everything is followed); `-H` follows only the
+        // start path (`fts.c:171` passes `ISSET(FTS_COMFOLLOW)` for the root,
+        // while `fts_build` passes follow=0 for children), so comfollow only
+        // affects visit_start.
         logical: parsed.walk.has(fts::LOGICAL),
         comfollow: parsed.walk.has(fts::COMFOLLOW),
     };
@@ -1880,7 +2069,8 @@ pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> 
         size_bytes,
     };
     let mut paths: Vec<&str> = Vec::with_capacity(parsed.extra_paths.len() + parsed.paths.len());
-    // `-f` 带上来的路径按出现顺序排在位置参数之前（`main.c:109-111` 先塞进数组）。
+    // Paths brought in by `-f` come before the positional operands in order of
+    // appearance (`main.c:109-111` pushes them into the array first).
     paths.extend(parsed.extra_paths.iter().copied());
     paths.extend(parsed.paths.iter().copied());
     for p in &paths {
@@ -1890,7 +2080,8 @@ pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> 
     w.out
 }
 
-/// 走表所需的一组位（从 `Parsed` 抽出，避免把整棵表达式树的所有权塞进递归）。
+/// The set of bits a walk needs (extracted from `Parsed` so the whole
+/// expression tree's ownership does not go into the recursion).
 #[derive(Debug, Clone, Copy)]
 struct WalkCfg {
     depth: bool,
@@ -1901,8 +2092,10 @@ struct WalkCfg {
     comfollow: bool,
 }
 
-/// 递归全程不变的一组入参：已成形（含隐式 `-print`）的表达式与 `divsize` 旗标。
-/// 捆成一个 `Copy` 结构是为了把 `eval_entry` 的形参压到 clippy 的门以内（≤7）。
+/// Inputs that stay constant throughout the recursion: the formed expression
+/// (implicit `-print` included) and the `divsize` flag. They are bundled into
+/// one `Copy` struct to keep `eval_entry`'s parameter count under clippy's limit
+/// (≤7).
 #[derive(Clone, Copy)]
 struct Ctx<'n> {
     nodes: &'n [Node<'n>],
@@ -1913,24 +2106,29 @@ struct Walk<'p> {
     probe: &'p dyn WalkProbe,
     world: &'p World,
     cfg: WalkCfg,
-    /// 起始路径所在设备，`-x` 用它比较（每颗起始路径各定一个）。
+    /// Device of the start path, used by the `-x` comparison (set separately
+    /// for each start path).
     root_dev: u64,
-    /// 当前正在下探的目录链的 `(dev,ino)`，供逻辑形的 `FTS_DC` 成环检测比对（`fts.c:955-961`）。
-    /// 物理形不跟随链、真目次 inode 唯一，不会成环，故木栈仅在 `logical` 下读写。
+    /// `(dev,ino)` of the directory chain currently being descended, used by the
+    /// logical mode's `FTS_DC` cycle check (`fts.c:955-961`). Physical mode does
+    /// not follow links and a real directory inode is unique, so no cycle can
+    /// form; this stack is read and written only under `logical`.
     ancestors: Vec<(u64, u64)>,
     out: WalkResult,
 }
 
 impl Walk<'_> {
-    /// 起始路径：`fts_read` 对根返回 `fts_level == 1`，名取末段（`.` 原样保留）。
-    /// 起始路径的跟随位 = `ISSET(FTS_LOGICAL) || ISSET(FTS_COMFOLLOW)`（`fts.c:171`）。
+    /// A start path: `fts_read` reports `fts_level == 1` for the root, with the
+    /// name taken from the last segment (`.` is kept as-is). The start path's
+    /// follow bit = `ISSET(FTS_LOGICAL) || ISSET(FTS_COMFOLLOW)` (`fts.c:171`).
     fn visit_start(&mut self, path: &str, ctx: Ctx<'_>) {
         let name = base_name(path);
         let follow = self.cfg.logical || self.cfg.comfollow;
         let (kind, st) = self.classify(path, follow);
         match kind {
-            // C 对 `FTS_NS` 打的是 `warnx("%s: %s", 路径, strerror(号))`，所以后缀是句子本身
-            // 而不是描述失手类型的短语。
+            // C prints `warnx("%s: %s", path, strerror(number))` for `FTS_NS`,
+            // so the suffix is the sentence itself, not a phrase describing the
+            // failure kind.
             FtsKind::Failed(err) => {
                 self.out.warnings.push(format!("{path}: {}", Strerror(err)));
                 self.out.rval = 1;
@@ -1942,8 +2140,10 @@ impl Walk<'_> {
         }
     }
 
-    /// 把一个已分类项按 `find_execute` 的 `switch (fts_info)` 走向（`find.c:216-235`）：
-    /// 目录走 `visit_dir`；成环/断链/非目次都落进默认分支单点求值、不下探。
+    /// Route a classified item as `find_execute`'s `switch (fts_info)` does
+    /// (`find.c:216-235`): directories go to `visit_dir`; cycles, broken links,
+    /// and non-directories all fall into the default branch, evaluated once
+    /// without descending.
     fn dispatch(
         &mut self,
         kind: FtsKind,
@@ -1961,20 +2161,26 @@ impl Walk<'_> {
         }
     }
 
-    /// 对一个路径定位（`fts_stat`，`fts.c:921-968`）。`follow` 时先取 `stat_of`（跟随）；
-    /// 它失败再 `lstat_of`：成功是断链（`FTS_SLNONE`），也失败是 `FTS_NS`。非 `follow` 只取
-    /// `lstat_of`。若目标为目次，只在逻辑形下比对祖先 `(dev,ino)` 查成环（`FTS_DC`）——
-    /// 物理形不跟随链、真目次 inode 唯一，不会成环，故门控在 `logical`（也避开合成树全 0 inode 的假阳性）。
+    /// Classify a path (`fts_stat`, `fts.c:921-968`). With `follow`, take
+    /// `stat_of` first (following); on failure take `lstat_of`: success means a
+    /// broken link (`FTS_SLNONE`), and failure too means `FTS_NS`. Without
+    /// `follow`, take only `lstat_of`. If the target is a directory, compare
+    /// against ancestor `(dev,ino)` only in logical mode to detect a cycle
+    /// (`FTS_DC`) — physical mode does not follow links and a real directory
+    /// inode is unique, so no cycle can form; gating on `logical` also avoids a
+    /// false positive from synthetic trees with all-zero inodes.
     fn classify(&self, path: &str, follow: bool) -> (FtsKind, StatBits) {
         let bits = if follow {
             match self.probe.stat_of(path) {
                 Ok(b) => b,
                 Err(stat_err) => match self.probe.lstat_of(path) {
                     Ok(b) => return (FtsKind::BrokenLink, b),
-                    // 连链本身也取不到：C 上报的是 **stat 那次的号**（`fts.c:950-955`
-                    // 先存 `saved_errno`，只在 `lstat` 也失败时拿它当 `fts_errno`），
-                    // 不是 lstat 的号。两个号不同时（典型为链不存在 vs 权限不足），
-                    // 拿错就会打错句子。
+                    // The link itself cannot be read either: C reports **the
+                    // stat call's number** (`fts.c:950-955` stores
+                    // `saved_errno` first and uses it as `fts_errno` only when
+                    // `lstat` fails too), not the lstat number. When the two
+                    // differ (typically link missing vs permission denied),
+                    // taking the wrong one prints the wrong sentence.
                     Err(_) => return (FtsKind::Failed(stat_err), StatBits::default()),
                 },
             }
@@ -1994,28 +2200,34 @@ impl Walk<'_> {
         }
     }
 
-    /// 一个目录：`FTS_D`（预序）或 `FTS_DP`（后序），取决于 `-d`。打不开子项 = `FTS_DNR`：
-    /// C 报 warn 并 `continue`（不求值、不下探），本层照此。
+    /// A directory: `FTS_D` (pre-order) or `FTS_DP` (post-order), depending on
+    /// `-d`. Unreadable children = `FTS_DNR`: C warns and `continue`s (no
+    /// evaluation, no descent), and this layer does the same.
     fn visit_dir(&mut self, path: &str, name: &str, level: usize, st: StatBits, ctx: Ctx<'_>) {
         let children = match self.probe.dir_children(path) {
             Ok(c) => c,
-            // `FTS_DNR` 与 `FTS_NS` 共用 C 的那一行 `warnx`：前缀是路径，后缀是号对应的句子。
+            // `FTS_DNR` and `FTS_NS` share C's one `warnx` line: the prefix is
+            // the path and the suffix is the sentence for the number.
             Err(err) => {
                 self.out.warnings.push(format!("{path}: {}", Strerror(err)));
                 self.out.rval = 1;
                 return;
             }
         };
-        // `-x`：设备与起始路径不同的目录被报告但不下探（`main.c:122-124` 的 `FTS_XDEV`）。
+        // `-x`: a directory on a different device than the start path is
+        // reported but not descended into (`main.c:122-124`'s `FTS_XDEV`).
         let can_recurse = !self.cfg.xdev || st.dev == self.root_dev;
         if self.cfg.depth {
-            // 后序：先下探（`FTS_D` 被 `find.c:218-220` 的 `isdepth` 挡掉），再求值目录自身。
+            // Post-order: descend first (`FTS_D` is suppressed by
+            // `find.c:218-220`'s `isdepth`), then evaluate the directory
+            // itself.
             if can_recurse {
                 self.enter(path, &children, level, st, ctx);
             }
             self.eval_entry(path, name, level, st, Some(&children), ctx);
         } else {
-            // 预序：先求值目录自身，命中 `-prune` 或 `-x` 越界则不下探。
+            // Pre-order: evaluate the directory itself first; do not descend if
+            // `-prune` hits or `-x` keeps us out.
             let pruned = self.eval_entry(path, name, level, st, Some(&children), ctx);
             if !pruned && can_recurse {
                 self.enter(path, &children, level, st, ctx);
@@ -2023,7 +2235,9 @@ impl Walk<'_> {
         }
     }
 
-    /// 真正下探：逻辑形下把本目录压入祖先栈再走子项，返回时弹出（供成环检测）；物理形直接下探。
+    /// Descend for real: in logical mode push this directory onto the ancestor
+    /// stack before walking the children and pop it on return (for cycle
+    /// detection); physical mode descends directly.
     fn enter(&mut self, path: &str, children: &[String], level: usize, st: StatBits, ctx: Ctx<'_>) {
         if self.cfg.logical {
             self.ancestors.push((st.dev, st.ino));
@@ -2034,9 +2248,11 @@ impl Walk<'_> {
         }
     }
 
-    /// 下探一个目录的子项。跳过 `.`/`..`（`dents::is_descendable`），`-s` 时按名排序；
-    /// 子项按逻辑位 `follow` 定位（`fts_build` 传 `follow=0`，靠 `FTS_LOGICAL` 旗标本身决定是否跟随）。
-    /// 定位失败 = `FTS_NS`（报 warn、rval、continue）。
+    /// Descend into a directory's children. Skip `.`/`..`
+    /// (`dents::is_descendable`); with `-s`, sort by name. Children are
+    /// classified with the logical-mode `follow` (`fts_build` passes follow=0;
+    /// the `FTS_LOGICAL` flag itself decides whether to follow). A failed
+    /// classification = `FTS_NS` (warn, set rval, continue).
     fn descend(&mut self, dir: &str, children: &[String], level: usize, ctx: Ctx<'_>) {
         let mut names: Vec<&str> = children
             .iter()
@@ -2062,8 +2278,10 @@ impl Walk<'_> {
         }
     }
 
-    /// 对一个目录项求值整段表达式，交回是否被 `-prune` 剪枝。`-X`（`isxargs`）先做
-    /// `BADCH` 拒径（`find.c:235-243`）；求值期的表外/缺腿按名报错记 rval，不产出行。
+    /// Evaluate the whole expression on one directory entry and report whether
+    /// `-prune` pruned it. `-X` (`isxargs`) first rejects paths by `BADCH`
+    /// (`find.c:235-243`); an off-table or missing leg during evaluation is
+    /// reported by name, sets rval, and emits nothing.
     fn eval_entry(
         &mut self,
         path: &str,
@@ -2104,9 +2322,12 @@ impl Walk<'_> {
                 ev.pruned && ev.truth
             }
             Err(_) => {
-                // 求值期错误（表外/缺腿/参数非法）：C 在计划构造或求值时 errx 终止，
-                // 本层不整轮终止而记 rval 并跳过该径（与 du/find 各批「硬错只令该操数计错」
-                // 同口径，差异登记在薄壳头注）。
+                // Evaluation-time error (off-table / missing leg / invalid
+                // argument): C terminates with errx while building the plan or
+                // evaluating, while this layer records rval and skips that path
+                // instead of ending the whole run (the same rule as the du/find
+                // packages' "a hard error only marks that operand"; the
+                // divergence is recorded in the thin shell's head note).
                 self.out.rval = 1;
                 false
             }
@@ -2114,15 +2335,19 @@ impl Walk<'_> {
     }
 }
 
-/// `find.c:236` 的 `BADCH`（给 `-X`/`isxargs` 用）：空格、tab、换行、反斜杠、单引号、双引号。
-/// 注意它与 `-printx` 转义表（`function.c:1492-1507`，八个字符）不是同一套，别合并。
+/// `find.c:236`'s `BADCH` (for `-X`/`isxargs`): space, tab, newline, backslash,
+/// single quote, double quote. Note that it is not the same set as `-printx`'s
+/// escape table (`function.c:1492-1507`, eight characters); do not merge
+/// them.
 const BADCH: &str = " \t\n\\'\"";
 
-/// `FTSENT::fts_name`：末段组件名。`.` 与以 `/` 结尾的路径各按其末段取。
+/// `FTSENT::fts_name`: the last path component. `.` and paths ending in `/`
+/// each take their last segment.
 fn base_name(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
-        // 路径本就是 `/`（或多个斜杠）：fts 对根的名字是空串。
+        // The path is `/` itself (or several slashes): fts gives the root an
+        // empty name.
         return "";
     }
     match trimmed.rsplit_once('/') {
@@ -2131,9 +2356,11 @@ fn base_name(path: &str) -> &str {
     }
 }
 
-/// BSD `fts` 的路径拼接规则（与 `dents::join_path` 的 `ls` dotdir 规则不同）：子项总是
-/// 带上父目录前缀，起始 `.` 的子项得 `./foo`（`fts_read` 的 `fts_path` 即如此），而根 `/`
-/// 下不出现双斜杠。find 打印的是这条完整路径，故不能用 `ls` 那一份去前缀的实现。
+/// BSD `fts`'s path assembly rule (different from the `ls` dotdir rule in
+/// `dents::join_path`): a child always carries the parent prefix, so a child of
+/// the start `.` is `./foo` (exactly what `fts_read` puts in `fts_path`), and
+/// no double slash appears under the root `/`. find prints this full path, so
+/// the de-prefixing implementation used by `ls` cannot be reused.
 fn fts_join(dir: &str, name: &str) -> String {
     if dir.ends_with('/') {
         let mut out = String::from(dir);
@@ -2186,10 +2413,12 @@ mod eval_tests {
         }
     }
 
-    /// 把「起始路径 + 表达式」按 `find` 的 argv 形状喂进第一包的解析器，
-    /// 再对一条固定目录项求值——两包就这样在测里连成一条链。
+    /// Feed "start path + expression" in `find`'s argv shape to the first
+    /// package's parser, then evaluate it against a fixed directory entry —
+    /// that is how the two packages chain together in tests.
     fn run(src: &[&str]) -> Result<Evaluated, JudgeError> {
-        // argv 形状是「起始路径 + 表达式」：第一包的解析器吃的就是这一串。
+        // The argv shape is "start path + expression": that is exactly what the
+        // first package's parser consumes.
         let mut owned: Vec<String> = vec![String::from(".")];
         owned.extend(src.iter().map(|s| String::from(*s)));
         let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
@@ -2200,11 +2429,12 @@ mod eval_tests {
 
     #[test]
     fn a_sequence_short_circuits_at_the_first_false_test() {
-        // `-name rc.d -print`：两个都真，行吐一次。
+        // `-name rc.d -print`: both are true, so one line is emitted.
         let got = run(&["-name", "rc.d", "-print"]).unwrap();
         assert!(got.truth);
         assert_eq!(got.emitted, vec![String::from("/etc/rc.d\n")]);
-        // 前项为假：后面的 -print 根本不该碰。
+        // The first test is false: the later -print must not be touched at
+        // all.
         let quiet = run(&["-name", "nope", "-print"]).unwrap();
         assert!(!quiet.truth);
         assert!(quiet.emitted.is_empty());
@@ -2221,10 +2451,11 @@ mod eval_tests {
 
     #[test]
     fn or_takes_the_right_branch_only_when_the_left_is_false() {
-        // 左真：右支不碰，故右支那个 -print 不吐行。
+        // The left side is true: the right branch is not touched, so its
+        // -print emits nothing.
         let left = run(&["-name", "rc.d", "-print", "-o", "-name", "x", "-print"]).unwrap();
         assert_eq!(left.emitted, vec![String::from("/etc/rc.d\n")]);
-        // 左假：右支接手。
+        // The left side is false: the right branch takes over.
         let right = run(&["-name", "nope", "-print", "-o", "-type", "f", "-print"]).unwrap();
         assert!(right.truth);
         assert_eq!(right.emitted, vec![String::from("/etc/rc.d\n")]);
@@ -2232,7 +2463,8 @@ mod eval_tests {
 
     #[test]
     fn not_flips_the_truth_but_keeps_the_output_it_produced() {
-        // C 的 f_not 只翻子计划的结果：子计划里的 -print 照吐。
+        // C's f_not flips only the sub-plan's result: the -print inside the
+        // sub-plan still emits.
         let got = run(&["!", "(", "-name", "rc.d", "-print", ")"]).unwrap();
         assert!(!got.truth);
         assert_eq!(got.emitted, vec![String::from("/etc/rc.d\n")]);
@@ -2243,7 +2475,7 @@ mod eval_tests {
     #[test]
     fn prune_is_reported_without_changing_the_truth() {
         let got = run(&["-type", "d", "-prune"]).unwrap();
-        assert!(!got.truth && !got.pruned); // 不是目录，-prune 也就碰不到
+        assert!(!got.truth && !got.pruned); // not a directory, so -prune is never reached
         let deep = run(&["-type", "f", "-prune", "-print"]).unwrap();
         assert!(deep.truth && deep.pruned);
         assert_eq!(deep.emitted, vec![String::from("/etc/rc.d\n")]);
@@ -2251,18 +2483,20 @@ mod eval_tests {
 
     #[test]
     fn the_xargs_print_form_escapes_exactly_the_chars_c_lists() {
-        // f_printx 逃的是 `' " 空格 $ ` \t \n \\` 这八个（function.c:1495-1500）。
+        // f_printx escapes these eight: `' " space $ ` \t \n \\` (function.c:1495-1500).
         let raw = "/tmp/a b'c\"d$e`f\n\tg\\";
         let escaped = printed(PrintForm::Xargs, raw);
         assert_eq!(escaped, "/tmp/a\\ b\\'c\\\"d\\$e\\`f\\\n\\\tg\\\\\n");
-        // 而 -X 的 BADCH 只有五个字，别把两套并起来（find.c:235）。
+        // -X's BADCH has only five characters; do not merge the two sets
+        // (find.c:235).
         assert_eq!(printed(PrintForm::Line, "a b"), String::from("a b\n"));
     }
 
     #[test]
     fn one_c_suffix_switches_every_size_test_in_the_tree() {
-        // `-size 1c -o -size 1`：那处 `c` 让全树都按字节比，于是 512 字节的条目
-        // 两条都不成立（C 的 `divsize` 就是这份全局性，`function.c:1638-1654`）。
+        // `-size 1c -o -size 1`: that one `c` makes the whole tree compare by
+        // byte, so neither test holds for a 512-byte entry (this globality is
+        // exactly C's `divsize`, `function.c:1638-1654`).
         let refs: Vec<&str> = vec![".", "-size", "1c", "-o", "-size", "1"];
         let parsed = parse(&refs).unwrap();
         let nodes = parsed.expr.clone();
@@ -2270,7 +2504,8 @@ mod eval_tests {
         let world = world();
         let e = entry(); // size 512
         assert!(!eval_plan(&world, &NoRefs, &e, &nodes, true).unwrap().truth);
-        // 把那条带 `c` 的换成带块的，旗标不置起，1 块（512 字节）就成立了。
+        // Replace the entry with `c` by a block-form one: the flag is not set,
+        // so 1 block (512 bytes) holds.
         let plain: Vec<&str> = vec![".", "-size", "2c", "-o", "-size", "1"];
         let plain = parse(&plain).unwrap();
         assert!(size_counts_bytes(&plain.expr));
@@ -2291,14 +2526,16 @@ mod eval_tests {
 
     #[test]
     fn unwired_actions_refuse_rather_than_reporting_true() {
-        // `-exec` 的执行腿未接：整段是错误，不是「真而无声」。
+        // `-exec`'s execution leg is not wired: the whole segment is an error,
+        // not "true but silent".
         let got = run(&["-exec", "true", ";"]).unwrap_err();
         assert!(matches!(got, JudgeError::Unwired(_)));
     }
 }
 
 // ============================================================================
-// 走表遍历腿的宿主测：一棵合成树，逐分支钉 `find_execute` 的走向
+// Host tests for the table-walk traversal leg: a synthetic tree pinning
+// `find_execute`'s routing branch by branch
 // ============================================================================
 #[cfg(test)]
 mod walk_tests {
@@ -2308,24 +2545,30 @@ mod walk_tests {
 
     struct FakeFs {
         dirs: BTreeMap<String, Vec<String>>,
-        /// `lstat` 结果（链本身的位）。
+        /// `lstat` results (the link's own bits).
         lstats: BTreeMap<String, StatBits>,
-        /// 符号链→目标（单跳）；`stat_of`/`dir_children` 据此解析。
+        /// Symlink → target (one hop); `stat_of`/`dir_children` resolve
+        /// through it.
         symlinks: BTreeMap<String, String>,
-        /// 打不开的目次（C 的 `FTS_DNR`）。
+        /// Unopenable directories (C's `FTS_DNR`).
         unreadable: BTreeSet<String>,
-        /// `lstat` 取不到的路径（C 的 `FTS_NS`）。
+        /// Paths `lstat` cannot read (C's `FTS_NS`).
         unstatable: BTreeSet<String>,
-        /// 逐路径指定「哪一次调用失败、失败是哪个号」：`[stat, lstat, dnr]` 三个槽，
-        /// 0 表示该口不失败。`unstatable`/`unreadable` 只能给笼统的 ENOENT/EACCES，
-        /// 而 C 的那一行 warn 报的正是号本身，所以三个口要能分开给。
+        /// Per-path "which call fails and with which number": three slots
+        /// `[stat, lstat, dnr]`, where 0 means that entry does not fail.
+        /// `unstatable`/`unreadable` can only give a blanket ENOENT/EACCES, but
+        /// C's warn line reports the number itself, so the three entries must be
+        /// settable separately.
         fails: BTreeMap<String, [i32; 3]>,
-        /// 自增 ino 分配器：让每个登记项有唯一 `(dev,ino)`，避免逻辑形成环检测的假阳性。
+        /// Auto-incrementing ino allocator: gives every registered item a unique
+        /// `(dev,ino)`, avoiding false positives in logical-mode cycle
+        /// detection.
         next_ino: u64,
     }
 
-    /// `fails` 的三个槽位。分开指名才测得出「逻辑形下 `stat` 与 `lstat` 都失败时
-    /// 上报的是 `stat` 的号」那一条（`fts.c:950-955`）。
+    /// The three slots of `fails`. Naming them separately is what makes it
+    /// testable that "in logical mode, when both `stat` and `lstat` fail, the
+    /// number reported is stat's" (`fts.c:950-955`).
     #[derive(Clone, Copy)]
     enum WhichCall {
         Stat = 0,
@@ -2334,7 +2577,8 @@ mod walk_tests {
     }
 
     impl FakeFs {
-        /// 某个路径的某一口是否失败、失败带哪个号（0 = 不失败）。
+        /// Whether a given entry fails for a path, and with which number
+        /// (0 = does not fail).
         fn fail_code(&self, path: &str, which: WhichCall) -> Option<i32> {
             self.fails
                 .get(path)
@@ -2342,7 +2586,8 @@ mod walk_tests {
                 .filter(|code| *code != 0)
         }
 
-        /// 让某个路径的某一口失败并带回指定号（其余两口保持不失败）。
+        /// Make one entry fail for a path with the given number (the other two
+        /// stay non-failing).
         fn fail(&mut self, path: &str, which: WhichCall, code: i32) {
             self.fails.entry(String::from(path)).or_insert([0, 0, 0])[which as usize] = code;
         }
@@ -2395,7 +2640,8 @@ mod walk_tests {
             );
             self
         }
-        /// 一个普通符号链（无目标，仅物理形下不被下探）。
+        /// An ordinary symlink (no target; in physical mode it is simply not
+        /// descended into).
         fn link(&mut self, path: &str, dev: u64) -> &mut FakeFs {
             let ino = self.fresh_ino();
             self.lstats.insert(
@@ -2409,7 +2655,7 @@ mod walk_tests {
             );
             self
         }
-        /// 符号链 `path` → `target`（供逻辑形解析）。
+        /// Symlink `path` → `target` (for logical-mode resolution).
         fn symlink_to(&mut self, path: &str, target: &str, dev: u64) -> &mut FakeFs {
             self.link(path, dev);
             self.symlinks
@@ -2444,7 +2690,8 @@ mod walk_tests {
             if self.unstatable.contains(path) {
                 return Err(Errno::from_i32(minix_sys::ENOENT));
             }
-            // 单跳跟随：链解析到目标的 `lstat` 位（真实 stat 会多跳，测试树不依赖）。
+            // One-hop follow: resolve the link to the target's `lstat` bits (a
+            // real stat may hop further; the test tree does not rely on that).
             let target = match self.symlinks.get(path) {
                 Some(t) => t.as_str(),
                 None => path,
@@ -2464,7 +2711,8 @@ mod walk_tests {
             if let Some(c) = self.dirs.get(path) {
                 return Ok(c.clone());
             }
-            // 逻辑形下 open(链) 会跟随到目标目次。
+            // In logical mode open(link) follows through to the target
+            // directory.
             match self.symlinks.get(path) {
                 Some(target) => self
                     .dirs
@@ -2476,7 +2724,8 @@ mod walk_tests {
         }
     }
 
-    /// `.` 之下有 `a`（常规文件）与 `sub`（目录，内含 `b`），全部同设备。
+    /// `.` contains `a` (a regular file) and `sub` (a directory containing
+    /// `b`), all on the same device.
     fn tree() -> FakeFs {
         let mut fs = FakeFs::new();
         fs.dir(".", 1, &["a", "sub"]);
@@ -2514,10 +2763,11 @@ mod walk_tests {
 
     #[test]
     fn prune_skips_the_subtree_at_preorder() {
-        // 无输出表项 → 隐式 -print 只在该段为真时才走，故只有被命名的 sub 吐行。
+        // No output entry, so the implicit -print runs only when the segment
+        // is true; only the named sub therefore emits a line.
         let got = run(&[".", "-name", "sub", "-prune"], &tree());
         assert_eq!(got.emitted, vec!["./sub\n"]);
-        // b 因剪枝从未被访问。
+        // b is never visited because of the prune.
         assert!(!got.emitted.iter().any(|e| e.contains("/b")));
     }
 
@@ -2526,7 +2776,8 @@ mod walk_tests {
         let mut fs = FakeFs::new();
         fs.dir(".", 1, &["a", "sub"]);
         fs.file("./a", 1);
-        // sub 落在另一台设备（1 vs 2），其子项不再被访问。
+        // sub is on another device (1 vs 2), so its children are no longer
+        // visited.
         fs.dir("./sub", 2, &["b"]);
         fs.file("./sub/b", 2);
         let plain = run(&["."], &fs);
@@ -2540,7 +2791,8 @@ mod walk_tests {
         let mut fs = tree();
         fs.unreadable.insert(String::from("./sub"));
         let got = run(&["."], &fs);
-        // FTS_DNR：sub 自身不求值（continue），故只报 warn。
+        // FTS_DNR: sub itself is not evaluated (continue), so only a warning
+        // is reported.
         assert_eq!(got.emitted, vec![".\n", "./a\n"]);
         assert_eq!(got.rval, 1);
         assert_eq!(
@@ -2550,10 +2802,12 @@ mod walk_tests {
         );
     }
 
-    /// C 对 `FTS_NS`/`FTS_DNR` 打的都是 `warnx("%s: %s", 路径, strerror(号))`
-    /// （`find.c:230-231`），所以后缀必须是**号对应的那句话**，不是描述失手类型的短语。
-    /// 句子权威在 `minix-types` 的 errno 表（对位 C `compat_errlist.c`），本树经
-    /// `minix_sys::Strerror` 再导出取用；表外码走 C 自己的 `Unknown error: %u`。
+    /// C prints `warnx("%s: %s", path, strerror(number))` for both `FTS_NS` and
+    /// `FTS_DNR` (`find.c:230-231`), so the suffix must be **the sentence for
+    /// the number**, not a phrase describing the failure kind. The authority for
+    /// the sentence is `minix-types`' errno table (counterpart of C's
+    /// `compat_errlist.c`), re-exported here through `minix_sys::Strerror`; an
+    /// off-table code takes C's own `Unknown error: %u`.
     #[test]
     fn walk_warning_line_ends_with_the_strerror_sentence() {
         let mut fs = tree();
@@ -2567,13 +2821,15 @@ mod walk_tests {
         );
         assert_eq!(got.rval, 1);
 
-        // 同一个形状在 `FTS_DNR` 侧：EACCES 的句子是「Permission denied」。
+        // The same shape on the `FTS_DNR` side: EACCES's sentence is
+        // "Permission denied".
         let mut fs2 = tree();
         fs2.fail("./sub", WhichCall::Dnr, minix_sys::EACCES);
         let got2 = run(&["."], &fs2);
         assert_eq!(got2.warnings, vec!["./sub: Permission denied"]);
 
-        // 表外码：C 的 `strerror` 打「Unknown error: <无符号值>」，本树同形。
+        // Off-table code: C's `strerror` prints "Unknown error: <unsigned
+        // value>", and this tree has the same shape.
         let mut fs3 = tree();
         fs3.dir(".", 1, &["a", "gone"]);
         fs3.fail("./gone", WhichCall::Lstat, 140);
@@ -2581,9 +2837,11 @@ mod walk_tests {
         assert_eq!(got3.warnings, vec!["./gone: Unknown error: 140"]);
     }
 
-    /// 逻辑形下 `stat` 失败、`lstat` 也失败时，C 上报的是 **stat 那次的号**：
-    /// `fts.c:950-955` 先 `saved_errno = errno`（stat 的），只在 `lstat` 也失败时拿它当
-    /// `fts_errno`。两个号给的是不同的句子，取错就等于打错报文。
+    /// In logical mode, when `stat` fails and `lstat` fails too, C reports **the
+    /// stat call's number**: `fts.c:950-955` first stores
+    /// `saved_errno = errno` (stat's) and uses it as `fts_errno` only when
+    /// `lstat` fails too. The two numbers give different sentences, so taking
+    /// the wrong one prints the wrong message.
     #[test]
     fn logical_walk_reports_the_stat_errno_not_the_lstat_one() {
         let mut fs = tree();
@@ -2604,7 +2862,8 @@ mod walk_tests {
         fs.dir(".", 1, &["a", "gone", "sub"]);
         fs.unstatable.insert(String::from("./gone"));
         let got = run(&[".", "-name", "nope", "-print"], &fs);
-        // gone 报 FTS_NS、rval=1；其它照常走（-name nope 恒假 → 无输出）。
+        // gone reports FTS_NS and rval=1; everything else proceeds normally
+        // (-name nope is always false, so nothing is emitted).
         assert_eq!(got.rval, 1);
         assert_eq!(
             got.warnings,
@@ -2620,7 +2879,7 @@ mod walk_tests {
         fs.dir(".", 1, &["a b"]);
         fs.file("./a b", 1);
         let got = run(&["-X", "."], &fs);
-        assert_eq!(got.emitted, vec![".\n"]); // 带空格的径被拒
+        assert_eq!(got.emitted, vec![".\n"]); // a path with a space is rejected
         assert_eq!(got.rval, 1);
         assert!(
             got.warnings
@@ -2634,11 +2893,14 @@ mod walk_tests {
         let mut fs = FakeFs::new();
         fs.dir(".", 1, &["link"]);
         fs.link("./link", 1);
-        // 幻影子项：若物理遍历错把符号链当目录下探，它就会冒出来。
+        // Phantom children: if a physical walk wrongly descended into the
+        // symlink as a directory, they would show up.
         fs.dir("./link", 1, &["deep"]);
         fs.file("./link/deep", 1);
-        // 最后登记链本身的 `lstat` 位（`FakeFs.lstats` 同键后写覆前写），使 `./link`
-        // 的型是 S_IFLNK——即便它作为目次有子项也不应被下探。
+        // Register the link's own `lstat` bits last (`FakeFs.lstats` lets a
+        // later write of the same key override the earlier one) so `./link`'s
+        // type is S_IFLNK — it must not be descended into even though it has
+        // children as a directory.
         fs.link("./link", 1);
         let got = run(&["."], &fs);
         assert_eq!(got.emitted, vec![".\n", "./link\n"]);
@@ -2646,8 +2908,9 @@ mod walk_tests {
 
     #[test]
     fn type_filter_selects_dirs_and_leaves_files_unprinted() {
-        // `-type d`：只有目录吐行；隐式 -print 不叠加（此处 -type d 无输出 → 补 print，
-        // 但 -type d 为假时短路，print 不跑）。
+        // `-type d`: only directories emit lines; the implicit -print does not
+        // stack on top (here -type d has no output, so print is added, but when
+        // -type d is false the short-circuit means print does not run).
         let got = run(&[".", "-type", "d"], &tree());
         assert_eq!(got.emitted, vec![".\n", "./sub\n"]);
     }
@@ -2658,13 +2921,15 @@ mod walk_tests {
         fs.dir(".", 1, &["sub", "lnk"]);
         fs.dir("./sub", 1, &["f"]);
         fs.file("./sub/f", 1);
-        // ./lnk 是指向 ./sub 的符号链；逻辑形下 open 到目标，子项走 ./lnk/f。
+        // ./lnk is a symlink to ./sub; in logical mode open reaches the target
+        // and children come out as ./lnk/f.
         fs.file("./lnk/f", 1);
         fs.symlink_to("./lnk", "./sub", 1);
         let logical = run(&["-L", "."], &fs);
         assert!(logical.emitted.iter().any(|e| e == "./lnk\n"));
         assert!(logical.emitted.iter().any(|e| e == "./lnk/f\n"));
-        // 物理形（默认）不跟随：lnk 作为链本体吐一行，子项不出现。
+        // Physical mode (the default) does not follow: lnk emits one line as
+        // the link itself, and its children do not appear.
         let physical = run(&["."], &fs);
         assert!(physical.emitted.iter().any(|e| e == "./lnk\n"));
         assert!(!physical.emitted.iter().any(|e| e.contains("./lnk/f")));
@@ -2675,10 +2940,12 @@ mod walk_tests {
         let mut fs = FakeFs::new();
         fs.dir(".", 1, &["sub"]);
         fs.dir("./sub", 1, &["back"]);
-        // ./sub/back -> . 形成环：逻辑形应识别为 FTS_DC，求值但不无限下探。
+        // ./sub/back -> . forms a cycle: logical mode must recognise FTS_DC,
+        // evaluate it, and not descend forever.
         fs.symlink_to("./sub/back", ".", 1);
         let got = run(&["-L", "."], &fs);
-        // back 自身被求值一次（FTS_DC 落入 find.c 默认分支），但不下探——故不会出现更深的环路径。
+        // back itself is evaluated once (FTS_DC falls into find.c's default
+        // branch) but not descended into, so no deeper cycle path appears.
         assert!(got.emitted.iter().any(|e| e == "./sub/back\n"));
         assert!(!got.emitted.iter().any(|e| e.contains("./sub/back/sub")));
         assert_eq!(
@@ -2691,9 +2958,10 @@ mod walk_tests {
     fn logical_broken_symlink_is_evaluated_as_a_leaf() {
         let mut fs = FakeFs::new();
         fs.dir(".", 1, &["bad"]);
-        fs.symlink_to("./bad", "./gone", 1); // 目标不存在
+        fs.symlink_to("./bad", "./gone", 1); // the target does not exist
         let got = run(&["-L", "."], &fs);
-        // FTS_SLNONE：stat 失败、lstat 成功 → 按链自身求值（吐一行），不下探、不报 NS。
+        // FTS_SLNONE: stat fails and lstat succeeds → evaluate the link itself
+        // (one line), without descending and without reporting NS.
         assert_eq!(got.emitted, vec![".\n", "./bad\n"]);
         assert_eq!(got.rval, 0);
         assert!(got.warnings.is_empty());
@@ -2701,13 +2969,15 @@ mod walk_tests {
 
     #[test]
     fn comfollow_follows_only_the_start_path() {
-        // `-H`：起始路径若是符号链到目次则跟随（`fts.c:171`），但子项按物理形（不跟随）。
+        // `-H`: if the start path is a symlink to a directory it is followed
+        // (`fts.c:171`), but children follow physical mode (no following).
         let mut fs = FakeFs::new();
         fs.dir("./real", 1, &["x"]);
         fs.file("./entry/x", 1);
         fs.symlink_to("./entry", "./real", 1);
         let got = run(&["-H", "./entry"], &fs);
-        // 起始 ./entry 被跟随成目次 → 下探 → ./entry/x 出现。
+        // The start ./entry is followed to a directory → descend → ./entry/x
+        // appears.
         assert!(got.emitted.iter().any(|e| e == "./entry\n"));
         assert!(got.emitted.iter().any(|e| e == "./entry/x\n"));
     }

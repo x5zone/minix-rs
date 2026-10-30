@@ -121,7 +121,7 @@ pub fn write_map<S: BlockSource>(
                 .acquire(BlockKey::new(device, double_zone), AcquireMode::NoRead)
                 .map_err(|_| WriteError::Io)?;
             zero_slot(cache, slot);
-            // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+            // [SD19-gate] best-effort release of a read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
             #[allow(clippy::let_underscore_must_use)]
             let _ = cache.release(slot);
         }
@@ -147,7 +147,7 @@ pub fn write_map<S: BlockSource>(
             .acquire(BlockKey::new(device, single_zone), AcquireMode::NoRead)
             .map_err(|_| WriteError::Io)?;
         zero_slot(cache, slot);
-        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        // [SD19-gate] best-effort release of a read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
         #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(slot);
     }
@@ -196,7 +196,7 @@ fn read_indirect_entries<S: BlockSource>(
         .acquire(BlockKey::new(device, zone), AcquireMode::Normal)
         .map_err(|_| WriteError::Io)?;
     let bytes = cache.slot_data(slot).to_vec();
-    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    // [SD19-gate] best-effort release of a read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
     #[allow(clippy::let_underscore_must_use)]
     let _ = cache.release(slot);
     if !bytes.len().is_multiple_of(4) {
@@ -233,7 +233,7 @@ fn write_indirect_entry<S: BlockSource>(
         let data = cache.slot_data_mut(slot);
         let at = index as usize * 4;
         if at + 4 > data.len() {
-            // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+            // [SD19-gate] best-effort release of a read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
             #[allow(clippy::let_underscore_must_use)]
             let _ = cache.release(slot);
             return Err(WriteError::Io);
@@ -241,7 +241,7 @@ fn write_indirect_entry<S: BlockSource>(
         data[at..at + 4].copy_from_slice(&(value as u32).to_le_bytes());
     }
     cache.mark_dirty(slot);
-    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    // [SD19-gate] best-effort release of a read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
     #[allow(clippy::let_underscore_must_use)]
     let _ = cache.release(slot);
     Ok(())
@@ -290,8 +290,8 @@ pub fn ensure_block<S: BlockSource>(
         crate::read::map_file_block(cache, device, &zones, params, range, file_block)
             .map_err(|_| WriteError::Io)?
     {
-        // 整块覆写时旧内容无关紧要：免读直接拿块（`read.c:175-177` 的
-        // NO_READ 优化）。
+        // When overwriting a whole block the old contents do not matter: acquire the
+        // block with no read (the NO_READ optimization at `read.c:175-177`).
         let mode = if skip_read {
             AcquireMode::NoRead
         } else {
@@ -395,8 +395,9 @@ pub fn write_file<S: BlockSource>(
     while remaining > 0 {
         let offset = (position % block_size as u64) as usize;
         let chunk = (block_size - offset).min(remaining);
-        // 整块覆写（块对齐且写满一块）时免读：旧内容即刻被覆盖
-        // （`read.c:175-177` 的 NO_READ 优化）。
+        // Whole-block overwrite (block-aligned and filling one block) skips the
+        // read: the old contents are overwritten immediately (the NO_READ
+        // optimization at `read.c:175-177`).
         let whole = offset == 0 && chunk == block_size;
         let cache_slot = ensure_block(
             table, cache, space, alloc_bit, free_bit, device, slot, params, range, block_size,
@@ -413,7 +414,7 @@ pub fn write_file<S: BlockSource>(
             bytes[offset..offset + chunk].copy_from_slice(&data[moved..moved + chunk]);
         }
         cache.mark_dirty(cache_slot);
-        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        // [SD19-gate] best-effort release of a read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
         #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(cache_slot);
         moved += chunk;
@@ -507,7 +508,7 @@ pub fn truncate_file<S: BlockSource>(
                             bytes[offset..offset + chunk].fill(0);
                         }
                         cache.mark_dirty(cache_slot);
-                        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+                        // [SD19-gate] best-effort release of a read-ahead cache slot; a failure is a self-disabling policy and does not change the main result (same as minix-fs bio cache.release)
                         #[allow(clippy::let_underscore_must_use)]
                         let _ = cache.release(cache_slot);
                     }
@@ -758,7 +759,8 @@ mod tests {
         );
     }
 
-    /// 计数存储源：统计穿透缓存的读盘次数（免读优化的观察口）。
+    /// Counting block source: counts reads that go through the cache (the
+    /// observation point for the no-read optimization).
     struct CountingSource {
         inner: RamDisk,
         reads: alloc::rc::Rc<core::cell::Cell<usize>>,
@@ -849,7 +851,8 @@ mod tests {
             .unwrap();
             assert_eq!(moved, 512);
         }
-        // 第二次整块写覆盖已映射块：免读优化生效，存储读不得增加。
+        // The second whole-block write covers an already-mapped block: the no-read
+        // optimization applies, so storage reads must not increase.
         let reads_before = reads.get();
         let data2 = [0x5Au8; 512];
         {

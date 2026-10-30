@@ -19,9 +19,11 @@
 //! MIB `sef_receive_status` shape).
 
 #![no_std]
-// SD-19 静默吞错家族机械化门（第五家 crate，与 minix-sys/rt/fs/kernel 同程序）：
-// SEF 框架里 `ipc.notify` 是 C 默认回调的发后即忘 pong，失败无回复可消费。今后
-// 无理由的新 `let _ =` 会当场多报一条。
+// Mechanical gate for the silent-error-swallowing family (fifth crate, same
+// program as minix-sys/rt/fs/kernel): in the SEF framework `ipc.notify` is the
+// fire-and-forget pong of C's default callback, and a failure leaves no reply
+// to consume. From now on an unjustified new `let _ =` reports an extra
+// warning on the spot.
 #![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
@@ -122,7 +124,8 @@ pub trait SefPingReply {
 
 /// Notify-based pong (the C default callback).
 pub fn pong_via_ipc(ipc: &mut impl SefIpc, source: Endpoint) {
-    //[SD19-gate] notify pong 发后即忘：C sef 默认回调即 fire-and-forget notify，无回复可消费
+    //[SD19-gate] notify pong is fire-and-forget: C's default SEF callback is a
+    // fire-and-forget notify, with no reply to consume
     #[allow(clippy::let_underscore_must_use)]
     let _ = ipc.notify(source);
 }
@@ -166,9 +169,9 @@ impl SefCancel {
 }
 
 /// What a service answers when one delivered signal number asks for a
-/// decision — the shared three-state vocabulary of the signal axis (PD-25:
-/// one definition here; consumers keep their own trait shapes, this is the
-/// common semantics).
+/// decision — the shared three-state vocabulary of the signal axis (defined
+/// once here; consumers keep their own trait shapes, this is the common
+/// semantics).
 ///
 /// C's handlers all reduce to one of these three answers: keep serving (a
 /// handler that returns — or the library default `sef_cb_signal_handler_null`
@@ -212,7 +215,8 @@ pub fn dispatch_kernel_notify(set: SigSetBits, on_signal: &mut dyn FnMut(i32)) {
         }
     }
     if !pending {
-        // 窗口零命中 = 今天的生产实际路径，见 `sef_receive_status` 的兜底注。
+        // Zero hits in the window is today's production path; see the fallback
+        // note on `sef_receive_status`.
         on_signal(SEF_SIGNAL_REQUEST_TYPE);
     }
 }
@@ -223,9 +227,9 @@ pub fn dispatch_kernel_notify(set: SigSetBits, on_signal: &mut dyn FnMut(i32)) {
 /// [`SefEvent::Signal`]; return ordinary messages.
 ///
 /// Live-update/state-transfer interception (`INTERCEPT_SEF_LU_REQUESTS`
-/// / `__sef_st_before_receive`) is not modeled: those paths depend on the
-/// LU/ST campaigns and are absent from 03-stage-rs (C keeps them behind
-/// `#if INTERCEPT_SEF_LU_REQUESTS`).
+/// / `__sef_st_before_receive`) is not modeled: those paths depend on
+/// live-update/state-transfer support that has no user-side implementation
+/// yet (C keeps them behind `#if INTERCEPT_SEF_LU_REQUESTS`).
 ///
 /// # The `on_signal` contract
 ///
@@ -285,12 +289,12 @@ pub fn sef_receive_status(
         let m_type = msg.m_type;
         let source = msg.m_source;
 
-        // Birth request (E-BIRTHFACE library root): C `IS_SEF_INIT_REQUEST`
-        // (sef.h:33) keys on `m_type == RS_INIT && m_source == RS` alone —
-        // delivery-independent, so the async `RS_INIT` an RS boot sends
-        // arrives as a plain (non-notify) request. Surface the init type
-        // (sef_init.c:202 `do_sef_init_request`) so the server dispatches
-        // its own fresh/LU/restart callback and answers via
+        // Birth request (the library root of the birth protocol): C
+        // `IS_SEF_INIT_REQUEST` (sef.h:33) keys on `m_type == RS_INIT &&
+        // m_source == RS` alone — delivery-independent, so the async `RS_INIT`
+        // an RS boot sends arrives as a plain (non-notify) request. Surface the
+        // init type (sef_init.c:202 `do_sef_init_request`) so the server
+        // dispatches its own fresh/LU/restart callback and answers via
         // [`sef_init_reply`]; SEF cannot run the server-specific callback.
         if m_type == SEF_INIT_REQUEST_TYPE && source == RS_ENDPOINT {
             let init_type = msg.rs_init_type().unwrap_or(0); // SEF_INIT_FRESH
@@ -305,14 +309,17 @@ pub fn sef_receive_status(
         // C sef.c:183-193 — notification classification by source.
         if is_ipc_notify(status) {
             if source == SYSTEM_ENDPOINT {
-                // C sef.c:183-193（通知按源改写 m_type）+ sef.c:230-238
-                // （`IS_SEF_SIGNAL_REQUEST` 命中后交 `do_sef_signal_request`）
-                // 的 SYSTEM 臂：载荷位图按内核信号窗口升序逐位走，每一位
-                // 命中调一次回调（sef_signal.c:96-113）。
+                // The SYSTEM arm of C sef.c:183-193 (notifications rewrite
+                // m_type by source) plus sef.c:230-238 (`IS_SEF_SIGNAL_REQUEST`
+                // hit hands off to `do_sef_signal_request`): the payload bitmap
+                // walks the kernel-signal window in ascending order, one
+                // callback call per set bit (sef_signal.c:96-113).
                 dispatch_kernel_notify(msg.notify_sigset(), on_signal);
-                // 回调里若请求了取消：C 的流程是该帧在库内被吞、循环顶返
-                // EINTR、帧永不上浮（sef.c:233-236 → :161-162）——此处照做；
-                // 未取消则维持「上浮 Signal 事件」的本库契约。
+                // If the callback requested cancellation, C swallows the frame
+                // inside the library and the loop top returns EINTR, so the
+                // frame never surfaces (sef.c:233-236 → :161-162) — do the
+                // same here; without cancellation, keep this library's
+                // contract of surfacing a Signal event.
                 if cancel.is_cancelled() {
                     return Err(minix_types::EINTR);
                 }
@@ -342,31 +349,40 @@ pub fn sef_receive_status(
             }
         }
 
-        // C `IS_SEF_SIGNAL_REQUEST` 的前半（sef.h:265）：非通知形态、
-        // `m_type == SIGS_SIGNAL_RECEIVED` 且发送者是 boot 模块（端点号
-        // < INIT_PROC_NR）——即信号管理器把非终止类信号译成的那条普通
-        // 消息（PM 的译码在 pm/signal.c:470-473，RS 在 rs/main.c:699-701）。
-        // 判据取端点裸值比较，与 C 的 `m_source < INIT_PROC_NR` 同形：带
-        // 代际位的回收端点（generation > 0）在 C 里同样不 < 11，改用
-        // `slot()` 反而会放宽判定。位置放在通知带之后、Call 兜底之前：
-        // 普通 Call 只多付一次整数比较，也与 C 的 case 次序（ping/lu 在
-        // signal 之前）一致。
+        // The first half of C `IS_SEF_SIGNAL_REQUEST` (sef.h:265): non-notify
+        // shape, `m_type == SIGS_SIGNAL_RECEIVED`, and the sender is a boot
+        // module (endpoint number < INIT_PROC_NR) — that is, the ordinary
+        // message a signal manager produces from a non-terminating signal (PM
+        // encodes it at pm/signal.c:470-473, RS at rs/main.c:699-701). The
+        // criterion compares the raw endpoint value, the same shape as C's
+        // `m_source < INIT_PROC_NR`: a recycled endpoint with a generation bit
+        // (generation > 0) is likewise not < 11 in C, so switching to `slot()`
+        // would only loosen the check. The position is after the notification
+        // band and before the Call fallback: an ordinary Call pays just one
+        // extra integer comparison, which also matches C's case order
+        // (ping/lu before signal).
         if m_type == SEF_SIGNAL_REQUEST_TYPE && source.get() < INIT_PROC_NR {
-            // C sef_signal.c:115-128：管理器形的载荷是单个号码，直接交给
-            // 回调；`do_sef_signal_request` 返回 OK 后 sef.c:233-236
-            // `continue`——这条消息被框架消费，从不进服务的分派表。不上浮
-            // 事件除了贴 C，还避开一个陷阱：`SefEvent::Signal` 的消费方读
-            // `m_notify`（如 os/fs/fs-rt/src/ipc.rs 的位图取法），而管理器
-            // 形的活跃臂是 `m_pm_lsys_sigs_signal`。
-            // `sigs_signal_num` 在 `m_type` 守卫下恒为 `Some`，`if let` 只是
-            // 把这一事实交给类型系统而不是编造一个零号。
+            // C sef_signal.c:115-128: the manager-shaped payload is a single
+            // number, handed straight to the callback; after
+            // `do_sef_signal_request` returns OK, sef.c:233-236 `continue`s —
+            // the framework consumes this message and it never reaches the
+            // service's dispatch table. Not surfacing an event both matches C
+            // and avoids a trap: `SefEvent::Signal` consumers read `m_notify`
+            // (e.g. the bitmap access in os/fs/fs-rt/src/ipc.rs), whereas the
+            // manager shape's active arm is `m_pm_lsys_sigs_signal`.
+            // `sigs_signal_num` is always `Some` under the `m_type` guard; the
+            // `if let` just hands that fact to the type system instead of
+            // inventing a zero signal number.
             //
-            // 逃生门（PD-27 已落地）：C 的 handler 需要退出时调
-            // `sef_cancel()`（如 uds.c:1360、netdriver.c:949、fsdriver.c:73）
-            // 后照常返回，循环顶的检查（sef.c:161-162）把这次 `continue`
-            // 变成 `EINTR`——服务主循环见中断、查退出标志、离开。Rust 侧
-            // 回调调 [`SefCancel::cancel`]，本臂的 `continue` 到循环顶后由
-            // 同一位置的检查收口；回调不取消时行为与 C 的吞消息逐字同形。
+            // Escape hatch (in place): a C handler that needs to exit calls
+            // `sef_cancel()` (e.g. uds.c:1360, netdriver.c:949, fsdriver.c:73)
+            // and then returns normally, and the loop-top check
+            // (sef.c:161-162) turns this `continue` into `EINTR` — the service
+            // main loop sees the interruption, checks its exit flag and leaves.
+            // On the Rust side the callback calls [`SefCancel::cancel`], and
+            // this arm's `continue` reaches the same check at the loop top;
+            // without cancellation the behavior is word-for-word the same as
+            // C's message swallowing.
             if let Some(signo) = msg.sigs_signal_num() {
                 on_signal(signo);
             }
@@ -395,18 +411,22 @@ pub fn sef_receive_status(
 /// pure builder so it needs no new [`SefIpc`] verb — each server already owns
 /// a send round trip. Mirrors the `run_birth` reply in the driver/FS
 /// runtimes (`minix-driver-rt`, `fs-rt`).
-/// P-ALL-08 T6 定谳（[待验证] 已结）：C 的 `process_init` 应答填
-/// `m.m_source = sef_self_endpoint`（libsys/sef_init.c:114），但那是
-/// **防御性形状**——内核在每条投递路径上都会把 `m_source` 盖成发送者
-/// 端点（C proc.c:1071-1075；本树 ipc.rs:1588 sendrec、:1986 senda，
-/// 各有宿主测试钉住：`test_sendrec_to_blocked_receiver_stamps_source_
-/// endpoint`、`test_senda_delivers_to_receiving_target`）。发送者用户
-/// 缓冲里的 m_source 恒被覆盖 ⇒ 本 builder 留 m_source=0 与 C 在
-/// **生产行为上零差异**；差异仅存在于 mock 传输的形状保真面，而 mock
-/// 传输按定义模拟内核行为也应盖章。故不加 self_ep 参数（is/ipc-server
-/// 的自身端点按 A-9 由 RS 注入不命名，硬编码会违反 A-9）。builder 实际
-/// 留 `m_source = Endpoint::NONE`（derive Default）——比 C 的 memset 0 更
-/// 防炸：0 是 PM 的有效端点，NONE 显式无效，混进未盖章路径立刻暴露。
+/// Settled after verification: C's `process_init` reply fills
+/// `m.m_source = sef_self_endpoint` (libsys/sef_init.c:114), but that is a
+/// **defensive shape** — the kernel stamps `m_source` with the sender endpoint
+/// on every delivery path (C proc.c:1071-1075; this tree's ipc.rs:1588
+/// sendrec, :1986 senda, each pinned by a host test:
+/// `test_sendrec_to_blocked_receiver_stamps_source_endpoint`,
+/// `test_senda_delivers_to_receiving_target`). The m_source in the sender's
+/// user buffer is always overwritten ⇒ leaving m_source=0 here is a **zero
+/// difference in production behavior** from C; the difference exists only in
+/// the shape-fidelity surface of mock transports, and a mock transport, by
+/// definition simulating the kernel, should stamp too. Hence no self_ep
+/// parameter (the IPC server's own endpoint is injected by RS and unnamed by
+/// the explicit-endpoint design; hard-coding it would violate that). The
+/// builder actually leaves `m_source = Endpoint::NONE` (derived Default) —
+/// safer than C's memset 0: 0 is a valid PM endpoint, while NONE is explicitly
+/// invalid, so a frame escaping onto an unstamped path is exposed at once.
 pub fn sef_init_reply(result: i32) -> Message {
     let mut m = Message {
         m_type: SEF_INIT_REQUEST_TYPE,
@@ -419,9 +439,9 @@ pub fn sef_init_reply(result: i32) -> Message {
 }
 
 /// The birth-protocol orchestration — C `process_init`
-/// (`sef_init.c:42-143`) as a sequence owner, not a monolith (PD-34: the
-/// linear kernel calls belong to `minix-sys`, the service's own init
-/// semantics stay with the consumer, the RS report is orchestrated here).
+/// (`sef_init.c:42-143`) as a sequence owner, not a monolith (the linear
+/// kernel calls belong to `minix-sys`, the service's own init semantics stay
+/// with the consumer, the RS report is orchestrated here).
 ///
 /// What this face owns, in C's six-paragraph order:
 ///
@@ -434,11 +454,11 @@ pub fn sef_init_reply(result: i32) -> Message {
 ///    (`cpf_grant_direct(SELF, 0, ULONG_MAX, CPF_READ)` with the
 ///    `SEF_STATE_TRANSFER_GID == 0` first-grant convention,
 ///    sef_init.c:62-67). Not modeled: no consumer of state transfer exists
-///    yet; inventing the grant semantics here is exactly what PD-34
-///    forbids.
+///    yet; inventing the grant semantics here would be exactly the kind of
+///    fabrication this split forbids.
 /// 3. *Registered slot* — the debug-init-flags short circuit
-///    (`SEF_INIT_CRASH/FAIL/TIMEOUT`, sef_init.c:69-89; PD-24's fault
-///    injection family). Not modeled for the same reason.
+///    (`SEF_INIT_CRASH/FAIL/TIMEOUT`, sef_init.c:69-89; the fault-injection
+///    family). Not modeled for the same reason.
 /// 4. **Dispatch by type** — the consumer's `init` callback answers the
 ///    result code (fresh/restart/LU semantics are its own; the library
 ///    only carries the number).
@@ -457,17 +477,19 @@ pub fn process_init(
     init_type: i32,
     init: &mut dyn FnMut(i32) -> i32,
 ) -> Result<Message, i32> {
-    // 段一（sef_init.c:59-60）：C `assert(r == OK)`——失败即出生失败，
-    // 返回内核 errno 由消费方 fail-closed，不吞。
+    // Paragraph one (sef_init.c:59-60): C `assert(r == OK)` — failure means
+    // the birth failed; return the kernel errno so the consumer fails closed
+    // instead of swallowing it.
     let r = statectl(minix_types::SYS_STATE_CLEAR_IPC_FILTERS, 0, 0)?;
     if r != minix_types::OK {
         return Err(r);
     }
-    // 段四（:91-108）：按类型分派——消费者语义，库只携号码与结果。
+    // Paragraph four (:91-108): dispatch by type — consumer semantics; the
+    // library only carries the number and the result.
     let result = init(init_type);
-    // 段五（:110-117）：回报编排——消息在此构造（m_type = RS_INIT、
-    // m_rs_init.result），发送走消费方的回报腿（B9b：sendrec 停在
-    // receive(RS) 半）。
+    // Paragraph five (:110-117): reply orchestration — the message is built
+    // here (m_type = RS_INIT, m_rs_init.result) and sent over the consumer's
+    // own reply leg (sendrec stops at the receive(RS) half).
     Ok(sef_init_reply(result))
 }
 
@@ -572,16 +594,18 @@ mod tests {
         m
     }
 
-    /// C sef.c:208-214 — RS ping 拦截:回 pong(notify)后 continue,消息
-    /// 不到达调用方。脚本两条 ping + 一条普通消息;普通消息最终返回,
-    /// pong 记录两次。
+    /// C sef.c:208-214 — RS ping interception: reply pong (notify) and
+    /// continue, so the message never reaches the caller. The script is two
+    /// pings plus one ordinary message; the ordinary message is returned in
+    /// the end and the pong is recorded twice.
     #[test]
     fn test_ping_intercepted_and_swallowed() {
         let mut ipc = CannedSefIpc::new();
-        // C ipc_receive 的 status:notify 时低 16 位 = CALL_NOTIFY(4);
-        // ping 的 source 是 RS(sef.h:122 分类按 m_source)。inbox 是 LIFO:
-        // 先 push 的后收到,故普通消息先压栈、两个 ping 后压栈。
-        ipc.push(4 | 1, call_msg(11)); // 非通知:status 携带别的 call。
+        // C ipc_receive status: for a notify, the low 16 bits = CALL_NOTIFY(4);
+        // a ping's source is RS (sef.h:122 classifies by m_source). The inbox
+        // is LIFO: whatever is pushed first is received last, so push the
+        // ordinary message first and the two pings after it.
+        ipc.push(4 | 1, call_msg(11)); // non-notify: status carries another call.
         let mut ping2 = notify_msg();
         ping2.m_source = RS_ENDPOINT;
         ipc.push(4, ping2);
@@ -612,8 +636,9 @@ mod tests {
         let _ = pong_count;
     }
 
-    /// C sef.c:183-193 + sef.c:230-238 — SYSTEM 通知 = 信号请求,作为 Signal
-    /// 事件上浮(服务器分派自己的 signal handler)。
+    /// C sef.c:183-193 + sef.c:230-238 — a SYSTEM notification is a signal
+    /// request and surfaces as a Signal event (the server dispatches its own
+    /// signal handler).
     #[test]
     fn test_system_notification_surfaces_signal() {
         let mut ipc = CannedSefIpc::new();
@@ -637,7 +662,8 @@ mod tests {
         assert!(signaled);
     }
 
-    /// 通知形的载荷：`m_notify.sigset`（C `sef_signal.c:96` 的读法）。
+    /// The notify-shaped payload: `m_notify.sigset` (C's read at
+    /// `sef_signal.c:96`).
     fn system_notify_msg(sigset: minix_types::SigSetBits) -> Message {
         let mut m = notify_msg();
         m.m_source = SYSTEM_ENDPOINT;
@@ -645,8 +671,9 @@ mod tests {
         m
     }
 
-    /// 管理器消息形：普通（非通知）的 `SIGS_SIGNAL_RECEIVED`，载荷是单个
-    /// 号码（C `pm/signal.c:470-473`、`rs/main.c:699-701`）。
+    /// The manager message shape: an ordinary (non-notify)
+    /// `SIGS_SIGNAL_RECEIVED` whose payload is a single number (C
+    /// `pm/signal.c:470-473`, `rs/main.c:699-701`).
     fn manager_signal_msg(source: Endpoint, num: i32) -> Message {
         let mut m = Message {
             m_source: source,
@@ -660,10 +687,12 @@ mod tests {
         m
     }
 
-    /// C `sef_signal.c:97-102`——SYSTEM 位图按 `SIGK_FIRST..SIGK_LAST` 升序
-    /// 遍历，每一位命中调一次回调，调的是信号号而不是请求类型。位基是
-    /// `signo-1`（`sigtypes.h:67-68`），所以 71 落 `bits[2]` 的 bit 6、
-    /// 74 落 bit 9。事件形状不变（fs-rt 一类消费方仍从消息里自取位图）。
+    /// C `sef_signal.c:97-102` — the SYSTEM bitmap is walked in ascending
+    /// `SIGK_FIRST..SIGK_LAST` order, one callback call per set bit, and the
+    /// argument is the signal number rather than the request type. The bit base
+    /// is `signo-1` (`sigtypes.h:67-68`), so 71 lands on bit 6 of `bits[2]` and
+    /// 74 on bit 9. The event shape is unchanged (consumers such as fs-rt still
+    /// read the bitmap from the message themselves).
     #[test]
     fn test_notify_sigset_walks_kernel_signals_ascending() {
         let mut ipc = CannedSefIpc::new();
@@ -686,9 +715,10 @@ mod tests {
         );
     }
 
-    /// 窗口外不展开：低 64 位全置位 = 用户/系统信号 1..=64 都挂着，
-    /// 它们不是内核信号族（C 的遍历只走 71..=74），回调只能收到
-    /// 一次兜底的请求类型。
+    /// Outside the window nothing unfolds: with the low 64 bits all set,
+    /// user/system signals 1..=64 are all pending, but they are not the kernel
+    /// signal family (C's walk covers only 71..=74), so the callback can only
+    /// receive the fallback request type, once.
     #[test]
     fn test_notify_low_word_bits_are_outside_the_kernel_window() {
         let mut ipc = CannedSefIpc::new();
@@ -710,10 +740,12 @@ mod tests {
         );
     }
 
-    /// 生产实际路径的形状钉：内核 `SigSet` 仍是 64 位（位 70..=73 产不出），
-    /// 所以今天每一条 SYSTEM 通知都是空位图→恰好一次回调且参数是请求类型。
-    /// 这条兜底是 VM 唤醒裁决与 uds/lwip 终止闩的依赖项（函数头
-    /// 「The wake-up fallback」注）；删它就等于静默断掉那两处。
+    /// Pins the shape of today's production path: the kernel `SigSet` is still
+    /// 64 bits (bits 70..=73 cannot be produced), so every SYSTEM notification
+    /// today is an empty bitmap → exactly one callback with the request type as
+    /// its argument. This fallback is what VM's wake-up decision and the
+    /// uds/lwip termination latch depend on (the "The wake-up fallback" note in
+    /// the function header); deleting it silently cuts those two off.
     #[test]
     fn test_notify_empty_sigset_wakes_the_handler_once() {
         let mut ipc = CannedSefIpc::new();
@@ -731,13 +763,16 @@ mod tests {
         assert_eq!(seen, vec![SEF_SIGNAL_REQUEST_TYPE]);
     }
 
-    /// C `sef.h:265` 前半 + `sef_signal.c:115-128`：管理器消息形的号码交给
-    /// 回调，消息本身被框架吞掉（`sef.c:233-236` 的 `continue`）——
-    /// 故服务看到的不是它，而是下一轮收到的普通消息；pong 与它无关。
+    /// The first half of C `sef.h:265` plus `sef_signal.c:115-128`: the
+    /// manager-shaped number goes to the callback, and the message itself is
+    /// swallowed by the framework (`sef.c:233-236`'s `continue`) — so the
+    /// service sees not this message but the ordinary one received in the next
+    /// round; the pong is unrelated to it.
     #[test]
     fn test_manager_signal_request_is_swallowed_after_the_callback() {
         let mut ipc = CannedSefIpc::new();
-        // inbox 是 LIFO：先压普通消息，它才是最终返回值。
+        // The inbox is LIFO: push the ordinary message first so it is the one
+        // finally returned.
         ipc.push(1, call_msg(11));
         ipc.push(1, manager_signal_msg(Endpoint::PM, 15));
 
@@ -759,11 +794,14 @@ mod tests {
         assert!(ipc.pongs.is_empty(), "信号请求不是 ping，不 pong");
     }
 
-    /// E-1 的方向哨兵：同一号码同一消息类型，但发方不是 boot 模块（init
-    /// 的 11 槽与用户槽 20）时不得拦截——否则用户进程发给服务的合法
-    /// 0xE00 调用号会被 SEF 静默吞掉（照 `source >= INIT_PROC_NR` 写就会如此）。
-    /// PD-34 编排面（C process_init — sef_init.c:42-143）：段一清过滤
-    /// 过后按类型分派，回报消息由库构造、result 透传。
+    /// The direction sentinel: the same number and message type, but when the
+    /// sender is not a boot module (init slot 11 vs user slot 20) it must not be
+    /// intercepted — otherwise a legal 0xE00 call a user process sends to the
+    /// service would be silently swallowed by SEF (writing
+    /// `source >= INIT_PROC_NR` would do exactly that).
+    /// The orchestration face (C process_init — sef_init.c:42-143): paragraph
+    /// one clears the filters, then dispatch happens by type, and the reply
+    /// message is built by the library with the result passed through.
     #[test]
     fn test_process_init_fresh_clears_filters_and_builds_reply() {
         let calls = core::cell::RefCell::new(alloc::vec::Vec::new());
@@ -790,7 +828,8 @@ mod tests {
 
     #[test]
     fn test_process_init_lu_refusal_travels_to_the_reply() {
-        // 消费者语义（LU 未建模 → ENOSYS）原样进回报——库不代答。
+        // Consumer semantics (LU not modeled → ENOSYS) travel into the reply
+        // unchanged — the library does not answer on its behalf.
         let reply = process_init(
             &mut |_req, _addr, _len| Ok(minix_types::OK),
             1, // SEF_INIT_LU
@@ -802,8 +841,9 @@ mod tests {
 
     #[test]
     fn test_process_init_filter_failure_fails_the_birth() {
-        // C 段一 `assert(r == OK)`（sef_init.c:60）：清过滤失败＝出生
-        // 失败——init 回调不得被调（顺序证明），内核 errno 原样上抛。
+        // C paragraph one `assert(r == OK)` (sef_init.c:60): failing to clear
+        // the filters means the birth failed — the init callback must not be
+        // called (an order proof), and the kernel errno propagates unchanged.
         let init_called = core::cell::Cell::new(false);
         let r = process_init(
             &mut |_req, _addr, _len| Err(minix_types::EPERM),
@@ -817,15 +857,18 @@ mod tests {
         assert!(!init_called.get(), "段一失败则分派不得到达");
     }
 
-    /// PD-27 逃生门（C `sef_cancel` — sef.c:291-297 + sef.c:161-162）：
-    /// 管理器形拦截里回调请求取消 → 库的 `continue` 到循环顶被收口成
-    /// `Err(EINTR)`，帧不上浮；不再阻塞在下一收——§续-418 登记的死锁雷
-    /// 就此拆除。
+    /// The escape hatch (C `sef_cancel` — sef.c:291-297 + sef.c:161-162): when
+    /// a callback inside manager-shaped interception requests cancellation, the
+    /// library's `continue` reaches the loop top and closes out as
+    /// `Err(EINTR)`, so the frame does not surface; the loop no longer blocks on
+    /// the next receive — the deadlock this guard was registered against is
+    /// defused.
     #[test]
     fn test_manager_signal_with_cancel_returns_eintr() {
         let mut ipc = CannedSefIpc::new();
-        // 夹具是 LIFO（`inbox.pop()`），先压的帧后到：普通消息先入队，
-        // 信号帧才是第一次收信到达的那条。
+        // The fixture is LIFO (`inbox.pop()`), so the frame pushed first
+        // arrives later: enqueue the ordinary message first, and the signal
+        // frame is the one that arrives on the first receive.
         ipc.push(0, call_msg(11));
         let mut m = call_msg(SIGS_SIGNAL_RECEIVED);
         m.m_source = Endpoint(0); // PM
@@ -849,13 +892,15 @@ mod tests {
         assert_eq!(ipc.inbox.len(), 1, "取消发生在下一帧之前——普通消息未被消费");
     }
 
-    /// PD-27 逃生门的 notify 形半：SYSTEM 通知的回调里取消 → 该帧在库内
-    /// 被吞（C 的拦截帧永不上浮，sef.c:233-236 → :161-162），返 `EINTR`；
-    /// 未取消时维持上浮 Signal 事件的既有契约。
+    /// The notify half of the escape hatch: cancellation inside a SYSTEM
+    /// notification's callback means the frame is swallowed inside the library
+    /// (C's intercepted frame never surfaces, sef.c:233-236 → :161-162) and
+    /// `EINTR` is returned; without cancellation the existing contract of
+    /// surfacing a Signal event holds.
     #[test]
     fn test_notify_signal_with_cancel_swallows_frame_and_returns_eintr() {
         let mut ipc = CannedSefIpc::new();
-        ipc.push(0, call_msg(11)); // LIFO：后压先到
+        ipc.push(0, call_msg(11)); // LIFO: the last pushed arrives first
         let mut m = notify_msg();
         m.m_source = SYSTEM_ENDPOINT;
         ipc.push(4, m);
@@ -871,12 +916,14 @@ mod tests {
         assert_eq!(r.unwrap_err(), minix_types::EINTR);
     }
 
-    /// 循环顶的检查先于阻塞收（C sef.c:161-162 的位置语义）：上一轮回调
-    /// 留下的取消在本轮入口就返 `EINTR`，不再向 IPC 面要消息。
+    /// The loop-top check comes before the blocking receive (the positional
+    /// semantics of C sef.c:161-162): a cancellation left by the previous
+    /// round's callback returns `EINTR` at this round's entry, without asking
+    /// the IPC face for a message.
     #[test]
     fn test_pre_cancelled_loop_returns_eintr_without_receiving() {
         let mut ipc = CannedSefIpc::new();
-        ipc.empty_error = minix_types::EPERM; // 若库胆敢收包，必须可见地失败
+        ipc.empty_error = minix_types::EPERM; // if the library dares to receive, it must fail visibly
         let cancel = SefCancel::new();
         cancel.cancel();
         let r = sef_receive_status(
@@ -913,7 +960,8 @@ mod tests {
         }
     }
 
-    /// 非通知的 RS 消息:is_ipc_notify 为假,不走 ping 分类,原样上浮。
+    /// A non-notify RS message: `is_ipc_notify` is false, so it skips the ping
+    /// classification and surfaces unchanged.
     #[test]
     fn test_rs_non_notification_is_plain_call() {
         let mut ipc = CannedSefIpc::new();
@@ -931,7 +979,8 @@ mod tests {
         assert!(ipc.pongs.is_empty());
     }
 
-    /// Canned receive 失败直通(C sef.c:173-174 — `if (r != OK) return r`)。
+    /// Canned receive failure passes straight through (C sef.c:173-174 —
+    /// `if (r != OK) return r`).
     #[test]
     fn test_receive_error_passthrough() {
         let mut ipc = CannedSefIpc::new();
@@ -946,13 +995,15 @@ mod tests {
         assert_eq!(r, Err(minix_types::EINTR));
     }
 
-    /// E-BIRTHFACE 库根：RS 的 `RS_INIT` 出生请求（非 notify 的异步投递）
-    /// 上浮为 `SefEvent::Init`，携带 m_rs_init.type（C sef.h:33 判定 +
-    /// sef_init.c:202 读 type）。此前库从不构造 Init——服务器 Init 臂死代码。
+    /// Library root of the birth protocol: RS's `RS_INIT` birth request (an
+    /// async delivery, not a notify) surfaces as `SefEvent::Init` carrying
+    /// m_rs_init.type (C decides with sef.h:33 and reads type at sef_init.c:202).
+    /// Previously the library never constructed Init — the servers' Init arm
+    /// was dead code.
     #[test]
     fn test_rs_init_request_surfaces_init_event() {
         let mut ipc = CannedSefIpc::new();
-        ipc.push(1, rs_init_msg(1)); // status 1 = 非通知；type 1 = SEF_INIT_LU
+        ipc.push(1, rs_init_msg(1)); // status 1 = non-notify; type 1 = SEF_INIT_LU
         let recv = sef_receive_status(
             &mut ipc,
             Endpoint::ANY,
@@ -973,12 +1024,14 @@ mod tests {
         );
     }
 
-    /// 出生判定按 type+source、与投递方式无关（C IS_SEF_INIT_REQUEST 无
-    /// notify 条件）：即便 status 落在通知段，仍先判 Init，不误入 ping 分支。
+    /// The birth test keys on type+source and is independent of the delivery
+    /// mode (C's IS_SEF_INIT_REQUEST has no notify condition): even when the
+    /// status falls in the notification band, Init is still decided first and
+    /// the ping branch is not entered by mistake.
     #[test]
     fn test_rs_init_wins_over_notify_band() {
         let mut ipc = CannedSefIpc::new();
-        ipc.push(4, rs_init_msg(0)); // status 通知段 (CALL_NOTIFY=4)；SEF_INIT_FRESH
+        ipc.push(4, rs_init_msg(0)); // status in the notify band (CALL_NOTIFY=4); SEF_INIT_FRESH
         let recv = sef_receive_status(
             &mut ipc,
             Endpoint::ANY,
@@ -991,14 +1044,15 @@ mod tests {
         assert!(ipc.pongs.is_empty());
     }
 
-    /// H-22：RS 的通知但 m_type 非 NOTIFY_MESSAGE（不是有效 ping）上浮为
-    /// `SefEvent::PingInvalid`（C sef.c:208-214 break 路径），此前无人构造。
+    /// An RS notification whose m_type is not NOTIFY_MESSAGE (not a valid ping)
+    /// surfaces as `SefEvent::PingInvalid` (C sef.c:208-214 break path);
+    /// previously nothing constructed this variant.
     #[test]
     fn test_rs_non_ping_notification_is_invalid() {
         let mut ipc = CannedSefIpc::new();
-        let mut m = call_msg(999); // RS 通知但非 ping 消息
+        let mut m = call_msg(999); // RS notification but not a ping message
         m.m_source = RS_ENDPOINT;
-        ipc.push(4, m); // status 通知段 (CALL_NOTIFY=4)
+        ipc.push(4, m); // status in the notify band (CALL_NOTIFY=4)
         let recv = sef_receive_status(
             &mut ipc,
             Endpoint::ANY,
@@ -1011,14 +1065,17 @@ mod tests {
         assert!(ipc.pongs.is_empty(), "无效 ping 不pong");
     }
 
-    /// 共享应答助手：`sef_init_reply` 造出回 RS 的 `RS_INIT`+result 消息
-    /// （C process_init 尾部 sef_init.c:113-117，经 ipc_sendrec(RS) 送出）。
+    /// The shared reply helper: `sef_init_reply` builds the `RS_INIT`+result
+    /// message sent back to RS (C process_init tail, sef_init.c:113-117, sent
+    /// via ipc_sendrec(RS)).
     #[test]
     fn test_sef_init_reply_carries_result() {
-        // T6 形状锚：m_source 留 0 不是缺陷——内核投递盖章（ipc.rs:1588
-        // sendrec、:1986 senda）把送达值恒置为发送者端点，与 C proc.c:
-        // 1071-1075 同形；C 的 sef_init.c:114 填 sef_self_endpoint 是
-        // 被覆盖前的防御性形状。改动此断言前先读上方 T6 定谳注释。
+        // Shape anchor: leaving m_source at 0 is not a defect — the kernel
+        // stamps on delivery (ipc.rs:1588 sendrec, :1986 senda), always setting
+        // the delivered value to the sender endpoint, the same shape as C
+        // proc.c:1071-1075; C's sef_init.c:114 filling sef_self_endpoint is a
+        // defensive shape that gets overwritten. Read the settled note above
+        // before changing this assertion.
         let ok = sef_init_reply(minix_types::OK);
         assert_eq!(
             ok.m_source,

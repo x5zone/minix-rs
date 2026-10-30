@@ -16,7 +16,7 @@
 //! `minix_sef::sef_receive_status` (RS ping absorption, the IS/MIB
 //! precedent) and nothing in the loop changes.
 //!
-//! `[ARCH: 驱动服务运行时统一]` — the runtime is stage infrastructure:
+//! `[ARCH: unified driver-service runtime]` — the runtime is stage infrastructure:
 //! `16-stage-drivers/todo.md` A1 records the decision; document
 //! `00-drivers-overview.md` carries the architecture narrative once
 //! expanded.
@@ -26,10 +26,11 @@
 //! built on it).
 
 #![no_std]
-// SD-19 静默吞错家族机械化门（本 crate 接手）：运行时与内核传输里的
-// `Result` 返回被 `let _ =` 掉空时，这个 restriction lint 让它在
-// `cargo clippy` 当场现形。已定性的站点按同族惯例写 `//[SD19-gate] <理由>`
-// + 语句级 `#[allow]`。
+// Mechanized gate for the silent-error-swallowing family (owned by this
+// crate): when a `Result` return in the runtime or kernel transport is
+// dropped with `let _ =`, this restriction lint exposes it immediately in
+// `cargo clippy`. Classified sites follow the family convention and carry
+// `//[SD19-gate] <reason>` plus a statement-level `#[allow]`.
 #![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;

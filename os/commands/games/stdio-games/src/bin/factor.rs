@@ -36,8 +36,9 @@ fn run() -> ! {
         let mut input = [0u8; 80];
         let mut reader = LineReader::new(support::stdin_chunk, &mut input);
         loop {
-            // C 分两种收尾：`fgets` 返回 `NULL` 且 `ferror(stdin)` 才算错，走
-            // `err(1, "stdin")`（`factor.c:157-161`）；只是读到尽头则 `exit(0)`。
+            // C has two ways to end: `fgets` returning `NULL` **and**
+            // `ferror(stdin)` is the error case, which takes `err(1, "stdin")`
+            // (`factor.c:157-161`); merely reaching the end is `exit(0)`.
             let has_line = match reader.next_line() {
                 Ok(has_line) => has_line,
                 Err(code) => {
@@ -95,9 +96,12 @@ fn factor_word(word: &str, from_stdin: bool) {
             }
         }
         Verdict::Overflow => {
-            // C 的这条腿是 `err(1, "%s", str)`（`factor.c:123-126`）：程序名、原串、冒号空格，
-            // 再缀 `strtoul` 设的那个号的句子。它与 `Illegal` 不同句，也不同时机——溢出先看
-            // `errno`，行末检验在其后（`:127`），所以带尾巴的超大数答这句而不提格式。
+            // In C this leg is `err(1, "%s", str)` (`factor.c:123-126`): program
+            // name, original string, colon-space, then the sentence for the
+            // number `strtoul` set. It differs from `Illegal` in sentence and in
+            // timing—overflow checks `errno` first and the end-of-line check
+            // comes after (`:127`), so an oversized number with a trailing tail
+            // gets this sentence and says nothing about the format.
             support::warn(b"factor: ");
             support::warn(word.trim_end_matches(['\n', '\r']).as_bytes());
             support::warn(b": ");

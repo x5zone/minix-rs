@@ -7,9 +7,10 @@
 //! These values follow Minix3's errno numbering, which differs from Linux
 //! in some cases (e.g., `ENOSYS = 78` in Minix3 vs `38` in Linux).
 
-/// Minix3 成功码。
+/// Minix3 success code.
 ///
-/// 对应 minix3/sys/sys/errno.h:190 `#define OK 0`。PM 用 `OK` 作为回复码。
+/// Corresponds to minix3/sys/sys/errno.h:190 `#define OK 0`. PM uses `OK` as a
+/// reply code.
 pub const OK: i32 = 0;
 
 pub const EPERM: i32 = 1;
@@ -94,9 +95,10 @@ pub const ENOSYS: i32 = 78;
 /// Pseudo-code: don't send a reply. C: `EDONTREPLY` — sys/errno.h:199.
 /// Not a real errno: handlers return it to suppress the main-loop reply
 /// (main.c:124-129, 06-rs-main-loop.md).
-/// Service restarted. C: `ERESTART` — sys/errno.h:196 (`_SYSTEM` 下为 -200；
-/// minix-types 采用用户态正数约定，见 03-stage-rs/99-rs-global-concepts.md §errno 符号约定).
-/// RS 用它作 `r_init_err` 的默认值（manager.c:1828，clone_slot）。
+/// Service restarted. C: `ERESTART` — sys/errno.h:196 (under `_SYSTEM` it is
+/// -200; minix-types uses the positive user-space convention, see
+/// 03-stage-rs/99-rs-global-concepts.md §errno sign convention).
+/// RS uses it as the default for `r_init_err` (manager.c:1828, clone_slot).
 pub const ERESTART: i32 = 200;
 /// Source or destination is not ready. C: `ENOTREADY` — sys/errno.h:197.
 /// The kernel answers a system call with this status when the other end is
@@ -245,7 +247,7 @@ impl Errno {
     /// identifier ("EPERM"), or `None` for a value without a named
     /// constant.
     ///
-    /// E-8: RS's diagnostic面 (error.c `rs_strerror`/`init_strerror`/
+    /// RS's diagnostic surface (error.c `rs_strerror`/`init_strerror`/
     /// `lu_strerror`) layers its contextual descriptions on top of this
     /// table instead of keeping a second errno→name map; the match arms
     /// use the constants themselves, so a value rename or removal breaks
@@ -371,23 +373,30 @@ impl Errno {
     }
 }
 
-/// C 的 `sys_nerr`：`sys_errlist` 的表长。`strerror(3)` 只在号小于它时查表，
-/// 否则走 `"Unknown error: %u"`（minix3/lib/libc/compat/gen/compat_errlist.c:153、
-/// minix3/lib/libc/string/strerror_r.c:66）。
+/// C's `sys_nerr`: the length of `sys_errlist`. `strerror(3)` only indexes the
+/// table when the number is below it, otherwise it uses `"Unknown error: %u"`
+/// (minix3/lib/libc/compat/gen/compat_errlist.c:153,
+/// minix3/lib/libc/string/strerror_r.c:66).
 pub const SYS_NERR: usize = 80;
 
-/// C `strerror(3)` 的句子表：下标就是 errno 号。
+/// C `strerror(3)`'s sentence table: the index is the errno number.
 ///
-/// 真源是 `minix3/lib/libc/compat/gen/compat_errlist.c:52-151`（本树里 `sys_errlist`
-/// 只有这一份定义），不是 glibc 或 Linux 的同名表——两者措辞不同：34 号在 Minix3 里是
-/// `Result too large or too small`，而 glibc 写 `Numerical result out of range`；
-/// 35 号 `Resource temporarily unavailable` 同时服务 `EAGAIN` 与 `EWOULDBLOCK`（C 只给
-/// 一份串，别名靠注释标出）；47 号 `Address family not supported by protocol family`
-/// 独立成项，与 46 号的 `Protocol family not supported` 不是一句。
+/// The source of truth is `minix3/lib/libc/compat/gen/compat_errlist.c:52-151`
+/// (the only definition of `sys_errlist` in this tree), not the same-named
+/// table in glibc or Linux — the wording differs: 34 is
+/// `Result too large or too small` in Minix3 while glibc writes
+/// `Numerical result out of range`; 35 `Resource temporarily unavailable`
+/// serves both `EAGAIN` and `EWOULDBLOCK` (C has only one string; the alias is
+/// marked by a comment); 47 `Address family not supported by protocol family`
+/// is its own entry and is not the same sentence as 46's
+/// `Protocol family not supported`.
 ///
-/// 表项逐条与 `minix3/sys/sys/errno.h` 的号对过：脚本按行提取 80 项串，并断言每个带
-/// 注记的行满足 `strings[注记号] == 该行的串`（79 条带注记行零失配；0 号在表头没有名字，
-/// 按 C 惯例记作 `ENOERROR`）。
+/// Every entry was cross-checked against the numbers in
+/// `minix3/sys/sys/errno.h`: a script extracts the 80 strings line by line and
+/// asserts that each annotated line satisfies
+/// `strings[annotation number] == the line's string` (79 annotated lines, zero
+/// mismatches; number 0 has no name in the table header and is recorded as
+/// `ENOERROR` following C convention).
 const SYS_ERRLIST: [&str; SYS_NERR] = [
     /*  0 ENOERROR               */ "Undefined error: 0",
     /*  1 EPERM                  */ "Operation not permitted",
@@ -472,15 +481,18 @@ const SYS_ERRLIST: [&str; SYS_NERR] = [
 ];
 
 impl Errno {
-    /// C `strerror(3)` 返回的那句话（`sys_errlist[errno]`）；号在表外时 `None`。
+    /// The sentence C `strerror(3)` returns (`sys_errlist[errno]`); `None`
+    /// when the number is outside the table.
     ///
-    /// 这与 [`Errno::name`] 是两件事：`name()` 给标识符（`"EINVAL"`），这里给读者读的
-    /// 句子（`"Invalid argument"`）。C 的 `err(3)`/`warn(3)` 缀的是后者——
-    /// `minix3/lib/libc/gen/verrc.c` 的形状是 `progname: ` + 调用者的格式串 + `": "` +
-    /// `strerror(code)` + 换行。
+    /// This is a different thing from [`Errno::name`]: `name()` gives the
+    /// identifier (`"EINVAL"`), this gives the sentence for readers
+    /// (`"Invalid argument"`). C's `err(3)`/`warn(3)` append the latter —
+    /// the shape in `minix3/lib/libc/gen/verrc.c` is `progname: ` + the
+    /// caller's format string + `": "` + `strerror(code)` + newline.
     pub fn message(self) -> Option<&'static str> {
-        // C 把 `int num` 先转成 `unsigned int` 再比大小（strerror_r.c:56/:66），
-        // 所以负数在这里绕成一个很大的数、直接落到表外。
+        // C converts `int num` to `unsigned int` before comparing
+        // (strerror_r.c:56/:66), so a negative number wraps to a very large
+        // value here and falls straight outside the table.
         let errnum = self.0 as u32;
         if (errnum as usize) < SYS_NERR {
             Some(SYS_ERRLIST[errnum as usize])
@@ -490,9 +502,11 @@ impl Errno {
     }
 }
 
-/// C `strerror(3)` 的完整形状：表内取句子，表外取 C 的 `Unknown error: %u`
-/// （minix3/lib/libc/string/strerror_r.c:55/:78）。`%u` 的实参是 `unsigned int`，
-/// 因此负数会打成绕回后的大数——这是 C 自己的行为，不是本树的发明。
+/// The full shape of C `strerror(3)`: take the sentence inside the table and
+/// C's `Unknown error: %u` outside it
+/// (minix3/lib/libc/string/strerror_r.c:55/:78). The `%u` argument is
+/// `unsigned int`, so negative numbers print as the wrapped-around large value
+/// — that is C's own behavior, not an invention of this tree.
 pub struct Strerror(pub Errno);
 
 impl core::fmt::Display for Strerror {
@@ -504,11 +518,14 @@ impl core::fmt::Display for Strerror {
     }
 }
 
-/// Minix3 的 `perror(3)` 那一行：`<调用者给的串>: <strerror 的句子>`——注意这张表里的
-/// `perror` **不带程序名前缀**（`minix3/lib/libc/stdio/perror.c` 打的是
-/// `fprintf(stderr, "%s%s%s\n", s, separator, buf)`，`separator` 在串为空时是空串），
-/// 与带前缀的 `err(3)`/`warn(3)`（[`err_line`]）是两件事。把两者都放在这里，是为了让
-/// 「哪一个函数缀程序名」这个差别只有一处答案。
+/// Minix3's `perror(3)` line: `<caller's string>: <strerror sentence>` — note
+/// that `perror` in this table has **no program-name prefix**
+/// (`minix3/lib/libc/stdio/perror.c` prints
+/// `fprintf(stderr, "%s%s%s\n", s, separator, buf)`, and `separator` is the
+/// empty string when the passed string is empty), which is a different thing
+/// from the prefixed `err(3)`/`warn(3)` ([`err_line`]). Both live here so the
+/// difference of "which function prefixes the program name" has exactly one
+/// answer.
 pub fn perror_line(label: &str, code: Errno, out: &mut [u8]) -> usize {
     use core::fmt::Write as _;
     struct Sink<'a>(&'a mut [u8], &'a mut usize);
@@ -525,8 +542,9 @@ pub fn perror_line(label: &str, code: Errno, out: &mut [u8]) -> usize {
     }
     let separator = if label.is_empty() { "" } else { ": " };
     let mut written = 0usize;
-    //[SD19-gate] 本地 Sink 的 write_str 恒回 Ok(())（超容量静默截断），
-    // write! 无失败面；C 对同类渲染是 (void)strerror_r（perror.c:66）。
+    //[SD19-gate] The local Sink's write_str always returns Ok(()) (silently
+    // truncating on overflow), so write! has no failure surface; C's
+    // counterpart rendering is (void)strerror_r (perror.c:66).
     #[allow(clippy::let_underscore_must_use)]
     let _ = write!(
         Sink(out, &mut written),
@@ -536,10 +554,11 @@ pub fn perror_line(label: &str, code: Errno, out: &mut [u8]) -> usize {
     written
 }
 
-/// C 的 `getprogname()`：程序名是运行时刻从 `argv[0]` 取的最后一段——
-/// `minix3/lib/csu/common/crt0-common.c:156-165` 扫到最后一个 `/` 就取其后面那段，
-/// 没有斜杠则整段照用。`err(3)`/`warn(3)`/`usage()` 的那几行都以它开头，所以这是契约
-/// 的一部分而不是装饰。
+/// C's `getprogname()`: the program name is the last segment of `argv[0]`
+/// taken at run time — `minix3/lib/csu/common/crt0-common.c:156-165` scans to
+/// the last `/` and takes the part after it, using the whole string when there
+/// is no slash. The `err(3)`/`warn(3)`/`usage()` lines all start with it, so
+/// this is part of the contract rather than decoration.
 pub fn prog_name(argv0: &str) -> &str {
     match argv0.rfind('/') {
         Some(slash) => &argv0[slash + 1..],
@@ -547,12 +566,15 @@ pub fn prog_name(argv0: &str) -> &str {
     }
 }
 
-/// C 的 `err(3)`/`warn(3)` 那一行的渲染：`prog: label: <句子>`。
+/// Rendering of C's `err(3)`/`warn(3)` line: `prog: label: <sentence>`.
 ///
-/// 形状逐字来自 `minix3/lib/libc/gen/verrc.c`——`getprogname()`、`": "`、调用者给的串、
-/// `": "`、`strerror(code)`、换行（换行由调用者补，因为 C 的 `vwarn` 也这样分）。句子出自
-/// `SYS_ERRLIST` 那张表，表外由 [`Strerror`] 出 C 的 `Unknown error: %u`。放在这里而不是
-/// 各命令的共享件里，是为了让所有消费者共用一个权威——C 也只有一个 `verrc`。
+/// The shape comes verbatim from `minix3/lib/libc/gen/verrc.c` —
+/// `getprogname()`, `": "`, the caller's string, `": "`, `strerror(code)`,
+/// newline (the caller supplies the newline, because C's `vwarn` splits it the
+/// same way). The sentence comes from the `SYS_ERRLIST` table; outside the
+/// table [`Strerror`] emits C's `Unknown error: %u`. It lives here instead of
+/// in each command's shared code so all consumers share one authority — C also
+/// has only one `verrc`.
 pub fn err_line(prog: &str, label: &str, code: Errno, out: &mut [u8]) -> usize {
     use core::fmt::Write as _;
     struct Sink<'a>(&'a mut [u8], &'a mut usize);
@@ -568,8 +590,9 @@ pub fn err_line(prog: &str, label: &str, code: Errno, out: &mut [u8]) -> usize {
         }
     }
     let mut written = 0usize;
-    //[SD19-gate] 本地 Sink 的 write_str 恒回 Ok(())（超容量静默截断），
-    // write! 无失败面；C verrc.c 的渲染同样不检查写入结果。
+    //[SD19-gate] The local Sink's write_str always returns Ok(()) (silently
+    // truncating on overflow), so write! has no failure surface; C's verrc.c
+    // rendering likewise does not check the write result.
     #[allow(clippy::let_underscore_must_use)]
     let _ = write!(
         Sink(out, &mut written),
@@ -718,26 +741,31 @@ pub trait ToErrno {
     fn to_errno(&self) -> Errno;
 }
 
-/// 服务器回复通道上的状态字：把本树**正号** errno 常量折成线序上的**负号**。
+/// Status word on the server reply channel: folds this tree's **positive**
+/// errno constants into the **negative** sign used on the wire.
 ///
-/// Minix3 的服务以 `_SYSTEM` 编译（各服务头里写死：
-/// `minix3/minix/servers/ds/inc.h:6`、`servers/ipc/inc.h:1`、`servers/is/inc.h:7`、
-/// `servers/rs/inc.h:7`、`servers/pm/pm.h:4`、`servers/sched/sched.h:4`、
-/// `servers/devman/devman.h:3`、`servers/vfs/fs.h:7`、`servers/vm/vm.h:5`），
-/// 错码常量本身带负号（“get OK and negative error codes”）；服务
-/// `m.m_type = result` 写回的因此是负错码，而用户侧 `_taskcall` 按
-/// `m_type < 0` 判错。本树 errno 是正号常量（`ESRCH == 3`），所以每个
-/// `_SYSTEM` 服务都必须在回复边界折一次符号——这一纪律已分别在 VFS 的
-/// `queue_reply`（`servers/vfs/src/main_loop.rs`）与 DS 的
-/// `dispatch::reply_status`（`servers/ds/src/dispatch.rs`）立过，本函数是
-/// 它们的单源归位。
+/// Minix3 services are compiled with `_SYSTEM` (hardwired in the service
+/// headers: `minix3/minix/servers/ds/inc.h:6`, `servers/ipc/inc.h:1`,
+/// `servers/is/inc.h:7`, `servers/rs/inc.h:7`, `servers/pm/pm.h:4`,
+/// `servers/sched/sched.h:4`, `servers/devman/devman.h:3`,
+/// `servers/vfs/fs.h:7`, `servers/vm/vm.h:5`), so the error constants
+/// themselves carry a negative sign ("get OK and negative error codes"); a
+/// service therefore writes back a negative error code in `m.m_type = result`,
+/// and the user side `_taskcall` treats `m_type < 0` as an error. This tree's
+/// errno values are positive constants (`ESRCH == 3`), so every `_SYSTEM`
+/// service must fold the sign once at the reply boundary — VFS established
+/// this discipline in `queue_reply` (`servers/vfs/src/main_loop.rs`) and DS in
+/// `dispatch::reply_status` (`servers/ds/src/dispatch.rs`); this function is
+/// their single-source home.
 ///
-/// **例外**：MIB 不定义 `_SYSTEM`（`minix3/minix/servers/mib/Makefile` 无此定义，
-/// 也无 `inc.h`），它的错码线序上是正数——MIB 与其客户端对不能套本函数
-/// （仓内已有先例：`sysctl_via` 的正 errno 判定）。
+/// **Exception**: MIB does not define `_SYSTEM`
+/// (`minix3/minix/servers/mib/Makefile` has no such definition and no
+/// `inc.h`), so its error codes are positive on the wire — MIB and its client
+/// pair must not use this function (there is already a precedent in the repo:
+/// the positive-errno check in `sysctl_via`).
 ///
-/// `0`（OK）与已负值原样透传（不会二次取负）；非负成功载荷（fd、字节数）
-/// 不受影响。
+/// `0` (OK) and already-negative values pass through unchanged (no double
+/// negation); non-negative success payloads (fds, byte counts) are unaffected.
 pub const fn reply_status(result: i32) -> i32 {
     if result > 0 { -result } else { result }
 }
@@ -746,7 +774,8 @@ pub const fn reply_status(result: i32) -> i32 {
 mod to_errno_trait_tests {
     use super::*;
 
-    // PmError / KernelError 的 trait 委托与既有固有方法一致性测试。
+    // Consistency test between the trait delegation and the existing
+    // inherent methods for PmError / KernelError.
     #[test]
     fn test_to_errno_trait_delegates_for_pm_error() {
         use crate::ipc::PmError;
@@ -772,13 +801,15 @@ mod to_errno_trait_tests {
 
     #[test]
     fn test_to_errno_ebadcpu_associated_const() {
-        // SchedProcError::BadCpu 的映射目标（kernel 侧 impl 使用）。
+        // The mapping target of SchedProcError::BadCpu (used by the
+        // kernel-side impl).
         assert_eq!(Errno::EBADCPU.to_i32(), EBADCPU);
         assert_eq!(EBADCPU, 217);
     }
 
-    /// 回复边界折号：`_SYSTEM` 服务的错码在线序上是负数，OK/已负值不动。
-    /// 判据锈在 C 常量上（EPERM=1、ESRCH=3、ELOCKED=208）。
+    /// Reply-boundary sign folding: `_SYSTEM` service error codes are
+    /// negative on the wire; OK and already-negative values are untouched. The
+    /// criteria are pinned to the C constants (EPERM=1, ESRCH=3, ELOCKED=208).
     #[test]
     fn test_reply_status_folds_positive_errno() {
         assert_eq!(reply_status(0), 0); // OK
@@ -786,7 +817,8 @@ mod to_errno_trait_tests {
         assert_eq!(reply_status(ESRCH), -3);
         assert_eq!(reply_status(ELOCKED), -208);
         assert_eq!(reply_status(-EPERM), -EPERM);
-        // 正数一律当错码折：调用方不得把成功载荷（fd、字节数）走这里。
+        // Every positive number is folded as an error code: callers must not
+        // route success payloads (fds, byte counts) through here.
         assert_eq!(reply_status(7), -7);
     }
 }
@@ -846,8 +878,9 @@ mod strerror_face_tests {
     use super::{EBADF, ENOENT, Errno, SYS_ERRLIST, SYS_NERR, Strerror};
     use alloc::string::ToString as _;
 
-    /// 表长与 C 的 `sys_nerr` 同数，且没有空串（C 的 80 项里每一项都有文字，
-    /// 空串会让 `err(3)` 打出光秃秃的冒号尾巴）。
+    /// The table length equals C's `sys_nerr`, and there is no empty string
+    /// (all 80 C entries carry text; an empty string would make `err(3)` print
+    /// a bare colon tail).
     #[test]
     fn table_is_c_sys_nerr_long_with_no_empty_entry() {
         assert_eq!(SYS_ERRLIST.len(), SYS_NERR);
@@ -855,11 +888,13 @@ mod strerror_face_tests {
         assert!(SYS_ERRLIST.iter().all(|text| !text.is_empty()));
     }
 
-    /// 措辞以 Minix3 的表为纲，不是 glibc/Linux 的那一张：6 号在 Minix3 里是
-    /// `Device not configured`（glibc 写 `No such device or address`），19 号是
-    /// `Operation not supported by device`（glibc 写 `No such device`），34 号是
-    /// `Result too large or too small`（glibc 写 `Numerical result out of range`）。
-    /// 46 与 47 是两句话，不是一个别名。
+    /// The wording follows Minix3's table, not the glibc/Linux one: 6 is
+    /// `Device not configured` in Minix3 (glibc writes
+    /// `No such device or address`), 19 is
+    /// `Operation not supported by device` (glibc writes `No such device`), 34
+    /// is `Result too large or too small` (glibc writes
+    /// `Numerical result out of range`). 46 and 47 are two sentences, not one
+    /// alias.
     #[test]
     fn wording_follows_the_minix3_table_not_glibc() {
         assert_eq!(Errno::from_i32(6).message(), Some("Device not configured"));
@@ -881,8 +916,10 @@ mod strerror_face_tests {
         );
     }
 
-    /// 句子面与标识符面是两件事：同一个 `EINVAL` 一边给 `Invalid argument`，
-    /// 一边给 `EINVAL`。把两者混起来的壳会在 `err(3)` 后缀里打出大写代号。
+    /// The sentence face and the identifier face are two different things: the
+    /// same `EINVAL` gives `Invalid argument` on one side and `EINVAL` on the
+    /// other. A shell that mixes them up prints the uppercase code in the
+    /// `err(3)` suffix.
     #[test]
     fn message_and_name_are_two_different_faces() {
         assert_eq!(Errno::EINVAL.message(), Some("Invalid argument"));
@@ -901,9 +938,11 @@ mod strerror_face_tests {
         );
     }
 
-    /// `err(3)` 那一行的形状是 `verrc.c` 逐字给的：程序名、冒号空格、调用者的串、
-    /// 冒号空格、句子。表外的号在渲染里就换成 C 的 `Unknown error: %u`，句子与代号
-    /// 不许混（`EINVAL` 的句子是 `Invalid argument`，不是 `EINVAL`）。
+    /// The shape of the `err(3)` line is given verbatim by `verrc.c`: the
+    /// program name, colon-space, the caller's string, colon-space, the
+    /// sentence. Numbers outside the table are rendered as C's
+    /// `Unknown error: %u`; sentences and identifiers must not be mixed up
+    /// (`EINVAL`'s sentence is `Invalid argument`, not `EINVAL`).
     #[test]
     fn err_line_renders_c_verrc_shape() {
         extern crate alloc;
@@ -921,7 +960,9 @@ mod strerror_face_tests {
             &mut out,
         );
         assert_eq!(&out[..len], b"factor: stdin: Unknown error: 4294967295");
-        // 截断只发生在缓冲区不足时，长度仍按需要的字节数报（调用者据此判断写没写全）。
+        // Truncation happens only when the buffer is too small; the length is
+        // still reported as the required byte count (callers use it to tell
+        // whether everything was written).
         let mut small = [0u8; 8];
         let len = err_line("rm", "unlink", Errno::from_i32(ENOENT), &mut small);
         assert_eq!(&small[..], b"rm: unli");
@@ -931,23 +972,28 @@ mod strerror_face_tests {
             "Operation not permitted"
         );
 
-        // Minix3 的 `perror` 不缀程序名：`perror("unlink")` 出的是 `unlink: <句子>`，
-        // 空串时连那个冒号空格都没有（`perror.c` 的 `separator` 规则）。
+        // Minix3's `perror` does not prefix the program name:
+        // `perror("unlink")` yields `unlink: <sentence>`, and with an empty
+        // string even the colon-space is omitted (`perror.c`'s `separator`
+        // rule).
         let mut line = [0u8; 96];
         let len = super::perror_line("unlink", Errno::from_i32(ENOENT), &mut line);
         assert_eq!(&line[..len], b"unlink: No such file or directory");
         let len = super::perror_line("", Errno::from_i32(ENOENT), &mut line);
         assert_eq!(&line[..len], b"No such file or directory");
 
-        // 程序名取末段，而不是整个 `argv[0]`：C 的运行时刻就是这么切的。
+        // The program name is taken as the last segment, not the whole
+        // `argv[0]`: that is how C's run time splits it.
         assert_eq!(super::prog_name("/bin/mkfifo"), "mkfifo");
         assert_eq!(super::prog_name("mkfifo"), "mkfifo");
         assert_eq!(super::prog_name(""), "");
     }
 
-    /// 表边界与 C 的 `unsigned` 比较同形：0 号有串（`Undefined error: 0`），79 号是
-    /// 最后一项，80 号落表外；负号先绕成 `unsigned` 的大数，因此也落表外，而
-    /// `Strerror` 打出 C 那句 `Unknown error: %u` 的绕回读数。
+    /// The table boundary matches C's `unsigned` comparison: number 0 has a
+    /// string (`Undefined error: 0`), 79 is the last entry, and 80 falls
+    /// outside; a negative number first wraps to a large `unsigned` value, so
+    /// it also falls outside, and `Strerror` prints C's `Unknown error: %u`
+    /// wrapped reading.
     #[test]
     fn table_edges_and_unknown_shape_follow_c_unsigned_compare() {
         assert_eq!(Errno::from_i32(0).message(), Some("Undefined error: 0"));

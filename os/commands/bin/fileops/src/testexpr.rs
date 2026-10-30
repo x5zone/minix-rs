@@ -316,7 +316,8 @@ impl<'w, T: FileTester> Parser<'w, T> {
             "-k" => Ok(self.tester.flags(self.operand()?).sticky),
             "-O" => Ok(self.tester.owned_by_me(self.operand()?)),
             "-G" => Ok(self.tester.grouped_by_me(self.operand()?)),
-            // `-h` 与 `-L` 同义：`test.c:139` 明写「for backwards compat」。
+            // `-h` and `-L` are synonyms: `test.c:139` says so explicitly,
+            // "for backwards compat".
             "-h" => Ok(self.tester.kind(self.operand()?).link),
             "-r" => Ok(self.tester.access(self.operand()?).read),
             "-w" => Ok(self.tester.access(self.operand()?).write),
@@ -341,12 +342,14 @@ impl<'w, T: FileTester> Parser<'w, T> {
     /// After a leading word: binary comparison or bare string truth.
     fn binary_or_string(&mut self, left: &str) -> Result<bool, FileOpError> {
         match self.peek() {
-            // C 的比较表里只有单等号（`test.c:110`），没有 bash 的 `==`。
+            // C's comparison table has only the single `=`
+            // (`test.c:110`); bash's `==` does not exist.
             Some("=") => {
                 self.pos += 1;
                 Ok(left == self.operand()?)
             }
-            // `<`/`>`：按字节序的字符串比较，对位 `strcmp`（`test.c:345-348`）。
+            // `<`/`>`: byte-order string comparison, matching `strcmp`
+            // (`test.c:345-348`).
             Some("<") => {
                 self.pos += 1;
                 Ok(left.as_bytes() < self.operand()?.as_bytes())
@@ -623,20 +626,22 @@ mod tests {
         assert_eq!(evaluate(&fs, &["-O", "/tmp"]), Ok(false));
         assert_eq!(evaluate(&fs, &["-G", "/tmp"]), Ok(true));
         assert_eq!(evaluate(&fs, &["-G", "/bin/sh"]), Ok(false));
-        // `<`/`>` 走 `strcmp` 的字节序（`test.c:109`、`:111`、`:345-348`）。
+        // `<`/`>` follow `strcmp`'s byte order (`test.c:109`, `:111`,
+        // `:345-348`).
         assert_eq!(evaluate(&fs, &["a", "<", "b"]), Ok(true));
         assert_eq!(evaluate(&fs, &["b", "<", "a"]), Ok(false));
         assert_eq!(evaluate(&fs, &["b", ">", "a"]), Ok(true));
         assert_eq!(evaluate(&fs, &["a", ">", "b"]), Ok(false));
         assert_eq!(evaluate(&fs, &["a", "<", "a"]), Ok(false));
         assert_eq!(evaluate(&fs, &["a", ">", "a"]), Ok(false));
-        // `==` 不在 C 的表里（只有单等号，`test.c:110`）：于是 `[ a == a ]` 不是
-        // 真也不是假，而是「剩下的词没人吃」的语法错（退出码 2 那一支）。
+        // `==` is not in C's table (only the single `=`, `test.c:110`), so
+        // `[ a == a ]` is neither true nor false: it is the syntax error "the
+        // remaining words were eaten by nobody" (the exit-code-2 arm).
         assert_eq!(
             evaluate(&fs, &["a", "==", "a"]),
             Err(FileOpError::InvalidArgument)
         );
-        // C 的表里没有 `-N`，本层也不再假装有。
+        // C's table has no `-N`, and this layer no longer pretends otherwise.
         assert_eq!(
             evaluate(&fs, &["-N", "/bin/sh"]),
             Err(FileOpError::InvalidArgument)
@@ -648,8 +653,9 @@ mod tests {
 
     #[test]
     fn test_h_is_the_alias_of_capital_l() {
-        // `test.c:139` 把 `h` 与 `L` 指到同一个 token（`FILSYM`），注释写明
-        // 「for backwards compat」——两条写法必须读同一个判据，也必须是 lstat 语义。
+        // `test.c:139` points `h` and `L` at the same token (`FILSYM`) and the
+        // comment says "for backwards compat" — both spellings must read the
+        // same predicate, and it must be lstat semantics.
         let mut fs = TableFs::empty();
         fs.files[0] = Some(TestFile {
             path: "/tmp/link",

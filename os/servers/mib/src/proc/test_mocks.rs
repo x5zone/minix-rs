@@ -26,8 +26,10 @@ pub(crate) struct FakeKernel {
     pub boot: u64,
     /// The caller sink: `datacopy_to(addr)` lands at this offset.
     pub sink: RefCell<Vec<u8>>,
-    /// 目标进程内存像（KERN_PROC_ARGS 的取页源）：`target_base` 起的
-    /// 线性字节；`datacopy_from` 越界即 EFAULT（与 C 的失败路径同形）。
+    /// Image of the target process's memory (the page source for
+    /// KERN_PROC_ARGS): linear bytes starting at `target_base`;
+    /// `datacopy_from` returns EFAULT on any out-of-bounds access (the same
+    /// shape as C's failure path).
     pub target_base: u64,
     pub target_mem: Vec<u8>,
 }
@@ -81,8 +83,8 @@ impl MibKernel for FakeKernel {
 pub(crate) struct FakeServices {
     /// Whole `SI_PROC_TAB` image (rows × [`minix_types::MProcSnap`]).
     pub pm_tab: Vec<u8>,
-    /// Whole `SI_PROCLIGHT_TAB` image (rows × 16 B)——C-22 后半的 VFS
-    /// light 行；测试里缺省给空表（A-7 降级路径）。
+    /// Whole `SI_PROCLIGHT_TAB` image (rows × 16 B) — the light rows VFS
+    /// serves; tests default to an empty table (the A-7 degrade path).
     pub light_tab: Vec<u8>,
 }
 
@@ -96,7 +98,8 @@ impl MibServices for FakeServices {
             if what != minix_types::SI_PROCLIGHT_TAB {
                 return Err(minix_types::EINVAL);
             }
-            // C-22 后半：light 表按需服务（空表仍在=生产者缺席的降级面）。
+            // The light table is served on demand (an empty table still
+            // present is the degrade surface when the producer is absent).
             let n = buf.len().min(self.light_tab.len());
             buf[..n].copy_from_slice(&self.light_tab[..n]);
             return Ok(());
@@ -125,7 +128,7 @@ impl MibServices for FakeServices {
     }
 
     fn vm_info(&mut self, _: i32, _: Endpoint, _: &mut [u8]) -> Result<(), i32> {
-        Err(minix_types::EIO) // VM usage 生产者未接（C 忽略失败，语义不变）
+        Err(minix_types::EIO) // VM usage producer not wired (C ignores the failure; semantics unchanged)
     }
 
     fn pm_getparam(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> {

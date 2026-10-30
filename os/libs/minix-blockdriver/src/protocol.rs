@@ -12,8 +12,9 @@ use minix_types::{EINVAL, EIO, ENOTTY, ENXIO, OK};
 /// Block-family wire constants, single source in `minix-types` — the
 /// framework re-exports the C names so driver authors import one module.
 ///
-/// [ARCH: 设备族常量单点] 权威住 `minix_types::types::device`（com.h 逐值
-/// 钉值测试随库）；本模块不再定义本地副本。
+/// [ARCH: device-family constants single source] The authority lives in
+/// `minix_types::types::device` (with per-value pinning tests against com.h);
+/// this module no longer defines a local copy.
 pub use minix_types::{BDEV_FORCEWRITE, BDEV_R_BIT, BDEV_RQ_BASE, BDEV_W_BIT};
 
 /// Maximum number of minor devices remembered as opened.
@@ -290,7 +291,8 @@ impl Default for PendingQueue {
 /// Set of minor devices opened since the last announce.
 ///
 /// The 256-slot machinery is the shared driver-runtime core
-/// (`[ARCH: 驱动服务运行时统一]`); the character framework's identical
+/// (`[ARCH: driver service runtime unification]`); the character framework's
+/// identical
 /// copy was consolidated there.
 pub type OpenDeviceSet = minix_driver_rt::core::OpenSet;
 

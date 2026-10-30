@@ -102,14 +102,16 @@ pub fn device_attributes(dev: &UsbDevice) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let hex2 = |v: u8| {
         let mut s = String::new();
-        //[SD19-gate] String 格式化仅内存分配可失败；C snprintf 亦不分支处理
+        //[SD19-gate] String formatting can only fail on an allocation; C's
+        // snprintf does not branch on failure either
         #[allow(clippy::let_underscore_must_use)]
         let _ = core::write!(s, "0x{v:02x}");
         s
     };
     let hex4 = |v: u16| {
         let mut s = String::new();
-        //[SD19-gate] String 格式化仅内存分配可失败；C snprintf 亦不分支处理
+        //[SD19-gate] String formatting can only fail on an allocation; C's
+        // snprintf does not branch on failure either
         #[allow(clippy::let_underscore_must_use)]
         let _ = core::write!(s, "0x{v:04x}");
         s
@@ -146,7 +148,8 @@ pub fn interface_attributes(intf: &UsbInterfaceDesc) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let hex2 = |v: u8| {
         let mut s = String::new();
-        //[SD19-gate] String 格式化仅内存分配可失败；C snprintf 亦不分支处理
+        //[SD19-gate] String formatting can only fail on an allocation; C's
+        // snprintf does not branch on failure either
         #[allow(clippy::let_underscore_must_use)]
         let _ = core::write!(s, "0x{v:02x}");
         s
@@ -209,7 +212,8 @@ impl UsbStack {
 pub fn device_name(usb_id: i32) -> String {
     use core::fmt::Write as _;
     let mut s = String::new();
-    //[SD19-gate] String 格式化仅内存分配可失败；C snprintf 亦不分支处理
+    //[SD19-gate] String formatting can only fail on an allocation; C's
+    // snprintf does not branch on failure either
     #[allow(clippy::let_underscore_must_use)]
     let _ = core::write!(s, "USB{usb_id}");
     // C: snprintf(name, 32, …) truncates (local.h:7); names are short in
@@ -245,7 +249,8 @@ pub fn add_usb(
 fn intf_name(i: usize) -> String {
     use core::fmt::Write as _;
     let mut s = String::new();
-    //[SD19-gate] String 格式化仅内存分配可失败；C snprintf 亦不分支处理
+    //[SD19-gate] String formatting can only fail on an allocation; C's
+    // snprintf does not branch on failure either
     #[allow(clippy::let_underscore_must_use)]
     let _ = core::write!(s, "intf{i}");
     super::devman_client::truncate_name(&s)

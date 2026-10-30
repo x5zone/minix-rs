@@ -1,7 +1,7 @@
-//! Test: riscv64 semantic shutdown through the QEMU test backend
-//! (edge1 K11 — the riscv64 leg; S-11 §3.8 two-layer rule: this exercises
-//! the QEMU test layer, the `sifive_test` finisher at 0x100000;
-//! the real-hardware layer is SBI SRST).
+//! Test: riscv64 semantic shutdown through the QEMU test backend — the
+//! riscv64 leg of the three-arch shutdown verification. §3.8 two-layer
+//! rule: this exercises the QEMU test layer, the `sifive_test` finisher
+//! at 0x100000; the real-hardware layer is SBI SRST.
 //!
 //! Boot: OpenSBI (`-bios default`) → this ELF (`-kernel`) → production
 //! `arch_boot_impl` paging bring-up, then

@@ -18,10 +18,10 @@
 //!   O(n) search to save an allocation the arena already pays, and
 //!   unsafe aliasing for nothing (the translate defense, pattern 16).
 //!
-//! Verdict: `ChildMap = BTreeMap`. `[ARCH: ...]` (对照点 `mib.h` 动态
-//! 子节点排序链表 + tree.c:69-78 早停查找；design 03/08 篇 A-2 行；
-//! 代码注释即本段)。`scan`'s sorted-slice verdicts stay untouched —
-//! the walker (todo.md P1-2) bridges map ↔ slices at the call site.
+//! Verdict: `ChildMap = BTreeMap`. `[ARCH: ...]` (comparison points: `mib.h`'s dynamic
+//! sorted child linked list and the early-stop lookup at tree.c:69-78; this comment block
+//! is that record). `scan`'s sorted-slice verdicts stay untouched —
+//! the walker bridges map ↔ slices at the call site.
 //!
 //! Memory ownership (A-3): a dynode's name, data, and description are
 //! budget-backed buffers. The tree settles the ledger when it removes
@@ -175,10 +175,10 @@ mod tests {
 
 // ── The live tree ──
 //
-// 静态竞技场本体（15 §4.4 单一真值承诺的兑现，todo.md P1-2）。
-// 镜像 C 的 mib_init 四线：`wire_kern`/`wire_vm`/`wire_hw`/`wire_minix`
-// 分别消费四个子树模块自己的表（形状知识留在拥有它的模块），arena
-// 只提供统一的结点原语。
+// The static arena proper (delivering the single-truth commitment of chapter 15 §4.4).
+// Mirror C's four-wire mib_init: `wire_kern`/`wire_vm`/`wire_hw`/`wire_minix` each consume
+// their own subtree module's table (shape knowledge stays with the module that owns it),
+// and the arena only provides the uniform node primitives.
 
 use minix_types::{
     CTLFLAG_PERMANENT, CTLFLAG_READWRITE, CTLTYPE_NODE, CTL_KERN, CTL_MINIX, CTL_VM, Endpoint,
@@ -318,9 +318,9 @@ pub(crate) fn build_int_value(name: &str) -> Option<i64> {
         "NGROUPS_MAX" => Some(16),
         // unistd.h:62 (`_POSIX_VERSION 200112L`).
         "_POSIX_VERSION" => Some(200112),
-        // NR_VNODES = 1024 — VFS 服务器局部常量(vfs/const.h:8),不在
-        // include 树;C MIB 的 maxvnodes/maxfiles 两行直接供这个值
-        // (mib/kern.c:341/:346 `MIB_INT(_P | _RO, NR_VNODES, ...)`)。
+        // NR_VNODES = 1024 — a VFS server-local constant (vfs/const.h:8), not in the
+        // include tree; the C MIB's maxvnodes/maxfiles rows supply exactly this value
+        // (mib/kern.c:341/:346 `MIB_INT(_P | _RO, NR_VNODES, ...)`).
         "NR_VNODES" => Some(1024),
         _ => None,
     }

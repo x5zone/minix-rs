@@ -19,30 +19,31 @@
 //!
 //! - [`KernelIpcTransport`] — production impl delegating to the minix-sys
 //!   trap backend (`DirectTrapTransport`). The call shape is final; until
-//!   the 64-bit trap wiring lands (edge E1, stage plan A-6) the backend
-//!   answers `EIO` and the main loop's dropped-message path handles it —
-//!   no panic, no `unimplemented!()` (V11/T9).
+//!   the 64-bit trap wiring lands the backend answers `EIO` and the main
+//!   loop's dropped-message path handles it — no panic, no
+//!   `unimplemented!()`.
 //! - [`TestIpcTransport`] — mock impl that buffers/returns test data.
-//!   `#[cfg(test)]`-only; injected through `VmServer::new_for_test`
-//!   (V10-P0-2). Lets unit tests drive the main loop without a live
-//!   kernel.
+//!   `#[cfg(test)]`-only; injected through `VmServer::new_for_test`. Lets
+//!   unit tests drive the main loop without a live kernel.
 //!
 //! # See also
 //!
 //! - VM IPC blocking bug analysis (original P0 blocking bug description)
-//! - `Doc 24-vm-ipc-dispatch.md` §3 — main loop and IPC message flow
+//! - `rewrite-notes/02-stage-vm/15-ipc-dispatch.md` — main loop and IPC
+//!   message flow
 //! - Minix3 `lib/syslib/sys_ipc_receive.c` — kernel IPC primitive
 
 use minix_types::{Endpoint, Message};
-// 匿名导入 minix-sys 的同名 trait：方法解析需要它，且不与本文件的
-// `IpcTransport` 冲突（VM 侧策略 trait 才是对外语义）。
+// An anonymous import of minix-sys's same-named trait: method resolution needs
+// it, and it does not conflict with this file's `IpcTransport` (the VM-side
+// strategy trait is the outward semantics).
 use minix_sys::ipc::IpcTransport as _;
 
 /// IPC receive status word, mirroring the `rcv_sts` output parameter of
 /// Minix3's `sef_receive_status()`. The kernel fills in the flags describing
 /// the message (e.g. notification vs. regular IPC, sender is kernel, etc.).
 ///
-/// The Rust side consumes `is_notify()` (main loop skip, V10-P1-1) and
+/// The Rust side consumes `is_notify()` (main-loop skip) and
 /// `is_from_kernel()` (pagefault audit branch); further `IPC_STATUS_*`
 /// bits join as consumers appear.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -57,7 +58,7 @@ impl IpcStatus {
     ///
     /// Notifications are async signals (kernel interrupts / RS pings), not
     /// request messages; the main loop must skip them before endpoint
-    /// validation (V10-P1-1, main.c:126-129).
+    /// validation (main.c:126-129).
     pub fn is_notify(&self) -> bool {
         (self.flags & 0x3F) == 4 // NOTIFY
     }
@@ -67,8 +68,8 @@ impl IpcStatus {
     /// behalf of a process (pagefaults, signals), never reply to it.
     ///
     /// `KernelIpcTransport::receive` fills `flags` from the minix-sys trap
-    /// status word (V11/T9); the pre-E1 trap stub answers `flags == 0`, so
-    /// it reads `false` until the real trap wiring lands (edge E1).
+    /// status word; the pre-E1 trap stub answers `flags == 0`, so it reads
+    /// `false` until the real trap wiring lands.
     pub fn is_from_kernel(&self) -> bool {
         ((self.flags >> 16) & 1) != 0
     }
@@ -84,7 +85,7 @@ pub(crate) enum IpcError {
     InvalidEndpoint,
     /// Send queue is full / non-blocking receive had nothing.
     // C's IPC has a non-blocking receive mode (EWOULDBLOCK); a producer
-    // appears when the trap layer (edge E1) surfaces it.
+    // appears when the trap layer surfaces it.
     #[allow(dead_code)]
     WouldBlock,
     /// The kernel returned a generic error (carries the raw code).
@@ -113,7 +114,7 @@ impl core::fmt::Display for IpcError {
 ///
 /// Rust: The kernel IPC is not yet available (kernel IPC core). Using a trait
 ///    allows us to substitute a mock in `#[cfg(test)]` builds and a
-///    real (trap-backed, V11/T9) impl otherwise. Two distinct
+///    real (trap-backed) impl otherwise. Two distinct
 ///    implementations (kernel vs. test) justify the trait abstraction
 ///    per the "trait quality" guideline.
 pub(crate) trait IpcTransport {
@@ -143,7 +144,7 @@ pub(crate) trait IpcTransport {
     ///
     /// C: SEF startup (`__minix_init`, main.c:480) initializes the IPC
     /// vectors; production impls seed kernel-side state here. Default
-    /// no-op so test transports need no special handling (V10-P0-2).
+    /// no-op so test transports need no special handling.
     fn mark_initialized(&mut self) {}
 
     /// Notify a destination. Mirrors C `ipc_notify(dest)` — used by the
@@ -159,11 +160,11 @@ pub(crate) trait IpcTransport {
 /// Production IPC transport. Delegates to the minix-sys user-space trap
 /// backend to invoke the kernel's IPC primitives.
 ///
-/// **Status (2026-09-06, V11/T9)**: the delegation shape is final —
+/// **Status**: the delegation shape is final —
 /// `receive` is `sef_receive_status(ANY, …)` and `send` is `ipc_send`,
 /// both through `DirectTrapTransport`. The kernel-side IPC core is real
 /// (`os/kernel/src/ipc.rs`); what is pending is the user-space trap
-/// instruction sequences themselves (edge E1). Until E1 lands the backend
+/// instruction sequences themselves. Until they land the backend
 /// answers `EIO`, which flows through `IpcError::Kernel` into the main
 /// loop's dropped-message accounting — the failure mode is observable,
 /// graceful, and identical to a slow/broken kernel link.
@@ -172,9 +173,10 @@ pub(crate) struct KernelIpcTransport {
     /// does this implicitly via SEF startup; we expose it explicitly
     /// so tests can assert against it.
     initialized: bool,
-    /// 用户态 trap 后端（minix-sys）。`DirectTrapTransport` 的方法体在
-    /// 64 位 trap wiring 落地（edge E1，stage plan A-6）前返回 EIO——
-    /// 本类型已经按真实调用形态委托，E1 落地时无需再改这里。
+    /// The user-space trap backend (minix-sys). `DirectTrapTransport`'s method
+    /// bodies return EIO until the 64-bit trap wiring lands — this type
+    /// already delegates in the real call shape, so nothing here changes when
+    /// that wiring does.
     inner: minix_sys::ipc::DirectTrapTransport,
     /// Persistent SENDA message table — the faithful port of C's
     /// `static asynmsg_t msgtable[ASYN_NR]` (asynsend.c:18). The kernel does
@@ -185,7 +187,7 @@ pub(crate) struct KernelIpcTransport {
     /// call — building it on the stack would hand the kernel a dead frame
     /// (garbage on re-read + a 12-byte write into popped stack). The VM
     /// transport is a single-threaded event loop, so this queue lives as
-    /// long as the server (NK4-C B5 review P0-1).
+    /// long as the server.
     queue: minix_sys::ipc::AsyncSendQueue<8>,
 }
 
@@ -214,17 +216,17 @@ impl IpcTransport for KernelIpcTransport {
 
     fn receive(&mut self) -> Result<(Message, IpcStatus), IpcError> {
         // C: sef_receive_status(ANY, &msg, &rcv_sts) — libsys.so.
-        // Delegates to the minix-sys trap backend (V11/T9): the call shape
-        // is final; until edge E1 lands the backend answers EIO and the
-        // main loop's dropped-message path handles it (no panic).
+        // Delegates to the minix-sys trap backend: the call shape is final;
+        // until the trap wiring lands the backend answers EIO and the main
+        // loop's dropped-message path handles it (no panic).
         if !self.initialized {
             return Err(IpcError::Unimplemented);
         }
         let mut msg = Message::default();
         match self.inner.receive(Endpoint::ANY, &mut msg) {
             // minix-sys `IpcStatus(u32)` is the raw kernel status word —
-            // identical to the `flags` this type models (V10-P1-1 bit
-            // decoding: NOTIFY = low 6 bits, FROM_KERNEL = bit 16).
+            // identical to the `flags` this type models (bit decoding:
+            // NOTIFY = low 6 bits, FROM_KERNEL = bit 16).
             Ok(sts) => Ok((msg, IpcStatus { flags: sts.0 })),
             Err(trap) => Err(IpcError::Kernel(trap.0)),
         }
@@ -255,7 +257,7 @@ impl IpcTransport for KernelIpcTransport {
         // (asynsend.c:154). The kernel delivers once `dest` enters receive;
         // the caller does not block, which is what breaks the VM<->RS boot
         // deadlock. The queue lives in `self`, so the slot stays valid for
-        // the kernel's later read-back (P0-1).
+        // the kernel's later read-back.
         self.queue
             .enqueue(dest, *msg, minix_sys::ipc::AsyncSlotFlags::NO_REPLY)
             .map_err(|_| IpcError::Kernel(minix_types::EBUSY))?;
@@ -273,7 +275,7 @@ impl IpcTransport for KernelIpcTransport {
     }
 }
 
-// ── SEF classification adapter (V14-P2-1 plan A) ──
+// ── SEF classification adapter ──
 
 /// Presents any [`IpcTransport`] as the `minix_sef::SefIpc` verb pair so
 /// the shared `minix_sef::sef_receive_status` classifier can front the VM
@@ -309,7 +311,7 @@ impl minix_sef::SefIpc for SefAdapter<'_> {
     }
 }
 
-// ── Test impl: in-memory mock (cfg(test) only; V10-P0-2) ──
+// ── Test impl: in-memory mock (cfg(test) only) ──
 
 /// Test-only IPC transport. Holds a single pre-loaded message that
 /// `receive` returns, and records every `send` so tests can inspect
@@ -317,7 +319,7 @@ impl minix_sef::SefIpc for SefAdapter<'_> {
 ///
 /// The mutable state lives behind an `Rc` so a test can keep a
 /// [`TestTransportHandle`] after the transport itself is boxed into
-/// `VmServer` (`VmServer::new_for_test`, V10-P0-2) — the server runs
+/// `VmServer` (`VmServer::new_for_test`) — the server runs
 /// `receive`/`send` through the trait object while the test queues
 /// messages and inspects replies through the handle.
 #[cfg(test)]
@@ -342,7 +344,7 @@ impl TestIpcTransport {
     }
 
     /// A handle to this transport's state, kept by the test after the
-    /// transport is moved into `VmServer` (V10-P0-2).
+    /// transport is moved into `VmServer`.
     pub fn handle(&self) -> TestTransportHandle {
         TestTransportHandle { shared: alloc::rc::Rc::clone(&self.shared) }
     }
@@ -367,7 +369,7 @@ impl TestIpcTransport {
 /// transport and any [`TestTransportHandle`] clones.
 #[cfg(test)]
 struct TestTransportShared {
-    /// FIFO receive queue (V14-P2-1: a ping-pong round consumes two
+    /// FIFO receive queue (a ping-pong round consumes two
     /// slots — the intercepted ping plus the follow-up message).
     next_receive: core::cell::RefCell<alloc::collections::VecDeque<(Message, IpcStatus)>>,
     sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
@@ -379,7 +381,7 @@ struct TestTransportShared {
     should_fail: core::cell::Cell<bool>,
 }
 
-/// Test-side handle to a [`TestIpcTransport`]'s state (V10-P0-2).
+/// Test-side handle to a [`TestIpcTransport`]'s state.
 ///
 /// The test keeps a clone of this handle while the transport itself runs
 /// inside `VmServer`; queueing a message before `run_once` and inspecting
@@ -502,9 +504,9 @@ mod tests {
 
     #[test]
     fn kernel_transport_asynsend_guards() {
-        // NK4-C B5: the async leg must reject NONE (C asynsend3 goes
-        // through the same endpoint validation) and refuse work before the
-        // transport is initialised — same contract as `send`.
+        // The async leg must reject NONE (C asynsend3 goes through the same
+        // endpoint validation) and refuse work before the transport is
+        // initialised — same contract as `send`.
         let mut t = KernelIpcTransport::new();
         let r = t.asynsend(Endpoint::NONE, &Message::default());
         assert!(matches!(r, Err(IpcError::InvalidEndpoint)));
@@ -515,7 +517,7 @@ mod tests {
     #[test]
     fn kernel_transport_asynsend_enqueues_then_delegates() {
         // Host builds do not enable `kernel_trap`, so the delegated
-        // `DirectTrapTransport::senda` answers EIO (the edge-E1 stub).
+        // `DirectTrapTransport::senda` answers EIO (the pre-wiring stub).
         // That the call reaches the trap at all — rather than panicking or
         // silently succeeding — is what pins the persistent-queue
         // construction: enqueue must return Ok (single slot never fills),

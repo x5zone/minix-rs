@@ -568,7 +568,9 @@ impl Pattern {
             if left_ok && right_ok {
                 return Some((start, end));
             }
-            // 非词边界命中：越过本匹配起始字符再找下一个候选（from 严格递增，必终止）。
+            // Non-word-boundary hit: step past this match's first
+            // character and look for the next candidate (`from` strictly
+            // increases, so the loop terminates).
             from = start + char_len_at(bytes, start);
         }
     }
@@ -1016,18 +1018,22 @@ mod tests {
 
     #[test]
     fn test_find_word_boundary() {
-        // BSD grep -w：命中词必须两侧非词字节。
+        // BSD grep -w: a word hit must have non-word bytes on both sides.
         let cat = compile_basic("cat").unwrap();
-        // "a cat sat"：cat 两侧空格 → 词命中。
+        // "a cat sat": spaces on both sides of cat -> word hit.
         assert_eq!(cat.find_word("a cat sat"), Some((2, 5)));
-        // "concatenate"：cat 夹在词里，逐个候选都不符词边界 → 无。
+        // "concatenate": cat sits inside a word, so no candidate
+        // satisfies the word boundary -> none.
         assert_eq!(cat.find_word("concatenate"), None);
-        // 行首/行尾边界也算词边界。
+        // Start-of-line/end-of-line edges also count as word boundaries.
         assert_eq!(cat.find_word("cat"), Some((0, 3)));
         assert_eq!(cat.find_word("the cat"), Some((4, 7)));
-        // 下划线是词字节："_cat" 里的 cat 左邻 _ → 非词边界。
+        // Underscore is a word byte: cat in "_cat" has _ on its left ->
+        // not a word boundary.
         assert_eq!(cat.find_word("_cat"), None);
-        // 多个候选：先命中一个非词界（concat 里的 cat）、再命中一个词界 → 取后者。
+        // Several candidates: the first hit is a non-word boundary (the
+        // cat inside concat), the second is a word boundary -> take the
+        // latter.
         assert_eq!(cat.find_word("concat cat"), Some((7, 10)));
     }
 }

@@ -1,18 +1,22 @@
-//! minix3/minix/tests Rust 腿翻译 —— 凭证域(test11/89)。
+//! Rust-side translation of the credential tests in minix3/minix/tests
+//! (test11/89).
 //!
-//! # 翻译映射
+//! # Translation map
 //!
-//! | C 测试 | 语义归宿 |
+//! | C test | Semantic home |
 //! |---|---|
-//! | test89(saved IDs 舞步) | 本文件 [`seteuid_saved_id_dance_lets_root_drop_and_regain`] |
-//! | test89(setuid 权限门) | 本文件 [`setuid_requires_match_or_superuser`] |
-//! | test46(getgroups/setgroups 专项) | 本文件 [`setgroups_superuser_only_and_getgroups_roundtrip`] |
-//! | setsid 与进程组(C 载体是 test42/77,编号套件无专项) | 本文件 [`setsid_binds_procgrp_and_getsid_resolves`](取 `getset.c:205-207` 实现语义) |
-//! | test11(exec 面的 UID/GID 语义) | 凭证注入面已由 `srv_fork.rs`(SRV_FORK 的 setuid/setgid 后置,C vfs main.c:867-870)覆盖;文件权限判定归 `t_fs_dir_ops.rs`,此处不重复 |
+//! | test89 (saved-ID dance) | [`seteuid_saved_id_dance_lets_root_drop_and_regain`] in this file |
+//! | test89 (setuid permission gate) | [`setuid_requires_match_or_superuser`] in this file |
+//! | test46 (getgroups/setgroups specifics) | [`setgroups_superuser_only_and_getgroups_roundtrip`] in this file |
+//! | setsid and process groups (C carriers are test42/77; the numbered suite has no dedicated test) | [`setsid_binds_procgrp_and_getsid_resolves`] in this file (taking the implementation semantics of `getset.c:205-207`) |
+//! | test11 (UID/GID semantics on the exec face) | the credential injection face is already covered by `srv_fork.rs` (the setuid/setgid suffix of SRV_FORK, C vfs main.c:867-870); file permission decisions belong to `t_fs_dir_ops.rs` and are not repeated here |
 //!
-//! C ground truth:`minix3/minix/servers/pm/getset.c`(223 行,13 个调用)。
-//! errno 断言对照 C 值(EPERM/EINVAL/ESRCH)。交付门 = 编译;全部测试
-//! `#[ignore]`,点亮前提见各测试属性(本文件四测信息性运行均通过)。
+//! C ground truth: `minix3/minix/servers/pm/getset.c` (223 lines, 13 call
+//! sites). errno assertions compare against the C values
+//! (EPERM/EINVAL/ESRCH). Delivery gate = compilation; every test is
+//! `#[ignore]`, and each test attribute states the precondition for
+//! lighting it up (all four tests passed an informational run of this
+//! file).
 
 use minix_pm::credentials::{
     CopyGroups, GetOp, GetResult, SetError, SetOp, VfsForwarder, do_get, do_set,
@@ -21,14 +25,15 @@ use minix_pm::mproc::{Lifecycle, ProcTable};
 use minix_types::{Endpoint, UserSlot, VirBytes};
 
 // ---------------------------------------------------------------------------
-// 夹具
+// Fixtures
 // ---------------------------------------------------------------------------
 
 fn ep_of(slot: usize) -> Endpoint {
     Endpoint::from_generation_slot(1, slot as i32)
 }
 
-/// 播种一个 Running 进程,凭证三元组全置 `uid`(real/eff/saved 同值)。
+/// Seed a Running process with all three credential IDs set to `uid`
+/// (real/effective/saved share the value).
 fn seed_with_uid(table: &mut ProcTable, slot: usize, pid: i32, uid: u32) {
     let p = &mut table.procs[slot];
     p.identity.endpoint = ep_of(slot);
@@ -47,8 +52,9 @@ fn seed_with_uid(table: &mut ProcTable, slot: usize, pid: i32, uid: u32) {
     };
 }
 
-/// 脚本化 VFS 转发器:只记录转发来的 SetOp,恒回 ReplyLater(C tell_vfs
-/// 的 SUSPEND 语义,getset.c:219)。
+/// Scripted VFS forwarder: records every forwarded SetOp and always
+/// answers ReplyLater (the SUSPEND semantics of C's `tell_vfs`,
+/// getset.c:219).
 struct ScriptedForwarder {
     forwarded: Vec<SetOp>,
 }
@@ -74,7 +80,8 @@ impl VfsForwarder for ScriptedForwarder {
     }
 }
 
-/// 脚本化 getgroups 拷贝缝:记录写回用户缓冲的 gid 列表。
+/// Scripted getgroups copy seam: records the gid list written back into
+/// the user buffer.
 struct ScriptedGroups {
     written: Vec<Vec<u32>>,
 }
@@ -98,13 +105,16 @@ impl CopyGroups for ScriptedGroups {
 }
 
 // ---------------------------------------------------------------------------
-// test89 —— saved ID 舞步:root 降权后凭 saved id 收回
+// test89 — saved ID dance: root drops privilege, then regains it via the
+// saved id
 // ---------------------------------------------------------------------------
 
-/// C 语义(getset.c:134 seteuid 只动 effective;权限门 131-133:目标须等于
-/// real 或 saved,或超级用户):(0,0,0) → seteuid(100) 得 (0,100,0)——
-/// saved 保留 0;凭 saved 收回 seteuid(0) 成功;setuid(100) 全三元组降权
-/// (117-119)后 seteuid(0) 被拒(saved 已是 100)。
+/// C semantics (getset.c:134: seteuid changes only the effective id; the
+/// permission gate at 131-133 requires the target to equal real or saved,
+/// or the caller to be the superuser): (0,0,0) → seteuid(100) yields
+/// (0,100,0) — saved stays 0; regaining root with seteuid(0) through the
+/// saved id succeeds; after setuid(100) lowers all three IDs (117-119),
+/// seteuid(0) is refused (saved is already 100).
 #[test]
 #[ignore = "点亮前提:PM 凭证面随载体用户态点亮后复核"]
 fn seteuid_saved_id_dance_lets_root_drop_and_regain() {
@@ -114,7 +124,7 @@ fn seteuid_saved_id_dance_lets_root_drop_and_regain() {
     let mut vfs = ScriptedForwarder::new();
     let mut copier = ScriptedGroups::new();
 
-    // root 降 effective 到 100:saved 保留 0(getset.c:134)。
+    // root lowers the effective id to 100: saved keeps 0 (getset.c:134).
     do_set(
         &mut table,
         caller,
@@ -131,7 +141,7 @@ fn seteuid_saved_id_dance_lets_root_drop_and_regain() {
         other => panic!("getuid 应返回 Uid,得 {other:?}"),
     }
 
-    // 凭 saved(0)收回 root。
+    // Regain root through saved (0).
     do_set(&mut table, caller, SetOp::SetEUid(0), &mut copier, &mut vfs)
         .expect("saved id 允许收回 root");
     match do_get(&table, caller, GetOp::GetUid, &mut copier).expect("getuid 可读") {
@@ -139,7 +149,7 @@ fn seteuid_saved_id_dance_lets_root_drop_and_regain() {
         other => panic!("getuid 应返回 Uid,得 {other:?}"),
     }
 
-    // setuid(100) 全三元组降权(getset.c:117-119 BSD 语义)。
+    // setuid(100) lowers all three IDs (BSD semantics, getset.c:117-119).
     do_set(
         &mut table,
         caller,
@@ -148,21 +158,24 @@ fn seteuid_saved_id_dance_lets_root_drop_and_regain() {
         &mut vfs,
     )
     .expect("root setuid(100) 合法");
-    // 降权后 seteuid(0) 被拒:0 ≠ real(100) 也 ≠ saved(100)。
+    // After the drop, seteuid(0) is refused: 0 equals neither real (100)
+    // nor saved (100).
     let err = do_set(&mut table, caller, SetOp::SetEUid(0), &mut copier, &mut vfs)
         .expect_err("降权后收不回 root");
     assert_eq!(err.to_errno(), minix_types::EPERM, "seteuid(0) → EPERM");
 
-    // 每次成功的 set 都经 tell_vfs 转发 VFS(C getset.c:219;PM_SETUID 报文填充在 121-125)。
+    // Every successful set is forwarded to VFS through tell_vfs (C
+    // getset.c:219; the PM_SETUID message is filled in at 121-125).
     assert_eq!(vfs.forwarded.len(), 3, "seteuid/seteuid/setuid 三次转发");
 }
 
 // ---------------------------------------------------------------------------
-// test89 —— setuid 权限门
+// test89 — setuid permission gate
 // ---------------------------------------------------------------------------
 
-/// C 语义(getset.c:113-116):setuid 到非自身 real 且非超级用户 → EPERM;
-/// 到自身 real → 合法。
+/// C semantics (getset.c:113-116): setuid to an ID that is neither the
+/// caller's own real id nor granted by superuser rights → EPERM; setuid
+/// to the caller's own real id → allowed.
 #[test]
 #[ignore = "点亮前提:PM 凭证面随载体用户态点亮后复核"]
 fn setuid_requires_match_or_superuser() {
@@ -194,11 +207,12 @@ fn setuid_requires_match_or_superuser() {
 }
 
 // ---------------------------------------------------------------------------
-// test89 —— setgroups/getgroups 往返
+// test89 — setgroups/getgroups round trip
 // ---------------------------------------------------------------------------
 
-/// C 语义(getset.c:172-197):setgroups 仅超级用户(EPERM);getgroups
-/// count==0 查询组数不拷贝;拷贝路径走 sys_datacopy 缝。
+/// C semantics (getset.c:172-197): setgroups is superuser-only (EPERM);
+/// getgroups with count==0 queries the group count without copying; the
+/// copy path goes through the `sys_datacopy` seam.
 #[test]
 #[ignore = "点亮前提:PM 凭证面随载体用户态点亮后复核"]
 fn setgroups_superuser_only_and_getgroups_roundtrip() {
@@ -207,7 +221,7 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
     seed_with_uid(&mut table, 1, 100, 100);
     let mut vfs = ScriptedForwarder::new();
 
-    // 普通用户:setgroups → EPERM。
+    // Ordinary user: setgroups → EPERM.
     let mut copier = ScriptedGroups::new();
     let err = do_set(
         &mut table,
@@ -219,7 +233,7 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
     .expect_err("普通用户 setgroups 必须拒绝");
     assert_eq!(err.to_errno(), minix_types::EPERM);
 
-    // 超级用户:置三组。
+    // Superuser: set three groups.
     let root = UserSlot::new(2);
     seed_with_uid(&mut table, 2, 101, 0);
     let mut copier = ScriptedGroups::new();
@@ -234,7 +248,7 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
     )
     .expect("root setgroups 合法");
 
-    // count==0 查询:返回组数,不拷贝(getset.c:34-37)。
+    // count==0 query: return the group count, copy nothing (getset.c:34-37).
     match do_get(
         &table,
         root,
@@ -251,8 +265,8 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
     }
     assert!(copier.written.is_empty(), "count==0 不拷贝");
 
-    // 拷贝路径:缓冲不足(count < ngroups)→ EINVAL(getset.c:39-41);
-    // 足够则按序写回。
+    // Copy path: an undersized buffer (count < ngroups) → EINVAL
+    // (getset.c:39-41); a sufficient one writes the list back in order.
     let too_small = do_get(
         &table,
         root,
@@ -283,12 +297,13 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// test89 —— setsid 与 getsid
+// test89 — setsid and getsid
 // ---------------------------------------------------------------------------
 
-/// C 语义(getset.c:205-207):setsid 时若调用者已是进程组长(procgrp ==
-/// pid)→ EPERM;否则 procgrp 绑为自身 pid。getsid:pid==0 查自身,未知
-/// pid → ESRCH。
+/// C semantics (getset.c:205-207): setsid returns EPERM if the caller is
+/// already a process group leader (procgrp == pid); otherwise procgrp is
+/// bound to the caller's own pid. getsid: pid==0 queries the caller,
+/// an unknown pid → ESRCH.
 #[test]
 #[ignore = "点亮前提:PM 凭证面随载体用户态点亮后复核"]
 fn setsid_binds_procgrp_and_getsid_resolves() {
@@ -298,19 +313,19 @@ fn setsid_binds_procgrp_and_getsid_resolves() {
     let mut vfs = ScriptedForwarder::new();
     let mut copier = ScriptedGroups::new();
 
-    // 首次 setsid:procgrp(0) ≠ pid(100) → 绑定成功。
+    // First setsid: procgrp (0) ≠ pid (100) → binds successfully.
     do_set(&mut table, caller, SetOp::SetSid, &mut copier, &mut vfs).expect("首次 setsid 合法");
     match do_get(&table, caller, GetOp::GetPgrp, &mut copier).expect("getpgrp 可读") {
         GetResult::Pgrp(pgrp) => assert_eq!(pgrp, 100, "procgrp 绑为自身 pid"),
         other => panic!("应返回 Pgrp,得 {other:?}"),
     }
 
-    // 再次 setsid:已是组长 → EPERM(getset.c:206)。
+    // Second setsid: already a leader → EPERM (getset.c:206).
     let err = do_set(&mut table, caller, SetOp::SetSid, &mut copier, &mut vfs)
         .expect_err("组长重复 setsid 必须拒绝");
     assert_eq!(err.to_errno(), minix_types::EPERM);
 
-    // getsid:pid==0 查自身;未知 pid → ESRCH。
+    // getsid: pid==0 queries the caller; an unknown pid → ESRCH.
     match do_get(&table, caller, GetOp::GetSid { pid: 0 }, &mut copier).expect("getsid(0) 合法") {
         GetResult::Sid(sid) => assert_eq!(sid, 100, "自身会话 id = procgrp"),
         other => panic!("应返回 Sid,得 {other:?}"),

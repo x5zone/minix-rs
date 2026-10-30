@@ -55,11 +55,11 @@ impl BlockSource for PendingBlockSource {
 /// directly; when the channel lands, servers switch to `minix-fs`'s
 /// `BdevBlockSource` and this type stays the boot-image form factor.
 ///
-/// B11: the packaged imgrd (8 MB) is embedded in the MFS binary via
+/// The packaged imgrd (8 MB) is embedded in the MFS binary via
 /// `include_bytes!` (static rdata). To avoid a 8 MB heap allocation that
 /// exceeds the slab pool, `from_static` wraps the reference zero-copy.
 ///
-/// B15: C's RAM disk is writable — the memory driver serves imgrd out of
+/// C's RAM disk is writable — the memory driver serves imgrd out of
 /// its own buffer, and clean-rw mount clears `FLAG_CLEAN` then stores
 /// block 0 back (`mfs/src/mount.rs:417-420`, mirroring C `mount.c:90-95`).
 /// The static rdata base cannot be mutated, so a bounded copy-on-write
@@ -73,7 +73,7 @@ impl BlockSource for PendingBlockSource {
 pub struct ImgrdBlockSource {
     inner: ImageData,
     block_size: usize,
-    /// B15: CoW overlay keyed by block number. Only the static arm
+    /// Copy-on-write overlay keyed by block number. Only the static arm
     /// populates it; owned writes mutate `inner` in place.
     overlay: BTreeMap<u64, Vec<u8>>,
 }
@@ -82,7 +82,7 @@ pub struct ImgrdBlockSource {
 enum ImageData {
     /// Owned copy (tests, or future write-back scenarios).
     Owned(Vec<u8>),
-    /// Zero-copy static reference (packaged boot image, E-IMGPKG B11).
+    /// Zero-copy static reference (packaged boot image, E-IMGPKG).
     Static(&'static [u8]),
 }
 
@@ -110,10 +110,10 @@ impl ImgrdBlockSource {
         })
     }
 
-    /// Wrap a static image reference zero-copy (the packaged boot image,
-    /// B11). Avoids heap allocation for large imgrd blobs. Writes are
-    /// served by a bounded CoW overlay (B15) so clean-rw mount's
-    /// dirty-mark on block 0 succeeds without mutating read-only rdata.
+    /// Wrap a static image reference zero-copy (the packaged boot image).
+    /// Avoids heap allocation for large imgrd blobs. Writes are served by
+    /// a bounded CoW overlay so clean-rw mount's dirty-mark on block 0
+    /// succeeds without mutating read-only rdata.
     pub fn from_static(image: &'static [u8], block_size: usize) -> Result<Self, Errno> {
         if image.is_empty() || block_size == 0 {
             return Err(Errno::EINVAL);
@@ -145,7 +145,7 @@ impl BlockSource for ImgrdBlockSource {
         if out.len() != self.block_size {
             return Err(Errno::EINVAL);
         }
-        // B15: the overlay shadows the base for any block that was
+        // The overlay shadows the base for any block that was
         // written through the static arm. A clipped tail (write reaching
         // past the device end) zero-fills the rest, matching the base's
         // own edge rule (`memory.c:442-443`).
@@ -185,7 +185,7 @@ impl BlockSource for ImgrdBlockSource {
                 v[start..start + surviving].copy_from_slice(&data[..surviving]);
                 Ok(())
             }
-            // B15: static rdata is read-only, so a write is served from
+            // Static rdata is read-only, so a write is served from
             // the CoW overlay — matching C's memory driver mutating its
             // own RAM-disk buffer. Clip at the device end like the base
             // transfer; a write entirely past the end writes nothing.
@@ -218,8 +218,8 @@ pub enum BootBlockSource {
 
 impl BootBlockSource {
     /// Pick the arm for `image`. Empty slices — the unpackaged default —
-    /// start fail-closed; anything else becomes the imgrd device (zero-copy
-    /// static reference, B11).
+    /// start fail-closed; anything else becomes the imgrd device as a
+    /// zero-copy static reference.
     pub fn from_boot_image(image: &'static [u8], block_size: usize) -> Self {
         match ImgrdBlockSource::from_static(image, block_size) {
             Ok(source) => Self::Imgrd(source),
@@ -366,7 +366,7 @@ mod tests {
         let mut out = [0u8; BS];
         src.read_block(BlockKey::new(0, 1), &mut out).unwrap();
         assert!(out.iter().all(|&b| b == 0x5A));
-        // B15: the static arm is served by a bounded CoW overlay —
+        // The static arm is served by a bounded CoW overlay —
         // writes succeed and shadow the base on subsequent reads,
         // untouched blocks still read from the base.
         src.write_block(BlockKey::new(0, 0), &[0x11u8; BS]).unwrap();
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_static_source_overlay_write_shadows_base_readback() {
-        // B15: writes on the static arm land in the CoW overlay and are
+        // Writes on the static arm land in the CoW overlay and are
         // served by subsequent reads, without mutating the base image.
         static IMAGE: [u8; 4 * BS] = [0x5Au8; 4 * BS];
         let mut src = ImgrdBlockSource::from_static(&IMAGE, BS).unwrap();
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_static_source_overlay_write_entirely_past_end_is_noop() {
-        // B15 keeps the base's edge rule: a write entirely past the
+        // The overlay keeps the base's edge rule: a write entirely past the
         // device end writes nothing; a read of that block still
         // answers zero (via base fall-through).
         static IMAGE: [u8; BS] = [0x5Au8; BS];

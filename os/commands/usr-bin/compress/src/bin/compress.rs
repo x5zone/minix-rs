@@ -6,7 +6,8 @@
 //! the library; this program maps files to `.Z` frames, translates the
 //! command line, and writes bytes through `minix_sys`.
 //!
-//! Declared boundary (11-compress-archive.md §5): the Rust LZW tops out at
+//! Declared boundary (`rewrite-notes/18-stage-commands/11-compress-archive.md`):
+//! the Rust LZW tops out at
 //! [`MAX_MAXBITS`] = 12 (4096 codes), so `.Z` frames from a 16-bit C
 //! compressor are rejected at [`unframe`] with an honest failure instead
 //! of a corrupt answer; `-n` (headerless legacy streams) is not accepted.
@@ -34,10 +35,10 @@ const STDERR: Fd = 2;
 
 
 fn fail(message: &str) -> ! {
-    //[SD19-gate] SD-19: fail 路径 stderr→terminate
+    //[SD19-gate] fail path: stderr then terminate
     #[allow(clippy::let_underscore_must_use)]
     let _ = write(STDERR, message.as_bytes());
-    //[SD19-gate] SD-19: fail 路径 stderr→terminate
+    //[SD19-gate] fail path: stderr then terminate
     #[allow(clippy::let_underscore_must_use)]
     let _ = write(STDERR, b"\n");
     support::terminate(1)
@@ -152,7 +153,8 @@ fn run() -> ! {
         Some(path) => {
             let fd = minix_sys::open(path, 0, 0).unwrap_or_else(|_| fail("cannot open input"));
             let data = slurp(fd);
-            //[SD19-gate] SD-19: close 后 fd 不再使用，失败仅漏回收
+            //[SD19-gate] the fd is unused after close; a failure only misses
+            // the reclaim
             #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::close(fd);
             data
@@ -191,7 +193,8 @@ fn run() -> ! {
             let fd = minix_sys::open(path, flags, 0o644)
                 .unwrap_or_else(|_| fail("cannot open output"));
             emit(fd, &framed);
-            //[SD19-gate] SD-19: close 后 fd 不再使用，失败仅漏回收
+            //[SD19-gate] the fd is unused after close; a failure only misses
+            // the reclaim
             #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::close(fd);
             if let (Some(src), true) = (&source, delete_source) {
@@ -204,13 +207,13 @@ fn run() -> ! {
                     0.0
                 };
                 let source_text = source.clone().unwrap_or_default();
-                //[SD19-gate] SD-19: stderr 提示，下步 terminate
+                //[SD19-gate] stderr notice, terminate next
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = write(
                     STDERR,
                     format!("{source_text}: {saved:.1}% -- replaced").as_bytes(),
                 );
-                //[SD19-gate] SD-19: stderr 提示，下步 terminate
+                //[SD19-gate] stderr notice, terminate next
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = write(STDERR, b"\n");
             }

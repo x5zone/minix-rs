@@ -159,14 +159,18 @@ fn add_into(unit: &mut UnitType, expr: &[u8], flip: bool) -> Result<(), UnitsErr
         Some(slash) => (&scratch[..slash], Some(&scratch[slash + 1..])),
         None => (scratch.as_slice(), None),
     };
-    // C `addunit` (`minix3/usr.bin/units/units.c:359-436`) 是 `do { …; doingtop--;
+    // C `addunit` (`minix3/usr.bin/units/units.c:359-436`) is `do { …; doingtop--;
     // if (slash) { scratch = slash + 1; } else doingtop--; } while (doingtop >= 0);`
-    // ——`doingtop` 初值 1，每轮尾 `doingtop--`；无斜杠时额外一次 `--`，共两轮 `--`
-    // 到 `-1`，下一轮 `>= 0` 假就退出。至多两轮（先顶后底），永远没有第三轮。
-    // 下面 Rust 翻译里的 `loop` 就是这个“至多两轮”的直译（`doingtop: bool` 首帧 true
-    // 后下一轮已固定为 false，`match bottom` 两臂均 break——clippy::unused_loop 拓到的就
-    // 是它）。展开为顺序两步，语义与 do-while 一致：首轮 `doingtop != flip == true != flip ==
-    // !flip`，若有底轮 `doingtop != flip == false != flip == flip`。
+    // — `doingtop` starts at 1 and every round ends with `doingtop--`; without a
+    // slash there is one extra `--`, so two `--` in total bring it to `-1` and
+    // the next `>= 0` test exits. At most two rounds (top first, then bottom),
+    // never a third. The `loop` in the Rust translation below is that "at most
+    // two rounds" read literally (`doingtop: bool` is true on the first frame
+    // and already fixed to false for the next, and both `match bottom` arms
+    // break — which is what clippy::unused_loop picked out). Unrolled into two
+    // sequential steps with the same semantics as do-while: the first round is
+    // `doingtop != flip == true != flip == !flip`, and a bottom round, when
+    // present, is `doingtop != flip == false != flip == flip`.
     add_product(unit, top, !flip)?;
     if let Some(b) = bottom {
         add_product(unit, b, flip)?;
@@ -677,29 +681,34 @@ pub fn list_units(table: &UnitsTable, expand: bool, prec: usize) -> (Vec<u8>, us
     (out, errors)
 }
 
-/// 前门跑完那个选项环之后手上有的东西（`units.c:818-833` 的 `switch` 各支置的变量）。
+/// What the front door holds after running that option ring (the variables
+/// each `switch` arm of `units.c:818-833` sets).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UnitsArgs<'a> {
-    /// `-f` 的值，C 的 `userfile`。它是**路径**：真正打开那一档的腿要等库侧的
-    /// 字节口（登记 `ARGV-BYTE-PATH-IN-LIBS`），本层只保证不再提前折成文本。
+    /// The `-f` value, C's `userfile`. It is a **path**: the leg that actually
+    /// opens it waits on the library-side byte interface, so this layer only
+    /// guarantees the value is not folded to text ahead of time.
     pub userfile: Option<&'a [u8]>,
-    /// `-l` 或 `-L` 都置它（C 的 `list`）。
+    /// Set by either `-l` or `-L` (C's `list`).
     pub list: bool,
-    /// `-L` 才置它（C 的 `listexpand`）。
+    /// Set by `-L` only (C's `listexpand`).
     pub listexpand: bool,
-    /// `-q`（C 的 `quiet`）。
+    /// `-q` (C's `quiet`).
     pub quiet: bool,
-    /// 环结束后的操作数，即 C 的 `argv += optind`。它们就是单位名表达式，
-    /// 所以与原字节直接接上 `fn add_unit`（C 在 `units.c:855-875` 把 `argv` 原样交出去）。
+    /// The operands after the ring ends, C's `argv += optind`. They are the
+    /// unit-name expressions, so raw bytes flow straight into `fn add_unit`
+    /// (C hands `argv` over as is at `units.c:855-875`).
     pub operands: Vec<&'a [u8]>,
 }
 
-/// 前门的三类出口。句式各有主人，所以不是一支的详略版：
-/// [`UnitsArgError::Getopt`] 那一行由 libc `getopt` 印、其后必接 usage
-/// （`units.c:843-845` 的 `default: usage()`）；[`UnitsArgError::Version`] 是
-/// `-v` 那两行加 usage（`units.c:836-841`，两行都在**标准错误**上）；
-/// [`UnitsArgError::Usage`] 只有 usage 块、没有 libc 那一行（操作数个数不对，
-/// `units.c:849-851`）。三支都退 3。
+/// The front door's three kinds of exit. Each sentence has its own owner, so
+/// none of these is an abridged or expanded version of another:
+/// [`UnitsArgError::Getopt`]'s line is printed by libc `getopt` and is always
+/// followed by usage (`units.c:843-845`'s `default: usage()`);
+/// [`UnitsArgError::Version`] is the two `-v` lines plus usage
+/// (`units.c:836-841`, both lines on **standard error**);
+/// [`UnitsArgError::Usage`] is the usage block alone, without libc's line (the
+/// operand count is wrong, `units.c:849-851`). All three exit 3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitsArgError {
     Getopt(crate::GetoptReport),
@@ -707,16 +716,19 @@ pub enum UnitsArgError {
     Usage,
 }
 
-/// `units.c:817` 的 `getopt(argc, argv, "lLvqf:")`。
+/// `getopt(argc, argv, "lLvqf:")` of `units.c:817`.
 ///
-/// 只有 `f` 带值，所以「带值选项缺值」那一支在本支只有 `f` 一个字母可达；
-/// `l`/`L` 是两个不同字母而不是大小写同义（`-l` 列原名、`-L` 列展开形），
-/// `v` 在环里就退出，所以 `-vZ` 只有版本块、`-Zv` 只有集外字母那一行加 usage，
-/// 两支都经参照件现量。
+/// Only `f` takes a value, so the "value-taking option is missing its value"
+/// arm is reachable through `f` alone in this ring; `l`/`L` are two distinct
+/// letters rather than a case pair (`-l` lists original names, `-L` lists the
+/// expanded form), and `v` exits inside the ring, so `-vZ` yields only the
+/// version block and `-Zv` only the unknown-letter line plus usage — both
+/// measured against the reference binary.
 ///
-/// 游标走**字节**而非 `chars()`：参照件对 `-é` 报的是首字节 `\303`
-/// （libc 的 `%c` 打的是那个字节本身），按字符走会在非 ASCII 字节上越出字符边界
-/// （与 `column`/`col` 那两处同形）。
+/// The cursor walks **bytes** rather than `chars()`: the reference binary
+/// reports the leading byte `\303` for `-é` (libc's `%c` prints that byte
+/// itself), and a character-wise walk would step past a character boundary on
+/// non-ASCII bytes (the same shape as the `column`/`col` sites).
 pub fn parse_units_args<'a>(args: &'a [&'a [u8]]) -> Result<UnitsArgs<'a>, UnitsArgError> {
     const OPTSTRING: &[u8] = b"lLvqf:";
     let mut parsed = UnitsArgs::default();
@@ -724,12 +736,15 @@ pub fn parse_units_args<'a>(args: &'a [&'a [u8]]) -> Result<UnitsArgs<'a>, Units
     while i < args.len() {
         let arg = args[i];
         let bytes = arg;
-        // 不以 `-` 开头的 token、以及单破折号本身，都在 `getopt.c:74-78` 与 `:87-92`
-        // 结束选项环且**不被吃掉**，于是它自己就是第一个操作数（不重排）。
+        // A token not starting with `-`, and the single dash itself, both end
+        // the option ring at `getopt.c:74-78` and `:87-92` and are **not
+        // consumed**, so the token becomes the first operand itself (no
+        // permutation).
         if bytes.len() < 2 || bytes[0] != b'-' {
             break;
         }
-        // `--` 在 `getopt.c:81-85` 结束环且自身被推进掉，所以它不是操作数。
+        // `--` ends the ring at `getopt.c:81-85` and is advanced past itself,
+        // so it is not an operand.
         if bytes == b"--" {
             i += 1;
             break;
@@ -738,17 +753,20 @@ pub fn parse_units_args<'a>(args: &'a [&'a [u8]]) -> Result<UnitsArgs<'a>, Units
         while k < bytes.len() {
             let letter = bytes[k];
             k += 1;
-            // `:` 在 optstring 里只是「前一个字母要值」的记号：libc 的判据是
-            // `optopt == ':' || strchr(ostr, optopt) == NULL`（`getopt.c:98`），所以它
-            // 永远不是可选字母，`-:` 落进集外字母那一支。
+            // `:` in the optstring is only the marker "the previous letter
+            // takes a value": libc's test is `optopt == ':' ||
+            // strchr(ostr, optopt) == NULL` (`getopt.c:98`), so it is never an
+            // acceptable letter, and `-:` lands in the unknown-letter arm.
             let Some(slot) = OPTSTRING.iter().position(|&o| o == letter && o != b':') else {
                 return Err(UnitsArgError::Getopt(crate::GetoptReport::UnknownOption(
                     char::from(letter),
                 )));
             };
             if OPTSTRING.get(slot + 1) == Some(&b':') {
-                // 带值项：值要么紧贴在本 token 的尾巴上，要么占下一个 token
-                // （`getopt.c:112-141`）。两种情形都结束本 token，尾巴不再当字母扫。
+                // A value-taking letter: the value either hugs the tail of
+                // this token or occupies the next token (`getopt.c:112-141`).
+                // Either way this token ends, and the tail is no longer scanned
+                // as letters.
                 let value = if k < bytes.len() {
                     &arg[k..]
                 } else {
@@ -763,7 +781,9 @@ pub fn parse_units_args<'a>(args: &'a [&'a [u8]]) -> Result<UnitsArgs<'a>, Units
                 if letter == b'f' {
                     parsed.userfile = Some(value);
                 }
-                // 值一旦取走，本 token 剩下的字节不再当字母扫（libc 直接推进 `optind`）。
+                // Once the value is taken, the remaining bytes of this token
+                // are no longer scanned as letters (libc advances `optind`
+                // directly).
                 break;
             }
             match letter {
@@ -780,25 +800,32 @@ pub fn parse_units_args<'a>(args: &'a [&'a [u8]]) -> Result<UnitsArgs<'a>, Units
         i += 1;
     }
     parsed.operands = args[i..].to_vec();
-    // C 的这个判断排在环之后、`readunits` 之前（`units.c:849-851`），所以
-    // 「操作数个数不对 + 档打不开」报的是 usage 而不是开档失败——顺序是可观测的。
+    // C's test runs after the ring and before `readunits`
+    // (`units.c:849-851`), so "wrong operand count + unusable file" reports
+    // usage rather than a file-open failure — the order is observable.
     if !matches!(parsed.operands.len(), 0 | 2 | 3) || (parsed.list && !parsed.operands.is_empty()) {
         return Err(UnitsArgError::Usage);
     }
     Ok(parsed)
 }
 
-/// `UnitsError` 对应到 C 侧那一句 `mywarnx`（`units.c:109-124`）。
+/// The C-side `mywarnx` sentence a `UnitsError` corresponds to
+/// (`units.c:109-124`).
 ///
-/// 非列表模式下 `errprefix` 是 `NULL`，所以句子走 `vwarnx` 到**标准错误**，
-/// 形如 `<prog>: Unknown unit '<原字节>'`。列表模式下同一句换成走标准输出并带
-/// `/ ` 前缀，那一段归 `list_units`（登记未做）。
+/// Outside list mode `errprefix` is `NULL`, so the sentence goes through
+/// `vwarnx` to **standard error**, shaped `<prog>: Unknown unit '<raw
+/// bytes>'`. In list mode the same sentence goes to standard output with a
+/// `/ ` prefix instead, and that face belongs to `list_units` (declared as not
+/// done).
 ///
-/// 交回字节串而不是 `String`：`mywarnx("Unknown unit '%s'", *product)` 把
-/// 单位名按原字节交出去（`units.c:554`），名字里有什么字节就打印什么字节。
+/// It returns a byte string rather than a `String`:
+/// `mywarnx("Unknown unit '%s'", *product)` hands the unit name out as raw
+/// bytes (`units.c:554`), so whatever bytes the name has are the bytes
+/// printed.
 #[must_use]
 pub fn units_error_line(prog: &str, error: &UnitsError) -> Option<Vec<u8>> {
-    // 词典行的错误由 `read_units` 那半处理，操作数推导这一路交不出这一句。
+    // Errors from a dictionary line are handled by the `read_units` half; the
+    // operand-derivation path cannot produce this sentence.
     if matches!(error, UnitsError::ReadError(_) | UnitsError::Conformability) {
         return None;
     }
@@ -943,13 +970,16 @@ mod tests {
         }
     }
 
-    /// 单位名的每一条腿都交回原字节：表键、表达式节点、`UnknownUnit` 载荷、
-    /// `units_error_line` 那句的 `'%s'` 回显位。真源判据是 `units.c:503`/`:511`/
-    /// `:542` 的 `strcmp`/`strncmp` 逐字节比，与 `units.c:554` 的
-    /// `mywarnx("Unknown unit '%s'", *product)`——C 从不问这串字节是什么编码。
+    /// Every leg of a unit name hands back raw bytes: the table key, the
+    /// expression node, the `UnknownUnit` payload, and the `'%s'` echo field of
+    /// the `units_error_line` sentence. The ground truth is the byte-wise
+    /// `strcmp`/`strncmp` at `units.c:503`/`:511`/`:542` together with
+    /// `units.c:554`'s `mywarnx("Unknown unit '%s'", *product)` — C never asks
+    /// what encoding these bytes are.
     #[test]
     fn a_unit_name_keeps_its_raw_bytes_through_the_table_and_the_warning() {
-        // `café` 写作字面字节 `63 61 66 c3 a9`（表里没有这一名）。
+        // `café` is written as the literal bytes `63 61 66 c3 a9` (the table
+        // has no such name).
         let name: &[u8] = &[b'c', b'a', b'f', 0xc3, 0xa9];
         let t = table();
         let mut u = add_unit(name, false).unwrap();
@@ -961,13 +991,16 @@ mod tests {
             units_error_line("units", &UnitsError::UnknownUnit(name.to_vec())).as_deref(),
             Some(&b"units: Unknown unit 'caf\xc3\xa9'\n"[..])
         );
-        // 表键同一串字节时命中：`strcmp` 只比字节。词典的一行是「名 定义」，
-        // 所以这一枚夹具把两个字段拼在同一串里（一个元素就是一行）。
+        // A table key of the very same bytes hits: `strcmp` compares bytes
+        // only. One dictionary line is "name definition", so this fixture
+        // joins both fields into a single string (one element is one line).
         let mut line = name.to_vec();
         line.extend_from_slice(b" !k!");
-        // 第二枚表键含**非法** UTF-8 的裸 `ff`：只有逐字节比才认得它。任何在比较
-        // 边界折一次 lossy 的写法（批次四百四十九否证的乙路）在非法侧解不开，
-        // 于是查不到。
+        // The second table key carries a raw `ff`, which is **illegal**
+        // UTF-8: only a byte-wise comparison recognizes it. Any variant that
+        // folds a lossy conversion at the comparison boundary (a route
+        // rejected earlier) cannot decode the illegal side, so the lookup
+        // misses.
         let mut bad_line = Vec::from(&b"weird\xff"[..]);
         bad_line.extend_from_slice(b" 2 m");
         let raw_table = read_units(&[b"m !a!".as_slice(), line.as_slice(), bad_line.as_slice()]);
@@ -985,18 +1018,22 @@ mod tests {
             Some(&b"2 m"[..]),
             "表键是非法 UTF-8 时也要按字节命中"
         );
-        // 命中之后按字节继续换算：`weird\xff` = `2 m`，而 `m` 的定义带
-        // PRIMITIVECHAR，`reduceproduct` 在这一格停下（`units.c:583-585` 的
-        // `if (strchr(toadd, PRIMITIVECHAR)) break;`），所以因子是 2、名字剩 `m`。
+        // After the hit the conversion continues byte-wise: `weird\xff` =
+        // `2 m`, and the definition of `m` carries PRIMITIVECHAR, so
+        // `reduceproduct` stops on this cell (`units.c:583-585`'s
+        // `if (strchr(toadd, PRIMITIVECHAR)) break;`), leaving a factor of 2 and
+        // the name `m`.
         let mut u = add_unit(b"weird\xff", false).unwrap();
         complete_reduce(&raw_table, &mut u).unwrap();
         assert!((u.factor - 2.0).abs() < 1e-12);
         assert_eq!(u.numerator, vec![b"m".to_vec()]);
-        // 第三道形：两串**不同**的字节折成 lossy 之后会同副面孔，而 `strcmp` 不上当
-        // （这正是批次四百四十九否证乙路的那条理由）。表里先放字面替换字符那一枚
-        // （`weird` + `ef bf bd`，定义 `5 m`），再放裸 `ff` 那一枚（定义 `2 m`）：
-        // 按字节查 `weird\xff` 该命中后者；任何在比较边界折一次 lossy 的写法都会先
-        // 撞上前者，把因子查成 5。
+        // Third shape: two **different** byte strings fold to the same lossy
+        // face, and `strcmp` is not fooled (exactly the reason the lossy route
+        // was rejected). The table gets the literal replacement character
+        // first (`weird` + `ef bf bd`, defined as `5 m`), then the raw `ff` one
+        // (defined as `2 m`): a byte-wise lookup of `weird\xff` must hit the
+        // latter, while any variant folding a lossy conversion at the
+        // comparison boundary hits the former and finds a factor of 5.
         let mut twin = Vec::from(&b"weird"[..]);
         twin.extend_from_slice("\u{fffd}".to_string().as_bytes());
         twin.extend_from_slice(b" 5 m");
@@ -1013,12 +1050,15 @@ mod tests {
         );
     }
 
-    /// 一行的**第二个**字段（定义原文）也按字节进表并按字节回显在 `-l` 清单里；
-    /// `read_units` 不做任何解码，所以一枚裸字节不会让整份词典消失。
+    /// The **second** field of a line (the raw definition) also enters the
+    /// table as bytes and is echoed as bytes in the `-l` listing; `read_units`
+    /// does no decoding, so a single raw byte cannot make the whole dictionary
+    /// vanish.
     #[test]
     fn a_units_line_with_a_raw_byte_still_reaches_the_table() {
-        // 裸 `ff` 不是任何 UTF-8 序列的开头；旧写法在调用方解一次 UTF-8，
-        // 解不过去就把**整份**词典丢掉（登记 UNITS-NONUTF8-DROP 的那一格）。
+        // A raw `ff` does not start any UTF-8 sequence; the older code decoded
+        // UTF-8 once at the caller and, on failure, dropped the **whole**
+        // dictionary.
         let t = read_units(&[b"weird! 1\xff meter".as_slice()]);
         assert_eq!(t.units, vec![(b"weird!".to_vec(), b"1\xff meter".to_vec())]);
         let (listing, errors) = list_units(&t, false, PRECISION);
@@ -1052,7 +1092,9 @@ mod tests {
 
     #[test]
     fn test_ring_only_f_takes_a_value() {
-        // `"lLvqf:"` 里 `l`/`L`/`q` 都不带值，所以「带值选项缺值」那一支在本支只有 `f` 可达。
+        // In `"lLvqf:"` the letters `l`/`L`/`q` take no value, so the
+        // "value-taking option is missing its value" arm is reachable only
+        // through `f` in this ring.
         let argv: &[&[u8]] = &[b"-lq".as_slice(), b"-L".as_slice()];
         let parsed = parse_units_args(argv).expect("-l/-q/-L 都不缺值");
         assert!(parsed.list);
@@ -1065,7 +1107,8 @@ mod tests {
                 'f'
             )))
         );
-        // 缺值那一行只由 libc 印，句子后面接的是调用方的 usage（`units.c:843-845`）。
+        // The missing-value line is printed by libc alone, and the caller's
+        // usage follows the sentence (`units.c:843-845`).
         assert_eq!(
             parse_units_args(&[b"-lq".as_slice(), b"-f".as_slice()]).err(),
             Some(UnitsArgError::Getopt(crate::GetoptReport::MissingValue(
@@ -1076,8 +1119,10 @@ mod tests {
 
     #[test]
     fn test_off_letter_follows_the_c_cluster_order() {
-        // 参照件：`-Z`、`-qZ`、`-Zq` 三形的第一行都是 `units: unknown option -- Z`，
-        // 差别只在 `q`/`l` 有没有先被置上——那一支走到 usage 就退出了，所以只有字母可见。
+        // Reference binary: `-Z`, `-qZ` and `-Zq` all print
+        // `units: unknown option -- Z` as their first line; the only
+        // difference is whether `q`/`l` were already set — that arm exits into
+        // usage, so only the letter is observable.
         use crate::GetoptReport;
         assert_eq!(
             parse_units_args(&[b"-Z".as_slice()]).err(),
@@ -1091,9 +1136,11 @@ mod tests {
             parse_units_args(&[b"-Zq".as_slice()]).err(),
             Some(UnitsArgError::Getopt(GetoptReport::UnknownOption('Z')))
         );
-        // 游标按字节走：短横后那一枚字节就是字母，`2d c3 a9` 交回的是 `c3`
-        // （`getopt.c:79` 的 `optopt = *place++` 一次进一个字节）。载荷是 `char`，
-        // 到报文那一步由 `GetoptReport::line_bytes` 把 `<= 0xFF` 的码位写回那一枚原字节。
+        // The cursor walks bytes: the byte after the dash is the letter, and
+        // `2d c3 a9` hands back `c3` (`getopt.c:79`'s `optopt = *place++`
+        // consumes one byte at a time). The payload is a `char`, and at the
+        // message stage `GetoptReport::line_bytes` writes a code point `<= 0xFF`
+        // back as that raw byte.
         assert_eq!(
             parse_units_args(&[b"-\xc3\xa9".as_slice()]).err(),
             Some(UnitsArgError::Getopt(GetoptReport::UnknownOption(
@@ -1104,8 +1151,9 @@ mod tests {
 
     #[test]
     fn test_v_exits_inside_the_ring() {
-        // `-v` 那两行打完就 `usage()`，所以它后面的字母永远扫不到；
-        // 反过来 `-Zv` 只能看到集外字母那一行。两支都经参照件现量。
+        // Once `-v` prints its two lines it calls `usage()`, so letters after
+        // it are never scanned; conversely `-Zv` can only show the
+        // unknown-letter line. Both measured against the reference binary.
         assert_eq!(
             parse_units_args(&[b"-v".as_slice()]).err(),
             Some(UnitsArgError::Version)
@@ -1140,7 +1188,8 @@ mod tests {
                 .userfile,
             Some(b"my.lib".as_slice())
         );
-        // 值取自下一个 token 时**不看它的脸色**：`-f -` 的档名就是 `-`。
+        // A value taken from the next token is accepted **without inspecting
+        // it**: the file name of `-f -` is `-`.
         let argv: &[&[u8]] = &[
             b"-f".as_slice(),
             b"-".as_slice(),
@@ -1150,8 +1199,10 @@ mod tests {
         let parsed = parse_units_args(argv).expect("- 可以被 -f 取走");
         assert_eq!(parsed.userfile, Some(b"-".as_slice()));
         assert_eq!(parsed.operands, vec![b"m".as_slice(), b"sec".as_slice()]);
-        // 值取走之后，同一 token 剩下的字节不再当字母扫：`-fql` 的档名是整条尾巴 `ql`，
-        // 而不是「`-f` 取 `q` 当值、`l` 再置列表」。
+        // Once the value is taken, the remaining bytes of the same token are
+        // no longer scanned as letters: the file name of `-fql` is the whole
+        // tail `ql`, not "`-f` takes `q` as its value and `l` then sets the
+        // list".
         let argv: &[&[u8]] = &[b"-fql".as_slice()];
         let parsed = parse_units_args(argv).expect("尾巴整段是值");
         assert_eq!(parsed.userfile, Some(b"ql".as_slice()));
@@ -1160,8 +1211,10 @@ mod tests {
 
     #[test]
     fn test_double_dash_is_consumed_and_bare_dash_is_an_operand() {
-        // `getopt.c:81-85`：`--` 结束环且自身被推进掉；`:87-92`：裸 `-` 结束环却不推进，
-        // 于是它自己是操作数（参照件对 `-f <档> - sec` 报的是 `Unknown unit '-'`）。
+        // `getopt.c:81-85`: `--` ends the ring and is advanced past itself;
+        // `:87-92`: a bare `-` ends the ring but is not advanced, so it is an
+        // operand itself (the reference binary reports `Unknown unit '-'` for
+        // `-f <file> - sec`).
         assert!(
             parse_units_args(&[b"--".as_slice()])
                 .expect("光写 -- 是零操作数")
@@ -1180,7 +1233,8 @@ mod tests {
                 .operands,
             vec![b"m".as_slice(), b"sec".as_slice()]
         );
-        // `--` 之后的 `-Z` 不是选项，于是这一形只剩一个操作数——走 usage 且没有 libc 那一行。
+        // The `-Z` after `--` is not an option, so this shape has just one
+        // operand — it goes to usage and has no libc line.
         assert_eq!(
             parse_units_args(&[b"--".as_slice(), b"-Z".as_slice()]).err(),
             Some(UnitsArgError::Usage)
@@ -1189,8 +1243,9 @@ mod tests {
 
     #[test]
     fn test_operand_count_check_precedes_any_file_access() {
-        // C 的判据 `(argc != 3 && argc != 2 && argc != 0) || (list && argc != 0)`
-        // 排在 `readunits` 之前，所以坏档加一个操作数报的是 usage 而不是开档失败。
+        // C's test `(argc != 3 && argc != 2 && argc != 0) || (list && argc != 0)`
+        // runs before `readunits`, so a bad dictionary plus one operand reports
+        // usage rather than a file-open failure.
         assert_eq!(
             parse_units_args(&[b"-f".as_slice(), b"db".as_slice(), b"m".as_slice()]).err(),
             Some(UnitsArgError::Usage)
@@ -1234,8 +1289,10 @@ mod tests {
 
     #[test]
     fn test_ring_does_not_rearrange() {
-        // `m -l sec`：环在第一个非选项 token 就结束，`-l` 落进操作数（参照件把
-        // `units -f <档> m sec -l` 的 `-l` 当成了 want 侧的单位名并报 `Unknown unit '-l'`）。
+        // `m -l sec`: the ring ends at the first non-option token and `-l`
+        // falls among the operands (the reference binary takes the `-l` of
+        // `units -f <file> m sec -l` as a unit name on the want side and
+        // reports `Unknown unit '-l'`).
         let argv: &[&[u8]] = &[b"m".as_slice(), b"-l".as_slice(), b"sec".as_slice()];
         let parsed = parse_units_args(argv).expect("三个都是操作数");
         assert!(!parsed.list);
@@ -1247,8 +1304,10 @@ mod tests {
 
     #[test]
     fn test_error_lines_quote_the_c_sentences() {
-        // 非列表模式下 `errprefix` 是 `NULL`，所以 `mywarnx` 走 `vwarnx`：两段形、
-        // 前缀是程序名、不带 `strerror`。三句的措辞各自抄 `units.c`。
+        // Outside list mode `errprefix` is `NULL`, so `mywarnx` goes through
+        // `vwarnx`: two segments, the program name as the prefix, no
+        // `strerror`. Each of the three sentences copies its wording from
+        // `units.c`.
         assert_eq!(
             units_error_line("units", &UnitsError::UnknownUnit(b"bogus".to_vec())).as_deref(),
             Some(&b"units: Unknown unit 'bogus'\n"[..])
@@ -1261,15 +1320,19 @@ mod tests {
             units_error_line("units", &UnitsError::JunkBeforeBar).as_deref(),
             Some(&b"units: Junk before '|'\n"[..])
         );
-        // 词典行与可折算这两支不由 `mywarnx` 在推导路径上句子，交回 `None` 让调用方不印。
+        // The dictionary-line and conformability arms are not `mywarnx`
+        // sentences on the derivation path; they return `None` so the caller
+        // prints nothing.
         assert_eq!(units_error_line("units", &UnitsError::Conformability), None);
         assert_eq!(units_error_line("units", &UnitsError::ReadError(7)), None);
     }
 
     #[test]
     fn test_colon_in_optstring_is_a_marker_not_a_letter() {
-        // `getopt.c:98` 把 `:` 排除在可选字母之外，所以 `-:` 与聚簇里的 `-l:` 都走集外
-        // 字母那一支；而 `-f:` 的冒号是**值**（值取自本 token 的尾巴，不查字母集合）。
+        // `getopt.c:98` excludes `:` from the acceptable letters, so `-:` and
+        // a `-l:` inside a cluster both take the unknown-letter arm; in `-f:`
+        // the colon is the **value** (taken from this token's tail, with no
+        // letter set consulted).
         use crate::GetoptReport;
         assert_eq!(
             parse_units_args(&[b"-:".as_slice()]).err(),

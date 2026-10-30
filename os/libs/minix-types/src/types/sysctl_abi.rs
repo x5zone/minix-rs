@@ -16,11 +16,11 @@
 //! `offset_of!`/`size_of` assertions — the exchange face never drifts
 //! with the platform. `[ARCH: ...]` minix-rs userland is self-consistently
 //! 64-bit; the C i386 ABI remains the ground truth these assertions are
-//! checked against. 02-mib-message-contract.md (A-4); 17/18/20 篇消费。
+//! checked against. 02-mib-message-contract.md; docs 17/18/20 consume it.
 //!
-//! C sources: `minix3/sys/sys/sysctl.h:1382-1410`（sysctlnode）、
-//! `:1444-1450`（sysctldesc）、`:647-673`（kinfo_lwp）、`:473-640`
-//! （kinfo_proc2）。
+//! C sources: `minix3/sys/sys/sysctl.h:1382-1410` (sysctlnode),
+//! `:1444-1450` (sysctldesc), `:647-673` (kinfo_lwp), `:473-640`
+//! (kinfo_proc2).
 
 // ── KI_* sizing constants ──
 // C: sys/sys/sysctl.h:458-470.
@@ -553,15 +553,16 @@ mod tests {
     }
 }
 
-// ── sysctl(2) 协议补充（E-RMIBWIRE：RMIB 客户端打包层消费）──
+// ── sysctl(2) protocol additions (consumed by the RMIB client packing layer) ──
 //
-// 全族常量（SYSCTL_VERSION/CTLTYPE_*/CTLFLAG_*/CTL_QUERY/CTL_DESCRIBE/
-// CTL_MAXNAME/CTL_SHORTNAME/SYSCTL_NAMELEN/SYSCTL_NODE_FN）已在
-// `types::sysctl` 定义并被 glob 导出——此处只补 MINIX 专属别名与
-// 缺失的辅助函数,不重复定义。
+// The whole family's constants (SYSCTL_VERSION/CTLTYPE_*/CTLFLAG_*/CTL_QUERY/
+// CTL_DESCRIBE/CTL_MAXNAME/CTL_SHORTNAME/SYSCTL_NAMELEN/SYSCTL_NODE_FN) are
+// already defined in `types::sysctl` and glob-exported — only the MINIX-specific
+// alias and the missing helper are added here, with no duplicate definitions.
 
-/// MINIX 别名：稀疏节点标志（C: rmib.h:57 —— `CTLFLAG_SPARSE` 重载
-/// `CTLFLAG_ROOT`,仅库内部使用,不对 userland 暴露,rmib.c:208-214）。
+/// MINIX alias: sparse node flag (C: rmib.h:57 — `CTLFLAG_SPARSE` overloads
+/// `CTLFLAG_ROOT`; library-internal only, never exposed to userland,
+/// rmib.c:208-214).
 pub const CTLFLAG_SPARSE: u32 = crate::CTLFLAG_ROOT;
 
 #[cfg(test)]
@@ -575,9 +576,10 @@ mod sysctl_constants_tests {
     #[allow(unused_imports)]
     use crate::{CTL_MAXNAME, CTL_SHORTNAME};
 
-    /// E-RMIBWIRE:常量绝对值对照 C 头(sys/sys/sysctl.h + minix rmib.h)。
-    /// rmib_copyout_node 的版本戳、SPARSE 剥离、immediate 分派都依赖
-    /// 这些数值,漂移即 wire 级错位。
+    /// Constant absolute values compared against the C headers
+    /// (sys/sys/sysctl.h + minix rmib.h). rmib_copyout_node's version stamp,
+    /// SPARSE stripping, and immediate dispatch all depend on these numbers; a
+    /// drift is a wire-level misalignment.
     #[test]
     fn test_sysctl_protocol_constants_match_c() {
         assert_eq!(SYSCTL_VERSION, 0x0100_0000); // sysctl.h:133

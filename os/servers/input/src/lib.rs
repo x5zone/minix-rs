@@ -1,5 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-// SD-19 机械化门
+// Mechanized gate: no silent dropping of must-use results.
 #![warn(clippy::let_underscore_must_use)]
 
 //! Minix-RS input server: keyboards and mice, as seen by everyone else.
@@ -22,8 +22,8 @@
 //! - [`init`] — startup order and the callback inventory (document 01).
 //! - the character-driver front door — message classification, the restart
 //!   gate, reply discipline (document 02) — lives in the shared
-//!   `minix-chardriver` library ([ARCH: 字符框架判定核单点]; the former
-//!   `framework` module converged there, edge E-CDRCONV).
+//!   `minix-chardriver` library (the former `framework` module converged
+//!   there — [ARCH: the character-driver decision core lives in one place]).
 //! - [`structs`] — device slots, minor numbers, table indices (document 03).
 //! - the event wire format and code tables live in `minix-types`
 //!   (`ipc::input_event` / `ipc::key_codes`, document 04) — shared with the

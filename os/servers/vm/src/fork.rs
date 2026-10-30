@@ -78,8 +78,9 @@ pub(crate) fn handle_memory_once(
             if wrflag {
                 // Resolve CoW for this page if needed.
                 // C: map_handle_memory(vmp, region, offset, PAGE_SIZE, wrflag, ...)
-                // — C 的该路径同样写 PTE（pt_writemap），否则内核恢复进程后
-                // 指令重执行二次故障（G-V12-8）。
+                // — C's path also writes the PTE (`pt_writemap`); otherwise the
+                // instruction re-executes and faults a second time once the
+                // kernel resumes the process.
                 if region.needs_cow(frames, offset) {
                     cow_resolve_core(region, frames, pfn_alloc, offset, pt)
                         .map_err(|_| VmForkError::CowAllocFailed)?;
@@ -326,7 +327,7 @@ pub(crate) fn do_fork(
     }
 
     // C: `map_proc_copy_range` calls `map_writept(src)` on the parent as well
-    // as `map_writept(dst)` on the child (`region.c:995-996`). B48: minix-rs
+    // as `map_writept(dst)` on the child (`region.c:995-996`). minix-rs
     // historically did only the `dst` half above, so `fork_region`'s refcount
     // bump never reached the parent's writable PTEs — the parent kept writing
     // straight into the CoW-shared frames and silently corrupted the child's
@@ -411,7 +412,7 @@ pub(crate) fn do_fork(
     // C panics on failure; minix-rs propagates fail-closed (same
     // post-commit posture as the sys_fork error above).
     //
-    // Dependency notes (V11/T33): the former "two live views cannot
+    // Dependency notes: the former "two live views cannot
     // coexist" blocker dissolved when the typestate API gained
     // `activate_relaxed` — `parent` and `child` are views of *different*
     // slots and coexist here exactly as C's `vmp`/`vmc` do. The kernel
@@ -420,7 +421,7 @@ pub(crate) fn do_fork(
     if let Some(msgaddr) = fork_msgaddr {
         let msg_len = VirBytes(core::mem::size_of::<minix_types::Message>() as u64);
 
-        // C fork.c:103 — child first. G-V12-8: the eager CoW must also
+        // C fork.c:103 — child first. The eager CoW must also
         // write each side's PTEs, or the kernel write of the fork reply
         // re-faults on resume.
         let (child_regions, child_pt) = child.mem_parts_mut();
@@ -455,7 +456,7 @@ pub(crate) fn do_fork(
 /// Thin wrapper around `cow_resolve_core` that maps `CowCoreError` to
 /// `VmForkError`.
 // Test-only single-page CoW entry. The fork production path's eager-CoW
-// phase (V11/T33) goes through `handle_memory_once`, which resolves CoW
+// phase goes through `handle_memory_once`, which resolves CoW
 // internally; this wrapper stays as the focused unit-test surface.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn cow_copy_page(
@@ -488,7 +489,7 @@ pub(crate) enum VmForkError {
     /// Page table mapping failed (pt_writemap).
     /// Corresponds to Minix3's ENOMEM from pt_writemap().
     PageTableMapFailed,
-    /// The kernel-side sys_fork failed through the gateway (V11/T9).
+    /// The kernel-side sys_fork failed through the gateway.
     /// C: do_fork.c panics on this; minix-rs replies fail-closed
     /// (NotImplemented pre-E1 — trap not wired; InternalError for a real
     /// kernel errno). See `do_fork` doc above.
@@ -566,7 +567,7 @@ mod tests {
         ep
     }
 
-    /// V11/T33: do_fork's eager-CoW phase (C fork.c:100-108). The mock
+    /// do_fork's eager-CoW phase (C fork.c:100-108). The mock
     /// gateway hands back a msgaddr pointing at the parent's single mapped
     /// page (refcount 2 after the CoW fork); the child phase resolves the
     /// child's copy, after which the parent's refcount is 1 and the parent
@@ -645,7 +646,7 @@ mod tests {
             "CoW-sharing must be untouched without a msgaddr");
     }
 
-    /// B48 (§1.88): fork must clear the write bit on the PARENT's CoW-shared
+    /// fork must clear the write bit on the PARENT's CoW-shared
     /// pages, mirroring C `map_proc_copy_range` calling `map_writept` on BOTH
     /// `src` and `dst` (`region.c:995-996`). Historically `do_fork` only ran
     /// the child (`dst`) half, so the parent kept writable PTEs straight into
@@ -665,7 +666,8 @@ mod tests {
 
         // Simulate the parent's real running state: its page table already
         // carries the mapping. Refcount is still 1 (sole owner) so this maps
-        // it read-write — the state B48 left writable across the fork.
+        // it read-write — the state the earlier code left writable across the
+        // fork.
         {
             let mut parent = table.get_active(parent_slot).unwrap();
             unsafe {
@@ -709,7 +711,7 @@ mod tests {
         );
     }
 
-    /// B22: the two coordinated legs C fork.c:89-95 pairs must both fire —
+    /// The two coordinated legs C fork.c:89-95 pairs must both fire —
     /// `sys_fork` carries `PFF_VMINHIBIT` (kernel parks the child off the
     /// run queue) and do_fork then binds the child's page table via
     /// `sys_vmctl_set_addrspace` (kernel stores p_seg.phys_root AND clears
@@ -808,7 +810,7 @@ mod tests {
     fn test_cow_copy_page_no_sharing() {
         let mut frames = make_frames(8);
         let mut alloc = TestAlloc { next: 0 };
-        // V13-P1-1: the reuse shortcut is gated on is_page_writable, so the
+        // The reuse shortcut is gated on is_page_writable, so the
         // no-sharing shape must carry VR_WRITABLE (anon private page) for the
         // same-frame outcome to apply.
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::WRITABLE);

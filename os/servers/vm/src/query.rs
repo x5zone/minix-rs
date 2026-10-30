@@ -48,8 +48,8 @@ pub(crate) enum QueryError {
     ProcessNotFound,
     NotMapped,
     NotSupported,
-    // Judgment (V11/T24): no constructor today — kept for the exhaustive
-    // errno-mapping surface (V10-P2-3 closure) and future query kinds.
+    // No constructor today — kept for the exhaustive errno-mapping surface and
+    // future query kinds.
     #[allow(dead_code)]
     InvalidQuery,
 }
@@ -61,7 +61,7 @@ impl QueryError {
     /// process is not found, while other query operations return EINVAL.
     /// This cannot be unified into `From<QueryError> for VmError` because
     /// the mapping depends on the call site.
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: dispatcher uses the From impl; this is the test-side mirror
+    #[cfg_attr(not(test), allow(dead_code))] // dispatcher uses the From impl; this is the test-side mirror
     pub(crate) fn to_errno_for_rusage(self) -> i32 {
         match self {
             Self::ProcessNotFound => ESRCH,
@@ -148,7 +148,7 @@ pub(crate) struct RegionInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)] // V10-P2-1 (DEFERRED): InfoResult payloads converge in the codec work
+#[allow(clippy::large_enum_variant)] // DEFERRED: InfoResult payloads converge in the codec work
 pub(crate) enum InfoResult {
     Stats(StatsInfo),
     Usage(UsageInfo),
@@ -302,8 +302,8 @@ pub(crate) fn handle_info(
                 // C: vsi_total = total_pages (utility.c:118) — the GLOBAL
                 // counter, which includes the boot-module extras added by
                 // `mem_add_total_pages` (main.c:485-495). The allocator's
-                // own total does not include those, so before V12-P2-4 the
-                // reported total drifted low by `boot_extra_pages` whenever
+                // own total does not include those, so an earlier implementation
+                // reported a total drifting low by `boot_extra_pages` whenever
                 // boot images were accounted.
                 total_pages: crate::global::total_pages() as u32,
                 free_pages: stats.free_pages as u32,
@@ -459,11 +459,13 @@ pub(crate) fn handle_info(
                     length: VirBytes(used_len),
                     // C: vri_prot = PROT_READ | (VR_WRITABLE ? PROT_WRITE : 0)
                     // (region.c:1493-1498). PROT_EXEC is never set — faithful
-                    // by design. B41 (§1.75) 新增的 `VrFlags::EXECUTABLE` 是
-                    // x86-64 NXE 下的**内部页表建模位**（供 sync_slot_pte /
-                    // write_page_table_mappings 组 PTE），**有意不外泄到 vri_prot**：
-                    // i386 C 从不跟踪可执行性，coredump/`ps`/dump_vm 等对外契约
-                    // 保持逐位 C 忠实。勿在此按 EXECUTABLE 补 PROT_EXEC（那会偏离 C）。
+                    // by design. `VrFlags::EXECUTABLE` is the **internal page-table
+                    // modeling bit** under x86-64 NXE (feeding sync_slot_pte /
+                    // write_page_table_mappings when building PTEs) and is
+                    // **deliberately not exposed in vri_prot**: i386 C never tracks
+                    // executability, and external contracts such as coredump/`ps`/
+                    // dump_vm stay C-faithful bit for bit. Do not add PROT_EXEC here
+                    // based on EXECUTABLE (that would deviate from C).
                     prot: if vr.flags.contains(VrFlags::WRITABLE) {
                         PROT_READ | PROT_WRITE
                     } else {
@@ -534,7 +536,7 @@ pub(crate) fn handle_getrusage(
         }))
     } else {
         // Minix3 C also does not implement the children path (utility.c:455-461):
-        // "XXX TODO: return the fields for terminated, waited-for children
+        // "XXX unimplemented: return the fields for terminated, waited-for children
         //  of the given process. We currently do not have this information!"
         // C assumes PM clears the rusage struct before calling, so returning
         // zeros is semantically equivalent to the C behavior.
@@ -847,7 +849,7 @@ mod tests {
         }
     }
 
-    /// V11/T18 ([ARCH: A-16]): allocation failures surface through
+    /// [ARCH: A-16]: allocation failures surface through
     /// InfoStats — a memory-pressure signal observable without syslog.
     #[test]
     fn test_handle_info_stats_alloc_failures_observable() {

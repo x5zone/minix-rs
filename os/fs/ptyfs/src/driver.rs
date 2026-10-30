@@ -202,8 +202,8 @@ impl FsDriver for PtyfsDriver {
                 Err(_) => return Err(Errno::from_i32(EINVAL)),
             }
         }
-        // C `fsdriver_dentry_finish`（dentry.c:85-99）：把 staging 里的
-        // 尾段刷给调用者，返回发出的总字节数。
+        // C `fsdriver_dentry_finish` (dentry.c:85-99): flush the tail segment staged in
+        // the staging area to the caller and return the total bytes emitted.
         delivered += encoder.finish().map_err(|e| e)?;
         *position = pos as i64;
         Ok(delivered)
@@ -270,14 +270,15 @@ impl FsDriver for PtyfsDriver {
 mod tests {
     use super::*;
 
-    /// 装配级全链：挂载 → 写入一个从节点（直接操纵表，模拟控制消息
-    /// 到达后的效果）→ lookup → getdents 列出 → stat → chown/chmod。
-    /// `ptyfs_table` 八入口里不依赖控制消息传递面的六个。
+    /// Assembly-level full chain: mount → write one slave node (manipulating the table
+    /// directly, simulating the effect of a control message arriving) → lookup → getdents
+    /// listing → stat → chown/chmod. The six of `ptyfs_table`'s eight entries that do not
+    /// depend on the control-message transport face.
     #[test]
     fn test_driver_mount_lookup_list_stat_chmod() {
         let mut driver = PtyfsDriver::new();
 
-        // 挂载：非根角色，回根节点（目录 0755），无能力位。
+        // Mount: a non-root role returns the root node (directory 0755) with no capability bits.
         let mut caps = minix_fs::protocol::CapabilityFlags(0);
         let root = driver
             .mount(0, minix_fs::protocol::MountFlags::EMPTY, &mut caps)
@@ -285,7 +286,7 @@ mod tests {
         assert_eq!(root.inode_number, ROOT_NUMBER);
         assert_eq!(root.mode, 0o040755);
         assert_eq!(caps.0, 0, "RES_NOFLAGS");
-        // 根角色拒绝（C ptyfs.c:35-38）。
+        // The root role is rejected (C ptyfs.c:35-38).
         let mut caps = minix_fs::protocol::CapabilityFlags(0);
         assert_eq!(
             driver
@@ -294,13 +295,13 @@ mod tests {
             Errno::from_i32(EINVAL)
         );
 
-        // 控制消息替身：直接向表写一个从节点（index 3 → 名字 "3"）。
+        // Control-message stand-in: write one slave node straight into the table (index 3 → name "3").
         let _ = driver.table.set(
             3,
             crate::table::StoredNode { device: 9, mode: 0o020620, uid: 100, gid: 5, created: 77 },
         );
 
-        // lookup：名字 "3" → 从节点详情。
+        // lookup: name "3" → the slave node's details.
         let (node, is_mount_point) = driver
             .lookup_child(ROOT_NUMBER, "3")
             .expect("已分配的从节点查得到");
@@ -309,8 +310,9 @@ mod tests {
         assert_eq!(node.device, 9);
         assert_eq!(node.mode, 0o020620);
 
-        // getdents：一趟装下 dot、dot-dot 与从节点。回调的 chunk 是
-        // **成段**字节（编码器可一次刷多条），按 reclen 逐条拆开。
+        // getdents: one pass fits dot, dot-dot and the slave node. The callback's chunk is
+        // **segmented** bytes (the encoder may flush several records at once), split here
+        // record by record by reclen.
         let mut position = 0i64;
         let collected: core::cell::RefCell<alloc::vec::Vec<u8>> =
             core::cell::RefCell::new(alloc::vec::Vec::new());
@@ -335,7 +337,7 @@ mod tests {
         assert_eq!(rows[2].0, crate::SLAVE_BASE_NUMBER + 3);
         assert_eq!(rows[2].1, b"3".to_vec());
 
-        // stat：从节点 nlink 为 1、三时间域为创建时间、rdev 为设备号。
+        // stat: the slave node has nlink 1, all three time fields set to the creation time, and rdev set to the device number.
         let mut st = Stat::zeroed();
         driver
             .stat(crate::SLAVE_BASE_NUMBER + 3, &mut st)
@@ -345,7 +347,7 @@ mod tests {
         assert_eq!(st.special, 9);
         assert_eq!(st.accessed, 77);
 
-        // chown + chmod：落表。
+        // chown + chmod: stored in the table.
         let mode = driver
             .change_owner(crate::SLAVE_BASE_NUMBER + 3, 1000, 1000)
             .unwrap();
@@ -355,15 +357,15 @@ mod tests {
             .unwrap();
         assert_eq!(mode & 0o777, 0o600);
 
-        // statvfs：名字不截断、namemax 上报。
+        // statvfs: the name is not truncated and name_max is reported.
         let mut vfs = StatVfs::zeroed();
         driver.stat_vfs(&mut vfs).expect("statvfs 成功");
         assert_eq!(vfs.name_max, NAME_MAX_REPORTED as u64);
     }
 
-    /// 从一条目录项字节里取 inode 号与名字。编码格式：
-    /// inode@0(8 字节)、reclen@8(2)、namelen@10(2)、type@12(1)、
-    /// name@13 起（dentry.rs:198-207 的布局）。
+    /// Take the inode number and name out of one directory-entry byte string. Encoding:
+    /// inode@0 (8 bytes), reclen@8 (2), namelen@10 (2), type@12 (1), name from @13 (the
+    /// layout of dentry.rs:198-207).
     fn decode_one(chunk: &[u8]) -> (u64, alloc::vec::Vec<u8>) {
         let inode = u64::from_le_bytes(chunk[0..8].try_into().unwrap());
         let name_len = u16::from_le_bytes(chunk[10..12].try_into().unwrap()) as usize;

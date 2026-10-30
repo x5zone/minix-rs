@@ -229,33 +229,34 @@ pub fn vm_fallback_entry() -> IpcFilterEl {
 /// SELF, buf, len)` — reads the requester's eval bytes and filter blocks.
 pub type StateFetchFn<'a> = dyn FnMut(usize, &mut [u8]) -> Result<(), Errno> + 'a;
 
-/// `init_state_data` 的产出（17 号状态传输的授权/消费面）。
+/// The product of `init_state_data` (the authorize/consume face of the state transfer, call 17).
 ///
-/// C: manager.c:172-285 写入 `dst_rs_state_data` 的三件套 —— `size` 原样、
-/// malloc'd 的 NUL 结尾 eval 表达式、malloc'd 的解析后过滤块字节
-/// （`ipcf_els_buff`）。owned 缓冲即 C 两次 `malloc` 的 Rust 对应物
-/// （同 `slot.exec` 先例），授权（cpf_grant_direct，19 号）消费这些字节。
+/// C: manager.c:172-285 writes the three pieces of `dst_rs_state_data` — `size` verbatim,
+/// the malloc'd NUL-terminated eval expression, and the malloc'd parsed filter-block
+/// bytes (`ipcf_els_buff`). The owned buffers are the Rust counterpart of C's two
+/// `malloc` calls (the same precedent as `slot.exec`), and the grant (cpf_grant_direct,
+/// call 19) consumes these bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedStateData {
-    /// `dst.size` — `src.size` 原样（EVAL 或过滤块分支写入；无二者时 0）。
+    /// `dst.size` — `src.size` verbatim (written by the EVAL or filter-block branch; 0 when neither).
     pub size: usize,
-    /// NUL 结尾的 eval 表达式字节（含结尾 NUL；非 EVAL 分支为 `None`）。
+    /// The NUL-terminated eval-expression bytes (including the trailing NUL; `None` on the non-EVAL branch).
     pub eval: Option<alloc::vec::Vec<u8>>,
-    /// 解析后的过滤块字节（每元素 [`IPCF_EL_SIZE`] 字节线面，VM 源追加
-    /// fallback 块）。空 = 无过滤块。
+    /// The parsed filter-block bytes (each element is [`IPCF_EL_SIZE`] bytes on the wire; a
+    /// VM source appends a fallback block). Empty = no filter block.
     pub ipcf_els_buff: alloc::vec::Vec<u8>,
     /// `ipcf_els_buff_size` — C: `sizeof(ipc_filter_el_t) * IPCF_MAX_ELEMENTS
-    /// * blocks`（manager.c:225-229）。
+    /// * blocks` (manager.c:225-229).
     pub ipcf_els_size: usize,
 }
 
-/// C: `init_state_data` — manager.c:172-285 的组合。
+/// C: `init_state_data` — the composition at manager.c:172-285.
 ///
-/// `fetch(addr, buf)` = `sys_datacopy(src_e, addr, SELF, ..)` 缝（读调用方的
-/// eval 字节与过滤块，19 号传输面）；`ds_lookup` =
-/// `ds_retrieve_label_endpt`（19 号 DS 缝）；`src_is_vm` = 源是否 VM_PROC_NR
-/// （manager.c:265-277 的 VM fallback 块）。失败时调用方按 C 清理新实例
-/// （request.c:788-796 的 `rupdate_upd_clear` 语义）。
+/// `fetch(addr, buf)` = the `sys_datacopy(src_e, addr, SELF, ..)` seam (reads the caller's
+/// eval bytes and filter blocks, the transfer face); `ds_lookup` =
+/// `ds_retrieve_label_endpt` (the DS seam); `src_is_vm` = whether the source is VM_PROC_NR
+/// (the VM fallback block at manager.c:265-277). On failure the caller cleans up the new
+/// instance as C does (`rupdate_upd_clear` semantics at request.c:788-796).
 pub fn init_state_data(
     prepare_state: i32,
     src: &crate::slot::RsStateData,

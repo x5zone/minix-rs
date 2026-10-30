@@ -33,14 +33,15 @@ const fn access_check(access: CpFlags) -> bool {
     (access.bits() & !all) == 0
 }
 
-/// `GrantTable::probe` 的窗口读数:授权的宿主地址窗与访问形状。
+/// Window reading for `GrantTable::probe`: the grant's host address window and
+/// access shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GrantProbe {
-    /// 授权内存窗:`(start, len)`(granter 地址空间的真实地址)。
+    /// Granted memory window: `(start, len)` (real addresses in the granter's address space).
     pub granter_window: (u64, u64),
-    /// MAGIC 臂时为 `(who_to, who_from)`;DIRECT 臂为 `None`。
+    /// `(who_to, who_from)` for the MAGIC arm; `None` for the DIRECT arm.
     pub magic: Option<(i32, i32)>,
-    /// 授权含写(`CPF_WRITE`)。
+    /// Whether the grant includes write access (`CPF_WRITE`).
     pub writable: bool,
 }
 
@@ -203,14 +204,16 @@ impl GrantTable {
 
     /// Grant one process access into another's memory (magic grant).
     ///
-    /// C: `cpf_grant_magic` — safecopies.c:198-220. 与
-    /// [`Self::grant_direct`] 的唯一差别是**转账方与收方分离**：
-    /// `who_from` 是缓冲的所有者、`who_to` 是被授权读写它的进程。VFS 用它
-    /// 把**用户进程**的缓冲直接交给 FS 写（`cpf_grant_magic(fs_e, user_e,
-    /// user_addr, len, CPF_WRITE|cpflag)` — request.c:844/1087）。
+    /// C: `cpf_grant_magic` — safecopies.c:198-220.  The only difference from
+    /// [`Self::grant_direct`] is that **the transferor and the transfer target are
+    /// separate**: `who_from` owns the buffer and `who_to` is the process granted
+    /// read/write access to it.  VFS uses it to hand a **user process's** buffer
+    /// straight to the FS for writing (`cpf_grant_magic(fs_e, user_e, user_addr,
+    /// len, CPF_WRITE|cpflag)` — request.c:844/1087).
     ///
-    /// 提交纪律同 direct：先填槽，最后写 `flags`（USED|MAGIC|VALID|access）
-    /// 作为内核认可的提交点。
+    /// The commit discipline matches direct: fill the slot first, then write
+    /// `flags` (USED|MAGIC|VALID|access) last as the commit point the kernel
+    /// recognises.
     pub fn grant_magic(
         &mut self,
         transport: &impl KernelCallTransport,
@@ -239,9 +242,11 @@ impl GrantTable {
         Ok(grant_id(g as u32, seq as u32))
     }
 
-    /// 内核视角的 grant 读取:按 ID 解析授权窗口。C 里这是内核从特权结构
-    /// 读槽(`do_safecopy` 前的校验);宿主桥接层(VFS↔FS 的内存回放)以
-    /// 同一语义取窗后在真地址上直读直写。未用/未知 ID 返回 `None`。
+    /// Grant reading from the kernel's point of view: resolve the granted window
+    /// by ID.  In C this is the kernel reading the slot out of a privileged
+    /// structure (the check before `do_safecopy`); the host bridging layer (VFS<->FS
+    /// memory replay) uses the same semantics to obtain the window and then reads
+    /// and writes real addresses directly.  An unused or unknown ID returns `None`.
     pub fn probe(&self, grant: i32) -> Option<GrantProbe> {
         if !grant_valid(grant) {
             return None;
@@ -255,8 +260,9 @@ impl GrantTable {
         {
             return None;
         }
-        // SAFETY: flags 的 USED+VALID 提交点保证 direct/magic 联合体臂已定型;
-        // INDIRECT 臂在宿主桥接面未使用,按未授权回答。
+        // SAFETY: the USED+VALID commit point in flags guarantees the direct/magic
+        // union arm is settled; the INDIRECT arm is unused on the host bridging
+        // path and is answered as unauthorised.
         unsafe {
             if flags.contains(CpFlags::DIRECT) {
                 let d = &slot.u.direct;

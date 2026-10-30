@@ -13,7 +13,7 @@
 //! - `boot_image`: GET_IMAGE wire entry (E-ISPROD)
 //! - `cell`: Single-threaded interior mutability primitives
 //! - `errno`: POSIX errno constants
-//! - `diagnostic`: panic diagnostic hook registration (D-48, kernel ↔ minix-rt shared)
+//! - `diagnostic`: panic diagnostic hook registration (kernel ↔ minix-rt shared)
 //! - `grant`: grant wire layout (`cp_grant_t` family — kernel ↔ user-space
 //!   grant-table contract, E-DSWIRE)
 //! - `irq_hook`: GET_IRQHOOKS wire entry (E-ISPROD)
@@ -90,9 +90,10 @@ pub use proc_info::*;
 pub use proc_nr::*;
 pub use ps_strings::*;
 pub use signal::*;
-// `stat` 故意不走根 glob：ipc::fs_driver 已有一个序列化用的 `Stat`
-// （VTreeFS `fs_stat` 载荷），两个概念同名——用户态 `struct stat` ABI
-// 经 `types::stat::Stat` 路径取用（minix-sys 再导出为 `minix_sys::Stat`）。
+// `stat` deliberately does not go through the root glob: ipc::fs_driver already
+// has a serialization `Stat` (the VTreeFS `fs_stat` payload), and the two
+// concepts share a name — the user-space `struct stat` ABI is reached through
+// the `types::stat::Stat` path (re-exported by minix-sys as `minix_sys::Stat`).
 pub use flock::*;
 pub use statvfs::*;
 pub use termios::*;

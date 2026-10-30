@@ -3,7 +3,7 @@
 //! Deciding half: the per-stream specs (separator, width format, pad
 //! flag, line terminator character) and the row assembly loop over
 //! in-memory line streams. File opening stays behind the hosted
-//! command seam (registered as 待开放路径 like tee/split).
+//! command seam (registered as a not-yet-open path, like tee/split).
 use alloc::vec::Vec;
 use alloc::string::{String, ToString};
 use alloc::{format, vec};

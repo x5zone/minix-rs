@@ -38,7 +38,7 @@ pub enum PmError {
     TooManyGroups,
     NotBlocked,
     /// A required kernel primitive is not wired yet — `ENOSYS` (fail-closed;
-    /// the wiring lands with the kernel IPC bundle, P1-2 / edge E1).
+    /// the wiring lands with the kernel IPC bundle).
     NotImplemented,
 }
 
@@ -83,7 +83,7 @@ pub enum FreeKind {
 ///
 /// The trait separates *how* a request is handled (real table vs. mock) from
 /// *which* request is handled (the `VfsCall` enum).  Both dimensions are
-/// exercised by tests, satisfying Gate D “≥2 behaviourally different impls”.
+/// exercised by tests, satisfying Gate D "≥2 behaviourally different impls".
 pub trait PmHandler {
     /// Handle a single `VfsCall` and return the `VfsReply` (or `Err` for the
     /// caller to turn into `ESRCH`/`EINVAL`).
@@ -111,7 +111,7 @@ pub trait PmHandler {
     /// `src`'s address space at `addr` into `out`.
     ///
     /// Default: fail-closed `ENOSYS`.  The production implementer arrives with
-    /// the kernel IPC primitives (P1-2 / edge E1); once wired, copy failures
+    /// the kernel IPC primitives; once wired, copy failures
     /// map to `EFAULT` per the 10-pm-protocol.md design decision (C panics).
     fn fetch_group_list(
         &mut self,
@@ -126,14 +126,16 @@ pub trait PmHandler {
 
 /// Real handler — mutates the live `FProcTable`, `FilpTable` and `VnodeTable`.
 ///
-/// Fork 上的 filp 共享(`filp_count++`,`misc.c:616-617`)与 rd/wd 的
-/// `dup_vnode`(`misc.c:632-633`)在此真实落表;`CopyOutcome` 的计数继续
-/// 供调用方与测试对账。
+/// Fork-side filp sharing (`filp_count++`, `misc.c:616-617`) and the
+/// `dup_vnode` for rd/wd (`misc.c:632-633`) land in the table for real
+/// here; `CopyOutcome`'s counts remain available to the caller and the
+/// tests for reconciliation.
 pub struct VfsPmHandler<'a> {
     pub table: &'a mut FProcTable,
     pub filp_table: &'a mut FilpTable,
     pub vnode_table: &'a mut VnodeTable,
-    /// vnode 零引用跨界的 `REQ_PUTNODE` 投递通道(C `put_vnode` 慢路径)。
+    /// Delivery channel for the cross-boundary `REQ_PUTNODE` of a vnode that
+    /// reached zero references (C `put_vnode`'s slow path).
     pub fs_ctl: &'a mut dyn crate::vnode::FsCtl,
 }
 
@@ -157,14 +159,14 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
                 // C panics on oversize (misc.c:748-750, "too much data to
                 // copy"); the rewrite fails closed with `EINVAL` instead —
                 // same registered deviation as the datacopy failure path
-                // (10-pm-protocol.md D4).
+                // (10-pm-protocol.md).
                 if ngroups > crate::fproc::NGROUPS_MAX {
                     return Err(PmError::TooManyGroups);
                 }
                 if ngroups > 0 {
                     // `sys_datacopy_wrapper` (misc.c:752): the list lives in
                     // PM's address space; the port is fail-closed `ENOSYS`
-                    // until the kernel IPC primitives land (P1-2 / edge E1).
+                    // until the kernel IPC primitives land.
                     let mut buf = [0 as Gid; crate::fproc::NGROUPS_MAX];
                     self.fetch_group_list(Endpoint::PM, group_addr, ngroups, &mut buf)?;
                     self.handle_setgroups(endpoint, ngroups, &buf)?;
@@ -204,11 +206,14 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
                 Ok(VfsReply::SrvFork)
             }
             VfsCall::Exec { endpoint, .. } => {
-                // 纯表测试面的诚实拒（`ENOSYS`）：exec 的生产装载在
-                // `exec_worker::pm_exec`（NS5 执行件，Route::Pm 直达），
-                // 需要 FS/VM/PM 三方往返，不是这张表的纯内存动作。曾经
-                // 在这里回 `status: 0` 的桩是虚构成功——断言 exec 全链的
-                // 测试应走 `exec_worker` 的 canned-transport 用例。
+                // An honest refusal (`ENOSYS`) from the pure-table test
+                // face: production exec loading lives in
+                // `exec_worker::pm_exec` (reached directly as Route::Pm) and
+                // needs a three-way FS/VM/PM round trip, not a pure in-memory
+                // action on this table. The stub that used to answer
+                // `status: 0` here was a fictitious success — tests asserting
+                // the full exec chain belong in `exec_worker`'s
+                // canned-transport cases.
                 let _ = endpoint;
                 Err(PmError::NotImplemented)
             }
@@ -221,9 +226,10 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
                 if term_sig == 0 {
                     return Err(PmError::BadEndpoint);
                 }
-                // 名字现按值随载荷到达（C-6/OQ-5：取代 C m7_p1 指针 +
-                // safecopy fetch）；core 文件落盘面仍未接线，本臂维持
-                // 表校验 + Core 回复的诚实现状。
+                // The name now arrives by value with the payload (replacing
+                // C's m7_p1 pointer + safecopy fetch); the core-file write
+                // face is still unwired, so this arm keeps the honest state
+                // of table validation plus a Core reply.
                 let slot = endpoint.to_user_slot().ok_or(PmError::BadEndpoint)?;
                 let fp = self.table.get(slot).ok_or(PmError::BadEndpoint)?;
                 if fp.pid == PID_FREE {
@@ -266,10 +272,12 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
         if self.table.get(slot).ok_or(PmError::BadEndpoint)?.pid == PID_FREE {
             return Err(PmError::BadEndpoint);
         }
-        // C `free_proc` 前半(misc.c:651-660):逐 fd `close_fd`(错误忽略,
-        // 末次关闭 `dec_count` 落表),随后 rd/wd 各 `put_vnode`(零引用跨界
-        // 经 fs_ctl 排 `REQ_PUTNODE`)。后半 dmap/smap/worker/vmnt/tty 级联
-        // 仍 DEFERRED,由 `FreeKind::Exiting` 的槽位建模代表。
+        // The first half of C `free_proc` (misc.c:651-660): `close_fd` per
+        // fd (errors ignored, the last close lands `dec_count` in the table),
+        // then `put_vnode` for rd and wd (zero references cross the boundary
+        // as `REQ_PUTNODE` through fs_ctl). The second half — the
+        // dmap/smap/worker/vmnt/tty cascade — is still DEFERRED and is
+        // represented by `FreeKind::Exiting`'s slot modelling.
         let VfsPmHandler {
             table,
             filp_table,
@@ -279,18 +287,21 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
         let fp = table.get_mut(slot).ok_or(PmError::BadEndpoint)?;
         for i in 0..crate::fproc::OPEN_MAX {
             if let Some(fd) = crate::filedes::Fd::new(i) {
-                // [SD19-gate] 尽力而为关 fd 收尾（C vfs 清理路径 close 失败不回错）
+                // [SD19-gate] Best-effort fd close on teardown (C's VFS
+                // cleanup path reports no error when close fails)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = crate::filedes::close_fd(fp, fd, filp_table);
             }
         }
         if let Some(rd) = fp.root_dir.take() {
-            // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+            // [SD19-gate] Best-effort vnode return / reference-count
+            // teardown (C's put_vnode is void and reports no error)
             #[allow(clippy::let_underscore_must_use)]
             let _ = vnode_table.put(VnodeId(rd), &mut **fs_ctl);
         }
         if let Some(wd) = fp.work_dir.take() {
-            // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+            // [SD19-gate] Best-effort vnode return / reference-count
+            // teardown (C's put_vnode is void and reports no error)
             #[allow(clippy::let_underscore_must_use)]
             let _ = vnode_table.put(VnodeId(wd), &mut **fs_ctl);
         }
@@ -585,7 +596,8 @@ fn copy_fproc(
         )
     };
 
-    // C `misc.c:616-617`:每个继承的非空 `fp_filp[i]` → `filp_count++`。
+    // C `misc.c:616-617`: every inherited non-null `fp_filp[i]` →
+    // `filp_count++`.
     for &idx in filps.iter().flatten() {
         filp_table.inc_count(FilpId(idx));
     }
@@ -598,7 +610,8 @@ fn copy_fproc(
     if work_dir.is_some() {
         vnodes_dupped += 1;
     }
-    // C `misc.c:632-633`:rd 与 wd 各 `dup_vnode` 一次(同一 vnode 时是两次)。
+    // C `misc.c:632-633`: rd and wd each `dup_vnode` once (twice when they
+    // are the same vnode).
     if let Some(rd) = root_dir {
         vnode_table.dup(VnodeId(rd));
     }
@@ -963,7 +976,7 @@ mod tests {
     #[test]
     fn test_setgroups_over_max_fail_closed() {
         // C panics ("too much data to copy", misc.c:748-750); the rewrite
-        // rejects with EINVAL before any copy attempt (10-pm-protocol.md D4).
+        // rejects with EINVAL before any copy attempt (10-pm-protocol.md).
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();

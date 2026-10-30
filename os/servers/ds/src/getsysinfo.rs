@@ -56,9 +56,10 @@ impl GetsysinfoReject {
 /// image follows. Callers compare the request `size` against this before
 /// copying — the exact-match rule at :668.
 ///
-/// `[ARCH: A-4]`：行宽是共享快照 [`DsEntrySnap`]（标量面子集），不是 C 的
-/// 192 字节 `struct data_store`——生产方（`server.rs` 的 `render_image`）与
-/// 消费方（IS `dump_ds`）都从这一个类型推宽度。
+/// `[ARCH: A-4]`: the row width is the shared snapshot [`DsEntrySnap`] (the
+/// scalar face subset), not C's 192-byte `struct data_store` -- both the
+/// producer (`render_image` in `server.rs`) and the consumer (IS `dump_ds`)
+/// derive the width from this single type.
 pub const fn image_bytes() -> usize {
     size_of::<DsEntrySnap>() * NR_DS_KEYS
 }
@@ -85,7 +86,7 @@ mod tests {
     #[test]
     fn test_image_is_row_times_table() {
         // The image is the table, whole: 168-byte snapshot rows × 128 seats
-        // (`[ARCH: A-4]` 标量面行，非 C 的 192 字节 `struct data_store`）。
+        // (`[ARCH: A-4]` scalar-face row, not C's 192-byte `struct data_store`).
         assert_eq!(image_bytes(), size_of::<DsEntrySnap>() * NR_DS_KEYS);
         assert_eq!(image_bytes(), 168 * 128);
     }

@@ -411,11 +411,12 @@ pub trait FsTransport {
     /// Move result bytes out: publish `bytes` at `offset` of the reply
     /// payload (read data, listing entries, status buffers).
     ///
-    /// SD-19 signature rework（登记处置表最后一档，`fs-rt copy_out`）：C
-    /// `fsdriver_copyout`（`libfsdriver/utility.c:52-53`）把 safecopyto 的
-    /// 返回值直接回给调用方，`dentry.c:52-54` 更是 copyout 一坏就
-    /// `return r`——传输失败必须推翻本次回复的 status，不能静默吞掉后
-    /// 仍回 OK。故本方法签名与 `copy_in` 对称，失败回 `Err(Errno)`。
+    /// C `fsdriver_copyout` (`libfsdriver/utility.c:52-53`) returns the
+    /// safecopyto result straight to the caller, and `dentry.c:52-54` goes
+    /// further, doing `return r` as soon as a copyout fails — a transport
+    /// failure must overturn this reply's status and may not be swallowed
+    /// silently with an OK still sent. The method signature therefore mirrors
+    /// `copy_in` and returns `Err(Errno)` on failure.
     fn copy_out(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Errno>;
 }
 
@@ -534,10 +535,12 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                 Ok(input) => input,
                 Err(e) => return err(e),
             };
-            // SD-19 signature rework：C read_write 里 put_once 的 copyout
-            // 失败即中断回 r（libfsdriver/utility.c:52-53）——捕获首个传输错，
-            // 驱动链再成功也要覆盖回复；已写入的前缀字节随 -1/错误回复对
-            // 调用方不可见，故与 C 的即时中断在可观测面等价。
+            // C's put_once in read_write aborts on a copyout failure and
+            // returns r (libfsdriver/utility.c:52-53) — capture the first
+            // transport error, and override the reply even if the driver chain
+            // otherwise succeeded; the already-written prefix bytes are
+            // invisible to the caller under the -1/error reply, so this is
+            // observably equivalent to C's immediate abort.
             let mut transport_error: Option<Errno> = None;
             let mut moved = 0usize;
             let adapted = adapt_read(&mut server.driver, input, &mut |bytes: &[u8]| {
@@ -617,8 +620,9 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                 Err(e) => return err(e),
             };
             let mut moved = 0usize;
-            // SD-19 signature rework：同 Read 臂，peek 模拟读链的 copyout
-            // 失败也要覆盖回复（C put_once 失败即中断回 r）。
+            // Same as the Read arm: a copyout failure in the peek-emulated read
+            // chain must override the reply too (C's put_once aborts and
+            // returns r on failure).
             let mut transport_error: Option<Errno> = None;
             let result = match path {
                 PeekPath::Direct => adapt_peek(&mut server.driver, input, path, &mut |driver, input| {
@@ -659,8 +663,9 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             capacity,
         } => {
             let mut resume = position;
-            // SD-19 signature rework：C getdents 的 dentry 刷写链每步
-            // copyout 失败即 `return r`（dentry.c:52-54）——首个传输错覆盖回复。
+            // Each step of C's getdents dentry-flush chain does `return r` on a
+            // copyout failure (dentry.c:52-54) — the first transport error
+            // overrides the reply.
             let mut transport_error: Option<Errno> = None;
             let mut moved = 0usize;
             let result = adapt_get_dents(
@@ -838,8 +843,8 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             Err(e) => err(e),
         },
         RequestBody::ReadLink { inode, capacity } => {
-            // SD-19 signature rework：同 Read 链（C `fsdriver_rdlink` 的
-            // copyout 失败即回 r，call.c:690-712）。
+            // Same as the Read chain (C's `fsdriver_rdlink` returns r on a
+            // copyout failure, call.c:690-712).
             let mut transport_error: Option<Errno> = None;
             let mut moved = 0usize;
             let result = adapt_read_link(&mut server.driver, inode, capacity, &mut |bytes: &[u8]| {
@@ -864,29 +869,35 @@ fn dispatch<D: FsDriver, T: FsTransport>(
         }
         RequestBody::Stat { inode } => {
             let mut stat = minix_types::Stat::zeroed();
-            // C `fsdriver_stat`（call.c:733-734）在问驱动前先预填 `st_ino`
-            // （`st_dev` 取 `fsdriver_device`，框架侧无该通道，按 call.rs 既有
-            // 契约由各 FS 驱动自填——MFS 即如此）。预填 inode 零成本且对齐 C。
+            // C `fsdriver_stat` (call.c:733-734) pre-fills `st_ino` before
+            // asking the driver (`st_dev` comes from `fsdriver_device`, and the
+            // framework side has no such channel, so each FS driver fills it per
+            // the existing call.rs contract — MFS does exactly that). Pre-filling
+            // the inode costs nothing and matches C.
             stat.inode = inode;
             match adapt_stat(&mut server.driver, inode, &mut stat) {
                 Ok(()) => {
-                    // C `fsdriver_stat`（call.c:717-741）：驱动填好后，magic
-                    // grant 把**用户 `struct stat`** 缓冲授权给 FS 直写——FS
-                    // 必须按 C 布局（`st_mode@8`…）copy_out 到调用方缓冲，
-                    // 否则用户缓冲停留在零值（`st_mode=0` → 目录判型失败，
-                    // 18-stage `ls` 把 `/bin` 当普通文件的根因）。
+                    // C `fsdriver_stat` (call.c:717-741): once the driver has
+                    // filled it in, the magic grant authorizes the **user
+                    // `struct stat`** buffer for the FS to write directly — the
+                    // FS must copy_out in C's layout (`st_mode@8` …) into the
+                    // caller's buffer, or the user buffer stays zero
+                    // (`st_mode=0` → directory type detection fails, which is
+                    // why an `ls` at the 18-stage sees `/bin` as a plain file).
                     let user = stat.write_user_stat();
-                    // SAFETY: `user` 是 `#[repr(C)]` 无不变量 POD，取其字节
-                    // 视图写入 grant；长度用 `USER_STAT_SIZE` 与授权窗口对齐。
+                    // SAFETY: `user` is a `#[repr(C)]` POD with no invariants; a
+                    // byte view of it is written into the grant, with the length
+                    // aligned to the grant window via `USER_STAT_SIZE`.
                     let bytes = unsafe {
                         core::slice::from_raw_parts(
                             &user as *const _ as *const u8,
                             minix_types::Stat::USER_STAT_SIZE,
                         )
                     };
-                    // SD-19 signature rework：C `fsdriver_stat` 最后一步
-                    // `r = fsdriver_copyout(...)` 直接把传输错写进回复 status
-                    // （call.c:717-741）——失败不再回 zero()。
+                    // The last step of C `fsdriver_stat` —
+                    // `r = fsdriver_copyout(...)` — writes the transport error
+                    // straight into the reply status (call.c:717-741); a failure
+                    // no longer replies zero().
                     match transport.copy_out(0, bytes) {
                         Ok(()) => zero(),
                         Err(e) => err(e),
@@ -921,13 +932,17 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             let mut vfs = minix_types::StatVfs::zeroed();
             match adapt_stat_vfs(&mut server.driver, &mut vfs) {
                 Ok(()) => {
-                    // C `fs_statvfs` + `req_statvfs`（request.c:232-247）：驱动填好后，
-                    // FS 必须按 C `struct statvfs` 布局（`statvfs_off` 权威偏移）copy_out
-                    // 到 VFS 授权的整块缓冲，否则 `df`/`statvfs` 用户缓冲停留零值
-                    // （此前此腿只 `zero()` 丢弃 `vfs`——同 `Stat` 腿已修的那个根因）。
+                    // C `fs_statvfs` + `req_statvfs` (request.c:232-247): once the
+                    // driver has filled it in, the FS must copy_out in C's
+                    // `struct statvfs` layout (`statvfs_off` is the authoritative
+                    // offset) into the whole VFS-authorized buffer, or the
+                    // `df`/`statvfs` user buffer stays zero (this leg used to
+                    // just `zero()` `vfs` away — the same root cause already
+                    // fixed on the `Stat` leg).
                     let buf = vfs.write_user_statvfs();
-                    // SD-19 signature rework：与 `Stat` 腿同律——`fsdriver_copyout`
-                    // 失败直接把传输错写进回复 status，不再回 zero()。
+                    // Same rule as the `Stat` leg — `fsdriver_copyout` failure
+                    // writes the transport error into the reply status and no
+                    // longer replies zero().
                     match transport.copy_out(0, buf.as_bytes()) {
                         Ok(()) => zero(),
                         Err(e) => err(e),
@@ -956,7 +971,7 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             let mut transport_error: Option<Errno> = None;
             let mut moved = 0usize;
             let _ = position;
-            // SD-19 signature rework：同 Read 链（块读回写也走 put_once）。
+            // Same as the Read chain (block read-back also goes through put_once).
             let adapted = adapt_block_read(&mut server.driver, input, &mut |bytes: &[u8]| {
                 if let Err(e) = transport.copy_out(moved, bytes) {
                     transport_error.get_or_insert(e);
@@ -1045,7 +1060,8 @@ mod tests {
         replies: alloc::vec::Vec<(i32, FsReply)>,
         out_bytes: alloc::vec::Vec<u8>,
         in_bytes: alloc::vec::Vec<u8>,
-        // SD-19 回归用：从该偏移起的 copy_out 一律报传输失败（None = 永不）。
+        // For regressions: every copy_out from this offset on reports a
+        // transport failure (None = never).
         fail_copy_at: Option<usize>,
     }
 
@@ -1312,11 +1328,12 @@ mod tests {
         );
     }
 
-    /// SD-19 处置表最后一档（signature rework，`fs-rt copy_out`）的回归针：
-    /// 传输腿 copy_out 报失败时，驱动读本身再成功也不得回 OK——C
-    /// `fsdriver_copyout`（libfsdriver/utility.c:52-53）把 safecopyto 的错
-    /// 直接回给调用方，`read_write` 随即中断回 r。旧签名 `copy_out(...)`
-    /// 无返回值，该错被静默吞掉；现在首个传输错必须覆盖本次回复 status。
+    /// Regression pin for the copyout-error signature: when the transport leg's
+    /// copy_out reports a failure, a driver read that itself succeeded must not
+    /// reply OK — C `fsdriver_copyout` (libfsdriver/utility.c:52-53) returns the
+    /// safecopyto error straight to the caller, and `read_write` then aborts
+    /// with r. A `copy_out(...)` signature without a return value swallowed that
+    /// error; the first transport error must now override this reply's status.
     #[test]
     fn test_read_copyout_transport_failure_overrides_ok_reply() {
         struct ReadDriver;
@@ -1365,7 +1382,7 @@ mod tests {
             ),
         ];
         let mut transport = ScriptedTransport::new(incoming);
-        transport.fail_copy_at = Some(0); // 从第一字节起传输即坏
+        transport.fail_copy_at = Some(0); // the transport is broken from the first byte on
         let mut server: Server<ReadDriver> = Server::new(ReadDriver);
         run(&mut server, &mut transport);
         let (_, read_reply) = &transport.replies[1];
@@ -1376,9 +1393,11 @@ mod tests {
         );
     }
 
-    /// statvfs 腿必须把整块 C `struct statvfs`（按 `statvfs_off` 权威偏移）经
-    /// `copy_out` 达 VFS 授权缓冲；此前此腿只 `zero()` 丢弃 `vfs`，使 `df`/
-    /// `statvfs` 用户缓冲恒零（同 stat 腿已修的那个根因）。
+    /// The statvfs leg must pass the whole C `struct statvfs` (at the
+    /// authoritative `statvfs_off` offsets) through `copy_out` into the
+    /// VFS-authorized buffer; this leg used to just `zero()` `vfs` away, leaving
+    /// the `df`/`statvfs` user buffer always zero (the same root cause already
+    /// fixed on the stat leg).
     #[test]
     fn test_statvfs_streams_struct_statvfs_through_copy_out() {
         struct StatVfsDriver;
@@ -1420,8 +1439,8 @@ mod tests {
         let mut server: Server<StatVfsDriver> = Server::new(StatVfsDriver);
         run(&mut server, &mut transport);
         use minix_types::statvfs_off as off;
-        // 整块 C `struct statvfs`（272 字节）须经 copy_out 达 grant——修复前此腿
-        // 只 zero()、out_bytes 为空。
+        // The whole C `struct statvfs` (272 bytes) must reach the grant through
+        // copy_out; before the fix this leg only zero()ed and out_bytes was empty.
         assert!(
             transport.out_bytes.len() >= minix_types::STATVFS_SIZE,
             "statvfs 字节必须整块达 grant"
@@ -1433,10 +1452,12 @@ mod tests {
         assert_eq!(u64_at(off::NAMEMAX), 60);
     }
 
-    /// stat 回复必须像 read 一样经 `copy_out` 落进用户的 magic grant 缓冲，
-    /// 且按 C `struct stat` 布局（`st_mode@8`、`st_size@112`）。此前此腿只
-    /// 回 status、从不落字节，导致用户缓冲停留在 `st_mode=0`——18-stage
-    /// `ls` 把 `/bin` 目录判成普通文件、只打印自身名的根因回归针。
+    /// A stat reply must land in the caller's magic grant buffer through
+    /// `copy_out`, the way a read does, and in C's `struct stat` layout
+    /// (`st_mode@8`, `st_size@112`). This leg used to reply with a status only
+    /// and never write bytes, leaving the user buffer at `st_mode=0` — the
+    /// regression pin for an `ls` at the 18-stage classifying `/bin` as a plain
+    /// file and printing its own name only.
     #[test]
     fn test_stat_streams_struct_stat_through_copy_out() {
         struct StatDriver;
@@ -1476,7 +1497,7 @@ mod tests {
         let mut transport = ScriptedTransport::new(incoming);
         let mut server: Server<StatDriver> = Server::new(StatDriver);
         run(&mut server, &mut transport);
-        // 整个用户 `struct stat` 缓冲应落到 grant（至少覆盖 st_size@112）。
+        // The whole user `struct stat` buffer should land in the grant (covering at least st_size@112).
         assert!(
             transport.out_bytes.len() >= 120,
             "stat 字节必须经 copy_out 达 grant"

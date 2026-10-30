@@ -97,10 +97,10 @@ pub(crate) fn stack_params(argv: &[&str], envp: &[&str]) -> Result<usize, Errno>
         }
         Ok(slots)
     };
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] best effort: the closure's slot count is not needed here; only its accumulation into `total` matters, and it propagates its own error
     #[allow(clippy::let_underscore_must_use)]
     let _ = count(argv)?;
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] best effort: the closure's slot count is not needed here; only its accumulation into `total` matters, and it propagates its own error
     #[allow(clippy::let_underscore_must_use)]
     let _ = count(envp)?;
     Ok(total.div_ceil(SLOT) * SLOT)
@@ -400,7 +400,7 @@ mod tests {
 mod setenv_tests {
     use super::*;
 
-    /// replace-in-place + append（C setenv rewrite=1，setenv.c:63-77）。
+    /// replace-in-place + append (C setenv rewrite=1, setenv.c:63-77).
     #[test]
     fn test_apply_env_override_replaces_and_appends() {
         let mut env: Vec<(String, String)> =
@@ -417,7 +417,8 @@ mod setenv_tests {
         );
     }
 
-    /// 空名与含 = 的名回 EINVAL（C setenv.c:70-74，__envvarnamelen 0）。
+    /// An empty name, or one containing `=`, answers EINVAL (C setenv.c:70-74,
+    /// `__envvarnamelen` returning 0).
     #[test]
     fn test_apply_env_override_rejects_malformed_names() {
         let mut env: Vec<(String, String)> = Vec::new();

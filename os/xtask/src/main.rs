@@ -1,13 +1,13 @@
 //! Minix-RS Build System (xtask)
 //!
-//! 用法:
-//!   cargo run -p xtask build          # 编译项目（宿主开发面，全量）
-//!   cargo run -p xtask test           # 运行所有测试
-//!   cargo run -p xtask test --slice fork  # 运行 fork 切片测试
-//!   cargo run -p xtask check          # 检查代码
-//!   cargo run -p xtask doc            # 生成文档
-//!   cargo run -p xtask image          # 装配可启动机镜像（E-IMGPKG）
-//!   cargo run -p xtask qemu           # 用镜像启动 QEMU
+//! Usage:
+//!   cargo run -p xtask build          # build the project (host dev face, full)
+//!   cargo run -p xtask test           # run all tests
+//!   cargo run -p xtask test --slice fork  # run the fork slice tests
+//!   cargo run -p xtask check          # check the code
+//!   cargo run -p xtask doc            # generate documentation
+//!   cargo run -p xtask image          # assemble a bootable machine image
+//!   cargo run -p xtask qemu           # boot QEMU with the image
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -27,60 +27,64 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 编译项目（宿主开发面：库 + 内核 + 装机清单全量服务器）
+    /// Build the project (host dev face: libraries + kernel + all manifest servers)
     Build {
         #[arg(short, long)]
         release: bool,
     },
-    /// 运行测试
+    /// Run tests
     Test {
-        /// 指定切片测试（fork/exec/exit/...）
+        /// Run a specific slice of tests (fork/exec/exit/...)
         #[arg(short, long)]
         slice: Option<String>,
     },
-    /// 检查代码
+    /// Check the code
     Check,
-    /// 生成文档
+    /// Generate documentation
     Doc,
-    /// 清理构建产物
+    /// Clean build artifacts
     Clean,
-    /// 装配可启动机镜像（boot-shim + 内核 + 12 模块 + imgrd）
+    /// Assemble a bootable machine image (boot-shim + kernel + 12 modules + imgrd)
     Image {
         #[arg(short, long)]
         release: bool,
-        /// 目标架构（x86_64 / aarch64 / riscv64）
+        /// Target architecture (x86_64 / aarch64 / riscv64)
         #[arg(long, default_value = "x86_64")]
         arch: String,
-        /// 内核 ELF 路径（缺省取 target/x86_64-unknown-none/<profile>/kernel，
-        /// 即 kernel-image 包的产出工件；ESP 安装名恒为 /EFI/minix/kernel.elf）
+        /// Kernel ELF path (defaults to target/x86_64-unknown-none/<profile>/kernel,
+        /// i.e. the artifact produced by the kernel-image package; the ESP install
+        /// name is always /EFI/minix/kernel.elf)
         #[arg(long)]
         kernel: Option<PathBuf>,
-        /// 只打印装配计划，不落盘
+        /// Only print the assembly plan, write nothing
         #[arg(long)]
         dry_run: bool,
     },
-    /// 用装配好的镜像启动 QEMU（真机验证须先确认 QEMU 空闲窗口）
+    /// Boot QEMU with the assembled image (real-machine verification must first
+    /// confirm a free QEMU window)
     Qemu {
-        /// 目标架构（x86_64 / aarch64 / riscv64）
+        /// Target architecture (x86_64 / aarch64 / riscv64)
         #[arg(long, default_value = "x86_64")]
         arch: String,
-        /// 盘镜像路径（缺省取 target/image/<arch>/minix.img）
+        /// Disk image path (defaults to target/image/<arch>/minix.img)
         #[arg(long)]
         image: Option<PathBuf>,
-        /// 串口日志路径（缺省取 target/image/<arch>/serial.log）
+        /// Serial log path (defaults to target/image/<arch>/serial.log)
         #[arg(long)]
         serial: Option<PathBuf>,
-        /// 只打印命令行，不启动
+        /// Only print the command line, do not start
         #[arg(long)]
         dry_run: bool,
     },
-    /// 生成 ATF 上机面（rc 变体 + atf-plan.txt）——给不走 UEFI 盘形装配的
-    /// 架构（riscv64 OpenSBI 直载）播种；用例表/注入规则与 `image` 同源
+    /// Generate the ATF on-target face (rc variant + atf-plan.txt) — seeds
+    /// architectures that do not go through the UEFI disk-image assembly
+    /// (riscv64 direct OpenSBI load); the case table and injection rules share
+    /// their source with `image`
     AtfFace {
-        /// 目标架构（aarch64 / riscv64）
+        /// Target architecture (aarch64 / riscv64)
         #[arg(long, default_value = "riscv64")]
         arch: String,
-        /// 只打印不落盘
+        /// Only print, write nothing
         #[arg(long)]
         dry_run: bool,
     },
@@ -120,32 +124,35 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// 宿主开发面全量构建：基础库 + 内核 + 装机清单 12 包 + 盘工具。
+/// Full host dev-face build: base libraries + kernel + the 12 manifest packages
+/// + the disk tools.
 ///
-/// 这里的目标是宿主三元组（服务器/命令的 E5 宿主半运行形态）；镜像
-/// 产出的 guest/UEFI 目标构建归 `image` 子命令（生产开关与
-/// `--target` 成对传递，见 image.rs 模块文档）。
+/// The targets here are the host triple (the E5 host-half run shape of servers
+/// and commands); the guest/UEFI target builds that produce the image belong to
+/// the `image` subcommand (the production switch and `--target` are passed in
+/// pairs; see the image.rs module documentation).
 fn build(release: bool) -> anyhow::Result<()> {
     println!("🚀 Building Minix-RS (host dev, full manifest)...");
 
-    // 编译库
+    // Build the libraries
     println!("📦 Building libraries...");
     run_cargo(&["build", "-p", "minix-types"], release)?;
     run_cargo(&["build", "-p", "minix-plat"], release)?;
     run_cargo(&["build", "-p", "minix-sys"], release)?;
     run_cargo(&["build", "-p", "minix-rt"], release)?;
 
-    // 编译内核
+    // Build the kernel
     println!("🔨 Building kernel...");
     run_cargo(&["build", "-p", "minix-kernel"], release)?;
 
-    // 编译装机清单全量服务器（X-11 白名单语义：镜像只装清单内包）
+    // Build every server on the manifest (whitelist semantics: the image only
+    // carries packages listed there)
     println!("🔧 Building boot modules (manifest)...");
     for entry in manifest::BOOT_MODULES.iter() {
         run_cargo(&["build", "-p", entry.package], release)?;
     }
 
-    // 盘工具（imgrd 生成器）
+    // Disk tools (the imgrd generator)
     run_cargo(&["build", "-p", "minix-diskfmt"], release)?;
 
     println!("✅ Build complete!");
@@ -156,7 +163,7 @@ fn run_tests(slice: Option<String>) -> anyhow::Result<()> {
     match slice {
         Some(s) => {
             println!("🧪 Running {s} slice tests...");
-            // 运行特定切片测试
+            // Run the specific slice tests
             run_cargo(&["test", "-p", "minix-pm", &s], false)?;
         }
         None => {

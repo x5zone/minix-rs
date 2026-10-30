@@ -92,7 +92,7 @@ pub fn terminate(code: i32) -> ! {
 #[cfg(any(test, not(target_os = "none")))]
 pub fn warn(bytes: &[u8]) {
     use std::io::Write as _;
-    //[SD19-gate] SD-19: hosted warn stderr
+    //[SD19-gate] best-effort hosted stderr warn: the write result is intentionally dropped
     #[allow(clippy::let_underscore_must_use)]
     let _ = std::io::stderr().write_all(bytes);
 }
@@ -111,10 +111,11 @@ pub fn warn(bytes: &[u8]) {
     let _ = minix_sys::write(STDERR, bytes);
 }
 
-/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（住在 `minix-types` 的 errno
-/// 表旁，本层经 `minix_sys::prog_name` 拿；规则见
-/// `minix3/lib/csu/common/crt0-common.c:156-165`）。
-/// `warn(3)`/`err(3)`/`usage()` 的那几行都以它开头。
+/// C's `getprogname()`: the last slash-separated segment of `argv[0]` (it
+/// lives next to the errno table in `minix-types`, reached here through
+/// `minix_sys::prog_name`; the rule is in
+/// `minix3/lib/csu/common/crt0-common.c:156-165`).
+/// The `warn(3)`/`err(3)`/`usage()` lines all begin with it.
 pub fn prog_name(argv: &[alloc::string::String]) -> &str {
     let raw = argv
         .first()
@@ -123,13 +124,16 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
     minix_sys::prog_name(raw)
 }
 
-/// Minix3 的 `perror(3)` 那一行：`<label>: <句子>`（**不带程序名**，见
-/// `minix3/lib/libc/stdio/perror.c`），写完不换行由本函数补换行、不退——退不退由调用者定。
+/// Minix3's `perror(3)` line: `<label>: <sentence>` (**without a program
+/// name**, see `minix3/lib/libc/stdio/perror.c`). The write leaves off the
+/// newline; this function appends it and does not exit — the caller decides.
 pub fn perror_line(label: &str, code: minix_sys::Errno) {
-    // C 的 `perror` 把调用者的串整个 `fprintf` 出去，只有句子走定长的 `strerror_r`
-    // 表（`minix3/lib/libc/stdio/perror.c:57-67`）。权威 `perror_line` 交回的是「本该
-    // 写多少字节」——缓冲装不下也照数——所以这里先量一次、再按那个数渲染，
-    // 超长操作数不会被截断。
+    // C's `perror` prints the caller's whole string through `fprintf`; only
+    // the sentence goes through the fixed-size `strerror_r` table
+    // (`minix3/lib/libc/stdio/perror.c:57-67`). The `perror_line` authority
+    // returns "how many bytes should have been written" — counted even when
+    // the buffer is too small — so size once here, then render to that size:
+    // an overlong operand is never truncated.
     let mut sizing: [u8; 0] = [];
     let need = minix_sys::perror_line(label, code, &mut sizing);
     let mut line = alloc::vec![0u8; need];
@@ -138,14 +142,18 @@ pub fn perror_line(label: &str, code: minix_sys::Errno) {
     warn(b"\n");
 }
 
-/// C 的 `warn(3)` 那一行：`prog: label: <strerror 的句子>` 加一个换行，写完继续跑
-/// （`vwarn.c` 不退，退不退由调用者决定）。形状与句子都由 `minix_sys::err_line` 转发的那
-/// 一份权威给出（住在 `minix-types` 的 errno 表旁，对位 `minix3/lib/libc/gen/verrc.c` 与 C
-/// 的 `sys_errlist`）。
+/// C's `warn(3)` line: `prog: label: <strerror sentence>` plus a newline;
+/// after writing it the caller keeps running (`vwarn.c` does not exit — the
+/// caller decides). Both the shape and the sentence come from the authority
+/// `minix_sys::err_line` forwards to (it lives next to the errno table in
+/// `minix-types`, matching `minix3/lib/libc/gen/verrc.c` and C's
+/// `sys_errlist`).
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
-    // C 的 `vwarnc` 直接用 `vfprintf(stderr, fmt, ap)` 打调用者的串，长度不进方程
-    // （`minix3/lib/libc/gen/vwarnc.c:62`）——不先量长度就会把超长操作数截在缓冲
-    // 边界上。`err_line` 交回的是需要的字节数，故先拿它量一次、再按这个数渲染。
+    // C's `vwarnc` prints the caller's string with `vfprintf(stderr, fmt, ap)`
+    // directly, so its length never enters the equation
+    // (`minix3/lib/libc/gen/vwarnc.c:62`) — without sizing first, an overlong
+    // operand would be cut at the buffer boundary. `err_line` returns the
+    // needed byte count, so size with it first and then render to that size.
     let mut sizing: [u8; 0] = [];
     let need = minix_sys::err_line(prog, label, code, &mut sizing);
     let mut line = alloc::vec![0u8; need];

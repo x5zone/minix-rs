@@ -1,4 +1,4 @@
-//! ATA PIO data-movement + task-file register layer (U-6 阶段二 increment 1).
+//! ATA PIO data-movement + task-file register layer.
 //!
 //! C correspondence: `minix3/minix/drivers/storage/at_wini/at_wini.h`
 //! (register offsets `:23-36`, status bits `:37-45`, LDH constants `:30-33`,
@@ -119,16 +119,21 @@ pub enum PioError {
     Timeout,
 }
 
-/// Outcome of an extent transfer. C `w_transfer` 回两类错：地址/长度不合
-/// 格回 `EINVAL`（at_wini.c:1027/1035），寄存器超时经重试耗尽后回 `EIO`
-/// （:1201-1206）——本层把 `PioError` 直接上抛，由接线层按 C 的重试计数定终态。
+/// Outcome of an extent transfer. C `w_transfer` reports two kinds of error:
+/// a bad address/length yields `EINVAL` (at_wini.c:1027/1035), and a register
+/// timeout after the retries are spent yields `EIO` (:1201-1206) — this layer
+/// propagates `PioError` as is and lets the wiring layer settle the final
+/// state from C's retry counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferError {
-    /// `position` 或请求长度不是扇区大小（512B）的整数倍。C: EINVAL。
+    /// `position` or the request length is not a multiple of the sector size
+    /// (512B). C: EINVAL.
     Unaligned,
-    /// 无法选中可寻址模式（CHS-only 且几何不可用）。C: do_transfer 无适用分支。
+    /// No address mode can be selected (CHS-only with unusable geometry).
+    /// C: do_transfer has no applicable branch.
     NoAddressMode,
-    /// 寄存器轮询超时。上层据此走 C 的 errors/max_errors 重试→EIO 路径。
+    /// Register polling timed out. The caller turns this into C's
+    /// errors/max_errors retry → EIO path.
     Pio(PioError),
 }
 
@@ -601,12 +606,15 @@ pub fn pio_write_sectors(
     Ok(())
 }
 
-/// C `w_transfer` 外层 extent 环（非 DMA 分支、polling 形）：把一段字节范围按
-/// 每命令 ≤ `max_count` 切块，逐块发一条读/写命令再逐扇区搬运，遇 EOF 裁剪。
-/// 数据落地由调用方给定的字节切片承载（生产里是已映射的 grant）；真机的
-/// IRQ 等待与 grant↔slice 桥接在 `block_face::transfer` 接线时补——本函数是
-/// 可离线测的命令时序 + extent 记账核心。返回成功搬运的字节数（C 的 `total`）。
-#[allow(clippy::too_many_arguments)] // 对位 C w_transfer 的硬件参数面（基址/几何/能力/方向/偏移），拆结构体反而掩盖调用序
+/// C `w_transfer`'s outer extent loop (non-DMA branch, polling form): split a
+/// byte range into chunks of at most `max_count` per command, issue one
+/// read/write command per chunk and move it sector by sector, clipping at EOF.
+/// The bytes land in the caller-provided slice (in production, the mapped
+/// grant); the real-machine IRQ wait and the grant↔slice bridge are added when
+/// `block_face::transfer` gets wired — this function is the offline-testable
+/// command sequencing plus extent accounting core. Returns the number of bytes
+/// moved (C's `total`).
+#[allow(clippy::too_many_arguments)] // mirrors C w_transfer's hardware parameter surface (base/geometry/caps/direction/offset); a struct would hide the call order
 pub fn transfer_extent<B: IoBus>(
     bus: &mut B,
     base_cmd: u16,
@@ -622,11 +630,13 @@ pub fn transfer_extent<B: IoBus>(
     max_polls: u32,
 ) -> Result<u64, TransferError> {
     const SECTOR_SIZE: u64 = SECTOR_WORDS as u64 * 2;
-    // C :1027/1035 — 起始偏移与请求长度都须是扇区整数倍。
+    // C :1027/1035 — both the starting offset and the request length must be
+    // whole sectors.
     if !position.is_multiple_of(SECTOR_SIZE) || !(buf.len() as u64).is_multiple_of(SECTOR_SIZE) {
         return Err(TransferError::Unaligned);
     }
-    // C :306/:1505-1508 — max_count 恒 ≥ 一扇区；传入 0 归一为一个。
+    // C :306/:1505-1508 — max_count is always ≥ one sector; a 0 passed in is
+    // normalized to one.
     let max_count = max_count.max(SECTOR_SIZE as usize);
     let eightheads = caps.heads >= 8;
     let total_bytes = buf.len() as u64;
@@ -634,11 +644,13 @@ pub fn transfer_extent<B: IoBus>(
     let mut sector = [0u16; SECTOR_WORDS];
 
     while off < total_bytes {
-        // C :1038 — 到/过 EOF 就停，返回已搬量（非错）。
+        // C :1038 — stop at or past EOF and return what was moved (not an
+        // error).
         if position >= dv_size {
             break;
         }
-        // C :1039-1040 — 跨端裁剪，再向下对齐到扇区边界。
+        // C :1039-1040 — clip at the end of the device, then round down to a
+        // sector boundary.
         let remaining = total_bytes - off;
         let room = dv_size - position;
         let mut chunk = remaining.min(room).min(max_count as u64);
@@ -648,10 +660,10 @@ pub fn transfer_extent<B: IoBus>(
             break;
         }
 
-        // C :1041 — 设备内字节偏 → 起始块。
+        // C :1041 — device-relative byte offset → starting block.
         let block = byte_to_block(dv_base, position);
-        // C :1064→do_transfer(:896-930) — 按能力选 LBA48/LBA28/CHS 并发命令（一命
-        // 令覆盖 n_sectors 个扇区）。
+        // C :1064→do_transfer(:896-930) — pick LBA48/LBA28/CHS by capability
+        // and issue the command (one command covers n_sectors sectors).
         let cmd = block_command(caps, block, n_sectors as u16, drive, do_write)
             .ok_or(TransferError::NoAddressMode)?;
         match &cmd {
@@ -664,7 +676,9 @@ pub fn transfer_extent<B: IoBus>(
             }
         }
 
-        // C :1128-1198 — 逐扇区：读先等 BSY 清+DRQ 置再取字，写先等再送字。
+        // C :1128-1198 — sector by sector: a read waits for BSY clear + DRQ
+        // set before taking the words, a write waits first and then sends
+        // them.
         for s in 0..n_sectors {
             let dst = (off as usize) + s * SECTOR_SIZE as usize;
             if do_write {
@@ -684,7 +698,7 @@ pub fn transfer_extent<B: IoBus>(
                 }
             }
         }
-        // C :1189-1191 — 记账推进。
+        // C :1189-1191 — advance the accounting.
         off += chunk;
         position += chunk;
     }
@@ -1109,7 +1123,7 @@ mod tests {
         assert_eq!(&bus.word_writes[0].1[..2], &[0xAAAA, 0xBBBB]);
     }
 
-    // ── transfer_extent（C w_transfer 外层 extent 环）──
+    // ── transfer_extent (C w_transfer's outer extent loop) ──
 
     fn lba28_caps() -> IdentifyInfo {
         IdentifyInfo {
@@ -1122,7 +1136,8 @@ mod tests {
         }
     }
 
-    /// 取出所有写到命令寄存器的字节（即每条发出的 opcode），验证命令次数/选路。
+    /// Collects every byte written to the command register (i.e. each issued
+    /// opcode), so tests can check the command count and the selected route.
     fn issued_commands(bus: &MockBus) -> Vec<u8> {
         bus.writes
             .iter()
@@ -1152,7 +1167,8 @@ mod tests {
         .unwrap();
         assert_eq!(total, 512);
         assert_eq!(issued_commands(&bus), vec![CMD_READ]);
-        // 数据确实从设备腿落地（MockBus 字填充非零）。
+        // The data really landed from the device leg (MockBus fills words
+        // with non-zero values).
         assert_ne!(buf, [0u8; 512]);
     }
 
@@ -1180,8 +1196,8 @@ mod tests {
     #[test]
     fn transfer_extent_splits_request_across_max_count() {
         let mut bus = MockBus::new(vec![STATUS_DRQ]);
-        let mut buf = [0u8; 1024]; // 两个扇区
-        // max_count = 一扇区 → 拆两条命令、共返 1024 字节。
+        let mut buf = [0u8; 1024]; // two sectors
+        // max_count = one sector → split into two commands, 1024 bytes total.
         let total = transfer_extent(
             &mut bus,
             BASE_CMD,
@@ -1204,8 +1220,9 @@ mod tests {
     #[test]
     fn transfer_extent_clips_at_eof() {
         let mut bus = MockBus::new(vec![STATUS_DRQ]);
-        let mut buf = [0u8; 1024]; // 想要两个扇区
-        // 设备只有 1 个扇区 → C :1039 跨端裁剪，只搬 1 个扇区、一命令。
+        let mut buf = [0u8; 1024]; // asking for two sectors
+        // The device has only 1 sector → C :1039 clips at the end, so only one
+        // sector moves, in one command.
         let total = transfer_extent(
             &mut bus,
             BASE_CMD,

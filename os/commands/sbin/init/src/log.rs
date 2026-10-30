@@ -3,7 +3,6 @@
 //! Covers `minix3/sbin/init/init.c:440-511` (`stall`, `warning`,
 //! `emergency`, `disaster`). `print_console` (`#if 0`) and `badsys`
 //! (non-Minix branch) are deliberately not modelled.
-//! Design contract: `.design/03-design.v1.md §1.1-§1.4`.
 //! Syslog gap: ARCH A-3 (no syslog service yet; console fallback).
 //!
 //! All output and sleeping go through the [`InitHost`] seam: the
@@ -28,7 +27,8 @@ pub const STALL_TIMEOUT_SECS: u64 = 30;
 /// Log and sleep (C: `stall`, init.c:440-450).
 pub fn stall(host: &mut dyn InitHost, message: &str) {
     host.console_write(Severity::Alert, message);
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] Best effort: C's `stall` discards the `sleep` return
+    // value (`(void)sleep(STALL_TIMEOUT)`).
     #[allow(clippy::let_underscore_must_use)]
     let _ = host.sleep_secs(STALL_TIMEOUT_SECS);
 }
@@ -58,7 +58,8 @@ pub enum DisasterAction {
 /// `sys_siglist[sig]`, init.c:507).
 pub fn disaster(host: &mut dyn InitHost, sig: Signal) -> DisasterAction {
     host.console_write(Severity::Emerg, &format!("fatal signal: {}", sig.name()));
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] Best effort: C's `disaster` discards the `sleep` return
+    // value (`(void)sleep(STALL_TIMEOUT)`).
     #[allow(clippy::let_underscore_must_use)]
     let _ = host.sleep_secs(STALL_TIMEOUT_SECS);
     DisasterAction::ExitWith(sig.signum())

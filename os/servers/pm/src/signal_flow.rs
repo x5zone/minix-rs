@@ -80,7 +80,7 @@ pub fn handle_sigsn_delay(
     deliver: &mut dyn SignalDeliver,
 ) -> bool {
     const SIGSNDELAY: i32 = 70;
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    //[SD19-gate] PM send/notify/reply are fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
     let _ = SIGSNDELAY;
     // In C this is called only when signo==SIGSNDELAY && DELAY_CALL.
@@ -99,13 +99,13 @@ pub fn handle_sigsn_delay(
     let is_vfs_or_event = table.procs[slot].state.block.is_vfs_blocked()
         || table.procs[slot].state.block.is_event_blocked();
     if is_vfs_or_event {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = stop_proc(table, UserSlot::new(slot), MayDelay::MustStop, kstop);
         return true;
     }
     // Else check_pending (366)
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    //[SD19-gate] PM send/notify/reply are fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
     let _ = check_pending(table, UserSlot::new(slot), deliver);
     assert!(!matches!(
@@ -211,7 +211,7 @@ pub fn unpause(
     }
     if proc.state.wait.waiting || proc.resources.signals.suspended {
         // `WAITING|SIGSUSPENDED` → stop(MustStop) → Ready (745-753)
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = stop_proc(table, target, MayDelay::MustStop, kstop).expect("MustStop should not defer");
         return UnpauseOutcome::Ready;
@@ -266,17 +266,20 @@ pub fn check_pending(
     CheckPendingOutcome::Completed
 }
 
-/// `restart_sigs` 三个注入点的合并 trait（D5，2026-09-06 收敛）。
+/// The merged trait over `restart_sigs`' three injection points.
 ///
-/// 原设计按 C 的三个模块级调用（`sys_resume`/`exit_proc`/`sig_proc`）拆成
-/// [`KernelResume`]/[`ExitHandler`]/[`SignalDeliver`] 三个独立 trait；生产
-/// 装配（`event.rs` 的事件终止分派）中三者共享同一 `transport`——三个独立
-/// 的 `&mut` 借用无法共存。合并为一个 supertrait，[`restart_sigs`] 函数体
-/// 内经 trait 上转（upcasting）按需取用；三个成员 trait 保留不动，测试仍
-/// 可单独注入 `check_pending`/`stop_proc` 等其他消费者。
+/// The original design split it into three independent traits
+/// [`KernelResume`]/[`ExitHandler`]/[`SignalDeliver`], following C's three
+/// module-level calls (`sys_resume`/`exit_proc`/`sig_proc`); in the production
+/// assembly (`event.rs`'s event-termination dispatch) all three share one
+/// `transport`, and three independent `&mut` borrows cannot coexist. Merged
+/// into one supertrait: the body of [`restart_sigs`] upcasts through the trait
+/// and takes what it needs. The three member traits stay as they were, so
+/// tests can still inject `check_pending`/`stop_proc` and other consumers
+/// separately.
 pub trait RestartServices: KernelResume + ExitHandler + SignalDeliver {}
 
-/// Restarts signal work after VFS reply (`restart_sigs`, `signal.c:687-714`, D5).
+/// Restarts signal work after VFS reply (`restart_sigs`, `signal.c:687-714`).
 pub fn restart_sigs(
     table: &mut ProcTable,
     target: UserSlot,
@@ -289,8 +292,8 @@ pub fn restart_sigs(
     {
         return RestartAction::Noop;
     }
-    // Check TRACE_EXIT first (695-698) — tracer 强制退出：以缓存的退出码
-    // 走 exit_proc（dump_core=FALSE，C `signal.c:697`）。
+    // Check TRACE_EXIT first (695-698) — tracer-forced exit: exit_proc with
+    // the cached exit code (dump_core=FALSE, C `signal.c:697`).
     if table.procs[target.get()].state.trace.exit_pending {
         let status = table.procs[target.get()].state.lifecycle.exit_code().map(|(c,_)| c).unwrap_or(0);
         svc.exit_proc(table, target, status);
@@ -304,10 +307,10 @@ pub fn restart_sigs(
             ),
             "restart_sigs: !DELAY_CALL"
         );
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = check_pending(table, target, svc);
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = try_resume_proc(table, target, svc);
         return RestartAction::CheckAndResume;
@@ -392,7 +395,7 @@ mod tests {
         let mut table = ProcTable::new();
         mk_running(&mut table, 5);
         let mut k = BusyStop;
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = stop_proc(&mut table, UserSlot::new(5), MayDelay::MustStop, &mut k);
     }
@@ -413,7 +416,7 @@ mod tests {
         let mut table = ProcTable::new();
         mk_running(&mut table, 5);
         let mut k = FailStop;
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = stop_proc(&mut table, UserSlot::new(5), MayDelay::MayDefer, &mut k);
     }
@@ -529,8 +532,9 @@ mod tests {
         assert_eq!(table.procs[5].resources.signals.kernel_pending, 0);
     }
 
-    /// `restart_sigs` 的合并注入 mock（D5 收敛后单一 service 对象）：
-    /// 记录 exit 调用、转发 deliver 计数、kernel resume 恒 OK。
+    /// The merged-injection mock for `restart_sigs` (a single service object
+    /// after the merge): records exit calls, forwards a deliver count, and
+    /// always reports kernel resume OK.
     struct RestartMock {
         exit_called: bool,
         exit_status: i8,

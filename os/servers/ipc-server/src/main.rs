@@ -14,19 +14,19 @@ static GLOBAL: std::alloc::System = std::alloc::System;
 fn main() {
     #[cfg(not(test))]
     {
-        // S26 四步接线(main.c:216-284):
+        // Four-step wiring (main.c:216-284):
         use minix_ipc_server::boundary::{SysBoundary, SysEventLoopTransport};
         use minix_ipc_server::server::IpcServer;
         use minix_ipc_server::service::IpcService;
 
-        // 1. 生产边界(trap 后端包装)+ 内核事件循环传输。
+        // 1. Production boundary (trap-backend wrapper) + kernel event-loop transport.
         let boundary = SysBoundary::new();
         let transport = SysEventLoopTransport::new();
-        // 2. 服务装配(判定层 + 边界)。
+        // 2. Service assembly (decision layer + boundary).
         let server = IpcServer::new(transport, IpcService::new(boundary));
-        // 3. 启动登记(main.c:223-224;SEF 回调注册随 SEF 库接线)。
+        // 3. Startup registration (main.c:223-224; SEF callback registration comes with the SEF library wiring).
         server.init();
-        // 4. 事件循环(main.c:227-280;永不返回)。
+        // 4. Event loop (main.c:227-280; never returns).
         server.run();
     }
 }

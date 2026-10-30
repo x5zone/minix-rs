@@ -14,8 +14,8 @@
 //! - **MEMCTL (HEAP_PREALLOC)**: Delegates to brk module.
 //! - **MEMCTL (MAP_PREALLOC)**: Delegates to mmap module.
 //! - **MEMCTL (GET_PREALLOC_MAP)**: Queries region with PREALLOC_MAP flag.
-//! - **PREPARE**: Implemented — validates endpoints + pins both processes' memory via `map_pin_memory` + extends the destination heap to match the source via `brk` + transfers mmap regions CoW via `map_proc_dyn_data` (V11/T12).
-//! - **UPDATE**: Implemented — validates endpoints + checks RsUpdateFlags (ROLLBACK/NOMMAP) + PREALLOC_MAP conflict detection + kernel `sys_update` via the gateway + slot swap + dyn-data swap (V11/T13). Real kernel traffic waits for edge E2 (pre-E1 the trap stub answers -EIO, surfacing as `UpdateKernelFailed`).
+//! - **PREPARE**: Implemented — validates endpoints + pins both processes' memory via `map_pin_memory` + extends the destination heap to match the source via `brk` + transfers mmap regions CoW via `map_proc_dyn_data`.
+//! - **UPDATE**: Implemented — validates endpoints + checks RsUpdateFlags (ROLLBACK/NOMMAP) + PREALLOC_MAP conflict detection + kernel `sys_update` via the gateway + slot swap + dyn-data swap. Real kernel traffic waits for edge E2 (pre-E1 the trap stub answers -EIO, surfacing as `UpdateKernelFailed`).
 
 use minix_types::{VirBytes, Endpoint, UserSlot};
 use crate::vmproc::{VmProcTable, EndpointError};
@@ -44,8 +44,8 @@ pub(crate) enum RsError {
 
     // ── UPDATE specific ──
     PreallocMapConflict,
-    /// Kernel `sys_update` answered a negative errno (V11/T13; C rs.c:177
-    /// passes `r` straight through).
+    /// Kernel `sys_update` answered a negative errno (C rs.c:177 passes
+    /// `r` straight through).
     UpdateKernelFailed(i32),
 
     // ── MEMCTL specific ──
@@ -157,7 +157,7 @@ pub(crate) fn handle_rs_set_priv(
 /// the search key, so the `<=` on vaddr is part of the ground truth).
 /// Both HEAP_PREALLOC and the live-update dst-heap extension measure the
 /// break this way; `vm_region_top` is *not* used — in C it is only a
-/// slot-placement hint (region.c:391), never a break value (§续-279m).
+/// slot-placement hint (region.c:391), never a break value.
 fn data_region_end(proc: &crate::vmproc::ActiveProc<'_>) -> Result<u64, RsError> {
     proc.regions()
         .iter()
@@ -185,7 +185,7 @@ fn data_region_end(proc: &crate::vmproc::ActiveProc<'_>) -> Result<u64, RsError>
 /// 4. `map_pin_memory(dst_vmp)` — pin destination process
 /// 5. `map_proc_dyn_data(src_vmp, dst_vmp)` — map dynamic data
 ///
-/// All five steps are implemented below; step 5 (V11/T12) shares src's
+/// All five steps are implemented below; step 5 shares src's
 /// mmap-range regions into dst as CoW (`map_proc_dyn_data`, C:
 /// utility.c:283-300 — see A-8 contract notes in `25-rs-services.md`).
 pub(crate) fn handle_rs_prepare(
@@ -226,8 +226,7 @@ pub(crate) fn handle_rs_prepare(
     // not run out of heap during the live update window. The `src > dst`
     // guard is load-bearing: calling brk unconditionally would aim the
     // extension at a lower address than the dst heap already covers
-    // (harmless no-op since §续-279m, but C skips it for a reason — keep
-    // the skip).
+    // (a harmless no-op here, but C skips it for a reason — keep the skip).
     let src_data_end = {
         let src_proc = table.get_active(src_slot)
             .ok_or(RsError::ProcessNotFound)?;
@@ -268,7 +267,7 @@ pub(crate) fn handle_rs_prepare(
     Ok(())
 }
 
-/// V11/T12: `map_proc_dyn_data` (C: utility.c:283-300) — copy src's
+/// `map_proc_dyn_data` (C: utility.c:283-300) — copy src's
 /// memory-mapped regions into dst as CoW within the live-update range
 /// (`MMAP_BASE` upward; C utility.c:296 `VM_MMAPBASE..VM_MMAPTOP`, which in
 /// the non-magic build spans the whole user space).
@@ -296,8 +295,8 @@ fn map_proc_dyn_data(
         if dst_regions.iter().any(|vr| vr.vaddr == src_vr.vaddr) {
             continue;
         }
-        // CoW copy (C map_proc_copy_range → fork_region 语义): 继承布局、
-        // memtype 与 param；共享页引用计数不变。
+        // CoW copy (C map_proc_copy_range → fork_region semantics): inherits
+        // the layout, memtype and param; the shared-page refcount is unchanged.
         let mut dst_vr = VirRegion::new(src_vr.vaddr, src_vr.length, src_vr.flags);
         dst_vr.parent_slot = src_vr.parent_slot;
         dst_vr.def_memtype = src_vr.def_memtype;
@@ -315,8 +314,8 @@ fn map_proc_dyn_data(
 
 /// Handle VM_RS_UPDATE — execute live update process switch.
 ///
-/// Corresponds to Minix3's `do_rs_update()` (rs.c:150). Implemented
-/// (V11/T13): endpoint validation, flag check, PREALLOC_MAP check, kernel
+/// Corresponds to Minix3's `do_rs_update()` (rs.c:150). Implemented:
+/// endpoint validation, flag check, PREALLOC_MAP check, kernel
 /// `sys_update` via the gateway, `VmProcTable::swap_slots` (C
 /// `swap_proc_slot`, utility.c:188-216), and the dyn-data swap
 /// (`share_mappings` / `map_proc_dyn_data`, C `swap_proc_dyn_data`
@@ -343,7 +342,7 @@ fn map_proc_dyn_data(
 ///     // 5. Reply + return SUSPEND
 /// }
 /// ```
-/// V11/T13: parameter bundle for [`handle_rs_update`] — collapses the
+/// Parameter bundle for [`handle_rs_update`] — collapses the
 /// former 8-argument signature (clippy too_many_arguments) into one typed
 /// context.
 pub(crate) struct RsUpdateCtx<'a> {
@@ -389,7 +388,7 @@ pub(crate) fn handle_rs_update(ctx: &mut RsUpdateCtx) -> Result<RsUpdateResult, 
 
     // Step 4: kernel swap first (C rs.c:171-176 — sys_update(src_e, dst_e,
     // SYS_UPD_ROLLBACK-or-0); kernel do_update performs the 12-step swap).
-    // Wire (M1): m1i1=src, m1i2=dst, m1i3=flags (kernel dispatch_update).
+    // Wire: m1i1=src, m1i2=dst, m1i3=flags (kernel dispatch_update).
     let rollback = update_flags.contains(RsUpdateFlags::ROLLBACK);
     gateway.sys_update(src, dst, if rollback { 0x080 } else { 0 })
         .map_err(|e| match e {
@@ -430,7 +429,7 @@ pub(crate) fn handle_rs_update(ctx: &mut RsUpdateCtx) -> Result<RsUpdateResult, 
     Ok(RsUpdateResult::Ok)
 }
 
-/// V11/T13: share src's materialized pages into dst's regions without
+/// Share src's materialized pages into dst's regions without
 /// copying (C: `pt_map_in_range` — the VM-instance branch of
 /// `swap_proc_dyn_data`, utility.c:305-316). Regions are matched by
 /// vaddr; only materialized src pages can be shared.
@@ -620,7 +619,7 @@ mod tests {
         PageFrames::new(PhysBytes(256 * REGION_PAGE_SIZE as u64))
     }
 
-    /// V11/T12: drive `map_proc_dyn_data` on two scratch slots.
+    /// Drive `map_proc_dyn_data` on two scratch slots.
     fn setup_dyn_data_pair() -> (UserSlot, UserSlot) {
         let table = VmProcTable::get_global();
         let (src_no, dst_no) = (60usize, 61usize);
@@ -918,7 +917,7 @@ mod tests {
         let slot = UserSlot::new(67);
         let ep = init_test_process(slot);
         {
-            // §续-279m: the break is measured off the data region (C
+            // The break is measured off the data region (C
             // region_search(MMAPBASE, AVL_LESS)), not off vm_region_top.
             let mut active = table.get_active(slot).unwrap();
             active.regions_mut().insert(crate::region::VirRegion::with_memtype(
@@ -943,8 +942,8 @@ mod tests {
         assert_eq!(addr, VirBytes(0x4000_1000));
         assert_eq!(len, 0x2000);
         // The anon resize leg extends the data region in place and never
-        // writes the placement hint (§续-279m C-parity: region.c:391 belongs
-        // to fresh slots only); assert the post-extension end directly.
+        // writes the placement hint (C parity: region.c:391 belongs to fresh
+        // slots only); assert the post-extension end directly.
         let active = table.get_active(slot).unwrap();
         let vr = active.regions().find(VirBytes(0x4000_0000)).unwrap();
         assert_eq!(vr.end_addr(), VirBytes(0x4000_3000));
@@ -1008,8 +1007,8 @@ mod tests {
             0,
         );
         assert_eq!(result, Ok(()));
-        // §续-279m: the break is the data region's end (C region_search),
-        // so assert on the region — the dst data region now matches src.
+        // The break is the data region's end (C region_search), so assert on
+        // the region — the dst data region now matches src.
         let proc = table.get_active(dst_slot).unwrap();
         let vr = proc.regions().find(VirBytes(0x3000_0000)).unwrap();
         assert_eq!(vr.end_addr(), VirBytes(0x5000_0000));

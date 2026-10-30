@@ -109,87 +109,89 @@ pub const BDEV_FORCEWRITE: i32 = 0x01;
 /// Transfer flag: do not send a page address (`BDEV_NOPAGE`, `com.h:988`).
 pub const BDEV_NOPAGE: i32 = 0x02;
 
-/// `mess_vfs_lchardriver_openclose` 的 LP64 域偏移（VFS → 字符驱动）。
+/// LP64 field offsets of `mess_vfs_lchardriver_openclose` (VFS -> char driver).
 ///
 /// C: `{ endpoint_t id; endpoint_t user; devminor_t minor; int access; }`
-/// （ipc.h:2228-2235）——`minor` **不在首位**，`id`/`user` 在前；
-/// `cdev_opcl`（cdev.c:198-208）填 `minor` 与 `id`，只有开方向再填
-/// `user` 与 `access`。
+/// (ipc.h:2228-2235) — `minor` is **not** first; `id`/`user` come before it.
+/// `cdev_opcl` (cdev.c:198-208) fills `minor` and `id`; only the open direction
+/// additionally fills `user` and `access`.
 pub mod lchardriver_openclose_off {
-    /// `endpoint_t id`（调用者端点）。
+    /// `endpoint_t id` (the caller's endpoint).
     pub const ID: usize = 0;
-    /// `endpoint_t user`（只有开方向填）。
+    /// `endpoint_t user` (filled only by the open direction).
     pub const USER: usize = 4;
-    /// `devminor_t minor`（真正要开的次设备号）。
+    /// `devminor_t minor` (the minor device number actually being opened).
     pub const MINOR: usize = 8;
-    /// `int access`（`CDEV_R_BIT`/`CDEV_W_BIT`/`CDEV_NOCTTY`）。
+    /// `int access` (`CDEV_R_BIT`/`CDEV_W_BIT`/`CDEV_NOCTTY`).
     pub const ACCESS: usize = 12;
 }
 
-/// `mess_vfs_lchardriver_readwrite` 的 LP64 域偏移（VFS → 字符驱动）。
+/// LP64 field offsets of `mess_vfs_lchardriver_readwrite` (VFS -> char driver).
 ///
 /// C: `{ off_t pos; cp_grant_id_t grant; size_t count; unsigned long request;
 /// int flags; endpoint_t id; endpoint_t user; devminor_t minor; }`
-/// （ipc.h:2238-2249）——读、写、ioctl 三种请求**共用**这一个结构：
-/// `cdev_io`（cdev.c:319-330）在 ioctl 时用 `request`/`user`，读/写时用
-/// `pos`/`count`。
+/// (ipc.h:2238-2249) — read, write, and ioctl **share** this one struct:
+/// `cdev_io` (cdev.c:319-330) uses `request`/`user` for ioctl and
+/// `pos`/`count` for read/write.
 pub mod lchardriver_readwrite_off {
-    /// `off_t pos`（读/写的位置；ioctl 不填）。
+    /// `off_t pos` (read/write position; ioctl leaves it unset).
     pub const POS: usize = 0;
-    /// `cp_grant_id_t grant`（用户缓冲的 magic grant）。
+    /// `cp_grant_id_t grant` (the magic grant of the user buffer).
     pub const GRANT: usize = 8;
-    /// `size_t count`（读/写的字节数；ioctl 不填）。
+    /// `size_t count` (read/write byte count; ioctl leaves it unset).
     pub const COUNT: usize = 16;
-    /// `unsigned long request`（ioctl 的请求码）。
+    /// `unsigned long request` (the ioctl request code).
     pub const REQUEST: usize = 24;
-    /// `int flags`（`CDEV_NONBLOCK`）。
+    /// `int flags` (`CDEV_NONBLOCK`).
     pub const FLAGS: usize = 32;
-    /// `endpoint_t id`。
+    /// `endpoint_t id`.
     pub const ID: usize = 36;
-    /// `endpoint_t user`（只有 ioctl 填）。
+    /// `endpoint_t user` (filled only by ioctl).
     pub const USER: usize = 40;
-    /// `devminor_t minor`。
+    /// `devminor_t minor`.
     pub const MINOR: usize = 44;
 }
 
-/// 驱动回复的 LP64 域偏移（驱动 → VFS）：`{ int status; int id; }`。
+/// LP64 field offsets of a driver reply (driver -> VFS): `{ int status; int id; }`.
 ///
-/// 字符族的 `mess_lchardriver_vfs_reply`（ipc.h:943-948）与块族的
-/// `mess_lblockdriver_lbdev_reply`（ipc.h:356-361）字段序相同，但 C 里是
-/// 两个独立结构——这里只共用偏移表，不合并语义。
+/// The character family's `mess_lchardriver_vfs_reply` (ipc.h:943-948) and the
+/// block family's `mess_lblockdriver_lbdev_reply` (ipc.h:356-361) have the same
+/// field order, but C declares them as two separate structs — only the offset
+/// table is shared here; the semantics are not merged.
 pub mod driver_reply_off {
-    /// `int status`（**首字就是状态**）。
+    /// `int status` (**status is the first word**).
     pub const STATUS: usize = 0;
-    /// `int id`（字符族声明为 `uint32_t`，值域同）。
+    /// `int id` (declared `uint32_t` in the character family, same value range).
     pub const ID: usize = 4;
 }
 
-/// `mess_lbdev_lblockdriver_msg` 的 LP64 域偏移（VFS → 块驱动）。
+/// LP64 field offsets of `mess_lbdev_lblockdriver_msg` (VFS -> block driver).
 ///
 /// C: `{ off_t pos; int minor; int id; int access; int count;
 /// cp_grant_id_t grant; int flags; endpoint_t user; unsigned long request; }`
-/// （ipc.h:338-353）。**首格是 `pos`**，于是每个字段都比字符族的
-/// `mess_vfs_lchardriver_openclose` 往后挪：`minor` 在 8 而不是 0，
-/// `access` 在 16 而不是 8——按字符族的位次发块消息，驱动收到的是
-/// "次设备号 0、grant 无效"的垃圾。
+/// (ipc.h:338-353). **`pos` is the first slot**, so every field shifts later
+/// than in the character family's `mess_vfs_lchardriver_openclose`: `minor` is at
+/// 8 rather than 0, `access` at 16 rather than 8 — sending a block message with
+/// the character family's positions leaves the driver holding garbage ("minor
+/// device 0, invalid grant").
 pub mod lblockdriver_msg_off {
-    /// `off_t pos`（读/写位置；open/close/ioctl 一律留 0）。
+    /// `off_t pos` (read/write position; always 0 for open/close/ioctl).
     pub const POS: usize = 0;
-    /// `int minor`（真正要操作的次设备号）。
+    /// `int minor` (the minor device number actually being operated on).
     pub const MINOR: usize = 8;
-    /// `int id`（异步请求的标识）。
+    /// `int id` (identifier for an asynchronous request).
     pub const ID: usize = 12;
-    /// `int access`（`BDEV_R_BIT`/`BDEV_W_BIT`，只有 open 填）。
+    /// `int access` (`BDEV_R_BIT`/`BDEV_W_BIT`, filled only by open).
     pub const ACCESS: usize = 16;
-    /// `int count`（读/写的字节数）。
+    /// `int count` (read/write byte count).
     pub const COUNT: usize = 20;
-    /// `cp_grant_id_t grant`。
+    /// `cp_grant_id_t grant`.
     pub const GRANT: usize = 24;
-    /// `int flags`。
+    /// `int flags`.
     pub const FLAGS: usize = 28;
-    /// `endpoint_t user`（ioctl 填）。
+    /// `endpoint_t user` (filled by ioctl).
     pub const USER: usize = 32;
-    /// `unsigned long request`（ioctl 的请求码）。
+    /// `unsigned long request` (the ioctl request code).
     pub const REQUEST: usize = 40;
 }
 
@@ -232,17 +234,20 @@ mod tests {
         assert!(CDEV_REPLY_BASE < BDEV_RQ_BASE);
     }
 
-    /// 驱动消息的域偏移逐格钉死（ipc.h 的结构体声明）：两族的结构**不
-    /// 同形**——字符族的 `openclose` 以 `id` 开头、块族以 `off_t pos`
-    /// 开头，把一族的位次套到另一族就会整排错位。
+    /// Every driver message field offset is pinned (ipc.h's struct declarations):
+    /// the two families' structs have **different shapes** — the character
+    /// family's `openclose` starts with `id` and the block family with `off_t
+    /// pos`, so applying one family's positions to the other shifts the whole
+    /// row.
     #[test]
     fn test_driver_message_offsets_match_c_structs() {
-        // 字符族开/关：id@0、user@4、minor@8、access@12（ipc.h:2228-2235）。
+        // Character family open/close: id@0, user@4, minor@8, access@12
+        // (ipc.h:2228-2235).
         assert_eq!(lchardriver_openclose_off::ID, 0);
         assert_eq!(lchardriver_openclose_off::USER, 4);
         assert_eq!(lchardriver_openclose_off::MINOR, 8);
         assert_eq!(lchardriver_openclose_off::ACCESS, 12);
-        // 字符族读/写/ioctl 共用一个结构（ipc.h:2238-2249）。
+        // Character family read/write/ioctl share one struct (ipc.h:2238-2249).
         assert_eq!(lchardriver_readwrite_off::POS, 0);
         assert_eq!(lchardriver_readwrite_off::GRANT, 8);
         assert_eq!(lchardriver_readwrite_off::COUNT, 16);
@@ -251,10 +256,12 @@ mod tests {
         assert_eq!(lchardriver_readwrite_off::ID, 36);
         assert_eq!(lchardriver_readwrite_off::USER, 40);
         assert_eq!(lchardriver_readwrite_off::MINOR, 44);
-        // 两族回复同形：状态在首字（ipc.h:356-361 / :943-948）。
+        // Both families' replies have the same shape: status in the first word
+        // (ipc.h:356-361 / :943-948).
         assert_eq!(driver_reply_off::STATUS, 0);
         assert_eq!(driver_reply_off::ID, 4);
-        // 块族：首格是 pos，minor 因此在 8（ipc.h:338-353）。
+        // Block family: `pos` is the first slot, so minor lands at 8
+        // (ipc.h:338-353).
         assert_eq!(lblockdriver_msg_off::POS, 0);
         assert_eq!(lblockdriver_msg_off::MINOR, 8);
         assert_eq!(lblockdriver_msg_off::ID, 12);

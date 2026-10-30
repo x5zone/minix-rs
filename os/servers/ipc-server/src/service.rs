@@ -141,19 +141,20 @@ pub trait IpcBoundary {
     /// C's `complete_semop`.
     fn send_wakeup(&self, endpoint: Endpoint, code: i32);
 
-    /// Grant 拷入(MIB 服务重授予的用户内存 → 本地缓冲;C rmib 框架的
-    /// `sys_safecopyfrom`,libsys rmib.c:716)。
+    /// Grant copy-in (the user memory the MIB service re-granted → the local
+    /// buffer; the C rmib framework's `sys_safecopyfrom`, libsys rmib.c:716).
     fn rmib_copyin(&self, from: Endpoint, grant: i32, off: usize, dst: &mut [u8]) -> Result<(), i32>;
 
-    /// Grant 拷出(本地缓冲 → MIB 服务重授予的用户内存;`sys_safecopyto`)。
+    /// Grant copy-out (local buffer → the user memory the MIB service re-granted;
+    /// `sys_safecopyto`).
     fn rmib_copyout(&self, to: Endpoint, grant: i32, off: usize, src: &[u8]) -> Result<(), i32>;
 
-    /// COMMON_MIB_REPLY 回信,同步路径(C:`ipc_sendnb`,rmib.c:1067-1068
-    /// ——请求经 SENDREC 到达时)。
+    /// COMMON_MIB_REPLY response, synchronous path (C: `ipc_sendnb`,
+    /// rmib.c:1067-1068 — when the request arrived via SENDREC).
     fn send_mib_reply(&mut self, to: Endpoint, msg: &Message);
 
-    /// COMMON_MIB_REPLY 回信,异步路径(C:`asynsend3(AMF_NOREPLY)`,
-    /// rmib.c:1069-1070)。
+    /// COMMON_MIB_REPLY response, asynchronous path (C:
+    /// `asynsend3(AMF_NOREPLY)`, rmib.c:1069-1070).
     fn send_mib_reply_async(&mut self, to: Endpoint, msg: &Message);
 
     /// Back a fresh segment: anonymous mapping plus physical snapshot
@@ -185,8 +186,8 @@ pub trait IpcBoundary {
     fn warn(&self, line: &str);
 
     /// State-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11) —
-    /// the birth protocol's paragraph-1 kernel call (clear IPC filters,
-    /// PD-34). Production wires `minix_sys::syscall::sys_statectl` over the
+    /// the birth protocol's paragraph-1 kernel call (clear IPC filters).
+    /// Production wires `minix_sys::syscall::sys_statectl` over the
     /// trap transport; the test double models an accepting kernel.
     fn statectl(&self, request: i32, address: u64, length: i32) -> Result<i32, i32>;
 }
@@ -201,10 +202,12 @@ pub trait IpcBoundary {
 /// The shared-memory table sits behind a `Box`: 1024 inline slots are
 /// ~90 KB, and the service is a long-lived heap resident, not a stack
 /// temporary (C's `shm_list` is a static global — the equivalent home is
-/// the heap; IPC-P3-1).
-/// grant 通道的 [`RmibIo`] 适配:把走查器的拷入/拷出落到
-/// [`IpcBoundary::rmib_copyin`]/[`IpcBoundary::rmib_copyout`]——对端是
-/// MIB 服务(C 的 safecopy 以 m_source 为 grant 所有方,rmib.c:1020/1029)。
+/// the heap).
+///
+/// The [`RmibIo`] adapter for the grant channel: it lands the walker's copy-in
+/// and copy-out on [`IpcBoundary::rmib_copyin`]/[`IpcBoundary::rmib_copyout`] —
+/// the peer is the MIB service (C's safecopy uses m_source as the grant owner,
+/// rmib.c:1020/1029).
 struct BoundaryIo<'a, B: IpcBoundary> {
     boundary: &'a B,
     to: Endpoint,
@@ -220,11 +223,13 @@ impl<B: IpcBoundary> RmibIo for BoundaryIo<'_, B> {
     }
 }
 
-/// `kern.ipc` INFO 函数节点的 handler(C: `kern_ipc_info`,main.c:27-52)。
+/// The handler of the `kern.ipc` INFO function node (C: `kern_ipc_info`,
+/// main.c:27-52).
 ///
-/// namelen 门真实;SEM_INFO/SHM_INFO 两臂的明细拷出依赖 seminfo/mib 行
-/// 布局锚定(edge E-IPCWIRE §8),锚定前 fail-closed EOPNOTSUPP——与 C
-/// 对未知子类型的默认出口同型,不虚构字节。
+/// The namelen gate is real; the detailed copy-out of the SEM_INFO/SHM_INFO arms
+/// depends on anchoring the seminfo/mib row layout (edge E-IPCWIRE §8), and
+/// before that anchor it is fail-closed EOPNOTSUPP — the same shape as C's
+/// default exit for an unknown subtype, with no invented bytes.
 struct MibInfoHandler;
 
 impl RmibFuncHandler for MibInfoHandler {
@@ -251,19 +256,23 @@ pub struct IpcService<B: IpcBoundary> {
     waiters: WaiterTable,
     subscription: Subscription,
     shms: Box<ShmTable>,
-    /// `kern.ipc` 远程子树的注册表(S26/C-12:挂载半 + COMMON_MIB_CALL
-    /// 的走查目标;C 侧对应 libsys 的 `rnodes[]` 静态表)。
+    /// The registry of the `kern.ipc` remote subtree (the mount half plus the
+    /// walk target of COMMON_MIB_CALL; the C side corresponds to libsys's
+    /// `rnodes[]` static table).
     mib: SubtreeTable,
-    /// 挂载时产出的待发 MIB_REGISTER 消息(sef_cb_init_fresh 的
-    /// `rmib_register` 对应物,main.c:86-93;发送挂启动通电面)。
+    /// The pending MIB_REGISTER message produced at mount time (the
+    /// `sef_cb_init_fresh` counterpart of `rmib_register`, main.c:86-93; sending
+    /// hangs off the startup power-on face).
     pub mib_registration: Option<minix_sys::rmib::RmibRegMessage>,
-    /// 干净退出时产出的待发 MIB_DEREGISTER 消息(signal handler 的
-    /// `rmib_deregister` 对应物,main.c:111-112;发送挂同一通电面,
-    /// 与 `mib_registration` 同族——C 的 rmib 库自带 asynsend3,本树
-    /// 的发送面尚未通电,消息先落此处保序)。
+    /// The pending MIB_DEREGISTER message produced on a clean exit (the signal
+    /// handler's `rmib_deregister` counterpart, main.c:111-112; sending hangs off
+    /// the same power-on face, the same family as `mib_registration` — C's rmib
+    /// library ships its own asynsend3, while this tree's send face is not powered
+    /// yet, so the message parks here to preserve ordering).
     pub mib_deregistration: Option<minix_sys::rmib::RmibRegMessage>,
-    /// 已挂子树的根节点(`mib.deregister` 需要同一实例比对槽位;
-    /// C 持静态 `kern_ipc_node`,Rust 由构造期存一份克隆)。
+    /// The mounted subtree's root node (`mib.deregister` compares instances
+    /// against a slot; C holds the static `kern_ipc_node`, while Rust stores a
+    /// clone made at construction time).
     kern_ipc_root: minix_sys::rmib::RmibNode,
 }
 
@@ -900,15 +909,17 @@ impl<B: IpcBoundary> CallHandler for IpcService<B> {
     }
 
     fn handle_mib(&mut self, msg: &mut Message, ipc_status: IpcStatus) {
-        // C rmib_process(rmib.c:1037-1080)的服务层编排。
-        // C rmib.c:1044-1046 — 只有 MIB 服务的请求被处理,其余静默。
+        // The service-layer orchestration of C rmib_process(rmib.c:1037-1080).
+        // C rmib.c:1044-1046 — only requests from the MIB service are handled; the
+        // rest are silent.
         if msg.m_source != Endpoint::MIB {
             return;
         }
         let to = msg.m_source;
 
-        // C rmib.c:1049-1063 — INFO/CALL 分发;default 臂的 HACK(req_id
-        // 域在所有请求的同一偏移,C 直接读 info 臂取值)照搬。
+        // C rmib.c:1049-1063 — INFO/CALL dispatch; the default arm's HACK (the
+        // req_id field sits at the same offset in every request, so C reads it
+        // through the info arm) is copied as is.
         let (req_id, r) = match msg.m_type {
             COMMON_MIB_INFO => {
                 let req_id = unsafe { &msg.m_u.m_mib_lsys_info }.req_id;
@@ -952,16 +963,18 @@ impl<B: IpcBoundary> CallHandler for IpcService<B> {
             }
         };
 
-        // C rmib.c:1065-1074 — COMMON_MIB_REPLY{req_id, status};按请求
-        // 的传送方式两分:SENDREC → ipc_sendnb,其余 → asynsend3。
+        // C rmib.c:1065-1074 — COMMON_MIB_REPLY{req_id, status}; split by how the
+        // request was delivered: SENDREC → ipc_sendnb, others → asynsend3.
         let mut reply = Message {
             m_type: COMMON_MIB_REPLY,
             ..Message::default()
         };
-        // SAFETY: COMMON_MIB_REPLY 的应答臂 m_lsys_mib_reply{req_id,status}。
+        // SAFETY: the COMMON_MIB_REPLY response arm
+        // m_lsys_mib_reply{req_id,status}.
         let arm = unsafe { &mut reply.m_u.m_lsys_mib_reply };
         arm.req_id = req_id;
-        // C:status = r(r 是拷出字节数,负 errno 表示失败)。
+        // C: status = r (r is the copied-out byte count; a negative errno means
+        // failure).
         arm.status = match r {
             Ok(n) => n as i32,
             Err(e) => e,
@@ -1081,7 +1094,8 @@ pub(crate) mod test_boundary {
             self.mib_replies.borrow().clone()
         }
 
-        /// 预置 grant 内容(RMIB 协议测试的名字/数据窗口)。
+        /// Preset grant contents (the name/data windows for RMIB protocol
+        /// tests).
         pub fn seed_grant(&self, id: i32, data: alloc::vec::Vec<u8>) {
             self.grants.borrow_mut().push((id, data));
         }
@@ -1252,7 +1266,8 @@ pub(crate) mod test_boundary {
         }
 
         fn statectl(&self, request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
-            // 测试替身模拟接受型内核；清过滤请求计数可按需断言。
+            // The test double models an accepting kernel; the clear-filter request
+            // count can be asserted on demand.
             let _ = request;
             Ok(minix_types::OK)
         }
@@ -1495,14 +1510,14 @@ mod tests {
 
     #[test]
     fn mib_source_gate_and_enosys_reply() {
-        // C rmib.c:1044-1046 — 非 MIB 来源静默忽略(不回信)。
+        // C rmib.c:1044-1046 — non-MIB sources are silently ignored (no reply).
         let mut service = IpcService::new(TestBoundary::new());
         let mut msg = Message::default();
         service.handle_mib(&mut msg, IpcStatus::request());
         assert_eq!(service.boundary.mib_visits(), 0);
 
-        // C rmib.c:1061-1063 + 1082-1085 — MIB 来源的未知请求:
-        // req_id 照抄,default → ENOSYS,COMMON_MIB_REPLY 回 MIB。
+        // C rmib.c:1061-1063 + 1082-1085 — an unknown request from the MIB source:
+        // req_id echoed, default → ENOSYS, COMMON_MIB_REPLY back to MIB.
         let mut msg = Message::default();
         msg.m_source = Endpoint::MIB;
         service.handle_mib(&mut msg, IpcStatus::request());
@@ -1511,26 +1526,29 @@ mod tests {
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].0, Endpoint::MIB);
         assert_eq!(replies[0].1.m_type, COMMON_MIB_REPLY);
-        // SAFETY: 按 COMMON_MIB_REPLY 应答臂域序读 status。
+        // SAFETY: read status following the COMMON_MIB_REPLY response arm's field
+        // order.
         let arm = unsafe { &replies[0].1.m_u.m_lsys_mib_reply };
         assert_eq!(arm.status, minix_types::ENOSYS);
     }
 
     #[test]
     fn mib_call_query_int_leaf_roundtrip() {
-        // C rmib_call(rmib.c:678-824)主链:kern.ipc 的 sysvsem(3)int
-        // 叶查询 → 叶值拷出,COMMON_MIB_REPLY.status = 4 字节。
+        // The main chain of C rmib_call(rmib.c:678-824): the sysvsem(3) int leaf
+        // query of kern.ipc → the leaf value is copied out,
+        // COMMON_MIB_REPLY.status = 4 bytes.
         let mut service = IpcService::new(TestBoundary::new());
         service
             .boundary
-            .seed_grant(5, alloc::vec![3, 0, 0, 0]); // 名字:[sysvsem]
-        service.boundary.seed_grant(7, alloc::vec![0; 8]); // oldp 窗口
+            .seed_grant(5, alloc::vec![3, 0, 0, 0]); // name: [sysvsem]
+        service.boundary.seed_grant(7, alloc::vec![0; 8]); // oldp window
 
         let mut msg = Message::default();
         msg.m_source = Endpoint::MIB;
         msg.m_type = COMMON_MIB_CALL;
         {
-            // SAFETY: 测试构造——按 m_mib_lsys_call 域序写请求。
+            // SAFETY: test construction — write the request following
+            // m_mib_lsys_call's field order.
             let arm = unsafe { &mut msg.m_u.m_mib_lsys_call };
             arm.req_id = 42;
             arm.root_id = 0;
@@ -1545,7 +1563,8 @@ mod tests {
         let replies = service.boundary.mib_replies();
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].1.m_type, COMMON_MIB_REPLY);
-        // SAFETY: 同上——读 status(拷出字节数)与 req_id 回显。
+        // SAFETY: same as above — read status (the copied-out byte count) and the
+        // echoed req_id.
         let arm = unsafe { &replies[0].1.m_u.m_lsys_mib_reply };
         assert_eq!(arm.req_id, 42);
         assert_eq!(arm.status, 4);
@@ -1553,20 +1572,21 @@ mod tests {
 
     #[test]
     fn mib_call_info_function_node_is_fail_closed() {
-        // C kern_ipc_info 的 SEM_INFO(5)子类型明细拷出待 E-IPCWIRE §8
-        // 布局锚定;C-12 走查器把它送到 handler,fail-closed EOPNOTSUPP
-        // (main.c:48-49 的默认出口同型)。
+        // The detailed copy-out of C kern_ipc_info's SEM_INFO(5) subtype waits for
+        // the E-IPCWIRE §8 layout anchor; the walker routes it to the handler,
+        // fail-closed EOPNOTSUPP (the same shape as the default exit at
+        // main.c:48-49).
         let mut service = IpcService::new(TestBoundary::new());
         service
             .boundary
-            .seed_grant(5, alloc::vec![1, 0, 0, 0, 5, 0, 0, 0]); // 名字:[sysvipc_info, 5]
+            .seed_grant(5, alloc::vec![1, 0, 0, 0, 5, 0, 0, 0]); // name: [sysvipc_info, 5]
         service.boundary.seed_grant(7, alloc::vec![0; 8]);
 
         let mut msg = Message::default();
         msg.m_source = Endpoint::MIB;
         msg.m_type = COMMON_MIB_CALL;
         {
-            // SAFETY: 按 m_mib_lsys_call 域序写请求。
+            // SAFETY: write the request following m_mib_lsys_call's field order.
             let arm = unsafe { &mut msg.m_u.m_mib_lsys_call };
             arm.req_id = 7;
             arm.root_id = 0;
@@ -1579,7 +1599,7 @@ mod tests {
         }
         service.handle_mib(&mut msg, IpcStatus::sendrec());
         let replies = service.boundary.mib_replies();
-        // SAFETY: 同上——读 status。
+        // SAFETY: same as above — read status.
         let arm = unsafe { &replies[0].1.m_u.m_lsys_mib_reply };
         assert_eq!(arm.status, EOPNOTSUPP);
     }

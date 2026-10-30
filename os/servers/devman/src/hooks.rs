@@ -57,7 +57,7 @@ impl RootStat {
 
 /// Explicit parameter object replacing the six globals C needs at
 /// `vtreefs.c:97-102`.
-// [ARCH:A-1-相关] C must stage args in globals ("inability to pass
+// [ARCH:A-1] C must stage args in globals ("inability to pass
 // parameters through SEF", vtreefs.c:93-96); Rust has no SEF signature
 // constraint, so the same values travel as an explicit argument.
 // Externally equivalent: identical values enter identical init order.
@@ -100,8 +100,9 @@ pub enum SefLifecycle {
 /// C's registration set (`vtreefs.c:59` registers `got_signal`) lives on
 /// the transport, whose stop flag is what `fsdriver_terminate()` actually
 /// clears (`fsdriver.c:68-74`) — the trait method this once carried was a
-/// dead link (nothing called it) and was removed (PD-26 的删一半；C 语义
-/// 由传输层忠实承接，见 `ipc::minix::MinixTransport`）。
+/// dead link (nothing called it) and was removed; the C semantics are
+/// carried faithfully by the transport layer, see
+/// `ipc::minix::MinixTransport`.
 /// [ARCH:A-7] C `panic("init_inodes failed")` becomes explicit
 /// `Err(ENOMEM)`; the caller decides fail-fast.
 pub trait SefHooks {

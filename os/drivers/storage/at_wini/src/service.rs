@@ -1,4 +1,4 @@
-//! Per-drive open/minor state policy (U-6 阶段二 increment 6).
+//! Per-drive open/minor state policy.
 //!
 //! C correspondence: `w_prepare` (at_wini.c:519-540) maps a block minor to a
 //! `(drive, sub-device)` slot; `w_do_open` (:454-486) admits an open unless the

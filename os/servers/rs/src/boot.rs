@@ -23,7 +23,7 @@
 //! domain faces ([`SysApi`] kernel calls, [`SchedApi`] scheduler face,
 //! [`PmApi`] PM process lifecycle, [`VmApi`] VM messages, [`IpcApi`] RS's own
 //! receive/reply). The production impl is [`crate::trap_api::TrapKernelApi`]
-//! (19 号换装:每方法委托 minix-sys 真实 wrapper);tests use
+//! (each method delegates to the real minix-sys wrapper); tests use
 //! `MockKernelApi`.
 
 use minix_types::{BootImage, Clock, Endpoint, Errno, GrantId, Message, Pid};
@@ -67,7 +67,7 @@ pub use crate::privilege::{PrivCtlOp, Privilege};
 /// | [`SysApi::sys_update`] | `srv_update(src_ep, dst_ep, flags)` — update.c:272-275 (libsys wrapper over SYS_UPDATE) |
 ///
 /// Errors are errno values (`minix-types` constants). Production impl:
-/// `crate::trap_api::TrapKernelApi`(19 号换装已落).
+/// `crate::trap_api::TrapKernelApi` (the replacement has landed).
 pub trait SysApi {
     fn get_machine(&mut self) -> Result<Machine, Errno>;
     fn get_hz(&mut self) -> Result<u32, Errno>;
@@ -229,7 +229,7 @@ pub trait IpcApi {
     /// Blocking receive with the IPC status word.
     ///
     /// C: `sef_receive_status(ANY, &m, &ipc_status)` — main.c:826-833 via
-    /// get_work (utility.c 全局接收原语, 06). The third element is the notify
+    /// get_work (utility.c global receive primitive, 06). The third element is the notify
     /// timestamp (ipc.h:1715) extracted safely — the union field cannot be
     /// read in no_std user code (R25 note). Wired 19.
     fn receive(
@@ -260,8 +260,9 @@ pub trait IpcApi {
 
     /// Asynchronous non-blocking send.
     ///
-    /// C: `rs_asynsend(rp, &m, 1)` — utility.c 全局异步原语；RS 用它发
-    /// `RS_INIT` 初始化消息（utility.c:62，boot Step 2 与服务创建路径）。
+    /// C: `rs_asynsend(rp, &m, 1)` — utility.c's global asynchronous primitive;
+    /// RS uses it to send the `RS_INIT` message (utility.c:62, boot step 2 and
+    /// the service-creation path).
     /// Wired 19-rs-external-interfaces.md (production impl: `crate::trap_api::TrapKernelApi`).
     fn asynsend(&mut self, endpoint: Endpoint, message: &minix_types::Message)
     -> Result<(), Errno>;
@@ -285,7 +286,7 @@ pub trait IpcApi {
     ///
     /// C: `ds_retrieve_label_endpt` — the state-data eval/filter labels
     /// (request.c:802, manager.c:265) and the recovery label lookups. The
-    /// store is reached by the DS taskcall leg (19 号 DS 缝);`None` when
+    /// store is reached by the DS taskcall leg (the DS seam); `None` when
     /// the label is unknown. Production impl: `DsClient` in
     /// `crate::trap_api`.
     fn ds_lookup_by_label(&mut self, label: &str) -> Option<Endpoint>;
@@ -317,9 +318,9 @@ pub trait IpcApi {
     /// VM_RS_PREPARE, {src, dst, flags})`.
     fn vm_prepare(&mut self, src: Endpoint, dst: Endpoint, flags: i32) -> Result<(), Errno>;
 
-    /// Blocking send-and-receive to an arbitrary peer (19 号:devman
-    /// unbind 的 DEVMAN_UNBIND 交换等)。reply 覆盖 msg,m_type 携带
-    /// 结果码(C ipc_sendrec 语义)。
+    /// Blocking send-and-receive to an arbitrary peer (for example the
+    /// DEVMAN_UNBIND exchange when devman unbinds).  The reply overwrites msg
+    /// and carries the result code in m_type (C ipc_sendrec semantics).
     fn sendrec_to(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), Errno>;
 }
 
@@ -572,34 +573,39 @@ impl<'a> BootTables<'a> {
         }
     }
 
-    /// Placeholder boot tables（测试/宿主开发用值）。
+    /// Placeholder boot tables (values for tests and host development).
     ///
     /// Mirrors VM's `BootParams::placeholder()` strategy
     /// (02-stage-vm/01-vm-init-main.md §4.1): a minimal but valid boot image
-    /// so the production binary has a legal boot input. 生产 main 用
-    /// [`BootTables::acquire_from`] 换内核 GET_IMAGE 真值。
+    /// so the production binary has a legal boot input.  The production main
+    /// swaps in the kernel GET_IMAGE ground truth via
+    /// [`BootTables::acquire_from`].
     pub fn placeholder() -> BootTables<'static> {
         BootTables::new(BOOT_IMAGE_PLACEHOLDER)
     }
 
-    /// 真实启动获取（D-02 消费半，S42 ② boot 真值链）。
+    /// Real boot acquisition (the consuming half of the boot ground-truth chain).
     ///
-    /// C main.c:196 `sys_getimage(image)`：内核 GET_IMAGE 的应答是 boot
-    /// 真值（do_getinfo.c:86-90 的 `struct boot_image[NR_BOOT_PROCS]`
-    /// 整表），按 minix-types wire 权威（`BootImageStruct`，40 字节 × 17）
-    /// 解码为建模行。失败回 `Err(原始 errno)`——C 对应 panic
-    /// （main.c:196-198），生产 main 据此停车。
+    /// C main.c:196 `sys_getimage(image)`: the kernel GET_IMAGE answer is the
+    /// boot ground truth (the whole `struct boot_image[NR_BOOT_PROCS]` table of
+    /// do_getinfo.c:86-90), decoded into modelled rows using the minix-types
+    /// wire authority (`BootImageStruct`, 40 bytes x 17).  Failure returns
+    /// `Err(the original errno)` — the C counterpart is a panic
+    /// (main.c:196-198), on which the production main halts.
     ///
-    /// 生命周期：RS 常驻，boot 表随进程同寿，`Box::leak` 换 `'static`
-    /// 借用是单进程服务器的诚实形态（C 的 `image[]` 也是静态存储）。
+    /// Lifetime: RS is a resident server and the boot tables live as long as
+    /// the process, so handing out a `'static` borrow via `Box::leak` is the
+    /// honest shape for a single-process server (C's `image[]` is static
+    /// storage too).
     pub fn acquire_from(
         transport: &impl minix_sys::syscall::KernelCallTransport,
     ) -> Result<BootTables<'static>, i32> {
         let mut wire =
             [minix_types::BootImageStruct::default(); minix_types::NR_BOOT_PROCS];
-        // SAFETY: `[BootImageStruct; N]` 是 repr(C) 的 POD 数组
-        //（minix-types boot_image.rs 布局冻结测试钉值），整块按字节
-        // 可写；内核 GET_IMAGE 按同一布局填充。
+        // SAFETY: `[BootImageStruct; N]` is a repr(C) POD array (its layout is
+        // pinned by the minix-types boot_image.rs layout-frozen tests), so the
+        // whole block is writable as bytes; the kernel GET_IMAGE fills it using
+        // the same layout.
         let bytes = unsafe {
             core::slice::from_raw_parts_mut(
                 wire.as_mut_ptr() as *mut u8,
@@ -647,21 +653,24 @@ impl<'a> BootTables<'a> {
 
 /// Boot-parameter lookup over the GET_MONPARAMS buffer.
 ///
-/// C `env_get_param` 的读半（libsys env_get_prm.c:26-84 的
-/// `find_key` 扫描对位）：参数缓冲是 NUL 分隔的 `key=value` 条目流，
-/// 按条目步进，key 前缀相等且紧跟 `=` 才算命中（strncmp + `'='`
-/// 界定，`env_get_prm.c:73-76`）——`rs_verbose_x=…` 不会命中
-/// `rs_verbose`。返回值切片（`=` 之后、条目 NUL 之前）。
+/// The read half of C `env_get_param` (the counterpart of the `find_key` scan
+/// in libsys env_get_prm.c:26-84): the parameter buffer is a NUL-separated
+/// stream of `key=value` entries.  Walk it entry by entry; a hit requires the
+/// key prefix to match and to be followed immediately by `=` (strncmp plus the
+/// `'='` delimiter, `env_get_prm.c:73-76`) — `rs_verbose_x=…` does not match
+/// `rs_verbose`.  The returned slice runs from just after `=` to the entry's
+/// NUL.
 ///
-/// 这是 boot 参数面的读取半：GET_MONPARAMS 由内核 GET_MONPARAMS 臂
-/// 提供（do_getinfo.c:143-146，S42 批一真值链）。pre-VFS 阶段这是
-/// 服务读 boot 参数的唯一通道；`/etc/rc` 等盘上配置面随 T3/T4 通电
-/// 后由 init/RS 同源读取（edge4 §6 OQ-3 裁决）——两条通道同源衔接。
+/// This is the reading half of the boot-parameter surface: GET_MONPARAMS is
+/// provided by the kernel's GET_MONPARAMS arm (do_getinfo.c:143-146).  Before
+/// VFS is up this is the only channel through which a service can read boot
+/// parameters; on-disk configuration such as `/etc/rc` is read later from the
+/// same source by init/RS — the two channels join up.
 pub fn find_boot_param<'a>(params: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
     let mut envp = params;
     while let Some(&first) = envp.first() {
         if first == 0 {
-            break; // C: for (envp = params; *envp != 0;) — NUL 即表尾
+            break; // C: for (envp = params; *envp != 0;) — NUL marks the end of the table
         }
         let key_matched = envp.len() > key.len()
             && envp.starts_with(key)
@@ -671,8 +680,8 @@ pub fn find_boot_param<'a>(params: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
             let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
             return Some(&rest[..end]);
         }
-        // 跳过本条到 NUL（C: while (*envp++ != 0)）；缓冲中途截断
-        // （无 NUL）则无更多条目。
+        // Skip this entry up to its NUL (C: while (*envp++ != 0)); if the
+        // buffer ends mid-entry (no NUL) there are no further entries.
         let next = envp.iter().position(|&b| b == 0)?;
         envp = &envp[next + 1..];
     }
@@ -680,8 +689,9 @@ pub fn find_boot_param<'a>(params: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
 }
 
 /// C main.c:171 — `env_parse("rs_verbose", "d", 0, &rs_verbose, 0, 1)`:
-/// RS verbose 开关的 boot 参数解析。env_parse 的 "d" 数值域只认十进制
-/// 串；缺省/解析失败落 0（verbose off），值域 [0,1] 外亦按失败计。
+/// boot-parameter parsing for the RS verbose switch.  env_parse's "d" numeric
+/// domain accepts decimal strings only; a missing value or a parse failure
+/// yields 0 (verbose off), and values outside [0,1] also count as failures.
 pub fn parse_rs_verbose(params: &[u8]) -> bool {
     matches!(find_boot_param(params, b"rs_verbose"), Some(b"1"))
 }
@@ -742,7 +752,7 @@ pub enum LookupError {
     PrivTable,
 }
 
-/// Failure modes of the boot sequence itself (E-6, T3 残留).
+/// Failure modes of the boot sequence itself (a leftover from an earlier stage).
 ///
 /// C has a single failure mode for boot — `panic()` (main.c:226, 427-429;
 /// lookup panics main.c:731/746) — because a half-booted RS cannot run. The
@@ -1166,11 +1176,13 @@ impl<'a> BootInit<'a> {
     ) -> Result<(), BootError> {
         use crate::service_slot::SlotMutations;
         use minix_types::RS_INIT;
-        // C 对位是 `sef_receive_status(endpoint, …)`（main.c:795），信号请求
-        // 在 boot 期同样会被 SEF 拦截；本树的裸收是有意残余——boot 机器不
-        // 持有 `RsServer` 的 handler（主循环腿的接线在 `get_work`），而
-        // handler 对 pre-boot 状态本就无操作（`state: None` 直接返回），且
-        // boot 期无信号发方。这里保持裸收，接线上移属后续裁决面。
+        // The C counterpart is `sef_receive_status(endpoint, …)` (main.c:795),
+        // which also intercepts signal requests during boot; the bare receive
+        // here is a deliberate leftover — the boot machine does not own an
+        // `RsServer` handler (the main-loop leg is wired in `get_work`), a
+        // handler has nothing to do for pre-boot state anyway (`state: None`
+        // returns immediately), and no signal sender exists during boot.  The
+        // bare receive stays; moving the wiring up is a later decision.
         let (m, _ipc_status, _ts) = sys.receive(endpoint).map_err(BootError::Kernel)?;
         if m.m_type != RS_INIT {
             // C: main.c:799-801.
@@ -1190,7 +1202,7 @@ impl<'a> BootInit<'a> {
         // RS_INIT message (m_type = OK), except VM (its reply was
         // asynchronous; a synchronous reply could deadlock).
         if m.m_source != minix_types::Endpoint::VM {
-            // [SD19-gate] 尽力而为回复收尾
+            // [SD19-gate] best-effort reply completion
             #[allow(clippy::let_underscore_must_use)]
             let _ = sys.reply(m.m_source, 0, &m);
         }
@@ -1265,7 +1277,7 @@ impl<'a> BootInit<'a> {
         let pid = sys.srv_fork(0, 0)?;
 
         // C main.c:447-455 — replica_pid = pid ? pid : getpid();
-        // getprocnr 后写回 replica 槽的 pid/endpoint。
+        // write the pid/endpoint back into the replica slot after getprocnr.
         let replica_pid = if pid == 0 { sys.getnpid(Endpoint::RS)? } else { pid };
         let replica_ep = sys.getprocnr(replica_pid)?;
         {
@@ -1323,8 +1335,9 @@ mod tests {
     use alloc::vec::Vec;
     use minix_types::BootImage;
 
-    /// D-02 消费半（S42 ② boot 真值链）：`acquire_from` 的 GET_IMAGE
-    /// wire 形状（request=1、整表定容）与失败路径（Err 原始 errno）。
+    /// The consuming half of boot ground-truth acquisition: the GET_IMAGE wire
+    /// shape of `acquire_from` (request = 1, whole table at fixed capacity) and
+    /// its failure path (Err with the original errno).
     #[test]
     fn test_boot_tables_acquire_wire_shape() {
         use minix_sys::syscall::CannedKernelCallTransport;
@@ -1334,7 +1347,7 @@ mod tests {
         {
             let sent = canned.sent.borrow();
             assert_eq!(sent.len(), 1);
-            // SAFETY(test): GETINFO 载荷臂。
+            // SAFETY(test): GETINFO payload arm.
             let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
             assert_eq!(gi.request, minix_types::GET_IMAGE);
             assert_eq!(
@@ -1344,12 +1357,13 @@ mod tests {
                     as i32
             );
         }
-        // canned 应答零填缓冲 → 17 行 proc_nr=0 的建模行，priv/sys/dev
-        // 三表仍是 RS 静态真值（acquire 只换 image 半）。
+        // A zero-filled canned reply -> 17 modelled rows with proc_nr = 0; the
+        // priv/sys/dev tables remain RS's static ground truth (acquire only
+        // swaps the image half).
         assert_eq!(tables.image.len(), minix_types::NR_BOOT_PROCS);
         assert_eq!(tables.priv_table.len(), BOOT_IMAGE_PRIV_TABLE.len());
 
-        // 内核拒绝 → Err 透传，零静默。
+        // Kernel rejection -> propagated as Err, never silent.
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(-minix_types::EPERM);
         assert_eq!(
@@ -1919,8 +1933,9 @@ mod tests {
     #[cfg(feature = "live-update")]
     #[test]
     fn test_self_update_old_instance_leg() {
-        // C main.c:474-489(pid > 0):旧实例给 replica 设特权 → 调度 →
-        // YIELD;新实例腿的四步不出现。
+        // C main.c:474-489 (pid > 0): the old instance sets the replica's
+        // privileges -> scheduling -> YIELD; none of the new-instance leg's
+        // four steps appear.
         static IMAGE: &[BootImage] = &[
             boot_image(2, Endpoint::RS),
             boot_image(8, Endpoint::VM),
@@ -1970,8 +1985,9 @@ mod tests {
     #[cfg(feature = "live-update")]
     #[test]
     fn test_self_update_new_instance_leg() {
-        // C main.c:456-472(pid == 0):update_service(RS_SWAP,内核走
-        // sys_update)→ cpf_reload → cleanup_service → vm_memctl(PIN)。
+        // C main.c:456-472 (pid == 0): update_service(RS_SWAP, the kernel path
+        // goes through sys_update) -> cpf_reload -> cleanup_service ->
+        // vm_memctl(PIN).
         static IMAGE2: &[BootImage] = &[
             boot_image(2, Endpoint::RS),
             boot_image(8, Endpoint::VM),
@@ -2334,9 +2350,10 @@ mod tests {
 
     #[test]
     fn test_find_boot_param_scans_key_value_entries() {
-        // C env_get_prm.c:26-84 find_key —— NUL 分隔 key=value 流的扫描
-        //（mb_set_param pre_init.c:35-63 同一 NUL 条目语义：条目以 NUL
-        // 结尾，末尾双 NUL 收尾）。值在 = 与条目 NUL 之间。
+        // C env_get_prm.c:26-84 find_key — scanning a NUL-separated key=value
+        // stream (mb_set_param pre_init.c:35-63 uses the same NUL-entry
+        // semantics: entries end at a NUL and a trailing double NUL closes the
+        // stream).  The value lies between `=` and the entry's NUL.
         let params = *b"processor=2\0rs_verbose=1\0label=rs\0";
         assert_eq!(find_boot_param(&params, b"processor"), Some(&b"2"[..]));
         assert_eq!(
@@ -2345,25 +2362,27 @@ mod tests {
             "命中条目取 = 后至 NUL"
         );
         assert_eq!(find_boot_param(&params, b"label"), Some(&b"rs"[..]));
-        // 前缀撞车：key 是另一条目的前缀但无 '=' 界定 → 不命中。
+        // Prefix collision: the key prefixes another entry but is not followed
+        // by `=`, so it does not match.
         let prefix_trap = *b"rs_verbose_extra=0\0rs_verbose=1\0";
         assert_eq!(
             find_boot_param(&prefix_trap, b"rs_verbose"),
             Some(&b"1"[..]),
             "rs_verbose_extra 不拦截，第二条才是命中"
         );
-        // 值为空、键缺失、空缓冲。
+        // Empty value, missing key, empty buffer.
         assert_eq!(find_boot_param(b"k=\0x=1\0", b"k"), Some(&b""[..]));
         assert_eq!(find_boot_param(&params, b"missing"), None);
         assert_eq!(find_boot_param(&[], b"rs_verbose"), None);
-        // 缓冲中途无 NUL：不假装截断成功。
+        // No NUL inside the buffer: do not pretend a truncated hit succeeded.
         assert_eq!(find_boot_param(b"no-terminator", b"no-terminator"), None);
     }
 
     #[test]
     fn test_parse_rs_verbose_matches_c_env_parse() {
         // C main.c:171 env_parse("rs_verbose","d",0,&rs_verbose,0,1) —
-        // 只有 "1" 打开；缺省/其他值/空值都落 verbose off。
+        // only "1" turns it on; a missing value, any other value, and the empty
+        // value all leave verbose off.
         assert!(parse_rs_verbose(b"rs_verbose=1\0"));
         assert!(!parse_rs_verbose(b"rs_verbose=0\0"));
         assert!(!parse_rs_verbose(b"rs_verbose=\0"), "空值 → off");
@@ -2372,10 +2391,11 @@ mod tests {
         assert!(!parse_rs_verbose(&[]), "空缓冲 → off");
     }
 
-    /// 批三序列钉（S42 ③）：RS_INIT 的发送次序 = boot tab 表序。C
-    /// table.c:14-15 注释明言 priv 表序即"boot system services are made
-    /// runnable and initialized at boot time"的顺序，main.c:344-399 按
-    /// 表下标遍历；Rust step2 的 priv_table 迭代即同一消费半。
+    /// Send-order pin: the order of RS_INIT sends equals the boot tab table
+    /// order.  The C comment at table.c:14-15 states that the priv table order
+    /// is exactly the "boot system services are made runnable and initialized
+    /// at boot time" order, and main.c:344-399 iterates by table index; Rust
+    /// step2's priv_table iteration is that same consuming half.
     #[test]
     fn test_boot_send_order_follows_priv_table_order() {
         static IMAGE: &[BootImage] = &[
@@ -2445,7 +2465,8 @@ mod tests {
         boot.step1_set_attrs(&mut sys).expect("step 1");
         boot.step2_allow_run(&mut sys).expect("step 2");
 
-        // 发送次序恰为表序（RS 不发）——table.c:14-15 + main.c:344-399。
+        // The send order is exactly the table order (RS itself is not sent) —
+        // table.c:14-15 + main.c:344-399.
         let order: alloc::vec::Vec<Endpoint> =
             sys.sent.iter().map(|(e, _)| *e).collect();
         assert_eq!(
@@ -2455,9 +2476,10 @@ mod tests {
         );
     }
 
-    /// 批三失败路径钉（S42 ③）：`sched_init_proc` 失败 → boot 在断点
-    /// 中止（C main.c:376-377 `panic("unable to initialize scheduling")`
-    /// 的 fail-closed 对应），后续服务不再收到 init 发送。
+    /// Failure-path pin: a failing `sched_init_proc` aborts boot at that break
+    /// point (the fail-closed counterpart of C main.c:376-377
+    /// `panic("unable to initialize scheduling")`), and later services receive
+    /// no further init sends.
     #[test]
     fn test_boot_aborts_when_sched_init_proc_fails() {
         static IMAGE: &[BootImage] = &[
@@ -2522,7 +2544,7 @@ mod tests {
             Endpoint::VM,
             crate::privilege::Privilege::boot_priv(crate::privilege::VM_F, 8),
         ));
-        // PM 的 sched_init_proc 失败（fail-injection 按变体匹配）。
+        // PM's sched_init_proc fails (fail-injection matched by variant).
         sys.fail_calls.push(Call::SchedInitProc(Endpoint::PM));
         let mut boot = BootInit::new(tables);
         boot.step0_prepare(&mut sys).expect("step 0");
@@ -2534,7 +2556,8 @@ mod tests {
             ),
             "sched_init_proc 失败 → BootError 中止 boot"
         );
-        // VM 已发（断点之前），PM/SCHED 未发（断点之后不再推进）。
+        // VM was sent (before the break point); PM/SCHED were not (no progress
+        // past the break point).
         let sent_eps: alloc::vec::Vec<Endpoint> =
             sys.sent.iter().map(|(e, _)| *e).collect();
         assert_eq!(
@@ -2544,9 +2567,9 @@ mod tests {
         );
     }
 
-    /// 批三失败路径钉（S42 ③）：`rs_asynsend`（init_service 的发送腿）
-    /// 失败 → boot 中止（C main.c:386-388
-    /// `panic("unable to initialize service")` 的 fail-closed 对应）。
+    /// Failure-path pin: a failing `rs_asynsend` (init_service's send leg)
+    /// aborts boot (the fail-closed counterpart of C main.c:386-388
+    /// `panic("unable to initialize service")`).
     #[test]
     fn test_boot_aborts_when_init_asynsend_fails() {
         static IMAGE: &[BootImage] = &[
@@ -2615,9 +2638,10 @@ mod tests {
         );
     }
 
-    /// 批三序列钉（S42 ③）：`SF_SYNCH_BOOT` 服务的 init-ready 在 step2
-    /// **内联**捕获——阻塞发生在两服务的 init 发送之间（C main.c:390-392
-    /// 的顺序语义：PM 的应答消费先于 SCHED 的 init 发送）。
+    /// Sequence pin: the init-ready of an `SF_SYNCH_BOOT` service is caught
+    /// **inline** in step2 — the block happens between the init sends of two
+    /// services (the ordering semantics of C main.c:390-392: PM's reply is
+    /// consumed before SCHED's init send).
     #[test]
     fn test_synch_boot_catch_is_inline_between_sends() {
         static IMAGE: &[BootImage] = &[
@@ -2657,8 +2681,9 @@ mod tests {
                 endpoint: Endpoint::VM,
                 flags: crate::service_slot::VM_SF,
             },
-            // PM 挂 SYNCH_BOOT：init-ready 在 step2 内联捕获。
-            // （bitflags 的 BitOr 非 const，static 内用 bits 组合还原。）
+            // PM is marked SYNCH_BOOT: its init-ready is caught inline in step2.
+            // (bitflags' BitOr is not const, so the bits are combined explicitly
+            // inside the static.)
             BootImageSys {
                 endpoint: Endpoint::PM,
                 flags: SysFlags::from_bits_retain(
@@ -2686,7 +2711,7 @@ mod tests {
             Endpoint::VM,
             crate::privilege::Privilege::boot_priv(crate::privilege::VM_F, 8),
         ));
-        // 预置 PM 的 init-ready 应答（inbox 顺序即消费顺序）。
+        // Preload PM's init-ready reply (inbox order is consumption order).
         let pm_ready = minix_types::RsInit {
             result: 0,
             init_type: 0,
@@ -2708,7 +2733,8 @@ mod tests {
         boot.step1_set_attrs(&mut sys).expect("step 1");
         boot.step2_allow_run(&mut sys).expect("step 2");
 
-        // 位置序：VM 发 < PM 的应答回声（catch 内联证据）< SCHED 发。
+        // Ordering: send to VM < echo of PM's reply (evidence of the inline
+        // catch) < send to SCHED.
         let calls = &sys.calls;
         let find = |pred: &dyn Fn(&Call) -> bool| {
             calls.iter().position(pred).expect("调用必须存在")
@@ -2721,7 +2747,7 @@ mod tests {
             "SYNCH_BOOT 的 catch 内联在前后服务的 init 发送之间 \
              (vm_send={vm_send}, pm_reply={pm_reply}, sched_send={sched_send})"
         );
-        // VM + SCHED 计入 step3；PM 已内联消费。
+        // VM + SCHED are counted in step3; PM was already consumed inline.
         assert_eq!(boot.nr_uncaught_init_srvs, 2);
     }
 

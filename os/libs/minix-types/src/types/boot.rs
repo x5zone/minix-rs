@@ -39,13 +39,13 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 /// - 2: full boot contract — free regions (A2 classification), the
 ///   LiveBootstrap deduction record, reserved modules, the boot image
 ///   table and the kernel footprint.
-/// - 3: kernel text/data span for per-process kernel mappings (V11/E3).
+/// - 3: kernel text/data span for per-process kernel mappings.
 /// - 4: `user_sp` — the initial user stack top, C `kinfo.user_sp`
 ///   (pre_init.c:156). VM builds every boot process's initial stack
 ///   frame downward from it (E-BOOTFRAME; C exec_bootproc reads the
 ///   same value out of `kernel_boot_info`, main.c:372).
 /// - 5: `kern_dm_vbase` / `kern_dm_pages` — the kernel Direct Map
-///   window's real VA base and PA coverage (fix26). Version ≤ 4
+///   window's real VA base and PA coverage. Version ≤ 4
 ///   handoffs carried hardcoded sentinels here (wrong base + 4-page
 ///   window): a process page table built from them left nearly the
 ///   whole Direct Map not-present, so kernel physical-memory access
@@ -55,7 +55,7 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 ///   candidate union `establish_boot_dm` maps
 ///   (`dm_coverage::kernel_dm_pa_end`).
 /// - 6: `kern_ident` / `kern_ident_count` — the kernel runtime
-///   identity windows (fix27). NK4-A forensics (int_fix26f.log)
+///   identity windows (version 6). Boot forensics
 ///   established the real first-switch death cause: the kernel is
 ///   statically linked into the UEFI boot-shim PE image and EXECUTES
 ///   from the firmware-relocated low addresses (text ~0x1dac_xxxx,
@@ -77,7 +77,7 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 pub const VM_BOOT_HANDOFF_VERSION: u32 = 7;
 
 /// Maximum kernel identity-window entries the handoff page carries
-/// (fix27, version 6). The UEFI memory map's non-conventional RAM
+/// (version 6). The UEFI memory map's non-conventional RAM
 /// typically occupies a few dozen descriptors; the kernel merges
 /// adjacent ranges before publishing and fails fast on overflow.
 pub const VM_BOOT_HANDOFF_MAX_IDENT: usize = 64;
@@ -152,11 +152,12 @@ impl HandoffModule {
 ///   page fault on the very first user stack access no matter what the
 ///   page tables contain; in-guest software page-table walks do not check
 ///   canonicality, so nothing on the guest side notices. History and full
-///   evidence: `rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md`.
+///   evidence: the riscv64 transient-PTE bug note under
+///   `rewrite-notes/coordination/`.
 ///
 /// This is the single authority: the boot shims publish it as
 /// `KernelInfo::user_sp` and the exec path uses it as the boot-contract
-/// fallback while the kerninfo read leg (NS5-B) is unwired. The
+/// fallback while the kerninfo read leg is unwired. The
 /// `cfg!`-form keeps this documentation visible on every target (a
 /// `#[cfg]`-split pair would hide it from `cargo doc` on the other arch).
 pub const USER_STACK_TOP: u64 = if cfg!(target_arch = "riscv64") {
@@ -167,7 +168,7 @@ pub const USER_STACK_TOP: u64 = if cfg!(target_arch = "riscv64") {
 
 /// One past the last valid user virtual address — the user-half limit.
 ///
-/// Derivation per architecture (T13 地址常量审计 R1：
+/// Derivation per architecture (the address-constant audit,
 /// `rewrite-notes/coordination/ADDRESS-CONSTANT-AUDIT.md` §1/§3):
 ///
 /// - x86_64 (four-level paging, LA57 absent): the user half is
@@ -179,8 +180,8 @@ pub const USER_STACK_TOP: u64 = if cfg!(target_arch = "riscv64") {
 ///   constant against the same shift (`TCR_T0SZ`), so the two cannot drift.
 /// - riscv64 (Sv39): the user half is `[0, 2^38)`; bit 38 is the first
 ///   VA bit that must equal bit 63 (canonicality — QEMU
-///   `target/riscv/cpu_helper.c` masked_msbs gate). The §续-338 defect
-///   class was exactly a user address above this limit.
+///   `target/riscv/cpu_helper.c` masked_msbs gate). The defect class this
+///   bound guards against was exactly a user address above this limit.
 ///
 /// This is the single authority for the user-half bound: the kernel-side
 /// user-copy checks, the VM mmap window top, and every new per-arch
@@ -194,8 +195,9 @@ pub const USER_VA_LIMIT: u64 = if cfg!(target_arch = "riscv64") {
     1u64 << 47
 };
 
-// Compile-time invariants: a wrong value here is the §续-338 defect class
-// (an untranslatable user address), so pin it at build time on every target.
+// Compile-time invariants: a wrong value here is the same defect class as
+// the riscv64 bound violation (an untranslatable user address), so pin it at
+// build time on every target.
 const _: () = assert!(USER_STACK_TOP.is_multiple_of(4096), "USER_STACK_TOP must be page-aligned");
 const _: () = assert!(USER_STACK_TOP < USER_VA_LIMIT, "USER_STACK_TOP must stay in the user half");
 #[cfg(target_arch = "riscv64")]
@@ -267,25 +269,25 @@ pub struct VmBootHandoff {
     /// Boot page-table pages the kernel allocated while mapping itself.
     /// C: `kinfo.kernel_allocated_bytes_dynamic` (pg_utils.c:154).
     pub kernel_allocated_dynamic: u64,
-    /// Kernel text virtual base (V11/E3: per-process kernel mapping
-    /// source — replaces VM's hardcoded mock, kernel `kern_virt_base`).
+    /// Kernel text virtual base (per-process kernel mapping source —
+    /// replaces VM's hardcoded mock, kernel `kern_virt_base`).
     pub kern_virt_base: u64,
-    /// Kernel text physical base (V11/E3; kernel `kern_phys_base`).
+    /// Kernel text physical base (kernel `kern_phys_base`).
     pub kern_phys_base: u64,
-    /// Pages in the kernel image span (V11/E3; `kern_size / PAGE_SIZE`).
+    /// Pages in the kernel image span (`kern_size / PAGE_SIZE`).
     /// C splits text/data; minix-rs maps the whole contiguous span.
     pub kern_text_pages: u32,
-    /// Pages in the kernel data span (V11/E3; 0 = whole-span-as-text,
+    /// Pages in the kernel data span (0 = whole-span-as-text,
     /// the minix-rs kernel image is one contiguous span).
     pub kern_data_pages: u32,
-    /// Virtual base of the kernel Direct Map window (fix26, handoff v5;
+    /// Virtual base of the kernel Direct Map window (handoff v5;
     /// arch constant `KERNEL_DIRECT_MAP_BASE` — e.g. x86-64
     /// `0xFFFF_8080_0000_0000`, riscv64 differs). VM maps this window
     /// into every process page table so kernel PA access survives a CR3
     /// switch; a wrong base silently breaks the first context switch.
     pub kern_dm_vbase: u64,
     /// Pages the kernel Direct Map window covers in physical address
-    /// space (fix26, handoff v5; page-rounded highest PA
+    /// space (handoff v5; page-rounded highest PA
     /// `establish_boot_dm` covered in the kernel window, i.e.
     /// `dm_coverage::kernel_dm_pa_end / 4096`). The window maps PA
     /// `[0, kern_dm_pages * 4096)` contiguously — a superset of the
@@ -319,7 +321,7 @@ pub struct VmBootHandoff {
     pub modules: [HandoffModule; VM_BOOT_HANDOFF_MAX_MODULES],
     /// Valid entries in `kern_ident`.
     pub kern_ident_count: u32,
-    /// Kernel runtime identity windows (fix27, version 6): occupied
+    /// Kernel runtime identity windows (version 6): occupied
     /// physical regions the running kernel image and its tables live
     /// in (UEFI link-in execution model — see the version history
     /// above). `map_kernel` maps each region identity (VA = PA)
@@ -332,14 +334,14 @@ pub struct VmBootHandoff {
 }
 
 impl VmBootHandoff {
-    /// Kernel layout for per-process kernel mappings (V11/E3).
+    /// Kernel layout for per-process kernel mappings.
     ///
     /// `Some` for version ≥ 3 handoffs (the kernel reports its text/data
     /// span); `None` for version ≤ 2 — the consumer keeps its historical
     /// fallback (VM: the mock `KernelLayout` constants + a warning).
     ///
     /// The Direct Map window is the kernel's real one only from version
-    /// 5 on (fix26): v3/v4 handoffs carry no DM fields and this function
+    /// 5 on: v3/v4 handoffs carry no DM fields and this function
     /// returns the historical sentinels, which are wrong on real
     /// hardware (base off by one PML4 slot, 4-page coverage). That is
     /// unreachable in production — [`Self::validate`] hard-asserts the
@@ -453,7 +455,7 @@ const _: () = assert!(
 ///   (immediately follows text segment in both VA and PA space).
 /// - `dm_vbase`: Virtual address where the kernel direct map starts.
 /// - `dm_pages`: Number of pages in the kernel direct map.
-/// - `ident` / `ident_count`: kernel runtime identity windows (fix27) —
+/// - `ident` / `ident_count`: kernel runtime identity windows —
 ///   occupied physical regions to replay identity (VA = PA) into every
 ///   process page table. Valid entries are `ident[..ident_count]`.
 ///
@@ -487,7 +489,7 @@ impl KernelLayout {
     /// read by every `init_page_table()` call.
     ///
     /// Produces a layout with NO identity windows — [`Self::new_with_ident`]
-    /// is the fix27 constructor used for version ≥ 6 handoffs. A layout
+    /// is the constructor used for version ≥ 6 handoffs. A layout
     /// without identity windows is correct only when the kernel really
     /// executes higher-half (never the UEFI link-in production model).
     pub const fn new(
@@ -511,7 +513,7 @@ impl KernelLayout {
     }
 
     /// Creates a `KernelLayout` including the kernel runtime identity
-    /// windows (fix27, handoff version ≥ 6).
+    /// windows (handoff version ≥ 6).
     pub const fn new_with_ident(
         kernel_text_vbase: u64,
         kernel_text_pbase: u64,
@@ -577,9 +579,10 @@ impl BootImage {
     }
 
     /// Decode one GET_IMAGE wire row ([`crate::types::boot_image::
-    /// BootImageStruct`], 40 字节,C `struct boot_image` — type.h:148-154)
-    /// 为内部建模行。GET_IMAGE 消费方(PM `BootParams` / RS `BootTables`)
-    /// 共用此转换,wire 布局只有 `BootImageStruct` 一个权威。
+    /// BootImageStruct`], 40 bytes, C `struct boot_image` — type.h:148-154)
+    /// into the internal modeling row. The GET_IMAGE consumers (PM
+    /// `BootParams` / RS `BootTables`) share this conversion; the wire layout
+    /// has one authority only, `BootImageStruct`.
     pub fn from_wire(wire: &crate::types::boot_image::BootImageStruct) -> Self {
         Self {
             proc_nr: wire.proc_nr,
@@ -610,7 +613,8 @@ mod tests {
         assert_eq!(img.len, 0);
     }
 
-    /// from_wire：GET_IMAGE 线上行（BootImageStruct）逐域折为建模行。
+    /// from_wire: fold a GET_IMAGE wire row (BootImageStruct) field by field
+    /// into the modeling row.
     #[test]
     fn test_boot_image_from_wire() {
         use crate::types::boot_image::BootImageStruct;
@@ -741,7 +745,7 @@ mod tests {
             assert_eq!(l.dm_pages, 4);
         }
 
-        /// v5 (fix26): the kernel's real Direct Map window values flow
+        /// v5: the kernel's real Direct Map window values flow
         /// through — no sentinels. v5 predates the identity windows, so
         /// `ident_regions()` stays empty.
         #[test]
@@ -759,7 +763,7 @@ mod tests {
             assert_eq!(l.ident_regions().len(), 0);
         }
 
-        /// v6 (fix27): the kernel runtime identity windows flow through.
+        /// v6: the kernel runtime identity windows flow through.
         #[test]
         fn test_kernel_layout_v6_reports_identity_windows() {
             let mut h = handoff(VM_BOOT_HANDOFF_VERSION);

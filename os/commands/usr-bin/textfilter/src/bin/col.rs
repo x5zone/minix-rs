@@ -20,8 +20,10 @@ use minix_textfilter::col::{ColFlagError, filter, parse_col_flags};
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名那一腿的渲染口仍是 `&str`（`GetoptReport::line_bytes` 收 `&str`），库侧字节口
-    // 在册未动：`ARGV-BYTE-PATH-IN-LIBS`。字母位与 `-l` 的值这两腿从这里开始是原字节。
+    // The rendering door for the program-name leg still takes `&str`
+    // (`GetoptReport::line_bytes` accepts `&str`), and the library's byte door
+    // remains unchanged and on the books: a registered limitation. The letter
+    // slot and the `-l` value are raw bytes starting here.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let words: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let options = match parse_col_flags(&words[1..]) {
@@ -29,10 +31,12 @@ fn run() -> ! {
         Err(error) => flag_error(&prog, error),
     };
 
-    // 读缝走 `bin_support` 的双生面（宿主 `std::io::stdin`、真机 `read(STDIN)`）：
-    // 本文件以前直接拿裸 `minix_sys::read`，**宿主上读不到任何输入**（同族第七例：
-    // `nl`/`fold`/`rev`/`colrm` 的读腿、`split` 的写腿、`unexpand` 的读腿），
-    // 所以 `col` 的过滤输出从来没有被进程级测过。
+    // The read seam goes through `bin_support`'s twin face (host
+    // `std::io::stdin`, target `read(STDIN)`): this file used to call raw
+    // `minix_sys::read` and **could not see any input on the host** (the seventh
+    // case of the family: the read legs of `nl`/`fold`/`rev`/`colrm`, the write
+    // leg of `split`, the read leg of `unexpand`), so `col`'s filtered output
+    // had never been exercised at process level.
     let out = filter(&support::read_stdin(), &options);
     if out.warned {
         support::warn(b"col: warning: can't back up -- line already flushed\n");
@@ -41,15 +45,19 @@ fn run() -> ! {
     support::terminate(0)
 }
 
-/// 四类出口各自的句子与退码，逐支照 C。
+/// The sentence and exit code of each of the four exits, arm by arm per C.
 fn flag_error(prog: &str, error: ColFlagError<'_>) -> ! {
     match error {
         ColFlagError::OperandsPresent => usage(),
-        // 集外字母与 `-l` 缺值：libc 那一行由 `getprogname()` 打头（真机是 `col`），
-        // 随后才是 `col.c:154-156` 的 `usage()` —— 两行。走字节形 `line_bytes`：
-        // libc 那一行的字母位是一个裸字节（`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、
-        // `:103` 用 `%c` 原样写出），参照件 `tmp/col-313/col` 现量 `col -bé` 打 `c3` 一个字节，
-        // 而按 `char` 渲染会多出第二个字节（U+00C3 的 UTF-8 是 `c3 83`）。
+        // An unknown letter or a `-l` missing its value: the libc line starts
+        // with `getprogname()` (on the real machine that is `col`), and only
+        // then comes `usage()` from `col.c:154-156` — two lines. Go through the
+        // byte form `line_bytes`: the letter slot of the libc line is one raw
+        // byte (`getopt.c:79`'s `optopt = *place++` takes one byte at a time,
+        // `:103` writes it out verbatim with `%c`). The reference binary
+        // `tmp/col-313/col` measures `col -bé` as a single `c3` byte, whereas
+        // rendering through `char` would add a second byte (U+00C3 is `c3 83` in
+        // UTF-8).
         ColFlagError::UnknownOption(letter) => {
             support::warn(&GetoptReport::UnknownOption(letter).line_bytes(prog));
             usage()
@@ -58,9 +66,12 @@ fn flag_error(prog: &str, error: ColFlagError<'_>) -> ! {
             support::warn(&GetoptReport::MissingValue(letter).line_bytes(prog));
             usage()
         }
-        // `col.c:145-150` 是裸 `fprintf(stderr, "col: bad -l argument %s.\n", optarg)`
-        // 加 `exit`：程序名写死、带操作数原文、有个句点，而且**不接 usage**。
-        // 旧写法少了操作数原文与句点，还在 `-l` 后面没有那一段时错走了这一支。
+        // `col.c:145-150` is a bare
+        // `fprintf(stderr, "col: bad -l argument %s.\n", optarg)` plus `exit`:
+        // the program name is hard-coded, the operand text is included, there is
+        // a period, and **no usage follows**. The old form omitted the operand
+        // text and the period, and wrongly took this arm when `-l` had no
+        // following segment.
         ColFlagError::BadLineCount(value) => {
             support::warn(&bad_line_count(value));
             support::terminate(1);
@@ -68,8 +79,9 @@ fn flag_error(prog: &str, error: ColFlagError<'_>) -> ! {
     }
 }
 
-/// `col.c:145-150` 那句按字节拼：`optarg` 来自 argv 的原字节，回显位不该被任何
-/// 字符解码改写过（`col: bad -l argument <原字节>.`）。
+/// The `col.c:145-150` sentence, assembled byte-wise: `optarg` comes from the
+/// raw argv bytes, and the echo slot must not be rewritten by any character
+/// decode (`col: bad -l argument <raw bytes>.`).
 fn bad_line_count(value: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(b"col: bad -l argument ");
@@ -78,8 +90,8 @@ fn bad_line_count(value: &[u8]) -> Vec<u8> {
     out
 }
 
-/// C 的 `usage()`（`col.c:520-526`）：程序名是**写死**的 `col`（不像 `rev` 那样跟着
-/// `getprogname()`），一行、退 1。
+/// C's `usage()` (`col.c:520-526`): the program name is a **hard-coded** `col`
+/// (unlike `rev`, which follows `getprogname()`), one line, exit 1.
 fn usage() -> ! {
     support::warn(b"usage: col [-bfpx] [-l nline]\n");
     support::terminate(1);

@@ -2,8 +2,8 @@
 //! against `minix3/usr.bin/getopt/getopt.c` (the print loop `:24-41`) driving
 //! `minix3/lib/libc/stdlib/getopt.c`.
 //!
-//! This door exists to pin the **output face**, which is what the `emit` seam fix
-//! (批次二百五十) made observable at all. `getopt`'s whole product is one line on
+//! This door exists to pin the **output face**, which the `emit` seam fix first
+//! made observable at all. `getopt`'s whole product is one line on
 //! standard output, and the shell crate's `bin_support::emit` had no hosted twin: on a
 //! host build the bytes went into the substitute transport, so the line was empty — and
 //! because `emit` exits 1 when its write fails, the command also failed. Measured before

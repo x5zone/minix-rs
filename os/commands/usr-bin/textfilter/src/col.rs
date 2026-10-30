@@ -14,9 +14,9 @@ pub const ESC: u8 = 0o033;
 pub const SI: u8 = 0o017; // shift in to normal character set
 pub const SO: u8 = 0o016; // shift out to alternate character set
 pub const VT: u8 = 0o013; // vertical tab (aka reverse line feed)
-pub const RLF: u8 = 0o007; // ESC-07 reverse line feed
-pub const RHLF: u8 = 0o010; // ESC-010 reverse half-line feed
-pub const FHLF: u8 = 0o011; // ESC-011 forward half-line feed
+pub const RLF: u8 = 0o007; // ESC 07 reverse line feed
+pub const RHLF: u8 = 0o010; // ESC 010 reverse half-line feed
+pub const FHLF: u8 = 0o011; // ESC 011 forward half-line feed
 
 /// build up at least this many lines before flushing them out
 const BUFFER_MARGIN: i32 = 32;
@@ -76,31 +76,40 @@ impl Default for ColOptions {
     }
 }
 
-/// `col` 的选项环（`col.c:133-158`）各支出口，一支对应 C 的一条路径。
+/// The exit points of `col`'s option ring (`col.c:133-158`), one variant per
+/// C path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColFlagError<'a> {
-    /// 集外字母：libc 先印一行（`getopt.c:101-104`），`col.c:154-156` 的
-    /// `case '?': default: usage()` 再接第二行 —— 两行、退 1。
+    /// An unknown letter: libc prints one line first (`getopt.c:101-104`),
+    /// then `col.c:154-156`'s `case '?': default: usage()` adds a second —
+    /// two lines, exit 1.
     UnknownOption(char),
-    /// `-l` 后面没有那一段：libc 的另一句 `option requires an argument -- l`
-    /// （`getopt.c:132-136`）+ usage，**不是** `bad -l argument`。
+    /// No argument follows `-l`: libc's other sentence `option requires an
+    /// argument -- l` (`getopt.c:132-136`) plus usage, **not**
+    /// `bad -l argument`.
     MissingValue(char),
-    /// `col.c:145-150`：`atoi(optarg) <= 0` 时 C 自己印
-    /// `col: bad -l argument <原文>.` 就退出——这一支不接 usage，程序名也是写死的 `col`。
-    /// 载荷是**原字节**：`-l` 那一段直接来自 argv，回显位不经任何字符解码。
+    /// `col.c:145-150`: when `atoi(optarg) <= 0`, C prints
+    /// `col: bad -l argument <original text>.` itself and exits — this arm
+    /// does not go through usage, and the program name is a hardcoded `col`.
+    /// The payload is the **raw bytes**: the `-l` segment comes straight from
+    /// argv, so the echoed field goes through no character decoding.
     BadLineCount(&'a [u8]),
-    /// `col.c:157-158`：`if (optind != argc) usage()`。`col` 只读标准输入，
-    /// 所以任何操作数都是这一支（裸 `-` 也算操作数，因为它不被 `getopt` 推进）。
+    /// `col.c:157-158`: `if (optind != argc) usage()`. `col` reads standard
+    /// input only, so any operand lands here (a bare `-` counts as an operand
+    /// too, since `getopt` does not advance past it).
     OperandsPresent,
 }
 
-/// C 的 `getopt(argc, argv, "bfhl:px")` 那一圈：五个无值字母加一个带值的 `l`，
-/// 聚簇要逐字母读（`-bfpx` 是一串、`-xb` 也合法），`-l` 的值可以附在本串里
-/// （`-l3`，参照件量过）也可以另起一段（`-l 3`）。
+/// C's `getopt(argc, argv, "bfhl:px")` ring: five value-less letters plus one
+/// value-taking `l`; a cluster is read letter by letter (`-bfpx` is one
+/// string, `-xb` is legal too), and the `-l` value may be attached to the
+/// same string (`-l3`, measured against the reference binary) or start a new
+/// one (`-l 3`).
 ///
-/// `--` 结束选项环而自身不是操作数（`getopt.c:81-85` 先 `++optind`）；裸 `-` 与任何
-/// 非选项 token 一到就结束选项环**且不重排**（`getopt.c:74-78`），剩下的都成了操作数——
-/// 而 `col` 一个操作数都不接受。
+/// `--` ends the option ring without being an operand (`getopt.c:81-85`
+/// does `++optind` first); a bare `-` or any non-option token ends the ring
+/// on arrival **and is not permuted** (`getopt.c:74-78`), so everything left
+/// becomes an operand — and `col` accepts no operand at all.
 pub fn parse_col_flags<'a>(args: &'a [&'a [u8]]) -> Result<ColOptions, ColFlagError<'a>> {
     let mut options = ColOptions::default();
     let mut index = 0usize;
@@ -139,14 +148,17 @@ pub fn parse_col_flags<'a>(args: &'a [&'a [u8]]) -> Result<ColOptions, ColFlagEr
                         return Err(ColFlagError::BadLineCount(value));
                     }
                     options.max_bufd_lines = lines;
-                    // 值把本串剩下的部分整个吃掉（C 的 `optarg` 就是「本串去掉 `-` 与
-                    // 字母之后的那一段」），所以这一串到此结束。
+                    // The value consumes the rest of this string whole (C's
+                    // `optarg` is exactly "this string minus the `-` and the
+                    // letter"), so this string ends here.
                     pos = bytes.len();
                 }
                 _ => {
-                    // libc 的 `getopt.c:103` 用 `%c` 打的是 `optopt` 那个**字节**，
-                    // 所以 `-é`（`c3 a9`）报的是 `c3` 一字节而不是整个字符——与本树
-                    // `src/column.rs:parse_column_args` 同法：按字节取，别按字符切
+                    // libc's `getopt.c:103` prints with `%c`, which emits the
+                    // **byte** in `optopt`, so `-é` (`c3 a9`) reports the single
+                    // byte `c3`, not the whole character — the same approach as
+                    // `src/column.rs:parse_column_args`: take a byte, never split
+                    // by character.
                     return Err(ColFlagError::UnknownOption(char::from(bytes[pos])));
                 }
             }
@@ -520,16 +532,18 @@ mod tests {
         String::from_utf8(filter(s.as_bytes(), &ColOptions::default()).bytes).unwrap()
     }
 
-    /// 字节形入口的测试适配器：夹具仍写文本，只在进选项环前折一次。
+    /// Test adapter for the byte-shaped entry: the fixtures still spell text,
+    /// and this folds it to bytes once before the option ring.
     fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
         list.iter().map(|word| word.as_bytes()).collect()
     }
 
     #[test]
     fn unknown_nonascii_option_letter_reports_the_byte() {
-        // 参照件现量（`tmp/col-313/col_ref`）：`col -bé` 打的是
-        // `col: unknown option -- ` + 裸字节 0xC3 + 换行，退 1。
-        // `é` 是 `c3 a9` 两字节，取**字符**会得到 U+00E9，取**字节**才是 U+00C3
+        // Measured against the reference binary: `col -bé` prints
+        // `col: unknown option -- ` + the raw byte 0xC3 + newline, exit 1.
+        // `é` is two bytes `c3 a9`; taking a **char** yields U+00E9, only
+        // taking a **byte** yields U+00C3.
         let words = argv_of(&["-b\u{e9}"]);
         let err = parse_col_flags(&words).expect_err("非 ASCII 字母该报错");
         assert_eq!(
@@ -537,7 +551,8 @@ mod tests {
             ColFlagError::UnknownOption('\u{00c3}'),
             "该报短横后的第一个字节"
         );
-        // 聚簇里也一样：`-xé` 的 x 先被吃掉，报错落在 c3 上
+        // Same inside a cluster: in `-xé` the x is consumed first, so the
+        // error lands on c3.
         let words = argv_of(&["-x\u{e9}"]);
         let err = parse_col_flags(&words).expect_err("同上");
         assert_eq!(err, ColFlagError::UnknownOption('\u{00c3}'));
@@ -585,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_reverse_line_feed_reorders_lines() {
-        // ESC-07 backs up a whole line; the earlier line gets more
+        // ESC 07 backs up a whole line; the earlier line gets more
         // content appended and is flushed before the later one.
         let out = run("ab\nxy\u{1b}\u{7}Z\n");
         // Line 0 = "ab" + Z (column from the second visit), line 1 = xy.
@@ -629,7 +644,7 @@ mod tests {
             fine: true,
             ..ColOptions::default()
         };
-        // Text on line 0, ESC-011 moves to half line 1, text there,
+        // Text on line 0, ESC 011 moves to half line 1, text there,
         // then \n completes the line: output keeps the half feed.
         let out = String::from_utf8(filter(b"a\x1b\x09b\n", &o).bytes).unwrap();
         // flush_blanks emits ESC TAB CR, then "b" sits in column 1
@@ -670,7 +685,8 @@ mod tests {
         assert!(!out.warned);
     }
 
-    /// 选项环逐支钉：聚簇、附值与另起一段的 `-l`、`--`、操作数、四支点亮的旗标。
+    /// Pins the option ring arm by arm: clustering, `-l` attached or separate,
+    /// `--`, operands, and the flags lit by all four.
     #[test]
     fn the_option_ring_reads_letter_by_letter_like_getopt() {
         let plain = parse_col_flags(&argv_of(&[])).unwrap();
@@ -688,7 +704,8 @@ mod tests {
             (all.no_backspaces && all.fine && !all.compress_spaces && all.pass_unknown_seqs),
             "聚簇要逐字母生效，`-bfpx` 里那个 `x` 关掉压缩"
         );
-        // 同一串里后写的字母覆盖先写的：`-xb` 与 `-bx` 都是「不压缩 + 不出退格」。
+        // A later letter in the same string overrides an earlier one: both
+        // `-xb` and `-bx` mean "no compression + no backspaces".
         assert!(!parse_col_flags(&argv_of(&["-xb"])).unwrap().compress_spaces);
         assert!(parse_col_flags(&argv_of(&["-xb"])).unwrap().no_backspaces);
         assert!(
@@ -696,7 +713,8 @@ mod tests {
             "后到的 x 覆盖 h"
         );
 
-        // `-l` 的值可以附在本串里，也可以另起一段；两者都吃掉那一整段。
+        // The `-l` value may be attached to this string or start a new one;
+        // both consume that whole segment.
         assert_eq!(
             parse_col_flags(&argv_of(&["-l3"])).unwrap().max_bufd_lines,
             3
@@ -718,7 +736,8 @@ mod tests {
                 .unwrap()
                 .fine
         );
-        // C 的 `atoi` 不管尾巴上的杂字符，所以 `3x` 是合法的 3（参照件同受）。
+        // C's `atoi` ignores trailing junk, so `3x` is a legal 3 (the
+        // reference binary behaves the same).
         assert_eq!(
             parse_col_flags(&argv_of(&["-l", "3x"]))
                 .unwrap()
@@ -726,7 +745,7 @@ mod tests {
             3
         );
 
-        // 三种失败各自成支，互不混用。
+        // The three failures each have their own arm and are never mixed.
         assert_eq!(
             parse_col_flags(&argv_of(&["-Z"])),
             Err(ColFlagError::UnknownOption('Z'))
@@ -754,7 +773,8 @@ mod tests {
                 "`-l {bad:?}` 该交回原文去印那句 bad -l argument"
             );
         }
-        // `--` 自身不是操作数；它后面有东西才算；裸 `-` 与普通 token 都是操作数。
+        // `--` itself is not an operand; only what follows it counts. A bare
+        // `-` and an ordinary token are both operands.
         assert_eq!(
             parse_col_flags(&argv_of(&["--"])).unwrap().max_bufd_lines,
             128
@@ -771,7 +791,8 @@ mod tests {
             parse_col_flags(&argv_of(&["file"])),
             Err(ColFlagError::OperandsPresent)
         );
-        // 不重排：操作数一到就结束，后面的合法字母也不再读（`col` 反正不接受操作数）。
+        // No permutation: an operand ends the ring on arrival, and later
+        // legal letters are not read either (`col` accepts no operand anyway).
         assert_eq!(
             parse_col_flags(&argv_of(&["-b", "file", "-f"])),
             Err(ColFlagError::OperandsPresent)
@@ -780,7 +801,8 @@ mod tests {
 
     #[test]
     fn a_raw_nonutf8_line_count_is_named_by_its_own_bytes() {
-        // `-l` 那一段直接来自 argv：回显位是原字节，不是替换字符的三字节。
+        // The `-l` segment comes straight from argv: the echoed field is the
+        // raw byte, not the three bytes of a replacement character.
         assert_eq!(
             parse_col_flags(&[b"-l\xff".as_slice()]),
             Err(ColFlagError::BadLineCount(b"\xff".as_slice()))

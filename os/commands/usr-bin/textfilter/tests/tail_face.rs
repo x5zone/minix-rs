@@ -28,18 +28,27 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 const TAIL: &str = env!("CARGO_BIN_EXE_tail");
-/// C 的一拍就是 `sleep(1)`（`forward.c:253`），这里只作参照：正向等待按它的倍数取，
-/// 静默窗口也必须长于它（不然「本该有一拍什么也不打」那一支根本抓不住 stray round）。
+/// C's tick is exactly `sleep(1)` (`forward.c:253`); this is only a reference:
+/// forward waits are taken as multiples of it, and the quiet window must also be
+/// longer than it (otherwise the "a tick that should print nothing" arm cannot
+/// catch a stray round).
 const ROUND: Duration = Duration::from_secs(1);
-/// 等一行到来时的**耐心上限**，不是判据。断言的是「来的是哪一行」而不是「它第几秒到」，
-/// 所以把这里放宽不会让任何断言变弱；反过来，拿它当判据就会把「机器此刻被别的线程占满、
-/// 子进程十几秒才拿到一次 CPU」误报成跟随环路的缺陷——本仓的整包并跑就报过一次这种假红
-/// （单跑同一目标与 `--no-fail-fast` 重跑均绿，而这一枚的等待本身就是唯一依赖调度快慢的量）。
-/// 代价只有真失败时多等几秒，而失败路径本来就要打 stderr 与通道错。取 20 拍，
-/// 所以下面那个数是从 `ROUND` 乘出来的，不是拍的个数写成魔法数。
+/// **Patience ceiling** while waiting for a line to arrive, not a decision
+/// criterion. The assertions check *which* line arrives, not *at which second*,
+/// so loosening this weakens no assertion; conversely, using it as a criterion
+/// would misreport "the machine is busy with other threads right now and the
+/// child gets CPU only every dozen seconds" as a defect in the follow loop —
+/// a whole-package parallel run in this repo produced exactly that kind of false
+/// red (the same target alone and a `--no-fail-fast` rerun were both green, and
+/// this wait is the only quantity that depends on scheduling speed). The only
+/// cost is a few extra seconds on a real failure, and the failure path prints
+/// stderr and the channel error anyway. It is 20 ticks, so the number below is
+/// multiplied out of `ROUND`, not a magic count of ticks.
 const PATIENCE: Duration = Duration::from_secs(ROUND.as_secs() * 20);
-/// 「必须什么都不打」的窗口：必须是 `ROUND` 的倍数且大于一拍，否则一整个周期都没跑完就
-/// 下结论。这个方向上**缩短它就是削弱判据**，所以它不参与上面的耐心调整（仍是 2.5 拍）。
+/// The "must print nothing" window: it must be a multiple of `ROUND` and larger
+/// than one tick, otherwise the conclusion is drawn before a whole period has
+/// run. In this direction **shortening it weakens the criterion**, so it does
+/// not take part in the patience adjustment above (still 2.5 ticks).
 const QUIET: Duration = Duration::from_millis((ROUND.as_millis() * 5 / 2) as u64);
 
 /// Runs `tail` with the given words and standard input.
@@ -72,8 +81,9 @@ fn scratch(name: &str) -> PathBuf {
     path
 }
 
-/// 把一个仍在运行的 child 的 stdout 接到一条通道上：读线程一行一行送，
-/// 于是「没有新行」是超时报错，而不是把整个测试挂死。
+/// Attach the stdout of a still-running child to a channel: a reader thread
+/// sends one line at a time, so "no new line" is a timeout error rather than a
+/// hung test.
 fn line_channel(pipe: std::process::ChildStdout) -> Receiver<String> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
@@ -93,8 +103,8 @@ fn line_channel(pipe: std::process::ChildStdout) -> Receiver<String> {
     receiver
 }
 
-/// 启动一个跟随中的 `tail`，stdout 走行通道、stderr 落进文件（跟随环路不退出，
-/// `output()` 那只会一直等）。
+/// Start a following `tail` with stdout on a line channel and stderr into a file
+/// (the follow loop never exits, so `output()` would wait forever).
 fn spawn_follow(args: &[&str], stderr_to: &Path) -> (Child, Receiver<String>) {
     let err_file = fs::File::create(stderr_to).expect("stderr file");
     let mut child = Command::new(TAIL)
@@ -108,8 +118,9 @@ fn spawn_follow(args: &[&str], stderr_to: &Path) -> (Child, Receiver<String>) {
     (child, lines)
 }
 
-/// 下一行，超过耐心上限即失败（附上的读数含 stderr，便于定位）。这里等的是「会不会来」，
-/// 不是「多久来」，所以用 [`PATIENCE`] 而不是拍数的倍数。
+/// The next line; past the patience ceiling this fails (the attached reading
+/// includes stderr for diagnosis). What is awaited here is "will it come", not
+/// "how soon it comes", hence [`PATIENCE`] rather than a multiple of ticks.
 fn next_line(lines: &Receiver<String>, child: &mut Child, stderr_to: &Path) -> String {
     match lines.recv_timeout(PATIENCE) {
         Ok(line) => line,
@@ -121,7 +132,8 @@ fn next_line(lines: &Receiver<String>, child: &mut Child, stderr_to: &Path) -> S
     }
 }
 
-/// 在 `wait` 这段时间里必须一行也不来（C 的静默支：睡过但什么都不打）。
+/// During `wait` not a single line may arrive (C's silent arm: it slept but
+/// printed nothing).
 fn expect_quiet(lines: &Receiver<String>, wait: Duration) {
     match lines.recv_timeout(wait) {
         Err(_) => {}
@@ -129,7 +141,8 @@ fn expect_quiet(lines: &Receiver<String>, wait: Duration) {
     }
 }
 
-/// 等够一拍以上的跨度，用来确认进程还活着（而不是默默退了）。
+/// Wait for a span of more than one tick, to confirm the process is still alive
+/// (rather than having exited silently).
 fn outlives_ticks(child: &mut Child, ticks: Duration) {
     let deadline = Instant::now() + ticks;
     while Instant::now() < deadline {
@@ -140,7 +153,8 @@ fn outlives_ticks(child: &mut Child, ticks: Duration) {
     }
 }
 
-/// 追加一行（刷新到档），供跟随环路下一拍读到。
+/// Append a line (flushed to the file) for the follow loop to read on its next
+/// tick.
 fn append(path: &Path, text: &str) {
     fs::OpenOptions::new()
         .append(true)
@@ -216,8 +230,9 @@ fn reverse_forms_walk_the_input_bottom_up() {
     assert_eq!(run(&["-r", "-n", "+3"], "a\nb\n").0, "b\na\n");
 }
 
-/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
-/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+/// Same command seam as `run`, but standard error comes back **byte for byte**:
+/// `from_utf8_lossy` renders a bare `c3` as the three-byte U+FFFD, and the text
+/// form cannot tell the "one byte" and "two bytes" failure modes apart.
 fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(TAIL)
         .args(args)
@@ -235,13 +250,16 @@ fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**。期望逐形取自本轮新配的参照件
-/// `tmp/tail-416/tail_ref`（五件真源 + Minix 的 `getopt.c` + 垫片，`-D__minix` 关掉 BSD 的
-/// kqueue 腿，经同名软链 `tail` 起 ⇒ 程序名段与本壳一致）：`-é` 与 `-ré` 都是
-/// `tail: unknown option -- ` + 单个 `c3` + 换行再跟那一行 usage（大写 `Usage:`，
-/// `tail.c:299-305`）、退 **1**；`-Zé` 停在 `Z`；反面的 `-né` 里 `é` 是**值**——
-/// `tail.c:108` 的选项串 `"Fb:c:fn:r"` 里 `n` 带值，所以走 `tail: illegal offset -- é`
-/// **单独一行、不接 usage**。
+/// The letter slot of the unknown-option line is **one raw byte**. Each
+/// expected shape was measured against the reference binary built for this
+/// round, `tmp/tail-416/tail_ref` (five ground-truth files + Minix's
+/// `getopt.c` + shims, `-D__minix` turning off the BSD kqueue leg, started
+/// through a same-name symlink `tail` so the program-name segment matches this
+/// shell): `-é` and `-ré` both give `tail: unknown option -- ` + a single `c3`
+/// + newline followed by the usage line (capitalized `Usage:`, `tail.c:299-305`)
+/// and exit **1**; `-Zé` stops at `Z`; conversely in `-né`, `é` is a **value** —
+/// the optstring `"Fb:c:fn:r"` at `tail.c:108` has `n` take a value, so it goes
+/// to `tail: illegal offset -- é` on **one line, with no usage**.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_tail() {
     const USAGE: &[u8] = b"Usage: tail [-f | -F | -r] [-b # | -c # | -n #] [file ...]\n";
@@ -275,10 +293,12 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_tail() {
     );
 }
 
-/// 与 `run_bytes` 同一条腿，但 **argv 交的是原始字节**：一枚裸 `0xff` 进不了 `&str`，
-/// 所以这一腿不能借道任何按 `str` 收参数的夹具。在临时目录里跑，目录中放一枚
-/// **档名本身带裸字节**的真档（`a\xff.txt`）与一枚普通 `in.txt`，这样横幅那条腿
-/// 也能摆到台面上。交回标准输出、退码、逐字节的标准错误。
+/// Same leg as `run_bytes`, but **argv is handed as raw bytes**: a bare `0xff`
+/// cannot enter a `&str`, so this leg cannot go through any fixture that takes
+/// `str` arguments. It runs in a temporary directory holding a real file whose
+/// **name itself contains a raw byte** (`a\xff.txt`) and a plain `in.txt`, so
+/// the banner leg is also on the table. Returns stdout, exit code and byte-exact
+/// standard error.
 fn run_raw(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt as _;
@@ -313,19 +333,29 @@ fn run_raw(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
 
 static RAW_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// 参数缝的字节判据（逐形取自参照件 `tmp/tail-416/tail` 经同名软链起，
-/// `tmp/tail-469/measure.log` 三侧对照）：改前的件 22 形里只有 10 形与参照件同，
-/// 改后 19 形同。这五形是本轮翻正的那五类：
-/// ① 字母位一枚裸 `ff`（`getopt.c:79` 的 `optopt = *place++` 一次进一枚字节、`:103`
-///    的 `%c` 原样写出）；② 三句 `illegal offset -- %s` 的值位（`tail.c:90` 打的是
-///    `optarg` 本身）；③ `obsolete()` 那句 `illegal option -- %s` 带的是**整段 token**
-///    （`tail.c:269`）；④ 遗留形**改写之后**的那枚 token 里的字节——C 用 `malloc` +
-///    `strcpy` 现拼（`:238-273`），`-1<ff>2` 拼成 `-n-1<ff>2`，于是回声带的是 `-1<ff>2`
-///    而不是原 token；⑤ 诊断行里的**档名**（`ierr()` 打的是全局 `fname`）。
-/// 最后钉的是仍留在册的那一条腿：一枚档名本身带裸字节的**真档**，参照件开得了并打出
-/// `==> a\xff.txt <==`，本壳开不了（档名进的是 `os/libs` 那条 `&str` 口，在册
-/// `ARGV-BYTE-PATH-IN-LIBS`），所以只能报「没有这个档」——按当前形状钉住，等那条口
-/// 换字节形时这枚门当场变红。
+/// Byte criteria for the argument seam (each shape measured against the
+/// reference binary `tmp/tail-416/tail` started through a same-name symlink,
+/// three-way comparison in `tmp/tail-469/measure.log`): before the fix only 10
+/// of 22 shapes matched the reference binary, after it 19. These five shapes
+/// are the five classes turned around this round:
+/// (1) one raw `ff` in the letter slot (`getopt.c:79`'s `optopt = *place++`
+///     takes one byte at a time, `:103`'s `%c` writes it out verbatim);
+/// (2) the value slot of the three `illegal offset -- %s` sentences (`tail.c:90`
+///     prints `optarg` itself);
+/// (3) the `obsolete()` sentence `illegal option -- %s` carries the **whole
+///     token** (`tail.c:269`);
+/// (4) the bytes in the token **after** the legacy form is rewritten — C
+///     assembles it with `malloc` + `strcpy` (`:238-273`), so `-1<ff>2` becomes
+///     `-n-1<ff>2` and the echo carries `-1<ff>2` rather than the original
+///     token;
+/// (5) the **file name** in diagnostic lines (`ierr()` prints the global
+///     `fname`).
+/// The final assertion pins the leg still on the books: a **real file** whose
+/// name contains a raw byte. The reference binary opens it and prints
+/// `==> a\xff.txt <==`, while this shell cannot open it (the name enters the
+/// `&str` door in `os/libs`, a registered limitation), so it can only report
+/// "no such file" — pinned to the current shape, and this gate turns red the
+/// moment that door switches to bytes.
 #[test]
 fn the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes() {
     const USAGE: &[u8] = b"Usage: tail [-f | -F | -r] [-b # | -c # | -n #] [file ...]\n";
@@ -338,7 +368,7 @@ fn the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes() {
         "字母该是那一枚字节本身，不是折过的第一字节 ef"
     );
 
-    // 聚簇里排在最前面的高字节就是报出来的那一枚。
+    // In a cluster, the first high byte is the one reported.
     let (_out, status, err) = run_raw(&[b"-\xffn"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(
@@ -346,7 +376,8 @@ fn the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes() {
         [b"tail: unknown option -- \xff\n".as_slice(), USAGE].concat()
     );
 
-    // 三句 illegal offset 的值位：附值、分词、`-c` 各一形。
+    // The value slot of the three illegal offset sentences: attached value,
+    // split word and `-c`, one shape each.
     for flag in [b"-n\xff".as_slice(), b"-c\xff".as_slice()] {
         let (_out, status, err) = run_raw(&[flag], b"a\n");
         assert_eq!(status, 1, "{flag:?} 的退码");
@@ -364,7 +395,7 @@ fn the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes() {
         "分词形同样按字节"
     );
 
-    // `obsolete()` 自己那一句带整段 token。
+    // The `obsolete()` sentence itself carries the whole token.
     let (_out, status, err) = run_raw(&[b"-20\xffx"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(
@@ -373,7 +404,8 @@ fn the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes() {
         "这一句的回声位是 token 而不是它的尾巴"
     );
 
-    // 改写之后的 token：`-1<ff>2` 被 C 拼成 `-n-1<ff>2`，回声因此带着符号与那枚 ff。
+    // The token after rewriting: `-1<ff>2` is assembled by C into `-n-1<ff>2`,
+    // so the echo carries the sign and that ff.
     let (_out, status, err) = run_raw(&[b"-1\xff2"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(
@@ -382,7 +414,7 @@ fn the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes() {
         "回声带的是改写之后的值位，其中那枚 ff 仍是 ff"
     );
 
-    // 打不开的档名：`ierr()` 念的是 argv 的原字节。
+    // An unopenable file name: `ierr()` reads the raw argv bytes.
     let (_out, status, err) = run_raw(&[b"no\xff/such"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(
@@ -394,7 +426,9 @@ fn the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes() {
         .concat()
     );
 
-    // 在册那条形：档名带裸字节的**真档**在本壳开不了，参照件开得了并打横幅。
+    // The registered shape: a **real file** whose name contains a raw byte
+    // cannot be opened by this shell, while the reference binary opens it and
+    // prints the banner.
     let (out, status, err) = run_raw(&[b"-n", b"1", b"a\xff.txt", b"in.txt"], b"a\n");
     assert_eq!(
         err,
@@ -415,23 +449,25 @@ fn the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes() {
 
 #[test]
 fn unknown_letters_and_bad_counts_are_refused_not_leaked() {
-    // `-x` 是 C 的 `case '?'` → `usage()`（`tail.c:128-130`），但前面还有一行是
-    // `getopt` 自己印的：`"<prog>: unknown option -- <字母>"`
-    // （`minix3/lib/libc/stdlib/getopt.c:101-104`，字母不带引号）。本仓**旧的**
-    // 宿主参照件比不了这一行——它跑的是 glibc 的 `getopt`，那句写的是
-    // `invalid option -- 'x'`。批次四百一十六配了链 Minix `getopt.c` 的
-    // `tmp/tail-416/tail_ref`（`tmp/tail-follow-ref/tail_ref` 同样
-    // 是 glibc 血脉，按批次四百零七那条规矩先验归属后判为不可用），所以这一句
-    // 现在有逐字节的差分腿可依——字母位那一枚门就用 `run_bytes` 钉在它上面。
-    // 而 usage 行本身是大写 `Usage:`、带程序名、选项里本来就有 `-f | -F`
-    // （`tail.c:299-305`），此前本壳那行小写且只列 `-r` 的写法是自创的。
+    // `-x` is C's `case '?'` → `usage()` (`tail.c:128-130`), but one line comes
+    // before it, printed by `getopt` itself: `"<prog>: unknown option -- <letter>"`
+    // (`minix3/lib/libc/stdlib/getopt.c:101-104`, the letter unquoted). The
+    // repo's **old** host reference binary could not compare this line — it ran
+    // glibc's `getopt`, whose sentence is `invalid option -- 'x'`. This round
+    // supplied `tmp/tail-416/tail_ref` linked against Minix `getopt.c` (the
+    // `tmp/tail-follow-ref/tail_ref` is glibc lineage too; after verifying
+    // provenance it was judged unusable), so this sentence now has a byte-exact
+    // differential leg — the letter-slot gate pins it with `run_bytes`.
+    // The usage line itself is the capitalized `Usage:`, carries the program
+    // name and already lists `-f | -F` (`tail.c:299-305`); the shell's earlier
+    // lowercase line listing only `-r` was invented.
     const USAGE: &str = "Usage: tail [-f | -F | -r] [-b # | -c # | -n #] [file ...]\n";
     let (out, status, err) = run(&["-x"], "a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);
     assert_eq!(err, format!("tail: unknown option -- x\n{USAGE}"));
-    // 带值选项缺值：同样两行，那句是 `option requires an argument -- n`
-    // （`getopt.c:132-136`）。
+    // A value option missing its value: likewise two lines, the sentence being
+    // `option requires an argument -- n` (`getopt.c:132-136`).
     let (out, status, err) = run(&["-n"], "a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);
@@ -439,14 +475,16 @@ fn unknown_letters_and_bad_counts_are_refused_not_leaked() {
         err,
         format!("tail: option requires an argument -- n\n{USAGE}")
     );
-    // 只有 usage 一行的两支：数字选项重复（`ARG` 首句）与 `-r` 配跟随。
+    // The two arms with only the usage line: a repeated number option (the
+    // first sentence of `ARG`) and `-r` with follow.
     for args in [&["-n", "3", "-n", "5"][..], &["-r", "-f", "a"][..]] {
         let (out, status, err) = run(args, "a\n");
         assert_eq!(out, "", "args {args:?} printed {out:?}");
         assert_eq!(status, 1, "args {args:?} stderr was {err:?}");
         assert_eq!(err, USAGE, "args {args:?}");
     }
-    // 计数非法走的是 `xerrx`，那一句不缀 `errno` 句子，也没有 usage 行。
+    // An illegal count goes through `xerrx`, whose sentence appends no `errno`
+    // sentence and has no usage line.
     let (out, status, err) = run(&["-n", "x"], "a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);
@@ -455,9 +493,10 @@ fn unknown_letters_and_bad_counts_are_refused_not_leaked() {
 
 #[test]
 fn follow_with_two_operands_is_refused_before_anything_is_read() {
-    // `tail.c:135-137` 的单文件门排在打开任何操作数之前，而且是 `xerrx`（
-    // `misc.c:78-89` 走 `vwarnx`），所以那一句后面没有 `errno` 句子。stdout
-    // 必须是空的：连第一个文件也没开。
+    // `tail.c:135-137`'s single-file gate comes before opening any operand, and
+    // it is `xerrx` (`misc.c:78-89` goes through `vwarnx`), so no `errno`
+    // sentence follows. stdout must be empty: not even the first file was
+    // opened.
     let one = scratch("multi-a");
     let two = scratch("multi-b");
     fs::write(&one, "a1\n").unwrap();
@@ -469,12 +508,13 @@ fn follow_with_two_operands_is_refused_before_anything_is_read() {
         err,
         "tail: -f and -F options only appropriate for a single file\n"
     );
-    // `-F` 走同一句（`fflag` 是 1 还是 2 都过这道门）。
+    // `-F` takes the same sentence (whether `fflag` is 1 or 2, it passes this
+    // gate).
     assert_eq!(
         run(&["-F", one.to_str().unwrap(), two.to_str().unwrap(),], "").2,
         "tail: -f and -F options only appropriate for a single file\n"
     );
-    // 门排在 `-r` 的用法检查之前（`:135` 对 `:143`）。
+    // The gate comes before the `-r` usage check (`:135` vs `:143`).
     assert_eq!(
         run(
             &["-r", "-f", one.to_str().unwrap(), two.to_str().unwrap(),],
@@ -489,8 +529,8 @@ fn follow_with_two_operands_is_refused_before_anything_is_read() {
 
 #[test]
 fn follow_with_reverse_is_the_usage_line() {
-    // `tail.c:143-145`：`if (rflag) { if (fflag) usage(); }`。两个方例都是退 1、
-    // 什么都不打。
+    // `tail.c:143-145`: `if (rflag) { if (fflag) usage(); }`. Both cases exit 1
+    // and print nothing.
     let file = scratch("rev-f");
     fs::write(&file, "r1\nr2\n").unwrap();
     let path = file.to_str().unwrap().to_owned();
@@ -508,9 +548,9 @@ fn follow_with_reverse_is_the_usage_line() {
 
 #[test]
 fn follow_on_a_pipe_is_dropped_and_the_stream_still_prints() {
-    // `tail.c:197-201` 把管道上的 `fflag` 清零（注释写着 POSIX.2 requires this）。
-    // 不接这一支的话，本例会永久等下去——这也是本仓把“跑不起来”翻译成
-    // “挂住”而非“报错”的那类坑。
+    // `tail.c:197-201` clears `fflag` on a pipe (the comment says POSIX.2
+    // requires this). Without this arm the case would wait forever — exactly the
+    // pit this repo translates as "hangs" rather than "errors".
     for flag in ["-f", "-F"] {
         let (out, status, err) = run(&[flag], "p1\np2\n");
         assert_eq!(out, "p1\np2\n", "{flag} 在管道上该打完就退");
@@ -520,8 +560,9 @@ fn follow_on_a_pipe_is_dropped_and_the_stream_still_prints() {
 
 #[test]
 fn follow_prints_what_arrives_after_the_first_round() {
-    // `-f` 那一拍：C 先抄到 EOF、再睡（`forward.c:191-202`、`:253`），所以初始内容
-    // 先出、新行在下一拍出。
+    // The `-f` tick: C copies to EOF first, then sleeps (`forward.c:191-202`,
+    // `:253`), so the initial content comes out first and new lines arrive on
+    // the next tick.
     let file = scratch("follow-append");
     let err_file = scratch("follow-append-err");
     fs::write(&file, "l1\nl2\nl3\n").unwrap();
@@ -547,9 +588,11 @@ fn follow_prints_what_arrives_after_the_first_round() {
 
 #[test]
 fn follow_by_handle_ignores_a_replacement_at_the_same_name() {
-    // `forward.c:255` 的 `fflag == 2` 只让 `-F` 去查身份。这一条是拿它跟上一条
-    // （`-f` 仍读旧 inode）一起区分两形：同一个剧本里只给 `-f`，那么同名出现的
-    // 替身档必须一声不出——不然就等于把 `-f` 做成了 `-F`。
+    // `forward.c:255`'s `fflag == 2` lets only `-F` check identity. This case,
+    // together with the one above (`-f` still reads the old inode), separates the
+    // two forms: in the same scenario with only `-f`, a replacement appearing
+    // under the same name must stay silent — otherwise `-f` would have been made
+    // into `-F`.
     let file = scratch("follow-namerepl");
     let moved = scratch("follow-namerepl-moved");
     let err_file = scratch("follow-namerepl-err");
@@ -570,9 +613,10 @@ fn follow_by_handle_ignores_a_replacement_at_the_same_name() {
 
 #[test]
 fn follow_by_name_prints_the_replacement_from_its_start() {
-    // `forward.c:257-266`：`-F` 比到身份不同就 `freopen`，而 freopen 把读位置带回
-    // 开头，所以替身档是**整份**打出来（不是接着旧位置只打尾巴）。注意这与 GNU
-    // `tail -F` 也不完全同：GNU 会试着重放旧尾。
+    // `forward.c:257-266`: `-F` calls `freopen` once identities differ, and
+    // freopen brings the read position back to the start, so the replacement is
+    // printed **in full** (not just the tail after the old position). Note this
+    // also differs from GNU `tail -F`, which tries to replay the old tail.
     let file = scratch("follow-rotate");
     let gone = scratch("follow-rotated");
     let err_file = scratch("follow-rotate-err");
@@ -584,7 +628,8 @@ fn follow_by_name_prints_the_replacement_from_its_start() {
     fs::write(&file, "fresh1\nfresh2\n").unwrap();
     assert_eq!(next_line(&lines, &mut child, &err_file), "fresh1\n");
     assert_eq!(next_line(&lines, &mut child, &err_file), "fresh2\n");
-    // 重开后身份换了（`*sbp = statbuf`），同一身份上的追加仍然看得见。
+    // After the reopen the identity changed (`*sbp = statbuf`), and appends to
+    // that same identity are still visible.
     append(&file, "more\n");
     assert_eq!(next_line(&lines, &mut child, &err_file), "more\n");
     let _ = child.kill();
@@ -597,9 +642,11 @@ fn follow_by_name_prints_the_replacement_from_its_start() {
 
 #[test]
 fn follow_by_handle_stays_with_the_file_it_opened() {
-    // 这一条把实现选择钉住：跟随拿的是**已打开的句柄**，不是每拍重开路径。
-    // `-f` 不比身份（`forward.c:255` 的 `fflag == 2`），所以改名后 C 仍从同一个
-    // inode 读：往新路径追加看不见，往旧 inode（改名后的名字）追加看得见。
+    // This pins the implementation choice: follow uses the **already-open
+    // handle**, not a path reopened every tick. `-f` does not compare identity
+    // (`forward.c:255`'s `fflag == 2`), so after a rename C still reads the same
+    // inode: appends to the new path are invisible, appends to the old inode
+    // (the renamed name) are visible.
     let file = scratch("follow-inode");
     let moved = scratch("follow-inode-moved");
     let err_file = scratch("follow-inode-err");
@@ -608,8 +655,9 @@ fn follow_by_handle_stays_with_the_file_it_opened() {
     assert_eq!(next_line(&lines, &mut child, &err_file), "x1\n");
     assert_eq!(next_line(&lines, &mut child, &err_file), "x2\n");
     fs::rename(&file, &moved).unwrap();
-    // 名字现在不存在了：若实现是“每拍按路径重读”，这里会报错或静默丢掉；
-    // C 和本壳都照旧从手上的句柄读。
+    // The name no longer exists: if the implementation re-read by path every
+    // tick, this would error or silently drop; C and this shell both keep
+    // reading from the handle in hand.
     append(&moved, "via-old-inode\n");
     assert_eq!(
         next_line(&lines, &mut child, &err_file),
@@ -625,16 +673,19 @@ fn follow_by_handle_stays_with_the_file_it_opened() {
 
 #[test]
 fn follow_does_not_rewind_the_position_when_the_file_shrinks() {
-    // 重定位到末尾只存在于被 `#if !defined(__minix)` 排除的 kqueue 支
-    // （`forward.c:238-243`），所以 Minix 上的真源不回退位置：截空后重新写满，
-    // 长回旧位置之前的部分一声不出，越过去那一刻打的是**半行**。
+    // Repositioning to the end exists only in the kqueue arm excluded by
+    // `#if !defined(__minix)` (`forward.c:238-243`), so the real ground truth on
+    // Minix never rewinds the position: after truncating and rewriting to full
+    // length, nothing is printed until the old position is passed, and the
+    // moment it is passed a **partial line** comes out.
     let file = scratch("follow-shrink");
     let err_file = scratch("follow-shrink-err");
     fs::write(&file, "abcdef\nghijkl\n").unwrap();
     let (mut child, lines) = spawn_follow(&["-f", file.to_str().unwrap()], &err_file);
     assert_eq!(next_line(&lines, &mut child, &err_file), "abcdef\n");
     assert_eq!(next_line(&lines, &mut child, &err_file), "ghijkl\n");
-    // 位置现在在 14。截空后写 21 字节：前 14 字节已“被读过”，只有 14 之后可见。
+    // The position is now at 14. After truncation write 21 bytes: the first 14
+    // are already "read", only what follows 14 is visible.
     fs::write(&file, "1234567890ABCDEFGHIJ\n").unwrap();
     assert_eq!(
         next_line(&lines, &mut child, &err_file),
@@ -652,8 +703,9 @@ fn follow_does_not_rewind_the_position_when_the_file_shrinks() {
 
 #[test]
 fn follow_by_name_waits_in_silence_while_the_name_is_gone() {
-    // C 的 `stat(fname, &statbuf) != -1`（`forward.c:255-256`）把“名字认不出来”整支
-    // 挡住：不报错、不退出、也不打东西，下一拍继续睡。
+    // C's `stat(fname, &statbuf) != -1` (`forward.c:255-256`) blocks the whole
+    // "name cannot be identified" branch: no error, no exit, no output, and the
+    // next tick keeps sleeping.
     let file = scratch("follow-gone");
     let err_file = scratch("follow-gone-err");
     fs::write(&file, "y1\n").unwrap();
@@ -674,9 +726,10 @@ fn follow_by_name_waits_in_silence_while_the_name_is_gone() {
 
 #[test]
 fn unopenable_operand_prints_the_program_the_name_and_the_errno_sentence() {
-    // `ierr()` 是 `xerr(0, "%s", fname)` → `vwarn`（`misc.c:53-57`、`:65-76`），
-    // 那句里三个成分缺一不可：程序名、操作数、`strerror(errno)` 的句子。
-    // 本壳之前只打前两个（把 C 的 `warn(3)` 当成 `warnx(3)` 用）。
+    // `ierr()` is `xerr(0, "%s", fname)` → `vwarn` (`misc.c:53-57`, `:65-76`), and
+    // that sentence needs all three parts: program name, operand, and the
+    // `strerror(errno)` sentence. The shell used to print only the first two
+    // (using C's `warn(3)` as if it were `warnx(3)`).
     let missing = scratch("errno-missing");
     let missing_text = missing.to_str().unwrap().to_owned();
     let (out, status, err) = run(&[&missing_text], "");
@@ -783,10 +836,11 @@ fn agrees_with_the_host_tail_on_the_shared_forms() {
     }
 }
 
-/// 缺省形（`tail -n 10`）不把无尾换行的末行改成带换行。C 的 `RLINES` 记录的行区间
-/// 本来就含那枚换行（`minix3/usr.bin/tail/reverse.c:133-144`），参照件
-/// `tmp/tail-416/tail_ref` 现量 `alpha\nbeta\ngamma`（末尾无换行）。
-/// 登记项 `TAIL-FINAL-LINE-ADDS-NEWLINE` 由此闭合。
+/// The default form (`tail -n 10`) does not turn an unterminated final line
+/// into a terminated one. C's `RLINES` records the line range including that
+/// newline (`minix3/usr.bin/tail/reverse.c:133-144`), and the reference binary
+/// `tmp/tail-416/tail_ref` measures `alpha\nbeta\ngamma` (no trailing newline).
+/// The registered item was closed by this test.
 #[test]
 fn tail_leaves_an_unterminated_final_line_unterminated() {
     let (out, code, err) = run(&[], "alpha\nbeta\ngamma");
@@ -798,8 +852,10 @@ fn tail_leaves_an_unterminated_final_line_unterminated() {
     assert_eq!(two, "beta\ngamma");
 }
 
-/// `-r` 把没有换行的末行翻到输出的最前面，那一行仍不带换行：终止状态记在行上，
-/// 跟着行走，不问输出里的位置。参照件现量 `gammabeta\nalpha\n`。
+/// `-r` moves the unterminated last line to the very front of the output, and
+/// that line still carries no newline: termination state is recorded on the
+/// line and travels with it, regardless of its position in the output. The
+/// reference binary measures `gammabeta\nalpha\n`.
 #[test]
 fn reversed_output_carries_the_unterminated_line_to_the_front() {
     let (out, code, err) = run(&["-r"], "alpha\nbeta\ngamma");
@@ -813,11 +869,13 @@ fn reversed_output_carries_the_unterminated_line_to_the_front() {
 
 #[test]
 fn an_operand_ends_option_scanning_like_c() {
-    // 与 `head` 同一条判据（`minix3/lib/libc/stdlib/getopt.c:71-74`：第一个非选项
-    // token 上 `getopt` 交回 -1 且不推进 `optind`，`tail.c:110` 的 `argv += optind`
-    // 于是把那个 token 与其后的全部当操作数）。参照件现量
-    // `tail_ref a.txt -r`：`==> a.txt <==` 加正序后十行，再
-    // `tail: -r: No such file or directory` 退 1——反序**不**发生。
+    // The same criterion as `head` (`minix3/lib/libc/stdlib/getopt.c:71-74`: at
+    // the first non-option token `getopt` returns -1 without advancing
+    // `optind`, so `tail.c:110`'s `argv += optind` treats that token and
+    // everything after it as operands). The reference binary measures
+    // `tail_ref a.txt -r`: `==> a.txt <==` plus the last ten lines in forward
+    // order, then `tail: -r: No such file or directory` and exit 1 — reversal
+    // does **not** happen.
     let good = scratch("operand-first");
     fs::write(&good, "g1\ng2\n").unwrap();
     let good_text = good.to_str().unwrap().to_owned();
@@ -826,8 +884,10 @@ fn an_operand_ends_option_scanning_like_c() {
     assert_eq!(status, 1);
     assert_eq!(err, "tail: -r: No such file or directory\n");
 
-    // 旗标在前才生效，且其后的 token 一律是操作数：`-r` 反序打两行，`-n 3` 只是
-    // 两个打不开的档名（参照件 `-r a.txt -n 3` 同形）。
+    // Flags only take effect before the operands, and every token after them is
+    // an operand: `-r` prints two lines in reverse, and `-n 3` is just two
+    // unopenable file names (the reference binary's `-r a.txt -n 3` has the
+    // same shape).
     let (out, status, err) = run(&["-r", &good_text, "-n", "3"], "");
     assert_eq!(out, format!("==> {good_text} <==\ng2\ng1\n"));
     assert_eq!(status, 1);

@@ -3,17 +3,17 @@
 //!
 //! `find`'s parse-side reports are all `errx(1, …)` lines: program name from
 //! `getprogname()`, C's phrase, and **no** `strerror` sentence (C never consulted
-//! `errno` there). Until this batch the shell carried its own invented wording — e.g.
+//! `errno` there). So invented wording is not acceptable — e.g.
 //! ``find: unknown option `-nope'`` where C says ``find: -nope: unknown option``
 //! (`option.c:131`), and an invented `find: (\` unmatched` where C says
 //! `find: (: missing closing ')'` (`operator.c:96-98`). Every line here is therefore
 //! checked byte-for-byte against the C source, including the punctuation C chose.
 //!
 //! These legs need no filesystem, so all of them are reachable on a host build —
-//! while the walk warnings (`find.c:230`'s `warnx` with `strerror`) used to be the
-//! exception: the probe trait answered `Option` and dropped the number. Since batch 274
-//! the probes hand it over, and this door pins the *shape* of that line (program name,
-//! path, `strerror` sentence) — but only the shape: a hosted `find` cannot read a real
+//! including the walk warnings (`find.c:230`'s `warnx` with `strerror`): the probe
+//! trait hands the number over instead of dropping it behind an `Option`, and this
+//! door pins the *shape* of that line (program name, path, `strerror` sentence) — but
+//! only the shape: a hosted `find` cannot read a real
 //! directory, because `getdents` goes over the VFS IPC (`minix-sys`'s `getdents_via`)
 //! and there is no VFS server here, so the number the host produces is `EIO`. Which
 //! sentence a genuine `EACCES`/`ENOENT` produces is pinned at the unit level
@@ -155,11 +155,15 @@ fn every_line_follows_argv_zero_like_getprogname_does() {
     let _ = fs::remove_file(&copied);
 }
 
-/// 宿主能钉的是**行形**：`warnx` 族先打 `getprogname() + ": "`（`vwarnx.c`），再是
-/// `<路径>: <strerror 句子>`。走表告警此前漏了程名前缀（同壳的解析错 `errx` 行都带了），
-/// 本批补上。至于号本身：宿主的 `getdents` 走 VFS IPC（`minix-sys::getdents_via`），
-/// 这里没有 VFS 服务，所以真跑一次只能拿到 `EIO` —— 这一形在宿主上恰恰证明
-/// 「报的是号对应的句子，不是编造的短语」，而 `EACCES` 那类真号在单元测与机器腿各自钉。
+/// What the host can pin is the **line shape**: the `warnx` family first prints
+/// `getprogname() + ": "` (`vwarnx.c`), then `<path>: <strerror sentence>`. The
+/// walk warning carries that program-name prefix too, as the parse-side `errx`
+/// lines of the same shell already do. As for the number itself: the host's
+/// `getdents` goes over VFS IPC (`minix-sys::getdents_via`) and there is no VFS
+/// server here, so a real run can only produce `EIO` — on a host that shape is
+/// exactly what proves "the sentence matches the number, not an invented phrase",
+/// while real numbers such as `EACCES` are pinned separately at the unit level and
+/// on the machine leg.
 #[test]
 fn a_walk_warning_line_carries_the_program_name_path_and_sentence() {
     let dir = std::env::temp_dir().join(format!("find-face-warn-{}", std::process::id()));
@@ -180,9 +184,10 @@ fn a_walk_warning_line_carries_the_program_name_path_and_sentence() {
     );
 }
 
-/// C 的 `c_not` 与 `c_or` 各管两句，四支各有自己的报文（`operator.c:198-201`、`:253-259`）。
-/// 旧实现把 `!` 的两支拢成一句、`-o` 的两支干脆不报（三种坏形状一路走到求值），所以这里钉的是
-/// 「哪一句」而不是「有没有报错」——退码由 `assert_errx_line` 统一按 `errx(1, …)` 断言。
+/// C's `c_not` and `c_or` own two sentences each, so all four branches have their
+/// own message (`operator.c:198-201`, `:253-259`). This pins *which* sentence is
+/// printed, not merely that a refusal happened — the exit code is asserted
+/// uniformly by `assert_errx_line` as `errx(1, …)`.
 #[test]
 fn the_two_operator_pairs_refuse_with_their_own_sentences() {
     assert_errx_line(&[".", "!"], "find: !: no following expression");
@@ -192,12 +197,14 @@ fn the_two_operator_pairs_refuse_with_their_own_sentences() {
     );
     assert_errx_line(&[".", "-o", "-print"], "find: -o: no expression before -o");
     assert_errx_line(&[".", "-print", "-o"], "find: -o: no expression after -o");
-    // C 的 `c_not` 先把连续 `!` 消合并（`while (node->type == N_NOT)`）再看类型，
-    // 所以 `! ! -or` 落的是同一句「之间没东西」。
+    // C's `c_not` first collapses consecutive `!` (`while (node->type == N_NOT)`)
+    // and only then looks at the type, so `! ! -or` lands on the same
+    // "nothing between" sentence.
     assert_errx_line(
         &[".", "!", "!", "-or", "-print"],
         "find: !: nothing between ! and -o",
     );
-    // C 的先查左后查右：只写一个 `-o` 时不能报成「after」那一句。
+    // C checks the left side before the right: a lone `-o` must not report the
+    // "after" sentence.
     assert_errx_line(&[".", "-o"], "find: -o: no expression before -o");
 }

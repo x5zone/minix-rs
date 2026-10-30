@@ -180,9 +180,11 @@ pub const SYS_BASIC_CALLS: [i32; 11] = [
 mod tests {
     use super::*;
 
-    /// C 绝对值 pin:抽钉族内全部非连续边界 + 每个连续段的首尾,防手抄
-    /// 漂移(E-MINTYPES-SYS 登记的事故模式)。断言值为 com.h:208-269 的
-    /// 字面偏移,不是本模块常量的自证。
+    /// Pin against C's absolute values: every non-contiguous boundary in the
+    /// family plus the ends of each contiguous run, to catch hand-copy drift
+    /// (the incident pattern registered under E-MINTYPES-SYS). The asserted
+    /// values are the literal offsets from com.h:208-269, not self-evidence
+    /// from this module's constants.
     #[test]
     fn test_kernel_call_numbers_match_c_com_h() {
         assert_eq!(KERNEL_CALL, 0x600); // com.h:205
@@ -235,8 +237,9 @@ mod tests {
         assert_eq!(NR_SYS_CALLS, 58); // com.h:269
     }
 
-    /// 偏移合法性:全族落在 `KERNEL_CALL..KERNEL_CALL + NR_SYS_CALLS` 内,
-    /// 且族内无重复号(同一号两个名字 = 分派歧义)。
+    /// Offset legality: the whole family falls inside
+    /// `KERNEL_CALL..KERNEL_CALL + NR_SYS_CALLS`, and no number repeats within
+    /// the family (two names for one number = dispatch ambiguity).
     #[test]
     fn test_kernel_call_family_in_range_and_unique() {
         let family = [
@@ -262,8 +265,8 @@ mod tests {
         }
     }
 
-    /// `SYS_BASIC_CALLS` 与 C com.h:275-278 的字面顺序一致(RS 的
-    /// edit_slot 路径按此顺序下发,顺序即契约)。
+    /// `SYS_BASIC_CALLS` follows the literal order of C com.h:275-278 (RS's
+    /// `edit_slot` path sends them in this order; the order is the contract).
     #[test]
     fn test_basic_calls_order_matches_c() {
         assert_eq!(SYS_BASIC_CALLS[0], SYS_EXIT);

@@ -1,4 +1,4 @@
-//! Test: IPI round-trip (SMP bring-up S-10, L6).
+//! Test: IPI round-trip (SMP bring-up).
 //!
 //! Verifies the SMP mechanism's first real cross-CPU round-trip: after
 //! smp_init brings all APs online and into the scheduling loop, the BSP
@@ -189,7 +189,7 @@ fn main() -> Status {
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 
-    // 6. S-5 orchestration: serial per-AP handshake + wait_for_aps BKL
+    // 6. Orchestration: serial per-AP handshake + wait_for_aps BKL
     // dance. C main.c:149 parity — the BKL is acquired ONCE before
     // smp_init and stays held (wait_for_aps's dance preserves it).
     minix_kernel::smp::bkl_lock().transfer();
@@ -216,7 +216,7 @@ fn main() -> Status {
     }
     early_console::write_str("  boot_ack == online == expected (all APs online)\n");
 
-    // S-10 L6: BSP → AP1 synchronous schedule IPI round-trip. AP1 is in
+    // BSP → AP1 synchronous schedule IPI round-trip. AP1 is in
     // the scheduling loop's idle halt (IF=1); the 0xF0 IPI wakes it and the
     // trap dispatcher routes it to sched_handler_full, which clears the
     // pending flags — schedule_sync's return IS the round-trip proof.
@@ -237,7 +237,7 @@ fn main() -> Status {
         early_console::write_str("  schedule_sync returned (pending cleared by AP1)\n");
     }
 
-    // S-7 L5: every AP entered the shared scheduling loop (per-CPU flag set
+    // Every AP entered the shared scheduling loop (per-CPU flag set
     // at `scheduler_loop` entry); the BSP did not (it runs this test body
     // instead). Serial-visible per-CPU activity marker.
     let mut aps_in_loop = true;

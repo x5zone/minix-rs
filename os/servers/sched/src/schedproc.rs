@@ -38,7 +38,7 @@ pub enum SlotState {
 /// non-negative; construction checks the bound, so an out-of-range
 /// priority cannot be built — only refused.
 ///
-/// [ARCH S-2] (plan.md): bare `unsigned` → ranged newtype.
+/// [ARCH: S-2] bare `unsigned` → ranged newtype.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Priority(u8);
 
@@ -65,7 +65,7 @@ impl Priority {
 /// written nor read anywhere in Minix3 (`schedule.c:185` holds only a
 /// `FIXME`), and no message carries affinity (`ipc.h:1428-1433`).
 ///
-/// [ARCH S-3] (plan.md §7.3): structural elimination, not omission.
+/// [ARCH: S-3] structural elimination, not omission.
 /// If affinity ever grows a message surface, it arrives as a new field
 /// with a new contract — not as a resurrection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,9 +82,9 @@ pub struct SchedProc {
     pub priority: Priority,
     /// Time slice in ms. C: `unsigned time_slice` — schedproc.h:31.
     ///
-    /// The name carries the unit (draft once miscalled it ticks, R-4):
+    /// The name carries the unit (the draft once miscalled it ticks):
     /// the value runs straight into the kernel's `p_quantum_size_ms`.
-    /// [ARCH S-6] (plan.md).
+    /// [ARCH: S-6] millisecond unit, matching the kernel boundary.
     pub time_slice_ms: u32,
     /// Which CPU it runs on. C: `unsigned cpu` — schedproc.h:32.
     ///
@@ -147,11 +147,11 @@ mod tests {
 
     #[test]
     fn test_slice_and_cpu() {
-        // Slice is milliseconds (S-6); cpu is the current home.
+        // Slice is milliseconds; cpu is the current home.
         let proc_ = sample();
         assert_eq!(proc_.time_slice_ms, 200);
         assert_eq!(proc_.cpu, CpuId(0));
-        // The eighth C field (cpu_mask) has no Rust shape: S-3
+        // The eighth C field (cpu_mask) has no Rust shape: the
         // elimination is structural, verified by reading the struct
         // above — absence leaves nothing to assert at runtime.
     }

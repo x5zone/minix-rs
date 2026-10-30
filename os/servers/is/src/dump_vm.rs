@@ -6,7 +6,7 @@
 //! delivers snapshots, the fold/batch state machines, and format constants.
 //!
 //! `[ARCH: A-4]` / `[ARCH: 26-D1]`: the VM-side producer ships query
-//! results in the reply message's M1 slots (value channel — no copy into
+//! results in the reply message's `m1` slots (value channel — no copy into
 //! the caller's address space), and the IS acquire client decodes those
 //! slots into the snapshots below (`SysVmInfo`, 04 §3.2/§4.2b). The three
 //! snapshots stay IS-side types: unlike the table channels (where producer
@@ -212,7 +212,7 @@ pub const VM_WIPE_LINE: &str = "        \n";
 /// a named constant so the defense stays greppable.
 pub const VM_INTERNAL_ERROR: &str = "IS: internal error\n";
 
-// ── render (V1-P1-3 execution face) ───────────────────────────────
+// ── render ────────────────────────────────────────────────────────
 
 use crate::acquire::VmInfoTransport;
 use crate::dump_kernel::{ProcInfoStruct, NR_TASKS, RTS_SLOT_FREE};

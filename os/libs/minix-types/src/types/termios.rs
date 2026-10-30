@@ -152,18 +152,18 @@ impl Default for Termios {
 mod tests {
     use super::*;
 
-    /// C 值逐位钉死：任何一枚旗标位与 `termios.h` 不符都在这里爆。
+    /// C values pinned bit by bit: any flag bit that disagrees with `termios.h` fails here.
     #[test]
     fn test_flag_bits_match_c_header() {
-        // 输入旗标（termios.h:90-100）。
+        // Input flags (termios.h:90-100).
         assert_eq!(ISTRIP, 0x0000_0020);
         assert_eq!(ICRNL, 0x0000_0100);
         assert_eq!(IXON, 0x0000_0200);
         assert_eq!(IXOFF, 0x0000_0400);
-        // 输出旗标（termios.h:111-113）。
+        // Output flags (termios.h:111-113).
         assert_eq!(OPOST, 0x0000_0001);
         assert_eq!(ONLCR, 0x0000_0002);
-        // 控制旗标（termios.h:131-140）。
+        // Control flags (termios.h:131-140).
         assert_eq!(CSIZE, 0x0000_0300);
         assert_eq!(CS8, 0x0000_0300);
         assert_eq!(CSTOPB, 0x0000_0400);
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(PARENB, 0x0000_1000);
         assert_eq!(PARODD, 0x0000_2000);
         assert_eq!(HUPCL, 0x0000_4000);
-        // 本地旗标（termios.h:161-176）。
+        // Local flags (termios.h:161-176).
         assert_eq!(ECHOE, 0x0000_0002);
         assert_eq!(ECHOK, 0x0000_0004);
         assert_eq!(ECHO, 0x0000_0008);
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(IEXTEN, 0x0000_0400);
     }
 
-    /// 槽位与 `NCCS` 钉值（termios.h:44-79）。
+    /// Slot numbers and `NCCS` pinned (termios.h:44-79).
     #[test]
     fn test_control_char_slots() {
         assert_eq!(VEOF, 0);
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(NCCS, 20);
     }
 
-    /// 结构体 44 字节且序列化按域序回读（LP64 无内垫）。
+    /// The struct is 44 bytes and serialization reads back in field order (no interior padding on LP64).
     #[test]
     fn test_round_trip_layout() {
         let mut t = Termios::new();
@@ -214,7 +214,7 @@ mod tests {
         let back = Termios::from_bytes(&bytes).unwrap();
         assert_eq!(back, t);
 
-        // 短输入拒绝。
+        // Short input rejected.
         assert!(Termios::from_bytes(&bytes[..43]).is_none());
         let mut small = [0u8; 43];
         assert!(t.to_bytes(&mut small).is_none());

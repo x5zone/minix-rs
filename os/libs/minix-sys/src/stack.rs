@@ -235,12 +235,14 @@ fn write_string(frame: &mut [u8], cursor: &mut usize, s: &str) -> Result<(), Sta
 /// Serialize the ps_strings block at `off` (fields in exec.h:111-116
 /// order; i32 counts at their natural 4-byte width).
 ///
-/// NK4-A C-3（2026-09-22）：布局对位 C `struct ps_strings` 的 LP64 自然
-/// 对齐——ps_envstr@16（i32 计数后有 4 字节填充）、ps_nenvstr@24、
-/// size 32（与 `size_of::<PsStrings>()` 一致）。旧实现按紧凑 24 字节写
-/// （envstr@12/nenvstr@20），与 minix-rt `PsStringsRaw`（repr(C) 自然
-/// 对齐读侧）错位——幸而帧缓冲清零使 rt 恰好读到空 envp，属于潜伏
-/// C 保真缺陷（F13，stack_frame_tests 有布局 pin 测试）。
+/// Layout matches C `struct ps_strings` under LP64 natural alignment —
+/// ps_envstr@16 (4 bytes of padding after the i32 count), ps_nenvstr@24,
+/// size 32 (the same as `size_of::<PsStrings>()`). An earlier version
+/// wrote a compact 24-byte layout (envstr@12/nenvstr@20), which was
+/// misaligned with minix-rt's `PsStringsRaw` (a repr(C) natural-alignment
+/// reader); the zeroed frame buffer happened to make rt read an empty
+/// envp, so this was a latent C-fidelity defect (`stack_frame_tests`
+/// carries a layout pin test).
 fn write_ps_strings(frame: &mut [u8], off: usize, ps: &PsStrings) {
     put_word(frame, off, ps.ps_argvstr);
     frame[off + WORD..off + WORD + 4].copy_from_slice(&ps.ps_nargvstr.to_ne_bytes());
@@ -293,8 +295,9 @@ mod stack_frame_tests {
         assert_eq!(get_word(&frame, 2 * WORD), 0);
         assert_eq!(get_word(&frame, 3 * WORD), 0);
 
-        // ps_strings block content at ps_str. NK4-A C-3：布局对位 C LP64
-        // 自然对齐（envstr@+16、nenvstr@+24——i32 计数后有填充）。
+        // ps_strings block content at ps_str. Layout matches C LP64
+        // natural alignment (envstr@+16, nenvstr@+24 — padding follows
+        // the i32 counts).
         let ps_off = placement.ps_str as usize - vsp as usize;
         assert_eq!(ps_off, round_up_word(string_off + path.len() + 1));
         assert_eq!(get_word(&frame, ps_off), vsp + WORD as u64); // ps_argvstr
@@ -328,8 +331,8 @@ mod stack_frame_tests {
         assert_eq!(get_word(&frame, slot), get_word(&frame, WORD));
         // ps_envstr = argv[0] slot + (argc+1) words = envp NULL slot;
         // that slot exists in the frame and holds 0.
-        // NK4-A C-3：ps_envstr 字段在 C LP64 自然布局下位于 ps块+16
-        // （i32 计数后有填充）。
+        // Under C's LP64 natural layout the ps_envstr field sits at ps
+        // block+16 (padding follows the i32 count).
         let env_slot: usize =
             (get_word(&frame, ps_off + WORD + 8) - vsp) as usize;
         assert_eq!(env_slot, WORD + 2 * WORD); // argc=1 → NULL @ frame+24

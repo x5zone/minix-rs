@@ -8,7 +8,7 @@
 //! calls, the warning channel, and the exit code.
 //!
 //! A write command: removing directories needs a writable root, so the real
-//! run is gated with the write-class commands (`C-57`/E5). The decision half and
+//! run is gated with the write-class commands (`E5`). The decision half and
 //! the operand walk are host/compile verified here.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]

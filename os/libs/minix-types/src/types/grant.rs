@@ -40,7 +40,7 @@ pub const fn grant_id(idx: u32, seq: u32) -> i32 {
 
 /// C: `GRANT_IDX(g)` — safecopies.h:61.
 pub const fn grant_idx(g: i32) -> u32 {
-    // `g as u32` is a lossless same-width bit reinterpretation (R-16).
+    // `g as u32` is a lossless same-width bit reinterpretation.
     (g as u32) & (GRANT_MAX_IDX - 1)
 }
 
@@ -209,10 +209,10 @@ mod tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// C: safecopies.h:7-37 布局见证(i386 原生与 LP64 同布局:union 最大
-    /// 成员 direct 为 24 字节(who_to@0、start@8、len@16,align 8),u 落
-    /// @8..32,faulted @32,尾对齐到 40;kernel 侧 `test_cp_grant_size`
-    /// 同钉)。
+    /// C: safecopies.h:7-37 layout witness (i386 native and LP64 agree: the
+    /// largest union member `direct` is 24 bytes (who_to@0, start@8, len@16,
+    /// align 8), `u` lands at @8..32, `faulted` at @32, tail-padded to 40; the
+    /// kernel side's `test_cp_grant_size` pins the same).
     #[test]
     fn test_cp_grant_layout() {
         assert_eq!(size_of::<CpGrant>(), 40);
@@ -222,7 +222,8 @@ mod tests {
         assert_eq!(offset_of!(CpGrant, faulted), 32);
     }
 
-    /// Grant-ID 打包/拆解(safecopies.h:56-62):seq 高 11 位、idx 低 20 位。
+    /// Grant-ID pack/unpack (safecopies.h:56-62): seq in the upper 11 bits,
+    /// idx in the lower 20.
     #[test]
     fn test_grant_id_roundtrip() {
         assert_eq!(GRANT_SHIFT, 20);
@@ -232,7 +233,7 @@ mod tests {
         assert_eq!(grant_seq(g), 0x2A);
         assert!(grant_valid(g));
         assert!(!grant_valid(GRANT_INVALID));
-        // 上界:idx 20 位、seq 11 位。
+        // Upper bounds: idx is 20 bits, seq 11 bits.
         assert_eq!(GRANT_MAX_IDX, 1 << 20);
         assert_eq!(GRANT_MAX_SEQ, 1 << 11);
     }

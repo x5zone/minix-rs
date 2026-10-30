@@ -38,13 +38,14 @@ bitflags::bitflags! {
     }
 }
 
-/// The global live-update state (A2, todo §18 — single holder).
+/// The global live-update state (single holder).
 ///
-/// C: `struct rupdate` — type.h:43-52: one global贯穿 do_update →
-/// do_upd_ready → do_init_ready → do_period → do_sigchld. Rust 收敛为单一
-/// 结构挂进 `ServerState`（T1 的运行态容器）——相位写入口收敛为
+/// C: `struct rupdate` — type.h:43-52: one global threaded through do_update
+/// → do_upd_ready → do_init_ready → do_period → do_sigchld. Rust converges on
+/// a single struct hung off `ServerState` (T1's runtime-state container) —
+/// the phase write entry points converge into
 /// [`UpdateState::begin_updating`]/[`UpdateState::begin_initializing`]
-/// （C 仅有的两个全局写点：update.c:510/:548）。
+/// (C's only two global write sites: update.c:510/:548).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UpdateState {
     /// Status flags. C: `rupdate.flags` — type.h:44.
@@ -162,7 +163,7 @@ pub fn update_phase(flags: RupdateFlags, num_rpupds: usize) -> UpdatePhase {
 ///
 /// C: `do_update` — request.c:653-655: `prepare_maxtime == 0` →
 /// `RS_DEFAULT_PREPARE_MAXTIME` (const.h:58, `2*RS_DELTA_T`; the hz-dependent
-/// default is passed in by the caller, 19). Named `resolve_*` (R32) because
+/// default is passed in by the caller). Named `resolve_*` because
 /// monitor's same-named `default_prepare_maxtime(hz)` computes the constant
 /// itself — two different C constructs, one name was a wiring trap.
 pub fn resolve_prepare_maxtime(maxtime: u32, default: u32) -> u32 {
@@ -939,7 +940,7 @@ mod tests {
     }
 }
 
-// ── chain operations (R23a — update.c:7-18/88-116/135-159/164-180) ──────────
+// ── chain operations (update.c:7-18/88-116/135-159/164-180) ─────────────────
 
 impl UpdateChain {
     /// Computes the flags a NEW descriptor inherits from the chain state,
@@ -948,7 +949,7 @@ impl UpdateChain {
     /// C: `rupdate_set_new_upd_flags` — update.c:88-116: MULTI when the
     /// chain is non-empty; the last descriptor's INCLUDES_VM|INCLUDES_RS
     /// propagate; a non-preparing-only VM/RS descriptor marks itself.
-    /// (`last_lu_flags` was the dormant原料 for this — R23a completes it.)
+    /// (`last_lu_flags` was the dormant raw material for this and is now used.)
     pub fn set_new_upd_flags(&mut self, entry: &mut UpdateEntry) {
         if !self.is_empty() {
             entry.lu_flags |= LuFlags::MULTI;
@@ -1068,7 +1069,7 @@ impl UpdateState {
     }
 }
 
-// Tests appended for R23a (chain operations — update.c:7-18/88-116/135-159/164-180).
+// Tests for the chain operations (update.c:7-18/88-116/135-159/164-180).
 #[cfg(test)]
 mod r23a_tests {
     use super::*;
@@ -1197,24 +1198,25 @@ mod r23a_tests {
         assert_eq!(table.get(dst).new_rp, Some(new));
         assert_eq!(table.get(new).old_rp, Some(dst));
         assert_eq!(table.get(src).new_rp, None);
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort finish; discarding the Result does not change
+        // the already-established main result (C is void/ignore there)
         #[allow(clippy::let_underscore_must_use)]
         let _ = idx;
     }
 }
 
-// ── LU mid-section orchestration (R23b — update.c:401-652) ──────────────────
+// ── LU mid-section orchestration (update.c:401-652) ──────────────────
 
-/// The prepare-phase seam pair (A-2 — §20.3): one bundle instead of two
+/// The prepare-phase seam pair: one bundle instead of two
 /// loose `&mut dyn` parameters. `&mut dyn` fields (no `Default`) — the
 /// bundle only lives for the duration of one walk, re-borrowing the
 /// caller's closures.
 pub struct PrepareEffects<'a> {
     /// Sends `RS_LU_PREPARE` to a service. C: request_prepare_update_service
-    /// (manager.c:455-462, 19 号 asynsend seam).
+    /// (manager.c:455-462, the asynsend seam).
     pub request_prepare: &'a mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
     /// Asks VM to pre-allocate for a new instance. C: vm_prepare
-    /// (update.c:489-515, 19 号 vm_memctl seam).
+    /// (update.c:489-515, the vm_memctl seam).
     pub vm_prepare: &'a mut dyn FnMut(Endpoint, Endpoint, crate::service_slot::SysFlags),
 }
 
@@ -1259,7 +1261,7 @@ impl UpdateState {
     /// carries zero state change: C bails before the VM pre-stage, the
     /// `RS_UPDATING` write and the dispatch loop, and this helper shares that
     /// rule with [`UpdateState::peek_next`] so the walk and its pure
-    /// pre-read can never disagree (R35).
+    /// pre-read can never disagree.
     fn next_prepare_target(&self) -> Option<usize> {
         if self.flags.contains(RupdateFlags::UPDATING) {
             self.chain.curr.and_then(|c| self.chain.entries[c].next)
@@ -1579,7 +1581,7 @@ impl UpdateState {
     }
 }
 
-// Tests appended for R23b (start_update_prepare_next walk — update.c:467-527).
+// Tests for the start_update_prepare_next walk (update.c:467-527).
 #[cfg(test)]
 mod r23b_tests {
     #![allow(
@@ -1648,7 +1650,8 @@ mod r23b_tests {
             )
             .is_none()
         );
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort finish; discarding the Result does not change
+        // the already-established main result (C is void/ignore there)
         #[allow(clippy::let_underscore_must_use)]
         let _ = requested;
     }
@@ -1675,7 +1678,8 @@ mod r23b_tests {
             let mut req = |slot: &crate::service_slot::ServiceSlot, _ps: i32| {
                 dispatched.push(slot.pub_.endpoint);
             };
-            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            // [SD19-gate] best-effort finish; discarding the Result does not change
+            // the already-established main result (C is void/ignore there)
             #[allow(clippy::let_underscore_must_use)]
             let _ = st.start_update_prepare_next(
                 &mut table,
@@ -1687,13 +1691,14 @@ mod r23b_tests {
         }
         // The walk continued past the prepare-only head in one call.
         assert_eq!(st.chain.curr, Some(1));
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort finish; discarding the Result does not change
+        // the already-established main result (C is void/ignore there)
         #[allow(clippy::let_underscore_must_use)]
         let _ = dispatched;
     }
 }
 
-// ── update/rollback/complete/end orchestration (R23c+R27 — update.c:262-325/
+// ── update/rollback/complete/end orchestration (update.c:262-325/
 //    330-366/657-702/816-927) ─────────────────────────────────────────────────
 
 impl UpdateState {
@@ -1766,7 +1771,7 @@ impl UpdateState {
     /// swap (plus a VM rollback when the running instance is not the original
     /// RS — `me` injected), and **all active slots get `r_check_tm = 0`** so
     /// the heartbeat monitor re-pings everyone (update.c:349-352 — the
-    /// monitor/LU coupling, R27(a)). Non-RS: freeze the new instance
+    /// monitor/LU coupling). Non-RS: freeze the new instance
     /// (`SYS_PRIV_DISALLOW`) when swapping, then `update_service` backwards
     /// with `SF_VM_ROLLBACK`.
     pub fn rollback_service(
@@ -1784,7 +1789,7 @@ impl UpdateState {
             if me != Endpoint::RS {
                 vm_rollback(table.get(new).pub_.endpoint, table.get(old).pub_.endpoint);
             }
-            // R27(a): heartbeat replies may have been missed — force re-ping
+            // Heartbeat replies may have been missed — force re-ping
             // of every active service next period (update.c:349-352).
             let active: Vec<SlotId> = table
                 .iter_all()
@@ -1799,11 +1804,13 @@ impl UpdateState {
             // without a kernel swap; swapping ones are frozen first.
             let swap = !table.get(new).flags.contains(RFlags::INIT_PENDING);
             if swap {
-                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                // [SD19-gate] best-effort finish; discarding the Result does not change
+                // the already-established main result (C is void/ignore there)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = kernel.privctl(table.get(new).pub_.endpoint, PrivCtlOp::Disallow, None);
             }
-            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            // [SD19-gate] best-effort finish; discarding the Result does not change
+            // the already-established main result (C is void/ignore there)
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.update_service(
                 table,
@@ -1823,8 +1830,9 @@ impl UpdateState {
     /// version (with all its instances) goes through `cleanup_service` — a
     /// detached old instance is marked `RS_CLEANUP_DETACH`, cleaned and
     /// replied with `EDEADEPT`.
-    #[allow(clippy::too_many_arguments)] // 数据参数（result/reply_flag/ticks）=
-    // C end_srv_update 的显式形参（update.c:932-941）——非缝闭包，不在 A-2 束化范围
+    #[allow(clippy::too_many_arguments)] // data parameters (result/reply_flag/ticks) =
+    // the explicit parameters of C's end_srv_update (update.c:932-941) — not a
+    // seam closure, so outside the bundling scope
     pub fn end_srv_update(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -1835,7 +1843,8 @@ impl UpdateState {
         ticks: Clock,
         effects: &mut EndEffects,
     ) {
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort finish; discarding the Result does not change
+        // the already-established main result (C is void/ignore there)
         #[allow(clippy::let_underscore_must_use)]
         let _ = RssFlags::empty();
         let (old, lu_detached) = {
@@ -1874,7 +1883,7 @@ impl UpdateState {
         // Reply or cancel the survivor (update.c:977-987).
         if reply_flag == 1 {
             // RS_REPLY — m_type = result.
-            // [SD19-gate] 尽力而为回复收尾
+            // [SD19-gate] best-effort reply finish
             #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.reply(
                 table.get(surviving).pub_.endpoint,
@@ -1894,7 +1903,7 @@ impl UpdateState {
             if id == old && lu_detached {
                 table.get_mut(id).flags.insert(RFlags::CLEANUP_DETACH);
                 crate::recovery::cleanup_service(table, id, kernel, &mut effects.run_script);
-                // [SD19-gate] 尽力而为回复收尾
+                // [SD19-gate] best-effort reply finish
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = kernel.reply(
                     table.get(id).pub_.endpoint,
@@ -1913,8 +1922,9 @@ impl UpdateState {
     /// classifying each non-prepare-only descriptor by its position relative
     /// to `curr` and the `RS_INITIALIZING` phase, then dispatches to the
     /// matching `end_update_*` handler (inlined here).
-    #[allow(clippy::too_many_arguments)] // 数据参数（result/reply_flag/skip/only）=
-    // C end_update_rev_iter 的显式形参（update.c:816-825）——非缝闭包
+    #[allow(clippy::too_many_arguments)] // data parameters (result/reply_flag/skip/only) =
+    // the explicit parameters of C's end_update_rev_iter (update.c:816-825) —
+    // not a seam closure
     pub fn end_update_rev_iter(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -2048,7 +2058,7 @@ impl UpdateState {
     ///
     /// C: `end_update` — update.c:865-927. Returns
     /// [`EndUpdateOutcome::RsSelfTerminate`] when a failed update hits an
-    /// RS_INIT_DONE new RS instance (C `exit(1)`, update.c:883-887 — R27(b)).
+    /// RS_INIT_DONE new RS instance (C `exit(1)`, update.c:883-887).
     pub fn end_update(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -2060,7 +2070,7 @@ impl UpdateState {
     ) -> crate::recovery::CrashOutcome {
         debug_assert!(self.flags.contains(RupdateFlags::UPDATING)); // update.c:875
 
-        // R27(b): the new RS instance completed initialization but the update
+        // The new RS instance completed initialization but the update
         // failed — the new instance exits (C `exit(1)`, update.c:883-887).
         let rs_init_done = table
             .endpoint_slot(Endpoint::RS)
@@ -2145,7 +2155,7 @@ impl UpdateState {
         if let Some(last_idx) = self.chain.last {
             let last_slot = self.chain.entries[last_idx].slot;
             if table.get(last_slot).flags.contains(RFlags::LATEREPLY) {
-                // [SD19-gate] 尽力而为回复收尾
+                // [SD19-gate] best-effort reply finish
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = kernel.reply(
                     table.get(last_slot).pub_.endpoint,
@@ -2290,7 +2300,7 @@ fn no_script_fn(_slot: &mut crate::service_slot::ServiceSlot) -> Result<(), Errn
 
 fn request_prepare_stub(_slot: &crate::service_slot::ServiceSlot, _ps: i32) {}
 
-// Tests appended for R23c/R27 (rollback sweep, self-terminate, end chain).
+// Tests for the rollback sweep, self-terminate, and end chain.
 #[cfg(test)]
 mod r23c_tests {
     #![allow(clippy::too_many_arguments, unused_variables, unused_mut)]
@@ -2300,7 +2310,7 @@ mod r23c_tests {
 
     #[test]
     fn test_rollback_rs_sweeps_active_check_tm() {
-        // R27(a): update.c:349-352 — an RS rollback zeroes `r_check_tm` on
+        // update.c:349-352 — an RS rollback zeroes `r_check_tm` on
         // every ACTIVE slot (heartbeat re-ping), but leaves non-active and
         // RS's own row alone.
         let mut table = RProcTable::new();
@@ -2321,7 +2331,7 @@ mod r23c_tests {
         let mut st = UpdateState::default();
         let mut k = crate::testutil::MockKernelApi::new(60);
         st.rollback_service(&mut table, &mut k, new, old, Endpoint::RS, &mut |_, _| {});
-        // R27(a): every ACTIVE row — RS itself AND bystanders — gets swept.
+        // Every ACTIVE row — RS itself AND bystanders — gets swept.
         assert_eq!(table.get(old).check_tm, 0);
         assert_eq!(table.get(bystander).check_tm, 0);
         // No kernel swap happened in the RS branch.
@@ -2334,7 +2344,7 @@ mod r23c_tests {
 
     #[test]
     fn test_end_update_rs_init_done_self_terminates() {
-        // R27(b): update.c:883-887 — a failed update with the new RS
+        // update.c:883-887 — a failed update with the new RS
         // instance at INIT_DONE exits (mock: SelfTerminate outcome).
         let mut table = RProcTable::new();
         let rs = table.alloc_slot().unwrap();
@@ -2404,7 +2414,7 @@ mod r23c_tests {
 
     #[test]
     fn test_peek_next_matches_walk_targets() {
-        // R35: the pure pre-read must answer exactly "which slot would
+        // The pure pre-read must answer exactly "which slot would
         // start_update_prepare_next dispatch" — the target rule is shared
         // (`next_prepare_target`), the skip loop is replayed without
         // mutations.

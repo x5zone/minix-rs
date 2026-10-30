@@ -18,92 +18,101 @@ fn trunc_status(status: i32) -> i8 {
     status as i8
 }
 
-/// PM 的内核调用出口（`do_exit` 的 PRIV_PROC 违规分支，2026-09-06 D-13 落地）。
+/// PM's kernel-call outlet (the PRIV_PROC violation branch of `do_exit`).
 ///
-/// 与 VM 侧 `kernel_gateway.rs` 的 `KernelGateway` 同型：handler 面向 trait
-/// 编程，生产实现走真实内核调用 wire（pre-E1 由 trap 桩诚实回 `-EIO`），
-/// 测试注入脚本化 mock。E6 后续的 SYS_TIMES/SYS_CLEAR 等按同模式扩展。
+/// Same shape as `KernelGateway` in VM's `kernel_gateway.rs`: handlers program
+/// against a trait, the production implementation goes through the real kernel
+/// call wire (before E1 the trap stub honestly returns `-EIO`), and tests
+/// inject scripted mocks. Later SYS_TIMES/SYS_CLEAR calls extend along the
+/// same pattern.
 pub trait KernelGateway {
-    /// C: `sys_kill(proc_ep, signr)`（libsys `sys_kill.c:3-13`）——
-    /// `_kernel_call(SYS_KILL, &m)`，载荷 `m_sigcalls.{endpt,sig}`，
-    /// 返回值 = 内核回复（OK 或负 errno）。
+    /// C: `sys_kill(proc_ep, signr)` (libsys `sys_kill.c:3-13`) —
+    /// `_kernel_call(SYS_KILL, &m)`, payload `m_sigcalls.{endpt,sig}`,
+    /// return value = kernel reply (OK or negative errno).
     fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32>;
 
-    /// C: `sys_clear(proc_ep)`（libsys `sys_clear.c:8-14`）——
-    /// `_kernel_call(SYS_CLEAR, &m)`，载荷 m1i1 = 目标 endpoint，无回复
-    /// 载荷；返回值 = 内核回复（OK 或负 errno）。
+    /// C: `sys_clear(proc_ep)` (libsys `sys_clear.c:8-14`) —
+    /// `_kernel_call(SYS_CLEAR, &m)`, payload m1i1 = target endpoint, no
+    /// reply payload; return value = kernel reply (OK or negative errno).
     fn sys_clear(&mut self, ep: Endpoint) -> Result<(), i32>;
 
-    /// C: `sys_statectl(request, address, length)`（libsys
-    /// `sys_statectl.c:3-11`）——状态控制面（清/挂 IPC 过滤、状态表登记）。
-    /// 出生协议段一（PD-34 `process_init`）经此发出清过滤请求。默认实现
-    /// 模拟接受型内核（测试替身无需逐一补写）；生产
-    /// [`TrapKernelGateway`] 走 trap 直连真接线。
+    /// C: `sys_statectl(request, address, length)` (libsys
+    /// `sys_statectl.c:3-11`) — state control plane (clear/attach IPC filters,
+    /// state-table registration). Phase one of the birth protocol
+    /// (`process_init`) sends its clear-filter request through this. The
+    /// default implementation models an accepting kernel (test doubles need no
+    /// per-call override); production [`TrapKernelGateway`] goes through the
+    /// trap channel.
     fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
         Ok(minix_types::OK)
     }
 
-    /// C: `sys_abort(how)`（libsys `sys_abort.c:8-13`）——
-    /// `_kernel_call(SYS_ABORT, &m)`，载荷 m1i1 = `how`（RB_* 位组）。
-    /// 成功时机器直接停机；失败返回负 errno（C 调用方忽略）。
+    /// C: `sys_abort(how)` (libsys `sys_abort.c:8-13`) —
+    /// `_kernel_call(SYS_ABORT, &m)`, payload m1i1 = `how` (RB_* bit set).
+    /// On success the machine halts outright; failure returns a negative errno
+    /// (the C caller ignores it).
     fn sys_abort(&mut self, how: i32) -> Result<(), i32>;
 
-    /// C: `sys_times(proc_ep, &user, &sys, NULL, NULL)`（libsys
-    /// `sys_times.c:3-23`）——读取目标进程的 user/system CPU ticks。
-    /// 失败返回负 errno。
+    /// C: `sys_times(proc_ep, &user, &sys, NULL, NULL)` (libsys
+    /// `sys_times.c:3-23`) — read the target process's user/system CPU ticks.
+    /// Failure returns a negative errno.
     fn proc_times(&mut self, ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32>;
 
-    /// C: `sys_datacopy(src_ep, src, dst_ep, dst, len)`（libsys
-    /// `sys_datacopy.c`；kernel `dispatch_vircopy` = `Syscall::Vircopy = 15`）
-    /// ——把 `bytes` 写入 `dst_ep` 进程虚地址 `dst_addr` 处。
-    /// 失败返回负 errno（如父进程缓冲非法）。
+    /// C: `sys_datacopy(src_ep, src, dst_ep, dst, len)` (libsys
+    /// `sys_datacopy.c`; kernel `dispatch_vircopy` = `Syscall::Vircopy = 15`)
+    /// — write `bytes` to virtual address `dst_addr` in process `dst_ep`.
+    /// Failure returns a negative errno (e.g. an invalid parent buffer).
     fn copy_to_user(&mut self, bytes: &[u8], dst_ep: Endpoint, dst_addr: u64) -> Result<(), i32>;
 
-    /// C: `sys_resume(proc_ep)`（`syslib.h:48` = `sys_runctl(ep, RC_RESUME, 0)`）
-    /// ——清除内核侧 `PROC_STOPPED`，恢复被停止的进程。返回原始内核回复
-    ///（OK = 0 / 负 errno），调用方（signal.c:285 `try_resume_proc`）对
-    /// 非 OK panic。
+    /// C: `sys_resume(proc_ep)` (`syslib.h:48` = `sys_runctl(ep, RC_RESUME, 0)`)
+    /// — clear the kernel-side `PROC_STOPPED` and resume the stopped process.
+    /// Returns the raw kernel reply (OK = 0 / negative errno); the caller
+    /// (signal.c:285 `try_resume_proc`) panics on anything but OK.
     fn sys_resume(&mut self, ep: Endpoint) -> Result<(), i32>;
 
-    /// C: `sys_delay_stop(proc_ep)`（libsys `delay_stop.c`；`signal.c:239`
-    /// `stop_proc` 内）——内核侧停住目标进程（`PROC_STOPPED`），返回
-    /// OK = 已停 / `EBUSY` = 内核延迟调用在途（仅 `may_delay=TRUE` 时
-    /// 可接受）/ 其它负 errno = 失败（`stop_proc` 对失败 panic，C 同型）。
-    /// 生产实现依赖 minix-sys wrapper（edge_todo.md E6 清单已登记）。
+    /// C: `sys_delay_stop(proc_ep)` (libsys `delay_stop.c`; inside `stop_proc`
+    /// at `signal.c:239`) — stop the target process on the kernel side
+    /// (`PROC_STOPPED`). Returns OK = stopped / `EBUSY` = a kernel delay call
+    /// is in flight (acceptable only with `may_delay=TRUE`) / any other
+    /// negative errno = failure (`stop_proc` panics on failure, as in C).
+    /// The production implementation awaits a minix-sys wrapper.
     fn sys_delay_stop(&mut self, ep: Endpoint) -> Result<(), i32>;
 
-    /// 恢复信号上下文(C: `sys_sigreturn(ep, ctx)`——libsys
-    /// `sys_sigreturn.c`;S3 批次 B 接线)。默认 pre-wire 诚实失败,
-    /// 生产 `TrapKernelGateway` 委托 minix-sys `sys_sigreturn`。
+    /// Restore a signal context (C: `sys_sigreturn(ep, ctx)` — libsys
+    /// `sys_sigreturn.c`; wired up in a later batch). The default pre-wire
+    /// implementation fails honestly; production `TrapKernelGateway` delegates
+    /// to minix-sys `sys_sigreturn`.
     fn sys_sigreturn(&mut self, ep: Endpoint, ctx: VirBytes) -> Result<(), i32> {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply results are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = (ep, ctx);
         Err(-minix_types::ENOSYS)
     }
 
-    /// PM 诊断输出(D-31):一行诊断经 sys_diagctl code 1 抵达内核控制台
-    /// (C printf 的 Rust 对应物)。默认 pre-wire 诚实失败;生产
-    /// TrapKernelGateway 委托 minix-sys sys_diagctl_write。
+    /// PM diagnostic output: one diagnostic line reaches the kernel console
+    /// via sys_diagctl code 1 (the Rust counterpart of C printf). The default
+    /// pre-wire implementation fails honestly; production TrapKernelGateway
+    /// delegates to minix-sys sys_diagctl_write.
     fn diag_write(&mut self, text: &str) -> Result<(), i32> {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply results are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = text;
         Err(-minix_types::ENOSYS)
     }
 
-    /// C: `sys_trace(req, proc_ep, addr, &data)`（libsys `sys_trace.c:3-18`）
-    /// ——内核 SYS_TRACE 通道：trace_stop 的 T_STOP（trace.c:263）、
-    /// do_trace 的命令透传（trace.c:244-248）与 READB/WRITEB_INS
-    ///（trace.c:106/129）。读值由内核写回 `data`。失败返回负 errno
-    ///（调用方按 C 透传，不折叠——V3-P2-6 规约）。
+    /// C: `sys_trace(req, proc_ep, addr, &data)` (libsys `sys_trace.c:3-18`)
+    /// — the kernel SYS_TRACE channel: trace_stop's T_STOP (trace.c:263),
+    /// do_trace's command passthrough (trace.c:244-248), and READB/WRITEB_INS
+    /// (trace.c:106/129). The kernel writes read values back into `data`.
+    /// Failure returns a negative errno (the caller passes it through as C
+    /// does, without folding).
     fn sys_trace(&mut self, req: i32, ep: Endpoint, addr: u64, data: &mut i64) -> Result<(), i32>;
 
-    /// C: `sys_vircopy(src_ep, src, dst_ep, dst, len)`（libsys
-    /// `sys_vircopy.c:8-16`）——跨进程虚地址复制，方向由调用方给定：
-    /// T_GETRANGE/T_SETRANGE 的被跟踪进程 ↔ 调试器缓冲区搬运
-    ///（trace.c:176-183）。与 [`Self::copy_to_user`] 的差异：本方法
-    /// 不隐含 SELF 端。
+    /// C: `sys_vircopy(src_ep, src, dst_ep, dst, len)` (libsys
+    /// `sys_vircopy.c:8-16`) — cross-process virtual-address copy with the
+    /// direction chosen by the caller: T_GETRANGE/T_SETRANGE moving data
+    /// between the traced process and the debugger buffer (trace.c:176-183).
+    /// Unlike [`Self::copy_to_user`], this method implies no SELF endpoint.
     fn sys_vircopy(
         &mut self,
         src_ep: Endpoint,
@@ -113,39 +122,46 @@ pub trait KernelGateway {
         len: u64,
     ) -> Result<(), i32>;
 
-    /// C: `sys_datacopy(src_ep, src, SELF, dst, len)`（libsys
-    /// `sys_datacopy.c`；内核侧与 VIRCOPY 同型，Fix #27 先例）——把
-    /// `src_ep` 进程虚地址处的字节读入 PM 本地缓冲。T_GETRANGE 的
-    /// `ptrace_range` 参数块即经此通道取出（trace.c:169-171）。
+    /// C: `sys_datacopy(src_ep, src, SELF, dst, len)` (libsys
+    /// `sys_datacopy.c`; the kernel side has the same shape as VIRCOPY) —
+    /// read bytes from a virtual address in process `src_ep` into a PM-local
+    /// buffer. T_GETRANGE's `ptrace_range` parameter block comes out through
+    /// this channel (trace.c:169-171).
     fn copy_from_user(&mut self, src_ep: Endpoint, src: u64, bytes: &mut [u8]) -> Result<(), i32>;
 
-    /// C: `sys_getksig(&target, &set)`（libsys `sys_getsig.c:6-17`）——
-    /// 取回一个有待处理内核信号的进程（endpoint + 位图）；`None` =
-    /// 内核侧无更多待处理信号（C：endpt == NONE）。取回即消费内核的
-    /// RTS_SIGNALED。SIGKSIG 拉取循环（sef_signal.c:27-63）的取半边。
-    /// 位图按 C wire 形态（`sigset_t` = 4×u32，128 位；SD-39）回传：
-    /// 内核内部信号（SIGSNDELAY/SIGKSIG 家族，71..=74）落在 word 2。
+    /// C: `sys_getksig(&target, &set)` (libsys `sys_getsig.c:6-17`) —
+    /// fetch one process with a pending kernel signal (endpoint + bitmap);
+    /// `None` = no more pending kernel signals (C: endpt == NONE). Fetching
+    /// consumes the kernel's RTS_SIGNALED. This is the fetch half of the
+    /// SIGKSIG pull loop (sef_signal.c:27-63). The bitmap comes back in C wire
+    /// form (`sigset_t` = 4×u32, 128 bits): kernel-internal signals
+    /// (SIGSNDELAY/SIGKSIG family, 71..=74) land in word 2.
     fn get_ksig(&mut self) -> Result<Option<(Endpoint, minix_types::SigSetBits)>, i32>;
 
-    /// C: `sys_endksig(proc_nr_e, sig_nr)`（libsys `sys_endsig.c:6-15`）
-    /// ——确认消费一个内核信号（清 SIG_PENDING）。调用方必须是目标
-    /// 进程的信号管理器（否则 EPERM）。拉取循环的确认半边。
+    /// C: `sys_endksig(proc_nr_e, sig_nr)` (libsys `sys_endsig.c:6-15`)
+    /// — acknowledge consumption of one kernel signal (clear SIG_PENDING).
+    /// The caller must be the target process's signal manager (else EPERM).
+    /// This is the acknowledge half of the pull loop.
     fn end_ksig(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32>;
 
-    /// C: `sys_sigsend(proc_nr_e, smp)`（libsys `sys_sigsend.c:8-18`）——
-    /// 内核按 `sigmsg` 建立 sigframe 并唤醒目标进程（被捕获信号的投递
-    /// 动作，signal.c:818）。EFAULT/ENOMEM = 进程内存装不下 handler
-    ///（合法失败）；其它负 errno = PM/内核失配（调用方 panic，C 同型）。
+    /// C: `sys_sigsend(proc_nr_e, smp)` (libsys `sys_sigsend.c:8-18`) —
+    /// the kernel builds a sigframe from `sigmsg` and wakes the target
+    /// process (the delivery action for a caught signal, signal.c:818).
+    /// EFAULT/ENOMEM = process memory cannot hold the handler (a legal
+    /// failure); any other negative errno = PM/kernel mismatch (the caller
+    /// panics, as in C).
     fn sys_sigsend(&mut self, ep: Endpoint, sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32>;
 
-    /// C: `sys_diagctl_stacktrace(proc_nr_e)`（`syslib.h:167` =
-    /// `sys_diagctl(DIAGCTL_CODE_STACKTRACE, NULL, ep)`）——请求内核打印
-    /// 目标进程的栈回溯。C 调用方（`signal.c:464-466`、RS `main.c:681-683`）
-    /// 不检查返回值；诊断通道失败静默。
+    /// C: `sys_diagctl_stacktrace(proc_nr_e)` (`syslib.h:167` =
+    /// `sys_diagctl(DIAGCTL_CODE_STACKTRACE, NULL, ep)`) — ask the kernel to
+    /// print a stack trace of the target process. The C callers
+    /// (`signal.c:464-466`, RS `main.c:681-683`) ignore the return value;
+    /// diagnostic-channel failures are silent.
     fn sys_diagctl_stacktrace(&mut self, ep: Endpoint) -> Result<(), i32>;
 }
 
-/// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
+/// Production implementation: kernel calls go through minix-sys's trap channel
+/// (returns `-EIO` before E1).
 pub struct TrapKernelGateway<T: minix_sys::syscall::KernelCallTransport> {
     pub transport: T,
 }
@@ -220,16 +236,16 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
     }
 
     fn sys_delay_stop(&mut self, _ep: Endpoint) -> Result<(), i32> {
-        // pre-E6 诚实占位：minix-sys 的 sys_delay_stop wrapper 尚未落地
-        //（edge_todo.md E6 清单），任何调用都以 -EIO 失败——`stop_proc`
-        // 对失败 panic（C signal.c:245 "sys_delay_stop failed" 同型），
-        // 不伪造停止状态。
+        // Honest pre-E6 placeholder: minix-sys has no sys_delay_stop wrapper
+        // yet, so every call fails with -EIO — `stop_proc` panics on failure
+        // (same shape as C signal.c:245 "sys_delay_stop failed"), and no stop
+        // state is ever faked.
         Err(-minix_types::EIO)
     }
 
     fn sys_trace(&mut self, req: i32, ep: Endpoint, addr: u64, data: &mut i64) -> Result<(), i32> {
-        // SYS_TRACE 真实通道（kernel 对端 dispatch_trace 已实现；
-        // minix-sys sys_trace wrapper = E6 切片，2026-09-09 随 V3-P1-1 落地）。
+        // Real SYS_TRACE channel (the kernel-side dispatch_trace exists; the
+        // minix-sys sys_trace wrapper is an E6 slice).
         minix_sys::syscall::sys_trace(&self.transport, req, ep.0, addr, data)
     }
 
@@ -273,7 +289,7 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
     }
 
     fn get_ksig(&mut self) -> Result<Option<(Endpoint, minix_types::SigSetBits)>, i32> {
-        // SYS_GETKSIG 真实通道（kernel dispatch_getksig，syscall_signal.rs:393）。
+        // Real SYS_GETKSIG channel (kernel dispatch_getksig, syscall_signal.rs:393).
         let (endpt, map) = minix_sys::syscall::sys_getksig(&self.transport)?;
         if endpt == Endpoint::NONE.0 {
             Ok(None)
@@ -306,7 +322,8 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
 /// Handles `PM_EXIT` (`do_exit`, `forkexit.c:245-262`).
 ///
 /// - `PRIV_PROC` (system service) → `sys_kill(endpoint, SIGKILL)` + `NoReply`
-/// - otherwise → `exit_proc` + `NoReply` (beyond the grave, `SUSPEND` 永不回复类)
+/// - otherwise → `exit_proc` + `NoReply` (beyond the grave: the `SUSPEND`
+///   no-reply class)
 pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     caller: UserSlot,
@@ -316,13 +333,16 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
 ) -> ReplyIntent {
     let proc = &table.procs[caller.get()];
     if proc.is_kernel_process() {
-        // C: forkexit.c:250-256 — 系统进程不得经 PM 的 exit() 终止
-        //（"System processes do not use PM's exit()"）：printf 警告后
-        // `sys_kill(mp->mp_endpoint, SIGKILL)`，返回值 C 不予检查——
-        // 真正的终止由内核信号路径稍后经 process_ksig（11）回到 PM 完成。
-        // 因此这里**不**调 exit_proc：违规进程在 PM 表中保持 Running，
-        // 等待 SIGKILL 的内核信号回环。C 254-255 的 printf 是可观测
-        // 面的一部分（真机上运维可见），经 pm_diag! 走内核 diagctl 通道。
+        // C: forkexit.c:250-256 — a system process must not be terminated
+        // through PM's exit() ("System processes do not use PM's exit()"):
+        // after a printf warning C calls `sys_kill(mp->mp_endpoint, SIGKILL)`
+        // and does not check the return value — the actual termination later
+        // completes when the kernel signal path returns to PM via
+        // process_ksig (11). So exit_proc is deliberately **not** called here:
+        // the offending process stays Running in the PM table, waiting for the
+        // SIGKILL kernel-signal round trip. The printf at C 254-255 is part of
+        // the observable surface (visible to operators on real hardware), and
+        // goes through the kernel diagctl channel via pm_diag!.
         let name_raw = proc.identity.name;
         let name_len = name_raw.iter().position(|&b| b == 0).unwrap_or(name_raw.len());
         let name_str = core::str::from_utf8(&name_raw[..name_len]).unwrap_or("");
@@ -331,7 +351,7 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
             proc.endpoint().get(),
             name_str
         );
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply results are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = kern.sys_kill(proc.endpoint(), crate::signal::SIGKILL);
         return ReplyIntent::NoReply;
@@ -355,12 +375,15 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
 /// `!dump_core`, `disinherit` loop (INIT adoption + `NEW_PARENT`), `SIGHUP` for
 /// session leader. Leaves `procs_in_use` unchanged (still counted).
 ///
-/// `sig_status` 是 C `mp_sigstatus` 的对位（`signal.c:552`——`sig_proc_exit`
-/// 在进 `exit_proc` 之前写入终止信号号；`forkexit.c:354` 作 `VFS_PM_TERM_SIG`
-/// 随 DUMPCORE 告知 VFS，之后随 EXITING 保留到 zombify/wait）。非信号死亡
-///（`do_exit`、VFS 驱动的销毁、trace 终止）传 0。信号号必须在调用前确定：
-/// EXITING 生命周期在 step 10 才建立，若此处从 lifecycle 读回永远是 0
-///（2026-10-05 §续-383：term_sig 恒 0 → VFS 拒 DUMPCORE → 退出链停摆）。
+/// `sig_status` is the counterpart of C `mp_sigstatus` (`signal.c:552` —
+/// `sig_proc_exit` writes the terminating signal number before entering
+/// `exit_proc`; `forkexit.c:354` passes it to VFS as `VFS_PM_TERM_SIG` along
+/// with DUMPCORE, and it survives with EXITING until zombify/wait). Non-signal
+/// deaths (`do_exit`, VFS-driven destruction, trace termination) pass 0. The
+/// signal number must be fixed before the call: the EXITING lifecycle is only
+/// established in step 10, so reading it back from the lifecycle here would
+/// always yield 0 (a constant term_sig of 0 makes VFS reject DUMPCORE and the
+/// exit chain stalls).
 pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     slot: UserSlot,
@@ -373,15 +396,16 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // ---- 1. dump_core double gate (285-292) ----
     {
         let proc = &table.procs[slot.get()];
-        // forkexit.c:285-286：setuid 程序（real uid ≠ effective uid）不 dump core。
-        // 该判据对所有 mproc 统一（含 PRIV_PROC），凭证恒存在。
+        // forkexit.c:285-286: a setuid program (real uid != effective uid)
+        // does not dump core. The test applies uniformly to every mproc
+        // (including PRIV_PROC); credentials always exist.
         if dump_core {
             let creds = proc.resources.privilege.credentials();
             if creds.user.real != creds.user.effective {
                 dump_core = false;
             }
         }
-        // forkexit.c:291-292：PRIV_PROC 系统进程不 dump core。
+        // forkexit.c:291-292: a PRIV_PROC system process does not dump core.
         if dump_core && proc.is_kernel_process() {
             dump_core = false;
         }
@@ -409,9 +433,10 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     }
 
     // ---- 4. sys_times accounting (305-310) ----
-    // C: 取死亡进程自身的 user/system CPU ticks，累加进它的 child 桶
-    //（`rmp->mp_child_utime += user_time`），父进程 wait 时再并入
-    //（tell_parent，forkexit.c:722-723）。失败 panic——计账缺失不可恢复。
+    // C: read the dying process's own user/system CPU ticks and accumulate
+    // them into its child bucket (`rmp->mp_child_utime += user_time`); they
+    // merge again when the parent waits (tell_parent, forkexit.c:722-723).
+    // Failure panics — missing accounting is unrecoverable.
     match kern.proc_times(proc_ep) {
         Ok((user, sys)) => {
             table.procs[proc_nr].resources.child_utime += user;
@@ -431,7 +456,8 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
 
     // ---- 6. vm_willexit (332-334) ----
     // C: `if((r=vm_willexit(proc_nr_e)) != OK) panic("exit_proc: vm_willexit
-    // failed: %d", r);`——VM 的内存记账依赖该通知，失败不可恢复。
+    // failed: %d", r);` — VM's memory accounting depends on this
+    // notification; failure is unrecoverable.
     if let Err(r) = crate::ipc::vm_willexit(transport, proc_ep) {
         panic!("exit_proc: vm_willexit failed: {}", r);
     }
@@ -442,16 +468,19 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     const INIT_PROC_NR: usize = 11;
     const VFS_PROC_NR: i32 = 1;
     if proc_ep == Endpoint::from_generation_slot(0, INIT_PROC_NR as i32) || proc_nr == INIT_PROC_NR {
-        // INIT died — C 336-341：printf + sys_diagctl_stacktrace + return
-        //（不走 VFS：VFS 侧无 INIT 的 fproc）。诊断行经 pm_diag! 抵达内核
-        // 控制台（D-31），栈回溯失败不阻断——C 就不检查返回值。
-        // 与 C 的差异：C 对 INIT 不改 mp_flags（表里留在运行态无人管），
-        // Rust 额外标 Exiting 使生命周期状态机可观测（见 09 文档差异表）。
+        // INIT died — C 336-341: printf + sys_diagctl_stacktrace + return
+        // (no VFS: VFS has no fproc for INIT). The diagnostic line reaches the
+        // kernel console via pm_diag!, and a failed stack trace does not block
+        // — C does not check the return value either.
+        // Difference from C: C leaves INIT's mp_flags untouched (the table
+        // slot stays in a running state nobody manages); Rust additionally
+        // marks it Exiting so the lifecycle state machine stays observable
+        // (see the difference table in doc 09).
         pm_diag!(
             "PM: INIT died with exit status {}; showing stacktrace",
             status
         );
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply results are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = kern.sys_diagctl_stacktrace(proc_ep);
         table.procs[proc_nr].state.lifecycle = Lifecycle::Exiting { exit_code: status, sig_status };
@@ -464,19 +493,22 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // ---- 8. VFS tell (350-359) ----
     {
         let call = if dump_core {
-            // C: forkexit.c:354-357 — `m.VFS_PM_PATH = rmp->mp_name`（m7p1
-            // 指针，VFS 稍后 safecopy）。本线按 OQ-5 裁决（new_edge4 §2 C-6）
-            // 改为**按值携带**：`mp_name` 的 Rust 对位 `identity.name`
-            // （[u8; PROC_NAME_LEN] NUL 填充）直接进载荷尾 40..56，
-            // name_len = 首个 NUL 前的字节数（m7_i3 槽）——Rust 侧无可移动
-            // 表行上的稳定裸指针，按值协议同时消除跨异步指针稳定性问题。
+            // C: forkexit.c:354-357 — `m.VFS_PM_PATH = rmp->mp_name` (an m7p1
+            // pointer; VFS safecopies it later). This line carries the name
+            // **by value** instead: `mp_name`'s Rust counterpart
+            // `identity.name` ([u8; PROC_NAME_LEN], NUL padded) goes directly
+            // into payload tail bytes 40..56, with name_len = bytes before the
+            // first NUL (m7_i3 slot) — Rust has no stable raw pointer into a
+            // movable table row, and the by-value protocol also removes
+            // cross-async pointer-stability concerns.
             let name = table.procs[proc_nr].identity.name;
             let name_len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-            // C: forkexit.c:354 — m.VFS_PM_TERM_SIG = rmp->mp_sigstatus。
-            // 信号号来自 sig_proc_exit 的写入（本函数 sig_status 参数），
-            // 不从 lifecycle 读：EXITING 到 step 10 才建立，读回必是 0，
-            // VFS 的 DUMPCORE 臂对 term_sig=0 拒服务（BadEndpoint），
-            // 退出链自此停摆（§续-383 死亡序列的静态根因）。
+            // C: forkexit.c:354 — m.VFS_PM_TERM_SIG = rmp->mp_sigstatus.
+            // The signal number comes from sig_proc_exit's write (this
+            // function's sig_status argument), not from the lifecycle:
+            // EXITING only exists from step 10 on, so a read-back would always
+            // yield 0, and VFS's DUMPCORE arm refuses term_sig=0 (BadEndpoint),
+            // stalling the exit chain from then on.
             VfsCall::DumpCore {
                 endpoint: proc_ep,
                 term_sig: sig_status as i32,
@@ -487,16 +519,17 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
             VfsCall::Exit { endpoint: proc_ep }
         };
         // tell_vfs on exiting slot (utility.c:123-139) → VFS_CALL
-        // tell_vfs 失败即 panic（utility.c 同型，V2-P2-3）——进程死亡时
-        // VFS 告知丢失不可接受，静默继续会让 VFS 永远保留死进程状态。
+        // A failed tell_vfs panics (same shape as utility.c) — losing the
+        // death notification to VFS is unacceptable; continuing silently would
+        // leave VFS holding the dead process's state forever.
         crate::ipc::tell_vfs(table, slot, call, transport);
     }
 
     // ---- 9. PRIV_PROC immediate sys_clear (361-369) ----
     // System process (driver) destroyed without waiting for VFS (deadlock avoidance)
     if table.procs[proc_nr].is_kernel_process() {
-        // C: forkexit.c:366-368 — 失败即 panic（进程已终结而内核侧未回收
-        // 即永久泄漏，不可恢复）。
+        // C: forkexit.c:366-368 — failure panics (a terminated process the
+        // kernel never reclaims is a permanent leak, hence unrecoverable).
         if let Err(r) = kern.sys_clear(proc_ep) {
             panic!("exit_proc: sys_clear failed: {}", r);
         }
@@ -508,10 +541,12 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
         // Preserve VFS_CALL (set by tell_vfs), PROC_STOPPED, TRACE_EXIT, PRIV_PROC, IN_USE
         // In Rust, IN_USE is lifecycle != Unused, VFS_CALL is BlockState, etc.
         // We just set lifecycle to Exiting, keeping other states as is
-        // C 只置 EXITING 位、不动 mp_sigstatus（forkexit.c:374-375）；
-        // 我方 sigstatus 字段寄生在生命周期里，构造时必须携带调用方
-        // 给定的 sig_status（信号死亡的终止信号号），否则 zombify/wait
-        // 上报的将是 0（§续-383 同源缺陷：信号死亡的 wait 状态错报）。
+        // C only sets the EXITING flag and leaves mp_sigstatus alone
+        // (forkexit.c:374-375); our sigstatus field lives inside the
+        // lifecycle, so construction must carry the caller-provided
+        // sig_status (the terminating signal number for signal deaths).
+        // Otherwise zombify/wait would report 0 — a signal death would be
+        // misreported in the wait status.
         proc.state.lifecycle = Lifecycle::Exiting {
             exit_code: status,
             sig_status,
@@ -529,11 +564,13 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
 
     // ---- 13. SIGHUP for session leader (411-412) ----
     if procgrp != 0 {
-        // 会话首领死亡 → 向其进程组广播 SIGHUP（D-27）。C 复用 check_sig
-        // 的负 pid 组扫描（signal.c:601-604 的 mp_procgrp 匹配），caller
-        // 是死亡的首领本人（权限判定与 C 一致）；首领自身已 EXITING，
-        // sig_proc 的退出守卫跳过投递。返回值 C 不检查（412）。
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        // Session leader death -> broadcast SIGHUP to its process group. C
+        // reuses check_sig's negative-pid group scan (the mp_procgrp match at
+        // signal.c:601-604) with the dying leader itself as caller (so the
+        // permission check matches C); the leader is already EXITING, so
+        // sig_proc's exit guard skips delivery. C does not check the return
+        // value (412).
+        //[SD19-gate] PM send/notify/reply results are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::check_sig(
             table,
@@ -560,9 +597,10 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
     kern: &mut dyn KernelGateway,
 ) {
     let scheduler = table.procs[slot.get()].resources.scheduler;
-    // 1. sched_stop (forkexit.c:425-441)：用户态调度器在管才发
-    //    SCHEDULING_STOP；调度器拒绝只 printf（C 的可观测面），进程照常
-    //    交还内核调度。
+    // 1. sched_stop (forkexit.c:425-441): send SCHEDULING_STOP only when a
+    //    user-space scheduler is in charge; a rejection just prints (C's
+    //    observable surface) and the process returns to kernel scheduling
+    //    as usual.
     if scheduler != Endpoint::KERNEL && scheduler != Endpoint::NONE {
         let mut msg = Message::default();
         msg.m_u.m_lsys_sched_scheduling_stop =
@@ -576,8 +614,9 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
             Err(_) => -minix_types::EIO,
         };
         if rv != 0 {
-            // C forkexit.c:429-433：只 printf，继续走僵尸化。
-            // 宿主构建下传输不可达时同样走这里（-EIO），行为一致。
+            // C forkexit.c:429-433: just printf and continue on to zombify.
+            // An unreachable transport on host builds lands here too (-EIO),
+            // with identical behavior.
         }
     }
     // 2. scheduler = NONE (441)
@@ -600,7 +639,8 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
     }
 
     // 4. sys_clear for !PRIV_PROC (447-452) — user process destroyed after VFS
-    // C: forkexit.c:449-451 — 失败即 panic（同 exit_proc step 9 的不可恢复语义）。
+    // C: forkexit.c:449-451 — failure panics (same unrecoverable semantics as
+    // exit_proc step 9).
     if !table.procs[slot.get()].is_kernel_process() {
         let ep = table.procs[slot.get()].endpoint();
         if let Err(r) = kern.sys_clear(ep) {
@@ -610,7 +650,8 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
 
     // 5. vm_exit (455-457) — VM free page tables
     // C: `if((r=vm_exit(rmp->mp_endpoint)) != OK) panic("exit_restart:
-    // vm_exit failed: %d", r);`——页表随进程终结，VM 不回收即永久泄漏。
+    // vm_exit failed: %d", r);` — page tables die with the process; if VM
+    // never reclaims them they leak permanently.
     {
         let ep = table.procs[slot.get()].endpoint();
         if let Err(r) = crate::ipc::vm_exit(transport, ep) {
@@ -619,10 +660,11 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
     }
 
     // 6. TRACE_EXIT → reply(tracer, OK) (459-464, 18-trace.md)
-    // C：`mproc[mp_tracer].mp_reply.m_pm_lc_ptrace.data = 0; reply(tracer, OK)`
-    // ——唤醒阻塞在 ptrace(T_EXIT) 上的 tracer，补完该调用的回复。
-    // Rust 对位：TRACE_EXIT 建模为 `TraceState::exit_pending`（mproc/trace.rs），
-    // 经 transport.send 直接异步回复（与 tell_tracer/tell_parent 同型）。
+    // C: `mproc[mp_tracer].mp_reply.m_pm_lc_ptrace.data = 0; reply(tracer, OK)`
+    // — wake the tracer blocked in ptrace(T_EXIT) and complete that call's
+    // reply. Rust counterpart: TRACE_EXIT is modeled as
+    // `TraceState::exit_pending` (mproc/trace.rs) and answered directly with
+    // an async send via transport.send (same shape as tell_tracer/tell_parent).
     {
         if let Some(tracer_slot) = table.procs[slot.get()]
             .state
@@ -636,7 +678,7 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
                 ..Default::default()
             };
             reply_msg.m_u.m_pm_lc_ptrace.data = 0;
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            //[SD19-gate] PM send/notify/reply results are fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = transport.send(tracer_ep, &reply_msg);
         }
@@ -677,13 +719,16 @@ pub(crate) fn zombify<T: crate::ipc::IpcTransport + ?Sized>(
             table.procs[slot.get()].state.lifecycle = Lifecycle::TraceZombie { exit_code, sig_status };
             // Do not send SIGCHLD signals to tracers (forkexit.c:611-614)
             if !wait_test(table, tracer_slot, slot) {
-                // C 613-614：tracer 未在 wait → 直接 return，不通知真父——
-                // “先 tracer 后真父”的顺序由 tracer 收割后的后续链路维持
-                //（10 的 wait4 收割时再走 tell_tracer→check_parent）。
+                // C 613-614: the tracer is not waiting -> return directly and
+                // do not notify the real parent — the "tracer first, real
+                // parent second" order is upheld by the later chain once the
+                // tracer reaps (wait4 reaping walks tell_tracer->check_parent
+                // again).
                 return;
             }
             tell_tracer(table, slot, transport);
-            // tracer 已收到死讯，真父接着处理（forkexit.c:623）
+            // The tracer has the death notice; the real parent is handled
+            // next (forkexit.c:623)
             check_parent(table, slot, false, transport, kern);
             return;
         }
@@ -721,14 +766,15 @@ pub(crate) fn check_parent<T: crate::ipc::IpcTransport + ?Sized>(
             cleanup(table, child_slot);
         }
     } else {
-        // Parent not waiting → SIGCHLD（D-28）。C check_parent 尾部：
-        // `sig_proc(p_mp, SIGCHLD, TRUE /*trace*/, FALSE /*ksig*/)`——
-        // 默认处置下 SIGCHLD ∈ ign_sset 被忽略，装了 handler 的父进程
-        // 收到通知（sigframe 交付链依赖 V2-P2-8，随批次 B 落地）。
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        // Parent not waiting -> SIGCHLD. C check_parent tail:
+        // `sig_proc(p_mp, SIGCHLD, TRUE /*trace*/, FALSE /*ksig*/)` — under
+        // the default disposition SIGCHLD is in ign_sset and ignored; a parent
+        // with a handler installed gets the notification (the sigframe
+        // delivery chain lands with a later batch).
+        //[SD19-gate] PM send/notify/reply results are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = child_slot;
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply results are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(
             table,
@@ -754,15 +800,17 @@ pub fn tracer_died<T: crate::ipc::IpcTransport + ?Sized>(
         crate::mproc::Guardianship::Traced { parent, .. } => crate::mproc::Guardianship::Normal { parent },
         other => other,
     };
-    // TRACE_EXIT cleared (768-769)：`mp_flags &= ~TRACE_EXIT` 的 Rust 对位
-    // 是摘 `TraceState::exit_pending`——tracer 已死，无人再等 T_EXIT 回复。
+    // TRACE_EXIT cleared (768-769): the Rust counterpart of
+    // `mp_flags &= ~TRACE_EXIT` is clearing `TraceState::exit_pending` — the
+    // tracer is dead, so nobody waits for the T_EXIT reply anymore.
     table.procs[child_slot.get()].state.trace.exit_pending = false;
-    // If !EXITING → SIGKILL cascade (775-777)：tracer 在子进程还在跑/停着时
-    // 死了，状态不可知（C 注释 "we have no idea what state the child is
-    // in"），只能杀掉避免 trainwreck；可能引发级联退出（C 775-777）。
-    // C: `sig_proc(child, SIGKILL, TRUE /*trace*/, FALSE /*ksig*/)`。
+    // If !EXITING -> SIGKILL cascade (775-777): the tracer died while the
+    // child was still running or stopped, so its state is unknown (C comment
+    // "we have no idea what state the child is in"); the only option is to
+    // kill it and avoid a trainwreck, which may cascade further exits
+    // (C 775-777). C: `sig_proc(child, SIGKILL, TRUE /*trace*/, FALSE /*ksig*/)`.
     if !table.procs[child_slot.get()].state.lifecycle.is_exiting() {
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply results are fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(
             table,
@@ -801,10 +849,12 @@ fn is_vfs_or_event_blocked(table: &ProcTable, slot: UserSlot) -> bool {
 
 /// Wait test: `wait_test` (`forkexit.c:wait_test` 569-588).
 ///
-/// `parent_waiting && right_child`——父必须正在等**这个**子（pid 精确或进程组匹配）
-/// 才交付；否则由调用方走 SIGCHLD 路径。匹配口径与 `do_wait4` 的 `pidarg` 过滤同源
-/// （`WaitState::is_waiting_for`），因此 `pidarg == 0 → -procgrp` 的归一必须在
-/// `do_wait4` 入口完成，`is_waiting_for` 只消费已归一的 `WaitTarget`。
+/// `parent_waiting && right_child` — the parent must be waiting for **this**
+/// child (exact pid or process-group match) before delivery; otherwise the
+/// caller takes the SIGCHLD path. The match rule comes from the same source as
+/// `do_wait4`'s `pidarg` filtering (`WaitState::is_waiting_for`), so the
+/// `pidarg == 0 → -procgrp` normalization must happen at `do_wait4`'s entry,
+/// and `is_waiting_for` only consumes an already-normalized `WaitTarget`.
 fn wait_test(table: &ProcTable, parent_slot: UserSlot, child_slot: UserSlot) -> bool {
     let parent = &table.procs[parent_slot.get()];
     let child = &table.procs[child_slot.get()];
@@ -816,9 +866,10 @@ fn wait_test(table: &ProcTable, parent_slot: UserSlot, child_slot: UserSlot) -> 
 
 /// Tell parent: `tell_parent` (`forkexit.c:670-726`).
 ///
-/// rusage（144 字节，仅 utime/stime）经 `KernelGateway::copy_to_user`
-/// 真实写入父进程用户内存（D-21/Fix #27），随后 `reply(parent, pid)`、
-/// 清 `WAITING`、`ZOMBIE→TOLD_PARENT`、子时间并入父桶（722-723）。
+/// rusage (144 bytes, utime/stime only) is really written into the parent's
+/// user memory via `KernelGateway::copy_to_user`, then `reply(parent, pid)`,
+/// clearing `WAITING`, `ZOMBIE→TOLD_PARENT`, and merging child times into the
+/// parent buckets (722-723).
 /// Returns `true` if wait succeeded (for check_parent try_cleanup).
 pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
@@ -833,11 +884,12 @@ pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
     }
     let child_pid = table.procs[child_slot.get()].identity.id.pid;
     let parent_ep = table.procs[parent_slot.get()].endpoint();
-    // C: forkexit.c:692-704 — 先经 sys_datacopy 把 rusage 写入父进程用户
-    // 内存（仅 ru_utime/ru_stime 两字段，utility.c set_rusage_times）；
-    // 失败 → reply(parent, errno) + FALSE，子进程保持 ZOMBIE 可重试。
+    // C: forkexit.c:692-704 — first write the rusage into the parent's user
+    // memory via sys_datacopy (only the ru_utime/ru_stime fields, utility.c
+    // set_rusage_times); on failure -> reply(parent, errno) + FALSE, and the
+    // child stays ZOMBIE so the parent can retry.
 
-    // set_rusage_times（utility.c:144-157）：ticks → usec 按 system_hz。
+    // set_rusage_times (utility.c:144-157): ticks -> usec at system_hz.
     let hz: u64 = u64::from(table.system_hz);
     let (child_utime, child_stime) = {
         let child = &table.procs[child_slot.get()];
@@ -847,24 +899,27 @@ pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
     {
         let u_usec = (child_utime.max(0) as u64 * 1_000_000) / hz;
         let s_usec = (child_stime.max(0) as u64 * 1_000_000) / hz;
-        // ru_utime: tv_sec @0, tv_usec @8；ru_stime: tv_sec @16, tv_usec @24
+        // ru_utime: tv_sec @0, tv_usec @8; ru_stime: tv_sec @16, tv_usec @24
         rusage[0..8].copy_from_slice(&(u_usec / 1_000_000).to_ne_bytes());
         rusage[8..16].copy_from_slice(&(u_usec % 1_000_000).to_ne_bytes());
         rusage[16..24].copy_from_slice(&(s_usec / 1_000_000).to_ne_bytes());
         rusage[24..32].copy_from_slice(&(s_usec % 1_000_000).to_ne_bytes());
     }
-    // B25（NK4-C 1.48，真机 c37-c41 根因）：C 在 forkexit.c:692 用
-    // `if (addr)` 守卫整段 rusage 拷贝——waitpid(pid, NULL, 0) 的
-    // rusage_addr==0 是合法输入，必须跳过拷贝直接回复。旧实现无守卫，
-    // 对父进程地址 0x0 发 SYS_VIRCOPY → 内核挂起 PM 问 VM 要页 → VM
-    // 拒绝 → 本函数失败臂向 INIT 投 errno 消息 → INIT 的 DELIVERMSG
-    // 写自己陈旧 p_delivermsg_vir=0x0 → memreq 再失败 → SIGSEGV →
-    // 全系统崩（真机 c41 现场：susp-krn mt=15 tgt=0xb st=0x0 ln=0x90）。
+    // C guards the whole rusage copy with `if (addr)` at forkexit.c:692 —
+    // rusage_addr==0 from waitpid(pid, NULL, 0) is legal input, and the copy
+    // must be skipped in favor of a direct reply. Without that guard,
+    // SYS_VIRCOPY against parent address 0x0 makes the kernel suspend PM to
+    // ask VM for a page; VM refuses, this function's failure arm sends an
+    // errno message to INIT, INIT's DELIVERMSG writes its own stale
+    // p_delivermsg_vir=0x0, the memreq fails again, SIGSEGV follows, and the
+    // whole system goes down (seen on real hardware: susp-krn mt=15 tgt=0xb
+    // st=0x0 ln=0x90).
     if addr.0 != 0 {
         if let Err(r) = kern.copy_to_user(&rusage, parent_ep, addr.0) {
-            // datacopy 失败：reply(parent, errno) + FALSE（forkexit.c:699-701），
-            // 子进程保持 ZOMBIE，父进程可重试 wait。
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            // datacopy failure: reply(parent, errno) + FALSE
+            // (forkexit.c:699-701); the child stays ZOMBIE and the parent can
+            // retry the wait.
+            //[SD19-gate] PM send/notify/reply results are fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = transport.send(
                 parent_ep,
@@ -877,18 +932,21 @@ pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
         }
     }
 
-    // C: forkexit.c:707-709 — 状态写 mp_reply.m_pm_lc_wait4.status（载荷，
-    // D-26 wire 契约），pid 作返回值走 reply(parent, pid)。
+    // C: forkexit.c:707-709 — the status goes into
+    // mp_reply.m_pm_lc_wait4.status (payload, per the wire contract) and the
+    // pid is the return value of reply(parent, pid).
     let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap_or((0, 0));
     let mut reply_msg = Message {
         m_type: child_pid,
         ..Default::default()
     };
-    // C forkexit.c:713 不掩码：`mp_exitstatus`/`mp_sigstatus` 是 `char`，整型提升按符号扩展
-    // （WCOREFLAG 置位时 sigstatus 为负）。掩码会让原始 status 值与 C 不同——
-    // libc 宏（WIFSIGNALED/WEXITSTATUS）会掩掉差异，但 wire 上的整数是外部可观察的。
+    // C forkexit.c:713 does not mask: `mp_exitstatus`/`mp_sigstatus` are
+    // `char`, and integer promotion sign-extends (sigstatus is negative when
+    // WCOREFLAG is set). Masking would make the raw status value differ from
+    // C — libc macros (WIFSIGNALED/WEXITSTATUS) hide the difference, but the
+    // integer on the wire is externally observable.
     reply_msg.m_u.m_pm_lc_wait4.status = crate::wait::w_exitcode(ec as i32, ss as i32);
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    //[SD19-gate] PM send/notify/reply results are fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
     let _ = transport.send(parent_ep, &reply_msg);
 
@@ -915,16 +973,17 @@ pub(crate) fn tell_tracer<T: crate::ipc::IpcTransport + ?Sized>(
         .expect("tracer must exist");
     let child_pid = table.procs[child_slot.get()].identity.id.pid;
     // C: forkexit.c:748-749 — `tracer->mp_reply.m_pm_lc_wait4.status =
-    // W_EXITCODE(ec, sigstatus & 0377)` 后 `reply(tracer, pid)`（D-26 载荷契约）。
+    // W_EXITCODE(ec, sigstatus & 0377)` followed by `reply(tracer, pid)`
+    // (payload per the wire contract).
     let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap();
     let mut reply_msg = Message {
         m_type: child_pid,
         ..Default::default()
     };
     reply_msg.m_u.m_pm_lc_wait4.status =
-        crate::wait::w_exitcode(ec as i32, (ss as i32) & 0o377); // C forkexit.c:749 显式掩码 sigstatus
+        crate::wait::w_exitcode(ec as i32, (ss as i32) & 0o377); // C forkexit.c:749 masks sigstatus explicitly
     let tracer_ep = table.procs[tracer_slot.get()].endpoint();
-    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    //[SD19-gate] PM send/notify/reply results are fire-and-forget
     #[allow(clippy::let_underscore_must_use)]
     let _ = transport.send(tracer_ep, &reply_msg);
 
@@ -938,7 +997,8 @@ pub(crate) fn tell_tracer<T: crate::ipc::IpcTransport + ?Sized>(
 /// - `tracer == proc_nr → tracer_died`
 /// - `parent == proc_nr → parent = INIT_PROC_NR + VFS_CALL→NEW_PARENT + ZOMBIE→check_parent`
 ///
-/// C 的 `SIGHUP` 广播（411-412）在循环之后、仍在 `exit_proc` 内，由调用方执行。
+/// C's `SIGHUP` broadcast (411-412) happens after the loop but still inside
+/// `exit_proc`, and is done by the caller.
 fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     exiting_slot: UserSlot,
@@ -983,7 +1043,7 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
                 if let Some(crate::mproc::IpcBlockReason::VfsCall { reply_to_new_parent }) =
                     child.state.block.ipc_blocked
                 {
-                    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                    //[SD19-gate] PM send/notify/reply results are fire-and-forget
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = reply_to_new_parent;
                 }
@@ -994,15 +1054,16 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
                 }
             }
         }
-        // If already ZOMBIE, check_parent for INIT（C 406-407 仅检 `ZOMBIE` 位：
-        // TraceZombie 的孩子死父时不通知 INIT——它的死讯要先给 tracer，
-        // 由 tracer 收割后经 tell_tracer→check_parent 链路自行处理）。
+        // If already ZOMBIE, check_parent for INIT (C 406-407 checks only the
+        // `ZOMBIE` bit: a TraceZombie child does not notify INIT when its
+        // parent dies — its death notice goes to the tracer first and is
+        // handled by the tell_tracer->check_parent chain after the tracer reaps).
         if matches!(table.procs[idx].state.lifecycle, Lifecycle::Zombie { .. }) {
             check_parent(table, child_slot, true, transport, kern);
         }
     }
-    // SIGHUP 不在本函数：C 的 411-412 在 disinherit 循环之后（仍是
-    // exit_proc 主体），由 exit_proc 尾部执行（D-27）。
+    // SIGHUP is not in this function: C's 411-412 run after the disinherit
+    // loop (still inside exit_proc's body) and are done by exit_proc's tail.
 }
 
 #[cfg(test)]
@@ -1020,15 +1081,17 @@ mod tests {
     }
 
 
-    /// D-27/V2-P1-2：会话首领死亡 → 进程组广播 SIGHUP（forkexit.c:411-412，
-    /// check_sig(-procgrp) 负 pid 组扫描）。同组成员默认处置终止，异组进程
-    /// 存活；首领自身已 EXITING，sig_proc 的退出守卫跳过重复投递。
+    /// Session leader death -> process-group SIGHUP broadcast
+    /// (forkexit.c:411-412, check_sig(-procgrp) negative-pid group scan).
+    /// Group members die under the default disposition, out-of-group processes
+    /// survive; the leader is already EXITING, so sig_proc's exit guard skips
+    /// duplicate delivery.
     #[test]
     fn test_session_leader_death_broadcasts_sighup() {
         let mut table = ProcTable::new();
-        // 首领 slot 1：pid == procgrp == 100（会话首领）。
+        // Leader at slot 1: pid == procgrp == 100 (session leader).
         running_proc(&mut table, 1, 100);
-        // 同组成员 slot 2；异组进程 slot 3。
+        // Group member at slot 2; out-of-group process at slot 3.
         running_proc(&mut table, 2, 101);
         table.procs[2].identity.procgrp = 100;
         running_proc(&mut table, 3, 102);
@@ -1038,7 +1101,8 @@ mod tests {
         let mut kern = KillRecorder::default();
         do_exit(&mut table, UserSlot::new(1), 0, &mut t, &mut kern);
 
-        // 同组成员被 SIGHUP 默认处置终止（EXITING → zombify）。
+        // The group member is terminated by the default SIGHUP disposition
+        // (EXITING -> zombify).
         assert!(
             table.procs[2].is_exiting()
                 || matches!(
@@ -1048,21 +1112,22 @@ mod tests {
             "group member must be terminated by SIGHUP, got {:?}",
             table.procs[2].state.lifecycle
         );
-        // 异组进程存活。
+        // The out-of-group process survives.
         assert!(table.procs[3].is_in_use() && !table.procs[3].is_exiting());
     }
 
-    /// D-28/V2-P2-5：父进程未等待时 check_parent 向其投递 SIGCHLD
-    /// （C check_parent 尾部 sig_proc(p_mp, SIGCHLD, TRUE, FALSE)）。
-    /// 用 mask 阻塞使投递可观察：pending 位被置位；父进程不退出。
+    /// When the parent is not waiting, check_parent delivers SIGCHLD to it
+    /// (C check_parent tail: sig_proc(p_mp, SIGCHLD, TRUE, FALSE)). The signal
+    /// is masked so delivery is observable: the pending bit gets set and the
+    /// parent does not exit.
     #[test]
     fn test_check_parent_sends_sigchld_when_parent_not_waiting() {
         let mut table = ProcTable::new();
-        running_proc(&mut table, 1, 100); // 父：未等待
+        running_proc(&mut table, 1, 100); // parent: not waiting
         running_proc(&mut table, 2, 101);
         table.procs[2].state.guardianship = Guardianship::Normal { parent: UserSlot::new(1) };
         table.procs[2].state.lifecycle = Lifecycle::Zombie { exit_code: 0, sig_status: 0 };
-        // 父进程阻塞 SIGCHLD → 投递落入 pending（可观察）。
+        // The parent blocks SIGCHLD, so delivery lands in pending (observable).
         table.procs[1].resources.signals.mask = crate::init::sig_bit(crate::signal::SIGCHLD);
 
         let mut t = crate::ipc::TestIpcTransport::default();
@@ -1076,14 +1141,16 @@ mod tests {
         assert!(table.procs[1].is_in_use() && !table.procs[1].is_exiting());
     }
 
-    /// `wait_test` 的 `right_child`（`forkexit.c:wait_test` 583-587）：父在等**别的**
-    /// 子进程（`SpecificChild`）时，另一个子进程退出不得交付——C 走 SIGCHLD 路径，
-    /// 该子保持 ZOMBIE 等真父来收。回归对象：曾以"父在等待即交付"的占位实现。
+    /// `wait_test`'s `right_child` (`forkexit.c:wait_test` 583-587): when the
+    /// parent waits for a **different** child (`SpecificChild`), another
+    /// child's exit must not be delivered — C takes the SIGCHLD path and that
+    /// child stays ZOMBIE until the real parent reaps it. Regression guard for
+    /// a placeholder that delivered whenever the parent was waiting at all.
     #[test]
     fn test_check_parent_waits_for_matching_child_only() {
         let mut table = ProcTable::new();
-        running_proc(&mut table, 1, 100); // 父：正在等 pid 999
-        running_proc(&mut table, 2, 101); // 退出的子：pid 101 ≠ 999
+        running_proc(&mut table, 1, 100); // parent: waiting for pid 999
+        running_proc(&mut table, 2, 101); // exiting child: pid 101 != 999
         table.procs[2].state.guardianship = Guardianship::Normal { parent: UserSlot::new(1) };
         table.procs[2].state.lifecycle = Lifecycle::Zombie { exit_code: 0, sig_status: 0 };
         table.procs[1].state.wait.waiting = true;
@@ -1106,7 +1173,7 @@ mod tests {
         assert!(t.sent().is_empty(), "no wait4 reply may be sent");
     }
 
-    /// D-13：记录 sys_kill 调用的网关 mock。
+    /// Gateway mock that records sys_kill calls.
     #[derive(Default)]
     struct KillRecorder {
         killed: Option<(Endpoint, i32)>,
@@ -1128,7 +1195,7 @@ mod tests {
             Ok(())
         }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
-            Ok((30, 12)) // 脚本化计账值（D-14 验证累加）
+            Ok((30, 12)) // scripted accounting values (used to verify accumulation)
         }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> {
             Ok(())
@@ -1155,14 +1222,16 @@ mod tests {
         assert_eq!(intent, ReplyIntent::NoReply);
         // Priv proc should not become Exiting via exit_proc
         assert!(matches!(table.procs[0].state.lifecycle, Lifecycle::Running));
-        // D-13：违规退出经 sys_kill(endpoint, SIGKILL) 交内核信号路径处置
+        // A violating exit goes through sys_kill(endpoint, SIGKILL) and is
+        // left to the kernel signal path
         assert_eq!(kern.killed, Some((Endpoint::from_generation_slot(1, 0), crate::signal::SIGKILL)));
     }
 
     #[test]
     fn test_do_exit_user_process_skips_sys_kill() {
-        // C: forkexit.c:258-260 — 非 PRIV_PROC 走 exit_proc，不碰 sys_kill
-        //（sys_kill 是 PRIV_PROC 违规分支的专属处置）。
+        // C: forkexit.c:258-260 — a non-PRIV_PROC process goes through
+        // exit_proc and never touches sys_kill (sys_kill is exclusive to the
+        // PRIV_PROC violation branch).
         let mut table = ProcTable::new();
         table.procs[5].state.lifecycle = Lifecycle::Running;
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
@@ -1175,22 +1244,24 @@ mod tests {
 
         assert_eq!(intent, ReplyIntent::NoReply);
         assert!(kern.killed.is_none(), "user exit must not go through sys_kill");
-        // exit_proc 走完 zombify 后：父未 wait → Zombie（非 ToldParent）。
+        // After exit_proc finishes zombify: the parent is not waiting -> Zombie
+        // (not ToldParent).
         assert!(matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. }));
     }
 
     #[test]
     fn test_tell_parent_delivers_rusage_via_datacopy() {
-        // D-21：tell_parent 经 VIRCOPY 把 144 字节 rusage 写入父进程用户
-        // 内存（forkexit.c:692-704），仅 ru_utime/ru_stime 两 timeval 有值
-        //（set_rusage_times，utility.c:144-157）；datacopy 失败 →
-        // reply(parent, errno) + FALSE，子保持 ZOMBIE。
+        // tell_parent writes the 144-byte rusage into the parent's user
+        // memory via VIRCOPY (forkexit.c:692-704); only the two timevals
+        // ru_utime/ru_stime carry values (set_rusage_times,
+        // utility.c:144-157). A datacopy failure -> reply(parent, errno) +
+        // FALSE, and the child stays ZOMBIE.
         let mut table = ProcTable::new();
-        table.system_hz = 100; // 显式 hz 隔离断言
+        table.system_hz = 100; // explicit hz, isolates the assertions
         running_proc(&mut table, 5, 42);
         let mut transport = crate::ipc::TestIpcTransport::default();
         let mut kern = KillRecorder::default();
-        // 子进程桶：(30 ticks, 12 ticks) @ hz=100 → (300000 usec, 120000 usec)
+        // Child buckets: (30 ticks, 12 ticks) @ hz=100 -> (300000 usec, 120000 usec)
         table.procs[5].resources.child_utime = 30;
         table.procs[5].resources.child_stime = 12;
         table.procs[5].state.lifecycle = Lifecycle::Zombie { exit_code: 7, sig_status: 0 };
@@ -1207,17 +1278,19 @@ mod tests {
         let s_usec = u64::from_ne_bytes(copied[24..32].try_into().unwrap());
         assert_eq!((u_sec, u_usec), (0, 300000));
         assert_eq!((s_sec, s_usec), (0, 120000));
-        // 其余 112 字节保持零（C 同样 memset 后只填两字段）
+        // The other 112 bytes stay zero (C likewise memsets and fills only the
+        // two fields)
         assert!(copied[32..].iter().all(|&b| b == 0));
     }
 
     #[test]
     fn test_tell_parent_null_rusage_addr_skips_datacopy() {
-        // B25（真机 c37-c41 根因）：C forkexit.c:692 的 `if (addr)` 守卫——
-        // waitpid(pid, NULL, 0) 时 rusage_addr==0 是合法输入，必须跳过
-        // rusage 拷贝直接回复；若仍对 0x0 发 VIRCOPY，内核挂起 PM 问 VM
-        // 要页 → 失败臂向 INIT 投 errno → INIT DELIVERMSG 写陈旧 pdmv=0
-        // → SIGSEGV 全系统崩。
+        // C forkexit.c:692 has an `if (addr)` guard — with
+        // waitpid(pid, NULL, 0), rusage_addr==0 is legal input and the rusage
+        // copy must be skipped for a direct reply. Sending VIRCOPY to 0x0
+        // instead makes the kernel suspend PM to ask VM for a page; the
+        // failure arm then sends an errno message to INIT, INIT's DELIVERMSG
+        // writes the stale pdmv=0, and SIGSEGV brings the whole system down.
         let mut table = ProcTable::new();
         table.system_hz = 100;
         running_proc(&mut table, 5, 42);
@@ -1243,7 +1316,8 @@ mod tests {
             kern.copied_bytes.is_none(),
             "addr==0 must not issue any datacopy (C: if (addr) guard, forkexit.c:692)"
         );
-        // 父进程收到 reply(pid) 且退出状态载荷照常交付（C: forkexit.c:707-709）。
+        // The parent receives reply(pid) and the exit-status payload as usual
+        // (C: forkexit.c:707-709).
         let pid = table.procs[5].identity.id.pid;
         assert!(
             transport.sent().iter().any(|(_, m)| m.m_type == pid),
@@ -1253,14 +1327,16 @@ mod tests {
 
     #[test]
     fn test_exit_proc_accumulates_sys_times() {
-        // D-14：exit_proc 取死亡进程自身 CPU ticks 累加进它的 child 桶
-        //（forkexit.c:305-310），父进程 wait 时再并入（tell_parent 722-723）。
-        // KillRecorder 的 proc_times 脚本值 = (30, 12)。
+        // exit_proc reads the dying process's own CPU ticks and accumulates
+        // them into its child bucket (forkexit.c:305-310); they merge into the
+        // parent on wait (tell_parent 722-723). KillRecorder's proc_times
+        // scripted value = (30, 12).
         let mut table = ProcTable::new();
         running_proc(&mut table, 5, 42);
         let mut transport = crate::ipc::TestIpcTransport::default();
         let mut kern = KillRecorder::default();
-        // KillRecorder 的 proc_times 恒 (30, 12)（脚本化计账值）。
+        // KillRecorder's proc_times always returns (30, 12) (scripted
+        // accounting values).
 
         exit_proc(
             &mut table,
@@ -1272,7 +1348,8 @@ mod tests {
             &mut kern,
         );
 
-        // 父进程未 wait → Zombie 持桶；wait 时桶值并入父。
+        // The parent does not wait -> the Zombie holds the buckets; they merge
+        // into the parent on wait.
         assert_eq!(table.procs[5].resources.child_utime, 30);
         assert_eq!(table.procs[5].resources.child_stime, 12);
     }
@@ -1364,10 +1441,12 @@ mod tests {
         ));
     }
 
-    /// `disinherit` 只改 `mp_parent`（及 `VFS_CALL → NEW_PARENT`），
-    /// `mp_trace_flags` 的 `TO_*` 选项位不被触碰（`forkexit.c:394-408`）：
-    /// 父死亡后被 `INIT` 收养的受跟踪子进程仍归原 tracer 跟踪，跟踪选项
-    /// 必须原样保留，否则 `T_SETOPT` 设定的自动附着/exec 行为在收养处丢失。
+    /// `disinherit` changes only `mp_parent` (and `VFS_CALL → NEW_PARENT`);
+    /// the `TO_*` option bits in `mp_trace_flags` are untouched
+    /// (`forkexit.c:394-408`). A traced child adopted by `INIT` after its
+    /// parent dies is still traced by the original tracer, so the trace
+    /// options must survive verbatim; otherwise auto-attach/exec behavior
+    /// configured by `T_SETOPT` would be lost at adoption.
     #[test]
     fn test_disinherit_preserves_trace_options() {
         let mut table = ProcTable::new();
@@ -1423,14 +1502,15 @@ mod tests {
         assert!(!table.procs[5].is_in_use());
     }
 
-    /// 回归保护（forkexit.c:613-614）：tracer 未在 wait 时 `zombify` 直接 return
-    ///（C forkexit.c:613-614），不得越过 tracer 先通知真父——真父的
-    /// SIGCHLD 必须保持未投递（mask 阻塞使投递可观察，D-28 手法）。
+    /// Regression guard (forkexit.c:613-614): when the tracer is not waiting,
+    /// `zombify` returns directly (C forkexit.c:613-614) and must not notify
+    /// the real parent ahead of the tracer — the real parent's SIGCHLD must
+    /// stay undelivered (masking the signal makes delivery observable).
     #[test]
     fn test_zombify_tracer_not_waiting_defers_parent() {
         let mut table = ProcTable::new();
-        running_proc(&mut table, 1, 100); // 真父：Running
-        running_proc(&mut table, 2, 101); // tracer：未在 wait
+        running_proc(&mut table, 1, 100); // real parent: Running
+        running_proc(&mut table, 2, 101); // tracer: not waiting
         table.procs[1].resources.signals.mask = crate::init::sig_bit(crate::signal::SIGCHLD);
         running_proc(&mut table, 5, 105);
         table.procs[5].state.lifecycle = Lifecycle::Exiting { exit_code: 7, sig_status: 0 };
@@ -1451,14 +1531,14 @@ mod tests {
         assert!(t.sent().is_empty(), "tracer 未等待时不应有任何异步回复发出");
     }
 
-    /// 回归保护：`exit_restart` 步 6 对 TRACE_EXIT
-    ///（`TraceState::exit_pending`）回复 `reply(tracer, OK)` 且
-    /// `m_pm_lc_ptrace.data = 0`（C forkexit.c:459-464），唤醒阻塞在
-    /// ptrace(T_EXIT) 上的 tracer。
+    /// Regression guard: `exit_restart` step 6 answers TRACE_EXIT
+    /// (`TraceState::exit_pending`) with `reply(tracer, OK)` and
+    /// `m_pm_lc_ptrace.data = 0` (C forkexit.c:459-464), waking the tracer
+    /// blocked in ptrace(T_EXIT).
     #[test]
     fn test_exit_restart_trace_exit_replies_tracer() {
         let mut table = ProcTable::new();
-        running_proc(&mut table, 1, 100); // 真父
+        running_proc(&mut table, 1, 100); // real parent
         running_proc(&mut table, 2, 101); // tracer
         running_proc(&mut table, 5, 105);
         table.procs[5].state.lifecycle = Lifecycle::ToldParent { exit_code: 0, sig_status: 0 };
@@ -1478,8 +1558,9 @@ mod tests {
             .find(|(dst, _)| *dst == tracer_ep)
             .expect("必须向 tracer 发出回复");
         assert_eq!(reply.1.m_type, minix_types::OK, "C: reply(tracer, OK)");
-        // SAFETY: 读 Message 联合体成员 m_pm_lc_ptrace.data（i64）——所有成员
-        // 均初始化可读（发送前刚写入同一成员），与 trace.rs 测试同一手法。
+        // SAFETY: reading Message union member m_pm_lc_ptrace.data (i64) — all
+        // members are initialized and readable (the same member was just
+        // written before sending); same approach as the trace.rs tests.
         assert_eq!(
             unsafe { reply.1.m_u.m_pm_lc_ptrace.data },
             0,
@@ -1487,15 +1568,16 @@ mod tests {
         );
     }
 
-    /// 回归保护（forkexit.c:775-777）：tracer 在子进程还在跑时死了 → SIGKILL
-    /// 级联（C forkexit.c:775-777）；同时 TRACE_EXIT 位被摘
-    ///（C 768-769）。子进程走默认处置终止（D-27 SIGHUP 测试同型观察）。
+    /// Regression guard (forkexit.c:775-777): the tracer died while the child
+    /// was still running -> SIGKILL cascade (C forkexit.c:775-777); the
+    /// TRACE_EXIT bit is also cleared (C 768-769). The child dies under the
+    /// default disposition (observed the same way as in the SIGHUP test).
     #[test]
     fn test_tracer_died_kills_running_child() {
         let mut table = ProcTable::new();
-        running_proc(&mut table, 1, 100); // 真父
-        running_proc(&mut table, 2, 101); // tracer（已死，由调用方语义保证）
-        running_proc(&mut table, 5, 105); // 被跟踪子：仍 Running
+        running_proc(&mut table, 1, 100); // real parent
+        running_proc(&mut table, 2, 101); // tracer (already dead; guaranteed by the caller)
+        running_proc(&mut table, 5, 105); // traced child: still Running
         table.procs[5].state.guardianship = Guardianship::Traced {
             parent: UserSlot::new(1),
             tracer: UserSlot::new(2),
@@ -1517,9 +1599,9 @@ mod tests {
         );
     }
 
-    /// 回归保护（forkexit.c:784-788）：tracer 死在子进程报死途中
-    ///（TRACE_ZOMBIE）→ 降为 ZOMBIE 并对真父重试 check_parent
-    ///（C 784-788），不得误发 SIGKILL。
+    /// Regression guard (forkexit.c:784-788): the tracer died mid-death-report
+    /// (TRACE_ZOMBIE) -> downgrade to ZOMBIE and retry check_parent for the
+    /// real parent (C 784-788); SIGKILL must not be sent by mistake.
     #[test]
     fn test_tracer_died_trace_zombie_becomes_zombie() {
         let mut table = ProcTable::new();

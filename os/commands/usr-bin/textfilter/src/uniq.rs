@@ -53,9 +53,10 @@ impl UniqFlags {
 /// One completed run handed to the reporter: the line plus its count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Run<'a> {
-    /// The repeated line（内容加它在输入里的那枚换行——C `uniq` 印的是**一个 run 的
-    /// 第一行**，而只有输入的末行可能没有换行，所以这个状态必须跟着行走：
-    /// `printf 'x\nx'` 里被印出的是第一行 `x\n`，不是末行那个 `x`）。
+    /// The repeated line (its content plus the newline it had in the input — C
+    /// `uniq` prints the **first line of a run**, and only the last line of the
+    /// input may lack a newline, so this state must travel with the line:
+    /// `printf 'x\nx'` prints the first line `x\n`, not the last `x`).
     pub line: crate::window::Line<'a>,
     /// How many adjacent copies formed the run.
     pub count: u64,
@@ -224,8 +225,10 @@ mod tests {
     use super::*;
     use crate::window::Line;
 
-    /// 库里交回的行是字节，测试要的是可比对的 `String`。本文件的夹具全是 ASCII，
-    /// 所以解不出来就是夹具写错，当场停而不是替换字符。
+    /// The library hands lines back as bytes, while the tests want a comparable
+    /// `String`. Every fixture in this file is ASCII, so a decode failure means
+    /// the fixture is wrong; stop on the spot instead of substituting
+    /// characters.
     fn shown(run: &Run<'_>) -> String {
         core::str::from_utf8(run.line.bytes())
             .expect("测试夹具都是 ASCII")
@@ -389,9 +392,10 @@ mod tests {
         );
     }
 
-    /// 比较键的位移按字节走，不按字符：C 的 `skip` 收的是 `const char *`
-    /// （`minix3/usr.bin/uniq/uniq.c:61`，用在 `:148-149`），一步就是一个字节。
-    /// 一枚解不出 UTF-8 的字节既不会让整行消失，也不会被当成两格。
+    /// The comparison key steps by byte, not by character: C's `skip` takes a
+    /// `const char *` (`minix3/usr.bin/uniq/uniq.c:61`, used at `:148-149`), so
+    /// one step is one byte. A byte that does not decode as UTF-8 neither
+    /// removes the whole line nor counts as two cells.
     #[test]
     fn a_byte_that_is_not_utf8_counts_as_one_skip_step() {
         assert_eq!(comparison_key(b"a\xffbc", 0, 2), b"bc");

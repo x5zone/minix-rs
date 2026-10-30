@@ -68,24 +68,27 @@ impl SelOps {
     pub fn is_empty_real(self) -> bool {
         self.real().is_empty()
     }
-    /// 线上状态字（`CDEV_SEL1_REPLY`/`SDEV_SELECT_REPLY` 载荷里的 `ops`
-    /// 位图就是 `SEL_*` 位，低位一致）。
+    /// The on-wire status word (the `ops` bitmap in the
+    /// `CDEV_SEL1_REPLY`/`SDEV_SELECT_REPLY` payload is the `SEL_*` bits;
+    /// the low bits agree).
     pub fn to_status(self) -> i32 {
         self.bits() as i32
     }
-    /// 从线上状态字取就绪位（丢弃 `NOTIFY` 一类非就绪位）。
+    /// Take the ready bits out of the on-wire status word (dropping
+    /// non-ready bits such as `NOTIFY`).
     pub fn from_status(status: i32) -> SelOps {
         SelOps::from_bits_truncate(status as u8) & (SelOps::RD | SelOps::WR | SelOps::ERR)
     }
 }
 
-/// 一个被选中的 fd 与其 filp 的关联（C 的 `se->filps[fd]` + `se->type[fd]`
-/// 两列并成一行的记录）。
+/// The association between one selected fd and its filp (C's
+/// `se->filps[fd]` plus `se->type[fd]`, two columns merged into one row
+/// here).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FdEntry {
-    /// filp 表下标。
+    /// Index into the filp table.
     pub filp: usize,
-    /// 该 fd 的类型（决定请求半走哪条路）。
+    /// The fd's type (decides which path the request half takes).
     pub kind: FdKind,
 }
 
@@ -178,17 +181,21 @@ pub fn ops2tab_apply(
     ReadyMark { newly }
 }
 
-/// 读位图的一位（`FD_ISSET` 的字节版；越界 = 未设）。
+/// Read one bit of the bitmap (the byte-wise form of `FD_ISSET`; out of
+/// range = not set).
 pub fn bit_of(set: &[u8], fd: usize) -> bool {
     let (byte, mask) = (fd / 8, 1u8 << (fd % 8));
     set.get(byte).is_some_and(|b| b & mask != 0)
 }
 
-/// `ops2tab`（select.c:631-651）的执行半：把就绪位写进一个槽的三张结果集。
+/// The execution half of `ops2tab` (select.c:631-651): write the ready
+/// bits into a slot's three result sets.
 ///
-/// C 的三个条件都在：该方向用户给了指针（`vir_* != 0`）、用户在该方向
-/// 设了这一位、且尚未记过就绪。`nready` 按新置位的位数递增。
-/// `want` 是"该方向用户是否感兴趣"的三元组；`sets` 是三张结果集。
+/// All three C conditions are present: the user supplied a pointer for
+/// that direction (`vir_* != 0`), the user set that bit for the direction,
+/// and readiness has not been recorded yet. `nready` grows by the number
+/// of newly set bits. `want` is the triple "is the user interested in this
+/// direction"; `sets` are the three result sets.
 pub fn ops2tab_store(
     ops: SelOps,
     fd: usize,
@@ -202,7 +209,7 @@ pub fn ops2tab_store(
             return false;
         }
         if v[byte] & mask != 0 {
-            return false; // 已就绪，不重复计数
+            return false; // Already ready; do not count it twice
         }
         v[byte] |= mask;
         true
@@ -219,64 +226,66 @@ pub fn ops2tab_store(
     }
 }
 
-/// 一个挂起的 `select` 请求（C `struct selectentry`，select.c:14-45）。
+/// One pending `select` request (C `struct selectentry`, select.c:14-45).
 #[derive(Debug, Clone, Default)]
 pub struct SelectSlot {
-    /// 发起者（`None` = 空槽）。
+    /// The initiator (`None` = empty slot).
     pub requestor: Option<minix_types::UserSlot>,
-    /// 是否阻塞（`block`）：无超时或超时非零为真；`(0,0)` 是一次 poll。
+    /// Whether to block (`block`): true with no timeout or a non-zero
+    /// timeout; `(0,0)` is a poll.
     pub block: bool,
-    /// `nfds`（C 用它做 fd 循环上界）。
+    /// `nfds` (C uses it as the upper bound of the fd loop).
     pub nfds: usize,
-    /// 三张 fd 集（VFS 侧副本，按 C 的 `fd_set` 字节布局）。
+    /// The three fd sets (VFS-side copies, in C's `fd_set` byte layout).
     pub readfds: alloc::vec::Vec<u8>,
-    /// `writefds`。
+    /// `writefds`.
     pub writefds: alloc::vec::Vec<u8>,
-    /// `errorfds`。
+    /// `errorfds`.
     pub errorfds: alloc::vec::Vec<u8>,
-    /// 用户给的三个指针（结果要拷回这里）。
+    /// The three user pointers (results are copied back here).
     pub vir_readfds: u64,
-    /// `writefds` 的指针。
+    /// Pointer to `writefds`.
     pub vir_writefds: u64,
-    /// `errorfds` 的指针。
+    /// Pointer to `errorfds`.
     pub vir_errorfds: u64,
-    /// 已经就绪的 fd 数（`nreadyfds`）。
+    /// Number of fds already ready (`nreadyfds`).
     pub nready: usize,
-    /// 出错码（非零即中止整个 select）。
+    /// Error code (non-zero aborts the whole select).
     pub error: i32,
-    /// 初始化期（`se->starting`，select.c:183/314）：fd 循环还没走完，
-    /// 期间的驱动回复不许提前收尾整个调用。
+    /// Initialisation phase (`se->starting`, select.c:183/314): the fd
+    /// loop has not finished, and driver replies during it must not wind
+    /// the whole call up early.
     pub starting: bool,
-    /// 超时剩余 ticks（`se->expiry`，0 = 没设定时器）。
+    /// Remaining timeout in ticks (`se->expiry`, 0 = no timer set).
     pub expiry: u64,
-    /// 参与本次 select 的 fd → (filp, 类型) 关联，下标即 fd 号
-    /// （C 的 `se->filps[fd]` + `se->type[fd]`）。
+    /// fd → (filp, type) association for the fds in this select, indexed
+    /// by fd number (C's `se->filps[fd]` + `se->type[fd]`).
     pub filps: alloc::vec::Vec<Option<FdEntry>>,
-    /// 就绪读集（`ready_readfds`，`ops2tab` 的落点、`copy_fdsets(TO_PROC)`
-    /// 的源）。
+    /// Ready read set (`ready_readfds`; `ops2tab`'s target and
+    /// `copy_fdsets(TO_PROC)`'s source).
     pub ready_readfds: alloc::vec::Vec<u8>,
-    /// 就绪写集（`ready_writefds`）。
+    /// Ready write set (`ready_writefds`).
     pub ready_writefds: alloc::vec::Vec<u8>,
-    /// 就绪错误集（`ready_errorfds`）。
+    /// Ready error set (`ready_errorfds`).
     pub ready_errorfds: alloc::vec::Vec<u8>,
 }
 
 impl SelectSlot {
-    /// 空槽。
+    /// An empty slot.
     pub fn free() -> Self {
         Self::default()
     }
 
-    /// 是不是空槽（C 的 `selecttab[s].requestor == NULL`）。
+    /// Whether this is an empty slot (C's `selecttab[s].requestor == NULL`).
     pub fn is_free(&self) -> bool {
         self.requestor.is_none()
     }
 }
 
-/// `selecttab`：固定 25 个槽（C `MAXSELECTS`，select.c:31）。
+/// `selecttab`: a fixed 25 slots (C `MAXSELECTS`, select.c:31).
 #[derive(Debug)]
 pub struct SelectTable {
-    /// 槽位。
+    /// The slots.
     pub slots: alloc::vec::Vec<SelectSlot>,
 }
 
@@ -287,29 +296,29 @@ impl Default for SelectTable {
 }
 
 impl SelectTable {
-    /// 全空表。
+    /// An all-empty table.
     pub fn new() -> Self {
         Self {
             slots: (0..MAXSELECTS).map(|_| SelectSlot::free()).collect(),
         }
     }
 
-    /// 找第一个空槽（C `do_select:118-124` 的循环）。
+    /// Find the first empty slot (the loop at C `do_select:118-124`).
     pub fn alloc(&mut self) -> Option<usize> {
         self.slots.iter().position(|s| s.is_free())
     }
 
-    /// 取槽。
+    /// Take a slot.
     pub fn get(&self, idx: usize) -> Option<&SelectSlot> {
         self.slots.get(idx)
     }
 
-    /// 改槽。
+    /// Take a slot mutably.
     pub fn get_mut(&mut self, idx: usize) -> Option<&mut SelectSlot> {
         self.slots.get_mut(idx)
     }
 
-    /// 释放槽（C 的 `se->requestor = NULL`）。
+    /// Release a slot (C's `se->requestor = NULL`).
     pub fn release(&mut self, idx: usize) {
         if let Some(s) = self.slots.get_mut(idx) {
             *s = SelectSlot::free();
@@ -317,22 +326,25 @@ impl SelectTable {
     }
 }
 
-/// 用户 `fd_set` 的取/存缝（C `copy_fdsets` 的两个方向：`FROM_PROC` 拷进来、
-/// `TO_PROC` 拷回去，select.c:660-708）。
+/// The fetch/store seam for the user `fd_set` (C `copy_fdsets`' two
+/// directions: `FROM_PROC` copies in, `TO_PROC` copies back,
+/// select.c:660-708).
 ///
-/// 生产件走跨空间 `sys_datacopy`（宿主不可达）；脚本替身让"取到之后"的门与
-/// 返回路径在宿主下也能测——与 `socket::MsgHdrFetcher` 同一个套路。
+/// The production part goes through the cross-space `sys_datacopy` (not
+/// reachable on the host); a scripted stand-in lets the gates "after the
+/// fetch" and the return path be tested on the host too — the same
+/// approach as `socket::MsgHdrFetcher`.
 pub trait FdSetIo {
-    /// 把用户缓冲拷进来（失败给 errno）。
+    /// Copy the user buffer in (failure yields an errno).
     fn fetch(&self, addr: u64, bytes: usize) -> Result<alloc::vec::Vec<u8>, i32>;
-    /// 把结果拷回去。
+    /// Copy the result back.
     fn store(&self, addr: u64, bytes: &[u8]) -> Result<(), i32>;
 }
 
-/// 生产取存件：两次 `sys_datacopy`。
+/// The production fetch/store part: two `sys_datacopy` calls.
 #[derive(Debug, Clone, Copy)]
 pub struct SysFdSetIo {
-    /// 调用方端点（C 的 `who_e`）。
+    /// The caller's endpoint (C's `who_e`).
     pub who: minix_types::Endpoint,
 }
 
@@ -363,22 +375,24 @@ impl FdSetIo for SysFdSetIo {
     }
 }
 
-/// 内存替身：把"用户缓冲"放在一个 `Vec` 里（测试用，另一种行为不同的实现）。
+/// In-memory stand-in: keeps the "user buffer" in a `Vec` (for tests; a
+/// second implementation with different behaviour).
 #[derive(Debug, Default, Clone)]
 pub struct MemoryFdSetIo {
-    /// 读方向的"用户内存"（`readfds` 的位图）。
+    /// The read direction's "user memory" (the `readfds` bitmap).
     pub read: alloc::vec::Vec<u8>,
-    /// `writefds` 的位图。
+    /// The `writefds` bitmap.
     pub write: alloc::vec::Vec<u8>,
-    /// `errorfds` 的位图。
+    /// The `errorfds` bitmap.
     pub error: alloc::vec::Vec<u8>,
-    /// 写回的记录（`(地址, 内容)` 顺序追加）。
+    /// Record of stores (`(address, content)` appended in order).
     pub stored: core::cell::RefCell<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>>,
 }
 
 impl FdSetIo for MemoryFdSetIo {
     fn fetch(&self, addr: u64, bytes: usize) -> Result<alloc::vec::Vec<u8>, i32> {
-        // 三个地址用约定区分（测试自己摆位图）：1=read、2=write、3=error。
+        // The three addresses are distinguished by convention (the test
+        // places its own bitmaps): 1=read, 2=write, 3=error.
         let src = match addr {
             1 => &self.read,
             2 => &self.write,

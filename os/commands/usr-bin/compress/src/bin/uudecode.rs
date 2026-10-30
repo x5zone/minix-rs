@@ -18,7 +18,7 @@
 //! component; the strict `"end"` / `"===="` footer check and the per-`readword`
 //! `short file` diagnostics are not reproduced (a malformed body simply stops
 //! the decoder); and real-machine file creation is gated by the writable-root
-//! work (`C-57`/E5) exactly like the other write-side commands — the code and
+//! work (`E5`) exactly like the other write-side commands — the code and
 //! its host-tested decoding are what this round delivers.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]

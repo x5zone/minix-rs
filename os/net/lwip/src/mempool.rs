@@ -77,7 +77,8 @@ pub struct SliceHandle(pub u32);
 ///
 /// The C pool has two buffer sizes (large and quarter-large,
 /// `mempool.c:116-123`); the split exists to pack a pbuf header next to
-/// each 512-byte data area. With the stack wall in place (24 篇 §1.5) the
+/// each 512-byte data area. With the stack wall in place
+/// (`rewrite-notes/17-stage-net/24-liblwip-port.md` §1.5) the
 /// server side keeps only data slices — the header-and-alignment packing
 /// belongs to whichever stack sits behind the wall — so one size remains,
 /// and the small slab kind is gone with it.
@@ -250,7 +251,8 @@ mod tests {
         assert_eq!(pool.capacity(), 2 * SLICES_PER_SLAB);
         handles.push(crossing);
 
-        // 补到全池四分之三线：512 + 256 = 768 片（1024 的四分之三）。
+        // Top up to the pool's three-quarter line: 512 + 256 = 768
+        // slices (three quarters of 1024).
         for _ in 0..(SLICES_PER_SLAB / 2) {
             handles.push(pool.alloc().expect("第二块 slab 配额内"));
         }
@@ -308,8 +310,10 @@ mod tests {
     #[should_panic(expected = "游离切片句柄")]
     fn test_free_rejects_a_stray_handle() {
         let mut pool = Pool::with_slab_limit(1);
-        // 从未分配过的越界句柄必须被拒绝：C 侧对非法释放无条件崩溃，
-        // 这里用不带条件编译的断言守住同一条不变量。
+        // An out-of-range handle that was never allocated must be
+        // rejected: C crashes unconditionally on an invalid free, and an
+        // assertion with no conditional compilation guards the same
+        // invariant here.
         pool.free(SliceHandle(SLICES_PER_SLAB + 1));
     }
 

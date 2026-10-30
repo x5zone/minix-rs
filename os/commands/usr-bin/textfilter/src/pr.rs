@@ -217,11 +217,13 @@ pub struct PrArgs<'a> {
 /// renders it), so the messages and exit codes match the old in-bin parser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrError {
-    /// 集外字母与带值选项缺值：`egetopt` 先印自己那一句（集外字母是
-    /// `illegal option -- <字母>`，`egetopt.c:144-151`；缺值是
-    /// `option requires an argument -- <字母>`，`:196-205`），然后 `setup` 返回 1、
-    /// `main` 再接上那三行 usage（`pr.c:156-157`）。注意措辞：`pr` 链的是自带的
-    /// `egetopt`，不是 libc 的 `getopt`，所以集外字母那一句与同族其它命令**不同形**。
+    /// Off-charset letter and missing value for a value-taking option: `egetopt` prints
+    /// its own sentence first (off-charset is `illegal option -- <letter>`,
+    /// `egetopt.c:144-151`; a missing value is `option requires an argument -- <letter>`,
+    /// `:196-205`), then `setup` returns 1 and `main` appends the three-line usage
+    /// (`pr.c:156-157`). Wording note: `pr` links its own `egetopt`, not libc's
+    /// `getopt`, so the off-charset sentence has a **different shape** from the other
+    /// commands of the family.
     Getopt(crate::GetoptReport),
     /// `+page` whose `atoi` is `< 1` (`pr.c:1658-1662`).
     PlusPage,
@@ -370,8 +372,8 @@ pub fn parse_pr_args<'a>(args: &'a [&'a [u8]]) -> Result<PrArgs<'a>, PrError> {
     let (mut out_char, mut out_gap) = (OCHAR, DEFAULT_GAP);
 
     // Take a required option value: the glued remainder of this token, else
-    // the next token (advancing `index`). 缺值要把那个字母交出去——`egetopt` 的那一句
-    // 带的是字母（`egetopt.c:196-205`）。
+    // the next token (advancing `index`). A missing value must hand out the letter —
+    // `egetopt`'s sentence carries the letter (`egetopt.c:196-205`).
     macro_rules! value {
         ($rest:expr, $index:ident, $letter:expr) => {{
             if !$rest.is_empty() {
@@ -1421,13 +1423,16 @@ mod tests {
         assert_eq!(contract_tabs(b"        x", b'\t', 0), b"        x".to_vec());
     }
 
-    /// 库里那一层的字节口径：`pr` 的选项环整个住在 `parse_pr_args`（与上一支 `nl` 相反），
-    /// 所以「值进输出」与「值进报文」这两条腿都必须在这里有牙，不能只靠端到端门。
-    /// 五个段：`-s` 的列分隔字节、`-n` 的行号后缀字节、`-h` 的标题字节、两句
-    /// `invalid value for -X %s` 的回显字节（`pr.c:1726-1729`、`:1757-1760`、`:1785-1788`），
-    /// 以及档名字节进页眉标题那一步（`prhead` 的 `fname`，`pr.h:59`、`pr.c:1511`）。
-    /// 裸字节在这里写成 `&b"\xff"[..]` 而不是字符串字面量——`&str` 字面量装不下一枚
-    /// 非 UTF-8 的字节，这正是要绕开的那条缝。
+    /// Byte-level contract of the library layer: `pr`'s whole option loop lives in
+    /// `parse_pr_args` (unlike its sibling `nl`), so both "value into output" and
+    /// "value into the message" legs need teeth here, not just end-to-end faces.
+    /// Five segments: `-s`'s column separator byte, `-n`'s line-number suffix byte,
+    /// `-h`'s title byte, the echoed bytes of the two `invalid value for -X %s`
+    /// sentences (`pr.c:1726-1729`, `:1757-1760`, `:1785-1788`), and the file-name
+    /// bytes entering the page header title (`prhead`'s `fname`, `pr.h:59`,
+    /// `pr.c:1511`). Raw bytes are written as `&b"\xff"[..]` here, not as string
+    /// literals — a `&str` literal cannot hold a non-UTF-8 byte, and that is exactly
+    /// the seam being bypassed.
     #[test]
     fn the_option_bytes_and_the_operand_bytes_stay_bytes_through_the_library() {
         let glued: Vec<&[u8]> = vec![b"-t", b"-2", b"-s\xff", b"-w", b"20"];
@@ -1443,7 +1448,7 @@ mod tests {
         let title = parse_pr_args(&glued).expect("-h<ff><fe>");
         assert_eq!(title.title_override, Some(&[0xffu8, 0xfe][..]));
 
-        // 回显位：C 那一句带的是 `eoptarg` 从游标起的**原字节**。
+        // Echo slot: C's sentence carries the **raw bytes** of `eoptarg` from the cursor onward.
         for (token, letter) in [(&b"-ex\xff"[..], 'e'), (&b"-sx\xff"[..], 's')] {
             let words: Vec<&[u8]> = vec![token];
             assert_eq!(
@@ -1452,52 +1457,63 @@ mod tests {
                 "{letter} 那一句的回显位该是原字节"
             );
         }
-        // 合法两字节序列只取首字节当值，剩下的那一枚进回显（`-s\xc3\xa9` ⇒ 分隔符 c3、回显 a9）。
+        // A valid two-byte sequence contributes only its first byte as the value; the
+        // remaining one goes into the echo (`-s\xc3\xa9` ⇒ separator c3, echo a9).
         let words: Vec<&[u8]> = vec![&b"-s\xc3\xa9"[..]];
         assert_eq!(
             parse_pr_args(&words).err(),
             Some(PrError::InvalidValue('s', vec![0xa9]))
         );
 
-        // 档名字节进页眉标题：`fname` 由 `prhead` 用 `%s` 打出去，不经任何字符解码。
+        // File-name bytes enter the page header title: `prhead` prints `fname` with
+        // `%s`, with no character decoding.
         let base = PrOptions::default();
         let files: Vec<(&[u8], Vec<Vec<u8>>)> = vec![(&b"raw\xffname"[..], vec![b"a".to_vec()])];
         let pages = paginate_files(&files, &base, None);
         assert_eq!(pages[0].header_lines[2], b"raw\xffname Page 1".to_vec());
     }
 
-    /// 夹具的 argv 取法：字面量仍写成 `&[&str]`，交回的是每枚词各自的**原字节切片**
-    /// （借自字面量，与薄壳 `args_bytes()` 交回的形状同层）。`PrArgs<'a>` 借的是这个
-    /// `Vec`，所以凡是结果要留着断言的调用都得先把它绑成一个变量
-    /// （`let w_x = argv(&[…]);` 再接 `parse_pr_args(&w_x)`），就地消费的形状才可以内联。
+    /// The fixture's argv extractor: literals are still written as `&[&str]`, but what
+    /// comes back is each word's **raw byte slice** (borrowed from the literal, the same
+    /// layer as the thin shell's `args_bytes()`). `PrArgs<'a>` borrows this `Vec`, so any
+    /// call whose result must survive for an assertion has to bind it to a variable first
+    /// (`let w_x = argv(&[…]);` then `parse_pr_args(&w_x)`); only shapes consumed in
+    /// place may be inlined.
     fn argv<'a>(words: &[&'a str]) -> Vec<&'a [u8]> {
         words.iter().map(|word| word.as_bytes()).collect()
     }
 
-    /// `-e` 与 `-i` 的字符位在 C 那里**符号性不同**，这一枚门钉的就是这个不对称：
-    /// `inln` 比的是 `int ch = getc(inf)`（字节的 0..=255）与 `int chk = (int)inchar`，
-    /// 而 `inchar` 是带符号的 `char`（`pr.c:87`、`:1038`、`:1049`），所以高位字节被提升成
-    /// 负数，**永远配不上任何输入字节**；`otln` 比的是 `*buf == ochar`，两边都是 `char`
-    /// （`:1165`），于是同一枚高位字节在输出侧照样命中。参数缝把这两支的值都换成原字节之后，
-    /// 这一对判据才第一次可观察——参照件 `tmp/pr-419/pr_ref` 现量：输入 `x\xffy` 配
-    /// `-e<ff>4` 交回 `78 ff 79`（不展开），配 `-i<ff>4` 的 `a\xff<四空格>b` 交回
-    /// `61 ff ff 62`（收缩成两枚 `ff`）。
+    /// The character slots of `-e` and `-i` are **signed differently** in C, and this
+    /// face pins that asymmetry: `inln` compares `int ch = getc(inf)` (byte values
+    /// 0..=255) with `int chk = (int)inchar`, while `inchar` is a signed `char`
+    /// (`pr.c:87`, `:1038`, `:1049`), so high bytes are promoted to negative numbers
+    /// and **never match any input byte**; `otln` compares `*buf == ochar` where both
+    /// sides are `char` (`:1165`), so the same high byte still matches on the output
+    /// side. Only after the argument seam switched both values to raw bytes did this
+    /// pair of predicates become observable — measured with the reference
+    /// `tmp/pr-419/pr_ref`: input `x\xffy` with `-e<ff>4` returns `78 ff 79` (no
+    /// expansion), while `a\xff<four spaces>b` with `-i<ff>4` returns `61 ff ff 62`
+    /// (contracted to two `ff`s).
     #[test]
     fn an_expansion_char_with_the_high_bit_set_matches_nothing_while_the_contraction_one_does() {
-        // -e 侧：字符带高位 ⇒ 没有一枚输入字节配得上，整条展开腿成为空操作。
+        // -e side: the character has the high bit ⇒ no input byte can match, making
+        // the whole expansion leg a no-op.
         assert_eq!(expand_tabs(b"x\xffy", 0xff, 4), b"x\xffy".to_vec());
         assert_eq!(expand_tabs(b"\xff\xff", 0xff, 8), b"\xff\xff".to_vec());
-        // 缺省那枚制表符（0x09，不带高位）不受影响——这一形同时是「没放宽」的控制形。
+        // The default tab (0x09, no high bit) is unaffected — this shape is also the
+        // "not relaxed" control.
         assert_eq!(expand_tabs(b"x\ty", b'\t', 4), b"x   y".to_vec());
-        // 高位字节作**输入内容**时它本来就不该被展开：只有字符位带高位才是空操作，
-        // 字符位是制表符而内容里有 `ff` 的那些字节原样通过。
+        // A high byte as **input content** should not be expanded anyway: only a high
+        // bit in the character slot makes it a no-op; when the character slot is a tab,
+        // bytes including `ff` pass through unchanged.
         assert_eq!(expand_tabs(b"\xff\tz", b'\t', 4), b"\xff   z".to_vec());
-        // -i 侧：同一枚高位字节命中（C 的两边都是 `char`），模拟 + 收缩都照走。
+        // -i side: the same high byte matches (both sides are `char` in C), so both the
+        // simulation and contraction run as usual.
         assert_eq!(
             contract_tabs(b"a\xff    b", 0xff, 4),
             b"a\xff\xffb".to_vec()
         );
-        // 零间距那一支仍然整段透传（C 的 `if (ogap)` 判据）。
+        // The zero-gap branch still passes the whole run through (C's `if (ogap)` predicate).
         assert_eq!(
             contract_tabs(b"a\xff    b", 0xff, 0),
             b"a\xff    b".to_vec()
@@ -2020,13 +2036,13 @@ mod tests {
 
     #[test]
     fn parse_defaults_and_basic_options() {
-        // 无参：默认 width 72、columns 1。
+        // No arguments: default width 72, columns 1.
         let w_d = argv(&[]);
         let d = parse_pr_args(&w_d).unwrap();
         assert_eq!(d.options.page_width, 72);
         assert_eq!(d.options.columns, 1);
         assert!(d.operands.is_empty());
-        // 现有分离值形式（回归）。
+        // Existing detached-value form (regression).
         let w_a = argv(&["-t", "-h", "T", "-l", "66", "-w", "100", "f1"]);
         let a = parse_pr_args(&w_a).unwrap();
         assert!(a.options.no_header);
@@ -2038,18 +2054,20 @@ mod tests {
 
     #[test]
     fn parse_glued_values_and_clusters_accepted() {
-        // 关键回归：附值与聚簇（旧前门拒）。`-w100 -l66 -o4`。
+        // Key regression: glued values and clusters (the old front door rejected them).
+        // `-w100 -l66 -o4`.
         let w_a = argv(&["-w100", "-l66", "-o4"]);
         let a = parse_pr_args(&w_a).unwrap();
         assert_eq!(a.options.page_width, 100);
         assert_eq!(a.options.page_len, 66);
         assert_eq!(a.options.offset, 4);
-        // `-hT`：附值标题。
+        // `-hT`: glued title.
         let w_b = argv(&["-hTitle", "f1", "f2"]);
         let b = parse_pr_args(&w_b).unwrap();
         assert_eq!(b.title_override, Some(b"Title".as_slice()));
         assert_eq!(b.operands, vec![b"f1".as_slice(), b"f2".as_slice()]);
-        // 聚簇：`-dm`（双行距+合并）、`-tw100`（无页眉后 w 取附值）。
+        // Clusters: `-dm` (double spacing + merge), `-tw100` (after no-header, `w` takes
+        // the glued value).
         let w_c = argv(&["-dm", "f"]);
         let c = parse_pr_args(&w_c).unwrap();
         assert!(c.options.double_space && c.merge);
@@ -2057,7 +2075,7 @@ mod tests {
         let e = parse_pr_args(&w_e).unwrap();
         assert!(e.options.no_header);
         assert_eq!(e.options.page_width, 100);
-        // `+N` 起始页、`-N` 竖列、`-n5`、`-sX`。
+        // `+N` start page, `-N` vertical columns, `-n5`, `-sX`.
         let w_f = argv(&["+3", "-n5", "-sX", "f"]);
         let f = parse_pr_args(&w_f).unwrap();
         assert_eq!(f.options.start_page, 3);
@@ -2068,12 +2086,15 @@ mod tests {
         assert_eq!(g.options.columns, 2);
     }
 
-    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
-    /// `char` 域里是 U+00C3。本支的字母来自 `parse_pr_args` 里的 `char::from(bytes[pos])`，机制层证据在
-    /// `minix3/usr.bin/pr/egetopt.c:110`（`eoptopt = (int)*place++` 一次进一个字节）与
-    /// `:148`（`%c` 原样写出），参照件 `tmp/pr-419/pr_ref` 现量 `-é` 与 `-dé` 都打单个
-    /// `303`（`d` 在 `"#adFfmrte?h:i?l:n?o:ps?T:w:"` 里不带值，聚簇继续吃到 `é` 的第一字节）。
-    /// 逐字节面门在 `tests/pr_face.rs`。
+    /// An off-charset letter reports the **first byte** after the dash, not the first
+    /// character: `-\u{e9}` (`c3 a9`) is U+00C3 in the `char` domain. The letter here
+    /// comes from `char::from(bytes[pos])` in `parse_pr_args`; the mechanism-level
+    /// evidence is `minix3/usr.bin/pr/egetopt.c:110` (`eoptopt = (int)*place++`, one
+    /// byte at a time) and `:148` (`%c` writes it raw); the reference
+    /// `tmp/pr-419/pr_ref` measures both `-é` and `-dé` printing a single `303` (`d`
+    /// takes no value in `"#adFfmrte?h:i?l:n?o:ps?T:w:"`, so the cluster keeps
+    /// consuming and reaches the first byte of `é`). The byte-wise face lives in
+    /// `tests/pr_face.rs`.
     #[test]
     fn the_illegal_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
@@ -2081,19 +2102,21 @@ mod tests {
             Some(PrError::Getopt(GetoptReport::IllegalOption('\u{00c3}'))),
             "`é` 是 c3 a9 两字节，egetopt 报 c3 而不是整个字符"
         );
-        // `d` 合法且不带值 ⇒ 聚簇继续吃到第一字节（参照件同读数）。
+        // `d` is legal and takes no value ⇒ the cluster keeps consuming and reaches the
+        // first byte (same reading from the reference).
         assert_eq!(
             parse_pr_args(&argv(&["-d\u{e9}"])).err(),
             Some(PrError::Getopt(GetoptReport::IllegalOption('\u{00c3}'))),
             "-d\u{e9}"
         );
-        // 环停在第一个坏字母上。
+        // The loop stops at the first bad letter.
         assert_eq!(
             parse_pr_args(&argv(&["-Z\u{e9}"])).err(),
             Some(PrError::Getopt(GetoptReport::IllegalOption('Z'))),
             "-Z\u{e9}"
         );
-        // 反面：带值字母把其后的字节整个当值收走（`w` 的值首位不是数字 ⇒ 自己那句）。
+        // Converse: a value-taking letter swallows all following bytes as its value
+        // (`w`'s value does not start with a digit ⇒ its own sentence).
         assert_eq!(
             parse_pr_args(&argv(&["-w\u{e9}"])).err(),
             Some(PrError::WidthValue),
@@ -2103,24 +2126,26 @@ mod tests {
 
     #[test]
     fn parse_error_paths() {
-        // 集外/未建模字母、缺值、C 为每个数值选项单写的判据消息、`-a` 与 `-m`
-        // 的组合拒绝。
+        // Off-charset/unmodelled letters, missing values, the dedicated predicate
+        // messages C writes for each numeric option, and the combined rejection of
+        // `-a` with `-m`.
         // `-e`/`-i` are modelled now, so an unimplemented letter has to come from the
         // rest of C's optstring; `-x` is not in it at all and answers usage.
         assert_eq!(
             parse_pr_args(&argv(&["-p"])).err(),
             Some(PrError::Unmodelled)
         );
-        // 集外字母与缺值各带一个 `egetopt` 报文（注意集外字母那一句的措辞与
-        // libc `getopt` 同族其它命令不同形：这里是 `illegal option`）。
+        // An off-charset letter and a missing value each carry an `egetopt` report (note
+        // the off-charset sentence has a different shape from the other family commands
+        // using libc `getopt`: here it is `illegal option`).
         assert_eq!(
             parse_pr_args(&argv(&["-w"])).err(),
             Some(PrError::Getopt(GetoptReport::MissingValue('w')))
-        ); // 缺值 ⇒ egetopt 那一句（egetopt.c:196-205）
+        ); // missing value ⇒ egetopt's sentence (egetopt.c:196-205)
         assert_eq!(
             parse_pr_args(&argv(&["-x"])).err(),
             Some(PrError::Getopt(GetoptReport::IllegalOption('x')))
-        ); // 集外字母 ⇒ egetopt.c:144-151
+        ); // off-charset letter ⇒ egetopt.c:144-151
         assert_eq!(
             parse_pr_args(&argv(&["-w0"])).err(),
             Some(PrError::WidthValue)
@@ -2128,7 +2153,7 @@ mod tests {
         assert_eq!(
             parse_pr_args(&argv(&["-w", "x"])).err(),
             Some(PrError::WidthValue)
-        ); // 首位非数字
+        ); // the first byte is not a digit
         assert_eq!(
             parse_pr_args(&argv(&["-o0"])).err(),
             Some(PrError::OffsetValue)

@@ -1,41 +1,51 @@
-//! `fsck.mfs` 的决定半：只读的文件系统一致性检测与报告。
+//! The deciding half of `fsck.mfs`: read-only file-system consistency checking
+//! and reporting.
 //!
-//! C 对应物：`minix3/minix/commands/fsck.mfs/fsck.c`（1675 行）。本模块
-//! 只做**检测与报告**：超块校验（`rw_super` fsck.c:561-599、`chksuper`
-//! fsck.c:602-655）、文件树走查（`chktree`/`descendtree`/`chkinode`/
-//! `chkmode`/`chkfile`/`chkzones`/`markzone` 与目录项检查族
-//! fsck.c:1021-1501）、位图对照（`chkmap`/`chkword` fsck.c:786-841——按
-//! 走查构造的"期望图"与盘上"实际图"逐位对比）、链接计数对账
-//! （`getcount`/`chkcount`/`counterror` fsck.c:866-908）、空闲 inode
-//! 清零检查（`chkilist` fsck.c:843-864）与总数报告（`printtotal`
-//! fsck.c:1503-1531）。`-l` 列表（`list` fsck.c:936-968）与 `-i`/`-z`
-//! 观察单（`fillbitmap` fsck.c:739-757）随走查提供。修复面
-//! （`repair`/`automatic` 的交互式修复）与 preen 并行**不在本模块**——
-//! `yes()` 问句与 `devwrite` 全部不出现，维持登记挂后批。
+//! C counterpart: `minix3/minix/commands/fsck.mfs/fsck.c` (1675 lines). This
+//! module only does **checking and reporting**: superblock validation
+//! (`rw_super` fsck.c:561-599, `chksuper` fsck.c:602-655), the file-tree walk
+//! (`chktree`/`descendtree`/`chkinode`/`chkmode`/`chkfile`/`chkzones`/
+//! `markzone` and the directory-entry check family, fsck.c:1021-1501), bitmap
+//! reconciliation (`chkmap`/`chkword` fsck.c:786-841 — the "expected map" built
+//! by the walk compared bit by bit against the on-disk "actual map"), link-count
+//! reconciliation (`getcount`/`chkcount`/`counterror` fsck.c:866-908), the
+//! free-inode zero check (`chkilist` fsck.c:843-864) and the totals report
+//! (`printtotal` fsck.c:1503-1531). The `-l` listing (`list` fsck.c:936-968) and
+//! the `-i`/`-z` watch lists (`fillbitmap` fsck.c:739-757) are provided
+//! alongside the walk. The repair face (`repair`/`automatic` interactive repair)
+//! and parallel preen are **not in this module** — the `yes()` question and
+//! `devwrite` do not appear at all, and keep their registration for a later
+//! batch.
 //!
-//! # 检查序（C `chkdev` fsck.c:1538-1614 的只读投影）
+//! # Check order (the read-only projection of C `chkdev` fsck.c:1538-1614)
 //!
 //! ```text
-//! 读超块 → 基础 sanity（magic/计数/几何）→ chksuper 深检
-//! → chktree 走查构造期望图与链接计数 → chkmap(zone) → chkcount
+//! read superblock → basic sanity (magic/counts/geometry) → chksuper deep check
+//! → chktree walk builds the expected maps and the link counts → chkmap(zone) → chkcount
 //! → chkmap(inode) → chkilist → printtotal
 //! ```
 //!
-//! # 立场与偏差（均已注记）
+//! # Stance and deviations (all annotated)
 //!
-//! - 只认第三版（`SUPER_V3`）：与服务器侧 `parse_superblock` 同一立场。
-//!   C 对 V2 的支持带宿主编译补丁（`block_size = 8192`，fsck.c:579-581），
-//!   V2 盘面本仓库不产出也不消费。
-//! - C `rw_super` 的 `s_firstdatazone <= 4` 检查（fsck.c:592）落在
-//!   in-memory 字段上——`read` 只填磁盘面 31 字节，该字段读到的是
-//!   超块块里的杂散字节。本模块把同一判据落在磁盘的 small 字段上
-//!   （`first_data_zone_small`），语义等价于"首数据区不得落在元数据区"。
-//! - 修复问句（`yes`）在只读模式恒"否"（fsck.c:263-266 本就如此）：
-//!   所有 remove/repair/adjust 分支不出现，检查照走、报告照发、盘面
-//!   零改动。
-//! - 宿主镜像整幅驻内存（`mkfs::build_image` 的对偶）：C 以一块缓存
-//!   流式读设备，镜像文件没有随机读问题；流式接缝（trait 抽象）留待
-//!   真机块设备面（E-FSBDEV）需要时再立。
+//! - Only the third superblock version is accepted (the `SUPER_` version-3
+//!   magic): the same stance as `parse_superblock` on the server side. C's
+//!   support for the older version carries a host-compilation patch
+//!   (`block_size = 8192`, fsck.c:579-581), and this repository neither produces
+//!   nor consumes such images. The magic numbers themselves live in
+//!   `crate::superblock`.
+//! - C `rw_super`'s `s_firstdatazone <= 4` check (fsck.c:592) lands on an
+//!   in-memory field — `read` fills only the 31 on-disk bytes, so that field
+//!   reads stray bytes from the superblock block. This module applies the same
+//!   test to the on-disk small field (`first_data_zone_small`), which is
+//!   semantically "the first data zone must not fall inside the metadata area".
+//! - The repair question (`yes`) is always "no" in read-only mode (fsck.c:263-266
+//!   already behaves that way): no remove/repair/adjust branch appears, checks
+//!   still run, reports still go out, and the disk image is untouched.
+//! - The host image is resident in memory as a whole (the dual of
+//!   `mkfs::build_image`): C streams the device through a block cache, while an
+//!   image file has no random-read problem; the streaming seam (a trait
+//!   abstraction) waits until the real-machine block-device face (E-FSBDEV)
+//!   needs it.
 
 use crate::inode::DiskInode;
 use crate::superblock::{
@@ -46,43 +56,49 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// 最大文件位置（C `MAX_FILE_POS`，minix/const.h:124：`0x7FFFFFFF`）。
+/// Maximum file position (C `MAX_FILE_POS`, minix/const.h:124: `0x7FFFFFFF`).
 const MAX_FILE_POS: i64 = 0x7FFF_FFFF;
 
-/// 位图报告的截断阈值（C `MAXPRINT`，fsck.c:67）：每 `MAXPRINT` 个
-/// 差异停一次逐条列出，之后只报总数。
+/// Truncation threshold of the bitmap report (C `MAXPRINT`, fsck.c:67): after
+/// every `MAXPRINT` differences it stops listing them one by one and reports only
+/// the total.
 pub const MAXPRINT: u64 = 80;
 
-/// 用法错误退出码（C `FSCK_EXIT_USAGE`，sbin/fsck/exitvalues.h）。
+/// Usage-error exit code (C `FSCK_EXIT_USAGE`, sbin/fsck/exitvalues.h).
 pub const EXIT_USAGE: i32 = 1;
-/// 检查失败退出码（C `FSCK_EXIT_CHECK_FAILED`，同上；`fatal()` 的出口）。
+/// Check-failed exit code (C `FSCK_EXIT_CHECK_FAILED`, same header; the exit of
+/// `fatal()`).
 pub const EXIT_CHECK_FAILED: i32 = 8;
 
-/// 一次读入的间接项数（C `CINDIR`，fsck.c:68）。
+/// Number of indirect entries read in one go (C `CINDIR`, fsck.c:68).
 const CINDIR: usize = 128;
-/// 区块级别数：`NLEVEL = NR_ZONE_NUMS - NR_DZONE_NUM + 1 = 4`
-/// （fsck.c:117；直连/单间/双间/盘上第 10 槽的"更间"位）。
+/// Number of zone levels: `NLEVEL = NR_ZONE_NUMS - NR_DZONE_NUM + 1 = 4`
+/// (fsck.c:117; direct / single-indirect / double-indirect / the "further
+/// indirect" slot at position 10 on disk).
 const ZONE_LEVELS: usize = 4;
-/// FIFO 类型位（C `I_NAMED_PIPE`，minix/const.h:111）。
+/// FIFO type bit (C `I_NAMED_PIPE`, minix/const.h:111).
 const TYPE_NAMED_PIPE: u32 = 0o010000;
-/// 符号链接目标长度上限（C `PATH_MAX`，sys/syslimits.h:64 的 1024；
-/// `chksymlinkzone` fsck.c:1175 的自洽判据）。
+/// Upper bound on a symlink target's length (C `PATH_MAX`, the 1024 in
+/// sys/syslimits.h:64; the self-consistency test of `chksymlinkzone`
+/// fsck.c:1175).
 const PATH_MAX_LIMIT: i32 = 1024;
-/// 链接计数上限（C `SHRT_MAX`；inode.rs 的 `LINK_CEILING` 同值）。
+/// Link-count ceiling (C `SHRT_MAX`; the same value as `LINK_CEILING` in
+/// inode.rs).
 const SHRT_MAX: u32 = crate::inode::LINK_CEILING;
-/// 目录走查的 `.` 在位旗标（C `DOT`，fsck.c:141）。
+/// The `.` presence flag of the directory walk (C `DOT`, fsck.c:141).
 const DOT: u8 = 1;
-/// 目录走查的 `..` 在位旗标（C `DOTDOT`，fsck.c:142）。
+/// The `..` presence flag of the directory walk (C `DOTDOT`, fsck.c:142).
 const DOTDOT: u8 = 2;
 
-/// 每块的位数（`FS_BITS_PER_BLOCK(b) = b * 8`，const.h:44 经
-/// `FS_BITMAP_CHUNKS` 折算：b/4 个 32 位字 × 32 位）。
+/// Bits per block (`FS_BITS_PER_BLOCK(b) = b * 8`, converted through
+/// `FS_BITMAP_CHUNKS` in const.h:44: b/4 32-bit words × 32 bits).
 fn bits_per_block(block_size: u64) -> u64 {
     block_size * 8
 }
 
-/// 位图占块数（C `bitmapsize`，libminlib/fslib.c：向上取整到整块）。
-/// 与 `mkfs` 的同名算式同源——那边是构建半、这边是校验半。
+/// Blocks occupied by a bitmap (C `bitmapsize`, libminlib/fslib.c: rounded up to
+/// whole blocks). From the same formula as the `mkfs` name — the build half there,
+/// the checking half here.
 fn bitmap_size(nr_bits: u64, block_size: u64) -> u64 {
     let per = bits_per_block(block_size);
     let blocks = nr_bits / per;
@@ -93,71 +109,82 @@ fn bitmap_size(nr_bits: u64, block_size: u64) -> u64 {
     }
 }
 
-/// 每块 inode 数（`INODES_PER_BLOCK(b) = b / 64`，const.h:39）。
+/// Inodes per block (`INODES_PER_BLOCK(b) = b / 64`, const.h:39).
 fn inodes_per_block(block_size: u64) -> u64 {
     block_size / crate::superblock::INODE_DISK_SIZE as u64
 }
 
-/// 校验通过后确立的文件系统几何——走查与位图对照的公共输入。
+/// The file-system geometry established once validation passes — the common
+/// input of the walk and the bitmap reconciliation.
 ///
-/// 字段对应 C `struct super_block` 的磁盘面加 `chksuper` 的两处重算
-/// （`s_firstdatazone`、期望 `max_size`）。
+/// The fields correspond to the on-disk face of C `struct super_block` plus
+/// `chksuper`'s two recomputations (`s_firstdatazone`, the expected `max_size`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SuperInfo {
-    /// 块大小（字节；V3 取自超块字段，fsck.c:584）。
+    /// Block size in bytes (the version-3 value comes from the superblock field,
+    /// fsck.c:584).
     pub block_size: u64,
-    /// 总区块数（`s_zones`）。
+    /// Total number of zones (`s_zones`).
     pub zones: u64,
-    /// 可用 inode 数（`s_ninodes`）。
+    /// Number of inodes in use (`s_ninodes`).
     pub inodes: u64,
-    /// inode 位图块数（`s_imap_blocks`）。
+    /// Number of inode bitmap blocks (`s_imap_blocks`).
     pub inode_map_blocks: u64,
-    /// 区块位图块数（`s_zmap_blocks`）。
+    /// Number of zone bitmap blocks (`s_zmap_blocks`).
     pub zone_map_blocks: u64,
-    /// inode 表块数（`N_ILIST`，fsck.c:107 的向上取整算式）。
+    /// Number of inode table blocks (`N_ILIST`, the round-up formula at
+    /// fsck.c:107).
     pub inode_table_blocks: u64,
-    /// 首数据区块号：`chksuper` 重算值与盘上 small 值核对后的采用值
-    /// （fsck.c:629-641；盘上为 0 时采用重算值，不一致时告警并从盘）。
+    /// First data zone number: the value adopted after reconciling `chksuper`'s
+    /// recomputation with the on-disk small value (fsck.c:629-641; when the disk
+    /// says 0 the recomputed value is used, and a mismatch warns and follows the
+    /// disk).
     pub first_data_zone: u64,
-    /// 每区块的块数对数（`s_log_zone_size`）。
+    /// Base-2 log of blocks per zone (`s_log_zone_size`).
     pub log_zone_size: u32,
-    /// 校验后的最大文件尺寸（盘上值或 C :642-646 的封顶算式）。
+    /// The validated maximum file size (the on-disk value, or C's capping formula
+    /// at :642-646).
     pub max_size: i64,
-    /// 清洁旗标（`MFSFLAG_CLEAN`）：preen 的跳过判据，本模块仅携带。
+    /// The clean flag (`MFSFLAG_CLEAN`): preen's skip criterion, carried here
+    /// only.
     pub clean: bool,
 }
 
 impl SuperInfo {
-    /// inode 表的首块号（`BLK_ILIST = 2 + imap + zmap`，fsck.c:114）。
+    /// First block of the inode table (`BLK_ILIST = 2 + imap + zmap`,
+    /// fsck.c:114).
     pub fn inode_table_block(&self) -> u64 {
         START_BLOCK + self.inode_map_blocks + self.zone_map_blocks
     }
 
-    /// 每区块的字节数（`ZONE_SIZE = block_size << log_zone_size`，
-    /// fsck.c:116 的 `ztob` 面）。
+    /// Bytes per zone (`ZONE_SIZE = block_size << log_zone_size`, the `ztob` face
+    /// of fsck.c:116).
     pub fn zone_bytes(&self) -> u64 {
         self.block_size << self.log_zone_size
     }
 }
 
-/// 致命错误：检查无法继续（C `fatal()`，fsck.c:241-246——打印消息、
-/// "fatal" 尾注、退出 [`EXIT_CHECK_FAILED`]）。
+/// A fatal error: the check cannot continue (C `fatal()`, fsck.c:241-246 — print
+/// the message, the "fatal" trailer, and exit [`EXIT_CHECK_FAILED`]).
 ///
-/// 多行时按 C 的输出序：前置明细行在前、`fatal()` 的短消息收尾。
+/// For multi-line messages the order is C's output order: the leading detail
+/// lines first, closing with `fatal()`'s short message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fatal {
-    /// 致命原因（可含前置明细的换行）。
+    /// The fatal reason (may contain newlines for leading detail lines).
     pub message: String,
 }
 
-/// 对照的位图种类（C `chkmap` 的 `type` 参数加两个调用点
-/// fsck.c:1586/:1588）。
+/// The kinds of bitmap being reconciled (C `chkmap`'s `type` argument plus its
+/// two call sites fsck.c:1586/:1588).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapKind {
-    /// inode 位图：块起点 [`START_BLOCK`]，报告号即 inode 号。
+    /// Inode bitmap: block start [`START_BLOCK`], the reported number is the
+    /// inode number.
     Inode,
-    /// 区块位图：块起点 `2 + imap_blocks`，报告号 = 位号 + 首数据区 - 1
-    /// （与 `markzone` 的位编号 `zno - FIRST + 1` 互逆，fsck.c:1223）。
+    /// Zone bitmap: block start `2 + imap_blocks`, reported number = bit number +
+    /// first data zone - 1 (the inverse of `markzone`'s bit numbering
+    /// `zno - FIRST + 1`, fsck.c:1223).
     Zone,
 }
 
@@ -183,7 +210,8 @@ impl MapKind {
         }
     }
 
-    /// 位号到报告号的平移（`chkmap` 的 `bit` 实参，fsck.c:1586/:1588）。
+    /// The shift from bit number to reported number (the `bit` argument of
+    /// `chkmap`, fsck.c:1586/:1588).
     fn first_reported(self, sup: &SuperInfo) -> u64 {
         match self {
             MapKind::Inode => 0,
@@ -192,96 +220,108 @@ impl MapKind {
     }
 }
 
-/// 走查选项（C 的 `-l`/`-i`/`-z` 旗标面；修复类旗标不在只读决定半）。
+/// Walk options (the `-l`/`-i`/`-z` flag face of C; the repair flags are not part
+/// of the read-only deciding half).
 #[derive(Debug, Clone, Default)]
 pub struct FsckOptions {
-    /// `-l`：走查途中逐 inode 列表（C `listing`）。
+    /// `-l`: list every inode during the walk (C `listing`).
     pub listing: bool,
-    /// `-i`：观察的 inode 号（C `ilist`；命中只提示，不判错）。
+    /// `-i`: inode numbers to watch (C `ilist`; a hit only notes it, no error).
     pub watch_inodes: Vec<u64>,
-    /// `-z`：观察的区块号（C `zlist`；命中只提示，不判错）。
+    /// `-z`: zone numbers to watch (C `zlist`; a hit only notes it, no error).
     pub watch_zones: Vec<u64>,
 }
 
-/// 一次完整检查的统计面（C `printtotal` 的数字来源）。
+/// The statistics face of one complete check (where C `printtotal` gets its
+/// numbers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FsckSummary {
-    /// 普通文件数（`nregular`）。
+    /// Regular files (`nregular`).
     pub nregular: u64,
-    /// 目录数（`ndirectory`）。
+    /// Directories (`ndirectory`).
     pub ndirectory: u64,
-    /// 块设备数（`nblkspec`）。
+    /// Block devices (`nblkspec`).
     pub nblkspec: u64,
-    /// 字符设备数（`ncharspec`）。
+    /// Character devices (`ncharspec`).
     pub ncharspec: u64,
-    /// 坏模式 inode 数（`nbadinode`）。
+    /// Inodes with a bad mode (`nbadinode`).
     pub nbadinode: u64,
-    /// FIFO 数（`npipe`）。
+    /// FIFOs (`npipe`).
     pub npipe: u64,
-    /// Unix 套接字数（`nsock`）。
+    /// Unix sockets (`nsock`).
     pub nsock: u64,
-    /// 符号链接数（`nsyml`）。
+    /// Symbolic links (`nsyml`).
     pub nsyml: u64,
-    /// 空闲 inode 数（`nfreeinode`，走查起点为总 inode 数）。
+    /// Free inodes (`nfreeinode`, which starts the walk at the total inode
+    /// count).
     pub nfreeinode: i64,
-    /// 空闲区块数（`nfreezone`，走查起点为数据区总数）。
+    /// Free zones (`nfreezone`, which starts the walk at the data-zone total).
     pub nfreezone: i64,
-    /// 按级别标到的区块数（`ztype[0..4]`：直连/单间/双间/更间）。
+    /// Zones marked per level (`ztype[0..4]`: direct / single / double / further
+    /// indirect).
     pub ztype: [u64; ZONE_LEVELS],
-    /// 发现的不一致总数（Rust 侧汇总；C 无单一计数器，只逐条报告）。
+    /// Total number of inconsistencies found (summed on the Rust side; C has no
+    /// single counter and only reports them one by one).
     pub errors: u64,
 }
 
-/// 走查的路径栈帧（C `struct stack`，fsck.c:133-137）。
+/// One path-stack frame of the walk (C `struct stack`, fsck.c:133-137).
 struct Frame {
-    /// 渲染后的名字（`printname` 语义：NUL 截断、不可打印转 `?`）。
+    /// The rendered name (`printname` semantics: truncate at NUL, render
+    /// non-printable bytes as `?`).
     name: String,
-    /// 本帧指向的 inode 号。
+    /// The inode number this frame points at.
     ino: u64,
-    /// `.`/`..` 在位旗标（`st_presence`）。
+    /// The `.`/`..` presence flags (`st_presence`).
     presence: u8,
 }
 
-/// `fsck.mfs` 检查器：持有一幅镜像与校验后的几何，逐相位产出消息。
+/// The `fsck.mfs` checker: holds one image and the validated geometry, and emits
+/// messages phase by phase.
 ///
-/// 消息（进度行、警告、不一致报告）按 C 的输出流序收进 [`Fsck::messages`]；
-/// 检查器不改镜像——修复面未在本模块。走查状态（期望图、链接计数、
-/// 路径栈）由 [`Fsck::run`] 初始化。
+/// Messages (progress lines, warnings, inconsistency reports) are collected into
+/// [`Fsck::messages`] in C's output-stream order; the checker never modifies the
+/// image — the repair face is not in this module. The walk state (expected maps,
+/// link counts, path stack) is initialised by [`Fsck::run`].
 pub struct Fsck<'a> {
     image: &'a [u8],
     sup: SuperInfo,
     messages: Vec<String>,
-    /// 走查构造的 inode 期望图（`imap`）。
+    /// The inode expected map built by the walk (`imap`).
     imap: Bitmap,
-    /// 走查构造的区块期望图（`zmap`）。
+    /// The zone expected map built by the walk (`zmap`).
     zmap: Bitmap,
-    /// 已访问目录表（`dirmap`：目录不得有第二链接）。
+    /// Table of visited directories (`dirmap`: a directory may not have a second
+    /// link).
     dirmap: Bitmap,
-    /// 观察单 inode 图（`spec_imap`）。
+    /// The watch-list inode map (`spec_imap`).
     spec_imap: Bitmap,
-    /// 观察单区块图（`spec_zmap`）。
+    /// The watch-list zone map (`spec_zmap`).
     spec_zmap: Bitmap,
-    /// 链接计数台账（`count[]`：每找到一个链接 +1，访问到 inode 减去
-    /// 盘上链接数，收尾应全零）。
+    /// Link-count ledger (`count[]`: +1 for every link found, minus the on-disk
+    /// link count when the inode is visited; it must be all zeros at the end).
     counts: Vec<i64>,
-    /// 路径栈（C 的 `ftop` 链）。
+    /// The path stack (C's `ftop` chain).
     path: Vec<Frame>,
-    /// 类型与空闲计数（`printtotal` 的数字面）。
+    /// Type and free counts (the numeric side of `printtotal`).
     stats: FsckSummary,
-    /// `-l` 列表开关。
+    /// The `-l` listing switch.
     listing: bool,
-    /// 列表头是否已印（C `firstlist`）。
+    /// Whether the listing header has been printed (C `firstlist`).
     firstlist: bool,
-    /// 计数错误表头是否已印（C `firstcnterr`）。
+    /// Whether the count-error header has been printed (C `firstcnterr`).
     firstcnterr: bool,
 }
 
 impl<'a> Fsck<'a> {
-    /// 读超块并做全部静态校验（C `rw_super` fsck.c:561-599 +
-    /// `chkdev` 的块大小下限 :1549-1550 + `chksuper` fsck.c:602-655）。
+    /// Read the superblock and run every static validation (C `rw_super`
+    /// fsck.c:561-599 + `chkdev`'s block-size lower bound :1549-1550 +
+    /// `chksuper` fsck.c:602-655).
     ///
-    /// 致命项直接拒检；非致命偏差（位图块数与算式不符、首数据区与
-    /// 重算值不符、最大尺寸与封顶算式不符）记为警告消息后继续。
+    /// Fatal items refuse the check outright; non-fatal deviations (bitmap block
+    /// counts disagreeing with the formula, first data zone disagreeing with the
+    /// recomputed value, max size disagreeing with the capping formula) become
+    /// warning messages and the check goes on.
     pub fn new(image: &'a [u8]) -> Result<Self, Fatal> {
         let at = SUPER_BLOCK_OFFSET;
         let disk = DiskSuperblock::from_bytes(&image[at..at + DiskSuperblock::STORED_BYTES])
@@ -295,8 +335,9 @@ impl<'a> Fsck<'a> {
             image,
             sup,
             messages,
-            // 走查状态在 run() 里按几何重建；位 0 恒置（allocbitmap
-            // 的 `*bitmap |= 1`，fsck.c:707）先立在这里。
+            // The walk state is rebuilt from the geometry in run(); bit 0 is
+            // always set (allocbitmap's `*bitmap |= 1`, fsck.c:707) and is put in
+            // place here already.
             imap: Bitmap::new(1),
             zmap: Bitmap::new(1),
             dirmap: Bitmap::new(1),
@@ -311,11 +352,14 @@ impl<'a> Fsck<'a> {
         })
     }
 
-    /// C `rw_super` 的 sanity 组加 `chksuper` 的深检组，按 C 的判定序。
-    /// 非致命偏差作为警告随几何一起返回。
+    /// C `rw_super`'s sanity group plus `chksuper`'s deep-check group, in C's
+    /// decision order. Non-fatal deviations are returned as warnings together with
+    /// the geometry.
     fn validate(disk: &DiskSuperblock, image_len: usize) -> Result<(SuperInfo, Vec<String>), Fatal> {
-        // 魔数：V1 直接拒（fsck.c:578）；V2 的支持带宿主编译补丁，
-        // 本仓库立场同服务器侧——只认 V3（模块文档§立场与偏差）。
+        // The magic number: the first version is refused outright (fsck.c:578);
+        // support for the second carries a host-compilation patch, and this
+        // repository takes the same stance as the server side — only the third
+        // version is accepted (see the module doc's stance and deviations).
         match disk.magic {
             MAGIC_V1 => {
                 return Err(Fatal {
@@ -336,7 +380,7 @@ impl<'a> Fsck<'a> {
         }
         let block_size = disk.block_size as u64;
         let mut warnings: Vec<String> = Vec::new();
-        // rw_super 的计数与几何 sanity（fsck.c:588-598）。
+        // rw_super's count and geometry sanity (fsck.c:588-598).
         if disk.inode_count == 0 {
             return Err(Fatal {
                 message: String::from("no inodes"),
@@ -357,8 +401,9 @@ impl<'a> Fsck<'a> {
                 message: String::from("no zmap"),
             });
         }
-        // C :592 的判据落在 in-memory 字段上（读到的是超块块杂散字节，
-        // 见模块文档§立场与偏差）；这里落在磁盘 small 字段上。
+        // C's test at :592 lands on an in-memory field (which reads stray bytes
+        // from the superblock block, see the module doc's stance and deviations);
+        // here it lands on the on-disk small field.
         if disk.first_data_zone_small != 0 && disk.first_data_zone_small <= 4 {
             return Err(Fatal {
                 message: String::from("first data zone too small"),
@@ -377,15 +422,16 @@ impl<'a> Fsck<'a> {
             ));
             max_size = i64::MAX;
         }
-        // chkdev 的块大小下限（fsck.c:1549-1550）。
+        // chkdev's block-size lower bound (fsck.c:1549-1550).
         if block_size < SUPER_BLOCK_OFFSET as u64 {
             return Err(Fatal {
                 message: String::from("funny block size"),
             });
         }
         let log_zone_size = disk.log_zone_size as u32;
-        // 每区块块数的对数：先上限后告警，再谈移位（fsck.c:625-628；
-        // block_nr 为 64 位，上限 64）。
+        // The base-2 log of blocks per zone: test the ceiling first, then warn,
+        // and only then talk about shifting (fsck.c:625-628; block_nr is 64-bit,
+        // so the ceiling is 64).
         if log_zone_size >= 64 {
             return Err(Fatal {
                 message: String::from("log_zone_size too large"),
@@ -403,11 +449,13 @@ impl<'a> Fsck<'a> {
         let inodes = disk.inode_count as u64;
         let zones = disk.zones as u64;
         let inode_table_blocks = inodes.div_ceil(inodes_per_block(block_size));
-        // chksuper：位图块数与算式对账（fsck.c:607-624）。
+        // chksuper: reconcile the bitmap block counts against the formula
+        // (fsck.c:607-624).
         let need_imap = bitmap_size(inodes + 1, block_size);
         if inode_map_blocks < need_imap {
             return Err(Fatal {
-                // C 原文把 blocks 拼成 "bocks"（fsck.c:611），按原样保留。
+                // C's original text misspells blocks as "bocks" (fsck.c:611) and
+                // that is kept verbatim.
                 message: format!(
                     "need {} bocks for inode bitmap; only have {}\ntoo few imap blocks",
                     need_imap, inode_map_blocks
@@ -432,7 +480,8 @@ impl<'a> Fsck<'a> {
                 need_zmap, zone_map_blocks
             ));
         }
-        // 首数据区：重算值与盘上 small 值对账（fsck.c:629-641）。
+        // First data zone: reconcile the recomputed value with the on-disk small
+        // value (fsck.c:629-641).
         let computed_first =
             (Self::blk_ilist(inode_map_blocks, zone_map_blocks) + inode_table_blocks + scale - 1)
                 >> log_zone_size;
@@ -458,8 +507,9 @@ impl<'a> Fsck<'a> {
         } else {
             computed_first
         };
-        // 最大文件尺寸封顶算式（fsck.c:642-646）：`MAX_FILE_POS` 起步，
-        // 盖不住 `MAX_ZONES` 个区块时按区块容量折算。
+        // The max-file-size capping formula (fsck.c:642-646): start from
+        // `MAX_FILE_POS`, and when that cannot cover `MAX_ZONES` zones, convert
+        // through the zone capacity.
         let max_zones = {
             let ind = block_size / 4;
             7 + ind + ind * ind
@@ -477,14 +527,17 @@ impl<'a> Fsck<'a> {
                 expected_max, max_size
             ));
         }
-        // 强制特性位：新格式的高位一律拒检（fsck.c:652-654）。
+        // Mandatory feature bits: any high bit of the new format refuses the
+        // check (fsck.c:652-654).
         if disk.flags & FLAG_MANDATORY_MASK != 0 {
             return Err(Fatal {
                 message: String::from("unsupported feature bits - newer fsck needed"),
             });
         }
-        // 宿主镜像的实在性检查（C 的对偶是设备读失败；镜像短于几何
-        // 意味着后续每一块读都是零填充噪声，直接拒检更诚实）。
+        // A reality check on the host image (C's counterpart is a failing device
+        // read; an image shorter than the geometry would make every later block
+        // read zero-filled noise, so refusing the check is the more honest
+        // answer).
         let wanted_bytes = ((zones as u128) << log_zone_size) * (block_size as u128);
         if (image_len as u128) < wanted_bytes {
             return Err(Fatal {
@@ -508,23 +561,26 @@ impl<'a> Fsck<'a> {
         ))
     }
 
-    /// `BLK_ILIST = 2 + imap + zmap`（fsck.c:114；这里只差 inode 表）。
+    /// `BLK_ILIST = 2 + imap + zmap` (fsck.c:114; only the inode table is missing
+    /// here).
     fn blk_ilist(inode_map_blocks: u64, zone_map_blocks: u64) -> u64 {
         START_BLOCK + inode_map_blocks + zone_map_blocks
     }
 
-    /// 校验后的几何。
+    /// The validated geometry.
     pub fn super_info(&self) -> &SuperInfo {
         &self.sup
     }
 
-    /// 至此累计的消息（进度行、警告、不一致报告），按流序。
+    /// The messages accumulated so far (progress lines, warnings, inconsistency
+    /// reports), in stream order.
     pub fn messages(&self) -> &[String] {
         &self.messages
     }
 
-    /// 超级块列表（C `lsuper` fsck.c:528-559 的只读半：修复问句与
-    /// 回写不在本模块，只列字段）。
+    /// The superblock listing (the read-only half of C `lsuper` fsck.c:528-559:
+    /// the repair question and the write-back are not in this module, so only the
+    /// fields are listed).
     pub fn list_super(&self) -> String {
         let at = SUPER_BLOCK_OFFSET;
         let disk = DiskSuperblock::from_bytes(&self.image[at..at + DiskSuperblock::STORED_BYTES]);
@@ -543,19 +599,22 @@ impl<'a> Fsck<'a> {
         )
     }
 
-    /// 位图对照（C `chkmap` fsck.c:813-841 的只读半）：`expected` 是
-    /// 按走查构造的期望图，盘上图逐位对账。
+    /// Bitmap reconciliation (the read-only half of C `chkmap` fsck.c:813-841):
+    /// `expected` is the expected map built by the walk, reconciled bit by bit
+    /// against the on-disk map.
     ///
-    /// 契约：`expected` 的位宽必须覆盖盘上图的全部整块
-    /// （`blocks * block_size * 8` 位）——C 的构造图按整块分配，比较
-    /// 遍历全部块，位图块尾部（inode 数以外的填充位）也参与对账。
-    /// 返回差异数（`nerr`）。
+    /// Contract: `expected` must be wide enough to cover every whole block of the
+    /// on-disk map (`blocks * block_size * 8` bits) — C's constructed map is
+    /// allocated per whole block and the comparison walks all blocks, so the tail
+    /// of a bitmap block (padding bits beyond the inode count) takes part in the
+    /// reconciliation as well. Returns the number of differences (`nerr`).
     pub fn check_bitmap(&mut self, kind: MapKind, expected: &Bitmap) -> u64 {
         compare_map(self.image, &self.sup, kind, expected, &mut self.messages)
     }
 
-    /// 从镜像读一字节（越界补零：C `devread` 读失败时零填充续走，
-    /// fsck.c:429-432；几何校验后正常到不了边界）。
+    /// Read bytes from the image (zero-filled past the end: C `devread` zero-fills
+    /// when a read fails and carries on, fsck.c:429-432; after the geometry check
+    /// the boundary is not normally reached).
     fn read_bytes(&self, at: u64, buf: &mut [u8]) {
         let at = at as usize;
         for (index, out) in buf.iter_mut().enumerate() {
@@ -563,7 +622,7 @@ impl<'a> Fsck<'a> {
         }
     }
 
-    /// 读一个 inode 记录（`inoblock`/`inooff` 的算式，fsck.c:657-665）。
+    /// Read one inode record (`inoblock`/`inooff` arithmetic, fsck.c:657-665).
     fn read_inode(&self, ino: u64) -> DiskInode {
         let isz = crate::superblock::INODE_DISK_SIZE as u64;
         let offset = (ino - 1) * isz;
@@ -571,7 +630,8 @@ impl<'a> Fsck<'a> {
         let at = block * self.sup.block_size + offset % self.sup.block_size;
         let mut buf = [0u8; crate::superblock::INODE_DISK_SIZE];
         self.read_bytes(at, &mut buf);
-        // 64 字节缓冲不可能短读；Corrupt 分支按全零盘面处理。
+        // A 64-byte buffer cannot be short-read; the Corrupt branch treats it as an
+        // all-zero on-disk record.
         DiskInode::from_bytes(&buf).unwrap_or(DiskInode {
             mode: 0,
             nlinks: 0,
@@ -585,14 +645,15 @@ impl<'a> Fsck<'a> {
         })
     }
 
-    /// 区块号到字节地址（`ztob(z) = z << log_zone_size` 后乘块大小，
-    /// fsck.c:99-100）。
+    /// Zone number to byte address (`ztob(z) = z << log_zone_size`, then times
+    /// the block size, fsck.c:99-100).
     fn zone_byte_at(&self, zno: u64) -> u64 {
         (zno << self.sup.log_zone_size) * self.sup.block_size
     }
 
-    /// 文件空洞的跨度（C `jump`，fsck.c:1262-1271：`ZONE_SIZE` 起，
-    /// 每级乘每区块的间接项数）。
+    /// The span of a file hole (C `jump`, fsck.c:1262-1271: start from
+    /// `ZONE_SIZE` and multiply by the per-block indirect entry count at each
+    /// level).
     fn jump(&self, level: u32) -> i64 {
         let mut power = self.sup.zone_bytes() as i64;
         for _ in 0..level {
@@ -601,8 +662,9 @@ impl<'a> Fsck<'a> {
         power
     }
 
-    /// 当前路径（C `printpath(0)`：根帧单独成 `/`，其余逐级 `/` 连接；
-    /// `printrec` fsck.c:354-361 的渲染）。
+    /// The current path (C `printpath(0)`: the root frame alone renders as `/`,
+    /// the rest are joined level by level with `/`; the rendering of `printrec`
+    /// fsck.c:354-361).
     fn path_none(&self) -> String {
         if self.path.len() <= 1 {
             return String::from("/");
@@ -615,7 +677,8 @@ impl<'a> Fsck<'a> {
         out
     }
 
-    /// 当前路径带开口括号（`printpath(1)`：`{路径} (ino = N, `）。
+    /// The current path with an open parenthesis (`printpath(1)`:
+    /// `{path} (ino = N, `).
     fn path_open(&self) -> String {
         format!(
             "{} (ino = {}, ",
@@ -624,7 +687,8 @@ impl<'a> Fsck<'a> {
         )
     }
 
-    /// 当前路径带闭括号（`printpath(2)`：`{路径} (ino = N)`）。
+    /// The current path with a closing parenthesis (`printpath(2)`:
+    /// `{path} (ino = N)`).
     fn path_full(&self) -> String {
         format!(
             "{} (ino = {})",
@@ -633,7 +697,7 @@ impl<'a> Fsck<'a> {
         )
     }
 
-    /// 区块报告的公共尾（C `errzone`，fsck.c:1196-1213）。
+    /// The common tail of a zone report (C `errzone`, fsck.c:1196-1213).
     fn errzone(&mut self, mess: &str, zno: u64, level: u32, pos: i64) {
         let kind = match level {
             0 => "DATA",
@@ -651,8 +715,8 @@ impl<'a> Fsck<'a> {
         ));
     }
 
-    /// 走查状态的建立（C `initvars` + `getbitmaps` + `fillbitmap` +
-    /// `getcount`，fsck.c:226-238/:766-784/:739-757/:866-870）。
+    /// Establish the walk state (C `initvars` + `getbitmaps` + `fillbitmap` +
+    /// `getcount`, fsck.c:226-238/:766-784/:739-757/:866-870).
     fn init_walk(&mut self, options: &FsckOptions) {
         let bs = self.sup.block_size;
         let imap_bits = self.sup.inode_map_blocks * bits_per_block(bs);
@@ -672,7 +736,8 @@ impl<'a> Fsck<'a> {
         self.listing = options.listing;
         self.firstlist = true;
         self.firstcnterr = true;
-        // 观察单：越界忽略并提示（fillbitmap 的 range 分支，fsck.c:749-754）。
+        // Watch lists: out-of-range entries are ignored with a note (fillbitmap's
+        // range branch, fsck.c:749-754).
         for &ino in &options.watch_inodes {
             if ino < 1 || ino > self.sup.inodes {
                 self.messages
@@ -691,20 +756,21 @@ impl<'a> Fsck<'a> {
         }
     }
 
-    /// 完整检查（C `chkdev` 只读投影的走查半，fsck.c:1556-1591 的序）：
-    /// 走查 → 区块图对账 → 计数对账 → inode 图对账 → 空闲表清零检查
-    /// → 总数。返回 [`FsckSummary`]；致命项（根非目录、符号链接超长）
-    /// 走 `Err`。
+    /// The complete check (the walk half of the read-only projection of C
+    /// `chkdev`, in the order of fsck.c:1556-1591): walk → zone bitmap
+    /// reconciliation → count reconciliation → inode bitmap reconciliation →
+    /// free-list zero check → totals. Returns [`FsckSummary`]; fatal items (a root
+    /// that is not a directory, an over-long symlink) go through `Err`.
     pub fn run(&mut self, options: &FsckOptions) -> Result<FsckSummary, Fatal> {
         self.init_walk(options);
-        // chktree（fsck.c:1490-1501）：伪目录项进根。
+        // chktree (fsck.c:1490-1501): a pseudo directory entry enters the root.
         let root_ok = self.descendtree(crate::superblock::ROOT_INODE_NUMBER, &[])?;
         if !root_ok {
             return Err(Fatal {
                 message: String::from("bad root inode"),
             });
         }
-        // C 的序：zone 图 → 计数 → inode 图 → 空闲表 → 总数。
+        // C's order: zone map → counts → inode map → free list → totals.
         let zerr = compare_map(
             self.image,
             &self.sup,
@@ -727,7 +793,7 @@ impl<'a> Fsck<'a> {
         Ok(self.stats)
     }
 
-    /// 链接计数对账（C `chkcount`，fsck.c:901-908）。
+    /// Link-count reconciliation (C `chkcount`, fsck.c:901-908).
     fn chkcount(&mut self) {
         for ino in 1..=self.sup.inodes {
             if self.counts[ino as usize] != 0 {
@@ -736,8 +802,9 @@ impl<'a> Fsck<'a> {
         }
     }
 
-    /// 单个 inode 的计数差报告（C `counterror`，fsck.c:873-892 的只读
-    /// 半：表头一次、回加盘上链接数、三列 `ino nlink 计数`）。
+    /// Report the count error of one inode (the read-only half of C
+    /// `counterror`, fsck.c:873-892: the header once, add the on-disk link count
+    /// back, three columns `ino nlink count`).
     fn counterror(&mut self, ino: u64) {
         if self.firstcnterr {
             self.messages
@@ -755,7 +822,8 @@ impl<'a> Fsck<'a> {
         self.stats.errors += 1;
     }
 
-    /// 空闲 inode 清零检查（C `chkilist`，fsck.c:843-864 的只读半）。
+    /// The free-inode zero check (the read-only half of C `chkilist`,
+    /// fsck.c:843-864).
     fn chkilist(&mut self) {
         self.messages.push(String::from("Checking inode list."));
         for ino in 1..=self.sup.inodes {
@@ -770,7 +838,8 @@ impl<'a> Fsck<'a> {
         }
     }
 
-    /// 总数报告（C `printtotal`，fsck.c:1503-1531 的非 preen 面）。
+    /// The totals report (C `printtotal`, the non-preen face of
+    /// fsck.c:1503-1531).
     fn printtotal(&mut self) {
         self.messages.push(format!(
             "blocksize = {:5}        zonesize  = {:5}",
@@ -814,8 +883,9 @@ impl<'a> Fsck<'a> {
         ));
     }
 
-    /// 走查入口（C `descendtree`，fsck.c:1454-1488 的只读半）：压栈、
-    /// 未访问则读 inode 检查、弹栈。`raw_name` 是目录项名字缓冲（可空）。
+    /// The walk entry (the read-only half of C `descendtree`, fsck.c:1454-1488):
+    /// push the frame, read and check the inode if not yet visited, pop the frame.
+    /// `raw_name` is the directory-entry name buffer (may be empty).
     fn descendtree(&mut self, ino: u64, raw_name: &[u8]) -> Result<bool, Fatal> {
         self.path.push(Frame {
             name: render_name(raw_name),
@@ -833,7 +903,8 @@ impl<'a> Fsck<'a> {
                 self.list_inode(ino, &inode);
             }
             if !visited && !self.chkinode(ino, &inode)? {
-                // 只读：remove 问句恒否，标注后继续。
+                // Read-only: the remove question is always "no", so note it and
+                // carry on.
                 self.spec_imap.set(ino);
             }
         }
@@ -841,7 +912,7 @@ impl<'a> Fsck<'a> {
         Ok(true)
     }
 
-    /// inode 检查（C `chkinode`，fsck.c:1427-1451）。
+    /// The inode check (C `chkinode`, fsck.c:1427-1451).
     fn chkinode(&mut self, ino: u64, inode: &DiskInode) -> Result<bool, Fatal> {
         if ino == crate::superblock::ROOT_INODE_NUMBER
             && inode.mode as u32 & crate::inode::TYPE_MASK != crate::inode::TYPE_DIRECTORY
@@ -876,7 +947,7 @@ impl<'a> Fsck<'a> {
         self.chkmode(ino, inode)
     }
 
-    /// 按类型分派（C `chkmode`，fsck.c:1391-1424）。
+    /// Dispatch by type (C `chkmode`, fsck.c:1391-1424).
     fn chkmode(&mut self, ino: u64, inode: &DiskInode) -> Result<bool, Fatal> {
         match inode.mode as u32 & crate::inode::TYPE_MASK {
             crate::inode::TYPE_REGULAR => {
@@ -918,8 +989,8 @@ impl<'a> Fsck<'a> {
         }
     }
 
-    /// 文件的区块走查（C `chkfile`，fsck.c:1313-1322）：七个直连槽
-    /// level 0，其余三槽 level 1..4。
+    /// The zone walk of a file (C `chkfile`, fsck.c:1313-1322): the seven direct
+    /// slots at level 0, the other three slots at levels 1..4.
     fn chkfile(&mut self, ino: u64, inode: &DiskInode) -> Result<bool, Fatal> {
         let mut pos: i64 = 0;
         let direct = inode.zones[..crate::inode::DIRECT_ZONES].to_vec();
@@ -932,8 +1003,9 @@ impl<'a> Fsck<'a> {
         Ok(ok)
     }
 
-    /// 区块列表走查（C `chkzones`，fsck.c:1292-1310）：洞跳过、标记
-    /// 失败跳过并记错、成功则进内容检查。
+    /// The walk over a zone list (C `chkzones`, fsck.c:1292-1310): holes are
+    /// skipped; a failed mark is skipped and counted as an error; on success the
+    /// content check follows.
     fn chkzones(
         &mut self,
         ino: u64,
@@ -956,8 +1028,9 @@ impl<'a> Fsck<'a> {
         Ok(ok)
     }
 
-    /// 区块标记（C `markzone`，fsck.c:1218-1239）：范围、重复、观察单
-    /// 命中三态，命中记入期望图并扣空闲计数。
+    /// Mark a zone (C `markzone`, fsck.c:1218-1239): three states — out of range,
+    /// duplicate, watch-list hit; a marked zone enters the expected map and
+    /// decrements the free count.
     fn markzone(&mut self, zno: u32, level: u32, pos: i64) -> bool {
         let zno = zno as u64;
         self.stats.ztype[level as usize] += 1;
@@ -975,14 +1048,14 @@ impl<'a> Fsck<'a> {
         }
         self.stats.nfreezone -= 1;
         if self.spec_zmap.test(bit) {
-            // 观察单命中：提示而非错误（C 只报不计）。
+            // Watch-list hit: a note, not an error (C reports it without counting).
             self.errzone("found", zno, level, pos);
         }
         self.zmap.set(bit);
         true
     }
 
-    /// 单区块内容分派（C `zonechk`，fsck.c:1276-1289）。
+    /// Dispatch on the content of one zone (C `zonechk`, fsck.c:1276-1289).
     fn zonechk(
         &mut self,
         ino: u64,
@@ -1008,8 +1081,8 @@ impl<'a> Fsck<'a> {
         }
     }
 
-    /// 间接区块走查（C `chkindzone`，fsck.c:1244-1257）：按 `CINDIR`
-    /// 分块读，位置越过文件尺寸即止。
+    /// The indirect-zone walk (C `chkindzone`, fsck.c:1244-1257): read in chunks
+    /// of `CINDIR` entries, stopping once the position passes the file size.
     fn chkindzone(
         &mut self,
         ino: u64,
@@ -1039,8 +1112,9 @@ impl<'a> Fsck<'a> {
         }
     }
 
-    /// 目录区块走查（C `chkdirzone`，fsck.c:1132-1166 的只读半）：
-    /// 逐项分派 [`Fsck::chkentry`]，尾尺寸大于 inode 尺寸报"未更新"。
+    /// The directory-zone walk (the read-only half of C `chkdirzone`,
+    /// fsck.c:1132-1166): dispatch entry by entry to [`Fsck::chkentry`], and
+    /// report "not updated" when the trailing size exceeds the inode size.
     fn chkdirzone(
         &mut self,
         ino: u64,
@@ -1063,7 +1137,8 @@ impl<'a> Fsck<'a> {
             if inum != crate::inode::NO_ENTRY as u32
                 && !self.chkentry(ino, entry_pos, inum as u64, &buf[4..])?
             {
-                // C 的 dirty 面只在修复时有意义；只读径直继续。
+                // C's dirty face only matters during repair; read-only carries
+                // straight on.
             }
             entry_pos += crate::inode::DIRECTORY_ENTRY_SIZE as i64;
             if inum != crate::inode::NO_ENTRY as u32 {
@@ -1079,9 +1154,9 @@ impl<'a> Fsck<'a> {
         Ok(true)
     }
 
-    /// 符号链接目标检查（C `chksymlinkzone`，fsck.c:1169-1194）：尺寸
-    /// 越过 PATH_MAX 是检查器自洽破坏（fatal）；NUL 位置与尺寸不符报
-    /// 坏尺寸。
+    /// The symlink-target check (C `chksymlinkzone`, fsck.c:1169-1194): a size
+    /// beyond PATH_MAX is a self-consistency break of the checker itself (fatal);
+    /// a NUL position disagreeing with the size is reported as a bad size.
     fn chksymlinkzone(
         &mut self,
         _ino: u64,
@@ -1108,7 +1183,8 @@ impl<'a> Fsck<'a> {
         Ok(true)
     }
 
-    /// 目录内容与 `.`/`..` 检查（C `chkdirectory`，fsck.c:1325-1342）。
+    /// The directory-content and `.`/`..` checks (C `chkdirectory`,
+    /// fsck.c:1325-1342).
     fn chkdirectory(&mut self, ino: u64, inode: &DiskInode) -> Result<bool, Fatal> {
         self.dirmap.set(ino);
         let mut ok = self.chkfile(ino, inode)?;
@@ -1128,8 +1204,8 @@ impl<'a> Fsck<'a> {
         Ok(ok)
     }
 
-    /// 符号链接整体检查（C `chklink`，fsck.c:1347-1361）：空链接与超
-    /// 块尺寸都报。
+    /// The whole-symlink check (C `chklink`, fsck.c:1347-1361): both an empty link
+    /// and an over-block size are reported.
     fn chklink(&mut self, ino: u64, inode: &DiskInode) -> Result<bool, Fatal> {
         let mut ok = self.chkfile(ino, inode)?;
         if inode.size <= 0 || inode.size > self.sup.block_size as i32 {
@@ -1148,8 +1224,8 @@ impl<'a> Fsck<'a> {
         Ok(ok)
     }
 
-    /// 设备文件检查（C `chkspecial`，fsck.c:1366-1388）：0 号设备非
-    /// 法，其余槽位必须清零。
+    /// The special-file check (C `chkspecial`, fsck.c:1366-1388): device number 0
+    /// is illegal, and every other slot must be zeroed.
     fn chkspecial(&mut self, _ino: u64, inode: &DiskInode) -> Result<bool, Fatal> {
         let mut ok = true;
         let path = self.path_full();
@@ -1174,8 +1250,10 @@ impl<'a> Fsck<'a> {
         Ok(ok)
     }
 
-    /// 目录项检查（C `chkentry`，fsck.c:1084-1127 的只读半）：inode 号
-    /// 范围、计数上限、`.`/`..` 对账、名字合法性、目录第二链接、递归。
+    /// The directory-entry check (the read-only half of C `chkentry`,
+    /// fsck.c:1084-1127): inode number range, count ceiling, `.`/`..`
+    /// reconciliation, name validity, a second link to a directory, and
+    /// recursion.
     fn chkentry(
         &mut self,
         dir_ino: u64,
@@ -1203,7 +1281,8 @@ impl<'a> Fsck<'a> {
                 path
             ));
             self.stats.errors += 1;
-            // 只读：Remove 问句恒否，计数照走。
+            // Read-only: the Remove question is always "no", so the count still
+            // advances.
         }
         self.counts[inum as usize] += 1;
         let name = cstr_bytes(raw_name);
@@ -1217,7 +1296,9 @@ impl<'a> Fsck<'a> {
             if let Some(frame) = self.path.last_mut() {
                 frame.presence |= DOTDOT;
             }
-            // 父目录号：根的 `..` 指根，其余取栈下一帧（fsck.c:1114-1115）。
+            // The parent directory number: the root's `..` points at the root,
+            // everything else takes the next frame down the stack
+            // (fsck.c:1114-1115).
             let expected = if dir_ino == crate::superblock::ROOT_INODE_NUMBER {
                 dir_ino
             } else {
@@ -1244,8 +1325,9 @@ impl<'a> Fsck<'a> {
         self.descendtree(inum, raw_name)
     }
 
-    /// `.`/`..` 指向与位置对账（C `chkdots`，fsck.c:1022-1053 的只读
-    /// 半）：指向错为错误，位置错为告警；三处观察单标注照发。
+    /// Reconcile `.`/`..` targets and positions (the read-only half of C `chkdots`,
+    /// fsck.c:1022-1053): a wrong target is an error, a wrong position a warning;
+    /// the three watch-list marks go out either way.
     fn chkdots(
         &mut self,
         dir_ino: u64,
@@ -1285,8 +1367,8 @@ impl<'a> Fsck<'a> {
         true
     }
 
-    /// 名字合法性（C `chkname`，fsck.c:1056-1079 的只读半）：空名与
-    /// 含 `/` 都报并标注目录。
+    /// Name validity (the read-only half of C `chkname`, fsck.c:1056-1079): both a
+    /// null name and one containing `/` are reported, and the directory is marked.
     fn chkname(&mut self, dir_ino: u64, raw_name: &[u8]) -> bool {
         if raw_name.first().copied().unwrap_or(0) == 0 {
             let path = self.path_none();
@@ -1311,8 +1393,8 @@ impl<'a> Fsck<'a> {
         true
     }
 
-    /// inode 列表行（C `list`，fsck.c:936-968）：类型字符、九位权限、
-    /// 链接数、尺寸或设备号、路径。
+    /// One inode listing line (C `list`, fsck.c:936-968): type character, nine
+    /// permission bits, link count, size or device number, path.
     fn list_inode(&mut self, ino: u64, inode: &DiskInode) {
         if self.firstlist {
             self.messages
@@ -1330,7 +1412,8 @@ impl<'a> Fsck<'a> {
             crate::inode::TYPE_SYMLINK => 'l',
             _ => '?',
         };
-        // printperm：九位权限，特殊位叠字（s/s/t）。
+        // printperm: nine permission bits, the special bits overlaid as letters
+        // (s/s/t).
         let mut perms = String::new();
         for (shift, special, overlay) in [
             (6u32, 0o4000u32, 's'),
@@ -1364,12 +1447,14 @@ impl<'a> Fsck<'a> {
     }
 }
 
-/// 位图对照核（C `chkmap` fsck.c:813-841 的逐位对账）：`expected` 与
-/// 盘上图逐位比对，`chkword` 语义报告（盘置/期清 → "missing"，盘清/
-/// 期置 → "not free"），MAXPRINT 截断。返回差异数。
+/// The bitmap reconciliation core (the bit-by-bit reconciliation of C `chkmap`
+/// fsck.c:813-841): `expected` is compared against the on-disk map bit by bit and
+/// reported with `chkword` semantics (on disk but not expected → "missing"; clear
+/// on disk but expected → "not free"), truncated by MAXPRINT. Returns the number of
+/// differences.
 ///
-/// 自由函数而非方法：`run` 里期望图与消息同为 `self` 字段，拆字段
-/// 借用在此汇总。
+/// A free function rather than a method: in `run` the expected map and the message
+/// vector are both `self` fields, and the split-field borrows are gathered here.
 fn compare_map(
     image: &[u8],
     sup: &SuperInfo,
@@ -1400,8 +1485,9 @@ fn compare_map(
             continue;
         }
         nerr += 1;
-        // C `chkword`：每第 MAXPRINT 个差异走静音支（该条不列），
-        // 之后只计数不列条；只读模式下列举停止后补 "etc."。
+        // C `chkword`: every MAXPRINT-th difference goes through the silent arm
+        // (that one is not listed); after that only counting happens. In read-only
+        // mode the listing ends with an "etc.".
         if nerr.is_multiple_of(MAXPRINT) {
             if report {
                 report = false;
@@ -1432,8 +1518,8 @@ fn compare_map(
     nerr
 }
 
-/// 目录项名字渲染（C `printname`，fsck.c:337-349：NUL 截断，不可打印
-/// 字符转 `?`）。
+/// Render a directory-entry name (C `printname`, fsck.c:337-349: truncate at NUL,
+/// turn non-printable bytes into `?`).
 fn render_name(raw: &[u8]) -> String {
     let mut out = String::new();
     for &byte in raw.iter().take(crate::inode::NAME_CAPACITY) {
@@ -1449,7 +1535,8 @@ fn render_name(raw: &[u8]) -> String {
     out
 }
 
-/// 名字缓冲的 C 串视图（到首个 NUL 为止，无 NUL 则全缓冲）。
+/// The C-string view of a name buffer (up to the first NUL, or the whole buffer
+/// when there is none).
 fn cstr_bytes(raw: &[u8]) -> &[u8] {
     let end = raw
         .iter()
@@ -1463,15 +1550,16 @@ mod tests {
     use super::*;
     use crate::mkfs::{build_image, plan_layout};
 
-    /// 64 块、64 inode、4096 字节块的基准镜像：imap/zmap/inode 表各
-    /// 一块，首数据区 5。
+    /// The baseline image: 64 blocks, 64 inodes, 4096-byte blocks — one block each
+    /// for the imap, the zmap and the inode table, with the first data zone at 5.
     fn base_image() -> (alloc::vec::Vec<u8>, crate::mkfs::MkfsPlan) {
         let plan = plan_layout(64, Some(64), 4096).unwrap();
         let image = build_image(&plan, 1_000).unwrap();
         (image, plan)
     }
 
-    /// 与基准镜像配套的期望图：位 0 恒置，根 inode 与根数据区占位 1。
+    /// The expected maps matching the baseline image: bit 0 is always set, and the
+    /// root inode and root data zone occupy position 1.
     fn expected_maps() -> (Bitmap, Bitmap) {
         let bits = 4096 * 8;
         let mut imap = Bitmap::new(bits);
@@ -1481,7 +1569,8 @@ mod tests {
         (imap, zmap)
     }
 
-    /// 取出致命错误（`unwrap_err` 需要 `Ok` 侧可调试，镜像不值得）。
+    /// Extract the fatal error (`unwrap_err` would require the `Ok` side to be
+    /// debuggable, and an image is not worth that).
     fn fatal_of(result: Result<Fsck, Fatal>) -> Fatal {
         match result {
             Err(fatal) => fatal,
@@ -1523,7 +1612,7 @@ mod tests {
     #[test]
     fn cleared_zone_bit_reports_not_free() {
         let (mut image, _plan) = base_image();
-        // 区块位图在第 3 块；清掉位 1（根数据区）。
+        // The zone bitmap is in block 3; clear bit 1 (the root data zone).
         let at = 3 * 4096;
         image[at] &= !0b10;
         let (_imap, zmap) = expected_maps();
@@ -1535,7 +1624,7 @@ mod tests {
     #[test]
     fn stray_zone_bit_reports_missing() {
         let (mut image, _plan) = base_image();
-        // 置一个空闲区块的位（位 7 → 区块 11）。
+        // Set the bit of a free zone (bit 7 → zone 11).
         let at = 3 * 4096;
         image[at] |= 0b1000_0000;
         let (_imap, zmap) = expected_maps();
@@ -1547,13 +1636,14 @@ mod tests {
     #[test]
     fn padding_bits_beyond_geometry_are_also_checked() {
         let (mut image, _plan) = base_image();
-        // 位图块尾部的填充位（位 32000，远超 64 个区块）也参与对账。
+        // The padding bits at the tail of the bitmap block (bit 32000, far beyond
+        // the 64 zones) take part in the reconciliation as well.
         let at = 3 * 4096 + (32000 / 8) as usize;
         image[at] |= 1 << (32000 % 8);
         let (_imap, zmap) = expected_maps();
         let mut fsck = Fsck::new(&image).unwrap();
         assert_eq!(fsck.check_bitmap(MapKind::Zone, &zmap), 1);
-        // 报告号 = 位号 + 首数据区 - 1 = 32000 + 4。
+        // Reported number = bit number + first data zone - 1 = 32000 + 4.
         assert!(fsck
             .messages()
             .contains(&String::from("zone 32004 is missing")));
@@ -1562,8 +1652,8 @@ mod tests {
     #[test]
     fn error_flood_truncates_listing_but_counts_all() {
         let (mut image, _plan) = base_image();
-        // 置 100 个杂散位（位 100..200）：前 79 条逐条列出，第 80 条
-        // 走静音支，之后只计数。
+        // Set 100 stray bits (bits 100..200): the first 79 are listed one by one,
+        // the 80th takes the silent arm, and after that only counting happens.
         for bit in 100u64..200 {
             let at = 3 * 4096 + (bit / 8) as usize;
             image[at] |= 1 << (bit % 8);
@@ -1586,10 +1676,11 @@ mod tests {
     #[test]
     fn small_error_count_has_no_summary() {
         let (mut image, _plan) = base_image();
-        // 两条差异（nerr ≤ 10 且 ≤ MAXPRINT）：不报总数（fsck.c:838）。
+        // Two differences (nerr ≤ 10 and ≤ MAXPRINT): no total is reported
+        // (fsck.c:838).
         let at = 3 * 4096;
-        image[at] |= 0b0001_0000; // 位 4 → 区块 8
-        image[at] |= 0b0010_0000; // 位 5 → 区块 9
+        image[at] |= 0b0001_0000; // bit 4 → zone 8
+        image[at] |= 0b0010_0000; // bit 5 → zone 9
         let (_imap, zmap) = expected_maps();
         let mut fsck = Fsck::new(&image).unwrap();
         assert_eq!(fsck.check_bitmap(MapKind::Zone, &zmap), 2);
@@ -1599,7 +1690,8 @@ mod tests {
             .any(|m| m.contains("errors found.")));
     }
 
-    /// 改写超块字段的助手：重建 31 字节磁盘面并写回镜像。
+    /// Helper that rewrites superblock fields: rebuild the 31 on-disk bytes and
+    /// write them back into the image.
     fn rewrite_super(image: &mut [u8], patch: impl FnOnce(&mut DiskSuperblock)) {
         let at = SUPER_BLOCK_OFFSET;
         let mut sup =
@@ -1642,7 +1734,7 @@ mod tests {
     #[test]
     fn zero_counters_are_fatal() {
         for (field, message) in [
-            //（字段名，rw_super 的短消息）
+            // (field name, rw_super's short message)
             ("inodes", "no inodes"),
             ("zones", "no zones"),
         ] {
@@ -1679,7 +1771,8 @@ mod tests {
     #[test]
     fn too_few_imap_blocks_fatal_names_the_arithmetic() {
         let (mut image, _plan) = base_image();
-        // 200_000 个 inode 需要 ceil(200_001/32768) = 7 块位图，只有 1 块。
+        // 200_000 inodes need ceil(200_001/32768) = 7 bitmap blocks, but only 1 is
+        // present.
         rewrite_super(&mut image, |sup| sup.inode_count = 200_000);
         assert_eq!(
             fatal_of(Fsck::new(&image)),
@@ -1694,8 +1787,9 @@ mod tests {
     #[test]
     fn surplus_imap_blocks_warn_but_pass() {
         let (mut image, _plan) = base_image();
-        // imap 多一块：inode 表整体后移，首数据区重算值变 6——盘上
-        // small 值同步改到 6，只剩位图块数一条警告。
+        // One extra imap block: the inode table shifts, so the recomputed first
+        // data zone becomes 6 — the on-disk small value is moved to 6 along with
+        // it, leaving only the bitmap-block-count warning.
         rewrite_super(&mut image, |sup| {
             sup.inode_map_blocks = 2;
             sup.first_data_zone_small = 6;
@@ -1712,7 +1806,7 @@ mod tests {
     #[test]
     fn first_data_zone_bounds_are_fatal() {
         let (mut image, _plan) = base_image();
-        // old >= zones（fsck.c:631-632）。
+        // old >= zones (fsck.c:631-632).
         rewrite_super(&mut image, |sup| sup.first_data_zone_small = 64);
         assert_eq!(
             fatal_of(Fsck::new(&image)),
@@ -1720,7 +1814,7 @@ mod tests {
                 message: String::from("first data zone too large")
             }
         );
-        // old <= 4（rw_super 判据，落在磁盘 small 字段上）。
+        // old <= 4 (rw_super's test, landing on the on-disk small field).
         rewrite_super(&mut image, |sup| sup.first_data_zone_small = 3);
         assert_eq!(
             fatal_of(Fsck::new(&image)),
@@ -1728,7 +1822,8 @@ mod tests {
                 message: String::from("first data zone too small")
             }
         );
-        // old < 重算值：128 inode 的布局首数据区是 6，old=5 落在 inode 表里。
+        // old < the recomputed value: with 128 inodes the layout's first data zone
+        // is 6, so old=5 falls inside the inode table.
         let mut plan = plan_layout(64, Some(64), 4096).unwrap();
         plan.inodes = 128;
         let mut image = build_image(&plan, 1_000).unwrap();
@@ -1744,7 +1839,8 @@ mod tests {
     #[test]
     fn first_data_zone_mismatch_warns_and_keeps_disk_value() {
         let (mut image, _plan) = base_image();
-        // 布局允许的更靠后首数据区：警告并采用盘上值（fsck.c:635-640）。
+        // A later first data zone that the layout allows: warn and adopt the
+        // on-disk value (fsck.c:635-640).
         rewrite_super(&mut image, |sup| sup.first_data_zone_small = 6);
         let fsck = Fsck::new(&image).unwrap();
         assert_eq!(fsck.super_info().first_data_zone, 6);
@@ -1833,10 +1929,11 @@ mod tests {
         assert!(text.contains("flags         = CLEAN"));
     }
 
-    // ---- 批二：走查、计数与目录检查 ----
+    // ---- Part two: the walk, the counts and the directory checks ----
     //
-    // 基准布局（64 块、64 inode、4096 字节）：imap 在块 2、zmap 在块 3、
-    // inode 表在块 4、首数据区 5。根 inode 是 1 号，根目录数据区是 5。
+    // Baseline layout (64 blocks, 64 inodes, 4096 bytes): imap in block 2, zmap
+    // in block 3, inode table in block 4, first data zone 5. The root is inode 1
+    // and the root directory's data zone is 5.
 
     const IMAP_BLOCK: u64 = 2;
     const ZMAP_BLOCK: u64 = 3;
@@ -1865,7 +1962,8 @@ mod tests {
         image[at..at + 64].fill(0);
     }
 
-    /// 目录 inode 的标准形状（`.`/`..` 两条目起）。
+    /// The standard shape of a directory inode (starting from the `.`/`..`
+    /// entries).
     fn dir_inode(nlinks: u16, size: i32, zone: u64) -> DiskInode {
         DiskInode {
             mode: (crate::inode::TYPE_DIRECTORY | 0o777) as u16,
@@ -1884,7 +1982,7 @@ mod tests {
         }
     }
 
-    /// 普通文件 inode。
+    /// A regular-file inode.
     fn file_inode(nlinks: u16, size: i32, zones: &[u32]) -> DiskInode {
         let mut inode = DiskInode {
             mode: (crate::inode::TYPE_REGULAR | 0o644) as u16,
@@ -1913,7 +2011,8 @@ mod tests {
         assert_eq!(summary.nfreeinode, 63);
         assert_eq!(summary.nfreezone, 58, "64 - 首数据区 5 - 根占 1");
         assert_eq!(summary.ztype, [1, 0, 0, 0]);
-        // 检查序的进度行与总数表都在。
+        // Both the progress lines of the check order and the totals table are
+        // present.
         assert!(fsck
             .messages()
             .contains(&String::from("Checking zone map.")));
@@ -1940,7 +2039,8 @@ mod tests {
     #[test]
     fn link_count_mismatch_is_tallied() {
         let (mut image, _plan) = base_image();
-        // 文件 f（inode 2）盘上链接数 2，目录里只有一个入口。
+        // File f (inode 2) has an on-disk link count of 2 but only one entry in
+        // the directory.
         write_inode(
             &mut image,
             1,
@@ -1955,7 +2055,7 @@ mod tests {
         assert!(fsck
             .messages()
             .contains(&String::from("INODE NLINK COUNT")));
-        // 三列：ino、盘上链接数、目录里找到的入口数。
+        // Three columns: ino, on-disk link count, entries found in directories.
         assert!(fsck
             .messages()
             .contains(&String::from("    2     2     1")));
@@ -1983,7 +2083,8 @@ mod tests {
         assert!(fsck
             .messages()
             .contains(&String::from(".. missing in / (ino = 1)")));
-        // `.` 仍在而 `..` 缺席：根的计数差一条。
+        // `.` is still there while `..` is missing: the root's count is off by
+        // one.
         assert!(summary.errors >= 2);
     }
 
@@ -2004,7 +2105,8 @@ mod tests {
     #[test]
     fn duplicate_zone_reported() {
         let (mut image, _plan) = base_image();
-        // 两个文件共指根的数据区 5：第二个走查时撞重复。
+        // Two files both point at the root's data zone 5: the second walk hits a
+        // duplicate.
         write_inode(&mut image, 1, &dir_inode(2, 4 * 64, FIRST_ZONE));
         write_inode(&mut image, 2, &file_inode(1, 100, &[5]));
         write_inode(&mut image, 3, &file_inode(1, 100, &[5]));
@@ -2022,7 +2124,8 @@ mod tests {
     #[test]
     fn link_to_directory_reported() {
         let (mut image, _plan) = base_image();
-        // 子目录 d（inode 2）+ 第二入口 hard：目录不得有第二链接。
+        // Subdirectory d (inode 2) plus a second entry "hard": a directory may not
+        // have a second link.
         write_inode(&mut image, 1, &dir_inode(3, 4 * 64, FIRST_ZONE));
         write_inode(&mut image, 2, &dir_inode(2, 2 * 64, 6));
         write_entry(&mut image, FIRST_ZONE, 2, b"d", 2);
@@ -2030,7 +2133,7 @@ mod tests {
         write_entry(&mut image, 6, 0, b".", 2);
         write_entry(&mut image, 6, 1, b"..", 1);
         set_map_bit(&mut image, IMAP_BLOCK, 2);
-        set_map_bit(&mut image, ZMAP_BLOCK, 2); // 数据区 6 → 位 2
+        set_map_bit(&mut image, ZMAP_BLOCK, 2); // data zone 6 → bit 2
         let mut fsck = Fsck::new(&image).unwrap();
         fsck.run(&FsckOptions::default()).unwrap();
         assert!(fsck.messages().contains(&String::from(
@@ -2055,7 +2158,7 @@ mod tests {
         let (mut image, _plan) = base_image();
         write_inode(&mut image, 1, &dir_inode(2, 3 * 64, FIRST_ZONE));
         let mut bad = file_inode(1, 0, &[]);
-        bad.mode = 0o160644; // 类型位 160000 不属任何已知类型
+        bad.mode = 0o160644; // type bits 160000 match no known type
         write_inode(&mut image, 2, &bad);
         write_entry(&mut image, FIRST_ZONE, 2, b"f", 2);
         set_map_bit(&mut image, IMAP_BLOCK, 2);
@@ -2076,8 +2179,8 @@ mod tests {
         write_inode(&mut image, 2, &link);
         write_entry(&mut image, FIRST_ZONE, 2, b"l", 2);
         set_map_bit(&mut image, IMAP_BLOCK, 2);
-        set_map_bit(&mut image, ZMAP_BLOCK, 2); // 数据区 6
-        // 目标内容 "hel\0lo"：NUL 在 3，尺寸却是 5。
+        set_map_bit(&mut image, ZMAP_BLOCK, 2); // data zone 6
+        // Target content "hel\0lo": the NUL is at 3 while the size says 5.
         let at = (6 * 4096) as usize;
         image[at..at + 6].copy_from_slice(b"hel\0lo");
         let mut fsck = Fsck::new(&image).unwrap();
@@ -2106,7 +2209,7 @@ mod tests {
 
     #[test]
     fn special_file_checks() {
-        // 合法字符设备：干净，计入 ncharspec。
+        // A legal character device: clean, counted in ncharspec.
         let (mut image, _plan) = base_image();
         write_inode(&mut image, 1, &dir_inode(2, 3 * 64, FIRST_ZONE));
         let mut dev = file_inode(1, 0, &[]);
@@ -2127,7 +2230,8 @@ mod tests {
         assert!(fsck.messages().contains(&String::from(
             "     2 crw-rw----   1    4, 5 /null"
         )));
-        // 非法 0 号设备 + 残留区块号：两条都报。
+        // An illegal device number 0 plus a leftover zone number: both are
+        // reported.
         let (mut image, _plan) = base_image();
         write_inode(&mut image, 1, &dir_inode(2, 3 * 64, FIRST_ZONE));
         let mut dev = file_inode(1, 0, &[]);
@@ -2173,7 +2277,8 @@ mod tests {
                 ..FsckOptions::default()
             })
             .unwrap();
-        // 观察单命中是提示：根数据区被标到时报 "found"，不记错。
+        // A watch-list hit is a note: marking the root data zone reports "found"
+        // without counting an error.
         assert!(fsck.messages().contains(&String::from(
             "found zone in / (ino = 1, zno = 5, type = DATA, pos = 0)"
         )));
@@ -2186,7 +2291,8 @@ mod tests {
     #[test]
     fn size_not_updated_reported() {
         let (mut image, _plan) = base_image();
-        // 根的尺寸记成一条目，实际有两条：尾尺寸越过字段值。
+        // The root's size records one entry while there are actually two: the
+        // trailing size passes the field's value.
         write_inode(&mut image, 1, &dir_inode(2, 64, FIRST_ZONE));
         let mut fsck = Fsck::new(&image).unwrap();
         fsck.run(&FsckOptions::default()).unwrap();
@@ -2197,14 +2303,15 @@ mod tests {
 
     #[test]
     fn indirect_zone_walk_clean_and_tampered() {
-        // 干净面：单间区块 7 指数据区 6，期望图与计数都对上。
+        // The clean face: single-indirect zone 7 points at data zone 6, and both
+        // the expected map and the counts agree.
         let (mut image, _plan) = base_image();
         write_inode(&mut image, 1, &dir_inode(2, 3 * 64, FIRST_ZONE));
         write_inode(&mut image, 2, &file_inode(1, 100, &[0, 0, 0, 0, 0, 0, 0, 7]));
         write_entry(&mut image, FIRST_ZONE, 2, b"f", 2);
         set_map_bit(&mut image, IMAP_BLOCK, 2);
-        set_map_bit(&mut image, ZMAP_BLOCK, 2); // 数据区 6
-        set_map_bit(&mut image, ZMAP_BLOCK, 3); // 间区块 7
+        set_map_bit(&mut image, ZMAP_BLOCK, 2); // data zone 6
+        set_map_bit(&mut image, ZMAP_BLOCK, 3); // indirect zone 7
         let indirect_at = (7 * 4096) as usize;
         image[indirect_at..indirect_at + 4].copy_from_slice(&6u32.to_le_bytes());
         let mut fsck = Fsck::new(&image).unwrap();
@@ -2212,7 +2319,8 @@ mod tests {
         assert_eq!(summary.errors, 0);
         assert_eq!(summary.ztype, [2, 1, 0, 0], "根数据区与文件数据区两级 0，间区块一级 1");
         assert_eq!(summary.nfreezone, 56, "58 - 数据区 6 - 间区块 7");
-        // 篡改面：间区块指到 999（越界走递归的 level 0 报告）。
+        // The tampered face: the indirect zone points at 999 (out of range, so the
+        // recursive level-0 report fires).
         let (mut image, _plan) = base_image();
         write_inode(&mut image, 1, &dir_inode(2, 3 * 64, FIRST_ZONE));
         write_inode(&mut image, 2, &file_inode(1, 4096, &[0, 0, 0, 0, 0, 0, 0, 7]));
@@ -2224,7 +2332,8 @@ mod tests {
         let mut fsck = Fsck::new(&image).unwrap();
         fsck.run(&FsckOptions::default()).unwrap();
         assert!(fsck.messages().contains(&String::from(
-            // 前七个直连槽都是洞：pos 已按每洞一个区块跳到 28672。
+            // The first seven direct slots are holes: pos has already jumped a
+            // whole zone per hole, to 28672.
             "out-of-range zone in /f (ino = 2, zno = 999, type = DATA, pos = 28672)"
         )));
     }
@@ -2248,8 +2357,9 @@ mod tests {
 
     #[test]
     fn orphan_allocated_inode_flagged_by_maps_and_ilist() {
-        // 只有位图位、无模式无入口：图对照报 missing，空闲表不报
-        // （模式为零本就是清零态）。
+        // A bitmap bit with no mode and no entry: the map reconciliation reports
+        // missing, while the free-list check does not (a zero mode is already the
+        // cleared state).
         let (mut image, _plan) = base_image();
         set_map_bit(&mut image, IMAP_BLOCK, 2);
         let mut fsck = Fsck::new(&image).unwrap();
@@ -2261,7 +2371,7 @@ mod tests {
             .messages()
             .iter()
             .any(|m| m.contains("not cleared")));
-        // 再补一个非零模式：空闲表也报 not cleared。
+        // Now add a nonzero mode: the free-list check reports not cleared too.
         let (mut image, _plan) = base_image();
         set_map_bit(&mut image, IMAP_BLOCK, 2);
         write_inode(&mut image, 2, &file_inode(1, 0, &[]));

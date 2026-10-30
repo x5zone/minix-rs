@@ -12,7 +12,8 @@ use minix_types::{DevId, Endpoint, NO_DEV};
 use alloc::boxed::Box;
 use alloc::string::String;
 
-/// `NR_MNTS` — C `const.h:7` `#define NR_MNTS 16`（首轮误记 8，与 stadir.rs 的 16 分叉，Fix #33 统一） (`const.h:NR_MNTS` 8).
+/// `NR_MNTS` — C `const.h:7` `#define NR_MNTS 16` (an early pass recorded 8,
+/// diverging from stadir.rs's 16; now unified) (`const.h:NR_MNTS` 8).
 pub const NR_MNTS: usize = 16;
 
 /// `VmntId` — index into `VmntTable::slots`.
@@ -123,10 +124,12 @@ impl VmntLock {
     }
 }
 
-/// `m_stats` 的缓存字段（C `struct statvfs` 里由 FS 填的那 17 个）。
+/// The cached fields of `m_stats` (the 17 that the FS fills in for C's
+/// `struct statvfs`).
 ///
-/// 只缓存 FS 侧的统计量；`f_flag` 的只读位、`f_fsid`、三个名字这些**本地
-/// 字段**每次现算（`fill_statvfs` 就是这么做的）。
+/// Only the FS-side statistics are cached; the `f_flag` read-only bits,
+/// `f_fsid`, and the three names—the **local fields**—are computed fresh every
+/// time (that is what `fill_statvfs` does).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VmntStats {
     pub f_flag: u64,
@@ -160,9 +163,10 @@ pub struct Vmnt {
     pub fs_flags: u32,
     pub mounted_on: Option<usize>, // VnodeId index placeholder
     pub root: Option<usize>,
-    /// `m_stats`（C vmnt.h:16）——`statvfs` 的缓存（`update_statvfs` 在每次
-    /// 从 FS 取到新数据后逐字段存下来；`ST_NOWAIT` 的调用直接用它，不再打扰
-    /// FS）。字段与 `struct statvfs` 里 FS 负责的那 17 个一一对应。
+    /// `m_stats` (C vmnt.h:16) — the `statvfs` cache (`update_statvfs` stores it
+    /// field by field after each fresh fetch from the FS; a `ST_NOWAIT` call
+    /// uses it directly and does not bother the FS). The fields correspond
+    /// one-to-one with the 17 the FS owns in `struct statvfs`.
     pub stats: VmntStats,
     pub label: String,
     pub mount_path: String,
@@ -260,7 +264,8 @@ impl VmntTable {
         None
     }
 
-    /// 已挂 `dev` 的行（`mount_fs` 的 `EBUSY` 扫描，`mount.c:190-196`）。
+    /// The rows with `dev` mounted (the `EBUSY` scan of `mount_fs`,
+    /// `mount.c:190-196`).
     pub fn find_by_dev(&self, dev: DevId) -> Option<VmntId> {
         self.slots
             .iter()
@@ -268,11 +273,13 @@ impl VmntTable {
             .map(VmntId)
     }
 
-    /// 块设备 open 的 `v_bfs_e` 选择（C `open.c:195-202` 的循环）。
+    /// Choice of `v_bfs_e` for a block-device open (the loop at C
+    /// `open.c:195-202`).
     ///
-    /// 默认是根文件系统；每个 `m_dev == dev` 且**不带** `VMNT_FORCEROOTBSF`
-    /// 的挂载行都覆盖一次。C 的循环里**没有 `break`**——同一个设备被挂载
-    /// 多次时最后一个匹配者赢，照抄。
+    /// The default is the root file system; every mount row with `m_dev == dev`
+    /// and **without** `VMNT_FORCEROOTBSF` overrides it once. C's loop has **no
+    /// `break`**—when the same device is mounted several times, the last match
+    /// wins, faithfully copied.
     pub fn bfs_for_device(&self, dev: DevId, root_fs: Endpoint) -> Endpoint {
         let mut bfs = root_fs;
         for v in self.slots.iter() {

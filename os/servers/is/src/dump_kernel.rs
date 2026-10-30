@@ -9,14 +9,14 @@
 //! `[ARCH: A-4]`: the snapshot structs below are minix-rs wire-contract
 //! proposals (`#[repr(C)]`, C declaration order, used-fields subset — the
 //! full C structs carry pointers/arch segments no snapshot can mirror).
-//! Kernel-side GETINFO producers align to them (pending kernel-crate
-//! work, explicit TODO below). Layouts: C `int→i32`, `endpoint_t→i32`,
+//! Kernel-side GETINFO producers align to them; that producer work is
+//! still pending. Layouts: C `int→i32`, `endpoint_t→i32`,
 //! `char[N]→[u8;N]`, `u32_t→u32`, `clock_t→i32` (32-bit Minix).
 
 // E-ISPROD: the four wire snapshots (KPrivSnap/BootImageSnap/KinfoSnap/
 // IrqHookSnap) moved to `minix_types::types` as the single authority — the
 // kernel GETINFO producers now emit exactly these layouts (the founding
-// mismatch this file's TODO tracked is resolved; widths follow the kernel
+// mismatch this file used to track is resolved; widths follow the kernel
 // producer: u32 flags, u64 ipc map / policy / notify_id).
 
 use crate::acquire::DiagctlTransport;

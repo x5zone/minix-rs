@@ -115,10 +115,13 @@ fn a_renamed_copy_changes_neither_line() {
 
 #[test]
 fn a_long_operand_survives_the_perror_line_untouched() {
-    // C 的 `perror` 把调用者的串整个 `fprintf` 出去（`minix3/lib/libc/stdio/perror.c:67`），
-    // 只有句子走定长的 `strerror_r` 表。本树的 `perror_line` 曾先写进 256 字节的栈缓冲
-    // 再裁，超长的操数会在句子之前被砍掉；这一枚钉住 `perror(3)` 那一族也不截断
-    // （同一形状也保 `truncate` 那两行裸报文）。
+    // C's `perror` writes the caller's whole string out through `fprintf`
+    // (`minix3/lib/libc/stdio/perror.c:67`); only the sentence goes through
+    // the fixed-size `strerror_r` table. This tree's `perror_line` used to
+    // write into a 256-byte stack buffer first and truncate, so an overlong
+    // operand was cut before the sentence; this test pins that the
+    // `perror(3)` family does not truncate either (the same shape also
+    // guards `truncate`'s two raw report lines).
     let long = format!("/tmp/{}", "w".repeat(600));
     let (out, status, err) = run(&[long.as_str()]);
     assert_eq!(out, "", "C 的失败路在 `printf` 之前就走了");

@@ -53,7 +53,7 @@ impl SchedctlFlags {
 ///
 /// C reads a bare `p_scheduler` pointer in three shapes (null / self /
 /// server); null and self both mean "the kernel schedules", so the shapes
-/// are really two assignments (S-1: the kernel side already merged them
+/// are really two assignments (the kernel side already merged them
 /// into `Option`, 11's domain; this enum merges them server-side).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchedulerAssignment {

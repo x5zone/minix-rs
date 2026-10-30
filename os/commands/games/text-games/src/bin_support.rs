@@ -41,8 +41,9 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
 /// `std::env::args()` panics on a non-UTF-8 argument, which would make this leg
 /// diverge from the target leg (which renders lossily); `args_os()` keeps the raw
 /// bytes so both legs apply the same lossy render — C passes argv as bytes and
-/// never validates them（批次四百二十二，现量：`random -\xff` 参照件打
-/// `unknown option -- \xff`，本壳宿主腿曾直接 panic 退 134）。
+/// never validates them (measured: the reference `random -\xff` prints
+/// `unknown option -- \xff`, while this shell's hosted leg used to panic and
+/// exit 134).
 #[cfg(any(test, not(target_os = "none")))]
 pub fn args() -> alloc::vec::Vec<alloc::string::String> {
     use std::os::unix::ffi::OsStrExt as _;
@@ -52,8 +53,10 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
 }
 
 /// Every environment string as raw `KEY=VALUE` bytes, in order (C `environ`).
-/// `minix3/games/wtf/wtf:47-53` 读的 `ACRONYMDB` 就是这么一个串，脚本先取整串、
-/// 再按空白断词。真机腿与 [`args`] 同一条出生链，宿主腿 re-join 成同一种形状。
+/// The `ACRONYMDB` that `minix3/games/wtf/wtf:47-53` reads is exactly such a
+/// string; the script takes the whole string first and then splits on
+/// whitespace. The target leg shares [`args`]'s birth chain; the hosted leg
+/// re-joins into the same shape.
 #[cfg(all(not(test), target_os = "none"))]
 pub fn envs() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
     minix_rt::crt0::envs().map(|raw| raw.to_vec()).collect()
@@ -154,10 +157,11 @@ pub fn emit_error(bytes: &[u8]) -> Option<minix_sys::Errno> {
     None
 }
 
-/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
-/// `minix3/lib/csu/common/crt0-common.c:156-165`，权威在 `minix-types` 的 `prog_name`）。
-/// `err(3)`/`errx(3)` 那几行都以它开头——但只以它们俩开头：`random` 的 `usage()` 把名字
-/// 写死在串里，两路不同来历，见 `src/lottery.rs` 的 `USAGE`。
+/// C's `getprogname()`: the last slash-segment of `argv[0]` (the rule lives in
+/// `minix3/lib/csu/common/crt0-common.c:156-165`, the authority in
+/// `minix-types`' `prog_name`). The `err(3)`/`errx(3)` lines all start with it —
+/// but only those two families do: `random`'s `usage()` bakes the name into the
+/// string, a different provenance, see `USAGE` in `src/lottery.rs`.
 pub fn prog_name(argv: &[alloc::string::String]) -> &str {
     let raw = argv
         .first()
@@ -166,12 +170,15 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
     minix_sys::prog_name(raw)
 }
 
-/// C 的 `err(3)`/`warn(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退
-/// （退不退由调用者定）。形状与句子都住在 `minix-types` 的 `err_line` 那一份权威里
-/// （与 `textfilter` 的同名件同一来源，C 也只有一个 `verrc.c`）。
+/// C's `err(3)`/`warn(3)` line: `prog: label: <sentence>` plus one newline; it
+/// does not exit (whether to exit is the caller's call). Shape and sentence both
+/// live in the single authority `minix-types`' `err_line` (same source as the
+/// identically named piece in `textfilter`; C also has only one `verrc.c`).
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
-    // 先量一次再按那个数渲染：`err_line` 交回的是「本该写多少字节」，超长操作数不会被截断
-    //（C 的 `vwarnc` 直接把调用者的串整个打到 stderr，长度不受一行栈缓冲限制）。
+    // Measure once, then render at that size: `err_line` returns "how many
+    // bytes should have been written", so an overlong operand is never
+    // truncated (C's `vwarnc` prints the caller's whole string to stderr, its
+    // length unbounded by any one-line stack buffer).
     let mut sizing: [u8; 0] = [];
     let need = minix_sys::err_line(prog, label, code, &mut sizing);
     let mut line = alloc::vec![0u8; need];
@@ -180,12 +187,17 @@ pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
     warn(b"\n");
 }
 
-/// 把标准输入读到尽，并且**把失手的号交回调用者**，不是把失手当成读到尽头。
+/// Read standard input to exhaustion and **hand the failing number back to the
+/// caller**, rather than treating a failure as end of input.
 ///
-/// C 的这一路是 `getchar()` 环读到 EOF（`minix3/games/random/random.c:127`），失手由
-/// stdio 记账、收尾用 `err(2, "stdin")` 报。本层只负责拿到号，句子与退码由调用者定。
-/// 宿主腿走 `std::io::stdin`（没有它时退到 `EIO`，与 `textfilter` 那条读缝同一口径），
-/// 真机腿在同一枚描述符上逐块 `read`。有了双生面，薄壳的过滤路径在宿主也可测。
+/// C's road here is a `getchar()` loop until EOF
+/// (`minix3/games/random/random.c:127`); stdio books the failure and the
+/// epilogue reports it with `err(2, "stdin")`. This layer only obtains the
+/// number — sentence and exit code belong to the caller. The hosted leg goes
+/// through `std::io::stdin` (falling back to `EIO` when it is absent, the same
+/// rule as `textfilter`'s read seam); the target leg does chunked `read` calls
+/// on the same descriptor. With the twin faces, a thin shell's filter path is
+/// testable on the host too.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn read_stdin_error() -> (alloc::vec::Vec<u8>, Option<minix_sys::Errno>) {
     use std::io::Read as _;
@@ -229,8 +241,8 @@ pub enum OperandFailure {
 
 /// Reads an operand file, reporting only a failure to open it; a read that breaks
 /// partway is reported as the end of the file. That is C's shape: `fortune` loads
-/// with `fgets(line, sizeof line, fp->inf) != NULL`（`minix3/games/fortune/fortune/fortune.c:268`、
-/// `:293`）and the file never asks `ferror`, so a broken read looks exactly like an
+/// with `fgets(line, sizeof line, fp->inf) != NULL` (`minix3/games/fortune/fortune/fortune.c:268`,
+/// `:293`) and the file never asks `ferror`, so a broken read looks exactly like an
 /// ordinary end of input — no extra sentence, and no different exit code. Hosted twin:
 /// real `std::fs` — without it a file-reading game binary cannot be run, and so
 /// cannot be checked, on the host at all (the target face below is the one the
@@ -246,7 +258,7 @@ pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> 
         ))
     })?;
     let mut image = alloc::vec::Vec::new();
-    // 读到失手就当作读到尽头：C 只看到 `fgets` 回了 NULL
+    // A failed read counts as end of input: C only sees `fgets` return NULL.
     if file.read_to_end(&mut image).is_err() {
         return Ok(image);
     }

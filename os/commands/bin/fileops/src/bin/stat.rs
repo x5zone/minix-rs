@@ -21,8 +21,8 @@
 //! `minix-types` crate, shape from `minix3/lib/libc/gen/vwarnc.c`), and all three of
 //! C's lines here are the `warn(3)` family, so each carries the number's sentence:
 //! `warn("%s: %s", name, usestat ? "stat" : "lstat")` (`stat.c:340-344`) becomes
-//! `stat: <名>: stat: <句子>`, `warn("readlink `%s'", file)` (`stat.c:849`) becomes
-//! `stat: readlink \`<名>': <句子>`, and `warn("realpath `%s'", file)` (`:828`) the
+//! `stat: <name>: stat: <sentence>`, `warn("readlink `%s'", file)` (`stat.c:849`)
+//! becomes `stat: readlink \`<name>': <sentence>`, and `warn("realpath `%s'", file)` (`:828`) the
 //! same shape with the number `getcwd.c` set — four of that folder's failure kinds
 //! assign the number themselves (`ENOENT`/`ENAMETOOLONG`/`ELOOP`/`ENOTDIR`) and are
 //! reproduced, while the three that pass a syscall's number through cannot be, since
@@ -35,8 +35,8 @@
 //! `who` (`minix_proctools::dates`).
 //!
 //! Real-machine effect for read-only output is not gated by the writable-root
-//! note (`C-57`/E5): `stat` only reads. It is not yet seeded into the image, so
-//! the serial gate does not cover it; see the batch note in
+//! note (E5): `stat` only reads. It is not yet seeded into the image, so the
+//! serial gate does not cover it; see the note in
 //! `rewrite-notes/18-stage-commands/todo.md`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -55,16 +55,20 @@ use minix_fileops::stat::{
 };
 use minix_sys::{Errno, Stat, fstat, getcwd, lstat, readlink, stat as stat_follows};
 
-/// `readlink` 与路径缓冲的宽度，取 C 那份 `path` 数组的同级容量（`stat.c:578`），
-/// 与 `realpath` 的上限同为 `PATH_MAX`（`minix-sys` 的线长上限即此值）。
+/// Width of `readlink` and of the path buffer, the same capacity as C's `path`
+/// array (`stat.c:578`), and equal to `realpath`'s upper bound `PATH_MAX`
+/// (`minix-sys`'s line-length limit is this value).
 const LINK_BUF: usize = 1024;
 
-/// `minix3/sys/sys/errno.h:114` 的 `ELOOP`（值 62，「符号链过多」）。`Errno` 未带这个
-/// 名的关联常量，所以照 `rm.rs` 对 `ETXTBSY` 的做法在壳侧定义数值并换算。
+/// `ELOOP` from `minix3/sys/sys/errno.h:114` (value 62, "too many symbolic
+/// links"). `Errno` carries no associated constant by that name, so, following
+/// `rm.rs`'s treatment of `ETXTBSY`, the shell defines the value locally and
+/// converts.
 const ELOOP: i32 = 62;
 
-/// `%R` 要的 `realpath(3)` 腿。三个动作全走 `minix_sys`，折叠算法在
-/// `minix_fileops::realpath`（`minix3/lib/libc/gen/getcwd.c:64-215` 的移植）。
+/// The `realpath(3)` leg `%R` needs. All three actions go through `minix_sys`;
+/// the folding algorithm lives in `minix_fileops::realpath` (a port of
+/// `minix3/lib/libc/gen/getcwd.c:64-215`).
 struct SysProbe;
 
 impl PathProbe for SysProbe {
@@ -89,9 +93,10 @@ impl PathProbe for SysProbe {
     }
 }
 
-/// 折一次 `%R`。C 在这里也是「失败就出声一次、置 `linkfail`、当空串」，
-/// 且那一行是 `warn("realpath `%s'", file)`（`stat.c:824-833`）——缀的是
-/// `getcwd.c` 设下的那个号的句子。
+/// Fold `%R` once. C also "speaks once on failure, sets `linkfail`, treats it
+/// as an empty string" here, and that line is
+/// `warn("realpath `%s'", file)` (`stat.c:824-833`) -- it attaches the sentence
+/// for the number `getcwd.c` set.
 fn resolve_for(prog: &str, name: &str, quiet: bool) -> Option<String> {
     match real_path(&SysProbe, name) {
         Ok(resolved) => Some(resolved),
@@ -99,8 +104,10 @@ fn resolve_for(prog: &str, name: &str, quiet: bool) -> Option<String> {
             if !quiet {
                 match real_path_errno(e) {
                     Some(code) => support::warn_line(prog, &format!("realpath `{name}'"), code),
-                    // 透传支（`lstat`/`readlink`/`getcwd` 自己失手）的号在探针接口
-                    // 那一头就丢了，宁可只出短语也不造一个假号（登记在头注）。
+                    // The pass-through arms (`lstat`/`readlink`/`getcwd` failing
+                    // on their own) lose the number at the probe interface, so
+                    // the phrase alone beats inventing a fake number (registered
+                    // in the header note).
                     None => support::warn(format!("{prog}: realpath `{name}'\n").as_bytes()),
                 }
             }
@@ -109,17 +116,20 @@ fn resolve_for(prog: &str, name: &str, quiet: bool) -> Option<String> {
     }
 }
 
-/// `RealPathError` 里那四支由 `getcwd.c` 自己指定号的原因（另三支是系统调用透传，
-/// 本层拿不到）。坐标逐支标在右边。
+/// The four causes in `RealPathError` whose number `getcwd.c` assigns itself
+/// (the other three are syscall pass-throughs this layer cannot get). The
+/// coordinates are given per arm on the right.
 fn real_path_errno(e: RealPathError) -> Option<Errno> {
     match e {
-        // `getcwd.c:104-107`（空路径）与 `:185-191`（链目标长为零）都定 `ENOENT`。
+        // `getcwd.c:104-107` (empty path) and `:185-191` (zero-length link
+        // target) both set `ENOENT`.
         RealPathError::NoEntry => Some(Errno::ENOENT),
-        // `getcwd.c:159-165`。
+        // `getcwd.c:159-165`.
         RealPathError::NameTooLong => Some(Errno::ENAMETOOLONG),
-        // `getcwd.c:180-183`（链层数过 `MAXSYMLINKS`）。
+        // `getcwd.c:180-183` (link depth exceeds `MAXSYMLINKS`).
         RealPathError::Loop => Some(Errno::from_i32(ELOOP)),
-        // `getcwd.c:207-209`（中间一段不是目次而后还有内容）。
+        // `getcwd.c:207-209` (a middle component is not a directory and
+        // content follows).
         RealPathError::NotDir => Some(Errno::ENOTDIR),
         RealPathError::StatFailed
         | RealPathError::ReadLinkFailed
@@ -127,8 +137,9 @@ fn real_path_errno(e: RealPathError) -> Option<Errno> {
     }
 }
 
-/// 模板里是否出现 `%R`（含 `%SR` 这类带形态字母的写法）。只有出现才折，
-/// 因为这条腿每段都要一次 `lstat`。
+/// Whether the template mentions `%R` (including forms like `%SR` with a shape
+/// letter). Fold only when it does, because this leg costs one `lstat` per
+/// piece.
 fn needs_realpath(pieces: &[minix_fileops::stat::Piece<'_>]) -> bool {
     pieces.iter().any(|piece| {
         matches!(
@@ -142,12 +153,14 @@ fn needs_realpath(pieces: &[minix_fileops::stat::Piece<'_>]) -> bool {
 }
 
 fn zeroed() -> Stat {
-    // SAFETY: `Stat` 是纯整数字段的字节结构，全零是合法位形，随后由
-    // `stat`/`lstat`/`fstat` 在成功时整体覆写。
+    // SAFETY: `Stat` is a byte struct of plain integer fields; all-zero is a
+    // valid bit pattern, and a successful `stat`/`lstat`/`fstat` overwrites it
+    // wholesale.
     unsafe { core::mem::zeroed() }
 }
 
-/// 把内核交回的 `Stat` 折成决定半的纯字段形（决定半不碰系统调用类型）。
+/// Fold the kernel-returned `Stat` into the deciding half's plain-field shape
+/// (the deciding half never touches system-call types).
 fn to_data(st: &Stat) -> StatData {
     StatData {
         dev: st.st_dev,
@@ -170,21 +183,23 @@ fn to_data(st: &Stat) -> StatData {
 }
 
 fn usage(prog: &str, synopsis: &str) -> ! {
-    // `stat.c:357-365`：`fprintf(stderr, "usage: %s %s\n", getprogname(), synopsis)`——
-    // 名字在行里，synopsis 随人格换。退出码 1。
+    // `stat.c:357-365`: `fprintf(stderr, "usage: %s %s\n", getprogname(), synopsis)`
+    // -- the name is inside the line, and the synopsis changes with the
+    // personality. Exit status 1.
     support::warn(format!("usage: {prog} {synopsis}\n").as_bytes());
     support::terminate(1);
 }
 
 fn bad_format(prog: &str, source: &str) -> ! {
-    // C 的 `errx` 打的是 `<prog>: <子格式串>: bad format`（`stat.c:555-556`）。
+    // C's `errx` prints `<prog>: <sub-format string>: bad format` (`stat.c:555-556`).
     support::warn(format!("{prog}: {source}: bad format\n").as_bytes());
     support::terminate(1);
 }
 
-/// 读符号链目标。读不到就交回 `None`，由决定半把 `linkfail` 置起
-/// （`stat.c:846-853` 的失败支只出声一次，这里同样只在失败时报一行）。
-/// C 的那一行是 `warn("readlink `%s'", file)`（`:849`）——缀号。
+/// Read the symlink target. If unreadable, return `None` and let the deciding
+/// half set `linkfail` (`stat.c:846-853`'s failure arm speaks only once; this
+/// place likewise reports only one line on failure). C's line is
+/// `warn("readlink `%s'", file)` (`:849`) -- it attaches the number.
 fn link_target(prog: &str, name: &str, quiet: bool) -> Option<String> {
     let mut buf = [0u8; LINK_BUF];
     match readlink(name, &mut buf) {
@@ -200,8 +215,9 @@ fn link_target(prog: &str, name: &str, quiet: bool) -> Option<String> {
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    // C 先 `setprogname(argv[0])`（`stat.c:217`）再拿 `getprogname()` 比人格
-    // （`:220`），所以这一串是去过目录的那一段，且比的是全等。
+    // C first does `setprogname(argv[0])` (`stat.c:217`) and then compares
+    // `getprogname()` against the personality (`:220`), so this string is the
+    // segment after stripping the directory, and the comparison is exact.
     let prog = support::prog_name(&argv);
     if argv.is_empty() {
         usage(prog, "[-FlLnqrsx] [-f format] [-t timefmt] [file ...]");
@@ -220,14 +236,14 @@ fn run() -> ! {
             },
         ),
         Err(PlanError::FormatConflict { first, second }) => {
-            // `stat.c:261-263`。
+            // `stat.c:261-263`.
             support::warn(
                 format!("{prog}: can't use format '{first}' with '{second}'\n").as_bytes(),
             );
             support::terminate(1);
         }
         Err(PlanError::NotWithDashF { fmtchar }) => {
-            // `stat.c:289-291`。
+            // `stat.c:289-291`.
             support::warn(format!("{prog}: can't use format '{fmtchar}' with -F\n").as_bytes());
             support::terminate(1);
         }
@@ -241,7 +257,8 @@ fn run() -> ! {
 
     let mut errs = false;
     let mut linkfail = false;
-    // C 的 `do/while` 即使无操作数也走一遍：那一遍是标准输入（`stat.c:324`）。
+    // C's `do/while` runs once even with no operands: that round is standard
+    // input (`stat.c:324`).
     let rounds = if operands.is_empty() {
         1
     } else {
@@ -254,8 +271,8 @@ fn run() -> ! {
         let mut st = zeroed();
         let got = match name {
             None => fstat(support::STDIN, &mut st),
-            // `stat.c:327-334`：`-L` 先 `stat()`，只有 `ENOENT` 才退回 `lstat()`，
-            // 两趟都失败时把错归到 `ENOENT`。
+            // `stat.c:327-334`: with `-L`, call `stat()` first and fall back to
+            // `lstat()` only on `ENOENT`; when both fail, blame `ENOENT`.
             Some(path) => match (plan.use_stat, stat_follows(path, &mut st)) {
                 (true, Err(Errno::ENOENT)) => lstat(path, &mut st),
                 (_, outcome) => outcome,
@@ -265,9 +282,10 @@ fn run() -> ! {
             errs = true;
             linkfail = true;
             if !plan.quiet {
-                // C 的 `warn("%s: %s", name, usestat ? "stat" : "lstat")`
-                // （`stat.c:340-344`）：那两个字是调用者给的格式串里的两个 `%s`，
-                // 而句子是 `errno` 的——四段都出自那一份权威。
+                // C's `warn("%s: %s", name, usestat ? "stat" : "lstat")`
+                // (`stat.c:340-344`): those two words are the two `%s` in the
+                // caller's format string, and the sentence comes from `errno`
+                // -- all four segments from that one authority.
                 let leg = if plan.use_stat { "stat" } else { "lstat" };
                 support::warn_line(prog, &format!("{}: {leg}", name.unwrap_or("(stdin)")), e);
             }
@@ -307,7 +325,8 @@ fn run() -> ! {
         number += 1;
     }
 
-    // `stat.c:354`：readlink 人格交回 `linkfail`，stat 人格交回 `errs`。
+    // `stat.c:354`: the readlink personality returns `linkfail`, the stat
+    // personality returns `errs`.
     support::terminate(if prog.ends_with("readlink") {
         linkfail as i32
     } else {
@@ -328,9 +347,11 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    // 薄壳本身只做腿与循环，判定全在决定半的宿主测里（`stat.rs` 的 `tests`
-    // 与 `face_tests`）。此处只钉住两处薄壳自己的折形：`to_data` 的字段对应，
-    // 以及符号链判定用的掩码常量。
+    // The thin shell itself only provides legs and the loop; judgement lives in
+    // the deciding half's host tests (`stat.rs`'s `tests` and `face_tests`).
+    // What is pinned here are the two shapes the thin shell folds itself:
+    // `to_data`'s field mapping, and the mask constants used for the symlink
+    // test.
     use super::*;
 
     #[test]
@@ -364,8 +385,9 @@ mod tests {
 
     #[test]
     fn the_link_test_uses_the_same_mask_and_value_as_the_deciding_half() {
-        // 薄壳里的 `0o170000`/`0o120000` 必须与 `cp::S_IFMT`/`S_IFLNK` 同值，
-        // 否则 `%Y` 会在真正的符链上不去读目标。
+        // The thin shell's `0o170000`/`0o120000` must equal
+        // `cp::S_IFMT`/`S_IFLNK`, or `%Y` would fail to read the target on a
+        // real symlink.
         assert_eq!(0o170000, minix_fileops::cp::S_IFMT);
         assert_eq!(0o120000, minix_fileops::cp::S_IFLNK);
     }

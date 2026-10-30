@@ -536,8 +536,8 @@ pub struct DirectTrapTransport;
 /// Commit the caller's message buffer to memory before an opaque trap.
 ///
 /// The kernel reads the message through the trap boundary — `arch_trap::ipc_trap`
-/// receives the buffer's address as a plain `usize`. NK4-C 续-22 observed
-/// that on aarch64 the boot `sched_start`'s final scalar store
+/// receives the buffer's address as a plain `usize`. A bring-up failure was
+/// observed on aarch64: the boot `sched_start`'s final scalar store
 /// (`msg.m_type = SCHEDULING_START`, 0xF02) could still be pending when the
 /// kernel's trap-time `read_volatile` ran, so SCHED received `m_type` = 0,
 /// returned ENOSYS, INIT never registered its scheduler, and the forked
@@ -547,7 +547,7 @@ pub struct DirectTrapTransport;
 /// makes the kernel see the full message and the boot proceeds to
 /// `SingleUser` + `/bin/sh` exec.
 ///
-/// Attribution is an A/B on the *same* tree: the 续-18 `switch_address_space`
+/// Attribution is an A/B on the *same* tree: the `switch_address_space`
 /// live-TTBR0 fix (commit 4cb8db458) is present in both the failing
 /// (no-barrier) and passing (barrier) runs, and the three-way root comparison
 /// showed live-TTBR0 == `p_seg.phys_root` == software mirror with matching
@@ -579,14 +579,12 @@ pub(crate) unsafe fn commit_message_to_memory(message: *const Message) {
 #[allow(unused_variables)]
 impl IpcTransport for DirectTrapTransport {
     fn send(&self, destination: Endpoint, message: &Message) -> Result<(), TrapStatus> {
-        // E1 slice 3 / NK4-C §1.112 / 续-75: the real-trap branch is
-        // arch-generic over the wired legs — `arch_trap::ipc_trap` carries
-        // the identical `(nr, op1, op2)` ABI on all three (x86-64
-        // `int 0x21`/SYSEXIT, aarch64 `svc #0`, riscv64 `ecall`). The
-        // gate range tracks the *kernel* legs that answer these numbers:
-        // x86 int-33 bridge + aarch64 EL1 mirror (§1.112) + riscv64 user
-        // leg (续-75) — hosted builds (no `kernel_trap`) keep the -EIO
-        // fallback.
+        // The real-trap branch is arch-generic over the wired legs —
+        // `arch_trap::ipc_trap` carries the identical `(nr, op1, op2)` ABI on
+        // all three (x86-64 `int 0x21`/SYSEXIT, aarch64 `svc #0`, riscv64
+        // `ecall`). The gate range tracks the *kernel* legs that answer these
+        // numbers: x86 int-33 bridge, aarch64 EL1 mirror and the riscv64 user
+        // leg — hosted builds (no `kernel_trap`) keep the -EIO fallback.
         #[cfg(all(
             any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"),
             kernel_trap
@@ -735,12 +733,13 @@ impl IpcTransport for DirectTrapTransport {
     }
     fn query_kerninfo_page(&self) -> Result<u64, TrapStatus> {
         // MINIX_KERNINFO: the page address comes back through the
-        // secondary return register — x86-64 上是 R10（状态车道的按调用
-        // 兼任，NK4-C 1.54/B26；内核 set_secondary_ipc_return 写同一条）,
-        // riscv64/aarch64 是 a1/x1——即 `ipc_trap` 的第二返回值。NK4-C
-        // §1.112: single arch-generic leg over the wired targets; riscv64
-        // joined with 续-75 (kernel leg wired + `set_secondary_ipc_return`
-        // A1-lane override in the arch crate).
+        // secondary return register — R10 on x86-64 (doubling, per call, for
+        // the status lane; the kernel writes the same register through
+        // set_secondary_ipc_return), a1/x1 on riscv64/aarch64 — i.e.
+        // `ipc_trap`'s second return value. One arch-generic leg over the
+        // wired targets; riscv64 is included because its kernel leg is wired
+        // and the arch crate overrides the `set_secondary_ipc_return` A1
+        // lane.
         #[cfg(all(
             any(
                 target_arch = "x86_64",

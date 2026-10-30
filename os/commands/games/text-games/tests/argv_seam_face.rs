@@ -1,18 +1,24 @@
 //! The argv seam face for the whole crate: every shell gets its arguments through
-//! `bin_support::args()`，宿主腿与真机腿在那里必须同形。
+//! `bin_support::args()`, and the host leg and the real-machine leg must have the
+//! same shape there.
 //!
-//! 真值出处是批次四百二十二的一枚现量：宿主腿曾用 `std::env::args()`（对非 UTF-8
-//! 参数 unwrap 即 panic 退 134），而真机腿是 `from_utf8_lossy`——于是
-//! `random -\xff` 在宿主上直接崩，参照件 `tmp/random-421/random` 打的却是
-//! `unknown option -- \xff`（C 把 argv 当字节传，从不校验）。修法照 textfilter
-//! `bin_support.rs` 的同一条缝：`args_os()` 保原字节、两条腿各自 lossy。
+//! A live measurement established the ground truth: the host leg once used
+//! `std::env::args()` (which panics and exits 134 on a non-UTF-8 argument),
+//! while the real-machine leg used `from_utf8_lossy` — so `random -\xff` crashed
+//! on the host, whereas the reference build printed `unknown option -- \xff`
+//! (C passes argv as bytes and never validates it). The fix copied the same seam
+//! from textfilter's `bin_support.rs`: `args_os()` keeps the original bytes and
+//! each leg applies lossy conversion itself.
 //!
-//! 这一枚门钉的是**缝的契约**而不是各壳的报文：给每支壳喂一枚裸 `-\xff`
-//! （`OsStr` 字节，不经 UTF-8），再喂它的 lossy 等价串，两路的三样（退码、标准
-//! 输出、标准错误）必须逐字节相同——即「裸字节参数的表现 == lossy 等价的表现」。
-//! 各壳报文本身的真值由各自的面门承载（`random_face` 的字节形门、`wtf_face` 的
-//! usage 形、`fortune_face` 的 `Cannot open` 三段形），这里不重复断言字面，
-//! 只断言两路相等且**没有一行 panic**。
+//! This gate pins the **contract of the seam**, not each shell's message: feed
+//! every shell a bare `-\xff` (an `OsStr` byte, not routed through UTF-8), then
+//! feed its lossy-equivalent string; the three outputs of the two runs (exit
+//! code, standard output, standard error) must be byte-identical — that is,
+//! "a raw-byte argument behaves like its lossy equivalent". The truth of each
+//! shell's own message is carried by its own face test (the byte-shape gate in
+//! `random_face`, the usage shape in `wtf_face`, the three-part `Cannot open`
+//! shape in `fortune_face`); this test does not restate literals, only that the
+//! two runs agree and that **no line panics**.
 
 use std::ffi::OsStr;
 use std::io::Write as _;
@@ -45,8 +51,10 @@ fn run(name: &str, args: &[&OsStr], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     )
 }
 
-/// 喂标准输入：只有 `BrokenPipe` 可以容忍（子进程在读输入之前就退是若干形的正常
-/// 结果，见 `random_face.rs::feed_stdin` 同一条判据；其余写错仍然当场失败）。
+/// Feed standard input: only `BrokenPipe` is tolerable (a child that exits
+/// before reading its input is the normal outcome for several shapes; see the
+/// same criterion in `random_face.rs::feed_stdin`. Any other write error still
+/// fails on the spot).
 fn feed_stdin(child: &mut std::process::Child, input: &[u8]) {
     let mut stdin = child.stdin.take().expect("stdin pipe");
     if let Err(err) = stdin.write_all(input) {
@@ -58,15 +66,18 @@ fn feed_stdin(child: &mut std::process::Child, input: &[u8]) {
     }
 }
 
-/// 裸字节参数的表现必须与它的 lossy 等价**逐字节相同**，且三支壳哪一支都不得
-/// 以信号退出（`code()` 回 None 就是崩了，比如宿主腿曾经的那枚 `env::args()`
-/// unwrap panic——它退 134，正是本枚门立起来的原因）。
+/// A raw-byte argument must behave **byte-identically** to its lossy
+/// equivalent, and none of the three shells may die by signal (`code()`
+/// returning None means it crashed, as the host leg once did with the
+/// `env::args()` unwrap panic — it exited 134, which is exactly why this gate
+/// exists).
 #[test]
 fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent() {
     let raw = OsStr::from_bytes(b"-\xff");
     let lossy = OsStr::new("-\u{fffd}");
-    // 三支壳吃这一枚 token 的位置不同：random/wtf 走选项环，fortune 当档名——
-    // 但「裸字节 == lossy 等价」这条缝契约对三种位置都得成立。
+    // The three shells consume this token in different places: random/wtf in
+    // the option loop, fortune as a filename — but the seam contract
+    // "raw bytes == lossy equivalent" must hold in all three positions.
     let rows: [(&str, &[u8]); 3] = [("random", b"aa\nbb\n"), ("wtf", b""), ("fortune", b"")];
     for (name, input) in rows {
         let (raw_code, raw_out, raw_err) = run(name, &[raw], input);
@@ -80,7 +91,8 @@ fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent() {
             (lossy_code, lossy_out, lossy_err),
             "{name} 的裸字节参数与 lossy 等价表现不同——两条 argv 腿不同形"
         );
-        // 反面：非法字节不许原样出现在报文里（lossy 之后它是 U+FFFD 的三个字节）
+        // The flip side: an invalid byte must not appear verbatim in the
+        // message (after lossy conversion it is U+FFFD's three bytes)
         assert!(
             !raw_out.contains(&b'\xff') && !raw_err.contains(&b'\xff'),
             "{name} 的报文里出现了未经 lossy 的原字节"

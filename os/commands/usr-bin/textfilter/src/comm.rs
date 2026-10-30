@@ -7,7 +7,7 @@
 //! either end of input the remaining lines drain into the surviving
 //! column. Columns carry tab offsets: one tab for column two, two for
 //! column three (comm.c:56, 105-110). `-1`/`-2`/`-3` suppress a column;
-//! `-f` compares case-insensitively (`strcasecmp`, 一张**按字节**的 ctype 表). Both files always
+//! `-f` compares case-insensitively (`strcasecmp`, a **byte-wise** ctype table). Both files always
 //! reach end of input (the loop reads on). [`parse_comm_args`] mirrors
 //! C's `getopt` option scanning (`comm.c:80`): clustered letters, the `--`
 //! terminator, a lone `-` operand, and an `UnknownOption` for any letter
@@ -31,8 +31,9 @@ pub struct CommOptions {
 pub struct CommLine<'a> {
     /// 1, 2, or 3 — the column the line prints in.
     pub column: u8,
-    /// The line itself, **as bytes**: C 的行腿 `getnextln` 用 `getc` 一字节一字节填缓冲
-    /// （`comm.c:200-205`）再 `printf("%s%s\n", col, line)`（`:140`），全程不解码。
+    /// The line itself, **as bytes**: C's line leg `getnextln` fills the buffer byte
+    /// by byte with `getc` (`comm.c:200-205`) and then does
+    /// `printf("%s%s\n", col, line)` (`:140`), never decoding.
     pub text: &'a [u8],
 }
 
@@ -90,10 +91,13 @@ fn push<'a>(out: &mut Vec<CommLine<'a>>, column: u8, options: &CommOptions, text
 /// The comparison: case-folded bytes with `-f`, plain bytes otherwise
 /// (the C's `strcoll` is byte order in the C locale).
 ///
-/// `-f` 走的是 `strcasecmp`：两侧各取一字节、按 `unsigned char` 查 `tolower` 表比
-/// （`minix3/common/lib/libc/string/strcasecmp.c:58-67`），C locale 下那张表只把
-/// `A`–`Z` 换成 `a`–`z`，`0x80`–`0xFF` 原样返回。字符域的 `to_lowercase` 是 **Unicode**
-/// 的大小写表：`c3 89`（É）与 `c3 a9`（é）在它眼里是同一对字符，在 C 的那张表里差一位。
+/// `-f` goes through `strcasecmp`: each side takes one byte and compares through the
+/// `tolower` table looked up by `unsigned char`
+/// (`minix3/common/lib/libc/string/strcasecmp.c:58-67`); in the C locale that table
+/// only maps `A`–`Z` to `a`–`z` and returns `0x80`–`0xFF` unchanged. The character
+/// domain's `to_lowercase` is the **Unicode** case table: `c3 89` (É) and `c3 a9` (é)
+/// are the same character pair to it, while in C's table they differ in the second
+/// byte.
 fn line_cmp(a: &[u8], b: &[u8], fold: bool) -> core::cmp::Ordering {
     if fold {
         a.iter()
@@ -126,17 +130,19 @@ pub enum CommArgError {
 /// (including an unknown `-z`) as an operand, so `comm -z f` opened a file
 /// literally named `-z`; this parser routes that to `UnknownOption`.
 ///
-/// 选项环**不重排**（`getopt.c:74-78`）：非选项 token 一到环就结束，它后面的
-/// `-1`/`-f` 都是档名，所以 `comm a -1 b` 是三个操作数而不是两个操作数加一个旗标。
-/// 这一支的 optstring 里没有带值字母，所以 libc 那句 `option requires an argument`
-/// 到不了（同 `rev`/`colrm` 的空 optstring 只有集外字母一形的道理一样：可达出口
-/// 由 optstring 定，不由「同族规律」定）。
+/// The option ring does **not reorder** (`getopt.c:74-78`): the ring ends as soon as
+/// a non-option token arrives, and any `-1`/`-f` after it is a file name, so
+/// `comm a -1 b` has three operands rather than two operands plus a flag. This
+/// command's optstring has no letter that takes a value, so libc's
+/// `option requires an argument` line is unreachable (just as `rev`/`colrm` with an
+/// empty optstring only have the outside-the-set letter shape: the reachable exits
+/// are decided by the optstring, not by a "family rule").
 ///
-/// 入参与交回的档名都是**字节**：C 把 `argv` 原样交给 `getopt` 与 `file()`，全程不问
-/// 编码（`comm.c:80` 与 `:177-187`）。签名此前是 `&str`，于是那一串字节在走到环之前
-/// 就已经被 `from_utf8_lossy` 折过——一枚裸 `ff` 变成 `ef bf bd` 三枚，字母位报的是
-/// `ef` 而不是 `ff`，档名也不再是 argv 里那一串。字节进、字节出，折只发生在真正需要
-/// `&str` 的那两条腿（开档与 `err(1, "%s", name)` 的 `strerror` 句子）里。
+/// Both the arguments and the returned file names are **bytes**: C hands `argv`
+/// unchanged to `getopt` and to `file()`, never asking about encoding (`comm.c:80`
+/// and `:177-187`). Bytes in, bytes out; the lossy fold happens only on the two legs
+/// that genuinely need a `&str` (opening the file, and the `strerror` sentence of
+/// `err(1, "%s", name)`).
 pub fn parse_comm_args<'a>(
     args: &'a [&'a [u8]],
 ) -> Result<(CommOptions, [&'a [u8]; 2]), CommArgError> {
@@ -147,18 +153,20 @@ pub fn parse_comm_args<'a>(
             break Vec::new();
         };
         if arg == b"--" {
-            // `getopt.c:81-85`：先 `++optind` 再返回 -1，所以 `--` 自身不是操作数。
+            // `getopt.c:81-85`: `++optind` runs before -1 is returned, so `--` itself
+            // is not an operand.
             break args[index + 1..].to_vec();
         }
         if arg.len() < 2 || arg[0] != b'-' {
-            // `getopt.c:74-78`：非选项 token 一到就返回 -1 且**不推进** `optind`，
-            // 于是它连同后面的 token 全是操作数（旧写法把它推进了环继续扫，所以
-            // `comm a -1 b` 里的 `-1` 被当旗标吃掉，参照件量的是三个操作数 → usage）。
+            // `getopt.c:74-78`: a non-option token makes the ring return -1 and
+            // **not advance** `optind`, so it and every token after it are operands
+            // (in the reference build `comm a -1 b` measures three operands, hence
+            // usage).
             break args[index..].to_vec();
         }
-        // 环走**字节**：C 的 `optopt` 是一个 `char`（`getopt.c:79` 的 `optopt = *place++` 一次
-        // 进一个字节），所以 `-é`（`c3 a9`）报的是 `c3` 而不是整个字符。之前这里过 `chars()`，
-        // 把一个字符的两个字节当成一枚字母交回，报文经 UTF-8 渲染后比 C 多一个字节。
+        // The ring walks **bytes**: C's `optopt` is a `char` (`optopt = *place++` at
+        // `getopt.c:79` takes one byte at a time), so `-é` (`c3 a9`) reports `c3` and
+        // not the whole character.
         for &byte in &arg[1..] {
             match byte {
                 b'1' => options.suppress1 = true,
@@ -256,9 +264,10 @@ mod tests {
         );
     }
 
-    /// 行是字节串：一枚非 UTF-8 字节让**整个档**的行消失是旧写法
-    /// （壳里 `from_utf8(input).unwrap_or("")`）的失败形状，C 那边那一行照样是记录
-    /// （`comm.c:204-215` 的 `getnextln` 逐 `getc` 读，不解码）。
+    /// A line is a byte string: letting a non-UTF-8 byte make **the whole file's**
+    /// lines disappear is the shell's failure shape (`from_utf8(input).unwrap_or("")`),
+    /// while in C that line is still a record (`getnextln` at `comm.c:204-215` reads
+    /// byte by byte with `getc` and never decodes).
     #[test]
     fn a_byte_that_is_not_utf8_is_still_a_comparable_line() {
         let left: [&[u8]; 2] = [b"a\xffb", b"common"];
@@ -269,11 +278,12 @@ mod tests {
         );
     }
 
-    /// `-f` 的折叠是**逐字节查 ctype 表**，不是 Unicode 小写：`strcasecmp` 两侧各按
-    /// `unsigned char` 取 `tolower`（`minix3/common/lib/libc/string/strcasecmp.c:58-67`），
-    /// 于是 `c3 89`（É）与 `c3 a9`（é）在第二位分开——参照件
-    /// `tmp/comm-409/comm_ref` 现量这两行**不**相等（各落自己那列），旧写法经
-    /// `str::to_lowercase` 判成公共行落在列三。
+    /// The `-f` fold is a **per-byte ctype lookup**, not a Unicode lowercase:
+    /// `strcasecmp` takes `tolower` by `unsigned char` on both sides
+    /// (`minix3/common/lib/libc/string/strcasecmp.c:58-67`), so `c3 89` (É) and
+    /// `c3 a9` (é) separate at the second byte — the reference build measures these
+    /// two lines as **not** equal (each lands in its own column), whereas a Unicode
+    /// fold would call them a common line in column three.
     #[test]
     fn the_fold_is_a_per_byte_ctype_lookup_not_a_unicode_lowercase() {
         let left: [&[u8]; 1] = [b"\xc3\x89"];
@@ -286,7 +296,7 @@ mod tests {
             texts(&comm(&left, &right, &fold)),
             vec![(1, b"\xc3\x89".to_vec()), (2, b"\xc3\xa9".to_vec())]
         );
-        // ASCII 那一半不许被波及：`Apple` 与 `apple` 折叠后仍是同一行。
+        // The ASCII half must not be affected: `Apple` and `apple` still fold to the same line.
         let left: [&[u8]; 1] = [b"Apple"];
         let right: [&[u8]; 1] = [b"apple"];
         assert_eq!(
@@ -345,8 +355,9 @@ mod tests {
         );
     }
 
-    /// 集外字母交回的是短横后的**第一个字节**，不是第一个字符：`-\u{e9}`（`c3 a9`）落在
-    /// `char` 域里是 U+00C3。参照件 `tmp/comm-409/comm_ref` 现量那一行的字母位是单个 `c3`。
+    /// The outside-the-set letter is the **first byte** after the dash, not the first
+    /// character: `-\u{e9}` (`c3 a9`) in the `char` domain is U+00C3. The reference
+    /// build measures a single `c3` at that line's option-letter position.
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
@@ -354,13 +365,13 @@ mod tests {
             Err(CommArgError::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
-        // 聚簇同理：`1` 合法先吃掉，报的是其后第一个字节。
+        // Same for a cluster: the legal `1` is consumed first, then the next byte is reported.
         assert_eq!(
             parse_comm_args(&[b"-1\xc3\xa9", b"a", b"b"]),
             Err(CommArgError::UnknownOption('\u{00c3}')),
             "-1é"
         );
-        // ASCII 不许被这次改动波及。
+        // ASCII must not be affected by the byte-wise handling.
         assert_eq!(
             parse_comm_args(&[b"-Z", b"a", b"b"]),
             Err(CommArgError::UnknownOption('Z')),
@@ -368,9 +379,11 @@ mod tests {
         );
     }
 
-    /// 操数交回的是 argv 里那串**原字节**：旧签名是 `&str`，这形在库里根本写不出来——
-    /// 一枚裸 `ff` 在走到环之前就被折成 `ef bf bd`，于是档名不再等于 argv 那串。
-    /// C 把 `argv[1]`/`argv[2]` 原样交给 `file()`（`comm.c:177-187`），全程不解码。
+    /// An operand comes back as the **raw bytes** from argv: a `&str` signature could
+    /// not express this shape — a bare `ff` would be folded into `ef bf bd` before it
+    /// reached the ring, and the file name would no longer equal the argv bytes. C
+    /// hands `argv[1]`/`argv[2]` unchanged to `file()` (`comm.c:177-187`), never
+    /// decoding.
     #[test]
     fn an_operand_that_is_not_utf8_is_returned_as_the_argv_bytes() {
         let argv: &[&[u8]] = &[b"a\xffb", b"c\xd6"];
@@ -410,21 +423,22 @@ mod tests {
         );
     }
 
-    /// 不重排：第一个非选项 token 一到，选项环当场结束，它后面的 `-1` 是**档名**，
-    /// 于是三个 token 全是操作数 → `NotTwoOperands`（参照件 `comm a -1 b` 现量：
-    /// 只一行 usage、退 1，那个 `-1` 既没被当旗标、也没被当成坏选项）。
+    /// No reordering: the option ring ends as soon as the first non-option token
+    /// arrives, so a following `-1` is a **file name** and all three tokens are
+    /// operands → `NotTwoOperands` (the reference build's `comm a -1 b` prints one
+    /// usage line and exits 1; the `-1` is neither a flag nor a bad option).
     #[test]
     fn test_parse_stops_at_the_first_operand_without_reordering() {
         assert_eq!(
             parse_comm_args(&[b"a", b"-1", b"b"]),
             Err(CommArgError::NotTwoOperands)
         );
-        // 两个操作数在前、旗标在后也一样：三个 token 全落进操作数。
+        // The same with two operands first and a flag after: all three tokens become operands.
         assert_eq!(
             parse_comm_args(&[b"-", b"b", b"-f"]),
             Err(CommArgError::NotTwoOperands)
         );
-        // 环内的聚簇仍逐字母生效，且 `--` 之后全是档名。
+        // Clusters inside the ring still take effect letter by letter, and everything after `--` is a file name.
         assert_eq!(
             parse_comm_args(&[b"-1f", b"--", b"-2", b"-3"]),
             Ok((

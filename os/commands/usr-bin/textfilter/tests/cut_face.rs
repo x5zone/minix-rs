@@ -67,9 +67,11 @@ fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// argv 形态的**字节形**夹具：一枚裸 `ff` 写不成 `&str`，所以参数经 `OsStr::from_bytes`
-/// 交下去，比的是子进程实际收到的那串字节（文本形夹具里 `from_utf8_lossy` 会把裸 `ff`
-/// 与 `ef bf bd` 弄成同一个串，那正是被测的缝）。
+/// A **byte-shaped** fixture for argv: a bare `ff` cannot be written as a `&str`,
+/// so the arguments go down through `OsStr::from_bytes` and the test compares the
+/// exact bytes the child process received (in a text-shaped fixture
+/// `from_utf8_lossy` would collapse a bare `ff` and `ef bf bd` into the same
+/// string — precisely the seam under test).
 fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::os::unix::ffi::OsStrExt as _;
     let mut child = Command::new(CUT)
@@ -88,12 +90,17 @@ fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 命令行参数那一半也按字节了（批次四百六十一）：`-d` 的值与 `column` 的 `-s` 同族——它不是
-/// 回显位，而是被 `cut.c:101-102` 的一句 `dchar = *optarg` 拿去切**输出内容**的首字节。所以
-/// 文本缝折一次之后分隔符变成 `ef`，同一份输入上「该切的切不开、不该切的反倒被切」。参照件
-/// `tmp/cut-406/cut`（软链名跑的，`getprogname()` 算出 `cut` 与本壳一致）现量：`-d<ff> -f1`
-/// 对 `a<ff>b<TAB>z` 交回 `a`、值附形 `-d<ff>` 同形；`-d<ff>` 对只含 U+FFFD 三字节的行原样交回。
-/// 第三段钉字母位：`-\xff` 交回那一枚裸字节本身，再跟那三行写死的 usage、退 1。
+/// The command-line argument half is byte-shaped too: the `-d` value belongs with
+/// `column`'s `-s` — it is not an echo position, but is taken by `dchar = *optarg`
+/// at `cut.c:101-102` to split **output content** on its first byte. So after one
+/// fold through the text seam the delimiter becomes `ef`, and on the same input
+/// "what should split does not, and what should not split does". Measured against
+/// the C reference `cut` (run through a symlink name, so `getprogname()` yields
+/// `cut` as it does here): `-d<ff> -f1` on `a<ff>b<TAB>z` returns `a`, and the
+/// attached form `-d<ff>` behaves the same; `-d<ff>` returns a line holding only
+/// the three U+FFFD bytes unchanged. The third section pins the letter position:
+/// `-\xff` returns that bare byte itself, followed by the three hard-coded usage
+/// lines, exit 1.
 #[test]
 fn a_raw_byte_delimiter_splits_the_field_and_a_raw_byte_letter_is_named() {
     let (out, code, err) = run_argv(&[b"-d\xff", b"-f", b"1"], b"a\xffb\tz\n");
@@ -180,9 +187,10 @@ fn scratch(name: &str) -> PathBuf {
     path
 }
 
-/// 参照件读数 `tmp/cut-428/ref-s.log`：`-s` 之下「没有分隔符的行」整行消失（不是
-/// 一枚空行），而「有分隔符但选不出字段」的行仍留下一枚换行——两形只在换行上差一字节，
-/// 却正好是「这一行到底算不算被写过」。
+/// Reference reading: under `-s`, a line "without a delimiter" vanishes whole
+/// (not as an empty line), while a line "with a delimiter but no selectable
+/// field" still leaves one newline — the two shapes differ by a single byte, and
+/// that byte is exactly "was this line written at all".
 #[test]
 fn a_suppressed_line_leaves_nothing_behind() {
     let (out, status, err) = run(&["-f", "3", "-s"], "x\na\tb\tc\n");
@@ -268,15 +276,19 @@ fn a_list_without_a_selector_is_the_bare_usage() {
 
 #[test]
 fn list_complaints_carry_no_offending_value() {
-    // `cut.c:196` and `:198` are `errx(1, "[-bcf] list: …")` with no `%s`：坏文本不会被
-    // 拼回句子里。零那一形走后一句，其他读不完的走前一句。
+    // `cut.c:196` and `:198` are `errx(1, "[-bcf] list: …")` with no `%s`: the bad
+    // text is not spliced back into the sentence. The zero form takes the latter
+    // sentence, other unreadable forms take the former.
     //
-    // 这一只拿两侧一致的形做金样。C 的 `get_list` 曾经比本树宽（`cut.c:171-174`
-    // 的注释写着「This parser is less restrictive than the Draft 9 POSIX spec」），
-    // 批次二百八十六已经把列表语法对齐：`strtok(list, ", \t")`（`:175`）折叠空项
-    // 并把空格与制表符也当分隔符，`5-2`（`:209-210` 不查大小关系）在 C 选中空
-    // 集合而不是报错，`-f ''` 连一次循环体都不进。这三形的读数另有四枚门钉住，
-    // 不在本枚里。
+    // This case takes shapes both sides agree on as the golden sample. C's
+    // `get_list` used to be more permissive than this tree (the comment at
+    // `cut.c:171-174` reads "This parser is less restrictive than the Draft 9
+    // POSIX spec"); the list syntax has since been aligned: `strtok(list, ", \t")`
+    // (`:175`) folds empty items and also treats space and tab as separators,
+    // `5-2` (`:209-210` checks no ordering) selects the empty set in C instead of
+    // erroring, and `-f ''` never enters the loop body even once. Those three
+    // shapes have four other gates pinning their readings; they are not in this
+    // one.
     for value in ["0", "0-5", "5-0"] {
         let (out, status, err) = run(&["-f", value], "a\n");
         assert_eq!(out, "", "列表 {value:?} 不该打任何内容");
@@ -311,9 +323,11 @@ fn a_bad_list_outranks_a_later_unknown_letter() {
 
 #[test]
 fn a_later_unknown_letter_outranks_the_conflict() {
-    // 与上一条相反的方向：两类列表并存不是环里的错，而是环外的四道 post-check
-    // 之一（`cut.c:120-128`）。所以 `-x` 排在并存之后时，C 报的是 `-x`（带 libc
-    // 那一行），而不是先报冲突。旧写法在选项环里就把冲突报掉了，这个形会反。
+    // The opposite direction from the case above: two list types coexisting is not
+    // an in-loop error but one of the four post-checks outside the loop
+    // (`cut.c:120-128`). So when `-x` comes after the coexistence, C reports `-x`
+    // (with the libc line) rather than the conflict first. The old spelling
+    // reported the conflict inside the option loop, which inverts this shape.
     let (out, status, err) = run(&["-b", "1", "-f", "2", "-x"], "a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);
@@ -335,9 +349,10 @@ fn a_multi_byte_delimiter_is_truncated_not_rejected() {
 
 #[test]
 fn a_reversed_range_selects_nothing_rather_than_erroring() {
-    // C 不查区间大小关系（`cut.c:209-210` 只是 `start++ <= stop` 地置位），所以
-    // `5-2` 一个位置也不置，而 `x_cut.c:69-87` 那个外层环路每行仍以一个换行结尾。
-    // 旧写法把它当成「illegal list value」拒掉。
+    // C checks no ordering of the range (`cut.c:209-210` just sets bits while
+    // `start++ <= stop`), so `5-2` sets no position at all, while the outer loop in
+    // `x_cut.c:69-87` still ends every line with one newline. The old spelling
+    // rejected it as "illegal list value".
     let (out, status, err) = run(&["-b", "5-2"], "abcde\nxyz\n");
     assert_eq!(out, "\n\n", "倒序区间选不中任何东西，但行还在");
     assert_eq!(status, 0, "stderr was {err:?}");
@@ -345,8 +360,9 @@ fn a_reversed_range_selects_nothing_rather_than_erroring() {
 
 #[test]
 fn separators_include_blank_space_and_empty_items() {
-    // `cut.c:175` 是 `strtok(list, ", \t")`：三个分隔符、空项折叠。所以五种写法
-    // 选到的是同一组位置（旧写法只认逗号，且把空项当错）。
+    // `cut.c:175` is `strtok(list, ", \t")`: three separators, empty items folded.
+    // So the five spellings select the same set of positions (the old spelling knew
+    // only the comma and treated empty items as errors).
     for list in ["1,3", "1 3", "1\t3", "1,,3", " 1 , 3 "] {
         let (out, status, err) = run(&["-b", list], "abcde\n");
         assert_eq!(out, "ac\n", "列表 {list:?} 的 stderr 是 {err:?}");
@@ -356,9 +372,10 @@ fn separators_include_blank_space_and_empty_items() {
 
 #[test]
 fn an_empty_list_is_not_an_error_and_prints_a_blank_line_per_input() {
-    // `get_list("")` 里 `strtok` 直接交 NULL，循环体一次也跑不到：不报错、也不置
-    // 任何位置（`cut.c:175`）；`x_cut.c:86` 又总给每行补一个换行。旧写法把空串
-    // 当成「illegal list value」。
+    // Inside `get_list("")` `strtok` returns NULL straight away, so the loop body
+    // never runs: no error, no positions set (`cut.c:175`); `x_cut.c:86` still
+    // appends one newline per line. The old spelling treated the empty string as
+    // "illegal list value".
     let (out, status, err) = run(&["-b", ""], "abc\nde\n");
     assert_eq!(out, "\n\n");
     assert_eq!(status, 0, "stderr was {err:?}");
@@ -366,8 +383,9 @@ fn an_empty_list_is_not_an_error_and_prints_a_blank_line_per_input() {
 
 #[test]
 fn more_than_sixteen_items_is_accepted() {
-    // C 的 positions 数组按需长大（`cut.c:163-164`、`:199-206`，每块
-    // `_POSIX2_LINE_MAX`），本树之前封顶 16 项。20 项该照切。
+    // C's positions array grows on demand (`cut.c:163-164`, `:199-206`, one
+    // `_POSIX2_LINE_MAX` block each); this tree used to cap it at 16. Twenty items
+    // must still cut.
     let list = (1..=20)
         .map(|n| n.to_string())
         .collect::<Vec<String>>()
@@ -380,11 +398,13 @@ fn more_than_sixteen_items_is_accepted() {
 
 #[test]
 fn a_trailing_dash_opens_the_line_end_but_a_dangling_one_is_illegal() {
-    // C 在 `*p == '-'` 上写了两个判据（`cut.c:186`、`:189`），不能压平成一件事。
-    // `1-2-` 是接受的：第二个判据跨过尾部那个 `-` 正好走到行尾，autostop 那一支
-    // 把 maxval 之后的内容原样打出（`x_cut.c:80-82`），效果就是从 1 打到行尾。
-    // `5--` 却不接受：`isdigit(p[1])` 不成立（`:187`），跨过索引 1 的 `-` 后还停在
-    // 索引 2 的 `-` 上 → 残留那句（`:195-196`）而不是零那句。
+    // C writes two criteria on `*p == '-'` (`cut.c:186`, `:189`) that must not be
+    // flattened into one thing. `1-2-` is accepted: the second criterion steps
+    // across the trailing `-` and lands exactly at end of line, and the autostop
+    // branch prints everything after maxval (`x_cut.c:80-82`), which amounts to
+    // printing from 1 to end of line. `5--` is rejected: `isdigit(p[1])` fails
+    // (`:187`), and after stepping across the `-` at index 1 the parser is still
+    // on the `-` at index 2 → the residual sentence (`:195-196`), not the zero one.
     let (out, status, err) = run(&["-b", "1-2-"], "abcde\n");
     assert_eq!(out, "abcde\n", "stderr 是 {err:?}");
     assert_eq!(status, 0);
@@ -413,10 +433,13 @@ fn an_unopenable_operand_prints_program_operand_and_errno_sentence() {
     let _ = fs::remove_file(&good);
 }
 
-/// `cut` 是这一族里 C **确实**归一化补换行的那支：每处理完一行都写一枚换行，
-/// 无尾换行的输入也被补上。参照件 `tmp/cut-406/cut_ref` 对 `alpha\nbeta\ngamma`
-/// 现量 `alp\nbet\ngam\n`。这一枚钉的是「归一化」本身，免得后来把 `head`/`tail`/
-/// `nl`/`uniq` 那条「不造换行」的判据顺手统一到 `cut` 上，反而与真源不符。
+/// `cut` is the one in this family where C **really** normalizes by appending a
+/// newline: it writes one newline after processing each line, so input without a
+/// trailing newline gets one too. Measured against the C reference `cut`:
+/// `alpha\nbeta\ngamma` yields `alp\nbet\ngam\n`. This test pins the normalization
+/// itself, so that the "does not invent newlines" criterion of
+/// `head`/`tail`/`nl`/`uniq` is not later unified onto `cut`, which would
+/// contradict ground truth.
 #[test]
 fn cut_normalizes_every_line_with_a_newline_even_the_last() {
     let (out, code, err) = run(&["-c", "1-3"], "alpha\nbeta\ngamma");
@@ -426,9 +449,10 @@ fn cut_normalizes_every_line_with_a_newline_even_the_last() {
     );
 }
 
-/// 换行当分隔符时的**壳侧**读数：`-d $'\n'` 的 `-f 2` 每行交回一枚换行、字段内容为空，
-/// 加上 `-s` 也一样（C 先给末行补上换行再扫，`cut.c:235-241`）；`-f 1` 则是通常的那一形。
-/// 对照参照件 `tmp/cut-406/cut_ref` 同形。
+/// The **shell-side** reading when newline is the delimiter: with `-d $'\n'`,
+/// `-f 2` returns one newline per line with empty field content, and the same
+/// holds with `-s` (C appends a newline to the last line before scanning,
+/// `cut.c:235-241`); `-f 1` is the ordinary shape. Matches the C reference `cut`.
 #[test]
 fn a_newline_delimiter_keeps_every_line_in_the_field_leg() {
     let (out, code, _) = run(&["-d", "\n", "-f", "2"], "a\nb c\n");

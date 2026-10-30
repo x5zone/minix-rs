@@ -3,11 +3,13 @@
 //! Mirrors `minix3/minix/servers/rs/manager.c:787-921` (`publish_service` —
 //! 787, `unpublish_service` — 864). 11-rs-publish.md.
 //!
-//! Wire-coupled steps: `ds_publish_label` 与 `DEVMAN_BIND`/`DEVMAN_UNBIND`
-//! 已在调用点接生产端（`shell_request.rs` 的 publish 闭包与 do_down 的
-//! UNBIND 半）；本模块own 判定谓词、消息成型助手与 `unpublish_service`
-//! 的 best-effort 聚合。**仍未接**：`mapdriver`（归 S12 传输批）与
-//! `pci_set_acl`/`pci_del_acl`（A-10 fail-closed，恒 false + 恒 0）。
+//! Wire-coupled steps: `ds_publish_label` and `DEVMAN_BIND`/`DEVMAN_UNBIND`
+//! are already connected to their production call sites (the publish closure
+//! in `shell_request.rs` and the UNBIND half of do_down); this module owns the
+//! decision predicates, the message-shaping helpers and the best-effort
+//! aggregation of `unpublish_service`. **Still unwired**: `mapdriver` (belongs
+//! to the transport batch) and `pci_set_acl`/`pci_del_acl` (fail-closed: always
+//! false, always 0).
 
 use crate::service_slot::PublicSlot;
 use minix_types::Endpoint;
@@ -23,8 +25,9 @@ pub fn should_map_driver(pub_: &PublicSlot) -> bool {
 /// Whether the service carries PCI ACL entries.
 ///
 /// C: `publish_service` — manager.c:826-838 (under `USE_PCI`):
-/// `rsp_nr_device || rsp_nr_class`. ARCH A-10: minix-rs has no PCI driver
-/// face, so the `rs_pci` structure (rs.h:154-161) is not modelled and the
+/// `rsp_nr_device || rsp_nr_class`. Architectural divergence: minix-rs has no
+/// PCI driver face, so the `rs_pci` structure (rs.h:154-161) is not modelled
+/// and the
 /// predicate is fail-closed (`false`); the semantic contract ("non-zero
 /// device/class counts trigger `pci_set_acl`") is preserved for the 19
 /// wiring (11-rs-publish.md §3.3).
@@ -41,12 +44,15 @@ pub fn should_bind_devman(pub_: &PublicSlot) -> bool {
     pub_.devman_id.is_some_and(|id| id != 0)
 }
 
-/// DEVMAN_BIND 消息（C `publish_service` — manager.c:846-849 的 m4 两域）。
+/// The DEVMAN_BIND message (the two m4 fields of C `publish_service`,
+/// manager.c:846-849).
 ///
-/// C 用自己的域别名写 `m.DEVMAN_ENDPOINT` / `m.DEVMAN_DEVICE_ID`；Rust 侧
-/// 按 05 的相位表落到共享 `m4` 词：**`m4l2` = 设备 id、`m4l3` = 服务端点**
-/// （与 UNBIND 同形，`devman/src/ipc/message.rs` 的相位表是同一张）。
-/// 结果在应答的 `m4l1`（`DEVMAN_RESULT`）。
+/// C writes the fields through its own aliases `m.DEVMAN_ENDPOINT` /
+/// `m.DEVMAN_DEVICE_ID`; the Rust side maps them onto the shared `m4` words
+/// of the message phase table: **`m4l2` = device id, `m4l3` = service
+/// endpoint** (the same shape as UNBIND; the phase table in
+/// `devman/src/ipc/message.rs` is the same one). The result comes back in the
+/// reply's `m4l1` (`DEVMAN_RESULT`).
 pub fn devman_bind_message(device: i32, endpoint: Endpoint) -> minix_types::Message {
     let mut m = minix_types::Message {
         m_type: minix_types::DEVMAN_BIND,
@@ -57,9 +63,9 @@ pub fn devman_bind_message(device: i32, endpoint: Endpoint) -> minix_types::Mess
     m
 }
 
-/// UNBIND 的应答结果字（`m4l1`，C `m.DEVMAN_RESULT`）。
+/// The reply result word (m4l1; C `m.DEVMAN_RESULT`).
 pub const fn devman_result(m: &minix_types::Message) -> i32 {
-    // SAFETY: DEVMAN 的应答把 RESULT 写在 m4l1（05 相位表）。
+    // SAFETY: DEVMAN replies write RESULT into m4l1 (the message phase table).
     unsafe { m.m_u.m_m4.m4l1 as i32 }
 }
 
@@ -90,7 +96,8 @@ pub fn unpublish_result(
     if !pci_del_ok && !shutting_down {
         result = minix_types::EIO;
     }
-    // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+    // [SD19-gate] best-effort tail; dropping the Result does not change an
+    // established primary result (C is void/ignores at the same site).
     #[allow(clippy::let_underscore_must_use)]
     let _ = devman_ok; // C: devman failures only log (manager.c:897-914)
     result
@@ -124,24 +131,26 @@ mod tests {
         assert!(!should_map_driver(&p));
     }
 
-    /// BIND 消息的字段（C manager.c:846-849）：m4l2=设备 id、m4l3=服务端点、
-    /// m_type=DEVMAN_BIND；应答结果字在 m4l1。
+    /// Fields of the BIND message (C manager.c:846-849): m4l2=device id,
+    /// m4l3=service endpoint, m_type=DEVMAN_BIND; the reply result word is in
+    /// m4l1.
     #[test]
     fn test_devman_bind_message_fields() {
         let m = devman_bind_message(5, Endpoint(9));
         assert_eq!(m.m_type, minix_types::DEVMAN_BIND);
-        // SAFETY(test): 按相位表读 m4 词。
+        // SAFETY(test): read the m4 words per the phase table.
         unsafe {
             assert_eq!(m.m_u.m_m4.m4l2, 5);
             assert_eq!(m.m_u.m_m4.m4l3, 9);
         }
         let mut answered = m;
-        // SAFETY(test): 应答把结果写在 m4l1。
+        // SAFETY(test): the reply writes the result into m4l1.
         unsafe {
             answered.m_u.m_m4.m4l1 = -22;
         }
         assert_eq!(devman_result(&answered), -22);
-        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        // [SD19-gate] best-effort tail; dropping the Result does not change an
+        // established primary result (C is void/ignores at the same site).
         #[allow(clippy::let_underscore_must_use)]
         let _ = Endpoint::NONE;
     }

@@ -116,10 +116,13 @@ pub fn reply_decision(request: CdevRequest, outcome: Result<usize, Errno>) -> Re
 /// every request for a device that has not been opened since the restart
 /// is dropped — except the open itself, which is both recorded and served.
 ///
-/// [ARCH: 字符框架判定核单点] 本判定与 [`classify`]/[`reply_decision`]
-/// 一起构成字符驱动判定核，权威定义住本库；input 服务器（原
-/// `os/servers/input/src/framework.rs` 独立副本）经本次架构演进改为本
-/// 库的消费者（edge E-CDRCONV，12-stage/02 与 16-stage/01 同步标注）。
+/// [ARCH: character framework decision core, single site] This verdict,
+/// together with [`classify`] and [`reply_decision`], forms the character
+/// driver decision core whose authoritative definition lives in this library;
+/// the input server (previously a standalone copy in
+/// `os/servers/input/src/framework.rs`) becomes a consumer of this library
+/// through this architectural evolution (noted in `12-stage-input/02` and
+/// `16-stage-drivers/01`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateVerdict {
     /// Serve the request (the device was opened after the restart).
@@ -402,7 +405,7 @@ pub fn cloned_minor(result: i32, requested: DeviceMinor) -> DeviceMinor {
 ///
 /// C: the file-static `running` flag (`chardriver.c:52`) and the
 /// open-device set (`chardriver.c:54-56`). The machinery is the shared
-/// driver-runtime core (`[ARCH: 驱动服务运行时统一]`) — the block
+/// driver-runtime core (`[ARCH: driver service runtime unification]`) — the block
 /// framework's identical copy was consolidated there; this alias keeps
 /// the character-family name over the shared implementation.
 pub type CharServer = minix_driver_rt::core::ServerState;

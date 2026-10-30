@@ -1,4 +1,4 @@
-//! The two seams: kernel verbs and peer-service verbs (A-12).
+//! The two seams: kernel verbs and peer-service verbs.
 //!
 //! MIB talks on two channels, and the split is the SCHED/DS house
 //! shape (`os/servers/sched/src/kernel_api/transport.rs`,
@@ -15,13 +15,12 @@
 //!   (`vm_info_stats`/`vm_info_usage`).
 //!
 //! Both traits are the **final shape**: every verb MIB's handlers will
-//! ever need is declared here, so later campaigns (P1-2 walker, P1-5
-//! tables, P1-1 assembly) consume instead of extend.
+//! ever need is declared here, so later campaigns consume instead of extend.
 //!
 //! The real end ([`SysTransport`]) reports `-EIO` on every verb until
 //! minix-sys grows the trap bodies and `SYS_*` wrappers — an honest
-//! failure, never a fake success (edge E1/E2; the DS `SysKernel`
-//! precedent). Tests drive the [`Recorder`] double instead.
+//! failure, never a fake success (the DS `SysKernel` precedent). Tests drive
+//! the [`Recorder`] double instead.
 
 use minix_sys::ds::DsClient;
 use minix_sys::pm::getnuid_via;
@@ -30,7 +29,7 @@ use minix_types::{EIO, Endpoint, GrantId};
 
 use crate::io::relay::RelayDir;
 
-/// Kernel calls: copy, grant, tables, clock (A-12's kernel half).
+/// Kernel calls: copy, grant, tables, clock (the kernel half).
 pub trait MibKernel {
     /// Copy from a caller's address space into `buf`.
     /// C: `sys_datacopy(src, src_addr, SELF, buf, n)` — main.c:183-184.
@@ -52,8 +51,8 @@ pub trait MibKernel {
     ) -> Result<GrantId, i32>;
 
     /// State-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11)
-    /// — the birth protocol's paragraph-1 kernel call (clear IPC filters,
-    /// PD-34). Default answers OK so mock kernels model an accepting kernel;
+    /// — the birth protocol's paragraph-1 kernel call (clear IPC filters).
+    /// Default answers OK so mock kernels model an accepting kernel;
     /// the production impl wires `minix_sys::syscall::sys_statectl` over the
     /// trap transport.
     fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
@@ -70,13 +69,13 @@ pub trait MibKernel {
     /// Uptime in clock ticks (16's pull discipline). C: `getticks` — proc.c:66.
     fn getticks(&mut self) -> Result<u64, i32>;
 
-    /// Ticks per second (time conversions, 16). C: `sys_hz` — proc.c:126 一带.
+    /// Ticks per second (time conversions, 16). C: `sys_hz` — around proc.c:126.
     fn hz(&mut self) -> Result<u32, i32>;
 
-    /// Boot time in epoch seconds (KERN_PROC2 的 `p_ustart_sec` 需要
-    /// "开机时刻 + 进程 started ticks"。C: `getuptime(NULL, NULL,
-    /// &boottime)` — proc.c:700；本实现走 `sys_times` 的 boot_time 域，
-    /// 与 PM 的 `SysClockSource` 同一来源）。
+    /// Boot time in epoch seconds (KERN_PROC2's `p_ustart_sec` needs
+    /// "boot instant + process started ticks". C: `getuptime(NULL, NULL,
+    /// &boottime)` — proc.c:700; this implementation uses the boot_time field of
+    /// `sys_times`, the same source as PM's `SysClockSource`).
     fn boottime(&mut self) -> Result<u64, i32>;
 }
 
@@ -104,7 +103,7 @@ pub trait MibServices {
     ) -> Result<(), i32>;
 
     /// Pull VM statistics (14's CTL_VM handlers).
-    /// C: `vm_info_stats`/`vm_info_usage` — vm.c:30-50 一带.
+    /// C: `vm_info_stats`/`vm_info_usage` — around vm.c:30-50.
     fn vm_info(&mut self, what: i32, ep: Endpoint, buf: &mut [u8]) -> Result<(), i32>;
 
     /// Relay a remote subtree call to its owning service (12).
@@ -131,16 +130,17 @@ pub trait MibServices {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SysTransport;
 
-/// The real peer-service end. DS 动词走 [`DsClient`](`retrieve_label_name`,
-/// minix-sys ds.rs 的 C ds.c:92-101 形状;标签查询的 DS 侧在 S22 通电后
-/// 为真),getnuid 走 pm.rs `getnuid_via`;其余动词的 wrapper 未落地
-/// (对端 producer 面归 S33 对账与 RS relay 域)——维持 `-EIO`
-/// fail-closed,wrapper 落地时逐动词换真,调用点不变。
+/// The real peer-service end. DS verbs go through [`DsClient`]
+/// (`retrieve_label_name`, the C ds.c:92-101 shape in minix-sys ds.rs; the DS side
+/// of label lookups is live now), getnuid goes through pm.rs `getnuid_via`; the
+/// remaining verbs have no landed wrapper yet (the peer producer face belongs to
+/// the RS relay domain) — they stay `-EIO` fail-closed, and each verb switches to
+/// the real thing once its wrapper lands, without touching call sites.
 pub struct SysServices {
     ipc: minix_sys::ipc::DirectTrapTransport,
     ds: DsClient<minix_sys::ipc::DirectTrapTransport, minix_sys::syscall::DirectKernelCallTransport>,
-    /// 本进程唯一的 grant 表（NK4-C 1.24：DsClient 不再自带私有表，
-    /// 由调用方注入；C 的 `grants` 全局在每进程只一份）。
+    /// The process's single grant table (DsClient no longer carries a private
+    /// table; the caller injects this one; C's `grants` global is one per process).
     grants: minix_sys::grant::GrantTable,
 }
 
@@ -160,7 +160,7 @@ impl Default for SysServices {
 
 impl MibKernel for SysTransport {
     fn statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32> {
-        // C `sys_statectl` 的真接线（trap 直连）：出生协议段一的生产形状。
+        // The real wiring of C `sys_statectl` (trap direct): the production shape of birth protocol phase one.
         let r = minix_sys::syscall::sys_statectl(
             &minix_sys::syscall::DirectKernelCallTransport,
             request,
@@ -210,8 +210,8 @@ impl MibKernel for SysTransport {
         Err(EIO)
     }
     fn boottime(&mut self) -> Result<u64, i32> {
-        // C getuptime 的 boottime 域——sys_times 顺带带回（与 PM 的
-        // SysClockSource 同一内核调用）。
+        // The boottime field of C getuptime — sys_times carries it back as well (the
+        // same kernel call as PM's SysClockSource).
         let t = minix_sys::syscall::sys_times(
             &minix_sys::syscall::DirectKernelCallTransport,
             minix_types::Endpoint::SELF.0,
@@ -222,15 +222,15 @@ impl MibKernel for SysTransport {
 
 impl MibServices for SysServices {
     fn getnuid(&mut self, who: Endpoint) -> Result<u32, i32> {
-        // C main.c:265-268 getnuid(who) → PM_GETEPINFO(minix-sys
-        // pm.rs getnuid_via;错误已折叠为 Errno,取 i32 透传)。
+        // C main.c:265-268 getnuid(who) → PM_GETEPINFO (minix-sys pm.rs
+        // getnuid_via; errors are already folded into Errno, pass i32 through).
         getnuid_via(&self.ipc, who).map(|uid| uid as u32).map_err(|e| e.to_i32())
     }
 
     fn getsysinfo(&mut self, target: Endpoint, what: i32, buf: &mut [u8]) -> Result<(), i32> {
-        // C `getsysinfo(PM/VFS/RS/DS, what, buf, size)`（getsysinfo.c:8-32
-        // 的路由 wrapper；目标服务器经内核拷贝把应答写进 buf 的本进程
-        // 地址）。
+        // C `getsysinfo(PM/VFS/RS/DS, what, buf, size)` (the routing wrapper at
+        // getsysinfo.c:8-32; the target server writes its answer into this process's
+        // buf address via a kernel copy).
         minix_sys::rs::system_info_via(
             &self.ipc,
             target,
@@ -242,8 +242,8 @@ impl MibServices for SysServices {
     }
 
     fn ds_retrieve_label_name(&mut self, who: Endpoint, buf: &mut [u8]) -> Result<usize, i32> {
-        // C remote.c:88 ds_retrieve_label_name(who)——register 的第一
-        // 步(remote.rs label_fits 的输入)。DS 侧在 S22 通电后为真。
+        // C remote.c:88 ds_retrieve_label_name(who) — the first step of register
+        // (input to remote.rs label_fits). The DS side is live now.
         self.ds.retrieve_label_name(&mut self.grants, who, buf)
     }
 
@@ -257,19 +257,20 @@ impl MibServices for SysServices {
     }
 
     fn vm_info(&mut self, what: i32, ep: Endpoint, buf: &mut [u8]) -> Result<(), i32> {
-        // C `vm_info_usage(who, vui)`（vm_info.c:25-33 的 RPC 面）：
-        // 请求走 M2（what/ep/count/next，utility.c:100），回复的负载按
-        // 26-D1 的值通道语义编进 **M1 槽位**（encode.rs InfoUsage 臂）：
-        //   p1/p2/p3 = vui_total/common/shared（字节）
-        //   i1/i2    = vui_virtual/mvirtual（**页数**）
-        //   i3       = vui_maxrss（KB，饱和）
-        //   minflt/majflt 无 M1 槽（V11/T31 裁决）——按零回填。
-        // 这里把 M1 槽位重装进 buf 的 `struct vm_usage_info` 域序
-        // （vm.h:48-58 八个 u64），virtual/mvirtual 还原成字节。
+        // C `vm_info_usage(who, vui)` (the RPC face at vm_info.c:25-33): the request
+        // uses m2 (what/ep/count/next, utility.c:100), and the reply payload is
+        // encoded into **m1 slots** per the value-channel semantics (encode.rs
+        // InfoUsage arm):
+        //   p1/p2/p3 = vui_total/common/shared (bytes)
+        //   i1/i2    = vui_virtual/mvirtual (**pages**)
+        //   i3       = vui_maxrss (KB, saturated)
+        //   minflt/majflt have no m1 slot — filled with zero.
+        // This code re-packs the m1 slots into buf in `struct vm_usage_info` field
+        // order (vm.h:48-58, eight u64s), converting virtual/mvirtual back to bytes.
         use minix_types::{Message, PAGE_SIZE, VM_INFO};
         let mut msg = Message { m_type: VM_INFO as i32, ..Message::default() };
-        // SAFETY: `mess_lsys_vm_info` 经 m2 overlay 携带
-        // what/ep/count/next（utility.c:100 的同一槽位集）。
+        // SAFETY: `mess_lsys_vm_info` carries what/ep/count/next through the m2
+        // overlay (the same slot set as utility.c:100).
         let m2 = unsafe { &mut msg.m_u.m_m2 };
         m2.m2i1 = what;
         m2.m2i2 = ep.0;
@@ -279,7 +280,7 @@ impl MibServices for SysServices {
         if msg.m_type < 0 {
             return Err(-msg.m_type);
         }
-        // SAFETY: VM 的成功回复用 M1 槽位带负载（encode.rs InfoUsage 臂）。
+        // SAFETY: a successful VM reply carries its payload in m1 slots (encode.rs InfoUsage arm).
         let m1 = unsafe { &msg.m_u.m_m1 };
         let words = [
             m1.m1p1,
@@ -288,8 +289,8 @@ impl MibServices for SysServices {
             (m1.m1i1.max(0) as u64).saturating_mul(PAGE_SIZE),
             (m1.m1i2.max(0) as u64).saturating_mul(PAGE_SIZE),
             m1.m1i3.max(0) as u64,
-            0, // vui_minflt：wire 无槽（V11/T31）
-            0, // vui_majflt：同上
+            0, // vui_minflt: no wire slot
+            0, // vui_majflt: same
         ];
         for (i, word) in words.iter().enumerate() {
             let at = i * 8;
@@ -426,14 +427,14 @@ pub(crate) mod recording {
             match self.grants.first() {
                 Some(Ok(id)) => {
                     let id = *id;
-                    // [SD19-gate] 测试夹内队首弹出：分支已由 first() 定型，remove 失败由后续断言体现
+                    // [SD19-gate] Pop the front inside the test fixture: the branch is fixed by first(), and a failed remove surfaces in later assertions
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.grants.remove(0);
                     Ok(id)
                 }
                 Some(Err(code)) => {
                     let code = *code;
-                    // [SD19-gate] 测试夹内队首弹出：分支已由 first() 定型，remove 失败由后续断言体现
+                    // [SD19-gate] Pop the front inside the test fixture: the branch is fixed by first(), and a failed remove surfaces in later assertions
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.grants.remove(0);
                     Err(code)
@@ -474,14 +475,14 @@ pub(crate) mod recording {
             match self.uids.first() {
                 Some(Ok(uid)) => {
                     let uid = *uid;
-                    // [SD19-gate] 测试夹内队首弹出：分支已由 first() 定型，remove 失败由后续断言体现
+                    // [SD19-gate] Pop the front inside the test fixture: the branch is fixed by first(), and a failed remove surfaces in later assertions
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.uids.remove(0);
                     Ok(uid)
                 }
                 Some(Err(code)) => {
                     let code = *code;
-                    // [SD19-gate] 测试夹内队首弹出：分支已由 first() 定型，remove 失败由后续断言体现
+                    // [SD19-gate] Pop the front inside the test fixture: the branch is fixed by first(), and a failed remove surfaces in later assertions
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.uids.remove(0);
                     Err(code)
@@ -562,8 +563,8 @@ mod tests {
         assert_eq!(t.hz(), Err(EIO));
         // Revokes stay silent — there is nothing to revoke.
         t.grant_revoke(3);
-        // The service half fails closed just as honestly(宿主构建下
-        // 真 wrapper 的 trap 后端回答 -EIO,断言不变)。
+        // The service half fails closed just as honestly (on host builds the real
+        // wrapper's trap backend answers -EIO; the assertions are unchanged).
         let mut services = SysServices::default();
         let mut name_buf = [0u8; 8];
         assert_eq!(services.getnuid(Endpoint::PM), Err(EIO));

@@ -1,17 +1,20 @@
-//! PM 启动链：SEF 回调注册 + `sef_cb_init_fresh` 等价实现。
+//! The PM startup chain: SEF callback registration plus a `sef_cb_init_fresh`
+//! equivalent.
 //!
-//! C 对应: `minix3/minix/servers/pm/main.c:131-244`（main / sef_local_startup /
-//!         sef_cb_init_fresh）+ `minix3/minix/servers/pm/schedule.c:36-69`
-//!         （sched_init 调用点）。
-//! 文档: `rewrite-notes/04-stage-pm/01-pm-init-main.md`
+//! C counterpart: `minix3/minix/servers/pm/main.c:131-244` (main /
+//! sef_local_startup / sef_cb_init_fresh) plus
+//! `minix3/minix/servers/pm/schedule.c:36-69` (the sched_init call site).
+//! Documents: `rewrite-notes/04-stage-pm/01-pm-init-main.md`.
 //!
-//! 主循环（run）细节见 04-ipc-dispatch.md；VFS 异步回复状态机见
-//! 05-vfs-interaction.md；调度协议见 16-scheduling.md。
+//! The main loop (run) is detailed in 04-ipc-dispatch.md; the VFS asynchronous
+//! reply state machine in 05-vfs-interaction.md; the scheduling protocol in
+//! 16-scheduling.md.
 //!
-//! # 单线程模型
+//! # Single-thread model
 //!
-//! PM 是用户态服务器（单线程事件循环）。本模块全部状态由
-//! `PmServer` 独占持有，无跨线程共享；`Cell`/`&mut` 在单线程下安全。
+//! PM is a userland server (a single-threaded event loop). All state in this
+//! module is held exclusively by `PmServer`, with no cross-thread sharing;
+//! `Cell`/`&mut` are safe under one thread.
 
 use crate::event::EventRegistry;
 use crate::ipc::{
@@ -24,14 +27,15 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-// ── 常量（C: minix3/minix/servers/pm + include）──
+// ── Constants (C: minix3/minix/servers/pm + include) ──
 
 /// C: `MULTIBOOT_PARAM_BUF_SIZE` — include/arch/earm/include/multiboot.h:240。
 pub const MULTIBOOT_PARAM_BUF_SIZE: usize = 1024;
 
 /// C: `VFS_PM_RQ_BASE` / `VFS_PM_INIT` — include/minix/com.h:513/520。
 ///
-/// 协议常量与 `VfsPmInit` 编解码已上移 minix-types（PM/VFS 单一事实源）。
+/// The protocol constants and the `VfsPmInit` codec have moved up to
+/// minix-types (the single source of truth shared by PM and VFS).
 pub use minix_types::{VFS_PM_INIT, VFS_PM_RQ_BASE, VfsPmInit};
 
 /// C: `VFS_PROC_NR` — include/minix/com.h:61。
@@ -48,23 +52,23 @@ pub const MAX_USER_Q: i32 = 0;
 /// C: `MIN_USER_Q` — include/minix/config.h:71（= NR_SCHED_QUEUES - 1）。
 pub const MIN_USER_Q: i32 = NR_SCHED_QUEUES - 1;
 
-/// C: `USER_QUANTUM` — include/minix/config.h:74（用户进程时间片）。
+/// C: `USER_QUANTUM` — include/minix/config.h:74 (the user-process time slice).
 pub const USER_QUANTUM: i32 = 200;
-/// C: `USER_Q` — include/minix/config.h:69（默认用户队列）。
+/// C: `USER_Q` — include/minix/config.h:69 (the default user queue).
 pub const USER_Q: i32 = (MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q;
-/// C: `USR_Q` — include/minix/priv.h:95（用户进程，= USER_Q）。
+/// C: `USR_Q` — include/minix/priv.h:95 (user process, = USER_Q).
 pub const USR_Q: i32 = USER_Q;
-/// C: `SRV_Q` — include/minix/priv.h:93（系统服务，= USER_Q）。
+/// C: `SRV_Q` — include/minix/priv.h:93 (system service, = USER_Q).
 pub const SRV_Q: i32 = USER_Q;
 
-/// C: `PRIO_MIN` / `PRIO_MAX` — sys/sys/resource.h:43-44（libc 提供）。
+/// C: `PRIO_MIN` / `PRIO_MAX` — sys/sys/resource.h:43-44 (provided by libc).
 pub const PRIO_MIN: i32 = -20;
 pub const PRIO_MAX: i32 = 20;
 
-// ── 信号编号（C: sys/sys/signal.h）──
+// ── Signal numbers (C: sys/sys/signal.h) ──
 //
-// 仅供本模块构建编译期信号集合使用；完整信号语义见 11-signal-core.md /
-// 12-signal-handlers.md。
+// Only used by this module to build the compile-time signal sets; the full
+// signal semantics are in 11-signal-core.md / 12-signal-handlers.md.
 
 /// C: `SIGQUIT` — signal.h:48。
 const SIGQUIT: i32 = 3;
@@ -91,19 +95,20 @@ const SIGWINCH: i32 = 28;
 /// C: `SIGINFO` — signal.h:73。
 const SIGINFO: i32 = 29;
 
-/// 构造单个信号的位图。位基对齐 C `__sigmask(n) = 1 << ((n-1) & 31)`
-///（`sys/sys/sigtypes.h:67`，`sigaddset`/`sigismember` 的语义）：bit i
-/// 对应信号 i+1，本 crate 的 `SigSet` 数值因此与 C `sigset_t` 逐位可比。
-/// 位基只允许出现在本函数——调用方一律传信号编号。
+/// Build the bit for a single signal. The bit base matches C
+/// `__sigmask(n) = 1 << ((n-1) & 31)` (`sys/sys/sigtypes.h:67`, the semantics of
+/// `sigaddset`/`sigismember`): bit i corresponds to signal i+1, so this crate's
+/// `SigSet` value is bit-for-bit comparable with C's `sigset_t`. The bit base may
+/// appear only in this function — callers always pass a signal number.
 pub(crate) const fn sig_bit(sig: i32) -> SigSet {
     1u64 << (sig - 1)
 }
 
-/// 引发 core dump 的信号集合。
+/// The set of signals that cause a core dump.
 ///
 /// C: `core_sigs[]` — main.c:137-138：SIGQUIT/SIGILL/SIGTRAP/SIGABRT/SIGEMT/
 /// SIGFPE/SIGBUS/SIGSEGV。
-#[allow(dead_code)] // 消费方：11-signal-core.md（signal.rs sig_proc_exit）。
+#[allow(dead_code)] // consumer: 11-signal-core.md (signal.rs sig_proc_exit).
 pub(crate) const CORE_SIGSET: SigSet = sig_bit(SIGQUIT)
     | sig_bit(SIGILL)
     | sig_bit(SIGTRAP)
@@ -113,17 +118,18 @@ pub(crate) const CORE_SIGSET: SigSet = sig_bit(SIGQUIT)
     | sig_bit(SIGBUS)
     | sig_bit(SIGSEGV);
 
-/// 默认忽略的信号集合。
+/// The set of signals ignored by default.
 ///
 /// C: `ign_sigs[]` — main.c:139：SIGCHLD/SIGWINCH/SIGCONT/SIGINFO。
-#[allow(dead_code)] // 消费方：11-signal-core.md（signal.rs check_sig）。
+#[allow(dead_code)] // consumer: 11-signal-core.md (signal.rs check_sig).
 pub(crate) const IGN_SIGSET: SigSet =
     sig_bit(SIGCHLD) | sig_bit(SIGWINCH) | sig_bit(SIGCONT) | sig_bit(SIGINFO);
 
-/// 不可忽略的信号集合（即使被设置为忽略也强制默认处理）。
+/// The set of signals that cannot be ignored (the default action is forced even
+/// if ignoring was requested).
 ///
 /// C: `noign_sigs[]` — main.c:140-141：SIGILL/SIGTRAP/SIGEMT/SIGFPE/SIGBUS/SIGSEGV。
-#[allow(dead_code)] // 消费方：11-signal-core.md（signal.rs check_sig）。
+#[allow(dead_code)] // consumer: 11-signal-core.md (signal.rs check_sig).
 pub(crate) const NOIGN_SIGSET: SigSet = sig_bit(SIGILL)
     | sig_bit(SIGTRAP)
     | sig_bit(SIGEMT)
@@ -131,38 +137,43 @@ pub(crate) const NOIGN_SIGSET: SigSet = sig_bit(SIGILL)
     | sig_bit(SIGBUS)
     | sig_bit(SIGSEGV);
 
-// ── 启动参数 ──
+// ── Boot parameters ──
 
-/// PM 启动参数。
+/// PM boot parameters.
 ///
-/// C 中由 `sys_getmonparams`（main.c:167-170）+ `sys_getimage`
-/// （main.c:172-176）+ `sys_hz`（main.c:238）三个内核 IPC 填充全局/静态
-/// 缓冲；Rust 侧显式聚合为启动契约（与 VM `BootParams` 同型）。
+/// In C, three kernel IPCs — `sys_getmonparams` (main.c:167-170),
+/// `sys_getimage` (main.c:172-176) and `sys_hz` (main.c:238) — fill global or
+/// static buffers; the Rust side aggregates them explicitly into a boot contract
+/// (the same shape as VM's `BootParams`).
 #[derive(Debug, Clone)]
 pub struct BootParams {
-    /// Boot monitor 参数缓冲。
+    /// The boot monitor parameter buffer.
     ///
-    /// C: `monitor_params`（glo.h:10，`MULTIBOOT_PARAM_BUF_SIZE` 字节）。
-    /// 语义（find_param）见 20-misc-queries.md。
+    /// C: `monitor_params` (glo.h:10, `MULTIBOOT_PARAM_BUF_SIZE` bytes). Its
+    /// semantics (find_param) are in 20-misc-queries.md.
     pub monitor_params: [u8; MULTIBOOT_PARAM_BUF_SIZE],
-    /// 内核 boot image 表（kernel/table.c 定义，sys_getimage 拷贝）。
+    /// The kernel boot image table (defined in kernel/table.c, copied by
+    /// sys_getimage).
     ///
     /// C: `static struct boot_image image[NR_BOOT_PROCS]` — main.c:135。
     pub boot_image: [minix_types::BootImage; NR_BOOT_PROCS],
-    /// 系统时钟频率（HZ）。
+    /// The system clock frequency (HZ).
     ///
-    /// C: `system_hz = sys_hz()` — main.c:238；定时器语义见 14-itimer.md。
+    /// C: `system_hz = sys_hz()` — main.c:238; timer semantics are in
+    /// 14-itimer.md.
     pub system_hz: u32,
-    /// VFS 进程 endpoint（VFS_PROC_NR）。
+    /// The VFS process endpoint (VFS_PROC_NR).
     pub vfs_endpoint: Endpoint,
 }
 
 impl BootParams {
-    /// 占位参数（内核 IPC 落地前的测试/开发用值）。
+    /// Placeholder parameters (values for tests and development before the kernel
+    /// IPCs land).
     ///
-    /// boot image 全为空条目（`endpoint == NONE`，`fill_boot_procs` 全部
-    /// 跳过——占位参数不会产生任何进程）。生产 main 用
-    /// [`BootParams::acquire_from`] 换真实内核答案。
+    /// The boot image is all empty entries (`endpoint == NONE`, so
+    /// `fill_boot_procs` skips every one — placeholder parameters produce no
+    /// process at all). The production main replaces them with real kernel answers
+    /// through [`BootParams::acquire_from`].
     pub fn placeholder() -> Self {
         Self {
             monitor_params: [0; MULTIBOOT_PARAM_BUF_SIZE],
@@ -172,17 +183,18 @@ impl BootParams {
         }
     }
 
-    /// 真实启动获取（D-02 消费半，S42 ② boot 真值链）。
+    /// Acquire the real boot values.
     ///
-    /// C main.c:167-238 的三个内核 IPC——`sys_getmonparams`（:167-170）、
-    /// `sys_getimage`（:172-176）、`sys_hz`（:238）——按 minix-sys wrapper
-    /// 取回并按 wire 权威解码：monitor params 为
-    /// `MULTIBOOT_PARAM_BUF_SIZE` 全长（kernel do_getinfo.c:143-146 的
-    /// `length = sizeof(kinfo.param_buf)`），image 为
-    /// `NR_BOOT_PROCS × BootImageStruct`（do_getinfo.c:86-90）。
-    /// 任一内核调用失败折为 `Err(原始 errno)`——C 对应 panic
-    /// （"get monitor params failed"/"couldn't get image table"），生产
-    /// main 据此停车，不让半真数据进启动契约。
+    /// The three kernel IPCs of C main.c:167-238 — `sys_getmonparams` (:167-170),
+    /// `sys_getimage` (:172-176) and `sys_hz` (:238) — are fetched through the
+    /// minix-sys wrappers and decoded per the wire authority: monitor params at
+    /// the full `MULTIBOOT_PARAM_BUF_SIZE` length (kernel do_getinfo.c:143-146's
+    /// `length = sizeof(kinfo.param_buf)`), the image as
+    /// `NR_BOOT_PROCS × BootImageStruct` (do_getinfo.c:86-90). Any kernel call
+    /// failure folds into `Err(the original errno)` — the C counterpart panics
+    /// ("get monitor params failed"/"couldn't get image table"), and the
+    /// production main stops on it rather than letting half-true data into the
+    /// boot contract.
     pub fn acquire_from(
         transport: &impl minix_sys::syscall::KernelCallTransport,
     ) -> Result<Self, i32> {
@@ -192,9 +204,10 @@ impl BootParams {
         sys_getmonparams(transport, &mut monitor_params)?;
 
         let mut wire = [minix_types::BootImageStruct::default(); NR_BOOT_PROCS];
-        // SAFETY: `[BootImageStruct; N]` 是 repr(C) 的 POD 数组
-        //（minix-types boot_image.rs 布局冻结测试钉值），整块按字节
-        // 可写；内核 GET_IMAGE 按同一布局填充。
+        // SAFETY: `[BootImageStruct; N]` is a repr(C) POD array (the layout is
+        // pinned by the freeze test in minix-types boot_image.rs), so the whole
+        // block is byte-writable; the kernel GET_IMAGE fills it in the same
+        // layout.
         let bytes = unsafe {
             core::slice::from_raw_parts_mut(
                 wire.as_mut_ptr() as *mut u8,
@@ -213,67 +226,78 @@ impl BootParams {
             monitor_params,
             boot_image,
             system_hz,
-            // C 与 VFS 的同步恒发往 VFS_PROC_NR 常量（main.c:229/:234），
-            // 非占位数据。
+            // The sync with VFS always goes to the VFS_PROC_NR constant
+            // (main.c:229/:234), not placeholder data.
             vfs_endpoint: Endpoint::VFS,
         })
     }
 }
 
-// ── PM 服务器 ──
+// ── The PM server ──
 
-/// PM 服务器：进程表 + 启动参数 + IPC 传输。
+/// The PM server: process table + boot parameters + IPC transport.
 ///
-/// C: 全局 `mproc[]` + `monitor_params` + `system_hz`（glo.h）。
-/// Rust: 显式聚合为单一结构（A-2 全局变量 → PmContext/PmServer）。
+/// C: the globals `mproc[]` + `monitor_params` + `system_hz` (glo.h).
+/// Rust: explicitly aggregated into one struct (globals become
+/// PmContext/PmServer).
 ///
-/// `T` 为 IPC 传输实现（生产 `KernelIpcTransport`，测试 mock）。
+/// `T` is the IPC transport implementation (production
+/// `KernelIpcTransport`, mocks in tests).
 pub struct PmServer<T: IpcTransport = KernelIpcTransport> {
-    /// PM 进程表（mproc）。
+    /// The PM process table (mproc).
     table: ProcTable,
-    /// 进程事件注册表（`event.c:60-67` `subs/nsubs/nested` 聚合，ARCH A-3）。
+    /// The process event registry (`event.c:60-67`'s aggregate of
+    /// `subs/nsubs/nested`, ARCH: A-3).
     ///
-    /// 文档：`rewrite-notes/04-stage-pm/06-event-subscription.md`。
+    /// Document: `rewrite-notes/04-stage-pm/06-event-subscription.md`.
     event_registry: EventRegistry,
-    /// 内核调用出口（SYS_CLEAR 等，2026-09-06 D-18 接线；pre-E1 诚实回 -EIO）。
+    /// The kernel-call exit (SYS_CLEAR etc.; honest `-EIO` before the E1
+    /// power-on).
     kern: Box<dyn crate::exit::KernelGateway>,
-    /// 启动参数。
+    /// Boot parameters.
     params: BootParams,
-    /// IPC 传输（VFS_PM_INIT 同步等）。
+    /// The IPC transport (VFS_PM_INIT sync etc.).
     transport: T,
-    /// 内核定时器出口（CLOCK notify → `expire_timers`，14-itimer.md；
-    /// 生产 `SysTimerCtl` 本地簿记 + 内核时钟，测试注入脚本化实现）。
+    /// The kernel timer exit (CLOCK notify → `expire_timers`, 14-itimer.md;
+    /// production `SysTimerCtl` keeps local bookkeeping plus the kernel clock,
+    /// tests inject scripted implementations).
     timer: Box<dyn crate::timer::TimerCtl>,
-    /// 虚拟计时器出口（SIGVTALRM/SIGPROF 重挂，14-itimer.md；SIGKSIG
-    /// 拉取经 process_ksig 消费；生产 `SysVTimerCtl` 委托 sys_vtimer）。
+    /// The virtual timer exit (SIGVTALRM/SIGPROF re-arming, 14-itimer.md; the
+    /// SIGKSIG pull is consumed through process_ksig; production `SysVTimerCtl`
+    /// delegates to sys_vtimer).
     vtimer: Box<dyn crate::timer::VTimerCtl>,
-    /// SVRCTL 参数存储(C: `local_param_overrides` 静态表 + monitor 串,
-    /// misc.c:305-310;S8 批次 G)。
+    /// SVRCTL parameter storage (C: the `local_param_overrides` static table plus
+    /// the monitor string, misc.c:305-310).
     svrctl_store: crate::misc::ParamStore,
-    /// 调用计数(C: `ENABLE_SYSCALL_STATS` 的 counters[],misc.c:64;
-    /// D-32:按调用号计数,feature 门控)。字节面即 SI_CALL_STATS 应答。
+    /// Call counters (C: `ENABLE_SYSCALL_STATS`'s counters[], misc.c:64; counted
+    /// per call number and gated by a feature). This byte face is the SI_CALL_STATS
+    /// reply.
     call_stats: alloc::vec::Vec<u8>,
-    /// `init()` 是否已完成（run() 前置断言）。
+    /// Whether `init()` has completed (the precondition asserted by run()).
     initialized: bool,
-    /// 内核中止标志（C: `glo.h:26` `abort_flag`；由 do_reboot 写入，归 20-misc-queries.md）。
+    /// The kernel abort flag (C: `glo.h:26` `abort_flag`; written by do_reboot,
+    /// documented in 20-misc-queries.md).
     ///
-    /// 仅在 `VFS_PM_REBOOT_REPLY` 特例经 [`crate::ipc::vfs::PmServices`] 读取并传给
-    /// `sys_abort`（见 05-design.v1.md D8）。
+    /// Read only in the `VFS_PM_REBOOT_REPLY` special case, through
+    /// [`crate::ipc::vfs::PmServices`], and passed to `sys_abort` (see the PM
+    /// interaction design notes).
     abort_flag: i32,
 }
 
 impl PmServer<KernelIpcTransport> {
-    /// 使用生产 IPC 传输创建服务器（空进程表 + 占位参数）。
+    /// Create a server with the production IPC transport (empty process table plus
+    /// the given boot parameters).
     pub fn new(params: BootParams) -> Self {
         Self::with_transport(params, KernelIpcTransport::new())
     }
 }
 
 impl<T: IpcTransport> PmServer<T> {
-    /// 使用显式传输创建服务器（测试注入 mock）。
+    /// Create a server with an explicit transport (tests inject a mock).
     ///
-    /// 内核网关默认取生产实现（trap 通道，pre-E1 回 `-EIO`）；测试可经
-    /// [`Self::with_kernel_gateway`] 注入脚本化网关。
+    /// The kernel gateway defaults to the production implementation (trap
+    /// channel, `-EIO` before E1); tests can inject a scripted gateway through
+    /// [`Self::with_kernel_gateway`].
     pub fn with_transport(params: BootParams, transport: T) -> Self {
         Self::with_kernel_gateway(
             params,
@@ -284,7 +308,8 @@ impl<T: IpcTransport> PmServer<T> {
         )
     }
 
-    /// 显式指定内核网关构造（测试注入脚本化网关；真实通电挂 edge E1）。
+    /// Construct with an explicit kernel gateway (tests inject a scripted
+    /// gateway; the real power-on hangs off edge E1).
     pub fn with_kernel_gateway(
         params: BootParams,
         transport: T,
@@ -299,8 +324,8 @@ impl<T: IpcTransport> PmServer<T> {
         )
     }
 
-    /// 显式指定内核网关与定时器出口构造（测试注入脚本化实现；
-    /// 真实通电挂 edge E1/E6）。
+    /// Construct with an explicit kernel gateway and timer exits (tests inject
+    /// scripted implementations; the real power-on hangs off edges E1/E6).
     #[allow(clippy::too_many_arguments)]
     pub fn with_timer_ctl(
         params: BootParams,
@@ -310,8 +335,9 @@ impl<T: IpcTransport> PmServer<T> {
         vtimer: Box<dyn crate::timer::VTimerCtl>,
     ) -> Self {
         Self {
-            // C: 第一步（main.c:146-152）mproc 表初始化——ProcTable::new()
-            // 保证空槽（Lifecycle::Unused）+ PID 生成器就绪。
+            // C: the first step (main.c:146-152) initializes the mproc table —
+            // ProcTable::new() guarantees empty slots (Lifecycle::Unused) and a
+            // ready PID generator.
             call_stats: alloc::vec![0u8; 48 * 4],
             svrctl_store: crate::misc::ParamStore::new(
                 String::from_utf8_lossy(
@@ -331,70 +357,77 @@ impl<T: IpcTransport> PmServer<T> {
             timer,
             vtimer,
             initialized: false,
-            // 内核中止标志初始为 0（无中止）；do_reboot 在 20-misc-queries.md 写入。
+            // The kernel abort flag starts at 0 (no abort); do_reboot writes it
+            // (20-misc-queries.md).
             abort_flag: 0,
         }
     }
 
-    /// 进程表引用（测试/断言用）。
+    /// The process table (for tests and assertions).
     pub fn table(&self) -> &ProcTable {
         &self.table
     }
 
-    /// 进程表可变引用（harness/集成测试的进程播种用）。
+    /// Mutable process table (used by the harness and integration tests to seed
+    /// processes).
     ///
-    /// C 中 `mproc` 是文件级全局，boot image 之外的测试进程在 main 循环前
-    /// 直接填表；Rust 侧集成测试（`tests/run_once_integration.rs`）经此
-    /// 播种 caller/parent——生产路径（`init_fresh`/`fill_boot_procs`）
-    /// 不经过本访问器。
+    /// In C, `mproc` is a file-level global, and test processes outside the boot
+    /// image are written into the table directly before the main loop; the Rust
+    /// integration test (`tests/run_once_integration.rs`) seeds the caller/parent
+    /// through this accessor — the production path
+    /// (`init_fresh`/`fill_boot_procs`) never goes through it.
     pub fn table_mut(&mut self) -> &mut ProcTable {
         &mut self.table
     }
 
-    /// 传输引用（wire 断言用）。
+    /// The transport (for wire assertions).
     pub fn transport(&self) -> &T {
         &self.transport
     }
 
-    /// 传输可变引用（集成测试的消息预置/应答脚本用）。
+    /// Mutable transport (used by integration tests to preset messages and script
+    /// replies).
     pub fn transport_mut(&mut self) -> &mut T {
         &mut self.transport
     }
 
-    /// 执行启动初始化。
+    /// Run the startup initialization.
     ///
-    /// C: `sef_cb_init_fresh` — main.c:131-243。步骤顺序与 C 一一对应：
+    /// C: `sef_cb_init_fresh` — main.c:131-243. The step order corresponds
+    /// one-to-one with C:
     ///
     /// ```text
-    /// main.c:146-152  mproc 表 + 定时器初始化 → ProcTable::new()（构造时）
-    /// main.c:154-165  信号集合构建            → 编译期常量（CORE_SIGSET 等）
-    /// main.c:167-170  sys_getmonparams        → BootParams::monitor_params（占位）
-    /// main.c:172-176  sys_getimage            → BootParams::boot_image（占位）
-    /// main.c:177-229  boot image 填充 mproc    → fill_boot_procs()
-    /// main.c:220-236  VFS_PM_INIT 同步         → vfs_init_sync()
-    /// main.c:238      system_hz = sys_hz()     → BootParams::system_hz（占位）
-    /// main.c:241      sched_init()             → init_scheduling()
+    /// main.c:146-152  mproc table + timer init -> ProcTable::new() (at construction)
+    /// main.c:154-165  signal set construction  -> compile-time constants (CORE_SIGSET etc.)
+    /// main.c:167-170  sys_getmonparams         -> BootParams::monitor_params (placeholder)
+    /// main.c:172-176  sys_getimage             -> BootParams::boot_image (placeholder)
+    /// main.c:177-229  boot image fills mproc   -> fill_boot_procs()
+    /// main.c:220-236  VFS_PM_INIT sync         -> vfs_init_sync()
+    /// main.c:238      system_hz = sys_hz()     -> BootParams::system_hz (placeholder)
+    /// main.c:241      sched_init()             -> init_scheduling()
     /// ```
     pub fn init(&mut self) {
-        // 第 5 步：boot image 填充（INIT + 系统进程）。
+        // Step 5: boot image fill (INIT + system processes).
         self.fill_boot_procs();
 
-        // 第 6 步：与 VFS 交换进程表（逐条 send + 末条 sendrec 屏障）。
+        // Step 6: exchange the process table with VFS (one send per entry plus a
+        // final sendrec barrier).
         self.vfs_init_sync();
 
-        // 第 8 步：为 INIT 指定用户态调度器（SCHED 协议细节归 16）。
+        // Step 8: assign INIT its userland scheduler (the SCHED protocol details
+        // are in doc 16).
         self.init_scheduling();
 
         self.initialized = true;
     }
 
-    /// 进入主循环（永不返回）。
+    /// Enter the main loop (never returns).
     ///
-    /// C: `main()` 主循环 — main.c:59-110。
+    /// C: `main()`'s main loop — main.c:59-110.
     ///
-    /// 单轮处理在 [`Self::run_once`]（测试可单轮驱动）；`run` 只提供
-    /// 无限循环 + receive 失败上限（防 busy-spin，与 VM
-    /// `vm_server.rs::run` 同型）。
+    /// A single pass lives in [`Self::run_once`] (tests can drive one pass); `run`
+    /// only provides the infinite loop plus a receive-failure cap (against
+    /// busy-spin, the same shape as VM's `vm_server.rs::run`).
     pub fn run(&mut self) -> ! {
         assert!(self.initialized, "PmServer::run() called before init()");
 
@@ -403,8 +436,9 @@ impl<T: IpcTransport> PmServer<T> {
             match self.run_once() {
                 RunStep::Handled => consecutive_recv_failures = 0,
                 RunStep::ReceiveFailed => {
-                    // C: sef_receive_status 阻塞直到消息到达（main.c:61），
-                    // 因此 receive Err 意味着传输本身损坏——fail-fast。
+                    // C: sef_receive_status blocks until a message arrives
+                    // (main.c:61), so a receive Err means the transport itself is
+                    // broken — fail-fast.
                     consecutive_recv_failures = consecutive_recv_failures.saturating_add(1);
                     if consecutive_recv_failures >= MAX_CONSECUTIVE_RECV_FAILURES {
                         panic!(
@@ -417,24 +451,26 @@ impl<T: IpcTransport> PmServer<T> {
         }
     }
 
-    /// 处理恰好一条 IPC 消息（或一次 receive 失败）。
+    /// Handle exactly one IPC message (or one receive failure).
     ///
-    /// 镜像 C 主循环单轮（main.c:59-106）：
+    /// Mirrors one pass of C's main loop (main.c:59-106):
     ///
     /// ```text
-    /// sef_receive_status      → receive()（transport）
-    /// is_ipc_notify           → 跳过（CLOCK → expire_timers 归 14）
-    /// pm_isokendpt            → caller 槽位验证（03）
-    /// EXITING 丢弃            → 退出中进程的延迟调用直接丢弃
-    /// 三路分发                → dispatch_message（VFS/事件/PM 调用）
-    /// result != SUSPEND       → reply()（ReplyIntent::Reply）
+    /// sef_receive_status      -> receive() (transport)
+    /// is_ipc_notify           -> skip (CLOCK -> expire_timers, doc 14)
+    /// pm_isokendpt            -> caller slot validation (doc 03)
+    /// EXITING drop            -> a deferred call of an exiting process is dropped
+    /// three-way dispatch      -> dispatch_message (VFS/events/PM calls)
+    /// result != SUSPEND       -> reply() (ReplyIntent::Reply)
     /// ```
     ///
-    /// [ARCH: A-3] C 全局 `m_in`/`who_p`/`who_e`/`call_nr` 隐式上下文 →
-    /// Rust 显式参数（`msg`/`rcv_sts`）+ `UserSlot` 槽位（详见 04 文档 §3.5）。
+    /// [ARCH: A-3] C's implicit global context `m_in`/`who_p`/`who_e`/`call_nr`
+    /// becomes explicit Rust parameters (`msg`/`rcv_sts`) plus a `UserSlot` slot
+    /// (04 doc §3.5).
     ///
-    /// 公开为单步驱动接口：`run()` 循环调用它；harness/集成测试
-    /// （`tests/run_once_integration.rs`）用它从外部驱动完整消息循环。
+    /// Public as a single-step driver: `run()` calls it in a loop, and the
+    /// harness/integration test (`tests/run_once_integration.rs`) uses it to drive
+    /// the whole message loop from the outside.
     pub fn run_once(&mut self) -> RunStep {
         // C: main.c:61 — sef_receive_status(ANY, &m_in, &ipc_status)。
         let (msg, rcv_sts) = match self.transport.receive() {
@@ -442,27 +478,34 @@ impl<T: IpcTransport> PmServer<T> {
             Err(_) => return RunStep::ReceiveFailed,
         };
 
-        // 信号面（T2 明证）：C 的 PM 不注册 signal handler（servers/pm/
-        // 全目录 grep `sef_setcb_signal_handler` 零命中），故 C 里 PM 收到
-        // 的 SYSTEM 通知全数被 SEF 拦截臂改写（sef.c:187）并以库默认空
-        // handler 消费、框架 `continue`（sef.h:287 ＋ sef_signal.c:156-158
-        // ＋ sef.c:231-235）——C 主循环的 is_ipc_notify 臂只见 CLOCK。本树
-        // transport 是裸 trap 收（不走 SEF 分类器），SYSTEM 通知上浮到
-        // 下方 notify 臂并被用作拉取循环触发器——该偏离已在 SYSTEM 臂的
-        // [ARCH] 注登记。管理器形（SIGS_SIGNAL_RECEIVED 消息）本树同样不
-        // 拦截，会落三路分派；今天无发方能把它递给 PM（RS 的
-        // signal_manager 无生产调用者，PM 自身发送臂卡 asynsend3 重试表
-        // ＝批次 H），故该差不可达。
-        // C: main.c:65-71 — is_ipc_notify：CLOCK → expire_timers（14）。
-        // 通知是异步信号（时钟 tick / 内核中断），不是请求消息，跳过
-        // endpoint 验证直接 continue。
+        // The signal face (documented by T2): C's PM does not register a signal
+        // handler (grepping `sef_setcb_signal_handler` across servers/pm/ gives
+        // zero hits), so every SYSTEM notification PM receives in C is rewritten by
+        // SEF's interceptor arm (sef.c:187), consumed by the library's default
+        // empty handler, and the framework does `continue` (sef.h:287 +
+        // sef_signal.c:156-158 + sef.c:231-235) — C's is_ipc_notify arm only ever
+        // sees CLOCK. This tree's transport receives raw traps (no SEF classifier),
+        // so SYSTEM notifications surface to the notify arm below and are used as
+        // the pull-loop trigger — that divergence is recorded in the [ARCH] note on
+        // the SYSTEM arm. The manager shape (SIGS_SIGNAL_RECEIVED messages) is not
+        // intercepted either and would fall into the three-way dispatch; today no
+        // sender can hand it to PM (RS's signal_manager has no production caller,
+        // and PM's own send arm is stuck on the asynsend3 retry table), so the
+        // difference is unreachable.
+        // C: main.c:65-71 — is_ipc_notify: CLOCK → expire_timers (doc 14).
+        // A notification is an asynchronous signal (clock tick / kernel interrupt),
+        // not a request message, so endpoint validation is skipped and the loop
+        // continues directly.
         if rcv_sts.is_notify() {
-            // C main.c:65-71：is_ipc_notify → CLOCK → expire_timers（14）。
-            // 其它源的通知不是请求消息，跳过 endpoint 验证直接 continue。
+            // C main.c:65-71: is_ipc_notify → CLOCK → expire_timers (doc 14).
+            // Notifications from other sources are not request messages, so
+            // endpoint validation is skipped and the loop continues directly.
             if msg.m_source == Endpoint::CLOCK {
-                // C main.c:66-67 用通知载荷的内核时间戳（m_notify.timestamp，
-                // 打点在内核侧）——V3-P2-10 之前用处理时刻的 TimerCtl 时钟，
-                // 主循环拥塞时到期判定整体后移。
+                // C main.c:66-67 uses the kernel timestamp in the notification
+                // payload (m_notify.timestamp, stamped on the kernel side); an
+                // earlier form used the TimerCtl clock at handling time, which
+                // shifted every expiry decision whenever the main loop was
+                // congested.
                 let now = unsafe { msg.m_u.m_notify.timestamp } as minix_types::Clock;
                 crate::timer::handle_clock_notify(
                     &mut self.table,
@@ -472,17 +515,22 @@ impl<T: IpcTransport> PmServer<T> {
                     &mut self.transport,
                 );
             }
-            // C sef_signal.c:104-108（main.c:121 的信号管理器注册）：内核
-            // 以 SYSTEM 源通知送达 `m_notify.sigset` 位图，SIGKSIG（74）
-            // 位 = "信号管理器有积累的内核信号待拉取"。V3-P1-2 之前本
-            // 分支只认 CLOCK，SIGKSIG 通知被静默丢弃，process_ksig 无
-            // 生产调用者，内核信号回环断路。
+            // C sef_signal.c:104-108 (main.c:121's signal-manager registration):
+            // the kernel delivers the `m_notify.sigset` bitmap in a SYSTEM-source
+            // notification, where the SIGKSIG (74) bit means "the signal manager
+            // has accumulated kernel signals to pull". An earlier form recognised
+            // only CLOCK in this branch, silently dropped SIGKSIG notifications,
+            // left process_ksig without a production caller, and broke the kernel
+            // signal loop.
             //
-            // [ARCH] 触发判定按 Rust 内核的实际行为：SigSet(u64) 装不下
-            // 位 73（SIGKSIG-1）——kernel syscall_signal.rs:88-94 已声明
-            // 该限制（位图位丢失，SYSTEM 通知本身即唤醒），SigSet 拓宽到
-            // 128 位是跨层 wire 变更（edge E6 登记）。PM 据此以 SYSTEM
-            // 源通知触发拉取循环，位图语义待拓宽后恢复。
+            // [ARCH] The trigger test follows the Rust kernel's actual behaviour:
+            // SigSet(u64) cannot hold bit 73 (SIGKSIG-1) — kernel
+            // syscall_signal.rs:88-94 declares that limitation (the bitmap bit is
+            // lost; the SYSTEM notification itself is the wakeup), and widening
+            // SigSet to 128 bits is a cross-layer wire change (recorded as edge
+            // E6). PM therefore uses a SYSTEM-source notification to trigger the
+            // pull loop, and the bitmap semantics return once the width is
+            // widened.
             if msg.m_source == Endpoint::SYSTEM {
                 crate::signal::process_sigmgr_signals(
                     &mut self.table,
@@ -494,23 +542,28 @@ impl<T: IpcTransport> PmServer<T> {
             return RunStep::Handled;
         }
 
-        // E-BIRTHFACE（NS1）出生臂：C 的 RS_INIT 在 sef_local_startup 内
-        // 消费（main.c:56 → sef.c:127-141 阻塞等 IS_SEF_INIT_REQUEST），
-        // 循环体不见；本树无独立 startup 面（server.init() 构造即 fresh 体），
-        // 在此拦截并按 process_init 尾部（sef_init.c:113-117）回
-        // RS_INIT+result。注册面 fresh 实体 + restart STATEFUL
-        //（main.c:118-119）→ fresh/restart 都 OK；LU 未注册 → 默认
-        // ENOSYS（sef_init.c:324-327）。应答失败 = RS 不在，C 侧等价于
-        // init 应答丢失（RS boot step3 超时）——同传输损坏 fail-fast。
+        // The E-BIRTHFACE (NS1) birth arm: C's RS_INIT is consumed inside
+        // sef_local_startup (main.c:56 → sef.c:127-141 blocking on
+        // IS_SEF_INIT_REQUEST), so the loop body never sees it; this tree has no
+        // separate startup face (server.init() is the fresh body at construction),
+        // so it is intercepted here and answered per process_init's tail
+        // (sef_init.c:113-117) with RS_INIT+result. Registration face fresh entity
+        // + restart STATEFUL (main.c:118-119) → both fresh and restart are OK; an
+        // unregistered LU → default ENOSYS (sef_init.c:324-327). A failed answer
+        // means RS is gone, which on the C side is equivalent to a lost init reply
+        // (the RS boot step-3 timeout) — fail-fast, the same as transport
+        // corruption.
         if msg.m_type == minix_types::RS_INIT && msg.m_source == Endpoint::RS {
-            // SAFETY: m_type == RS_INIT 且源 RS → 活跃 union 臂是
-            // m_rs_init（sef_init.c:193-215 unpack 同款）。
+            // SAFETY: m_type == RS_INIT and the source is RS, so the active union
+            // arm is m_rs_init (the same unpack as sef_init.c:193-215).
             let init_type = unsafe { msg.m_u.m_rs_init.type_ };
-            // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
-            // 第一段 sef_init.c:59-60 的 `assert(r == OK)`，经
-            // `KernelGateway::statectl` 真接线）、回报消息由库构造；
-            // 分派语义（fresh 实体 + restart STATEFUL → 都 OK；LU 未注册
-            // → 默认 ENOSYS，sef_init.c:324-327）保持原样。
+            // The birth-protocol orchestration lives in the library: paragraph one
+            // clears the IPC filters (C `process_init`'s first paragraph,
+            // sef_init.c:59-60's `assert(r == OK)`, genuinely wired through
+            // `KernelGateway::statectl`), and the reply message is built by the
+            // library; the dispatch semantics (fresh entity + restart STATEFUL →
+            // both OK; unregistered LU → default ENOSYS, sef_init.c:324-327) are
+            // unchanged.
             let birth = minix_sef::process_init(
                 &mut |req, addr, len| self.kern.statectl(req, addr, len),
                 init_type,
@@ -521,21 +574,22 @@ impl<T: IpcTransport> PmServer<T> {
             );
             let mut birth = match birth {
                 Ok(m) => m,
-                // C 段一是 assert；本树的 fail-closed 形状＝传输损坏同款
-                //（出生协议失败无恢复面）。
+                // C's first paragraph is an assert; this tree's fail-closed shape
+                // is the same as transport corruption (a failed birth protocol has
+                // no recovery face).
                 Err(e) => panic!("PM: birth statectl failed: {e}"),
             };
-            // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
-            // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466），非普通 send。
+            // The birth reply leg is C `sef_cb_init_response_rs_reply` =
+            // `ipc_sendrec(RS, &m)` (sef_init.c:458-466), not a plain send.
             self.transport
                 .sendrec(Endpoint::RS, &mut birth)
                 .expect("PM: can't reply RS_INIT birth report to RS");
             return RunStep::Handled;
         }
 
-        // C: main.c:74-77 — who_e = m_in.m_source；pm_isokendpt 验证。
-        // C 对非法 endpoint panic（"PM got message from invalid endpoint"）；
-        // Rust 等价 fail-fast（与 C 行为一致，见 04 文档 §3.6 D6）。
+        // C: main.c:74-77 — who_e = m_in.m_source; pm_isokendpt validates it.
+        // C panics on an invalid endpoint ("PM got message from invalid endpoint");
+        // Rust fails fast equivalently (the same behaviour as C, 04 doc §3.6).
         let caller = match self.table.pm_isokendpt(msg.m_source) {
             Ok(slot) => slot,
             Err(_) => panic!(
@@ -544,7 +598,8 @@ impl<T: IpcTransport> PmServer<T> {
             ),
         };
 
-        // C: main.c:80-82 — EXITING 进程的延迟调用直接丢弃（continue）。
+        // C: main.c:80-82 — a deferred call of an EXITING process is dropped
+        // (continue).
         let caller_proc = self
             .table
             .get(caller.get())
@@ -553,8 +608,10 @@ impl<T: IpcTransport> PmServer<T> {
             return RunStep::Handled;
         }
 
-        // C: main.c:84-87 — 第一路：VFS 异步回复（状态机归 05-vfs-interaction.md）。
-        // 注意：必须在 dispatch_message 之前拦截——VFS 回复不与普通 PM 调用同路。
+        // C: main.c:84-87 — first path: the VFS asynchronous reply (the state
+        // machine is in 05-vfs-interaction.md). Note: it must be intercepted before
+        // dispatch_message — VFS replies do not share the path with ordinary PM
+        // calls.
         if is_vfs_pm_rs(msg.m_type) && msg.m_source == Endpoint::VFS {
             let mut svc = PmServices::new(
                 &mut self.table,
@@ -564,38 +621,47 @@ impl<T: IpcTransport> PmServer<T> {
                 self.abort_flag,
             );
             if let Err(e) = handle_vfs_reply(&mut svc, &msg) {
-                // C: main.c:317-319 / 324-325 / 417-418 以 panic 兜底四类损坏。
+                // C: main.c:317-319 / 324-325 / 417-418 panic on the four kinds of
+                // corruption.
                 panic!("handle_vfs_reply failed: {:?}", e);
             }
             return RunStep::Handled;
         }
 
-        // 续-149（fb201 乒乓止血）：VFS 来源但非 RS 族 m_type 的消息——
-        // 静默丢弃不回。riscv 真机 fb201 洪流（mt=0xFFFF0FB2=FS stamped
-        // status=-1 泄漏进 PM/VFS 车道）的乒乓放大器＝PM 对这类消息
-        // dispatch→ENOSYS 回 VFS→VFS 收到再处理再发→循环。C 对位：
-        // main.c 的第一路检查后，未识别调用号回 ENOSYS（main.c:102-103
-        // `result = ENOSYS` → main.c:106 reply）——C 假定 VFS 是受信源、
-        // 该车道上不会有垃圾，ENOSYS 反射无害；riscv 真机上垃圾实存，
-        // 反射即放大器，故取静默丢弃（有意偏离，非 C 的 panic 路径——
-        // C 仅在端点无效时 panic，main.c:77）。丢掉后乒乓的「PM 回
-        // VFS」半截断裂，VFS 不再收到自己发出的 stamped 消息的 ENOSYS
-        // 反射。
+        // Ping-pong suppression: a message from VFS whose m_type is not in the RS
+        // family is silently dropped without a reply. The ping-pong amplifier in
+        // the fb201 flood on real RISC-V hardware (mt=0xFFFF0FB2 = FS stamped
+        // status=-1 leaking into the PM/VFS lane) was PM dispatching such messages
+        // → ENOSYS back to VFS → VFS reprocessing and resending → loop. C's
+        // counterpart: after the first-path check, main.c replies ENOSYS to an
+        // unrecognised call number (main.c:102-103 `result = ENOSYS` →
+        // main.c:106 reply) — C assumes VFS is a trusted source and that no
+        // garbage travels in that lane, so the ENOSYS reflection is harmless; on
+        // real RISC-V hardware the garbage does exist and the reflection is the
+        // amplifier, so a silent drop is chosen (a deliberate divergence, not C's
+        // panic path — C panics only on an invalid endpoint, main.c:77). Dropping
+        // it breaks the "PM replies to VFS" half of the ping-pong, so VFS no longer
+        // receives the ENOSYS reflection of its own stamped messages.
         //
-        // 续-151（收窄）：丢弃条件从「VFS 来源一律」收窄为「非已注册
-        // PM 调用号」。VFS 的 exec 链会以普通调用号形态发 PM_EXEC_NEW
-        // (43, callnr.h:56) 给 PM（C table.c:57 的 do_newexec 槽位）——
-        // 无条件 VFS 丢弃把它一并吞掉，exec worker 停在等 EXEC_NEW
-        // 回复（pd:02b01 探针实证 PM 收到 VFS 来源 mt=0x02B 无回复）。
-        // stamped 泄漏消息（负值/非 1..=47）from_call_nr 返回 None，
-        // 仍落本分支静默丢弃——乒乓止血语义不变。
+        // Narrowing: the drop condition narrows from "any VFS source" to "a call
+        // number that is not a registered PM call". VFS's exec chain sends
+        // PM_EXEC_NEW (43, callnr.h:56) to PM as an ordinary call number (the
+        // do_newexec slot at C table.c:57) — an unconditional VFS drop would
+        // swallow that too, leaving the exec worker waiting for an EXEC_NEW reply
+        // (the pd:02b01 probe showed PM receiving mt=0x02B from VFS with no reply).
+        // Stamped leak messages (negative, or outside 1..=47) make from_call_nr
+        // return None and still fall into this branch's silent drop — the ping-pong
+        // suppression semantics are unchanged.
         if msg.m_source == Endpoint::VFS && PmCall::from_call_nr(msg.m_type).is_none() {
             return RunStep::Handled;
         }
 
-        // C: main.c:88-103 — 第二/三路：事件回复 + PM 调用族统一经
-        // D-32(C ENABLE_SYSCALL_STATS,misc.c:64)——按调用号计数
-        //(callnr.h:62 NR_PM_CALLS=48;PM_BASE=0,调用号即索引)。
+        // C: main.c:88-103 — second/third path: event replies and the PM call
+        // family all go through the single dispatch table (the dispatch_message
+        // call below).
+        // Call counting (C ENABLE_SYSCALL_STATS, misc.c:64) — counted per call
+        // number (callnr.h:62 NR_PM_CALLS=48; PM_BASE=0, so the call number is the
+        // index).
         #[cfg(feature = "syscall_stats")]
         if msg.m_type >= 1 && (msg.m_type as usize) < self.call_stats.len() / 4 {
             let off = msg.m_type as usize * 4;
@@ -606,8 +672,9 @@ impl<T: IpcTransport> PmServer<T> {
                 .copy_from_slice(&cur.wrapping_add(1).to_le_bytes());
         }
 
-        // dispatch_message → dispatch_pm_call 的**单一分发表**（ARCH A-5）。
-        // 主循环不内联拦截任何 PM 调用（旧实现 7 个内联块已收编，04 文档 §3.6）。
+        // The **single dispatch table** of dispatch_message → dispatch_pm_call
+        // (ARCH A-5). The main loop does not inline-intercept any PM call (the old
+        // implementation's seven inline blocks have been absorbed, 04 doc §3.6).
         let mut timers = crate::timer::TimerFaces {
             tctl: self.timer.as_mut(),
             vctl: self.vtimer.as_mut(),
@@ -626,7 +693,7 @@ impl<T: IpcTransport> PmServer<T> {
             &msg,
         );
 
-        // C: main.c:106 — result != SUSPEND → reply(who_p, result)。
+        // C: main.c:106 — result != SUSPEND → reply(who_p, result).
         if let ReplyIntent::Reply(code) = intent {
             self.reply(caller, code);
         }
@@ -634,20 +701,22 @@ impl<T: IpcTransport> PmServer<T> {
         RunStep::Handled
     }
 
-    /// 向调用者发送回复。
+    /// Send a reply to the caller.
     ///
-    /// C: `reply(proc_nr, result)` — main.c:250-270：`mp_reply.m_type =
-    /// result` 后 `ipc_sendnb(mp_endpoint, &mp_reply)`。
+    /// C: `reply(proc_nr, result)` — main.c:250-270: set `mp_reply.m_type =
+    /// result`, then `ipc_sendnb(mp_endpoint, &mp_reply)`.
     ///
-    /// 与 C 的差异（见 04 文档 §3.5）：C 复用每进程持久 `mp_reply`
-    /// 缓冲（handler 可预填载荷字段）；Rust 每次构造 `Message`，载荷
-    /// 扩展由各 handler 文档（07~20）落地。发送失败只打印警告不 panic
-    /// （C: main.c:267-269 同语义）。
+    /// Difference from C (04 doc §3.5): C reuses a per-process persistent
+    /// `mp_reply` buffer (handlers may pre-fill payload fields); Rust builds a
+    /// `Message` each time, with payload extensions delivered by the individual
+    /// handler docs (07–20). A send failure only prints a warning and does not
+    /// panic (the same semantics as C, main.c:267-269).
     ///
-    /// [ARCH: A-3] 槽位以 `UserSlot` 传递（替代 C 裸 `proc_nr` 索引）。
+    /// [ARCH: A-3] The slot is passed as a `UserSlot` (replacing C's bare
+    /// `proc_nr` index).
     fn reply(&mut self, slot: UserSlot, result: i32) {
         let endpoint = self.table.procs[slot.get()].endpoint();
-        // C: `rmp->mp_reply.m_type = result` 后 `ipc_sendnb(rmp->mp_endpoint, &rmp->mp_reply)`
+        // C: after `rmp->mp_reply.m_type = result`, `ipc_sendnb(rmp->mp_endpoint, &rmp->mp_reply)`
         // Rust: if handler pre-filled `ipc.reply` (e.g., wait's W_STOPCODE status), reuse it
         let mut msg = self.table.procs[slot.get()]
             .ipc
@@ -657,8 +726,8 @@ impl<T: IpcTransport> PmServer<T> {
         msg.m_type = result;
         // m_source is set by kernel on receive, not needed for send
         if let Err(e) = self.transport.send(endpoint, &msg) {
-            // C: printf("PM can't reply to %d (%s): %d") — 警告不 panic。
-            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            // C: printf("PM can't reply to %d (%s): %d") — warn, do not panic.
+            //[SD19-gate] PM send/notify/reply is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = e;
             #[cfg(test)]
@@ -666,19 +735,20 @@ impl<T: IpcTransport> PmServer<T> {
         }
     }
 
-    /// 第 5 步：boot image 填充 mproc 表。
+    /// Step 5: fill the mproc table from the boot image.
     ///
-    /// C: main.c:177-229。只处理 `proc_nr >= 0` 的条目（负值为内核 task）；
-    /// INIT 与系统进程两条身份路径分开。
+    /// C: main.c:177-229. Only entries with `proc_nr >= 0` are handled (a negative
+    /// value is a kernel task); the INIT and system-process identity paths are
+    /// kept separate.
     fn fill_boot_procs(&mut self) {
         let mut procs_in_use = 0usize;
         for ip in self.params.boot_image.iter() {
             if ip.proc_nr < 0 || ip.endpoint.is_none() {
-                // C: main.c:179 — task 有负 proc_nr，跳过。
-                // Rust 额外跳过 padding 条目：boot image 拷贝进定长
-                // `[BootImage; NR_BOOT_PROCS]` 后空槽 `endpoint == NONE`
-                // （C 数组精确填充，minix-types 的不精确；与 VM
-                // init_boot_procs 同规则）。
+                // C: main.c:179 — tasks have a negative proc_nr and are skipped.
+                // Rust additionally skips padding entries: once the boot image is
+                // copied into the fixed-length `[BootImage; NR_BOOT_PROCS]`, an
+                // empty slot has `endpoint == NONE` (C's array is filled exactly,
+                // minix-types' is not; the same rule as VM's init_boot_procs).
                 continue;
             }
             let slot = ip.proc_nr as usize;
@@ -687,7 +757,7 @@ impl<T: IpcTransport> PmServer<T> {
             let pid = if ip.proc_nr == INIT_PROC_NR {
                 INIT_PID
             } else {
-                // C: main.c:209 — 系统进程用 get_free_pid() 分配。
+                // C: main.c:209 — system processes get a pid from get_free_pid().
                 self.table.pid_generator.get_free_pid(&self.table)
             };
 
@@ -696,29 +766,32 @@ impl<T: IpcTransport> PmServer<T> {
                 .get_mut(slot)
                 .expect("boot image proc_nr within NR_PROCS");
 
-            // C: main.c:183-186 — 名字 + 信号集合清零（Rust 默认空位图）。
+            // C: main.c:183-186 — name plus cleared signal sets (Rust's default is
+            // an empty bitmap).
             proc.identity.name = ip.proc_name;
             proc.identity.id.index = UserSlot::new(slot);
             proc.identity.endpoint = ip.endpoint;
 
             if ip.proc_nr == INIT_PROC_NR {
-                // INIT 分支：C main.c:188-201。
+                // The INIT branch: C main.c:188-201.
                 proc.identity.id.pid = INIT_PID;
                 proc.identity.procgrp = INIT_PID;
-                // C: main.c:189-194 — INIT 是"自己的父亲"（PM 假设
-                // mp_parent 恒指向有效槽位；见 09-pm-exit.md 收养语义）。
+                // C: main.c:189-194 — INIT is "its own father" (PM assumes
+                // mp_parent always points at a valid slot; see the adoption
+                // semantics in 09-pm-exit.md).
                 proc.state.guardianship = Guardianship::Normal {
                     parent: UserSlot::new(INIT_PROC_NR as usize),
                 };
                 proc.state.lifecycle = Lifecycle::Running; // IN_USE
                 proc.resources.privilege = Privilege::User(crate::mproc::Credentials::default());
-                // C: main.c:199-200 — INIT 初始由内核调度。
+                // C: main.c:199-200 — INIT is initially scheduled by the kernel.
                 proc.resources.scheduler = Endpoint::KERNEL;
                 proc.resources.nice = nice_from_queue(USR_Q);
             } else {
-                // 系统进程分支：C main.c:202-215。
+                // The system-process branch: C main.c:202-215.
                 proc.identity.id.pid = pid;
-                // C: main.c:203-208 — RS 自身的父亲是 INIT，其余是 RS。
+                // C: main.c:203-208 — RS is its own father INIT; the others have RS
+                // as father.
                 let parent = if ip.proc_nr == RS_PROC_NR {
                     INIT_PROC_NR as usize
                 } else {
@@ -729,7 +802,8 @@ impl<T: IpcTransport> PmServer<T> {
                 };
                 proc.state.lifecycle = Lifecycle::Running; // IN_USE
                 proc.resources.privilege = Privilege::Kernel(crate::mproc::Credentials::default()); // PRIV_PROC
-                // C: main.c:213-214 — 系统进程由 RS 调度（NONE = 未指定）。
+                // C: main.c:213-214 — system processes are scheduled by RS
+                // (NONE = not specified).
                 proc.resources.scheduler = Endpoint::NONE;
                 proc.resources.nice = nice_from_queue(SRV_Q);
             }
@@ -737,14 +811,15 @@ impl<T: IpcTransport> PmServer<T> {
         self.table.procs_in_use.set(procs_in_use);
     }
 
-    /// 第 6 步：VFS_PM_INIT 进程表同步。
+    /// Step 6: the VFS_PM_INIT process-table sync.
     ///
-    /// C: main.c:220-236。逐条 `ipc_send`（每个 boot 进程一条）+ 末条
-    /// `ipc_sendrec` 屏障（endpoint = NONE，VFS 回复必须 OK）。
+    /// C: main.c:220-236. One `ipc_send` per entry (one per boot process) plus a
+    /// final `ipc_sendrec` barrier (endpoint = NONE, and VFS's reply must be OK).
     ///
-    /// 与 C 的差异：C 在填充循环内逐条发送；Rust 先完成全部填充再统一
-    /// 发送——发送失败都会中止启动（C panic ↔ Rust expect），可观测
-    /// 行为一致。
+    /// Difference from C: C sends each entry inside the fill loop, while Rust
+    /// completes the whole fill first and then sends them together — a send
+    /// failure aborts startup either way (C panic ↔ Rust expect), so the
+    /// observable behaviour is the same.
     fn vfs_init_sync(&mut self) {
         let messages = self.vfs_init_messages();
         for msg in messages[..messages.len() - 1].iter() {
@@ -752,10 +827,11 @@ impl<T: IpcTransport> PmServer<T> {
                 .send_blocking(self.params.vfs_endpoint, msg)
                 .expect("PM: can't sync up with VFS (per-process send)");
         }
-        // C: main.c:231-236 — 末条 sendrec，回复 m_type 必须为 OK。
-        // NK4-C 1.10：expect 的 `{:?}` 曾对未知错误载荷格式化死循环
-        // （rt_birth 时代 Debug::fmt 自旋，符号 <&T as Debug>::fmt）——
-        // 改为只打 errno 数值，既封闭格式化面又直接暴露真实错误码。
+        // C: main.c:231-236 — the final sendrec; the reply's m_type must be OK.
+        // The `{:?}` of expect once looped forever formatting an unknown error
+        // payload (Debug::fmt spun on `<&T as Debug>::fmt` in an earlier
+        // incarnation) — printing only the errno value closes off that formatting
+        // surface and exposes the real error code directly.
         let mut barrier = *messages.last().expect("at least final barrier message");
         if let Err(e) = self.transport.sendrec(self.params.vfs_endpoint, &mut barrier) {
             panic!(
@@ -770,12 +846,14 @@ impl<T: IpcTransport> PmServer<T> {
         );
     }
 
-    /// 构造全部 VFS_PM_INIT 消息（逐条 + 末条屏障，可独立测试）。
+    /// Build all VFS_PM_INIT messages (one per entry plus the final barrier, so it
+    /// can be tested independently).
     fn vfs_init_messages(&self) -> Vec<Message> {
         let mut msgs = Vec::new();
         for ip in self.params.boot_image.iter() {
             if ip.proc_nr < 0 || ip.endpoint.is_none() {
-                // 与 fill_boot_procs 同规则：跳过内核 task 与 padding 条目。
+                // The same rule as fill_boot_procs: skip kernel tasks and padding
+                // entries.
                 continue;
             }
             let slot = ip.proc_nr as usize;
@@ -789,7 +867,8 @@ impl<T: IpcTransport> PmServer<T> {
                 .encode(),
             );
         }
-        // C: main.c:231-236 — 末条 endpoint = NONE（无更多系统进程）。
+        // C: main.c:231-236 — the final entry has endpoint = NONE (no more system
+        // processes).
         msgs.push(
             VfsPmInit {
                 slot: 0,
@@ -801,13 +880,14 @@ impl<T: IpcTransport> PmServer<T> {
         msgs
     }
 
-    /// 第 8 步：为 INIT 指定用户态调度器（调用点）。
+    /// Step 8: assign INIT its userland scheduler (the call site).
     ///
-    /// C: `sched_init()` — schedule.c:36-69。遍历 mproc，对 `IN_USE` 且
-    /// 非 `PRIV_PROC` 的槽（启动时只有 INIT 满足）调 `sched_start`
-    /// （SCHEDULING_START 协议，SCHED_PROC_NR=4）。
+    /// C: `sched_init()` — schedule.c:36-69. It walks mproc and calls
+    /// `sched_start` for slots that are `IN_USE` and not `PRIV_PROC` (at boot only
+    /// INIT qualifies) — the SCHEDULING_START protocol, SCHED_PROC_NR=4.
     ///
-    /// DEFERRED: 实际 SCHED 传输归 16-scheduling.md（minix_sched 客户端）。
+    /// DEFERRED: the actual SCHED transport is in 16-scheduling.md (the
+    /// minix_sched client).
     fn init_scheduling(&mut self) {
         for slot in 0..NR_PROCS {
             let (in_use, is_priv, endpoint, parent_slot) = {
@@ -820,10 +900,11 @@ impl<T: IpcTransport> PmServer<T> {
                 )
             };
             if !in_use || is_priv {
-                // C: schedule.c:43-44 — 系统进程（PRIV_PROC）不接管。
+                // C: schedule.c:43-44 — system processes (PRIV_PROC) are not taken
+                // over.
                 continue;
             }
-            // C: schedule.c:46 — assert(_ENDPOINT_P(endpoint) == INIT_PROC_NR)。
+            // C: schedule.c:46 — assert(_ENDPOINT_P(endpoint) == INIT_PROC_NR).
             assert_eq!(
                 endpoint.slot(),
                 INIT_PROC_NR,
@@ -832,18 +913,19 @@ impl<T: IpcTransport> PmServer<T> {
                 endpoint
             );
             let parent_endpoint = self.table.procs[parent_slot.get()].endpoint();
-            // C: schedule.c:47-48 — assert(parent_e == schedulee_e)。
+            // C: schedule.c:47-48 — assert(parent_e == schedulee_e).
             assert_eq!(parent_endpoint, endpoint, "INIT parent must be itself");
 
             // C: schedule.c:49-58 — sched_start(SCHED_PROC_NR, schedulee,
-            // parent, USER_Q, USER_QUANTUM, -1, &mp_scheduler)。
+            // parent, USER_Q, USER_QUANTUM, -1, &mp_scheduler).
             //
-            // DEFERRED: minix_sched 客户端（16-scheduling.md）。
+            // DEFERRED: the minix_sched client (16-scheduling.md).
             let new_sched = self.sched_start(endpoint, parent_endpoint);
             match new_sched {
                 Ok(scheduler) => self.table.procs[slot].resources.scheduler = scheduler,
                 Err(rv) => {
-                    // C: schedule.c:60-67 — 失败仅打印警告，不 panic。
+                    // C: schedule.c:60-67 — on failure, print a warning only, do
+                    // not panic.
                     #[cfg(test)]
                     pm_diag!(
                         "PM: SCHED denied taking over scheduling of slot {} (rv {})",
@@ -851,7 +933,7 @@ impl<T: IpcTransport> PmServer<T> {
                         rv
                     );
                     #[cfg(not(test))]
-                    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                    //[SD19-gate] PM send/notify/reply is fire-and-forget
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = rv;
                 }
@@ -859,9 +941,11 @@ impl<T: IpcTransport> PmServer<T> {
         }
     }
 
-    /// `sched_start` 调用点（C libsys/sched_start.c:46-88：SCHEDULING_START，
-    /// 四域 endpoint/parent/maxprio/quantum；成功时调度器可能经回复转交，
-    /// 模型取**发去的调度器**——INIT 的调度器就是 SCHED，无转交场景）。
+    /// The `sched_start` call site (C libsys/sched_start.c:46-88: SCHEDULING_START
+    /// with the four fields endpoint/parent/maxprio/quantum; on success the
+    /// scheduler can be handed over through the reply, and the model takes the
+    /// **scheduler that was sent** — INIT's scheduler is SCHED itself, so there is
+    /// no hand-over case).
     fn sched_start(&mut self, schedulee: Endpoint, parent: Endpoint) -> Result<Endpoint, i32> {
         let mut msg = Message::default();
         msg.m_u.m_lsys_sched_scheduling_start =
@@ -873,11 +957,14 @@ impl<T: IpcTransport> PmServer<T> {
                 _padding: [0; 40],
             };
         msg.m_type = minix_types::SCHEDULING_START;
-        // C `_taskcall` 的「阻塞直到投递/应答」语义：SCHED 尚未进 receive 时
-        // sendrec 会以 Ok + 回复 `m_type`=ELOCKED(208) 返回，需重试至真正
-        // 应答（同形 `sched.rs::MinixSchedCtl::taskcall` 的 ELOCKED 重试；
-        // boot 期 tick 抢占提供前进保证，不会永久互卡）。先于通用拒绝
-        // 码臂判 208，否则会被当作拒绝码误返 Err 而不登记调度器。
+        // C `_taskcall`'s "block until delivery/reply" semantics: when SCHED has
+        // not entered receive yet, sendrec returns Ok with the reply `m_type` =
+        // ELOCKED(208), so it must be retried until a real reply arrives (the same
+        // shape as the ELOCKED retry in
+        // `sched.rs::MinixSchedCtl::taskcall`; boot-time tick preemption guarantees
+        // progress, so the two cannot deadlock forever). The 208 test must come
+        // before the generic refusal-code arm, or it would be mistaken for a
+        // refusal code, return Err, and leave the scheduler unregistered.
         let mut retries: u32 = 0;
         loop {
             match self.transport.sendrec(Endpoint::SCHED, &mut msg) {
@@ -887,50 +974,59 @@ impl<T: IpcTransport> PmServer<T> {
                         return Err(-minix_types::EIO);
                     }
                 }
-                // C libsys/sched_start.c:87 — `_taskcall` 回传 SCHED 的回复码即
-                // rv，`if ((rv = _taskcall(scheduler_e, SCHEDULING_START, &m))) return
-                // rv;`。旧码不看回复 `m_type` 即 `Ok(SCHED)`＝§1.119 追的「INIT 假
-                // 登记 scheduler=SCHED」根因（SCHED 回 ENOSYS/EDEADEPT 也当成功→
-                // 后续 fork 必撞 parent-Dead 活锁）。回复 `m_type` 语义同
-                // `MinixSchedCtl::taskcall` 腿（OK=0 / 拒绝码非 0）。
+                // C libsys/sched_start.c:87 — the code `_taskcall` returns from
+                // SCHED is rv: `if ((rv = _taskcall(scheduler_e, SCHEDULING_START,
+                // &m))) return rv;`. The old code ignored the reply `m_type` and
+                // answered `Ok(SCHED)`, which is the root cause of the reported
+                // "INIT falsely registers scheduler=SCHED" (a reply of
+                // ENOSYS/EDEADEPT also counted as success → a later fork
+                // necessarily hit the parent-Dead live-lock). The reply `m_type`
+                // semantics match the
+                // `MinixSchedCtl::taskcall` leg (OK=0 / a non-zero refusal code).
                 Ok(()) if msg.m_type != minix_types::OK => return Err(msg.m_type),
-                // C 成功回读 `*newsched_e = m.m_sched_lsys_scheduling_start.scheduler`；
-                // INIT 的调度器恒为 SCHED（无转交场景），故直接返回 Endpoint::SCHED。
+                // On success, C reads back
+                // `*newsched_e = m.m_sched_lsys_scheduling_start.scheduler`; INIT's
+                // scheduler is always SCHED (no hand-over case), so return
+                // Endpoint::SCHED directly.
                 Ok(()) => return Ok(Endpoint::SCHED),
-                // 传输本身失败（C 启动路径同级 fatal）：折 -EIO 交调用方按
-                // schedule.c:60-67 仅告警、不 panic。
+                // The transport itself failed (equally fatal on C's startup path):
+                // fold to -EIO and let the caller warn only, per
+                // schedule.c:60-67, without panicking.
                 Err(_) => return Err(-minix_types::EIO),
             }
         }
     }
 }
 
-/// queue → nice 转换（调用点）。
+/// The queue → nice conversion (the call site).
 ///
-/// C: `get_nice_value` — main.c:276-295（static）。完整调度语义
-/// （nice_to_priority 等）见 16-scheduling.md。
+/// C: `get_nice_value` — main.c:276-295 (static). The full scheduling semantics
+/// (nice_to_priority etc.) are in 16-scheduling.md.
 fn nice_from_queue(queue: i32) -> i32 {
     let nice_val = (queue - USER_Q) * (PRIO_MAX - PRIO_MIN + 1) / (MIN_USER_Q - MAX_USER_Q + 1);
     nice_val.clamp(PRIO_MIN, PRIO_MAX)
 }
 
-// ── 主循环（04-ipc-dispatch.md）──
+// ── The main loop (04-ipc-dispatch.md) ──
 
-/// 连续 receive 失败上限。
+/// The cap on consecutive receive failures.
 ///
-/// C: sef_receive_status 阻塞等待（main.c:61），失败即传输损坏；
-/// 连续失败达到上限后 fail-fast panic（防 busy-spin，与 VM
-/// `MAX_CONSECUTIVE_RECV_FAILURES = 64` 同值同语义）。
+/// C: sef_receive_status blocks waiting (main.c:61), so a failure means the
+/// transport is broken; once consecutive failures reach the cap it fails fast with
+/// a panic (against busy-spin, the same value and semantics as VM's
+/// `MAX_CONSECUTIVE_RECV_FAILURES = 64`).
 const MAX_CONSECUTIVE_RECV_FAILURES: u32 = 64;
 
-/// 主循环单轮结果。
+/// The outcome of one main-loop pass.
 ///
-/// `run()` 据此维护连续失败计数；测试单轮驱动 `run_once` 时用。
+/// `run()` uses it to maintain the consecutive-failure count, and a test driving a
+/// single pass uses it with `run_once`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStep {
-    /// 一条消息已处理（或一次失败已计数）。
+    /// One message was handled (or one failure was counted).
     Handled,
-    /// receive 返回错误（传输损坏，`run()` 计数后可能 panic）。
+    /// receive returned an error (broken transport; `run()` counts it and may
+    /// panic).
     ReceiveFailed,
 }
 
@@ -976,9 +1072,10 @@ mod tests {
         }
     }
 
-    /// D-02 消费半（S42 ② boot 真值链）：`acquire_from` 的三连内核调用
-    /// 次序与 wire 形状（monparams 1024 → image 整表 → hz），失败路径
-    /// 回原始 errno 且不发后续调用。
+    /// The consume half of the boot truth chain: `acquire_from`'s three kernel
+    /// calls, their order and wire shapes (monparams 1024 → the whole image table
+    /// → hz), and the failure path returning the original errno without issuing
+    /// the later calls.
     #[test]
     fn test_boot_params_acquire_wire_shapes() {
         use minix_sys::syscall::{CannedKernelCallTransport, KernelCallTransport};
@@ -989,7 +1086,7 @@ mod tests {
         let params = BootParams::acquire_from(&canned).unwrap();
         let sent = canned.sent.borrow();
         assert_eq!(sent.len(), 3);
-        // SAFETY(test): 三条都是 GETINFO 载荷臂。
+        // SAFETY(test): all three are GETINFO payload arms.
         let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
         assert_eq!(gi.request, minix_types::GET_MONPARAMS);
         assert_eq!(gi.val_len, MULTIBOOT_PARAM_BUF_SIZE as i32);
@@ -1003,7 +1100,8 @@ mod tests {
         assert_eq!(gi.request, minix_types::GET_HZ);
         assert_eq!(params.vfs_endpoint, Endpoint::VFS);
 
-        // 首个内核调用失败：Err 透传原始 errno，后续调用不发出。
+        // The first kernel call fails: Err passes the original errno through, and
+        // the later calls are not issued.
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(-minix_types::EPERM);
         assert_eq!(
@@ -1015,9 +1113,10 @@ mod tests {
 
     #[test]
     fn test_signal_sets_match_c() {
-        // C: main.c:154-165（sigaddset 构建）+ sys/sys/sigtypes.h:67
-        //（__sigmask(n) = 1<<((n-1)&31)，bit i 对应信号 i+1）。
-        // 断言值是 C sigset_t 的逐位数值，与位基约定一起锁死。
+        // C: main.c:154-165 (built with sigaddset) + sys/sys/sigtypes.h:67
+        // (__sigmask(n) = 1<<((n-1)&31), bit i corresponding to signal i+1).
+        // The asserted values are the bit-for-bit values of C's sigset_t, pinned
+        // together with the bit-base convention.
         assert_eq!(
             CORE_SIGSET,
             (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 9) | (1 << 10)
@@ -1027,18 +1126,19 @@ mod tests {
             NOIGN_SIGSET,
             (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 9) | (1 << 10)
         );
-        // 全部信号编号 ≤ 29 < _NSIG = 64（u64 位图内）。
+        // Every signal number is ≤ 29 < _NSIG = 64 (inside the u64 bitmap).
         let highest_used = CORE_SIGSET | IGN_SIGSET | NOIGN_SIGSET;
         assert_eq!(highest_used.ilog2() as i32, 28);
     }
 
-    /// 逐信号对账：成员资格直接用 C `__sigmask` 的原始掩码表达式
-    /// （`1 << (signo-1)`）判定，不经过 `sig_bit`——本测试与
-    /// test_signal_sets_match_c 各自独立锁定集合数值，位基约定若再被
-    /// 改错，两个测试都会失败。
+    /// Per-signal reconciliation: membership is decided with C `__sigmask`'s raw
+    /// mask expression (`1 << (signo-1)`) rather than through `sig_bit` — this test
+    /// and test_signal_sets_match_c independently pin the set values, so if the
+    /// bit-base convention is broken again, both tests fail.
     #[test]
     fn test_signal_set_membership_matches_c_arrays() {
-        // C main.c:137-141：core_sigs/ign_sigs/noign_sigs 三个数组的原值。
+        // C main.c:137-141: the original values of the three arrays
+        // core_sigs/ign_sigs/noign_sigs.
         let core = [SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGEMT, SIGFPE, SIGBUS, SIGSEGV];
         let ign = [SIGCHLD, SIGWINCH, SIGCONT, SIGINFO];
         let noign = [SIGILL, SIGTRAP, SIGEMT, SIGFPE, SIGBUS, SIGSEGV];
@@ -1064,21 +1164,24 @@ mod tests {
 
     #[test]
     fn test_nice_from_queue_default_queues() {
-        // USR_Q = SRV_Q = USER_Q = 7 → nice 0（main.c:200/214）。
+        // USR_Q = SRV_Q = USER_Q = 7 → nice 0 (main.c:200/214).
         assert_eq!(nice_from_queue(USR_Q), 0);
         assert_eq!(nice_from_queue(SRV_Q), 0);
-        // 线性缩放端点（main.c:281-289）：(q-7)*41/16，C 向零截断。
+        // Linear scaling at the endpoints (main.c:281-289): (q-7)*41/16, truncated
+        // toward zero as C does.
         assert_eq!(nice_from_queue(MAX_USER_Q), -17);
         assert_eq!(nice_from_queue(MIN_USER_Q), 20);
     }
 
-    /// §1.119 C 保真回归：PM `sched_start` 必须校验 SCHED 回复码
-    /// （C libsys/sched_start.c:87 `if ((rv = _taskcall(...))) return rv;`）。
-    /// 旧码不看回复 `m_type` 即 `Ok(SCHED)`→INIT 假登记调度器→后续 fork
-    /// 必撞 parent-Dead 活锁。
+    /// C-fidelity regression: PM's `sched_start` must check SCHED's reply code
+    /// (C libsys/sched_start.c:87 `if ((rv = _taskcall(...))) return rv;`). The old
+    /// code ignored the reply `m_type` and answered `Ok(SCHED)` → INIT falsely
+    /// registered a scheduler → a later fork necessarily hit the parent-Dead
+    /// live-lock.
     #[test]
     fn test_sched_start_propagates_denied_reply_code() {
-        // 1) SCHED 拒绝（ENOSYS）→ Err(ENOSYS)，不透传成 Ok(SCHED)。
+        // 1) SCHED refuses (ENOSYS) → Err(ENOSYS), not passed through as
+        // Ok(SCHED).
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         server.transport.set_reply_type(ENOSYS);
         assert_eq!(
@@ -1086,7 +1189,7 @@ mod tests {
             Err(ENOSYS),
             "SCHED 拒绝 INIT START 时 PM 不得假登记调度器"
         );
-        // 2) SCHED 接受（OK）→ Ok(SCHED)。
+        // 2) SCHED accepts (OK) → Ok(SCHED).
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         server.transport.set_reply_type(OK);
         assert_eq!(server.sched_start(Endpoint::INIT, Endpoint::INIT), Ok(Endpoint::SCHED));
@@ -1100,7 +1203,7 @@ mod tests {
         let init = server.table().get(INIT_PROC_NR as usize).unwrap();
         assert_eq!(init.identity.id.pid, 1); // INIT_PID
         assert_eq!(init.identity.procgrp, 1);
-        assert_eq!(init.parent(), UserSlot::new(11)); // 自己的父亲
+        assert_eq!(init.parent(), UserSlot::new(11)); // its own father
         assert!(init.is_in_use());
         assert_eq!(init.resources.scheduler, Endpoint::KERNEL);
         assert_eq!(init.resources.nice, 0);
@@ -1112,25 +1215,26 @@ mod tests {
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         server.fill_boot_procs();
 
-        // 系统进程：parent = RS（slot 2），PRIV_PROC，scheduler = NONE。
+        // System processes: parent = RS (slot 2), PRIV_PROC, scheduler = NONE.
         let pm = server.table().get(0).unwrap();
         assert_eq!(pm.parent(), UserSlot::new(2));
         assert!(pm.is_kernel_process());
         assert_eq!(pm.resources.scheduler, Endpoint::NONE);
         assert_eq!(pm.identity.endpoint, Endpoint::PM);
 
-        // RS 自身的父亲是 INIT（main.c:204-206）。
+        // RS is its own father INIT (main.c:204-206).
         let rs = server.table().get(2).unwrap();
         assert_eq!(rs.parent(), UserSlot::new(11));
 
-        // PID 分配：PM→3, VFS→4, RS→5（get_free_pid 顺序；C 相位下
-        // 首个分配值是 INIT_PID+2=3，pid 2 永不使用——utility.c:38 先
-        // 自增再返回，V2-P1-1 相位修正）。
+        // PID assignment: PM→3, VFS→4, RS→5 (the get_free_pid order; under C's
+        // phase the first allocated value is INIT_PID+2=3 and pid 2 is never used —
+        // utility.c:38 increments before returning, the corrected phase).
         assert_eq!(server.table().get(0).unwrap().identity.id.pid, 3);
         assert_eq!(server.table().get(1).unwrap().identity.id.pid, 4);
         assert_eq!(server.table().get(2).unwrap().identity.id.pid, 5);
 
-        // 负 proc_nr（内核 task）跳过，不计入 procs_in_use。
+        // Negative proc_nr (kernel tasks) are skipped and not counted in
+        // procs_in_use.
         assert_eq!(server.table().procs_in_use.get(), 4);
     }
 
@@ -1145,7 +1249,7 @@ mod tests {
         }
         .encode();
         assert_eq!(msg.m_type, VFS_PM_INIT);
-        // SAFETY: 刚由 encode() 完整写入 m_m7。
+        // SAFETY: m_m7 was just written in full by encode().
         let m7 = unsafe { msg.m_u.m_m7 };
         assert_eq!(m7.m7i1, Endpoint::INIT.get());
         assert_eq!(m7.m7i2, 11);
@@ -1158,7 +1262,7 @@ mod tests {
         server.fill_boot_procs();
         let msgs = server.vfs_init_messages();
 
-        // 4 条逐条（PM/VFS/RS/INIT）+ 1 条末条屏障。
+        // Four per-entry messages (PM/VFS/RS/INIT) plus one final barrier.
         assert_eq!(msgs.len(), 5);
         for (i, m) in msgs.iter().enumerate() {
             assert_eq!(m.m_type, VFS_PM_INIT, "msgs[{}].m_type", i);
@@ -1166,14 +1270,14 @@ mod tests {
         }
         let last = msgs.last().unwrap();
         assert_eq!(last.m_type, VFS_PM_INIT);
-        // SAFETY: 末条由 encode() 写入 m_m7。
+        // SAFETY: the final entry's m_m7 is written by encode().
         let m7 = unsafe { last.m_u.m_m7 };
         assert_eq!(m7.m7i1, Endpoint::NONE.get());
         assert_eq!(m7.m7i2, 0);
         assert_eq!(m7.m7i3, 0);
     }
 
-    // ── 主循环（04-ipc-dispatch.md）──
+    // ── The main loop (04-ipc-dispatch.md) ──
 
     fn running_proc_at(table: &mut ProcTable, slot: usize, ep: Endpoint) {
         let p = &mut table.procs[slot];
@@ -1183,19 +1287,22 @@ mod tests {
 
     #[test]
     fn test_run_once_skips_notify() {
-        // C: main.c:65-71 — is_ipc_notify：非 CLOCK 源的通知不产生回复、
-        // 不做 endpoint 验证。
+        // C: main.c:65-71 — is_ipc_notify: a notification from a non-CLOCK source
+        // produces no reply and skips endpoint validation.
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let mut msg = Message { m_type: 0x1000, ..Message::default() }; // NOTIFY_MESSAGE（com.h:90）
-        msg.m_source = Endpoint::RS; // 非 CLOCK
+        msg.m_source = Endpoint::RS; // not CLOCK
         server.transport.queue_receive(msg, IpcStatus { flags: 4 });
         assert_eq!(server.run_once(), RunStep::Handled);
         assert!(server.transport.sent().is_empty());
     }
 
-    /// 出生测试网关：仅 statectl 接受（PD-34 段一），其余内核 verb 不应
-    /// 被出生路触碰——panic 即测试意图漂移的响铃。宿主 trap 诚实回 -EIO
-    ///（E1 通电前不伪造成功），出生编排测试关注回报形状而非内核往返。
+    /// The birth test gateway: only statectl is accepted (paragraph one of the birth
+    /// orchestration), and no other kernel verb should be touched by the birth path
+    /// — a panic is the bell that the test's intent has drifted. The host trap
+    /// answers `-EIO` honestly (no faked success before the E1 power-on), and the
+    /// birth orchestration test cares about the report shape, not the kernel round
+    /// trip.
     struct BirthOnlyGateway;
     impl crate::exit::KernelGateway for BirthOnlyGateway {
         fn statectl(&mut self, _: i32, _: u64, _: i32) -> Result<i32, i32> {
@@ -1257,10 +1364,11 @@ mod tests {
 
     #[test]
     fn test_run_once_birth_request_answers_rs_init_report() {
-        // E-BIRTHFACE（NS1）：RS_INIT from RS → 出生应答（PD-34 编排面：
-        // 段一 statectl → 分派 → 库构造回报），不落 pm_isokendpt/dispatch
-        // 路——C 侧该请求由 sef_local_startup 消费（main.c:56）。注册面
-        // fresh + restart STATEFUL（main.c:118-119）→ 都 OK；LU → ENOSYS。
+        // The E-BIRTHFACE (NS1): RS_INIT from RS → birth answer (the orchestration
+        // face: paragraph-one statectl → dispatch → the library builds the report),
+        // not falling into the pm_isokendpt/dispatch path — on the C side this
+        // request is consumed by sef_local_startup (main.c:56). Registration face
+        // fresh + restart STATEFUL (main.c:118-119) → both OK; LU → ENOSYS.
         let mut server = PmServer::with_kernel_gateway(
             test_params(),
             TestIpcTransport::new(),
@@ -1271,7 +1379,7 @@ mod tests {
             ..Message::default()
         };
         birth.m_source = Endpoint::RS;
-        // Union 写安全：RS_INIT 标签选中 m_rs_init 臂。
+        // Union write is safe: the RS_INIT tag selects the m_rs_init arm.
         birth.m_u.m_rs_init.type_ = 0; // SEF_INIT_FRESH
         server.transport.queue_receive(birth, IpcStatus { flags: 1 });
         assert_eq!(server.run_once(), RunStep::Handled);
@@ -1297,8 +1405,8 @@ mod tests {
         assert_eq!(server2.transport.sent()[0].1.rs_init_result(), Some(minix_types::ENOSYS));
     }
 
-    /// V2-P2-1：CLOCK notify 进入 expire_timers 路径（handle_clock_notify），
-    /// 无到期 timer 时零副作用、零回复。
+    /// A CLOCK notify enters the expire_timers path (handle_clock_notify); with no
+    /// timer due there is zero side effect and zero reply.
     #[test]
     fn test_run_once_clock_notify_drives_expire_timers() {
         struct StubTimer;
@@ -1325,19 +1433,20 @@ mod tests {
     #[test]
     #[should_panic(expected = "invalid endpoint")]
     fn test_run_once_invalid_endpoint_panics() {
-        // C: main.c:75-76 — pm_isokendpt 失败 panic（fail-fast）。
+        // C: main.c:75-76 — a pm_isokendpt failure panics (fail-fast).
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let mut msg = Message { m_type: 2, ..Message::default() }; // PM_FORK
-        msg.m_source = Endpoint::from_generation_slot(9, 9); // 未注册槽位
+        msg.m_source = Endpoint::from_generation_slot(9, 9); // unregistered slot
         server.transport.queue_receive(msg, IpcStatus::default());
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.run_once();
     }
 
     #[test]
     fn test_run_once_drops_exiting_caller() {
-        // C: main.c:80-82 — EXITING 进程的延迟调用直接丢弃（continue）。
+        // C: main.c:80-82 — a deferred call of an EXITING process is dropped
+        // (continue).
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let ep = Endpoint::from_generation_slot(1, 5);
         let p = &mut server.table.procs[5];
@@ -1355,10 +1464,10 @@ mod tests {
 
     #[test]
     fn test_run_once_replies_enosys_to_unimplemented_call() {
-        // C: main.c:102-103 — call_index 越界（未注册号）→ result =
-        // ENOSYS；主循环 reply(who_p, result)（main.c:106）。
-        // （1..=47 已全量接线,S4 收尾;“已注册但未实现”类不复存在,
-        // ENOSYS 只剩未注册号这一入口。）
+        // C: main.c:102-103 — call_index out of range (an unregistered number) →
+        // result = ENOSYS; the main loop replies(who_p, result) (main.c:106).
+        // (1..=47 are all wired now, so the "registered but unimplemented" class no
+        // longer exists and ENOSYS has only the unregistered-number entry.)
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let ep = Endpoint::from_generation_slot(1, 5);
         running_proc_at(&mut server.table, 5, ep);
@@ -1368,20 +1477,22 @@ mod tests {
         assert_eq!(server.run_once(), RunStep::Handled);
         let sent = server.transport.sent();
         assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].0, ep); // 回复发给 caller endpoint
-        // NK4-C 1.30 B16：未接线 PM 号同构取负，线上 m_type<0 = errno。
+        assert_eq!(sent[0].0, ep); // the reply goes to the caller endpoint
+        // An unwired PM number is symmetrically negated, so m_type<0 on the wire is
+        // the errno.
         assert_eq!(sent[0].1.m_type, -ENOSYS);
     }
 
     #[test]
     fn test_run_once_fork_no_sync_reply() {
-        // C: do_fork 返回 SUSPEND（forkexit.c:139）——fork 同步不回复，
-        // 回复经 05 的 VFS_PM_FORK_REPLY；但 PM 侧需先 vm_fork（sendrec VM）
-        // 再 tell_vfs 子进程（VFS_CALL）。
+        // C: do_fork returns SUSPEND (forkexit.c:139) — fork does not reply
+        // synchronously; the reply comes through the 05 VFS_PM_FORK_REPLY. PM must
+        // first vm_fork (sendrec to VM) and then tell_vfs the child (VFS_CALL).
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let ep = Endpoint::from_generation_slot(1, 5);
         running_proc_at(&mut server.table, 5, ep);
-        // 脚本化 VM_FORK 应答：空表 + 游标 0 → 子槽位 1（父在 5）。
+        // Scripted VM_FORK reply: empty table with cursor 0 → child slot 1 (the
+        // parent is at 5).
         let mut vm_reply = Message { m_type: minix_types::OK, ..Message::default() };
         vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
         server.transport.queue_sendrec_reply(vm_reply);
@@ -1389,14 +1500,16 @@ mod tests {
         msg.m_source = ep;
         server.transport.queue_receive(msg, IpcStatus::default());
         assert_eq!(server.run_once(), RunStep::Handled);
-        // 依次发出：VM_FORK（sendrec，先于一切不可回滚变更）→ VFS_PM_FORK
-        //（子进程 VFS_CALL）；未向父进程同步回复（SUSPEND）。
+        // Sent in order: VM_FORK (sendrec, before any non-rollbackable change) →
+        // VFS_PM_FORK (the child's VFS_CALL); no synchronous reply to the parent
+        // (SUSPEND).
         assert_eq!(server.transport.sent().len(), 2);
         assert_eq!(server.transport.sent()[0].0, Endpoint::VM);
         assert_eq!(server.transport.sent()[0].1.m_type, minix_types::VM_FORK as i32);
         assert_eq!(server.transport.sent()[1].0, Endpoint::VFS);
         assert_eq!(server.transport.sent()[1].1.m_type, minix_types::VFS_PM_FORK);
-        // 子进程槽应处于 VFS_CALL（延续挂在子进程）
+        // The child slot should be in VFS_CALL (the continuation hangs on the
+        // child)
         assert!(server
             .table
             .procs
@@ -1406,35 +1519,42 @@ mod tests {
 
     #[test]
     fn test_run_once_vfs_reply_no_sync_reply() {
-        // C: main.c:84-87 — VFS 异步回复经 handle_vfs_reply 状态机即时处理，
-        // 不向 VFS 同步回复；状态机向"被回复进程"施加效果（此处 reply(OK)）。
+        // C: main.c:84-87 — a VFS asynchronous reply is handled immediately by the
+        // handle_vfs_reply state machine, with no synchronous reply to VFS; the
+        // state machine applies effects to "the process being replied to" (here
+        // reply(OK)).
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
-        // m_source 验证（pm_isokendpt）需要 VFS 槽位 endpoint 已登记。
+        // m_source validation (pm_isokendpt) requires the VFS slot's endpoint to be
+        // registered.
         running_proc_at(&mut server.table, 1, Endpoint::VFS);
-        // 被回复进程（slot 5）处于 VFS_CALL 状态，其 endpoint 写入回复 m7_i1。
+        // The process being replied to (slot 5) is in the VFS_CALL state, and its
+        // endpoint is written into the reply's m7_i1.
         let ep = Endpoint::from_generation_slot(1, 5);
         running_proc_at(&mut server.table, 5, ep);
         server.table.procs[5].state.block.ipc_blocked =
             Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
-        // SETUID 分支：reply(OK) + 尾部 restart_signals
+        // The SETUID branch: reply(OK) plus the trailing restart_signals
         let mut msg = Message { m_type: VFS_PM_SETUID_REPLY, ..Message::default() };
         msg.m_source = Endpoint::VFS;
-        // SAFETY: 回复消息的 m7_i1 承载目标进程 endpoint（main.c:315-321）。
+        // SAFETY: the reply message's m7_i1 carries the target process endpoint
+        // (main.c:315-321).
         msg.m_u.m_m7.m7i1 = ep.get();
         server.transport.queue_receive(msg, IpcStatus::default());
         assert_eq!(server.run_once(), RunStep::Handled);
-        // 状态机已即时施加效果：向 slot 5 进程回复 OK（而非向 VFS 同步回复）。
+        // The state machine has already applied the effect: reply OK to the slot-5
+        // process (not a synchronous reply to VFS).
         let sent = server.transport.sent();
         assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].0, ep); // 回复发给被回复进程
+        assert_eq!(sent[0].0, ep); // the reply goes to the process being replied to
         assert_eq!(sent[0].1.m_type, OK);
-        // VFS_CALL 标志已被状态机清除（take_vfs_call）。
+        // The VFS_CALL flag has been cleared by the state machine (take_vfs_call).
         assert_eq!(server.table.procs[5].state.block.ipc_blocked, None);
     }
 
     #[test]
     fn test_run_once_receive_failure_reported() {
-        // receive 无消息 → ReceiveFailed（run() 计数，防 busy-spin）。
+        // No message on receive → ReceiveFailed (run() counts it, against
+        // busy-spin).
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         assert_eq!(server.run_once(), RunStep::ReceiveFailed);
     }
@@ -1442,11 +1562,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "permanently broken")]
     fn test_run_panics_after_consecutive_receive_failures() {
-        // C: sef_receive_status 阻塞等待（main.c:61）；传输损坏时
-        // fail-fast（与 VM V10-P0-2 同型）。
+        // C: sef_receive_status blocks waiting (main.c:61); on a broken transport it
+        // fails fast (the same shape as VM).
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         server.initialized = true;
-        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        //[SD19-gate] PM send/notify/reply is fire-and-forget
         #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
     }
@@ -1457,9 +1577,10 @@ mod tests {
         server.init();
         assert!(server.initialized);
 
-        // VFS 同步：4 条逐条 send + 1 条 sendrec（也记录在 sent）；
-        // S29 卡C 转真后 `init_scheduling` 再发一条 SCHEDULING_START 给
-        // SCHED（boot 链真接：INIT 的调度启动不再占位）。
+        // VFS sync: four per-entry sends plus one sendrec (also recorded in sent);
+        // once the card-C leg was converted to the real thing, `init_scheduling`
+        // sends one more SCHEDULING_START to SCHED (the boot chain is genuinely
+        // wired: INIT's scheduling start is no longer a placeholder).
         let sent = server.transport.sent();
         assert_eq!(sent.len(), 6);
         assert_eq!(sent[0].0, Endpoint::VFS);

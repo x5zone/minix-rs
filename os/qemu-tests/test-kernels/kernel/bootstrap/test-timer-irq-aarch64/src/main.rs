@@ -1,4 +1,4 @@
-//! Test: timer IRQ hardware half-loop on aarch64 (E-3ARCHTRAP / NK3 — the
+//! Test: timer IRQ hardware half-loop on aarch64 (E-3ARCHTRAP — the
 //! aarch64 leg of the x86 `test-timer-irq` carrier; AAVMF carrier).
 //!
 //! Verifies the full interrupt delivery chain with the REAL production
@@ -280,7 +280,7 @@ fn main() -> Status {
     // GICR_WAKER write landed in a reserved hole: external abort, ESR
     // 0x96000050, FAR 0x08030014). The hardcoded descriptor carries the
     // correct redistributor base 0x080A_0000; production discovery stays
-    // ACPI/DTB and is the platform lane's concern, not NK3's.
+    // ACPI/DTB and is the platform lane's concern, not this carrier's.
     unsafe {
         minix_platform::init(minix_platform::PlatformDescEnum::QemuVirt(
             minix_platform::arch::aarch64::QemuVirtDesc::default(),
@@ -290,7 +290,7 @@ fn main() -> Status {
     // 3. Trap entry — the trap-entry half of init_protection, performed
     // by hand (see the module doc: AAVMF rejects the SP_EL1 write in
     // `AArch64Protection::init`). Order matters: the dispatch bodies are
-    // registered strictly before the table goes live (S-8 stage
+    // registered strictly before the table goes live (ordering
     // invariant — no live gate with an empty handler).
     use minix_arch::{
         CurrentTrapEntry, TrapEntryArch, install_trap_stubs, register_trap_dispatchers,

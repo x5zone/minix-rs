@@ -16,8 +16,9 @@
 //!
 //! On a host build `access(2)`/`stat(2)`/`rename(2)` all fail through the transport
 //! seam, so the ask ladder never fires and `fastcopy` is unreachable; the legs that
-//! need a real filesystem are the deciding half's unit tests and the `C-57`/`E5`
-//! machine gate, and this door says so instead of pretending to cover them.
+//! need a real filesystem are the deciding half's unit tests and the `E5`
+//! writable-root machine gate, and this door says so instead of pretending to
+//! cover them.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;

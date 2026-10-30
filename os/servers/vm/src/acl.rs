@@ -170,10 +170,10 @@ impl AclState {
     // Exit-time ACL clearing (C `acl_clear()`, exit.c:48) has no standalone
     // method: minix-rs folds it into `VmProc::clear()`, which resets
     // `vm_acl` to `Uninitialized` as part of process cleanup — there is no
-    // shared slot table to free, so no separate step is needed (V11/T24).
+    // shared slot table to free, so no separate step is needed.
 
     // Test-only; the ACL check path matches `AclState` inline, so this
-    // read accessor has no production consumer yet (revisit with V9-P2-3).
+    // read accessor has no production consumer yet (revisit when a caller appears).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn mask(&self) -> Option<AclMask> {
         match self {

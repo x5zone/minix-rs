@@ -1,17 +1,21 @@
-//! `mkfs.mfs` 薄壳：在镜像文件上构建第三版 Minix 文件系统——空卷或按
-//! 原型文件播种。
+//! `mkfs.mfs` thin shell: build a third-version Minix file system on an image
+//! file — an empty volume, or one seeded from a prototype file.
 //!
-//! C 对应物：`minix3/minix/usr.sbin/mkfs.mfs/mkfs.c` 的 `main`。决定半
-//! 在 `minix_fs_mfs::mkfs`（布局算式、镜像构建、根目录装配、原型播种
-//! 都在格式库里）；本程序只做四件事——解析参数、读原型、喂宿主文件、
-//! 落盘。
+//! C counterpart: `main` in
+//! `minix3/minix/usr.sbin/mkfs.mfs/mkfs.c`. The deciding half lives in
+//! `minix_fs_mfs::mkfs` (layout arithmetic, image building, root directory
+//! assembly, prototype seeding are all in the format library); this program
+//! does four things only — parse arguments, read the prototype, feed host
+//! files, write the image.
 //!
-//! 参数形状（宿主面）：`mkfs.mfs <image> <blocks> [inodes] [block-size]
-//! [-p proto]`。`-p` 给出时按 C 的 `simple == 0` 支路走：原型头第二行
-//! 的 inode 数优先于位置参数（C `main` 直接覆盖），头声明的块数超过
-//! 位置参数即拒（C mkfs.c:305-308）。条目里的普通文件经 `StdHost`
-//! 从宿主读内容与修改时刻。C 的 getopt 面（`-b`/`-i`/`-l`/`-z`/`-T`）
-//! 与真机块设备写入随 E-FSBDEV 一并对位。
+//! Argument shape (host face): `mkfs.mfs <image> <blocks> [inodes] [block-size]
+//! [-p proto]`. When `-p` is given the C `simple == 0` branch is taken: the
+//! inode count on the prototype header's second line wins over the positional
+//! argument (C `main` overwrites it directly), and a header block count
+//! exceeding the positional argument is refused (C mkfs.c:305-308). Plain
+//! files in an entry are read from the host, content and mtime, through
+//! `StdHost`. C's getopt face (`-b`/`-i`/`-l`/`-z`/`-T`) and real
+//! block-device writes are aligned together once the block-device path lands.
 
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -37,8 +41,9 @@ fn fail(message: &str) -> ! {
     support::terminate(1);
 }
 
-/// 宿主文件读取器的生产半：整文件读入，修改时刻取自元数据；失败的
-/// 路径留在 `last_path` 里，错误报告时点名（C 的 "Can't open %s"）。
+/// The production half of the host file reader: whole-file read, mtime taken
+/// from metadata; the failing path stays in `last_path` so the error report
+/// can name it (C's "Can't open %s").
 struct StdHost {
     last_path: RefCell<String>,
 }
@@ -51,9 +56,11 @@ impl ProtoHost for StdHost {
             return Err(MkfsError::BufferTooSmall);
         }
         out[..bytes.len()].copy_from_slice(&bytes);
-        // mtime 取当前时刻（原型文件元的修改时间戳）；目标侧时钟面是
-        // SYS_TIMES 合成秒（`support::epoch_micros`），与 hosted 元数据
-        // 查询的差别登记在 bin_support 头。
+        // mtime is the current instant (the prototype file's metadata
+        // modification timestamp); the target side's clock face is SYS_TIMES
+        // synthesized seconds (`support::epoch_micros`), and the difference
+        // from the hosted metadata query is recorded in the bin_support
+        // header.
         let mtime = (support::epoch_micros().unwrap_or(0) / 1_000_000) as i32;
         Ok(mkfs::HostFile { len: bytes.len(), mtime })
     }
@@ -86,7 +93,7 @@ fn explain(error: MkfsError, host: &StdHost) -> ! {
 
 fn run() -> ! {
     let args: Vec<String> = support::args();
-    // -p <proto> 可出现在任意位置；其余按位置收。
+    // -p <proto> may appear anywhere; everything else is taken positionally.
     let mut proto_path: Option<String> = None;
     let mut positional: Vec<String> = Vec::new();
     let mut at = 1;
@@ -115,7 +122,8 @@ fn run() -> ! {
         .map(|s| s.parse().unwrap_or_else(|_| fail("block-size is not a number")))
         .unwrap_or(mkfs::DEFAULT_BLOCK_SIZE);
 
-    // 原型给出时：头的 inode 数优先（零 = 用缺省阶梯），头块数超出参数即拒。
+    // With a prototype: the header's inode count wins (zero = use the default
+    // ladder); a header block count above the argument is refused.
     let mut inodes = inodes_arg;
     let mut host = StdHost { last_path: RefCell::new(String::new()) };
     let proto_text = proto_path.map(|path| {
@@ -146,8 +154,9 @@ fn run() -> ! {
     }
     .unwrap_or_else(|error| explain(error, &host));
     if support::write_file(&image_path, &image).is_err() {
-        // 目标侧失败原因在缝上抹平（minix_sys Errno 未穿透本缝），宿主
-        // io::Error 的 {e} 细节随之移除——失败可见性不变。
+        // The target-side failure reason is flattened at the seam (minix_sys
+        // Errno does not cross it), and the host io::Error {e} detail goes
+        // with it — failure visibility is unchanged.
         fail(&format!("cannot write {image_path}"));
     }
     support::emit(

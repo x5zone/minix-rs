@@ -1,5 +1,5 @@
 //! Panic diagnostic hook — the kernel-side panic renderer registration
-//! point (D-48, A-8 step 2).
+//! point.
 //!
 //! # Why this lives in minix-types
 //!

@@ -47,47 +47,49 @@ pub fn message_version_allowed(version: u8) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// RTM 帧面（第 20 篇 §2.5 登记的"服务主程序"半在此落地；判断与存储分离
-// 的裁决不变——本节只是把消息的线形状收进本模块，保持"路由消息头不外泄
-// 其他模块"的隔离规则）。消息头与地址数组的走查规则照 C：头之后按
-// RTAX 位序排 sockaddr，每个按 8 字节向上取整推进（RT_ROUNDUP，0 也占
-// 8 字节，`sys/net/route.h:272-274`）。
+// RTM frame face: the "service main program" half for route messages lands
+// here, and the ruling that decision and storage stay separate is unchanged —
+// this section only takes the message's wire shape into this module, keeping the
+// isolation rule that route message headers do not leak to other modules. The
+// walk over the header and the address array follows C: after the header,
+// sockaddrs sit in RTAX bit order, each advancing by an 8-byte round-up
+// (RT_ROUNDUP, where 0 also occupies 8 bytes, `sys/net/route.h:272-274`).
 // ---------------------------------------------------------------------------
 
-/// 消息类型：增路由（`RTM_ADD`，0x1，`route.h:210`）。
+/// Message type: add route (`RTM_ADD`, 0x1, `route.h:210`).
 pub const RTM_ADD: u8 = 0x1;
-/// 消息类型：删路由（`RTM_DELETE`，0x2，`route.h:211`）。
+/// Message type: delete route (`RTM_DELETE`, 0x2, `route.h:211`).
 pub const RTM_DELETE: u8 = 0x2;
-/// 消息类型：改路由（`RTM_CHANGE`，0x3，`route.h:212`；同键替换语义）。
+/// Message type: change route (`RTM_CHANGE`, 0x3, `route.h:212`; same-key replace semantics).
 pub const RTM_CHANGE: u8 = 0x3;
-/// 消息类型：查路由（`RTM_GET`，0x4，`route.h:213`）。
+/// Message type: get route (`RTM_GET`, 0x4, `route.h:213`).
 pub const RTM_GET: u8 = 0x4;
 
-/// 地址位：目的（`RTA_DST`，0x1，`route.h:248`）。
+/// Address bit: destination (`RTA_DST`, 0x1, `route.h:248`).
 pub const RTA_DST: i32 = 0x1;
-/// 地址位：网关（`RTA_GATEWAY`，0x2，`route.h:249`）。
+/// Address bit: gateway (`RTA_GATEWAY`, 0x2, `route.h:249`).
 pub const RTA_GATEWAY: i32 = 0x2;
-/// 地址位：掩码（`RTA_NETMASK`，0x4，`route.h:250`）。
+/// Address bit: netmask (`RTA_NETMASK`, 0x4, `route.h:250`).
 pub const RTA_NETMASK: i32 = 0x4;
 
-/// 回执旗标：条目可用（`RTF_UP`，0x1，`route.h:140`）。
+/// Receipt flag: the entry is usable (`RTF_UP`, 0x1, `route.h:140`).
 pub const RTF_UP: i32 = 0x1;
-/// 回执旗标：经网关（`RTF_GATEWAY`，0x2，`route.h:141`）。
+/// Receipt flag: reached through a gateway (`RTF_GATEWAY`, 0x2, `route.h:141`).
 pub const RTF_GATEWAY: i32 = 0x2;
-/// 回执旗标：主机条目（`RTF_HOST`，0x4，`route.h:142`）。
+/// Receipt flag: host entry (`RTF_HOST`, 0x4, `route.h:142`).
 pub const RTF_HOST: i32 = 0x4;
 
-/// LP64 下 `struct rt_msghdr` 的字节数（10 个 4 字节域 @0..40 加
-/// 80 字节 metrics @40，头长 120 且天然 8 对齐）。
+/// Byte size of `struct rt_msghdr` under LP64 (ten 4-byte fields at 0..40 plus
+/// 80 bytes of metrics at 40; the header is 120 bytes and naturally 8-aligned).
 pub const HEADER_LEN: usize = 120;
 
-/// 地址族：版本 4（`AF_INET`，2）。
+/// Address family: version 4 (`AF_INET`, 2).
 const AF_INET: u8 = 2;
-/// 地址族：版本 6（`AF_INET6`，24）。
+/// Address family: version 6 (`AF_INET6`, 24).
 const AF_INET6: u8 = 24;
 
-/// 8 字节向上取整（`RT_ROUNDUP2(a, sizeof(uint64_t))`，`route.h:272-273`；
-/// 0 也占一个槽位）。
+/// Round up to 8 bytes (`RT_ROUNDUP2(a, sizeof(uint64_t))`, `route.h:272-273`;
+/// 0 still occupies one slot).
 fn roundup(len: usize) -> usize {
     if len == 0 {
         8
@@ -96,44 +98,46 @@ fn roundup(len: usize) -> usize {
     }
 }
 
-/// 一条 sockaddr 的解析结果：族加至多 16 字节的地址本体（版本 4 的
-/// `sin_addr`@4 与版本 6 的 `sin6_addr`@8 都装得下）。
+/// One sockaddr's parse result: the family plus an address body of at most 16
+/// bytes (which holds both version 4's `sin_addr`@4 and version 6's
+/// `sin6_addr`@8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RtSockaddr {
-    /// 地址族字节（`sa_family`，`sys/socket.h:229-233` 的第 2 字节）。
+    /// Address family byte (`sa_family`, the second byte of the object at `sys/socket.h:229-233`).
     pub family: u8,
-    /// 地址本体（版本 4 取 4 字节、版本 6 取 16 字节）。
+    /// Address body (4 bytes for version 4, 16 bytes for version 6).
     pub addr: [u8; 16],
 }
 
-/// 解码后的 RTM 帧：命令与回执所需的最小域集。
+/// A decoded RTM frame: the minimal field set the command and the receipt need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RtFrame {
-    /// 消息类型（`rtm_type`）。
+    /// Message type (`rtm_type`).
     pub msg_type: u8,
-    /// 出接口行号（`rtm_index`，落到路由条目的 ifdev 半）。
+    /// Egress interface index (`rtm_index`, landing in the route entry's ifdev half).
     pub index: u16,
-    /// 旗标（`rtm_flags`）。
+    /// Flags (`rtm_flags`).
     pub flags: i32,
-    /// 地址位掩码（`rtm_addrs`）。
+    /// Address bit mask (`rtm_addrs`).
     pub addrs: i32,
-    /// 发送方进程号（`rtm_pid`，回执原样带回）。
+    /// Sender process number (`rtm_pid`, echoed back verbatim in the receipt).
     pub pid: i32,
-    /// 发送方序号（`rtm_seq`，回执原样带回）。
+    /// Sender sequence number (`rtm_seq`, echoed back verbatim in the receipt).
     pub seq: i32,
-    /// 目的地址（`RTA_DST` 位在场时解析）。
+    /// Destination address (parsed when the `RTA_DST` bit is present).
     pub dst: Option<RtSockaddr>,
-    /// 网关（`RTA_GATEWAY` 位在场时解析；`None` = 直连）。
+    /// Gateway (parsed when the `RTA_GATEWAY` bit is present; `None` = directly connected).
     pub gateway: Option<RtSockaddr>,
-    /// 前缀长度（`RTA_NETMASK` 位在场时从掩码折算；位不在场 = 主机
-    /// 条目，按族取满 32/128）。
+    /// Prefix length (derived from the netmask when the `RTA_NETMASK` bit is
+    /// present; without the bit = a host entry, full 32/128 by family).
     pub prefix: Option<u8>,
 }
 
-/// 从 `base` 起的 sockaddr 槽位取族与地址本体（版本 4 的地址在
-/// `sin_addr`@4，版本 6 在 `sin6_addr`@8，`netinet6/in6.h:145-151`）。
-/// 其余族在本模型的路由面无语义，按 C 的"目的族不认识"折
-/// EAFNOSUPPORT（登记：C 在更晚的 route_process 阶段才拒）。
+/// Take the family and address body from the sockaddr slot at `base` (version 4
+/// addresses at `sin_addr`@4, version 6 at `sin6_addr`@8,
+/// `netinet6/in6.h:145-151`). Other families carry no meaning on this model's
+/// routing face and fold to EAFNOSUPPORT the way C's "destination family not
+/// understood" does (C rejects later, in the route_process stage).
 fn parse_addr_slot(buf: &[u8], base: usize) -> Result<RtSockaddr, i32> {
     let family = *buf.get(base + 1).ok_or(minix_types::EINVAL)?;
     let mut addr = [0u8; 16];
@@ -153,18 +157,20 @@ fn parse_addr_slot(buf: &[u8], base: usize) -> Result<RtSockaddr, i32> {
     Ok(RtSockaddr { family, addr })
 }
 
-/// 从 `base` 起的 netmask 槽位折前缀长度。两种线上形态都收：完整
-/// 形态（族 2/24，掩码在 sin_addr@4 / sin6_addr@8）与压缩形态
-/// （掩码位从 `sa_data`@2 起，族字节可为 0——C 的
-/// `rtsock_expand_netmask` 在 rtsock.c:598-605 展开同一形态）。位序
-/// 大端（位 0 是首字节最高位），前导连续 1 计满后余位必须为零。
+/// Fold the netmask slot at `base` into a prefix length. Both wire forms are
+/// accepted: the full form (family 2/24 with the mask at sin_addr@4 /
+/// sin6_addr@8) and the compressed form (mask bytes starting at `sa_data`@2,
+/// whose family byte may be 0 — C's `rtsock_expand_netmask` expands the same
+/// form at rtsock.c:598-605). Bit order is big-endian (bit 0 is the high bit of
+/// the first byte), and after counting the leading run of ones every remaining
+/// bit must be zero.
 fn mask_prefix(buf: &[u8], base: usize, sa_len: usize) -> Result<u8, i32> {
     let family = *buf.get(base + 1).ok_or(minix_types::EINVAL)?;
     let (start, max_bits) = match (family, sa_len) {
         (AF_INET, l) if l >= 8 => (base + 4, 32u16),
         (AF_INET6, l) if l >= 24 => (base + 8, 128u16),
         (_, l) if l >= 2 => (base + 2, 128u16),
-        // 只有头的空槽：前缀 0（默认路由）。
+        // A head-only empty slot: prefix 0 (default route).
         _ => return Ok(0),
     };
     let end = (base + sa_len).min(start + 16);
@@ -191,15 +197,17 @@ fn mask_prefix(buf: &[u8], base: usize, sa_len: usize) -> Result<u8, i32> {
     Ok(prefix as u8)
 }
 
-/// 解码一条 RTM 帧（C `rtsock_put` 的检查序，rtsock.c:528-570）：
-/// ① `rtm_msglen` 必须等于缓冲长度；② 版本必须是 4（不对不解析类型）；
-/// ③ 地址数组逐槽走查（界检查后取族与本体）。类型与身份的门在
-/// [`crate::sockops::rt_road`]（要查根身份），表更新也在服务路。
+/// Decode one RTM frame (the check order of C `rtsock_put`, rtsock.c:528-570):
+/// (1) `rtm_msglen` must equal the buffer length; (2) the version must be 4 (the
+/// type is not parsed otherwise); (3) the address array is walked slot by slot
+/// (bounds check, then family and body). The type and identity gates live in
+/// [`crate::sockops::rt_road`] (which checks root identity), and table updates
+/// stay on the service side too.
 pub fn parse_frame(buf: &[u8]) -> Result<RtFrame, i32> {
     if buf.len() < HEADER_LEN {
         return Err(minix_types::EINVAL);
     }
-    // 头长已在门槛检查中保证，固定域位的切片不越界。
+    // The header length was guaranteed by the gate check, so slicing fixed field positions cannot go out of bounds.
     let word = |at: usize| i32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
     let msglen = u16::from_le_bytes(buf[0..2].try_into().map_err(|_| minix_types::EINVAL)?)
         as usize;
@@ -221,15 +229,16 @@ pub fn parse_frame(buf: &[u8]) -> Result<RtFrame, i32> {
         gateway: None,
         prefix: None,
     };
-    // 地址数组走查：`rtm_addrs` 的位序即 RTAX 序（DST=0、GATEWAY=1、
-    // NETMASK=2，route.h:261-263），每槽按 RT_ROUNDUP(sa_len) 推进。
+    // Address array walk: the bit order of `rtm_addrs` is the RTAX order
+    // (DST=0, GATEWAY=1, NETMASK=2, route.h:261-263), and each slot advances by
+    // RT_ROUNDUP(sa_len).
     let mut off = HEADER_LEN;
     let mut mask_slot: Option<(usize, usize)> = None;
     for slot in 0..9 {
         if frame.addrs & (1 << slot) == 0 {
             continue;
         }
-        // 槽位至少要放得下 sockaddr 的头两字节（C rtsock.c:572-575）。
+        // A slot must at least hold the first two bytes of a sockaddr (C rtsock.c:572-575).
         if off + 2 > buf.len() {
             return Err(minix_types::EINVAL);
         }
@@ -247,14 +256,15 @@ pub fn parse_frame(buf: &[u8]) -> Result<RtFrame, i32> {
     }
     frame.prefix = match mask_slot {
         Some((base, sa_len)) => Some(mask_prefix(buf, base, sa_len)?),
-        // 位不在场 = 主机条目；前缀在表更新时按族取满。
+        // Bit absent = a host entry; the prefix is filled to the family maximum at table update.
         None => None,
     };
     Ok(frame)
 }
 
-/// 在 `out` 的 `base` 偏移写一个完整形态 sockaddr（头两字节 +
-/// 本体位；掩码槽把前缀掩码放到本体位），槽内余量清零。
+/// Write a full-form sockaddr at the `base` offset of `out` (two header bytes
+/// plus the body bits; a mask slot puts the prefix mask in the body bits), and
+/// zero the remaining room in the slot.
 fn write_sockaddr(
     out: &mut [u8],
     base: usize,
@@ -283,10 +293,12 @@ fn write_sockaddr(
     out[base + addr_at..base + addr_at + width].copy_from_slice(&body[..width]);
 }
 
-/// 编码一条路由条目的 RTM_GET 帧（read 导出面）：头 + DST + GATEWAY
-/// （在场时）+ NETMASK，全用完整形态 sockaddr（掩码不压缩——C 的
-/// 导出面发压缩形态，完整形态是同一语义的未压缩表达，登记差异）。
-/// 返回写入 `out` 的字节数；`out` 放不下整帧回 `None`。
+/// Encode the RTM_GET frame of one route entry (the read export face): header +
+/// DST + GATEWAY (when present) + NETMASK, all in full-form sockaddrs (the mask
+/// is not compressed — C's export face sends the compressed form; the full form
+/// is the same semantics expressed uncompressed, a noted difference). Returns the
+/// number of bytes written to `out`; `None` when `out` cannot hold the whole
+/// frame.
 pub fn encode_entry_frame(
     entry: &crate::route::RouteEntry,
     pid: i32,
@@ -305,7 +317,7 @@ pub fn encode_entry_frame(
     for byte in out[..total].iter_mut() {
         *byte = 0;
     }
-    // 头：类型 GET、版本 4、接口行号、旗标、地址位、回执的 pid/seq。
+    // Header: type GET, version 4, interface index, flags, address bits, receipt pid/seq.
     let mut flags = RTF_UP;
     if entry.gateway.is_some() {
         flags |= RTF_GATEWAY;
@@ -340,7 +352,7 @@ pub fn encode_entry_frame(
     Some(total)
 }
 
-/// 族对应的地址字节数（条目半）。
+/// Address byte count for the family (the entry half).
 fn addr_len(version: crate::route::IpVersion) -> usize {
     match version {
         crate::route::IpVersion::V4 => 4,
@@ -371,8 +383,7 @@ mod tests {
         assert!(!message_version_allowed(5));
     }
 
-    /// 造一条 ADD 帧的原始字节（完整形态 sockaddr：DST+GATEWAY+
-    /// NETMASK）。
+    /// Build the raw bytes of an ADD frame (full-form sockaddrs: DST+GATEWAY+NETMASK).
     fn sample_add_frame() -> alloc::vec::Vec<u8> {
         let mut buf = alloc::vec![0u8; HEADER_LEN + 16 * 3];
         let total = buf.len();
@@ -383,16 +394,16 @@ mod tests {
         buf[12..16].copy_from_slice(&(RTA_DST | RTA_GATEWAY | RTA_NETMASK).to_le_bytes());
         buf[16..20].copy_from_slice(&4242i32.to_le_bytes());
         buf[20..24].copy_from_slice(&7i32.to_le_bytes());
-        // DST 10.1.0.0。
+        // DST 10.1.0.0.
         buf[HEADER_LEN] = 16;
         buf[HEADER_LEN + 1] = 2;
         buf[HEADER_LEN + 4..HEADER_LEN + 8].copy_from_slice(&[10, 1, 0, 0]);
-        // GATEWAY 10.0.0.1。
+        // GATEWAY 10.0.0.1.
         let gw = HEADER_LEN + 16;
         buf[gw] = 16;
         buf[gw + 1] = 2;
         buf[gw + 4..gw + 8].copy_from_slice(&[10, 0, 0, 1]);
-        // NETMASK /16（完整形态）。
+        // NETMASK /16 (full form).
         let nm = HEADER_LEN + 32;
         buf[nm] = 16;
         buf[nm + 1] = 2;
@@ -415,24 +426,24 @@ mod tests {
         assert_eq!(&gw.addr[..4], &[10, 0, 0, 1]);
         assert_eq!(frame.prefix, Some(16), "完整形态掩码折前缀 16");
 
-        // 检查序①：msglen 与缓冲长度不符 → EINVAL。
+        // Check order (1): msglen disagrees with the buffer length → EINVAL.
         let mut short = buf.clone();
         short[0..2].copy_from_slice(&99u16.to_le_bytes());
         assert_eq!(parse_frame(&short).unwrap_err(), minix_types::EINVAL);
-        // 检查序②：版本不是 4 → EPROTONOSUPPORT。
+        // Check order (2): version is not 4 → EPROTONOSUPPORT.
         let mut alien = buf.clone();
         alien[2] = 5;
         assert_eq!(
             parse_frame(&alien).unwrap_err(),
             minix_types::EPROTONOSUPPORT
         );
-        // 过短缓冲：EINVAL。
+        // Too-short buffer: EINVAL.
         assert_eq!(parse_frame(&buf[..40]).unwrap_err(), minix_types::EINVAL);
     }
 
     #[test]
     fn test_compressed_netmask_and_no_mask_host_route() {
-        // 压缩形态：只有头两字节加掩码位（/24 → 3 个 0xFF）。
+        // Compressed form: only the two header bytes plus the mask bytes (/24 → three 0xFF).
         let mut buf = alloc::vec![0u8; HEADER_LEN + 16 + 8];
         let total = buf.len();
         buf[0..2].copy_from_slice(&(total as u16).to_le_bytes());
@@ -443,17 +454,17 @@ mod tests {
         buf[HEADER_LEN + 1] = 2;
         buf[HEADER_LEN + 4..HEADER_LEN + 8].copy_from_slice(&[192, 168, 1, 1]);
         let nm = HEADER_LEN + 16;
-        buf[nm] = 5; // 2 字节头 + 3 掩码字节
-        buf[nm + 1] = 0; // 压缩形态族字节可为 0
+        buf[nm] = 5; // 2-byte header + 3 mask bytes
+        buf[nm + 1] = 0; // the compressed form's family byte may be 0
         buf[nm + 2..nm + 5].copy_from_slice(&[255, 255, 255]);
         let frame = parse_frame(&buf).expect("压缩掩码解析");
         assert_eq!(frame.prefix, Some(24));
 
-        // 非连续掩码拒绝。
+        // Non-contiguous mask rejected.
         buf[nm + 2..nm + 5].copy_from_slice(&[255, 0, 255]);
         assert_eq!(parse_frame(&buf).unwrap_err(), minix_types::EINVAL);
 
-        // 掩码位不在场 = 主机条目（prefix None，表更新按族取满）。
+        // Mask bit absent = host entry (prefix None; table update fills it to the family maximum).
         let mut host = alloc::vec![0u8; HEADER_LEN + 16];
         let total = host.len();
         host[0..2].copy_from_slice(&(total as u16).to_le_bytes());
@@ -495,7 +506,7 @@ mod tests {
         assert_eq!(&frame.dst.unwrap().addr[..4], &[10, 1, 0, 0]);
         assert_eq!(&frame.gateway.unwrap().addr[..4], &[10, 0, 0, 1]);
 
-        // 主机条目带主机旗标；缓冲放不下回 None。
+        // A host entry carries the host flag; a buffer too small returns None.
         let host = crate::route::RouteEntry { prefix: 32, ..entry };
         let n = encode_entry_frame(&host, 0, 0, &mut out).expect("主机帧");
         assert_eq!(parse_frame(&out[..n]).unwrap().flags & RTF_HOST, RTF_HOST);

@@ -1,7 +1,9 @@
 #![cfg_attr(not(test), no_std)]
-// SD-19 静默吞错家族机械化门（第七家 crate，与 minix-sys/rt/fs/kernel/sef/fs-rt 同程序）：
-// textfilter 里当前仅 `cmp.rs` 一处 `let _ = write!` 入 String（仅内存分配可失败，
-// C regular.c 对应 printf 亦不分支）。新开无理由的 `let _ =` 会当场多报一条。
+// Mechanical gate for the silently-swallowed-error family (seventh crate, same
+// program as minix-sys/rt/fs/kernel/sef/fs-rt): textfilter currently has exactly
+// one `let _ = write!` into a String, in `cmp.rs` (only allocation can fail, and
+// C regular.c's printf does not branch either). A new unexplained `let _ =`
+// reports an extra hit immediately.
 #![warn(clippy::let_underscore_must_use)]
 
 //! Text filtering and data processing core for Minix-RS commands.
@@ -96,32 +98,40 @@ impl TextError {
     }
 }
 
-/// libc 的 `getopt` 在返回 `'?'` **之前**自己先印的那一行。
+/// The line libc's `getopt` prints itself **before** returning `'?'`.
 ///
-/// 这一行不属于任何一条命令：只要 optstring 不以 `:` 开头（本族没有一条以它开头），
-/// `getopt` 就在两个地方各自印一句，然后才把 `'?'` 交给调用者的 `usage()`：
-/// 集外字母走 `minix3/lib/libc/stdlib/getopt.c:101-104`，带值选项缺值走
-/// `:132-136`。两句都把程序名放在最前（`getprogname()`），字母**不带引号**——
-/// 本机 glibc 写的是 `invalid option -- 'x'`，拿宿主当基线会错，所以这一句的真值
-/// 只能来自 C 源。两个命令各写一份同样的句子就是重复承载同一个事实（谁先被抹平
-/// 都不会改变行为），所以把它收在这里。
+/// This line belongs to no command: as long as the optstring does not start with
+/// `:` (none in this family does), `getopt` prints a sentence in two places and
+/// only then hands `'?'` to the caller's `usage()`: out-of-set letters go through
+/// `minix3/lib/libc/stdlib/getopt.c:101-104`, a value-taking option with a missing
+/// value through `:132-136`. Both put the program name first (`getprogname()`), and
+/// the letter is **not quoted** — the local glibc writes
+/// `invalid option -- 'x'`, so the host is a wrong baseline; the truth of this
+/// sentence can only come from the C source. Two commands each writing the same
+/// sentence would carry the same fact twice (flattening either first changes no
+/// behavior), so it lives here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GetoptReport {
-    /// `getopt.c:101-104`：集外字母（libc 版）。
+    /// `getopt.c:101-104`: out-of-set letter (libc version).
     UnknownOption(char),
-    /// `egetopt.c:144-151`：集外字母（`pr` 自带的 `egetopt` 版）。措辞与 libc 那一行**不同**，
-    /// 所以不能共用一个变体：`pr` 不吃 libc 的 `getopt`，它链的是
-    /// `minix3/usr.bin/pr/egetopt.c`，而那里写的是 `illegal option`。同一个字母在两个
-    /// 解析器下得到的句子就是不一样，拿“同族规律”抹平会把措辞写错。
+    /// `egetopt.c:144-151`: out-of-set letter (`pr`'s own `egetopt` version). The
+    /// wording **differs** from libc's line, so the two cannot share a variant:
+    /// `pr` does not use libc's `getopt`; it links `minix3/usr.bin/pr/egetopt.c`,
+    /// which writes `illegal option`. The same letter yields different sentences
+    /// under the two parsers, and flattening them with a "family rule" would get
+    /// the wording wrong.
     IllegalOption(char),
-    /// `getopt.c:132-136`（libc）与 `egetopt.c:196-205`（`pr`）——两处的句子逐字相同，
-    /// 所以共一个变体。（`egetopt` 还有第三句 `illegal '+' delimiter with option`，
-    /// 在 `:158-167`，只在 `+` 后面接不上数字时走，本壳的 `+` 腿自己报 `+page number ...`。）
+    /// `getopt.c:132-136` (libc) and `egetopt.c:196-205` (`pr`) — the sentences are
+    /// verbatim identical, so they share one variant. (`egetopt` has a third
+    /// sentence, `illegal '+' delimiter with option`, at `:158-167`, reached only
+    /// when `+` is not followed by a number; this wrapper's `+` leg reports
+    /// `+page number ...` itself.)
     MissingValue(char),
 }
 
 impl GetoptReport {
-    /// 那一行的措辞与它要报的字母——两个渲染入口共用这一份，措辞只承载一次。
+    /// The line's wording and the letter to report — both rendering entries share
+    /// this, so the wording is carried once.
     fn wording(self) -> (&'static str, char) {
         match self {
             GetoptReport::UnknownOption(letter) => ("unknown option -- ", letter),
@@ -130,33 +140,41 @@ impl GetoptReport {
         }
     }
 
-    /// 那一行的完整文本（带换行）。调用方把它写到标准错误，随后接自己的 usage。
+    /// The complete line (with newline). The caller writes it to stderr and then
+    /// appends its own usage.
     ///
-    /// 前缀都是程序名：libc 那两句递的是 `getprogname()`，而 `egetopt` 自己拿
-    /// `strrchr(*nargv, '/')` 现算 `argv[0]` 的最后一段（`egetopt.c:145-147`、
-    /// `:159-161`、`:197-199`），结果同一物。
+    /// The prefix is always the program name: libc's two sentences pass
+    /// `getprogname()`, while `egetopt` computes the last segment of `argv[0]`
+    /// itself with `strrchr(*nargv, '/')` (`egetopt.c:145-147`, `:159-161`,
+    /// `:197-199`) — the same result.
     ///
-    /// 字母按 `char` 的 `Display` 渲染，于是 `0x80..=0xFF` 这一段会得到**两个**字节
-    /// （UTF-8 编码），而 C 打的是一个裸字节——差在渲染，见 [`GetoptReport::line_bytes`]。
+    /// The letter renders through `char`'s `Display`, so the `0x80..=0xFF` range
+    /// produces **two** bytes (UTF-8 encoding) while C prints one bare byte — a
+    /// rendering difference; see [`GetoptReport::line_bytes`].
     #[must_use]
     pub fn line(self, prog: &str) -> alloc::string::String {
         let (wording, letter) = self.wording();
         alloc::format!("{prog}: {wording}{letter}\n")
     }
 
-    /// 同一行的**字节**形：把字母当**一个裸字节**写出去。
+    /// The **byte** form of the same line: write the letter as **one bare byte**.
     ///
-    /// C 那一行递的是 `optopt`，而 `optopt = *place++`（`getopt.c:79`、`:95`）取的是 argv 里的
-    /// **一个字节**，`fprintf` 的 `%c` 再把这个字节原样写出（`getopt.c:101-104`）。参照件
-    /// `tmp/rev-309/rev_ref` 现量：`rev -é`（`é` 是 `c3 a9` 两字节）打的是
-    /// `rev: unknown option -- ` + 裸字节 `c3` + 换行，只此一行（`rev.c:72-74` 拿到 `'?'`
-    /// 就 `usage()` 退出，不会再回到 `getopt` 读第二个字节）。
+    /// C's line passes `optopt`, and `optopt = *place++` (`getopt.c:79`, `:95`)
+    /// takes **one byte** from argv, which `fprintf`'s `%c` writes out unchanged
+    /// (`getopt.c:101-104`). Reference measurement `tmp/rev-309/rev_ref`: `rev -é`
+    /// (`é` is the two bytes `c3 a9`) prints `rev: unknown option -- ` + the bare
+    /// byte `c3` + newline, and nothing else (`rev.c:72-74` calls `usage()` and
+    /// exits on `'?'`, never returning to `getopt` to read the second byte).
     ///
-    /// 码位落在 `0x00..=0xFF` 就当**那一个字节**写——C 的字母位本来就是一个字节，
-    /// 这一段与本方法的用途完全对上。码位**高于** `0xFF` 时 C 无字节可打：那种码位只可能
-    /// 来自「解析那半还按字符取」的壳，这里退回该字符的 UTF-8 编码，与
-    /// [`GetoptReport::line`] 一字不差。这条退路是为**分轮迁移**留的：`line` 的调用方散在
-    /// 二十多支壳里，一轮只能换一支，换渲染的那一轮不该顺带改动还没换取法的壳的报文。
+    /// A code point in `0x00..=0xFF` is written as **that one byte** — C's letter
+    /// slot is a single byte to begin with, so this range matches the method's
+    /// purpose exactly. For a code point **above** `0xFF` C has no byte to print:
+    /// such code points can only come from a wrapper whose parse half still takes
+    /// characters, so this falls back to the character's UTF-8 encoding, byte for
+    /// byte identical to [`GetoptReport::line`]. The fallback exists for the
+    /// **staged migration**: `line`'s callers are spread over more than twenty
+    /// wrappers, one can change per round, and the round that changes rendering
+    /// must not also change messages of wrappers whose parse method is unchanged.
     #[must_use]
     pub fn line_bytes(self, prog: &str) -> alloc::vec::Vec<u8> {
         let (wording, letter) = self.wording();
@@ -170,27 +188,39 @@ impl GetoptReport {
     }
 }
 
-/// 空 optstring 的选项环：交回 `argv += optind` 之后的操作数。
+/// The option loop for an empty optstring: return the operands after
+/// `argv += optind`.
 ///
-/// `rev.c:70` 与 `colrm.c:67` 写的都是 `getopt(argc, argv, "")`，两处形状逐字相同，
-/// 所以这一支放在这里由两条命令共用（同 [`GetoptReport`] 的处置理由：一份事实只承载一次）。
-/// 空 optstring 不等于「没有选项环」，它的后果有三处，全部由 libc `getopt` 定：
-/// ① `strchr("", <字母>)` 永远是 `NULL`，所以任何 `-` 开头的 token 都落
-/// `minix3/lib/libc/stdlib/getopt.c:95-104` 的集外字母支——libc 先印一行再返回 `'?'`；
-/// ② `--` 在 `:81-85` 结束选项环且**先 `++optind`**，所以它自身不是操作数；
-/// ③ 裸 `-` 在 `:87-92` 因 optstring 里没有 `-` 而结束选项环**却不推进** `optind`，
-/// 于是它自己是操作数（两条命令怎么处理这个操作数各不相同，归各自的壳）。
+/// `rev.c:70` and `colrm.c:67` both write `getopt(argc, argv, "")`, and the two
+/// shapes are verbatim identical, so this branch lives here and is shared by both
+/// commands (same rationale as [`GetoptReport`]: one fact carried once).
+/// An empty optstring does not mean "no option loop", and its consequences are
+/// three, all fixed by libc `getopt`:
+/// (1) `strchr("", <letter>)` is always `NULL`, so any token starting with `-`
+/// falls into the out-of-set-letter branch at
+/// `minix3/lib/libc/stdlib/getopt.c:95-104` — libc prints a line first, then
+/// returns `'?'`;
+/// (2) `--` ends the option loop at `:81-85` and **does `++optind` first**, so it
+/// is not itself an operand;
+/// (3) a bare `-` ends the option loop at `:87-92` because the optstring has no
+/// `-`, **without advancing** `optind`, so it is an operand itself (how the two
+/// commands handle that operand differs and belongs to their wrappers).
 ///
-/// 不重排：非选项 token 一到，`:74-78` 当场返回 -1，它和它后面的 token 整个交回当操作数。
-/// 只看**第一个** token：调用者的 `while` 圈定不了第二次（拿到 `'?'` 就 `usage()` 退出，
-/// 拿到 -1 就结束），所以这里写单次判定而不写循环。
+/// No permutation: as soon as a non-option token appears, `:74-78` returns -1
+/// immediately and that token plus everything after it are returned as operands.
+/// Only the **first** token is inspected: the caller's `while` cannot reach a
+/// second one (`'?'` leads to `usage()` and exit, -1 ends the loop), so this is a
+/// single decision rather than a loop.
 ///
-/// 这一支不判「带值选项缺值」：空 optstring 里没有任何选项要值，`getopt.c:112-141`
-/// 那整段到不了，所以只可能交回 [`GetoptReport::UnknownOption`]。
+/// This branch never judges "value-taking option missing its value": an empty
+/// optstring has no option that takes a value, so the whole `getopt.c:112-141`
+/// block is unreachable and only [`GetoptReport::UnknownOption`] can come back.
 ///
-/// 报的是短横后的**第一个字节**，不是第一个字符：`getopt.c:79` 的 `optopt = *place++`
-/// 步进在 `char *` 上，一次一个字节。参照件现量 `rev -é` 报裸字节 `c3`（`é` 的后半 `a9`
-/// 根本不进报文），按字符取会报 U+00E9。同法先例见 `src/col.rs:parse_col_flags`。
+/// What is reported is the **first byte** after the dash, not the first
+/// character: `optopt = *place++` at `getopt.c:79` steps over a `char *`, one byte
+/// at a time. Reference measurement `rev -é` reports the bare byte `c3` (`é`'s
+/// trailing `a9` never enters the message); taking a character would report
+/// U+00E9. Same-method precedent: `src/col.rs:parse_col_flags`.
 pub fn empty_optstring_operands<'a>(
     argv: &'a [&'a str],
 ) -> Result<alloc::vec::Vec<&'a str>, GetoptReport> {
@@ -209,9 +239,11 @@ pub fn empty_optstring_operands<'a>(
     Err(GetoptReport::UnknownOption(char::from(byte)))
 }
 
-/// [`empty_optstring_operands`] 的字节形（A2 参数缝半）：同一张三形判据，只是交回的
-/// 是原字节。字母仍是短横后的**第一个字节**——`char::from(byte)` 收进报告，那正是 C 里
-/// `unsigned char` 提升成 `int` 的形状；[`GetoptReport::line_bytes`] 再把它打回那一个字节。
+/// Byte form of [`empty_optstring_operands`] (the A2 argument-seam half): the same
+/// three-shape rule, except raw bytes come back. The letter is still the **first
+/// byte** after the dash — `char::from(byte)` puts it in the report, which is
+/// exactly how C promotes `unsigned char` to `int`; [`GetoptReport::line_bytes`]
+/// then writes it back as that one byte.
 pub fn empty_optstring_operands_bytes<'a>(
     argv: &'a [&'a [u8]],
 ) -> Result<alloc::vec::Vec<&'a [u8]>, GetoptReport> {
@@ -230,16 +262,18 @@ pub fn empty_optstring_operands_bytes<'a>(
     Err(GetoptReport::UnknownOption(char::from(byte)))
 }
 
-/// C 的 `atoi`：跳过前导 `isspace`、可带符号、取一串十进制数字，**尾巴上有杂字符不管**，
-/// 一位数字都没有就是 0。
+/// C's `atoi`: skip leading `isspace`, allow an optional sign, take a run of
+/// decimal digits, **ignore any trailing junk**, and yield 0 when there is no
+/// digit at all.
 ///
-/// 住在 crate 根由几条命令共用（同 [`GetoptReport`] 的处置理由：一份事实只承载一次）——
-/// `col` 的 `-l`（`col.c` 的 `atoi(optarg)`）与 `column` 的 `-c`（`column.c:96`）
-/// 走的是同一个 libc 函数，判据一模一样。
+/// Lives at the crate root, shared by several commands (same rationale as
+/// [`GetoptReport`]: one fact carried once) — `col`'s `-l` (`atoi(optarg)` in
+/// `col.c`) and `column`'s `-c` (`column.c:96`) call the same libc function, so
+/// the rule is identical.
 ///
-/// 所以 `3x` 是合法的 3（参照件同受），而 `abc`、`0`、`-2` 分别得到 0、0、-2；
-/// 溢出按 C 的 `strtol` 截到 `i32` 两端（`saturating_*`），因为 `atoi` 的返回值
-/// 本来就是 `int`。
+/// So `3x` is a legal 3 (the reference accepts it too), while `abc`, `0`, `-2`
+/// yield 0, 0, -2; overflow saturates to the `i32` bounds (`saturating_*`) the way
+/// C's `strtol` does, because `atoi`'s return value is an `int` to begin with.
 #[must_use]
 pub fn atoi(text: &[u8]) -> i32 {
     let bytes = text;
@@ -275,10 +309,12 @@ pub fn atoi(text: &[u8]) -> i32 {
 mod tests {
     use super::{GetoptReport, empty_optstring_operands, empty_optstring_operands_bytes};
 
-    /// 那两行的原文逐字钉在这里（单源），因为壳侧的门只能证明「渲染出来了」，
-    /// 证明不了措辞。真值取 `minix3/lib/libc/stdlib/getopt.c:101-104` 与
-    /// `:132-136`：`"%s: unknown option -- %c\n"`、
-    /// `"%s: option requires an argument -- %c\n"`，字母两边都不带引号。
+    /// The two lines' exact text is pinned here (single source), because the
+    /// wrapper-side gates can only prove "it rendered", not the wording. The truth
+    /// comes from `minix3/lib/libc/stdlib/getopt.c:101-104` and `:132-136`:
+    /// `"%s: unknown option -- %c\n"`,
+    /// `"%s: option requires an argument -- %c\n"`, with the letter unquoted in
+    /// both.
     #[test]
     fn getopt_report_lines_match_the_libc_format_strings() {
         assert_eq!(
@@ -289,28 +325,34 @@ mod tests {
             GetoptReport::MissingValue('f').line("tail"),
             "tail: option requires an argument -- f\n"
         );
-        // 程序名来自 `getprogname()`（或 `egetopt` 自己算的那一段），不是写死的命令名。
+        // The program name comes from `getprogname()` (or the segment `egetopt`
+        // computes itself), not a hard-coded command name.
         assert_eq!(
             GetoptReport::UnknownOption('3').line("head"),
             "head: unknown option -- 3\n"
         );
-        // `pr` 自带的 `egetopt` 对集外字母写的是另一句（`egetopt.c:148`），与上面
-        // 那一形一字之差；拿同族措辞替它会把句子写错。
+        // `pr`'s own `egetopt` writes a different sentence for out-of-set letters
+        // (`egetopt.c:148`), one word off from the shape above; substituting the
+        // family wording would get the sentence wrong.
         assert_eq!(
             GetoptReport::IllegalOption('x').line("pr"),
             "pr: illegal option -- x\n"
         );
-        // 缺值那一句两边逐字相同（`egetopt.c:202` 与 `getopt.c:134`），所以两枝共用一个变体。
+        // The missing-value sentence is verbatim identical on both sides
+        // (`egetopt.c:202` and `getopt.c:134`), so the two branches share one
+        // variant.
         assert_eq!(
             GetoptReport::MissingValue('w').line("pr"),
             "pr: option requires an argument -- w\n"
         );
     }
 
-    /// 字节形那一支：字母是**一个裸字节**，不是它的 UTF-8。
+    /// The byte-form branch: the letter is **one bare byte**, not its UTF-8
+    /// encoding.
     ///
-    /// 真值是参照件现量（`tmp/rev-309/rev_ref` 打 `rev -é` 得 `unknown option -- ` + `c3`），
-    /// 机制在 `getopt.c:79` 的 `optopt = *place++` 与 `:103` 的 `%c`。
+    /// The truth is the reference measurement (`tmp/rev-309/rev_ref` with `rev -é`
+    /// gives `unknown option -- ` + `c3`); the mechanism is `optopt = *place++` at
+    /// `getopt.c:79` and `%c` at `:103`.
     #[test]
     fn getopt_report_bytes_write_the_letter_as_one_byte() {
         assert_eq!(
@@ -327,18 +369,20 @@ mod tests {
             b"tail: option requires an argument -- f\n".to_vec(),
             "另外两句的措辞与 line 同一份来源"
         );
-        // ASCII 那一形两个入口一字不差：迁移不许动它。
+        // The ASCII shape is identical through both entries: the migration must
+        // not touch it.
         assert_eq!(
             GetoptReport::UnknownOption('Z').line_bytes("rev"),
             GetoptReport::UnknownOption('Z').line("rev").into_bytes()
         );
-        // 落在 `0x00..=0xFF` 的码位一律当**那一个字节**写：U+00E9 打 `e9`，比 `line` 的
-        // UTF-8 形（`c3 a9`）少一个字节。
+        // Every code point in `0x00..=0xFF` is written as **that one byte**: U+00E9
+        // prints `e9`, one byte less than `line`'s UTF-8 form (`c3 a9`).
         assert_eq!(
             GetoptReport::UnknownOption('\u{00e9}').line_bytes("rev"),
             b"rev: unknown option -- \xe9\n".to_vec()
         );
-        // 分叉的另一侧也钉住：`line` 对同一个码位打两个字节，这就是登记的那处偏差。
+        // The other side of the fork is pinned too: `line` prints two bytes for the
+        // same code point — that is the logged deviation.
         assert_eq!(
             GetoptReport::UnknownOption('\u{00c3}')
                 .line("rev")
@@ -346,8 +390,10 @@ mod tests {
             b"rev: unknown option -- \xc3\x83\n".to_vec(),
             "`line` 的 char 渲染比 C 多一个字节——A2 的射程"
         );
-        // 高于 0xFF 的码位（只有解析那半还按字符取时才拿得到）退回 UTF-8，与 `line` 同串——
-        // 所以「换渲染」这一轮不会改动还没「换取法」的壳的报文。
+        // A code point above 0xFF (reachable only while the parse half still takes
+        // characters) falls back to UTF-8, the same string as `line` — so the
+        // "change rendering" round does not alter messages of wrappers whose
+        // "parse method" has not changed yet.
         assert_eq!(
             GetoptReport::UnknownOption('\u{fffd}').line_bytes("rev"),
             GetoptReport::UnknownOption('\u{fffd}')
@@ -356,8 +402,9 @@ mod tests {
         );
     }
 
-    /// 空 optstring 的字节形认得**非法 UTF-8 的单字节**：那一枚 `ff` 就是字母，
-    /// 不走有损折叠那一条路（`args()` 会先把它折成 U+FFFD，字母就成了 `ef`）。
+    /// The byte form of the empty optstring recognizes an **invalid UTF-8 single
+    /// byte**: that `ff` is the letter, not something routed through lossy folding
+    /// (`args()` would fold it to U+FFFD first, making the letter `ef`).
     #[test]
     fn empty_optstring_bytes_name_an_invalid_utf8_option_byte() {
         assert_eq!(
@@ -369,8 +416,9 @@ mod tests {
             GetoptReport::UnknownOption('\u{00ff}').line_bytes("rev"),
             b"rev: unknown option -- \xff\n".to_vec()
         );
-        // 同一枚参数经 `args()` 的折叠腿进来时，字母位已经不是那一个字节了——两形的差
-        // 就是 A/B 里那条残差。
+        // When the same argument comes in through `args()`'s folding leg, the letter
+        // slot is no longer that byte — the difference between the two shapes is the
+        // residual tracked in A/B.
         let folded: alloc::borrow::Cow<'_, str> =
             alloc::string::String::from_utf8_lossy(&[b'-', 0xff][..]);
         assert_eq!(
@@ -380,7 +428,7 @@ mod tests {
         );
     }
 
-    /// 空 optstring 那一支报的是短横后的第一个**字节**。
+    /// The empty-optstring branch reports the first **byte** after the dash.
     #[test]
     fn empty_optstring_names_the_first_byte_of_the_flag() {
         assert_eq!(
@@ -388,12 +436,14 @@ mod tests {
             Err(GetoptReport::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
-        // 聚簇仍报第一个字节：ASCII 的 x 排在前面就落在 x 上。
+        // Clustering still reports the first byte: with ASCII `x` first, it lands on
+        // `x`.
         assert_eq!(
             empty_optstring_operands(&["-x\u{e9}"]),
             Err(GetoptReport::UnknownOption('x'))
         );
-        // ASCII 与三形（`--` 吃掉自身、裸 `-` 与 `--x`）不受这条改法影响。
+        // ASCII and three shapes (`--` consuming itself, bare `-`, and `--x`) are
+        // unaffected by this change.
         assert_eq!(
             empty_optstring_operands(&["-Z"]),
             Err(GetoptReport::UnknownOption('Z'))

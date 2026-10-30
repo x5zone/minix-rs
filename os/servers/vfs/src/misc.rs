@@ -65,9 +65,11 @@ pub const VFS_GCOV_FLUSH_OFF: u32 = 44;
 /// `VFS_GETSYSINFO` offset (`callnr.h:120`).
 pub const VFS_GETSYSINFO_OFF: u32 = 48;
 
-// E-ISPROD:`SI_PROC_TAB`/`SI_DMAP_TAB`/`SI_CALL_STATS`/`SI_PROCLIGHT_TAB`
-// 的权威在 `minix_types::sysinfo`(i32,与 C int 的 what 域一致)——VFS
-// 历史本地副本(u32)已删除,统一 re-export 后本地消费点做 u32 比较。
+// E-ISPROD: the authority for
+// `SI_PROC_TAB`/`SI_DMAP_TAB`/`SI_CALL_STATS`/`SI_PROCLIGHT_TAB` lives in
+// `minix_types::sysinfo` (i32, matching C's int `what` domain) — VFS's
+// historical local copies (u32) were deleted, and after the unified
+// re-export local consumers compare as u32.
 pub use minix_types::{SI_CALL_STATS, SI_DMAP_TAB, SI_PROC_TAB};
 pub const SI_PROCLIGHT_TAB: u32 = minix_types::SI_PROCLIGHT_TAB as u32;
 
@@ -86,9 +88,9 @@ impl SysinfoWhat {
     /// Decode the wire `what`; statistics (`9`) and wild values refuse
     /// (`default:104-105`; `9` has no table outside the stats build).
     pub fn from_raw(raw: u32) -> Option<Self> {
-        // E-ISPROD:三个常量是 minix_types i32 权威的 re-export,与 u32
-        // 的 raw 视图比较需显式 cast(C int 的 what 域在 VFS 内部按位
-        // 保持)。
+        // E-ISPROD: the three constants re-export the minix_types i32
+        // authority; comparing against the u32 raw view needs an explicit
+        // cast (C's int `what` domain is preserved bit for bit inside VFS).
         match raw {
             v if v == SI_PROC_TAB as u32 => Some(Self::ProcTab),
             v if v == SI_DMAP_TAB as u32 => Some(Self::DmapTab),
@@ -122,13 +124,14 @@ pub trait CopyToUser {
     fn copy_to_user(&mut self, src: &[u8], dst: VirBytes) -> Result<(), MiscError>;
 }
 
-/// 生产 `CopyToUser`：`sys_datacopy(SELF → 调用方)`（`misc.c:113` 的
-/// `sys_datacopy_wrapper(SELF, src_addr, who_e, dst_addr, len)`）。
+/// Production `CopyToUser`: `sys_datacopy(SELF → caller)` (`misc.c:113`'s
+/// `sys_datacopy_wrapper(SELF, src_addr, who_e, dst_addr, len)`).
 ///
-/// 失败原样折成 `Fault`（EFAULT）——C 的 `do_getsysinfo` 对 datacopy 失败
-/// 直接 `return r`，调用方看到的就是内核给的那个 errno。
+/// A failure folds unchanged into `Fault` (EFAULT) — C's `do_getsysinfo`
+/// does `return r` on a datacopy failure, so the caller sees exactly the errno
+/// the kernel returned.
 pub struct SysCopyToUser {
-    /// 调用方端点（C 的 `who_e`，取自消息源）。
+    /// Caller endpoint (C's `who_e`, taken from the message source).
     pub target: Endpoint,
 }
 
@@ -155,7 +158,7 @@ impl CopyToUser for SysCopyToUser {
 /// pointer arrays don't cross the wire), so the length contract is
 /// `NR_PROCS * size_of::<FProcSnap>()` on both sides (IS's out slice is
 /// `[FProcSnap; NR_PROCS]`, dmp_fs.c:31 shape). Slots serialize one at a
-/// time into the caller's buffer (D-29 PM 同型) — no staging copy. Unused
+/// time into the caller's buffer (the same shape as PM) — no staging copy. Unused
 /// slots ride along as the all-zero rows C's BSS image carries; filtering
 /// (`pid <= 0`) is the consumer's job (dmp_fs.c:44-45).
 pub fn do_getsysinfo(
@@ -176,7 +179,7 @@ pub fn do_getsysinfo(
             for (idx, fp) in table.slots().iter().enumerate() {
                 let wire = fp.to_fproc_snap();
                 // SAFETY: `FProcSnap` is a 52-byte repr(C) POD; the byte
-                // view feeds the copy seam only (D-29 同款 wire 展开).
+                // view feeds the copy seam only (same wire expansion as the PM path).
                 let bytes = unsafe {
                     core::slice::from_raw_parts(core::ptr::addr_of!(wire) as *const u8, WIRE)
                 };
@@ -184,11 +187,13 @@ pub fn do_getsysinfo(
             }
             Ok(())
         }
-        // C: `misc.c:78-80` —— `SI_DMAP_TAB` 拷整张 `dmap[NR_DEVICES]`。
-        // 行是共享快照 `DmapSnap`（A-4 使用字段子集：端点 + 标签两列；
-        // 选择状态/互斥量/服务线程都是 VFS 进程内部状态，不出 wire）。
-        // 空槽的 `dmap_driver` 是 `NONE`（`init_dmap` 的逐行填充，
-        // dmap.c:235-247）——不是 0，消费者按 NONE 过滤。
+        // C: `misc.c:78-80` — `SI_DMAP_TAB` copies the whole
+        // `dmap[NR_DEVICES]`. The row is the shared snapshot `DmapSnap`
+        // (the used-field subset: endpoint + label; selection state, mutex,
+        // and serving thread are all internal VFS process state and do not
+        // cross the wire). An empty slot's `dmap_driver` is `NONE` (the
+        // per-row fill of `init_dmap`, dmap.c:235-247) — not 0; consumers
+        // filter by NONE.
         SysinfoWhat::DmapTab => {
             const WIRE: usize = core::mem::size_of::<DmapSnap>();
             sysinfo_len_gate((WIRE * DMAP_NR_DEVICES) as u64, buf_size)?;
@@ -199,7 +204,7 @@ pub fn do_getsysinfo(
                     dmap_label: entry.label,
                 };
                 // SAFETY: `DmapSnap` is a 20-byte repr(C) POD; the byte view
-                // feeds the copy seam only (ProcTab 臂同款展开).
+                // feeds the copy seam only (same expansion as the ProcTab arm).
                 let bytes = unsafe {
                     core::slice::from_raw_parts(core::ptr::addr_of!(wire) as *const u8, WIRE)
                 };
@@ -207,18 +212,20 @@ pub fn do_getsysinfo(
             }
             Ok(())
         }
-        // C fills SI_PROCLIGHT_TAB for MIB on request (`misc.c:81-95`)。
-        // C-22 后半落地：行是共享快照 `FprocLightSnap`（16 B/槽，wire
-        // 权威在 minix-types::fproc——tty/blocked_on/task 三列，task 的
-        // sdev 半经注入的 smap 查询）。未用槽的 task 是 NONE（C 的填充
-        // 循环覆盖全部槽，misc.c:87-94）。
+        // C fills SI_PROCLIGHT_TAB for MIB on request (`misc.c:81-95`).
+        // The light table lands: the row is the shared snapshot
+        // `FprocLightSnap` (16 B/slot, wire authority in
+        // minix-types::fproc — the tty/blocked_on/task columns, with task's
+        // sdev half resolved through the injected smap lookup). An unused
+        // slot's task is NONE (C's fill loop covers every slot,
+        // misc.c:87-94).
         SysinfoWhat::ProcLightTab => {
             const WIRE: usize = core::mem::size_of::<minix_types::FprocLightSnap>();
             sysinfo_len_gate((WIRE * NR_PROCS) as u64, buf_size)?;
             let lookup = |dev: u64| crate::device_map::smap_endpt_by_dev(smap, dev);
             for (idx, wire) in table.snapshot_light(&lookup).iter().enumerate() {
                 // SAFETY: `FprocLightSnap` is a 16-byte repr(C) POD; the
-                // byte view feeds the copy seam only (ProcTab 臂同款展开)。
+                // byte view feeds the copy seam only (same expansion as the ProcTab arm).
                 let bytes = unsafe {
                     core::slice::from_raw_parts(core::ptr::addr_of!(wire) as *const u8, WIRE)
                 };
@@ -389,27 +396,29 @@ pub enum VmVfsReq {
     FdIo,
 }
 
-/// `do_vm_call` 的消息级解码产物(C misc.c:387-392:六个 wire 域 +
-/// opcode 分派)。E-VFSWIRE:字节解释来自共享 wire 结构
-/// `minix_types::MessVmVfsCall`,不再各自为政。
+/// Message-level decode product of `do_vm_call` (C misc.c:387-392: six wire
+/// fields plus opcode dispatch). E-VFSWIRE: the byte interpretation comes from
+/// the shared wire struct `minix_types::MessVmVfsCall` instead of per-site
+/// copies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VmVfsCall {
-    /// 请求类别(FDLOOKUP/FDCLOSE/FDIO)。
+    /// Request kind (FDLOOKUP/FDCLOSE/FDIO).
     pub req: VmVfsReq,
-    /// 参照进程内的 fd。C: `int req_fd = VFS_VMCALL_FD`。
+    /// fd inside the referenced process. C: `int req_fd = VFS_VMCALL_FD`.
     pub fd: i32,
-    /// VM 侧请求号——应答必须携带同一值。C: `u32_t req_id`。
+    /// VM-side request number — the reply must carry the same value. C:
+    /// `u32_t req_id`.
     pub req_id: u32,
-    /// 被引用进程端点。C: `endpoint_t ep`。
+    /// Endpoint of the referenced process. C: `endpoint_t ep`.
     pub endpoint: i32,
-    /// 分页 I/O 偏移。C: `u64_t offset`。
+    /// Paging-I/O offset. C: `u64_t offset`.
     pub offset: u64,
-    /// 传输长度。C: `u32_t length`。
+    /// Transfer length. C: `u32_t length`.
     pub length: u32,
 }
 
-/// 解码一条 `VFS_VMCALL` 消息(`m_type` 不符或 opcode 未知 → `None`,
-/// 调用方按错误应答)。
+/// Decode one `VFS_VMCALL` message (a mismatched `m_type` or an unknown
+/// opcode gives `None`; the caller answers with an error).
 pub fn decode_vm_call(msg: &minix_types::Message) -> Option<VmVfsCall> {
     if msg.m_type != minix_types::VFS_VMCALL {
         return None;
@@ -459,8 +468,9 @@ pub fn vm_lookup_gate(found: bool) -> Result<(), MiscError> {
     Ok(())
 }
 
-/// `VM_VFS_REPLY` (`com.h:707`): `VM_RQ_BASE 0xC00 + 30`. E-VFSWIRE 纪律:
-/// 绝对值单点断言在 minix-types(`VM_RQ_BASE + 30`),此处 re-export。
+/// `VM_VFS_REPLY` (`com.h:707`): `VM_RQ_BASE 0xC00 + 30`. E-VFSWIRE
+/// discipline: the absolute value is asserted in one place in minix-types
+/// (`VM_RQ_BASE + 30`) and re-exported here.
 pub const VM_VFS_REPLY: u32 = minix_types::VM_VFS_REPLY;
 
 /// `svrctl` group (`svrctl.h:23-24`, `_IOW/_IOWR('F', ...)`).
@@ -825,30 +835,33 @@ pub fn ds_event_action(kind: DsDriverKind, value: u32) -> Option<DsUpTarget> {
     }
 }
 
-/// DS 订阅排空循环(`ds_event`,`misc.c:949-986`)。
+/// DS subscription drain loop (`ds_event`, `misc.c:949-986`).
 ///
-/// `while ds_check(key, &type, &owner) == OK` 的对应物:每条事件经
-/// `DsClient::check` 取回(key 由 DS 写回调用者缓冲——C-13 回拷通道),
-/// 前缀分类(`classify_ds_key`)后 `ds_retrieve_u32` 取值,非
-/// `DS_DRIVER_UP` 跳过;命中者经 `sink` 交给执行体(C 的
-/// `dmap_endpt_up`/`smap_endpt_up` 调用点)。`Ok(None)`(无待处理)与
-/// `Err(ENOENT)` 都是正常排空终止;其它错误原样上抛(C 的
-/// `printf + break`,misc.c:973-974)。
+/// The counterpart of `while ds_check(key, &type, &owner) == OK`: each event
+/// comes back through `DsClient::check` (DS writes the key back into the
+/// caller's buffer — the copy-back channel), the prefix is classified
+/// (`classify_ds_key`), `ds_retrieve_u32` fetches the value, and anything other
+/// than `DS_DRIVER_UP` is skipped; a hit goes to the executor through `sink`
+/// (C's `dmap_endpt_up`/`smap_endpt_up` call sites). `Ok(None)` (nothing
+/// pending) and `Err(ENOENT)` are both normal drain terminations; any other
+/// error propagates unchanged (C's `printf + break`, misc.c:973-974).
 ///
-/// 订阅本体(`ds_subscribe("drv\\.[bc]..\\..*", DSF_INITIAL|DSF_OVERWRITE)`,
-/// main.c:441)由调用方在启动段执行一次——`DsClient::subscribe` 已备。
-/// 给排空循环供数的最小面(`ds_check` + `ds_retrieve_u32`);生产实现
-/// 是 `DsClient` 的本地适配(`impl DsEventSource for DsClient`),测试
-/// 用脚本化替身。
+/// The subscription itself (`ds_subscribe("drv\.[bc]..\..*",
+/// DSF_INITIAL|DSF_OVERWRITE)`, main.c:441) is performed once by the caller in
+/// the startup section — `DsClient::subscribe` is ready for it. This is the
+/// minimal surface that feeds the drain loop (`ds_check` + `ds_retrieve_u32`);
+/// the production implementation is the local adapter on `DsClient`
+/// (`impl DsEventSource for DsClient`) and tests use scripted doubles.
 pub trait DsEventSource {
-    /// 取一条待处理事件:`Ok(Some(owner))` 时 `key` 已被 DS 写回;
-    /// `Ok(None)` = 无待处理。`grants` 是宿主进程唯一的 grant 表。
+    /// Fetch one pending event: on `Ok(Some(owner))` the `key` has already
+    /// been written back by DS; `Ok(None)` = nothing pending. `grants` is the
+    /// host process's single grant table.
     fn next_event(
         &mut self,
         grants: &mut minix_sys::grant::GrantTable,
         key: &mut [u8],
     ) -> Result<Option<Endpoint>, i32>;
-    /// 取 key 对应的 u32 值(C: `ds_retrieve_u32`)。
+    /// Fetch the u32 value for a key (C: `ds_retrieve_u32`).
     fn event_value(
         &mut self,
         grants: &mut minix_sys::grant::GrantTable,
@@ -866,25 +879,28 @@ pub fn ds_drain(
         let owner = match client.next_event(grants, &mut key) {
             Ok(Some(o)) => o,
             Ok(None) => return Ok(()),
-            Err(minix_types::ENOENT) => return Ok(()), // 排空(C 的正常出口)
+            Err(minix_types::ENOENT) => return Ok(()), // drained (C's normal exit)
             Err(e) => return Err(e),
         };
-        // C misc.c:952-970 — key 前缀分类,非驱动 key 跳过。
+        // C misc.c:952-970 — classify the key prefix; non-driver keys are
+        // skipped.
         let key_len = key.iter().position(|&b| b == 0).unwrap_or(key.len());
         let key_str = core::str::from_utf8(&key[..key_len]).unwrap_or("");
         let Some(kind) = classify_ds_key(key_str) else {
             continue;
         };
-        // C misc.c:971-974 — ds_retrieve_u32,失败 printf+break。
+        // C misc.c:971-974 — ds_retrieve_u32; on failure printf+break.
         let value = client.event_value(grants, key_str)?;
-        // C misc.c:975-982 — 非 DRIVER_UP 跳过;命中交执行体。
+        // C misc.c:975-982 — non-DRIVER_UP values are skipped; a hit goes to
+        // the executor.
         if let Some(target) = ds_event_action(kind, value) {
             sink(owner, target);
         }
     }
 }
 
-/// DsClient 适配:check 的 key 回拷(C-13)供分类,retrieve_u32 供值。
+/// DsClient adapter: check's key copy-back feeds classification and
+/// retrieve_u32 supplies the value.
 impl<I: minix_sys::ipc::IpcTransport, K: minix_sys::syscall::KernelCallTransport> DsEventSource
     for minix_sys::ds::DsClient<I, K>
 {
@@ -954,7 +970,8 @@ pub fn free_pass2_eligible(endpoint_live: bool) -> bool {
 /// The obsolete verdict (`do_getrusage:998-1006`).
 ///
 /// PM owns rusage now; VFS answers `OK` until the call is removed
-/// (the C TODO says so, `1003`). The contract pins the `OK`, not the TODO.
+/// (the C source's own note says so, `1003`). The contract pins the `OK`,
+/// not the removal note.
 pub fn getrusage_verdict() -> i32 {
     minix_types::OK
 }
@@ -1070,8 +1087,9 @@ pub enum MiscError {
     RoFs,
     /// `EIO`: FS-side refusal.
     Io,
-    /// `EFAULT`: 拷出到调用方失败（`sys_datacopy` 的 errno，`misc.c:113`
-    /// 的 `return r` 面——C 直接把内核返回值透传）。
+    /// `EFAULT`: copy-out to the caller failed (the `sys_datacopy` errno, the
+    /// `return r` face at `misc.c:113` — C passes the kernel return value
+    /// straight through).
     Fault,
 }
 
@@ -1224,10 +1242,12 @@ mod tests {
         assert_eq!(cpy.copies[0].1, vec![0u8; WIRE]);
     }
 
-    /// `SI_DMAP_TAB` 服务整表（`misc.c:78-80`）：行宽是共享快照
-    /// `DmapSnap`（20 字节），行数 `NR_DEVICES`，映射行带驱动端点与标签、
-    /// 空行的驱动端点是 `NONE`（`init_dmap` 的逐行填充，dmap.c:235-247）
-    /// ——不是 0，IS 的 `dmap_dmp` 靠它跳过空行。
+    /// `SI_DMAP_TAB` serves the whole table (`misc.c:78-80`): the row width is
+    /// the shared snapshot `DmapSnap` (20 bytes) and the row count is
+    /// `NR_DEVICES`; a mapped row carries the driver endpoint and label, and
+    /// an empty row's driver endpoint is `NONE` (the per-row fill of
+    /// `init_dmap`, dmap.c:235-247) — not 0; IS's `dmap_dmp` relies on that to
+    /// skip empty rows.
     #[test]
     fn test_do_getsysinfo_dmap_tab_serves_whole_table() {
         const WIRE: usize = core::mem::size_of::<DmapSnap>();
@@ -1330,8 +1350,9 @@ mod tests {
             Err(MiscError::Inval),
             "DMAP 的长度门是整表宽度，FProc 表宽会被拒"
         );
-        // light 表的长度门是自己的整表宽度（16B×NR_PROCS），FProc 表宽
-        // 会被拒（C-22 后半：生产臂已真装）。
+        // The light table's length gate is its own whole-table width
+        // (16B×NR_PROCS); the FProc table width is refused (the production
+        // arm is really wired now).
         assert_eq!(
             do_getsysinfo(
                 &table,
@@ -1413,9 +1434,10 @@ mod tests {
         assert_eq!(VmVfsReq::from_raw(0), None);
     }
 
-    /// E-VFSWIRE: VM 构造(同 minix-types 布局见证的字节)经
-    /// `decode_vm_call` 解出六域——VM 发送半与 VFS 接收半的
-    /// 闭环契约 witness。
+    /// E-VFSWIRE: a VM-built message (the bytes witnessed by the minix-types
+    /// layout) decodes into six fields through `decode_vm_call` — a
+    /// closed-loop contract witness between VM's send half and VFS's receive
+    /// half.
     #[test]
     fn test_decode_vm_call_round_trip() {
         let mut msg = minix_types::Message::default();
@@ -1442,7 +1464,7 @@ mod tests {
         assert_eq!(call.offset, 0x4000);
         assert_eq!(call.length, 8192);
 
-        // 非 VFS_VMCALL m_type 与未知 opcode 都拒绝。
+        // Both a non-VFS_VMCALL m_type and an unknown opcode are refused.
         let mut other = msg;
         other.m_type = 295;
         assert!(decode_vm_call(&other).is_none());
@@ -1665,7 +1687,8 @@ fn test_ds_event_classification() {
     assert_eq!(ds_event_action(DsDriverKind::Blk, 0), None);
 }
 
-/// 脚本化事件源:按序出事件,key 由"DS 写回"。
+/// Scripted event source: yields events in order, with the key "written back
+/// by DS".
 #[cfg(test)]
 struct ScriptedSource {
     events: alloc::vec::Vec<Result<Option<(Endpoint, &'static str)>, i32>>,
@@ -1699,8 +1722,9 @@ impl DsEventSource for ScriptedSource {
 
 #[test]
 fn test_ds_drain_dispatches_up_events() {
-    // C misc.c:949-986 主链:blk 上线 + chr 非 UP 跳过 + sck 上线 +
-    // 非驱动 key 跳过 → 排空终止(ENOENT/None 同判)。
+    // C misc.c:949-986 main chain: blk comes up + chr non-UP skipped + sck
+    // comes up + non-driver key skipped → drain termination (ENOENT/None
+    // treated alike).
     let mut src = ScriptedSource {
         events: alloc::vec![
             Ok(Some((Endpoint(4), "drv.blk.0"))),
@@ -1729,7 +1753,8 @@ fn test_ds_drain_dispatches_up_events() {
 
 #[test]
 fn test_ds_drain_propagates_retrieve_failure() {
-    // C misc.c:971-974 — retrieve_u32 失败 printf+break(错误上抛)。
+    // C misc.c:971-974 — a retrieve_u32 failure does printf+break (the error
+    // propagates).
     struct FailRetrieve;
     impl DsEventSource for FailRetrieve {
         fn next_event(
@@ -1762,7 +1787,8 @@ fn test_ds_drain_propagates_retrieve_failure() {
 
 #[test]
 fn test_ds_drain_enoent_is_clean_exit() {
-    // C misc.c:984-985 — ds_check 返回 ENOENT 是正常排空出口。
+    // C misc.c:984-985 — ds_check returning ENOENT is the normal drain
+    // exit.
     struct Empty;
     impl DsEventSource for Empty {
         fn next_event(

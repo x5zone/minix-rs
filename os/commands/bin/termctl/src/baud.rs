@@ -2,7 +2,7 @@
 //!
 //! Ground truth: `stty` sets speeds through `cfsetospeed` (`stty.c:137`,
 //! `key.c:258`) and reports them as `speed %d baud` (`print.c:71-73`).
-//! The C library maps speed constants (`B9600` and friends) to baud
+//! The C library maps its `B`-coded speed constants to baud
 //! numbers; this module maps baud numbers both ways over the standard
 //! serial speed set (0, 50, 75, 110, 134, 150, 200, 300, 600, 1200, 1800,
 //! 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400). Speed 0 means

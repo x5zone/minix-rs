@@ -54,9 +54,9 @@ pub const USER_Q: u8 = (MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q;
 /// quantum off the wire, it only seeds the birth value for its own
 /// table. Same number, different road; keeping the two names apart
 /// keeps the two provenances from merging.
-/// [ARCH S-6] (plan.md): the unit is milliseconds, straight into the
+/// [ARCH: S-6] the unit is milliseconds, straight into the
 /// kernel's `p_quantum_size_ms` (`system.c:683`); the draft's "ticks"
-/// reading (R-4) is retired.
+/// reading is retired.
 pub const DEFAULT_USER_TIME_SLICE: u32 = 200;
 
 /// "Use the default CPU" sentinel (`config.h:77`).
@@ -78,7 +78,7 @@ pub const PRIO_MAX: i32 = 20;
 /// `sched_start.c` through `schedule.c:314-316`); the hyphen then needs
 /// a comment at every use. The enum moves that comment into the type:
 /// [`CpuChoice::Default`] is the `-1`, [`CpuChoice::Cpu`] a real home.
-/// [ARCH S-4] (plan.md): the `-1`-as-`unsigned`-load-counter sibling
+/// [ARCH: S-4] the `-1`-as-`unsigned`-load-counter sibling
 /// (`cpu_proc[]`/`CPU_DEAD`) is 10's business; this enum covers the
 /// selection side only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_default_time_slice() {
-        // The birth value (`schedule.c:41`), in ms (S-6: straight into
+        // The birth value (`schedule.c:41`), in ms (straight into
         // `p_quantum_size_ms`). The client-side default (`USER_QUANTUM`,
         // `config.h:74`) lives in PM and RS, not here — SCHED stores
         // whatever the message carries and never judges it (06; the

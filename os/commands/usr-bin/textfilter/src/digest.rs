@@ -1,58 +1,82 @@
-//! `cksum -a` 的摘要本体：C 的 `hashes[]` 表里那八枚全部接齐——MD2、MD4、MD5、RMD160、
-//! SHA1、SHA256、SHA384、SHA512。
+//! The digest core of `cksum -a`: all eight entries of C's `hashes[]` table are
+//! wired up — MD2, MD4, MD5, RMD160, SHA1, SHA256, SHA384, SHA512.
 //!
-//! 其中两族**不在这里重写**，因为本仓已经有它们：`os/libs/minix-crypt` 的
-//! [`md5`](minix_crypt::md5) 与 [`sha1`](minix_crypt::sha1)，两份的真源同样是本仓 C 原件
-//! `minix3/common/lib/libc/md/md5c.c`（`MD5Transform`）与
-//! `minix3/common/lib/libc/hash/sha1/sha1.c`（`SHA1Transform`）。同一个工作区里放两份
-//! MD5 是净损失——它会让人去问「哪一份是真的」，而这个问题本来不该存在。本模块因此只做
-//! 两件事：**接上已经有的**，以及**补上确实没有的**。剩下四枚在本模块新译，出处逐一对位：
+//! Two of the families are **not rewritten here**, because this repository
+//! already has them: [`md5`](minix_crypt::md5) and [`sha1`](minix_crypt::sha1)
+//! in `os/libs/minix-crypt`, whose ground truth is likewise the original C in
+//! this repository — `minix3/common/lib/libc/md/md5c.c` (`MD5Transform`) and
+//! `minix3/common/lib/libc/hash/sha1/sha1.c` (`SHA1Transform`). Two MD5 copies
+//! in one workspace is a net loss: it makes people ask "which one is real", a
+//! question that should not exist. This module therefore does only two things:
+//! **wire up what already exists**, and **add what is genuinely missing**. The
+//! remaining four are newly translated here, each matched to its source:
 //!
-//! * MD4 —— `minix3/common/lib/libc/md/md4c.c` 的 `MD4Transform`；
-//! * SHA256、SHA384、SHA512 —— `minix3/common/lib/libc/hash/sha2/sha2.c` 的
-//!   `SHA256_Transform` 与 `SHA512_Transform`（SHA384 与 SHA512 共用后一颗芯，只换初值
-//!   并截去尾部 16 字节，`sha2.c` 自己就是这么写的）。
+//! * MD4 — `MD4Transform` in `minix3/common/lib/libc/md/md4c.c`;
+//! * SHA256, SHA384, SHA512 — `SHA256_Transform` and `SHA512_Transform` in
+//!   `minix3/common/lib/libc/hash/sha2/sha2.c` (SHA384 and SHA512 share the
+//!   latter core, differing only in the initial values and a 16-byte tail
+//!   truncation, exactly as `sha2.c` itself writes them).
 //!
-//! 最后两枚是真源各一份的独立结构：MD2 按 `minix3/lib/libc/hash/md2/md2.c`（它的 256 项 S 表
-//! 与 18 轮混淆步是 RFC 1319 那一套，源文件注释自称 `cut-n-pasted from rfc1319`；它不按
-//! 「64 字节块 + 末尾比特数」的骨架走，而是 32 字节一块、先算校验和再随消息一起折叠），
-//! RMD160 按 `minix3/common/lib/libc/hash/rmd160/rmd160.c`（左右两条线各 80 轮，同族里只有
-//! 它的右线要把函数组**倒过来**用而常数组不倒，见下表注释）。
+//! The last two have independent structures in their sources: MD2 follows
+//! `minix3/lib/libc/hash/md2/md2.c` (its 256-entry S table and 18-round mixing
+//! step are the RFC 1319 set; the source calls itself
+//! `cut-n-pasted from rfc1319`; it does not follow the "64-byte block plus
+//! trailing bit count" skeleton but works in 32-byte blocks, computing a
+//! checksum first and folding it in with the message), and RMD160 follows
+//! `minix3/common/lib/libc/hash/rmd160/rmd160.c` (two lines of 80 rounds each;
+//! the only family whose right line uses its function groups **in reverse**
+//! while the constant groups stay forward — see the table comments below).
 //!
-//! 把多族接进同一道缝的收益不只是少几份实现：**向量门从此一次覆盖全部已接的族**，而
-//! `minix-crypt` 那两份自带的判据并不等重——`sha1.rs` 有 `test_sha1_vectors`，`md5.rs` 一枚
-//! 测试也没有（现查 `grep -c "#\[test\]" os/libs/minix-crypt/src/md5.rs` → 0），且两处的
-//! 向量都是短输入。本模块末尾那些按 64/128 字节块边界取的长度，再加一百万字节那一枚，
-//! 覆盖的正是「跨块折叠 + 填充换块」这一类短向量测不到的形状。
+//! Wiring several families into one seam is worth more than a few saved
+//! implementations: **the vector gate now covers every wired family at once**,
+//! while the two in `minix-crypt` did not carry equally strong criteria —
+//! `sha1.rs` has `test_sha1_vectors`, `md5.rs` has not a single test
+//! (`grep -c "#\[test\]" os/libs/minix-crypt/src/md5.rs` → 0 today), and both
+//! sets of vectors use short inputs. The lengths at the end of this module,
+//! taken at 64/128-byte block boundaries plus the one-million-byte case, cover
+//! exactly the shapes short vectors cannot: cross-block folding and padding
+//! that spills into another block.
 //!
-//! 各族的骨架相同：把输入按整块切好，末尾补上「一个 `0x80`、若干 `0x00`、末尾的比特数」，
-//! 逐块折叠进一个状态向量。次序在这里是承重的——`0x80` 必须紧跟最后一个数据字节，比特数
-//! 必须落在最后一块的最末尾。把长度写成「补完之后的总长」，或者把 `0x80` 放到零填充的
-//! 另一头，摘要值不会报错，只会让每个输入都变成另一个摘要；这类缺陷只能靠已知输入→已知
-//! 摘要的对照钉住。族与族真正不一致的地方只有三处，全在「末尾那个字段」和「状态怎么摊成
-//! 字节」上：
+//! All families share the same skeleton: cut the input into whole blocks, append
+//! "one `0x80`, some `0x00`s, the trailing bit count", and fold each block into
+//! a state vector. Order is load-bearing here — the `0x80` must immediately
+//! follow the last data byte, and the bit count must sit at the very end of the
+//! last block. Writing the length as "the total after padding", or putting the
+//! `0x80` at the other end of the zero padding, does not raise an error; it just
+//! turns every input into a different digest. Such defects can only be pinned by
+//! known-input → known-digest pairs. The families genuinely disagree in only
+//! three places, all about "the trailing field" and "how the state is spread
+//! into bytes":
 //!
-//! * 块长：MD 族与 SHA-256 是 64 字节，SHA-384/512 是 128 字节。
-//! * 比特数字段：MD 族记 8 字节**小端**（`md5c.c`/`md4c.c` 的 `Encode` 从低位字节起写），
-//!   SHA-1/256 记 8 字节大端（`SHA1Final` 那句注释自称 `Endian independent`，它按
-//!   `(3-(i&3))*8` 位移取字节），SHA-512 记 **16 字节**大端（`sha2.c` 把 128 位计数器拆成
-//!   两个 `u64`，短输入时高 8 字节恒零）。
-//! * 摘要摊成字节：MD 族按小端摊，SHA 族按大端摊；SHA384 取 SHA512 那 64 字节的前 48 字节。
+//! * Block length: the MD family and SHA-256 use 64 bytes; SHA-384/512 use 128.
+//! * The bit-count field: the MD family records 8 bytes **little-endian**
+//!   (`Encode` in `md5c.c`/`md4c.c` writes from the low byte), SHA-1/256 record
+//!   8 bytes big-endian (`SHA1Final`'s comment calls itself
+//!   `Endian independent`; it takes bytes via `(3-(i&3))*8` shifts), and SHA-512
+//!   records **16 bytes** big-endian (`sha2.c` splits the 128-bit counter into
+//!   two `u64`s; for short inputs the high 8 bytes are always zero).
+//! * Spreading the digest into bytes: the MD family goes little-endian, the SHA
+//!   family big-endian; SHA384 takes the first 48 bytes of SHA512's 64.
 //!
-//! 也就是说同一份输入在 x86-64/AArch64/RISC-V 上必须得到同一串十六进制——字节序是
-//! **算法规定的**，不是机器决定的，所以本模块只走显式的 `to_be_bytes`/`from_le_bytes`，
-//! 一处也不交给宿主决定。
+//! In other words, the same input must produce the same hex string on
+//! x86-64/AArch64/RISC-V — byte order is **prescribed by the algorithm**, not by
+//! the machine, so this module uses only explicit `to_be_bytes`/`from_le_bytes`
+//! and never leaves it to the host.
 //!
-//! 报文那一半（`MD5 (file) = <digest>` 与它的 `-n`/`-q` 两个变体、标准输入那一腿）住在
-//! `src/bin/cksum.rs`；排版的判据是 C 的 `End`（`minix3/lib/libc/md/mdXhl.c`、
-//! `minix3/lib/libc/hash/hashhl.c`）：逐字节先高四位后低四位、查 `0123456789abcdef`、
-//! **小写**，长度恒为 `2 * 摘要字节数`。
+//! The reporting half (`MD5 (file) = <digest>` with its `-n`/`-q` variants, and
+//! the standard-input leg) lives in `src/bin/cksum.rs`; the formatting criterion
+//! is C's `End` (`minix3/lib/libc/md/mdXhl.c`,
+//! `minix3/lib/libc/hash/hashhl.c`): per byte, high nibble first then low, looked
+//! up in `0123456789abcdef`, **lowercase**, always `2 * digest bytes` long.
 
 use alloc::string::String;
 
-/// `sha2.c` 的 `K256[64]`（「Hash constant words K for SHA-256」那一份表）。
-/// 逐条机械抄自源文件，不按 `floor(2^32 · frac(p))` 的前八个素数小数重算——重算会把
-/// 「抄错」和「算法本就如此」混成一团，而源文件本身就是判据。
+/// `sha2.c`'s SHA-256 constant table (64 entries, the "Hash constant words K
+/// for SHA-256" one).
+/// Copied mechanically from the source, not recomputed from `floor(2^32 ·
+/// frac(p))` for the first eight primes — recomputation would blur "copied
+/// wrong" and "the algorithm is like this", and the source file is itself the
+/// criterion.
 static SHA256_K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -64,38 +88,47 @@ static SHA256_K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-/// `sha2.c` 的 `sha256_initial_hash_value[8]`，即 `SHA256_Init` 装进状态的初值。
-/// SHA512 那一族的八个初值不同，且是 64 位字，仍在后一片里。
+/// `sha2.c`'s `sha256_initial_hash_value[8]`, the initial values `SHA256_Init`
+/// loads into the state. The SHA512 family's eight initial values differ and are
+/// 64-bit words; they live in the next block.
 static SHA256_H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-/// `md4c.c` 的 48 条 `FF`/`GG`/`HH` 行里的消息字下标；机械摘取自源文件（同 `SHA256_K` 的理由）。
+/// The message-word indices from `md4c.c`'s 48 `FF`/`GG`/`HH` lines, taken
+/// mechanically from the source (same reason as `SHA256_K`).
 static MD4_WORD: [usize; 48] = [
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
     0x00, 0x04, 0x08, 0x0c, 0x01, 0x05, 0x09, 0x0d, 0x02, 0x06, 0x0a, 0x0e, 0x03, 0x07, 0x0b, 0x0f,
     0x00, 0x08, 0x04, 0x0c, 0x02, 0x0a, 0x06, 0x0e, 0x01, 0x09, 0x05, 0x0d, 0x03, 0x0b, 0x07, 0x0f,
 ];
 
-/// 同上 48 条行的旋转量（`md4c.c` 的 `S11`…`S34`）。
+/// The rotation amounts of those same 48 lines (`md4c.c`'s `S11`…`S34`).
 static MD4_SHIFT: [u32; 48] = [
     0x03, 0x07, 0x0b, 0x13, 0x03, 0x07, 0x0b, 0x13, 0x03, 0x07, 0x0b, 0x13, 0x03, 0x07, 0x0b, 0x13,
     0x03, 0x05, 0x09, 0x0d, 0x03, 0x05, 0x09, 0x0d, 0x03, 0x05, 0x09, 0x0d, 0x03, 0x05, 0x09, 0x0d,
     0x03, 0x09, 0x0b, 0x0f, 0x03, 0x09, 0x0b, 0x0f, 0x03, 0x09, 0x0b, 0x0f, 0x03, 0x09, 0x0b, 0x0f,
 ];
 
-/// `md4c.c` 的 `MD4Init` 四枚初值。它与 MD5 的四枚同值，两份 C 源各自写了一遍，这里也写两份。
+/// The four initial values of `md4c.c`'s `MD4Init`. They equal MD5's four; both
+/// C sources write them out separately, so both are written separately here.
 static MD4_H0: [u32; 4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
 
-// 下面五张表全部由 `tmp/cksum-384/gen_tables3.py` 从 C 源机械摘出：MD2 的 S 表取自
-// `minix3/lib/libc/hash/md2/md2.c:51-70`，RMD160 的四张表取自该文件 160 条 `R(...)` 行的
-// 第 8、9 个实参（轮移量与消息字下标）。生成器同时核对了「每 16 轮换一次函数/常数组」
-// 与「目标寄存器按 a,e,d,c,b 循环」两件事在**两条线上都成立**，所以下面只按 `i / 16`
-// 取组号、按 `(-i) mod 5` 取目标寄存器，不必再各抄一张 80 项的组号表。
-// 右线唯一与直觉相反的地方：它的**函数**组是倒着走的（第 0..15 轮用 `F4`、
-// 最后 16 轮用 `F0`），而**常数**组正着走（`KK0 → KK4`）——这是从 `rmd160.c` 的行里
-// 读出来的，不是从教科书记的。
-/// `md2.c:51-70` 那张 256 项 S 表（源文件注释自称 `cut-n-pasted from rfc1319`）。
+// All five tables below are extracted mechanically from the C sources by
+// `tmp/cksum-384/gen_tables3.py`: MD2's S table from
+// `minix3/lib/libc/hash/md2/md2.c:51-70`, and RMD160's four from the 8th and
+// 9th arguments of that file's 160 `R(...)` lines (rotation amount and
+// message-word index). The generator also verified that "change the
+// function/constant group every 16 rounds" and "cycle the target register as
+// a,e,d,c,b" both hold on **both lines**, so below the group number is just
+// `i / 16` and the target register is `(-i) mod 5`; there is no need to copy a
+// separate 80-entry group table.
+// The one counter-intuitive thing about the right line: its **function** groups
+// run backwards (rounds 0..15 use `F4`, the last 16 use `F0`), while the
+// **constant** groups run forwards (`KK0 → KK4`) — this was read from
+// `rmd160.c`'s lines, not from a textbook.
+/// The 256-entry S table at `md2.c:51-70` (the source calls itself
+/// `cut-n-pasted from rfc1319`).
 static MD2_S: [u8; 256] = [
     41, 46, 67, 201, 162, 216, 124, 1, 61, 54, 84, 161, 236, 240, 6, 19, 98, 167, 5, 243, 192, 199,
     115, 140, 152, 147, 43, 217, 188, 76, 130, 202, 30, 155, 87, 60, 253, 212, 224, 22, 103, 66,
@@ -136,7 +169,7 @@ static RMD_RIGHT_SHIFT: [u32; 80] = [
     6, 14, 6, 9, 12, 9, 12, 5, 15, 8, 8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11,
 ];
 
-/// `sha2.c` 的 `K512[80]`。
+/// `sha2.c`'s SHA-512 constant table (80 entries).
 static SHA512_K: [u64; 80] = [
     0x428a2f98d728ae22,
     0x7137449123ef65cd,
@@ -220,7 +253,7 @@ static SHA512_K: [u64; 80] = [
     0x6c44198c4a475817,
 ];
 
-/// `sha2.c` 的 `sha512_initial_hash_value[8]`。
+/// `sha2.c`'s `sha512_initial_hash_value[8]`.
 static SHA512_H0: [u64; 8] = [
     0x6a09e667f3bcc908,
     0xbb67ae8584caa73b,
@@ -232,7 +265,8 @@ static SHA512_H0: [u64; 8] = [
     0x5be0cd19137e2179,
 ];
 
-/// `sha2.c` 的 `sha384_initial_hash_value[8]`：与 SHA512 同芯，只有这颗初值和输出长度不同。
+/// `sha2.c`'s `sha384_initial_hash_value[8]`: the same core as SHA512; only this
+/// initial value and the output length differ.
 static SHA384_H0: [u64; 8] = [
     0xcbbb9d5dc1059ed8,
     0x629a292a367cd507,
@@ -244,10 +278,14 @@ static SHA384_H0: [u64; 8] = [
     0x47b5481dbefa4fa4,
 ];
 
-/// 末尾那个「比特数」字段的形状。三族的差异全在这里，而这一处错了不报错、只换摘要：
-/// MD 族写 8 字节小端（`md4c.c`/`md5c.c` 的 `Encode`），SHA-1/256 写 8 字节大端
-///（`sha1.c` 的 `SHA1Final`），SHA-384/512 写 **16 字节**大端（`sha2.c` 把计数器拆成
-/// 两个 `u64`，高那半在本仓会遇到的输入长度下恒零，所以这里只写低半、高半留给零初始化的缓冲）。
+/// The shape of that trailing "bit count" field. All three differences live
+/// here, and getting it wrong raises no error — it only changes the digest: the
+/// MD family writes 8 bytes little-endian (`Encode` in `md4c.c`/`md5c.c`),
+/// SHA-1/256 write 8 bytes big-endian (`SHA1Final` in `sha1.c`), and
+/// SHA-384/512 write **16 bytes** big-endian (`sha2.c` splits the counter into
+/// two `u64`s; the high half is always zero for the input lengths this
+/// repository meets, so only the low half is written here and the high half
+/// stays in the zero-initialized buffer).
 #[derive(Clone, Copy)]
 enum Counter {
     Le64,
@@ -256,7 +294,8 @@ enum Counter {
 }
 
 impl Counter {
-    /// 这个字段占几个字节——填充是否还挤得进当前块就靠它。
+    /// How many bytes this field occupies — whether the padding still fits in
+    /// the current block depends on it.
     fn len(self) -> usize {
         match self {
             Counter::Le64 | Counter::Be64 => 8,
@@ -273,15 +312,20 @@ impl Counter {
     }
 }
 
-/// 把 `data` 连同「`0x80` + 零填充 + 末尾的比特数」这一段一起切成 `block_len` 字节的块，
-/// 逐块交给 `sink`。`block_len` 取 64（MD 族与 SHA-256）或 128（SHA-384/512）。
+/// Cut `data` plus the "`0x80` + zero padding + trailing bit count" segment into
+/// `block_len`-byte blocks, handing each to `sink`. `block_len` is 64 (MD family
+/// and SHA-256) or 128 (SHA-384/512).
 ///
-/// 「挤不挤得下」是这段代码的全部难度：`0x80` 站在 `rem`，比特数要占块尾那
-/// `counter.len()` 格，于是放得下的条件是 `rem + counter.len() + 1 <= block_len`；
-/// 64 字节块配 8 字节字段就是 `rem <= 55`，128 字节块配 16 字节字段就是 `rem <= 111`。
-/// 边界写成 `>`（不满足就先把这一块交出去、再补一整块纯零），而不是「`>= 56`」这种把
-/// 两个常数焊在一起的写法——`rem` 恰为 56（或 112）时 `0x80` 已经站到字段的位置上，
-/// 这时候还往同一块里写长度就会把填充覆盖掉，摘要不报错、只是每份输入都变成另一个值。
+/// "Does it still fit" is the whole difficulty of this code: the `0x80` sits at
+/// `rem`, the bit count needs the last `counter.len()` cells of the block, so the
+/// fit condition is `rem + counter.len() + 1 <= block_len`; a 64-byte block with
+/// an 8-byte field gives `rem <= 55`, a 128-byte block with a 16-byte field gives
+/// `rem <= 111`. The boundary is written as `>` (when it fails, hand this block
+/// over first and then emit one extra block of pure zeros) rather than as
+/// `>= 56`, which welds two constants together — when `rem` is exactly 56 (or
+/// 112) the `0x80` already occupies the field's position, and writing the length
+/// into that same block would overwrite the padding: no error, just a different
+/// digest for every input.
 fn feed_blocks(data: &[u8], block_len: usize, counter: Counter, sink: &mut impl FnMut(&[u8])) {
     let whole = data.len() / block_len;
     let rem = data.len() % block_len;
@@ -302,10 +346,12 @@ fn feed_blocks(data: &[u8], block_len: usize, counter: Counter, sink: &mut impl 
     sink(&tail[..block_len]);
 }
 
-/// `sha2.c` 的 `SHA256_Transform`：64 轮，八个寄存器各自有名（`SH256R` 宏传的是
-/// `a`…`h` 八个），字扩展用 `sigma0_256`/`sigma1_256` 那两个「两次右旋加一次右移」。
-/// 右旋与右移各是谁（`rotate_right` 对 `>>`）不能混：`sigma0_256(x) = ROTR(7)^ROTR(18)^(x>>3)`
-/// 里第三项是**移位**，写成 `ROTR(3)` 就把挪走的 3 位重新拉回来。
+/// `sha2.c`'s `SHA256_Transform`: 64 rounds, eight named registers (the `SH256R`
+/// macro passes `a`…`h`), with word expansion using `sigma0_256`/`sigma1_256`,
+/// the "two rotations plus one shift" functions. Which is the rotation and which
+/// the shift (`rotate_right` vs `>>`) must not be confused: in
+/// `sigma0_256(x) = ROTR(7)^ROTR(18)^(x>>3)` the third term is a **shift**;
+/// writing it as `ROTR(3)` would bring the 3 shifted-out bits back.
 fn sha256_transform(state: &mut [u32; 8], block: &[u8]) {
     let mut word = [0u32; 64];
     for index in 0..16 {
@@ -354,11 +400,13 @@ fn sha256_transform(state: &mut [u32; 8], block: &[u8]) {
     }
 }
 
-/// `md4c.c` 的 `MD4Transform`：48 轮，三个 16 轮的组各换一个布尔函数与一个常数
-///（第一组加零、第二组加 `0x5a827999`、第三组加 `0x6ed9eba1`——**第三组那个数不是**
-/// MD5 的族常数，也不是常见教科书里那个 `0x6d70756d`；它逐字取自 `md4c.c` 的 `HH` 宏）。
-/// 与 MD5 的差别只在每轮末尾：MD4 的 `FF` 宏没有 `(a) += (b)` 那一句，所以轮次里
-/// 交回寄存器的是旋转后的值本身。
+/// `md4c.c`'s `MD4Transform`: 48 rounds, three 16-round groups each swapping a
+/// boolean function and a constant (the first adds zero, the second adds
+/// `0x5a827999`, the third adds `0x6ed9eba1` — **the third number is not** MD5's
+/// family constant, nor the `0x6d70756d` common in textbooks; it is taken
+/// verbatim from `md4c.c`'s `HH` macro). The only difference from MD5 is at the
+/// end of each round: MD4's `FF` macro lacks the `(a) += (b)` statement, so the
+/// value handed back to the register is the rotated value itself.
 fn md4_transform(state: &mut [u32; 4], block: &[u8]) {
     let mut word = [0u32; 16];
     for (index, slot) in word.iter_mut().enumerate() {
@@ -395,9 +443,11 @@ fn md4_transform(state: &mut [u32; 4], block: &[u8]) {
     state[3] = state[3].wrapping_add(d);
 }
 
-/// `sha2.c` 的 `SHA512_Transform`：80 轮、128 字节块、`u64` 字。四个复合函数里的
-/// 右旋位数逐一对 `sha2.c` 的 `Sigma0_512`/`Sigma1_512`/`sigma0_512`/`sigma1_512`：
-/// `28/34/39`、`14/18/41`、`1/8` 加**右移** `7`、`19/61` 加**右移** `6`。
+/// `sha2.c`'s `SHA512_Transform`: 80 rounds, 128-byte blocks, `u64` words. The
+/// rotation counts of the four composite functions are matched one by one
+/// against `sha2.c`'s `Sigma0_512`/`Sigma1_512`/`sigma0_512`/`sigma1_512`:
+/// `28/34/39`, `14/18/41`, `1/8` plus a **shift** of `7`, `19/61` plus a
+/// **shift** of `6`.
 fn sha512_transform(state: &mut [u64; 8], block: &[u8]) {
     let mut word = [0u64; 80];
     for index in 0..16 {
@@ -446,21 +496,23 @@ fn sha512_transform(state: &mut [u64; 8], block: &[u8]) {
     }
 }
 
-/// MD5 的 16 字节摘要：走 `minix-crypt` 已有的那份流式实现（`Md5::new`/`update`/`finalize`
-/// 对位 C 的 `MD5Init`/`MD5Update`/`MD5Final`）。
+/// MD5's 16-byte digest: uses the existing streaming implementation in
+/// `minix-crypt` (`Md5::new`/`update`/`finalize`, matching C's
+/// `MD5Init`/`MD5Update`/`MD5Final`).
 fn md5(data: &[u8]) -> [u8; 16] {
     let mut context = minix_crypt::md5::Md5::new();
     context.update(data);
     context.finalize()
 }
 
-/// SHA1 的 20 字节摘要：走 `minix-crypt` 已有的那份 `sha1`（FIPS 180-1）。
+/// SHA1's 20-byte digest: uses the existing `sha1` in `minix-crypt` (FIPS 180-1).
 fn sha1(data: &[u8]) -> [u8; 20] {
     minix_crypt::sha1::sha1(data)
 }
 
-/// SHA256 的 32 字节摘要：本模块新译的那一份（`sha2.c` 的 `SHA256_Final` 交出八个状态字
-/// 按大端摊开的 32 字节）。
+/// SHA256's 32-byte digest: the one newly translated here (`sha2.c`'s
+/// `SHA256_Final` hands out the eight state words spread big-endian into 32
+/// bytes).
 fn sha256(data: &[u8]) -> [u8; 32] {
     let mut state = SHA256_H0;
     feed_blocks(data, 64, Counter::Be64, &mut |block| {
@@ -473,9 +525,10 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     digest
 }
 
-/// SHA-512 那 64 字节摘要的共用芯：`sha2.c` 的 `SHA512_Data`/`SHA384_Data` 也是同一颗芯
-/// 换初值（`SHA384_Init` 装 `sha384_initial_hash_value`，`SHA512_Init` 装
-/// `sha512_initial_hash_value`）。
+/// The shared core of SHA-512's 64-byte digest: `sha2.c`'s `SHA512_Data`/
+/// `SHA384_Data` are likewise the same core with different initial values
+/// (`SHA384_Init` loads `sha384_initial_hash_value`, `SHA512_Init` loads
+/// `sha512_initial_hash_value`).
 fn sha512_with(data: &[u8], initial: [u64; 8]) -> [u8; 64] {
     let mut state = initial;
     feed_blocks(data, 128, Counter::Be128, &mut |block| {
@@ -488,13 +541,14 @@ fn sha512_with(data: &[u8], initial: [u64; 8]) -> [u8; 64] {
     digest
 }
 
-/// SHA512 的 64 字节摘要。
+/// SHA512's 64-byte digest.
 fn sha512(data: &[u8]) -> [u8; 64] {
     sha512_with(data, SHA512_H0)
 }
 
-/// SHA384 的 48 字节摘要：`sha2.c` 的 `SHA384_Final` 只把前六个状态字写出去，
-/// 也就是取 SHA512 那 64 字节的前 48 字节——不是「另算一个 384 位摘要」。
+/// SHA384's 48-byte digest: `sha2.c`'s `SHA384_Final` writes out only the first
+/// six state words, i.e. it takes the first 48 bytes of SHA512's 64 — it does
+/// **not** compute a separate 384-bit digest.
 fn sha384(data: &[u8]) -> [u8; 48] {
     let full = sha512_with(data, SHA384_H0);
     let mut digest = [0u8; 48];
@@ -502,7 +556,8 @@ fn sha384(data: &[u8]) -> [u8; 48] {
     digest
 }
 
-/// MD4 的 16 字节摘要（本模块新译的那一颗芯；`minix-crypt` 没有 MD4）。
+/// MD4's 16-byte digest (the core newly translated here; `minix-crypt` has no
+/// MD4).
 fn md4(data: &[u8]) -> [u8; 16] {
     let mut state = MD4_H0;
     feed_blocks(data, 64, Counter::Le64, &mut |block| {
@@ -515,9 +570,11 @@ fn md4(data: &[u8]) -> [u8; 16] {
     digest
 }
 
-/// MD2 的 32 字节一块折叠（`md2.c` 的 `MD2Transform`）。状态里 `X[0..16)` 是链接值、
-/// `X[16..32)` 是正在 accumulation 的输入块、`X[32..48)` 是两者的异或；`index` 初值是 16 而不是
-/// 0——前 16 格住着上一块的链接值，这一步错了 MD2 就变成另一个函数。
+/// MD2's 32-byte block folding (`md2.c`'s `MD2Transform`). In the state,
+/// `X[0..16)` is the chaining value, `X[16..32)` the input block being
+/// accumulated, and `X[32..48)` their XOR; `index` starts at 16 rather than 0 —
+/// the first 16 cells hold the previous block's chaining value, and getting this
+/// wrong turns MD2 into a different function.
 struct Md2 {
     x: [u8; 48],
     checksum: [u8; 16],
@@ -533,7 +590,8 @@ impl Md2 {
         }
     }
 
-    /// `MD2Update`：填满 32 字节就折叠，折叠把写指针拉回 16（不是 0）。
+    /// `MD2Update`: fold once 32 bytes are full; the fold pulls the write
+    /// pointer back to 16 (not 0).
     fn feed(&mut self, bytes: &[u8]) {
         for byte in bytes {
             self.x[self.index] = *byte;
@@ -563,8 +621,10 @@ impl Md2 {
         self.index = 16;
     }
 
-    /// `MD2Final`：先按缺几个字节就补几个「值为缺数的字节」，再把**当前**校验和整个喂进去；
-    /// 最后交回 `X[0..16)`。补码长度落在 1..=16，因为写指针从不在 0。
+    /// `MD2Final`: first pad with as many bytes as are missing, each carrying
+    /// the missing count, then feed the **current** checksum in whole; finally
+    /// hand back `X[0..16)`. The pad length lands in 1..=16 because the write
+    /// pointer is never 0.
     fn finish(mut self) -> [u8; 16] {
         let padlen = 32 - self.index;
         let pad = [padlen as u8; 16];
@@ -577,17 +637,21 @@ impl Md2 {
     }
 }
 
-/// `rmd160.c` 的 `H0`…`H4`（与 MD5/MD4 的四枚同值，第五枚与 SHA1 那族的第五枚同值——
-/// 三份源文件各写了一遍，这里也写三份，见各自的注释）。
+/// `rmd160.c`'s `H0`…`H4` (the same as MD5/MD4's four, and the fifth the same as
+/// SHA1's fifth — three source files each wrote them out, so three copies live
+/// here too; see their comments).
 static RMD_H0: [u32; 5] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0];
 
-/// 左线五组的常数 `K0`…`K4`。
+/// The left line's five group constants (the `K` array, entries 0 through 4).
 static RMD_K: [u32; 5] = [0x00000000, 0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xa953fd4e];
 
-/// 右线五组的常数 `KK0`…`KK4`：**与左线不同序**，而且右线的函数组是倒着用的（见上表注释）。
+/// The right line's five group constants `KK0`…`KK4`: **in a different order
+/// from the left**, and the right line uses its function groups in reverse (see
+/// the table comment above).
 static RMD_KK: [u32; 5] = [0x50a28be6, 0x5c4dd124, 0x6d703ef3, 0x7a6d76e9, 0x00000000];
 
-/// `rmd160.c` 的五个布尔函数（左线按组号 `i / 16` 顺着用，右线倒着用）。
+/// `rmd160.c`'s five boolean functions (the left line uses them forward by group
+/// number `i / 16`, the right line in reverse).
 fn rmd_f(group: usize, x: u32, y: u32, z: u32) -> u32 {
     match group {
         0 => x ^ y ^ z,
@@ -598,9 +662,12 @@ fn rmd_f(group: usize, x: u32, y: u32, z: u32) -> u32 {
     }
 }
 
-/// 一条线 80 轮（`rmd160.c` 的 `R` 宏：`a = ROL(s, a + F(b,c,d) + x[r] + K) + e; c = ROL(10, c);`）。
-/// 目标寄存器按 `a,e,d,c,b` 循环，等价于数组下标 `(-i) mod 5`；三个操作数是它后面三个、
-/// 末尾加的是再后面那个。左线用常数表 `K`、函数组顺走；右线用 `KK`、函数组倒走。
+/// One line's 80 rounds (`rmd160.c`'s `R` macro: `a = ROL(s, a + F(b,c,d) + x[r]
+/// + K) + e; c = ROL(10, c);`). The target register cycles as `a,e,d,c,b`,
+/// equivalent to array index `(-i) mod 5`; the three operands are the three after
+/// it, and the final addend is the one after those. The left line uses constant
+/// table `K` with function groups forward; the right line uses `KK` with
+/// function groups backward.
 fn rmd160_line(
     state: &[u32; 5],
     words: &[u32; 16],
@@ -633,9 +700,11 @@ fn rmd160_line(
     r
 }
 
-/// RMD160 的一枚块变换：左右两条线各 80 轮，最后按下式合并（`rmd160.c` 的
-/// `t = state[1] + cc + d; …` 那六行）。两条线各自把「本线的寄存器组」加回**初始**状态，
-/// 所以合并式里出现的六个值是「新左五元组、新右五元组与旧状态」三者混用的——照抄源文件。
+/// One block transform of RMD160: the left and right lines do 80 rounds each,
+/// then merge as follows (the six lines of `rmd160.c`'s
+/// `t = state[1] + cc + d; …`). Each line adds "its own register set" back to the
+/// **initial** state, so the six values in the merge mix "new left five-tuple,
+/// new right five-tuple, and old state" — copied from the source.
 fn rmd160_transform(state: &mut [u32; 5], block: &[u8]) {
     let mut words = [0u32; 16];
     for (index, slot) in words.iter_mut().enumerate() {
@@ -659,10 +728,14 @@ fn rmd160_transform(state: &mut [u32; 5], block: &[u8]) {
         true,
     );
 
-    // 合并那六行的两个加数**来自不同的线**：`t = state[1] + cc + d;` 里的 `cc` 是左线存进
-    // `aa`…`ee` 的第三个寄存器，`d` 是右线当前的第四个——源文件先跑完左线把结果存档，再把
-    // `a`…`e` 重新装成初始状态跑右线。把两者的下标对调不会报错，只会换一个摘要：本仓第一次
-    // 跑空输入那形就是这样错的，被 `rmdtest.c` 第一条抓出来。
+    // The two addends in those six merge lines **come from different lines**:
+    // in `t = state[1] + cc + d;` the `cc` is the left line's third register
+    // saved into `aa`…`ee`, and `d` is the right line's current fourth — the
+    // source finishes the left line and stores its result, then reloads `a`…`e`
+    // with the initial state and runs the right line. Swapping the two indices
+    // raises no error, it just changes the digest: this repository's first run
+    // on the empty input failed exactly that way, caught by the first case in
+    // `rmdtest.c`.
     let old = *state;
     state[0] = old[1].wrapping_add(l[2]).wrapping_add(r[3]);
     state[1] = old[2].wrapping_add(l[3]).wrapping_add(r[4]);
@@ -671,15 +744,16 @@ fn rmd160_transform(state: &mut [u32; 5], block: &[u8]) {
     state[4] = old[0].wrapping_add(l[1]).wrapping_add(r[2]);
 }
 
-/// MD2 的 16 字节摘要。
+/// MD2's 16-byte digest.
 fn md2(data: &[u8]) -> [u8; 16] {
     let mut context = Md2::new();
     context.feed(data);
     context.finish()
 }
 
-/// RMD160 的 20 字节摘要：块长 64、末尾比特数记 8 字节**小端**（`RMD160Final` 的
-/// `PUT_64BIT_LE`），状态按小端摊开——与 MD5 同一条填充规则，因此共用 [`feed_blocks`]。
+/// RMD160's 20-byte digest: 64-byte blocks, trailing bit count in 8 bytes
+/// **little-endian** (`RMD160Final`'s `PUT_64BIT_LE`), state spread
+/// little-endian — the same padding rule as MD5, so it shares [`feed_blocks`].
 fn rmd160(data: &[u8]) -> [u8; 20] {
     let mut state = RMD_H0;
     feed_blocks(data, 64, Counter::Le64, &mut |block| {
@@ -692,9 +766,11 @@ fn rmd160(data: &[u8]) -> [u8; 20] {
     digest
 }
 
-/// C 的 `End`（`mdXhl.c:44-66`、`hashhl.c` 的同名函数）排版摘要的那一步：逐字节取高
-/// 四位再取低四位，查 `0123456789abcdef`，**小写**。大写的那一份只出现在报文头的算法
-/// 名里（`cksum.c` 的 `hash->hashname`），别把两处混成一种。
+/// The step where C's `End` (`mdXhl.c:44-66`, and the same-named function in
+/// `hashhl.c`) formats a digest: per byte take the high nibble then the low, look
+/// up `0123456789abcdef`, **lowercase**. The uppercase copy appears only in the
+/// algorithm name of the report header (`cksum.c`'s `hash->hashname`); do not mix
+/// the two.
 fn hex(digest: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut text = String::with_capacity(digest.len() * 2);
@@ -705,10 +781,14 @@ fn hex(digest: &[u8]) -> String {
     text
 }
 
-/// C 的 `hashes[]` 表里那八枚算法（`minix3/usr.bin/cksum/cksum.c:120-144`）。**全仓唯一的
-/// 名字表**：`-a` 的匹配、`MD5 mutually exclusive with sum` 那句里的名字、以及报文头
-/// `MD5 (file) = …` 都从这里取，所以「选没选中算法」与「这一族能不能算」在类型上就是同一件事
-///——不存在「认得名字但算不出」的中间态，薄壳因此不可能印一枚空输入的摘要冒充结果。
+/// The eight algorithms in C's `hashes[]` table
+/// (`minix3/usr.bin/cksum/cksum.c:120-144`). **The repository's only name
+/// table**: the `-a` match, the name in the `MD5 mutually exclusive with sum`
+/// sentence, and the report header `MD5 (file) = …` all come from here, so
+/// "whether the algorithm was selected" and "whether this family can be
+/// computed" are the same thing in the type system — there is no intermediate
+/// state of "name recognized but not computable", and the thin shell therefore
+/// cannot print an empty-input digest as a pretend result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Algo {
     Md2,
@@ -722,9 +802,11 @@ pub enum Algo {
 }
 
 impl Algo {
-    /// C 的 `hashes[]` 那张表里的八枚，**顺序照表**（`minix3/usr.bin/cksum/cksum.c:120-144`：
-    /// md2、md4、md5、rmd160、sha1、sha256、sha384、sha512）。顺序不是讲究：`cksum -c` 认行首
-    /// 算法名时是照这张表逐项 `strncmp`、第一个前缀命中就收（`:343-352`）。
+    /// The eight entries of C's `hashes[]` table, **in table order**
+    /// (`minix3/usr.bin/cksum/cksum.c:120-144`: md2, md4, md5, rmd160, sha1,
+    /// sha256, sha384, sha512). The order matters: when `cksum -c` recognizes an
+    /// algorithm name at the start of a line it `strncmp`s against this table
+    /// item by item and takes the first prefix hit (`:343-352`).
     pub const ALL: [Algo; 8] = [
         Algo::Md2,
         Algo::Md4,
@@ -736,17 +818,21 @@ impl Algo {
         Algo::Sha512,
     ];
 
-    /// `hashname` → 算法。**大小写不敏感**：C 的 `case 'a'` 用
-    /// `strcasecmp(hashes[i].hashname, optarg)`（`cksum.c:201-207`），所以 `-a md5`、`-a MD5`、
-    /// `-a Md5` 在 C 里是同一个入口。全仓只有这一张名字表——`src/cksum.rs` 的 `-a` 腿、诊断里
-    /// 那句大写的名字、以及报文头都从这里出；两处各抄一份的话，「哪一份是真的」就又回来了。
+    /// `hashname` → algorithm. **Case-insensitive**: C's `case 'a'` uses
+    /// `strcasecmp(hashes[i].hashname, optarg)` (`cksum.c:201-207`), so `-a md5`,
+    /// `-a MD5`, and `-a Md5` are the same entry in C. This is the repository's
+    /// only name table — the `-a` leg in `src/cksum.rs`, the uppercase name in
+    /// diagnostics, and the report header all come from it; copying it twice
+    /// would bring back the question "which one is real".
     pub fn from_hashname(hashname: &str) -> Option<Algo> {
         Self::from_hashname_bytes(hashname.as_bytes())
     }
 
-    /// 同一张表的**字节入口**。C 的 `strcasecmp(hashes[i].hashname, optarg)`
-    /// （`cksum.c:201-207`）比的是两串字节，`optarg` 就是 argv 里的那一段，不问编码；
-    /// 所以 argv 按字节交上来时查表也要按字节查。名字表仍只有一份。
+    /// The **byte entry** to the same table. C's
+    /// `strcasecmp(hashes[i].hashname, optarg)` (`cksum.c:201-207`) compares two
+    /// byte strings; `optarg` is that stretch of argv, with no encoding
+    /// question, so when argv arrives as bytes the lookup must be byte-wise too.
+    /// There is still only one name table.
     pub fn from_hashname_bytes(hashname: &[u8]) -> Option<Algo> {
         Self::ALL.into_iter().find(|algo| {
             let want = algo.hashname().as_bytes();
@@ -758,19 +844,25 @@ impl Algo {
         })
     }
 
-    /// 校验档里一行的**行首前缀** → 算法。这条判据与上一条**不同**：C 在 `do_check` 里用的是
-    /// `strncmp(buf, nhash->hashname, strlen(nhash->hashname))`（`cksum.c:343-352`），
-    /// **大小写敏感**、只认表里那一份大写名。参照件 g-10 形实测：`md5 (f) = <摘要>` 这一行
-    /// 认不出算法，走的是 `unknown hash`（`:358`）而不是 forgiving 的 `-a` 那一腿。
-    /// 两处若共用一份匹配规则，`-a` 的大小写不敏感就会渗进校验档——那是 C 没有的行为。
+    /// The **line-start prefix** of a line in a check file → algorithm. This
+    /// criterion **differs** from the one above: in `do_check` C uses
+    /// `strncmp(buf, nhash->hashname, strlen(nhash->hashname))`
+    /// (`cksum.c:343-352`), **case-sensitive**, accepting only the uppercase name
+    /// from the table. Measured on the reference (shape g-10): the line
+    /// `md5 (f) = <digest>` is not recognized as an algorithm and takes the
+    /// `unknown hash` path (`:358`) rather than the forgiving `-a` leg. If both
+    /// places shared one match rule, `-a`'s case-insensitivity would seep into
+    /// the check file — behavior C does not have.
     pub fn by_line_prefix(line: &str) -> Option<Algo> {
         Self::ALL
             .into_iter()
             .find(|algo| line.starts_with(algo.hashname()))
     }
 
-    /// C 的 `hashes[]` 表里 `hashname` 那一列（大写那一份）。诊断句子与缺省报文头用的都是它
-    ///（`cksum.c:231-234` 的 `warnx("%s mutually exclusive with sum", hash->hashname)`）。
+    /// The `hashname` column of C's `hashes[]` table (the uppercase copy).
+    /// Diagnostic sentences and the default report header use it
+    /// (`cksum.c:231-234`'s `warnx("%s mutually exclusive with sum",
+    /// hash->hashname)`).
     pub fn hashname(self) -> &'static str {
         match self {
             Algo::Md2 => "MD2",
@@ -784,7 +876,7 @@ impl Algo {
         }
     }
 
-    /// 小写十六进制的那一行摘要正文，长度是 `2 * 摘要字节数`。
+    /// The digest body as lowercase hex, `2 * digest bytes` long.
     pub fn hex_digest(self, data: &[u8]) -> String {
         match self {
             Algo::Md2 => hex(&md2(data)),
@@ -799,11 +891,14 @@ impl Algo {
     }
 }
 
-/// C 的 `MD5TestSuite` 打的那八枚固定串（`minix3/usr.bin/cksum/md5.c:118-133`，八条调用在 `:122-132`）。
-/// **八枚算法共用同一份**：`md2.c`/`md4.c`/`md5.c`/`rmd160.c`/`sha1.c`/`sha256.c`/
-/// `sha384.c`/`sha512.c` 里除了 `HASHTYPE`/`HASHLEN` 与一句 `#include "md5.c"` 没有别的
-///（现查八份各 21–25 行），所以 C 的 `-x` 是「同一串文字 × 八种摘要」。最后一枚在 C 里是
-/// 一条反斜杠续行的字符串拼接（`:131-132`），合起来 80 个字符。
+/// The eight fixed strings C's `MD5TestSuite` prints
+/// (`minix3/usr.bin/cksum/md5.c:118-133`, eight calls at `:122-132`).
+/// **All eight algorithms share them**: apart from `HASHTYPE`/`HASHLEN` and an
+/// `#include "md5.c"`, `md2.c`/`md4.c`/`md5.c`/`rmd160.c`/`sha1.c`/`sha256.c`/
+/// `sha384.c`/`sha512.c` contain nothing else (21–25 lines each today), so C's
+/// `-x` is "the same text × eight digests". The last one in C is a
+/// backslash-continued string concatenation (`:131-132`), 80 characters
+/// together.
 pub const TEST_SUITE: [&str; 8] = [
     "",
     "a",
@@ -815,16 +910,18 @@ pub const TEST_SUITE: [&str; 8] = [
     "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
 ];
 
-/// C 的 `-t` 那一腿的块长（`md5.c:53` 的 `TEST_BLOCK_LEN`）。
+/// The block length of C's `-t` leg (`md5.c:53`'s `TEST_BLOCK_LEN`).
 pub const TIME_TRIAL_BLOCK_LEN: usize = 1000;
-/// C 的 `-t` 那一腿折叠的次数（`md5.c:54` 的 `TEST_BLOCK_COUNT`）。
+/// The number of folds on C's `-t` leg (`md5.c:54`'s `TEST_BLOCK_COUNT`).
 pub const TIME_TRIAL_BLOCK_COUNT: usize = 1000;
 
-/// C 的 `-t` 喂给摘要本体的字节：`md5.c:86-87` 先造一块 `block[i] = i & 0xff`（1000 字节），
-/// 再把**同一枚块**连续 `Update` 一千次（`:94-95`），合计 1000 × 1000 字节，于是第 `j` 个字节是
-/// `(j % 1000) & 0xff`。本壳的摘要本体是一次喂入的 `hex_digest`，所以这里把那一千次
-/// 摊平成一条序列——与 `CKSUM-DIGEST-STREAMING` 那条登记是同一件事（值是同一份，
-/// 差别只在内存占用）。
+/// The bytes C's `-t` feeds to the digest core: `md5.c:86-87` first builds a
+/// block with `block[i] = i & 0xff` (1000 bytes), then `Update`s that **same
+/// block** a thousand times (`:94-95`), 1000 × 1000 bytes in total, so the `j`-th
+/// byte is `(j % 1000) & 0xff`. This shell's digest core is a single-shot
+/// `hex_digest`, so the thousand folds are flattened into one sequence here — the
+/// same thing as the registered `CKSUM-DIGEST-STREAMING` item (same value,
+/// differing only in memory footprint).
 pub fn time_trial_data() -> alloc::vec::Vec<u8> {
     (0..TIME_TRIAL_BLOCK_LEN * TIME_TRIAL_BLOCK_COUNT)
         .map(|index| (index % TIME_TRIAL_BLOCK_LEN) as u8)
@@ -838,9 +935,12 @@ mod tests {
         time_trial_data,
     };
 
-    /// `-t` 那一腿喂的 1000 × 1000 字节必须是 C 的形状（`md5.c:86-87` 造块、`:94-95` 折叠一千次：块里 `block[i] = i & 0xff`，
-    /// 同一枚块折叠一千次）。期望摘要取自本仓 C 原件编出的完整参照件
-    ///（`tmp/cksum-hash-state/readings.log` 的 t-1 与 t-2 两形，配方 `bash tmp/cksum-hash-state/build-cksum-ref.sh`）。
+    /// The 1000 × 1000 bytes fed on the `-t` leg must have C's shape
+    /// (`md5.c:86-87` builds the block, `:94-95` folds it a thousand times:
+    /// `block[i] = i & 0xff` inside the block, the same block a thousand times).
+    /// The expected digests come from the full reference built from this
+    /// repository's C source (`tmp/cksum-hash-state/readings.log`, shapes t-1 and
+    /// t-2; recipe `bash tmp/cksum-hash-state/build-cksum-ref.sh`).
     #[test]
     fn the_time_trial_payload_matches_the_c_block_pattern() {
         let data = time_trial_data();
@@ -866,18 +966,24 @@ mod tests {
         );
     }
 
-    /// 本模块的门只认两类出处：仓库里的 C 期望值文件，以及**用本仓 C 原件编出来的参照件**
-    /// 的读数（配方记在 `rewrite-notes/18-stage-commands/todo.md` 批次三百八十四、三百八十五与三百八十六；
-    /// 参照件先复现了下面这些仓库内期望值——`md5test-out`/`sha1test-out`/`sha1test2-out`、
-    /// `md4test.c` 那七条、`t_sha2.c` 那两张表——才被用来出别的长度上的读数）。
-    /// 宿主 libc 或宿主 OpenSSL 的任何哈希实现都不作真值。
+    /// This module's gates accept only two sources of truth: expectation files
+    /// in the repository, and readings from **a reference built from this
+    /// repository's C source** (the recipe is in
+    /// `rewrite-notes/18-stage-commands/todo.md`). The reference reproduced the
+    /// in-repository expectations below — `md5test-out`/`sha1test-out`/
+    /// `sha1test2-out`, the seven `md4test.c` cases, and the two `t_sha2.c`
+    /// tables — before it was used to produce readings at other lengths. No hash
+    /// implementation from the host libc or the host OpenSSL counts as ground
+    /// truth.
     const ALPHA: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
 
-    /// 参照件与仓库期望值共同覆盖的输入形状：长度按 64 字节块的边界取。
-    /// `(长度, md5, sha1, sha256)`，输入是 `ALPHA` 循环填充的前 `长度` 个字节。
-    /// 长度 0/1/3 三行的期望同时出现在 `minix3/tests/lib/libc/hash/data/md5test-out`
-    /// 与 `sha1test-out`（那三行的输入就是 `""`/`a`/`abc`），所以这张表自己就带一根
-    /// 钉到仓库内的桩。
+    /// Input shapes covered jointly by the reference and the in-repository
+    /// expectations: lengths taken at 64-byte block boundaries.
+    /// `(length, md5, sha1, sha256)`, the input being the first `length` bytes of
+    /// a repeating `ALPHA`. The expectations for lengths 0/1/3 also appear in
+    /// `minix3/tests/lib/libc/hash/data/md5test-out` and `sha1test-out` (those
+    /// three rows' inputs are `""`/`a`/`abc`), so this table carries its own
+    /// anchor into the repository.
     const VECTORS: &[(usize, &str, &str, &str)] = &[
         (
             0,
@@ -977,11 +1083,14 @@ mod tests {
             .collect()
     }
 
-    /// 块边界与填充判据（MD5/SHA1/SHA256 那三族，块长都是 64）：长度 55/56/57 三行是
-    /// 「放不放得下」那格的正反两面（55 时 `0x80` 与长度挤在同一块里，56 起要多补一整块
-    /// 纯零），63/64/65 是「满块」的三面，119/120/127/128/129 是跨两块的同一条判据。
-    /// 少一条就漏一整类输入。这枚门跨在两道缝上：MD5/SHA1 走 `minix-crypt` 那两份的填充腿，
-    /// SHA256 走本模块那一份。
+    /// Block boundaries and the padding criterion (MD5/SHA1/SHA256, all with
+    /// 64-byte blocks): lengths 55/56/57 are the two sides of the "does it fit"
+    /// cell (at 55 the `0x80` and the length share one block; from 56 on, an
+    /// extra block of pure zeros is needed), 63/64/65 are the three sides of
+    /// "full block", and 119/120/127/128/129 repeat the same criterion across two
+    /// blocks. Dropping one row misses a whole class of input. This gate
+    /// straddles two seams: MD5/SHA1 use the padding legs of the two
+    /// `minix-crypt` copies, SHA256 uses this module's copy.
     #[test]
     fn the_three_families_match_the_reference_at_every_block_boundary() {
         for (length, expected_md5, expected_sha1, expected_sha256) in VECTORS {
@@ -996,11 +1105,15 @@ mod tests {
         }
     }
 
-    /// 新接的三族按同一套规则比对待照件的读数：`md4` 与 `sha384`/`sha512`。长度除了 64 字节块
-    /// 的边界（55/56/57、63/64/65），还加了 **128 字节块**的边界（111/112/119/120/127/128/129、
-    /// 247/248）与整块数（1024/1025、1152）——SHA-512 那族的「放不放得下」阈值是 `rem <= 111`
-    /// （块尾要让给 16 字节的比特数），与 64 字节族那条同源但数值不同；少这一组就等于
-    /// 没测那半套填充。`(长度, md4, sha384, sha512)`，输入仍是字母表循环填充。
+    /// The three newly wired families are compared against reference readings by
+    /// the same rule: `md4` and `sha384`/`sha512`. Besides the 64-byte block
+    /// boundaries (55/56/57, 63/64/65), there are **128-byte block** boundaries
+    /// (111/112/119/120/127/128/129, 247/248) and whole-block counts
+    /// (1024/1025, 1152) — the SHA-512 family's "does it fit" threshold is
+    /// `rem <= 111` (the block tail is reserved for the 16-byte bit count), same
+    /// origin as the 64-byte family's but a different number; without this set,
+    /// half the padding scheme goes untested. `(length, md4, sha384, sha512)`, the
+    /// input again a repeating alphabet.
     const VECTORS_WIDE: &[(usize, &str, &str, &str)] = &[
         (
             0,
@@ -1160,10 +1273,14 @@ mod tests {
         }
     }
 
-    /// 仓库里的 MD4 期望值只有一份，且不在 Minix 自己的测试目录里：
-    /// `minix3/crypto/external/bsd/openssl/dist/crypto/md4/md4test.c:75-94` 那七条 RSA 套件
-    /// ——输入与 `md5test-in` 那七行逐字同一串，正好让两族横向对照。参照件在出别的读数之前
-    /// 先把这七条复现了一遍（`tmp/cksum-384/gen_vectors2.py` 的第一段，七条全合）。
+    /// The repository has only one set of MD4 expectations, and it is not in
+    /// Minix's own test directory:
+    /// `minix3/crypto/external/bsd/openssl/dist/crypto/md4/md4test.c:75-94`, the
+    /// seven RSA-suite cases — their inputs are the same strings, word for word,
+    /// as the seven lines of `md5test-in`, which conveniently allows a
+    /// side-by-side comparison of the two families. The reference reproduced all
+    /// seven before producing other readings (the first section of
+    /// `tmp/cksum-384/gen_vectors2.py`, all seven matching).
     #[test]
     fn md4_matches_the_vendored_rsa_suite() {
         for (text, expected) in [
@@ -1188,9 +1305,12 @@ mod tests {
         }
     }
 
-    /// `minix3/tests/lib/libc/hash/t_sha2.c` 的两张表各取六条短的：它们钉的是**初值与截断**
-    ///（两族同一颗芯，只有那颗初值和输出宽度不同），跨块的形状由上面那张边界表钉。
-    /// `hello, world` 排在表首是因为它是 `sha2.c` 作者自己留的对照串，不在标准套件里。
+    /// Six short rows from each of `minix3/tests/lib/libc/hash/t_sha2.c`'s two
+    /// tables: they pin **initial values and truncation** (one core for both
+    /// families, differing only in that initial value and the output width);
+    /// cross-block shapes are pinned by the boundary table above. `hello, world`
+    /// leads the table because it is the author of `sha2.c`'s own comparison
+    /// string and is not part of the standard suite.
     #[test]
     fn sha384_and_sha512_match_the_in_tree_sha2_suite() {
         for (text, expected) in [
@@ -1251,9 +1371,11 @@ mod tests {
         }
     }
 
-    /// 一百万个 `a` 在新三族上的读数（参照件出，与 `sha1test2-out` 那枚同一条输入）：
-    /// `md4` 走 64 字节块、另两族走 128 字节块，一百万对两者都不是整数倍，所以这一枚钉的是
-    /// 「折叠到最后那块填充」在两种块长下都没丢状态。
+    /// Readings for one million `a`s on the three new families (from the
+    /// reference, the same input as the `sha1test2-out` case): `md4` uses
+    /// 64-byte blocks and the other two 128-byte blocks, and a million is not a
+    /// multiple of either, so this pins that "fold down to the last padding
+    /// block" loses no state at either block length.
     #[test]
     fn the_megabyte_input_covers_the_new_three_families_too() {
         let million = alloc::vec![b'a'; 1_000_000];
@@ -1268,11 +1390,14 @@ mod tests {
         );
     }
 
-    /// 最后两族的块边界读数（`md2` 与 `rmd160`）。MD2 的「块」是 32 字节、且末尾还要再折进
-    /// 16 字节校验和，所以它的边界是 15/16/17、31/32/33、47/48/49 那一组；RMD160 与 MD5 同一条
-    /// 填充规则，55/56/57 与 63/64/65 那两组照用。一张表把两种块长一起取，是因为
-    /// 「补码长度恰好等于缺的字节数」这件事在 MD2 上是 1..=16、在 64 字节族上是 1..=56——
-    /// 两个范围错一个都不报错，只会换一个摘要。
+    /// Block-boundary readings for the last two families (`md2` and `rmd160`).
+    /// MD2's "block" is 32 bytes and the 16-byte checksum is folded in at the
+    /// end, so its boundaries are the 15/16/17, 31/32/33, 47/48/49 group; RMD160
+    /// follows MD5's padding rule, so 55/56/57 and 63/64/65 apply as is. One
+    /// table takes both block lengths together because "the pad length equals
+    /// exactly the number of missing bytes" covers 1..=16 for MD2 and 1..=56 for
+    /// the 64-byte family — getting either range wrong raises no error, it just
+    /// changes the digest.
     const VECTORS_TAIL: &[(usize, &str, &str)] = &[
         (
             0,
@@ -1444,10 +1569,14 @@ mod tests {
         }
     }
 
-    /// 仓库内的 RMD160 期望值：`minix3/crypto/external/bsd/openssl/dist/crypto/ripemd/rmdtest.c:85-103`
-    /// 那八条（输入串与 MD5/MD4 的套件同源，最后一行这里是**九十**个数字字符，比 MD5 那七行的
-    /// 八十个多十个——各文件的套件本来就不完全相同，不能一把梳子推过去）。参照件在出别的读数
-    /// 之前先把这八条逐条比过（`tmp/cksum-384/gen_vectors3.py`，八条全合）。
+    /// The in-repository RMD160 expectations:
+    /// `minix3/crypto/external/bsd/openssl/dist/crypto/ripemd/rmdtest.c:85-103`,
+    /// the eight cases (the input strings come from the same source as the
+    /// MD5/MD4 suites; the last line here is **ninety** digit characters, ten
+    /// more than MD5's eighty — the suites in different files are not exactly the
+    /// same, so one comb cannot be dragged across all). The reference compared
+    /// all eight one by one before producing other readings
+    /// (`tmp/cksum-384/gen_vectors3.py`, all eight matching).
     #[test]
     fn rmd160_matches_the_vendored_suite() {
         for (text, expected) in [
@@ -1476,7 +1605,8 @@ mod tests {
         }
     }
 
-    /// 一百万个 `a` 在最后两族上的读数（同一条输入，八族全部横向可比）。
+    /// Readings for one million `a`s on the last two families (the same input, so
+    /// all eight families are horizontally comparable).
     #[test]
     fn the_megabyte_input_covers_the_last_two_families_too() {
         let million = alloc::vec![b'a'; 1_000_000];
@@ -1487,9 +1617,12 @@ mod tests {
         );
     }
 
-    /// 仓库里的期望值文件：`md5test-in` 的七行逐行去换行后对应 `md5test-out` 的七串
-    /// （长度 0/1/3/14/26/62/80 一并写在这里，因为这七行的形状正是驱动 `h_hash.c` 的读法：
-    /// 它的 `CHOMP` 只剥行尾那**一个**换行，所以被摘要的输入**不含**换行）。
+    /// The in-repository expectation files: the seven lines of `md5test-in`,
+    /// newline-stripped, correspond to the seven strings of `md5test-out`
+    /// (lengths 0/1/3/14/26/62/80 are written here as well, because the shape of
+    /// these seven lines is exactly how `h_hash.c` drives the reading: its
+    /// `CHOMP` strips only **one** trailing newline, so the hashed input does
+    /// **not** include the newline).
     #[test]
     fn md5_matches_the_in_tree_vector_file() {
         for (length, text, expected) in [
@@ -1518,10 +1651,12 @@ mod tests {
         }
     }
 
-    /// SHA1 的三条仓库内读数：`sha1test-in` 的两行（第二行是 56 个字符那一枚，正是
-    /// 填充要多补一块的那一格）与 `sha1test2-out` 那一百万个 `a`（`t_hash.sh` 用
-    /// `jot -s '' -b 'a' -n 1000000` 灌进标准输入，`regress()` 只剥掉行尾那一个换行，
-    /// 所以被摘要的是**整整一百万个 `a`**）。
+    /// Three in-repository SHA1 readings: the two lines of `sha1test-in` (the
+    /// second is the 56-character one, exactly the cell where padding needs an
+    /// extra block) and the one million `a`s of `sha1test2-out` (`t_hash.sh`
+    /// pipes `jot -s '' -b 'a' -n 1000000` into standard input, `regress()`
+    /// strips only the single trailing newline, so what is hashed is **exactly
+    /// one million `a`s**).
     #[test]
     fn sha1_matches_the_in_tree_vectors_including_the_megabyte_one() {
         assert_eq!(
@@ -1541,9 +1676,11 @@ mod tests {
         );
     }
 
-    /// MD5 与 SHA256 对同一串一百万个 `a` 的读数出自参照件（同一份 `md5c.c` 与
-    /// `sha2.c`）。这枚门钉的是「跨块折叠时状态没被重置」：一百万不是 64 的整数倍，
-    /// 最后一条 `sink` 走的是整块之后的独立填充块，与长度 64 整数倍那格同一条路。
+    /// The MD5 and SHA256 readings for the same one million `a`s come from the
+    /// reference (the same `md5c.c` and `sha2.c`). This gate pins "state is not
+    /// reset while folding across blocks": a million is not a multiple of 64, and
+    /// the last `sink` call is an independent padding block after the whole
+    /// blocks, the same path as the length-is-a-multiple-of-64 cell.
     #[test]
     fn a_megabyte_input_folds_block_after_block_without_losing_state() {
         let million = alloc::vec![b'a'; 1_000_000];
@@ -1554,9 +1691,10 @@ mod tests {
         );
     }
 
-    /// `minix3/external/bsd/bind/dist/bin/tests/hashes/t_hashes.c` 里的 56 字符那一枚：
-    /// 它是仓库内**唯一**一份 MD5 的 56 字节期望值，钉的是 `md5c.c` 第二个 16 轮组
-    /// （`GG`）与填充那块的一个交点。
+    /// The 56-character case in
+    /// `minix3/external/bsd/bind/dist/bin/tests/hashes/t_hashes.c`: it is the
+    /// repository's **only** 56-byte MD5 expectation, pinning one crossing of
+    /// `md5c.c`'s second 16-round group (`GG`) with the padding block.
     #[test]
     fn md5_matches_the_bind_test_vector_for_the_56_byte_string() {
         assert_eq!(
@@ -1567,8 +1705,8 @@ mod tests {
         );
     }
 
-    /// 排版的两条：小写、且长度是摘要字节数的两倍（C 的 `End` 给 `malloc(33)`/
-    /// `HASH_STRLEN`，即 `2 * 字节数 + 1`）。
+    /// Two rendering facts: lowercase, and the length is twice the digest bytes
+    /// (C's `End` gets `malloc(33)`/`HASH_STRLEN`, i.e. `2 * bytes + 1`).
     #[test]
     fn the_rendering_is_lowercase_and_double_width() {
         assert_eq!(hex(&[0x0a, 0xff, 0x00]), "0aff00");
@@ -1582,11 +1720,14 @@ mod tests {
         assert_eq!(Algo::Sha512.hex_digest(b"abc").len(), 128);
     }
 
-    /// 八枚全认；表外的拼法一个都不认。`ripemd160` 这个常见写法**不在** C 的表里
-    /// （`cksum.c:120-144` 只有 `rmd160`），所以它落 `None` 是判据而不是疏漏——C 对它报的是
-    /// `illegal argument to -a option`。大小写**不敏感**也是照 C 来的：它的 `case 'a'` 用
-    /// `strcasecmp`（`cksum.c:201-207`），所以 `-a md5`、`-a MD5`、`-a Md5` 在 C 里就是同一个
-    /// 入口——名字表全仓只有这一张，归一大小写的活也在这里做，没有第二道缝再归一次。
+    /// All eight are recognized; no outside spelling is. The common spelling
+    /// `ripemd160` is **not** in C's table (`cksum.c:120-144` has only `rmd160`),
+    /// so its `None` is the criterion rather than an omission — C reports
+    /// `illegal argument to -a option` for it. Case-**insensitivity** also
+    /// follows C: its `case 'a'` uses `strcasecmp` (`cksum.c:201-207`), so
+    /// `-a md5`, `-a MD5`, and `-a Md5` are the same entry in C — there is only
+    /// this one name table in the repository, and case normalization happens here
+    /// too, with no second seam normalizing again.
     #[test]
     fn all_eight_names_answer_and_no_other_spelling_does() {
         assert_eq!(
@@ -1610,7 +1751,8 @@ mod tests {
                 "{name} 的本体没接或不是摘要名，不该给出算法"
             );
         }
-        // 同一个名字的多种拼法指到同一枚算法，而 `hashname()` 交回的是表里大写那一份。
+        // Several spellings of one name point to the same algorithm, and
+        // `hashname()` returns the uppercase copy from the table.
         for spelling in ["md5", "MD5", "Md5", "sHa1", "rmd160", "RMD160"] {
             let Some(algo) = Algo::from_hashname(spelling) else {
                 panic!("{spelling} 该按 C 的 strcasecmp 认出来");

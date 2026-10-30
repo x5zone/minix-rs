@@ -1,28 +1,39 @@
 //! End-to-end face for the `comm` binary, checked against
-//! `minix3/usr.bin/comm/comm.c`（选项环 `:80-95`、操作数判 `:97-102`、
-//! `file()` 的开档支 `:177-187`、`usage()` `:195-199`、`getnextln()` `:201-215`）
-//! 与它驱动的 libc `getopt`（`minix3/lib/libc/stdlib/getopt.c:74-78`、`:81-92`、`:95-104`）。
+//! `minix3/usr.bin/comm/comm.c` (option ring `:80-95`, operand check `:97-102`,
+//! `file()`'s open branch `:177-187`, `usage()` `:195-199`, `getnextln()`
+//! `:201-215`) and the libc `getopt` it drives
+//! (`minix3/lib/libc/stdlib/getopt.c:74-78`, `:81-92`, `:95-104`).
 //!
-//! `comm.c:80` 的 optstring 是 `"123f"`：`1`/`2`/`3`/`f` 四个**无值**字母。这一条决定了
-//! 本支的可达出口只有两类——参照件 `tmp/comm-315/comm_ref`（`comm.c` 真源 + Minix 的
-//! `getopt.c` + 程序名垫片，宿主现链）逐形量出的形状是：
-//! ① 集外字母 = libc 一行 + usage 一行，退 1（`-Z`、聚簇 `-1Z` 报 `Z`、`--x` 报 `-`）；
-//! ② 操作数不是两个 = **只有 usage 一行**，退 1（少一个、多一个、`comm 档 -1 档` 那种
-//!    「选项写在操作数之后」的形都是这一类——环不重排，`-1` 是第三个档名）；
-//! ③ 打不开的档名 = `err(1, "%s", name)` 三段形、一行、**致命**：第一个档名开不了就退 1，
-//!    第二个档名连试都不试（区别于 `column`/`rev` 的 warn+继续）；
-//! ④ usage 那一行的程序名是**写死在串里**的（`comm.c:197` 没有 `getprogname()`），
-//!    而 ① 那一行的前缀跟着 `getprogname()`——同一支命令里两行的来历不同；
-//! ⑤ 裸 `-` 是合法操作数（`comm.c:181` 的 `!strcmp(name, "-")` → `stdin`），`--` 结束环
-//!    而自身不是操作数；
-//! ⑥ 末行没有换行符**照样是一条记录**（`getnextln` 只在 EOF 且一个字符都没读到时才返回
-//!    `NULL`），这一条与 `column` 的「残行当长行丢掉」正相反；
-//! ⑦ 制表符前缀**跟着真正打出来的列走**（`comm.c:105-110` 依次把 `tabs[]` 发给
-//!    打出来的列），所以 `-1` 之后公共行拿的是 `tabs[1]` 一个制表符而不是两个——
-//!    本壳旧写法按列号固定取 `tabs[column - 1]`，被这扇新门当场逮住。
+//! `comm.c:80`'s optstring is `"123f"`: `1`/`2`/`3`/`f` are four **valueless**
+//! letters. That one fact fixes the reachable exits of this face to two families — the
+//! reference build (`comm.c` as source of truth + Minix's `getopt.c` + a program-name
+//! shim, linked on the host) measured these shapes:
+//! (1) out-of-set letter = one libc line + one usage line, exit 1 (`-Z`, cluster
+//!     `-1Z` reports `Z`, `--x` reports `-`);
+//! (2) an operand count other than two = **only the usage line**, exit 1 (one too few,
+//!     one too many, and the `comm file -1 file` shape where "the option is written
+//!     after an operand" all land here — the ring does not reorder, `-1` is the third
+//!     file name);
+//! (3) an unopenable file name = the three-part `err(1, "%s", name)` form, one line,
+//!     **fatal**: the first name that fails exits 1 and the second is never tried
+//!     (unlike `column`/`rev`'s warn+continue);
+//! (4) the program name in the usage line is **hard-coded in the string**
+//!     (`comm.c:197` has no `getprogname()`), while branch (1)'s prefix follows
+//!     `getprogname()` — two lines of one command with different sources;
+//! (5) a bare `-` is a legal operand (`comm.c:181`'s `!strcmp(name, "-")` →
+//!     `stdin`), and `--` ends the ring without being an operand itself;
+//! (6) a last line without a newline **is still a record** (`getnextln` returns
+//!     `NULL` only at EOF with no character read) — the exact opposite of `column`,
+//!     which treats a residual line as a "long line" and drops it;
+//! (7) the tab prefix **follows the columns actually printed** (`comm.c:105-110`
+//!     hands out `tabs[]` to the printed columns in turn), so after `-1` a common
+//!     line gets the single tab of `tabs[1]`, not two — an earlier shell indexed
+//!     `tabs[column - 1]` by column number, which this door caught on the spot.
 //!
-//! 这扇门前不存在：`comm` 的读缝直接拿裸 `minix_sys::open`/`read`，宿主上读不到任何
-//! 操作数文件（同族第八例），三列合并的进程级行为从来没被测过。
+//! Before this door existed `comm`'s read seam went straight to bare
+//! `minix_sys::open`/`read`, so no operand file could be read on the host (the eighth
+//! instance of the same family), and the process-level three-column merge had never
+//! been tested.
 
 mod face_support;
 
@@ -32,11 +43,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const COMM: &str = env!("CARGO_BIN_EXE_comm");
-/// `comm.c:197` 那一行：程序名写死在串里。
+/// The `comm.c:197` line: the program name is hard-coded in the string.
 const USAGE: &str = "usage: comm [-123f] file1 file2\n";
 
-/// 与 `run` 同一条命令缝，但两路输出**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
-/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+/// Same command seam as `run`, but both output streams come back **byte for
+/// byte**: `from_utf8_lossy` renders a bare `c3` as the three-byte U+FFFD, so a text
+/// form cannot tell "one byte" from "two bytes" apart.
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(COMM)
         .args(args)
@@ -54,9 +66,10 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// argv 形态的**字节形**夹具：一枚裸 `ff` 写不成 `&str`，所以参数经 `OsStr::from_bytes`
-/// 交下去，比的是子进程实际收到的那串字节（文本形夹具里 `from_utf8_lossy` 会把裸 `ff`
-/// 与 `ef bf bd` 弄成同一个名字，那正是被测的那条缝）。
+/// **Byte-form** fixture for argv shapes: a bare `ff` cannot be written as `&str`, so
+/// the arguments go down through `OsStr::from_bytes` and what is compared is the byte
+/// string the child actually receives (in a text-form fixture `from_utf8_lossy` turns a
+/// bare `ff` and `ef bf bd` into the same name — precisely the seam under test).
 fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::os::unix::ffi::OsStrExt as _;
     let mut child = Command::new(COMM)
@@ -75,8 +88,10 @@ fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 按**原字节名**落一份档，并交回它的绝对路径字节（`PathBuf` 拼不了裸 `ff` 那一段）。
-/// 折叠名那份由调用处另写，两份内容相同——理由写在用它的那枚门的注释里。
+/// Write a file under its **raw byte name** and return its absolute path bytes
+/// (`PathBuf` cannot splice in a bare `ff` segment). The call site writes the folded-name
+/// copy separately with the same content — the reason sits in the comment of the door
+/// that uses it.
 fn write_raw(dir: &Path, name: &[u8], body: &[u8]) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt as _;
     fs::write(dir.join(std::ffi::OsStr::from_bytes(name)), body).expect("按原字节名落盘");
@@ -86,11 +101,13 @@ fn write_raw(dir: &Path, name: &[u8], body: &[u8]) -> Vec<u8> {
     full
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/comm-409/comm_ref` 现量 `-é` 与
-/// `-1é` 都是 `comm: unknown option -- ` + `c3` + 换行再跟那行 usage、退 1
-/// （`1` 是 `"123f"` 里的合法字母，聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`）。
-/// 这一形要**两半一起对**才成立：取法按字节 + 报文按字节写，所以本枚与库里那枚
-/// `the_unknown_letter_is_the_first_byte_not_the_first_character` 各钉一半。
+/// The letter position of the out-of-set letter line is **one raw byte**: the reference
+/// build measured `-é` and `-1é` both printing `comm: unknown option -- ` + `c3` +
+/// newline followed by the usage line, exit 1 (`1` is a legal letter in `"123f"`, so the
+/// cluster keeps scanning into the first byte of `é`; `-Zé` stops at `Z`).
+/// This shape holds only when **both halves** agree: the fetch is byte-wise and the
+/// message is written byte-wise, so this test and the library's
+/// `the_unknown_letter_is_the_first_byte_not_the_first_character` pin one half each.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_one_byte_after_the_cluster() {
     let want: Vec<u8> = [
@@ -115,19 +132,25 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_after_the_cluster() {
     );
 }
 
-/// 命令行参数那一半也按字节了（批次四百六十）：一枚裸 `ff` 走到选项环时还是那一枚字节，
-/// 字母位报的也就是它本身。参照件 `tmp/comm-409/comm`（软链名跑的，`getprogname()` 算出
-/// `comm`，与本壳同名）现量 `-\xff` 与聚簇 `-1\xff` 交回的都是 `comm: unknown option -- `
-/// 那一枚 `ff`、一个换行，再跟那行**写死的** usage、退 1（`comm.c:195-199` 的 usage
-/// 没有 `getprogname()`，所以同一支命令里两行的程序名来历不同：第一行跟着 argv[0]，
-/// 第二行是串本身）。
+/// The argv half is byte-wise too: a bare `ff` is still that one byte when it reaches
+/// the option ring, and the letter position reports it as it is. The reference build (run
+/// through a symlink named `comm`, so `getprogname()` yields `comm`, the same name as
+/// this shell) measured `-\xff` and the cluster `-1\xff` both returning
+/// `comm: unknown option -- ` + that one `ff` + a newline, then the **hard-coded** usage
+/// line, exit 1 (`comm.c:195-199`'s usage has no `getprogname()`, so the two lines of one
+/// command take their program name from different sources: the first follows argv[0], the
+/// second is the string itself).
 ///
-/// 第三形把**操作数**也带上裸字节。它对 argv 那条缝没有分辨力——折叠是幂等的，argv 先折一次
-/// 与按字节走到开档臂再折一次，得到的是同一个名字（负控 D1 就是靠这一形两侧都不红来确认这点）；
-/// 但它对开档臂的**折叠写法**有牙：把 `from_utf8_lossy` 换成 `from_utf8(...).unwrap_or("")`
-/// 时这一形当场红（负控 D4）。盘上因此**同时放两份**（原字节名与它的 `from_utf8_lossy`
-/// 折叠名，内容相同）：开档腿仍要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），只放原名时本壳必然
-/// `ENOENT` 而参照件读得到，那读数量的是开档腿不是这条缝。
+/// The third shape also carries raw bytes in the **operands**. It has no discriminating
+/// power over the argv seam — folding is idempotent, so folding once up front and folding
+/// again when the open arm is reached yield the same name (which is why a negative control
+/// can be green on both sides and still confirm this point) — but it has teeth against the
+/// open arm's **folding style**: swapping `from_utf8_lossy` for
+/// `from_utf8(...).unwrap_or("")` turns this shape red on the spot. The disk therefore
+/// holds **both copies** (the raw byte name and its `from_utf8_lossy` folded name, same
+/// content): the open leg still needs `&str`, so with only the raw name this shell would
+/// necessarily report `ENOENT` while the reference reads it, and that difference would
+/// measure the open leg, not this seam.
 #[test]
 fn comm_reports_the_raw_option_byte_before_the_hardcoded_usage_line() {
     let want: Vec<u8> = [
@@ -175,7 +198,8 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
-/// 两个已排序的操作数档（参照件用的同一对内容），返回它们的绝对路径。
+/// Two sorted operand files (the same pair of contents the reference uses); returns their
+/// absolute paths.
 fn operands(tag: &str) -> (PathBuf, String, String) {
     let dir = scratch(tag);
     let a = dir.join("a.txt");
@@ -189,7 +213,8 @@ fn operands(tag: &str) -> (PathBuf, String, String) {
     )
 }
 
-/// 集外字母：libc 那一行在前、写死的 usage 在后，退 1（旧写法少了 libc 那一行）。
+/// Out-of-set letter: the libc line first, the hard-coded usage after, exit 1 (an earlier
+/// shell dropped the libc line).
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     let (_dir, a, b) = operands("unknown");
@@ -197,19 +222,21 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     assert_eq!((out.as_str(), status), ("", 1), "stderr 是 {err:?}");
     assert_eq!(err, format!("comm: unknown option -- Z\n{USAGE}"));
 
-    // 聚簇只报第一个集外字母，前面的合法字母不改变出口。
+    // A cluster reports only the first out-of-set letter; legal letters before it do not
+    // change the exit.
     let (_, status, err) = run(&["-1Z", &a, &b], b"");
     assert_eq!(status, 1);
     assert_eq!(err, format!("comm: unknown option -- Z\n{USAGE}"));
 
-    // `--x` 报的字母是第二个连字符（optstring 里没有 `-`）。
+    // `--x` reports the second hyphen as the letter (the optstring has no `-`).
     let (_, status, err) = run(&["--x", &a, &b], b"");
     assert_eq!(status, 1);
     assert_eq!(err, format!("comm: unknown option -- -\n{USAGE}"));
 }
 
-/// 操作数不是两个 = **只有一行 usage**：libc 那一行没有，`err` 那一行也没有。
-/// 「选项写在操作数之后」同样算三个操作数——环不重排。
+/// An operand count other than two = **only the usage line**: no libc line, and no `err`
+/// line either. "The option written after an operand" also counts as three operands — the
+/// ring does not reorder.
 #[test]
 fn an_operand_count_other_than_two_is_the_usage_line_only() {
     let (_dir, a, b) = operands("count");
@@ -228,7 +255,8 @@ fn an_operand_count_other_than_two_is_the_usage_line_only() {
     }
 }
 
-/// 三列合并的缺省形制：列一无前缀、列二一个制表符、列三两个（`comm.c:56` 的 `tabs[]`）。
+/// The default three-column merge: column one has no prefix, column two one tab, column
+/// three two (`comm.c:56`'s `tabs[]`).
 #[test]
 fn the_default_merge_writes_three_columns_with_tab_offsets() {
     let (_dir, a, b) = operands("merge");
@@ -238,8 +266,9 @@ fn the_default_merge_writes_three_columns_with_tab_offsets() {
     assert_eq!(out, "apple\n\t\tbanana\ncherry\n\tdate\n\tfig\n");
 }
 
-/// `-1`/`-2`/`-3` 各自压掉一列，**且列前缀跟着重排**：`-1` 之后原来的列二变成
-/// 无前缀那一列（`comm.c:105-110` 只给「打出来的列」依次配 `tabs` 的偏移）。
+/// `-1`/`-2`/`-3` each drop one column, **and the column prefixes shift with them**: after
+/// `-1` the former column two becomes the unprefixed one (`comm.c:105-110` assigns `tabs`
+/// offsets to the printed columns in turn).
 #[test]
 fn each_suppression_flag_drops_its_column_and_retitles_the_rest() {
     let (_dir, a, b) = operands("suppress");
@@ -249,16 +278,18 @@ fn each_suppression_flag_drops_its_column_and_retitles_the_rest() {
     assert_eq!(out, "apple\n\tbanana\ncherry\n");
     let (out, _, _) = run(&["-3", &a, &b], b"");
     assert_eq!(out, "apple\ncherry\n\tdate\n\tfig\n");
-    // 聚簇逐字母生效：`-12` 只剩公共列，且它拿的是 `tabs[0]`（无前缀）。
+    // A cluster takes effect letter by letter: `-12` leaves only the common column, and it
+    // gets `tabs[0]` (no prefix).
     let (out, _, _) = run(&["-12", &a, &b], b"");
     assert_eq!(out, "banana\n");
-    // 三列全压掉就什么都不打，退码仍是 0。
+    // Suppressing all three columns prints nothing, and the exit code is still 0.
     let (out, status, err) = run(&["-123", &a, &b], b"");
     assert_eq!((out.as_str(), status, err.as_str()), ("", 0, ""));
 }
 
-/// `-f` 把比较换成 `strcasecmp`（`comm.c:88-89`）：同一对档不折叠时没有公共行，
-/// 折叠后 `Apple`/`banana` 这类配对才成立。
+/// `-f` switches the comparison to `strcasecmp` (`comm.c:88-89`): the same file pair
+/// yields no common lines without folding, while `Apple`/`banana`-style pairs match once
+/// folded.
 #[test]
 fn the_fold_flag_compares_case_insensitively() {
     let dir = scratch("fold");
@@ -272,20 +303,22 @@ fn the_fold_flag_compares_case_insensitively() {
         ("Apple\n\t\tBANANA\nCherry\n\tdate\n\tfig\n", 0)
     );
     assert_eq!(err, "");
-    // 不折叠时同一对档按字节序走：大写全排在 `banana` 之前，所以三条都在列一，
-    // 然后第一边见底、第二边整段落在列二（参照件现量正是这一形）。
+    // Without folding the same pair follows byte order: all upper-case lines sort before
+    // `banana`, so all three land in column one, then the first side runs out and the whole
+    // second side goes to column two (the reference reads exactly this).
     let (plain, status, _) = run(&[up.to_str().unwrap(), b.to_str().unwrap()], b"");
     assert_eq!(status, 0);
     assert_eq!(plain, "Apple\nBANANA\nCherry\n\tbanana\n\tdate\n\tfig\n");
 }
 
-/// 裸 `-` 是**合法操作数**并就是标准输入（`comm.c:181`）；`--` 结束环而自身不是操作数，
-/// 它后面的 `-1` 是字面档名。
+/// A bare `-` is a **legal operand** meaning standard input (`comm.c:181`); `--` ends the
+/// ring and is not an operand itself, so a `-1` after it is a literal file name.
 #[test]
 fn a_dash_names_stdin_and_the_double_dash_ends_the_ring() {
     let (_dir, a, _b) = operands("dash");
-    // 第一操作数是 `-`：标准输入那一份与档里那一份并排走。第一边先见底，**剩下的
-    // 是第二边的行，落在列二**（参照件现量 `\t\tapple`、`\t\tbanana`、`\tcherry`）。
+    // First operand is `-`: the standard-input copy and the file copy run side by side. The
+    // first side runs out first, so **the remaining lines are the second side's and go to
+    // column two** (the reference reads `\t\tapple`, `\t\tbanana`, `\tcherry`).
     let (out, status, err) = run(&["-", &a], b"apple\nbanana\n");
     assert_eq!(
         (out.as_str(), status),
@@ -293,7 +326,8 @@ fn a_dash_names_stdin_and_the_double_dash_ends_the_ring() {
     );
     assert_eq!(err, "");
 
-    // 第二操作数开不了 = err(1) 三段形、一行、致命（不接 usage）。
+    // A second operand that cannot be opened = the three-part err(1) form, one line, fatal
+    // (no usage).
     let (out, status, err) = run(&["-", "/nonexistent-second"], b"apple\n");
     assert_eq!((out.as_str(), status), ("", 1));
     assert_eq!(
@@ -309,14 +343,17 @@ fn a_dash_names_stdin_and_the_double_dash_ends_the_ring() {
     let (out, status, err) = run(&["--", one.to_str().unwrap(), two.to_str().unwrap()], b"");
     assert_eq!((out.as_str(), status), ("alpha\n\t\tbeta\n\tgamma\n", 0));
     assert_eq!(err, "");
-    // `--` 之后的 `-1` 不当旗标：两个都是字面档名，第一个就开不了 → 致命。
+    // A `-1` after `--` is not a flag: both are literal file names, and the first cannot be
+    // opened → fatal.
     let (_, status, err) = run(&["--", "-1", "-2"], b"");
     assert_eq!(status, 1);
     assert_eq!(err, "comm: -1: No such file or directory\n");
 }
 
-/// 打不开的档名是 `err(1, "%s", name)` 三段形而且**致命**：第一个档名失败时第二个
-/// 连试都不试（参照件两支都只印一行、退 1）；第二个失败时第一个已成功读入。
+/// An unopenable file name is the three-part `err(1, "%s", name)` form and **fatal**: when
+/// the first name fails the second is never tried (the reference prints one line and exits
+/// 1 in both branches); when the second fails, the first has already been read
+/// successfully.
 #[test]
 fn an_unopenable_operand_is_fatal_and_prints_one_three_part_line() {
     let (_dir, a, b) = operands("fatal");
@@ -332,8 +369,9 @@ fn an_unopenable_operand_is_fatal_and_prints_one_three_part_line() {
     assert_eq!(err, "comm: no-such-file: No such file or directory\n");
 }
 
-/// 末行没有换行符**照样是一条记录**（`getnextln` 只在「EOF 且一个字符都没读到」时才
-/// 返回 `NULL`）——这一条与 `column` 正相反，那边把残行当「长行」丢掉并警告。
+/// A last line without a newline **is still a record** (`getnextln` returns `NULL` only at
+/// "EOF with no character read") — the opposite of `column`, which treats a residual line as
+/// a "long line", drops it and warns.
 #[test]
 fn an_unterminated_last_line_is_still_a_record() {
     let dir = scratch("tail");
@@ -347,7 +385,8 @@ fn an_unterminated_last_line_is_still_a_record() {
     assert_eq!(out, "\t\tapple\n\t\tbanana\n\t\tcherry\n");
 }
 
-/// 空档是合法的第二个输入：另一边的行整个落在自己那列里，两句都空则什么都没有。
+/// An empty file is a legal second input: the other side's lines all land in their own
+/// column, and when both are empty nothing is printed.
 #[test]
 fn an_empty_operand_drains_the_other_side_into_its_own_column() {
     let dir = scratch("empty");
@@ -362,10 +401,11 @@ fn an_empty_operand_drains_the_other_side_into_its_own_column() {
     assert_eq!((out.as_str(), status, err.as_str()), ("", 0, ""));
 }
 
-/// 两腿一起按字节：① 非 UTF-8 的行照样是记录、逐字节打回（C 的 `getnextln` 逐 `getc`
-/// 读，`comm.c:204-215`）；② `-f` 的折叠是逐字节的 ctype 表，`c3 89`（É）与 `c3 a9`（é）
-/// **不**相等（`strcasecmp` `minix3/common/lib/libc/string/strcasecmp.c:58-67`）。
-/// 期望逐形取自参照件 `tmp/comm-409/comm_ref` 的现量读数（`tmp/paste-comm-434/ab.log`）。
+/// Both legs byte-wise: (1) a non-UTF-8 line is still a record and is printed back byte for
+/// byte (C's `getnextln` reads with `getc`, `comm.c:204-215`); (2) `-f`'s folding is a
+/// per-byte ctype table, so `c3 89` (É) and `c3 a9` (é) are **not** equal (`strcasecmp`
+/// `minix3/common/lib/libc/string/strcasecmp.c:58-67`).
+/// Every expected value is taken from the reference build's measured output.
 #[test]
 fn a_nonutf8_line_is_a_record_and_the_fold_is_per_byte() {
     let dir = scratch("nonutf8");
@@ -385,15 +425,17 @@ fn a_nonutf8_line_is_a_record_and_the_fold_is_per_byte() {
         "共有的那一行带 ff，两半都该留住"
     );
 
-    // 不折叠：按字节序，`c3 89` 与 `c3 a9` 在第二位分开 ⇒ 各落自己那一列
+    // No folding: in byte order `c3 89` and `c3 a9` differ in the second byte ⇒ each goes to
+    // its own column
     let (out, status, err) = run_bytes(&[upper.to_str().unwrap(), lower.to_str().unwrap()], b"");
     assert_eq!((status, err), (0, Vec::new()));
     assert_eq!(out, b"\xc3\x89\nApple\n\t\xc3\xa9\n\tapple\n");
 
-    // `-f` 之后**形状不变**：C 的 ctype 表只折 `A`–`Z`，非 ASCII 字节原样返回，
-    // 而 ASCII 那一对 `Apple`/`apple` 折完相同、照旧落列一（因为 `A` < `c3`）。
-    // 旧写法经 `str::to_lowercase` 把 É/é 折成同一个字符，这两行被判成公共行落列三，
-    // 现量见 `tmp/paste-comm-434/ab.log` 的「comm -f」一行。
+    // After `-f` the **shape does not change**: C's ctype table folds only `A`–`Z` and
+    // returns non-ASCII bytes as they are, while the ASCII pair `Apple`/`apple` folds equal
+    // and still lands in column one (because `A` < `c3`). An earlier shell folded É/é into
+    // the same character via `str::to_lowercase`, so the two lines were judged a common line
+    // and went to column three.
     let (out, status, err) = run_bytes(
         &["-f", upper.to_str().unwrap(), lower.to_str().unwrap()],
         b"",

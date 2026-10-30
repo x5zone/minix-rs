@@ -42,7 +42,7 @@ pub fn new_service<B: LineBackend>(backend: B) -> TtyService<B> {
 }
 
 /// Service initialization entry (x86_64): the wired line table over the
-/// COM1 serial output face (OQ-N3 裁决方案 B — /dev/console drains to the
+/// COM1 serial output face (/dev/console drains to the
 /// UART through kernel-mediated SYS_DEVIO; the video-text backend stays
 /// registered until a display-visible acceptance harness exists).
 #[cfg(target_arch = "x86_64")]
@@ -51,7 +51,7 @@ pub fn init() -> TtyService<serial::SerialBackend<serial::WireUart>> {
 }
 
 /// Service initialization entry (aarch64): the wired line table over the
-/// QEMU-`virt` PL011 console UART (NK4-C 续-132 — the 16550/COM1 lane has
+/// QEMU-`virt` PL011 console UART (the 16550/COM1 lane has
 /// no aarch64 equivalent; the PL011 page is mapped into this driver via
 /// `VM_MAP_PHYS` at startup and driven with volatile register accesses,
 /// the C ARM-board serial model). A failed device map fail-fasts the
@@ -64,7 +64,7 @@ pub fn init() -> TtyService<serial::Pl011Backend<serial::WirePl011>> {
 }
 
 /// Service initialization entry (riscv64): the wired line table over the
-/// QEMU-`virt` NS16550A console UART (NK4-C 续-132 — register model is
+/// QEMU-`virt` NS16550A console UART (register model is
 /// the 16550 family the x86 arm already serves; the access lane is the
 /// mapped MMIO page from `VM_MAP_PHYS`, base 0 so `port` operands carry
 /// the register offset). A failed device map fail-fasts the driver.

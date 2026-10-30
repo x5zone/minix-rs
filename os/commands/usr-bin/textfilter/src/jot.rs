@@ -3,8 +3,8 @@
 //! Deciding half: option derivation (the right-to-left positional
 //! arguments), format selection and value rendering. The RNG is
 //! injected so `-r` is testable without libc's random(3); the exact
-//! NetBSD random() bit stream is not reproduced (registered in 07
-//! §4.4 as a remaining corner).
+//! NetBSD random() bit stream is not reproduced (registered as a
+//! remaining corner in `rewrite-notes/18-stage-commands/07-text-filter.md`).
 use crate::floatfmt::{decimal_exponent, floor, pow10};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -27,21 +27,24 @@ pub const HAVE_ENDER: u8 = 8;
 #[derive(Debug, PartialEq)]
 pub enum JotError {
     BadPrecision,
-    /// `jot.c:215-216`：`Bad reps value:  %s`（两个空格），带的是 reps 操作数的**原字节**。
+    /// `jot.c:215-216`: `Bad reps value:  %s` (two spaces); the value is the
+    /// **raw bytes** of the reps operand.
     BadReps(Vec<u8>),
-    /// `jot.c:189-190`：`Bad step value:  %s`（两个空格），同样是原字节。
+    /// `jot.c:189-190`: `Bad step value:  %s` (two spaces), also raw bytes.
     BadStep(Vec<u8>),
-    /// `jot.c:385`、`:396`：`unknown or invalid format \`%s'` 带的是**整个 format 词**——
-    /// 包括 `:360` 那句 `strcat(format, "%")` 之后多出来的那一枚百分号，所以回显的是
-    /// 校验时那份 `format`，不是用户敲进来的原始子串。
+    /// `jot.c:385`, `:396`: `unknown or invalid format \`%s'` carries the
+    /// **whole format word** — including the extra percent sign appended by
+    /// `strcat(format, "%")` at `:360`, so what is echoed is the `format` as
+    /// validated, not the original substring the user typed.
     InvalidFormat(Vec<u8>),
-    /// `jot.c:376-377`：`cannot convert numeric data to strings` 是固定句，C 在这一支不带值。
+    /// `jot.c:376-377`: `cannot convert numeric data to strings` is a fixed
+    /// sentence; C carries no value on this arm.
     FormatWantsString,
     ImpossibleStepsize,
     MustSpecifyBegin,
     InfiniteUnbounded,
-    /// `jot.c:223-225`：`Too many arguments.  What do you mean by %s?` 报的是**第五个**
-    /// 操作数（`argv[4]`），原字节。
+    /// `jot.c:223-225`: `Too many arguments.  What do you mean by %s?` reports
+    /// the **fifth** operand (`argv[4]`), raw bytes.
     TooManyArgs(Vec<u8>),
 }
 
@@ -118,10 +121,11 @@ pub struct JotOptions {
     pub step: f64,
     /// Explicit `-p` precision; `None` until inferred from the operands.
     pub prec: Option<usize>,
-    /// `-s` 的值：条目之间打出去的**原字节**（`jot.c:169-170` 存 `sepstring`，
-    /// `:310` 的 `fputs(sepstring, stdout)` 原样写出）。缺省是一枚换行。
+    /// The `-s` value: the **raw bytes** printed between items (`jot.c:169-170`
+    /// stores `sepstring`, `:310` writes it out verbatim with
+    /// `fputs(sepstring, stdout)`). Defaults to a single newline.
     pub sep: Vec<u8>,
-    /// `-b`/`-w` 共用的那一个槽（`jot.c:173-176` 的落穿）：原字节。
+    /// The one slot shared by `-b`/`-w` (`jot.c:173-176` fallthrough): raw bytes.
     pub word: Vec<u8>,
     pub boring: bool,
     pub chardata: bool,
@@ -165,54 +169,71 @@ pub fn get_prec(num_str: &[u8]) -> usize {
 
 /// Applies a non-numeric operand the way the C does: it falls back to
 /// the last **byte** (`begin = argv[i][strlen(argv[i]) - 1]`, `jot.c:196`/`:204`).
-/// 交回 `None` 表示那一格保持缺省——只有空操作数走这一支，理由见函数体内的注释。
+/// Returning `None` means that cell keeps its default — only an empty operand
+/// takes this arm, for the reason given in the comment inside the function.
 pub fn operand_to_number(s: &[u8]) -> Option<f64> {
     match parse_float_prefix_bytes(s) {
         Some((v, _)) => Some(v),
-        // `jot.c:196`/`:204` 取的是 `argv[i][strlen(argv[i]) - 1]`——最后一个**字节**，
-        // 不是最后一个字符：参照件对 `-c 3 1 <ff>` 现量第三个值是那一枚 `ff` 本身，
-        // 而 `-c 3 1 ab` 取的是 `b`。空操作数在 C 是把下标算成 `-1` 的越界读，值取决于
-        // 那块内存前面是什么；本层不复制未定义行为，按宿主参照件的现量（`jot 3 '' 5`
-        // 交回 `1 3 5`，即那一格保持缺省）留缺省，登记 `JOT-EMPTY-OPERAND-READS-OOB`。
+        // `jot.c:196`/`:204` takes `argv[i][strlen(argv[i]) - 1]` — the last
+        // **byte**, not the last character: against the reference binary,
+        // `-c 3 1 <ff>` measures the third value as that `ff` itself, while
+        // `-c 3 1 ab` takes `b`. For an empty operand C computes index `-1`,
+        // an out-of-bounds read whose value depends on whatever precedes that
+        // memory; this layer does not copy undefined behavior and instead
+        // keeps the default, matching the host reference binary's measurement
+        // (`jot 3 '' 5` returns `1 3 5`, i.e. that cell keeps its default).
         None if s.is_empty() => None,
-        // 那枚字节要先经 **signed char** 落地：`jot.c:196`/`:204` 的赋值目标是 `char`，
-        // 而 x86 的 `char` 带符号，所以 `\xff` 是 -1 而不是 255。三形现量：
-        // `jot 3 \xff 5` → `-1 2 5`（begin 取 -1，步长 (5-(-1))/2 = 3）、
-        // `jot 3 1 \xff` → `1 0 -1`、`jot -c 3 1 \xff` → 字节 `01 00 ff`；
-        // 按无符号读会把 ender 算成 255，中间那格从 0 变成 128（参照件同形现量差一枚）。
+        // That byte lands through a **signed char**: the assignment target at
+        // `jot.c:196`/`:204` is `char`, and x86 `char` is signed, so `\xff` is
+        // -1 rather than 255. Three measured shapes: `jot 3 \xff 5` →
+        // `-1 2 5` (begin -1, step (5-(-1))/2 = 3), `jot 3 1 \xff` →
+        // `1 0 -1`, and `jot -c 3 1 \xff` → bytes `01 00 ff`. Reading it as
+        // unsigned would make ender 255 and turn the middle cell from 0 into
+        // 128 (one byte off from the reference binary's measurement).
         None => Some(f64::from(*s.last().expect("上面已排除空串") as i8)),
     }
 }
 
-/// 选项环的出口：两类由 libc `getopt` 印，一类由 `jot.c` 自己的 `errx` 印。
+/// Exits from the option ring: two kinds printed by libc `getopt`, one printed
+/// by `jot.c`'s own `errx`.
 #[derive(Debug, PartialEq)]
 pub enum JotArgError {
-    /// 集外字母或缺值字母。libc 先印一行，`jot.c:151-152` 的 `default: usage()` 紧接一行。
+    /// An unknown letter or a value-taking letter without its value. libc
+    /// prints one line; `jot.c:151-152`'s `default: usage()` follows with one
+    /// more line.
     Getopt(crate::GetoptReport),
-    /// `jot.c:161-165`：一句 `errx(EXIT_FAILURE, "Bad precision value")`，
-    /// 只有这一行、不接 usage。
+    /// `jot.c:161-165`: a single `errx(EXIT_FAILURE, "Bad precision value")`
+    /// — only that line, no usage afterwards.
     BadPrecision,
 }
 
-/// 选项环的产物：已定的旗标与**按原序**交回的操作数。
+/// The option ring's product: settled flags plus the operands **in original
+/// order**.
 pub struct JotArgs<'a> {
     pub options: JotOptions,
     pub operands: Vec<&'a [u8]>,
 }
 
-/// `jot.c:150` 那句 `getopt(argc, argv, "b:cnp:rs:w:")` 的选项环。
+/// The option ring of the `getopt(argc, argv, "b:cnp:rs:w:")` call at
+/// `jot.c:150`.
 ///
-/// optstring 里 `b`、`p`、`s`、`w` 四个字母带值，`c`、`n`、`r` 三个不带值，
-/// 所以可达的出口是四类而不是一类：①集外字母、②带值字母缺值（各由 libc 先印一行，
-/// C 那边再补 usage 一行）、③`-p` 的值过不了 `strtol` 判定（`errx` 单独一行、不接
-/// usage）、④环正常结束。`-b` 与 `-w` 落进**同一个** `format` 槽位
-/// （`jot.c:172-176` 的 `case 'b': boring = 1; /* FALLTHROUGH */ case 'w':`），
-/// 所以后写的那个词覆盖先写的，而 `boring` 一旦置起就不再落下。
+/// In the optstring, `b`, `p`, `s`, `w` take values while `c`, `n`, `r` do
+/// not, so the reachable exits form four classes rather than one: (1) an
+/// unknown letter, (2) a value-taking letter without a value (each first gets
+/// a libc line, then C adds the usage line), (3) a `-p` value that fails the
+/// `strtol` test (`errx`, one line of its own, no usage), (4) the ring ending
+/// normally. `-b` and `-w` land in the **same** `format` slot
+/// (`jot.c:172-176`'s `case 'b': boring = 1; /* FALLTHROUGH */ case 'w':`),
+/// so the later word overrides the earlier one, while `boring` stays set once
+/// it is raised.
 ///
-/// 环不重排：第一个非选项 token 一到，`getopt.c:74-78` 当场返回 -1 且不推进 `optind`，
-/// 于是它自己就是第一个操作数（参照件现量：`jot 3 -Z` 里 `-Z` 是 begin 而不是选项）。
-/// 裸 `-` 同理留在操作数里，而 `jot.c:66` 的 `is_default(s)` 把它当成「这一格用默认值」，
-/// 与同族其它命令里「`-` 是标准输入」的读法无关。
+/// The ring does not permute: as soon as the first non-option token arrives,
+/// `getopt.c:74-78` returns -1 on the spot without advancing `optind`, so that
+/// token is itself the first operand (measured against the reference binary:
+/// in `jot 3 -Z`, `-Z` is begin rather than an option). A bare `-` likewise
+/// stays among the operands, and `jot.c:66`'s `is_default(s)` reads it as
+/// "use the default for this cell", unrelated to the "`-` is standard input"
+/// reading of sibling commands.
 pub fn parse_jot_args<'a>(args: &'a [&'a [u8]]) -> Result<JotArgs<'a>, JotArgError> {
     let mut options = JotOptions::default();
     let mut index = 0usize;
@@ -222,11 +243,13 @@ pub fn parse_jot_args<'a>(args: &'a [&'a [u8]]) -> Result<JotArgs<'a>, JotArgErr
         };
         let bytes = arg;
         if arg == b"--" {
-            // `getopt.c:81-85`：`++optind` 之后才返回 -1，所以 `--` 自身不是操作数。
+            // `getopt.c:81-85`: -1 is returned only after `++optind`, so `--`
+            // itself is not an operand.
             break args[index + 1..].to_vec();
         }
         if bytes.len() < 2 || bytes[0] != b'-' {
-            // `getopt.c:74-78`：非选项 token 一到就结束，不推进 `optind`。
+            // `getopt.c:74-78`: a non-option token ends the ring without
+            // advancing `optind`.
             break args[index..].to_vec();
         }
         let mut pos = 1usize;
@@ -236,8 +259,10 @@ pub fn parse_jot_args<'a>(args: &'a [&'a [u8]]) -> Result<JotArgs<'a>, JotArgErr
                 b'n' => options.nofinalnl = true,
                 b'r' => options.randomize = true,
                 ch @ (b'b' | b'p' | b's' | b'w') => {
-                    // 值是「本串去掉 `-` 与字母之后的那一段」，没有剩余就取下一个 token
-                    // （`getopt.c:118-141`）；两种取法都把本串吃到尽头。
+                    // The value is "the rest of this token after the dash and
+                    // the letter", or the next token when nothing is left
+                    // (`getopt.c:118-141`); both forms consume this token to
+                    // the end.
                     let value = if pos + 1 < bytes.len() {
                         &bytes[pos + 1..]
                     } else {
@@ -270,9 +295,11 @@ pub fn parse_jot_args<'a>(args: &'a [&'a [u8]]) -> Result<JotArgs<'a>, JotArgErr
                     pos = bytes.len();
                 }
                 _ => {
-                    // 报的是**这一处的第一个字节**：C 的 `optopt` 是 `char`，`%c` 打的就是
-                    // 那一个字节。游标 `pos` 是字节下标，非 ASCII 字母时它会落进多字节字符
-                    // 中间，所以这里按字节取而不切字符串（切串当场 panic）。
+                    // What is reported is **the first byte at this spot**: C's
+                    // `optopt` is a `char`, and `%c` prints that one byte. The
+                    // cursor `pos` is a byte index, and for a non-ASCII letter
+                    // it lands inside a multi-byte character, so take a byte
+                    // here rather than slicing a string (slicing would panic).
                     return Err(JotArgError::Getopt(crate::GetoptReport::UnknownOption(
                         char::from(bytes[pos]),
                     )));
@@ -285,16 +312,21 @@ pub fn parse_jot_args<'a>(args: &'a [&'a [u8]]) -> Result<JotArgs<'a>, JotArgErr
     Ok(JotArgs { options, operands })
 }
 
-/// C 那句 `strtol(optarg, &ep, 0)` 配上 `*ep != 0 || prec < 0` 的合并判定
-/// （`jot.c:161-165`）。四个后果都由它来：
-/// ①base 0 认前导空白与 `+`/`-` 号，`0x` 走十六进、前导 `0` 走八进，所以 `-p 0x2`
-/// 是合法的 2（参照件现量：打出 `1.00 2.00 3.00`）；
-/// ②尾巴上一个字符都不许剩，所以 `3x` 与 `09`（八进吃到 `0` 就停）都拒；
-/// ③一个数字也没转出来时 `strtol` 把 `ep` 留在原起点，故只有空串算合法（值 0，
-/// 参照件现量：`jot -p '' 3` 打整数形），纯空白或单独的 `-` 都拒；
-/// ④值先饱和到 `long` 的边界，再像 C 那样截成 `int` 参与判定——`99999999999999999999`
-/// 截成 `-1` 因而被拒，`4294967298` 截成 `2` 因而被接受。三块目标板与宿主都是 64 位
-/// `long`，这个截断形状在四处一致。
+/// C's `strtol(optarg, &ep, 0)` combined with the `*ep != 0 || prec < 0`
+/// check (`jot.c:161-165`). Four consequences follow from it:
+/// (1) base 0 accepts leading whitespace and a `+`/`-` sign, `0x` selects hex
+/// and a leading `0` octal, so `-p 0x2` is a legal 2 (measured against the
+/// reference binary: prints `1.00 2.00 3.00`);
+/// (2) not a single character may remain at the tail, so both `3x` and `09`
+/// (octal stops after the `0`) are rejected;
+/// (3) when no digit converts, `strtol` leaves `ep` at the starting point, so
+/// only the empty string is legal (value 0; measured: `jot -p '' 3` prints the
+/// integer form), while pure whitespace or a lone `-` are rejected;
+/// (4) the value saturates at `long` first, then truncates to `int` for the
+/// check exactly as C does — `99999999999999999999` truncates to `-1` and is
+/// therefore rejected, `4294967298` truncates to `2` and is accepted. All three
+/// target boards and the host use 64-bit `long`, so this truncation shape is
+/// identical in all four.
 #[must_use]
 pub fn parse_precision(value: &[u8]) -> Option<usize> {
     const LONG_MAX: i128 = i64::MAX as i128;
@@ -337,7 +369,8 @@ pub fn parse_precision(value: &[u8]) -> Option<usize> {
         pos += 1;
     }
     if !converted {
-        // `ep` 停在原起点：只有整串本来就空时 `*ep` 才是 `\0`。
+        // `ep` stays at the starting point: `*ep` is `\0` only when the whole
+        // string was empty to begin with.
         return if value.is_empty() { Some(0) } else { None };
     }
     if pos != bytes.len() {
@@ -353,9 +386,10 @@ pub fn parse_precision(value: &[u8]) -> Option<usize> {
 
 /// Parses `reps`: strtoul semantics with a full-parse check.
 pub fn parse_reps(s: &[u8]) -> Result<i64, JotError> {
-    // `strtoul` 跳的是 `isspace` 那六枚字节，不是 Unicode 的空白类：非 ASCII 空白
-    // （`c2 a0`）在 C 里不是空白，于是「一个数字也没转出来」→ 报 Bad reps。按字节走
-    // 之后这条边界是自动的，按 `str::trim_start` 走则会把 `c2 a0` 当空白跳掉而接受它。
+    // `strtoul` skips the six `isspace` bytes, not Unicode whitespace classes:
+    // non-ASCII whitespace (`c2 a0`) is not whitespace in C, so "no digit
+    // converted" → Bad reps. Working byte-wise makes that boundary automatic;
+    // `str::trim_start` would skip `c2 a0` and wrongly accept it.
     let mut at = 0usize;
     while matches!(s.get(at), Some(b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')) {
         at += 1;
@@ -367,10 +401,12 @@ pub fn parse_reps(s: &[u8]) -> Result<i64, JotError> {
         .take_while(|byte| byte.is_ascii_digit())
         .collect();
     if t.is_empty() {
-        // `strtoul("")` 一个数字也没转、把 `ep` 留在起点，于是 `*ep == '\0'` 成立，
-        // 值是 0 而**不报错**（与 `parse_precision` 那条同一个道理）。参照件现量
-        // `jot '' 1 2` 报的是 `Infinite sequences cannot be bounded`（reps 为 0 就是无界，
-        // `jot.c:272-275`），而不是那句 Bad reps。
+        // `strtoul("")` converts no digit and leaves `ep` at the start, so
+        // `*ep == '\0'` holds and the value is 0 **without an error** (the
+        // same reasoning as the `parse_precision` case). Measured against the
+        // reference binary, `jot '' 1 2` reports `Infinite sequences cannot be
+        // bounded` (reps 0 means unbounded, `jot.c:272-275`), not the Bad reps
+        // sentence.
         return Ok(0);
     }
     if digits.is_empty() || digits.len() != t.len() {
@@ -389,13 +425,17 @@ pub fn parse_step(s: &[u8]) -> Result<f64, JotError> {
     }
 }
 
-/// `jot.c:118` 的 `srandom((unsigned long) step)`：先按 C 的规则把 `double` **向零截断**，
-/// 再在负数变无符号那一步**回绕**。所以 `-0.5` 与 `0` 是同一个种子（截成 0），
-/// `-5.9` 与 `-5` 也是同一个（先截成 -5 再回绕）。
+/// `jot.c:118`'s `srandom((unsigned long) step)`: truncate the `double`
+/// **toward zero** by C rules, then **wrap** at the negative-to-unsigned step.
+/// So `-0.5` and `0` are the same seed (both truncate to 0), and `-5.9` and
+/// `-5` are also the same (truncate to -5, then wrap).
 ///
-/// C 的 `unsigned long` 在 Minix 的 ILP32 上只有 32 位，本层的随机流由 `Lcg` 承载、
-/// 拿 64 位种子；两边回绕的**位宽**不同，但流的数值本就不是 libc `random()`（登记在
-/// 07 篇 §4.4），可观察的是截断方向与「负数合法」这两点，函数按这两点定形。
+/// C's `unsigned long` is only 32 bits on Minix's ILP32, while this layer's
+/// random stream is carried by `Lcg` with a 64-bit seed; the two differ in
+/// **wrapping width**, but the stream values were never libc `random()` anyway
+/// (registered in `rewrite-notes/18-stage-commands/07-text-filter.md`). What is
+/// observable is the truncation direction and "negatives are legal", and the
+/// function is shaped by those two points.
 #[must_use]
 pub fn seed_from_step(step: f64) -> u64 {
     (step as i64) as u64
@@ -425,17 +465,24 @@ pub fn get_format(options: &JotOptions) -> Result<(Format, bool), JotError> {
     }
     match at {
         None => {
-            // C 在这里用的是**未经钳位**的 prec：`jot.c:229-230` 的
-            // `if (prec == -1) prec = 0;` 排在 `getformat()` **之后**，所以拼说明符那一步
-            // 它还是 -1。壳侧的 `None` 就是那个 -1，而 `Some(0)` 是另一回事——
-            // 后者对应 C 的 `prec == 0`，走整数支（`%ld`，`(long)floor(x)`，`jot.c:306`）。
+            // C uses the **unclamped** prec here: `jot.c:229-230`'s
+            // `if (prec == -1) prec = 0;` comes **after** `getformat()`, so at
+            // the point where the specifier is assembled it is still -1. The
+            // shell-side `None` is that -1, while `Some(0)` is a different
+            // thing — it corresponds to C's `prec == 0` and takes the integer
+            // arm (`%ld`, `(long)floor(x)`, `jot.c:306`).
             //
-            // -1 那一支 C 拼出 `%.-1f`（`jot.c:356` 的 `"%%.%df"`）。这个说明符在 Minix 上
-            // 不是坏的：libc 是 NetBSD 血脉，`minix3/lib/libc/stdio/vsnprintf_ss.c:213-226`
-            // 的 `case '.'` 在 `.` 后遇到非数字时把 `n` 留在 0，于是 `prec = 0`，再 `goto reswitch`
-            // 把剩下的 `-` 当左调旗标、`1` 当字段宽、`f` 当转换字符。等价于 `%-1.0f`——
-            // **四舍五入**，不是取整。宿主 glibc 对同一串打回字面量 `%.0-1f`，那是参照件
-            // 所链 libc 的行为，不是 Minix 的真值，所以这一形不能拿宿主参照件定判据。
+            // On the -1 arm C assembles `%.-1f` (`jot.c:356`'s `"%%.%df"`).
+            // That specifier is not broken on Minix: the libc descends from
+            // NetBSD, and `minix3/lib/libc/stdio/vsnprintf_ss.c:213-226`'s
+            // `case '.'` leaves `n` at 0 when it meets a non-digit after the
+            // `.`, so `prec = 0`, then `goto reswitch` reads the remaining `-`
+            // as the left-adjust flag, `1` as the field width and `f` as the
+            // conversion. That is equivalent to `%-1.0f` — **rounding**, not
+            // truncation. Host glibc answers the same string with the literal
+            // `%.0-1f`; that is the behavior of the libc the reference binary
+            // links against, not Minix ground truth, so this shape cannot be
+            // pinned against the host reference binary.
             if options.chardata || options.prec == Some(0) {
                 let kind: &[u8] = if options.chardata { b"c" } else { b"ld" };
                 let mut full = word.clone();
@@ -474,9 +521,12 @@ pub fn get_format(options: &JotOptions) -> Result<(Format, bool), JotError> {
 /// conversion character; anything after (outside `%%`) is an error.
 fn parse_conv_spec(word: &[u8], pct: usize) -> Result<Conv, JotError> {
     let bytes = word;
-    // 前缀段同样要展开 `%%`：C 把**整个** `format` 交给 `printf`（`jot.c:306`、`:308`），
-    // 展开由 libc 完成，不区分转换的哪一侧。参照件现量 `-p 2 -w '%%x%d' 3 1 5` 打
-    // `%x1`（一枚百分号），不展开的那一版打的是 `%x` 之前多出来的两枚。
+    // The prefix segment needs `%%` unfolded as well: C hands the **whole**
+    // `format` to `printf` (`jot.c:306`, `:308`), and libc does the unfolding
+    // without distinguishing which side of the conversion it is on. Measured
+    // against the reference binary, `-p 2 -w '%%x%d' 3 1 5` prints `%x1` (one
+    // percent sign); the version that did not unfold here printed two extra
+    // percent signs before `%x`.
     let prefix = unfold_double_percent(&word[..pct]);
     let mut i = pct + 1;
     let mut left = false;
@@ -535,7 +585,8 @@ fn parse_conv_spec(word: &[u8], pct: usize) -> Result<Conv, JotError> {
         b'G' => ConvKind::Real(RealKind::BigG),
         b'%' => ConvKind::Percent,
         b's' => {
-            // `jot.c:376-377` 那句是固定句，C 在这一支**不带值**。
+            // The `jot.c:376-377` sentence is fixed; C carries **no value** on
+            // this arm.
             return Err(JotError::FormatWantsString);
         }
         b'd' => ConvKind::Int(IntKind::D),
@@ -577,8 +628,10 @@ fn parse_conv_spec(word: &[u8], pct: usize) -> Result<Conv, JotError> {
     })
 }
 
-/// 一串十进制字节转成 `usize`（`-w` 说明符里 `.` 之后那一段）。转不出就算 0，与 C 的
-/// `atoi` 式读法同形：libc 从 `.` 之后开始吃数字，遇非数字即止。
+/// Turn a run of decimal bytes into `usize` (the segment after `.` in a `-w`
+/// specifier). Anything unconvertible counts as 0, the same shape as C's
+/// `atoi`-style read: libc starts eating digits after the `.` and stops at the
+/// first non-digit.
 #[must_use]
 fn byte_digits_to_usize(bytes: &[u8]) -> usize {
     core::str::from_utf8(bytes)
@@ -587,9 +640,13 @@ fn byte_digits_to_usize(bytes: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
-/// `printf` 在**整条格式串**上把 `%%` 展开成一枚 `%`（`jot.c:306`、`:308` 把整个 `format`
-/// 交给它，`:391-397` 的第二遍扫描只做校验不做展开）。本层把转换前后的字面段分开存着，
-/// 所以两段都要自己做这次展开——只展开后缀会留下「前缀打两枚、参照件打一枚」的半截语义。
+/// `printf` unfolds `%%` into a single `%` across the **whole format string**
+/// (`jot.c:306`, `:308` hand the entire `format` to it; the second scan at
+/// `:391-397` only validates and does not unfold). This layer stores the
+/// literal segments before and after the conversion separately, so both
+/// segments must be unfolded here — unfolding only the suffix would leave a
+/// half-semantics where the prefix prints two percent signs while the
+/// reference binary prints one.
 #[must_use]
 fn unfold_double_percent(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
@@ -606,15 +663,18 @@ fn unfold_double_percent(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The derivation switch at the end of `getargs`（`jot.c:247-296`）。
+/// The derivation switch at the end of `getargs` (`jot.c:247-296`).
 ///
-/// C 的 `switch (have)` 用的是**精确值**而不是「含某几位」：`case ENDER | STEP`
-/// （`:249`）只在 `have` 恰好等于这两位时命中，四个操作数都给齐时命中的是
-/// `case REPS | BEGIN | ENDER | STEP`（`:281`）。按子集判会把四旗标形误派到 `:249-259`
-/// 那一支，而两支队尾相反：那一支在 `step == 0.0` 时写的是 `reps = 0`（**无界**，
-/// 打印循环是 `for (i = 1; i <= reps || reps == 0; i++)`，`jot.c:129`），
-/// `:281-284` 写的是 `break`（**reps 保持给定的 3**）。于是 `jot 3 1 100 0`
-/// 从三行变成永不终止，`jot 3 1 100 5` 从三行变成二十行。
+/// C's `switch (have)` matches on the **exact value**, not on "contains these
+/// bits": `case ENDER | STEP` (`:249`) hits only when `have` is exactly those
+/// two bits, and when all four operands are given the hit is
+/// `case REPS | BEGIN | ENDER | STEP` (`:281`). A subset test would misroute
+/// the four-flag shape into the `:249-259` arm, and the two arms end
+/// oppositely: that arm writes `reps = 0` when `step == 0.0` (**unbounded**;
+/// the print loop is `for (i = 1; i <= reps || reps == 0; i++)`, `jot.c:129`),
+/// while `:281-284` writes `break` (**reps keeps the given 3**). So
+/// `jot 3 1 100 0` would go from three lines to never terminating, and
+/// `jot 3 1 100 5` from three lines to twenty.
 pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
     if options.randomize {
         // Randomize takes the operands as given (step is the seed).
@@ -625,7 +685,8 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
     let b = HAVE_BEGIN;
     let e = HAVE_ENDER;
     let s = HAVE_STEP;
-    // `jot.c:249-259`：只给了 ender 与 step（可带 begin），reps 要算出来
+    // `jot.c:249-259`: only ender and step were given (begin optional); reps
+    // must be derived
     if have == e | s || have == e | s | b {
         if options.step == 0.0 {
             options.reps = 0;
@@ -638,7 +699,8 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
         }
         return Ok(());
     }
-    // `jot.c:261-268`：给了 reps 与 ender（可带 step），begin 要算出来
+    // `jot.c:261-268`: reps and ender were given (step optional); begin must
+    // be derived
     if have == r | e || have == r | e | s {
         if options.reps == 0 {
             return Err(JotError::MustSpecifyBegin);
@@ -646,7 +708,7 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
         options.begin = options.ender - options.reps as f64 * options.step + options.step;
         return Ok(());
     }
-    // `jot.c:270-279`：给了 reps、begin、ender，step 要算出来
+    // `jot.c:270-279`: reps, begin and ender were given; step must be derived
     if have == r | b | e {
         if options.reps == 0 {
             return Err(JotError::InfiniteUnbounded);
@@ -658,8 +720,9 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
         }
         return Ok(());
     }
-    // `jot.c:281-291`：四个都给，取「给定的」与「算出的」较小的那个 reps；
-    // step 为零时 **break**——reps 保持给定值，既不无界也不报错
+    // `jot.c:281-291`: all four given; take the smaller of the given and the
+    // derived reps; a zero step **breaks** — reps keeps the given value,
+    // neither unbounded nor an error
     if have == r | b | e | s {
         if options.step == 0.0 {
             return Ok(());
@@ -673,7 +736,8 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
         }
         return Ok(());
     }
-    // `jot.c:293-295` 的 `default`：什么也算不出来，全部按现值走
+    // The `default` of `jot.c:293-295`: nothing can be derived, keep the
+    // current values
     Ok(())
 }
 
@@ -816,9 +880,12 @@ pub fn render(format: &Format, value: f64) -> Vec<u8> {
                 ConvKind::Percent => finish(c, b"%".to_vec()),
                 ConvKind::Int(kind) => match kind {
                     IntKind::C => {
-                        // `printf("%c", …)` 经 `putchar` 交回**一枚字节**：参照件对
-                        // `-p 0 -w '%c' 1 200 1` 现量 `c8`，而把 `v as u8 as char` 再经
-                        // UTF-8 编码会打成 `c3 88` 两枚——那一支的 `char` 通道在字节形下退出。
+                        // `printf("%c", …)` goes through `putchar` and returns
+                        // **one byte**: measured against the reference binary,
+                        // `-p 0 -w '%c' 1 200 1` gives `c8`, whereas
+                        // `v as u8 as char` encoded through UTF-8 would print
+                        // `c3 88` (two bytes) — that arm's `char` channel
+                        // drops out under the byte form.
                         finish(c, vec![v as u8])
                     }
                     IntKind::O => finish_signed(c, false, format!("{:o}", v).into_bytes()),
@@ -877,8 +944,10 @@ fn finish(c: &Conv, body: Vec<u8>) -> Vec<u8> {
         }
         out = spaced;
     }
-    // 字段宽只作用于转换出来的那一段（`jot.c:306`、`:308` 就是 `printf(format, x)`，
-    // 百分号前后的字面段由格式串自己打出去），所以补白夹在前后段之间而不是算进宽度。
+    // The field width applies only to the converted segment (`jot.c:306`,
+    // `:308` are `printf(format, x)`; the literal segments before and after the
+    // percent sign are printed by the format string itself), so padding is
+    // inserted between the segments rather than counted into the width.
     let mut full = Vec::with_capacity(c.prefix.len() + out.len() + c.suffix.len());
     full.extend_from_slice(&c.prefix);
     full.extend_from_slice(&out);
@@ -976,16 +1045,20 @@ fn strip_trailing_zeros(s: &str) -> String {
 mod tests {
     use super::*;
 
-    /// 夹具助手：把文本形的 argv 词表交回字节形。测试里的字面量全是 ASCII，两种形状等价，
-    /// 所以这层只是把 `parse_jot_args` 的入参类型写出来，本身不承载判据。交回
-    /// `Vec<&'static [u8]>`（而不是造临时量）是必需的：`JotArgs` 借的是那些字节，临时 `Vec`
-    /// 撑不过一条语句，结果要留着断言的形必须先 `let w_x = argv(&[…])` 命名。
+    /// Fixture helper: turn a textual argv word list into byte form. All test
+    /// literals are ASCII, so the two forms are equivalent; this layer only
+    /// spells out the argument type of `parse_jot_args` and carries no
+    /// assertion itself. Returning `Vec<&'static [u8]>` (rather than making
+    /// temporaries) is required: `JotArgs` borrows those bytes, a temporary
+    /// `Vec` does not outlive one statement, and any shape kept for later
+    /// assertions must first be named, e.g. `let w_x = argv(&[…])`.
     fn argv(words: &'static [&'static str]) -> Vec<&'static [u8]> {
         words.iter().map(|word| word.as_bytes()).collect()
     }
 
-    /// 渲染半交回的每一项都是字节；长度不齐的数组字面量在 `vec![b"1", b"18"]` 里会混型，
-    /// 所以「整串条目」的期望走这个助手。
+    /// Every item returned by the rendering half is bytes; array literals of
+    /// uneven length would mix types in `vec![b"1", b"18"]`, so expectations
+    /// over "whole-string items" go through this helper.
     fn words(items: &[&str]) -> Vec<Vec<u8>> {
         items.iter().map(|word| word.as_bytes().to_vec()).collect()
     }
@@ -1025,27 +1098,33 @@ mod tests {
 
     #[test]
     fn test_seed_cast_truncates_then_wraps() {
-        // 截断是**向零**取整：`-0.5` 与 `0` 同种子（参照件现量两串数逐字节相同，见
-        // `tests/jot_face.rs` 的 `a_negative_or_fractional_seed_is_accepted_like_c`）
+        // Truncation rounds **toward zero**: `-0.5` and `0` share a seed (the
+        // reference binary's two number sequences are byte-identical; see
+        // `a_negative_or_fractional_seed_is_accepted_like_c` in
+        // `tests/jot_face.rs`)
         assert_eq!(seed_from_step(0.0), 0);
         assert_eq!(seed_from_step(-0.5), 0);
         assert_eq!(seed_from_step(0.9), 0);
         assert_eq!(seed_from_step(-0.9), 0);
-        // 负数先截成整数再回绕：`-5` 与 `-5.9` 同种子
+        // A negative number truncates to an integer first, then wraps: `-5`
+        // and `-5.9` share a seed
         assert_eq!(seed_from_step(-5.0), u64::MAX - 4);
         assert_eq!(seed_from_step(-5.9), seed_from_step(-5.0));
-        // 正数不受回绕影响
+        // Positive numbers are unaffected by the wrap
         assert_eq!(seed_from_step(5.0), 5);
         assert_eq!(seed_from_step(2147483648.0), 2147483648);
-        // 这条就是批次三百二十五那枚漏网负控要钉的位置：整幅偏移现在会被测到
+        // This pins the negative control that previously slipped through: the
+        // whole offset range is covered now
         assert_ne!(seed_from_step(-5.0).wrapping_add(1), seed_from_step(-5.0));
     }
 
     #[test]
     fn test_begin_ender_step_derives_reps() {
-        // `jot - 1 100 5`：reps 没给而 begin 给了，命中的是 C 的第三个标签
-        // `case ENDER | STEP | BEGIN`（`jot.c:250`）——它与 `case ENDER | STEP` 共用同一段体，
-        // 标签少写一个就整支落进 `default`，reps 停在默认值而不是算出的 20
+        // `jot - 1 100 5`: reps was not given but begin was, so the hit is C's
+        // third label `case ENDER | STEP | BEGIN` (`jot.c:250`) — it shares the
+        // same body with `case ENDER | STEP`, and a label with one bit missing
+        // would drop the whole thing into `default`, leaving reps at its
+        // default instead of the derived 20
         let mut o = opts();
         o.begin = 1.0;
         o.ender = 100.0;
@@ -1057,9 +1136,11 @@ mod tests {
 
     #[test]
     fn test_all_four_operands_with_zero_step_keeps_reps() {
-        // `jot 3 1 100 0`：C 的 `case REPS | BEGIN | ENDER | STEP`（`jot.c:281-284`）在
-        // step 为零时是 **break**，reps 保持给定值；把 reps 归零的是另一支
-        // `case ENDER | STEP`（`:251-253`）。switch 的 case 标签是精确值，少一位就不是同一支
+        // `jot 3 1 100 0`: C's `case REPS | BEGIN | ENDER | STEP`
+        // (`jot.c:281-284`) **breaks** on a zero step, so reps keeps the given
+        // value; zeroing reps belongs to the other arm `case ENDER | STEP`
+        // (`:251-253`). Switch case labels are exact values; one bit short and
+        // it is not the same arm
         let mut o = opts();
         o.reps = 3;
         o.begin = 1.0;
@@ -1074,8 +1155,9 @@ mod tests {
 
     #[test]
     fn test_derived_reps_branch_still_goes_unbounded() {
-        // 反方向也要钉住：`jot - - 100 0` 走 `case ENDER | STEP`，那里 `reps = 0` 就是**无界**
-        // （打印循环是 `for (i = 1; i <= reps || reps == 0; i++)`，`jot.c:129`）
+        // Pin the other direction too: `jot - - 100 0` takes
+        // `case ENDER | STEP`, where `reps = 0` means **unbounded** (the print
+        // loop is `for (i = 1; i <= reps || reps == 0; i++)`, `jot.c:129`)
         let mut o = opts();
         o.ender = 100.0;
         o.step = 0.0;
@@ -1150,21 +1232,25 @@ mod tests {
         assert_eq!(render(&f, 65.0), b"xA");
     }
 
-    /// `prec` 从未被写过（C 的 `-1`，`jot.c:74`）与显式写成 `0`（`-p 0` 或推得 0）
-    /// 是两件事：前者进 C 的 `%%.%df` 支拼出 `%.-1f`，Minix 的 libc 把它解析成
-    /// 精度 0 的浮点（`minix3/lib/libc/stdio/vsnprintf_ss.c:213-226`：`.` 后非数字 ⇒
-    /// `prec = 0`，随后 `-` 是左调旗标、`1` 是宽度、`f` 是转换），**四舍五入**；
-    /// 后者进整数支，`(long)floor(x)`（`jot.c:306`、`dox`），**向下取整**。
-    /// 两支撑得开的值不同，这一枚钉的就是那条分界。
+    /// `prec` never spelled (C's `-1`, `jot.c:74`) and explicitly written as
+    /// `0` (`-p 0` or derived 0) are two different things: the former takes
+    /// C's `%%.%df` arm and assembles `%.-1f`, which Minix's libc parses as a
+    /// float with precision 0 (`minix3/lib/libc/stdio/vsnprintf_ss.c:213-226`:
+    /// a non-digit after `.` ⇒ `prec = 0`, then `-` is the left-adjust flag,
+    /// `1` the width and `f` the conversion), i.e. **rounding**; the latter
+    /// takes the integer arm, `(long)floor(x)` (`jot.c:306`, `dox`), i.e.
+    /// **flooring**. The two arms support different values, and this test pins
+    /// that boundary.
     #[test]
     fn an_unwritten_precision_rounds_while_an_explicit_zero_floors() {
         let mut o = opts();
-        // 未写精度：走浮点支，dox 为假。
+        // No precision written: takes the float arm, so dox is false.
         o.prec = None;
         let (f, dox) = get_format(&o).unwrap();
         assert!(!dox, "未写精度不进整数支");
-        // 推导出来的说明符要把 Minix 解析 `%.-1f` 得到的三个要素都带上：左调旗标、
-        // 字段宽 1、精度 0。少任何一个都是把 C 的真值少抄一半。
+        // The derived specifier must carry all three elements Minix gets from
+        // parsing `%.-1f`: the left-adjust flag, field width 1 and precision 0.
+        // Missing any one copies only half of C's ground truth.
         match &f {
             Format::Conv(c) => {
                 assert!(c.left, "`.` 后那个 `-` 在 Minix 的旗标循环里是 LADJUST");
@@ -1178,15 +1264,16 @@ mod tests {
         assert_eq!(render(&f, 1.5), b"2", "半数上取");
         assert_eq!(render(&f, 2.5), b"2", "凑偶：与 NetBSD dtoa 同规则");
         assert_eq!(render(&f, 3.0), b"3", "整值两支撑得一样");
-        // `-c` 的字符支优先于精度这一族：C 的条件是 `chardata || prec == 0`，
-        // 所以 `chardata` 为真时**不论 prec 写没写**都走 `%c`。
+        // The `-c` character arm takes precedence over the whole precision
+        // family: C's condition is `chardata || prec == 0`, so when `chardata`
+        // is true it takes `%c` **whether or not prec was written**.
         o.chardata = true;
         let (f, dox) = get_format(&o).unwrap();
         assert!(dox, "`-c` 在精度未写时仍走整数支");
         assert_eq!(render(&f, 65.0), b"A");
         o.chardata = false;
 
-        // 显式 0：走整数支，floor。
+        // Explicit 0: takes the integer arm, floor.
         o.prec = Some(0);
         let (f, dox) = get_format(&o).unwrap();
         assert!(dox, "显式 0 走 %ld 支");
@@ -1211,11 +1298,15 @@ mod tests {
         o.prec = None;
         let (f, dox) = get_format(&o).unwrap();
         assert!(!dox);
-        // 不用 π 的近似当用例：`3.14159` 与 `3.1416` 都会撞上 deny 级
-        // `clippy::approx_constant`——它的常量表含**舍入后的短形**（实测 1.94.0 连四位的
-        // `3.1416` 也报），比的是数值而不是写法，加下划线分隔也挡不住。
-        // 本测要钉的是「`%5.2f` 把值补宽到五列」，与值的来历无关：`9.5` 二进制下精确，
-        // 两个小数位就是 `.50`；`7.9375`（127/16，同样精确）第三位是 `7`，必然进位成 `7.94`。
+        // Do not use an approximation of π as the test value: both `3.14159`
+        // and `3.1416` trip the deny-level `clippy::approx_constant` — its
+        // constant table contains **rounded short forms** (measured: 1.94.0
+        // reports even the four-digit `3.1416`), it compares values rather than
+        // spellings, and underscore separators do not help.
+        // What this test pins is "`%5.2f` pads the value to five columns",
+        // independent of where the value comes from: `9.5` is exact in binary,
+        // so two decimals are `.50`; `7.9375` (127/16, also exact) has a `7` in
+        // the third place and must carry to `7.94`.
         assert_eq!(render(&f, 9.5), b" 9.50|");
         assert_eq!(render(&f, 7.9375), b" 7.94|");
         o.word = b"%04x".to_vec();
@@ -1263,7 +1354,9 @@ mod tests {
         assert_eq!(format_g(-42.0, 8, false), "-42");
     }
 
-    /// 集外字母与缺值都交回 libc 那两个形状，由壳去接 `usage()`。聚簇只报**第一个**坏字母。
+    /// An unknown letter and a missing value both return libc's two shapes,
+    /// leaving `usage()` to the shell. A cluster reports only the **first** bad
+    /// letter.
     #[test]
     fn an_unreachable_option_shape_is_reported_by_the_libc_line() {
         assert_eq!(
@@ -1278,15 +1371,17 @@ mod tests {
             parse_jot_args(&argv(&["-cb"])).err().unwrap(),
             JotArgError::Getopt(crate::GetoptReport::MissingValue('b'))
         );
-        // `--x` 报的字母是第二个连字符：optstring 里没有 `-`。
+        // `--x` reports the second hyphen as the letter: the optstring has no
+        // `-`.
         assert_eq!(
             parse_jot_args(&argv(&["--x"])).err().unwrap(),
             JotArgError::Getopt(crate::GetoptReport::UnknownOption('-'))
         );
     }
 
-    /// 坏值字母排在前面就先报它：`-p abc` 的 `errx` 与 `-Z` 的 libc 行各走各的出口，
-    /// 而两者都在环里发生，早于任何操作数判定。
+    /// A bad value letter that comes first is reported first: the `errx` of
+    /// `-p abc` and the libc line of `-Z` take separate exits, and both happen
+    /// inside the ring, before any operand decision.
     #[test]
     fn a_rejected_precision_is_the_bad_value_sentence_not_the_libc_one() {
         assert_eq!(
@@ -1303,9 +1398,10 @@ mod tests {
         );
     }
 
-    /// 环**不重排**：第一个非选项 token 一到就结束，它自己就是第一个操作数，
-    /// 后面那个 `-Z` 也留在操作数里（参照件 `jot 3 -Z` 打的是 90/91/92，把 `-Z`
-    /// 当成 begin 那个字符，根本没有二次扫描）。
+    /// The ring does **not** permute: it ends at the first non-option token,
+    /// which is itself the first operand, and the following `-Z` also stays
+    /// among the operands (the reference binary's `jot 3 -Z` prints 90/91/92,
+    /// treating `-Z` as the begin character; there is no second scan at all).
     #[test]
     fn the_ring_ends_at_the_first_operand_and_keeps_everything_after_it() {
         let w_ring = argv(&["3", "-Z"]);
@@ -1317,8 +1413,9 @@ mod tests {
         );
     }
 
-    /// `--` 结束环且自身不是操作数；裸 `-` 结束环却**留在**操作数里
-    /// （`jot.c:66` 的 `is_default` 把它读成「这一格用默认值」）。
+    /// `--` ends the ring and is not itself an operand; a bare `-` ends the
+    /// ring but **stays** among the operands (`jot.c:66`'s `is_default` reads
+    /// it as "use the default for this cell").
     #[test]
     fn the_double_dash_is_dropped_but_a_bare_dash_stays_an_operand() {
         let w_dash = argv(&["--", "-Z"]);
@@ -1332,8 +1429,9 @@ mod tests {
         assert_eq!(parsed.operands, argv(&["-", "3"]));
     }
 
-    /// 带值字母取值的两种写法都把下一个 token 吃进选项，绝不当成操作数；
-    /// `-b` 与 `-w` 落进同一个词槽（`jot.c:173-176` 的 FALLTHROUGH）。
+    /// Both spellings of a value letter consume the next token as the option's
+    /// value, never as an operand; `-b` and `-w` land in the same word slot
+    /// (`jot.c:173-176` fallthrough).
     #[test]
     fn a_value_letter_consumes_the_next_token_and_b_and_w_share_one_slot() {
         let w_prec = argv(&["-p", "0"]);
@@ -1350,8 +1448,9 @@ mod tests {
         assert_eq!(parsed.operands, argv(&["3"]));
     }
 
-    /// `strtol(optarg, &ep, 0)` 配 `*ep != 0 || prec < 0`：base 0 的两条前缀、
-    /// 尾巴零字符、以及「一个数字都没转出来时 `ep` 留在原起点」都在这张表里。
+    /// `strtol(optarg, &ep, 0)` plus `*ep != 0 || prec < 0`: the two base-0
+    /// prefixes, the zero-character tail, and "no digit converted leaves `ep`
+    /// at the starting point" are all in this table.
     #[test]
     fn the_precision_follows_strtol_base_zero_with_a_full_parse_check() {
         for (word, accepted) in [
@@ -1376,23 +1475,30 @@ mod tests {
                 "`-p {word}` 的接受性"
             );
         }
-        // 值先饱和到 `long`，再像 C 那样截成 `int`：`LONG_MAX` 截成 `-1` 因而被拒，
-        // `2^32+2` 截成 `2` 因而被接受。
+        // The value saturates at `long` first, then truncates to `int` as C
+        // does: `LONG_MAX` truncates to `-1` and is rejected, `2^32+2`
+        // truncates to `2` and is accepted.
         assert_eq!(parse_precision(b"99999999999999999999"), None);
         assert_eq!(parse_precision(b"4294967298"), Some(2));
     }
 
-    /// `jot` 的四支带值字母里，三支的值**直接是输出内容**、一支是数字：`-b`/`-w` 的词被
-    /// `putdata`（`jot.c:300-311`）原样打出去，`-s` 的串由 `:310` 的 `fputs(sepstring, stdout)`
-    /// 打在条目之间，而 `-w` 的词还要过 `getformat`（`:333-398`）那道按字节的校验。所以枚
-    /// 裸 `ff` 在这里同时决定三件事：打得出来的字节、切分说明符能不能通过校验、以及校验失败
-    /// 那句回显长几个字节（`jot.c:385`、`:396` 的 `unknown or invalid format \`%s\'` 带的就是
-    /// 整个 `format`）。操作数那两条腿也在这枚门里：`jot.c:196`/`:204` 取的是最后一个**字节**
-    /// （`argv[i][strlen(argv[i]) - 1]`），而 `strtoul` 对空串是「一个数字也没转、`ep` 停在起点、
-    /// `*ep == '\0'`」，所以空 reps 是合法的 0（= 无界）而不是坏值。
+    /// Of jot's four value-taking letters, three take values that are
+    /// **output content** and one takes a number: the `-b`/`-w` word is printed
+    /// verbatim by `putdata` (`jot.c:300-311`), the `-s` string is written
+    /// between items by `:310`'s `fputs(sepstring, stdout)`, and the `-w` word
+    /// additionally goes through `getformat` (`:333-398`), a byte-wise
+    /// validation. So one raw `ff` here decides three things at once: the bytes
+    /// that print, whether the specifier splits pass validation, and how many
+    /// bytes the failure echo has (`jot.c:385`, `:396`'s
+    /// `unknown or invalid format \`%s'` carries the whole `format`). The two
+    /// operand legs live under the same gate: `jot.c:196`/`:204` takes the last
+    /// **byte** (`argv[i][strlen(argv[i]) - 1]`), and `strtoul` on the empty
+    /// string is "no digit converted, `ep` stays at the start, `*ep ==
+    /// '\0'`", so empty reps is a legal 0 (= unbounded) rather than a bad value.
     #[test]
     fn the_word_the_separator_and_the_operand_bytes_all_reach_the_output() {
-        // ①`-b` 的词：`boring` 那一路把整个词当字面段打出（`jot.c:304` 的 `printf("%s", format)`）。
+        // (1) The `-b` word: the `boring` path prints the whole word as a
+        // literal segment (`jot.c:304`'s `printf("%s", format)`).
         let raw: &[&[u8]] = &[b"-b\xffwd", b"2"];
         let parsed = parse_jot_args(raw).expect("`-b` 收整串当词");
         assert_eq!(
@@ -1409,11 +1515,15 @@ mod tests {
             vec![0xff, b'w', b'd'],
             "打出去的必须是那三枚字节"
         );
-        // ②`-s` 的串：条目之间的分隔符是原字节（参照件对 `-s<ff>x` 现量条目间就是 `ff 78`）。
+        // (2) The `-s` string: the separator between items is the raw bytes
+        // (measured: for `-s<ff>x` the reference binary prints `ff 78` between
+        // items).
         let sep: &[&[u8]] = &[b"-s\xffx", b"2"];
         let parsed = parse_jot_args(sep).expect("`-s` 的值是一串字节");
         assert_eq!(parsed.options.sep, vec![0xff, b'x']);
-        // ③`-w` 的词：百分号之前的字面段按字节存着，转换之后的补白与前后段互不干扰。
+        // (3) The `-w` word: the literal segment before the percent sign is
+        // stored as bytes, and the padding after the conversion does not
+        // interfere with either side.
         let mut o = opts();
         o.word = vec![b'a', 0xff, b'%', b'd'];
         let (format, dox) = get_format(&o).unwrap();
@@ -1427,14 +1537,16 @@ mod tests {
             "百分号前那一段就是 argv 的原字节"
         );
         assert_eq!(render(&format, 3.0), vec![b'a', 0xff, b'3']);
-        // ④`%c` 交回**一枚字节**：C 走 `putchar`，所以 200 就是 `c8`；那一条腿若经 `char`
-        //    通体会编成 `c3 88` 两枚（参照件对 `-p 0 -w '%c' 1 200 1` 现量 `c8`）。
+        // (4) `%c` returns **one byte**: C goes through `putchar`, so 200 is
+        //     `c8`; that leg going through the `char` channel would encode two
+        //     bytes, `c3 88` (measured: `-p 0 -w '%c' 1 200 1` gives `c8`).
         let mut o = opts();
         o.word = b"%c".to_vec();
         o.prec = Some(0);
         let (format, _) = get_format(&o).unwrap();
         assert_eq!(render(&format, 200.0), vec![0xc8]);
-        // ⑤校验失败那句带的是**整个 format 词**（含裸字节），不是空壳句子。
+        // (5) The validation-failure echo carries the **whole format word**
+        //     (including raw bytes), not an empty sentence.
         let mut o = opts();
         o.word = vec![b'%', 0xff];
         assert_eq!(
@@ -1442,29 +1554,35 @@ mod tests {
             Some(JotError::InvalidFormat(vec![b'%', 0xff])),
             "`unknown or invalid format `%s'` 的值位是原字节"
         );
-        // ⑥操作数取最后一个字节：`é`（`c3 a9`）在 C 就是取到 `a9` = 169。
+        // (6) An operand takes its last byte: `é` (`c3 a9`) in C yields `a9` =
+        //     169.
         assert_eq!(operand_to_number(b"a"), Some(97.0));
         assert_eq!(
             operand_to_number(b"\xc3\xa9"),
             Some(-87.0),
             "取到的是最后一字节 `a9`，而 `char` 带符号"
         );
-        // ⑦空操作数：C 是 `argv[i][-1]` 的越界读，本层不复制未定义行为，交回 `None`
-        //    让调用方留那一格缺省（宿主参照件现量 `jot 3 '' 5` → `1 3 5`）。
+        // (7) Empty operand: C reads `argv[i][-1]` out of bounds; this layer
+        //     does not copy undefined behavior and returns `None` so the caller
+        //     keeps that cell's default (measured on the host reference binary:
+        //     `jot 3 '' 5` → `1 3 5`).
         assert_eq!(
             operand_to_number(b""),
             None,
             "空操作数不该 panic，也不该编出一个值"
         );
-        // ⑧空 reps 在 C 是合法的 0（`strtoul` 把 `ep` 留在起点），于是无界而不是坏值。
+        // (8) Empty reps is a legal 0 in C (`strtoul` leaves `ep` at the
+        //     start), hence unbounded rather than a bad value.
         assert_eq!(parse_reps(b""), Ok(0));
         assert_eq!(
             parse_reps(b"x").err(),
             Some(JotError::BadReps(b"x".to_vec()))
         );
-        // ⑨`isspace` 那六枚字节之外都不算空白：非 ASCII 空白（`c2 a0`）在 C 里不是空白，
-        //    所以一个数字也没转出来，落 Bad reps——按字符走 `str::trim_start` 会把它跳掉而
-        //    意外接受，这一形钉的是「按字节」而不是「按字符」。
+        // (9) Nothing outside the six `isspace` bytes counts as whitespace:
+        //     non-ASCII whitespace (`c2 a0`) is not whitespace in C, so no
+        //     digit converts and Bad reps follows — going by characters,
+        //     `str::trim_start` would skip it and accept unexpectedly. This
+        //     shape pins "byte-wise" rather than "character-wise".
         assert_eq!(
             parse_reps(&[0xc2, 0xa0, b'3'])
                 .err()
@@ -1472,9 +1590,12 @@ mod tests {
             Some(true),
             "`c2 a0` 不是 C 的 isspace，不该被跳过"
         );
-        // ⑪前缀段的 `%%` 也一样要展开：C 把**整个** format 交给 `printf`（`jot.c:306`、
-        //    `:308`），展开由 libc 做，不分转换的哪一侧。参照件对 `-p 2 -w '%%x%d' 3 1 5`
-        //    现量 `%x1`——只展开后缀的那一版在这里会多打一枚百分号。
+        // (11) The prefix segment's `%%` must be unfolded too: C hands the
+        //    **whole** format to `printf` (`jot.c:306`, `:308`) and libc does
+        //    the unfolding regardless of which side of the conversion it is
+        //    on. For `-p 2 -w '%%x%d' 3 1 5` the reference binary measures
+        //    `%x1` — the version that unfolded only the suffix prints one
+        //    extra percent sign here.
         let mut o = opts();
         o.word = b"%%x%d".to_vec();
         o.prec = Some(2);
@@ -1484,7 +1605,9 @@ mod tests {
             b"%x1".to_vec(),
             "前缀里两枚百分号该展开成一枚"
         );
-        // ⑩`-p` 之外的三支带值字母缺值时，缺的那枚字母也是字节（`getopt.c:132-136` 的 `%c`）。
+        // (10) When one of the three value-taking letters other than `-p` is
+        //     missing its value, the missing letter is a byte too
+        //     (`getopt.c:132-136`'s `%c`).
         assert_eq!(
             parse_jot_args(&argv(&["-s"])).err(),
             Some(JotArgError::Getopt(crate::GetoptReport::MissingValue('s'))),

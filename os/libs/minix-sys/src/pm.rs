@@ -81,14 +81,16 @@ pub const PM_CALL_GETRUSAGE: i32 = minix_types::PmCall::GetRUsage as i32;
 ///
 /// C: `PM_SRV_FORK (PM_BASE + 41)` (`callnr.h:54`).
 pub const PM_CALL_SERVICE_FORK: i32 = minix_types::PmCall::SrvFork as i32;
-/// E9 PmApi:PM_GETEPINFO(callnr.h:58,PM_BASE + 45)。
+/// E9 PmApi: PM_GETEPINFO (callnr.h:58, PM_BASE + 45).
 pub const PM_CALL_GETEPINFO: i32 = minix_types::PmCall::GetEpInfo as i32;
-/// C: `PM_GETUID (PM_BASE + 6)` (`callnr.h:20`) — 回复 m1i1=ruid、m1i2=euid。
+/// C: `PM_GETUID (PM_BASE + 6)` (`callnr.h:20`) — reply m1i1=ruid, m1i2=euid.
 pub const PM_CALL_GETUID: i32 = minix_types::PmCall::GetUid as i32;
-/// C: `PM_GETGID (PM_BASE + 13)` (`callnr.h:26`) — 回复 m1i1=rgid、m1i2=egid
-/// (与 [`PM_CALL_GETUID`] 同形，两栏一次带回真实/有效组号)。
+/// C: `PM_GETGID (PM_BASE + 13)` (`callnr.h:26`) — reply m1i1=rgid, m1i2=egid
+/// (same shape as [`PM_CALL_GETUID`]; one message returns both real and
+/// effective group ids).
 pub const PM_CALL_GETGID: i32 = minix_types::PmCall::GetGid as i32;
-/// C: `PM_SETSID (PM_BASE + 15)` (`callnr.h:29`) — 回复值即新会话 id。
+/// C: `PM_SETSID (PM_BASE + 15)` (`callnr.h:29`) — the reply value is the new
+/// session id.
 pub const PM_CALL_SETSID: i32 = minix_types::PmCall::SetSid as i32;
 /// C: `PM_SIGACTION (PM_BASE + 20)` (`callnr.h:33`).
 pub const PM_CALL_SIGACTION: i32 = minix_types::PmCall::SigAction as i32;
@@ -104,7 +106,7 @@ pub const PM_CALL_GETPRIORITY: i32 = minix_types::PmCall::GetPriority as i32;
 pub const PM_CALL_SETPRIORITY: i32 = minix_types::PmCall::SetPriority as i32;
 /// C: `PM_REBOOT (PM_BASE + 37)` (`callnr.h:50`).
 pub const PM_CALL_REBOOT: i32 = minix_types::PmCall::Reboot as i32;
-/// E9 PmApi:PM_GETPROCNR(callnr.h:59,PM_BASE + 46)。
+/// E9 PmApi: PM_GETPROCNR (callnr.h:59, PM_BASE + 46).
 pub const PM_CALL_GETPROCNR: i32 = minix_types::PmCall::GetProcNr as i32;
 /// Stop a system service (server-side call).
 ///
@@ -188,7 +190,8 @@ pub fn exit_via(transport: &impl IpcTransport, status: i32) -> ! {
         status,
         _padding: [0; 52],
     };
-    //[SD19-gate] exit 不返回：回复值无可消费，失败则停在本函数 spin 循环
+    //[SD19-gate] exit never returns: there is no reply value to consume, and on
+    // failure control stays in this function's spin loop
     #[allow(clippy::let_underscore_must_use)]
     let _ = perform_syscall(transport, pm_endpoint(), PM_CALL_EXIT, &mut message);
     loop {
@@ -245,10 +248,11 @@ pub fn getpid_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
     Ok(self_pid)
 }
 
-/// PM_SETUID(5):设置调用者自身的 uid(C `minix3/minix/lib/libc` 的
-/// setuid 经 PM_SETUID 到 PM;RS 用它做服务进程自设 uid,manager.c:656)。
-/// 载荷 `mess_lc_pm_setid`(minix-types `MessLcPmSetid`;C ipc.h:528-533):
-/// id u32@0。MessageUnion 无专属臂(SRV_FORK 先例),repr(C) 载荷 raw 写入。
+/// PM_SETUID(5): set the caller's own uid (C's `minix3/minix/lib/libc` setuid
+/// reaches PM through PM_SETUID; RS uses it for a service process to set its own
+/// uid, manager.c:656). Payload `mess_lc_pm_setid` (minix-types `MessLcPmSetid`;
+/// C ipc.h:528-533): id u32@0. MessageUnion has no dedicated arm (SRV_FORK
+/// precedent), so the repr(C) payload is written raw.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct SetuidPayload {
@@ -256,14 +260,15 @@ struct SetuidPayload {
     _padding: [u8; 52],
 }
 
-/// PM_SETUID 的 RS 客户端封装(见 [`SetuidPayload`])。
+/// RS client wrapper for PM_SETUID (see [`SetuidPayload`]).
 pub fn setuid_via(transport: &impl IpcTransport, uid: u32) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     let packed = SetuidPayload {
         uid,
         _padding: [0; 52],
     };
-    // SAFETY: plain-value 推理同 service_fork_via(repr(C),无指针字段)。
+    // SAFETY: same plain-value reasoning as service_fork_via (repr(C), no
+    // pointer fields).
     let bytes = unsafe {
         core::slice::from_raw_parts(
             (&raw const packed) as *const u8,
@@ -295,36 +300,38 @@ pub fn kill_via(transport: &impl IpcTransport, target: Pid, signal: i32) -> Resu
 /// signal numbers, then send the signal to the caller's own identifier. The
 /// range check happens before any transport use, so an invalid number never
 /// causes a round trip.
-/// `struct sigaction` 的用户态内存镜像(LP64,32 字节)。
+/// User-space memory image of `struct sigaction` (LP64, 32 bytes).
 ///
-/// PM 经 `sys_datacopy` 于 `act`/`oact` 地址把这份字节出入
-/// (pm/signal.c:47-66):handler 8 字节 @0、`sigset_t` 16 字节 @8、
-/// flags 4 字节 @24。PM 内部把 16 字节掩码折叠为 u64——那是 04 阶段
-/// 的解码半,与本镜像无关;客户端只保证字节图与 C `struct sigaction`
-/// 一致。
+/// PM copies these bytes in and out through `sys_datacopy` at the `act`/`oact`
+/// addresses (pm/signal.c:47-66): handler 8 bytes @0, `sigset_t` 16 bytes @8,
+/// flags 4 bytes @24. PM internally folds the 16-byte mask into a u64 — that is
+/// the decode half of the 04 stage and unrelated to this image; the client only
+/// guarantees that the byte picture matches C `struct sigaction`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct SigActionWire {
-    /// SIG_DFL=0 / SIG_IGN=1 / handler 地址。
+    /// SIG_DFL=0 / SIG_IGN=1 / handler address.
     pub sa_handler: usize,
-    /// 处理期间屏蔽的信号集(C `sigset_t`,16 字节)。
+    /// Signal set blocked while the handler runs (C `sigset_t`, 16 bytes).
     pub sa_mask: [u32; 4],
-    /// SA_* 标志。
+    /// SA_* flags.
     pub sa_flags: i32,
-    /// LP64 尾填充。
+    /// LP64 tail padding.
     pub _pad: [u8; 4],
 }
 
-/// 安装/查询一个信号的处置(C: `do_sigaction`,pm/signal.c:40-86)。
+/// Install/query a signal's disposition (C: `do_sigaction`, pm/signal.c:40-86).
 ///
-/// 线格式 `mess_lc_pm_sig`(ipc.h:528-540):`nr` 为信号号,`act`/`oact`
-/// 是**用户态地址**(PM 用 `sys_datacopy` 出入,`act==0` 即只读查询),
-/// `ret` 是 sigreturn 恢复桩地址。恢复函数本体已就位(`sigreturn`,
-/// lib.rs 顶层;`sigreturn_via` 在本模块);桩**地址**由调用方传入
-/// ——C 的 libc 单一单元直接填 `__sigreturn`(sigaction.c:7/:19),
-/// 本仓的对应符号住 minix-rt(`signals::__sigreturn`,NL3③),依赖
-/// 方向 rt→sys 决定本面只收地址;零配置顶层见 rt 同名面(NS11 init
-/// 消费先例:填真符号地址)。
+/// Wire format `mess_lc_pm_sig` (ipc.h:528-540): `nr` is the signal number,
+/// `act`/`oact` are **user-space addresses** (PM copies through them with
+/// `sys_datacopy`; `act==0` means a read-only query), and `ret` is the address of
+/// the sigreturn restore stub. The restore function itself exists (`sigreturn` at
+/// lib.rs top level; `sigreturn_via` in this module); the stub **address** is
+/// supplied by the caller — C's single libc unit fills in `__sigreturn` directly
+/// (sigaction.c:7/:19), while this repo's symbol lives in minix-rt
+/// (`signals::__sigreturn`). The rt→sys dependency direction makes this face take
+/// an address only; see the same-named face in rt for the zero-config top level
+/// (which fills the real symbol address).
 #[allow(clippy::too_many_arguments)]
 pub fn sigaction_via(
     transport: &impl IpcTransport,
@@ -349,11 +356,13 @@ pub fn sigaction_via(
     perform_syscall(transport, pm_endpoint(), PM_CALL_SIGACTION, &mut message).map(|_| ())
 }
 
-/// 读/写调用者的信号掩码(C: `do_sigprocmask`,pm/signal.c:99-155)。
+/// Read/write the caller's signal mask (C: `do_sigprocmask`,
+/// pm/signal.c:99-155).
 ///
-/// 掩码按值走消息(`m_lc_pm_sigset.set`),旧掩码经回复消息
-/// `m_pm_lc_sigset.set` 带回(signal.c:117);`how = SIG_INQUIRE`(10)
-/// 时 `set` 被忽略、仅查旧掩码。`KILL/STOP` 的屏蔽请求由服务端剥除。
+/// The mask travels by value in the message (`m_lc_pm_sigset.set`), and the old
+/// mask comes back in the reply message `m_pm_lc_sigset.set` (signal.c:117); with
+/// `how = SIG_INQUIRE` (10) `set` is ignored and only the old mask is queried.
+/// Blocking requests for `KILL/STOP` are stripped on the server side.
 pub fn sigprocmask_via(
     transport: &impl IpcTransport,
     how: i32,
@@ -374,11 +383,12 @@ pub fn sigprocmask_via(
     Ok(raw)
 }
 
-/// 以给定掩码等待信号(C: `sigsuspend`,lib/libc/sys/sigsuspend.c:11-17
-/// ——消息只携带 `set`,恢复桩由 sigaction 时刻的 `ret` 槽定死,本调用
-/// 不再携带;PM 臂同样只消费掩码,calls.rs `_ctx` 忽略)。正常情况下
-/// 仅在 handler 返回后经 sigreturn 醒来,调用失败面即 errno
-/// (`EINTR` 为设计值)。
+/// Wait for a signal with the given mask (C: `sigsuspend`,
+/// lib/libc/sys/sigsuspend.c:11-17 — the message carries only `set`; the restore
+/// stub was fixed by the `ret` slot at sigaction time and is not carried again
+/// here; PM's arm likewise consumes only the mask and ignores `_ctx` in calls.rs).
+/// Normally control wakes up only after the handler returns through sigreturn;
+/// the failure face is the errno (`EINTR` is a designed value).
 pub fn sigsuspend_via(transport: &impl IpcTransport, mask: &[u32; 4]) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     message.m_u.m_lc_pm_sigset = minix_types::MessLcPmSigset {
@@ -391,14 +401,17 @@ pub fn sigsuspend_via(transport: &impl IpcTransport, mask: &[u32; 4]) -> Result<
     perform_syscall(transport, pm_endpoint(), PM_CALL_SIGSUSPEND, &mut message).map(|_| ())
 }
 
-/// 信号恢复:handler 返回后由恢复路径调用(C: `sigreturn`,
-/// lib/libc/sys/sigreturn.c:18-36;服务端 `do_sigreturn`,pm/signal.c:176-190)。
+/// Signal restore: called by the restore path after a handler returns (C:
+/// `sigreturn`, lib/libc/sys/sigreturn.c:18-36; server side `do_sigreturn`,
+/// pm/signal.c:176-190).
 ///
-/// 复用 `m_lc_pm_sigset` 线形状,但服务端只读 `ctx`——进程栈上
-/// sigcontext 的用户态地址(signal.c:189),内核从该地址自取掩码与寄存器
-/// 快照;`set`/`how` 在 SIGRETURN 语义里不消费(C 的 libc 实现写入
-/// `scp->sc_mask` 只是顺手填充,PM 侧无读者)。成功路径不返回:内核
-/// 以恢复后的上下文重启进程,sendrec 的应答永远落在恢复之后。
+/// Reuses the `m_lc_pm_sigset` wire shape, but the server reads only `ctx` — the
+/// user-space address of the sigcontext on the process stack (signal.c:189), from
+/// which the kernel takes the mask and register snapshot itself; `set`/`how` are
+/// not consumed in SIGRETURN semantics (C's libc implementation writes
+/// `scp->sc_mask` merely as a side fill and PM never reads it). The success path
+/// never returns: the kernel restarts the process with the restored context, so
+/// the sendrec reply always lands after the restore.
 pub fn sigreturn_via(transport: &impl IpcTransport, ctx: u64) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     message.m_u.m_lc_pm_sigset = minix_types::MessLcPmSigset {
@@ -411,8 +424,8 @@ pub fn sigreturn_via(transport: &impl IpcTransport, ctx: u64) -> Result<(), Errn
     perform_syscall(transport, pm_endpoint(), minix_types::PM_SIGRETURN, &mut message).map(|_| ())
 }
 
-/// 读待决信号集(C: `do_sigpending`,pm/signal.c:88-97;回复
-/// `m_pm_lc_sigset.set`,signal.c:97 附近)。
+/// Read the pending signal set (C: `do_sigpending`, pm/signal.c:88-97; reply
+/// `m_pm_lc_sigset.set`, around signal.c:97).
 pub fn sigpending_via(transport: &impl IpcTransport) -> Result<[u32; 4], Errno> {
     let mut message = crate::syscall::cleared_message();
     perform_syscall(transport, pm_endpoint(), PM_CALL_SIGPENDING, &mut message)?;
@@ -421,17 +434,17 @@ pub fn sigpending_via(transport: &impl IpcTransport) -> Result<[u32; 4], Errno> 
     Ok(pending)
 }
 
-/// 建立新会话并成为其首进程(C: `setsid(2)`;回复值为新会话 id,PM 的
-/// `GetResult::Sid`→`Reply(p)` 把值走 m_type——区别于 `GetResult::Pid`
-/// 的 payload 约定)。
+/// Create a new session and become its leader (C: `setsid(2)`; the reply value is
+/// the new session id — PM's `GetResult::Sid`→`Reply(p)` sends it as m_type,
+/// unlike the payload convention of `GetResult::Pid`).
 pub fn setsid_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
     let mut message = crate::syscall::cleared_message();
     perform_syscall(transport, pm_endpoint(), PM_CALL_SETSID, &mut message)
         .map(|reply_type| reply_type as Pid)
 }
 
-/// 读真实/有效 uid(C: `getuid(2)`/`geteuid(2)`;回复 m1i1=ruid、
-/// m1i2=euid,一次消息同时携带)。
+/// Read real/effective uid (C: `getuid(2)`/`geteuid(2)`; reply m1i1=ruid,
+/// m1i2=euid, both carried in one message).
 pub fn getuid_via(transport: &impl IpcTransport) -> Result<(i32, i32), Errno> {
     let mut message = crate::syscall::cleared_message();
     perform_syscall(transport, pm_endpoint(), PM_CALL_GETUID, &mut message)?;
@@ -441,15 +454,15 @@ pub fn getuid_via(transport: &impl IpcTransport) -> Result<(i32, i32), Errno> {
     Ok((m1.m1i1, m1.m1i2))
 }
 
-/// 读真实/有效 gid(C: `getgid(2)`/`getegid(2)`;回复 m1i1=rgid、
-/// m1i2=egid,一次消息同时携带)。服务端 `GetResult::Gid { real, eff }`
-/// 走与 `GetUid` 相同的 `prefill(real, eff)` 落点
-/// (`servers/pm/src/ipc/calls.rs` 的 `GetResult::Gid` 臂)。
+/// Read real/effective gid (C: `getgid(2)`/`getegid(2)`; reply m1i1=rgid,
+/// m1i2=egid, both carried in one message). The server's
+/// `GetResult::Gid { real, eff }` lands in the same `prefill(real, eff)` spot as
+/// `GetUid` (the `GetResult::Gid` arm in `servers/pm/src/ipc/calls.rs`).
 pub fn getgid_via(transport: &impl IpcTransport) -> Result<(i32, i32), Errno> {
     let mut message = crate::syscall::cleared_message();
     perform_syscall(transport, pm_endpoint(), PM_CALL_GETGID, &mut message)?;
     // SAFETY: the PM fills `m_m1` (m1i1=rgid, m1i2=egid) on this call —
-    // the same reply overlay the C getgid reads (lib/libc/sys/getegid.c)。
+    // the same reply overlay the C getgid reads (lib/libc/sys/getegid.c).
     let m1 = unsafe { message.m_u.m_m1 };
     Ok((m1.m1i1, m1.m1i2))
 }
@@ -762,28 +775,31 @@ pub fn service_fork_via(
     }
 }
 
-/// E9 PmApi 分域:RS 服务进程管理的消息构造面。
+/// E9 PmApi domain: message construction for RS service-process management.
 ///
-/// - `getepinfo_via` 覆盖 C `getepinfo`(`libsys/getepinfo.c:10-27`)与
-///   其上的 `getnpid`/`getnuid` 薄壳;
-/// - `getprocnr_via` 覆盖 C `getprocnr`(`libsys/getprocnr.c:6-16`);
-/// - `exec_restart_via` 覆盖 RS exec 终步的 PM_EXEC_RESTART
-///   (C `servers/rs/exec.c:124-135`)。
-///   组表(groups)拷出沿 C getepinfo 的默认形态传 NULL/0——PM 侧组表
-///   拷出未接线(04-stage-pm D-30),接通后再扩参数。
+/// - `getepinfo_via` covers C `getepinfo` (`libsys/getepinfo.c:10-27`) and the
+///   `getnpid`/`getnuid` thin shells built on it;
+/// - `getprocnr_via` covers C `getprocnr` (`libsys/getprocnr.c:6-16`);
+/// - `exec_restart_via` covers PM_EXEC_RESTART, the final step of an RS exec
+///   (C `servers/rs/exec.c:124-135`).
+///   The group table (groups) copy follows C getepinfo's default form and passes
+///   NULL/0 — PM's group-table copy is not wired up yet; parameters extend once
+///   it is.
 
-/// getepinfo 解码结果:C `getepinfo` 语义(返回 pid,出参 euid/egid)。
+/// getepinfo decode result: C `getepinfo` semantics (returns the pid, outputs
+/// euid/egid).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GetepInfo {
-    /// 目标进程的 pid(taskcall 返回值)。
+    /// The target process's pid (the taskcall return value).
     pub pid: i32,
-    /// 有效 uid。C: `*uid = m.m_pm_lsys_getepinfo.euid`。
+    /// Effective uid. C: `*uid = m.m_pm_lsys_getepinfo.euid`.
     pub euid: i32,
-    /// 有效 gid。C: `*gid = m.m_pm_lsys_getepinfo.egid`。
+    /// Effective gid. C: `*gid = m.m_pm_lsys_getepinfo.egid`.
     pub egid: i32,
 }
 
-/// PM_GETEPINFO(45):按端点取凭证。组表拷出暂沿 C 默认(NULL/0)。
+/// PM_GETEPINFO(45): fetch credentials by endpoint. The group-table copy still
+/// follows the C default (NULL/0).
 pub fn getepinfo_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<GetepInfo, Errno> {
     let mut message = crate::syscall::cleared_message();
     message.m_u.m_lsys_pm_getepinfo = minix_types::ipc::MessLsysPmGetepinfo {
@@ -798,7 +814,8 @@ pub fn getepinfo_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
-    // SAFETY: 应答由 PM 经同一臂回填(C getepinfo.c:22-24 对称读)。
+    // SAFETY: the reply is filled in by PM through the same arm (the symmetric
+    // read in C getepinfo.c:22-24).
     let arm = unsafe { message.m_u.m_pm_lsys_getepinfo };
     Ok(GetepInfo {
         pid: reply,
@@ -807,18 +824,19 @@ pub fn getepinfo_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result
     })
 }
 
-/// PM_GETEPINFO 薄壳:只取 pid(C `getnpid`,getepinfo.c:31-34)。
+/// PM_GETEPINFO thin shell: take only the pid (C `getnpid`, getepinfo.c:31-34).
 pub fn getnpid_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<i32, Errno> {
     getepinfo_via(transport, proc_ep).map(|i| i.pid)
 }
 
-/// PM_GETEPINFO 薄壳:取有效 uid(C `getnuid`,getepinfo.c:37-45)。
+/// PM_GETEPINFO thin shell: take the effective uid (C `getnuid`,
+/// getepinfo.c:37-45).
 pub fn getnuid_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<i32, Errno> {
     getepinfo_via(transport, proc_ep).map(|i| i.euid)
 }
 
-/// PM_GETPROCNR(46):按 pid 反查端点(C `getprocnr`,getprocnr.c:6-16;
-/// 应答 m_pm_lsys_getprocnr.endpt 携带端点)。
+/// PM_GETPROCNR(46): look up an endpoint by pid (C `getprocnr`,
+/// getprocnr.c:6-16; the reply's m_pm_lsys_getprocnr.endpt carries the endpoint).
 pub fn getprocnr_via(transport: &impl IpcTransport, pid: Pid) -> Result<Endpoint, Errno> {
     let mut message = crate::syscall::cleared_message();
     message.m_u.m_lsys_pm_getprocnr = minix_types::ipc::MessLsysPmGetprocnr {
@@ -829,13 +847,14 @@ pub fn getprocnr_via(transport: &impl IpcTransport, pid: Pid) -> Result<Endpoint
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
-    // SAFETY: 应答由 PM 经同一臂回填(C 对应 ipc.h:1800-1805)。
+    // SAFETY: the reply is filled in by PM through the same arm (C counterpart
+    // ipc.h:1800-1805).
     let arm = unsafe { message.m_u.m_pm_lsys_getprocnr };
     Ok(Endpoint(arm.endpt))
 }
 
-/// PM_EXEC_RESTART(44):RS exec 终步——新映像就绪,PM 接管进程
-/// (C `exec_restart`,servers/rs/exec.c:124-135)。
+/// PM_EXEC_RESTART(44): the final step of an RS exec — the new image is ready and
+/// PM takes over the process (C `exec_restart`, servers/rs/exec.c:124-135).
 pub fn exec_restart_via(
     transport: &impl IpcTransport,
     proc_ep: Endpoint,
@@ -1050,7 +1069,8 @@ mod tests {
     fn test_sigprocmask_sends_mask_by_value_and_reads_old() {
         let mut transport = CannedTransport::new();
         let mut reply = reply_with_type(0);
-        // 回复叠加 m_pm_lc_sigset.set(旧掩码)在 raw 前 16 字节。
+        // The reply overlay m_pm_lc_sigset.set (old mask) occupies the first 16
+        // raw bytes.
         let old_mask: [u32; 4] = [0b101, 0, 0, 0];
         for (i, word) in old_mask.iter().enumerate() {
             // SAFETY: byte-level reply overlay for test scripting.
@@ -1064,7 +1084,7 @@ mod tests {
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, PM_CALL_SIGPROCMASK);
         // SAFETY: byte-level overlay reads for assertions. Layout:
-        // how @0、pad @4、ctx(u64) @8、set([u32;4]) @16。
+        // how @0, pad @4, ctx(u64) @8, set([u32;4]) @16.
         let (how, ctx, wire_set) = unsafe {
             (
                 i32::from_ne_bytes(sent.m_u.raw[0..4].try_into().unwrap()),
@@ -1079,7 +1099,8 @@ mod tests {
 
     #[test]
     fn test_sigsuspend_carries_mask_only() {
-        // C sigsuspend.c:11-17——只发 .set;ctx 车道保持零(PM 忽略)。
+        // C sigsuspend.c:11-17 — only .set is sent; the ctx lane stays zero (PM
+        // ignores it).
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
         let mask: [u32; 4] = [0b1000, 0, 0, 0];
@@ -1226,14 +1247,15 @@ mod pm_service_tests {
         (CannedTransport::new(), ())
     }
 
-    /// E9 切片:getepinfo 请求域(endpt/groups/ngroups)与应答臂
-    /// (euid/egid)双向断言。C getepinfo.c:16-25。
+    /// E9 slice: bidirectional assertions on the getepinfo request fields
+    /// (endpt/groups/ngroups) and the reply arm (euid/egid). C getepinfo.c:16-25.
     #[test]
     fn test_getepinfo_via_request_and_reply() {
         let (mut transport, ()) = make_canned();
-        // 应答:pid 500(EPIPE? 不——正数即 pid),应答臂带 euid=1000/egid=100。
+        // Reply: pid 500 (not EPIPE — a positive value is the pid); the reply arm
+        // carries euid=1000/egid=100.
         let mut reply = reply_with_type(500);
-        // SAFETY: 构造应答臂。
+        // SAFETY: construct the reply arm.
         unsafe {
             reply.m_u.m_pm_lsys_getepinfo = minix_types::ipc::MessPmLsysGetepinfo {
                 uid: 999, euid: 1000, gid: 100, egid: 101, ngroups: 0,
@@ -1248,8 +1270,9 @@ mod pm_service_tests {
         assert_eq!(info.egid, 101);
     }
 
-    /// E9 切片:getnpid 薄壳只取 pid;getepinfo 应答臂缺省零值时
-    /// pid 仍正确(负 pid = PM 层错误码语义保留给调用方)。
+    /// E9 slice: the getnpid thin shell takes only the pid; the pid is still
+    /// correct when the getepinfo reply arm holds its default zeros (a negative
+    /// pid, PM's error-code semantics, is left to the caller).
     #[test]
     fn test_getnpid_via_thin_shell() {
         let (mut transport, ()) = make_canned();
@@ -1258,12 +1281,12 @@ mod pm_service_tests {
         assert_eq!(pid, 4242);
     }
 
-    /// E9 切片:getprocnr 请求域(pid)与应答臂(endpt)。
+    /// E9 slice: getprocnr request field (pid) and reply arm (endpt).
     #[test]
     fn test_getprocnr_via_request_and_reply() {
         let (mut transport, ()) = make_canned();
         let mut reply = reply_with_type(4242);
-        // SAFETY: 构造应答臂。
+        // SAFETY: construct the reply arm.
         unsafe {
             reply.m_u.m_pm_lsys_getprocnr = minix_types::ipc::MessPmLsysGetprocnr {
                 endpt: 12,
@@ -1274,35 +1297,37 @@ mod pm_service_tests {
 
         let ep = getprocnr_via(&transport, 4242).unwrap();
         assert_eq!(ep, Endpoint(12));
-        // 请求域:pid 落 m_lsys_pm_getprocnr.pid——via CannedTransport
-        // 的记录面断言(sendrec 的请求在 reply 前交出)。
+        // Request field: the pid lands in m_lsys_pm_getprocnr.pid — asserted
+        // through CannedTransport's recording face (the sendrec request is handed
+        // over before the reply).
     }
 
-    /// E9 切片:exec_restart 请求域(endpt/result/pc/ps_str)。
-    /// C exec.c:128-132。
+    /// E9 slice: exec_restart request fields (endpt/result/pc/ps_str).
+    /// C exec.c:128-132.
     #[test]
     fn test_exec_restart_via_wire() {
         let (mut transport, ()) = make_canned();
         transport.reply_sendrec(Ok(reply_with_type(0)));
         exec_restart_via(&transport, Endpoint(11), 0, 0x40_1000, 0x7FFF_E000).unwrap();
-        // 无 panic 即 Ok;字段断言在集成层覆盖(真传输语义)。
+        // No panic means Ok; field assertions are covered at the integration
+        // layer (real transport semantics).
     }
-    /// E-IPCWIRE 第 4 项:proceventmask_via 请求域(mask)与应答
-    /// (旧掩码作正返回值,proceventmask.c:19)。
+    /// proceventmask_via request field (mask) and reply (the old mask comes back
+    /// as the positive return value, proceventmask.c:19).
     #[test]
     fn test_proceventmask_via_wire() {
         let (mut transport, ()) = make_canned();
-        transport.reply_sendrec(Ok(reply_with_type(0b101))); // 旧掩码
+        transport.reply_sendrec(Ok(reply_with_type(0b101))); // old mask
         let old = proceventmask_via(&transport, 0b010).unwrap();
         assert_eq!(old, 0b101);
     }
 
-    /// E-IPCWIRE 第 7 项:getngid_via 从 getepinfo 应答臂取 egid。
+    /// getngid_via takes egid from the getepinfo reply arm.
     #[test]
     fn test_getngid_via_reply_arm() {
         let (mut transport, ()) = make_canned();
         let mut reply = reply_with_type(500);
-        // SAFETY: 构造应答臂。
+        // SAFETY: construct the reply arm.
         unsafe {
             reply.m_u.m_pm_lsys_getepinfo = minix_types::ipc::MessPmLsysGetepinfo {
                 uid: 999, euid: 1000, gid: 100, egid: 101, ngroups: 0,
@@ -1317,12 +1342,13 @@ mod pm_service_tests {
 }
 
 
-// ── E-IPCWIRE 第 4/7 项:proceventmask 客户端 + getngid 窄 helper ──
+// ── proceventmask client + getngid narrow helper ──
 
-/// PM_PROCEVENTMASK(40):订阅/退订进程事件,返回先前掩码。
-/// C: libsys `proceventmask`(proceventmask.c:11-19)——消息构造器
-/// [`minix_types::ipc::proceventmask_msg`] 已备,此处补 taskcall 组装;
-/// ipc-server `events.rs` 的 SyncAction(订阅/退订)由此承载。
+/// PM_PROCEVENTMASK(40): subscribe/unsubscribe to process events, returning the
+/// previous mask. C: libsys `proceventmask` (proceventmask.c:11-19) — the message
+/// builder [`minix_types::ipc::proceventmask_msg`] already exists; this adds the
+/// taskcall assembly, and ipc-server `events.rs`'s SyncAction (subscribe/
+/// unsubscribe) rides on it.
 pub fn proceventmask_via(transport: &impl IpcTransport, mask: u32) -> Result<u32, Errno> {
     let mut message = minix_types::ipc::proceventmask_msg(
         minix_types::ProcEventMask::from_bits_truncate(mask),
@@ -1332,17 +1358,17 @@ pub fn proceventmask_via(transport: &impl IpcTransport, mask: u32) -> Result<u32
     Ok(reply as u32)
 }
 
-/// PM_GETEPINFO 薄壳:取有效 gid(C `getngid`,getepinfo.c 家族第三个
-/// 窄 helper;getnpid_via/getnuid_via 见上)。
+/// PM_GETEPINFO thin shell: take the effective gid (C `getngid`, the third narrow
+/// helper of the getepinfo family; see getnpid_via/getnuid_via above).
 pub fn getngid_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<i32, Errno> {
     getepinfo_via(transport, proc_ep).map(|i| i.egid)
 }
 
-// ── E9 SchedApi 分域:SCHEDULING_* 消息构造面(RS/PM → 调度器)──
+// ── E9 SchedApi domain: SCHEDULING_* message construction (RS/PM -> scheduler) ──
 
-/// SCHEDULING_START(0xF02):调度器启动目标进程的调度。
-/// C: `sched_start` — sched_start.c:46-88,MessLsysSchedSchedulingStart
-/// {endpoint, parent, maxprio, quantum} 四域。
+/// SCHEDULING_START(0xF02): the scheduler starts scheduling the target process.
+/// C: `sched_start` — sched_start.c:46-88, MessLsysSchedSchedulingStart with four
+/// fields {endpoint, parent, maxprio, quantum}.
 pub fn sched_start_via(
     transport: &impl IpcTransport,
     scheduler: Endpoint,
@@ -1364,7 +1390,7 @@ pub fn sched_start_via(
     Ok(())
 }
 
-/// SCHEDULING_STOP(0xF03):调度器停止目标进程的调度。
+/// SCHEDULING_STOP(0xF03): the scheduler stops scheduling the target process.
 pub fn sched_stop_via(
     transport: &impl IpcTransport,
     scheduler: Endpoint,
@@ -1385,8 +1411,8 @@ mod payload_layout_tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// E-MINTYPES-RUNTIME 第②步：本地 payload 补 56 字节/偏移断言
-    /// （C ipc.h:435-444 mess_lc_pm_exec 五域 + ipc.h:1420-1427 srv_fork）。
+    /// Local payload 56-byte/offset assertions (C ipc.h:435-444
+    /// mess_lc_pm_exec's five fields + ipc.h:1420-1427 srv_fork).
     #[test]
     fn test_exec_payload_layout() {
         assert_eq!(size_of::<ExecPayload>(), 56);
@@ -1417,7 +1443,7 @@ mod itimer_wire_tests {
         message
     }
 
-    /// C 绝对值 pin：PM_ITIMER = PM_BASE + 17（callnr.h:30）。
+    /// C absolute-value pin: PM_ITIMER = PM_BASE + 17 (callnr.h:30).
     #[test]
     fn test_itimer_call_number_matches_c() {
         assert_eq!(PM_CALL_ITIMER, 17);
@@ -1426,16 +1452,18 @@ mod itimer_wire_tests {
         assert_eq!(ITIMER_PROF, 2);
     }
 
-    /// 布局见证：TimevalWire 16 字节、ItimervalWire 32 字节（LP64
-    /// time_t/suseconds_t 各 8；PM sys_datacopy 整块拷贝，alarm.c:120）。
+    /// Layout witness: TimevalWire is 16 bytes and ItimervalWire 32 (LP64
+    /// time_t/suseconds_t are 8 each; PM copies the whole block via sys_datacopy,
+    /// alarm.c:120).
     #[test]
     fn test_itimerval_layout() {
         assert_eq!(core::mem::size_of::<TimevalWire>(), 16);
         assert_eq!(core::mem::size_of::<ItimervalWire>(), 32);
     }
 
-    /// 线格式：which@0（i32）、value@8、ovalue@16（指针域）；Some/None
-    /// 分别落非零/零指针——PM 按指针判 set/get（alarm.c:106-110）。
+    /// Wire format: which@0 (i32), value@8, ovalue@16 (pointer fields); Some/None
+    /// produce nonzero/zero pointers — PM decides set/get by the pointer
+    /// (alarm.c:106-110).
     #[test]
     fn test_setitimer_message_carries_which_and_pointers() {
         let mut transport = CannedTransport::new();
@@ -1475,14 +1503,14 @@ mod gettimeofday_wire_tests {
         message
     }
 
-    /// C 绝对值 pin：PM_GETTIMEOFDAY = PM_BASE + 28（callnr.h:43）。
+    /// C absolute-value pin: PM_GETTIMEOFDAY = PM_BASE + 28 (callnr.h:43).
     #[test]
     fn test_gettimeofday_call_number_matches_c() {
         assert_eq!(PM_CALL_GETTIMEOFDAY, 28);
     }
 
-    /// 回复载荷按 mess_pm_lc_time 解码（ipc.h:1769-1773：sec@0、
-    /// nsec@8），请求本身无载荷。
+    /// The reply payload is decoded as mess_pm_lc_time (ipc.h:1769-1773: sec@0,
+    /// nsec@8); the request itself carries no payload.
     #[test]
     fn test_gettimeofday_reply_carries_sec_and_nsec() {
         let mut transport = CannedTransport::new();
@@ -1500,8 +1528,9 @@ mod gettimeofday_wire_tests {
         assert_eq!(sent.m_type, PM_CALL_GETTIMEOFDAY);
     }
 
-    /// 设置时间的请求把新秒数写在载荷首字段（mess_lc_pm_time.sec@0，
-    /// PM 侧 decode.rs:253 同偏移读）；调用号 PM_STIME=7，回复 OK。
+    /// The set-time request puts the new seconds in the payload's first field
+    /// (mess_lc_pm_time.sec@0; PM reads the same offset at decode.rs:253); the
+    /// call number is PM_STIME=7 and the reply is OK.
     #[test]
     fn test_stime_writes_seconds_and_uses_pm_stime() {
         let mut transport = CannedTransport::new();
@@ -1514,7 +1543,7 @@ mod gettimeofday_wire_tests {
         let sec = unsafe { i64::from_ne_bytes(sent.m_u.raw[0..8].try_into().unwrap()) };
         assert_eq!(sec, 1_700_000_123);
 
-        // 权限门由 PM 判：EPERM 原样回来。
+        // The permission gate is decided by PM: EPERM comes back as-is.
         let mut denied = CannedTransport::new();
         denied.reply_sendrec(Ok(reply_with_type(-minix_types::EPERM)));
         assert_eq!(stime_via(&denied, 1), Err(Errno::EPERM));
@@ -1534,7 +1563,8 @@ mod pm_identity_wire_tests {
         message
     }
 
-    /// 请求腿的 lane 读出（与 vfs fileop 测试同法）。
+    /// Byte-lane readout of the request leg (same method as the vfs fileop
+    /// tests).
     fn raw_lane(msg: &Message, range: core::ops::Range<usize>) -> Vec<u8> {
         // SAFETY: test-only read-back of the outgoing wire bytes.
         unsafe { msg.m_u.raw[range].to_vec() }
@@ -1542,7 +1572,7 @@ mod pm_identity_wire_tests {
 
     #[test]
     fn test_priority_call_numbers_match_c() {
-        // C: callnr.h:39-40 (PM_BASE + 26 / + 27)。
+        // C: callnr.h:39-40 (PM_BASE + 26 / + 27).
         assert_eq!(PM_CALL_GETPRIORITY, 26);
         assert_eq!(PM_CALL_SETPRIORITY, 27);
         assert_eq!(PRIO_MIN, -20); // sys/sys/resource.h:43
@@ -1552,7 +1582,8 @@ mod pm_identity_wire_tests {
     fn test_getppid_reads_parent_lane() {
         let mut transport = CannedTransport::new();
         let mut reply = reply_with_type(0);
-        // 本仓 server 约定：m1i1=self、m1i2=parent（getuid_via 同族）。
+        // This repo's server convention: m1i1=self, m1i2=parent (same family as
+        // getuid_via).
         reply.m_u.m_m1.m1i1 = 7;
         reply.m_u.m_m1.m1i2 = 3;
         transport.reply_sendrec(Ok(reply));
@@ -1589,7 +1620,7 @@ mod pm_identity_wire_tests {
     #[test]
     fn test_getpriority_lanes_and_value_channel() {
         let mut transport = CannedTransport::new();
-        // server 回 raw = nice - PRIO_MIN（C misc.c:266），0..=40。
+        // The server returns raw = nice - PRIO_MIN (C misc.c:266), 0..=40.
         transport.reply_sendrec(Ok(reply_with_type(25)));
         assert_eq!(getpriority_via(&transport, 1, 9), Ok(5)); // 25 + (-20)
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();

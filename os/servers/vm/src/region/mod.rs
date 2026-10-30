@@ -22,7 +22,7 @@ use minix_types::{Endpoint, UserSlot, VirBytes};
 /// In test builds, callers pass `page_table = None` (the zeroed test stub
 /// table has no real storage behind it), so only the physical-frame release
 /// runs; unmap is exercised once a test-injectable Paging implementation
-/// lands (02-stage-vm todo V11-P2-1).
+/// lands (02-stage-vm todo).
 pub(crate) fn free_region_pages(
     mut region: VirRegion,
     page_table: Option<&mut crate::pagetable::PageTable>,
@@ -35,7 +35,9 @@ pub(crate) fn free_region_pages(
     if let Some(pt) = page_table {
         for i in 0..page_count {
             let vaddr = VirBytes(region.vaddr.0 + (i as u64) * PAGE_SIZE);
-            //[SD19-gate] 区域撕页循环，与 vmproc_handle.rs:711 同构：页面可能本就没映射（未触及/已丢），unmap 失败属预期
+            //[SD19-gate] Region teardown loop, structurally the same as
+            // vmproc_handle.rs:711: a page may never have been mapped
+            // (untouched/lost), so an unmap failure is expected
             #[allow(clippy::let_underscore_must_use)]
             let _ = pt.unmap(vaddr);
         }
@@ -63,7 +65,7 @@ pub(crate) fn free_region_pages(
             // Minix3 sends an async VFS request to close the borrowed fd in
             // this branch (C fdref.c:150 — `vfs_request(VMVFSREQ_FDCLOSE, …)`
             // with no callback: a failed close is VFS's diagnostic, not
-            // VM's). V11/T10: the close is enqueued into the VfsRequestQueue;
+            // VM's). The close is enqueued into the VfsRequestQueue;
             // the send half (VFS_VMCALL wire) is edge E-VFSWIRE — the vfs
             // server's message-level decode is still being built by the
             // 09/13-stage workflows.
@@ -81,7 +83,7 @@ pub(crate) fn free_region_pages(
             if vfs_queue.request(vreq).is_err() {
                 // Queue full → the close is lost and the fd leaks in VFS.
                 // Fail-closed drop + audit (C panics on SLABALLOC failure;
-                // this codebase never panics at the IPC boundary, V9-P0-1).
+                // this codebase never panics at the IPC boundary).
                 audit_log!(
                     "[VM VFS] fdclose queue full — fd {} close dropped (fd leak)",
                     close.fd
@@ -111,7 +113,7 @@ pub(crate) enum RegionRemapsError {
     IdMismatch,
     /// More shared remaps were deleted than were made (C
     /// `assert(src_region->remaps > 0)`, demoted to a checked error —
-    /// no panics at the IPC boundary, V9-P0-1).
+    /// no panics at the IPC boundary).
     Underflow,
 }
 
@@ -160,7 +162,7 @@ pub(crate) fn decrement_remaps_in(
 /// `remaps` feeds two observable behaviors — the source stays writable while
 /// a remap holds (`anon_writable`, mem_anon.c:105-113) and GET_REF reports
 /// `1 + remaps` (mem_shared.c:207-209) — which is why a missed decrement is
-/// semantic drift and not just stale bookkeeping (G-V12-7: before this
+/// semantic drift and not just stale bookkeeping (before this
 /// existed, every shm unmap inflated the source's refcount report forever).
 pub(crate) fn release_shared_remap(
     param: &VrParam,
@@ -254,7 +256,7 @@ pub(crate) fn map_pin_memory(
 
     // Phase 2: Process each region with wrflag=true.
     // C: map_handle_memory(vmp, vr, 0, vr->length, 1 /* wrflag */, NULL, 0, 0)
-    // G-V12-8: CoW resolution inside also writes the PTEs via `pt`.
+    // CoW resolution inside also writes the PTEs via `pt`.
     for (vaddr, length) in region_specs {
         crate::fork::handle_memory_once(regions, frames, pfn_alloc, vaddr, length, true, pt)
             .map_err(|_| PinMemoryError::PageNotMapped)?;
@@ -286,7 +288,7 @@ mod tests {
         VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)))
     }
 
-    /// V11/T10: freeing a file-backed region whose fdref reaches zero must
+    /// Freeing a file-backed region whose fdref reaches zero must
     /// enqueue an FdClose request into the VfsRequestQueue (the send half
     /// is edge E-VFSWIRE — the vfs server's VFS_VMCALL message decode).
     #[test]
@@ -329,7 +331,7 @@ mod tests {
         assert_eq!(ep, Endpoint(42));
     }
 
-    /// V11/T21 (V11-P2-1): with SimPaging as the test `PageTable`,
+    /// With SimPaging as the test `PageTable`,
     /// `free_region_pages` can pass `Some(pt)` and exercise REAL unmap
     /// dispatch — the mapped page leaves the simulated page table and its
     /// frame refcount drops. This is the test-side proof that the
@@ -400,7 +402,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // --- G-V12-7: shared-remap release (`release_shared_remap`) — C
+    // --- shared-remap release (`release_shared_remap`) — C
     // `shared_delete`'s source `remaps--` with its `getsrc` validation. ---
 
     /// Spin up an in-use slot with an initialized region map, mirroring the

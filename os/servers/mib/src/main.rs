@@ -12,23 +12,26 @@
 static GLOBAL: std::alloc::System = std::alloc::System;
 
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
-// 无须也不应再调。
+// The freestanding side holds the link reference to minix-rt: the bin code
+// itself uses no symbol from rt, and an unreferenced rlib is dropped whole,
+// taking `_start`, `#[panic_handler]`, and `#[global_allocator]` with it (the
+// `extern crate` retention semantics of the panic-halt pattern). The birth
+// chain's `_start` already completed rt initialization before main (the
+// `lib.rs:86` init contract: called automatically in no_std mode and
+// idempotent), so there is no need—and no reason—to call it again here.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
-// E0277（docker minix-ci:1.94 实测）。
+// The entry point splits by target: the none side satisfies the crt0 Consumer
+// contract (name + Rust ABI + `-> i32`, os/libs/minix-rt/src/crt0.rs:40); the
+// host/test side keeps `()`—since rustc 1.94, Termination is no longer
+// implemented for i32, and an i32 main on the host is E0277 (measured in
+// docker minix-ci:1.94).
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
-    // real_main 原地消费返回 ()；0 即进程退出码（crt0 Consumer contract）。
+    // real_main consumes its return value in place (); 0 is the process exit
+    // code (crt0 Consumer contract).
     real_main();
     0
 }
@@ -54,27 +57,33 @@ fn real_main() {
         let kernel = SysTransport;
         let services = SysServices::default();
 
-        // SD-11 U-5 迁移：把全局堆供给切到 VM_BRK 增长堆，初始断点 = 链接器
-        // 镜像尾（`minix_rt::image_end`，C `brksize.S` 以 `_end` 播 `_brksize`
-        // 的同一符号）。安装本身无 IPC（只切换分配器形态）；首次超出固定池的
-        // 分配才真正发 VM_BRK。出生序上 MIB 晚于 VM（`rs/boot.rs` 装机表），
-        // 安装时 VM 主循环已在收请求；EINVAL（镜像尾为 0 = 链接缺陷）fail-fast。
-        // 与首迁 DS（T3）、二迁 SCHED（T3b）同法。
+        // Migration of the global heap supply to a VM_BRK-grown heap: the
+        // initial break is the tail of the linked image (`minix_rt::image_end`,
+        // the same symbol C's `brksize.S` uses to publish `_brksize` from
+        // `_end`). The install itself issues no IPC (it only switches the
+        // allocator shape); the first allocation that exceeds the fixed pool
+        // actually sends VM_BRK. In the birth order MIB starts after VM (the
+        // install table in `rs/boot.rs`), so VM's main loop is already taking
+        // requests at install time; EINVAL (image tail is 0 = link defect)
+        // fails fast. Same approach as the earlier DS and SCHED migrations.
         #[cfg(target_os = "none")]
         minix_rt::install_vm_supplier(minix_rt::image_end())
             .expect("mib: install_vm_supplier(镜像尾) 不得失败");
 
-        // SD-11 真机取证探针：安装后立即从 VM 腿取一页（8 字节 slab 请求触发
-        // add_slab → supply_page → VM_BRK），失败即 fail-fast。成功打一行串口
-        // 标记——VM_BRK 增长腿端到端贯通的 L1 证据；探针块随 free 回 slab 自由
-        // 表（VM 侧页不回收：收缩 brk 从不 unmap，同 C）。
+        // Real-machine evidence probe: right after the install, take one page
+        // through the VM leg (an 8-byte slab request triggers add_slab →
+        // supply_page → VM_BRK) and fail fast on error. On success print one
+        // serial marker—L1 evidence that the VM_BRK growth leg works end to
+        // end; the probe block returns to the slab free list on free (the VM
+        // side never reclaims pages: shrinking the break never unmaps, same
+        // as C).
         #[cfg(target_os = "none")]
         {
             let probe = minix_rt::alloc(8);
             assert!(!probe.is_null(), "mib: vm-brk probe 分配失败");
             minix_rt::free(probe);
             use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] park as the last resort when the reporting channel itself is broken (panic.c:66)
             let _ = sys_diagctl_write(
                 &DirectKernelCallTransport,
                 "nk4a: mib-vmbrk probe ok pages=1 via=VM_BRK\n",

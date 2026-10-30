@@ -50,7 +50,7 @@ fn run() -> ! {
             }
         };
         expand_stream(fd, &stops);
-        //[SD19-gate] SD-19: close 后 fd 不再使用
+        //[SD19-gate] the fd is not used after close
         #[allow(clippy::let_underscore_must_use)]
         let _ = close(fd);
     }

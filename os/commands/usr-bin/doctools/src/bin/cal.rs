@@ -1,13 +1,16 @@
 //! Minix-RS cal — the doing half over `minix_doctools::cal`.
 //!
-//! Ground truth: `minix3/usr.bin/cal/cal.c` (`main` 的参数解析与
-//! `render_month`/`render_year` 的年版式）。决定半（栅格与渲染）在库内；
-//! 本程序只翻命令行、取当前时刻、把渲染结果写到标准输出。
+//! Ground truth: `minix3/usr.bin/cal/cal.c` (`main`'s argument parsing and the
+//! year layout of `render_month`/`render_year`).  The deciding half (grid and
+//! rendering) lives in the library; this program only translates the command
+//! line, reads the current time, and writes the rendered result to standard
+//! output.
 //!
-//! 声明性留白（10-doc-man-tools.md §5）：`-r`/`-h`/`-A`/`-B`/`-C`/
-//! `-R` 等面回答 "option not wired"；月份只收数字（C 的月名解析面未
-//! 移植，C 自身也只收数字）。`-y`（强制年视图）、`-j`（年积日）、`-3`（前/
-//! 当/后月三联）与 `-d`（周起始日 0..6）已接。
+//! Declared gaps (10-doc-man-tools.md §5): `-r`/`-h`/`-A`/`-B`/`-C`/`-R` and
+//! similar faces answer "option not wired"; months are accepted as numbers only
+//! (C's month-name parsing was not ported, and C itself only accepts numbers
+//! too).  `-y` (force the year view), `-j` (day of year), `-3` (previous/current/
+//! next month triple) and `-d` (week start day 0..6) are wired.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -30,12 +33,13 @@ fn fail(message: &str) -> ! {
     support::terminate(1)
 }
 
-/// 当前 UTC 时刻（`cal` 无参时的当前月）：宿主读宿主钟，目标读内核
-/// `SYS_TIMES` 面（`support::epoch_micros` 双形）。
+/// The current UTC instant (the current month when `cal` has no operands): on the
+/// host it reads the host clock, on the target the kernel `SYS_TIMES` face
+/// (`support::epoch_micros` has both forms).
 fn now_epoch_days_civil() -> (i32, u32) {
     let secs = (support::epoch_micros().unwrap_or(0) / 1_000_000) as i64;
     let days = secs.div_euclid(86_400);
-    // Hinnant civil_from_days（与 12 篇 stamp.rs 同式）。
+    // Hinnant civil_from_days (the same formula as the library's stamp.rs).
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = (z - era * 146_097) as u64;
@@ -120,8 +124,9 @@ fn run() -> ! {
                     'y' => force_year = true,
                     'j' => style = DayStyle::Julian,
                     '3' => force_triple = true,
-                    // -d 取值（0..=6）：值附于本 token（-d1）或取下一词（-d 1），
-                    // 对位 C getopt("...d:...", cal.c:247) 与 getnum。
+                    // -d value (0..=6): attached to this token (-d1) or taken from
+                    // the next word (-d 1), matching C getopt("...d:...", cal.c:247)
+                    // and getnum.
                     'd' => {
                         k += 1;
                         let raw: String = if k < rest.len() {
@@ -134,9 +139,9 @@ fn run() -> ! {
                             Ok(v @ 0..=6) => week_start = v as usize,
                             _ => fail("illegal day of week value: use 0-6"),
                         }
-                        k = rest.len(); // -d 吃值后终止本 token 扫描
+                        k = rest.len(); // -d consumes its value and ends this token scan
                     }
-                    // 其余 C 旗标（-h r A B C R）逐个留白。
+                    // The remaining C flags (-h r A B C R) each stay unwired.
                     _ => fail("option not wired"),
                 }
                 k += 1;
@@ -194,7 +199,8 @@ mod view_tests {
 
     #[test]
     fn no_operand_with_y_is_current_year() {
-        // 旧体把 `-y` 当静默 no-op，仍走月视图——这行钉住与 C 一致：无操作数时 -y 拉年。
+        // The old body treated `-y` as a silent no-op and still used the month
+        // view; this pins the C behaviour: with no operands, -y pulls the year.
         assert_eq!(
             choose_view(&[], true, false, (2026, 10)),
             Ok(View::Year(2026))
@@ -219,7 +225,7 @@ mod view_tests {
 
     #[test]
     fn minus_three_reshapes_month_faces_to_triple() {
-        // 无操作数 + -3 → 当前月三联；两操作数 + -3 → 指定月三联。
+        // No operands + -3 -> the current month triple; two operands + -3 -> the triple for that month.
         assert_eq!(
             choose_view(&[], false, true, (2026, 10)),
             Ok(View::Triple(2026, 10))
@@ -232,7 +238,8 @@ mod view_tests {
 
     #[test]
     fn minus_three_ignored_on_year_only_and_y_outranks() {
-        // 单操作数（年）不受 -3 影响（C 在 month==0 时回到 yearly）；-y 优于 -3。
+        // A single operand (a year) is unaffected by -3 (C goes back to yearly when
+        // month==0); -y outranks -3.
         assert_eq!(
             choose_view(&["2025"], false, true, (2026, 10)),
             Ok(View::Year(2025))

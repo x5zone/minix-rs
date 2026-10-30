@@ -4,7 +4,8 @@
 //!
 //! # Design Approach
 //!
-//! Uses **Approach 5: Monotonic increment + local validation**, combining Minix's original spirit with modern Rust syntax.
+//! Uses **monotonic increment with local validation**, combining Minix's original
+//! spirit with modern Rust syntax.
 //!
 //! # Core Idea
 //!
@@ -44,12 +45,13 @@
 //! }
 //! ```
 //!
-//! # ARCH 行为差异（03-mproc-table.md §3.4）
+//! # ARCH behavior difference (03-mproc-table.md section 3.4)
 //!
-//! C 扫描**全部**槽位（`for rmp = &mproc[0]; rmp < &mproc[NR_PROCS]`），
-//! 释放槽的陈旧 `mp_procgrp` 会造成额外跳过；Rust 只扫活进程
-//! （[`ProcTable::iter_active`]）——对活进程的 PID 唯一性契约两边一致，
-//! 环绕边界上"具体选中哪个 PID"可能有差异，不构成外部语义变化。
+//! C scans **every** slot (`for rmp = &mproc[0]; rmp < &mproc[NR_PROCS]`), so a
+//! stale `mp_procgrp` in a released slot causes extra skips; Rust scans only
+//! live processes ([`ProcTable::iter_active`]) — the PID uniqueness contract
+//! for live processes is the same on both sides, and which PID is picked at a
+//! wrap boundary may differ, which is not an external semantic change.
 //!
 //! # Single Source of Truth Principle
 //!
@@ -131,10 +133,11 @@ impl PidGenerator {
     /// ```
     pub fn get_free_pid(&self, table: &ProcTable) -> Pid {
         loop {
-            // C utility.c:38：先自增 next_pid 再检查再返回——初值
-            // INIT_PID+1（2）只是游标，永不作为分配结果，首个 PID 是
-            // INIT_PID+2（3）。V2-P1-1：旧实现返回自增前的旧值，相位
-            // 与 C 相差一位，pid 2 在 C 中永不使用。
+            // C utility.c:38 increments next_pid first, then checks, then
+            // returns — the initial value INIT_PID+1 (2) is only a cursor and
+            // never an allocation result, so the first PID is INIT_PID+2 (3).
+            // The value returned here is the incremented one, in phase with C;
+            // pid 2 is never used in C either.
             let next = if self.next_pid.get() < NR_PIDS {
                 self.next_pid.get() + 1
             } else {
@@ -199,8 +202,8 @@ mod tests {
         let generator = PidGenerator::new();
         let table = create_test_table();
 
-        // C utility.c:38 先自增再返回：首分配 = INIT_PID + 2（3），
-        // PID 2 永不使用（V2-P1-1 相位修正）。
+        // C utility.c:38 increments before returning: the first allocation is
+        // INIT_PID + 2 (3), and PID 2 is never used.
         let pid = generator.get_free_pid(&table);
         assert_eq!(pid, INIT_PID + 2);
     }
@@ -224,7 +227,7 @@ mod tests {
 
         let table = create_test_table();
 
-        // 新相位（C utility.c:38）：返回自增后的值。
+        // Post-increment phase (C utility.c:38): the incremented value is returned.
         let pid1 = generator.get_free_pid(&table);
         assert_eq!(pid1, NR_PIDS);
 
@@ -244,7 +247,8 @@ mod tests {
         table.procs[0].identity.id.pid = 3;
         table.procs[0].identity.procgrp = 3;
 
-        // 新相位下首候选是 3（INIT_PID+2），与槽内 pid/procgrp 冲突 → 跳到 4。
+        // The first candidate is 3 (INIT_PID+2), which conflicts with the slot's
+        // pid/procgrp, so the scan moves on to 4.
         let pid = generator.get_free_pid(&table);
         assert_ne!(pid, 3);
         assert!((INIT_PID + 2..=NR_PIDS).contains(&pid));
@@ -259,7 +263,7 @@ mod tests {
         table.procs[0].identity.id.pid = 100;
         table.procs[0].identity.procgrp = 3;
 
-        generator.next_pid.set(2); // 新相位下首候选 = 3
+        generator.next_pid.set(2); // first candidate = 3
         let pid = generator.get_free_pid(&table);
         assert_ne!(pid, 3);
     }
@@ -278,14 +282,15 @@ mod tests {
 
     #[test]
     fn test_released_slot_stale_procgrp_not_conflict() {
-        // ARCH 差异（03-mproc-table.md §3.4）：C 扫描全部槽位，释放槽的
-        // 陈旧 mp_procgrp 会造成额外跳过；Rust 只扫活进程（iter_active）——
-        // 对活进程的唯一性契约不变。
+        // ARCH difference (03-mproc-table.md section 3.4): C scans every slot,
+        // so a stale mp_procgrp in a released slot causes extra skips; Rust
+        // scans live processes only (iter_active) — the uniqueness contract for
+        // live processes is unchanged.
         let generator = PidGenerator::new();
         let mut table = create_test_table();
-        generator.next_pid.set(7); // 新相位下候选 = 8
+        generator.next_pid.set(7); // candidate = 8
 
-        // 未使用槽位持有陈旧 procgrp=7：不参与冲突检测。
+        // The unused slot holds a stale procgrp=7: it takes no part in conflict detection.
         table.procs[0].identity.procgrp = 7;
         let pid = generator.get_free_pid(&table);
         assert_eq!(pid, 8);

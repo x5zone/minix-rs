@@ -170,9 +170,10 @@ pub trait FkeyCtlTransport {
     fn fkey_ctl(&mut self, req: FkeyReq, fkeys: u32, sfkeys: u32) -> (i32, u32, u32);
 }
 
-/// 生产 fkey 传输(S23 片 2):`fkey_ctl` 经 minix-sys 的
-/// `fkey_ctl_via`——C libsys `fkey_ctl`(fkey_ctl.c:11-28)的
-/// `_taskcall(TTY, TTY_FKEY_CONTROL)` 直译,回复带回 TTY 未消费的位。
+/// Production fkey transport: `fkey_ctl` goes through minix-sys's
+/// `fkey_ctl_via`—a direct translation of C libsys `fkey_ctl`
+/// (fkey_ctl.c:11-28) calling `_taskcall(TTY, TTY_FKEY_CONTROL)`; the reply
+/// carries back the bits TTY did not consume.
 pub struct SysFkeyCtl;
 
 impl FkeyCtlTransport for SysFkeyCtl {
@@ -244,8 +245,9 @@ pub fn pull_events<C: FkeyCtlTransport>(client: &mut C) -> (i32, u32, u32) {
 mod tests {
     #[test]
     fn test_sys_fkey_ctl_hosted_is_eio() {
-        // hosted:SysFkeyCtl 经 trap 直连,CannedTransport 缺席时诚实回
-        // (EIO, 入参原样);S23 片 2 的真装面。
+        // Hosted: SysFkeyCtl connects straight through the trap, so when no
+        // CannedTransport is present it honestly answers (EIO, inputs passed
+        // through unchanged); this is the production wiring face.
         use super::{FkeyCtlTransport, FkeyReq, SysFkeyCtl};
         let mut c = SysFkeyCtl;
         let (status, fk, sfk) = c.fkey_ctl(FkeyReq::Map, 0x3, 0x1);

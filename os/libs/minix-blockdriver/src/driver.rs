@@ -195,8 +195,8 @@ pub fn classify(
 /// policy.
 /// Server state for one block driver: run flag plus open tracking.
 ///
-/// The machinery is the shared driver-runtime core (`[ARCH: 驱动服务运行时
-/// 统一]`); the character framework's identical copy was consolidated
+/// The machinery is the shared driver-runtime core ([ARCH: unified driver
+/// service runtime]); the character framework's identical copy was consolidated
 /// there; this alias keeps the block-family name over the shared
 /// implementation.
 pub type BlockServer = minix_driver_rt::core::ServerState;

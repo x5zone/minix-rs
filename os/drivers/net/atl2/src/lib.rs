@@ -1,8 +1,8 @@
-//! Minix-RS driver (net/atl2) — 占位 crate。
+//! Minix-RS driver (net/atl2) — placeholder crate.
 //!
-//! C 对应: `minix3/minix/drivers/net/atl2/`
-//! 状态: 占位（stub），待实装。
+//! C correspondence: `minix3/minix/drivers/net/atl2/`
+//! Status: placeholder (stub), pending implementation.
 #![no_std]
 
-/// 服务初始化入口（占位）。
+/// Service initialization entry point (placeholder).
 pub fn init() {}

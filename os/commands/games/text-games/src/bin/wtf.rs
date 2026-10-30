@@ -1,11 +1,14 @@
 //! Minix-RS wtf — the doing half over `minix_text_games::acronym`.
 //!
-//! Ground truth: `minix3/games/wtf/wtf`（`-f` 指库、`-o` 只认全字、
-//! 开头那一枚 `is` 被移走而后面出现的 `is` 照查；库行是 `term: expansion`）。决定半
-//! （行解析、大小写不敏感首中查询）在库内；本壳拼参数、读库、
-//! 逐词打印 `term: expansion`，任一词查无即退出 1。
+//! Ground truth: `minix3/games/wtf/wtf` (`-f` names a database, `-o` accepts
+//! only whole words, a leading `is` is removed while later `is` tokens are
+//! still looked up; a database line is `term: expansion`). The decision half
+//! (line parsing, case-insensitive first-match lookup) lives in the library;
+//! this shell assembles arguments, reads the database, prints
+//! `term: expansion` word by word, and exits 1 if any word is unknown.
 //!
-//! 库默认 `/usr/share/misc/acronyms`（NetBSD wtf 的缺省路径）。
+//! The default database is `/usr/share/misc/acronyms` (NetBSD wtf's default
+//! path).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -26,34 +29,47 @@ fn run() -> ! {
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut db_files: Vec<&str> = Vec::new();
     let mut at = 1;
-    // 真源 `minix3/games/wtf/wtf:16-27` 走 `getopts f:o`，认不出来的旗标一律 `usage`
-    // 退 1（实测 `sh minix3/games/wtf/wtf -Z nasa` → 先一句 shell 自己的
-    // `Illegal option -Z`、再程序自己的 usage、退码 1）。改前本壳把 `-Z` 当查询词咽了下去。
-    // 那句 `Illegal option …` 是 shell 印的，不是 wtf 印的——与批次三百七十六对 `wtf`
-    // 写腿的结论同一条：判据不归这个程序，所以本壳只复用它自己那句 usage。
+    // The source of truth `minix3/games/wtf/wtf:16-27` runs `getopts f:o`, and
+    // any unrecognised flag gets `usage` and exit 1 (measured: `sh
+    // minix3/games/wtf/wtf -Z nasa` → first the shell's own `Illegal option
+    // -Z`, then the program's usage, exit 1). The earlier shell swallowed `-Z`
+    // as a query word. That `Illegal option …` line is printed by the shell,
+    // not by wtf — the same conclusion as for the `wtf` write leg: the verdict
+    // does not belong to this program, so this shell only reuses its own
+    // usage line.
     //
-    // 停环的位置由 `getopts` 定：第一个非选项 token 一到就停，**不重排**，剩下的整段
-    // 经脚本 `:30` 的 `shift "$(expr "$OPTIND" - 1)"` 交回位置参数。
+    // Where the ring stops is decided by `getopts`: it stops at the first
+    // non-option token, **without reordering**, and the remaining run goes
+    // back to the positional parameters through the script's `:30`
+    // `shift "$(expr "$OPTIND" - 1)"`.
     while at < args.len() {
         match args[at] {
             "-f" => {
                 at += 1;
                 match args.get(at).copied() {
                     Some(path) => {
-                        // 脚本 `:21` 是 `acronyms="$OPTARG $acronyms"`——每一枚 `-f` 都
-                        // **插到列表最前面**，所以 `-f w1 -f w2` 的搜索次序是 w2 先。
-                        // 现量两档各有 `LOL` 时输出 `LOL: second file` 换行 `first file`。
+                        // Script `:21` is `acronyms="$OPTARG $acronyms"` — every
+                        // `-f` is **prepended to the list**, so `-f w1 -f w2`
+                        // searches w2 first. Measured: with `LOL` in both
+                        // files the output is `LOL: second file` newline
+                        // `first file`.
                         db_files.insert(0, path);
                         at += 1;
                     }
-                    // 实测 `sh … -f` → shell 一句 `No arg for -f option` + 程序的 usage
-                    // 退 1；本壳自创的 `wtf: -f needs a database path` 两句都不是，改掉。
+                    // Measured: `sh … -f` → one shell line
+                    // `No arg for -f option` + the program's usage, exit 1.
+                    // Neither matches this shell's old invented
+                    // `wtf: -f needs a database path`, so the shell now falls
+                    // back to usage.
                     None => usage(),
                 }
             }
             "-o" => {
-                // 只认全字的旗标：决定半的查询本就是全字匹配，语义已含。
-                // 真正挑 `*-o` 那批库档要的是通配展开，那是 A9c 的第②条。
+                // The whole-word-only flag: the decision half's lookup is
+                // already whole-word, so its semantics are implied. Actually
+                // picking the `*-o` family of database files would need glob
+                // expansion, which needs directory enumeration this crate does
+                // not have yet.
                 at += 1;
             }
             "--" => {
@@ -64,15 +80,19 @@ fn run() -> ! {
             _ => break,
         }
     }
-    // 脚本对 `is` 只做了这一件事（`:32-34`）：`if [ "$1" = "is" ]; then shift; fi`——
-    // 移走**开头**那一枚，一次，而且比的是字面量（`IS` 不算，它是个查询词）。
-    // 之后每个 token 都是查询词，**包括后面再出现的 `is`**。三形现量
-    // （`sh minix3/games/wtf/wtf -f minix3/share/misc/acronyms …`）：
-    // `y2k is` → `y2k` 与 `is` 各一句「I don't know what …」；
-    // `is is y2k` → 先 `is` 后 `y2k`（只移走开头那一枚）；
-    // `IS lol` → `IS` 查无一句，随后仍印 `LOL: laughing out loud`，退 1。
-    // 旧写法在查询循环里跳过任意位置的 `is`，还把它做成大小写不敏感的
-    // `is_skipped_word`，于是上面三形全与参照件分叉（且退码也差）。
+    // The script does exactly one thing with `is` (`:32-34`): `if [ "$1" =
+    // "is" ]; then shift; fi` — it removes **the leading** one, once, and
+    // compares the literal (`IS` does not count; it is a query word). Every
+    // token after that is a query word, **including a later `is`**. Measured
+    // for the three shapes (`sh minix3/games/wtf/wtf -f
+    // minix3/share/misc/acronyms …`):
+    // `y2k is` → one "I don't know what …" each for `y2k` and `is`;
+    // `is is y2k` → `is` first, then `y2k` (only the leading one is removed);
+    // `IS lol` → one not-found line for `IS`, then still prints
+    // `LOL: laughing out loud`, exit 1.
+    // The old form skipped `is` at any position inside the query loop and made
+    // it the case-insensitive `is_skipped_word`, so all three shapes diverged
+    // from the reference build (exit codes too).
     let mut terms: Vec<&str> = args[at.min(args.len())..].to_vec();
     if terms.first().copied() == Some("is") {
         terms.remove(0);
@@ -81,12 +101,17 @@ fn run() -> ! {
         usage();
     }
 
-    // 脚本 `:42-56` 造那个档列表：`-f` 给过就用 `-f` 的（`ACRONYMDB` 此时**整支不看**，
-    // 现量 `ACRONYMDB=<有该词的库> sh … -f /etc/hostname lol` → 查无）；否则 `ACRONYMDB`
-    // 非空时把它的整串当列表（`acronyms="$ACRONYMDB"`，随后 `for f in $acronyms` 按
-    // **空白断词**，现量 `ACRONYMDB="w1  w2 "` 这种连排与尾部空格都能命中 w2 里的条目）；
-    // 两者都空才去对 `/usr/share/misc/acronyms*` 做通配展开——那一支要目录枚举，本 crate
-    // 现在拿不到（`dents` 住在 `minix-fileops`），所以退回单档缺省名，这一形已登记。
+    // Script `:42-56` builds the file list: when `-f` was given its value is
+    // used (`ACRONYMDB` is **not consulted at all** in that case; measured:
+    // `ACRONYMDB=<database with that word> sh … -f /etc/hostname lol` → not
+    // found); otherwise, when `ACRONYMDB` is non-empty its whole string is the
+    // list (`acronyms="$ACRONYMDB"`, and then `for f in $acronyms` splits on
+    // **whitespace** — measured: `ACRONYMDB="w1  w2 "` with runs and trailing
+    // spaces still finds the entry inside w2); only when both are empty does it
+    // glob `/usr/share/misc/acronyms*` — that branch needs directory
+    // enumeration, which this crate cannot reach today (`dents` lives in
+    // `minix-fileops`), so it falls back to the single default name; that shape
+    // is a recorded gap.
     let env_list = if db_files.is_empty() {
         env_value("ACRONYMDB").unwrap_or_default()
     } else {
@@ -100,22 +125,28 @@ fn run() -> ! {
         files.push(DEFAULT_DB);
     }
 
-    // 列表里每一档都要**先**过一遍：脚本 `:64-69` 是一条独立的前置圈，逐档
-    // `[ ! -f $f ]`，第一档开不了就打 `cannot open acronym database file \`<档>'` 并
-    // **当场退 1**——后面还有好档也不查、也不印任何命中行（现量
-    // `-f <含 LOL 的档> -f <不存在> lol` 只出那一句、退 1；反序同）。
-    // 前置圈过了之后才逐档读进同一个行池（`:76` 的 `fgrep -h $acronyms` 是把所有档
-    // 当一个流搜），顺序就是列表顺序。
-    // 开档读档走 `support::slurp_operand` 的双生面（真机腿 `minix_sys::{open, read, close}`、
-    // 宿主腿 `std::fs`）。改前这里直接写死 `minix_sys::open`，**宿主上任何真实存在的库档都报
-    // `cannot open` 退 1**——与批次三百六十一给 `fortune` 治的是同一枚缺陷。
+    // Every file in the list must be checked **first**: script `:64-69` is a
+    // separate front loop testing `[ ! -f $f ]` per file, and the first file
+    // that cannot be opened prints `cannot open acronym database file
+    // \`<file>'` and **exits 1 on the spot** — later good files are not
+    // searched and no match line is printed (measured: `-f <file with LOL> -f
+    // <missing> lol` produces only that line and exits 1; the reverse order
+    // behaves the same). Only after the front loop does it read every file into
+    // one line pool (`:76`'s `fgrep -h $acronyms` searches all files as a
+    // single stream), in list order.
+    // Opening and reading files goes through `support::slurp_operand`'s twin
+    // face (real-hardware leg `minix_sys::{open, read, close}`, host leg
+    // `std::fs`). The earlier version wrote `minix_sys::open` directly, so
+    // **any database file that really exists on the host reported `cannot
+    // open` and exited 1** — the same defect that was fixed for `fortune`.
     let mut lines: Vec<&str> = Vec::new();
     let mut pool: Vec<String> = Vec::new();
     for path in &files {
         let image = match support::slurp_operand(path) {
             Ok(image) => image,
             Err(support::OperandFailure::Open(_)) => {
-                // 脚本原句 `wtf: cannot open acronym database file \`<路径>'`（`:67`，实测同）。
+                // The script's literal line is `wtf: cannot open acronym
+                // database file \`<path>'` (`:67`; the measurement agrees).
                 support::warn(
                     format!("wtf: cannot open acronym database file `{path}'\n").as_bytes(),
                 );
@@ -130,25 +161,32 @@ fn run() -> ! {
 
     let mut status = 0;
     for term in &terms {
-        // 脚本 `:75` 先把查询词转大写（`tr '[a-z]' '[A-Z]'`）再拿它输出，实测
-        // `ACRONYMDB=<库> sh … nasa` → `NASA: National Aeronautics and Space Administration`。
-        // 改前本壳原样输出查询词，等于把「打印哪个形态」这件真值漏掉了。
+        // Script `:75` upper-cases the query word first (`tr '[a-z]' '[A-Z]'`)
+        // and uses that for the output; measured: `ACRONYMDB=<database> sh …
+        // nasa` → `NASA: National Aeronautics and Space Administration`. The
+        // earlier shell printed the query word as given, which lost that
+        // ground-truth detail of "which form gets printed".
         let shown = term.to_ascii_uppercase();
         let expansions = matching_expansions(&lines, term);
         if !expansions.is_empty() {
-            // 一个词命中**多行**时（同档重复词条，或两档各有该词），`:77` 的 `sed` 把所有
-            // 匹配行都留下、`:80` 的 `echo "$target: $ans"` 只在**第一行**前面加 `TARGET: `，
-            // 后面的行裸着出。现量：同档两行 `LOL` → `LOL: first match` 换行 `second match`。
+            // When one word matches **several lines** (a duplicate entry in one
+            // file, or the word in two files), `:77`'s `sed` keeps every
+            // matching line and `:80`'s `echo "$target: $ans"` prefixes
+            // `TARGET: ` to the **first line** only, leaving later lines bare.
+            // Measured: two `LOL` lines in one file → `LOL: first match`
+            // newline `second match`.
             let joined = expansions.join("\n");
             support::emit(format!("{shown}: {joined}\n").as_bytes());
             continue;
         }
         {
-            // 脚本原句走的是**操作数原样**而不是大写化的 target：`:105` 写的是
-            // `echo "$PROGNAME: I don't know what \`$i' means!"`（`$i` 是移位后的
-            // 实参，`$target` 只在命中那支用）。实测 `… zzz` → ``I don't know what
-            // `zzz' means!``，本壳一度印成 `ZZZ` 已经改回。句子本身走 stderr、
-            // 末了 `rv=1`（`:106-107`）。
+            // The script's own line uses the **operand as given**, not the
+            // upper-cased target: `:105` says `echo "$PROGNAME: I don't know
+            // what \`$i' means!"` (`$i` is the shifted argument; `$target` is
+            // only used in the matching branch). Measured: `… zzz` → ``I don't
+            // know what `zzz' means!``; this shell once printed `ZZZ` and has
+            // been changed back. The sentence itself goes to stderr, and at the
+            // end `rv=1` (`:106-107`).
             support::warn(format!("wtf: I don't know what `{term}' means!\n").as_bytes());
             status = 1;
         }
@@ -156,10 +194,13 @@ fn run() -> ! {
     support::terminate(status)
 }
 
-/// 环境里 `NAME` 的值：按 C 的 `getenv` 取**第一条**带 `NAME=` 前缀的串并去掉前缀。
-/// 与 `os/commands/bin/fileops/src/bin/du.rs:env_value` 同法——两处的宿主/真机双生面
-/// 各自住在自己的 `bin_support`，所以这份扫描也跟着各留一份（提到共件要跨 crate，
-/// 那属 `os/libs/` 的归属决定，不在本轮射程）。
+/// The value of `NAME` in the environment: follow C's `getenv`, take the
+/// **first** entry with the `NAME=` prefix and strip the prefix.
+/// Same method as `os/commands/bin/fileops/src/bin/du.rs:env_value` — the host
+/// and real-hardware twin faces each live in their own `bin_support`, so this
+/// scan is kept once per copy too (hoisting it into shared code would cross
+/// crate boundaries, which is an `os/libs/` ownership decision and out of
+/// scope here).
 fn env_value(name: &str) -> Option<String> {
     let prefix = format!("{name}=");
     support::envs().iter().find_map(|entry| {
@@ -168,9 +209,10 @@ fn env_value(name: &str) -> Option<String> {
     })
 }
 
-/// 脚本的 `usage()`（`minix3/games/wtf/wtf:11-14`）是 `echo` 到**标准输出**再退 1，
-/// 实测分路读数：stdout 收到 `usage: wtf [-o] [-f dbfile] [is] term ...`、stderr 空。
-/// 改前本壳把它发到 stderr，且文本里没有 `[-o]`。
+/// The script's `usage()` (`minix3/games/wtf/wtf:11-14`) is an `echo` to
+/// **standard output** followed by exit 1; measured per stream: stdout gets
+/// `usage: wtf [-o] [-f dbfile] [is] term ...` and stderr is empty. The earlier
+/// shell sent it to stderr and the text had no `[-o]`.
 fn usage() -> ! {
     support::emit(b"usage: wtf [-o] [-f dbfile] [is] term ...\n");
     support::terminate(1);

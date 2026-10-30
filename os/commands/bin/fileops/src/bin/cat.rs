@@ -126,7 +126,7 @@ fn run() -> ! {
         } else {
             copy_stream(fd);
         }
-        //[SD19-gate] SD-19: close 后 fd 不再使用
+        //[SD19-gate] the fd is no longer used after close
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
     }

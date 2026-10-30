@@ -1,37 +1,51 @@
-//! E5(b) — VM↔VFS 的 `FDCLOSE` 往返（宿主态，按 wire 构造请求与应答）。
+//! E5(b) — the VM↔VFS `FDCLOSE` round trip (host side, request and reply built
+//! to the wire).
 //!
-//! VM 为文件映射向 VFS 借用一个 fd（`FDLOOKUP` 在自己的进程表里落一个副本），
-//! 用完再把它还回去（`FDCLOSE`）。这条往返只有两个跨服务动作，VFS 侧的全部
-//! 语义恰好落在一条消息的一进一出上，所以它能在宿主态测到接近真机的程度。
+//! VM borrows an fd from VFS for a file mapping (`FDLOOKUP` stores a copy in its
+//! own process table) and hands it back when done (`FDCLOSE`). This round trip
+//! has only two cross-service actions, and all of VFS's semantics for it fall on
+//! one message in and one message out, so it can be tested on the host close to
+//! real-machine fidelity.
 //!
-//! # 链路面（三段真代码，只有 VM 的发送半以 wire 形状代替）
+//! # Chain surface (three real code pieces; only VM's sending half is replaced
+//! by a wire-shaped construction)
 //!
-//! 1. **VM 发送半**：生产实现是 `VfsRequestQueue::take_pending_vfs_call`
-//!    （`os/servers/vm/src/vfs_queue.rs:161-203`），它把六个语义域写进
-//!    `minix_types::MessVmVfsCall`。整个队列是 `pub(crate)`，宿主测试链接不到，
-//!    因此本文件按同一 wire 结构构造请求——两边写的是同一个结构体，所以这条
-//!    构造就是 VM↔VFS 的字节约定本身（`MessVmVfsCall` 的 56 字节布局另有
-//!    `minix-types/src/ipc/vm.rs:1811-1821` 的偏移见证）。
-//! 2. **VFS 接收半**：`minix_vfs::misc::decode_vm_call` 真解码器解出六域
-//!    （`misc.rs:422-437`），随后按 C `do_vm_call` 的 `VMVFSREQ_FDCLOSE` 分支
-//!    （`minix3/minix/servers/vfs/misc.c:452-462`）走 `close_fd` 真语义
-//!    （`filedes.rs:202`，C `open.c:690`）。
-//! 3. **VM 接收半**：`minix_types::VmVfsReplyIn::decode_message`——即 VM 主循环
-//!    从消息解应答用的那个解码器（`os/servers/vm/src/ipc/dispatcher.rs:773`）。
+//! 1. **VM sending half**: the production implementation is
+//!    `VfsRequestQueue::take_pending_vfs_call`
+//!    (`os/servers/vm/src/vfs_queue.rs:161-203`), which writes six semantic
+//!    fields into `minix_types::MessVmVfsCall`. The whole queue is
+//!    `pub(crate)`, so host tests cannot link to it; this file therefore builds
+//!    the request against the same wire structure — both sides write the same
+//!    struct, so this construction *is* the VM↔VFS byte convention itself (the
+//!    56-byte layout of `MessVmVfsCall` has its own offset witness in
+//!    `minix-types/src/ipc/vm.rs:1811-1821`).
+//! 2. **VFS receiving half**: `minix_vfs::misc::decode_vm_call`, the real
+//!    decoder, extracts the six fields (`misc.rs:422-437`), then follows the
+//!    `VMVFSREQ_FDCLOSE` branch of C's `do_vm_call`
+//!    (`minix3/minix/servers/vfs/misc.c:452-462`) into `close_fd`'s real
+//!    semantics (`filedes.rs:202`, C `open.c:690`).
+//! 3. **VM receiving half**: `minix_types::VmVfsReplyIn::decode_message` — the
+//!    very decoder VM's main loop uses to parse replies
+//!    (`os/servers/vm/src/ipc/dispatcher.rs:773`).
 //!
-//! # 与两侧自有单测的分工（本文件不抄的部分）
+//! # Division of labour with each side's own unit tests (not copied here)
 //!
-//! - `decode_vm_call` 的纯解码与拒绝行为、`VM_VFS_REPLY` 的字面值，已由
-//!   `os/servers/vfs/src/misc.rs:1355-1399` 的往返测试与
-//!   `minix-types/src/ipc/vm.rs:1804-1808` 的常量钉值覆盖，此处不再重复；
-//! - `close_fd` 自身的 fd 清位 / `cloexec` 清位 / 引用计数递减，已由
-//!   `os/servers/vfs/src/filedes.rs:501-522` 的 `test_close_ok` 覆盖；
-//! - VM 队列按属主撤销（`purge_by_owner`，死进程兜底）是 VM crate 内部面，
-//!   `pub(crate)` 不可链接，由 `os/servers/vm/src/vfs_queue.rs:459-528` 自测覆盖。
+//! - `decode_vm_call`'s pure decode and reject behaviour, plus the literal
+//!   value of `VM_VFS_REPLY`, are already covered by the round-trip test at
+//!   `os/servers/vfs/src/misc.rs:1355-1399` and the pinned constants at
+//!   `minix-types/src/ipc/vm.rs:1804-1808`, so they are not repeated here;
+//! - `close_fd`'s own fd-bit clear / `cloexec` clear / reference-count
+//!   decrement is already covered by `test_close_ok` at
+//!   `os/servers/vfs/src/filedes.rs:501-522`;
+//! - VM queue revocation by owner (`purge_by_owner`, the dead-process fallback)
+//!   is a VM-crate internal face, `pub(crate)` and unlinkable, covered by
+//!   `os/servers/vm/src/vfs_queue.rs:459-528`'s own tests.
 //!
-//! 本文件测的是**这三段之间的接缝**：请求的 fd 与 `req_id` 从 wire 里来、
-//! 关闭结果回到应答里、应答被对端解码器读懂。真机往返（VM 真实发起、VFS 真实
-//! 应答）挂 edge4 T2 / E5(b)。
+//! What this file tests is **the seam between those three pieces**: the
+//! request's fd and `req_id` come off the wire, the close result goes back into
+//! the reply, and the reply is understood by the peer's decoder. The
+//! real-machine round trip (VM truly initiating, VFS truly replying) is tracked
+//! under T2 / E5(b).
 
 use minix_types::{
     Endpoint, Message, MessVmVfsCall, MessVmVfsReply, UserSlot, VmVfsReplyIn, EBADF, OK,
@@ -42,29 +56,33 @@ use minix_vfs::filp::FilpTable;
 use minix_vfs::fproc::FProcTable;
 use minix_vfs::misc::{decode_vm_call, VmVfsReq};
 
-/// VM 借来用的那个 fd（落在 VM 自己的 `fproc` 里）。
+/// The fd VM borrows (stored in VM's own `fproc`).
 const VM_FD: u8 = 3;
-/// 与它相邻的另一个 fd——用来证明关闭只动被点名的那个。
+/// Another fd right next to it — used to prove the close touches only the one
+/// named.
 const NEIGHBOUR_FD: u8 = 4;
-/// 请求号：VM 用它把应答对回挂起的请求。
+/// Request id: VM uses it to match the reply back to the pending request.
 ///
-/// VM 侧要求 `reqid > 0`（0 表示"无挂起请求"，负值是错误哨兵，
-/// `os/servers/vm/src/ipc/dispatcher.rs:327-332`），夹具照此取值。
+/// The VM side requires `reqid > 0` (0 means "no pending request", a negative
+/// value is an error sentinel, `os/servers/vm/src/ipc/dispatcher.rs:327-332`),
+/// and the fixture follows that.
 const REQ_ID: u32 = 0x2A;
 
-/// VM 的 `fproc` 槽位。
+/// VM's `fproc` slot.
 ///
-/// C 的 `do_vm_call` 在 FDCLOSE 分支里关的是**服务进程自己的** fd 表
-/// （`close_fd(fp, req_fd, FALSE)`，`misc.c:454`，其中 `fp` 是当前会话进程即 VM），
-/// 而消息里的 `endpoint` 域只被 FDLOOKUP 用作被引用进程的定位（`misc.c:405`
-/// 的 `assert(rfp != vmf)` 就是这两者不可混同的自证）。
+/// C's `do_vm_call` closes the **serving process's own** fd table in the FDCLOSE
+/// branch (`close_fd(fp, req_fd, FALSE)`, `misc.c:454`, where `fp` is the
+/// current session process, i.e. VM), while the message's `endpoint` field is
+/// used only by FDLOOKUP to locate the referenced process (`misc.c:405`'s
+/// `assert(rfp != vmf)` is itself the proof that the two must not be
+/// conflated).
 fn vm_slot() -> UserSlot {
     Endpoint::VM
         .to_user_slot()
         .expect("VM 是用户态进程，端点可解出槽位")
 }
 
-/// 构造一条 VM→VFS 的请求消息（与 VM 发送半同结构）。
+/// Build one VM→VFS request message (same structure as VM's sending half).
 fn vm_call_message(req: i32, fd: i32, endpoint: Endpoint, req_id: u32) -> Message {
     let mut msg = Message {
         m_type: VFS_VMCALL,
@@ -84,7 +102,7 @@ fn vm_call_message(req: i32, fd: i32, endpoint: Endpoint, req_id: u32) -> Messag
     msg
 }
 
-/// 构造 VFS→VM 的应答消息（与 C `do_vm_call:487-494` 的字段顺序同）。
+/// Build a VFS→VM reply message (same field order as C `do_vm_call:487-494`).
 fn vfs_reply_message(endpoint: Endpoint, result: i32, req_id: u32) -> Message {
     let mut msg = Message {
         m_type: VM_VFS_REPLY as i32,
@@ -105,12 +123,13 @@ fn vfs_reply_message(endpoint: Endpoint, result: i32, req_id: u32) -> Message {
 }
 
 // ---------------------------------------------------------------------------
-// E5(b).1 成功往返：借用的 fd 关掉，引用计数递减，应答按请求号回到 VM
+// E5(b).1 success round trip: the borrowed fd closes, the refcount drops, the
+// reply returns to VM under the request id
 // ---------------------------------------------------------------------------
 
 #[test]
 fn vm_fdclose_round_trip_closes_borrowed_fd_and_replies_ok() {
-    // ── VM 侧的状态：一个借来的 fd + 一个相邻 fd ──
+    // ── VM-side state: one borrowed fd plus one neighbouring fd ──
     let mut filps = FilpTable::new();
     let borrowed = filps
         .alloc_filp(minix_vfs::open::R_BIT | minix_vfs::open::W_BIT)
@@ -137,19 +156,21 @@ fn vm_fdclose_round_trip_closes_borrowed_fd_and_replies_ok() {
         vm.filps[NEIGHBOUR_FD as usize] = Some(borrowed.get());
     }
     {
-        // 被引用进程（消息 `endpoint` 域指向的那个）放在同一张表里，
-        // 且**同一个 fd 号**上也放一个 filp——这样"关的是 VM 的表"才有观测面：
-        // 若关闭落错了对象，这里的 fd 会被清掉、引用计数会掉。
+        // The referenced process (the one the message's `endpoint` field points
+        // at) sits in the same table, and its **same fd number** also carries a
+        // filp — that is what gives "the table being closed is VM's" an
+        // observable surface: if the close landed on the wrong object, this fd
+        // would be cleared and this refcount would drop.
         let peer = fproc.get_mut(referenced_slot).expect("被引用槽存在");
         peer.pid = 11;
         peer.endpoint = referenced_ep;
         peer.filps[VM_FD as usize] = Some(peer_filp.get());
     }
-    // 借来的 filp 有 VM 的两个 fd 指向它（VM_FD 与 NEIGHBOUR_FD），
-    // 对端 fd 指向另一个 filp，计数为 2。
+    // The borrowed filp is pointed at by two of VM's fds (VM_FD and
+    // NEIGHBOUR_FD); the peer fd points at another filp, with count 2.
     filps.inc_count(borrowed);
 
-    // ── 第一步：VFS 收到 VM 的请求并解码 ──
+    // ── Step one: VFS receives VM's request and decodes it ──
     let request = vm_call_message(
         VMVFSREQ_FDCLOSE,
         VM_FD as i32,
@@ -162,9 +183,10 @@ fn vm_fdclose_round_trip_closes_borrowed_fd_and_replies_ok() {
     assert_eq!(call.req_id, REQ_ID, "req_id 域来自 wire");
     assert_eq!(call.endpoint, referenced_ep.0, "endpoint 域来自 wire");
 
-    // ── 第二步：按 C 的分支关掉这个 fd ──
-    // C: `result = close_fd(fp, req_fd, FALSE /*may_suspend*/);`（misc.c:454），
-    // `fp` 是本会话进程（VM）的 fproc，不是消息里那个被引用进程。
+    // ── Step two: close this fd along C's branch ──
+    // C: `result = close_fd(fp, req_fd, FALSE /*may_suspend*/);` (misc.c:454),
+    // where `fp` is the current session process's (VM's) fproc, not the
+    // referenced process named in the message.
     let outcome = {
         let vm = fproc.get_mut(vm_slot()).expect("VM 槽存在");
         close_fd(
@@ -175,8 +197,9 @@ fn vm_fdclose_round_trip_closes_borrowed_fd_and_replies_ok() {
     };
     assert!(outcome.is_ok(), "借用的 fd 有效，关闭应成功");
 
-    // 关闭语义（对照 C `open.c:699-710`）：fd 位清空、cloexec 位清空、
-    // 引用计数递减到 0 时 filp 槽释放。
+    // Close semantics (cf. C `open.c:699-710`): the fd bit is cleared, the
+    // cloexec bit is cleared, and the filp slot is released once the refcount
+    // reaches 0.
     let vm = fproc.get(vm_slot()).expect("VM 槽存在");
     assert!(
         vm.filps[VM_FD as usize].is_none(),
@@ -201,9 +224,10 @@ fn vm_fdclose_round_trip_closes_borrowed_fd_and_replies_ok() {
         2,
         "对端的 filp 引用计数不动"
     );
-    // 被引用进程就是这张表里的 11 号槽：同一 fd 号上的表项原样保留。
-    // 这一条是"关的是 VM 自己的 fd 表"的反证——若错关到消息里那个 endpoint，
-    // 这里的 fd 会被清空。
+    // The referenced process is slot 11 in this same table: the entry at the
+    // same fd number stays exactly as it was. This is the counter-proof that
+    // "the fd table being closed is VM's own" — had the close hit the endpoint
+    // named in the message, this fd would be cleared.
     let peer = fproc.get(referenced_slot).expect("被引用槽存在");
     assert_eq!(
         peer.filps[VM_FD as usize],
@@ -211,8 +235,9 @@ fn vm_fdclose_round_trip_closes_borrowed_fd_and_replies_ok() {
         "被引用进程同一 fd 号的表项原样保留"
     );
 
-    // 借来的 filp 只剩 VM 的 NEIGHBOUR_FD 一个引用；把它也关掉才是最后关闭，
-    // 此时 filp 槽释放（C `filedes.c:496` 的 `--filp_count == 0` 分支）。
+    // The borrowed filp has only VM's NEIGHBOUR_FD left; closing that too is the
+    // final close, at which point the filp slot is released (the
+    // `--filp_count == 0` branch at C `filedes.c:496`).
     {
         let vm = fproc.get_mut(vm_slot()).expect("VM 槽存在");
         close_fd(
@@ -230,9 +255,9 @@ fn vm_fdclose_round_trip_closes_borrowed_fd_and_replies_ok() {
         "最后一个引用消失时 filp 置 CLOSED（filedes.c:496 的 dec_count）"
     );
 
-    // ── 第三步：应答回到 VM 并被对端解码器读懂 ──
-    // C 在 `reqdone` 处填 VMV_ENDPOINT / VMV_RESULT / VMV_REQID 后以
-    // `VM_VFS_REPLY` 异步发出（misc.c:487-494）。
+    // ── Step three: the reply returns to VM and the peer decoder understands it ──
+    // C fills VMV_ENDPOINT / VMV_RESULT / VMV_REQID at `reqdone`, then sends
+    // `VM_VFS_REPLY` asynchronously (misc.c:487-494).
     let reply = vfs_reply_message(referenced_ep, OK, call.req_id);
     assert_eq!(reply.m_type, VM_VFS_REPLY as i32);
     let decoded = VmVfsReplyIn::decode_message(&reply);
@@ -245,7 +270,8 @@ fn vm_fdclose_round_trip_closes_borrowed_fd_and_replies_ok() {
 }
 
 // ---------------------------------------------------------------------------
-// E5(b).2 错误路径：无效 fd 的应答仍是应答（携 errno 与请求号）
+// E5(b).2 error path: a reply for an invalid fd is still a reply (carrying the
+// errno and the request id)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -262,7 +288,7 @@ fn vm_fdclose_bad_fd_replies_ebadf_and_leaves_other_fds_alone() {
     }
     let referenced_ep = Endpoint::from_generation_slot(1, 11);
 
-    // ── 无效 fd：消息合法但点名一个没有的 fd ──
+    // ── invalid fd: the message is legal but names an fd that is not open ──
     let empty_fd = NEIGHBOUR_FD as i32;
     let request = vm_call_message(VMVFSREQ_FDCLOSE, empty_fd, referenced_ep, REQ_ID);
     let call = decode_vm_call(&request).expect("opcode 合法，解码应成功");
@@ -280,20 +306,24 @@ fn vm_fdclose_bad_fd_replies_ebadf_and_leaves_other_fds_alone() {
     assert_eq!(err, FdError::BadFd);
     assert_eq!(err.to_errno(), EBADF);
 
-    // C 打印一行诊断后照常回错误码（`misc.c:456-460`：`result != OK` 时
-    // printf，随后 `reqdone` 处 `VMV_RESULT = result`），所以失败也是一次
-    // 正常应答，且必须带着原请求号——VM 靠它把结果对回挂起的请求，
-    // 否则失败会变成一次"应答丢失"的挂起。上线的服务器构建里 errno 值是负的
-    // （`minix3/sys/sys/errno.h:187-190` 的 `_SIGN` 在 `_SYSTEM` 下展开为 `-`），
-    // 故应答携带 `-EBADF`；Rust 的 `FdError::to_errno()` 给的是用户可见的正号
-    // 编号（`minix-types/src/types/errno.rs:23`），上线前取负。
+    // C prints one diagnostic line and still returns the error code as usual
+    // (`misc.c:456-460`: printf when `result != OK`, then `VMV_RESULT = result`
+    // at `reqdone`), so a failure is a normal reply too and must carry the
+    // original request id — VM matches the result back to the pending request
+    // with it, otherwise the failure becomes a pending request whose "reply was
+    // lost". In the on-wire server build the errno value is negative (`_SIGN` at
+    // `minix3/sys/sys/errno.h:187-190` expands to `-` under `_SYSTEM`), so the
+    // reply carries `-EBADF`; Rust's `FdError::to_errno()` yields the
+    // user-visible positive number (`minix-types/src/types/errno.rs:23`), so it
+    // is negated before going on the wire.
     let reply = vfs_reply_message(referenced_ep, -err.to_errno(), call.req_id);
     let decoded = VmVfsReplyIn::decode_message(&reply);
     assert_eq!(decoded.result, -EBADF, "VMV_RESULT 携负号 errno");
     assert_eq!(decoded.reqid as u32, REQ_ID, "错误路径同样按请求号回去");
 
-    // 拒绝不产生副作用：点名的 fd 本来就是空的，在用的那个 fd 与它的 filp
-    // 引用计数都必须原封不动——`close_fd` 的校验在校验之后才允许递减。
+    // A rejection produces no side effects: the named fd was empty to begin
+    // with, and the fd in use and its filp refcount must stay untouched —
+    // `close_fd` only decrements after its validation passes.
     let vm = fproc.get(vm_slot()).expect("VM 槽存在");
     assert_eq!(
         vm.filps[VM_FD as usize],

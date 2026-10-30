@@ -86,44 +86,55 @@ impl CharClass {
 ///
 /// Repeat counts that would overflow the 256 table are an error, matching
 /// the C tool refusing absurd sets rather than wrapping.
-/// C 的 `str2set()` 带一个 `s->which`（`minix3/usr.bin/tr/str.c`），它决定同一串字符在
-/// 两串里各自合法到什么程度：重复式 `[c*n]` 只在第二串合法。壳侧同样把它做成入参，
-/// 而不是让两串共用一条无差别的解析。
-/// 正在解析的是哪一串。C 的 `STRING1`/`STRING2`。
+/// C's `str2set()` carries an `s->which` (`minix3/usr.bin/tr/str.c`) that decides
+/// how far the same characters are legal in each set: a repeat `[c*n]` is legal
+/// only in string2. The shell side makes it a parameter too, rather than letting
+/// both sets share one undifferentiated parse. Which set is being parsed; C's
+/// `STRING1`/`STRING2`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SetSite {
     String1,
     String2,
 }
 
-/// `str.c` 里由语法自身触发的 `errx(1, ...)`。句子逐字照 C，因为 `errx` 是两段形
-/// （程序名加句子，不缀 `strerror`），而 C 每处都是当场退出。
+/// The `errx(1, ...)` failures `str.c` raises from its own grammar. The sentences
+/// are copied verbatim from C, because `errx` is a two-part form (program name
+/// plus sentence, no `strerror` suffix), and C exits on the spot at every one.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SetGrammar {
     /// `errx(1, "unknown class %.*s", (int)len, class)`（`str.c:253`）。
     UnknownClass(Vec<u8>),
-    /// `genseq()` 的第一条判断：`if (s->which == STRING1) errx(1, "Sequences only valid in string2")`
-    ///（`str.c:353-356`）——它在吃任何字符之前，所以第二枚字符是什么都无所谓。
+    /// The first check in `genseq()`:
+    /// `if (s->which == STRING1) errx(1, "Sequences only valid in string2")`
+    /// (`str.c:353-356`) — it runs before consuming any character, so whatever the
+    /// second character is makes no difference.
     SequencesOnlyInString2,
-    /// 取完成员字符后 `if (*s->str != '*') errx(1, "Misplaced sequence asterisk")`
-    ///（`str.c:362-366`）。故 `[ab*2]` 报这句：`a` 之后的不是 `*` 而是 `b`。
+    /// After taking the member character,
+    /// `if (*s->str != '*') errx(1, "Misplaced sequence asterisk")`
+    /// (`str.c:362-366`). So `[ab*2]` reports this sentence: what follows `a` is
+    /// `b`, not `*`.
     MisplacedSequenceAsterisk,
-    /// 计数段既不是 `]`、也不是「数字紧跟 `]`」时 `errx(1, "illegal sequence count")`
-    ///（`str.c:368-386`）。
+    /// When the count is neither `]` nor "digits immediately followed by `]`":
+    /// `errx(1, "illegal sequence count")` (`str.c:368-386`).
     IllegalSequenceCount,
-    /// `genequiv()` 取完成员字符后 `if (*s->str != '=') errx(1, "Misplaced equivalence
-    /// equals sign")`（`str.c:307-320`）。成员只吃**一枚**字符（或一枚反斜杠转义），
-    /// 所以 `[=ab=]`、`[==]`、`[=a b=]` 都撞在这一句上——式尾有没有 `=]` 由 `bracket()`
-    /// 事先认过（`str.c:193-199`），它认得形式，`genequiv()` 才负责核形式内部。
+    /// After `genequiv()` takes the member character,
+    /// `if (*s->str != '=') errx(1, "Misplaced equivalence equals sign")`
+    /// (`str.c:307-320`). The member consumes **one** character (or one backslash
+    /// escape), so `[=ab=]`, `[==]` and `[=a b=]` all hit this sentence — whether
+    /// the form ends with `=]` was recognized beforehand by `bracket()`
+    /// (`str.c:193-199`); it recognizes the form, and `genequiv()` checks inside it.
     MisplacedEquivalenceEquals,
-    /// 等号之后 `if (*s->str != ']') errx(1, "Misplaced equivalence right bracket")`
-    ///（`str.c:321-323`）。`[=a=b=]` 走这一句：`bracket()` 找到的第一个 `=]` 在式尾，
-    /// 而 `genequiv()` 逐枚走完 `a`、`=` 之后撞上的是 `b`。
+    /// After the equals sign,
+    /// `if (*s->str != ']') errx(1, "Misplaced equivalence right bracket")`
+    /// (`str.c:321-323`). `[=a=b=]` takes this sentence: the first `=]` that
+    /// `bracket()` finds is at the end of the form, while `genequiv()` walks through
+    /// `a` and `=` and then hits `b`.
     MisplacedEquivalenceRightBracket,
 }
 
 impl SetGrammar {
-    /// C 打出去的那一句原文（不含程序名与冒号，那两段由 `errx` 的前缀负责）。
+    /// The exact sentence C prints (without the program name and colon; those two
+    /// parts are `errx`'s prefix job).
     pub fn sentence_bytes(&self) -> Vec<u8> {
         match self {
             SetGrammar::UnknownClass(name) => {
@@ -142,15 +153,17 @@ impl SetGrammar {
     }
 }
 
-/// 解析一个集合式的全部失败出口：语法句，以及尚未定形的两类（式子没闭合、成员表已满）。
+/// Every failure exit of parsing one set expression: grammar sentences plus the two
+/// not-yet-shaped cases (unclosed form, full member table).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SetError {
     Grammar(SetGrammar),
-    /// `[...)` 没有闭括号、或 `[:name:]` 没有收尾——C 对这两形走的是
-    /// 「按字面量继续吃」还是另一句尚未逐行核对，故仍按既有的静默退 1 处理
-    /// （登记见 18 篇台账）。
+    /// `[...)` with no closing bracket, or `[:name:]` with no terminator — whether C
+    /// keeps consuming these two shapes as literals or reports another sentence has
+    /// not been checked line by line, so the existing silent exit 1 remains
+    /// (registered in the document-18 ledger).
     Malformed,
-    /// 成员超过 256 个，即 `TextError::TooLong`。
+    /// More than 256 members, i.e. `TextError::TooLong`.
     TooLong,
 }
 
@@ -163,23 +176,26 @@ impl From<TextError> for SetError {
     }
 }
 
-/// C 的名字表（`str.c` 的 `classes[]`）里认得的类名；表外的名字一律是
-/// `unknown class <名>`，不是「当字面量凑合」。
+/// The class names recognized in C's name table (`classes[]` in `str.c`); a name
+/// outside the table is always `unknown class <name>`, never "make do as literals".
 pub fn parse_set(
     text: &[u8],
     site: SetSite,
     expanded: &mut [u8; 256],
 ) -> Result<(usize, Set2Tail), SetError> {
     let bytes = text;
-    // 式子里最后一项的种类，决定 string2 耗尽之后补什么（见 `Set2Tail`）。
+    // The kind of the expression's last item decides what pads string2 once it is
+    // exhausted (see `Set2Tail`).
     let mut tail = Set2Tail::LastByte;
     let mut pos = 0;
     let mut used = 0;
     while pos < bytes.len() {
-        // `next()` 一撞见 `[` 就先问 `bracket()`，它返回假就当场 FALLTHROUGH 成一枚
-        // **左方括号字面量**（`str.c:124-132`）。所以「像特殊形而没成形」的 `[x]`、
-        // `[:alpha`、`[x`、`[x]y*` 在 C 里都是普通字符、退 0——这三条形判据必须逐条
-        // 照 `bracket()` 的 switch 抄（`str.c:176-210`），少抄一条就多一类假报错。
+        // `next()` asks `bracket()` as soon as it sees `[`; if that returns false it
+        // FALLTHROUGHs on the spot to a **literal left bracket** (`str.c:124-132`).
+        // So the shapes that look special but are not formed — `[x]`, `[:alpha`,
+        // `[x`, `[x]y*` — are ordinary characters in C, exiting 0. These shape
+        // predicates must be copied one by one from `bracket()`'s switch
+        // (`str.c:176-210`); missing one adds a class of false errors.
         let class_end = if marker_at(bytes, pos, b':') {
             find_pair(bytes, pos + 2, b':', b']')
         } else {
@@ -215,12 +231,15 @@ pub fn parse_set(
             }
             pos = end + 2;
         } else if let Some(end) = equiv_end {
-            // `[=c=]`：`bracket()`（`str.c:193-199`）只认「式子里有没有一处 `=]`」，
-            // 认过了就交给 `genequiv()`（`str.c:305-330`）逐枚核内部——成员吃**一枚**字符
-            // （或一枚反斜杠转义），然后必须是 `=`，再然后必须是 `]`。C 的注释写明
-            // 「English doesn't have any equivalence classes, so for now we just syntax
-            // check and grab the character」，所以这个类永远只有一枚成员，而式内多塞的
-            // 任何字符都是那两句「放错了等号 / 放错了右括号」之一。
+            // `[=c=]`: `bracket()` (`str.c:193-199`) only checks that the expression
+            // contains a `=]`; once recognized, `genequiv()` (`str.c:305-330`) checks
+            // the inside character by character — the member consumes **one**
+            // character (or one backslash escape), then there must be `=`, then there
+            // must be `]`. C's comment states
+            // "English doesn't have any equivalence classes, so for now we just
+            // syntax check and grab the character", so this class always has exactly
+            // one member, and any extra character inside the form triggers one of the
+            // two sentences "misplaced equals sign" / "misplaced right bracket".
             let mut cursor = pos + 2;
             let member = if bytes[cursor] == b'\\' && cursor + 1 < bytes.len() {
                 let escaped = bytes[cursor + 1];
@@ -242,14 +261,17 @@ pub fn parse_set(
             }
             tail = Set2Tail::Oobch;
             push_byte(expanded, &mut used, member)?;
-            // 两道核对都过了，`bracket()` 认下的那处 `=]` 必然就是刚核完的这两个字节，
-            // 所以收口仍按 `end + 2`（与 C 的 `s->str = p + 2`，`str.c:200` 同形）。
+            // Both checks passed, so the `=]` that `bracket()` recognized must be
+            // the two bytes just checked; closing still uses `end + 2` (same shape as
+            // C's `s->str = p + 2`, `str.c:200`).
             pos = end + 2;
         } else if sequence_form {
-            // 三句的**先后**本身就是行为，照 `genseq()` 抄：先问「这是哪一串」（吃任何
-            // 字符之前，`str.c:353-356`），再取成员字符，然后才核星号（`:362-366`），
-            // 最后才是个数（`:368-386`）。于是第一串里的 `[c*n]` 永远轮不到谈内容，
-            // 而第二串里的 `[ab*2]` 报的是星号那句而不是「个数非法」。
+            // The **order** of the three sentences is itself behavior; copy
+            // `genseq()`: first ask which string this is (before consuming any
+            // character, `str.c:353-356`), then take the member character, only then
+            // check the asterisk (`:362-366`), and only then the count (`:368-386`).
+            // So `[c*n]` in string1 never gets to discuss its contents, while
+            // `[ab*2]` in string2 reports the asterisk sentence, not "illegal count".
             if site == SetSite::String1 {
                 return Err(SetError::Grammar(SetGrammar::SequencesOnlyInString2));
             }
@@ -268,10 +290,12 @@ pub fn parse_set(
             }
             cursor += 1;
             let repeat = match bytes.get(cursor) {
-                // `case ']'` 与「数字但值为 0」都汇到 `s->state = s->cnt ? SEQUENCE :
-                // INFINITE` 的 INFINITE 一侧：`[x*]` 与 `[x*0]` 是**无限**重复，不是空集。
-                // 本层把无限落成一枚成员——`translate()` 对短的 set2 一律重复其末字节
-                // （`tr.c:205-211`），那正是 INFINITE 在翻译路径上的效果。
+                // Both `case ']'` and "a digit whose value is 0" land on the INFINITE
+                // side of `s->state = s->cnt ? SEQUENCE : INFINITE`: `[x*]` and `[x*0]`
+                // mean **infinite** repetition, not an empty set.
+                // This layer renders infinity as one member — `translate()` repeats
+                // the last byte of a short set2 (`tr.c:205-211`), which is exactly the
+                // effect of INFINITE on the translation path.
                 Some(b']') => {
                     cursor += 1;
                     1
@@ -303,9 +327,12 @@ pub fn parse_set(
         } else if pos + 2 < bytes.len() && bytes[pos + 1] == b'-' {
             let (low, high) = (bytes[pos], bytes[pos + 2]);
             if high < low {
-                // `genrange()` 的 `if (stopval < s->lastch) { s->str = savestart; return 0; }`
-                // 把整个区间退回给主循环，左端点于是按字面量入集，下一轮再从 `-` 起：
-                // `tr z-a y` 的 set1 是 z、-、a 三枚成员并退 0，不是「非法区间」。
+                // `genrange()`'s
+                // `if (stopval < s->lastch) { s->str = savestart; return 0; }`
+                // hands the whole range back to the main loop, so the left endpoint
+                // enters the set as a literal and the next round starts at `-`:
+                // `tr z-a y` has set1 = z, -, a (three members) and exits 0, not
+                // "illegal range".
                 tail = Set2Tail::LastByte;
                 push_byte(expanded, &mut used, low)?;
                 pos += 1;
@@ -335,22 +362,25 @@ pub fn parse_set(
     Ok((used, tail))
 }
 
-/// 这枚 `[` 后面紧跟的是不是那个特殊标记（`bracket()` 的 `switch (s->str[1])`）。
+/// Whether the byte right after this `[` is that special marker (`bracket()`'s
+/// `switch (s->str[1])`).
 #[must_use]
 fn marker_at(bytes: &[u8], pos: usize, marker: u8) -> bool {
     bytes.get(pos) == Some(&b'[') && bytes.get(pos + 1) == Some(&marker)
 }
 
-/// 从 `from` 起找成对的收尾 `ab`（`bracket()` 的 `strstr(s->str + 2, ":]")` 与
-/// `strstr(s->str + 2, "=]")`），返回 `a` 的下标；找不到就说明这枚 `[` 不是特殊形。
+/// Find the paired terminator `ab` starting at `from` (`bracket()`'s
+/// `strstr(s->str + 2, ":]")` and `strstr(s->str + 2, "=]")`), returning the index
+/// of `a`; not finding one means this `[` is not a special form.
 #[must_use]
 fn find_pair(bytes: &[u8], from: usize, a: u8, b: u8) -> Option<usize> {
     (from..bytes.len().saturating_sub(1)).find(|&i| bytes[i] == a && bytes[i + 1] == b)
 }
 
-/// 序列形的判据是 `strpbrk(s->str + 2, "*]")` **先撞上 `*`**，且那枚 `*` 之后还有一个
-/// `]`（`str.c:200-206`）。任缺其一，C 就把这枚 `[` 当字面量：`[x]` 与 `[x]y*` 都因
-/// 为「先撞上 `]`」而落回普通字符，`[x` 则因为「往后什么都没有」而落回普通字符。
+/// The sequence form requires that `strpbrk(s->str + 2, "*]")` hits **`*` first**
+/// and that a `]` follows that `*` (`str.c:200-206`). Missing either one, C treats
+/// this `[` as a literal: `[x]` and `[x]y*` fall back to ordinary characters
+/// because `]` is hit first, and `[x` falls back because there is nothing after it.
 #[must_use]
 fn sequence_ahead(bytes: &[u8], from: usize) -> bool {
     let hit = (from..bytes.len())
@@ -362,8 +392,9 @@ fn sequence_ahead(bytes: &[u8], from: usize) -> bool {
     }
 }
 
-/// `\` 后面那个字符代表谁——`backslash()` 的转义表里本支只接得起这三个命名形，
-/// 八进制那一段（`str.c:398-415` 的循环）登记在 `TR-BACKSLASH-OCTAL` 而未接。
+/// What the character after `\` stands for — of `backslash()`'s escape table this
+/// branch wires up only the three named forms; the octal part (the loop at
+/// `str.c:398-415`) is registered as `TR-BACKSLASH-OCTAL` and not wired.
 #[must_use]
 fn escape_literal(escaped: u8) -> u8 {
     match escaped {
@@ -374,21 +405,26 @@ fn escape_literal(escaped: u8) -> u8 {
     }
 }
 
-/// C 的 `extern.h:39` 的 `#define OOBCH (UCHAR_MAX + 1)`：一个**装不进气表**的值当哨兵。
-/// 本层把它留在 `u16` 域里（`translate_squeeze` 的挤压判据要比的就是这个 256），
-/// 只在写出的那一刻截成 `unsigned char`，也就是 `0`。
+/// C's `#define OOBCH (UCHAR_MAX + 1)` at `extern.h:39`: a value that **does not
+/// fit the byte table**, used as a sentinel. This layer keeps it in the `u16`
+/// domain (the squeeze predicate in `translate_squeeze` compares against exactly
+/// this 256) and truncates it to `unsigned char`, i.e. `0`, only when writing out.
 const OOBCH: u16 = 256;
 
-/// 式子耗尽之后 `next()` 还会不会给出新东西——`tr.c:226-232` 那句注释说的「重复末字节」
-/// 只对**普通**式子成立，而以一枚集合类收尾的式子交回的是 `OOBCH`。
+/// Whether `next()` still yields anything new after the expression is exhausted —
+/// the "repeat the last byte" of the comment at `tr.c:226-232` holds only for
+/// **ordinary** expressions; one ending in a character class yields `OOBCH`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Set2Tail {
-    /// 最后一项是普通字符、区间或 `[x*n]`：`lastch` 停在那枚成员上，所以耗尽之后重复末字节。
+    /// The last item is an ordinary character, a range or `[x*n]`: `lastch` rests on
+    /// that member, so exhaustion repeats the last byte.
     LastByte,
-    /// 最后一项是 `[:class:]` 或 `[=c=]`：`str.c:158-166` 的 `SET` 分支先做
-    /// `s->lastch = s->set[s->cnt++]`，走到哨兵时把 `lastch` 顶成 `OOBCH`，随后
-    /// `case '\0'` 那一支交回的就是这个 256（`:103-121`）。`tr.c:220` 存进映射表、
-    /// `putchar` 截成 `0`；而 `-s` 那条腿在 `int` 域里比较，所以 256 与普通 0 是两回事。
+    /// The last item is `[:class:]` or `[=c=]`: the `SET` branch at
+    /// `str.c:158-166` does `s->lastch = s->set[s->cnt++]`, and on reaching the
+    /// sentinel it pushes `lastch` to `OOBCH`; the `case '\0'` branch then yields
+    /// this 256 (`:103-121`). `tr.c:220` stores it in the mapping table and
+    /// `putchar` truncates it to `0`; the `-s` leg compares in the `int` domain, so
+    /// 256 and an ordinary 0 are two different things.
     Oobch,
 }
 
@@ -402,10 +438,12 @@ fn push_byte(expanded: &mut [u8; 256], used: &mut usize, byte: u8) -> Result<(),
     Ok(())
 }
 
-/// C 那张映射表：`int string1[NCHARS]`（`tr.c:55`）先填恒等（`:178-181`），再按 string1
-/// 的每一位写入 string2 交回的值（`:217`）。**值域是 `int` 而不是字节**，因为一枚集合类
-/// 耗尽之后交回的是 `OOBCH`（256）；`translate` 与 `translate_and_squeeze` 共用这张表，
-/// 差别只在下半场要不要按「交回过的值」挤压。
+/// C's mapping table: `int string1[NCHARS]` (`tr.c:55`) is filled with the identity
+/// first (`:178-181`), then each position of string1 gets the value yielded by
+/// string2 (`:217`). **The value domain is `int`, not bytes**, because a character
+/// class yields `OOBCH` (256) once exhausted; `translate` and
+/// `translate_and_squeeze` share this table, differing only in whether the second
+/// half squeezes by "values that were yielded".
 fn build_map(set1: &[u8], set2: &[u8], tail: Set2Tail) -> [u16; 256] {
     let mut map = [0u16; 256];
     for (index, slot) in map.iter_mut().enumerate() {
@@ -415,8 +453,10 @@ fn build_map(set1: &[u8], set2: &[u8], tail: Set2Tail) -> [u16; 256] {
         map[*byte as usize] = if index < set2.len() {
             u16::from(set2[index])
         } else {
-            // string2 比 string1 短：C 不再取新值，而是把 `next()` 当时那个 `lastch` 一路重复
-            //（`tr.c:226-232` 的注释说的就是这件事）。普通式子停在末字节，集合类停在 OOBCH。
+            // string2 is shorter than string1: C does not take a new value but keeps
+            // repeating the `lastch` that `next()` held (exactly what the comment at
+            // `tr.c:226-232` describes). Ordinary expressions stop on the last byte,
+            // character classes stop on OOBCH.
             match tail {
                 Set2Tail::Oobch => OOBCH,
                 Set2Tail::LastByte => u16::from(*set2.last().unwrap_or(&0)),
@@ -432,11 +472,14 @@ fn build_map(set1: &[u8], set2: &[u8], tail: Set2Tail) -> [u16; 256] {
 /// last byte **unless it ends with a character class**, in which case C repeats
 /// `OOBCH` and `putchar` writes that as a NUL byte. Returns the used byte count.
 ///
-/// **一个空的 `set1` 是合法输入**，走的是恒等映射：C 在非取补路径上先把映射表填成
-/// `string1[ch] = ch`（`tr.c:178-181`），随后取 string1 首元素的 `next(s1)` 在空集合上
-/// 当场失败而跳出映射循环（`:214-215`），于是一张谁也没被改过的恒等表被原样用于过滤——
-/// 参照件 `tr '' x` 因此是「退 0 且逐字节照抄标准输入」。空的 `set2` 不在这条例外里：
-/// C 在循环之前就用 `next(s2)` 把它判死成 `empty string2`（`:187-188`），本层那条判据在壳里。
+/// **An empty `set1` is legal input** and goes through the identity map: on the
+/// non-complement path C first fills the mapping table with `string1[ch] = ch`
+/// (`tr.c:178-181`), then the `next(s1)` for string1's first element fails on the
+/// empty set and breaks out of the mapping loop (`:214-215`), so an identity table
+/// nobody modified is used for filtering as-is — hence the reference binary
+/// `tr '' x` "exits 0 and copies stdin byte for byte". An empty `set2` is not in
+/// this exception: C rejects it as `empty string2` with `next(s2)` before the loop
+/// (`:187-188`); this layer's check lives in the shell.
 pub fn translate(
     input: &[u8],
     set1: &[u8],
@@ -452,21 +495,26 @@ pub fn translate(
         return Err(TextError::TooLong);
     }
     for (index, byte) in input.iter().enumerate() {
-        // `putchar(string1[ch])`：C 的实参是 `int`，落到 `putchar` 时被截成 `unsigned char`，
-        // 所以 OOBCH(256) 打出去就是 `\0`（参照件 `tr abc '[=c=]'` ← `abc` 交回 `c\0\0`）。
+        // `putchar(string1[ch])`: C's argument is an `int`, truncated to
+        // `unsigned char` at `putchar`, so writing OOBCH (256) emits `\0` (the
+        // reference binary `tr abc '[=c=]'` ← `abc` yields `c\0\0`).
         out[index] = map[*byte as usize] as u8;
     }
     Ok(input.len())
 }
 
-/// `tr [-c] -s string1 string2` 那一腿（`tr.c:239-246`）：**映射与挤压在同一趟里做**，
-/// 而且挤压判据比的是映射**之后**的 `int` 值——`lastch` 初值就是 `OOBCH`，被记进
-/// `string2[]` 的也恰恰是那一路交回过的值（`tr.c:224` 记在映射那一趟里）。
+/// The `tr [-c] -s string1 string2` leg (`tr.c:239-246`): **mapping and squeezing
+/// happen in the same pass**, and the squeeze predicate compares the `int` value
+/// **after** mapping — `lastch` starts as `OOBCH`, and what gets recorded in
+/// `string2[]` is exactly the values yielded along the way (`tr.c:224` records
+/// them in the mapping pass).
 ///
-/// 这两句合起来解释了一格看着矛盾的现象：`tr -s abc '[=c=]'` ← `abc` 交回 `c\0`，
-/// 即那两枚由 OOBCH 变来的 NUL **互相挤压成一枚**，而输入里本来就有的 NUL 不受影响。
-/// 将本腿拆成「先 translate 再 squeeze」两步就会丢掉这个区别——两步之间 256 已经被截成 0，
-/// 于是 0 与真 NUL 混为一谈，挤压判据也换到了字节域上。
+/// Together these explain a seemingly contradictory case: `tr -s abc '[=c=]'` ←
+/// `abc` yields `c\0`, i.e. the two NULs that came from OOBCH **squeeze into
+/// one another**, while NULs already present in the input are unaffected.
+/// Splitting this leg into "translate, then squeeze" loses the distinction —
+/// between the two steps 256 has already been truncated to 0, so 0 and a real NUL
+/// become indistinguishable and the squeeze predicate moves into the byte domain.
 pub fn translate_and_squeeze(
     input: &[u8],
     set1: &[u8],
@@ -478,8 +526,9 @@ pub fn translate_and_squeeze(
         return Err(TextError::InvalidArgument);
     }
     let map = build_map(set1, set2, tail);
-    // C 的 `string2[ch2] = 1` 坐在映射循环里（`tr.c:222-224`），记的是**交回过的值**；
-    // 值域含那枚哨兵，所以表比映射表宽一格。
+    // C's `string2[ch2] = 1` sits inside the mapping loop (`tr.c:222-224`) and
+    // records **values that were yielded**; the domain includes the sentinel, so
+    // the table is one slot wider than the map.
     let mut yielded = [false; 257];
     for byte in set1 {
         yielded[map[*byte as usize] as usize] = true;
@@ -541,36 +590,43 @@ pub fn squeeze(input: &[u8], set: &[u8], out: &mut [u8]) -> Result<usize, TextEr
     Ok(written)
 }
 
-/// `tr.c:68` 的选项环：`while ((ch = getopt(argc, argv, "cds")) != -1)`——`c`/`d`/`s`
-/// **三个都是旗标**，所以 `getopt.c:108-140` 的「带值 / 缺值」那一支在本支**不可达**，
-/// 可达的只有「集外字母」一种 libc 报文（`getopt.c:98-106`）。更要紧的是
-/// `tr.c:79-81` 的 `case '?': default: usage();` **坐在环里直接退出**，于是本支的 libc 报文
-/// **至多一条**（参照件 `-ZQ` 只报 `Z`、`-sZ a` 只报 `Z`），与 `seq` 的累加形相反。
+/// The option loop at `tr.c:68`: `while ((ch = getopt(argc, argv, "cds")) != -1)` —
+/// `c`/`d`/`s` are **all flags**, so the "takes a value / missing value" branch of
+/// `getopt.c:108-140` is **unreachable** here; the only reachable libc report is
+/// "unknown option letter" (`getopt.c:98-106`). More importantly,
+/// `tr.c:79-81`'s `case '?': default: usage();` **sits in the loop and exits
+/// immediately**, so this side emits **at most one** libc report (the reference
+/// binary reports only `Z` for `-ZQ`, and only `Z` for `-sZ a`), the opposite of
+/// `seq`'s accumulating form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrArgs<'a> {
-    /// `-c`：把 set1 取补。
+    /// `-c`: complement set1.
     pub complement: bool,
-    /// `-d`：删除 set1 里的字节。
+    /// `-d`: delete the bytes in set1.
     pub delete: bool,
-    /// `-s`：挤压。
+    /// `-s`: squeeze.
     pub squeeze: bool,
-    /// 环不重排：第一个不是选项的 token 及其后一切**都是操作数**
-    /// （`tr.c:83-84` 的 `argc -= optind; argv += optind;`）。所以 `tr a -d` 的 `-d`
-    /// 是第二个集合名而不是旗标。
+    /// The loop does not reorder: the first non-option token and everything after it
+    /// **are operands** (`argc -= optind; argv += optind;` at `tr.c:83-84`). So the
+    /// `-d` in `tr a -d` is the second set name, not a flag.
     pub operands: Vec<&'a [u8]>,
 }
 
-/// 前门的错：本支所有出错出口打的都是**同一块四行 usage** 并退 1（`tr.c:276-282`），
-/// 区别只在于前面有没有一行 libc 报文。
+/// Front-door errors: every failure exit here prints the **same four-line usage
+/// block** and exits 1 (`tr.c:276-282`); the only difference is whether a libc
+/// report line precedes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrError {
-    /// libc 那一行（至多一条）加上整块 usage，由壳发到标准错误。
+    /// The libc line (at most one) plus the whole usage block, sent to standard
+    /// error by the shell.
     Usage { reports: Vec<crate::GetoptReport> },
 }
 
-/// 环 + 个数判 + 组合判，按 `tr.c` 的**先后次序**执行：环里的集外字母 ⇒ 带 libc 行的 usage；
-/// `tr.c:86-97` 的 `switch (argc)` 判 0 个与 3 个以上；`-ds` 要两个操作数（`:104-106`）；
-/// `-d` 给了两个就报错（`:123-125`）；既没 `-d` 也没 `-s` 时必须恰好两个（`:156-157`）。
+/// The loop, the count check and the combination check, in the **same order** as
+/// `tr.c`: an off-string letter in the loop ⇒ usage with a libc line;
+/// the `switch (argc)` at `tr.c:86-97` rejects 0 and 3+; `-ds` needs two operands
+/// (`:104-106`); `-d` with two is an error (`:123-125`); with neither `-d` nor
+/// `-s` there must be exactly two (`:156-157`).
 pub fn parse_tr_args<'a>(args: &[&'a [u8]]) -> Result<TrArgs<'a>, TrError> {
     const OPTSTRING: &[u8] = b"cds";
     let mut parsed = TrArgs {
@@ -582,12 +638,14 @@ pub fn parse_tr_args<'a>(args: &[&'a [u8]]) -> Result<TrArgs<'a>, TrError> {
     let mut i = 0usize;
     while i < args.len() {
         let token = args[i];
-        // `getopt.c:74-78` 首字符不是 `-` ⇒ 收环且**不推进**游标；`getopt.c:86-93` 里
-        // 一个光杆 `-` 因为 optstring 不含 `-` 也走同一收法，于是它落进操作数。
+        // `getopt.c:74-78`: a first character other than `-` ends the loop and does
+        // **not** advance the cursor; in `getopt.c:86-93` a bare `-` takes the same
+        // route because optstring has no `-`, so it lands among the operands.
         if token.len() < 2 || token[0] != b'-' {
             break;
         }
-        // `getopt.c:80-85`：**恰好**两个短横才认作结束标记，并且吃掉自身。
+        // `getopt.c:80-85`: **exactly** two dashes are recognized as the terminator,
+        // and it consumes itself.
         if token == b"--" {
             i += 1;
             break;
@@ -597,7 +655,8 @@ pub fn parse_tr_args<'a>(args: &[&'a [u8]]) -> Result<TrArgs<'a>, TrError> {
             let letter = token[k];
             k += 1;
             if !OPTSTRING.contains(&letter) {
-                // `getopt.c:98-106` 先印一行，`tr.c:79-81` 的 `default: usage()` 紧接着退出
+                // `getopt.c:98-106` prints one line, and `tr.c:79-81`'s
+                // `default: usage()` exits right after
                 return Err(TrError::Usage {
                     reports: vec![crate::GetoptReport::UnknownOption(char::from(letter))],
                 });
@@ -607,7 +666,8 @@ pub fn parse_tr_args<'a>(args: &[&'a [u8]]) -> Result<TrArgs<'a>, TrError> {
                 b'd' => parsed.delete = true,
                 _ => parsed.squeeze = true,
             }
-            // 三个字母都不带值，所以只有「这个 token 已到末尾」才推进到下一个
+            // None of the three letters takes a value, so advance to the next token
+            // only when this token is exhausted
             if k >= token.len() {
                 i += 1;
             }
@@ -615,17 +675,18 @@ pub fn parse_tr_args<'a>(args: &[&'a [u8]]) -> Result<TrArgs<'a>, TrError> {
     }
     parsed.operands = args[i..].to_vec();
     let count = parsed.operands.len();
-    // `tr.c:86-97`：0 个与 3 个以上都只落进 `default: usage();`
+    // `tr.c:86-97`: both 0 and 3+ only fall into `default: usage();`
     if count == 0 || count > 2 {
         return Err(TrError::Usage {
             reports: Vec::new(),
         });
     }
     let two_sets = count == 2;
-    // 下面三条一一对应 C 里三段代码的**原次序**，每条就是 C 的那一句 `if`：
-    // `-ds` 少给 string2（`:104-106`）、`-d` 多给 string2（`:123-125`）、
-    // 翻译路径没有 string2（`:156-157`）。`-s` 单带一个操作数在 `:139-140` 自成一局，
-    // 所以不进任何一条。
+    // The three checks below correspond one-to-one, in the **original order**, to
+    // three pieces of C code; each is one of C's `if` statements: `-ds` missing
+    // string2 (`:104-106`), `-d` with an extra string2 (`:123-125`), and the
+    // translation path without string2 (`:156-157`). `-s` with a single operand is
+    // its own case at `:139-140`, so it does not enter any of them.
     if parsed.delete && parsed.squeeze && !two_sets {
         return Err(TrError::Usage {
             reports: Vec::new(),
@@ -644,9 +705,12 @@ pub fn parse_tr_args<'a>(args: &[&'a [u8]]) -> Result<TrArgs<'a>, TrError> {
     Ok(parsed)
 }
 
-/// `tr.c:276-282` 那**四行**：第一行以 `usage: ` 起，后三行是七个空格的对齐续行；
-/// 整个块没有程序名占位（C 把 `tr` 写死在串里）且走**标准错误**。
-/// 用 `concat!` 拼是因为 Rust 的字符串续行会吃掉下一行的行首空白，而那七个空格就是对齐本身。
+/// The **four lines** of `tr.c:276-282`: the first starts with `usage: `, the other
+/// three are aligned continuation lines with seven spaces; the block has no
+/// program name placeholder (C hard-codes `tr` in the string) and goes to
+/// **standard error**.
+/// `concat!` is used because Rust's string continuation would eat the next line's
+/// leading whitespace, and those seven spaces are the alignment itself.
 #[must_use]
 pub const fn usage_block() -> &'static [u8] {
     concat!(
@@ -661,7 +725,8 @@ pub const fn usage_block() -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// 文本夹具交给字节前门的那一跳：`str` 字面量的字节形就是命令行上的字节。
+    /// The hop from the text fixtures to the byte front door: the byte form of a
+    /// `str` literal is what the command line carries.
     fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
         list.iter().map(|word| word.as_bytes()).collect()
     }
@@ -676,7 +741,8 @@ mod tests {
         (expanded, used)
     }
 
-    /// 只取尾部判据：式子以什么收尾，决定 string2 耗尽之后补什么。
+    /// Only the tail predicate: how the expression ends decides what pads string2
+    /// once it is exhausted.
     fn tail_of(text: &str) -> Set2Tail {
         let mut expanded = [0u8; 256];
         parse_set(text.as_bytes(), SetSite::String2, &mut expanded)
@@ -684,9 +750,12 @@ mod tests {
             .1
     }
 
-    /// string2 耗尽之后补什么，判据是**式子的最后一项**而不是整条式子里有没有集合类：
-    /// `[:digit:]x` 停在普通字符上（重复 `x`），`x[:digit:]` 停在集合类上（重复 OOBCH）。
-    /// 参照件八形逐一核过（`tmp/tr-343/ref-padding.log`）。
+    /// What pads string2 once exhausted depends on the **expression's last item**,
+    /// not on whether the expression contains a class anywhere: `[:digit:]x` stops
+    /// on an ordinary character (repeats `x`), `x[:digit:]` stops on a class
+    /// (repeats OOBCH).
+    /// All eight shapes were checked against the reference binary
+    /// (`tmp/tr-343/ref-padding.log`).
     #[test]
     fn only_a_class_at_the_end_changes_what_exhaustion_yields() {
         assert_eq!(tail_of("[=c=]"), Set2Tail::Oobch, "等价类收尾");
@@ -703,8 +772,9 @@ mod tests {
         assert_eq!(tail_of("[x*2]"), Set2Tail::LastByte, "重复式收尾");
     }
 
-    /// 集合类把 string2 用尽之后，映射表里存的是 OOBCH、打出去是 NUL；
-    /// 普通 string2 短了则一路重复末字节。两形各一枚对照，差的就是这一格。
+    /// Once a character class exhausts string2 the map stores OOBCH and the output
+    /// is NUL; a plain short string2 keeps repeating its last byte. One case of each
+    /// is compared; this is exactly the cell they differ in.
     #[test]
     fn the_class_tail_maps_to_nul_bytes_while_a_plain_tail_repeats_its_last_byte() {
         let mut out = [0u8; 32];
@@ -737,11 +807,14 @@ mod tests {
         assert_eq!(&out[..len], b"xyy", "普通式子仍按末字节重复");
     }
 
-    /// `-s` 那一腿在 `int` 域里挤压：相邻两枚由 OOBCH 变来的 NUL **挤成一枚**，
-    /// 而输入里本来就有的 NUL 不参与挤压（它映射到自身，从没被记进「交回过」那张表）。
-    /// 把这条腿拆成 translate + squeeze 两步就会把两者混为一谈——那两步之间 256 已经没了。
-    /// 四形期望值全部取自参照件（`tmp/tr-390/ab.log`，26 形不一致 0）：本枚门第一次跑
-    /// 就把自己的期望写错了（写成 `c\0\0`），是参照件的 `c\0\0\0` 纠正的。
+    /// The `-s` leg squeezes in the `int` domain: adjacent NULs that came from OOBCH
+    /// **collapse into one**, while NULs already in the input do not participate
+    /// (they map to themselves and were never recorded in the "yielded" table).
+    /// Splitting this leg into translate + squeeze conflates the two — between those
+    /// steps 256 is already gone. All four expected values come from the reference
+    /// binary (`tmp/tr-390/ab.log`, 26 shapes with 0 mismatches): the first run of
+    /// this gate wrote its own expectation wrong (`c\0\0`), and the reference's
+    /// `c\0\0\0` corrected it.
     #[test]
     fn the_squeeze_leg_collapses_padded_nuls_but_leaves_a_real_nul_alone() {
         let mut out = [0u8; 32];
@@ -752,9 +825,11 @@ mod tests {
             (&b"abbc"[..], &b"c\0"[..]),
             (&b"ab\0c"[..], &b"c\0\0\0"[..]),
             (&b"a\0b\0c"[..], &b"c\0\0\0\0"[..]),
-            // `tr.c:240` 的 `lastch` 初值就是 `OOBCH`，所以**开头**那枚 OOBCH 也算「与前一枚相同」
-            // 而被挤掉——把初值写成任何真字节都会让它多打一枚 `\0`（参照件 `tr -s ab [=c=]` ← `b`
-            // 交回**空串**，本枚门第一版没测这一格，负控 P4 因此空咬）。
+            // `tr.c:240`: `lastch` starts as `OOBCH`, so the leading OOBCH also counts
+            // as "same as the previous one" and is squeezed away — initializing it to
+            // any real byte would print one extra `\0` (the reference `tr -s ab [=c=]`
+            // ← `b` yields the **empty string**; the first version of this gate did not
+            // test this cell, so the negative control passed vacuously).
             (&b"b"[..], &b""[..]),
         ] {
             let len = translate_and_squeeze(
@@ -769,10 +844,11 @@ mod tests {
         }
     }
 
-    /// 本层原先给集合表留了八格，并让**每一枚**成员都占一格，于是九枚字面量
-    /// （`tr 'abcdefghi' 'x'`）就是一条静默的退 1——C 侧没有这个上限：字面量、区间、
-    /// 转义都只是 `lastch` 的一次赋值，只有 `[:class:]`/`[=c=]` 才用到 SET 状态。
-    /// 参照件同形交回 `xxx` 退 0。
+    /// This layer used to reserve eight slots for the class table and let **every**
+    /// member occupy one, so nine literals (`tr 'abcdefghi' 'x'`) were a silent
+    /// exit 1 — C has no such limit: literals, ranges and escapes are just an
+    /// assignment to `lastch`; only `[:class:]`/`[=c=]` use the SET state. The
+    /// reference binary on the same shape yields `xxx` and exits 0.
     #[test]
     fn a_literal_set_is_bounded_by_256_members_not_by_an_eight_slot_class_table() {
         for text in [
@@ -795,7 +871,8 @@ mod tests {
         assert_eq!(&out[..len], b"xxx", "九枚成员不是错误，是一枚都不少地映射");
     }
 
-    /// 只取失败出口：本模块的语法句断言都走这里，第二串位（重复式合法的那一侧）。
+    /// Only the failure exit: all grammar-sentence assertions in this module go
+    /// through here, at the string2 site (the side where repeats are legal).
     fn set_error(text: &str) -> SetError {
         let mut expanded = [0u8; 256];
         parse_set(text.as_bytes(), SetSite::String2, &mut expanded)
@@ -830,8 +907,10 @@ mod tests {
 
     #[test]
     fn test_empty_first_set_is_the_identity_map() {
-        // `tr.c:178-181` 先把映射表填成恒等，`:214-215` 的空 string1 让循环一次也不进入，
-        // 于是没有任何位置被改写过——参照件 `tr '' x` 因此逐字节照抄标准输入且退 0
+        // `tr.c:178-181` first fills the map with the identity, and the empty
+        // string1 makes the `:214-215` loop never run, so no position was ever
+        // rewritten — hence the reference `tr '' x` copies stdin byte for byte and
+        // exits 0
         let (set2, len2) = expanded_set("XYZ");
         let mut out = [0u8; 16];
         let len = translate(b"aXb", &[], &set2[..len2], Set2Tail::LastByte, &mut out).unwrap();
@@ -900,8 +979,9 @@ mod tests {
 
     #[test]
     fn a_reversed_range_is_handed_back_as_literals() {
-        // genrange() 的 `stopval < lastch` 把指针退回 `savestart` 并返回 0，主循环于是
-        // 按字面量吃：`tr z-a y` 的集合是 z、-、a 三枚成员且退 0，不是「非法区间」
+        // genrange()'s `stopval < lastch` rewinds the pointer to `savestart` and
+        // returns 0, so the main loop consumes literals: `tr z-a y` has the set
+        // z, -, a (three members) and exits 0, not "illegal range"
         let (set, len) = expanded_set("z-a");
         assert_eq!(len, 3);
         assert_eq!(&set[..len], [b'z', b'-', b'a']);
@@ -921,7 +1001,8 @@ mod tests {
 
     #[test]
     fn a_repeat_in_string1_is_refused_before_its_own_shape_is_read() {
-        // genseq() 的第一句判据在吃任何字符之前，所以星号、个数长什么样都轮不到发言
+        // genseq()'s first check runs before consuming any character, so the
+        // asterisk and the count never get a say in what the shape looks like
         for text in ["[a*2]", "[ab*2]", "[x*]", "[x*1a]"] {
             assert_eq!(
                 grammar(text, SetSite::String1),
@@ -933,7 +1014,8 @@ mod tests {
             SetGrammar::SequencesOnlyInString2.sentence_bytes(),
             b"Sequences only valid in string2".as_slice()
         );
-        // 同一枚式子在第二串位上合法，证明分流按串位而不是按式子本身
+        // The same expression is legal at the string2 site, proving the split is by
+        // site, not by the expression itself
         let (set, len) = expanded_set("[a*2]");
         assert_eq!(len, 2);
         assert_eq!(&set[..len], [b'a', b'a']);
@@ -941,7 +1023,8 @@ mod tests {
 
     #[test]
     fn the_asterisk_is_checked_before_the_count() {
-        // 星号那一句在前：`[ab*2]` 里 `a` 之后跟着 `b`，谈不上「个数非法」
+        // The asterisk sentence runs first: in `[ab*2]` a `b` follows the `a`, so
+        // "illegal count" never comes up
         for text in ["[ab*2]", "[abc*2]", "[a b*2]"] {
             assert_eq!(
                 grammar(text, SetSite::String2),
@@ -972,7 +1055,8 @@ mod tests {
 
     #[test]
     fn an_open_repeat_means_repeat_forever_not_empty() {
-        // `case ']'` 与「数字但值为 0」都汇到 `s->cnt ? SEQUENCE : INFINITE` 的 INFINITE 侧
+        // Both `case ']'` and "a digit whose value is 0" land on the INFINITE side
+        // of `s->cnt ? SEQUENCE : INFINITE`
         for text in ["[x*]", "[x*0]"] {
             let (set, len) = expanded_set(text);
             assert_eq!(len, 1);
@@ -994,10 +1078,12 @@ mod tests {
 
     #[test]
     fn an_equivalence_with_a_second_member_blames_the_equals_sign() {
-        // `genequiv()` 的成员腿只吃**一枚**字符，紧接着那枚必须是 `=`
-        // （`str.c:307-320`）。式尾有没有 `=]` 是 `bracket()` 事先认过的
-        // （`str.c:193-199`），所以 `[=ab=]` 这类「像成形而内部多塞」的式子走到这里，
-        // 报的是这一句。参照件四形现量同一句、同退 1（`tmp/tr-341/measure341.log`）。
+        // `genequiv()`'s member leg consumes **one** character, and the next one must
+        // be `=` (`str.c:307-320`). Whether the form ends with `=]` was recognized
+        // beforehand by `bracket()` (`str.c:193-199`), so shapes like `[=ab=]` that
+        // "look formed but carry extra bytes inside" reach here and report this
+        // sentence. The reference binary reports the same sentence and exit 1 for all
+        // four shapes (`tmp/tr-341/measure341.log`).
         for text in ["[=ab=]", "[=abc=]", "[=a b=]", "[==]"] {
             for site in [SetSite::String1, SetSite::String2] {
                 assert_eq!(
@@ -1015,9 +1101,10 @@ mod tests {
 
     #[test]
     fn an_equivalence_bracketed_by_more_than_the_equals_blames_the_right_bracket() {
-        // `[=a=b=]` 撞的是**下一句**（`str.c:321-323`）：成员 `a` 之后确实是 `=`，
-        // 但 `=` 之后是 `b` 而不是 `]`。`bracket()` 找的是式尾那处 `=]`，
-        // 于是「认下过」与「核得过」不是一回事——两串位同判。
+        // `[=a=b=]` hits the **next** sentence (`str.c:321-323`): the member `a` is
+        // indeed followed by `=`, but the `=` is followed by `b`, not `]`.
+        // `bracket()` looked for the `=]` at the end of the form, so "was recognized"
+        // and "passes the check" are not the same thing — both sites judge alike.
         for site in [SetSite::String1, SetSite::String2] {
             assert_eq!(
                 grammar("[=a=b=]", site),
@@ -1032,10 +1119,12 @@ mod tests {
 
     #[test]
     fn the_equivalence_member_leg_consumes_two_bytes_for_an_escape() {
-        // 成员腿写作 `if (*s->str == '\\') s->equiv[0] = backslash(s);`（`str.c:309-312`），
-        // `backslash()` 一次走过两枚字节。于是 `[=\=]` 在 `\=` 之后剩下的是 `]` 而不是 `=`，
-        // 报等号那一句（参照件同形同句）；`[=\n=]` 则正常收成**换行符**这一枚成员
-        // （参照件现量 `tr '[=\n=]' x` 把输入里的换行换成了 `x`）。
+        // The member leg reads `if (*s->str == '\\') s->equiv[0] = backslash(s);`
+        // (`str.c:309-312`), and `backslash()` consumes two bytes at once. So after
+        // `\=` in `[=\=]` what remains is `]`, not `=`, and the equals sentence is
+        // reported (the reference binary agrees); `[=\n=]` instead yields the single
+        // member **newline** (the reference `tr '[=\n=]' x` turns newlines in the
+        // input into `x`).
         assert_eq!(
             grammar(r"[=\=]", SetSite::String1),
             SetGrammar::MisplacedEquivalenceEquals
@@ -1048,8 +1137,9 @@ mod tests {
 
     #[test]
     fn an_unshaped_bracket_is_a_literal_bracket() {
-        // `bracket()` 返回假 ⇒ `next()` FALLTHROUGH 成一枚字面 `[`：这四形在参照件里都
-        // 退 0，少抄一条判据就会在这里多报一句假话，所以逐形钉成字面量成员
+        // `bracket()` returns false ⇒ `next()` FALLTHROUGHs to a literal `[`: all
+        // four shapes exit 0 in the reference binary, and missing one predicate would
+        // report a false sentence here, so each shape is pinned as literal members
         for (text, want) in [
             ("[x]", "[x]".as_bytes()),
             ("[x]y*", "[x]y*".as_bytes()),
@@ -1063,8 +1153,9 @@ mod tests {
 
     #[test]
     fn a_wellformed_equivalence_is_its_own_single_member() {
-        // 参照件 `tr_ref abc [=c=]` 退 0；它那两句「放错了等号 / 右括号」要的是式内
-        // 再夹字符的形，本支未接，登记为 TR-EQUIV-SENTENCES
+        // The reference `tr_ref abc [=c=]` exits 0; its two sentences "misplaced
+        // equals sign / right bracket" want shapes with extra characters inside the
+        // form, which this branch does not wire up; registered as TR-EQUIV-SENTENCES
         let (set, len) = expanded_set("[=c=]");
         assert_eq!(len, 1);
         assert_eq!(&set[..len], [b'c']);
@@ -1072,7 +1163,8 @@ mod tests {
 
     #[test]
     fn test_ring_stops_at_the_first_off_letter() {
-        // 环里的 usage 直接退出 ⇒ 报文至多一条，且报的是**第一个**坏字母
+        // usage in the loop exits immediately ⇒ at most one report, naming the
+        // **first** bad letter
         assert_eq!(
             tr_args(&["-ZQ"]),
             Err(TrError::Usage {
@@ -1085,7 +1177,8 @@ mod tests {
                 reports: vec![crate::GetoptReport::UnknownOption('Z')]
             })
         );
-        // 三个字母都是旗标 ⇒ 缺值那一支到不了，`-d` 的 `d` 不是「带值字母」
+        // All three letters are flags ⇒ the missing-value branch is unreachable, and
+        // the `d` in `-d` is not a "value-taking letter"
         assert_eq!(
             tr_args(&["-d", "a"]).map(|p| (p.delete, p.operands)),
             Ok((true, argv_of(&["a"])))
@@ -1095,12 +1188,12 @@ mod tests {
     #[test]
     fn test_operand_count_and_combination_all_say_usage() {
         for args in [
-            &[][..],               // 零个操作数
-            &["a"][..],            // 一个操作数却没给 -d/-s
-            &["a", "b", "c"][..],  // 三个
-            &["-d"][..],           // 只有旗标
-            &["-d", "a", "b"][..], // -d 多给一个
-            &["-ds", "a"][..],     // -ds 少给一个
+            &[][..],               // zero operands
+            &["a"][..],            // one operand without -d/-s
+            &["a", "b", "c"][..],  // three
+            &["-d"][..],           // flags only
+            &["-d", "a", "b"][..], // -d with an extra operand
+            &["-ds", "a"][..],     // -ds with one missing
             &["-c"][..],
         ] {
             assert_eq!(
@@ -1111,7 +1204,8 @@ mod tests {
                 "{args:?}"
             );
         }
-        // 合法的形：`-s` 配一个、`-ds` 配两个、`-c` 配两个、裸 `-` 是集合名
+        // Legal shapes: `-s` with one, `-ds` with two, `-c` with two, a bare `-` is a
+        // set name
         assert_eq!(
             tr_args(&["-s", "a"]).map(|p| (p.squeeze, p.operands.len())),
             Ok((true, 1))
@@ -1124,7 +1218,8 @@ mod tests {
             tr_args(&["-", "a"]).map(|p| p.operands),
             Ok(argv_of(&["-", "a"]))
         );
-        // `--` 被吃掉且自身不是操作数；只给 `--` 时操作数为零 ⇒ usage（参照件同形）
+        // `--` is consumed and is not an operand itself; with only `--` there are zero
+        // operands ⇒ usage (the reference binary agrees)
         assert_eq!(
             tr_args(&["--", "a", "b"]).map(|p| p.operands),
             Ok(argv_of(&["a", "b"]))
@@ -1135,7 +1230,7 @@ mod tests {
                 reports: Vec::new()
             })
         );
-        // 环不重排：`a -d` 的两个 token 都是集合名
+        // The loop does not reorder: both tokens of `a -d` are set names
         assert_eq!(
             tr_args(&["a", "-d"]).map(|p| (p.delete, p.operands)),
             Ok((false, argv_of(&["a", "-d"])))
@@ -1156,10 +1251,13 @@ mod tests {
         }
     }
 
-    /// 集合式里的一枚裸 `ff` 是**一位成员**，不是折叠后的三字节。C 的 `str.c` 按字节
-    /// 吃式子（`escape()` 与 `nextch()` 都走 `unsigned char`），而参照件
-    /// `tmp/tr-322/tr_ref` 现量 `tr -d a<ff>b` 对输入 `a\xffbq` 打 `q`（`ff` 被删掉了）；
-    /// 文本缝在同一形上交回 `\xffq`——它删的是 `ef`、`bf`、`bd` 三位，而输入里没有它们。
+    /// A raw `ff` in a set expression is **one member**, not three folded bytes.
+    /// C's `str.c` consumes expressions byte by byte (`escape()` and `nextch()`
+    /// both go through `unsigned char`), and the reference binary
+    /// `tmp/tr-322/tr_ref` measured `tr -d a<ff>b` on input `a\xffbq` printing `q`
+    /// (the `ff` was deleted);
+    /// the text seam on the same shape yields `\xffq` — it deletes the three bytes
+    /// `ef`, `bf`, `bd`, none of which are in the input.
     #[test]
     fn a_raw_ff_set_member_is_one_byte_of_the_set() {
         let mut expanded = [0u8; 256];
@@ -1168,9 +1266,12 @@ mod tests {
         assert_eq!(&expanded[..used], b"a\xffb".as_slice());
     }
 
-    /// 类名回显是式子里的**原字节**：`str.c:253` 的 `errx(1, "unknown class %.*s",
-    /// (int)len, class)` 带长度打回那一串字节，参照件对 `tr $'[:\xfffoo:]' x` 交
-    /// `tr: unknown class \xfffoo`。句子交回 `Vec<u8>` 就是为了让这一枚能钉得住。
+    /// The class-name echo is the **original bytes** from the expression:
+    /// `str.c:253`'s `errx(1, "unknown class %.*s",
+    /// (int)len, class)` prints that byte string with its length, and the reference
+    /// answers `tr $'[:\xfffoo:]' x` with
+    /// `tr: unknown class \xfffoo`. The sentence returns `Vec<u8>` precisely so this
+    /// one can be pinned.
     #[test]
     fn an_unknown_class_name_is_echoed_as_its_own_bytes() {
         assert_eq!(
@@ -1179,8 +1280,9 @@ mod tests {
         );
     }
 
-    /// 集外字母交回的是短横后的那一枚字节（`getopt.c:79` 的 `optopt = *place++`），
-    /// 报文是一位裸 `ff`：文本缝在此折成 `ef`，参照件 `tr -<ff> a b` 打的是 `ff`。
+    /// An off-string letter yields the byte after the dash (`getopt.c:79`'s
+    /// `optopt = *place++`); the report is a raw `ff`: the text seam folds it to `ef`
+    /// here, while the reference `tr -<ff> a b` prints `ff`.
     #[test]
     fn parse_tr_names_a_raw_ff_option_letter_by_that_byte() {
         use crate::GetoptReport;

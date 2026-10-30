@@ -309,21 +309,21 @@ mod tests {
     }
 }
 
-/// 一个处理器的描述（`cpuinfo.c` 的字段集，按目标架构裁剪）。
+/// Description of one processor (the field set of `cpuinfo.c`, trimmed per target architecture).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessorInfo<'a> {
-    /// 处理器编号（`processor : N`）。
+    /// Processor number (`processor : N`).
     pub id: u32,
-    /// 厂商标识（`vendor_id`）。
+    /// Vendor identifier (`vendor_id`).
     pub vendor: &'a str,
-    /// 型号名（`model name`）。
+    /// Model name (`model name`).
     pub model: &'a str,
-    /// 特性位名称列表（`flags`）。
+    /// List of feature-bit names (`flags`).
     pub flags: &'a [&'a str],
 }
 
-/// 逐处理器输出 `/proc/cpuinfo` 的块（`cpuinfo.c:100-120` 的
-/// `%-16s: value` 字段格式；flags 以空格分隔、行尾换行）。
+/// Emit the `/proc/cpuinfo` block per processor (the `%-16s: value` field format of
+/// `cpuinfo.c:100-120`; flags are space-separated and each line ends with a newline).
 pub fn render_cpuinfo(buf: &mut ProcBuf, processors: &[ProcessorInfo<'_>]) {
     for processor in processors {
         buf.push_str("processor       : ");
@@ -344,22 +344,22 @@ pub fn render_cpuinfo(buf: &mut ProcBuf, processors: &[ProcessorInfo<'_>]) {
     }
 }
 
-/// 一条 PCI 设备记录（总线、设备、功能、厂商、型号）。
+/// One PCI device record (bus, device, function, vendor, product).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PciEntry {
-    /// 总线号。
+    /// Bus number.
     pub bus: u8,
-    /// 设备号。
+    /// Device number.
     pub device: u8,
-    /// 功能号。
+    /// Function number.
     pub function: u8,
-    /// 厂商标识。
+    /// Vendor identifier.
     pub vendor: u16,
-    /// 型号标识。
+    /// Product identifier.
     pub product: u16,
 }
 
-/// 逐行输出 PCI 设备表（`root_pci` 的设备清单语义；每行一条记录）。
+/// Emit the PCI device table line by line (the device-list semantics of `root_pci`; one record per line).
 fn push_hex_u16(buf: &mut ProcBuf, value: u16) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for shift in [12i64, 8, 4, 0] {
@@ -384,18 +384,18 @@ pub fn render_pci(buf: &mut ProcBuf, entries: &[PciEntry]) {
     }
 }
 
-/// 一条 IPC 向量记录（名称与入口地址）。
+/// One IPC vector record (name and entry address).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpcVector {
-    /// 向量入口地址。
+    /// Vector entry address.
     pub address: u64,
-    /// 向量名称（`sendrec`、`send`、`notify`、`senda`、`sendnb`、
-    /// `receive`、`do_kernel_call` 之一）。
+    /// Vector name (one of `sendrec`, `send`, `notify`, `senda`, `sendnb`, `receive`,
+    /// `do_kernel_call`).
     pub name: &'static str,
 }
 
-/// 输出 IPC 向量表（`root_ipcvecs`，`root.c:181-208`）：每行
-/// `地址 T 名称(k)`，地址按八位十六进制零填充。
+/// Emit the IPC vector table (`root_ipcvecs`, `root.c:181-208`): each line is
+/// `address T name(k)`, with the address zero-padded to eight hexadecimal digits.
 pub fn render_ipcvecs(buf: &mut ProcBuf, vectors: &[IpcVector]) {
     for vector in vectors {
         buf.push_bytes(&address_bytes(vector.address));
@@ -405,9 +405,9 @@ pub fn render_ipcvecs(buf: &mut ProcBuf, vectors: &[IpcVector]) {
     }
 }
 
-/// 八位十六进制零填充地址字节（`root_ipcvecs` 的 `%08lx` 格式）。
+/// The address bytes zero-padded to eight hexadecimal digits (the `%08lx` format of `root_ipcvecs`).
 fn address_bytes(address: u64) -> [u8; 8] {
-    // `%08lx` 打印低三十二位的八个 nibble，小数字零填充。
+    // `%08lx` prints the eight nibbles of the low 32 bits, zero-padded for small numbers.
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = [0u8; 8];
     for (index, slot) in out.iter_mut().enumerate() {
@@ -417,8 +417,8 @@ fn address_bytes(address: u64) -> [u8; 8] {
     out
 }
 
-/// 进程命令行（`pid_cmdline`）：参数间以 NUL 字节分隔，与内核暴露的
-/// argv 布局一致；结尾不带终止字节。
+/// Process command line (`pid_cmdline`): arguments are separated by NUL bytes, matching
+/// the argv layout the kernel exposes; there is no terminating byte at the end.
 pub fn render_cmdline(buf: &mut ProcBuf, arguments: &[&[u8]]) {
     for (index, argument) in arguments.iter().enumerate() {
         if index > 0 {
@@ -428,7 +428,7 @@ pub fn render_cmdline(buf: &mut ProcBuf, arguments: &[&[u8]]) {
     }
 }
 
-/// 进程环境块（`pid_environ`）：`KEY=VALUE` 项间以 NUL 字节分隔。
+/// Process environment block (`pid_environ`): `KEY=VALUE` items are separated by NUL bytes.
 pub fn render_environ(buf: &mut ProcBuf, variables: &[&[u8]]) {
     for (index, variable) in variables.iter().enumerate() {
         if index > 0 {

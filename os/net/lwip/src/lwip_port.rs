@@ -37,53 +37,55 @@ pub const TCP_WINDOW: usize = 16384;
 /// Send buffer (`TCP_SND_BUF`, 11 times the segment size, `lwipopts.h:282`).
 pub const TCP_SEND_BUFFER: usize = 11 * TCP_MAX_SEGMENT;
 
-// SO_SNDBUF/SO_RCVBUF 选项的容量契约（C 侧各套接字模块顶部的三档常量；
-// 垫片按同档收下、记录，物理缓冲仍按上面两个 lwipopts 常量定容——
-// 登记差异见 `25-smoltcp-shim.md` §3）。
-/// TCP 发送缓冲下界（`TCP_SNDBUF_MIN`，1，`tcpsock.c:86`）。
+// Capacity contract for the SO_SNDBUF/SO_RCVBUF options (the three-tier constants
+// at the top of each C socket module; the shim accepts and records the same tiers
+// while the physical buffers stay sized by the two lwipopts constants above —
+// see `25-smoltcp-shim.md` §3 for the registered difference).
+/// TCP send-buffer floor (`TCP_SNDBUF_MIN`, 1, `tcpsock.c:86`).
 pub const TCP_SNDBUF_MIN: usize = 1;
-/// TCP 发送缓冲缺省（`TCP_SNDBUF_DEF`，32768，`tcpsock.c:87`）。
+/// TCP send-buffer default (`TCP_SNDBUF_DEF`, 32768, `tcpsock.c:87`).
 pub const TCP_SNDBUF_DEF: usize = 32768;
-/// TCP 发送缓冲上界（`TCP_SNDBUF_MAX`，131072，`tcpsock.c:88`）。
+/// TCP send-buffer ceiling (`TCP_SNDBUF_MAX`, 131072, `tcpsock.c:88`).
 pub const TCP_SNDBUF_MAX: usize = 131072;
-/// TCP 接收缓冲下界（`TCP_RCVBUF_MIN`，即 `TCP_WND`，`tcpsock.c:89`）。
+/// TCP receive-buffer floor (`TCP_RCVBUF_MIN`, i.e. `TCP_WND`, `tcpsock.c:89`).
 pub const TCP_RCVBUF_MIN: usize = TCP_WINDOW;
-/// TCP 接收缓冲缺省（`TCP_RCVBUF_DEF`，`MAX(TCP_WND, 32768)`；接收窗
-/// 16384 小于 32768，取值即 32768，`tcpsock.c:90`）。
+/// TCP receive-buffer default (`TCP_RCVBUF_DEF`, `MAX(TCP_WND, 32768)`; the receive
+/// window of 16384 is below 32768, so the value is 32768, `tcpsock.c:90`).
 pub const TCP_RCVBUF_DEF: usize = 32768;
-/// TCP 接收缓冲上界（`TCP_RCVBUF_MAX`，`MAX(TCP_WND, 131072)`；同上
-/// 取值即 131072，`tcpsock.c:91`）。
+/// TCP receive-buffer ceiling (`TCP_RCVBUF_MAX`, `MAX(TCP_WND, 131072)`; likewise
+/// the value is 131072, `tcpsock.c:91`).
 pub const TCP_RCVBUF_MAX: usize = 131072;
-/// UDP 发送缓冲下界（`UDP_SNDBUF_MIN`，1，`udpsock.c:29`）。
+/// UDP send-buffer floor (`UDP_SNDBUF_MIN`, 1, `udpsock.c:29`).
 pub const UDP_SNDBUF_MIN: usize = 1;
-/// UDP 发送缓冲缺省（`UDP_SNDBUF_DEF`，8192，`udpsock.c:30`）。
+/// UDP send-buffer default (`UDP_SNDBUF_DEF`, 8192, `udpsock.c:30`).
 pub const UDP_SNDBUF_DEF: usize = 8192;
-/// UDP 发送缓冲上界（`UDP_SNDBUF_MAX`，`UDP_MAX_PAYLOAD`，`udpsock.c:28`/`:31`）。
+/// UDP send-buffer ceiling (`UDP_SNDBUF_MAX`, `UDP_MAX_PAYLOAD`, `udpsock.c:28`/`:31`).
 pub const UDP_SNDBUF_MAX: usize = u16::MAX as usize;
-/// UDP 接收缓冲下界（`UDP_RCVBUF_MIN`，即 `MEMPOOL_BUFSIZE`，
-/// `lwipopts.h:49` + `udpsock.c:32`）。
+/// UDP receive-buffer floor (`UDP_RCVBUF_MIN`, i.e. `MEMPOOL_BUFSIZE`,
+/// `lwipopts.h:49` + `udpsock.c:32`).
 pub const UDP_RCVBUF_MIN: usize = 512;
-/// UDP 接收缓冲缺省（`UDP_RCVBUF_DEF`，32768，`udpsock.c:33`）。
+/// UDP receive-buffer default (`UDP_RCVBUF_DEF`, 32768, `udpsock.c:33`).
 pub const UDP_RCVBUF_DEF: usize = 32768;
-/// UDP 接收缓冲上界（`UDP_RCVBUF_MAX`，65536，`udpsock.c:34`）。
+/// UDP receive-buffer ceiling (`UDP_RCVBUF_MAX`, 65536, `udpsock.c:34`).
 pub const UDP_RCVBUF_MAX: usize = 65536;
 
-/// TCP 保活使能时的空闲间隔（C 使能 `SOF_KEEPALIVE` 后 pcb 的缺省
-/// 空闲值 `TCP_KEEPIDLE_DEFAULT`，7200000 毫秒，
-/// `lwip/priv/tcp_priv.h:138-139`）。
+/// Idle interval while TCP keepalive is enabled (the pcb's default idle value
+/// `TCP_KEEPIDLE_DEFAULT` once C enables `SOF_KEEPALIVE`, 7200000 milliseconds,
+/// `lwip/priv/tcp_priv.h:138-139`).
 pub const TCP_KEEPALIVE_IDLE_MS: u64 = 7_200_000;
 
-// 选项名（`sys/sys/socket.h` 的线上值；服务路按名字分派，墙按名字
-// 落效果——名字清单在墙上与路上各消费一次）。
-/// `SOL_SOCKET`（0xffff，`sys/socket.h:171`）。
+// Option names (the wire values of `sys/sys/socket.h`; the service path dispatches
+// by name and the wall applies the effect by name — the name list is consumed once
+// on each side).
+/// `SOL_SOCKET` (0xffff, `sys/socket.h:171`).
 pub const SOL_SOCKET: i32 = 0xffff;
-/// `SO_KEEPALIVE`（0x0008，`sys/socket.h:124`）。
+/// `SO_KEEPALIVE` (0x0008, `sys/socket.h:124`).
 pub const SO_KEEPALIVE: i32 = 0x0008;
-/// `SO_BROADCAST`（0x0020，`sys/socket.h:126`）。
+/// `SO_BROADCAST` (0x0020, `sys/socket.h:126`).
 pub const SO_BROADCAST: i32 = 0x0020;
-/// `SO_SNDBUF`（0x1001，`sys/socket.h:139`）。
+/// `SO_SNDBUF` (0x1001, `sys/socket.h:139`).
 pub const SO_SNDBUF: i32 = 0x1001;
-/// `SO_RCVBUF`（0x1002，`sys/socket.h:140`）。
+/// `SO_RCVBUF` (0x1002, `sys/socket.h:140`).
 pub const SO_RCVBUF: i32 = 0x1002;
 
 /// Hooks the service provides to the stack (`lwiphooks.h`: sequence-number
@@ -118,42 +120,48 @@ pub const PATCHES: [&str; 4] = [
 ];
 
 // ---------------------------------------------------------------------------
-// 栈墙：服务唯一依赖的第三方栈边界（[ARCH N-1]，裁决记录见 24 篇 §1.5）
+// Stack wall: the third-party stack boundary the service depends on exclusively
+// ([ARCH N-1], decision record in chapter 24 §1.5).
 //
-// 边界的所有权方向是这条墙的全部意义：
-// - 路由与网关策略属于服务（C 里 lwip_hook_ip4_route 被调用即 panic，
-//   lwiphooks.h:15——含义是栈根本没有路由权，route.c 的表是唯一真相）。
-//   所以墙只向栈要"下一跳/网关"这种解析服务，不交出选路决策。
-// - 时间源属于服务（C sys_now = getticks × 1000 / sys_hz，毫秒），墙上的
-//   时刻一律是毫秒数。
-// - 设备属于服务：帧从 NDEV 进来交给栈，栈要发帧时交还服务，缓冲模型由
-//   缓冲轮次（N1-P1-5）细化后替换这里的借用切片签名。
+// The ownership direction of the boundary is the whole point of this wall:
+// - Routing and gateway policy belong to the service (in C, calling
+//   lwip_hook_ip4_route panics immediately, lwiphooks.h:15 — meaning the stack has
+//   no routing authority at all and the table in route.c is the single truth). The
+//   wall therefore asks the stack only for resolution services such as "next
+//   hop/gateway" and never hands over route selection.
+// - The time source belongs to the service (C sys_now = getticks × 1000 / sys_hz,
+//   milliseconds); every instant on the wall is a millisecond count.
+// - The device belongs to the service: frames arrive from NDEV and are handed to
+//   the stack, and the stack hands frames back to the service when it wants to
+//   send; the buffer model, once refined by the buffer round, replaces the
+//   borrowed-slice signature here.
 // ---------------------------------------------------------------------------
 
-/// 线上形状的 IP 地址。最终归属随 N1-P1-1/N-8 的 wire 类型裁决定位。
+/// An IP address in wire shape. Its final home is settled by the wire-type decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackIpAddr {
-    /// 版本 4 地址，网络序字节。
+    /// Version 4 address, network-order bytes.
     V4([u8; 4]),
-    /// 版本 6 地址，网络序字节。
+    /// Version 6 address, network-order bytes.
     V6([u8; 16]),
 }
 
-/// 栈支持的 socket 家族，与服务侧 tcpsock/udpsock/rawsock/icmp 面一一对应。
+/// Socket families the stack supports, one-to-one with the service-side tcpsock/udpsock/rawsock/icmp faces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackFamily {
-    /// 传输控制协议（第 08 篇）。
+    /// Transmission control protocol (chapter 08).
     Tcp,
-    /// 用户数据报协议（第 09 篇）。
+    /// User datagram protocol (chapter 09).
     Udp,
-    /// 原始 IP 报文（第 10 篇）。
+    /// Raw IP packets (chapter 10).
     Raw,
-    /// 互联网控制报文协议（第 07 篇的 icmp 面）。
+    /// Internet control message protocol (the icmp face of chapter 07).
     Icmp,
 }
 
-/// 栈内一个 socket 的句柄：家族加栈内索引。服务从不持有栈内部内存，
-/// 句柄指向的对象随关闭消失，之后使用它的调用由栈以错误回答。
+/// Handle for one socket inside the stack: family plus in-stack index. The service
+/// never holds stack-internal memory; the object a handle points at disappears on
+/// close, and later calls that use it are answered with an error by the stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackSocket {
     family: StackFamily,
@@ -161,140 +169,150 @@ pub struct StackSocket {
 }
 
 impl StackSocket {
-    /// 用家族与栈内索引构造句柄。
+    /// Build a handle from a family and an in-stack index.
     pub const fn new(family: StackFamily, index: u16) -> Self {
         StackSocket { family, index }
     }
 
-    /// 句柄的家族。
+    /// The handle's family.
     pub const fn family(&self) -> StackFamily {
         self.family
     }
 
-    /// 句柄在栈内的索引。
+    /// The handle's index within the stack.
     pub const fn index(&self) -> u16 {
         self.index
     }
 }
 
-/// TCP 初始序列号的输入四元组（`lwip_hook_tcp_isn` 的 Rust 重述，
-/// lwiphooks.h:8-11）。契约只有一条：不可预测（RFC 6528）。
+/// The input quad for a TCP initial sequence number (the Rust restatement of
+/// `lwip_hook_tcp_isn`, lwiphooks.h:8-11). There is exactly one contract:
+/// unpredictability (RFC 6528).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectionQuad {
-    /// 本端地址。
+    /// Local address.
     pub local_address: StackIpAddr,
-    /// 本端端口。
+    /// Local port.
     pub local_port: u16,
-    /// 对端地址。
+    /// Peer address.
     pub remote_address: StackIpAddr,
-    /// 对端端口。
+    /// Peer port.
     pub remote_port: u16,
 }
 
-/// 服务提供给栈的策略钩子。
+/// Policy hooks the service provides to the stack.
 ///
-/// C 对应 lwiphooks.h 的序列号钩子与两个网关钩子（lwiphooks.h:24-27 与
-/// :40-43，服务从自己的表回答解析）。两个路由覆盖钩子**不在墙内**：它们在
-/// C 里的契约就是"被调用即 panic"（lwiphooks.h:15 与 :31），真正的
-/// 含义是路由决策属于服务，不是栈可以回调的策略点，所以墙上没有这个口子。
+/// The C counterparts are lwiphooks.h's sequence-number hook and two gateway hooks
+/// (lwiphooks.h:24-27 and :40-43, where the service answers resolution from its own
+/// table). The two route-override hooks are **not inside the wall**: their C contract
+/// is "panic when called" (lwiphooks.h:15 and :31), whose real meaning is that route
+/// decisions belong to the service and are not a policy point the stack may call back
+/// into, so the wall has no opening for them.
 pub trait StackHooks {
-    /// 一个新 TCP 连接的初始序列号。smoltcp 一族的栈在内部生成序列号、
-    /// 不消费此钩子；钩子保留在墙上是为持有随机源的服务实现（记录于
-    /// 24 篇 §1.5 偏差表）。
+    /// Initial sequence number for a new TCP connection. smoltcp-family stacks
+    /// generate sequence numbers internally and do not consume this hook; it stays on
+    /// the wall for service implementations that hold a random source (recorded in the
+    /// deviation table of chapter 24 §1.5).
     fn initial_sequence(&mut self, quad: ConnectionQuad) -> u32;
 
-    /// 版本 4 的网关/下一跳解析（地址解析前的最后一步）；`None` 表示
-    /// 目的地即本地链路。`netif_index` 是服务侧接口表（第 14 篇）的行号。
+    /// Version 4 gateway/next-hop resolution (the last step before address resolution);
+    /// `None` means the destination is on the local link. `netif_index` is a row number
+    /// in the service-side interface table (chapter 14).
     fn gateway_v4(&mut self, netif_index: u16, destination: [u8; 4]) -> Option<[u8; 4]>;
 
-    /// 版本 6 的网关/下一跳解析（邻居发现消费）。
+    /// Version 6 gateway/next-hop resolution (consumed by neighbor discovery).
     fn gateway_v6(&mut self, netif_index: u16, destination: [u8; 16]) -> Option<[u8; 16]>;
 }
 
-/// 栈报给服务的一个 socket 就绪位。服务把它翻译成 SEV_SEND/SEV_RECV
-/// 事件位（第 02 篇）；错误就绪不走这里，由操作返回的错误表达。
+/// One socket readiness bit as the stack reports it to the service. The service
+/// translates it into SEV_SEND/SEV_RECV event bits (chapter 02); error readiness does
+/// not travel here and is expressed by the error an operation returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Readiness {
-    /// 可读（有数据或连接事件待处理）。
+    /// Readable (data or a connection event is pending).
     pub readable: bool,
-    /// 可写（发送缓冲有余量）。
+    /// Writable (the send buffer has room).
     pub writable: bool,
 }
 
-/// 一个 UDP 端点：地址加端口。`addr` 为 `None` 表示通配（绑定时未定
-/// 地址、发送时取套接字默认对端语义外的裸端口面）。
+/// One UDP endpoint: address plus port. `addr` being `None` means wildcard (an address
+/// not yet fixed at bind time; on send, a bare-port face outside the socket's
+/// default-peer semantics).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackEndpoint {
-    /// 地址；`None` = 通配。
+    /// Address; `None` = wildcard.
     pub addr: Option<StackIpAddr>,
-    /// 端口（主机序）。
+    /// Port (host order).
     pub port: u16,
 }
 
 impl StackEndpoint {
-    /// 指定地址与端口的端点。
+    /// An endpoint with the given address and port.
     pub const fn new(addr: Option<StackIpAddr>, port: u16) -> Self {
         StackEndpoint { addr, port }
     }
 }
 
-/// 主循环向栈询问下一次交付时刻，对应 C 里 `sys_check_timeouts` 的语义
-/// 位置。`At` 携带的毫秒时刻与 C `sys_now` 同一时间基。
+/// The main loop asks the stack when the next delivery is due, the semantic position
+/// of C's `sys_check_timeouts`. The millisecond instant carried by `At` uses the same
+/// time base as C `sys_now`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PollWhen {
-    /// 该毫秒时刻前无需 pump。
+    /// No pump needed before this millisecond instant.
     At(u64),
-    /// 无定时器、无重传待办，睡到下一个消息到来。
+    /// No timers, no retransmission pending: sleep until the next message arrives.
     Never,
 }
 
-/// 栈墙主 trait。服务代码（startup 的分发路、各 sock 模块）只依赖这里
-/// 声明的面，不依赖任何具体栈；骨架期先立 pump、就绪与最小生命周期，
-/// 逐家族操作与数据面细节随缓冲轮次（N1-P1-5）落地。错误一律返回
-/// `util.rs` 的 `STACK_*` 线上值——它们是 N-14 双射表的栈侧半边，不在此
-/// 重复定义。
+/// The stack wall's main trait. Service code (startup's dispatch path, the sock
+/// modules) depends only on the surface declared here and on no concrete stack; the
+/// skeleton stage first establishes pump, readiness and the minimal lifecycle, while
+/// per-family operations and data-plane details land with the buffer round. Errors
+/// always return the `STACK_*` wire values of `util.rs` — they are the stack-side half
+/// of the error bijection table and are not redefined here.
 pub trait Stack {
-    /// 推进栈：处理到期定时器与排队工作。就绪位在 pump 之后经
-    /// [`Stack::readiness`] 逐句柄查询（poll-then-scan，Redox smolnetd
-    /// 的分发形状）。
+    /// Advance the stack: run due timers and queued work. Readiness bits are queried
+    /// per handle through [`Stack::readiness`] after the pump (poll-then-scan, the
+    /// dispatch shape of Redox smolnetd).
     fn poll(&mut self, now_millis: u64) -> PollWhen;
 
-    /// 查询一个 socket 的当前就绪位；句柄已关闭时返回缺省值（无事件）。
+    /// Query the current readiness bits of one socket; a closed handle returns the default (no events).
     fn readiness(&self, socket: StackSocket) -> Readiness;
 
-    /// 打开一个指定家族的 socket，返回栈侧句柄。`protocol` 只有 RAW
-    /// 家族消费（Minix 建户的第三参，`raw_new_ip_type` 的过滤协议，
-    /// rawsock.c:314——u8 值域，如 ICMP=1）。
+    /// Open a socket of the given family and return the stack-side handle. `protocol`
+    /// is consumed only by the RAW family (Minix creation's third argument, the filter
+    /// protocol of `raw_new_ip_type`, rawsock.c:314 — a u8 domain, e.g. ICMP=1).
     fn open(&mut self, family: StackFamily, protocol: Option<u8>) -> Result<StackSocket, i32>;
 
-    /// RAW 收发（第 10 篇的栈面）：全报文语义（含 IP 头，HDRINCL）。
+    /// RAW send/receive (the stack face of chapter 10): full-packet semantics (including the IP header, HDRINCL).
     fn send_raw(&mut self, socket: StackSocket, data: &[u8]) -> Result<usize, i32>;
 
     fn recv_raw(&mut self, socket: StackSocket, data: &mut [u8]) -> Result<usize, i32>;
 
-    /// 关闭一个 socket；此后它的句柄失效。
+    /// Close a socket; its handle is invalid afterwards.
     fn close(&mut self, socket: StackSocket) -> Result<(), i32>;
 
-    /// 交付一个入站帧（NDEV 接收路的终点）。帧模型在缓冲轮次细化。
+    /// Deliver one inbound frame (the endpoint of the NDEV receive path). The frame model is refined with the buffer round.
     fn receive_frame(&mut self, frame: &[u8]) -> Result<(), i32>;
 
-    /// 从栈取一个出站帧到服务提供的缓冲，返回写入长度；`None` 表示
-    /// 暂无待发帧。
+    /// Fetch one outbound frame from the stack into a service-provided buffer and
+    /// return the written length; `None` means no frame is pending.
     fn transmit_frame(&mut self, frame: &mut [u8]) -> Option<usize>;
 
-    // -- UDP 半（第 09 篇的栈面；家族操作按批上墙）--
+    // -- UDP half (the stack face of chapter 09; family operations go on the wall batch by batch) --
 
-    /// 绑定本地端点；`None` = 通配地址加临时端口语义由实现定（栈侧
-    /// 分配）。非 UDP 句柄或重复绑定按栈错误回答。
+    /// Bind a local endpoint; `None` = wildcard address with the ephemeral-port
+    /// semantics chosen by the implementation (allocated on the stack side). A non-UDP
+    /// handle or a repeated bind answers with a stack error.
     fn bind_udp(&mut self, socket: StackSocket, local: Option<StackEndpoint>) -> Result<(), i32>;
 
-    /// 设默认对端（connect 的 UDP 语义）：此后 [`Self::send_udp`] 不带
-    /// 地址即发往对端。
+    /// Set the default peer (the UDP semantics of connect): from then on
+    /// [`Self::send_udp`] without an address sends to the peer.
     fn connect_udp(&mut self, socket: StackSocket, remote: StackEndpoint) -> Result<(), i32>;
 
-    /// 发送一段数据；带 `remote` 即 sendto 语义，`None` 走 connect 定
-    /// 下的默认对端。返回实际入栈字节数（栈缓冲满按 EWOULDBLOCK 类
-    /// 错误回答，不部分发送）。
+    /// Send one chunk of data; with `remote` this is sendto semantics, `None` uses the
+    /// default peer set by connect. Returns the number of bytes actually queued (a full
+    /// stack buffer answers with an EWOULDBLOCK-class error, never a partial send).
     fn send_udp(
         &mut self,
         socket: StackSocket,
@@ -302,56 +320,66 @@ pub trait Stack {
         remote: Option<StackEndpoint>,
     ) -> Result<usize, i32>;
 
-    /// 接收一段数据，返回 `(字节数, 发送方端点)`；无到包按 EWOULDBLOCK
-    /// 类错误回答（调用方决定挂起还是立即返回）。
+    /// Receive one chunk of data, returning `(byte count, sender endpoint)`; no incoming
+    /// packet answers with an EWOULDBLOCK-class error (the caller decides whether to
+    /// suspend or return immediately).
     fn recv_udp(&mut self, socket: StackSocket, data: &mut [u8])
         -> Result<(usize, StackEndpoint), i32>;
 
-    /// 查询本地端点（getsockname 的栈半）；未绑定时返回通配端点。
+    /// Query the local endpoint (the stack half of getsockname); an unbound socket returns the wildcard endpoint.
     fn local_endpoint_udp(&self, socket: StackSocket) -> Result<StackEndpoint, i32>;
 
-    // -- TCP 半（第 08 篇的栈面）--
+    // -- TCP half (the stack face of chapter 08) --
 
-    /// 预绑本地端点（bind 的 TCP 语义：栈内监听随 listen 落地）。
+    /// Pre-bind the local endpoint (the TCP semantics of bind: the in-stack listener lands with listen).
     fn bind_tcp(&mut self, socket: StackSocket, local: Option<StackEndpoint>) -> Result<(), i32>;
 
-    /// 转入监听；`backlog` 的语义按 C 收下（栈对"单个监听者一次挂一个
-    /// 连接"的模型只记账不承诺队列深度，见 08 篇）。
+    /// Switch to listening; `backlog` is accepted with C's semantics (the stack's model
+    /// of "one connection attached to a single listener at a time" only records it and
+    /// commits to no queue depth, see chapter 08).
     fn listen_tcp(&mut self, socket: StackSocket, backlog: u32) -> Result<(), i32>;
 
-    /// 发起连接（connect 的栈半）。非阻塞的调用方语义（EINPROGRESS）
-    /// 由服务层折算；这里只报"能否开张"。
+    /// Initiate a connection (the stack half of connect). The non-blocking caller
+    /// semantics (EINPROGRESS) are folded by the service layer; here only "can it be
+    /// started" is reported.
     fn connect_tcp(&mut self, socket: StackSocket, remote: StackEndpoint) -> Result<(), i32>;
 
-    /// 受连接（accept 的栈半）：监听者上已有建连则把它整体转成受纳
-    /// 套接字并就地换上新监听者，返回 `(受纳句柄, 对端端点)`；无连接
-    /// 按阻塞类错误回答（服务层决定挂起还是立即返回）。
+    /// Accept a connection (the stack half of accept): if the listener already has an
+    /// established connection, turn it wholesale into an accepted socket and swap a new
+    /// listener in place, returning `(accepted handle, peer endpoint)`; no connection
+    /// answers with a blocking-class error (the service layer decides whether to suspend
+    /// or return immediately).
     fn accept_tcp(&mut self, socket: StackSocket) -> Result<(StackSocket, StackEndpoint), i32>;
 
-    /// 查询对端端点（getpeername 的栈半）。
+    /// Query the peer endpoint (the stack half of getpeername).
     fn remote_endpoint_tcp(&self, socket: StackSocket) -> Result<StackEndpoint, i32>;
 
-    /// 流式发送（write 的栈半）：把数据入栈缓冲，返回**实际入队**
-    /// 字节数——流语义允许部分发送，缓冲满时返回 0（调用方决定挂起
-    /// 还是以 EAGAIN 回）；连接未建按错误回答。
+    /// Stream send (the stack half of write): queue the data in the stack buffer and
+    /// return the number of bytes **actually queued** — stream semantics allow partial
+    /// sends, and a full buffer returns 0 (the caller decides whether to suspend or
+    /// answer EAGAIN); an unestablished connection answers with an error.
     fn send_tcp(&mut self, socket: StackSocket, data: &[u8]) -> Result<usize, i32>;
 
-    /// 流式接收（read 的栈半）：返回 `(字节数, 对端已关闭)`。空且连接
-    /// 仍开按阻塞类错误回答；对端关闭且数据取尽返回 `(0, true)`——
-    /// C 的 read 返回 0 即 EOF。
+    /// Stream receive (the stack half of read): returns `(byte count, peer closed)`.
+    /// Empty with the connection still open answers with a blocking-class error; peer
+    /// closed with the data drained returns `(0, true)` — C's read returning 0 is EOF.
     fn recv_tcp(&mut self, socket: StackSocket, data: &mut [u8])
         -> Result<(usize, bool), i32>;
 
-    /// 半关/全关（shutdown 的栈半）：写向关闭走体面的 FIN（后续推进
-    /// 发出）；读向单独关闭在栈上无对应动词，由实现按能力回答。
+    /// Half-close/full-close (the stack half of shutdown): closing the write direction
+    /// sends a graceful FIN (emitted by later progress); closing the read direction
+    /// alone has no counterpart verb in the stack and is answered by the implementation
+    /// according to its capabilities.
     fn shutdown_tcp(&mut self, socket: StackSocket, how: i32) -> Result<(), i32>;
 
-    // -- 选项半（SDEV_SETSOCKOPT/SDEV_GETSOCKOPT 的栈面）--
+    // -- Options half (the stack face of SDEV_SETSOCKOPT/SDEV_GETSOCKOPT) --
 
-    /// 读写一个 TCP 套接字的选项（收拢形：`value` 带值即设置，`None`
-    /// 即查询并回当前值。设计裁决记于 `25-smoltcp-shim.md` §3——逐选项
-    /// 一个墙方法会让墙随着选项清单膨胀，收拢后墙上只有一个口子）。
-    /// `name` 是线上的 `SO_*` 值；墙不认识的名字按栈参数错误回答。
+    /// Read or write one TCP socket option (collapsed form: a `value` sets it, `None`
+    /// queries it and returns the current value. The design ruling is recorded in
+    /// `25-smoltcp-shim.md` §3 — one wall method per option would make the wall grow with
+    /// the option list, so the collapsed form leaves a single opening).
+    /// `name` is the wire `SO_*` value; a name the wall does not know answers with a
+    /// stack argument error.
     fn sockopt_tcp(
         &mut self,
         socket: StackSocket,
@@ -359,7 +387,7 @@ pub trait Stack {
         value: Option<i32>,
     ) -> Result<Option<i32>, i32>;
 
-    /// 读写一个 UDP 套接字的选项，形状同 [`Stack::sockopt_tcp`]。
+    /// Read or write one UDP socket option, same shape as [`Stack::sockopt_tcp`].
     fn sockopt_udp(
         &mut self,
         socket: StackSocket,
@@ -367,27 +395,30 @@ pub trait Stack {
         value: Option<i32>,
     ) -> Result<Option<i32>, i32>;
 
-    // -- ioctl 半（SDEV_IOCTL 的栈面）--
+    // -- ioctl half (the stack face of SDEV_IOCTL) --
 
-    /// 查询待收首包的载荷长度（FIONREAD 的 UDP 半：C `pktsock_test_recv`
-    /// 取队首包的 tot_len，`pktsock.c:886-899`）。空环回 `None`。
+    /// Query the payload length of the first pending packet (the UDP half of FIONREAD:
+    /// C `pktsock_test_recv` takes the head packet's tot_len, `pktsock.c:886-899`). An
+    /// empty ring returns `None`.
     fn pending_recv_udp(&mut self, socket: StackSocket) -> Option<usize>;
 
-    /// 查询接收缓冲的排队字节数（FIONREAD 的 TCP 半：C
-    /// `tcpsock_test_recv` 的 `tr_len` 语义，`tcpsock.c:1969`）。
+    /// Query the queued byte count of the receive buffer (the TCP half of FIONREAD: the
+    /// `tr_len` semantics of C `tcpsock_test_recv`, `tcpsock.c:1969`).
     fn pending_recv_tcp(&self, socket: StackSocket) -> usize;
 
-    /// 查询 RAW 接收环的排队字节数（FIONREAD 的 RAW 半；smoltcp 的
-    /// raw 包环只报总量，与 C 的首包语义差异登记）。
+    /// Query the queued byte count of the RAW receive ring (the RAW half of FIONREAD;
+    /// smoltcp's raw packet ring reports only the total, and the difference from C's
+    /// first-packet semantics is registered).
     fn pending_recv_raw(&self, socket: StackSocket) -> Option<usize>;
 
-    /// 置/清非阻塞旗标（FIONBIO 的栈半；旗标存服务侧槽位，收发路把它
-    /// 折进 MSG_DONTWAIT 判定——C 里 FIONBIO 由 libc 改写为
-    /// fcntl(O_NONBLOCK)，`libc/sys/ioctl.c:296`/`:330`，服务侧本模型
-    /// 补此位作为同一语义的补充）。
+    /// Set or clear the non-blocking flag (the stack half of FIONBIO; the flag lives in
+    /// a service-side slot and the send/receive paths fold it into the MSG_DONTWAIT
+    /// decision — in C FIONBIO is rewritten by libc into fcntl(O_NONBLOCK),
+    /// `libc/sys/ioctl.c:296`/`:330`, and this model adds the bit on the service side as
+    /// a complement of the same semantics).
     fn set_nonblock(&mut self, socket: StackSocket, nonblock: bool) -> Result<(), i32>;
 
-    /// 查询非阻塞旗标。
+    /// Query the non-blocking flag.
     fn is_nonblock(&self, socket: StackSocket) -> bool;
 }
 
@@ -402,7 +433,7 @@ mod tests {
         assert_eq!(TCP_MAX_SEGMENT, 1460);
         assert_eq!(TCP_WINDOW, 16384);
         assert_eq!(TCP_SEND_BUFFER, 11 * 1460);
-        // 选项容量契约的三档（tcpsock.c:86-91、udpsock.c:29-34）。
+        // The three tiers of the option capacity contract (tcpsock.c:86-91, udpsock.c:29-34).
         assert_eq!(TCP_SNDBUF_MIN, 1);
         assert_eq!(TCP_SNDBUF_DEF, 32768);
         assert_eq!(TCP_SNDBUF_MAX, 131072);
@@ -415,7 +446,7 @@ mod tests {
         assert_eq!(UDP_RCVBUF_MIN, 512);
         assert_eq!(UDP_RCVBUF_DEF, 32768);
         assert_eq!(UDP_RCVBUF_MAX, 65536);
-        // 保活使能的缺省空闲间隔（lwip/priv/tcp_priv.h:138-139）。
+        // The default idle interval while keepalive is enabled (lwip/priv/tcp_priv.h:138-139).
         assert_eq!(TCP_KEEPALIVE_IDLE_MS, 7_200_000);
     }
 
@@ -425,7 +456,7 @@ mod tests {
 // directory, and the build-file count mirrors the compiled `.c` subset — all
 // three are hand-maintained numbers the compiler can check statically, so they
 // freeze in a const block instead of burning a runtime test on a fact the
-// compiler already knows (N1-P2-5). The glue values above stay runtime
+// compiler already knows. The glue values above stay runtime
 // assertions because a maintainer can edit them to a *wrong* number that is
 // still a compile-time-constant self-comparison; the runtime test pins each
 // against the documented `lwipopts.h` value.
@@ -441,7 +472,7 @@ mod wall_tests {
     use super::*;
     use alloc::vec::Vec;
 
-    /// 服务持有的固定序列号源：钩子的最小真实现。
+    /// A fixed sequence-number source held by the service: the minimal real hook implementation.
     struct FixedSource(u32);
 
     impl StackHooks for FixedSource {
@@ -462,7 +493,7 @@ mod wall_tests {
         }
     }
 
-    /// 形状替身：证明墙上的面足够服务走出"开、泵、查就绪、关"一圈。
+    /// Shape stand-in: proves the wall's surface is enough for the service to walk open, pump, check readiness, close.
     struct ShapeStack {
         opened: Vec<StackSocket>,
         next_index: u16,

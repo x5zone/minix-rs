@@ -308,12 +308,13 @@ pub struct FProc {
     pub ngroups: usize,
     /// Supplemental group list.
     pub supplemental_groups: [Gid; NGROUPS_MAX],
-    /// umask set by the `umask` syscall —— **原始掩码**（0 = 全保留）。
+    /// umask set by the `umask` syscall — the **raw mask** (0 = keep everything).
     ///
-    /// C 的 `fp_umask` 存的是**反码**（`fp->fp_umask = ~(new_umask &
-    /// RWX_MODES)`，protect.c:190；初值 `~0`，main.c:433），所以 C 侧建节点
-    /// 的模式公式写成 `mode & fp_umask`。Rust 侧按自然语义存原始掩码，建节点
-    /// 处一律 `mode & !umask`（`Creat`/`Mkdir`/`Mknod` 三处）。
+    /// C's `fp_umask` stores the **complement** (`fp->fp_umask = ~(new_umask &
+    /// RWX_MODES)`, protect.c:190; initial value `~0`, main.c:433), so C's
+    /// node-creation mode formula reads `mode & fp_umask`. The Rust side stores
+    /// the raw mask in its natural sense, and every node-creation site uses
+    /// `mode & !umask` (three sites: `Creat`/`Mkdir`/`Mknod`).
     pub umask: Mode,
     /// Name of the last executed program (`fp_name`, `PROC_NAME_LEN` bytes).
     pub name: [u8; PROC_NAME_LEN],
@@ -471,9 +472,11 @@ impl FProcTable {
     /// `sys_datacopy_wrapper(SELF, fproc, ...)` copies the raw
     /// `fproc[NR_PROCS]` BSS image (`misc.c:76-77,113`) — per-slot
     /// filtering is the *consumer's* job (dmp_fs.c skips `pid <= 0`).
-    /// 同时借两个槽（`copyfd` 要在**调用方**与**远端**两张 fd 表之间搬
-    /// filp，两个 `&mut FProc` 必须并存）。同一个槽返回 `None`——那种调用
-    /// 是自拷贝，C 里由 `filp_ioctl_fp`/自拷贝门挡住，不该走到这里。
+    /// Borrows two slots at once (`copyfd` moves a filp between the
+    /// **caller's** and the **remote** fd table, so two `&mut FProc` must
+    /// coexist). The same slot returns `None` — such a call is a self-copy,
+    /// which C blocks in `filp_ioctl_fp`/the self-copy gate, so it must not
+    /// reach here.
     pub fn get_two_mut(
         &mut self,
         a: UserSlot,
@@ -604,14 +607,15 @@ impl FProcTable {
     }
 
     /// Snapshot the `fproc_light` projection (`fproc.h:111-115`,
-    /// `misc.c:81-95`)——`SI_PROCLIGHT_TAB` 的生产半，MIB 的
-    /// `get_lwp_stat` 按 16 字节/槽消费（C-22 后半：此前 feature 占位
-    /// 与"task=NONE"的澄清注记一并清除——`fpl_task` 的 C 语义就是
-    /// cdev 直取 `fp_cdev.endpt`、sdev 经 `get_smap_by_dev` 查
-    /// `smap_endpt`，其余 `NONE`，misc.c:87-94）。
+    /// `misc.c:81-95`) — the producing half of `SI_PROCLIGHT_TAB`; MIB's
+    /// `get_lwp_stat` consumes it at 16 bytes per slot. The C semantics of
+    /// `fpl_task` are exactly: cdev takes `fp_cdev.endpt` directly, sdev looks
+    /// up `smap_endpt` via `get_smap_by_dev`, everything else is `NONE`
+    /// (misc.c:87-94).
     ///
-    /// `smap_endpt_by_dev` 由调用方注入（socket-map 属 19 的设备表面，
-    /// 表结构不出本模块）。
+    /// `smap_endpt_by_dev` is injected by the caller (the socket map belongs to
+    /// the device surface of 19; its table structure does not leave this
+    /// module).
     pub fn snapshot_light(
         &self,
         smap_endpt_by_dev: &dyn Fn(DevId) -> Option<Endpoint>,
@@ -627,8 +631,8 @@ impl FProcTable {
                     BlockedOn::Select => (4, Endpoint::NONE),
                     BlockedOn::Cdev(b) => (5, b.endpt),
                     BlockedOn::Sdev(b) => {
-                        // C: `get_smap_by_dev(fp_sdev.dev)->smap_endpt`
-                        // 查不到也落 NONE（misc.c:92-94）。
+                        // C: `get_smap_by_dev(fp_sdev.dev)->smap_endpt`;
+                        // a miss also lands on NONE (misc.c:92-94).
                         (6, smap_endpt_by_dev(b.dev).unwrap_or(Endpoint::NONE))
                     }
                 };
@@ -904,9 +908,10 @@ mod tests {
         assert!(!table.is_slot_free(slot));
     }
 
-    /// C-22 后半：light 快照的逐槽形状——tty 直取、blocked_on 按
-    /// const.h:19-25 折算、cdev 任务端点直取、sdev 经注入的 smap 查询、
-    /// 其余 NONE；未用槽全零（misc.c:81-95 的 C 填充面）。
+    /// The per-slot shape of the light snapshot: tty taken directly,
+    /// blocked_on folded per const.h:19-25, the cdev task endpoint taken
+    /// directly, sdev via the injected smap lookup, everything else NONE;
+    /// unused slots all zero (the C fill face of misc.c:81-95).
     #[test]
     fn test_fproc_light_snapshot() {
         let mut table = FProcTable::new();
@@ -927,7 +932,7 @@ mod tests {
                 None
             }
         };
-        // Sdev 槽：smap 查中。
+        // Sdev slot: the smap lookup hits.
         {
             let fp = table.get_mut(UserSlot::new(1)).unwrap();
             fp.blocked_on = BlockedOn::Sdev(SdevBlock {
@@ -937,7 +942,7 @@ mod tests {
                 aux: crate::fproc::SdevAux::None,
             });
         }
-        // Sdev 槽：smap 查不中 → NONE（misc.c:92-94）。
+        // Sdev slot: the smap lookup misses → NONE (misc.c:92-94).
         {
             let fp = table.get_mut(UserSlot::new(2)).unwrap();
             fp.blocked_on = BlockedOn::Sdev(SdevBlock {
@@ -956,8 +961,9 @@ mod tests {
         assert_eq!(v[1].fpl_task, Endpoint::from_generation_slot(0, 30).get());
         assert_eq!(v[2].fpl_blocked_on, 6);
         assert_eq!(v[2].fpl_task, Endpoint::NONE.get());
-        // 未用槽：blocked_on=0，但 task 仍被 C 的填充循环置 NONE
-        // （misc.c:87-94 覆盖全部 NR_PROCS 槽，BSS 零像随即被覆写）。
+        // Unused slot: blocked_on=0, but task is still set to NONE by C's fill
+        // loop (misc.c:87-94 covers every NR_PROCS slot, overwriting the BSS
+        // zeros).
         assert_eq!(v[5].fpl_blocked_on, 0);
         assert_eq!(v[5].fpl_task, Endpoint::NONE.get());
         assert_eq!(v[5].fpl_tty, 0);

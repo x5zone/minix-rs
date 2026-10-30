@@ -3,8 +3,8 @@
 //! Ground truth: `minix3/usr.sbin/link/link.c`. POSIX's `link` is `link(2)`
 //! behind an argument-count check; the shape check lives in
 //! `minix_fileops::linkops`, this program supplies the syscall and error leg
-//! (`link.c:52-59`). A write-side command: real-machine effect is the
-//! writable-root gate (`C-57`/E5). The failure leg is C's `perror("link")`
+//! (`link.c:52-59`). A write-side command: the real-machine effect is the
+//! writable-root gate (E5). The failure leg is C's `perror("link")`
 //! (`link.c:57`), which in Minix3 prints `<the caller's string>: <strerror>` with no
 //! program-name prefix (`minix3/lib/libc/stdio/perror.c`) — so the line is
 //! `link: <sentence>`, and neither operand reaches the diagnostic. Note this is the single
@@ -38,7 +38,7 @@ fn run() -> ! {
     };
     match link(old, new) {
         Ok(()) => support::terminate(0),
-        // C 的 `perror("link")`：报号不报操作数。
+        // C's `perror("link")`: reports the errno sentence, not the operands.
         Err(code) => {
             support::perror_line("link", code);
             support::terminate(1);

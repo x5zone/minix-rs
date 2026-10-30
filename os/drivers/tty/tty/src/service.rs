@@ -251,7 +251,7 @@ impl<B: LineBackend> TtyService<B> {
                 let count = read_u64(msg, wire::readwrite::COUNT) as usize;
                 let _position = read_u64(msg, wire::readwrite::POS);
                 let _flags = read_i32(msg, wire::readwrite::FLAGS);
-                // Output byte pipeline (NL1 批B): pull the writer's bytes
+                // Output byte pipeline: pull the writer's bytes
                 // in grant-sized chunks and push them through the device
                 // backend. C: do_write parks the write (tty.c:536-578) and
                 // the device hook drains the grant; here the drain runs to

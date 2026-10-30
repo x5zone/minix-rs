@@ -51,7 +51,7 @@ impl IpcStatus {
 pub enum DispatchKind {
     /// CLOCK notification → `do_period` (07). C: main.c:80-83. The notify
     /// timestamp is `do_period`'s `now` (request.c:948
-    /// `clock_t now = m_ptr->m_notify.timestamp`) — same R25 pattern as the
+    /// `clock_t now = m_ptr->m_notify.timestamp`) — the same pattern as the
     /// heartbeat class.
     ClockNotify {
         /// Kernel-filled notify timestamp (ipc.h:1715).
@@ -60,8 +60,8 @@ pub enum DispatchKind {
     /// Heartbeat notification from a service (07). C: main.c:85-91 — the
     /// kernel timestamp carried by every notify (ipc.h:1715, `u64_t`) is
     /// what the main loop writes into `r_alive_tm`, so the classification
-    /// result carries it (R25, todo §18): a `HeartbeatNotify` is
-    /// self-contained and the handler needs no second look at the message.
+    /// result carries it: a `HeartbeatNotify` is self-contained and the
+    /// handler needs no second look at the message.
     /// `timestamp` uses the crate-wide tick type `Clock` (= `i64`, matching
     /// `r_alive_tm`/`SlotMutations::alive_tm`); the u64 wire value converts
     /// once at the receive boundary (19).
@@ -81,7 +81,7 @@ pub enum DispatchKind {
 /// (negative slots, CLOCK included — that is how the tick reaches
 /// `do_period`) pass; only a slot outside the whole process/task table is
 /// rejected, and then C panics (`panic("message from bogus source: %d")`,
-/// main.c:64-65) — the rewrite mirrors that (R34.20 gate).
+/// main.c:64-65) — the rewrite mirrors that.
 pub fn isokendpt(endpoint: Endpoint) -> bool {
     let slot = endpoint.slot();
     slot >= -(MAX_NR_TASKS as i32) && slot < NR_PROCS as i32
@@ -92,10 +92,10 @@ pub fn isokendpt(endpoint: Endpoint) -> bool {
 /// C: `main()` classification — main.c:70-127. `who_p` is the sender's slot
 /// (validated by `rs_isokendpt`, 02, before classification); `call_nr` is
 /// `m.m_type`; `timestamp` is `m.m_notify.timestamp` (ipc.h:1715 — valid for
-/// every notify; the non-notify classes ignore it). R12: the 06 main-loop
-/// wiring must run the `isokendpt` gate (main.c:63-66) before classifying —
-/// the O(1) endpoint fast index is total (out-of-range endpoints yield
-/// `None`) but only the gate rejects them.
+/// every notify; the non-notify classes ignore it). The 06 main-loop wiring
+/// must run the `isokendpt` gate (main.c:63-66) before classifying — the O(1)
+/// endpoint fast index is total (out-of-range endpoints yield `None`) but only
+/// the gate rejects them.
 pub fn classify(
     ipc_status: &IpcStatus,
     who_p: Endpoint,
@@ -141,14 +141,13 @@ impl DispatchResult {
 /// annotated; handlers land with their owning docs. Until then, all requests
 /// fail closed with `ENOSYS`, matching the C `default` branch — main.c:118-121.
 ///
-/// Wiring status (I3-I6 + §21 R4/R5, 2026-09-07): `RS_UP`/`RS_EDIT`,
+/// Wiring status: `RS_UP`/`RS_EDIT`,
 /// `RS_DOWN`/`RS_REFRESH`/`RS_RESTART`/`RS_SHUTDOWN`/`RS_CLONE`/`RS_UNCLONE`
 /// (13) and `RS_SYSCTL`/`RS_FI`/`RS_GETSYSINFO`/`RS_LOOKUP` (14) run live
 /// through `RsServer::do_request` — they never reach this table. The sole
-/// remaining arm `RS_UPDATE` opens with `copy_rs_start` (request.c:542) —
-/// the byte ABI is pinned and decoded since Fix #81
-/// (`minix_types::rs_start_off`), and the arm's handler shell lands with
-/// the §21 R6 round. It stays fail-closed here until then.
+/// remaining arm, `RS_UPDATE`, opens with `copy_rs_start` (request.c:542);
+/// its byte ABI is pinned and decoded (`minix_types::rs_start_off`), and the
+/// arm's handler shell lands later. It stays fail-closed here until then.
 pub fn dispatch_request(call_nr: i32) -> DispatchResult {
     match call_nr {
         // → 13-rs-control-requests.md
@@ -192,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_classify_heartbeat_carries_timestamp() {
-        // R25: the notify's kernel timestamp (ipc.h:1715) must survive
+        // The notify's kernel timestamp (ipc.h:1715) must survive
         // classification — main.c:87 writes it into `r_alive_tm` verbatim,
         // so the classifier loses nothing on the way (main.c:85-91).
         let st = IpcStatus { flags: 4 };
@@ -248,9 +247,9 @@ mod tests {
 
     #[test]
     fn test_rs_constants_match_c() {
-        // C: com.h:463-492 — the full RS message-type family. (CSL 收口
-        // `2026-10-13`: 本测试原自称覆盖 "15 RS message types" 却只断言 4 枚，
-        // 现逐值对账 `minix3/minix/include/minix/com.h` 补全。)
+        // C: com.h:463-492 — the full RS message-type family. This test used
+        // to claim "15 RS message types" while asserting only 4; it now
+        // checks each value against `minix3/minix/include/minix/com.h`.
         assert_eq!(minix_types::RS_RQ_BASE, 0x700); // com.h:463
         assert_eq!(minix_types::RS_UP, 0x700 + 0); // com.h:465
         assert_eq!(minix_types::RS_DOWN, 0x700 + 1); // com.h:466

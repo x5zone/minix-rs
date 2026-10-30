@@ -33,13 +33,14 @@ pub struct PsStrings {
 }
 
 /// Exec frame size cap: the strings live in the exec frame, whose total
-/// never exceeds this. C: `ARG_MAX 262144`（NetBSD limits.h；MIB 的
-/// proc.c:978 注记 "current ARG_MAX value of 256K"）——`ps` 家族的大小
-/// 估算与页行走预算都按它封顶（C-22）。
+/// never exceeds this. C: `ARG_MAX 262144` (NetBSD limits.h; the MIB's
+/// proc.c:978 note "current ARG_MAX value of 256K") — the `ps` family's
+/// size estimation and page-walk budget both cap at it.
 pub const ARG_MAX: u64 = 262_144;
 
 /// Page size the MIB arg/env walk fetches and rounds by. C: `PAGE_SIZE
-/// 4096`（i386/LP64 页宽；proc.c:981 的 roundup 与 :1042 的 trunc_page）。
+/// 4096` (i386/LP64 page width; the roundup at proc.c:981 and the
+/// trunc_page at :1042).
 pub const PAGE_SIZE: u64 = 4_096;
 
 /// `sizeof(struct ps_strings)` — the MIB reads this many bytes from the
@@ -63,7 +64,8 @@ mod ps_strings_wire_tests {
         assert_eq!(PS_STRINGS_SIZE, 32);
     }
 
-    /// 取表半的极限常量钉值（C-22）：ARG_MAX 封顶估算、PAGE_SIZE 定页。
+    /// Pins the limit constants of the fetch-table half: ARG_MAX caps the
+    /// estimation, PAGE_SIZE fixes the page.
     #[test]
     fn test_arg_max_and_page_size() {
         assert_eq!(ARG_MAX, 262_144);

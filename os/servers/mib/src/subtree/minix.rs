@@ -279,10 +279,10 @@ mod tests {
     }
 }
 
-// ── Arena wiring (P1-2) ──
+// ── Arena wiring ──
 //
-// C 的 `mib_minix_init` 等价物（minix.c:74-78 挂三表；LWIP 有意缺席，
-// 由 RMIB 运行时挂载）。
+// The equivalent of C's `mib_minix_init` (minix.c:74-78 mounts three
+// tables; LWIP is deliberately absent and mounted at run time by RMIB).
 
 pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
     use alloc::boxed::Box;
@@ -306,7 +306,7 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
             MinixSlot::Proc
         };
         let top = match slot {
-            // C minix.c:68-70 `MIB_NODE(_P | _RW | CTLFLAG_HIDDEN, …)`。
+            // C minix.c:68-70 `MIB_NODE(_P | _RW | CTLFLAG_HIDDEN, …)`.
             MinixSlot::Test => {
                 if !MINIX_TEST_SUBTREE {
                     continue;
@@ -321,7 +321,8 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                 let test_csize = TEST_ENTRIES.iter().map(|e| e.id).max().unwrap() as u32 + 1;
                 t.reserve(top, test_csize);
                 for te in TEST_ENTRIES.iter() {
-                    // 逐行对照 minix.c:19-43 的宏（test87 钉值表）。
+                    // Row-by-row against the macros at minix.c:19-43 (the value
+                    // table test87 pins).
                     let (flags, size) = match &te.kind {
                         TestKind::HexInt(_) => {
                             (CTLTYPE_INT | CTLFLAG_IMMEDIATE | RO, 4)
@@ -360,7 +361,8 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                 }
             }
             MinixSlot::Mib => {
-                // 自统计镜像：三个 INTPTR 门读活计数器（读时结算）。
+                // Self-statistics mirror: the three INTPTR gates read live
+                // counters (settled at read time).
                 let stat_csize = MIB_STAT_IDS.iter().map(|(sid, _)| *sid).max().unwrap() as u32 + 1;
                 t.reserve(top, stat_csize);
                 for (i, (sid, sname)) in MIB_STAT_IDS.iter().enumerate() {
@@ -383,7 +385,7 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                         ProcDoor::List
                     };
                     let (flags, fkey) = match door {
-                        // C minix.c:59-66：list 是 STRUCT 门，data 是 NODE 门。
+                        // C minix.c:59-66: list is a STRUCT gate, data a NODE gate.
                         ProcDoor::List => (CTLTYPE_STRUCT | RO, ProcDoor::List),
                         ProcDoor::Data => (CTLTYPE_NODE | RO, ProcDoor::Data),
                     };

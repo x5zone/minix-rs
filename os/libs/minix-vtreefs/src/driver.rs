@@ -464,7 +464,8 @@ mod tests {
         let mut server = TreeServer::new(tree, MemoryHooks { data: alloc::vec::Vec::new() });
         let mut capabilities = CapabilityFlags::EMPTY;
         server.mount(1, flags(false), &mut capabilities).unwrap();
-        // 在根下种一个普通文件节点（编号二：槽零加一）。
+        // Seed one regular file node under the root (number two: slot zero
+        // plus one).
         server
             .tree_mut()
             .add(

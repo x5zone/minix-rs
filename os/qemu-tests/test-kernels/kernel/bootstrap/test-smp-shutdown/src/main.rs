@@ -85,7 +85,7 @@ fn main() -> Status {
     early_console::write_str("  paging:         X86_64Paging (Paging trait)\n");
     early_console::write_str("  identity_map:   via arch_boot_impl\n");
     early_console::write_str("### TEST_RESULT: PASS test-smp-shutdown ###\n");
-    // S-11 (hw-2): semantic shutdown through the QEMU test backend —
+    // Semantic shutdown through the QEMU test backend —
     // isa-debug-exit terminates QEMU with exit code (status<<1)|1 = 1.
     // run_qemu's PASS check is serial-marker based (rc==1 accepted for this
     // test by run_all's shutdown special-case... actually the runner's PASS

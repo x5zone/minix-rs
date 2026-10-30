@@ -1,9 +1,9 @@
 //! `GET_KINFO` kernel-info snapshot — the single Rust authority for the
 //! wire layout of the kernel `GET_KINFO` payload.
 //!
-//! E-ISPROD: replaces the kernel's former M4-message-field encoding
-//! (nr_procs/nr_tasks/user_sp/freepde_start/vir_kern_start packed into
-//! `MessageM4` registers) with a struct copy — C parity: do_getinfo.c
+//! E-ISPROD: replaces the kernel's former message encoding, which packed
+//! nr_procs/nr_tasks/user_sp/freepde_start/vir_kern_start into
+//! `MessageM4` registers, with a struct copy — C parity: do_getinfo.c
 //! GET_KINFO copies `sizeof(kinfo)` from the kernel's `kinfo` struct, and
 //! the IS `kernel` dump reads `release`/`version`/`nr_procs`/`nr_tasks`
 //! (dmp_kernel.c) which the register form could not carry.

@@ -187,8 +187,9 @@ where
                     channel.copy_out(moved, bytes)
                 }
                 TransferDirection::Write => {
-                    // 暂存后直接拼进缓存的槽位并置脏：不再克隆整块后由
-                    // write_slot 整块拷回。
+                    // Stage, then splice straight into the cached slot and mark it
+                    // dirty: no longer clone the whole block and copy it back via
+                    // write_slot.
                     let mut staged = alloc::vec![0u8; chunk];
                     match channel.copy_in(moved, &mut staged) {
                         Ok(()) => {
@@ -207,7 +208,7 @@ where
                 // still have landed (`bio.c:214-222`).
                 cache.mark_dirty(slot);
             }
-            //[SD19-gate] 预读尽力而为：acquire(Peek) 后立即 release 只探缓存驻留，release 失败对本预读提示不可行动（本函数返回 ()，无调用方可传播）
+            //[SD19-gate] Prefetch is best-effort: acquire(Peek) then immediate release only probes cache residency; a release failure is not actionable for this prefetch hint (this function returns (), with no caller to propagate to)
             #[allow(clippy::let_underscore_must_use)]
             let _ = cache.release(slot);
             if let Err(error) = step {
@@ -215,7 +216,7 @@ where
                 break;
             }
         } else {
-            //[SD19-gate] 预读尽力而为：acquire(Peek) 后立即 release 只探缓存驻留，release 失败对本预读提示不可行动（本函数返回 ()，无调用方可传播）
+            //[SD19-gate] Prefetch is best-effort: acquire(Peek) then immediate release only probes cache residency; a release failure is not actionable for this prefetch hint (this function returns (), with no caller to propagate to)
             #[allow(clippy::let_underscore_must_use)]
             let _ = cache.release(slot);
         }
@@ -260,7 +261,7 @@ pub fn prefetch_blocks<S: BlockSource, V: SecondLevelCache>(
     for &block in &blocks[..limit] {
         match cache.acquire(BlockKey::new(device, block), AcquireMode::Peek) {
             Ok(slot) => {
-                //[SD19-gate] 预读尽力而为：acquire(Peek) 后立即 release 只探缓存驻留，release 失败对本预读提示不可行动（本函数返回 ()，无调用方可传播）
+                //[SD19-gate] Prefetch is best-effort: acquire(Peek) then immediate release only probes cache residency; a release failure is not actionable for this prefetch hint (this function returns (), with no caller to propagate to)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = cache.release(slot);
                 break;
@@ -274,13 +275,13 @@ pub fn prefetch_blocks<S: BlockSource, V: SecondLevelCache>(
         let key = BlockKey::new(device, block);
         match cache.acquire(key, AcquireMode::Peek) {
             Ok(slot) => {
-                //[SD19-gate] 预读尽力而为：acquire(Peek) 后立即 release 只探缓存驻留，release 失败对本预读提示不可行动（本函数返回 ()，无调用方可传播）
+                //[SD19-gate] Prefetch is best-effort: acquire(Peek) then immediate release only probes cache residency; a release failure is not actionable for this prefetch hint (this function returns (), with no caller to propagate to)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = cache.release(slot);
             }
             Err(_) => {
                 if let Ok(slot) = cache.acquire(key, AcquireMode::Normal) {
-                    //[SD19-gate] 预读尽力而为：acquire(Peek) 后立即 release 只探缓存驻留，release 失败对本预读提示不可行动（本函数返回 ()，无调用方可传播）
+                    //[SD19-gate] Prefetch is best-effort: acquire(Peek) then immediate release only probes cache residency; a release failure is not actionable for this prefetch hint (this function returns (), with no caller to propagate to)
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = cache.release(slot);
                 }

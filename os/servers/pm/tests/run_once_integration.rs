@@ -1,28 +1,34 @@
-//! PM 主循环端到端集成测试（从 crate 外部驱动 `PmServer::run_once`）。
+//! End-to-end integration tests for the PM main loop (driving
+//! `PmServer::run_once` from outside the crate).
 //!
-//! # 为什么需要这一层
+//! # Why this layer is needed
 //!
-//! 单元测试验证的是各 handler 的逻辑（给定表状态 → 预期副作用），分发层
-//! 单测验证的是 `dispatch_pm_call` 的臂路由；但"从收到 `Message` 到发出
-//! `Reply`"的完整链路——`run_once` 的 caller 验证、VFS 回复拦截、单一
-//! 分发表（04-ipc-dispatch.md §4.2）、`ReplyIntent` → `reply()` 映射——
-//! 只能由本层覆盖。旧跨 crate 测试（`os/tests/pm_vm_fork.rs`）因直接
-//! 触碰 VM 内部类型而停用，本层改走消息面（其文件头建议的方向）。
+//! Unit tests check the logic of each handler (given table state -> expected
+//! side effects), and dispatch-layer unit tests check the arm routing of
+//! `dispatch_pm_call`; but the complete path "from receiving a `Message` to
+//! sending a `Reply`" — `run_once`'s caller validation, VFS reply interception,
+//! the single dispatch table (04-ipc-dispatch.md §4.2), and the `ReplyIntent` ->
+//! `reply()` mapping — can only be covered by this layer.  The old cross-crate
+//! test (`os/tests/pm_vm_fork.rs`) was retired because it touched VM-internal
+//! types directly; this layer goes through the message interface instead (the
+//! direction its file header suggested).
 //!
-//! # 播种方式
+//! # Seeding
 //!
-//! `BootParams::placeholder()` 的 boot image 全为空条目（不产生任何进程），
-//! 测试进程经 `table_mut()` 手工播种——对应 C 在 main 循环前直接填
-//! `mproc` 表的做法。wire 断言全部落在 `TestIpcTransport` 记录的
-//! (目标, 消息) 序列上。
+//! `BootParams::placeholder()`'s boot image contains only empty entries (it
+//! creates no processes), so test processes are seeded by hand through
+//! `table_mut()` — matching what C does by filling the `mproc` table directly
+//! before the main loop.  All wire assertions rest on the (destination, message)
+//! sequence recorded by `TestIpcTransport`.
 
 use minix_pm::init::{BootParams, RunStep};
 use minix_pm::ipc::{IpcStatus, TestIpcTransport};
 use minix_pm::mproc::{Lifecycle, WaitTarget};
 use minix_types::{Endpoint, Message};
 
-/// 集成测试用内核网关 mock：sys_times 返回脚本化计账值，
-/// sys_kill/sys_clear/sys_abort 恒 OK（真实通电挂 edge E1/E6）。
+/// Kernel gateway mock for integration tests: sys_times returns scripted
+/// accounting values, and sys_kill/sys_clear/sys_abort always return OK (their
+/// real hardware paths are outside this test's scope).
 struct MockKernelGateway {
     pub user: minix_types::Clock,
     pub sys: minix_types::Clock,
@@ -50,7 +56,7 @@ impl minix_pm::exit::KernelGateway for MockKernelGateway {
     }
 }
 
-/// 构造一台带空参数表的服务器（`placeholder()` 不播种任何进程）。
+/// Build a server with an empty parameter table (`placeholder()` seeds no processes).
 fn server() -> minix_pm::init::PmServer<TestIpcTransport> {
     minix_pm::init::PmServer::with_kernel_gateway(
         BootParams::placeholder(),
@@ -59,7 +65,7 @@ fn server() -> minix_pm::init::PmServer<TestIpcTransport> {
     )
 }
 
-/// 在 `slot` 播种一个 Running 进程（endpoint 带代际，PID 唯一）。
+/// Seed a Running process into `slot` (the endpoint carries a generation; the PID is unique).
 fn seed_running(server: &mut minix_pm::init::PmServer<TestIpcTransport>, slot: usize, pid: i32) -> Endpoint {
     let ep = Endpoint::from_generation_slot(1, slot as i32);
     let table = server.table_mut();
@@ -69,7 +75,7 @@ fn seed_running(server: &mut minix_pm::init::PmServer<TestIpcTransport>, slot: u
     ep
 }
 
-/// 构造一条来自 `source` 的请求消息。
+/// Build a request message originating from `source`.
 fn request(m_type: i32, source: Endpoint) -> Message {
     Message {
         m_type,
@@ -80,13 +86,15 @@ fn request(m_type: i32, source: Endpoint) -> Message {
 
 #[test]
 fn fork_request_runs_full_chain_and_suspends() {
-    // C: do_fork（forkexit.c:44-143）——vm_fork（sendrec VM）成功 →
-    // tell_vfs（VFS_PM_FORK）→ SUSPEND（主循环不向父回复，forkexit.c:139）。
-    // 端到端断言的是 wire 序列：VM_FORK 先于 VFS_PM_FORK，且零 caller 回复。
+    // C: do_fork (forkexit.c:44-143) — vm_fork (sendrec to VM) succeeds ->
+    // tell_vfs (VFS_PM_FORK) -> SUSPEND (the main loop does not reply to the
+    // parent, forkexit.c:139).  What is asserted end to end is the wire
+    // sequence: VM_FORK precedes VFS_PM_FORK and the caller gets no reply.
     let mut srv = server();
     let parent_ep = seed_running(&mut srv, 5, 100);
 
-    // 脚本化 VM_FORK 应答：空表 + 游标 0 → 子槽位 1，子代际 = 父(1)+1。
+    // Scripted VM_FORK reply: empty table + cursor 0 -> child slot 1, child
+    // generation = parent (1) + 1.
     let mut vm_reply = Message {
         m_type: minix_types::OK,
         ..Default::default()
@@ -105,38 +113,39 @@ fn fork_request_runs_full_chain_and_suspends() {
     assert_eq!(sent[0].1.m_type, minix_types::VM_FORK as i32);
     assert_eq!(sent[1].0, Endpoint::VFS);
     assert_eq!(sent[1].1.m_type, minix_types::VFS_PM_FORK);
-    // SUSPEND：没有任何发往父 endpoint 的回复。
+    // SUSPEND: no reply is sent to the parent endpoint.
     assert!(
         !sent.iter().any(|(dest, _)| *dest == parent_ep),
         "fork must not sync-reply the parent"
     );
-    // 子进程槽位 1 处于 VFS_CALL（延续挂在子进程，forkexit.c:130）。
+    // Child slot 1 is in VFS_CALL (the continuation hangs off the child, forkexit.c:130).
     assert!(srv.table().procs[1].state.block.is_vfs_blocked());
 }
 
 #[test]
 fn exit_request_never_replies_and_zombifies_child() {
-    // C: do_exit（forkexit.c:245-266）——"beyond the grave"：永不回复；
-    // 父进程在 wait → tell_parent 后子进程 TOLD_PARENT，否则保持 ZOMBIE。
+    // C: do_exit (forkexit.c:245-266) — "beyond the grave": never replies; if
+    // the parent is waiting, tell_parent moves the child to TOLD_PARENT,
+    // otherwise it stays ZOMBIE.
     let mut srv = server();
     let _parent_ep = seed_running(&mut srv, 2, 10);
     let child_ep = seed_running(&mut srv, 3, 11);
-    // 父进程在等任意子进程（wait_test 命中 → tell_parent 链）。
+    // The parent waits for any child (wait_test hits -> the tell_parent chain).
     srv.table_mut().procs[2].state.wait.waiting = true;
     srv.table_mut().procs[2].state.wait.target = WaitTarget::AnyChild;
 
     srv.transport_mut()
-        .queue_receive(request(1, child_ep), IpcStatus::default()); // PM_EXIT = 1，status 默认 0
+        .queue_receive(request(1, child_ep), IpcStatus::default()); // PM_EXIT = 1, status defaults to 0
 
     assert_eq!(srv.run_once(), RunStep::Handled);
 
-    // 永不回复退出者本身。
+    // The exiting process itself is never replied to.
     let sent = srv.transport().sent();
     assert!(
         !sent.iter().any(|(dest, _)| *dest == child_ep),
         "exit must never reply the exiting process"
     );
-    // 子进程已完成僵尸链（父在 wait → ToldParent）。
+    // The child has completed the zombie chain (parent waiting -> ToldParent).
     let child = &srv.table().procs[3];
     assert!(
         matches!(
@@ -150,12 +159,13 @@ fn exit_request_never_replies_and_zombifies_child() {
 
 #[test]
 fn wait4_zombie_replies_pid_tag_with_status_payload() {
-    // D-26 端到端：僵尸子进程 + 等待中的父 → ZOMBIE 环 tell_parent →
-    // wire 回复 m_type = 子 pid（tag）、载荷 m_pm_lc_wait4.status =
-    // W_EXITCODE（body）。libc 的 wait4 按此布局读取（forkexit.c:707-709）。
+    // End to end: a zombie child plus a waiting parent -> the ZOMBIE arm's
+    // tell_parent -> a wire reply with m_type = child pid (tag) and payload
+    // m_pm_lc_wait4.status = W_EXITCODE (body).  libc's wait4 reads this layout
+    // (forkexit.c:707-709).
     let mut srv = server();
     let parent_ep = seed_running(&mut srv, 5, 100);
-    // 僵尸子：exit(7)（W_EXITCODE(7,0) = 0x0700）。
+    // Zombie child: exit(7) (W_EXITCODE(7,0) = 0x0700).
     let table = srv.table_mut();
     table.procs[6].state.lifecycle = Lifecycle::Zombie { exit_code: 7, sig_status: 0 };
     table.procs[6].identity.id.pid = 101;
@@ -179,7 +189,7 @@ fn wait4_zombie_replies_pid_tag_with_status_payload() {
     assert_eq!(sent[0].1.m_type, 101, "tag = child pid");
     let status = unsafe { sent[0].1.m_u.m_pm_lc_wait4.status };
     assert_eq!(status, 7 << 8, "body = W_EXITCODE(7, 0)");
-    // 僵尸已被回收为 TOLD_PARENT。
+    // The zombie has been reaped into TOLD_PARENT.
     assert!(matches!(
         srv.table().procs[6].state.lifecycle,
         Lifecycle::ToldParent { .. }
@@ -188,13 +198,13 @@ fn wait4_zombie_replies_pid_tag_with_status_payload() {
 
 #[test]
 fn wait4_without_children_replies_echild() {
-    // C: do_wait4 尾段（forkexit.c:550-563）——无匹配子进程 → ECHILD，
-    // 与 WNOHANG 无关。
+    // C: the tail of do_wait4 (forkexit.c:550-563) — no matching child ->
+    // ECHILD, independent of WNOHANG.
     let mut srv = server();
     let caller_ep = seed_running(&mut srv, 5, 100);
 
     let mut wait_msg = request(3, caller_ep); // PM_WAIT4 = 3
-    wait_msg.m_u.m_lc_pm_wait4.pid = -1; // 任意子进程
+    wait_msg.m_u.m_lc_pm_wait4.pid = -1; // any child
     wait_msg.m_u.m_lc_pm_wait4.options = 0;
     wait_msg.m_u.m_lc_pm_wait4.addr = 0;
     srv.transport_mut()
@@ -205,22 +215,23 @@ fn wait4_without_children_replies_echild() {
     let sent = srv.transport().sent();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, caller_ep);
-    // B16 契约（SD-16 对齐轮 2026-10-06）：错误回执 m_type<0 = −errno
-    // （C _syscall 客户端契约，errno.h:189 _SIGN=- 于 _SYSTEM；fork 臂
-    // 1.30 同款）。本测试此前钉正数＝钉着与真源相反的旧约定（自立项
-    // 起即红，本次随全文件符号对齐一并修正）。
+    // Error replies carry m_type < 0 = -errno (the C _syscall client contract,
+    // errno.h:189 _SIGN=- for _SYSTEM; the fork arm uses the same convention).
+    // This test previously pinned a positive value, i.e. an old convention
+    // opposite to ground truth (it had been red ever since it was written); it
+    // is corrected here together with the sign alignment across this file.
     assert_eq!(sent[0].1.m_type, -minix_types::ECHILD);
 }
 
 #[test]
 fn kill_unknown_pid_replies_esrch() {
-    // C: do_kill → check_sig（signal.c:597+）——无匹配进程 → ESRCH，
-    // 经主循环 reply(caller, errno)。
+    // C: do_kill -> check_sig (signal.c:597+) — no matching process -> ESRCH,
+    // returned through the main loop's reply(caller, errno).
     let mut srv = server();
     let caller_ep = seed_running(&mut srv, 5, 100);
 
     let mut kill_msg = request(11, caller_ep); // PM_KILL = 11
-    kill_msg.m_u.m_lc_pm_kill.pid = 9999; // 不存在的 PID
+    kill_msg.m_u.m_lc_pm_kill.pid = 9999; // nonexistent PID
     kill_msg.m_u.m_lc_pm_kill.signo = 15; // SIGTERM
     srv.transport_mut()
         .queue_receive(kill_msg, IpcStatus::default());
@@ -230,19 +241,20 @@ fn kill_unknown_pid_replies_esrch() {
     let sent = srv.transport().sent();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, caller_ep);
-    // B16 契约（SD-16 对齐轮）：m_type<0 = −errno（同上）。
+    // Error replies carry m_type < 0 = -errno (same as above).
     assert_eq!(sent[0].1.m_type, -minix_types::ESRCH);
 }
 
 #[test]
 fn kill_on_fork_suspended_child_stops_it_and_records_pending() {
-    // V3-P1-3：fork 挂起窗口（子槽 VFS_CALL，forkexit.c:130）内 kill(子)
-    // → sig_proc 的 VFS_CALL 分支置 pending 并经 sys_delay_stop 停住子
-    // 进程（C signal.c:425-443）——PM 复查信号前子进程不得再发起调用。
+    // kill(child) inside the fork suspension window (child slot in VFS_CALL,
+    // forkexit.c:130) -> sig_proc's VFS_CALL branch marks the signal pending and
+    // stops the child via sys_delay_stop (C signal.c:425-443): the child must
+    // not issue another call before PM re-examines its signals.
     let mut srv = server();
     let parent_ep = seed_running(&mut srv, 5, 100);
 
-    // fork 全链：VM_FORK 脚本化 OK → 子槽 1 挂 VFS_CALL。
+    // Full fork chain: scripted VM_FORK OK -> child slot 1 hangs in VFS_CALL.
     let mut vm_reply = Message {
         m_type: minix_types::OK,
         ..Default::default()
@@ -254,7 +266,7 @@ fn kill_on_fork_suspended_child_stops_it_and_records_pending() {
     assert_eq!(srv.run_once(), RunStep::Handled);
     assert!(srv.table().procs[1].state.block.is_vfs_blocked());
 
-    // 父进程 kill(子 pid, SIGTERM)。
+    // The parent kills the child with SIGTERM.
     let child_pid = srv.table().procs[1].identity.id.pid;
     let mut kill_msg = request(11, parent_ep);
     kill_msg.m_u.m_lc_pm_kill.pid = child_pid;
@@ -263,7 +275,7 @@ fn kill_on_fork_suspended_child_stops_it_and_records_pending() {
         .queue_receive(kill_msg, IpcStatus::default());
     assert_eq!(srv.run_once(), RunStep::Handled);
 
-    // 子进程：SIGTERM pending + PROC_STOPPED（C signal.c:426/441-443）。
+    // Child: SIGTERM pending + PROC_STOPPED (C signal.c:426/441-443).
     let bit = 1u64 << (15 - 1);
     assert_eq!(srv.table().procs[1].resources.signals.pending & bit, bit);
     assert!(srv.table().procs[1].state.block.stopped, "stop_proc must stop the VFS-suspended child");
@@ -271,41 +283,44 @@ fn kill_on_fork_suspended_child_stops_it_and_records_pending() {
 
 #[test]
 fn unwired_call_replies_enosys() {
-    // 04-ipc-dispatch.md §3.6 D6——未注册调用号越界 → ENOSYS,主循环
-    // reply(who_p, ENOSYS)（C main.c:102-106）。（1..=47 已全量接线,
-    // S4 收尾;“已注册但未实现”类不复存在,锚改为未注册号 48。）
+    // 04-ipc-dispatch.md §3.6 — an out-of-range unregistered call number ->
+    // ENOSYS, sent by the main loop as reply(who_p, ENOSYS) (C main.c:102-106).
+    // (All of 1..=47 is wired up, so the "registered but unimplemented" class no
+    // longer exists; the anchor is now the unregistered number 48.)
     let mut srv = server();
     let caller_ep = seed_running(&mut srv, 5, 100);
 
     srv.transport_mut()
-        .queue_receive(request(48, caller_ep), IpcStatus::default()); // 未注册(> NR_PM_CALLS)
+        .queue_receive(request(48, caller_ep), IpcStatus::default()); // unregistered (> NR_PM_CALLS)
 
     assert_eq!(srv.run_once(), RunStep::Handled);
 
     let sent = srv.transport().sent();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, caller_ep);
-    // B16 契约（SD-16 对齐轮）：m_type<0 = −errno（同上）。
+    // Error replies carry m_type < 0 = -errno (same as above).
     assert_eq!(sent[0].1.m_type, -minix_types::ENOSYS);
 }
 
 #[test]
 #[should_panic(expected = "handle_vfs_reply failed")]
 fn corrupt_vfs_reply_is_fail_fast_not_enosys() {
-    // C: main.c:84-87——IS_VFS_PM_RS && source==VFS 走第一路拦截，进入
-    // handle_vfs_reply 状态机；状态损坏（此处：FORK_REPLY 无对应 VFS_CALL
-    // 挂起）时 C 以 panic 兜底（main.c:317-319/324-325），Rust 同构。
-    // 关键契约：VFS 回复被第一路消费，绝不落入 PM 调用分发表的 ENOSYS
-    // 兜底（0x98x 不在 0..=0xff 调用族，落进去只会得到误导性的 ENOSYS）。
+    // C: main.c:84-87 — IS_VFS_PM_RS && source==VFS takes the first
+    // interception path into the handle_vfs_reply state machine; when the state
+    // is corrupt (here: a FORK_REPLY with no matching pending VFS_CALL) C falls
+    // back to panic (main.c:317-319/324-325), and Rust mirrors that.
+    // Key contract: VFS replies are consumed by the first path and never fall
+    // into the PM dispatch table's ENOSYS fallback (0x98x is not in the 0..=0xff
+    // call family; landing there would only produce a misleading ENOSYS).
     let mut srv = server();
-    // VFS 自身必须已在表中（run_once 的 pm_isokendpt 对 source==VFS 校验）。
+    // VFS itself must already be in the table (run_once's pm_isokendpt checks source==VFS).
     let vfs_ep = Endpoint::VFS;
     srv.table_mut().procs[1].identity.endpoint = vfs_ep;
     srv.table_mut().procs[1].identity.id.pid = 1;
     srv.table_mut().procs[1].state.lifecycle = Lifecycle::Running;
 
-    // VFS_PM_FORK_REPLY（0x980+7）——无对应挂起的 VFS_CALL → 状态机报错
-    // → run_once panic（fail-fast，04-ipc-dispatch.md §1.5）。
+    // VFS_PM_FORK_REPLY (0x980+7) with no matching pending VFS_CALL -> the state
+    // machine errors -> run_once panics (fail-fast, 04-ipc-dispatch.md §1.5).
     srv.transport_mut()
         .queue_receive(request(0x980 + 7, vfs_ep), IpcStatus::default());
     let _ = srv.run_once();
@@ -313,11 +328,13 @@ fn corrupt_vfs_reply_is_fail_fast_not_enosys() {
 
 #[test]
 fn kill_termination_tells_vfs_exit() {
-    // V2-P0-1（todo.md §11）：kill 成功终止目标后必须经服务器真实通道
-    // 向 VFS 发 VFS_PM_EXIT（C forkexit.c:350-358 无条件 tell_vfs）——
-    // 修复前该消息被 sig_proc_exit 内部构造的一次性 mock 吞掉，VFS
-    // 永远不知道进程死亡。SIGKILL 默认处置 → 普通终止 → zombify +
-    // VFS_PM_EXIT；终止链同时经同一通道告知 VM（vm_willexit）。
+    // A successful kill that terminates the target must send VFS_PM_EXIT to VFS
+    // over the server's real channel (C forkexit.c:350-358 calls tell_vfs
+    // unconditionally) — before the fix, that message was swallowed by a
+    // one-shot mock built inside sig_proc_exit, so VFS never learned the process
+    // had died.  SIGKILL's default disposition -> ordinary termination ->
+    // zombify + VFS_PM_EXIT; the termination chain also tells VM (vm_willexit)
+    // over the same channel.
     let mut srv = server();
     let caller_ep = seed_running(&mut srv, 5, 100);
     seed_running(&mut srv, 6, 101);
@@ -337,14 +354,14 @@ fn kill_termination_tells_vfs_exit() {
         "kill must notify VFS with VFS_PM_EXIT, sent={:?}",
         sent.iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
     );
-    // 终止链还经同一通道告知 VM（vm_willexit，D-15/Fix #11）。
+    // The termination chain also tells VM over the same channel (vm_willexit).
     assert!(
         sent.iter()
             .any(|(ep, m)| *ep == Endpoint::VM && m.m_type == minix_types::VM_WILLEXIT as i32),
         "exit chain must tell VM_WILLEXIT, sent={:?}",
         sent.iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
     );
-    // 调用者收到 kill(2) 成功语义回复 0（dispatch Kill 臂的固定回复值）。
+    // The caller receives the kill success reply 0 (the dispatch Kill arm's fixed reply value).
     assert!(
         sent.iter().any(|(ep, m)| *ep == caller_ep && m.m_type == 0),
         "caller must receive success reply 0, sent={:?}",
@@ -354,10 +371,11 @@ fn kill_termination_tells_vfs_exit() {
 
 #[test]
 fn ptrace_attach_runs_full_chain_and_replies_with_payload() {
-    // V3-P1-1：PM_PTRACE(8) → do_trace(T_ATTACH) 全链——权限门 → tracer
-    // 安装 + TO_NOEXEC（trace.c:88）→ sig_proc(SIGSTOP, TRUE)（trace.c:90，
-    // 经 sig_proc 的 TRACE 分支进 trace_stop：内核 T_STOP + stopped 置位）
-    // → OK 回复带 m_pm_lc_ptrace.data=0 载荷（trace.c:92）。
+    // PM_PTRACE(8) -> the full do_trace(T_ATTACH) chain: permission gates ->
+    // tracer installed + TO_NOEXEC (trace.c:88) -> sig_proc(SIGSTOP, TRUE)
+    // (trace.c:90, entering trace_stop via sig_proc's TRACE branch: kernel T_STOP
+    // + stopped set) -> OK reply with an m_pm_lc_ptrace.data=0 payload
+    // (trace.c:92).
     let mut srv = server();
     let debugger_ep = seed_running(&mut srv, 5, 100);
     let _target_ep = seed_running(&mut srv, 6, 200);
@@ -369,15 +387,15 @@ fn ptrace_attach_runs_full_chain_and_replies_with_payload() {
     assert_eq!(srv.run_once(), RunStep::Handled);
 
     let table = srv.table();
-    // tracer 安装 + TO_NOEXEC。
+    // Tracer installed + TO_NOEXEC.
     assert_eq!(table.procs[6].tracer(), Some(minix_types::UserSlot::new(5)));
     assert!(table.procs[6].state.guardianship.trace_options().contains(
         minix_pm::mproc::TraceOptions::NOEXEC
     ));
-    // 子进程被 trace_stop 停住（mock 网关 T_STOP 成功）。
+    // The child is stopped by trace_stop (the mock gateway's T_STOP succeeds).
     assert!(table.procs[6].state.trace.stopped);
     assert_eq!(table.procs[6].resources.signals.trace_mask, 1u64 << (17 - 1));
-    // 回复：m_type = OK，载荷 data = 0。
+    // Reply: m_type = OK, payload data = 0.
     let sent = srv.transport().sent();
     let (_, reply) = sent
         .iter()
@@ -389,13 +407,15 @@ fn ptrace_attach_runs_full_chain_and_replies_with_payload() {
 
 #[test]
 fn kernel_sigksig_notify_drains_pending_kernel_signals() {
-    // V3-P1-2：内核以 SYSTEM 源 notify 送达 sigset 位图（SIGKSIG 位，
-    // sef_signal.c:104-108）→ run_once 通知分支驱动拉取循环 →
-    // getksig/endksig 逐信号确认 → process_ksig 处置（SIGTERM 终止）。
-    // 此前 notify 分支只认 CLOCK，SIGKSIG 被静默丢弃。
-    // 脚本化：第一次 getksig 返回 (target, SIGTERM 位)，其后 None。
-    // 目标进程的 endpoint 在 seed 之后才知道——先按槽位算出（seed 的
-    // endpoint = from_generation_slot(1, slot)，确定性）。
+    // The kernel delivers the sigset bitmap through a SYSTEM-source notify (the
+    // SIGKSIG bit, sef_signal.c:104-108) -> run_once's notification branch drives
+    // the fetch loop -> getksig/endksig acknowledges each signal -> process_ksig
+    // handles it (SIGTERM terminates).  Previously the notify branch recognised
+    // only CLOCK and SIGKSIG was silently dropped.
+    // Scripted: the first getksig returns (target, SIGTERM bit), then None.
+    // The target process's endpoint is only known after seeding, so compute it
+    // from the slot first (seed's endpoint = from_generation_slot(1, slot),
+    // deterministic).
     let target_ep = Endpoint::from_generation_slot(1, 5);
     let mut srv = minix_pm::init::PmServer::with_kernel_gateway(
         BootParams::placeholder(),
@@ -411,15 +431,16 @@ fn kernel_sigksig_notify_drains_pending_kernel_signals() {
     );
     let _ = seed_running(&mut srv, 5, 42);
 
-    // 内核通知：SYSTEM 源即拉取触发（SD-39 后 SigSet 与 C sigset_t 同为
-    // 128 位，SIGKSIG 位 73 本身可编码；SYSTEM 通知仍是
-    // "有积累"的唯一载体，PM 按 SYSTEM 源触发）。
+    // Kernel notification: a SYSTEM source is the fetch trigger (SigSet is now
+    // 128 bits like C's sigset_t, so SIGKSIG bit 73 is itself encodable; the
+    // SYSTEM notification remains the only carrier of "something accumulated",
+    // and PM triggers on the SYSTEM source).
     let notify = Message { m_source: Endpoint::SYSTEM, ..Default::default() };
     srv.transport_mut()
         .queue_receive(notify, IpcStatus { flags: 4 });
     assert_eq!(srv.run_once(), RunStep::Handled);
 
-    // 拉取生效：目标进程被 SIGTERM 终止（默认处置）。
+    // The fetch took effect: the target process is terminated by SIGTERM (default disposition).
     let table = srv.table();
     assert!(
         matches!(
@@ -431,17 +452,21 @@ fn kernel_sigksig_notify_drains_pending_kernel_signals() {
     );
 }
 
-// ── 续-152/153（VFS 车道静默丢弃的边界钉子）──
+// ---- Boundary pins for silent drops on the VFS lane ----
 //
-// 续-149 为断 fb201 乒乓（FS stamped status=-1 消息泄漏进 PM/VFS 车道，
-// PM 的 ENOSYS 反射即放大器）设了「VFS 来源非 RS 族一律静默丢弃」；
-// 续-153 收窄为「非已注册 PM 调用号才丢」——否则 VFS 合法发来的
-// PM_EXEC_NEW(43, callnr.h:56) 也被吞，exec worker 永远等不到回复
-// （gh25 pd:02b01 真机实证）。本组两钉各守半边：
-// ① 43 必须穿透到分派（警卫再度收紧=exec 再断，真机上要花数天定位）；
-// ② 非注册号必须零回复（乒乓放大器不得复活）。
+// To break the fb201 ping-pong (FS messages stamped status=-1 leaking into the
+// PM/VFS lane, with PM's ENOSYS reflection acting as the amplifier), the guard
+// once dropped every non-RS-family VFS source silently.  It was then narrowed
+// to "drop only call numbers that are not registered PM calls" — otherwise a
+// legitimate PM_EXEC_NEW(43, callnr.h:56) from VFS was swallowed too and the
+// exec worker waited for ever (observed on real hardware).  The two pins below
+// each protect one half:
+// 1. 43 must reach dispatch (tightening the guard again breaks exec, which took
+//    days to localise on real hardware);
+// 2. unregistered numbers must produce zero replies (the ping-pong amplifier
+//    must not come back).
 
-/// 把 VFS 播种成 Running（source==VFS 过 pm_isokendpt 校验所需）。
+/// Seed VFS as Running (needed so source==VFS passes pm_isokendpt).
 fn seed_vfs(srv: &mut minix_pm::init::PmServer<TestIpcTransport>) -> Endpoint {
     let table = srv.table_mut();
     table.procs[1].identity.endpoint = Endpoint::VFS;
@@ -455,13 +480,15 @@ fn vfs_exec_new_passes_drop_gate_reaches_dispatch() {
     let mut srv = server();
     let vfs_ep = seed_vfs(&mut srv);
 
-    // PM_EXEC_NEW=43（callnr.h:56）：endpt@0 故意放无效端点值——
-    // 分派臂 do_newexec 的 pm_isokendpt 必失败并回错误；钉子的判据是
-    // 「VFS 收到回复」（穿透分派）而非具体 errno（符号约定另有台账）。
+    // PM_EXEC_NEW=43 (callnr.h:56): endpt@0 deliberately holds an invalid
+    // endpoint value, so pm_isokendpt in the dispatch arm do_newexec must fail
+    // and return an error; the pin's criterion is "VFS receives a reply" (the
+    // message reached dispatch), not the particular errno.
     let mut msg = request(43, vfs_ep);
-    msg.m_u.m_m1.m1i1 = 0x2ff; // endpt@0（decode::exec_new raw[0..4]），
-    // 故意放无效端点值——分派臂 do_newexec 的 pm_isokendpt 必失败并回
-    // 错误；钉子判据是「VFS 收到回复」（穿透分派）而非具体 errno。
+    msg.m_u.m_m1.m1i1 = 0x2ff; // endpt@0 (decode::exec_new raw[0..4]),
+    // deliberately an invalid endpoint value — pm_isokendpt in the dispatch arm
+    // do_newexec must fail and return an error; the pin's criterion is "VFS
+    // receives a reply" (the message reached dispatch), not the particular errno.
     srv.transport_mut()
         .queue_receive(msg, IpcStatus::default());
 
@@ -480,7 +507,7 @@ fn vfs_unregistered_mtypes_silently_dropped() {
     let mut srv = server();
     let vfs_ep = seed_vfs(&mut srv);
 
-    // fb201 形态①：FS stamped status=-1（负 m_type，续-149 洪流本体）。
+    // fb201 shape (1): FS stamped status=-1 (negative m_type, the flood itself).
     srv.transport_mut()
         .queue_receive(request(-1, vfs_ep), IpcStatus::default());
     assert_eq!(srv.run_once(), RunStep::Handled);
@@ -490,9 +517,10 @@ fn vfs_unregistered_mtypes_silently_dropped() {
         srv.transport().sent().iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
     );
 
-    // 形态②：越界未注册号 48（> NR_PM_CALLS，同 clo 非 VFS 源的
-    // unwired_call_replies_enosys——VFS 源在这里必须静默，不得回
-    // ENOSYS 反射给 VFS 复活乒乓）。
+    // Shape (2): the out-of-range unregistered number 48 (> NR_PM_CALLS, the same
+    // as unwired_call_replies_enosys for non-VFS sources — but a VFS source must
+    // stay silent here and must not send an ENOSYS reflection back to VFS, which
+    // would revive the ping-pong).
     srv.transport_mut()
         .queue_receive(request(48, vfs_ep), IpcStatus::default());
     assert_eq!(srv.run_once(), RunStep::Handled);

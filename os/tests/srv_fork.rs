@@ -1,39 +1,54 @@
-//! E5(c) 前哨段 — RS→PM→VM→VFS 的 `srv_fork` 全链路联调（宿主态，走 wire 契约）。
+//! E5(c) forward section — full-chain `srv_fork` integration across RS→PM→VM→VFS (hosted form, over the wire contract).
 //!
-//! RS 用 `srv_fork` 孵化系统服务，这个调用与普通 `fork` 共享大部分流程却有几处
-//! 相反的语义（权限门、特权保留、凭证注入、VFS 载荷、立即双回复）。本文件把这条
-//! 链路上除 VM 内部之外的三段真实代码接起来跑：PM 的状态机、跨服务的消息编码、
-//! VFS 的分发处理臂。它与 [`pm_vm_fork`](../pm_vm_fork.rs) 是同族件，后者覆盖
-//! 普通 `fork`，本文件覆盖 `srv_fork`。
+//! RS uses `srv_fork` to spawn system services. That call shares most of the flow
+//! with an ordinary `fork` yet has several opposite semantics (permission gate,
+//! privilege retention, credential injection, VFS payload, immediate double
+//! reply). This file connects and runs the three real-code segments of that chain
+//! other than VM internals: PM's state machine, the cross-service message
+//! encoding, and VFS's dispatch arm. It is a sibling of
+//! [`pm_vm_fork`](../pm_vm_fork.rs), which covers an ordinary `fork`; this file
+//! covers `srv_fork`.
 //!
-//! # 链路面（三层全真代码，只有 VM 内部以 wire 契约代替）
+//! # Chain surface (all three layers are real code; only VM internals are
+//! replaced by the wire contract)
 //!
-//! 1. **PM**：`minix_pm::fork::do_srv_fork` 真实状态机跑全步（RS 门 / 容量门 /
-//!    槽位扫描 / `vm_fork` / `srv_fork_from` 复制 / pid / `tell_vfs` / 立即回复）。
-//!    出站消息由 PM 自带的 `TestIpcTransport` 捕获——该类型为集成测试刻意不做
-//!    `cfg(test)` 门控（`servers/pm/src/ipc/transport.rs:165-166` 自证）。
-//! 2. **VM**：宿主态不可驱动（`minix-vm` 对外只导出 `VmServer` 与 boot 类型，
-//!    `vfs_queue`/`pagetable` 等模块均 `pub(crate)`）。因此 VM 段按 wire 契约参战：
-//!    请求用 VM 侧解码器 [`VmForkIn`] 回解、应答用 VM 侧编码器 [`VmForkOut`] 构造
-//!    ——PM 的编码与 VM 的解码互为见证，测的是跨服务 wire 对账（不是手抄字节）。
-//!    VM 内部的地址空间复制由 `minix-vm` 自身单测覆盖。
-//! 3. **VFS**：捕获到的 `VFS_PM_SRV_FORK` 逐域断言后，以消息字段还原
-//!    `VfsCall::SrvFork` 并交给真实主线入口 `minix_vfs::VfsPmHandler::handle`
-//!    （与 `servers/vfs/src/ipc/dispatcher.rs:187-198` 同臂）消费。该臂在复制
-//!    fd 表之后追加 `setuid`/`setgid` 两步（C `misc.c:869` 的 `SRV_FORK` 特例），
-//!    所以子 fproc 的凭证必须等于消息里的 `REUID`/`REGID`。
+//! 1. **PM**: `minix_pm::fork::do_srv_fork` runs the real state machine through
+//!    every step (RS gate / capacity gate / slot scan / `vm_fork` /
+//!    `srv_fork_from` copy / pid / `tell_vfs` / immediate reply). Outbound
+//!    messages are captured by PM's own `TestIpcTransport` — that type
+//!    deliberately carries no `cfg(test)` gate for integration tests
+//!    (`servers/pm/src/ipc/transport.rs:165-166` attests this).
+//! 2. **VM**: cannot be driven in the hosted form (`minix-vm` exports only
+//!    `VmServer` and the boot types; modules such as `vfs_queue`/`pagetable` are
+//!    all `pub(crate)`). The VM segment therefore takes part through the wire
+//!    contract: requests are re-decoded with the VM-side decoder [`VmForkIn`] and
+//!    replies are built with the VM-side encoder [`VmForkOut`] — PM's encoding
+//!    and VM's decoding witness each other, so what is tested is cross-service
+//!    wire agreement, not hand-copied bytes. VM's internal address-space copy is
+//!    covered by `minix-vm`'s own unit tests.
+//! 3. **VFS**: after asserting the captured `VFS_PM_SRV_FORK` field by field, the
+//!    message fields reconstruct `VfsCall::SrvFork` and hand it to the real
+//!    mainline entry `minix_vfs::VfsPmHandler::handle` (the same arm as
+//!    `servers/vfs/src/ipc/dispatcher.rs:187-198`) to consume. That arm appends
+//!    the two steps `setuid`/`setgid` after copying the fd table (the `SRV_FORK`
+//!    special case at C `misc.c:869`), so the child fproc's credentials must
+//!    equal the message's `REUID`/`REGID`.
 //!
-//! # 覆盖
+//! # Coverage
 //!
-//! - RS 门拒绝：非 RS 端点调用返回 `NotPermitted`，且**一条出站消息都没有**
-//!   ——门在 `vm_fork` 之前（`forkexit.c:159-160`，Rust `fork.rs:125-127`）；
-//! - 成功链：PM→VM→VFS 全通，三支出站消息（VM_FORK / VFS_PM_SRV_FORK / 给子
-//!   进程的 OK）逐项断言，子槽凭证与调度上下文、VFS 侧子 fproc 逐项断言。
+//! - RS gate rejection: a call from a non-RS endpoint returns `NotPermitted`,
+//!   and **there is not a single outbound message** — the gate runs before
+//!   `vm_fork` (`forkexit.c:159-160`, Rust `fork.rs:125-127`);
+//! - Success chain: PM→VM→VFS all the way through, with the three outbound
+//!   messages (VM_FORK / VFS_PM_SRV_FORK / the OK to the child process) asserted
+//!   item by item, along with the child slot's credentials and scheduling
+//!   context and the VFS-side child fproc.
 //!
-//! 真机链路（VM 真实参战、RS 真实发起）挂 edge4 T2 / E5(c)。
+//! The real-machine chain (VM actually participating, RS actually initiating) is
+//! pursued separately as T2 / E5(c).
 
 use minix_pm::TestIpcTransport;
-/// 空操作 vnode 归还通道(零引用跨界时的 REQ_PUTNODE 宿主替身)。
+/// No-op vnode return channel (the hosted stand-in for REQ_PUTNODE at the zero-reference boundary crossing).
 struct NopCtl;
 impl minix_vfs::vnode::FsCtl for NopCtl {
     fn put_node(
@@ -55,24 +70,26 @@ use minix_types::{
 use minix_vfs::PmHandler;
 
 // ---------------------------------------------------------------------------
-// 夹具
+// Fixtures
 // ---------------------------------------------------------------------------
 
-/// RS 在 PM 进程表里的槽位。
+/// RS's slot in the PM process table.
 ///
-/// `Endpoint::RS` 的裸值是 2，槽位取低 15 位即 2（`types/endpoint.rs:63`）；
-/// C 侧 `RS_PROC_NR` 同为 2（`minix3/minix/include/minix/com.h`），PM 的自有
-/// 单测也把 RS 放在 `procs[2]`。
+/// The raw value of `Endpoint::RS` is 2, and taking the low 15 bits gives slot 2
+/// (`types/endpoint.rs:63`); C's `RS_PROC_NR` is likewise 2
+/// (`minix3/minix/include/minix/com.h`), and PM's own unit tests also put RS at
+/// `procs[2]`.
 const RS_SLOT: usize = 2;
 
-/// RS 的 pid（夹具值，`INIT_PID + 1` 起的真实分配值不参与本测试）。
+/// RS's pid (fixture value; the real allocation starting at `INIT_PID + 1` does not take part in this test).
 const RS_PID: i32 = 2;
 
-/// 子端点：槽 1、代 1。
+/// Child endpoint: slot 1, generation 1.
 ///
-/// VM 的 `sys_fork` 使用 PM 传入的槽位并递增代际，故首个子进程落在槽 1、代 1。
-/// PM 侧有一条 `debug_assert_eq!` 守卫"VM 回复的槽位必须等于请求的槽位"
-/// （`fork.rs:165-169`），本夹具与之一致。
+/// VM's `sys_fork` uses the slot PM passed in and bumps the generation, so the
+/// first child process lands in slot 1, generation 1. On the PM side a
+/// `debug_assert_eq!` guards that "the slot VM replies with must equal the
+/// requested slot" (`fork.rs:165-169`), and this fixture agrees with it.
 fn child_endpoint() -> Endpoint {
     Endpoint::from_generation_slot(1, 1)
 }
@@ -81,10 +98,12 @@ fn child_slot() -> UserSlot {
     UserSlot::new(1)
 }
 
-/// 父进程表：RS 占槽 2、Running、系统进程、调度器 `NONE`，其余槽为空。
+/// Parent process table: RS occupies slot 2 as Running, a system process, with
+/// scheduler `NONE`; the remaining slots are empty.
 ///
-/// RS 是系统服务，C 侧它的 `mp_flags` 含 `PRIV_PROC` 且 `mp_scheduler == NONE`
-/// （`04-stage-pm/16-scheduling.md:47-48` 引 `schedule.c:72` 断言），夹具照此。
+/// RS is a system service; in C its `mp_flags` contains `PRIV_PROC` and
+/// `mp_scheduler == NONE` (`04-stage-pm/16-scheduling.md:47-48` cites the
+/// `schedule.c:72` assertion), so the fixture follows that.
 fn table_with_rs() -> ProcTable {
     let mut table = ProcTable::new();
     let rs = table.get_mut(RS_SLOT).expect("slot 2 exists");
@@ -97,10 +116,11 @@ fn table_with_rs() -> ProcTable {
     table
 }
 
-/// VM 侧 fork 应答（OK + 子 endpoint 在 m1i3），用 VM 自己的编码器构造。
+/// VM-side fork reply (OK plus the child endpoint in m1i3), built with VM's own encoder.
 ///
-/// 与 `pm_vm_fork.rs` 的同名夹具一致：`VmForkOut` 是 VM 的发送半编码器，
-/// 这里借它构造应答，PM 的解码端是 `vm_fork`（`ipc/dispatcher.rs:137`）。
+/// Same as the same-named fixture in `pm_vm_fork.rs`: `VmForkOut` is VM's
+/// send-half encoder, borrowed here to build the reply; PM's decoding end is
+/// `vm_fork` (`ipc/dispatcher.rs:137`).
 fn vm_fork_ok_reply(child: Endpoint) -> Message {
     let mut reply = Message {
         m_type: OK,
@@ -113,7 +133,7 @@ fn vm_fork_ok_reply(child: Endpoint) -> Message {
     reply
 }
 
-/// 无操作内核网关：srv_fork 链在夹具上不触内核面（未设 tracer，`sys_*` 不可达）。
+/// No-op kernel gateway: on this fixture the srv_fork chain never reaches the kernel face (no tracer is set, so the `sys_*` calls are unreachable).
 struct NoopKernelGateway;
 
 impl KernelGateway for NoopKernelGateway {
@@ -197,7 +217,7 @@ impl KernelGateway for NoopKernelGateway {
     }
 }
 
-/// 构造一个运行中的用户进程槽（用于负路径：非 RS 端点的调用者）。
+/// Build a running user process slot (for the negative path: a caller at a non-RS endpoint).
 fn table_with_user_caller() -> ProcTable {
     let mut table = ProcTable::new();
     let caller = table.get_mut(5).expect("slot 5 exists");
@@ -208,7 +228,7 @@ fn table_with_user_caller() -> ProcTable {
 }
 
 // ---------------------------------------------------------------------------
-// E5(c) 前哨.1 负路径：RS 门 —— 拒绝且零出站
+// E5(c) forward part 1, negative path: the RS gate — rejection with zero outbound traffic
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -227,9 +247,10 @@ fn srv_fork_gate_rejects_non_rs_caller_silently() {
     .expect_err("非 RS 端点不得使用 srv_fork");
 
     assert!(matches!(err, ForkCoordError::NotPermitted));
-    // C 的门是 do_srv_fork 的第一条语句（forkexit.c:159-160），先于容量门、
-    // 槽位扫描与 vm_fork（183-185）。因此被拒的调用**不产生任何出站流量**：
-    // 既没有 VM_FORK，也没有 VFS 通知，更没有给谁发过回复。
+    // C's gate is the first statement of do_srv_fork (forkexit.c:159-160), ahead
+    // of the capacity gate, slot scan and vm_fork (183-185). A rejected call
+    // therefore **produces no outbound traffic at all**: no VM_FORK, no VFS
+    // notification, and no reply sent to anyone.
     assert!(
         transport.sent().is_empty(),
         "RS 门在 vm_fork 之前：拒绝路径零出站，实际 {:?}",
@@ -238,13 +259,15 @@ fn srv_fork_gate_rejects_non_rs_caller_silently() {
 }
 
 // ---------------------------------------------------------------------------
-// E5(c) 前哨.2 成功链：PM 状态机 → VM_FORK（wire 回解）→ VFS_PM_SRV_FORK
-//                    （逐域）→ VFS 真处理臂
+// E5(c) forward part 2, success chain: PM state machine → VM_FORK (wire re-decode) → VFS_PM_SRV_FORK
+//                    (field by field) → the real VFS handling arm
 // ---------------------------------------------------------------------------
 
 #[test]
 fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
-    // 夹具里的凭证注入值：与 RS 自身凭证不同，才能证明是"注入"而非"继承"。
+    // The credential injection values in this fixture differ from RS's own
+    // credentials; only then does the test prove "injection" rather than
+    // "inheritance".
     const INJECT_UID: Uid = 1001;
     const INJECT_GID: Gid = 55;
 
@@ -265,9 +288,10 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
     )
     .expect("VM 应答 OK：RS 发起的 srv_fork 全链应成功");
 
-    // ── 出站消息一览：恰三支 ──
-    // C 的 do_srv_fork 出站顺序：vm_fork（183-185，同步 sendrec）→ tell_vfs
-    // （224-230，异步 send）→ reply(child, OK)（237，同步 send）。
+    // ── Outbound message overview: exactly three ──
+    // C's do_srv_fork outbound order: vm_fork (183-185, synchronous sendrec) →
+    // tell_vfs (224-230, asynchronous send) → reply(child, OK) (237, synchronous
+    // send).
     let sent = transport.sent();
     assert_eq!(
         sent.len(),
@@ -275,7 +299,7 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
         "srv_fork 出站恰三支：VM_FORK + VFS_PM_SRV_FORK + 给子进程的 OK"
     );
 
-    // ── 出站一：VM_FORK（PM 手写编码 ↔ VM 解码器互证）──
+    // ── Outbound one: VM_FORK (PM's hand-written encoding ↔ VM decoder witness each other) ──
     let (vm_dest, vm_req) = &sent[0];
     assert_eq!(*vm_dest, Endpoint::VM);
     assert_eq!(vm_req.m_type, VM_FORK as i32);
@@ -283,7 +307,7 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
     assert_eq!(req.parent_endpoint, Endpoint::RS, "VMF_ENDPOINT = m1i1");
     assert_eq!(req.child_slot, child_slot(), "VMF_SLOTNO = m1i2");
 
-    // ── PM 侧子槽：占位、endpoint、pid、VFS_CALL ──
+    // ── Child slot on the PM side: occupancy, endpoint, pid, VFS_CALL ──
     let child = table.get(child_slot().get()).expect("child slot exists");
     assert!(matches!(child.state.lifecycle, Lifecycle::Running));
     assert_eq!(child.identity.endpoint, child_endpoint());
@@ -294,14 +318,15 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
         RS_PID,
         "父槽 pid 不被改写"
     );
-    // tell_vfs 成功后置 VFS_CALL（utility.c:128）；子进程在被立即唤醒时
-    // 仍挂着这个未完成的 VFS 调用（fork.rs:229-231 注释）。
+    // VFS_CALL is set after tell_vfs succeeds (utility.c:128); the child still
+    // carries this unfinished VFS call when it is woken immediately (the comment
+    // at fork.rs:229-231).
     assert!(
         child.state.block.is_vfs_blocked(),
         "子进程 VFS_CALL 已置位（tell_vfs 的第三步）"
     );
 
-    // ── 凭证：SrvForkParams 注入（对比 do_fork 的父继承）──
+    // ── Credentials: injected from SrvForkParams (versus do_fork's inheritance from the parent) ──
     let creds = child.resources.privilege.credentials();
     assert_eq!(creds.user.real, INJECT_UID, "mp_realuid = 注入 uid");
     assert_eq!(creds.user.effective, INJECT_UID, "mp_effuid = 注入 uid");
@@ -309,29 +334,31 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
     assert_eq!(creds.group.real, INJECT_GID, "mp_realgid = 注入 gid");
     assert_eq!(creds.group.effective, INJECT_GID, "mp_effgid = 注入 gid");
     assert_eq!(creds.group.saved, INJECT_GID, "mp_svgid = 注入 gid");
-    // 子进程组随父（`srv_fork_from` 的 procgrp 取自父）。
+    // The child process group follows the parent (`srv_fork_from` takes procgrp from the parent).
     assert_eq!(child.identity.procgrp, RS_PID, "进程组随父 RS");
-    // 系统服务的调度上下文：`scheduler == NONE` 保留，不经 SCHED 接管
-    // （C forkexit.c:199-200 保留 PRIV_PROC 后 scheduler 仍 NONE；设计文档
-    // 08-pm-srv-fork.md §2.4 同此）。
+    // The scheduling context of a system service: `scheduler == NONE` is kept and
+    // SCHED never takes over (C forkexit.c:199-200 keeps PRIV_PROC and the
+    // scheduler stays NONE; design document 08-pm-srv-fork.md §2.4 agrees).
     assert_eq!(
         child.resources.scheduler,
         Endpoint::NONE,
         "系统服务 scheduler 保持 NONE（不经 SCHED 接管）"
     );
-    // PRIV_PROC 保留（C-28 已落地）：C 的 do_srv_fork 用内联掩码
-    // `rmc->mp_flags &= (IN_USE|PRIV_PROC|DELAY_CALL)`（forkexit.c:200）保留
-    // `PRIV_PROC`，设计文档 08-pm-srv-fork.md §4.2/§D2 写明子进程
-    // `is_kernel_process()==true`。`Process::srv_fork_from`（mproc/fork.rs）
-    // 现落 `Privilege::Kernel(注入凭证)`：`Privilege::Kernel` 携带凭证字段，
-    // 既保留特权位又安放六字段注入（对应 C 里 PRIV_PROC 与 mp_realuid 等正交）。
-    // 上面的凭证断言证明注入值生效，本断言证明特权位保留。
+    // PRIV_PROC is retained: C's do_srv_fork keeps `PRIV_PROC` with the inline
+    // mask `rmc->mp_flags &= (IN_USE|PRIV_PROC|DELAY_CALL)` (forkexit.c:200), and
+    // design document 08-pm-srv-fork.md §4.2/§D2 states that the child has
+    // `is_kernel_process()==true`. `Process::srv_fork_from` (mproc/fork.rs) now
+    // produces `Privilege::Kernel(injected credentials)`: `Privilege::Kernel`
+    // carries the credential fields, so it keeps the privilege bit and holds the
+    // six-field injection (orthogonal in C, where PRIV_PROC and mp_realuid et al.
+    // are separate). The credential assertions above prove the injection took
+    // effect; this assertion proves the privilege bit was retained.
     assert!(
         child.is_kernel_process(),
         "srv_fork 子进程保留 PRIV_PROC（is_kernel_process==true，C-28）"
     );
 
-    // ── 出站二：VFS_PM_SRV_FORK（tell_vfs 载荷 m7 逐域）──
+    // ── Outbound two: VFS_PM_SRV_FORK (the tell_vfs payload's m7 field by field) ──
     let (vfs_dest, vfs_msg) = &sent[1];
     assert_eq!(*vfs_dest, Endpoint::VFS);
     assert_eq!(vfs_msg.m_type, VFS_PM_SRV_FORK);
@@ -348,11 +375,12 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
         "m7i5 = REGID 携真实 gid（do_fork 在此处固定为 -1）"
     );
 
-    // ── VFS 侧：真实 PM 协议入口消费同一条消息 ──
-    // `VfsPmHandler::handle(VfsCall::SrvFork)` 即 VFS 主线对 PM 通知的分发臂
-    // （dispatcher.rs:187-198）：先 handle_fork 复制 fd 表，再追加 setuid /
-    // setgid 两步（SRV_FORK 在 C 侧的特例，misc.c:869）。三个入参全部取自
-    // PM 编入消息的 m7 字段，链路不断。
+    // ── VFS side: the real PM protocol entry consumes the same message ──
+    // `VfsPmHandler::handle(VfsCall::SrvFork)` is VFS mainline's dispatch arm for
+    // PM notifications (dispatcher.rs:187-198): it copies the fd table in
+    // handle_fork, then appends the two steps setuid / setgid (the SRV_FORK
+    // special case on the C side, misc.c:869). All three inputs come from the m7
+    // fields PM encoded into the message, so the chain stays closed.
     let mut fproc = minix_vfs::fproc::FProcTable::new();
     {
         let rs = fproc
@@ -389,9 +417,11 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
         matches!(reply, VfsReply::SrvFork),
         "分发臂回 VfsReply::SrvFork"
     );
-    // 回复码即 C 的 VFS_PM_SRV_FORK_REPLY（0x988）；PM 侧的 `handle_vfs_reply`
-    // 对该回复走空分支（main.c:398-401 `/* Nothing to do */`），清 VFS_CALL 后
-    // 不重启信号——与普通 fork 的 `VFS_PM_FORK_REPLY` 双分支正交。
+    // The reply code is exactly C's VFS_PM_SRV_FORK_REPLY (0x988); PM's
+    // `handle_vfs_reply` takes the empty branch for this reply (main.c:398-401
+    // `/* Nothing to do */`) and, after clearing VFS_CALL, does not restart the
+    // signal — orthogonal to the two branches of the ordinary fork's
+    // `VFS_PM_FORK_REPLY`.
     assert_eq!(reply.m_type(), VFS_PM_SRV_FORK_REPLY);
 
     let child_fp = fproc
@@ -425,10 +455,12 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
     );
     assert_eq!(child_fp.filps[0], Some(7), "filp 表共享（同一表项索引）");
 
-    // ── 出站三：给子进程的立即 OK（`srv_fork` 与 `do_fork` 的回复差异）──
-    // `do_fork` 返回 SUSPEND，由 VFS_PM_FORK_REPLY 的双分支异步唤醒父与子；
-    // `srv_fork` 的子进程 scheduler==NONE 不经 SCHED，所以 PM 在此直接
-    // `reply(child, OK)`（forkexit.c:237）后同步返父 pid（239）。
+    // ── Outbound three: the immediate OK to the child process (the reply
+    // difference between `srv_fork` and `do_fork`) ──
+    // `do_fork` returns SUSPEND and the two branches of VFS_PM_FORK_REPLY wake
+    // parent and child asynchronously; a `srv_fork` child has scheduler==NONE and
+    // never goes through SCHED, so PM sends `reply(child, OK)` directly here
+    // (forkexit.c:237) and then synchronously returns the parent pid (239).
     let (child_dest, child_msg) = &sent[2];
     assert_eq!(*child_dest, child_endpoint(), "立即回复的目标是子进程");
     assert_eq!(child_msg.m_type, OK, "子进程收到 OK（不是 SUSPEND）");

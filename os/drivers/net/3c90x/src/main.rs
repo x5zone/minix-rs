@@ -1,18 +1,20 @@
-//! driver (net/3c90x) 入口（占位）。
+//! Driver (net/3c90x) entry point (placeholder).
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs` init 契约：no_std 模式 `_start` 自动调用、幂等），这里无须
-// 也不应再调。
+// The freestanding side holds the link reference to minix-rt: the bin code
+// itself uses none of rt's symbols, and an unreferenced rlib is dropped whole,
+// taking `_start`/`#[panic_handler]`/`#[global_allocator]` with it (the
+// `extern crate` keeps-the-rlib semantics of panic-halt mode). The birth
+// chain's `_start` has already completed rt initialization before main (the
+// `lib.rs` init contract: in no_std mode `_start` calls it automatically and
+// it is idempotent), so calling it here is neither needed nor right.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字 + Rust
-// ABI + `-> i32`，`os/libs/minix-rt/src/crt0.rs`）；宿主与测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现。
+// The entry point splits into two forms by target: the none side satisfies the
+// crt0 Consumer contract (name + Rust ABI + `-> i32`,
+// `os/libs/minix-rt/src/crt0.rs`); the hosted and test sides keep
+// `()` — since rustc 1.94, Termination is no longer implemented for i32.
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
@@ -26,7 +28,7 @@ fn main() {
 }
 
 fn real_main() {
-    // TODO: 实装为真实服务进程（事件循环 + RS 启动协议）。
+    // Not yet implemented: a real service process (event loop + RS startup protocol).
     minix_driver_3c90x::init();
     loop {}
 }

@@ -101,7 +101,7 @@ impl VmProcTable {
     /// # Safety
     /// Caller must ensure no mutable references to the same slot are active.
     /// Even in single-threaded contexts, aliasing a mutable reference is UB.
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only (via is_slot_in_use)
+    #[cfg_attr(not(test), allow(dead_code))] // test-only (via is_slot_in_use)
     unsafe fn get_slot(&self, slot: UserSlot) -> Option<&VmProc> {
         let index = Self::check_slot(slot)?;
         // SAFETY: Caller guarantees no mutable references to this slot are active
@@ -133,7 +133,7 @@ impl VmProcTable {
         Some(unsafe { &mut *self.slots[index].get() })
     }
 
-    // ---- Live-update slot swap (C utility.c:188-216 swap_proc_slot, V11/T13) ----
+    // ---- Live-update slot swap (C utility.c:188-216 swap_proc_slot) ----
 
     /// Swap the entire `VmProc` state of two slots, then restore each
     /// slot's original endpoint (C utility.c:206-209 — contents swap,
@@ -186,10 +186,12 @@ impl VmProcTable {
     /// Use this to initialize a new process in the slot.
     /// Sets the vm_slot field to the given value (Minix3's `vm_slot = i`).
     pub(crate) fn get_empty<'a>(&self, slot: UserSlot) -> Option<EmptySlot<'a>> {
-        // SAFETY: 续-158——视图的 &mut VmProc 从 Cell 裸指针直接铸造（fresh
-        // 生命周期，不再继承 &self 借用），杜绝「&VmProcTable 活着时存在
-        // 派生 &mut」的 noalias 冲突（gh39/40 stale-load 实锤的别名 UB 铸
-        // 造点）。typestate 纪律不变：单线程 VM，同槽同时至多一个视图。
+        // SAFETY: the view's &mut VmProc is cast directly from the Cell raw
+        // pointer (a fresh lifetime, not inherited from the &self borrow),
+        // ruling out the noalias conflict of "a derived &mut while
+        // &VmProcTable is alive" (the aliasing-UB cast point nailed down by
+        // the gh39/40 stale-load case). The typestate discipline is unchanged:
+        // single-threaded VM, at most one view per slot at a time.
         let index = Self::check_slot(slot)?;
         // SAFETY: index bounds checked; slot contents accessed only through
         // this UnsafeCell (interior mutability) on this single thread.
@@ -208,7 +210,7 @@ impl VmProcTable {
     /// Sets the vm_slot field to the found index (Minix3's `vm_slot = i`).
     ///
     /// This method is not atomic and assumes single-threaded execution.
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
+    #[cfg_attr(not(test), allow(dead_code))] // test-only
     pub(crate) fn alloc_empty_slot(&self) -> Option<EmptySlot<'_>> {
         for i in 0..VM_PROC_COUNT {
             // SAFETY: We only access slot i, and the returned EmptySlot
@@ -226,10 +228,13 @@ impl VmProcTable {
     ///
     /// Returns `Some` only if the process is active (IN_USE and not EXITING).
     pub(crate) fn get_active<'a>(&self, slot: UserSlot) -> Option<ActiveProc<'a>> {
-        // SAFETY: 续-158——同 get_empty：&mut 从 Cell 裸指针直接铸造（fresh
-        // 生命周期），不继承 &self 借用，消除 noalias 冲突的铸造点。返回的
-        // ActiveProc<'_> 生命周期由调用方新鲜指派，与 &self 无派生关系；
-        // typestate 纪律（同槽同时至多一个视图）由单线程 VM + 调用方保证。
+        // SAFETY: same as get_empty: the &mut is cast directly from the Cell
+        // raw pointer (a fresh lifetime), not inherited from the &self borrow,
+        // removing the noalias-conflict cast point. The returned
+        // ActiveProc<'_> lifetime is freshly assigned by the caller and has no
+        // derivation relation to &self; the typestate discipline (at most one
+        // view per slot at a time) is guaranteed by the single-threaded VM and
+        // the caller.
         let index = Self::check_slot(slot)?;
         // SAFETY: index bounds checked; slot contents accessed only through
         // this UnsafeCell (interior mutability) on this single thread.
@@ -246,7 +251,7 @@ impl VmProcTable {
     ///
     /// Returns `Some` only if the process is exiting (IN_USE and EXITING).
     pub(crate) fn get_exiting<'a>(&self, slot: UserSlot) -> Option<ExitingProc<'a>> {
-        // SAFETY: 续-158——同 get_active（Cell 裸指针直接铸造）。
+        // SAFETY: same as get_active (cast directly from the Cell raw pointer).
         let index = Self::check_slot(slot)?;
         // SAFETY: index bounds checked; slot contents accessed only through
         // this UnsafeCell (interior mutability) on this single thread.
@@ -263,7 +268,7 @@ impl VmProcTable {
 
     /// Checks if the slot is in use.
     #[inline]
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
+    #[cfg_attr(not(test), allow(dead_code))] // test-only
     pub(crate) fn is_slot_in_use(&self, slot: UserSlot) -> bool {
         // SAFETY: get_slot returns &VmProc (shared reference). No mutation occurs.
         // Single-threaded VM ensures no concurrent modification.
@@ -277,7 +282,7 @@ impl VmProcTable {
     /// Unlike `alloc_empty_slot()`, this returns only the slot index
     /// without an `EmptySlot` handle, so the slot might be taken
     /// by another operation before you use it.
-    #[allow(dead_code)] // V10-P2-1: no callers (used by the dead is_full)
+    #[allow(dead_code)] // no callers (used by the dead is_full)
     pub(crate) fn find_free_slot(&self) -> Option<UserSlot> {
         for i in 0..VM_PROC_COUNT {
             // SAFETY: Read-only access to check IN_USE flag. No mutation.
@@ -291,7 +296,7 @@ impl VmProcTable {
     }
 
     /// Returns the number of used slots.
-    #[allow(dead_code)] // V10-P2-1: no callers (used by the dead free_count/is_empty)
+    #[allow(dead_code)] // no callers (used by the dead free_count/is_empty)
     pub(crate) fn used_count(&self) -> usize {
         (0..VM_PROC_COUNT)
             .filter(|&i| {
@@ -369,7 +374,7 @@ impl VmProcTable {
     /// It does NOT expose raw `&VmProc`, preserving the typestate contract.
     ///
     /// Corresponds to Minix3's `ALLREGIONS` macro in `region.c:178-192`.
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: used by verify_refcounts (test-driven)
+    #[cfg_attr(not(test), allow(dead_code))] // used by verify_refcounts (test-driven)
     pub(crate) fn for_each_active_region<F>(&self, mut f: F)
     where
         F: FnMut(UserSlot, Endpoint, &VirRegion),
@@ -419,7 +424,7 @@ impl VmProcTable {
     /// `pub(super)` — this iterator bypasses typestate and should only be
     /// used within the vmproc module tree. Prefer typestate views for all
     /// stateful operations.
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
+    #[cfg_attr(not(test), allow(dead_code))] // test-only
     pub(super) fn iter(&self) -> VmProcIter<'_> {
         VmProcIter {
             table: self,
@@ -537,7 +542,7 @@ impl VmProcTable {
 /// This iterator returns `&VmProc` directly, bypassing the typestate
 /// system. It is restricted to `pub(super)` to prevent external code
 /// from accessing process data without typestate enforcement.
-#[cfg_attr(not(test), allow(dead_code))] // test-only iteration face (V11/T35 judgment: kept)
+#[cfg_attr(not(test), allow(dead_code))] // test-only iteration face (kept)
 pub(super) struct VmProcIter<'a> {
     table: &'a VmProcTable,
     index: usize,

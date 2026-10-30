@@ -1,11 +1,11 @@
 //! Reply encoding — the wire-format half of the VM's reply path.
 //!
-//! V12-P2-1: this module owns the pure "VmReply → IPC message" translation
-//! that used to live in `vm_server.rs` (the server-orchestration file). The
-//! run loop's job is receive → dispatch → send; how a `VmReply` maps onto
-//! the M1/M2/m_vmmcp_reply message layouts is IPC concern, and this module
-//! is its single home (C keeps the equivalent scatter in main.c's reply
-//! tail and the per-service do_* functions).
+//! This module owns the pure "VmReply -> IPC message" translation that used to
+//! live in `vm_server.rs` (the server-orchestration file). The run loop's job
+//! is receive -> dispatch -> send; how a `VmReply` maps onto the
+//! MessageM1/MessageM2/m_vmmcp_reply message layouts is an IPC concern, and
+//! this module is its single home (C keeps the equivalent scatter in main.c's
+//! reply tail and the per-service do_* functions).
 
 use minix_types::{EncodeToM1, Message, VmReply};
 #[cfg(test)] // VirBytes appears only in the test assertions below
@@ -134,16 +134,20 @@ pub(crate) fn reply_to_errno(reply: VmReply) -> i32 {
 /// this function accepts `VmReply` directly, so a future refactor that
 /// bypasses the wrapper could pass `Suspend` here. The `unreachable!()`
 /// assertion catches that bug immediately, consistent with `reply_to_errno`.
-/// 单条区域在回复里的紧凑宽度（addr u64 + length u64 + prot u32）。
+/// Packed width of one region entry in a reply (addr u64 + length u64 + prot
+/// u32).
 pub(crate) const VRI_PACKED_LEN: usize = 20;
 
-/// 一条回复最多携带的区域条目数：负载 56 字节 − 12 字节头 = 44 / 20 = 2。
+/// Maximum number of region entries one reply carries: payload 56 bytes -
+/// 12-byte header = 44 / 20 = 2.
 pub(crate) const MAX_VRI_PER_REPLY: usize = 2;
 
-/// 把一批区域条目按 `[ARCH: 26-D7]` 的紧凑布局打进回复负载。
+/// Pack a batch of region entries into a reply payload using the compact
+/// `[ARCH: 26-D7]` layout.
 ///
-/// 返回的字节数 ≤ `MESSAGE_PAYLOAD_SIZE`；`count` 是**本回复实际携带**的
-/// 条数（可能小于服务端算出的 `count`——消费方按游标续批）。
+/// The returned byte count is <= `MESSAGE_PAYLOAD_SIZE`; `count` is the number
+/// **actually carried by this reply** (it may be smaller than the server-side
+/// `count` — the consumer continues batching by cursor).
 pub(crate) fn pack_region_reply(
     regions: &[minix_types::VmRegionInfo],
     count: usize,
@@ -163,22 +167,22 @@ pub(crate) fn pack_region_reply(
 }
 
 pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
-    // The user-facing mmap reply is the one non-M1 reply: C's VM writes the
-    // chosen address into the same m_mmap overlay's retaddr lane
-    // (servers/vm/mmap.c:191/:276), where libc minix_mmap_for reads it back
-    // (libc/sys/mmap.c:44-45). Handled before the M1 borrow below — it has
-    // no M1 slot (edge NS5-A; the old m1p1 form collided with mmap_via's
-    // @40 read on the real wire).
+    // The user-facing mmap reply is the one reply that is not MessageM1:
+    // C's VM writes the chosen address into the same m_mmap overlay's retaddr
+    // lane (servers/vm/mmap.c:191/:276), where libc minix_mmap_for reads it
+    // back (libc/sys/mmap.c:44-45). Handled before the MessageM1 borrow below
+    // — it has no m1 slot (the old m1p1 form collided with mmap_via's @40 read
+    // on the real wire).
     if let VmReply::Mmap(out) = reply {
         out.encode_message(msg);
         return;
     }
-    // SAFETY: All VM replies use the M1 message format.
+    // SAFETY: All VM replies use the m1 message format.
     let m1 = unsafe { &mut msg.m_u.m_m1 };
     match reply {
         VmReply::Fork(out) => out.encode(m1),
         VmReply::Brk(out) => out.encode(m1),
-        // Intercepted above (m_mmap retaddr lane, not an M1 slot).
+        // Intercepted above (m_mmap retaddr lane, not an m1 slot).
         VmReply::Mmap(_) => unreachable!("VmReply::Mmap handled before the M1 encode"),
         VmReply::MapPhys(out) => out.encode(m1),
         VmReply::MapCache { addr } => {
@@ -196,11 +200,11 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
         VmReply::GetRefcount { count } => { m1.m1i1 = count as i32; }
         VmReply::InfoStats { page_size, total_pages, free_pages, largest_contiguous, cached_pages, .. } => {
             // C: struct vm_stats_info (vm.h:39-44) — pagesize/total/free/
-            // largest/cached. M1 slots: p1=pagesize, i1=total, i2=free,
+            // largest/cached. m1 slots: p1=pagesize, i1=total, i2=free,
             // i3=largest, p2=cached (u64 page count; no integer slots left).
-            // `dropped_messages`/`pagefault_errors` (V10-P2-4) are a
-            // minix-rs extension with no C wire slot — dropped here, like
-            // InfoUsage's minflt/majflt (see below).
+            // `dropped_messages`/`pagefault_errors` are a minix-rs extension
+            // with no C wire slot — dropped here, like InfoUsage's
+            // minflt/majflt (see below).
             m1.m1p1 = page_size;
             m1.m1i1 = total_pages as i32;
             m1.m1i2 = free_pages as i32;
@@ -211,7 +215,7 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             // Minix3 C uses sys_datacopy to copy a `struct vm_usage_info`
             // (5 VirBytes fields + 3 u64 fields) into the caller's address
             // space (utility.c — do_info → get_usage_info).
-            // Rust M1 layout has 3 pointer slots (m1p1..m1p3) and 3 integer
+            // Rust m1 layout has 3 pointer slots (m1p1..m1p3) and 3 integer
             // slots (m1i1..m1i3). Encode the 5 VirBytes fields: 3 in pointer
             // slots, 2 as page counts (saturated i32) in integer slots, and
             // vui_maxrss (KB) in the last integer slot.
@@ -220,20 +224,20 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             //   m1p1 = vui_total, m1p2 = vui_common, m1p3 = vui_shared
             //   m1i1 = vui_virtual (page count), m1i2 = vui_mvirtual (page count)
             //   m1i3 = vui_maxrss (KB, saturated)
-            // vui_minflt / vui_majflt have no M1 slot — judgment (V11/T31):
-            // C's vm_stats_info (minix/vm.h:41-45) carries no fault fields,
-            // so the VM_INFO wire stays C-parity; the counters' observable
-            // exit is Getrusage (minor/major wired at dispatch_pagefault).
-            // to the sys_datacopy path (VMI-3 follow-up; MIB gets them via
-            // the full reply once transport lands).
+            // vui_minflt / vui_majflt have no m1 slot — judgment: C's
+            // vm_stats_info (minix/vm.h:41-45) carries no fault fields, so the
+            // VM_INFO wire stays C-parity; the counters' observable exit is
+            // Getrusage (minor/major wired at dispatch_pagefault).
+            // to the sys_datacopy path (a follow-up; MIB gets them via the
+            // full reply once transport lands).
             m1.m1p1 = total.0;
             m1.m1p2 = common.0;
             m1.m1p3 = shared.0;
             // SAFETY: `as i32` is a truncating cast. Region sizes in bytes fit
             // in u32 when divided by PAGE_SIZE (PAGE_SIZE = 4096 ⇒ 1 TiB of
             // memory ≈ 2^28 pages, well within i32::MAX = 2^31). Documented
-            // for reviewer (see review-patterns-skill §模式19 — `as` 截断
-            // 必须有 SAFETY 注释).
+            // for the reviewer (see review-patterns-skill's pattern 19: an
+            // `as` truncation must carry a SAFETY comment).
             let pages = |bytes: u64| -> i32 {
                 (bytes / crate::region::page_state::PAGE_SIZE).min(i32::MAX as u64) as i32
             };
@@ -249,7 +253,7 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             // C message layout (com.h:738-741): VM_RS_CTL_ADDR == m2_p1,
             // VM_RS_CTL_LEN == m2_i3. In C's `mess` union, m2_p1 is at
             // offset 40 while m1_p1/m2_l1 are at offset 24 — the minix-rs
-            // MessageM1/M2 layouts are offset-shifted vs C (see
+            // MessageM1/MessageM2 layouts are offset-shifted vs C (see
             // minix-types message.rs), so within this model addr→m1p1 and
             // len→m1i3 alias the slots the request decode reads back
             // (m2l1/m2i3). The C wire offsets differ and need a dedicated
@@ -261,22 +265,29 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             m1.m1i3 = len as i32;
         }
         VmReply::InfoRegion { regions, count, next } => {
-            // `[ARCH: 26-D7]` 值通道分批：C 用 `sys_datacopy(VM, regions,
-            // caller, ptr, count*sizeof)` 把整批写进调用方缓冲
-            // （utility.c:169-182，复制前 `handle_memory_once` 钉页防死锁）；
-            // minix-rs 的 IPC 模型没有"往调用方地址空间写"这一步（26-D1），
-            // 故条目**随回复内联**——回复负载 56 字节里塞得下
-            // `MAX_VRI_PER_REPLY` 条紧凑条目（addr u64 / length u64 /
-            // prot u32 = 20 字节），分批循环由消费方（IS `SysVmInfo`）做。
+            // `[ARCH: 26-D7]` value-channel batching: C uses
+            // `sys_datacopy(VM, regions, caller, ptr, count*sizeof)` to write
+            // the whole batch into the caller's buffer (utility.c:169-182;
+            // `handle_memory_once` pins pages before the copy to avoid
+            // deadlock); minix-rs's IPC model has no "write into the caller's
+            // address space" step (26-D1), so entries are **inlined in the
+            // reply** — the 56-byte reply payload holds `MAX_VRI_PER_REPLY`
+            // compact entries (addr u64 / length u64 / prot u32 = 20 bytes),
+            // and the batching loop is done by the consumer (IS `SysVmInfo`).
             //
-            // 负载布局（回复 raw 字节视图，消费方逐字节同解）：
-            //   [0..4)  count（本回复内条目数，LE i32）
-            //   [4..12) next（新游标，LE u64；区域地址在低 4 GiB 内）
-            //   [12..)  条目数组，每条 20 字节，最多 MAX_VRI_PER_REPLY 条
+            // Payload layout (raw byte view of the reply, decoded byte for
+            // byte by the consumer):
+            //   [0..4)  count (entries in this reply, LE i32)
+            //   [4..12) next (new cursor, LE u64; region addresses are below
+            //           4 GiB)
+            //   [12..)  entry array, 20 bytes each, at most
+            //           MAX_VRI_PER_REPLY entries
             let _ = m1;
             let packed = pack_region_reply(&regions, count, next);
-            // SAFETY: 回复负载的 raw 视图（union 的字节面，与 M1 同区）；
-            // 本臂独占写，长度由 `pack_region_reply` 保证不超过负载容量。
+            // SAFETY: raw view of the reply payload (the byte face of the
+            // union, in the same region as m1); this arm writes it exclusively,
+            // and `pack_region_reply` guarantees the length stays within the
+            // payload capacity.
             unsafe {
                 msg.m_u.raw[..packed.len()].copy_from_slice(&packed);
             }
@@ -299,7 +310,7 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             // SAFETY: `as i32` truncates fault counters. i32::MAX = 2^31 ≈
             // 2.1B faults per measurement window; saturation at i32::MAX
             // signals "very high fault rate" rather than overflow in
-            // practice. Documented per review-patterns-skill §模式19.
+            // practice. Documented per review-patterns-skill's pattern 19.
             let faults_to_i32 = |n: u64| -> i32 { n.min(i32::MAX as u64) as i32 };
             m1.m1i1 = faults_to_i32(minor_faults);
             m1.m1i2 = faults_to_i32(major_faults);
@@ -352,13 +363,14 @@ mod tests {
         let m1 = unsafe { &msg.m_u.m_m1 };
         assert_eq!(m1.m1p1, 0x1_2345_6000);
         assert_eq!(m1.m1i3, 0x3000);
-        // The endpoint slot must not be clobbered by the len write (25-R2).
+        // The endpoint slot must not be clobbered by the len write.
         assert_eq!(m1.m1i1, 0);
     }
 
-    /// `[ARCH: 26-D7]`：区域批次的紧凑布局——count（本回复条数）/ next
-    /// （新游标）/ 每条 20 字节（addr/length/prot），一回复最多
-    /// `MAX_VRI_PER_REPLY` 条；超出部分由消费方按游标续批。
+    /// `[ARCH: 26-D7]`: compact layout of a region batch — count (entries in
+    /// this reply) / next (new cursor) / 20 bytes per entry (addr/length/prot),
+    /// at most `MAX_VRI_PER_REPLY` entries per reply; the consumer continues
+    /// batching by cursor beyond that.
     #[test]
     fn test_pack_region_reply_layout_and_cap() {
         let regions = [
@@ -372,7 +384,8 @@ mod tests {
                 length: minix_types::VirBytes(0x1000),
                 prot: 3,
             },
-            // 第三条超出单回复容量，必须被丢弃（消费方续批拿）。
+            // The third entry exceeds the single-reply capacity and must be
+            // dropped (the consumer picks it up in the next batch).
             minix_types::VmRegionInfo {
                 addr: minix_types::VirBytes(0x8000),
                 length: minix_types::VirBytes(0x1000),
@@ -389,14 +402,16 @@ mod tests {
         assert_eq!(u64::from_le_bytes(packed[32..40].try_into().unwrap()), 0x4000);
         assert_eq!(u32::from_le_bytes(packed[48..52].try_into().unwrap()), 3);
 
-        // 空批：只有头，count=0（消费方据此停批）。
+        // Empty batch: header only, count=0 (the consumer stops batching on
+        // this).
         let empty = pack_region_reply(&regions, 0, minix_types::VirBytes(0));
         assert_eq!(empty.len(), 12);
         assert_eq!(i32::from_le_bytes(empty[0..4].try_into().unwrap()), 0);
     }
 
-    /// 编码路径把打包负载写进回复负载区（`encode_reply_data` 的
-    /// InfoRegion 臂）：消费方按同一字节布局解码。
+    /// The encode path writes the packed payload into the reply payload area
+    /// (the InfoRegion arm of `encode_reply_data`): the consumer decodes it
+    /// with the same byte layout.
     #[test]
     fn test_encode_info_region_writes_packed_payload() {
         let mut regions = [minix_types::VmRegionInfo {
@@ -414,15 +429,16 @@ mod tests {
             VmReply::InfoRegion { regions, count: 1, next: minix_types::VirBytes(0x3000) },
             &mut msg,
         );
-        // SAFETY: 断言侧按打包布局读回复负载。
+        // SAFETY: the assertion side reads the reply payload per the packed
+        // layout.
         let raw = unsafe { &msg.m_u.raw };
         assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 1);
         assert_eq!(u64::from_le_bytes(raw[4..12].try_into().unwrap()), 0x3000);
         assert_eq!(u64::from_le_bytes(raw[12..20].try_into().unwrap()), 0x2000);
     }
 
-    /// V11/T23 (V11-P2-5): the wrapper is the compile-time gate — wrapping a
-    /// `VmReply::Suspend` must refuse it (`None` → the run loop's `.expect`
+    /// The wrapper is the compile-time gate — wrapping a
+    /// `VmReply::Suspend` must refuse it (`None` -> the run loop's `.expect`
     /// panics with the remediation hint) instead of a cryptic `unreachable!`
     /// deep in `reply_to_errno`.
     #[test]

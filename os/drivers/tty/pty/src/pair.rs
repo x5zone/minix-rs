@@ -57,15 +57,16 @@ pub enum MasterOpen {
 ///
 /// C: `pty_master_close` (`pty.c:225-246`) has two branches — with a live
 /// slave it marks the pseudo side closed and hangs the line up
-/// (`c_ospeed = B0` makes slave reads see EOF; `sigchar(SIGHUP)` notifies
-/// the slave's session); without one it resets the pair. `pty_slave_close`
-/// (`pty.c:775-796`) replies pending master transfers (buffer module) and
-/// resets when the master had already closed.
+/// (`c_ospeed` set to the zero speed makes slave reads see EOF;
+/// `sigchar(SIGHUP)` notifies the slave's session); without one it resets
+/// the pair. `pty_slave_close` (`pty.c:775-796`) replies pending master
+/// transfers (buffer module) and resets when the master had already
+/// closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseEffect {
     /// Only a flag changed; nothing observable.
     Quiet,
-    /// The slave survives: make slave reads see EOF (speed B0) and raise
+    /// The slave survives: make slave reads see EOF (zero speed) and raise
     /// SIGHUP on the slave's session. Both are service actions.
     SlaveHangup,
     /// Both sides are done and the pair reset; the service clears the

@@ -388,14 +388,14 @@ pub fn format_panic_report(
         length: 0,
     };
     if let Some((file, line)) = location {
-        //[SD19-gate] ByteWriter::write_str 恒回 Ok(())（满则静默截断），此处丢弃可证明不失败的 fmt::Result
+        //[SD19-gate] ByteWriter::write_str always returns Ok(()) (it silently truncates when full), so the fmt::Result discarded here provably cannot fail
         #[allow(clippy::let_underscore_must_use)]
         let _ = core::fmt::write(&mut writer, format_args!("{}:{}: ", file, line));
     }
-    //[SD19-gate] 同上：ByteWriter 不可败，丢弃的是恒 Ok 的 fmt::Result（非静默吞错）
+    //[SD19-gate] Same as above: ByteWriter cannot fail; what is discarded is a fmt::Result that is always Ok (not a silently swallowed error)
     #[allow(clippy::let_underscore_must_use)]
     let _ = core::fmt::write(&mut writer, format_args!("{}", message));
-    //[SD19-gate] 同上；末尾换行写入也不可败，writer.length 紧随其后返回真实截断长
+    //[SD19-gate] Same as above; writing the trailing newline cannot fail either, and writer.length right after returns the real truncated length
     #[allow(clippy::let_underscore_must_use)]
     let _ = core::fmt::write(&mut writer, format_args!("\n"));
     writer.length

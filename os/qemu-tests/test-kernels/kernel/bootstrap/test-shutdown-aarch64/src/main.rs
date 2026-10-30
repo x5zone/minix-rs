@@ -1,7 +1,7 @@
-//! Test: aarch64 semantic shutdown through the QEMU test backend
-//! (edge1 K11 — the aarch64 leg of the three-arch shutdown verification;
-//! S-11 §3.8 two-layer rule: this exercises the QEMU test layer,
-//! semihosting `SYS_EXIT`; the real-hardware layer is PSCI SYSTEM_OFF).
+//! Test: aarch64 semantic shutdown through the QEMU test backend — the
+//! aarch64 leg of the three-arch shutdown verification. §3.8 two-layer
+//! rule: this exercises the QEMU test layer, semihosting `SYS_EXIT`; the
+//! real-hardware layer is PSCI SYSTEM_OFF.
 //!
 //! Boot: AAVMF → this .efi → production `arch_boot_impl` paging bring-up
 //! (so the shutdown happens from a realistic post-MMU state), then

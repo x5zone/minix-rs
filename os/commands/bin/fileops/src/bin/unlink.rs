@@ -4,7 +4,7 @@
 //! `unlink(2)` behind an argument-count check; the shape check lives in
 //! `minix_fileops::linkops`, this program supplies the syscall and error leg
 //! (`unlink.c:52-59`). A write-side command: real-machine effect is the
-//! writable-root gate (`C-57`/E5). The failure leg is C's
+//! writable-root gate (E5). The failure leg is C's
 //! `perror("unlink")` (`unlink.c:56`), and Minix3's `perror`
 //! (`minix3/lib/libc/stdio/perror.c`) prints `<the caller's string>: <strerror>`
 //! with **no program-name prefix** — so the line is `unlink: <sentence>` about the
@@ -36,7 +36,8 @@ fn run() -> ! {
     };
     match unlink(path) {
         Ok(()) => support::terminate(0),
-        // C 的 `perror("unlink")`：报的是这个号的句子，操作数本身不出现在诊断里。
+        // C's `perror("unlink")`: reports the sentence for this errno; the
+        // operand itself never appears in the diagnostic.
         Err(code) => {
             support::perror_line("unlink", code);
             support::terminate(1);

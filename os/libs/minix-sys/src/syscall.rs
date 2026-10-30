@@ -158,16 +158,20 @@ pub struct DirectKernelCallTransport;
 #[allow(unused_variables)]
 impl KernelCallTransport for DirectKernelCallTransport {
     fn kernel_call(&self, message: &mut Message) -> i32 {
-        // NK4-C 续-130（续-22 同族，SYSCALL 腿补屏障）：内核从调用方内存
-        // 拷整条消息（system.c copy_msg_from_user 对位），而 LLVM 只看见
-        // 一个整数指针操作数——`message.m_type = call_number` 的 store 不
-        // 被视为 asm 可见的内存写（eager 回执会覆盖整缓冲 → 该 store 是
-        // 死存储），可在 svc/ecall/syscall 前被消除/寄存器化。真机
-        // aarch64 实测存在 m_type 槽被毁的两类症状（内核收到陈旧值 0x62C
-        // 或 0）：本屏障是**契约级防御**（续-22 同族——腿语义要求 store
-        // 先物化），与其中 d9-FP-常量被踩的根因（续-129/130 懒 FPU 轮转
-        // 修复）互补；续-22 已给 IPC 三腿（send/sendrec/sendnb）插同一
-        // 屏障，本腿此前漏掉，三架构统一补齐。
+        // Barrier on the SYSCALL leg (the kernel copies the whole message from
+        // caller memory — the counterpart of system.c copy_msg_from_user),
+        // while LLVM sees only an integer-pointer operand: the store from
+        // `message.m_type = call_number` is not treated as an asm-visible
+        // memory write (an eager reply would overwrite the whole buffer, so the
+        // store is dead) and may be eliminated or kept in a register before
+        // svc/ecall/syscall. Real aarch64 hardware showed two symptoms of a
+        // destroyed m_type slot (the kernel saw the stale value 0x62C, or 0):
+        // this barrier is a **contract-level defense** (the leg semantics
+        // require the store to be materialized first), complementary to the
+        // root cause of the clobbered d9 FP constant (lazy-FPU rotation). It
+        // also covers the three IPC legs (send/sendrec/sendnb), which carry the
+        // same barrier; this leg had been missing it, and all three
+        // architectures are now brought in line.
         #[cfg(all(
             any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"),
             kernel_trap
@@ -180,7 +184,7 @@ impl KernelCallTransport for DirectKernelCallTransport {
         {
             return unsafe { crate::arch_trap::kernel_call_trap(message) };
         }
-        // K12b riscv64/aarch64 legs: the same message leg through the
+        // riscv64/aarch64 legs: the same message leg through the
         // arch boundary (trap number 0, message pointer in a0/x0, reply
         // code in a0/x0) — see arch_trap::KERNEL_CALL_TRAP_NR.
         #[cfg(all(
@@ -260,16 +264,18 @@ impl KernelCallTransport for CannedKernelCallTransport {
 //   non-negative result) and is never swallowed — each caller decides, per
 //   its C call site, whether to ignore or panic on it.
 
-/// C: SYS_KILL 是内核调用 6（`kernel/src/syscall_signal.rs:138`
-/// `Syscall::Kill`；C `callnr.h` `SYS_KILL`）。
+/// C: SYS_KILL is kernel call 6 (`kernel/src/syscall_signal.rs:138`
+/// `Syscall::Kill`; C `callnr.h` `SYS_KILL`).
 pub const SYS_KILL_CALL: i32 = 6;
 
-/// 向内核发送"终止信号"请求（C: libsys `sys_kill`，`sys_kill.c:3-13`）。
+/// Send a terminate-signal request to the kernel (C: libsys `sys_kill`,
+/// `sys_kill.c:3-13`).
 ///
-/// `_kernel_call(SYS_KILL, &m)`：载荷 `m_sigcalls.endpt`（目标 endpoint）
-/// 与 `m_sigcalls.sig`（信号号），无回复载荷——返回值即结果（OK 或负
-/// errno）。C 的 do_exit 对返回值不予检查（`forkexit.c:256`），调用方
-/// 各按其语义处置。
+/// `_kernel_call(SYS_KILL, &m)`: the payload is `m_sigcalls.endpt` (target
+/// endpoint) and `m_sigcalls.sig` (signal number), with no reply payload — the
+/// return value is the result (OK or a negative errno). C's do_exit does not
+/// check the return value (`forkexit.c:256`); each caller decides what its own
+/// semantics require.
 pub fn sys_kill(
     transport: &impl KernelCallTransport,
     endpt: i32,
@@ -277,8 +283,8 @@ pub fn sys_kill(
 ) -> i32 {
     let mut msg = Message::default();
     {
-        // SAFETY: m_sigcalls 是 SYS_KILL 的文档化载荷布局
-        //（kernel/src/syscall_signal.rs:141-147 读 map/endpt/sig）。
+        // SAFETY: m_sigcalls is the documented payload layout of SYS_KILL
+        // (kernel/src/syscall_signal.rs:141-147 reads map/endpt/sig).
         let sc = unsafe { &mut msg.m_u.m_sigcalls };
         sc.endpt = endpt;
         sc.sig = sig;
@@ -286,12 +292,13 @@ pub fn sys_kill(
     perform_kernel_call(transport, SYS_KILL_CALL, &mut msg, |_| {})
 }
 
-/// C `sys_statectl`（libsys sys_statectl.c:3-11）：`_kernel_call(SYS_STATECTL,
-/// &m)`，载荷 `m_lsys_krn_sys_statectl.{request,address,length}`——状态控制
-/// 面（清/挂 IPC 过滤、状态表登记）。返回值即内核结果（OK 或负 errno）；
-/// C 的出生协议对第一段 `assert(r == OK)`（sef_init.c:60），调用方按各自
-/// 的 fail-closed 形状处置。请求号用 `minix_types::SYS_STATE_CLEAR_IPC_FILTERS`
-/// 等 com.h:442-446 常量。
+/// C `sys_statectl` (libsys sys_statectl.c:3-11): `_kernel_call(SYS_STATECTL,
+/// &m)` with payload `m_lsys_krn_sys_statectl.{request,address,length}` — the
+/// state-control surface (clear/set IPC filters, state-table registration).
+/// The return value is the kernel result (OK or a negative errno); C's birth
+/// protocol asserts `r == OK` for the first segment (sef_init.c:60), and
+/// callers handle it in their own fail-closed shapes. Request numbers use the
+/// `minix_types::SYS_STATE_CLEAR_IPC_FILTERS`-style com.h:442-446 constants.
 pub fn sys_statectl(
     transport: &impl KernelCallTransport,
     request: i32,
@@ -300,8 +307,9 @@ pub fn sys_statectl(
 ) -> i32 {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_statectl 是 SYS_STATECTL 的文档化载荷布局
-        //（kernel/src/syscall_process.rs:104 读 request/address/length）。
+        // SAFETY: m_lsys_krn_sys_statectl is the documented payload layout of
+        // SYS_STATECTL (kernel/src/syscall_process.rs:104 reads
+        // request/address/length).
         let sc = unsafe { &mut msg.m_u.m_lsys_krn_sys_statectl };
         sc.request = request;
         sc.address = address;
@@ -310,53 +318,60 @@ pub fn sys_statectl(
     perform_kernel_call(transport, minix_types::SYS_STATECTL, &mut msg, |_| {})
 }
 
-/// C: SYS_CLEAR 是内核调用 2（`kernel/src/syscall.rs` `Syscall::Clear`；
-/// C `callnr.h` `SYS_CLEAR`）。
+/// C: SYS_CLEAR is kernel call 2 (`kernel/src/syscall.rs` `Syscall::Clear`;
+/// C `callnr.h` `SYS_CLEAR`).
 pub const SYS_CLEAR_CALL: i32 = 2;
-/// C: SYS_ABORT 是内核调用 27（`kernel/src/syscall.rs` `Syscall::Abort`；
-/// C `callnr.h` `SYS_ABORT`）。
+/// C: SYS_ABORT is kernel call 27 (`kernel/src/syscall.rs` `Syscall::Abort`;
+/// C `callnr.h` `SYS_ABORT`).
 pub const SYS_ABORT_CALL: i32 = 27;
 
-/// C: SYS_TIMES 是内核调用 25（`kernel/src/syscall_clock.rs:90`
-/// `dispatch_times`；C `callnr.h` `SYS_TIMES`）。
+/// C: SYS_TIMES is kernel call 25 (`kernel/src/syscall_clock.rs:90`
+/// `dispatch_times`; C `callnr.h` `SYS_TIMES`).
 pub const SYS_TIMES_CALL: i32 = 25;
 
-/// C: SYS_VIRCOPY 是内核调用 15（`kernel/src/syscall.rs` `Syscall::Vircopy`）。
+/// C: SYS_VIRCOPY is kernel call 15 (`kernel/src/syscall.rs` `Syscall::Vircopy`).
 pub const SYS_VIRCOPY_CALL: i32 = 15;
 
-/// C: `SELF`（endpoint.h:56，`_ENDPOINT_SLOT_TOP - 3`）——源/目标 endpoint
-/// 为调用者自身时使用的哨兵值，内核分发时替换为调用者真实 endpoint。
-/// 权威值自 `minix_types::Endpoint::SELF` 派生；历史误值 -2 恰为 SYSTEM
-/// 任务 endpoint（com.h:50），内核比对面权威化后（syscall_copy.rs:126）
-/// 传 -2 永不命中 SELF 替换，真机 wire 层按具体端点解析失败。
+/// C: `SELF` (endpoint.h:56, `_ENDPOINT_SLOT_TOP - 3`) — the sentinel used when
+/// the source or destination endpoint is the caller itself; the kernel
+/// substitutes the caller's real endpoint during dispatch. The authoritative
+/// value derives from `minix_types::Endpoint::SELF`; the historical wrong value
+/// -2 is exactly the SYSTEM task endpoint (com.h:50), and once the kernel
+/// comparison side was made authoritative (syscall_copy.rs:126), passing -2
+/// never hits the SELF substitution and the on-target wire layer then fails to
+/// resolve concrete endpoints.
 pub const SELF: i32 = Endpoint::SELF.0;
 
-/// 请求内核中止系统（C: libsys `sys_abort`，`sys_abort.c:8-13`）。
+/// Ask the kernel to abort the system (C: libsys `sys_abort`, `sys_abort.c:8-13`).
 ///
-/// `_kernel_call(SYS_ABORT, &m)`：载荷 m1i1 = `how`（`sys/reboot.h` 的
-/// RB_* 位组），无回复载荷——成功时机器直接停机，调用不会返回。
-/// C 的 PM 侧 REBOOT 处理（`main.c:304-312`）对返回值不予检查：abort
-/// 请求发出后 PM 在主循环等待 HARD_STOP 通知，失败也只是继续循环。
+/// `_kernel_call(SYS_ABORT, &m)`: the payload is m1i1 = `how` (the RB_* bits of
+/// `sys/reboot.h`), with no reply payload — on success the machine stops
+/// outright and the call does not return. C's PM-side REBOOT handling
+/// (`main.c:304-312`) does not check the return value: after the abort request
+/// is out, PM waits in its main loop for the HARD_STOP notification, so a
+/// failure merely keeps the loop going.
 pub fn sys_abort(
     transport: &impl KernelCallTransport,
     how: i32,
 ) -> i32 {
     let mut msg = Message::default();
     {
-        // SAFETY: m1i1 是 SYS_ABORT 的文档化载荷布局
-        //（kernel/src/syscall.rs dispatch_abort 读 m1.m1i1 = how）。
+        // SAFETY: m1i1 is the documented payload layout of SYS_ABORT
+        // (kernel/src/syscall.rs dispatch_abort reads m1.m1i1 = how).
         let m1 = unsafe { &mut msg.m_u.m_m1 };
         m1.m1i1 = how;
     }
     perform_kernel_call(transport, SYS_ABORT_CALL, &mut msg, |_| {})
 }
 
-/// 读取进程 CPU 计时（C: libsys `sys_times`，`sys_times.c:3-23`）。
+/// Read a process's CPU times (C: libsys `sys_times`, `sys_times.c:3-23`).
 ///
-/// `_kernel_call(SYS_TIMES, &m)`：请求载荷 m_lsys_krn_sys_times.endpt，
-/// 回复载荷 m_krn_lsys_sys_times（user/system/real/boot 四值 + boottime）。
-/// `endpt == SELF`（endpoint.h:56 哨兵，权威推导见
-/// `minix_types::Endpoint::SELF`）由内核替换为调用者自身（do_times.c:33-34）。
+/// `_kernel_call(SYS_TIMES, &m)`: the request payload is
+/// m_lsys_krn_sys_times.endpt; the reply payload is m_krn_lsys_sys_times (the
+/// four values user/system/real/boot plus boottime). `endpt == SELF`
+/// (endpoint.h:56 sentinel, authoritative derivation in
+/// `minix_types::Endpoint::SELF`) is replaced by the kernel with the caller
+/// itself (do_times.c:33-34).
 pub fn sys_times(
     transport: &impl KernelCallTransport,
     endpt: i32,
@@ -366,8 +381,8 @@ pub fn sys_times(
         ..Default::default()
     };
     {
-        // SAFETY: m_lsys_krn_sys_times 是 SYS_TIMES 的文档化载荷布局
-        //（kernel/src/syscall_clock.rs dispatch_times 读 req.endpt）。
+        // SAFETY: m_lsys_krn_sys_times is the documented payload layout of
+        // SYS_TIMES (kernel/src/syscall_clock.rs dispatch_times reads req.endpt).
         let req = unsafe { &mut msg.m_u.m_lsys_krn_sys_times };
         req.endpt = endpt;
     }
@@ -375,36 +390,40 @@ pub fn sys_times(
     if r < 0 {
         return Err(r);
     }
-    // SAFETY: 内核以 m_krn_lsys_sys_times 覆写回复载荷（dispatch_times 尾部）。
+    // SAFETY: the kernel overwrites the reply payload with m_krn_lsys_sys_times
+    // (end of dispatch_times).
     Ok(unsafe { msg.m_u.m_krn_lsys_sys_times })
 }
 
-/// C: SYS_SIGSEND 是内核调用 9（`kernel/src/syscall.rs` `Syscall::Sigsend`）。
+/// C: SYS_SIGSEND is kernel call 9 (`kernel/src/syscall.rs` `Syscall::Sigsend`).
 pub const SYS_SIGSEND_CALL: i32 = 9;
 
-/// C: `struct sigmsg`（`minix/type.h:71-77`，x86-64 布局 40 字节）——
-/// `sys_sigsend` 经 `m_sigcalls.sigctx` 指针指向调用方内存中的此结构，
-/// 内核 safecopy 取回后建立 sigframe 并唤醒目标进程。
+/// C: `struct sigmsg` (`minix/type.h:71-77`, 40 bytes on x86-64) —
+/// `sys_sigsend` points `m_sigcalls.sigctx` at this structure in the caller's
+/// memory; the kernel safecopies it out, builds the sigframe and wakes the
+/// target process.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SigMsgWire {
-    /// Signal number being caught. C: `int sm_signo`（offset 0）。
+    /// Signal number being caught. C: `int sm_signo` (offset 0).
     pub signo: u32,
-    /// Mask to restore when handler returns. C: `sigset_t sm_mask`（offset 8）。
+    /// Mask to restore when handler returns. C: `sigset_t sm_mask` (offset 8).
     pub mask: u64,
-    /// Handler address. C: `vir_bytes sm_sighandler`（offset 16）。
+    /// Handler address. C: `vir_bytes sm_sighandler` (offset 16).
     pub sighandler: u64,
-    /// `_sigreturn` trampoline in libc. C: `vir_bytes sm_sigreturn`（offset 24）。
+    /// `_sigreturn` trampoline in libc. C: `vir_bytes sm_sigreturn` (offset 24).
     pub sigreturn: u64,
-    /// User stack pointer at signal time. C: `vir_bytes sm_stkptr`（offset 32）。
+    /// User stack pointer at signal time. C: `vir_bytes sm_stkptr` (offset 32).
     pub stkptr: u64,
 }
 
-/// C: `sys_sigsend(proc_nr_e, smp)`（libsys `sys_sigsend.c:8-18`）——
-/// `_kernel_call(SYS_SIGSEND, &m)`：载荷 `m_sigcalls.endpt`（目标）+
-/// `m_sigcalls.sigctx`（调用方内存中 `sigmsg` 的虚地址，内核 safecopy
-/// 取回）。返回 EFAULT/ENOMEM = 进程内存装不下 handler（合法失败，
-/// 目标将被杀）；其它负 errno = PM/内核失配（调用方 panic，C 同型）。
+/// C: `sys_sigsend(proc_nr_e, smp)` (libsys `sys_sigsend.c:8-18`) —
+/// `_kernel_call(SYS_SIGSEND, &m)` with payload `m_sigcalls.endpt` (target) +
+/// `m_sigcalls.sigctx` (virtual address of the `sigmsg` in the caller's memory,
+/// safecopied by the kernel). EFAULT/ENOMEM means the process's memory cannot
+/// hold the handler (a legitimate failure; the target will be killed); any
+/// other negative errno means a PM/kernel mismatch (the caller panics, as in
+/// C).
 pub fn sys_sigsend(
     transport: &impl KernelCallTransport,
     endpt: i32,
@@ -415,8 +434,8 @@ pub fn sys_sigsend(
         ..Default::default()
     };
     {
-        // SAFETY: m_sigcalls 是 SIGSEND 的文档化载荷布局
-        //（kernel/src/syscall_signal.rs dispatch_sigsend 读 endpt/sigctx）。
+        // SAFETY: m_sigcalls is the documented payload layout of SIGSEND
+        // (kernel/src/syscall_signal.rs dispatch_sigsend reads endpt/sigctx).
         let sc = unsafe { &mut msg.m_u.m_sigcalls };
         sc.endpt = endpt;
         sc.sigctx = sigmsg as *const SigMsgWire as u64;
@@ -428,18 +447,19 @@ pub fn sys_sigsend(
     Ok(())
 }
 
-/// C: SYS_GETKSIG 是内核调用 7（`kernel/src/syscall.rs` `Syscall::Getksig`）。
+/// C: SYS_GETKSIG is kernel call 7 (`kernel/src/syscall.rs` `Syscall::Getksig`).
 pub const SYS_GETKSIG_CALL: i32 = 7;
-/// C: SYS_ENDKSIG 是内核调用 8（`kernel/src/syscall.rs` `Syscall::Endksig`）。
+/// C: SYS_ENDKSIG is kernel call 8 (`kernel/src/syscall.rs` `Syscall::Endksig`).
 pub const SYS_ENDKSIG_CALL: i32 = 8;
 
-/// C: `sys_getksig(proc_nr_e, &sigset)`（libsys `sys_getsig.c:6-17`）——
-/// 取回一个有待处理内核信号的进程及其信号位图；无待处理时 `endpt`
-/// 为 `Endpoint::NONE`。回复载荷 `m_sigcalls.{endpt, map}`。取回即消费：
-/// 内核同时清除该进程的 RTS_SIGNALED 与 p_pending（后续 endksig 逐信号
-/// 清 SIG_PENDING）。PM 的 SIGKSIG 拉取循环（sef_signal.c:27-63）驱动。
-/// 位图按 C wire 形态回传（`sigset_t` = 4×u32，128 位；SD-39）：
-/// PM 侧用 [`minix_types::sigset_contains`] 逐位消费。
+/// C: `sys_getksig(proc_nr_e, &sigset)` (libsys `sys_getsig.c:6-17`) — fetch a
+/// process with a pending kernel signal together with its signal bitmap; when
+/// nothing is pending, `endpt` is `Endpoint::NONE`. The reply payload is
+/// `m_sigcalls.{endpt, map}`. Fetching consumes: the kernel also clears that
+/// process's RTS_SIGNALED and p_pending (the later endksig clears SIG_PENDING
+/// per signal). PM's SIGKSIG pull loop (sef_signal.c:27-63) drives it. The
+/// bitmap travels in C's wire form (`sigset_t` = 4×u32, 128 bits): PM consumes
+/// it bit by bit with [`minix_types::sigset_contains`].
 pub fn sys_getksig(
     transport: &impl KernelCallTransport,
 ) -> Result<(i32, minix_types::SigSetBits), i32> {
@@ -451,22 +471,24 @@ pub fn sys_getksig(
     if r < 0 {
         return Err(r);
     }
-    // SAFETY: 内核以 m_sigcalls 覆写回复载荷（syscall_signal.rs:440-447）。
+    // SAFETY: the kernel overwrites the reply payload with m_sigcalls
+    // (syscall_signal.rs:440-447).
     let sc = unsafe { msg.m_u.m_sigcalls };
     Ok((sc.endpt, sc.map))
 }
 
-/// C: `sys_endksig(proc_nr_e, sig_nr)`（libsys `sys_endsig.c:6-15`）——
-/// 确认消费一个内核信号（载荷 `m_sigcalls.{endpt, sig}`），内核清
-/// SIG_PENDING 位。调用方必须是目标进程的信号管理器（否则 EPERM）。
+/// C: `sys_endksig(proc_nr_e, sig_nr)` (libsys `sys_endsig.c:6-15`) — confirm
+/// consumption of one kernel signal (payload `m_sigcalls.{endpt, sig}`); the
+/// kernel clears the SIG_PENDING bit. The caller must be the target process's
+/// signal manager (otherwise EPERM).
 pub fn sys_endksig(transport: &impl KernelCallTransport, endpt: i32, sig: i32) -> Result<(), i32> {
     let mut msg = Message {
         m_type: SYS_ENDKSIG_CALL,
         ..Default::default()
     };
     {
-        // SAFETY: m_sigcalls 是 GETKSIG/ENDKSIG 的文档化载荷布局
-        //（kernel/src/syscall_signal.rs msg_sigcalls 读 endpt/sig）。
+        // SAFETY: m_sigcalls is the documented payload layout of GETKSIG/ENDKSIG
+        // (kernel/src/syscall_signal.rs msg_sigcalls reads endpt/sig).
         let sc = unsafe { &mut msg.m_u.m_sigcalls };
         sc.endpt = endpt;
         sc.sig = sig;
@@ -478,17 +500,18 @@ pub fn sys_endksig(transport: &impl KernelCallTransport, endpt: i32, sig: i32) -
     Ok(())
 }
 
-/// C: SYS_TRACE 是内核调用 5（`kernel/src/syscall.rs` `Syscall::Trace`）。
+/// C: SYS_TRACE is kernel call 5 (`kernel/src/syscall.rs` `Syscall::Trace`).
 pub const SYS_TRACE_CALL: i32 = 5;
 
-/// C: `sys_trace(req, proc_ep, addr, datap)`（libsys `sys_trace.c:3-18`）——
-/// `_kernel_call(SYS_TRACE, &m)`：载荷 `mess_lsys_krn_sys_trace`
-///（request@0/endpt@4/address@8/data@16，布局与 `m_m1` **不同**——
-/// `m1.m1i1` 落在 request 上而不是 endpt，见 minix-types 的 IMPORTANT
-/// 注记；kernel `misc.rs msg_trace` 按该布局读取）。回复的读值由内核
-/// 写回 data 字段（`misc.rs write_trace_reply_data`，与请求 data 同偏移
-/// 16）。PM 的 ptrace 透传（trace.c:244-248）与 trace_stop 的 T_STOP
-///（trace.c:263）走此通道。
+/// C: `sys_trace(req, proc_ep, addr, datap)` (libsys `sys_trace.c:3-18`) —
+/// `_kernel_call(SYS_TRACE, &m)` with payload `mess_lsys_krn_sys_trace`
+/// (request@0/endpt@4/address@8/data@16; this layout is **different** from
+/// `m_m1` — `m1.m1i1` lands on request rather than endpt, see the IMPORTANT
+/// note in minix-types; the kernel's `misc.rs msg_trace` reads this layout).
+/// The kernel writes a read value back into the data field (`misc.rs
+/// write_trace_reply_data`, same offset 16 as the request data). PM's ptrace
+/// pass-through (trace.c:244-248) and trace_stop's T_STOP (trace.c:263) use
+/// this channel.
 pub fn sys_trace(
     transport: &impl KernelCallTransport,
     req: i32,
@@ -501,8 +524,8 @@ pub fn sys_trace(
         ..Default::default()
     };
     {
-        // SAFETY: m_lsys_krn_sys_trace 是 SYS_TRACE 的文档化载荷布局
-        //（kernel/src/misc.rs msg_trace 读 request/endpt/address/data）。
+        // SAFETY: m_lsys_krn_sys_trace is the documented payload layout of
+        // SYS_TRACE (kernel/src/misc.rs msg_trace reads request/endpt/address/data).
         let t = unsafe { &mut msg.m_u.m_lsys_krn_sys_trace };
         t.request = req;
         t.endpt = endpt;
@@ -513,32 +536,35 @@ pub fn sys_trace(
     if r < 0 {
         return Err(r);
     }
-    // SAFETY: 内核把读值写回 data（write_trace_reply_data，同偏移 16，
-    // m_lsys_krn_sys_trace 与 m_krn_lsis_sys_trace 占同一内存）。
+    // SAFETY: the kernel writes the read value back into data
+    // (write_trace_reply_data, same offset 16; m_lsys_krn_sys_trace and
+    // m_krn_lsis_sys_trace occupy the same memory).
     *data = unsafe { msg.m_u.m_lsys_krn_sys_trace }.data;
     Ok(())
 }
 
-/// 虚地址复制（C: libsys `sys_vircopy`/`sys_datacopy` 家族，
-/// `kernel/src/syscall_copy.rs dispatch_vircopy` = `Syscall::Vircopy = 15`）。
+/// Virtual-address copy (C: the libsys `sys_vircopy`/`sys_datacopy` family,
+/// `kernel/src/syscall_copy.rs dispatch_vircopy` = `Syscall::Vircopy = 15`).
 ///
-/// 载荷 `mess_lsys_krn_sys_copy`：src_endpt（`SELF` 由内核替换为调用者
-/// endpoint，哨兵权威见 [`SELF`]）→ dst_endpt 的虚地址。
-/// PM 的 rusage 投递（tell_parent）与 exec 的 frame 拷贝共用此通道。
+/// Payload `mess_lsys_krn_sys_copy`: from src_endpt to the virtual address at
+/// dst_endpt (`SELF` is replaced by the kernel with the caller's endpoint; the
+/// sentinel authority is [`SELF`]). PM's rusage delivery (tell_parent) and the
+/// exec frame copy share this channel.
 ///
-/// C: SYS_RUNCTL 是内核调用 46（`kernel/src/syscall.rs` `Syscall::Runctl`）。
+/// C: SYS_RUNCTL is kernel call 46 (`kernel/src/syscall.rs` `Syscall::Runctl`).
 pub const SYS_RUNCTL_CALL: i32 = 46;
-/// Runctl 动作：停止进程。C: `RC_STOP`（do_runctl.c）。
+/// Runctl action: stop the process. C: `RC_STOP` (do_runctl.c).
 pub const RC_STOP: i32 = 0;
-/// Runctl 动作：恢复进程。C: `RC_RESUME`（do_runctl.c）。
+/// Runctl action: resume the process. C: `RC_RESUME` (do_runctl.c).
 pub const RC_RESUME: i32 = 1;
-/// Runctl 标志：发送中延迟停止。C: `RC_DELAY`（do_runctl.c）。
+/// Runctl flag: delay the stop while sending. C: `RC_DELAY` (do_runctl.c).
 pub const RC_DELAY: i32 = 1;
 
-/// 进程运行控制（C: libsys `sys_runctl`，`sys_runctl.c:3-15`）。
+/// Process run control (C: libsys `sys_runctl`, `sys_runctl.c:3-15`).
 ///
-/// `_kernel_call(SYS_RUNCTL, &m)`：载荷 m1i1 = RC_ENDPT、m1i2 = RC_ACTION、
-/// m1i3 = RC_FLAGS。返回值 = 内核回复（OK / EBUSY / 负 errno）。
+/// `_kernel_call(SYS_RUNCTL, &m)`: payload m1i1 = RC_ENDPT, m1i2 = RC_ACTION,
+/// m1i3 = RC_FLAGS. Return value = the kernel reply (OK / EBUSY / negative
+/// errno).
 pub fn sys_runctl(
     transport: &impl KernelCallTransport,
     endpt: i32,
@@ -547,8 +573,8 @@ pub fn sys_runctl(
 ) -> i32 {
     let mut msg = Message::default();
     {
-        // SAFETY: m1 是 SYS_RUNCTL 的文档化载荷布局
-        //（kernel/src/syscall_process.rs dispatch_runctl 读 m1i1/m1i2/m1i3）。
+        // SAFETY: m1 is the documented payload layout of SYS_RUNCTL
+        // (kernel/src/syscall_process.rs dispatch_runctl reads m1i1/m1i2/m1i3).
         let m1 = unsafe { &mut msg.m_u.m_m1 };
         m1.m1i1 = endpt;
         m1.m1i2 = action;
@@ -557,7 +583,7 @@ pub fn sys_runctl(
     perform_kernel_call(transport, SYS_RUNCTL_CALL, &mut msg, |_| {})
 }
 
-/// 恢复被停止的进程（C: `sys_resume`，`syslib.h:48` —— RC_RESUME 动作）。
+/// Resume a stopped process (C: `sys_resume`, `syslib.h:48` — the RC_RESUME action).
 pub fn sys_resume(transport: &impl KernelCallTransport, endpt: i32) -> i32 {
     sys_runctl(transport, endpt, RC_RESUME, 0)
 }
@@ -571,8 +597,9 @@ pub fn sys_vircopy(
 ) -> i32 {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_copy 是 VIRCOPY/PHYSCOPY 共用的载荷布局
-        //（kernel/src/syscall_copy.rs:244-260 读 src/dst/nr_bytes）。
+        // SAFETY: m_lsys_krn_sys_copy is the payload layout shared by
+        // VIRCOPY/PHYSCOPY (kernel/src/syscall_copy.rs:244-260 reads
+        // src/dst/nr_bytes).
         let cp = unsafe { &mut msg.m_u.m_lsys_krn_sys_copy };
         cp.src_endpt = src_endpt;
         cp.src_addr = src_addr;
@@ -583,53 +610,57 @@ pub fn sys_vircopy(
     perform_kernel_call(transport, SYS_VIRCOPY_CALL, &mut msg, |_| {})
 }
 
-/// VUMAP 输入向量元素：`struct vumap_vir` 的调用方镜像
-/// （C `minix3/minix/include/minix/type.h:40-46`：grant/addr 联合 + 大小）。
+/// VUMAP input vector element: the caller-side mirror of `struct vumap_vir`
+/// (C `minix3/minix/include/minix/type.h:40-46`: a grant/addr union plus size).
 ///
-/// 联合在 64 位下 8 字节（`u_addr` 撑起宽度），本镜像按 8 字节存整
-/// （grant 取低 32 位，与内核 `VumapVir::vv_grant()` 的读法一致）。
+/// The union is 8 bytes on 64-bit (`u_addr` sets the width); this mirror stores
+/// the whole 8 bytes (grant in the low 32 bits, the same reading as the kernel's
+/// `VumapVir::vv_grant()`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VumapVir {
-    /// grant ID（低 32 位）或虚拟地址（C `vv_u`）。
+    /// Grant id (low 32 bits) or virtual address (C `vv_u`).
     pub u: u64,
-    /// 该元素的字节长度（C `vv_size`）。
+    /// Byte length of this element (C `vv_size`).
     pub size: u64,
 }
 
-/// VUMAP 输出向量元素：`struct vumap_phys` 的调用方镜像
-/// （C `type.h:50-53`：`vp_addr`/`vp_size`）。
+/// VUMAP output vector element: the caller-side mirror of `struct vumap_phys`
+/// (C `type.h:50-53`: `vp_addr`/`vp_size`).
 ///
-/// 内核侧有一份私有同构体（`os/kernel/src/syscall_copy.rs` 的
-/// `VumapPhys`）；这里定义的是库层可见的那份，两字段均为 64 位、16 字节，
-/// 与内核写出向量时的逐元素拷贝形状一致。
+/// The kernel side has a private isomorphic type (`VumapPhys` in
+/// `os/kernel/src/syscall_copy.rs`); this is the library-visible one, two 64-bit
+/// fields (16 bytes), matching the kernel's element-by-element copy shape when
+/// it writes the vector out.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VumapPhys {
-    /// 物理地址（C `vp_addr`）。
+    /// Physical address (C `vp_addr`).
     pub addr: u64,
-    /// 该段字节数（C `vp_size`）。
+    /// Byte count of this segment (C `vp_size`).
     pub size: u64,
 }
 
-/// VUMAP 的访问位：读（C `VUA_READ`，type.h）。
+/// VUMAP access bit: read (C `VUA_READ`, type.h).
 pub const VUA_READ: i32 = 0x01;
-/// VUMAP 的访问位：写（C `VUA_WRITE`，type.h）。
+/// VUMAP access bit: write (C `VUA_WRITE`, type.h).
 pub const VUA_WRITE: i32 = 0x02;
 
-/// SYS_VUMAP：把一个 grant 映射成物理向量（C: libsys `sys_vumap`，
-/// `sys_vumap.c:7-40`；内核 `do_vumap.c`）。
+/// SYS_VUMAP: map one grant into a physical vector (C: libsys `sys_vumap`,
+/// `sys_vumap.c:7-40`; kernel `do_vumap.c`).
 ///
-/// 输入向量固定为单元素 `{grant, size}`——这是 C 树内唯一调用方
-/// （vbox 的 `store_pages`）使用的形状，故包装成两个标量。`offset` 是向量
-/// 内起始偏移（C `offset`），`access` 取 [`VUA_READ`]/[`VUA_WRITE`] 位；
-/// `out` 的容量即 C 的 `pmax` 入值，成功返回实际填充的元素数（C 出值
-/// `pcount`）。
+/// The input vector is fixed at a single element `{grant, size}` — the only
+/// shape used by the sole caller in the C tree (vbox's `store_pages`), so it is
+/// wrapped as two scalars. `offset` is the starting offset inside the vector
+/// (C `offset`), and `access` takes the [`VUA_READ`]/[`VUA_WRITE`] bits; the
+/// capacity of `out` is C's `pmax` input value, and success returns the number
+/// of elements actually filled (C's output value `pcount`).
 ///
-/// 内核读入向量、写出物理向量的两处拷贝都以调用方（本进程）的虚拟地址为
-/// 源/目的：C 传 `(vir_bytes) vvec` 与 `(vir_bytes) pvec`
-///（`sys_vumap.c:30,35`），内核侧对 caller 做 `data_copy`
-///（`syscall_copy.rs:1141-1157`、`:1270-1285`）。
+/// Both copies — the kernel reading the input vector and writing the physical
+/// vector — use the caller's (this process's) virtual addresses as source and
+/// destination: C passes `(vir_bytes) vvec` and `(vir_bytes) pvec`
+/// (`sys_vumap.c:30,35`), and the kernel side does a `data_copy` against the
+/// caller (`syscall_copy.rs:1141-1157`, `:1270-1285`).
 pub fn sys_vumap(
     transport: &impl KernelCallTransport,
     endpt: Endpoint,
@@ -640,15 +671,16 @@ pub fn sys_vumap(
     out: &mut [VumapPhys],
 ) -> Result<usize, i32> {
     let vvec = [VumapVir {
-        // 低 32 位是 grant；高位补零，内核按 i32 读该联合（`vv_grant()`）。
+        // The low 32 bits are the grant; the upper bits are zero, since the
+        // kernel reads this union as i32 (`vv_grant()`).
         u: u64::from(grant as u32),
         size,
     }];
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_vumap 是 SYS_VUMAP 的文档化请求布局
-        //（kernel/src/syscall_copy.rs:1063-1071 读
-        // endpt/vaddr/vcount/offset/access/paddr/pmax）。
+        // SAFETY: m_lsys_krn_sys_vumap is the documented request layout of
+        // SYS_VUMAP (kernel/src/syscall_copy.rs:1063-1071 reads
+        // endpt/vaddr/vcount/offset/access/paddr/pmax).
         let v = unsafe { &mut msg.m_u.m_lsys_krn_sys_vumap };
         v.endpt = endpt.0;
         v.vaddr = vvec.as_ptr() as u64;
@@ -662,51 +694,53 @@ pub fn sys_vumap(
     if reply < 0 {
         return Err(reply);
     }
-    // SAFETY: 内核经 m_krn_lsys_sys_vumap 回填 pcount
-    //（kernel/src/syscall_copy.rs:1288 附近；C ipc.h mess_krn_lsys_sys_vumap）。
+    // SAFETY: the kernel fills pcount through m_krn_lsys_sys_vumap
+    // (around kernel/src/syscall_copy.rs:1288; C ipc.h mess_krn_lsys_sys_vumap).
     let pcount = unsafe { msg.m_u.m_krn_lsys_sys_vumap }.pcount;
     Ok(pcount.max(0) as usize)
 }
 
-/// 通知内核回收已退出的进程（C: libsys `sys_clear`，`sys_clear.c:8-14`）。
+/// Notify the kernel that an exited process may be reclaimed (C: libsys
+/// `sys_clear`, `sys_clear.c:8-14`).
 ///
-/// `_kernel_call(SYS_CLEAR, &m)`：载荷 m1i1 = 目标 endpoint，无回复载荷。
-/// C 的 exit_proc（PRIV_PROC 直毁，`forkexit.c:366-368`）与 exit_restart
-///（用户进程回收，`forkexit.c:449-451`）对失败均 panic——进程已终结而
-/// 内核侧未回收即永久泄漏，不可恢复。
+/// `_kernel_call(SYS_CLEAR, &m)`: payload m1i1 = target endpoint, no reply
+/// payload. C's exit_proc (direct PRIV_PROC destruction, `forkexit.c:366-368`)
+/// and exit_restart (user process reclamation, `forkexit.c:449-451`) both panic
+/// on failure — a process already terminated but not reclaimed by the kernel is
+/// a permanent leak, unrecoverable.
 pub fn sys_clear(
     transport: &impl KernelCallTransport,
     endpt: i32,
 ) -> i32 {
     let mut msg = Message::default();
     {
-        // SAFETY: m1 是 SYS_CLEAR 的文档化载荷布局
-        //（kernel/src/syscall_process.rs:402-404 读 m1i1）。
+        // SAFETY: m1 is the documented payload layout of SYS_CLEAR
+        // (kernel/src/syscall_process.rs:402-404 reads m1i1).
         let m1 = unsafe { &mut msg.m_u.m_m1 };
         m1.m1i1 = endpt;
     }
     perform_kernel_call(transport, SYS_CLEAR_CALL, &mut msg, |_| {})
 }
 
-// ── VM 侧 SYS_* wrappers（edge_todo.md E2：六个薄包装，CannedTransport
-// 回放测试）──
+// ── VM-side SYS_* wrappers (six thin wrappers, replayed with CannedTransport) ──
 //
-// 约定（同上方既有 wrapper 区）：
-// - m_type 由 `perform_kernel_call` 写入调用号；
-// - 请求载荷按 C 的 union 成员填写（kernel dispatch 侧的读取臂是
-//   契约锚点）；
-// - 返回值 = 内核回复 m_type（负 errno 或非负结果），不吞错。
-// 调用号常量消费 minix-types 的 kernel_call 权威（E-MINTYPES-SYS），
-// 不再本地定义。
+// Conventions (as in the existing wrapper section above):
+// - `perform_kernel_call` writes the call number into m_type;
+// - request payloads fill C's union members (the reading arm on the kernel
+//   dispatch side is the contract anchor);
+// - the return value = the kernel reply m_type (a negative errno or a
+//   non-negative result), never swallowed.
+// Call-number constants consume minix-types' kernel_call authority
+// (E-MINTYPES-SYS) instead of being defined locally.
 
-/// SYS_FORK：创建子进程（C: libsys `sys_fork` 语义；kernel
-/// `dispatch_fork`）。
+/// SYS_FORK: create a child process (C: libsys `sys_fork` semantics; kernel
+/// `dispatch_fork`).
 ///
-/// 应答形状见 E-FORKMSG：内核返回 OK(0) 并把出参原地写进应答臂
-/// `m_krn_lsys_sys_fork`（ipc.h:283-287；do_fork.c:111-112）——
-/// `endpt` 是子进程端点，`msgaddr` 是父进程交付消息缓冲地址（VM 据此
-/// 做 eager-CoW，fork.c:100-108）。成功返回 `(child_endpt, msgaddr)`，
-/// 失败返回负 errno。
+/// Reply shape: the kernel returns OK(0) and writes the out-parameters into the
+/// reply arm `m_krn_lsys_sys_fork` in place (ipc.h:283-287; do_fork.c:111-112) —
+/// `endpt` is the child endpoint and `msgaddr` is the buffer address where the
+/// parent receives the message (VM uses it for eager-CoW, fork.c:100-108).
+/// Success returns `(child_endpt, msgaddr)`; failure returns a negative errno.
 pub fn sys_fork(
     transport: &impl KernelCallTransport,
     parent_endpt: i32,
@@ -715,9 +749,9 @@ pub fn sys_fork(
 ) -> Result<(i32, u64), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_fork 是 SYS_FORK 的文档化请求布局
-        //（kernel/src/syscall_process.rs dispatch_fork 读 endpt/slot/flags；
-        // C ipc.h:1173-1177）。
+        // SAFETY: m_lsys_krn_sys_fork is the documented request layout of
+        // SYS_FORK (kernel/src/syscall_process.rs dispatch_fork reads
+        // endpt/slot/flags; C ipc.h:1173-1177).
         let req = unsafe { &mut msg.m_u.m_lsys_krn_sys_fork };
         req.endpt = parent_endpt;
         req.slot = child_slot;
@@ -727,13 +761,14 @@ pub fn sys_fork(
     if reply < 0 {
         return Err(reply);
     }
-    // SAFETY: 应答由内核原地写入同一消息；臂为 plain-old-data。
+    // SAFETY: the kernel writes the reply in place into the same message; the
+    // arm is plain old data.
     let arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
     Ok((arm.endpt, arm.msgaddr))
 }
 
-/// SYS_EXEC：重载目标进程映像（C: libsys `sys_exec`；kernel
-/// `dispatch_exec` 读 `m_lsys_krn_sys_exec`，成功返回 OK）。
+/// SYS_EXEC: reload the target process image (C: libsys `sys_exec`; kernel
+/// `dispatch_exec` reads `m_lsys_krn_sys_exec` and returns OK on success).
 pub fn sys_exec(
     transport: &impl KernelCallTransport,
     endpt: i32,
@@ -744,8 +779,8 @@ pub fn sys_exec(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_exec 是 SYS_EXEC 的文档化载荷布局
-        //（kernel/src/syscall_process.rs dispatch_exec；C ipc.h）。
+        // SAFETY: m_lsys_krn_sys_exec is the documented payload layout of
+        // SYS_EXEC (kernel/src/syscall_process.rs dispatch_exec; C ipc.h).
         let e = unsafe { &mut msg.m_u.m_lsys_krn_sys_exec };
         e.endpt = endpt;
         e.ip = ip;
@@ -760,9 +795,9 @@ pub fn sys_exec(
     Ok(())
 }
 
-/// SYS_SAFECOPYFROM：经 grant 从授权方拷入调用方空间（C: libsys
-/// `sys_safecopyfrom`；kernel `dispatch_safecopy_from` 读
-/// `m_lsys_kern_safecopy`，成功返回 OK，无应答出参）。
+/// SYS_SAFECOPYFROM: copy in from the granter through a grant into the caller's
+/// space (C: libsys `sys_safecopyfrom`; kernel `dispatch_safecopy_from` reads
+/// `m_lsys_kern_safecopy`, returning OK on success with no reply out-parameter).
 pub fn sys_safecopyfrom(
     transport: &impl KernelCallTransport,
     granter_endpt: i32,
@@ -773,8 +808,8 @@ pub fn sys_safecopyfrom(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_kern_safecopy 是 SAFECOPYFROM/TO 共用的载荷布局
-        //（kernel/src/syscall_copy.rs:181；C ipc.h）。
+        // SAFETY: m_lsys_kern_safecopy is the payload layout shared by
+        // SAFECOPYFROM/TO (kernel/src/syscall_copy.rs:181; C ipc.h).
         let sc = unsafe { &mut msg.m_u.m_lsys_kern_safecopy };
         sc.from_to = granter_endpt;
         sc.grant_id = grant_id;
@@ -789,8 +824,9 @@ pub fn sys_safecopyfrom(
     Ok(())
 }
 
-/// SYS_SAFECOPYTO：经 grant 把调用方空间拷给授权方（方向与
-/// [`sys_safecopyfrom`] 相反，同一载荷臂，C: libsys `sys_safecopyto`）。
+/// SYS_SAFECOPYTO: copy the caller's space to the granter through a grant (the
+/// direction opposite to [`sys_safecopyfrom`], same payload arm, C: libsys
+/// `sys_safecopyto`).
 pub fn sys_safecopyto(
     transport: &impl KernelCallTransport,
     granter_endpt: i32,
@@ -801,7 +837,7 @@ pub fn sys_safecopyto(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: 同 sys_safecopyfrom——两者共用 m_lsys_kern_safecopy 臂。
+        // SAFETY: same as sys_safecopyfrom — both share the m_lsys_kern_safecopy arm.
         let sc = unsafe { &mut msg.m_u.m_lsys_kern_safecopy };
         sc.from_to = granter_endpt;
         sc.grant_id = grant_id;
@@ -816,9 +852,9 @@ pub fn sys_safecopyto(
     Ok(())
 }
 
-/// SYS_UPDATE：RS live-update 的内核相（C: libsys `sys_update`；kernel
-/// `dispatch_update` 按 M1 读 src/dst/flags —— do_update.c:9-11 的 C
-/// 形状就是 M1，非误读，成功返回 OK）。
+/// SYS_UPDATE: the kernel phase of RS live update (C: libsys `sys_update`;
+/// kernel `dispatch_update` reads src/dst/flags from m_m1 — the C shape at
+/// do_update.c:9-11 really is m_m1, not a misread; returns OK on success).
 pub fn sys_update(
     transport: &impl KernelCallTransport,
     src_endpt: i32,
@@ -827,8 +863,8 @@ pub fn sys_update(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_m1 是 SYS_UPDATE 的文档化载荷（kernel/src/misc.rs
-        // dispatch_update 读 m1i1/m1i2/m1i3；C do_update.c:9-11）。
+        // SAFETY: m_m1 is the documented payload of SYS_UPDATE (kernel/src/misc.rs
+        // dispatch_update reads m1i1/m1i2/m1i3; C do_update.c:9-11).
         let m1 = unsafe { &mut msg.m_u.m_m1 };
         m1.m1i1 = src_endpt;
         m1.m1i2 = dst_endpt;
@@ -841,10 +877,11 @@ pub fn sys_update(
     Ok(())
 }
 
-/// SYS_DIAGCTL：诊断控制（C: libsys `sys_diagctl(int code, char *arg1,
-/// int arg2)`——kernel `dispatch_diagctl` 按 code 分派：DIAG(1) 用
-/// buf/len 从调用方空间拷取至多 DIAGBUFSIZE 字节打到控制台；STACKTRACE(2)
-/// 用 `endpt` 字段指定目标进程）。
+/// SYS_DIAGCTL: diagnostic control (C: libsys `sys_diagctl(int code, char *arg1,
+/// int arg2)` — kernel `dispatch_diagctl` dispatches by code: DIAG(1) copies up
+/// to DIAGBUFSIZE bytes from the caller's space via buf/len and prints them to
+/// the console; STACKTRACE(2) uses the `endpt` field to name the target
+/// process).
 pub fn sys_diagctl(
     transport: &impl KernelCallTransport,
     code: i32,
@@ -853,8 +890,8 @@ pub fn sys_diagctl(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_diagctl 是 SYS_DIAGCTL 的文档化载荷布局
-        //（kernel/src/syscall.rs dispatch_diagctl；C ipc.h）。
+        // SAFETY: m_lsys_krn_sys_diagctl is the documented payload layout of
+        // SYS_DIAGCTL (kernel/src/syscall.rs dispatch_diagctl; C ipc.h).
         let d = unsafe { &mut msg.m_u.m_lsys_krn_sys_diagctl };
         d.code = code;
         if code == 1 {
@@ -871,41 +908,44 @@ pub fn sys_diagctl(
     Ok(())
 }
 
-/// SYS_DIAGCTL code 1 的字符串便利封装——服务器诊断输出缝（[ARCH: A-6]）
-/// 的共享下沉通道。C 的服务器 `printf`/`rs_verbose` 全家（rs 的
-/// `const.h:6-7` `DEBUG_DEFAULT`/`PRIV_DEBUG_DEFAULT` 等诊断面）在 Rust
-/// 侧经此抵达内核诊断台（kernel `dispatch_diagctl` code 1：按 buf/len
-/// 从调用方空间拷取至多 DIAGBUFSIZE 字节打到控制台）。文本在 sendrec
-/// 期间必须存活——同步内核调用期间内核 safecopy 该指针，`&str` 借用
-/// 恰好覆盖全程；分块、前缀与落盘节奏归调用方。
+/// Convenience wrapper for the SYS_DIAGCTL code-1 string — the shared sink of
+/// the server diagnostic-output seam ([ARCH: A-6]). C's server `printf`/
+/// `rs_verbose` family (the diagnostic face of rs's `const.h:6-7`
+/// `DEBUG_DEFAULT`/`PRIV_DEBUG_DEFAULT` etc.) reaches the kernel console through
+/// this on the Rust side (kernel `dispatch_diagctl` code 1: copy up to
+/// DIAGBUFSIZE bytes from the caller's space via buf/len and print them to the
+/// console). The text must stay alive during the sendrec — the kernel safecopies
+/// that pointer during the synchronous kernel call, and the `&str` borrow covers
+/// exactly that span; chunking, prefixes and flush pacing are the caller's
+/// business.
 pub fn sys_diagctl_write(transport: &impl KernelCallTransport, text: &str) -> Result<(), i32> {
     sys_diagctl(transport, 1, text.as_ptr() as u64, text.len() as i32)
 }
 
-/// SYS_DEVIO 请求字节的 I/O 方向与宽度位（C: com.h:283/:287
-/// `_DIO_INPUT=0x001`/`_DIO_OUTPUT=0x002`/`_DIO_BYTE=0x010`；
-/// kernel `IoDirection`/`IoSize` 的 `from_request_mask` 按同值解码）。
+/// I/O direction and width bits of a SYS_DEVIO request byte (C: com.h:283/:287
+/// `_DIO_INPUT=0x001`/`_DIO_OUTPUT=0x002`/`_DIO_BYTE=0x010`; the kernel's
+/// `IoDirection`/`IoSize` `from_request_mask` decodes the same values).
 pub const _DIO_INPUT: i32 = 0x001;
-/// C: `com.h:283` `_DIO_OUTPUT`。
+/// C: `com.h:283` `_DIO_OUTPUT`.
 pub const _DIO_OUTPUT: i32 = 0x002;
-/// C: `com.h:287` `_DIO_BYTE`。
+/// C: `com.h:287` `_DIO_BYTE`.
 pub const _DIO_BYTE: i32 = 0x010;
-/// C: `com.h:285` `_DIO_WORD`（16 位端口宽）。
+/// C: `com.h:285` `_DIO_WORD` (16-bit port width).
 pub const _DIO_WORD: i32 = 0x020;
-/// C: `com.h:286` `_DIO_LONG`（32 位端口宽）。
+/// C: `com.h:286` `_DIO_LONG` (32-bit port width).
 pub const _DIO_LONG: i32 = 0x030;
 
-/// SYS_DEVIO 字节输出：向硬件端口写一个字节（C: libsys syslib.h:217
-/// `sys_outb(p,v) = sys_out(p, v, _DIO_BYTE)`）。端口可达性由内核
-/// `do_devio` 的 CHECK_IO_PORT 门裁决——调用方特权无 CHECK_IO_PORT
-/// 标志时放行（C system.conf tty 服务 `io ALL` 即此形态：驱动从不
-/// 持有 IOPL，port I/O 一律内核中转）。
+/// SYS_DEVIO byte output: write one byte to a hardware port (C: libsys syslib.h:217
+/// `sys_outb(p,v) = sys_out(p, v, _DIO_BYTE)`). Port reachability is decided by
+/// the kernel `do_devio` CHECK_IO_PORT gate — it passes the caller when the
+/// privilege lacks CHECK_IO_PORT (C's system.conf tty service `io ALL` is this
+/// shape: drivers never hold IOPL, and all port I/O goes through the kernel).
 pub fn sys_outb(transport: &impl KernelCallTransport, port: u16, value: u8) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局
-        //（kernel/src/syscall_device.rs dispatch_devio：request/port/value；
-        // C ipc.h mess_lsys_krn_sys_devio）。
+        // SAFETY: m_lsys_krn_sys_devio is the documented payload layout of
+        // SYS_DEVIO (kernel/src/syscall_device.rs dispatch_devio:
+        // request/port/value; C ipc.h mess_lsys_krn_sys_devio).
         let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
         devio.request = _DIO_OUTPUT | _DIO_BYTE;
         devio.port = i32::from(port);
@@ -918,15 +958,16 @@ pub fn sys_outb(transport: &impl KernelCallTransport, port: u16, value: u8) -> R
     Ok(())
 }
 
-/// SYS_DEVIO 字节输入：从硬件端口读一个字节（C: libsys syslib.h
-/// `sys_inb(p, v*)` 的同族封装；回值载荷 `mess_krn_lsys_sys_devio`，
-/// value@0——kernel `dispatch_devio` Input 臂回填同一槽位）。
+/// SYS_DEVIO byte input: read one byte from a hardware port (C: the libsys
+/// syslib.h `sys_inb(p, v*)` sibling wrapper; the reply payload is
+/// `mess_krn_lsys_sys_devio`, value@0 — the kernel `dispatch_devio` Input arm
+/// fills the same slot).
 pub fn sys_inb(transport: &impl KernelCallTransport, port: u16) -> Result<u8, i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局
-        //（kernel/src/syscall_device.rs dispatch_devio；C ipc.h
-        // mess_lsys_krn_sys_devio）。
+        // SAFETY: m_lsys_krn_sys_devio is the documented payload layout of
+        // SYS_DEVIO (kernel/src/syscall_device.rs dispatch_devio; C ipc.h
+        // mess_lsys_krn_sys_devio).
         let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
         devio.request = _DIO_INPUT | _DIO_BYTE;
         devio.port = i32::from(port);
@@ -935,19 +976,21 @@ pub fn sys_inb(transport: &impl KernelCallTransport, port: u16) -> Result<u8, i3
     if reply < 0 {
         return Err(reply);
     }
-    // SAFETY: 回值在 MessKrnLsysSysDevio.value（偏移 0）——kernel
-    // dispatch_devio Input 臂写回同一 variant（对位注释见 :506 附近）。
+    // SAFETY: the reply value sits in MessKrnLsysSysDevio.value (offset 0) — the
+    // kernel dispatch_devio Input arm writes back the same variant (see the
+    // counterpart comment around :506).
     Ok(unsafe { msg.m_u.m_krn_lsys_sys_devio.value } as u8)
 }
 
-/// SYS_DEVIO 字输出：向硬件端口写一个 16 位字（C: libsys syslib.h:218
-/// `sys_outw(p,v) = sys_out(p, v, _DIO_WORD)`）。内核 `dispatch_devio` 的
-/// `IoSize::Word` 臂已实现（`port_io.outw`），本封装补齐字节之外的字宽。
+/// SYS_DEVIO word output: write a 16-bit word to a hardware port (C: libsys
+/// syslib.h:218 `sys_outw(p,v) = sys_out(p, v, _DIO_WORD)`). The kernel
+/// `dispatch_devio` `IoSize::Word` arm is implemented (`port_io.outw`); this
+/// wrapper adds the word width beyond bytes.
 pub fn sys_outw(transport: &impl KernelCallTransport, port: u16, value: u16) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局
-        //（kernel/src/syscall_device.rs dispatch_devio；C ipc.h）。
+        // SAFETY: m_lsys_krn_sys_devio is the documented payload layout of
+        // SYS_DEVIO (kernel/src/syscall_device.rs dispatch_devio; C ipc.h).
         let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
         devio.request = _DIO_OUTPUT | _DIO_WORD;
         devio.port = i32::from(port);
@@ -960,14 +1003,15 @@ pub fn sys_outw(transport: &impl KernelCallTransport, port: u16, value: u16) -> 
     Ok(())
 }
 
-/// SYS_DEVIO 字输入：从硬件端口读一个 16 位字（C: libsys syslib.h:224
-/// `sys_inw(p,v) = sys_in(p, v, _DIO_WORD)`）。回值在
-/// `mess_krn_lsys_sys_devio.value`（偏移 0），内核 `dispatch_devio` Input 臂
-/// 将 `port_io.inw(port)` 零扩展写回同一槽位，此处取低 16 位。
+/// SYS_DEVIO word input: read a 16-bit word from a hardware port (C: libsys
+/// syslib.h:224 `sys_inw(p,v) = sys_in(p, v, _DIO_WORD)`). The reply value is in
+/// `mess_krn_lsys_sys_devio.value` (offset 0); the kernel `dispatch_devio` Input
+/// arm zero-extends `port_io.inw(port)` and writes it back to the same slot, and
+/// the low 16 bits are taken here.
 pub fn sys_inw(transport: &impl KernelCallTransport, port: u16) -> Result<u16, i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局。
+        // SAFETY: m_lsys_krn_sys_devio is the documented payload layout of SYS_DEVIO.
         let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
         devio.request = _DIO_INPUT | _DIO_WORD;
         devio.port = i32::from(port);
@@ -976,16 +1020,18 @@ pub fn sys_inw(transport: &impl KernelCallTransport, port: u16) -> Result<u16, i
     if reply < 0 {
         return Err(reply);
     }
-    // SAFETY: 回值在 MessKrnLsysSysDevio.value（偏移 0），与字节臂同槽位。
+    // SAFETY: the reply value is in MessKrnLsysSysDevio.value (offset 0), the
+    // same slot as the byte arm.
     Ok(unsafe { msg.m_u.m_krn_lsys_sys_devio.value } as u16)
 }
 
-/// SYS_DEVIO 双字输出：向硬件端口写一个 32 位字（C: libsys syslib.h:219
-/// `sys_outl(p,v) = sys_out(p, v, _DIO_LONG)`）。内核 `IoSize::Long` 臂已实现。
+/// SYS_DEVIO doubleword output: write a 32-bit word to a hardware port (C:
+/// libsys syslib.h:219 `sys_outl(p,v) = sys_out(p, v, _DIO_LONG)`). The kernel
+/// `IoSize::Long` arm is implemented.
 pub fn sys_outl(transport: &impl KernelCallTransport, port: u16, value: u32) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局。
+        // SAFETY: m_lsys_krn_sys_devio is the documented payload layout of SYS_DEVIO.
         let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
         devio.request = _DIO_OUTPUT | _DIO_LONG;
         devio.port = i32::from(port);
@@ -998,13 +1044,14 @@ pub fn sys_outl(transport: &impl KernelCallTransport, port: u16, value: u32) -> 
     Ok(())
 }
 
-/// SYS_DEVIO 双字输入：从硬件端口读一个 32 位字（C: libsys syslib.h:225
-/// `sys_inl(p,v) = sys_in(p, v, _DIO_LONG)`）。内核 `IoSize::Long` 臂回填
-/// `port_io.inl(port)` 全 32 位到 value 槽。
+/// SYS_DEVIO doubleword input: read a 32-bit word from a hardware port (C:
+/// libsys syslib.h:225 `sys_inl(p,v) = sys_in(p, v, _DIO_LONG)`). The kernel
+/// `IoSize::Long` arm fills all 32 bits of `port_io.inl(port)` into the value
+/// slot.
 pub fn sys_inl(transport: &impl KernelCallTransport, port: u16) -> Result<u32, i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局。
+        // SAFETY: m_lsys_krn_sys_devio is the documented payload layout of SYS_DEVIO.
         let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
         devio.request = _DIO_INPUT | _DIO_LONG;
         devio.port = i32::from(port);
@@ -1013,14 +1060,14 @@ pub fn sys_inl(transport: &impl KernelCallTransport, port: u16) -> Result<u32, i
     if reply < 0 {
         return Err(reply);
     }
-    // SAFETY: 回值在 MessKrnLsysSysDevio.value（偏移 0）。
+    // SAFETY: the reply value is in MessKrnLsysSysDevio.value (offset 0).
     Ok(unsafe { msg.m_u.m_krn_lsys_sys_devio.value })
 }
 
-/// SYS_SETALARM：设置（或取消）闹钟并取回旧闹钟信息（C: libsys
-/// `sys_setalarm2`；kernel `dispatch_setalarm` 读/写
-/// `m_lsys_krn_sys_setalarm`——请求 exp_time/abs_time，应答 time_left/
-/// uptime 经同一臂回填）。成功返回 `(time_left, uptime)`。
+/// SYS_SETALARM: set (or cancel) an alarm and fetch the previous alarm
+/// information (C: libsys `sys_setalarm2`; kernel `dispatch_setalarm` reads and
+/// writes `m_lsys_krn_sys_setalarm` — request exp_time/abs_time, reply
+/// time_left/uptime through the same arm). Success returns `(time_left, uptime)`.
 pub fn sys_setalarm(
     transport: &impl KernelCallTransport,
     exp_time: u64,
@@ -1028,8 +1075,8 @@ pub fn sys_setalarm(
 ) -> Result<(u64, u64), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_setalarm 是 SETALARM 的文档化载荷布局
-        //（kernel/src/syscall_clock.rs dispatch_setalarm；C ipc.h）。
+        // SAFETY: m_lsys_krn_sys_setalarm is the documented payload layout of
+        // SETALARM (kernel/src/syscall_clock.rs dispatch_setalarm; C ipc.h).
         let a = unsafe { &mut msg.m_u.m_lsys_krn_sys_setalarm };
         a.exp_time = exp_time;
         a.abs_time = abs_time as i32;
@@ -1038,58 +1085,62 @@ pub fn sys_setalarm(
     if reply < 0 {
         return Err(reply);
     }
-    // SAFETY: 应答由内核经同一臂回填（syscall_clock.rs:265）。
+    // SAFETY: the kernel fills the reply through the same arm (syscall_clock.rs:265).
     let arm = unsafe { msg.m_u.m_lsys_krn_sys_setalarm };
     Ok((arm.time_left, arm.uptime))
 }
 
-// ── E9 切片 1:RS SysApi 面所需的 SYS_* 命名包装 ──
-// 六个调用对齐 servers/rs/src/boot.rs 的 SysApi 九方法中尚缺的六项
-// (kill/update/setalarm 已有)。全部经 perform_kernel_call,Canned
-// 回放可测;真实传输 = real-trap 构建下的 SYSCALL 腿。
+// ── SYS_* named wrappers needed by the RS SysApi face ──
+// Six calls align with the six of the nine SysApi methods in
+// servers/rs/src/boot.rs that are still missing (kill/update/setalarm already
+// exist). All go through perform_kernel_call and are replay-testable with
+// Canned; the real transport is the SYSCALL leg under a real-trap build.
 
-/// SYS_GETINFO · GET_MACHINE(12):取机器信息(处理器数 + BSP id)。
-/// C: `sys_getinfo(GET_MACHINE, ...)`;kernel `getinfo_machine` 经
-/// `copy_struct_to_caller` 拷 `MachineStruct`。`out` 至少要容纳内核
-/// 侧结构(内核按 min(len) 截断拷贝)。
+/// SYS_GETINFO · GET_MACHINE(12): fetch machine information (processor count +
+/// BSP id). C: `sys_getinfo(GET_MACHINE, ...)`; kernel `getinfo_machine` copies
+/// `MachineStruct` via `copy_struct_to_caller`. `out` must hold at least the
+/// kernel-side structure (the kernel truncates the copy to min(len)).
 pub fn sys_get_machine(transport: &impl KernelCallTransport, out: &mut [u8]) -> Result<(), i32> {
     sys_getinfo_into(transport, minix_types::GET_MACHINE, out, minix_types::Endpoint::NONE.0)
 }
 
-/// SYS_GETINFO · GET_HZ(18):取系统时钟频率(i32)。C: do_getinfo.c:81-84。
+/// SYS_GETINFO · GET_HZ(18): read the system clock rate (i32). C: do_getinfo.c:81-84.
 pub fn sys_get_hz(transport: &impl KernelCallTransport) -> Result<i32, i32> {
     let mut buf = [0u8; 4];
     sys_getinfo_into(transport, minix_types::GET_HZ, &mut buf, minix_types::Endpoint::NONE.0)?;
     Ok(i32::from_le_bytes(buf))
 }
 
-/// SYS_GETINFO · GET_PRIV(17):读目标进程的特权结构快照。
-/// 目标端点经 `val_len2_e` 域传递(kernel getinfo_priv:925-929)。
+/// SYS_GETINFO · GET_PRIV(17): read a snapshot of the target process's
+/// privilege structure. The target endpoint travels in the `val_len2_e` field
+/// (kernel getinfo_priv:925-929).
 pub fn sys_get_priv(transport: &impl KernelCallTransport, endpt: i32, out: &mut [u8]) -> Result<(), i32> {
     sys_getinfo_into(transport, minix_types::GET_PRIV, out, endpt)
 }
 
-/// SYS_GETINFO · GET_MONPARAMS(4):取 boot monitor 参数缓冲。
+/// SYS_GETINFO · GET_MONPARAMS(4): fetch the boot monitor parameter buffer.
 /// C: `sys_getmonparams(v,vl)` = `sys_getinfo(GET_MONPARAMS, v,vl, 0,0)`
-/// (syslib.h:187 宏)。内核按 `sizeof(kinfo.param_buf)` 恒拷 1024 字节
-/// (do_getinfo.c:143-146,param.h:28,尾部零填充)——调用方缓冲须按
-/// MULTIBOOT_PARAM_BUF_SIZE 定容,短缓冲得 E2BIG。
+/// (the syslib.h:187 macro). The kernel always copies `sizeof(kinfo.param_buf)`
+/// = 1024 bytes (do_getinfo.c:143-146, param.h:28, zero-padded at the tail) —
+/// the caller's buffer must be sized per MULTIBOOT_PARAM_BUF_SIZE, and a short
+/// buffer gets E2BIG.
 pub fn sys_getmonparams(transport: &impl KernelCallTransport, out: &mut [u8]) -> Result<(), i32> {
     sys_getinfo_into(transport, minix_types::GET_MONPARAMS, out, minix_types::Endpoint::NONE.0)
 }
 
-/// SYS_GETINFO · GET_IMAGE(1):取内核 boot image 表。
+/// SYS_GETINFO · GET_IMAGE(1): fetch the kernel boot image table.
 /// C: `sys_getimage(dst)` = `sys_getinfo(GET_IMAGE, dst, 0,0,0)`
-/// (syslib.h:184 宏)。载荷为 `struct boot_image[NR_BOOT_PROCS]`
-/// (do_getinfo.c:86-90;wire 布局权威 = minix-types `BootImageStruct`,
-/// 40 字节 × 17)——调用方缓冲须按整表定容。
+/// (the syslib.h:184 macro). The payload is `struct boot_image[NR_BOOT_PROCS]`
+/// (do_getinfo.c:86-90; wire-layout authority = minix-types `BootImageStruct`,
+/// 40 bytes × 17) — the caller's buffer must hold the whole table.
 pub fn sys_getimage(transport: &impl KernelCallTransport, out: &mut [u8]) -> Result<(), i32> {
     sys_getinfo_into(transport, minix_types::GET_IMAGE, out, minix_types::Endpoint::NONE.0)
 }
 
-/// GETINFO 通用承载:填充 `m_lsys_krn_sys_getinfo` 并执行。
-/// `endpt` 落 `val_len2_e`(kernel getinfo_priv 以此读目标端点;
-/// 无端点语义的子请求传 NONE,内核忽略)。
+/// Generic GETINFO carrier: fill `m_lsys_krn_sys_getinfo` and execute.
+/// `endpt` lands in `val_len2_e` (the kernel getinfo_priv reads the target
+/// endpoint from there; sub-requests with no endpoint semantics pass NONE and
+/// the kernel ignores it).
 pub fn sys_getinfo_into(
     transport: &impl KernelCallTransport,
     request: i32,
@@ -1098,8 +1149,8 @@ pub fn sys_getinfo_into(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_getinfo 是 GETINFO 的文档化载荷
-        //(kernel/src/misc.rs msg_getinfo:269-279——勿用 m1 覆盖)。
+        // SAFETY: m_lsys_krn_sys_getinfo is the documented payload of GETINFO
+        // (kernel/src/misc.rs msg_getinfo:269-279 — do not overwrite with m1).
         let gi = unsafe { &mut msg.m_u.m_lsys_krn_sys_getinfo };
         gi.request = request;
         gi.endpt = endpt;
@@ -1114,44 +1165,48 @@ pub fn sys_getinfo_into(
     Ok(())
 }
 
-/// 调用方自身身份(SYS_GETINFO · GET_WHOAMI 的应答)。
+/// The caller's own identity (the reply of SYS_GETINFO · GET_WHOAMI).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WhoAmI {
-    /// 调用方端点。C: `who_ep` 出参。
+    /// Caller endpoint. C: the `who_ep` out-parameter.
     pub endpoint: Endpoint,
-    /// 特权旗标。C: `priv_flags` 出参。
+    /// Privilege flags. C: the `priv_flags` out-parameter.
     pub priv_flags: i32,
-    /// 初始旗标。C: `init_flags` 出参。
+    /// Init flags. C: the `init_flags` out-parameter.
     pub init_flags: i32,
-    /// 进程名(wire 宽 44,NUL 终结由内核写)。C: `who_name` 出参。
+    /// Process name (44 bytes on the wire; the kernel writes the NUL).
+    /// C: the `who_name` out-parameter.
     pub name: [u8; 44],
 }
 
-/// SYS_GETINFO · GET_WHOAMI(19):取调用方自身身份。C: `sys_whoami`
-/// (libsys,sys_getinfo.c:29-55)——sef_startup 出生即问(sef.c:76-87),
-/// 是 C 驱动/服务器 `sef_self_endpoint` 的唯一来源。内核按调用者进程
-/// 上下文应答并直写应答消息 overlay(kernel/src/misc.rs getinfo_whoami,
-/// C do_getinfo.c:132-141),不做结构拷贝。
+/// SYS_GETINFO · GET_WHOAMI(19): fetch the caller's own identity. C: `sys_whoami`
+/// (libsys, sys_getinfo.c:29-55) — asked at birth by sef_startup (sef.c:76-87),
+/// and the sole source of C driver/server `sef_self_endpoint`. The kernel answers
+/// from the caller's process context and writes the reply message overlay
+/// directly (kernel/src/misc.rs getinfo_whoami, C do_getinfo.c:132-141) without
+/// a structure copy.
 ///
-/// 与 C 的形状差异:len<2 门(C sys_getinfo.c:40-41)保护的是调用方自备
-/// 的 name 缓冲;Rust 侧 name 以 44 字节 wire 宽随结构整体返回,无自备
-/// 缓冲,该守卫无对应面,故不设。失败语义同 C:内核负值原样 `Err`。
+/// Shape difference from C: the `len<2` gate (C sys_getinfo.c:40-41) protects a
+/// name buffer supplied by the caller; on the Rust side the name returns as part
+/// of the structure at its 44-byte wire width, with no caller-supplied buffer,
+/// so that guard has no counterpart and is absent. Failure semantics match C: a
+/// negative kernel value is returned as `Err` unchanged.
 pub fn sys_whoami(transport: &impl KernelCallTransport) -> Result<WhoAmI, i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_getinfo 是 GETINFO 的文档化载荷
-        //(kernel/src/misc.rs msg_getinfo——勿用 m1 覆盖)。
+        // SAFETY: m_lsys_krn_sys_getinfo is the documented payload of GETINFO
+        // (kernel/src/misc.rs msg_getinfo — do not overwrite with m1).
         let gi = unsafe { &mut msg.m_u.m_lsys_krn_sys_getinfo };
-        // C sys_getinfo.c:38——GET_WHOAMI 请求只带 request 一个车道,
-        // endpt/val_* 均不设。
+        // C sys_getinfo.c:38 — a GET_WHOAMI request carries only the request
+        // lane; endpt/val_* are all left unset.
         gi.request = minix_types::GET_WHOAMI;
     }
     let reply = perform_kernel_call(transport, minix_types::SYS_GETINFO, &mut msg, |_| {});
     if reply < 0 {
         return Err(reply);
     }
-    // SAFETY: 应答由内核经 GET_WHOAMI 臂直写同一 overlay
-    //(kernel/src/misc.rs getinfo_whoami)。
+    // SAFETY: the kernel writes the reply through the GET_WHOAMI arm directly
+    // into the same overlay (kernel/src/misc.rs getinfo_whoami).
     let w = unsafe { msg.m_u.m_krn_lsys_sys_getwhoami };
     Ok(WhoAmI {
         endpoint: Endpoint(w.endpt),
@@ -1161,9 +1216,10 @@ pub fn sys_whoami(transport: &impl KernelCallTransport) -> Result<WhoAmI, i32> {
     })
 }
 
-/// SYS_PRIVCTL:特权控制(allow/disallow/set_sys/set_user/...)。
-/// M1 载荷:m1i1=request,m1i2=endpt,m1p1=arg_ptr(用户态特权结构
-/// 指针,无则为 0)。C: mess_lsys_krn_sys_privctl,do_privctl.c:47-51。
+/// SYS_PRIVCTL: privilege control (allow/disallow/set_sys/set_user/...).
+/// m_m1 payload: m1i1=request, m1i2=endpt, m1p1=arg_ptr (pointer to the
+/// user-space privilege structure, 0 when absent). C:
+/// mess_lsys_krn_sys_privctl, do_privctl.c:47-51.
 pub fn sys_privctl(
     transport: &impl KernelCallTransport,
     endpt: i32,
@@ -1172,7 +1228,8 @@ pub fn sys_privctl(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: M1 覆盖(privctl 载荷与 m1 同形,syscall.rs:1354-1358)。
+        // SAFETY: m_m1 covers it (the privctl payload has the same shape as m1,
+        // syscall.rs:1354-1358).
         let m1 = unsafe { &mut msg.m_u.m_m1 };
         m1.m1i1 = request;
         m1.m1i2 = endpt;
@@ -1185,24 +1242,27 @@ pub fn sys_privctl(
     Ok(())
 }
 
-/// SYS_DIAGCTL · STACKTRACE(2):请求目标进程的栈回溯打印。
-/// C: main.c:681-683(RS 信号管理器的 stacktrace-signal 分支)。
+/// SYS_DIAGCTL · STACKTRACE(2): request a stack-trace dump of the target
+/// process. C: main.c:681-683 (the stacktrace-signal branch of the RS signal
+/// manager).
 ///
-/// C: `syslib.h:167` 定义为 `sys_diagctl(DIAGCTL_CODE_STACKTRACE, NULL, ep)`
-/// ——端点走 **arg2**（`sys_diagctl.c:16-17` 的 `endpt = (endpoint_t)arg2`）。
-/// 早前版本误把 target 放在 arg1（buf 槽位）、arg2 恒 0，内核收到的
-/// `endpt` 永远是 0——本次接线 PM stacktrace 支路时按 C 纠正。
+/// C: `syslib.h:167` defines it as `sys_diagctl(DIAGCTL_CODE_STACKTRACE, NULL, ep)`
+/// — the endpoint goes in **arg2** (`endpt = (endpoint_t)arg2` at
+/// `sys_diagctl.c:16-17`). An earlier version wrongly put the target in arg1
+/// (the buf slot) with arg2 always 0, so the kernel always received `endpt` 0 —
+/// corrected per C when wiring the PM stacktrace branch.
 pub fn sys_diagctl_stacktrace(transport: &impl KernelCallTransport, target: i32) -> Result<(), i32> {
     sys_diagctl(transport, minix_types::DIAGCTL_CODE_STACKTRACE, 0, target)
 }
 
-/// SYS_DATACOPY 命名别名:C syslib.h:129 把它定义为 sys_vircopy 的
-/// 宏(参数完全同形)——Rust 同样以 [`sys_vircopy`] 承载,仅提供 C 侧
-/// 名称以便 ipc-server 的 semop/semctl/shmctl 拷贝边界动词 grep 可达。
+/// SYS_DATACOPY named alias: C syslib.h:129 defines it as a macro over
+/// sys_vircopy (identical parameters) — Rust likewise carries it with
+/// [`sys_vircopy`], offering the C name only so that ipc-server's
+/// semop/semctl/shmctl copy-boundary verbs are grep-reachable.
 /// Creates a zeroed message — the single crate-wide helper
 /// (`cleared_message`, mirroring the `memset(&m, 0, sizeof(m))` that opens
 /// every C wrapper). Previously duplicated per group module; consolidated
-/// here (E-MINTYPES-RUNTIME 第②步，单点 helper).
+/// here (E-MINTYPES-RUNTIME step 2, single-point helper).
 pub(crate) fn cleared_message() -> crate::Message {
     crate::Message::zeroed()
 }
@@ -1226,18 +1286,20 @@ pub fn sys_datacopy(
     dst_addr: u64,
     bytes: u64,
 ) -> Result<(), i32> {
-    // SAFETY/语义:C 宏直传——sys_vircopy 返回负 errno 或 OK。
+    // SAFETY/semantics: the C macro passes straight through — sys_vircopy
+    // returns a negative errno or OK.
     let r = sys_vircopy(transport, src_endpt, src_addr, dst_endpt, dst_addr, bytes);
     if r < 0 { return Err(r); }
     Ok(())
 }
 
-/// 内核侧整块填充（C libsys `sys_memset`，sys_memset.c:3-16）。
+/// Whole-block fill on the kernel side (C libsys `sys_memset`, sys_memset.c:3-16).
 ///
-/// `bytes == 0` 短路 `OK`（C :9-11 同语义）；其余经 `SYS_MEMSET`
-/// （com.h:221）由内核向 `process` 的 `base..base+bytes` 写 `pattern`
-/// ——exec 收尾的 clearmem 回调（exec.c:382 经 libexec_clear_sys_memset）
-/// 用它清段间隙，不经过本进程的中转缓冲。
+/// `bytes == 0` short-circuits to `OK` (same semantics as C :9-11); otherwise
+/// SYS_MEMSET (com.h:221) has the kernel write `pattern` into
+/// `base..base+bytes` of `process` — the clearmem callback at the end of exec
+/// (exec.c:382 via libexec_clear_sys_memset) uses it to clear segment gaps,
+/// without going through this process's bounce buffer.
 pub fn sys_memset(
     transport: &impl KernelCallTransport,
     process: i32,
@@ -1250,8 +1312,8 @@ pub fn sys_memset(
     }
     let mut msg = cleared_message();
     {
-        // SAFETY: m_lsys_krn_sys_memset 是 MEMSET 的文档化载荷
-        //（kernel syscall_copy.rs msg_memset:187-191 同一联合臂）。
+        // SAFETY: m_lsys_krn_sys_memset is the documented payload of MEMSET
+        // (the same union arm at kernel syscall_copy.rs msg_memset:187-191).
         let m = unsafe { &mut msg.m_u.m_lsys_krn_sys_memset };
         m.base = base;
         m.count = bytes;
@@ -1265,13 +1327,14 @@ pub fn sys_memset(
     Ok(())
 }
 
-/// E-IPCWIRE 第 6 项:clock_time 客户端。
+/// clock_time client.
 ///
-/// C: libsys `clock_time`(clock_time.c:12-38)读 kerninfo kclockinfo 的
-/// boottime/realtime/hz,`sec = boottime + realtime / hz`。本重写同源
-/// 数据经 SYS_TIMES + GET_HZ 内核调用承载(kerninfo 页的用户映射随
-/// E1 通电族落地,见 edge E-KERNINFO 注记)——同一 ClockState 源,
-/// 不同传输,语义等价。
+/// C: libsys `clock_time` (clock_time.c:12-38) reads boottime/realtime/hz from
+/// kerninfo's kclockinfo and computes `sec = boottime + realtime / hz`. This
+/// rewrite carries the same-source data through the SYS_TIMES + GET_HZ kernel
+/// calls (the user mapping of the kerninfo page lands with the E1 power-up
+/// family, see the E-KERNINFO note) — same ClockState source, different
+/// transport, equivalent semantics.
 pub fn clock_time_via(transport: &impl KernelCallTransport) -> Result<u64, i32> {
     let times = sys_times(transport, minix_types::Endpoint::SELF.0)?;
     let hz = sys_get_hz(transport)?;
@@ -1281,10 +1344,10 @@ pub fn clock_time_via(transport: &impl KernelCallTransport) -> Result<u64, i32> 
     Ok(times.boot_time + times.real_ticks / hz as u64)
 }
 
-/// SYS_SCHEDCTL(54):调度控制——RS SchedApi 的 KERNEL 分支
-/// (C `sched_start.c:46-88`:`sys_schedctl(SCHEDCTL_FLAG_KERNEL,
-/// endpt, priority, quantum, cpu)`;kernel `dispatch_schedctl`
-/// 语义:-1 = 保持当前值)。
+/// SYS_SCHEDCTL(54): scheduling control — the KERNEL branch of the RS SchedApi
+/// (C `sched_start.c:46-88`: `sys_schedctl(SCHEDCTL_FLAG_KERNEL, endpt,
+/// priority, quantum, cpu)`; kernel `dispatch_schedctl`; semantics: -1 = keep the
+/// current value).
 pub fn sys_schedctl(
     transport: &impl KernelCallTransport,
     endpoint: i32,
@@ -1294,8 +1357,8 @@ pub fn sys_schedctl(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_schedctl 是 SCHEDCTL 的文档化载荷
-        //(kernel/src/syscall_process.rs msg_schedctl:114-117)。
+        // SAFETY: m_lsys_krn_schedctl is the documented payload of SCHEDCTL
+        // (kernel/src/syscall_process.rs msg_schedctl:114-117).
         let sc = unsafe { &mut msg.m_u.m_lsys_krn_schedctl };
         sc.flags = minix_types::SCHEDCTL_FLAG_KERNEL;
         sc.endpoint = endpoint;
@@ -1310,9 +1373,9 @@ pub fn sys_schedctl(
     Ok(())
 }
 
-/// SYS_SIGRETURN：信号处理返回，恢复目标进程的被信号上下文（C: libsys
-/// `sys_sigreturn`——`m_sigcalls.endpt/sigctx`；kernel
-/// `dispatch_sigreturn`）。
+/// SYS_SIGRETURN: signal-handler return, restoring the target process's
+/// signaled context (C: libsys `sys_sigreturn` — `m_sigcalls.endpt/sigctx`;
+/// kernel `dispatch_sigreturn`).
 pub fn sys_sigreturn(
     transport: &impl KernelCallTransport,
     proc_endpt: i32,
@@ -1320,8 +1383,8 @@ pub fn sys_sigreturn(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_sigcalls 是 SIGRETURN 的文档化载荷布局
-        //（kernel/src/syscall_signal.rs dispatch_sigreturn）。
+        // SAFETY: m_sigcalls is the documented payload layout of SIGRETURN
+        // (kernel/src/syscall_signal.rs dispatch_sigreturn).
         let sc = unsafe { &mut msg.m_u.m_sigcalls };
         sc.endpt = proc_endpt;
         sc.sigctx = sig_ctx;
@@ -1333,9 +1396,9 @@ pub fn sys_sigreturn(
     Ok(())
 }
 
-/// SYS_SPROF：统计式 profiling 控制（C: libsys `sys_sprof`——
-/// `m_lsys_krn_sys_sprof` 的 action/freq/intr_type/endpt/ctl_ptr/mem_ptr；
-/// kernel `dispatch_profile`）。
+/// SYS_SPROF: statistical profiling control (C: libsys `sys_sprof` — the
+/// action/freq/intr_type/endpt/ctl_ptr/mem_ptr of `m_lsys_krn_sys_sprof`;
+/// kernel `dispatch_profile`).
 pub fn sys_sprof(
     transport: &impl KernelCallTransport,
     action: i32,
@@ -1347,8 +1410,8 @@ pub fn sys_sprof(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_sprof 是 SPROF 的文档化载荷布局
-        //（kernel/src/misc.rs dispatch_profile；C ipc.h）。
+        // SAFETY: m_lsys_krn_sys_sprof is the documented payload layout of
+        // SPROF (kernel/src/misc.rs dispatch_profile; C ipc.h).
         let s = unsafe { &mut msg.m_u.m_lsys_krn_sys_sprof };
         s.action = action;
         s.freq = freq;
@@ -1364,9 +1427,9 @@ pub fn sys_sprof(
     Ok(())
 }
 
-/// SYS_SETTIME：设置实时钟或调整渐变（C: libsys `sys_settime`——
-/// `m_lsys_krn_sys_settime` 的 now/clock_id/sec/nsec；kernel
-/// `dispatch_settime`，CLOCK_REALTIME 之外 EINVAL）。
+/// SYS_SETTIME: set the real-time clock or adjust the gradual drift (C: libsys
+/// `sys_settime` — the now/clock_id/sec/nsec of `m_lsys_krn_sys_settime`;
+/// kernel `dispatch_settime`, EINVAL for anything other than CLOCK_REALTIME).
 pub fn sys_settime(
     transport: &impl KernelCallTransport,
     now: i32,
@@ -1376,8 +1439,8 @@ pub fn sys_settime(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_settime 是 SETTIME 的文档化载荷布局
-        //（kernel/src/syscall_clock.rs dispatch_settime）。
+        // SAFETY: m_lsys_krn_sys_settime is the documented payload layout of
+        // SETTIME (kernel/src/syscall_clock.rs dispatch_settime).
         let t = unsafe { &mut msg.m_u.m_lsys_krn_sys_settime };
         t.now = now;
         t.clock_id = clock_id;
@@ -1391,13 +1454,13 @@ pub fn sys_settime(
     Ok(())
 }
 
-/// SYS_STIME：设置系统引导时间（C: libsys `sys_stime`——
-/// `m_lsys_krn_sys_stime.boot_time`；kernel `dispatch_stime`）。
+/// SYS_STIME: set the system boot time (C: libsys `sys_stime` —
+/// `m_lsys_krn_sys_stime.boot_time`; kernel `dispatch_stime`).
 pub fn sys_stime(transport: &impl KernelCallTransport, boottime: u64) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_stime 是 STIME 的文档化载荷布局
-        //（kernel/src/syscall_clock.rs dispatch_stime）。
+        // SAFETY: m_lsys_krn_sys_stime is the documented payload layout of
+        // STIME (kernel/src/syscall_clock.rs dispatch_stime).
         let t = unsafe { &mut msg.m_u.m_lsys_krn_sys_stime };
         t.boot_time = boottime;
     }
@@ -1408,11 +1471,11 @@ pub fn sys_stime(transport: &impl KernelCallTransport, boottime: u64) -> Result<
     Ok(())
 }
 
-/// SYS_VTIMER：设置/取回进程的虚拟或 profile 定时器（C: libsys
-/// `sys_vtimer`——kernel `dispatch_vtimer` 按 M2 读
-/// which/set/value/endpt，旧值经 `m_m2.m2l1` 回填）。
+/// SYS_VTIMER: set/fetch a process's virtual or profile timer (C: libsys
+/// `sys_vtimer` — kernel `dispatch_vtimer` reads which/set/value/endpt from m_m2,
+/// and the old value is written back through `m_m2.m2l1`).
 ///
-/// `new_val` 为 `Some` 时设置新值；应答携带旧值。
+/// When `new_val` is `Some` a new value is set; the reply carries the old value.
 pub fn sys_vtimer(
     transport: &impl KernelCallTransport,
     proc_endpt: i32,
@@ -1421,8 +1484,8 @@ pub fn sys_vtimer(
 ) -> Result<Option<u64>, i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: kernel dispatch_vtimer 按 M2 读 VT_WHICH/SET/VALUE/ENDPT
-        //（syscall_clock.rs:437-441；C do_vtimer.c:33-71）。
+        // SAFETY: the kernel dispatch_vtimer reads VT_WHICH/SET/VALUE/ENDPT from
+        // m_m2 (syscall_clock.rs:437-441; C do_vtimer.c:33-71).
         let m2 = unsafe { &mut msg.m_u.m_m2 };
         m2.m2i1 = which;
         m2.m2i2 = new_val.is_some() as i32;
@@ -1433,13 +1496,14 @@ pub fn sys_vtimer(
     if reply < 0 {
         return Err(reply);
     }
-    // SAFETY: 旧值由内核写回 m_m2.m2l1（syscall_clock.rs:505-508）。
+    // SAFETY: the kernel writes the old value back into m_m2.m2l1
+    // (syscall_clock.rs:505-508).
     let old = unsafe { msg.m_u.m_m2.m2l1 } as u64;
     Ok(Some(old))
 }
 
-/// SYS_GETMCONTEXT：取目标进程的机器上下文（`m_lsys_krn_sys_mcontext`
-/// 的 endpt/ctx_ptr；kernel `dispatch_getmcontext`）。
+/// SYS_GETMCONTEXT: fetch the target process's machine context (the
+/// endpt/ctx_ptr of `m_lsys_krn_sys_mcontext`; kernel `dispatch_getmcontext`).
 pub fn sys_getmcontext(
     transport: &impl KernelCallTransport,
     proc_endpt: i32,
@@ -1447,8 +1511,8 @@ pub fn sys_getmcontext(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: m_lsys_krn_sys_mcontext 是 GET/SETMCONTEXT 共用的载荷
-        //布局（kernel/src/syscall.rs dispatch_getmcontext）。
+        // SAFETY: m_lsys_krn_sys_mcontext is the payload layout shared by
+        // GET/SETMCONTEXT (kernel/src/syscall.rs dispatch_getmcontext).
         let mc = unsafe { &mut msg.m_u.m_lsys_krn_sys_mcontext };
         mc.endpt = proc_endpt;
         mc.ctx_ptr = ctx_ptr;
@@ -1460,8 +1524,8 @@ pub fn sys_getmcontext(
     Ok(())
 }
 
-/// SYS_SETMCONTEXT：设置目标进程的机器上下文（同
-/// [`sys_getmcontext`] 的载荷臂，kernel `dispatch_setmcontext`）。
+/// SYS_SETMCONTEXT: set the target process's machine context (the same payload
+/// arm as [`sys_getmcontext`], kernel `dispatch_setmcontext`).
 pub fn sys_setmcontext(
     transport: &impl KernelCallTransport,
     proc_endpt: i32,
@@ -1469,7 +1533,7 @@ pub fn sys_setmcontext(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
-        // SAFETY: 同 sys_getmcontext——GET/SET 共用 m_lsys_krn_sys_mcontext。
+        // SAFETY: same as sys_getmcontext — GET/SET share m_lsys_krn_sys_mcontext.
         let mc = unsafe { &mut msg.m_u.m_lsys_krn_sys_mcontext };
         mc.endpt = proc_endpt;
         mc.ctx_ptr = ctx_ptr;
@@ -1521,16 +1585,17 @@ mod tests {
 
     #[test]
     fn test_sys_kill_encodes_sigcalls_wire() {
-        // C: libsys sys_kill.c:3-13 — m_sigcalls.endpt/sig，SYS_KILL = 5；
-        // 回复 OK（内核 do_kill 无回复载荷）。
+        // C: libsys sys_kill.c:3-13 — m_sigcalls.endpt/sig, SYS_KILL = 5;
+        // the reply is OK (the kernel do_kill has no reply payload).
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
 
         let r = sys_kill(&canned, 7, 9); // endpoint 7, SIGKILL
 
         assert_eq!(r, 0);
-        // 调用号必须与 kernel/src/syscall.rs 的 `Syscall::Kill = 6` 一致
-        //（对齐 05750e28c 引入的内核枚举；错号 5 = SYS_TRACE）。
+        // The call number must match `Syscall::Kill = 6` in
+        // kernel/src/syscall.rs (the kernel enum; the wrong number 5 is
+        // SYS_TRACE).
         assert_eq!(SYS_KILL_CALL, 6);
         let sent = canned.sent.borrow();
         assert_eq!(sent.len(), 1);
@@ -1541,9 +1606,10 @@ mod tests {
 
     #[test]
     fn test_sys_statectl_encodes_request_address_length() {
-        // C sys_statectl.c:3-11 的载荷形状：request/address/length 三件进
-        // m_lsys_krn_sys_statectl，调用号 = minix_types::SYS_STATECTL
-        //（com.h:263，KERNEL_CALL+55 = 0x637；错号会打进别的内核调用）。
+        // The payload shape of C sys_statectl.c:3-11: request/address/length go
+        // into m_lsys_krn_sys_statectl, and the call number is
+        // minix_types::SYS_STATECTL (com.h:263, KERNEL_CALL+55 = 0x637; a wrong
+        // number would land in another kernel call).
         let canned = CannedKernelCallTransport::default();
         let r = sys_statectl(&canned, minix_types::SYS_STATE_CLEAR_IPC_FILTERS, 0, 0);
         assert_eq!(r, 0);
@@ -1558,8 +1624,8 @@ mod tests {
 
     #[test]
     fn test_sys_clear_encodes_m1_endpoint() {
-        // C: libsys sys_clear.c:8-14 — m1i1 = 目标 endpoint，SYS_CLEAR = 2；
-        // 无回复载荷，OK 即回收完成。
+        // C: libsys sys_clear.c:8-14 — m1i1 = target endpoint, SYS_CLEAR = 2;
+        // no reply payload, OK means reclamation is done.
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
 
@@ -1574,14 +1640,15 @@ mod tests {
 
     #[test]
     fn test_sys_whoami_requests_get_whoami_and_decodes_reply_overlay() {
-        // C: libsys sys_getinfo.c:29-55 — 请求只带 request=GET_WHOAMI；
-        // 回复直写 m_krn_lsys_sys_getwhoami（endpt/privflags/initflags/name）。
+        // C: libsys sys_getinfo.c:29-55 — the request carries only
+        // request=GET_WHOAMI; the reply writes m_krn_lsys_sys_getwhoami directly
+        // (endpt/privflags/initflags/name).
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         {
-            // SAFETY: 测试按 GET_WHOAMI 文档化应答布局填充。
+            // SAFETY: the test fills the documented GET_WHOAMI reply layout.
             let w = unsafe { &mut reply.m_u.m_krn_lsys_sys_getwhoami };
-            w.endpt = 0x5F5C; // 任意 slot 推导端点（非哨兵值即可）
+            w.endpt = 0x5F5C; // any slot-derived endpoint (just not a sentinel value)
             w.privflags = 0x0000_0040;
             w.initflags = 0x0000_0003;
             let mut name = [0u8; 44];
@@ -1596,7 +1663,7 @@ mod tests {
         assert_eq!(who.priv_flags, 0x40);
         assert_eq!(who.init_flags, 3);
         assert_eq!(&who.name[..12], b"drv.chr.tty\0");
-        // 请求腿:m_type = SYS_GETINFO,overlay 只带 request=GET_WHOAMI。
+        // Request leg: m_type = SYS_GETINFO, the overlay carries only request=GET_WHOAMI.
         let sent = canned.sent.borrow();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].m_type, minix_types::SYS_GETINFO);
@@ -1608,7 +1675,7 @@ mod tests {
 
     #[test]
     fn test_sys_whoami_propagates_kernel_error() {
-        // C sys_getinfo.c:43-44 — _kernel_call 负值原样返回。
+        // C sys_getinfo.c:43-44 — a negative _kernel_call value is returned as-is.
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(-1);
 
@@ -1617,8 +1684,8 @@ mod tests {
 
     #[test]
     fn test_sys_times_encodes_endpt_and_decodes_reply() {
-        // C: libsys sys_times.c:3-23 — 请求 m_lsys_krn_sys_times.endpt；
-        // 回复 m_krn_lsys_sys_times（user/system 等四值）。
+        // C: libsys sys_times.c:3-23 — the request m_lsys_krn_sys_times.endpt;
+        // the reply m_krn_lsys_sys_times (the four values user/system etc.).
         use minix_types::{MessKrnLsysSysTimes, MessSigcalls};
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
@@ -1643,8 +1710,10 @@ mod tests {
     #[test]
     fn test_sys_vircopy_encodes_copy_payload() {
         // C: do_copy.c — m_lsys_krn_sys_copy {src_endpt, src_addr, dst_endpt,
-        // dst_addr, nr_bytes}；SELF 由内核替换为调用者 endpoint。
-        // src 走 `SELF` 常量（与 ipc-server/rs/ds/pm 消费点同形态）。
+        // dst_addr, nr_bytes}; SELF is replaced by the kernel with the caller
+        // endpoint.
+        // src uses the `SELF` constant (the same shape as the ipc-server/rs/ds/pm
+        // consumption sites).
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
 
@@ -1655,8 +1724,9 @@ mod tests {
         assert_eq!(sent[0].m_type, SYS_VIRCOPY_CALL);
         let cp = unsafe { &sent[0].m_u.m_lsys_krn_sys_copy };
         assert_eq!(cp.src_endpt, SELF);
-        // 哨兵权威绝对值 pin：-2 是 SYSTEM 任务 endpoint（com.h:50），常量若
-        // 退回历史误值，真机 wire 层 SELF 替换将静默失效。
+        // Sentinel absolute-value pin: -2 is the SYSTEM task endpoint (com.h:50);
+        // if the constant falls back to the historical wrong value, SELF
+        // substitution on the real wire layer silently stops working.
         assert_eq!(SELF, 31742); // endpoint.h:56
         assert_eq!(cp.src_addr, 0x1000);
         assert_eq!(cp.dst_endpt, 9);
@@ -1666,13 +1736,14 @@ mod tests {
 
     #[test]
     fn test_sys_vumap_encodes_request_and_decodes_pcount() {
-        // C: libsys sys_vumap.c:14-38 — 请求臂填 endpt/vaddr/vcount/offset/
-        // access/paddr/pmax，应答经 m_krn_lsys_sys_vumap.pcount 回填。单元素
-        // 输入向量是树内唯一调用方（vbox store_pages）的形状。
+        // C: libsys sys_vumap.c:14-38 — the request arm fills endpt/vaddr/vcount/
+        // offset/access/paddr/pmax, and the reply fills
+        // m_krn_lsys_sys_vumap.pcount. The single-element input vector is the
+        // shape of the tree's only caller (vbox store_pages).
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
-        // SAFETY(test):构造应答臂镜像内核回填 pcount。
+        // SAFETY(test): build the reply arm as the kernel's pcount fill.
         let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_vumap };
         arm.pcount = 2;
         canned.reply_message(reply);
@@ -1689,16 +1760,17 @@ mod tests {
         assert_eq!(v.offset, 0x100);
         assert_eq!(v.access, VUA_READ);
         assert_eq!(v.pmax, 8);
-        // vaddr/paddr 是调用方虚拟地址（C 同形传 vir_bytes），只验证非零。
+        // vaddr/paddr are caller virtual addresses (C passes vir_bytes the same
+        // way); only nonzero-ness is checked.
         assert_ne!(v.vaddr, 0);
         assert_ne!(v.paddr, 0);
-        // 两个向量元素的 C 布局（type.h:40-53）：64 位下各 16 字节。
+        // C layout of the two vector elements (type.h:40-53): 16 bytes each on 64-bit.
         assert_eq!(core::mem::size_of::<VumapVir>(), 16);
         assert_eq!(core::mem::size_of::<VumapPhys>(), 16);
         assert_eq!(core::mem::offset_of!(VumapVir, size), 8);
         assert_eq!(core::mem::offset_of!(VumapPhys, size), 8);
 
-        // 负 errno 不吞：原样返回。
+        // A negative errno is not swallowed: returned as-is.
         let mut denied = CannedKernelCallTransport::new();
         denied.reply(-minix_types::EFAULT);
         let mut out = [VumapPhys::default(); 4];
@@ -1710,17 +1782,18 @@ mod tests {
 
     #[test]
     fn test_sys_trace_encodes_lsys_layout_and_decodes_read_value() {
-        // C: libsys sys_trace.c:3-18 — 载荷 mess_lsys_krn_sys_trace
-        //（request@0/endpt@4/address@8/data@16，**不同于 m_m1**：m1.m1i1
-        // 是 request 而非 endpt，kernel misc.rs msg_trace 按该布局读）；
-        // 回复的读值经同偏移 data 字段写回（write_trace_reply_data）。
+        // C: libsys sys_trace.c:3-18 — payload mess_lsys_krn_sys_trace
+        // (request@0/endpt@4/address@8/data@16, **different from m_m1**:
+        // m1.m1i1 is request rather than endpt; the kernel misc.rs msg_trace
+        // reads this layout); the reply's read value is written back into the
+        // data field at the same offset (write_trace_reply_data).
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
         unsafe { reply.m_u.m_lsys_krn_sys_trace.data = 0x55 };
         canned.reply_message(reply);
 
-        let mut data: i64 = 0; // READ 类命令忽略入值
+        let mut data: i64 = 0; // READ-class commands ignore the input value
         let r = sys_trace(&canned, 1 /* T_GETINS */, 7, 0x2000, &mut data);
 
         assert_eq!(r, Ok(()));
@@ -1736,14 +1809,15 @@ mod tests {
 
     #[test]
     fn test_sys_getksig_decodes_endpt_and_map() {
-        // C: do_getksig.c:31-32 — 回复 m_sigcalls.{endpt, map}；endpt NONE
-        // 表示内核侧无更多待处理（PM 拉取循环的终止条件）。
+        // C: do_getksig.c:31-32 — the reply m_sigcalls.{endpt, map}; an endpt of
+        // NONE means nothing more is pending on the kernel side (the termination
+        // condition of PM's pull loop).
         use minix_types::MessSigcalls;
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
         unsafe {
-            // 信号 15 → word 0 的 bit 14（与 C `__sigmask(15)` 一致）。
+            // Signal 15 → bit 14 of word 0 (matching C `__sigmask(15)`).
             reply.m_u.m_sigcalls = MessSigcalls {
                 map: [1u32 << 14, 0, 0, 0],
                 endpt: 42,
@@ -1766,8 +1840,9 @@ mod tests {
 
     #[test]
     fn test_sys_endksig_encodes_endpt_and_sig() {
-        // C: do_endksig.c — 载荷 m_sigcalls.{endpt, sig}；调用方必须是
-        // 目标进程的信号管理器（否则内核 EPERM，负 errno 透传）。
+        // C: do_endksig.c — payload m_sigcalls.{endpt, sig}; the caller must be
+        // the target process's signal manager (otherwise the kernel answers
+        // EPERM, passed through as a negative errno).
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(-1); // EPERM
 
@@ -1782,7 +1857,8 @@ mod tests {
 
     #[test]
     fn test_sys_trace_negative_errno_passthrough() {
-        // C: 返回值 = 内核回复（负 errno 原样透传，do_trace 不折叠）。
+        // C: the return value = the kernel reply (a negative errno passes through
+        // as-is; do_trace does not fold it).
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(-1); // EPERM
 
@@ -1793,8 +1869,8 @@ mod tests {
 
     #[test]
     fn test_sys_runctl_resume_encodes_m1() {
-        // C: syslib.h:48 — sys_resume = sys_runctl(ep, RC_RESUME, 0)；
-        // 载荷 m1i1 = RC_ENDPT、m1i2 = RC_RESUME、m1i3 = RC_FLAGS(0)。
+        // C: syslib.h:48 — sys_resume = sys_runctl(ep, RC_RESUME, 0);
+        // payload m1i1 = RC_ENDPT, m1i2 = RC_RESUME, m1i3 = RC_FLAGS(0).
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
 
@@ -1819,7 +1895,8 @@ mod tests {
 
     #[test]
     fn test_sys_abort_failure_passthrough() {
-        // C: main.c:309 — 返回值被忽略，失败时 PM 继续主循环。
+        // C: main.c:309 — the return value is ignored; on failure PM keeps its
+        // main loop running.
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(-5);
 
@@ -1829,7 +1906,8 @@ mod tests {
 
     #[test]
     fn test_sys_kill_negative_errno_passthrough() {
-        // C: 返回值 = 内核回复（负 errno 原样透传，调用方自行处置）。
+        // C: the return value = the kernel reply (a negative errno passes through
+        // as-is; each caller decides).
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(-1); // EPERM
 
@@ -1865,7 +1943,7 @@ mod tests {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(test_message(0)));
         let mut message = test_message(999);
-        //[SD19-gate] 测试夹具：CannedTransport 只答剧本首呼，调用数由下行计数断言
+        //[SD19-gate] Test fixture: CannedTransport answers only the first scripted call; the call count is asserted by the counter below
         #[allow(clippy::let_underscore_must_use)]
         let _ = perform_syscall(&transport, Endpoint(1), 33, &mut message);
         // The reply overwrote the type, but the transport saw call number 33:
@@ -1996,15 +2074,17 @@ mod tests {
         );
     }
 
-    // ── E2:VM 侧六个 SYS_* wrapper 的 CannedTransport 回放测试 ──
+    // ── E2: CannedTransport replay tests for the six VM-side SYS_* wrappers ──
 
-    /// SYS_FORK 回放:请求臂逐字段 + 应答臂出参解析(E-FORKMSG 形状)。
+    /// SYS_FORK replay: field by field on the request arm + out-parameter
+    /// decode on the reply arm (the E-FORKMSG shape).
     #[test]
     fn test_sys_fork_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
-        // SAFETY(test):构造应答臂镜像内核 do_fork.c:111-112 的原地写。
+        // SAFETY(test): build the reply arm mirroring the kernel's in-place write
+        // at do_fork.c:111-112.
         let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_fork };
         arm.endpt = 32771;
         arm.msgaddr = 0x7000;
@@ -2015,12 +2095,12 @@ mod tests {
         let sent = canned.sent.borrow();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].m_type, minix_types::SYS_FORK); // 0x600
-        // SAFETY(test):读回请求臂核对逐字段。
+        // SAFETY(test): read the request arm back to check each field.
         let req = unsafe { sent[0].m_u.m_lsys_krn_sys_fork };
         assert_eq!((req.endpt, req.slot, req.flags), (10, 3, 0));
     }
 
-    /// SYS_FORK 错误直通(负 errno 不折叠)。
+    /// SYS_FORK error pass-through (a negative errno is not folded).
     #[test]
     fn test_sys_fork_negative_errno_passthrough() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2029,7 +2109,7 @@ mod tests {
         assert_eq!(canned.calls.get(), 1);
     }
 
-    /// SYS_EXEC 回放:五个载荷字段 + OK。
+    /// SYS_EXEC replay: five payload fields + OK.
     #[test]
     fn test_sys_exec_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2038,12 +2118,12 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_EXEC); // 0x601
-        // SAFETY(test):读回请求臂核对逐字段。
+        // SAFETY(test): read the request arm back to check each field.
         let e = unsafe { sent[0].m_u.m_lsys_krn_sys_exec };
         assert_eq!((e.endpt, e.ip, e.stack, e.name, e.ps_str), (8, 0x1000, 0x9000, 0x8000, 0x7f00));
     }
 
-    /// SYS_SAFECOPYFROM 回放:grant 五元组 + OK(无应答出参)。
+    /// SYS_SAFECOPYFROM replay: the grant quintuple + OK (no reply out-parameter).
     #[test]
     fn test_sys_safecopyfrom_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2052,7 +2132,7 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_SAFECOPYFROM); // 0x61f
-        // SAFETY(test):读回请求臂核对逐字段。
+        // SAFETY(test): read the request arm back to check each field.
         let sc = unsafe { sent[0].m_u.m_lsys_kern_safecopy };
         assert_eq!(
             (sc.from_to, sc.grant_id, sc.offset, sc.address, sc.bytes),
@@ -2060,7 +2140,7 @@ mod tests {
         );
     }
 
-    /// SYS_SAFECOPYTO 回放:同臂反向调用号。
+    /// SYS_SAFECOPYTO replay: same arm, opposite call number.
     #[test]
     fn test_sys_safecopyto_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2071,7 +2151,7 @@ mod tests {
         assert_eq!(sent[0].m_type, minix_types::SYS_SAFECOPYTO); // 0x620
     }
 
-    /// SYS_UPDATE 回放:M1 三字段(C do_update.c:9-11 的真实形状)。
+    /// SYS_UPDATE replay: the three m_m1 fields (the real shape of C do_update.c:9-11).
     #[test]
     fn test_sys_update_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2080,12 +2160,12 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_UPDATE); // 0x634
-        // SAFETY(test):读回 M1 臂核对逐字段。
+        // SAFETY(test): read the m_m1 arm back to check each field.
         let m1 = unsafe { sent[0].m_u.m_m1 };
         assert_eq!((m1.m1i1, m1.m1i2, m1.m1i3), (2, 9, 1));
     }
 
-    /// SYS_DIAGCTL 回放:code/buf/len + OK。
+    /// SYS_DIAGCTL replay: code/buf/len + OK.
     #[test]
     fn test_sys_diagctl_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2094,12 +2174,12 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_DIAGCTL); // 0x62c
-        // SAFETY(test):读回载荷臂核对逐字段。
+        // SAFETY(test): read the payload arm back to check each field.
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
         assert_eq!((d.code, d.buf, d.len), (1, 0x4000, 32));
     }
 
-    /// SYS_DIAGCTL STACKTRACE 形状:arg2 = 目标端点进 endpt 字段。
+    /// SYS_DIAGCTL STACKTRACE shape: arg2 = the target endpoint lands in the endpt field.
     #[test]
     fn test_sys_diagctl_stacktrace_encodes_endpt() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2107,12 +2187,12 @@ mod tests {
         let r = sys_diagctl(&canned, 2, 0, 9); // DIAGCTL_CODE_STACKTRACE, endpt 9
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
-        // SAFETY(test):读回载荷臂核对 endpt 字段。
+        // SAFETY(test): read the payload arm back to check the endpt field.
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
         assert_eq!((d.code, d.endpt), (2, 9));
     }
 
-    /// SYS_DEVIO outb 回放:请求字 `_DIO_OUTPUT|_DIO_BYTE` + 端口/值。
+    /// SYS_DEVIO outb replay: request word `_DIO_OUTPUT|_DIO_BYTE` + port/value.
     #[test]
     fn test_sys_outb_encodes_devio_wire() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2123,22 +2203,23 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_DEVIO);
-        // SAFETY(test):读回载荷臂核对 request/port/value。
+        // SAFETY(test): read the payload arm back to check request/port/value.
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
         assert_eq!(d.request, _DIO_OUTPUT | _DIO_BYTE);
         assert_eq!(d.port, 0x3F8);
         assert_eq!(d.value, 0x61);
     }
 
-    /// SYS_DEVIO inb 回放:请求字 `_DIO_INPUT|_DIO_BYTE`，回值取自
-    /// `mess_krn_lsys_sys_devio` value@0（kernel dispatch_devio Input 臂
-    /// 回填同一槽位）；errno 回复走 Err 车道。
+    /// SYS_DEVIO inb replay: request word `_DIO_INPUT|_DIO_BYTE`, reply value
+    /// taken from `mess_krn_lsys_sys_devio` value@0 (the kernel dispatch_devio
+    /// Input arm fills the same slot); an errno reply takes the Err lane.
     #[test]
     fn test_sys_inb_decodes_reply_value() {
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
-        // SAFETY(test):构造应答臂镜像内核回填(syscall_device.rs Input 臂)。
+        // SAFETY(test): build the reply arm mirroring the kernel fill
+        // (syscall_device.rs Input arm).
         let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_devio };
         arm.value = 0x20;
         canned.reply_message(reply);
@@ -2147,19 +2228,19 @@ mod tests {
         assert_eq!(r, Ok(0x20));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_DEVIO);
-        // SAFETY(test):读回请求臂核对方向/宽度/端口。
+        // SAFETY(test): read the request arm back to check direction/width/port.
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
         assert_eq!(d.request, _DIO_INPUT | _DIO_BYTE);
         assert_eq!(d.port, 0x3FD);
 
-        // errno 回复(EPERM=-1):白名单拒绝(C do_devio.c:55 EPERM)。
+        // errno reply (EPERM=-1): a whitelist rejection (C do_devio.c:55 EPERM).
         let mut denied = CannedKernelCallTransport::new();
         denied.reply(-minix_types::EPERM);
         assert_eq!(sys_inb(&denied, 0x3FD), Err(-minix_types::EPERM));
     }
 
-    /// SYS_DEVIO outw 回放:请求字 `_DIO_OUTPUT|_DIO_WORD` + 端口/值。
-    /// 对位 C syslib.h:218 `sys_outw(p,v)=sys_out(p,v,_DIO_WORD)`。
+    /// SYS_DEVIO outw replay: request word `_DIO_OUTPUT|_DIO_WORD` + port/value.
+    /// Counterpart of C syslib.h:218 `sys_outw(p,v)=sys_out(p,v,_DIO_WORD)`.
     #[test]
     fn test_sys_outw_encodes_devio_word_wire() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2170,21 +2251,23 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_DEVIO);
-        // SAFETY(test):读回载荷臂核对方向/宽度/端口/值。
+        // SAFETY(test): read the payload arm back to check direction/width/port/value.
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
         assert_eq!(d.request, _DIO_OUTPUT | _DIO_WORD);
         assert_eq!(d.port, 0x1F0);
         assert_eq!(d.value, 0xABCD);
     }
 
-    /// SYS_DEVIO inw 回放:请求字 `_DIO_INPUT|_DIO_WORD`，回值取低 16 位
-    /// （内核 `IoSize::Word` 臂将 `inw` 零扩展写回 value 槽）；errno 走 Err 车道。
+    /// SYS_DEVIO inw replay: request word `_DIO_INPUT|_DIO_WORD`, reply value
+    /// taken from the low 16 bits (the kernel `IoSize::Word` arm zero-extends
+    /// `inw` into the value slot); an errno takes the Err lane.
     #[test]
     fn test_sys_inw_decodes_reply_word() {
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
-        // SAFETY(test):构造应答臂镜像内核回填(syscall_device.rs Input Word 臂)。
+        // SAFETY(test): build the reply arm mirroring the kernel fill
+        // (syscall_device.rs Input Word arm).
         let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_devio };
         arm.value = 0x1234;
         canned.reply_message(reply);
@@ -2192,7 +2275,7 @@ mod tests {
         let r = sys_inw(&canned, 0x1F0); // IDE data register
         assert_eq!(r, Ok(0x1234));
         let sent = canned.sent.borrow();
-        // SAFETY(test):读回请求臂核对方向/宽度/端口。
+        // SAFETY(test): read the request arm back to check direction/width/port.
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
         assert_eq!(d.request, _DIO_INPUT | _DIO_WORD);
         assert_eq!(d.port, 0x1F0);
@@ -2202,8 +2285,9 @@ mod tests {
         assert_eq!(sys_inw(&denied, 0x1F0), Err(-minix_types::EPERM));
     }
 
-    /// SYS_DEVIO outl/inl 回放:请求字带 `_DIO_LONG`，回值为全 32 位。
-    /// 对位 C syslib.h:219/:225 sys_outl/sys_inl。
+    /// SYS_DEVIO outl/inl replay: the request word carries `_DIO_LONG`, the
+    /// reply value is all 32 bits. Counterpart of C syslib.h:219/:225
+    /// sys_outl/sys_inl.
     #[test]
     fn test_sys_outl_inl_long_wire_roundtrip() {
         let mut out = CannedKernelCallTransport::new();
@@ -2211,7 +2295,7 @@ mod tests {
         assert_eq!(sys_outl(&out, 0x020, 0xDEAD_BEEF), Ok(()));
         {
             let sent = out.sent.borrow();
-            // SAFETY(test):读回请求臂核对宽度位与值。
+            // SAFETY(test): read the request arm back to check the width bits and the value.
             let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
             assert_eq!(d.request, _DIO_OUTPUT | _DIO_LONG);
             assert_eq!(d.value, 0xDEAD_BEEF);
@@ -2220,24 +2304,25 @@ mod tests {
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
-        // SAFETY(test):构造应答臂镜像内核 Long 回填。
+        // SAFETY(test): build the reply arm mirroring the kernel Long fill.
         let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_devio };
         arm.value = 0xFFFF_0000;
         canned.reply_message(reply);
         assert_eq!(sys_inl(&canned, 0x020), Ok(0xFFFF_0000));
         let sent = canned.sent.borrow();
-        // SAFETY(test):读回请求臂核对方向/宽度。
+        // SAFETY(test): read the request arm back to check direction/width.
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
         assert_eq!(d.request, _DIO_INPUT | _DIO_LONG);
     }
 
-    /// SYS_SETALARM 回放:请求 exp/abs + 应答臂 time_left/uptime。
+    /// SYS_SETALARM replay: request exp/abs + reply arm time_left/uptime.
     #[test]
     fn test_sys_setalarm_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
-        // SAFETY(test):构造应答臂镜像内核回填(syscall_clock.rs:265)。
+        // SAFETY(test): build the reply arm mirroring the kernel fill
+        // (syscall_clock.rs:265).
         let arm = unsafe { &mut reply.m_u.m_lsys_krn_sys_setalarm };
         arm.time_left = 500;
         arm.uptime = 9000;
@@ -2247,12 +2332,12 @@ mod tests {
         assert_eq!(r, Ok((500, 9000)));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_SETALARM); // 0x618
-        // SAFETY(test):读回请求臂。
+        // SAFETY(test): read the request arm back.
         let a = unsafe { sent[0].m_u.m_lsys_krn_sys_setalarm };
         assert_eq!((a.exp_time, a.abs_time), (100, 0));
     }
 
-    /// SYS_SIGRETURN 回放:endpt/sigctx。
+    /// SYS_SIGRETURN replay: endpt/sigctx.
     #[test]
     fn test_sys_sigreturn_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2261,12 +2346,12 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_SIGRETURN); // 0x60a
-        // SAFETY(test):读回载荷臂。
+        // SAFETY(test): read the payload arm back.
         let sc = unsafe { sent[0].m_u.m_sigcalls };
         assert_eq!((sc.endpt, sc.sigctx), (7, 0x30_0000));
     }
 
-    /// SYS_SPROF 回放:六字段。
+    /// SYS_SPROF replay: six fields.
     #[test]
     fn test_sys_sprof_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2275,7 +2360,7 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_SPROF); // 0x624
-        // SAFETY(test):读回载荷臂。
+        // SAFETY(test): read the payload arm back.
         let s = unsafe { sent[0].m_u.m_lsys_krn_sys_sprof };
         assert_eq!(
             (s.action, s.freq, s.intr_type, s.endpt, s.ctl_ptr, s.mem_ptr),
@@ -2283,7 +2368,7 @@ mod tests {
         );
     }
 
-    /// SYS_SETTIME 回放:四字段。
+    /// SYS_SETTIME replay: four fields.
     #[test]
     fn test_sys_settime_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2292,12 +2377,12 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_SETTIME); // 0x628
-        // SAFETY(test):读回载荷臂。
+        // SAFETY(test): read the payload arm back.
         let t = unsafe { sent[0].m_u.m_lsys_krn_sys_settime };
         assert_eq!((t.now, t.clock_id, t.sec, t.nsec), (1, 0, 1_700_000_000, 500));
     }
 
-    /// SYS_STIME 回放:boot_time。
+    /// SYS_STIME replay: boot_time.
     #[test]
     fn test_sys_stime_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2306,18 +2391,18 @@ mod tests {
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_STIME); // 0x627
-        // SAFETY(test):读回载荷臂。
+        // SAFETY(test): read the payload arm back.
         let t = unsafe { sent[0].m_u.m_lsys_krn_sys_stime };
         assert_eq!(t.boot_time, 1_700_000_000);
     }
 
-    /// SYS_VTIMER 回放:M2 形状(which/set/value/endpt)+ 旧值回读。
+    /// SYS_VTIMER replay: the m_m2 shape (which/set/value/endpt) + old-value read-back.
     #[test]
     fn test_sys_vtimer_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
-        // SAFETY(test):构造旧值回写(kernel 写 m_m2.m2l1)。
+        // SAFETY(test): build the old-value write-back (the kernel writes m_m2.m2l1).
         reply.m_u.m_m2.m2l1 = 1234;
         canned.reply_message(reply);
 
@@ -2325,12 +2410,13 @@ mod tests {
         assert_eq!(r, Ok(Some(1234)));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_VTIMER); // 0x62d
-        // SAFETY(test):读回 M2 请求字段。
+        // SAFETY(test): read the m_m2 request fields back.
         let m2 = unsafe { sent[0].m_u.m_m2 };
         assert_eq!((m2.m2i1, m2.m2i2, m2.m2l1, m2.m2l2), (1, 1, 5000, 8));
     }
 
-    /// SYS_GETMCONTEXT 回放:endpt/ctx_ptr(GET/SET 同臂异调用号)。
+    /// SYS_GETMCONTEXT replay: endpt/ctx_ptr (GET/SET share the arm, different
+    /// call numbers).
     #[test]
     fn test_sys_mcontext_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2344,8 +2430,8 @@ mod tests {
     }
 }
 
-    /// E9 切片 1:GETINFO 承载——请求域/缓冲指针/长度/端点域逐项
-    /// 落 m_lsys_krn_sys_getinfo,内核应答 OK。
+    /// GETINFO carrier: request field, buffer pointer, length and endpoint
+    /// field each land in m_lsys_krn_sys_getinfo, and the kernel replies OK.
     #[test]
     fn test_sys_getinfo_into_wire() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2353,17 +2439,17 @@ mod tests {
         let mut out = [0u8; 16];
         let r = sys_getinfo_into(&canned, minix_types::GET_MACHINE, &mut out, minix_types::Endpoint::NONE.0);
         assert!(r.is_ok());
-        // 出站消息断言(CannedKernelCallTransport 记录 sent)。
+        // Assertion on the outgoing message (CannedKernelCallTransport records sent).
         let sent = canned.sent.borrow();
         assert_eq!(sent.len(), 1);
-        // SAFETY: 断言读回 m_lsys_krn_sys_getinfo 臂。
+        // SAFETY: read the m_lsys_krn_sys_getinfo arm back in the assertion.
         let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
         assert_eq!(gi.request, minix_types::GET_MACHINE);
         assert_eq!(gi.val_ptr, out.as_ptr() as u64);
         assert_eq!(gi.val_len, 16);
     }
 
-    /// E9 切片 1:GET_HZ 走 4 字节缓冲并以 LE 解回 i32。
+    /// GET_HZ goes through a 4-byte buffer and decodes back to i32 little-endian.
     #[test]
     fn test_sys_get_hz_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2371,14 +2457,14 @@ mod tests {
         let hz = sys_get_hz(&canned).unwrap();
         assert_eq!(hz, 0, "hosted canned reply zeros the buffer");
         let sent = canned.sent.borrow();
-        // SAFETY: 断言读回 request 域。
+        // SAFETY: read the request field back in the assertion.
         let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
         assert_eq!(gi.request, minix_types::GET_HZ);
         assert_eq!(gi.val_len, 4);
     }
 
-    /// E9 切片 1:GET_PRIV 的目标端点落 val_len2_e 域
-    /// (kernel getinfo_priv:925-929 以此解析目标)。
+    /// GET_PRIV's target endpoint lands in the val_len2_e field
+    /// (the kernel getinfo_priv:925-929 resolves the target from there).
     #[test]
     fn test_sys_get_priv_endpt_in_val_len2_e() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2386,30 +2472,30 @@ mod tests {
         let mut out = [0u8; 64];
         sys_get_priv(&canned, 9, &mut out).unwrap();
         let sent = canned.sent.borrow();
-        // SAFETY: 断言读回 getinfo 臂。
+        // SAFETY: read the getinfo arm back in the assertion.
         let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
         assert_eq!(gi.request, minix_types::GET_PRIV);
         assert_eq!(gi.val_len2_e, 9);
     }
 
-    /// C-3/S42 ②:GET_MONPARAMS 请求形状——request=4,缓冲长度原样
-    /// 传递(C syslib.h:187 宏的 (v,vl) 两参形状)。
+    /// GET_MONPARAMS request shape: request=4, the buffer length passed through
+    /// as-is (the (v,vl) two-parameter shape of the C syslib.h:187 macro).
     #[test]
     fn test_sys_getmonparams_wire() {
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
-        let mut out = [0u8; 1024]; // MULTIBOOT_PARAM_BUF_SIZE 定容
+        let mut out = [0u8; 1024]; // sized to MULTIBOOT_PARAM_BUF_SIZE
         sys_getmonparams(&canned, &mut out).unwrap();
         let sent = canned.sent.borrow();
-        // SAFETY: 断言读回 getinfo 臂。
+        // SAFETY: read the getinfo arm back in the assertion.
         let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
         assert_eq!(gi.request, minix_types::GET_MONPARAMS);
         assert_eq!(gi.val_ptr, out.as_ptr() as u64);
         assert_eq!(gi.val_len, 1024);
     }
 
-    /// C-3/S42 ②:GET_IMAGE 请求形状——request=1,整表定容缓冲
-    /// (NR_BOOT_PROCS × 40 = 680 字节,C syslib.h:184 宏)。
+    /// GET_IMAGE request shape: request=1, buffer sized to the whole table
+    /// (NR_BOOT_PROCS × 40 = 680 bytes, C syslib.h:184 macro).
     #[test]
     fn test_sys_getimage_wire() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2417,13 +2503,13 @@ mod tests {
         let mut out = [0u8; minix_types::NR_BOOT_PROCS * 40];
         sys_getimage(&canned, &mut out).unwrap();
         let sent = canned.sent.borrow();
-        // SAFETY: 断言读回 getinfo 臂。
+        // SAFETY: read the getinfo arm back in the assertion.
         let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
         assert_eq!(gi.request, minix_types::GET_IMAGE);
         assert_eq!(gi.val_len, (minix_types::NR_BOOT_PROCS * 40) as i32);
     }
 
-    /// E9 切片 1:PRIVCTL 的 M1 载荷(request/endpt/arg_ptr)。
+    /// The PRIVCTL m_m1 payload (request/endpt/arg_ptr).
     #[test]
     fn test_sys_privctl_m1_wire() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2431,77 +2517,79 @@ mod tests {
         sys_privctl(&canned, 9, 1 /* SYS_PRIV_ALLOW */, 0).unwrap();
         let sent = canned.sent.borrow();
         assert_eq!(sent.len(), 1);
-        // SAFETY: 断言读回 M1 臂。
+        // SAFETY: read the m_m1 arm back in the assertion.
         let m1 = unsafe { sent[0].m_u.m_m1 };
         assert_eq!(m1.m1i1, 1);
         assert_eq!(m1.m1i2, 9);
         assert_eq!(m1.m1p1, 0);
     }
 
-    /// E9 切片 1:TIMES 应答臂回填(RS get_ticks 消费 boot_ticks)。
+    /// TIMES reply-arm fill (RS get_ticks consumes boot_ticks).
     #[test]
     fn test_sys_times_reply_arm() {
         let mut canned = CannedKernelCallTransport::new();
-        // 内核形状应答:OK(0) + 同臂回填五域。
+        // Kernel-shaped reply: OK(0) + the five fields filled in the same arm.
         let mut reply = Message::default();
         reply.m_type = 0;
-        // SAFETY: 构造应答臂。
+        // SAFETY: construct the reply arm.
         let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_times };
         arm.boot_ticks = 777;
         canned.reply_message(reply);
         let times = sys_times(&canned, minix_types::Endpoint::SELF.0).unwrap();
         assert_eq!(times.boot_ticks, 777);
-        // 请求 endpt 域 = SELF。
+        // The request endpt field = SELF.
         let sent = canned.sent.borrow();
-        // SAFETY: 断言读回 times 请求臂。
+        // SAFETY: read the times request arm back in the assertion.
         let req = unsafe { sent[0].m_u.m_lsys_krn_sys_times };
         assert_eq!(req.endpt, minix_types::Endpoint::SELF.0);
     }
 
-    /// E9 切片 1:STACKTRACE 诊断码(2) + 目标端点。
-    /// 必须核 `endpt` 本身——早前版本只断言 code，target 放错实参位
-    /// （arg1 而非 C 的 arg2）被放过，内核侧永远收到 endpt=0。
+    /// STACKTRACE diagnostic code (2) + target endpoint.
+    /// The `endpt` itself must be checked — an earlier version asserted only
+    /// code, so a target placed in the wrong argument slot (arg1 instead of C's
+    /// arg2) slipped through and the kernel always received endpt=0.
     #[test]
     fn test_sys_diagctl_stacktrace_code_and_target() {
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
         sys_diagctl_stacktrace(&canned, 9).unwrap();
         let sent = canned.sent.borrow();
-        // SAFETY: 断言读回 diagctl 臂。
+        // SAFETY: read the diagctl arm back in the assertion.
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
         assert_eq!(d.code, minix_types::DIAGCTL_CODE_STACKTRACE);
         assert_eq!(d.endpt, 9, "target 必须落进 endpt 字段（C: sys_diagctl.c:17）");
     }
 
-    /// E-IPCWIRE 第 6 项:clock_time_via 组合 SYS_TIMES + GET_HZ——
-    /// sec = boot_time + real_ticks / hz(C clock_time.c:30-33)。
+    /// clock_time_via combines SYS_TIMES + GET_HZ —
+    /// sec = boot_time + real_ticks / hz (C clock_time.c:30-33).
     #[test]
     fn test_clock_time_via_composite() {
         let mut canned = CannedKernelCallTransport::new();
-        // 第一笔:SYS_TIMES 应答臂回填。
+        // First call: the SYS_TIMES reply-arm fill.
         let mut times_reply = Message::default();
         times_reply.m_type = 0;
-        // SAFETY: 构造应答臂。
+        // SAFETY: construct the reply arm.
         let arm = unsafe { &mut times_reply.m_u.m_krn_lsys_sys_times };
         arm.real_ticks = 2500;
         arm.boot_time = 1_000_000;
         canned.reply_message(times_reply);
-        // 第二笔:GET_HZ 应答(4 字节 LE)。
+        // Second call: the GET_HZ reply (4 bytes LE).
         let mut hz_reply = Message::default();
         hz_reply.m_type = 0;
-        // SAFETY: getinfo 臂的 val_ptr 指向的缓冲由真实路径写入;
-        // Canned 形状只需 OK 应答——hz 断言在 sys_get_hz 测试覆盖,
-        // 此处 hz=0 会触发 EINVAL 分支,正好钉住防御。
+        // SAFETY: the buffer the getinfo arm's val_ptr points at is written by
+        // the real path; the Canned shape only needs an OK reply — the hz
+        // assertion is covered by the sys_get_hz test, and hz=0 here triggers the
+        // EINVAL branch, which pins the defense.
         canned.reply(0);
-        // hz 读回来自用户缓冲(Canned 路径全零)→ hz=0 → EINVAL 防御。
+        // The hz read comes from the user buffer (all zero on the Canned path) → hz=0 → the EINVAL defense.
         let r = clock_time_via(&canned);
         assert_eq!(r, Err(-minix_types::EINVAL));
     }
 
-    /// E9 SchedApi:SYS_SCHEDCTL 的 KERNEL 分支线面——flags 置
-    /// SCHEDCTL_FLAG_KERNEL,priority/quantum/cpu 的 -1 = 保持当前值
-    /// (C sched_start.c:46-88;kernel dispatch_schedctl:651 起的
-    /// Option 转换以 -1 为哨兵)。
+    /// SYS_SCHEDCTL wire face for the KERNEL branch: flags set to
+    /// SCHEDCTL_FLAG_KERNEL; -1 for priority/quantum/cpu = keep the current value
+    /// (C sched_start.c:46-88; the kernel dispatch_schedctl Option conversion
+    /// starting at :651 uses -1 as the sentinel).
     #[test]
     fn test_sys_schedctl_wire() {
         let mut canned = CannedKernelCallTransport::new();
@@ -2510,7 +2598,7 @@ mod tests {
         let sent = canned.sent.borrow();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].m_type, minix_types::SYS_SCHEDCTL);
-        // SAFETY: 断言读回 schedctl 臂。
+        // SAFETY: read the schedctl arm back in the assertion.
         let sc = unsafe { sent[0].m_u.m_lsys_krn_schedctl };
         assert_eq!(sc.flags, minix_types::SCHEDCTL_FLAG_KERNEL);
         assert_eq!(sc.endpoint, 9);
@@ -2519,7 +2607,8 @@ mod tests {
         assert_eq!(sc.cpu, -1);
     }
 
-    /// 内核拒绝(非法 flag 组合)时 wrapper 透传负 errno。
+    /// The wrapper passes a negative errno through when the kernel rejects
+    /// (illegal flag combination).
     #[test]
     fn test_sys_schedctl_propagates_kernel_error() {
         let mut canned = CannedKernelCallTransport::new();

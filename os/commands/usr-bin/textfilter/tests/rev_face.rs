@@ -1,18 +1,26 @@
 //! End-to-end face for the `rev` binary, checked against
-//! `minix3/usr.bin/rev/rev.c`（选项环 `:70-75`、`argv += optind` `:77-78`、
-//! 操作数循环与 `warn` `:83-106`、`usage()` `:110-115`）与它驱动的 libc `getopt`
-//!（`minix3/lib/libc/stdlib/getopt.c:74-78`、`:81-92`、`:95-104`）。
+//! `minix3/usr.bin/rev/rev.c` (the option loop `:70-75`, `argv += optind`
+//! `:77-78`, the operand loop and `warn` `:83-106`, `usage()` `:110-115`) and
+//! the libc `getopt` it drives (`minix3/lib/libc/stdlib/getopt.c:74-78`,
+//! `:81-92`, `:95-104`).
 //!
-//! C 的 optstring 是**空串**，这一条容易被读成「没有选项环」，于是本壳以前把 `-Z`
-//! 当文件操作数。参照件 `tmp/rev-309/rev_ref`（`rev.c` 真源 + Minix 的 `getopt.c` +
-//! `fgetwln`/`setprogname` 垫片，宿主现链）逐形量出的形状是：
-//! ① 任何 `-` 开头的 token（除 `--` 与裸 `-`）= libc 一行 + usage 一行，退 1；
-//! ② `--` 结束选项环且自身不算操作数，裸 `-` 则是操作数；
-//! ③ 不重排：非选项 token 之后的 `-Z` 归操作数；
-//! ④ 打不开的操作数是 `warn(3)` 三段形、**非致命**（继续做后面的文件，退码 1）。
+//! C's optstring is the **empty string**, which is easy to misread as "no
+//! option loop", so this shell used to treat `-Z` as a file operand. The
+//! reference binary `tmp/rev-309/rev_ref` (the `rev.c` ground truth + Minix's
+//! `getopt.c` + `fgetwln`/`setprogname` shims, linked against the host)
+//! measured these shapes:
+//! 1. Any token starting with `-` (except `--` and a bare `-`) = one libc line
+//!    + one usage line, status 1;
+//! 2. `--` ends the option loop and is not an operand itself, while a bare `-`
+//!    is an operand;
+//! 3. No reordering: a `-Z` after a non-option token is an operand;
+//! 4. An operand that cannot be opened gets the three-part `warn(3)` shape and
+//!    is **non-fatal** (the run continues with later files, exit code 1).
 //!
-//! 这扇门前不存在：`rev` 的读缝直接拿裸 `open`/`read`，宿主上读不到任何输入，
-//! 所以它的输出以前只能靠库测（同批次三百零六的 `nl`、三百零八的 `fold`）。
+//! This face did not exist before: `rev`'s read seam took a bare
+//! `open`/`read`, so on the host it could read no input at all, and its output
+//! was previously covered only by library tests (as with `nl` and `fold`
+//! earlier).
 
 mod face_support;
 
@@ -23,9 +31,10 @@ use std::process::{Command, Stdio};
 const REV: &str = env!("CARGO_BIN_EXE_rev");
 const USAGE: &str = "usage: rev [file ...]\n";
 
-/// 用**原始字节**当 argv 跑一形：`&str` 造不出一枚裸 `ff` 的参数（`"-\xff"` 是
-/// Unicode 转义，编码成 UTF-8 就成了 `ef bf bd`），只有 `OsString::from_vec` 交得出的
-/// 才是内核看到的那串字节。
+/// Run one shape with **raw bytes** as argv: a `&str` cannot carry a bare `ff`
+/// argument (`"-\xff"` is a Unicode escape, and encoding it as UTF-8 yields
+/// `ef bf bd`); only what `OsString::from_vec` hands over is the byte string
+/// the kernel sees.
 fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::os::unix::ffi::OsStringExt as _;
     let argv: Vec<std::ffi::OsString> = args.iter().map(|a| std::ffi::OsString::from_vec(a.clone())).collect();
@@ -62,10 +71,11 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
-/// 同上，但三条通道交回**原始字节**。
+/// Same as above, but all three channels come back as **raw bytes**.
 ///
-/// 报文里要钉住一个裸字节时只能用这一条：`String::from_utf8_lossy` 会把 `c3` 和
-/// `c3 83` 都渲染成替换字符 U+FFFD，上面那个夹具区分不了这两种错法。
+/// This is the only way to pin a bare byte in a report: `String::from_utf8_lossy`
+/// renders both `c3` and `c3 83` as the replacement character U+FFFD, so the
+/// fixture above cannot tell those two mistakes apart.
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(REV)
         .args(args)
@@ -83,8 +93,9 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`rev.c:72-74` 的 `case '?': default`）。
-/// 参照件读数 `rev: unknown option -- Z` + `usage: rev [file ...]`。
+/// An unknown letter: the libc line first, `usage()` after, status 1 (the
+/// `case '?': default` at `rev.c:72-74`). The reference read
+/// `rev: unknown option -- Z` + `usage: rev [file ...]`.
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     let (out, status, err) = run(&["-Z"], b"abc");
@@ -93,8 +104,9 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     assert_eq!(err, format!("rev: unknown option -- Z\n{USAGE}"));
 }
 
-/// 聚簇只报**第一个**字符：调用者拿到 `'?'` 就直接 `usage()` 退出，不会回到
-/// getopt 去读第二个字母（参照件：`-bZ` → `unknown option -- b`）。
+/// A cluster reports only its **first** character: the caller gets `'?'` and
+/// exits through `usage()` without returning to getopt to read the second
+/// letter (reference: `-bZ` → `unknown option -- b`).
 #[test]
 fn a_cluster_reports_only_its_first_letter() {
     let (out, status, err) = run(&["-bZ"], b"abc");
@@ -103,13 +115,15 @@ fn a_cluster_reports_only_its_first_letter() {
     assert_eq!(err, format!("rev: unknown option -- b\n{USAGE}"));
 }
 
-/// 非 ASCII 的集外字母打的是**一个裸字节**：参照件 `tmp/rev-309/rev_ref` 现量
-/// `rev -é` → `rev: unknown option -- ` + `c3` + 换行，再一行 usage，退 1。
-/// 本壳在这一形上错过两次：按字符取时报 `c3 a9`（整个 `é`），按字节取但仍用 `char`
-/// 渲染时报 `c3 83`（U+00C3 的 UTF-8）——两种都比 C 多一个字节，而 lossy 的 `String`
-/// 夹具把这两种都读成替换字符，所以这一枚逐字节比 stderr。
-/// 只有一行 libc 报文也是断言的一部分：`rev.c:72-74` 拿到 `'?'` 就退出，
-/// 不会像 `getopt` 的累加型调用者那样把 `a9` 再报一次。
+/// A non-ASCII unknown letter prints **one bare byte**: the reference measured
+/// `rev -é` → `rev: unknown option -- ` + `c3` + newline, then one usage line,
+/// status 1. This shell got this shape wrong twice: taking a character reported
+/// `c3 a9` (the whole `é`), and taking a byte but still rendering it as `char`
+/// reported `c3 83` (the UTF-8 of U+00C3) — both are one byte longer than C,
+/// and the lossy `String` fixture reads both as the replacement character, so
+/// this test compares stderr byte by byte. That there is only one libc report
+/// is part of the assertion too: `rev.c:72-74` exits on `'?'` and does not
+/// report `a9` a second time the way an accumulating `getopt` caller would.
 #[test]
 fn an_unknown_nonascii_letter_prints_one_raw_byte() {
     let want: Vec<u8> = [
@@ -123,7 +137,8 @@ fn an_unknown_nonascii_letter_prints_one_raw_byte() {
     assert_eq!(status, 1, "stderr 是 {err:?}");
     assert_eq!(err, want, "字母该是一个裸字节 c3");
 
-    // 聚簇里非 ASCII 排在第二位：报错仍落在第一个字节上，且仍是**一行**。
+    // Non-ASCII in second position of a cluster: the report still lands on the
+    // first byte, and it is still **one line**.
     let (out, status, err) = run_bytes(&["-x\u{e9}"], b"abc");
     assert_eq!(out, Vec::new());
     assert_eq!(status, 1);
@@ -134,10 +149,11 @@ fn an_unknown_nonascii_letter_prints_one_raw_byte() {
 }
 
 
-/// 一枚**非法 UTF-8 的单字节**当选项字母（`-` 跟着裸 `ff`）：参照件 `tmp/rev-309/rev`
-/// 现量 `rev: unknown option -- ` + 裸字节 `ff`，退 1。C 的 `getopt` 在字节上步进
-/// （`minix3/lib/libc/stdlib/getopt.c:optopt = *place++`），所以字母就是那一个字节，
-/// 不存在「先当文本解码再报」这一说。
+/// A **single invalid-UTF-8 byte** as the option letter (`-` followed by a bare
+/// `ff`): the reference measured `rev: unknown option -- ` + the bare byte `ff`,
+/// status 1. C's `getopt` steps byte by byte
+/// (`minix3/lib/libc/stdlib/getopt.c:optopt = *place++`), so the letter is that
+/// one byte; there is no "decode as text first, then report" step.
 #[test]
 fn a_raw_nonutf8_option_letter_is_reported_as_that_byte() {
     let want: Vec<u8> = [
@@ -152,8 +168,10 @@ fn a_raw_nonutf8_option_letter_is_reported_as_that_byte() {
     assert_eq!(err, want, "字母该是裸字节 ff，不是折叠后的 efbfbd");
 }
 
-/// `--x` 报的字母是第二个连字符：optstring 里没有 `-`，所以它也是集外字符
-/// （参照件：`unknown option -- -`）。而纯 `--` 走的是另一支——结束选项环，不报错。
+/// `--x` reports the second hyphen as the letter: `-` is not in the optstring,
+/// so it is an unknown character too (reference: `unknown option -- -`). A
+/// plain `--` takes the other branch — it ends the option loop and reports
+/// nothing.
 #[test]
 fn a_dash_followed_by_a_word_is_an_unknown_option_named_by_the_dash() {
     let (out, status, err) = run(&["--x"], b"abc");
@@ -162,8 +180,9 @@ fn a_dash_followed_by_a_word_is_an_unknown_option_named_by_the_dash() {
     assert_eq!(err, format!("rev: unknown option -- -\n{USAGE}"));
 }
 
-/// `--` 自身被吃掉、后面的都算操作数（`getopt.c:81-85` 先 `++optind`）：
-/// 单给 `--` 仍是读标准输入，`-- <file>` 则改读那个文件。
+/// `--` is consumed and everything after it counts as an operand
+/// (`getopt.c:81-85` does `++optind` first): `--` alone still reads standard
+/// input, while `-- <file>` reads that file instead.
 #[test]
 fn the_end_of_options_marker_is_not_an_operand() {
     let (out, status, err) = run(&["--"], b"abc\ndefg\n");
@@ -180,10 +199,11 @@ fn the_end_of_options_marker_is_not_an_operand() {
     let _ = fs::remove_dir_all(dir);
 }
 
-/// 裸 `-` 是操作数而不是选项：optstring 里没有 `-`，getopt 结束选项环时**不推进**
-/// `optind`（`getopt.c:87-92`），于是这个 token 落进 `argv += optind` 的那一段，
-/// 走到 C 的 `fopen("-")` → `warn` 支（参照件：`rev: -: No such file or directory`，
-/// **一行、没有 usage**、退 1）。
+/// A bare `-` is an operand, not an option: `-` is not in the optstring, and
+/// getopt **does not advance** `optind` when it ends the option loop
+/// (`getopt.c:87-92`), so this token falls into the `argv += optind` segment
+/// and reaches C's `fopen("-")` → `warn` branch (reference:
+/// `rev: -: No such file or directory`, **one line, no usage**, status 1).
 #[test]
 fn a_solitary_dash_is_an_operand_and_warns_in_the_err3_shape() {
     let (out, status, err) = run(&["-"], b"abc");
@@ -202,8 +222,9 @@ fn a_solitary_dash_is_an_operand_and_warns_in_the_err3_shape() {
     assert!(!err.contains("usage:"), "操作数的 warn 不接 usage：{err:?}");
 }
 
-/// 不重排：非选项 token 一到，选项环就结束（`getopt.c:74-78`），所以
-/// `rev <file> -Z` 里的 `-Z` 是个**文件名**（参照件给它 warn 而照常处理前一个文件）。
+/// No reordering: the option loop ends as soon as a non-option token arrives
+/// (`getopt.c:74-78`), so the `-Z` in `rev <file> -Z` is a **file name** (the
+/// reference warns about it and processes the earlier file as usual).
 #[test]
 fn an_option_looking_token_after_an_operand_is_an_operand() {
     let dir = scratch();
@@ -219,9 +240,11 @@ fn an_option_looking_token_after_an_operand_is_an_operand() {
     let _ = fs::remove_dir_all(dir);
 }
 
-/// 打不开的操作数**非致命**（`rev.c:85-89` 是 `warn` + `++argv` + `continue`）：
-/// 坏文件报一行、好文件照做、退码 1。旧写法两处都不合：句子少了 `strerror`，
-/// 而且没有选项环。
+/// An operand that cannot be opened is **non-fatal** (`rev.c:85-89` is `warn` +
+/// `++argv` + `continue`): the bad file reports one line, the good files are
+/// processed as usual, exit code 1. The old implementation got both parts
+/// wrong: the sentence lacked the `strerror` part, and there was no option
+/// loop.
 #[test]
 fn an_unopenable_operand_warns_and_the_run_continues() {
     let dir = scratch();
@@ -244,30 +267,38 @@ fn an_unopenable_operand_warns_and_the_run_continues() {
     let _ = fs::remove_dir_all(dir);
 }
 
-/// 输出腿（本闸门存在的另一半）：以前 `rev` 用裸 `open`/`read`，宿主上**读不到输入**，
-/// 所以这三形从来没有被进程级测过。金样逐形对参照件（`tmp/rev-309/golden.log`）。
+/// The output leg (the other half of why this face exists): `rev` used to use a
+/// bare `open`/`read`, so on the host it **could read no input**, and these
+/// three shapes had never been tested at process level. The golden samples were
+/// checked shape by shape against the reference (`tmp/rev-309/golden.log`).
 #[test]
 fn the_reversal_reaches_the_output_end_to_end() {
     let (out, status, err) = run(&[], b"abc\ndefg\n");
     assert_eq!((out.as_str(), err.as_str(), status), ("cba\ngfed\n", "", 0));
-    // 末行没有换行也照反，并补一个换行（`rev.c:94-99`）。
+    // A final line without a newline is still reversed, and one newline is
+    // added (`rev.c:94-99`).
     let (out, status, _) = run(&[], b"abc");
     assert_eq!((out.as_str(), status), ("cba\n", 0));
-    // 空输入不产出行。
+    // Empty input produces no lines.
     let (out, status, _) = run(&[], b"");
     assert_eq!((out.as_str(), status), ("", 0));
-    // 字符级反转：多字节字符不被撕裂（C 走的是宽字符，同一保证）。
+    // Character-level reversal: multibyte characters are not torn apart (C goes
+    // through wide characters, the same guarantee).
     let (out, _, _) = run(&[], "aé中b\n".as_bytes());
     assert_eq!(out, "b中éa\n");
 }
 
-/// 标准输入读不出内容时，C 报的是**流名**而不是操作数：`rev.c:80-81` 把 `filename`
-/// 起成 `"stdin"`，`:101-104` 的 `if (ferror(fp)) warn("%s", filename)` 于是印
-/// `rev: stdin: <strerror>` 并把退码置 1。宿主上最省事的读错误承载是让标准输入
-/// 是一个目录的文件描述符：打开成功、读的时候拿 `EISDIR`。参照件在同一形上的读数
-/// （`tmp/rev-331/measure.log`）：`rev_ref: stdin: Is a directory`、退 1、无输出。
-/// 本壳以前把读失败当文件末尾，于是这一形**什么都不说还退 0**。
-/// `Is a directory` 那句取自宿主 `strerror` 表（真机读库腿归 `C-57`/E5）。
+/// When standard input cannot be read, C reports the **stream name**, not an
+/// operand: `rev.c:80-81` initialises `filename` to `"stdin"`, so
+/// `if (ferror(fp)) warn("%s", filename)` at `:101-104` prints
+/// `rev: stdin: <strerror>` and sets the exit code to 1. The easiest read-error
+/// carrier on the host is a file descriptor for a directory as standard input:
+/// the open succeeds and the read answers `EISDIR`. The reference's reading of
+/// this shape (`tmp/rev-331/measure.log`): `rev_ref: stdin: Is a directory`,
+/// status 1, no output. This shell used to treat a read failure as end of file,
+/// so this shape **said nothing and exited 0**. The `Is a directory` sentence
+/// comes from the host `strerror` table (the on-target libc read leg is
+/// tracked separately as E5).
 #[test]
 fn a_stdin_that_cannot_be_read_names_the_stream_and_exits_one() {
     let dir = scratch();
@@ -300,10 +331,12 @@ fn a_stdin_that_cannot_be_read_names_the_stream_and_exits_one() {
     );
 }
 
-/// 同一条 `warn("%s", filename)` 的另一半：操作数顶掉了 `filename` 的初值
-/// （`rev.c:91`），所以读一个打不开/读不出的操作数时报的是**那个操作数**而不是
-/// `stdin`。这一形本壳已经对（走 `read_file` 的错误通道），留在这里是为了让上一枚
-/// 门钉的「流名跟着流走」有对照，不至于把两件事混成一句泛化的报文。
+/// The other half of the same `warn("%s", filename)`: an operand replaces
+/// `filename`'s initial value (`rev.c:91`), so an operand that cannot be opened
+/// or read reports **that operand**, not `stdin`. This shape is already
+/// correct here (it goes through `read_file`'s error channel); it stays so the
+/// previous test's "the stream name follows the stream" has a contrast, and the
+/// two cases do not collapse into one generic report.
 #[test]
 fn an_unreadable_operand_names_itself_rather_than_stdin() {
     let dir = scratch();
@@ -320,8 +353,10 @@ fn an_unreadable_operand_names_itself_rather_than_stdin() {
 }
 
 fn scratch() -> std::path::PathBuf {
-    // 每枚门各拿一个目录：这些门结尾都要 `remove_dir_all`，而 cargo 是多线程跑测试的，
-    // 共用同一个按进程号命名的目录就会让先跑完的那枚删掉别人正在用的档。
+    // Each test gets its own directory: these tests all end with
+    // `remove_dir_all`, and cargo runs tests on multiple threads, so sharing
+    // one directory named after the process id would let whichever finishes
+    // first delete files another test is still using.
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("rev-face-{}-{}", std::process::id(), seq));

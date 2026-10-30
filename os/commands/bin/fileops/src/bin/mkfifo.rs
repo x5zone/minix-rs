@@ -21,7 +21,7 @@
 //!   difference cannot be observed; this program restores it anyway, since
 //!   leaving the mask at zero is a side effect with no purpose to justify it.
 //!
-//! Real-machine effect is the writable-root gate (`C-57`/E5), as for every
+//! Real-machine effect is the writable-root gate (`E5`), as for every
 //! write-side command: the root image is the read-only boot-shim `imgrd`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]

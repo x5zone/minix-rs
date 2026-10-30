@@ -22,7 +22,7 @@ use crate::phys_mem::AlignedPhysBytes;
 /// Dispatches to the region's `MemType::ev_pagefault`, then acts on the
 /// returned `PagefaultResult`: allocate a new page, resolve CoW, or report
 /// an access violation.
-#[allow(clippy::too_many_arguments)] // V10-P2-1 (DEFERRED): fold into a PagefaultCtx struct
+#[allow(clippy::too_many_arguments)] // DEFERRED: fold into a PagefaultCtx struct
 pub(crate) fn handle_pagefault(
     proc_endpoint: Endpoint,
     region: &mut VirRegion,
@@ -68,14 +68,19 @@ pub(crate) fn handle_pagefault(
 
 /// Make the hardware PTE for `offset` agree with the VM bookkeeping slot.
 ///
-/// C 对应: `map_pf` 尾部的 `pt_writemap`（region.c/pagetable.c:784，CoW 写位
-/// 翻转走 WMF_WRITEFLAGSONLY）与 `map_ph_writept`——Minix3 的缺页路径由 VM
-/// 自己写进程页表。G-V12-8: 本函数之前缺失，`handle_pagefault` 链只更新
-/// PageSlot/PageFrames 记账，通电后指令重执行会二次故障（活锁）。
+/// C counterpart: the `pt_writemap` at the tail of `map_pf`
+/// (region.c/pagetable.c:784, with the CoW write-bit flip going through
+/// WMF_WRITEFLAGSONLY) and `map_ph_writept` — Minix3's page-fault path has VM write
+/// the process page table itself. This function was missing before: the
+/// `handle_pagefault` chain only updated PageSlot/PageFrames accounting, so once
+/// the instruction was restarted after the fault it faulted a second time
+/// (livelock).
 ///
-/// 三路分派：同帧不同位 → `update_flags`（WMF_WRITEFLAGSONLY）；换帧 →
-/// `remap`（WMF_OVERWRITE，单操作替换、无"无映射"窗口）；未映射 → `map`。
-/// 写权限判定用 `is_page_writable`（C `pr_writable`，region.c:130-133）。
+/// Three-way dispatch: same frame, different bits → `update_flags`
+/// (WMF_WRITEFLAGSONLY); different frame → `remap` (WMF_OVERWRITE, a single
+/// replacing operation with no "unmapped" window); unmapped → `map`.
+/// The write-permission decision uses `is_page_writable` (C `pr_writable`,
+/// region.c:130-133).
 pub(crate) fn sync_slot_pte(
     region: &VirRegion,
     frames: &PageFrames,
@@ -86,25 +91,30 @@ pub(crate) fn sync_slot_pte(
         .get_slot(offset)
         .and_then(PageSlot::pfn)
         .ok_or(CowCoreError::PageNotMapped)?;
-    // C map_pf 页对齐后再 pt_writemap——fault_addr 是指令给出的字节地址，
-    // PTE 只吃页界。未对齐地址此前让 pt.map 报 InvalidAddress，缺页填充
-    // 整体失败（NK4-A C-3 真机：RS 首指令 0x2246c0 → vm-pf err
-    // PageTable(InvalidAddress)，2026-09-22）。
+    // C aligns the page before pt_writemap in map_pf — fault_addr is the byte
+    // address the instruction supplies, while a PTE only takes page boundaries.
+    // An unaligned address used to make pt.map report InvalidAddress, failing the
+    // whole page-fault fill (seen on real hardware: RS's first instruction
+    // 0x2246c0 -> vm-pf err PageTable(InvalidAddress)).
     let vaddr = VirBytes(
         (region.vaddr.0 + offset.0) & !(crate::region::PAGE_SIZE as u64 - 1),
     );
     let paddr = frames.pfn_to_phys(pfn);
-    // C i386 的 P|U 天然可执行（无 NX）；x86-64 NXE 下 EXECUTABLE 必须显式
-    // 给出，否则用户 text 首次取指即 #PF(err=0x15)（NK4-A C-3 真机
-    // 2026-09-22：RS 入口页 PTE=NX，walk=0x5，fetch 拒绝）。B41（§1.74/
-    // §1.75）修正：可执行性不再从“非可写”间接推断（那会把 exec 装载的
-    // PROT_RWX 文本因“可写”误判 NX → 取指恒 #PF 活锁），而是直接取 region
-    // 承接的 PROT_EXEC（`is_executable`）。语义＝“caller 请求 EXEC 才可执
-    // 行”：未请求 EXEC 的映射（如裸 mmap 数据/栈）保持 NX；但 exec 装载腿
-    // （`exec_worker.rs` 每段 + 栈均 PROT_RWX，C 忠实）会产出 RWX，与
-    // i386 C 无-NX 等价，**非严格用户页 W^X**（fix27e [ARCH] 的 W^X 作
-    // 用于内核 identity window，不约束此 C 忠实路径）；若要恢复严格用户
-    // 页 W^X，需专开一单元在 exec_worker 按 ELF p_flags/PT_GNU_STACK 分派 prot。
+    // C on i386 has P|U executable by nature (no NX); under x86-64 NXE,
+    // EXECUTABLE must be given explicitly, or the first instruction fetch from
+    // user text faults with #PF(err=0x15) (seen on real hardware: the RS entry
+    // page had PTE=NX, walk=0x5, and the fetch was refused). The correction:
+    // executability is no longer inferred indirectly from "not writable" (that
+    // misjudged exec-loaded PROT_RWX text as NX because it was writable, causing a
+    // fetch livelock) but taken directly from the region's PROT_EXEC
+    // (`is_executable`). Semantics = "executable only if the caller requested
+    // EXEC": mappings that did not request EXEC (bare mmap data/stack) stay NX;
+    // but the exec-load leg (`exec_worker.rs` gives every segment and the stack
+    // PROT_RWX, faithful to C) produces RWX, equivalent to i386 C without NX and
+    // **not strict user-page W^X** (W^X applies to the kernel identity window and
+    // does not constrain this C-faithful path); restoring strict user-page W^X
+    // would need a separate unit dispatching prot in exec_worker by ELF p_flags/
+    // PT_GNU_STACK.
     let mut flags = if region.is_page_writable(frames, offset) {
         PageFlags::read_write()
     } else {
@@ -197,11 +207,11 @@ pub(crate) fn mappedfile_pf_cont(
     let table = VmProcTable::get_global();
     let slot = table.vm_isokendpt(*caller_endpoint).map_err(|_| VfsQueueError::InvalidFd)?;
     let mut proc = table.get_active(slot).ok_or(VfsQueueError::InvalidFd)?;
-    // V9-P1-3 step 1: disjoint &mut fields via VmContext destructuring.
+    // Step 1: disjoint &mut fields via VmContext destructuring.
     let crate::vm_server::VmContext { page_alloc, page_frames, page_cache: cache, vfs_queue, .. } =
         &mut server.ctx;
     let frames = page_frames.as_mut().expect("page_frames not initialized");
-    // G-V12-8: the retry resolves the fault and must write the PTE too.
+    // The retry resolves the fault and must write the PTE too.
     let (regions, pt) = proc.mem_parts_mut();
     let region = regions.find_mut(*region_vaddr)
         .ok_or(VfsQueueError::InvalidFd)?;
@@ -245,7 +255,7 @@ pub(crate) fn alloc_and_map(
     memtype: &'static dyn MemType,
     pt: &mut PageTable,
 ) -> Result<u32, CowError> {
-    // V11/T30: C alloc_mem semantics — reclaim-retry at the funnel.
+    // C alloc_mem semantics — reclaim-retry at the funnel.
     let pfn = crate::alloc_page::alloc_pfn_reclaiming(alloc)
         .map_err(|_| CowError::NoMemory)?;
     // C `vrallocflags` (region.c:646-658) → `PAF_CLEAR` (alloc.c:452): every
@@ -324,7 +334,7 @@ pub(crate) fn cow_resolve_core(
         .map(|s| s.refcount)
         .unwrap_or(0);
 
-    // V13-P1-1: exclusive ownership alone does not license the write-bit
+    // Exclusive ownership alone does not license the write-bit
     // flip — the reuse shortcut is only valid for memtypes where a
     // privately-held page is writable (the anon family). For MappedFile,
     // whose `writable()` is constantly false, C has no refcount shortcut at
@@ -345,7 +355,7 @@ pub(crate) fn cow_resolve_core(
         return Ok(old_pfn);
     }
 
-    // V11/T30: reclaim-retry funnel (C alloc_mem).
+    // Reclaim-retry funnel (C alloc_mem).
     let new_pfn = crate::alloc_page::alloc_pfn_reclaiming(alloc)
         .map_err(|_| CowCoreError::NoMemory)?;
 
@@ -353,7 +363,7 @@ pub(crate) fn cow_resolve_core(
 
     let pending = region.unmap_page(frames, offset);
     region.map_page(frames, offset, new_pfn, &MEM_TYPE_ANON);
-    // G-V12-8: point the hardware PTE at the private copy (C pt_writemap
+    // Point the hardware PTE at the private copy (C pt_writemap
     // WMF_OVERWRITE) — without this the resumed instruction re-faults.
     sync_slot_pte(region, frames, offset, pt)?;
 
@@ -386,7 +396,7 @@ fn verify_cow_consistency(
     region: &VirRegion,
     offset: VirBytes,
 ) {
-    // V13-P1-1: the old page's post-CoW refcount has two legal outcomes and
+    // The old page's post-CoW refcount has two legal outcomes and
     // which one applies is unknown here — 0 when this CoW displaced the last
     // reference (sole-held file page, now freed via the unref funnel) or ≥1
     // when other sharers remain (fork shape). The former became reachable
@@ -434,7 +444,7 @@ impl From<CowCoreError> for CowError {
 
 /// Copy `src_pfn` into `dst_pfn` and zero the last `zero_len` bytes of the
 /// destination page — the Rust `cow_block(…, clearend)` tail (mem_file.c:
-/// 73-79, G-V12-11): a file's final partial page must never expose the
+/// 73-79): a file's final partial page must never expose the
 /// cache's stale bytes past EOF, so the private copy is created first and
 /// the tail is scrubbed second.
 ///
@@ -504,7 +514,7 @@ fn copy_page_content(_frames: &PageFrames, _src_pfn: u32, _dst_pfn: u32) {
 ///
 /// Iterates over every page slot; if `needs_cow` is true, performs
 /// `cow_resolve` on that page. Returns the number of pages resolved.
-// V10-P2-1 (DEFERRED): fork/exec production paths are not wired; kept for
+// DEFERRED: fork/exec production paths are not wired; kept for
 // the CoW test suite and the future exec-newmem flow.
 #[allow(dead_code)]
 pub(crate) fn cow_resolve_region(
@@ -615,7 +625,7 @@ mod tests {
     fn test_cow_resolve_no_sharing() {
         let mut frames = make_frames(8);
         let mut alloc = TestAlloc { next: 0 };
-        // V13-P1-1: the reuse shortcut now requires the region to be
+        // The reuse shortcut now requires the region to be
         // writable (is_page_writable = VR_WRITABLE && memtype.writable), so
         // the no-sharing case must be modelled on a writable anon region —
         // that is the shape in which C's wp_page_reuse analogue applies.
@@ -657,7 +667,7 @@ mod tests {
     fn test_cow_resolve_core_refcount_one_fast_path() {
         let mut frames = make_frames(4);
         let mut alloc = TestAlloc { next: 0 };
-        // V13-P1-1: the reuse shortcut requires is_page_writable to hold —
+        // The reuse shortcut requires is_page_writable to hold —
         // VR_WRITABLE on the region and a memtype whose private pages are
         // writable. Anon with refcount 1 is exactly that shape.
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::WRITABLE);
@@ -675,7 +685,7 @@ mod tests {
         assert_eq!(slot.pfn(), Some(pfn));
     }
 
-    // --- G-V12-8: the fault path must keep the hardware PTE in sync with
+    // --- The fault path must keep the hardware PTE in sync with
     // the bookkeeping slot (C: map_pf → pt_writemap). SimPaging makes the
     // PTE side assertable for the first time.
 
@@ -711,18 +721,20 @@ mod tests {
         assert!(flags.contains(PageFlags::WRITABLE), "private writable page must get a RW PTE");
     }
 
-    /// B41 (§1.74/§1.75) 回归：exec 装载每段 PROT_RWX（C 忠实，
-    /// `exec_general.c:23-24`），region 需同时携 WRITABLE+EXECUTABLE，
-    /// `sync_slot_pte` 必须据此产出可执行 PTE——否则 PROT_RWX 文本因
-    /// “可写”被旧逻辑判 NX → 取指恒 #PF 活锁（真机 0x20ef60 现场）。
-    /// 同时验证未请求 EXEC 的可写区（堆/栈）仍保持 NX，不破坏 W^X。
+    /// Regression: exec loading gives every segment PROT_RWX (faithful to C,
+    /// `exec_general.c:23-24`), so the region must carry both WRITABLE and
+    /// EXECUTABLE, and `sync_slot_pte` must produce an executable PTE — otherwise
+    /// PROT_RWX text gets judged NX by the old logic "because it is writable",
+    /// causing a fetch livelock (seen on real hardware at 0x20ef60). At the same
+    /// time, a writable region that did not request EXEC (heap/stack) must stay NX,
+    /// so W^X is not broken.
     #[test]
     fn test_sync_slot_pte_honors_executable_region_flag() {
         let mut frames = make_frames(8);
         let mut alloc = TestAlloc { next: 0 };
         let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
-        // Exec-loaded text: WRITABLE + EXECUTABLE → PTE 必须带 EXECUTABLE。
+        // Exec-loaded text: WRITABLE + EXECUTABLE -> the PTE must carry EXECUTABLE.
         let mut text = VirRegion::new(
             VirBytes(0x1000),
             VirBytes(0x4000),
@@ -736,7 +748,7 @@ mod tests {
         assert!(tflags.contains(PageFlags::WRITABLE), "RWX text stays writable (C-faithful)");
         assert!(tflags.contains(PageFlags::EXECUTABLE), "PROT_EXEC region must map executable (B41)");
 
-        // Plain writable data (no EXEC) → 必须保持 NX，不注入可执行。
+        // Plain writable data (no EXEC) -> must stay NX; do not inject executable.
         let mut data = VirRegion::new(VirBytes(0x2000), VirBytes(0x4000), VrFlags::WRITABLE);
         data.def_memtype = Some(&MEM_TYPE_ANON);
         let dpfn = alloc.alloc_pfn().unwrap();
@@ -797,7 +809,7 @@ mod tests {
 
         // refcount==1 + write → `anon_pagefault` verdicts `Handled` ("safely
         // writable without CoW"); the PTE write-bit flip happens in the
-        // Handled arm's PTE sync (G-V12-8) — before this fix the stale
+        // Handled arm's PTE sync — before this fix the stale
         // read-only PTE would re-fault the resumed instruction.
         let action = handle_pagefault(
             Endpoint(100), &mut region, &mut frames, &mut alloc,
@@ -813,7 +825,7 @@ mod tests {
 
     #[test]
     fn test_cow_mappedfile_sole_page_copies_and_retypes_to_anon() {
-        // V13-P1-1 regression: a sole-held (refcount == 1) MappedFile page in
+        // Regression: a sole-held (refcount == 1) MappedFile page in
         // a writable region must take the COPY path on a write fault. C's
         // mappedfile_pagefault has no refcount shortcut and cow_block re-types
         // the page to anon (mem_file.c:70-71, "After COW we are a normal

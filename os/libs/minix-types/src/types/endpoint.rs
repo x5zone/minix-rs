@@ -303,13 +303,13 @@ mod tests {
 
     #[test]
     fn test_endpoint_slot_extraction() {
-        // 测试槽位提取：endpoint = (generation << 15) + slot
-        // 当 generation = 0 时，endpoint = slot
+        // Test slot extraction: endpoint = (generation << 15) + slot
+        // With generation = 0, endpoint = slot
         let ep = Endpoint::from_generation_slot(0, 5);
         assert_eq!(ep.slot(), 5);
         assert_eq!(ep.generation(), 0);
 
-        // 测试带 generation 的情况
+        // Test the case that carries a generation
         let ep = Endpoint::from_generation_slot(1, 5);
         assert_eq!(ep.slot(), 5);
         assert_eq!(ep.generation(), 1);
@@ -330,8 +330,8 @@ mod tests {
 
     #[test]
     fn test_endpoint_kernel_task() {
-        // 内核任务的槽位号为负
-        let kernel_ep = Endpoint(-5); // 槽位号 -5
+        // Kernel task slot numbers are negative
+        let kernel_ep = Endpoint(-5); // slot number -5
         assert!(kernel_ep.is_kernel_task());
         assert!(!kernel_ep.is_user_proc());
     }
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_negative_slot() {
-        // 内核任务使用负数槽位
+        // Kernel tasks use negative slot numbers
         let endpoint = Endpoint::from_generation_slot(1, -1);
         assert_eq!(endpoint.slot(), -1);
         assert_eq!(endpoint.generation(), 1);
@@ -375,22 +375,22 @@ mod tests {
 
     #[test]
     fn test_endpoint_to_user_slot() {
-        // 用户进程的 endpoint 可以转换为 UserSlot
+        // A user process endpoint converts to UserSlot
         let ep = Endpoint::from_generation_slot(1, 5);
         assert_eq!(ep.to_user_slot(), Some(UserSlot::new(5)));
 
-        // 内核任务的 endpoint 不能转换为 UserSlot
+        // A kernel task endpoint does not convert to UserSlot
         let kernel_ep = Endpoint::from_generation_slot(0, -1);
         assert_eq!(kernel_ep.to_user_slot(), None);
     }
 
     #[test]
     fn test_endpoint_to_kernel_slot() {
-        // 用户进程的内核槽位
+        // A user process's kernel slot
         let ep = Endpoint::from_generation_slot(1, 5);
         assert_eq!(ep.to_kernel_slot().get(), 5 + MAX_NR_TASKS);
 
-        // 内核任务的内核槽位
+        // A kernel task's kernel slot
         let kernel_ep = Endpoint::from_generation_slot(0, -1);
         assert_eq!(kernel_ep.to_kernel_slot().get(), MAX_NR_TASKS - 1);
     }

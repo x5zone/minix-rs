@@ -1,26 +1,42 @@
 //! End-to-end face for the `jot` binary, checked against
-//! `minix3/usr.bin/jot/jot.c`（选项环 `:149-177`、操作数计数的 `switch (argc)`
-//! `:184-226`、`usage()` `:313-320`）与它驱动的 libc `getopt`
-//!（`minix3/lib/libc/stdlib/getopt.c:74-78`、`:81-92`、`:95-104`、`:118-141`）。
+//! `minix3/usr/bin/jot/jot.c` (the option loop at `:149-177`, the operand
+//! counting `switch (argc)` at `:184-226`, `usage()` at `:313-320`) and the
+//! libc `getopt` it drives (`minix3/lib/libc/stdlib/getopt.c:74-78`,
+//! `:81-92`, `:95-104`, `:118-141`).
 //!
-//! `jot.c:150` 的 optstring 是 `"b:cnp:rs:w:"`：三个不带值的字母（`c`、`n`、`r`）
-//! 加四个带值的（`b`、`p`、`s`、`w`），所以可达的出口有**四类**，句式各有主人：
-//! ① 集外字母 = libc 一行 + usage 一行，退 1（聚簇只报第一个坏字母，`--x` 报的是 `-`）；
-//! ② 带值字母缺值 = libc 的 `option requires an argument -- <字母>` + usage 两行，
-//!    四个字母同形（旧写法里 `-p` 缺值错走了 `Bad precision value` 那一支，句子和行数都不同）；
-//! ③ `-p` 的值过不了 `strtol(optarg, &ep, 0)` 全串检查或为负 = `jot: Bad precision value`
-//!    **单独一行**、不接 usage；
-//! ④ 环正常结束后才轮到操作数：一个都没有（含光写 `--`）是 usage 且**没有** libc 行，
-//!    五个以上是 `jot: Too many arguments.  What do you mean by <第五个>?` 单独一行。
+//! The optstring at `jot.c:150` is `"b:cnp:rs:w:"`: three letters with no
+//! value (`c`, `n`, `r`) plus four with one (`b`, `p`, `s`, `w`), so there
+//! are **four** reachable exits, each with its own sentence:
+//! (1) a letter outside the set = one libc line + one usage line, exit 1
+//!     (a cluster reports only its first bad letter; `--x` reports `-`);
+//! (2) a value-taking letter without its value = libc's
+//!     `option requires an argument -- <letter>` + two usage lines, the same
+//!     for all four letters (the earlier implementation sent a missing `-p`
+//!     value down the `Bad precision value` branch, which differs in both
+//!     sentence and line count);
+//! (3) a `-p` value failing the `strtol(optarg, &ep, 0)` whole-string check,
+//!     or negative = `jot: Bad precision value` on a **single line**, with no
+//!     usage;
+//! (4) only after the loop ends normally do the operands count: none
+//!     (including a lone `--`) is usage with **no** libc line; five or more is
+//!     `jot: Too many arguments.  What do you mean by <fifth>?` on a single
+//!     line.
 //!
-//! 另两处只有端到端才看得见：`-b` 与 `-w` 共用一个词槽（`:172-176` 的 FALLTHROUGH），
-//! 以及环**不重排**——`jot 3 -Z` 里 `-Z` 是 begin 那个操作数，`sscanf` 不吃它时就取
-//! 它最后一个字符的代码点当值（`:203-204`），所以打的是 90/91/92。
+//! Two more facts are visible only end to end: `-b` and `-w` share one word
+//! slot (the FALLTHROUGH at `:172-176`), and the loop does **not**
+//! rearrange — in `jot 3 -Z`, `-Z` is the begin operand, and where `sscanf`
+//! does not take it, the code point of its last character becomes the value
+//! (`:203-204`), so it prints 90/91/92.
 //!
-//! 本支没有读写缝缺陷：`jot` 既不读标准输入也不开任何档，值全由命令行推出来。
-//! 也不测 `prec` 保持 `-1` 的那一族（`jot 3`、`-n 3`、`3 - 5`、`-s , 3`）——`jot.c:349-356`
-//! 在那一族拼出的说明符本身是坏的，被打印成什么由各家 `printf` 决定，本机不可判定，
-//! 已登记为 `JOT-PREC-MINUS-ONE-FORMAT`。`-r` 的随机流另有一档（`07` §4.4）。
+//! This branch has no read/write seam defect: `jot` neither reads standard
+//! input nor opens any file, so every value is derived from the command
+//! line. The family where `prec` stays `-1` is not tested either (`jot 3`,
+//! `-n 3`, `3 - 5`, `-s , 3`): the format specifier `jot.c:349-356` builds
+//! there is itself broken and what gets printed depends on each `printf`
+//! implementation, which makes it undecidable on this host; it is registered
+//! as `JOT-PREC-MINUS-ONE-FORMAT`. The `-r` random stream is a separate
+//! divergence: this layer uses an injected LCG rather than libc's
+//! `random()`.
 
 use std::process::{Command, Stdio};
 
@@ -42,8 +58,10 @@ fn run(args: &[&str]) -> (String, i32, String) {
     )
 }
 
-/// 与 `run` 同一条命令缝，但**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3` 渲染成三字节
-/// U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法（`rev`/`paste` 那几支同此）。
+/// The same command seam as `run`, but handing the bytes back **verbatim**:
+/// `from_utf8_lossy` renders a bare `c3` as the three-byte U+FFFD, so the
+/// text form cannot tell the two failure shapes "one byte" and "two bytes"
+/// apart (the `rev`/`paste` branches have the same issue).
 fn run_bytes(args: &[&str]) -> (Vec<u8>, i32, Vec<u8>) {
     let output = Command::new(JOT)
         .args(args)
@@ -59,13 +77,20 @@ fn run_bytes(args: &[&str]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/jot-317/jot_ref` 现量 `-é` 与 `-cé`
-/// 都是 `jot: unknown option -- ` + `c3` + 换行，再跟 usage、退 1（`c` 是 `"b:cnp:rs:w:"` 里
-/// 合法且不带值的字母，聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`，`jot.c:151-152` 拿到
-/// `'?'` 就 `usage()`，第二个字母轮不到）。`-bé 3` 是这一族的反面：`b` 带值，`é` 整个被当值
-/// 收走，退 0 把那枚词按 `reps` 重复三行——换渲染不许碰取值那半。ASCII 的 `-Z` 与聚簇只报第一枚两形本文件
-/// 各已有主人（`an_unknown_letter_prints_the_libc_line_then_the_usage`、
-/// `a_cluster_reports_only_its_first_bad_letter`），这里不重复承载。
+/// For a letter outside the set, the letter position is a **single raw
+/// byte**: the reference measured both `-é` and `-cé` as
+/// `jot: unknown option -- ` + `c3` + newline, then usage and exit 1 (`c` is
+/// a legal valueless letter in `"b:cnp:rs:w:"`, so the cluster keeps
+/// consuming and takes the first byte of `é`; `-Zé` stops at `Z` because
+/// `jot.c:151-152` calls `usage()` on `'?'` and the second letter is never
+/// reached). `-bé 3` is the counter-case for this family: `b` takes a
+/// value, the whole `é` is swallowed as that value, and exit 0 repeats the
+/// word on three lines as `reps` — byte handling must not touch the
+/// value-taking half. ASCII `-Z` and "a cluster reports only its first bad
+/// letter" each already have an owner in this file
+/// (`an_unknown_letter_prints_the_libc_line_then_the_usage`,
+/// `a_cluster_reports_only_its_first_bad_letter`) and are not repeated
+/// here.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_a_single_raw_byte() {
     let multibyte: Vec<u8> = [
@@ -90,7 +115,8 @@ fn the_libc_line_of_a_multibyte_flag_is_a_single_raw_byte() {
     );
 
     let (out, code, err) = run_bytes(&["-b\u{e9}", "3"]);
-    // 参照件 `jot_ref -bé 3` 现量三行 `c3 a9 0a`（`-b` 把那枚词重复 reps 次），退 0 且不写 stderr。
+    // The reference measured `jot_ref -bé 3` as three lines of `c3 a9 0a`
+    // (`-b` repeats that word reps times), exit 0, nothing on stderr.
     assert_eq!(
         (out.as_slice(), code),
         ("\u{e9}\n\u{e9}\n\u{e9}\n".as_bytes(), 0),
@@ -99,7 +125,8 @@ fn the_libc_line_of_a_multibyte_flag_is_a_single_raw_byte() {
     assert_eq!(err, Vec::new(), "`-b` 的值不是字母位，多字节字符照原样出去");
 }
 
-/// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`jot.c:151-152`）。旧写法少了 libc 那一行。
+/// A letter outside the set: the libc line first, `usage()` after, exit 1
+/// (`jot.c:151-152`). The earlier implementation was missing the libc line.
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     let (out, status, err) = run(&["-Z", "3"]);
@@ -107,7 +134,8 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     assert_eq!(err, format!("jot: unknown option -- Z\n{USAGE}"));
 }
 
-/// 聚簇只报第一个坏字母（参照件：`-cz` → `unknown option -- z`，`c` 已生效但不再往后扫）。
+/// A cluster reports only its first bad letter (reference: `-cz` →
+/// `unknown option -- z`; `c` took effect but the scan does not go on).
 #[test]
 fn a_cluster_reports_only_its_first_bad_letter() {
     for (args, letter) in [("-cz", "z"), ("-Zb", "Z"), ("-ncrZ", "Z")] {
@@ -117,7 +145,8 @@ fn a_cluster_reports_only_its_first_bad_letter() {
     }
 }
 
-/// `--x` 报的字母是第二个连字符：optstring 里没有 `-`（参照件：`unknown option -- -`）。
+/// `--x` reports the second hyphen as the letter: the optstring contains no
+/// `-` (reference: `unknown option -- -`).
 #[test]
 fn a_dash_followed_by_a_word_is_an_unknown_option_named_by_the_dash() {
     let (out, status, err) = run(&["--x", "3"]);
@@ -125,8 +154,10 @@ fn a_dash_followed_by_a_word_is_an_unknown_option_named_by_the_dash() {
     assert_eq!(err, format!("jot: unknown option -- -\n{USAGE}"));
 }
 
-/// 四个带值字母缺值同形：libc 那一行 + usage，退 1。旧写法里 `-b`/`-s`/`-w` 只打 usage、
-/// `-p` 打成 `Bad precision value`，两支的行数与句子都错位。
+/// A value-taking letter without its value is uniform for all four: the
+/// libc line + usage, exit 1. The earlier implementation printed only usage
+/// for `-b`/`-s`/`-w` and `Bad precision value` for `-p`, so the line counts
+/// and sentences were both off.
 #[test]
 fn a_value_letter_without_its_value_prints_the_libc_line_then_the_usage() {
     for letter in ['b', 'p', 's', 'w'] {
@@ -142,8 +173,10 @@ fn a_value_letter_without_its_value_prints_the_libc_line_then_the_usage() {
             format!("jot: option requires an argument -- {letter}\n{USAGE}"),
             "缺值这一支是两句、程序名跟着 `getprogname()`"
         );
-        // 聚簇落在串尾同样走这一支——但**后面不能再有 token**：`-cb 3` 里的 `3` 会被
-        // `-b` 取作词值，于是缺值判据根本不成立（参照件现量：那样打的是 usage）。
+        // A cluster landing at the end of the string takes the same branch —
+        // but **no further token may follow**: the `3` in `-cb 3` would be
+        // taken as `-b`'s word value, so the missing-value condition would
+        // not hold at all (reference measurement: that prints the usage).
         let clustered = format!("-c{letter}");
         let (_, status, err) = run(&[&clustered]);
         assert_eq!(status, 1);
@@ -154,8 +187,10 @@ fn a_value_letter_without_its_value_prints_the_libc_line_then_the_usage() {
     }
 }
 
-/// `-p` 的值坏是 `errx` 的单独一行（`jot.c:161-165`）：程序名写死在句子里、**不接 usage**、
-/// 退 1。判定用的是 `strtol` 的全串检查，所以 `09`（八进吃到 `0` 就停）与 `3x` 都拒。
+/// A bad `-p` value is a single `errx` line (`jot.c:161-165`): the program
+/// name is hard-coded in the sentence, **no usage follows**, and the exit
+/// code is 1. The test is `strtol`'s whole-string check, so both `09` (octal
+/// stops at `0`) and `3x` are rejected.
 #[test]
 fn a_rejected_precision_is_one_line_without_the_usage() {
     for word in ["abc", "-1", "3x", "09", " ", "-", "99999999999999999999"] {
@@ -169,8 +204,9 @@ fn a_rejected_precision_is_one_line_without_the_usage() {
     }
 }
 
-/// 一个操作数都没有就是 usage，而且**没有** libc 那一行。`-b X` 的 `X` 被 `-b` 吃掉，
-/// 于是同样是一个操作数都没有（参照件现量：`jot -b X` 打 usage、退 1）。
+/// No operand at all means usage, and **no** libc line. In `-b X`, the `X`
+/// is eaten by `-b`, so again there is no operand (reference measurement:
+/// `jot -b X` prints the usage and exits 1).
 #[test]
 fn an_empty_operand_list_is_the_usage_without_a_libc_line() {
     for args in [
@@ -190,8 +226,9 @@ fn an_empty_operand_list_is_the_usage_without_a_libc_line() {
     }
 }
 
-/// 五个操作数起是一句 `errx`，报的是**第五个**（`argv[4]`），前面四个一个都不解读；
-/// `arguments.` 后面是两个空格（`jot.c:223-225`）。
+/// Five operands or more is one `errx` sentence naming the **fifth**
+/// (`argv[4]`); the four before it are not interpreted at all. Two spaces
+/// follow `arguments.` (`jot.c:223-225`).
 #[test]
 fn the_fifth_operand_is_the_one_named_by_the_too_many_arguments() {
     let (out, status, err) = run(&["3", "1", "5", "2", "9"]);
@@ -205,13 +242,15 @@ fn the_fifth_operand_is_the_one_named_by_the_too_many_arguments() {
         "报的是第五个操作数，不是最后一个"
     );
 
-    // 坏的第一操作数在这一支之前轮不到：个数判定先于任何解读。
+    // A bad first operand never gets a turn before this branch: the count
+    // check precedes any interpretation.
     let (_, status, err) = run(&["x", "1", "2", "3", "4"]);
     assert_eq!(status, 1);
     assert_eq!(err, "jot: Too many arguments.  What do you mean by 4?\n");
 }
 
-/// `reps` 与 `step` 的拒收句都是「两个空格 + 操作数原文 + 句尾无句点」（`jot.c:189 与 :215`）。
+/// Both the `reps` and the `step` rejection sentences are "two spaces + the
+/// operand verbatim + no trailing period" (`jot.c:189` and `:215`).
 #[test]
 fn a_rejected_operand_names_itself_after_two_spaces() {
     let (out, status, err) = run(&["x"]);
@@ -223,16 +262,18 @@ fn a_rejected_operand_names_itself_after_two_spaces() {
     assert_eq!(err, "jot: Bad step value:  x\n");
 }
 
-/// 环不重排：操作数之后的 `-c` 不再被当选项，而是第四个操作数即 step，
-/// `strtod` 全串检查当场拒掉（参照件：`jot 3 65 69 -c` → `Bad step value:  -c`）。
+/// The loop does not rearrange: a `-c` after the operands is no longer an
+/// option but the fourth operand, i.e. step, and `strtod`'s whole-string
+/// check rejects it on the spot (reference: `jot 3 65 69 -c` →
+/// `Bad step value:  -c`).
 #[test]
 fn the_ring_does_not_rearrange_options_after_the_first_operand() {
     let (out, status, err) = run(&["3", "65", "69", "-c"]);
     assert_eq!((out.as_str(), status), ("", 1));
     assert_eq!(err, "jot: Bad step value:  -c\n");
 
-    // `-Z` 落进 begin 那一格：`sscanf("%lf")` 不吃它，于是取最后一个字符的代码点
-    // （`jot.c:203-204`），`Z` 是 90。
+    // `-Z` lands in the begin slot: `sscanf("%lf")` does not take it, so the
+    // code point of its last character is used (`jot.c:203-204`); `Z` is 90.
     let (out, status, err) = run(&["3", "-Z"]);
     assert_eq!(
         (out.as_str(), status),
@@ -242,11 +283,14 @@ fn the_ring_does_not_rearrange_options_after_the_first_operand() {
     assert_eq!(err, "");
 }
 
-/// 裸 `-` 是操作数而不是 stdin 别名，且它那一格保持默认值；`--` 之后的 `-Z` 是字面操作数。
-/// 三个形状都走 step/begin/ender 的默认推导，`jot.c:193-219` 的 FALLTHROUGH 逐格回看。
+/// A bare `-` is an operand, not an alias for stdin, and its slot keeps the
+/// default; a `-Z` after `--` is a literal operand. All three shapes go
+/// through the default derivation of step/begin/ender, and the FALLTHROUGH
+/// at `jot.c:193-219` looks back slot by slot.
 #[test]
 fn a_bare_dash_keeps_the_default_for_its_slot() {
-    // 第四个格子给 step，第三格 `-` 让 ender 留默认：reps=3、begin=65、step=2。
+    // The fourth slot supplies step; the `-` in the third lets ender keep its
+    // default: reps=3, begin=65, step=2.
     let (out, status, err) = run(&["3", "65", "-", "2"]);
     assert_eq!(
         (out.as_str(), status),
@@ -255,7 +299,8 @@ fn a_bare_dash_keeps_the_default_for_its_slot() {
     );
     assert_eq!(err, "");
 
-    // 三、四格都留默认，于是 begin=65 配默认 step=1。
+    // The third and fourth slots keep their defaults, so begin=65 pairs with
+    // the default step=1.
     let (out, status, _err) = run(&["3", "65", "-", "-"]);
     assert_eq!((out.as_str(), status), ("65\n66\n67\n", 0));
 
@@ -263,8 +308,9 @@ fn a_bare_dash_keeps_the_default_for_its_slot() {
     assert_eq!((out.as_str(), status), ("65\n66\n67\n", 0));
 }
 
-/// `-b` 只点起 `boring`，值与 `-w` 写进同一个词槽：后写的覆盖先写的，
-/// 而 `boring` 一旦置起不再落下（`jot.c:172-176`）。
+/// `-b` only raises `boring`; its value goes into the same word slot as
+/// `-w`, so the later write wins, while `boring` stays raised once set
+/// (`jot.c:172-176`).
 #[test]
 fn b_and_w_write_into_one_word_slot() {
     let (out, status, err) = run(&["-bX", "-wY", "3"]);
@@ -283,9 +329,11 @@ fn b_and_w_write_into_one_word_slot() {
     );
 }
 
-/// `-p` 的接受集由 `strtol(…, 0)` 定：base 0 认 `0x`，空串转不出数字也算全串 consumed，
-/// 尾巴一个杂字符都不许剩。这一枚盯的是旧写法那句 `parse::<usize>()`——
-/// 它把 `0x2` 与空串两支都拒了，而参照件两支都收。
+/// The accepted set for `-p` is defined by `strtol(…, 0)`: base 0 recognizes
+/// `0x`, an empty string yields no digits yet still counts as fully
+/// consumed, and not one stray trailing character is allowed. This test pins
+/// down the earlier `parse::<usize>()` behaviour: it rejected both `0x2` and
+/// the empty string, while the reference accepts both.
 #[test]
 fn the_precision_takes_base_zero_and_requires_a_full_operand() {
     let (out, status, err) = run(&["-p", "0x2", "3"]);
@@ -316,35 +364,45 @@ fn the_precision_takes_base_zero_and_requires_a_full_operand() {
 
 #[test]
 fn four_operands_with_a_zero_step_stay_bounded() {
-    // 参照件 `tmp/jot-317/jot_ref` 现量：`jot 3 1 100 0` 是三行 `1`，退 0；
-    // 派生 switch 曾把它误派到 `case ENDER | STEP` 那一支而 reps 归零，于是永不终止
+    // Reference measurement: `jot 3 1 100 0` is three lines of `1`, exit 0;
+    // the derived switch once misrouted it to the `case ENDER | STEP` branch
+    // with reps zeroed, so it never terminated
     for args in [&["3", "1", "100", "0"][..], &["3", "1", "1", "0"][..]] {
         let (out, code, err) = run(args);
         assert_eq!((code, err.as_str()), (0, ""), "{args:?}");
         assert_eq!(out, "1\n1\n1\n", "{args:?}");
     }
-    // 步长非零时取「给定的 reps」与「算出的个数」里较小的一个：`jot 3 1 100 5` 是三行而不是二十行
+    // With a non-zero step, take the smaller of "the given reps" and "the
+    // computed count": `jot 3 1 100 5` is three lines, not twenty
     let (out, code, err) = run(&["3", "1", "100", "5"]);
     assert_eq!((code, err), (0, String::new()));
     assert_eq!(out, "1\n6\n11\n");
-    // 算出的更小就用算出的（`jot 2 1 100 5` 两行；`jot 20 1 100 5` 二十行，此处只钉前两行）
+    // When the computed count is smaller, use it (`jot 2 1 100 5` gives two
+    // lines; `jot 20 1 100 5` gives twenty, and only the first two are pinned
+    // here)
     let (out, code, _) = run(&["2", "1", "100", "5"]);
     assert_eq!((code, out.as_str()), (0, "1\n6\n"));
-    // reps 缺省而 begin/ender/step 三个都给：C 用 `case ENDER | STEP | BEGIN` 的同一段体算 reps
-    // （`(10 - 1 + 2) / 2` = 5），本层少写这一个标签时它会落进 `default` 而按默认 100 行走
+    // Default reps with begin/ender/step all given: C computes reps in the
+    // same body as `case ENDER | STEP | BEGIN` (`(10 - 1 + 2) / 2` = 5);
+    // with this label missing it would fall into `default` and run with the
+    // default 100 rows
     let (out, code, _) = run(&["-", "1", "10", "2"]);
     assert_eq!((code, out.as_str()), (0, "1\n3\n5\n7\n9\n"));
-    // 六个给定 reps 但 ender 已在步内 reached 的形：C 仍按 reps 与算出值取小，这里打六行 `1`
+    // Six given reps but ender already reached within the step: C still takes
+    // the smaller of reps and the computed count, so six lines of `1` print
+    // here
     let (out, code, _) = run(&["6", "1", "10", "0"]);
     assert_eq!((code, out.as_str()), (0, "1\n1\n1\n1\n1\n1\n"));
 }
 
 #[test]
 fn a_negative_or_fractional_seed_is_accepted_like_c() {
-    // `jot.c:118` 是 `srandom((unsigned long) step)`：负数与小数都是**合法**种子。
-    // 参照件 `jot -r 3 1 10 -5` 退 0 打三个整数（本层曾用自创的 `v >= 0.0` 报
-    // `Bad step value`）。随机流的**数值**是另一档分歧（本层的 LCG 不是 libc 的
-    // `random()`，见 07 §4.4），所以这里只钉退码、行数、行数与「全是数字」这三件。
+    // `jot.c:118` is `srandom((unsigned long) step)`: negative and fractional
+    // values are **legal** seeds. The reference `jot -r 3 1 10 -5` exits 0 and
+    // prints three integers (an earlier layer used its own `v >= 0.0` check and
+    // reported `Bad step value`). The random stream's **values** are a separate
+    // divergence (this layer's LCG is not libc's `random()`), so only the exit
+    // code, the line count, and "all digits" are pinned here.
     for arg in ["-5", "-2147483648", "-0.5", "0", "5"] {
         let (out, code, err) = run(&["-r", "3", "1", "10", arg]);
         assert_eq!(code, 0, "种子 {arg} 的 stderr={err:?}");
@@ -356,21 +414,27 @@ fn a_negative_or_fractional_seed_is_accepted_like_c() {
             "种子 {arg} 输出不全是整数：{out:?}"
         );
     }
-    // 截断取整的可观察推论：C 的 `(unsigned long)(-0.5)` 就是 0，
-    // 所以 `-0.5` 与 `0` 两串数必须逐字节相同（参照件现量同为 `9\n4\n8\n`）
+    // A visible consequence of the truncation: C's `(unsigned long)(-0.5)` is
+    // 0, so the `-0.5` and `0` sequences must be byte-identical (the reference
+    // measured `9\n4\n8\n` for both)
     let (a, _, _) = run(&["-r", "3", "1", "10", "-0.5"]);
     let (b, _, _) = run(&["-r", "3", "1", "10", "0"]);
     assert_eq!(a, b, "小数种子要先截断，不能当成坏值");
-    // `strtod` 的全串检查没动：尾巴带杂字符仍然报同一句、退 1
+    // `strtod`'s whole-string check is unchanged: a trailing stray character
+    // still reports the same sentence and exits 1
     let (out, code, err) = run(&["-r", "3", "1", "10", "5x"]);
     assert_eq!((code, out.as_str()), (1, ""));
     assert_eq!(err, "jot: Bad step value:  5x\n");
 }
 
-/// 登记里的四形（`jot 3`、`-n 3`、`3 - 5`、`-s , 3`）都是 `prec` 从未被写过那一族。
-/// 这一形在进程级能钉的是形状：每行不带小数点（精度 0 的浮点，或取整后的整数），
-/// 也不带 `%`（宿主 glibc 把 `%.-1f` 当坏说明符打回字面量 `%.0-1f`，那是参照件所链
-/// libc 的产物，不是 Minix 的真值，所以本门刻意不拿参照件的这一形当判据）。
+/// The four registered shapes (`jot 3`, `-n 3`, `3 - 5`, `-s , 3`) all
+/// belong to the family where `prec` is never written. What can be pinned at
+/// process level for this shape is its form: no decimal point on any line (a
+/// float with precision 0, or a rounded integer), and no `%` either (the host
+/// glibc rejects `%.-1f` as a bad specifier and prints the literal `%.0-1f`,
+/// which is an artifact of the libc the reference links against, not Minix
+/// ground truth, so this gate deliberately does not use the reference's shape
+/// as its criterion).
 #[test]
 fn the_unwritten_precision_family_prints_no_decimal_point_and_no_literal() {
     for args in [
@@ -391,9 +455,12 @@ fn the_unwritten_precision_family_prints_no_decimal_point_and_no_literal() {
     }
 }
 
-/// 字节形 argv 的命令缝：`&str` 递不出裸 `ff`（`OsStr` 从 `str` 过来时那串已是合法 UTF-8），
-/// 而 `jot` 的三支带值字母（`-b`/`-s`/`-w`）的值**就是输出内容**，所以这一层夹具是必需的。
-/// 两路输出逐字节交回：文本形分不清「一枚字节」与「折叠出的三字节」这两种错法。
+/// The command seam for byte-shaped argv: `&str` cannot deliver a bare `ff`
+/// (by the time an `OsStr` comes from a `str` it is already valid UTF-8), and
+/// `jot`'s three value-taking letters (`-b`/`-s`/`-w`) take values that **are
+/// output content**, so this fixture layer is required. Both output streams
+/// are handed back byte by byte: the text form cannot distinguish the two
+/// failure shapes "one byte" and "three bytes from folding".
 fn run_argv(args: &[&[u8]]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::os::unix::ffi::OsStrExt as _;
     let output = Command::new(JOT)
@@ -410,20 +477,25 @@ fn run_argv(args: &[&[u8]]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 参数缝在 `jot` 上直接改到**打出去的内容**：`-b`/`-w` 的词由 `putdata`（`jot.c:300-311`）
-/// 原样送 stdout，`-s` 的串由 `:310` 的 `fputs(sepstring, stdout)` 打在条目之间。文本缝之下
-/// 一枚裸 `ff` 先被折成 `ef bf bd`，于是每一行都多两枚字节。反面形是 `%c`：C 走 `putchar`
-/// 交回**一枚**字节（参照件对 `-p 0 -w '%c' 1 200 1` 现量 `c8`），而 `v as u8 as char` 经
-/// UTF-8 会变成 `c3 88` 两枚——这一支的 `char` 通道在字节形下退出。
+/// The argument seam on `jot` changes the **printed content** directly: the
+/// `-b`/`-w` word is sent to stdout verbatim by `putdata` (`jot.c:300-311`),
+/// and the `-s` string is printed between entries by `fputs(sepstring,
+/// stdout)` at `:310`. Below a text seam a bare `ff` is first folded into
+/// `ef bf bd`, so every line gains two bytes. The counter-case is `%c`: C goes
+/// through `putchar` and hands back **one** byte (the reference measured `c8`
+/// for `-p 0 -w '%c' 1 200 1`), while `v as u8 as char` becomes the two bytes
+/// `c3 88` through UTF-8 — this branch's `char` channel is out in the byte
+/// shape.
 #[test]
 fn a_raw_byte_in_the_word_or_the_separator_is_printed_as_that_byte() {
-    // ①`-b` 的词：两行都是 `ff 77 64`。
+    // (1) The `-b` word: both lines are `ff 77 64`.
     let (out, status, err) = run_argv(&[b"-b\xffwd", b"2"]);
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(err, Vec::new(), "成功路一声不出");
     assert_eq!(out, vec![0xff, b'w', b'd', b'\n', 0xff, b'w', b'd', b'\n']);
 
-    // ②`-s` 的串：条目之间夹的是 `ff 78` 两枚，不是五枚。
+    // (2) The `-s` string: what sits between entries is the two bytes `ff 78`,
+    // not five.
     let (out, status, err) = run_argv(&[b"-s\xffx", b"3", b"1", b"5"]);
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(
@@ -432,17 +504,20 @@ fn a_raw_byte_in_the_word_or_the_separator_is_printed_as_that_byte() {
         "分隔符必须按 argv 的原字节打出去"
     );
 
-    // ③`-w` 的词里，百分号之前的字面段照样进输出。
+    // (3) In the `-w` word, the literal section before the percent sign goes
+    // into the output as well.
     let (out, status, err) = run_argv(&[b"-wa\xff%d", b"2"]);
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(out, vec![b'a', 0xff, b'1', b'\n', b'a', 0xff, b'2', b'\n']);
 
-    // ④前缀里的 `%%` 展开成一枚（参照件对 `-p 2 -w '%%x%d' 3 1 5` 现量 `%x1|%x3|%x5`）。
+    // (4) `%%` in the prefix expands to one (the reference measured
+    // `%x1|%x3|%x5` for `-p 2 -w '%%x%d' 3 1 5`).
     let (out, status, err) = run(&["-p", "2", "-w%%x%d", "3", "1", "5"]);
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(out, "%x1\n%x3\n%x5\n", "两枚百分号进、一枚百分号出");
 
-    // ⑤`%c` 只交回一枚字节：这是「按字节」在输出端的另一个可观察面。
+    // (5) `%c` hands back exactly one byte: another observable face of
+    // "by bytes" on the output side.
     let (out, status, err) = run_argv(&[b"-p", b"0", b"-w%c", b"1", b"200", b"1"]);
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(
@@ -452,16 +527,22 @@ fn a_raw_byte_in_the_word_or_the_separator_is_printed_as_that_byte() {
     );
 }
 
-/// 三支把值拼进句子的腿，值位都是 argv 原字节：`unknown or invalid format \`%s'`
-/// （`jot.c:385`、`:396`——**这一支此前在本壳根本没有值**，见本轮台账）、
-/// `Bad reps value:  %s`（`:215`）、`Too many arguments.  What do you mean by %s?`（`:225`）。
-/// 三支都是 `errx`：一行、不接 usage、退 1。另一族是可观察的**判据**差：空 reps 在 C 是合法的
-/// 0（`strtoul` 把 `ep` 留在起点），配上 begin/ender 落 `Infinite sequences cannot be bounded`
-/// （`:272-275`）而不是那句 Bad reps；空 begin 在 C 是 `argv[i][-1]` 的越界读，宿主参照件现量
-/// `jot 3 '' 5` 交回 `1 3 5`（那一格留缺省），而本壳此前是**当场 panic**。
+/// The three legs that splice a value into a sentence all use the argv bytes
+/// at the value position: `unknown or invalid format \`%s'` (`jot.c:385`,
+/// `:396` — this branch previously had **no value at all** in this shell),
+/// `Bad reps value:  %s` (`:215`), and `Too many arguments.  What do you mean
+/// by %s?` (`:225`). All three are `errx`: one line, no usage, exit 1.
+/// The other family is an observable **criterion** difference: an empty reps
+/// is a legal 0 in C (`strtoul` leaves `ep` at the start), and with
+/// begin/ender present it lands on `Infinite sequences cannot be bounded`
+/// (`:272-275`) rather than the Bad reps sentence; an empty begin is an
+/// out-of-bounds read of `argv[i][-1]` in C, and the host reference returns
+/// `1 3 5` for `jot 3 '' 5` (that slot keeps its default), whereas this shell
+/// used to **panic on the spot**.
 #[test]
 fn the_operand_and_the_word_echoed_into_a_sentence_are_the_argv_bytes() {
-    // ①说明符校验失败：反引号之间是**整个 format 词**，含那枚裸字节。
+    // (1) Specifier validation failure: what sits between the backquotes is
+    // the **whole format word**, including that raw byte.
     let (out, status, err) = run_argv(&[b"-w%\xff", b"2"]);
     assert_eq!(out, Vec::new(), "报文只走标准错误");
     assert_eq!(status, 1);
@@ -476,7 +557,7 @@ fn the_operand_and_the_word_echoed_into_a_sentence_are_the_argv_bytes() {
         "这一句在 C 带值；不带值就少了一整个可观察面"
     );
 
-    // ②坏 reps：`-- ` 之后是原字节。
+    // (2) Bad reps: what follows the two spaces is the raw byte.
     let (out, status, err) = run_argv(&[b"x\xff", b"2"]);
     assert_eq!(out, Vec::new());
     assert_eq!(status, 1);
@@ -491,7 +572,8 @@ fn the_operand_and_the_word_echoed_into_a_sentence_are_the_argv_bytes() {
         "两个空格是 C 的原句，值位是原字节"
     );
 
-    // ③第五个操作数：报的是第五个，前四个一个都不解读。
+    // (3) The fifth operand: the fifth is reported, the first four are not
+    // interpreted at all.
     let (out, status, err) = run_argv(&[b"1", b"2", b"3", b"4", b"5\xff"]);
     assert_eq!(out, Vec::new());
     assert_eq!(status, 1);
@@ -505,19 +587,23 @@ fn the_operand_and_the_word_echoed_into_a_sentence_are_the_argv_bytes() {
         .concat()
     );
 
-    // ④空 reps 是合法的 0：无界序列配上 begin/ender 落那句 bounded，而不是 Bad reps。
+    // (4) An empty reps is a legal 0: an unbounded sequence with
+    // begin/ender lands on the bounded sentence, not on Bad reps.
     let (out, status, err) = run_argv(&[b"", b"1", b"2"]);
     assert_eq!(out, Vec::new(), "无界又不可能界定，一格都不该打");
     assert_eq!(status, 1);
     assert_eq!(err, b"jot: Infinite sequences cannot be bounded\n");
 
-    // ⑤高字节操作数经 `char` 落地所以为负：参照件对 `jot 3 <ff> 5` 现量 `-1 2 5`
-    //    （begin = -1，步长 (5-(-1))/2 = 3），按无符号读会打成 `189 97 5` 或 `1 97 189`。
+    // (5) A high-byte operand lands through `char` and is therefore negative:
+    //     the reference measured `-1 2 5` for `jot 3 <ff> 5` (begin = -1, step
+    //     (5-(-1))/2 = 3); reading it as unsigned would print `189 97 5` or
+    //     `1 97 189`.
     let (out, status, err) = run_argv(&[b"3", &[0xff][..], b"5"]);
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(out, b"-1\n2\n5\n".to_vec(), "最后一枚字节要经 signed char");
 
-    // ⑥空 begin：那一格保持缺省（参照件现量 `1 3 5`），关键是**不再 panic**。
+    // (6) Empty begin: that slot keeps its default (the reference measured
+    // `1 3 5`); the key point is that it **no longer panics**.
     let (out, status, err) = run_argv(&[b"3", b"", b"5"]);
     assert_eq!(status, 0, "退码该是 0：stderr 是 {err:?}");
     assert_eq!(

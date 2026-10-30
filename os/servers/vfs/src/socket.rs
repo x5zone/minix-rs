@@ -35,7 +35,7 @@ use minix_sockdriver::sdev::{SHUT_RD, SHUT_RDWR, SHUT_WR};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // `do_socketpath` entry gates (`path.c:803-836`) — the walk itself stays
-// with 13-path-lookup (C-6); only the three doors decide here.
+// with 13-path-lookup; only the three doors decide here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `SPATH_CHECK`/`SPATH_CREATE` (`minix3/minix/include/minix/syslib.h:278-279`).
@@ -555,10 +555,10 @@ pub fn recvmsg_update(ctl_len: u32, flags: u32, addr_len: u32) -> RecvmsgUpdate 
     }
 }
 
-/// 用户 `struct msghdr` 的字段（C `sys/socket.h` 的 `msghdr`）。
+/// Fields of the user's `struct msghdr` (C `msghdr` in `sys/socket.h`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MsgHdr {
-    /// `void *msg_name`（对端地址缓冲）。
+    /// `void *msg_name` (peer address buffer).
     pub name: u64,
     /// `socklen_t msg_namelen`。
     pub namelen: u32,
@@ -566,7 +566,7 @@ pub struct MsgHdr {
     pub iov: u64,
     /// `size_t msg_iovlen`。
     pub iovlen: usize,
-    /// `void *msg_control`（控制消息缓冲）。
+    /// `void *msg_control` (control message buffer).
     pub control: u64,
     /// `socklen_t msg_controllen`。
     pub controllen: u32,
@@ -574,7 +574,7 @@ pub struct MsgHdr {
     pub flags: i32,
 }
 
-/// 单个 `struct iovec`。
+/// A single `struct iovec`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IoVec {
     /// `void *iov_base`。
@@ -583,29 +583,33 @@ pub struct IoVec {
     pub len: u64,
 }
 
-/// 用户 `msghdr`/`iovec` 的取数缝（C `do_sockmsg` 的两处 `sys_datacopy`，
-/// socket.c:552-553/573-575）。生产实现走跨空间拷贝（宿主不可达），测试用
-/// 脚本替身——这样"取到之后"的 iov 门与请求形状在宿主下也能测。
+/// The fetch seam for the user's `msghdr`/`iovec` (the two `sys_datacopy` calls
+/// in C `do_sockmsg`, socket.c:552-553/573-575). The production implementation
+/// does a cross-space copy (unreachable on the host); tests use a scripted
+/// stand-in — so the iov gate and request shape "after fetching" are testable on
+/// the host too.
 pub trait MsgHdrFetcher {
-    /// 取用户的 `struct msghdr`。
+    /// Fetch the user's `struct msghdr`.
     fn fetch_msghdr(&self, addr: u64) -> Result<MsgHdr, SockError>;
-    /// 取用户的单个 `struct iovec`。
+    /// Fetch one user `struct iovec`.
     fn fetch_iov(&self, addr: u64) -> Result<IoVec, SockError>;
 }
 
-/// 生产取数件：两次 `sys_datacopy`（C `sys_datacopy_wrapper(who_e, ...)`）。
+/// The production fetcher: two `sys_datacopy` calls (C
+/// `sys_datacopy_wrapper(who_e, ...)`).
 ///
-/// 宿主构建下内核调用不可达 → `EINVAL`（与 C 把拷贝失败原样上浮同值）。
+/// Under a host build the kernel call is unreachable → `EINVAL` (the same value
+/// C propagates when the copy fails).
 #[derive(Debug, Clone, Copy)]
 pub struct SysMsgHdrFetcher {
-    /// 调用方端点（C 的 `who_e`）。
+    /// Caller endpoint (C's `who_e`).
     pub who: minix_types::Endpoint,
 }
 
 impl MsgHdrFetcher for SysMsgHdrFetcher {
     fn fetch_msghdr(&self, addr: u64) -> Result<MsgHdr, SockError> {
-        // 生产面：把用户的 `struct msghdr` 拷进 VFS。宿主下不可达 → Inval
-        // （C 的 `sys_datacopy_wrapper != OK → return r`）。
+        // Production side: copy the user's `struct msghdr` into VFS. Unreachable on
+        // the host → Inval (C's `sys_datacopy_wrapper != OK → return r`).
         let mut raw = [0u8; MSGHDR_SIZE];
         minix_sys::syscall::sys_datacopy(
             &minix_sys::syscall::DirectKernelCallTransport,
@@ -634,13 +638,14 @@ impl MsgHdrFetcher for SysMsgHdrFetcher {
     }
 }
 
-/// 脚本替身：直接给出 msghdr/iovec（测试用，两种行为不同的实现之一）。
+/// Scripted stand-in: yields msghdr/iovec directly (for tests; one of the two
+/// implementations with different behavior).
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub struct ScriptedMsgHdr {
-    /// 这条替身要回的 `msghdr`。
+    /// The `msghdr` this stand-in answers with.
     pub msghdr: MsgHdr,
-    /// 这条替身要回的 `iovec`。
+    /// The `iovec` this stand-in answers with.
     pub iovec: IoVec,
 }
 
@@ -654,7 +659,8 @@ impl MsgHdrFetcher for ScriptedMsgHdr {
     }
 }
 
-/// 一律拒绝的替身（第二种行为不同的实现）。
+/// A stand-in that always refuses (the second implementation with different
+/// behavior).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RefusingMsgHdr;
 
@@ -667,13 +673,13 @@ impl MsgHdrFetcher for RefusingMsgHdr {
     }
 }
 
-/// `sizeof(struct msghdr)`（LP64：3 个指针 + socklen_t + size_t + socklen_t +
-/// int，含对齐）。
+/// `sizeof(struct msghdr)` (LP64: 3 pointers + socklen_t + size_t + socklen_t +
+/// int, including alignment).
 pub const MSGHDR_SIZE: usize = 56;
-/// `sizeof(struct iovec)`（两个指针）。
+/// `sizeof(struct iovec)` (two pointers).
 pub const IOVEC_SIZE: usize = 16;
 
-/// 按 LP64 域序解 `struct msghdr`（与 C 编译器布局一致）。
+/// Decode `struct msghdr` in LP64 field order (matching the C compiler layout).
 pub fn decode_msghdr(raw: &[u8; MSGHDR_SIZE]) -> MsgHdr {
     let rd8 = |at: usize| -> u64 {
         let mut b = [0u8; 8];
@@ -696,7 +702,8 @@ pub fn decode_msghdr(raw: &[u8; MSGHDR_SIZE]) -> MsgHdr {
     }
 }
 
-/// 按 LP64 域序**编回** `struct msghdr`（`resume_recvmsg` 要把它拷回用户）。
+/// Encode `struct msghdr` **back** in LP64 field order (`resume_recvmsg` copies
+/// it back to the user).
 pub fn encode_msghdr(mh: &MsgHdr) -> [u8; MSGHDR_SIZE] {
     let mut raw = [0u8; MSGHDR_SIZE];
     raw[0..8].copy_from_slice(&mh.name.to_le_bytes());
@@ -709,7 +716,7 @@ pub fn encode_msghdr(mh: &MsgHdr) -> [u8; MSGHDR_SIZE] {
     raw
 }
 
-/// 按 LP64 域序解 `struct iovec`。
+/// Decode `struct iovec` in LP64 field order.
 pub fn decode_iovec(raw: &[u8; IOVEC_SIZE]) -> IoVec {
     let mut b = [0u8; 8];
     b.copy_from_slice(&raw[0..8]);

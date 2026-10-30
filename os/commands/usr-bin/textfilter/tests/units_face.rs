@@ -1,34 +1,47 @@
 //! End-to-end face for the `units` binary, checked against
-//! `minix3/usr.bin/units/units.c`（选项环 `:817-846`、操作数判 `:849-851`、
-//! `readunits()` 的开档支 `:142-181`、`usage()` `:793-807`、交互提示环
-//! `:876-893`）与它驱动的 libc `getopt`（`minix3/lib/libc/stdlib/getopt.c:74-78`、
-//! `:81-85`、`:87-92`、`:95-104`、`:112-141`）。
+//! `minix3/usr.bin/units/units.c` (option loop `:817-846`, operand check `:849-851`,
+//! `readunits()`'s open branch `:142-181`, `usage()` `:793-807`, the interactive
+//! prompt loop `:876-893`) and the libc `getopt` it drives
+//! (`minix3/lib/libc/stdlib/getopt.c:74-78`, `:81-85`, `:87-92`, `:95-104`,
+//! `:112-141`).
 //!
-//! `units.c:817` 的 optstring 是 `"lLvqf:"`：`l`/`L`/`q`/`v` 不带值，只有 `f` 带值。
-//! 参照件 `tmp/units-319/units_ref`（`units.c` 真源 + Minix 的 `getopt.c` + 程序名与
-//! `strlcpy`/`strlcat` 垫片，宿主现链）逐形量出的形状是：
-//! ① 集外字母 = libc 一行 + **九行** usage，退 3；聚簇 `-qZ` 报的是 `Z`；
-//! ② 缺值只有 `-f` 一形，句子与退码同 ①；
-//! ③ `-v` 的两行版本在**标准错误**上，且它在环里就退出——`-vZ` 没有集外字母那一行，
-//!    `-Zv` 没有版本两行；
-//! ④ 操作数个数（非 0/2/3）与「`-l` 还带操作数」都**只有 usage 块**，没有 libc 那一行；
-//! ⑤ 这个判据排在 `readunits` **之前**，所以 `-f <坏档> m` 报 usage 而不是开档失败；
-//! ⑥ 两支开档失败分属两个句子：`-f` 是 `err` 的三段形（带 `strerror`），默认档
-//!    `/usr/share/misc/units.lib` 是 `errx` 的两段形（不带），都退 1；
-//! ⑦ `--` 被吃掉、裸 `-` 是操作数，而且 `-f` 取下一个 token 时不看它的脸色
-//!    （`-f - m sec` 的档名就是 `-`）；
-//! ⑧ 环不重排：`units -f <档> m sec -l` 的 `-l` 是第三个操作数，于是它是 want 侧的
-//!    单位名，报文 `units: Unknown unit '-l'`；
-//! ⑨ 交互面 `do { 提示; fgets; } while (不认)`：一行不认就**重问同一格**（参照件对
-//!    `bogus\nm\nsec\n` 打的是 `You have: You have: You want: `），`fgets(buf, 80, …)`
-//!    把 100 字符的长行切成 79+21 两段，各报一条 `Unknown unit`。
+//! The optstring at `units.c:817` is `"lLvqf:"`: `l`/`L`/`q`/`v` take no value; only
+//! `f` does. The reference build `tmp/units-319/units_ref` (`units.c`'s real source +
+//! Minix's `getopt.c` + program name and `strlcpy`/`strlcat` shims, linked live on the
+//! host) measured these shapes one by one:
+//! (1) off-charset letter = one libc line + **nine-line** usage, exit 3; a cluster
+//!     `-qZ` reports `Z`;
+//! (2) a missing value exists only for `-f`, with the same sentence and exit code as
+//!     (1);
+//! (3) `-v`'s two version lines go to **stderr**, and it exits inside the loop —
+//!     `-vZ` has no off-charset line, `-Zv` has no version lines;
+//! (4) an operand count other than 0/2/3, and "`-l` with operands", produce **only
+//!     the usage block**, with no libc line;
+//! (5) this check runs **before** `readunits`, so `-f <bad-file> m` reports usage
+//!     rather than an open failure;
+//! (6) the two open-failure branches use different sentences: `-f` is `err`'s
+//!     three-part shape (with `strerror`), the default file
+//!     `/usr/share/misc/units.lib` is `errx`'s two-part shape (without), both exit 1;
+//! (7) `--` is consumed, a bare `-` is an operand, and `-f` takes the next token
+//!     regardless of what it looks like (`-f - m sec` uses `-` as the file name);
+//! (8) the loop does not rearrange: in `units -f <file> m sec -l` the `-l` is the
+//!     third operand, hence a want-side unit name, and the message is
+//!     `units: Unknown unit '-l'`;
+//! (9) the interactive face is `do { prompt; fgets; } while (unrecognized)`: an
+//!     unrecognized line **re-asks the same slot** (the reference prints
+//!     `You have: You have: You want: ` for `bogus\nm\nsec\n`), and
+//!     `fgets(buf, 80, …)` splits a 100-character line into 79+21, each reporting its
+//!     own `Unknown unit`.
 //!
-//! 这扇门前不存在：`units` 的交互面拿裸 `minix_sys::read` 读标准输入，宿主上一个字也
-//! 读不到（同族第九处之后的第十处），而 `usage()` 只有两行、`-v` 打到标准输出上、
-//! 默认档名写成 `/usr/lib/units`——四处都由本门第一次钉住。
+//! No such face existed before this one: `units`'s interactive face read stdin with a
+//! bare `minix_sys::read`, which on the host reads not a single byte (the tenth
+//! read-seam defect after the ninth of the same family), while `usage()` had only two
+//! lines, `-v` printed to stdout, and the default file name was `/usr/lib/units` —
+//! this face pinned all four for the first time.
 //!
-//! 决定半（换算数值、`-l`/`-L` 的展开形、坏单位时的**半成品答案块**）不在此门射程内，
-//! 已在 `rewrite-notes/18-stage-commands/todo.md` 批次三百一十九那条登记。
+//! The decisive half (conversion values, `-l`/`-L` expansions, the **partial answer
+//! block** on a bad unit) is outside this face's range and is registered in
+//! `rewrite-notes/18-stage-commands/todo.md` under batch 319.
 
 mod face_support;
 
@@ -38,7 +51,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 const UNITS: &str = env!("CARGO_BIN_EXE_units");
-/// `units.c:795-806` 的两个 `fprintf` 合起来的九行；`units` 是写死的字面量。
+/// The nine lines of the two `fprintf`s at `units.c:795-806` combined; `units` is a hard-coded literal.
 const USAGE: &str = concat!(
     "\nunits [-Llqv] [-f filename] [[count] from-unit to-unit]\n",
     "\n    -f specify units file\n",
@@ -47,12 +60,12 @@ const USAGE: &str = concat!(
     "    -q suppress prompting (quiet)\n",
     "    -v print version number\n",
 );
-/// `units.c:836-839` 的两行版本，同在标准错误上。
+/// The two version lines at `units.c:836-839`, also on stderr.
 const VERSION: &str = concat!(
     "\n  units version 1.0  Copyright (c) 1993 by Adrian Mariano\n",
     "                    This program may be freely distributed\n",
 );
-/// 参照件与门共用的那份小词典（`tmp/units-319/tiny.lib` 的同一内容）。
+/// The tiny dictionary shared by the reference and this face (same content as `tmp/units-319/tiny.lib`).
 const TINY: &str = concat!(
     "/ tiny test database for batch 319 A/B\n",
     "/ primitive units\n",
@@ -82,7 +95,7 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
-/// 把小词典落到临时文件，返回它的路径（参照件跑的是同一份内容）。
+/// Write the tiny dictionary to a temp file and return its path (the reference runs the same content).
 fn database(tag: &str) -> (PathBuf, String) {
     let dir = scratch(tag);
     let path = dir.join("tiny.lib");
@@ -109,8 +122,10 @@ fn off_letter_gets_libc_line_then_the_nine_line_usage_block() {
 
 #[test]
 fn cluster_reports_the_off_letter_after_the_valid_ones() {
-    // `-qZ` 与 `-Zq` 的报文都是 `Z`：前者 `q` 先被置上再撞上集外字母，后者一上来就是
-    // `Z`。两支都在 `usage()` 里退出，所以差别在外部行为上看不见——但字母不能取第一个。
+    // Both `-qZ` and `-Zq` report `Z`: in the former `q` is set first and then the
+    // off-charset letter is hit, in the latter `Z` comes first. Both exit in
+    // `usage()`, so the difference is invisible externally — but the letter must not
+    // be the first one.
     for args in [&["-qZ"][..], &["-Zq"][..]] {
         let (out, code, err) = run(args, b"");
         assert_eq!(code, 3, "{args:?} 该退 3，实际 stdout={out:?}");
@@ -132,8 +147,9 @@ fn missing_value_is_reachable_only_through_f() {
         format!("units: option requires an argument -- f\n{USAGE}")
     );
     assert_eq!(out, "");
-    // `l`/`q`/`v` 都不带值，所以「后面紧跟的 token 被当值吃掉」这一形在本支不存在：
-    // `-l m sec` 走的是「`-l` 还带操作数」那一支，`-q` 干脆一路走到读默认档。
+    // `l`/`q`/`v` take no value, so "the following token is swallowed as a value"
+    // cannot happen here: `-l m sec` takes the "-l with operands" branch, while `-q`
+    // goes all the way to reading the default file.
     let (_, code, err) = run(&["-q"], b"");
     assert_eq!(code, 1, "-q 之后没选项了，该去读词典");
     assert_eq!(
@@ -144,7 +160,8 @@ fn missing_value_is_reachable_only_through_f() {
 
 #[test]
 fn attached_value_is_never_reported_missing() {
-    // `-fZ` 的值紧贴着，libc 不会报缺值，于是这一形落到开档失败那三支里的一段。
+    // `-fZ`'s value is attached, so libc does not report a missing value; this shape
+    // falls into one of the three open-failure branches.
     let (out, code, err) = run(&["-fZ"], b"");
     assert_eq!(code, 1);
     assert_eq!(
@@ -156,12 +173,13 @@ fn attached_value_is_never_reported_missing() {
 
 #[test]
 fn version_lines_go_to_stderr_and_win_over_later_letters() {
-    // 旧写法把这两行打到了标准输出上（`units.c:836` 是 `fprintf(stderr, …)`）。
+    // The old form printed these two lines to stdout (`units.c:836` is
+    // `fprintf(stderr, …)`).
     let (out, code, err) = run(&["-v"], b"");
     assert_eq!(code, 3);
     assert_eq!(out, "", "版本两行在标准错误上，标准输出该是空的");
     assert_eq!(err, format!("{VERSION}{USAGE}"));
-    // `-v` 在环里就退出：同一 token 后面的 `Z` 永远扫不到。
+    // `-v` exits inside the loop: the `Z` later in the same token is never scanned.
     let (_, code, err) = run(&["-vZ"], b"");
     assert_eq!(code, 3);
     assert_eq!(
@@ -169,11 +187,13 @@ fn version_lines_go_to_stderr_and_win_over_later_letters() {
         format!("{VERSION}{USAGE}"),
         "-v 之后不该再有集外字母那一行"
     );
-    // 反过来 `-Zv` 只有集外字母那一行加 usage，版本两行打不出来。
+    // Conversely `-Zv` has only the off-charset line plus usage; the version lines
+    // never print.
     let (_, code, err) = run(&["-Zv"], b"");
     assert_eq!(code, 3);
     assert_eq!(err, format!("units: unknown option -- Z\n{USAGE}"));
-    // `-f <档> -v` 也一样：`-v` 排在操作数判据之前，所以坏值都读过了还是先看版本。
+    // `-f <file> -v` is the same: `-v` precedes the operand-count check, so even after
+    // reading a bad value the version wins.
     let (_dir, db) = database("version-after-f");
     let (_, code, err) = run(&["-f", &db, "-v"], b"");
     assert_eq!(code, 3);
@@ -183,16 +203,18 @@ fn version_lines_go_to_stderr_and_win_over_later_letters() {
 #[test]
 fn the_operand_count_check_runs_before_the_database_read() {
     let (_dir, db) = database("count-before-read");
-    // 一个操作数：C 在 `units.c:849-851` 就 usage，档名连开都不开。
+    // One operand: C calls usage at `units.c:849-851`, without even opening the file
+    // name.
     let (out, code, err) = run(&["-f", &db, "m"], b"");
     assert_eq!(code, 3);
     assert_eq!(err, USAGE, "旧写法把这形拖到读库之后，坏档时会先印开档失败");
     assert_eq!(out, "");
-    // 四个操作数同一支。
+    // Four operands take the same branch.
     let (_, code, err) = run(&["-f", &db, "m", "sec", "km", "cm"], b"");
     assert_eq!(code, 3);
     assert_eq!(err, USAGE);
-    // 坏档 + 合法的操作数个数：这才轮到开档失败那一句。
+    // Bad file + a legal operand count: only then does the open-failure sentence come
+    // into play.
     let (_, code, err) = run(&["-f", "/definitely-not-here", "m", "sec"], b"");
     assert_eq!(code, 1);
     assert_eq!(
@@ -203,8 +225,9 @@ fn the_operand_count_check_runs_before_the_database_read() {
 
 #[test]
 fn default_database_failure_is_the_errx_two_part_shape() {
-    // 无 `-f` 时 C 找的是 `_PATH_UNITSLIB`（`minix3/usr.bin/units/pathnames.h`），
-    // 找不到走 `errx`：句子带档名但**不带** `strerror`，与 `-f` 那支的三段形相对。
+    // Without `-f`, C looks for `_PATH_UNITSLIB` (`minix3/usr.bin/units/pathnames.h`);
+    // if it is missing the path goes through `errx`: the sentence names the file but
+    // **does not** include `strerror`, unlike the three-part shape of the `-f` branch.
     for args in [&["--"][..], &["-q"][..], &["m", "-l", "sec"][..]] {
         let (out, code, err) = run(args, b"");
         assert_eq!(code, 1, "{args:?}");
@@ -218,13 +241,14 @@ fn default_database_failure_is_the_errx_two_part_shape() {
 
 #[test]
 fn double_dash_is_consumed_and_bare_dash_is_an_operand() {
-    // `--` 在 `getopt.c:81-85` 结束环且自身被推进掉，于是 `-- -Z` 只剩一个操作数：
-    // 走「个数不对」那一支，只有 usage 块，没有 libc 的集外字母那一行。
+    // `--` ends the loop at `getopt.c:81-85` and is itself consumed, so `-- -Z` leaves
+    // only one operand: the wrong-count branch, with only the usage block and no libc
+    // off-charset line.
     let (_, code, err) = run(&["--", "-Z"], b"");
     assert_eq!(code, 3);
     assert_eq!(err, USAGE);
-    // 裸 `-` 结束环却不推进（`:87-92`），所以它是操作数；`-f` 取下一个 token 时
-    // 不看脸色，`-f - m sec` 的档名就是 `-`。
+    // A bare `-` ends the loop without being consumed (`:87-92`), so it is an operand;
+    // `-f` takes the next token regardless, so `-f - m sec` uses `-` as the file name.
     let (_, code, err) = run(&["-f", "-", "m", "sec"], b"");
     assert_eq!(code, 1);
     assert_eq!(
@@ -242,7 +266,9 @@ fn list_mode_rejects_operands_and_lists_the_tiny_database() {
         err, USAGE,
         "`list && argc != 0` 与个数不对同走 usage 一支，没有 libc 行"
     );
-    // 无操作数时才进列表；这一段是决定半与外部形状的重叠处，参照件现量的正是这份小词典。
+    // Only without operands does it enter list mode; this segment is where the
+    // decisive half overlaps the external shape, and the reference measured exactly
+    // this tiny dictionary.
     let (out, code, err) = run(&["-l", "-f", &db], b"");
     assert_eq!(code, 0, "列表里有坏定义才退 1，这份词典没有");
     assert_eq!(err, "");
@@ -255,9 +281,11 @@ fn list_mode_rejects_operands_and_lists_the_tiny_database() {
 
 #[test]
 fn ring_does_not_rearrange_the_tail() {
-    // 环在第一个非选项 token 就结束（`getopt.c:74-78`），所以写在操作数之后的选项
-    // **不是选项**。这一形有四个操作数（`m`、`sec`、`-l`、档名），落「个数不对」那一支：
-    // 只有 usage 块、退 3。若谁去重排参数，`-l` 会被当选项吃掉而只剩两个操作数，退码变 0。
+    // The loop ends at the first non-option token (`getopt.c:74-78`), so an option
+    // written after the operands is **not an option**. This shape has four operands
+    // (`m`, `sec`, `-l`, the file name) and takes the wrong-count branch: only the
+    // usage block, exit 3. If anyone rearranged the arguments, `-l` would be consumed
+    // as an option and only two operands would remain, changing the exit code to 0.
     let (_dir, db) = database("rearrange");
     let (out, code, err) = run(&["m", "sec", "-l", &db], b"");
     assert_eq!(
@@ -266,8 +294,10 @@ fn ring_does_not_rearrange_the_tail() {
     );
     assert_eq!(err, USAGE);
     assert_eq!(out, "");
-    // 三个操作数时那一路把尾巴当单位名：`units -f <档> m sec -l` 的 `-l` 是 want 侧的
-    // 名字，报文是 C 的 `Unknown unit`，而**不是**进列表（旧写法在此退 1 且不报任何句子）。
+    // With three operands that path treats the tail as unit names: in
+    // `units -f <file> m sec -l`, `-l` is a want-side name and the message is C's
+    // `Unknown unit`, **not** a listing (the old form exited 1 here without any
+    // sentence).
     let (out, code, err) = run(&["-f", &db, "m", "sec", "-l"], b"");
     assert_eq!(code, 0, "C 忽略换算失败照样退 0");
     assert!(
@@ -283,15 +313,17 @@ fn ring_does_not_rearrange_the_tail() {
 
 #[test]
 fn unknown_operand_name_gets_the_c_warning_and_exit_zero() {
-    // 参照件：`units -f <档> bogus m` 打 `units: Unknown unit 'bogus'`（标准错误、
-    // 两段形）再照样出一个答案块，退 0。答案块那一半是决定半里的「半成品展示」，
-    // 登记为 UNITS-PARTIAL-UNIT-ON-ERROR，本门只钉句子与退码。
+    // Reference: `units -f <file> bogus m` prints `units: Unknown unit 'bogus'`
+    // (stderr, two-part shape) and still produces an answer block, exit 0. The answer
+    // block is the decisive half's "partial display", registered as
+    // UNITS-PARTIAL-UNIT-ON-ERROR; this face pins only the sentence and the exit code.
     let (_dir, db) = database("unknown-name");
     let (_, code, err) = run(&["-f", &db, "bogus", "m"], b"");
     assert_eq!(code, 0);
     assert_eq!(err, "units: Unknown unit 'bogus'\n");
-    // 两边都陌生时句子按 have→want 的顺序各打一行（参照件 `tmp/units-319/measure4.log`
-    // 那一形：`Unknown unit 'bogus'` 然后 `Unknown unit 'nope'`）。
+    // When both sides are unknown, one line each is printed in have→want order (the
+    // `tmp/units-319/measure4.log` shape of the reference: `Unknown unit 'bogus'` then
+    // `Unknown unit 'nope'`).
     let (_, code, err) = run(&["-f", &db, "bogus", "nope"], b"");
     assert_eq!(code, 0);
     assert_eq!(
@@ -302,8 +334,9 @@ fn unknown_operand_name_gets_the_c_warning_and_exit_zero() {
 
 #[test]
 fn interactive_pair_reads_stdin_and_prompts_in_order() {
-    // 这一枚是同族第十处读缝缺陷的门：旧写法拿裸 `minix_sys::read` 读标准输入，
-    // 宿主上一个字节也读不到，于是交互面只剩「打提示 → 立刻 EOF」。
+    // This is the face for the tenth read-seam defect of the family: the old form read
+    // stdin with a bare `minix_sys::read`, which on the host reads not one byte, so the
+    // interactive face degenerated to "print prompt → immediate EOF".
     let (_dir, db) = database("interactive");
     let (out, code, err) = run(&["-f", &db], b"km\ncm\n");
     assert_eq!(code, 0);
@@ -316,8 +349,9 @@ fn interactive_pair_reads_stdin_and_prompts_in_order() {
 
 #[test]
 fn unknown_have_line_reprompts_the_same_slot() {
-    // C 的 `do { 提示; fgets; } while (addunit || completereduce)`：坏行重问**同一格**。
-    // 旧写法把两次读当成 have/want 一对，于是 `bogus` 吃掉的是 want 那一格。
+    // C's `do { prompt; fgets; } while (addunit || completereduce)`: a bad line
+    // re-asks **the same slot**. The old form treated two reads as a have/want pair,
+    // so `bogus` consumed the want slot.
     let (_dir, db) = database("reprompt");
     let (out, code, err) = run(&["-f", &db], b"bogus\nm\nsec\n");
     assert_eq!(code, 0);
@@ -335,12 +369,13 @@ fn unknown_have_line_reprompts_the_same_slot() {
 #[test]
 fn eof_mid_pair_prints_a_newline_and_exits_zero() {
     let (_dir, db) = database("eof-mid");
-    // have 读到了、want 那格撞上 EOF：C 在**非 `-q`** 时补一个换行再退 0，答案块不打。
+    // have was read and the want slot hits EOF: when **not `-q`**, C emits a newline
+    // then exits 0 without an answer block.
     let (out, code, err) = run(&["-f", &db], b"m\n");
     assert_eq!(code, 0);
     assert_eq!(err, "");
     assert_eq!(out, "5 units, 0 prefixes\n\nYou have: You want: \n");
-    // 一上来就 EOF：只有 have 那一次提示加换行。
+    // EOF right away: only the single have prompt plus the newline.
     let (out, code, _) = run(&["-f", &db], b"");
     assert_eq!(code, 0);
     assert_eq!(out, "5 units, 0 prefixes\n\nYou have: \n");
@@ -349,7 +384,8 @@ fn eof_mid_pair_prints_a_newline_and_exits_zero() {
 #[test]
 fn quiet_suppresses_prompts_and_the_counts_line() {
     let (_dir, db) = database("quiet");
-    // `-q` 之下提示与 counts 都不打，EOF 那个换行也不打——三通道全空、退 0。
+    // Under `-q` neither the prompts nor the counts print, nor the EOF newline — all
+    // three channels empty, exit 0.
     let (out, code, err) = run(&["-q", "-f", &db], b"");
     assert_eq!(code, 0);
     assert_eq!(out, "", "-q 下提示、counts 与 EOF 换行都不打");
@@ -362,8 +398,10 @@ fn quiet_suppresses_prompts_and_the_counts_line() {
 
 #[test]
 fn long_input_line_truncates_at_seventy_nine_bytes() {
-    // C 用 `fgets(havestr, 80, stdin)`：一行最多 79 字节，剩下的连同换行归下一次读。
-    // 参照件对 100 个 `x` 报的是 79 与 21 两段，然后才把 `km`/`cm` 当第二、三次读。
+    // C uses `fgets(havestr, 80, stdin)`: a line is at most 79 bytes, and the rest
+    // (including the newline) goes to the next read. For 100 `x`s the reference
+    // reports segments of 79 and 21, then treats `km`/`cm` as the second and third
+    // reads.
     let (_dir, db) = database("long-line");
     let input = format!("{}\nkm\ncm\n", "x".repeat(100));
     let (out, code, err) = run(&["-f", &db], input.as_bytes());
@@ -384,7 +422,8 @@ fn long_input_line_truncates_at_seventy_nine_bytes() {
 
 #[test]
 fn blank_line_is_a_valid_dimensionless_pair() {
-    // 空行不是「跳过」：C 把它交给 `addunit`，得到无量纲的 1，于是答案是 `* 1` `/ 1`。
+    // A blank line is not "skipped": C hands it to `addunit`, yielding the
+    // dimensionless 1, so the answer is `* 1` `/ 1`.
     let (_dir, db) = database("blank");
     let (out, code, err) = run(&["-f", &db], b"\n\n");
     assert_eq!(code, 0);
@@ -397,8 +436,9 @@ fn blank_line_is_a_valid_dimensionless_pair() {
 
 #[test]
 fn colon_in_the_optstring_is_a_marker_not_a_selectable_letter() {
-    // 参照件现量（`tmp/units-319/measure5.log`）：`units -:` 与 `units -l:` 都打
-    // `units: unknown option -- :` 再接 usage，退 3；`units -f:` 的档名就是那个冒号。
+    // Measured against the reference (`tmp/units-319/measure5.log`): `units -:` and
+    // `units -l:` both print `units: unknown option -- :` followed by usage, exit 3;
+    // `units -f:` uses the colon itself as the file name.
     for args in [&["-:"][..], &["-l:"][..]] {
         let (_, code, err) = run(args, b"");
         assert_eq!(code, 3, "{args:?}");
@@ -418,8 +458,10 @@ fn colon_in_the_optstring_is_a_marker_not_a_selectable_letter() {
 
 #[test]
 fn listexpand_flag_expands_definitions_in_the_listing() {
-    // `-L` 是第二个字母而不是 `-l` 的大小写同义：它除进列表外还置 `listexpand`，
-    // 于是定义行被折算成十进制因子（参照件 `km\t1000 m`），`-l` 则原样透传 `km\t1000*m`。
+    // `-L` is a second letter, not a case variant of `-l`: besides entering list mode
+    // it sets `listexpand`, so definition lines are reduced to decimal factors (the
+    // reference shows `km\t1000 m`), whereas `-l` passes `km\t1000*m` through
+    // unchanged.
     let (_dir, db) = database("listexpand");
     let (out, code, err) = run(&["-L", "-f", &db], b"");
     assert_eq!(code, 0);
@@ -433,14 +475,17 @@ km\t1000 m\ncm\t0.01 m\nmin\t60 sec\n"
 
 #[test]
 fn off_letter_outside_the_charset_is_reported_by_its_first_byte() {
-    // 参照件对 `-é` 报的是**首字节**（libc 的 `%c` 打那一个字节）：
-    // `tmp/units-319/units -é` 与 `-qé` 都打 `units: unknown option -- ` + `c3` + 换行
-    // + 那份九行 usage，退 3。本壳的游标本来就按字节走（所以不会有 `column -té`
-    // 那种越出字符边界的 panic），曾经差的只剩渲染：按 `char` 打的是 Latin-1 码点
-    // U+00C3，即 `c3 83` 两个字节——那一处失真登记为 `UNITS-NONASCII-OPTLETTER`，
-    // 随批次三百九十九换 `GetoptReport::line_bytes` 闭合，断言因此改成逐字节。
-    // 文本夹具在这里已经不够用：`String::from_utf8_lossy` 会把裸 `c3` 与 `c3 83`
-    // 都渲染成替换字符，所以比的是 stderr 的原始字节。
+    // For `-é` the reference reports **the first byte** (libc's `%c` prints that one
+    // byte): `tmp/units-319/units -é` and `-qé` both print
+    // `units: unknown option -- ` + `c3` + newline + the nine-line usage, exit 3.
+    // This shell's cursor already walks bytes (so no `column -té`-style panic past a
+    // character boundary); the only thing that used to differ was rendering: printing
+    // by `char` gives the Latin-1 code point U+00C3, i.e. the two bytes `c3 83` —
+    // registered as `UNITS-NONASCII-OPTLETTER` and closed in batch 399 by switching to
+    // `GetoptReport::line_bytes`, so the assertions are now byte-wise.
+    // Text fixtures no longer suffice here: `String::from_utf8_lossy` renders both a
+    // raw `c3` and `c3 83` as the replacement character, so this compares raw stderr
+    // bytes.
     let want: Vec<u8> = [
         b"units: unknown option -- ".as_slice(),
         b"\xc3\n",
@@ -459,14 +504,15 @@ fn off_letter_outside_the_charset_is_reported_by_its_first_byte() {
         assert_eq!(out.stderr, want, "{form} 的字母该是一个裸字节 c3");
     }
 
-    // ASCII 那一形两个入口一字不差
+    // For the ASCII shape the two entry points match exactly
     let (_, code, err) = run(&["-Z"], b"");
     assert_eq!(code, 3);
     assert_eq!(err, format!("units: unknown option -- Z\n{USAGE}"));
 }
 
-/// 逐字节的夹具腿：`run` 把两路输出交回 lossy `String`，而文本形分不清裸 `ff` 与
-/// 折出来的 `ef bf bd`——那正是本文件这两枚门要比的东西（同 `col_face` 的 `run_bytes`）。
+/// Byte-wise fixture leg: `run` returns both output streams as lossy `String`s, and
+/// text cannot distinguish a raw `ff` from the folded `ef bf bd` — which is exactly
+/// what the two faces in this file compare (same as `col_face`'s `run_bytes`).
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, Vec<u8>, Option<i32>) {
     let mut child = Command::new(UNITS)
         .args(args)
@@ -482,10 +528,12 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, Vec<u8>, Option<i32>) {
 
 #[test]
 fn a_raw_byte_in_a_dictionary_name_reaches_the_listing() {
-    // 词典行的名字与定义都按字节进表（C 的 `fgets(line, 79, unitfile)` 从不解码，
-    // `readunits` 用 `strspn`/`strcspn` 切字节）。旧写法在壳侧先把**整份**档解一次
-    // UTF-8，解不过去就当空串——一枚裸字节能让全部单位消失，那一格登记为
-    // `UNITS-NONUTF8-DROP`，随单位名链路换字节形闭合。
+    // Dictionary-line names and definitions enter the table as bytes (C's
+    // `fgets(line, 79, unitfile)` never decodes, and `readunits` splits bytes with
+    // `strspn`/`strcspn`). The old form first decoded the **whole** file as UTF-8 on
+    // the shell side and treated failure as an empty string — a single raw byte could
+    // make every unit disappear; registered as `UNITS-NONUTF8-DROP` and closed by
+    // switching the unit-name path to the byte form.
     let dir = scratch("raw-name-listing");
     let path = dir.join("raw.lib");
     fs::write(
@@ -514,8 +562,9 @@ fn a_raw_byte_in_a_dictionary_name_reaches_the_listing() {
     );
 }
 
-/// argv 形态的字节形夹具：一枚裸 `ff` 没法写成 `&str`，所以参数按字节交
-/// （`OsStr::from_bytes`），比的是子进程实际收到的那串字节。
+/// Byte-form fixture for the argv shape: a raw `ff` cannot be written as `&str`, so
+/// arguments are passed as bytes (`OsStr::from_bytes`); this compares the exact byte
+/// string the child process received.
 fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, Vec<u8>, Option<i32>) {
     use std::os::unix::ffi::OsStrExt as _;
     let mut child = Command::new(UNITS)
@@ -532,9 +581,11 @@ fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, Vec<u8>, Option<i32>) {
 
 #[test]
 fn an_operand_with_a_raw_byte_is_warned_about_in_raw_bytes() {
-    // 操作数就是单位名表达式，C 在 `units.c:855-875` 把 `argv` 原样交给 `addunit`，
-    // 未知时由 `mywarnx("Unknown unit '%s'", *product)` 按字节回显。参数缝半此前
-    // 在 `support::args()` 里就把它折成 U+FFFD（三字节），本壳与参照件差三位。
+    // An operand is a unit-name expression; C hands `argv` to `addunit` unchanged at
+    // `units.c:855-875`, and `mywarnx("Unknown unit '%s'", *product)` echoes it byte
+    // by byte when unknown. The argument-seam half previously folded it to U+FFFD
+    // (three bytes) inside `support::args()`, leaving this shell three bytes off from
+    // the reference.
     let (_dir, db) = database("raw-operand");
     let operand = [b"weird".as_slice(), b"\xff"].concat();
     let args: Vec<&[u8]> = vec![
@@ -558,10 +609,12 @@ fn an_operand_with_a_raw_byte_is_warned_about_in_raw_bytes() {
 
 #[test]
 fn a_raw_byte_in_a_typed_name_comes_back_in_the_warning() {
-    // 交互那一行的字节原样进单位名链路：`addunit` 的 `strtok` 与 `lookupunit` 的
-    // `strcmp` 都在字节上走，`mywarnx("Unknown unit '%s'")`（`units.c:554`）把名字
-    // 按 `%s` 交回。旧写法在壳侧折一次 `from_utf8_lossy`，于是裸 `c3` 变成三个替换
-    // 字节、裸 `ff` 变成 `ef bf bd`——与参照件差一整串。
+    // Bytes from the interactive line enter the unit-name path unchanged: both
+    // `addunit`'s `strtok` and `lookupunit`'s `strcmp` work on bytes, and
+    // `mywarnx("Unknown unit '%s'")` (`units.c:554`) returns the name via `%s`. The
+    // old form folded once with `from_utf8_lossy` on the shell side, so a raw `c3`
+    // became three replacement bytes and a raw `ff` became `ef bf bd` — a whole
+    // string's worth of difference from the reference.
     let (_dir, db) = database("raw-name-warning");
     let (out, err, code) = run_bytes(
         &["-q", "-f", &db],

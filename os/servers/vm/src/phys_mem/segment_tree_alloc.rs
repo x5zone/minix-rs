@@ -132,7 +132,7 @@ impl SegmentTreeAllocator {
         alloc
     }
 
-    // V11-P2-3: `metadata_size` removed — `PhysAllocType::SegmentTree::metadata_size`
+    // `metadata_size` removed — `PhysAllocType::SegmentTree::metadata_size`
     // (phys_mem/mod.rs) is the single authority the relocation path consumes;
     // the two formulas had drifted (this one used SegmentNode + padding).
 

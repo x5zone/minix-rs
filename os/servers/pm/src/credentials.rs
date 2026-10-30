@@ -9,9 +9,10 @@ use crate::mproc::{ProcTable, NGROUPS_MAX, RemainingFlags};
 use crate::ipc::ReplyIntent;
 use alloc::vec::Vec;
 
-/// `GID_MAX`（`sys/sys/syslimits.h:53`，`2147483647U`）。gid_t 是 32 位
-/// 无符号（`sys/sys/ansi.h:38` `__uint32_t`），因此 C 的 `> GID_MAX`
-/// 校验（getset.c:191）真实拒绝 [2^31, 2^32-1] 区间——Rust 同值同语义。
+/// `GID_MAX` (`sys/sys/syslimits.h:53`, `2147483647U`). gid_t is a 32-bit
+/// unsigned type (`sys/sys/ansi.h:38` `__uint32_t`), so C's `> GID_MAX`
+/// check (getset.c:191) really does reject the [2^31, 2^32-1] range — Rust
+/// has the same value and the same semantics.
 pub const GID_MAX: u64 = 2147483647;
 
 /// `SUPER_USER` (`unistd.h`, `0`).
@@ -83,9 +84,11 @@ pub trait CopyGroups {
 
 /// VFS forwarder (`tell_vfs(SUSPEND)`, getset.c:219, D6, A-6).
 ///
-/// `table`/`slot` 由方法携带(非构造捕获):tell_vfs 的 not-idle 断言与
-/// VFS_CALL 置位都要访问进程表,而 do_set 的调用方(分发表)同时持表
-/// 与转发器——借用在调用点重入是合法的。
+/// `table`/`slot` are carried by the method (not captured at construction):
+/// the not-idle assertion in tell_vfs and the VFS_CALL flag both need the
+/// process table, and do_set's caller (the dispatch table) holds the table
+/// and the forwarder at the same time — re-borrowing at the call site is
+/// legal.
 pub trait VfsForwarder {
     fn forward_set(
         &mut self,
@@ -416,12 +419,13 @@ mod tests {
         mk_proc(&mut table, 0, 0, 0);
         let mut c = NopCopy;
         let mut v = NopVfs;
-        // gid_t 为 u32、GID_MAX = 2^31-1：[2^31, 2^32-1] 区间被拒绝
-        //（C getset.c:191，syslimits.h:53——V2-P3-2 修复前该检查恒假）。
+        // gid_t is u32 and GID_MAX = 2^31-1: the [2^31, 2^32-1] range is
+        // rejected (C getset.c:191, syslimits.h:53 — before the signedness
+        // fix this check was always false).
         let over = vec![(GID_MAX + 1) as Gid];
         let res = do_set(&mut table, UserSlot::new(0), SetOp::SetGroups { gids: over }, &mut c, &mut v);
         assert_eq!(res.unwrap_err(), SetError::Inval);
-        // 边界值 GID_MAX 本身合法。
+        // The boundary value GID_MAX itself is legal.
         let boundary = vec![GID_MAX as Gid];
         let res_ok = do_set(&mut table, UserSlot::new(0), SetOp::SetGroups { gids: boundary }, &mut c, &mut v);
         assert_eq!(res_ok.unwrap(), ReplyIntent::ReplyLater);

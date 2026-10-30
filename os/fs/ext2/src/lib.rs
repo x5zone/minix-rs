@@ -17,11 +17,13 @@
 
 #![no_std]
 
-// SD-19 机械化门（静默吞错家族）：本 crate 内新增无理由的 `let _ =`
-// 会当场多报一条 `clippy::let_underscore_must_use` 警告。不做 crate 级
-// `#![allow]` blanket，保门有效；已定性的历史站点逐站在语句级 `#[allow]`
-// 上方留 `//[SD19-gate] <理由>`。参考 `os/libs/minix-sys/src/lib.rs` 同
-// 族头部注释。
+// Mechanized gate for the silent-error-swallowing family: a new unexplained
+// `let _ =` inside this crate immediately reports one more
+// `clippy::let_underscore_must_use` warning. There is no crate-level
+// `#![allow]` blanket, which keeps the gate effective; each
+// already-classified historical site carries a statement-level `#[allow]`
+// with a `//[SD19-gate] <reason>` line above it. See the same family's
+// header comment in `os/libs/minix-sys/src/lib.rs`.
 #![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;

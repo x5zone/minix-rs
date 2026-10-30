@@ -38,20 +38,22 @@ pub struct Options {
     /// `-k`: process constant `#if` expressions.
     pub killconsts: bool,
     /// `-o`: write the result to this path instead of standard output
-    /// (`unifdef.c:311-312` 的 `ofilename = optarg`).
+    /// (`ofilename = optarg` at `unifdef.c:311-312`).
     pub output: Option<String>,
 }
 
-/// `addsym`（`unifdef.c:965-991`）的两种失败：形不合（C 直接 `usage()`）与符号表满
-/// （`unifdef.c:971-972` 的 `errx(2, "too many symbols")`）。
+/// The two failures of `addsym` (`unifdef.c:965-991`): malformed (C calls
+/// `usage()` directly) and symbol table full (`errx(2, "too many symbols")`
+/// at `unifdef.c:971-972`).
 #[derive(Debug, PartialEq)]
 pub enum SymError {
     Malformed,
     TooMany,
 }
 
-/// C 的 `skipsym`（`unifdef.c:947-952`）：吃一串 `[A-Za-z0-9_]`，**空串合法**（它一个字符
-/// 也不吃就返回原点，于是 `addsym` 看到的是 `*val == '\0'`）。
+/// C's `skipsym` (`unifdef.c:947-952`): consume a run of `[A-Za-z0-9_]`;
+/// **the empty string is legal** (it returns at the start without consuming a
+/// single character, so `addsym` sees `*val == '\0'`).
 fn symbol_run(spec: &str) -> usize {
     let mut end = 0usize;
     while end < spec.len()
@@ -64,10 +66,14 @@ fn symbol_run(spec: &str) -> usize {
 
 /// Parses `-Dsym[=val]` / `-Usym` (and the `-iD/-iU` ignore variants).
 ///
-/// 判据逐条对着 `addsym` 走，不自创句子：`-D` 那一支允许 `sym`、`sym=`、`sym=val`，
-/// 名字之后既不是结尾也不是 `=` 就交回 [`SymError::Malformed`]（C 那边是一句 `usage()`）；
-/// `-U` 那一支名字之后必须是结尾，带 `=` 就坏（参照件现量：`unifdef -UFOO=1` 只打 usage 一行）。
-/// 名字重复时 C 用 `findsym` 找到同一格再覆写 `value`/`ignore`，这里同形。
+/// The criteria follow `addsym` clause by clause, inventing no sentences: the
+/// `-D` branch accepts `sym`, `sym=`, and `sym=val`, and returns
+/// [`SymError::Malformed`] when what follows the name is neither the end nor
+/// `=` (C has a `usage()` there); the `-U` branch requires the name to end the
+/// string, and a `=` makes it bad (measured on the reference:
+/// `unifdef -UFOO=1` prints only the one usage line). When a name repeats, C
+/// uses `findsym` to find the same slot and overwrites `value`/`ignore`; this
+/// code does the same.
 pub fn add_symbol(
     options: &mut Options,
     spec: &str,
@@ -96,8 +102,9 @@ pub fn add_symbol(
             return Ok(());
         }
     }
-    // `MAXSYMS`（`unifdef.c:197`）是 C 那张静态表的容量，溢出那句 `too many symbols`
-    // 走的是 `errx(2, …)` 而不是 usage。
+    // `MAXSYMS` (`unifdef.c:197`) is the capacity of C's static table, and the
+    // overflow sentence `too many symbols` goes through `errx(2, …)` rather
+    // than usage.
     if options.symbols.len() >= 4096 {
         return Err(SymError::TooMany);
     }
@@ -109,36 +116,47 @@ pub fn add_symbol(
     Ok(())
 }
 
-/// 前门环的出口（`unifdef.c:273` 的 `getopt(argc, argv, "i:D:U:I:o:cdeklst")`）。
+/// The exit of the front-end loop (`getopt(argc, argv, "i:D:U:I:o:cdeklst")`
+/// at `unifdef.c:273`).
 #[derive(Debug, PartialEq)]
 pub enum UnifdefArgError {
-    /// 集外字母或缺值字母：libc 先印一行，`unifdef.c:322-323` 的 `default: usage()` 接第二行。
+    /// Out-of-set letter or missing-value letter: libc prints one line first,
+    /// and `default: usage()` at `unifdef.c:322-323` adds the second.
     Getopt(crate::GetoptReport),
-    /// `-i` 后面不是 `D`/`U`（`unifdef.c:283-287`），或符号名不合 `addsym` 的形——
-    /// 两处 C 都只 `usage()`，**不打任何自拟句子**。
+    /// `-i` followed by something other than `D`/`U` (`unifdef.c:283-287`), or
+    /// a symbol name malformed for `addsym` — in both places C only calls
+    /// `usage()`, **printing no self-invented sentence**.
     Usage,
-    /// 符号表满：`errx(2, "too many symbols")` 单独一行。
+    /// Symbol table full: `errx(2, "too many symbols")` on a single line.
     TooManySymbols,
 }
 
-/// 选项环的产物：旗标与**按原序**交回的操数（C 只接受 0 或 1 个，多的在壳里判）。
+/// The option loop's product: flags plus the operands handed back **in their
+/// original order** (C accepts only 0 or 1; more are judged in the shell).
 pub struct UnifdefArgs<'a> {
     pub options: Options,
     pub operands: Vec<&'a str>,
 }
 
-/// `unifdef.c:273-323` 的选项环。
+/// The option loop of `unifdef.c:273-323`.
 ///
-/// 五个带值项（`D`/`U`/`i`/`I`/`o`）与七个不带值的字母（`c`/`d`/`e`/`k`/`l`/`s`/`t`），
-/// 大小写混排——`D` 与 `d`、`U` 与 `u`（后者不在串里）是两回事，集外的判定不能按字母族猜。
-/// `-i` 的取值先吃掉紧随其后的**一个字符**再看剩下那段（`opt = *optarg++`，`unifdef.c:278-287`）：
-/// `-iDFOO` 里的符号是 `FOO`，`-iD` 的符号是空串（合法），`-iX` 与 `-i` 配空串都直接 usage。
-/// `-I` 收下值却什么都不做（`unifdef.c:289-291` 的 cpp 兼容位）。
+/// Five value-taking items (`D`/`U`/`i`/`I`/`o`) and seven valueless letters
+/// (`c`/`d`/`e`/`k`/`l`/`s`/`t`), mixed case — `D` and `d`, `U` and `u` (the
+/// latter is not in the string) are different things, so out-of-set judgment
+/// must not guess by letter family.
+/// `-i`'s value first consumes the **one character** right after it and then
+/// looks at the rest (`opt = *optarg++`, `unifdef.c:278-287`): the symbol in
+/// `-iDFOO` is `FOO`, the symbol in `-iD` is the empty string (legal), and
+/// `-iX` and `-i` with an empty string both go straight to usage.
+/// `-I` takes a value and does nothing with it (the cpp compatibility slot at
+/// `unifdef.c:289-291`).
 ///
-/// 环**不重排**：第一个非选项 token 一到，`getopt.c:74-78` 当场结束环且不推进 `optind`，
-/// 于是 `unifdef -DFOO in.c -c` 里的 `-c` 是第二个操数（参照件现量：`unifdef: can only do one file`），
-/// 而不是又点起一面旗标。裸 `-` 留在操数里，且 `unifdef.c:333` 的 `strcmp(*argv, "-") != 0`
-/// 把它读成标准输入。
+/// The loop **does not reorder**: as soon as the first non-option token
+/// arrives, `getopt.c:74-78` ends the loop on the spot without advancing
+/// `optind`, so the `-c` in `unifdef -DFOO in.c -c` is the second operand
+/// (measured on the reference: `unifdef: can only do one file`) rather than
+/// raising another flag. A bare `-` stays among the operands, and
+/// `strcmp(*argv, "-") != 0` at `unifdef.c:333` makes it read standard input.
 pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, UnifdefArgError> {
     let mut options = Options::default();
     let mut index = 0usize;
@@ -148,11 +166,13 @@ pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, Un
         };
         let bytes = arg.as_bytes();
         if arg == "--" {
-            // `getopt.c:81-85`：`++optind` 之后才返回 -1，所以 `--` 自身不是操数。
+            // `getopt.c:81-85`: -1 is returned only after `++optind`, so `--`
+            // itself is not an operand.
             break args[index + 1..].to_vec();
         }
         if bytes.len() < 2 || bytes[0] != b'-' {
-            // `getopt.c:74-78`：非选项 token 一到就结束，不推进 `optind`。
+            // `getopt.c:74-78`: a non-option token ends the loop without
+            // advancing `optind`.
             break args[index..].to_vec();
         }
         let mut pos = 1usize;
@@ -163,12 +183,15 @@ pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, Un
                 b'l' => options.lnblank = true,
                 b's' => options.symlist = true,
                 b't' => options.text = true,
-                // `-d`（调试报告）与 `-e`（宽容畸形行）在本壳是无操作的合法字母：
-                // 它们门控的是 DODGY 表那几列，已另登记。
+                // `-d` (debug report) and `-e` (tolerate malformed lines) are
+                // legal no-op letters in this shell: they gate columns of the
+                // DODGY table, registered separately.
                 b'd' | b'e' => {}
                 ch @ (b'D' | b'U' | b'i' | b'I' | b'o') => {
-                    // 值是「本串去掉 `-` 与字母之后的那一段」，没有剩余就取下一个 token
-                    // （`getopt.c:118-141`）；两种取法都把本串吃到尽头。
+                    // The value is "the rest of this token after the `-` and
+                    // the letter", or the next token when nothing remains
+                    // (`getopt.c:118-141`); both forms consume this token to
+                    // its end.
                     let value = if pos + 1 < bytes.len() {
                         &arg[pos + 1..]
                     } else {
@@ -194,7 +217,8 @@ pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, Un
                         b'I' => {}
                         b'o' => options.output = Some(value.to_string()),
                         _ => {
-                            // `-i` 的第一个字符选边，剩下那段才是符号名。
+                            // `-i`'s first character selects the side; the rest
+                            // is the symbol name.
                             let mut rest = value.bytes();
                             match rest.next() {
                                 Some(b'D') => add_symbol(&mut options, &value[1..], true, true)
@@ -208,9 +232,12 @@ pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, Un
                     pos = bytes.len();
                 }
                 _ => {
-                    // 报的是**这一处的第一个字节**：C 的 `optopt` 是 `char`，`%c` 打的就是
-                    // 那一个字节；游标 `pos` 是字节下标，非 ASCII 字母时它会落进多字节字符
-                    // 中间，所以按字节取而不切字符串（切串当场 panic）。
+                    // What is reported is **the first byte at this position**:
+                    // C's `optopt` is a `char`, and `%c` prints that one byte;
+                    // the cursor `pos` is a byte index, and with a non-ASCII
+                    // letter it lands inside a multibyte character, so the byte
+                    // is taken directly rather than slicing the string
+                    // (slicing panics on the spot).
                     return Err(UnifdefArgError::Getopt(crate::GetoptReport::UnknownOption(
                         char::from(bytes[pos]),
                     )));
@@ -223,7 +250,8 @@ pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, Un
     Ok(UnifdefArgs { options, operands })
 }
 
-/// `addsym` 的两种失败在 C 里落在两个不同的出口上：形不合是 `usage()`，表满是 `errx`。
+/// `addsym`'s two failures land on two different exits in C: malformed is
+/// `usage()`, full is `errx`.
 fn usage_or_full(err: SymError) -> UnifdefArgError {
     match err {
         SymError::Malformed => UnifdefArgError::Usage,
@@ -1110,7 +1138,9 @@ fn split_lines(input: &str) -> Vec<&str> {
 mod tests {
     use super::*;
 
-    /// 集外字母与缺值都交回 libc 那两个形状；大小写算集合的一部分（`u` 与 `E` 都不在串里）。
+    /// Out-of-set letters and missing values both come back as libc's two
+    /// shapes; case is part of the set (`u` and `E` are both absent from the
+    /// string).
     #[test]
     fn an_unreachable_option_shape_is_reported_by_the_libc_line() {
         for (args, report) in [
@@ -1130,8 +1160,9 @@ mod tests {
         }
     }
 
-    /// 环**不重排**：`-DA in.c -c` 里的 `-c` 留在操数里（参照件那句 `can only do one file`），
-    /// 而裸 `-` 也是操数；`--` 结束环且自身不算操数。
+    /// The loop **does not reorder**: the `-c` in `-DA in.c -c` stays among the
+    /// operands (the reference's `can only do one file`), and a bare `-` is
+    /// also an operand; `--` ends the loop and is not itself an operand.
     #[test]
     fn the_ring_ends_at_the_first_operand_and_keeps_everything_after_it() {
         let parsed = parse_unifdef_args(&["-DA", "in.c", "-c"]).expect("环在 in.c 处结束");
@@ -1144,8 +1175,9 @@ mod tests {
         assert!(parse_unifdef_args(&["--"]).unwrap().operands.is_empty());
     }
 
-    /// `-i` 的取值先吃一个字母：`-iDFOO` 的符号是 `FOO` 且带 ignore；后随字母不是 `D`/`U`
-    /// 就是 `Usage`（C 直接 `usage()`，没有自己的句子）。
+    /// `-i`'s value consumes one letter first: the symbol in `-iDFOO` is `FOO`
+    /// with ignore set; a following letter other than `D`/`U` is `Usage` (C
+    /// calls `usage()` directly, with no sentence of its own).
     #[test]
     fn the_ignore_letter_splits_its_value() {
         let parsed = parse_unifdef_args(&["-iDFOO", "-iUBAR"]).expect("两个 ignore 符号");
@@ -1175,8 +1207,9 @@ mod tests {
         );
     }
 
-    /// 空符号名合法（`skipsym` 原地返回），而名字之后既不是结尾也不是 `=` 就交回 `Usage`；
-    /// 重复给同一个符号覆写同一格而不是叠两份。
+    /// The empty symbol name is legal (`skipsym` returns in place), while a
+    /// name followed by neither the end nor `=` comes back as `Usage`;
+    /// repeating one symbol overwrites the same slot instead of stacking two.
     #[test]
     fn a_symbol_name_is_a_leading_identifier_run_and_may_be_empty() {
         let parsed = parse_unifdef_args(&["-D", ""]).expect("空符号名是合法的");

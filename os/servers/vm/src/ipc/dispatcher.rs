@@ -128,7 +128,7 @@ impl MessageDispatcher {
             endpoint: request.endpoint,
             new_brk_addr: request.new_addr,
         };
-        // §续-279m: the brk port is a pure region-table extension (C
+        // The brk port is a pure region-table extension (C
         // map_region_extend_upto_v anon legs are demand-filled), so page
         // alloc / frames / vfs_queue no longer reach it.
         match brk::handle_brk(table, &req) {
@@ -455,7 +455,7 @@ impl MessageDispatcher {
     // to page_alloc + frames + regions, which the Dispatcher (taking &VmProcTable)
     // cannot provide. Do not add a duplicate stub here.
 
-    // -- exec_newmem / DMA (parity-verified, 2026-09-06 V11/T19) --
+    // -- exec_newmem / DMA (parity-verified) --
     //
     // VM_EXEC_NEWMEM and VM_ADDDMA/VM_DELDMA/VM_GETDMA exist in C's
     // com.h call-number list but are NOT registered in main.c's CALLMAP
@@ -480,7 +480,7 @@ impl MessageDispatcher {
         let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        // §续-279m: rs_prepare's brk leg (heap extension) no longer needs
+        // rs_prepare's brk leg (heap extension) no longer needs
         // page_alloc/frames/vfs_queue queues — anon resize is demand-filled;
         // frames stays only for the map_pin_memory legs.
         match rs::handle_rs_prepare(table, page_alloc, frames, src, dst, flags) {
@@ -523,8 +523,8 @@ impl MessageDispatcher {
 /// Decode a VM_RS_MEMCTL sub-request code into the typed request.
 ///
 /// C: `do_rs_memctl` switch on `m->VM_RS_CTL_REQ` (rs.c:366-389); the
-/// default arm returns EINVAL (rs.c:386-388). (25-P0-1: unknown codes
-/// previously mapped to `VmError::InvalidAddress` → EFAULT.)
+/// default arm returns EINVAL (rs.c:386-388). (Unknown codes previously mapped
+/// to `VmError::InvalidAddress` → EFAULT.)
 fn decode_rs_memctl_request(
     req_code: i32,
     addr: u64,
@@ -583,11 +583,11 @@ impl MessageDispatcher {
                 free_pages: s.free_pages,
                 largest_contiguous: s.largest_contiguous,
                 cached_pages: s.cached_pages,
-                // V10-P2-4: main-loop observability counters (minix-rs
-                // extension; not on C's vm_stats_info wire layout).
+                // Main-loop observability counters (minix-rs extension; not on
+                // C's vm_stats_info wire layout).
                 dropped_messages,
                 pagefault_errors,
-                // V11/T18 ([ARCH: A-16]): page-allocation failures.
+                // [ARCH: A-16] page-allocation failures.
                 alloc_failures: s.alloc_failures,
             },
             Ok(query::InfoResult::Usage(u)) => VmReply::InfoUsage {
@@ -654,7 +654,7 @@ impl MessageDispatcher {
 }
 
 // ==========================================================================
-// Compile-time CALLMAP — V9-P2-1 (per-call codec) + V9-P2-2 (table dispatch)
+// Compile-time CALLMAP — per-call codec plus table dispatch
 //
 // C builds `vm_calls[VM_RQ_BASE..]` in main.c:508-538 and registers one
 // handler per call at main.c:543-575; the dispatcher loop calls
@@ -664,8 +664,8 @@ impl MessageDispatcher {
 // (→ ENOSYS), exactly like C's NULL `vmc_func`.
 //
 // Each entry is a thin *decode wrapper* — the single place that knows which
-// wire format its call number speaks (M1 / M2 / dedicated overlay) and how
-// wire fields map to semantic arguments (V9-P2-1). Policy lives in the
+// wire format its call number speaks (`m1`, `m2` or a dedicated overlay) and
+// how wire fields map to semantic arguments. Policy lives in the
 // `dispatch_*` handlers, which the wrapper delegates to.
 // ==========================================================================
 
@@ -748,13 +748,13 @@ fn call_map_phys(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
 }
 
 fn call_unmap_phys(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
-    // 21-P1-1: wired at VM_UNMAP_PHYS (previously the `_` catch-all).
+    // Wired at VM_UNMAP_PHYS (previously the `_` catch-all).
     // C: CALLMAP(VM_UNMAP_PHYS, do_munmap), main.c:540.
     MessageDispatcher::dispatch_unmap_phys(ctx, VmUnmapPhysIn::decode_message(msg)).into()
 }
 
 fn call_munmap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
-    // 21-P1-1 wire-format fix: decode from the m_mmap overlay + m_source.
+    // Wire-format fix: decode from the m_mmap overlay + m_source.
     MessageDispatcher::dispatch_munmap(ctx, VmMunmapIn::decode_message(msg)).into()
 }
 
@@ -783,8 +783,8 @@ fn call_remap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
 }
 
 fn call_shm_unmap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
-    // 21-P1-1 wire-format fix: dedicated m_lc_vm_shm_unmap overlay
-    // (forwhom@0, addr@4). The old M1 decode read addr from m1p1 @ 16.
+    // Wire-format fix: dedicated m_lc_vm_shm_unmap overlay
+    // (forwhom@0, addr@4). The old `m1` decode read addr from m1p1 @ 16.
     MessageDispatcher::dispatch_shm_unmap(ctx, VmShmUnmapIn::decode_message(msg)).into()
 }
 
@@ -809,7 +809,7 @@ fn call_get_refcount(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
 
 fn call_rs_set_priv(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
     // C: rs.c:40 — nr=m->VM_RS_NR, buf=m->VM_RS_BUF, sys=m->VM_RS_SYS
-    // M2: m2i1=target endpoint, m2l1=call_mask pointer, m2i2=is_sys_proc.
+    // `m2`: m2i1=target endpoint, m2l1=call_mask pointer, m2i2=is_sys_proc.
     let m2 = unsafe { &msg.m_u.m_m2 };
     let target = Endpoint(m2.m2i1);
     let is_sys_proc = m2.m2i2 != 0;
@@ -852,10 +852,11 @@ fn call_rs_set_priv(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
 }
 
 fn call_info(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
-    // C: utility.c:100 — `mess_lsys_vm_info`（ipc.h:1494-1501）。专属结构 what@0/
-    // ep@4/count@8/next@24 与旧 `m_m2` overlay 的 m2i1/m2i2/m2i3/m2l2 逐字段同偏移，
-    // 故切到专属结构是行为等价的类型化（V13-P2-6 解码面收口，与其余四个
-    // VM 消息 handler 同形）。
+    // C: utility.c:100 — `mess_lsys_vm_info` (ipc.h:1494-1501). The dedicated
+    // struct's what@0/ep@4/count@8/next@24 sit at the same offsets, field by
+    // field, as the old `m_m2` overlay's m2i1/m2i2/m2i3/m2l2, so switching to
+    // the dedicated struct is behavior-equivalent typing (closing out the
+    // decode face the same way as the other four VM message handlers).
     let info = unsafe { &msg.m_u.m_lsys_vm_info };
     let what = info.what;
     let mut ep = Endpoint(info.ep);
@@ -960,7 +961,7 @@ impl From<fork::VmForkError> for VmError {
             fork::VmForkError::PageTableMapFailed => VmError::OutOfMemory,
             fork::VmForkError::PageNotMapped => VmError::PageNotMapped,
             fork::VmForkError::MemType(_) => VmError::MemType,
-            // V11/T9: gateway kernel-call failure → fail-closed error reply
+            // A gateway kernel-call failure → fail-closed error reply
             // (C do_fork.c panics instead — see the do_fork doc in fork.rs).
             // Pre-E1 the trap stub answers -EIO while the kernel state is
             // untouched, so the InternalError reply is exact.
@@ -1047,7 +1048,7 @@ impl From<rs::RsError> for VmError {
             // C: real_brk() returns ENOMEM on failure (break.c:63-68).
             rs::RsError::HeapExtendFailed => VmError::OutOfMemory,
             rs::RsError::PreallocMapConflict => VmError::NotImplemented,
-            // V11/T13: kernel sys_update errno passed through (C rs.c:177).
+            // Kernel sys_update errno passed through (C rs.c:177).
             rs::RsError::UpdateKernelFailed(_) => VmError::InternalError,
             // C: rs.c:386-388 — `do_rs_memctl` default arm returns EINVAL.
             rs::RsError::InvalidRequest => VmError::InvalidParam,
@@ -1089,9 +1090,10 @@ fn query_rusage_error_to_vm_error(e: query::QueryError) -> VmError {
 
 /// Mmap address range for remap operations.
 /// C: `VM_MMAPBASE` / `VM_MMAPTOP` (computed at boot in minix3).
-/// In 64-bit minix-rs, the same range as `handle_mmap` — T13 审计 A2：
-/// 此前这里是 2^41 的第二份字面量拷贝，「same range」约定只靠注释
-/// 维持；现改为单一真源（含 per-arch 用户半区封顶，riscv 收到 2^38）。
+/// In 64-bit minix-rs, the same range as `handle_mmap` — previously a second
+/// copy of the 2^41 literal lived here, and the "same range" convention rested
+/// only on a comment; it now comes from a single source (including the per-arch
+/// user-half cap, riscv at 2^38).
 use crate::mmap::{MMAP_BASE as REMAP_MMAP_BASE, MMAP_TOP as REMAP_MMAP_TOP};
 
 /// Page-align a length value, matching C's `size += VM_PAGE_SIZE - size % VM_PAGE_SIZE`.
@@ -1162,10 +1164,11 @@ fn dispatch_remap_impl(
     // Step 6: Determine destination address range
     // (C: mmap.c:412-415 — `if(da) map_page_region(dvmp, da, 0, ...) else map_page_region(dvmp, VM_MMAPBASE, VM_MMAPTOP, ...)`)
     //
-    // T13 审计 A3/R2：显式目标此前无任何用户半区上界校验（可达口子
-    // 之二）——校验复用 mmap 的 `check_user_range`（续-344b N1：单一
-    // 实现，checked_add 防回绕读成「fits」，形态同 kernel
-    // user_copy_range_mapped 第 1 步）。
+    // An explicit target previously had no user-half upper-bound check at all
+    // (the second reachable hole) — validation reuses mmap's
+    // `check_user_range` (single implementation; `checked_add` prevents a wrap
+    // from reading as "fits", the same shape as step 1 of kernel
+    // user_copy_range_mapped).
     let (minv, maxv) = if request.target.0 != 0 {
         if crate::mmap::check_user_range(
             minix_types::USER_VA_LIMIT,
@@ -1228,7 +1231,7 @@ fn dispatch_remap_impl(
         }
         // C: do_remap lands on map_page_region (mmap.c:418-421), whose slot
         // finder always records `vm_region_top = startv + length`
-        // (region.c:391). Hint-only semantics (§续-279m).
+        // (region.c:391). Hint-only semantics.
         dst_proc.set_region_top(VirBytes(dst_vaddr.0 + aligned_len.0));
     }
 
@@ -1239,7 +1242,10 @@ fn dispatch_remap_impl(
     // (a process can remap its own region to a different address),
     // but if they're the same slot, we must not hold an ActiveProc
     // for it. Since we dropped dst_proc above, this is safe regardless.
-    //[SD19-gate] remap 计数属 bookkeeping：主操作 vmremap 已完成射射实际生效，计数失败不回滚主语义（与 C vmremap 不测计数失败同构）
+    //[SD19-gate] remap counting is bookkeeping: the main operation vmremap has
+    // already taken effect, and a counting failure does not roll back the main
+    // semantics (same shape as C vmremap, which does not test the counting
+    // failure)
     #[allow(clippy::let_underscore_must_use)]
     let _ = table.increment_region_remaps(src_slot, src_snapshot.vaddr);
 
@@ -1284,12 +1290,7 @@ mod tests {
         assert_eq!(result, minix_types::EINVAL);
     }
 
-    /// V10-P1-2: pins the live-update scaffold. `dispatch_rs_update` must
-    /// currently return `Error(NotImplemented)` — the `Ok`/`Suspend` arms
-    /// (dispatcher.rs) and `DispatchAction::Suspend` (vm_server.rs) are
-    /// unreachable until kernel `sys_update` lands. Flip this test when
-    /// live update is implemented.
-    /// V11/T7 structural test: the CALLMAP is the executable form of C's
+    /// Structural test: the CALLMAP is the executable form of C's
     /// CALLMAP (main.c:543-575). Exactly the 26 calls C registers are
     /// registered here; the four parity-unregistered numbers (exec_newmem,
     /// ADDDMA/DELDMA/GETDMA — see the note above `build_callmap`) stay
@@ -1353,9 +1354,9 @@ mod tests {
             dst,
             0,
         );
-        // V11/T13 flip (Fix #40): live update is implemented — the gateway
-        // sys_update succeeds (mock replies OK) and steps 5-7 complete, so
-        // the reply is Ok. The kernel-side real wire is edge E2.
+        // Live update is implemented — the gateway sys_update succeeds (mock
+        // replies OK) and steps 5-7 complete, so the reply is Ok. The
+        // kernel-side real wire is a later stage.
         assert!(
             matches!(reply, VmReply::Ok),
             "live update with a succeeding gateway must complete: {:?}",
@@ -1363,7 +1364,7 @@ mod tests {
         );
     }
 
-    // ── Happy-path tests (V11/T27) ─────
+    // ── Happy-path tests ─────
     //
     // The fail-closed validation half of procctl / remap / remap_ro /
     // vfs_reply is pinned by the reject tests below; these four tests
@@ -2351,13 +2352,13 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         }
     }
 
-    /// V12-P2-6 regression: a cache MISS on page k>0 must roll back the
+    /// Regression: a cache MISS on page k>0 must roll back the
     /// pages already linked by the same request — each frame's refcount
     /// returns to the cache-only baseline (IN_CACHE keeps the cached pages
     /// out of the free funnel during the unwind). C do_mapcache performs
     /// the same whole-region rollback (`map_unmap_region` + ENOENT,
     /// mem_cache.c:155-157) — the rollback is C-parity, not a Rust wart;
-    /// this test pins the refcount symmetry V12 asked for.
+    /// this test pins the refcount symmetry the design requires.
     #[test]
     fn test_dispatch_mapcache_mid_failure_rolls_back_refcounts() {
         let table = default_table();
@@ -2421,13 +2422,13 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         unsafe { table.reset_slot(caller_slot); }
     }
 
-    // ── VM_RS_MEMCTL sub-request decode (25-P0-1 regression) ─────
+    // ── VM_RS_MEMCTL sub-request decode (regression) ─────
 
     #[test]
     fn test_decode_rs_memctl_unknown_req_einval() {
         // C: rs.c:386-388 — `do_rs_memctl` default arm returns EINVAL.
-        // 25-P0-1: unknown sub-request previously mapped to
-        // `VmError::InvalidAddress` (EFAULT); must be EINVAL.
+        // An unknown sub-request previously mapped to
+        // `VmError::InvalidAddress` (EFAULT); it must be EINVAL.
         let err = decode_rs_memctl_request(99, 0, 0).unwrap_err();
         assert_eq!(err, VmError::InvalidParam);
         assert_eq!(err.to_errno(), minix_types::EINVAL);

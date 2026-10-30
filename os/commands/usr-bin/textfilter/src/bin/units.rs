@@ -7,27 +7,38 @@
 //! library's `units` module; this program runs the option ring, loads
 //! the database, and drives the interactive prompt face.
 //!
-//! 前门有三类出口，退码一律 3，句式各有主人。libc `getopt` 的那一行（集外字母、
-//! 带值的 `-f` 缺值——`units.c:817` 的 optstring 是 `"lLvqf:"`，只有 `f` 带值，
-//! 所以缺值形在本支只有 `f` 一个字母可达）由 [`minix_textfilter::GetoptReport`]
-//! 单源，其后必接整块 usage，因为 `units.c:843-845` 写的是 `default: usage()`；
-//! `-v` 打两行版本再接 usage，那两行在**标准错误**上（`units.c:836-839` 是
-//! `fprintf(stderr, …)`）；操作数个数不对只有 usage 块，没有 libc 那一行。
-//! usage 块是九行（两个 `fprintf`：首行自带前导空行，说明段自带前导空行），
-//! 里面的 `units` 是写死在句子中的字面量，不跟 `getprogname()`——只有 libc 那一行跟。
+//! The front door has three exit classes, all with exit code 3, each with its
+//! own sentence owner. The libc `getopt` line (unknown letter, or the
+//! value-taking `-f` missing its value — the optstring at `units.c:817` is
+//! `"lLvqf:"`, only `f` takes a value, so the missing-value shape has just `f`
+//! reachable in this arm) comes from the single source
+//! [`minix_textfilter::GetoptReport`] and is always followed by the whole usage
+//! block, because `units.c:843-845` writes `default: usage()`. `-v` prints the
+//! two version lines then usage, and those two lines go to **standard error**
+//! (`units.c:836-839` is `fprintf(stderr, …)`). A wrong operand count gets only
+//! the usage block, with no libc line. The usage block is nine lines (two
+//! `fprintf` calls: the first line carries its own leading blank line, and so
+//! does the description paragraph); the `units` in it is a literal written into
+//! the sentence and does not follow `getprogname()` — only the libc line does.
 //!
-//! 两个档口句子分属两支：`-f` 的档打不开是 `err(1, "Unable to open units file
-//! '%s'", …)` 的三段形（带 `strerror`），默认档 `/usr/share/misc/units.lib`
-//! （`minix3/usr.bin/units/pathnames.h`）找不到是 `errx(1, "Can't find units
-//! file '%s'", …)` 的两段形（不带）。操作数个数的检查排在读库**之前**
-//! （`units.c:849-857`），所以「坏档加一个操作数」报的是 usage 而不是开档失败。
+//! The two file sentences belong to two different arms: a `-f` file that cannot
+//! be opened is the three-part `err(1, "Unable to open units file '%s'", …)`
+//! (with `strerror`), while the default file
+//! `/usr/share/misc/units.lib` (`minix3/usr.bin/units/pathnames.h`) not being
+//! found is the two-part `errx(1, "Can't find units file '%s'", …)` (without).
+//! The operand-count check runs **before** reading the database
+//! (`units.c:849-857`), so "bad file plus one operand" reports usage rather than
+//! an open failure.
 //!
-//! argv 与交互行都按字节进链路（批次四百五十五两片）：选项字母、操作数里的单位名、
-//! `-l` 清单与 `Unknown unit` 那句的回显位交回的都是原字节；只有 `-f` 的档名两条腿
-//! （打开与回显）还过库侧的 `&str` 口，登记在册。
+//! Both argv and interactive lines enter the chain as bytes: option letters,
+//! unit names inside operands, the `-l` listing and the echo slot of the
+//! `Unknown unit` sentence all return the original bytes; only the `-f` file
+//! name's two legs (open and echo) still pass through the library's `&str`
+//! door, a registered limitation.
 //!
-//! 交互面的每一行都走 `bin_support::read_line_bounded`：宿主与目标各一条腿，
-//! 这是同族第十处「薄壳裸 `read` 宿主读不到输入」的修复。
+//! Every interactive line goes through `bin_support::read_line_bounded`, one leg
+//! for the host and one for the target: this is the tenth fix of the
+//! "thin-shell raw `read` cannot see input on the host" family.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -45,28 +56,34 @@ use minix_textfilter::units::{
     units_error_line,
 };
 
-/// C 的 `_PATH_UNITSLIB`（`minix3/usr.bin/units/pathnames.h`）。
+/// C's `_PATH_UNITSLIB` (`minix3/usr.bin/units/pathnames.h`).
 const UNITSFILE: &str = "/usr/share/misc/units.lib";
-/// C 的 `fgets(havestr, 80, stdin)`：`havestr` 是 `char[81]`，一次最多收 79 字节，
-/// 第 80 个字节留给下一个换行或下一个数据字符，故截断时换行**留在流里**。
+/// C's `fgets(havestr, 80, stdin)`: `havestr` is `char[81]`, so at most 79 bytes
+/// are taken per call and the 80th byte is reserved for the next newline or the
+/// next data character; hence on truncation the newline **stays in the stream**.
 const LINE_LIMIT: usize = 79;
 
 fn run() -> ! {
-    // argv 按字节交回：C 的 `crt0` 把 `argv` 当字节数组、`getopt` 的字母取自字节步进，
-    // 所以短横后那一枚 `ff` 到报文里还得是那一枚 `ff`（批次四百四十定的字节缝）。
+    // argv comes back as bytes: C's `crt0` treats `argv` as a byte array and
+    // `getopt` takes letters by stepping bytes, so a `ff` after the dash must
+    // still be that same `ff` in the message (the byte seam settled in this
+    // round).
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名那一腿要交给 `warn_line` 与 `units_error_line` 的 `&str` 口（登记
-    // `ARGV-BYTE-PATH-IN-LIBS`），所以在臂内折一次 lossy——与其余各支同一条既定口径。
+    // The program-name leg must be handed to the `&str` doors of `warn_line` and
+    // `units_error_line` (a registered limitation), so it folds lossy once here
+    // — the same established rule as the other arms.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let prog = prog.as_str();
     let args: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let parsed = match parse_units_args(&args) {
         Ok(parsed) => parsed,
         Err(UnitsArgError::Getopt(report)) => {
-            // 走字节形：libc 那一行的字母位是一个裸字节（`getopt.c:79` 的
-            // `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出）。参照件
-            // `tmp/units-319/units` 现量 `units -é` 打 `unknown option -- ` + `c3` + 换行，
-            // 而按 `char` 渲染会多出第二个字节（U+00C3 的 UTF-8 是 `c3 83`）。
+            // Go byte-wise: the letter slot of the libc line is one raw byte
+            // (`getopt.c:79`'s `optopt = *place++` takes one byte at a time,
+            // `:103` writes it out verbatim with `%c`). Measured against the
+            // reference binary `tmp/units-319/units`, `units -é` prints
+            // `unknown option -- ` + `c3` + newline, whereas rendering through
+            // `char` would add a second byte (U+00C3 is `c3 83` in UTF-8).
             support::warn(&report.line_bytes(prog));
             usage();
         }
@@ -97,10 +114,13 @@ fn run() -> ! {
     }
 }
 
-/// 两个或三个操作数那一路（`units.c:855-875`）。三个时前两个用空格并成 have 侧；
-/// 环不重排，所以 `units -f <档> m sec -l` 的 `-l` 是**第三个操作数**而不是选项。
+/// The two-or-three operand path (`units.c:855-875`). With three operands the
+/// first two are joined with a space into the have side; the ring does not
+/// permute, so in `units -f <file> m sec -l` the `-l` is the **third operand**
+/// rather than an option.
 ///
-/// 操作数交回的是 argv 的原字节（`support::args_bytes()`），非法 UTF-8 也照样进链路。
+/// Operands arrive as the raw argv bytes (`support::args_bytes()`); invalid
+/// UTF-8 travels down the chain just the same.
 fn convert_operands(prog: &str, table: &UnitsTable, operands: &[&[u8]]) -> ! {
     let have_expr: Vec<u8> = if operands.len() == 3 {
         let mut joined = operands[0].to_vec();
@@ -112,16 +132,18 @@ fn convert_operands(prog: &str, table: &UnitsTable, operands: &[&[u8]]) -> ! {
     };
     let have = build_unit(prog, table, &have_expr);
     let want = build_unit(prog, table, operands[operands.len() - 1]);
-    // C 不看 `addunit`/`completereduce` 的返回值，拿半成品照样出一个答案块再退 0
-    // （`units.c:864-875`）；本壳这两支交回 `Err` 时没有半成品可展示，于是报文照 C、
-    // 退码照 C，只有答案块那一行缺——登记为 UNITS-PARTIAL-UNIT-ON-ERROR。
+    // C ignores the return values of `addunit`/`completereduce` and still emits
+    // an answer block from the half-built unit, exiting 0 (`units.c:864-875`);
+    // when these two arms return `Err` there is no half-built unit to show, so
+    // the messages match C and the exit code matches C, with only the answer
+    // block line missing — a registered limitation.
     if let (Some(have), Some(want)) = (have, want) {
         support::emit(&render_answer(&show_answer(&have, &want), PRECISION));
     }
     support::terminate(0);
 }
 
-/// 一个操作数都没有那一路：`You have: `/`You want: ` 成对提示。
+/// The no-operand path: paired `You have: `/`You want: ` prompts.
 fn interactive(prog: &str, table: &UnitsTable, quiet: bool) -> ! {
     if !quiet {
         support::emit(
@@ -140,11 +162,14 @@ fn interactive(prog: &str, table: &UnitsTable, quiet: bool) -> ! {
     }
 }
 
-/// C 的 `do { 提示; fgets; } while (addunit || completereduce)`（`units.c:876-893`）：
-/// 一行不认就**重问同一格**，而不是跳到对面那一格。EOF 时非 `-q` 先补一个换行再退 0。
+/// C's `do { prompt; fgets; } while (addunit || completereduce)`
+/// (`units.c:876-893`): a line that is not understood **re-asks the same cell**
+/// rather than moving to the opposite cell. At EOF, a non-`-q` run emits one
+/// newline first and then exits 0.
 ///
-/// 那一行交出的字节原样进单位名链路：C 的 `fgets` 之后从不解码，
-/// `addunit`→`lookupunit` 的 `strcmp` 与 `mywarnx` 的 `'%s'` 都按字节走。
+/// The bytes that line yields enter the unit-name chain unchanged: C never
+/// decodes after `fgets`, and both `addunit`→`lookupunit`'s `strcmp` and
+/// `mywarnx`'s `'%s'` work on bytes.
 fn read_unit(prog: &str, table: &UnitsTable, quiet: bool, prompt: &[u8]) -> UnitType {
     loop {
         if !quiet {
@@ -187,21 +212,26 @@ fn build_unit(prog: &str, table: &UnitsTable, expr: &[u8]) -> Option<UnitType> {
     }
 }
 
-/// 推导期的 `mywarnx` 句子（`units.c:109-124`）。非列表模式下 `errprefix` 是 `NULL`，
-/// 整句走 `vwarnx` 到标准错误。
+/// The `mywarnx` sentences of the derivation phase (`units.c:109-124`). In
+/// non-list mode `errprefix` is `NULL`, and the whole sentence goes through
+/// `vwarnx` to standard error.
 fn report(prog: &str, error: &minix_textfilter::units::UnitsError) {
     if let Some(line) = units_error_line(prog, error) {
         support::warn(&line);
     }
 }
 
-/// 读词典档。`-f` 与默认档的失败句子分属 `err` 与 `errx` 两支，见模块头的对照。
+/// Read the dictionary file. The `-f` and default-file failure sentences belong
+/// to the `err` and `errx` arms respectively; see the comparison in the module
+/// header.
 fn load_units_file(prog: &str, path: Option<&[u8]>) -> Vec<u8> {
     match path {
         Some(raw) => {
-            // `-f` 的档名两条腿（打开、回显）都还过库侧的 `&str` 口：
-            // `minix_sys::open` 与 `minix_types::errno::err_line` 都收 `&str`，
-            // 登记 `ARGV-BYTE-PATH-IN-LIBS`，库侧换字节形之前在这里折一次 lossy。
+            // Both legs of the `-f` file name (open and echo) still pass through
+            // the library's `&str` door: `minix_sys::open` and
+            // `minix_types::errno::err_line` both take `&str` (a registered
+            // limitation), so fold lossy once here until the library switches
+            // to the byte form.
             let name = String::from_utf8_lossy(raw);
             match support::read_file(&name) {
                 Ok(bytes) => bytes,
@@ -213,8 +243,10 @@ fn load_units_file(prog: &str, path: Option<&[u8]>) -> Vec<u8> {
         }
         None => match support::read_file(UNITSFILE) {
             Ok(bytes) => bytes,
-            // C 在这里先按 `PATH` 逐个目录找一遍（`units.c:146-176`），那一段登记为
-            // UNITS-PATH-SEARCH；两形都落不到本机可测的目录上，最终失败才是这一句。
+            // C first searches `PATH` directory by directory here
+            // (`units.c:146-176`); that segment is a registered limitation.
+            // Neither shape lands on a directory testable on this host, and
+            // this sentence is the final failure.
             Err(_) => {
                 support::warn(format!("{prog}: Can't find units file '{UNITSFILE}'\n").as_bytes());
                 support::terminate(1);
@@ -223,19 +255,26 @@ fn load_units_file(prog: &str, path: Option<&[u8]>) -> Vec<u8> {
     }
 }
 
-/// 词典的换行切分按字节走（C 的 `fgets(line, 79, unitfile)` 从不解码）。
-/// 旧写法先解一次整档 UTF-8、解不过去就把**整份**词典当空串，一枚裸字节能让
-/// 全部单位消失——登记 `UNITS-NONUTF8-DROP` 的那一格，本片随 `read_units` 换字节键消掉。
+/// The dictionary's newline split works on bytes (C's
+/// `fgets(line, 79, unitfile)` never decodes). The old form decoded the whole
+/// file as UTF-8 first and treated the **entire** dictionary as an empty string
+/// when that failed, so one raw byte could make every unit disappear — the
+/// registered limitation that this slice removed along with `read_units`' switch
+/// to byte keys.
 fn split_file_lines(bytes: &[u8]) -> Vec<&[u8]> {
-    // `split` 在档尾那个换行之后多给一个空项；`read_units` 对空名一律跳过，
-    // 与 C 的 `fgets` 在 EOF 处不再产生一行等效。
+    // `split` yields one extra empty item after the file's trailing newline;
+    // `read_units` skips empty names uniformly, which is equivalent to C's
+    // `fgets` not producing another line at EOF.
     bytes.split(|&byte| byte == b'\n').collect()
 }
 
-/// `units.c:793-807` 的 `usage()`：两个 `fprintf` 合起来九行，退码 3。
+/// The `usage()` of `units.c:793-807`: two `fprintf` calls making nine lines,
+/// exit code 3.
 ///
-/// 用 `concat!` 而不是带反斜杠续行的字节串：续行会吃掉下一行的**前导空白**，
-/// 那四格缩进就是这么丢掉的（本门第一跑逮到的正是这一处）。
+/// `concat!` is used rather than byte strings with backslash line continuations:
+/// a continuation eats the **leading whitespace** of the next line, and that is
+/// exactly how the four spaces of indentation got lost (the first run of this
+/// gate caught this very spot).
 const USAGE: &str = concat!(
     "\nunits [-Llqv] [-f filename] [[count] from-unit to-unit]\n",
     "\n    -f specify units file\n",
@@ -245,7 +284,8 @@ const USAGE: &str = concat!(
     "    -v print version number\n",
 );
 
-/// `units.c:836-839` 的两行版本，同在一个 `fprintf(stderr, …)` 上。
+/// The two version lines of `units.c:836-839`, from the same
+/// `fprintf(stderr, …)`.
 const VERSION: &str = concat!(
     "\n  units version 1.0  Copyright (c) 1993 by Adrian Mariano\n",
     "                    This program may be freely distributed\n",

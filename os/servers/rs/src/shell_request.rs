@@ -1,7 +1,9 @@
-//! 13/14 号控制与查询请求的 handler shell（A-1 拆分——§20.3 触发器：E-RSSTART
-//! 落地）。`impl RsServer` 的本块方法按 request.c 的臂序组织；取数与序列化
-//! 助手随行。主循环（run/get_work）、SEF 回调与信号面仍在 lib.rs
-//! （06/15/18 域），12/16 号壳在 shell_update.rs。
+//! The handler shell for the doc 13/14 control and query requests (part of the
+//! request-handler split, taken when E-RSSTART landed). This block of
+//! `impl RsServer` methods follows request.c's arm order; the fetch and
+//! serialization helpers travel with it. The main loop (run/get_work), the SEF
+//! callbacks and the signal face stay in lib.rs (docs 06/15/18), and the doc 12/16
+//! shell is in shell_update.rs.
 
 use super::*;
 
@@ -9,27 +11,32 @@ use super::*;
 /// C: `RS_VM_DEFAULT_MAP_PREALLOC_LEN` — const.h:83 (8 MiB).
 const RS_VM_DEFAULT_MAP_PREALLOC_LEN: i64 = 1024 * 1024 * 8;
 
-/// 一行快照的字节视图（行是 `#[repr(C)]` POD，wire 就是它的字节）。
+/// The byte view of one snapshot row (the row is a `#[repr(C)]` POD, so its wire
+/// form is exactly its bytes).
 ///
 /// # Safety
-/// `rows` 的元素类型由生产者保证为 repr(C) 无填充语义依赖 POD；视图只在
-/// 本次 safecopy 期间借用。
+/// The producer guarantees that `rows`' element type is a repr(C) POD whose
+/// semantics do not depend on padding; the view is borrowed only for this one
+/// safecopy.
 fn row_bytes<T>(rows: &[T]) -> &[u8] {
-    // SAFETY: 见上；`size_of_val` 给出切片整体的字节数。
+    // SAFETY: see above; `size_of_val` gives the byte length of the whole
+    // slice.
     unsafe { core::slice::from_raw_parts(rows.as_ptr().cast::<u8>(), core::mem::size_of_val(rows)) }
 }
 
-/// 单个服务槽 → 公共表快照行（`[ARCH: A-4]` 单一权威，见
-/// [`minix_types::RprocpubSnap`]）。字段映射：
-/// - `in_use`：`bool → 0/1`（C 的 i16 语义，取值为真值面）；
-/// - `sys_flags`/`vm_call_mask`：位容器取裸值（`vm_call_mask` 的两块在 C
-///   是 `bitchunk_t[2]` 小端相接，树内以 u64 位 *i* 记调用号 *i*，同位）；
-/// - `label`：16 字节 NUL 结尾（`Label` 保证）。
+/// One service slot → a public-table snapshot row (`[ARCH: A-4]` single
+/// authority, see [`minix_types::RprocpubSnap`]). Field mapping:
+/// - `in_use`: `bool → 0/1` (C's i16 semantics, where the value is the truth);
+/// - `sys_flags`/`vm_call_mask`: the bit containers take their raw value (C joins
+///   `vm_call_mask`'s two `bitchunk_t[2]` chunks in little-endian order; the tree
+///   records call number *i* at u64 bit *i*, the same position);
+/// - `label`: 16 bytes, NUL-terminated (guaranteed by `Label`).
 pub(crate) fn serialize_rprocpub_snap(slot: &crate::service_slot::ServiceSlot) -> minix_types::RprocpubSnap {
     let pub_ = &slot.pub_;
     if !pub_.in_use {
-        // 空槽出全零行：C 的 `rprocpub[]` 是静态数组，未分配槽保持 BSS 零
-        // （`in_use` 即有效性判据）；消费者按 `in_use` 过滤。
+        // An empty slot yields an all-zero row: C's `rprocpub[]` is a static
+        // array, so an unallocated slot stays BSS zero (`in_use` is the validity
+        // test); consumers filter on `in_use`.
         return minix_types::RprocpubSnap::default();
     }
     minix_types::RprocpubSnap {
@@ -42,16 +49,21 @@ pub(crate) fn serialize_rprocpub_snap(slot: &crate::service_slot::ServiceSlot) -
     }
 }
 
-/// 单个服务槽 → 私有表快照行（`[ARCH: A-4]`）。字段映射：
-/// - `r_pid`：`None`（无进程）→ `-1`（C 的 `r_pid` 无进程即 -1）；
-/// - `r_period`：树内 `period: i64` → C 的 `int r_period`（dump 列宽 4）；
-/// - `r_alive_tm`：树内 `Clock = i64` 原样；
-/// - `r_args`：NUL 分隔命令行原样 512 字节（dump 尾列逐字节打印）。
+/// One service slot → a private-table snapshot row (`[ARCH: A-4]`). Field
+/// mapping:
+/// - `r_pid`: `None` (no process) → `-1` (C's `r_pid` is -1 without a process);
+/// - `r_period`: the tree's `period: i64` → C's `int r_period` (dump column
+///   width 4);
+/// - `r_alive_tm`: the tree's `Clock = i64`, verbatim;
+/// - `r_args`: the NUL-separated command line, 512 bytes verbatim (the dump's
+///   last column prints it byte by byte).
 pub(crate) fn serialize_rproc_snap(slot: &crate::service_slot::ServiceSlot) -> minix_types::RprocSnap {
     if !slot.flags.contains(crate::service_slot::RFlags::IN_USE) {
-        // 空槽出全零行（同 PM/DS 生产者纪律）：C 的 `rproc[]` 未分配槽是
-        // BSS 零，`RS_IN_USE` 为有效性判据——不把"无进程"的 -1 哨兵写进
-        // 空槽（那是**在用**服务无 pid 时的取值）。
+        // An empty slot yields an all-zero row (the same producer discipline as
+        // PM/DS): C's `rproc[]` keeps unallocated slots at BSS zero and
+        // `RS_IN_USE` is the validity test — the -1 "no process" sentinel is not
+        // written into an empty slot (that is the value an **in-use** service has
+        // when it has no pid).
         return minix_types::RprocSnap::default();
     }
     minix_types::RprocSnap {
@@ -64,7 +76,8 @@ pub(crate) fn serialize_rproc_snap(slot: &crate::service_slot::ServiceSlot) -> m
     }
 }
 
-/// 整表快照（槽数 × 行宽；空槽同样出行，C 拷的是整数组）。
+/// The whole-table snapshot (slots × row width; empty slots produce rows too,
+/// since C copies the entire array).
 fn snap_table<T: Copy + Default>(
     table: &crate::process_table::RProcTable,
     one: impl Fn(&crate::service_slot::ServiceSlot) -> T,
@@ -142,7 +155,8 @@ pub(crate) fn copy_out_rproc_table(
 /// second half of C's two-phase design (rs.h:63 "Labels are copied over
 /// separately"; in C the byte copies live *inside* `edit_slot`'s branches,
 /// manager.c:1475-1483/:1578-1626, and the Rust pure-`edit_slot` split them
-/// out to the request handler — Fix #48's "RsStart 本就是拷贝后内存结构").
+/// out to the request handler — `RsStart` is, after all, a post-copy in-memory
+/// structure).
 ///
 /// Copy shapes follow the C per-branch semantics exactly:
 /// - cmd / IPC list / script: raw claimed lengths ride in `RsStart`
@@ -563,7 +577,7 @@ impl RsServer {
                     .flags
                     .contains(crate::privilege::PrivFlags::ROOT_SYS_PROC)
                 {
-                    // [SD19-gate] 尽力而为 VM 控制清理
+                    // [SD19-gate] best-effort VM control cleanup
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = self.kernel.vm_memctl(
                         state.table.get(nid).pub_.endpoint,
@@ -588,7 +602,7 @@ impl RsServer {
         }
 
         // State data (request.c:788-836) — the `init_state_data`
-        // composition (manager.c:172-285, 17 号): spec validation, the eval
+        // composition (manager.c:172-285, doc 17): spec validation, the eval
         // bytes and the filter blocks through the fetch seam, labels
         // resolved through the DS seam (19: `ds_retrieve_label_endpt` via
         // the boundary's DS client). The three cpf_grant_direct calls
@@ -619,10 +633,11 @@ impl RsServer {
                 entry.eval_buff = out.eval;
                 entry.ipcf_els_buff = Some(out.ipcf_els_buff);
 
-                // C request.c:817-838 —— grant 半:eval/filter 字节授权给
-                // 更新实例读取(RS 自身内存,CPF_READ);元数据半由 LU
-                // 描述符(entry.prepare_state_data 字段)承载。授权地址
-                // 稳定性:Vec 堆缓冲不受 header 移动影响。
+                // C request.c:817-838 — the grant half: the eval/filter bytes are
+                // granted for reading by the update instance (RS's own memory,
+                // CPF_READ), while the metadata half rides in the LU descriptor
+                // (the `entry.prepare_state_data` fields). The granted address is
+                // stable: a Vec heap buffer is unaffected by header moves.
                 if let Some(eval) = entry.eval_buff.as_ref()
                     && !eval.is_empty()
                 {
@@ -686,9 +701,9 @@ impl RsServer {
         let mut noop_end = |_: i32| {};
         let kern_cell = &core::cell::RefCell::new(&mut *self.kernel.as_mut());
         let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
-            // C update.c:203-227 —— RS_LU_PREPARE + m_rs_update 三域,
-            // rs_asynsend(失败忽略,utility.c:223-240)。槽位的 lu_flags
-            // 与 state_data_gid 自带。
+            // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
+            // fields, via rs_asynsend (failures ignored, utility.c:223-240). The
+            // slot carries its own lu_flags and state_data_gid.
             let upd = slot.upd.as_ref();
             let mut u = minix_types::MessRsUpdate::default();
             u.state = state;
@@ -700,13 +715,13 @@ impl RsServer {
             let mut msg = minix_types::Message::default();
             msg.m_u.m_rs_update = u;
             msg.m_type = minix_types::RS_LU_PREPARE;
-            // [SD19-gate] asynsend 发后即忘
+            // [SD19-gate] asynsend is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
         };
         let mut noop_vm = move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
             // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
-            // [SD19-gate] 尽力而为 VM 预备（失败走回滚）
+            // [SD19-gate] best-effort VM preparation (failure goes to rollback)
             #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().vm_prepare(src, dst, flags.bits() as i32);
         };
@@ -725,7 +740,7 @@ impl RsServer {
             Err(Errno::EAGAIN) => {
                 // C ignores the abort's internals here (update.c:411 — the
                 // call statement's value is unused).
-                // [SD19-gate] live_update 回滚清理尽力而为
+                // [SD19-gate] best-effort live_update rollback cleanup
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = crate::live_update::abort_update_proc(
                     &mut update,
@@ -740,8 +755,8 @@ impl RsServer {
             }
             Err(Errno::ESRCH) => {
                 let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
-            // C update.c:203-227 —— RS_LU_PREPARE + m_rs_update 三域,
-            // rs_asynsend(失败忽略,utility.c:223-240)。
+            // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
+            // fields, via rs_asynsend (failures ignored, utility.c:223-240).
             let upd = slot.upd.as_ref();
             let mut u = minix_types::MessRsUpdate::default();
             u.state = state;
@@ -753,12 +768,13 @@ impl RsServer {
             let mut msg = minix_types::Message::default();
             msg.m_u.m_rs_update = u;
             msg.m_type = minix_types::RS_LU_PREPARE;
-            // [SD19-gate] asynsend 发后即忘
+            // [SD19-gate] asynsend is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
         };
                 let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
-                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                // [SD19-gate] best-effort tail; dropping the Result does not change
+                // an established primary result (C is void/ignores at the same site).
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = update.end_update(
                     &mut state.table,
@@ -801,7 +817,7 @@ impl RsServer {
     /// Dispatches one `RS_*` request (C: main.c:102-114 switch).
     ///
     /// Arms turn live in dependency order as their message-payload decode
-    /// lands (the union-arm reads are the 19 safe-receive seam — OQ-4):
+    /// lands (the union-arm reads are the doc 19 safe-receive seam):
     /// `RS_SHUTDOWN` needs only `m_source` and is live; everything else
     /// falls through to [`dispatch::dispatch_request`]'s fail-closed table.
     pub(crate) fn do_request(
@@ -888,12 +904,12 @@ impl RsServer {
         match decision.signal {
             crate::request::StopSignal::Hangup => {
                 // RS itself (manager.c:1003) — SIGHUP via the PM face.
-                // [SD19-gate] 尽力而为杀进程（C 不回错）
+                // [SD19-gate] best-effort process kill (C returns no error)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.srv_kill(pid, 1);
             }
             crate::request::StopSignal::Term => {
-                // [SD19-gate] 尽力而为杀进程（C 不回错）
+                // [SD19-gate] best-effort process kill (C returns no error)
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.srv_kill(pid, 15);
             }
@@ -1130,8 +1146,8 @@ impl RsServer {
                 let mut noop_end = |_: i32| {};
                 let kern_cell = &core::cell::RefCell::new(&mut *self.kernel.as_mut());
                 let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
-            // C update.c:203-227 —— RS_LU_PREPARE + m_rs_update 三域,
-            // rs_asynsend(失败忽略,utility.c:223-240)。
+            // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
+            // fields, via rs_asynsend (failures ignored, utility.c:223-240).
             let upd = slot.upd.as_ref();
             let mut u = minix_types::MessRsUpdate::default();
             u.state = state;
@@ -1143,13 +1159,13 @@ impl RsServer {
             let mut msg = minix_types::Message::default();
             msg.m_u.m_rs_update = u;
             msg.m_type = minix_types::RS_LU_PREPARE;
-            // [SD19-gate] asynsend 发后即忘
+            // [SD19-gate] asynsend is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
         };
                 let mut noop_vm = move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
             // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
-            // [SD19-gate] 尽力而为 VM 预备（失败走回滚）
+            // [SD19-gate] best-effort VM preparation (failure goes to rollback)
             #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().vm_prepare(src, dst, flags.bits() as i32);
         };
@@ -1214,8 +1230,8 @@ impl RsServer {
                         let ticks = self.kernel.get_ticks()?;
                         let kern_cell = &core::cell::RefCell::new(&mut *self.kernel.as_mut());
                         let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
-            // C update.c:203-227 —— RS_LU_PREPARE + m_rs_update 三域,
-            // rs_asynsend(失败忽略,utility.c:223-240)。
+            // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
+            // fields, via rs_asynsend (failures ignored, utility.c:223-240).
             let upd = slot.upd.as_ref();
             let mut u = minix_types::MessRsUpdate::default();
             u.state = state;
@@ -1227,7 +1243,7 @@ impl RsServer {
             let mut msg = minix_types::Message::default();
             msg.m_u.m_rs_update = u;
             msg.m_type = minix_types::RS_LU_PREPARE;
-            // [SD19-gate] asynsend 发后即忘
+            // [SD19-gate] asynsend is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
         };
@@ -1376,9 +1392,10 @@ impl RsServer {
         {
             // C: request.c:136-141 — a recovery script is bringing down an
             // already-gone service: unpublish + cleanup, reply OK now.
-            // C: unpublish_service(rp) — manager.c:864-920:DS unpublish 半
-            // 接真(ds_delete TYPE_LABEL);mapdriver/devman/PCI 三半归各自
-            // 服务接线,聚合判定面是 publish.rs(R32)。
+            // C: unpublish_service(rp) — manager.c:864-920: the DS unpublish half
+            // is genuinely wired (ds_delete TYPE_LABEL); the mapdriver/devman/PCI
+            // halves belong to their own service wiring, and the aggregate
+            // decision face is publish.rs.
             let mut ds = minix_sys::ds::DsClient::new(
                 minix_sys::ipc::DirectTrapTransport,
                 minix_sys::syscall::DirectKernelCallTransport,
@@ -1386,24 +1403,27 @@ impl RsServer {
             );
             if let Some(name) = state.table.get(id).pub_.label.as_str() {
                 let mut grants = minix_sys::grant::GrantTable::new();
-                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                // [SD19-gate] best-effort tail; dropping the Result does not change
+                // an established primary result (C is void/ignores at the same site).
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = ds.delete(&mut grants, name, minix_types::DsFlags::TYPE_LABEL);
             }
-            // C manager.c:896-914 —— devman unbind 半:devman_id 非零时
-            // 向 devman 发 DEVMAN_UNBIND(m4:RESULT@0/DEVICE_ID@8/
-            // ENDPOINT@16),失败仅记录不影响结果。
+            // C manager.c:896-914 — the devman unbind half: when devman_id is
+            // non-zero, send DEVMAN_UNBIND to devman (m4: RESULT@0/DEVICE_ID@8/
+            // ENDPOINT@16); a failure is only recorded and does not change the
+            // result.
             if let Some(devman_id) = state.table.get(id).pub_.devman_id
                 && let Some(devman_ep) = self.kernel.ds_lookup_by_label("devman")
             {
                 let mut unbind = minix_types::Message::default();
-                // DEVMAN_UNBIND 走 m4 三域(ipc.h/com.h:864-866):
-                // RESULT@0(应答)/DEVICE_ID@8/ENDPOINT@16。m4 域为裸
-                // i64 联合槽,整字赋值无需 unsafe(字段写入即覆盖)。
+                // DEVMAN_UNBIND uses three m4 fields (ipc.h/com.h:864-866):
+                // RESULT@0 (reply)/DEVICE_ID@8/ENDPOINT@16. The m4 fields are raw
+                // i64 union slots, so a whole-word assignment needs no unsafe (a
+                // field write overwrites the word).
                 unbind.m_u.m_m4.m4l2 = devman_id as i64;
                 unbind.m_u.m_m4.m4l3 = state.table.get(id).pub_.endpoint.0 as i64;
                 unbind.m_type = minix_types::DEVMAN_UNBIND;
-                // [SD19-gate] 尽力而为 sendrec 收尾
+                // [SD19-gate] best-effort sendrec tail
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.sendrec_to(devman_ep, &mut unbind);
             }
@@ -1432,14 +1452,16 @@ impl RsServer {
         match decision.signal {
             crate::request::StopSignal::Hangup => {
                 // RS itself (manager.c:1003) — SIGHUP via the PM face.
-                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                // [SD19-gate] best-effort tail; dropping the Result does not change
+                // an established primary result (C is void/ignores at the same site).
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self
                     .kernel
                     .srv_kill(state.table.get(id).pid.unwrap_or(0), 1);
             }
             crate::request::StopSignal::Term => {
-                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                // [SD19-gate] best-effort tail; dropping the Result does not change
+                // an established primary result (C is void/ignores at the same site).
                 #[allow(clippy::let_underscore_must_use)]
                 let _ = self
                     .kernel
@@ -1565,9 +1587,11 @@ impl RsServer {
         // (utility.c:223-240, failures ignored), so the deferred send keeps
         // the observable order.
         let mut sent: alloc::vec::Vec<(Endpoint, minix_types::Message)> = alloc::vec::Vec::new();
-        // DS 发布缝(19):publish 闭包自带 DsClient(零尺寸传输腿,与
-        // start_service 直传的 kernel 参数无借用交集)。C manager.c:962-966
-        // 对发布失败只 printf 不失败请求——best-effort 同型。
+        // The DS publish seam (doc 19): the publish closure carries its own
+        // DsClient (zero-sized transport legs, so its borrows do not intersect the
+        // kernel parameter passed straight to start_service). C manager.c:962-966
+        // only printfs on a publish failure without failing the request — the same
+        // best-effort shape.
         let mut ds = minix_sys::ds::DsClient::new(
             minix_sys::ipc::DirectTrapTransport,
             minix_sys::syscall::DirectKernelCallTransport,
@@ -1581,7 +1605,8 @@ impl RsServer {
                     let Some(name) = pub_.label.as_str() else {
                         return Ok(());
                     };
-                    // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                    // [SD19-gate] best-effort tail; dropping the Result does not change
+                    // an established primary result (C is void/ignores at the same site).
                     #[allow(clippy::let_underscore_must_use)]
                     let _ = ds.publish_label(
                         &mut grants,
@@ -1589,14 +1614,16 @@ impl RsServer {
                         pub_.endpoint,
                         minix_types::DsFlags::empty(),
                     );
-                    // C manager.c:840-853 —— devman bind 半（S25 余件①）：
-                    // `devman_id != 0` 时先查 devman 端点，再把设备绑到本
-                    // 服务端点。**与 DS 发布不同，C 对这条失败是致命的**
-                    // （`kill_service(rp, "devman bind device failed", r)`）；
-                    // Rust 的 publish 缝只有表与返回值，没有 kill 句柄，
-                    // 这里按 C 的错误面回 `Err`（由 `start_service` 上抛），
-                    // "devman 没在跑" 与 "绑定被拒" 都落在这一条上——kill
-                    // 半的缺口登记在 FIXLOG（RS 内部设计项，非本批发明）。
+                    // C manager.c:840-853 — the devman bind half: when
+                    // `devman_id != 0`, first look up the devman endpoint and then
+                    // bind the device to this service's endpoint. **Unlike the DS
+                    // publish, C treats a failure here as fatal**
+                    // (`kill_service(rp, "devman bind device failed", r)`); the Rust
+                    // publish seam has only the table and a return value, no kill
+                    // handle, so it returns `Err` on C's error face (raised by
+                    // `start_service`), and both "devman is not running" and "the
+                    // bind was refused" land on that line — the kill-half gap is a
+                    // recorded RS-internal design item.
                     if crate::publish::should_bind_devman(pub_)
                         && let Some(devman_id) = pub_.devman_id
                     {
@@ -1619,8 +1646,8 @@ impl RsServer {
                                     return Err(Errno::from_i32(code));
                                 }
                             }
-                            // C: `ds_retrieve_label_endpt` 失败 → kill_service
-                            // （"devman not running?"）。Rust 按 EIO 上抛。
+                            // C: a `ds_retrieve_label_endpt` failure → kill_service
+                            // ("devman not running?"). Rust raises EIO instead.
                             Err(_) => return Err(Errno::from_i32(minix_types::EIO)),
                         }
                     }
@@ -1649,7 +1676,7 @@ impl RsServer {
                         }
                         let transport = minix_sys::ipc::DirectTrapTransport;
                         // C: mapdriver failure is non-fatal (printf only).
-                        // [SD19-gate] 尽力而为 sendrec 收尾
+                        // [SD19-gate] best-effort sendrec tail
                         #[allow(clippy::let_underscore_must_use)]
                         let _ = transport.sendrec(
                             minix_types::Endpoint::VFS,
@@ -1676,7 +1703,7 @@ impl RsServer {
             )?;
         }
         for (ep, out) in sent {
-            // [SD19-gate] asynsend 发后即忘
+            // [SD19-gate] asynsend is fire-and-forget
             #[allow(clippy::let_underscore_must_use)]
             let _ = self.kernel.asynsend(ep, &out);
         }
@@ -1833,7 +1860,7 @@ impl RsServer {
                 );
                 state.table.get_mut(id).next_rp = None;
             }
-            // [SD19-gate] 克隆失败尽力回滚清理
+            // [SD19-gate] best-effort rollback cleanup after a clone failure
             #[allow(clippy::let_underscore_must_use)]
             let _ = crate::service_create::clone_service(
                 &mut state.table,

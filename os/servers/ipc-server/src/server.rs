@@ -6,7 +6,7 @@
 //! The loop is single-threaded — one message at a time, no locks. Shared
 //! state (transport handle, counters) sits behind `RefCell`, matching the
 //! VM server's single-threaded model (not kernel SMP: no `Arc`/`Mutex`).
-//! Document `01-ipc-init-main.md` §3 (decisions D5/D6/D7) and §4.
+//! Document `01-ipc-init-main.md` §3 and §4.
 //!
 //! Division of labour (IPC-P2-1): judgement lives in the decision modules
 //! (`sem/`, `shm/`, `perms.rs`, `events.rs`, `mib_tree.rs`), effects live
@@ -38,19 +38,20 @@ use crate::dispatch::{
 pub struct IpcStatus {
     /// True when the arrival is an asynchronous notification, not a request.
     pub notify: bool,
-    /// 内核状态字的 CALL 段(status & 0x3F)——区分 SENDREC 与其它到达
-    /// 方式(C rmib_process 按 IPC_STATUS_CALL(ipc_status) 两分回信,
-    /// libsys rmib.c:1065-1074;S26/C-12 接入)。
+    /// The CALL segment of the kernel status word (status & 0x3F) — it tells
+    /// SENDREC apart from other arrival modes (C rmib_process splits the reply
+    /// by IPC_STATUS_CALL(ipc_status), libsys rmib.c:1065-1074).
     pub call: u32,
 }
 
 impl IpcStatus {
-    /// Request arrival (not a notification);call 段未知置 0。
+    /// Request arrival (not a notification); an unknown call segment is 0.
     pub const fn request() -> Self {
         Self { notify: false, call: 0 }
     }
 
-    /// Request arrival via SENDREC(C rmib 回信两分的同步半)。
+    /// Request arrival via SENDREC (the synchronous half of C rmib's two-way
+    /// reply split).
     pub const fn sendrec() -> Self {
         Self { notify: false, call: minix_sys::ipc::CALL_SENDREC }
     }
@@ -114,7 +115,7 @@ pub trait EventLoopTransport {
     /// Send a reply, non-blocking (C: `ipc_sendnb` — main.c:273).
     fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError>;
     /// Send-and-receive (C: `ipc_sendrec` — sef_cb_init_response_rs_reply,
-    /// sef_init.c:458-466). NK4-C B9b: the birth-report leg parks in
+    /// sef_init.c:458-466). The birth-report leg parks in
     /// receive(RS) for RS's catch reply instead of a fire-and-forget sendnb.
     fn send_rec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), TransportError>;
     /// Send an asynchronous acknowledgement (C: `asynsend3(AMF_NOREPLY)` —
@@ -153,7 +154,7 @@ pub trait CallHandler {
     /// [`crate::lifecycle::SignalStep::ExitClean`].
     fn handle_signal(&mut self, signo: i32) -> crate::lifecycle::SignalStep;
     /// State-control verb for the birth protocol's paragraph-1 kernel call
-    /// (PD-34 `process_init` orchestration). The loop owns the orchestration;
+    /// (`process_init` orchestration). The loop owns the orchestration;
     /// the handler routes the verb to whichever face holds the kernel
     /// (production `IpcService` forwards to its boundary).
     fn birth_statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32>;
@@ -303,10 +304,10 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
     ///
     /// C: `for (;;)` — main.c:227-280.
     ///
-    /// [ARCH: IPC-01-01] C panics on the first receive failure (main.c:229);
+    /// [ARCH: IPC_01_01] C panics on the first receive failure (main.c:229);
     /// here failures are counted and the loop continues, stopping only after
     /// sustained failure — a user-space server should survive one transport
-    /// hiccup. See document 01 §3 D7.
+    /// hiccup. See document 01 §3.
     pub fn run(&self) -> ! {
         assert!(
             self.initialized.get(),
@@ -343,10 +344,12 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
         // RefCell makes the handler reachable without splitting the borrow
         // across the transport call.
         let exited = Cell::new(false);
-        // 逃生门（PD-27）：干净退出在回调里同时取消挂起收信（C 的
-        // `sef_exit(0)` 在 handler 内即刻终结，main.c:113——本树的退出
-        // 落在循环、但取消让 `receive` 立即以 `Err(EINTR)` 返回，退出
-        // 拍点与 C 同在这一次收信之内；`exited` 检查在错误臂之前）。
+        // Escape hatch: a clean exit cancels the pending receive inside the
+        // callback too (C's `sef_exit(0)` terminates inside the handler right
+        // away, main.c:113 — this tree's exit lands in the loop, but the cancel
+        // makes `receive` return `Err(EINTR)` immediately, so the exit beat sits
+        // inside this same receive as in C; the `exited` check precedes the
+        // error arm).
         let cancel = minix_sef::SefCancel::new();
         let received = self.transport.borrow_mut().receive(
             &mut |signo: i32| match self.handler.borrow_mut().handle_signal(signo) {
@@ -384,24 +387,31 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
             return RunStep::Handled;
         }
 
-        // E-BIRTHFACE（NS1）出生臂：C 的 RS_INIT 由 sef_local_startup 在
-        // 主循环前消费（ipc main.c:124-134 注册 → sef.c:127-141 阻塞等），
-        // 循环体不见；本树无独立 startup 面（init() 只标 ready），在此拦截。
-        // 注册面 fresh+restart 同体 = sef_cb_init_fresh（main.c:128-129；
-        // Rust 对位 ≡ 构造态 + mib 树就绪），LU 未注册 → 默认 ENOSYS
-        //（sef_init.c:324-327）。应答按 process_init 尾部
-        //（sef_init.c:113-117）；发送失败计数照常（RS 已不在）。
+        // Birth arm: C's RS_INIT is consumed by sef_local_startup before the
+        // main loop (ipc main.c:124-134 registers → sef.c:127-141 blocks
+        // waiting), so the loop body never sees it; this tree has no separate
+        // startup face (`init()` only marks ready), so intercept it here.
+        // The registration face is the same body for fresh+restart =
+        // sef_cb_init_fresh (main.c:128-129; the Rust counterpart is the
+        // constructed state plus a ready MIB tree), and LU unregistered →
+        // default ENOSYS (sef_init.c:324-327). The answer follows the tail of
+        // process_init (sef_init.c:113-117); send failures are counted as usual
+        // (RS is already gone).
         if msg.m_type == minix_types::RS_INIT && msg.m_source == Endpoint::RS {
-            // SAFETY: classify 前置检查 m_type == RS_INIT 且源 RS → 活跃
-            // union 臂是 m_rs_init（sef_init.c:193-215 unpack 同款）。
+            // SAFETY: classify already checked m_type == RS_INIT and the
+            // source is RS, so the live union arm is m_rs_init (the same unpack
+            // as sef_init.c:193-215).
             let init_type = unsafe { msg.m_u.m_rs_init.type_ };
-            // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
-            // 第一段 sef_init.c:59-60 的 `assert(r == OK)`；经
-            // `CallHandler::birth_statectl` 到 boundary 的真接线）、回报
-            // 消息由库构造；本服务只答分派语义（fresh+restart 注册同体
-            // = sef_cb_init_fresh，main.c:128-129；LU 未注册 → 默认
-            // ENOSYS，sef_init.c:324-327）。清过滤失败＝出生失败：C 是
-            // assert，本循环的 fail-closed 形状是按传输损坏计数。
+            // The birth protocol orchestration belongs to the library: stage
+            // one clears the IPC filter (the first stage of C's `process_init`,
+            // sef_init.c:59-60's `assert(r == OK)`, wired for real through
+            // `CallHandler::birth_statectl` at the boundary) and the library
+            // builds the report message; this service only answers the dispatch
+            // semantics (fresh+restart registration share the body =
+            // sef_cb_init_fresh, main.c:128-129; LU unregistered → default
+            // ENOSYS, sef_init.c:324-327). A failed filter clear is a failed
+            // birth: C asserts, and this loop's fail-closed shape counts it as
+            // transport damage.
             let birth = minix_sef::process_init(
                 &mut |req, addr, len| self.handler.borrow_mut().birth_statectl(req, addr, len),
                 init_type,
@@ -417,7 +427,7 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
                     return RunStep::ReceiveFailed;
                 }
             };
-            // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非 sendnb）。
+            // The birth report leg = C `ipc_sendrec` (not sendnb).
             if self
                 .transport
                 .borrow_mut()
@@ -543,7 +553,7 @@ mod tests {
     /// (`minix_sef::sef_receive_status`) so scripted signal frames exercise
     /// the identical interception leg the kernel delivery would — a fixture
     /// with its own private interception would be a second copy of the
-    /// truth (fs-rt 同族纪律).
+    /// truth (the same discipline as fs-rt).
     struct TestTransport {
         arrivals: Vec<(Message, IpcStatus)>,
         replies: Vec<(Endpoint, Message)>,
@@ -811,9 +821,10 @@ mod tests {
 
     #[test]
     fn run_once_birth_request_answers_rs_init_report() {
-        // E-BIRTHFACE（NS1）：RS_INIT from RS → 出生应答（process_init 尾部
-        // sef_init.c:113-117），不落 Unknown/ENOSYS，也不跑 cycle hook——
-        // C 侧该请求由 sef_local_startup 消费（main.c:124-134）。
+        // RS_INIT from RS → birth reply (process_init tail,
+        // sef_init.c:113-117), not Unknown/ENOSYS, and no cycle hook either —
+        // on the C side this request is consumed by sef_local_startup
+        // (main.c:124-134).
         let mut transport = TestTransport::new();
         let mut birth = request_msg(Endpoint::RS, minix_types::RS_INIT);
         // Union field write is safe: the RS_INIT tag selects m_rs_init.
@@ -848,7 +859,7 @@ mod tests {
 
     #[test]
     fn run_once_receive_failure_counts() {
-        // [ARCH: IPC-01-01] — C panics (main.c:229); here the failure is
+        // [ARCH: IPC_01_01] — C panics (main.c:229); here the failure is
         // counted and the loop survives.
         let mut transport = TestTransport::new();
         transport.fail_next_receives = 2;
@@ -998,7 +1009,7 @@ mod tests {
     fn run_panics_after_sustained_receive_failures() {
         // The failure bound is the loop's only self-protection: sustained
         // transport breakage stops the server instead of spinning forever
-        // ([ARCH: IPC-01-01]; IPC-T-5).
+        // ([ARCH: IPC_01_01]; IPC-T-5).
         let mut transport = TestTransport::new();
         transport.fail_next_receives = MAX_CONSECUTIVE_RECV_FAILURES as usize;
         let server = IpcServer::new(transport, StubHandler);

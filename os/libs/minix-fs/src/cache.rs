@@ -27,9 +27,10 @@ use alloc::vec::Vec;
 
 use minix_types::{EAGAIN, EBUSY, EINVAL, ENOENT, Errno};
 
-// 二级缓存的面（trait 与两个实现）住在 `crate::vm_cache`；这里再导出，
-// 让消费方沿用 `minix_fs::cache::*` 这一条路径，也让本模块的文档链接
-// （[`SecondLevelCache`]、[`NoSecondLevel`]）指向唯一定义处。
+// The second-level cache face (trait plus two implementations) lives in
+// `crate::vm_cache`; it is re-exported here so consumers keep using the one
+// path `minix_fs::cache::*`, and so this module's doc links
+// ([`SecondLevelCache`], [`NoSecondLevel`]) point at the single definition.
 pub use crate::vm_cache::{
     BlockMemory, BlockTag, BufferFlags, MappedPage, NoSecondLevel, PAGE_SIZE, SecondLevelCache,
     VmCacheFault, VmCacheWire, VmSecondLevel, is_page_multiple, page_round_up,
@@ -41,8 +42,8 @@ pub use crate::vm_cache::{
 /// progress: too few buffers to stage a scattered transfer.
 pub const MIN_POOL_SIZE: usize = 6;
 
-/// 写入量跨过该阈值即提示重新评估池尺寸（`cache.c:119-161` 的十兆带宽
-/// 台阶）。
+/// A write volume past this threshold hints that the pool size should be
+/// re-evaluated (the ten-megabyte bandwidth step at `cache.c:119-161`).
 pub const WRITE_REESTIMATE_THRESHOLD: u64 = 10 * 1024 * 1024;
 
 /// Upper bound for one prefetch run.
@@ -223,7 +224,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         for _slot in 0..pool_size {
             slots.push(Buffer::free());
         }
-        // 串起空闲链：头到尾依次链接。
+        // Chain the free list: link head to tail in order.
         for slot in 0..pool_size - 1 {
             slots[slot].next = slot + 1;
             slots[slot + 1].prev = slot;
@@ -379,8 +380,9 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         self.index.insert(key, slot);
 
         if mode == AcquireMode::Normal {
-            // 存储源与槽位是不相交的字段借用：驱动直读进缓冲，
-            // 不经过暂存分配（对齐 C 驱动直写缓冲的行为）。
+            // The storage source and the slot are disjoint field borrows: the
+            // driver reads straight into the buffer, with no staging allocation
+            // (matching C's driver-writes-the-buffer-directly behavior).
             let slot_memory = &mut self.slots[slot].memory;
             let source = &self.source;
             if let Err(error) = source.read_block(key, slot_memory.as_mut_slice(block_size)) {
@@ -580,8 +582,10 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             return Ok(());
         }
         self.hand_over(slot, true);
-        // 一次性块用完即不再是缓存条目：C 把设备号作废（`cache.c:595`），
-        // 防止它刚报备完又被立刻拿回来、造成同一块二次报备的麻烦。
+        // A one-shot block stops being a cache entry once used up: C invalidates
+        // the device number (`cache.c:595`), which keeps the block from being
+        // grabbed back the moment after it was handed to the second level and
+        // double-registering the same block.
         self.discard_slot(slot);
         self.list_push_front(slot);
         Ok(())
@@ -687,8 +691,9 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
     /// may have switched it off while blocks were still registered there
     /// (C's own reasoning, `cache.c:803-807`).
     pub fn invalidate_device(&mut self, device: u64) {
-        // 只清身份，不动空闲链：C 的 lmfs_invalidate 同样把块留在 LRU 链上
-        // （`cache.c:782-808`），槽位容量因此不因失效而流失。
+        // Clear identity only, leave the free list alone: C's lmfs_invalidate
+        // likewise keeps the block on the LRU chain (`cache.c:782-808`), so slot
+        // capacity is not lost to invalidation.
         for slot in 0..self.slots.len() {
             let on_device = self.slots[slot]
                 .key
@@ -770,8 +775,10 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         if let Some(key) = old_key {
             self.index.remove(&key);
             if was_dirty {
-                // 直接把缓存的字节写回存储：源与槽位是不相交的借用，
-                // 不需要克隆整块（旧实现为绕借用检查克隆过一次）。
+                // Write the cached bytes straight back to storage: the source and
+                // the slot are disjoint borrows, so the whole block need not be
+                // cloned (an older implementation cloned once to get around the
+                // borrow checker).
                 let block_size = self.source.block_size();
                 let data = self.slots[slot].memory.as_slice(block_size);
                 self.source
@@ -863,7 +870,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             .second_level
             .set_block(memory, key, tag, block_size, once, &mut buffer.flags);
         buffer.need_set_cache = false;
-        //[SD19-gate] set_block 失败是二级策略（线没了它自我禁用，见本函数文档头），块在本池仍有效——按 C cache.c:562-587 不回报
+        //[SD19-gate] a set_block failure is second-level policy (the second level disables itself once the wire is gone; see this function's doc header), and the block stays valid in this pool — C reports nothing here either (cache.c:562-587)
         #[allow(clippy::let_underscore_must_use)]
         let _ = outcome;
     }

@@ -21,30 +21,35 @@
 static GLOBAL: std::alloc::System = std::alloc::System;
 
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
-// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
-// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
-//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
-// 无须也不应再调。
+// The freestanding side holds the minix-rt link reference: the bin code
+// itself uses no symbol from rt, so an unreferenced rlib is dropped
+// wholesale, and `_start`/`#[panic_handler]`/`#[global_allocator]`
+// disappear with it (the `extern crate` retention semantics of the
+// panic-halt pattern). The birth chain's `_start` has already completed
+// rt initialization before main (the `lib.rs:86` init contract: in no_std
+// mode `_start` calls it automatically and is idempotent), so calling it
+// here is neither needed nor appropriate.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
-// hooks 的 Box::new 裸用：none 侧由 alloc 供给（宿主/测试走 std prelude）。
+// `Box::new` is used bare in the hooks: the none side gets it from alloc
+// (host/test builds go through the std prelude).
 #[cfg(all(not(test), target_os = "none"))]
 extern crate alloc;
 
 #[cfg(all(not(test), target_os = "none"))]
 use alloc::boxed::Box;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
-// E0277（docker minix-ci:1.94 实测）。
+// The entry splits by target: the none side satisfies the crt0 Consumer
+// contract (name + Rust ABI + `-> i32`, `os/libs/minix-rt/src/crt0.rs:38`);
+// the host/test side keeps `()` — since rustc 1.94 `Termination` is no
+// longer implemented for i32, and a host i32 main is E0277 (measured in
+// docker minix-ci:1.94).
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
-    // real_main 原地消费返回 ()；0 即进程退出码（crt0 Consumer contract）。
+    // real_main consumes the return in place; 0 is the process exit code
+    // (the crt0 Consumer contract).
     real_main();
     0
 }
@@ -61,11 +66,14 @@ fn real_main() {
     {
         let server = minix_fs_pfs::init();
 
-        // SD-11 U-5 迁移：把全局堆供给切到 VM_BRK 增长堆（与 DS T3/SCHED T3b/
-        // MIB/VFS 同法）。init 已建 inode 表（仍在固定池），此后的增长分配走
-        // VM_BRK。安装点在 serve 前、VM（boot 序第 2 位，早于 PFS 第 8 位）
-        // 主循环已在收请求；EINVAL fail-fast；整块 #[cfg(target_os="none")]
-        // 不影响宿主测试。
+        // Migration: switch the global heap supply to the VM_BRK growth
+        // heap (the same method DS, SCHED, MIB and VFS use). init has
+        // already built the inode table (still in the fixed pool); growth
+        // allocations from here on go through VM_BRK. The install point is
+        // before serve, by which time the VM server (boot order position
+        // 2, ahead of PFS at position 8) is already receiving requests in
+        // its main loop; EINVAL fails fast; the whole block is
+        // #[cfg(target_os="none")] and does not affect host tests.
         #[cfg(target_os = "none")]
         minix_rt::install_vm_supplier(minix_rt::image_end())
             .expect("pfs: install_vm_supplier(镜像尾) 不得失败");
@@ -76,7 +84,7 @@ fn real_main() {
             assert!(!probe.is_null(), "pfs: vm-brk probe 分配失败");
             minix_rt::free(probe);
             use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] park as the fallback when the report channel itself is broken (panic.c:66)
             let _ = sys_diagctl_write(
                 &DirectKernelCallTransport,
                 "nk4a: pfs-vmbrk probe ok pages=1 via=VM_BRK\n",

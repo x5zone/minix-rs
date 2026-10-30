@@ -34,16 +34,17 @@ use minix_sys::{Errno, getdomainname, setdomainname};
 /// C `domainname.c:60` — `char domainname[MAXHOSTNAMELEN]`, no slack.
 const DOMAINNAME_BUF_LEN: usize = MAX_HOSTNAME_LEN;
 
-/// C 的 `usage()`（`domainname.c:90-94`）：`usage: %s [name-of-domain]` 的 `%s` 同样是
-/// `getprogname()`；`EXIT_FAILURE` 即 1。
+/// C's `usage()` (`domainname.c:90-94`): the `%s` in `usage: %s [name-of-domain]`
+/// is likewise `getprogname()`; `EXIT_FAILURE` is 1.
 fn usage(prog: &str) -> ! {
     support::warn(format!("usage: {prog} [name-of-domain]\n").as_bytes());
     support::terminate(1);
 }
 
-/// C 的 `err(1, "getdomainname")`/`err(1, "setdomainname")`（`domainname.c:80`/`:83`），
-/// 与 `hostname` 同一条约定：`getprogname(): ` + 调用者的串 + `": "` + `strerror` 的句子，
-/// 退 1（见 `minix3/lib/libc/gen/verrc.c` 与 [`support::err_exit`]）。
+/// C's `err(1, "getdomainname")`/`err(1, "setdomainname")` (`domainname.c:80`/
+/// `:83`), the same convention as `hostname`: the sentence
+/// `getprogname(): ` + the caller's string + `": "` + `strerror`, exit 1 (see
+/// `minix3/lib/libc/gen/verrc.c` and [`support::err_exit`]).
 fn report_err(prog: &str, operation: &str, errno: Errno) -> ! {
     support::err_exit(prog, operation, errno, 1);
 }

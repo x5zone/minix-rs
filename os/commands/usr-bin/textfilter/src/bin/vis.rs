@@ -138,15 +138,19 @@ fn main() {
     run()
 }
 
-/// C 的 usage 文本（`vis.c:136-139`，注意那个大写 `U`；退 1）。
+/// C's usage text (`vis.c:136-139`; note the capital `U`; exits 1).
 const USAGE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
 
-/// 把 libc `getopt` 的那一行与自己的 usage 拼成两行（句子单源住在
-/// [`GetoptReport`]，与同族其它壳共用一份文本）。
+/// Concatenate libc `getopt`'s line with our own usage into two lines (the
+/// sentence is single-sourced in [`GetoptReport`] and shared with the other
+/// shells of the family).
 ///
-/// 交回的是**字节串**而不是 `String`：libc 那一行的字母位是一个裸字节（`getopt.c:79` 的
-/// `optopt = *place++` 一次进一个字节、`:103` 的 `%c` 原样写出），参照不了 `vis` 的宿主没有
-/// `vis(3)`，所以这一支的判据来源是同族已用参照件钉过的九支壳与 C 源本身。
+/// What comes back is a **byte string**, not a `String`: the letter slot of the
+/// libc line is one bare byte (`optopt = *place++` at `getopt.c:79` advances
+/// one byte at a time, and `%c` at `:103` writes it out raw), and a host with
+/// no reference `vis` has no `vis(3)`, so this branch's evidence comes from the
+/// nine shell members already pinned with reference binaries plus the C source
+/// itself.
 fn libc_line(report: GetoptReport, prog: &str) -> Vec<u8> {
     [report.line_bytes(prog), USAGE.as_bytes().to_vec()].concat()
 }
@@ -240,8 +244,10 @@ fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, Vec<u8
                     } else if index < argv.len() {
                         argv[index].as_bytes().to_vec()
                     } else {
-                        // C 的 getopt 在缺值时先自己印一行（`getopt.c:132-136`），
-                        // 才把 `?` 交给开项环落到 `default: usage()`——所以这里是**两行**。
+                        // C's getopt prints a line itself on a missing
+                        // value (`getopt.c:132-136`) and only then hands the
+                        // `?` to the option loop, which lands on
+                        // `default: usage()` — hence **two lines** here.
                         return Err(libc_line(GetoptReport::MissingValue('e'), prog));
                     };
                     pos = bytes.len();
@@ -272,9 +278,11 @@ fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, Vec<u8
                     pos = bytes.len();
                     continue;
                 }
-                // `-d` 不在集外：C 的选项串里写的是 `d:`（带值），所以 getopt **不**报
-                // 那一行；但 `case 'd'` 在 `DEBUG` 之外的构建里被编译掉，于是它落到
-                // `default: usage()`（批次二百一十二定下的那一形）。缺值时仍走 libc 那一句。
+                // `-d` is not out of set: C's option string writes `d:` (it
+                // takes a value), so getopt does **not** report that line; but
+                // `case 'd'` is compiled out in builds without `DEBUG`, so it
+                // falls to `default: usage()`. A missing value still takes
+                // libc's sentence.
                 b'd' => {
                     index += 1;
                     if pos + 1 >= bytes.len() && index >= argv.len() {
@@ -283,10 +291,13 @@ fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, Vec<u8
                     return Err(USAGE.as_bytes().to_vec());
                 }
                 _ => {
-                    // 集外字母：libc 的 `getopt` 先印一行（`getopt.c:101-104`，选项串不以
-                    // `:` 开头所以 `opterr` 生效），再由 `case '?'`/`default` 接 usage。
-                    // 本壳此前只打 usage，把这个命令同族的其它五支（head/tail/uniq/cut/join/sort）
-                    // 都有的那一行弄丢了。
+                    // Out-of-set letter: libc's `getopt` prints a line first
+                    // (`getopt.c:101-104`; the option string does not start
+                    // with `:` so `opterr` is in effect), and then
+                    // `case '?'`/`default` appends usage. This shell used to
+                    // print only usage, losing the line that the other five
+                    // members of the family for this command
+                    // (head/tail/uniq/cut/join/sort) all have.
                     return Err(libc_line(
                         GetoptReport::UnknownOption(bytes[pos] as char),
                         prog,

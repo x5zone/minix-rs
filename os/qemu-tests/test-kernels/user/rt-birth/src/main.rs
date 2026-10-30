@@ -1,5 +1,5 @@
 //! rt-birth — the first minix-rt freestanding user binary (edge E1 slice 5
-//! acceptance, 14-stage-runtime V1-P1-1 step 2).
+//! acceptance, tracked in 14-stage-runtime).
 //!
 //! The birth chain under test (minix-rt `crt0`): the kernel loads this ELF
 //! through `load_vm_elf` and hands the CPU over at `_start` with the
@@ -10,11 +10,12 @@
 //! `main` emits its evidence on the serial log through the SYS_DIAGCTL
 //! console channel (kernel `dispatch_diagctl` code 1) and additionally
 //! records a compact numeric trail in `M_TRAIL` (a .bss static,
-//! GDB-readable through the live CR3): M0 = magic 0xC0FFEE01, M1 = argv
-//! count, M2 = diagctl result (0 = emitted, else errno), M3 = kerninfo
-//! availability (bit 0 = ready), M4 = channel result for the flags line,
-//! M5 = channel result for the user_sp line, M6 = channel result for the
-//! MAIN OK line, M7 = 0xC0FFEE05 once the forced panic check begins.
+//! GDB-readable through the live CR3): slot 0 = magic 0xC0FFEE01, slot 1
+//! = argv count, slot 2 = diagctl result (0 = emitted, else errno), slot 3
+//! = kerninfo availability (bit 0 = ready), slot 4 = channel result for
+//! the flags line, slot 5 = channel result for the user_sp line, slot 6 =
+//! channel result for the MAIN OK line, slot 7 = 0xC0FFEE05 once the
+//! forced panic check begins.
 //! After that `main` forces a panic on purpose so the user-space
 //! diagnostic hook renders through the same console channel.
 //!

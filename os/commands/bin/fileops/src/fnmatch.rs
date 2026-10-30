@@ -1,42 +1,49 @@
-//! `fnmatch(3)` 的移植：拿一条模式去比一个文件名或路径。
+//! A port of `fnmatch(3)`: match one pattern against a file name or path.
 //!
-//! 真源是 `minix3/lib/libc/gen/fnmatch.c`（NetBSD 1.26，222 行）。`find` 的
-//! `-name`/`-iname`/`-path` 三判据直接用它（`minix3/usr.bin/find/function.c:1282-1310`、
-//! `:1404-1410`），参数只有 `0` 与 `FNM_CASEFOLD` 两种；这里把整套都搬过来，
-//! 好让旗标语义不在本树里被重新发明。
+//! The source of truth is `minix3/lib/libc/gen/fnmatch.c` (NetBSD 1.26, 222
+//! lines). `find`'s three predicates `-name`/`-iname`/`-path` use it directly
+//! (`minix3/usr.bin/find/function.c:1282-1310`, `:1404-1410`), with only two
+//! argument values, `0` and `FNM_CASEFOLD`; the whole set is ported here so
+//! flag semantics are not reinvented in this tree.
 //!
-//! 三处容易被简化的细节，都按 C 保留：
-//! - 括号里的 `/` 永远不匹配：`rangematch` 撞上斜杠就返回「写法不合法」的哨兵
-//!   （`fnmatch.c:94-95`），调用方遂把 `[` 当字面量再看一眼（`:186-200`）。
-//! - 开头的 `^` 与 `!` 同义（`fnmatch.c:82-88` 的注释明说为与正则语法一致，POSIX 未定义）。
-//! - `FNM_PERIOD` 看「是否串首，或在 `FNM_PATHNAME` 下上一个字符是 `/`」：
-//!   `?` 一支在 `fnmatch.c:140-143`，`*` 一支在 `:152-155`。
-//! - 递归层数用尽时 C 返回 `FNM_NORES`（`fnmatch.c:126-127` 判、`:219-221` 给 64 层）；
-//!   本层用 `Option` 的 `None` 表达同一件事，`find` 那侧按「非 0 即假」收
-//!   （`minix3/usr.bin/find/function.c:1282-1286`）。
+//! Three details that are easy to simplify are kept as C has them:
+//! - A `/` inside brackets never matches: when `rangematch` meets a slash it
+//!   returns the "malformed" sentinel (`fnmatch.c:94-95`), so the caller takes
+//!   the `[` literally and looks again (`:186-200`).
+//! - A leading `^` means the same as `!` (`fnmatch.c:82-88` says so to agree
+//!   with regex syntax; POSIX leaves it undefined).
+//! - `FNM_PERIOD` asks "is this the start of the string, or under
+//!   `FNM_PATHNAME` is the previous character a `/`": the `?` branch is at
+//!   `fnmatch.c:140-143`, the `*` branch at `:152-155`.
+//! - When the recursion budget runs out C returns `FNM_NORES` (`fnmatch.c:126-127`
+//!   tests it, `:219-221` supplies the 64 levels); this layer expresses the
+//!   same thing as `Option`'s `None`, and the `find` side takes it as "non-zero
+//!   is false" (`minix3/usr.bin/find/function.c:1282-1286`).
 
-/// `minix3/include/fnmatch.h` 的旗标位。
+/// The flag bits of `minix3/include/fnmatch.h`.
 pub mod flags {
-    /// 路径分隔符不当普通字符处理（`*` 不跨 `/`）。
+    /// A path separator is not an ordinary character (`*` does not cross `/`).
     pub const PATHNAME: i32 = 0x01;
-    /// 句点开头的名字必须被模式里的字面句点匹配。
+    /// A leading period must be matched by a literal period in the pattern.
     pub const PERIOD: i32 = 0x02;
-    /// 反斜杠不作转义符。
+    /// A backslash is not an escape character.
     pub const NOESCAPE: i32 = 0x04;
-    /// 大小写不敏感（`find` 的 `-iname` 用这一条）。
+    /// Case-insensitive (`find`'s `-iname` uses this one).
     pub const CASEFOLD: i32 = 0x10;
-    /// 允许在 `/` 处截尾匹配（`fnmatch.c:131-134`）。
+    /// Allow matching a truncated path at a `/` (`fnmatch.c:131-134`).
     pub const LEADING_DIR: i32 = 0x20;
 }
 
-/// C 的 `FNM_NOMATCH`/`FNM_NORES` 语义在这里用 `Option` 表达：
-/// `Some(true)` 匹配、`Some(false)` 不匹配、`None` 是递归用尽（`FNM_NORES`）。
+/// C's `FNM_NOMATCH`/`FNM_NORES` semantics are expressed here as `Option`:
+/// `Some(true)` matches, `Some(false)` does not, and `None` is exhausted
+/// recursion (`FNM_NORES`).
 pub fn matches(pattern: &str, string: &str, flags: i32) -> Option<bool> {
     match_one(pattern.as_bytes(), string.as_bytes(), flags, 64)
 }
 
-/// `foldcase()`：只在 `FNM_CASEFOLD` 且是大写时下调（`fnmatch.c:62-71`）。
-/// 按 ASCII 处理，与本树其余处对 `isupper`/`tolower` 的口径一致。
+/// `foldcase()`: folds only when `FNM_CASEFOLD` is set and the byte is
+/// uppercase (`fnmatch.c:62-71`). It works on ASCII, matching the treatment of
+/// `isupper`/`tolower` elsewhere in this tree.
 fn fold(byte: u8, flags: i32) -> u8 {
     if flags & flags::CASEFOLD != 0 && byte.is_ascii_uppercase() {
         return byte + b'a' - b'A';
@@ -44,8 +51,8 @@ fn fold(byte: u8, flags: i32) -> u8 {
     byte
 }
 
-/// `fnmatchx()`（`fnmatch.c:118-215`）。递归深度上限即 C 调用侧写死的 64
-/// （`fnmatch.c:219-221`）。
+/// `fnmatchx()` (`fnmatch.c:118-215`). The recursion depth limit is the 64
+/// hardcoded at C's call site (`fnmatch.c:219-221`).
 fn match_one(pattern: &[u8], string: &[u8], flags: i32, mut depth: usize) -> Option<bool> {
     let mut p = 0usize;
     let mut s = 0usize;
@@ -55,7 +62,8 @@ fn match_one(pattern: &[u8], string: &[u8], flags: i32, mut depth: usize) -> Opt
         }
         depth -= 1;
         let c = match pattern.get(p) {
-            // 模式的 EOS：`FNM_LEADING_DIR` 且串停在 `/` 也算过。
+            // End of pattern: with `FNM_LEADING_DIR`, a string that stops at
+            // `/` also passes.
             None => {
                 if flags & flags::LEADING_DIR != 0 && string.get(s) == Some(&b'/') {
                     return Some(true);
@@ -77,7 +85,7 @@ fn match_one(pattern: &[u8], string: &[u8], flags: i32, mut depth: usize) -> Opt
                 s += 1;
             }
             b'*' => {
-                // 连打多个 `*` 收成一个（`fnmatch.c:147-150`）。
+                // Consecutive `*` collapse into one (`fnmatch.c:147-150`).
                 let mut next = pattern.get(p).copied().unwrap_or(b'\0');
                 while next == b'*' {
                     p += 1;
@@ -87,7 +95,8 @@ fn match_one(pattern: &[u8], string: &[u8], flags: i32, mut depth: usize) -> Opt
                     return Some(false);
                 }
                 if next == b'\0' {
-                    // `*` 收尾：不看 PATHNAME 直接过；看了则要求余下没有 `/`。
+                    // A trailing `*`: without PATHNAME it passes outright;
+                    // with PATHNAME the remainder must contain no `/`.
                     if flags & flags::PATHNAME != 0 {
                         let tail = &string[s..];
                         let ok = flags & flags::LEADING_DIR != 0 || !tail.contains(&b'/');
@@ -102,7 +111,8 @@ fn match_one(pattern: &[u8], string: &[u8], flags: i32, mut depth: usize) -> Opt
                     }
                     continue;
                 }
-                // 一般情形：逐个位置试剩下的模式（`fnmatch.c:171-181`）。
+                // The general case: try the rest of the pattern at each
+                // position (`fnmatch.c:171-181`).
                 loop {
                     let test = match string.get(s) {
                         None => return Some(false),
@@ -130,14 +140,16 @@ fn match_one(pattern: &[u8], string: &[u8], flags: i32, mut depth: usize) -> Opt
                 }
                 match range_match(&pattern[p..], fold(cur, flags), flags) {
                     RangeMatch::NoMatch => return Some(false),
-                    // 区间写法里撞见 `/`：把 `[` 当字面量再比一次（`fnmatch.c:94-95`、`:186-200`）。
+                    // A `/` met in the bracket expression: retry with `[` as a
+                    // literal (`fnmatch.c:94-95`, `:186-200`).
                     RangeMatch::BadSlash => {
                         if cur != b'[' {
                             return Some(false);
                         }
                     }
                     RangeMatch::Rest(next) => {
-                        // `range_match` 拿的是 `pattern[p..]`，故它交回的下标要累加。
+                        // `range_match` was given `pattern[p..]`, so the index
+                        // it returns must be added.
                         p += next;
                     }
                 }
@@ -149,7 +161,8 @@ fn match_one(pattern: &[u8], string: &[u8], flags: i32, mut depth: usize) -> Opt
                         p += 1;
                         fold(b, flags)
                     }
-                    // 串尾的反斜杠：比一个真正的 NUL（`fnmatch.c:201-208`）。
+                    // A backslash at the end of the pattern compares against
+                    // a real NUL (`fnmatch.c:201-208`).
                     None => {
                         p -= 1;
                         0
@@ -170,26 +183,32 @@ fn match_one(pattern: &[u8], string: &[u8], flags: i32, mut depth: usize) -> Opt
     }
 }
 
-/// 该位置的句点是否算「本次匹配串开头的那个句点」（`FNM_PERIOD` 生效时通配盖不掉它）。
-/// C 的判据是 `string == stringstart`（`fnmatch.c:140-143`、`:152-155`），也就是
-/// 「在本层调用的串里处于下标 0」；递归换的是子串，故按下标判与按指针判同义。
+/// Whether the period at this position counts as "the period that opens the
+/// string of this match" (when `FNM_PERIOD` is in force a wildcard cannot match
+/// it).
+/// C's test is `string == stringstart` (`fnmatch.c:140-143`, `:152-155`), that
+/// is, "index 0 in the string of this call"; recursion passes substrings, so
+/// testing the index means the same as testing the pointer.
 fn at_period(string: &[u8], s: usize, flags: i32) -> bool {
     flags & flags::PERIOD != 0
         && string.get(s) == Some(&b'.')
         && (s == 0 || (flags & flags::PATHNAME != 0 && string[s - 1] == b'/'))
 }
 
-/// `rangematch()` 的三种出口。
+/// The three exits of `rangematch()`.
 enum RangeMatch {
-    /// 不匹配（C 返回 `NULL`）。
+    /// No match (C returns `NULL`).
     NoMatch,
-    /// 区间里出现 `/`，整个括号写法判不合法（C 返回 `(void *)-1`）。
+    /// A `/` appeared in the bracket expression, so the whole bracket form is
+    /// malformed (C returns `(void *)-1`).
     BadSlash,
-    /// 匹配，并给出括号之后在模式里的下标（C 返回剩余串的指针）。
+    /// A match, giving the index in the pattern after the bracket (C returns
+    /// a pointer to the remaining string).
     Rest(usize),
 }
 
-/// `rangematch()`（`fnmatch.c:74-116`）：吃一个 `[...]` 的内容，判断 `test` 在不在里面。
+/// `rangematch()` (`fnmatch.c:74-116`): consume the contents of one `[...]`
+/// and decide whether `test` is inside.
 fn range_match(pattern: &[u8], test: u8, flags: i32) -> RangeMatch {
     let mut at = 0usize;
     let negate = matches!(pattern.first(), Some(&b'!') | Some(&b'^'));
@@ -197,8 +216,9 @@ fn range_match(pattern: &[u8], test: u8, flags: i32) -> RangeMatch {
         at += 1;
     }
     let mut ok = false;
-    // C 的循环条件是 `(c = *pattern++) != ']' || need`，即**第一个**字符无条件要吃，
-    // 哪怕它就是 `]`（`[]]` 里那一位确实是字面 `]`）。
+    // C's loop condition is `(c = *pattern++) != ']' || need`, i.e. the
+    // **first** character is consumed unconditionally, even when it is `]` (in
+    // `[]]` that position really is a literal `]`).
     let mut need = true;
     loop {
         let mut c = match pattern.get(at) {
@@ -224,7 +244,7 @@ fn range_match(pattern: &[u8], test: u8, flags: i32) -> RangeMatch {
                 None => return RangeMatch::NoMatch,
             };
         }
-        // 区间：`-` 后面还有字符且那字符不是收尾的 `]`。
+        // A range: `-` is followed by a character that is not the closing `]`.
         let range_ahead = pattern.get(at) == Some(&b'-');
         let endpoint = pattern.get(at + 1).map(|&b| fold(b, flags));
         if range_ahead && endpoint.is_some_and(|b| b != b']') {
@@ -253,8 +273,9 @@ fn range_match(pattern: &[u8], test: u8, flags: i32) -> RangeMatch {
     }
 }
 
-/// 便捷式：把 `Option<bool>` 折成布尔，递归用尽按「不匹配」处理——`find` 那侧
-/// 只需要一个真值，而 C 的 `f_name` 也是把非 0 一律当假（`function.c:1282-1286`）。
+/// Convenience: fold `Option<bool>` into a bool, treating exhausted recursion
+/// as "no match" — the `find` side needs only one truth value, and C's `f_name`
+/// likewise takes any non-zero as false (`function.c:1282-1286`).
 pub fn matches_bool(pattern: &str, string: &str, flags: i32) -> bool {
     matches(pattern, string, flags) == Some(true)
 }
@@ -293,7 +314,7 @@ mod tests {
         assert!(hit("[abc]", "b"));
         assert!(!hit("[abc]", "d"));
         assert!(hit("[!abc]", "d"));
-        // `^` 与 `!` 同义（`fnmatch.c:82-88` 的取舍）。
+        // `^` means the same as `!` (the choice at `fnmatch.c:82-88`).
         assert!(hit("[^abc]", "d"));
         assert!(hit("[a-c]", "b"));
         assert!(!hit("[a-c]", "d"));
@@ -303,8 +324,8 @@ mod tests {
 
     #[test]
     fn a_slash_inside_a_bracket_never_matches() {
-        // `rangematch` 撞上 `/` 就判写法不合法，于是只有字面 `[` 才有救
-        // （`fnmatch.c:94-95` 与 `:186-200`）。
+        // When `rangematch` meets `/` it declares the form malformed, so only
+        // a literal `[` can still match (`fnmatch.c:94-95` and `:186-200`).
         assert!(!hitf("[a/b]", "/", flags::PATHNAME));
         assert!(!hit("[a/b]", "/"));
     }
@@ -322,11 +343,13 @@ mod tests {
     fn period_at_the_start_needs_a_literal_dot() {
         assert!(!hitf("*", ".profile", flags::PERIOD));
         assert!(hitf(".*", ".profile", flags::PERIOD));
-        // POSIX 的说法：开头的 `*` 也盖不住开头的句点，故这一形同样是假。
+        // As POSIX puts it: a leading `*` does not cover a leading period
+        // either, so this shape is false too.
         assert!(!hitf("*.profile", ".profile", flags::PERIOD));
-        // 句点不在开头就不受 `FNM_PERIOD` 管。
+        // A period that is not at the start is not governed by `FNM_PERIOD`.
         assert!(hitf("*.profile", "x.profile", flags::PERIOD));
-        // 段首才算：中间的句点不受管。
+        // Only the start of a component counts: a period in the middle is not
+        // governed.
         assert!(hitf("a*b", "a.b", flags::PERIOD));
     }
 
@@ -342,19 +365,23 @@ mod tests {
         assert!(hit(r"a*b", r"a*b"));
         assert!(hit(r"a\*b", "a*b"));
         assert!(hitf(r"a\*b", r"a\*b", flags::NOESCAPE));
-        // 模式以反斜杠收尾：它比的是一个 NUL，也就是串的结束。
+        // The pattern ends with a backslash: it compares against a NUL, that
+        // is, the end of the string.
         assert!(!hit(r"ab\", "ab"));
     }
 
     #[test]
     fn leading_dir_stops_at_the_first_slash() {
         assert!(hitf("a*", "a/b", flags::LEADING_DIR));
-        // 不带 `FNM_PATHNAME` 时 `/` 就是普通字符（`find` 的 `-name` 比的是名字，
-        // `-path` 比整条路径但同样不带该旗标，见 `function.c:1404-1410`）。
+        // Without `FNM_PATHNAME`, `/` is just an ordinary character (`find`'s
+        // `-name` compares a name, and `-path` compares the whole path but also
+        // without that flag; see `function.c:1404-1410`).
         assert!(hit("a*", "a/b"));
         assert!(!hitf("a*", "a/b", flags::PATHNAME));
-        // 空模式只匹空串；`LEADING_DIR` 是在「模式吃完而串停在 `/`」时才生效
-        // （`fnmatch.c:131-134`），故这里要留一个字符给斜杠之前的部分。
+        // An empty pattern matches only an empty string; `LEADING_DIR` takes
+        // effect only when the pattern is exhausted while the string stops at a
+        // `/` (`fnmatch.c:131-134`), so a character must be left for the part
+        // before the slash.
         assert!(!hitf("", "a/b", flags::LEADING_DIR));
         assert!(hitf("a", "a/b", flags::LEADING_DIR));
     }

@@ -99,102 +99,103 @@ mod tests {
     }
 }
 
-// ── VFS_PM 协议（PM → VFS）──
+// ── VFS_PM protocol (PM → VFS) ──
 //
-// C: include/minix/com.h:513-531（VFS_PM_RQ_BASE / VFS_PM_* 消息族）+
-//    com.h:547-551（VFS_PM_INIT 字段 m7_i1/m7_i2/m7_i3，mess_7 布局）。
-// PM 侧发送方见 os/servers/pm/src/init.rs（04-stage-pm/01-pm-init-main.md §2.1 第 6 步）；
-// VFS 侧接收方见 05-stage-vfs/01-vfs-init-main.md §2.3。
+// C: include/minix/com.h:513-531 (VFS_PM_RQ_BASE / the VFS_PM_* message family) +
+//    com.h:547-551 (VFS_PM_INIT fields m7_i1/m7_i2/m7_i3, mess_7 layout).
+// PM-side sender: os/servers/pm/src/init.rs (04-stage-pm/01-pm-init-main.md §2.1 step 6);
+// VFS-side receiver: 05-stage-vfs/01-vfs-init-main.md §2.3.
 
-/// VFS_PM request message type base（com.h:513）。
+/// VFS_PM request message type base (com.h:513).
 pub const VFS_PM_RQ_BASE: i32 = 0x900;
 
-/// VFS_PM_INIT — process table exchange（com.h:520）。
+/// VFS_PM_INIT — process table exchange (com.h:520).
 ///
-/// PM 逐条发送 boot 进程信息（槽号 + PID + endpoint），末条
-/// endpoint = NONE 表示"没有更多系统进程"并同步等待 VFS 回复 OK。
-#[allow(clippy::identity_op)] // 保持与 C `(VFS_PM_RQ_BASE + 0)` 同形。
+/// PM sends boot process information one entry at a time (slot + PID + endpoint);
+/// a final endpoint = NONE means "no more system processes" and then it waits
+/// synchronously for VFS's OK reply.
+#[allow(clippy::identity_op)] // Keep the same shape as C `(VFS_PM_RQ_BASE + 0)`.
 pub const VFS_PM_INIT: i32 = VFS_PM_RQ_BASE + 0;
 
-// ── PM → VFS 运行时请求（com.h:521-531，不含启动期 VFS_PM_INIT）──
-/// VFS_PM_SETUID — 替换有效/真实 UID（com.h:521）。
+// ── PM → VFS runtime requests (com.h:521-531, excluding boot-time VFS_PM_INIT) ──
+/// VFS_PM_SETUID — replace the effective/real UID (com.h:521).
 pub const VFS_PM_SETUID: i32 = VFS_PM_RQ_BASE + 1;
-/// VFS_PM_SETGID — 替换有效/真实 GID（com.h:522）。
+/// VFS_PM_SETGID — replace the effective/real GID (com.h:522).
 pub const VFS_PM_SETGID: i32 = VFS_PM_RQ_BASE + 2;
-/// VFS_PM_SETSID — 创建新会话（com.h:523）。
+/// VFS_PM_SETSID — create a new session (com.h:523).
 pub const VFS_PM_SETSID: i32 = VFS_PM_RQ_BASE + 3;
-/// VFS_PM_EXIT — 进程退出（com.h:524）。
+/// VFS_PM_EXIT — process exit (com.h:524).
 pub const VFS_PM_EXIT: i32 = VFS_PM_RQ_BASE + 4;
-/// VFS_PM_DUMPCORE — 进程 core dump（com.h:525）。
+/// VFS_PM_DUMPCORE — process core dump (com.h:525).
 pub const VFS_PM_DUMPCORE: i32 = VFS_PM_RQ_BASE + 5;
-/// VFS_PM_EXEC — 装载可执行镜像（com.h:526）。
+/// VFS_PM_EXEC — load an executable image (com.h:526).
 pub const VFS_PM_EXEC: i32 = VFS_PM_RQ_BASE + 6;
-/// VFS_PM_FORK — 复制父进程 fd 表（com.h:527）。
+/// VFS_PM_FORK — duplicate the parent's fd table (com.h:527).
 pub const VFS_PM_FORK: i32 = VFS_PM_RQ_BASE + 7;
-/// VFS_PM_SRV_FORK — 服务进程 fork（com.h:528）。
+/// VFS_PM_SRV_FORK — service process fork (com.h:528).
 pub const VFS_PM_SRV_FORK: i32 = VFS_PM_RQ_BASE + 8;
-/// VFS_PM_UNPAUSE — 解除进程挂起（com.h:529）。
+/// VFS_PM_UNPAUSE — unpause a process (com.h:529).
 pub const VFS_PM_UNPAUSE: i32 = VFS_PM_RQ_BASE + 9;
-/// VFS_PM_REBOOT — 系统重启（com.h:530）。
+/// VFS_PM_REBOOT — system reboot (com.h:530).
 pub const VFS_PM_REBOOT: i32 = VFS_PM_RQ_BASE + 10;
-/// VFS_PM_SETGROUPS — 替换补充组（com.h:531）。
+/// VFS_PM_SETGROUPS — replace the supplementary groups (com.h:531).
 pub const VFS_PM_SETGROUPS: i32 = VFS_PM_RQ_BASE + 11;
 
-// ── VFS → PM 回复（com.h:534-544）──
-/// VFS_PM response message type base（com.h:514）。
+// ── VFS → PM replies (com.h:534-544) ──
+/// VFS_PM response message type base (com.h:514).
 pub const VFS_PM_RS_BASE: i32 = 0x980;
 
-/// VFS_PM_SETUID_REPLY（com.h:534）。
+/// VFS_PM_SETUID_REPLY (com.h:534).
 pub const VFS_PM_SETUID_REPLY: i32 = VFS_PM_RS_BASE + 1;
-/// VFS_PM_SETGID_REPLY（com.h:535）。
+/// VFS_PM_SETGID_REPLY (com.h:535).
 pub const VFS_PM_SETGID_REPLY: i32 = VFS_PM_RS_BASE + 2;
-/// VFS_PM_SETSID_REPLY（com.h:536）。
+/// VFS_PM_SETSID_REPLY (com.h:536).
 pub const VFS_PM_SETSID_REPLY: i32 = VFS_PM_RS_BASE + 3;
-/// VFS_PM_EXIT_REPLY（com.h:537）。
+/// VFS_PM_EXIT_REPLY (com.h:537).
 pub const VFS_PM_EXIT_REPLY: i32 = VFS_PM_RS_BASE + 4;
-/// VFS_PM_CORE_REPLY（com.h:538）。
+/// VFS_PM_CORE_REPLY (com.h:538).
 pub const VFS_PM_CORE_REPLY: i32 = VFS_PM_RS_BASE + 5;
-/// VFS_PM_EXEC_REPLY（com.h:539）。
+/// VFS_PM_EXEC_REPLY (com.h:539).
 pub const VFS_PM_EXEC_REPLY: i32 = VFS_PM_RS_BASE + 6;
-/// VFS_PM_FORK_REPLY（com.h:540）。
+/// VFS_PM_FORK_REPLY (com.h:540).
 pub const VFS_PM_FORK_REPLY: i32 = VFS_PM_RS_BASE + 7;
-/// VFS_PM_SRV_FORK_REPLY（com.h:541）。
+/// VFS_PM_SRV_FORK_REPLY (com.h:541).
 pub const VFS_PM_SRV_FORK_REPLY: i32 = VFS_PM_RS_BASE + 8;
-/// VFS_PM_UNPAUSE_REPLY（com.h:542）。
+/// VFS_PM_UNPAUSE_REPLY (com.h:542).
 pub const VFS_PM_UNPAUSE_REPLY: i32 = VFS_PM_RS_BASE + 9;
-/// VFS_PM_REBOOT_REPLY（com.h:543）。
+/// VFS_PM_REBOOT_REPLY (com.h:543).
 pub const VFS_PM_REBOOT_REPLY: i32 = VFS_PM_RS_BASE + 10;
-/// VFS_PM_SETGROUPS_REPLY（com.h:544）。
+/// VFS_PM_SETGROUPS_REPLY (com.h:544).
 pub const VFS_PM_SETGROUPS_REPLY: i32 = VFS_PM_RS_BASE + 11;
 
-/// C: `IS_VFS_PM_RQ(type)` — com.h:516 的 `((type) & ~0x7f) == VFS_PM_RQ_BASE`。
+/// C: `IS_VFS_PM_RQ(type)` — `((type) & ~0x7f) == VFS_PM_RQ_BASE` at com.h:516.
 ///
-/// 注意 `VFS_PM_INIT`（0x900）同属请求族。
+/// Note that `VFS_PM_INIT` (0x900) also belongs to the request family.
 pub const fn is_vfs_pm_rq(m_type: i32) -> bool {
     (m_type & !0x7f) == VFS_PM_RQ_BASE
 }
 
-/// C: `IS_VFS_PM_RS(type)` — com.h:517 的 `((type) & ~0x7f) == VFS_PM_RS_BASE`。
+/// C: `IS_VFS_PM_RS(type)` — `((type) & ~0x7f) == VFS_PM_RS_BASE` at com.h:517.
 pub const fn is_vfs_pm_rs(m_type: i32) -> bool {
     (m_type & !0x7f) == VFS_PM_RS_BASE
 }
 
-/// PM → VFS 的 `VFS_PM_INIT` 消息负载。
+/// Payload of the PM → VFS `VFS_PM_INIT` message.
 ///
-/// C: com.h:520（m_type）+ com.h:547-551（VFS_PM_ENDPT=m7_i1 /
-/// VFS_PM_SLOT=m7_i2 / VFS_PM_PID=m7_i3）。
+/// C: com.h:520 (m_type) + com.h:547-551 (VFS_PM_ENDPT=m7_i1 /
+/// VFS_PM_SLOT=m7_i2 / VFS_PM_PID=m7_i3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VfsPmInit {
-    /// 进程槽号（boot image 的 proc_nr）。
+    /// Process slot number (proc_nr of the boot image).
     pub slot: i32,
-    /// 进程 PID。
+    /// Process PID.
     pub pid: Pid,
-    /// 进程 endpoint。
+    /// Process endpoint.
     pub endpoint: Endpoint,
 }
 
 impl VfsPmInit {
-    /// 编码为 IPC 消息（`MessageM7`，与 C mess_7 字段对齐）。
+    /// Encode as an IPC message (`MessageM7`, fields aligned with C's mess_7).
     pub fn encode(&self) -> Message {
         let m7 = MessageM7 {
             m7i1: self.endpoint.get(),
@@ -206,7 +207,7 @@ impl VfsPmInit {
             m7p2: 0,
             _padding: [0; 16],
         };
-        // 联合体构造（仅指定一个成员）与成员写入均为安全操作。
+        // Union construction (naming only one member) and member writes are both safe operations.
         Message {
             m_source: Endpoint::NONE,
             m_type: VFS_PM_INIT,
@@ -214,15 +215,16 @@ impl VfsPmInit {
         }
     }
 
-    /// 从 IPC 消息解码。
+    /// Decode from an IPC message.
     ///
-    /// 仅验证 `m_type` 与槽号范围；endpoint 原样保留（NONE 终止符
-    /// 由握手逻辑判别，等价 C 的 `if (NONE == mess.VFS_PM_ENDPT) break;`）。
+    /// Only `m_type` and the slot range are validated; the endpoint is preserved
+    /// as-is (the NONE terminator is judged by the handshake logic, equivalent to
+    /// C's `if (NONE == mess.VFS_PM_ENDPT) break;`).
     pub fn decode(msg: &Message) -> Result<Self, VfsPmInitError> {
         if msg.m_type != VFS_PM_INIT {
             return Err(VfsPmInitError::WrongMessageType(msg.m_type));
         }
-        // m_type 已在上面验证；联合体读取与 C 的 union 语义一致。
+        // m_type was validated above; reading the union matches C's union semantics.
         let m7 = unsafe { &msg.m_u.m_m7 };
         let slot = m7.m7i2;
         if slot < 0 || slot as usize >= NR_PROCS {
@@ -236,12 +238,12 @@ impl VfsPmInit {
     }
 }
 
-/// `VFS_PM_INIT` 解码错误。
+/// `VFS_PM_INIT` decode error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VfsPmInitError {
-    /// `m_type` 不是 `VFS_PM_INIT`。
+    /// `m_type` is not `VFS_PM_INIT`.
     WrongMessageType(i32),
-    /// 槽号超出 `[0, NR_PROCS)`。
+    /// Slot number outside `[0, NR_PROCS)`.
     SlotOutOfRange(i32),
 }
 
@@ -265,7 +267,7 @@ mod vfs_pm_init_tests {
 
     #[test]
     fn test_vfs_pm_init_decode_none_terminator() {
-        // 末条屏障：endpoint = NONE（com.h:428-431 对端语义）。
+        // Final barrier: endpoint = NONE (peer semantics at com.h:428-431).
         let msg = VfsPmInit {
             slot: 0,
             pid: 0,
@@ -305,124 +307,126 @@ mod vfs_pm_init_tests {
     }
 }
 
-// ── PM → VFS 运行时请求（不含启动期 VFS_PM_INIT）──
+// ── PM → VFS runtime requests (excluding boot-time VFS_PM_INIT) ──
 //
-// C: com.h:521-531（11 种请求）+ com.h:547-583（mess_7 字段布局）。
-// 同一 union 槽位在不同请求间复用（如 VFS_PM_STATUS / VFS_PM_PENDPT /
-// VFS_PM_GROUP_NO / VFS_PM_EID / VFS_PM_SLOT / VFS_PM_TERM_SIG 同为 m7_i2），
-// 这里用类型化字段在编译期排除错配（见 04-stage-pm/05-design.v1.md D2）。
+// C: com.h:521-531 (11 request kinds) + com.h:547-583 (mess_7 field layout).
+// The same union slot is reused across requests (e.g. VFS_PM_STATUS / VFS_PM_PENDPT /
+// VFS_PM_GROUP_NO / VFS_PM_EID / VFS_PM_SLOT / VFS_PM_TERM_SIG are all m7_i2), so
+// typed fields exclude mismatches at compile time (see 04-stage-pm/05-design.v1.md D2).
 
-/// PM → VFS 的运行时请求。
+/// PM → VFS runtime request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VfsCall {
-    /// VFS_PM_SETUID — 替换进程的有效/真实 UID（getset.c:121）。
+    /// VFS_PM_SETUID — replace the process's effective/real UID (getset.c:121).
     SetUid {
-        /// 目标进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// Target process endpoint (VFS_PM_ENDPT = m7_i1).
         endpoint: Endpoint,
-        /// 有效 UID（VFS_PM_EID = m7_i2）。
+        /// Effective UID (VFS_PM_EID = m7_i2).
         eid: i32,
-        /// 真实 UID（VFS_PM_RID = m7_i3）。
+        /// Real UID (VFS_PM_RID = m7_i3).
         rid: i32,
     },
-    /// VFS_PM_SETGID — 替换有效/真实 GID（getset.c:136）。
+    /// VFS_PM_SETGID — replace the effective/real GID (getset.c:136).
     SetGid {
-        /// 目标进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// Target process endpoint (VFS_PM_ENDPT = m7_i1).
         endpoint: Endpoint,
-        /// 有效 GID（VFS_PM_EID = m7_i2）。
+        /// Effective GID (VFS_PM_EID = m7_i2).
         eid: i32,
-        /// 真实 GID（VFS_PM_RID = m7_i3）。
+        /// Real GID (VFS_PM_RID = m7_i3).
         rid: i32,
     },
-    /// VFS_PM_SETGROUPS — 替换补充组（getset.c:151）。
+    /// VFS_PM_SETGROUPS — replace the supplementary groups (getset.c:151).
     SetGroups {
-        /// 目标进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// Target process endpoint (VFS_PM_ENDPT = m7_i1).
         endpoint: Endpoint,
-        /// 组数量（VFS_PM_GROUP_NO = m7_i2）。
+        /// Group count (VFS_PM_GROUP_NO = m7_i2).
         group_no: i32,
-        /// 组数组地址（VFS_PM_GROUP_ADDR = m7_p1）。
+        /// Address of the group array (VFS_PM_GROUP_ADDR = m7_p1).
         group_addr: u64,
     },
-    /// VFS_PM_SETSID — 创建新会话（getset.c:199）。
+    /// VFS_PM_SETSID — create a new session (getset.c:199).
     SetSid {
-        /// 目标进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// Target process endpoint (VFS_PM_ENDPT = m7_i1).
         endpoint: Endpoint,
     },
-    /// VFS_PM_EXEC — 装载可执行镜像（exec.c:44）。
+    /// VFS_PM_EXEC — load an executable image (exec.c:44).
     Exec {
-        /// 目标进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// Target process endpoint (VFS_PM_ENDPT = m7_i1).
         endpoint: Endpoint,
-        /// 可执行路径（VFS_PM_PATH = m7_p1）。
+        /// Executable path (VFS_PM_PATH = m7_p1).
         path: u64,
-        /// 路径长度（含 NUL，VFS_PM_PATH_LEN = m7_i2）。
+        /// Path length (including NUL, VFS_PM_PATH_LEN = m7_i2).
         path_len: i32,
-        /// 参数与环境帧（VFS_PM_FRAME = m7_p2）。
+        /// Argument and environment frame (VFS_PM_FRAME = m7_p2).
         frame: u64,
-        /// 帧大小（VFS_PM_FRAME_LEN = m7_i3）。
+        /// Frame size (VFS_PM_FRAME_LEN = m7_i3).
         frame_len: i32,
-        /// ps_strings 指针（VFS_PM_PS_STR）。LP64 下是完整 64 位用户指针
-        /// （x86-64 用户栈 ps_strings 落在 `0x0000_7fff_xxxx_xxxx`，47 位），
-        /// C i386 时代塞 `m7_i5`（32 位指针无损），LP64 移植须保 64 位——
-        /// 编码拆到 `m7_i4`（高 32 位）+ `m7_i5`（低 32 位）两槽（B43）。
+        /// ps_strings pointer (VFS_PM_PS_STR). Under LP64 this is a full 64-bit user
+        /// pointer (x86-64 user-stack ps_strings lives in `0x0000_7fff_xxxx_xxxx`,
+        /// 47 bits); C in the i386 era stored it in `m7_i5` (lossless for a 32-bit
+        /// pointer), and the LP64 port must preserve 64 bits — so encoding splits it
+        /// across `m7_i4` (high 32 bits) + `m7_i5` (low 32 bits).
         ps_str: u64,
     },
-    /// VFS_PM_EXIT — 进程退出（forkexit.c:351）。
+    /// VFS_PM_EXIT — process exit (forkexit.c:351).
     Exit {
-        /// 目标进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// Target process endpoint (VFS_PM_ENDPT = m7_i1).
         endpoint: Endpoint,
     },
-    /// VFS_PM_DUMPCORE — 进程 core dump（forkexit.c:351）。
+    /// VFS_PM_DUMPCORE — process core dump (forkexit.c:351).
     ///
-    /// C 的 `VFS_PM_PATH`（com.h:562 = m7_p1）是指向 PM `mp_name` 的指针，
-    /// VFS 稍后 safecopy 取名（forkexit.c:357 `m.VFS_PM_PATH = rmp->mp_name`）。
-    /// 本线按 OQ-5 裁决（new_edge4 §2 C-6，2026-09-19）把内核内部协议改为
-    /// **按值携带名字**：名字走载荷尾偏移 40..56（`MessageM7` 尾 pad 上半，
-    /// 36..40 保留零），长度走 m7_i3 槽。`name_len` ≤ 16（C mproc.h
-    /// `PM_NAME_LEN`）由 PM 侧编码保证，解码侧按定长 `[u8; 16]` 拷贝。
+    /// C's `VFS_PM_PATH` (com.h:562 = m7_p1) is a pointer to PM's `mp_name`, which
+    /// VFS later fetches with safecopy (forkexit.c:357
+    /// `m.VFS_PM_PATH = rmp->mp_name`). This line's internal kernel protocol instead
+    /// carries the name **by value**: the name goes in payload tail offset 40..56
+    /// (the upper half of `MessageM7`'s trailing pad; 36..40 stays zero) and the
+    /// length goes in the m7_i3 slot. The PM side guarantees `name_len` ≤ 16
+    /// (C mproc.h `PM_NAME_LEN`); the decode side copies a fixed-size `[u8; 16]`.
     DumpCore {
-        /// 目标进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// Target process endpoint (VFS_PM_ENDPT = m7_i1).
         endpoint: Endpoint,
-        /// 终止信号（VFS_PM_TERM_SIG = m7_i2）。
+        /// Termination signal (VFS_PM_TERM_SIG = m7_i2).
         term_sig: i32,
-        /// 进程名字节数（不含 NUL，≤ 16；m7_i3 槽）。
+        /// Process name byte count (without NUL, ≤ 16; m7_i3 slot).
         name_len: u32,
-        /// 进程名按值副本（NUL 填充；载荷偏移 40..56）。
+        /// Process name copied by value (NUL padded; payload offset 40..56).
         name: [u8; 16],
     },
-    /// VFS_PM_FORK — 复制父进程 fd 表（forkexit.c:123）。
+    /// VFS_PM_FORK — duplicate the parent's fd table (forkexit.c:123).
     Fork {
-        /// **子**进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// **Child** process endpoint (VFS_PM_ENDPT = m7_i1).
         child: Endpoint,
-        /// 父进程 endpoint（VFS_PM_PENDPT = m7_i2）。
+        /// Parent process endpoint (VFS_PM_PENDPT = m7_i2).
         parent: Endpoint,
-        /// 子进程 PID（VFS_PM_CPID = m7_i3）。
+        /// Child process PID (VFS_PM_CPID = m7_i3).
         child_pid: Pid,
     },
-    /// VFS_PM_SRV_FORK — 服务进程 fork（forkexit.c:223）。
+    /// VFS_PM_SRV_FORK — service process fork (forkexit.c:223).
     SrvFork {
-        /// **子**进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// **Child** process endpoint (VFS_PM_ENDPT = m7_i1).
         child: Endpoint,
-        /// 父进程 endpoint（VFS_PM_PENDPT = m7_i2）。
+        /// Parent process endpoint (VFS_PM_PENDPT = m7_i2).
         parent: Endpoint,
-        /// 子进程 PID（VFS_PM_CPID = m7_i3）。
+        /// Child process PID (VFS_PM_CPID = m7_i3).
         child_pid: Pid,
-        /// 真实/有效 UID（VFS_PM_REUID = m7_i4）。
+        /// Real/effective UID (VFS_PM_REUID = m7_i4).
         reuid: i32,
-        /// 真实/有效 GID（VFS_PM_REGID = m7_i5）。
+        /// Real/effective GID (VFS_PM_REGID = m7_i5).
         regid: i32,
     },
-    /// VFS_PM_UNPAUSE — 解除进程挂起（signal.c:764）。
+    /// VFS_PM_UNPAUSE — unpause a process (signal.c:764).
     Unpause {
-        /// 目标进程 endpoint（VFS_PM_ENDPT = m7_i1）。
+        /// Target process endpoint (VFS_PM_ENDPT = m7_i1).
         endpoint: Endpoint,
     },
-    /// VFS_PM_REBOOT — 系统重启（misc.c:228）。
+    /// VFS_PM_REBOOT — system reboot (misc.c:228).
     ///
-    /// 唯一不与任何用户进程关联的请求（com.h:301-302 注释）。
+    /// The only request not associated with any user process (comment at com.h:301-302).
     Reboot,
 }
 
 impl VfsCall {
-    /// 消息类型（C: `m_type`）。
+    /// Message type (C: `m_type`).
     pub const fn m_type(&self) -> i32 {
         match self {
             Self::SetUid { .. } => VFS_PM_SETUID,
@@ -439,7 +443,7 @@ impl VfsCall {
         }
     }
 
-    /// 目标进程 endpoint；`Reboot` 不与任何进程关联，返回 `None`。
+    /// Target process endpoint; `Reboot` is not associated with any process and returns `None`.
     pub const fn endpoint(&self) -> Option<Endpoint> {
         match self {
             Self::SetUid { endpoint, .. }
@@ -455,12 +459,13 @@ impl VfsCall {
         }
     }
 
-    /// 编码为 IPC 消息（`MessageM7`，字段布局与 C mess_7 对齐）。
+    /// Encode as an IPC message (`MessageM7`, field layout aligned with C's mess_7).
     ///
-    /// `m_source` 置 `Endpoint::NONE`：发送目标由 `IpcTransport::send` 的
-    /// 目标参数决定，与 C `asynsend3(VFS_PROC_NR, ...)` 等价。`Fork` 的
-    /// `REUID`/`REGID` 槽位显式置 `-1`（forkexit.c:129-130 注释
-    /// "Not used by VFS_PM_FORK"），其余未使用槽位置 0。
+    /// `m_source` is set to `Endpoint::NONE`: the send target is decided by
+    /// `IpcTransport::send`'s target argument, equivalent to C
+    /// `asynsend3(VFS_PROC_NR, ...)`. `Fork`'s `REUID`/`REGID` slots are explicitly
+    /// set to `-1` (forkexit.c:129-130 comment "Not used by VFS_PM_FORK"); other
+    /// unused slots are set to 0.
     pub fn encode(&self) -> Message {
         let (i1, i2, i3, i4, i5, p1, p2) = match *self {
             Self::SetUid { endpoint, eid, rid } => (endpoint.get(), eid, rid, 0, 0, 0, 0),
@@ -519,11 +524,12 @@ impl VfsCall {
             m7p2: p2,
             _padding: [0; 16],
         };
-        // DumpCore 的按值名字走载荷尾 40..56（pad 上半，见 variant 文档）。
+        // DumpCore's by-value name goes in payload tail 40..56 (upper pad half, see
+        // the variant docs).
         if let Self::DumpCore { name, .. } = self {
-            // 名字 16 字节落 pad 全段 [0..16]＝载荷绝对 [40..56]（C 的DumpCore
-            // 按值名形状）；旧布局 [4..20] 越界到 60，是 P-ALL-12 病灶的
-            // 一部分——PD-20 收口后恰好在协议边界内。
+            // The 16-byte name occupies the whole pad [0..16] = payload absolute
+            // [40..56] (C's DumpCore by-value name shape); the old layout [4..20] ran
+            // out to 60, past the protocol boundary; this one sits exactly inside it.
             m7._padding[0..16].copy_from_slice(name);
         }
         Message {
@@ -533,21 +539,24 @@ impl VfsCall {
         }
     }
 
-    /// 从 IPC 消息解码（PM → VFS 控制面入口，`service_pm` 的载荷半）。
+    /// Decode from an IPC message (PM → VFS control-plane entry, the payload half
+    /// of `service_pm`).
     ///
-    /// 与 [`Self::encode`] 互逆：字段序与 C `mess_7` 槽位一致（com.h:560-575
-    /// 的 `VFS_PM_PATH`/`VFS_PM_FRAME` 等名字锚点即 encode 注记表）。先校验
-    /// 落于 RQ 族（C: `main.c` 以 `who_e == PM_PROC_NR` 进 `service_pm`，
-    /// 族判定补载荷侧这一道），族外回 [`VfsCallError::NotACall`]，族内
-    /// 无 variant 回 [`VfsCallError::UnknownCall`]。
+    /// Inverse of [`Self::encode`]: field order matches C's `mess_7` slots (the
+    /// `VFS_PM_PATH`/`VFS_PM_FRAME` names at com.h:560-575 are the encode-side
+    /// annotation table). It first checks membership in the RQ family (C: `main.c`
+    /// enters `service_pm` on `who_e == PM_PROC_NR`; the family check adds this
+    /// guard on the payload side); outside the family returns
+    /// [`VfsCallError::NotACall`], inside the family but with no variant returns
+    /// [`VfsCallError::UnknownCall`].
     ///
-    /// `VFS_PM_INIT` 不在此解码：进程表交换走 [`VfsPmInit`]（握手专用
-    /// 载荷，见其 `decode`）。
+    /// `VFS_PM_INIT` is not decoded here: the process table exchange goes through
+    /// [`VfsPmInit`] (a handshake-only payload; see its `decode`).
     pub fn decode(msg: &Message) -> Result<Self, VfsCallError> {
         if !is_vfs_pm_rq(msg.m_type) || msg.m_type == VFS_PM_INIT {
             return Err(VfsCallError::NotACall(msg.m_type));
         }
-        // m_type 已验证属于 RQ 族；联合体读取与 C 的 union 语义一致。
+        // m_type was validated as belonging to the RQ family; reading the union matches C's union semantics.
         let m7 = unsafe { &msg.m_u.m_m7 };
         Ok(match msg.m_type {
             VFS_PM_SETUID => Self::SetUid {
@@ -610,57 +619,58 @@ impl VfsCall {
     }
 }
 
-/// `VfsCall::decode` 错误。
+/// `VfsCall::decode` error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VfsCallError {
-    /// `m_type` 不在 RQ 请求族（或为握手专用的 `VFS_PM_INIT`）。
+    /// `m_type` is not in the RQ request family (or is the handshake-only `VFS_PM_INIT`).
     NotACall(i32),
-    /// `m_type` 在 RQ 族但无对应 variant。
+    /// `m_type` is in the RQ family but has no matching variant.
     UnknownCall(i32),
 }
 
-/// VFS → PM 的回复。
+/// VFS → PM reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VfsReply {
-    /// VFS_PM_SETUID_REPLY（main.c:335 分组）。
+    /// VFS_PM_SETUID_REPLY (main.c:335 grouping).
     SetUid,
-    /// VFS_PM_SETGID_REPLY。
+    /// VFS_PM_SETGID_REPLY.
     SetGid,
-    /// VFS_PM_SETGROUPS_REPLY。
+    /// VFS_PM_SETGROUPS_REPLY.
     SetGroups,
-    /// VFS_PM_SETSID_REPLY。
+    /// VFS_PM_SETSID_REPLY.
     SetSid,
-    /// VFS_PM_EXEC_REPLY — 携带新程序入口与栈（main.c:398-407）。
+    /// VFS_PM_EXEC_REPLY — carries the new program entry and stack (main.c:398-407).
     Exec {
-        /// 执行状态（OK 或失败，VFS_PM_STATUS = m7_i2）。
+        /// Execution status (OK or failure, VFS_PM_STATUS = m7_i2).
         status: i32,
-        /// 程序计数器（VFS_PM_PC = m7_p1）。
+        /// Program counter (VFS_PM_PC = m7_p1).
         pc: u64,
-        /// 可能更新的栈指针（VFS_PM_NEWSP = m7_p2）。
+        /// Possibly updated stack pointer (VFS_PM_NEWSP = m7_p2).
         newsp: u64,
-        /// 可能更新的 ps_strings 指针（VFS_PM_NEWPS_STR）。LP64 下完整 64 位，
-        /// 编码拆 `m7_i4`（高）+ `m7_i5`（低）（B43，见 `VfsCall::Exec::ps_str`）。
+        /// Possibly updated ps_strings pointer (VFS_PM_NEWPS_STR). Full 64 bits under
+        /// LP64; encoding splits it into `m7_i4` (high) + `m7_i5` (low) (see
+        /// `VfsCall::Exec::ps_str`).
         newps_str: u64,
     },
-    /// VFS_PM_CORE_REPLY — 携带 core dump 状态（main.c:409-415）。
+    /// VFS_PM_CORE_REPLY — carries core dump status (main.c:409-415).
     Core {
-        /// 状态（OK 或失败，VFS_PM_STATUS = m7_i2）。
+        /// Status (OK or failure, VFS_PM_STATUS = m7_i2).
         status: i32,
     },
-    /// VFS_PM_EXIT_REPLY（main.c:419-421）。
+    /// VFS_PM_EXIT_REPLY (main.c:419-421).
     Exit,
-    /// VFS_PM_FORK_REPLY（main.c:372-396）。
+    /// VFS_PM_FORK_REPLY (main.c:372-396).
     Fork,
-    /// VFS_PM_SRV_FORK_REPLY（main.c:372-396）。
+    /// VFS_PM_SRV_FORK_REPLY (main.c:372-396).
     SrvFork,
-    /// VFS_PM_UNPAUSE_REPLY（main.c:417 后走尾部）。
+    /// VFS_PM_UNPAUSE_REPLY (falls through the tail after main.c:417).
     Unpause,
-    /// VFS_PM_REBOOT_REPLY（main.c:304-312 特例）。
+    /// VFS_PM_REBOOT_REPLY (special case at main.c:304-312).
     Reboot,
 }
 
 impl VfsReply {
-    /// 消息类型（C: `m_type`）。
+    /// Message type (C: `m_type`).
     pub const fn m_type(&self) -> i32 {
         match self {
             Self::SetUid => VFS_PM_SETUID_REPLY,
@@ -677,17 +687,18 @@ impl VfsReply {
         }
     }
 
-    /// 从 IPC 消息解码。
+    /// Decode from an IPC message.
     ///
-    /// 先校验落于 RS 族（C: `main.c:84` 的 `IS_VFS_PM_RS` 族判定保证进入
-    /// `handle_vfs_reply` 的必是 RS 族）；`NotAReply` 覆盖族外 `m_type`，
-    /// `UnknownReply` 覆盖族内未定义编号（对应 C `default: panic("unknown
-    /// reply code")`）。
+    /// First checks membership in the RS family (C: the `IS_VFS_PM_RS` family check
+    /// at `main.c:84` guarantees only RS-family messages reach `handle_vfs_reply`);
+    /// `NotAReply` covers out-of-family `m_type`, `UnknownReply` covers undefined
+    /// numbers inside the family (matching C `default: panic("unknown
+    /// reply code")`).
     pub fn decode(msg: &Message) -> Result<Self, VfsReplyError> {
         if !is_vfs_pm_rs(msg.m_type) {
             return Err(VfsReplyError::NotAReply(msg.m_type));
         }
-        // m_type 已在上面验证属于 RS 族；联合体读取与 C 的 union 语义一致。
+        // m_type was validated as RS-family above; reading the union matches C's union semantics.
         let m7 = unsafe { &msg.m_u.m_m7 };
         Ok(match msg.m_type {
             VFS_PM_SETUID_REPLY => Self::SetUid,
@@ -710,13 +721,13 @@ impl VfsReply {
         })
     }
 
-    /// 编码为 IPC 消息（PM 侧 `handle_vfs_reply` 的消费格式，与
-    /// [`Self::decode`] 互逆）。
+    /// Encode as an IPC message (the format PM's `handle_vfs_reply` consumes;
+    /// inverse of [`Self::decode`]).
     ///
-    /// C `reply(who_e, result)` 是裸回复（`memset(&m, 0, …)` 后只写
-    /// `m_type`）；带载荷的两路按 com.h:570-575 的槽位填：`Exec` 的
-    /// status/pc/newsp/newps_str 与 `Core` 的 status。`m_source` 置
-    /// `Endpoint::NONE`，发送目标由传输层决定。
+    /// C `reply(who_e, result)` is a bare reply (`memset(&m, 0, …)` then write
+    /// only `m_type`); the two payload-carrying paths fill slots per com.h:570-575:
+    /// `Exec`'s status/pc/newsp/newps_str and `Core`'s status. `m_source` is set to
+    /// `Endpoint::NONE`; the send target is decided by the transport layer.
     pub fn encode(&self) -> Message {
         let mut msg = Message {
             m_source: Endpoint::NONE,
@@ -752,7 +763,7 @@ impl VfsReply {
                 let m7 = unsafe { &mut msg.m_u.m_m7 };
                 m7.m7i2 = status;
             }
-            // C 的裸回复：载荷区保持全零（reply() 的 memset 语义）。
+            // C's bare reply: the payload area stays all zero (reply()'s memset semantics).
             Self::SetUid
             | Self::SetGid
             | Self::SetGroups
@@ -766,35 +777,37 @@ impl VfsReply {
         msg
     }
 
-    /// 编码为带回显目标端点的 IPC 回复。
+    /// Encode as an IPC reply that echoes the target endpoint.
     ///
-    /// C `service_pm`（main.c）的每一路回复都做
+    /// Every reply path in C `service_pm` (main.c) does
     /// `proc_e = m_in.VFS_PM_ENDPT; ... m_out.VFS_PM_ENDPT = proc_e;`
-    /// ——把请求携带的目标进程端点原样回填进回复的 `VFS_PM_ENDPT`
-    /// （`m7_i1`）。PM 侧 `handle_vfs_reply`（main.c:315-321）正是从
-    /// `m_in.VFS_PM_ENDPT` 取端点 `pm_isokendpt` 解析槽位，再断言该槽
-    /// 挂着 `VFS_CALL`。[`Self::encode`] 是裸回复形态（`m7_i1` 保持 0），
-    /// 直接投递会让 PM 解析到 slot 0 并 `panic("reply without request")`。
-    /// 本方法在裸回复之上补写 `m7_i1 = target`，恢复 C 的端点回显契约。
+    /// — echoing the request's target process endpoint back into the reply's
+    /// `VFS_PM_ENDPT` (`m7_i1`). PM's `handle_vfs_reply` (main.c:315-321) takes the
+    /// endpoint from `m_in.VFS_PM_ENDPT`, resolves the slot with `pm_isokendpt`,
+    /// then asserts that slot has a `VFS_CALL` attached. [`Self::encode`] is the
+    /// bare reply shape (`m7_i1` stays 0); delivering it directly makes PM resolve
+    /// slot 0 and `panic("reply without request")`. This method writes
+    /// `m7_i1 = target` on top of the bare reply, restoring C's endpoint-echo
+    /// contract.
     ///
-    /// `target` 取自 `VfsCall::endpoint()`（fork/srv_fork 为**子**端点，
-    /// 与 PM 把 `VFS_CALL` 挂在子槽的语义一致）。
+    /// `target` comes from `VfsCall::endpoint()` (fork/srv_fork use the **child**
+    /// endpoint, matching PM's semantics of attaching `VFS_CALL` to the child slot).
     pub fn encode_reply_for(&self, target: Endpoint) -> Message {
         let mut msg = self.encode();
-        // SAFETY: `encode` 刚刚以 `m_m7` 臂构造了该 union，读改同一臂有效。
+        // SAFETY: `encode` just built the union with the `m_m7` arm; reading and writing that same arm is valid.
         unsafe { msg.m_u.m_m7.m7i1 = target.get() };
         msg
     }
 }
 
-/// `VfsReply::decode` / `handle_vfs_reply` 错误。
+/// `VfsReply::decode` / `handle_vfs_reply` error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VfsReplyError {
-    /// `m_type` 不在 RS 族（见 `is_vfs_pm_rs`）。
+    /// `m_type` is not in the RS family (see `is_vfs_pm_rs`).
     NotAReply(i32),
-    /// `m_type` 在 RS 族但无对应 variant。
+    /// `m_type` is in the RS family but has no matching variant.
     UnknownReply(i32),
-    /// 回复中的 endpoint 无法解析为有效槽位（C: `pm_isokendpt` 失败）。
+    /// The reply's endpoint does not resolve to a valid slot (C: `pm_isokendpt` fails).
     BadEndpoint(Endpoint),
 }
 
@@ -802,26 +815,26 @@ pub enum VfsReplyError {
 mod vfs_call_reply_tests {
     use super::*;
 
-    /// 逐路请求编码 → 解码往返，并校验 m_type 与族判定。
+    /// Round-trip encode → decode for one request path, also checking m_type and family classification.
     fn roundtrip(call: VfsCall) {
         assert!(is_vfs_pm_rq(call.m_type()));
         assert!(!is_vfs_pm_rs(call.m_type()));
         let msg = call.encode();
         assert_eq!(msg.m_type, call.m_type());
-        // REBOOT 之外，目标进程 endpoint 落于 m7_i1。
+        // Apart from REBOOT, the target process endpoint lands in m7_i1.
         if let Some(ep) = call.endpoint() {
             let m7 = unsafe { &msg.m_u.m_m7 };
             assert_eq!(m7.m7i1, ep.get(), "endpoint 必须编码到 m7_i1");
         }
-        // encode → decode 全量互逆（NS5 的 service_pm 载荷半）。
+        // encode → decode is fully inverse (the payload half of service_pm).
         assert_eq!(VfsCall::decode(&msg), Ok(call));
     }
 
-    /// NS5：`VfsReply::Exec` 的 encode → decode 往返（PM 侧
-    /// `handle_vfs_reply` 的消费格式，com.h:570-575 槽位）。
+    /// `VfsReply::Exec` encode → decode round trip (the format PM's
+    /// `handle_vfs_reply` consumes, slots at com.h:570-575).
     #[test]
     fn test_vfs_reply_exec_encode_decode_roundtrip() {
-        // B43：newps_str 用 LP64 高地址（高 32 位非零）验证 m7_i4/m7_i5 拆分往返。
+        // newps_str uses an LP64 high address (non-zero high 32 bits) to verify the m7_i4/m7_i5 split round trip.
         let reply = VfsReply::Exec {
             status: 0,
             pc: 0x401_000,
@@ -831,25 +844,26 @@ mod vfs_call_reply_tests {
         let msg = reply.encode();
         assert_eq!(msg.m_type, VFS_PM_EXEC_REPLY);
         assert_eq!(VfsReply::decode(&msg), Ok(reply));
-        // 裸回复（C reply() 的 memset 语义）也是同形往返。
+        // A bare reply (C reply()'s memset semantics) also round-trips the same way.
         let bare = VfsReply::Fork.encode();
         assert_eq!(VfsReply::decode(&bare), Ok(VfsReply::Fork));
     }
 
-    /// B18 回归：`service_pm` 每一路回复必须把目标进程端点回显进
-    /// `VFS_PM_ENDPT`（m7_i1），否则 PM `handle_vfs_reply` 会解析到 slot 0
-    /// 并 `panic("reply without request")`。`encode_reply_for` 恢复该契约。
+    /// Regression: every `service_pm` reply must echo the target process endpoint
+    /// into `VFS_PM_ENDPT` (m7_i1), otherwise PM's `handle_vfs_reply` resolves slot
+    /// 0 and `panic("reply without request")`. `encode_reply_for` restores that
+    /// contract.
     #[test]
     fn test_vfs_reply_encode_reply_for_echoes_endpoint() {
-        let target = Endpoint::from_generation_slot(1, 12); // fork 子端点
-        // 裸 encode 不携带端点（旧 bug：m7_i1=0 → PM 误解析 slot 0）。
+        let target = Endpoint::from_generation_slot(1, 12); // fork child endpoint
+        // Bare encode carries no endpoint (old bug: m7_i1=0 → PM resolves slot 0).
         let bare = VfsReply::Fork.encode();
         assert_eq!(unsafe { bare.m_u.m_m7 }.m7i1, 0);
-        // encode_reply_for 回显端点；载荷 m_type 与裸回复一致。
+        // encode_reply_for echoes the endpoint; the payload m_type matches the bare reply.
         let reply = VfsReply::Fork.encode_reply_for(target);
         assert_eq!(reply.m_type, VFS_PM_FORK_REPLY);
         assert_eq!(unsafe { reply.m_u.m_m7 }.m7i1, target.get());
-        // Exec 额外载荷（status/pc/newsp）不受影响，m7_i1 仍为端点。
+        // Exec's extra payload (status/pc/newsp) is unaffected; m7_i1 remains the endpoint.
         let exec = VfsReply::Exec {
             status: 0,
             pc: 0x401_000,
@@ -864,7 +878,7 @@ mod vfs_call_reply_tests {
 
     #[test]
     fn test_vfs_call_decode_rejects_out_of_family() {
-        // 族外（FS 请求族）与握手专用 INIT 都不进 service_pm 载荷解码。
+        // Out-of-family (the FS request family) and the handshake-only INIT never enter service_pm payload decoding.
         assert_eq!(
             VfsCall::decode(&Message { m_type: 0xA00, ..Message::default() }),
             Err(VfsCallError::NotACall(0xA00))
@@ -876,7 +890,7 @@ mod vfs_call_reply_tests {
             }),
             Err(VfsCallError::NotACall(VFS_PM_INIT))
         );
-        // 族内但未定义的编号。
+        // A number inside the family but undefined.
         let bogus = VFS_PM_RQ_BASE + 12;
         assert!(
             is_vfs_pm_rq(bogus),
@@ -949,7 +963,7 @@ mod vfs_call_reply_tests {
 
     #[test]
     fn test_vfs_call_fork_sentinels() {
-        // VFS_PM_FORK 的 REUID/REGID 槽位必须 -1（forkexit.c:129-130）。
+        // VFS_PM_FORK's REUID/REGID slots must be -1 (forkexit.c:129-130).
         let msg = VfsCall::Fork {
             child: Endpoint::from_generation_slot(1, 6),
             parent: Endpoint::from_generation_slot(1, 5),
@@ -959,16 +973,18 @@ mod vfs_call_reply_tests {
         let m7 = unsafe { &msg.m_u.m_m7 };
         assert_eq!(m7.m7i4, -1);
         assert_eq!(m7.m7i5, -1);
-        // 父 endpoint 在 m7_i2，子 pid 在 m7_i3。
+        // The parent endpoint is in m7_i2, the child pid in m7_i3.
         assert_eq!(m7.m7i2, Endpoint::from_generation_slot(1, 5).get());
         assert_eq!(m7.m7i3, 1234);
     }
 
     #[test]
     fn test_vfs_call_exec_layout() {
-        // B43 回归：x86-64 LP64 下用户 ps_strings 落在 `0x0000_7fff_xxxx_xxxx`
-        // （47 位），必须完整穿 `m7_i4`（高 32 位）+ `m7_i5`（低 32 位）两槽；
-        // 旧 `i32` 承载会截成 `0xffff_efe0` 再被 PM 符号扩展为 `0xffff_ffff_ffff_efe0`。
+        // Regression: under x86-64 LP64 the user ps_strings lives in
+        // `0x0000_7fff_xxxx_xxxx` (47 bits) and must travel intact through both
+        // `m7_i4` (high 32 bits) and `m7_i5` (low 32 bits); the old `i32` carrier
+        // truncated it to `0xffff_efe0`, which PM then sign-extended to
+        // `0xffff_ffff_ffff_efe0`.
         let ps: u64 = 0x0000_7fff_ffff_efe0;
         let msg = VfsCall::Exec {
             endpoint: Endpoint::from_generation_slot(1, 5),
@@ -994,10 +1010,11 @@ mod vfs_call_reply_tests {
         }
     }
 
-    /// C-6（OQ-5 裁决）：DumpCore 按值名字的字节位——名字落载荷尾
-    /// 40..56（`_padding[0..16]` 全段；PD-20 收口后恰在 56 字节协议边界
-    /// 内，旧布局 [4..20]=绝对 44..60 越界）、长度落 m7_i3、指针槽
-    /// m7_p1 恒零（C 的 m7_p1 指针 + VFS safecopy fetch 由按值携带取代）。
+    /// Byte layout of DumpCore's by-value name: the name lands in payload tail
+    /// 40..56 (the whole `_padding[0..16]`; this is exactly inside the 56-byte
+    /// protocol boundary, whereas the old layout [4..20] = absolute 44..60 ran past
+    /// it), the length lands in m7_i3, and the pointer slot m7_p1 stays zero (the
+    /// by-value carrier replaces C's m7_p1 pointer plus VFS safecopy fetch).
     #[test]
     fn test_vfs_call_dumpcore_by_value_name_layout() {
         let mut name = [0u8; 16];
@@ -1117,7 +1134,7 @@ mod vfs_call_reply_tests {
 
     #[test]
     fn test_vfs_reply_decode_not_a_reply() {
-        // 请求族与未知编号都不应通过 decode。
+        // Neither request-family messages nor unknown numbers should pass decode.
         assert_eq!(
             VfsReply::decode(&Message {
                 m_type: VFS_PM_EXEC,
@@ -1126,7 +1143,7 @@ mod vfs_call_reply_tests {
             .unwrap_err(),
             VfsReplyError::NotAReply(VFS_PM_EXEC)
         );
-        let bogus = VFS_PM_RS_BASE + 12; // 族内但无 variant
+        let bogus = VFS_PM_RS_BASE + 12; // inside the family but no variant
         assert!(
             is_vfs_pm_rs(bogus),
             "bogus 必须落在 RS 族内以测试 UnknownReply 分支"
@@ -1146,17 +1163,18 @@ mod vfs_call_reply_tests {
         assert!(is_vfs_pm_rq(VFS_PM_INIT));
         assert!(is_vfs_pm_rq(VFS_PM_EXEC));
         assert!(is_vfs_pm_rs(VFS_PM_EXEC_REPLY));
-        // 边界：0x980 + 0x80 = 0xA00 不应命中 RS 族（低 7 位被掩去）。
+        // Boundary: 0x980 + 0x80 = 0xA00 must not hit the RS family (the low 7 bits are masked off).
         assert!(!is_vfs_pm_rs(VFS_PM_RS_BASE + 0x80));
-        // 普通 PM 调用（如 PM_GETPROCNR = 0~）不在任一族。
+        // Ordinary PM calls (e.g. PM_GETPROCNR = 0~) are in neither family.
         assert!(!is_vfs_pm_rq(0));
     }
 
     #[test]
     fn test_vfs_pm_constants_match_com_h() {
-        // 锁定线协议数值与 C com.h:520-544 完全一致，防止偏移错位
-        // （枚举顺序若与 C 宏编号不同会导致线值错误，属 P0-fact）。
-        // RQ 族（com.h:521-531）
+        // Locks the wire protocol values to C com.h:520-544 exactly, preventing
+        // offset drift (an enumeration order differing from C's macro numbers yields
+        // wrong wire values — a wire-value defect).
+        // RQ family (com.h:521-531)
         assert_eq!(VFS_PM_SETUID, 0x901);
         assert_eq!(VFS_PM_SETGID, 0x902);
         assert_eq!(VFS_PM_SETSID, 0x903);
@@ -1168,7 +1186,7 @@ mod vfs_call_reply_tests {
         assert_eq!(VFS_PM_UNPAUSE, 0x909);
         assert_eq!(VFS_PM_REBOOT, 0x90a);
         assert_eq!(VFS_PM_SETGROUPS, 0x90b);
-        // RS 族（com.h:534-544）
+        // RS family (com.h:534-544)
         assert_eq!(VFS_PM_SETUID_REPLY, 0x981);
         assert_eq!(VFS_PM_SETGID_REPLY, 0x982);
         assert_eq!(VFS_PM_SETSID_REPLY, 0x983);

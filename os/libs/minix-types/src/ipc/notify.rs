@@ -161,17 +161,19 @@ mod tests {
     use crate::{KERNEL_SIGNAL_FIRST, KERNEL_SIGNAL_LAST};
     use core::mem::{offset_of, size_of};
 
-    /// C 绝对值 pin:通知带基址(com.h:90)。is_notify 的无符号回绕判定
-    /// 依赖此值,漂移即把整段调用号误判为通知。
+    /// C absolute-value pin: the notification band base (com.h:90). `is_notify`'s
+    /// unsigned wraparound test depends on this value, and a drift would
+    /// misclassify the whole call-number range as notifications.
     #[test]
     fn test_notify_message_band_base_matches_c() {
         assert_eq!(NOTIFY_MESSAGE, 0x1000); // com.h:90
     }
 
-    /// 布局见证:`mess_notify` 逐字节对位 ipc.h:1714-1719 —— 总长 56,
-    /// `sigset` 落在偏移 16 并占满 16 字节(C `sigset_t`),剩余 24 字节是
-    /// C 自己的 padding。字段形状若漂回 8 字节,内核信号族(71..=74,
-    /// 位于 `bits[2]`)就没有落脚点。
+    /// Layout witness: `mess_notify` matches ipc.h:1714-1719 byte for byte — 56
+    /// total, `sigset` at offset 16 and filling 16 bytes (C `sigset_t`), with the
+    /// remaining 24 bytes being C's own padding. If the field shape drifted back to
+    /// 8 bytes, the kernel signal family (71..=74, in `bits[2]`) would have nowhere
+    /// to land.
     #[test]
     fn test_mess_notify_layout_matches_c() {
         assert_eq!(size_of::<MessNotify>(), MESSAGE_PAYLOAD_SIZE);
@@ -183,15 +185,16 @@ mod tests {
         assert_eq!(offset_of!(MessNotify, _padding), 32); // ipc.h:1718
     }
 
-    /// 位基与 C `__sigmask/__sigword` 同形:bit(signo-1),按 32 位分字。
-    /// 内核信号族的四个字(71..=74)全落在 `bits[2]`,即 u64 形态装不下的
-    /// 那一段;越界的号码一律答 `false`,不索引数组之外。
+    /// Bit numbering is the same shape as C `__sigmask/__sigword`: bit(signo-1),
+    /// split into 32-bit words. The four kernel-family signals (71..=74) all land
+    /// in `bits[2]`, the range the u64 form cannot hold; out-of-range numbers
+    /// always answer `false` and never index past the array.
     #[test]
     fn test_sigset_contains_matches_c_bit_numbering() {
         let set: SigSetBits = [
-            (1 << 0) | (1 << 31),                      // signo 1 与 32
-            1 << 31,                                   // signo 64（bits[1] 的最后一位）
-            (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9), // 内核信号族 71..=74
+            (1 << 0) | (1 << 31),                      // signo 1 and 32
+            1 << 31,                                   // signo 64 (last bit of bits[1])
+            (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9), // kernel signal family 71..=74
             0,
         ];
         assert!(sigset_contains(set, 1));
@@ -204,24 +207,24 @@ mod tests {
             );
         }
         assert!(!sigset_contains(set, 2));
-        assert!(!sigset_contains(set, 65)); // bits[2] 的 bit 0 未置
-        assert!(!sigset_contains(set, 70)); // SIGSNDELAY 不在此测试集
-        assert!(!sigset_contains(set, 75)); // 族外:bits[2] bit 10 未置
-        assert!(!sigset_contains(set, 0)); // signo 0 不是信号
-        assert!(!sigset_contains([u32::MAX; SIGSET_WORDS], 129)); // 越界不 panic
+        assert!(!sigset_contains(set, 65)); // bit 0 of bits[2] is not set
+        assert!(!sigset_contains(set, 70)); // SIGSNDELAY is not in this test set
+        assert!(!sigset_contains(set, 75)); // outside the family: bits[2] bit 10 unset
+        assert!(!sigset_contains(set, 0)); // signo 0 is not a signal
+        assert!(!sigset_contains([u32::MAX; SIGSET_WORDS], 129)); // out of range does not panic
     }
 
-    /// 与内核 64 位 `SigSet` 的桥:低 64 位无损落进前两个字,后两个字在生产者
-    /// 拓宽之前恒零。
+    /// The bridge to the kernel's 64-bit `SigSet`: the low 64 bits land in the first
+    /// two words without loss, and the last two stay zero until the producer widens.
     #[test]
     fn test_sigset_from_u64_fills_the_low_two_words_only() {
-        let low = 0x0000_0001_8000_0001u64; // 置位的 bit: 0 / 31 / 32
+        let low = 0x0000_0001_8000_0001u64; // set bits: 0 / 31 / 32
         let set = sigset_from_u64(low);
         assert_eq!(set, [low as u32, (low >> 32) as u32, 0, 0]);
         assert!(sigset_contains(set, 1)); // bit 0
         assert!(sigset_contains(set, 32)); // bit 31
-        assert!(sigset_contains(set, 33)); // bit 32 落进第二个字
-        // 内核信号族要等生产者拓宽后才可见。
+        assert!(sigset_contains(set, 33)); // bit 32 lands in the second word
+        // The kernel signal family only becomes visible once the producer widens.
         assert!(!sigset_contains(set, KERNEL_SIGNAL_FIRST as u32));
     }
 }

@@ -30,22 +30,27 @@ pub struct UnexpandOptions {
 /// Parses a `-t` stop list: the C splits on `", \t"` (`strsep`,
 /// unexpand.c:93-115), each stop parses as a base-zero number and must
 /// be strictly greater than the previous. `None` marks any violation.
-/// C 对 `-t` 档位表的两种坏法，各有各的句子，不许抹平成一句。
+/// C's two bad shapes for the `-t` stop list each get their own sentence; never
+/// flatten them into one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopRejection<'a> {
-    /// `unexpand.c:101-103`：`strtoul` 剩下尾巴字符，或溢出到 `ULONG_MAX`
-    /// （`errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`）。带的是那一支档位的
-    /// **原字节**——C 交给 `%s` 的就是 `strsep` 切出来的那个词。
+    /// `unexpand.c:101-103`: `strtoul` leaves trailing characters, or overflows
+    /// to `ULONG_MAX` (`errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`). It
+    /// carries that stop's **original bytes**—what C hands to `%s` is exactly
+    /// the word `strsep` cut out.
     Invalid(&'a [u8]),
-    /// `unexpand.c:108-112`：不比前一支大
-    /// （`errx(... "Bad tabstop spec `%s', must be greater than the previous `%zu'", ...)`）。
+    /// `unexpand.c:108-112`: not greater than the previous stop
+    /// (`errx(... "Bad tabstop spec `%s', must be greater than the previous `%zu'", ...)`).
     NotIncreasing { spec: &'a [u8], previous: usize },
 }
 
-/// 按 C 的 `strsep(&optarg, ", \t")` 切档位表：逗号、空格、制表符都是分隔符，
-/// 空字段跳过（所以 `-t ""` 与 `-t ,` 都是「一支都没有」，C 那边 `nstops` 保持 0，
-/// 行为与不给 `-t` 相同），每支按 **base 0** 解析（`0x` 是十六进制、`0` 前缀是八进制，
-/// `unexpand.c:100` 的 `strtoul(tab, &ep, 0)`；参照件现量 `-t 010` 得 8、`-t 0x10` 得 16）。
+/// Splits the stop list the way C's `strsep(&optarg, ", \t")` does: commas,
+/// spaces, and tabs are all separators, empty fields are skipped (so both
+/// `-t ""` and `-t ,` mean "no stop at all", with C keeping `nstops` at 0 and
+/// behaving as if `-t` were absent), and each piece is parsed in **base 0**
+/// (`0x` is hexadecimal, a `0` prefix is octal, `unexpand.c:100`'s
+/// `strtoul(tab, &ep, 0)`; the reference build measures `-t 010` as 8 and
+/// `-t 0x10` as 16).
 pub fn parse_stops(spec: &[u8]) -> Result<Vec<usize>, StopRejection<'_>> {
     let mut stops: Vec<usize> = Vec::new();
     for piece in spec.split(|byte| matches!(byte, b',' | b' ' | b'\t')) {
@@ -56,7 +61,9 @@ pub fn parse_stops(spec: &[u8]) -> Result<Vec<usize>, StopRejection<'_>> {
             Some(value) => value,
             None => return Err(StopRejection::Invalid(piece)),
         };
-        // 「不比前一支大」只在有前一支时才判，且相等也不算「更大」（参照件 `-t 4,4' 同拒）。
+        // "Not greater than the previous stop" is only checked when there is a
+        // previous stop, and equality is not "greater" either (the reference
+        // build rejects `-t 4,4` alike).
         if let Some(&last) = stops.last().filter(|&&previous| previous >= value) {
             return Err(StopRejection::NotIncreasing {
                 spec: piece,
@@ -68,9 +75,11 @@ pub fn parse_stops(spec: &[u8]) -> Result<Vec<usize>, StopRejection<'_>> {
     Ok(stops)
 }
 
-/// C 的 `strtoul(piece, &ep, 0)` 加上「`*ep` 非零就拒」与「`ERANGE` 且回 `ULONG_MAX` 就拒」。
-/// base 0 的前缀规则照 C：`0x`/`0X` 走十六进制，前导 `0` 走八进制，其余十进制。
-/// 溢出用 `checked_*` 挡（本壳与 C 都是 64 位无符号宽），落回 `None` 即 C 的 Invalid。
+/// C's `strtoul(piece, &ep, 0)` plus "reject if `*ep` is nonzero" and "reject
+/// when `ERANGE` returned `ULONG_MAX`". The base-0 prefix rules follow C: `0x`/`0X`
+/// is hexadecimal, a leading `0` is octal, everything else decimal. Overflow is
+/// caught with `checked_*` (both this shell and C are 64-bit unsigned wide);
+/// falling back to `None` is C's Invalid.
 fn base_zero(piece: &[u8]) -> Option<usize> {
     let (radix, rest) = if piece.len() > 1 && piece[0] == b'0' {
         match piece[1] {
@@ -95,10 +104,9 @@ fn base_zero(piece: &[u8]) -> Option<usize> {
 ///
 /// Faithful to `tabify` (unexpand.c:148-214): a display column (`dcol`)
 /// walks the input — spaces add one, tabs quantize to the next stop —
-/// and each non-blank byte flushes the accumulated gap as tabs (only
-/// where a stop boundary is crossed and the gap is at least two
-/// 把攒下的空白冲成「制表符 + 空格」：C 在 `unexpand.c:167-205` 的 Output-tabs 与
-/// Output-spaces 两腿里做这件事，而触发它的必须是**一个非空白字节**。
+/// and each non-blank byte flushes the accumulated gap as "tabs then spaces":
+/// C does this in the Output-tabs and Output-spaces arms at
+/// `unexpand.c:167-205`, and what triggers it must be **a non-blank byte**.
 fn flush_gap(out: &mut String, ocol: &mut usize, dcol: usize, stops: &[usize], limit: usize) {
     if stops.is_empty() {
         while (*ocol + DEFAULT_STOP) / DEFAULT_STOP <= dcol / DEFAULT_STOP && dcol - *ocol >= 2 {
@@ -131,8 +139,9 @@ fn flush_gap(out: &mut String, ocol: &mut usize, dcol: usize, stops: &[usize], l
 /// rest of the line passes through verbatim.
 pub fn unexpand_line(line: &str, options: &UnexpandOptions, terminated: bool) -> String {
     let bytes = line.as_bytes();
-    // C 这里减的是 `size_t`（`unexpand.c:146`），档位为 0 时它回绕成最大值而不是停下，
-    // 所以 `wrapping_sub` 才是 C 的那一步；裸减法在宿主调试构建里先触 trap，`-t 0` 就崩了。
+    // C subtracts a `size_t` here (`unexpand.c:146`); with a stop of 0 it wraps
+    // to the maximum instead of stopping, so `wrapping_sub` is C's step; a bare
+    // subtraction traps first in a host debug build and `-t 0` would crash.
     let limit = options
         .stops
         .last()
@@ -164,9 +173,11 @@ pub fn unexpand_line(line: &str, options: &UnexpandOptions, terminated: bool) ->
                 cursor += 1;
                 continue;
             }
-            // 够不着下一档时 C 不 `continue`：`unexpand.c:160-165` 那一判不成立就落到
-            // 下面「先冲档、再 `putchar(*p)`」那一腿（`:195`），制表符因此被原样交回，
-            // 两列各进一格。这里也必须落到同一腿，不能把它当已消费的空白跳过。
+            // When the next stop is out of reach C does not `continue`: the test
+            // at `unexpand.c:160-165` fails and control falls into the "flush the
+            // stop, then `putchar(*p)`" arm below (`:195`), so the tab is handed
+            // back as-is and both columns advance by one. This must fall into the
+            // same arm here, not skip the tab as an already-consumed blank.
         }
 
         // Non-blank byte: flush the gap as tabs then spaces.
@@ -196,8 +207,10 @@ pub fn unexpand_line(line: &str, options: &UnexpandOptions, terminated: bool) ->
             break;
         }
     }
-    // 行以换行结束：那枚换行就是结束空白串的那个非空白字节，C 在这一刻冲档。输入末尾
-    // 没有换行时 `tabify` 走到缓冲末尾直接 `return`（`unexpand.c:214-215`），一个字节也不冲。
+    // The line ends with a newline: that newline is the non-blank byte that ends
+    // the blank run, and C flushes at that moment. When the input has no trailing
+    // newline, `tabify` walks off the buffer and returns directly
+    // (`unexpand.c:214-215`), flushing not one byte.
     if terminated {
         flush_gap(&mut out, &mut ocol, dcol, &options.stops, limit);
     }
@@ -233,31 +246,40 @@ pub struct UnexpandArgs<'a> {
 /// `unexpand` argument-parsing failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnexpandError<'a> {
-    /// C 的 `usage()` 自己那一行：`-a` 与 `-t` 冲突（`unexpand.c:89-95` 的
-    /// `if (nstops) usage()` 与 `if (all) usage()`）。
+    /// C's own `usage()` line: `-a` and `-t` conflict (`unexpand.c:89-95`'s
+    /// `if (nstops) usage()` and `if (all) usage()`).
     Usage,
-    /// 集外字母：libc 先印一行（`getopt.c:101-104`），C 的 `default: usage()` 再接一行。
+    /// Out-of-set letter: libc prints one line first (`getopt.c:101-104`), then
+    /// C's `default: usage()` appends a second line.
     UnknownOption(char),
-    /// `-t` 后面没有值：libc 印 `option requires an argument -- t`（`getopt.c:132-136`），
-    /// 再由 `default: usage()` 接第二行。
+    /// No value after `-t`: libc prints `option requires an argument -- t`
+    /// (`getopt.c:132-136`), then `default: usage()` adds the second line.
     MissingValue(char),
-    /// `-t` 的档位表里有一支坏档位，交回 C 那两种句子的哪一种。
+    /// One bad stop in `-t`'s stop list; hands back whichever of C's two
+    /// sentences applies.
     BadStops(StopRejection<'a>),
 }
 
-/// 把 `unexpand` 的参数尾巴拆成 [`UnexpandArgs`]，照 C 的 `getopt(argc, argv, "at:")`
-/// （`unexpand.c:86`）。三件事必须逐字母按 getopt 的聚簇指针来读而不是整段比对：
-/// ① `-a` 与 `-t` 互斥，两支谁后到谁就 `usage()`（`unexpand.c:88-95`），所以 `-at4`
-/// 是 usage 而不是组合形；② 集外字母先由 libc 印一行（`getopt.c:101-104`），
-/// 交回的是 `-` 后面的**第一个**字符（量过：`-Za` 只报 `Z`）；③ `-t` 的值可以附在
-/// 本 token（`-t4,8`）也可以另起一段（`-t 4,8`），后面没有那一段时 libc 印
-/// `option requires an argument -- t`（`getopt.c:132-136`）而不是直接 usage。
+/// Splits `unexpand`'s argument tail into [`UnexpandArgs`], following C's
+/// `getopt(argc, argv, "at:")` (`unexpand.c:86`). Three things must be read
+/// letter by letter through getopt's cluster pointer rather than by whole-string
+/// comparison: ① `-a` and `-t` are mutually exclusive, and whichever arrives
+/// second calls `usage()` (`unexpand.c:88-95`), so `-at4` is usage and not a
+/// combined form; ② for an out-of-set letter libc prints one line first
+/// (`getopt.c:101-104`), handing back the **first** character after `-`
+/// (measured: `-Za` reports only `Z`); ③ `-t`'s value may be attached to this
+/// token (`-t4,8`) or be a separate argument (`-t 4,8`), and when that argument
+/// is absent libc prints `option requires an argument -- t`
+/// (`getopt.c:132-136`) instead of going straight to usage.
 ///
-/// 不重排：非选项 token 一到，`getopt.c:74-78` 当场返回 -1，它和它后面的 token 整个
-/// 落进 `argv += optind` 的那一段，全当**文件操作数**（参照件量过：`unexpand f -a`
-/// 里的 `-a` 是被当第二个档名去 `freopen` 的，报 `Cannot open `-a'`）。
-/// `--` 结束选项环且自身不算操作数（`getopt.c:81-85`），裸 `-` 是操作数
-/// （`getopt.c:87-92` 不推进 `optind`，而 C `unexpand.c:129` 会拿它去 `freopen`）。
+/// No reordering: as soon as a non-option token appears, `getopt.c:74-78` returns
+/// -1 on the spot, and that token and everything after it land in the
+/// `argv += optind` tail, all treated as **file operands** (measured against the
+/// reference build: in `unexpand f -a`, the `-a` is `freopen`ed as the second
+/// file name and reported as `Cannot open `-a'`). `--` ends the option loop and
+/// is not itself an operand (`getopt.c:81-85`); a bare `-` is an operand
+/// (`getopt.c:87-92` does not advance `optind`, and C `unexpand.c:129` hands it
+/// to `freopen`).
 pub fn parse_unexpand_args<'a>(
     args: &'a [&'a [u8]],
 ) -> Result<UnexpandArgs<'a>, UnexpandError<'a>> {
@@ -279,7 +301,7 @@ pub fn parse_unexpand_args<'a>(
         while pos < bytes.len() {
             match bytes[pos] {
                 b'a' => {
-                    // `-a` 在档位表之后是 C 的冲突 → usage。
+                    // `-a` after the stop list is C's conflict → usage.
                     if !options.stops.is_empty() {
                         return Err(UnexpandError::Usage);
                     }
@@ -287,7 +309,7 @@ pub fn parse_unexpand_args<'a>(
                     pos += 1;
                 }
                 b't' => {
-                    // `-t` 在 `-a` 之后是同一支冲突 → usage。
+                    // `-t` after `-a` is the same conflict → usage.
                     if options.all {
                         return Err(UnexpandError::Usage);
                     }
@@ -304,9 +326,11 @@ pub fn parse_unexpand_args<'a>(
                     pos = bytes.len();
                 }
                 _ => {
-                    // 环本身按字节走（`pos` 是字节下标），交回的字母也必须是那一枚字节：
-                    // `getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 的 `%c`
-                    // 原样写出，所以 `-é`（`c3 a9`）报的是 `c3` 而不是整个字符。
+                    // The loop itself walks by byte (`pos` is a byte index), and
+                    // the letter handed back must be that byte too: `getopt.c:79`'s
+                    // `optopt = *place++` takes one byte at a time and `:103`'s
+                    // `%c` writes it out as-is, so `-é` (`c3 a9`) reports `c3`,
+                    // not the whole character.
                     return Err(UnexpandError::UnknownOption(char::from(bytes[pos])));
                 }
             }
@@ -320,8 +344,9 @@ pub fn parse_unexpand_args<'a>(
 mod tests {
     use super::*;
 
-    /// 夹具的 argv：`std::env::args_os()` 交回的就是字节，所以这里把可读的
-    /// 词转成字节向量；值位本身要断言字节的两形（`é` 与裸 `ff`）写成字面字节。
+    /// The fixture argv: `std::env::args_os()` hands back bytes, so readable
+    /// words are turned into byte vectors here; the value shapes that must assert
+    /// bytes themselves (`é` and a bare `ff`) are written as literal bytes.
     fn argv<'a>(words: &[&'a str]) -> Vec<&'a [u8]> {
         words.iter().map(|word| word.as_bytes()).collect()
     }
@@ -385,9 +410,10 @@ mod tests {
         assert_eq!(unexpand_line("            x", &options, true), "\t  x");
     }
 
-    /// 档位表的两支句子与 base 0 逐个钉：分隔符三种、空字段跳过、`0x`/前导 `0` 走
-    /// 十六进制与八进制（参照件现量 `-t 010` 得 8、`-t 0x10` 得 16），
-    /// 递减那支报的是**后写的那一支**与前一支的值。
+    /// The stop list's two sentences and base 0 pinned one by one: three kinds of
+    /// separator, empty fields skipped, `0x`/leading `0` going hexadecimal and
+    /// octal (the reference build measures `-t 010` as 8 and `-t 0x10` as 16),
+    /// and the decreasing arm reporting **the later one** plus the previous value.
     #[test]
     fn the_stop_list_follows_strtoul_base_zero_and_two_sentences() {
         assert_eq!(parse_stops(b"1,2"), Ok(vec![1, 2]));
@@ -402,7 +428,8 @@ mod tests {
         );
         assert_eq!(parse_stops(b"0x10"), Ok(vec![16]), "base 0 认十六进制");
         assert_eq!(parse_stops(b"010"), Ok(vec![8]), "前导零是八进制");
-        // 第一支句子：尾巴有字符、八进制位越界、溢出。
+        // The first sentence: trailing characters, an out-of-range octal digit,
+        // overflow.
         assert_eq!(parse_stops(b"x"), Err(StopRejection::Invalid(b"x")));
         assert_eq!(parse_stops(b"3x"), Err(StopRejection::Invalid(b"3x")));
         assert_eq!(parse_stops(b"08"), Err(StopRejection::Invalid(b"08")));
@@ -411,7 +438,8 @@ mod tests {
             Err(StopRejection::Invalid(b"18446744073709551616")),
             "溢出在 C 是 ERANGE 且回 ULONG_MAX，同判 Invalid"
         );
-        // 第二支句子：不比前一支大，报的是后写的那一支与前一支的值。
+        // The second sentence: not greater than the previous stop; it reports the
+        // later one and the previous value.
         assert_eq!(
             parse_stops(b"8,4"),
             Err(StopRejection::NotIncreasing {
@@ -429,8 +457,10 @@ mod tests {
         );
     }
 
-    /// 选项环的四支出口与不重排：集外字母只报短横后的第一个字节、缺值是另一句、
-    /// `-a` 与 `-t` 谁后到谁触 usage、非选项 token 一到后面的整个当操作数。
+    /// The option loop's four exits and its lack of reordering: an out-of-set
+    /// letter reports only the first byte after the dash, a missing value is a
+    /// different sentence, whichever of `-a`/`-t` arrives second triggers usage,
+    /// and everything after the first non-option token becomes operands.
     #[test]
     fn the_option_ring_reports_libc_letters_and_stops_at_the_first_operand() {
         assert!(parse_unexpand_args(&argv(&["-a"])).unwrap().options.all);
@@ -453,14 +483,17 @@ mod tests {
             parse_unexpand_args(&argv(&["-at4"])),
             Err(UnexpandError::Usage)
         );
-        // `-ta` 不是「两支冲突」而是「`-t` 取到附值 `a'」：C 的 getopt 一见 `t:` 就把
-        // 同一串里剩下的 `a` 当 optarg 交回（`getopt.c:117-118`），于是走
-        // `Invalid tabstop `a'`（参照件现量同一句）。
+        // `-ta` is not "the two conflict" but "`-t` took the attached value `a'":
+        // C's getopt, on seeing `t:`, hands back the rest of the same string as
+        // optarg (`getopt.c:117-118`), so this takes the
+        // `Invalid tabstop `a'` path (the reference build measures the same
+        // sentence).
         assert_eq!(
             parse_unexpand_args(&argv(&["-ta"])),
             Err(UnexpandError::BadStops(StopRejection::Invalid(b"a")))
         );
-        // 互斥也管分开的写法：`-a` 之后再来 `-t`，或档位表之后再来 `-a`。
+        // Exclusivity also covers separate spellings: `-t` after `-a`, or `-a`
+        // after the stop list.
         assert_eq!(
             parse_unexpand_args(&argv(&["-a", "-t", "8"])),
             Err(UnexpandError::Usage)
@@ -494,7 +527,8 @@ mod tests {
                 previous: 8
             }))
         );
-        // 不重排：`unexpand f -a` 里的 `-a` 是第二支档名（C 会去 freopen 它）。
+        // No reordering: the `-a` in `unexpand f -a` is the second file name (C
+        // would freopen it).
         assert_eq!(
             parse_unexpand_args(&argv(&["f", "-a"])).unwrap().operands,
             vec![b"f".as_slice(), b"-a".as_slice()]
@@ -506,7 +540,7 @@ mod tests {
                 .all,
             "操作数之后的 -a 不再被当选项读"
         );
-        // `--` 自身不是操作数，裸 `-` 是。
+        // `--` itself is not an operand; a bare `-` is.
         assert_eq!(
             parse_unexpand_args(&argv(&["--", "-a"])).unwrap().operands,
             vec![b"-a".as_slice()]
@@ -521,10 +555,13 @@ mod tests {
         );
     }
 
-    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
-    /// `char` 域里是 U+00C3（参照件 `tmp/unexpand-312/unexpand_ref` 现量报文里那一个字节
-    /// 就是 `303`，见 `tests/unexpand_face.rs` 的同形门）。本支的环本就按字节下标走，
-    /// 所以这一枚钉的是「交回的那一刻不要把字节升格成字符」。
+    /// The out-of-set letter handed back is the **first byte** after the dash, not
+    /// the first character: `-\u{e9}` (`c3 a9`) is U+00C3 in the `char` domain (the
+    /// single byte in the measured message of the reference build
+    /// `tmp/unexpand-312/unexpand_ref` is `303`; see the same-shape gate in
+    /// `tests/unexpand_face.rs`). This branch's loop already walks byte indices,
+    /// so this gate pins "do not promote the byte to a character at hand-back
+    /// time".
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
@@ -532,38 +569,44 @@ mod tests {
             Err(UnexpandError::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
-        // `a` 是选项串里合法且不带值的字母，聚簇继续吃到下一字节。
+        // `a` is a legal, value-less letter in the option string, so the cluster
+        // keeps consuming into the next byte.
         assert_eq!(
             parse_unexpand_args(&argv(&["-a\u{e9}"])),
             Err(UnexpandError::UnknownOption('\u{00c3}')),
             "-a\u{e9}"
         );
-        // 环停在第一个坏字母上：`-Zé` 只报 `Z`。
+        // The loop stops at the first bad letter: `-Zé` reports only `Z`.
         assert_eq!(
             parse_unexpand_args(&argv(&["-Z\u{e9}"])),
             Err(UnexpandError::UnknownOption('Z'))
         );
-        // ASCII 那一形不许被这次改动波及。
+        // The ASCII shape must not be disturbed by this change.
         assert_eq!(
             parse_unexpand_args(&argv(&["-q"])),
             Err(UnexpandError::UnknownOption('q'))
         );
-        // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
-        // `Invalid tabstop `a\303\251'`）。
+        // The reverse: a value-taking letter swallows every byte after it as the
+        // value, so the letter slot never gets a turn (the reference build prints
+        // the same `Invalid tabstop `a\303\251'`).
         assert_eq!(
             parse_unexpand_args(&argv(&["-t\u{e9}"])),
             Err(UnexpandError::BadStops(StopRejection::Invalid(b"\xc3\xa9")))
         );
     }
 
-    /// 值位、分隔串与操作数交回的都是 argv 的**原字节**，字母位是短横后的第一枚字节。
-    /// C 那三句都在字节上：`errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`
-    /// （`unexpand.c:101-103`）与 `errx(... "Bad tabstop spec `%s', must be greater than
-    /// the previous `%zu'", tab, ...)`（`:108-112`）打的是 `strsep` 切出来的那一支词，
-    /// `err(EXIT_FAILURE, "Cannot open `%s'", argv[0])`（`:129-130`）打的是操作数本身，
-    /// 而分隔判据（`:96` 的 `strsep(&optarg, ", \t")`）是**字节集**。`getopt.c:79` 的
-    /// `optopt = *place++` 一次进一枚字节、`:103` 的 `%c` 原样写出，所以 `-\xff` 报的是
-    /// `ff` 而不是 U+FFFD；`char::from(0xff)` 就是 U+00FF，与 `%c` 打出的那一枚同值。
+    /// The value slots, separator string, and operands all hand back argv's
+    /// **original bytes**, and the letter slot is the first byte after the dash.
+    /// All three C sentences operate on bytes: `errx(EXIT_FAILURE, "Invalid
+    /// tabstop `%s'", tab)` (`unexpand.c:101-103`) and `errx(... "Bad tabstop
+    /// spec `%s', must be greater than the previous `%zu'", tab, ...)`
+    /// (`:108-112`) print the word `strsep` cut out, while
+    /// `err(EXIT_FAILURE, "Cannot open `%s'", argv[0])` (`:129-130`) prints the
+    /// operand itself, and the separator test (`:96`'s
+    /// `strsep(&optarg, ", \t")`) is a **byte set**. `getopt.c:79`'s
+    /// `optopt = *place++` takes one byte at a time and `:103`'s `%c` writes it
+    /// out as-is, so `-\xff` reports `ff`, not U+FFFD; `char::from(0xff)` is
+    /// U+00FF, the same value that `%c` prints.
     #[test]
     fn the_stop_spec_and_the_operand_carry_the_argv_bytes() {
         assert_eq!(
@@ -645,10 +688,13 @@ mod tests {
 
     #[test]
     fn a_zero_tabstop_wraps_its_limit_the_way_c_does() {
-        // `unexpand.c:146` 的 `limit = tabstops[nstops - 1] - 1` 与 `:157`/`:160`
-        // 那两处 `tabstops[n] - 1` 都是 `size_t` 的减法：档位给 0 时它们回绕成最大值，
-        // C 不停下也不报错。参照件现量 `-t 0` 与 `-t 0,8` 都是**整行原样交回、退 0**
-        // （`tmp/unexpand-425/ref-matrix.log`），所以本壳也不许在 0 这一档上崩掉。
+        // `unexpand.c:146`'s `limit = tabstops[nstops - 1] - 1` and the two
+        // `tabstops[n] - 1` spots at `:157`/`:160` are all `size_t` subtractions:
+        // with a stop of 0 they wrap to the maximum, and C neither stops nor
+        // errors. The reference build measures both `-t 0` and `-t 0,8` as
+        // **handing the whole line back unchanged, exit 0**
+        // (`tmp/unexpand-425/ref-matrix.log`), so this shell must not crash on a
+        // 0 stop either.
         assert_eq!(parse_stops(b"0"), Ok(vec![0]));
         assert_eq!(parse_stops(b"0,8"), Ok(vec![0, 8]));
         let zero = UnexpandOptions {
@@ -662,16 +708,22 @@ mod tests {
             stops: vec![0, 8],
             all: false,
         };
-        // 参照件现量 `-t 0,8` 对八空格是 `	x`（第 1 档 8 仍可用作 tab 出口），
-        // 而 `-t 0` 只有一档且它就是当前列，八空格原样交回（`tmp/unexpand-425/tab-drop.log`）。
+        // The reference build measures `-t 0,8` as `\tx` for eight blanks (stop
+        // 8 still works as a tab exit), while `-t 0` has a single stop that is
+        // the current column, so eight blanks are handed back unchanged
+        // (`tmp/unexpand-425/tab-drop.log`).
         assert_eq!(unexpand_line("        x", &zero_then_eight, true), "\tx");
         assert_eq!(unexpand_line("        x", &zero, true), "        x");
-        // 这一支只为走进制表符那两处的 `wrapping_sub`（`  ` 之后已是第 2 列，档位 0 是最后一档）：
-        // 它的**输出形状**属另一处已登记的偏离（吞掉制表符），本轮不钉它的值，只要求不崩。
+        // This shape only exists to reach `wrapping_sub` in the two tab spots
+        // (after `  ` the column is already 2, and stop 0 is the last stop): its
+        // **output shape** belongs to another registered divergence (swallowing
+        // the tab); this pass does not pin its value, only that it does not
+        // crash.
         let _ = unexpand_line("  \tx", &zero_then_eight, true);
     }
-    /// 参照件读数 `tmp/unexpand-426/ref-shapes.log`：够不着下一档时 C 不 `continue`，
-    /// 那个制表符落到同一腿的 `putchar(*p)`（`unexpand.c:160-165` 那一判不成立 → `:195`）。
+    /// Reference reading `tmp/unexpand-426/ref-shapes.log`: when the next stop is
+    /// out of reach C does not `continue`, and that tab falls to `putchar(*p)` in
+    /// the same arm (`unexpand.c:160-165`'s test fails → `:195`).
     #[test]
     fn a_tab_beyond_the_last_stop_is_handed_back_like_c_does() {
         let eight = UnexpandOptions {
@@ -680,15 +732,18 @@ mod tests {
         };
         assert_eq!(unexpand_line("\ta", &eight, true), "\ta");
         assert_eq!(unexpand_line("  \tx", &eight, true), "  \tx");
-        // 八个空格先把列推到第 8 档，随后那个制表符够不着下一档，于是也原样交回：两枚制表符
+        // Eight blanks first push the column to stop 8, then the tab cannot reach
+        // the next stop, so it too is handed back unchanged: two tabs.
         assert_eq!(unexpand_line("        \ty", &eight, true), "\t\ty");
         assert_eq!(unexpand_line("   \t   \tw", &eight, true), "   \t   \tw");
         let four_then_eight = UnexpandOptions {
             stops: vec![4, 8],
             all: false,
         };
-        // 这一形的制表符够得着第 1 档（停在第 0 档而它不是最后一档），于是被折进档里：
-        // 参照件同形交回 `\tx`，与上面那几形的「原样交回」正相反
+        // This shape's tab can reach the 1st stop (it stops at stop 0, which is
+        // not the last stop), so it folds into the stop: the reference build
+        // hands back `\tx`, the exact opposite of the "hand back unchanged"
+        // shapes above.
         assert_eq!(unexpand_line("  \tx", &four_then_eight, true), "\tx");
         assert_eq!(unexpand_line("    \ty", &four_then_eight, true), "\t\ty");
         let zero = UnexpandOptions {
@@ -698,10 +753,14 @@ mod tests {
         assert_eq!(unexpand_line("\ta", &zero, true), "\ta");
         assert_eq!(unexpand_line("  \tx", &zero, true), "  \tx");
     }
-    /// 行末那枚换行就是「结束空白串的非空白字节」：纯空白行**带着换行**时要冲档。参照件
-    /// `tmp/unexpand-312/unexpand_ref` 现量（`tmp/unexpand-431/eol.log`）——`-t 4,8` 的 `    \n`
-    /// 交回 `\t\n`；`-t 8` 的 `   \n` 交回 `   \n`（够不着 8 这一档就只落空格，不折成制表符）。
-    /// 上面那枚门测的是同样这几串空白、但输入里没有那枚换行，两形只差终止符。
+    /// The newline at the end of a line is the "non-blank byte that ends the blank
+    /// run": a blank-only line **with its newline** must flush. Reference
+    /// measurements from `tmp/unexpand-312/unexpand_ref`
+    /// (`tmp/unexpand-431/eol.log`)—`-t 4,8` turns `    \n` into `\t\n`; `-t 8`
+    /// turns `   \n` into `   \n` (with stop 8 out of reach only spaces remain,
+    /// no folding into tabs). The gate above tests the same blank strings but
+    /// without the newline in the input; the two shapes differ only in the
+    /// terminator.
     #[test]
     fn a_blank_line_ending_in_a_newline_flushes_its_gap() {
         let four_then_eight = UnexpandOptions {
@@ -717,7 +776,8 @@ mod tests {
         assert_eq!(unexpand_line("        ", &default, true), "\t");
     }
 
-    /// 整份输入的取舍落在终止符上而不是行号上：末行带着换行就冲，末行没有换行就不冲。
+    /// The whole-input decision falls on the terminator, not the line index: a
+    /// last line with a newline flushes, one without does not.
     #[test]
     fn the_last_line_flushes_only_when_the_input_terminated_it() {
         let four_then_eight = UnexpandOptions {
@@ -732,10 +792,13 @@ mod tests {
         );
     }
 
-    /// 参照件读数 `tmp/unexpand-426/eol.log`：C 的间隙只由「非空白字节」冲出，循环走到缓冲区
-    /// 末尾就 `return`（`unexpand.c:214-215`），一行只剩空白时交出的是**无字节**。本函数拿到的
-    /// 是剥掉换行的行体，于是它与「末行没有换行」那一族同形；带换行的那一半（参照件交出成档的
-    /// 制表符而不是空行）属已登记的 `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`，本轮不改。
+    /// Reference reading `tmp/unexpand-426/eol.log`: C flushes the gap only from a
+    /// **non-blank byte**, and the loop `return`s on reaching the end of the
+    /// buffer (`unexpand.c:214-215`), so a line of nothing but blanks yields **no
+    /// bytes**. This function receives the line body with the newline stripped,
+    /// so it matches the "last line without a newline" family; the half that
+    /// carries a newline (the reference build emits a folded tab instead of an
+    /// empty line) is a registered divergence, unchanged by this pass.
     #[test]
     fn a_blank_run_is_collapsed_only_by_a_non_blank_byte() {
         let eight = UnexpandOptions {
@@ -755,7 +818,8 @@ mod tests {
             all: false,
         };
         assert_eq!(unexpand_line("        ", &default, false), "");
-        // 不足一档的间隙连「由非空白冲出」这一腿也不折：两列不到就照原样留着
+        // A gap shorter than one stop does not fold even on the "flushed by a
+        // non-blank" arm: under two columns it stays as-is.
         assert_eq!(unexpand_line("  x", &default, true), "  x");
         assert_eq!(unexpand_line("   x", &default, true), "   x");
         assert_eq!(unexpand_line("", &default, true), "");

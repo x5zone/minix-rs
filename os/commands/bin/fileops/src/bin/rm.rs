@@ -33,7 +33,7 @@
 //! and this program now does the same rather than reporting the directory and
 //! carrying on.
 //!
-//! Real-machine effect is the writable-root gate (`C-57`/E5).
+//! Real-machine effect is the writable-root gate (`E5`).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

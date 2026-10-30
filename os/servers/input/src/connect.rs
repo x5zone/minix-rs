@@ -369,8 +369,9 @@ mod tests {
 
     #[test]
     fn test_mouse_window_exhaustion_leaves_keyboard_window_intact() {
-        // C: input.c:435-454 — 两个窗口互不侵占：鼠标窗满后，同一驱动再要
-        // 鼠标得 INVALID，键盘窗仍能分配。
+        // C: input.c:435-454 — the two windows never encroach on each other:
+        // once the mouse window is full, the same driver's further mouse
+        // request gets INVALID while the keyboard window can still allocate.
         let mut table = InputTable::fresh();
         for slot in FIRST_MOUSE_INDEX..=LAST_MOUSE_INDEX {
             labelled(&mut table, slot, Endpoint(9), b"mouse");
@@ -383,8 +384,9 @@ mod tests {
 
     #[test]
     fn test_alloc_skips_disconnected_but_opened_slots() {
-        // C: input.c:450-453 — "断开但读者还开着"的槽不可分配（不可占走
-        // 读者的设备）；下一间空房接棒。
+        // C: input.c:450-453 — a slot that is "disconnected but still open by
+        // a reader" must not be allocated (it must not take the device away
+        // from the reader); the next free slot takes over.
         let mut table = InputTable::fresh();
         table.devices[6].opened = true;
         let report = connect_driver(&mut table, false, true, Endpoint(9), b"mouse");
@@ -393,8 +395,9 @@ mod tests {
 
     #[test]
     fn test_disconnect_reader_only_and_selector_only() {
-        // C: input.c:540-550 — 断连的两个唤醒面各自独立：只有挂起读者、
-        // 只有选择者的单侧场景都必须各自正确。
+        // C: input.c:540-550 — the two wake-up surfaces of a disconnect are
+        // independent: the one-sided cases (only a parked reader, only a
+        // selector) must each behave correctly on their own.
         let mut table = InputTable::fresh();
         let device = &mut table.devices[6];
         device.owner = Endpoint(9);
@@ -418,7 +421,8 @@ mod tests {
 
     #[test]
     fn test_labels_match_stops_at_first_nul_like_strcmp() {
-        // C: input.c:492 — strcmp 语义：首 NUL 截断比较，不符静默忽略。
+        // C: input.c:492 — strcmp semantics: compare truncated at the first
+        // NUL, and a mismatch is silently ignored.
         assert!(labels_match(b"pckbd", b"pckbd"));
         assert!(labels_match(b"pckbd\0junk", b"pckbd"));
         assert!(!labels_match(b"pckbd", b"impostor"));

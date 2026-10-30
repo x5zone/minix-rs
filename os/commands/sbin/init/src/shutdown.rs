@@ -69,7 +69,7 @@ pub fn death(host: &mut dyn InitHost, deps: &mut ShutdownDeps) -> StateKind {
             }
 
         deps.clang.swap(false, Ordering::SeqCst); // clang = 0
-        //[SD19-gate] SD-19: init 尽力而为
+        //[SD19-gate] best effort: a failed alarm leaves the round bounded by ECHILD instead; init must keep reaping
         #[allow(clippy::let_underscore_must_use)]
         let _ = host.alarm(DEATH_WATCH_SECS as u32);
 

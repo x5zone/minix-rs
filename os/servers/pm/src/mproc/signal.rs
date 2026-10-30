@@ -306,11 +306,13 @@ impl SignalState {
             sm_mask |= bit;
         }
 
-        // C signal.c:800-808 —— `mp_sigmask` 的簿记更新与 `sm_mask` 分离：
-        // sa_mask 永远并入 mp_sigmask；NODEFER 从 mp_sigmask 删当前信号，
-        // 否则加入。suspended 时 sm_mask 以 mask2 起底而 mp_sigmask 以
-        // 当前 mask 起底——两者是不同的值（handler 运行期掩码 vs PM 簿记）。
-        // 缺此簿记时 sigreturn 的恢复基线错位（V2-P2-8）。
+        // C signal.c:800-808 — the `mp_sigmask` bookkeeping update is kept
+        // apart from `sm_mask`: sa_mask is always ORed into mp_sigmask;
+        // NODEFER removes the current signal from mp_sigmask, otherwise adds
+        // it. When suspended, sm_mask starts from mask2 while mp_sigmask
+        // starts from the current mask — the two are different values (the
+        // handler's runtime mask vs PM bookkeeping). Without this
+        // bookkeeping, sigreturn's restore baseline is off.
         self.mask |= action.sa_mask;
         if (action.sa_flags & SA_NODEFER) != 0 {
             self.mask &= !bit;
@@ -376,8 +378,8 @@ impl SignalState {
                 let idx = (sn - 1) as usize;
                 self.actions[idx].sa_handler = 0; // SIG_DFL
                 self.actions[idx].sa_mask = 0;
-                // sa_flags 不清——C exec.c:178-184 只动 handler 与 mask
-                //（V2-P3-4c：曾多清 sa_flags，属无行为依据的超集）。
+                // sa_flags is not cleared — C exec.c:178-184 touches only the
+                // handler and the mask.
             }
         }
     }

@@ -3,22 +3,26 @@
 //! C: `main()` — `minix3/minix/servers/ds/main.c:28-88`.
 //! See `rewrite-notes/07-stage-ds/01-ds-init-main.md`.
 
-// 按目标分形态（init 先例，`os/commands/sbin/init/src/main.rs:27-35`）：
-// 宿主与测试构建保持 std 形态——rustc 对 hosted target 一律传 Scrt1.o
-// （其 `_start` 需要 `main` + `__libc_start_main`），no_std + no_main 在
-// 宿主链接必断；`target_os = "none"` 侧才是 freestanding 真身（boot 装
-// 机模块）。`#[unsafe(no_mangle)]` 满足 minix-rt crt0 出生链按名解
-// `main` 的 Consumer contract（`os/libs/minix-rt/src/crt0.rs:40`：
-// 名字 + Rust ABI + `-> i32` 三要素，返回值经 stage-6 exit 原样成为
-// 进程退出码）。
+// The form splits by target (following init, `os/commands/sbin/init/src/main.rs:27-35`):
+// host and test builds keep the std form — rustc always passes Scrt1.o for a
+// hosted target (its `_start` needs `main` + `__libc_start_main`), so
+// no_std + no_main always breaks the host link; the `target_os = "none"` side
+// is the real freestanding body (a boot-installed module).
+// `#[unsafe(no_mangle)]` satisfies the minix-rt crt0 birth chain, which
+// resolves `main` by name through the Consumer contract
+// (`os/libs/minix-rt/src/crt0.rs:40`: name + Rust ABI + `-> i32`, the three
+// requirements; the return value becomes the process exit status verbatim
+// through the stage-6 exit).
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
-// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
-// 符号（init 不同——它 main 里直接调 `minix_rt::init()`），未引用的
-// rlib 会被整体丢弃，`_start`/`#[panic_handler]`/`#[global_allocator]`
-// 三件随之消失（panic-halt 模式的 `extern crate` 保留语义）。出生链
-// `_start` 在 main 前已自动完成 rt 初始化（`lib.rs:86` init 契约：
-// no_std 模式 `_start` 自动调用、幂等），这里无须也不应再调。
+// The freestanding side holds a link reference to minix-rt: the bin code
+// itself uses no rt symbol (init differs — its main calls `minix_rt::init()`
+// directly), so an unreferenced rlib would be dropped whole and
+// `_start`/`#[panic_handler]`/`#[global_allocator]` would vanish with it (the
+// `extern crate` retention semantics of the panic-halt pattern). The birth
+// chain's `_start` has already completed rt initialization before `main` (the
+// `lib.rs:86` init contract: in no_std form `_start` calls it automatically,
+// idempotently), so it is neither needed nor proper to call it again here.
 #[cfg(all(not(test), target_os = "none"))]
 extern crate minix_rt;
 
@@ -28,10 +32,11 @@ extern crate minix_rt;
 #[global_allocator]
 static GLOBAL: std::alloc::System = std::alloc::System;
 
-// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
-// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
-// E0277（docker minix-ci:1.94 实测）。
+// The entry splits two ways by target: the none side satisfies the crt0
+// Consumer contract (name + Rust ABI + `-> i32`,
+// os/libs/minix-rt/src/crt0.rs:40); the host/test side keeps `()` — since
+// rustc 1.94, Termination is no longer implemented for i32, so a host i32
+// main is an immediate E0277 (measured with docker minix-ci:1.94).
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
@@ -54,37 +59,43 @@ fn real_main() -> ! {
         // C: env_setargs + sef_local_startup() — main.c:38-39. The fresh
         // anchor (`sef_cb_init_fresh`, store.c:254-282) resets both tables
         // and shadows the RS boot table; the rproctab *decode* (raw
-        // `rprocpub` bytes → `BootService` list) is pinned at edge
-        // E-RSWIRE, so the fresh run starts from the reset state — the
-        // exact state `sef_cb_init_fresh` itself occupies after its reset
-        // half, before the shadow loop.
+        // `rprocpub` bytes → `BootService` list) is pinned by tests, so the
+        // fresh run starts from the reset state — the exact state
+        // `sef_cb_init_fresh` itself occupies after its reset half, before the
+        // shadow loop.
         let mut server = DsServer::new();
         let mut ipc = SysIpc::new(DirectTrapTransport);
         let mut kernel = SysKernel;
 
-        // SD-11 T3 首迁安装点：把全局堆供给切到 VM_BRK 增长堆，初始
-        // 断点 = 链接器镜像尾（C `brksize.S` 以 `_end` 播 `_brksize`
-        // 的同一符号，`minix_rt::image_end`）。安装本身无 IPC（只切换
-        // 分配器形态）；首次超出固定池的分配才真正发 VM_BRK。出生序
-        // 上 DS 晚于 VM（`rs/boot.rs` 装机表），安装时 VM 主循环已在
-        // 收请求；EINVAL（镜像尾为 0 = 链接缺陷）fail-fast。
+        // The first install point of the migration: switch the global heap
+        // supply to the VM_BRK growing heap, with the initial break at the
+        // linker image end (C `brksize.S` broadcasts the same symbol `_end`
+        // into `_brksize`; here `minix_rt::image_end`). The install itself
+        // performs no IPC (it only switches the allocator form); only a first
+        // allocation beyond the fixed pool really sends VM_BRK. In the birth
+        // order DS comes after VM (`rs/boot.rs` install table), so the VM main
+        // loop is already taking requests at install time; EINVAL (image end
+        // of 0 = link defect) fails fast.
         #[cfg(target_os = "none")]
         minix_rt::install_vm_supplier(minix_rt::image_end())
             .expect("ds: install_vm_supplier(镜像尾) 不得失败");
 
-        // SD-11 T3 真机取证探针：安装后立即从 VM 腿取一页（8 字节 slab
-        // 请求触发 add_slab → supply_page → VM_BRK），失败即 fail-fast
-        //（OOM 标签 + panic）。成功打一行串口标记——VM_BRK 增长腿端到
-        // 端贯通的 L1 证据；探针块随 free 回 slab 自由表（VM 侧页不
-        // 回收：收缩 brk 从不 unmap，同 C）。探针发阻塞 sendrec 给 VM，
-        // 出生序上 DS 晚于 VM、无循环依赖，安全。
+        // Real-machine probe for the install: immediately after it, take one
+        // page through the VM leg (an 8-byte slab request triggers add_slab →
+        // supply_page → VM_BRK); any failure fails fast (OOM tag + panic). On
+        // success it prints one serial marker — evidence that the VM_BRK
+        // growth leg is connected end to end; the probe block returns to the
+        // slab free list on free (the VM-side page is not reclaimed: shrinking
+        // the break never unmaps, as in C). The probe sends a blocking sendrec
+        // to VM; DS comes after VM in the birth order, so there is no cyclic
+        // dependency and it is safe.
         #[cfg(target_os = "none")]
         {
             let probe = minix_rt::alloc(8);
             assert!(!probe.is_null(), "ds: vm-brk probe 分配失败");
             minix_rt::free(probe);
             use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] park is the fallback when the report channel itself breaks (panic.c:66)
             let _ = sys_diagctl_write(
                 &DirectKernelCallTransport,
                 "nk4a: ds-vmbrk probe ok pages=1 via=VM_BRK\n",
@@ -97,8 +108,9 @@ fn real_main() -> ! {
         // deviation from C's panic-on-first-failure).
         server.run(&mut ipc, &mut kernel);
     }
-    // 测试臂编译排除后本函数体为空，以 unreachable 保持 `-> !` 形状
-    //（测试壳直接驱动库，不进本入口）。
+    // With the test arm compiled out this body is empty; an unreachable keeps
+    // the `-> !` shape (the test shell drives the library directly and never
+    // enters this entry point).
     #[cfg(test)]
     unreachable!("bin entry unused in test builds")
 }

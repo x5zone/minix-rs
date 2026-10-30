@@ -21,9 +21,10 @@ pub const SMALL_PRIMES: &[u64] = &[
 pub const NUMBERS_MSG: &str = "numbers <= 1 aren't permitted.";
 pub const NEGATIVE_MSG: &str = "negative numbers aren't permitted.";
 
-/// C 的溢出腿留下的那个号：`errno = 0; strtoul(...); if (errno) err(1, "%s", str)`
-/// （`factor.c:123-126`）。溢出时 `strtoul` 置 `ERANGE`，于是那句的尾巴由本树的
-/// `sys_errlist` 决定 —— Minix3 写 `Result too large or too small`。
+/// The number C's overflow leg leaves behind: `errno = 0; strtoul(...);
+/// if (errno) err(1, "%s", str)` (`factor.c:123-126`). On overflow `strtoul`
+/// sets `ERANGE`, so that sentence's tail comes from this tree's
+/// `sys_errlist` — Minix3 writes `Result too large or too small`.
 pub const OVERFLOW_ERRNO: Errno = Errno::from_i32(ERANGE);
 
 /// What C makes of one value token: factor it, skip the line, or leave with a sentence.
@@ -240,8 +241,10 @@ mod tests {
         assert_eq!(verdict("  12", true), Verdict::Value(12));
         assert_eq!(verdict("12\n", true), Verdict::Value(12));
         assert_eq!(verdict("12x", false), Verdict::Illegal);
-        // 溢出与带尾巴是两句不同的话：C 的 `if (errno) err(1, "%s", str)`（`factor.c:125-126`）
-        // 走在「行末只许换行」的检验（`:127`）之前，所以「溢出且带尾巴」答溢出那句。
+        // Overflow and trailing junk are two different sentences: C's
+        // `if (errno) err(1, "%s", str)` (`factor.c:125-126`) runs before the
+        // "newline only at end of line" test (`:127`), so "overflow with
+        // trailing junk" answers with the overflow sentence.
         assert_eq!(verdict("18446744073709551616", false), Verdict::Overflow);
         assert_eq!(
             verdict("99999999999999999999999x", false),
@@ -251,12 +254,14 @@ mod tests {
             verdict("18446744073709551615", false),
             Verdict::Value(u64::MAX)
         );
-        // 二十个 0 再加一位也不该被判溢出：前导零不吃宽度。
+        // Twenty zeros plus one more digit must not be judged overflow:
+        // leading zeros consume no width.
         assert_eq!(
             verdict("000000000000000000000000000000002", false),
             Verdict::Value(2)
         );
-        // 那句的尾巴由本树的表给出，措辞是 Minix3 的而不是 glibc 的。
+        // That sentence's tail comes from this tree's table: Minix3's
+        // wording, not glibc's.
         assert_eq!(
             OVERFLOW_ERRNO.message(),
             Some("Result too large or too small")

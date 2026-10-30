@@ -10,7 +10,7 @@
 //!
 //! Wired here: the `bs=` (ibs==obs) unconverted path with `count`/`skip`/
 //! `seek`/`conv=sync,noerror,notrunc`. Declared residual (16-stage-drivers
-//! §2, E5 command面): the `ibs != obs` blocking machine, the `conv=`
+//! §2, E5 command side): the `ibs != obs` blocking machine, the `conv=`
 //! case/`swab`/`block`/`unblock`/`cbs` byte transforms, tape `files=`, and
 //! `iflag`/`oflag` beyond `append`/`creat` defaults — the pump returns an
 //! error on the asymmetric-block case and this program reports it rather

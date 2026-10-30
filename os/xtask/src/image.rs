@@ -1,35 +1,35 @@
-//! `xtask image` — 把构建产物装配成可启动机镜像（E-IMGPKG / new_edge3
-//! NS8）。
+//! `xtask image` — assembles build artifacts into a bootable machine image
+//! (E-IMGPKG).
 //!
-//! 包形（UEFI 路径）：一张 FAT 盘镜像，内含
-//!   - `/EFI/BOOT/<固件默认加载项>` ← boot-shim（x86_64 =
-//!     `BOOTX64.EFI`，aarch64 = `BOOTAA64.EFI`，见 [`Arch::uefi_slots`]）
-//!   - `/EFI/minix/kernel.elf` ← 内核 ELF（boot-shim 按
-//!     `loader::KERNEL_PATH` 读取，`os/boot-shim/src/loader.rs:31`）
-//!   - `/EFI/minix/modules/<名>` ×12 ← 装机清单（[`crate::manifest`]）
-//!   - `/EFI/minix/imgrd` ← mfs 根盘（mkfs_mfs 播种 `/etc` 最小集）。
-//!     B11（E-IMGPKG）：mfs 的 build.rs 在编译期 include_bytes!
-//!     把 imgrd 字节喂进 BOOT_IMGRD 静态量，消费通道已落地。
+//! Package shape (UEFI path): one FAT disk image containing
+//!   - `/EFI/BOOT/<firmware default load option>` <- boot-shim (x86_64 =
+//!     `BOOTX64.EFI`, aarch64 = `BOOTAA64.EFI`, see [`Arch::uefi_slots`])
+//!   - `/EFI/minix/kernel.elf` <- kernel ELF (boot-shim reads it per
+//!     `loader::KERNEL_PATH`, `os/boot-shim/src/loader.rs:31`)
+//!   - `/EFI/minix/modules/<name>` x12 <- install manifest ([`crate::manifest`])
+//!   - `/EFI/minix/imgrd` <- mfs root disk (mkfs_mfs seeds the minimal `/etc`
+//!     set). E-IMGPKG: mfs's build.rs include_bytes!s the imgrd bytes into the
+//!     BOOT_IMGRD static at compile time; the consumption path is in place.
 //!
-//! 与 boot-shim 的 fail-fast 同语义：模块缺件在装配期报错点名
-//! （`os/boot-shim/src/loader.rs:280-288` 的运行期对位），不让半包
-//! 镜像流出去。
+//! Same fail-fast semantics as boot-shim: a missing module is named at assembly
+//! time (counterpart of the run-time check at
+//! `os/boot-shim/src/loader.rs:280-288`), so a half-packed image never escapes.
 //!
-//! 生产开关：boot-shim 以 `--no-default-features --features
-//! fw-x86-uefi`（aarch64 为 `fw-aarch64-uefi`）构建（X-2/NK5 的 feature
-//! 词汇表），链接进 boot-shim 的
-//! 内核半因此不带 mock（`boot-shim/Cargo.toml` 对 minix-kernel 已写死
-//! `default-features = false`）。模块逐包独立调用 cargo——规避 feature
-//! 统一陷阱（一次多 `-p` 会把 Mock 与生产类型拉进同一编译），也让
-//! 失败点名到具体模块。
+//! Production switch: boot-shim is built with `--no-default-features --features
+//! fw-x86-uefi` (aarch64: `fw-aarch64-uefi`) — the feature vocabulary — and the
+//! kernel half linked into boot-shim therefore carries no mock
+//! (`boot-shim/Cargo.toml` pins `default-features = false` for minix-kernel).
+//! Each module is a separate cargo invocation — this avoids the feature
+//! unification trap (one multi-`-p` invocation would pull Mock and production
+//! types into the same compilation) and names the failing module.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// 目标架构。x86_64 与 aarch64 有 UEFI 装机面（后者由 NK4-B P3 M3.3
-/// 放行）；riscv64 走 U-Boot fatload，不经 UEFI 盘形，装配时 honest bail
-/// 而不是装出不可启动机的镜像。
+/// Target architecture. x86_64 and aarch64 have a UEFI install surface;
+/// riscv64 boots via U-Boot fatload and has no UEFI disk layout, so assembly
+/// bails honestly instead of producing an unbootable image.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arch {
     X86_64,
@@ -47,7 +47,7 @@ impl Arch {
         }
     }
 
-    /// 模块（用户态）构建目标三元组。
+    /// Build target triple for modules (user land).
     fn module_target(self) -> &'static str {
         match self {
             Self::X86_64 => "x86_64-unknown-none",
@@ -56,7 +56,7 @@ impl Arch {
         }
     }
 
-    /// 输出目录名。
+    /// Output directory name.
     pub fn slug(self) -> &'static str {
         match self {
             Self::X86_64 => "x86_64",
@@ -65,12 +65,13 @@ impl Arch {
         }
     }
 
-    /// UEFI 装机面的四个架构常量。`None` = 本架构不走 UEFI 盘形。
+    /// The four per-architecture UEFI install-surface constants. `None` = this
+    /// architecture has no UEFI disk layout.
     ///
-    /// 这些值今天散在装配计划里写死成 x86 形态，放行 aarch64 就是把它们
-    /// 收成一张表（NK4-B P3 M3.3 决策四）。`loader` 名不是随意取的：
-    /// UEFI 规范按 CPU 架构规定默认加载项文件名，AAVMF 只认
-    /// `EFI/BOOT/BOOTAA64.EFI`。
+    /// These values used to be hardcoded in x86 form across the assembly plan;
+    /// enabling aarch64 collects them into one table. The `loader` name is not
+    /// arbitrary: the UEFI spec fixes the default load-option filename per CPU
+    /// architecture, and AAVMF only recognizes `EFI/BOOT/BOOTAA64.EFI`.
     fn uefi_slots(self) -> Option<UefiSlots> {
         match self {
             Self::X86_64 => Some(UefiSlots {
@@ -90,44 +91,47 @@ impl Arch {
     }
 }
 
-/// 一个架构的 UEFI 装机面常量（见 [`Arch::uefi_slots`]）。
+/// UEFI install-surface constants for one architecture (see
+/// [`Arch::uefi_slots`]).
 #[derive(Clone, Copy, Debug)]
 struct UefiSlots {
-    /// boot-shim 的构建目标三元组。
+    /// Build target triple for boot-shim.
     shim_target: &'static str,
-    /// boot-shim 的对外特性名（生产开关）。
+    /// Public feature name of boot-shim (production switch).
     shim_feature: &'static str,
-    /// `kernel-image` 的对外特性名（目标三元组同 [`Arch::module_target`]，
-    /// 与 [`kernel_elf_path`] 的取件路径已经是同一假设）。
+    /// Public feature name of `kernel-image` (same target triple as
+    /// [`Arch::module_target`], which [`kernel_elf_path`] already assumes when
+    /// picking the artifact).
     kernel_none_feature: &'static str,
-    /// ESP 内 `/EFI/BOOT/` 下的固件默认加载项文件名。
+    /// Firmware default load-option filename under `/EFI/BOOT/` on the ESP.
     loader: &'static str,
 }
 
-/// 装配计划里的一步。计划先行、执行在后——`--dry-run` 打印同一份
-/// 计划，单元测试也直接对计划断言。
+/// One step of the assembly plan. The plan comes first, execution second —
+/// `--dry-run` prints the same plan, and unit tests assert on the plan
+/// directly.
 #[derive(Debug)]
 pub enum Action {
-    /// 在 workspace 根调 cargo（构建类步骤）。
+    /// Invoke cargo at the workspace root (build steps).
     Cargo {
         args: Vec<String>,
         note: &'static str,
     },
-    /// 建目录。
+    /// Create a directory.
     Mkdir { path: PathBuf },
-    /// 落盘文本（如生成的原型文件）。
+    /// Write text to disk (e.g. a generated prototype file).
     Write {
         path: PathBuf,
         bytes: Vec<u8>,
         note: &'static str,
     },
-    /// 复制产物进 staging。
+    /// Copy an artifact into staging.
     Copy {
         from: PathBuf,
         to: PathBuf,
         note: &'static str,
     },
-    /// 外部工具（mkfs_mfs / mtools）。
+    /// External tool (mkfs_mfs / mtools).
     Tool {
         program: String,
         args: Vec<String>,
@@ -136,11 +140,12 @@ pub enum Action {
     },
 }
 
-/// 装配所需的路径环境。全部由调用方传入以便测试。
+/// Path environment needed for assembly. Everything is passed in by the caller
+/// for testability.
 pub struct Layout {
-    /// workspace 根（`os/`）。
+    /// Workspace root (`os/`).
     pub os_root: PathBuf,
-    /// cargo target 根（`CARGO_TARGET_DIR` 或 `os/target`）。
+    /// Cargo target root (`CARGO_TARGET_DIR` or `os/target`).
     pub target_root: PathBuf,
 }
 
@@ -164,11 +169,12 @@ impl Layout {
     }
 }
 
-/// 内核 ELF 的取用路径。产出者 = `kernel-image` 包（NS8-A，new_edge1
-/// 面）：bin 名 `kernel`，cargo 对 none 目标产无扩展名工件
-/// `target/<target>/<profile>/kernel`——缺省路径与之对齐；ESP 侧安装名
-/// 仍是 `/EFI/minix/kernel.elf`（`loader::KERNEL_PATH` 契约位不变）。
-/// `--kernel` 可指向任意外部产出的 ELF（自定义内核构建流程用）。
+/// Path from which the kernel ELF is taken. Producer = the `kernel-image`
+/// package: bin name `kernel`, and cargo emits an extension-less artifact for
+/// none targets at `target/<target>/<profile>/kernel` — the default path
+/// matches that; the ESP-side install name stays `/EFI/minix/kernel.elf` (the
+/// `loader::KERNEL_PATH` contract slot is unchanged). `--kernel` may point at
+/// an externally produced ELF (for custom kernel build flows).
 fn kernel_elf_path(
     layout: &Layout,
     override_path: Option<&Path>,
@@ -185,18 +191,20 @@ fn kernel_elf_path(
     }
 }
 
-/// 生成装配计划，返回（动作序列，ESP 盘镜像产出位）。
+/// Build the assembly plan, returning (action sequence, ESP disk image output
+/// path).
 pub fn plan(
     arch: Arch,
     release: bool,
     kernel_override: Option<&Path>,
     layout: &Layout,
 ) -> Result<(Vec<Action>, PathBuf)> {
-    // 三架构诚实话：riscv64 的启动路径是 U-Boot fatload + BootFileTable，
-    // 不经 UEFI 装机形（载体机制见 qemu-tests/test-riscv64-uboot.sh），
-    // 给它装一张 ESP 盘就是装不可启动机的镜像。x86_64 / aarch64 的四个
-    // 架构常量由 [`Arch::uefi_slots`] 一张表供值（aarch64 腿 = NK4-B P3
-    // M3.3 决策四放行，依赖 boot-shim 的 fw-aarch64-uefi 门）。
+    // Honest about all three architectures: riscv64 boots via U-Boot fatload
+    // + BootFileTable, not the UEFI install layout (carrier mechanism in
+    // qemu-tests/test-riscv64-uboot.sh); giving it an ESP disk would ship an
+    // unbootable image. The four x86_64 / aarch64 constants come from the
+    // single [`Arch::uefi_slots`] table (the aarch64 leg depends on boot-shim's
+    // fw-aarch64-uefi gate).
     let Some(uefi) = arch.uefi_slots() else {
         bail!(
             "{} 镜像暂不可装配：启动路径不是 UEFI 盘形（riscv64 走 U-Boot fatload + \
@@ -219,8 +227,9 @@ pub fn plan(
         actions.push(Action::Cargo { args, note });
     };
 
-    // 1a. 逐包构建 11 模块 + sh（guest 用户态目标；失败点名到包）。
-    //     mfs 推迟到 imgrd 生成后构建（B11：build.rs include_bytes!）。
+    // 1a. Build the 11 modules + sh package by package (guest user-land
+    //     target; failures name the package). mfs is deferred until after imgrd
+    //     generation (build.rs include_bytes!).
     for entry in crate::manifest::BOOT_MODULES
         .iter()
         .filter(|e| e.package != "minix-fs-mfs")
@@ -231,16 +240,19 @@ pub fn plan(
             &["-p", entry.package, "--target", arch.module_target()],
         );
     }
-    // /bin/sh、/bin/echo 不是 boot 模块，但 imgrd 播种需要其 ELF 二进制
-    // （proto 路径引用）。NK4-C 1.56 B31：本重写的 shell 目前只有
-    // exit/cd 两个内建（commands/bin/shell/src/bin/sh.rs 的 eval 臂），
-    // rc 里的 `echo marker` 因此走外部命令腿；C 的 ash 虽有 echo 内建
-    // （`minix3/bin/sh/builtins.def` 的 `echocmd`，无 TINY/SMALL 门），
-    // 但其镜像同样独立装 /bin/echo（`minix3/bin/echo/`），播种即对位
-    // ——内建化留待 shell 扩内建面时裁决。此前盘上只播 sh：一旦
-    // init→sh 的 exec 腿（B32）修通，rc 的 echo 会 PATH 全 ENOENT →
-    // sh 退 127 → runcom 回落 SingleUser。当前循环的近因是 B32，
-    // 本缺件是它下游的独立实锤障碍。
+    // /bin/sh and /bin/echo are not boot modules, but imgrd seeding needs
+    // their ELF binaries (referenced by path in the proto). This rewrite's
+    // shell currently has only two builtins, exit/cd (the eval arm of
+    // commands/bin/shell/src/bin/sh.rs), so `echo marker` in rc takes the
+    // external-command leg; C's ash does have an echo builtin (`echocmd` in
+    // `minix3/bin/sh/builtins.def`, with no TINY/SMALL gate), but its images
+    // also install /bin/echo separately (`minix3/bin/echo/`), so seeding it
+    // matches C. Making echo a builtin is left until the shell grows its
+    // builtin set. The disk used to seed only sh: once the init->sh exec leg
+    // was fixed, rc's echo would hit ENOENT on every PATH entry -> sh exits
+    // 127 -> runcom falls back to SingleUser. That exec-leg fix was the
+    // proximate cause; this missing binary was the independent downstream
+    // blocker.
     cargo_release(
         &mut actions,
         "sh/echo 命令构建（imgrd /bin 播种）",
@@ -254,15 +266,20 @@ pub fn plan(
         ],
     );
 
-    // E5(f) 真机半的 DS 传输链载体（`qemu-tests/test-kernels/user/e5-ds`）。
-    // 与 sh/echo 同一条 freestanding 腿，但本包 `required-features =
-    // ["fw-user-none"]`（X-2/NK5 裸机隔离：宿主 --workspace --bins 跳过），
-    // 故 --target 与 --features 必须成对传——rt-birth/sysboot 的先例。
+    // DS transfer-chain carrier for the on-metal half of E5(f)
+    // (`qemu-tests/test-kernels/user/e5-ds`). Same freestanding leg as sh/echo,
+    // but this package has `required-features = ["fw-user-none"]` (bare-metal
+    // isolation: a host `--workspace --bins` run skips it), so --target and
+    // --features must be passed together — the rt-birth/sysboot precedent.
     //
-    // 只给已开禁的架构装（[`E5_DS_READY`]，`ATF_BOOT_LEG_READY` 同款名单形）：
-    // 载体的第一条 taskcall 若撞上「DS 未在服务」会本征阻塞在 sendrec，装到
-    // 未验收的架构上会拖垮该架构既有冒烟门。rc 的 `/bin/e5-ds` 行不随名单
-    // 一开禁（未播种只多一行 "not found"），名单扩到三架构跟 E5-ARCH。
+    // Installed only for enabled architectures ([`E5_DS_READY`], same list shape
+    // as `ATF_BOOT_LEG_READY`): when the carrier's first taskcall hits "DS not
+    // serving yet" it blocks intrinsically in sendrec, so installing it on an
+    // architecture that has not passed on-metal acceptance would break that
+    // architecture's existing smoke gate. The `/bin/e5-ds` line in rc is not
+    // enabled together with the list (if not seeded it just prints one extra
+    // "not found"); the list extends to all three architectures alongside
+    // E5-ARCH.
     let e5_ds_ready = E5_DS_READY.contains(&arch.slug());
     if e5_ds_ready {
         cargo_release(
@@ -279,7 +296,8 @@ pub fn plan(
         );
     }
 
-    // 2. boot-shim（生产开关：关默认 feature，只开本架构的 uefi 特性）。
+    // 2. boot-shim (production switch: default features off, only this
+    //    architecture's uefi feature on).
     cargo_release(
         &mut actions,
         "boot-shim UEFI 载体构建（生产开关）",
@@ -294,8 +312,8 @@ pub fn plan(
         ],
     );
 
-    // 2b. 生产内核镜像（NS8-A 产出者：`-p kernel-image`，bin 门
-    //     fw-<arch>-none，产出 `target/<none target>/<profile>/kernel`）。
+    // 2b. Production kernel image (`-p kernel-image`, bin gate fw-<arch>-none,
+    //     producing `target/<none target>/<profile>/kernel`).
     cargo_release(
         &mut actions,
         "生产内核镜像构建（kernel-image，NS8-A）",
@@ -309,32 +327,39 @@ pub fn plan(
         ],
     );
 
-    // 3. mkfs_mfs 宿主工具（imgrd 生成器；宿主三元组，S32 批次三十一交付）。
+    // 3. mkfs_mfs host tool (imgrd generator; host triple).
     cargo_release(
         &mut actions,
         "mkfs_mfs 宿主工具构建",
         &["-p", "minix-diskfmt"],
     );
 
-    // 3b. /etc 原型 + mkfs_mfs 播种 imgrd（先于 mfs 构建——build.rs 需 imgrd 就位）。
+    // 3b. /etc prototype + mkfs_mfs seeding imgrd (before the mfs build —
+    //     build.rs needs imgrd in place).
     let proto_path = image_dir.join("imgrd.proto");
     let imgrd = image_dir.join("imgrd.img");
     let bin_rel = |name: &str| format!("target/{}/{}/{name}", arch.module_target(), profile);
-    // NK4-C 续-277：目标③ ATF C 测试播种——交叉 ELF 不在 cargo 装配链内（由
-    // tools/build-atf-test.sh 产出），文件存在才播；首案 t_memchr（纯内存面，
-    // 不依赖 fork/exec/VFS 桥）+ p1/p2/p3 上机二分探针（tools/atf-c-compat/probes/，
-    // 分别验裸桥/stdio/malloc 腿）。盘上落 /tests/<name>，rc 尾段 exec。
-    // 单源：用例表/rc 注入规则 = [`collect_atf_face`]（`xtask atf-face` 子命令
-    // 同源消费——riscv64 不走 UEFI 盘形装配，用该子命令拿同一套 rc 变体+manifest）。
+    // ATF C test seeding: cross-compiled ELFs are not part of the cargo
+    // assembly chain (tools/build-atf-test.sh produces them), so they are
+    // seeded only when the file exists; the first case is t_memchr (pure memory,
+    // no fork/exec/VFS bridge) plus the p1/p2/p3 on-metal bisect probes
+    // (tools/atf-c-compat/probes/, covering the bare bridge / stdio / malloc
+    // legs respectively). They land on disk as /tests/<name> and rc execs them
+    // at the end. Single source: the case table and rc injection rules live in
+    // [`collect_atf_face`] (the `xtask atf-face` subcommand consumes the same
+    // function — riscv64 does not use UEFI disk-layout assembly, so it takes the
+    // same rc variant + manifest through that subcommand).
     let AtfFace { tests: atf_tests, rc_execs } = collect_atf_face(arch, layout);
-    // 门 manifest（"prog tc" 逐行）= rc exec 行去掉 `/tests/` 前缀（同一序列，
-    // 不做第二份拼接，防两处漂移）。
+    // Gate manifest (one "prog tc" per line) = the rc exec lines with the
+    // `/tests/` prefix stripped (same sequence, no second join, so the two
+    // cannot drift apart).
     let atf_plan: Vec<String> = rc_execs
         .iter()
         .map(|line| line.trim_start_matches("/tests/").to_string())
         .collect();
-    // rc 变体：套件 exec 行注进 `exit 0` 之前（os/etc/rc 保持静态哨兵面，
-    // 套件面单源在 ATF_SUITE+minix3 C 源）。
+    // rc variant: the suite exec lines are injected just before `exit 0`
+    // (os/etc/rc stays the static sentinel; the suite surface is single-sourced
+    // in ATF_SUITE + the minix3 C sources).
     let rc_variant_rel = format!("target/image/{}/rc.imgrd", arch.slug());
     let rc_host: Option<&str> = if rc_execs.is_empty() {
         None
@@ -361,22 +386,27 @@ pub fn plan(
     }
     let atf_refs: Vec<(&str, &str)> =
         atf_tests.iter().map(|(n, p)| (n.as_str(), p.as_str())).collect();
-    // 根盘容量随套件存在性放大（无套件架构逐字节同旧，CodeReview 续-278）。
+    // Root-disk capacity grows with suite presence (architectures without
+    // suites stay byte-identical to before).
     let imgrd_blocks = if atf_tests.is_empty() { IMGRD_BLOCKS } else { IMGRD_BLOCKS_SUITE };
     let mut bins: Vec<(&str, String)> = vec![
         ("sh", bin_rel("sh")),
         ("echo", bin_rel("echo")),
         ("ls", bin_rel("ls")),
         ("cat", bin_rel("cat")),
-        // `du` 只读，不受只读 imgrd 根盘门控（批次一百二十登记的下一件）：
-        // 它的盘上读数由 test-cmd-smoke* 的 du 断言判。
+        // `du` is read-only and not gated by the read-only imgrd root disk:
+        // its on-disk readings are checked by the du assertions in
+        // test-cmd-smoke*.
         ("du", bin_rel("du")),
-        // `stat` 同样只读（批次一百三十一接线）：三种模板的盘上形状由
-        // test-cmd-smoke* 的 stat 断言收，走的是同一条 lstat IPC 腿。
+        // `stat` is likewise read-only: the on-disk shape of all three
+        // templates is covered by the stat assertions in test-cmd-smoke*, over
+        // the same lstat IPC leg.
         ("stat", bin_rel("stat")),
-        // `find` 只读（批次一百六十四/一百七十二接线）：文件操作数的整条
-        // parse→walk→eval→print 腿由 test-cmd-smoke* 的 find 断言收到串口；
-        // 目录遍历腿仍受 imgrd 根盘 getdents 断腿牵制（同 du/ls），故只判文件操作数。
+        // `find` is read-only: the whole parse->walk->eval->print leg for file
+        // operands is covered out to the serial port by the find assertions in
+        // test-cmd-smoke*; the directory-walk leg is still blocked by the
+        // getdents gap on the imgrd root disk (same as du/ls), so only file
+        // operands are asserted.
         ("find", bin_rel("find")),
     ];
     if e5_ds_ready {
@@ -403,9 +433,9 @@ pub fn plan(
             .into_owned(),
         args: vec![
             imgrd.to_string_lossy().into_owned(),
-            imgrd_blocks.to_string(), // 块数：×4KiB，随套件存在性选值（见常量注）
-            "0".into(),    // inode 数 0 = mkfs 缺省阶梯（mkfs.rs proto_header 文档）
-            "4096".into(), // 块大小
+            imgrd_blocks.to_string(), // block count: x4KiB, chosen by suite presence (see const note)
+            "0".into(),    // inode count 0 = mkfs default ladder (mkfs.rs proto_header docs)
+            "4096".into(), // block size
             "-p".into(),
             proto_path.to_string_lossy().into_owned(),
         ],
@@ -413,15 +443,16 @@ pub fn plan(
         note: "mkfs_mfs 播种 imgrd（B11：先于 mfs 构建）",
     });
 
-    // 3c. mfs 构建（build.rs 此时可发现 target/image/<arch>/imgrd.img，
-    //     经 include_bytes! 喂 BOOT_IMGRD）。E-IMGPKG 落地。
+    // 3c. mfs build (build.rs can now find target/image/<arch>/imgrd.img and
+    //     feed it to BOOT_IMGRD via include_bytes!). This is where E-IMGPKG
+    //     lands.
     cargo_release(
         &mut actions,
         "mfs 构建（imgrd include_bytes!，B11）",
         &["-p", "minix-fs-mfs", "--target", arch.module_target()],
     );
 
-    // 4. staging 目录树。
+    // 4. staging directory tree.
     let modules_dir = staging.join("EFI/minix/modules");
     actions.push(Action::Mkdir {
         path: modules_dir.clone(),
@@ -430,7 +461,8 @@ pub fn plan(
         path: staging.join("EFI/BOOT"),
     });
 
-    // 5. 12 模块逐件取包装机（缺件 fail-fast 点名）。
+    // 5. Take and install each of the 12 modules (missing files fail fast and
+    //    are named).
     for entry in crate::manifest::BOOT_MODULES.iter() {
         actions.push(Action::Copy {
             from: layout
@@ -443,7 +475,7 @@ pub fn plan(
         });
     }
 
-    // 6. 内核 ELF（NS8-A：按路径取件，产出者归 new_edge1 面）。
+    // 6. Kernel ELF (picked by path; produced by the kernel-image package).
     let kernel = kernel_elf_path(layout, kernel_override, arch, release);
     actions.push(Action::Copy {
         from: kernel,
@@ -451,15 +483,16 @@ pub fn plan(
         note: "内核 ELF 装机（loader::KERNEL_PATH 契约位）",
     });
 
-    // 7. imgrd 入 staging（生成已在 step 3b 完成，此处只拷贝）。
+    // 7. imgrd into staging (generation already happened in step 3b; this only
+    //    copies).
     actions.push(Action::Copy {
         from: imgrd,
         to: staging.join("EFI/minix/imgrd"),
         note: "imgrd 入包 staging（供 ESP mcopy 消费）",
     });
 
-    // 8. FAT 盘镜像组装（mtools；与 run_qemu.sh 的真盘镜像优先路径同词汇，
-    //    run_qemu.sh:77-86）。
+    // 8. FAT disk-image assembly (mtools; same vocabulary as run_qemu.sh's
+    //    real-disk-image preferred path, run_qemu.sh:77-86).
     actions.push(Action::Tool {
         program: "dd".into(),
         args: vec![
@@ -492,7 +525,8 @@ pub fn plan(
         note: "ESP 目录树",
     });
 
-    // 9. boot-shim 入包为固件默认加载项 + 全部文件 mcopy 进 ESP。
+    // 9. boot-shim packaged as the firmware default load option + every file
+    //    mcopy'd into the ESP.
     let loader_path = staging.join(format!("EFI/BOOT/{}", uefi.loader));
     actions.push(Action::Copy {
         from: layout
@@ -503,10 +537,12 @@ pub fn plan(
         to: loader_path.clone(),
         note: "boot-shim 入包为固件默认加载项",
     });
-    // boot-shim 本体也是 ESP 文件：staging 只进了工作树，固件加载的是
-    // 盘上的 ::/EFI/BOOT/<本架构默认加载项>（首装配漏列即 UEFI Shell 落地，
-    // test-cmd-smoke 首跑实证）。startup.nsh 是本固件的自动引导 belt-
-    // and-suspenders（test-sysboot 判例：倒计时后逐行执行）。
+    // boot-shim itself is an ESP file too: staging only fills the work tree,
+    // while the firmware loads ::/EFI/BOOT/<this architecture's default load
+    // option> from the disk (omitting it in the first assembly attempt landed
+    // in the UEFI Shell, as the first test-cmd-smoke run showed). startup.nsh
+    // is this firmware's auto-boot belt-and-suspenders (test-sysboot precedent:
+    // it runs the lines one by one after the countdown).
     let startup_nsh = format!("echo -off\r\nFS0:\r\ncd EFI\\BOOT\r\n{}\r\n", uefi.loader);
     actions.push(Action::Write {
         path: staging.join("startup.nsh"),
@@ -545,10 +581,13 @@ pub fn plan(
     Ok((actions, esp_image))
 }
 
-/// 目标③首批 ATF 套件（NK4-C 续-278）：盘上程序名 → minix3 C 源（仓根相对）。
-/// ELF 由 tools/build-atf-test.sh 交编（同名落 target/atf/<arch>/tests/）；
-/// 用例名装配时从源文件 `ATF_TC(name);` 声明行提取（不另立清单，单一真源=C 源）。
-/// p1/p2/p3 桥面哨兵不在此表（无 atf 用例，固定 exec 行在 os/etc/rc 里）。
+/// First batch of ATF suites: on-disk program name -> minix3 C source
+/// (repo-root relative). ELFs are cross-compiled by tools/build-atf-test.sh
+/// (same name under target/atf/<arch>/tests/); case names are extracted at
+/// assembly time from the `ATF_TC(name);` declarations in the source (no
+/// separate list — the single source of truth is the C source). The p1/p2/p3
+/// bridge sentinels are not in this table (they have no ATF cases; their fixed
+/// exec lines live in os/etc/rc).
 const ATF_SUITE: &[(&str, &str)] = &[
     ("t_bm", "minix3/tests/lib/libc/string/t_bm.c"),
     ("t_memchr", "minix3/tests/lib/libc/string/t_memchr.c"),
@@ -570,8 +609,10 @@ const ATF_SUITE: &[(&str, &str)] = &[
     ("t_swab", "minix3/tests/lib/libc/string/t_swab.c"),
 ];
 
-/// 从 atf C 源提取注册用例名（`ATF_TC(name);` 声明行；HEAD/BODY 定义行不重复
-/// 计名）。纯函数，宿主单测钉住；提不到任何名字时调用方须视装配失败。
+/// Extract registered case names from an atf C source (`ATF_TC(name);`
+/// declaration lines; HEAD/BODY definition lines do not count twice). Pure
+/// function, pinned by host unit tests; when no name is extracted the caller
+/// must treat it as an assembly failure.
 pub fn extract_atf_tc_names(src: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for line in src.lines() {
@@ -588,8 +629,9 @@ pub fn extract_atf_tc_names(src: &str) -> Vec<String> {
     names
 }
 
-/// 在 rc 文本的 `exit 0` 行（尾行，若存在）之前注入测试 exec 行；无 `exit 0`
-/// 则追加到末尾。纯函数便于单测钉住插入位置语义。
+/// Inject the test exec lines before the `exit 0` line of the rc text (the last
+/// line, if present); without `exit 0` they are appended at the end. Pure
+/// function so unit tests can pin the insertion-point semantics.
 pub fn inject_rc_execs(rc_text: &str, exec_lines: &[String]) -> String {
     if exec_lines.is_empty() {
         return rc_text.to_string();
@@ -616,49 +658,59 @@ pub fn inject_rc_execs(rc_text: &str, exec_lines: &[String]) -> String {
     out
 }
 
-/// imgrd 根盘块数（× 4KiB）：无套件时保持旧值 2048（=8MiB，x86/riscv 装配
-/// 产物逐字节同旧，CodeReview 续-278 建议：不给未验证架构扩足迹）；首批 ATF
-/// 套件 18 个静态 ELF（每个 ~410KB 含 libc+libatf-c）超旧预算时由调用方按
-/// 套件存在性传 4096（=16MiB；ESP 128MiB 容得下，bootface 源直拷 bump 分配
-/// 无固定上限）。proto 头部与 mkfs 参数共用同一值（单点，不再两处手写）。
+/// imgrd root-disk block count (x 4KiB): without suites the old value 2048
+/// (=8MiB) is kept, so x86/riscv artifacts stay byte-identical to before and
+/// unverified architectures do not grow their footprint; the first ATF suite's
+/// 18 static ELFs (~410KB each, including libc + libatf-c) exceed the old
+/// budget, so the caller passes 4096 (=16MiB; the 128MiB ESP has room, and
+/// bootface's direct-copy bump allocation has no fixed cap). The proto header
+/// and the mkfs argument share the same value (one place, no longer hand-written
+/// twice).
 pub const IMGRD_BLOCKS: u32 = 2048;
 pub const IMGRD_BLOCKS_SUITE: u32 = 4096;
 
-/// E5(f) 的 DS 传输链载体（`/bin/e5-ds`）已开禁的架构名单，形状同
-/// [`ATF_BOOT_LEG_READY`]。今天只放 x86_64：那是命令面/服务链唯一已过机验收
-/// 的一腿；载体的首条 taskcall 在「DS 未在服务」时会本征阻塞在 sendrec，
-/// 给未验收架构装上会拖垮该架构的既有冒烟门。扩到 aarch64/riscv64 跟
-/// E5-ARCH（台账 §5）的三架构复跑。
+/// Architectures on which the E5(f) DS transfer-chain carrier (`/bin/e5-ds`) is
+/// enabled, same shape as [`ATF_BOOT_LEG_READY`]. Today only x86_64 is enabled:
+/// it is the only leg of the command surface / service chain that has passed
+/// on-metal acceptance; when the carrier's first taskcall hits "DS not serving
+/// yet" it blocks intrinsically in sendrec, so installing it on an unaccepted
+/// architecture would break that architecture's existing smoke gate. Extending
+/// to aarch64/riscv64 follows the three-architecture rerun of E5-ARCH.
 const E5_DS_READY: &[&str] = &["x86_64"];
 
-/// 自定义出生腿（`-nostartfiles` + startup-minix.c）已放行的架构白名单。
-/// riscv64 于 §续-338（exec 栈顶 Sv39 规范地址修复）后与 aarch64 同形启用——
-/// 此前 riscv 腿链 picolibc 默认 crt0（sp 切 ELF 内 .stack + main(0,NULL)），
-/// §续-277 已定谳为坏。
+/// Whitelist of architectures where the custom birth leg (`-nostartfiles` +
+/// startup-minix.c) is enabled. riscv64 is enabled in the same shape as aarch64
+/// after the exec-stack-top Sv39 canonical-address fix — before that the riscv
+/// leg linked picolibc's default crt0 (sp switched to the ELF's internal .stack
+/// + main(0,NULL)), which was ruled broken.
 const ATF_BOOT_LEG_READY: &[&str] = &["aarch64", "riscv64"];
 
-/// ATF 上机面的收集结果（[`collect_atf_face`] 的返回结构）。
+/// Collected ATF on-metal surface (the return struct of [`collect_atf_face`]).
 ///
-/// 独立结构而非元组：两个字段语义不同（播种清单 vs rc 注入序列），且元组形式
-/// 会触发 `clippy::type_complexity`（`xtask check` 以 `-D warnings` 跑），
-/// CodeReview 续-340b P2-1 采纳。
+/// A dedicated struct rather than a tuple: the two fields mean different things
+/// (seed list vs rc injection sequence), and the tuple form would trip
+/// `clippy::type_complexity` (`xtask check` runs with `-D warnings`).
 struct AtfFace {
-    /// `(prog, 宿主相对路径)` —— `/tests/<prog>` 的 imgrd 播种清单（含 p1/p2/p3
-    /// 桥面哨兵，存在才播）。
+    /// `(prog, host-relative path)` — the imgrd seed list for `/tests/<prog>`
+    /// (including the p1/p2/p3 bridge sentinels, seeded only when present).
     tests: Vec<(String, String)>,
-    /// `/tests/<prog> <tc>` exec 行（rc 变体注入序列；atf-plan 由其去
-    /// `/tests/` 前缀派生，不做第二份拼接）。
+    /// `/tests/<prog> <tc>` exec lines (the rc-variant injection sequence;
+    /// atf-plan is derived from them by stripping the `/tests/` prefix, with no
+    /// second join).
     rc_execs: Vec<String>,
 }
 
-/// 收集一台架构的 ATF 上机面（单源）。
+/// Collect one architecture's ATF on-metal surface (single source).
 ///
-/// 用例表来自 [`ATF_SUITE`]（18 案清单）并对每个 prog 从 minix3 C 源提取
-/// `ATF_TC(name)` 声明——提取为空即拒绝静默装配（panic 而非 Err：这是装配面
-/// 的"声明与提取器漂移"事故，必须响到人能看见，不是可恢复的 IO 失败）。
-/// `p1/p2/p3` 桥面哨兵无条件追加（存在才播）。`plan()`（UEFI 盘形装配）与
-/// [`atf_face()`]（非 UEFI 启动形的产物面）共用本函数，保证 rc 注入序列与
-/// manifest 永远同源。
+/// The case table comes from [`ATF_SUITE`] (18 cases), and for each prog the
+/// `ATF_TC(name)` declarations are extracted from the minix3 C source — an
+/// empty extraction refuses silent assembly (panic rather than Err: this is a
+/// "declaration vs extractor drift" incident on the assembly surface and must
+/// be loud enough for a human to see, not a recoverable IO failure). The
+/// `p1/p2/p3` bridge sentinels are appended unconditionally (seeded only when
+/// present). `plan()` (UEFI disk-layout assembly) and [`atf_face()`] (the
+/// artifact surface for non-UEFI boot shapes) share this function, so the rc
+/// injection sequence and the manifest always come from the same source.
 fn collect_atf_face(arch: Arch, layout: &Layout) -> AtfFace {
     let mut tests: Vec<(String, String)> = Vec::new();
     let mut rc_execs: Vec<String> = Vec::new();
@@ -693,21 +745,24 @@ fn collect_atf_face(arch: Arch, layout: &Layout) -> AtfFace {
     AtfFace { tests, rc_execs }
 }
 
-/// 生成 ATF 上机面产物（不依赖 UEFI 盘形装配）。
+/// Generate the ATF on-metal surface artifacts (independent of UEFI disk-layout
+/// assembly).
 ///
-/// riscv64 的启动形是 OpenSBI 直载 + BootFileTable（见
-/// `os/qemu-tests/test-riscv64-boot-full.sh`），不经 `xtask image` 的 ESP 盘形；
-/// 但 ATF 套件面需要的两件单源产物必须与 aarch64 完全同源：
-///   - `target/image/<arch>/rc.imgrd`：`os/etc/rc` + `/tests/<prog> <tc>` exec 行
-///     （注在 `exit 0` 前，规则=[`inject_rc_execs`]）；
-///   - `target/image/<arch>/atf-plan.txt`：`prog tc` 逐行 manifest（门的期望
-///     数唯一真源）。
+/// riscv64 boots by OpenSBI direct load + BootFileTable (see
+/// `os/qemu-tests/test-riscv64-boot-full.sh`) and does not use `xtask image`'s
+/// ESP layout; but the two single-source artifacts the ATF suite surface needs
+/// must be exactly the same as for aarch64:
+///   - `target/image/<arch>/rc.imgrd`: `os/etc/rc` + `/tests/<prog> <tc>` exec
+///     lines (injected before `exit 0`, rules=[`inject_rc_execs`]);
+///   - `target/image/<arch>/atf-plan.txt`: the one-`prog tc`-per-line manifest
+///     (the sole source of the gate's expected count).
 ///
-/// stdout 契约（调用方 `os/qemu-tests/test-atf-riscv64.sh` 按此解析）：
-///   - `rc.execs=<N>` 一行（注入的 exec 行数）；
-///   - 每个待播种项一行 `tests.<prog>=<host-rel-path>`（rel 是相对 `os/` 的宿主
-///     路径，供 proto 生成写 `/tests/<prog>` 的源文件）；
-///   - `--dry-run` 时只打印、不落盘。
+/// stdout contract (the caller `os/qemu-tests/test-atf-riscv64.sh` parses this):
+///   - one `rc.execs=<N>` line (the number of injected exec lines);
+///   - one `tests.<prog>=<host-rel-path>` line per item to seed (rel is the host
+///     path relative to `os/`, used by proto generation to write the source file
+///     of `/tests/<prog>`);
+///   - with `--dry-run` it only prints, writing nothing.
 pub fn atf_face(arch: Arch, dry_run: bool) -> Result<()> {
     if !ATF_BOOT_LEG_READY.contains(&arch.slug()) {
         bail!(
@@ -758,24 +813,31 @@ pub fn atf_face(arch: Arch, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// 生成 /etc 最小集的 mkfs 原型文本。
+/// Generate the mkfs prototype text for the minimal /etc set.
 ///
-/// 文法（`os/fs/mfs/src/mkfs.rs` 的 proto_header/build_image_seeded）：
-/// 第一行引导名读到即弃；第二行 `块数 inode数`；第三行是**根目录模式
-/// 行**（仅 mode uid gid，无名字）；其后是根目录条目，目录递归以 `$`
-/// 收口；设备行 `名 c--权限 uid gid major minor`。console 设备号对位
-/// C dmap 表的 TTY_MAJOR=4（`minix3/minix/include/minix/dmap.h:25`，
-/// ttys 族），惯例次设备号 0。`bin_entries` 是 /bin 下要播种的条目
-/// （盘上名, 宿主相对路径），一律 0755——本表只播可执行文件；
-/// NK4-C 1.56 B31 起含 `sh` 与 `echo`（rc 外部命令腿），列表化以便
-/// 后续命令面（18-stage）按需上收；非 exec 文件需先带 mode 入表。
-/// `atf_tests`（NK4-C 续-277，目标③）非空时额外播 `/tests` 目录（同 0755
-/// 可执行面；交叉 ELF 由 `tools/build-atf-test.sh` 产出，不在 cargo 装配链
-/// 内，故只在宿主文件存在时传入）。空表时产物逐字节同旧，不影响既有
-/// 三架构装机面。`rc_host`（续-278）Some 时 rc 条目改指该宿主路径（装配方
-/// 已把套件 exec 行注入的变体文件）；None 仍指 `etc/rc`。`blocks` 是根盘块数
-///（调用方按套件存在性选 IMGRD_BLOCKS / IMGRD_BLOCKS_SUITE，proto 头与 mkfs
-/// 参数同源单点）。
+/// Grammar (`proto_header`/`build_image_seeded` in `os/fs/mfs/src/mkfs.rs`):
+/// the first line is a boot name that is read and discarded; the second line is
+/// `block-count inode-count`; the third line is the **root directory mode
+/// line** (mode uid gid only, no name); then come the root directory entries,
+/// with directories closed recursively by `$`; a device line is
+/// `name c--perms uid gid major minor`. The console device number matches
+/// TTY_MAJOR=4 of C's dmap table (`minix3/minix/include/minix/dmap.h:25`, the
+/// ttys family), with the conventional minor number 0. `bin_entries` are the
+/// entries to seed under /bin (on-disk name, host-relative path), always 0755 —
+/// this table only seeds executables; it holds `sh` and `echo` (the rc
+/// external-command leg) and is kept as a list so later command-surface work can
+/// grow it as needed; non-executable files would need a mode column first. A
+/// non-empty `atf_tests` additionally seeds a `/tests` directory (also the 0755
+/// executable surface; the cross ELFs are produced by
+/// `tools/build-atf-test.sh`, outside the cargo assembly chain, hence only
+/// passed when the host file exists). With an empty table the output is
+/// byte-identical to before and does not affect the existing
+/// three-architecture install surface. When `rc_host` is Some, the rc entry
+/// points at that host path (the assembly side already injected the suite exec
+/// lines into the variant file); None still points at `etc/rc`. `blocks` is the
+/// root-disk block count (the caller picks IMGRD_BLOCKS / IMGRD_BLOCKS_SUITE by
+/// suite presence; the proto header and the mkfs argument share this one
+/// place).
 pub fn generate_etc_proto(
     etc_dir: &Path,
     bin_entries: &[(&str, &str)],
@@ -783,7 +845,8 @@ pub fn generate_etc_proto(
     rc_host: Option<&str>,
     blocks: u32,
 ) -> Result<Vec<u8>> {
-    // 存在性在此验证；内容由 mkfs_mfs 的 StdHost 播种时从宿主读取。
+    // Existence is verified here; the content is read from the host by
+    // mkfs_mfs's StdHost at seed time.
     for required in ["rc", "ttys"] {
         let path = etc_dir.join(required);
         if !path.is_file() {
@@ -828,7 +891,7 @@ pub fn generate_etc_proto(
     Ok(proto.into_bytes())
 }
 
-/// 执行装配计划。`dry_run` 只打印不落盘。
+/// Execute the assembly plan. `dry_run` only prints, writing nothing.
 pub fn execute(actions: &[Action], dry_run: bool) -> Result<()> {
     for action in actions {
         match action {
@@ -839,25 +902,32 @@ pub fn execute(actions: &[Action], dry_run: bool) -> Result<()> {
                     continue;
                 }
                 let mut cmd = Command::new("cargo");
-                // aarch64 生产内核禁 NEON 与标量 FP（`-C target-feature=
-                // -neon,-fp-armv8`，仅内核链这一次 cargo 调用；用户模块构
-                // 建不带此旗）。C 内核的 lazy-FPU 模型（i386 CR0.TS / ARM64
-                // FPEN 懒陷阱）依赖「内核自身不用 FPU/NEON」前提——本内核
-                // 源码无浮点，但 LLVM 会把块拷贝自动向量化成 NEON（改前
-                // kernel.elf 实测 ~840 条 FP 指令），内核执行期间踩进用户
-                // 进程的 Q0-Q31 且无人保存恢复（trap stub 只存 GPR，
-                // SD-23）——aarch64 上直接表现为 PM 编译器放进 d8 的常量
-                // 被踩、VFS_PM_INIT 消息头被写脏（WrongMessageType(8)）。
-                // 禁 NEON+FP 后内核源码再无隐式 V 寄存器使用：同 CPU 物理
-                // 寄存器跨陷入自动保持；跨 CPU 迁移由 smp.rs SAVE_CTX IPI
-                // save + EC=0x07 懒 restore 闭环兜底。已知残差：rustup 预
-                // 编译 core 里的少量 V 寄存器指令（字符计数/格式化诊断路
-                // 径）不受 RUSTFLAGS 重建，登记为 build-std 待办。fpu.rs
-                // 的显式 FPSIMD 原语经 per-function target_feature 保留。
-                // NK4-C 续-133：riscv64 同族注入（`-f,-d`＝禁 FP——内核
-                // 改前 345 条 LLVM 自向量化 FP 指令踩用户 f 寄存器活值；
-                // FS=Off 门控无 per-mode 分裂，内核必须真无 FP，含预编译
-                // core 残差见 fpu 注释登记）。
+                // The aarch64 production kernel disables NEON and scalar FP
+                // (`-C target-feature=-neon,-fp-armv8`, only on this one cargo
+                // invocation for the kernel; user-module builds carry no such
+                // flag). C's lazy-FPU model (i386 CR0.TS / ARM64 FPEN lazy
+                // trap) assumes the kernel itself does not use FPU/NEON — this
+                // kernel source has no floating point, but LLVM auto-vectorizes
+                // block copies into NEON (kernel.elf measured ~840 FP
+                // instructions before the change), which trample the user
+                // process's Q0-Q31 while the kernel runs, with nobody saving or
+                // restoring them (the trap stub only saves GPRs) — on aarch64
+                // this showed up directly as PM compiler constants placed in d8
+                // being clobbered and the VFS_PM_INIT message header being
+                // dirtied (WrongMessageType(8)). With NEON+FP disabled the
+                // kernel source has no implicit V-register use left: the same
+                // physical registers are preserved across traps on one CPU, and
+                // cross-CPU migration is covered by the smp.rs SAVE_CTX IPI save
+                // + EC=0x07 lazy restore loop. Known residual: a few V-register
+                // instructions in rustup's precompiled core (char counting /
+                // formatted diagnostics paths) are not rebuilt under RUSTFLAGS;
+                // recorded as a build-std todo. The explicit FPSIMD primitives
+                // in fpu.rs are kept via per-function target_feature. riscv64
+                // gets the same family of injection (`-f,-d` = disable FP — the
+                // kernel had 345 LLVM self-vectorized FP instructions trampling
+                // live user f registers before the change; FS=Off gating has no
+                // per-mode split, so the kernel must truly be FP-free; the
+                // precompiled core residual is recorded in the fpu notes).
                 let is_kernel_image = args.windows(2).any(|w| w == ["-p", "kernel-image"]);
                 let is_aarch64 = args.iter().any(|a| a.contains("aarch64"));
                 let is_riscv64 = args.iter().any(|a| a.contains("riscv64"));
@@ -961,7 +1031,7 @@ fn run_inherit(cmd: &mut Command) -> Result<()> {
     Ok(())
 }
 
-/// `xtask image` 入口。
+/// `xtask image` entry point.
 pub fn run(release: bool, arch: Arch, kernel_override: Option<&Path>, dry_run: bool) -> Result<()> {
     let layout = Layout::from_env();
     let (actions, esp_image) = plan(arch, release, kernel_override, &layout)?;
@@ -990,7 +1060,8 @@ pub fn run(release: bool, arch: Arch, kernel_override: Option<&Path>, dry_run: b
 mod tests {
     use super::*;
 
-    /// 极简临时目录助手（不引 dev 依赖，std 组合即可）。
+    /// Minimal temp-directory helper (no dev dependencies; plain std
+    /// composition suffices).
     mod tempdir {
         use std::path::PathBuf;
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -1023,9 +1094,10 @@ mod tests {
         }
     }
 
-    /// NK4-C 1.10r：在 tempdir 布局中植出 /bin 宿主产物（plan 的
-    /// 缺件 fail-fast 需要它们存在；内容无关——proto 只引用路径）。
-    /// NK4-C 1.56 B31：+echo（rc 外部命令播种腿）。
+    /// Plant the /bin host artifacts in the tempdir layout (plan's missing-file
+    /// fail-fast needs them present; their content is irrelevant — the proto
+    /// only references paths). The list also includes `echo` (the rc
+    /// external-command seed leg).
     fn plant_sh(layout: &Layout, module_target: &str, profile: &str) {
         let dir = layout
             .target_root
@@ -1036,7 +1108,8 @@ mod tests {
         std::fs::write(dir.join("echo"), b"").unwrap();
     }
 
-    /// 计划完整性：构建/装机/播种/ESP 组装各环节齐全，生产开关在位。
+    /// Plan completeness: every build/install/seed/ESP-assembly stage is
+    /// present and the production switch is in place.
     #[test]
     fn plan_x86_64_contains_all_contract_steps() {
         let (layout, _guard) = tempdir::create();
@@ -1044,7 +1117,8 @@ mod tests {
         let (actions, esp) = plan(Arch::X86_64, true, None, &layout).unwrap();
 
         let text = format!("{actions:?}");
-        // 12 模块逐包构建 + 逐件装机（抽三个代表断言，全量计数见下）。
+        // 12 modules built one package at a time, installed one by one (three
+        // representatives are asserted here; the full count follows).
         for pkg in ["minix-ds", "minix-init", "minix-fs-mfs", "minix-driver-tty"] {
             assert!(text.contains(pkg), "装机计划应含 {pkg}");
         }
@@ -1056,38 +1130,40 @@ mod tests {
             17,
             "11 模块(不含 mfs) + sh/echo（minix-shell+minix-fileops 一步） + e5-ds（E5(f) 载体一步） + boot-shim + kernel-image + mkfs_mfs + mfs(B11 后构) = 17 步 cargo 构建"
         );
-        // 生产开关与 uefi 目标。
+        // Production switch and uefi target.
         assert!(text.contains("fw-x86-uefi") && text.contains("x86_64-unknown-uefi"));
         assert!(
             text.contains("--no-default-features"),
             "boot-shim 构建必须关默认 feature"
         );
-        // 内核镜像构建步（NS8-A 产出者）与 guest 目标开关。
+        // Kernel-image build step and the guest target switch.
         assert!(
             text.contains("kernel-image") && text.contains("fw-x86-none"),
             "装配计划应含 kernel-image 构建步（fw-x86-none 门）"
         );
-        // mkfs_mfs 播种与 imgrd 入包。
+        // mkfs_mfs seeding and imgrd packaging.
         assert!(text.contains("mkfs_mfs") && text.contains("imgrd"));
-        // 内核 ELF 契约位（ESP 安装名）与产出位。
+        // Kernel ELF contract slot (ESP install name) and output location.
         assert!(text.contains("kernel.elf"));
         assert!(esp.ends_with("minix.img"));
-        // mtools 组装段在位。
+        // mtools assembly stage present.
         assert!(text.contains("mmd") && text.contains("mcopy") && text.contains("mkfs.vfat"));
-        // boot-shim 入 ESP 为固件默认加载项（首装配漏列 = UEFI Shell
-        // 落地，test-cmd-smoke 首跑实证）+ 自动引导脚本。
+        // boot-shim enters the ESP as the firmware default load option
+        // (omitting it in the first assembly landed in the UEFI Shell, as the
+        // first test-cmd-smoke run showed) + the auto-boot script.
         assert!(text.contains("BOOTX64.EFI") && text.contains("startup.nsh"));
     }
 
-    /// 非 UEFI 启动形（riscv64）honest bail：装机面不装不可启动机的镜像。
+    /// Non-UEFI boot shape (riscv64) bails honestly: no unbootable image is
+    /// installed.
     #[test]
     fn plan_bails_honestly_for_arch_without_uefi_path() {
         let (layout, _guard) = tempdir::create();
         assert!(plan(Arch::Riscv64, true, None, &layout).is_err());
     }
 
-    /// aarch64 腿走自己的四常量（NK4-B P3 M3.3 决策四）：不是把 x86 的
-    /// 三元组与加载项名“顺手共用了”，而是整张表都切换。
+    /// The aarch64 leg uses its own four constants: it does not casually reuse
+    /// x86's triple and loader name — the whole table switches.
     #[test]
     fn plan_aarch64_switches_every_uefi_slot() {
         let (layout, _guard) = tempdir::create();
@@ -1095,9 +1171,11 @@ mod tests {
         let (actions, esp) = plan(Arch::Aarch64, true, None, &layout).unwrap();
         let text = format!("{actions:?}");
 
-        // 结构断言：定位到具体那一步的参值，不靠整串包含——否则 12 个
-        // 模块步骤的 `aarch64-unknown-none` 会替 kernel-image 步骤“顶包”，
-        // 把目标写回 x86 也测不出来。
+        // Structural assertion: locate the argument value of that specific
+        // step instead of relying on whole-string containment — otherwise the
+        // `aarch64-unknown-none` of the 12 module steps would stand in for the
+        // kernel-image step, and writing the target back to x86 would go
+        // undetected.
         let step_flag = |pkg: &str, flag: &str| -> String {
             actions
                 .iter()
@@ -1123,7 +1201,8 @@ mod tests {
             "fw-aarch64-none",
             "kernel-image 腿必须用 fw-aarch64-none（M3.2 定的词汇表）"
         );
-        // 反向断言：x86 的四个写死值一个也不许出现（否则就是表没生效）。
+        // Reverse assertion: none of x86's four hardcoded values may appear
+        // (otherwise the table did not take effect).
         for x86_only in [
             "x86_64-unknown-uefi",
             "fw-x86-uefi",
@@ -1135,12 +1214,14 @@ mod tests {
                 "aarch64 计划里不应残留 x86 写死值 {x86_only}"
             );
         }
-        // 加载项与自动引导脚本同名（名字写错 = AAVMF 根本不加载）。
+        // The load option and the auto-boot script carry the same name (a
+        // wrong name means AAVMF never loads anything).
         assert!(
             text.contains("BOOTAA64.EFI") && text.contains("startup.nsh"),
             "ESP 默认加载项应为 BOOTAA64.EFI 且同步写进 startup.nsh"
         );
-        // 其余构形与 x86_64 同调（11 模块 + sh + shim + kernel + mkfs + mfs = 16）。
+        // Everything else matches x86_64 (11 modules + sh + shim + kernel +
+        // mkfs + mfs = 16).
         assert_eq!(
             actions
                 .iter()
@@ -1152,14 +1233,17 @@ mod tests {
         assert!(esp.ends_with("minix.img"));
     }
 
-    /// 自动引导脚本逐字节契约：x86_64 腿的 `startup.nsh` 必须与放行 aarch64
-    /// 之前逐字节相同（NK4-A 翻绿链路的外部产物，不得被「表化」顺手改掉），
-    /// aarch64 腿只能差异在加载项文件名那一段。
+    /// Byte-exact auto-boot script contract: the x86_64 leg's `startup.nsh`
+    /// must stay byte-identical to before aarch64 was enabled (an external
+    /// artifact of the green chain that must not be changed incidentally by
+    /// tabling it), and the aarch64 leg may differ only in the load-option
+    /// filename segment.
     #[test]
     fn startup_nsh_bytes_are_the_frozen_template_per_loader_name() {
-        /// 放行前的 x86_64 常量原文（`git show 873f3e947:os/xtask/src/image.rs`
-        /// 里 `Action::Write` 的 `bytes`）——多一个尾反斜杠也是行为等价但契约
-        /// 已变，所以比的是字节而不是「能不能启动」。
+        /// The x86_64 constant text from before the change (the `bytes` of
+        /// `Action::Write` in `git show 873f3e947:os/xtask/src/image.rs`) — even
+        /// one extra trailing backslash is behaviorally equivalent but changes
+        /// the contract, so this compares bytes rather than "does it boot".
         const X86_FROZEN: &str = "echo -off\r\nFS0:\r\ncd EFI\\BOOT\r\nBOOTX64.EFI\r\n";
         let nsh = |arch: Arch, module_target: &str| -> Vec<u8> {
             let (layout, _guard) = tempdir::create();
@@ -1182,7 +1266,8 @@ mod tests {
         );
     }
 
-    /// 原型文法：两行头 + 目录递归收口 + console 设备行（major 4）。
+    /// Prototype grammar: two header lines + recursive directory closing +
+    /// console device line (major 4).
     #[test]
     fn etc_proto_grammar_and_console_device_line() {
         let (layout, _guard) = tempdir::create();
@@ -1241,7 +1326,8 @@ mod tests {
         );
     }
 
-    /// NK4-C 续-277：atf_tests 非空 → 根下多一个 tests 目录段（同 0755 可执行面）。
+    /// A non-empty atf_tests adds a tests directory segment under the root (the
+    /// same 0755 executable surface).
     #[test]
     fn etc_proto_seeds_atf_tests_dir() {
         let (layout, _guard) = tempdir::create();
@@ -1265,11 +1351,13 @@ mod tests {
             lines.contains(&"t_memchr ---755 0 0 target/atf/aarch64/tests/t_memchr"),
             "测试 ELF 经宿主相对路径播种（同 bin_entries 文法）"
         );
-        // tests 段带自己的 $ 收口 → 总收口数从 4 变 5。
+        // The tests segment brings its own $ closing → the total closing count
+        // goes from 4 to 5.
         assert_eq!(lines.iter().filter(|l| **l == "$").count(), 5);
     }
 
-    /// /etc 最小集缺件时原型生成必须报错（装机面不造缺 rc 的镜像）。
+    /// Prototype generation must fail when the minimal /etc set is missing (the
+    /// install surface never ships an image without rc).
     #[test]
     fn etc_proto_requires_rc_and_ttys() {
         let (layout, guard) = tempdir::create();
@@ -1286,8 +1374,10 @@ mod tests {
         );
     }
 
-    /// NK4-C 续-278：用例名提取器对 `ATF_TC(name);` 声明行去重收集，
-    /// HEAD/BODY 定义行不计名；真实套件源至少提 1 名（防声明面漂移）。
+    /// The case-name extractor collects `ATF_TC(name);` declaration lines
+    /// without duplicates and does not count HEAD/BODY definition lines; real
+    /// suite sources yield at least one name (guarding against declaration
+    /// drift).
     #[test]
     fn extract_atf_tc_names_collects_declarations_only() {
         let sample = "ATF_TC(memchr_basic);\nATF_TC_HEAD(memchr_basic, tc)\n{\n}\nATF_TC_BODY(memchr_basic, tc)\n{\n}\nATF_TC(memchr_simple);\n";
@@ -1298,8 +1388,9 @@ mod tests {
         assert!(extract_atf_tc_names("/* 声明面漂移的样本 */\nint main(){}\n").is_empty());
     }
 
-    /// 续-278：exec 行必须落在 `exit 0` 之前（尾行固定返回码语义不被破坏）；
-    /// 空 exec 列表逐字节同旧；无 exit 0 行时追加到尾部。
+    /// exec lines must land before `exit 0` (the trailing fixed return-code
+    /// semantics stay intact); an empty exec list is byte-identical to before;
+    /// without an exit 0 line they are appended at the end.
     #[test]
     fn inject_rc_execs_lands_before_exit_zero() {
         let rc = "echo m\n/tests/p1\nexit 0\n";
@@ -1318,7 +1409,8 @@ mod tests {
         );
     }
 
-    /// 续-278：rc_host Some 时 proto 的 rc 条目改指变体宿主路径。
+    /// With rc_host Some, the proto's rc entry points at the variant host
+    /// path.
     #[test]
     fn etc_proto_rc_host_override() {
         let (layout, _guard) = tempdir::create();
@@ -1340,8 +1432,9 @@ mod tests {
         assert!(!proto.contains("rc ---755 0 0 etc/rc"));
     }
 
-    /// 续-278：ATF_SUITE 每一项的 minix3 源真实存在且能提到用例名（装配面
-    /// 静态契约：表与仓内容对账，防改名/移动后静默少播）。
+    /// Every ATF_SUITE entry's minix3 source really exists and yields case names
+    /// (a static assembly-surface contract: the table is reconciled against repo
+    /// contents so a rename/move cannot silently shrink the seeded set).
     #[test]
     fn atf_suite_entries_have_sources_with_cases() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

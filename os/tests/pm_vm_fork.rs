@@ -1,40 +1,52 @@
-//! E5(a) — PM↔VM↔VFS fork 全链路联调（宿主态，走 wire 契约）。
+//! E5(a) — full-chain PM↔VM↔VFS fork integration (hosted form, over the wire contract).
 //!
-//! 本文件曾整体注释停用（自注 "DEPRECATED: permanently disabled"），停用
-//! 注释给出的复活条件是：等 E1（minix-sys 用户态 trap 层）与 E2（`SYS_*`
-//! wrapper）落地后，改走 minix-sys 消息层重写——两者已于 2026-09-16/17
-//! 闭环（edge_todo.md E1/E2），本文件即 E5(a) 的宿主半（edge4.md §5）。
+//! This file was once commented out wholesale (self-labelled "DEPRECATED:
+//! permanently disabled"); the revival condition given in that comment was: once
+//! E1 (the minix-sys userland trap layer) and E2 (the `SYS_*` wrappers) landed,
+//! rewrite it on the minix-sys message layer — both closed on 2026-09-16/17, and
+//! this file is the hosted half of E5(a).
 //!
-//! # 链路面（三层全真代码，只有 VM 内部以 wire 契约代替）
+//! # Chain surface (all three layers are real code; only VM internals are
+//! replaced by the wire contract)
 //!
-//! 1. **PM**：`minix_pm::fork::do_fork` 真实状态机跑全步（槽位扫描 / 容量门 /
-//!    `vm_fork` / 拷贝 / pid / `tell_vfs`）。出站消息由 PM 自带的
-//!    `TestIpcTransport` 捕获——该类型按集成测试需要刻意不做 `cfg(test)`
-//!    门控（`servers/pm/src/ipc/transport.rs:165-166` 自证）。
-//! 2. **VM**：宿主态不可驱动（`minix-vm` 模块全 `pub(crate)`，`new_for_test`
-//!    为 `cfg(test)`）。按停用注释指定的 "mock IPC + wire 契约" 路径：请求用
-//!    VM 侧解码器 [`VmForkIn`] 回解、应答用 VM 侧编码器 [`VmForkOut`] 构造
-//!    ——PM 手写编码与 VM 解码器互为见证，测的是跨服务 wire 对账（而非
-//!    手抄字节）。VM 内部 fork 处理（CoW/内存面）由 `minix-vm` 自身单测覆盖。
-//! 3. **VFS**：捕获到的 `VFS_PM_FORK` 逐域断言后，以消息字段还原
-//!    `VfsCall::Fork` 并交给真实主线入口 `minix_vfs::VfsPmHandler::handle`
-//!    （与 `dispatcher.rs:179-185` 同臂）消费，断言子 fproc 的拷贝语义
-//!    （端点 / `child_pid` / 凭证 / filp 表共享）——`child_pid` 取自 PM
-//!    编入消息的 m7i3，闭环不断。
+//! 1. **PM**: `minix_pm::fork::do_fork` runs the real state machine through every
+//!    step (slot scan / capacity gate / `vm_fork` / copy / pid / `tell_vfs`).
+//!    Outbound messages are captured by PM's own `TestIpcTransport` — that type
+//!    deliberately carries no `cfg(test)` gate because integration tests need it
+//!    (`servers/pm/src/ipc/transport.rs:165-166` attests this).
+//! 2. **VM**: cannot be driven in the hosted form (`minix-vm` is all `pub(crate)`
+//!    and `new_for_test` is `cfg(test)`). Following the "mock IPC + wire
+//!    contract" path the disabled comment prescribed: requests are re-decoded
+//!    with the VM-side decoder [`VmForkIn`] and replies are built with the
+//!    VM-side encoder [`VmForkOut`] — PM's hand-written encoding and VM's decoder
+//!    witness each other, so what is tested is cross-service wire agreement, not
+//!    hand-copied bytes. VM's internal fork work (CoW / memory face) is covered
+//!    by `minix-vm`'s own unit tests.
+//! 3. **VFS**: after asserting the captured `VFS_PM_FORK` field by field, the
+//!    message fields reconstruct `VfsCall::Fork` and hand it to the real mainline
+//!    entry `minix_vfs::VfsPmHandler::handle` (the same arm as
+//!    `dispatcher.rs:179-185`) to consume, asserting the child fproc's copy
+//!    semantics (endpoint / `child_pid` / credentials / shared filp table) — the
+//!    `child_pid` comes from the m7i3 PM encoded into the message, so the loop
+//!    stays closed.
 //!
-//! # 覆盖
+//! # Coverage
 //!
-//! - 成功链：PM→VM→VFS 全通，三侧产物逐项断言；
-//! - VM 拒绝回滚：`vm_fork` 失败不占槽、不通知 VFS（forkexit.c:78-79 语义）。
+//! - Success chain: PM→VM→VFS all the way through, with each side's products
+//!   asserted item by item;
+//! - VM refusal rollback: a failed `vm_fork` takes no slot and does not notify
+//!   VFS (forkexit.c:78-79 semantics).
 //!
-//! 真机链路（VM 真实参战）挂 edge4 T2 / E5；旧冗余死壳
-//! `pm_vm_fork_test.rs` 随本批删除（同内容注释件，复活产物即本文件）。
+//! The real-machine chain (with VM actually participating) is pursued separately
+//! as T2 / E5; the old redundant dead shell `pm_vm_fork_test.rs` was deleted with
+//! this batch (a commented-out copy of the same content; the revived product is
+//! this file).
 
 use minix_pm::TestIpcTransport;
 use minix_pm::exit::KernelGateway;
 use minix_vfs::vnode::FsCtl;
 
-/// 空操作 vnode 归还通道(零引用跨界时的 REQ_PUTNODE 宿主替身)。
+/// No-op vnode return channel (the hosted stand-in for REQ_PUTNODE at the zero-reference boundary crossing).
 struct NopCtl;
 impl FsCtl for NopCtl {
     fn put_node(
@@ -55,13 +67,13 @@ use minix_types::{
 use minix_vfs::PmHandler;
 
 // ---------------------------------------------------------------------------
-// 夹具
+// Fixtures
 // ---------------------------------------------------------------------------
 
-/// 父进程 pid（夹具值，与 PM 内部 `create_test_table_with_parent` 同形）。
+/// Parent pid (fixture value, same shape as PM's internal `create_test_table_with_parent`).
 const PARENT_PID: i32 = 100;
 
-/// 父进程夹具：槽 0 占用、Running，其余槽为空。
+/// Parent fixture: slot 0 is in use and Running; the remaining slots are empty.
 fn table_with_parent() -> ProcTable {
     let mut table = ProcTable::new();
     let parent = table.get_mut(0).expect("slot 0 exists");
@@ -75,7 +87,7 @@ fn parent_endpoint() -> Endpoint {
     Endpoint::from_generation_slot(1, 0)
 }
 
-/// 子端点：槽 1、代 1——VM 的 `sys_fork` 使用 PM 传入的槽位并递增代际。
+/// Child endpoint: slot 1, generation 1 — VM's `sys_fork` uses the slot PM passed in and bumps the generation.
 fn child_endpoint() -> Endpoint {
     Endpoint::from_generation_slot(1, 1)
 }
@@ -84,7 +96,7 @@ fn child_slot() -> UserSlot {
     UserSlot::new(1)
 }
 
-/// VM 侧 fork 应答（OK + 子 endpoint 在 m1i3），用 VM 自己的编码器构造。
+/// VM-side fork reply (OK plus the child endpoint in m1i3), built with VM's own encoder.
 fn vm_fork_ok_reply(child: Endpoint) -> Message {
     let mut reply = Message {
         m_type: OK,
@@ -97,7 +109,7 @@ fn vm_fork_ok_reply(child: Endpoint) -> Message {
     reply
 }
 
-/// 无操作内核网关：fork 链在夹具上不触内核面（tracer 未设，sys_* 不可达）。
+/// No-op kernel gateway: on this fixture the fork chain never reaches the kernel face (no tracer is set, so the sys_* calls are unreachable).
 struct NoopKernelGateway;
 
 impl KernelGateway for NoopKernelGateway {
@@ -182,7 +194,7 @@ impl KernelGateway for NoopKernelGateway {
 }
 
 // ---------------------------------------------------------------------------
-// E5(a).1 成功链：PM 状态机 → VM_FORK（wire 回解）→ VFS_PM_FORK（逐域）→ VFS 真处理
+// E5(a).1 Success chain: PM state machine → VM_FORK (wire re-decode) → VFS_PM_FORK (field by field) → real VFS handling
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -195,7 +207,7 @@ fn fork_chain_pm_vm_vfs_all_real() {
     let child_pid = do_fork(&mut table, parent_endpoint(), &mut transport, &mut kern)
         .expect("VM 应答 OK：全链应成功");
 
-    // ── 出站消息一：VM_FORK（PM 手写编码 ↔ VM 解码器互证）──
+    // ── Outbound message one: VM_FORK (PM's hand-written encoding ↔ VM decoder witness each other) ──
     let sent = transport.sent();
     assert_eq!(sent.len(), 2, "do_fork 出站恰两条：VM_FORK + VFS_PM_FORK");
     let (vm_dest, vm_req) = &sent[0];
@@ -209,7 +221,7 @@ fn fork_chain_pm_vm_vfs_all_real() {
     );
     assert_eq!(req.child_slot, child_slot(), "VMF_SLOTNO = m1i2");
 
-    // ── 子进程槽位（PM 侧）──
+    // ── Child slot (PM side) ──
     let child = table.get(child_slot().get()).expect("child slot exists");
     assert!(matches!(child.state.lifecycle, Lifecycle::Running));
     assert_eq!(child.identity.endpoint, child_endpoint());
@@ -221,7 +233,7 @@ fn fork_chain_pm_vm_vfs_all_real() {
         "父槽 pid 不被改写"
     );
 
-    // ── 出站消息二：VFS_PM_FORK（tell_vfs 载荷 m7 逐域）──
+    // ── Outbound message two: VFS_PM_FORK (the tell_vfs payload's m7 field by field) ──
     let (vfs_dest, vfs_msg) = &sent[1];
     assert_eq!(*vfs_dest, Endpoint::VFS);
     assert_eq!(vfs_msg.m_type, VFS_PM_FORK);
@@ -232,9 +244,11 @@ fn fork_chain_pm_vm_vfs_all_real() {
     assert_eq!(m7.m7i4, -1, "m7i4 = -1（Fork 变体固定值）");
     assert_eq!(m7.m7i5, -1, "m7i5 = -1（Fork 变体固定值）");
 
-    // ── VFS 侧：真实 PM 协议入口消费同一条消息（m7 字段还原 VfsCall）──
-    // `VfsPmHandler::handle(VfsCall::Fork)` 即 VFS 主线对 PM 通知的分发臂
-    // （dispatcher.rs:179-185），child_pid 取自 PM 编入消息的 m7i3。
+    // ── VFS side: the real PM protocol entry consumes the same message (the m7
+    // fields reconstruct VfsCall) ──
+    // `VfsPmHandler::handle(VfsCall::Fork)` is VFS mainline's dispatch arm for PM
+    // notifications (dispatcher.rs:179-185); child_pid comes from the m7i3 PM
+    // encoded into the message.
     let mut fproc = minix_vfs::fproc::FProcTable::new();
     {
         let parent = fproc
@@ -281,15 +295,16 @@ fn fork_chain_pm_vm_vfs_all_real() {
 }
 
 // ---------------------------------------------------------------------------
-// E5(a).2 VM 拒绝回滚：不占槽、不通知 VFS
+// E5(a).2 VM refusal rollback: no slot taken, no VFS notification
 // ---------------------------------------------------------------------------
 
 #[test]
 fn fork_chain_vm_failure_rolls_back() {
     let mut table = table_with_parent();
     let mut transport = TestIpcTransport::new();
-    // C 语义：taskcall 返回值非 OK → errno 直接传播（forkexit.c:78-79），
-    // 且此时尚未进入 forkexit.c:83 的"不可失败窗口"——PM 侧不得留痕。
+    // C semantics: a taskcall return value other than OK → the errno propagates
+    // directly (forkexit.c:78-79), and the "cannot fail" window of forkexit.c:83
+    // has not been entered yet — the PM side must leave no trace.
     transport.queue_sendrec_reply(Message {
         m_type: -ENOMEM,
         ..Message::default()
@@ -300,7 +315,7 @@ fn fork_chain_vm_failure_rolls_back() {
         .expect_err("VM 拒绝时 fork 必须失败");
     assert!(matches!(err, ForkCoordError::VmError));
 
-    // 回滚断言：只发出 VM_FORK 一条；子槽未占、pid 未分配。
+    // Rollback assertions: only one VM_FORK goes out; the child slot is unoccupied and no pid was allocated.
     let sent = transport.sent();
     assert_eq!(sent.len(), 1, "失败链不得通知 VFS");
     assert_eq!(sent[0].0, Endpoint::VM);

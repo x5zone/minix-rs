@@ -6,7 +6,7 @@
 //! with every port access going through the kernel (`my_inb`/`sys_outb`,
 //! rs232.c:110/:223-232). One 16550 register set serves one line.
 //!
-//! Port access model (OQ-N3 裁决, new_edge4 §6): the driver never holds
+//! Port access model (resolved by decision): the driver never holds
 //! I/O privilege — every port read/write is a SYS_DEVIO kernel call, and
 //! the kernel's `do_devio` gate (`syscall_device.rs:458-484`) enforces the
 //! CHECK_IO_PORT whitelist where one is declared. Stock C declares
@@ -88,7 +88,7 @@ pub struct SerialBackend<U: UartPort> {
 }
 
 impl SerialBackend<WireUart> {
-    /// The COM1 output face (QEMU `-serial` carrier, OQ-N3 方案 B).
+    /// The COM1 output face (QEMU `-serial` carrier, MMIO-free port lane).
     pub fn com1() -> SerialBackend<WireUart> {
         SerialBackend::new(WireUart, COM1_BASE)
     }
@@ -134,7 +134,7 @@ impl<U: UartPort> LineBackend for SerialBackend<U> {
     }
 }
 
-// ── aarch64 PL011 MMIO arm (NK4-C 续-132) ─────────────────────────────────
+// ── aarch64 PL011 MMIO arm ───────────────────────────────────────────────
 //
 // C correspondence: the ARM board serial output face. C Minix3's i386
 // `rs232.c` talks a 16550 over port I/O; the ARM boards' UART is the
@@ -148,8 +148,8 @@ impl<U: UartPort> LineBackend for SerialBackend<U> {
 // - `FR`  @ +0x18 — flag register: `TXFF` (bit 5) set means the transmit
 //   FIFO cannot take another byte; ready = `FR & TXFF == 0`.
 //
-// Port-access model: unlike the 16550 lane (SYS_DEVIO kernel mediation,
-// OQ-N3), there is no port lane on aarch64 — the page is mapped once at
+// Port-access model: unlike the 16550 lane (SYS_DEVIO kernel mediation),
+// there is no port lane on aarch64 — the page is mapped once at
 // driver init via `VM_MAP_PHYS` (VM's `map_perm_check` admits TTY by
 // endpoint, C mmap.c parity) and driven with volatile accesses. The same
 // registered deviation as the 16550 arm applies: no re-initialization
@@ -292,16 +292,18 @@ impl<P: Pl011Regs> LineBackend for Pl011Backend<P> {
     }
 }
 
-// ── riscv64 mapped NS16550A arm (NK4-C 续-132) ────────────────────────────
+// ── riscv64 mapped NS16550A arm ──────────────────────────────────────────
 //
-// QEMU `virt` (riscv) 的控制台 UART 是 NS16550A 兼容芯片，MMIO @
-// 0x1000_0000（设备树 `reg-io-width=1, reg-shift=0`——寄存器字节宽、
-// 1 字节步距）。寄存器模型与 16550 臂完全同族（THR@0 / LSR@5），差
-// 别只在访问车道：无端口 I/O，走 VM_MAP_PHYS 映页 + volatile 字节访
-// 问（与 PL011 臂同一通道）。映射一次持有终生；`SerialBackend` 的
-// `base` 传 0——`port` 操作数即寄存器偏移。
+// The QEMU `virt` (riscv) console UART is an NS16550A-compatible chip,
+// MMIO at 0x1000_0000 (device tree `reg-io-width=1, reg-shift=0` — byte
+// wide registers, one-byte stride). The register model is the same family
+// as the 16550 arm (THR@0 / LSR@5); only the access lane differs: no port
+// I/O, instead a VM_MAP_PHYS page mapping with volatile byte accesses (the
+// same channel as the PL011 arm). The mapping is made once and held for
+// life; `SerialBackend` takes `base` 0 — the `port` operand is then the
+// register offset.
 
-/// QEMU `virt` (riscv) NS16550A base（板卡常量）。
+/// QEMU `virt` (riscv) NS16550A base (board constant).
 pub const NS16550A_VIRT_BASE: u64 = 0x1000_0000;
 
 /// The wire register bank: the NS16550A page mapped at init, driven
@@ -444,12 +446,13 @@ mod tests {
         // Borrow Split: the backend owns the chip; record after the drain.
         let moved = backend.write_bytes(b"abcd");
         assert_eq!(moved, 1);
-        // SAFETY(test): SerialBackend<OneShot> 字段访问需先取回所有权。
+        // SAFETY(test): field access on SerialBackend<OneShot> requires
+        // taking back ownership first.
         let SerialBackend { uart, .. } = backend;
         assert_eq!(uart.tx.into_inner(), b"a".to_vec());
     }
 
-    // ── PL011 arm tests (续-132) ────────────────────────────────────────
+    // ── PL011 arm tests ─────────────────────────────────────────────────
 
     /// Scripted PL011 bank: `flags` per script, every pushed byte
     /// recorded. Mirrors `FakeUart` for the ARM register model.

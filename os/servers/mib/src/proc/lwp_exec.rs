@@ -7,14 +7,17 @@
 //! exactly like C. What C reads from its static tables, the views in
 //! [`super::rows`] decode here.
 //!
-//! `[ARCH: A-7]` **已消解（C-25，2026-09-20）**：内核 GET_PROCTAB 行扩面后
-//! `p_dequeued`/`p_cpuavg` 到场，`l_slptime`（出队时刻差）与
-//! `l_pctcpu`/`l_cpticks`（`cpuavg_getstats`）都按 C 的公式出真值。
-//! **余项**：内核侧的 cpuavg 记账目前只覆盖 `KERNEL` 伪进程（C 的三个
-//! `context_stop(proc_addr(KERNEL))` 站点），用户进程那一半在 C 走汇编中断
-//! 入口（`mpx.S:77-90`），Rust 模型尚无对应站点——用户行的 `l_pctcpu` 因此
-//! 仍为 0，登记在 FIXLOG（C-25 余项）。VFS light 表仍按 fail-closed 降级
-//! 为 "idle"，cdev/sdev 睡眠车道不触发。
+//! `[ARCH: A-7]` **resolved**: after the kernel GET_PROCTAB row was widened,
+//! `p_dequeued`/`p_cpuavg` are present, and `l_slptime` (the difference of
+//! dequeue times) and `l_pctcpu`/`l_cpticks` (`cpuavg_getstats`) both yield
+//! true values by C's formulas.
+//! **Remainder**: kernel-side cpuavg accounting currently covers only the
+//! `KERNEL` pseudo-process (C's three `context_stop(proc_addr(KERNEL))`
+//! sites); the user-process half goes through the assembly interrupt entry in
+//! C (`mpx.S:77-90`) and the Rust model has no counterpart site yet — so a user
+//! row's `l_pctcpu` is still 0, recorded in the fix log. The VFS light table
+//! still degrades fail-closed to "idle", and the cdev/sdev sleep lane does not
+//! fire.
 //!
 //! 17-mib-proc-lwp.md.
 
@@ -74,8 +77,9 @@ pub fn kern_lwp<K: MibKernel, S: MibServices>(
 
     let kern = KernelRows::new(&tables.kernel_tab);
     let pm = PmRows::new(&tables.pm_tab);
-    // C-22 后半：light 表随 VFS 生产者接通——cdev/sdev 阻塞的 wchan/
-    // wmesg 车道由此点亮；表缺席时（A-7 降级）每槽退化为 idle。
+    // The light table is wired up together with the VFS producer: the
+    // wchan/wmesg lane for cdev/sdev blocking lights up from here; when the
+    // table is absent (the A-7 degradation) every slot falls back to idle.
     let light_view = LightRows::new(&tables.vfs_tab);
 
     let old_len = oldp.map(|o| o.left);
@@ -223,8 +227,8 @@ pub(super) struct RowState {
     pub sinter: bool,
     /// The endpoint `DriverName`/`EndpointName` words name: the blocking
     /// driver's endpoint (no parens) for the former, the `P_BLOCKEDON`
-    /// peer (parens) for the latter. C: `fill_wmesg` 的 `endpt` 实参
-    /// （proc.c:318-321/:382）。
+    /// peer (parens) for the latter. C: the `endpt` argument of `fill_wmesg`
+    /// (proc.c:318-321/:382).
     pub wmesg_ep: i32,
 }
 
@@ -251,9 +255,9 @@ pub(super) fn judge_row_state(
             wmesg_ep: 0,
         },
         _ => {
-            // The VFS lane lights up only through the light row (C-22):
-            // blocked_on feeds the lane decode, fpl_task feeds the
-            // cdev/sdev wchan word and the driver-name endpoint.
+            // The VFS lane lights up only through the light row: blocked_on
+            // feeds the lane decode, fpl_task feeds the cdev/sdev wchan word and
+            // the driver-name endpoint.
             let (lane, task_ep) = match light {
                 Some(l) => (super::lwp::decode_blocked_on(l.blocked_on), l.task_ep),
                 None => (VfsLane::Idle, 0),
@@ -301,18 +305,19 @@ fn fill_user_row(
     }
     l.l_pid = row.mp_pid as u32;
     put_name(&mut l.l_name, &row.mp_name);
-    // started rides the PM row since C-21; dequeued is still pending the
-    // kernel row (C-21 first half) and answers 0 (module note).
+    // started rides the PM row; dequeued is still pending the kernel row and
+    // answers 0 (module note).
     fill_common(l, &kp, Some(row.mp_started), now, hz);
 }
 
 /// `fill_lwp_common` — proc.c:399-456. `started` is `None` for kernel tasks
-/// (their swtime is raw uptime, proc.c:430-433)。
+/// (their swtime is raw uptime, proc.c:430-433).
 ///
-/// C-25（2026-09-20）：`p_dequeued`/`p_cpuavg` 已随内核行扩面到场，A-7 的
-/// "如实回 0"随之撤换——`l_slptime` 用行里的出队时刻算（C `proc.c:438`），
-/// `l_pctcpu`/`l_cpticks` 走 [`minix_types::types::cpuavg::getstats`]
-/// （C `proc.c:453` 调 `cpuavg_getstats`）。
+/// `p_dequeued`/`p_cpuavg` arrived with the kernel row widening, so the old
+/// "answer 0 honestly" shape is retired — `l_slptime` uses the dequeue time
+/// carried in the row (C `proc.c:438`), and `l_pctcpu`/`l_cpticks` go through
+/// [`minix_types::types::cpuavg::getstats`] (C `proc.c:453` calls
+/// `cpuavg_getstats`).
 fn fill_common(l: &mut KinfoLwp, kp: &ProcInfoStruct, started: Option<u64>, now: u64, hz: u32) {
     l.l_lid = kp.p_endpoint;
     let (swtime, slptime) = judge_times(
@@ -331,9 +336,10 @@ fn fill_common(l: &mut KinfoLwp, kp: &ProcInfoStruct, started: Option<u64>, now:
         super::tables::ticks_to_timeval(kp.p_user_time.saturating_add(kp.p_sys_time), hz as u64);
     l.l_rtime_sec = sec as u32;
     l.l_rtime_usec = usec as u32;
-    // C `proc.c:447-454`：三个处理器用量一次算出来——均值进 l_pctcpu、本秒
-    // 滴答数进 l_cpticks、短期估计只用于 C 的局部 estcpu（无对外字段）。
-    // `hz == 0` 是建模护栏（`sys_hz` 保证非零）。
+    // C `proc.c:447-454`: three processor-usage numbers come out of one pass —
+    // the average goes to l_pctcpu, this second's tick count to l_cpticks, and
+    // the short-term estimate is used only for C's local estcpu (no outward
+    // field). `hz == 0` is a modelling guardrail (`sys_hz` guarantees nonzero).
     if hz != 0 {
         let stats = minix_types::types::cpuavg::getstats(&kp.p_cpuavg, now, hz as u64);
         l.l_pctcpu = stats.avg;
@@ -369,9 +375,9 @@ fn block_target(kp: &ProcInfoStruct, self_endpt: Endpoint) -> BlockTarget {
 }
 
 /// Render the sleep word into `l_wmesg`. C: the literal lanes plus the two
-/// `fill_wmesg` calls (proc.c:287-386) — `DriverName` names the driver
-/// without parens（cdev/sdev 车道，C-22 后半点亮）, `EndpointName` names
-/// the `P_BLOCKEDON` peer with parens.
+/// `fill_wmesg` calls (proc.c:287-386) — `DriverName` names the driver without
+/// parens (the cdev/sdev lane, which lights up with the light table), while
+/// `EndpointName` names the `P_BLOCKEDON` peer with parens.
 fn render_wmesg(
     l: &mut KinfoLwp,
     kern: &KernelRows,
@@ -486,8 +492,10 @@ mod tests {
         // 40 ticks at hz 50 = 0.8s.
         assert_eq!(l.l_rtime_sec, 0);
         assert_eq!(l.l_rtime_usec, 800_000);
-        // 任务行的 cpuavg 账恒零：内核只给 KERNEL 伪进程记账（C 的三个
-        // `context_stop(proc_addr(KERNEL))` 站点），任务行拿到的就是零结构。
+        // A task row's cpuavg account is always zero: the kernel accounts only
+        // for the KERNEL pseudo-process (C's three
+        // `context_stop(proc_addr(KERNEL))` sites), so a task row receives the
+        // zero structure.
         assert_eq!(l.l_pctcpu, 0);
         assert_eq!(l.l_cpticks, 0);
     }
@@ -525,13 +533,14 @@ mod tests {
         assert_eq!(l.l_swtime, 12);
     }
 
-    /// C-25：`l_slptime` 用行里的出队时刻算、`l_pctcpu`/`l_cpticks` 走
-    /// `cpuavg_getstats`（C `proc.c:438` / `:453`）——不再是恒零的 A-7 形。
+    /// `l_slptime` is computed from the dequeue time carried in the row, and
+    /// `l_pctcpu`/`l_cpticks` go through `cpuavg_getstats` (C `proc.c:438` /
+    /// `:453`) — no longer the always-zero A-7 shape.
     #[test]
     fn test_user_row_uses_dequeued_and_cpuavg() {
         let mut tab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * core::mem::size_of::<ProcInfoStruct>()];
-        // 行：1000 时刻的 uptime、出队于 600、cpuavg 里上一秒跑了 25 个滴答
-        // （hz=50，故 estcpu = 50%）。
+        // The row: uptime at time 1000, dequeued at 600, 25 ticks run in the
+        // previous second of cpuavg (hz=50, hence estcpu = 50%).
         let kp = ProcInfoStruct {
             p_nr: 5,
             p_endpoint: 5,
@@ -566,16 +575,20 @@ mod tests {
         let mut l = zeroed_lwp();
         let pm_tab = vec![0u8; minix_types::NR_PROCS * core::mem::size_of::<MProcSnap>()];
         let pm = PmRows::new(&pm_tab);
-        // now = 1000（与 ca_base 同一秒，update 不推进时间轴）。
+        // now = 1000 (same second as ca_base, so update does not advance the
+        // time line).
         fill_user_row(&mut l, &kern, &pm, None, 5, &row, 1000, 50, Endpoint::NONE);
-        // slptime = (1000 - 600) / 50 = 8（C proc.c:438）。
+        // slptime = (1000 - 600) / 50 = 8 (C proc.c:438).
         assert_eq!(l.l_slptime, 8, "出队时刻差换算成秒");
-        // l_pctcpu 是 FSCALE 单位的衰减均值，不是百分比：C 的公式展开
+        // l_pctcpu is a decaying average in FSCALE units, not a percentage:
+        // C's formula expands to
         //   avg = (ccpu*avg)>>FSHIFT + ((FSCALE-ccpu)*(last/hz))>>FSHIFT
         //       = (1948*2048)>>11 + (100*1024)>>11 = 1948 + 50 = 1998
-        // （≈97.5% FSCALE；本秒未推进时间轴故只有衰减 + 并入两步）。
+        // (about 97.5% FSCALE; the time line did not advance this second, so
+        // only the decay and merge steps run).
         assert_eq!(l.l_pctcpu, 1998, "l_pctcpu 按 cpuavg_getstats 的均值出");
-        // 本行 ca_run = 0 → 本秒滴答数为 0（cpticks = ca_run >> FSHIFT）。
+        // This row has ca_run = 0 → this second's tick count is 0
+        // (cpticks = ca_run >> FSHIFT).
         assert_eq!(l.l_cpticks, 0);
     }
 
@@ -583,8 +596,9 @@ mod tests {
     fn test_user_row_wait_sleep() {
         let mut tab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * core::mem::size_of::<ProcInfoStruct>()];
         // Kernel side: blocked sending to endpoint 5 — a direct endpoint
-        // target, so judge_sleep keeps the PM word (C 的 NONE/MIB 车道会
-        // 用 RTS 词覆盖 PM 词，proc.c:343-364；Direct 保留，:380-382)。
+        // target, so judge_sleep keeps the PM word (C's NONE/MIB lane would
+        // overwrite the PM word with RTS words, proc.c:343-364; Direct keeps
+        // it, :380-382).
         let kp = ProcInfoStruct {
             p_nr: 6,
             p_rts_flags: RTS_SENDING,
@@ -621,8 +635,9 @@ mod tests {
         assert_eq!(l.l_flag, (minix_types::L_INMEM | minix_types::L_SINTR) as i32);
     }
 
-    // ── walker 级端到端：producer（mock 双 seam）→ Tables 拉取 →
-    // 真实 `sysctl()` 走 CTL_KERN/KERN_LWP → 拷出字节逐行解码断言。──
+    // ── walker-level end to end: producer (mock double seam) → Tables pull →
+    // a real `sysctl()` through CTL_KERN/KERN_LWP → per-row decode assertions
+    // on the copied-out bytes. ──
 
     use crate::proc::test_mocks::{self as mocks, put_row};
     use crate::auth::CallAuth;
@@ -634,14 +649,16 @@ mod tests {
     use alloc::string::String;
     use minix_types::{Endpoint, KI_LNAMELEN, KI_WMESGLEN};
 
-    /// 场景：任务 1 名 "memory"；用户槽 5 = 可运行 "ps"(pid 100)、
-    /// 槽 6 = WAITING 挂起 "sh"(pid 101)、槽 7 = 僵尸(pid 103, 不进列表)、
-    /// 槽 8 = cdev 阻塞 "tty-read"(pid 104, light 表给 TTY 端点)。
+    /// Scenario: task 1 named "memory"; user slot 5 = runnable "ps" (pid 100),
+    /// slot 6 = WAITING-suspended "sh" (pid 101), slot 7 = zombie (pid 103,
+    /// filtered out of the list), slot 8 = cdev-blocked "tty-read" (pid 104,
+    /// the light table gives the TTY endpoint).
     fn fixture() -> (mocks::FakeKernel, mocks::FakeServices) {
         let krow = core::mem::size_of::<ProcInfoStruct>();
         let mut proctab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * krow];
         let put_k = |v: &mut Vec<u8>, kslot: usize, row: &ProcInfoStruct| {
-            // SAFETY(test): repr(C) POD 写进槽窗口，索引在界内。
+            // SAFETY(test): repr(C) POD write into the slot window, index in
+            // bounds.
             unsafe {
                 core::ptr::write_unaligned(
                     v.as_mut_ptr().add(kslot * krow) as *mut ProcInfoStruct,
@@ -681,7 +698,8 @@ mod tests {
         });
         let mut pm = vec![0u8; minix_types::NR_PROCS * core::mem::size_of::<MProcSnap>()];
         let put_m = |v: &mut Vec<u8>, mslot: usize, row: &MProcSnap| {
-            // SAFETY(test): repr(C) POD 写进槽窗口，索引在界内。
+            // SAFETY(test): repr(C) POD write into the slot window, index in
+            // bounds.
             unsafe {
                 core::ptr::write_unaligned(
                     v.as_mut_ptr().add(mslot * core::mem::size_of::<MProcSnap>())
@@ -716,7 +734,8 @@ mod tests {
             mp_name: name_bytes("dead"),
             ..MProcSnap::default()
         });
-        // 内核行：槽 8 cdev 阻塞在 TTY 驱动（端点 -1 之外的普通端点 4）。
+        // Kernel row: slot 8 cdev-blocked on the TTY driver (a normal endpoint
+        // 4, not the -1 sentinel).
         put_row(
             &mut proctab,
             minix_types::NR_TASKS + 8,
@@ -729,21 +748,21 @@ mod tests {
                 ..ProcInfoStruct::default()
             },
         );
-        // light 表（C-22 后半）：槽 8 blocked_on=CDEV(5)、task=端点 4。
+        // Light table: slot 8 has blocked_on=CDEV(5), task=endpoint 4.
         let mut light = vec![0u8; minix_types::NR_PROCS * 16];
         let put_l = |v: &mut Vec<u8>, mslot: usize, tty: u64, blocked: u32, task: i32| {
             v[mslot * 16..mslot * 16 + 8].copy_from_slice(&tty.to_le_bytes());
             v[mslot * 16 + 8..mslot * 16 + 12].copy_from_slice(&blocked.to_le_bytes());
             v[mslot * 16 + 12..mslot * 16 + 16].copy_from_slice(&task.to_le_bytes());
         };
-        // tty-read 的 PM 行（pid 104, IN_USE）——list 的行来源。
+        // tty-read's PM row (pid 104, IN_USE) — the list's row source.
         put_m(&mut pm, 8, &MProcSnap {
             mp_pid: 104,
             mp_flags: mp_flags::IN_USE,
             mp_name: name_bytes("tty-read"),
             ..MProcSnap::default()
         });
-        put_l(&mut light, 8, 0, 5, 4); // blocked=CDEV, task=端点 4（ttydrv）
+        put_l(&mut light, 8, 0, 5, 4); // blocked=CDEV, task=endpoint 4 (ttydrv)
         (
             mocks::FakeKernel {
                 proctab,
@@ -791,16 +810,18 @@ mod tests {
                 newp: None,
             },
         );
-        // 5 个任务槽 + 4 个在用用户槽（僵尸被过滤）——off = 9 × elsz。
+        // 5 task slots + 4 in-use user slots (the zombie is filtered) — off =
+        // 9 × elsz.
         assert_eq!(out, SysctlOutcome::Done(9 * lsz as u64));
 
         let sink = c.kernel.sink.borrow();
         let read = |i: usize| -> KinfoLwp {
-            // SAFETY(test): repr(C) POD 读，i 在拷出范围内。
+            // SAFETY(test): repr(C) POD read, i inside the copied-out range.
             unsafe { core::ptr::read_unaligned(sink.as_ptr().add(i * core::mem::size_of::<KinfoLwp>()) as *const KinfoLwp) }
         };
 
-        // 任务槽 1："memory"，LSSLEEP，负 PID 回绕，wchan 类 0x00。
+        // Task slot 1: "memory", LSSLEEP, negative PID after the wrap-around,
+        // wchan class 0x00.
         let t1 = read(1);
         assert_eq!(t1.l_pid, (1i32 - minix_types::NR_TASKS as i32) as u32);
         assert_eq!(t1.l_stat, minix_types::LSSLEEP as i8);
@@ -810,13 +831,13 @@ mod tests {
         assert_eq!(t1.l_rtime_sec, 0);
         assert_eq!(t1.l_rtime_usec, 800_000);
 
-        // 用户槽 4（元素 5）："ttydrv" 可运行。
+        // User slot 4 (element 5): "ttydrv" is runnable.
         let u4 = read(minix_types::NR_TASKS);
         assert_eq!(u4.l_pid, 90);
         assert_eq!(u4.l_stat, minix_types::LSRUN as i8);
         assert_eq!(&u4.l_name[..7], b"ttydrv\0");
 
-        // 用户槽 5（元素 6）："ps" 可运行 → LSRUN，无 wchan。
+        // User slot 5 (element 6): "ps" is runnable → LSRUN, no wchan.
         let u5 = read(minix_types::NR_TASKS + 1);
         assert_eq!(u5.l_pid, 100);
         assert_eq!(u5.l_stat, minix_types::LSRUN as i8);
@@ -826,8 +847,9 @@ mod tests {
         assert_eq!(u5.l_lid, 5);
         assert_eq!(u5.l_priority, 2);
 
-        // 用户槽 6（元素 7）："sh" 在 PM WAITING、内核 SENDING 到 4 →
-        // PM 词保留（Direct 不覆盖）：wchan 0x102、"wait"、可中断。
+        // User slot 6 (element 7): "sh" is WAITING in PM and SENDING to 4 in
+        // the kernel → the PM word is kept (Direct does not overwrite): wchan
+        // 0x102, "wait", interruptible.
         let u6 = read(minix_types::NR_TASKS + 2);
         assert_eq!(u6.l_pid, 101);
         assert_eq!(u6.l_stat, minix_types::LSSLEEP as i8);
@@ -835,9 +857,9 @@ mod tests {
         assert_eq!(&u6.l_wmesg[..5], b"wait\0");
         assert_eq!(u6.l_flag, (minix_types::L_INMEM | minix_types::L_SINTR) as i32);
 
-        // 用户槽 8（元素 8）："tty-read" cdev 阻塞——light 表在（C-22
-        // 后半）→ wchan = (task_ep<<16)|(5<<8)|0x03，wmesg 是**驱动名**
-        // 无括号（DriverName 车道）。
+        // User slot 8 (element 8): "tty-read" is cdev-blocked — the light row
+        // is present → wchan = (task_ep<<16)|(5<<8)|0x03, and wmesg is the
+        // **driver name** without parens (the DriverName lane).
         let u8 = read(minix_types::NR_TASKS + 3);
         assert_eq!(u8.l_pid, 104);
         assert_eq!(u8.l_stat, minix_types::LSSLEEP as i8);
@@ -845,10 +867,12 @@ mod tests {
         assert_eq!(&u8.l_wmesg[..7], b"ttydrv\0");
         assert_eq!(u8.l_flag, (minix_types::L_INMEM | minix_types::L_SINTR) as i32);
 
-        // 僵尸（槽 7）不进列表：缓冲区到元素 8 为止（9 行）。
+        // The zombie (slot 7) does not enter the list: the buffer stops at
+        // element 8 (9 rows).
         assert_eq!(sink.len(), 9 * core::mem::size_of::<KinfoLwp>());
 
-        // 7 个元素（任务 0~4 + 用户 5、6），僵尸没有第 8 个。
+        // 7 elements (tasks 0..4 plus user slots 5 and 6); the zombie does not
+        // take the 8th.
         assert_eq!(sink.len(), 9 * core::mem::size_of::<KinfoLwp>());
     }
 
@@ -858,7 +882,7 @@ mod tests {
         let mut tables = Tables::new();
         let lsz = core::mem::size_of::<KinfoLwp>() as i32;
 
-        // 未知 pid → ESRCH（proc.c:564-566）。
+        // Unknown pid → ESRCH (proc.c:564-566).
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
         let out = walker::sysctl(
             &mut c,
@@ -870,7 +894,8 @@ mod tests {
         );
         assert_eq!(out, SysctlOutcome::err(ESRCH));
 
-        // 名字长度错 → EINVAL（proc.c:519-521，走 walker 的门）。
+        // Wrong name length → EINVAL (proc.c:519-521, through the walker's
+        // gate).
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
         let out = walker::sysctl(
             &mut c,
@@ -882,7 +907,7 @@ mod tests {
         );
         assert_eq!(out, SysctlOutcome::err(EINVAL));
 
-        // pid == 0：只回任务段（proc.c:558-560）。
+        // pid == 0: only the task range is returned (proc.c:558-560).
         let mut c = e2e_ctx(&mut k, &mut s, &mut tables);
         let out = walker::sysctl(
             &mut c,

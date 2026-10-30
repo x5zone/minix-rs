@@ -18,9 +18,9 @@
 //!
 //! The real ends are final-shape but honest: every call is packed exactly as
 //! production will send it and delegated to minix-sys's direct transports.
-//! Until the user-space trap layer lands (edge E1), those report `EIO` —
-//! the shape is committed, the power comes later (the VM campaign's
-//! transport precedent, 02-stage-vm/todo.md T9).
+//! Until the user-space trap layer lands, those report `EIO` — the shape is
+//! committed, the power comes later (following the VM transport precedent in
+//! 02-stage-vm/todo.md).
 
 use crate::kernel_api::schedctl::SchedctlCall;
 use crate::kernel_api::schedule::Fanout;
@@ -57,8 +57,8 @@ pub trait IpcTransport {
     /// Send a message (C: `ipc_send`, `main.c:103` — the reply path).
     fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32>;
 
-    /// Non-blocking send (C: `ipc_sendnb`) — NK4-C 1.10p：应答改非阻塞，
-    /// 消除 PM↔sched 双向阻塞 send 互卡（ELOCKED 实锤）。
+    /// Non-blocking send (C: `ipc_sendnb`) — replies must be non-blocking to avoid
+    /// the PM↔sched mutual block of two blocking sends (confirmed with ELOCKED).
     fn sendnb(&self, to: Endpoint, message: &Message) -> Result<(), i32>;
 }
 
@@ -66,7 +66,7 @@ pub trait IpcTransport {
 ///
 /// minix-sys reports trap failures as positive errno statuses
 /// (`Err(TrapStatus(EIO))`, ipc.rs:531); the seam surfaces the same number
-/// as an `i32`. The mapping lives in one place so edge E1 can refine it
+/// as an `i32`. The mapping lives in one place so the trap layer can refine it
 /// without touching callers.
 const fn trap_errno(status: TrapStatus) -> i32 {
     status.0
@@ -82,7 +82,7 @@ fn blank_message() -> Message {
 }
 
 /// The real message end: final call shape through minix-sys's direct trap
-/// transport (`EIO` until edge E1 lands the trap bodies, ipc.rs:523-525).
+/// transport (`EIO` until the trap bodies land, ipc.rs:523-525).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KernelIpcTransport {
     inner: DirectTrapTransport,
@@ -114,17 +114,19 @@ impl IpcTransport for KernelIpcTransport {
         // no-handler default is OK, so sef.c:232-237 `continue`s). A
         // surfaced signal would earn a no_sys reply C never sends.
         //
-        // 出生应答的发送腿：C `sef_cb_init_response_rs_reply` 缺省实现是
-        // `ipc_sendrec(RS_PROC_NR, &m)`（sef_init.c:458-466，SEF_CB_INIT_
-        // RESPONSE_DEFAULT=sef.h:90）——不是普通 send。sendrec 两阶段语义：
-        // 发出 RS_INIT 后停在 receive(RS) 半（内核置 REPLY_PEND、getfrom=RS），
-        // 等 RS catch 出口回的那一发 OK 唤醒。旧实现用阻塞 send 不建立
-        // REPLY_PEND，RS 的 reply 无人认领→服务野消费→回声投回 RS→
-        // step3 catch 收到非 RS_INIT → boot.rs:1254 panic（NK4-C B9b）。
+        // The send leg of the birth reply: C's default
+        // `sef_cb_init_response_rs_reply` is `ipc_sendrec(RS_PROC_NR, &m)`
+        // (sef_init.c:458-466, SEF_CB_INIT_RESPONSE_DEFAULT=sef.h:90) — not a plain
+        // send. sendrec has two-phase semantics: after sending RS_INIT it parks in
+        // the receive(RS) half (the kernel sets REPLY_PEND, getfrom=RS) and waits to
+        // be woken by the OK that RS's catch exit replies with. The old
+        // implementation used a blocking send, so REPLY_PEND was never set, RS's
+        // reply was unclaimed → a stray service consumed it → the echo went back to
+        // RS → step3 catch received a non-RS_INIT → boot.rs:1254 panic.
         let mut sef = SefIpcAdapter { inner: self.inner };
         let mut send_reply =
             |m: &mut Message| self.inner.sendrec(Endpoint::RS, m).map_err(trap_errno);
-        // 出生协议段一（PD-34）：C `sys_statectl` 的 trap 直连真接线。
+        // Birth protocol phase one: the real wiring of C `sys_statectl`'s trap direct call.
         let mut statectl = |req: i32, addr: u64, len: i32| {
             let r = minix_sys::syscall::sys_statectl(
                 &minix_sys::syscall::DirectKernelCallTransport,
@@ -143,14 +145,14 @@ impl IpcTransport for KernelIpcTransport {
     }
 
     fn sendnb(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
-        // C: ipc_sendnb（应答非阻塞语义，1.10p）。
+        // C: ipc_sendnb (non-blocking reply semantics).
         self.inner.sendnb(to, message).map_err(trap_errno)
     }
 }
 
-/// `minix-sef` 的动词适配（trap 直连）：`receive` 带回状态字（通知与内核
-/// 封印都从它读），`notify` 是 ping 的应答通道（C `do_sef_ping_request` 的
-/// `ipc_notify`，sef_ping.c:21-38）。
+/// Verb adapter for `minix-sef` (trap direct): `receive` returns the status word
+/// (both notifications and the kernel seal are read from it), and `notify` is the
+/// ping reply channel (the `ipc_notify` of C `do_sef_ping_request`, sef_ping.c:21-38).
 struct SefIpcAdapter {
     inner: DirectTrapTransport,
 }
@@ -166,56 +168,66 @@ impl minix_sef::SefIpc for SefIpcAdapter {
     }
 }
 
-/// 经 SEF 层的接收循环（C `sef_receive_status` 的主循环契约）：普通调用与
-/// 通知原样上浮（状态字随之走，02 的 classify 与 `noquantum_trust` 消费两
-/// 个半边）；信号被吞掉、继续等下一条；RS 的 init 请求走**出生面**。
+/// Receive loop through the SEF layer (the main-loop contract of C
+/// `sef_receive_status`): ordinary calls and notifications surface unchanged (the
+/// status word rides along; 02's classify and `noquantum_trust` consume its two
+/// halves); signals are swallowed and the loop waits for the next message; RS's
+/// init request goes through the **birth face**.
 ///
-/// `SefEvent::Signal` 在这里吞掉，因为 SCHED 没有注册信号处理程序——C 的
-/// `sef_receive_status` 对无处理程序的服务同样是吞（处理结果 OK →
-/// `continue`）。证据链：`minix3/minix/servers/sched/` 全目录 grep
-/// `sef_setcb_signal_handler` 零命中；未注册时库默认值就是空函数
-/// `sef_cb_signal_handler_null`（sef.h:287 `SEF_CB_SIGNAL_HANDLER_DEFAULT`，
-/// 实体 sef_signal.c:156-158 空函数体），故 SYSTEM 通知在库内被改写成信号
-/// 请求（sef.c:187）后由空 handler 消费、框架 `continue`（sef.c:231-235），
-/// 主循环对信号面无可观察行为——这里的空闭包与该行为逐一等价。
+/// `SefEvent::Signal` is swallowed here because SCHED registers no signal handler —
+/// C's `sef_receive_status` likewise swallows them for a service without a handler
+/// (handler result OK → `continue`). Evidence: grepping the whole
+/// `minix3/minix/servers/sched/` directory for `sef_setcb_signal_handler` yields
+/// zero hits; without registration the library default is the null function
+/// `sef_cb_signal_handler_null` (sef.h:287 `SEF_CB_SIGNAL_HANDLER_DEFAULT`, an
+/// empty body at sef_signal.c:156-158), so a SYSTEM notification is rewritten into
+/// a signal request inside the library (sef.c:187), consumed by the null handler,
+/// and the framework `continue`s (sef.c:231-235); the main loop has no observable
+/// behavior on the signal face — the empty closure here is equivalent one for one.
 ///
-/// **出生面**（S42 批二收口；此前 RS_INIT 浮进分发表换来 no_sys 回复，
-/// RS 的 boot 期 catch 永久阻塞——S25/S27 登记的挂点）：C `sef_startup`
-/// 阻塞等 RS 的 init 请求（sef.c:125-131 do-while 收到
-/// `IS_SEF_INIT_REQUEST` 才出；sef.h:33-34 按 type+source 判定、与投递
-/// 方式无关；主循环臂 sef.c:197-203 再拦），回调完工后回
-/// `RS_INIT+result`（process_init 尾部，sef_init.c:113-121）。Rust 侧
-/// sched 的 init 工作——`sys_getmachine` + `init_scheduling`——已在
-/// main 于循环前完成（等价 C `sef_cb_init_fresh` main.c:126-136 的
-/// 完工语义，devman「构造期已建」同型），应答因此发生在首次收包：
-/// fresh 应答 `RS_INIT+OK` 后进主循环；LU/RESTART 诚实拒 `ENOSYS`
-/// 并停机（devman/fs-rt 出生面同族协议，C 对 init 失败 panic 的
-/// fail-closed 对应）。
+/// **Birth face** (RS_INIT previously surfaced into the dispatch table, drew a
+/// no_sys reply, and RS's boot-time catch blocked forever): C `sef_startup` blocks
+/// waiting for RS's init request (sef.c:125-131, a do-while that leaves only on
+/// `IS_SEF_INIT_REQUEST`; sef.h:33-34 decides by type+source regardless of delivery
+/// mode; the main loop arm at sef.c:197-203 intercepts again), then replies
+/// `RS_INIT+result` once the callback finishes (the tail of process_init,
+/// sef_init.c:113-121). Rust-side sched init work — `sys_getmachine` +
+/// `init_scheduling` — already completes before the loop in main (equivalent to
+/// the completion semantics of C `sef_cb_init_fresh` main.c:126-136; devman's
+/// "built during construction" has the same shape), so the reply happens on the
+/// first received packet: fresh answers `RS_INIT+OK` then enters the main loop;
+/// LU/RESTART are honestly refused with `ENOSYS` and the process stops (the same
+/// family protocol as the devman/fs-rt birth faces, the fail-closed counterpart of
+/// C panicking on init failure).
 fn sef_filtered_receive<S: minix_sef::SefIpc>(
     sef: &mut S,
     send_reply: &mut dyn FnMut(&mut Message) -> Result<(), i32>,
     statectl: &mut dyn FnMut(i32, u64, i32) -> Result<i32, i32>,
 ) -> Result<(Message, IpcStatus), i32> {
-    // SCHED 在 C 未注册 signal handler（上方文档注释有锚），逃生门令牌
-    // 只为满足库契约——无人取消。
+    // SCHED registers no signal handler in C (anchored in the doc comment above);
+    // the escape-hatch token exists only to satisfy the library contract — nobody
+    // cancels it.
     let cancel = minix_sef::SefCancel::new();
     loop {
         let mut message = blank_message();
         let recv =
             minix_sef::sef_receive_status(sef, Endpoint::ANY, &mut message, &mut |_| {}, &cancel)?;
-        // 出生拦截先于事件分类：RS_INIT 不论以何种事件形态到达
-        // （minix-sef 不产出 Init 事件，异步投递走 Call 形态）都按
-        // sef.h:33-34 的 type+source 判定。
+        // Birth interception precedes event classification: RS_INIT is decided by
+        // type+source per sef.h:33-34 regardless of the event shape it arrives in
+        // (minix-sef produces no Init event; asynchronous delivery uses the Call
+        // shape).
         if recv.message.m_type == minix_types::RS_INIT && recv.source == Endpoint::RS {
-            // SAFETY: 出生请求的活跃 union 臂是 `m_rs_init`
-            //（m_type == RS_INIT 且来源 RS，上面两道门已过）。
+            // SAFETY: the active union arm of a birth request is `m_rs_init`
+            // (m_type == RS_INIT and source RS; both gates above passed).
             let kind = unsafe { recv.message.m_u.m_rs_init.type_ };
-            // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
-            // 第一段 sef_init.c:59-60 的 `assert(r == OK)`，statectl 动词由
-            // 调用方注入）、回报消息由库构造（≡ 旧手搓的
-            // `m.m_rs_init.result = result`）；分派语义（sched 的 init
-            // 工作已在 main 循环前完成 ≡ `sef_cb_init_fresh` 完工语义 →
-            // fresh OK；LU/RESTART 诚实拒 `ENOSYS`）保持原样。
+            // Birth protocol orchestration belongs to the library: phase one clears
+            // the IPC filter (C `process_init`'s first phase, the `assert(r == OK)` at
+            // sef_init.c:59-60; the statectl verb is injected by the caller), the reply
+            // message is built by the library (equivalent to the old hand-built
+            // `m.m_rs_init.result = result`); the dispatch semantics (sched's init work
+            // already completed before the main loop ≡ `sef_cb_init_fresh` completion
+            // semantics → fresh OK; LU/RESTART honestly refused with `ENOSYS`) stay
+            // unchanged.
             let mut reply = match minix_sef::process_init(statectl, kind, &mut |t| {
                 if t == 0 {
                     minix_types::OK
@@ -224,21 +236,21 @@ fn sef_filtered_receive<S: minix_sef::SefIpc>(
                 }
             }) {
                 Ok(m) => m,
-                // C 段一 assert ＝ 出生失败 fail-closed 停机。
+                // C's phase-one assert = fail-closed stop when birth fails.
                 Err(e) => return Err(e),
             };
             send_reply(&mut reply)?;
             if reply.rs_init_result() == Some(minix_types::OK) {
-                continue; // 出生已应答，吞掉这条，主循环继续
+                continue; // birth answered; swallow this message and continue the main loop
             }
-            return Err(minix_types::ENOSYS); // init 被拒：fail-closed 停机
+            return Err(minix_types::ENOSYS); // init refused: fail-closed stop
         }
         match recv.event {
-            // 普通消息与"不是 ping 的 RS 通知"（C 的 `break` 路径）照常上浮。
+            // Ordinary messages and "RS notifications that are not pings" (C's `break` path) surface as usual.
             minix_sef::SefEvent::Call(_) | minix_sef::SefEvent::PingInvalid => {
                 return Ok((recv.message, IpcStatus(recv.status as u32)));
             }
-            // 无处理程序的信号请求：吞掉，继续等（C sef.c:232-237）。
+            // Signal request without a handler: swallow and keep waiting (C sef.c:232-237).
             minix_sef::SefEvent::Signal(_) | minix_sef::SefEvent::Init(_) => continue,
         }
     }
@@ -248,7 +260,7 @@ fn sef_filtered_receive<S: minix_sef::SefIpc>(
 ///
 /// One method per C call site, named for the C entry point. Errors are the
 /// errno the kernel answered with (`i32`); a call that never got an answer
-/// reports the transport's errno (`EIO` pre-E1). The wire packing for
+/// reports the transport's errno (`EIO` before the trap layer). The wire packing for
 /// `schedctl` and `schedule` reuses the mirrors that already exist
 /// (schedctl.rs:137, schedule.rs:122-154); `get_machine`/`get_hz` pack the
 /// GETMINFO pointer contract here, where the buffer is a local.
@@ -422,14 +434,15 @@ impl KernelApi for SysKernelApi {
 
 #[cfg(test)]
 mod sef_filter_tests {
-    //! `sef_filtered_receive` 的拦截契约（宿主可重复）：ping 在层内应答
-    //! （pong）并吞掉、无处理程序的信号请求吞掉、真调用与通知原样上浮。
-    //! C 对应物：sef.c:208-214（ping）与 sef.c:232-237（信号）。
+    //! Interception contract of `sef_filtered_receive` (host-repeatable): a ping is
+    //! answered in-layer (pong) and swallowed, signal requests without a handler are
+    //! swallowed, and real calls and notifications surface unchanged. C counterpart:
+    //! sef.c:208-214 (ping) and sef.c:232-237 (signals).
 
     use super::*;
     use core::cell::RefCell;
 
-    /// 脚本化的 SEF 动词：按剧本吐消息、记下每次 notify（pong 的证据）。
+    /// Scripted SEF verbs: emit messages per the script and record every notify (the evidence of a pong).
     struct ScriptedSef {
         script: RefCell<std::vec::Vec<(i32, Message)>>,
         notified: RefCell<std::vec::Vec<Endpoint>>,
@@ -471,8 +484,9 @@ mod sef_filter_tests {
 
     #[test]
     fn ping_is_ponged_and_swallowed_signal_swallowed_call_surfaces() {
-        // 剧本：RS ping（RS 用它探活，不答 pong 就当服务死了）→ SYSTEM 信号
-        // 请求 → 真调用。只有第三个浮出；pong 恰好一次、发给 RS。
+        // Script: RS ping (RS probes liveness with it; no pong means the service is
+        // dead) → SYSTEM signal request → real call. Only the third surfaces; exactly
+        // one pong, sent to RS.
         let script = vec![
             arrival(Endpoint::RS, minix_sef::SEF_PING_REQUEST_TYPE, true),
             arrival(
@@ -497,7 +511,7 @@ mod sef_filter_tests {
 
     #[test]
     fn exhausted_script_reports_the_transport_error() {
-        // 底座断链（宿主 trap 恒 EIO）→ Err 原样上浮，循环不伪造成功。
+        // Broken base link (host trap always EIO) → Err surfaces unchanged; the loop does not fake success.
         let mut sef = ScriptedSef::new(std::vec::Vec::new());
         assert!(
             matches!(
@@ -512,9 +526,9 @@ mod sef_filter_tests {
         );
     }
 
-    /// 出生面（S42 批二）：RS 的 fresh init 请求被应答 `RS_INIT+OK` 后
-    /// 吞掉，下一条业务消息正常上浮——「init 发出 → 应答 OK → 服务进
-    /// 主循环」的传输层往返。
+    /// Birth face: RS's fresh init request is answered `RS_INIT+OK` and then
+    /// swallowed; the next business message surfaces normally — the transport-level
+    /// round trip of "init sent → OK answered → service enters the main loop".
     #[test]
     fn birth_fresh_is_answered_ok_then_loop_serves_business() {
         let mut birth = Message {
@@ -522,8 +536,8 @@ mod sef_filter_tests {
             m_source: Endpoint::RS,
             ..Message::default()
         };
-        // union 字段写是 safe 的；活跃臂 `m_rs_init`（type_=0 即
-        // SEF_INIT_FRESH）。
+        // Union field writes are safe; the active arm is `m_rs_init` (type_=0 is
+        // SEF_INIT_FRESH).
         birth.m_u.m_rs_init.type_ = 0;
         let business = arrival(
             Endpoint::from_generation_slot(1, 2),
@@ -546,14 +560,15 @@ mod sef_filter_tests {
         let replies = replied.borrow();
         assert_eq!(replies.len(), 1, "出生回信恰好一条");
         assert_eq!(replies[0].m_type, minix_types::RS_INIT);
-        // SAFETY(test): 回信臂 `m_rs_init.result`。
+        // SAFETY(test): reply arm `m_rs_init.result`.
         unsafe {
             assert_eq!(replies[0].m_u.m_rs_init.result, minix_types::OK);
         }
     }
 
-    /// 出生面：LU/RESTART 诚实拒 `ENOSYS` 并停机（回信 ENOSYS 后 Err
-    /// 上浮，调用方 fail-closed；C 对 init 失败 panic）。
+    /// Birth face: LU/RESTART are honestly refused with `ENOSYS` and the process
+    /// stops (after replying ENOSYS an Err surfaces and the caller fails closed; C
+    /// panics on init failure).
     #[test]
     fn birth_stateful_is_refused_enosys_and_stops() {
         let mut birth = Message {
@@ -561,7 +576,7 @@ mod sef_filter_tests {
             m_source: Endpoint::RS,
             ..Message::default()
         };
-        // type_=1 即 SEF_INIT_LU。
+        // type_=1 is SEF_INIT_LU.
         birth.m_u.m_rs_init.type_ = 1;
         let mut sef = ScriptedSef::new(vec![(0, birth)]);
         let replied: RefCell<std::vec::Vec<Message>> = RefCell::new(std::vec::Vec::new());
@@ -578,14 +593,14 @@ mod sef_filter_tests {
         );
         let replies = replied.borrow();
         assert_eq!(replies.len(), 1);
-        // SAFETY(test): 回信臂 `m_rs_init.result`。
+        // SAFETY(test): reply arm `m_rs_init.result`.
         unsafe {
             assert_eq!(replies[0].m_u.m_rs_init.result, minix_types::ENOSYS);
         }
     }
 
-    /// 非 RS 源的 RS_INIT 不拦截（sef.h:33-34 的 source 门）——照常
-    /// 上浮进分发表，不回信。
+    /// An RS_INIT from a non-RS source is not intercepted (sef.h:33-34's source
+    /// gate) — it surfaces into the dispatch table as usual, with no reply.
     #[test]
     fn rs_init_from_other_source_surfaces_unanswered() {
         let mut impostor = Message {

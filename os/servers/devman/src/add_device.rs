@@ -54,7 +54,8 @@ fn unwind_staged(
     e: minix_types::Errno,
 ) -> minix_types::Errno {
     if let Some(dir) = dir_ino {
-        //[SD19-gate] SD-19: fw.delete 尽力而为清理，主操作已定
+        //[SD19-gate] fw.delete is best-effort cleanup; the main operation is
+        // already decided
         #[allow(clippy::let_underscore_must_use)]
         let _ = fw.delete(dir);
     }
@@ -74,10 +75,10 @@ pub fn do_add(
     // C: _find_dev(parent_dev_id) NULL → ENODEV (device.c:246-251).
     let parent_dev = tree.get(parent).ok_or(Errno::ENODEV)?;
     let parent_ino = parent_dev.binding.ok_or(Errno::ENODEV)?.ino;
-    // OQ-3 (closed): devmand parses event paths with %s (13 §2.1) — a
-    // name containing ASCII whitespace would silently mis-split the
-    // event line. C has no check (new behavior); reject with EINVAL
-    // (silent mismatch is worse than failure).
+    // devmand parses event paths with %s (13 §2.1) — a name containing
+    // ASCII whitespace would silently mis-split the event line. C has no
+    // check (new behavior); reject with EINVAL (a silent mismatch is worse
+    // than a failure).
     if parsed.name.bytes().any(|b| b.is_ascii_whitespace()) {
         return Err(Errno::EINVAL);
     }
@@ -127,7 +128,7 @@ pub fn do_add(
     let mut id_text = String::new();
     {
         use core::fmt::Write as _;
-        //[SD19-gate] SD-19: core::write! 入 String，仅分配可败
+        //[SD19-gate] core::write! into a String: only allocation can fail
         #[allow(clippy::let_underscore_must_use)]
         let _ = core::write!(id_text, "{}", id.0);
     }
@@ -154,7 +155,7 @@ pub fn do_add(
     line.push_str(&path);
     {
         use core::fmt::Write as _;
-        //[SD19-gate] SD-19: core::write! 入 String，仅分配可败
+        //[SD19-gate] core::write! into a String: only allocation can fail
         #[allow(clippy::let_underscore_must_use)]
         let _ = core::write!(line, " 0x{:08x}", id.0);
     }
@@ -318,8 +319,8 @@ mod tests {
 
     #[test]
     fn add_whitespace_name_is_einval() {
-        // OQ-3 (closed): devmand splits event paths with %s (13 §2.1) —
-        // a spaced name would silently mis-split. Rejected, no residue.
+        // devmand splits event paths with %s (13 §2.1) — a spaced name would
+        // silently mis-split. Rejected, no residue.
         let (mut tree, mut fw) = harness();
         let mut buf = wire_usb();
         // Rewrite the name string in place ("usb" → "u b").

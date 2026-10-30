@@ -23,8 +23,8 @@
 //!
 //! The trap bodies compile only under `cfg(kernel_trap)` — set by
 //! `build.rs` for freestanding targets or the `real-trap` feature
-//! (NK4-A fix22: the per-package feature opt-in used to be the only
-//! gate, and every image module that forgot it silently got `-EIO`).
+//! (The per-package feature opt-in used to be the only gate, so every
+//! image module that forgot it silently got `-EIO`).
 //! Hosted test builds keep the `-EIO` transports: a stray `syscall`/`int`
 //! under the HOST kernel is indistinguishable from a real boundary at
 //! compile time (observed live: the host answered -ENOSYS), so the switch
@@ -41,8 +41,9 @@ pub const NOTIFY_NR: i32 = 4;
 pub const SENDNB_NR: i32 = 5;
 pub const SENDA_NR: i32 = 16;
 /// MINIX_KERNINFO — kernel info page query; the page address comes back
-/// through the secondary return register (x86-64: R10 status-lane 兼任,
-/// C ipcconst.h:12; NK4-C 1.54 — 与 `ipc_trap` 第二返回值同车道).
+/// through the secondary return register (x86-64: R10 doubles as the
+/// status lane, C ipcconst.h:12; the same lane as `ipc_trap`'s secondary
+/// return value).
 pub const KERNINFO_NR: i32 = 6;
 
 /// Map a trap errno to the transport result shape.
@@ -63,14 +64,17 @@ pub fn errno_result(ret: i32) -> Result<(), super::ipc::TrapStatus> {
 /// gate and a valid `a2` pointer for message-carrying calls.
 #[cfg(all(target_arch = "x86_64", kernel_trap))]
 pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
-    // ABI（NK4-C Task C A 案，[ARCH]）：R10 是 IPC 状态寄存器——入口由本
-    // 序列装载消息指针，内核完成时把状态字 OR 进同一寄存器并随恢复交付。
-    // R10 是 caller-saved：用户代码不能指望它跨调用存活（与 C earm 的
-    // IPC_STATUS_REG=r1 同思路），因此内核在任意恢复点写入它不破坏用户
-    // 活值——这正是把状态从 callee-saved 的 RBX 迁出的原因（RBX 迁移前
-    // 被内核状态写摧毁用户 callee-saved 活值：真机 RS `&self.table`=0，
-    // NK4A Task C 六轮取证）。消息指针仍走 RBX 车道（入口参数），本序列
-    // 继续 push/pop 保护调用者的 RBX。
+    // ABI ([ARCH]): R10 is the IPC status register — the entry sequence loads
+    // the message pointer, and when the kernel finishes it ORs the status word
+    // into the same register and delivers it on restore. R10 is caller-saved:
+    // user code cannot rely on it surviving across calls (the same idea as
+    // C earm's IPC_STATUS_REG=r1), so the kernel writing it at any restore
+    // point cannot destroy live user values — that is exactly why the status
+    // moved out of the callee-saved RBX (before the move, the kernel status
+    // write destroyed live callee-saved user values: on real hardware the RS
+    // `&self.table` read 0). The message pointer still uses the RBX lane (an
+    // entry parameter), and this sequence keeps push/pop around the trap to
+    // protect the caller's RBX.
     //
     // RBX is reserved by LLVM on x86-64 and cannot be a declared operand
     // (same constraint as cpu_identity.rs) — the manual push/pop around
@@ -122,7 +126,7 @@ pub unsafe fn kernel_call_trap(msg: &mut minix_types::Message) -> i32 {
 // the instruction bodies are absent by construction — the transports keep
 // their `-EIO` behavior and the Canned transports remain the test seam.
 
-// ── riscv64 ecall boundary (K12b riscv64 leg) ───────────────────────────
+// ── riscv64 ecall boundary ───────────────────────────────────────────────
 //
 // The riscv64 semantic mapping of the same C i386 soft-int convention: the
 // RISC-V ABI already reserves a7 for the syscall number (the Linux rv64
@@ -196,7 +200,7 @@ pub unsafe fn kernel_call_trap(msg: &mut minix_types::Message) -> i32 {
     ret as i32
 }
 
-// ── aarch64 SVC boundary (K12b aarch64 leg) ─────────────────────────────
+// ── aarch64 SVC boundary ─────────────────────────────────────────────────
 //
 // The aarch64 semantic mapping of the same C i386 soft-int convention,
 // following the riscv64 shape (one boundary instruction serving both the

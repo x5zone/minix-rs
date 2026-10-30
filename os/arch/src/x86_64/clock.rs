@@ -43,20 +43,20 @@ pub struct X86_64ClockArch {
 }
 
 // LAPIC timer register offsets (from the LAPIC base) and the one-shot
-// programming constants (edge1 K6; C apic.h/apic.c).
+// programming constants (C apic.h/apic.c).
 const LAPIC_TIMER_ICR_OFF: usize = 0x380 / 4;
 const LAPIC_TIMER_DCR_OFF: usize = 0x3E0 / 4;
 const LAPIC_TIMER_CCR_OFF: usize = 0x390 / 4;
 const LAPIC_LVT_TIMER_OFF: usize = 0x320 / 4;
 // C programs APIC_TIMER_INT_VECTOR = 0xf0; the Rust-side sched-IPI
-// lane (S-10) already owns 0xF0, so the local timer takes 0xF1 — a
+// lane already owns 0xF0, so the local timer takes 0xF1 — a
 // carrier convention (hook chains never see it), documented in §28.
 const LAPIC_TIMER_VECTOR: u32 = 0xf1;
 const DCR_DIVIDE_1: u32 = 0x0b; // C APIC_TDCR_1
 const CALIBRATION_PROBE_ICR: u32 = 1 << 20;
 
 impl ClockArch for X86_64ClockArch {
-    /// Arm the LAPIC local timer as a one-shot (edge1 K6; C
+    /// Arm the LAPIC local timer as a one-shot (C
     /// `init_local_timer` — arch_clock.c:131-139, `lapic_set_timer_one_shot`
     /// apic.c:526-543).
     ///

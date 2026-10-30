@@ -7,22 +7,32 @@
 //! file opens once, all `-` operands share the single standard-input
 //! stream, `paste.c:106-112`).
 //!
-//! 前门有**三家句子、两个退码**，都按 C 逐句搬回：
-//! ① 集外字母与 `-d` 缺值各走「libc 一行 + **一行** usage」且退 **1**
-//!    （`paste.c:80-82` 的 `case '?': default: usage();` 在环里直接退出，所以
-//!    本支的环**只可能有一行** libc 报文——与 `seq` 的累加形正相反，`jot` 与本支同形）；
-//!    usage 那一行的程序名是**写死在串里**的（`paste.c:231`），libc 那行跟着
-//!    `getprogname()`，同一支命令里两行来历不同。
-//! ② `-d ''` 走 `errx(1, "no delimiters specified.")`：一行、带程序名、**句子自带句号**、
-//!    不带 `strerror`，退 1（`paste.c:221-223`）。
-//! ③ 开不了的档名在两种模式下走两条不同的出口（这是本支最值钱的一处形状）：
-//!    并行模式是 `err(1, "%s", argv[cnt])` 三段形**致命**（`paste.c:107-108`，
-//!    第一个开不了的档名就退出，后面的档名连试都不试）；顺序模式是
-//!    `warn("%s", p)` 三段形**非致命**（`paste.c:166-169`，跳过这个档名继续下一个，
-//!    整体仍退 0）。两支的句子形状相同，退码与是否继续相反。
+//! The front door has **three sentence families and two exit codes**, all
+//! carried over from C sentence by sentence:
+//! (1) An out-of-set letter and a missing `-d` value each take "one libc line
+//!     + **one** usage line" and exit **1** (`paste.c:80-82`'s
+//!     `case '?': default: usage();` exits straight from inside the ring, so
+//!     this branch's ring can produce **at most one** libc message — the exact
+//!     opposite of `seq`'s accumulating shape; `jot` matches this branch).
+//!     The program name in the usage line is **hard-coded in the string**
+//!     (`paste.c:231`), while the libc line follows `getprogname()`, so the
+//!     two lines of one branch come from different sources.
+//! (2) `-d ''` goes through `errx(1, "no delimiters specified.")`: one line,
+//!     program name included, **the sentence carries its own full stop**, no
+//!     `strerror`, exit 1 (`paste.c:221-223`).
+//! (3) An unopenable file name leaves through two different exits depending on
+//!     the mode (the most valuable shape in this branch): parallel mode uses
+//!     the three-part **fatal** form `err(1, "%s", argv[cnt])`
+//!     (`paste.c:107-108`, the first unopenable name exits and later names are
+//!     never even tried); serial mode uses the three-part **non-fatal** form
+//!     `warn("%s", p)` (`paste.c:166-169`, skip this name and continue with the
+//!     next, and the run still exits 0). Both branches share the sentence
+//!     shape; the exit code and whether to continue are opposite.
 //!
-//! 操作数**没有个数判**：`paste` 不带操作数既不读标准输入也不报错，退 0 打空
-//! （`paste.c:88-92` 把 `argc` 直接交给 `parallel`，零条流时那个行循环一步不走）。
+//! Operands have **no count check**: `paste` with no operands neither reads
+//! standard input nor reports an error; it exits 0 with empty output
+//! (`paste.c:88-92` hands `argc` straight to `parallel`, and with zero streams
+//! the line loop never takes a step).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -51,8 +61,10 @@ fn run() -> ! {
         support::terminate(0);
     }
 
-    // 一列 = 一个**已打开的流**：档名各开一次（所以 `paste a.txt a.txt` 是两个游标），
-    // 而所有 `-` 共用标准输入这一个流（参照件 `paste - -` 对三行打的是两列各取一行）。
+    // One column = one **already-open stream**: each file name opens once (so
+    // `paste a.txt a.txt` is two cursors), while all `-` share the single
+    // standard-input stream (a reference build's `paste - -` over three lines
+    // prints two columns, each taking one line).
     let mut sources: Vec<Vec<Vec<u8>>> = Vec::new();
     let mut columns: Vec<usize> = Vec::new();
     let mut stdin_source: Option<usize> = None;
@@ -69,9 +81,11 @@ fn run() -> ! {
             columns.push(index);
             continue;
         }
-        // 开档与 echo 那两句要文本形：`read_file` 落到 `minix_sys` 的 `open(2)`，
-        // `warn_line` 的 label 是 `&str`（`ARGV-BYTE-PATH-IN-LIBS` 在册）。于是非 UTF-8 的
-        // 档名在这一句被折叠、报文里打出的也是折叠后的字节——行内容不经过这一步。
+        // Opening the file and the warning sentence need the text form:
+        // `read_file` lowers to `minix_sys`'s `open(2)`, and `warn_line`'s
+        // label is `&str`. A non-UTF-8 file name is therefore folded at this
+        // sentence and the message prints the folded bytes — line content
+        // never passes through this step.
         let path = String::from_utf8_lossy(operand).into_owned();
         match support::read_file(&path) {
             Ok(data) => {
@@ -81,7 +95,8 @@ fn run() -> ! {
             Err(errno) => {
                 support::warn_line(&prog, &path, errno);
                 if options.serial {
-                    // `sequential` 的那一支是 `warn` + `continue`（`paste.c:166-169`）
+                    // The `sequential` branch is `warn` + `continue`
+                    // (`paste.c:166-169`)
                     continue;
                 }
                 support::terminate(1);
@@ -90,7 +105,9 @@ fn run() -> ! {
     }
 
     if options.serial {
-        // 同一个流被列在多处时，第二处已经没有行可取（游标是流的，不是列的）
+        // When the same stream is listed in several places, the second place
+        // has no lines left to take (the cursor belongs to the stream, not to
+        // the column)
         let mut taken: Vec<usize> = vec![0; sources.len()];
         for column in &columns {
             let source = *column;
@@ -110,12 +127,14 @@ fn run() -> ! {
     support::terminate(0)
 }
 
-/// 三家句子各走各的出口与退码；libc 那一行交回 [`minix_textfilter::GetoptReport`] 单源。
+/// Each of the three sentence families takes its own exit and exit code; the libc line comes back from the single [`minix_textfilter::GetoptReport`] source.
 ///
-/// 字母位走 `line_bytes` 而不是 `line`：`src/paste.rs` 的取法本就按字节（`token[k]` 是一枚
-/// `u8`，再 `char::from`），非 ASCII 字母经 `line` 会被 UTF-8 编码成两字节。参照件
-/// `tmp/paste-321/paste_ref` 现量 `paste -é` 与 `paste -sé` 都是 `paste: unknown option -- ` +
-/// 单个 `c3` + 换行，机制在 `getopt.c:79` 的 `optopt = *place++` 与 `:103` 的 `%c`。
+/// The letter slot uses `line_bytes` rather than `line`: `src/paste.rs`
+/// already reads it as bytes (`token[k]` is a `u8`, then `char::from`), and a
+/// non-ASCII letter through `line` would be UTF-8 encoded into two bytes. A
+/// reference build measured `paste -é` and `paste -sé` both printing
+/// `paste: unknown option -- ` + a single `c3` + newline; the mechanism is
+/// `getopt.c:79`'s `optopt = *place++` and `:103`'s `%c`.
 fn fail(prog: &str, error: &PasteError) -> ! {
     match error {
         PasteError::Usage { reports } => {
@@ -133,13 +152,15 @@ fn fail(prog: &str, error: &PasteError) -> ! {
 }
 
 /// Split bytes into newline-stripped **byte** lines, dropping the empty piece after
-/// a trailing newline (interior blank lines stay as empty cells)——C 用 `fgetln`
-/// 拿到含换行的整行再把换行减掉（`paste.c:134-136`），末行没有换行照样是一行。
+/// a trailing newline (interior blank lines stay as empty cells) — C uses
+/// `fgetln` to obtain the whole line including its newline and then subtracts
+/// it (`paste.c:134-136`); a last line without a newline is still a line.
 ///
-/// 行是字节不是文本：C 的行腿从不解码，一个非 UTF-8 字节只是那一行里的一个字节。
-/// 旧写法 `from_utf8(input).unwrap_or("")` 让一枚坏字节把**整个档**的行抹掉——
-/// 参照件对 `paste raw.txt raw.txt`（`raw.txt` 是 `a\xffb\nc\n`）打
-/// `a\xffb\ta\xffb\nc\tc\n`，旧本壳交回空（`tmp/paste-comm-434/ab.log`）。
+/// Lines are bytes, not text: C's line path never decodes, so a non-UTF-8 byte
+/// is just one byte in that line. The old `from_utf8(input).unwrap_or("")` let a
+/// single bad byte erase the lines of the **whole file** — a reference build
+/// over `paste raw.txt raw.txt` (`raw.txt` = `a\xffb\nc\n`) prints
+/// `a\xffb\ta\xffb\nc\tc\n`, while the old shell returned empty output.
 fn split_lines(input: &[u8]) -> Vec<Vec<u8>> {
     if input.is_empty() {
         return Vec::new();

@@ -44,7 +44,7 @@ use crate::phys_mem::{PageAllocFlags, AlignedPhysBytes, CLICK_SIZE};
 const PAGE_SIZE: u64 = CLICK_SIZE as u64;
 
 pub(crate) struct HeapArena {
-    // V10-P2-1: `base` is read only by the test-only accessors and the
+    // `base` is read only by the test-only accessors and the
     // DEFERRED `shrink` path; production uses `limit`/`top`.
     #[cfg_attr(not(test), allow(dead_code))]
     base: u64,
@@ -61,7 +61,7 @@ impl HeapArena {
         }
     }
 
-    // V10-P2-1: layout accessors are test-only today.
+    // Layout accessors are test-only today.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn base(&self) -> u64 {
         self.base
@@ -143,7 +143,7 @@ impl HeapArena {
 }
 
 #[derive(Debug)]
-// V10-P2-1: error payloads are diagnostic-only (callers propagate or
+// Error payloads are diagnostic-only (callers propagate or
 // `.expect()` without inspecting them), so dead fields/variants are
 // allowed until a caller inspects them.
 #[allow(dead_code)]
@@ -271,7 +271,7 @@ mod tests {
             );
 
             // Cleanup: unmap the pre-mapped page.
-            //[SD19-gate] 测试 cleanup 中 unmap 失败可忽：上方 assert! 已确认页已预映射，cleanup 仅回收预页，失败不回影响断言结果。属测试夹具
+            //[SD19-gate] An unmap failure during test cleanup is ignorable: the assert! above already confirmed the page was pre-mapped, and cleanup only reclaims the pre-mapped page, so a failure does not affect the assertion result. Test fixture only.
             #[allow(clippy::let_underscore_must_use)]
             let _ = crate::pagetable::vm_self_unmap(va1);
         });

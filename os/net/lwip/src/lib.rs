@@ -14,7 +14,7 @@
 //! state across threads.
 
 #![no_std]
-// SD-19 机械化门
+// Mechanized gate: no silent dropping of must-use results.
 #![warn(clippy::let_underscore_must_use)]
 
 

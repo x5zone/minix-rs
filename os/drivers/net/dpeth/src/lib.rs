@@ -1,8 +1,8 @@
-//! Minix-RS driver (net/dpeth) — 占位 crate。
+//! Minix-RS driver (net/dpeth) — placeholder crate.
 //!
-//! C 对应: `minix3/minix/drivers/net/dpeth/`
-//! 状态: 占位（stub），待实装。
+//! C counterpart: `minix3/minix/drivers/net/dpeth/`
+//! Status: stub, implementation pending.
 #![no_std]
 
-/// 服务初始化入口（占位）。
+/// Service initialization entry point (placeholder).
 pub fn init() {}

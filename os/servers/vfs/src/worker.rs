@@ -75,566 +75,634 @@ impl WorkerFunc {
     }
 }
 
-/// 续接标识：臂挂起前登记"FS 回复到了之后要做什么"。
+/// Continuation marker: what a handler registers before suspending, recording
+/// "what to do once the FS reply arrives".
 ///
-/// C 的"回复后半段"活在 worker 线程的栈上（`fs_sendrec` 里 `worker_wait()`
-/// 让出，回复到达后线程从该点继续，调用方接着解回复、拷出、回用户），
-/// 单线程事件循环没有可恢复的栈，故把这一半显式成一个标记 + 少量参数。
-/// **参数尽量从槽上已有的 `input`（原始请求）与 `sendrec`（回复）重算**，
-/// 只存重算不出来的东西（如已发出的 grant id）。
-/// `socketpair` 的成对编排状态（两半各带一份，见 `WorkerCont::SockFd`）。
+/// The "second half of the reply" lives on the worker thread's stack in C
+/// (`worker_wait()` inside `fs_sendrec` yields; when the reply arrives the
+/// thread continues from that point and the caller decodes the reply, copies
+/// the data out, and replies to the user).  A single-threaded event loop has no
+/// resumable stack, so that half is made explicit as a marker plus a few
+/// arguments.  **Arguments are recomputed from the slot's existing `input`
+/// (the original request) and `sendrec` (the reply) wherever possible**; only
+/// values that cannot be recomputed (such as an already issued grant id) are
+/// stored.
+///
+/// Pairing state for `socketpair` (each half carries its own copy, see
+/// `WorkerCont::SockFd`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PairState {
-    /// 另一半的设备号（**第一半**用它起第二半；第二半不用）。
+    /// The other half's device number (**the first half** uses it to start the
+    /// second half; the second half does not).
     pub other_dev: u64,
-    /// 已建好的第一个 fd（**第二半**用它拼 `fdpair` 回复）。
+    /// The first fd already created (**the second half** uses it to build the
+    /// `fdpair` reply).
     pub fd0: u32,
-    /// 这份状态属于第二半吗（第一半为 `false`）。
+    /// Whether this state belongs to the second half (`false` for the first half).
     pub second: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerCont {
-    /// 字符设备 open 的对话半（`CDEV_OPEN`）：回复是
-    /// `mess_lchardriver_vfs_reply { status, id }`（状态在首字）；`status >= 0`
-    /// 时低位带 `CDEV_CLONED`/`CDEV_CTTY` 两个效果位——克隆要 PFS（未接）、
-    /// 控制终端要写回 `fp_tty` 与该 dmap 行的 `dmap_seen_tty`。
-    /// C `cdev_opcl`（cdev.c:236-249）。
+    /// Dialog half of a character-device open (`CDEV_OPEN`): the reply is
+    /// `mess_lchardriver_vfs_reply { status, id }` (status in the first word);
+    /// when `status >= 0` the low bits carry the `CDEV_CLONED`/`CDEV_CTTY`
+    /// effect bits — cloning needs PFS (not wired up yet), and a controlling
+    /// terminal must be written back to `fp_tty` and to that dmap row's
+    /// `dmap_seen_tty`.
+    /// C `cdev_opcl` (cdev.c:236-249).
     CdevOpen {
-        /// 已认领的 fd（成功时作为返回值）。
+        /// The claimed fd (returned to the user on success).
         fd: u32,
-        /// 已认领的 filp（失败时要放开）。
+        /// The claimed filp (released on failure).
         filp: usize,
-        /// 目标设备号（`CDEV_CTTY` 效果要把它写进 `fp_tty`）。
+        /// Target device number (the `CDEV_CTTY` effect writes it into `fp_tty`).
         dev: u64,
     },
-    /// 块设备 ioctl 的对话半（`BDEV_IOCTL`）：回复是
-    /// `mess_lblockdriver_lbdev_reply { int status; int id; }`（状态在首字）；
-    /// 续接体撤销 grant、清 `filp_ioctl_fp` 守卫并把状态回给用户。
-    /// C `bdev_ioctl`（bdev.c:144-186）。
+    /// Dialog half of a block-device ioctl (`BDEV_IOCTL`): the reply is
+    /// `mess_lblockdriver_lbdev_reply { int status; int id; }` (status in the
+    /// first word); the continuation revokes the grant, clears the
+    /// `filp_ioctl_fp` guard, and returns the status to the user.
+    /// C `bdev_ioctl` (bdev.c:144-186).
     BdevIoctl {
-        /// 已发给驱动的 magic grant（收尾时撤销）。
+        /// The magic grant already sent to the driver (revoked at completion).
         grant: i32,
-        /// 被 ioctl 占着的 filp（收尾时清 `ioctl_holder`）。
+        /// The filp held by the ioctl (clears `ioctl_holder` at completion).
         filp: usize,
     },
-    /// 块设备 open 的对话半（`BDEV_OPEN`）：回复是
-    /// `mess_lblockdriver_lbdev_reply { int status; int id; }`（状态在首字）。
-    /// 成功后还要选**块文件系统端点**（`v_bfs_e`：该设备没被别的挂载占着
-    /// 就归根文件系统），并在归根时补一条 `REQ_NEW_DRIVER` 把驱动标签
-    /// 告诉它。失败路径要放开认领的 fd/filp 并放回 vnode（C `common_open`
-    /// 尾部的 `put_vnode`）。C `bdev_open`（bdev.c:79-112）+ `open.c:172-217`。
+    /// Dialog half of a block-device open (`BDEV_OPEN`): the reply is
+    /// `mess_lblockdriver_lbdev_reply { int status; int id; }` (status in the
+    /// first word).  On success it must also pick the **block file-system
+    /// endpoint** (`v_bfs_e`: the root file system when no other mount claims
+    /// the device), and when falling back to the root FS send an extra
+    /// `REQ_NEW_DRIVER` to tell it the driver label.  The failure path releases
+    /// the claimed fd/filp and puts the vnode back (the `put_vnode` at the tail
+    /// of C `common_open`).  C `bdev_open` (bdev.c:79-112) + `open.c:172-217`.
     BdevOpen {
-        /// 已认领的 fd（成功时作为返回值）。
+        /// The claimed fd (returned to the user on success).
         fd: u32,
-        /// 已认领的 filp（失败时要放开）。
+        /// The claimed filp (released on failure).
         filp: usize,
-        /// 已并进 vnode 表的下标（`v_bfs_e` 写回它，失败时要放回）。
+        /// Index merged into the vnode table (`v_bfs_e` writes back into it; put back on failure).
         vnode: usize,
-        /// 设备的**特殊设备号**（`v_sdev`）——`REQ_NEW_DRIVER` 与补偿的
-        /// `BDEV_CLOSE` 都按它算 major/minor。
+        /// The device's **special device number** (`v_sdev`) — both
+        /// `REQ_NEW_DRIVER` and the compensating `BDEV_CLOSE` derive
+        /// major/minor from it.
         dev: u64,
-        /// 重发用的次设备号（`BDEV_OPEN` 载荷的 `minor` 格）。
+        /// Minor number used for resends (the `minor` field of the `BDEV_OPEN` payload).
         minor: u32,
-        /// 重发用的访问位（`BDEV_R_BIT`/`BDEV_W_BIT`）。
+        /// Access bits used for resends (`BDEV_R_BIT`/`BDEV_W_BIT`).
         access: u8,
-        /// 已用掉的重启次数（C `bdev_sendrec` 的 `retry_count`）。
+        /// Retries already consumed (C `bdev_sendrec`'s `retry_count`).
         retries: u8,
     },
-    /// 块设备 open 的第二跳（`REQ_NEW_DRIVER` 到块文件系统）：把驱动标签
-    /// 交给管这个设备的 FS。只有该设备**没有**被别的挂载占着（于是
-    /// `v_bfs_e` 归根文件系统）才走这一跳——别的 FS 在挂载时就认识驱动了。
-    /// 回复只有状态；失败要补一条 `BDEV_CLOSE` 再回 `ENXIO`
-    /// （C `open.c:210-216`）。
+    /// Second hop of a block-device open (`REQ_NEW_DRIVER` to the block file
+    /// system): hand the driver label to the FS that owns this device.  This hop
+    /// is taken only when the device is **not** claimed by another mount (so
+    /// `v_bfs_e` is the root file system) — other file systems learn the driver
+    /// when they are mounted.  The reply carries only a status; on failure send
+    /// an extra `BDEV_CLOSE` and then return `ENXIO` (C `open.c:210-216`).
     BdevNewDriver {
-        /// 已认领的 fd（成功时作为返回值）。
+        /// The claimed fd (returned to the user on success).
         fd: u32,
-        /// 已认领的 filp（失败时要放开）。
+        /// The claimed filp (released on failure).
         filp: usize,
-        /// 已并进 vnode 表的下标（失败时要放回）。
+        /// Index merged into the vnode table (put back on failure).
         vnode: usize,
-        /// 设备的特殊设备号（失败时 `bdev_close(dev)` 用）。
+        /// The device's special device number (used by `bdev_close(dev)` on failure).
         dev: u64,
     },
-    /// 块设备 open 失败后的**补偿**：先给驱动发 `BDEV_CLOSE` 关掉刚打开的
-    /// 设备，再回原来的错误（C `open.c:213` 的 `bdev_close(dev); r = ENXIO;`
-    /// ——`bdev_close` 的返回值被丢掉）。close 的回复到了才收尾：这条请求
-    /// 撒手不管的话，回复会落到下一个用同一驱动对话的作业头上。
+    /// **Compensation** after a failed block-device open: send `BDEV_CLOSE` to
+    /// the driver to close the device just opened, then return the original
+    /// error (C `open.c:213` `bdev_close(dev); r = ENXIO;` — the return value of
+    /// `bdev_close` is discarded).  Completion waits for the close reply:
+    /// abandoning this request would let that reply land on the next job that
+    /// talks to the same driver.
     BdevCloseThenReply {
-        /// 要回给用户的原始状态。
+        /// The original status to return to the user.
         status: i32,
-        /// 已认领的 fd（失败尾要放开）。
+        /// The claimed fd (released by the failure tail).
         fd: u32,
-        /// 已认领的 filp（失败尾要放开）。
+        /// The claimed filp (released by the failure tail).
         filp: usize,
-        /// 已并进 vnode 表的下标（失败尾要放回）。
+        /// Index merged into the vnode table (put back by the failure tail).
         vnode: usize,
     },
-    /// 字符设备 ioctl 的对话半（`CDEV_IOCTL`）：回复是
-    /// `mess_lchardriver_vfs_reply { int status; uint32_t id; }`，续接体撤销
-    /// ioctl 的 magic grant 并把状态回给用户。C `cdev_io`（cdev.c:277-340）。
+    /// Dialog half of a character-device ioctl (`CDEV_IOCTL`): the reply is
+    /// `mess_lchardriver_vfs_reply { int status; uint32_t id; }`; the
+    /// continuation revokes the ioctl's magic grant and returns the status to
+    /// the user.  C `cdev_io` (cdev.c:277-340).
     CdevIoctl {
-        /// 已发给驱动的 magic grant（收尾时撤销）。
+        /// The magic grant already sent to the driver (revoked at completion).
         grant: i32,
     },
-    /// 字符设备读/写的数据对话半（`CDEV_READ`/`CDEV_WRITE`）：回复同 ioctl，
-    /// 成功状态是**搬运字节数**（非负，原样回给用户——驱动挂起读写的正常
-    /// 完成形态），失败是负 errno（`EINTR` 按 `cdev_generic_reply` 的折算改
-    /// 成 `EAGAIN`）。续接体撤销数据 magic grant、清 `BlockedOn::Cdev` 再回
-    /// 用户。C `cdev_io`（cdev.c:277-341）+ `cdev_generic_reply`
-    /// （cdev.c:471-477）。
+    /// Data dialog half of a character-device read/write (`CDEV_READ`/`CDEV_WRITE`):
+    /// the reply matches the ioctl one; a successful status is the **number of
+    /// bytes moved** (non-negative, passed to the user unchanged — the normal
+    /// completion shape of a suspended driver read/write), and a failure is a
+    /// negative errno (`EINTR` is remapped to `EAGAIN` as `cdev_generic_reply`
+    /// does).  The continuation revokes the data magic grant, clears
+    /// `BlockedOn::Cdev`, and replies to the user.  C `cdev_io` (cdev.c:277-341)
+    /// + `cdev_generic_reply` (cdev.c:471-477).
     CdevIo {
-        /// 已发给驱动的数据 magic grant（收尾时撤销）。
+        /// The data magic grant already sent to the driver (revoked at completion).
         grant: i32,
     },
-    /// `Fstat`（`do_fstat` → `REQ_STAT`）：回复只有状态字，续接就是把
-    /// 用户的 grant 撤掉再把状态回给用户。
+    /// `Fstat` (`do_fstat` -> `REQ_STAT`): the reply carries only a status
+    /// word; the continuation just revokes the user's grant and returns the
+    /// status to the user.
     Fstat {
-        /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
+        /// The magic grant already sent to the FS (revoked in the continuation, C request.c:1109).
         grant: i32,
     },
-    /// `chown` 的对话半（`REQ_CHOWN`）：回复的 `mode` 是新的模式
-    /// （C `do_chown:159-163`），uid/gid 由本续接体自己写进 vnode。
+    /// Dialog half of `chown` (`REQ_CHOWN`): the reply's `mode` is the new mode
+    /// (C `do_chown:159-163`); uid/gid are written into the vnode by this
+    /// continuation itself.
     Chown {
-        /// 被改归属的 vnode 下标。
+        /// Index of the vnode whose ownership changes.
         vnode: usize,
-        /// 折算后的新属主（`-1` 已经用现有值替代）。
+        /// Resolved new owner (`-1` has already been replaced by the current value).
         uid: u32,
-        /// 折算后的新属组。
+        /// Resolved new group.
         gid: u32,
     },
-    /// 套接字驱动对话的对话半（`SDEV_SOCKET`/`SDEV_SOCKETPAIR`）：回复带
-    /// 新套接字的设备号（单个或一对），续接体解析后转 `make_sock_fd`
-    /// （`WorkerCont::SockFd`）。C `sdev_socket`（sdev.c:124-170）。
+    /// Dialog half of a socket-driver exchange (`SDEV_SOCKET`/`SDEV_SOCKETPAIR`):
+    /// the reply carries the new socket's device number (a single one or a
+    /// pair); the continuation decodes it and moves on to `make_sock_fd`
+    /// (`WorkerCont::SockFd`).  C `sdev_socket` (sdev.c:124-170).
     SdevSocket {
-        /// `true` 是 `SDEV_SOCKETPAIR`（要两个设备号）。
+        /// `true` for `SDEV_SOCKETPAIR` (two device numbers expected).
         pair: bool,
-        /// 驱动回复里带的打开标志（`socket::sock_flags` 已翻成 `O_*`）。
+        /// Open flags carried in the driver reply (`socket::sock_flags` already translated them to `O_*`).
         flags: u32,
-        /// 该域的 smap 行号（`make_smap_dev` 的高 32 位）。
+        /// smap row number of this domain (the high 32 bits of `make_smap_dev`).
         smap_num: u32,
     },
-    /// 套接字驱动 getset 族的对话半（`SDEV_SETSOCKOPT`/`SDEV_GETSOCKOPT`/
-    /// `SDEV_GETSOCKNAME`/`SDEV_GETPEERNAME`）：回复号必须是 `SDEV_REPLY`，
-    /// **状态在回复载荷里**；`get` 方向（状态 ≥ 0）时那个状态就是**新长度**，
-    /// 由续接体放进回复载荷（`m_vfs_lc_socklen { len }`）。C `sdev_getset`
-    /// （sdev.c:450-555）。
+    /// Dialog half of the socket-driver getset family
+    /// (`SDEV_SETSOCKOPT`/`SDEV_GETSOCKOPT`/`SDEV_GETSOCKNAME`/`SDEV_GETPEERNAME`):
+    /// the reply type must be `SDEV_REPLY` and the **status lives in the reply
+    /// payload**; on the `get` direction (status >= 0) that status is the **new
+    /// length**, which the continuation places in the reply payload
+    /// (`m_vfs_lc_socklen { len }`).  C `sdev_getset` (sdev.c:450-555).
     SdevGetSet {
-        /// 已发给驱动的 magic grant（收尾时撤销）。
+        /// The magic grant already sent to the driver (revoked at completion).
         grant: i32,
-        /// `true` = `get` 方向（状态是新长度，要放进回复载荷）。
+        /// `true` = `get` direction (the status is the new length and goes into the reply payload).
         write_dir: bool,
     },
-    /// 套接字驱动"简单请求"的对话半（`SDEV_LISTEN`/`SDEV_SHUTDOWN`/
-    /// `SDEV_CLOSE`）：回复号必须是 `SDEV_REPLY`，**状态在回复载荷里**
-    /// （`mess_lsockdriver_vfs_reply.status`）。C `sdev_simple`（sdev.c:245-276）。
+    /// Dialog half of the socket driver's "simple request" family
+    /// (`SDEV_LISTEN`/`SDEV_SHUTDOWN`/`SDEV_CLOSE`): the reply type must be
+    /// `SDEV_REPLY` and the **status lives in the reply payload**
+    /// (`mess_lsockdriver_vfs_reply.status`).  C `sdev_simple` (sdev.c:245-276).
     SdevSimple,
-    /// `make_sock_fd` 的对话半（`REQ_NEWNODE` 到 PFS）：回复带新节点的
-    /// `node_details`，续接体填 vnode 与 filp 并把 fd 作为**返回值**回给用户。
-    /// C `make_sock_fd`（socket.c:86-176）。
+    /// Dialog half of `make_sock_fd` (`REQ_NEWNODE` to PFS): the reply carries
+    /// the new node's `node_details`; the continuation fills in the vnode and
+    /// filp and returns the fd as the **return value** to the user.
+    /// C `make_sock_fd` (socket.c:86-176).
     SockFd {
-        /// 已认领的 filp。
+        /// The claimed filp.
         filp: usize,
-        /// 已认领的 fd 号。
+        /// The claimed fd number.
         fd: u32,
-        /// 打开标志（`O_CLOEXEC` 等）。
+        /// Open flags (`O_CLOEXEC` and friends).
         flags: u32,
-        /// 预留的 vnode 下标。
+        /// The reserved vnode index.
         vnode: usize,
-        /// 套接字设备号（写进 vnode 的 `v_sdev`）。
+        /// Socket device number (written into the vnode's `v_sdev`).
         dev: u64,
-        /// `accept` 的收尾还要把**对端地址长度**放进回复载荷
-        /// （`m_vfs_lc_socklen { len }`，C `resume_accept` 的末段）；其余调用
-        /// 为 `None`。
+        /// `accept` completion must also place the **peer address length** in
+        /// the reply payload (`m_vfs_lc_socklen { len }`, the tail of C
+        /// `resume_accept`); `None` for every other call.
         addr_len_out: Option<u32>,
-        /// `socketpair` 的成对编排状态（C `do_socketpair` socket.c:239-266）：
-        /// 第一半带着"另一半的设备号"、第二半带着"第一个 fd"（最后要拼
-        /// `m_vfs_lc_fdpair { fd0, fd1 }` 回复）。
+        /// Pairing state for `socketpair` (C `do_socketpair` socket.c:239-266):
+        /// the first half carries "the other half's device number", the second
+        /// half carries "the first fd" (they are finally joined into an
+        /// `m_vfs_lc_fdpair { fd0, fd1 }` reply).
         pair: Option<PairState>,
     },
-    /// `accept` 失败但**驱动已建了新套接字**时（C 的 case #2 与 case #1 的
-    /// `make_sock_fd` 失败）：先给驱动发 `SDEV_CLOSE` 把那个套接字关掉，再回
-    /// **原来的错误**（C 的 `(void)sdev_close(dev, ...)` 不看它的状态）。
+    /// When `accept` fails but **the driver already created a new socket**
+    /// (C's case #2, and `make_sock_fd` failing in case #1): first send
+    /// `SDEV_CLOSE` to the driver to close that socket, then return the
+    /// **original error** (C's `(void)sdev_close(dev, ...)` ignores its status).
     SdevCloseThenReply {
-        /// 要回给用户的原始状态。
+        /// The original status to return to the user.
         status: i32,
     },
-    /// `F_FREESP` 的对话半（`REQ_FTRUNC` 到 FS）：回复只有状态；零长
-    /// （`l_len == 0`）在成功后把 vnode 的 `v_size` 收到 `start`
-    /// （C misc.c:236-237 的 `f->filp_vno->v_size = start`）。
+    /// Dialog half of `F_FREESP` (`REQ_FTRUNC` to the FS): the reply carries
+    /// only a status; on success a zero length (`l_len == 0`) shrinks the
+    /// vnode's `v_size` down to `start` (C misc.c:236-237
+    /// `f->filp_vno->v_size = start`).
     Freesp {
-        /// 被截的 vnode。
+        /// The vnode being truncated.
         vnode: usize,
-        /// `l_len == 0`（截到 start）才动 size。
+        /// Size is touched only when `l_len == 0` (truncate to start).
         zero_len: bool,
-        /// 新大小。
+        /// The new size.
         start: i64,
     },
-    /// `pipe2` 的对话半（`REQ_NEWNODE`）：回复带新节点的 `node_details`，续接体
-    /// 要用它填 vnode 与两个 filp，并把 `m_vfs_lc_fdpair { fd0, fd1 }` 作为
-    /// **回复载荷**发回（用户拿到的就是这两个 fd）。C `create_pipe`
-    /// （pipe.c:58-135）的后半。
+    /// Dialog half of `pipe2` (`REQ_NEWNODE`): the reply carries the new node's
+    /// `node_details`; the continuation uses it to fill in the vnode and both
+    /// filps, and sends `m_vfs_lc_fdpair { fd0, fd1 }` back as the **reply
+    /// payload** (those two fds are what the user receives).  The second half
+    /// of C `create_pipe` (pipe.c:58-135).
     Pipe2 {
-        /// 读端 filp（已认领，等 vnode 落位）。
+        /// Read-end filp (already claimed, waiting for the vnode to land).
         filp0: usize,
-        /// 写端 filp。
+        /// Write-end filp.
         filp1: usize,
-        /// 读端 fd 号。
+        /// Read-end fd number.
         fd0: u32,
-        /// 写端 fd 号。
+        /// Write-end fd number.
         fd1: u32,
-        /// `flags | oflags`（CLOEXEC 位要用）。
+        /// `flags | oflags` (the CLOEXEC bit is needed).
         flags: i32,
-        /// 预留的 vnode 下标。
+        /// The reserved vnode index.
         vnode: usize,
     },
-    /// `statvfs` 的对话半（`REQ_STATVFS`）：回复只有状态，FS 已经把统计量写
-    /// 进 VFS 侧的 `struct statvfs` 缓冲了；续接体要撤销 grant、把 FS 那 17 个
-    /// 字段存进挂载行的缓存（C `update_statvfs`）、补本地字段，再整块拷给用户
-    /// （C `fill_statvfs` 尾部的 `sys_datacopy_wrapper`）。
+    /// Dialog half of `statvfs` (`REQ_STATVFS`): the reply carries only a
+    /// status; the FS has already written the statistics into the VFS-side
+    /// `struct statvfs` buffer.  The continuation revokes the grant, stores the
+    /// FS's 17 fields in the mount row's cache (C `update_statvfs`), fills in
+    /// the local fields, and copies the whole block to the user (the
+    /// `sys_datacopy_wrapper` at the tail of C `fill_statvfs`).
     Statvfs {
-        /// 已发给 FS 的 direct grant（收尾时撤销）。
+        /// The direct grant already sent to the FS (revoked at completion).
         grant: i32,
-        /// 用户缓冲地址（拷给它的目的地；`getvfsstat` 时随序号推进）。
+        /// User buffer address (the copy destination; advanced per index by `getvfsstat`).
         user_buf: u64,
-        /// 被查询的挂载行下标（缓存写回处）。
+        /// Index of the mount row being queried (where the cache is written back).
         vmnt: usize,
-        /// `getvfsstat` 的多挂载序列：前 `seq_count` 个有效（`0` = 单挂载的
-        /// `statvfs1`/`fstatvfs1`）。
+        /// Multi-mount sequence for `getvfsstat`: the first `seq_count` entries
+        /// are valid (`0` = the single-mount `statvfs1`/`fstatvfs1`).
         seq: [usize; crate::vmnt::NR_MNTS],
-        /// 序列长度。
+        /// Sequence length.
         seq_count: u8,
-        /// 当前是第几个（回复到达后推进）。
+        /// Which entry is current (advanced once the reply arrives).
         seq_at: u8,
     },
-    /// `chmod` 的对话半（`REQ_CHMOD`）：回复的 `mode` 是实际生效的模式
-    /// （C request.c:127），成功时回写 vnode 缓存（C `vp->v_mode =
-    /// result_mode`，protect.c:127-128）。
+    /// Dialog half of `chmod` (`REQ_CHMOD`): the reply's `mode` is the mode
+    /// actually in effect (C request.c:127); on success it is written back to
+    /// the vnode cache (C `vp->v_mode = result_mode`, protect.c:127-128).
     Chmod {
-        /// 被改模式的 vnode 下标（走完时并入缓存的那个）。
+        /// Index of the vnode whose mode changes (the one merged into the cache on completion).
         vnode: usize,
     },
-    /// `sync`/`fsync` 的**多挂载序列**（C `do_sync` misc.c:276-296 与
-    /// `do_fsync` misc.c:229-267 的 `for (vmp = &vmnt[0]; ...)` 循环）：
-    /// 每个匹配的挂载各发一条 `REQ_SYNC`，逐条等回复（单线程模型里就是逐段
-    /// 挂起）。C 把 `req_sync` 的返回值**丢掉**，只保留加锁失败的错误——所以
-    /// 序列跑完报的是 `first_err`（通常 0）。
+    /// **Multi-mount sequence** for `sync`/`fsync` (the
+    /// `for (vmp = &vmnt[0]; ...)` loops of C `do_sync` misc.c:276-296 and
+    /// `do_fsync` misc.c:229-267): one `REQ_SYNC` per matching mount, awaiting
+    /// each reply in turn (in the single-threaded model, suspending once per
+    /// segment).  C **discards** the return value of `req_sync` and keeps only
+    /// lock-failure errors — so the sequence reports `first_err` (usually 0)
+    /// when it finishes.
     ///
-    /// 用定长数组而不是 `Vec`：`WorkerCont` 必须是 `Copy`（驱动层
-    /// `let (Some(cont), Some(reply)) = (wp.cont, wp.sendrec)` 直接按值取），
-    /// 而 `NR_MNTS` 只有 16，定长数组够用且保住了 `Copy`。
+    /// A fixed-size array is used instead of a `Vec` because `WorkerCont` must
+    /// be `Copy` (the driver layer takes it by value in
+    /// `let (Some(cont), Some(reply)) = (wp.cont, wp.sendrec)`), and `NR_MNTS`
+    /// is only 16, so a fixed array suffices while preserving `Copy`.
     SyncMounts {
-        /// 待发的挂载 FS 端点（前 `count` 个有效）。
+        /// Mount FS endpoints still to send to (the first `count` are valid).
         targets: [Endpoint; crate::vmnt::NR_MNTS],
-        /// 有效元素个数。
+        /// Number of valid elements.
         count: u8,
-        /// 下一个要发的下标。
+        /// Index of the next target to send.
         at: u8,
-        /// 要报给用户的错误（C 里只有加锁失败会写它）。
+        /// Error to report to the user (in C only a lock failure writes it).
         first_err: i32,
     },
-    /// `readlink` 的对话半（`REQ_RDLINK`）：C `req_rdlink_actual`
-    /// （request.c:741-747）——回复的 `m_type` 只是 `OK`，**字节数在载荷里**
-    /// （`mess_fs_vfs_rdlink { size_t nbytes; }`），所以不能复用 `Status`。
+    /// Dialog half of `readlink` (`REQ_RDLINK`): C `req_rdlink_actual`
+    /// (request.c:741-747) — the reply's `m_type` is just `OK` and the
+    /// **byte count lives in the payload** (`mess_fs_vfs_rdlink { size_t
+    /// nbytes; }`), so `Status` cannot be reused.
     Rdlink {
-        /// 已发给 FS 的 magic grant（收尾时撤销）。
+        /// The magic grant already sent to the FS (revoked at completion).
         grant: i32,
     },
-    /// `getdents` 的对话半（`REQ_GETDENTS`）：C `do_getdents`（read.c:282-317）
-    /// 的回复处理与 read/write 不同——**只有 `nbytes > 0` 才推进 filp 位置**
-    /// （C `if (r > 0) rfilp->filp_pos = new_pos;`），也不动 vnode 大小，
-    /// 所以不能复用 `Transfer`。
+    /// Dialog half of `getdents` (`REQ_GETDENTS`): reply handling in C
+    /// `do_getdents` (read.c:282-317) differs from read/write — the filp
+    /// position advances **only when `nbytes > 0`** (C `if (r > 0)
+    /// rfilp->filp_pos = new_pos;`) and the vnode size is left alone, so
+    /// `Transfer` cannot be reused.
     Getdents {
-        /// 已发给 FS 的 magic grant（收尾时撤销）。
+        /// The magic grant already sent to the FS (revoked at completion).
         grant: i32,
-        /// 目标 filp 下标（位置写回处）。
+        /// Target filp index (where the position is written back).
         filp: usize,
     },
-    /// `open` 的 `O_TRUNC` 分支（`REQ_FTRUNC`）：C `common_open:150-157` 对
-    /// 常规文件先过 W 位门、再 `truncate_vnode(vp, 0)`，**截断结果被忽略**
-    /// （C 没接返回值），随后照常装配 fd/filp。续接里按此继续本地半
-    /// （`O_TRUNC` 位要清掉，否则 `dispatch_open` 会再判一次 NeedTruncate）。
+    /// `O_TRUNC` branch of `open` (`REQ_FTRUNC`): C `common_open:150-157`
+    /// first passes the W-bit gate for regular files, then calls
+    /// `truncate_vnode(vp, 0)` with the **truncation result ignored** (C
+    /// discards the return value), and afterwards assembles fd/filp as usual.
+    /// The continuation resumes the local half from there (the `O_TRUNC` bit
+    /// must be cleared, otherwise `dispatch_open` would see NeedTruncate again).
     OpenTrunc {
-        /// 走完的节点（本地半要用它的 mode/ino 做类型分派与并表）。
+        /// The node already walked (the local half uses its mode/ino for type dispatch and table merge).
         node: crate::path::NodeDetails,
-        /// 原始 `oflags`（含 `O_TRUNC`）。
+        /// The original `oflags` (including `O_TRUNC`).
         oflags: u32,
     },
-    /// `creat` 阶段 3（`REQ_CREATE`）：回复是新建节点的 `node_details`，
-    /// 续接里并进 vnode 表、再做 `common_open` 的本地半（fd/filp 装配）。
+    /// `creat` phase 3 (`REQ_CREATE`): the reply is the new node's
+    /// `node_details`; the continuation merges it into the vnode table and then
+    /// runs the local half of `common_open` (fd/filp assembly).
     Create {
-        /// 调用方端点。
+        /// Caller endpoint.
         user: Endpoint,
-        /// 原始 `oflags`。
+        /// The original `oflags`.
         oflags: u32,
     },
-    /// 纯状态续接（`REQ_MKDIR`/`REQ_UNLINK` 一类"回了状态就完事"的请求）：
-    /// 把回复的状态原样回给用户，无载荷、无副作用。
+    /// Pure status continuation (requests such as `REQ_MKDIR`/`REQ_UNLINK`
+    /// where "a status reply is the whole job"): returns the reply's status to
+    /// the user unchanged, with no payload and no side effects.
     Status,
-    /// `Lseek` 的"抑制预读"请求（`REQ_INHIBREAD`）：位置已改，回复到达后
-    /// 把新位置写进回复载荷（C `do_lseek` 的 `job_m_out.m_vfs_lc_lseek`）。
+    /// `Lseek`'s "inhibit read-ahead" request (`REQ_INHIBREAD`): the position
+    /// has already changed; once the reply arrives the new position is written
+    /// into the reply payload (C `do_lseek`'s `job_m_out.m_vfs_lc_lseek`).
     InhibRead {
-        /// 新的文件位置（回给用户）。
+        /// The new file position (returned to the user).
         offset: i64,
     },
-    /// `Ftruncate`（`REQ_FTRUNC`）：回复只有状态，但成功时要按 C
-    /// `truncate_vnode:382` 把 vnode 大小改成新长度。
+    /// `Ftruncate` (`REQ_FTRUNC`): the reply carries only a status, but on
+    /// success the vnode size must be set to the new length as C
+    /// `truncate_vnode:382` does.
     Ftrunc {
-        /// 目标 vnode 下标（成功时更新大小）。
+        /// Target vnode index (size updated on success).
         vnode: usize,
-        /// 新的文件长度（C 的 `newsize`）。
+        /// The new file length (C's `newsize`).
         newsize: i64,
     },
-    /// 路径遍历（`REQ_LOOKUP` 一趟或多趟）：现场在 `WorkerSlot.path`
-    /// （`PathPending`）——续接体把它 `take()` 出来、`resume()` 后决定
-    /// "再发一条 lookup"（放回现场，继续挂起）还是"做相位 2"。
+    /// Path traversal (one or more `REQ_LOOKUP` rounds): the live state sits in
+    /// `WorkerSlot.path` (`PathPending`) — the continuation `take()`s it,
+    /// `resume()`s, and then decides between "send another lookup" (put the
+    /// state back and stay suspended) and "run phase 2".
     Path,
-    /// `Read`/`Write`（`REQ_READ`/`REQ_WRITE`）：回复的
-    /// `seek_pos`/`nbytes` 要写回 filp 位置，状态是实际传输的字节数
-    /// （C read.c 的 `cum_io`）；写方向还要按 C read.c:255-259 更新
-    /// vnode 大小（位置越过旧大小即抬高）。
+    /// `Read`/`Write` (`REQ_READ`/`REQ_WRITE`): the reply's
+    /// `seek_pos`/`nbytes` must be written back to the filp position, and the
+    /// status is the number of bytes actually transferred (C read.c's
+    /// `cum_io`); the write direction must also update the vnode size per C
+    /// read.c:255-259 (raise it once the position moves past the old size).
     Transfer {
-        /// 已发给 FS 的 magic grant。
+        /// The magic grant already sent to the FS.
         grant: i32,
-        /// 目标 filp 下标（位置推进要写回它）。
+        /// Target filp index (the advanced position is written back to it).
         filp: usize,
-        /// 目标 vnode 下标（写方向的大小更新要回写它）。
+        /// Target vnode index (write-direction size updates are written back to it).
         vnode: usize,
-        /// 请求时的位置（C 的 `position`，回复里给的是新位置）。
+        /// Position at request time (C's `position`; the reply gives the new position).
         orig_pos: i64,
-        /// 方向：`true` = 写（要更新 vnode 大小），`false` = 读。
+        /// Direction: `true` = write (vnode size must be updated), `false` = read.
         write: bool,
     },
 }
 
-/// 路径遍历的挂起现场（C 那份"活在 worker 线程栈上"的局部量）。
+/// Suspended state of a path traversal (the locals that "live on the worker
+/// thread's stack" in C).
 #[derive(Debug)]
 pub struct PathPending {
-    /// 遍历状态机（起点三元组 + symloop + 路径游标）。
+    /// The traversal state machine (start triple + symloop + path cursor).
     pub walk: crate::path::LookupWalk,
-    /// 当前在途的路径 grant（回复到达后 revoke）。
+    /// The path grant currently in flight (revoked once the reply arrives).
     pub grant: i32,
-    /// 走完之后做什么（臂的"相位 2"）。
+    /// What to do once the walk finishes (the handler's "phase 2").
     pub follow: PathFollow,
 }
 
-/// 路径走完之后的动作（C 里是 `eat_path` 返回后臂自己接着写的那段代码）。
+/// Action taken after a path walk completes (in C this is the code the handler
+/// writes right after `eat_path` returns).
 ///
-/// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
+/// Not `Copy`: `Mkdir` carries the "last component name" (`String`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
-    /// `rename(name1, name2)` 阶段 1：走**name1 的父目录**（`last_dir`）。
-    /// 走通后先过粘滞位（开着就转 `RenameOldSticky` 子遍历），再转阶段 2
-    /// （走 name2 的父目录）。C `do_rename`（link.c:166-280）。
+    /// `rename(name1, name2)` phase 1: walk **name1's parent directory**
+    /// (`last_dir`).  On success check the sticky bit first (if set, divert to
+    /// the `RenameOldSticky` sub-walk), then move to phase 2 (walk name2's
+    /// parent directory).  C `do_rename` (link.c:166-280).
     RenameOld {
-        /// name1 的最后组件（**要保存的旧名**）。
+        /// name1's last component (**the old name to be saved**).
         entry: alloc::string::String,
-        /// name2（阶段 2 要切出它的父目录与组件名）。
+        /// name2 (phase 2 splits it into parent directory and component name).
         new_path: alloc::string::String,
     },
-    /// `rename` 阶段 1 的粘滞位子遍历（只在旧父目录带粘滞位时走）：从旧父
-    /// 目录起走 name1 的最后组件（`PATH_RET_SYMLINK`），取受害者属主。
+    /// Sticky-bit sub-walk of `rename` phase 1 (taken only when the old parent
+    /// directory has the sticky bit): starting at the old parent directory,
+    /// walk name1's last component (`PATH_RET_SYMLINK`) to obtain the victim's
+    /// owner.
     RenameOldSticky {
-        /// 旧名（阶段 2 要用）。
+        /// The old name (needed by phase 2).
         entry: alloc::string::String,
-        /// name2。
+        /// name2.
         new_path: alloc::string::String,
     },
-    /// `rename` 阶段 2：走 name2 的**父目录**，走通后过跨设备门与两个
-    /// `W|X` 门，再发 `REQ_RENAME`。
+    /// `rename` phase 2: walk name2's **parent directory**; on success pass the
+    /// cross-device gate and the two `W|X` gates, then send `REQ_RENAME`.
     RenameNew {
-        /// 旧父目录所在 FS 端点（跨设备门用它比）。
+        /// FS endpoint of the old parent directory (the cross-device gate compares it).
         old_fs_e: Endpoint,
-        /// 旧父目录节点号（`REQ_RENAME` 的 `dir_old`）。
+        /// Inode number of the old parent directory (`REQ_RENAME`'s `dir_old`).
         old_ino: u64,
-        /// 保存下来的旧名。
+        /// The saved old name.
         old_name: alloc::string::String,
-        /// name2 的最后组件（新名；阶段 2 起走时切好带进来）。
+        /// name2's last component (the new name; split when phase 2 starts).
         new_entry: alloc::string::String,
     },
-    /// `link(name1, name2)` 阶段 1：走**整条 name1**（要链接的源文件，
-    /// C `do_link:188-189` 的 `eat_path`）。走通后转阶段 2（走 name2 的
-    /// 父目录）。
+    /// `link(name1, name2)` phase 1: walk **all of name1** (the source file to
+    /// link, C `do_link:188-189`'s `eat_path`).  On success move to phase 2
+    /// (walk name2's parent directory).
     LinkSrc {
-        /// name2（新链接的路径）——阶段 2 要重新切出父目录与组件名。
+        /// name2 (the new link's path) — phase 2 re-splits it into parent directory and component name.
         dst_path: alloc::string::String,
     },
-    /// `link` 阶段 2：走 name2 的**父目录**（`last_dir`），走通后过跨设备门与
-    /// `W|X` 门再发 `REQ_LINK`。C `do_link:191-214`。
+    /// `link` phase 2: walk name2's **parent directory** (`last_dir`); on
+    /// success pass the cross-device gate and the `W|X` gate, then send
+    /// `REQ_LINK`.  C `do_link:191-214`.
     LinkDst {
-        /// 源文件所在 FS 端点（跨设备门用它比）。
+        /// FS endpoint holding the source file (the cross-device gate compares it).
         src_fs_e: Endpoint,
-        /// 源文件的节点号（`REQ_LINK` 的 `inode` 域）。
+        /// Inode number of the source file (`REQ_LINK`'s `inode` field).
         src_ino: u64,
-        /// name2 的最后组件名。
+        /// name2's last component name.
         entry: alloc::string::String,
     },
-    /// `symlink(target, linkpath)`：走完**父目录**（`last_dir`）过门后发
-    /// `REQ_SLINK`——两个 grant：名字（VFS 内存，direct）+ 目标串（**用户
-    /// 内存**，magic）。C `do_slink`（link.c:386-424）。
+    /// `symlink(target, linkpath)`: after walking the **parent directory**
+    /// (`last_dir`) and passing the gates, send `REQ_SLINK` — two grants: the
+    /// name (VFS memory, direct) and the target string (**user memory**,
+    /// magic).  C `do_slink` (link.c:386-424).
     Slink {
-        /// 最后组件名（新链接的名字）。
+        /// Last component name (the new link's name).
         entry: alloc::string::String,
-        /// 用户内存里目标串的地址。
+        /// Address of the target string in user memory.
         target_addr: u64,
-        /// 目标串长度（**不含**结尾 NUL，C 传 `vname1_length - 1`）。
+        /// Target string length (**excluding** the trailing NUL; C passes `vname1_length - 1`).
         target_len: u64,
     },
-    /// `statvfs1(path, buf, flags)`：走完拿到 vnode 后进 `fill_statvfs`
-    /// （挂载行 → 缓存或 FS 往返 → 本地字段 → 拷给用户）。C `do_statvfs`
-    /// （stadir.c:294-326）。
+    /// `statvfs1(path, buf, flags)`: once the walk yields a vnode, enter
+    /// `fill_statvfs` (mount row -> cache or FS round trip -> local fields ->
+    /// copy to the user).  C `do_statvfs` (stadir.c:294-326).
     Statvfs {
-        /// 用户 `struct statvfs` 缓冲地址。
+        /// User `struct statvfs` buffer address.
         user_buf: u64,
-        /// `ST_NOWAIT` 等标志。
+        /// Flags such as `ST_NOWAIT`.
         flags: i32,
     },
-    /// `chdir(path)` / `chroot(path)`：走完改**本进程**的当前目录/根目录
-    /// （`change_into`，stadir.c:120-140）——没有 FS 往返，走完即判即改。
+    /// `chdir(path)` / `chroot(path)`: after the walk, change **this process's**
+    /// working directory / root directory (`change_into`, stadir.c:120-140) —
+    /// no FS round trip, decided and applied right after the walk.
     Chdir {
-        /// `true` 改根目录（`fp_rd`），`false` 改当前目录（`fp_wd`）。
+        /// `true` changes the root directory (`fp_rd`), `false` the working directory (`fp_wd`).
         into_root: bool,
     },
-    /// `utimens(path, times, flags)`：走完过门后发 `REQ_UTIME`；时间里的
-    /// `UTIME_NOW`/`UTIME_OMIT` 哨兵在走完之后才折算（要先知道节点的属主）。
-    /// C `do_utimens`（time.c:44-160）。
+    /// `utimens(path, times, flags)`: after walking and passing the gates, send
+    /// `REQ_UTIME`; the `UTIME_NOW`/`UTIME_OMIT` sentinels in the times are
+    /// resolved only after the walk (the node's owner must be known first).
+    /// C `do_utimens` (time.c:44-160).
     Utimens {
-        /// 用户给的 atime（秒, 纳秒）。
+        /// atime given by the user (seconds, nanoseconds).
         atime: (i64, i64),
-        /// 用户给的 mtime（秒, 纳秒）。
+        /// mtime given by the user (seconds, nanoseconds).
         mtime: (i64, i64),
-        /// `AT_SYMLINK_NOFOLLOW` 等标志（遍历标志在入口就用了，这里只做
-        /// "未知标志即 EINVAL"的判定）。
+        /// Flags such as `AT_SYMLINK_NOFOLLOW` (walk flags are consumed at entry;
+        /// only the "unknown flag means EINVAL" check remains here).
         flags: u32,
     },
-    /// `mknod(path, mode, dev)`：走完**父目录**（`last_dir`）过门后发
-    /// `REQ_MKNOD`。C `do_mknod`（open.c:514-556）。
+    /// `mknod(path, mode, dev)`: after walking the **parent directory**
+    /// (`last_dir`) and passing the gates, send `REQ_MKNOD`.  C `do_mknod`
+    /// (open.c:514-556).
     Mknod {
-        /// 最后组件名。
+        /// Last component name.
         entry: alloc::string::String,
-        /// 已按 umask 收窄的完整模式（含类型位）。
+        /// Full mode already narrowed by umask (including type bits).
         mode_bits: u32,
-        /// 设备号（FIFO/常规文件为 0）。
+        /// Device number (0 for FIFOs and regular files).
         dev: u64,
     },
-    /// `truncate(path, length)`：走完过写位门后发 `REQ_FTRUNC`（与
-    /// `Ftruncate` 共用发送半）。C `do_truncate`（link.c:277-326）的路径半。
+    /// `truncate(path, length)`: after the walk and the write-bit gate, send
+    /// `REQ_FTRUNC` (sharing the send half with `Ftruncate`).  The path half of
+    /// C `do_truncate` (link.c:277-326).
     Truncate {
-        /// 新长度（负值已在入口挡掉）。
+        /// The new length (negative values are rejected at entry).
         length: i64,
     },
-    /// `chown(path, uid, gid)`：走完过门后发 `REQ_CHOWN`；回复带新的模式，
-    /// uid/gid 由续接体写回 vnode 缓存。C `do_chown`（protect.c:24-110）的
-    /// 路径半。
+    /// `chown(path, uid, gid)`: after the walk and the gates, send
+    /// `REQ_CHOWN`; the reply carries the new mode and the continuation writes
+    /// uid/gid back to the vnode cache.  The path half of C `do_chown`
+    /// (protect.c:24-110).
     Chown {
-        /// 用户给的属主（`u32::MAX` = 不改，C 的 `-1`）。
+        /// Owner given by the user (`u32::MAX` = leave unchanged, C's `-1`).
         uid: u32,
-        /// 用户给的属组（同上）。
+        /// Group given by the user (same convention).
         gid: u32,
     },
-    /// `unlink(path)` / `rmdir(path)` 阶段 1：走**父目录**（`last_dir` 的
-    /// 目录前缀）。走通后过三道门（父目录类型 → `X|W` 权限 → 粘滞位），
-    /// 粘滞位开着就转阶段 2（子遍历取受害者属主），否则直接发
-    /// `REQ_UNLINK`/`REQ_RMDIR`。C `do_unlink`（link.c:94-163）。
+    /// `unlink(path)` / `rmdir(path)` phase 1: walk the **parent directory**
+    /// (the directory prefix of `last_dir`).  On success pass three gates
+    /// (parent directory type -> `X|W` permissions -> sticky bit); if the
+    /// sticky bit is set, move to phase 2 (a sub-walk that obtains the victim's
+    /// owner), otherwise send `REQ_UNLINK`/`REQ_RMDIR` directly.  C `do_unlink`
+    /// (link.c:94-163).
     Unlink {
-        /// 最后组件名（发给 FS 的名字）。
+        /// Last component name (the name sent to the FS).
         entry: alloc::string::String,
-        /// `true` 走 `REQ_RMDIR`，`false` 走 `REQ_UNLINK`（C 按 `job_call_nr`
-        /// 分流，link.c:156-159）。
+        /// `true` sends `REQ_RMDIR`, `false` sends `REQ_UNLINK` (C dispatches on
+        /// `job_call_nr`, link.c:156-159).
         rmdir: bool,
     },
-    /// `unlink`/`rmdir` 阶段 2（**只在粘滞位目录上走**）：从父目录起走
-    /// 最后组件本身（`PATH_RET_SYMLINK`，不跟进），拿到受害者属主后过
-    /// 粘滞位门，再发请求。C `do_unlink:132-152` 的 `advance(dirp, ...)`。
+    /// `unlink`/`rmdir` phase 2 (**taken only on sticky-bit directories**):
+    /// starting from the parent directory, walk the last component itself
+    /// (`PATH_RET_SYMLINK`, no follow-through), obtain the victim's owner, pass
+    /// the sticky-bit gate, then send the request.  The `advance(dirp, ...)` of
+    /// C `do_unlink:132-152`.
     UnlinkSticky {
-        /// 最后组件名。
+        /// Last component name.
         entry: alloc::string::String,
-        /// 是否 rmdir。
+        /// Whether this is rmdir.
         rmdir: bool,
-        /// 父目录所在 FS 端点（发请求的目标，阶段 2 的回复要用）。
+        /// FS endpoint of the parent directory (request target; phase 2's reply goes there).
         dir_fs_e: Endpoint,
-        /// 父目录节点号（`REQ_UNLINK` 的 `inode` 域）。
+        /// Inode number of the parent directory (`REQ_UNLINK`'s `inode` field).
         dir_ino: u64,
     },
-    /// `chmod(path, mode)`：走完过权限门后发 `REQ_CHMOD`，回复带**实际生效
-    /// 的模式**（FS 可能收窄），由续接体回写 vnode 缓存。C `do_chmod`
-    /// （protect.c:62-133）的路径半。
+    /// `chmod(path, mode)`: after the walk and the permission gate, send
+    /// `REQ_CHMOD`; the reply carries the **mode actually in effect** (the FS
+    /// may narrow it), which the continuation writes back to the vnode cache.
+    /// The path half of C `do_chmod` (protect.c:62-133).
     Chmod {
-        /// 调用方端点（回复目的地）。
+        /// Caller endpoint (reply destination).
         user: Endpoint,
-        /// 用户给的模式位（setgid 位可能被清，见续接前的本地半）。
+        /// Mode bits given by the user (the setgid bit may be cleared, see the local half before the continuation).
         mode: u32,
     },
-    /// `readlink(path, buf, bufsize)`：走完（**不跟进末组件符号链接**，
-    /// `PATH_RET_SYMLINK`）后发 `REQ_RDLINK`，链接文本由 FS 经 magic grant
-    /// 写进用户缓冲。C `do_rdlink`（link.c:473-507）。
+    /// `readlink(path, buf, bufsize)`: after the walk (**without following a
+    /// symlink in the last component**, `PATH_RET_SYMLINK`), send `REQ_RDLINK`;
+    /// the FS writes the link text into the user buffer through a magic grant.
+    /// C `do_rdlink` (link.c:473-507).
     Rdlink {
-        /// 调用方端点（magic grant 的 `who_from` 与回复目的地）。
+        /// Caller endpoint (the magic grant's `who_from` and the reply destination).
         user: Endpoint,
-        /// 用户缓冲地址。
+        /// User buffer address.
         buf: u64,
-        /// 用户给的窗口大小。
+        /// Window size given by the user.
         buf_size: u64,
     },
-    /// `access(path, mode)`：走完就结束——权限判断全在本地
-    /// （C `do_access`，protect.c:199-233：`eat_path` 之后只剩一次
-    /// `forbidden`），**没有 FS 往返**，所以这个 follow 的续接体直接回状态。
+    /// `access(path, mode)`: finished right after the walk — the permission
+    /// check is entirely local (C `do_access`, protect.c:199-233: after
+    /// `eat_path` only a single `forbidden` remains) with **no FS round trip**,
+    /// so this follow's continuation returns a status directly.
     Access {
-        /// 调用方端点（回复目的地）。
+        /// Caller endpoint (reply destination).
         user: Endpoint,
-        /// 用户给的 `mode`（`R_OK`/`W_OK`/`X_OK`/`F_OK` 的位组合）。
+        /// `mode` given by the user (a bit combination of `R_OK`/`W_OK`/`X_OK`/`F_OK`).
         access: u32,
     },
-    /// `stat(path, buf)`：按走完的 ino 发 `REQ_STAT`（C `do_stat` →
-    /// `req_stat`），随后由 `WorkerCont::Fstat` 续接收尾。
+    /// `stat(path, buf)`: send `REQ_STAT` for the inode the walk produced
+    /// (C `do_stat` -> `req_stat`); `WorkerCont::Fstat` then finishes the job.
     Stat {
-        /// 调用方端点（stat 缓冲的属主，magic grant 的 `who_from`）。
+        /// Caller endpoint (owner of the stat buffer, the magic grant's `who_from`).
         user: Endpoint,
-        /// 用户 `struct stat` 缓冲地址。
+        /// User `struct stat` buffer address.
         buf: u64,
     },
-    /// `open(path, flags)`：走完后做 `common_open` 的**本地半**（类型分派 +
-    /// fd/filp 装配 + 回 fd），C `open.c:118-274` 里不碰 FS 的那些步。
+    /// `open(path, flags)`: after the walk run the **local half** of
+    /// `common_open` (type dispatch + fd/filp assembly + reply with the fd) —
+    /// the steps in C `open.c:118-274` that do not touch the FS.
     Open {
-        /// 调用方端点（回复目的地）。
+        /// Caller endpoint (reply destination).
         user: Endpoint,
-        /// 原始 `oflags`（C 的 `open_flags`）。
+        /// The original `oflags` (C's `open_flags`).
         oflags: u32,
     },
-    /// `creat(path, flags, mode)` 阶段 1：**走整条路径**。走通＝文件已存在
-    /// （`O_EXCL` 时是 EEXIST）；ENOENT 则转阶段 2（走父目录）。
-    /// C `common_open` 的 O_CREAT 支（open.c:100-135）。
+    /// `creat(path, flags, mode)` phase 1: **walk the whole path**.  Success
+    /// means the file already exists (EEXIST with `O_EXCL`); ENOENT moves to
+    /// phase 2 (walk the parent directory).  The O_CREAT branch of C
+    /// `common_open` (open.c:100-135).
     Creat {
-        /// 调用方端点。
+        /// Caller endpoint.
         user: Endpoint,
-        /// 原始 `oflags`（含 `O_CREAT`）。
+        /// The original `oflags` (including `O_CREAT`).
         oflags: u32,
-        /// 新建节点的模式位（已按 umask 收窄）。
+        /// Mode bits of the new node (already narrowed by umask).
         mode: u32,
-        /// 原路径（阶段 2 要重新 split 出父目录与组件名）。
+        /// The original path (phase 2 re-splits it into parent directory and component name).
         path: alloc::string::String,
     },
-    /// `creat` 阶段 2：走父目录（`last_dir_split` 的 `dir_path`），走通后发
-    /// `REQ_CREATE`。C `new_node` 的 `last_dir` 那一步（open.c:322）。
+    /// `creat` phase 2: walk the parent directory (`last_dir_split`'s
+    /// `dir_path`), then send `REQ_CREATE`.  The `last_dir` step of C
+    /// `new_node` (open.c:322).
     CreatInDir {
-        /// 调用方端点。
+        /// Caller endpoint.
         user: Endpoint,
-        /// 原始 `oflags`。
+        /// The original `oflags`.
         oflags: u32,
-        /// 新建节点的模式位。
+        /// Mode bits of the new node.
         mode: u32,
-        /// 最后组件名（新节点的名字）。
+        /// Last component name (the new node's name).
         entry: alloc::string::String,
     },
-    /// `mkdir(path, mode)`：**走的是父目录**（`last_dir_split` 的
-    /// `dir_path`），走完后发 `REQ_MKDIR`（C `do_mkdir` 的
-    /// `last_dir` + `req_mkdir`）。
+    /// `mkdir(path, mode)`: **walks the parent directory** (`last_dir_split`'s
+    /// `dir_path`), then sends `REQ_MKDIR` (C `do_mkdir`'s `last_dir` +
+    /// `req_mkdir`).
     Mkdir {
-        /// 调用方端点。
+        /// Caller endpoint.
         user: Endpoint,
-        /// 最后组件名（新目录的名字）。
+        /// Last component name (the new directory's name).
         entry: alloc::string::String,
-        /// 建目录的权限位（已含 `I_DIRECTORY` 与 umask）。
+        /// Permission bits for the new directory (already includes `I_DIRECTORY` and umask).
         mode: u32,
     },
 }
@@ -680,15 +748,19 @@ pub struct WorkerSlot {
     pub func: Option<WorkerFunc>,
     /// Slot index (`self` in `worker_main:243` `ASSERTW(self)`).
     pub self_index: usize,
-    /// 续接标识（`Some` = 该槽的作业在等 FS 回复，回复到了要跑续接体；
-    /// C 的"后半段在栈上"在单线程模型里的显式对应物）。
+    /// Continuation marker (`Some` = this slot's job is awaiting an FS reply and
+    /// must run the continuation when it arrives; the explicit counterpart, in
+    /// the single-threaded model, of C's "second half lives on the stack").
     pub cont: Option<WorkerCont>,
-    /// 路径遍历现场（`WorkerCont::Path` 时必有）：跨多次 `REQ_LOOKUP`
-    /// 存活，直到走完或出错。
+    /// Path traversal state (always present when `WorkerCont::Path`): it
+    /// survives across several `REQ_LOOKUP` rounds until the walk finishes or
+    /// fails.
     pub path: Option<PathPending>,
-    /// 路径 grant 的源缓冲：grant 要 NUL 结尾的字节区，而 `String` 没有
-    /// 结尾 NUL，故每次 lookup 把当前路径拷进来 + 补 NUL 再授权；放在槽上
-    /// 是因为它必须活过"挂起 → 回复"这段（每槽一块，池子建一次）。
+    /// Source buffer for path grants: a grant needs a NUL-terminated byte
+    /// region, and `String` has no trailing NUL, so each lookup copies the
+    /// current path in and appends a NUL before granting; it lives on the slot
+    /// because it must outlive the "suspend -> reply" span (one block per slot,
+    /// allocated once when the pool is built).
     pub path_scratch: Box<[u8; crate::path::PATH_MAX]>,
 }
 
@@ -1490,7 +1562,8 @@ mod tests {
             let mut fp2 = FProc::new_unused();
             let s = slot(i + 10);
             // Use spare to force assignment even when available==1
-            // [SD19-gate] 测试夹具：调度失败由后续断言体现，不 unwrap 属刻意形状
+            // [SD19-gate] test fixture: scheduling failures are surfaced by later
+            // assertions; deliberately not unwrapping here.
             #[allow(clippy::let_underscore_must_use)]
             let _ = pool.start_first_fit(s, &mut fp2, WorkerFunc::DoWork, &msg, true);
         }
@@ -1526,7 +1599,8 @@ mod tests {
         // Now occupy 8 slots (busy=8, avail=1) → may_do_pending false (spare reserved)
         for i in 0..8 {
             let mut f = FProc::new_unused();
-            // [SD19-gate] 测试夹具：调度失败由后续断言体现，不 unwrap 属刻意形状
+            // [SD19-gate] test fixture: scheduling failures are surfaced by later
+            // assertions; deliberately not unwrapping here.
             #[allow(clippy::let_underscore_must_use)]
             let _ = pool.start_first_fit(slot(i + 20), &mut f, WorkerFunc::DoWork, &msg, true);
         }
@@ -1797,7 +1871,8 @@ mod tests {
         // Still pending queued?
         pool.set_allow(false);
         let mut fp = FProc::new_unused();
-        // [SD19-gate] 测试夹具：调度失败由后续断言体现，不 unwrap 属刻意形状
+        // [SD19-gate] test fixture: scheduling failures are surfaced by later
+        // assertions; deliberately not unwrapping here.
         #[allow(clippy::let_underscore_must_use)]
         let _ = pool.start_first_fit(slot(1), &mut fp, WorkerFunc::DoWork, &m, false);
         // pending==1 → not idle → cleanup fails

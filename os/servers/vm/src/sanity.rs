@@ -29,7 +29,7 @@ use crate::vmproc::VmProcTable;
 
 /// A single refcount mismatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// Fields are read by tests; the production audit path (V11/T16) reports
+// Fields are read by tests; the production audit path reports
 // only `mismatches.len()` today — per-PFN formatting joins when a syslog
 // consumer exists.
 #[allow(dead_code)]
@@ -55,9 +55,9 @@ pub struct RefcountMismatch {
 /// ALLREGIONS(;,if(pr->ph->flags & PBF_INCACHE) pr->ph->seencount++;);
 /// ALLREGIONS(;,MYASSERT(pr->ph->refcount == pr->ph->seencount););
 /// ```
-// V11/T16 (G-V11-2 闭环)：生产入口 = `sanity_checks` feature（对应 C
-// SANITYCHECKS 编译开关），由 `VmServer::run_once` 周期调用。
-// C: alloc.c `#if SANITYCHECKS` + region.c `map_sanitycheck`（:168-261）。
+// Production entry point = the `sanity_checks` feature (corresponding to C's
+// SANITYCHECKS compile switch), called periodically by `VmServer::run_once`.
+// C: alloc.c `#if SANITYCHECKS` + region.c `map_sanitycheck` (:168-261).
 #[cfg_attr(
     all(not(test), not(feature = "sanity_checks")),
     allow(dead_code)

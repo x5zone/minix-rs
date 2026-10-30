@@ -39,8 +39,9 @@ fn assert_err_line(err: &str, prog: &str, operation: &str) {
     let head = format!("{prog}: {operation}: ");
     assert!(err.starts_with(&head), "`{err}` should start with `{head}`");
     let sentence = &err[head.len()..];
-    // 句子必须是一个句子：里头不再有一个字段，也不能是大写代号（`EIO`、`EINVAL` 这类
-    // 标识符一个 lowercase 都没有），并且以换行收尾。
+    // The sentence must be a sentence: no further field inside it, no
+    // uppercase code word (`EIO`, `EINVAL` and the like have not a single
+    // lowercase letter), and a trailing newline.
     assert!(
         !sentence.is_empty() && !sentence.contains(": "),
         "不该再有一个字段：`{sentence}`"

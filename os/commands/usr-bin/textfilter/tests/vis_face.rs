@@ -130,8 +130,10 @@ fn operands_are_encoded_into_one_stream_and_a_bad_one_only_warns() {
     }
 }
 
-/// 与 `run` 同一条命令缝，但标准错误也**逐字节**交回：文本形经 `from_utf8_lossy` 之后，
-/// 一个裸 `c3` 是替换字符 U+FFFD、`c3 83` 是 `Ã`，两种错法虽然不同串，却都不如直接比字节。
+/// The same command seam as `run`, but stderr also comes back **byte for
+/// byte**: after `from_utf8_lossy`, a bare `c3` is the replacement character
+/// U+FFFD and `c3 83` is `Ã`; the two error forms differ as strings, which is
+/// still worse than comparing bytes directly.
 fn run_streams(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(VIS)
         .args(args)
@@ -149,13 +151,19 @@ fn run_streams(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**（`-\u{e9}` 交回 `c3`，不是 `c3 a9` 也不是 `c3 83`）。
-/// 本支没有差分腿（宿主没有 `vis(3)`，篇首那句「byte-exact expectations are what the C source
-/// says」是既定口径），判据两处：机制在 `minix3/lib/libc/stdlib/getopt.c:79`（`optopt = *place++`
-/// 一次进一个字节）与 `:103`（`%c` 原样写出），同族九支壳的参照件读数（`tmp/rev-309/rev_ref`、
-/// `tmp/paste-321/paste_ref`、`tmp/jot-317/jot_ref` 等）对 `-é` 全部交回单个 `c3`。
-/// `c` 是 C 选项串里合法且不带值的字母，所以聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`——
-/// `vis.c:135-140` 的 `case '?'`/`default` 打完 usage 就 `return 1`，第二个字母轮不到。
+/// The letter slot of the out-of-set letter line is **one bare byte**
+/// (`-\u{e9}` comes back as `c3`, not `c3 a9` and not `c3 83`). This branch
+/// has no differential leg (the host has no `vis(3)`, and the opening statement
+/// "byte-exact expectations are what the C source says" is the established
+/// criterion); the evidence has two parts: the mechanism in
+/// `minix3/lib/libc/stdlib/getopt.c:79` (`optopt = *place++` advances one byte
+/// at a time) and `:103` (`%c` writes it out raw), and the reference readings
+/// of the nine shell members of the family (`tmp/rev-309/rev_ref`,
+/// `tmp/paste-321/paste_ref`, `tmp/jot-317/jot_ref`, etc.), which all return a
+/// single `c3` for `-é`. `c` is a legal letter without a value in C's option
+/// string, so the cluster keeps consuming and takes the first byte of `é`;
+/// `-Zé` stops at `Z` — the `case '?'`/`default` at `vis.c:135-140` prints
+/// usage and `return 1`s, so the second letter never gets a turn.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_the_first_byte_of_the_flag() {
     const USAGE_LINE: &[u8] =
@@ -183,10 +191,13 @@ fn letters_outside_the_c_optstring_are_refused_with_usage() {
     // refusals left are the letters C itself sends to `default:`. `-d` belongs in
     // that group: it is C's debug counter, compiled out of this build, so the
     // answer is the usage line rather than a “not modelled” note about our shell.
-    // 集外字母是**两行**：libc 的 `getopt`（`minix3/lib/libc/stdlib/getopt.c:101-104`，
-    // 选项串不以 `:` 开头所以 `opterr` 生效）先印 `vis: unknown option -- <字母>`，
-    // 然后 `case '?'`/`default` 才打那一行 usage（`vis.c:135-140`）。旧断言只看
-    // `contains("Usage: vis [")`，所以少了首行也测不出来——现按逐字等式钉。
+    // An out-of-set letter is **two lines**: libc's `getopt`
+    // (`minix3/lib/libc/stdlib/getopt.c:101-104`; the option string does not
+    // start with `:`, so `opterr` is in effect) first prints
+    // `vis: unknown option -- <letter>`, and only then does
+    // `case '?'`/`default` print the usage line (`vis.c:135-140`). The old
+    // assertion only looked at `contains("Usage: vis [")`, so a missing first
+    // line went undetected — now pinned by exact equality.
     const USAGE_LINE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
     for (flag, letter) in [("-z", 'z'), ("-1", '1')] {
         let (out, status, err) = run(&[flag], b"a\n");
@@ -198,8 +209,9 @@ fn letters_outside_the_c_optstring_are_refused_with_usage() {
             "flag {flag} 的两行形与 C 不符"
         );
     }
-    // `-d` 不在集外（C 的选项串里是 `d:`），所以它**没有**首行，只落 usage；
-    // 而它带值：后面什么都没有时才是 libc 的缺值那一句。
+    // `-d` is not out of set (C's option string has `d:`), so it has **no**
+    // first line and only falls through to usage; and it takes a value: only
+    // when nothing follows does libc's missing-argument sentence appear.
     let (out, status, err) = run(&["-d", "x"], b"a\n");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 1, "stderr was {err:?}");
@@ -409,7 +421,8 @@ fn fold_width_is_read_the_way_atoi_reads_it() {
         "vis: option requires an argument -- F\nUsage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n",
         "缺值那一支是两行（libc 首行 + usage）；旧断言只看 `contains`，少了首行也测不出"
     );
-    // `-e` 的缺值是同一族的另一支，字母跟着换。
+    // The missing value for `-e` is another branch of the same family; the
+    // letter changes accordingly.
     let (out, status, err) = run(&["-e"], b"a");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 1, "stderr was {err:?}");

@@ -4,21 +4,25 @@
 //! session, device probe, flag parsing, signal registration, stdio
 //! cleanup, securelevel probe, then `transition()` (see 02).
 
-// SD-19 机械化门
+// Mechanical gate: every discarded `Result` must carry a written reason.
 #![warn(clippy::let_underscore_must_use)]
 
-// P1-2 ③（决策记录：09-stage-init/todo.md）：真机用户镜像的目标是
-// `x86_64-unknown-none`（rt-birth 先例；workspace .cargo/config 为该
-// target 配 static 重定位），二进制在那一侧是 freestanding PID 1 ——
-// 入口走 minix-rt 的 `_start` 出生链（os/libs/minix-rt/src/crt0.rs:334，
-// RBX 载 ps_strings 描述符），panic handler 由本 crate 自带（本文件底部）。
-// 门控用 `target_os = "none"` 而不是 `not(test)`：宿主（linux-gnu/musl）
-// 的开发构建必须保持 std 形态才可链接——rustc 对 hosted target 一律传
-// Scrt1.o（其 `_start` 需要 `main` + `__libc_start_main`），no_std + no_main
-// 在宿主链接必然断；freestanding 形态只在真 target 上成立。`cfg(test)`
-// 下与宿主构建同为 std：测试二进制链接真 std，其 panic_impl/入口与
-// minix-rt 的 no_std 专属件互斥（E0152 死结，workspace 声明 +
-// dev-dependency 双声明共同解开）。
+// The on-target user image targets `x86_64-unknown-none` (the rt-birth
+// precedent; the workspace .cargo/config configures static relocation for
+// that target). The binary is freestanding PID 1 on that side: the entry
+// goes through minix-rt's `_start` birth chain
+// (os/libs/minix-rt/src/crt0.rs:334, RBX carries the ps_strings
+// descriptor), and this crate supplies its own panic handler (bottom of
+// this file).
+// Gating uses `target_os = "none"` rather than `not(test)`: a hosted
+// (linux-gnu/musl) development build must keep the std form to link —
+// rustc always passes Scrt1.o for hosted targets (its `_start` needs
+// `main` + `__libc_start_main`), so no_std + no_main cannot link on the
+// host; the freestanding form holds only on the real target. Under
+// `cfg(test)` the build is std like the hosted one: the test binary links
+// real std, whose panic_impl/entry are mutually exclusive with minix-rt's
+// no_std-only items (an E0152 deadlock, resolved by the workspace
+// declaration plus the dev-dependency declaration together).
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 // The containers live in `alloc` (not the std prelude) so the module
@@ -59,14 +63,15 @@ use host::{InitHost, MinixSysHost};
 use state_machine::StateKind;
 use alloc::sync::Arc;
 
-/// PID 1 的启动体：八步接线（C init.c:229-367 的 Rust 侧），尾调
-/// `run_transition`（`-> !`，状态机永不返回）。两个入口形态共用本
-/// 函数，见下方各自 cfg 门控的 `main`。
+/// PID 1's startup body: the eight steps wired up (the Rust side of C
+/// init.c:229-367), ending in a call to `run_transition` (`-> !`, the state
+/// machine never returns). Both entry forms share this function; see the
+/// separately cfg-gated `main`s below.
 fn run_init() -> ! {
     minix_rt::init();
     let mut host = MinixSysHost::default();
     // C step 1: identity gate (init.c:242-249). getuid has no client
-    // wrapper yet (E-INITSYS ②) — say so once and continue; pid 1 is
+    // wrapper yet (E-INITSYS 2) — say so once and continue; pid 1 is
     // still verified whenever getpid answers.
     match host.getuid() {
         Ok(0) => {}
@@ -93,7 +98,7 @@ fn run_init() -> ! {
 
     // C step 4: flag parsing (init.c:287-303). Args come from the
     // birth descriptor via minix-rt — no std env anywhere on the boot
-    // path (P1-2).
+    // path.
     let argv: Vec<String> = (0..minix_rt::crt0::argv_count())
         .filter_map(minix_rt::crt0::argv_bytes)
         .map(|b| String::from_utf8_lossy(b).into_owned())
@@ -105,7 +110,7 @@ fn run_init() -> ! {
     let decision = decide_entry(&boot_args, console_ok);
 
     // C step 5: signal registration (init.c:310-334). ENOSYS until
-    // E-INITSYS ① — the machine runs with default dispositions until
+    // E-INITSYS 1 — the machine runs with default dispositions until
     // then, which the boot log says out loud.
     if let Err(e) = host.register_handlers(&host::default_signal_spec()) {
         log::warning(&mut host, &format!("signal registration unavailable: {e}"));
@@ -151,48 +156,53 @@ fn run_init() -> ! {
         InitialState::Runcom => StateKind::Runcom,
         InitialState::SingleUser => StateKind::SingleUser,
     };
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] best effort: reading TTYS_PATH through the seam may fail; the result is intentionally dropped here
     #[allow(clippy::let_underscore_must_use)]
     let _ = TTYS_PATH; // read per read_ttys step through the seam
     driver::run_transition(&mut host, &mut state, initial);
 }
 
-/// 真机入口：crt0 出生链消费契约的精确形（crt0.rs Consumer contract：
-/// `#[no_mangle]` 承载符号名——`unsafe extern "Rust" { fn main() ->
-/// i32; }` 按名解析、不查签名，`()` 形态照样链接但返回寄存器无人写，
-/// stage-6 的 `exit(main())` 读垃圾；rt-birth 先例 main.rs:117）。
-/// `run_init` 发散，i32 槽位永不产出——契约要的是 ABI 形态一致。
+/// Target entry: the exact shape of the crt0 birth-chain Consumer contract
+/// (crt0.rs Consumer contract: `#[no_mangle]` carries the symbol name —
+/// `unsafe extern "Rust" { fn main() -> i32; }` resolves by name without
+/// checking the signature, so a `()` form links too but nobody writes the
+/// return register, and stage-6's `exit(main())` reads garbage; the rt-birth
+/// precedent is main.rs:117). `run_init` diverges, so the i32 slot is never
+/// produced — the contract only requires the ABI shape to agree.
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
     run_init()
 }
 
-/// 宿主入口：std 构建走 rustc 的 start glue，`main` 返回类型必须实现
-/// `Termination`——`i32` 不是（rustc 1.94 实测 E0277），`()` 是；
-/// `run_init` 发散，本函数同样永不返回，exit code 路径只是类型面。
+/// Host entry: std builds go through rustc's start glue, so `main`'s return
+/// type must implement `Termination` — `i32` does not (E0277 observed on
+/// rustc 1.94), `()` does; `run_init` diverges, so this function never
+/// returns either, and the exit-code path exists only at the type level.
 #[cfg(any(test, not(target_os = "none")))]
 fn main() {
     run_init()
 }
 
-/// PID 1 的 panic handler（P1-2 ③ 决策记录的落地形态；门控与 crate 的
-/// freestanding 形态一致，见文件顶部）。
+/// PID 1's panic handler (the gate matches the crate's freestanding form,
+/// see the top of the file).
 ///
-/// 裁决：init 采用 minix-rt 的统一渲染——`minix_rt::diag::
-/// format_panic_report`（栈上缓冲、无分配器、无系统调用，minix-rt
-/// lib.rs:287 同款）——加上 init 特有的收尾：PID 1 不允许自旋挂死
-/// 全机（minix-rt 自带 handler 的 no-hook 分支已改 SYS_DIAGCTL+exit
-/// 阶梯——C-56，2026-09-21；此自带 handler 为 PID 1 保留同一阶梯的
-/// 直接形式，不依赖 hook registry），所以渲染完成后经 SYS_DIAGCTL 把报告
-/// 送到内核诊断台（C 的 panic 即死语义，minix3/minix/lib/libsys/
-/// panic.c:51-58 emit→exit 阶梯），然后非零 `exit`——内核与 C 世界
-/// 一样看得见"init 死了"。
+/// Ruling: init uses minix-rt's unified rendering —
+/// `minix_rt::diag::format_panic_report` (stack buffer, no allocator, no
+/// system call, the same form as minix-rt lib.rs:287) — plus an
+/// init-specific ending: PID 1 must not spin and hang the whole machine
+/// (the no-hook branch of minix-rt's built-in handler has already moved to
+/// the SYS_DIAGCTL+exit ladder, dated 2026-09-21; this handler keeps the same
+/// ladder in direct form for PID 1, without depending on the hook registry),
+/// so after rendering, the report goes to the kernel diagnostic console
+/// through SYS_DIAGCTL (C's panic-dies-at-once semantics, the emit→exit
+/// ladder of minix3/minix/lib/libsys/panic.c:51-58), followed by a non-zero
+/// `exit` — the kernel sees "init died" just as in the C world.
 ///
-/// minix-rt 自带的 `#[panic_handler]` 在 `panic-handler` feature 后面
-/// （minix-rt lib.rs:279），本 crate 不启用该 feature——图内恰好一个
-/// handler，永不 E0152。宿主/std 构建下本函数整体编译出局（std 的
-/// panic_impl 接管）。
+/// minix-rt's own `#[panic_handler]` sits behind the `panic-handler` feature
+/// (minix-rt lib.rs:279), and this crate does not enable it — exactly one
+/// handler in the graph, never E0152. Under host/std builds this function is
+/// compiled out entirely (std's panic_impl takes over).
 #[cfg(all(not(test), target_os = "none"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
@@ -202,13 +212,15 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
         info.message(),
         &mut buffer,
     );
-    // 渲染失败不可能从这里 panic（format_panic_report 对超出缓冲的
-    // 字节静默截断）；非 UTF-8 消息换成诚实占位。诊断台发送失败本身
-    // 不再重试——panic 路径上的内核调用失败没有更有意义的去向，exit
-    // 的可见结果（init 退出）不变。
+    // A rendering failure cannot panic from here (format_panic_report
+    // silently truncates bytes beyond the buffer); a non-UTF-8 message is
+    // replaced by an honest placeholder. A failed console send is not
+    // retried — a kernel call failing on the panic path has no more
+    // meaningful destination, and the visible outcome of the exit (init
+    // going away) is unchanged.
     let message = core::str::from_utf8(&buffer[..length])
         .unwrap_or("init panicked (non-utf8 message)");
-    //[SD19-gate] SD-19: init 尽力而为
+    //[SD19-gate] best effort: a failed diagnostic write has no better destination on the panic path; the exit below still makes init's death visible
     #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::syscall::sys_diagctl_write(
         &minix_sys::syscall::DirectKernelCallTransport,

@@ -1,91 +1,105 @@
-//! PM 主循环三路分发（C: `main.c:84-103`）。
+//! PM main loop's three-way dispatch (C: `main.c:84-103`).
 //!
-//! 文档: `rewrite-notes/04-stage-pm/04-ipc-dispatch.md`。
+//! Document: `rewrite-notes/04-stage-pm/04-ipc-dispatch.md`.
 //!
-//! # 与 C 的对应
+//! # Correspondence with C
 //!
-//! - `IS_VFS_PM_RS(call_nr) && who_e == VFS_PROC_NR` → `handle_vfs_reply()`
-//!   （main.c:84-87）——此拦截在 `PmServer::run_once` 主循环第一路完成
-//!   （见 `crate::init`），不进入本三路分发；状态机归 05-vfs-interaction.md。
-//! - `call_nr == PROC_EVENT_REPLY` → `do_proc_event_reply()`
-//!   （main.c:88-89）——本层只建钩子，语义归 06-event-subscription.md。
-//! - `IS_PM_CALL(call_nr)` → `call_vec[call_nr - PM_BASE]()`（main.c:90-101）
-//!   ——见 [`crate::ipc::calls::dispatch_pm_call`]。
-//! - 其余 → ENOSYS（main.c:102-103）。
+//! - `IS_VFS_PM_RS(call_nr) && who_e == VFS_PROC_NR` -> `handle_vfs_reply()`
+//!   (main.c:84-87) -- that interception happens on the first leg of
+//!   `PmServer::run_once`'s main loop (see `crate::init`) and does not enter
+//!   this three-way dispatch; the state machine belongs to
+//!   05-vfs-interaction.md.
+//! - `call_nr == PROC_EVENT_REPLY` -> `do_proc_event_reply()`
+//!   (main.c:88-89) -- this layer only builds the hook; the semantics belong
+//!   to 06-event-subscription.md.
+//! - `IS_PM_CALL(call_nr)` -> `call_vec[call_nr - PM_BASE]()` (main.c:90-101)
+//!   -- see [`crate::ipc::calls::dispatch_pm_call`].
+//! - Everything else -> ENOSYS (main.c:102-103).
 //!
-//! `ReplyIntent` 建模 C 的 `result != SUSPEND → reply()`（main.c:106）：
-//! SUSPEND（com.h:1151，值 -998）被显式化为 [`ReplyIntent::ReplyLater`] /
-//! [`ReplyIntent::NoReply`]（ARCH A-6，plan.md §7.3）。
+//! `ReplyIntent` models C's `result != SUSPEND -> reply()` (main.c:106):
+//! SUSPEND (com.h:1151, value -998) is made explicit as
+//! [`ReplyIntent::ReplyLater`] / [`ReplyIntent::NoReply`] (`[ARCH: A-6]`,
+//! plan.md section 7.3).
 
 use super::transport::IpcTransport;
 use crate::ipc::calls::{PmCall, dispatch_pm_call};
 use crate::mproc::ProcTable;
 use minix_types::{ENOSYS, Endpoint, Message, UserSlot};
 
-/// VFS→PM 回复消息类型基址。C: `VFS_PM_RS_BASE` — com.h:514。
+/// VFS->PM reply message type base. C: `VFS_PM_RS_BASE` -- com.h:514.
 ///
-/// 收敛到 minix-types（与 com.h:514 单一真相），见 05-design.v1.md D1。
+/// Converged into minix-types (single truth with com.h:514), see
+/// 05-design.v1.md.
 pub use minix_types::VFS_PM_RS_BASE;
 
-/// 进程事件订阅者回复消息类型。C: `PROC_EVENT_REPLY` —
-/// `COMMON_RS_BASE + 0` — com.h:619（COMMON_RS_BASE = 0xE80，com.h:598）。
-/// V3-P3-5：收敛到 minix-types 单一真值（与上方 `VFS_PM_RS_BASE` 的
-/// re-export 同型），消除本地 0xE80 双址。
+/// Process-event subscriber reply message type. C: `PROC_EVENT_REPLY` --
+/// `COMMON_RS_BASE + 0` -- com.h:619 (COMMON_RS_BASE = 0xE80, com.h:598).
+/// Converged into the single minix-types truth (the same shape as the
+/// `VFS_PM_RS_BASE` re-export above), removing the local 0xE80 duplicate
+/// address.
 pub use minix_types::PROC_EVENT_REPLY;
 
-/// 主循环对一次分发的回复意图（ARCH A-6：C `SUSPEND` 显式化）。
+/// The reply intent the main loop derives from one dispatch (`[ARCH: A-6]`:
+/// C's `SUSPEND` made explicit).
 ///
-/// C 中 handler 返回 `result`，主循环 `if (result != SUSPEND) reply(...)`
-/// （main.c:106）；SUSPEND 是 -998 魔法数，同时覆盖三种子情形
-/// （plan.md §7.3）：等待中回复（do_wait4 → tell_parent）、异步回复
-/// （do_exec/do_set → handle_vfs_reply）、永不回复（do_exit）。Rust 用
-/// 枚举区分：
+/// In C the handler returns `result`, and the main loop does
+/// `if (result != SUSPEND) reply(...)` (main.c:106); SUSPEND is the -998 magic
+/// number that covers three sub-cases at once: reply while waiting (do_wait4
+/// -> tell_parent), asynchronous reply (do_exec/do_set -> handle_vfs_reply),
+/// and never reply (do_exit). Rust distinguishes them with an enum:
 ///
-/// - [`ReplyIntent::Reply`]：主循环立即 `reply(slot, code)`（C: result
-///   非 SUSPEND）。
-/// - [`ReplyIntent::ReplyLater`]：本次不回复，稍后由异步路径回复
-///   （C: result == SUSPEND 且存在后续回复者，如 05 的 VFS 回复）。
-/// - [`ReplyIntent::NoReply`]：永不回复（C: do_exit 返回 SUSPEND 且
-///   没有后续回复者，forkexit.c:246-266；04 层暂不产生，供 09 使用）。
+/// - [`ReplyIntent::Reply`]: the main loop immediately does
+///   `reply(slot, code)` (C: result is not SUSPEND).
+/// - [`ReplyIntent::ReplyLater`]: no reply now; an asynchronous path replies
+///   later (C: result == SUSPEND with a later replier, such as VFS's reply in
+///   05).
+/// - [`ReplyIntent::NoReply`]: never reply (C: do_exit returns SUSPEND with no
+///   later replier, forkexit.c:246-266; the 04 layer does not produce it yet,
+///   it serves 09).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyIntent {
-    /// 立即以 `code` 作为回复 `m_type` 发送（code 可为 OK=0 / errno /
-    /// 载荷值如 pid）。
+    /// Send `code` as the reply `m_type` at once (code may be OK=0, an errno,
+    /// or a payload value such as a pid).
     Reply(i32),
-    /// 本次不回复，稍后由异步路径回复（C: SUSPEND）。
+    /// No reply now; an asynchronous path replies later (C: SUSPEND).
     ReplyLater,
-    /// 永不回复（C: do_exit 子情形；04 层暂无生产者）。
+    /// Never reply (C: do_exit's sub-case; the 04 layer has no producer yet).
     NoReply,
 }
 
-/// C: `IS_VFS_PM_RS(type)` — com.h:517：`((type) & ~0x7f) == VFS_PM_RS_BASE`。
+/// C: `IS_VFS_PM_RS(type)` -- com.h:517: `((type) & ~0x7f) == VFS_PM_RS_BASE`.
 ///
-/// 委托到 minix-types 同名函数（单一真相），见 05-design.v1.md D1。
+/// Delegates to the minix-types function of the same name (single truth), see
+/// 05-design.v1.md.
 pub fn is_vfs_pm_rs(nr: i32) -> bool {
     minix_types::is_vfs_pm_rs(nr)
 }
 
-/// C: `IS_PM_CALL(type)` — callnr.h:11：`((type) & ~0xff) == PM_BASE`。
+/// C: `IS_PM_CALL(type)` -- callnr.h:11: `((type) & ~0xff) == PM_BASE`.
 pub fn is_pm_call(nr: i32) -> bool {
     (nr & !0xff) == 0
 }
 
-/// 主循环三路分发（C: main.c:84-103）。
+/// The main loop's three-way dispatch (C: main.c:84-103).
 ///
-/// 前置条件（调用方 `PmServer::run_once` 已保证）：消息非 notification、
-/// `msg.m_source` 已通过 `pm_isokendpt` 验证、caller 非 EXITING。
+/// Preconditions (already guaranteed by the caller `PmServer::run_once`): the
+/// message is not a notification, `msg.m_source` has passed `pm_isokendpt`,
+/// and the caller is not EXITING.
 ///
-/// # 注意
+/// # Note
 ///
-/// VFS→PM 异步回复（`IS_VFS_PM_RS && source == VFS`）已在 `run_once` 入口
-/// 拦截并交由 `handle_vfs_reply` 状态机处理（main.c:84-87 在主循环第一路），
-/// 因此**不会**进入本分发。本函数处理事件回复与 PM 调用两路——PM 调用
-/// 全部经 [`dispatch_pm_call`] 的单一分发表（ARCH A-5），主循环不得内联
-/// 拦截。
+/// The VFS->PM asynchronous reply (`IS_VFS_PM_RS && source == VFS`) is already
+/// intercepted at the entry of `run_once` and handled by the
+/// `handle_vfs_reply` state machine (main.c:84-87 is the first leg of the main
+/// loop), so it **does not** enter this dispatch. This function handles the
+/// event-reply and PM-call legs -- every PM call goes through the single
+/// dispatch table of [`dispatch_pm_call`] (`[ARCH: A-5]`); the main loop must
+/// not inline-intercept it.
 ///
-/// # 返回
+/// # Returns
 ///
-/// [`ReplyIntent`]：主循环据此决定是否回复（main.c:106 等价）。
+/// [`ReplyIntent`]: the main loop decides from it whether to reply (equivalent
+/// to main.c:106).
 pub fn dispatch_message<T: IpcTransport>(
     table: &mut ProcTable,
     events: &mut crate::event::EventRegistry,
@@ -98,51 +112,57 @@ pub fn dispatch_message<T: IpcTransport>(
     let call_nr = msg.m_type;
 
     if call_nr == PROC_EVENT_REPLY {
-        // C: main.c:88-89 — do_proc_event_reply()（06-event-subscription.md）。
+        // C: main.c:88-89 -- do_proc_event_reply() (06-event-subscription.md).
         events.do_proc_event_reply(msg, caller, table, transport, kern)
     } else if is_pm_call(call_nr) {
-        // C: main.c:90-101 — call_index = call_nr - PM_BASE；越界/NULL →
-        // ENOSYS。
+        // C: main.c:90-101 -- call_index = call_nr - PM_BASE; out of range or
+        // NULL -> ENOSYS.
         match PmCall::from_call_nr(call_nr) {
             Some(call) => {
                 dispatch_pm_call(call, table, events, transport, kern, timers, caller, msg)
             }
-            // NK4-C 1.30 B16：未接线的 PM 号→ENOSYS 与 C `_syscall` 契约同构取负（m_type<0 = errno）。
+            // An unwired PM number -> ENOSYS, negated the same way as C's
+            // `_syscall` contract (m_type < 0 = errno).
             None => ReplyIntent::Reply(-ENOSYS),
         }
     } else {
-        // C: main.c:102-103 — 非 PM 调用 → ENOSYS（NK4-C 1.30 同构取负）。
+        // C: main.c:102-103 -- not a PM call -> ENOSYS (same negation
+        // convention).
         ReplyIntent::Reply(-ENOSYS)
     }
 }
 
-// ── PM → VM 服务间调用（同步任务调用，对齐 C libsys）──
+// ── PM -> VM service calls (synchronous task calls, aligned with C libsys) ──
 
-/// 发送 VM_FORK 请求到 VM 服务（同步）。
+/// Send a VM_FORK request to the VM service (synchronous).
 ///
-/// C: `vm_fork`（libsys，`minix3/minix/lib/libsys/vm_fork.c:16-25`）——
-/// `_taskcall(VM_PROC_NR, VM_FORK, &m)`：请求 m1 载荷 `VMF_ENDPOINT`
-/// （父 endpoint，m1i1）与 `VMF_SLOTNO`（子槽位，m1i2），回复的子进程
-/// endpoint 在 `VMF_CHILD_ENDPOINT`（m1i3）。C 的 do_fork 在 vm_fork
-/// 失败时把 errno 直接传播给 fork 调用者（`forkexit.c:77-79`），且一旦
-/// vm_fork 成功，fork 不允许再失败（`forkexit.c:83` "PM may not fail
-/// fork after call to vm_fork()"）——因此本函数是 fork 链路上唯一的
-/// VM 依赖点，其失败必须先于任何不可回滚的进程表变更被发现。
+/// C: `vm_fork` (libsys, `minix3/minix/lib/libsys/vm_fork.c:16-25`) --
+/// `_taskcall(VM_PROC_NR, VM_FORK, &m)`: the request carries `VMF_ENDPOINT`
+/// (parent endpoint, m1i1) and `VMF_SLOTNO` (child slot, m1i2) in the m1
+/// payload, and the reply carries the child endpoint in `VMF_CHILD_ENDPOINT`
+/// (m1i3). On vm_fork failure C's do_fork propagates the errno straight to the
+/// fork caller (`forkexit.c:77-79`), and once vm_fork succeeds, fork may not
+/// fail any more (`forkexit.c:83` "PM may not fail fork after call to
+/// vm_fork()") -- so this function is the only VM dependency on the fork path,
+/// and its failure must be discovered before any unrollbackable process-table
+/// change.
 ///
-/// # 错误
+/// # Errors
 ///
-/// 传输失败或 VM 回复非 OK（负 errno）都收敛为
-/// [`ForkCoordError::VmError`]。errno 细粒度传播依赖 `PmError` 增加
-/// 载体变体（minix-types 共享层，登记于 edge_todo.md E7），当前以
-/// 统一 VmError 失败——失败语义正确，粒度待共享层支持。
+/// Both a transport failure and a non-OK VM reply (negative errno) converge to
+/// [`ForkCoordError::VmError`]. Fine-grained errno propagation needs a carrier
+/// variant on `PmError` (the minix-types shared layer, registered as E7 in
+/// edge_todo.md); for now it fails with a uniform VmError -- the failure
+/// semantics are correct, only the granularity waits on shared-layer support.
 pub fn vm_fork<T: IpcTransport>(
     transport: &mut T,
     parent: Endpoint,
     child_slot: UserSlot,
 ) -> Result<Endpoint, crate::fork::ForkCoordError> {
-    // 请求编码：m1i1 = VMF_ENDPOINT，m1i2 = VMF_SLOTNO（C 的 VMF_*
-    // 宏即 m1 字段别名；VmForkIn 只实现了 VM 侧的 DecodeFromM1，
-    // PM 侧发送端按同一布局手写，对应 ipc/vm.rs:841-849 的解码序）。
+    // Request encoding: m1i1 = VMF_ENDPOINT, m1i2 = VMF_SLOTNO (C's VMF_*
+    // macros are the m1 field aliases; VmForkIn only implements the VM-side
+    // DecodeFromM1, so the PM-side sender writes the same layout by hand,
+    // matching the decode order at ipc/vm.rs:841-849).
     let mut msg = Message {
         m_type: minix_types::VM_FORK as i32,
         ..Default::default()
@@ -152,29 +172,30 @@ pub fn vm_fork<T: IpcTransport>(
     transport
         .sendrec(Endpoint::VM, &mut msg)
         .map_err(|_| crate::fork::ForkCoordError::VmError)?;
-    // C: taskcall 返回值非 OK → errno 传播（forkexit.c:78-79）。负数
-    // errno 直接视为 VM 拒绝；m_type == OK 才读取 m1i3。
+    // C: a non-OK taskcall return -> errno propagation (forkexit.c:78-79). A
+    // negative errno is taken as a VM refusal; only m_type == OK reads m1i3.
     if msg.m_type != minix_types::OK {
         return Err(crate::fork::ForkCoordError::VmError);
     }
-    // 回复解码：VMF_CHILD_ENDPOINT 在 m1i3
-    //（minix-types EncodeToM1 for VmForkOut，ipc/vm.rs:852-856）。
+    // Reply decoding: VMF_CHILD_ENDPOINT in m1i3
+    // (minix-types EncodeToM1 for VmForkOut, ipc/vm.rs:852-856).
     Ok(Endpoint(unsafe { msg.m_u.m_m1 }.m1i3))
 }
 
-/// 发送 VM_WILLEXIT 通知到 VM 服务（同步）。
+/// Send a VM_WILLEXIT notification to the VM service (synchronous).
 ///
-/// C: `vm_willexit`（libsys，与 `vm_exit` 同文件 `libsys/vm_exit.c:25-35`，
-/// 无单独的 `vm_willexit.c`）
-/// —— `_taskcall(VM_PROC_NR, VM_WILLEXIT, &m)`：载荷 `VMWE_ENDPOINT`
-/// （m1i1，`com.h:644`），无回复载荷。taskcall 返回值即结果——非 OK
-/// 时 C 的调用方 panic（`forkexit.c:332-334` "exit_proc: vm_willexit
-/// failed"），因为 VM 的内存记账依赖该通知，缺失将永久失衡。
+/// C: `vm_willexit` (libsys, same file as `vm_exit`: `libsys/vm_exit.c:25-35`;
+/// there is no separate `vm_willexit.c`) -- `_taskcall(VM_PROC_NR,
+/// VM_WILLEXIT, &m)`: the payload is `VMWE_ENDPOINT` (m1i1, `com.h:644`) with
+/// no reply payload. The taskcall return value is the result -- on non-OK C's
+/// caller panics (`forkexit.c:332-334` "exit_proc: vm_willexit failed"),
+/// because VM's memory accounting depends on that notification and losing it
+/// would unbalance it forever.
 ///
-/// # 错误
+/// # Errors
 ///
-/// 传输失败或 VM 回复非 OK → `Err(errno 值)`；调用方（`exit.rs` 的
-/// `exit_proc` 步骤 6）以同文案 panic 对齐 C。
+/// Transport failure or a non-OK VM reply -> `Err(errno value)`; the caller
+/// (step 6 of `exit_proc` in `exit.rs`) panics with the same text to match C.
 pub fn vm_willexit<T: IpcTransport + ?Sized>(transport: &mut T, endpoint: Endpoint) -> Result<(), i32> {
     let mut msg = Message {
         m_type: minix_types::VM_WILLEXIT as i32,
@@ -190,18 +211,18 @@ pub fn vm_willexit<T: IpcTransport + ?Sized>(transport: &mut T, endpoint: Endpoi
     Ok(())
 }
 
-/// 发送 VM_EXIT 通知到 VM 服务（同步）。
+/// Send a VM_EXIT notification to the VM service (synchronous).
 ///
-/// C: `vm_exit`（libsys，`minix3/minix/lib/libsys/vm_exit.c`）——
-/// `_taskcall(VM_PROC_NR, VM_EXIT, &m)`：载荷 `VME_ENDPOINT`（m1i1，
-/// `com.h:631`），无回复载荷。失败时 C 的调用方 panic
-///（`forkexit.c:455-457` "exit_restart: vm_exit failed"）——页表已随
-/// 进程终结，VM 不回收即永久泄漏。
+/// C: `vm_exit` (libsys, `minix3/minix/lib/libsys/vm_exit.c`) --
+/// `_taskcall(VM_PROC_NR, VM_EXIT, &m)`: the payload is `VME_ENDPOINT` (m1i1,
+/// `com.h:631`) with no reply payload. On failure C's caller panics
+/// (`forkexit.c:455-457` "exit_restart: vm_exit failed") -- the page tables
+/// ended with the process, so a VM that does not reclaim leaks them forever.
 ///
-/// # 错误
+/// # Errors
 ///
-/// 传输失败或 VM 回复非 OK → `Err(errno 值)`；调用方（`exit.rs` 的
-/// `exit_restart` 步骤 5）以同文案 panic 对齐 C。
+/// Transport failure or a non-OK VM reply -> `Err(errno value)`; the caller
+/// (step 5 of `exit_restart` in `exit.rs`) panics with the same text to match C.
 pub fn vm_exit<T: IpcTransport + ?Sized>(transport: &mut T, endpoint: Endpoint) -> Result<(), i32> {
     let mut msg = Message {
         m_type: minix_types::VM_EXIT as i32,
@@ -223,7 +244,8 @@ mod tests {
     use crate::timer::{TimerCtl, TimerFaces, VTimerCtl};
     use minix_types::{Clock, Endpoint};
 
-    /// 空转定时器出口(测试只为通过分发,不消费计时器语义)。
+    /// Idle timer outlet (tests only need dispatch to pass; they do not
+    /// consume timer semantics).
     pub struct TestTimerCtl;
     impl TimerCtl for TestTimerCtl {
         fn set(&mut self, _ep: Endpoint, _ticks: Clock) {}
@@ -248,10 +270,12 @@ mod tests {
         }
     }
     fn timers() -> TimerFaces<'static> {
-        // 测试用泄漏式构造('static 借用由泄漏的 Box 承担)。
+        // Leaking construction for tests (the 'static borrow is carried by the
+        // leaked Box).
         timers_with(Box::leak(Box::new(0i32)))
     }
-    /// 注入受测方可读的 abort_flag（Reboot 臂断言用）。
+    /// Inject an abort_flag the subject under test can read (for the Reboot
+    /// arm's assertion).
     fn timers_with<'a>(abort_flag: &'a mut i32) -> TimerFaces<'a> {
         let tctl: &'static mut dyn TimerCtl = Box::leak(Box::new(TestTimerCtl));
         let vctl: &'static mut dyn crate::timer::VTimerCtl = Box::leak(Box::new(TestVTimerCtl));
@@ -274,7 +298,7 @@ mod tests {
     use minix_types::Message;
 
 
-    /// 测试用内核网关 mock（sys_kill/sys_clear 恒 OK）。
+    /// Kernel-gateway mock for tests (sys_kill/sys_clear always OK).
     #[derive(Default)]
     struct NoopKernel;
     impl crate::exit::KernelGateway for NoopKernel {
@@ -301,8 +325,9 @@ mod tests {
         m
     }
 
-    /// 构造 dispatch_message 测试环境：`slot` 处注册 Running 进程
-    ///（`kernel=true` 时置 Privilege::Kernel，供事件回复的内核门）。
+    /// Build the dispatch_message test environment: register a Running process
+    /// at `slot` (with `kernel=true`, set Privilege::Kernel for the
+    /// event-reply kernel gate).
     fn setup(slot: usize, ep: Endpoint, kernel: bool) -> (ProcTable, EventRegistry, TestIpcTransport) {
         let mut table = ProcTable::new();
         table.procs[slot].identity.endpoint = ep;
@@ -316,31 +341,33 @@ mod tests {
 
     #[test]
     fn test_is_vfs_pm_rs_matches_c() {
-        // com.h:517 — 0x980 族内任意低 7 位都命中。
+        // com.h:517 -- any of the low 7 bits within the 0x980 family matches.
         assert!(is_vfs_pm_rs(0x980 + 7)); // VFS_PM_FORK_REPLY
         assert!(is_vfs_pm_rs(0x980));
-        assert!(!is_vfs_pm_rs(0x980 + 0x80)); // 超出低 7 位
+        assert!(!is_vfs_pm_rs(0x980 + 0x80)); // exceeds the low 7 bits
         assert!(!is_vfs_pm_rs(0x900)); // VFS_PM_RQ
         assert!(!is_vfs_pm_rs(0xE80)); // COMMON_RS
     }
 
     #[test]
     fn test_is_pm_call_matches_c() {
-        // callnr.h:11 — 0x00~0xff 内任意类型都"是 PM 调用族"（解码后
-        // 未注册号仍 ENOSYS，与 C 越界槽位一致）。
+        // callnr.h:11 -- any type within 0x00..0xff "is the PM call family" (a
+        // decoded but unregistered number still gets ENOSYS, matching C's
+        // out-of-range slot).
         assert!(is_pm_call(2)); // PM_FORK
         assert!(is_pm_call(47)); // PM_GETSYSINFO
-        assert!(is_pm_call(0)); // 保留值：族内但未注册
-        assert!(!is_pm_call(0x100)); // 超出低 8 位
+        assert!(is_pm_call(0)); // reserved value: in the family but unregistered
+        assert!(!is_pm_call(0x100)); // exceeds the low 8 bits
         assert!(!is_pm_call(-1));
     }
 
     #[test]
     fn test_vfs_pm_rs_from_non_vfs_source_is_enosys() {
-        // VFS→PM 异步回复（IS_VFS_PM_RS && source == VFS）已由 `run_once`
-        // 在主循环第一路（main.c:84-87）拦截，不进入本三路分发；此处仅当
-        // 来源非 VFS 时才会落入 dispatch_message，此时它不属于 PM 调用族
-        // → ENOSYS（main.c:102-103 兜底）。
+        // The VFS->PM asynchronous reply (IS_VFS_PM_RS && source == VFS) is
+        // intercepted by `run_once` on the first leg of the main loop
+        // (main.c:84-87) and does not enter this three-way dispatch; only a
+        // non-VFS source falls through to dispatch_message here, and then it is
+        // not in the PM call family -> ENOSYS (the main.c:102-103 fallback).
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
@@ -359,9 +386,9 @@ mod tests {
 
     #[test]
     fn test_proc_event_reply_routes_to_reply_later() {
-        // C: main.c:88-89 — PROC_EVENT_REPLY → do_proc_event_reply()。
-        // 内核调用者 + 默认消息（event 位为 0 → endpoint 解析失败）
-        // → SUSPEND 前置（event.c:241-245 → ReplyLater）。
+        // C: main.c:88-89 -- PROC_EVENT_REPLY -> do_proc_event_reply().
+        // Kernel caller + default message (event bit 0 -> endpoint resolution
+        // fails) -> the SUSPEND precondition (event.c:241-245 -> ReplyLater).
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, true);
         let mut kern = NoopKernel;
@@ -380,7 +407,8 @@ mod tests {
 
     #[test]
     fn test_proc_event_reply_from_user_process_is_enosys() {
-        // event.c:232-233 — 仅系统服务可回复；普通进程误用 → ENOSYS 回复。
+        // event.c:232-233 -- only system services may reply; misuse by an
+        // ordinary process -> ENOSYS reply.
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
@@ -399,9 +427,10 @@ mod tests {
 
     #[test]
     fn test_pm_call_routes_to_dispatch_pm_call() {
-        // C: main.c:90-101 — IS_PM_CALL → call_vec（单一分发表）。
-        // GETPID(4) 已接线：路由进 dispatch_pm_call 的直接见证是
-        // 返回确定性应答（pid=100+slot,setup 的注册值）。
+        // C: main.c:90-101 -- IS_PM_CALL -> call_vec (the single dispatch
+        // table). GETPID(4) is wired: the direct witness of routing into
+        // dispatch_pm_call is the deterministic answer (pid=100+slot, the value
+        // setup registered).
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
@@ -418,16 +447,16 @@ mod tests {
             ),
             ReplyIntent::Reply(0)
         );
-        // GETPID 的应答协议:回复返回值 0,pid 走预置回复载荷 m1i1
-        // (get_result_intent,calls.rs:1115-1121)。
+        // GETPID's reply protocol: the return value is 0 and the pid rides the
+        // staged reply payload m1i1 (get_result_intent, calls.rs:1115-1121).
         let reply = table.procs[3].ipc.reply.take().expect("reply staged");
-        // SAFETY: 断言侧按写入域序读 m1i1。
+        // SAFETY: the assertion side reads m1i1 in the written field order.
         assert_eq!(unsafe { reply.m_u.m_m1 }.m1i1, 103);
     }
 
     #[test]
     fn test_unknown_type_returns_enosys() {
-        // C: main.c:102-103 — 非 PM 调用 → ENOSYS。
+        // C: main.c:102-103 -- not a PM call -> ENOSYS.
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
@@ -446,12 +475,12 @@ mod tests {
         );
     }
 
-    // ── vm_willexit（PM → VM 退出预告）──
+    // ── vm_willexit (PM -> VM exit notice) ──
 
     #[test]
     fn test_vm_willexit_encodes_endpoint_and_ok() {
-        // C: libsys vm_exit.c:25-35 — 载荷 VMWE_ENDPOINT（m1i1，
-        // com.h:644），无回复载荷；taskcall 返回 OK。
+        // C: libsys vm_exit.c:25-35 -- payload VMWE_ENDPOINT (m1i1,
+        // com.h:644), no reply payload; taskcall returns OK.
         let mut transport = crate::ipc::TestIpcTransport::new();
         let got = vm_willexit(&mut transport, Endpoint::from_generation_slot(1, 7));
         assert!(got.is_ok());
@@ -464,17 +493,17 @@ mod tests {
     #[test]
     fn test_vm_willexit_refusal_is_err() {
         let mut transport = crate::ipc::TestIpcTransport::new();
-        let refusal = Message { m_type: -12, ..Message::default() }; // VM 拒绝（负 errno）
+        let refusal = Message { m_type: -12, ..Message::default() }; // VM refuses (negative errno)
         transport.queue_sendrec_reply(refusal);
         let got = vm_willexit(&mut transport, Endpoint::from_generation_slot(1, 7));
         assert_eq!(got.unwrap_err(), -12);
     }
 
-    // ── vm_exit（PM → VM 页表回收通知）──
+    // ── vm_exit (PM -> VM page-table reclaim notice) ──
 
     #[test]
     fn test_vm_exit_encodes_endpoint_and_ok() {
-        // C: libsys vm_exit.c — 载荷 VME_ENDPOINT（m1i1，com.h:631）。
+        // C: libsys vm_exit.c -- payload VME_ENDPOINT (m1i1, com.h:631).
         let mut transport = crate::ipc::TestIpcTransport::new();
         let got = vm_exit(&mut transport, Endpoint::from_generation_slot(3, 9));
         assert!(got.is_ok());
@@ -493,9 +522,9 @@ mod tests {
         assert_eq!(got.unwrap_err(), -19);
     }
 
-    // ── vm_fork（PM → VM 任务调用）──
+    // ── vm_fork (PM -> VM task call) ──
 
-    /// 构造一条 VM_FORK 脚本化应答（OK + 子 endpoint 在 m1i3）。
+    /// Build a scripted VM_FORK reply (OK + child endpoint in m1i3).
     fn vm_fork_ok_reply(child: Endpoint) -> Message {
         let mut m = Message { m_type: minix_types::OK, ..Message::default() };
         m.m_u.m_m1.m1i3 = child.0;
@@ -504,8 +533,9 @@ mod tests {
 
     #[test]
     fn test_vm_fork_encodes_request_and_decodes_reply() {
-        // C: libsys vm_fork.c:16-25 — _taskcall(VM_PROC_NR, VM_FORK)，
-        // 请求 VMF_ENDPOINT/VMF_SLOTNO（m1i1/m1i2），回复 VMF_CHILD_ENDPOINT（m1i3）。
+        // C: libsys vm_fork.c:16-25 -- _taskcall(VM_PROC_NR, VM_FORK),
+        // request VMF_ENDPOINT/VMF_SLOTNO (m1i1/m1i2), reply
+        // VMF_CHILD_ENDPOINT (m1i3).
         let mut transport = crate::ipc::TestIpcTransport::new();
         let child = Endpoint::from_generation_slot(2, 7);
         transport.queue_sendrec_reply(vm_fork_ok_reply(child));
@@ -518,7 +548,7 @@ mod tests {
         .expect("vm_fork should succeed on scripted OK reply");
         assert_eq!(got, child);
 
-        // 请求 wire：发往 VM，m_type = VM_FORK，载荷 m1i1/m1i2。
+        // Request wire: to VM, m_type = VM_FORK, payload m1i1/m1i2.
         let (dest, sent_msg) = &transport.sent()[0];
         assert_eq!(*dest, Endpoint::VM);
         assert_eq!(sent_msg.m_type, minix_types::VM_FORK as i32);
@@ -529,9 +559,10 @@ mod tests {
 
     #[test]
     fn test_vm_fork_vm_refusal_is_error() {
-        // C: forkexit.c:78-79 — vm_fork 返回非 OK → errno 传播为失败。
+        // C: forkexit.c:78-79 -- vm_fork returns non-OK -> errno propagates as
+        // failure.
         let mut transport = crate::ipc::TestIpcTransport::new();
-        let refusal = Message { m_type: -12, ..Message::default() }; // 负 errno（ENOMEM）
+        let refusal = Message { m_type: -12, ..Message::default() }; // negative errno (ENOMEM)
         transport.queue_sendrec_reply(refusal);
 
         let result = vm_fork(
@@ -544,8 +575,9 @@ mod tests {
 
     #[test]
     fn test_vm_fork_transport_failure_is_error() {
-        // 传输层失败（真实内核 IPC 未落地时 sendrec 会 Err）同样收敛为
-        // VmError——绝不伪造成功（原 send_vm_fork 假成功接缝的回归守卫）。
+        // A transport-layer failure (sendrec Errs before real kernel IPC
+        // lands) converges to VmError as well -- never fabricate success (a
+        // regression guard against the old send_vm_fork fake-success seam).
         struct FailingSendrec;
         impl IpcTransport for FailingSendrec {
             fn receive(
@@ -581,19 +613,22 @@ mod tests {
         assert_eq!(result.unwrap_err(), crate::fork::ForkCoordError::VmError);
     }
 
-    /// NS10：root 的 PM_REBOOT 走完整 reboot 序——SUSPEND 不回复、
-    /// abort_flag 记 how（glo.h:26 对位）、VFS 槽位挂 VFS_CALL。
-    /// sys_abort 的实际发出在 VFS_PM_REBOOT_REPLY 特例（run_once
-    /// 第一路，misc.c:309 对位），不在本臂。
+    /// root's PM_REBOOT runs the full reboot sequence -- SUSPEND replies
+    /// nothing, abort_flag records how (matching glo.h:26), and the VFS slot
+    /// takes a VFS_CALL. The actual sys_abort emission is in the
+    /// VFS_PM_REBOOT_REPLY special case (first leg of run_once, matching
+    /// misc.c:309), not in this arm.
     #[test]
     fn test_reboot_root_suspends_sets_abort_flag_and_tells_vfs() {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
-        // setup 默认凭证即 uid 0；显式置 User(0,0) 表达"root 用户进程"。
+        // setup's default credentials are uid 0; set User(0,0) explicitly to
+        // express "a root user process".
         table.procs[3].resources.privilege =
             crate::mproc::Privilege::User(crate::mproc::Credentials::new(0, 0));
-        // VFS 行在表（C mproc[VFS_PROC_NR]）：tell_reboot 的 slot 来源。
-        // PRIV_PROC 使广播 SIGKILL 跳过它（signal.c:607-608）。
+        // The VFS row is in the table (C mproc[VFS_PROC_NR]): the slot source
+        // for tell_reboot. PRIV_PROC makes the broadcast SIGKILL skip it
+        // (signal.c:607-608).
         table.procs[1].identity.endpoint = Endpoint::VFS;
         table.procs[1].identity.id.pid = 2;
         table.procs[1].state.lifecycle = Lifecycle::Running;
@@ -602,7 +637,7 @@ mod tests {
         let mut kern = NoopKernel;
         let mut abort_flag = 0i32;
         let mut timers = timers_with(&mut abort_flag);
-        let mut msg = msg_with(37, ep); // PM_REBOOT（callnr.h）
+        let mut msg = msg_with(37, ep); // PM_REBOOT (callnr.h)
         msg.m_u.m_lc_pm_reboot.how = 0x0808;
         let intent = dispatch_message(
             &mut table,
@@ -621,7 +656,8 @@ mod tests {
         }
     }
 
-    /// NS10：非 root → EPERM 同步回复，零副作用（misc.c:202 门）。
+    /// Non-root -> EPERM synchronous reply, zero side effects (the misc.c:202
+    /// gate).
     #[test]
     fn test_reboot_non_root_is_eperm_without_side_effects() {
         let ep = Endpoint::from_generation_slot(1, 3);
@@ -645,7 +681,7 @@ mod tests {
             UserSlot::new(3),
             &msg,
         );
-        // B16 契约（SD-16 对齐轮）：m_type<0 = −errno。
+        // Negation convention: m_type < 0 = -errno.
         assert_eq!(intent, ReplyIntent::Reply(-minix_types::EPERM));
         assert_eq!(abort_flag, 0, "EPERM 路径不得写 abort_flag");
         assert!(
