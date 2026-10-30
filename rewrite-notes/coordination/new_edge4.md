@@ -3470,6 +3470,20 @@ exclude」的分域读数。
 
 **读数**：`cargo test -p minix-rs --lib` → **357 / 0**。本笔只动一行摘要、一行板行与本里程碑。
 
+### 第一百九十二笔（A 板 A17 · `E-DMWIRE` 四缺逐条读原文：服务侧三缺已落，client 面归 E5(h)/B 板）
+
+- **server transport**：`os/servers/devman/src/main.rs:37-42`——`MinixTransport::new(SysKernel)` +
+  `server.run(&mut transport)` 的生产环；环结束即响亮 panic（传输坏掉没有恢复面）。
+- **请求分类器**：`src/ipc/dispatch.rs:38-43`——`DEVMAN_ADD_DEV`/`DEL_DEV`/`BIND`/`UNBIND` 四消息
+  五路 + `Ignored` 缺省；注释写明与 C 的 `switch` 同形（未匹配的 case 什么都不做、fail-closed），
+  `null`/`REPLY`/垃圾走忽略臂。
+- **装配半**：`src/server.rs:314` 的 `build_forward` 与 server 在自有状态上的装配。
+- **client/RS 侧**：`minix-sys::devman_client` 的三条腿已实现（`C-17`，`devman_client.rs:105-162`，
+  宿主测在），生产驱动的消费者与端到端生命周期（mount → 注册 → 事件 → bind → 删除）挂在
+  **E5(h) 真机联调**；client 面按板上路由注归 B 板对账。
+
+**读数**：`cargo test -p minix-devman --lib` → **90 / 0**。本笔只动一行 §6 表与一行板行。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端

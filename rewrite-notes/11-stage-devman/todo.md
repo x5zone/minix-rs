@@ -198,7 +198,7 @@ bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 11-stage-devman
 
 | edge 条目 | 类型 | 一句话 | 与本 todo 的关系 |
 |---|---|---|---|
-| E-DMWIRE | 新登记 | devman 生产接线四缺：server transport、请求分类器（VFS 面挂 E-REQWIRE）、装配半、client/RS 侧生产传输 | 承接 STATE.md P1-6/P1-1T/P1-10/P1-12；实施时消费 DM-P1-2/P1-3 的结构定案 |
+| E-DMWIRE | 新登记 | devman 生产接线四缺：server transport、请求分类器（VFS 面挂 E-REQWIRE）、装配半、client/RS 侧生产传输 | 承接 STATE.md P1-6/P1-1T/P1-10/P1-12；实施时消费 DM-P1-2/P1-3 的结构定案。**`2026-10-31` 现查（A 板 A17，claim/A17-DMWIRE-qoder）：四缺里的服务侧三缺都已落**——① server transport：`src/main.rs:37-42` 的 `MinixTransport::new(SysKernel)` + `server.run(&mut transport)` 生产环，接收失手响亮 panic；② 请求分类器：`src/ipc/dispatch.rs:38-43` 的 `DEVMAN_{ADD_DEV,DEL_DEV,BIND,UNBIND}` 五路 + `Ignored` 缺省（与 C 的 switch 同形、fail-closed，`null/REPLY/垃圾` 走忽略臂有注释）；③ 装配半：`src/server.rs:314` 的 `build_forward` 与 server 在自有状态上的装配。**剩下的是 client/RS 侧**——`minix-sys::devman_client` 的三条腿已实现（`C-17`，宿主测在），生产驱动消费者与端到端生命周期挂 **E5(h) 真机联调**（B 板 client 面按路由注对账）。判据 `cargo test -p minix-devman --lib` → **90 / 0** |
 | E-DMCLIENT | 新登记，✅ 2026-09-15 执行 | `minix-devman-client` 孤儿 crate 处置（与 minix-sys::devman_client 职责重叠、零依赖、16-stage-drivers 文档引用）——按方案 A 删除，文档引用改指 minix-sys（edge_todo.md 闭单注记） | DM-P3-1 的跨 stage 部分 |
 | E-REQWIRE | 增补 | devman 是 VTreeFS dirent/stat/REQ_* wire 的第三消费方 | §1.2 "半处缺口"的归属地 |
 | E-ISWIRE | 增补 | devman SefHooks 是 minix-sef 第三消费方（OQ-1 承接） | §1.3 存量开口 |
