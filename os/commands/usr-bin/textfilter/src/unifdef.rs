@@ -19,8 +19,10 @@ pub const MAXDEPTH: usize = 64;
 /// empty value means `-Dsym` without `=val`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sym {
-    pub name: String,
-    pub value: Option<String>,
+    /// 符号名是 argv 的**原字节**：C 的 `addsym` 存的就是 `optarg` 里那段指针
+    /// （`unifdef.c:975` 的 `symname[symind] = sym`），查表走 `strlcmp`（`:951`），从不校验编码。
+    pub name: Vec<u8>,
+    pub value: Option<Vec<u8>>,
     pub ignore: bool,
 }
 
@@ -38,8 +40,10 @@ pub struct Options {
     /// `-k`: process constant `#if` expressions.
     pub killconsts: bool,
     /// `-o`: write the result to this path instead of standard output
-    /// (`unifdef.c:311-312` 的 `ofilename = optarg`).
-    pub output: Option<String>,
+    /// (`unifdef.c:311-312` 的 `ofilename = optarg`). Bytes: the same
+    /// `argv` word later reaches `err(2, "can't open %s", ofilename)`
+    /// (`unifdef.c:365`) and `errx(2, "%s unchanged", ofilename)` (`:509`).
+    pub output: Option<Vec<u8>>,
 }
 
 /// `addsym`（`unifdef.c:965-991`）的两种失败：形不合（C 直接 `usage()`）与符号表满
@@ -50,13 +54,11 @@ pub enum SymError {
     TooMany,
 }
 
-/// C 的 `skipsym`（`unifdef.c:947-952`）：吃一串 `[A-Za-z0-9_]`，**空串合法**（它一个字符
+/// C 的 `skipsym`（`unifdef.c:928-933`，判据是 `:262` 的 `endsym`）：吃一串 `[A-Za-z0-9_]`，**空串合法**（它一个字符
 /// 也不吃就返回原点，于是 `addsym` 看到的是 `*val == '\0'`）。
-fn symbol_run(spec: &str) -> usize {
+fn symbol_run(spec: &[u8]) -> usize {
     let mut end = 0usize;
-    while end < spec.len()
-        && matches!(spec.as_bytes()[end], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
-    {
+    while end < spec.len() && matches!(spec[end], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') {
         end += 1;
     }
     end
@@ -70,17 +72,19 @@ fn symbol_run(spec: &str) -> usize {
 /// 名字重复时 C 用 `findsym` 找到同一格再覆写 `value`/`ignore`，这里同形。
 pub fn add_symbol(
     options: &mut Options,
-    spec: &str,
+    spec: &[u8],
     defined: bool,
     ignore: bool,
 ) -> Result<(), SymError> {
     let cut = symbol_run(spec);
     let (name, rest) = spec.split_at(cut);
+    // C 的 `addsym` 先看 `*val`：`'\0'` 与 `'='` 两支合法，其余直接 `usage()`
+    // （`unifdef.c:977-990`）。`=` 之后那一段整串当值，不再校验字符集。
     let value = if defined {
         if rest.is_empty() {
-            Some(String::new())
-        } else if let Some(tail) = rest.strip_prefix('=') {
-            Some(tail.to_string())
+            Some(Vec::new())
+        } else if rest[0] == b'=' {
+            Some(rest[1..].to_vec())
         } else {
             return Err(SymError::Malformed);
         }
@@ -102,7 +106,7 @@ pub fn add_symbol(
         return Err(SymError::TooMany);
     }
     options.symbols.push(Sym {
-        name: name.to_string(),
+        name: name.to_vec(),
         value,
         ignore,
     });
@@ -124,7 +128,9 @@ pub enum UnifdefArgError {
 /// 选项环的产物：旗标与**按原序**交回的操数（C 只接受 0 或 1 个，多的在壳里判）。
 pub struct UnifdefArgs<'a> {
     pub options: Options,
-    pub operands: Vec<&'a str>,
+    /// 操数按 argv 的原字节交回：C 拿它去 `fopen`（`unifdef.c:335`），
+    /// 失败时又把它打进 `err(2, "can't open %s", filename)`（`:337`）。
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// `unifdef.c:273-323` 的选项环。
@@ -139,15 +145,15 @@ pub struct UnifdefArgs<'a> {
 /// 于是 `unifdef -DFOO in.c -c` 里的 `-c` 是第二个操数（参照件现量：`unifdef: can only do one file`），
 /// 而不是又点起一面旗标。裸 `-` 留在操数里，且 `unifdef.c:333` 的 `strcmp(*argv, "-") != 0`
 /// 把它读成标准输入。
-pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, UnifdefArgError> {
+pub fn parse_unifdef_args<'a>(args: &'a [&'a [u8]]) -> Result<UnifdefArgs<'a>, UnifdefArgError> {
     let mut options = Options::default();
     let mut index = 0usize;
     let operands = loop {
         let Some(&arg) = args.get(index) else {
             break Vec::new();
         };
-        let bytes = arg.as_bytes();
-        if arg == "--" {
+        let bytes = arg;
+        if arg == b"--" {
             // `getopt.c:81-85`：`++optind` 之后才返回 -1，所以 `--` 自身不是操数。
             break args[index + 1..].to_vec();
         }
@@ -170,7 +176,7 @@ pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, Un
                     // 值是「本串去掉 `-` 与字母之后的那一段」，没有剩余就取下一个 token
                     // （`getopt.c:118-141`）；两种取法都把本串吃到尽头。
                     let value = if pos + 1 < bytes.len() {
-                        &arg[pos + 1..]
+                        &bytes[pos + 1..]
                     } else {
                         match args.get(index + 1) {
                             Some(next) => {
@@ -179,7 +185,7 @@ pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, Un
                             }
                             None => {
                                 return Err(UnifdefArgError::Getopt(
-                                    crate::GetoptReport::MissingValue(ch as char),
+                                    crate::GetoptReport::MissingValue(char::from(ch)),
                                 ));
                             }
                         }
@@ -192,11 +198,10 @@ pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, Un
                             add_symbol(&mut options, value, false, false).map_err(usage_or_full)?
                         }
                         b'I' => {}
-                        b'o' => options.output = Some(value.to_string()),
+                        b'o' => options.output = Some(value.to_vec()),
                         _ => {
-                            // `-i` 的第一个字符选边，剩下那段才是符号名。
-                            let mut rest = value.bytes();
-                            match rest.next() {
+                            // `-i` 的第一个**字节**选边（`opt = *optarg++`），剩下那段才是符号名。
+                            match value.first() {
                                 Some(b'D') => add_symbol(&mut options, &value[1..], true, true)
                                     .map_err(usage_or_full)?,
                                 Some(b'U') => add_symbol(&mut options, &value[1..], false, true)
@@ -919,7 +924,7 @@ impl Unifdef {
             let v = match &sym.value {
                 None => 0,
                 Some(vs) => {
-                    let bytes = vs.as_bytes();
+                    let bytes = vs.as_slice();
                     let (n, used) = strtol0(bytes, 0);
                     if used != bytes.len() || used == 0 {
                         return None;
@@ -1025,12 +1030,15 @@ impl Unifdef {
         if end == cp {
             return None;
         }
+        // `skip_sym` 与 C 的 `skipsym` 同一取法（`unifdef.c:262` 的 `endsym` 只放过
+        // 字母、数字与 `_`），所以这一段恒为 ASCII，`from_utf8` 不会失败。
         let name = core::str::from_utf8(&b[cp..end]).ok()?;
         if self.options.symlist {
             self.symbol_list.push(name.to_string());
         }
         for (i, sym) in self.options.symbols.iter().enumerate() {
-            if sym.name == name {
+            // 名字比的是字节（C 是 `strlcmp`，`unifdef.c:951`）。
+            if sym.name == name.as_bytes() {
                 return Some((i, end));
             }
         }
@@ -1110,17 +1118,44 @@ fn split_lines(input: &str) -> Vec<&str> {
 mod tests {
     use super::*;
 
+    /// 夹具的 argv：`std::env::args_os()` 交回的就是字节。`symbol_list` 的期望仍写文本形：
+    /// 那里头只有 `[A-Za-z0-9_]`（`endsym` 的两边同一取法），不存在按字节还是按字符的差。
+    fn argv<'a>(words: &[&'a str]) -> Vec<&'a [u8]> {
+        words.iter().map(|word| word.as_bytes()).collect()
+    }
+
     /// 集外字母与缺值都交回 libc 那两个形状；大小写算集合的一部分（`u` 与 `E` 都不在串里）。
     #[test]
     fn an_unreachable_option_shape_is_reported_by_the_libc_line() {
         for (args, report) in [
-            (vec!["-z"], crate::GetoptReport::UnknownOption('z')),
-            (vec!["-cz"], crate::GetoptReport::UnknownOption('z')),
-            (vec!["--x"], crate::GetoptReport::UnknownOption('-')),
-            (vec!["-uD"], crate::GetoptReport::UnknownOption('u')),
-            (vec!["-tE"], crate::GetoptReport::UnknownOption('E')),
-            (vec!["-cD"], crate::GetoptReport::MissingValue('D')),
-            (vec!["-lI"], crate::GetoptReport::MissingValue('I')),
+            (
+                vec![b"-z".as_slice()],
+                crate::GetoptReport::UnknownOption('z'),
+            ),
+            (
+                vec![b"-cz".as_slice()],
+                crate::GetoptReport::UnknownOption('z'),
+            ),
+            (
+                vec![b"--x".as_slice()],
+                crate::GetoptReport::UnknownOption('-'),
+            ),
+            (
+                vec![b"-uD".as_slice()],
+                crate::GetoptReport::UnknownOption('u'),
+            ),
+            (
+                vec![b"-tE".as_slice()],
+                crate::GetoptReport::UnknownOption('E'),
+            ),
+            (
+                vec![b"-cD".as_slice()],
+                crate::GetoptReport::MissingValue('D'),
+            ),
+            (
+                vec![b"-lI".as_slice()],
+                crate::GetoptReport::MissingValue('I'),
+            ),
         ] {
             assert_eq!(
                 parse_unifdef_args(&args).err().unwrap(),
@@ -1134,27 +1169,36 @@ mod tests {
     /// 而裸 `-` 也是操数；`--` 结束环且自身不算操数。
     #[test]
     fn the_ring_ends_at_the_first_operand_and_keeps_everything_after_it() {
-        let parsed = parse_unifdef_args(&["-DA", "in.c", "-c"]).expect("环在 in.c 处结束");
-        assert_eq!(parsed.operands, ["in.c", "-c"]);
+        let w_parsed = argv(&["-DA", "in.c", "-c"]);
+        let parsed = parse_unifdef_args(&w_parsed).expect("环在 in.c 处结束");
+        assert_eq!(parsed.operands, [b"in.c".as_slice(), b"-c".as_slice()]);
         assert!(!parsed.options.complement, "环后的 `-c` 不该再点旗标");
-        let parsed = parse_unifdef_args(&["-DA", "-"]).expect("裸 `-` 是操数");
-        assert_eq!(parsed.operands, ["-"]);
-        let parsed = parse_unifdef_args(&["--", "-z"]).expect("`--` 之后全是操数");
-        assert_eq!(parsed.operands, ["-z"]);
-        assert!(parse_unifdef_args(&["--"]).unwrap().operands.is_empty());
+        let w_parsed = argv(&["-DA", "-"]);
+        let parsed = parse_unifdef_args(&w_parsed).expect("裸 `-` 是操数");
+        assert_eq!(parsed.operands, [b"-".as_slice()]);
+        let w_parsed = argv(&["--", "-z"]);
+        let parsed = parse_unifdef_args(&w_parsed).expect("`--` 之后全是操数");
+        assert_eq!(parsed.operands, [b"-z".as_slice()]);
+        assert!(
+            parse_unifdef_args(&argv(&["--"]))
+                .unwrap()
+                .operands
+                .is_empty()
+        );
     }
 
     /// `-i` 的取值先吃一个字母：`-iDFOO` 的符号是 `FOO` 且带 ignore；后随字母不是 `D`/`U`
     /// 就是 `Usage`（C 直接 `usage()`，没有自己的句子）。
     #[test]
     fn the_ignore_letter_splits_its_value() {
-        let parsed = parse_unifdef_args(&["-iDFOO", "-iUBAR"]).expect("两个 ignore 符号");
+        let w_parsed = argv(&["-iDFOO", "-iUBAR"]);
+        let parsed = parse_unifdef_args(&w_parsed).expect("两个 ignore 符号");
         assert_eq!(
             parsed.options.symbols,
             [
                 Sym {
                     name: "FOO".into(),
-                    value: Some(String::new()),
+                    value: Some(Vec::new()),
                     ignore: true,
                 },
                 Sym {
@@ -1165,11 +1209,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            parse_unifdef_args(&["-iX"]).err().unwrap(),
+            parse_unifdef_args(&argv(&["-iX"])).err().unwrap(),
             UnifdefArgError::Usage
         );
         assert_eq!(
-            parse_unifdef_args(&["-i", ""]).err().unwrap(),
+            parse_unifdef_args(&argv(&["-i", ""])).err().unwrap(),
             UnifdefArgError::Usage,
             "空值时 `*optarg` 当场是 `\\0`"
         );
@@ -1179,14 +1223,15 @@ mod tests {
     /// 重复给同一个符号覆写同一格而不是叠两份。
     #[test]
     fn a_symbol_name_is_a_leading_identifier_run_and_may_be_empty() {
-        let parsed = parse_unifdef_args(&["-D", ""]).expect("空符号名是合法的");
+        let w_parsed = argv(&["-D", ""]);
+        let parsed = parse_unifdef_args(&w_parsed).expect("空符号名是合法的");
         assert_eq!(parsed.options.symbols.len(), 1);
-        assert_eq!(parsed.options.symbols[0].value, Some(String::new()));
+        assert_eq!(parsed.options.symbols[0].value, Some(Vec::new()));
         for args in [
-            vec!["-DFOO."],
-            vec!["-UFOO=1"],
-            vec!["-D", "FOO BAR"],
-            vec!["-U", "FOO."],
+            vec![b"-DFOO.".as_slice()],
+            vec![b"-UFOO=1".as_slice()],
+            vec![b"-D".as_slice(), b"FOO BAR".as_slice()],
+            vec![b"-U".as_slice(), b"FOO.".as_slice()],
         ] {
             assert_eq!(
                 parse_unifdef_args(&args).err().unwrap(),
@@ -1194,9 +1239,13 @@ mod tests {
                 "`{args:?}` 的符号形"
             );
         }
-        let parsed = parse_unifdef_args(&["-DA", "-DA=2"]).expect("同一个符号覆写同一格");
+        let w_parsed = argv(&["-DA", "-DA=2"]);
+        let parsed = parse_unifdef_args(&w_parsed).expect("同一个符号覆写同一格");
         assert_eq!(parsed.options.symbols.len(), 1);
-        assert_eq!(parsed.options.symbols[0].value.as_deref(), Some("2"));
+        assert_eq!(
+            parsed.options.symbols[0].value.as_deref(),
+            Some(b"2".as_slice())
+        );
     }
 
     fn run_with(input: &str, setup: impl FnOnce(&mut Options)) -> Result<Outcome, UnifdefError> {
@@ -1208,7 +1257,7 @@ mod tests {
     #[test]
     fn test_dropped_ifdef_body() {
         let out = run_with("#ifdef FOO\nkept\n#endif\nafter\n", |o| {
-            add_symbol(o, "FOO", false, false).unwrap();
+            add_symbol(o, b"FOO", false, false).unwrap();
         })
         .unwrap();
         // The decided #ifdef/#endif pair itself is deleted too.
@@ -1219,7 +1268,7 @@ mod tests {
     #[test]
     fn test_kept_ifndef_body() {
         let out = run_with("#ifndef FOO\nkept\n#endif\n", |o| {
-            add_symbol(o, "FOO", false, false).unwrap();
+            add_symbol(o, b"FOO", false, false).unwrap();
         })
         .unwrap();
         assert_eq!(String::from_utf8(out.output).unwrap(), "kept\n");
@@ -1229,7 +1278,7 @@ mod tests {
     #[test]
     fn test_else_branch_dropped_when_if_kept() {
         let out = run_with("#ifdef FOO\nyes\n#else\nno\n#endif\n", |o| {
-            add_symbol(o, "FOO", true, false).unwrap();
+            add_symbol(o, b"FOO", true, false).unwrap();
         })
         .unwrap();
         assert_eq!(String::from_utf8(out.output).unwrap(), "yes\n");
@@ -1238,7 +1287,7 @@ mod tests {
     #[test]
     fn test_else_branch_kept_when_if_dropped() {
         let out = run_with("#ifdef FOO\nyes\n#else\nno\n#endif\n", |o| {
-            add_symbol(o, "FOO", false, false).unwrap()
+            add_symbol(o, b"FOO", false, false).unwrap()
         })
         .unwrap();
         assert_eq!(String::from_utf8(out.output).unwrap(), "no\n");
@@ -1248,8 +1297,8 @@ mod tests {
     fn test_nested_conditionals() {
         let src = "#ifdef A\nouter\n#ifdef B\nboth\n#endif\n#endif\n";
         let out = run_with(src, |o| {
-            add_symbol(o, "A", true, false).unwrap();
-            add_symbol(o, "B", false, false).unwrap();
+            add_symbol(o, b"A", true, false).unwrap();
+            add_symbol(o, b"B", false, false).unwrap();
         })
         .unwrap();
         // Both groups were decidable, so no directives survive.
@@ -1277,7 +1326,7 @@ mod tests {
     #[test]
     fn test_dash_d_value_used_in_if() {
         let out = run_with("#if FOO == 42\nyes\n#else\nno\n#endif\n", |o| {
-            add_symbol(o, "FOO=42", true, false).unwrap();
+            add_symbol(o, b"FOO=42", true, false).unwrap();
             o.killconsts = true;
         })
         .unwrap();
@@ -1287,7 +1336,7 @@ mod tests {
     #[test]
     fn test_ignore_symbols_treat_block_as_text() {
         let out = run_with("#ifdef FOO\ntext\n#endif\n", |o| {
-            add_symbol(o, "FOO", true, true).unwrap();
+            add_symbol(o, b"FOO", true, true).unwrap();
         })
         .unwrap();
         assert_eq!(String::from_utf8(out.output).unwrap(), "text\n");
@@ -1297,7 +1346,7 @@ mod tests {
     #[test]
     fn test_complement_inverts() {
         let out = run_with("#ifdef FOO\nyes\n#endif\n", |o| {
-            add_symbol(o, "FOO", true, false).unwrap();
+            add_symbol(o, b"FOO", true, false).unwrap();
             o.complement = true;
         })
         .unwrap();
@@ -1313,7 +1362,7 @@ mod tests {
     #[test]
     fn test_lnblank_blanks_dropped_lines() {
         let out = run_with("#ifdef FOO\nyes\nno\n#endif\n", |o| {
-            add_symbol(o, "FOO", true, false).unwrap();
+            add_symbol(o, b"FOO", true, false).unwrap();
             o.lnblank = true;
         })
         .unwrap();
@@ -1326,7 +1375,7 @@ mod tests {
         // A comment closed on the directive line does not make it
         // DODGY: the directive still parses.
         let out = run_with("#ifdef FOO /* x */\nbody\n#endif\n", |o| {
-            add_symbol(o, "FOO", false, false).unwrap();
+            add_symbol(o, b"FOO", false, false).unwrap();
         })
         .unwrap();
         // -UFOO drops the whole group including the directive lines.
@@ -1336,7 +1385,7 @@ mod tests {
     #[test]
     fn test_text_mode_leaves_comments_alone() {
         let out = run_with("#ifdef FOO\n// not a directive marker\n#endif\n", |o| {
-            add_symbol(o, "FOO", false, false).unwrap();
+            add_symbol(o, b"FOO", false, false).unwrap();
             o.text = true;
         })
         .unwrap();
@@ -1353,7 +1402,7 @@ mod tests {
     #[test]
     fn test_premature_eof_is_error() {
         let err = run_with("#ifdef FOO\nbody\n", |o| {
-            add_symbol(o, "FOO", false, false).unwrap();
+            add_symbol(o, b"FOO", false, false).unwrap();
         })
         .unwrap_err();
         assert_eq!(err, UnifdefError::PrematureEof);
@@ -1375,5 +1424,67 @@ mod tests {
         assert_eq!(strtol0(b"0x2a", 0), (42, 4));
         assert_eq!(strtol0(b"052", 0), (42, 3));
         assert_eq!(strtol0(b"-7", 0), (-7, 2));
+    }
+    /// 符号名、`-o` 的值与操数交回的都是 argv 的**原字节**。C 那三处都在字节上：`addsym` 存的
+    /// 是 `optarg` 里那段指针（`unifdef.c:975`），查表用 `strlcmp` 比字节（`:951`，定义 `:998`），
+    /// 尾巴起点由 `skipsym` 给出（`:977`）；
+    /// `ofilename = optarg`（`:314`）之后既进 `fopen`（`:364`）又进
+    /// `err(2, "can't open %s", ofilename)`（`:365`）与 `errx(2, "%s unchanged", ofilename)`
+    /// （`:509`），操数同理（`:335-337`）。`-i` 那一支先吃**一个字节**选边
+    /// （`opt = *optarg++`，`:281`），所以 `-i\xff` 走的是 usage 而不是符号臂。
+    #[test]
+    fn the_symbol_and_path_legs_hand_back_the_argv_bytes() {
+        // 名字本身必须全在 `[A-Za-z0-9_]` 之内（C 的 `skipsym`），所以一枚裸 `ff` 落在
+        // 名字里是 `usage()` 而不是「带字节的符号」；裸字节能活着走到的地方是**`=` 之后
+        // 的那段值**（C 不再校验字符集）与两处档名。
+        assert_eq!(
+            parse_unifdef_args(&[b"-D\xff"]).err(),
+            Some(UnifdefArgError::Usage),
+            "名字里的 ff 让 `*val` 停在 ff 上，C 那一支就是 usage"
+        );
+        assert_eq!(
+            parse_unifdef_args(&[b"-DA\xff"]).err(),
+            Some(UnifdefArgError::Usage),
+            "名字吃到 `A` 为止，ff 是剩下的尾巴——`addsym` 判的就是这根尾巴为空"
+        );
+        let w_val: Vec<&[u8]> = vec![b"-DA=\xff".as_slice()];
+        let parsed = parse_unifdef_args(&w_val).expect("`=` 之后 C 不再校验字符集");
+        assert_eq!(parsed.options.symbols[0].name, b"A");
+        assert_eq!(
+            parsed.options.symbols[0].value.as_deref(),
+            Some(b"\xff".as_slice()),
+            "值位是原字节：它随后进的是 `strtol0` 的比较而不是报文"
+        );
+        let w_o: Vec<&[u8]> = vec![b"-o".as_slice(), b"out\xff.c".as_slice(), b"-DA".as_slice()];
+        let parsed = parse_unifdef_args(&w_o).expect("-o 的值是档名，按字节留着");
+        assert_eq!(
+            parsed.options.output.as_deref(),
+            Some(b"out\xff.c".as_slice()),
+            "报文与 fopen 用的都是这一串"
+        );
+        // `-o` 吃掉紧随的那一段之后环继续：`-DA` 仍以 `-` 开头，所以它是**第二个选项**
+        // 而不是操数（`getopt.c:74-78` 只在非选项 token 上收 -1）。
+        assert!(parsed.operands.is_empty(), "环没停，`-DA` 被当选项吃了");
+        assert_eq!(parsed.options.symbols.len(), 1);
+        let w_dash: Vec<&[u8]> = vec![b"-DA".as_slice(), b"in\xff.c".as_slice()];
+        assert_eq!(
+            parse_unifdef_args(&w_dash).unwrap().operands,
+            vec![b"in\xff.c".as_slice()]
+        );
+        // 字母位那一枚也要在库里钉住：负控 K2 的第一版把「按字符取」的注入打进这一臂时
+        // 库内全绿，说明本门只覆盖了 `usage()` 那两支、没覆盖字母臂（判据：一整段全绿先怀疑
+        // 覆盖面有洞）。补上这一段之后，同一枚注入咬库内一枚。
+        assert_eq!(
+            parse_unifdef_args(&[b"-\xff"]).err(),
+            Some(UnifdefArgError::Getopt(crate::GetoptReport::UnknownOption(
+                '\u{00ff}'
+            ))),
+            "短横后第一枚字节 ff 交回 U+00FF，不是折过的 U+FFFD"
+        );
+        assert_eq!(
+            parse_unifdef_args(&[b"-i\xff"]).err(),
+            Some(UnifdefArgError::Usage),
+            "-i 选边吃的是第一枚字节，ff 既不是 D 也不是 U"
+        );
     }
 }

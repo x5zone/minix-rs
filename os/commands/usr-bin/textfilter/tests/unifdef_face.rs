@@ -16,12 +16,14 @@
 //! 另三处只有端到端才看得见：`-D ''` 与 `-U ''` 是**合法**的空符号名（`skipsym` 一个字符
 //! 也不吃就返回原点，于是 `*val == '\0'`），整档原样透传退 0；操数只许一个且环**不重排**
 //! （`unifdef -DA in.c -c` 的 `-c` 是第二个操数，退 2 而不是被当旗标吃掉）；开不了的操数档名
-//! 是 `err(2, "can't open %s", …)` 三段形。`-i` 那一支先吃一个字符再看剩下那段，所以
+//! 是 `err(2, "can't open %s", …)` 三段形。`-i` 那一支先吃一个字节再看剩下那段，所以
 //! `-iDA` 的符号是 `A`（与 `-D A` 逐字节同效），不是 `DFOO` 那样的整串。
 //!
-//! `-s` 打出的控制符号清单与 `-d` 的调试行都不在这扇门的断言里：前者由 `findsym` 在查表的
-//! 同时 `printf`（`unifdef.c:930-931`）、后者是 `debug()` 往标准错误上刷，两支都属决定半，
-//! 已登记为 `UNIFDEF-SYMLIST-OUTPUT` 与 `UNIFDEF-D-DEBUG-OUTPUT`。
+//! `-s` 打出的控制符号清单与 `-d` 的调试行都不在这扇门的断言里：前者是 `findsym` 里那句
+//! `printf`（`unifdef.c:948-949`，也是 `-s` 下唯一的打印点）、后者是 `debug()` 往标准错误上刷，
+//! 两支都属决定半，已登记为 `UNIFDEF-SYMLIST-OUTPUT` 与 `UNIFDEF-D-DEBUG-OUTPUT`；档里被保留
+//! 的那一行含裸字节时参照件原样穿过、本壳交回替换字符，登记为 `UNIFDEF-LINE-CONTENT-TEXTSEAM`
+//! （现量 `tmp/unifdef-471/content-seam.log`）。
 
 mod face_support;
 
@@ -354,5 +356,119 @@ fn the_output_operand_takes_the_text_and_stdout_stays_empty() {
     assert_eq!(
         fs::read_to_string(&out_path).expect("read out.c"),
         RESOLVED_A
+    );
+}
+
+/// 与 `run_bytes` 同一条命令缝，但 **argv 交的是原始字节**：一枚裸 `0xff` 进不了 `&str`。
+/// 在自己的临时目录里跑（`-o` 那一形会在盘上落文件），交回退码、逐字节的标准错误、
+/// 逐字节的标准输出与目录里的档名（按字节）。
+fn run_raw(args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>, Vec<Vec<u8>>) {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("unifdef-raw-{}-{}", std::process::id(), seq));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    std::fs::write(dir.join("in.txt"), b"#ifdef A\nkeep\n#endif\n").expect("in.txt");
+    let mut child = Command::new(UNIFDEF)
+        .args(args.iter().map(|a| OsStr::from_bytes(a)))
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the unifdef binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    let mut names: Vec<Vec<u8>> = fs::read_dir(&dir)
+        .expect("the scratch dir should be readable")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().as_bytes().to_vec())
+        .collect();
+    names.sort();
+    let read = (
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+        output.stdout,
+        names,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    read
+}
+
+/// 参数缝的字节判据（三侧现量 `tmp/unifdef-471/measure.log` 十三形：改前 9/13 与参照件
+/// 逐字节同，改后 11/13）。翻正的两形是字母位与**输入操数**那句 `can't open`；
+/// `-o` 的名字位现在也按字节（`Undefined error: 0` 那一段是 `write_file` 没有 errno 通道
+/// 的既有差异，在册 `UNIFDEF-O-ERRNO-LEG`）。三形判据本轮**核实为同判**：`-D<ff>A`
+/// 与 `-i<ff>` 都落 usage 一行（C 的 `skipsym` 与 `opt = *optarg++` 都只认 ASCII），
+/// `-DA=<ff>` 两侧都接受。最后一形钉的是盘上的名字：参照件落 `out` + `ff` + `.c`，
+/// 本壳落 `out` + `ef bf bd` + `.c`（开档那条 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`）。
+#[test]
+fn the_operand_and_output_names_carry_the_argv_bytes() {
+    let (status, err, out, names) = run_raw(&[b"-\xff"], b"");
+    assert_eq!(
+        status, 2,
+        "unifdef 的 usage 退的是 2 而不是 1（`unifdef.c:378`）"
+    );
+    assert_eq!(
+        err,
+        [
+            b"unifdef: unknown option -- \xff\n".as_slice(),
+            USAGE.as_bytes()
+        ]
+        .concat()
+    );
+    assert_eq!(out, Vec::new());
+    assert!(names.iter().all(|n| n == b"in.txt"), "报错时不落任何新档");
+
+    let (status, err, _out, _names) = run_raw(&[b"-DA", b"no\xffx"], b"");
+    assert_eq!(status, 2);
+    assert_eq!(
+        err,
+        [
+            b"unifdef: can't open no\xffx: ".as_slice(),
+            b"No such file or directory\n".as_slice()
+        ]
+        .concat(),
+        "操数进的是 `err(2, \"can't open %s\", filename)` 的名字位"
+    );
+
+    // `-o` 的名字位按字节，句子那一段仍是本层的缺号读数（见门注释）。
+    let (status, err, _out, _names) = run_raw(&[b"-DA", b"-o", b"d\xff/x", b"in.txt"], b"");
+    assert_eq!(status, 2);
+    assert_eq!(
+        err,
+        [
+            b"unifdef: can't open d\xff/x: ".as_slice(),
+            b"Undefined error: 0\n".as_slice()
+        ]
+        .concat()
+    );
+
+    // 三形判据同判：usage 一行、没有 libc 前置行、没有自拟句子。
+    for flag in [b"-D\xffA".as_slice(), b"-i\xff".as_slice()] {
+        let (status, err, _out, _names) = run_raw(&[flag], b"");
+        assert_eq!(status, 2, "{flag:?}");
+        assert_eq!(
+            err,
+            USAGE.as_bytes(),
+            "{flag:?} 只打 usage 一行（C 的 `skipsym` 与 `*optarg++` 都只认 ASCII）"
+        );
+    }
+    let (status, err, out, _names) = run_raw(&[b"-DA=\xff", b"in.txt"], b"");
+    assert_eq!(status, 1, "值位带裸字节不影响处理：`-DA=\\xff` 两侧都接受");
+    assert_eq!(err, Vec::new());
+    assert_eq!(out, b"keep\n");
+
+    // 在册那一条：盘上的输出档名仍是折过的三枚。
+    let (status, _err, _out, names) = run_raw(&[b"-DA", b"-o", b"out\xff.c", b"in.txt"], b"");
+    assert_eq!(status, 1);
+    let mut want = names.clone();
+    want.retain(|n| n != b"in.txt");
+    assert_eq!(
+        want,
+        vec![b"out\xef\xbf\xbd.c".to_vec()],
+        "参照件这一形落的是 out+ff+.c"
     );
 }

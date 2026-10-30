@@ -23,6 +23,16 @@
 //! `err(2, "can't open %s", …)` 的三段形。usage 那一行的程序名**写死在串里**
 //! （`unifdef.c:375-377` 没有 `getprogname()`），而 libc 那两行与 `err`/`warnx` 的前缀
 //! 跟着 `getprogname()`——同一支命令里两行来历不同。
+//!
+//! The command line reaches the library as bytes (`args_bytes`), so the operand
+//! name, the `-o` name and each `-D`/`-U` symbol name and value are the exact
+//! argv bytes — C echoes all three through `%s` (`unifdef.c:337`, `:365`, `:509`)
+//! and matches symbol names with `strlcmp` (`:951`). Two legs stay on the text
+//! side and are registered: the program-name token still folds once on its way
+//! into `line_bytes`/`err_line` (`ARGV-BYTE-PATH-IN-LIBS`), and the file's own
+//! line content folds once before the machine sees it, so a raw byte in a kept
+//! line comes back as the replacement character instead of the byte
+//! (`UNIFDEF-LINE-CONTENT-TEXTSEAM`).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -37,9 +47,11 @@ mod support;
 use minix_textfilter::unifdef::{Unifdef, UnifdefArgError, UnifdefError, parse_unifdef_args};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名那一处折一次（`line_bytes` 与 `err_line` 两条 `&str` 口，在册
+    // `ARGV-BYTE-PATH-IN-LIBS`）；操数名与 `-o` 名另有按字节拼的腿，不经过这里。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // 选项环（`unifdef.c:273` 的 `"i:D:U:I:o:cdeklst"`）。libc 那两行后面必接 usage，
     // 而 `-i` 的后随字母坏了、符号名不合 `addsym` 的形这两支，C 只有 usage 一行。
     //
@@ -50,7 +62,7 @@ fn run() -> ! {
     let (options, operands) = match parse_unifdef_args(&args[1..]) {
         Ok(parsed) => (parsed.options, parsed.operands),
         Err(UnifdefArgError::Getopt(report)) => {
-            support::warn(&report.line_bytes(prog));
+            support::warn(&report.line_bytes(&prog));
             usage();
         }
         Err(UnifdefArgError::Usage) => usage(),
@@ -76,14 +88,17 @@ fn run() -> ! {
     // 开不了的那句是 `err(2, "can't open %s", filename)` 三段形（程序名、操数原文、
     // `strerror` 句子），退码是 2 而不是 1。
     let input = match operands.first().copied() {
-        None | Some("-") => support::read_stdin(),
-        Some(path) => match support::read_file(path) {
-            Ok(bytes) => bytes,
-            Err(code) => {
-                support::warn_line(prog, &format!("can't open {path}"), code);
-                support::terminate(2);
+        // `unifdef.c:333` 的 `strcmp(*argv, "-") != 0`：裸 `-` 按字节比那一个字节。
+        None | Some(b"-") => support::read_stdin(),
+        Some(path) => {
+            // 开档那条 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`）：折的只是递给 `fopen`
+            // 的那个名字，`err(2, "can't open %s", filename)` 的档名位仍是原字节。
+            let shown = String::from_utf8_lossy(path);
+            match support::read_file(&shown) {
+                Ok(bytes) => bytes,
+                Err(code) => err_can_open(&prog, path, code),
             }
-        },
+        }
     };
     let text = String::from_utf8_lossy(&input).into_owned();
     // `-o` 的值在操数判定之前就被环收下（`unifdef.c:311-312`），这里先抄一份，
@@ -97,9 +112,9 @@ fn run() -> ! {
                     // C 那句是 `err(2, "can't open %s", ofilename)` 三段形；本层的
                     // `write_file` 没有 errno 通道（`Result<(), ()>`），所以这里只能打两段，
                     // 差的那一段登记为 `UNIFDEF-O-ERRNO-LEG`。
-                    if support::write_file(path, &outcome.output).is_err() {
-                        support::warn(format!("{prog}: can't open {path}\n").as_bytes());
-                        support::terminate(2);
+                    let shown = String::from_utf8_lossy(path);
+                    if support::write_file(&shown, &outcome.output).is_err() {
+                        err_can_open(&prog, path, minix_sys::Errno::from_i32(0));
                     }
                 }
                 None => support::emit(&outcome.output),
@@ -144,6 +159,24 @@ fn error_text(err: &UnifdefError) -> String {
             format!("unifdef: {}: Too many levels of nesting\n", line)
         }
     }
+}
+
+/// C 的 `err(2, "can't open %s", …)` 那一句按**字节**渲染：`prog: can't open <名>: <句子>`
+/// 然后退 2。名是 argv 递进来的档名（输入操数与 `-o` 的值两处都用它），经
+/// `support::warn_line` → `minix_sys::err_line(&str)` 会把裸字节折成 U+FFFD，参照件同形
+/// 逐字节对不上（`split`/`tail` 两轮都量过这一形）。`code` 为 0 的那一支是本层的
+/// 诚实读数：`write_file` 没有 errno 通道，C 那一段是 `strerror(0)` 的句子，
+/// 差异登记在 `UNIFDEF-O-ERRNO-LEG`。
+fn err_can_open(prog: &str, name: &[u8], code: minix_sys::Errno) -> ! {
+    let mut line = Vec::new();
+    line.extend_from_slice(prog.as_bytes());
+    line.extend_from_slice(b": can't open ");
+    line.extend_from_slice(name);
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+    line.push(b'\n');
+    support::warn(&line);
+    support::terminate(2)
 }
 
 fn usage() -> ! {
