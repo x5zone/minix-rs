@@ -3300,6 +3300,68 @@ a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 的期望升到逐字�
 「只有读码、没有参照件」时代留下的口径；差分腿缺位时写下的期望要标注判据来源，配齐之后
 第一批事就是把旧期望全部重测一遍。
 
+### 第一百八十七笔（批次四百七十三 · A2 族终笔：十五支壳迁字节缝、三个文本口删除、`argv_seam_face` 的门升到逐字节；本行闭合）
+
+**删口的前提是消费者清零**，所以这一笔先迁后删：十二支没有字母面的 textfilter 壳
+（`wc`、`hexdump`、`fmt`、`unvis`、`look`、`lam`、`tsort`、`asa`、`expand`、`diff`、
+`colcrt`、`patch`）与 text-games 三支（`random`、`wtf`、`fortune`）全部换到
+`args_bytes()`，然后删掉三个文本口——`bin_support::args()` 两条腿、
+`bin_support::prog_name()`、`minix_textfilter::empty_optstring_operands` 的 `&str` 形
+（那张三形判据的钉子全部迁到 `_bytes` 形上）。四个库入口同时改收字节：
+`hexdump::parse_skip`、`expand::{parse_expand_args,parse_stops}`、`tsort::parse_args`、
+`lam::parse_width`。**报文形状全部照旧**：这些壳的开档失手句与 C 三段形的差是既有维度，
+本笔只把名字位换成原字节、不改句子——「一次只修一条」在族末笔的收口处同样成立。
+
+**门的两处升级**：① `argv_seam_face` 那枚门从「裸字节 == lossy 等价」（批次四百二十二
+立的契约）升到「裸字节 == C 的答案」（参照件 `tmp/random-421/random` 的读数）：random 的
+环字母位、wtf 的查询词位、fortune 的档名位三形逐字节。两处期望是参照件读出来的——
+wtf 与 fortune 的报文里**连短横一起**原样出现（token 整个是查询词/档名），写期望时凭空
+丢掉短横就当场红。② 新立跨壳门
+`the_plain_shells_operand_echo_carries_the_argv_bytes`（十行）：没有字母面的十支壳各喂
+一枚带裸 `ff` 的操数，钉住报文里的名字位是原字节；colcrt 与 fmt 的失手句不带档名位、
+没有可观察的字节腿，不入列（理由写进门注释）。
+
+**门读数（全部 L1，`2026-10-30`，基线快照 `d6140babc`）**：宿主 textfilter **69 段 /
+1285 / 0**、text-games **9 段 / 79 / 0**；容器权威门两包同读数退 0（第一遍失败是
+`tmp/ci-target` 被删后 docker 以 root 重建、挂载写不进去——目录属主问题不是代码问题，
+删掉重建成用户属主一次通过）；三架构两包各退 0；`rustfmt --edition 2024 --check` 触及件
+各 0 处；clippy 两包退 0、唯一句集合与主树相同（textfilter 149 行、text-games 14 行）。
+负控三枚各咬 1（`tmp/family-473/negctl-summary.txt`）：K1（wc 的壳侧 argv 内联一条有损
+折叠——`args()` 已删，注入只能复刻那条腿）咬十行门的 wc 行，K2/K3 各咬 seam 门一形；
+random 的 OutOfRange 臂只有 ASCII 数字能到，折叠无可观察差，**不设注入**并写明原因。
+
+**四起工具自错**：① **no_std 的 `ToString` 第四次**（`unvis`、`random`、`fortune` 三件
+当场补 import），且本笔把三架构又排在了负控之后——上一笔刚加严的判据自己没执行，
+连续两笔犯同一类顺序错；② **rustfmt 顺着 `src/lib.rs` 的模块树带出九件纯格式漂移**
+（join/nl/look/diff/fmt/colcrt/patch/rev/seq 的库件被就地格式化），按批四十零四那条规矩
+`git checkout --` 还原、不带走——**对 lib 件跑 rustfmt 等于对全族跑**，这条判据第二次
+兑现；③ clippy 抓到五处换缝后死掉的 `format`/`ToString` import 与一枚可省略的生命周期，
+就地清掉才与主树同数——**删口之后 import 的死活要靠 clippy 复核**；④ 负控驱动两起：
+K1 的注入串引用了已删除的 `support::args()`（负控也是代码，删口后要跟着改），K3 的锚点
+在 fortune 里命中两处、收窄到带句子的上下文才咬对形。
+
+**进度终值与本行闭合**：渲染半十支（`GetoptReport::line_bytes`）+ 参数缝半二十七支
+= **三十七支壳全部按字节**；`line_bytes` **88 处 / 35 件**；三段形自拼助手 **5** 份；
+`args()` 文本口在全命令面只剩其它族自己的 bin_support 各一份（**13** 份，现量
+`grep -rl "pub fn args()" os/commands --include=bin_support.rs | wc -l`，不在 A2 射程）。
+自批次三百九十一起立账的字母位失真与参数缝失真两条残差**全部归零**，协调板 A2 行翻 ✅。
+在册不变者：`ARGV-BYTE-PATH-IN-LIBS`（本笔再添十五处开档口一条腿）、
+`TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE`、`SPLIT-*` 两枚、
+`TAIL-OFFSET-SATURATION-OUTCOME`、`UNIFDEF-*` 四枚、`VIS-USAGE-PROGNAME-HARDCODED`；
+wtf 的行池内容半按源码应如此、未量（无参照件，不成册项）。
+
+**五道收尾门逐条读数**：① `bash tools/todo-reconcile-scan.sh` → 十三项里 2 项 DRIFT
+（探针两项），与主树同读数、非本线引入；② `python3 tools/notes-link-check.py rewrite-notes/`
+→ 764 个 md、断链 131（连续七笔同数），本轮两件文档窄口径改前/改后对照，两侧都是 **6** 条、
+目标串集相同 ⇒ 新增 0；③ `bash tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md` →
+**PASS（0 项）**；④ `bash tools/doc-style-lint.sh --diff` → 2 个文件 / 78 个新增行、
+**error 级 0**；⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条未触碰。
+
+**合回条件（本笔当场量）**：`git log --oneline d6140babc..rewrite` 交回空、
+`git merge-base --is-ancestor d6140babc rewrite` 退 0 ⇒ 纯快进、零冲突；主树
+`git status --porcelain` 里本笔涉及的三处（`os/commands/usr-bin/`、`os/commands/games/`、
+`rewrite-notes/`）都没有在制改动。快进之后的主树复跑读数另记一笔合回补记。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
