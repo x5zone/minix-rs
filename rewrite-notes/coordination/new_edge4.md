@@ -3456,6 +3456,20 @@ exclude」的分域读数。
 **读数**：`cargo test -p minix-vm --lib` → **543 / 0**（宿主与容器权威门同读数退 0），三架构
 `--bins` 各退 0。A14 行记 🔄（一条腿落、一条腿挂设计决定），不冒认 ✅。
 
+### 第一百九十一笔（A 板 A15 · 03 根服务：二十四符号接线面与自升级两条现查都在边界侧，本行 by-audit 闭合）
+
+**二十四符号接线面**：`os/servers/rs/src/trap_api.rs` 的 `KernelGateway`/`IpcLeg` 两条腿逐条落地
+（`get_machine`、`get_hz`、`get_ticks`、`privctl`、`getpriv`、`setalarm`、`sys_kill`、`sys_update`、
+`diagctl_stacktrace`、`diag_write`、`sched_init_proc`、`sched_stop`、`getnuid`、`getnpid`、
+`getprocnr`、`cpf_reload`、`srv_fork`、`srv_execve`、`srv_kill`、`waitpid`、`setuid`、`vm_memctl`、
+`vm_set_priv`、`receive`、`reply`）；`grep -rn "unimplemented!()\|todo!()" os/servers/rs/src`
+生产区零命中。**自升级**：决策面与 `update_service` 闭包缝在 `live_update.rs:1239+`、
+`self_lifecycle.rs` 的纯切片就绪；剩余是 E-1 点名的「19 的进程/IPC 缝上驱动 update+init+YIELD
+链」——`exec.rs`/`sched.rs` 的 `awaiting-wiring` 注记指的都是**消费侧（19 / E-11）**，本阶段
+没有缺件。板上路由注「自升级先读 19 阶段接线面，不代做 19 的前置」照旧成立。
+
+**读数**：`cargo test -p minix-rs --lib` → **357 / 0**。本笔只动一行摘要、一行板行与本里程碑。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端

@@ -1,6 +1,7 @@
 # 03-stage-rs TODO 总清单（rs server Rust 实现深度 review + 改进点收集）
 
 > **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 2。最关键：二十四个符号的生产接线面（占位返回码是刻意的失败即止）、根服务自升级的接线。
+> **`2026-10-31` 逐项现查（A 板 A15，claim/A15-rs-qoder）——两条都在「边界」侧、无 stage 内待办**：① **二十四符号的接线面已实现为 trait 双腿**：`os/servers/rs/src/trap_api.rs` 的 `KernelGateway`/`IpcLeg` 面逐条落地（`get_machine`/`get_hz`/`get_ticks`/`privctl`/`getpriv`/`setalarm`/`sys_kill`/`sys_update`/`diagctl_stacktrace`/`diag_write`/`sched_init_proc`/`sched_stop`/`getnuid`/`getnpid`/`getprocnr`/`cpf_reload`/`srv_fork`/`srv_execve`/`srv_kill`/`waitpid`/`setuid`/`vm_memctl`/`vm_set_priv`/`receive`/`reply`；`grep -rn "unimplemented!()\|todo!()" os/servers/rs/src` 生产区零命中）；② **自升级**：决策面与 `update_service` 闭包缝在 `live_update.rs`（`:1239` 起）、`self_lifecycle.rs` 的纯切片就绪；剩余的是 E-1 点名的「19 的进程/IPC 缝上驱动 update+init+YIELD 链」，`exec.rs`/`sched.rs` 的 `awaiting-wiring` 注记指的都是**消费侧（19 / E-11）**而不是本阶段缺件——板上路由注「自升级先读 19 阶段接线面，不代做 19 的前置」照旧成立。L1：`cargo test -p minix-rs --lib` → **357 / 0**。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > **来源**：2026-08-15 Codex 深度 review 起始，历经 §10-§17 六轮修复、§18 查漏+架构轮、
