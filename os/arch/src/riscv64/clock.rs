@@ -172,6 +172,17 @@ impl ClockArch for Riscv64ClockArch {
         }
     }
 
+    fn restart_local_timer(&mut self, _cpu_id: u32, _icr: u32) {
+        // Reverse `stop_local_timer`: reopen `sie.STIE` and program the
+        // next SBI deadline. The deadline is per-hart M-mode state that
+        // OpenSBI owns; `local_timer_eoi` is the same re-arm the tick body
+        // uses (TICK_INTERVAL, with the DEFAULT_HZ fallback).
+        unsafe {
+            core::arch::asm!("csrs sie, {bits}", bits = in(reg) 0x20u64);
+        }
+        self.local_timer_eoi();
+    }
+
     fn local_timer_eoi(&mut self) {
         // Re-arm the one-shot: the mtimecmp-style deadline is consumed by
         // each interrupt (unlike a periodic PIT), so the tick body must

@@ -194,6 +194,21 @@ pub trait ClockArch: Sized + Send + Sync {
     /// `smp_ipi_halt_handler()` (smp.c:56-61) as `lapic_stop_timer()`.
     fn stop_local_timer(&mut self, cpu_id: u32);
 
+    /// Restart this CPU's local timer after an idle wake.
+    ///
+    /// This is the `if (is_idle) restart_local_timer()` half of C
+    /// `context_stop_idle` (arch_clock.c:351-369): `stop_local_timer` masks
+    /// or disarms the per-CPU one-shot while the CPU idles; the interrupt
+    /// that wakes it must reverse that and arm the next deadline, or the CPU
+    /// never ticks again. `icr` is the calibrated one-shot reload count
+    /// (x86); ARM64 and RISC-V re-arm from their own interval state. Callers
+    /// run on the target CPU and hold the BKL. The BSP keeps its
+    /// PIT/auto-reloading source, so the kernel guards that case and never
+    /// reaches this method on the BSP.
+    ///
+    /// The default is a no-op (host/mock implementors).
+    fn restart_local_timer(&mut self, _cpu_id: u32, _icr: u32) {}
+
     /// Initialize and start the statistical profiling timer.
     ///
     /// Called by `SYS_SPROF` with `action=PROF_START` and

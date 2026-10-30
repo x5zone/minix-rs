@@ -3759,16 +3759,18 @@ fn idle(
         // half of C's design. C pairs it with `context_stop_idle`
         // (arch_clock.c:351-369), which clears `cpu_is_idle` and restarts the
         // local timer at interrupt entry so a woken AP resumes ticking.
-        //   1. Receive side: NOT complete. No architecture restarts the AP
-        //      timer on the wake path, so this mask is permanent after the
-        //      first idle. aarch64 now opens the BSP's SGI 0 gate, sends via
-        //      ICC_SGI1R/GICD_SGIR by ARE state, and its APs enter
-        //      `scheduler_loop` (C2D-APENTRY); riscv64's APs enter
-        //      `scheduler_loop` and open SSIE/STIE (C2D-RVAPENTRY), though
-        //      its SSI cross-hart delivery is still firmware-blocked, and it
-        //      clears `sip.SSIP` without applying the pending scheduler
-        //      flags, and keeps the local-only `fence.i` contract, whose
-        //      remote-fence arm is this unclamp's precondition.
+        //   1. Receive side: the wake entries call
+        //      `context_stop_idle_current`, which clears the flag and runs
+        //      `restart_local_timer` (C2D-WAKETIMER) — the BSP guard keeps
+        //      its PIT source, APs re-arm their one-shot. aarch64 opens the
+        //      BSP's SGI 0 gate, sends via ICC_SGI1R/GICD_SGIR by ARE state,
+        //      and its APs enter `scheduler_loop` (C2D-APENTRY); riscv64's
+        //      APs enter `scheduler_loop` and open SSIE/STIE
+        //      (C2D-RVAPENTRY), though its SSI cross-hart delivery is still
+        //      firmware-blocked, and it clears `sip.SSIP` without applying
+        //      the pending scheduler flags, and keeps the local-only
+        //      `fence.i` contract, whose remote-fence arm is this unclamp's
+        //      precondition.
         //   2. Producer: LANDED. `sched_enqueue_with` sends the C
         //      `proc.c:1647` SCHED IPI when the target CPU is idle — inert
         //      while the clamp below keeps every process on the BSP.
@@ -3824,22 +3826,43 @@ fn idle(
     // context_stop after the interrupt (proc.c:221-222 comment).
 }
 
-/// Re-arm the local timer.
+/// Re-arm this CPU's local timer after an idle wake.
 ///
-/// C: `restart_local_timer()` — arch_clock.c:168-175: restarts the LAPIC
-/// timer and is a **no-op when no LAPIC is present** (`if (lapic_addr)`).
-/// The single-CPU Rust build runs the clock on the periodic PIT (x86-64)
-/// or an auto-reloading comparator (aarch64 Generic Timer / riscv64
-/// CLINT) — hardware sources that repeat without software re-arming — so
-/// the exact single-CPU parity of this function is a no-op, matching C's
-/// `lapic_addr == 0` behavior.
-///
-/// When the one-shot LAPIC timer becomes the clock source (LAPIC LVT
-/// adoption deferred in bsp_finish_booting step 6), this function is the
-/// re-arm hook: reload the comparator with the tick interval before
-/// returning to user mode / idle.
+/// C: `restart_local_timer()` — arch_clock.c:168-175. The BSP keeps its
+/// PIT/auto-reloading clock source (an `[ARCH]` choice; restarting its LAPIC
+/// here would conflict with that source), so the kernel guards the BSP out.
+/// APs use the one-shot local timer that `idle()` masks via
+/// `stop_local_timer`; the wake interrupt must reload it or the AP never
+/// ticks again. Caller holds the BKL.
 fn restart_local_timer() {
-    // No-op on the current auto-reloading clock sources — see doc comment.
+    #[cfg(not(test))]
+    {
+        use minix_arch::{ClockArch, CurrentClockArch};
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        let cpu = crate::current_cpu_id();
+        if cpu == crate::smp_state_with(&section).bsp_cpu_id() {
+            return; // BSP stays on the PIT/auto-reloading source
+        }
+        let icr = crate::clock::local_tick_icr();
+        if icr == 0 {
+            return; // timer not calibrated yet
+        }
+        let pd = minix_platform::platform_desc();
+        let mut clock = CurrentClockArch::new(pd.timer());
+        clock.restart_local_timer(cpu.raw(), icr);
+    }
+}
+
+/// C `context_stop_idle` (arch_clock.c:351-369): at interrupt entry, read and
+/// clear this CPU's `cpu_is_idle`; if it *was* set, restart the local timer.
+/// The clearing half alone leaves a woken AP with its one-shot still masked.
+/// Caller holds the BKL.
+pub(crate) fn context_stop_idle_current() {
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let cpu = crate::current_cpu_id();
+    if crate::smp_state_with(&section).clear_idle_flag(cpu) {
+        restart_local_timer();
+    }
 }
 
 /// Switch the active address space to `nr`'s page-table root.

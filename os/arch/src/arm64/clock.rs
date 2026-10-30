@@ -150,6 +150,16 @@ impl ClockArch for AArch64ClockArch {
         }
     }
 
+    fn restart_local_timer(&mut self, _cpu_id: u32, _icr: u32) {
+        // Reverse `stop_local_timer`: program the next compare value and
+        // re-open the module gate (ENABLE=1, IMASK=0). CNTP is a per-CPU
+        // system register, so no `cpu_id` is needed.
+        Self::rearm_next_tick();
+        unsafe {
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64);
+        }
+    }
+
     fn local_timer_eoi(&mut self) {
         // Re-arm the one-shot (see `rearm_next_tick`) — called by
         // `kernel::clock::local_tick` after every tick.

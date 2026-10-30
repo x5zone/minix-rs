@@ -189,6 +189,10 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // `&mut PROC_TABLE` at once (the early-SMP corruption).
     if vector == minix_arch::x86_64::smp::SCHED_IPI_VECTOR as u8 {
         let acquired = crate::smp::bkl_lock_or_inherit();
+        // C context_stop_idle at interrupt entry: a wake IPI that lands on
+        // an idle CPU clears the flag and restarts that CPU's one-shot; the
+        // handler below then sees a live tick source.
+        crate::context_stop_idle_current();
         {
             let section = unsafe { crate::smp::BklSection::assume_held() };
             let table = crate::proc_table_with(&section);
@@ -244,10 +248,10 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // the table at once (the early-SMP corruption).
         let tick_acquired = crate::smp::bkl_lock_or_inherit();
         let section = unsafe { crate::smp::BklSection::assume_held() };
-        // C `context_stop_idle` clearing half, arch_clock.c:351-359:
-        // a tick landing on a halted CPU marks it busy again. Runs under the BKL
-        // acquired just above, mirroring C's interrupt-entry placement.
-        crate::smp_state_with(&section).clear_idle_flag(crate::current_cpu_id());
+        // C `context_stop_idle` (arch_clock.c:351-369): a tick landing on a
+        // halted CPU marks it busy again and, if it *was* idle, restarts the
+        // local timer. Runs under the BKL acquired just above.
+        crate::context_stop_idle_current();
         let cur_nr = {
             let smp = crate::smp_state_with(&section);
             smp.cpu_local(crate::current_cpu_id())
@@ -336,9 +340,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             // the BKL (or inherit it only if this CPU already owns it).
             let tick_acquired = crate::smp::bkl_lock_or_inherit();
             let tick_section = unsafe { crate::smp::BklSection::assume_held() };
-            // Same idle-clearing half as the LAPIC 0xF1 arm — the
-            // PIT-origin tick also wakes a halted CPU (C context_stop_idle).
-            crate::smp_state_with(&tick_section).clear_idle_flag(crate::current_cpu_id());
+            // Same context_stop_idle as the LAPIC 0xF1 arm — the PIT-origin
+            // tick also wakes a halted CPU and restarts its timer.
+            crate::context_stop_idle_current();
             let tick_cur = {
                 let smp = crate::smp_state_with(&tick_section);
                 smp.cpu_local(crate::current_cpu_id())
@@ -1923,6 +1927,9 @@ fn riscv64_swi_arm() {
     }
     let n = ACKS.fetch_add(1, AtomicOrd::AcqRel);
     let acquired = crate::smp::bkl_lock_or_inherit();
+    // C context_stop_idle at interrupt entry: clear the idle flag and
+    // restart the one-shot before the scheduler-IPI policy runs.
+    crate::context_stop_idle_current();
     {
         let section = unsafe { crate::smp::BklSection::assume_held() };
         let smp = crate::smp_state_with(&section);
@@ -2025,6 +2032,10 @@ fn riscv64_timer_arm() {
     // shape): inherit only if THIS CPU's interrupted kernel frame
     // owns the lock, else spin-acquire it even when a peer holds it.
     let acquired = crate::smp::bkl_lock_or_inherit();
+    // C context_stop_idle: a tick landing on a halted hart clears the idle
+    // flag and restarts its local timer (the riscv arm previously only ran
+    // the quantum check, leaving a woken AP's one-shot masked).
+    crate::context_stop_idle_current();
     {
         let section = unsafe { crate::smp::BklSection::assume_held() };
         let smp = crate::smp_state_with(&section);
@@ -2505,6 +2516,9 @@ pub unsafe extern "C" fn aarch64_kernel_body(
             // return Spurious without completing it).
             Some(id) if id == minix_arch::arm64::smp::SCHED_SGI_INTID => {
                 let acquired = crate::smp::bkl_lock_or_inherit();
+                // C context_stop_idle at interrupt entry: clear the idle
+                // flag and restart this CPU's one-shot before the handler.
+                crate::context_stop_idle_current();
                 {
                     let section = unsafe { crate::smp::BklSection::assume_held() };
                     let table = crate::proc_table_with(&section);
@@ -2552,6 +2566,9 @@ pub unsafe extern "C" fn aarch64_kernel_body(
                 // try-or-inherit BKL — the SCHED_IPI shape).
                 if is_timer {
                     let acquired = crate::smp::bkl_lock_or_inherit();
+                    // C context_stop_idle: a tick landing on a halted CPU
+                    // clears the idle flag and restarts its timer.
+                    crate::context_stop_idle_current();
                     {
                         let section = unsafe { crate::smp::BklSection::assume_held() };
                         let smp = crate::smp_state_with(&section);

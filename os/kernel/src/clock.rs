@@ -65,6 +65,11 @@ use crate::globals::TSC_PER_MS;
 static LOCAL_TICK_ICR: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// The calibrated one-shot reload count, for the idle-wake restart half.
+pub(crate) fn local_tick_icr() -> u32 {
+    LOCAL_TICK_ICR.load(Ordering::Acquire) as u32
+}
+
 /// Per-CPU local tick counters (carrier observability): each AP's
 /// local tick increments its own slot, so a test can verify that secondary
 /// harts actually receive their local timer ticks (without the
