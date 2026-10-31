@@ -4098,3 +4098,30 @@ sscratch`、契约句），`riscv64_return_leg_pin` 改为“返回腿不得自�
 sscratch”。读数：riscv ATF `-smp 1/2/4` 均 **36/36**（34 passed +
 2 skipped，0 failed/broken）、minix-arch runtime-window 全绿、kernel mock
 850/0/8、三架构 check 0 error、合并后 `run_all` 39/0/0。
+
+
+**D-73 核定里程碑（GPT 裁决后的探针取证，更正早前结论）**：最小 RISC-V
+探针（`_start(argc, argv, a2)`，SBI console）在本机 U-Boot 2025.10 上
+实测：早前「bootelf 无 argv」**证伪**——`bootelf -p <img> [args…]` 把
+image 地址之后的参数以 `(extra_argc, extra_argv)` 交入口：无参→argc=0；
+`87654321`→argc=1/argv[0]="87654321"；`aaaa bbbb`→argc=2。两个此前
+没看见的门：`autostart` 默认未定义时 bootelf 只装载不执行（必须
+`setenv autostart yes`）；不带 `-p` 的 extra-arg 形状在本 build 未通过
+（`## No elf image at address 0x80200000`），契约钉在 `-p`。a2 是
+U-Boot 堆内指针、不是 FDT。hello-boot 的 `Load access fault` 真因修正
+为 **staging==LMA 自重叠**（默认 `loadaddr=0x80200000` 既是 fatload
+落点又是其 PT_LOAD 目标）；探针 LMA=0x84000000、staging 留在
+0x80200000 后两次全链干净执行。布局证据（256M）：lmb reserved =
+OpenSBI `0x80000000-0x8005ffff`、`0x8deaa000-0x8deacfff`、U-Boot 区
+`0x8dead8d0-0x8fffffff`（relocaddr `0x8f6cf000`、malloc
+`0x8eeaf000-0x8f6cf000`、fdt_blob `0x8eead8e0`）；可用带
+`0x80060000-0x8dea9fff`；staging：`loadaddr=0x80200000`、boot.scr
+执行拷贝 `0x8c100000`。去向（裁决首选路线）：物理地址链接的
+`riscv64-uboot-shim.elf`（VMA=LMA=物理入口、自带 bootstrap 栈），入口
+ABI=`bootelf -p <img> <MNXBOOT1 表地址>` 的 `(extra_argc, extra_argv)`，
+表承载 DTB/kernel/12 模块；**不需要固定 handoff 槽**（仅作板级备用）；
+LMA 由 D-73 专属布局配置从 bdinfo/lmb 推导，不硬编码 `0x90000000`；
+`BootHandoffV1` 冻结不动；`OpenSbiBootShim` 更名
+`UbootBootShim`/`RiscvUbootBootShim` 属下一批实施范围。探针证据：
+`/tmp/d73/`（probe.elf、argv-base2/argv-plus/argv-matrix 串口全文）；
+01-todo §2.8 已同步更正（保护文件，未代提交）。
