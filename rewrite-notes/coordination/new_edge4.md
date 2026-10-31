@@ -3562,6 +3562,17 @@ E-IPCWIRE 登记的是 ipc-server 生产面的八缺（trap 桥/SEF 层/`sys_dat
 
 判据：`cargo test -p minix-ipc-server` → **114 / 0**（4 段）。
 
+### 第一百九十九笔（A 板 A22 成员 `E-MIBPROD`：布局对账落成「单一权威 + 消费」，本成员闭）
+
+E-MIBPROD 登记的是「MIB 快照 vs kernel/PM/VFS producer 布局对账」。现查：对账的形状已经是
+**单一权威 + 消费**——表布局归生产者（kernel/PM/VFS），`os/servers/mib/src/proc/tables.rs:298-300`
+的 `KERN_ROW`/`PM_ROW` 直接取 `core::mem::size_of::<minix_types::ProcInfoStruct>()` 与
+`<MProcSnap>()`；kernel 四臂（GET_PRIVTAB/GET_IRQHOOKS/GET_IMAGE/GET_KINFO）的布局见证
+（`priv_info.rs` 56B、`irq_hook.rs` 48B）在 minix-types 且带锁测（edge_todo 里 `987773bb3` 的进度）。
+MIB 侧没有自己的布局副本可漂。
+
+判据：`cargo test -p minix-mib` → **178 / 0**（3 段）。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
