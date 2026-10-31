@@ -4192,3 +4192,17 @@ PASS、x86/aarch64 生产 boot PASS、U-Boot 链 6/6、docker mock 850/0/8、
 arch runtime-window 287/0（mock map_kernel 钉随 RX 契约更新）、三架构
 check 0 error。台账 SD-12 行与 register:362 标 step① landed，C 板 C11
 行改 ✅（第一步）。
+
+**C17A6 里程碑（C17-A6 静默 mock 布局回退消除）**：三处变更——①
+`BootParams::simple` 显式携带 mock `KernelLayout`（夹具语义：用简单构造
+器 = 明确要 mock 布局；x86 mock 常量逐值保留）；② `VmServer::init` 的
+`kernel_layout` 缺失处理从 unwrap_or_else 回退改为**三架构统一拒绝**
+（expect，riscv 既有 panic 泛化；旧形状=riscv panic、x86/aarch64 静默
+采用 x86 mock 常量）；③ 负控 `test_init_rejects_missing_kernel_layout`
+（真实 v<5 形状 None 输入被拒）。**cfg(test) 边界核查**（评审质疑点）：
+simple 全调用点在 cfg(test) 门控内（vm_server new/new_for_test + boot.rs
+单元测试），零集成测试调用点——cfg(test) 当前充分，但仍按评审偏好收窄
+为显式夹具语义。走 init 的既有测试（boot_params 助手）随新契约注入夹
+具；纯字段测试的 None 保留（合法被测值）。生产路径不变（真实交接 ≥ v5
+恒带真值）。门读数：minix-vm 544/0（+负控）、riscv ATF 36/36。A 板复
+核请求已随 C 板 C17 行留痕。A9（来源断言）为余片。

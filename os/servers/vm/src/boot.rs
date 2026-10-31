@@ -152,7 +152,20 @@ impl<'a> BootParams<'a> {
             kernel_allocated: KernelAllocated::ZERO,
             vm_allocated_bytes: 0,
             is_first_time: true,
-            kernel_layout: None,
+            // A6（C17 余片）：**显式 mock 布局夹具**——用简单构造器 = 明确
+            // 要 mock 布局，`kernel_layout` 不再以 None 表示"测试请回退"。
+            // 生产路径对 None 一律拒绝（VmServer::init 的 expect），
+            // "None 输入被拒"由
+            // `test_init_rejects_missing_kernel_layout` 负控钉住。mock
+            // 形状 = 原 fallback 的 x86 常量（逐值保留）。
+            kernel_layout: Some(minix_types::KernelLayout::new(
+                0xFFFF_FFFF_8000_0000, // kernel_text_vbase (mock)
+                0x100_0000,            // kernel_text_pbase (16 MiB, mock)
+                8,                     // kernel_text_pages (mock)
+                8,                     // kernel_data_pages (mock)
+                0xFFFF_8000_0000_0000, // dm_vbase (mock sentinel)
+                4,                     // dm_pages (mock sentinel)
+            )),
             // Test-only constructor: a plausible stack top the boot-path
             // tests can build frames against — the single-authority value
             // the kernel reports for this target (kernel lib.rs boot-proc
