@@ -3928,3 +3928,19 @@ xtask 的 `ATF_BOOT_LEG_READY` 放行 x86_64，新增
 39/0/0、kernel mock 849/0/8、三架构 kernel/kernel-image check 0 error；
 aarch64/riscv 单例交叉编译仍过 ehdr 校验。已知非本笔：`test-cmd-smoke`
 的 du 目录读腿仍红（A 板 C-57）。C4 行与 `P-X86-01` 台账同批回写。
+
+
+**C5BSP 里程碑（riscv 选后 BSP 身份 + ATF skip 面）**：码笔 `27e4fe980`、
+合并 `54818cabd`。`init_smp_state` 不再直接信任 DTB 的 `bsp_id`，改从
+`BOOT_HART_ELECTED` 解析真实 BSP（OpenSBI 可能把控制交给任意 hart；
+QEMU `-smp 4` 实测进过 hart 1/2），`seed_bsp_masks` 随身份移动清旧槽、
+置新槽并迁移 VM ptproc；启动集的 `p_cpu` 在调度器启动前按
+RTS_SET(NO_QUANTUM)→store→RTS_UNSET 迁到 BSP（`bsp=0` 时零变化）。
+`test-atf-riscv64.sh` 的 skip 路径改由 `atf-plan.txt` 派生 prog 清单、
+不重跑 atf-face（未派生清单的跳过分支会留下空清单并把 `rc.imgrd` 写到比 `imgrd` 新）。
+读数：riscv ATF `-smp 1` **36/36**（34 passed + 2 skipped）、x86
+`test-smp-aps` PASS（cpu1=2/cpu2=2/cpu3=0）、`test-smp-aps-aarch64` PASS、
+`test-smp-aps-riscv64` PASS、kernel mock 850/0/8、三架构 check 0 error。
+残留显式门：riscv `-smp 2/4` 全镜像仍在 `entering scheduler` 后停住，
+BSP 身份已正确（`enq cpu=1/2`、not-all-CPU warning 消失），属 SMP
+启动集/AP 交互的独立问题；C13 的 cpu3=0 同笔定为空闲停表设计。
