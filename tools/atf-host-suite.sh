@@ -4,31 +4,37 @@
 # 这条门补的是「编译腿看不见的那一半」。台账 P-X86-01 的实测判例：从链接行摘掉
 # `random.o` 时构建退码仍为 0、产物照样链成 ET_EXEC，只有把二进制跑起来才在
 # `minix3/tests/lib/libc/string/t_memcpy.c:99` 现形——BSD 随机序这类**语义**缺口
-# 对「18/18 构建成功」这种读数是瞎的。x86_64 腿链宿主 glibc，产物本身就是宿主可执行
-# ELF（交叉两腿的产物在宿主跑不了），所以它是三腿里唯一能拿原生速度逐用例判定的腿。
+# 对「18/18 构建成功」这种读数是瞎的。
 #
-# 它**不声明**出生腿能跑：x86_64 产物走 glibc 的运行时初始化与 Linux 系统调用，
-# 上我方真机仍需台账 P-X86-01 的缺口④（freestanding x86_64 C 工具链，已登记待裁决）。
-# 所以本门不替换 `os/qemu-tests/test-atf-{riscv64,aarch64}.sh`，也不动
-# `ATF_BOOT_LEG_READY` 白名单——那条白名单断言的是「自定义出生腿能跑」，口径不混。
+# 用的是独立的 `x86_64-host` 腿（宿主 cc + glibc）。`x86_64` 本身已是客态腿：
+# 它链非 TLS picolibc、由 startup-minix.c 的 x86 分支出生，产物只能在我方内核下跑
+# （`os/qemu-tests/test-atf-x86_64.sh` 是它的真机门）。两条腿分目录、分 libc 来源戳，
+# 混用会被 build-atf-test.sh 的 P1-2 flavor 判据挡下。宿主腿的价值是原生速度的逐用例
+# 语义反馈——交叉两条腿的产物在宿主跑不了，这是唯一能那样跑的一列。
 #
 # 期望用例数从**测试源头**现算（每个 `ATF_TP_ADD_TC(tp, …)` 一行），不从产物 `-l`
 # 输出反推：后者会把「某个 prog 压根没列出用例」这种漏测洗成绿灯。
 #
-# 用法：tools/atf-host-suite.sh [arch=x86_64]
+# 用法：tools/atf-host-suite.sh [arch=x86_64-host]
 # 退出码：0=PASS 1=FAIL 2=SKIP（前置件缺，按本仓门禁口径 SKIP 必须打 RESULT: SKIP，
 #         免得「因为没装东西所以永远绿」）
 set -uo pipefail
 
-ARCH="${1:-x86_64}"
+ARCH="${1:-x86_64-host}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUITE="$ROOT/minix3/tests/lib/libc/string"
 BUILD="$ROOT/os/target/atf/$ARCH/tests"
 TIMEOUT_TC="${ATF_HOST_TIMEOUT:-120}"
 
-[ "$ARCH" = "x86_64" ] || { echo "RESULT: SKIP — 本门只服务宿主腿（arch=$ARCH 的产物在宿主不可执行）"; exit 2; }
+[ "$ARCH" = "x86_64-host" ] || { echo "RESULT: SKIP — 本门只服务宿主腿（arch=$ARCH 的产物在宿主不可执行）"; exit 2; }
 command -v cc >/dev/null 2>&1 || { echo "RESULT: SKIP — 缺宿主编译器 cc"; exit 2; }
 [ -d "$SUITE" ] || { echo "FAIL: 测试源目录不存在 $SUITE"; exit 1; }
+
+# 库腿首次使用要现建（分目录，不会碰客态 x86_64 的 libatf-c.a）。
+if [ ! -f "$ROOT/os/target/atf/$ARCH/libatf-c.a" ]; then
+    echo "== Stage 0: 构建 $ARCH 的 libatf-c.a =="
+    bash "$ROOT/tools/build-libatf-c.sh" "$ARCH" || { echo "FAIL: libatf-c.a 构建失败"; exit 1; }
+fi
 
 echo "== Stage 1: 逐例构建（$ARCH 宿主腿）=="
 progs=()

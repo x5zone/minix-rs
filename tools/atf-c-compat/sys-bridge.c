@@ -43,6 +43,14 @@ static long kcall(struct kmsg *m) {
     __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8) : "memory", "x1","x2","x3","x4","x5");
     return x0;
 }
+#elif defined(__x86_64__)
+static long kcall(struct kmsg *m) {
+    /* arch_trap.rs kernel_call_trap: RDI = &Message, SYSCALL, RAX = status.
+     * SYSCALL destroys RCX/R11; the kernel saves/restores the rest. */
+    long ret;
+    __asm__ __volatile__("syscall" : "=a"(ret) : "D"(m) : "rcx", "r11", "memory");
+    return ret;
+}
 #else
 #error "sys-bridge.c: 未支持的架构（需与 os/libs/minix-sys/src/arch_trap.rs 的 kernel_call_trap 同形）"
 #endif
@@ -68,6 +76,23 @@ long ipc_sendrec(int endpoint, struct kmsg *m) {
     register long x8 __asm__("x8") = IPC_SENDREC_NR;
     __asm__ __volatile__("svc #0" : "+r"(x0), "+r"(x1) : "r"(x8) : "memory", "x2","x3","x4","x5");
     return x0;
+}
+#elif defined(__x86_64__)
+long ipc_sendrec(int endpoint, struct kmsg *m) {
+    /* arch_trap.rs ipc_trap: RAX = endpoint, RBX = &Message, RCX = call nr,
+     * int 0x21; errno in RAX, IPC status in R10. RBX is callee-saved, so the
+     * trap sequence preserves the compiler's value with push/pop. */
+    long ret;
+    __asm__ __volatile__(
+        "push %%rbx\n\t"
+        "mov %2, %%rbx\n\t"
+        "int $0x21\n\t"
+        "mov %%rax, %0\n\t"
+        "pop %%rbx"
+        : "=r"(ret)
+        : "a"((long)endpoint), "r"(m), "c"((long)IPC_SENDREC_NR)
+        : "memory", "r10");
+    return ret;
 }
 #endif
 

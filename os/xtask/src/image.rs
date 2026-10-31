@@ -682,8 +682,12 @@ const E5_DS_READY: &[&str] = &["x86_64"];
 /// startup-minix.c) is enabled. riscv64 is enabled in the same shape as aarch64
 /// after the exec-stack-top Sv39 canonical-address fix — before that the riscv
 /// leg linked picolibc's default crt0 (sp switched to the ELF's internal .stack
-/// + main(0,NULL)), which was ruled broken.
-const ATF_BOOT_LEG_READY: &[&str] = &["aarch64", "riscv64"];
+/// + main(0,NULL)), which was ruled broken. x86_64 joins once its guest leg
+/// stopped linking glibc: the host cc + glibc startup needs a per-process FS
+/// base (`arch_prctl(ARCH_SET_FS)`) that this kernel does not carry, so the
+/// leg now links the same non-TLS picolibc as the other two and supplies the
+/// x86 `_start` from startup-minix.c.
+const ATF_BOOT_LEG_READY: &[&str] = &["aarch64", "riscv64", "x86_64"];
 
 /// Collected ATF on-metal surface (the return struct of [`collect_atf_face`]).
 ///
