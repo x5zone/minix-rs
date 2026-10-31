@@ -3601,6 +3601,18 @@ minix_types::{…}` 消费权威类型（PM/VFS/DS/VM 的 dump 模块同形）�
 
 判据：`cargo test -p minix-init` → **149 / 0**。
 
+### 第二百零三笔（A 板 A22 成员 `E-FSRUNTIME`：hgfs 的空转桩改成响亮拒绝，两个空转桩至此全清，本成员记「桩半清、框架待」）
+
+E-FSRUNTIME 的 8 个 fs server bin 里，2026-09-21 的复核已把 6 个接出 `loop {}` 占位
+（mfs/pfs/procfs/ptyfs/ext2/isofs），余 hgfs 与 vbfs 两个空转桩。vbfs 随 A20 首轮改成
+带计划锚的 panic；本笔把 **hgfs 同形处理**——`os/fs/hgfs/src/main.rs` 的
+`init(); loop {}` 改为 `panic!("hgfs: the fsdriver loop is not implemented …")`，条目指
+E-FSRUNTIME 与 pfs 模板。静默挂起看起来像「服务在跑」，响亮拒绝让「挂载为什么卡住」变成
+「这个 server 还没造好」（SD-19 的「假装」族）。
+
+**剩下的**是 SEF 三段逐 bin 核与 RS 启动握手——与 E-NETSTART 同根，等 03-rs 侧的服务运行时
+startup 面，本板不代做。判据：`cargo test -p minix-fs-hgfs` → **2 / 0**。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端

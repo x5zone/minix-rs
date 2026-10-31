@@ -931,6 +931,7 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 ## E-FSRUNTIME 8 个 fs server bin 的 SEF/RS 启动握手与运行时接线（15-stage-fs V1 轮登记，2026-09-16）
 
 > **复核进度（2026-09-21，qorder_3，LEDGER-AUDIT）**：8 bin 中 6 个已脱 loop{} 占位（grep 实测 2026-09-21 仅剩 hgfs/vbfs 两 main.rs 空转）——主体大幅落地，**余件收敛判据（SEF 三段对位逐 bin 核 + RS 启动）归 15-stage 复核后再闭单**。
+> **复核进度（`2026-10-31`，A 板 A22 成员 E-FSRUNTIME，claim/E-FSRUNTIME-qoder）**：余下的两个空转桩**都已改成响亮拒绝**——vbfs 随 A20 首轮（`fs/vbfs/src/main.rs` 的 `init(); loop {}` → 带计划锚的 panic），hgfs 本笔同形（`fs/hgfs/src/main.rs` 的 `loop {}` → panic，条目指 E-FSRUNTIME 与 pfs 模板）；六个已脱占位的 bin（mfs/pfs/procfs/ptyfs/ext2/isofs）保持。**剩下的是 SEF 三段逐 bin 核与 RS 启动握手**——与 E-NETSTART 同根，等本条目建议里的「服务运行时轨道 startup 面」（03-rs 侧），本板不代做。
 
 
 **问题**：8 个 fs server 的 bin 全部未接事件循环与进程握手：mfs 是 `fn main() { loop {} }`（os/fs/mfs/src/main.rs:8-10，模块注释声明归服务运行时轨道）；ext2/isofs/vbfs/hgfs/procfs/ptyfs 的 main.rs 第 4-6 行是同义 TODO 注释；pfs 构建 server 后停放（os/fs/pfs/src/main.rs:8-10）。C 对应物是各 server main.c 的三段：`env_setargs`（mfs/main.c:19）、`sef_local_startup`（:31-42，含 `sef_setcb_init_restart` 状态化重启）、`fsdriver_task(&mfs_table)` 分发主循环（:23）。框架内事件循环与 `impl FsDriver` 装配归 15-stage-fs/todo.md V1-P0-1，本条只管进程侧：SEF 回调注册、RS 启动握手、参数解析、信号接线。
