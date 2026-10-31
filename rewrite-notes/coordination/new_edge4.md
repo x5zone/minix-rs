@@ -3573,6 +3573,14 @@ MIB 侧没有自己的布局副本可漂。
 
 判据：`cargo test -p minix-mib` → **178 / 0**（3 段）。
 
+### 第二百笔（A 板 A22 成员 `E-RMIBWIRE`：minix-sys 的 rmib 协议半已落，本成员闭）
+
+登记时是「minix-sys rmib 客户端协议半整缺」。现查：`os/libs/minix-sys/src/rmib.rs` 已带稀疏表
+（`sparse_find`/`validate_sparse`/槽位 `claim`/`release`/`live_slots`）与 `rmib_copyout`、
+`rmib_copyout_node`（父规则与 inrange/oldlen 都在，纯函数测试 13 枚）。
+
+判据：`cargo test -p minix-sys --lib` → **341 / 0**。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
