@@ -73,10 +73,10 @@ use core::arch::asm;
 /// `smp_init` is not wired for non-x86 architectures (kernel/smp.rs
 /// prints the "not wired" warning; `init_ap` has no riscv caller yet).
 /// Once SMP AP bring-up lands, each hart's `init_ap` must record a
-/// PER-HART base — either turn this into a per-CPU array indexed by
-/// `current_cpu_id()` or give each AP its own cell — otherwise
-/// `restore_to_user` re-anchors every hart's sscratch to whichever
-/// stack was written last.
+/// The scheduler refreshes this cell from the current CPU's stack top
+/// immediately before every `restore_to_user` ([`set_trap_stack_base`]), so
+/// an AP's `init_ap` cannot leave a stale value that the BSP's next user
+/// return would adopt.
 ///
 /// `no_mangle` because the `restore_to_user` asm dereferences it by
 /// absolute address (`ld a4, KERNEL_TRAP_STACK_BASE`); the Rust side
@@ -85,6 +85,15 @@ use core::arch::asm;
 /// this port's single-write boot phase).
 #[unsafe(no_mangle)]
 pub static mut KERNEL_TRAP_STACK_BASE: u64 = 0;
+
+/// Re-anchor the trap stack base (sscratch + the restore path's recorded
+/// cell) for the CPU currently executing. Called by the scheduler before
+/// every user restore: the recorded cell is one scalar shared by all harts,
+/// so an AP's `init_ap` would otherwise leave its own stack top there and
+/// the BSP's next user return would re-anchor onto the AP's stack.
+pub fn set_trap_stack_base(base: VirBytes) {
+    set_entry_stack_base(base);
+}
 
 /// Record this CPU's kernel-stack top: write the CSR *and* the re-anchor
 /// cell. `base == 0` is the throwaway-instance sentinel, not a stack —

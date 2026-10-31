@@ -4404,6 +4404,27 @@ fn finish_and_restore(
             core::arch::asm!("sfence.vma zero, zero", options(nostack, preserves_flags));
         }
     }
+    // riscv64: the restore path re-anchors `sscratch` from the recorded
+    // per-CPU trap-stack cell, but that cell is one scalar shared by every
+    // hart. An AP's `init_ap` writes its own stack top there; without this
+    // per-restore refresh the BSP's next user return would load the AP's
+    // stack, `current_cpu_id()` (stack-based) would report the AP, and the
+    // user's first kernel call would be attributed to that AP's idle proc
+    // (observed as `KC cpu=1 nr=-4` and no VMCTL dispatch on -smp 2).
+    #[cfg(target_arch = "riscv64")]
+    {
+        let cpu = crate::current_cpu_id();
+        let stack_top = if cpu == smp.bsp_cpu_id() {
+            crate::kernel_info().map(|k| k.kern_stack_top.0).unwrap_or(0)
+        } else {
+            crate::smp::ap_kernel_stack_top(cpu.raw())
+        };
+        if stack_top != 0 {
+            minix_arch::riscv64::protection::set_trap_stack_base(
+                minix_types::VirBytes::new(stack_top),
+            );
+        }
+    }
     // SAFETY: all `TrapReturnArch::restore_to_user` preconditions hold:
     // - the picked process's address space is active (switch_address_space
     //   ran before the misc/quantum stages);
