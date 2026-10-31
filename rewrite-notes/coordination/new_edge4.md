@@ -3635,6 +3635,16 @@ E-FSVMCACHE 的 FS 侧已经落地：`os/fs/mfs/src/second_level.rs` 的 `MfsSec
 `REQ_PEEK` 的 HAS_PEEK 能力与 VM 侧逐出回报的联调归 02 轨道的真机面，本条 register 的 FS 侧
 无待办。
 
+### 第二百零六笔（A 板 A21 栈体半：`SmoltcpStack` 与两个帧设备桥已在，A21 两半皆闭）
+
+A21 剩余的两条里，「协议栈本体」也已经是实现而非待办：`os/net/lwip/src/stack.rs` 的
+`SmoltcpStack<D: Device>`（1338 行）带 `impl Stack`（`:210`）、`TrunkDevice`/`LoopDevice` 两个
+帧设备桥与 `add_address_v4`；服务侧只认识 `lwip_port::Stack` trait，具体栈不外泄（`[ARCH:
+protocol stack behind the Stack trait]`）。
+
+判据：`cargo test -p minix-net-lwip --lib` → **127 / 0**（`stack` 过滤 11/0）。A21 两半（主循环 +
+协议栈本体）至此都闭，A21 行转 ✅；余者只有 **E-NETSTART** 的 RS 加载握手，跨板单列。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端

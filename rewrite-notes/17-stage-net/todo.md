@@ -2,6 +2,7 @@
 
 > **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`；`2026-10-09` 回勾）：未闭合 `open` 2：协议栈本体与传输未实现、缺设计条目。本行旧记的第三项"套接字标识五类基值缺 Rust 侧权威"（`N1-P1-1`）经现场核实为**账面滞后**——`os/libs/minix-netdriver/src/sockid.rs` 已落地（`2026-09-17`，与本文件 §0.3 同一条目行自洽），五个 `SOCKID_*` 基值逐个对 `minix3/minix/net/lwip/lwip.h:58-62` 有钉定测试，`cargo test -p minix-netdriver --lib sockid` → 5 passed/0 failed（核于 `2026-10-09`，快照见本轮提交）。§0.2 常量对账表里同一件事此前记的"❌ 计划外缺失"已同步回勾为 ✅。
 > **`2026-10-31` 现查（A 板 A21，claim/A21-NET-qoder）——`N1-P1-4` 的「主循环占位」已过期，循环半在**：`os/net/lwip/src/main.rs` 与 `os/net/uds/src/main.rs` 都以 `ProductionHandler` + `SockTable` + `server::run(…)` 起真环（lwip 侧还有 7 段映射 C 十三步的 `Startup` 链、`-dev` 参数收集与 `wait_for_init` 门）；`grep -rn "unimplemented!()|todo!()" os/net` 生产区零命中；判据 `cargo test -p minix-net-lwip -p minix-net-uds` → **148 / 0**（6 段）。**剩下的两条**：① **协议栈本体**——`ProductionHandler.stack: Option<Box<dyn Stack>>` 在启动链第 2 步建，smoltcp 适配的落地随 `25-smoltcp-shim.md`（本轮不代做）；② **SF/RS 启动链**挂 **E-NETSTART**（跨板）。板上落码注「先复核 N1-P1-2/N1-P1-4 是否覆盖生产主循环」的答案：覆盖了。
+> **`2026-10-31` 栈体半补充现查（A 板 A21，claim/A21-STACK-qoder）**：`os/net/lwip/src/stack.rs` 的 `SmoltcpStack<D: Device>`（1338 行）已带 `impl Stack`（`:210`）、`TrunkDevice`/`LoopDevice` 帧设备桥与 `add_address_v4`；`cargo test -p minix-net-lwip --lib` → **127 / 0**（`stack` 过滤 11/0）。「协议栈本体」不再是待办，A21 两半都闭；余者只有 **E-NETSTART** 的 RS 加载握手（跨板）。
 > **账面滞后校正**：网络字节序与套接字事件类型的两份手抄已裁决归共享类型库单点权威（`PD-13`），属执行未竟。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
