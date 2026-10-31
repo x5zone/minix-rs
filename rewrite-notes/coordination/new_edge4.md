@@ -3551,6 +3551,17 @@ A22 家庭行至此已有两个成员闭（`E-ISWIRE`、`E-INWIRE`）；其余�
 真机腿、E-ISPROD/E-ISBOOT/E-RMIBWIRE/E-MIBPROD/E-NETSTART/E-INITSYS/E-IPCWIRE/E-VMTLB/
 E-PREEMPTFLAG）照旧逐项领。
 
+### 第一百九十八笔（A 板 A22 成员 `E-IPCWIRE`：八缺逐条已有落点，ipc-server 四步装配是真入口，本成员闭）
+
+E-IPCWIRE 登记的是 ipc-server 生产面的八缺（trap 桥/SEF 层/`sys_datacopy`/`proceventmask`/
+`VM_SHM_UNMAP`/clock/`getepinfo` 窄 helper 七件 minix-sys 面 + minix-types 的 `semid_ds`/`shmid_ds`
+布局面）。现查：七件 minix-sys 面全部有落点（`syscall.rs`/`pm.rs`/`vm.rs`/`rs.rs`），两份布局在
+`minix-types/ipc/sysvipc.rs`；`os/servers/ipc-server/src/main.rs` 的四步装配
+（`SysBoundary` + `SysEventLoopTransport` + `IpcServer::new` + `init`/`run`）是真入口，与 C
+`main.c:216-284` 同序。
+
+判据：`cargo test -p minix-ipc-server` → **114 / 0**（4 段）。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
