@@ -3590,6 +3590,17 @@ minix_types::{…}` 消费权威类型（PM/VFS/DS/VM 的 dump 模块同形）�
 
 判据：`cargo test -p minix-is` → **129 / 0**（3 段）。本条 register 至此 `closed`。
 
+### 第二百零二笔（A 板 A22 成员 `E-INITSYS`：init 真实运行所需的三件 minix-sys 面全在，本成员闭）
+
+- **信号族**：`minix-sys/src/lib.rs:572` 的 `sigprocmask`、`:1082` 的 `sigaction`（另带
+  `pm.rs:336` 的 `sigaction_via`）。
+- **进程控制族与 open 存在路径**：`lib.rs:214/223/267/274` 的 `fork`/`exec`/`waitpid`/`kill`，
+  配套 `pm.rs:170/212/286` 的 `*_via`。
+- **`WaitStatus` 解码与 `WUNTRACED`**：`minix-sys/src/wait.rs:13-14` 起（含 `signaled_by`/
+  `signaled` 判读），init 的 `driver.rs` 按变体消费。
+
+判据：`cargo test -p minix-init` → **149 / 0**。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
