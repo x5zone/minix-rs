@@ -30,7 +30,7 @@ cc_for() {
     case "$1" in
         riscv64) echo riscv64-unknown-elf-gcc ;;
         aarch64) echo aarch64-linux-gnu-gcc ;;
-        x86_64)  echo gcc ;;
+        x86_64)  echo cc ;;
         *) return 1 ;;
     esac
 }

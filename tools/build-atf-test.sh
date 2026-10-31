@@ -19,7 +19,7 @@ set -euo pipefail
 TEST="${1:?用法: build-atf-test.sh <test.c> [arch] [编译flags...]}"; shift
 # arch 仅在 $1 是已知值时消费，否则默认 riscv64、把 $@ 全当额外 flags。
 case "${1:-}" in
-    riscv64|aarch64|x86_64) ARCH="$1"; shift ;;
+    riscv64|aarch64|x86_64|x86_64-host) ARCH="$1"; shift ;;
     *) ARCH="riscv64" ;;
 esac
 EXTRA_INC=("$@")   # 剩余的当额外编译 flags（如 -I<dir>）
@@ -52,22 +52,27 @@ case "$ARCH" in
              { read -r PICOA && read -r SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64) || true
              [ -n "${SPECS:-}" ] || { echo "aarch64 picolibc 未取得（见上方 vendor-atf-toolchain.sh 报错）" >&2; exit 2; }
              SYS=(--specs="$SPECS"); SEMIHOST=("$PICOA/lib/libsemihost.a") ;;
-    x86_64) # 宿主 cc + glibc，与 `tools/build-libatf-c.sh:50-51` 同一条腿：发行版没有
-            # x86_64 的 `-unknown-elf` 裸机包，宿主就是它的裸机腿。glibc 原生有
-            # <err.h>/<sys/uio.h>/sysconf/strerror_r(GNU 形)/random，再注入本仓那层
-            # picolibc 专用接管面会与 glibc 声明冲突（旧判据：`errno-compat.h` 的
-            # `extern const int sys_nerr;` 对 glibc 的 `int _sys_nerr` 类型不符；该名字现已
-            # 拆给 bsd-strerr.h，三腿共用），故整层接管面一律不挂，与库腿 `COMPAT_INC=()`
-            # 同一个判断。`md5.h`/`bm.h` glibc 没有，仍走 -I"$COMPAT"。
+    x86_64) # 非 TLS x86_64 picolibc（tools/vendor-picolibc-x86_64.sh 本地构建）。
+            # 原宿主 cc + glibc 腿在 glibc 启动时走 arch_prctl(ARCH_SET_FS)/TLS，
+            # 而内核没有每进程 FS base，测试在进 main 前就 fault。picolibc 不建
+            # TLS，和 aarch64/riscv 腿同源，也不需要内核改动。
+            CC="cc"; MC=(-fno-stack-protector)
+            { read -r PICOA && read -r SPECS; } < <("$ROOT/tools/vendor-picolibc-x86_64.sh") || true
+            [ -n "${SPECS:-}" ] || { echo "x86_64 picolibc 未取得（见上方 vendor-picolibc-x86_64.sh 报错）" >&2; exit 2; }
+            SYS=(--specs="$SPECS"); SEMIHOST=("$PICOA/lib/libsemihost.a")
+            LIBC_KIND=picolibc; COMPAT_TAKEOVER=1 ;;
+    x86_64-host) # 宿主执行腿（tools/atf-host-suite.sh 专用）：宿主 cc + glibc，
+            # 产物在 Linux 宿主直接跑。不能用于客态根镜像：glibc 的启动需要
+            # arch_prctl(ARCH_SET_FS) 与每进程 TLS，而内核不提供 FS base。
+            # 走 glibc 原生头/语义，所以整层 picolibc 接管面都不挂（理由见
+            # 下方 CFGS/COMPAT_INCLUDE 注释）；`md5.h`/`bm.h` 仍走 compat。
             CC="cc"; MC=(); SYS=(); SEMIHOST=(); LIBC_KIND=glibc; COMPAT_TAKEOVER=0
-            # 上游测试源文件在文件作用域写 NetBSD 的标识串宏（`t_bm.c:32:__RCSID(...)`），
-            # picolibc 的 <sys/cdefs.h> 给得出，glibc 给不出——报
-            # 「expected declaration specifiers or '...' before string constant」。这里把它
-            # 定义成**空展开**（`= ` 结尾，不能省：`-D__RCSID(x)` 会展开成 1 而留下 `1("..")`），
-            # 与批次二百五十四那个三行 shim 同形。只挂 glibc 腿：picolibc 腿用真宏，
-            # 覆盖它会改掉交叉产物的标识串段。
+            # 上游测试源把 NetBSD 标识串宏写在文件作用域（`t_bm.c:32:__RCSID(...)`），
+            # picolibc 的 <sys/cdefs.h> 给得出，glibc 给不出。定义成空展开
+            # （必须带尾等号，否则 `-D__RCSID(x)` 展开成 1 并留下 `1("..")`）；
+            # 只挂 glibc 腿，picolibc 腿用真宏以保住交叉产物的标识串段。
             NETBSD_ID_MACROS=(-D'__RCSID(x)=' -D'__COPYRIGHT(x)=') ;;
-    *) echo "本脚本支持 riscv64 | aarch64 | x86_64（真跑另需 fork/exec/VFS 桥）" >&2; exit 2 ;;
+    *) echo "本脚本支持 riscv64 | aarch64 | x86_64 | x86_64-host（真跑另需 fork/exec/VFS 桥）" >&2; exit 2 ;;
 esac
 command -v "$CC" >/dev/null || { echo "缺编译器：$CC（目标③ 前置，请先装交叉工具链）" >&2; exit 2; }
 if [ "$COMPAT_TAKEOVER" = 1 ]; then
@@ -184,10 +189,19 @@ BSD_RNG_O=("$BUILD/random.o")
 STARTUP_O=()
 LINK_EXTRA=()
 case "$ARCH" in
-    aarch64|riscv64)
+    aarch64|riscv64|x86_64)
         "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/startup-minix.c" -o "$BUILD/startup-minix.o"
         STARTUP_O=("$BUILD/startup-minix.o")
-        LINK_EXTRA=(-nostartfiles) ;;
+        LINK_EXTRA=(-nostartfiles)
+        if [ "$ARCH" = x86_64 ]; then
+            # picolibc's x86 semihost archive carries an e9_stub member that
+            # also defines read/write/open/close/lseek/unlink (port 0xE9).
+            # The Minix bridge objects come first on the link line and are the
+            # desired definitions; let them win. stdio-minix.c defines the
+            # three FILE streams on this leg, so e9_io.o (whose putc is the
+            # privileged `out %al,$0xE9`) is not pulled either.
+            LINK_EXTRA+=(-Wl,--allow-multiple-definition)
+        fi ;;
 esac
 
 "$CC" -static "${MC[@]}" "${SYS[@]}" "${LINK_EXTRA[@]}" "${STARTUP_O[@]}" "$BUILD/$name.o" \

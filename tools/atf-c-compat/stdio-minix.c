@@ -6,6 +6,11 @@
  * 达。本 TU 抢定义这两个符号：链接顺序上本 .o 在 libsemihost.a 之前，archive
  * 成员只为**尚未定义**的符号拉入，故 iob.c.o 的引用解析到这里，而 semihost
  * 的 putc/getc 实现成员不进镜像（无死代码，链接器已裁）。
+ *
+ * x86_64 腿没有 iob.c.o：机器后端是 e9_io.c，直接以 `out %al,$0xE9` 定义
+ * 流对象，而该指令在 ring 3 是特权指令（首个字符就 #GP）。所以 x86 分支改由
+ * 本 TU 直接定义 stdin/stdout/stderr 三个流对象（同样的链接顺序原理让
+ * e9_io.o 不被拉入），把两路都接到 _write 桥。
  * 输出经 sys-bridge.c _write → SYS_DIAGCTL → 内核串口，即 atf 测试报告上机
  * 的显示通道。
  *
@@ -24,6 +29,37 @@ extern int _write(int fd, const void *buf, size_t len);
 /* stdin/stdout/stderr 由 <stdio.h> 声明（picolibc tinystdio：`FILE *const`，
  * iob.c.o 定义）；本 TU 只用其值比较流身份，不重声明（重声明与头冲突）。 */
 
+#if defined(__x86_64__)
+
+/* x86_64 picolibc has no generic `iob.c` in libsemihost: its machine backend
+ * is `e9_io.c`, which defines stdin/stdout/stderr with a port-0xE9 putc.
+ * `out %al,$0xE9` is privileged, so a ring-3 test takes #GP on the first
+ * character ("Passed" -> 'P'). Define the streams here instead. This object
+ * precedes libsemihost on the link line, so e9_io.o is never pulled in; the
+ * rest of libsemihost (stubs for open/close/lseek) stays available. */
+static int minix_stdio_putc(char c, FILE *file) {
+    int fd = (file == stderr) ? 2 : 1;
+    char b = c;
+    (void)_write(fd, &b, 1);
+    return 0;
+}
+
+static int minix_stdio_getc(FILE *file) {
+    (void)file;
+    return -1;
+}
+
+static FILE __stdio_out = FDEV_SETUP_STREAM(minix_stdio_putc, minix_stdio_getc,
+                                            NULL, _FDEV_SETUP_RW);
+static FILE __stdio_err = FDEV_SETUP_STREAM(minix_stdio_putc, minix_stdio_getc,
+                                            NULL, _FDEV_SETUP_RW);
+
+FILE *const stdin = &__stdio_out;
+FILE *const stdout = &__stdio_out;
+FILE *const stderr = &__stdio_err;
+
+#else
+
 int sys_semihost_putc(char c, FILE *file) {
     /* fd 语义对齐 POSIX：stdout=1、stderr=2；其余流按 stdout 处理。
      * 返回 0=成功（semihost 惯例；诊断串口无背压语义，写入失败也吞掉——
@@ -40,3 +76,5 @@ int sys_semihost_getc(FILE *file) {
      * 不读输入（读输入的属 atf_check -I 场景，未进首批 18 案）。 */
     return -1;
 }
+
+#endif

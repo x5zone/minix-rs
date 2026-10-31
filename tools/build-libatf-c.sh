@@ -12,19 +12,20 @@
 #
 # 关键移植点（对照 picolibc 缺件，均在 tools/atf-c-compat/ 补齐）：
 #   - defs.h 由 defs.h.in 渲染（三个 @ATTRIBUTE_*@ 宏 → GCC __attribute__）。
-#   - atf-c/tc.c 需 <sys/uio.h>（struct iovec）—— picolibc 缺，用 compat 头（仅 riscv64 注入；
-#     x86_64 走 glibc 原生，不注入以免覆盖）。
+#   - atf-c/tc.c 需 <sys/uio.h>（struct iovec）—— picolibc 缺，三条腿都用
+#     compat 头（-I"$COMPAT"）。
 #   - atf-c 源是 Minix 补丁化的：`#if defined(__minix)` 块须 -D__minix 才闭合
 #     （否则 check.c 的 `atf_error_t err` 声明被跳过、后续引用它报 undeclared）。
 #   - config.c 需要 11 个 config-time 宏（ATF_BUILD_* 与 ATF_*DIR/SHELL/WORKDIR），
 #     正常由 atf 的 configure 注入；这里以 -D 提供占位值（构建期不影响测试语义）。
 #
-# 用法：tools/build-libatf-c.sh [arch]   # arch=riscv64（默认）| aarch64 | x86_64
+# 用法：tools/build-libatf-c.sh [arch]   # arch=riscv64（默认）| aarch64 | x86_64 | x86_64-host
 # 依赖：riscv64 用 riscv64-unknown-elf-gcc + 系统 picolibc；aarch64 用
 #       aarch64-linux-gnu-gcc + picolibc-aarch64-linux-gnu（由
 #       tools/vendor-atf-toolchain.sh 免 root 取包/本地化 specs，与 build-atf-test.sh
 #       同 libc——混用 glibc 会致 FILE 布局/stdio 符号语义不匹配）；
-#       x86_64 用 host gcc（glibc 原生）。
+#       x86_64 用 host cc + 非 TLS picolibc（tools/vendor-picolibc-x86_64.sh
+#       本地构建，避免 glibc 启动的 TLS 需求）。
 # 注：目标③ 上机首选 aarch64（目标① aarch64 已 ✅、可 boot+exec；riscv 上机受 (A) 门控）。
 set -euo pipefail
 
@@ -47,9 +48,21 @@ case "$ARCH" in
              # picolibc 同 riscv：缺 <sys/uio.h> 等用 compat 注入；与测试腿同 libc 同源；
              # 关 Debian 默认加固（PAC/stack protector）——cortex-a72 无 PAC，且库成员
              # 的 __stack_chk 系列会拖进最终 ELF（真机取证见 build-atf-test.sh 同处注）
-    x86_64)  CC="cc"; AR="ar"; SYSROOT_FLAGS=(); \
-             COMPAT_INC=(); LIBC_KIND=glibc; MCFLAGS=() ;;   # x86_64 用 glibc 原生 <err.h>/<sys/uio.h>，不注入 compat（否则覆盖原生头致冲突）
-    *) echo "未知 arch：$ARCH（支持 riscv64 | aarch64 | x86_64）" >&2; exit 2 ;;
+    x86_64)  CC="cc"; AR="ar"; \
+             { read -r _PICOA && read -r _SPECS; } < <("$ROOT/tools/vendor-picolibc-x86_64.sh") || true; \
+             [ -n "${_SPECS:-}" ] || { echo "x86_64 picolibc 未取得（见上方 vendor-picolibc-x86_64.sh 报错）" >&2; exit 2; }; \
+             SYSROOT_FLAGS=(--specs="$_SPECS"); COMPAT_INC=(-I"$COMPAT"); LIBC_KIND=picolibc; \
+             MCFLAGS=(-fno-stack-protector) ;;
+             # 非 TLS x86_64 picolibc：与 aarch64/riscv 同源，避免 glibc 启动的
+             # arch_prctl(ARCH_SET_FS)/TLS 需求；compat 头（err.h/sys/uio.h）同
+             # 两条交叉腿由 -I$COMPAT 提供。
+    x86_64-host) CC="cc"; AR="ar"; \
+             SYSROOT_FLAGS=(); COMPAT_INC=(); LIBC_KIND=glibc; MCFLAGS=() ;;
+             # 宿主执行腿（tools/atf-host-suite.sh）：产物在 Linux 宿主上直接跑，
+             # 走 glibc 原生 <err.h>/<sys/uio.h>/sysconf/strerror_r/random，不注入
+             # compat 接管面（会覆盖原生头并改变宿主语义）。与 x86_64 客态腿分目录：
+             # 目标/库不同源，混用会破坏 P1-2 的 CC+libc 来源戳判据。
+    *) echo "未知 arch：$ARCH（支持 riscv64 | aarch64 | x86_64 | x86_64-host）" >&2; exit 2 ;;
 esac
 
 command -v "$CC" >/dev/null || { echo "缺少编译器：$CC（目标③ 前置，请先装交叉工具链）" >&2; exit 2; }
