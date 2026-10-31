@@ -3581,6 +3581,15 @@ MIB 侧没有自己的布局副本可漂。
 
 判据：`cargo test -p minix-sys --lib` → **341 / 0**。
 
+### 第二百零一笔（A 板 A22 成员 `E-ISPROD`：IS 消费侧的六组快照已全部改吃 minix-types 单一权威，本成员闭）
+
+E-ISPROD 的裁决（方案 A：快照权威上收 `minix-types`）在 2026-09-16 已落，kernel 四臂随后闭环；
+本笔现查的是**消费侧**：`os/servers/is/src/dump_kernel.rs:23` 与 `dump_rs.rs:14` 都以 `pub use
+minix_types::{…}` 消费权威类型（PM/VFS/DS/VM 的 dump 模块同形），`KProcSnap`/`KPrivSnap` 只在
+注释里出现——IS 侧再没有第二份 `#[repr(C)]` 可漂。
+
+判据：`cargo test -p minix-is` → **129 / 0**（3 段）。本条 register 至此 `closed`。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
