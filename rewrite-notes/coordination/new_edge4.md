@@ -4082,3 +4082,19 @@ image 之后的 `argc/argv` 通道；设计注 §五引用的 `bootelf [-d ...] 
 U-Boot 预载模块、BootFileTable、DTB 固定槽与池基去 QEMU 化。D-73 保持
 ⏳，门控钥匙为：T-10 CI 窗口换支持 `-d`/argv 的 U-Boot 重测；若仍不支持，
 按 `go`/`bootelf` 固定地址 + 独立 LMA 产物重裁入口契约。
+
+
+**C5SMP3 里程碑（riscv 入口栈 per-hart sscratch）**：码笔 `7d7330b7b`、
+合并 `5ebf01950`。上一笔在每次 `restore_to_user` 前刷新共享标量
+`KERNEL_TRAP_STACK_BASE`，只是把共享格改成正确值；本笔按 trait 已有的
+per-CPU 语义收尾：删除共享标量，riscv 的 `init`/`init_ap`/
+`set_kernel_stack` 只写当前 hart 的 `sscratch`；`TrapReturnArch` 增
+`prepare_user_return(cpu_id, stack_top)` 默认 no-op 钩子，调度器经 trait
+调用，riscv 实现只写本 hart CSR，返回腿汇编不再读共享符号。trait/impl
+文档写死“每次用户返回前保证当前 CPU 入口栈最新、实现不得使用共享状态”。
+测试：`MockTrapReturn` 记录 `(cpu_id, stack_top)`；新增
+`riscv64_percpu_trap_stack_pin` 三条源码钉（无共享符号、无 `csrw
+sscratch`、契约句），`riscv64_return_leg_pin` 改为“返回腿不得自行写
+sscratch”。读数：riscv ATF `-smp 1/2/4` 均 **36/36**（34 passed +
+2 skipped，0 failed/broken）、minix-arch runtime-window 全绿、kernel mock
+850/0/8、三架构 check 0 error、合并后 `run_all` 39/0/0。
