@@ -49,6 +49,12 @@ SECTIONS
     {
         KEEP(*(.text.boot))
         *(.text .text.*)
+        /* C11/SD-12 乙案′：内核文本段末界（VMA 空间）。可执行区 =
+           [KERNEL_VIRT_BASE, __text_end) 的镜像连续前缀——.text 是首个
+           输出节且其后只有 rodata/data/bss，故单符号即足以算
+           kern_text_pages（向上取整到 4K 页）。消费方
+           os/kernel/src/vm_handoff.rs。 */
+        PROVIDE(__text_end = .);
     }
 
     .rodata ALIGN(4K) : AT(ADDR(.rodata) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)

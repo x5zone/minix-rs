@@ -359,7 +359,7 @@ pre-claimed reserve (serve the supplier's own IPC buffers from it), per-server i
 track "remove the x86/non-x86 split" as an explicit acceptance item of that migration, since a
 migration that leaves the split has not paid its full debt.
 
-#### SD-12. Identity window supervisor RWX / kernel W^X — **adjudicated (PD-22, three steps), not started**
+#### SD-12. Identity window supervisor RWX / kernel W^X — **adjudicated (PD-22, three steps); step ① landed (C11WX, 乙案′)**
 
 **Decision (frozen):** ① drop W on the kernel-text mapping in process roots (precondition: a static
 check that no runtime writer patches text); ② the low-identity window **de-depend and exit** —
@@ -507,6 +507,20 @@ is asserted by the three `test-rt-birth*` gates; the deviation from C's 8-byte r
 unobservable (args reach the program via the ps_strings register). Evidence:
 `c-board-rulings-brief.md` §11.4-11.5/§12; gates minix-sys 342/0, shell 61/0, init 149/0,
 three-arch rt-birth PASS, riscv ATF full regression.
+
+#### SD-12a. Boot-time 4 KiB map hang root cause — **open (independent technical debt; 甲案 disposition per the C11 two-round review)**
+
+The C11 first-shape probe (4 KiB RX/RW slicing of the kernel image during bootstrap-root
+construction) failed on all three architectures — riscv/aarch64 hung silently inside the first
+4 KiB `Paging::map` call, after the preceding 2 MiB `map_huge` leaves succeeded; the x86 UEFI
+carrier took an instruction-fetch exception. The shape was fully reverted (riscv ATF 36/36
+revived) and the C11 work proceeded on the 乙案′ path, which does not touch the failing
+mechanism. This entry keeps the failure as an independent diagnosis target: the suspect is
+the bootstrap-phase interaction between fine-grained mapping and the boot page-table
+allocator / walker state (timing unknown; no probe evidence beyond the hang location).
+Registration is explicitly *not* a commitment: 甲案 (loader-side per-PT_LOAD-flag paging)
+stays suspended until this root cause is diagnosed, per the review ruling. Evidence anchor:
+C-board C11 row and the ledger SD-12 line; the reverted probe commit is recorded there.
 
 #### SD-22. Kernel↔user memory access model (SUM/PAN/SMAP) — **adjudicated (PD-21, two layers); software layer landed on the message face**
 

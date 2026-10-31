@@ -34,6 +34,11 @@ SECTIONS
     {
         KEEP(*(.text.boot))
         *(.text .text.*)
+        /* C11/SD-12 乙案′：内核文本段末界（VMA 空间），与 riscv64.ld
+           同形同源注释——可执行区 = 镜像起点连续前缀，单符号即足以算
+           kern_text_pages（向上取整到 4K 页）。消费方
+           os/kernel/src/vm_handoff.rs。 */
+        PROVIDE(__text_end = .);
     }
 
     .rodata ALIGN(4K) : AT(ADDR(.rodata) - KERNEL_HIGH_BASE)

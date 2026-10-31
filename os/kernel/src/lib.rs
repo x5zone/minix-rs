@@ -1166,6 +1166,85 @@ fn dtb_blob_len(dtb_pa: u64) -> Option<usize> {
 /// This function runs at the kernel's high virtual address.
 /// It orchestrates the six-phase boot sequence:
 ///
+/// [ARCH: kernel-text-rx] C11/SD-12 乙案′（PD-22 第一步，引导根半）：
+/// 把**引导根**高半的内核文本映射从粗大叶 RWX 收紧为 RX 4K 页。
+///
+/// 窗口条件（外部评审第 2 点，c-board-rulings-brief.md §11.2 已逐架构
+/// 补证）：调用点位于 `smp_init` 之前、BKL 已持有——三架构 AP 的释放
+/// 调用全在 `smp_init` 体内，释放前 AP 从未执行内核代码、未装载内核根
+/// （riscv 落选臂 `park: wfi` 在开分页之前），故除 BSP 外无核可能持有
+/// 本根的陈旧 TLB 条目；PTE 写路径自带本地失效，跨核 shootdown 不需要。
+///
+/// 承诺条款（§11.3 精确文字）：进程根经 `map_kernel` 构造即得 RX 文本
+/// （真 `kern_text_pages`，见 `vm_handoff`）；本函数只收紧**引导根的高半
+/// 别名**；引导根的低 4 GiB 恒等映射（RWX 粗叶）维持现状，文本页在引导
+/// 根上的可执行可写别名不因此消除。文本/数据边界叶：`text_end` 之后的
+/// 同叶 4K 页保持原旗标（引导根数据区维持既有粗放行为）。
+#[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
+fn harden_kernel_text() {
+    use minix_arch::paging::Paging as _;
+    use minix_arch::CurrentPaging;
+    use minix_arch::paging::PageFlags;
+
+    const MIB_2: u64 = 2 << 20;
+    const PAGE: u64 = 4096;
+
+    let kinfo = crate::kernel_info().expect("harden_kernel_text: KERNEL_INFO store missing");
+    let kern_virt = kinfo.kern_virt_base().0;
+    // medany 直核形态存在 virt == phys 的镜像视图（step 1 的高半别名只在
+    // virt != phys 时建立）——此时无可分割的高半别名，恒等视图按承诺条款
+    // 维持现状。
+    if kern_virt == kinfo.kern_phys_base().0 {
+        return;
+    }
+    // 占位交接（非 kernel-text-rx 构建，kern_data_pages == 0）不分割：
+    // 整段当文本会把引导根数据区一并 RX，内核首笔数据写即 fault。生产
+    // 镜像（kernel-text-rx）携带真实分界，占位恒走旧语义。
+    let text_pages = crate::vm_handoff::kern_text_pages(kinfo);
+    if kinfo.kern_size() / 4096 == text_pages {
+        return;
+    }
+    let root = crate::current_root_phys()
+        .expect("harden_kernel_text: live root not recorded (set_current_root_phys)");
+    let text_end = kern_virt + text_pages as u64 * PAGE;
+
+    // SAFETY: the bootstrap root is the currently-loaded root (paging live,
+    // DM established by the boot flow's step 4); `from_active_root` wraps
+    // it without zeroing on the **KernelDm** channel (the kernel boot face
+    // — PTE reads/writes go through the kernel DM window, each write
+    // carrying a local TLB invalidation). The VmDm-channel
+    // `adopt_active_root` is the VM-side constructor: in kernel boot
+    // context the VM window is unreachable and its first PTE read faults
+    // (observed: kernel-leg load page fault at VM_DM+root_paddr+0x800).
+    // Single hart + BKL per the window contract above.
+    let mut pt = unsafe { <CurrentPaging as minix_arch::paging::Paging>::from_active_root(root) };
+
+    let mut leaf = kern_virt; // 镜像基址 2MiB 对齐（riscv64.ld 收口）
+    while leaf < text_end {
+        // split_huge 劈到底（L2 1GiB→2MiB、L1 2MiB→4K 一次调用内完成）；
+        // 已是 4K 叶时幂等（返回 false）。
+        // SAFETY: as above — live-root edit under the boot window contract.
+        unsafe {
+            pt.split_huge(minix_types::VirBytes(leaf))
+                .expect("harden_kernel_text: split_huge failed");
+        }
+        let leaf_text_end = (leaf + MIB_2).min(text_end);
+        let mut page = leaf;
+        while page < leaf_text_end {
+            // SAFETY: as above — live-root edit; the write path flushes.
+            unsafe {
+                pt.update_flags(
+                    minix_types::VirBytes(page),
+                    PageFlags::kernel_executable(),
+                )
+                .expect("harden_kernel_text: update_flags failed");
+            }
+            page += PAGE;
+        }
+        leaf += MIB_2;
+    }
+}
+
 /// Phase A (this function): Entry — validate kinfo, allow kernel alloc
 /// Phase B: cstart — prot_init + clock + intr (software only) + arch_init
 /// Phase C: proc_init + arch_boot_proc
@@ -1515,6 +1594,12 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // deliberately (transfer) — the BKL stays held until switch_to_user
     // releases it.
     crate::smp::bkl_lock().transfer();
+
+    // [ARCH: kernel-text-rx] C11/SD-12 乙案′：引导根文本分割——必须在
+    // `smp_init` 之前（窗口条件见 harden_kernel_text 文档：AP 释放前从未
+    // 装载内核根，本地失效即足够）。
+    // BISECT-TEMP: disabled to isolate the ATF kernel-leg fault.
+    // harden_kernel_text();
 
     // C main.c:311 parity — full SMP bring-up (smp_start_aps + wait_for_APs
     // inside). C: "if smp_init() returns it means that it failed and we try
