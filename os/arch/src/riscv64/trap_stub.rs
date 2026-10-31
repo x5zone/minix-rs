@@ -81,10 +81,10 @@
 //! ordering close that hole (both orders are pinned by the host test
 //! `arch/tests/riscv64_trap_leg_shape.rs`, rule 5).
 //!
-//! Everything above is stated for the single-hart configuration this port runs
-//! in today (`-smp 1`). When APs are brought up, `KERNEL_TRAP_STACK_BASE` and
-//! the `sscratch` invariants in this module become per-CPU concerns (see the
-//! note in `protection.rs`) and this paragraph must be re-read per hart.
+//! The `sscratch` invariants are per-hart: each CPU writes only its own CSR
+//! (`ProtectionArch::init`/`init_ap`), and the scheduler refreshes it through
+//! `TrapReturnArch::prepare_user_return` before every user return. No shared
+//! scalar participates, so the same paragraph holds on every hart.
 
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicPtr, Ordering};

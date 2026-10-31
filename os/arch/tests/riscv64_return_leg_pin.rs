@@ -170,8 +170,17 @@ fn return_leg_masks_interrupts_before_switching_the_vector() {
     // (the privilege-level bit) and must not be mistaken for the mask.
     let spp_clear = sstatus_clear(&leg, "{spp}").expect("本腿必须清 SPP（返回 U 态）");
     assert_ne!(mask, spp_clear, "屏蔽与清 SPP 应当是两笔不同的写");
-    let anchor =
-        pos(&leg, |i| i.starts_with("csrw sscratch,")).expect("本腿必须重锚 sscratch 为内核栈顶");
+    // The entry stack is per-hart and refreshed by the trait hook
+    // `prepare_user_return` immediately before this call; the return leg
+    // must NOT write sscratch or read a shared cell.
+    assert!(
+        !leg.iter().any(|i| i.starts_with("csrw sscratch,")),
+        "返回腿不得自行写 sscratch：per-CPU 入口栈由 prepare_user_return 负责"
+    );
+    assert!(
+        SRC.contains("fn prepare_user_return"),
+        "riscv64 必须实现 per-CPU 的 prepare_user_return"
+    );
     // What is pinned is the **last** stvec write: if someone later adds another
     // vector switch at the tail of this leg, the earlier one no longer decides
     // "who receives the next trap after the return" (the same discipline as rule
@@ -184,11 +193,6 @@ fn return_leg_masks_interrupts_before_switching_the_vector() {
         mask < vector,
         "SIE 屏蔽（第 {mask} 条）必须早于 stvec 换腿（第 {vector} 条）：否则这段窗口里 \
          S 态带着开着的中断走进只适用于 U-origin 的用户腿，时钟会把 34 槽帧写进调度器活栈"
-    );
-    assert!(
-        anchor < vector,
-        "sscratch 重锚（第 {anchor} 条）应早于换腿（第 {vector} 条）：换腿之后 sscratch \
-         的语义就被人依赖了"
     );
     assert!(
         vector < first_reload,

@@ -57,68 +57,23 @@ use core::arch::asm;
 /// Per-CPU kernel-stack base for the trap entry legs (the riscv counterpart
 /// of aarch64's `TPIDR_EL1` entry-base scheme).
 ///
-/// riscv has no scratch system register we may claim (aarch64 owns
-/// TPIDR_EL1; `sscratch` itself is the *user-trap swap register* — it
-/// carries the parked user sp the moment a park switch happens, so it
-/// cannot double as the base store). The cell is written by
-/// [`ProtectionArch::init`]/[`ProtectionArch::init_ap`] at boot (before
-/// any `restore_to_user` can run) and read by `restore_to_user`'s asm to
-/// re-anchor `sscratch` to this CPU's kernel-stack top before `sret` —
-/// closing the park-path hazard: the park branch of the user leg leaves
-/// `sscratch` holding the *parked* process's user sp, and without a
-/// re-anchor the next U-mode trap would build its frame on that user
-/// stack instead of the kernel stack.
+/// The state lives **only** in the per-hart `sscratch` CSR: every hart's
+/// `init`/`init_ap` writes its own value, and the scheduler refreshes it
+/// through [`TrapReturnArch::prepare_user_return`] before each user return
+/// (the park/resched path leaves `sscratch` holding the parked user sp, so a
+/// refresh is required). There is deliberately no shared cell: a scalar
+/// shared by all harts let an AP's `init_ap` overwrite the BSP's entry stack,
+/// and the stack-based `current_cpu_id()` then misattributed the BSP's first
+/// kernel call to the AP's idle process.
 ///
-/// Single cell, sound today because this port runs riscv64 single-hart:
-/// `smp_init` is not wired for non-x86 architectures (kernel/smp.rs
-/// prints the "not wired" warning; `init_ap` has no riscv caller yet).
-/// Once SMP AP bring-up lands, each hart's `init_ap` must record a
-/// The scheduler refreshes this cell from the current CPU's stack top
-/// immediately before every `restore_to_user` ([`set_trap_stack_base`]), so
-/// an AP's `init_ap` cannot leave a stale value that the BSP's next user
-/// return would adopt.
-///
-/// `no_mangle` because the `restore_to_user` asm dereferences it by
-/// absolute address (`ld a4, KERNEL_TRAP_STACK_BASE`); the Rust side
-/// reaches it only through [`set_entry_stack_base`] / [`entry_stack_base`]
-/// volatile accesses (64-bit aligned — no torn read by construction on
-/// this port's single-write boot phase).
-#[unsafe(no_mangle)]
-pub static mut KERNEL_TRAP_STACK_BASE: u64 = 0;
-
-/// Re-anchor the trap stack base (sscratch + the restore path's recorded
-/// cell) for the CPU currently executing. Called by the scheduler before
-/// every user restore: the recorded cell is one scalar shared by all harts,
-/// so an AP's `init_ap` would otherwise leave its own stack top there and
-/// the BSP's next user return would re-anchor onto the AP's stack.
-pub fn set_trap_stack_base(base: VirBytes) {
-    set_entry_stack_base(base);
-}
-
-/// Record this CPU's kernel-stack top: write the CSR *and* the re-anchor
-/// cell. `base == 0` is the throwaway-instance sentinel, not a stack —
-/// see [`ProtectionArch::init`] (the non-x86 `with_protection` helper
-/// fabricates `init(0, VirBytes::new(0))` just to reach `load()`; the
-/// sentinel keeps that call side-effect-free instead of clobbering the
-/// live sscratch back to 0 — the lesson learned on aarch64, in its riscv
-/// form).
-fn set_entry_stack_base(base: VirBytes) {
+/// [`TrapReturnArch::prepare_user_return`]: crate::arch::trap_return::TrapReturnArch::prepare_user_return
+pub(crate) fn set_entry_stack_base(base: VirBytes) {
     debug_assert_eq!(base.get() % 8, 0, "kernel stack top must be 8-byte aligned");
-    // SAFETY: CSR write to sscratch in S-mode with a valid kernel VA; the
-    // global below is written only at boot (single-threaded phase, before
-    // any `restore_to_user` reads it).
+    // SAFETY: CSR write to sscratch in S-mode with a valid kernel VA; each
+    // hart writes only its own CSR, so no cross-hart alias exists.
     unsafe {
         asm!("csrw sscratch, {}", in(reg) base.get(), options(nomem, preserves_flags));
-        core::ptr::addr_of_mut!(KERNEL_TRAP_STACK_BASE).write_volatile(base.get());
     }
-}
-
-/// The recorded kernel-stack top (0 before init) — read-only accessor
-/// for diagnostics/tests; the sentinel write path itself lives in
-/// [`set_entry_stack_base`].
-pub fn entry_stack_base() -> u64 {
-    // SAFETY: volatile read of the boot-written cell; see the static doc.
-    unsafe { core::ptr::addr_of!(KERNEL_TRAP_STACK_BASE).read_volatile() }
 }
 
 /// RISC-V privilege level representation.
@@ -175,7 +130,8 @@ impl ProtectionArch for Riscv64Protection {
     }
 
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
-        // SAFETY: see `set_entry_stack_base` — CSR write in S-mode.
+        // Per-hart `sscratch` only; there is no shared cell to keep in
+        // sync. `cpu_id` is implicit in the CSR each hart writes.
         //
         // `base == 0` is the throwaway sentinel, not a stack (the riscv form
         // of the aarch64 guard): the non-x86
@@ -198,7 +154,9 @@ impl ProtectionArch for Riscv64Protection {
         // caller today, so a 0 here is a wiring bug (loud stop instead of
         // silently poisoning sscratch).
         debug_assert_ne!(stack_top.0, 0, "set_kernel_stack(0) would poison sscratch");
-        // SAFETY: Same as init() — sscratch write in S-mode with valid address.
+        // Contract: per-CPU entry state only. `_cpu_id` is implicit because
+        // the write targets the calling hart's own `sscratch`; an
+        // implementation must not introduce a shared scalar here.
         set_entry_stack_base(stack_top);
     }
 
@@ -209,14 +167,13 @@ impl ProtectionArch for Riscv64Protection {
         // structures — CSRs take effect immediately on write.
     }
 
-    fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
+    fn init_ap(&self, _cpu_id: u32, kernel_stack_top: VirBytes) {
         // Park this AP's own kernel-stack top in its `sscratch` (per-hart
-        // CSR — `init_ap` runs on the AP) and record the re-anchor cell.
-        // Same `base == 0` throwaway-instance guard as `init`.
+        // CSR — `init_ap` runs on the AP). No shared cell: the calling hart
+        // is the index. Same `base == 0` throwaway-instance guard as `init`.
         if kernel_stack_top.0 != 0 {
             set_entry_stack_base(kernel_stack_top);
         }
-        let _ = cpu_id;
     }
 }
 

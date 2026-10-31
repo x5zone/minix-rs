@@ -86,6 +86,26 @@ pub trait TrapReturnArch {
     /// OS call sites stay architecture-uniform.
     type RegisterFile: Copy + core::fmt::Debug + Default;
 
+    /// Prepare this CPU's user-return entry state immediately before
+    /// [`restore_to_user`](Self::restore_to_user).
+    ///
+    /// The scheduler calls this on every dispatch, with the CPU that is
+    /// about to run the process and that CPU's kernel-stack top. The
+    /// implementation must make the per-CPU entry state current; it must
+    /// not rely on a shared scalar, because another CPU's bring-up or
+    /// park/resched path can overwrite it.
+    ///
+    /// The default is a no-op: x86-64 updates the per-CPU TSS slot when the
+    /// stack is installed, and aarch64's `eret` reloads SP_EL1 from
+    /// TPIDR_EL1, so neither needs a per-dispatch refresh. riscv64's
+    /// `sscratch` is the one entry register that can be left holding a
+    /// parked user sp, so its impl writes it here.
+    ///
+    /// Contract: after this call and before `restore_to_user`, no code may
+    /// change the current CPU's entry stack; `restore_to_user` must not
+    /// read any shared symbol for it.
+    fn prepare_user_return(_cpu_id: u32, _stack_top: minix_types::VirBytes) {}
+
     /// Transfer control to user mode with the given saved state. Never
     /// returns.
     ///
@@ -131,6 +151,11 @@ impl TrapReturnArch for MockTrapReturn {
     type Frame = crate::x86_64::exception::X86_64ExceptionFrame;
     type RegisterFile = crate::x86_64::boot::X86_64CpuContext;
 
+    fn prepare_user_return(cpu_id: u32, stack_top: minix_types::VirBytes) {
+        MOCK_PREPARE_CPU.store(cpu_id, core::sync::atomic::Ordering::Release);
+        MOCK_PREPARE_STACK.store(stack_top.0, core::sync::atomic::Ordering::Release);
+    }
+
     unsafe fn restore_to_user(frame: &Self::Frame, _regs: &Self::RegisterFile) -> ! {
         panic!(
             "MockTrapReturn::restore_to_user: real dispatch attempted on host \
@@ -138,6 +163,22 @@ impl TrapReturnArch for MockTrapReturn {
         )
     }
 }
+
+/// Last `(cpu_id, stack_top)` recorded by [`MockTrapReturn::prepare_user_return`].
+#[cfg(feature = "runtime-window")]
+pub fn mock_prepare_user_return_last() -> (u32, u64) {
+    (
+        MOCK_PREPARE_CPU.load(core::sync::atomic::Ordering::Acquire),
+        MOCK_PREPARE_STACK.load(core::sync::atomic::Ordering::Acquire),
+    )
+}
+
+#[cfg(feature = "runtime-window")]
+static MOCK_PREPARE_CPU: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "runtime-window")]
+static MOCK_PREPARE_STACK: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 
 #[cfg(test)]
 mod tests {
@@ -161,6 +202,17 @@ mod tests {
             probe::<MockTrapReturn>();
         }
         _typecheck();
+    }
+
+    /// The prepare hook is the per-CPU entry-state channel: the mock records
+    /// the CPU id and stack top so a host test can prove the scheduler passes
+    /// the CPU that is actually returning, not a shared/default slot.
+    #[test]
+    fn test_mock_prepare_user_return_records_cpu_and_stack() {
+        MockTrapReturn::prepare_user_return(7, minix_types::VirBytes(0x1234_5000));
+        assert_eq!(mock_prepare_user_return_last(), (7, 0x1234_5000));
+        MockTrapReturn::prepare_user_return(3, minix_types::VirBytes(0x2222_0000));
+        assert_eq!(mock_prepare_user_return_last(), (3, 0x2222_0000));
     }
 
     #[test]
