@@ -1569,7 +1569,7 @@ static mut AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; AP_STACK_COUNT] =
     target_arch = "riscv64",
     target_arch = "aarch64"
 ))]
-fn ap_kernel_stack_top(logical_id: u32) -> u64 {
+pub(crate) fn ap_kernel_stack_top(logical_id: u32) -> u64 {
     // SAFETY: address-only computation; no dereference.
     let base =
         unsafe { core::ptr::addr_of!(AP_KERNEL_STACKS[logical_id as usize]) as *const u8 as usize };
