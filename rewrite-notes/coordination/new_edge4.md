@@ -4206,3 +4206,13 @@ simple 全调用点在 cfg(test) 门控内（vm_server new/new_for_test + boot.r
 具；纯字段测试的 None 保留（合法被测值）。生产路径不变（真实交接 ≥ v5
 恒带真值）。门读数：minix-vm 544/0（+负控）、riscv ATF 36/36。A 板复
 核请求已随 C 板 C17 行留痕。A9（来源断言）为余片。
+
+**C17A9 里程碑（C17-A9 user_sp 来源契约断言）**：两条缝各一枚断言——①
+夹具缝：`BootParams::simple().user_sp == USER_STACK_TOP`（架构权威常量，
+按宿主 target 取值、零字面量）；② 直通缝：构造器把 params.user_sp 原样
+落进 `VmContext.user_sp`（来源链不允许转换或字面量替换）。语义按评审裁
+决钉死：`ctx.user_sp` = 帧构造前栈顶输入（非入口 sp）；入口 sp 对齐断
+言属 C8（test-rt-birth* 门内嵌），两项分立。内核侧源头（build_kernel_
+info 的 user_sp）已由 boot-shim 既有测试钉住——来源链闭合：kinfo→交
+接页→params→ctx。门读数：minix-vm 546/0（+2）。C 板 C17 行 A6/A9 族
+双闭，余=xtask 构建侧（等 A 板）。
