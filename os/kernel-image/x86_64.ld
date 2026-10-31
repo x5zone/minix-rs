@@ -34,18 +34,24 @@ SECTIONS
     {
         KEEP(*(.text.boot))
         *(.text .text.*)
-        /* 可执行孤儿节显式收纳：`.ap_early_entry`（AP 早入桩）与
-           `.ltext.*`（rustc 逐函数可执行节）不被 `.text.*` 通配命中，
-           孤儿放置会把它们插到本节之后、R E 段内——`__text_end` 因此
-           偏小（0x2c64 vs 真实 0x403ae），`kern_text_pages` 只 RX 前三
-           页，余下代码在进程根里 NX，首个内核腿取指 #PF(0x11) 即死。
-           收纳后 `__text_end` = R E 段末（readelf 对账）。 */
+        /* Explicitly collect the executable orphan sections:
+           `.ap_early_entry` (the AP early-entry stub) and `.ltext.*`
+           (rustc per-function executable sections) are not matched by
+           `.text.*`; left as orphans they land inside the R E segment
+           AFTER this point, which made `__text_end` undersized (0x2c64 vs
+           the real 0x403ae) — kern_text_pages then RX'd only the first
+           three pages, leaving the rest of the kernel code NX in process
+           roots, and the first kernel-leg instruction fetch at
+           x86_trap_dispatch died with #PF(0x11). With the orphans
+           collected, `__text_end` equals the R E segment end (verified
+           with readelf). */
         *(.ap_early_entry)
         *(.ltext .ltext.*)
-        /* C11/SD-12 乙案′：内核文本段末界（VMA 空间），与 riscv64.ld
-           同形同源注释——可执行区 = 镜像起点连续前缀，单符号即足以算
-           kern_text_pages（向上取整到 4K 页）。消费方
-           os/kernel/src/vm_handoff.rs。 */
+        /* Kernel-text W^X: end of the text segment (link VMA space), same
+           shape and comment as riscv64.ld — the executable region is the
+           image's contiguous prefix, one symbol suffices for
+           kern_text_pages (rounded up to 4 KiB pages). Consumer:
+           os/kernel/src/vm_handoff.rs. */
         PROVIDE(__text_end = .);
     }
 

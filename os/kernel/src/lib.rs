@@ -1166,20 +1166,29 @@ fn dtb_blob_len(dtb_pa: u64) -> Option<usize> {
 /// This function runs at the kernel's high virtual address.
 /// It orchestrates the six-phase boot sequence:
 ///
-/// [ARCH: kernel-text-rx] C11/SD-12 乙案′（PD-22 第一步，引导根半）：
-/// 把**引导根**高半的内核文本映射从粗大叶 RWX 收紧为 RX 4K 页。
+/// [ARCH: kernel-text-rx] Narrow the bootstrap root's high-half kernel
+/// text mapping from coarse RWX huge leaves down to RX 4 KiB pages (the
+/// bootstrap-root half of the kernel-text W^X work; per-process roots get
+/// their RX text from `map_kernel` at construction time).
 ///
-/// 窗口条件（外部评审第 2 点，c-board-rulings-brief.md §11.2 已逐架构
-/// 补证）：调用点位于 `smp_init` 之前、BKL 已持有——三架构 AP 的释放
-/// 调用全在 `smp_init` 体内，释放前 AP 从未执行内核代码、未装载内核根
-/// （riscv 落选臂 `park: wfi` 在开分页之前），故除 BSP 外无核可能持有
-/// 本根的陈旧 TLB 条目；PTE 写路径自带本地失效，跨核 shootdown 不需要。
+/// Window contract (verified per architecture in
+/// `rewrite-notes/01-stage-kernel/c-board-rulings-brief.md` §11.2): the
+/// call site runs before `smp_init` with the BKL held. On all three
+/// architectures the AP release calls live inside `smp_init`, and an AP
+/// never executes kernel code nor loads the kernel root before its release
+/// (the riscv64 loser-park `wfi` loop runs with paging off), so no CPU but
+/// the BSP can hold a stale TLB entry for this root; the PTE write path's
+/// built-in local invalidation is therefore sufficient and no cross-core
+/// shootdown is needed.
 ///
-/// 承诺条款（§11.3 精确文字）：进程根经 `map_kernel` 构造即得 RX 文本
-/// （真 `kern_text_pages`，见 `vm_handoff`）；本函数只收紧**引导根的高半
-/// 别名**；引导根的低 4 GiB 恒等映射（RWX 粗叶）维持现状，文本页在引导
-/// 根上的可执行可写别名不因此消除。文本/数据边界叶：`text_end` 之后的
-/// 同叶 4K 页保持原旗标（引导根数据区维持既有粗放行为）。
+/// Promise scope (the precise wording the design review settled on):
+/// per-process roots carry RX text from `map_kernel` (real text page count
+/// from `vm_handoff`); this function only narrows the bootstrap root's
+/// high-half alias; the bootstrap root's low 4 GiB identity mapping (coarse
+/// RWX leaves) stays as-is — the writable-executable alias of text pages on
+/// the bootstrap root is deliberately not removed. On the text/data
+/// boundary leaf, 4 KiB pages past `text_end` keep their inherited flags
+/// (the bootstrap root's data region keeps its existing coarse behavior).
 #[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
 fn harden_kernel_text() {
     use minix_arch::paging::Paging as _;
@@ -1193,15 +1202,18 @@ fn harden_kernel_text() {
 
     let kinfo = crate::kernel_info().expect("harden_kernel_text: KERNEL_INFO store missing");
     let kern_virt = kinfo.kern_virt_base().0;
-    // medany 直核形态存在 virt == phys 的镜像视图（step 1 的高半别名只在
-    // virt != phys 时建立）——此时无可分割的高半别名，恒等视图按承诺条款
-    // 维持现状。
+    // The medany direct-boot form has a virt == phys image view (step 1
+    // only builds the high-half alias when virt != phys) — there is no
+    // high-half alias to split; the identity view stays as-is per the
+    // promise scope above.
     if kern_virt == kinfo.kern_phys_base().0 {
         return;
     }
-    // 占位交接（非 kernel-text-rx 构建，kern_data_pages == 0）不分割：
-    // 整段当文本会把引导根数据区一并 RX，内核首笔数据写即 fault。生产
-    // 镜像（kernel-text-rx）携带真实分界，占位恒走旧语义。
+    // Placeholder handoff (non-kernel-text-rx builds report data_pages ==
+    // 0): skip the split — "whole span as text" would RX the bootstrap
+    // root's data region too and the first kernel data write would fault.
+    // Production images (kernel-text-rx) carry the real boundary; the
+    // placeholder always takes the legacy path.
     let text_pages = crate::vm_handoff::kern_text_pages(kinfo);
     if kinfo.kern_size() / 4096 == text_pages {
         return;
@@ -1222,10 +1234,10 @@ fn harden_kernel_text() {
     let mut pt = unsafe { <CurrentPaging as minix_arch::paging::Paging>::from_active_root(root) };
     Console::write_str("kernel: text harden adopted\n");
 
-    let mut leaf = kern_virt; // 镜像基址 2MiB 对齐（riscv64.ld 收口）
+    let mut leaf = kern_virt; // image base, 2 MiB aligned (link-script closure)
     while leaf < text_end {
-        // split_huge 劈到底（L2 1GiB→2MiB、L1 2MiB→4K 一次调用内完成）；
-        // 已是 4K 叶时幂等（返回 false）。
+        // split_huge splits all the way down (1 GiB -> 2 MiB -> 4 KiB in
+        // one call); idempotent on an already-4 KiB leaf (returns false).
         // SAFETY: as above — live-root edit under the boot window contract.
         unsafe {
             pt.split_huge(minix_types::VirBytes(leaf))
@@ -1599,9 +1611,10 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // releases it.
     crate::smp::bkl_lock().transfer();
 
-    // [ARCH: kernel-text-rx] C11/SD-12 乙案′：引导根文本分割——必须在
-    // `smp_init` 之前（窗口条件见 harden_kernel_text 文档：AP 释放前从未
-    // 装载内核根，本地失效即足够）。
+    // [ARCH: kernel-text-rx] Bootstrap-root text split — must run before
+    // `smp_init` (window contract in the harden_kernel_text docs: no AP has
+    // loaded the kernel root before its release, so local invalidation
+    // suffices).
     harden_kernel_text();
 
     // C main.c:311 parity — full SMP bring-up (smp_start_aps + wait_for_APs
