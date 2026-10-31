@@ -2508,6 +2508,31 @@ mod tests {
         VmServer::new(TEST_TOTAL_PAGES, &test_free_regions())
     }
 
+    /// A9（C17 余片）来源契约·夹具缝：`BootParams::simple` 的初始栈顶
+    /// 取**架构权威常量** `USER_STACK_TOP`（按宿主 target 取值，零字面
+    /// 量）——`ctx.user_sp` 的语义是帧构造前的栈顶输入（C `kinfo.user_sp
+    /// = USR_STACKTOP`，pre_init.c:156），不是入口 sp；入口 sp 对齐断言
+    /// 属 C8 修复（`test-rt-birth*` 门内嵌），两者分立。
+    #[test]
+    fn test_user_sp_source_authority_fixture() {
+        let regions = test_free_regions();
+        let params = crate::boot::BootParams::simple(TEST_TOTAL_PAGES, &regions);
+        assert_eq!(params.user_sp.0, minix_types::USER_STACK_TOP);
+    }
+
+    /// A9（C17 余片）来源契约·直通缝：构造器把 params.user_sp 原样落进
+    /// `VmContext.user_sp`——来源链上不允许出现任何转换或字面量替换。
+    /// 内核侧源头（`build_kernel_info` 的 user_sp）已由 boot-shim 宿主测
+    /// 试钉住（opensbi_helpers 两条 `info.user_sp == USER_STACK_TOP` 断
+    /// 言），本缝补齐 VM 侧后来源链闭合。
+    #[test]
+    fn test_user_sp_source_authority_ctx_passthrough() {
+        with_test_mock_base(|| {
+            let server = make_test_vm_server();
+            assert_eq!(server.ctx.user_sp.0, minix_types::USER_STACK_TOP);
+        });
+    }
+
     /// A6（C17 余片）负控：缺失 kernel_layout 的交接（真实 v<5 形状）在
     /// `init` 一律被拒——静默回退 mock 形状的生产路径已消除，mock 布局
     /// 只能由 `BootParams::simple` 夹具显式注入。
