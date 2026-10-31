@@ -46,10 +46,11 @@ SECTIONS
     {
         KEEP(*(.text.boot))
         *(.text .text.*)
-        /* C11/SD-12 乙案′：内核文本段末界（VMA 空间），与 riscv64.ld
-           同形同源注释——可执行区 = 镜像起点连续前缀，单符号即足以算
-           kern_text_pages（向上取整到 4K 页）。消费方
-           os/kernel/src/vm_handoff.rs。 */
+        /* Kernel-text W^X: end of the text segment (link VMA space), same
+           shape and comment as riscv64.ld — the executable region is the
+           image's contiguous prefix, one symbol suffices for
+           kern_text_pages (rounded up to 4 KiB pages). Consumer:
+           os/kernel/src/vm_handoff.rs. */
         PROVIDE(__text_end = .);
     }
 

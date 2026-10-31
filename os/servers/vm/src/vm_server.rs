@@ -662,14 +662,18 @@ impl VmServer {
         // A version ≥ 3 handoff carries the real kernel layout —
         // consume it.
         //
-        // A6（C17 余片，外部评审裁决）：缺失 kernel_layout = 输入不完整
-        // （真实交接 ≥ v5 必带真值），**生产一律拒绝**——三架构统一
-        // fail-fast，不再有任何静默回退 mock 形状的生产路径（旧形状：
-        // riscv panic、x86/aarch64 静默采用 x86 mock 常量）。mock 布局
-        // 由测试夹具显式注入：`BootParams::simple` 自带 mock
-        // `KernelLayout`（fixture 语义——用简单构造器 = 明确要 mock 布
-        // 局），宿主测试不受影响；"None 输入被拒"由
-        // `test_init_rejects_missing_kernel_layout` 负控钉住。
+        // A6 (C17 remainder, external-review ruling): a missing
+        // kernel_layout means an incomplete input (a real handoff is v5
+        // and always carries it) — production rejects it uniformly on all
+        // three architectures. There is no silent fallback-to-mock
+        // production path anymore (the old shape: riscv panicked while
+        // x86/aarch64 silently adopted the x86 mock constants). The mock
+        // layout is injected explicitly by the test fixture:
+        // `BootParams::simple` carries a mock `KernelLayout` (fixture
+        // semantics — using the simple constructor means "I want the mock
+        // layout"), so host tests are unaffected; the reject-on-None
+        // behavior is pinned by
+        // `test_init_rejects_missing_kernel_layout`.
         let layout = self.kernel_layout.expect(
             "handoff lacks kernel layout (version < 5) — input rejected (A6): \
              a real handoff is v5 and carries the kernel layout",
@@ -2508,11 +2512,14 @@ mod tests {
         VmServer::new(TEST_TOTAL_PAGES, &test_free_regions())
     }
 
-    /// A9（C17 余片）来源契约·夹具缝：`BootParams::simple` 的初始栈顶
-    /// 取**架构权威常量** `USER_STACK_TOP`（按宿主 target 取值，零字面
-    /// 量）——`ctx.user_sp` 的语义是帧构造前的栈顶输入（C `kinfo.user_sp
-    /// = USR_STACKTOP`，pre_init.c:156），不是入口 sp；入口 sp 对齐断言
-    /// 属 C8 修复（`test-rt-birth*` 门内嵌），两者分立。
+    /// A9 (C17 remainder) source-contract, fixture seam: `BootParams::
+    /// simple` takes its initial stack top from the architecture-authority
+    /// constant `USER_STACK_TOP` (resolved per host target, zero
+    /// literals). `ctx.user_sp` semantically means the stack-top INPUT at
+    /// frame-construction time (C `kinfo.user_sp = USR_STACKTOP`,
+    /// pre_init.c:156), not the entry SP; the entry-SP alignment assertion
+    /// belongs to the C8 fix (embedded in the `test-rt-birth*` gates) and
+    /// the two are kept separate.
     #[test]
     fn test_user_sp_source_authority_fixture() {
         let regions = test_free_regions();
@@ -2520,11 +2527,14 @@ mod tests {
         assert_eq!(params.user_sp.0, minix_types::USER_STACK_TOP);
     }
 
-    /// A9（C17 余片）来源契约·直通缝：构造器把 params.user_sp 原样落进
-    /// `VmContext.user_sp`——来源链上不允许出现任何转换或字面量替换。
-    /// 内核侧源头（`build_kernel_info` 的 user_sp）已由 boot-shim 宿主测
-    /// 试钉住（opensbi_helpers 两条 `info.user_sp == USER_STACK_TOP` 断
-    /// 言），本缝补齐 VM 侧后来源链闭合。
+    /// A9 (C17 remainder) source-contract, pass-through seam: the
+    /// constructor lands params.user_sp verbatim into
+    /// `VmContext.user_sp` — no conversion or literal substitution is
+    /// allowed anywhere on the source chain. The kernel-side origin (the
+    /// user_sp produced by `build_kernel_info`) is already pinned by the
+    /// boot-shim host tests (the two `info.user_sp == USER_STACK_TOP`
+    /// assertions in opensbi_helpers); with this VM-side seam the source
+    /// chain is closed end to end.
     #[test]
     fn test_user_sp_source_authority_ctx_passthrough() {
         with_test_mock_base(|| {
@@ -2533,16 +2543,18 @@ mod tests {
         });
     }
 
-    /// A6（C17 余片）负控：缺失 kernel_layout 的交接（真实 v<5 形状）在
-    /// `init` 一律被拒——静默回退 mock 形状的生产路径已消除，mock 布局
-    /// 只能由 `BootParams::simple` 夹具显式注入。
+    /// A6 (C17 remainder) negative control: a handoff missing
+    /// kernel_layout (the real v<5 shape) is rejected by `init`
+    /// unconditionally — the silent fallback-to-mock production path is
+    /// gone, and the mock layout can only arrive via the explicit
+    /// `BootParams::simple` fixture.
     #[test]
     #[should_panic(expected = "input rejected (A6)")]
     fn test_init_rejects_missing_kernel_layout() {
         with_test_mock_base(|| {
             let regions = test_free_regions();
-            // 夹具值逐字段照抄 BootParams::simple，唯独 kernel_layout=None
-            // ——真实 v<5 交接的形状。
+            // Field-for-field identical to BootParams::simple except
+            // kernel_layout=None — the real v<5 handoff shape.
             let params = crate::boot::BootParams {
                 root_paddr: minix_types::PhysBytes(0x900_000),
                 kerninfo_pa: minix_types::PhysBytes(0x901_000),
@@ -3786,7 +3798,8 @@ mod tests {
             kernel_allocated: KernelAllocated::ZERO,
             vm_allocated_bytes: 0,
             is_first_time: true,
-            // A6：走 init 的测试必须显式注入 mock 布局夹具（缺失=被拒）。
+            // A6: tests that run init must inject the mock layout fixture
+            // explicitly (a missing layout is rejected).
             kernel_layout: Some(minix_types::KernelLayout::new(
                 0xFFFF_FFFF_8000_0000,
                 0x100_0000,

@@ -656,18 +656,25 @@ pub fn map_kernel<P: Paging>(
         // x86_64/aarch64 behavior is unchanged. RWX matches the RWX boot/identity
         // mapping already used for the running kernel image (see segment 4 below).
         //
-        // [ARCH: kernel-text-rx] C11/SD-12 乙案′：文本段旗标按交接自判。
-        // `kernel_data_pages > 0`（kernel-text-rx 生产镜像，`__text_end`
-        // 真实分界）→ 文本 RX（`kernel_executable()`，词表既有的 W^X
-        // 旗标），数据段走下方 `kernel_read_write()`（RW 无 X）；文本页
-        // 经 DM 仍有可写别名，承诺口径=映射级 W^X（进程根高半文本不可
-        // 写），不承诺物理页级。
-        // `kernel_data_pages == 0`（占位交接：测试载体/boot-shim 等，整段
-        // 当文本）→ 维持旧 `kernel_executable_writable()`（RWX）——与乙
-        // 案′前的行为逐位一致，载体无 kernel-image 链接脚本、无真分界。
-        // 前提两条已由外部评审补证闭合（c-board-rulings-brief.md §11）：
-        // ① 真值来自 `__text_end` 链接符号（可执行区=镜像起点连续前缀）；
-        // ② 全树无运行期文本写者的静态核验已留档（C11 行）。
+        // [ARCH: kernel-text-rx] The text-segment flag discriminates on
+        // the handoff. `kernel_data_pages > 0` (kernel-text-rx production
+        // images carrying the real `__text_end` boundary) -> text is RX
+        // (`kernel_executable()`, the pre-existing W^X flag in this
+        // vocabulary) and the data segment below uses `kernel_read_write()`
+        // (RW, no X); text pages still have a writable alias through the
+        // Direct Map, so the promise is mapping-level W^X (the
+        // per-process root's high-half text is not writable), never
+        // physical-page-level W^X.
+        // `kernel_data_pages == 0` (placeholder handoff: test carriers,
+        // boot-shim — the whole span reported as text) -> keep the legacy
+        // `kernel_executable_writable()` (RWX), bit-identical to the
+        // pre-W^X behavior: those consumers link without the
+        // kernel-image scripts and have no real boundary. Both
+        // preconditions were verified by the external review
+        // (c-board-rulings-brief.md §11): the boundary comes from the
+        // `__text_end` linker symbol (executable region = contiguous
+        // prefix from the image base), and the tree-wide static check
+        // found no runtime text writer.
         let text_flag = if kernel_data_pages == 0 {
             PageFlags::kernel_executable_writable()
         } else {
@@ -700,17 +707,23 @@ pub fn map_kernel<P: Paging>(
     //
     // Flags: PRESENT|WRITABLE|EXECUTABLE|GLOBAL (supervisor).
     //
-    // [ARCH] 口径更正（C11 乙案′批，c-board-rulings-brief.md §11.3）：本段
-    // 早期注释所称"window 混有运行中内核的 text/data/heap、内核在固件搬迁
-    // 的低地址执行"属 T2 之前**内联执行模型**的陈旧叙述——T2 之后
-    // `build_identity_windows` 的候选只剩
-    // `kernel_identity_mmio_regions()`（x86: IO-APIC/LAPIC 两页；riscv: PLIC
-    // 2 MiB 窗；aarch64: 空），**不再含内核镜像低址窗**，进程根射程内不
-    // 存在文本页的 RWX 别名。RWX 旗标对 MMIO 窗仍然正确：窗口描述的是
-    // 设备寄存器占用而非 W^X 意图，OVMF 下非可执行恒等窗会在 CR3 切换后
-    // 首次取指 #PF（真机 2026-09-21，IP=CR2=0x1daf0d9d 的实测背景保留）。
-    // 内核**引导根**的低 4 GiB 恒等映射（RWX 粗叶）不在本函数射程内，
-    // 生命周期=引导根全程，见承诺条款。
+    // [ARCH] Scope correction (kernel-text W^X batch; full analysis in
+    // rewrite-notes/01-stage-kernel/c-board-rulings-brief.md §11.3): the
+    // claim that one window "mixes the running kernel's text, data and
+    // heap" with the kernel executing at firmware-relocated low addresses
+    // described the pre-T2 inline-execution model and is stale. Since T2,
+    // `build_identity_windows` draws its candidates only from
+    // `kernel_identity_mmio_regions()` (x86: the IO-APIC/LAPIC pages;
+    // riscv64: the 2 MiB PLIC window; aarch64: empty) and no longer
+    // includes a low-address image window — no process root carries an RWX
+    // alias of kernel text. The RWX flag remains correct for these MMIO
+    // windows: they describe device-register occupancy, not W^X intent,
+    // and OVMF boots with EFER.NXE set, so a non-executable identity
+    // window #PFs (present violation, err=0x11) on the first instruction
+    // fetch after the CR3 switch (real machine 2026-09-21, IP=CR2=
+    // 0x1daf0d9d). The kernel's own bootstrap root (its low 4 GiB identity
+    // mapping, coarse RWX leaves) is outside this function's scope and
+    // persists for the bootstrap root's lifetime — see the promise scope.
     let ident_flags = PageFlags::kernel_executable_writable();
     for region in ident_regions {
         debug_assert!(region.base % page_size == 0 && region.size % page_size == 0);
