@@ -1477,6 +1477,33 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     }
 }
 
+/// Hardware id of the CPU actually executing the BSP.
+///
+/// x86 always boots CPU 0, so the topology value is the truth. aarch64 and
+/// riscv64 record the elected boot hart in `BOOT_HART_ELECTED` (hart id + 1,
+/// 0 = election not run), because QEMU/OpenSBI may enter `_start` on any
+/// hart. Falling back to the topology value keeps hosted tests and pre-election
+/// callers working.
+fn elected_bsp_hw_id(topo: &minix_boot::platform::CpuTopology) -> u64 {
+    #[cfg(target_arch = "riscv64")]
+    {
+        let e = minix_arch::riscv64::ap_early_entry::BOOT_HART_ELECTED
+            .load(core::sync::atomic::Ordering::Acquire);
+        if e != 0 {
+            return e - 1;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let e = minix_arch::arm64::ap_early_entry::BOOT_HART_ELECTED
+            .load(core::sync::atomic::Ordering::Acquire);
+        if e != 0 {
+            return e - 1;
+        }
+    }
+    topo.bsp_id as u64
+}
+
 /// Assemble the global SMP state from the platform topology — single file
 /// kmain Phase D block (topology from MADT/DTB, BSP marked READY,
 /// APs join later), extracted so the L3 bring-up test driver
@@ -1489,16 +1516,65 @@ pub fn init_smp_state() {
     // SAFETY: boot is single-threaded before BKL exists.
     unsafe {
         let topo = platform_desc().cpu_topology();
-        *SMP_STATE.get() = Some(smp::SmpState::with_ncpus(
-            topo.nr_cpus.max(1),
-            crate::proc::CpuId::new_unchecked(topo.bsp_id),
-        ));
+        // The DTB/ACPI `bsp_id` is a hint, not the truth: OpenSBI may hand
+        // control to any hart (QEMU -smp 4 has booted hart 1 and hart 2), and
+        // the entry election cell records the real one. Resolve it here,
+        // before per-CPU state is seeded, so the BSP's READY flag, ptproc and
+        // clock state all land on the CPU that is actually running.
+        let bsp_hw = elected_bsp_hw_id(&topo);
+        let bsp_logical = (0..topo.nr_cpus as usize)
+            .find(|&i| topo.cpus[i].hw_id == bsp_hw)
+            .unwrap_or(topo.bsp_id as usize) as u32;
+        let mut state = smp::SmpState::with_ncpus(topo.nr_cpus.max(1), crate::proc::CpuId::new_unchecked(bsp_logical));
+        // Publish BSP_LOGICAL and the two masks now; smp_init's later seeding
+        // is then idempotent.
+        state.seed_bsp_masks(bsp_logical);
+        *SMP_STATE.get() = Some(state);
+    }
+    // The process table is zeroed at creation, so every boot process starts
+    // with `p_cpu = 0`. On x86 that is the BSP; on riscv64 the elected BSP can
+    // be another hart, and leaving the boot set on CPU 0 puts the first
+    // runnable process on an idle AP whose wakeup IPI this firmware cannot
+    // deliver (`-smp 4` hung right after "entering scheduler"). Re-home the
+    // whole boot set onto the elected BSP before the scheduler starts.
+    //
+    // A runnable process is already on CPU 0's run queue (proc_init enqueued
+    // it). Merely rewriting `p_cpu` would leave the queue entry behind and
+    // strand the process, so mirror C's affinity-change order in
+    // `sched_proc`: RTS_SET(NO_QUANTUM) dequeues, the CPU store moves the
+    // home, RTS_UNSET re-enqueues on the new CPU.
+    use crate::proc::RtsFlagsBits;
+    let smp_state = unsafe { crate::smp_state_boot_unchecked() };
+    let bsp_logical = smp_state.bsp_cpu_id().raw();
+    // SAFETY: single-threaded boot; the scheduler has not started.
+    unsafe {
+        let table = crate::proc_table_boot_unchecked();
+        for raw in -(crate::proc_table::NR_TASKS as i32)
+            ..(crate::proc_table::NR_PROCS as i32)
+        {
+            let nr = crate::proc::ProcNr::new(raw);
+            let Some(homed) = table.get(nr).map(|p| p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire)) else {
+                continue;
+            };
+            if homed == bsp_logical {
+                continue;
+            }
+            let runnable = table.get(nr).is_some_and(|p| p.is_runnable());
+            if runnable {
+                table.rts_set(nr, RtsFlagsBits::NO_QUANTUM);
+            }
+            if let Some(p) = table.get_mut(nr) {
+                p.p_sched.cpu.store(bsp_logical, core::sync::atomic::Ordering::Release);
+            }
+            if runnable {
+                table.rts_unset(nr, RtsFlagsBits::NO_QUANTUM);
+            }
+        }
     }
     // The BSP's ptproc slot = VM (C: arch_post_init
     // `get_cpulocal_var(ptproc) = vm` — protect.c:372; each AP installs its
     // own in smp_ap_tail). The SMP state must exist before the slot can be
     // written — hence this install lives in Phase D, not Phase C.
-    let smp_state = unsafe { crate::smp_state_boot_unchecked() };
     if let Some(local) = smp_state.cpu_local_mut(smp_state.bsp_cpu_id()) {
         local.ptproc = Some(crate::proc::proc_nr::VM_PROC_NR);
     }
