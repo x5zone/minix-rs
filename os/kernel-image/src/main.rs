@@ -223,6 +223,7 @@ core::arch::global_asm!(
 );
 
 #[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(feature = "fw-riscv64-uboot")))]
 core::arch::global_asm!(
     r#"
     .attribute arch, "rv64gc"
@@ -276,6 +277,38 @@ core::arch::global_asm!(
 park:
     wfi
     j park
+    "#,
+    rust_image_main = sym rust_image_main,
+);
+
+/// D-73 receiver product: `_start` takes `a0` = v1 handoff arena PA from the
+/// boot-shim's `fence.i; jr` and runs the additive-only resume. No hart
+/// election (the U-Boot gate runs single-hart), no bootface fallback, no
+/// runtime product guessing — this product's only entry semantic is
+/// "resume from arena".
+#[cfg(all(target_arch = "riscv64", feature = "fw-riscv64-uboot"))]
+core::arch::global_asm!(
+    r#"
+    .attribute arch, "rv64gc"
+    .section .text.boot, "ax"
+    .globl _start
+    _start:
+        # a0 = arena PA (shim 契约)；bss 清零循环不改动 a0（t0/t1 循环寄存器）。
+        # NK4-C 续-88 甲案 .bss 清零：OpenSBI/U-Boot 递入裸 RAM（NOBITS 不写），
+        # bump 游标/平台冻结全局在 .bss，先清再立栈（与直接面同形）。
+        la t0, __bss_start
+        la t1, __bss_end
+    1:  bgeu t0, t1, 2f
+        sd zero, 0(t0)
+        addi t0, t0, 8
+        j 1b
+    2:
+        la sp, kernel_boot_stack_top
+        li ra, 0
+        li fp, 0
+        call {rust_image_main}
+    3:  wfi
+        j 3b
     "#,
     rust_image_main = sym rust_image_main,
 );
@@ -360,9 +393,22 @@ fn rust_image_main(arena_pa: usize) -> ! {
 /// in `bootface`: decode the DTB memmap from a1 → BootFileTable (a2/chosen
 /// dual channel, gated by magic) → load 12 modules → `minix_kernel::arch_boot`
 /// passes the validation gate.
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(feature = "fw-riscv64-uboot")))]
 fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! {
     bootface::bootface(boot_hart, dtb_phys, boot_file_table_pa)
+}
+
+/// D-73 receiver product: `a0` = v1 handoff arena PA from the boot-shim's
+/// `enter_kernel_image_v1` jump (`fence.i; jr` with `a0` = arena). Same v1
+/// decoding and additive resume as x86_64/aarch64; the bootstrap root built
+/// by the boot-shim is already live and must never be rebuilt.
+#[cfg(all(target_arch = "riscv64", feature = "fw-riscv64-uboot"))]
+fn rust_image_main(arena_pa: usize) -> ! {
+    let _kernel_entry: usize = core::hint::black_box(KERNEL_ENTRY_ANCHOR as usize);
+    early_console::write_str(
+        "### minix-rs kernel-image: resuming high-half boot (handoff v1 arena, riscv64)\n",
+    );
+    minix_kernel::arch_boot_resume_v1(arena_pa as u64)
 }
 
 fn halt() -> ! {

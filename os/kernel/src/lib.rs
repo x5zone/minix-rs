@@ -51,7 +51,7 @@ use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 use minix_types::{VM_BOOT_HANDOFF_VA, VmBootHandoff};
 #[cfg(all(
     not(feature = "mock"),
-    any(target_arch = "aarch64", target_arch = "x86_64")
+    any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "riscv64")
 ))]
 use minix_boot::{
     decode_envelope, decode_memmap, decode_modules, decode_param_buf, decode_platform_sources,
@@ -381,13 +381,17 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
 /// `.bss` clear).
 #[cfg(all(
     not(feature = "mock"),
-    any(target_arch = "aarch64", target_arch = "x86_64")
+    any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "riscv64")
 ))]
 pub fn enter_kernel_image_v1(
     arena_pa: u64,
     kernel_info: &KernelInfo,
     root_page: PhysBytes,
 ) -> ! {
+    // riscv64 has no `BootArchImpl` alias at module scope (its direct boot
+    // face names the type explicitly); the v1 sender names it here instead.
+    #[cfg(target_arch = "riscv64")]
+    use minix_arch::arch::boot_arch::Riscv64BootArch as BootArchImpl;
     // Entry-state contract (T2): no maskable interrupt may run while the
     // bootstrap root is being built and activated. The firmware handed over
     // with IF=1; `paging.enable` switches CR3 before the image trampoline's
@@ -442,6 +446,22 @@ pub fn enter_kernel_image_v1(
     unsafe {
         __minix_x86_enter_image(entry, arena_pa)
     }
+
+    // riscv64: the receiver entry takes the arena in `a0` (U-Boot bootelf's
+    // argv ABI is consumed one layer below, by the boot-shim; this jump is
+    // shim→image, and the shim defines the convention). `fence.i` first: the
+    // kernel image bytes were just copied by the shim, and `jr` must fetch
+    // them with a coherent I-cache.
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!(
+            "fence.i",
+            "jr {entry}",
+            in("a0") arena_pa,
+            entry = in(reg) entry,
+            options(noreturn)
+        );
+    }
 }
 
 /// x86-64 machine entry into the standalone image.
@@ -479,7 +499,7 @@ unsafe extern "sysv64" {
 /// this very function.
 #[cfg(all(
     not(feature = "mock"),
-    any(target_arch = "aarch64", target_arch = "x86_64")
+    any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "riscv64")
 ))]
 pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
     // SAFETY: the sender allocated a four-page LOADER_DATA arena below the
@@ -602,6 +622,41 @@ fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
     // image's `.bss` copy and `kern_stack_top` is the high virtual stack the
     // inline boot used successfully.
     unsafe { X86_64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+}
+
+/// Finish the v1 handoff on riscv64: same additive-only shape as x86-64 —
+/// the shim's bootstrap root is already live (`satp` enabled before the
+/// jump), so this records the root, lands the KernelInfo, adds direct-map
+/// coverage and jumps to `kmain` at its high virtual address. The root must
+/// never be rebuilt: `new_from_page` would zero the active root that maps
+/// this very function.
+#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
+    use crate::boot::HigherHalf;
+    use crate::riscv64::higher_half::Riscv64HigherHalf;
+
+    let support =
+        boot_validate_and_prepare::<minix_arch::arch::boot_arch::Riscv64BootArch>(kernel_info);
+    let layout = DirectMapLayout::<minix_arch::arch::boot_arch::Riscv64BootArch>::from_arch();
+    let dm = plan_dm_policy::<minix_arch::arch::boot_arch::Riscv64BootArch>(&support, &layout)
+        .unwrap_or_else(|e| panic!("resume: direct-map policy: {e}"));
+    let root = PhysBytes(root_page);
+    set_current_root_phys(root);
+    store_kernel_info(kernel_info);
+    let kinfo: &'static KernelInfo = crate::kernel_info()
+        .expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
+    register_panic_diagnostic();
+    // SAFETY: the shim's bootstrap root is active, its identity window covers
+    // the table pages, and this is the boot thread.
+    unsafe {
+        crate::dm_coverage::establish_boot_dm::<minix_arch::arch::boot_arch::Riscv64BootArch>(
+            kinfo, root, &dm,
+        )
+    }
+    .unwrap_or_else(|e| panic!("resume: DM coverage: {e}"));
+    // SAFETY: paging is live via the shim's bootstrap root; kinfo is this
+    // image's `.bss` copy and `kern_stack_top` is a high virtual address.
+    unsafe { Riscv64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]

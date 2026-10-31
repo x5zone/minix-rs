@@ -8,7 +8,7 @@
 //! There is no `riscv64-unknown-uefi` Rust target, so this kernel is
 //! a bare-metal binary (not a .efi file), loaded by QEMU's -kernel flag.
 //!
-//! ## Why not use `OpenSbiBootShim::prepare_boot`?
+//! ## Why not use `RiscvUbootBootShim::prepare_boot`?
 //!
 //! In the real boot chain (OpenSBI → U-Boot → boot-shim → kernel), U-Boot
 //! provides a `BootFileTable` via `fatload` so the boot-shim can read

@@ -9,7 +9,7 @@
 //!
 //! Available implementations:
 //! - `uefi` feature (default): `UefiBootShim` — uses `uefi` crate
-//! - `opensbi` feature: `OpenSbiBootShim` — hardcoded QEMU virt memory map
+//! - `opensbi` feature: `RiscvUbootBootShim` — hardcoded QEMU virt memory map
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(test, allow(internal_features))]
@@ -116,7 +116,7 @@ pub mod opensbi_helpers;
 pub use uefi_helpers::{find_platform_sources, UefiBootShim};
 
 #[cfg(all(feature = "opensbi", not(feature = "uefi")))]
-pub use opensbi_helpers::OpenSbiBootShim;
+pub use opensbi_helpers::RiscvUbootBootShim;
 
 /// Raw-write the QEMU serial port (COM1 data port 0x3F8; OVMF has already
 /// initialized the 16550).
@@ -155,9 +155,18 @@ pub fn raw_serial(text: &str) {
     }
 }
 
+/// riscv64: the QEMU virt 16550 early console from `minix-plat` (single
+/// source of truth, same emitter the direct-boot bootface uses). The U-Boot
+/// leg needs a live serial channel before the kernel image takes over —
+/// `bootelf` hands over with no console contract of its own.
+#[cfg(target_arch = "riscv64")]
+pub fn raw_serial(text: &str) {
+    minix_plat::riscv64::early_console::write_str(text);
+}
+
 /// All other targets: no verified bare-metal serial channel; degrade to an
 /// empty implementation.
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn raw_serial(_text: &str) {}
 
 /// Raw-write the serial port byte by byte (bounded wait on the transmit side
@@ -228,6 +237,15 @@ fn emit_byte(b: u8) {
     <minix_plat::CurrentEarlyConsole as EarlyConsole>::write_byte(b);
 }
 
+/// riscv64: emitter = `minix-plat`'s early-console write (QEMU virt 16550,
+/// with its own pacing; the U-Boot leg shares the direct-boot bootface's
+/// console contract).
+#[cfg(target_arch = "riscv64")]
+fn emit_byte(b: u8) {
+    use minix_plat::EarlyConsole;
+    <minix_plat::CurrentEarlyConsole as EarlyConsole>::write_byte(b);
+}
+
 /// Other targets: empty implementation (same tune as [`raw_serial`]).
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
 fn emit_byte(_b: u8) {}

@@ -68,6 +68,17 @@ use crate::loader::{self, FileLoader};
 const MODULE_REGION_BASE: u64 = 0x8000_0000 + 0x0200_0000; // DRAM + 32 MB
 const MODULE_REGION_SIZE: u64 = 0x0200_0000;             // 32 MB
 
+/// Kernel image physical base (`riscv64.ld` `KERNEL_PHYS_BASE` — the same
+/// value `kernel-image/src/bootface.rs` pins as `KERN_PHYS_BASE`). Passed to
+/// `DtbMemoryMap::new` as `firmware_reserve_end`: everything below it is the
+/// S-mode firmware's territory (OpenSBI) and must stay out of the memmap —
+/// the same functional trim bootface applies on the direct leg. Missed here,
+/// `[DRAM_BASE, KERN_PHYS_BASE)` leaked into VM's free list and VM picked it
+/// as the PMM metadata donor (first region under the DM-window bound); the
+/// metadata store into DM(0x80000000) then page-faulted, because the kernel's
+/// DM plan correctly refuses to map the firmware range.
+const KERN_PHYS_BASE: u64 = 0x8020_0000;
+
 /// Magic number identifying a valid [`BootFileTable`] in memory.
 ///
 /// ASCII for "MNXBOOT1". Used to defensively detect a misconfigured U-Boot
@@ -187,9 +198,19 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 /// - File access → [`UbootFileLoader`] over a `BootFileTable`.
 /// - Exit firmware services → nothing to do; U-Boot has already handed
 ///   over and we never call back.
-pub struct OpenSbiBootShim;
+///
+/// # Naming (D-73)
+///
+/// The three roles are kept apart: **U-Boot** is the loader (it stages the
+/// files and hands over via `bootelf`), **OpenSBI** is the S-mode runtime
+/// service provider this leg inherits, and *this* struct is the Minix-RS
+/// boot shim that consumes U-Boot's `BootFileTable`. The old
+/// `RiscvUbootBootShim` name fused "loader" and "runtime provider" into one
+/// word; the type describes the loader-side contract, so it is named after
+/// U-Boot.
+pub struct RiscvUbootBootShim;
 
-impl BootShim for OpenSbiBootShim {
+impl BootShim for RiscvUbootBootShim {
     fn prepare_boot(bump_pages: usize) -> BootPrepareResult {
         // U-Boot passes the BootFileTable's physical address in a0,
         // which our entry trampoline (see `main.rs`) saves into a
@@ -221,7 +242,8 @@ impl BootShim for OpenSbiBootShim {
             let bytes = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, total) };
             let fdt = fdt::Fdt::new(bytes)
                 .expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
-            let (memmap, reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect();
+            let (memmap, reserved) =
+                minix_boot::DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect();
             // The SBI leg's parameter source is the standard firmware
             // channel — DTB `/chosen/bootargs` (QEMU `-append` fills it).
             let landing: &'static mut [u8] =
@@ -310,13 +332,13 @@ impl BootShim for OpenSbiBootShim {
 //
 // The trampoline in `main.rs` (or an equivalent setup routine) is
 // expected to call `install_boot_file_table(a0)` exactly once before
-// invoking `OpenSbiBootShim::prepare_boot`.
+// invoking `RiscvUbootBootShim::prepare_boot`.
 
 static mut BOOT_FILE_TABLE_PTR: usize = 0;
 
 /// Install the physical address of the [`BootFileTable`] passed by U-Boot.
 ///
-/// Must be called exactly once, before [`OpenSbiBootShim::prepare_boot`].
+/// Must be called exactly once, before [`RiscvUbootBootShim::prepare_boot`].
 ///
 /// # Safety
 ///
@@ -358,13 +380,13 @@ pub fn boot_file_table() -> Option<&'static BootFileTable> {
 // OpenSBI passes the Flattened Device Tree (DTB) physical address in
 // register `a1` to the S-mode payload. The entry trampoline is expected
 // to call `install_dtb_ptr(a1)` exactly once before invoking
-// `OpenSbiBootShim::prepare_boot`.
+// `RiscvUbootBootShim::prepare_boot`.
 
 static mut DTB_PTR: u64 = 0;
 
 /// Install the physical address of the DTB passed by OpenSBI in `a1`.
 ///
-/// Must be called exactly once, before [`OpenSbiBootShim::prepare_boot`].
+/// Must be called exactly once, before [`RiscvUbootBootShim::prepare_boot`].
 /// Passing 0 is equivalent to "no DTB available" (kernel uses QEMU fallback).
 ///
 /// # Safety

@@ -4125,3 +4125,32 @@ LMA 由 D-73 专属布局配置从 bdinfo/lmb 推导，不硬编码 `0x90000000`
 `UbootBootShim`/`RiscvUbootBootShim` 属下一批实施范围。探针证据：
 `/tmp/d73/`（probe.elf、argv-base2/argv-plus/argv-matrix 串口全文）；
 01-todo §2.8 已同步更正（保护文件，未代提交）。
+
+**D-73 实施里程碑（U-Boot → boot-shim → kernel-uboot 全链 PASS）**：交付
+四个面。① shim 产物：`os/boot-shim/src/uboot_main.rs` + `riscv64-uboot.ld`
+（物理链接 VMA=LMA=0x84500000；入口自清 SIE、自清 .bss 含 `.lbss`、自立
+64KB bootstrap 栈）+ `build.rs` 特性门挂脚本；MNXBOOT1 表由 shim 在自身
+.bss 用 `uboot_layout` 常量自建（kernel 0x86000000/2MB、模块
+0x87000000+1MB×12、DTB 0x8c000000），boot.scr 只 fatload 文件——U-Boot
+把表与文件分两次落盘时，表条目的 `phys_addr` 与文件实际落点不保证一致
+（实测 `phys_addr` 读垃圾而 `len` 正确），表改由消费方自建即消解。
+② 接收产物：`kernel-image` 增 `fw-riscv64-uboot` 特性，
+`rust_image_main(arena_pa)` → `arch_boot_resume_v1`，与 x86_64 臂同构。
+③ 三处实施期修正（各有 QEMU 读数）：`jump_to_kmain` 加 `auipc` 执行位置
+探针——接收腿已被跳到高半链接地址、PC 相对 `la` 已解析真值，链接↔装载
+偏移不得再加（故障闭合：EPC 0xffffff7f7fe0477a = kmain 链接址
+0xffffffc00000477a + delta 0xffffffbf7ffe0000）；shim memmap 的
+`firmware_reserve_end` 从 0 改 `KERN_PHYS_BASE=0x80200000`（bootface 同源
+语义）——此前 OpenSBI 足迹 `[0x80000000,0x80200000)` 漏进 VM 空闲表、被
+选作 PMM 元数据供体，DM(0x80000000) 写入页 fault（stval
+0x0000001080000000 = DM 基 64GiB + PA 0x80000000），内核 DM 计划拒绝映射
+固件区间属正确行为，错在 memmap 上游；门脚本 Stage 1 `set +x` 曾把构建
+失败掩盖成旧二进制续跑，改 `set -e -x`。④ 用户腿取证诊断扩展：
+riscv64 用户 trap 面板增 `ura/usp/ua0/ua2`。门读数：`test-riscv64-uboot-shim.sh`
+PASS（6/6 路标至 entering scheduler；空闲表修正后 n=2 无固件区间）；
+直核腿 `test-riscv64-boot-full.sh` PASS（rc marker，含新 jump 代码）；
+docker kernel mock 850/0/8；boot-shim test-all 58/0；三架构 kernel check
+0 error；01 篇 §3.7/§4.8 三形态叙事更新（四条链收敛句、riscv64 两行形态
+表）；文风门 0 error、承载门通过。01-todo §1 D-73 行改 ✅（保护文件，未
+代提交）。后续窗口：xtask 产线接线（`fw-riscv64-uboot` 进 image 装配）、
+真板 U-Boot 契约（`FW_PAYLOAD` 直核形态保持可用，另计）。

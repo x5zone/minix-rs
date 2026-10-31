@@ -25,6 +25,11 @@ test-all = ["uefi", "opensbi"]
 fw-uefi-image = ["uefi"]
 fw-x86-uefi = ["fw-uefi-image"]
 fw-aarch64-uefi = ["fw-uefi-image"]
+# D-73: the riscv64 U-Boot leg. `bootelf -p <img> <table_addr>` hands over
+# with `(extra_argc, extra_argv)` in a0/a1 (probe-verified 2026-10-31); the
+# bin is physically linked (VMA=LMA, own bootstrap stack) and produces the
+# frozen `BootHandoffV1` envelope for the `kernel-uboot` receiver image.
+fw-riscv-uboot = ["opensbi"]
 
 [dependencies]
 # I-22 丁案 C：opensbi/U-Boot 腿 memmap 源=DTB（DtbMemoryMap 消费），
@@ -55,3 +60,15 @@ test = true
 name = "boot-shim"
 test = false
 required-features = ["fw-uefi-image"]
+
+# D-73: the riscv64 U-Boot receiver-side shim. Physically linked
+# (riscv64-uboot.ld, VMA=LMA=0x84500000 — inside the bdinfo/lmb free band
+# 0x80060000-0x8dea9fff, outside the bump/module region 0x82000000-0x84000000
+# and every staged file), entered by `bootelf -p` with `a0/a1` =
+# `(extra_argc, extra_argv)`; it consumes the MNXBOOT1 table and produces the
+# frozen `BootHandoffV1` arena for the `kernel-uboot` receiver image.
+[[bin]]
+name = "riscv64-uboot-shim"
+path = "src/uboot_main.rs"
+test = false
+required-features = ["fw-riscv-uboot"]
