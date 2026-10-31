@@ -4068,3 +4068,17 @@ AP 用 `ap_kernel_stack_top`）。读数：riscv ATF `-smp 1`/`-smp 2`/
 `-smp 4` 均 **36/36**（34 passed + 2 skipped，0 failed/broken；
 `tmp/c5smp2-smp1f.log`、`-final2.log`、`-final4.log`）、kernel mock
 850/0/8、三架构 kernel check 0 error。C5/P-RV-01 全闭。
+
+
+**D-73 入口契约实测（U-Boot bootelf 支持面）**：本机 U-Boot 2025.10 的
+`help bootelf` 输出 `Usage: bootelf [-p|-s] [address]`——没有 `-d`，也没有
+image 之后的 `argc/argv` 通道；设计注 §五引用的 `bootelf [-d ...] [args]`
+在这个版本上不可用。手工串口驱动 U-Boot 已让 `boot.scr` 真正执行，
+`fatload virtio 0 $loadaddr boot.elf` 成功，但 hello-boot 的 ELF LMA
+`0x80200000` 与 U-Boot 自身装载地址重叠，`bootelf $loadaddr` 当场
+`Load access fault`（EPC `0x8f73d74e`、RA `0x8f73d780`）并复位。⇒
+`-d` + 固定槽回退在现装 U-Boot 上不可实现；固定槽路线也必须先做 LMA
+在 U-Boot 之上的独立 `kernel-shim.elf`/`kernel.elf` 产物，并解决
+U-Boot 预载模块、BootFileTable、DTB 固定槽与池基去 QEMU 化。D-73 保持
+⏳，门控钥匙为：T-10 CI 窗口换支持 `-d`/argv 的 U-Boot 重测；若仍不支持，
+按 `go`/`bootelf` 固定地址 + 独立 LMA 产物重裁入口契约。
