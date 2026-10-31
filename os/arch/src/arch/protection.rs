@@ -142,6 +142,16 @@ pub trait ProtectionArch: Sized {
     /// exception, or system call), the CPU automatically switches to this
     /// kernel stack.
     ///
+    /// # Per-CPU invariant
+    ///
+    /// The state is per-CPU: `cpu_id` names the CPU whose entry state is
+    /// being set, and an implementation must never funnel it through one
+    /// scalar shared by all harts. The return path refreshes the current
+    /// CPU's entry state through `TrapReturnArch::prepare_user_return`
+    /// before every user return; a shared cell lets one CPU's bring-up
+    /// overwrite another CPU's entry stack (the riscv64 SMP bug this
+    /// contract now forbids).
+    ///
     /// C: tss_init() sets tss.sp0 — protect.c:175
     fn set_kernel_stack(&mut self, cpu_id: u32, stack_top: VirBytes);
 
@@ -157,7 +167,9 @@ pub trait ProtectionArch: Sized {
     /// Initialize protection for an Application Processor (AP).
     ///
     /// Called once per AP during SMP bringup. Creates per-CPU protection
-    /// structures (e.g., TSS entry in GDT) and loads them.
+    /// structures (e.g., TSS entry in GDT) and loads them. The same
+    /// per-CPU invariant as [`set_kernel_stack`](Self::set_kernel_stack)
+    /// applies: no shared entry-stack scalar.
     ///
     /// C: tss_init(cpu, stack) + prot_load_selectors() — called from mpx.S
     fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes);

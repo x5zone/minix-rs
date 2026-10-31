@@ -4420,7 +4420,8 @@ fn finish_and_restore(
             crate::smp::ap_kernel_stack_top(cpu.raw())
         };
         if stack_top != 0 {
-            minix_arch::riscv64::protection::set_trap_stack_base(
+            <CurrentTrapReturnArch as TrapReturnArch>::prepare_user_return(
+                cpu.raw(),
                 minix_types::VirBytes::new(stack_top),
             );
         }

@@ -95,7 +95,7 @@ const SSTATUS_SPIE: u64 = 1 << 5;
 ///
 /// The bit values and the instruction order that makes this mask effective
 /// are pinned by the HOST test `arch/tests/riscv64_return_leg_pin.rs` —
-/// a `#[test]` in this module would never run, because `pub mod riscv64` is
+/// a test attribute in this module would never run, because `pub mod riscv64` is
 /// `#[cfg(target_arch = "riscv64")]` (the host-test reachability trap).
 const SSTATUS_SIE: u64 = 1 << 1;
 
@@ -115,6 +115,16 @@ impl TrapReturnArch for Riscv64TrapReturn {
     type Frame = Riscv64ExceptionFrame;
     type RegisterFile = Riscv64CpuContext;
 
+    fn prepare_user_return(_cpu_id: u32, stack_top: minix_types::VirBytes) {
+        // The per-hart CSR is the only store: an AP's `init_ap` writes its
+        // own `sscratch`, never a shared cell. The scheduler calls this on
+        // every dispatch because the park/resched path leaves `sscratch`
+        // holding the parked user sp.
+        if stack_top.0 != 0 {
+            crate::riscv64::protection::set_entry_stack_base(stack_top);
+        }
+    }
+
     unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> ! {
         // SAFETY (full contract in TrapReturnArch::restore_to_user):
         // - `frame` was rebuilt from the picked process's saved state by
@@ -133,19 +143,9 @@ impl TrapReturnArch for Riscv64TrapReturn {
             // Park the register-file pointer in t6 (its user slot is
             // gp_regs[GP_T6], loaded last as a self-referential load).
             "mv t6, a1",
-            // sscratch re-anchor (the riscv form of the aarch64 §1.113 SP
-            // rebase before `eret`): after a park-and-resched
-            // switch the register holds the PARKED process's user sp, not
-            // a kernel-stack top — and this leg's own `sp` is about to
-            // become a user sp, so nothing here else heals it. Load the
-            // boot-recorded per-CPU base and restore the `load()`
-            // invariant (`sscratch` = this CPU's kernel-stack top) BEFORE
-            // anything reads a user value into a4. The symbol is the
-            // `no_mangle` cell in `protection` (written by `init`/
-            // `init_ap`, never reachable before the first user return).
-            "la a4, KERNEL_TRAP_STACK_BASE",
-            "ld a4, 0(a4)",
-            "csrw sscratch, a4",
+            // sscratch was refreshed by `prepare_user_return` immediately
+            // before this call (the trait contract); the per-hart CSR is
+            // the single source, so this leg must not read a shared cell.
             // Point stvec at the USER leg: the CPU is about to run U-mode
             // code, so its next trap must enter through the swap leg
             // (`riscv64_user_trap_vector` — the kernel/user legs are
