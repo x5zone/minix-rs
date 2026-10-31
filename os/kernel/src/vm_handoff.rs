@@ -52,6 +52,47 @@ use minix_types::{
     VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VERSION, VmBootHandoff,
 };
 
+/// The kernel image's text-segment end (link VMA), provided by
+/// `PROVIDE(__text_end = .;)` in all three `kernel-image/*.ld` scripts.
+///
+/// C11/SD-12 乙案′ boundary source: the executable region is the image's
+/// contiguous prefix `[kern_virt_base, __text_end)` (`.text` is the first
+/// output section and nothing after it is executable — see
+/// c-board-rulings-brief.md §11.1), so one symbol expresses the whole
+/// boundary. The symbol is a naked address; it is never dereferenced.
+/// Compile-gated to the `kernel-text-rx` builds — only those link against
+/// the kernel-image scripts that define the symbol.
+#[cfg(feature = "kernel-text-rx")]
+unsafe extern "C" {
+    static __text_end: u8;
+}
+
+/// Text page count for the VM per-process kernel mapping: the image prefix
+/// up to `__text_end`, rounded UP to 4 KiB pages (the tail of the last text
+/// page is section-alignment padding; `.rodata` starts on its own 4 KiB
+/// boundary so the RX region never covers real data bytes).
+///
+/// [`kernel-text-rx`]（由 kernel-image 的 fw-none-image 转发，生产镜像独
+/// 占）开启时读链接符号；关闭时（测试载体、boot-shim 等不经
+/// kernel-image 链接脚本的消费者）回退"整段当文本"占位——占位交接的
+/// `kern_data_pages == 0`，`map_kernel` 据此走旧 RWX 语义，行为不变。
+#[cfg(feature = "kernel-text-rx")]
+pub(crate) fn kern_text_pages(kernel_info: &KernelInfo) -> u64 {
+    let text_end_vma = core::ptr::addr_of!(__text_end) as usize as u64;
+    let text_bytes = text_end_vma
+        .checked_sub(kernel_info.kern_virt_base().0)
+        .expect("__text_end below kern_virt_base — link layout drift");
+    text_bytes.div_ceil(4096)
+}
+
+/// Placeholder: the whole image span as "text" (data pages = 0) — the
+/// pre-乙案′ semantics, kept for consumers whose link scripts carry no
+/// `__text_end` symbol.
+#[cfg(not(feature = "kernel-text-rx"))]
+pub(crate) fn kern_text_pages(kernel_info: &KernelInfo) -> u64 {
+    kernel_info.kern_size() / 4096
+}
+
 /// Frame size of every `VmBootAllocator` page (C: I386_PAGE_SIZE).
 const PAGE_SIZE: u64 = 0x1000;
 
@@ -414,13 +455,20 @@ pub fn build_vm_handoff(
         kernel_allocated_dynamic: boot_alloc_used_bytes(),
         // Kernel layout for VM's per-process kernel mappings —
         // C kinfo carries the same role (kernel text/data base + pages).
-        // minix-rs maps the whole contiguous image span as "text"
-        // (data_pages = 0); the VM's map_kernel walks text_pages then
-        // data_pages, so the sum is what matters.
+        //
+        // [ARCH: kernel-text-rx] C11/SD-12 乙案′：文本/数据真实分界。
+        // 边界来自本镜像链接符号 `__text_end`（三份 kernel-image/*.ld 的
+        // `.text` 节末 PROVIDE；可执行区 = 镜像起点连续前缀，见
+        // c-board-rulings-brief.md §11.1）。`kern_text_pages` 向上取整到
+        // 4K 页——文本末页与 rodata 首页之间的对齐垫归 RX（无内容），
+        // rodata 起于自身 4K 对齐边界故不被覆盖。此前占位为"整段当
+        // 文本"（data_pages = 0），进程根整段 RWX；真值使 VM 的
+        // `map_kernel` 文本段走 RX、数据段走 RW（W^X，进程根射程）。
         kern_virt_base: kernel_info.kern_virt_base().0,
         kern_phys_base: kernel_info.kern_phys_base().0,
-        kern_text_pages: (kernel_info.kern_size() / 4096) as u32,
-        kern_data_pages: 0,
+        kern_text_pages: kern_text_pages(kernel_info) as u32,
+        kern_data_pages: (kernel_info.kern_size() / 4096
+            - kern_text_pages(kernel_info)) as u32,
         // Handoff v5: the real kernel Direct Map window. VM's
         // `map_kernel` replays this window into every process page
         // table; the first CR3 switch to a VM-built table makes it the

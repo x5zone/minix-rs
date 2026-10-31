@@ -4169,3 +4169,26 @@ DIAGCTL 行，三 `test-rt-birth*` 门内嵌 16 对齐断言。`[ARCH: exec-sp-1
 arch runtime-window 287/0（两布局钉随新契约 −64/−40）、docker mock
 850/0/8、三架构 rt-birth PASS、riscv ATF 36/36。台账 SD-21（ledger:26、
 register:494）改 closed，C 板 C8 行改 ✅。
+
+**C11WX 里程碑（C11/SD-12 第一步 PD-22① 乙案′落地——进程根内核文本 RX）**：
+三段实施：① 三份 kernel-image/*.ld `.text` 节末 `PROVIDE(__text_end = .;)`
+（readelf 坐实符号 = R E 段末 0x3561a，可执行区 = 镜像起点连续前缀，单符
+号充分）；② `vm_handoff::kern_text_pages` 以符号算真值（feature
+`kernel-text-rx` 门控 + kernel-image fw-none-image 转发；非 kernel-image
+链接的消费者——测试载体/boot-shim——回退"整段当文本"占位，行为逐位不
+变；**契约零变更**，v5 字段既有）；③ `map_kernel` 文本段 RX（按交接
+data_pages 运行时自判占位/真值）+ 引导根高半分割（`harden_kernel_text`，
+调用点 kmain 内 `smp_init` 前：`from_active_root` KernelDm 句柄 +
+split_huge/update_flags，2MiB 步进 + 逐 4K RX，窗口条件=AP 释放前从未装
+载内核根）。**交付中发现并修复**：首版误用 `adopt_active_root`
+（VmDm 通道）——内核态经 VM 窗读根 PTE 即 fault（stval
+0x1082000800 = VM_DM + root 0x82000000 + 0x800），改 `from_active_root`
+（KernelDm）后全绿；两构造器并存语义自此有判例。承诺条款（精确）：进程
+根高半文本 RX、DM 别名 RW/NX、进程根恒等窗仅 MMIO（`map_kernel` 第四段
+陈旧注释随批更正为 T2 后口径）、引导根低 4GiB 恒等 RWX 维持现状、不承
+诺物理页级 W^X。甲案（建根期 4K 分片）挂起 = 独立技术债 register 新行
+`SD-12a`。门读数：riscv ATF 36/36（RX 文本首次上全系统）、test-smp-aps
+PASS、x86/aarch64 生产 boot PASS、U-Boot 链 6/6、docker mock 850/0/8、
+arch runtime-window 287/0（mock map_kernel 钉随 RX 契约更新）、三架构
+check 0 error。台账 SD-12 行与 register:362 标 step① landed，C 板 C11
+行改 ✅（第一步）。

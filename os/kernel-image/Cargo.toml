@@ -23,7 +23,7 @@ walk-hardening = ["minix-arch/walk-hardening"]
 # 产出」；fw-none-image 不单独对外使用，但它被直接打开时的行为与今天
 # 在宿主 triple 上传 `fw-x86-none` 同形（裸机 bin 在宿主缺
 # `eh_personality` 而编译失败），不构成隔离退化。
-fw-none-image = []
+fw-none-image = ["minix-kernel/kernel-text-rx"]
 fw-x86-none = ["fw-none-image"]
 fw-aarch64-none = ["fw-none-image"]
 fw-riscv64-none = ["fw-none-image"]

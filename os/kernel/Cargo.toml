@@ -22,6 +22,12 @@ minix-arch = { path = "../arch", features = ["runtime-window", "test-support"] }
 minix-plat = { path = "../plat", features = ["mock"] }
 
 [features]
+# C11/SD-12 乙案′：内核文本边界符号路径开关。开启时 `kern_text_pages`
+# 读本镜像链接符号 `__text_end`（kernel-image/*.ld 的 `.text` 节末
+# PROVIDE）；关闭时回退"整段当文本"占位——测试载体/boot-shim 等不经
+# kernel-image 链接脚本的消费者维持原行为（进程根整段 RWX）。由
+# kernel-image 的 fw-none-image 转发开启（生产镜像独占）。
+kernel-text-rx = []
 # 形态开关（SD-30/U-1 已摘默认，NL5③ 生产开关显式化的延伸）：`default = []`——
 # 不再有隐式形态。宿主测试腿走显式 `--features mock`（`mock` 传播 arch
 # runtime-window、plat mock）；生产形态 = `--no-default-features`（真 arch/plat；
