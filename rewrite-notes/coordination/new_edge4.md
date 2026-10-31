@@ -3623,6 +3623,18 @@ src/bin/fsck_mfs.rs`（168 行；判定半在 `minix_fs_mfs::fsck`，超级块�
 
 判据：`cargo test -p minix-mountinfo -p minix-diskfmt` → **26 / 0**（7 段）。本条 `closed`。
 
+### 第二百零五笔（A20 账本成员 `E-FSVMCACHE`：FS 侧二级缓存已落成零拷贝页移交，本成员 FS 侧闭）
+
+E-FSVMCACHE 的 FS 侧已经落地：`os/fs/mfs/src/second_level.rs` 的 `MfsSecondLevel` 实现
+`minix_fs::cache::SecondLevelCache`，消费 `minix_sys::vm` 的 `map_cacheblock_via`/
+`forget_cacheblock_via`/`clear_cache_via`（零拷贝页移交面），块大小按页向上取整、`VMSF_ONCE`
+走 setflags 车道（`second_level.rs:113`）；boot 配置按 `use_vmcache` 选面（`startup.rs:28-65`）。
+`minix-types/types/vm_cache.rs` 带 `VMMC_EVICTED`/`VMSF_ONCE` 的 wire 常量与注释。
+
+判据：`cargo test -p minix-fs-mfs -p minix-fs` → **317 / 0**（5 段，`second_level` 4 枚）。
+`REQ_PEEK` 的 HAS_PEEK 能力与 VM 侧逐出回报的联调归 02 轨道的真机面，本条 register 的 FS 侧
+无待办。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端

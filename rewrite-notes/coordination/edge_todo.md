@@ -979,6 +979,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 - 方案 B（否决）：在 minix-fs 内先做拷贝型二级缓存撑场面。否决理由：拷贝型无性能收益反而增加整块拷贝，属伪实现。
 
 **依赖**：02-stage-vm 页缓存轨道；E-MINTYPES-RUNTIME（vm 消息布局同源权威）。
+
+> **`2026-10-31` 现查（A20 账本成员 E-FSVMCACHE，claim/E-FSVMCACHE-qoder）：FS 侧已落**——`os/fs/mfs/src/second_level.rs` 的 `MfsSecondLevel` 实现 `minix_fs::cache::SecondLevelCache`，消费 `minix_sys::vm` 的 `map_cacheblock_via`/`forget_cacheblock_via`/`clear_cache_via`（零拷贝页移交面）与 `VMSF_ONCE` 旗标车道（`second_level.rs:113`），boot 配置按 `use_vmcache` 选面（`startup.rs:28-65`）；`minix-types/types/vm_cache.rs` 带 `VMMC_EVICTED`/`VMSF_ONCE` 的 wire 常量。判据：`cargo test -p minix-fs-mfs -p minix-fs` → **317 / 0**（5 段，second_level 4 枚）。`REQ_PEEK` 的 HAS_PEEK 能力与 VM 侧的逐出回报联调仍属 02 轨道的真机面，本条 register 的 FS 侧无待办。
 **解锁**：HAS_PEEK 能力、FS↔VM 共享页、V1-P1-3 方案 B。
 
 ---
