@@ -138,6 +138,17 @@ pub enum Action {
         cwd: Option<PathBuf>,
         note: &'static str,
     },
+    /// External tool whose failure is contractually normal: the artifact is
+    /// optional by the consumer's protocol (e.g. the aarch64 machine DTB —
+    /// its absence on the ESP simply means the boot-shim keeps the UEFI
+    /// GetMemoryMap source). A missing binary, a nonzero exit or a timeout
+    /// skips the artifact instead of failing the assembly; the consumers'
+    /// gates enforce the presence where it matters.
+    ToolBestEffort {
+        program: String,
+        args: Vec<String>,
+        note: &'static str,
+    },
 }
 
 /// Path environment needed for assembly. Everything is passed in by the caller
@@ -564,6 +575,41 @@ pub fn plan(
             format!("::EFI/minix/modules/{}", entry.module),
         ));
     }
+    // SD-3 D1 (C17): aarch64 images ship their QEMU machine DTB on the ESP
+    // root (/dumpdtb.dtb). The boot-shim optionally reads it (loader::
+    // DUMPDTB_PATH) as the gated DTB source probe — v1 semantics: gate plus
+    // a source line on the console, the memmap itself stays
+    // UEFI-GetMemoryMap (the DTB's /memory includes the shim's own
+    // LOADER_DATA pages, so a source swap needs the self-allocation
+    // accounting that is still under design). QEMU with dumpdtb does not
+    // exit on its own, hence the timeout wrapper and the best-effort
+    // action: no qemu-aarch64 on the host simply means the ESP carries no
+    // dumpdtb (the shim's absence path).
+    if matches!(arch, Arch::Aarch64) {
+        let dumpdtb = staging.join("dumpdtb.dtb");
+        let _ = std::fs::remove_file(&dumpdtb);
+        actions.push(Action::ToolBestEffort {
+            program: "timeout".into(),
+            args: vec![
+                "15".into(),
+                "qemu-system-aarch64".into(),
+                "-machine".into(),
+                format!(
+                    "virt,gic-version=3,dumpdtb={}",
+                    dumpdtb.to_string_lossy()
+                ),
+                "-cpu".into(),
+                "max".into(),
+                "-m".into(),
+                "512M".into(),
+                "-display".into(),
+                "none".into(),
+            ],
+            note: "machine DTB for ESP /dumpdtb.dtb (boot-shim gated source)",
+        });
+        copy_pairs.push((dumpdtb, "::dumpdtb.dtb".into()));
+    }
+
     for (from, to) in copy_pairs {
         actions.push(Action::Tool {
             program: "mcopy".into(),
@@ -1015,6 +1061,23 @@ pub fn execute(actions: &[Action], dry_run: bool) -> Result<()> {
                     cmd.current_dir(dir);
                 }
                 run_inherit(&mut cmd).with_context(|| format!("{program} 执行失败"))?;
+            }
+            Action::ToolBestEffort { program, args, note } => {
+                println!("  [tool-best-effort] {note}: {program} {}", args.join(" "));
+                if dry_run {
+                    continue;
+                }
+                let mut cmd = Command::new(program);
+                cmd.args(args);
+                let status = cmd.status();
+                match status {
+                    Ok(st) if st.success() => {}
+                    Ok(st) => println!(
+                        "    [tool-best-effort] skipped ({} exited {})",
+                        program, st
+                    ),
+                    Err(e) => println!("    [tool-best-effort] skipped ({e})"),
+                }
             }
         }
     }
