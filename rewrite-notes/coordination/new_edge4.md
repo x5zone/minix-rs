@@ -3908,3 +3908,23 @@ C2b/C2E 至此收口；riscv SSI 固件门保留为平台前置。
 读数一致。新增“文档改名与拆分的前置”：改名/拆分必须与全部代码注释
 同笔，提交前重跑 `tools/check-rs-unwired.sh`（PASS）；附引用分布
 复算命令与当前头部读数。README style error 0、断链 0。C7b 余项清零。
+
+
+**C4B 里程碑（x86_64 ATF 客态腿：非 TLS picolibc）**：码笔 `249a5c37b`、
+合并 `5f6d2c4f8`。用户对 A/B 两案未返回裁决，按 B 案可逆默认落地，未加
+内核每进程 FS base。`tools/vendor-picolibc-x86_64.sh` 本地构建 picolibc
+1.8.6（显式 `-Dthread-local-storage=false`）；`x86_64` 腿改链 picolibc +
+compat 接管面 + `startup-minix.c` 的 x86 `_start`；`sys-bridge.c` 补 x86
+`syscall`（RDI=&Message）与 `int 0x21`（RAX=端点/RBX=消息/RCX=3/R10 状态）
+桥。真机点火逮到一处平台级陷阱：x86 的 `libsemihost` 只有 `e9_io.o`，其
+putc 是 ring 3 特权指令 `out %al,$0xE9`，首个 `'P'` 即 #GP；`stdio-minix.c`
+改为在 x86 直接定义 stdin/stdout/stderr 三个 FILE 流，e9_io.o 不再被拉入。
+xtask 的 `ATF_BOOT_LEG_READY` 放行 x86_64，新增
+`os/qemu-tests/test-atf-x86_64.sh`（18 案 + p1/p2/p3、OVMF/q35、按
+`atf-plan.txt` 计 36 条终态）。宿主执行腿另立 `x86_64-host`（glibc 原语义），
+`tools/atf-host-suite.sh` 默认值随改并首次自建库腿。读数：x86 ATF
+**36/36**（34 passed + 2 skipped，0 failed/broken；证据件
+`suite_sha256=866e091d66d1…`、`progs=18`）、宿主腿 36/36、`run_all`
+39/0/0、kernel mock 849/0/8、三架构 kernel/kernel-image check 0 error；
+aarch64/riscv 单例交叉编译仍过 ehdr 校验。已知非本笔：`test-cmd-smoke`
+的 du 目录读腿仍红（A 板 C-57）。C4 行与 `P-X86-01` 台账同批回写。
