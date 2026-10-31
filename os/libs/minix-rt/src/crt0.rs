@@ -70,10 +70,30 @@
 //!   must still return a concrete value (`0`), because whoever ran it
 //!   (the shell, init's waitpid) reads one anyway.
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use minix_types::Errno;
 
 use crate::handoff::ProcessStrings;
 use crate::init::RuntimeState;
+
+/// The stack pointer as of the process's **first executed instruction**,
+/// stashed by the `_start` naked stubs before anything else runs.
+///
+/// C8/SD-21 entry-SP probe: the process-entry ABI requires 16-byte
+/// alignment on aarch64 (AAPCS64) and riscv64 (psABI); capturing the raw
+/// delivered SP here — before the birth chain's own frames exist — is the
+/// only honest measurement point (any later read sees caller prologues).
+/// The cell is written once by inline asm at entry and only read through
+/// [`entry_sp`]; the kernel zeroes NOBITS before entry, so no later clear
+/// can lose the value.
+static ENTRY_SP_CELL: AtomicU64 = AtomicU64::new(0);
+
+/// The stack pointer delivered to this process at its first instruction
+/// (`0` on hosts/tests where the naked stubs never ran).
+pub fn entry_sp() -> u64 {
+    ENTRY_SP_CELL.load(Ordering::Relaxed)
+}
 
 /// Raw `struct ps_strings` image on the initial stack.
 ///
@@ -389,11 +409,16 @@ pub extern "C" fn _start() -> ! {
     // SAFETY: naked entry — RSP and RBX are the kernel-established process
     // state (build_cpu_context); no Rust prologue has run.
     core::arch::naked_asm!(
+        // C8/SD-21 entry-SP probe: capture the raw delivered SP first —
+        // before the `and` below, so the cell records the kernel's
+        // contract value, not the post-alignment one.
+        "mov qword ptr [rip + {entry_sp}], rsp",
         "and rsp, -16",
         "mov rdi, rbx",
         "call {birth}",
         "ud2",
         birth = sym rt_birth,
+        entry_sp = sym ENTRY_SP_CELL,
     );
 }
 
@@ -412,9 +437,14 @@ pub extern "C" fn _start() -> ! {
     // SAFETY: naked entry — sp and a0 are the kernel-established process
     // state (build_cpu_context); no Rust prologue has run.
     core::arch::naked_asm!(
+        // C8/SD-21 entry-SP probe: first instruction captures the SP the
+        // kernel delivered (t0 is caller-saved scratch; a0 untouched).
+        "la t0, {entry_sp}",
+        "sd sp, 0(t0)",
         "call {birth}",
         "unimp",
         birth = sym rt_birth,
+        entry_sp = sym ENTRY_SP_CELL,
     );
 }
 
@@ -433,9 +463,16 @@ pub extern "C" fn _start() -> ! {
     // SAFETY: naked entry — sp and x0 are the kernel-established process
     // state (build_cpu_context); no Rust prologue has run.
     core::arch::naked_asm!(
+        // C8/SD-21 entry-SP probe: first instructions capture the SP the
+        // kernel delivered (x9/x10 are caller-saved scratch; x0 untouched).
+        "mov x10, sp",
+        "adrp x9, {entry_sp}",
+        "add x9, x9, :lo12:{entry_sp}",
+        "str x10, [x9]",
         "bl {birth}",
         "brk #0",
         birth = sym rt_birth,
+        entry_sp = sym ENTRY_SP_CELL,
     );
 }
 

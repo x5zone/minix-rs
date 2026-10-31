@@ -85,6 +85,17 @@ grep -qa "rt-birth user_sp="           "$SERIAL_LOG" || { pass=0; echo "FAIL: ku
 grep -qa "RT-BIRTH MAIN OK"            "$SERIAL_LOG" || { pass=0; echo "FAIL: birth chain did not reach main"; }
 grep -qa "rt-birth panic render check" "$SERIAL_LOG" || { pass=0; echo "FAIL: panic render marker missing"; }
 
+# C8/SD-21 entry-SP probe: the naked `_start` stashed the SP at the first
+# executed instruction; the riscv64 psABI requires 16-byte alignment at
+# process entry ([ARCH: exec-sp-16]).
+ENTRY_SP_HEX=$(grep -ao "rt-birth entry_sp=0x[0-9a-f]*" "$SERIAL_LOG" | head -1 | cut -d= -f2)
+ENTRY_SP_HEX=${ENTRY_SP_HEX#0x}
+if [ -z "$ENTRY_SP_HEX" ]; then
+    pass=0; echo "FAIL: entry_sp probe line missing"
+elif (( (16#$ENTRY_SP_HEX & 15) != 0 )); then
+    pass=0; echo "FAIL: entry SP $ENTRY_SP_HEX is not 16-byte aligned"
+fi
+
 if [ "$pass" -eq 1 ]; then
     echo "### TEST_RESULT: PASS test-rt-birth-riscv64 ###"
     exit 0

@@ -685,11 +685,22 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     }
 
     // Initial stack layout, mirroring C's `arch_boot_proc`
-    // (protect.c:410-427): the ps_strings struct sits 32 bytes below
-    // `stack_high`, and the SP is taken down a further 20 bytes (two
-    // pointers + one int) so the startup code sees argc/argv/envp.
-    let ps_strings = VirBytes(stack_high.0 - PS_STRINGS_SIZE); // stack_high - 32
-    let sp = VirBytes(ps_strings.0 - ARGC_ARGV_ENVP);          // three full words, 8-byte aligned
+    // (protect.c:410-427): the ps_strings struct sits below `stack_high`,
+    // and the SP is taken down a further three words (argc, argv, envp) so
+    // the startup code sees argc/argv/envp.
+    //
+    // [ARCH: exec-sp-16] The SP is rounded down to 16 bytes: the
+    // process-entry ABI requires 16-byte alignment on aarch64 (AAPCS64)
+    // and riscv64 (psABI). The pre-fix layout (`ps_strings = high-32`,
+    // `sp = ps_strings-24`) landed the SP at `stack_high-56` — 8 mod 16 —
+    // on every architecture (the prior fix noted in the history below only
+    // restored 8-byte alignment; 8 mod 16 still violates the entry ABI).
+    // The internal relations are unchanged (`ps_strings == sp + 24`, the
+    // startup code reads the descriptor via its register, not via SP), so
+    // this only shifts the frame down by 8 bytes. Ruling: C-board
+    // C8/SD-21 external review, c-board-rulings-brief.md §11.4-11.5.
+    let sp = VirBytes((stack_high.0 - PS_STRINGS_SIZE - ARGC_ARGV_ENVP) & !15);
+    let ps_strings = VirBytes(sp.0 + ARGC_ARGV_ENVP);
 
     // Resolve the kernel VA of the *top* stack page (`stack_high -
     // page_size`). The bootstrap allocator's frame order is
@@ -1036,9 +1047,11 @@ mod tests {
             .expect("minimal ELF must load");
 
         // Public geometry the loader contract promises.
-        assert_eq!(result.ps_strings.0, user_sp.0 - 32); // stack_high - 32
-        // stack_high - (32 ps_strings + 3 full-word slots) = 56 after alignment
-        assert_eq!(result.sp.0, user_sp.0 - 56);
+        // [ARCH: exec-sp-16] sp = align16(stack_high - 56) = stack_high - 64;
+        // ps_strings rides sp + 24 = stack_high - 40 (the pre-fix values
+        // were -56/-32, 8 mod 16 at the entry SP).
+        assert_eq!(result.sp.0, user_sp.0 - 64);
+        assert_eq!(result.ps_strings.0, user_sp.0 - 40);
         assert!(result.allocated_bytes >= 256 * 1024);
 
         // ---- happy path through `paging.query` + `PhysAccess` ----
@@ -1167,10 +1180,12 @@ mod tests {
         // address spaces (C kinfo.user_sp semantics — per-address-space
         // stack placement from a shared boot value).
         assert_eq!(a.pc, b.pc);
-        assert_eq!(a.sp.0, user_sp.0 - 56);
-        assert_eq!(b.sp.0, user_sp.0 - 56);
-        assert_eq!(a.ps_strings.0, user_sp.0 - 32);
-        assert_eq!(b.ps_strings.0, user_sp.0 - 32);
+        // [ARCH: exec-sp-16] sp = align16(stack_high - 56) = stack_high - 64;
+        // ps_strings = sp + 24 = stack_high - 40.
+        assert_eq!(a.sp.0, user_sp.0 - 64);
+        assert_eq!(b.sp.0, user_sp.0 - 64);
+        assert_eq!(a.ps_strings.0, user_sp.0 - 40);
+        assert_eq!(b.ps_strings.0, user_sp.0 - 40);
         // Each load accounted its own root page on top of image + stack.
         assert!(a.allocated_bytes >= 256 * 1024 + 0x1000 + 0x1000);
         assert!(b.allocated_bytes >= 256 * 1024 + 0x1000 + 0x1000);
