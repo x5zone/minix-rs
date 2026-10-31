@@ -541,7 +541,30 @@ impl SmpState {
     /// woken (§3.4 mask rules — the BSP is born acked and online). The
     /// BSP's logical id comes from matching `hw_id == bsp_id` in the
     /// topology (MADT/DTB order does not guarantee slot 0 — never assume).
-    pub fn seed_bsp_masks(&self, bsp_logical_id: u32) {
+    ///
+    /// The identity move matters on riscv64: `init_smp_state` seeds the
+    /// state from the DTB's `bsp_id`, but OpenSBI may boot a hart other than
+    /// that one (QEMU `-smp 4` has been observed booting hart 2). The
+    /// election cell records the real BSP, and this function is where the
+    /// state catches up: leaving `bsp_cpu_id` at the DTB slot would clamp
+    /// processes onto an AP and leave the real BSP idle (`-smp 4` hung after
+    /// "entering scheduler"), while the READY flag left on the stale slot
+    /// made `wait_for_aps` count 4 CPUs before every AP had acked.
+    pub fn seed_bsp_masks(&mut self, bsp_logical_id: u32) {
+        let elected = CpuId::new_unchecked(bsp_logical_id);
+        if self.bsp_cpu_id != elected {
+            let old = self.bsp_cpu_id.index();
+            self.cpus[old].clear_flag(CpuFlags::BSP | CpuFlags::READY);
+            self.cpus[elected.index()].set_flag(CpuFlags::BSP | CpuFlags::READY);
+            // `init_smp_state` installed the BSP's VM ptproc on the DTB slot
+            // before the election is known; carry it to the real BSP rather
+            // than leaving it on what is actually an AP.
+            let ptproc = self.cpu_locals[old].ptproc.take();
+            if self.cpu_locals[elected.index()].ptproc.is_none() {
+                self.cpu_locals[elected.index()].ptproc = ptproc;
+            }
+            self.bsp_cpu_id = elected;
+        }
         // Record the BSP's logical slot for the riscv stack-based identity
         // (the BSP's stack is outside the AP stack ranges).
         BSP_LOGICAL.store(bsp_logical_id, Ordering::Release);
@@ -2350,13 +2373,32 @@ mod tests {
     }
 
     #[test]
+    fn test_seed_bsp_masks_moves_identity_to_elected_slot() {
+        // DTB bsp_id and the hart OpenSBI actually booted can differ (the
+        // -smp 4 hang: state said CPU 0, the real BSP was hart 2). Seeding
+        // must move BSP|READY and bsp_cpu_id to the elected slot, and must
+        // not leave the stale slot READY (wait_for_aps counts READY).
+        let mut smp = SmpState::with_ncpus(4, CpuId::BSP);
+        let vm = crate::proc::proc_nr::VM_PROC_NR;
+        smp.cpu_locals[0].ptproc = Some(vm);
+        smp.seed_bsp_masks(2);
+        assert_eq!(smp.bsp_cpu_id(), CpuId::new_unchecked(2));
+        assert!(smp.cpus[2].test_flag(CpuFlags::BSP | CpuFlags::READY));
+        assert!(!smp.cpus[0].test_flag(CpuFlags::BSP | CpuFlags::READY));
+        assert_eq!(smp.cpu_locals[2].ptproc, Some(vm));
+        assert!(smp.cpu_locals[0].ptproc.is_none());
+        assert!(smp.observe_boot_ack(2));
+        assert!(smp.observe_online(2));
+    }
+
+    #[test]
     fn test_online_mask_completion() {
         // Production completion = online == boot_ack.
         // Degenerate case first: only the BSP seeded → nothing outstanding →
         // completes immediately. C-faithful: wait_for_APs with zero READY
         // APs waits for ap_cpus_booted == 0 and returns at once (degraded
     // continuation).
-        let smp = SmpState::with_ncpus(4, CpuId::BSP);
+        let mut smp = SmpState::with_ncpus(4, CpuId::BSP);
         smp.seed_bsp_masks(0);
         assert!(smp.all_aps_booted(), "BSP-only: nothing to wait for");
 
@@ -2723,7 +2765,7 @@ mod tests {
     fn test_wait_for_aps_single_cpu() {
         // Single-CPU config: wait_for_APs should return immediately
         // (expected = 0, ap_cpus_booted = 0).
-        let smp = SmpState::new_single_cpu();
+        let mut smp = SmpState::new_single_cpu();
         smp.seed_bsp_masks(0);
         // Acquire BKL first (wait_for_APs releases and reacquires).
         // BklGuard is RAII — guard.release() at end releases BKL.

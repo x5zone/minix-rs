@@ -84,7 +84,10 @@ if [ "${RS_ATF_SKIP_BUILD:-0}" != "1" ]; then
 fi
 
 echo "== Stage 2: ATF 面（xtask atf-face：rc 变体 + atf-plan.txt，单源）=="
-if [ "${RS_ATF_SKIP_BUILD:-0}" != "1" ] || [ ! -s "$PLAN" ]; then
+# Skip-build must not regenerate the face: atf-face rewrites rc.imgrd, which
+# would then be newer than the existing imgrd and trip the freshness guard
+# below. In that mode the plan is the source for the prog list (below).
+if [ "${RS_ATF_SKIP_BUILD:-0}" != "1" ] || [ ! -s "$PLAN" ] || [ ! -s "$IMG/rc.imgrd" ]; then
     ( cd "$ROOT" && cargo run -q -p xtask -- atf-face --arch riscv64 ) >"$WORK/atf_face.log" 2>&1 || {
         echo "FAIL: xtask atf-face 失败"; tail -6 "$WORK/atf_face.log"; exit 1; }
 fi
@@ -106,12 +109,19 @@ bash "$ROOT/../tools/atf-evidence.sh" check riscv64 "$PLAN" "$EVID" \
 
 
 
-# 套件 prog 清单（从 atf-face 的 tests.<prog>=<rel> 行解析；rel 是相对 os/ 的
-# 宿主路径，直接进 imgrd proto）。Stage 2 在非 SKIP 路径必跑 atf-face，此处
-# 必然非空——不再保留"plan 首列回退"（CodeReview 续-340b P2-3：该分支不可达，
-# 且会漏播 p1/p2/p3 探针）。
-mapfile -t TEST_PROGS < <(sed -n 's/^tests\.\([^=]*\)=.*/\1/p' "$WORK/atf_face.log")
-mapfile -t TEST_RELS  < <(sed -n 's/^tests\.[^=]*=//p' "$WORK/atf_face.log")
+# 套件 prog 清单（rel 是相对 os/ 的宿主路径，直接进 imgrd proto）。正常
+# 路径从 atf-face 的 tests.<prog>=<rel> 行解析；SKIP 路径不重跑 atf-face，
+# 由 plan 的 prog 列派生同一份列表（p1/p2/p3 探针已在既有 imgrd 里）。
+if [ "${RS_ATF_SKIP_BUILD:-0}" = "1" ] && [ -s "$PLAN" ]; then
+    mapfile -t TEST_PROGS < <(awk '{print $1}' "$PLAN" | sort -u)
+    TEST_RELS=()
+    for p in "${TEST_PROGS[@]}"; do
+        TEST_RELS+=("target/atf/riscv64/tests/$p")
+    done
+else
+    mapfile -t TEST_PROGS < <(sed -n 's/^tests\.\([^=]*\)=.*/\1/p' "$WORK/atf_face.log")
+    mapfile -t TEST_RELS  < <(sed -n 's/^tests\.[^=]*=//p' "$WORK/atf_face.log")
+fi
 [ "${#TEST_PROGS[@]}" -gt 0 ] || fail "套件 prog 清单为空（atf-face 输出缺失/格式漂移）"
 # 分母完整性（CodeReview 续-340b P2-4）：套件面必须 18 个 ATF prog 齐全，
 # 否则 EXPECTED 自派生会随残缺产物缩小、门可能对残缺集判 PASS。

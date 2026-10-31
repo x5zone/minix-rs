@@ -343,8 +343,8 @@ fn main() -> Status {
             }
             if ticks > 0 {
                 // "At least one secondary core counted a local tick" — see the
-                // criterion comment below: counting on every core is a known
-                // defect today (cpu3 is always 0), outside this gate's scope.
+                // criterion comment below: an idle AP deliberately stops its
+                // local timer, so a zero count on one core is not a defect.
                 aps_ticked = true;
             }
         }
@@ -382,14 +382,14 @@ fn main() -> Status {
     // the tail of `init_ap`) really did fire — no longer "a human reads
     // the serial numbers".
     // The criterion is "at least one AP counted a tick". Why not "every AP
-    // counted one": measurements show that across 5 rounds of the same image
-    // **cpu3's tick is always 0**, while cpu1/cpu2 count 1 each and `in_loop`
-    // is 1 on all three cores — raising the budget (30G→120G cycles) still
-    // leaves 0, so this is not host scheduling jitter but a real defect: "the
-    // last AP's local LAPIC timer never fires" (filed as P0-code-bug with the
-    // rerun command and readings; the gate still prints each core's count line
-    // by line, so cpu3=0 is directly visible). Once that is fixed, this
-    // criterion should tighten to per-core tick>0.
+    // counted one": an AP with no runnable process parks in the idle loop and
+    // deliberately stops its local timer (`context_stop_idle` — the wake arm
+    // restarts it when work arrives). Measurements consistently show cpu1/cpu2
+    // count while cpu3 reads 0 with `in_loop=1`, and removing the BSP clamp
+    // (C2E) did not change that: cpu3 had no process to wake it. A per-core
+    // tick>0 criterion would therefore assert the scheduler's idle policy,
+    // not the timer path; this gate stays at "at least one AP". A future gate
+    // that assigns work to every AP can tighten it to per-core.
     if !aps_ticked {
         early_console::write_str(
             "  FAIL: no AP local LAPIC tick fired within the budget (see per-cpu ticks)\n",
