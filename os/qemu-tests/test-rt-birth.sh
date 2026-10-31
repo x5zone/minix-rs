@@ -126,6 +126,17 @@ grep -q "rt-birth user_sp=0x00007fff" "$SERIAL_LOG" || { pass=0; echo "FAIL: kus
 grep -q "RT-BIRTH MAIN OK" "$SERIAL_LOG" || { pass=0; echo "FAIL: main not reached"; }
 grep -q "rt-birth panic render check" "$SERIAL_LOG" || { pass=0; echo "FAIL: panic render check missing on console"; }
 
+# C8/SD-21 entry-SP probe: the naked `_start` stashed the raw delivered SP
+# BEFORE the `and rsp,-16` below it, so this asserts the kernel's contract
+# value (post-fix it is already 16-byte aligned and the `and` is a no-op).
+ENTRY_SP_HEX=$(grep -ao "rt-birth entry_sp=0x[0-9a-f]*" "$SERIAL_LOG" | head -1 | cut -d= -f2)
+ENTRY_SP_HEX=${ENTRY_SP_HEX#0x}
+if [ -z "$ENTRY_SP_HEX" ]; then
+    pass=0; echo "FAIL: entry_sp probe line missing"
+elif (( (16#$ENTRY_SP_HEX & 15) != 0 )); then
+    pass=0; echo "FAIL: entry SP $ENTRY_SP_HEX is not 16-byte aligned"
+fi
+
 if [ "$pass" -eq 1 ]; then
     echo "RESULT: PASS (minix-rt birth chain on real machine — E1 slice 5 + V1-P1-1 step 2)"
     exit 0

@@ -119,6 +119,17 @@ extern "Rust" fn main() -> i32 {
     // Trail: main entered.
     M_TRAIL[0].store(0xC0FF_EE01, Ordering::Relaxed);
 
+    // 0. Entry-SP probe (C8/SD-21): the naked `_start` stub stashed the SP
+    // at the first executed instruction, before any prologue or the x86
+    // `and rsp,-16`. The process-entry ABI requires 16-byte alignment on
+    // aarch64 (AAPCS64) and riscv64 (psABI); the gate scripts assert the
+    // low nibble of this line.
+    let mut line = Line::new();
+    line.push_bytes(b"rt-birth entry_sp=");
+    line.push_hex16(minix_rt::crt0::entry_sp());
+    line.push_bytes(b"\n");
+    M_TRAIL[4].store(line.emit(), Ordering::Relaxed);
+
     // 1. descriptor parse result (boot images: empty argv, empty name).
     let mut line = Line::new();
     line.push_bytes(b"rt-birth argv=");

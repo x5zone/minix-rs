@@ -113,8 +113,23 @@ pub fn stack_params(argv: &[&str], envp: &[&str]) -> StackParams {
     for s in envp {
         size += WORD + s.len() + 1;
     }
-    // C: round up to pointer alignment (stack_utils.c:112-114).
-    size = (size + WORD - 1) & !(WORD - 1);
+    // [ARCH: exec-sp-16] Round the *total frame* up to 16 bytes, not the C
+    // pointer-slot width (stack_utils.c:112-114 rounds to 8). The process
+    // entry ABI on aarch64 (AAPCS64) and riscv64 (psABI) requires the
+    // initial SP to be 16-byte aligned; `vsp = user_sp - frame_size` with a
+    // page-aligned `user_sp` inherits whatever modulus the total carries,
+    // and the base constant `STACK_MIN_SZ` itself is 8 mod 16 (1400) — so
+    // with 8-byte rounding every birth process (argv = one short name,
+    // frame_size 1416) entered with an SP misaligned by 8. The rounding is
+    // applied once to the summed total: pointer slots stay 8 bytes wide,
+    // every internal offset (strings, ps_strings) is independent of
+    // frame_size, so the frame image is byte-identical and only `vsp`
+    // moves down by 0-8 bytes. Unobservable to conforming consumers (args
+    // reach the program via the ps_strings register, not via SP); the
+    // x86-64 crt0 `and rsp,-16` becomes a no-op. Ruling: C-board C8/SD-21
+    // two-round external review, evidence in
+    // rewrite-notes/01-stage-kernel/c-board-rulings-brief.md §11.4-11.5.
+    size = (size + 15) & !15;
     StackParams {
         frame_size: size,
         argc: argv.len(),
@@ -263,6 +278,32 @@ mod stack_frame_tests {
         assert_eq!(AUXINFO_SIZE, 16);
         assert_eq!(STACK_MIN_SZ, 8 + 16 + 320 + 1024 + 32);
         assert_eq!(STACK_MIN_SZ, 1400);
+    }
+
+    /// [ARCH: exec-sp-16] Process-entry ABI: the SP handed to a new
+    /// process must be 16-byte aligned on aarch64 (AAPCS64) and riscv64
+    /// (psABI). The total-frame rounding in `stack_params` is the single
+    /// point that decides the modulus — pin it for the boot counterexample
+    /// (argv = one short process name: the pre-fix frame was 1416 ≡ 8
+    /// mod 16, misaligning every birth process) and for multi-arg shapes.
+    #[test]
+    fn test_frame_size_sixteen_byte_aligned() {
+        // The exact pre-fix counterexample: a 2-char process name.
+        for name in ["rs", "ds", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init"] {
+            let params = stack_params(&[name], &[]);
+            assert_eq!(
+                params.frame_size % 16,
+                0,
+                "frame_size {:#x} for {name} breaks the 16-byte entry-SP ABI",
+                params.frame_size
+            );
+        }
+        // Multi-string shapes stay aligned too.
+        let params = stack_params(&["sh", "-c", "echo hi"], &["PATH=/bin", "HOME=/"]);
+        assert_eq!(params.frame_size % 16, 0);
+        // Empty argv/env (the degenerate frame).
+        let params = stack_params(&[], &[]);
+        assert_eq!(params.frame_size % 16, 0);
     }
 
     /// Boot-path shape: `argv = {"/sbin/rs", NULL}`, `envp = {NULL}`

@@ -491,11 +491,22 @@ ledger row stays open and is the authority). The frozen recommendation (Rev 2/§
 the highest-certainty real-hardware time bomb in the register** — nothing in the QEMU gates can ever
 clear it.
 
-#### SD-21. Inbound user-SP 16-byte realignment — **adjudicated: explicitly deferred (续-395 option C)**
+#### SD-21. Inbound user-SP 16-byte realignment — **closed (C8ALIGN; [ARCH: exec-sp-16] per two-round external review)**
 
 The rollback discipline held (no re-landing without an owner defect); the boot-leg alignment instance
 was incidentally fixed by the SD-17 unification (续-388). The remaining face (exec-side child SP on
-aarch64/riscv64) waits on P-A64-03's ruling context. **No action.**
+aarch64/riscv64) is closed at the frame-construction layer, not in crt0: all four delivery points
+round the final frame to 16 bytes — `minix_sys::stack::stack_params`, the shell and init exec-frame
+builders, and the kernel birth frame in `arch/src/arch/boot.rs::load_elf_into` (the entry-SP probe
+caught this fourth site delivering `stack_high-56`, 8 mod 16, on every architecture; the prior
+续-395-era fix had restored only 8-byte alignment). `STACK_MIN_SZ = 1400 ≡ 8 (mod 16)` made every
+birth process enter with a misaligned SP. Pointer slots stay 8 bytes; internal offsets are
+independent of the frame total, so frame images are byte-identical and only the entry SP moves down
+0-8 bytes. An entry-SP probe stashed at the first executed instruction in all three crt0 naked arms
+is asserted by the three `test-rt-birth*` gates; the deviation from C's 8-byte rounding is
+unobservable (args reach the program via the ps_strings register). Evidence:
+`c-board-rulings-brief.md` §11.4-11.5/§12; gates minix-sys 342/0, shell 61/0, init 149/0,
+three-arch rt-birth PASS, riscv ATF full regression.
 
 #### SD-22. Kernel↔user memory access model (SUM/PAN/SMAP) — **adjudicated (PD-21, two layers); software layer landed on the message face**
 

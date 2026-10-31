@@ -103,7 +103,15 @@ pub(crate) fn stack_params(argv: &[&str], envp: &[&str]) -> Result<usize, Errno>
     //[SD19-gate] best effort: the closure's slot count is not needed here; only its accumulation into `total` matters, and it propagates its own error
     #[allow(clippy::let_underscore_must_use)]
     let _ = count(envp)?;
-    Ok(total.div_ceil(SLOT) * SLOT)
+    // [ARCH: exec-sp-16] Round the *total frame* to 16 bytes, not the
+    // 8-byte slot width (C stack_utils.c:112-114 rounds to 8): the entry
+    // SP = stack_top - frame_size must satisfy the 16-byte AAPCS64/psABI
+    // process-entry alignment, and this total rounding is its single
+    // decision point. Pointer slots stay SLOT=8; internal offsets are
+    // independent of the total, so the image is unchanged and only `vsp`
+    // moves down 0-8 bytes. Ruling: C-board C8/SD-21 external review,
+    // c-board-rulings-brief.md §11.4-11.5.
+    Ok(total.div_ceil(16) * 16)
 }
 
 /// Fills the frame and returns the ps_strings offset within it (C:
@@ -296,19 +304,24 @@ mod tests {
     /// Size formula against a worked example (C: `minix_stack_params`,
     /// `stack_utils.c:74-109`, reduced STACK_MIN): argv `["sh", "/etc/rc"]`
     /// and envp `["PATH=/sbin"]` carry 3+8+11 = 22 string bytes and 3
-    /// pointer slots over the 56-byte minimum → 102 → slot-aligned 104.
+    /// pointer slots over the 56-byte minimum → 102 → 16-byte entry-SP
+    /// aligned 112 ([ARCH: exec-sp-16]; the pre-fix slot-rounded total was
+    /// 104).
     #[test]
     fn test_stack_params_worked_example() {
         let argv = ["sh", "/etc/rc"];
         let envp = ["PATH=/sbin"];
-        assert_eq!(stack_params(&argv, &envp), Ok(104));
+        assert_eq!(stack_params(&argv, &envp), Ok(112));
     }
 
-    /// Empty vectors size to the bare minimum frame (already slot-aligned).
+    /// Empty vectors size to the bare minimum frame, rounded to the
+    /// 16-byte entry-SP alignment ([ARCH: exec-sp-16]: 56 → 64; the
+    /// unrounded base is 8 mod 16, so the rounding is load-bearing).
     #[test]
     fn test_stack_params_minimum_frame() {
-        assert_eq!(stack_params(&[], &[]), Ok(STACK_MIN_BYTES));
+        assert_eq!(stack_params(&[], &[]), Ok(64));
         assert_eq!(STACK_MIN_BYTES % 8, 0);
+        assert_eq!(stack_params(&[], &[]).map(|n| n % 16), Ok(0));
     }
 
     /// The fill against a fully hand-laid frame (C: `minix_stack_fill`,

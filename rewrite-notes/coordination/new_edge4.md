@@ -4154,3 +4154,18 @@ docker kernel mock 850/0/8；boot-shim test-all 58/0；三架构 kernel check
 表）；文风门 0 error、承载门通过。01-todo §1 D-73 行改 ✅（保护文件，未
 代提交）。后续窗口：xtask 产线接线（`fw-riscv64-uboot` 进 image 装配）、
 真板 U-Boot 契约（`FW_PAYLOAD` 直核形态保持可用，另计）。
+
+**C8ALIGN 里程碑（C8/SD-21 入口 sp 十六字节对齐闭合）**：修复覆盖四个交付
+点——三帧构造器（`minix_sys::stack`/shell `exec_frame`/init `execve`）总帧
+圆整 8→16（指针槽保持 8、帧内偏移与 frame_size 无关、内容逐字节不变），
+加探针真机抓获的第四点：`arch/src/arch/boot.rs::load_elf_into` 内核出生帧
+`sp=stack_high-56`（8 mod 16，全架构；历史注释自证先前只修到八字节）。
+根因=`STACK_MIN_SZ=1400 ≡ 8 (mod 16)`，修复前全部十二个出生进程入口 sp
+错位。探针=minix-rt 三 naked 臂首指令 stash + `entry_sp()` + rt-birth 载体
+DIAGCTL 行，三 `test-rt-birth*` 门内嵌 16 对齐断言。`[ARCH: exec-sp-16]`
+依据=C `stack_utils.c` 八字节圆整的不可观察偏离（参数经 ps_strings 寄存器），
+裁决=c-board-rulings-brief.md 两轮外部评审。门读数：minix-sys 342/0
+（反例钉 `test_frame_size_sixteen_byte_aligned`）、shell 61/0、init 149/0、
+arch runtime-window 287/0（两布局钉随新契约 −64/−40）、docker mock
+850/0/8、三架构 rt-birth PASS、riscv ATF 36/36。台账 SD-21（ledger:26、
+register:494）改 closed，C 板 C8 行改 ✅。
