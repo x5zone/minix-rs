@@ -4250,3 +4250,18 @@ VM 首个内核腿取指 `x86_trap_dispatch` → #PF(e=0x11，P|I NX 取指) 无
 e5-ds 12/12、cmd-smoke 核心 marker（du 腿=TODO-06 既载既有问题）、
 U-Boot 链 6/6、mock 850/0/8、arch 287/0。hardened boot 诊断行
 （text harden enter/adopted/done）常驻。
+
+**C17XTASK 里程碑（C17-xtask 构建侧闭合——aarch64 镜像随产 dumpdtb）**：
+xtask image 装配清单增 `Action::ToolBestEffort`（失败/缺件属契约正常态的
+外部工具动作——qemu dumpdtb 不自退故 timeout 15 包裹，宿主无
+qemu-system-aarch64 则静默跳过，ESP 无文件即 shim 的缺席路径）+
+aarch64 分支动作：`-machine virt,gic-version=3,dumpdtb=staging/dumpdtb
+.dtb -cpu max -m 512M`（与门生成参数逐参一致）→ mcopy 入 ESP 根
+`/dumpdtb.dtb`（shim loader::DUMPDTB_PATH 契约位）。门
+test-shim-bootmarks-aarch64 的 MARK3 改为**装配后按 ESP 实况解析**
+（mdir 检测；D1_DUMPDTB=1 保留为手工注入覆盖），修掉首轮"默认等 legacy
+行而镜像已打 gated 行"的错配。门读数：默认（无环境变量）
+test-shim-bootmarks-aarch64 PASS，串口
+`memmap source: uefi-getmemorymap gated by dtb /memory (conv=14
+dtb_regions=1)`；xtask check/clean。A 板窗口=用户本轮指令授权，A 板复
+核留痕于 C17 行。C17 行余片=0。

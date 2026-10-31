@@ -41,11 +41,13 @@ TIMEOUT_BOOT="${TIMEOUT_BOOT:-90}"
 MARK1="boot-shim: kernel loaded (entry staged)"
 MARK2="boot-shim: 12 boot modules loaded"
 # SD-3 D1 两腿的 memmap 源行（shim 侧 uefi_helpers.rs 打印）
-if [ "${D1_DUMPDTB:-0}" = "1" ]; then
-    MARK3="boot-shim: memmap source: uefi-getmemorymap gated by dtb /memory"
-else
-    MARK3="boot-shim: memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)"
-fi
+# SD-3 D1, xtask half landed: the assembled image self-carries
+# /dumpdtb.dtb (best-effort at assembly — present when the host has
+# qemu-system-aarch64). MARK3 is resolved AFTER assembly by detecting the
+# file on the ESP (see the re-resolution right before the boot wait);
+# D1_DUMPDTB=1 keeps the manual-injection override (a run-local image
+# copy) for hosts where assembly ran without qemu-aarch64.
+MARK3="boot-shim: memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)"
 
 if ! command -v qemu-system-aarch64 &>/dev/null; then
     echo "SKIP: qemu-system-aarch64 not found"; exit 2
@@ -147,6 +149,13 @@ cleanup() {
     rm -f "$FW_VARS"
 }
 trap cleanup EXIT
+
+# MARK3 re-resolution (post-assembly): the expected memmap-source line
+# follows what the image actually carries.
+if [ "${D1_DUMPDTB:-0}" = "1" ] \
+    || mdir -i "$IMG" ::/ 2>/dev/null | grep -qi 'dumpdtb'; then
+    MARK3="boot-shim: memmap source: uefi-getmemorymap gated by dtb /memory"
+fi
 
 both=0
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
