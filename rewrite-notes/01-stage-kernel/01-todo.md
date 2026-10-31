@@ -1,265 +1,280 @@
-# 01-todo — 01 篇关联代码设计审查工单（2026-10-20）
+# 01-todo — 01 篇关联 todo 总台账
 
-> **来源与方法**：对 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` §7.3 关联代码清单的**设计合理性专项审查**（五个分片：契约层 `os/libs/minix-boot/`、boot-shim 实现层、内核 boot 路径 `os/kernel/src/`、arch 层、kernel-image + VM 消费侧），叠加对 01 篇正文与 `todo.md`（stage 权威台账）既有条目的逐条现状复核。焦点是**设计合理性**——抽象边界、trait 形状、契约钉死方式、冗余与叠床架屋、依赖方向、终态与过渡形态的错位；注释漂移仅在其暴露设计问题时登记。
-> **口径**：`minix3/` C 源为真值；`os/` Rust 实现的偏差分三类——**注释失真**（改注释即闭环）、**抽象收口**（需设计裁决后动码）、**测试缺口**（补测试即闭环）。行号为登记日快照，动手前以符号锚点重新定位。
-> **与权威台账的关系**：本文件是 01 篇射程内的**工单**，不是权威。既有条目（D-59/D-66/D-67/I-1/I-22/I-23/I-24/I-25）的描述与修法以 `todo.md` §7 为权威，本文件只给摘要 + 指针 + 本轮复核出的现状增量；本轮**新登记**的条目（D-68 ~ D-71、I-26、I-27）全文在本文件，待 GPT 多轮裁决（经 `01-code-design.md`）后再回填权威条目。
-> **设计裁决载体**：需要设计与裁决的条目，逐条自包含简报见 `01-code-design.md`（网页端 GPT 可独立阅读，不依赖本仓库）；已有专门设计文件的（D-59 → `boot-dm-hugepage-design.md`）只给指针。
+> **重写**: 归拢版（九轮评审终态后重制，取代 2026-10-20 版本）。
+
+> **来源与方法**：本文件归拢 `01-boot-shim-bootstrap.md`（下称「01 篇」）射程内的**全部** todo 项——代码项与文档项都含，凡该篇 §7.3 关联代码清单与正文 TODO 标记涉及的条目一律在册。三个来源：
+> ① **本会话九轮外部评审终态**：`01-code-design.md` v2→v9外部评审迭代至冻结；七份调查报告 `01-forensics-round3.md` 至 `01-forensics-round9.md`——**T1–T5 设计已冻结（v9）**，原「待裁决」条目全部拿到裁决，剩余工作收敛为实施、直修与文档同步；
+> ② **stage 权威台账** `todo.md` §7（D/I/T 系条目的现状读数、修法、DoD、现算命令以其为权威，本文件只给摘要 + 指针 + 状态）；
+> ③ **01 篇正文与 §5.3 交接表**（正文 TODO 标记 L1378/L1408/L1424/L1488/L1532 与 TODO-01~07，唯一登记处在篇内，本文件管状态与批次）。
+> **口径**：`minix3/` C 源为真值；`os/` Rust 实现的偏差分三类——**注释失真**（改注释即闭环）、**抽象收口**（设计已裁决、待动码）、**测试缺口**（补测试即闭环）。行号为登记日快照，动手前以符号锚点重新定位。
 
 ---
 
 ## 0. 使用说明（给代码迭代 agent）
 
-1. **一次一条**（todo-fix 纪律）：每条自带现状、证据命令、设计方向与验收；动手前先跑证据命令复核现状（源码可能已前移）。
-2. **裁决先行**：§3 B 批各条**先裁决后动码**——裁决载体是 `01-code-design.md` 对应节（网页端 GPT 多轮讨论的结论回填到本文件条目下，再实施）。§4 C 批互相独立、可直接实施。
-3. **每条做完的通用验收**：`cargo test -p <对应 crate>` 通过；涉及共享契约层（`os/libs/minix-boot`）的条目，三架构 `cargo build` 与 qemu 引导测试（`os/qemu-tests/run_all.sh`）回归；受影响的 01 篇章节同步更新。
+1. **一次一条**（todo-fix 纪律）：每条自带现状与验收；动手前先跑证据命令复核（源码可能已前移）。
+2. **裁决已全部完成**：§2 各条的设计载体（`01-code-design.md` v9）已冻结，**直接按裁决实施**，不再需要外部评审轮次；只有实现证伪某项既定前提时才重开对应局部裁决（v9 冻结条款）。
+3. **每条做完的通用验收**：`cargo test -p <对应 crate>` 通过；涉共享契约层（`os/libs/minix-boot`）的条目加三架构 `cargo build` 与 qemu 引导测试（`os/qemu-tests/run_all.sh`）回归；受影响的 01 篇章节同批更新（Doc Code Sync）。
 4. **硬约束**：`#![no_std]`（测试除外）；错误映射 Minix3 errno；注释全英文自包含（`os/` 下）；三档术语 `[ARCH: ...]` 三处一致。
 
 ---
 
-## 1. 总览
+## 1. 总览（全部条目 × 当前状态 × 去向）
 
-| 批 | 条目 | 类型 | 状态 | 设计载体 |
+| 条目 | 一句话 | 类型 | 当前状态 | 去向 |
 |---|---|---|---|---|
-| A | I-22 回勾、D-60 回勾 | 已落地待回勾 | 代码已闭环，台账读数过时 | — |
-| B | D-59、D-66、D-67、I-1/NK1/OQ-N6 | 设计裁决（既有） | open，现状复核有增量 | `01-code-design.md` T1/T2/T3；D-59 → `boot-dm-hugepage-design.md`；I-1 → coordination 台账 |
-| B | D-68、D-69、D-70、D-71 | 设计裁决（本轮新登记） | open | `01-code-design.md` T1/T4/T5 |
-| C | I-26、I-27 | 注释/登记回修（本轮新登记） | open，可直修 | — |
-| D | §5.3 TODO-01~07 收编 | 测试缺口 | 逐一复核仍 open | — |
-| E | I-23、I-24、L1424 张力、L1422 口径、I-25 指针、读者待办 | 文档侧 | open | stage `todo.md` 详情 |
+| **T1（D-67 吸收 + D-69 同批）** | 跨镜像 wire 协议 + handoff arena + 方案乙配对循环 | ✅ 已实施（01TODO-T1CUT，2026-10-30） | v9 冻结；类型/序列化/分类/配对/解码/失败族/builder/getter 与 2c/3b 联合切根全部落地；aarch64 v1 arena 端到端到 `/etc/rc`，旧 blob 删除，run_all 39/0/0 | §2.2 |
+| **T2（I-1/NK1/OQ-N6）** | x86 切独立镜像（入口契约全套已裁） | ✅ 已实施（01TODO-T2X86，2026-10-30） | 入口契约落地：`_start` 建栈/清 `.bss`/`cli`/`cld`/`rbx` 交接；`arch_boot_resume_v1` x86 分支；`reserved_regions` 恒等重放半退场；模块 blob 上界；x86 冒烟门 PASS，run_all 39/0/0 | §2.5 |
+| **T3（D-66）** | `param_buf` 生产侧接入 | ✅ 已实施（01TODO-T3PARAM，2026-10-30） | 统一 normalizer + UEFI LoadOptions + DTB `/chosen/bootargs`；aarch64 直核读数 `bytes=0x15 first=ARCH=aarch64`，UEFI 腿 `bytes=13`（无 LoadOptions）；内核零改动 | §2.4 |
+| **T4（D-68 + DTB 扣除）** | bootface_a64 第四链迁移 + DTB 永久扣除 | 设计已冻结 → ✅ 已实施（01TODO-B3） | 独立小批完成；`cut_memmap` 真实 totalsize 记账测试与 aarch64 直核冒烟在案 | §2.1 |
+| **T5（D-70）** | 落地区补 `platform_sources`/`param_buf` | ✅ 已实施（01TODO-T5） | 五块落地区在位；容量 4/1024 与 fail-fast 测试在案 | §2.3 |
+| **D-59** | 大页能力/选页策略四层抽象 | ✅ 五阶段全部实施（D59PAGE/D59SIZE/D59POLICY/D59DEFEND/D59RENAME；合并 4dc6a797f/8d99bb774/f9bab95c2/5479b8083） | 启动选页先能力后对齐、`PageSize`/统一能力 API、事实与纯规划拆分、预检式安装、`map_huge` 防御、机械重命名全部落地；末轮三架构 `run_all` 39/0/0。覆盖损失门按 §2.6 未关闭验收门独立立项，不随迁移闭合 | §2.6 |
+| **D-72（本轮新登记）** | bump 池耗尽结构债（kerninfo 注入链每新根抽页、池无回收、真机 ~40 次绑定死亡） | ✅ 已实施（01TODO-D72VM，2026-10-30） | 映射责任移交 VM（候选 A）：`VmBootHandoff` v7 加 `kerninfo_pa`，VM 建根统一映射，内核侧注入块删除；源码序钉 2/0 | §2.7 |
+| **D-73（本轮新登记）** | riscv64 独立 boot-shim 腿：三架构统一主线 = shim + 独立内核镜像，自引导面降为特定嵌入式形态（FW_PAYLOAD / `-kernel` 测试） | ✅ U-Boot → boot-shim → kernel-uboot 全链 PASS（6/6 路标到 entering scheduler）；直核腿不回归；门读数见 §2.8 实施记录 | 交付=`riscv64-uboot-shim`（物理链接 VMA=LMA=0x84500000，自带 bootstrap 栈与 MNXBOOT1 表自建）+ `kernel-uboot` 接收镜像（`fw-riscv64-uboot` 特性，`arch_boot_resume_v1` 加性恢复）；入口 ABI=`bootelf -p <img> <dtb_addr>` 的 `argv[0]`=DTB 物理地址（表由 shim 在 .bss 自建，避开 staging 共变问题）；三处实施期修正：jump_to_kmain 执行位置探针（接收腿不加链接偏移）、shim memmap `firmware_reserve_end`=0x80200000（bootface 同源，堵 OpenSBI 足迹漏进 VM 空闲表）、门脚本 build 失败不再被 `set +x` 掩盖；门=`test-riscv64-uboot-shim.sh` | §2.8 |
+| **N-1~N-5（本轮新登记）** | `BootAlloc::resume` 无区间校验 / vm_handoff 头注释与实现不一致 / 零消费者便利包装 / bootface 双份名字池与常量 / 池页零化机制归因未定案 | 直修或取证 | N-1/N-2/N-3 ✅（01TODO-B1）；N-4 ✅（01TODO-B4）；N-5 ✅（01TODO-N5 探针：映射重放成立、复用前提未出现） | §3 |
+| D-60 | `IDENTITY_MAP_END` 双定义 | 闭合 | ✅ 双定义归一为全仓单定义（回勾确认）；01 篇 §4.6 措辞随修（见 §5） | §3 |
+| I-22 | `MemoryMapSource` trait 收口三链 | 代码已落地 | ✅ 代码落地；文档连带 ①–⑦ 已逐项核（⑤ bootface 头注随 01TODO-B2 修正）；遗留 = D-68（T4 批） | §3 |
+| D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
+| I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
+| I-27 + L1424 | 01 篇 L1422/L2624「还没裁决」口径 + 张力指针 | 文档回修 | ✅ 已修（01TODO-B1；OQ-N6 口径与张力指针同批） | §3 |
+| TODO-01~07 | 01 篇 §5.3 交接表七条测试缺口 | 测试缺口 | TODO-01/02/03/06/07 ✅；TODO-04 ✅（文本级，T1 接线后升级）；TODO-05 允许开放（真机窗口） | §4 |
+| I-17/I-18/I-19 | 01 篇 §2.6 拆节 / 章头体检 / 讲解条续扫 | 文档结构 | ✅ 已改（01TODO-DOC） | §5 |
+| I-23 / I-24 + L1378/L1408 | §3.7 fw_payload 段 / §3.1 否决表拆行 | 文档内容 | ✅ 已改（01TODO-DOC；设计侧 [ARCH] 镜像在主树工作区，未代提交） | §5 |
+| L1488 / L1532 | 01 篇读者待办（`reserved_regions` 退场学习项 / 张力块性质澄清） | 读者侧 | 允许开放（用户侧学习/澄清项，AI 不代决） | §5 |
+| I-25 | `os/` 全仓注释语言与锚点整改 | 代码注释 | ✅ 全仓完成：1,549 个 Rust 文件注释 CJK=0、广义锚点=0；654 个纯注释文件非注释 token 与基线零差异，另 1 个 `SimPaging` 测试替身按 D-59 补齐（合并 e754ea77a/9c9c24bbe/f933b53ab）。审计 `tmp/i25-final-audit.md`，构建 `run_all` 39/0/0、workspace 8,284 passed/0 failed | §5 |
+| I-21 | 篇头「路径约定」重复上收 | 文档结构 | 允许开放（延后决策；W-10/W-11 冻结后再议） | §5 |
+| I-20 | boot-shim 再导出注释 | 已闭合 | ✅（commit b0da9074e） | — |
 
 ---
 
-## 2. A 批——已落地、待回勾闭环（台账读数刷新）
+## 2. 实施批次（设计已冻结，按既定次序 T4 → T1 → T5 → T3 → T2）
 
-### I-22 `MemoryMapSource` 丁案：代码已全部落地，`todo.md` §7.1 仍记 open
+> 本节每条的**完整裁决内容**在 `01-code-design.md`（v9 状态收紧表 §10 + 各节）；本文件只给实施要点、验收锚点与现状复核命令。九轮评审的关键终态：wire 载荷走**单一 handoff arena**（信封宿主 + 语义工作分区双写 + 仅 `byte_len` 描述符 + `arena_len` 字段，独立 bump blob 页移除）；内存图权威走**方案乙**（`uefi::table::system_table_raw()` raw 配对循环，分类在 Boot Services 活着的规范明文窗口，MapKey 显式配对）；解码边界为**受控复制五步序列**（`KernelInfoView`/`BootReadPhase` 退役）；x86 入口契约全套已裁（镜像内 bootstrap 栈二段式、`rbx` 传 blob 指针、显式 `cli`/`cld`、red-zone 由目标规格闭合无需旗标、`load_elf_into` 机制前提归边界）。
 
-**现状（2026-10-20 复核，证据命令见下）**：
+### 2.1 批次一 —— T4（独立小批，最先）
 
-- trait 与 DTB 实现已落 `os/libs/minix-boot/src/memmap_source.rs:trait MemoryMapSource`（`DtbMemoryMap` + `clip_reserved` 纯函数 + 编译期护栏 + 8 个宿主测试）。
-- 三链接线完成：UEFI 腿 `os/boot-shim/src/uefi_helpers.rs:struct UefiMemoryMap`（委托 `build_memmaps`，丁案 B）；opensbi 腿 `os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot` 改用 `DtbMemoryMap::new(&fdt, 0).collect()`（丁案 C，缺 DTB 诚实停机）；bootface 腿 `os/kernel-image/src/bootface.rs:fn bootface` 改用 `DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)`（丁案 B 迁移注释在 L187/L284/L496）。
-- opensbi 侧 `DRAM_BASE`/`DEFAULT_RAM_SIZE`/`build_memmap` 与单区断言测试已删（grep 零命中）。
-- 01 篇文档侧「硬编码的 QEMU virt DRAM 布局」「单条 DRAM」表述已清零（`grep -cE '硬编码的 QEMU virt DRAM 布局|单条 DRAM' 01-boot-shim-bootstrap.md` 得 0）。
-- 附带落地了丁案之外的一件：`dtb_covers_conventional` 出界闸（SD-3 D1，UEFI 腿 dumpdtb.dtb 存在时对 conventional 快照做 DTB 全景覆盖校验）。
+**D-68：`bootface_a64` 第四条 memmap 链迁移**（权威：todo.md §7.1；裁决：01-code-design §4.3）
+
+- 删 `os/kernel-image/src/bootface_a64.rs` 的 `fill_memmap`/`clip_firmware`/`MEMMAP_STORAGE`，改调 `DtbMemoryMap::new(&fdt, 0).collect()`；`fw_end = 0` 带形态前提成文（该腿无固件常驻区于 DRAM），与内核侧 `cut_memmap` 两机制不替岗。
+- **v5 定案增补**：DTB 永久扣除——Phase A.2 补一笔 `cut_memmap(dtb_pa, totalsize)`（与 D-64① 内核镜像自切同型，损耗 ≤ 2 页）；**腿侧无需预对齐**（round-5 C 批核实：`cut_memmap` 自动页化扩展 `[floor_P(start), ceil_P(start+len))`，带 saturating/回绕保护，非页对齐测试已在库 `test_cut_memmap_alignment_*`）。
+- 验收：aarch64 target 构建通过；直核冒烟；`grep -n "MEMMAP_STORAGE\|clip_firmware" os/kernel-image/src/bootface_a64.rs` 归零；DTB 扣除端到端检查（真实 `dtb_pa + totalsize` 传入后记账与预期页区间一致）。**状态**：✅ 01TODO-B3——`MEMMAP_STORAGE`/`clip_firmware`/`fill_memmap` 三归零；Phase A.2 Step 4 用 `dtb_blob_len`（8 字节头）取真实 totalsize 后 `cut_memmap`；宿主测试用真实 QEMU blob（7699B @ 0x4000_0000）断言切除后自由段 `[0x4000_2000, +512MiB-0x2000)`；aarch64 kernel-image（SD-23 RUSTFLAGS 门）0 error；`test-smp-aps-aarch64.sh` 直核全链 PASS（ap-arrived=1）。
+
+### 2.2 批次二 —— T1（wire 协议 + arena + 方案乙；九轮评审的主体的落地）
+
+**T1 实施拆步（裁决载体：01-code-design §1.3/§1.4/§1.5（四）（六）（七）/§9.2–9.4）**：
+
+1. **协议类型层**：`BootHandoffV1` + `Wire*` 元素类型（`WireMemoryRegion`/`WireBootModule` 16B 定长名槽/`WirePlatformDescSource`）；信封内切片描述符**仅 `byte_len: u64`**（`WireSlice{addr,byte_len}` 已在 v8 退役——固定分区布局下地址由 arena 基址 + 协议偏移推导，三类指向错误不可表达）；协议头 `magic`/`version`/`size`（= 信封结构大小）+ **`arena_len`**（= 协议常量 `ARENA_CAP`，接收方验证相等）；`free_upper_idx` 用 `u64::MAX` 哨兵；`MemoryRegion.len` → u64。
+2. **arena 布局常量**（编译期 + 进布局门禁基准）：自基址起 = 信封（≤ 256 B 预算）→ wire 分区（128×16 + 256×16 + 12×32 + 4×16 + 1024 = 7,616 B）→ 语义工作分区（`MemoryRegion` 双写供给 shim 侧，6,144 B）≈ **4 页（16 KiB）**；`Wire*` 元素 size/align/offset + 分区偏移逐目标交叉编译断言。
+3. **方案乙配对循环**（`prepare_boot` 末节替换现「快照 A + helper EBS」）：`uefi::table::system_table_raw()` → raw `boot_services` → 外部缓冲 `GetMemoryMap`（自管 buffer：`memory_map_size()` 实查 + `desc_size×8` 余量，EBS 前 LOADER_DATA 单独分配）→ 分类**双写**（`WireMemoryRegion` 进 wire 分区、`MemoryRegion` 进语义分区；非内存图载荷——模块名/平台来源/param——在此前已序列化）→ 填信封静态字段 → raw `ExitBootServices(image_handle, map_key)`。
+4. **四条硬性实施契约**（缺一不实施，round-9 + 九轮终审）：① **EBS 后三零**（零分配/零释放/零 BS 调用；RAII 清理在循环前完成——`prepare_boot` 链 Drop 面盘点为零；失败与终止路径同受约束）；② **失败原因分派**（仅 `EFI_INVALID_PARAMETER` 重试；其他状态立即失败；总尝试 2 次超限走不依赖 BS 的冷复位；缓冲三段处置——EBS 前可扩容 / 失败后只复用 / 复用不足 fail-closed；不沿用旧分类结果）；③ **描述符遍历**（`descriptor_size` 步长；引用建立前验证——version=1、desc_size ≥ size_of、**desc_size 为对齐整数倍**、首地址对齐、边界与整除；对齐不满足不强行建引用；循环体零 fmt/日志）；④ **区间 checked 算术**（`checked_mul`/`checked_add` + 页数非零 + PA 范围验证后才生成 `MemoryRegion`）。
+5. **接收端受控复制**（镜像侧 `store_kernel_info` 的 wire 版五步）：受限原始读取验头（通过前不构造 wire 引用）→ 复制信封 → 逐载荷验证（容量 + 编码守恒两条；溢出/对齐/⊆ 已由布局构造保证）→ 受保读取阶段复制进 `.bss` 落地区 → 从落地区构造 `KernelInfo`。**切根后**：arena 信封原地补运行期字段（bump 三件套）、跳转 `x0 = arena 基址`（独立 blob 页删除）；验收改「arena 不占 bump 区 + 信封游标 = 跳转前真值」。
+6. **九面失败测试族**（§9.3）：无效 version / desc_size 不足 / 对齐不合法 / 不整除 / 扩展步长 / 区间溢出与零页数 / 复用仍不足 fail-closed / 第二次 EBS 失败 / 非 `INVALID_PARAMETER` 状态不重试。
+
+**D-67 存留件**（原信封合一 a–e 的 v9 后形态）：模块注释 "only data crossing the boundary" 失真句随实施删除；`BootPrepareResult` 保留为进程内类型（合一已裁不做）；builder 统一（D-69）随本批——`build_kernel_info` 收敛单一构造面、统一签名带 `reserved_regions` 形参；getter 家族补 `param_buf`。
+
+**D-69**：两处 `build_kernel_info`（opensbi 8 参 vs uefi 9 参）随本批收敛；证据 `grep -rn "fn build_kernel_info" os --include="*.rs"`。
+
+**T1 落地后 01 篇需同步的章节清单**（本轮 review 补列，避免实施者漏改）：§3.1 交接表「内存布局」行（快照两份列表 → 配对循环 + 终图）；§3.4 L1422 段的「切片深拷」叙述（受控复制五步）；§4.1/A. 主流程骨架（`prepare_boot` 末节换配对循环、blob 页移除）；§4.2 八步表（步骤 6「两次列表在同一快照分流」与「列表页快照后分配」的不变量整段改写——方案乙下不再有「快照后分配」类别）；§4.5 落地区表（三块 → 五块随 T5、加「wire 版受控复制」）；§4.7 bump 游标段（blob 页移除后的 `bump_next` 语义）；§5.1 M4/M12/M13 的断言与覆盖状态；§6.1 里程碑清单（新增配对循环路标、`memmap ok (final pre-EBS snapshot)` 字样替换）。
+
+**子步进度**：1a ✅（01TODO-T1A）`handoff_v1.rs` 类型/arena 常量/布局门禁；1b ✅（01TODO-T1B）`handoff_v1_write.rs` 生产者序列化器；2a ✅（01TODO-T1C）`ebs_map.rs` 描述符走查分类；2b ✅（01TODO-T1D）`ebs_pair.rs` 配对循环可测核心；3a ✅（01TODO-T1E）`handoff_v1_read.rs` 接收端解码器；5a ✅（01TODO-T1F）D-69 单一 builder + D-67 旧口径；5b ✅（01TODO-T1G）`param_buf()` getter；**2c/3b ✅（01TODO-T1CUT，2026-10-30）**——aarch64 `prepare_and_enter_kernel_image`（arena + 配对循环 + 建根 + 原地补字段 + `x0=arena`）与 `enter_kernel_image_v1`/`arch_boot_resume_v1`（五块解码进 T5 落地区 + additive resume）落地，旧一页 `BootHandoff` blob 与 `bootstrap_to_kernel_image` 删除。**4 九面失败测试 ✅**（映射：无版本→`rejects_unsupported_version`；步长不足→`rejects_descriptor_smaller_than_prefix`；不对齐→`rejects_unaligned_descriptor_size`；不整除→`rejects_map_size_not_multiple`+`rejects_non_divisible_descriptor`；扩展步长→`padded_descriptor_stride_is_honored`；区间溢出/零页→`rejects_page_count_overflow`/`rejects_range_overflow`/`rejects_zero_page_count_on_produced_region`；复用不足 fail-closed→`too_small_on_retry_is_fail_closed`；二次 EBS 失败→`two_invalid_parameters_exhaust_the_retry_budget`；非 INVALID 不重试→`other_ebs_status_fails_immediately`）。**2026-10-30 补**：TODO-04 已升级为两条入口的文本级审计（`prepare_boot` 与 `prepare_and_enter_kernel_image`，5/0）；T1 的配对循环状态码修正是 `EFI_ERROR_BIT | code` 高位编码，原 2/5 只命中低字节。
+
+**2c/3b 联合切根实施方案（下一笔开工前先读；T5 已备齐五块落地区）**：
+
+- **载体**：aarch64 专属 `uefi_helpers::prepare_and_enter_kernel_image(bump_pages)`（只在 `target_arch = "aarch64"` 编译），不复用 `BootPrepareResult`——避免给 38 处构造点加字段；x86 内联路径保持到 T2 再统一。
+- **发送顺序**：装载 kernel/模块 → 平台源 → root/bump 分配 → arena（`AllocateMaxAddress(bootstrap_alloc_limit(4 页)), LOADER_DATA, 4`）→ map buffer（`AllocatePool`，`memory_map_size()` 实查 + 余量）→ 非内存图载荷序列化（信封/模块/平台源/param）→ 配对循环（raw `get_memory_map` → `classify_map` → raw `exit_boot_services`；uefi-raw 0.9 的表字段签名无 `This`，状态码用 EFI_STATUS 高位编码）→ 建根开分页 → 原地补 runtime 字段 → `x0 = arena` 跳转。
+- **接收端**：kernel 侧 `arch_boot_resume_v1(arena_pa)`（aarch64）：identity 读 arena → `decode_envelope` → 五块分区解码进 T5 落地区（memmap/reserved/modules+名池/platform/param）→ 构造 `KernelInfo` → `validate` → `set_current_root_phys` → `establish_boot_dm` → `jump_to_kmain`；`kernel-image/src/main.rs` 的 `x0` 非空支路改为传 arena（类型从 `*const BootHandoff` 改 `usize`）。
+- **删除项**：`bootstrap_to_kernel_image` 的 blob 页分配与 `BootHandoff` 写入在切根落地后清理；01 篇 §3.4/§3.7/§4.7/§4.8 的 blob 叙述同批改写。
+- **验证**：`test-shim-bootmarks-aarch64.sh` 先验 shim 两路标；`test-cmd-smoke-aarch64.sh` 全链；`run_all` 39 段不回归（x86 路径未动）。
+- **风险**：raw EBS 与固件 ABI（aarch64 上 `efiapi == C`）；arena 必须落在 bootstrap 恒等窗口内；map buffer 的分配必须在 EBS 前完成，循环内零分配。
+
+**2026-10-30 实施完成（01TODO-T1CUT）**：上述载体、发送顺序、接收端与删除项全部落地；实现偏离一处——`uefi` 0.33 的 `memory_map_size` 是 crate 私有，map buffer 改为 raw `GetMemoryMap` 空缓冲探测加余量、循环内按 `BUFFER_TOO_SMALL` 扩容；`uefi-raw 0.9` 作为 boot-shim 直接依赖引入（与 `uefi` 同一版本，`Cargo.lock` 未变）。门读数：minix-boot 57/0、boot-shim test-all 53/0 加边界审计 5/0、kernel mock 845/0/8、三架构 kernel/kernel-image check 0 error、`test-shim-bootmarks-aarch64` PASS、`run_all` 39/0/0；`test-cmd-smoke-aarch64` 到达 `/etc/rc`，`du`/`ls` 目录读腿在 `f03aa8ffc` 基线同样失败（既有 A 板问题，非本批回归）。
+
+### 2.3 批次三 —— T5（先于 T3）
+
+**D-70**（裁决：01-code-design §5，采案 1）：`globals.rs` 增 `PLATFORM_SOURCE_STORE`（4 条，**容量 4 = 已核实真实上限 2 × 有意余量**）与 `PARAM_BUF_STORE`（1024，清零再复制语义）；`store_kernel_info` 五块切片全落地；验收 = `test_store_kernel_info_lands_firmware_slices` 扩断言 + 超容量 fail-fast 测试（兼 TODO-03 第五块）。**状态**：✅ 01TODO-T5。两 pad 已在 `globals.rs`（platform 4 / param 1024，前者补 `BklProtected` 审计条目）；`store_kernel_info` 五块全部重指向；落地区测试扩平台源/param（含幂等再存指针稳定），超容量负控 5 枚；01 篇 §4.5 三块→五块、M8/TODO-03 行、§5.2 计数 4→6 同批；kernel mock 845/0/8、三架构生产 check 0 error。
+
+### 2.4 批次四 —— T3（D-66）
+
+- UEFI 腿读当前镜像 `EFI_LOADED_IMAGE_PROTOCOL` 的 `LoadOptions`（非 `Boot####` 枚举）；规范化四步统一规则；**ARCH 有可靠来源（编译目标）则生成、BOARD 有真实值才生成、不能确认显式省略**（v5 废除占位；结论范围 = 未发现仓库内消费者）；截断按整条记录丢弃；SBI/直核腿来源 = `/chosen/bootargs`，验收须实测本仓 QEMU 链 `-append` → DTB 节点通路（或诚实结论 = 该腿长期空切片）。
+- 验收：`GET_MONPARAMS` 与 C 同形（1024 定长零填充）；01 篇 §3.4 param_buf 表述同步。
+
+**2026-10-30 实施完成（01TODO-T3PARAM）**：`minix-boot` 新增 `boot_params.rs`（`normalize_param_buf` 唯一规则：NUL/空白分词、可打印 ASCII、内部键拒绝、重复键首条胜出、整条记录截断）；`build_kernel_info` 增第 10 个 `param_buf` 形参；UEFI 腿读 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`（非 UCS-2/二进制不猜，逐条拒绝），OpenSBI 与两个直核面读 DTB `/chosen/bootargs`（`all_nodes` 走查，避开 `find_node` 的 SD-38 缺陷）。`KernelInfo` 与内核零改动。读数：minix-boot 65/0、boot-shim test-all 53/0、kernel mock 845/0/8、三架构 kernel/kernel-image check 0 error；aarch64 直核注入 `/chosen/bootargs "ARCH=probe BOARD=qemu FOO=bar"` 后串口 `param_buf bytes=0x15 first=ARCH=aarch64`（ARCH 13 字节 + `FOO=bar` 8 字节；BOARD 无来源按规则省略，外部同名键被拒）；UEFI 腿 `param_buf bytes=13 rejected=0 dropped=0`（AAVMF 启动管理器未传 LoadOptions，生成 ARCH 一条）。riscv 直核面复用同一 `bootface.rs` 代码，其现有测试夹具的模块表为空、走不到 `build_kernel_info`，该腿的端到端读数留待 D-73 shim 腿。
+
+### 2.5 批次五 —— T2（I-1/NK1/OQ-N6：x86 切独立镜像）
+
+- OQ-N6 已裁（每进程独立根原语）；本批 = NK1（C-29）实施收口。全部入口契约已冻结：trampoline 状态清单（镜像内 bootstrap 栈起步、**禁止验证前读 `kern_stack_top`**、显式 `cli`/`cld`、16B 对齐、`rbx` 持 blob 指针跨 `.bss` 清零）；red-zone **无需任何旗标**（`x86_64-unknown-none`/`x86_64-unknown-uefi` 规格 `disable-redzone: true`，round-5 B 批实测）；`load_elf_into` 前提归边界成文（不改签名不加 trait）；`reserved_regions` 按消费语义拆分输入（`dm_coverage` 保留、`vm_handoff` kern_ident 输入删除）；模块 blob 分配改 `MaxAddress(bootstrap_alloc_limit)` + 区间末端验证；QEMU 先行短期双轨后翻产线删旧路径。
+- 联动：01 篇 §3.7 三形态表 x86 行、§4.8、L1422/L2624/L1424 张力块（同批，见 §3）、`os/kernel-image/src/main.rs` 头注「交付边界」段更新。
+
+**2026-10-30 实施完成（01TODO-T2X86）**：`prepare_and_enter_kernel_image` 与 `enter_kernel_image_v1`/`arch_boot_resume_v1` 的 cfg 扩到 `any(aarch64, x86_64)`；x86 的最终跳转走 `__minix_x86_enter_image` 全局汇编（`cli`/`cld`、`rbx=arena`、`jmp entry`），镜像 `_start` 建栈、清 `.bss`（只碰 rdi/rax/rcx）、`and rsp,-16`、`mov rdi,rbx`。**实现中发现并修复一处 ABI 真 bug**：`extern "C"` 在 `x86_64-unknown-uefi` 上是 Win64 约定（rcx/rdx），与 stub 的 SysV 取值不符，曾把 `KernelInfo` 指针当入口地址跳进栈；改为 `extern "sysv64"` 后 x86 门稳定 PASS（连跑三次）。`reserved_regions` 的 kern_ident 输入已从 `vm_handoff::build_identity_windows` 删除（只剩架构 MMIO 恒等窗口），`dm_coverage` 源保留；`alloc_module_pages` 改 `MaxAddress(bootstrap_alloc_limit(size))` 并验证区间末端；`load_elf_into` 的恒等可读前提成文。新增 `test-shim-bootmarks-x86.sh`（五路标：三 shim 行 + 接收端行 + `entering scheduler`），`test-cmd-smoke.sh` 的 M14 交接行改为 `[raw] entering kernel image v1`。门读数：kernel mock 845/0/8、minix-boot 65/0、boot-shim 53/0 + 边界审计 5/0、三架构 kernel/kernel-image check 0 error、x86 冒烟门 PASS（三次）、aarch64 冒烟门 PASS、`test-cmd-smoke.sh` 到达 `/etc/rc`（仅 `du` 既有 A 板红）、`run_all` 39/0/0。
+
+### 2.6 独立线 —— D-59（`boot-dm-hugepage-design.md`，不进 01-code-design）
+
+- 设计文档已定稿（2,249 行；五轮评审收尾；lint 0 error）；**待实施**，迁移五阶段（先启动选页 → `PageSize`/能力 API → 事实/规划拆分与策略 → `map_huge`/SMP/预检 → 机械重命名）。
+- 开放问题（§10）现状：大多已决（`BootDmInstaller` 封口、物理上界路线 A + 统一取小、MMU 模式变更时重算）；剩小项 = `test-support` feature 打包方式、`DmPagePolicy` 构造边界、`KernelLayout::from_info` 取舍、`supports_huge_page` 命名——随实施定。
+- **未关闭验收门（独立立项，不随迁移闭合）**：候选区间整段丢弃的覆盖损失（reserved 与候选部分重叠时非重叠尾部失去 kernel-DM 叶子）——按优先级区间差集归一化另立专项 + 真机证明；本项闭合前集合级不变量不承诺「所有有资格映射的字节都被保留」。
+- 与 01 篇的交点：TODO-05（2 MiB 回退档真机启动）随本条实施 + NK1 一并验。
+
+### 2.7 D-72（新登记）——bump 池耗尽的结构债：1024 页是 runway，不是终态
+> **裁决（八轮评审，通过候选 A）**：映射责任移交 VM；所有权三分——`KERNINFO_PAGE` 归内核（长期保留、不得被 VM 当普通帧回收）、每个地址空间的 `KERNINFO_USER_VA` 映射归 VM（建根建立、随页表销毁）、中间页表页归 VM 的页表分配器；`VmBootHandoff` 加字段并**升载荷版本**（VM 拒绝不支持版本，不得静默漏映射）；`fork`/`exec` 分别验收；4 MiB 启动池预算在候选 A 后按实测峰值复核。**仓库侧前置已核实**：`init_kerninfo` 在 Phase B.5、`build_vm_handoff` 在 Phase C——加字段无需倒置初始化顺序；`fork`（`vm/src/fork.rs:do_fork` 的 `pt_new` + `fork_regions`）与 `exec`（`vm_server.rs:exec_bootproc`）都新建根、不继承映射，实现点应放在 VM「根创建」统一函数。详见 `01-design-note-riscv-unify-d72.md` §5.2/§5.4。
+
+**现状（代码注释自陈，属 01 篇射程：`prepare_boot(N)` 的预算正是 §4.1 讲的那个池）**：
+
+- 预算构成：boot 期约 100 页（恒等/内核映射、DM 覆盖、引导身份窗口逐页拆解、交接链），其余余量给**每次新根绑定（exec 重建根）的 kerninfo 注入链**留 1–3 页/次。证据：`os/boot-shim/src/main.rs:fn main` 的 `prepare_boot(1024)` 上方注释（NK4-C 1.55 B30 段）。
+- **池无回收路径**：`BootAlloc` 是单调 bump（`alloc` 只前进、失败回滚一格），页表页从不归还；真机（bn9m）在 **~40 次绑定后 `AllocationFailed` 死亡**——注释原文 "the pool has no free path … died AllocationFailed after ~40 binds"。
+- **代价已量化且落在 VM 可分配总量上**：`vm_handoff` 按 `boot_alloc_region()` **整段**扣除（用掉的与剩下的都算内核保留），1024 页 = **4 MiB 每次启动从 VM 可选内存里永久扣掉**。
+- 注释自陈不是修好了："Before the structural fix lands (**reclaimable page-table pages / moving the kerninfo mapping responsibility to VM per kerninfo.rs doc** — WORKLOG 1.55 follow-up) this pool only postpones the deterministic panic." `kerninfo.rs` 模块 doc 侧对应口径：本次重写不移植 `.usermapped` 段，`init_kerninfo` 自建一页并在**每个新根**里复刻该映射（即注入链的来源）。
+- **未登记核实**：`todo.md` 与旧 `01-todo.md` 全量检索 `reclaimable|kerninfo-injection|bn9m|1.55` 只命中 I-25 的锚点样例——本债此前**没有条目**；01 篇 §4.1 只描述了预算构成，未写耗尽故障与结构修复缺口。
+
+**待裁决（两候选，实施前需一次小裁决）**：
+
+1. **可回收页表页**：给引导期页表池加回收路径（C 的 `pt_free` 语义在 boot 侧的对应物），或改用 VM 的页表池承担新根建表；
+2. **kerninfo 映射责任移交 VM**：内核只发布 kerninfo 页的物理位置，由 VM 在建每个进程根时把该页映射进去（与 C 的 `.usermapped` 段语义更近；`kerninfo.rs` doc 已把这个方向写成"待结构修复"）。
+
+**登记理由**：这是 01 篇射程内唯一的"已跑通过的临时方案被当作终态"的结构债——不影响当前启动，但在 exec 密集负载下是确定性上限（~40 次绑定）。**验收方向**：设计裁决落文（01-code-design 增补一节或独立小设计）→ 实施 → 真机验证"exec 重建根 N 次（N ≫ 40）不耗尽"或"bump 池不再承担每绑定开销"。
 
 **证据命令**：
 
 ```
-grep -rn "trait MemoryMapSource" os/libs/minix-boot/
-grep -n 'DRAM_BASE\|DEFAULT_RAM_SIZE\|fn build_memmap' os/boot-shim/src/opensbi_helpers.rs   # 应零命中
-grep -cE '硬编码的 QEMU virt DRAM 布局|单条 DRAM' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md   # 应 0
+sed -n '38,62p' os/boot-shim/src/main.rs          # 预算构成与 bn9m 读数
+grep -n "init_kerninfo\|new root\|replicating" os/kernel/src/kerninfo.rs | head
+grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 ```
 
-**遗留**：`bootface_a64` 第四链未迁（升格为本轮 D-68，见 §3）；连带文档六处的逐一核对（`04-platform-discovery.md` 分工段、`uefi_helpers.rs` 模块顶注等）未见专查记录——回勾时按 `todo.md` I-22 条目的连带清单 ①–⑦ 逐项过。
+**2026-10-30 实施完成（01TODO-D72VM，候选 A）**：`VmBootHandoff` 升到 v7 并加 `kerninfo_pa`（非零/页对齐校验；v6 及以下拒收）；`minix_types` 增 `KERNINFO_USER_VA` 单一权威，内核 `kerninfo.rs` 改为再导出；`kernel/vm_handoff.rs` 在 Phase C 填 `kerninfo_page_phys()`；`kernel/syscall.rs` 的 `vmctl_set_addr_space` 每根注入块删除（源码序钉 `os/kernel/tests/set_addr_space_no_boot_alloc_pin.rs` 2/0 钉住"不再出现 `boot_pt_alloc`/`kerninfo_page_phys`/`KERNINFO_USER_VA`"）；VM 侧 `BootParams` 加 `kerninfo_pa`、`init_page_table` 在 `map_kernel` 之后把该页只读映射到 `KERNINFO_USER_VA`（失败走既有 `free_page_table` 回滚）。`fork` 与 `exec` 都经 `init_page_table` 新建根，一处覆盖两条路径。门读数：minix-types 331/0、minix-vm 543/0、kernel mock 845/0/8、三架构 check 0 error、`run_all` 39/0/0（含 rt-birth 的 `kerninfo=ready` 查询）。4 MiB 预算按实测复核：映射不再从启动池取页，池只承担启动期本身，1024 页维持不变（净值见 `kernel_allocated_dynamic` 交接字段）。
 
-**处置**：`todo.md` §7.1 的 I-22 条目改记「代码已落地（丁案 A–F 除 aarch64 直核腿外），遗留 D-68 与文档连带核对」；本文件不再展开。
+### 2.8 D-73（新登记）——riscv64 独立 boot-shim 腿：三架构统一为主线
 
-### D-60 `IDENTITY_MAP_END` 双定义：已修复，`todo.md` §7.1 仍记 open
+> **裁决（八轮评审，有条件通过）**：方向通过；先闭合 **入口契约闭合门（输入契约）**再接线——① U-Boot 版本与 `bootelf` 支持面（官方文档：`bootelf [-p|-s] [-d <fdt_addr>] [<image_addr> [<arg>]...]`，`image_addr` 之后的参数以 `argc/argv` 交给应用，`-d` 按地址设置设备树）；② shim 入口适配层解析 argc/argv（设备树 + 启动清单）并校验，不依赖 OpenSBI 的 `a0/a1` 语义；③ kernel.elf 与 12 模块由谁装载（沿用 U-Boot 预载 + `BootFileTable` 契约，或 shim 自读）与地址/长度/内存范围进契约；④ 页池/设备树/镜像/模块/交接载荷互不重叠（`MODULE_REGION_BASE` 等 QEMU 常量改为 DTB `/memory` 推导或构建期注入）；⑤ 两内核产物入口契约（`kernel-direct.elf` 直核：`a0`=hartid、`a1`=DTB；`kernel-shim.elf`：只收交接载荷），且两入口适配完成后必须进入同一套公共内核启动语义流程（汇合点验收）；⑥ `-d`/参数传递依赖 U-Boot 构建配置（`CONFIG_CMD_ELF_FDT_SETUP` 一类），实际版本须实测核实；⑦ 入口 ABI / 固件服务 / 文件与启动信息来源三个维度分开表达，不固化成同一个"固件实现"选择开关。**分道 = 两个构建产物**（不做运行时分道猜测）。直核自引导面称「辅助启动路径」，保留并继续验收；QEMU 通过 ≠ 真板契约成立。rustc 现无 riscv64 UEFI 目标（`*-unknown-uefi` 列表无 riscv64），UEFI-on-riscv 只作未来扩展。详见 `01-design-note-riscv-unify-d72.md` §五。
 
-**现状（2026-10-20 复核）**：kernel 侧已改引用 arch 权威——`os/kernel/src/lib.rs` 顶部 `use minix_arch::BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END`；全仓 `const` 定义只剩 `os/arch/src/lib.rs:231` 一处。推荐修法（kernel `use` 归一）与解除条件（「全仓该字面量只剩一处定义」）均已满足；其余 `0x1_0000_0000` 命中属不同语义常量（`VM_BOOT_HANDOFF_VA`、DTB 界限闸、测试值），不在该条射程。
+**方向（提出方立场，已获有条件通过）**：三架构共用同一条主线——**独立 boot-shim 可执行体 + 独立内核镜像 + 交接载荷**。boot-shim 的职责是为内核屏蔽固件形态（UEFI、U-Boot/OpenSBI 或将来其它）；riscv64 也因此收编进主线，自引导面（`bootface`/`bootface_a64`）**降级为特定嵌入式形态**（riscv 的 `FW_PAYLOAD`、QEMU `-kernel` 测试通道），保留但不作主产线。依据：`BootShim` trait 本就与固件无关（`UefiBootShim` / `OpenSbiBootShim` 两个实现产同一 `KernelInfo`）；riscv 的 shim 腿主体（`OpenSbiBootShim`/`UbootFileLoader`/`BootFileTable`/`bump_alloc_pages`）已在仓内，只是**零接线**（bin 只按 `fw-uefi-image` 构建，`OpenSbiBootShim::prepare_boot` 无调用方）——当前"riscv 产线走自引导面"是历史缺线，不是架构结论。
 
-**证据命令**：
+**已知缺口（实施前要解决）**：
 
-```
-grep -rn "IDENTITY_MAP_END" os --include="*.rs" | grep "const"
-# 仅 os/arch/src/lib.rs:231 一处定义；os/target/ 下为构建产物，不计
-grep -n "BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END" os/kernel/src/lib.rs
-```
+1. **bin 与 feature 词表**：`os/boot-shim/Cargo.toml` 需增 riscv64 bin 词表（如 `fw-riscv-opensbi`），`main.rs` 按 feature 选固件实现；目标 triple `riscv64gc-unknown-none-elf`。
+2. **入口参数通道**：U-Boot `bootelf` 不按 OpenSBI 的 `a1` 传设备树（现有 `install_dtb_ptr(a1)` 与 `rust_image_main(a0/a1/a2)` 约定只对 OpenSBI 直载成立）——需裁决取树通道（候选：`go` 带参 / 约定内存槽 / 扫 FDT 魔数 / 构建期注入）。
+3. **交接泛化**：`bootstrap_to_kernel_image` 与 `arch_boot_resume_high_half` 当前 `#[cfg(target_arch = "aarch64")]`，需放宽到 riscv64（架构差异仅跳转指令 `fence.i`+`jr` 与寄存器；`BootHandoff` 类型本身架构无关）。
+4. **内核镜像两形分道**：直核（`bootface`）与 shim 交接共存；aarch64 的「`x0==0` 走自引导」判据在 riscv 不成立（直核 `a0` 是 hartid）——需新判据（候选：两个独立 ELF 入口符号 / 魔数载荷 / 专用寄存器约定）。
+5. **池基去 QEMU 化**：`opensbi_helpers.rs` 的 `MODULE_REGION_BASE = 0x8000_0000 + 32 MiB` 与 `BUMP_END` 编译期断言是 QEMU 布局硬编码，真板不可用——改为从设备树 `/memory` 推导或构建期注入 + 运行期检查。
 
-**处置**：`todo.md` §7.1 的 D-60 条目改记「✅ 已修复（`2026-10-20` 前落地，`2026-10-20` 复核回勾）」，附上述证据。
+**裁决载体**：`rewrite-notes/01-stage-kernel/01-design-note-riscv-unify-d72.md`（完全自包含，含议题二 D-72；外部评审已完成并冻结，裁决见其 §五）。裁决回填本条目与 `01-code-design.md`（T2 的「riscv64 直核腿不需要 shim 侧跳转」表述随裁决更新）。
+
+**验收方向**：QEMU 上 U-Boot `fatload` 载 `boot-shim.elf` → `bootelf` → shim 读 12 模块 → 建表 → 跳 `kernel.elf` 高半 → 内核首个路标；`-kernel` 直核形态不回归；真板窗口另计（`FW_PAYLOAD` 形态保持可用）。
+
+**入口契约实测结论（D-73，GPT 裁决核定后的更正版）**：早前的「bootelf 无 argv」结论**已被探针证伪**——`help` 的 usage 文本只写 `[address]` 不足以证明参数通道不存在。本机 U-Boot 2025.10（`/usr/lib/u-boot/qemu-riscv64_smode/uboot.elf`，OpenSBI 之下 S-mode）用最小 RISC-V 探针（`_start(argc, argv, a2)`，SBI console 打印）实测：**`bootelf -p <img> [args…]` 会把 image 地址之后的参数以 `(extra_argc, extra_argv)` 交给应用入口**——`bootelf -p $loadaddr` → `argc=0`；加 `87654321` → `argc=1, argv[0]="87654321"`；加 `aaaa bbbb` → `argc=2, argv[0]="aaaa", argv[1]="bbbb"`；a2 是 U-Boot 堆内指针（随调用变化），**不是 FDT**。两个此前没看见的门：① `autostart` 环境变量默认未定义时 bootelf 只装载不执行（必须 `setenv autostart yes`）；② 不带 `-p` 时本 build 的 extra-arg 形状未通过（`bootelf $loadaddr deadbeef` 报 `## No elf image at address 0x80200000`），契约应钉在 `-p` 上。`-d` 未在 help 列出且本设计不需要它（DTB 地址进 BootFileTable，由 shim 自己读）。
+
+早前 hello-boot 的 `bootelf` `Load access fault`（EPC `0x8f73d74e`）的真因也修正为：**staging == LMA 自重叠**——默认 `loadaddr=0x80200000` 既是 fatload 落点又是 hello-boot 的 PT_LOAD 目标，bootelf 边读边覆盖装载头。探针把 LMA 放到 0x84000000、staging 留在 0x80200000 后两次全链干净执行。`bdinfo` 布局证据（256M 配置）：DRAM `0x80000000-0x8fffffff`；lmb reserved = OpenSBI `0x80000000-0x8005ffff` + `0x8deaa000-0x8deacfff` + U-Boot 区 `0x8dead8d0-0x8fffffff`（relocaddr `0x8f6cf000`、malloc `0x8eeaf000-0x8f6cf000`、fdt_blob `0x8eead8e0`）；可用带 = `0x80060000-0x8dea9fff`，默认 staging `loadaddr=0x80200000`、boot.scr 执行拷贝 `0x8c100000`。
+
+**去向（按裁决更新为首选路线）**：保留独立 BootShim 方向；下一步是物理地址链接的 `riscv64-uboot-shim.elf` 探针→产物（VMA=LMA=物理入口、自带 bootstrap 栈），入口 ABI=U-Boot `bootelf -p <img> <BootFileTable 地址>` 的 `(extra_argc, extra_argv)`，`argv[0]` 传 MNXBOOT1 表地址；DTB/kernel/12 模块由 U-Boot 预载、表承载；**不需要新增固定 handoff 槽**（固定槽仅作板级备用 ABI）。LMA 安全带从 bdinfo/lmb 推导并由 D-73 专属布局配置生成，不硬编码 `0x90000000`。`BootHandoffV1` 冻结协议不动；U-Boot 的入口问题由 shim 适配层消化。完整探针证据：`/tmp/d73/{probe.elf,argv-base2.txt,argv-plus.txt,argv-matrix.txt}` 与本段命令。
+
+**2026-10-31 实施完成（D-73 全链 PASS）**：新增 `os/boot-shim/src/uboot_main.rs` + `riscv64-uboot.ld`（物理链接 VMA=LMA=0x84500000，`.text.boot` 入口自清 SIE、自清 .bss 含 `.lbss`、自立 64KB bootstrap 栈）+ `build.rs`（特性门挂链接脚本）；`RiscvUbootBootShim`（原 `OpenSbiBootShim` 更名）经 `prepare_boot` 用 MNXBOOT1 表读文件——表由 shim 在自身 .bss 用 `uboot_layout` 常量自建（kernel 0x86000000/2MB、模块 0x87000000+1MB×12、DTB 0x8c000000），boot.scr 只 fatload 文件，绕开预建表的 staging 共变问题；arena 走 v1 序列化后 `enter_kernel_image_v1` 跳接收镜像。`kernel-image` 增 `fw-riscv64-uboot` 特性：`rust_image_main(arena_pa)` → `arch_boot_resume_v1`（riscv64 臂与 x86_64 同构）。实施期三处修正：① `Riscv64HigherHalf::jump_to_kmain` 加 `auipc` 执行位置探针——接收腿已被跳到高半链接地址，medany 的 PC 相对 `la` 已解析真值，链接↔装载偏移不得再加（故障读数：EPC=0xffffff7f7fe0477a = kmain 链接址 0xffffffc00000477a + delta 0xffffffbf7ffe0000，算术精确闭合）；② shim 的 `DtbMemoryMap::new` 第二参从 0 改为 `KERN_PHYS_BASE=0x80200000`（bootface 同源语义）——此前 `[0x80000000,0x80200000)` OpenSBI 足迹漏进 VM 空闲表，VM 把它选作 PMM 元数据供体，向 DM(0x80000000) 写入页 fault（stval=0x0000001080000000 = DM 基 64GiB + PA 0x80000000），而内核 DM 计划正确地拒绝映射固件区间；③ 门脚本 Stage 1 的 `set +x` 曾把构建失败掩盖成旧二进制续跑（`|| fail` 检查到的是 `set +x` 的退出码），改 `set -e -x`。门读数：`test-riscv64-uboot-shim.sh` PASS（6/6 路标：shim enter/表建/模块装载/进 v1/接收 resume/entering scheduler；空闲表修正后 n=2 无固件区间）；直核腿 `test-riscv64-boot-full.sh` PASS（rc marker）；docker kernel mock 850/0/8；boot-shim test-all 58/0；三架构 kernel check 0 error。用户腿取证诊断扩展（`ura/usp/ua0/ua2` 进 riscv64 用户腿 trap 面板）随本批保留。
+---
+
+## 3. 直修批（无设计依赖，可立即可做）
+
+### I-22 收尾回勾（代码已落地，三件尾巴）
+
+1. `todo.md` §7.1 的 I-22 条目改记「代码已落地（丁案 A–F 除 aarch64 直核腿外），遗留 D-68 与文档连带」；
+2. **文档连带 ①–⑦ 逐一核对**（todo.md I-22 条目所列：01 篇 L1265/L1945/L2288 三表、opensbi_helpers 顶注（→I-26）、bootface 头注、§3.7/§4.8 合流句、04 篇平台发现分工段）——未见专查记录，回勾时逐项过；
+3. D-68 之外的连带（名字池/常量合并）不在本条射程。
+
+**状态**：✅ 01TODO-B2——①–⑦ 逐项核过：① §3.1 L1265 表、② L1961「内存与参数准备」行、③ L2288 `memmap` 行、④ opensbi 顶注（I-26 已修）、⑤ bootface 头注（本批修正对已删 `build_memmap` 的指涉）、⑥ §3.7/§4.8 合流句、⑦ 04 篇 §3.1 平台发现分工段，全部已按新口径在位；`grep -cE '硬编码的 QEMU virt DRAM 布局|单条 DRAM'` → 0。第 1 件（`todo.md` §7.1 改记）已在本批台账行同步；遗留仅 D-68（T4 批）。
+
+### D-71：`BootForm::source_path` 悬空 + 测试无存在性检查
+
+路径改 `os/libs/minix-boot/src/handoff.rs`；`test_each_boot_form_has_distinct_source` 补五条落点的存在性断言；顺带核其余四条落点。证据：`ls os/boot-shim/src/handoff.rs`（不存在）vs `ls os/libs/minix-boot/src/handoff.rs`。验收：`cargo test -p minix-boot` 全绿。**状态**：✅ 01TODO-B1（路径已改，五落点 `repo_root.join(source_path()).exists()` 断言入测试；首跑以错拼 `../..` 的红验证断言有鉴别力）。
+
+### I-26：opensbi_helpers 孤儿注释 + "hardcoded" 顶注
+
+删两条孤儿 doc 注释（L61–L64）；顶注改 "Memory map → `DtbMemoryMap::collect(dtb_ptr())` (DTB `/memory`; missing DTB halts)"；grep 全文件清剩余 "hardcoded"。验收：`cargo check -p boot-shim`（opensbi feature）通过。**状态**：✅ 01TODO-B1（孤儿注释已删，两句 hardcoded 归零，opensbi 形态 27/0）。
+
+### I-27 + L1424（同批，三处都动 §3/§4 现状 vs 终态叙述）
+
+L1422/L2624「还没裁决/尚未定案」→「OQ-N6 已裁（每进程独立根原语，aarch64 `BootHandoff` 交接即其实现）；x86 腿实施收口 = NK1（C-29）待认领」；L1424 张力块按候选 ① 补「当前产线形态与终态的差距见 §3.4」指针；`os/kernel-image/src/main.rs` 头注顺一句「OQ-N6 已裁」。证据：`grep -n "还没裁决\|尚未定案" rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`。**状态**：✅ 01TODO-B1（两句归零；§3.1/§3.3 现状标注与 main.rs 头注同批，doc-lint error 0）。
+
+### N-1 `BootAlloc::resume` 与 `region()` 缺区间自洽校验（跨镜像 wire 字段未验证即信任）
+
+**现状（本轮新登记）**：`os/kernel/src/boot_alloc.rs:fn resume` 三值裸 store，无 `base <= next <= end` 断言；`fn region` 只判 `end == 0`，不判 `base < end`。`alloc` 的越界判据只有 `pa >= end` 回滚——**不检查 `pa < base`**。跨镜像路径上 `bump_base/bump_next/bump_end` 来自 wire 载荷（对端同批构建，现可信；但"可信"是工序纪律不是结构保证）。后果推演：若 `next < base` 成立，`alloc` 会从声明区间**之外**发页（在 `end` 之前一路成功）——页表页落进未登记区域，扣除表与 DM 覆盖都不含它；若 `base > end`，`region()` 返回倒置区间，DM 候选与扣除两侧都按错区间算。
+
+**修法（两处补一道，不重复）**：① `resume`/`region` 入口断言 `base < end && base <= next && next <= end`（引导期单线程，fail-fast 与 `KernelInfo::validate` 同风格）；② **T1 的 wire 验证必须覆盖同一检查**（§2.2 第 5 步受控复制的"逐载荷验证"清单里加"bump 三件套区间自洽"）——wire 字段不该只靠发送端纪律。两条不必都做，但②是 T1 的必做项、①是现状的可选加固（若做，宿主测试补三类倒置/越界输入）。
+
+**证据命令**：`sed -n '60,90p' os/kernel/src/boot_alloc.rs`；`grep -n "fn resume\|fn region" os/kernel/src/boot_alloc.rs`。**状态**：✅ 01TODO-B1（① 已做：两入口断言 + 五枚宿主测试——1 枚合法 resume + 3 类倒置/越界 + 1 枚 region 侧倒置 init；② wire 侧检查仍为 T1 必做项）。
+
+### N-2 `vm_handoff.rs` 模块头注释与扣除实现不一致（注释回修）
+
+**现状**：模块 doc 的扣除表行写 "reserved module blobs | `KernelInfo.boot_modules()` **minus the VM module** (reclaimed after ELF copy, C: protect.c:450-451)"；而实现 `os/kernel/src/vm_handoff.rs:fn classify`（"Kernel-reserved: every boot module blob **INCLUDING VM's own**"——该处成修注释记录了完整理由：VM 启动前其段帧从本 free list 取出，回收即启动前腐坏）与交接模块清单（"every module except VM's"，C `kinfo.module_list[]` 口径）是**两份不同清单**。01 篇 §3.8 已如实指出"表头注释的旧口径"，但代码注释本身未改——读者先读模块 doc 会得到错的前提。
+
+**修法**：模块 doc 该行改为两行分述——「扣除记录（`classify`）：全部模块含 VM 自身（成修理由：VM 启动前其段帧从本 free list 取，回收即启动前腐坏）」与「交接模块清单（`VmBootHandoff.modules`）：除 VM 外各模块（C `kinfo.module_list[]` 语义）」。验收：`grep -n "minus the VM module" os/kernel/src/vm_handoff.rs` 归零。**状态**：✅ 01TODO-B1（模块头与 `classify` doc 两处均改为两清单分述；01 篇 §3.8 的引文与说明句同批）。
+
+### N-3 零消费者便利包装（`uefi_helpers::load_kernel_elf` / `load_boot_modules`）
+
+**现状**：`os/boot-shim/src/uefi_helpers.rs` L575/L580 两个 `pub fn` 文档称"供集成测试等直接调用 UEFI 路径"，全仓检索**零调用方**（`grep -rn "load_kernel_elf\|load_boot_modules\b" os --include="*.rs"` 只命中定义与一处 doc 引用）。死公共 API 会让读者以为存在另一条产线入口。
+
+**修法**：删除两函数（连同其 doc 注释）；`minix-elf` doc 里对 `uefi_helpers::load_kernel_elf` 的指涉改为指 `loader::load_kernel_with_loader`。验收：上述 grep 归零（`load_boot_modules_with_loader` 保留）。**边界**：`build_memmap()`（单数）**保留**——两个 qemu 测试内核（`test-higher-half`/`test-protection`）在用。**状态**：✅ 01TODO-B1（两函数已删，全仓 grep 归零；`alloc_module_pages`/`build_memmap`/`load_boot_modules_with_loader` 保留）。
+
+### N-4 `bootface.rs` ↔ `bootface_a64.rs` 名字池与常量的重复收敛（独立清理增量）
+
+**现状**：`bootface_a64.rs` 头注自陈"两门全绿后的去重收敛留给独立清理增量"，D-68 的边界也写着"名字池/常量合并超出本条"——但台账里**没有独立条目**接住这件事（只在两处"边界"句里被提及）。重复面：模块名池、`MODULE_NAMES` 同源常量、`DTB_PA`/`KERN_SIZE` 类布局常量、串口打印辅助。风险：两份副本各自漂移（与 I-22 的削界算术双份同型，只是对象换成名字池/常量）。
+
+**修法（D-68 落地后）**：先 `grep -n "NAME_POOL\|MODULE_NAMES\|DTB_PA\|KERN_SIZE" os/kernel-image/src/bootface*.rs` 列全重复面；能下沉到 `boot-shim` 库（`opensbi_helpers` 已有的名字表）就下沉，不能下沉的（架构差异的真常量）留两份并在双方注释互指。**验收**：重复面清单落盘 + 每处按"下沉/互指"处置；不追求两文件结构合并（头注与公理 3 已裁不合并引导形态层）。**状态**：✅ 01TODO-B4。清单与处置——**下沉**到新模块 `os/kernel-image/src/bootface_common.rs`（`cfg(any(aarch64, riscv64))`）：`NAME_SLOT`/`NAME_POOL`、`NAME_POOL↔MODULE_NAMES` 编译期对账、`be_cell`、`fdt_table_pa`、`in_memmap`、`in_memmap_range`、`table_magic_ok`（两文件逐字同形）；**留两份互指**：`say`/`say_hex`（`early_console` 实现按架构不同）、`place_modules`（本地 bump 池与 `MODULE_TABLE` 胶水，差异仅池基）、布局常量组（`DRAM_BASE`/`KERN_PHYS_BASE`/`DTB_PA`/`KERN_SIZE`/`BUMP_*`/`PT_BUMP_PAGES`）。偏离说明：工单原写「能下沉到 boot-shim 库就下沉」，实际落在 kernel-image 包内的共享模块——这批 helper 是 kernel-image 侧零堆/物址视图专用，放进 boot-shim 公共面会为一个消费者扩大库边界；两架构直核冒烟（`test-smp-aps-aarch64`、`test-kernel-image-riscv64-bootface`）均 PASS。
+
+### N-5 池页零化机制归因未定案（开放调查项，非代码缺陷）
+
+**现状**：01 篇 §3.4 明说两组真机读数（`res=127 zeroed=127`；"DM 建立时完好、分类点读零"）指向同一设计结论（入口尽早深拷），但**机制归因未定案**——两条候选（页表不重放 1:1 映射 / 被当空闲复用清零）各带可检验推论，文档标注"可作为后续取证的切入口"。T1 的受控复制设计**不依赖**该归因（拷贝先于一切分配），所以不是 T1 的阻塞项；但证据链缺最后一环，且它决定"池页可读窗口"的教科书式解释。
+
+**修法（定向调查）**：按文档给的两条推论各做一次定向读数——（a）若"页表不重放"：在切根前后各读同一池页地址，读数应在切根时刻突变；（b）若"复用清零"：在 `store_kernel_info` 之前人为推迟消费（测试内核）并在首个 `pg_alloc_page` 之后回读，读数应随复用时点零化。落点：`tmp/` 取证或 qemu 测试内核探针。**验收**：归因结论落盘（一句话 + 读数），01 篇 §3.4/§4.5 相应句从"未定案"改为定案或保留双候选并写明判别结果。**状态**：✅ 01TODO-N5。探针在 `test-kernel-map`：快照之后分配一枚低于 4GiB 的 LOADER_DATA 页、填位置标记，EBS 前/后/开分页后三次整页校验和；读数 `pa=0x5e9b000`、`pre=post_ebs=post_enable=0x4a00_0000_0001_ff00`、`verdict=replayed`、`in_snapshot_free=0`。判别：①"页表不重放 1:1"对该形态不成立（映射重放、字节未变）；②"被当空闲复用"的结构前提未出现；历史零化读数的剩余解释是深拷之前的入口引用链（NK4-A），与深拷落地后症状消失一致。01 篇 §3.4 两处已按读数改写，探针保留为可复跑证据。
 
 ---
 
-## 3. B 批——设计裁决类（先裁决后动码）
+## 4. 测试缺口批（01 篇 §5.3 TODO-01~07，归拢时点复核）
 
-> 本批每条的设计要点、候选方案与待裁决问题清单见 `01-code-design.md`（自包含简报 T1–T5）；既有条目的完整登记（现状读数、修法、DoD、现算命令）在 `todo.md` §7.1/§7.4，本节只摘与本轮审查相关的**增量**。
-> **2026-10-21 外部首轮裁决已回填简报 v2**：T1 改题（wire 协议冻结为主、信封合一降为次级）、T3 的 UEFI 取参来源改判（当前镜像 `LoadOptions`，非 `Boot####` 枚举）、T4 已裁（独立小批，`fw_end=0` 带形态前提）、T5 已裁（案 1，先于 D-66 实施）、T2 补入口状态契约。实施次序裁定：**T4 → T1(wire) → T5 → T3 → T2**。各条目状态以下方行内标注为准。
-> **2026-10-21 二轮评审已回填简报 v3**（三缺口定向增补）：① T1 解码边界改三层模型（`BootHandoffV1` → `KernelInfoView<'a>` → 内核自有 `KernelInfo`），废弃伪造 `'static` 的 `decode()->KernelInfo`；② 源切片可读性具体机制（UEFI 池上界三层：AllocateMaxAddress 构造 / pre-EBS 断言 / 解码重验）；③ wire 递归闭合（`Wire*` 元素类型、`BootModule.name` 16B 定长字节槽）+ `BootSlice` 改 `addr: u64` 物理地址语义；④ T4 补 DTB 生命周期前提（全仓无 DTB cut/reserve 取证）。T2 双契约拆分（建表返回 ≠ blob 写入后）；T3 的 ARCH/BOARD 已核为用户态 `env_get_param` 契约。状态收紧表见简报 §10。
-> **2026-10-21 三轮评审已回填简报 v4**（原则级修正：v3 把恒等映射机制写进了共享解码规则）：① `BootSlice<T>` 改非泛型 `WireSlice` + `byte_len` 字节口径 + 溢出检查区间公式；② 地址语义逐字段声明（`WirePhysAddr`/`WireVirtAddr`，纠正「全部是物理地址」的过宽表述）；③ 可读性判据改语义接口（`BootReadPhase.readable_intervals`）、机制归腿——依赖方向佐证：`minix-boot` 只依赖 `minix-types`；④ wire 序列化与 UEFI 快照/EBS/回收闭环（T1 冻结条件 +1）；⑤ `reserved_regions` 消费面取证：`dm_coverage` source 4（DM 可达，保留）与 `vm_handoff` kern_ident（恒等重放，随 T2 退场）两语义，T2 按消费语义拆分输入；⑥ cfg 门候选加限制（仅真正同构的语义阶段共享）；⑦ T3 补 UEFI Shell 兼容边界；⑧ T4 DTB 修复走通用所有权语义、禁止特例进 PMM；⑨ T5 三存储阶段联动。**T1 wire 协议达冻结条件。**
-> **2026-10-21 三轮评审定向取证已落盘**（`01-forensics-round3.md`，只调查不改码）：评审三项 P0 全部坐实——① `decode_view(&BootHandoffV1)` 签名与「头验证前不形成引用」自相矛盾（改四步分段验证入口）；② 共享解码器 `addr as *const T` 直转仍隐含恒等映射（改 `BootReadPhase::translate` 转换能力，机制归腿）；③ **新发现 A-β**：`build_memmaps` 两表 Vec 载荷在 GetMemoryMap 之后分配、自身就落进内核 conventional 空闲清单（uefi_helpers.rs L319-330 注释自陈）——wire 载荷必须在最终快照**前**以 LOADER_DATA 预分配，排除机制=类型分类而非 bump 归属；序列化须在开根**前**（池页可读性无构造保证）。**反证两项**：x86 二段式栈已是三架构既成实现（镜像内 .bss 栈，trampoline 不读 blob 字段）；`rdi` 被 .bss 清零游标占用（NK1 交接寄存器需避开）。**架构演进发现**：C 内核 main.c:133 回读 board 键映射 board_id（占位值破坏板级识别），Rust 内核无此回读——义务射程改两步裁决。T1 冻结状态回撤为「四步入口/预分配时序/生命周期方向 B 落文后冻结」。
-> **2026-10-21 四轮评审追加取证已落盘**（`01-forensics-round4.md`）：**P0——EBS helper 在 EBS 前分配 map 缓冲坐实**（Cargo.lock 锁定 uefi 0.33.0，`boot.rs:fn exit_boot_services` L1226 → `MemoryMapBackingMemory::new` L279 `allocate_pool(LOADER_DATA, map_size+8条目)`），「快照后零分配」前提作废；裁决输入=方案甲（EBS 终图为权威+预分配输出缓冲，顺带消灭 A-β 与快照 A）优于乙。**P1 两项**：①模块 blob 恒等直读无上界（`alloc_module_pages` AnyPages + `load_elf_into` L438 直读，blob>4GiB 即 VM 装载缺页——修法=分配改 MaxAddress，三腿同律）；②x86 内核目标未禁 red zone（`.cargo/config.toml` 无 `-Z red-zone=no`，uefi 目标默认启用——修法=xtask 注入，SD-23 先例）。**P2 两项**：arch/board 键 C 用户态零字面量消费者（`env_get_param("board"/"arch")` 全树零命中，通用 API ≠ 具体键消费）——两键降级展示信息，「宁可占位」废除改「真实值或显式省略」；DTB 永久扣除成立（页化后 ≤2 页损耗），实现=腿侧页对齐后 cut_memmap、PMM 无 DTB 字样。`BootReadPhase::translate` API 收紧三条（调用期引用/未登记区间不可构造/存活 debug 桩）。阻塞条件 5 项见报告末尾。
-
-### D-67 boot 信封合一 + 跨镜像布局全钉死（既有，`todo.md` §7.1）
-
-**本轮增量（三条，均已写进简报 T1）**：
-
-1. **`BootPrepareResult` 的文档声明已失真**：`os/libs/minix-boot/src/boot_shim.rs:struct BootPrepareResult` 的模块注释自称 "It is the **only** data crossing the boot-shim → kernel boundary"，而 `os/libs/minix-boot/src/handoff.rs:struct BootHandoff` 是第二个跨边界载荷（aarch64 跨镜像 blob）。信封合一落地时此注释随之删除；在此之前它是误导（读者会以为 `BootHandoff` 不存在或不需要钉布局）。
-2. **`MemoryRegion.len: usize` 与 `kern_size/bootstrap_len: u64` 宽度不一致**：`kernel_info.rs` 对 `kern_size` 的注释明说 "Uses u64 instead of usize to avoid truncation on 32-bit targets"，而同文件 `os/libs/minix-boot/src/kernel_info.rs:struct MemoryRegion` 的 `len` 是 `usize`——跨镜像 blob 与 `#[repr(C)]` 布局钉死的射程内，`usize` 的宽度随 target 变，同一逻辑字段两种宽度没有理由。随 D-67 的切片 newtype 一并钉死（`u64`）。
-3. **`KernelInfo` getter 家族缺 `param_buf`**：R-07 约定 getter 是推荐 API，14 个字段里 13 个有 getter，唯 `param_buf` 没有（`kernel_info.rs:impl KernelInfo`）。随 D-66/D-67 实施补齐。
-
-**设计载体**：`01-code-design.md` T1 v2–v4（**已改题且已达冻结条件**：主问题 = 跨镜像 wire 协议——非泛型 `WireSlice{addr,byte_len}` + 溢出检查区间公式、`free_upper_idx` 用 `u64::MAX` 哨兵、`MemoryRegion.len`→u64、协议头 magic/version/size + 先验后解引用、`Wire*` 递归闭合、地址语义逐字段声明（`WirePhysAddr`/`WireVirtAddr`）、可读区间语义接口（`BootReadPhase`，机制归腿）、wire 序列化/快照/EBS/回收闭环、跨目标布局构建门；**信封合一已裁不做**——`BootPrepareResult` 保留为进程内类型；builder 统一 D-69 联动保留）。
-
-### D-66 `param_buf` 生产侧接入（既有，`todo.md` §7.1）
-
-**本轮增量（两条，已写进简报 T3/T5）**：
-
-1. **「内核侧零改动」的登记结论需要修正**：D-66 条目写「接入只动生产侧（boot-shim/bootface），`KernelInfo` 结构与内核零改动」。本轮审查发现 param_buf 一旦非空，UEFI 腿的参数字节将落在 UEFI 池堆——与 `memmap`/`reserved_regions`/`boot_modules` 三块切片**同病**（真机取证：池堆页在切根后读回零，见 `os/kernel/src/lib.rs:fn store_kernel_info` 的 NK4-C 注释与 vh1 读数），而 `GET_MONPARAMS` 消费点在 syscall 期（远晚于首次切根）。因此 D-66 落地**必须**同时在 `store_kernel_info` 增加 param_buf 落地区（= 本轮 D-70 的 param_buf 半）。
-2. **SBI 腿来源裁决的输入**：`opensbi_helpers.rs:fn prepare_boot` 现有注释把来源标为 "SBI boot hart argument"，但 bootface 直核腿的实参是 `a0`=hartid、`a1`=DTB、`a2`=BootFileTable（`os/kernel-image/src/main.rs:fn rust_image_main` riscv64 签名）——没有命令行通道。三案裁决见简报 T3。
-
-**设计载体**：`01-code-design.md` T3 v2/v3（**已裁**：UEFI 腿读当前镜像 `EFI_LOADED_IMAGE_PROTOCOL` 的 `LoadOptions`/`LoadOptionsSize`——非 `Boot####` 变量枚举（后者降为排查备用）；文本编码是 Minix-RS 自有契约、非 UEFI 规范承诺；参数规范化四步统一规则（先生成内部必备键 ARCH/BOARD，再并入外部输入）；SBI 腿 DTB `/chosen/bootargs`，验收须实测本仓 QEMU 启动链的 `-append` → DTB 节点通路；截断按**整条记录**丢弃、不留半截 key=value；**v3**——ARCH/BOARD 语义归属已核：用户态 `env_get_param`（`minix3/minix/lib/libsys/env_get_prm.c`）boot 变量契约、内核不消费，写入时点与 BOARD 值来源按腿实施取证；重复键规则定案=内部权威键禁覆盖（同名外部键拒绝+诊断）；LoadOptions 编码契约定案=ASCII、`\0` 分隔、逐记录拒绝）+ T5 v2/v3（落地区已定案，**实施顺序先于本条**）。
-
-### D-59 大页能力/选页策略四层抽象收口（既有，`todo.md` §7.1）
-
-**本轮增量**：现状与登记一致——双入口仍在（`os/arch/src/arch/paging_ext.rs:fn supports_1gb_page` 的 `HugePages` 默认实现 vs `os/arch/src/arch/dm_coverage.rs:fn supports_1gb_page` 的 `DmCoverageArch`），x86 侧已把两个入口同源转发到一份 CPUID 查询（`os/arch/src/x86_64/paging.rs:fn supports_1gb_page` 两处，模块注释 L1029–1030 自陈）。设计文档 `boot-dm-hugepage-design.md`（2046 行，迭代中未定稿）就绪。**不进 `01-code-design.md`**（已有专门设计文件）；本文件不重复其内容。
-
-### I-1 / NK1 / OQ-N6：x86 跨镜像跳转协议（既有 DEFERRED + coordination 台账）
-
-**本轮增量（已写进简报 T2）**：
-
-1. **OQ-N6 已裁，非「未裁决」**：`rewrite-notes/coordination/TODO-LEDGER-DONE.md` §2 记 `OQ-N6`——「自举载体的双镜像交换采『每进程独立根』原语；『加栈顶参数』的快案被否（段面互撞与零隔离是结构性缺陷）」，状态「已裁，实施待领」。aarch64 的 `BootHandoff`（x0 递物理指针）+ `arch_boot_resume_high_half`（在活跃根上只做 additive）+ 每进程独立根（VM 建进程页表）正是该裁决的参考实现。**剩余的 NK1（C-29）是 x86 腿的实施收口**：x86 何时从内联切到独立镜像交接、入口 ABI 用哪组寄存器递 `BootHandoff`。
-2. **01 篇两处叙述与台账口径不一致**：L1422「跨镜像跳转协议还没裁决（NK1/OQ-N6，§4.8 交付边界）」与 L2624「跳转协议尚未定案（镜像头注释如此说明）」——「还没裁决」应对齐为「OQ-N6 已裁（每进程独立根原语），x86 腿的实施收口（NK1/C-29）待认领」；`os/kernel-image/src/main.rs` 头注「交付边界（诚实登记）」段的同款表述一并更新。
-3. **x86 切换的存量资产**：`os/kernel-image/x86_64.ld` 布局产出与 `os/kernel-image/check-layout.sh` 的 L0–L9 校验已在位；aarch64 已把 `bootstrap_to_kernel_image`（shim 侧）与 `arch_boot_resume_high_half`（镜像侧）做成 `#[cfg(target_arch = "aarch64")]` 单架构实现——x86 版基本是把这两段的 cfg 泛化 + asm 寄存器换 SysV（`rdi` 递 blob 指针）。
-
-**设计载体**：`01-code-design.md` T2 v2–v4（**已裁方向**：独立镜像方案推进、`rdi` 交接、QEMU 先行短期双轨；**v2**——x86 入口状态契约成文（trampoline + 栈/`cld`/`IF=0`/CR3 清单）、源数据映射两证明分离、`reserved_regions` 字段保留仅内联窗口半退场；**v3**——双契约拆分（建表返回 ≠ blob 写入后不得分配）、入口清单补显式 `cli`/`call` 前 16B 对齐/no-red-zone 构建约束/段状态前提；**v4**——共享与架构后端分界限制（仅真正同构的语义阶段共享，机器入口不合并、不为统一抽象硬件操作 trait）、`reserved_regions` 消费面取证定案：`dm_coverage` source 4（DM 可达候选，保留）vs `vm_handoff` kern_ident（恒等重放，随 T2 删除该输入源，kern_ident 只剩 `kernel_identity_mmio_regions` 架构常量源））。
-
-### D-68（新登记）`bootface_a64` 的 memmap 链未迁 `DtbMemoryMap`——I-22 迁移漏掉的第四链
-
-**现状**：I-22 丁案把三条链的 memmap 源收口到 `minix_boot::DtbMemoryMap`，但 aarch64 直核自引导面 `os/kernel-image/src/bootface_a64.rs` 仍保留**独立的**第四套：`fn fill_memmap`（L276 起，`all_nodes` 全树遍历 `/memory`）、`const fn clip_firmware`（L315 起，固件常驻区削界算术）、`static mut MEMMAP_STORAGE`（L141）。这与已迁入 `DtbMemoryMap` 的 `clip_reserved` 是**同一段算术的两份实现**——`memmap_source.rs` 的编译期护栏（`_FW_PURE`/`_FW_ABOVE`/`_FW_CROSS` 三条 assert）只护住库内那份，bootface_a64 这份的算术回归不会被任何测试拦住。模块头注自陈「两门全绿后的去重收敛留给独立清理增量」，本条把该增量立项。
-
-**为什么是设计问题而不只是重复**：① memmap 源的语义出口在 I-22 裁决后只剩 `MemoryMapSource::collect()` 一处，bootface_a64 是绕过该出口的漏网链——下一次削界语义调整（例如 `/reserved-memory` 节点解析，丁案 B 预留项）会改库内不改这份，aarch64 直核腿静默漂移；② `static mut MEMMAP_STORAGE` 是 `os/` 下又一处 `static mut`（I-25 的同类形态，`memmap_source.rs` 迁移时已用 `static mut + AtomicUsize` 计数替代，bootface_a64 这份连计数都没有）；③ 顺带消灭 `MEMMAP_MAX = 8` 双定义（库内 `DTB_MEMMAP_MAX` 与 bootface_a64 各一份）。
-
-**修法**：`bootface_a64.rs` 的 `fill_memmap`/`clip_firmware`/`MEMMAP_STORAGE` 整体删除，改调 `DtbMemoryMap::new(&fdt, fw_end).collect()`。`fw_end` 取值需裁决：bootface.rs（riscv）传 `KERN_PHYS_BASE`（OpenSBI 常驻区削除），bootface_a64 的直核腿 QEMU 不放固件常驻区于 DRAM（DTB 在 RAM 基址、镜像在 +2MiB），传 0 还是传 `KERN_PHYS_BASE` 需按 aarch64 直核的固件占位实况定（倾向 0 = 不削，理由写入裁决记录）。
-
-**证据命令**：
-
-```
-grep -n "fn fill_memmap\|const fn clip_firmware\|MEMMAP_STORAGE\|DtbMemoryMap" os/kernel-image/src/bootface_a64.rs
-# fill_memmap/clip_firmware/MEMMAP_STORAGE 各命中、DtbMemoryMap 零命中
-grep -n "clip_reserved" os/libs/minix-boot/src/memmap_source.rs
-```
-
-**验收**：bootface_a64 构建（aarch64 target）通过；`test-kernel-image-riscv64-bootface` 类比测试或真机 aarch64 `-kernel` 直核冒烟通过；`grep -n "MEMMAP_STORAGE\|clip_firmware" os/kernel-image/src/bootface_a64.rs` 归零。**2026-10-21 外部首轮裁决：采纳，独立小批实施（五项中最先）；`fw_end=0` 可接受但必须带形态前提成文——「此引导腿不存在需固件前缀裁剪的区间」，且与内核侧 `cut_memmap`（镜像自占排除）是两个机制、不互相替岗；不为它单独引入策略抽象。** **v3 增补验收（DTB 生命周期）**：全仓取证 DTB 区间不在任何保留清单（`reserved_regions=&[]`、Phase A.2 只切内核镜像与模块）——两项验收必查：① DTB 最后访问（平台发现，Phase A–D）早于最早复用（VM PMM）的次序证据；② 结构化修复裁决——Phase A.2 对 DTB 补 `cut_memmap`（与 D-64① 同型）或纳入 handoff `deducted`，实施时对照 C earm 侧 DTB 预留行为定案。**
-
-**边界**：不合并 bootface.rs 与 bootface_a64.rs 的其余重复（名字池、常量——模块头注已登记为独立清理增量，超出本条）。
-
-### D-69（新登记）`build_kernel_info` 双版本漂移面——同函数名、不同签名、语义分叉
-
-**现状**：两个同名函数并存：
-
-- `os/boot-shim/src/opensbi_helpers.rs:fn build_kernel_info`（8 参，**不含** `reserved_regions`，函数体内硬编码 `reserved_regions: &[]`）——被 bootface.rs（riscv）与 bootface_a64.rs（aarch64）两个直核面复用；
-- `os/boot-shim/src/uefi_helpers.rs:fn build_kernel_info`（9 参，多一个 `reserved_regions: &'static [MemoryRegion]` 形参）——UEFI 腿专用。
-
-名字相同、签名不同、UEFI 版多出的字段恰是「x86 内联执行模型特有的运行期恒等窗口」（01 篇 §3.4 `reserved_regions` 条目 + L1488 读者 TODO 标记的「x86_64 待退场」项）。风险：两个直核面若将来需要非空 `reserved_regions`（例如 aarch64 直核腿的 MMIO 窗口），改 opensbi 版签名会牵动两个调用面，而 UEFI 版的 `reserved_regions` 形参在 x86 切跨镜像后要退场——三处消费面共享一个名字却无统一形状，是 D-67 信封合一落地时必然撞上的缝合面。
-
-**修法（随 D-67 同批）**：信封合一后 `build_kernel_info` 收敛为单一构造面——候选见简报 T1 §4（统一签名带 `reserved_regions` 形参 vs 拆 per-leg builder trait）。
-
-**证据命令**：
-
-```
-grep -rn "fn build_kernel_info" os --include="*.rs"
-grep -rn "opensbi_helpers::.*build_kernel_info\|build_kernel_info," os/kernel-image/src/
-```
-
-**设计载体**：`01-code-design.md` T1 §4。
-
-### D-70（新登记）`store_kernel_info` 深拷落地区缺 `platform_sources` 与 `param_buf` 两块切片
-
-**现状**：`os/kernel/src/lib.rs:fn store_kernel_info` 把三块切片（`reserved_regions`/`memmap`/`boot_modules`）深拷进 `.bss` 落地区（`globals.rs` 的 `RESERVED_REGION_STORE`/`MEMMAP_REGION_STORE`/`BOOT_MODULE_STORE` + `BOOT_MODULE_NAME_STORE` 字节池），复制的根因是 NK4-C 真机取证——boot-shim UEFI 池堆的页在首次切根后不再被内核页表重放（`reserved_regions`）或被当空闲复用清零（`memmap`，vh1 读数）。但 `KernelInfo` 有五块切片字段，剩下两块没落地：
-
-- **`platform_sources`**：UEFI 腿由 `find_platform_sources()` `Box::leak` 进 UEFI 池堆（`os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources`）。当前安全的原因是**消费点全部在首次切根之前**（平台发现跑在 kmain Phase A–D，首次切根在 Phase F `switch_to_user` 之后）——「消费一次、时点恰好在映射失效前」是无结构保证的时序巧合，与 NK4-C 三块切片当年「Step 4 还完好、分类点读零」的发病时序同型。
-- **`param_buf`**：当前恒空切片（D-66 未落地），但 `GET_MONPARAMS` 消费点 `os/kernel/src/misc.rs:fn monparams_snapshot` 在 syscall 期执行——D-66 一旦接入 UEFI 腿参数，param_buf 指向的池堆页在消费时点早已失效，是 **D-66 的硬前置**。
-
-**修法（两案，简报 T5 展开）**：
-
-- 案 1（推荐）：`globals.rs` 增 `PLATFORM_SOURCE_STORE`（`[PlatformDescSource; N]`，N=4 足够 DTB+RSDP）与 `PARAM_BUF_STORE`（`[u8; MULTIBOOT_PARAM_BUF_SIZE]`）两块落地区，`store_kernel_info` 同步落地两块——与既有三块同构，类型系统不再依赖「消费时点」论证。
-- 案 2：显式化「consume-before-first-root-switch」契约——在 `platform_sources` 字段文档与消费点写明时序约束并加 debug 断言。省 264+1024 字节 `.bss`，但把不变量留给注释而非结构。
-
-**证据命令**：
-
-```
-grep -n "fn store_kernel_info" os/kernel/src/lib.rs
-sed -n '764,837p' os/kernel/src/lib.rs          # 落地区仅三块
-grep -n "PLATFORM_SOURCE_STORE\|PARAM_BUF_STORE" os/kernel/src/globals.rs   # 应零命中
-grep -n "monparams_snapshot\|param_buf" os/kernel/src/misc.rs | head
-```
-
-**验收**：案 1 落地后 `store_kernel_info` 五块切片全部 repoint 到 `.bss`；`test_store_kernel_info_lands_firmware_slices` 扩断言（platform_sources/param_buf 指针变化）；`cargo test -p minix-kernel --features mock` 全绿。**2026-10-21 外部首轮裁决：采案 1；`PLATFORM_SOURCE_STORE_LEN=4` 为候选值——须先核实「最多两源」是类型与生产路径的真实上限还是常见情况，容量作为有意设计的上限写入并配超容量测试；param_buf 落地保持「清零再复制」语义（幂等重存不得暴露上次输入遗留）；本条为 D-66 的硬前置，实施顺序 T4 → T1(wire) → **T5** → T3 → T2。** **v3 两核实（实施前完成）**：容量 4 = 已核实真实上限 2 × 有意余量（`find_platform_sources` 每类 `break` 在先，opensbi/bootface 腿恒 1 条 DTB）；`PlatformDescSource` 已核纯数据 `(PlatformDescKind, PhysBytes)` 无嵌套指针，深拷直接成立（`PlatformDescKind` 枚举布局归 T1 递归闭合处理）。**
-
-### D-71（新登记）`BootForm::source_path()` 悬空引用 + 形态登记测试无存在性检查
-
-**现状**：`os/libs/minix-boot/src/boot_form.rs:fn source_path` 给 `BootForm::Aarch64UefiCrossImage` 的落点是 `"os/boot-shim/src/handoff.rs"`——该路径**不存在**（`handoff.rs` 实际在 `os/libs/minix-boot/src/handoff.rs`，boot-shim crate 源目录只有 main/lib/loader/uefi_helpers/opensbi_helpers 五个文件）。既有测试 `test_each_boot_form_has_distinct_source` 只断言「非空 + 互异」，不检查文件真实存在，所以悬空引用不被测试拦截。`source_path()` 的模块级自述是「该形态在树上的落点……缺失即说明某形态被搬走或改名而台账未跟上」——这个自述对 Aarch64UefiCrossImage 已经失真，恰是它声称要防的病。
-
-**修法**：① 路径改正为 `os/libs/minix-boot/src/handoff.rs`；② 测试补存在性断言（宿主测试可用 `env!("CARGO_MANIFEST_DIR")` 拼仓库相对路径检查 `Path::new(...).exists()`，五条落点逐一校验）；③ 顺带核对其余四条落点——`X86UefiInline`→`os/boot-shim/src/main.rs`、`RiscvOpensbiSelfBoot`→`os/kernel-image/src/bootface.rs`、`Aarch64QemuDirectCore`→`os/kernel-image/src/bootface_a64.rs`、`RiscvEarlyHartMailbox`→`os/arch/src/riscv64/ap_early_entry.rs`（grep 复核后如有第二处悬空一并修）。
-
-**证据命令**：
-
-```
-ls os/boot-shim/src/handoff.rs; ls os/libs/minix-boot/src/handoff.rs
-grep -n "Aarch64UefiCrossImage =>" os/libs/minix-boot/src/boot_form.rs
-grep -rn "fn source_path" os/libs/minix-boot/src/boot_form.rs
-```
-
-**验收**：`test_each_boot_form_has_distinct_source` 扩存在性断言后通过；`cargo test -p minix-boot` 全绿。
-
----
-
-## 4. C 批——注释/登记回修（独立小修，可直修）
-
-### I-26（新登记）`opensbi_helpers.rs` 过时注释：孤儿 doc 注释 + "hardcoded" 顶注与 I-22 实况矛盾
-
-**现状**：两处：
-
-- `os/boot-shim/src/opensbi_helpers.rs` L61–L64：`/// QEMU virt DRAM base address.` 与 `/// Default QEMU virt RAM size (128 MB).` 两条 doc 注释后面**没有常量**——I-22 丁案 C 删除 `DRAM_BASE`/`DEFAULT_RAM_SIZE` 时漏删了它们的注释，成为孤儿 doc 注释。
-- 同文件 `impl BootShim for OpenSbiBootShim` 的 doc 注释（L185–189 区段）仍写 "Memory map → hardcoded (no SBI call to enumerate RAM; QEMU virt is fixed)"，而同函数体 L205–223 已是 `DtbMemoryMap::collect()`——注释与代码在同一函数内自相矛盾。这正是 `todo.md` I-22 连带清单 ④ 要改的位置，落地时漏改。
-
-**修法**：删两条孤儿注释；顶注 "Memory map → hardcoded…" 改为 "Memory map → `DtbMemoryMap::collect(dtb_ptr())` (DTB `/memory`; missing DTB halts)"。顺带 grep 全文件确认无第三处 "hardcoded" 残留（L376 区段 "no firmware to call; everything is hardcoded" 的分节标题按实况收窄为「分配与取件无固件服务」——memmap 已不是 hardcoded）。
-
-**证据命令**：
-
-```
-grep -n "hardcoded\|QEMU virt DRAM base address\|Default QEMU virt RAM size" os/boot-shim/src/opensbi_helpers.rs
-```
-
-**验收**：上述 grep 仅剩语义正确处；`cargo check -p boot-shim`（riscv64 target 或 opensbi feature）通过。
-
-### I-27（新登记）01 篇两处「跳转协议还没裁决」与 OQ-N6 已裁口径不一致
-
-**现状**：`01-boot-shim-bootstrap.md` L1422（§3.4）「跨镜像跳转协议还没裁决（NK1/OQ-N6，§4.8 交付边界）」、L2624（§4.8）「跳转协议尚未定案（镜像头注释如此说明）」。而 `rewrite-notes/coordination/TODO-LEDGER-DONE.md` §2 记 OQ-N6 已裁（每进程独立根原语、加栈顶参数快案被否）。两处「还没裁决」应改为「OQ-N6 已裁决（每进程独立根原语，aarch64 的 `BootHandoff` 交接即其实现）；x86 腿从内联切换到该形态的实施收口是 NK1（C-29），待认领」。`os/kernel-image/src/main.rs` 头注「交付边界（诚实登记）」段的同款表述（"是 NK1（C-29，OQ-N6 设计轮）的裁决范围，这里不代决"）语义正确但可顺一句「OQ-N6 已裁」。
-
-**连带**：与 L1424 的张力登记（§3.1/§3.3 终态叙述 vs §3.4 过渡形态标注，见 E 批）同批处理——三处都动 §3/§4 的「现状 vs 终态」叙述，一次改完避免 diff 冲突。
-
-**证据命令**：
-
-```
-grep -n "还没裁决\|尚未定案" rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
-grep -n "每进程独立根" rewrite-notes/coordination/TODO-LEDGER-DONE.md
-```
-
----
-
-## 5. D 批——测试缺口（01 篇 §5.3 TODO 交接表现状复核）
-
-> 01 篇 §5.3 的七条以该表为唯一登记处；本节逐条复核后的现状如下，实施时回填 01 篇 §5.3 的「覆盖状态」列与本表的验收记录。优先级参照 `todo.md` §7.3 T 系惯例（T-8 QEMU 半挂 CI、真机项随硬件窗口）。
-
-| ID | 机制 | 断言 | 复核现状（2026-10-20） | 去向 |
+| ID | 机制 | 断言 | 复核现状 | 去向 |
 |---|---|---|---|---|
-| TODO-01 | M4 深拷先于一切动用空闲清单者 | 三入口在首个页分配前完成 `store_kernel_info` | 仍 open：`test_store_kernel_info_lands_firmware_slices`（`os/kernel/src/lib.rs` 测试区）只测落地区行为与幂等，调用序无自动断言；x86 入口 `arch_boot` L224 的 `store_kernel_info` 先于 `arch_boot_impl`（首个分配点）属实但靠人读 | 宿主可修：三入口（x86/aarch64 inline、aarch64 resume、riscv）各自补一条「入口首个动作 = store」的断言或测试（mock 下调用序记录） |
-| TODO-02 | M7 分配器写一次 | 二次 `register` debug 失败、release 拒改写 | 仍 open：`grep -c "#\[test\]" os/arch/src/arch/pt_alloc.rs` = 0，该模块零测试 | 宿主可修：`register` 二次调用断言 + `is_registered`/`register_free` 契约测试 |
-| TODO-03 | M8 落地区容量与 fail-fast | 超容量输入 fail-fast（不截断） | **半开**：三块落地区的 `exceeds the .bss landing pad` 断言在 `lib.rs:781/:799/:809`，无测试构造溢出；落地区**行为**已有测试 | 宿主可修：构造超容量 `memmap`/`boot_modules` 断言 panic 消息（D-70 落地后随第五块补） |
-| TODO-04 | M12 EBS 阶段边界 | EBS 后路径不出现 `uefi::` 调用 | 仍 open：无 CI 静态检查；`uefi_helpers.rs:fn exit_boot_services`（L536）之后的代码路径人工审计过（`prepare_boot` 尾部 raw_serial + 返回），但没有机制防回归 | 半宿主可修：lint 脚本或测试断言 `exit_boot_services` 调用点之后的行不含 `uefi::` 符号（文本级检查即可起步） |
-| TODO-05 | §4.6 大页回退档 | 2MiB 回退档下真机启动 | 仍 open：真机矩阵依赖（x86 产线 kern 布局按 2MiB 对齐即走回退档；当前真机链走 1GiB 档） | 真机窗口项，随 x86 跨镜像切换（NK1）一并验 |
-| TODO-06 | M14 x86_64 路标链 | `kernel loaded`/`12 boot modules loaded`/`handing control` 三路标出现 | 仍 open：`os/qemu-tests/run_all.sh` x86 段只判 `TEST_RESULT`，不判三条 shim 路标 | CI 可修：x86 测试脚本的串口判定加三行 grep |
-| TODO-07 | §4.2 UEFI 侧宿主可测面 | `build_memmaps` 两列表互斥完备、root/bump 不与 free 相交 | 仍 open：`build_memmaps` 调用点单根（Boot Services），宿主无法构造；`assert_bootstrap_outside_memmap` 是纯函数可直接测但无测试 | 半宿主可修：`assert_bootstrap_outside_memmap` 的三案（相交/不相交/边界贴合）纯函数测试先行；`build_memmaps` 的过滤逻辑抽纯函数后同批补 |
+| TODO-01 | M4 深拷先于一切动用空闲清单者 | 三入口在首个页分配前完成 `store_kernel_info` | ✅ 已覆盖：四入口源码序钉（`store_before_alloc_pin.rs`）；运行期断言经 QEMU 测试内核直接调 `arch_boot_impl` 分阶段验证证明不成立，已撤（判据写在钉注释） | 已交接完成 |
+| TODO-02 | M7 分配器写一次 | 二次 `register` debug 失败、release 拒改写 | ✅ 已覆盖：`pt_alloc_write_once.rs` 2 条（`register`/`register_free`，debug panic、release 拒改写且指针不变） | 已交接完成 |
+| TODO-03 | M8 落地区容量 fail-fast | 超容量输入 fail-fast（不截断） | ✅ 已覆盖：三枚超容量 `should_panic`（reserved 257 / memmap 129 / modules 13，各持 boot-globals 锁） | 已交接完成 |
+| TODO-04 | M12 EBS 阶段边界 | EBS 后路径不出现 `uefi::` 调用 | ✅ 已覆盖：`os/boot-shim/tests/ebs_boundary_audit.rs` 文本级审计（切函数体、去注释、扫 EBS 后语句；注入负控 + 注释豁免自检）；T1CUT 接线后已按最终形状升级为两条入口（`prepare_boot` 与 `prepare_and_enter_kernel_image`）各一套，5/0 | 已交接完成 |
+| TODO-05 | §4.6 大页回退档 | 2MiB 回退档下真机启动 | 仍 open：当前环境 QEMU-only（无真机，窗口不可得），真机断言保持开放；软件路径的 QEMU 等价覆盖存在候选——能力压制腿（如 x86 `-cpu qemu64,-pse` 关 2MiB PSE，逐架构类推）可逼 `plan_dm_policy` 走回退档，尚未实施、未排期 | 真机窗口项（等硬件）；候选软路径腿另行立项 |
+| TODO-06 | M14 x86_64 路标链 | `kernel loaded`/`12 boot modules loaded`/`handing control` 三路标 | ✅ 已覆盖：`test-cmd-smoke.sh` Stage 3b 逐条 `grep -qF`；本批实跑三行全在。脚本后续 du/stat/find 腿在主树 HEAD 亦失败，属既有问题不在本条 | 已交接完成 |
+| TODO-07 | §4.2 UEFI 侧宿主可测面 | 两列表互斥完备、root/bump 不与 free 相交 | ✅ 纯函数已覆盖：`assert_bootstrap_outside_memmap` 3 条（相离/贴边通过、包含/跨界 panic）；`build_memmaps` 调用点单根，可测面随 T1 分类循环纯函数化后重定义 | 纯函数三案完成；其余随 T1 |
 
 ---
 
-## 6. E 批——文档侧（01 篇正文条目，改文档不动码）
+## 5. 文档批（01 篇正文，改文档不动码；文档线程执行）
 
-| 条目 | 内容 | 与谁同批 |
+| 条目 | 内容 | 同批 |
 |---|---|---|
-| I-23 | §3.7 补三形态引导矩阵与 `fw_payload` 真板用途段（~10 行 + `[ARCH]` 三处一致）——详情以 `todo.md` §7.4 I-23 为权威 | I-22 文档连带、I-24 |
-| I-24 | §3.1「内核自带 stub」否决行重写为「UEFI 形态被否 / opensbi 形态采纳」两行——详情以 `todo.md` §7.4 I-24 为权威 | I-22、I-23 |
-| L1424 张力登记 | §3.4 的 TODO 块：§3.1/§3.3 终态叙述缺「当前产线形态与终态的差距见 §3.4」指针；候选 ① 补指针（随 I-27 一起改）或 ② 等 NK1 落地后删括注 | I-27、NK1 |
-| I-27 | L1422/L2624「还没裁决」口径对齐 OQ-N6 已裁（本文件 §4） | L1424 |
-| I-25 | `os/` 全仓注释语言/锚点整改——低优，权威在 `todo.md` §7.4 I-25；本轮审查确认的同类新样例：`memmap_source.rs`/`boot_form.rs` 的中英混排注释、`opensbi_helpers.rs` 协作锚点（NK4-C 续-88 等）按 I-25 口径 a/b 处理 | 全仓批 |
-| 读者待办 L1488 | 「TODO，x86_64 的待退场，此处待核实，并透彻学习」——`reserved_regions` x86 内联窗口随 x86 切跨镜像退场的路径。**用户侧学习项**，AI 不代决；可回读 `01-code-design.md` T2（x86 切换后 UEFI 腿 `reserved_regions` 退场的具体形态）辅助 | NK1 |
-| 读者待办 L1532 | §3.4 末「TODO 这个是TODO是交互式文档类TODO，我读不懂？？」——该 TODO 块（L1424）的性质是**登记文档-代码张力**（不是代码任务）：正文叙述以终态口径写、代码实况是过渡形态，两者差距要求正文标注。处理方式见上一行。**用户侧澄清项** | L1424 |
+| I-17 | §2.6 拆节（`alloc_lowest` 缺陷分析、静态页表池两段独立成 §2.6.3；纯移动不删内容；§2.6 现 347 行占章 31%） | I-18 |
+| I-18 | §1、§3–§6 章头导语与 ≥300 行巨节体检 | I-17 |
+| I-19 | §3–§6 讲解条续扫「只报事实不报道理」（§2 已扫 40 条修 4；§3–§6 约 90 条待过） | — |
+| I-23 | §3.7 补 `fw_payload` 真板用途段 + 三架构落位矩阵（~10 行，`[ARCH]` 三处一致；现 `fw_payload` 术语零命中） | I-22 文档连带、I-24（§3.7 一次改完） |
+| I-24 + L1378/L1408 | §3.1 否决表拆两行（UEFI 形态被否 / opensbi 形态采纳）；正文 L1378「OpenSbiBootShim 无调用方」叙述与 L1408 依赖方向 TODO 同批收敛 | I-22、I-23 |
+| L1488 | 「x86_64 的待退场，此处待核实，并透彻学习」——`reserved_regions` 内联窗口退场路径。**用户侧学习项**；可回读 01-code-design §2.5/§2.8（消费面拆分）辅助 | NK1/T2 |
+| L1532 | 「这个是交互式文档类TODO我读不懂」——L1424 块的性质是**文档-代码张力登记**（正文以终态口径写、代码实况是过渡形态，要求正文标注）。**用户侧澄清项**，处置同 L1424（§3 I-27 批） | L1424 |
+| I-25 | `os/` 全仓注释语言与锚点整改（低优；01 篇射程内样例：uefi_helpers D-64②/F8 段、bootface 头注等，随各条顺手按 a/b 口径处理） | 全仓批 |
+| **§5.2.1 测试计数漂移**（本轮新登记） | `opensbi_helpers.rs` 文档记 13、`grep -c '#\[test\]'` 实际 **12**（连带"15+13+1=29"的算式应为 15+12+1=28）；`x86_64/paging.rs` 文档记 14、实际 **15**。按复算命令重跑后改数（其余核过：loader 15、uefi_helpers 1、kernel_info 9、platform 8、boot_form 6、minix-elf 23、memmap 16、boot_alloc 5、vm_handoff 7、dm_coverage 10 均一致） | 文档线程；与 §5.1 M6 行的"paging.rs 14 条"同处改 |
+| **§4.6 `IDENTITY_MAP_END` 措辞**（本轮新登记） | 正文写"`IDENTITY_MAP_END`（lib.rs 里固定的低地址上界）"——D-60 闭合后 kernel 侧已是 `use minix_arch::BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END` 别名，"lib.rs 里固定"失真；改为"唯一权威在 `minix-arch`（`BOOT_IDENTITY_MAP_END`），kernel 侧是别名" | D-60 回勾行（§3） |
+| **I-25 追加样例：`globals.rs` 陈旧注释**（本轮新登记） | `FREE_MEMMAP` 上 `#[allow(dead_code)] // SMP memmap infra (checklist D-17); not yet wired to all call sites`——"checklist D-17"与 `todo.md` 的 D-17（IPC 过滤）不同指、锚点不可达；且 `FREE_MEMMAP` 已被 `kmain` A.2 使用，"not yet wired" 多半过期（`allow` 现在可能只为 mock 构建保留）。落地时核实 `allow` 是否仍必要，注释按实况改写 | I-25 |
+| I-21 | 篇头「路径约定」13 篇重复上收 | 📌 延后（W-10/W-11 冻结后） |
+
+> **2026-10-29 回勾（01TODO-B1）**：§5.2.1 计数漂移与 §4.6 `IDENTITY_MAP_END` 措辞两项已在正文闭合。前者除登记的三处（opensbi 13→12、`15+13+1=29`→`15+12+1=28`、paging 14→15）外，复算还纠正了 minix-boot 总数（23→32，原算式漏 `memmap_source.rs` 的 9 条）并把 boot-shim 的 28 口径写准（须带 `--features test-all`）；后者两处（§4.6 Step 1 与 §1 的同一措辞）均改为「唯一权威在 `minix-arch` 的 `BOOT_IDENTITY_MAP_END`，kernel 侧是别名」。
+
+> **2026-10-29 回勾（01TODO-DOC）**：I-17（§2.6 内部拆五节，最大节 176 行；顶层不改号以保 prompt/ 与 02 篇的历史锚点）、I-18（§4/§6 补章头导语；≥300 行巨节体检：仅 §2.6 入选且已拆，§2.4 287 行未达阈值记录不改）、I-19（§3–§6 讲解条续扫 ~90 条，修 4 条纯事实条目）、I-23（§3.7 FW_PAYLOAD 落位矩阵 + `[ARCH]` 三处一致）、I-24 + L1378/L1408（否决表拆两行、TODO 块改状态叙述、I-22 终态句）、I-25 射程样例（FREE_MEMMAP 陈旧锚点、D-64②/F8 不可达标签）六项闭合。设计侧 `[ARCH]` 镜像因该文件在主树是用户未提交脏版，落在工作区未代提交。
+
+---
+
+## 6. 射程外指针（防重查）
+
+- **D-60** 已闭合（kernel 侧 `use minix_arch::BOOT_IDENTITY_MAP_END` 归一，全仓单定义）；**I-20** 已闭合（b0da9074e）。
+- **I-1**（kernel 独立 ELF 构建接入 xtask）原 DEFERRED 的解除前置「入口交接 ABI 设计 + boot-shim 终局跳转」已由 T2 v9 全套裁决补齐——不再独立登记，随批次五实施（bin 目标 + build.rs 一并）。
+- **I-5**（ACPI RSDP）DEFERRED：物理机 x86_64 支持时实现，当前三家族 QEMU virt 均不依赖。
+- **`VmBootHandoff`**（`os/libs/minix-types/src/types/boot.rs`）是内核→VM 的运行期上层交接、带 magic/version，属另一层契约，**不在 01 篇射程**。
+- **T-10**（riscv64 U-Boot 真实启动链集成）在 todo.md §7.3，非 01 篇正文登记（§7.4 有引用），随 CI 窗口处理。
 
 ---
 
 ## 7. 验收总则（每条通用）
 
-1. **证据先行**：动手前跑该条「证据命令」确认现状；与工单描述不一致时以源码为准并在回报里写明偏离。
-2. **裁决先行**：B 批各条以 `01-code-design.md` 对应节与 GPT 的裁决结论为实施前提；裁决记录回填条目下方，不另开文档。
-3. **文档同步**：涉 01 篇正文的（D-66 §3.4 param_buf 表述、D-67 §3.4 两信封叙述、I-27/L1424/L1422、E 批各条）同批更新；§5.3 交接表回填覆盖状态。
-4. **门禁**：`cargo test -p <crate>` 与 `cargo clippy` 通过；共享契约层（minix-boot）条目加三架构构建与 qemu 引导冒烟；文档五门（anchor/style/ref-check/density/code-map）在受影响文档复跑全绿。
-5. **不跳过 hook、不 `git add -A`**：逐路径点名提交；一条逻辑单元一笔。
+1. **证据先行**：动手前跑该条证据命令确认现状；与工单不一致时以源码为准并写明偏离。
+2. **裁决已冻结**：§2 各条直接按 `01-code-design.md` v9 实施；实现证伪既定前提才重开局部裁决，不开新设计轮次。
+3. **文档同步**：涉 01 篇正文的同批更新（Doc Code Sync 七项）；§5.3 交接表回填覆盖状态。
+4. **门禁**：`cargo test -p <crate>` 与 `cargo clippy` 通过；共享契约层（minix-boot）条目加三架构构建与 qemu 引导冒烟；文档五门在受影响文档复跑全绿。
