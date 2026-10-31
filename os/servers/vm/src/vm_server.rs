@@ -660,29 +660,20 @@ impl VmServer {
         // values without touching `init_page_table()`.
         //
         // A version ≥ 3 handoff carries the real kernel layout —
-        // consume it. `None` (pre-E3 handoffs, host tests via
-        // `BootParams::simple`) keeps the historical mock constants.
-        let layout = self.kernel_layout.unwrap_or_else(|| {
-            audit_log!(
-                "[VM BOOT] handoff lacks kernel layout (version < 3) — mock constants in use"
-            );
-            // The mock shape is x86's (dm_vbase=0xFFFF_8000_0000_0000 is
-            // non-canonical under Sv39) — on a riscv64 guest a real handoff is
-            // always v5 and carries the real layout, so reaching this fallback
-            // means the handoff version logic is broken: fail hard rather than
-            // silently applying the wrong shape.
-            #[cfg(all(target_arch = "riscv64", not(test)))]
-            panic!("handoff lacks kernel layout on riscv64 — a real handoff is v5 and carries it");
-            #[cfg(not(all(target_arch = "riscv64", not(test))))]
-            minix_types::KernelLayout::new(
-                0xFFFF_FFFF_8000_0000, // kernel_text_vbase (mock)
-                0x100_0000,            // kernel_text_pbase (16 MiB, mock)
-                8,                     // kernel_text_pages (mock)
-                8,                     // kernel_data_pages (mock)
-                0xFFFF_8000_0000_0000, // dm_vbase (legacy sentinel — host-test shape only; a real handoff is v5 and carries the arch's true KERNEL_DIRECT_MAP_BASE)
-                4,                     // dm_pages (legacy sentinel — see above)
-            )
-        });
+        // consume it.
+        //
+        // A6（C17 余片，外部评审裁决）：缺失 kernel_layout = 输入不完整
+        // （真实交接 ≥ v5 必带真值），**生产一律拒绝**——三架构统一
+        // fail-fast，不再有任何静默回退 mock 形状的生产路径（旧形状：
+        // riscv panic、x86/aarch64 静默采用 x86 mock 常量）。mock 布局
+        // 由测试夹具显式注入：`BootParams::simple` 自带 mock
+        // `KernelLayout`（fixture 语义——用简单构造器 = 明确要 mock 布
+        // 局），宿主测试不受影响；"None 输入被拒"由
+        // `test_init_rejects_missing_kernel_layout` 负控钉住。
+        let layout = self.kernel_layout.expect(
+            "handoff lacks kernel layout (version < 5) — input rejected (A6): \
+             a real handoff is v5 and carries the kernel layout",
+        );
         // SAFETY: Called before any `init_page_table()` call (process table
         // setup happens in `init_proc_table()` after this). Single-threaded
         // VM ensures no concurrent reader of `KERNEL_LAYOUT`.
@@ -2517,6 +2508,37 @@ mod tests {
         VmServer::new(TEST_TOTAL_PAGES, &test_free_regions())
     }
 
+    /// A6（C17 余片）负控：缺失 kernel_layout 的交接（真实 v<5 形状）在
+    /// `init` 一律被拒——静默回退 mock 形状的生产路径已消除，mock 布局
+    /// 只能由 `BootParams::simple` 夹具显式注入。
+    #[test]
+    #[should_panic(expected = "input rejected (A6)")]
+    fn test_init_rejects_missing_kernel_layout() {
+        with_test_mock_base(|| {
+            let regions = test_free_regions();
+            // 夹具值逐字段照抄 BootParams::simple，唯独 kernel_layout=None
+            // ——真实 v<5 交接的形状。
+            let params = crate::boot::BootParams {
+                root_paddr: minix_types::PhysBytes(0x900_000),
+                kerninfo_pa: minix_types::PhysBytes(0x901_000),
+                total_pages: TEST_TOTAL_PAGES,
+                free_regions: &regions,
+                boot_procs: &[],
+                modules: &[],
+                kernel_allocated: KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                is_first_time: true,
+                kernel_layout: None,
+                user_sp: minix_types::VirBytes(minix_types::USER_STACK_TOP),
+            };
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
+            let mut server = VmServer::new_inner(params, shared);
+            server.init();
+        });
+    }
+
     #[test]
     fn test_dispatch_vm_unmap_phys_wired() {
         // 21-P1-1 regression: VM_UNMAP_PHYS previously fell through to the
@@ -3739,7 +3761,15 @@ mod tests {
             kernel_allocated: KernelAllocated::ZERO,
             vm_allocated_bytes: 0,
             is_first_time: true,
-            kernel_layout: None,
+            // A6：走 init 的测试必须显式注入 mock 布局夹具（缺失=被拒）。
+            kernel_layout: Some(minix_types::KernelLayout::new(
+                0xFFFF_FFFF_8000_0000,
+                0x100_0000,
+                8,
+                8,
+                0xFFFF_8000_0000_0000,
+                4,
+            )),
             user_sp: VirBytes(USER_STACK_TOP as u64),
         }
     }
