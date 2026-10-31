@@ -4053,6 +4053,18 @@ RTS_SET(NO_QUANTUM)→store→RTS_UNSET 迁到 BSP（`bsp=0` 时零变化）。
 读数：riscv ATF `-smp 1` **36/36**（34 passed + 2 skipped）、x86
 `test-smp-aps` PASS（cpu1=2/cpu2=2/cpu3=0）、`test-smp-aps-aarch64` PASS、
 `test-smp-aps-riscv64` PASS、kernel mock 850/0/8、三架构 check 0 error。
-残留显式门：riscv `-smp 2/4` 全镜像仍在 `entering scheduler` 后停住，
-BSP 身份已正确（`enq cpu=1/2`、not-all-CPU warning 消失），属 SMP
-启动集/AP 交互的独立问题；C13 的 cpu3=0 同笔定为空闲停表设计。
+C13 的 cpu3=0 同笔定为空闲停表设计。
+
+**C5SMP2 里程碑（riscv 用户返回按 CPU 重锚 sscratch）**：码笔
+`88eadff27`、合并 `d03fbb17b`。根因：`KERNEL_TRAP_STACK_BASE` 是全局
+标量，AP 的 `init_ap` 把自身栈顶写入；BSP 下一次 `restore_to_user` 从
+该标量重锚 sscratch，用户陷阱落到 AP 栈。riscv 的 `current_cpu_id()`
+按栈区间识别 CPU，于是 VM 的 kernel call 被记到 AP 的 idle 进程
+（`KC cpu=1 nr=-4`），`dispatch_vmctl` 前的权限检查失败，VmDm 的
+PteWrite 代理不执行，`VM_HEAP_BASE` 未映射，VM 在 `memset` 处 store
+page fault（`scause=0xf`）。修法：调度器在每次 `restore_to_user` 前按
+当前 CPU 重写该标量与 sscratch（BSP 用 `kernel_info.kern_stack_top`，
+AP 用 `ap_kernel_stack_top`）。读数：riscv ATF `-smp 1`/`-smp 2`/
+`-smp 4` 均 **36/36**（34 passed + 2 skipped，0 failed/broken；
+`tmp/c5smp2-smp1f.log`、`-final2.log`、`-final4.log`）、kernel mock
+850/0/8、三架构 kernel check 0 error。C5/P-RV-01 全闭。
