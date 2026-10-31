@@ -996,6 +996,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 - 方案 B（否决）：15-stage 提前认领。否决理由：命令 crate 的归属与 sbin 分型构建形态未定，提前认领会重演域外混装（对账 E-MINSYS-SCOPE）。
 
 **依赖**：V1-P2-10（盘上结构层稳定）；命令轨道建立。
+
+> **`2026-10-31` 现查（A 板 A20 账本成员 E-FSCMDS，claim/E-FSCMDS-qoder）：轨道已认领、工具已落**——占位 crate 早已不在；两条真工具在命令轨道上：`os/commands/sbin/mountinfo/src/bin/fsck_mfs.rs`（168 行，判定半在 `minix_fs_mfs::fsck`：超级块校验、遍历、位图比对与计数对账，壳只做旗标/读档/打印/退码）与 `os/commands/sbin/diskfmt/src/bin/mkfs_mfs.rs`（182 行）；判据 `cargo test -p minix-mountinfo -p minix-diskfmt` → **26 / 0**（7 段）。本条 `closed`。
 **解锁**：镜像制作/校验自动化、装机流程。
 
 ---

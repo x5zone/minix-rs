@@ -3613,6 +3613,16 @@ E-FSRUNTIME 与 pfs 模板。静默挂起看起来像「服务在跑」，响亮
 **剩下的**是 SEF 三段逐 bin 核与 RS 启动握手——与 E-NETSTART 同根，等 03-rs 侧的服务运行时
 startup 面，本板不代做。判据：`cargo test -p minix-fs-hgfs` → **2 / 0**。
 
+### 第二百零四笔（A20 账本成员 `E-FSCMDS`：fsck/mkfs 的轨道认领已兑现，两条真工具在命令轨道上，本成员闭）
+
+E-FSCMDS 登记的是「`os/commands/sbin/{fsck,mkfs}` 各 14/15 行纯参数解析占位，等盘上结构层稳定
+后由命令轨道认领」。现查：占位 crate 早已不在，两条真工具已在命令轨道——`os/commands/sbin/mountinfo/
+src/bin/fsck_mfs.rs`（168 行；判定半在 `minix_fs_mfs::fsck`，超级块校验、遍历、位图比对与计数对账
+都在库里，壳只做旗标解析/读镜像/打印/退码）与 `os/commands/sbin/diskfmt/src/bin/mkfs_mfs.rs`
+（182 行）。
+
+判据：`cargo test -p minix-mountinfo -p minix-diskfmt` → **26 / 0**（7 段）。本条 `closed`。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
