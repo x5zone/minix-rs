@@ -46,7 +46,7 @@
 //! dereferenced only after `arch_boot` has built the tables and called
 //! `enable()` — the ordering is guaranteed by `arch_boot` itself.
 //!
-//! Boundary with boot-shim `OpenSbiBootShim::prepare_boot`: that leg is
+//! Boundary with boot-shim `RiscvUbootBootShim::prepare_boot`: that leg is
 //! "standalone shim installs kernel.elf then jumps", which re-copies **this
 //! image's own segments** and clears NOBITS — self-destructive for a self-boot
 //! image; this face copies only **modules** and never re-copies itself. Module

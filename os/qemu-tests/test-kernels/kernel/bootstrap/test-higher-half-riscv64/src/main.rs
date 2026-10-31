@@ -9,7 +9,7 @@
 //!   HigherHalf::jump_to_kmain → kmain (qemu_test) → verify SP/PC/FP
 //!
 //! See hello-boot-riscv64/main.rs for rationale on why individual helpers
-//! are used instead of `OpenSbiBootShim::prepare_boot`.
+//! are used instead of `RiscvUbootBootShim::prepare_boot`.
 
 #![no_std]
 #![no_main]

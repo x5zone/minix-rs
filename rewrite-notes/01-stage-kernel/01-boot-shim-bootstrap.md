@@ -1785,7 +1785,7 @@ aarch64 上多一层（`lib.rs` 的 [`fn enter_kernel_image_v1`](os/kernel/src/l
 /// instruction fetch would fault.
 ```
 
-riscv64 上是第三种形态：内核镜像自己就是引导体（入口是 [`main.rs`](os/kernel-image/src/main.rs) 里按架构分道的 `rust_image_main`，riscv64 的实现是 `bootface.rs` 的 [`fn bootface`](os/kernel-image/src/bootface.rs:fn bootface)；aarch64 的对应面是 `bootface_a64.rs` 的 [`fn bootface_a64`](os/kernel-image/src/bootface_a64.rs:fn bootface_a64)，只在该架构构建时编译），在没有 U-Boot 与文件系统的 `-kernel` 场景里从设备树解析内存、从 `BootFileTable` 或 DTB 通道取模块，然后调用同一个 `arch_boot`。三链的 memmap 层已通过 minix-boot 的同一 `MemoryMapSource` 合流（I-22）——引导形态层不合并，memmap 源单一下沉。三条链的入口同源、收敛点也是同一个函数。
+riscv64 上是第三种形态的出生地：内核镜像自己就是引导体——在没有 U-Boot 与文件系统的 `-kernel` 场景里，入口是 [`main.rs`](os/kernel-image/src/main.rs) 按架构分道的 `rust_image_main`，riscv64 的实现是 [`fn bootface`](os/kernel-image/src/bootface.rs:fn bootface)（aarch64 的对应面是 `bootface_a64.rs` 的 [`fn bootface_a64`](os/kernel-image/src/bootface_a64.rs:fn bootface_a64)，只在该架构构建时编译），从设备树解析内存、从 `BootFileTable` 或 DTB 通道取模块，然后调用同一个 `arch_boot`。D-73 落地后 riscv64 也补齐了第二种形态的完整链：`riscv64-uboot-shim`（物理链接，VMA=LMA，自带 bootstrap 栈）吃下 U-Boot `bootelf -p` 的 `(extra_argc, extra_argv)` 参数通道，把 DTB、内核 ELF 与 12 个引导模块准备成 `BootHandoffV1` arena，交给配套特性构建的 `kernel-uboot` 接收镜像走 `arch_boot_resume_v1`——接收侧与 aarch64 同构，复用同一个加性恢复序列，不重建根表。riscv64 的 `jump_to_kmain` 因此带一个执行位置探针：直核腿仍在低地址恒等窗口里执行，medany 代码模型的 PC 相对 `la` 解析出的是装载地址，要加上镜像的链接↔装载偏移；接收腿已被 shim 跳到高半链接地址，`la` 解析的已是真值，偏移不得再加——同一段 asm 用 `auipc` 读当前 PC 与 `kern_virt_base` 比较后分道。四条链的 memmap 层已通过 minix-boot 的同一 `MemoryMapSource` 合流（I-22）——引导形态层不合并，memmap 源单一下沉。
 
 **两个替代做法各会撞什么**（两处）：
 
@@ -2592,7 +2592,7 @@ Step 3 的 `enable()` 在 x86-64 上做四件事：
 
 ### 4.8 跨镜像交接与直核自引导（→3.7）
 
-三个架构的交接形态并列。boot-shim 侧的分道代码（`main.rs` 里那两行 `cfg` 分支）已在 §4.1 逐字引过，这里不重复；先从 aarch64 的接收面看起：
+三架构四种交接形态并列。boot-shim 侧的分道代码（`main.rs` 里那两行 `cfg` 分支）已在 §4.1 逐字引过，这里不重复；先从 aarch64 的接收面看起：
 
 ```rust
 // 节选（保留分道与 resume 调用；注释改述为机制陈述），os/kernel-image/src/main.rs:fn rust_image_main（aarch64）。
@@ -2615,10 +2615,21 @@ fn rust_image_main(arena_pa: usize) -> ! {
 （`bootface_a64()` 的返回类型是 `!`——自引导面正常不会返回；`arena_pa == 0` 是唯一走直核的取值，v1 链不会传 0。）
 
 ```rust
-// 代码引用（保留入口的三行与调用），os/kernel-image/src/main.rs:fn rust_image_main（riscv64）。
-#[cfg(target_arch = "riscv64")]
+// 代码引用（保留两个 cfg 臂的完整分道；注释节选），os/kernel-image/src/main.rs:fn rust_image_main（riscv64，按交付形态分特性）。
+#[cfg(all(target_arch = "riscv64", not(feature = "fw-riscv64-uboot")))]
 fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! {
     bootface::bootface(boot_hart, dtb_phys, boot_file_table_pa)
+}
+
+// D-73 接收镜像：a0 = boot-shim 的 enter_kernel_image_v1 跳转递来的 v1 arena
+// 物理地址；同一 v1 解码与加性恢复，不重建 shim 已激活的根表。
+#[cfg(all(target_arch = "riscv64", feature = "fw-riscv64-uboot"))]
+fn rust_image_main(arena_pa: usize) -> ! {
+    let _kernel_entry: usize = core::hint::black_box(KERNEL_ENTRY_ANCHOR as usize);
+    early_console::write_str(
+        "### minix-rs kernel-image: resuming high-half boot (handoff v1 arena, riscv64)\n",
+    );
+    minix_kernel::arch_boot_resume_v1(arena_pa as u64)
 }
 ```
 
@@ -2626,16 +2637,17 @@ fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! 
 |---|---|---|---|---|
 | x86_64 | boot-shim | boot-shim（`enter_kernel_image_v1` 内的 `enable`） | `BootHandoffV1` arena 物理地址（`rbx`） | 独立镜像高半 `_start` |
 | aarch64 | boot-shim | boot-shim（`enter_kernel_image_v1` 内的 `enable`） | `BootHandoffV1` arena 物理地址（`x0`） | 独立镜像高半 `_start` |
-| riscv64 | 内核镜像自身（`bootface`） | 内核镜像自身（`arch_boot` → `enable`） | `a0`=hartid、`a1`=DTB、`a2`=`BootFileTable`（可选） | 独立镜像 `_start` |
+| riscv64（`-kernel` 直核） | 内核镜像自身（`bootface`） | 内核镜像自身（`arch_boot` → `enable`） | `a0`=hartid、`a1`=DTB、`a2`=`BootFileTable`（可选） | 独立镜像 `_start` |
+| riscv64（U-Boot 链） | `riscv64-uboot-shim` | shim（`enter_kernel_image_v1` 内的 `enable`） | `BootHandoffV1` arena 物理地址（`a0`） | 独立镜像高半 `_start` |
 
-三条链收敛在同一个 `arch_boot`/`arch_boot_impl`（跨镜像路径收敛在 `arch_boot_resume_v1` → `arch_boot_resume_high_half`，后者调用同一个 Step 4 与同一个 `jump_to_kmain`）。`arch_boot_resume_v1` 里的 `resume_boot_pt_alloc` 只是 `BootAlloc::resume` 的转发（§4.7 的三种进入方式之一），注册不发生在它里面。
+四条链收敛在同一个 `arch_boot`/`arch_boot_impl`（跨镜像路径收敛在 `arch_boot_resume_v1`：aarch64 经 `arch_boot_resume_high_half`，x86_64 与 riscv64 在 `resume_after_v1_decode` 内做同一组加性阶段——validate/落 KernelInfo/记录根/establish DM——最后都落到同一个 `jump_to_kmain`）。`arch_boot_resume_v1` 里的 `resume_boot_pt_alloc` 只是 `BootAlloc::resume` 的转发（§4.7 的三种进入方式之一），注册不发生在它里面。
 
 `enter_kernel_image_v1` 里跳转前的准备（建根、读游标、补运行期字段）与 `br {entry}` 的写法在 3.7 已给出。这里补一条与"谁建根"有关的约束：跨镜像路径下，`build_bootstrap_root_and_enable` 被 boot-shim 调用一次、生成的表**已经激活**；接收侧必须避免二次建表（3.7 的反向推演已给后果），而 `bootface` 路径下建表发生在内核镜像自身，`arch_boot` 走的是常规 Step 1–4。
 
 两处实现现状：
 
 - x86_64 的独立镜像入口已经接线：`rust_image_main(arena_pa)` 从 `rbx` 取 arena 基址，调用 `arch_boot_resume_v1`；`_start` trampoline 按入口契约建栈、清 `.bss`（只碰 rdi/rax/rcx）、`cli`/`cld`、把 `rbx` 转进 SysV 第一参数 `rdi`。内核镜像的产出与布局校验仍由 `check-layout.sh` 的 L0–L9 守住。
-- riscv64 在 QEMU `-kernel` 直核场景下镜像按物理基址视图执行（源码注释把这一实测事实记作 `medany`），此时 `kern_virt` 与 `kern_phys` 可能相等，§4.6 的 Step 2 守卫就是为这种情况写的；生产链（`bootface` + 文件系统 + 高半链接）走的是另一套布局。两条布局的基址常量以链接脚本为准，复算命令：`grep -n 'KERNEL_VIRT_BASE\|KERNEL_PHYS_BASE\|ENTRY' os/kernel-image/*.ld`（该命令对三份脚本各命中若干行，这里只摘 riscv64 的三个值： `KERNEL_VIRT_BASE = 0xFFFFFFC000000000`、`KERNEL_PHYS_BASE = 0x80200000`、`ENTRY(_start)`）。
+- riscv64 在 QEMU `-kernel` 直核场景下镜像按物理基址视图执行（源码注释把这一实测事实记作 `medany`），此时 `kern_virt` 与 `kern_phys` 可能相等，§4.6 的 Step 2 守卫就是为这种情况写的；生产链（`bootface` + 文件系统 + 高半链接）走的是另一套布局。U-Boot 链的 `kernel-uboot` 接收镜像与直核镜像共用同一份 `riscv64.ld`（高半 VMA `0xFFFFFFC000000000`、物理装载基址 `0x80200000`），差别只在入口分道特性与交给它的第一个参数；shim 侧则是一片独立的物理链接产物（VMA=LMA，见 `os/boot-shim/riscv64-uboot.ld`）。两条布局的基址常量以链接脚本为准，复算命令：`grep -n 'KERNEL_VIRT_BASE\|KERNEL_PHYS_BASE\|ENTRY' os/kernel-image/*.ld`（该命令对三份脚本各命中若干行，这里只摘 riscv64 的三个值： `KERNEL_VIRT_BASE = 0xFFFFFFC000000000`、`KERNEL_PHYS_BASE = 0x80200000`、`ENTRY(_start)`）。
 
 **让 riscv64 照 aarch64 那样"先建表、再跳镜像"会怎样**。aarch64 的镜像入口之所以直核与 UEFI 两种场景都能用，靠的是入口里的一条分道：`rust_image_main(arena_pa)` 在 `arena_pa == 0` 时走自引导面（`-kernel` 直核下 QEMU 不设 `x0`）、非零时走高半 resume 面；x86_64 没有直核面，`0` 只作诚实失败。riscv64 的入口（`rust_image_main(boot_hart, dtb_phys, boot_file_table_pa)`）没有"交接指针"这个入参——直核场景只给 hartid 与 DTB；若照搬 aarch64 的协议而不补一条分道，空指针解引用会发生在 `early_console` 初始化之前，现场没有任何输出。反过来，若 aarch64 退回内联执行，撞的是 §3.7 第一处替代做法已经推演过的同一个问题（TTBR0 被换掉、取指映射作废），现场证据（`elr`/`vbar` 钉在同一低地址）也在那里。
 

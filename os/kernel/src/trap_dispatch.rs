@@ -2468,6 +2468,18 @@ fn riscv64_diag_panic(
     Console::write_hex(cpu as u64);
     Console::write_str(" sp=");
     Console::write_hex(sp as u64);
+    // User-origin forensics: the caller chain lives in the saved GPRs —
+    // ra is the first thing to resolve against the module's own symbols
+    // (a wild store inside a library loop, e.g. memset, points back at the
+    // caller's argument computation, not at the store itself).
+    Console::write_str(" ura=");
+    Console::write_hex(frame.gpr[1]);
+    Console::write_str(" usp=");
+    Console::write_hex(frame.sp());
+    Console::write_str(" ua0=");
+    Console::write_hex(frame.gpr[10]);
+    Console::write_str(" ua2=");
+    Console::write_hex(frame.gpr[12]);
     Console::write_str("\n");
     panic!(
         "riscv64 {origin}: scause {scause:#x} stval {stval:#x} sepc {:#x} cpu {cpu} sp {sp:#x}",

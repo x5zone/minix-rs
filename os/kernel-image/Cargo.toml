@@ -27,6 +27,12 @@ fw-none-image = []
 fw-x86-none = ["fw-none-image"]
 fw-aarch64-none = ["fw-none-image"]
 fw-riscv64-none = ["fw-none-image"]
+# D-73: the U-Boot receiver product. Same link script and LMA layout as the
+# direct product, but the riscv64 `_start` is the v1 handoff receiver
+# (`a0` = arena PA → `arch_boot_resume_v1`); there is no bootface election
+# and no runtime fallback. Two cargo invocations = two build products, per
+# the D-73 frozen decision ("分道 = 两个构建产物，不做运行时分道猜测").
+fw-riscv64-uboot = ["fw-none-image"]
 
 [dependencies]
 minix-arch = { path = "../arch", default-features = false }
