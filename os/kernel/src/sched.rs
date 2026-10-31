@@ -357,12 +357,16 @@ fn validate_cpu_param(
 /// `run_all` (including `test-smp-aps`/`test-smp-ipi` and the e5-ds
 /// cross-CPU chain) stays green.
 ///
-/// riscv64 keeps a **narrow** transitional clamp: its default firmware does
-/// not deliver a cross-hart SSIP (the SWI forensic note in `riscv64::smp`;
-/// `test-smp-ipi-riscv64` passes only with `aclint=on`). An AP-homed process
-/// would never be woken, so `params.cpu` is rewritten to the BSP there until
-/// firmware delegation or an SSWI device is available. This is a platform
-/// gate, not a shared-scheduler difference.
+/// riscv64 keeps a **narrow, runtime-conditional** clamp: on platforms whose
+/// firmware does not deliver a cross-hart SSIP (no `riscv,aclint-sswi` node
+/// in the DTB — the default QEMU config; the SWI forensic note in
+/// `riscv64::smp`), `params.cpu` is rewritten to the BSP, because an
+/// AP-homed process would never be woken. When the platform exposes the
+/// ACLINT SSWI device (e.g. QEMU virt `aclint=on`), the production
+/// `send_sched_ipi` Path 1 delivers the IPI by direct register write
+/// (round-trip proven by `test-smp-ipi-riscv64` under the authoritative
+/// run_all) and the clamp lifts at runtime. This is a platform gate, not a
+/// shared-scheduler difference.
 pub fn sched_proc(
     table: &mut crate::proc_table::ProcessTable,
     nr: ProcNr,
@@ -410,12 +414,19 @@ pub fn sched_proc(
         None => validate_cpu_param(params.cpu, 1, |v: u32| v == 0)?,
     }
 
-    // riscv64 narrow stop-loss (see `# AP placement`): the default firmware
-    // does not deliver a cross-hart SSIP, so an AP-homed process would never
-    // be woken. The validation above still runs first; only the accepted
-    // destination is rewritten. x86_64/aarch64 apply the caller's cpu.
+    // riscv64 narrow stop-loss (see `# AP placement`): **runtime-conditional
+    // since C2ESSWI** — the clamp lifts when the platform exposes the ACLINT
+    // SSWI device (DTB `riscv,aclint-sswi` node, e.g. QEMU virt
+    // `aclint=on`): the production `send_sched_ipi` Path 1 then delivers a
+    // cross-hart SSIP by direct register write (round-trip proven by
+    // `test-smp-ipi-riscv64` under the authoritative run_all), so an
+    // AP-homed process can be woken and the caller's cpu is applied. On
+    // default firmware (no SSWI node) the clamp stays: an AP-homed process
+    // would never be woken. The validation above still runs first; only the
+    // accepted destination is rewritten. x86_64/aarch64 apply the caller's
+    // cpu unconditionally.
     #[cfg(target_arch = "riscv64")]
-    {
+    if minix_platform::platform_desc().sswi_setip_base().is_none() {
         let bsp = smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0);
         params.cpu = params.cpu.map(|_| bsp);
     }

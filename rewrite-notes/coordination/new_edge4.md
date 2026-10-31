@@ -4216,3 +4216,17 @@ simple 全调用点在 cfg(test) 门控内（vm_server new/new_for_test + boot.r
 info 的 user_sp）已由 boot-shim 既有测试钉住——来源链闭合：kinfo→交
 接页→params→ctx。门读数：minix-vm 546/0（+2）。C 板 C17 行 A6/A9 族
 双闭，余=xtask 构建侧（等 A 板）。
+
+**C2ESSWI 里程碑（C2E-riscv 窄钳钥匙消费——运行时条件撤钳）**：`sched_
+proc` 的 riscv64 亲和钳制从编译期 cfg 改为**运行时条件**——`platform_
+desc().sswi_setip_base().is_none()` 时维持钳制（默认 QEMU 无 SSWI 节
+点，行为不变）；平台暴露 ACLINT SSWI 设备（DTB `riscv,aclint-sswi`，如
+QEMU `aclint=on`）即撤钳——生产 `send_sched_ipi` Path 1 直写 SETIP 寄存
+器递跨核 SSIP（`test-smp-ipi-riscv64` 真机往返、run_all 常驻）。钥匙消
+费依据：SSWI 往返已真机证实 + 生产路径就位（本轮核查确认，无需新探
+针）。test-smp-aps-riscv64.sh 增 `ACLINT=1` 门控参数（两条 -machine 参
+数追加 `,aclint=on`），双形态门：默认（钳制）PASS + ACLINT=1（撤钳）
+PASS——全系统载体的撤钳路径首次真机执行。评审限制如实记录：aclint 属
+TCG 路径，探通结果不推广到 KVM/真板；SSWI 为可选平台设备。门读数：默
+认 PASS、ACLINT=1 PASS、test-smp-ipi PASS、riscv ATF 36/36、docker mock
+850/0/8、riscv check 0 error。C 板 C2E 行钥匙消费注记。

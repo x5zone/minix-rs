@@ -105,7 +105,12 @@ echo "== Stage 4: 拼 BootFileTable + 生成 DTB(chosen) + QEMU loader 参数 ==
 BASE_DTB="$IMG/base.dtb"; QEMU_DTB="$IMG/qemu.dtb"; TABLE_BIN="$IMG/table.bin"
 rm -f "$BASE_DTB" "$QEMU_DTB" "$TABLE_BIN"
 # 拓扑真值=DTB：dump 必须 -smp 2（缺省 1 CPU ⇒ smp_init 多核分支惰性）
-timeout 10 qemu-system-riscv64 -machine virt -smp 2 -m 512M -display none -bios default \
+# C2ESSWI: ACLINT=1 appends the SSWI device (riscv,aclint-sswi node) to both
+# -machine args — the runtime-conditional clamp lifts and the unclamped
+# AP-homing path runs under the full-system carrier. Default (unset):
+# legacy machine shape, clamp active.
+ACLINT_ARG=""; [ "${ACLINT:-0}" = "1" ] && ACLINT_ARG=",aclint=on"
+timeout 10 qemu-system-riscv64 -machine "virt${ACLINT_ARG}" -smp 2 -m 512M -display none -bios default \
     -machine dumpdtb="$BASE_DTB" >/dev/null 2>&1 || true
 [ -f "$BASE_DTB" ] || fail "dumpdtb 未产出"
 fdtput -p -t x "$BASE_DTB" /chosen opensbi,boot-file-table "$TABLE_PA" || fail "fdtput 注入失败"
@@ -153,7 +158,7 @@ pkill -f '[q]emu-system-riscv64' 2>/dev/null || true; sleep 1
 rm -f "$SERIAL"
 # shellcheck disable=SC2086
 timeout "$TIMEOUT_BOOT" qemu-system-riscv64 \
-    -machine virt -smp 2 -m 512M -bios default \
+    -machine "virt${ACLINT_ARG}" -smp 2 -m 512M -bios default \
     -kernel "$REL/kernel" \
     -dtb "$QEMU_DTB" \
     -device "loader,addr=$TABLE_PA,file=$TABLE_BIN,force-raw=on" \
