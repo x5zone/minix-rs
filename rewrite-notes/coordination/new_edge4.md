@@ -4230,3 +4230,23 @@ PASS——全系统载体的撤钳路径首次真机执行。评审限制如实�
 TCG 路径，探通结果不推广到 KVM/真板；SSWI 为可选平台设备。门读数：默
 认 PASS、ACLINT=1 PASS、test-smp-ipi PASS、riscv ATF 36/36、docker mock
 850/0/8、riscv check 0 error。C 板 C2E 行钥匙消费注记。
+
+**C11WX2 里程碑（C11WX 两缺陷修正——分割启用 + x86 文本边界孤儿节）**：
+C11WX 合并笔带入两处缺陷，本批修正并全量重验。① **bisect 注释态泄漏**：
+C11WX 的 `harden_kernel_text()` 调用在合并时仍处二分禁用态——riscv ATF
+"绿"为分割关闭态，进程根 RX（真值）与引导根分割（`from_active_root`
+KernelDm）两条运行时路径当时均未真机验证；本批重启用。② **x86 文本边
+界孤儿节**：x86_64.ld 的 `.text` 输入匹配漏掉 `.ap_early_entry` 与
+`.ltext.*`（rustc 逐函数可执行节）——孤儿放置把它们插进 R E 段内、
+PROVIDE 之后，`__text_end`=0x2c64 vs 真实 R E 段末 0x403ae；
+`kern_text_pages=3` → 进程根 [0x203000,0x2403ae) 的代码映为 RW-NX，
+VM 首个内核腿取指 `x86_trap_dispatch` → #PF(e=0x11，P|I NX 取指) 无限
+复烫 → #DF → #GP（QEMU `-d int` 抓获 RIP=CR2 现场定界）。修复=显式收
+纳孤儿节；修复后三架构不变量 **`__text_end == R E 段末`** 全部成立
+（x86 0x403ae、aarch64 0x38914、riscv 0x3561a，readelf 对账）——建议
+后续进 check-layout。二分读数：占位态 e5-ds PASS（Round1 sp 无罪）、
+真值+legacy 根 FAIL、legacy 根+分割 FAIL → 元凶=x86 RX（孤儿子集），
+分割无罪。最终态全绿：riscv ATF 36/36（RX 根+分割双开）、smp-aps、
+e5-ds 12/12、cmd-smoke 核心 marker（du 腿=TODO-06 既载既有问题）、
+U-Boot 链 6/6、mock 850/0/8、arch 287/0。hardened boot 诊断行
+（text harden enter/adopted/done）常驻。

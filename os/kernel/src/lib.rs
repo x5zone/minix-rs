@@ -1185,9 +1185,11 @@ fn harden_kernel_text() {
     use minix_arch::paging::Paging as _;
     use minix_arch::CurrentPaging;
     use minix_arch::paging::PageFlags;
+    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
 
     const MIB_2: u64 = 2 << 20;
     const PAGE: u64 = 4096;
+    Console::write_str("kernel: text harden enter\n");
 
     let kinfo = crate::kernel_info().expect("harden_kernel_text: KERNEL_INFO store missing");
     let kern_virt = kinfo.kern_virt_base().0;
@@ -1218,6 +1220,7 @@ fn harden_kernel_text() {
     // (observed: kernel-leg load page fault at VM_DM+root_paddr+0x800).
     // Single hart + BKL per the window contract above.
     let mut pt = unsafe { <CurrentPaging as minix_arch::paging::Paging>::from_active_root(root) };
+    Console::write_str("kernel: text harden adopted\n");
 
     let mut leaf = kern_virt; // 镜像基址 2MiB 对齐（riscv64.ld 收口）
     while leaf < text_end {
@@ -1243,6 +1246,7 @@ fn harden_kernel_text() {
         }
         leaf += MIB_2;
     }
+    Console::write_str("kernel: text harden done\n");
 }
 
 /// Phase A (this function): Entry — validate kinfo, allow kernel alloc
@@ -1598,8 +1602,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // [ARCH: kernel-text-rx] C11/SD-12 乙案′：引导根文本分割——必须在
     // `smp_init` 之前（窗口条件见 harden_kernel_text 文档：AP 释放前从未
     // 装载内核根，本地失效即足够）。
-    // BISECT-TEMP: disabled to isolate the ATF kernel-leg fault.
-    // harden_kernel_text();
+    harden_kernel_text();
 
     // C main.c:311 parity — full SMP bring-up (smp_start_aps + wait_for_APs
     // inside). C: "if smp_init() returns it means that it failed and we try

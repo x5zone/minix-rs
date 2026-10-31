@@ -34,6 +34,14 @@ SECTIONS
     {
         KEEP(*(.text.boot))
         *(.text .text.*)
+        /* 可执行孤儿节显式收纳：`.ap_early_entry`（AP 早入桩）与
+           `.ltext.*`（rustc 逐函数可执行节）不被 `.text.*` 通配命中，
+           孤儿放置会把它们插到本节之后、R E 段内——`__text_end` 因此
+           偏小（0x2c64 vs 真实 0x403ae），`kern_text_pages` 只 RX 前三
+           页，余下代码在进程根里 NX，首个内核腿取指 #PF(0x11) 即死。
+           收纳后 `__text_end` = R E 段末（readelf 对账）。 */
+        *(.ap_early_entry)
+        *(.ltext .ltext.*)
         /* C11/SD-12 乙案′：内核文本段末界（VMA 空间），与 riscv64.ld
            同形同源注释——可执行区 = 镜像起点连续前缀，单符号即足以算
            kern_text_pages（向上取整到 4K 页）。消费方
