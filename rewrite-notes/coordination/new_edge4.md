@@ -4419,3 +4419,13 @@ UART bootstrap=true（物理 2MiB 对齐可装）；**复测新发现**：stageC
 （PLIC claim→uart hook 读→complete→console）仍有未映射点或 BKL/序
 问题，需在 SEI kernel leg 加逐点窗口访问诊断。claim PD22S2H 在途
 （含已提交 UART fix），下会话从该 claim 续。
+
+**PD22S2H-8 二分定界（claim 在途，b633338d3）**：MCR.LOOP=1 写挂死
+vCPU（QEMU 8.2.2 16550 设备模型行为；PA/设备窗 VA 均挂）。去 LOOP →
+不挂、ticks 正常、carrier 跑到窗口结束。且 IER.ERBFI=1 写后 SEI 触发
+→ kernel leg claim 走 0xffffff8040201004（基座 0xffffff8040000000 非
+任何已知 arch 窗——非设备窗/DM/identity）→ load fault。另发现 PLIC
+enable context stride 代码=0x80、规格应为 0x100（QEMU plic.c context
+间隔）——潜在 context 寻址错误。下会话首刀：核对 PLIC 全部 context
+stride（enable=0x100、threshold/claim=0x2000）+ hart↔context 映射 +
+MCR.LOOP 替代回环方案 → timer 载体 PASS。
