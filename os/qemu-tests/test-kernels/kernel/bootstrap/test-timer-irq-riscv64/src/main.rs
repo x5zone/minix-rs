@@ -412,7 +412,10 @@ fn panic(info: &PanicInfo) -> ! {
         }
     }
     let _ = core::fmt::write(&mut Console, format_args!("{}\n", info.message()));
-    early_console::write_str(" ###\n");
+    // PD22S2H：Console sink 在 platform init 后路由到设备窗 VA（本轮静默
+    // 挂起时消息丢失的根因）——panic 尾标记改经 SBI ecall 直写，保证
+    // 「到达了 panic」这一事实可见；消息正文回收见 kmess 环。
+    minix_plat::riscv64::early_console::write_str(" ###\n");
     loop {
         unsafe {
             asm!("wfi", options(nomem, nostack));
