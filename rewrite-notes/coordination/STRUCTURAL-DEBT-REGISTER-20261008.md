@@ -536,7 +536,14 @@ software rule is the load-bearing one.
 gate); the VM server's **four direct `minix_arch::riscv64::paging::vmdm::*` imports** (registered
 refactor todo with a three-option scope choice — fold into the vmddm disposition, SD-10); and H5
 (`PteRead/Write/Zero` arms accept arbitrary `pa` — an unbounded physical R/W face from VM, the
-`direct_map(wrong_pa)` hole in concrete form: needs a RAM-bound + permission check). The
+`direct_map(wrong_pa)` hole in concrete form). **H5 closed `2026-10-31`** (claim/SD22-H5-qoder):
+the three riscv arms now gate on (i) caller == `VM_PROC_NR` (the bypass is VM-only by contract —
+C has no such call) and (ii) `phys_ram_covers` — `pa..pa+len` must sit inside the boot-reported
+physical RAM (free memmap ∪ kernel image ∪ firmware non-conventional snapshot), MMIO windows
+excluded by construction, with the arm's alignment/width (8 B for the u64 arms, 4 KiB for the
+page zero-fill); out-of-gate calls answer EPERM/EINVAL instead of touching KDM. Predicate is
+host-tested (4 枚, `syscall::phys_ram_gate_tests`), kernel mock **860 / 0**, three arches check 0
+error. The
 Rust-for-Linux `UserSlice` closed-surface precedent remains the target shape for the remaining sites.
 
 #### SD-23. aarch64/riscv64 FPSIMD state across traps — **closed, by a different design than recommended; five residuals live**
@@ -791,8 +798,8 @@ blueprint (assertion *chains* at the type layer, not just totals).
 Covered under SD-10 face 3. Separate ID because its disposition is a *design* decision (cost model of a
 kernel call per PTE op; the H5 unbounded-`pa` surface; whether it generalizes into the batched
 explicit-flush vehicle or dies when a VM-side path is proven). **Recommendation:** decide at 问题乙
-closure; until then, add the H5 RAM-bound + permission check (it is cheap and independent of the
-disposition).
+closure; the H5 RAM-bound + permission check named here **landed `2026-10-31`** (see SD-22's residual
+line for the mechanism and readings).
 
 #### SD-37. UEFI/AAVMF cannot re-deliver secondary cores (firmware fork under the SMP gate) — **open, parked by workaround**
 
@@ -921,7 +928,7 @@ in-repo cure precedent). The families, updated:
 | SD-19 | open — **dropped** | none | lint + 2 named stations; re-register |
 | SD-20 | open | P-A64RV-02 | `sync_icache` unit (+SD-42 same review) |
 | SD-21 | deferred 续-395 | P-A64RV-03 | none |
-| SD-22 | adjudicated PD-21 | P-A64RV-04 | guard write-down; vmdm imports; H5 bound |
+| SD-22 | adjudicated PD-21 | P-A64RV-04 | guard write-down; vmdm imports; **H5 bound ✅ `2026-10-31`** |
 | SD-23 | **closed** (divergent plan) | P-A64-03 | residuals batch: AF-1/3/8-10 test+wiring |
 | SD-24 | adjudicated PD-02 | P-ALL-03 | unclamp precondition list audit |
 | SD-25 | largely executed | P-ALL-04 | tier-rule sweep of ~30 stations |
@@ -934,7 +941,7 @@ in-repo cure precedent). The families, updated:
 | SD-32 | deferred PD-11 | (PD-11) | none |
 | SD-34 | open (worked 31/86) | P-ALL-01 | finish sweep + count gate |
 | SD-35 | **closed** 续-433 | P-ALL-12 | — (watch async-slot surface) |
-| SD-36 | open | (SD-10 face 3) | H5 bound now; disposition at case closure |
+| SD-36 | open | (SD-10 face 3) | H5 bound ✅ `2026-10-31`; disposition at case closure |
 | SD-37 | open (parked) | (SD-24 sub) | write into PD-02 precondition list |
 | SD-38 | open | none | fork-pin at next DTB consumer |
 | SD-39 | open (batched) | none | with first ≥64-signal consumer |
