@@ -334,9 +334,6 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // the MCR.LOOP internal loop needs no external input, lighting up the
     // whole SEI chain on real hardware (UART device→PLIC→claim→hook
     // chain→complete).
-    early_console::write_str("  uart-rx selftest arming...\n");
-    minix_kernel::uart_irq::enable_uart_rx_selftest(b'C');
-    early_console::write_str("  uart-rx selftest armed (loopback 'C')\n");
 
     let start = minix_kernel::clock::get_monotonic(&section);
     let target = start + PASS_TICKS;

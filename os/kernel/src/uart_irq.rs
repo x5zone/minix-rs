@@ -61,21 +61,10 @@ fn uart_write(off: u64, v: u8) {
 /// serial writes are the bottleneck). Returns Completed (the level source ends
 /// once RDR is drained).
 fn uart_rx_hook(_ctx: &mut IrqHookContext) -> IrqAction {
-    // PD22S2H diag: SBI ecall print (MMIO-free) at hook entry — locates
-    // silent hangs between the PLIC claim and the hook body.
-    use minix_plat::riscv64::early_console as sbi_con;
-    sbi_con::write_str("  [hook-diag] enter\n");
     let mut got: Option<u8> = None;
-    let mut spins = 0u32;
     while uart_read(5) & 1 == 1 {
         got = Some(uart_read(0));
-        spins += 1;
-        if spins > 1_000_000 {
-            sbi_con::write_str("  [hook-diag] drain loop runaway\n");
-            break;
-        }
     }
-    sbi_con::write_str("  [hook-diag] drained\n");
     let n = FIRED.fetch_add(1, AtomicOrd::AcqRel);
     let exp = EXPECTED.load(AtomicOrd::Acquire);
     let matched = exp != 0 && got == Some(exp);
@@ -167,9 +156,8 @@ pub fn enable_uart_rx_selftest(expected: u8) {
             Console::write_str("\n");
         }
     }
-    Console::write_str("  uart: stageC2 pre-mcr-write\n");
-    uart_write(4, mcr & !0x10); // BISECT: no LOOP bit
-    Console::write_str("  uart: stageC2b mcr written\n");
+    uart_write(4, mcr | 0x10);
+    Console::write_str("  uart: stageC2 mcr loop\n");
     uart_write(1, 0x01);
     Console::write_str("  uart: stageD uart regs\n");
     // ⑤ THR write of the expected byte: loopback turns it into RX and lights
