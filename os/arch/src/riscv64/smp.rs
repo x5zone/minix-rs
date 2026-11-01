@@ -80,11 +80,36 @@ impl SmpArch for Riscv64SmpArch {
         // `platform_desc` is initialized during boot — strictly before any
         // IPI sender can run (smp_init or later).
         if let Some(sswi_base) = minix_platform::platform_desc().sswi_setip_base() {
-            // SAFETY: MMIO write to the ACLINT SSWI device described by
-            // the platform DTB; the register is S-mode-writable by spec
-            // and the write raises SSIP on the target hart.
+            // PD-22 step 2: with paging live, the write goes through the
+            // kernel device window (slot 2; `sswi_setip_base` is Some only
+            // when the DTB carried the node, so window and device co-exist
+            // by construction). `satp = 0` means a pre-paging execution
+            // environment — the mmu-off test carriers run identity-mapped
+            // and have no kernel root to carry the window; there PA is the
+            // only addressable view. Production kernels always have the
+            // window installed (bootstrap root + process roots) and always
+            // take the window path.
+            let setip_pa = sswi_base + 4 * cpu as usize;
+            let satp: usize;
+            // SAFETY: reading satp has no side effects.
+            unsafe { core::arch::asm!("csrr {}, satp", out(reg) satp) };
+            let target: usize = if satp == 0 {
+                setip_pa
+            } else {
+                crate::arch::device_window::device_va_for(
+                    crate::arch::device_window::device_window_regions(),
+                    2,
+                    setip_pa as u64,
+                )
+                .expect("SSWI setip outside the kernel device window")
+                    as usize
+            };
+            // SAFETY: MMIO write to the ACLINT SSWI device (window VA with
+            // paging live, PA in the mmu-off carrier fixture); the
+            // register is S-mode-writable by spec and the write raises
+            // SSIP on the target hart.
             unsafe {
-                core::ptr::write_volatile((sswi_base + 4 * cpu as usize) as *mut u32, 1);
+                core::ptr::write_volatile(target as *mut u32, 1);
             }
             return;
         }

@@ -24,6 +24,18 @@ use crate::irq_manager::IrqHookContext;
 /// QEMU virt NS16550A base address (DTB `/soc/serial@10000000`; inside the
 /// identity-mapped window).
 pub const UART_BASE: u64 = 0x1000_0000;
+
+/// Kernel device-window VA of the UART (PD-22 step 2): computed once from
+/// the arch device description — the module never dereferences the
+/// physical `UART_BASE` after paging is live; `None` before the window is
+/// installed (the selftest arms only after boot, when the window is live).
+fn uart_va(off: u64) -> Option<*mut u8> {
+    use minix_arch::arch::device_window::{device_va_for, device_window_regions};
+    let regions = device_window_regions();
+    let slot = if cfg!(target_arch = "riscv64") { 1 } else { return None };
+    let va = device_va_for(regions, slot, UART_BASE + off)?;
+    Some(va as *mut u8)
+}
 /// QEMU virt PLIC line number (`VIRT_UART0_IRQ`).
 pub const UART_IRQ_NUM: u8 = 10;
 
@@ -34,12 +46,12 @@ static MATCHED: AtomicUsize = AtomicUsize::new(0);
 fn uart_read(off: u64) -> u8 {
     // SAFETY: device MMIO inside the identity-mapped window [0,4 GiB); reads
     // of RHR/LSR carry no side-effect ordering constraints.
-    unsafe { ((UART_BASE + off) as *const u8).read_volatile() }
+    unsafe { (uart_va(off).expect("UART device window unmapped") as *const u8).read_volatile() }
 }
 
 fn uart_write(off: u64, v: u8) {
     // SAFETY: same as above; writes IER/MCR/THR.
-    unsafe { ((UART_BASE + off) as *mut u8).write_volatile(v) }
+    unsafe { (uart_va(off).expect("UART device window unmapped") as *mut u8).write_volatile(v) }
 }
 
 /// UART RX hook (first source): drain RDR, verify the expected character,
