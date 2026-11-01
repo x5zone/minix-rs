@@ -612,3 +612,49 @@ fn an_unknown_class_name_with_a_raw_byte_is_echoed_by_that_byte() {
     assert_eq!(out, Vec::new());
     assert_eq!(err, b"tr: unknown class \xfffoo\n");
 }
+
+/// End to end: `\` in a set reads **up to three digits as octal**, otherwise the
+/// named escape table, otherwise the escaped byte (`str.c:398-452`). The digit
+/// test in C is `isdigit`, so `8`/`9` participate (`\18` is 16, not "1 then a
+/// stray 8"), a run longer than three digits leaves the fourth byte as ordinary
+/// text (`\1029` is `B` plus `9`), and the value stored into the byte table is
+/// truncated mod 256 (`\999` → 145). Each expectation is the reference
+/// `tmp/tr-322/tr_ref` reading; before this leg the shell only knew `\n`, `\t`,
+/// `\r` and dropped the backslash, so `\102` mapped to `1` and left `0`/`2` as
+/// extra members.
+#[test]
+fn backslash_reads_three_octal_digits_or_a_named_escape_end_to_end() {
+    for (set2, want) in [
+        (b"\\102".to_vec(), b"BBC\n".to_vec()),
+        (b"\\101".to_vec(), b"ABC\n".to_vec()),
+        (b"\\9".to_vec(), b"\tBC\n".to_vec()),
+        (b"\\18".to_vec(), vec![16u8, b'B', b'C', b'\n']),
+        (b"\\999".to_vec(), vec![145u8, b'B', b'C', b'\n']),
+        (b"\\777".to_vec(), vec![255u8, b'B', b'C', b'\n']),
+        (b"\\e".to_vec(), vec![27u8, b'B', b'C', b'\n']),
+        (b"\\a".to_vec(), vec![7u8, b'B', b'C', b'\n']),
+        (b"\\v".to_vec(), vec![11u8, b'B', b'C', b'\n']),
+        (b"\\z".to_vec(), b"zBC\n".to_vec()),
+        (b"\\1029".to_vec(), b"BBC\n".to_vec()),
+    ] {
+        let (out, code, err) = run_raw(&[b"A".to_vec(), set2.clone()], b"ABC\n");
+        assert_eq!(
+            (code, &err[..]),
+            (0, "".as_bytes()),
+            "{set2:?} stderr {err:?}"
+        );
+        assert_eq!(out, want, "{set2:?}");
+    }
+    // The sequence member leg shares the reader, and the count pushes that many
+    // members: the reference maps `tr 'abc' '[X*2]y'` to `XXy`, so string2 is
+    // `[X, X, y]` — with `[\102*2]y` that means `a`→`B`, `b`→`B`, `c`→`y`.
+    let (out, code, err) = run_raw(&[b"abc".to_vec(), b"[\\102*2]y".to_vec()], b"abc\n");
+    assert_eq!((code, &err[..]), (0, "".as_bytes()), "{err:?}");
+    assert_eq!(out, b"BBy\n".to_vec());
+    // The equivalence member leg too: `[=\102=]` is the class whose single
+    // member is `B` (`str.c:309-312` reads the member through `backslash()`), so
+    // only the `B` of the input maps — the reference gives `AxC`, not `xBC`.
+    let (out, code, _) = run_raw(&[b"[=\\102=]".to_vec(), b"x".to_vec()], b"ABC\n");
+    assert_eq!(code, 0);
+    assert_eq!(out, b"AxC\n".to_vec());
+}

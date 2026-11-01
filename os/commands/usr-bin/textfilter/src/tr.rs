@@ -242,9 +242,9 @@ pub fn parse_set(
             // two sentences "misplaced equals sign" / "misplaced right bracket".
             let mut cursor = pos + 2;
             let member = if bytes[cursor] == b'\\' && cursor + 1 < bytes.len() {
-                let escaped = bytes[cursor + 1];
-                cursor += 2;
-                escape_literal(escaped)
+                let (value, next) = read_escape(bytes, cursor + 1);
+                cursor = next;
+                value
             } else {
                 let ch = bytes[cursor];
                 cursor += 1;
@@ -277,9 +277,9 @@ pub fn parse_set(
             }
             let mut cursor = pos + 1;
             let member = if bytes[cursor] == b'\\' && cursor + 1 < bytes.len() {
-                let escaped = bytes[cursor + 1];
-                cursor += 2;
-                escape_literal(escaped)
+                let (value, next) = read_escape(bytes, cursor + 1);
+                cursor = next;
+                value
             } else {
                 let ch = bytes[cursor];
                 cursor += 1;
@@ -349,10 +349,10 @@ pub fn parse_set(
             }
             pos += 3;
         } else if bytes[pos] == b'\\' && pos + 1 < bytes.len() {
-            let byte = escape_literal(bytes[pos + 1]);
+            let (byte, consumed) = read_escape(bytes, pos + 1);
             tail = Set2Tail::LastByte;
             push_byte(expanded, &mut used, byte)?;
-            pos += 2;
+            pos = consumed;
         } else {
             tail = Set2Tail::LastByte;
             push_byte(expanded, &mut used, bytes[pos])?;
@@ -392,16 +392,59 @@ fn sequence_ahead(bytes: &[u8], from: usize) -> bool {
     }
 }
 
-/// What the character after `\` stands for — of `backslash()`'s escape table this
-/// branch wires up only the three named forms; the octal part (the loop at
-/// `str.c:398-415`) is registered as `TR-BACKSLASH-OCTAL` and not wired.
+/// What the character after `\` stands for — the **no-digit** half of C's
+/// `backslash()` (`minix3/usr.bin/tr/str.c:429-451`): `a`→`\7`, `b`→`\b`,
+/// `e`→`\033`, `f`→`\f`, `n`→`\n`, `r`→`\r`, `t`→`\t`, `v`→`\13`, and any
+/// other byte stands for itself (`\q` → `q`).
 #[must_use]
 fn escape_literal(escaped: u8) -> u8 {
     match escaped {
+        b'a' => 0x07,
+        b'b' => 0x08,
+        b'e' => 0x1b,
+        b'f' => 0x0c,
         b'n' => b'\n',
-        b't' => b'\t',
         b'r' => b'\r',
+        b't' => b'\t',
+        b'v' => 0x0b,
         other => other,
+    }
+}
+
+/// C's `backslash()` whole (`str.c:398-452`), entered with `at` pointing at the
+/// byte right after a `\`. Up to **three** digits fold as octal
+/// (`val = val * 8 + ch - '0'`) — and the test C uses is `isdigit`, not an
+/// octal-digit test, so `8` and `9` take part: `\9` is 9, `\18` is 16, and
+/// `\999` is 657, which the callers store into their `unsigned char` tables and
+/// therefore keep **mod 256** (`\999` → 145, `\777` → 255). If no digit at all
+/// follows, the escape table above decides; a `\` that ends the string yields a
+/// literal backslash. Returns the byte plus the index just past everything
+/// consumed, which is what the three call sites need to keep their cursors
+/// aligned with C's `s->str`.
+fn read_escape(bytes: &[u8], at: usize) -> (u8, usize) {
+    let mut index = at;
+    let mut value: u32 = 0;
+    let mut digits = 0usize;
+    while digits < 3 {
+        match bytes.get(index) {
+            Some(digit @ b'0'..=b'9') => {
+                value = value * 8 + u32::from(digit - b'0');
+                index += 1;
+                digits += 1;
+            }
+            _ => break,
+        }
+    }
+    if digits > 0 {
+        return (value as u8, index);
+    }
+    match bytes.get(index) {
+        // `\<end>`: C returns `'\\'` and marks the string exhausted.
+        None => (b'\\', index),
+        Some(&escaped) => {
+            index += 1;
+            (escape_literal(escaped), index)
+        }
     }
 }
 
@@ -1115,6 +1158,59 @@ mod tests {
             SetGrammar::MisplacedEquivalenceRightBracket.sentence_bytes(),
             b"Misplaced equivalence right bracket".as_slice()
         );
+    }
+
+    /// C's `backslash()` (`str.c:398-452`) is one function with three exits: up to
+    /// three digits folded as octal, otherwise the named escape table, otherwise the
+    /// escaped byte itself. The digit test is `isdigit`, **not** an octal-digit test,
+    /// so `8` and `9` participate; the value is stored into C's `unsigned char`
+    /// tables, so a three-digit run that overflows keeps its low byte. Every reading
+    /// below is the reference `tmp/tr-322/tr_ref`: `tr 'A' '\102'` → `B` (66),
+    /// `'\9'` → tab (9), `'\18'` → 16, `'\999'` → 145 (657 mod 256), `'\777'` → 255,
+    /// `'\0666'` → `'6'` (54), `'\e'` → 27, `'\a'` → 7, `'\v'` → 11, `'\b'` → 8,
+    /// `'\f'` → 12, `'\z'` → `z`, and a trailing `\` alone yields the backslash.
+    #[test]
+    fn the_octal_and_named_escape_legs_follow_backslash() {
+        for (word, want) in [
+            (r"\102", 66u8),
+            (r"\101", 65),
+            (r"\9", 9),
+            (r"\18", 16),
+            (r"\999", 145),
+            (r"\777", 255),
+            (r"\e", 27),
+            (r"\a", 7),
+            (r"\v", 11),
+            (r"\b", 8),
+            (r"\f", 12),
+            (r"\n", 10),
+            (r"\0", 0),
+            (r"\t", 9),
+            (r"\r", 13),
+            (r"\z", b'z'),
+            (r"\\", b'\\'),
+        ] {
+            let (set, len) = expanded_set(word);
+            assert_eq!((len, &set[..len]), (1, &[want][..]), "{word}");
+        }
+        // `\0666` is three digits **plus** a fourth byte: the run stops at three
+        // (0→0, then 6, then 6*8+6 = 54) and the leftover `6` is ordinary text —
+        // whose own byte value happens to be 54 too, which is why the reference
+        // shows `tr 'abc' '\0666'` as `a`→`6` (the first member decides).
+        let (set, len) = expanded_set(r"\0666");
+        assert_eq!((len, &set[..len]), (2, &[54, 54][..]), r"\0666");
+        // A `\` that ends the string is a literal backslash (C's `ch == '\0'` exit).
+        let (set, len) = expanded_set(r"A\");
+        assert_eq!((len, &set[..len]), (2, &[b'A', b'\\'][..]));
+        // The cursor lands **past** what the digits consumed, so a fourth digit is
+        // ordinary text again: `\1029` is 66 followed by `9`.
+        let (set, len) = expanded_set(r"\1029");
+        assert_eq!((len, &set[..len]), (2, &[66, b'9'][..]));
+        // The sequence member leg uses the same reader, and the count really does
+        // push that many members: the reference maps `tr 'abc' '[X*2]y'` to
+        // `XXy`, i.e. string2 is `[X, X, y]` — so `[\102*2]` alone is two `B`s.
+        let (set, len) = expanded_set(r"[\102*2]");
+        assert_eq!((len, &set[..len]), (2, &[66, 66][..]));
     }
 
     #[test]
