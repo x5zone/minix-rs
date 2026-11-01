@@ -175,6 +175,11 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - **在册变化**：`VIS-USAGE-PROGNAME-HARDCODED` 闭合（批次四百零四登记的那一条）；
   `07-text-filter.md` 的 `vis` 行与 A 板 A2 行的「在册」句同步改写。其余在册项不变。
 - **三件套**：可重跑命令与读数如上（核实日 `2026-11-01`、基线快照 `77193f104`）。
+- **合回补记（`2026-11-01`）**：主树在领取期间没有前进，合回是纯快进
+  （`77193f104` → 代码笔 `f3273276d` → 台账笔 `1f0b33eb9`）。主树复验用隔离 target
+  重跑：`cargo test -p minix-textfilter --test vis_face` → **22 / 0**、整包
+  `cargo test -p minix-textfilter` → **69 段 / 1286 / 0**，与认领树的读数相同
+  （`tmp/vis-474/main-pkg.log`）。
 
 ---
 
