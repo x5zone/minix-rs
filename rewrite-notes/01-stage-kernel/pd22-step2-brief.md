@@ -1,5 +1,16 @@
 # PD-22 第二步评审简报：恒等窗口退出进程根（de-depend and exit）
 
+
+> **终态（2026-11-02）：实施完成。** 验收范围（§15）全部满足，收官门
+> run_all 39 passed / 0 failed / 0 build failures（三架构）。实施序列
+> PD22S2A..H 八批（描述层→map_kernel 段→PLIC per-hart→UART/SSWI→
+> x86 LAPIC 逐 CPU 校验→identity 退场+强形态扫描→引导根 bootstrap
+> 过滤→修复批：空表跳过/全区域 map_huge/窗口化 LAPIC 时钟与 IO-APIC
+> 路径/window-live 门/enable stride 0x80）。强形态验收：identity 恒
+> 等窗停产 + map_kernel 第四段 fail-fast + VM 拒非空 + mock 强形态扫
+> 描全过。余债=真机内存类型（x86 PAT/MTRR、riscv PMA），独立登记于
+> 结构债台账。
+
 本文面向**看不到代码仓库的外部评审人**。它是 PD-22 三步中的**第二步**设计评审材料：把"普通进程的地址空间里不再存在恒等映射"从验收条文变成实施方案。第①步（进程根的内核文本映射去写）已于本批落地；本文只处理第二步，自包含，不需要先读任何其他文档。
 
 ## 0. 背景与阅读指引
