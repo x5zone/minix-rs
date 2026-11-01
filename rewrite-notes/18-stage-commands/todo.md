@@ -120,6 +120,64 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 ---
 
 
+## 批次四百七十四（`vis` 的四处程序名位改跟 `argv[0]`：usage 两处与两条 `errx` 拒绝句；在册 `VIS-USAGE-PROGNAME-HARDCODED` 闭合）
+
+- **这一笔的射程**：`vis` 有四条报文带程序名——usage 行（C 的 `vis.c:136-139` 写的是
+  `"Usage: %s …", getprogname()`）、`-F` 宽度不足的 `errx`（`vis.c:91`）与 `-m` 和 `-h`
+  并用的 `errx`（`vis.c:144`）。本壳此前把 `vis` 写死在串里：`const USAGE` 一处，两条
+  `format!` 各一处；以别的名字起时，只有 libc 的 `unknown option` 那一行跟着 `argv[0]`
+  走。修法把名字收成一个 `fn usage_bytes(prog: &str)`，四个出口都取同一个 `prog`，
+  `libc_line` 追加的也从常量改成 `usage_bytes(prog)`。
+- **修前现量**（主树旧二进制 `os/target/debug/vis`，经 `vv` 软链起、`LC_ALL=C`；
+  读数 `tmp/vis-474/before.log`）：`vv -Z` 的第二行是 `Usage: vis …`；`vv -d` 只有
+  `Usage: vis …` 一行；`vv -F 4` 打 `vis: can't fold lines to less than 5 cols` 退 1；
+  `vv -m -h` 打 `vis: Can't specify -m and -h at the same time` 退 1——四条里有三条
+  名字错位。
+- **修后 C 参照件现量**（`tmp/vis-472/vis_ref`，经 `vv` 软链起、两侧钉 `LC_ALL=C`）：
+  `vv -Z` → `vv: unknown option -- Z` 再一行 `Usage: vv […]`；`vv -d` → `Usage: vv […]`
+  一行；`vv -F 4` → `vv: can't fold lines to less than 5 cols` 退 1；`vv -m -h` →
+  `vv: Can't specify -m and -h at the same time` 退 1。四形与修后的本壳逐字节相同，
+  见下条 A/B。
+- **A/B**（`tmp/vis-474/ab-final2.log`，两侧各建同名软链、同一份输入 `a<TAB>b` 与
+  `< /dev/null` 两种）：十二形——`vv` 与 `vis` 各跑 `-Z`、`-d`、`-F 4`、`-m -h`，再加
+  `-F 40`、`-e x`、默认编码与 `-n`——逐字节比退码、标准输出、标准错误，
+  **SAME=12 / DIFF=0**。
+- **门**：面侧 21 → **22** 枚（新立 `every_program_name_slot_follows_argv0`：用
+  `CommandExt::arg0` 把 `argv[0]` 直接置成 `vv`，四形逐字节断言；同一枚里再以 `vis`
+  起一次，确认默认名不变）；整包 69 段 **1285 → 1286 / 0**（`pkg-final.log`），
+  **容器权威门同读数退 0**（`container-gate2.log`，按 §7.3 三挂载配方）；三架构
+  `cargo check --bins` 各退 0（`arch2.log`）；`rustfmt --edition 2024 --check` 触及的
+  两件各 0 处；`cargo clippy --all-targets` 与主树同参数对照，唯一句集合两边各 85 行、
+  集合差为空（`clippy2.log` 对 `clippy-base.log`）。
+- **负控三枚**（`tmp/vis-474/negctl.py`）各咬住 1：K1 把 `Format` 里的 `Usage: {prog}`
+  写回 `Usage: vis`，K2 与 K3 分别把两条 `errx` 的 `{prog}` 写回 `vis`；三枚都只红新门，
+  红名分别是「-Z 的两行都必须跟着 argv[0]」「-F 的 errx 前缀也必须跟着 argv[0]」
+  「-m/-h 的 errx 前缀也必须跟着 argv[0]」。还原后源码 md5 与备份一致
+  （`f3ef0acf…`）。
+- **两起工具自错**：① no_std 的 `format!` **第五次**——`vis.rs` 顶层的
+  `use alloc::format;` 一开始没补，宿主整包 1286 全绿看不见，三架构当场各报三处
+  `cannot find macro format`（`arch.log` 留红，补 import 后 `arch2.log` 留绿）；
+  「动了壳侧字符串拼装就当场跑三架构」这条判据又一次在前置抓到。② 负控脚本还原源码后
+  **没有重建二进制**，紧随的 A/B 用上一枚注入过的二进制跑出唯一一处假 DIFF（`vv -m -h`
+  打回 `vis:`）；判据：**负控之后先重建再量 A/B**，或在负控末枚之后立刻
+  `cargo build --bin vis`，本次重建后 `ab-final2.log` 才给出十二形全同。
+- **收尾门读数**：`bash tools/doc-style-lint.sh --diff` → 4 个文件 / 68 个新增行、
+  error 级 **0**；`bash tools/todo-staleness-check.sh rewrite-notes/coordination/TODO-LEDGER-OPEN.md`
+  → **PASS**；`bash tools/check-staged-inflight.sh` → 暂存区无在制的登记文件；
+  `python3 tools/notes-link-check.py rewrite-notes/` → 存量 131 条，按（文件，目标）与基线
+  做集合差只剩 `rewrite-notes/README.md` 的 `tmp/evidence/` 一条——它在主树能解析，在认领树
+  没有未入库的 `tmp/evidence/` 目录，属两棵树环境的差、不是新增断链；**本笔改动的六件零新增**。
+  `bash tools/todo-reconcile-scan.sh` 报三项 DRIFT（探针待滚除 0 对基线 13、探针命名族 32 对
+  基线 18、指令缓存维护 31 对基线 23），在基线 `77193f104` 的主树上重跑是同样三项同样读数
+  ⇒ 与本笔无关：前两项的检索面被 I25 的注释英文化（`0d235964a`）译走——`用后即滚` 现量 0 命中，
+  真正剩下的 `nk4[ac]:` 有 32 行；第三项是 SD-20 与 SD-42 落码的合法前进。按脚本自述
+  「退出码 1 只报告，不阻断」处理；共享工具基线的滚动另立维护笔（`U-4` 先例）。
+- **在册变化**：`VIS-USAGE-PROGNAME-HARDCODED` 闭合（批次四百零四登记的那一条）；
+  `07-text-filter.md` 的 `vis` 行与 A 板 A2 行的「在册」句同步改写。其余在册项不变。
+- **三件套**：可重跑命令与读数如上（核实日 `2026-11-01`、基线快照 `77193f104`）。
+
+---
+
 ## 批次四百七十三（A2 族终笔：十五支壳迁字节缝、三个文本口删除、`argv_seam_face` 的门升到逐字节；本行自批次三百九十一起的字母位与参数缝两条残差自此无源）
 
 - **这一笔的射程**：支级切片（渲染半十支 + 参数缝半二十七支）已把有字母面的壳全部带走，

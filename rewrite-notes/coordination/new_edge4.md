@@ -4370,3 +4370,22 @@ test-shim-bootmarks-aarch64 PASS，串口
 `memmap source: uefi-getmemorymap gated by dtb /memory (conv=14
 dtb_regions=1)`；xtask check/clean。A 板窗口=用户本轮指令授权，A 板复
 核留痕于 C17 行。C17 行余片=0。
+
+### 第二百一十二笔（A 板 · `vis` 的四处程序名位改跟 `argv[0]`，在册 `VIS-USAGE-PROGNAME-HARDCODED` 闭合）
+
+内核板与二线板本轮无在册可领项（C 板末两行分别是真机窗服务队列与 `🚫` 维持登记，B 板各项全部
+`✅` 或 `⏸`），按 C→B→A 的次序落到 A 板在册项。`vis` 有四条报文带程序名：usage 行
+（`minix3/usr.bin/vis/vis.c:136-139` 的 `"Usage: %s …", getprogname()`）、`-F` 宽度不足的
+`errx`（`:91`）与 `-m` 和 `-h` 并用的 `errx`（`:144`）；本壳把 `vis` 写死在三处字符串里，
+以别的名字起时只有 libc 的 `unknown option` 那一行跟 `argv[0]`。修法把名字收成一个
+`fn usage_bytes(prog: &str)`，`libc_line` 与两个 `errx` 出口共用同一个 `prog`。
+
+参照件 `tmp/vis-472/vis_ref` 经 `vv` 软链现量：四形（`-Z`、`-d`、`-F 4`、`-m -h`）全部打 `vv`。
+A/B 十二形（`vv`/`vis` 各四形，加 `-F 40`、`-e x`、默认与 `-n`）退码、标准输出、标准错误
+逐字节比较 **SAME=12 / DIFF=0**（`tmp/vis-474/ab-final2.log`）。面门新立
+`every_program_name_slot_follows_argv0`（用 `CommandExt::arg0` 直接把 `argv[0]` 置成 `vv`，
+并在同一枚里以 `vis` 起一次确认默认名不变），面侧 21 → 22 枚；整包 69 段
+**1286 / 0**、容器权威门同读数退 0、三架构 `--bins` 各退 0、clippy 与主树唯一句集合各 85 行
+无差；负控三枚（usage、`-F`、`-m/-h` 各写回 `vis`）各咬住 1。判据、读数与两起工具自错
+（no_std 的 `format!` 导入第五次；负控还原源码后未重建二进制导致一次假 DIFF）全文见
+18 篇批次四百七十四。
