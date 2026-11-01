@@ -126,6 +126,34 @@ pub fn enable_uart_rx_selftest(expected: u8) {
     // ④ UART: MCR.LOOP=1 (internal THR→RDR ring) + IER.ERBFI=1 (RX interrupt enable).
     let mcr = uart_read(4);
     Console::write_str("  uart: stageC1 mcr read\n");
+    // PD22S2H diag: machine state right before the first window-VA store.
+    {
+        let (mut sstatus, mut sie, mut sscratch, mut satp): (u64, u64, u64, u64);
+        unsafe {
+            core::arch::asm!(
+                "csrr {}, sstatus",
+                "csrr {}, sie",
+                "csrr {}, sscratch",
+                "csrr {}, satp",
+                out(reg) sstatus, out(reg) sie, out(reg) sscratch, out(reg) satp,
+                options(nomem)
+            );
+        }
+        for (name, v) in [("sstatus", sstatus), ("sie", sie), ("sscratch", sscratch), ("satp", satp)] {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut hb = [0u8; 16];
+            let mut vv = v;
+            for i in (0..16).rev() {
+                hb[i] = HEX[(vv & 0xf) as usize];
+                vv >>= 4;
+            }
+            Console::write_str("  [mcr-diag] ");
+            Console::write_str(name);
+            Console::write_str("=0x");
+            Console::write_str(core::str::from_utf8(&hb).unwrap_or("?"));
+            Console::write_str("\n");
+        }
+    }
     uart_write(4, mcr | 0x10);
     Console::write_str("  uart: stageC2 mcr loop\n");
     uart_write(1, 0x01);
