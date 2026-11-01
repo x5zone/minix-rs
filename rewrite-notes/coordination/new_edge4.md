@@ -4429,3 +4429,18 @@ enable context stride 代码=0x80、规格应为 0x100（QEMU plic.c context
 间隔）——潜在 context 寻址错误。下会话首刀：核对 PLIC 全部 context
 stride（enable=0x100、threshold/claim=0x2000）+ hart↔context 映射 +
 MCR.LOOP 替代回环方案 → timer 载体 PASS。
+
+**PD22S2H-9 会话终态（预算尽，claim 在途）**：git 历史考古关键发现——
+`ef23cbbf0 SD-41/C3 收官` 曾将 stride 误修反转回滚 0x1000（QEMU
+CONTEXT_STRIDE 规范值；0x2000 为上段误修），且"脉冲式 LOOP 使能序为
+真病根解法"——C11WX2 时代 timer 载体以 stride 0x1000 + 脉冲式 LOOP
+PASS。当前回归的根因候选：① 设备窗迁移改变了 UART 访问路径的时序/
+上下文，使脉冲式 LOOP 使能序行为变化；② MCR.LOOP=1 写经设备窗 VA 挂
+死 vCPU（PA 直访也挂——设备模型层面问题，非映射问题）。下会话续作
+方案：A) 回退 UART bootstrap=true（恢复 G 时代 bootstrap=false，
+timer 载体回退到引导根 PA 直访=identity 覆盖 ✓——C11WX2 时代行为），
+同时保留设备窗 process root 映射（map_kernel seg5）；B) PLIC stride
+0x1000/0x80/0x2000 全部按 ef23cbbf0 确认值维持；C) timer 载体
+PASS 后合并 PD22S2H → run_all 39/0/0 → 收官记账。claim 树完整
+（9 笔提交含全套诊断/二分/边界校验），门读数 arch 290/0、三架构
+check 0 error。
