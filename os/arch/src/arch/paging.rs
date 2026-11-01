@@ -735,6 +735,31 @@ pub fn map_kernel<P: Paging>(
         }
     }
 
+    // Segment 5: the kernel device window (PD-22 step 2 — the successor of
+    // segment 4). Every MMIO region from the device description is mapped
+    // at its reserved high-half slot (`DEVICE_VA_BASE + slot * STRIDE`)
+    // supervisor RW/NX/global. This is the mapping runtime consumers
+    // migrate to; segment 4's identity replay retires once all consumers
+    // use these VAs (final batch). Drivers obtain the VA from
+    // `device_window::device_va_for` — never by offsetting physical
+    // addresses themselves.
+    {
+        use super::device_window::{device_window_flags, device_window_regions, slot_va_base};
+        let regions = device_window_regions();
+        for region in regions {
+            let va_base = slot_va_base(regions, region.slot);
+            let mut off = 0u64;
+            while off < region.size {
+                pt.map(
+                    VirBytes(va_base + off),
+                    PhysBytes(region.phys_base + off),
+                    device_window_flags(),
+                )?;
+                off += page_size;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1277,6 +1302,30 @@ pub mod mock {
                 let (paddr, flags) = result.unwrap();
                 assert_eq!(paddr, PhysBytes(MOCK_KERNEL_TEXT_PBASE + i * PAGE_SIZE));
                 assert_eq!(flags, PageFlags::kernel_executable());
+            }
+
+            // Segment 5: device window — region 0 (host target = x86
+            // IO-APIC page) maps at its reserved high-half slot with the
+            // supervisor RW/NX/G device flags.
+            {
+                use crate::arch::device_window::{
+                    device_va_for, device_window_regions, slot_va_base, DEVICE_VA_BASE,
+                };
+                let regions = device_window_regions();
+                let r0 = &regions[0];
+                let va = device_va_for(regions, 0, r0.phys_base).expect("device base maps");
+                assert_eq!(va, DEVICE_VA_BASE, "slot 0 base = window base");
+                let (paddr, flags) = pt
+                    .query(VirBytes(va))
+                    .expect("device window page must be mapped");
+                assert_eq!(paddr, PhysBytes(r0.phys_base));
+                assert_eq!(flags, PageFlags::kernel_read_write());
+                // Slot 1 base = cumulative span of region 0 (region lengths,
+                // not a fixed stride — the 6 MiB PLIC region consumed what a
+                // fixed 2 MiB stride would have given slots 1-2).
+                let va1 = slot_va_base(regions, 1);
+                assert!(va1 > va + r0.size - 1, "slot 1 above region 0 span");
+                assert!(pt.query(VirBytes(va1)).is_some(), "region 1 slot live");
             }
 
             // Segment 1: Kernel data segment (8 pages after code segment)
