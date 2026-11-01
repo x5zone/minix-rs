@@ -122,6 +122,12 @@ fn lapic_base() -> u64 {
 /// (PD-22 step 2 — never PA-as-VA). Slot 1 = the LAPIC page; the slot's
 /// mapping covers exactly the validated base.
 fn lapic_va(offset: u32) -> *mut u32 {
+    // Carriers that hand-roll their own root (UEFI CR3 reuse, e.g. the
+    // ap-alive ladder) never install the device window — fall back to PA,
+    // which the retained identity [0,4 GiB) covers in that context.
+    if !crate::arch::device_window::x86_window_live() {
+        return (lapic_base() as usize + offset as usize) as *mut u32;
+    }
     let regions = crate::arch::device_window::device_window_regions();
     let lapic = &regions[1];
     debug_assert_eq!(lapic.phys_base, 0xFEE0_0000);

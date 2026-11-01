@@ -1,5 +1,7 @@
 # 五轮串行迭代：用 doc-gen-prompt 生成 01~05 并逐轮改进 REVIEW 工作流
 
+> **已废弃（2026-10-28 注）**：本驱动协议为 docgen 第一棒（以用户否决收场）。演化链：本文件 → `doc-gen-iterate-prompt-v2.md` → 第三棒协议（原 `prompt/REVIEW-TRACE-docgen-01-05-v3.md` §协议，该文件已删档、git 历史可查）→ 统一规格 `prompt/DOC-ITER-WORKFLOW.md`。本文引用的 `prompt/` 取证文件已同批删档，增量承接见 `prompt/WORKFLOW-ADVICE-ARCHIVE.md`。
+
 > 用途：**外层迭代驱动器**。每轮跑一遍 `AI-chats/doc-gen-prompt.md` 产出一篇正式文档，然后与 `draft/` 里人工审阅过的旧版做**教学性对比**，据此改进 REVIEW 工作流与本 prompt，提交，再回归复核自己的提交——串行五轮。
 > 用法：整段发给 agent。先读 `AI-chats/doc-gen-prompt.md`（内层流程），本篇只管轮次编排、对比方法与改进纪律。
 > 最终目标：五轮后当前工作流能稳定产出高质量技术文档——**产出好文档是结果，把工作流磨硬是主线**。

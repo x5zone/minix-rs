@@ -45,6 +45,11 @@ pub struct X86_64ClockArch {
 /// Device-window VA of the LAPIC page (slot 1); the per-CPU APIC base /
 /// x2APIC check-and-reject runs before the caller's first MMIO.
 fn lapic_va_base() -> usize {
+    // PD22S2H: carriers with a hand-rolled root (window never installed)
+    // fall back to PA — the retained identity covers it in that context.
+    if !crate::arch::device_window::x86_window_live() {
+        return 0xFEE0_0000 as usize;
+    }
     // SAFETY: `rdmsr` reads this CPU's IA32_APIC_BASE — per-CPU validation
     // on the CPU about to touch the LAPIC MMIO.
     let (lo, hi): (u32, u32);

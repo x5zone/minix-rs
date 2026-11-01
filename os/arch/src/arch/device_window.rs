@@ -95,6 +95,27 @@ pub const fn device_window_span(regions: &[DeviceWindowRegion]) -> u64 {
 #[cfg(target_arch = "x86_64")]
 pub const DEVICE_VA_BASE: u64 = 0xFFFF_8040_0000_0000;
 
+/// x86-64: whether the device window has been installed into the ACTIVE
+/// root (set by the kernel after the bootstrap-root install). Carriers
+/// that hand-roll their own root (UEFI CR3 reuse) never set it — LAPIC
+/// access falls back to PA, which the retained identity covers.
+#[cfg(target_arch = "x86_64")]
+pub static X86_WINDOW_LIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Mark the device window live for the active root (kernel-side call,
+/// right after the bootstrap-root install / injection).
+#[cfg(target_arch = "x86_64")]
+pub fn set_x86_window_live() {
+    X86_WINDOW_LIVE.store(true, core::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether the window is live on the active root.
+#[cfg(target_arch = "x86_64")]
+pub fn x86_window_live() -> bool {
+    X86_WINDOW_LIVE.load(core::sync::atomic::Ordering::SeqCst)
+}
+
 #[cfg(target_arch = "x86_64")]
 const _: () = assert!(
     0x2000 <= 0xFFFF_8080_0000_0000 - DEVICE_VA_BASE,

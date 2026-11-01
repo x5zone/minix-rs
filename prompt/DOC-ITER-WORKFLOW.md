@@ -747,7 +747,7 @@ Round 04 外部评审的「R05 附加收集要求」按"只记录、不直接改
 ### v0.1（2026-10-13 建立）
 
 - **设计输入**：GPT 工作流对话（`AI-chats/GPT-workflow-optim-begin.md`）、GPT 对 01 的专门意见
-  （`prompt/GPT_doc_advice.md`）、人审 01 三个提交（827da595e / 2eac4586e / 512ca4ea3）、
+  （`prompt/GPT_doc_advice.md`；该文件 2026-10-28 删档、未入库，判据摘录见 `prompt/WORKFLOW-ADVICE-ARCHIVE.md` §2.2）、人审 01 三个提交（827da595e / 2eac4586e / 512ca4ea3）、
   `prompt/WORKFLOW-OPEN-ITEMS.md` 的 W-1/W-6/W-7/W-8/W-9 与 R5。
 - **用户裁决（2026-10-13）**：轮次包恒为「新版全文 + diff（逐条标注命中规则）」；规则落点本文件；
   06~14 全量重审计；本会话产出 prompt、执行在新会话；盲测学生保留并升级；W-items 并入规则表。

@@ -2235,6 +2235,7 @@ pub fn init_clock_and_interrupts() {
         )
         .expect("LAPIC page inside its own window") as usize;
         minix_plat::x86_64_interrupt_set_lapic_va(lapic_va);
+        minix_arch::arch::device_window::set_x86_window_live();
     }
     // PD-22 step 2 check-and-reject + device-window VA injection (riscv64):
     // the DTB-discovered PLIC base must equal the base the kernel device

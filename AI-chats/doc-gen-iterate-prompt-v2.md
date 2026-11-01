@@ -1,5 +1,7 @@
 # 五轮迭代 v2：以"纯学生实读"为闸门，把干巴稿逼回 draft 级教材
 
+> **已废弃（2026-10-28 注）**：本驱动协议为 docgen 第二棒，已被第三棒协议与统一规格 `prompt/DOC-ITER-WORKFLOW.md` 取代。下文引用的 `prompt/GPT_advice.md` 与两份 5rounds 取证文件已删档——GPT_advice 与取证均为已入库删档（git 历史可查），未吸收方法论的蒸馏见 `prompt/WORKFLOW-ADVICE-ARCHIVE.md` §2.1。
+
 > 用途：外层迭代驱动器。目标不是"产出一篇过门的文档"，而是**每轮逼工作流学会"带着读者把机制想一遍"**。
 > 用法：整段发给新会话 agent。内层流程见 `AI-chats/doc-gen-prompt.md`；上一轮取证与复盘见 `prompt/REVIEW-TRACE-docgen-01-05-5rounds.md`；教学性诊断的真源见 `prompt/GPT_advice.md`。
 > 一句话北极星：**产出好文档是结果，把"读者认知转移"逼进生成器是主线。**
