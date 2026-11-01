@@ -98,6 +98,10 @@ pub fn pic_eoi(irq: u8) {
 pub fn lapic_eoi() {
     crate::x86_64::interrupt::lapic_eoi()
 }
+#[cfg(target_arch = "x86_64")]
+pub use x86_64::interrupt::set_lapic_va as x86_64_interrupt_set_lapic_va;
+
+/// PD-22 step 2: kernel-side injection of the LAPIC device-window VA.
 #[cfg(target_arch = "aarch64")]
 pub const TIMER_IRQ: IrqVector = crate::arm64::interrupt::TIMER_IRQ;
 #[cfg(target_arch = "riscv64")]

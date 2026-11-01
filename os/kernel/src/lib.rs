@@ -2202,6 +2202,27 @@ pub fn init_clock_and_interrupts() {
     // The instance is then moved into the global `IRQ_MANAGER` so that
     // trap entry points and `bsp_finish_booting` can reach it.
     let mut intr = CurrentInterruptController::new(pd.interrupt_controller());
+    // PD-22 step 2 check-and-reject + device-window VA injection (x86_64):
+    // BSP's IA32_APIC_BASE must equal the window's LAPIC page (per-CPU
+    // checks re-run on every AP at its own first LAPIC MMIO — clock /
+    // EOI paths); after validation the LAPIC driver's MMIO goes through
+    // the high-half device window.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let regions = minix_arch::arch::device_window::device_window_regions();
+        let lapic_region = &regions[1];
+        assert!(
+            lapic_region.phys_base == 0xFEE0_0000,
+            "device-window LAPIC page drifted from 0xFEE00000"
+        );
+        let lapic_va = minix_arch::arch::device_window::device_va_for(
+            regions,
+            1,
+            0xFEE0_0000,
+        )
+        .expect("LAPIC page inside its own window") as usize;
+        minix_plat::x86_64_interrupt_set_lapic_va(lapic_va);
+    }
     // PD-22 step 2 check-and-reject + device-window VA injection (riscv64):
     // the DTB-discovered PLIC base must equal the base the kernel device
     // window maps — a mismatch means the window and the driver would talk
