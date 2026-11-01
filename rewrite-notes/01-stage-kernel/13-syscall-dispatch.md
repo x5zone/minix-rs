@@ -1,6 +1,7 @@
 # 13 · 系统调用分派：双腿的另一条与结果回写
 
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:enum NAME`、`path:struct NAME`），不使用行号；代码引用块的块级区间题注带行区间与复算命令；§2.5/§3.4 归纳表内的行号是当前代码快照，锚点仍以符号名为准。
+> 路径与标注约定（`[ARCH: …]` 等记号的解码处）全局只说一次：见 [README.md](../README.md) 的「全局阅读约定」。
+
 > **本篇主题**：用户态进入内核的第二条腿——syscall 指令腿（内核调用）从陷入到结果回写的完整周期：入口的回信地址登记与消息拷入、分派的三道门与表路由、完成半的 VMSUSPEND 识别与回复拷贝、被 VM 挂起的调用如何重派；以及 Rust 用 `enum Syscall`+`match`、六变体 `KcallResult` 与三函数拆分如何承接这套周期。
 > **前置**：[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §3.1（注册时刻——enum 即表，本篇讲分派时刻）、§3.2（BKL 取得点）、§4.3（kerninfo 页的建立与发布）、[10-switch-to-user.md](10-switch-to-user.md) §2.1（五标志循环的 KCALL_RESUME 臂）、§3.3（Stage 3a 四防护——本篇讲内核侧 resume 本体）、[12-ipc-core.md](12-ipc-core.md) §2.1（int-33 腿的分派——本篇讲 syscall 指令腿）、§4.3（delivermsg 的两次失败策略）、[11-scheduling-primitives.md](11-scheduling-primitives.md) §2.2 与 §4.2（RTS_SENDING/RECEIVING 的队列半——本篇讲位为什么变）、[09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3（MEMREQ 的 VMSUSPEND 消费端——本篇讲 VMSUSPEND 的生产端识别半）。
 > **后续**：`14-exception-interrupt`（trap 入口汇编，尚未重生成）、`21-26` 方向（各内核调用的 handler 本体，尚未重生成）、`23-ipc-filter`（IPC 过滤决策，尚未重生成）、`24-cross-space-runtime`（VMSUSPEND 恢复协议与跨空间拷贝运行时，尚未重生成）。

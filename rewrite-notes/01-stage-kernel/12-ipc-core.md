@@ -1,6 +1,7 @@
 # 12 · IPC 核心：无共享内存的消息交换
 
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:enum NAME`、`path:struct NAME`），不使用行号；代码引用块的块级区间题注带行区间与复算命令。
+> 路径与标注约定（`[ARCH: …]` 等记号的解码处）全局只说一次：见 [README.md](../README.md) 的「全局阅读约定」。
+
 > **本篇主题**：微内核的基石——两个没有共享内存的进程如何可靠地交换一条消息。六个原语各自的停与不停、接收侧的三级匹配序、通知的永不丢失与永不阻塞、环等待死锁的机器判定、延迟投递的两段式协议；以及 Rust 的 `IpcEngine`、侵入式 FIFO 与结构化死锁返回如何承接这套协议。
 > **前置**：[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.8（endpoint、generation 与槽位常量体系——通信身份的前提）、[09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3（MEMREQ GET/REPLY 是 VM 拉取的回信形状；FROM_KERNEL 的推送形状在缺页臂，[`earm/exception.c`](minix3/minix/kernel/arch/earm/exception.c)）、[10-switch-to-user.md](10-switch-to-user.md) §2.1（五标志循环的 DELIVERMSG 臂=本篇 delivermsg 的消费点）、[11-scheduling-primitives.md](11-scheduling-primitives.md) §2.2 与 §4.2（RTS_SENDING/RECEIVING 的队列半——本篇讲位为什么变，那边讲位变化的队列后果）。
 > **后续**：`13-syscall-dispatch`（trap 入口传参，**已重生成**——见 [13-syscall-dispatch.md](13-syscall-dispatch.md)，其"前置"反引本篇 §2.1/§4.3）、`22-syscall-copy`（拷贝机制本体，尚未重生成）、`23-ipc-filter`（IPC 过滤决策，尚未重生成）、`24-cross-space-runtime`（VMSUSPEND 与跨空间拷贝运行时，尚未重生成）。
