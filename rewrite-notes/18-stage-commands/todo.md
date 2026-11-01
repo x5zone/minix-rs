@@ -119,6 +119,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百七十八（`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE` 闭合，且登记语要改正：C 的 `join` 根本不查输入侧读错）
+
+- **这条登记原本记错了方向**。批次四百六十三把它记成「标准输入那条腿绕开了双生面」，
+  隐含「应该报读失手」。本轮先读 C 真源：`minix3/usr.bin/join/join.c` 里 `ferror` 只出现在
+  标准输出上（`:457`、`:488`、`:498`、`:508` 四处），**输入侧零检查**（`grep -c
+  "ferror(stdin)\|ferror(F1->fp)\|ferror(F2->fp)"` → 0）。所以正确形态是「走共件那条缝，
+  但**刻意把号弃掉**」——C 自己就把它当读到尽头。壳里的注释按这个结论写，不再借共件那句
+  「读失手要报句子」的口径（那是 `rev`/`head` 那一族的判据，不适用于 `join`）。
+- **顺带量出一处真实缺陷（这才是本轮的收获）**：绕开共件的那圈 `minix_sys::read` 在**宿主**
+  构建里读不到标准输入——`join - file2` 交出空。证据是同两个二进制对跑：改前
+  `cat f1 | join - f2` → 空（退 0），改后 → `b 2 20\nc 3 30`；矩阵二十形里
+  **六形真差全部落在带 `-` 的读腿上，其余十四形逐字节同**（`tmp/join-478/matrix2.log`；
+  第一版矩阵 `matrix.log` 有 26 形「差」，全是我拿 `join-before`/`join-after` 两个不同
+  文件名起造成的程序名段差，按同名副本复量才是真数——**夹具的名字也要同形**）。
+- **门**：面门 +1 枚 `a_dash_operand_reads_the_piped_standard_input`（同一份内容，
+  文件-文件、`- 文件`、`文件 -` 三形必须同答）。**负控就是改前的真码本身**：把
+  `src/bin/join.rs` 退回基线提交重跑这枚门 → 红在「标准输入作第一个操作数」
+  （left 空、right `b 2 20\nc 3 30`），换回补丁后 join_face 33/0。宿主整包 69 段
+  **1295 / 0**，**容器权威门同读数退 0**（`tmp/join-478/container-gate.log`），三架构
+  `--bins` 各退 0，clippy 与主树唯一句集合各 85 行，`rustfmt --check` 两件基线=改后
+  （1 处与 3 处存量，本轮 hunk 零新增），`doc-style-lint --diff` error 级 0。
+- **在册变化**：`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE` 闭合；07 篇与主树别处不再有该
+  登记的未接陈述（`grep -rn "JOIN-STDIN-LEG" os/ rewrite-notes/18-stage-commands/07-text-filter.md`
+  → 零命中）。
+- **三件套**：`cat tmp/join-478/matrix2.log`、
+  `git -C .wt/... checkout -- os/commands/usr-bin/textfilter/src/bin/join.rs &&
+  cargo test -p minix-textfilter --test join_face a_dash_operand`（红）→ 换回补丁（绿）、
+  `cargo test -p minix-textfilter`（`tmp/join-478/pkg.log`、`container-gate.log`）；
+  核实日 `2026-11-02`，基线快照 `98fad89d7`。
+
+---
+
+
 ## 批次四百七十七（`TR-BACKSLASH-OCTAL` 闭合：`tr` 的 `\` 读「至多三位数字按八进制折叠」，并把命名转义表补全）
 
 - **这一笔的射程**：C 的 `backslash()`（`minix3/usr.bin/tr/str.c:398-452`）是**一个函数三个出口**：
