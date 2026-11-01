@@ -196,6 +196,18 @@ pub fn enable_uart_rx_selftest(expected: u8) {
         sbi_con::write_str(core::str::from_utf8(&hb).unwrap_or("?"));
         sbi_con::write_str("\n");
     };
+    {
+        let mut hb = [0u8; 16];
+        const HX: &[u8; 16] = b"0123456789abcdef";
+        let mut vv = plic_va as u64;
+        for i in (0..16).rev() {
+            hb[i] = HX[(vv & 0xf) as usize];
+            vv >>= 4;
+        }
+        sbi_con::write_str("  [plic-diag] diag_base=0x");
+        sbi_con::write_str(core::str::from_utf8(&hb).unwrap_or("?"));
+        sbi_con::write_str("\n");
+    }
     show("pending0", plic_va + 0x1000);
     show("enable_c1_w0", plic_va + 0x2000 + 0x100);
     show("threshold_c1", plic_va + 0x200000 + 0x1000);

@@ -88,6 +88,11 @@ impl Riscv64InterruptController {
     pub fn plic_base(&self) -> usize {
         self.plic_base
     }
+    /// PD22S2H diag: the injected device-window base the driver uses.
+    pub fn plic_va_base(&self) -> usize {
+        self.plic_va_base
+    }
+
 
     unsafe fn plic_read32(&self, offset: usize) -> u32 {
         core::ptr::read_volatile(self.plic_va(offset) as *const u32)

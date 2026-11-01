@@ -395,6 +395,15 @@ fn bump(num_pages: usize) -> Option<u64> {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    // PD22S2H: the uart-rx selftest pulses MCR.LOOP=1 for the THR→RDR
+    // ring — while set, OpenSBI's console putchar loops back internally
+    // and the serial line hears NOTHING (all panic text vanishes). Un-deaf
+    // the console first: clear LOOP at the UART PA (bootstrap-root identity
+    // covers PA at this stage).
+    unsafe {
+        let mcr = (0x1000_0004usize as *const u8).read_volatile();
+        (0x1000_0004usize as *mut u8).write_volatile(mcr & !0x10);
+    }
     early_console::write_str("### PANIC in test-timer-irq-riscv64: ");
     if let Some(loc) = info.location() {
         early_console::write_str(loc.file());
