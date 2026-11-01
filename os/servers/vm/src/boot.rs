@@ -412,7 +412,21 @@ pub fn read_boot_params() -> BootParams<'static> {
         is_first_time: handoff.is_first_time != 0,
         // Version ≥ 3 handoffs carry the kernel layout; version ≤ 2 yields
         // None (the consumer falls back to the mock constants + warn).
-        kernel_layout: handoff.kernel_layout(),
+        // PD-22 step 2 final: the v6 identity-window field is retired —
+        // a non-empty field from a new kernel means contract drift, and is
+        // rejected outright (check-and-reject; the identity replay no
+        // longer exists on either side).
+        kernel_layout: {
+            let layout = handoff.kernel_layout();
+            if let Some(l) = &layout {
+                assert!(
+                    l.ident_regions().is_empty(),
+                    "handoff carries identity windows — retired by PD-22 \
+                     step 2, refusing (check-and-reject)"
+                );
+            }
+            layout
+        },
         // E-BOOTFRAME: handoff v4 carries the initial user stack top
         // (C exec_bootproc reads `kernel_boot_info.user_sp`, main.c:372).
         user_sp: VirBytes(handoff.user_sp),

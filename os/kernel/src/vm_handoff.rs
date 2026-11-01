@@ -534,91 +534,17 @@ pub fn build_vm_handoff(
 /// PLIC window), which every root still needs to reach the interrupt
 /// controller at its physical address.
 pub(crate) fn build_identity_windows() -> ([HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT], usize) {
-    const USER_IDENTITY_FLOOR: u64 = 0x40_0000;
-    /// Candidate slots: the arch MMIO table is tiny; the bound stays as a
-    /// fail-fast guard against a future arch list growing without review.
-    const MAX_CANDIDATES: usize = crate::globals::RESERVED_REGION_STORE_LEN;
-    /// Sanity cap on 4 KiB identity leaves: 128 Ki pages = 512 MiB.
-    const MAX_TOTAL_PAGES: u64 = 128 * 1024;
-
-    let mut cand = [(0u64, 0u64); MAX_CANDIDATES];
-    let mut n = 0usize;
-    let mut max_end = 0u64;
-    let mut push = |base: u64, size: u64, n: &mut usize| {
-        assert!(*n < MAX_CANDIDATES, "vm_handoff: identity candidate overflow");
-        if base + size > max_end {
-            max_end = base + size;
-        }
-        if size == 0 {
-            return;
-        }
-        // align out: floor base, ceil end.
-        let b = base & !(PAGE_SIZE - 1);
-        let e = (base + size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-        // clip below the user-image floor.
-        if e <= USER_IDENTITY_FLOOR {
-            return;
-        }
-        let b = b.max(USER_IDENTITY_FLOOR);
-        cand[*n] = (b, e - b);
-        *n += 1;
-    };
-    for &(base, size) in minix_arch::kernel_identity_mmio_regions() {
-        push(base, size, &mut n);
-    }
-    // The closure's mutable borrow of the counters ends here; they can only be
-    // read afterwards.
-    drop(push);
-    let _ = max_end;
-
-    // insertion sort by base — n ≤ MAX_CANDIDATES, boot-path sizes only.
-    for i in 1..n {
-        let mut j = i;
-        while j > 0 && cand[j - 1].0 > cand[j].0 {
-            cand.swap(j - 1, j);
-            j -= 1;
-        }
-    }
-
-    // merge overlapping/adjacent runs; fail fast on a produced-entry or
-    // page-total cap breach (never truncate — a cut window would put
-    // the #PF→#DF→triple-fault landmine back).
-    let mut ident = [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT];
-    let mut count = 0usize;
-    let mut total_pages = 0u64;
-    let mut i = 0usize;
-    while i < n {
-        let (b0, s0) = cand[i];
-        let mut end = b0 + s0;
-        let mut j = i + 1;
-        while j < n && cand[j].0 <= end {
-            end = end.max(cand[j].0 + cand[j].1);
-            j += 1;
-        }
-        assert!(count < VM_BOOT_HANDOFF_MAX_IDENT, "vm_handoff: identity window overflow");
-        total_pages += (end - b0) / PAGE_SIZE;
-        assert!(
-            total_pages <= MAX_TOTAL_PAGES,
-            "vm_handoff: identity windows exceed the 4KiB-leaf sanity cap"
-        );
-        ident[count] = HandoffMemRegion {
-            base: b0,
-            size: end - b0,
-        };
-        count += 1;
-        i = j;
-    }
-
-    // Forensic landmark (removed once the item was closed): the identity-window
-    // truth must be visible on real hardware — the count decides whether
-    // low-half instruction fetch stays alive after the rs switch. Under the mock
-    // (host test) the console writes a real port, so this must be compiled out
-    // (same landmark convention as lib.rs).
-    #[cfg(not(feature = "mock"))]
-    {
-    }
-
-    (ident, count)
+    // PD-22 step 2 final: identity windows RETIRED from process roots —
+    // the strong-form acceptance ("must not exist") requires no VA=PA
+    // mapping in any normal process address space. MMIO consumers reach
+    // their registers through the kernel device window (segment 5 of
+    // `map_kernel` + the bootstrap-root install); this function now
+    // produces an empty list, and the v6 handoff's identity field is
+    // written empty (VM rejects a non-empty field — check-and-reject).
+    // The function body is retained as the historical documentation of the
+    // former candidate assembly (see git history for the pre-retirement
+    // implementation).
+    ([HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT], 0)
 }
 
 /// Copies a boot image name into the fixed `proc_name` field (truncate to
@@ -860,23 +786,13 @@ mod tests {
 
     #[test]
     fn test_identity_windows_are_arch_mmio_only() {
-        // T2: the firmware reserved list no longer feeds per-process identity
-        // windows; only the arch MMIO identity ranges remain.
+        // PD-22 step 2 final: identity windows RETIRED — the producer must
+        // return an empty list (strong form: no VA=PA mapping in process
+        // roots). The device window (slot-mapped high-half) replaced the
+        // identity replay entirely.
         let (ident, count) = build_identity_windows();
-        let mmio = minix_arch::kernel_identity_mmio_regions();
-        assert_eq!(count, mmio.len());
-        for (i, &(base, _)) in mmio.iter().enumerate() {
-            assert_eq!(ident[i].base, base);
-        }
-        // Invariant map_kernel relies on: sorted, non-overlapping, page-aligned.
-        for w in &ident[..count] {
-            assert_eq!(w.base % PAGE_SIZE, 0);
-            assert_eq!(w.size % PAGE_SIZE, 0);
-            assert!(w.base >= 0x40_0000);
-        }
-        for pair in ident[..count].windows(2) {
-            assert!(pair[0].base + pair[0].size <= pair[1].base);
-        }
+        assert_eq!(count, 0, "identity windows retired — must produce none");
+        assert!(ident.iter().all(|w| w.base == 0 && w.size == 0));
     }
 
     #[test]
