@@ -58,10 +58,14 @@ enum Section {
 /// Line-numbering options (the C globals `nl` reads from its flags).
 #[derive(Debug, Clone)]
 pub struct NlOptions {
-    /// First number of each page (`-v`).
-    pub startnum: u64,
-    /// Number increment (`-i`).
-    pub incr: u64,
+    /// First number of each page (`-v`; C's `static int startnum` at
+    /// `nl.c:125`, assigned from `startnum = (int)val` at `:215`). C's counter
+    /// is an `int`, so a negative start number is legal and counts downward.
+    pub startnum: i32,
+    /// Number increment (`-i`; C's `static int incr`, assigned from
+    /// `incr = (int)val` at `nl.c:182`). There is no non-zero or sign check in
+    /// C, so a negative increment counts backwards and zero repeats a number.
+    pub incr: i32,
     /// Line-number field width (`-w`).
     pub width: usize,
     /// Number field format (`-n`).
@@ -172,7 +176,7 @@ pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
         let mut row = Vec::new();
         if donumber {
             write_number(counter, opts, &mut row);
-            counter += opts.incr;
+            counter = counter.wrapping_add(opts.incr);
         } else {
             row.resize(row.len() + opts.width, b' ');
         }
@@ -184,10 +188,19 @@ pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
 }
 
 /// Render `n` into the fixed-width number field per the chosen format.
-fn write_number(n: u64, opts: &NlOptions, out: &mut Vec<u8>) {
+/// Render one counter value the way C's
+/// `snprintf(intbuffer, intbuffersize, format, width, line)` does
+/// (`nl.c:331-332`): the digits of the magnitude, a leading `-` when the value
+/// is negative (C prints `line`, an `int`, through `%*d` and its two siblings at
+/// `nl.c:63-65`), and the field padded to `width` — spaces on the right under
+/// `-n ln`, spaces on the left under `-n rn`, and **zeros after the sign** under
+/// `-n rz` (`%0*d` turns `-7` at width 5 into `-0007`, as the reference
+/// measures). `i32::MIN` has no positive counterpart, so the magnitude is taken
+/// in `i64`.
+fn write_number(n: i32, opts: &NlOptions, out: &mut Vec<u8>) {
     let mut digits = [0u8; 20];
     let mut len = 0usize;
-    let mut v = n;
+    let mut v = i64::from(n).unsigned_abs();
     loop {
         digits[len] = b'0' + (v % 10) as u8;
         len += 1;
@@ -196,24 +209,34 @@ fn write_number(n: u64, opts: &NlOptions, out: &mut Vec<u8>) {
             break;
         }
     }
-    let digits = &digits[..len];
-    let pad = opts.width.saturating_sub(len);
+    let negative = n < 0;
+    // C pads to the *rendered* width, and the sign occupies one of those cells.
+    let pad = opts.width.saturating_sub(len + usize::from(negative));
     match opts.format {
         NumFormat::Left => {
-            for d in digits.iter().rev() {
+            if negative {
+                out.push(b'-');
+            }
+            for d in digits[..len].iter().rev() {
                 out.push(*d);
             }
             out.resize(out.len() + pad, b' ');
         }
         NumFormat::Right => {
             out.resize(out.len() + pad, b' ');
-            for d in digits.iter().rev() {
+            if negative {
+                out.push(b'-');
+            }
+            for d in digits[..len].iter().rev() {
                 out.push(*d);
             }
         }
         NumFormat::RightZero => {
+            if negative {
+                out.push(b'-');
+            }
             out.resize(out.len() + pad, b'0');
-            for d in digits.iter().rev() {
+            for d in digits[..len].iter().rev() {
                 out.push(*d);
             }
         }
@@ -245,6 +268,72 @@ mod tests {
     #[test]
     fn test_numbers_nonempty_by_default() {
         assert_eq!(nl("a\nb", &NlOptions::default()), "     1\ta\n     2\tb");
+    }
+
+    /// C's counter is an `int` (`nl.c:125` and the two `strtol` arms at
+    /// `:176-183`/`:208-216`), so a negative first number and a negative
+    /// increment are both accepted and the numbering runs backwards; each
+    /// format then puts the sign in its own place — `-n ln` left-justifies and
+    /// pads right (`-7  `), `-n rn` pads on the left (`  -7`), and `-n rz` puts
+    /// the zeros **after** the minus (`-0007`, because `%0*d` pads between the
+    /// sign and the digits). Every expectation is the reference's own reading
+    /// (`tmp/nl-417/nl_ref` on `a\nb\nc`).
+    #[test]
+    fn negative_counters_and_the_sign_position_of_each_format() {
+        let o = NlOptions {
+            startnum: 3,
+            incr: -1,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb\nc", &o), "     3\ta\n     2\tb\n     1\tc");
+        let o = NlOptions {
+            startnum: -2,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb\nc", &o), "    -2\ta\n    -1\tb\n     0\tc");
+        let o = NlOptions {
+            startnum: -7,
+            width: 4,
+            format: NumFormat::Left,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), "-7  \ta\n-6  \tb");
+        let o = NlOptions {
+            startnum: -7,
+            width: 5,
+            format: NumFormat::RightZero,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), "-0007\ta\n-0006\tb");
+    }
+
+    /// Stepping past `i32::MAX` wraps to `i32::MIN` the way C's `int` does
+    /// (`line += incr` at `nl.c:334` is UB on overflow and two's-complement
+    /// wrap in the measured reference: `-v 2147483647 -i 1 -w 12` prints
+    /// `2147483647`, `-2147483648`, `-2147483647`). `i32::MIN` is also the one
+    /// value whose magnitude does not fit an `int`, which is why the digits are
+    /// taken in `i64` — the width here (12) exceeds both renderings, so this
+    /// gate does not touch the tail-truncation leg C gets from
+    /// `intbuffer + max(0, consumed - width)`.
+    #[test]
+    fn the_counter_wraps_at_the_int_boundary_and_prints_int_min() {
+        let o = NlOptions {
+            startnum: i32::MAX,
+            incr: 1,
+            width: 12,
+            ..Default::default()
+        };
+        assert_eq!(
+            nl("a\nb\nc", &o),
+            "  2147483647\ta\n -2147483648\tb\n -2147483647\tc"
+        );
+        let o = NlOptions {
+            startnum: i32::MIN,
+            incr: 0,
+            width: 12,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), " -2147483648\ta\n -2147483648\tb");
     }
 
     #[test]

@@ -212,6 +212,53 @@ fn the_number_arguments_quote_the_rejected_value() {
     }
 }
 
+/// C's counters are `int` and neither arm has a sign test (`nl.c:176-183` for
+/// `-i`, `:208-216` for `-v`), so a negative first number and a negative
+/// increment are accepted and the numbering runs backwards. The reference
+/// `tmp/nl-417/nl_ref` reads `-v 3 -i -1` as `3/2/1` and `-v -2` as
+/// `-2/-1/0` in the default 6-wide right-justified field — this closes
+/// `NL-SIGNED-COUNTERS`, the leg that used to answer with an invented
+/// "signed numbering counters (-i/-v) not wired".
+#[test]
+fn signed_counters_run_backwards_end_to_end() {
+    let (out, status, err) = run(&["-v", "3", "-i", "-1"], b"a\nb\nc\n");
+    assert_eq!(status, 0, "{err}");
+    assert_eq!(out, "     3\ta\n     2\tb\n     1\tc\n");
+    let (out, status, err) = run(&["-v", "-2"], b"a\nb\nc\n");
+    assert_eq!(status, 0, "{err}");
+    assert_eq!(out, "    -2\ta\n    -1\tb\n     0\tc\n");
+    // The increment may also cross the boundary the counter wraps at; the
+    // field is widened so this run never reaches the truncation leg.
+    let (out, status, _) = run(&["-v", "2147483647", "-i", "1", "-w", "12"], b"a\nb\n");
+    assert_eq!(status, 0);
+    assert_eq!(out, "  2147483647\ta\n -2147483648\tb\n");
+}
+
+/// The accepted domain is C's `int`: Minix's userland `long` is 32 bits on
+/// i386, and C casts the result to `int` anyway (`incr = (int)val`,
+/// `startnum = (int)val`), so a value outside `int` takes the same sentence as
+/// trailing junk does. **The host-built reference cannot pin this shape** — it
+/// links glibc, whose 64-bit `long` accepts `2147483648` and truncates it in
+/// the cast, so the judgment here is the C source plus the platform width
+/// (recorded in 18 篇 with the reading that shows the divergence). The
+/// boundary values inside the domain are accepted, `i32::MIN` included.
+#[test]
+fn a_value_beyond_the_int_domain_takes_the_rejecting_sentence() {
+    for (flag, value, sentence) in [
+        ("-i", "2147483648", "invalid incr argument -- 2147483648"),
+        ("-v", "2147483648", "invalid startnum value -- 2147483648"),
+        ("-v", "-2147483649", "invalid startnum value -- -2147483649"),
+    ] {
+        let (_, status, err) = run(&[flag, value], b"a\n");
+        assert_eq!(status, 1, "{flag} {value} 该退 1");
+        assert_eq!(err, format!("nl: {sentence}\n"), "{flag} {value}");
+    }
+    for (flag, value) in [("-i", "-2147483648"), ("-v", "-2147483648")] {
+        let (_, status, err) = run(&[flag, value], b"a\n");
+        assert_eq!(status, 0, "{flag} {value} 在 `int` 域内，该被接受：{err}");
+    }
+}
+
 /// C has **no** non-zero check here (it only checks `*ep`), so `-i 0` is legal and exits
 /// 0; the old wording invented an "increment must be non-zero" sentence, treating a guard
 /// that does not exist as real.

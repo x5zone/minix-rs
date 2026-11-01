@@ -285,15 +285,16 @@ fn run() -> ! {
                 }
                 'i' => {
                     let value = value!('i');
-                    match strtol10(value) {
-                        // C has **no** non-zero check here: an `incr` of 0 is
-                        // accepted too (increments of 0 afterwards).
-                        Some(n) if n >= 0 => opts.incr = n as u64,
-                        // The decision half's counter is `u64` (C's is `int`
-                        // and can count backwards); a negative increment is
-                        // another unwired leg, and C's sentence is not borrowed
-                        // for it — registered as `NL-SIGNED-COUNTERS`.
-                        Some(_) => errx(&prog, b"signed numbering counters (-i/-v) not wired"),
+                    // C's `-i` (`nl.c:176-183`): `strtol` base 10, then the two
+                    // tests `*ep != '\0'` and `(val == LONG_MIN || val ==
+                    // LONG_MAX) && errno != 0`, then `incr = (int)val`. Minix's
+                    // userland `long` is 32 bits on i386, so the accepted domain
+                    // and the cast agree on `int`: a value outside it takes the
+                    // same sentence as trailing junk does. **There is no sign
+                    // check** — a negative increment counts backwards, and zero
+                    // repeats a number (`NL-SIGNED-COUNTERS` closed here).
+                    match strtol10(value).and_then(|n| i32::try_from(n).ok()) {
+                        Some(n) => opts.incr = n,
                         None => errx(
                             &prog,
                             quoted(b"invalid incr argument -- ", value, b"").as_slice(),
@@ -331,9 +332,13 @@ fn run() -> ! {
                 }
                 'v' => {
                     let value = value!('v');
-                    match strtol10(value) {
-                        Some(n) if n >= 0 => opts.startnum = n as u64,
-                        Some(_) => errx(&prog, b"signed numbering counters (-i/-v) not wired"),
+                    // C's `-v` (`nl.c:208-216`) is the same `strtol` shape as
+                    // `-i` with the sentence `invalid startnum value -- %s`, and
+                    // the store is again `startnum = (int)val` — so a negative
+                    // first number of a page is legal and the accepted domain is
+                    // `int`.
+                    match strtol10(value).and_then(|n| i32::try_from(n).ok()) {
+                        Some(n) => opts.startnum = n,
                         None => errx(
                             &prog,
                             quoted(b"invalid startnum value -- ", value, b"").as_slice(),
