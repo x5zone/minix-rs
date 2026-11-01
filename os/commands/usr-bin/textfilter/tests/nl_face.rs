@@ -259,6 +259,36 @@ fn a_value_beyond_the_int_domain_takes_the_rejecting_sentence() {
     }
 }
 
+/// End to end: C's number field is printed as `intbuffer + max(0, consumed -
+/// width)` (`nl.c:331-335`), so a counter that outgrows `-w` loses cells from
+/// the **left**, and the loss is the same under all three `-n` formats. Every
+/// byte below is the reference's reading (`tmp/nl-417/nl_ref`): `-w 1 -v 100`
+/// → `0`,`1`; `-w 1 -v -100` → `0`,`9` (the sign is the first cell dropped);
+/// `-n ln -w 3 -v 12345` → `345`,`346`; `-w 4 -v -100000` → `0000`,`9999`.
+/// Before this leg the shell printed the whole rendering, so all four shapes
+/// were one line longer than C's.
+#[test]
+fn a_number_wider_than_the_field_keeps_its_last_cells() {
+    for (args, want) in [
+        (vec!["-w", "1", "-v", "100"], "0\ta\n1\tb\n"),
+        (vec!["-w", "1", "-v", "-100"], "0\ta\n9\tb\n"),
+        (
+            vec!["-n", "ln", "-w", "3", "-v", "12345"],
+            "345\ta\n346\tb\n",
+        ),
+        (
+            vec!["-n", "rz", "-w", "3", "-v", "12345"],
+            "345\ta\n346\tb\n",
+        ),
+        (vec!["-w", "4", "-v", "-100000"], "0000\ta\n9999\tb\n"),
+        (vec!["-w", "3", "-v", "100"], "100\ta\n101\tb\n"),
+    ] {
+        let (out, status, err) = run(&args, b"a\nb\n");
+        assert_eq!(status, 0, "{args:?} 的 stderr 是 {err}");
+        assert_eq!(out, want, "{args:?}");
+    }
+}
+
 /// C has **no** non-zero check here (it only checks `*ep`), so `-i 0` is legal and exits
 /// 0; the old wording invented an "increment must be non-zero" sentence, treating a guard
 /// that does not exist as real.

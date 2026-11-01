@@ -187,16 +187,24 @@ pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
     out
 }
 
-/// Render `n` into the fixed-width number field per the chosen format.
-/// Render one counter value the way C's
-/// `snprintf(intbuffer, intbuffersize, format, width, line)` does
-/// (`nl.c:331-332`): the digits of the magnitude, a leading `-` when the value
-/// is negative (C prints `line`, an `int`, through `%*d` and its two siblings at
-/// `nl.c:63-65`), and the field padded to `width` — spaces on the right under
-/// `-n ln`, spaces on the left under `-n rn`, and **zeros after the sign** under
-/// `-n rz` (`%0*d` turns `-7` at width 5 into `-0007`, as the reference
-/// measures). `i32::MIN` has no positive counterpart, so the magnitude is taken
-/// in `i64`.
+/// Render `n` into the fixed-width number field per the chosen format, the way
+/// C does it in two steps: `snprintf(intbuffer, intbuffersize, format, width,
+/// line)` builds the field, and `printf("%s", intbuffer + max(0, consumed -
+/// width))` prints it (`nl.c:331-335`) — that second step is C's **left cut**:
+/// when the rendering is wider than the field, the leading cells are dropped
+/// and the trailing `width` cells survive. The buffer is
+/// `max(INT_STRLEN_MAXIMUM, width) + 1` (`nl.c:261`), so `snprintf` itself never
+/// truncates and `consumed` is always the full length. The reference measures
+/// `-w 1 -v 100` as `0`,`1`,`2`, `-w 1 -v -100` as `0`,`9`, and
+/// `-n ln -w 3 -v 12345` as `345`,`346` — the left cut applies to all three
+/// formats alike.
+///
+/// The field itself follows C's three format strings (`nl.c:63-65`): the digits
+/// of the magnitude with a leading `-` for a negative value (C prints `line`, an
+/// `int`), padded with spaces on the right under `-n ln`, on the left under
+/// `-n rn`, and with **zeros after the sign** under `-n rz` (`%0*d` turns `-7`
+/// at width 5 into `-0007`). The sign occupies one of the `width` cells, and
+/// `i32::MIN` has no positive counterpart, so the magnitude is taken in `i64`.
 fn write_number(n: i32, opts: &NlOptions, out: &mut Vec<u8>) {
     let mut digits = [0u8; 20];
     let mut len = 0usize;
@@ -212,35 +220,40 @@ fn write_number(n: i32, opts: &NlOptions, out: &mut Vec<u8>) {
     let negative = n < 0;
     // C pads to the *rendered* width, and the sign occupies one of those cells.
     let pad = opts.width.saturating_sub(len + usize::from(negative));
+    let mut field: Vec<u8> = Vec::with_capacity(len + usize::from(negative) + pad);
     match opts.format {
         NumFormat::Left => {
             if negative {
-                out.push(b'-');
+                field.push(b'-');
             }
             for d in digits[..len].iter().rev() {
-                out.push(*d);
+                field.push(*d);
             }
-            out.resize(out.len() + pad, b' ');
+            field.resize(field.len() + pad, b' ');
         }
         NumFormat::Right => {
-            out.resize(out.len() + pad, b' ');
+            field.resize(field.len() + pad, b' ');
             if negative {
-                out.push(b'-');
+                field.push(b'-');
             }
             for d in digits[..len].iter().rev() {
-                out.push(*d);
+                field.push(*d);
             }
         }
         NumFormat::RightZero => {
             if negative {
-                out.push(b'-');
+                field.push(b'-');
             }
-            out.resize(out.len() + pad, b'0');
+            field.resize(field.len() + pad, b'0');
             for d in digits[..len].iter().rev() {
-                out.push(*d);
+                field.push(*d);
             }
         }
     }
+    // `intbuffer + max(0, consumed - width)`: hand over only the last `width`
+    // cells of what was built.
+    let skip = field.len().saturating_sub(opts.width);
+    out.extend_from_slice(&field[skip..]);
 }
 
 #[cfg(test)]
@@ -349,6 +362,57 @@ mod tests {
     fn test_number_all_includes_blanks() {
         let o = NlOptions { body: NumberType::All, ..Default::default() };
         assert_eq!(nl("a\n\nb", &o), "     1\ta\n     2\t\n     3\tb");
+    }
+
+    /// C prints `intbuffer + max(0, consumed - width)` (`nl.c:331-335`), so a
+    /// number wider than the field loses its **leading** cells. Every
+    /// expectation below is the reference's own reading
+    /// (`tmp/nl-417/nl_ref` on `a\nb`): `-w 1 -v 100` → `0`,`1`;
+    /// `-w 1 -v -100` → `0`,`9` (the minus is a cell too, and it is the first
+    /// one dropped); `-n ln -w 3 -v 12345` and `-n rz -w 3 -v 12345` → `345`,
+    /// `346` — the left cut is not a right-justification artifact, it applies to
+    /// all three formats; `-w 4 -v -100000` → `0000`,`9999`. A field exactly as
+    /// wide as the rendering loses nothing.
+    #[test]
+    fn the_number_field_is_cut_from_the_left_when_it_outgrows_the_width() {
+        let o = NlOptions {
+            startnum: 100,
+            width: 1,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), "0\ta\n1\tb");
+        let o = NlOptions {
+            startnum: -100,
+            width: 1,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), "0\ta\n9\tb");
+        let o = NlOptions {
+            startnum: 12345,
+            width: 3,
+            format: NumFormat::Left,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), "345\ta\n346\tb");
+        let o = NlOptions {
+            startnum: 12345,
+            width: 3,
+            format: NumFormat::RightZero,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), "345\ta\n346\tb");
+        let o = NlOptions {
+            startnum: -100000,
+            width: 4,
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), "0000\ta\n9999\tb");
+        let o = NlOptions {
+            startnum: 100,
+            width: 3,
+            ..Default::default()
+        };
+        assert_eq!(nl("a", &o), "100\ta");
     }
 
     #[test]
