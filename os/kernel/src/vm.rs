@@ -1107,8 +1107,19 @@ pub fn copy_page_table_ref(_as: &PageTableRef) -> PageTableRef {
 /// VM suspend type.
 ///
 /// Replaces Minix3's `VMSTYPE_KERNELCALL`/`VMSTYPE_DELIVERMSG` macros.
-/// `VMSTYPE_MAP` and `VMSTYPE_SYS_NONE` are not implemented — they are
-/// unused in Minix3 (24-cross-space-runtime.md §2.5.6).
+/// Minix3 declares four codes (`proc.h:98-101`: `VMSTYPE_SYS_NONE` = 0,
+/// `VMSTYPE_KERNELCALL` = 1, `VMSTYPE_DELIVERMSG` = 2, `VMSTYPE_MAP` = 3) but
+/// only the last two of `SYS_NONE`/`MAP` never get a producer: `vm_suspend` is
+/// called with `VMSTYPE_KERNELCALL` (arch `i386/memory.c:444,567,661`) and with
+/// `VMSTYPE_DELIVERMSG` (`proc.c:282`), while `VMSTYPE_MAP` appears only as a
+/// defensive consumer arm in `do_vmctl.c:102-104` (it asserts
+/// `RTS_VMREQUEST` and does nothing else) and `VMSTYPE_SYS_NONE` is the zero
+/// value of the raw `type` field. This enum therefore covers exactly the two
+/// types C can suspend for, and C's `default: panic("strange request type")`
+/// (`do_vmctl.c:105-106`) has no counterpart to write: the type never crosses
+/// the wire (`VMCTL_MEMREQ_REPLY` reads only the result), it is the kernel's
+/// own stored value, and an unproducible type is not representable here. The
+/// "none" state C spells with 0 is carried by `p_vm_suspend` being `None`.
 ///
 /// Design decision: §3.1 (enum replaces VMSTYPE_* macros).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

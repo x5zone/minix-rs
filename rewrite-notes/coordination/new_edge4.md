@@ -4486,3 +4486,34 @@ PD22S2H-15/16 两笔修复闭合 e5-ds（LAPIC 四条时钟路径 + IO-APIC 运�
 SD-12 台账行已闭（CLOSED 2026-11-02 + 完整实施记录）；C 板 C11 行状
 态列与裁决列已更新。简报终态=p22-step2-brief.md（§15 验收表全项满
 足，含强形态扫描）。PD-22 全部完成。
+
+### 第二百一十三笔（C 板·内核优先 · `VMSTYPE-MAP-FACT`：更正「VMSTYPE_MAP/SYS_NONE 在 Minix3 里没用」这条失实陈述）
+
+接管三板后的第一轮。C 板任务表 32 行里 29 行 `✅`，`C17` 正文已写「余片=0」而状态列未翻，
+`C9` 是自标「不领」的真机窗服务队列，`C20` 是 `🚫` 维持登记；内核领地（`os/kernel`、`os/arch`、
+`os/plat`、`os/kernel-image`）现量的 11 处 `not wired`/`not implemented` 全部是 WONTFIX 设计决定
+或对固件/硬件限制的说明（NMI 采样、earm 的 SBI 语义、aarch64 `init` 与首次 `disable()` 等价），
+唯一一条**事实失真**在 `VmSuspendType` 的篇注里。
+
+**现量否证**：C 四个码全有定义（`proc.h:98-101`），`VMSTYPE_MAP` 还有一条消费臂
+（`do_vmctl.c:102-104`，只做 `assert(RTS_ISSET(p, RTS_VMREQUEST))`），`default:` 才是
+`panic("strange request type")`（`:105-106`）；生产侧只有两值——`VMSTYPE_KERNELCALL`
+（`arch/i386/memory.c:444,567,661`）与 `VMSTYPE_DELIVERMSG`（`proc.c:282`）。所以旧注释
+「not implemented — they are unused in Minix3」把「无生产者」误写成「无用/不存在」，
+并且引用的是 `draft/24-cross-space-runtime.md`（非交付物）。同一句错误在 01 篇 todo 的 D-24
+备忘里（「C 本身无此变体」）。
+
+**本轮改的两处**：`os/kernel/src/vm.rs` 的枚举篇注按现量重写（四码 + 两生产者 + MAP 臂 +
+default panic 的行号全写死），并说明为什么本树**不需要**写 `Map` 变体与 panic 臂：类型不走线
+（`VMCTL_MEMREQ_REPLY` 只读回结果），它是内核自己存的值，不可生产的类型在枚举里不可表达，
+而 C 的 `SYS_NONE`=0 这一「无挂起」态由 `p_vm_suspend` 的 `None` 承载；
+`rewrite-notes/01-stage-kernel/todo.md` 的 D-24 理由随之改正（结论不变，理由从「无此变体」
+改成「有定义、有消费臂、无生产者」）。
+
+**门**：宿主内核 `cargo test -p minix-kernel --features mock` → **857 通过 / 0 失败 / 8 忽略**
+（`tmp/vmstype-fact/mock.log`）；三架构 `cargo check --target … -p minix-kernel --bins` 各退 0
+（`arch.log`）；本轮 diff 全是注释行（`git diff | grep -vE '^\+\s*//'` 零命中），格式漂移按
+「改前/改后 `Diff in` 计数相等」量：`vm.rs` 基线 29 处、改后 29 处，**零新增**——全文的存量
+漂移属他线，按批次四百零四那条规矩不带走；`doc-style-lint --diff` error 级 0；在制自检干净。
+`VMSTYPE` 相关的行为门本就存在（`memreq_reply_delivermsg_requires_mf_delivermsg` 对位 C 的
+`assert`），本轮无新增门、无代码路径变化。

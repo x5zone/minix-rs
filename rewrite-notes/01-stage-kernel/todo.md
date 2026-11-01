@@ -140,7 +140,10 @@ witness 根位补齐后可全链化）；rmm 独立内存管理 crate（F2 已�
 
 **✅ 已解决（44 项，一行备忘）**：D-1~D-13、D-15~D-35、D-42~D-58 全部闭环（落地批次见 §0.1；
 逐条解决记录含 C 锚点与测试证据，见 git `893386cd8` 版 §7.1 表）。其中 🟢 设计 no-op 六项：
-D-14（SIGKMESS 随 W-7 演进不可达）、D-24（VMSTYPE_MAP C 本身无此变体）、D-25（无部分进度
+D-14（SIGKMESS 随 W-7 演进不可达）、D-24（VMSTYPE_MAP **C 有定义也有消费臂**（`proc.h:101`、
+`do_vmctl.c:102-104`），但全树**无生产者**——`vm_suspend` 只用 `VMSTYPE_KERNELCALL`
+（`arch/i386/memory.c:444,567,661`）与 `VMSTYPE_DELIVERMSG`（`proc.c:282`），`VMSTYPE_SYS_NONE`
+是原始 `type` 的零值；本树枚举因此正好覆盖有生产者的两值，no-op 结论不变、理由改正为「无生产者」而非「无此变体」）、D-25（无部分进度
 消费方）、D-30（swap 链恒空前提；**后被 U-2 推翻改真实现**，见 §12 Phase 5）、D-34
 （mmap_size/mem_high_phys 无读者，write-only 状态不维护）、W-8 同 D-30。
 
