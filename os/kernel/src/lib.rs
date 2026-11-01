@@ -1048,26 +1048,36 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
     // root and process roots; the low identity map stays for its own
     // scope, so this is additive duplication of the device regions only).
     {
-        // PLIC only: it is the sole device-window consumer that runs under
-        // the bootstrap root (controller init). UART0 and ACLINT SSWI
-        // consumers arm at runtime under process roots, which carry the
-        // full-window 4 KiB mapping from `map_kernel`. Huge-leaf mapping
-        // (both bases 2 MiB aligned) matches the proven step-1/2 path.
+        // ALL regions: boot-phase MMIO consumers run under THIS root
+        // (controller init on both arches; x86 AP bring-up ICR writes), and
+        // the slots are 2 MiB-aligned by construction, so each region
+        // installs as huge leaves along the proven step-1/2 path. The 4 KiB
+        // map() path hangs here (pre-DM-establishment channel writes) and
+        // must not be reintroduced for bootstrap-root installs.
         use minix_arch::paging::Paging as _;
         let regions = minix_arch::arch::device_window::device_window_regions();
-        let plic = &regions[0];
-        let va_base = minix_arch::arch::device_window::slot_va_base(regions, plic.slot);
-        let mut off = 0u64;
-        while off < plic.size {
-            paging
-                .map_huge(
-                    VirBytes(va_base + off),
-                    PhysBytes(plic.phys_base + off),
-                    minix_arch::paging_ext::PageSize::MIB_2,
-                    minix_arch::arch::device_window::device_window_flags(),
-                )
-                .expect("PLIC device window map into bootstrap root failed");
-            off += 2 << 20;
+        // Architectures with an empty device table (aarch64: the interrupt
+        // controller is reached via system registers and devices via the
+        // TTBR1-pinned high window) have nothing to install here — an
+        // empty table is a legitimate form, not an error.
+        if regions.is_empty() {
+            boot_stage!("kernel: step2c device window empty (skip)\n");
+        } else {
+        for region in regions {
+            let va_base = minix_arch::arch::device_window::slot_va_base(regions, region.slot);
+            let mut off = 0u64;
+            while off < region.size {
+                paging
+                    .map_huge(
+                        VirBytes(va_base + off),
+                        PhysBytes(region.phys_base + off),
+                        minix_arch::paging_ext::PageSize::MIB_2,
+                        minix_arch::arch::device_window::device_window_flags(),
+                    )
+                    .expect("device window map into bootstrap root failed");
+                off += 2 << 20;
+            }
+        }
         }
     }
 
