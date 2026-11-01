@@ -4389,3 +4389,23 @@ A/B 十二形（`vv`/`vis` 各四形，加 `-F 40`、`-e x`、默认与 `-n`）�
 无差；负控三枚（usage、`-F`、`-m/-h` 各写回 `vis`）各咬住 1。判据、读数与两起工具自错
 （no_std 的 `format!` 导入第五次；负控还原源码后未重建二进制导致一次假 DIFF）全文见
 18 篇批次四百七十四。
+
+**PD22S2 交接（运行中——NOT DONE，run_all 26/13 回归未解）**：五批已合并
+（1a 描述层 / 1b map_kernel 设备窗段 / 2a PLIC+per-hart context /
+2b UART+SSWI / 2c x86 LAPIC+逐 CPU 校验 / 3 identity 退场+强形态扫描）。
+单门全绿：riscv ATF 36/36、smp-aps、test-smp-ipi、x86 e5-ds/cmd-smoke、
+mock 857/0/8、arch 290/0、三架构 check 0 error。**但收官 run_all
+26 passed / 13 failed**：① aarch64 全家族（hello-boot 实测 panic=
+`platform::init_from_kinfo: no platform source parsed successfully`
+@ platform global.rs:283——shim 产 platform_sources 解析失败/为空，复
+现命令=直接 qemu aarch64 跑 minix.img）；② x86 smp-aps/smp-ipi
+（"CPU 2/3 didn't boot"+mask mismatch，boot_ack=1——AP 未到齐，嫌疑
+=LAPIC_VA 注入后 ICR 路径在测试内核上下文；或与 LAPIC init 序相关）；
+③ e5-ds 超时（单独跑 PASS、run_all 内超时——资源/时序嫌疑）。
+**下一步**：先修 aarch64 platform source panic（dumpdtb 程序集是
+PD22S2C 加入 xtask 的，嫌疑最大——回看 run_all 前后 minix.img 内容差
+异），再查 x86 ICR 注入路径，最后重跑 run_all 到 39/0/0 后才可宣布
+PD-22② 完成。简报/裁决/验收表=rewrite-notes/01-stage-kernel/
+pd22-step2-brief.md（§15）。中途实证：实测 DTB 纠正 SSWI/UART 地址、
+PLIC 2MiB 反证、4K map 引导根卡死（map_huge 路径正常）等已在 edge4
+前文与简报留档。
