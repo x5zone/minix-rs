@@ -95,7 +95,39 @@ fn lapic_base() -> u64 {
             options(nomem, nostack),
         );
     }
-    ((hi as u64) << 32 | lo as u64) & LAPIC_BASE_MASK
+    let raw = (hi as u64) << 32 | lo as u64;
+    // PD-22 step 2 per-CPU check-and-reject (brief §15 hard gates: every
+    // logical CPU validates before its first LAPIC MMIO — IA32_APIC_BASE
+    // is per-CPU, so a BSP-only check proves nothing for the APs):
+    // ① x2APIC mode (bit 10) must be off — the driver is xAPIC MMIO;
+    // ② the base must equal the device-window's mapped constant — the
+    //   window maps exactly one 4 KiB page and check-and-reject keeps
+    //   driver and window on the same device.
+    const X2APIC_ENABLE: u64 = 1 << 10;
+    assert!(
+        raw & X2APIC_ENABLE == 0,
+        "x2APIC mode unsupported — xAPIC MMIO driver refuses (PD-22 step 2)"
+    );
+    let base = raw & LAPIC_BASE_MASK;
+    assert!(
+        base == 0xFEE0_0000,
+        "APIC base {:#x} != device-window LAPIC page 0xFEE00000 — \
+         refusing (PD-22 check-and-reject)",
+        base
+    );
+    base
+}
+
+/// The LAPIC register address for `offset`: the kernel device-window VA
+/// (PD-22 step 2 — never PA-as-VA). Slot 1 = the LAPIC page; the slot's
+/// mapping covers exactly the validated base.
+fn lapic_va(offset: u32) -> *mut u32 {
+    let regions = crate::arch::device_window::device_window_regions();
+    let lapic = &regions[1];
+    debug_assert_eq!(lapic.phys_base, 0xFEE0_0000);
+    (crate::arch::device_window::device_va_for(regions, 1, lapic.phys_base)
+        .expect("LAPIC page inside its own window")
+        + offset as u64) as *mut u32
 }
 
 /// Write a 32-bit value to a LAPIC MMIO register.
@@ -106,10 +138,10 @@ fn lapic_base() -> u64 {
 /// LAPIC is enabled (via IA32_APIC_BASE MSR).
 #[inline]
 unsafe fn lapic_write(offset: u32, value: u32) {
-    let addr = (lapic_base() as usize + offset as usize) as *mut u32;
-    // SAFETY: `addr` points to the LAPIC MMIO region. The write is
-    // side-effecting (triggers IPI send, EOI, etc.) but is memory-mapped
-    // and volatile.
+    let addr = lapic_va(offset);
+    // SAFETY: `addr` points into the kernel device-window LAPIC page. The
+    // write is side-effecting (triggers IPI send, EOI, etc.) but is
+    // memory-mapped and volatile.
     unsafe {
         core::ptr::write_volatile(addr, value);
     }
@@ -123,7 +155,7 @@ unsafe fn lapic_write(offset: u32, value: u32) {
 #[inline]
 #[allow(dead_code)]
 unsafe fn lapic_read(offset: u32) -> u32 {
-    let addr = (lapic_base() as usize + offset as usize) as *const u32;
+    let addr = lapic_va(offset) as *const u32;
     // SAFETY: `addr` points to the LAPIC MMIO region. Volatile read is
     // required because reads from some registers (e.g., ICR delivery
     // status) have side effects.

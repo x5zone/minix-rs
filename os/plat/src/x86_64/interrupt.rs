@@ -12,6 +12,7 @@
 
 use core::arch::asm;
 use core::ptr::{read_volatile, write_volatile};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use minix_platform::arch::x86_64::ApicDesc;
 
@@ -124,9 +125,34 @@ unsafe fn read_imr(port: u16) -> u8 {
 /// refuses further interrupts of the same kind (the direct cause of seeing
 /// only one tick per boot). C: lapic_eoi() (apic.c).
 pub fn lapic_eoi() {
+    // PD-22 step 2: EOI through the kernel device-window LAPIC page; the
+    // per-CPU APIC base / x2APIC check runs before the MMIO (IA32_APIC_BASE
+    // is per-CPU — this EOI executes on whatever CPU took the IRQ).
+    let (lo, hi): (u32, u32);
+    // SAFETY: `rdmsr` reads this CPU's IA32_APIC_BASE.
     unsafe {
-        let apic_base = wrmsr_msr_read(MSR_IA32_APIC_BASE) & IA32_APIC_BASE_ADDR_MASK;
-        lapic_write(apic_base as usize, LAPIC_REG_EOI, 0);
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") MSR_IA32_APIC_BASE,
+            out("eax") lo,
+            out("edx") hi,
+            options(nomem, nostack),
+        );
+    }
+    let raw = ((hi as u64) << 32) | lo as u64;
+    const X2APIC_ENABLE: u64 = 1 << 10;
+    assert!(
+        raw & X2APIC_ENABLE == 0,
+        "x2APIC mode unsupported on this CPU — refusing (PD-22 step 2)"
+    );
+    let base = (raw & IA32_APIC_BASE_ADDR_MASK) as usize;
+    assert!(
+        base == 0xFEE0_0000,
+        "APIC base {:#x} != device-window LAPIC page — refusing",
+        base
+    );
+    unsafe {
+        lapic_write(0xFEE0_0000, LAPIC_REG_EOI, 0);
     }
 }
 
@@ -182,14 +208,28 @@ const IOAPIC_NUM_PINS: u8 = 24;
 /// Bit 16 of redirection entry low: interrupt mask.
 const IOAPIC_REDTBL_MASK: u32 = 1 << 16;
 
+/// PD-22 step 2: the LAPIC MMIO base the kernel device window maps
+/// (injected kernel-side after check-and-reject; defaults to the PA view
+/// for pre-window boot-stage access — the bootstrap root's retained
+/// identity covers it). All LAPIC register reads/writes go through this
+/// base; IO-APIC keeps its own (boot-phase-only) PA access.
+static LAPIC_VA: AtomicUsize = AtomicUsize::new(0xFEE0_0000);
+
+/// Kernel-side injection of the device-window VA (PD-22 step 2).
+pub fn set_lapic_va(va_base: usize) {
+    LAPIC_VA.store(va_base, Ordering::SeqCst);
+}
+
 #[inline]
 unsafe fn lapic_read(base: usize, offset: usize) -> u32 { unsafe {
-    read_volatile((base + offset) as *const u32)
+    let _ = base; // window base governs; the caller's PA base is legacy
+    read_volatile((LAPIC_VA.load(Ordering::Relaxed) + offset) as *const u32)
 }}
 
 #[inline]
 unsafe fn lapic_write(base: usize, offset: usize, value: u32) { unsafe {
-    write_volatile((base + offset) as *mut u32, value)
+    let _ = base; // window base governs; the caller's PA base is legacy
+    write_volatile((LAPIC_VA.load(Ordering::Relaxed) + offset) as *mut u32, value)
 }}
 
 unsafe fn ioapic_read_redtbl(base: usize, irq: u8) -> u64 { unsafe {

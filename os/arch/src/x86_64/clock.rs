@@ -42,6 +42,39 @@ pub struct X86_64ClockArch {
     lapic_base: usize,
 }
 
+/// Device-window VA of the LAPIC page (slot 1); the per-CPU APIC base /
+/// x2APIC check-and-reject runs before the caller's first MMIO.
+fn lapic_va_base() -> usize {
+    // SAFETY: `rdmsr` reads this CPU's IA32_APIC_BASE — per-CPU validation
+    // on the CPU about to touch the LAPIC MMIO.
+    let (lo, hi): (u32, u32);
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") 0x1Bu32,
+            out("eax") lo,
+            out("edx") hi,
+            options(nomem, nostack),
+        );
+    }
+    let raw = ((hi as u64) << 32) | lo as u64;
+    const X2APIC_ENABLE: u64 = 1 << 10;
+    assert!(
+        raw & X2APIC_ENABLE == 0,
+        "x2APIC mode unsupported on this CPU — refusing (PD-22 step 2)"
+    );
+    let base = raw & 0xFFFF_F000;
+    assert!(
+        base == 0xFEE0_0000,
+        "APIC base {:#x} != device-window LAPIC page — refusing",
+        base
+    );
+    use crate::arch::device_window::{device_va_for, device_window_regions};
+    let regions = device_window_regions();
+    device_va_for(regions, 1, 0xFEE0_0000)
+        .expect("LAPIC page inside its own window") as usize
+}
+
 // LAPIC timer register offsets (from the LAPIC base) and the one-shot
 // programming constants (C apic.h/apic.c).
 const LAPIC_TIMER_ICR_OFF: usize = 0x380 / 4;
@@ -67,7 +100,11 @@ impl ClockArch for X86_64ClockArch {
     /// against the TSC and the ratio yields ticks-per-millisecond (valid
     /// on QEMU and real hardware alike — no fixed-frequency guess).
     fn init_local_timer(&mut self, period_ms: u32, tsc_per_ms: u64, _cpu_id: u32) -> u32 {
-        let lapic = self.lapic_base as *mut u32;
+        // PD-22 step 2: the LAPIC MMIO goes through the kernel device
+        // window; this is each AP's first LAPIC access, so the per-CPU
+        // check-and-reject runs here (IA32_APIC_BASE is per-CPU — a
+        // BSP-only check proves nothing for the APs).
+        let lapic = lapic_va_base() as *mut u32;
         unsafe {
             // C apic.c:537-538 — divide configuration first.
             core::ptr::write_volatile(lapic.add(LAPIC_TIMER_DCR_OFF), DCR_DIVIDE_1);
