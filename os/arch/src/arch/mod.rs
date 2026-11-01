@@ -8,6 +8,7 @@ pub mod paging;
 pub mod paging_ext;
 pub mod boot_arch;
 pub mod pt_alloc;
+pub mod device_window;
 pub mod direct_map;
 pub mod boot_dm;
 pub mod frame;
