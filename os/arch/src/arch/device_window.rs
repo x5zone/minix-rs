@@ -36,6 +36,14 @@ pub struct DeviceWindowRegion {
     /// Stable slot index (VA base = cumulative span of lower slots).
     /// Never renumber — drivers bake the resulting VA.
     pub slot: usize,
+    /// Whether this region has bootstrap-phase consumers (controller/timer
+    /// init running under the bootstrap root). Only bootstrap-true regions
+    /// are installed into the bootstrap root (huge leaves only — the
+    /// 4 KiB map() path hangs pre-DM-establishment); ALL regions are
+    /// installed into process roots by `map_kernel` (4 KiB path, live
+    /// allocator). Regions whose consumers arm at runtime (UART0 selftest,
+    /// ACLINT SSWI scheduler IPI) are bootstrap=false.
+    pub bootstrap: bool,
 }
 
 /// Page-round a region size for VA-allocation purposes (PTE coverage is
@@ -111,8 +119,8 @@ const _: () = assert!(
 #[cfg(target_arch = "x86_64")]
 pub const fn device_window_regions() -> &'static [DeviceWindowRegion] {
     &[
-        DeviceWindowRegion { phys_base: 0x0FEC0_0000, size: 0x1000, slot: 0 },
-        DeviceWindowRegion { phys_base: 0x0FEE0_0000, size: 0x1000, slot: 1 },
+        DeviceWindowRegion { phys_base: 0x0FEC0_0000, size: 0x1000, slot: 0, bootstrap: true },
+        DeviceWindowRegion { phys_base: 0x0FEE0_0000, size: 0x1000, slot: 1, bootstrap: true },
     ]
 }
 
@@ -174,11 +182,18 @@ pub const fn device_window_regions() -> &'static [DeviceWindowRegion] {
         // PLIC — full DTB reg length 0x600000 (the former 2 MiB window was
         // proven insufficient: claim(context 1) at offset 0x201004 fell
         // outside it; brief §14.2).
-        DeviceWindowRegion { phys_base: 0x0C00_0000, size: 0x60_0000, slot: 0 },
-        // UART0 page (NS16550A; consumer kernel/src/uart_irq.rs).
-        DeviceWindowRegion { phys_base: 0x1000_0000, size: 0x1000, slot: 1 },
-        // ACLINT SSWI (conditional — DTB-gated at install time).
-        DeviceWindowRegion { phys_base: 0x02F0_0000, size: 0x4000, slot: 2 },
+        DeviceWindowRegion {
+            phys_base: 0x0C00_0000,
+            size: 0x60_0000,
+            slot: 0,
+            bootstrap: true,
+        },
+        // UART0 page (NS16550A; consumer kernel/src/uart_irq.rs) — the RX
+        // selftest arms at runtime, under process roots only.
+        DeviceWindowRegion { phys_base: 0x1000_0000, size: 0x1000, slot: 1, bootstrap: false },
+        // ACLINT SSWI (conditional — DTB-gated at install time); the
+        // scheduler-IPI write happens at runtime, under process roots only.
+        DeviceWindowRegion { phys_base: 0x02F0_0000, size: 0x4000, slot: 2, bootstrap: false },
     ]
 }
 

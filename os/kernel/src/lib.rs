@@ -1064,6 +1064,9 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
             boot_stage!("kernel: step2c device window empty (skip)\n");
         } else {
         for region in regions {
+            if !region.bootstrap {
+                continue; // runtime-only consumer: process roots carry it
+            }
             let va_base = minix_arch::arch::device_window::slot_va_base(regions, region.slot);
             let mut off = 0u64;
             while off < region.size {
