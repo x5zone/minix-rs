@@ -2332,6 +2332,55 @@ fn dispatch_settime(msg: &Message, clock_state: &mut ClockState) -> KcallResult 
 ///
 /// Only system processes (SYS_PROC) may call SYS_VMCTL.
 /// C: implicit — only VM calls this, and VM always has SYS_PROC.
+/// SD-22 H5 — the physical-address gate for the riscv vmdm arms.
+///
+/// `PteRead`/`PteWrite`/`PteZero` are this rewrite's own KDM bypass (C has no
+/// such kernel call); without a bound they let VM read or write **any**
+/// physical address, device MMIO included — the `direct_map(wrong_pa)` hole in
+/// concrete form. The gate accepts only physical RAM the boot handoff
+/// reported: the free memmap, the kernel image, or the firmware's occupied
+/// non-conventional snapshot (`reserved_regions`). MMIO windows deliberately
+/// do **not** qualify: VM's page-table traffic never targets device registers.
+///
+/// `len` is the access width and `align` its required alignment (8 for the u64
+/// arms, 4096 for the page zero-fill). Kept free of globals so the predicate
+/// is host-testable; the arms below feed it the boot state.
+#[allow(dead_code)] // production callers are riscv64-only; host tests cover the predicate.
+fn phys_ram_covers(
+    pa: u64,
+    len: u64,
+    align: u64,
+    memmap: &[minix_boot::MemoryRegion],
+    reserved: &[minix_boot::MemoryRegion],
+    kernel_image: (u64, u64),
+) -> bool {
+    if len == 0 || align == 0 || pa % align != 0 {
+        return false;
+    }
+    let Some(end) = pa.checked_add(len) else {
+        return false;
+    };
+    let covers = |base: u64, length: u64| base <= pa && end <= base.saturating_add(length);
+    memmap.iter().any(|r| covers(r.base.0, r.len as u64))
+        || reserved.iter().any(|r| covers(r.base.0, r.len as u64))
+        || covers(kernel_image.0, kernel_image.1)
+}
+
+/// The boot-reported physical-RAM view, or `None` before the handoff stored it.
+#[cfg(all(target_arch = "riscv64", not(test)))]
+fn phys_ram_view() -> Option<(
+    &'static [minix_boot::MemoryRegion],
+    &'static [minix_boot::MemoryRegion],
+    (u64, u64),
+)> {
+    let kinfo = crate::kernel_info()?;
+    Some((
+        kinfo.memmap(),
+        kinfo.reserved_regions(),
+        (kinfo.kern_phys_base.0, kinfo.kern_size),
+    ))
+}
+
 fn dispatch_vmctl(
     caller_nr: crate::proc::ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -2465,6 +2514,15 @@ fn dispatch_vmctl(
                 const KDM: u64 = 0xFFFF_FFC0_4000_0000;
                 let pa = unsafe { msg.m_u.m_m1.m1p1 } as u64;
                 let val = unsafe { msg.m_u.m_m1.m1p2 } as u64;
+                // H5: VM-only, physical-RAM-only (see `phys_ram_covers`).
+                if caller_nr != crate::proc::proc_nr::VM_PROC_NR {
+                    return KcallResult::Ok(EPERM);
+                }
+                match phys_ram_view() {
+                    Some((memmap, reserved, image))
+                        if phys_ram_covers(pa, 8, 8, memmap, reserved, image) => {}
+                    _ => return KcallResult::Ok(EINVAL),
+                }
                 unsafe { ((KDM + pa) as *mut u64).write_volatile(val) };
                 unsafe { core::arch::asm!("sfence.vma zero, zero") };
                 // Slot-level record of gateway writes on behalf (drained
@@ -2484,6 +2542,15 @@ fn dispatch_vmctl(
             {
                 const KDM: u64 = 0xFFFF_FFC0_4000_0000;
                 let pa = unsafe { msg.m_u.m_m1.m1p1 } as u64;
+                // H5: VM-only, a whole page of physical RAM (see `phys_ram_covers`).
+                if caller_nr != crate::proc::proc_nr::VM_PROC_NR {
+                    return KcallResult::Ok(EPERM);
+                }
+                match phys_ram_view() {
+                    Some((memmap, reserved, image))
+                        if phys_ram_covers(pa, 4096, 4096, memmap, reserved, image) => {}
+                    _ => return KcallResult::Ok(EINVAL),
+                }
                 for i in 0..512u64 {
                     unsafe { ((KDM + pa + i * 8) as *mut u64).write_volatile(0) };
                 }
@@ -2501,6 +2568,15 @@ fn dispatch_vmctl(
             {
                 const KDM: u64 = 0xFFFF_FFC0_4000_0000;
                 let pa = unsafe { msg.m_u.m_m1.m1p1 } as u64;
+                // H5: VM-only, physical-RAM-only (see `phys_ram_covers`).
+                if caller_nr != crate::proc::proc_nr::VM_PROC_NR {
+                    return KcallResult::Ok(EPERM);
+                }
+                match phys_ram_view() {
+                    Some((memmap, reserved, image))
+                        if phys_ram_covers(pa, 8, 8, memmap, reserved, image) => {}
+                    _ => return KcallResult::Ok(EINVAL),
+                }
                 let v = unsafe { ((KDM + pa) as *const u64).read_volatile() };
                 unsafe { msg.m_u.m_m1.m1p1 = v; };
                 KcallResult::Ok(0)
@@ -3865,6 +3941,85 @@ pub fn kernel_call_resume(
         .p_misc_flags
         .clear(MiscFlagsBits::KCALL_RESUME);
     kernel_call_finish(caller_nr, proc_table, &msg_copy, result, priv_table);
+}
+
+#[cfg(test)]
+mod phys_ram_gate_tests {
+    //! SD-22 H5 predicate tests (host): the riscv vmdm arms themselves are
+    //! production-only, so the bound is pinned through `phys_ram_covers`.
+
+    use super::phys_ram_covers;
+    use minix_boot::MemoryRegion;
+    use minix_types::PhysBytes;
+
+    fn region(base: u64, len: usize) -> MemoryRegion {
+        MemoryRegion {
+            base: PhysBytes(base),
+            len,
+        }
+    }
+
+    const MEM: [MemoryRegion; 2] = [
+        MemoryRegion {
+            base: PhysBytes(0x4000_0000),
+            len: 0x0800_0000,
+        },
+        MemoryRegion {
+            base: PhysBytes(0x5000_0000),
+            len: 0x0100_0000,
+        },
+    ];
+    const RES: [MemoryRegion; 1] = [MemoryRegion {
+        base: PhysBytes(0x1da0_0000),
+        len: 0x0100_0000,
+    }];
+    const IMAGE: (u64, u64) = (0x4020_0000, 0x0200_0000);
+
+    #[test]
+    fn a_u64_slot_inside_free_ram_passes() {
+        assert!(phys_ram_covers(0x4000_1000, 8, 8, &MEM, &RES, IMAGE));
+        assert!(phys_ram_covers(0x4000_1008, 8, 8, &MEM, &RES, IMAGE));
+        assert!(phys_ram_covers(0x47ff_fff8, 8, 8, &MEM, &RES, IMAGE));
+        let _ = &[region(0, 0)];
+    }
+
+    #[test]
+    fn reserved_and_kernel_image_regions_qualify() {
+        assert!(phys_ram_covers(0x1da0_0010, 8, 8, &MEM, &RES, IMAGE));
+        assert!(phys_ram_covers(0x4020_0010, 8, 8, &MEM, &RES, IMAGE));
+    }
+
+    #[test]
+    fn gaps_far_off_ram_and_mmio_are_refused() {
+        // Between the two free regions.
+        assert!(!phys_ram_covers(0x4800_0000, 8, 8, &MEM, &RES, IMAGE));
+        // Past the top of RAM (the QEMU virt PLIC window is at 0x0c00_0000).
+        assert!(!phys_ram_covers(0x0c00_0000, 8, 8, &MEM, &RES, IMAGE));
+        // Straddles the end of a region: start inside, end outside.
+        assert!(!phys_ram_covers(0x47ff_fffc, 8, 8, &MEM, &RES, IMAGE));
+        // Non-canonical / overflowing address.
+        assert!(!phys_ram_covers(u64::MAX - 7, 8, 8, &MEM, &RES, IMAGE));
+    }
+
+    #[test]
+    fn alignment_width_and_zero_length_are_enforced() {
+        // Misaligned u64 slot.
+        assert!(!phys_ram_covers(0x4000_1004, 8, 8, &MEM, &RES, IMAGE));
+        // Page zero-fill needs a page-aligned page-sized run.
+        assert!(phys_ram_covers(0x4000_1000, 4096, 4096, &MEM, &RES, IMAGE));
+        assert!(!phys_ram_covers(
+            0x4000_1000 + 8,
+            4096,
+            4096,
+            &MEM,
+            &RES,
+            IMAGE
+        ));
+        // A page that runs past the region end is refused even when aligned.
+        assert!(!phys_ram_covers(0x47ff_f800, 4096, 4096, &MEM, &RES, IMAGE));
+        // Length zero never qualifies.
+        assert!(!phys_ram_covers(0x4000_1000, 0, 8, &MEM, &RES, IMAGE));
+    }
 }
 
 #[cfg(test)]

@@ -3663,6 +3663,29 @@ protocol stack behind the Stack trait]`）。
 **本草案不改码**：静待裁决后才动承载面，且实施时按 `[ARCH]` 三处一致标注（本篇、设计快照、
 `main.rs`/`vm_server.rs` 注解）。
 
+### 第二百零八笔（C 板·内核优先 · SD-22 H5：riscv vmdm 的 `PteRead/Write/Zero` 从「任意物理地址」收到「调用者==VM + 物理 RAM」，H5 闭）
+
+**这笔修的是内核侧一个无界物理读写面**：`PteRead`/`PteWrite`/`PteZero` 是本重写自造的 KDM 旁路
+（C 没有这三号调用），此前把 `pa` 原样加进 `KDM` 基址就直接读写——VM 传什么就碰什么，设备 MMIO
+也不例外，正是登记里说的 `direct_map(wrong_pa)` 洞的具象形（SD-22 H5 / SD-36）。
+
+**修法**（`os/kernel/src/syscall.rs`）：三个 riscv 手臂各加双重闸——
+1. **调用者必须 == `VM_PROC_NR`**（这条旁路按契约就是 VM 专用；C 侧「只有 VM 会调」是隐式的，
+   这里落成显式判据），否则 `EPERM`；
+2. **`phys_ram_covers(pa, len, align)`**：`pa..pa+len` 必须整段落进 boot 上报的物理 RAM——
+   空闲 memmap ∪ 内核镜像 `[kern_phys_base, +kern_size)` ∪ 固件非约定快照 `reserved_regions`
+   （模块 blob、UEFI 堆对象都在后者），**MMIO 窗按构造排除**（VM 的页表流量从不指向设备寄存器）；
+   同时校验该手臂的对齐与宽度：u64 手臂 8 字节、整页零填 4 KiB；越界/错位/长度为零答 `EINVAL`。
+
+谓词做成不吃全局的自由函数（`phys_ram_covers`，手臂侧用 `phys_ram_view()` 喂 boot 状态），
+**宿主可测**——这正是「生产手臂是 riscv-only、宿主跑不到」时的正确缝。
+
+**读数**：kernel mock（`--features mock`）**5 段 / 860 / 0**，新增 4 枚
+`syscall::phys_ram_gate_tests`（空闲区/u64 槽、reserved 与内核镜像区、缝隙/MMIO 地址/跨区尾/
+溢出地址、错位与零长度）；三架构 `cargo check -p minix-kernel` 各 0 error（riscv64 编过新闸）；
+`rustfmt --check syscall.rs` 与 HEAD 基线同为 111 处（本笔新增 0 处）。登记侧：SD-22 的 H5 残量
+与 SD-36 的「until then」句都改成已落并指向读数；台账对应行同步。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
