@@ -44,7 +44,7 @@ EXECUTION-LOG §2.5 曾发现形如 `Bash(rg "...*" notes/rewrite/...)` 的中�
 
 - 缘起：人审 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 第 1 章时连出 8 处修正（过渡句方向反、引言塞细节、残句、压缩简写、恒等与高半映射讲不清、跨篇重复取证、带圈数字渲染不清、引用标签含糊），**其中没有一处是被工具挡下的**，全部靠人读出来；而形式类噪声（工单号、日期、坐标噪声）早就有 SL-1～SL-11 挡着。结论：规则文本不缺，缺的是把"读者视角"变成可执行装置。
 - 规则已有、无机器判据（本轮实测）：`prompt/skill/cmds/style-bible/SKILL.md` 第 57 行明令禁"压缩简写"，而"清单又越过它直接供给建表那一步"这类句子 `doc-style-lint.sh` 零次报警（判据：该句改成"页表本身也住在内存里，它要的页只能从清单的可用区间里拿"才读得通）。
-- 规则真空（需先写规则再谈门）：① 引号风格与本文件主导风格不一致——本轮 agent 三次引入弯引号，门全绿（`grep -o '“' 该文档 | wc -l` 修前 15、修后 0，`git show HEAD:` 同文件为 0，即全属新引入）；② 含糊尾巴"及邻近字段/相关部分"；③ 跨篇共享取证链的判据归属（本轮 01 篇 §1.4 与 02 篇 §2.4 曾互标"这条依据链与本处同一条"，导致一头把四步证据压成一句嵌套长句）；④ "预判读者会卡在哪"——本台账所在的规则库里仍无这一条，而本轮人审又两次撞上它（改完的段落 agent 自评估得通，人一读仍卡）。候选落地形态已记在下一条（复述测试产物形态强制、新手问题预演）；这两条最早出自第一轮多模型分头评审的共识，但那份评审稿尚未纳入版本库，所以此处不写文件路径——等那批评审文件入库后再补上精确出处。
+- 规则真空（需先写规则再谈门）：① 引号风格与本文件主导风格不一致——本轮 agent 三次引入弯引号，门全绿（`grep -o '“' 该文档 | wc -l` 修前 15、修后 0，`git show HEAD:` 同文件为 0，即全属新引入）；② 含糊尾巴"及邻近字段/相关部分"；③ 跨篇共享取证链的判据归属（本轮 01 篇 §1.4 与 02 篇 §2.4 曾互标"这条依据链与本处同一条"，导致一头把四步证据压成一句嵌套长句）；④ "预判读者会卡在哪"——本台账所在的规则库里仍无这一条，而本轮人审又两次撞上它（改完的段落 agent 自评估得通，人一读仍卡）。候选落地形态已记在下一条（复述测试产物形态强制、新手问题预演）；这两条最早出自第一轮多模型分头评审的共识，出处已回填（2026-10-28；该批评审稿未入库、同日删档）：「复述测试产物形态强制」出自 doc-optim-glm 提案 C（structure.md §11 必须含一段实际复述文字与卡点标注，一行「换名仍可读」的结论不算产物）与 doc-optim-ds T-6（复述从「能说出」升级为「能产出」）；「新手问题预演」出自 doc-optim-glm 提案 C.2（列出目标读者读完会问的 5 个问题逐个查作答，拟挂 structure.md 第 13 节）。引文摘录见 `prompt/WORKFLOW-ADVICE-ARCHIVE.md` §一/§3.2。
 - 候选三条（按成本递增，均需走 `prompt/README.md` 三端同步与四道派生门）：一、`doc-style-lint.sh` 增两条机械判据（引号主导风格一致性、含糊尾巴禁用），self-test 补正反例，当天可上；二、把 structure.md §11 的"整段复述 + 卡点清单"从产物要求升级为 Blocker Gate（缺则 FAIL），治的是"同一个 agent 自认为读得通"这一根本盲区，与 AGENTS.md 已记载的"VERIFY-CHECK 同 agent 局限"同源；三、定向吸收外部成熟条目进模式库（Diátaxis 象限纯度治"引言塞细节"、Google/Microsoft 开发者文档风格指南的句长与示例可复制条目、Strunk & White"一句一义"治压缩长句），必须写明与本项目"教学性必须展开"的适用边界。
 - 本轮裁决承接：先只登记本条，不动规则源与工具；存量文档暂不扫，只防新增（见第三节 R5）。本轮已落地的两件与此相关：01 篇新增 §1.3「把第一章收成五句话」（各篇第一章末节固定为范围表，故骨架小结插在其前）；02 篇 §2.4 与 01 篇 §1.4 的互指改为单向（判据只在 owning 篇给全，他篇只引结论）。
 
@@ -141,7 +141,7 @@ EXECUTION-LOG §2.5 曾发现形如 `Bash(rg "...*" notes/rewrite/...)` 的中�
 （现 7.1 顺延为 7.5，表体不动）
 ```
 
-头部结果：第 3–4 行整行删除，引用块从现有的 `> **路径约定**` 起。
+头部结果：第 3–4 行整行删除，引用块从现有的指针行（`> 路径与标注约定…`——I-21 上收后篇头约定块已由 rewrite-notes/README.md 全局承担）起。
 
 1. **小标题选型实测**（`grep -rE '<候选>' rewrite-notes/ prompt/ --include=*.md` 的命中行数）：`关联Rust源码列举` 0、`关联C源码` 0、`关联.*源码.*清单` 0——三个候选键都干净；`源码清单` 19 行/16 篇（太泛，不适合当键）；`关联代码清单` 是 `doc-code-map.sh` 自己输出段的段名（prompt 命中 27 行），**不复用**，否则工具产物与文档小节同名。定名取「关联 C 源码清单」/「关联 Rust 源码清单」：按 W-9 的中文惯用法口径用"清单"不用"列举"。
 2. **写法硬约束（会把门判红的一条）**：§7 下的小节层级**必须是 `###`，不得升 `##`**。`doc-code-density-check.sh` 只按 `^## ` 切章、并按章标题词表 `测试|参见|附录|概述|概念|目录|术语|导航|小结|导览|速查|总览|全景` 排除非承载章；「关联 Rust 源码清单」不含任一排除词，一旦升为 `##` 就会被当承载章并要求贴节选码，`--check` 下判 P1。预演实测：目标形态下仍报 `7. 参见 … 非承载章型(报告)` 且"✅ 承载门阻断项通过（4 个可判章均有码/命令）"。
@@ -190,7 +190,7 @@ P6（禁用）  [`lin_lin_copy`](minix3/…/memory.c)
   - 因此定名按"改到库内既成事实"而非"引入新词"：`逐字引用` → **`代码引用`**（需改题注 94 处）；**`节选` 原样保留**（47 处一行不动）；`教学简化` → **`有改写`**（它与 `节选` 的区分是"删了没改" vs "改了"，不可合并）；`签名示意` 保留；`未删节` 退回附注角色（R5① 本来就允许"未删节或起止符号"作措辞级补充），不升为标签。全文口径的波及面仍须一并扫：`逐字引用` 共 539 行 / 32 篇（题注外还有叙述用法，改名逐处要读句子判语义）。
   - **`反面示例` 采 C 方案（改名 + 写清边界），不摘除**：定义职责很具体（`review-doc-checklist.md:651`："教"为什么不要这样写"｜必须标 ❌ 并给出正确版本"），且它确实在同一根轴上——保真度问的是"这块码能不能跟源文件 diff"，它的答案是"不能，因为它不存在于源文件"。零使用的真相是职责被**反事实散文**（W-8 那套：`把这三个数字改成由调用者传入会怎样`）接管了，正文 16 行"反例"全是名词用法而非题注标签。所以改名 `反例（勿这样写）` 并补一句边界：**"仅用于代码并非仓库真实片段的块；反事实论证走 W-8，不用此标签"**——不写边界迟早有人在散文上错贴该标签，再被 `checks/doc.md:421` 的"分类缺失 → P2"误伤。（选 C 而非 B 的额外理由：四分类里摘掉一类后，真出现虚构反面代码块时题注无词可用，而"必须标 ❌ 并给正确版本"这条约束会无处挂靠。）
   - 关键事实（决定这是**词汇层改动而非契约破坏**）：**没有任何工具把标签字串当匹配关键字**——`grep -rn 逐字引用 tools/` 只命中 `tools/doc-snippet-extract.sh:5` 的注释；`doc-ref-check.sh` 对账的是章节引用 `§N.M`；`doc-code-density-check.sh` 的承载判据是 `^> ` 加 `.c:`/`.rs:`，均不看标签词。
-  - 定义处共 **16 个文件**（`grep -rl 逐字引用 prompt/ tools/ .claude/ .codex/ .trae/ .agents/ AGENTS.md`）：规范源 `prompt/review-rules/review-doc-checklist.md`、`review-patterns.md`、`prompt/skill/review-patterns-skill.md`、`prompt/skill/review-scan/checks/{doc,patterns}.md`、`prompt/DOC-ITER-WORKFLOW.md`、`tools/doc-snippet-extract.sh`；派生端 `.claude/skills/review-scan/checks/{doc,patterns}.md`、`.codex/skills/review-patterns-skill/SKILL.md`、`.codex/skills/review-scan/checks/{doc,patterns}.md`、`.trae/skills/review-patterns-skill/SKILL.md`。历史取证文件（`prompt/REVIEW-TRACE-*`、`prompt/doc-optim-*.md`）与 R5 裁决行**不改字**（存档），只在旁加注新旧词映射。
+  - 定义处共 **16 个文件**（`grep -rl 逐字引用 prompt/ tools/ .claude/ .codex/ .trae/ .agents/ AGENTS.md`）：规范源 `prompt/review-rules/review-doc-checklist.md`、`review-patterns.md`、`prompt/skill/review-patterns-skill.md`、`prompt/skill/review-scan/checks/{doc,patterns}.md`、`prompt/DOC-ITER-WORKFLOW.md`、`tools/doc-snippet-extract.sh`；派生端 `.claude/skills/review-scan/checks/{doc,patterns}.md`、`.codex/skills/review-patterns-skill/SKILL.md`、`.codex/skills/review-scan/checks/{doc,patterns}.md`、`.trae/skills/review-patterns-skill/SKILL.md`。历史取证文件（`prompt/REVIEW-TRACE-*`、`prompt/doc-optim-*.md`）与 R5 裁决行**不改字**（存档），只在旁加注新旧词映射。**（2026-10-28 更新：该批历史取证文件已整体删档——已入库的 12 份 git 历史可查，未入库的 13 份以摘录收口于 `prompt/WORKFLOW-ADVICE-ARCHIVE.md`；「旁加注」义务就此终止。）**
 - 落地顺序（沿用 W-10 的纪律，不能反）：① **先改两处工具**——`notes-link-check.py`（剥目标尾部 `:symbol` 再解析）与 `doc-code-map.sh`（token 抽取同时认 `](os/**.rs)` 链接目标，与 W-10 的簇边界修复并成一笔）；两者各补 self-test（正例：剥后命中真文件、链接目标里的 `.rs` 能进清单；负例：真断链仍须报 BROKEN、目录簇不得被当文件）。② 同步规范源与派生端共 16 个定义处（标签改名）+ 锚点写法条款入 `review-doc-checklist.md` 与 `DOC-ITER-WORKFLOW.md` 的锚点纪律门，跟四道派生门；③ 文档侧按 W-1 的"增量阻断 + 存量报告"逐篇迁（现测规模：01 篇正文 184 条、全 stage 正式篇约 1700 条：01 184、06 183、08 177、05 154、04 122、09 117、03 116、10 115、13 112、11 109、02 80、12 83、07 75、14 54），随 01/02/03 串行迭代推进；**行号坐标（259 处）单列不参与**。**每篇迁完必复跑 `anchor-resolve --check` 与 `doc-code-map.sh --check` 两个门并对账条数**：前者条数降即 P6 型静默丢锚，后者条数降就是纯路径链接化把关联代码清单打漏——不接受"门绿了"当交付。④ **标签改名、锚点改形、工具改动分三笔提交**：各自的 diff 要能独立回滚，混在一笔里 reviewer 无法分辨哪一半出问题。
 - 本轮未做：不动 `notes-link-check.py`、不动 `doc-code-map.sh`、不动 `anchor-resolve.sh`、不动 16 个定义处、不动任何正式文档。
 
@@ -280,6 +280,12 @@ P6（禁用）  [`lin_lin_copy`](minix3/…/memory.c)
 - 与既有条目的关系：W-1 治「锚点过密」（移出正文），W-11/R6 立「受众分层」（坐标归审查、讲解归读者），本条立「证据形态分层」——三者同属「正文为读者服务」的降噪族，但对象不同：本条不否定命令锚点本身，只判**哪一档的断言配得上正文里的命令**。agent 复查留痕的 designated home 仍是 `.review/` 的 scan/SYMBOLS 产物，正文命令的第一受益人必须是读者，agent 顺手是副产物。
 - 已做：01 篇 L1448 按档 ① 修（awk 命令撤除，改为指向邻接结构体代码块）。未做：存量不扫；若后续篇目复审中同类处现身，按本条判据顺手处理并回填实例。
 
+### W-15 工作流优化历史批次（2026-10-08~20）删档承接：增量收口于 WORKFLOW-ADVICE-ARCHIVE.md（状态 登记 2026-10-28，待 triage）
+
+- 缘起：`prompt/` 下 25 份历史评审/建议/取证文件（doc-optim-* 6 份、doc-commit-review-* 8 份、REVIEW-TRACE-* 8 份、GPT_advice、GPT_doc_advice、subagent-optim-advice）逐文件对账后确认：可执行内容已由规范源与工具落地，或被后续轮次有意降档/supersede；用户 2026-10-28 拍板删档。12 份曾入库（git 历史可查全文），13 份从未入库（增量以摘录收口）。逐文件判定表见 `prompt/WORKFLOW-ADVICE-ARCHIVE.md` §一。
+- 承接：全部未吸收增量（判据与方法论摘录、审计遗留三分类「已修/仍开放/有意不做」、取证欠账指针、两项悬置用户裁决）收口于该文档 §2~§4；本台账 W-6 出处回填、F-A 与 §四 的出处注及 F 系收口同日完成。
+- 待办：该文档 §3.2/§4.3 的开放项（density 存量 `--baseline` 口径、~15 项 teaching devices 三角账、doc-ref-check 接入与剩余局限、两项用户裁决等）需逐条 triage——并入本台账各 W 条、裁决关闭、或显式弃置；**§2.3 对抗性冷审协议**（原 subagent-optim-advice，整体未吸收且原件未入库）单列一项裁决——是否把它落成 DOC-ITER-WORKFLOW 外部评审（V5/§八）的执行约束（零附加输入/异构/对抗框架/裁决不回父上下文/改后重新冷启动），或显式弃置。完成后本条闭环、该文档降为纯存档。
+
 ## 二、被活规则引用、必须留存的格式/纪律定义
 
 ### F-A `gate-evidence-*` 统一格式（原 todo_plan 0.5；`review-process.md` Step 3.6 指向本定义）
@@ -296,7 +302,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 ```
 
 约定：type ∈ {0, A, B, C, D, D-6, E, G, H, code, unsafe, qemu, test, dep, ...}；同一 review 内同一 type 只写一个块；`command` 必须可重放原文。
-另注意 Gate 0 的 9 个锚段精确段名硬编码在 `tools/verify-check.py:GATE0_ANCHORS`（`## Skill Invocation Log`、`## Blocker Gates Status`、`## Step 0: 预检结果`、`## Step 1: C Source Ground Truth Lookup`、`## Step 1.5: Coverage Enumeration`、`## Step 2: Diff Extraction`、`## Step 3.5: Precision Check`、`## Issue List`、`## Artifact Inventory`），scan.md 命名须与其一致（见 REVIEW-TRACE-pm-09-fullrun.md F-2）。
+另注意 Gate 0 的 9 个锚段精确段名硬编码在 `tools/verify-check.py:GATE0_ANCHORS`（`## Skill Invocation Log`、`## Blocker Gates Status`、`## Step 0: 预检结果`、`## Step 1: C Source Ground Truth Lookup`、`## Step 1.5: Coverage Enumeration`、`## Step 2: Diff Extraction`、`## Step 3.5: Precision Check`、`## Issue List`、`## Artifact Inventory`），scan.md 命名须与其一致（出处：REVIEW-TRACE-pm-09-fullrun.md F-2；该文件 2026-10-28 删档，git 历史可查）。
 
 ### F-B 模式库三副本同步纪律（原 EXECUTION-LOG §7；patterns.md 两处指向本定义）
 
@@ -328,7 +334,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 
 ## 四、review 流程实证检验索引（本台账的"过程正常完备且正确"证据链）
 
-- 第一轮：`prompt/REVIEW-TRACE-vfs-08-dryrun.md`（vfs/08 干跑，流程侧修复 F5-F8 的来源）。
-- 第二轮：`prompt/REVIEW-TRACE-pm-09-fullrun.md`（pm/09 全量实跑，含 Gate A 工具阻断→修复→重跑、Gate G 机检 FAIL→重组→跨 session 独立验证 7/7 的完整轨迹；流程空档 F-1~F-8 待据此修订规范源）。
+- 第一轮：`prompt/REVIEW-TRACE-vfs-08-dryrun.md`（vfs/08 干跑，流程侧修复 F5-F8 的来源；文件 2026-10-28 删档，git 历史可查，登记未做项的承接见 `prompt/WORKFLOW-ADVICE-ARCHIVE.md` §4）。
+- 第二轮：`prompt/REVIEW-TRACE-pm-09-fullrun.md`（pm/09 全量实跑，含 Gate A 工具阻断→修复→重跑、Gate G 机检 FAIL→重组→跨 session 独立验证 7/7 的完整轨迹；流程空档 F-1~F-8 待据此修订规范源。**2026-10-28 复核收口**：F-1（AGENTS.md 入口句）、F-2（九锚段名，已入上文 F-A）、F-3（模板措辞，review-process.md 现存量 0 命中）、F-8（stage 语义）已落地；F-4 由 Step 5.6「跨 agent 首选、同 agent 须重放命令＋标注局限」承担；F-6 由 `tools/anchor-suspect-scan.py` 与其基线文件承担；F-5 由 `rules-consistency.yml` 的 CI 常驻自测承担（fix-guard 未另加第 6 条文本）；F-7 由三端派生技能生成机制架构性解决。该文件同日删档，git 历史可查）。
 - 第三轮：01 篇 CH1-CH2 人工审阅（2026-10-12；本轮无独立 REVIEW-TRACE 文件，过程记录就在本台账的 W-6、W-7 与 R5，正文改动落在 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`、`02-higher-half-kernel.md` 与 `rewrite-notes/08-stage-is/04-is-data-acquisition.md`）。本轮的特征是：**八处"读不懂 / 讲不通"全部由人发现，工具零拦截**——这就是 W-6 要补执行装置的依据。
-- 前两轮均收敛；F-2/F-3/F-4/F-5 四条建议改规范源时，按 `prompt/README.md` 三端同步流程执行。
+- 前两轮均收敛；F-2/F-3/F-4/F-5 四条建议改规范源时，按 `prompt/README.md` 三端同步流程执行。（2026-10-28：F 系空档状态已逐条复核收口，见上第二轮行末注。）
