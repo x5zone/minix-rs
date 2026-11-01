@@ -724,16 +724,16 @@ pub fn map_kernel<P: Paging>(
     // 0x1daf0d9d). The kernel's own bootstrap root (its low 4 GiB identity
     // mapping, coarse RWX leaves) is outside this function's scope and
     // persists for the bootstrap root's lifetime — see the promise scope.
-    let ident_flags = PageFlags::kernel_executable_writable();
-    for region in ident_regions {
-        debug_assert!(region.base % page_size == 0 && region.size % page_size == 0);
-        let mut pa = region.base;
-        let end = pa + region.size;
-        while pa < end {
-            pt.map(VirBytes(pa), PhysBytes(pa), ident_flags)?;
-            pa += page_size;
-        }
-    }
+    // PD-22 step 2 final: the identity replay is RETIRED. The handoff
+    // must carry no windows (the kernel writes an empty list; the VM
+    // conversion rejects a non-empty field), and this fail-fast is the
+    // last line of defense — a non-empty list here would silently
+    // re-introduce VA=PA mappings into every process root.
+    assert!(
+        ident_regions.is_empty(),
+        "identity windows retired by PD-22 step 2 — non-empty replay \
+         list refused (strong form: VA=PA must not exist)"
+    );
 
     // Segment 5: the kernel device window (PD-22 step 2 — the successor of
     // segment 4). Every MMIO region from the device description is mapped
@@ -1268,24 +1268,22 @@ pub mod mock {
                 MOCK_KERNEL_DATA_PAGES,
                 MOCK_DM_VBASE,
                 MOCK_DM_SENTINEL_PAGES,
-                // Segment 4: one two-page identity window.
-                &[
-                    minix_types::HandoffMemRegion {
-                        base: 0x1da0_0000,
-                        size: 2 * PAGE_SIZE_CONST,
-                    },
-                ],
+                // Segment 4: RETIRED (PD-22 step 2) — must be empty.
+                &[],
             ).unwrap();
 
-            // Segment 4: identity windows are mapped VA == PA, supervisor
-            // RWX (EXECUTABLE required — OVMF boots with EFER.NXE).
-            for i in 0..2u64 {
-                let addr = VirBytes(0x1da0_0000 + i * PAGE_SIZE_CONST);
-                let (paddr, flags) = pt
-                    .query(addr)
-                    .expect("identity window page must be mapped");
-                assert_eq!(paddr, PhysBytes(0x1da0_0000 + i * PAGE_SIZE_CONST));
-                assert_eq!(flags, PageFlags::kernel_executable_writable());
+            // Segment 4 strong-form scan: no VA=PA mapping may exist for
+            // any device-window physical page (the former identity
+            // replay) — query each region's pages and refuse.
+            for region in crate::arch::device_window::device_window_regions() {
+                let mut pa = region.phys_base;
+                while pa < region.phys_base + region.size {
+                    assert!(
+                        pt.query(VirBytes(pa)).is_none(),
+                        "identity mapping survived retirement at PA {pa:#x}"
+                    );
+                    pa += PAGE_SIZE_CONST;
+                }
             }
 
             // Segment 1: Kernel code segment (8 pages at MOCK_KERNEL_TEXT_VBASE)
