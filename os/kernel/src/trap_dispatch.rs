@@ -545,6 +545,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_hex(frame.rsp);
             Console::write_str(" ss ");
             Console::write_hex(frame.ss);
+            let cr2: u64;
+            unsafe {
+                core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem));
+            }
+            Console::write_str(" cr2 ");
+            Console::write_hex(cr2);
             Console::write_str("\n");
             #[cfg(not(feature = "mock"))]
             panic!(

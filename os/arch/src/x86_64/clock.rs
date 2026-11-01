@@ -147,7 +147,10 @@ impl ClockArch for X86_64ClockArch {
     /// apic.c:578 `lapic_set_timer_one_shot(1000000 / system_hz)` inside
     /// the tick handler).
     fn write_local_timer_icr(&mut self, icr: u32) {
-        let lapic = self.lapic_base as *mut u32;
+        // PD-22 step 2: LAPIC MMIO via the kernel device window (PA on
+        // carriers with a hand-rolled root — the window-live gate inside
+        // lapic_va_base picks per active root).
+        let lapic = lapic_va_base() as *mut u32;
         // SAFETY: LAPIC MMIO register write on the current CPU.
         unsafe {
             core::ptr::write_volatile(lapic.add(LAPIC_TIMER_ICR_OFF), icr);
@@ -157,7 +160,7 @@ impl ClockArch for X86_64ClockArch {
     /// LAPIC EOI for the local tick (the local timer's completion —
     /// there is no hook-chain `complete` on this path).
     fn local_timer_eoi(&mut self) {
-        let lapic = self.lapic_base as *mut u32;
+        let lapic = lapic_va_base() as *mut u32;
         // SAFETY: LAPIC MMIO register write on the current CPU.
         unsafe {
             core::ptr::write_volatile(lapic.add(0xB0 / 4), 0);
@@ -228,7 +231,7 @@ impl ClockArch for X86_64ClockArch {
         // its own LAPIC there), so `cpu_id` is not needed.
         //
         // C: smp.c:56-61 — `lapic_stop_timer()` (inline in smp_ipi_halt_handler)
-        let lapic_base = self.lapic_base as *mut u32;
+        let lapic_base = lapic_va_base() as *mut u32;
         unsafe {
             // LVT Timer Register (offset 0x320): set Mask bit (bit 16)
             let lvt_timer = lapic_base.add(0x320 / 4);
@@ -241,7 +244,7 @@ impl ClockArch for X86_64ClockArch {
         // `stop_local_timer` set LVT.Mask; clear exactly that bit (the
         // one-shot vector and mode bits stay as init wrote them) and reload
         // the calibrated count. Both writes are per-CPU LAPIC MMIO.
-        let lapic_base = self.lapic_base as *mut u32;
+        let lapic_base = lapic_va_base() as *mut u32;
         unsafe {
             let lvt_timer = lapic_base.add(0x320 / 4);
             let v = core::ptr::read_volatile(lvt_timer);
