@@ -341,26 +341,6 @@ fn tf_guard_verify(frame: &Riscv64TrapFrame) {
 /// built on the interrupted kernel stack.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn riscv64_kernel_trap_dispatch(frame: &mut Riscv64TrapFrame) {
-    // PD22S2H diag: SEI-leg entry marker (SBI ecall, MMIO-free). The scause
-    // bit 63 set + code 9 = supervisor external interrupt.
-    {
-        let sc: usize;
-        core::arch::asm!("csrr {}, scause", out(reg) sc, options(nomem));
-        if sc & (1usize << 63) != 0 && (sc & !(1usize << 63)) == 9 {
-            core::arch::asm!(
-                "li a7, 1",
-                "li a6, 0",
-                "li a0, 0x5b", // '['
-                "ecall",
-                "li a0, 0x53", // 'S'
-                "ecall",
-                "li a0, 0x5d", // ']'
-                "ecall",
-                out("a7") _, out("a6") _, out("a0") _,
-                options(nomem, nostack),
-            );
-        }
-    }
     let f = KERNEL_DISPATCH.load(Ordering::Acquire);
     assert!(
         !f.is_null(),

@@ -243,7 +243,13 @@ impl Riscv64InterruptController {
     /// [`Self::new`], so `plic_base` and the window describe the same
     /// device.
     fn plic_va(&self, offset: usize) -> usize {
-        self.plic_va_base + offset
+        match self.plic_va_base.checked_add(offset) {
+            Some(v) => v,
+            None => panic!(
+                "plic_va overflow: base={:#x} offset={:#x} context={:#x} nr_irqs={:#x}",
+                self.plic_va_base, offset, self.context, self.nr_irqs
+            ),
+        }
     }
 
     /// Claim read for an explicit S-mode PLIC context (per-hart: context =
@@ -255,7 +261,7 @@ impl Riscv64InterruptController {
         // the kernel device window; the read claims the interrupt and
         // returns its ID (0 = nothing pending).
         unsafe {
-            let id = self.plic_read32(self.plic_va(Self::claim_offset(context)));
+            let id = self.plic_read32(Self::claim_offset(context));
             (id != 0).then_some(id)
         }
     }
@@ -269,7 +275,7 @@ impl Riscv64InterruptController {
         // SAFETY: write the claimed ID to the context's complete register
         // through the kernel device window (write = complete).
         unsafe {
-            self.plic_write32(self.plic_va(PLIC_COMPLETE + context * 0x1000), id);
+            self.plic_write32(PLIC_COMPLETE + context * 0x1000, id);
         }
     }
 

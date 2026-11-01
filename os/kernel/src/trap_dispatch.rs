@@ -1425,22 +1425,7 @@ fn riscv64_read_stval() -> u64 {
 /// resumes via `sret` when this returns.
 #[cfg(target_arch = "riscv64")]
 pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
-    // PD22S2H diag: body-entry trace via the SBI ecall console (MMIO-free).
-    minix_plat::riscv64::early_console::write_str("  [body-diag] enter\n");
     let scause = riscv64_read_scause();
-    {
-        let sc = scause & !RISCV64_SCAUSE_INTERRUPT;
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut hexb = [0u8; 16];
-        let mut v = sc;
-        for i in (0..16).rev() {
-            hexb[i] = HEX[(v & 0xf) as usize];
-            v >>= 4;
-        }
-        minix_plat::riscv64::early_console::write_str("  [body-diag] scause=");
-        minix_plat::riscv64::early_console::write_str(core::str::from_utf8(&hexb).unwrap_or("?"));
-        minix_plat::riscv64::early_console::write_str("\n");
-    }
     if scause & RISCV64_SCAUSE_INTERRUPT != 0
         && scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_TIMER
     {
@@ -2493,8 +2478,6 @@ fn riscv64_diag_panic(
     Console::write_hex(sp as u64);
     // PD22S2H diag: the SEI leg's last derived PLIC context — visible even
     // when the LOOP-pulsed console deafened the earlier prints.
-    Console::write_str(" seictx=");
-    Console::write_hex(crate::irq_manager::last_sei_ctx() as u64);
     // User-origin forensics: the caller chain lives in the saved GPRs —
     // ra is the first thing to resolve against the module's own symbols
     // (a wild store inside a library loop, e.g. memset, points back at the

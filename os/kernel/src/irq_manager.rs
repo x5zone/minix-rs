@@ -303,6 +303,18 @@ fn s_mode_context_for_current_cpu() -> usize {
 pub static LAST_SEI_CTX: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
+/// PD22S2H diag: the device-window VA injected into the PLIC driver at
+/// init (kernel-side record — diagnostics read it on the fault path).
+#[cfg(target_arch = "riscv64")]
+pub static INJECTED_PLIC_VA: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// PD22S2H diag: record the injected base (called from init_clock).
+#[cfg(target_arch = "riscv64")]
+pub fn set_injected_plic_va(va: usize) {
+    INJECTED_PLIC_VA.store(va, core::sync::atomic::Ordering::Relaxed);
+}
+
 /// PD22S2H diag accessor.
 #[cfg(target_arch = "riscv64")]
 pub fn last_sei_ctx() -> usize {
@@ -319,19 +331,6 @@ pub fn claim_hardware_irq() -> Option<u32> {
     let claimed = {
         let ctx = s_mode_context_for_current_cpu();
         LAST_SEI_CTX.store(ctx, core::sync::atomic::Ordering::Relaxed);
-        minix_plat::riscv64::early_console::write_str("  [sei-diag] enter ctx=");
-        let mut hexb = [0u8; 16];
-        {
-            const HEX: &[u8; 16] = b"0123456789abcdef";
-            let mut v = ctx as u64;
-            for i in (0..16).rev() {
-                hexb[i] = HEX[(v & 0xf) as usize];
-                v >>= 4;
-            }
-        }
-        minix_plat::riscv64::early_console::write_str("  [sei-diag] enter ctx=");
-        minix_plat::riscv64::early_console::write_str(core::str::from_utf8(&hexb).unwrap_or("?"));
-        minix_plat::riscv64::early_console::write_str("\n");
         mgr.controller_claim_context(ctx)
     };
     #[cfg(not(target_arch = "riscv64"))]
@@ -683,6 +682,8 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
     pub fn controller_claim_context(&mut self, context: usize) -> Option<u32> {
         self.controller.claim_context(context)
     }
+
+
 
     /// The controller's completion write, exposed for a claim that has no
     /// hook chain (the aarch64 scheduler SGI lane).
