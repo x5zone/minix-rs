@@ -44,14 +44,16 @@ static FIRED: AtomicUsize = AtomicUsize::new(0);
 static MATCHED: AtomicUsize = AtomicUsize::new(0);
 
 fn uart_read(off: u64) -> u8 {
-    // SAFETY: device MMIO inside the identity-mapped window [0,4 GiB); reads
-    // of RHR/LSR carry no side-effect ordering constraints.
-    unsafe { (uart_va(off).expect("UART device window unmapped") as *const u8).read_volatile() }
+    // SAFETY: same as above; reads RHR/LSR. PA direct — the timer carrier
+    // runs under the bootstrap root whose retained identity [0,4 GiB)
+    // covers the UART.
+    unsafe { ((UART_BASE + off) as *const u8).read_volatile() }
 }
 
 fn uart_write(off: u64, v: u8) {
-    // SAFETY: same as above; writes IER/MCR/THR.
-    unsafe { (uart_va(off).expect("UART device window unmapped") as *mut u8).write_volatile(v) }
+    // SAFETY: same as above; writes IER/MCR/THR. Bootstrap root identity
+    // [0,4 GiB) is retained per ruling — PA access works at boot phase.
+    unsafe { ((UART_BASE + off) as *mut u8).write_volatile(v) }
 }
 
 /// UART RX hook (first source): drain RDR, verify the expected character,
@@ -59,10 +61,21 @@ fn uart_write(off: u64, v: u8) {
 /// serial writes are the bottleneck). Returns Completed (the level source ends
 /// once RDR is drained).
 fn uart_rx_hook(_ctx: &mut IrqHookContext) -> IrqAction {
+    // PD22S2H diag: SBI ecall print (MMIO-free) at hook entry — locates
+    // silent hangs between the PLIC claim and the hook body.
+    use minix_plat::riscv64::early_console as sbi_con;
+    sbi_con::write_str("  [hook-diag] enter\n");
     let mut got: Option<u8> = None;
+    let mut spins = 0u32;
     while uart_read(5) & 1 == 1 {
         got = Some(uart_read(0));
+        spins += 1;
+        if spins > 1_000_000 {
+            sbi_con::write_str("  [hook-diag] drain loop runaway\n");
+            break;
+        }
     }
+    sbi_con::write_str("  [hook-diag] drained\n");
     let n = FIRED.fetch_add(1, AtomicOrd::AcqRel);
     let exp = EXPECTED.load(AtomicOrd::Acquire);
     let matched = exp != 0 && got == Some(exp);
@@ -154,8 +167,9 @@ pub fn enable_uart_rx_selftest(expected: u8) {
             Console::write_str("\n");
         }
     }
-    uart_write(4, mcr | 0x10);
-    Console::write_str("  uart: stageC2 mcr loop\n");
+    Console::write_str("  uart: stageC2 pre-mcr-write\n");
+    uart_write(4, mcr & !0x10); // BISECT: no LOOP bit
+    Console::write_str("  uart: stageC2b mcr written\n");
     uart_write(1, 0x01);
     Console::write_str("  uart: stageD uart regs\n");
     // ⑤ THR write of the expected byte: loopback turns it into RX and lights
