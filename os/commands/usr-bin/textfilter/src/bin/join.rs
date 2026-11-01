@@ -29,20 +29,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use minix_textfilter::join::{JoinError, join_lines, parse_join_args};
 
-/// Read a whole standard-input stream (a `-` operand).
-fn read_stdin() -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match minix_sys::read(support::STDIN, &mut chunk) {
-            Ok(0) => break,
-            Ok(n) => out.extend_from_slice(&chunk[..n]),
-            Err(_) => break,
-        }
-    }
-    out
-}
-
 /// Split a buffer into newline-stripped lines, dropping the empty tail that
 /// a newline-terminated file leaves.
 fn line_refs(buf: &[u8]) -> Vec<&[u8]> {
@@ -199,7 +185,16 @@ fn run() -> ! {
     // (registered as `ARGV-BYTE-PATH-IN-LIBS`).
     let read_operand = |name: &[u8]| -> Vec<u8> {
         if name == b"-" {
-            return read_stdin();
+            // C's `join` consults `ferror` **only for stdout**
+            // (`minix3/usr.bin/join/join.c:457,488,498,508`); there is no
+            // input-side check anywhere, so a failed read simply ends the input
+            // and nothing is reported. The read still goes through the crate's
+            // one standard-input seam (`support::read_stdin`, which is
+            // `read_stdin_error` without the number) so the seam has a single
+            // implementation — the number is dropped here **because C drops it**,
+            // not because this shell forgot to look. (`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`,
+            // registered in batch 463 with the opposite implication, corrected here.)
+            return support::read_stdin();
         }
         let path = String::from_utf8_lossy(name);
         match support::read_file(&path) {

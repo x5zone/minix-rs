@@ -886,3 +886,66 @@ fn the_three_value_echoes_carry_the_argv_bytes() {
         "`obsolete()` 的畸形形带整个 token，且 `errx` 不接 usage"
     );
 }
+
+/// A `-` operand reads **standard input** (`join.c:241-246` assigns `stdin` to
+/// that `FILE*`), so the joined lines have to come out the same whether the
+/// operand was named as a file or fed through the pipe. This shape had no gate
+/// before: every earlier `-` test either fed `/dev/null` (both operands `-`,
+/// which C refuses before reading) or ran with stdin closed, so a shell whose
+/// standard-input leg read nothing at all still passed. The seam this pins is
+/// the one in `bin_support::read_stdin` — the shell used to run its own
+/// `minix_sys::read` loop, which yields nothing in a hosted build.
+#[test]
+fn a_dash_operand_reads_the_piped_standard_input() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+
+    let dir = std::env::temp_dir().join(format!("join-face-stdin-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("scratch dir");
+    let file1 = dir.join("first");
+    let file2 = dir.join("second");
+    fs::write(&file1, b"a 1\nb 2\nc 3\n").expect("write first");
+    fs::write(&file2, b"b 20\nc 30\nd 40\n").expect("write second");
+    let subject = std::path::Path::new(env!("CARGO_BIN_EXE_join"));
+
+    let feed = |args: &[&str], stdin_data: &[u8]| -> String {
+        let mut child = Command::new(subject)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the join binary should be runnable");
+        child
+            .stdin
+            .as_mut()
+            .expect("a piped stdin")
+            .write_all(stdin_data)
+            .expect("feed standard input");
+        let output = child.wait_with_output().expect("the run should finish");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    // `-` first, a real file second; then the mirror image. Both must equal the
+    // file-and-file run, which is the answer C gives for the same three pairs.
+    let first = file1.to_str().expect("an utf-8 scratch path").to_string();
+    let second = file2.to_str().expect("an utf-8 scratch path").to_string();
+    let expected = "b 2 20\nc 3 30\n";
+    assert_eq!(
+        feed(&[&first, &second], b""),
+        expected,
+        "先立一个文件-文件的基准，另两形与它比"
+    );
+    assert_eq!(
+        feed(&["-", &second], &fs::read(&file1).expect("read first back")),
+        expected,
+        "标准输入作第一个操作数"
+    );
+    assert_eq!(
+        feed(&[&first, "-"], &fs::read(&file2).expect("read second back")),
+        expected,
+        "标准输入作第二个操作数"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
