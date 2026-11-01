@@ -119,6 +119,59 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百七十五（`NL-SIGNED-COUNTERS` 闭合：`-i`/`-v` 交回 `int` 域，计数器按 C 的 `int` 倒数与回绕，三种格式各就符号归位；另量出 `NL-WIDTH-TAIL-TRUNCATION` 一形登记不执行）
+
+- **这一笔的射程**：`nl` 的两个数字选项。C 的 `incr` 与 `startnum` 都是 `static int`
+  （`minix3/usr.bin/nl/nl.c:125` 与 `:176-183`、`:208-216` 的两条 `strtol` 臂），赋值走
+  `incr = (int)val` / `startnum = (int)val`，**没有任何符号检查**；本层的决定半此前把两者存成
+  `u64`，壳侧两臂对负值回一句自创的 `signed numbering counters (-i/-v) not wired`（在册
+  `NL-SIGNED-COUNTERS`，登记处 18 篇批次三百四十九段与那行 `7152`）。
+- **改的三层**：库件 `src/nl.rs` 的 `NlOptions.startnum`/`incr` 改 `i32`，`write_number` 收 `i32`
+  并按 C 的三张格式串各就符号归位——`%-*d` 先符号后数字再右补空格、`%*d` 左补空格、`%0*d` 把零
+  **填在符号之后**（`-7` 在宽度 5 下是 `-0007`），数字长度按含符号的那一格算进 `width`；
+  `i32::MIN` 的绝对值放不进 `i32`，故取数走 `i64`；计数递进从 `counter += incr` 改为
+  `counter.wrapping_add(incr)`（C 的 `line += incr`（`nl.c:334`）在溢出处是未定义行为，参照件实测
+  表现为二进制回绕）。壳件 `src/bin/nl.rs` 两臂的取值判据换成「`strtol` 语义 + `int` 域」：
+  超出域与带尾串取**同一句**报文（C 的第二条判据是
+  `(val == LONG_MIN || val == LONG_MAX) && errno != 0`，而 Minix 的 i386 用户态 `long` 是 32 位，
+  域恰是 `int`）。
+- **参照件在这一族第一次管不了数值范围**：`tmp/nl-417/nl_ref` 链的是宿主 glibc，它的 `long` 是
+  64 位，于是 `-i 2147483648` 在参照件里**被接受**并在 `(int)` 转换处截成 `-2147483648`
+  （读数 `tmp/nl-475/ab.log`：`     1` 之后是 `483647`）。本壳按 Minix 的 32 位 `long` 判它越界，
+  报 `nl: invalid incr argument -- 2147483648` 退 1。**这一形的判据是 C 源 + 平台宽度，不是参照件**，
+  按批次四百六十九立的那条规矩写明；其余形状参照件仍然管得住。
+- **A/B**（`tmp/nl-475/ab.log`，`LC_ALL=C`、两侧同名软链、输入 `a\nb\nc\n`）：十三形 SAME / 两形 DIFF
+  （就是上面那两形越界值）。逐形含默认编号、`-v 3 -i -1`、`-v -2`、`-v -2 -i -3 -w 6`、
+  `-n ln -v -7 -w 4`、`-n rz -v -7 -w 5`、`-n rn -v -7 -w 4`、`-i 0`、`-i 2x`、`-v 1x`、
+  `-i -1 -v 5 -b a`、`-n rz -v 1 -w 3`、`-v -1 -n rz -w 4`。
+- **顺带量出的另一形，登记不执行**：`NL-WIDTH-TAIL-TRUNCATION`。C 打的不是「整个数字」而是
+  `intbuffer + max(0, consumed - width)`（`nl.c:331-335`），数字宽过字段时**从左截尾**。参照件现量
+  `-w 1 -v 100` → `0`/`1`/`2`（不是 `100`/`101`/`102`），`-w 2 -v -100` → `00`/`99`/`98`；
+  本壳 `write_number` 没有这一层截尾，两形都打完整数字。本轮不动它（一次只修一条），
+  新立的负号门因此刻意把 `width` 取到 12，避开这条未修的腿——这条选择写进了测试注释。
+- **门**：库内 `nl` 模块 +2 枚（`negative_counters_and_the_sign_position_of_each_format`、
+  `the_counter_wraps_at_the_int_boundary_and_prints_int_min`），面门 +2 枚
+  （`signed_counters_run_backwards_end_to_end`、
+  `a_value_beyond_the_int_domain_takes_the_rejecting_sentence`）；宿主整包 69 段
+  **1286 → 1290 / 0**（基线读数取自上一轮的容器门日志 `tmp/vis-474/container-gate2.log`，
+  这一轮之前 `os/commands/usr-bin/textfilter` 没有被别笔改过测试），三架构 `--bins` 各退 0
+  （`tmp/nl-475/` 的 `pkg.log`、`arch-*.log`）；
+  `rustfmt --edition 2024 --check` 三件各 0 处（`src/nl.rs` 基线本就是 5 处存量漂移，改后仍 5，
+  本轮 hunk 零新增）。
+- **负控四枚**（`tmp/nl-475/negctl.py`）各咬住：K1 把 `-i` 臂退回占位句 → 面门红 3 枚；
+  K2 让 `write_number` 丢掉符号 → 库内 2 枚 + 面门 1 枚；K3 把零填到符号**之前** → 库内那枚格式门
+  红 1 枚（面门全绿：面门没有 `-n rz` 的负号形，这是一处覆盖面缺口，按既有规矩记在这里）；
+  K4 把 `int` 域判据改成 `as i32` 截断 → 越界那枚面门红。四枚还原后复跑面门 18/0。
+  驱动本身也错过两次：失败名不在 `... FAILED` 行上而在 `failures:` 块里，第一版四枚全报 `red=0`；
+  K4 的锚点两臂共用一句、`count` 是 2，收窄到带 `opts.startnum` 的那一行才咬对形。
+- **我写错的一处期望**：`-n ln` 那例我先写了 `incr: -1`，于是第二行是 `-8`，而参照件量的那形是默认
+  `+1` 给出 `-7`/`-6`/`-5`——**改期望而不是改代码**，判据仍是「读数在前、期望在后」。
+- **三件套**：核实命令 `python3 tmp/nl-475/negctl.py`、`cat tmp/nl-475/ab.log`、
+  `cargo test -p minix-textfilter`（`tmp/nl-475/pkg.log`）；核实日 `2026-11-02`，
+  基线快照 `8b40ee29f`（本轮领取时的 `rewrite` 顶）。
+
+---
+
 
 ## 批次四百七十四（`vis` 的四处程序名位改跟 `argv[0]`：usage 两处与两条 `errx` 拒绝句；在册 `VIS-USAGE-PROGNAME-HARDCODED` 闭合）
 

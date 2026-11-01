@@ -4517,3 +4517,27 @@ default panic 的行号全写死），并说明为什么本树**不需要**写 `
 漂移属他线，按批次四百零四那条规矩不带走；`doc-style-lint --diff` error 级 0；在制自检干净。
 `VMSTYPE` 相关的行为门本就存在（`memreq_reply_delivermsg_requires_mf_delivermsg` 对位 C 的
 `assert`），本轮无新增门、无代码路径变化。
+
+### 第二百一十四笔（A 板 · `NL-SIGNED-COUNTERS`：`nl` 的 `-i`/`-v` 交回 C 的 `int` 域，负号计数器与三种格式的符号归位）
+
+C 的两个计数器都是 `static int`（`minix3/usr.bin/nl/nl.c:125`、`:176-183`、`:208-216`），赋值走
+`(int)val` 且**无符号检查**；本层此前存成 `u64`，壳侧对负值回一句自创的
+`signed numbering counters (-i/-v) not wired`。改的三层：`src/nl.rs` 的 `NlOptions.startnum`/`incr`
+改 `i32`、`write_number` 按 `%-*d`/`%*d`/`%0*d` 三张串各就符号归位（`%0*d` 把零填在符号之后，
+`-7` 在宽度 5 下是 `-0007`）、取数走 `i64` 以容纳 `i32::MIN`，`counter += incr` 改
+`wrapping_add`（C 在该处是未定义行为，参照件实测回绕）；`src/bin/nl.rs` 两臂的判据换成
+「`strtol` 语义 + `int` 域」，越界与尾串取同一句报文。
+
+**一处判据来源的更正值得留档**：参照件 `tmp/nl-417/nl_ref` 链的是宿主 glibc，`long` 是 64 位，
+`-i 2147483648` 在它那儿被接受并截成 `-2147483648`——这一形的权威是 C 源加 Minix i386 的 32 位
+`long`，不是参照件，A/B 里那两形 DIFF 因此是**预期分形**而非回归。其余十三形 SAME
+（`tmp/nl-475/ab.log`）。另量出一形登记不执行：`NL-WIDTH-TAIL-TRUNCATION`——C 打的是
+`intbuffer + max(0, consumed - width)`（`nl.c:331-335`），数字宽过字段时从左截尾，参照件现量
+`-w 1 -v 100` → `0/1/2`、`-w 2 -v -100` → `00/99/98`，本壳无这层截尾。
+
+**门**：库内 +2 枚、面门 +2 枚；宿主整包 69 段 **1286 → 1290 / 0**，**容器权威门同读数退 0**
+（`tmp/nl-475/container-gate.log`），三架构 `--bins` 各退 0，`clippy` 与主树唯一句集合各 85 行、
+位置集合无差，`rustfmt` 触及三件零新增漂移（`src/nl.rs` 基线 5 处存量、改后仍 5）。负控四枚
+各咬住（K1 面门 3、K2 库 2 + 面 1、K3 库 1、K4 面 1），还原后复跑面门 18/0。两处自错入 18 篇
+批次四百七十五：负控驱动第一版把失败名去 `... FAILED` 行上找（实际在 `failures:` 块里）⇒ 四枚
+全报 `red=0`；`-n ln` 那例我先把期望写成 `incr: -1` 的第二行，靠参照件读数改正期望而不是改代码。
