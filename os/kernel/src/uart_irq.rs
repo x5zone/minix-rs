@@ -125,7 +125,9 @@ pub fn enable_uart_rx_selftest(expected: u8) {
     Console::write_str("  uart: stageC sie\n");
     // ④ UART: MCR.LOOP=1 (internal THR→RDR ring) + IER.ERBFI=1 (RX interrupt enable).
     let mcr = uart_read(4);
+    Console::write_str("  uart: stageC1 mcr read\n");
     uart_write(4, mcr | 0x10);
+    Console::write_str("  uart: stageC2 mcr loop\n");
     uart_write(1, 0x01);
     Console::write_str("  uart: stageD uart regs\n");
     // ⑤ THR write of the expected byte: loopback turns it into RX and lights

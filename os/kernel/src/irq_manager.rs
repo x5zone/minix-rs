@@ -281,11 +281,10 @@ fn s_mode_context_for_current_cpu() -> usize {
     // description exists the machine is hart 0.
     let cpu = crate::current_cpu_id().raw() as usize;
     let topo = minix_platform::platform_desc().cpu_topology();
-    let hart = topo
-        .cpus
-        .get(cpu)
-        .map(|c| c.hw_id as usize)
-        .unwrap_or(cpu);
+    if cpu >= topo.nr_cpus as usize || cpu >= topo.cpus.len() {
+        return 1; // hart 0, S-mode context 1 (boot convention)
+    }
+    let hart = topo.cpus[cpu].hw_id as usize;
     2 * hart + 1
 }
 
@@ -298,6 +297,19 @@ pub fn claim_hardware_irq() -> Option<u32> {
     #[cfg(target_arch = "riscv64")]
     let claimed = {
         let ctx = s_mode_context_for_current_cpu();
+        minix_plat::riscv64::early_console::write_str("  [sei-diag] enter ctx=");
+        let mut hexb = [0u8; 16];
+        {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut v = ctx as u64;
+            for i in (0..16).rev() {
+                hexb[i] = HEX[(v & 0xf) as usize];
+                v >>= 4;
+            }
+        }
+        minix_plat::riscv64::early_console::write_str("  [sei-diag] enter ctx=");
+        minix_plat::riscv64::early_console::write_str(core::str::from_utf8(&hexb).unwrap_or("?"));
+        minix_plat::riscv64::early_console::write_str("\n");
         mgr.controller_claim_context(ctx)
     };
     #[cfg(not(target_arch = "riscv64"))]

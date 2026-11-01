@@ -4409,3 +4409,13 @@ PD-22② 完成。简报/裁决/验收表=rewrite-notes/01-stage-kernel/
 pd22-step2-brief.md（§15）。中途实证：实测 DTB 纠正 SSWI/UART 地址、
 PLIC 2MiB 反证、4K map 引导根卡死（map_huge 路径正常）等已在 edge4
 前文与简报留档。
+
+**PD22S2H 进行中（claim 在途，未合并）**：PD22S2G 后 run_all=36/3
+（e5-ds 超时、timer-irq-riscv64、+1）。timer 载体实测定位：UART RX
+自检在引导根阶段武装（stageC csrs sie 后写 UART IER/MCR/THR 走设备
+窗 slot1 VA）→ UART 槽在引导根未映射 → load fault。已落
+UART bootstrap=true（物理 2MiB 对齐可装）；**复测新发现**：stageC 后
+静默挂起（SEI 触发后无 trap 诊断输出）——SEI 路径上的窗口访问链
+（PLIC claim→uart hook 读→complete→console）仍有未映射点或 BKL/序
+问题，需在 SEI kernel leg 加逐点窗口访问诊断。claim PD22S2H 在途
+（含已提交 UART fix），下会话从该 claim 续。
