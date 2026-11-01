@@ -777,17 +777,28 @@ Trigger = first multithreaded consumer. **No action.**
 
 ### Part H — New since Revision 2
 
-#### SD-34. ~90 host-unreachable arch-gated tests display green (P-ALL-01) — **open, being worked (31/86 pinned)**
+#### SD-34. ~90 host-unreachable arch-gated tests display green (P-ALL-01) — **closed; anti-regrowth gate landed `2026-10-31`**
 
 `#[cfg(target_arch = "...")]`-gated unit tests inside arch/server crates never compile in the host test
 form, yet the suites report green (the tests are simply absent). Census: ~90 (arm64 39, riscv64 40, plat
 7, +5); x86_64's 106 run natively; riscv has a two-file `include_str!` mitigation; aarch64 zero. The fix
-pattern established in-window (31 of 86 done): move the assertions into `<crate>/tests/*.rs` as
-text/shape checks (the "template四件套"), with positive controls. **Why structural:** it changes how
-every "has tests" cell in the parity matrix is read — a green suite proves nothing about uncompiled
-arch arms. Tier-1 in the claim ledger. **Recommendation: finish the sweep**; add a lint/gate that
-counts `cfg(target_arch)`-gated `#[test]` per crate so the class cannot regrow silently (same shape as
-pattern 86: "zero hits" must not read as "passing").
+pattern established in-window: move the assertions into `<crate>/tests/*.rs` as text/shape checks (the
+"template四件套"), with positive controls. **Why structural:** it changes how every "has tests" cell in
+the parity matrix is read — a green suite proves nothing about uncompiled arch arms. Tier-1 in the
+claim ledger.
+
+**Landed, in two halves.** (i) The sweep finished and closed in the operative ledger (`closed / L1`):
+`os/arch/tests/arch_gated_audit.rs` freezes the per-file manifest (86) and goes red on drift, with the
+deep-migration batches beside it. (ii) **The anti-regrowth gate is now CI-level and cross-crate**
+(`2026-10-31`, claim/SD34-GATE-qoder): `tools/arch-gated-test-count.py` counts host-unreachable gated
+tests across **all of `os/`** — two shapes, the attribute stack directly above `#[test]` and a
+`#[cfg(target_arch = …)]`-gated `mod` block — freezes the count per file in
+`tools/arch-gated-test-count-baseline.txt` (current census: **5** — 3 timer-gate compile-existence
+checks + 2 device-tree shape tests; the arch audit's 86-manifest covers the arch dirs, this gate covers
+the rest and the regrowth edge), and runs with `--self-test` in
+`.github/workflows/rules-consistency.yml` (the workflow now also triggers on `os/**`, so a gated test
+added anywhere cannot land silently). Failure line names every file whose count moved; a deliberate
+move updates the baseline in the same commit with its reason.
 
 #### SD-35. Message union vs the 56-byte payload invariant (P-ALL-12) — **closed (续-433); recorded as the register's exemplar closure**
 
@@ -964,7 +975,7 @@ in-repo cure precedent). The families, updated:
 | SD-30 | open + **conflict** | P-ALL-10 / PD-29 | user resolution; T-STAB-1 crash RCA first |
 | SD-31 | open (compounded) | — | re-anchor gate → P ledger; review rounds file findings |
 | SD-32 | deferred PD-11 | (PD-11) | none |
-| SD-34 | open (worked 31/86) | P-ALL-01 | finish sweep + count gate |
+| SD-34 | **closed**；防回长门 `2026-10-31` | P-ALL-01 | none (baseline frozen, CI-wired) |
 | SD-35 | **closed** 续-433 | P-ALL-12 | — (watch async-slot surface) |
 | SD-36 | open | (SD-10 face 3) | H5 bound ✅ `2026-10-31`; disposition at case closure |
 | SD-37 | open (parked) | (SD-24 sub) | write into PD-02 precondition list |

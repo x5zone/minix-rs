@@ -19,6 +19,7 @@ on:
   push:
     paths:
       - 'prompt/**'
+      - 'os/**'
       - '.claude/**'
       - '.codex/**'
       - '.trae/**'
@@ -30,6 +31,7 @@ on:
   pull_request:
     paths:
       - 'prompt/**'
+      - 'os/**'
       - '.claude/**'
       - '.codex/**'
       - '.trae/**'
@@ -93,3 +95,8 @@ jobs:
           bash tools/pattern-gate.sh --self-test
           bash tools/check-clippy-ratchet.sh --self-test
           python3 tools/notes-link-check.py --self-test
+
+      - name: 架构门测试计数门（SD-34 防回长：宿主跑不到的 #[test] 不许静默增减）
+        run: |
+          python3 tools/arch-gated-test-count.py --self-test
+          python3 tools/arch-gated-test-count.py

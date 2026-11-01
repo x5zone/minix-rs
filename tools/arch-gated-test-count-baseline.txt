@@ -1,0 +1,5 @@
+# SD-34 架构门测试计数基线（tools/arch-gated-test-count.py --update-baseline 生成）
+# 每行：文件相对 os/ 的路径 TAB 计数。新增架构门测试要么迁成 tests/ 形状 pin，
+# 要么在这里写明理由后抬基线；不许让它静默地不跑。
+arch/src/arch/timer_irq_gate.rs	3
+libs/minix-platform/src/device_tree.rs	2

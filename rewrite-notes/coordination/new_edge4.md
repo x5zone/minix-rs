@@ -3734,6 +3734,29 @@ aarch64 形各自的块/片判定）；`minix-arch --features runtime-window` **
 **诚实边界**：QEMU 不区分 Normal/Device，pin 证明的是「属性到达描述符、映射点仍走该判定」，
 真机窗仍是权威。
 
+### 第二百一十一笔（C 板 · SD-34：防回长计数门升到 CI 级并跨 crate——宿主编译不到的 `#[test]` 不许再静默增减）
+
+**这笔先把账对清**：SD-34 的**清扫早已闭**（台账 `closed / L1`，`os/arch/tests/arch_gated_audit.rs`
+冻结 86 文件清单、漂移即红），寄存器的 `open (31/86)` 是陈旧读数；但寄存器推荐的那条
+「count 每个 crate 的 `cfg(target_arch)` 门测试、防静默回长」当时只落在 arch 目录的测试清单里，
+**没有 CI 级、也不跨 crate**。
+
+**本轮补的正是那半边**：
+- `tools/arch-gated-test-count.py`：统计**全 `os/`** 里「宿主测试形态下根本不编译」的 `#[test]`——
+  两种形态都算：`target_arch` 属性栈直叠在 `#[test]` 上（含 `#[cfg(all(...))]`），以及
+  `#[cfg(target_arch = …)]` 门住整块 `mod`、块内测试全计入；
+- 逐文件计数冻结进 `tools/arch-gated-test-count-baseline.txt`（现算 **5 枚 / 2 文件**：
+  `arch/src/arch/timer_irq_gate.rs` 3 枚编译存在性检查 + `libs/minix-platform/src/device_tree.rs`
+  2 枚形状测试）；基线外**新增或缺失**都让门变红，并逐文件打印「基线 → 现在」；
+- `--self-test` 用夹具覆盖「直接 / 模块级 / `cfg(all(...))` 都计入、宿主可跑的不计、新增即红」
+  四种判别，随 `rules-consistency.yml` 常驻；**工作流路径加 `os/**`**——否则 os 里新增的门测试
+  不会触发这道门，等于没接。
+
+**读数**：`python3 tools/arch-gated-test-count.py --self-test` → 自检通过；
+`python3 tools/arch-gated-test-count.py` → **5 枚 / 2 文件与基线一致**；工作流 YAML 解析通过
+（7 个步骤）。**边界**：这道门管的是「测试被静默跳过」这一形态本身，不评价那 5 枚是否该继续
+存在（timer 门三枚是每架构编译存在性检查，按设计就该在 arch 下；要迁成形状 pin 是另一笔的取舍）。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
