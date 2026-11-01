@@ -33,18 +33,43 @@ pub struct DeviceWindowRegion {
     pub phys_base: u64,
     /// Page-aligned mapping length (≥ the device's reg length).
     pub size: u64,
-    /// Stable slot index: region i maps at `DEVICE_VA_BASE + i *
-    /// WINDOW_STRIDE`. Never renumber — drivers bake the resulting VA.
+    /// Stable slot index (VA base = cumulative span of lower slots).
+    /// Never renumber — drivers bake the resulting VA.
     pub slot: usize,
 }
 
-/// Virtual-address stride reserved per device slot (2 MiB: huge-page
-/// mappable, generous guard gaps between devices).
-pub const WINDOW_STRIDE: u64 = 2 << 20;
+/// Page-round a region size for VA-allocation purposes (PTE coverage is
+/// page-granular even when the device `reg` length is not).
+const fn page_round(v: u64) -> u64 {
+    (v + 0xFFF) & !0xFFF
+}
 
-/// Compile-time guard: the region table fits the reserved VA span.
-const fn slots_fit(span: u64, count: usize) -> bool {
-    (count as u64) * WINDOW_STRIDE <= span
+/// VA base of a region's slot: the cumulative page-rounded span of all
+/// regions with smaller slots. Sizing by region length (not a fixed
+/// stride) makes overlapping slots impossible by construction — the first
+/// attempt used a fixed 2 MiB stride and the PLIC region (6 MiB) swallowed
+/// the following two slots (caught by the riscv ATF gate as `AlreadyMapped`
+/// in VM's first `init_page_table`).
+pub const fn slot_va_base(regions: &[DeviceWindowRegion], slot: usize) -> u64 {
+    let mut base = DEVICE_VA_BASE;
+    let mut i = 0usize;
+    while i < slot && i < regions.len() {
+        base += page_round(regions[i].size);
+        i += 1;
+    }
+    base
+}
+
+/// Total VA span reserved by the table (for collision audits against the
+/// rest of the high-half address map).
+pub const fn device_window_span(regions: &[DeviceWindowRegion]) -> u64 {
+    let mut end = DEVICE_VA_BASE;
+    let mut i = 0usize;
+    while i < regions.len() {
+        end += page_round(regions[i].size);
+        i += 1;
+    }
+    end - DEVICE_VA_BASE
 }
 
 // ── x86-64 ──────────────────────────────────────────────────────────────
@@ -57,8 +82,8 @@ pub const DEVICE_VA_BASE: u64 = 0xFFFF_8040_0000_0000;
 
 #[cfg(target_arch = "x86_64")]
 const _: () = assert!(
-    slots_fit(0xFFFF_8080_0000_0000 - DEVICE_VA_BASE, 2),
-    "x86-64 device window slots must fit before the kernel DM window"
+    0x2000 <= 0xFFFF_8080_0000_0000 - DEVICE_VA_BASE,
+    "x86-64 device window span must fit before the kernel DM window"
 );
 
 #[cfg(target_arch = "x86_64")]
@@ -107,8 +132,9 @@ pub const DEVICE_VA_BASE: u64 = 0xFFFF_FFC0_2000_0000;
 
 #[cfg(target_arch = "riscv64")]
 const _: () = assert!(
-    slots_fit(0xFFFF_FFC0_4000_0000 - DEVICE_VA_BASE, 3),
-    "riscv64 device window slots must fit before the kernel DM window"
+    0x605000 <= 0xFFFF_FFC0_4000_0000 - DEVICE_VA_BASE,
+    "riscv64 device window span (PLIC 6 MiB + UART 4 KiB + SSWI 16 KiB, \
+     page-rounded) must fit before the kernel DM window"
 );
 
 #[cfg(target_arch = "riscv64")]
@@ -149,20 +175,24 @@ pub const fn device_window_regions() -> &'static [DeviceWindowRegion] {
     ]
 }
 
-/// The kernel virtual address for MMIO address `pa` inside region
-/// `region`. Install-time and driver code both go through this function —
-/// drivers never compute `DEVICE_VA_BASE + pa` themselves.
+/// The kernel virtual address for MMIO address `pa` inside region `slot`
+/// of table `regions`. Install-time and driver code both go through this
+/// function — drivers never compute `DEVICE_VA_BASE + pa` themselves.
 ///
 /// Returns `None` when `pa` falls outside the region's mapped extent.
-pub const fn device_va_for(region: &DeviceWindowRegion, pa: u64) -> Option<u64> {
+pub const fn device_va_for(
+    regions: &[DeviceWindowRegion],
+    slot: usize,
+    pa: u64,
+) -> Option<u64> {
+    if slot >= regions.len() {
+        return None;
+    }
+    let region = &regions[slot];
     if pa < region.phys_base || pa >= region.phys_base + region.size {
         return None;
     }
-    Some(
-        DEVICE_VA_BASE
-            + (region.slot as u64) * WINDOW_STRIDE
-            + (pa - region.phys_base),
-    )
+    Some(slot_va_base(regions, slot) + (pa - region.phys_base))
 }
 
 /// Page flags for device-window mappings: supervisor RW, NX, global —
@@ -207,12 +237,12 @@ mod tests {
         let enable_tail = 0x2000 + max_context * 0x80 + 96 * 4;
         for off in [claim, threshold, enable_tail] {
             assert!(
-                device_va_for(plic, 0x0C00_0000 + off as u64).is_some(),
+                device_va_for(regions, 0, 0x0C00_0000 + off as u64).is_some(),
                 "PLIC offset {off:#x} outside the device window"
             );
         }
         // The historical fault address must be inside the new window.
-        assert!(device_va_for(plic, 0x0C00_0000 + 0x201004).is_some());
+        assert!(device_va_for(regions, 0, 0x0C00_0000 + 0x201004).is_some());
     }
 
     /// The SSWI window covers `setip` for the gate hart count, and the
@@ -227,30 +257,47 @@ mod tests {
         assert_eq!(sswi.size, 0x4000);
         for hart in 0..4usize {
             let setip = sswi.phys_base + 4 * hart as u64;
-            assert!(device_va_for(sswi, setip).is_some(), "hart {hart} setip");
+            assert!(
+                device_va_for(regions, 2, setip).is_some(),
+                "hart {hart} setip"
+            );
         }
         // Adjacent-platform addresses must NOT resolve into the SSWI window.
-        assert!(device_va_for(sswi, 0x1000_1000).is_none()); // VirtIO
-        assert!(device_va_for(sswi, 0x1000_0000).is_none()); // UART0
+        assert!(device_va_for(regions, 2, 0x1000_1000).is_none()); // VirtIO
+        assert!(device_va_for(regions, 2, 0x1000_0000).is_none()); // UART0
+        // Slots never overlap by construction: each slot base is at or
+        // above the previous slot's end.
+        let b0 = slot_va_base(regions, 0);
+        let b1 = slot_va_base(regions, 1);
+        let b2 = slot_va_base(regions, 2);
+        assert!(b1 >= b0 + page_round(regions[0].size));
+        assert!(b2 >= b1 + page_round(regions[1].size));
     }
 
     /// Device VAs land in the reserved span, inside the region's own slot,
     /// with the region offset preserved.
     #[test]
     fn device_va_preserves_region_offset() {
-        for r in device_window_regions() {
-            let va = device_va_for(&r, r.phys_base).expect("base must map");
+        let regions = device_window_regions();
+        for slot in 0..regions.len() {
+            let r = &regions[slot];
+            let va = device_va_for(regions, slot, r.phys_base).expect("base must map");
             assert_eq!(
                 va,
-                DEVICE_VA_BASE + (r.slot as u64) * WINDOW_STRIDE,
-                "base VA = slot base"
+                slot_va_base(regions, slot),
+                "base VA = cumulative slot base"
             );
-            let last = device_va_for(&r, r.phys_base + r.size - 1)
+            let last = device_va_for(regions, slot, r.phys_base + r.size - 1)
                 .expect("last byte must map");
-            assert!(last < DEVICE_VA_BASE + (r.slot as u64 + 1) * WINDOW_STRIDE);
+            assert!(
+                last < slot_va_base(regions, slot) + page_round(r.size),
+                "region stays inside its own slot"
+            );
         }
         // Out-of-window physical addresses resolve to None.
-        assert_eq!(device_va_for(&device_window_regions()[0], 0), None);
+        assert_eq!(device_va_for(regions, 0, 0), None);
+        // Slot beyond the table resolves to None.
+        assert_eq!(device_va_for(regions, regions.len(), 0), None);
     }
 
     /// Device-window flags: supervisor RW, NX, global — the W^X contract
