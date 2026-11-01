@@ -182,6 +182,19 @@ pub trait InterruptRouter: Sized + Send + Sync {
 ///
 /// C: the claim/complete ops of the arch APIC/GIC/PLIC driver.
 pub trait PerCpuInterruptUnit: Send {
+    /// Per-context claim (PD-22 step 2, riscv64): claim through the
+    /// hart's own S-mode PLIC context instead of the boot-time default.
+    /// Default = the plain single-context face (mock/x86/aarch64 have no
+    /// per-hart context concept; aarch64 completes via system registers).
+    fn claim_context(&mut self, _context: usize) -> Option<u32> {
+        self.claim()
+    }
+
+    /// Per-context completion (pairs with [`Self::claim_context`]).
+    fn complete_context(&mut self, _context: usize, claimed: Option<u32>) {
+        self.complete(claimed);
+    }
+
     /// Acknowledge (claim) the interrupt, before any handler runs, and
     /// return the claimed identity.
     ///

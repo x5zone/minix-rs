@@ -264,10 +264,43 @@ pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
 /// idle window where it does not). The claim itself is per-CPU controller
 /// state and needs no lock for its own correctness; the window only guards
 /// access to the global manager.
+/// The calling hart's S-mode PLIC context (brief §15 hard gate ①).
+///
+/// QEMU virt assigns PLIC contexts in M/S pairs per hart with consecutive
+/// hart indices, so hart i's S context is `2i + 1` — a *verified platform
+/// convention* (validated at boot against the DTB-derived hart inventory by
+/// the controller window check), not a universal DTB rule. Hart 0 is not
+/// the universal context: every claim/complete/threshold/enable for a hart
+/// goes through this mapping. Before SMP state exists (early single-hart
+/// boot) the machine is hart 0 → context 1.
+#[cfg(target_arch = "riscv64")]
+fn s_mode_context_for_current_cpu() -> usize {
+    // Logical CPU index doubles as the topology slot index (C2D convention:
+    // `sched_for_cpu_mut` seeds masks by the slot whose hw_id matches the
+    // BSP). The slot's hw_id is the RISC-V hart id; before the platform
+    // description exists the machine is hart 0.
+    let cpu = crate::current_cpu_id().raw() as usize;
+    let topo = minix_platform::platform_desc().cpu_topology();
+    let hart = topo
+        .cpus
+        .get(cpu)
+        .map(|c| c.hw_id as usize)
+        .unwrap_or(cpu);
+    2 * hart + 1
+}
+
 pub fn claim_hardware_irq() -> Option<u32> {
     let acquired = crate::smp::bkl_lock_or_inherit();
     let section = unsafe { crate::smp::BklSection::assume_held() };
     let mgr = crate::irq_manager_with(&section);
+    // PD-22 step 2 hard gate ①: per-hart claim — the executing hart claims
+    // through its own S-mode context, never hart 0's.
+    #[cfg(target_arch = "riscv64")]
+    let claimed = {
+        let ctx = s_mode_context_for_current_cpu();
+        mgr.controller_claim_context(ctx)
+    };
+    #[cfg(not(target_arch = "riscv64"))]
     let claimed = mgr.controller_claim();
     if acquired {
         crate::smp::bkl_unlock();
@@ -305,7 +338,16 @@ pub fn dispatch_claimed_hardware_irq(irq: IrqVector, claimed: Option<u32>) -> Re
 pub fn complete_hardware_irq(claimed: Option<u32>) {
     let acquired = crate::smp::bkl_lock_or_inherit();
     let section = unsafe { crate::smp::BklSection::assume_held() };
-    crate::irq_manager_with(&section).controller_complete(claimed);
+    let mgr = crate::irq_manager_with(&section);
+    // PD-22 step 2 hard gate ①: completion pairs with the claiming hart's
+    // own S-mode context (same mapping as `claim_hardware_irq`).
+    #[cfg(target_arch = "riscv64")]
+    {
+        let ctx = s_mode_context_for_current_cpu();
+        mgr.controller_complete_context(ctx, claimed);
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    mgr.controller_complete(claimed);
     if acquired {
         crate::smp::bkl_unlock();
     }
@@ -599,10 +641,26 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
         self.controller.claim()
     }
 
+    /// Per-hart claim (riscv64 PD-22 step 2): claim through the hart's own
+    /// S-mode context. Non-riscv arches have no per-hart context concept
+    /// (mock/x86 complete() ignores the context; aarch64 uses system
+    /// registers) — the mock delegates to the plain claim.
+    #[cfg(target_arch = "riscv64")]
+    pub fn controller_claim_context(&mut self, context: usize) -> Option<u32> {
+        self.controller.claim_context(context)
+    }
+
     /// The controller's completion write, exposed for a claim that has no
     /// hook chain (the aarch64 scheduler SGI lane).
     pub fn controller_complete(&mut self, claimed: Option<u32>) {
         self.controller.complete(claimed);
+    }
+
+    /// Per-hart completion (riscv64 PD-22 step 2; pairs with
+    /// `controller_claim_context` on the same hart).
+    #[cfg(target_arch = "riscv64")]
+    pub fn controller_complete_context(&mut self, context: usize, claimed: Option<u32>) {
+        self.controller.complete_context(context, claimed);
     }
 
     /// Enable one SGI on the CPU named by its architecture hardware id.

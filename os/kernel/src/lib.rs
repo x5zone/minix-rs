@@ -1040,6 +1040,37 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
         }
     }
 
+    // Step 2c (PD-22 step 2): install the kernel device window into the
+    // bootstrap root — the same VAs `map_kernel` installs into process
+    // roots (segment 5). Boot-phase MMIO consumers (PLIC init, LAPIC init)
+    // run under THIS root and address devices through the same high-half
+    // VAs the runtime uses (ruling §2.1 option A: one device VA for boot
+    // root and process roots; the low identity map stays for its own
+    // scope, so this is additive duplication of the device regions only).
+    {
+        // PLIC only: it is the sole device-window consumer that runs under
+        // the bootstrap root (controller init). UART0 and ACLINT SSWI
+        // consumers arm at runtime under process roots, which carry the
+        // full-window 4 KiB mapping from `map_kernel`. Huge-leaf mapping
+        // (both bases 2 MiB aligned) matches the proven step-1/2 path.
+        use minix_arch::paging::Paging as _;
+        let regions = minix_arch::arch::device_window::device_window_regions();
+        let plic = &regions[0];
+        let va_base = minix_arch::arch::device_window::slot_va_base(regions, plic.slot);
+        let mut off = 0u64;
+        while off < plic.size {
+            paging
+                .map_huge(
+                    VirBytes(va_base + off),
+                    PhysBytes(plic.phys_base + off),
+                    minix_arch::paging_ext::PageSize::MIB_2,
+                    minix_arch::arch::device_window::device_window_flags(),
+                )
+                .expect("PLIC device window map into bootstrap root failed");
+            off += 2 << 20;
+        }
+    }
+
     boot_stage!("kernel: step1+2 mappings ok\n");
     // Step 3: Enable paging.
     // SAFETY: Steps 1+2 set up identity mapping covering current RIP.
@@ -2171,6 +2202,30 @@ pub fn init_clock_and_interrupts() {
     // The instance is then moved into the global `IRQ_MANAGER` so that
     // trap entry points and `bsp_finish_booting` can reach it.
     let mut intr = CurrentInterruptController::new(pd.interrupt_controller());
+    // PD-22 step 2 check-and-reject + device-window VA injection (riscv64):
+    // the DTB-discovered PLIC base must equal the base the kernel device
+    // window maps — a mismatch means the window and the driver would talk
+    // to different devices. After validation the driver's MMIO goes through
+    // the high-half device window, never PA-as-VA.
+    #[cfg(target_arch = "riscv64")]
+    {
+        let regions = minix_arch::arch::device_window::device_window_regions();
+        let plic_region = &regions[0];
+        assert!(
+            intr.plic_base() == plic_region.phys_base as usize,
+            "PLIC base {:#x} != device-window base {:#x} — DTB/window drift, \
+             refusing (PD-22 check-and-reject)",
+            intr.plic_base(),
+            plic_region.phys_base
+        );
+        let plic_va = minix_arch::arch::device_window::device_va_for(
+            regions,
+            0,
+            plic_region.phys_base,
+        )
+        .expect("PLIC base inside its own window") as usize;
+        intr.set_plic_va_base(plic_va);
+    }
     intr.init();  // mask_all() called internally
 
     // D10: Store the interrupt controller in the global `IRQ_MANAGER`.

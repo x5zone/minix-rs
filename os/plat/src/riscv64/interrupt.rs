@@ -60,6 +60,8 @@ pub const PROFILE_CLOCK_IRQ: IrqVector = IrqVector::new(0);
 pub struct Riscv64InterruptController {
     /// PLIC MMIO base address.
     plic_base: usize,
+    /// Kernel device-window VA aliasing `plic_base` (PD-22 step 2).
+    plic_va_base: usize,
     /// Number of IRQ sources supported.
     nr_irqs: usize,
     /// S-mode context ID for the current hart.
@@ -88,11 +90,11 @@ impl Riscv64InterruptController {
     }
 
     unsafe fn plic_read32(&self, offset: usize) -> u32 {
-        core::ptr::read_volatile((self.plic_base + offset) as *const u32)
+        core::ptr::read_volatile(self.plic_va(offset) as *const u32)
     }
 
     unsafe fn plic_write32(&self, offset: usize, value: u32) {
-        core::ptr::write_volatile((self.plic_base + offset) as *mut u32, value);
+        core::ptr::write_volatile(self.plic_va(offset) as *mut u32, value);
     }
 }
 
@@ -101,12 +103,18 @@ impl InterruptRouter for Riscv64InterruptController {
         let plic = desc.as_any()
             .downcast_ref::<PlicDesc>()
             .expect("Riscv64InterruptController::new: expected PlicDesc");
+        // plic_va_base defaults to the identity view; the kernel injects
+        // the device-window VA after check-and-reject (see
+        // `set_plic_va_base`) — the window mapping lives in minix-arch,
+        // which sits above this crate in the dependency order.
         Self {
             plic_base: plic.plic_base,
+            plic_va_base: plic.plic_base,
             nr_irqs: (plic.nr_irqs as usize).min(NR_IRQ_VECTORS),
             context: plic.context as usize,
         }
     }
+
 
     fn init(&mut self) {
         unsafe {
@@ -223,27 +231,61 @@ mod tests {
     }
 }
 
-impl PerCpuInterruptUnit for Riscv64InterruptController {
-    fn claim(&mut self) -> Option<u32> {
-        // SAFETY: PLIC claim-register read on the interrupting CPU; the
-        // read claims the interrupt and returns its ID (0 = nothing
-        // pending → nothing to handle or complete).
+impl Riscv64InterruptController {
+    /// The kernel VA of a PLIC register at `offset` (PD-22 step 2: MMIO
+    /// goes through the high-half device window, never PA-as-VA). The
+    /// window base was check-and-rejected against the DTB base in
+    /// [`Self::new`], so `plic_base` and the window describe the same
+    /// device.
+    fn plic_va(&self, offset: usize) -> usize {
+        self.plic_va_base + offset
+    }
+
+    /// Claim read for an explicit S-mode PLIC context (per-hart: context =
+    /// 2×hart index + 1 on the verified consecutive-hart layout; brief
+    /// §15 hard gate ① — every caller derives the context from the
+    /// executing hart, hart 0 is *not* the universal context).
+    pub fn claim_context(&mut self, context: usize) -> Option<u32> {
+        // SAFETY: PLIC claim-register read on the interrupting CPU through
+        // the kernel device window; the read claims the interrupt and
+        // returns its ID (0 = nothing pending).
         unsafe {
-            let id = self.plic_read32(Self::claim_offset(self.context));
+            let id = self.plic_read32(self.plic_va(Self::claim_offset(context)));
             (id != 0).then_some(id)
         }
     }
 
-    fn complete(&mut self, claimed: Option<u32>) {
+    /// Completion write for an explicit S-mode PLIC context (pairs with
+    /// [`Self::claim_context`] on the same hart).
+    pub fn complete_context(&mut self, context: usize, claimed: Option<u32>) {
         let Some(id) = claimed else {
-            return; // nothing claimed: nothing to complete
+            return;
         };
-        // SAFETY: write the claimed ID to the complete register (the
-        // complete register shares the claim offset; write = complete).
-        // The ID is exactly what claim returned — the pairing is the
-        // protocol.
+        // SAFETY: write the claimed ID to the context's complete register
+        // through the kernel device window (write = complete).
         unsafe {
-            self.plic_write32(PLIC_COMPLETE + self.context * 0x1000, id);
+            self.plic_write32(self.plic_va(PLIC_COMPLETE + context * 0x1000), id);
         }
+    }
+
+    /// PD-22 step 2: install the kernel device-window VA for this PLIC.
+    /// The kernel validates `pa` against the window before calling —
+    /// check-and-reject lives kernel-side because the window description
+    /// is a minix-arch concern.
+    pub fn set_plic_va_base(&mut self, va_base: usize) {
+        self.plic_va_base = va_base;
+    }
+}
+
+impl PerCpuInterruptUnit for Riscv64InterruptController {
+    fn claim(&mut self) -> Option<u32> {
+        // Legacy single-context face (hart 0) — kept for boot-stage init
+        // probes; runtime claim paths use `claim_context` per hart
+        // (brief §15 hard gate ①).
+        self.claim_context(self.context)
+    }
+
+    fn complete(&mut self, claimed: Option<u32>) {
+        self.complete_context(self.context, claimed);
     }
 }
