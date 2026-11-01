@@ -2259,6 +2259,9 @@ pub fn init_clock_and_interrupts() {
         )
         .expect("PLIC base inside its own window") as usize;
         intr.set_plic_va_base(plic_va);
+        crate::irq_manager::set_injected_plic_va(plic_va);
+        // PD22S2H diag: confirm the injected base round-trips.
+        minix_plat::riscv64_early_console_write_str("  [inject-diag] plic_va set\n");
     }
     intr.init();  // mask_all() called internally
 

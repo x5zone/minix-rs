@@ -291,7 +291,40 @@ fn s_mode_context_for_current_cpu() -> usize {
         return 1; // hart 0, S-mode context 1 (boot convention)
     }
     let hart = topo.cpus[cpu].hw_id as usize;
+    // The hart id comes from the firmware DTB — a hand-built or partially
+    // parsed DTB can carry a bogus reg (observed: timer carrier with a
+    // hand-fdtput DTB produced a garbage hw_id, and claim(context 2×g+1)
+    // landed megabytes past the PLIC window). QEMU virt reserves 1024
+    // contexts (reg 0x600000 / stride 0x1000); anything beyond is refuse-
+    // and-fall-back, not a page fault.
+    if hart >= 1024 {
+        return 1; // hart 0, S-mode context 1 (boot convention)
+    }
     2 * hart + 1
+}
+
+/// PD22S2H diag: the context the SEI leg last derived (visible via the
+/// kernel-leg fault diag even when the LOOP-pulsed console is deaf).
+#[cfg(target_arch = "riscv64")]
+pub static LAST_SEI_CTX: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// PD22S2H diag: the device-window VA injected into the PLIC driver at
+/// init (kernel-side record — diagnostics read it on the fault path).
+#[cfg(target_arch = "riscv64")]
+pub static INJECTED_PLIC_VA: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// PD22S2H diag: record the injected base (called from init_clock).
+#[cfg(target_arch = "riscv64")]
+pub fn set_injected_plic_va(va: usize) {
+    INJECTED_PLIC_VA.store(va, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// PD22S2H diag accessor.
+#[cfg(target_arch = "riscv64")]
+pub fn last_sei_ctx() -> usize {
+    LAST_SEI_CTX.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn claim_hardware_irq() -> Option<u32> {
@@ -303,6 +336,7 @@ pub fn claim_hardware_irq() -> Option<u32> {
     #[cfg(target_arch = "riscv64")]
     let claimed = {
         let ctx = s_mode_context_for_current_cpu();
+        LAST_SEI_CTX.store(ctx, core::sync::atomic::Ordering::Relaxed);
         mgr.controller_claim_context(ctx)
     };
     #[cfg(not(target_arch = "riscv64"))]
@@ -654,6 +688,8 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
     pub fn controller_claim_context(&mut self, context: usize) -> Option<u32> {
         self.controller.claim_context(context)
     }
+
+
 
     /// The controller's completion write, exposed for a claim that has no
     /// hook chain (the aarch64 scheduler SGI lane).

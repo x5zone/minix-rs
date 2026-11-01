@@ -4409,3 +4409,50 @@ PD-22② 完成。简报/裁决/验收表=rewrite-notes/01-stage-kernel/
 pd22-step2-brief.md（§15）。中途实证：实测 DTB 纠正 SSWI/UART 地址、
 PLIC 2MiB 反证、4K map 引导根卡死（map_huge 路径正常）等已在 edge4
 前文与简报留档。
+
+**PD22S2H 进行中（claim 在途，未合并）**：PD22S2G 后 run_all=36/3
+（e5-ds 超时、timer-irq-riscv64、+1）。timer 载体实测定位：UART RX
+自检在引导根阶段武装（stageC csrs sie 后写 UART IER/MCR/THR 走设备
+窗 slot1 VA）→ UART 槽在引导根未映射 → load fault。已落
+UART bootstrap=true（物理 2MiB 对齐可装）；**复测新发现**：stageC 后
+静默挂起（SEI 触发后无 trap 诊断输出）——SEI 路径上的窗口访问链
+（PLIC claim→uart hook 读→complete→console）仍有未映射点或 BKL/序
+问题，需在 SEI kernel leg 加逐点窗口访问诊断。claim PD22S2H 在途
+（含已提交 UART fix），下会话从该 claim 续。
+
+**PD22S2H-8 二分定界（claim 在途，b633338d3）**：MCR.LOOP=1 写挂死
+vCPU（QEMU 8.2.2 16550 设备模型行为；PA/设备窗 VA 均挂）。去 LOOP →
+不挂、ticks 正常、carrier 跑到窗口结束。且 IER.ERBFI=1 写后 SEI 触发
+→ kernel leg claim 走 0xffffff8040201004（基座 0xffffff8040000000 非
+任何已知 arch 窗——非设备窗/DM/identity）→ load fault。另发现 PLIC
+enable context stride 代码=0x80、规格应为 0x100（QEMU plic.c context
+间隔）——潜在 context 寻址错误。下会话首刀：核对 PLIC 全部 context
+stride（enable=0x100、threshold/claim=0x2000）+ hart↔context 映射 +
+MCR.LOOP 替代回环方案 → timer 载体 PASS。
+
+**PD22S2H-9 会话终态（预算尽，claim 在途）**：git 历史考古关键发现——
+`ef23cbbf0 SD-41/C3 收官` 曾将 stride 误修反转回滚 0x1000（QEMU
+CONTEXT_STRIDE 规范值；0x2000 为上段误修），且"脉冲式 LOOP 使能序为
+真病根解法"——C11WX2 时代 timer 载体以 stride 0x1000 + 脉冲式 LOOP
+PASS。当前回归的根因候选：① 设备窗迁移改变了 UART 访问路径的时序/
+上下文，使脉冲式 LOOP 使能序行为变化；② MCR.LOOP=1 写经设备窗 VA 挂
+死 vCPU（PA 直访也挂——设备模型层面问题，非映射问题）。下会话续作
+方案：A) 回退 UART bootstrap=true（恢复 G 时代 bootstrap=false，
+timer 载体回退到引导根 PA 直访=identity 覆盖 ✓——C11WX2 时代行为），
+同时保留设备窗 process root 映射（map_kernel seg5）；B) PLIC stride
+0x1000/0x80/0x2000 全部按 ef23cbbf0 确认值维持；C) timer 载体
+PASS 后合并 PD22S2H → run_all 39/0/0 → 收官记账。claim 树完整
+（9 笔提交含全套诊断/二分/边界校验），门读数 arch 290/0、三架构
+check 0 error。
+
+**PD22S2H-12 取证闭环（claim 在途，最新 diag 提交）**：去失聪修复
+（panic handler + diag_panic 双双先清 MCR.LOOP）后 panic 文本全量可
+见：scause 0xd stval=0xffffff8040201004，seictx=0x1（per-hart 派生正
+确——2a 实现无误），ua0=0xffffff8040201000（fault 基座）、ua2=0x10。
+disasm 形态=f120<<12 + f110*2 + 0x200004（claim_offset 形状但基座非
+注入的 0xffffffc020000000）。下会话首刀：沿 ua0 基座来源定位——载体
+自建 KernelInfo 的 DM 窗基座（D59POLICY 字段）嫌疑最大；grep
+0xffffff8040000000 的产生点（0xffffff8020000000+0x20000000 或
+base-0x40000000 形态）。次候选：claim_hardware_irq 内联的
+s_mode_context 路径与 plat claim_context 的 plic_va 基座不一致。
+修好 → timer 载体 PASS → 合并 PD22S2H → run_all 39/0/0 → 记账。

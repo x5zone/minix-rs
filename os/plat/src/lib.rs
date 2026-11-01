@@ -36,6 +36,8 @@ pub mod riscv64;
 
 // ── Re-exports ──
 pub use early_console::EarlyConsole;
+#[cfg(target_arch = "riscv64")]
+pub use riscv64::early_console::write_str as riscv64_early_console_write_str;
 pub use interrupt::{
     InterruptRouter, PerCpuInterruptUnit, IrqVector, IrqId, IrqNotifyId, IrqPolicy, IrqAction,
     NR_IRQ_VECTORS, NR_IRQ_HOOKS,

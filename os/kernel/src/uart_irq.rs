@@ -44,13 +44,14 @@ static FIRED: AtomicUsize = AtomicUsize::new(0);
 static MATCHED: AtomicUsize = AtomicUsize::new(0);
 
 fn uart_read(off: u64) -> u8 {
-    // SAFETY: device MMIO inside the identity-mapped window [0,4 GiB); reads
-    // of RHR/LSR carry no side-effect ordering constraints.
+    // SAFETY: device MMIO inside the kernel device window (slot 1, PD-22
+    // step 2); reads of RHR/LSR carry no side-effect ordering constraints.
     unsafe { (uart_va(off).expect("UART device window unmapped") as *const u8).read_volatile() }
 }
 
 fn uart_write(off: u64, v: u8) {
-    // SAFETY: same as above; writes IER/MCR/THR.
+    // SAFETY: same as above; writes IER/MCR/THR via the kernel device
+    // window (slot 1).
     unsafe { (uart_va(off).expect("UART device window unmapped") as *mut u8).write_volatile(v) }
 }
 
@@ -125,7 +126,9 @@ pub fn enable_uart_rx_selftest(expected: u8) {
     Console::write_str("  uart: stageC sie\n");
     // ④ UART: MCR.LOOP=1 (internal THR→RDR ring) + IER.ERBFI=1 (RX interrupt enable).
     let mcr = uart_read(4);
+    Console::write_str("  uart: stageC1 mcr read\n");
     uart_write(4, mcr | 0x10);
+    Console::write_str("  uart: stageC2 mcr loop\n");
     uart_write(1, 0x01);
     Console::write_str("  uart: stageD uart regs\n");
     // ⑤ THR write of the expected byte: loopback turns it into RX and lights

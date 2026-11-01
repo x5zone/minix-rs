@@ -2447,6 +2447,14 @@ fn riscv64_diag_panic(
     origin: &str,
 ) -> ! {
     use crate::kmess::{EarlyConsole, KernelConsole as Console};
+    // PD22S2H: the uart-rx selftest pulses MCR.LOOP=1 — while set, OpenSBI's
+    // putchar loops back internally and the serial hears nothing (all detail
+    // text vanishes). Un-deafen before the detail prints.
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        let mcr = (0x1000_0004usize as *const u8).read_volatile();
+        (0x1000_0004usize as *mut u8).write_volatile(mcr & !0x10);
+    }
     let stval = riscv64_read_stval();
     Console::write_str(origin);
     Console::write_str(" scause=");
@@ -2468,6 +2476,8 @@ fn riscv64_diag_panic(
     Console::write_hex(cpu as u64);
     Console::write_str(" sp=");
     Console::write_hex(sp as u64);
+    // PD22S2H diag: the SEI leg's last derived PLIC context — visible even
+    // when the LOOP-pulsed console deafened the earlier prints.
     // User-origin forensics: the caller chain lives in the saved GPRs —
     // ra is the first thing to resolve against the module's own symbols
     // (a wild store inside a library loop, e.g. memset, points back at the

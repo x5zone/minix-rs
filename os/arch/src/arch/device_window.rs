@@ -189,8 +189,10 @@ pub const fn device_window_regions() -> &'static [DeviceWindowRegion] {
             bootstrap: true,
         },
         // UART0 page (NS16550A; consumer kernel/src/uart_irq.rs) — the RX
-        // selftest arms at runtime, under process roots only.
-        DeviceWindowRegion { phys_base: 0x1000_0000, size: 0x1000, slot: 1, bootstrap: false },
+        // selftest arms at BOOT on the timer carrier (under the bootstrap
+        // root), so this page IS bootstrap-phase. Physical base is 2 MiB
+        // aligned, so the bootstrap install maps it as one huge leaf.
+        DeviceWindowRegion { phys_base: 0x1000_0000, size: 0x1000, slot: 1, bootstrap: true },
         // ACLINT SSWI (conditional — DTB-gated at install time); the
         // scheduler-IPI write happens at runtime, under process roots only.
         DeviceWindowRegion { phys_base: 0x02F0_0000, size: 0x4000, slot: 2, bootstrap: false },
