@@ -119,6 +119,40 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百七十六（`NL-WIDTH-TAIL-TRUNCATION` 闭合：数字宽过字段时按 C 从左截尾，三种格式同律）
+
+- **这一笔的射程**：上一笔登记不执行的那一形。C 打完字段之后交给输出的是
+  `intbuffer + max(0, consumed - width)`（`minix3/usr.bin/nl/nl.c:331-335`），而缓冲尺寸是
+  `max((int)INT_STRLEN_MAXIMUM, width) + 1`（`:261`），所以 `snprintf` 自己从不截断、
+  `consumed` 永远是整个渲染长度——削掉的是**左边**那几格。本壳上一笔把整段渲染原样交出，
+  凡数字宽过 `-w` 的形都比 C 长。
+- **参照件现量（`tmp/nl-417/nl_ref`，输入 `a\nb`，`LC_ALL=C`）**：`-w 1 -v 100` → `0`、`1`；
+  `-w 1 -v -100` → `0`、`9`（符号本身是一格，且是第一格被削）；`-n ln -w 3 -v 12345` →
+  `345`、`346`；`-n rz -w 3 -v 12345` → `345`、`346`；`-w 4 -v -100000` → `0000`、`9999`；
+  `-w 3 -v 100` 不越界 → `100`、`101`（一格不削）。**左截不是右对齐的产物**，三张格式串同律，
+  这条判据决定了 K3 那枚负控必须能咬。
+- **改法**：`src/nl.rs:fn write_number` 先把字段建进局部 `field`（补位与符号归位仍按上一笔的
+  三条规则），末尾交回 `field[field.len() - width..]`（`saturating_sub` 兜住不越界的一支）。
+- **门**：库内 +1 枚（`the_number_field_is_cut_from_the_left_when_it_outgrows_the_width`，
+  六形含 `-n ln`/`-n rz` 与「正好等宽」的反形）、面门 +1 枚
+  （`a_number_wider_than_the_field_keeps_its_last_cells`，同六形端到端）；宿主整包 69 段
+  **1290 → 1292 / 0**，**容器权威门同读数退 0**（`tmp/nl-476/container-gate.log`），三架构
+  `--bins` 各退 0，`clippy` 与主树唯一句集合各 85 行、集合差为空，`rustfmt --check` 两件
+  （`src/nl.rs` 基线 5 处存量、改后仍 5；面门件 0 → 0）。
+- **A/B**（`tmp/nl-476/ab.log`，十七形）：**SAME=16 / DIFF=1**，唯一那一形就是上一笔写明
+  「参照件管不了」的 `-i 2147483648`（宿主 glibc 的 64 位 `long` 接受并截断，本壳按 Minix 的
+  32 位 `long` 拒）。上一笔留下的两形预期 DIFF 里，`-w 1 -v 100` 这类截尾形本轮转 SAME。
+- **负控三枚**（`tmp/nl-476/negctl.py`）各咬 2 枚（库 + 面）：K1 撤掉左截、K2 改成右截
+  （`-100` 宽 1 时右截交出 `-` 而不是 `0`，两判据分得开）、K3 只对右对齐生效（`-n ln`/`-n rz`
+  两形立刻红）。还原后复跑：库 634/0、面门 19/0。
+- **在册变化**：`NL-WIDTH-TAIL-TRUNCATION` 闭合（上一笔批次四百七十五新立，同日闭合）。
+- **三件套**：`cat tmp/nl-476/ab.log`、`python3 tmp/nl-476/negctl.py`、
+  `cargo test -p minix-textfilter`（`tmp/nl-476/pkg.log`、`container-gate.log`）；核实日
+  `2026-11-02`，基线快照 `51af6a608`。
+
+---
+
+
 ## 批次四百七十五（`NL-SIGNED-COUNTERS` 闭合：`-i`/`-v` 交回 `int` 域，计数器按 C 的 `int` 倒数与回绕，三种格式各就符号归位；另量出 `NL-WIDTH-TAIL-TRUNCATION` 一形登记不执行）
 
 - **这一笔的射程**：`nl` 的两个数字选项。C 的 `incr` 与 `startnum` 都是 `static int`
