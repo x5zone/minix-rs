@@ -3757,6 +3757,17 @@ aarch64 形各自的块/片判定）；`minix-arch --features runtime-window` **
 （7 个步骤）。**边界**：这道门管的是「测试被静默跳过」这一形态本身，不评价那 5 枚是否该继续
 存在（timer 门三枚是每架构编译存在性检查，按设计就该在 arch 下；要迁成形状 pin 是另一笔的取舍）。
 
+**合回读数（第二百一十一笔补记，SD34-GATE）**：主树在领取期间被 I21HOIST 一笔推进
+（`a4394a7b0`，也改同一份工作流），本笔的提交父就是它 ⇒ 纯快进成功（`rewrite` 顶到
+`052d977c8`）。主树复验：工作流 YAML 解析 **7 个步骤**、`os/**` 在 push/pull_request 两处路径里、
+新步骤在场；`python3 tools/arch-gated-test-count.py --self-test` → 自检通过，
+`python3 tools/arch-gated-test-count.py` → **5 枚 / 2 文件与基线一致**（退 0）。
+**一处工具自错的账要记**：本笔的提交 diff 里那份工作流显示「整篇 95 行重写」——原因是父版
+**blob 带 CRLF**（95 行 `\r`），而 `.gitattributes` 的 `* text=auto` 在入库时把触碰过的文件
+归一为 LF（文件头自己写着这条规矩，批次一百一十三的同款先例）；本笔写回的 Python 只是如实
+触发了归一，不是内容改写。**按策略保留归一结果**；`pattern-gate.sh` 的 P8 只扫
+`*.ld/*.sh/*.rs`，yml 不在其列，不影响门。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
