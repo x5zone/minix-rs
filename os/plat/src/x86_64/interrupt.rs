@@ -220,6 +220,17 @@ pub fn set_lapic_va(va_base: usize) {
     LAPIC_VA.store(va_base, Ordering::SeqCst);
 }
 
+/// PD-22 step 2: the IO-APIC MMIO base the kernel device window maps
+/// (injected kernel-side after check; defaults to the PA view for
+/// pre-window boot-phase access). Runtime re-mask/unmask goes through
+/// this base — process roots carry no identity after PD22S2E.
+static IOAPIC_VA: AtomicUsize = AtomicUsize::new(0xFEC0_0000);
+
+/// Kernel-side injection of the IO-APIC device-window VA.
+pub fn set_ioapic_va(va_base: usize) {
+    IOAPIC_VA.store(va_base, Ordering::SeqCst);
+}
+
 #[inline]
 unsafe fn lapic_read(base: usize, offset: usize) -> u32 { unsafe {
     let _ = base; // window base governs; the caller's PA base is legacy
@@ -246,13 +257,17 @@ unsafe fn ioapic_write_redtbl(base: usize, irq: u8, value: u64) { unsafe {
 }}
 
 unsafe fn ioapic_read_indirect(base: usize, reg: u32) -> u32 { unsafe {
-    write_volatile((base + IOAPIC_REG_IOREGSEL) as *mut u32, reg);
-    read_volatile((base + IOAPIC_REG_IOWIN) as *const u32)
+    let _ = base; // the window base governs (PA is the boot-phase default)
+    let b = IOAPIC_VA.load(Ordering::Relaxed);
+    write_volatile((b + IOAPIC_REG_IOREGSEL) as *mut u32, reg);
+    read_volatile((b + IOAPIC_REG_IOWIN) as *const u32)
 }}
 
 unsafe fn ioapic_write_indirect(base: usize, reg: u32, value: u32) { unsafe {
-    write_volatile((base + IOAPIC_REG_IOREGSEL) as *mut u32, reg);
-    write_volatile((base + IOAPIC_REG_IOWIN) as *mut u32, value)
+    let _ = base; // the window base governs (PA is the boot-phase default)
+    let b = IOAPIC_VA.load(Ordering::Relaxed);
+    write_volatile((b + IOAPIC_REG_IOREGSEL) as *mut u32, reg);
+    write_volatile((b + IOAPIC_REG_IOWIN) as *mut u32, value)
 }}
 
 /// x86-64 APIC-based interrupt controller.

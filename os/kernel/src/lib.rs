@@ -2235,6 +2235,15 @@ pub fn init_clock_and_interrupts() {
         )
         .expect("LAPIC page inside its own window") as usize;
         minix_plat::x86_64_interrupt_set_lapic_va(lapic_va);
+        // The IO-APIC page is slot 0; runtime re-mask/unmask goes through
+        // the same window (process roots carry no identity after PD22S2E).
+        let ioapic_va = minix_arch::arch::device_window::device_va_for(
+            regions,
+            0,
+            regions[0].phys_base,
+        )
+        .expect("IO-APIC page inside its own window") as usize;
+        minix_plat::x86_64_interrupt_set_ioapic_va(ioapic_va);
         minix_arch::arch::device_window::set_x86_window_live();
     }
     // PD-22 step 2 check-and-reject + device-window VA injection (riscv64):

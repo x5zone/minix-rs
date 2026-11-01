@@ -102,6 +102,8 @@ pub fn lapic_eoi() {
 }
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::interrupt::set_lapic_va as x86_64_interrupt_set_lapic_va;
+#[cfg(target_arch = "x86_64")]
+pub use x86_64::interrupt::set_ioapic_va as x86_64_interrupt_set_ioapic_va;
 
 /// PD-22 step 2: kernel-side injection of the LAPIC device-window VA.
 #[cfg(target_arch = "aarch64")]
