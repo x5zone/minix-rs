@@ -31,15 +31,17 @@
 //! one judgment leg of this family); the libc option line names the first byte of
 //! the flag (`getopt.c:79,103`); an unopenable operand is reported through
 //! `warn("%s", *argv)` (`vis.c:157`) with the name as raw bytes. The program-name
-//! token still folds once on its way into `&str` mouths
-//! (`ARGV-BYTE-PATH-IN-LIBS`), and the usage line's name is C's own
-//! `getprogname()` against this shell's hardcoded `vis` — registered as
-//! `VIS-USAGE-PROGNAME-HARDCODED`.
+//! token folds once on its way into `&str` mouths (`ARGV-BYTE-PATH-IN-LIBS`), and
+//! every line that carries a name follows C's `getprogname()`: the usage line
+//! (`vis.c:136-139` spells `"Usage: %s …"`), the `-F` refusal
+//! (`errx(1, …)`, `:91`) and the `-m`/`-h` refusal (`:144`). A renamed
+//! invocation renames all three, as the reference measures under a `vv` symlink.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
@@ -65,11 +67,10 @@ struct Plan<'a> {
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // The program name folds once (both `line_bytes` and the usage line take `&str`,
-    // registered `ARGV-BYTE-PATH-IN-LIBS`; the usage line's name is a separate registered
-    // item, `VIS-USAGE-PROGNAME-HARDCODED`). Operand names and the `-e` value do not pass
-    // through here: the former is built bytewise into the three-part `warn`, the latter
-    // goes into the extra list as the whole raw string.
+    // The program name folds once (the libc line, the usage line and the two `errx`
+    // refusals take `&str`, registered `ARGV-BYTE-PATH-IN-LIBS`). Operand names and
+    // the `-e` value do not pass through here: the former is built bytewise into the
+    // three-part `warn`, the latter goes into the extra list as the whole raw string.
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
     let refs: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let plan = match parse_vis_args(&refs, &prog) {
@@ -178,8 +179,13 @@ fn main() {
     run()
 }
 
-/// C's usage text (`vis.c:136-139`, note the capital `U`; exit 1).
-const USAGE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
+/// C's usage text (`vis.c:136-139`, note the capital `U`; exit 1). The name is the
+/// first `%s` argument, `getprogname()`, so a renamed invocation prints its own
+/// name — the reference `tmp/vis-472/vis_ref` run through a `vv` symlink prints
+/// `Usage: vv […]`.
+fn usage_bytes(prog: &str) -> Vec<u8> {
+    format!("Usage: {prog} [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n").into_bytes()
+}
 
 /// Joins the libc `getopt` line and this program's usage into two lines (the sentence
 /// has a single source in [`GetoptReport`], shared with the rest of the family).
@@ -190,7 +196,7 @@ const USAGE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [fil
 /// reference, so the truth for this branch comes from the nine shells of the family
 /// already pinned against C references, plus the C source itself.
 fn libc_line(report: GetoptReport, prog: &str) -> Vec<u8> {
-    [report.line_bytes(prog), USAGE.as_bytes().to_vec()].concat()
+    [report.line_bytes(prog), usage_bytes(prog)].concat()
 }
 
 /// Fold `argv` into a [`Plan`] the way `getopt(argc, argv, "bcde:F:fhlMmNnoSstw")`
@@ -311,9 +317,12 @@ fn parse_vis_args<'a>(argv: &'a [&'a [u8]], prog: &str) -> Result<Plan<'a>, Vec<
                     // all converts to zero and is refused here too.
                     let width = parse_atoi(word);
                     if width < 5 {
-                        return Err("vis: can't fold lines to less than 5 cols\n"
-                            .as_bytes()
-                            .to_vec());
+                        // `errx(1, "can't fold lines to less than 5 cols")`
+                        // (`vis.c:91-93`): `errx` prefixes `getprogname()` and the
+                        // sentence carries no operand.
+                        return Err(
+                            format!("{prog}: can't fold lines to less than 5 cols\n").into_bytes()
+                        );
                     }
                     foldwidth = width as usize;
                     // The same case also runs `markeol++`: `-F` marks end of line,
@@ -331,7 +340,7 @@ fn parse_vis_args<'a>(argv: &'a [&'a [u8]], prog: &str) -> Result<Plan<'a>, Vec<
                 // print only the usage line). An earlier version treated it as a
                 // value-taking letter, so a trailing `-d` produced libc's extra
                 // missing-value line.
-                b'd' => return Err(USAGE.as_bytes().to_vec()),
+                b'd' => return Err(usage_bytes(prog)),
                 _ => {
                     // Unknown letter: libc's `getopt` prints one line first
                     // (`getopt.c:101-104`; the option string does not start with `:`, so
@@ -351,9 +360,9 @@ fn parse_vis_args<'a>(argv: &'a [&'a [u8]], prog: &str) -> Result<Plan<'a>, Vec<
     // `vis.c:142-144`: the two styles are refused *after* the option loop and
     // before any operand is opened, so this error outranks an unreadable file.
     if options.http && options.mime {
-        return Err("vis: Can't specify -m and -h at the same time\n"
-            .as_bytes()
-            .to_vec());
+        // `errx(1, "Can't specify -m and -h at the same time")` (`vis.c:144`):
+        // `errx` prefixes `getprogname()`.
+        return Err(format!("{prog}: Can't specify -m and -h at the same time\n").into_bytes());
     }
     Ok(Plan {
         options,

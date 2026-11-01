@@ -358,6 +358,76 @@ fn letters_outside_the_c_optstring_are_refused_with_usage() {
     }
 }
 
+/// Every line that names the program follows C's `getprogname()`, not a hardcoded
+/// `vis`: the usage line (`vis.c:136-139` spells `"Usage: %s …"`), the `-F`
+/// refusal (`errx`, `:91`) and the `-m`/`-h` refusal (`errx`, `:144`). The
+/// registered `VIS-USAGE-PROGNAME-HARDCODED` named only the usage line; the two
+/// `errx` lines were measured to have the same root after a `vv` symlink turned
+/// all four reference lines into `vv`, and the reference `tmp/vis-472/vis_ref`
+/// reads `vv: unknown option -- Z` / `Usage: vv […]` / `vv: can't fold lines to
+/// less than 5 cols` / `vv: Can't specify -m and -h at the same time`. The gate
+/// sets `argv[0]` directly (`CommandExt::arg0`), so no symlink is needed on the
+/// Rust side.
+#[test]
+fn every_program_name_slot_follows_argv0() {
+    use std::os::unix::process::CommandExt;
+
+    fn run_as(name: &str, args: &[&str]) -> (Vec<u8>, i32, Vec<u8>) {
+        let child = Command::new(VIS)
+            .arg0(name)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the vis binary should be runnable");
+        let output = child.wait_with_output().expect("the run should finish");
+        (
+            output.stdout,
+            output.status.code().unwrap_or(-1),
+            output.stderr,
+        )
+    }
+
+    const USAGE_VV: &[u8] = b"Usage: vv [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
+    // The libc line and the usage line share one origin: both take `argv[0]`.
+    let (out, status, err) = run_as("vv", &["-Z"]);
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"vv: unknown option -- Z\n".as_slice(), USAGE_VV].concat(),
+        "-Z 的两行都必须跟着 argv[0]"
+    );
+    // `-d` reaches the usage line alone (`case 'd'` is compiled out).
+    let (out, status, err) = run_as("vv", &["-d"]);
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(err, USAGE_VV, "-d 只有 usage 一行，名字也是 vv");
+    // The two `errx` refusals prefix `getprogname()`.
+    let (out, status, err) = run_as("vv", &["-F", "4"]);
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"vv: can't fold lines to less than 5 cols\n".to_vec(),
+        "-F 的 errx 前缀也必须跟着 argv[0]"
+    );
+    let (out, status, err) = run_as("vv", &["-m", "-h"]);
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"vv: Can't specify -m and -h at the same time\n".to_vec(),
+        "-m/-h 的 errx 前缀也必须跟着 argv[0]"
+    );
+    // Under its own name the answer is unchanged: the other face tests that
+    // expect `vis:` keep their own contract, and the name really is argv[0].
+    let (_, status, err) = run_as("vis", &["-F", "4"]);
+    assert_eq!(status, 1);
+    assert_eq!(err, b"vis: can't fold lines to less than 5 cols\n".to_vec());
+}
+
 #[test]
 fn letters_cluster_and_values_attach_or_follow() {
     // `getopt("bcde:F:fhlMmNnoSstw")` clusters flags, and `e` takes the rest of its
