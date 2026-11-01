@@ -993,6 +993,15 @@ impl VmServer {
                         core::ptr::write_bytes(base_ptr.add(tail_start), 0, PS - tail_start);
                     }
                 }
+
+                // SD-20: the page's bytes are final; if this segment is
+                // executable, the CPU will fetch them as instructions — the
+                // arch sequence must run before the image ever runs
+                // (aarch64/riscv64; x86_64 and host builds compile the call
+                // out). One kernel call per executable page, boot-time only.
+                if seg.flags & minix_elf::PF_X != 0 {
+                    crate::icache_bridge::sync_written_page(dst_phys);
+                }
             }
         }
 

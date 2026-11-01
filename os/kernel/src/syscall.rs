@@ -2367,7 +2367,7 @@ fn phys_ram_covers(
 }
 
 /// The boot-reported physical-RAM view, or `None` before the handoff stored it.
-#[cfg(all(target_arch = "riscv64", not(test)))]
+#[allow(dead_code)] // the riscv KDM arms and the all-arch PteSyncIcache arm consume it.
 fn phys_ram_view() -> Option<(
     &'static [minix_boot::MemoryRegion],
     &'static [minix_boot::MemoryRegion],
@@ -2379,6 +2379,24 @@ fn phys_ram_view() -> Option<(
         kinfo.reserved_regions(),
         (kinfo.kern_phys_base.0, kinfo.kern_size),
     ))
+}
+
+/// SD-20: the gate for `VmCtlParam::PteSyncIcache` — VM-only (the loader that
+/// writes images through its own Direct Map is VM), and the reported page must
+/// be physical RAM per [`phys_ram_covers`] (the same H5 bound the riscv KDM
+/// arms use; a whole page, no particular alignment required beyond the RAM
+/// region itself). Returns the errno the VM should see on refusal.
+fn vm_pte_sync_target(caller_nr: crate::proc::ProcNr, pa: u64, len: u64) -> Result<(), i32> {
+    if caller_nr != crate::proc::proc_nr::VM_PROC_NR {
+        return Err(EPERM);
+    }
+    let Some((memmap, reserved, image)) = phys_ram_view() else {
+        return Err(EINVAL);
+    };
+    if !phys_ram_covers(pa, len, 1, memmap, reserved, image) {
+        return Err(EINVAL);
+    }
+    Ok(())
 }
 
 fn dispatch_vmctl(
@@ -2585,6 +2603,31 @@ fn dispatch_vmctl(
             {
                 let _ = msg;
                 KcallResult::Ok(ENOSYS)
+            }
+        }
+        // ── PteSyncIcache: VM-loader instruction-cache sync (SD-20) ──
+        // All architectures: the VM's own loader copies executable image bytes
+        // through its Direct Map, so the kernel's ELF-loader tail sync never
+        // sees them. The kernel maps the reported page through **its** Direct
+        // Map (same physical lines) and runs the arch sequence; x86_64's
+        // implementor is a serializing no-op.
+        VmCtlParam::PteSyncIcache => {
+            let pa = unsafe { msg.m_u.m_m1.m1p1 } as u64;
+            let len = unsafe { msg.m_u.m_m1.m1p2 } as u64;
+            match vm_pte_sync_target(caller_nr, pa, len) {
+                Ok(()) => {
+                    use minix_arch::arch::cache_sync::CacheSyncArch as _;
+                    use minix_arch::direct_map::DirectMapArch as _;
+                    let lo = minix_arch::CurrentDirectMap::kernel_phys_to_virt(
+                        minix_types::PhysBytes(pa),
+                    );
+                    let hi = minix_arch::CurrentDirectMap::kernel_phys_to_virt(
+                        minix_types::PhysBytes(pa + len),
+                    );
+                    minix_arch::CurrentCacheSyncArch::sync_icache_range(lo.0..hi.0);
+                    KcallResult::Ok(0)
+                }
+                Err(errno) => KcallResult::Ok(errno),
             }
         }
         VmCtlParam::SetAddrSpace => {
@@ -3999,6 +4042,27 @@ mod phys_ram_gate_tests {
         assert!(!phys_ram_covers(0x47ff_fffc, 8, 8, &MEM, &RES, IMAGE));
         // Non-canonical / overflowing address.
         assert!(!phys_ram_covers(u64::MAX - 7, 8, 8, &MEM, &RES, IMAGE));
+    }
+
+    #[test]
+    fn the_icache_sync_gate_is_vm_only_and_ram_bounded() {
+        // SD-20's gate: a non-VM caller is refused before any boot state is
+        // consulted; the VM caller with an absurd page is refused by the RAM
+        // bound (deterministic whichever boot view the test process has —
+        // `pa` is beyond every possible region).
+        use super::vm_pte_sync_target;
+        use crate::proc::ProcNr;
+        use minix_types::{EINVAL, EPERM};
+        assert_eq!(
+            vm_pte_sync_target(ProcNr(3), 0x4000_0000, 4096),
+            Err(EPERM),
+            "only VM may ask for image-page synchronization"
+        );
+        assert_eq!(
+            vm_pte_sync_target(crate::proc::proc_nr::VM_PROC_NR, u64::MAX - 4095, 4096),
+            Err(EINVAL),
+            "an out-of-RAM page has nothing to synchronize"
+        );
     }
 
     #[test]

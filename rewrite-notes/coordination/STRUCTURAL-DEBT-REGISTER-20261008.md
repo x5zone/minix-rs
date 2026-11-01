@@ -480,16 +480,30 @@ the claim ledger** (§7).
 
 ### Part E — Per-architecture CPU contracts
 
-#### SD-20. Cache maintenance on data→instruction transitions (债⑩) — **open (P-A64RV-02, untouched)**
+#### SD-20. Cache maintenance on data→instruction transitions (债⑩) — **closed `2026-10-31` (P-A64RV-02); this entry's "untouched" line was stale**
 
-Unchanged: aarch64 `dc cvau`/`ic iallu` remain absent; riscv64's `fence.i` coverage beyond the boot-leg
-scatter was not re-verified this round (the October riscv boot chain reached all gates, which exercises
-exec heavily on QEMU — but QEMU does not model this fault class, so gates-green is not evidence; the
-ledger row stays open and is the authority). The frozen recommendation (Rev 2/§D.11): a per-arch
-`sync_icache(range)` contract in the arch-trait family (`[ARCH]`), aarch64 = the ARMv8 sequence, riscv64
-= `fence.i` (+ SBI remote fence at SMP), x86_64 = no-op; called at the ELF-loader tail. **This remains
-the highest-certainty real-hardware time bomb in the register** — nothing in the QEMU gates can ever
-clear it.
+**Landed before this round** (recorded in the operative ledger's SD-20 row, `closed / L1`): the
+`[ARCH]` contract `os/arch/src/arch/cache_sync.rs` (`CacheSyncArch::sync_icache_range`), the three
+implementations (aarch64 = `ctr_el0` line decode + `dc cvau`/`dsb ish`/`ic ivau`/`dsb ish`/`isb`;
+riscv64 = `fence.i` + SBI remote fence; x86_64 = serializing no-op), and the kernel ELF-loader tail call
+in `arch/boot.rs::load_elf_into` with mock-recorded tests.
+
+**Remaining leg found and landed `2026-10-31`** (claim/SD20-ICACHE-qoder): the **kernel loader is not
+the only loader** — the production boot loader is the VM server, whose `exec_bootproc` copies every
+boot process's image through the VM Direct Map; those stores never passed the kernel loader's sync, so
+on aarch64/riscv64 every non-VM image was about to run from unsynchronized instruction lines (QEMU
+cannot show this; the register's "time bomb" warning applied exactly here). Fix: a new `SYS_VMCTL`
+sub-command `PteSyncIcache` (wire 23, `pa` in m1p1, length in m1p2) — the kernel gates it with the H5
+rule (caller must be `VM_PROC_NR`; the page must be physical RAM), maps the page through its own Direct
+Map view of the same physical lines and runs `CurrentCacheSyncArch::sync_icache_range`; the VM calls it
+once per executable page right after writing it (`os/servers/vm/src/icache_bridge.rs`; x86_64 and host
+builds compile the call out). Readings: kernel mock **5 段 / 861 / 0**（new gate test + the H5 predicate
+family), VM lib **546 / 0**, three-arch `cargo check -p minix-kernel -p minix-vm` 0 error each.
+
+**Honest boundary (unchanged):** QEMU does not model this fault class, so no gate can *prove* the
+sequence; the real-hardware window remains the authority for "it works". What the code + tests now
+guarantee is that **every image-loading path in the tree (kernel loaders and the VM loader) issues the
+arch sequence at its tail** — the structural half of the bomb is disarmed.
 
 #### SD-21. Inbound user-SP 16-byte realignment — **closed (C8ALIGN; [ARCH: exec-sp-16] per two-round external review)**
 

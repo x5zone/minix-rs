@@ -1479,6 +1479,16 @@ pub enum VmCtlParam {
     /// (C does not have this symptom). wire=20, pa in m1p1, value back in
     /// m1p1.
     PteRead,
+    /// Instruction-cache synchronization for a page the VM loader wrote
+    /// itself (SD-20): the VM's `exec_bootproc` copies image bytes through
+    /// its own Direct Map, so the kernel's ELF-loader tail sync never sees
+    /// them; the VM reports the freshly written physical page here and the
+    /// kernel runs the arch sequence by mapping the page through the kernel
+    /// Direct Map (aarch64 `dc cvau`/`ic ivau`, riscv64 `fence.i` + remote
+    /// broadcast, x86_64 serializing no-op). No C counterpart (C has no
+    /// aarch64 port and no cache-maintenance call in its loader). wire=23,
+    /// pa in m1p1, length in m1p2.
+    PteSyncIcache,
 }
 
 /// Parse `SVMCTL_PARAM` integer into `VmCtlParam`.
@@ -1506,6 +1516,7 @@ impl TryFrom<i32> for VmCtlParam {
             20 => Ok(VmCtlParam::PteRead),
             21 => Ok(VmCtlParam::PteWrite),
             22 => Ok(VmCtlParam::PteZero),
+            23 => Ok(VmCtlParam::PteSyncIcache),
             // VMCTL_NOPAGEZERO (18) and VMCTL_I386_KERNELLIMIT (19) are
             // 32-bit only and unused on 64-bit — return ENOSYS.
             _ => Err(()),

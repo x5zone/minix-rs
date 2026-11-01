@@ -102,6 +102,7 @@ pub(crate) mod cow_exec_pf;
 pub(crate) mod rs;
 pub(crate) mod query;
 pub(crate) mod sanity;
+pub(crate) mod icache_bridge;
 pub(crate) mod vmdm_bridge;
 
 

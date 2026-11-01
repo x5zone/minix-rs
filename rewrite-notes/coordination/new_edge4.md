@@ -3686,6 +3686,30 @@ protocol stack behind the Stack trait]`）。
 `rustfmt --check syscall.rs` 与 HEAD 基线同为 111 处（本笔新增 0 处）。登记侧：SD-22 的 H5 残量
 与 SD-36 的「until then」句都改成已落并指向读数；台账对应行同步。
 
+### 第二百零九笔（C 板·内核优先 · SD-20：装载路径的另一半——VM 自己的 `exec_bootproc` 也同步指令缓存，闸用 H5 同一套规则）
+
+**台账与寄存器在本笔开头互相矛盾**：台账的 SD-20 行早已 `closed / L1`（契约、三架构实现、内核装载器尾调用
+与 mock 记录全在），寄存器那份却写着 `open (untouched)`——读码后发现两边都没说全：内核的
+`load_elf_into` 尾巴确实同步了，可**生产启动链的装载器是 VM 服务器**——
+`os/servers/vm/src/vm_server.rs::exec_bootproc` 把每个启动进程的镜像经 VM Direct Map 逐页写进新根，
+那些页从未经过任何同步。aarch64 的 I-cache 与这些 D 侧写入不粘，riscv64 首取前需要 `FENCE.I`；
+QEMU 不建模该故障类，所以「全门绿」从来没有证明过它——寄存器说的「最高确定性真机定时炸弹」正好落在这条
+腿上。
+
+**修法（内核 + VM 两侧）**：
+1. **内核**：`VmCtlParam::PteSyncIcache`（wire 23，`pa` 在 m1p1、长在 m1p2）。手臂按 **H5 同一套规则**
+   设闸——调用者必须 `VM_PROC_NR`（否则 EPERM）、页必须落在 boot 上报的物理 RAM（`phys_ram_covers`，
+   否则 EINVAL）——然后把该页经**内核自己的** Direct Map 视图（同一批物理行）交给
+   `CurrentCacheSyncArch::sync_icache_range`。
+2. **VM**：新模块 `os/servers/vm/src/icache_bridge.rs`；`exec_bootproc` 在写完每个**可执行段**页
+   （文件字节 + .bss 头尾清零都落定之后）调一次。x86_64 与宿主测试编译掉整个调用（缓存相干/无内核可问）。
+
+**读数**：kernel mock（`--features mock`）**5 段 / 861 / 0**（新增闸测试：非 VM → EPERM、VM + 越界页 →
+EINVAL；H5 谓词族 4 枚仍在）；`minix-vm --lib` **546 / 0**；三架构 `cargo check -p minix-kernel -p minix-vm`
+各 **0 error**（aarch64/riscv64 编过新桥）；`rustfmt --check` 触及件的自漂移与 HEAD 基线一致（新增区 0 处，
+新文件 0 处）。**诚实边界**：门的绿仍不能证明真机行为，真机窗是权威；本笔记的是**结构半**——树内每一条
+装载路径（内核两个装载器 + VM 装载器）的尾同步至此齐了。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
