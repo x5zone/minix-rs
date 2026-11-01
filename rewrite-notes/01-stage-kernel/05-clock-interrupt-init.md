@@ -1,6 +1,7 @@
 # 05 · 时钟与中断初始化：让时间开始流动，同时先别接收中断
 
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:struct Name`、`path:const NAME`），不使用行号；正文里出现的行号（调用链快照、命令预期输出、引文题注的 L 区间）是当期快照数据，不作定位锚点。
+> 路径与标注约定（`[ARCH: …]` 等记号的解码处）全局只说一次：见 [README.md](../README.md) 的「全局阅读约定」。
+
 > **本篇主题**：`cstart` 后半段与它在 Rust 侧的对位——软件时钟状态、中断控制器、架构杂项三件事怎么建立，硬件定时器为什么不在这一步启动，以及"放开一条中断线"需要先凑齐哪几样东西。
 > **前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) 交出启动信息与内存记账（`KernelInfo` 字段的存放与 `cut_memmap` 的用法）、[02-higher-half-kernel.md](02-higher-half-kernel.md) 建立高半地址空间（设备寄存器页可被内核直接寻址的前提）、[03-kmain-cstart.md](03-kmain-cstart.md) 装上保护结构（GDT/IDT/TSS 三张表与"门里有真入口"）、[04-platform-discovery.md](04-platform-discovery.md) 产出描述符（本篇的三次实例化都从它取地址与频率）。
 > **后续**：tick 到达之后做什么（`15-clock-timer`（时钟与定时器篇，尚未重生成））、中断分发与 claim/complete 协议（`14-exception-interrupt`（异常与中断篇））、`bsp_finish_booting` 的其余步骤与 `switch_to_user`（`08-system-init-boot-finish`（启动收尾与切用户篇））、AP 定时器与 SMP（`16-smp`（SMP 篇，尚未重生成））。

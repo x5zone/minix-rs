@@ -1,5 +1,7 @@
 # 09 · VM 启动协商：一页交接与一条 SYS_VMCTL 通道
 
+> 路径与标注约定（`[ARCH: …]` 等记号的解码处）全局只说一次：见 [README.md](../README.md) 的「全局阅读约定」。
+
 > **C 真值源**：`minix3/minix/include/minix/com.h`（SYS_VMCTL 调用号与 VMCTL_* 子命令常量、SVMCTL_* 消息字段）、`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`、`minix3/minix/kernel/arch/i386/arch_do_vmctl.c`（`setcr3`/`arch_do_vmctl`）、`minix3/minix/servers/vm/main.c`（`exec_bootproc`/`init_vm`/`is_first_time`）、`minix3/minix/servers/vm/pagetable.c`（`pt_bind`/`pt_mapkernel`/`pt_allocate_kernel_mapped_pagetables`）、`minix3/minix/servers/vm/glo.h`（BSS 全局 `kernel_boot_info`）、`minix3/minix/lib/libsys/sys_vmctl.c:sys_vmctl_set_addrspace`、`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc`、`minix3/minix/kernel/arch/i386/pre_init.c`（模块表装配）、`minix3/minix/kernel/arch/i386/memory.c`（`createpde`/`mem_clear_mapcache`/`arch_phys_map`）。
 > **Rust 实现**：`os/libs/minix-types/src/types/boot.rs`（`VmBootHandoff` 与交接页常量）、`os/kernel/src/syscall.rs`（`dispatch_vmctl` 与 `vmctl_*` 子函数）、`os/kernel/src/vm.rs:enum VmCtlParam`、`os/kernel/src/vm_handoff.rs`（`classify`/`build_vm_handoff`/`build_identity_windows`）、`os/servers/vm/src/boot.rs`（`read_boot_params`/`reconcile`/`BootParams`）、`os/servers/vm/src/pagetable/vm_self_map.rs:fn init_vm_self_pt`、`os/servers/vm/src/vm_server.rs`（`init`/`init_global_state`/`exec_bootproc`/`init_boot_procs`）、`os/servers/vm/src/main.rs`（启动链）。
 > **目标读者**：熟悉操作系统基本概念（进程、页表、IPC、内核/用户态边界）与 C 语言的开发者；Rust 一侧读到 repr(C) 结构体、enum 与 `unsafe` 契约大意即可。
@@ -8,7 +10,6 @@
 > **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构）；`[ARCH: riscv-vmddm]`（PteRead/PteWrite/PteZero 三臂）是 Architectural Evolution（riscv64 专属，文档/注释/代码三处一致标注）。
 > **补充清单**：正文另引用 `minix3/minix/include/arch/i386/include/archtypes.h`、`minix3/minix/include/minix/{param.h,syslib.h}`、`minix3/minix/kernel/main.c`、`minix3/minix/kernel/system/{do_exec.c,do_getinfo.c,do_umap_remote.c}`、`os/kernel/src/lib.rs`、`os/servers/vm/src/{exit,fork}.rs`、`os/qemu-tests/README.md`。
 > **编号说明**：正文与引文里出现的 `NK4-C`、`fix2x`、`gh*`、`T8`、`D-40`、`X-7` 等编号是本仓的开发工作条目号与评审记录编号——原文保留，溯源按编号在本仓检索。
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:static NAME`），**行号不作锚点**——行号只出现在三类场合：被引注释内部（随原文保留）、漂移登记（§3.6/§4.4 对齐现码）、符号名旁为短小事实注明的取证行号。
 > **本篇主题**：VM 出生时只拿着内核建的 bootstrap 根，却要接管全系统的内存管理——中间的协商怎么完成。两件交接物（一页世界状态快照 + 一条 SYS_VMCTL 通道）与两道闸的两条放行路径（SETADDRSPACE 清 VMINHIBIT 不入队、BOOTINHIBIT_CLEAR 才入队）。
 > **前置**：[08-system-init-boot-finish.md](08-system-init-boot-finish.md)（三开关与 bsp 收尾；其 §3.3 预告的 set_vm_running 补写兑现于本篇 SETADDRSPACE 臂，§3.5 预告的凭证随页交付兑现于本篇 reconcile，§5.1 移交的 identity_windows 与 handoff 协议面归本篇）、[07-cross-space-init.md](07-cross-space-init.md)（DM 双窗口与 bootstrap 根的来历）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（VMINHIBIT/BOOTINHIBIT 的置位——本篇讲它们的解除者）。
 > **后续**：调度循环本体（`10-switch-to-user`，切用户与调度循环篇）、分派入口与 kernel_call_finish（`13-syscall-dispatch`，系统调用分派篇）、VMSUSPEND 挂起-恢复运行时（`24-cross-space-runtime`，跨空间运行时篇，尚未重生成）、VM 服务器内部本体（`rewrite-notes/02-stage-vm/`，init_page_table/map_kernel/PMM）。

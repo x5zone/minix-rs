@@ -1,8 +1,9 @@
 # 08 · 启动完成翻转：从初始化态到运行态
 
+> 路径与标注约定（`[ARCH: …]` 等记号的解码处）全局只说一次：见 [README.md](../README.md) 的「全局阅读约定」。
+
 > **C 真值源**：`minix3/minix/kernel/main.c`（`bsp_finish_booting`/`kmain`/`cstart`/`announce`）、`minix3/minix/kernel/system.c`（`system_init`/`kernel_call_dispatch`）、`minix3/minix/kernel/proc.h`（RTS 位族与宏）、`minix3/minix/kernel/clock.c:boot_cpu_init_timer`、`minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init`、`minix3/minix/kernel/arch/i386/arch_system.c:fpu_init`/`cpu_identify`、`minix3/minix/kernel/arch/i386/pg_utils.c`（`add_memmap` 与 `kernel_may_alloc` 的五处断言）、`minix3/minix/kernel/arch/i386/pre_init.c`（`kernel_may_alloc` 定义）、`minix3/minix/include/minix/com.h`（`VM_PROC_NR`/`NR_SYS_CALLS`）、`minix3/minix/kernel/{config.h,glo.h}`、`minix3/minix/kernel/arch/i386/{acpi.c,oxpcie.c}`、`minix3/minix/kernel/system/do_umap_remote.c`。
 > **Rust 实现**：`os/kernel/src/lib.rs`（`kmain` 的 Phase A-F 与 `bsp_finish_booting`）、`os/kernel/src/syscall.rs`（`enum Syscall` 与分派）、`os/kernel/src/memmap.rs`、`os/kernel/src/vm_handoff.rs`、`os/kernel/src/proc_table.rs`、`os/kernel/src/smp.rs`、`os/kernel/src/globals.rs`、`os/kernel/src/kerninfo.rs`、`os/kernel/src/irq_manager.rs`、`os/arch/src/x86_64/cpu_identity.rs`、`os/kernel/src/{clock,proc,trap_dispatch}.rs`。
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:static NAME`），不使用行号；**例外按原样保留**：命令输出与证据清单里的行号、对源码注释坐标的登记，以及 C 侧同一函数内部的阶段定位（如"关窗拍在 `main.c:105`"这类分拍坐标）。
 > **目标读者**：熟悉操作系统基本概念（进程、调度、页表、中断）与 C 语言的开发者；Rust 一侧读到 enum/trait 与 `unsafe` 契约大意即可。
 > **前置知识**：kmain 前半与 Phase 划分（03 篇）、定时器三段语义（05 篇）、进程表与 RTS 位族（06 篇）、Direct Map 与 memory_init（07 篇）——本篇从"表都建完了"接起。
 > **教学目标**：①翻转的三个开关及其次序防线（§1.1）；②kmain 尾段的十二拍全景与交接时刻的进程图景（§1.2、§1.3）；③C 侧收尾序列：system_init 装配、kernel_may_alloc 窗口、bsp_finish_booting 逐拍、smp_init 位次（§2）；④Rust 的重排与消失：分发表编译期穷尽、Phase A–F、两个全局、bootstrap 内存归宿（§3）；⑤实现走查：classify、announce/kerninfo、Step -1..9（§4）；⑥测试与诚实披露（§5）、诊断（§6）。

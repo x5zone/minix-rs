@@ -1,6 +1,7 @@
 # 06 · 进程表与 boot 进程初始化：261 个槽、16 个状态位与 17 项清单
 
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:struct Name`、`path:const NAME`、`path:MACRO`），不使用行号；引文块内部的坐标与历史标记（若源注释原文带——如 `Replaces the previous …`、阶段编号 `D-58`/`E1 slice N`、日期）按原文保留，属引文保真的一部分，与本文结论无关。
+> 路径与标注约定（`[ARCH: …]` 等记号的解码处）全局只说一次：见 [README.md](../README.md) 的「全局阅读约定」。
+
 > **本篇主题**：内核的两张编译期定容表怎么存、`struct proc`/`struct priv` 的字段各自承担什么、`p_rts_flags` 的 16 个位各自由谁置位与解除、`p_misc_flags` 的 18 个位各自的位值与语义（置位与解除的调用面散布在各功能篇），以及编译期写死的 17 项 boot image 清单如何被逐项填进进程槽、其中 VM 又是如何被内核亲自装载。
 > **前置**：[03-kmain-cstart.md](03-kmain-cstart.md)（`kmain` 的分段与 `proc_init` 在其中的位置）、[04-platform-discovery.md](04-platform-discovery.md)（平台描述符与 `KernelInfo` 的消费）、[05-clock-interrupt-init.md](05-clock-interrupt-init.md)（§1.4 把"进程表本身的初始化与 boot 进程装载"指给本篇）。
 > **后续**：`08-system-init-boot-finish`（启动收尾与切用户篇，尚未重生成）接 `bsp_finish_booting` 的其余步骤与 `switch_to_user`；`07-cross-space-init`（跨空间访问初始化篇，尚未重生成）接页表根与 Direct Map；`10-smp-boot`（SMP 启动篇，尚未重生成）接 AP 侧的同一批抑制位；`11-scheduling-primitives`（调度原语篇，尚未重生成）接就绪队列与 `pick_proc`；`12-ipc-core`（IPC 核心篇，尚未重生成）接消息流程。
