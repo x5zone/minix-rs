@@ -4444,3 +4444,15 @@ timer 载体回退到引导根 PA 直访=identity 覆盖 ✓——C11WX2 时代�
 PASS 后合并 PD22S2H → run_all 39/0/0 → 收官记账。claim 树完整
 （9 笔提交含全套诊断/二分/边界校验），门读数 arch 290/0、三架构
 check 0 error。
+
+**PD22S2H-12 取证闭环（claim 在途，最新 diag 提交）**：去失聪修复
+（panic handler + diag_panic 双双先清 MCR.LOOP）后 panic 文本全量可
+见：scause 0xd stval=0xffffff8040201004，seictx=0x1（per-hart 派生正
+确——2a 实现无误），ua0=0xffffff8040201000（fault 基座）、ua2=0x10。
+disasm 形态=f120<<12 + f110*2 + 0x200004（claim_offset 形状但基座非
+注入的 0xffffffc020000000）。下会话首刀：沿 ua0 基座来源定位——载体
+自建 KernelInfo 的 DM 窗基座（D59POLICY 字段）嫌疑最大；grep
+0xffffff8040000000 的产生点（0xffffff8020000000+0x20000000 或
+base-0x40000000 形态）。次候选：claim_hardware_irq 内联的
+s_mode_context 路径与 plat claim_context 的 plic_va 基座不一致。
+修好 → timer 载体 PASS → 合并 PD22S2H → run_all 39/0/0 → 记账。
