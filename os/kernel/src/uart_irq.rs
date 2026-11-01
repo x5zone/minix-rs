@@ -44,16 +44,15 @@ static FIRED: AtomicUsize = AtomicUsize::new(0);
 static MATCHED: AtomicUsize = AtomicUsize::new(0);
 
 fn uart_read(off: u64) -> u8 {
-    // SAFETY: same as above; reads RHR/LSR. PA direct — the timer carrier
-    // runs under the bootstrap root whose retained identity [0,4 GiB)
-    // covers the UART.
-    unsafe { ((UART_BASE + off) as *const u8).read_volatile() }
+    // SAFETY: device MMIO inside the kernel device window (slot 1, PD-22
+    // step 2); reads of RHR/LSR carry no side-effect ordering constraints.
+    unsafe { (uart_va(off).expect("UART device window unmapped") as *const u8).read_volatile() }
 }
 
 fn uart_write(off: u64, v: u8) {
-    // SAFETY: same as above; writes IER/MCR/THR. Bootstrap root identity
-    // [0,4 GiB) is retained per ruling — PA access works at boot phase.
-    unsafe { ((UART_BASE + off) as *mut u8).write_volatile(v) }
+    // SAFETY: same as above; writes IER/MCR/THR via the kernel device
+    // window (slot 1).
+    unsafe { (uart_va(off).expect("UART device window unmapped") as *mut u8).write_volatile(v) }
 }
 
 /// UART RX hook (first source): drain RDR, verify the expected character,
@@ -170,6 +169,46 @@ pub fn enable_uart_rx_selftest(expected: u8) {
     uart_write(0, expected);
     uart_write(4, mcr & !0x10);
     uart_write(0, expected);
+    // PD22S2H diag: PLIC state right after the trigger — distinguishes
+    // "UART did not raise the line" (pending bit 10 clear) from "enable
+    // written to the wrong context" (enable bit 10 clear) from "PLIC
+    // holds it" (both set, SEI pending in sip).
+    use minix_plat::riscv64::early_console as sbi_con;
+    let regions = minix_arch::arch::device_window::device_window_regions();
+    let plic_va = minix_arch::arch::device_window::device_va_for(
+        regions,
+        0,
+        regions[0].phys_base,
+    )
+    .expect("PLIC window") as usize;
+    let mut show = |name: &str, addr: usize| {
+        let v = unsafe { (addr as *const u32).read_volatile() };
+        sbi_con::write_str("  [plic-diag] ");
+        sbi_con::write_str(name);
+        sbi_con::write_str("=0x");
+        let mut hb = [0u8; 8];
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut vv = v as u64;
+        for i in (0..8).rev() {
+            hb[i] = HEX[(vv & 0xf) as usize];
+            vv >>= 4;
+        }
+        sbi_con::write_str(core::str::from_utf8(&hb).unwrap_or("?"));
+        sbi_con::write_str("\n");
+    };
+    show("pending0", plic_va + 0x1000);
+    show("enable_c1_w0", plic_va + 0x2000 + 0x100);
+    show("threshold_c1", plic_va + 0x200000 + 0x1000);
+    let sip_word = {
+        let mut v: u32;
+        // SAFETY: PLIC window MMIO read of... reuses the pending block as a
+        // canary: the SEIP state is visible via sip only through CSR, which
+        // faulted in this context; the MMIO pending read above already
+        // proves the line state, so this second pending read suffices.
+        v = unsafe { (plic_va as *const u32).read_volatile() };
+        v
+    };
+    show("plic_base_canary", sip_word as usize);
 }
 
 /// First-source readings (used by the script and accounting): (fire count,

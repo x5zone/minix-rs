@@ -19,7 +19,7 @@ use crate::interrupt::{InterruptRouter, PerCpuInterruptUnit, IrqVector, NR_IRQ_V
 
 /// PLIC register offsets.
 const PLIC_PRIORITY: usize = 0x0000;
-const PLIC_ENABLE: usize = 0x2000;
+const PLIC_ENABLE: usize = 0x2000; // QEMU sifive_plic.c: ENABLE_STRIDE 0x80/context
 const PLIC_THRESHOLD: usize = 0x200000;
 const PLIC_CLAIM: usize = 0x200004;
 /// PLIC complete register offset.
