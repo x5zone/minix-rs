@@ -842,6 +842,56 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
     kernel_info
 }
 
+/// The low-VA device windows the Step-1 identity map must emit as
+/// Device-nGnRnE ([ARCH: mmio-device], SD-42).
+///
+/// - **aarch64**: the platform MMIO window (PL011 GICv3 registers). Both the
+///   identity alias here and the high-half alias of Step 2b carry the same
+///   attributes on purpose — mapping one physical page with two attribute
+///   sets is UNPREDICTABLE per the ARM ARM.
+/// - **riscv64**: `kernel_identity_mmio_regions()` — the PLIC window and the
+///   NS16550A UART page (`kernel/src/uart_irq.rs` dereferences the UART at
+///   VA == PA; a Normal WBWA mapping satisfies QEMU and not real hardware).
+/// - **x86_64**: none here — its LAPIC/IO-APIC pages get their uncacheable
+///   attribute from firmware-established MTRRs, and the page tables have no
+///   per-PTE device bit to set.
+#[cfg(target_arch = "aarch64")]
+fn identity_device_windows() -> &'static [(u64, u64)] {
+    use minix_platform::arch::aarch64::{MMIO_PA_BASE, MMIO_WINDOW_LEN};
+    const WINDOWS: &[(u64, u64)] = &[(MMIO_PA_BASE, MMIO_WINDOW_LEN)];
+    WINDOWS
+}
+
+#[cfg(target_arch = "riscv64")]
+fn identity_device_windows() -> &'static [(u64, u64)] {
+    minix_arch::kernel_identity_mmio_regions()
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
+fn identity_device_windows() -> &'static [(u64, u64)] {
+    &[]
+}
+
+/// Whether a `kern_huge` block starting at `addr` intersects any device
+/// window — the condition that forces the block to be emitted at
+/// `dev_piece` granularity (SD-42).
+fn identity_block_touches_device(addr: u64, kern_huge: u64, windows: &[(u64, u64)]) -> bool {
+    let block_end = addr.saturating_add(kern_huge);
+    windows
+        .iter()
+        .any(|&(base, len)| base < block_end && addr < base.saturating_add(len))
+}
+
+/// Whether one identity piece intersects a device window — those pieces are
+/// emitted with `PageFlags::DEVICE`. A window smaller than the piece widens
+/// to the whole piece: on riscv the UART's 4 KiB page sits inside the QEMU
+/// virt device range, where the surrounding 2 MiB block is not RAM either.
+fn identity_piece_is_device(piece: u64, piece_len: u64, windows: &[(u64, u64)]) -> bool {
+    windows.iter().any(|&(base, len)| {
+        base < piece.saturating_add(piece_len) && piece < base.saturating_add(len)
+    })
+}
+
 /// Build the bootstrap page-table root and enable paging (Steps 1-3 of the
 /// generic boot). Extracted from [`arch_boot_impl`] so the
 /// boot-shim→high-half-kernel-image handoff can run the exact same table
@@ -873,50 +923,39 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
     // identity mapping must be supervisor-only.
     let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
 
-    // [ARCH: mmio-device] (aarch64 only): the device MMIO window must
-    // map Device-nGnRnE, not Normal. MMIO registers require strongly-ordered
+    // [ARCH: mmio-device] (SD-42): the device MMIO windows must map
+    // Device-nGnRnE, not Normal. MMIO registers require strongly-ordered
     // access (no speculation, no gathering, no reordering); a Normal WBWA
-    // mapping satisfies that on QEMU but not on real hardware. The window
-    // sits inside the first `kern_huge` identity block, so that block is
-    // emitted at 2 MiB granularity with per-piece flags; every other block
-    // keeps `kern_huge` granularity. This identity alias and the high-half
-    // alias of Step 2b carry the same attributes on purpose — mapping one
-    // physical page with two different attribute sets is UNPREDICTABLE per
-    // the ARM ARM, so the two must agree.
+    // mapping satisfies that on QEMU but not on real hardware. Device windows
+    // sit low in the address space, inside the first `kern_huge` identity
+    // block: blocks touching a window are emitted at `DEV_PIECE` granularity
+    // with per-piece flags, every other block keeps `kern_huge` granularity.
+    // aarch64 additionally requires the Step-2b high-half alias of the same
+    // window to carry the same attributes (one PA, two attribute sets is
+    // UNPREDICTABLE); riscv64 has no high-half alias of these windows.
+    const DEV_PIECE: u64 = 1 << 21; // 2 MiB
+    let device_windows = identity_device_windows();
+    assert_eq!(
+        kern_huge.bytes() % DEV_PIECE,
+        0,
+        "a device piece must divide the huge page size"
+    );
     let mut addr: u64 = 0;
     while addr < IDENTITY_MAP_END {
         let block_end = addr + kern_huge.bytes();
         let mut piece_addr = addr;
-        #[cfg(target_arch = "aarch64")]
-        let piece_size = {
-            use minix_platform::arch::aarch64::{MMIO_PA_BASE, MMIO_WINDOW_LEN};
-            const DEV_BLOCK: u64 = 1 << 21; // 2 MiB
-            // The window is DEV_BLOCK-aligned and `addr` is kern_huge-aligned
-            // (kern_huge is 1 GiB or 2 MiB), so every DEV_BLOCK piece of the
-            // block is fully inside or fully outside the window.
-            const _: () =
-                assert!(MMIO_PA_BASE % DEV_BLOCK == 0 && MMIO_WINDOW_LEN % DEV_BLOCK == 0);
-            let dev_hi = MMIO_PA_BASE + MMIO_WINDOW_LEN;
-            if addr < dev_hi && MMIO_PA_BASE < block_end {
-                PageSize::MIB_2
-            } else {
-                kern_huge
-            }
+        let piece_size = if identity_block_touches_device(addr, kern_huge.bytes(), device_windows) {
+            PageSize::MIB_2
+        } else {
+            kern_huge
         };
-        #[cfg(not(target_arch = "aarch64"))]
-        let piece_size = kern_huge;
         while piece_addr < block_end {
-            #[cfg(target_arch = "aarch64")]
-            let piece_flags = {
-                use minix_platform::arch::aarch64::{MMIO_PA_BASE, MMIO_WINDOW_LEN};
-                if piece_addr >= MMIO_PA_BASE && piece_addr < MMIO_PA_BASE + MMIO_WINDOW_LEN {
+            let piece_flags =
+                if identity_piece_is_device(piece_addr, piece_size.bytes(), device_windows) {
                     PageFlags::kernel_read_write() | PageFlags::DEVICE
                 } else {
                     id_flags
-                }
-            };
-            #[cfg(not(target_arch = "aarch64"))]
-            let piece_flags = id_flags;
+                };
             // Ignore errors — some ranges may not be backed by physical memory,
             // but that's fine; the CPU won't access them.
             #[allow(clippy::let_underscore_must_use)]
@@ -4928,6 +4967,58 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
 }
 
 // ── Tests ──
+
+#[cfg(test)]
+mod identity_device_map_tests {
+    //! SD-42: the Step-1 device carve-out, pinned through its pure helpers.
+    //! The boot map itself only exists on real targets; what is testable here
+    //! is the decision — which blocks split, and which pieces go Device.
+
+    use super::{identity_block_touches_device, identity_piece_is_device};
+
+    const GIB: u64 = 1 << 30;
+    const MIB_2: u64 = 1 << 21;
+
+    #[test]
+    fn only_blocks_touching_a_device_window_split() {
+        let riscv = [(0x0C00_0000u64, 0x0020_0000u64), (0x1000_0000, 0x1000)];
+        assert!(
+            identity_block_touches_device(0, GIB, &riscv),
+            "PLIC/UART sit in the first GiB"
+        );
+        assert!(
+            !identity_block_touches_device(GIB, GIB, &riscv),
+            "the second GiB is RAM only"
+        );
+        let aarch64 = [(0x0800_0000u64, 0x0200_0000u64)];
+        assert!(identity_block_touches_device(0, GIB, &aarch64));
+        assert!(!identity_block_touches_device(GIB, GIB, &aarch64));
+        assert!(
+            !identity_block_touches_device(0, GIB, &[]),
+            "architectures without windows keep huge pieces"
+        );
+    }
+
+    #[test]
+    fn the_uart_page_drives_its_whole_2mib_piece_to_device() {
+        // The UART window is a single 4 KiB page; the piece that contains it
+        // is Device (the surrounding 2 MiB is the QEMU virt device range, not
+        // RAM), and the neighbouring pieces stay Normal.
+        let riscv = [(0x0C00_0000u64, 0x0020_0000u64), (0x1000_0000, 0x1000)];
+        assert!(identity_piece_is_device(0x1000_0000, MIB_2, &riscv));
+        assert!(!identity_piece_is_device(0x1020_0000, MIB_2, &riscv));
+        // PLIC: exactly one 2 MiB piece.
+        assert!(identity_piece_is_device(0x0C00_0000, MIB_2, &riscv));
+        assert!(!identity_piece_is_device(0x0C20_0000, MIB_2, &riscv));
+        // aarch64's window spans its pieces fully.
+        let aarch64 = [(0x0800_0000u64, 0x0200_0000u64)];
+        assert!(identity_piece_is_device(0x0800_0000, MIB_2, &aarch64));
+        assert!(identity_piece_is_device(0x09E0_0000, MIB_2, &aarch64));
+        assert!(!identity_piece_is_device(0x0A00_0000, MIB_2, &aarch64));
+        // No windows: no piece is Device.
+        assert!(!identity_piece_is_device(0x1000_0000, MIB_2, &[]));
+    }
+}
 
 #[cfg(all(test, feature = "mock"))]
 mod tests {

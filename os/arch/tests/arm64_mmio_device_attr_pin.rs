@@ -76,11 +76,19 @@ fn mair_layout_keeps_attr0_normal_and_attr1_device() {
 #[test]
 fn kernel_maps_device_window_addr_window_as_device() {
     let c = strip_comments(include_str!("../../kernel/src/lib.rs"));
-    // Identity-mapping granule: DEV_BLOCK (2 MiB) and the device window
-    // constants must appear together.
+    // Identity-mapping granule: the 2 MiB device piece and the device window
+    // constants must appear together. SD-42 generalized the carve-out (the
+    // riscv64 leg reuses it for PLIC/UART), so the pin also requires the two
+    // decision helpers — the split must stay a *decision*, not inline text.
     assert!(
-        c.contains("const DEV_BLOCK: u64 = 1 << 21;"),
+        c.contains("const DEV_PIECE: u64 = 1 << 21;"),
         "恒等映射的设备分片粒度常量丢失（2 MiB 分片是实现设备窗口属性的前提）"
+    );
+    assert!(
+        c.contains("fn identity_block_touches_device")
+            && c.contains("fn identity_piece_is_device")
+            && c.contains("fn identity_device_windows"),
+        "设备分片的判定被内联回循环——窗口/分片决策的可测缝丢失"
     );
     assert!(
         c.contains("MMIO_PA_BASE") && c.contains("MMIO_WINDOW_LEN"),

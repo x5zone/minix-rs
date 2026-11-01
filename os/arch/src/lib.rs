@@ -264,17 +264,25 @@ pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
     ]
 }
 
-/// riscv64: QEMU virt PLIC (2 MiB window). External-interrupt leg
-/// precondition: S-mode external-interrupt claim/complete must go through
-/// PLIC MMIO (`0x0C00_0000 + PLIC_CLAIM(0x200004) + context*0x1000`), yet a
-/// user process root does not map this window, so reading the claim register
+/// riscv64: QEMU virt PLIC (2 MiB window) and the NS16550A UART page.
+///
+/// External-interrupt leg precondition: S-mode external-interrupt
+/// claim/complete must go through PLIC MMIO
+/// (`0x0C00_0000 + PLIC_CLAIM(0x200004) + context*0x1000`), yet a user
+/// process root does not map this window, so reading the claim register
 /// inside the S trap leg is an immediate load fault (observed
 /// `stval=0xc201004`). The window enters the A2 classification through
 /// `kernel_identity_mmio_regions`, hence is identity-mapped into user roots —
 /// the same mechanism as x86 IO-APIC/LAPIC.
+///
+/// The UART page (`/soc/serial@10000000`, QEMU virt; `kernel/src/uart_irq.rs`
+/// dereferences it at VA == PA) joins for the same reason, and because SD-42
+/// requires that page to be **Device**-mapped: the kernel's Step-1 identity
+/// map carves `kernel_identity_mmio_regions` as Device-nGnRnE so MMIO
+/// ordering survives real hardware (QEMU never shows the difference).
 #[cfg(target_arch = "riscv64")]
 pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
-    &[(0x0C00_0000, 0x0020_0000)]
+    &[(0x0C00_0000, 0x0020_0000), (0x1000_0000, 0x1000)]
 }
 
 /// aarch64: in this repository the aarch64 interrupt controller is accessed

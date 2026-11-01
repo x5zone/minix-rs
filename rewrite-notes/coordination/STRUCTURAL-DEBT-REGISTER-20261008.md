@@ -851,12 +851,23 @@ binding condition (G1/G2/H3 family).
 Covered under SD-24. Fix shape suggested: merge the two fields into one `AtomicIsize` owner word so the
 wake path is a single atomic RMW. **Recommendation:** land with the unclamp opening audit.
 
-#### SD-42. PL011 UART page mapped Normal-cacheable (review G6) — **open (true-hardware latent)**
+#### SD-42. PL011/NS16550 UART page mapped Normal-cacheable (review G6) — **closed `2026-10-31`**
 
-The early-console/UART mapping uses Normal cacheable attributes, not Device — QEMU-silent, real-hardware
-latent (MMIO ordering/duration semantics). Same epistemic class as SD-20 (gates cannot clear it).
-**Options:** MAIR entry + device attributes for the UART page per arch. **Recommendation:** batch with
-SD-20's `sync_icache` unit — both are "real hardware will collect" items, one design review.
+The MMIO pages were Normal cacheable, not Device — QEMU-silent, real-hardware latent (MMIO ordering).
+**Landed in two legs:** (i) aarch64, earlier: `PageFlags::DEVICE` reaches the descriptor through
+`AttrIndx=1` → MAIR Attr1 = 0x00 (Device-nGnRnE), the Step-1 identity alias of the platform MMIO window
+is emitted at 2 MiB pieces with DEVICE, and the Step-2b high-half alias agrees (ARM ARM: one PA with two
+attribute sets is UNPREDICTABLE) — pinned by `os/arch/tests/arm64_mmio_device_attr_pin.rs`;
+(ii) **riscv64, this round** (claim/SD42-UART-qoder): the Step-1 carve-out written for aarch64 never
+applied to riscv, so the **PLIC and the NS16550A UART page** (`kernel/src/uart_irq.rs` dereferences it at
+VA == PA) were identity-mapped Normal. The carve-out is now arch-generic — `identity_device_windows()`
+feeds pure helpers (`identity_block_touches_device` / `identity_piece_is_device`), blocks touching a
+window are emitted at 2 MiB pieces, pieces intersecting a window get `PageFlags::DEVICE`
+(Device-nGnRnE via MAIR); riscv's window list adds the UART page
+(`minix_arch::kernel_identity_mmio_regions()`), so user roots replay it too. The 4 KiB UART page widens
+to its containing 2 MiB piece — that block is QEMU virt device space, not RAM.
+**Honest boundary (unchanged):** QEMU does not report Normal/Device differences; the pin tests prove the
+attribute reaches the descriptor and the mapping points, the real-hardware window remains the authority.
 
 #### SD-43. `supports_resize` semantic inversion vs C (F10) — **open (P-ALL-05 residue)**
 
@@ -961,7 +972,7 @@ in-repo cure precedent). The families, updated:
 | SD-39 | open (batched) | none | with first ≥64-signal consumer |
 | SD-40 | open (gated) | (case closure list) | name in case-closure batch |
 | SD-41 | open (pre-SMP) | none | unclamp opening audit |
-| SD-42 | open (latent) | none | batch with SD-20 |
+| SD-42 | **closed** `2026-10-31` | (SD-20 row) | aarch64 + riscv64 device windows landed |
 | SD-43 | open | P-ALL-05 | flip two impls to C truth |
 
 **Dropped-from-ledgers callout:** SD-6, SD-15, SD-19, SD-26, SD-27 (+ SD-36…SD-43 born here) have no

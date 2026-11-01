@@ -3710,6 +3710,30 @@ EINVAL；H5 谓词族 4 枚仍在）；`minix-vm --lib` **546 / 0**；三架构 
 新文件 0 处）。**诚实边界**：门的绿仍不能证明真机行为，真机窗是权威；本笔记的是**结构半**——树内每一条
 装载路径（内核两个装载器 + VM 装载器）的尾同步至此齐了。
 
+### 第二百一十笔（C 板·内核优先 · SD-42：riscv 的 PLIC 与 UART 页从 Normal 缓存改为 Device，恒等映射分片改成架构通用）
+
+**SD-42 的 aarch64 腿早已落地**（`PageFlags::DEVICE` → AttrIndx=1 → MAIR Attr1=0x00
+Device-nGnRnE，恒等与高半两条别名一致，`arm64_mmio_device_attr_pin` 钉住），但**恒等映射的
+设备分片在 Step-1 里只对 aarch64 写**——riscv 的 PLIC 与 **NS16550A UART 页**就那样落在
+Normal 缓存里：`kernel/src/uart_irq.rs` 以 VA==PA 直取 UART（首源中断自检在用），QEMU 不报
+缓存性差异，真机上 MMIO 的强序语义没有保障。这正是 SD-42 那条「真机会收账」的账。
+
+**修法**：把分片做成**架构通用**——
+1. `identity_device_windows()` 三臂给窗口：aarch64 = 平台 MMIO 窗；**riscv64 = 
+   `minix_arch::kernel_identity_mmio_regions()`，并把 UART 页（`0x1000_0000`，4 KiB）加进这张表**
+   （用户根回放同一份表，`uart_irq` 在任何根下都够得着）；x86_64 = 空（其 LAPIC/IO-APIC 靠固件
+   MTRR 定 UC，页表没有逐 PTE 设备位）。
+2. 两个**纯判定**（宿主可测）：`identity_block_touches_device`（块是否碰窗 → 决定按 2 MiB 分片）
+   与 `identity_piece_is_device`（片是否交窗 → 发 DEVICE）。4 KiB 的 UART 窗会把它所在的 2 MiB
+   片整体提为 Device——那一块是 QEMU virt 的设备区，不是 RAM。
+
+**读数**：kernel mock（`--features mock`）**5 段 / 863 / 0**（+2 枚分片判定测试：riscv 形与
+aarch64 形各自的块/片判定）；`minix-arch --features runtime-window` **22 段 / 373 / 0**（含按新
+形状改写并**加强**的 `arm64_mmio_device_attr_pin`：除原三断言外再钉两个判定函数在场，防「判定被
+内联回循环」）；三架构 `cargo check -p minix-kernel` 各 **0 error**；`rustfmt` 新增区 0 处。
+**诚实边界**：QEMU 不区分 Normal/Device，pin 证明的是「属性到达描述符、映射点仍走该判定」，
+真机窗仍是权威。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
