@@ -4467,3 +4467,14 @@ err=2（supervisor write），rip=0xffff800000230258——嫌疑=step③ 内核
 文本 RX 与某内核写路径交互、或 E 批 identity 退场在 e5-ds 链的后续；
 ripage 需 debug 符号归因。下会话首刀 = e5-ds（独立工作面）→
 39/0/0 → 收官记账（C 板/register/SD-12/edge4/简报终态）。
+
+**e5-ds 归因（下一会话工作面已明确）**：evidence serial（tmp/evidence/
+e5-ds-serial-*.log）+ run_all 实测：scheduler hand-off 后内核态写页异
+常（vector 14 err=2 supervisor write），rip=0xffff800000230258 落
+x86_trap_dispatch_body 内 `movl %ecx, 0x380(%rax)` = **CpuLocal.
+fpu_owner 记账写**（trap_dispatch.rs ~2392 行 FPU trap 路径：`local.
+fpu_owner = Some(cur_fpu)`）。写 fault = 目标页不可写——嫌疑排序：
+① SMP_STATE（CpuLocal 数组宿主）被链接进只读段（x86_64.ld orphan
+段收编——与 ap-alive-era x86 orphan 段历史同族，核验 nm SMP_STATE
+地址 vs 段表 R E / R / RW 边界）；② PD22S2E identity 退场后 e5-ds 链
+的某根缺内核数据段映射。修复 → run_all 39/0/0 → 收官记账。
