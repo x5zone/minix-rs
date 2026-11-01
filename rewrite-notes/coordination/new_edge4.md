@@ -4478,3 +4478,11 @@ fpu_owner = Some(cur_fpu)`）。写 fault = 目标页不可写——嫌疑排序
 段收编——与 ap-alive-era x86 orphan 段历史同族，核验 nm SMP_STATE
 地址 vs 段表 R E / R / RW 边界）；② PD22S2E identity 退场后 e5-ds 链
 的某根缺内核数据段映射。修复 → run_all 39/0/0 → 收官记账。
+
+**PD-22②③ 收官（2026-11-02，全绿）**：收官 run_all **39 passed / 0
+failed / 0 build failures**（三架构，/tmp/runall-pd22h16-final.log）。
+PD22S2H-15/16 两笔修复闭合 e5-ds（LAPIC 四条时钟路径 + IO-APIC 运行
+期 re-mask 全量窗口化；cr2 取证 0xFEE00380/0xFEC00000 逐一定位）。
+SD-12 台账行已闭（CLOSED 2026-11-02 + 完整实施记录）；C 板 C11 行状
+态列与裁决列已更新。简报终态=p22-step2-brief.md（§15 验收表全项满
+足，含强形态扫描）。PD-22 全部完成。

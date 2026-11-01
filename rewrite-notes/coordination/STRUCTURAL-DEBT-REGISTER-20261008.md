@@ -359,7 +359,7 @@ pre-claimed reserve (serve the supplier's own IPC buffers from it), per-server i
 track "remove the x86/non-x86 split" as an explicit acceptance item of that migration, since a
 migration that leaves the split has not paid its full debt.
 
-#### SD-12. Identity window supervisor RWX / kernel W^X — **adjudicated (PD-22, three steps); step ① landed (C11WX, 乙案′)**
+#### SD-12. Identity window supervisor RWX / kernel W^X — **CLOSED (PD-22 all three steps landed: ① C11WX 乙案′; ② device-window migration + identity retirement, PD22S2A..H; ③ bootstrap-root split)**
 
 **Decision (frozen):** ① drop W on the kernel-text mapping in process roots (precondition: a static
 check that no runtime writer patches text); ② the low-identity window **de-depend and exit** —
@@ -369,6 +369,24 @@ roots only; DM windows already NX. Fact correction recorded during freezing: ide
 into every process root today. No implementation. Linux `set_memory_*`/rodata is the reference frame;
 the acceptance criterion ("must not exist", not "smaller") is the strong form — worth keeping verbatim
 when this batch opens.
+
+**CLOSED 2026-11-02 (PD-22②③ implementation, PD22S2A..H batches).** Step ② delivered per the frozen
+review brief (`rewrite-notes/01-stage-kernel/pd22-step2-brief.md`, four external review rounds, final
+freeze with 10-item acceptance scope + 5 hard gates): kernel device-window layer
+(`os/arch/src/arch/device_window.rs`, description/mapping-strategy split, compile-time pins),
+`map_kernel` segment 5 (process roots), bootstrap-root install (kernel step 2c, huge leaves,
+bootstrap-flag filtered), and the full consumer migration — PLIC (per-hart S-context claim/complete,
+hard gate ①), SSWI (runtime process-root path), UART0 (boot-root selftest consumer), x86 LAPIC
+(all four clock paths + EOI/IPI via window VA, per-CPU check-and-reject at every logical CPU's first
+MMIO — IA32_APIC_BASE is per-CPU), IO-APIC (runtime re-mask via injected window VA). Identity
+retirement (the strong form): `build_identity_windows` produces an empty list, `map_kernel` segment 4 is
+a fail-fast on non-empty input, the VM conversion rejects a non-empty v6 identity field
+(check-and-reject on both sides), and the arch mock test scans every device-window physical page for
+surviving VA=PA mappings (strong-form scan). **Final gate: run_all 39 passed / 0 failed / 0 build
+failures (x86_64+aarch64+riscv64, 2026-11-02)** with arch 290/0, mock 857/0/8, triple-arch check 0
+error. Registered residuals: real-hardware memory-type correctness (x86 PAT/MTRR probe, riscv PMA)
+remains the separately-registered debt; two migration defects found and fixed by the gates
+(window-live gate for hand-rolled-root carriers, PLIC enable stride 0x80 per QEMU sifive_plic.c).
 
 ---
 
@@ -953,7 +971,7 @@ in-repo cure precedent). The families, updated:
 | SD-9 | **closed** | — | — |
 | SD-10 | open (escalated) | P-RV-02 / PD-16 | instrument rebuild + coverage triple |
 | SD-11 | open (recurred) | PD-28 | execute PageSupplier+VM_BRK; track split removal |
-| SD-12 | adjudicated PD-22 | (PD-22) | not started |
+| SD-12 | CLOSED (PD-22 ①②③) | (PD-22) | 2026-11-02 |
 | SD-13 | mostly closed | P-ALL-13 (PD-only) | give it a P row; delivery leg bound to unclamp |
 | SD-14 | **closed** | P-X86-05 (stale) | ledger refresh + NK4B release |
 | SD-15 | open (low) | none | trap-frame checksum w/ SD-10 |
