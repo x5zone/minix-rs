@@ -277,15 +277,20 @@ pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
 fn s_mode_context_for_current_cpu() -> usize {
     // Logical CPU index doubles as the topology slot index (C2D convention:
     // `sched_for_cpu_mut` seeds masks by the slot whose hw_id matches the
-    // BSP). The slot's hw_id is the RISC-V hart id; before the platform
-    // description exists the machine is hart 0.
+    // BSP). The slot's hw_id is the RISC-V hart id. Bounds: `current_cpu_id`
+    // rides per-hart sscratch — on a carrier whose boot path has not
+    // committed it yet the raw value can be garbage, and a garbage hart
+    // index produces an out-of-range PLIC context whose claim/complete
+    // register sits beyond the DTB reg window (observed: claim(context
+    // 1024) → offset 0x600004, one context past the 6 MiB reg). Fall back
+    // to hart 0 / context 1 (the boot convention) whenever the slot is out
+    // of the topology's real CPU count.
     let cpu = crate::current_cpu_id().raw() as usize;
     let topo = minix_platform::platform_desc().cpu_topology();
-    let hart = topo
-        .cpus
-        .get(cpu)
-        .map(|c| c.hw_id as usize)
-        .unwrap_or(cpu);
+    if cpu >= topo.nr_cpus as usize || cpu >= topo.cpus.len() {
+        return 1; // hart 0, S-mode context 1 (boot convention)
+    }
+    let hart = topo.cpus[cpu].hw_id as usize;
     2 * hart + 1
 }
 
