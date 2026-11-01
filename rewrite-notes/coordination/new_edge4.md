@@ -4456,3 +4456,14 @@ disasm 形态=f120<<12 + f110*2 + 0x200004（claim_offset 形状但基座非
 base-0x40000000 形态）。次候选：claim_hardware_irq 内联的
 s_mode_context 路径与 plat claim_context 的 plic_va 基座不一致。
 修好 → timer 载体 PASS → 合并 PD22S2H → run_all 39/0/0 → 记账。
+
+**PD22S2H-14 收官冲刺读数（已合并主树 3bb370884）**：PD22S2H 全链
+合并（SEI 首源链在设备窗下全通，test-timer-irq-riscv64 PASS debug+
+release 双验证）。x86 ap-alive 修复落地（X86_WINDOW_LIVE 门：自建根
+载体回退 PA）→ test-smp-ap-alive PASS。**run_all = 37/2 → 修复后预
+期 38/1**。唯一余红 = test-e5-ds：standalone 现场取证（tmp/evidence/
+e5-ds-serial-*.log）= scheduler hand-off 后内核态写页异常 vector 14
+err=2（supervisor write），rip=0xffff800000230258——嫌疑=step③ 内核
+文本 RX 与某内核写路径交互、或 E 批 identity 退场在 e5-ds 链的后续；
+ripage 需 debug 符号归因。下会话首刀 = e5-ds（独立工作面）→
+39/0/0 → 收官记账（C 板/register/SD-12/edge4/简报终态）。
