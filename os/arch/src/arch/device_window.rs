@@ -44,17 +44,24 @@ const fn page_round(v: u64) -> u64 {
     (v + 0xFFF) & !0xFFF
 }
 
-/// VA base of a region's slot: the cumulative page-rounded span of all
+/// 2 MiB-align a span: every slot base is 2 MiB-aligned so bootstrap-root
+/// installs can use huge leaves (the proven pre-paging mapping path).
+const fn huge_round(v: u64) -> u64 {
+    (v + 0x1F_FFFF) & !0x1F_FFFF
+}
+
+/// VA base of a region's slot: the cumulative 2 MiB-aligned span of all
 /// regions with smaller slots. Sizing by region length (not a fixed
 /// stride) makes overlapping slots impossible by construction — the first
 /// attempt used a fixed 2 MiB stride and the PLIC region (6 MiB) swallowed
 /// the following two slots (caught by the riscv ATF gate as `AlreadyMapped`
-/// in VM's first `init_page_table`).
+/// in VM's first `init_page_table`). Slots are 2 MiB-aligned so boot-root
+/// installs map them as single huge leaves.
 pub const fn slot_va_base(regions: &[DeviceWindowRegion], slot: usize) -> u64 {
     let mut base = DEVICE_VA_BASE;
     let mut i = 0usize;
     while i < slot && i < regions.len() {
-        base += page_round(regions[i].size);
+        base += huge_round(regions[i].size);
         i += 1;
     }
     base
@@ -66,7 +73,7 @@ pub const fn device_window_span(regions: &[DeviceWindowRegion]) -> u64 {
     let mut end = DEVICE_VA_BASE;
     let mut i = 0usize;
     while i < regions.len() {
-        end += page_round(regions[i].size);
+        end += huge_round(regions[i].size);
         i += 1;
     }
     end - DEVICE_VA_BASE
@@ -132,9 +139,9 @@ pub const DEVICE_VA_BASE: u64 = 0xFFFF_FFC0_2000_0000;
 
 #[cfg(target_arch = "riscv64")]
 const _: () = assert!(
-    0x605000 <= 0xFFFF_FFC0_4000_0000 - DEVICE_VA_BASE,
-    "riscv64 device window span (PLIC 6 MiB + UART 4 KiB + SSWI 16 KiB, \
-     page-rounded) must fit before the kernel DM window"
+    0x60_0000 <= 0xFFFF_FFC0_4000_0000 - DEVICE_VA_BASE,
+    "riscv64 device window span (3 huge-aligned slots) must fit before \
+     the kernel DM window"
 );
 
 #[cfg(target_arch = "riscv64")]
@@ -270,8 +277,8 @@ mod tests {
         let b0 = slot_va_base(regions, 0);
         let b1 = slot_va_base(regions, 1);
         let b2 = slot_va_base(regions, 2);
-        assert!(b1 >= b0 + page_round(regions[0].size));
-        assert!(b2 >= b1 + page_round(regions[1].size));
+        assert!(b1 >= b0 + huge_round(regions[0].size));
+        assert!(b2 >= b1 + huge_round(regions[1].size));
     }
 
     /// Device VAs land in the reserved span, inside the region's own slot,
@@ -290,7 +297,7 @@ mod tests {
             let last = device_va_for(regions, slot, r.phys_base + r.size - 1)
                 .expect("last byte must map");
             assert!(
-                last < slot_va_base(regions, slot) + page_round(r.size),
+                last < slot_va_base(regions, slot) + huge_round(r.size),
                 "region stays inside its own slot"
             );
         }
