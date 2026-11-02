@@ -51,7 +51,7 @@ pub const DEPTH_MAX: i32 = 32767;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DuOption {
     /// A letter whose facility this tree has not landed yet: `-h`
-    /// (`humanize_number`), `-H`/`-L` (the logical walk), `-x` (`FTS_XDEV`).
+    /// (`humanize_number`), `-H`/`-L` (the logical walk).
     NotWired(char),
     /// Usage and exit 1, which is also the answer to a conflicting flag pair
     /// (`du.c:174-181`) and to an out-of-range `-d` (`du.c:112-116`).
@@ -77,6 +77,11 @@ pub struct DuPlan {
     /// The unit the total is reported in, already divided by 512
     /// (`du.c:192`): 1 by default, 2 for `-k`, 2048 for `-m`, 2097152 for `-g`.
     pub blocksize: u64,
+    /// `-x` (`FTS_XDEV`, `du.c:144-146`): do not descend into directories
+    /// whose device differs from the operand the walk started from. The
+    /// mount-point directory itself is still counted and printed — fts(3)
+    /// returns it with its children pruned, so its own blocks stand.
+    pub xdev: bool,
     /// The operands, defaulting to the single name `.` (`du.c:184-187`).
     pub roots: Vec<String>,
 }
@@ -99,6 +104,7 @@ pub fn parse_args(
     let mut inodes = false;
     let mut human = false;
     let mut skip_nodump = false;
+    let mut xdev = false;
     let mut depth = DEPTH_UNBOUNDED;
     let mut unit: Option<u64> = None;
     let mut i = 0;
@@ -143,7 +149,8 @@ pub fn parse_args(
                     i += 1;
                 }
                 b'h' => human = true,
-                b'H' | b'L' | b'x' => return Err(DuOption::NotWired(bytes[k] as char)),
+                b'x' => xdev = true,
+                b'H' | b'L' => return Err(DuOption::NotWired(bytes[k] as char)),
                 _ => return Err(DuOption::Usage),
             }
             k += 1;
@@ -177,12 +184,20 @@ pub fn parse_args(
             inodes,
             human,
             skip_nodump,
+            xdev,
             depth,
             blocksize: blocksize_bytes / BLOCK_UNIT,
             roots,
         },
         warnings,
     ))
+}
+
+/// The descent test `-x` drives (`fts(3)`'s `FTS_XDEV` compare, requested at
+/// `du.c:144-146`): prune a directory's children exactly when the flag is on
+/// and the directory's device differs from the operand's device.
+pub fn crosses_device(xdev: bool, entry_dev: u64, root_dev: u64) -> bool {
+    xdev && entry_dev != root_dev
 }
 
 /// The gigabyte ceiling `getbsize.c:64` sets with `MAXB` ("No tera, peta, nor
@@ -437,6 +452,33 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    /// `-x` is accepted and lands in the plan.
+    #[test]
+    fn x_is_the_device_boundary_flag() {
+        assert!(plan(&["-x"]).xdev);
+        assert!(!plan(&[]).xdev);
+    }
+
+    /// The mount-boundary decision `-x` drives (the bin consults it before
+    /// descending): the flag alone never prunes, a device match never prunes,
+    /// and a different device under the flag prunes the descent. The
+    /// mount-point directory itself keeps its own count either way.
+    #[test]
+    fn xdev_prunes_only_a_different_device_under_the_flag() {
+        for (xdev, entry, root, prunes) in [
+            (false, 1, 1, false),
+            (false, 2, 1, false),
+            (true, 1, 1, false),
+            (true, 2, 1, true),
+        ] {
+            assert_eq!(
+                crosses_device(xdev, entry, root),
+                prunes,
+                "{xdev}/{entry}/{root}"
+            );
+        }
+    }
+
     fn plan(args: &[&str]) -> DuPlan {
         parse_args(args, None).unwrap().0
     }
@@ -502,7 +544,9 @@ mod tests {
 
     #[test]
     fn unwired_letters_are_named_and_the_noop_letters_are_taken() {
-        for c in ['H', 'L', 'x'] {
+        // `-x` left the unwired set when the device boundary landed; `-H`/`-L`
+        // (the logical walk) are the remaining two.
+        for c in ['H', 'L'] {
             let arg = alloc::format!("-{c}");
             assert_eq!(
                 parse_args(&[arg.as_str(), "d"], None),

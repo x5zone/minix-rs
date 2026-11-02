@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百（`du -x` 接通：FTS_XDEV 的设备边界剪枝）
+
+- **这一笔的射程**：18 篇实测的 not-wired 清单里 `du -x` 一处——C 的 `-x` 置 `FTS_XDEV`（`du.c:144-146`），fts(3) 不下探与操作数不同设备的目次（该目次自身的块数与行照常产出）。原实现把它压在 `-H`/`-L` 的未接线拒绝里。
+- **落码**：`du.rs` 的 `DuPlan` 增 `xdev` 位（parse 的 `b'x'` 臂）+ 纯谓词 `crosses_device(xdev, entry_dev, root_dev)`（剪枝判据的可测形）；`bin/du.rs` 的走表把操作数根设备逐操作数捕获（fts 每操作数各起一程）后穿进 `du_visit`/`descend`，is_dir 臂在下探前查谓词——目次自身计数与打印不变，只停子树。
+- **可测性边界（如实）**：跨设备语义需第二个文件系统，宿主面挂不了——判据钉在库里（`crosses_device` 四行真值表 + `-x` 落 plan 的 parse 钉），宿主面测钉「`-x` 过选项门走到 stat 错误行而非未接线拒绝」（du bin 的 syscall 腿是 none 面，宿主走不了真树——du_face 既有四枚同口径）；真机上 imgrd 单盘同样观察不到第二设备，该语义的最强可用证据就是库测真值表。
+- **门**：`cargo test -p minix-fileops --lib` → **394 / 0**（du 子集 21/0，新增 `x_is_the_device_boundary_flag` 与 `xdev_prunes_only_a_different_device_under_the_flag` 两枚）；面门 `du_face` **5 / 0**（新增 `x_passes_the_option_gate_to_the_walk`）；旧测 `unwired_letters…` 的 'x' 成员移除（'H'/'L' 仍在）；clippy 触及文件零新增；`rustfmt --edition 2024` 三文件清；`cargo build --target x86_64-unknown-none --release --bin du` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `c333be565`。
+
 ## 批次四百九十九（`date` 设钟腿接通：canonical 操作数解析、PM clock_settime 客户端与 `badcanotime` 输出形）
 
 - **这一笔的射程**：18 篇 §5 里 `date` 的登记残差——设钟操作数（`date [[[[[[CC]yy]mm]dd]HH]MM[.SS]]`）原以「settimeofday pending」拒绝。C 的路径：`setthetime`（`date.c:185-331`）按位数落字段（12=CCYYMMDDhhmm、10=YYMMDDhhmm 且 `yy<69` 进 2000s、8=MMDDhhmm、6=DDhhmm、4=hhmm、2=mm，`.SS` 尾定秒且恰两位、00–61），越界/形错走 `badcanotime`（三行：句子/操作数/插字符 + usage，`date.c:174-182`），成功后 `settimeofday`→`clock_settime(CLOCK_REALTIME)`（PM 绝对设形，`clock_settime.c:11-27`）。

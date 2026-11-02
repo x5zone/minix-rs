@@ -83,7 +83,14 @@ fn env_value(name: &str) -> Option<String> {
 /// One walk position (`du.c:197-249`): the entry's own count, its children's
 /// totals when it is a directory, and the print this visit owes. Returns the count
 /// in 512-byte blocks (or inodes, under `-i`) and whether anything failed.
-fn du_visit(prog: &str, path: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64, bool) {
+fn du_visit(
+    prog: &str,
+    path: &str,
+    level: i32,
+    plan: &DuPlan,
+    links: &mut LinkSet,
+    root_dev: u64,
+) -> (i64, bool) {
     let mut sb = zeroed();
     if let Err(e) = lstat(path, &mut sb) {
         // `du.c:230-235` (`FTS_NS`/`FTS_ERR`): report, count the failure, and
@@ -98,7 +105,14 @@ fn du_visit(prog: &str, path: &str, level: i32, plan: &DuPlan, links: &mut LinkS
 
     let own = count(plan.inodes, sb.st_blocks);
     if cp::is_dir(sb.st_mode) {
-        let (children, failed) = descend(prog, path, level + 1, plan, links);
+        // `-x` (`du.c:145`, fts's `FTS_XDEV`): the directory keeps its own
+        // count and its line, but a device other than the operand's stops
+        // the descent — fts returns it with the children pruned.
+        let (children, failed) = if du::crosses_device(plan.xdev, sb.st_dev, root_dev) {
+            (0, false)
+        } else {
+            descend(prog, path, level + 1, plan, links, root_dev)
+        };
         let total = own.saturating_add(children);
         if prints_directory(level, plan) {
             report(path, total, plan);
@@ -130,7 +144,14 @@ fn report(path: &str, units: i64, plan: &DuPlan) {
 /// Walk one directory's entries. An unopenable directory is C's `FTS_DNR`
 /// (`du.c:230-235`): reported, counted as a failure, and the caller still adds the
 /// directory's own blocks.
-fn descend(prog: &str, dir: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64, bool) {
+fn descend(
+    prog: &str,
+    dir: &str,
+    level: i32,
+    plan: &DuPlan,
+    links: &mut LinkSet,
+    root_dev: u64,
+) -> (i64, bool) {
     let fd: Fd = match open(dir, cp::O_RDONLY, 0) {
         Ok(fd) => fd,
         Err(e) => {
@@ -177,8 +198,14 @@ fn descend(prog: &str, dir: &str, level: i32, plan: &DuPlan, links: &mut LinkSet
             if !dents::is_descendable(name) {
                 continue;
             }
-            let (units, child_failed) =
-                du_visit(prog, &dents::join_path(dir, name), level, plan, links);
+            let (units, child_failed) = du_visit(
+                prog,
+                &dents::join_path(dir, name),
+                level,
+                plan,
+                links,
+                root_dev,
+            );
             total = total.saturating_add(units);
             failed |= child_failed;
         }
@@ -222,7 +249,16 @@ fn run() -> ! {
     let mut grand: i64 = 0;
     let mut failed = false;
     for root in &plan.roots {
-        let (units, this_failed) = du_visit(prog, root, 0, &plan, &mut links);
+        // Each operand starts its own traversal, so `-x` compares against
+        // this operand's device (fts roots one walk per operand).
+        let mut sb = zeroed();
+        let root_dev = match lstat(root, &mut sb) {
+            Ok(_) => sb.st_dev,
+            // A missing operand is reported by the walk itself; the boundary
+            // flag is then irrelevant because nothing descends.
+            Err(_) => 0,
+        };
+        let (units, this_failed) = du_visit(prog, root, 0, &plan, &mut links, root_dev);
         grand = grand.saturating_add(units);
         failed |= this_failed;
     }

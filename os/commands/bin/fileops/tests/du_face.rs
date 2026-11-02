@@ -108,3 +108,24 @@ fn the_usage_line_is_hardcoded_while_the_report_line_follows_argv_zero() {
 
     let _ = fs::remove_file(&copied);
 }
+
+/// `-x` left the not-wired set when the device boundary landed (`du.c:144-146`,
+/// fts's `FTS_XDEV`): the flag now passes the option gate, so on the host —
+/// where the walk's syscall legs are the none-target faces — a missing
+/// operand reaches the stat-error line instead of the refusal. The
+/// cross-device prune decision itself is pinned by the lib's
+/// `crosses_device` truth table (`du.rs` tests); the host face cannot mount a
+/// second filesystem.
+#[test]
+fn x_passes_the_option_gate_to_the_walk() {
+    let missing = format!("/tmp/du-face-x-absent-{}", std::process::id());
+    let (out, status, err) = run(&["-x", missing.as_str()]);
+    assert_eq!(out.as_str(), "");
+    assert_eq!(status, 1);
+    let head = format!("du: {missing}: ");
+    assert!(
+        err.starts_with(&head),
+        "`{err}` 该走 stat 错误行而不是未接线拒绝"
+    );
+    assert!(!err.contains("not wired"), "-x 不该再报未接线：{err}");
+}
