@@ -2,12 +2,14 @@
 //!
 //! Included per binary through `#[path = "../bin_support.rs"]`; it never
 //! enters the library target, keeping `minix-regex` free of any
-//! system-call import. The hosted-versus-target split lives in the two
-//! seams the echo template documents (`os/commands/bin/fileops/src/bin/echo.rs`),
-//! carried here as `cfg`-twin pairs so each binary swaps both in one sweep:
-//! argv via `std::env::args` (hosted) or the `minix-rt` birth-chain
+//! system-call import. The hosted-versus-target split lives in the seams the
+//! echo template documents (`os/commands/bin/fileops/src/bin/echo.rs`),
+//! carried here as `cfg`-twin pairs so each binary swaps all of them in one
+//! sweep: argv via `std::env::args` (hosted) or the `minix-rt` birth-chain
 //! descriptor (`minix_rt::crt0::args`, raw initial-stack bytes rendered
 //! lossily), termination via the host runtime (hosted) or `minix_sys::exit`
+//! (target), and the **input** legs ([`read_stdin`] / [`read_file`]) via
+//! `std::io` / `std::fs` (hosted) or `minix_sys::{open, read, close}`
 //! (target). Transport failures short-circuit to a typed `Err` (edge
 //! E-SYSCALL-SIGN), so hosted runs observe honest failures on both
 //! channels.
@@ -17,7 +19,11 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use minix_sys::{read, write, Fd};
+use minix_sys::Fd;
+// The syscall carriers behind the target legs of the input and output seams;
+// the hosted legs go through `std`, so nothing here is referenced there.
+#[cfg(all(not(test), target_os = "none"))]
+use minix_sys::{close, open, read, write};
 
 /// Standard input, POSIX `STDIN_FILENO`.
 pub const STDIN: Fd = 0;
@@ -90,6 +96,24 @@ pub fn warn(bytes: &[u8]) {
 ///
 /// Stream filters transform per line, so the doing half collects first and
 /// iterates over the split; a read failure ends collection.
+///
+/// The hosted twin goes through `std::io::stdin`, because descriptor 0 on the
+/// host is the real process standard input while `minix_sys::read` is a shim
+/// that hands back nothing — a filter built on the host would otherwise run the
+/// whole pipeline over an empty pattern space and still exit 0 (`sed 's/a/A/'`
+/// measured exactly that: no output, exit 0, where the C reads and prints two
+/// lines). Same leg, two carriers: the target still goes through the syscall.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn read_stdin() -> Vec<u8> {
+    use std::io::Read as _;
+    let mut input = Vec::new();
+    // A failed read ends collection with whatever arrived, which is the target
+    // leg's behavior too, so both sides hand back the same shape.
+    let _ = std::io::stdin().read_to_end(&mut input);
+    input
+}
+
+#[cfg(all(not(test), target_os = "none"))]
 pub fn read_stdin() -> Vec<u8> {
     let mut input = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -101,6 +125,49 @@ pub fn read_stdin() -> Vec<u8> {
         }
     }
     input
+}
+
+/// Opens and drains one file operand, reporting only **whether** the operand
+/// could be turned into bytes. Both consumers of this leg (`sed` and `grep`)
+/// treat an unreadable operand the same way the C does: `sed` warns, flags the
+/// exit status and moves to the next operand (`main.c:449-452`), `grep`
+/// records `file_err` and moves on (`util.c` `procfile`). Neither has a
+/// sentence carrying an errno number, which is why the failure arm carries no
+/// number — unlike the text filters whose `err(1, "%s", *argv)` prints one.
+///
+/// The hosted twin opens through `std::fs`, for the same reason as
+/// [`read_stdin`]: `minix_sys::open` on the host fails, so every file operand
+/// would take the warning arm and a normal run would exit 1 with no output.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn read_file(path: &str) -> Result<Vec<u8>, ()> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path).map_err(|_| ())?;
+    let mut data = Vec::new();
+    // A read failure stops collection and keeps the bytes that arrived, the
+    // same shape as the target loop below.
+    let _ = file.read_to_end(&mut data);
+    Ok(data)
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn read_file(path: &str) -> Result<Vec<u8>, ()> {
+    let fd = match open(path, 0, 0) {
+        Ok(fd) => fd,
+        Err(_) => return Err(()),
+    };
+    let mut data = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match read(fd, &mut chunk) {
+            Ok(0) => break,
+            Ok(count) => data.extend_from_slice(&chunk[..count]),
+            Err(_) => break,
+        }
+    }
+    // [SD19-gate] the fd is no longer used after close
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = close(fd);
+    Ok(data)
 }
 
 /// Renders `value` in decimal into `out`, returning the written length.

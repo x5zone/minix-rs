@@ -15,7 +15,6 @@
 //! create/rename surface and is not modelled; net output carries no
 //! filename prefix, unlike `grep`.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -27,7 +26,6 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read};
 use minix_regex::pattern::{compile_basic, Pattern};
 use minix_regex::sed::{apply, parse_subst, Subst};
 
@@ -113,7 +111,7 @@ fn run() -> ! {
         sed_lines(&input, quiet, &pattern, &subst, &mut scratch);
     } else {
         for file in &files {
-            match read_file(file) {
+            match support::read_file(file) {
                 Ok(data) => sed_lines(&data, quiet, &pattern, &subst, &mut scratch),
                 Err(()) => {
                     // C `mf_fgets`: an unopenable operand warns and flags the
@@ -140,29 +138,6 @@ fn sed_lines(input: &[u8], quiet: bool, pattern: &Pattern, subst: &Subst<'_>, sc
             support::emit(&result);
         }
     }
-}
-
-/// Opens and drains one file operand. Unlike commands that abort on an
-/// unreadable operand, sed warns, flags the exit status and moves on (C
-/// `mf_fgets` `warn`/`rval = 1`/`continue`).
-fn read_file(path: &str) -> Result<Vec<u8>, ()> {
-    let fd = match open(path, 0, 0) {
-        Ok(fd) => fd,
-        Err(_) => return Err(()),
-    };
-    let mut data = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => data.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    // [SD19-gate] the fd is no longer used after close
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = close(fd);
-    Ok(data)
 }
 
 #[cfg(test)]
@@ -221,7 +196,6 @@ mod tests {
         assert_eq!(parse_sed_args(&["-n"]), Err(SedArgError::MissingScript));
     }
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

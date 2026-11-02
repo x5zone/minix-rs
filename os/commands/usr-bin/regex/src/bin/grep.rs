@@ -21,7 +21,6 @@
 //! status by `exit_code`. NetBSD grep opens operands through `fopen`, so a
 //! bare `-` is a literal file name, not a stdin alias.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -32,7 +31,6 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read};
 use minix_regex::grep::{exit_code, parse_grep_args, GrepOptions, SearchMode};
 use minix_regex::pattern::{compile_basic, compile_extended, Pattern};
 
@@ -54,12 +52,12 @@ fn run() -> ! {
     let words: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (options, pattern_words, pattern_count, operands) =
         match parse_grep_args(&words[1..]) {
-            Ok(parsed) => parsed,
-            Err(_) => {
-                support::emit(b"grep: bad pattern or option\n");
-                support::terminate(2);
-            }
-        };
+        Ok(parsed) => parsed,
+        Err(_) => {
+            support::emit(b"grep: bad pattern or option\n");
+            support::terminate(2);
+        }
+    };
     if options.ignore_case {
         support::emit(b"grep: -i waits for engine case-folding (see 08 sec 4.4)\n");
         support::terminate(2);
@@ -107,7 +105,7 @@ fn run() -> ! {
         support::emit(&rendered);
     } else {
         for operand in operands {
-            let data = match read_file(operand) {
+            let data = match support::read_file(operand) {
                 Ok(data) => data,
                 Err(()) => {
                     // `procfile` warns (there is no `-s` here) and keeps
@@ -202,29 +200,6 @@ fn grep_stream(
         out.push(b'\n');
     }
     selected_count > 0
-}
-
-/// Opens and drains one file operand. Unlike the single-file filters that
-/// abort on an unreadable operand, grep records the failure and moves on
-/// (`procfile` returns 0 and sets `file_err`).
-fn read_file(path: &str) -> Result<Vec<u8>, ()> {
-    let fd = match open(path, 0, 0) {
-        Ok(fd) => fd,
-        Err(_) => return Err(()),
-    };
-    let mut data = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => data.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    // [SD19-gate] the fd is no longer used after close
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = close(fd);
-    Ok(data)
 }
 
 #[cfg(test)]
@@ -329,7 +304,6 @@ mod tests {
         assert_eq!(text, "");
     }
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
