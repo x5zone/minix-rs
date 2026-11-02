@@ -36,8 +36,8 @@ mod support;
 
 use minix_regex::pattern::{Pattern, compile_basic};
 use minix_regex::sed::{
-    Command, MAX_SCRIPT_COMMANDS, PatternChoice, ScriptError, apply, auto_print, parse_script,
-    pattern_choice, script_quiet_directive, step,
+    Command, MAX_SCRIPT_COMMANDS, ParseFailure, PatternChoice, ScriptError, SubstError, apply,
+    auto_print, parse_script, pattern_choice, script_quiet_directive, step,
 };
 
 /// Argument-splitting errors for the sed front end.
@@ -97,8 +97,13 @@ fn run() -> ! {
     let mut slots = [Command::Delete; MAX_SCRIPT_COMMANDS];
     let count = match parse_script(script, &mut slots) {
         Ok(count) => count,
-        Err(ScriptError::BadSubst) => bad_script(),
-        Err(ScriptError::NotModelled) => not_modelled(),
+        Err(failure) => match failure.error {
+            // Two shapes have no C sentence to borrow: this build's own command
+            // cap, and the addresses and verbs C carries but this shell does not.
+            ScriptError::NotModelled => not_modelled(),
+            ScriptError::Subst(SubstError::TooLong) => bad_script(),
+            error => compile_error(script, ParseFailure { error, ..failure }),
+        },
     };
     // `-n` from the command line, or the `#n` line C honours at the start of a
     // script unit (`main.c:286-287`).
@@ -255,14 +260,82 @@ fn first_re_empty() -> ! {
     support::terminate(1)
 }
 
-/// The rejection for what this build does not carry: an address prefix, a verb
-/// outside `s`/`d`/`p`/`=`, or text left over after a command. C parses all of
-/// those; a silent pass-through would turn a script the kernel cannot run into
-/// output that looks like it did.
+/// The rejection for what this build does not carry: an address prefix or a verb
+/// outside `s`/`d`/`p`/`=`. C parses all of those, so there is no C sentence to
+/// copy here; a silent pass-through would turn a script the kernel cannot run
+/// into output that looks like it did.
 fn not_modelled() -> ! {
     support::warn(b"sed: address or verb not modelled (see 08 sec 4.4)\n");
     support::terminate(1)
 }
+
+/// C's compile-time error line. `errx` prints `<program name>: `
+/// (`minix3/lib/libc/gen/verrx.c:57`) and every `compile.c` call starts its
+/// format with `"%lu: %s: "` — the script line and `fname` — before the sentence
+/// (`compile.c:219`, `:264`, `:325`, `:331`, `:601`, `:636`). The letter slots
+/// carry **bytes**, the way C's `%c` writes them: a non-ASCII byte goes out as
+/// that one byte instead of being re-encoded.
+fn compile_error(script: &str, failure: ParseFailure) -> ! {
+    let mut line: Vec<u8> = b"sed: ".to_vec();
+    line.extend_from_slice(format!("{}: ", failure.line).as_bytes());
+    line.extend_from_slice(script_ident(script).as_bytes());
+    line.extend_from_slice(b": ");
+    match failure.error {
+        ScriptError::Subst(SubstError::BadDelimiter) => line.extend_from_slice(
+            b"substitute pattern can not be delimited by newline or backslash",
+        ),
+        ScriptError::Subst(SubstError::Unterminated) => {
+            line.extend_from_slice(b"unterminated substitute pattern");
+        }
+        ScriptError::Subst(SubstError::BadFlag(byte)) => {
+            line.extend_from_slice(b"bad flag in substitute command: '");
+            line.push(byte);
+            line.push(b'\'');
+        }
+        ScriptError::Subst(SubstError::NumberOverflow) => {
+            line.extend_from_slice(b"overflow in the 'N' substitute flag");
+        }
+        ScriptError::ExtraChars(verb) => {
+            line.extend_from_slice(b"extra characters at the end of ");
+            line.push(verb);
+            line.extend_from_slice(b" command");
+        }
+        ScriptError::InvalidCode(byte) => {
+            line.extend_from_slice(b"invalid command code ");
+            line.push(byte);
+        }
+        // Routed elsewhere; naming them keeps the split from silently swallowing
+        // a new arm.
+        ScriptError::NotModelled | ScriptError::Subst(SubstError::TooLong) => bad_script(),
+    }
+    line.push(b'\n');
+    support::warn(&line);
+    support::terminate(1)
+}
+
+/// The name C puts in that line: the script string in quotes, into a
+/// `static char string_ident[30]` (`main.c:242`); when the quoted form does not
+/// fit in 29 bytes, byte 24 onward becomes ` ..."` (`main.c:261-266`). The cut is
+/// by bytes because C cuts bytes — one that would land inside a multibyte
+/// character is walked back to a character boundary here, where C would have
+/// printed the split bytes raw.
+fn script_ident(script: &str) -> String {
+    let quoted = format!("\"{script}\"");
+    if quoted.len() < STRING_IDENT - 1 {
+        return quoted;
+    }
+    let limit = STRING_IDENT - 6;
+    let mut cut = limit.min(quoted.len());
+    while cut > 0 && !quoted.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut ident = String::from(&quoted[..cut]);
+    ident.push_str(" ...\"");
+    ident
+}
+
+/// `sizeof(string_ident)` in `minix3/usr.bin/sed/main.c:242`.
+const STRING_IDENT: usize = 30;
 
 #[cfg(test)]
 mod tests {

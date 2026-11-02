@@ -15,11 +15,15 @@
 //! `n` for `\n` (a backslash before any other character yields that
 //! character).
 
-use crate::RegexError;
 use crate::pattern::{Captures, Pattern};
 
 /// Maximum pattern plus replacement bytes handled in one command.
 pub const MAX_SUBST_TEXT: usize = 256;
+
+/// The largest occurrence number C accepts in an `s` flag: `s->n` is an `int`
+/// (`compile.c:601-607`'s `nval > INT_MAX`), written out so the bound stays a
+/// number rather than a cast.
+const INT_MAX_FLAG: u32 = 2_147_483_647;
 
 /// Which matches a substitution replaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,14 +49,44 @@ pub struct Subst<'a> {
     pub print: bool,
 }
 
+/// Why one `s` command could not be read. C's arms are four separate `errx`
+/// sentences, so this type names them one by one instead of folding them into a
+/// single "bad pattern" answer — the shell can only print what C prints if the
+/// failure says which one it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubstError {
+    /// The byte after `s` ends the line or is a backslash
+    /// (`compile.c:324-326`).
+    BadDelimiter,
+    /// A delimiter never closed before the text ran out (`compile.c:330-331`).
+    Unterminated,
+    /// A flag byte outside `g`, `p`, the case letters, `w`, or `1`-`9`
+    /// (`compile_flags`' `default:`, `compile.c:636`). A leading `0` lands here
+    /// too, because C's digit arm only accepts `1`-`9`.
+    BadFlag(u8),
+    /// The occurrence number overflowed an `int` (`compile.c:601-607`'s
+    /// `errno == ERANGE || nval > INT_MAX`).
+    NumberOverflow,
+    /// Pattern plus replacement past [`MAX_SUBST_TEXT`]. C has no such cap (it
+    /// reads into fixed `_POSIX2_LINE_MAX` buffers), so this arm has no C
+    /// sentence to borrow.
+    TooLong,
+}
+
 /// Parse one `s` command (the leading `s` already consumed).
 ///
 /// The byte after `s` is the delimiter. Returns the substitution plus how
 /// many bytes of `text` it consumed, so the caller can continue with
 /// chained commands (`s/a/b/;s/c/d/`).
-pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), RegexError> {
+pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), SubstError> {
     let bytes = text.as_bytes();
-    let delim = *bytes.first().ok_or(RegexError::InvalidPattern)?;
+    // C checks the delimiter before reading anything: a line-ending or
+    // backslash delimiter is refused on the spot (`compile.c:323-326`).
+    let delim = match bytes.first() {
+        None => return Err(SubstError::BadDelimiter),
+        Some(&b'\n') | Some(&b'\\') => return Err(SubstError::BadDelimiter),
+        Some(&byte) => byte,
+    };
     let mut pattern_text: Option<&'a str> = None;
     let mut replacement: Option<&'a str> = None;
     let mut pos = 1;
@@ -60,7 +94,7 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), RegexError> 
         let start = pos;
         loop {
             if pos >= bytes.len() {
-                return Err(RegexError::InvalidPattern);
+                return Err(SubstError::Unterminated);
             }
             if bytes[pos] == b'\\' {
                 pos += 2;
@@ -75,7 +109,7 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), RegexError> 
         }
     }
     let (Some(pattern_text), Some(replacement)) = (pattern_text, replacement) else {
-        return Err(RegexError::InvalidPattern);
+        return Err(SubstError::Unterminated);
     };
     let mut scope = SubstScope::First;
     let mut print = false;
@@ -90,26 +124,33 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), RegexError> 
                 print = true;
                 consumed += 1;
             }
-            b'0'..=b'9' => {
+            b'0' => return Err(SubstError::BadFlag(b'0')),
+            b'1'..=b'9' => {
                 let mut number: u32 = 0;
                 while consumed < bytes.len() && bytes[consumed].is_ascii_digit() {
-                    number = number
-                        .checked_mul(10)
-                        .and_then(|v| v.checked_add((bytes[consumed] - b'0') as u32))
-                        .ok_or(RegexError::InvalidPattern)?;
+                    let digit = u32::from(bytes[consumed] - b'0');
+                    // C's gate is `errno == ERANGE || nval > INT_MAX`, and `s->n`
+                    // is an `int`, so anything past that bound is the overflow
+                    // sentence rather than a huge count (`compile.c:601-607`).
+                    if number > (INT_MAX_FLAG - digit) / 10 {
+                        return Err(SubstError::NumberOverflow);
+                    }
+                    number = number * 10 + digit;
                     consumed += 1;
-                }
-                if number == 0 {
-                    return Err(RegexError::InvalidPattern);
                 }
                 scope = SubstScope::Nth(number);
             }
-            b';' | b'\n' | b' ' | b'\t' => break,
-            _ => return Err(RegexError::InvalidPattern),
+            b';' | b'\n' => break,
+            // C's flag loop runs `EATSPACE()` at the **top** of every iteration
+            // (`compile.c:576`, marked EXTENSION there), so blanks between flags
+            // and before a separator are skipped and `s/a/b/g p` still sets the
+            // `p` flag — stopping here instead would turn that into a refusal.
+            b' ' | b'\t' => consumed += 1,
+            other => return Err(SubstError::BadFlag(other)),
         }
     }
     if pattern_text.len() + replacement.len() > MAX_SUBST_TEXT {
-        return Err(RegexError::TooComplex);
+        return Err(SubstError::TooLong);
     }
     Ok((
         Subst {
@@ -318,12 +359,36 @@ pub enum Command<'a> {
 /// Errors while splitting a script into commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptError {
-    /// An address prefix (`/re/`, a line number, `$`), a verb beyond
-    /// `s`/`d`/`p`/`=`, trailing bytes, or more than `MAX_SCRIPT_COMMANDS`
-    /// commands — not modelled by this build.
+    /// An address prefix (`/re`, a line number, `$`), a verb C has but this
+    /// build does not carry, or more than `MAX_SCRIPT_COMMANDS` commands. C
+    /// accepts all of these, so there is no C sentence to print and the shell
+    /// gives its own.
     NotModelled,
-    /// A malformed `s` command (bad delimiters/escapes).
-    BadSubst,
+    /// A byte that is not one of C's command codes at all:
+    /// `invalid command code %c` (`compile.c:320`). The payload is C's `%c`
+    /// argument, a raw byte.
+    InvalidCode(u8),
+    /// Text left after a verb that takes none, as C's `EMPTY` case `default:`
+    /// arm reports it (`compile.c:264-265`). The payload is the **verb**, because
+    /// that is what C prints (`cmd->code`), not the leftover byte.
+    ExtraChars(u8),
+    /// A failure inside one `s` command, which carries its own arms.
+    Subst(SubstError),
+}
+
+/// A refusal plus the script line it happened on.
+///
+/// C's compile-time `errx` calls all print `"%lu: %s: <sentence>"` with
+/// `linenum` — the script line just read, counted by `cu_fgets`
+/// (`main.c:274`, `:292`, `:306`, `:315`) — and `fname`, the script string in
+/// quotes. A caller that wants to print what C prints therefore needs the line
+/// number with the reason, not just the reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseFailure {
+    /// Which refusal.
+    pub error: ScriptError,
+    /// The 1-based script line the failing command started on.
+    pub line: u64,
 }
 
 /// Split a sed script into [`Command`]s written into the caller's `out` slice
@@ -338,18 +403,28 @@ pub enum ScriptError {
 /// `s/a;b/x/` is pattern text and must not split anything. Cutting the whole
 /// script up front would read `s/a;b/x/` as two broken commands.
 ///
-/// After a command, blanks and tabs are eaten and a separator, a line end, or
-/// the end of the script must follow — C's `compile_flags` return points and the
-/// `EMPTY` case's `switch` (`compile.c:251-266`) accept exactly those, and its
-/// `default` arm is the fatal `extra characters at the end of %c command`. Any
-/// other byte here is refused as `ScriptError::NotModelled`, the same loud
-/// rejection this shell gives for an address or an unmodelled verb.
-pub fn parse_script<'a>(script: &'a str, out: &mut [Command<'a>]) -> Result<usize, ScriptError> {
+/// After a bare verb (`d`, `p`, `=`) blanks are eaten and a separator, a line
+/// end, or the end of the script must follow — C's `EMPTY` case `switch`
+/// (`compile.c:251-266`) accepts exactly those, and its `default:` arm is the
+/// fatal `extra characters at the end of %c command`. An `s` command cannot reach
+/// that check: its own reader ends at a separator, a line end, or the end of the
+/// text, and any other byte there is a flag position, which C refuses with
+/// `bad flag in substitute command` (`compile.c:636`).
+pub fn parse_script<'a>(script: &'a str, out: &mut [Command<'a>]) -> Result<usize, ParseFailure> {
     let bytes = script.as_bytes();
     let mut index = 0usize;
     let mut count = 0usize;
+    // C's `linenum`, which `cu_fgets` raises once per script line before the
+    // command on it is even looked at (`main.c:274`, `:292`, `:306`, `:315`).
+    let mut line = 1u64;
     while index < bytes.len() {
-        index = skip_blanks(bytes, index);
+        while matches!(bytes.get(index), Some(&byte) if matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
+        {
+            if bytes[index] == b'\n' {
+                line += 1;
+            }
+            index += 1;
+        }
         if index >= bytes.len() {
             break;
         }
@@ -370,48 +445,88 @@ pub fn parse_script<'a>(script: &'a str, out: &mut [Command<'a>]) -> Result<usiz
             }
             _ => {}
         }
+        // The line this command started on, kept for the refusal messages.
+        let command_line = line;
         let command = match bytes[index] {
             b's' => {
-                let (subst, consumed) =
-                    parse_subst(&script[index + 1..]).map_err(|_| ScriptError::BadSubst)?;
+                let (subst, consumed) = parse_subst(&script[index + 1..])
+                    .map_err(|error| fail(command_line, ScriptError::Subst(error)))?;
                 index += 1 + consumed;
                 Command::Subst(subst)
             }
             byte @ (b'd' | b'p' | b'=') => {
                 index += 1;
+                index = skip_spaces(bytes, index);
+                if index < bytes.len() && !matches!(bytes[index], b';' | b'\n') {
+                    return Err(fail(command_line, ScriptError::ExtraChars(byte)));
+                }
                 match byte {
                     b'd' => Command::Delete,
                     b'p' => Command::Print,
                     _ => Command::PrintLineNum,
                 }
             }
-            // `/re/`, a digit, `$` → address; any other verb → unmodelled.
-            _ => return Err(ScriptError::NotModelled),
+            // `/re`, a digit, `\`, `$` are address starts (`compile.c:193`'s
+            // `addrchar`); the rest split by whether C's own table knows them.
+            other => {
+                return Err(fail(
+                    command_line,
+                    if is_command_code(other) || matches!(other, b'/' | b'\\' | b'$' | b'0'..=b'9')
+                    {
+                        ScriptError::NotModelled
+                    } else {
+                        ScriptError::InvalidCode(other)
+                    },
+                ));
+            }
         };
-        index = skip_spaces(bytes, index);
-        if index < bytes.len() && !matches!(bytes[index], b';' | b'\n') {
-            return Err(ScriptError::NotModelled);
-        }
-        *out.get_mut(count).ok_or(ScriptError::NotModelled)? = command;
+        *out.get_mut(count)
+            .ok_or_else(|| fail(command_line, ScriptError::NotModelled))? = command;
         count += 1;
     }
     Ok(count)
 }
 
-/// Blanks that separate commands within a line, C's `isspace` under the C
-/// locale (`compile.c:152-156`'s `EATSPACE`). A newline is **not** eaten here:
-/// in C each script line arrives as its own buffer, so a line end always means
-/// "this line is over", never "keep looking on the next one".
-fn skip_blanks(bytes: &[u8], mut index: usize) -> usize {
-    while matches!(bytes.get(index), Some(&byte) if matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
-    {
-        index += 1;
-    }
-    index
+/// One refusal at a known script line.
+fn fail(line: u64, error: ScriptError) -> ParseFailure {
+    ParseFailure { error, line }
 }
 
-/// The blanks C eats between a command and its separator (`compile.c:253` and
-/// `:347`'s `EATSPACE()`), restricted to what can sit on one line.
+/// Whether C's command table knows this byte (`compile.c:102-131`'s `cmd_fmts`).
+/// The distinction is what decides the message: an unknown byte is C's own
+/// `invalid command code`, while a known verb this build does not carry has no C
+/// error to copy.
+fn is_command_code(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'{' | b'}'
+            | b'a'..=b'd'
+            | b'D'
+            | b'g'
+            | b'G'
+            | b'h'
+            | b'H'
+            | b'i'
+            | b'l'
+            | b'n'
+            | b'N'
+            | b'p'
+            | b'P'
+            | b'q'
+            | b'r'
+            | b's'
+            | b't'
+            | b'w'
+            | b'x'
+            | b'y'
+            | b'!'
+            | b':'
+    )
+}
+
+/// The blanks C eats between a bare verb and its separator (`compile.c:253`'s
+/// `EATSPACE()`), restricted to what can sit on one line: in C each script line
+/// arrives as its own buffer, so a line end always means "this line is over".
 fn skip_spaces(bytes: &[u8], mut index: usize) -> usize {
     while matches!(bytes.get(index), Some(&b' ' | &b'\t')) {
         index += 1;
@@ -555,12 +670,16 @@ mod tests {
 
     #[test]
     fn test_missing_delimiter_rejected() {
-        assert_eq!(parse_subst("/ab"), Err(RegexError::InvalidPattern));
+        // C's `compile_delimited` returns NULL and the caller prints
+        // `unterminated substitute pattern` (`compile.c:329-331`).
+        assert_eq!(parse_subst("/ab"), Err(SubstError::Unterminated));
     }
 
     #[test]
     fn test_zero_nth_rejected() {
-        assert_eq!(parse_subst("/a/b/0"), Err(RegexError::InvalidPattern));
+        // C's digit arm accepts `1`-`9` only, so a `0` in the flag run falls to
+        // its `default:` — a bad flag, not a bad number (`compile.c:597-636`).
+        assert_eq!(parse_subst("/a/b/0"), Err(SubstError::BadFlag(b'0')));
     }
 
     #[test]
@@ -592,19 +711,87 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_script_rejects_addresses_and_junk() {
+    fn test_parse_script_splits_c_own_errors_from_ours() {
         let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
-        assert_eq!(parse_script("1d", &mut cmds), Err(ScriptError::NotModelled));
+        // Addresses are something C carries, so a refusal here has no C sentence:
+        // ours. The four address-start bytes come from `compile.c:193`'s
+        // `addrchar("0123456789/\\$")`.
+        for script in ["1d", "/a/d", "$d", "\\ad"] {
+            assert_eq!(
+                parse_script(script, &mut cmds),
+                Err(fail(1, ScriptError::NotModelled)),
+                "{script:?}"
+            );
+        }
+        // Likewise a verb C's table knows and this build does not carry.
         assert_eq!(
-            parse_script("/a/d", &mut cmds),
-            Err(ScriptError::NotModelled)
+            parse_script("q", &mut cmds),
+            Err(fail(1, ScriptError::NotModelled))
         );
-        assert_eq!(parse_script("$d", &mut cmds), Err(ScriptError::NotModelled));
-        assert_eq!(parse_script("q", &mut cmds), Err(ScriptError::NotModelled));
-        assert_eq!(parse_script("dx", &mut cmds), Err(ScriptError::NotModelled));
+        // A byte outside C's table is C's own `invalid command code`
+        // (`compile.c:318-320`), carrying the byte for C's `%c`.
+        assert_eq!(
+            parse_script("Z", &mut cmds),
+            Err(fail(1, ScriptError::InvalidCode(b'Z')))
+        );
+        // Text after a bare verb names the **verb**, as C's `EMPTY` case does
+        // (`compile.c:264-265`).
+        assert_eq!(
+            parse_script("dx", &mut cmds),
+            Err(fail(1, ScriptError::ExtraChars(b'd')))
+        );
+        assert_eq!(
+            parse_script("p ; p x", &mut cmds),
+            Err(fail(1, ScriptError::ExtraChars(b'p')))
+        );
+        // C prints the script line the command sat on, so the scan has to carry it:
+        // `cu_fgets` raises `linenum` per line (`main.c:274`, `:292`, `:306`).
+        assert_eq!(
+            parse_script("p\np\n d x", &mut cmds),
+            Err(fail(3, ScriptError::ExtraChars(b'd')))
+        );
+        assert_eq!(
+            parse_script("s/a/b/;\nZ", &mut cmds),
+            Err(fail(2, ScriptError::InvalidCode(b'Z')))
+        );
+        // A comment that runs to the end of its own line does not move the count
+        // past that line.
+        assert_eq!(
+            parse_script("#c\ns/a/b/x", &mut cmds),
+            Err(fail(2, ScriptError::Subst(SubstError::BadFlag(b'x'))))
+        );
+    }
+
+    #[test]
+    fn test_subst_error_arms() {
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        // A flag letter outside C's set (`compile.c:635-637`).
         assert_eq!(
             parse_script("s/a/b/x", &mut cmds),
-            Err(ScriptError::BadSubst)
+            Err(fail(1, ScriptError::Subst(SubstError::BadFlag(b'x'))))
+        );
+        // C's digit arm takes `1`-`9`, so a leading `0` is a bad flag, not a bad
+        // number.
+        assert_eq!(
+            parse_script("s/a/b/0", &mut cmds),
+            Err(fail(1, ScriptError::Subst(SubstError::BadFlag(b'0'))))
+        );
+        // Past the bound C puts on `s->n` (`compile.c:601-607`).
+        assert_eq!(
+            parse_script("s/a/b/2147483648", &mut cmds),
+            Err(fail(1, ScriptError::Subst(SubstError::NumberOverflow)))
+        );
+        // Right at the bound is still a count.
+        assert_eq!(parse_script("s/a/b/2147483647", &mut cmds).unwrap(), 1);
+        // A backslash delimiter (`compile.c:323-326`) and a delimiter that never
+        // closes (`compile.c:329-331`).
+        assert_eq!(
+            parse_script("s\\a/b/", &mut cmds),
+            Err(fail(1, ScriptError::Subst(SubstError::BadDelimiter)))
+        );
+        assert_eq!(
+            parse_script("s/a/b", &mut cmds),
+            Err(fail(1, ScriptError::Subst(SubstError::Unterminated)))
         );
     }
 
@@ -732,17 +919,27 @@ mod tests {
     }
 
     #[test]
-    fn test_flag_after_a_space_is_a_known_divergence() {
-        // C's `compile_flags` runs `EATSPACE()` at the top of its loop (an
-        // extension marked as such at `compile.c:576`), so `s/a/b/ p` sets the
-        // `p` flag there. This build stops the flag run at the space and then
-        // refuses the trailing text, registered as `SED-FLAG-SPACE-EXTENSION`.
+    fn test_blanks_between_flags_still_belong_to_the_flags() {
+        // C's `compile_flags` runs `EATSPACE()` at the top of its loop (the
+        // extension marked as such at `compile.c:576`), so a blank before a flag
+        // letter does not end the flag run: `s/a/b/ g` is `g`, `s/a/b/ p` is the
+        // print flag. A shell that stopped the run at the blank would refuse both.
         let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
-        assert_eq!(
-            parse_script("s/a/b/ p", &mut cmds),
-            Err(ScriptError::NotModelled)
-        );
-        // Without the letter the blank is only a separator, which is accepted.
+        assert_eq!(parse_script("s/a/b/ g", &mut cmds).unwrap(), 1);
+        let Command::Subst(subst) = cmds[0] else {
+            panic!("一条 s 命令都读不出来");
+        };
+        assert_eq!(subst.scope, SubstScope::Global);
+        assert!(!subst.print);
+        assert_eq!(parse_script("s/a/b/ p;d", &mut cmds).unwrap(), 2);
+        let Command::Subst(subst) = cmds[0] else {
+            panic!("第一条该是 s");
+        };
+        assert!(subst.print);
+        assert!(matches!(cmds[1], Command::Delete));
+        // The same blank before a separator is only a separator.
         assert_eq!(parse_script("s/a/b/ ;p", &mut cmds).unwrap(), 2);
+        // Trailing blanks after the flags run out are nothing at all.
+        assert_eq!(parse_script("s/a/b/  ", &mut cmds).unwrap(), 1);
     }
 }

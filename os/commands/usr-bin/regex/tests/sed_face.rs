@@ -383,3 +383,91 @@ fn an_empty_pattern_with_nothing_recorded_stops_with_the_c_sentence() {
         "sed: first RE may not be empty\n"
     );
 }
+
+#[test]
+fn a_compile_refusal_carries_the_line_and_the_script_name_as_c_prints_them() {
+    // Every compile-time `errx` in `compile.c` opens with `"%lu: %s: "` — the
+    // script line and `fname` — and `errx` itself prefixes `<program name>: `
+    // (`minix3/lib/libc/gen/verrx.c:57`). These are the sentences, byte for byte:
+    // `bad flag` (`compile.c:636`), `extra characters at the end of %c command`
+    // naming the verb (`:264`), `invalid command code` (`:320`), `unterminated
+    // substitute pattern` (`:331`), the newline-or-backslash delimiter (`:325`),
+    // and the occurrence-number overflow (`:601`).
+    let cases = [
+        ("s/a/b/x", "sed: 1: \"s/a/b/x\": bad flag in substitute command: 'x'\n"),
+        (
+            "dx",
+            "sed: 1: \"dx\": extra characters at the end of d command\n",
+        ),
+        ("Z", "sed: 1: \"Z\": invalid command code Z\n"),
+        ("s/a/b", "sed: 1: \"s/a/b\": unterminated substitute pattern\n"),
+        (
+            "s\\a/b/",
+            "sed: 1: \"s\\a/b/\": substitute pattern can not be delimited by newline or backslash\n",
+        ),
+        (
+            "s/a/b/2147483648",
+            "sed: 1: \"s/a/b/2147483648\": overflow in the 'N' substitute flag\n",
+        ),
+    ];
+    for (script, expected) in cases {
+        let (out, status, err) = run(&[script], b"");
+        assert_eq!(out, Vec::<u8>::new(), "{script:?} must not have run");
+        assert_eq!(status, 1, "{script:?} stderr was {err:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&err),
+            expected,
+            "{script:?} should print C's own line"
+        );
+    }
+}
+
+#[test]
+fn the_refusal_names_the_script_line_the_command_sits_on() {
+    // `cu_fgets` raises C's `linenum` once per script line (`main.c:274`, `:292`,
+    // `:306`), so a command on the third line is reported as line 3 — and the name
+    // slot still carries the **whole** script, newlines included, since that is
+    // what `fname` points at.
+    let (out, status, err) = run(&["p\np\n d x"], b"");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "sed: 3: \"p\np\n d x\": extra characters at the end of d command\n"
+    );
+}
+
+#[test]
+fn a_script_too_long_for_the_name_slot_is_cut_where_c_cuts_it() {
+    // `string_ident` is 30 bytes (`main.c:242`): when `"<script>"` does not fit in
+    // 29, `strcpy(string_ident + 24, " ...\"")` leaves the first 24 bytes and the
+    // ellipsis (`main.c:261-266`).
+    let script = "s/abcdefghijklmnopqrstuvwxyz0123456789/x";
+    let (out, status, err) = run(&[script], b"");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "sed: 1: \"s/abcdefghijklmnopqrstu ...\": unterminated substitute pattern\n"
+    );
+}
+
+#[test]
+fn a_blank_between_flags_still_belongs_to_the_flags() {
+    // C's `compile_flags` eats blanks at the top of every iteration
+    // (`compile.c:576`, labelled EXTENSION there), so `s/a/b/ g` is a global
+    // substitution and `s/a/b/ g p` both. Treating the blank as the end of the
+    // flags would refuse both shapes.
+    let (out, status, err) = run(&["s/a/b/ g"], b"aaa\n");
+    assert_eq!(
+        out,
+        b"bbb\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+    let (out, status, _) = run(&["-n", "s/a/b/ p"], b"aab\n");
+    // The padded `p` flag is set, and without a `g` only the first match goes.
+    assert_eq!(out, b"bab\n".to_vec(), "the padded `p` flag still prints");
+    assert_eq!(status, 0);
+}
