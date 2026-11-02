@@ -4607,3 +4607,21 @@ C 的 `stime_file()`（`minix3/usr.bin/touch/touch.c:318-327`）只做一次 `st
 门：`cargo test -p minix-fileops` → 41 段 **456/0**；三架构 `--bins` 各退 0；`rustfmt` 对
 `src/touch.rs` 基线 3 处、改后 2 处且 `git diff` 零他人行（纯增量，rustfmt 顺手改的 3 行别人注释已还原）；
 文风 `--diff` 零 error；在制自检干净。
+
+### 第二百一十九笔（A 板 · `PR-NODIAG-LEG`：`pr -r` 接上——C 的 `nodiag` 只压那句开档诊断，`errcnt` 与退码照旧）
+
+`pr` 的未建模字母那一支把 `-p`/`-r`/`-T` 一并回 `pr: option form not modelled yet`。C 的
+`case 'r'` 只是 `++nodiag`（`minix3/usr.bin/pr/pr.c:1775-1777`），而 `nodiag` 全树一处使用
+（`:1364-1369`）：开档失败先 `++errcnt`，再 `if (nodiag) continue;`，才轮到
+`pr: Cannot open %s, %s`——压的是句子，不是失败。落码：`PrOptions.nodiag` + 解析臂 + 壳侧把
+`support::warn` 包进 `if !options.nodiag`，`had_error = true` 留在外面，未建模一支缩到 `-p`/`-T`。
+
+门两枚：库内 `dash_r_is_a_flag_and_the_unmodelled_arm_stays_narrow`（`-r`、`-tr`、`-rt`、`-r -t`
+四种给法、只给 `-t` 时不亮、`-p`/`-T` 照旧 `Unmodelled`——钉住搬走 `r` 没放宽那一支）；
+面门 `dash_r_silences_the_open_diagnostic_but_not_the_failure`（`-r 缺档` 空 stdout/空 stderr/退 1、
+`-t -r 缺档 -` 仍打 `a\n` 且退 1、两枚缺档仍静默仍退 1、去掉 `-r` 逗号形报文一字不差回来）。
+负控三枚各咬（吞掉失败 1 红 / 照印 3 红 / 塞回未建模 2 红）。
+
+读数：宿主整包 69 段 **1297/0**、容器权威门同读数退 0、三架构各退 0；本轮新写代码起初有 3 处
+自有格式漂移，就地格式化后归零（基线 0，未带走存量）。07 篇 `pr` 行「三形未接线」改成两形并按 C
+写明 `nodiag` 的分量。
