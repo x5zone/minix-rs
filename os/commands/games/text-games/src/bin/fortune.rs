@@ -1,11 +1,22 @@
 //! Minix-RS fortune — the doing half over `minix_text_games::fortune`.
 //!
-//! Ground truth: `minix3/games/fortune/fortune/fortune.c` — the quip database is
-//! split by line and the draw index is taken modulo the database length (the
-//! deciding half of `pick_quip`). This shell reads the data file (default
-//! `/usr/share/games/fortune`, or the operand when given), draws from the clock's
-//! seconds (the real machine also mixes in the process id), and prints the line
-//! it hit.
+//! Ground truth: `minix3/games/fortune/fortune/fortune.c` — the two-file
+//! model. The operand names the **text** file; the index is that path plus
+//! `.dat` (`is_fortfile`, `fortune.c:788-799`). The acceptance order in
+//! `add_file` is: open the text file (`err(1, "Cannot open `%s'", path)`,
+//! `fortune.c:525` when that fails), then `is_fortfile` gates the name — the
+//! last suffix must not be one of the "illegal" ones (`fortune.c:756-762`)
+//! and the `.dat` beside it must be readable (`fortune.c:792-795`) — a
+//! failure there answers `warnx("`%s' not a fortune file or directory")`
+//! (`fortune.c:549-551`). The draw index is taken modulo the recorded quip
+//! count (`get_pos`, `fortune.c:960-975`); the drawn quip is seeked and read
+//! to the delimiter line (`display`, `fortune.c:265-276`), rotated when the
+//! index says so. Two verdicts replace C's crash legs (the cross-board
+//! adjudication on the empty-database and corrupt-index shapes): an index
+//! that records zero quips answers "no fortunes in database" where C divides
+//! by zero (`fortune.c:956/:1007`), and a structurally bad index answers
+//! "invalid fortune database" where C's check covers only a short header read
+//! (`fortune.c:1115-1117`).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -17,76 +28,113 @@ use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
 mod support;
-use minix_text_games::fortune::{SliceQuips, pick_quip};
+use minix_text_games::fortune::{FortuneIndex, InvalidDatabase, rot13_bytes};
 
 const DEFAULT_DB: &str = "/usr/share/games/fortune";
+
+/// The suffixes `is_fortfile` rejects (`fortune.c:756-762`): an operand whose
+/// last suffix is one of these is not treated as a fortune file at all.
+const ILLEGAL_SUFFIXES: [&str; 13] = [
+    "dat", "pos", "c", "h", "p", "i", "f", "pas", "ftn", "ins.c", "ins,pas", "ins.ftn", "sml",
+];
+
+/// C's `is_fortfile` name half (`fortune.c:780-786`): a basename starting
+/// with a dot, or carrying an illegal last suffix, is not a fortune file.
+fn name_is_not_a_fortune_file(shown: &str) -> bool {
+    let base = shown.rsplit('/').next().unwrap_or(shown);
+    if base.starts_with('.') {
+        return true;
+    }
+    if let Some(dot) = base.rfind('.') {
+        let suffix = &base[dot + 1..];
+        if ILLEGAL_SUFFIXES.contains(&suffix) {
+            return true;
+        }
+    }
+    false
+}
+
+/// C's `err(1, "Cannot open `%s'", path)` for the text file
+/// (`fortune.c:525`): program name, the sentence with the raw path wrapped in
+/// a backtick and a single quote, and the errno sentence. The path entry
+/// wants `&str` (registered under `ARGV-BYTE-PATH-IN-LIBS`), so the fold
+/// happens only at the call point; the message still reports the raw bytes.
+fn cannot_open(path: &[u8], code: minix_sys::Errno) -> ! {
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let mut line: Vec<u8> = support::prog_name_bytes(&argv).to_vec();
+    line.extend_from_slice(b": Cannot open `");
+    line.extend_from_slice(path);
+    line.extend_from_slice(b"': ");
+    line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+    line.push(b'\n');
+    support::warn(&line);
+    support::terminate(1);
+}
+
+/// C's `warnx("`%s' not a fortune file or directory", path)`
+/// (`fortune.c:549-551`): no errno sentence, exit 1 through the same
+/// `form_file_list` failure that the open failure takes (`fortune.c:213`).
+fn not_a_fortune_file(path: &[u8]) -> ! {
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let mut line: Vec<u8> = support::prog_name_bytes(&argv).to_vec();
+    line.extend_from_slice(b": `");
+    line.extend_from_slice(path);
+    line.extend_from_slice(b"' not a fortune file or directory\n");
+    support::warn(&line);
+    support::terminate(1);
+}
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let path: &[u8] = args.get(1).copied().unwrap_or(DEFAULT_DB.as_bytes());
-
-    // An open failure is reported on its own (C's `err(1, "Cannot open `%s'", ...)`);
-    // a read failure is not: C loads with `fgets(...) != NULL` (`fortune.c:268`,
-    // `:293`) and never checks `ferror`, so a broken read and end of file are the
-    // same thing. The seam is the twin face of `support::slurp_operand`: the
-    // real-machine leg lands on `minix_sys::{open, read, close}` and the host leg
-    // on `std::fs`. The sentences reuse the two this shell already has (not yet
-    // squared with C's `err(1, "Cannot open `%s'", ...)` shape; that debt is
-    // recorded in `rewrite-notes/18-stage-commands/todo.md`). Only the two arms are
-    // made reachable here, not reworded. The open entry wants `&str` (registered
-    // under `ARGV-BYTE-PATH-IN-LIBS`), so the fold happens only at this point; the
-    // message still reports the raw bytes.
     let shown = String::from_utf8_lossy(path).into_owned();
+
+    // The text file first (C opens it in `add_file`, `fortune.c:525`).
+    // A read that breaks partway is end of input: C loads with
+    // `fgets(...) != NULL` (`fortune.c:268`) and never checks `ferror`.
     let image = match support::slurp_operand(&shown) {
         Ok(image) => image,
-        Err(support::OperandFailure::Open(code)) => {
-            // This C path is `err(1, "Cannot open `%s'", fp->path)`
-            // (`fortune.c:1056`, with two more `.dat` legs of the same sentence shape
-            // at `:1067` and `:1116`): a three-part form whose middle is the sentence
-            // plus the file name wrapped in a backtick and a single quote (raw
-            // bytes), whose tail is the sentence for the errno, and whose exit
-            // status is 1. A file-name access failure in this shell is exactly this
-            // path (the directory leg goes through `warn` in C at `:525` and `:705`
-            // and does not leave; this shell does not walk directories yet and is
-            // not in that form). The `err_line` label entry takes `&str`, so the
-            // line is put together here.
-            let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
-            let mut line: Vec<u8> = prog.as_bytes().to_vec();
-            line.extend_from_slice(b": Cannot open `");
-            line.extend_from_slice(path);
-            line.extend_from_slice(b"': ");
-            line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
-            line.push(b'\n');
-            support::warn(&line);
+        Err(support::OperandFailure::Open(code)) => cannot_open(path, code),
+    };
+    // Then the name gate and the index beside it. In C the `.dat` readability
+    // check lives inside `is_fortfile` (`fortune.c:792-795`), so an
+    // unopenable index is the warnx shape, not a second "Cannot open".
+    if name_is_not_a_fortune_file(&shown) {
+        not_a_fortune_file(path);
+    }
+    let dat_shown = format!("{shown}.dat");
+    let dat_image = match support::slurp_operand(&dat_shown) {
+        Ok(image) => image,
+        Err(support::OperandFailure::Open(_)) => not_a_fortune_file(path),
+    };
+
+    // Structural verdicts: one sentence for every bad index, one for an index
+    // that records nothing. C's own paths are the corrupted-table `errx` and
+    // the division by zero; the adjudicated replacements are below.
+    let index = match FortuneIndex::parse(&dat_image, &image) {
+        Ok(index) => index,
+        Err(InvalidDatabase) => {
+            support::warn(b"fortune: invalid fortune database\n");
             support::terminate(1);
         }
     };
-
-    let text = String::from_utf8_lossy(&image).into_owned();
-    let quips: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
-    let draw = (support::epoch_micros().unwrap_or(0) / 1_000_000) as u32;
-    let db = SliceQuips::new(&quips);
-    match pick_quip(&db, draw) {
-        Ok(quip) => {
-            // C's output leg does not check for failure: `fputs(line, stdout)`
-            // (`minix3/games/fortune/fortune/fortune.c:272`) is followed by
-            // `(void) fflush(stdout)` (`:274`), the return value is dropped by
-            // `(void)`, and the whole file has no `ferror(stdout)` test (the one in
-            // `strfile/strfile.c:255` checks the data file that tool writes, a
-            // different program). So a failed write adds no line and changes no exit
-            // status: the error is taken and dropped, and the status is still set by
-            // `terminate(0)` below, matching C's `exit(0)` (`fortune.c:377`).
-            let _ = support::emit_error(format!("{quip}\n").as_bytes());
-        }
-        Err(_) => {
-            let mut line: Vec<u8> = b"fortune: ".to_vec();
-            line.extend_from_slice(path);
-            line.extend_from_slice(b": empty database\n");
-            support::warn(&line);
-            support::terminate(1);
-        }
+    if index.is_empty() {
+        support::warn(b"fortune: no fortunes in database\n");
+        support::terminate(1);
     }
+
+    let draw = (support::epoch_micros().unwrap_or(0) / 1_000_000) as u32;
+    let picked = (draw as usize) % index.len();
+    let mut bytes = index.quip_bytes(picked).unwrap_or_default().to_vec();
+    if index.rotated() {
+        bytes = rot13_bytes(&bytes);
+    }
+    // C's output leg does not check for failure: `fputs(line, stdout)`
+    // (`fortune.c:272`) and `(void) fflush(stdout)` (`:274`) both drop the
+    // result, and the file has no `ferror(stdout)` test, so a failed write
+    // adds no line and changes no exit status (`exit(0)`, `fortune.c:377`).
+    let _ = support::emit_error(&bytes);
     support::terminate(0)
 }
 

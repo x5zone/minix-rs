@@ -119,6 +119,14 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百九十六（`fortune` 换两文件模型：`.dat` 索引解析、严格校验与 C `strfile` 金样夹具）
+
+- **这一笔的射程**：跨板裁决 `PENDING-DECISIONS-CROSS-BOARD-20261102.md` §2.1（方案甲：实现 `.dat` 读取）与 §2.2（空库与损坏两类错误分开，不复刻信号 8）的落地。C 的读取模型是 `strfile` 两件形：操作数指文本件，索引是路径加 `.dat`（`is_fortfile`，`fortune.c:788-799`）；索引头是 24 字节 `STRFILE`（`strfile.h:31-45`，五个大端 `u32` 加四字节备用区、首字节定界符），其后是「条数加一」个 8 字节大端定位点（`strfile.c:451-461` 写、`fortune.c:979-982` 读）；抽取按秒取模，正文从定位点按行读到定界行（`STR_ENDSTRING`，`strfile.h:29-30`；`display`，`fortune.c:265-276`），`STR_ROTATED` 置位时输出前 rot13（`fortune.c:247-258`，只动 ASCII 字母）。现场：本壳读纯文本按行切分、与 C 的数据文件生态（`strfile` 产物）不兼容。
+- **落码**：`fortune.rs` 的读取半整体换形——`FortuneIndex::parse(dat, text)` 解析 24 字节头与定位点表，结构性校验四处：头过短（对位 C 唯一查的 `fortune.c:1115-1117` 短读）、版本非 1、定位点表不完整、定位点越过文本件，一律 `InvalidDatabase` 一个判词；`quip_bytes` 按整行扫描到定界行或文末（行中定界符不成界，对位 C 的行级 `STR_ENDSTRING`），表尾那个终止点不是格言（越界返回 `None`）；`rot13_bytes` 逐字节照 C 只动 ASCII 字母。壳 `bin/fortune.rs` 按接收序走：开文本件（失败 `err(1, "Cannot open \`%s'")` 全形带 errno 句，`fortune.c:525`）、`is_fortfile` 名字门（点开头名与非法尾缀清单 `fortune.c:756-762`、`.dat` 可读检查 `:792-795`，失败 `warnx("\`%s' not a fortune file or directory")`，`:549-551`——**缺 `.dat` 的 C 真值是 warnx 形而非第二次 Cannot open**，因为 C 的可读检查在 `is_fortfile` 里）、解析失败答 `fortune: invalid fortune database`、零条答 `fortune: no fortunes in database`（对位 C 的对零取模崩溃，`fortune.c:956/:1007`，两句皆裁决钦定）、输出腿保持「失手不查不改退码」（`fortune.c:272-274`）。原文本切分模型（`QuipDb`/`SliceQuips`/`EmptyQuips`/`pick_quip`/`split_quips` 及其测试）随换形整体移除——裁决明文不许文本回落形态。
+- **夹具**：`tests/fixtures/` 四件皆由 C 工具生成——本批现编 `minix3/games/fortune/strfile/strfile.c`（宏桩 + getopt + progname 垫片，产物在 `tmp/strfile-21/`）得 `strfile`，对 `golden.txt`（两条）、`rot13.txt`（同文 `-x` 置 `STR_ROTATED`）、`single.txt`（单条）、`empty.txt`（只含定界行，工具自报 `There were 0 strings`）各跑一次。金样逐字节核过格式：头 24 字节五字段大端、定位点 8 字节大端（`od` 读数在案）。
+- **门**：`cargo test -p minix-text-games` → 库 **35 / 0**（fortune 子集 5 枚：金样两读与越界、行中定界符不成界、rot13 只动字母、零条索引合法解析、四形拒绝一个判词）+ 面门 `fortune_face` **9 / 0**（金样二选一输出、单条逐字节、缺 `.dat` warnx 形、缺文本件 Cannot open 全形、`.dat` 尾缀名字门、零条句、截断索引句、rot13 输出、`/dev/full` 静默退 0）；`cargo clippy -p minix-text-games --tests` 触及文件零告警；`rustfmt --edition 2024` 三文件归一；`cargo build --target x86_64-unknown-none --release --bin fortune` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `5b3ebfd77`。
+- **登记与余量**：目次形操作数与 `-a` offensive 配对走 `add_dir` 目次走查，本壳只接单文件两件形（24 篇留白行同步改写）；随机源仍取时钟秒（C 的 `random()` 播种面是另一条施工线，取模语义一致）；24 篇 §2.3/§3/§4/§5 的六处模型描述随本批同步（Doc Code Sync）。
+
 ## 批次四百九十五（`colrm` 的两腿归因按裁决收口：规则已在树，探针矩阵新参照件复跑）
 
 - **这一笔的射程**：跨板裁决 `PENDING-DECISIONS-CROSS-BOARD-20261102.md` §2.3（方案乙：不复刻 stdio 缓冲，保留「读失败报 stdin、写失败报 stdout」，不以输出量决定错误可见性，不延迟报告；同时故障按实际首先观察到的流终止，该边界单独登记）的执行与验收。裁决定的验收方式是「探针矩阵复跑（读坏/写坏 × 大小输出）」，本轮以新构建的参照件复跑全矩阵并把四条规则的钉子测试点齐。

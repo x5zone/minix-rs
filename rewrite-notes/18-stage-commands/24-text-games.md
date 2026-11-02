@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第三组——靠故事留住人的游戏，世界能走、骰子能掷、格言能抽的证明
 > **源码**: `minix3/games/adventure/hdr.h`（词汇上限 `HTSIZE 512` 见第 78 行附近、物品描述见第 101 行附近、物品初始位置见第 116 行附近）、`minix3/games/adventure/vocab.c`（物品移动见第 72 行附近）、`minix3/games/monop/`（棋盘玩法见 `monop.c`、牌堆见 `cards.c`、房子见 `houses.c`、监狱见 `jail.c`）、`minix3/games/fortune/fortune/fortune.c`（索引表定位见第 267 行附近、表读取见第 980 行附近）、`minix3/games/fortune/datfiles/`（格言数据文件）、`minix3/games/fish/fish.c`（十三点数 `RANKS` 见第 61 行附近、整副牌见第 64 行附近、成书计数见第 83 行附近、要牌提示见第 160 行附近）、`minix3/games/wtf/wtf`（`-o` 与 `-f` 标志、跳过的 `is` 词）、`minix3/games/random/random.c`（时钟加进程播种见第 107 行附近、分母选中见第 126 行附近）、`minix3/games/wargames/wargames.sh`（战争游戏脚本）
-> **Rust 模块**: `os/commands/games/text-games`（库包 `minix-text-games`：`adventure.rs`、`monop.rs`、`fortune.rs`、`fish.rs`、`acronym.rs`、`lottery.rs`，34 个测试通过）；`wtf`/`fortune`/`random` 三枚薄壳已接线，其中 `random` 另有一枚端到端门在 `os/commands/games/text-games/tests/random_face.rs`（25 枚：三百四十三立 6 枚、三百四十六补 3 枚、三百四十七补 3 枚、三百四十八补 6 枚、三百四十九补 4 枚、三百五十补 2 枚、四百二十一补 1 枚）；另有整 crate 共用的 argv 缝门 `tests/argv_seam_face.rs` 一枚（四百二十二立：三支壳各喂一枚裸 `\xff` 字节参数与它的 lossy 等价，三样逐字节相同且不得以信号退出——缝的契约归这一枚门，各壳报文归各自面门）（各游戏 `src/bin/` 内，数据文件读取与抽取面落地；`adventure`/`monop` 的完整游玩循环归执行层批次）
+> **Rust 模块**: `os/commands/games/text-games`（库包 `minix-text-games`：`adventure.rs`、`monop.rs`、`fortune.rs`、`fish.rs`、`acronym.rs`、`lottery.rs`，35 个库测通过）；`wtf`/`fortune`/`random` 三枚薄壳已接线，其中 `random` 另有一枚端到端门在 `os/commands/games/text-games/tests/random_face.rs`（25 枚：三百四十三立 6 枚、三百四十六补 3 枚、三百四十七补 3 枚、三百四十八补 6 枚、三百四十九补 4 枚、三百五十补 2 枚、四百二十一补 1 枚）；另有整 crate 共用的 argv 缝门 `tests/argv_seam_face.rs` 一枚（四百二十二立：三支壳各喂一枚裸 `\xff` 字节参数与它的 lossy 等价，三样逐字节相同且不得以信号退出——缝的契约归这一枚门，各壳报文归各自面门）（各游戏 `src/bin/` 内，数据文件读取与抽取面落地；`adventure`/`monop` 的完整游玩循环归执行层批次）
 > **前置依赖**: `06-file-ops.md` 与 `10-doc-man-tools.md`（输入输出与文本面先行）
 > **不覆盖（移交）**: 大文本数据文件格式落地（架构演进决策，见 3.5 节）、数据文件读取与玩家交互（各游戏二进制包）、纸牌发牌与战争游戏剧本（后续补齐）
 
@@ -62,7 +62,7 @@
 
 ### 2.3 格言：索引表定位
 
-格言选择走索引表：先定位到表头（第 267 行附近），再按表项读偏移（第 980 行附近），最后定位读正文。数据文件在 `datfiles` 目录下，多个主题各一库。Rust 侧 `fortune.rs` 的格言库接口（切片库加空库）与选择语义对应，取余抽签与均匀语义对应，分隔符切分与磁盘形状对应。
+格言选择走索引表：先定位到表头（第 267 行附近），再按表项读偏移（第 980 行附近），最后定位读正文。数据文件在 `datfiles` 目录下，多个主题各一库。Rust 侧 `fortune.rs` 的读取是 `strfile` 的两文件模型：操作数指文本件，索引是路径加 `.dat`（`is_fortfile` 的命名规则在 `fortune.c` 第 788 行到第 799 行附近，非法后缀清单与索引可读检查都属名字门，缺失即「not a fortune file or directory」）；索引头是 24 字节的 `STRFILE`（五个大端 `u32` 加四字节备用区，首字节是定界符），其后是「条数加一」个 8 字节大端定位点；抽取按秒取余，正文从定位点按行读到定界行（行首是定界符、次字节是换行）或文末，`STR_ROTATED` 置位时输出前逐字符做 rot13（只动 ASCII 字母）。结构性校验比 C 严：头过短、版本非 1、定位点表不完整、定位点越过文本件，一律一个「invalid fortune database」判词；索引记零条时给「no fortunes in database」——C 在这两处分别是只查短读的「corrupted」与对零取模的崩溃。
 
 ### 2.4 首字母与随机：跳过词与分母选中
 
@@ -105,7 +105,7 @@
 | `lib.rs` | — | 错误类型（`TextGameError`，22 对应参数无效、2 对应查无、34 对应超范围）与模块组织 |
 | `adventure.rs` | `hdr.h` 第 78 行与第 101 行与第 116 行附近 | 词汇接口（切片表加空表）、出口跟随、物品移动 |
 | `monop.rs` | `monop.c` 棋盘语义 | 走子回绕、起点经过、付收钱、骰子 |
-| `fortune.rs` | `fortune.c` 第 267 行与第 980 行附近 | 格言库接口（切片库加空库）、取余抽签、分隔符切分 |
+| `fortune.rs` | `strfile.h` 第 31 行到第 45 行、`fortune.c` 第 267 行、第 788 行到第 799 行、第 980 行附近 | `.dat` 索引解析与严格校验、按定界行的正文切取、rot13 字节表、取余抽签 |
 | `fish.rs` | `fish.c` 第 61 行与第 83 行附近 | 点数解析、成书计数、要牌选择 |
 | `acronym.rs` | `wtf` 脚本的库行 | 行解析、按词条交回**全部**命中行（开头那一枚 `is` 的移走、库档列表与前置检查都属参数收法，在壳 `src/bin/wtf.rs`） |
 | `lottery.rs` | `random.c` 第 89-104 行、第 107 行与第 126 行附近 | 操作数个数分派、分母解析、选中条件、种子混合；两条报文文本（`USAGE` 与 `NOT_VALID_SENTENCE`）也住这里；libc 那一句的字节出口 `unknown_option_line`（`getopt.c:101-104` 的字面加 `:79` 的一枚原字节）与选项环 `scan_ring`（交回 `Ring::Unknown(u8)`） |
@@ -115,7 +115,7 @@
 - **词汇 `VocabEntry`**：词加种类加编号。不变量：查词不分大小写；空词即错；未知报查无；空表一切查无。
 - **出口 `Exit`**：动作码加房间。不变量：无匹配动作报查无；房间号原样返回。
 - **钱**：余额加金额。不变量：付成负数报超范围；收钱饱和；骰子一到六。
-- **格言库 `QuipDb`**：索引加计数。不变量：空库一切查无；抽数取余恒有答案；空段跳过。
+- **格言索引 `FortuneIndex`**：定位点表加文本件。不变量：定位点表恰为「条数加一」且每点都落在文本件内；版本恒为 1；正文切取按整行进行，行首定界行永不进输出；空索引是合法解析结果，由壳交给「no fortunes in database」；一切结构性拒绝共享「invalid fortune database」一个判词。
 - **纸牌点数**：零到十二编号。不变量：英文数字两形等价；一与十四以上拒绝；每点零到四张。
 - **首字母行**：词条加解释。不变量：词条无空白；两边去空；全部命中行按列表序与档内行序交回；比较前把查询词整个大写，而词条按行首**逐字**比（词条里带小写字母即永远取不到）；查询词表来自操作数，其中开头那一枚 `is` 已被移走（不变量在壳侧的参数收法里，不在本件的行解析里）。
 - **分母**：正整数。不变量：零拒绝；抽数超界拒绝；选中当且仅当抽中零。
@@ -145,7 +145,7 @@
 
 - **探险**（`adventure.rs`，4 个）：`test_lookup_case_insensitive`（大小写不分与空词未知）、`test_empty_vocab_misses`（空表）、`test_exits_followed`（出口跟随与走不通）、`test_object_movement_split`（编号分界）。
 - **垄断**（`monop.rs`，5 个）：`test_advance_wraps`（回绕与越界）、`test_start_passing`（起点经过）、`test_pay_and_bankruptcy`（付钱与破产）、`test_receive_saturates`（饱和）、`test_dice_checked`（骰子合法与双数）。
-- **格言**（`fortune.rs`，4 个）：`test_pick_wraps`（取余回绕）、`test_empty_db_misses`（空库）、`test_separator_splits`（分隔符切分）、`test_blank_text_reports_not_found`（全空查无）。
+- **格言**（`fortune.rs`，5 个）：`golden_index_counts_two_quips_and_reads_both`（C `strfile` 金样夹具的两条读取与越界）、`the_delimiter_line_is_never_output_and_midline_delim_is_not_a_boundary`（定界行不进输出、行中定界符不成界）、`the_rotated_flag_is_reported_and_rot13_moves_only_letters`（旗标与 rot13 只动字母）、`an_index_recording_zero_quips_parses_and_reports_empty`（零条索引合法解析）、`structural_rejections_are_one_verdict`（四形拒绝共享一个判词）。另有端到端面门 `tests/fortune_face.rs` 九枚，夹具四件（普通、rot13、单条、零条）皆由 C `strfile` 生成。
 - **钓鱼**（`fish.rs`，3 个）：`test_ranks_parse`（两形与拒绝）、`test_books_counted`（成书与超牌）、`test_ask_prefers_lowest_unasked`（要牌策略与摸牌）。
 - **首字母**（`acronym.rs`，3 个）：`test_lines_parse`、`test_skipped_words`、`test_lookup_finds_first`。
 - **随机**（`lottery.rs`，3 个）：`test_denominators_parse`、`test_selection_rule`（抽中零与超界）、`test_seed_mixes`（种子混合）。
@@ -184,6 +184,6 @@
 
 ## 批次随记（接线状态，批次二十七）
 
-- **已接线**：`wtf`（`-f` 指库、操作数开头那一枚 `is` 移走而后续出现的 `is` 照查、逐词 `term: expansion` 打印、任一查无退出 1）、`fortune`（数据文件按行切分、时钟秒抽取、`pick_quip` 取模语义）、`random`（操作数那一步已按 C 定形：零枚取分母 2、一枚被拒打 `random: denominator is not valid.`、一枚撞数值范围打三段形 `random: <操作数>: <句子>`、两枚以上打不缀程序名的 `usage: random [-er] [denominator]`，全部退 1；标准输入逐行独立掷、中者**按输入顺序整行写出**、播种混时钟与进程号，读失手走 `err(2, "stdin")` 的三段形与退 2；选项环已接上（`-e` 把 `(denom * random()) / RANDOM_MAX` 当退码、`-r` 关缓冲、集外字母那两行照 Minix 自己的 `lib/libc/stdlib/getopt.c:101-104` 而不是参照件那句 glibc 字样——字母位是短横后的**第一个字节**（`:79` 的 `optopt = *place++` 一次进一个字节），报文走字节出口 `lottery::unknown_option_line`，`-é`（`c3 a9`）与参照件 `tmp/random-421/random` 逐字节同是 `303` 一枚字节后紧跟 usage；本仓早期那份参照件 `tmp/random-342/random_ref` 链的是宿主 glibc 的 getopt（`invalid option -- 'Z'`），承不了这条真值，四百二十一重链了一份带 Minix `getopt.c` 的；宿主腿的 argv 接缝曾对非 UTF-8 参数 `panic`（`std::env::args()` 的 unwrap，`TEXTGAMES-ARGV-HOSTLEG-PANIC`），随批次四百二十二闭：宿主腿换成 `args_os()` 保原字节、两条腿各自 lossy（与 textfilter `bin_support.rs` 同一条缝），缝契约由 `tests/argv_seam_face.rs` 的跨壳表承载）；分母那一枚也已换成 C 的 `double`——`strtod` 的十进制腿（前导空白、符号、小数点、`e`/`E` 指数、`inf`/`nan`）与 `errno == ERANGE` 的溢出、下溢两条腿都接上，于是 `1e-3` 与负分母是「每行都掷中」的正常形，`4294967296` 不再报溢出；十六进制浮点也已接上（`0x10` 这种省掉二进制指数的形照 `gethex.c:110-112` 认，且这一整支不立 `errno`，故 `0x1p99999999` 是认下的无穷大而非「撞数值范围」）；`nan(0x…)` 载荷也已接上——它在这一支可见的只有「吃到哪」：`hexnan` 撞上右括号就把整串吃掉，一路没有右括号就把游标留在左括号上（`minix3/lib/libc/gdtoa/hexnan.c:105-118`、`:146-147`）；载荷的位样本支读不到，因为所有 NaN 都让 `denom == 0` 为假、让 `(int)` 那一步不为 0，以及本 crate 共用的 `emit` 写缝退码（C 是 `err(2, "stdout")` 退 2），账在 `todo.md` 的 `RANDOM-DENOM-LEGS` 片3 之后的收尾条）。三枚薄壳的文件读取走 L10 的 open/read/close 既有路。
-- **声明性留白**：`adventure`/`monop` 的完整游玩循环（世界状态推进与回合交互是执行层批次）、`fish` 的对手回合（要电脑玩家循环）、fortune 索引表版数据文件（现读纯文本行）。
+- **已接线**：`wtf`（`-f` 指库、操作数开头那一枚 `is` 移走而后续出现的 `is` 照查、逐词 `term: expansion` 打印、任一查无退出 1）、`fortune`（两文件模型：文本件加 `.dat` 索引、`is_fortfile` 名字门、24 字节头加 8 字节大端定位点、按定界行切取、`STR_ROTATED` 输出前 rot13、时钟秒取模抽取；零条索引答「no fortunes in database」、坏索引答「invalid fortune database」）、`random`（操作数那一步已按 C 定形：零枚取分母 2、一枚被拒打 `random: denominator is not valid.`、一枚撞数值范围打三段形 `random: <操作数>: <句子>`、两枚以上打不缀程序名的 `usage: random [-er] [denominator]`，全部退 1；标准输入逐行独立掷、中者**按输入顺序整行写出**、播种混时钟与进程号，读失手走 `err(2, "stdin")` 的三段形与退 2；选项环已接上（`-e` 把 `(denom * random()) / RANDOM_MAX` 当退码、`-r` 关缓冲、集外字母那两行照 Minix 自己的 `lib/libc/stdlib/getopt.c:101-104` 而不是参照件那句 glibc 字样——字母位是短横后的**第一个字节**（`:79` 的 `optopt = *place++` 一次进一个字节），报文走字节出口 `lottery::unknown_option_line`，`-é`（`c3 a9`）与参照件 `tmp/random-421/random` 逐字节同是 `303` 一枚字节后紧跟 usage；本仓早期那份参照件 `tmp/random-342/random_ref` 链的是宿主 glibc 的 getopt（`invalid option -- 'Z'`），承不了这条真值，四百二十一重链了一份带 Minix `getopt.c` 的；宿主腿的 argv 接缝曾对非 UTF-8 参数 `panic`（`std::env::args()` 的 unwrap，`TEXTGAMES-ARGV-HOSTLEG-PANIC`），随批次四百二十二闭：宿主腿换成 `args_os()` 保原字节、两条腿各自 lossy（与 textfilter `bin_support.rs` 同一条缝），缝契约由 `tests/argv_seam_face.rs` 的跨壳表承载）；分母那一枚也已换成 C 的 `double`——`strtod` 的十进制腿（前导空白、符号、小数点、`e`/`E` 指数、`inf`/`nan`）与 `errno == ERANGE` 的溢出、下溢两条腿都接上，于是 `1e-3` 与负分母是「每行都掷中」的正常形，`4294967296` 不再报溢出；十六进制浮点也已接上（`0x10` 这种省掉二进制指数的形照 `gethex.c:110-112` 认，且这一整支不立 `errno`，故 `0x1p99999999` 是认下的无穷大而非「撞数值范围」）；`nan(0x…)` 载荷也已接上——它在这一支可见的只有「吃到哪」：`hexnan` 撞上右括号就把整串吃掉，一路没有右括号就把游标留在左括号上（`minix3/lib/libc/gdtoa/hexnan.c:105-118`、`:146-147`）；载荷的位样本支读不到，因为所有 NaN 都让 `denom == 0` 为假、让 `(int)` 那一步不为 0，以及本 crate 共用的 `emit` 写缝退码（C 是 `err(2, "stdout")` 退 2），账在 `todo.md` 的 `RANDOM-DENOM-LEGS` 片3 之后的收尾条）。三枚薄壳的文件读取走 L10 的 open/read/close 既有路。
+- **声明性留白**：`adventure`/`monop` 的完整游玩循环（世界状态推进与回合交互是执行层批次）、`fish` 的对手回合（要电脑玩家循环）、fortune 的目次走查（`-a` 的 offensive 配对与目次形操作数走 `add_dir`，本壳只接单文件两件形）。
 - **POSIX 基准**：四命令均无 POSIX 条目，行为以 `minix3/games/` 与 `minix3/games/wtf/wtf` 脚本为准绳。
