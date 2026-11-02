@@ -425,6 +425,45 @@ fn an_unreadable_operand_gets_the_comma_form_and_does_not_stop_the_run() {
     );
 }
 
+/// `-r` is C's `++nodiag` (`pr.c:1775-1777`), consulted at exactly one place:
+/// the open-failure leg raises `errcnt` and only then skips the sentence
+/// (`pr.c:1364-1369`). So the flag removes the line, never the failure — the
+/// exit status stays 1, the operand is still skipped, and a later operand still
+/// prints. Before this leg the shell answered `-r` with
+/// `pr: option form not modelled yet` and exit 1 without reading anything.
+#[test]
+fn dash_r_silences_the_open_diagnostic_but_not_the_failure() {
+    let missing = format!("pr-face-{}-missing", std::process::id());
+    let (out, status, err) = run(&["-r", &missing], b"a\n");
+    assert_eq!(
+        (out, err),
+        (String::new(), String::new()),
+        "退 1 之外不该有任何输出"
+    );
+    assert_eq!(status, 1, "nodiag 只压句子，不压失败");
+
+    // Same with a readable operand behind it: the body arrives, the sentence does
+    // not, and the run still ends in failure (`errcnt`).
+    let (out, status, err) = run(&["-t", "-r", &missing, "-"], b"a\n");
+    assert_eq!(out, "a\n");
+    assert_eq!(err, "");
+    assert_eq!(status, 1);
+
+    // Two unreadable operands under `-r`: still silent, still one failure.
+    let other = format!("pr-face-{}-missing2", std::process::id());
+    let (out, status, err) = run(&["-r", &missing, &other], b"");
+    assert_eq!((out, err), (String::new(), String::new()));
+    assert_eq!(status, 1);
+
+    // Without `-r` the sentence is back, unchanged (the comma form of the test above).
+    let (_, status, err) = run(&[&missing], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        format!("pr: Cannot open {missing}, No such file or directory\n")
+    );
+}
+
 #[test]
 fn form_feed_ends_every_header_page_and_no_header_cancels_it() {
     // `prtail`'s form-feed arm writes one `\f` and returns (`pr.c:1555-1561`), so a

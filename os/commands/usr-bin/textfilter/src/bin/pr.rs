@@ -90,15 +90,20 @@ fn run() -> ! {
                         // capital C, and a comma between the name and the
                         // sentence (not the `err(3)` colon form); it then
                         // `continue`s and the exit status only turns 1 at the
-                        // end. `-r` (nodiag) can suppress this line; this shell
-                        // has no such arm (a registered deviation).
-                        let mut line = Vec::new();
-                        line.extend_from_slice(b"pr: Cannot open ");
-                        line.extend_from_slice(op);
-                        line.extend_from_slice(b", ");
-                        line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
-                        line.push(b'\n');
-                        support::warn(&line);
+                        // end.                        // `-r` is that arm now: C raises `errcnt` first and only
+                        // then skips the line (`pr.c:1364-1369`), so the operand is
+                        // still a failure and the exit status still comes back 1.
+                        if !options.nodiag {
+                            let mut line = Vec::new();
+                            line.extend_from_slice(b"pr: Cannot open ");
+                            line.extend_from_slice(op);
+                            line.extend_from_slice(b", ");
+                            line.extend_from_slice(
+                                minix_sys::Strerror(code).to_string().as_bytes(),
+                            );
+                            line.push(b'\n');
+                            support::warn(&line);
+                        }
                         had_error = true;
                     }
                 }

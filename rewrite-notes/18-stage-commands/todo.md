@@ -119,6 +119,40 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十（`pr -r` 接上：C 的 `nodiag` 只压那句开档诊断，`errcnt` 与退码照旧）
+
+- **这一笔的射程**：`pr` 未建模字母那一支（`b'p' | b'r' | b'T'` 一起回
+  `pr: option form not modelled yet`）里的 `-r`。C 的 `case 'r'` 就一句 `++nodiag`
+  （`minix3/usr.bin/pr/pr.c:1775-1777`），而 `nodiag` 在全树只有一处被读
+  （`pr.c:98` 声明、`:1364-1369` 使用）：开档失败时**先 `++errcnt`**，再 `if (nodiag) continue;`，
+  才轮到那句 `pr: Cannot open %s, %s`。所以它压的是句子，不是失败。
+- **落码**：`PrOptions` 加 `nodiag`，解析臂 `b'r' => options.nodiag = true`（`r` 不带值，
+  与 `-t`/`-d` 同属可与别的字母聚成一簇），未建模那一支缩到 `b'p' | b'T'`；壳侧开档失败的
+  `Err` 臂把 `support::warn` 包进 `if !options.nodiag`，`had_error = true` 留在外面。
+- **门**：库内新立 `dash_r_is_a_flag_and_the_unmodelled_arm_stays_narrow`——`-r` 单独、
+  `-tr`、`-rt`、`-r -t` 四种给法都把 `nodiag` 与 `no_header` 一起立起，只给 `-t` 时 `nodiag`
+  仍为假，而 `-p`/`-T` 两形**照旧**回 `Unmodelled`（钉住「搬走 `r` 没把那一支放宽」）；
+  面门新立 `dash_r_silences_the_open_diagnostic_but_not_the_failure`——`-r 缺失档` 交出
+  空 stdout、空 stderr、退 1；`-t -r 缺失档 -` 交出 `a
+` 且仍退 1；两枚缺失档同给仍静默仍退 1；
+  去掉 `-r` 那句逗号形报文一字不差回到原位（与批次三百零五钉的既有门同一读数）。
+  宿主整包 69 段 **1297 / 0**，**容器权威门同读数退 0**（`tmp/pr-480/container-gate.log`），
+  三架构 `--bins` 各退 0；`rustfmt --edition 2024 --check` 三件本轮新写的代码先有 3 处自有漂移，
+  就地格式化后归零（基线本就是 0，未带走任何存量）。
+- **负控三枚**（`tmp/pr-480/negctl.py`，各咬住）：K1 让 `-r` 连失败一起吞（`had_error` 被挪进条件里）
+  → 面门红 1；K2 让句子照印（条件恒假）→ 红 3（新门、既有逗号形那枚、以及按字节回显操数那枚）；
+  K3 把 `r` 塞回未建模那一支 → 库内与面门各红。还原后复跑 pr:: 51/0、pr_face 20/0。
+- **判据来源**：`-r` 的语义与那句逗号形报文都取自 C 源行号（上面四组），本笔不依赖参照件；
+  参照件那侧的既有读数（`pr: Cannot open …, …`）是批次三百零五量的，本轮沿用。
+- **在册变化**：07 篇 `pr` 行里「`-r`/`-p`/`-T` 三形未接线」随本笔改成两形，并按 C 写明
+  `nodiag` 的确切分量（压句子不压失败）。
+- **三件套**：`python3 tmp/pr-480/negctl.py`、`cargo test -p minix-textfilter`
+  （`tmp/pr-480/pkg.log`、`container-gate.log`）、`cat tmp/pr-480/arch-*.log`；
+  核实日 `2026-11-02`，基线快照 `3b10b516a`。
+
+---
+
+
 ## 批次四百七十九（`touch -r` 接上：C 的 `stime_file()` 就是一次 `stat` 加两个时间戳，本壳却记成「缺基础设施」）
 
 - **登记语的错**：`os/commands/bin/fileops/src/bin/touch.rs` 的头注把 `-d`、`-r`、`-h` 与两枚
