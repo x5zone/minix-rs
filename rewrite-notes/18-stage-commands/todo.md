@@ -119,6 +119,51 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十九（区间量词接在单指令原子上：`{m,n}` 与 `\{m,n\}` 展开成必选份加可选份）
+
+- **这一笔的射程**：`minix-regex` 的重复层。C 把 `{m,n}` 交给 `repeat()`，由引擎在匹配时计数
+  （`minix3/lib/libc/regex/regcomp.c:512-529` 的扩展式与 `:705-721` 的基本式，界数都由 `p_count`
+  读，反界 `REQUIRE(count <= count2, REG_BADBR)`）；本引擎的指令只有
+  `Byte/Any/Class/Split/Jump/Save/Assert*`，没有计数态，因此两式若都把 `{` 当普通字节读，区间就落不回重复语义：
+  量的现场是 `grep -E 'a{2}b'` 与 `grep -G 'a\{2\}b'` 都找不到 `aab`，而宿主 grep 交回 `aab`。
+- **形状按 C 抄，实现换成展开**：`m` 份必选，然后每多一份配一个 `quest` 包起来的可选份，开上界
+  （`{m,}`）时在末尾挂一个 `star`。贪心次序不变，因为 `quest`/`star` 都是先取体后跳过；`{0}`
+  不留任何份，用一个"只连着下一步的跳转"占位，正是空分支的现成形状，于是 `a{0}b` 与 C、GNU 一样
+  匹配 `b`、`ab`、`aab`。`{` 后面不跟数字时不开区间（`regcomp.c:473`），基本式的收尾是 `\}`，
+  双重量词（`a*{2}`、`a{2}{3}`）按 `regcomp.c:531-537` 的 `REG_BADRPT` 一并拒——落地方式是任何
+  一次量词用掉之后就把"可重复位"清空。
+- **组上的区间交回拒绝，不假装会做**：`Compiler` 的捕获槽位是单调编号的，而重复一个子表达式要复制
+  它的代码段并让各份共用同一批槽位（C 的 `dupl` 加 `repeat`，POSIX 还要"捕获留最后一次迭代"）。
+  在没有那套设施之前，`(ab){2}` 这类形状一律拒（退 2 的 `bad pattern`），**不**退化成"匹配字面
+  `ab{2}`"——静默错配比当场拒绝坏得多。这一条另立 `RE-GROUP-INTERVAL-DUP` 在册。
+- **门**：引擎侧新立三枚——`test_interval_repeats_a_single_instruction_atom`（字节、类、`.`、转义
+  字节四形 × `{m}`/`{1,2}`/`{2,}`/`{0}`，两式拼法各一遍）、`test_interval_shape_errors_follow_c`
+  （反界、缺收尾、基本式少了反斜杠的收尾、`{x}`/`{`/`{2}x` 三种仍按字面）、
+  `test_group_intervals_are_refused_rather_than_read_as_text`（两式都拒，且不带括号的组照常，
+  再加三条双量词）；面门 `grep_face.rs` +2 枚（七形跨两式的逐字节比对、形状错的与不支持的交回
+  退 2）、`sed_face.rs` +1 枚（`s/a\{2\}b/X/`、`s/a\{2,\}b/Y/`、`s/.\{2\}/#/` 三形与宿主 sed 同）。
+  差分腿全程与宿主 grep/sed 对表：支持面逐字节同，反界与 `\{x\}` 两形两边都拒（GNU 的句子是它自己的
+  `Invalid content of {}`），组上的区间是唯一 GNU 支持而本壳拒的形状，门里注明。
+  **顺手钉下一处现行通道差异**：`grep` 的 `bad pattern or option` 今天打在**标准输出**上，而 C 的
+  每条诊断都走 `errx`/`fprintf(stderr, …)`（`grep.c:114`、`:484`）——面门按现状钉住并登记
+  `GREP-DIAGNOSTIC-STREAM`，不在本笔顺手搬。
+- **读数**：`minix-regex` 宿主整包 **111 / 0**，依赖件 `minix-editor` + `minix-fileops` 44 段
+  **522 / 0**（改的是引擎公开行为，消费方照规矩全跑），容器权威门同读数退 0
+  （`tmp/re-interval/container.log`），三架构 `--bins` 各退 0（`tmp/re-interval/arch-*.log`）。
+  `rustfmt --edition 2024 --check` 对 `pattern.rs` 基线 9 处、改后仍 9 处：本轮先让 rustfmt 全文跑过
+  一次，它顺手把 9 处别人行的既有漂移一起改了，遂以 HEAD 为底反向还原那 9 块（`git apply -R
+  --unidiff-zero`），最终 `git diff` 只剩 244 行纯新增、零删除；两次面门文件本就没漂移。
+  负控四枚各咬：I1（扩展式不开区间）红 6、I2（反界放过）红 3、I3（区间不用掉可重复位）红 2、
+  I4（基本式不查 `\}` 收尾）红 5，还原复跑 111/0（`python3 tmp/re-interval/negctl.py`）。
+- **在册变化**：`RE-INTERVAL-UNIMPLEMENTED` 拆成两半——单指令原子那半随本笔闭合，组上的那半以
+  `RE-GROUP-INTERVAL-DUP` 继续在册；08 篇 `grep` 行与「尚未覆盖」那句按此改写。
+- **三件套**：`python3 tmp/re-interval/negctl.py`、`cargo test -p minix-regex`
+  （`tmp/re-interval/pkg.log`、`container.log`）与 `cargo test -p minix-editor -p minix-fileops`
+  （`tmp/re-interval/dependents.log`）、`cat tmp/re-interval/arch-*.log`；核实日 `2026-11-02`，
+  基线快照 `424e3924d`。
+
+---
+
 ## 批次四百八十八（`sed`/`grep` 的开档警告补齐 C 的三段：程序名取自 `argv[0]`、操作数、`strerror` 句子）
 
 - **这一笔的射程**：打不开操作数时那一行。C 两处都是 `warn("%s", name)`
