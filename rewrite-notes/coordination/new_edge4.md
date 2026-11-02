@@ -4922,3 +4922,26 @@ C 把 `{m,n}` 交给 `repeat()` 由引擎计数（`minix3/lib/libc/regex/regcomp
 **在册变化**：`RE-INTERVAL-UNIMPLEMENTED` 拆两半——单指令原子那半闭合，组上的那半以
 `RE-GROUP-INTERVAL-DUP` 继续在册；新立 `GREP-DIAGNOSTIC-STREAM`。08 篇的 `grep`/`sed` 两行与
 「尚未覆盖」那句按此改写。
+
+### 第二百二十九笔（A 板 · `GREP-DIAGNOSTIC-STREAM`：诊断一律走标准错误，标准输出只放数据）
+
+`grep`/`sed` 两支壳还有三句诊断打在标准输出上。C 侧一句都没有：`grep` 的 `usage()` 是
+`fprintf(stderr, …)`（`grep.c:111-118`）、图案不合法是 `errx(2, "%s", re_error)`（`:484`）；`sed` 的
+`usage()` 同形（`main.c:223-226`）；`verrx.c:57`/`vwarnc.c:3` 的前缀段也都在标准错误。现场
+`grep -E 'a{2,1}b' 文件` 把 `grep: bad pattern or option` 吐在结果流里——下游管道分不清一句诊断与一条
+命中行，而 `grep` 的标准输出本就是它的答案。
+
+落码：`bin/grep.rs` 三处、`bin/sed.rs` 两处改走 `support::warn`，顺带把 sed usage 的名字位从字面量
+换成 `argv[0]`（C 那两行按 `getprogname()` 填 `%s`）。**usage 的文本仍只写本壳接线的 `-n`**：C 那串
+`[-aElnru] … [-e command] [-f command_file] [-I[extension]] [-i[extension]]` 里多数旗标本壳没有，
+照抄等于让一句拒绝提示去兜售不存在的能力——这一条是设计取舍，不是待修。
+
+门：面门两枚新立（`every_diagnostic_reaches_standard_error_and_leaves_standard_output_clean` 三形各钉
+stderr 原文 + stdout 零字节 + 退 2；`the_usage_and_option_refusals_reach_standard_error` 用
+`arg0("sd")` 钉 `usage: sd [-n] script [file ...]`），并把批次四百八十九两枚按"现行通道"钉在标准
+输出上的期望同时翻正。读数：`minix-regex` **113/0**、依赖件 44 段 **522/0**、容器权威门退 0、
+三架构各退 0、rustfmt 四件基线 0 改后 0；负控 D1/D2 各咬一枚（各红一处）。
+
+**闭合** `GREP-DIAGNOSTIC-STREAM`；`SED-USAGE-STREAM-AND-TEXT` 按实际拆两半——通道那半随本笔闭，
+文本那半转为设计取舍（不再列作待修）。仍在册的旧账：`bad pattern`/`bad s command` 是自造句，C 在那
+两处打正则库的 `re_error` 文本（`grep.c:484`、`compile.c:467`），接它先得有 regerror 那套文本。

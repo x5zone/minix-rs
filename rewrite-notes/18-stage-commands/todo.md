@@ -119,6 +119,41 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百九十（两支壳的诊断一律走标准错误：标准输出只放数据）
+
+- **这一笔的射程**：`grep`/`sed` 两条壳里还留在标准输出的三句诊断。C 侧没有一句诊断打标准输出：
+  `grep` 的 `usage()` 是 `fprintf(stderr, …)`（`minix3/minix/usr.bin/grep/grep.c:111-118`）、图案不
+  合法是 `errx(2, "%s", re_error)`（`:484`）；`sed` 的 `usage()` 同样是 `fprintf(stderr, …)`
+  （`minix3/usr.bin/sed/main.c:223-226`），`verrx`/`vwarnc` 的前缀段也都打在标准错误
+  （`verrx.c:57`、`vwarnc.c:3`）。
+  现场：`grep -E 'a{2,1}b' 文件` 把 `grep: bad pattern or option` 吐在**标准输出**上——对下游管道
+  而言，一句诊断与一条命中行无法区分；对 `grep` 来说更糟，因为它的标准输出正是结果集本身。
+- **落码**：`bin/grep.rs` 三处 `support::emit` → `support::warn`（图案/参数被拒两形与 `-i` 那一形），
+  `bin/sed.rs` 两处（`unsupported option` 与缺脚本时的 usage）。顺带把 usage 的名字位从字面量换成
+  `argv[0]`：C 那两行都按 `getprogname()` 填 `%s`（`main.c:224-229`），写死的 `sed` 不会随调用名移动，
+  与批次四百八十八那一族同源。**usage 的文本仍按本壳实际支持的 `-n` 写**，不抄 C 那两行
+  `[-aElnru] … [-e command] [-f command_file] [-I[extension]] [-i[extension]]`：那串里多数旗标本壳
+  并未接线，照抄会让一句拒绝提示去兜售没有的能力。
+- **门**：面门两枚新立——`grep_face.rs` 的
+  `every_diagnostic_reaches_standard_error_and_leaves_standard_output_clean`（三形诊断各钉一句
+  stderr 原文 + stdout 零字节 + 退 2，并带上批次四百八十八那枚三段形门共守同一条规矩）、
+  `sed_face.rs` 的 `the_usage_and_option_refusals_reach_standard_error`（`arg0("sd")` 时 usage 行是
+  `usage: sd [-n] script [file ...]`，`-x` 那一形在 stderr 且 stdout 空、退 1）；批次四百八十九两枚
+  按"现行通道"钉在标准输出上的期望同时翻正。
+- **读数**：`minix-regex` 宿主整包 6 段 **113 / 0**，依赖件 `minix-editor` + `minix-fileops` 44 段
+  **522 / 0**，容器权威门同读数退 0（`tmp/grep-diag/container.log`），三架构 `--bins` 各退 0
+  （`tmp/grep-diag/arch-*.log`）；`rustfmt` 本轮四件基线 0、改后 0。负控两枚：D1（把 `grep` 的图案
+  拒绝句搬回标准输出）红 `every_diagnostic…`，D2（usage 退回标准输出并写死名字）红
+  `the_usage_and_option_refusals…`，还原复跑 113/0。
+- **闭合与在册**：`GREP-DIAGNOSTIC-STREAM` 闭合。`SED-USAGE-STREAM-AND-TEXT` 那笔登记按本笔实际拆成
+  两半——**通道**已闭，**文本**仍与 C 不同（C 兜售本壳未接线的旗标，本壳只写 `-n`），这条差异按
+  设计保留并在 08 篇注明，不再作为待修项。仍未闭的老账：`bad pattern`/`bad s command` 一类句子是本壳
+  自造的，C 在那里打的是正则库的 `re_error` 文本（`grep.c:484`、`compile.c:467`），要接先得有
+  regerror 那套文本，仍在册。
+- **三件套**：负控脚本与两份日志见 `tmp/grep-diag/`；核实日 `2026-11-02`，基线快照 `b9c70aac1`。
+
+---
+
 ## 批次四百八十九（区间量词接在单指令原子上：`{m,n}` 与 `\{m,n\}` 展开成必选份加可选份）
 
 - **这一笔的射程**：`minix-regex` 的重复层。C 把 `{m,n}` 交给 `repeat()`，由引擎在匹配时计数
