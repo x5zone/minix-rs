@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百九十四（`chown` 的名字形按无口令库的 C 读：落 `id()` 的「invalid name」，不再单报「缺设施」）
+
+- **这一笔的射程**：跨板裁决 `PENDING-DECISIONS-CROSS-BOARD-20261102.md` §2.9（方案乙：不建口令库，附错误语义修正）的落地。C 在没有口令数据库的环境里，名字形输入走的是 `a_uid`/`a_gid` 的回落腿：`uid_from_user`/`getgrnam` 查不到名字（`chown.c:169/:256`），记号掉进 `id()`，`strtoul` 一个数字都不消费、`*ep != '\0'` 命中，`errx(EXIT_FAILURE, "%s: invalid %s name", name, type)`（`chown.c:288`）——报文形状是「程序名: 名字: invalid user/group name」加非零退出。现场：本壳在名字形上单立一个 `ChownError::NamedUnsupported`，渲染成「user/group name lookup needs the password DB」——语义是「这个功能不存在」，而 C 的语义是「这个名字不存在」；裁决要求后者。
+- **落码**：`parse_user`/`parse_group` 删掉「像名字就报 `NamedUnsupported`」的分流——名字形记号直接走 `parse_num`，命中非数字位即交回 `Invalid("<name>: invalid <user|group> name")`，与 C 的 `errx` 文本逐字一致；`ChownError::NamedUnsupported` 变体与 `looks_like_name` 助手整体删除（C 对名字与坏数字本就同罪，无需 Rust 侧再分类）；`bin/chown.rs` 的 `Invalid` 臂补上 `errx` 的程序名前缀（`{progname}: {msg}`，chgrp 形自动得到 `chgrp:` 前缀）——旧臂对坏数字同样缺前缀，属同腿一并修正。头注与模块文档改写为「无库环境下与 C 逐字对齐；口令库出现后在 `getpwnam`/`getgrnam` 落地处补名换号」。
+- **门**：`cargo test -p minix-fileops --lib` → **394 / 0**（chown 子集 14 / 0；名字形三测改断言 C 文本：`root`→`invalid user name`、`100:wheel`→`invalid group name`、`alice:100` 整条失败，另补 `chgrp wheel` 名字形一测）；`cargo clippy -p minix-fileops --tests` 触及两文件零告警；`rustfmt --edition 2024` 对两文件整件归一后 `--check` 零漂移；`cargo build --target x86_64-unknown-none --release -p minix-fileops --bin chown` 绿；全仓 `grep -rn NamedUnsupported commands/` → 0。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `8fde24576`。
+- **登记与余量**：名换号腿按裁决维持「数据库出现再补」的登记，`ChownError` 不再承载「缺设施」语义；另点检发现一处存量（未动）：`bin/chown.rs` 的 stat 失败臂硬编码 `chown:` 前缀，chgrp 形下应为 `chgrp:`（chgrp 二进制当前未单独安装，属潜伏面，随 chgrp 独立接线批处理）。
+
 ## 批次四百九十三（`s` 的两半各按 C 的读者读：图案不能续行，替换续行并拼字段）
 
 - **这一笔的射程**：`SED-ESCAPED-NEWLINE-CONTINUATION` 登记的那条差异，连同同一个读者上量出来的三处

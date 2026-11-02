@@ -12,11 +12,13 @@
 //! Wired: `chown [-f] [-v] owner[:group] file ...` and `chgrp [-f] [-v] group
 //! file ...`, numeric owner and group only. A group or user named rather than
 //! numbered needs the password DB (`getpwnam`/`getgrnam`, `chown.c:252/:266`),
-//! which this tree does not wrap, so it is refused by name through
-//! `ChownError::NamedUnsupported` rather than resolved to a guessed id. `(uid
-//! -1)`/`(gid -1)` from an empty half means "keep that id" (`chown.c:154-156`),
-//! and the VFS `do_chown` gate enforces the same (`protect.rs:146`) — so an
-//! unset half is passed as `u32::MAX`, matching C's `(uid_t)-1` exactly.
+//! which this tree does not wrap; as in C without that database, the lookup
+//! fails and the token falls to `id()`, whose verdict (`chown.c:288`,
+//! `"%s: invalid %s name"`, prefixed by the program name) is what the bin
+//! prints before exiting non-zero. `(uid -1)`/`(gid -1)` from an empty half
+//! means "keep that id" (`chown.c:154-156`), and the VFS `do_chown` gate
+//! enforces the same (`protect.rs:146`) — so an unset half is passed as
+//! `u32::MAX`, matching C's `(uid_t)-1` exactly.
 //!
 //! Wired: `--reference=rfile` (or `--reference rfile`) copies the owner/group
 //! off an existing file instead of an owner spec (`chown.c:181-189`) — the
@@ -76,7 +78,11 @@ struct Flags<'a> {
 /// non-option operand, or `Err` for a refused/unrecognised option (the caller
 /// turns a refusal into a message and usage into the usage text).
 fn parse_flags<'a>(args: &[&'a str]) -> Result<(Flags<'a>, usize), &'static str> {
-    let mut flags = Flags { force: false, verbose: false, reference: None };
+    let mut flags = Flags {
+        force: false,
+        verbose: false,
+        reference: None,
+    };
     let mut i = 0;
     while i < args.len() {
         let a = args[i];
@@ -164,12 +170,12 @@ fn run() -> ! {
         }
         let ids = match parse_owner_spec(operands[0], ischown) {
             Ok(ids) => ids,
-            Err(ChownError::NamedUnsupported(name)) => {
-                warn(format!("chown: {name}: user/group name lookup needs the password DB\n").as_bytes());
-                support::terminate(1);
-            }
+            // `errx`/`err` prefix the program name (`chown.c:288`), so the
+            // verdict renders as "chown: <name>: invalid <user|group> name"
+            // — or "chgrp: ..." when invoked as chgrp. With no password DB
+            // every named token lands here, matching C in this environment.
             Err(ChownError::Invalid(msg)) => {
-                warn(format!("{msg}\n").as_bytes());
+                warn(format!("{progname}: {msg}\n").as_bytes());
                 support::terminate(1);
             }
         };
