@@ -250,6 +250,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `FORTUNE-DAT-READ`：改 `os/commands/games/text-games/src/{fortune.rs,bin/fortune.rs}`、`tests/fortune_face.rs` + 新增 `tests/fixtures/` 四件 C `strfile` 生成的夹具（A 板领地）——跨板裁决 §2.1/§2.2 落地：读取换 `strfile` 两文件模型（24 字节头 + 8 字节大端定位点、按定界行切取、rot13），`is_fortfile` 名字门照 C（缺 `.dat`=warnx 形），零条答 no fortunes in database、坏索引答 invalid fortune database；门=text-games lib 35/0 + face 9/0、clippy 净、x86_64-unknown-none fortune bin 绿 —— `✅`
 - `2026-11-03` A / `ADJ28-FOURCASES`：改 `os/commands/usr-bin/textfilter/tests/` 四件面测（A 板领地）——跨板裁决 §2.8 验收：四情形代码核在终态（cut 空列表不挂死、nl 0–2 字节接受/>2 拒绝、fold `-bN` 聚簇数字、paste/comm 数据 NUL 保留），补四枚字面钉（nl 单字节、fold `-b80`、paste/comm 数据 NUL 各一）；门=四 face 13/8/19/16 全绿 —— `✅`
 - `2026-11-03` A / `WTF-REG`：零代码改动——跨板裁决 §2.5 验收收口：镜像 `/bin` 播种清单与 rc grep 三程序零命中（whatis 源码在树未入镜像；pkg_info/make 无源码），C 脚本无三程序环境的终点=本地查 +「I don't know」退 1 与本壳逐字一致（wtf_face 两钉）；触发条件维持裁决登记 —— `✅`
+- `2026-11-03` A / `VM24-EVIDENCE`：改 `rewrite-notes/02-stage-vm/todo.md` V20-P1-1 行（A 板领地）——跨板裁决 §1b.4 最高优先级补证（2.4 VM 跨重启）落证：机制更正（`is_first_time()` 查内核进程表 RS 旗标`RTS_BOOTINHIBIT`，非 BSS 全局；旗标链 kernel main.c:266 置/do_vmctl.c:167 清，Rust 同链已在）+ 三情形结论（①对象重建=静态承载成立 ②live-update 形=段搬运承载、机制未建前不可达 ③崩溃重执行=C 本身无可 用语义，响亮拒绝即 C 对位）；静态存储等价性对 ①② 成立；实施仍挂 [ARCH] 裁决 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。
