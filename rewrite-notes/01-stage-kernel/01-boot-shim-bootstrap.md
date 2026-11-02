@@ -1309,9 +1309,9 @@ pub fn exit_boot_services() {
 | 内核自带 stub（UEFI 形态：把 boot-shim 链接进内核镜像，内核自己读文件再自举） | 否决，理由是**依赖方向**：boot-shim 与内核并成一个二进制，内核就得认识固件类型、把 `uefi` 拉进自己的依赖表，与 §3.3「内核不依赖引导层」的单向边界冲突——屏蔽固件差异正是 boot-shim 的职责。riscv64 没有 Rust 支持的 UEFI 目标，但只挡住 UEFI 这一种实现；换成 opensbi 形态则改判为采纳（下一行） |
 | 内核自带 stub（opensbi 形态：固件直接跳下一级镜像，引导面长在内核镜像里） | **采纳**：它就是 §3.7 的直核自引导形态（riscv64 真板 `FW_PAYLOAD`、QEMU `-kernel`；aarch64 `-kernel` 测试通道）。它不违反依赖方向——`kernel-image` 反向依赖的是 boot-shim 的**库函数**（取件表、memmap 源），不是引导器产物，`minix-kernel` 与 `kernel-image` 都不依赖 `uefi`（§3.3 问题二）。定位是辅助启动路径，不作三架构主线 |
 
-> **现状标注**（D-73 落地后刷新）：上面两张表描述的是架构终态。x86_64 与 aarch64 的 UEFI 产线现在都是「boot-shim 建根 + v1 arena + 跳独立 `kernel.elf` 高半入口」。riscv64 的独立 shim 主线已由 D-73 以 **U-Boot 腿**落地（`riscv64-uboot-shim`：U-Boot `bootelf` → boot-shim → `kernel-uboot`，门 `test-riscv64-uboot-shim.sh` 6/6 路标 PASS）；**UEFI-shim 腿仍不可接线**——rustc 没有 riscv64 UEFI 目标（`*-unknown-uefi` 列表无 riscv64），D-73 裁决登记为未来扩展，不是欠账。riscv64 的 QEMU 门链当前走直核自引导（辅助/嵌入式形态，见下段）。x86 的切换见 §3.4 与 §4.8。
+> **现状标注**：上面两张表描述的是架构终态。x86_64 与 aarch64 的 UEFI 产线现在都是「boot-shim 建根 + v1 arena + 跳独立 `kernel.elf` 高半入口」。riscv64 的独立 shim 主线经由 **U-Boot 腿**接线：U-Boot 用 `bootelf` 装载 `riscv64-uboot-shim`，shim 建根后跳进 `kernel-uboot` 的高半入口；门脚本 `test-riscv64-uboot-shim.sh` 的六个串口路标（直到 `entering scheduler`）全部出现。**UEFI 腿暂不接线**，原因不是工程欠账而是工具链事实：Rust 编译器至今没有提供 riscv64 的 UEFI 目标（`*-unknown-uefi` 目标列表不含 riscv64），这条腿要等编译器支持后再接。riscv64 的 QEMU 门链当前走直核自引导（辅助/嵌入式形态，见下段）。x86 的切换见 §3.4 与 §4.8。
 
-> **例外条款的背景**：RISC-V 的固件形态规范（OpenSBI 的 `FW_PAYLOAD` 模式）允许把下一级镜像打包进固件本体，boot 时固件直接跳进 S-mode 目标——真板上这类极简装机（省掉 U-Boot 与文件系统）不需要引导器存在，QEMU 的 `-kernel` 模拟的正是这个时序。所以"引导面长在内核镜像里"是硬件规范支持的真实形态。§3.1 分工表里的 OpenSBI 列描述的是 U-Boot shim 腿（`RiscvUbootBootShim::prepare_boot`，由 `os/boot-shim/src/uboot_main.rs:333` 调用）——这条腿已经接线，产物是 `riscv64-uboot-shim`；“未接线的 riscv64 UEFI-shim 腿”指的是另一条腿，不是这条 U-Boot 腿。riscv64 的 QEMU 门链当前走 `kernel-image` 直核自引导（辅助形态）；U-Boot shim 腿（D-73）是独立 shim 主线的 riscv64 落地，UEFI 腿待 rustc 目标。
+> **例外条款的背景**：RISC-V 的固件形态规范（OpenSBI 的 `FW_PAYLOAD` 模式）允许把下一级镜像打包进固件本体，boot 时固件直接跳进 S-mode 目标——真板上这类极简装机（省掉 U-Boot 与文件系统）不需要引导器存在，QEMU 的 `-kernel` 模拟的正是这个时序。所以"引导面长在内核镜像里"是硬件规范支持的真实形态。§3.1 分工表里的 OpenSBI 列描述的是 U-Boot shim 腿（`RiscvUbootBootShim::prepare_boot`，由 `os/boot-shim/src/uboot_main.rs:333` 调用）——这条腿已经接线，产物是 `riscv64-uboot-shim`；“未接线的 riscv64 UEFI-shim 腿”指的是另一条腿，不是这条 U-Boot 腿。riscv64 的 QEMU 门链当前走 `kernel-image` 直核自引导（辅助形态）；独立 shim 主线在 riscv64 上经由上述 U-Boot 腿落地，UEFI 腿等 Rust 编译器提供 riscv64 UEFI 目标后再接。
 
 ### 3.2 一个 trait 两种固件：`BootShim`
 
@@ -1436,7 +1436,7 @@ C 里 `kinfo` 是一个全局变量。`pre_init.c` 开头就定义 `kinfo_t kinf
 
 Rust 侧把这份共享状态改成一段**显式交接**，分两个维度说：**通道形态**随交接形态变。x86_64 与 aarch64 的 UEFI 链都走跨镜像跳转：boot-shim 建好自举根、开分页，把一块四页 arena 的物理地址递给独立 `kernel.elf` 的高半入口（x86_64 用 `rbx`，aarch64 用 `x0`，见 §3.7）；接收方从 arena 解码五块载荷、落进自己的 `.bss`，再走只增量的高半 resume。riscv64 的直核自引导没有独立 shim，引导面在同一镜像内直接调 `arch_boot`；这是硬件形态决定的辅助启动路径（§3.3 问题二），与两条 UEFI 产线不同源。**载荷内容**三形态一致：必须按值深拷进接收方的私有存储，不能靠指针跨边界存活。理由：跨镜像档里两个分别编译的二进制各有自己的 `.bss`，指针在接收方指向完全无关的内存，连 `&'static KernelInfo` 也只保证生命周期、不保证页在对方页表里被映射；直核腿虽然没有跨镜像指针，但同一套落地区把三形态收成一条路径（少一套特例），也让"解码之后再消费"成为统一次序。值里的切片由 v1 协议的固定分区与 `byte_len` 描述符重建：接收方按分区偏移与元素类型解码，不再解释发送方的裸 `(ptr, len)`（本节末的边界说明）。
 
-> **收口记录**（D-73 落地后刷新）：上面这段指出的缝隙已闭合——x86_64 与 aarch64 的 UEFI 产线都切到独立镜像交接，§3.1/§3.3 的终态叙述与产线实况一致；riscv64 的独立 shim 主线已由 D-73 以 U-Boot 腿落地（`riscv64-uboot-shim`，见 §3.1 现状标注），UEFI-shim 腿仍因 rustc 无 riscv64 UEFI 目标不可接线（未来扩展，非欠账），直核自引导维持为辅助/嵌入式形态。
+> **收口记录**：上面这段指出的缝隙已闭合——x86_64 与 aarch64 的 UEFI 产线都切到独立镜像交接，§3.1/§3.3 的终态叙述与产线实况一致。riscv64 的独立 shim 主线经由 U-Boot 腿接线（`riscv64-uboot-shim`，见 §3.1 现状标注）；UEFI 腿因 Rust 编译器暂无 riscv64 UEFI 目标而不可接线，属未来扩展；直核自引导维持为辅助/嵌入式形态。
 
 ```rust
 // 代码引用（略去文档注释），os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo。
