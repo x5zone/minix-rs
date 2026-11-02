@@ -176,16 +176,23 @@ pub fn classify_map(
         if desc.ty == MMIO_TYPE || desc.ty == MMIO_PORT_SPACE_TYPE {
             continue;
         }
-        let len = checked_len(&desc, pa_limit)?;
-        let region = MemoryRegion {
-            base: PhysBytes(desc.physical_start),
-            len: len as usize,
-        };
+        // Validate only the descriptors that will be emitted. A high
+        // non-conventional descriptor above `ram_top` is dropped by the
+        // filter below; fail-closing the whole map on its geometry would
+        // turn a legitimate firmware hole into a boot failure.
         if desc.ty == CONVENTIONAL_TYPE {
-            serializer.push_memmap(region)?;
+            let len = checked_len(&desc, pa_limit)?;
+            serializer.push_memmap(MemoryRegion {
+                base: PhysBytes(desc.physical_start),
+                len: len as usize,
+            })?;
             conventional += 1;
         } else if desc.physical_start < ram_top {
-            serializer.push_reserved(region)?;
+            let len = checked_len(&desc, pa_limit)?;
+            serializer.push_reserved(MemoryRegion {
+                base: PhysBytes(desc.physical_start),
+                len: len as usize,
+            })?;
             reserved += 1;
         }
     }

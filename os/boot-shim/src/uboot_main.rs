@@ -242,6 +242,56 @@ fn module_file_stage(idx: usize) -> u64 {
 /// `prepare_boot` reads it). 16 slots × 80 B + 16 B header = 1296 B.
 static mut SHIM_TABLE: [u8; 16 + 16 * 80] = [0; 16 + 16 * 80];
 
+/// Read a staged ELF file's used length from its program headers.
+///
+/// The U-Boot script only stages files; the table stores the slot capacity.
+/// Parsing the staged ELF header gives the real file end (`max(p_offset +
+/// p_filesz)` over PT_LOAD), so `BootModule.len` is not the 1 MiB/2 MiB slot.
+/// Returns `None` for a non-ELF payload or a header that does not fit the
+/// slot; the caller then falls back to the slot capacity.
+///
+/// # Safety
+/// `pa` must point to `slot` readable bytes of the staged file (identity
+/// mapped during boot, single-hart).
+unsafe fn staged_elf_used_len(pa: u64, slot: u64) -> Option<u64> {
+    // SAFETY: caller guarantees the readable range; reads are volatile and
+    // bounds-checked against `slot`.
+    unsafe {
+        let read_u16 = |off: u64| -> Option<u16> {
+            if off.checked_add(2)? > slot { return None; }
+            Some(core::ptr::read_unaligned((pa + off) as *const u16))
+        };
+        let read_u32 = |off: u64| -> Option<u32> {
+            if off.checked_add(4)? > slot { return None; }
+            Some(core::ptr::read_unaligned((pa + off) as *const u32))
+        };
+        let read_u64 = |off: u64| -> Option<u64> {
+            if off.checked_add(8)? > slot { return None; }
+            Some(core::ptr::read_unaligned((pa + off) as *const u64))
+        };
+        if read_u32(0)? != 0x464C_457F { return None; } // \x7fELF
+        if read_u16(4)? != 2 || read_u16(5)? != 1 { return None; } // 64-bit LE
+        let phoff = read_u64(32)?;
+        let phentsize = read_u16(54)? as u64;
+        let phnum = read_u16(56)? as u64;
+        if phentsize < 56 { return None; }
+        let table_end = phoff.checked_add(phnum.checked_mul(phentsize)?)?;
+        if table_end > slot { return None; }
+        let mut end = 0u64;
+        let mut i = 0u64;
+        while i < phnum {
+            let ph = phoff + i * phentsize;
+            if read_u32(ph)? == 1 { // PT_LOAD
+                let off = read_u64(ph + 8)?;
+                let filesz = read_u64(ph + 32)?;
+                end = end.max(off.checked_add(filesz)?);
+            }
+            i += 1;
+        }
+        (end > 0).then_some(end)
+    }
+}
+
 /// Build the MNXBOOT1 table in .bss with the correct file addresses.
 ///
 /// The table's binary layout must match `opensbi_helpers::BootFileTable`:
@@ -271,7 +321,12 @@ unsafe fn build_shim_table() -> u64 {
         let addr = uboot_layout::KERNEL_FILE_STAGE;
         let addr_bytes = addr.to_le_bytes();
         for i in 0..8 { e0.add(64 + i).write_volatile(addr_bytes[i]); }
-        let len_bytes = (2u64 * 1024 * 1024).to_le_bytes(); // 2 MB kernel slot
+        let slot = 2u64 * 1024 * 1024; // 2 MB kernel slot
+        let used = staged_elf_used_len(addr, slot).unwrap_or(slot);
+        if used > slot {
+            raw_serial_line("boot-shim: kernel ELF exceeds the 2 MiB staging slot — truncating");
+        }
+        let len_bytes = used.min(slot).to_le_bytes();
         for i in 0..8 { e0.add(72 + i).write_volatile(len_bytes[i]); }
         // entries 1-12: modules
         for (mi, name) in MODULE_NAMES.iter().enumerate() {
@@ -282,7 +337,14 @@ unsafe fn build_shim_table() -> u64 {
             let a = module_file_stage(mi);
             let a_bytes = a.to_le_bytes();
             for i in 0..8 { e.add(64 + i).write_volatile(a_bytes[i]); }
-            let l_bytes = (1u64 * 1024 * 1024).to_le_bytes(); // 1 MB module slot
+            let slot = 1u64 * 1024 * 1024; // 1 MB module slot
+            let used = staged_elf_used_len(a, slot).unwrap_or(slot);
+            if used > slot {
+                raw_serial_line("boot-shim: module ELF exceeds the 1 MiB staging slot — truncating: ");
+                raw_serial_line(name);
+                raw_serial_line("\n");
+            }
+            let l_bytes = used.min(slot).to_le_bytes();
             for i in 0..8 { e.add(72 + i).write_volatile(l_bytes[i]); }
         }
     }

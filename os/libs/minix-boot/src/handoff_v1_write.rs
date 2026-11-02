@@ -255,6 +255,10 @@ impl<'a> Serializer<'a> {
         if bytes.len() > WIRE_PARAM_CAP {
             return Err(HandoffV1WriteError::ParamTooLong);
         }
+        // The partition is fixed-size; a second, shorter write must not leave
+        // the previous tail visible past `param_n` (defensive: current
+        // callers write once).
+        self.arena[WIRE_PARAM_OFFSET..WIRE_PARAM_OFFSET + WIRE_PARAM_CAP].fill(0);
         self.arena[WIRE_PARAM_OFFSET..WIRE_PARAM_OFFSET + bytes.len()].copy_from_slice(bytes);
         self.param_n = bytes.len();
         put_u64(self.arena, offsets::PARAM_BYTE_LEN, bytes.len() as u64);

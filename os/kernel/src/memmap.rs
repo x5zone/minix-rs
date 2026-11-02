@@ -99,8 +99,10 @@ pub enum MemMapError {
 pub fn add_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], addr: u64, len: u64) -> Result<usize, MemMapError> {
     // C: page alignment — roundup(addr) and rounddown(addr + len)
     let page_size = 4096u64;
-    let aligned_base = (addr + page_size - 1) & !(page_size - 1);
-    let aligned_end = (addr + len) & !(page_size - 1);
+    let aligned_base = addr
+        .saturating_add(page_size - 1)
+        & !(page_size - 1);
+    let aligned_end = addr.saturating_add(len) & !(page_size - 1);
     let aligned_len = aligned_end.saturating_sub(aligned_base);
 
     if aligned_len == 0 {
@@ -183,11 +185,13 @@ pub fn cut_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], start: u64, len: u64) -> 
     let page_size = 4096u64;
     let cut_start = start & !(page_size - 1); // round down
     let cut_end_raw = start.saturating_add(len);
-    let mut cut_end = (cut_end_raw + page_size - 1) & !(page_size - 1); // round up
-    if cut_end == 0 && cut_end_raw > 0 {
-        // Overflow: cut to the end of addressable memory
-        cut_end = u64::MAX;
-    }
+    // Saturating: an overflowing end clamps at the top of the address space
+    // instead of wrapping. The final 4 KiB below u64::MAX is not cut, which
+    // is unreachable for a real memmap (the top of the address space is not
+    // available RAM).
+    let cut_end = cut_end_raw
+        .saturating_add(page_size - 1)
+        & !(page_size - 1); // round up
     if cut_start >= cut_end {
         // Zero-length cut after alignment — nothing to do
         return Ok(());

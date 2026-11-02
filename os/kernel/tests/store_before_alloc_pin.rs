@@ -48,6 +48,18 @@ fn kernel_entries_store_before_any_page_allocation() {
             "pub fn arch_boot_resume_high_half",
             "establish_boot_dm",
         ),
+        // v1 cross-image receiver: x86_64 and riscv64 land the KernelInfo in
+        // `resume_after_v1_decode` before establishing DM coverage. The
+        // aarch64 receiver delegates to `arch_boot_resume_high_half` (already
+        // pinned above), so it has no direct store call in this body.
+        (
+            "#[cfg(all(not(feature = \"mock\"), target_arch = \"x86_64\"))]\nfn resume_after_v1_decode",
+            "establish_boot_dm",
+        ),
+        (
+            "#[cfg(all(not(feature = \"mock\"), target_arch = \"riscv64\"))]\nfn resume_after_v1_decode",
+            "establish_boot_dm",
+        ),
     ];
 
     for (marker, alloc_site) in entries {

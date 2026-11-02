@@ -473,9 +473,18 @@ pub fn build_vm_handoff(
         // and the data segment RW (W^X within the per-process-root scope).
         kern_virt_base: kernel_info.kern_virt_base().0,
         kern_phys_base: kernel_info.kern_phys_base().0,
-        kern_text_pages: kern_text_pages(kernel_info) as u32,
-        kern_data_pages: (kernel_info.kern_size() / 4096
-            - kern_text_pages(kernel_info)) as u32,
+        kern_text_pages: u32::try_from(kern_text_pages(kernel_info))
+            .expect("vm_handoff: kern_text_pages exceeds u32"),
+        kern_data_pages: {
+            let total = kernel_info.kern_size() / 4096;
+            let text = kern_text_pages(kernel_info) as u64;
+            let data = total
+                .checked_sub(text)
+                .expect("vm_handoff: __text_end exceeds kern_size — link layout drift");
+            // 0 in `map_kernel` means "the whole image is text" (RWX); do not
+            // let an invariant failure silently fall into that sentinel.
+            u32::try_from(data).expect("vm_handoff: kern_data_pages exceeds u32")
+        },
         // Handoff v5: the real kernel Direct Map window. VM's
         // `map_kernel` replays this window into every process page
         // table; the first CR3 switch to a VM-built table makes it the

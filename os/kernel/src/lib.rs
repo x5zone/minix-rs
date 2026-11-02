@@ -872,6 +872,9 @@ fn identity_device_windows() -> &'static [(u64, u64)] {
     &[]
 }
 
+/// Device-window piece size used by Step 1 (2 MiB).
+const DEV_PIECE: u64 = 1 << 21;
+
 /// Whether a `kern_huge` block starting at `addr` intersects any device
 /// window — the condition that forces the block to be emitted at
 /// `dev_piece` granularity (SD-42).
@@ -933,7 +936,6 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
     // aarch64 additionally requires the Step-2b high-half alias of the same
     // window to carry the same attributes (one PA, two attribute sets is
     // UNPREDICTABLE); riscv64 has no high-half alias of these windows.
-    const DEV_PIECE: u64 = 1 << 21; // 2 MiB
     let device_windows = identity_device_windows();
     assert_eq!(
         kern_huge.bytes() % DEV_PIECE,
@@ -1170,10 +1172,16 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
                 // (store-lifetime backing), not from a local borrow.
                 let slot = &mut (*bnames)[i];
                 slot[..n].copy_from_slice(&bytes[..n]);
-                // SAFETY: boot-module names are ASCII literals (boot-shim
-                // `MODULE_NAMES`), so a 15-byte truncation cannot split a
-                // multi-byte sequence; the copied prefix is valid UTF-8.
-                let name: &'static str = core::str::from_utf8_unchecked(&slot[..n]);
+                // Boot-module names are expected to be ASCII literals
+                // (boot-shim `MODULE_NAMES`), but this function is public and
+                // an arbitrary caller could pass a non-ASCII name whose
+                // 15-byte truncation splits a multi-byte sequence. Validate
+                // instead of relying on the caller: on an invalid tail, keep
+                // the longest valid UTF-8 prefix.
+                let name: &'static str = match core::str::from_utf8(&slot[..n]) {
+                    Ok(s) => s,
+                    Err(e) => core::str::from_utf8(&slot[..e.valid_up_to()]).unwrap_or("?"),
+                };
                 bstore[i] = minix_boot::BootModule {
                     name,
                     start: module.start,
@@ -5275,13 +5283,16 @@ mod tests {
 
         let huge_size = MockPaging::FALLBACK_HUGE_PAGE_SIZE;
 
-        // Test Step 1: Identity mapping
+        // Test Step 1: Identity mapping. The production flags are
+        // supervisor-only + executable; `read_write()` would include
+        // USER_ACCESSIBLE and hide a flag regression.
+        let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
         let region = &info.memmap[0];
         let mut addr = region.base.0;
         let end = addr + region.len as u64;
         let mut identity_pages = 0u64;
         while addr < end {
-            paging.map_huge(VirBytes(addr), PhysBytes(addr), huge_size, PageFlags::read_write())
+            paging.map_huge(VirBytes(addr), PhysBytes(addr), huge_size, id_flags)
                 .unwrap();
             addr += huge_size.bytes();
             identity_pages += 1;
@@ -5291,7 +5302,15 @@ mod tests {
         // Verify identity mapping — query a mapped huge-page-aligned address
         let query_addr = region.base.0; // 2 MiB-aligned base, mapped at first iteration
         let result = paging.query(VirBytes(query_addr));
-        assert!(result.is_some(), "identity mapping not found at 0x{:x}", query_addr);
+        let (_, flags) = result.expect("identity mapping not found");
+        assert!(
+            !flags.contains(PageFlags::USER_ACCESSIBLE),
+            "identity mapping must be supervisor-only"
+        );
+        assert!(
+            flags.contains(PageFlags::EXECUTABLE),
+            "identity mapping must be executable (next fetch after the switch)"
+        );
 
         // Test Step 2: Kernel high-address mapping
         let mut offset = 0u64;
@@ -5300,7 +5319,7 @@ mod tests {
             paging.map_huge(
                 VirBytes(info.kern_virt_base.0 + offset),
                 PhysBytes(info.kern_phys_base.0 + offset),
-                huge_size, PageFlags::kernel_read_write(),
+                huge_size, id_flags,
             ).unwrap();
             offset += huge_size.bytes();
             kernel_pages += 1;
@@ -5313,6 +5332,47 @@ mod tests {
         // access since this is single-threaded test code.
         let root_phys = unsafe { paging.enable() };
         assert_eq!(root_phys, PhysBytes(0));
+    }
+
+    /// M6 (partial, host-side): the Step-1 piece policy covers the whole
+    /// `IDENTITY_MAP_END` range and marks device-window pieces, without
+    /// depending on a page-table page allocator (the mock `map_huge` would
+    /// expand a 1 GiB leaf into 262144 BTreeMap entries). The full
+    /// `map_huge` range is still a real-machine gate (TODO-05).
+    #[test]
+    fn identity_piece_policy_covers_low_4gib_and_marks_device_windows() {
+        let kern_huge = 1u64 << 30; // 1 GiB block
+        let windows = &[(0x0800_0000u64, 0x0200_0000u64)]; // 128 MiB + 32 MiB
+        let mut addr = 0u64;
+        while addr < IDENTITY_MAP_END {
+            let block_end = addr + kern_huge;
+            let piece_size = if identity_block_touches_device(addr, kern_huge, windows) {
+                DEV_PIECE
+            } else {
+                kern_huge
+            };
+            assert_eq!(
+                (block_end - addr) % piece_size,
+                0,
+                "piece must divide the block at {addr:#x}"
+            );
+            let mut piece = addr;
+            while piece < block_end {
+                let is_device = identity_piece_is_device(piece, piece_size, windows);
+                let overlaps_window =
+                    piece < 0x0A00_0000 && piece + piece_size > 0x0800_0000;
+                assert_eq!(
+                    is_device, overlaps_window,
+                    "device flag mismatch at {piece:#x}"
+                );
+                piece += piece_size;
+            }
+            addr = block_end;
+        }
+        assert_eq!(addr, IDENTITY_MAP_END);
+        let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
+        assert!(!id_flags.contains(PageFlags::USER_ACCESSIBLE));
+        assert!(id_flags.contains(PageFlags::EXECUTABLE));
     }
 
     /// Regression: `store_kernel_info` must deep-land the
@@ -5630,13 +5690,18 @@ mod tests {
     /// QEMU virt riscv64 RAM starts at 0x8000_0000.
     #[test]
     fn test_kernel_info_riscv64_identity() {
-        let dram_base: u64 = 0x8000_0000; // QEMU virt riscv64 DRAM base
-        let kern_phys_base: u64 = dram_base;
-        let kern_virt_base: u64 = dram_base; // identity mapping
-        assert_eq!(kern_virt_base, kern_phys_base,
-            "riscv64 kern_virt_base must equal kern_phys_base (identity mapping)");
-        assert_eq!(kern_phys_base % (1 << 30), 0,
-            "riscv64 kern_phys_base must be 1GB-aligned for Sv39 huge pages");
+        // riscv64.ld: KERNEL_VIRT_BASE is the Sv39 canonical high half,
+        // KERNEL_PHYS_BASE is the QEMU virt DRAM load address. They are not
+        // equal; the old fixture used the DRAM base for both and asserted a
+        // 1 GiB alignment that the real phys base (0x8020_0000) does not have.
+        let kern_phys_base: u64 = 0x8020_0000;
+        let kern_virt_base: u64 = 0xFFFF_FFC0_0000_0000;
+        assert_ne!(kern_virt_base, kern_phys_base,
+            "riscv64 image is high-half linked, not identity-mapped");
+        assert_eq!(kern_phys_base % (1 << 21), 0,
+            "riscv64 kern_phys_base must be 2MiB-aligned for the fallback tier");
+        assert_eq!(kern_virt_base % (1 << 30), 0,
+            "riscv64 kern_virt_base must be 1GiB-aligned for Sv39 huge pages");
     }
 
     // ── Linker script constraint validation tests ──
@@ -5650,90 +5715,72 @@ mod tests {
 
     /// x86_64 linker script: KERN_VIRT_BASE = 0xFFFF800000000000, KERN_PHYS_BASE = 0x200000
     /// Verify these values satisfy arch_boot_impl constraints.
-    #[test]
-    fn test_linker_script_x86_64_constraints() {
-        let kern_virt_base: u64 = 0xFFFF_8000_0000_0000; // link.ld KERN_VIRT_BASE
-        let kern_phys_base: u64 = 0x200_000;             // link.ld KERN_PHYS_BASE
-        let kern_size: u64 = 0x200_000;                  // typical 2MB kernel
-
-        // Must be page-aligned
-        assert_eq!(kern_virt_base % 0x1000, 0, "kern_virt_base must be page-aligned");
-        assert_eq!(kern_phys_base % 0x1000, 0, "kern_phys_base must be page-aligned");
-
-        // x86_64 HUGE_PAGE_SIZE = 1GB, FALLBACK = 2MB
-        let huge: u64 = 1 << 30; // 1GB
-        let fallback: u64 = 1 << 21; // 2MB
-
-        // kern_phys_base = 0x200_000 is 2MB-aligned but not 1GB-aligned
-        assert_eq!(kern_phys_base % fallback, 0,
-            "kern_phys_base must be at least FALLBACK_HUGE_PAGE_SIZE aligned");
-        assert_eq!(kern_virt_base % huge, 0,
-            "kern_virt_base must be HUGE_PAGE_SIZE aligned for 1GB pages");
-
-        // kern_size must be a multiple of the chosen huge page size
-        // Since kern_phys_base is not 1GB-aligned, we use 2MB fallback
-        assert_eq!(kern_size % fallback, 0,
-            "kern_size must be a multiple of 2MB");
+    /// Parse a `NAME = 0x...;` constant from a linker script.
+    fn ld_const(script: &str, name: &str) -> u64 {
+        let line = script
+            .lines()
+            .find(|l| l.trim_start().starts_with(name))
+            .unwrap_or_else(|| panic!("linker script lacks {name}"));
+        let rhs = line.split('=').nth(1).unwrap_or_else(|| panic!("bad {name} line"));
+        let hex = rhs
+            .split(';')
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap();
+        u64::from_str_radix(hex.trim_start_matches("0x"), 16)
+            .unwrap_or_else(|_| panic!("bad {name} value: {hex}"))
     }
 
-    /// aarch64 linker script: KERN_VIRT_BASE = 0xFFFF800000000000, KERN_PHYS_BASE = 0x40200000
-    /// Verify these values satisfy arch_boot_impl constraints.
+    /// The three *production* kernel linker scripts (`os/kernel-image/*.ld`,
+    /// selected by `kernel-image/build.rs`) must satisfy the boot policy's
+    /// alignment constraints. The previous version included the unused
+    /// `os/kernel/src/arch/*/link.ld` copies and asserted local literals, so
+    /// a production-script change could not fail it.
     #[test]
-    fn test_linker_script_aarch64_constraints() {
-        let kern_virt_base: u64 = 0xFFFF_8000_0000_0000; // link.ld KERN_VIRT_BASE
-        let kern_phys_base: u64 = 0x4020_0000;           // link.ld KERN_PHYS_BASE (2MB-aligned)
-        let kern_size: u64 = 0x200_000;                  // typical 2MB kernel
-
-        // Must be page-aligned
-        assert_eq!(kern_virt_base % 0x1000, 0, "kern_virt_base must be page-aligned");
-        assert_eq!(kern_phys_base % 0x1000, 0, "kern_phys_base must be page-aligned");
-
-        // aarch64 HUGE_PAGE_SIZE = 1GB, FALLBACK = 2MB
-        let huge: u64 = 1 << 30; // 1GB
-        let fallback: u64 = 1 << 21; // 2MB
-
-        // kern_phys_base = 0x4020_0000 is 2MB-aligned
-        assert_eq!(kern_phys_base % fallback, 0,
-            "kern_phys_base must be at least FALLBACK_HUGE_PAGE_SIZE aligned");
-        assert_eq!(kern_virt_base % huge, 0,
-            "kern_virt_base must be HUGE_PAGE_SIZE aligned");
-
-        // kern_size must be a multiple of the chosen huge page size
-        assert_eq!(kern_size % fallback, 0,
-            "kern_size must be a multiple of 2MB");
-    }
-
-    /// riscv64 linker script: KERN_VIRT_BASE = 0xFFFFFFC000000000, KERN_PHYS_BASE = 0x80200000
-    /// Verify these values satisfy arch_boot_impl constraints.
-    #[test]
-    fn test_linker_script_riscv64_constraints() {
-        let kern_virt_base: u64 = 0xFFFF_FFC0_0000_0000; // link.ld KERN_VIRT_BASE (Sv39 canonical high, VPN[2]=256)
-        let kern_phys_base: u64 = 0x8020_0000;           // link.ld KERN_PHYS_BASE
-        let kern_size: u64 = 0x200_000;                  // typical 2MB kernel
-
-        // Must be page-aligned
-        assert_eq!(kern_virt_base % 0x1000, 0, "kern_virt_base must be page-aligned");
-        assert_eq!(kern_phys_base % 0x1000, 0, "kern_phys_base must be page-aligned");
-
-        // riscv64 HUGE_PAGE_SIZE = 1GB (Sv39), FALLBACK = 2MB
-        let huge: u64 = 1 << 30; // 1GB
-        let fallback: u64 = 1 << 21; // 2MB
-
-        // kern_phys_base = 0x8020_0000 is 2MB-aligned but not 1GB-aligned
-        assert_eq!(kern_phys_base % fallback, 0,
-            "kern_phys_base must be at least 2MB-aligned");
-        // kern_virt_base = 0xFFFF_FFC0_0000_0000 is 1GB-aligned (Sv39 canonical high)
-        assert_eq!(kern_virt_base % huge, 0,
-            "kern_virt_base must be HUGE_PAGE_SIZE aligned for Sv39 1GB pages");
-
-        // Verify Sv39 canonical high: VPN[2] must be in 256..=511 range
-        let vpn2 = (kern_virt_base >> 30) & 0x1FF;
-        assert!((256..=511).contains(&(vpn2 as usize)),
-            "Sv39 kern_virt_base VPN[2] must be 256..511, got {}", vpn2);
-
-        // kern_size must be a multiple of the chosen huge page size
-        assert_eq!(kern_size % fallback, 0,
-            "kern_size must be a multiple of 2MB");
+    fn linker_scripts_satisfy_boot_alignment_constraints() {
+        let cases: [(&str, &str, &str, &str); 3] = [
+            (
+                "x86_64",
+                include_str!("../../kernel-image/x86_64.ld"),
+                "KERNEL_HIGH_BASE",
+                "KERNEL_PHYS_BASE",
+            ),
+            (
+                "aarch64",
+                include_str!("../../kernel-image/aarch64.ld"),
+                "KERNEL_VIRT_BASE",
+                "KERNEL_PHYS_BASE",
+            ),
+            (
+                "riscv64",
+                include_str!("../../kernel-image/riscv64.ld"),
+                "KERNEL_VIRT_BASE",
+                "KERNEL_PHYS_BASE",
+            ),
+        ];
+        for (arch, script, virt_name, phys_name) in cases {
+            let virt_symbol = ld_const(script, virt_name);
+            let phys = ld_const(script, phys_name);
+            // x86_64's kernel-image link places `.text` at
+            // KERNEL_HIGH_BASE + KERNEL_PHYS_BASE (the AT() delta); the
+            // policy sees min(p_vaddr), not the raw symbol.
+            let virt = if arch == "x86_64" {
+                virt_symbol + phys
+            } else {
+                virt_symbol
+            };
+            assert_eq!(virt % 0x1000, 0, "{arch}: virt base page-aligned");
+            assert_eq!(phys % 0x1000, 0, "{arch}: phys base page-aligned");
+            assert_eq!(phys % (1 << 21), 0, "{arch}: phys base 2MiB-aligned");
+            assert_eq!(virt % (1 << 21), 0, "{arch}: policy virt base 2MiB-aligned");
+            assert!(virt > phys, "{arch}: high-half virt base above phys base");
+            assert!(
+                script.contains("ALIGN(0x200000)"),
+                "{arch}: image span must end on a 2MiB boundary"
+            );
+        }
     }
 
     /// Verify that arch_boot_impl rejects misaligned KernelInfo.

@@ -108,9 +108,10 @@ pub mod opensbi_helpers;
 
 // ── Convenience re-export of the active implementation ──
 // Re-exports the *active firmware implementation's* type — callers still
-// write the concrete type (e.g. `UefiBootShim::prepare_boot(...)` in
-// src/main.rs). The Cargo.toml feature selection determines which impl is
-// compiled (no forwarding fn is provided; callers use the concrete type).
+// write the concrete type. The production UEFI entry calls
+// `uefi_helpers::prepare_and_enter_kernel_image`; `UefiBootShim::prepare_boot`
+// is the auxiliary `BootShim` form. The Cargo.toml feature selection
+// determines which impl is compiled (no forwarding fn is provided).
 
 #[cfg(feature = "uefi")]
 pub use uefi_helpers::{find_platform_sources, UefiBootShim};

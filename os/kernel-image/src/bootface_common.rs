@@ -7,6 +7,7 @@
 //! allocator) stays in its own file with a cross-reference; so does the
 //! `say`/`say_hex` pair, whose `early_console` implementation differs by arch.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use minix_boot::{NR_BOOT_MODULES, MemoryRegion};
 
 /// Fixed module-name slot width (16 B; the kernel's `store_kernel_info`
@@ -66,7 +67,12 @@ pub(crate) fn be_cell(bytes: &[u8]) -> Option<u64> {
 /// Is `pa` inside any memmap range? (Guard: never dereference a hartid or
 /// other garbage value.)
 pub(crate) fn in_memmap(memmap: &[MemoryRegion], pa: u64) -> bool {
-    memmap.iter().any(|r| pa >= r.base.0 && pa < r.base.0 + r.len as u64)
+    memmap.iter().any(|r| {
+        r.base
+            .0
+            .checked_add(r.len as u64)
+            .is_some_and(|end| pa >= r.base.0 && pa < end)
+    })
 }
 
 /// Is the whole `[pa, pa + len)` inside one memmap range? `checked_add` keeps
@@ -75,14 +81,23 @@ pub(crate) fn in_memmap_range(memmap: &[MemoryRegion], pa: u64, len: u64) -> boo
     let Some(end) = pa.checked_add(len) else {
         return false;
     };
-    memmap
-        .iter()
-        .any(|r| pa >= r.base.0 && end <= r.base.0 + r.len as u64)
+    memmap.iter().any(|r| {
+        r.base
+            .0
+            .checked_add(r.len as u64)
+            .is_some_and(|r_end| pa >= r.base.0 && end <= r_end)
+    })
 }
 
 /// Magic gate: read one aligned `u64` at `pa` and compare it with the
 /// `BootFileTable` signature.
 pub(crate) fn table_magic_ok(pa: u64) -> bool {
+    // A `read_volatile::<u64>` needs an aligned address; the DTB property is
+    // only bounds-checked by the callers, not alignment-checked. A
+    // misaligned read may trap on RISC-V, so reject it before dereferencing.
+    if pa % 8 != 0 {
+        return false;
+    }
     // SAFETY: the caller guarantees `in_memmap(pa)` — the address is inside
     // DTB-reported DRAM and readable; one aligned u64 read; boot is
     // single-hart.
@@ -122,6 +137,14 @@ pub(crate) fn fdt_bootargs<'a>(fdt: &fdt::Fdt<'a>) -> Option<&'a str> {
 pub(crate) fn param_landing() -> &'static mut [u8] {
     static mut PARAM_BUF: [u8; minix_boot::PARAM_BUF_CAP] =
         [0u8; minix_boot::PARAM_BUF_CAP];
+    // One `&'static mut` only: a second call would create two aliasing
+    // mutable references to the same buffer. The boot faces call this once;
+    // fail fast if that contract ever changes.
+    static PARAM_TAKEN: AtomicBool = AtomicBool::new(false);
+    assert!(
+        !PARAM_TAKEN.swap(true, Ordering::AcqRel),
+        "param_landing() called twice; the buffer is a one-shot landing pad"
+    );
     // SAFETY: one call per boot, single-hart; the buffer lives for the whole
     // run and `addr_of_mut!` avoids creating a reference to the `static mut`
     // itself.

@@ -1,8 +1,11 @@
 //! UEFI boot shim — bridges UEFI firmware to the bare-metal kernel.
 //!
-//! This is the UEFI binary entry point. It calls `UefiBootShim::prepare_boot()`
-//! (which implements the `BootShim` trait from `minix-types`) to collect
-//! firmware information, then hands control to the kernel's `arch_boot`.
+//! This is the UEFI binary entry point. It calls
+//! `prepare_and_enter_kernel_image()`: allocate the v1 arena, classify the
+//! final memory map in the ExitBootServices pairing loop, build the
+//! bootstrap root, and jump into the standalone high-half `kernel.elf`.
+//! `UefiBootShim::prepare_boot` is the `BootShim` trait's auxiliary form and
+//! has no production caller.
 //!
 //! After ExitBootServices, UEFI runtime services may still be available
 //! (via GetVariable/SetVariable), but boot services (AllocatePages, etc.)

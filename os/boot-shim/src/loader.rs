@@ -143,16 +143,28 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
 
     while let Some(seg) = iter.next() {
         found_load = true;
+        // A file segment larger than its memory image would copy bytes past
+        // the declared range; the overlap gate uses `memsz`, so it would not
+        // catch the overwrite. Reject it before any arithmetic.
+        if seg.filesz > seg.memsz {
+            return Err(minix_elf::ElfError::InvalidSegment);
+        }
+        let seg_end = seg
+            .paddr
+            .checked_add(seg.memsz)
+            .ok_or(minix_elf::ElfError::InvalidSegment)?;
         kern_phys_base = kern_phys_base.min(seg.paddr);
         kern_virt_base = kern_virt_base.min(seg.vaddr);
-        kern_end_phys = kern_end_phys.max(seg.paddr + seg.memsz);
+        kern_end_phys = kern_end_phys.max(seg_end);
     }
 
     if !found_load {
         return Err(minix_elf::ElfError::NoLoadSegments);
     }
 
-    let kern_size = kern_end_phys - kern_phys_base;
+    let kern_size = kern_end_phys
+        .checked_sub(kern_phys_base)
+        .ok_or(minix_elf::ElfError::InvalidSegment)?;
 
     Ok(KernelLoadResult {
         kern_phys_base: PhysBytes(kern_phys_base),
@@ -418,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_kernel_with_loader_computes_layout() {
+    fn test_compute_kernel_layout_from_mock_elf() {
         let mut loader = MockLoader::new();
         loader.insert(KERNEL_PATH, build_minimal_elf());
 
@@ -434,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_kernel_with_loader_panics_on_missing_kernel() {
+    fn test_read_required_panics_on_missing_kernel() {
         let loader = MockLoader::new();
         let result = std::panic::catch_unwind(|| {
             loader.read_required(KERNEL_PATH);

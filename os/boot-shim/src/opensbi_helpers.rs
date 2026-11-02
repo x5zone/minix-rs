@@ -184,7 +184,20 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
         let slice = unsafe {
             slice::from_raw_parts(entry.phys_addr as *const u8, entry.len as usize)
         };
-        Some(slice.to_vec())
+        // The table stores the slot capacity, not the file length (the shim
+        // does not know the size before `fatload`). Trim to the end of the
+        // last PT_LOAD segment so `BootModule.len` and the module-page
+        // allocation reflect the actual file, not the 1 MiB/2 MiB slot.
+        // A non-ELF payload (tests, future formats) keeps the full slot.
+        let used = minix_elf::segment_iter(slice)
+            .ok()
+            .and_then(|iter| {
+                iter.map(|seg| (seg.offset + seg.filesz) as usize)
+                    .max()
+            })
+            .filter(|&end| end > 0 && end <= slice.len())
+            .unwrap_or(slice.len());
+        Some(slice[..used].to_vec())
     }
 }
 
@@ -437,12 +450,13 @@ fn bump_alloc(num_pages: usize) -> Option<u64> {
     assert!(num_pages > 0, "bump_alloc: num_pages must be > 0");
     // SAFETY: single-threaded boot context; SMP not yet started.
     unsafe {
-        let need = (num_pages as u64) * 4096;
-        if BUMP_PTR + need > BUMP_END {
+        let need = (num_pages as u64).checked_mul(4096)?;
+        let end = BUMP_PTR.checked_add(need)?;
+        if end > BUMP_END {
             return None;
         }
         let addr = BUMP_PTR;
-        BUMP_PTR += need;
+        BUMP_PTR = end;
         Some(addr)
     }
 }

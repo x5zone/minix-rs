@@ -558,18 +558,24 @@ pub trait HigherHalf {
 
 C 侧的负担：`pg_mapkernel` 按 4MB 一块映射内核（§2.2 的 961 与循环步进），因此**两个基址**都要按 4MB 对齐——`kernel.lds` 用 `_kern_phys_base = 0x00400000` 与 `_kern_vir_base = 0xF0400000` 提供这件事，`i386/pg_utils.c` 的 [`pg_mapkernel`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel) 入口的两行断言把它当硬约束（`assert(!(kern_vir_start % I386_BIG_PAGE_SIZE));` 与 `assert(!(kern_phys % I386_BIG_PAGE_SIZE));`）。镜像大小没有对齐断言：映射循环以 `mapped < kern_kernlen` 为条件、每次步进 4MB，`kern_kernlen` 不是 4MB 整数倍时最后一块会向上取整到 4MB（多映射不足 4MB 的一段），而不是断言失败。
 
-Rust 侧的页尺寸在运行时选：`lib.rs` 的 [`fn boot_validate_and_prepare`](os/kernel/src/lib.rs:fn boot_validate_and_prepare) 先取架构的 `HUGE_PAGE_SIZE`，再看三个量（`kern_virt_base`、`kern_phys_base`、`kern_size`）是否都能被它整除，不能就退到 `FALLBACK_HUGE_PAGE_SIZE`，再不能就 panic：
+Rust 侧的页尺寸在内核的纯策略层选：`boot_policy.rs` 的 `plan_kernel_mapping` 先校验能力快照与布局，再按“首选支持且三量整除 → 回退支持且三量整除 → 否则错误”的阶梯选择（`boot_validate_and_prepare` 只负责采集能力事实与注册分配器）：
 
 ```rust
-/* 节选（保留粒度选择块；省略号处为断言与注册段），os/kernel/src/lib.rs:fn boot_validate_and_prepare。 */
-    let kern_huge = if kv.is_multiple_of(huge) && kp.is_multiple_of(huge) && ks.is_multiple_of(huge) {
-        huge
-    } else if kv.is_multiple_of(fallback) && kp.is_multiple_of(fallback) && ks.is_multiple_of(fallback) {
-        fallback
-    } else {
-        panic!("arch_boot: kern_virt_base, kern_phys_base, and kern_size must be aligned to at least FALLBACK_HUGE_PAGE_SIZE");
-    };
+// 代码引用（保留选择阶梯；前置校验略），os/kernel/src/boot_policy.rs:fn plan_kernel_mapping。
+let preferred = support.preferred();
+let fallback = support.fallback();
+let page_size = if preferred.supported() && layout_satisfies(preferred.size(), layout) {
+    preferred.size()
+} else if fallback.supported() && layout_satisfies(fallback.size(), layout) {
+    fallback.size()
+} else if !fallback.supported() {
+    return Err(KernelMapError::FallbackUnsupported(fallback.size()));
+} else {
+    return Err(KernelMapError::NoKernelPageSize);
+};
 ```
+
+`arch_boot` 把 `NoKernelPageSize` panic 成 `arch_boot: page-size policy: no kernel page size satisfies the layout`；这一步发生在任何页表写入之前。
 
 三档的判据与后果：
 
@@ -1033,9 +1039,9 @@ riscv64 多一件事（`higher_half.rs` 的 [`struct Riscv64HigherHalf`](os/kern
 | 段字段 | `test_segment_with_zero_filesz`、`test_mixed_pt_load_and_other`、`test_segment_flags`、`test_entry_point`、`test_machine_type` | 字段取值的忠实性（含 `filesz == 0` 与混合段序） |
 | 装载仿真 | `test_kernel_load_simulation_single_segment`、`test_kernel_load_simulation_two_segments`、`test_kernel_load_simulation_with_bss_segment`、`test_segment_copy_and_bss_fill` | 用解析结果做一次"拷贝 + 清零"，逐字节核对 |
 
-`os/boot-shim` 的 `loader.rs` 部分有 15 个测试（复算：`grep -c '    fn test_' os/boot-shim/src/loader.rs` 输出 15；运行：`cd os && cargo test -p boot-shim --lib`），其中与本节直接相关的是九个：`test_load_kernel_with_loader_computes_layout`（布局三个量的取值）、`test_load_kernel_with_loader_panics_on_missing_kernel`（缺内核文件是 panic 而不是继续）、`test_bss_region_is_zeroed_after_load`（BSS 清零的结果逐字节核对）、`test_load_segments_into_phys_memory_rejects_overlapping_elf`（重叠段被拒），以及五个 `first_overlapping_pair_*`（区间判交叠：不相交、真重叠、相邻不算、首个命中、空表——见下段）。
+`os/boot-shim` 的 `loader.rs` 部分有 15 个测试（复算：`grep -c '    fn test_' os/boot-shim/src/loader.rs` 输出 15；运行：`cd os && cargo test -p boot-shim --lib`），其中与本节直接相关的是九个：`test_compute_kernel_layout_from_mock_elf`（布局三个量的取值）、`test_read_required_panics_on_missing_kernel`（缺内核文件是 panic 而不是继续）、`test_bss_region_is_zeroed_after_load`（BSS 清零的结果逐字节核对）、`test_load_segments_into_phys_memory_rejects_overlapping_elf`（重叠段被拒），以及五个 `first_overlapping_pair_*`（区间判交叠：不相交、真重叠、相邻不算、首个命中、空表——见下段）。
 
-这些测试覆盖三类对象，各自走的路径不同：`test_bss_region_is_zeroed_after_load` 直接调用孪生函数 `load_segments_into_buffer`，逐字节核对三件事——`[0, filesz)` 保留文件字节、`[filesz, memsz)` 清零、`memsz` 之后一个哨兵字节不被触碰（判据是两种预填充值 0xAB 与 0xCC）；`test_load_kernel_with_loader_computes_layout` 直接调用 `compute_kernel_layout`，测试文件里写明了原因（大意：不能在单元测试里做那次物理内存拷贝）；五个 `first_overlapping_pair_*` 直接调纯函数（不相交、真重叠、相邻不算、首个命中、空表）。模块那一侧的两条测试走 `load_boot_modules_with_loader` 加一个模拟分配器，它的地址指向泄漏的 `Vec`——同一文件里的注释写明（大意）"绝不在单元测试里写真实物理内存"。
+这些测试覆盖三类对象，各自走的路径不同：`test_bss_region_is_zeroed_after_load` 直接调用孪生函数 `load_segments_into_buffer`，逐字节核对三件事——`[0, filesz)` 保留文件字节、`[filesz, memsz)` 清零、`memsz` 之后一个哨兵字节不被触碰（判据是两种预填充值 0xAB 与 0xCC）；`test_compute_kernel_layout_from_mock_elf` 直接调用 `compute_kernel_layout`，测试文件里写明了原因（大意：不能在单元测试里做那次物理内存拷贝）；五个 `first_overlapping_pair_*` 直接调纯函数（不相交、真重叠、相邻不算、首个命中、空表）。模块那一侧的两条测试走 `load_boot_modules_with_loader` 加一个模拟分配器，它的地址指向泄漏的 `Vec`——同一文件里的注释写明（大意）"绝不在单元测试里写真实物理内存"。
 
 因此宿主测试证明的是"解析出的字段、拷贝与清零的语义、区间判交叠"，不证明"按 `p_paddr` 写物理地址"这一步：那一步的唯一执行者是 `load_segments_into_phys_memory`，它的目标地址来自 ELF，在宿主上无法安全执行，留给真机链。这条分界也解释了为什么孪生函数存在——把可测的语义从不可测的那一步里剥出来。
 
