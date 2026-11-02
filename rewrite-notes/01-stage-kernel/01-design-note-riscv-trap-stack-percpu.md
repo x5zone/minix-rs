@@ -59,7 +59,7 @@ RISC-V 的 S 模式有一个控制状态寄存器（Control and Status Register�
 
 在 RISC-V 的 QEMU 测试中：
 
-- `-smp 1`（只有 BSP）时，ATF 测试 36 项全部通过（34 passed + 2 skipped，0 failed/broken）。
+- `-smp 1`（只有 BSP）时，ATF 测试 36 项全部到达终态（34 passed + 2 skipped，0 failed/broken）。
 - `-smp 2` 或 `-smp 4`（有 AP）时，系统能启动、能进入调度器，但在 VM 初始化堆的时候失败。
 - 故障点是 VM 在 `memset` 中写 `VM_HEAP_BASE = 0x1400000000`，触发 store page fault，`scause = 0xf`。
 - 串口里没有任何 `PW pa=` 页表写入日志，说明 VmDm 的 `PteWrite` 代理根本没有执行。
