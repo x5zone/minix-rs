@@ -119,6 +119,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百九十七（跨板裁决 §2.8 四情形验收：代码已在终态，补齐字面钉子）
+
+- **这一笔的射程**：裁决 §2.8「逐项裁决完成，实施与测试待验收」的验收步——四种 C 缺陷形的处理在树里已是终态，本轮逐形核对代码与测试并把缺的四枚字面钉子补上。①cut 空列表：修正不挂死，每输入行一个空行（`an_empty_list_is_not_an_error_and_prints_a_blank_line_per_input` 已钉，cut_face）；②nl 短定界符：0–2 字节接受、超过拒绝，安全长度检查不越界读（`delim_takes_two_characters_and_refuses_a_third` 已钉空值与三字节拒绝，两字节接受与匹配由 `a_raw_byte_delimiter_matches_the_line_and_a_raw_byte_separator_is_printed` 钉住——本轮补单字节接受一枚，凑齐裁决要求的空/单/双三形）；③fold 数字位：`-b9` 按宽度 9（`the_width_can_be_given_three_ways` 已钉）——本轮补裁决字面形 `-b80` 一枚；④paste/comm 的 NUL：保留完整字节（paste 侧原有测试只钉 `-d \0` 转义、comm 侧无数据 NUL 测试）——本轮各补一枚数据 NUL 钉：paste 单列 `-` 输入 `61 00 62 0a 63 0a` 原样吐出（C 在 `paste.c:180` 的串尾改写处截断），comm 两输入各含同一行 `61 00 62 0a` 公共列整行带 NUL 打出（C 在 `comm.c:209-211` 写串尾、输出走 `%s` 处截断）。
+- **门**：`cargo test -p minix-textfilter --test paste_face --test comm_face --test nl_face --test fold_face` → **13/0、8/0、19/0、16/0**（各含新钉）。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `06dcdcbbf`。
+- **登记与余量**：四情形的「修正并登记」状态由裁决持有；本批是验收钉，不改生产码。paste 无操作数时本壳静默退 0（C 读一次 stdin 单列输出）——与 2.8 无关的另一处形态差，留待 paste 的操作数批核对（发现未动）。
+
 ## 批次四百九十六（`fortune` 换两文件模型：`.dat` 索引解析、严格校验与 C `strfile` 金样夹具）
 
 - **这一笔的射程**：跨板裁决 `PENDING-DECISIONS-CROSS-BOARD-20261102.md` §2.1（方案甲：实现 `.dat` 读取）与 §2.2（空库与损坏两类错误分开，不复刻信号 8）的落地。C 的读取模型是 `strfile` 两件形：操作数指文本件，索引是路径加 `.dat`（`is_fortfile`，`fortune.c:788-799`）；索引头是 24 字节 `STRFILE`（`strfile.h:31-45`，五个大端 `u32` 加四字节备用区、首字节定界符），其后是「条数加一」个 8 字节大端定位点（`strfile.c:451-461` 写、`fortune.c:979-982` 读）；抽取按秒取模，正文从定位点按行读到定界行（`STR_ENDSTRING`，`strfile.h:29-30`；`display`，`fortune.c:265-276`），`STR_ROTATED` 置位时输出前 rot13（`fortune.c:247-258`，只动 ASCII 字母）。现场：本壳读纯文本按行切分、与 C 的数据文件生态（`strfile` 产物）不兼容。

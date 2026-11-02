@@ -248,6 +248,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `CHOWN-NAMED-ERR`：改 `os/commands/bin/fileops/src/{chown.rs,bin/chown.rs}`（A 板领地）——跨板裁决 §2.9 错误语义修正落地：删除 `ChownError::NamedUnsupported`，名字形输入按无口令库的 C 走 `id()` 腿，报文与 `errx("%s: invalid %s name")` 逐字一致（含程序名前缀），非零退出；口令库出现后在 `getpwnam`/`getgrnam` 落地处补名换号（触发条件维持裁决登记）；门=fileops lib 394/0、clippy 触及文件零告警、rustfmt 2024 整件归一、x86_64-unknown-none chown bin 构建绿 —— `✅`
 - `2026-11-03` A / `COLRM-RULES`：零代码改动（A 板领地 `os/commands/usr-bin/textfilter/`）——跨板裁决 §2.3 收口：四条归因规则的锚点与四枚钉子测试核在树（小输出不吞错、两腿同坏两形各一），新参照件 `tmp/colrm-23-verify/` 复跑探针矩阵四形，本壳读数与乙案固定规则逐形相符；门=colrm_face 19/0 —— `✅`
 - `2026-11-03` A / `FORTUNE-DAT-READ`：改 `os/commands/games/text-games/src/{fortune.rs,bin/fortune.rs}`、`tests/fortune_face.rs` + 新增 `tests/fixtures/` 四件 C `strfile` 生成的夹具（A 板领地）——跨板裁决 §2.1/§2.2 落地：读取换 `strfile` 两文件模型（24 字节头 + 8 字节大端定位点、按定界行切取、rot13），`is_fortfile` 名字门照 C（缺 `.dat`=warnx 形），零条答 no fortunes in database、坏索引答 invalid fortune database；门=text-games lib 35/0 + face 9/0、clippy 净、x86_64-unknown-none fortune bin 绿 —— `✅`
+- `2026-11-03` A / `ADJ28-FOURCASES`：改 `os/commands/usr-bin/textfilter/tests/` 四件面测（A 板领地）——跨板裁决 §2.8 验收：四情形代码核在终态（cut 空列表不挂死、nl 0–2 字节接受/>2 拒绝、fold `-bN` 聚簇数字、paste/comm 数据 NUL 保留），补四枚字面钉（nl 单字节、fold `-b80`、paste/comm 数据 NUL 各一）；门=四 face 13/8/19/16 全绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。
