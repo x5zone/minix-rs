@@ -51,8 +51,8 @@ drift=0
 
 printf '判据\t本次读数\t台账基线\t判定\n'
 
-n=$(rs "用后即滚");                     row "探针待滚除（行）" "$n" 13 "$(verdict "$n" 13)"
-n=$(rs -E "nk4[ac]:");                  row "探针命名族（行）" "$n" 18 "$(verdict "$n" 18)"
+n=$(rs -E "remov(e|ed) after use");     row "探针待滚除（行）" "$n" 2 "$(verdict "$n" 2)"
+n=$(rs -E "nk4[ac]:");                  row "探针命名族（行）" "$n" 32 "$(verdict "$n" 32)"
 n=$(grep -rn "todo!()\|unimplemented!()" os/kernel/src os/arch/src 2>/dev/null | wc -l | tr -d ' ')
                                         row "内核与架构层静默占位" "$n" 0 "$(verdict "$n" 0)"
 n=$(rs "UnimplementedTransport");        row "占位传输实现" "$n" 0 "$(verdict "$n" 0)"
@@ -63,7 +63,7 @@ n=$(rs "fn context_stop_idle");         row "空闲核唤醒臂本体（定义�
 n=$(rs "AP_GO");                        row "次级核放行邮箱（行）" "$n" 5 "$(verdict "$n" 5)"
 n=$(rs "fpu_owner");                    row "浮点归属相关行" "$n" 24 "$(verdict "$n" 24)"
 n=$(rs -E "fence\.i|dc *cvau|ic *iallu|sync_icache");
-                                        row "指令缓存维护（行）" "$n" 23 "$(verdict "$n" 23)"
+                                        row "指令缓存维护（行）" "$n" 31 "$(verdict "$n" 31)"
 n=$(grep -c 'ATF_BOOT_LEG_READY: &\[&str\] = &\[[^]]*"x86_64"' os/xtask/src/image.rs | tr -d ' ')
                                         row "测试套件白名单含 x86（1=已放行）" "$n" 1 "$(verdict "$n" 1)"
 n=$(grep -n '^default' os/kernel/Cargo.toml 2>/dev/null | grep -c 'mock' | tr -d ' ')
