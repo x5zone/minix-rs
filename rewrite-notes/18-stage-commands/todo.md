@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百九十八（跨板裁决 §2.5 验收：`wtf` 三级退化查找的环境差异登记闭合）
+
+- **这一笔的射程**：裁决 §2.5（方案乙：暂不实现跨程序调用，登记环境差异与重新检查的触发条件）的验收步——两件事：确认三个被调程序确实不在最终镜像与可执行路径中；对照 C 脚本在同样环境下的最终输出与退出码。零代码改动。
+- **缺席读数（镜像面）**：`os/xtask/src/image.rs` 的 imgrd `/bin` 播种清单现算为 `sh`、`echo`、`ls`、`cat`、`du`、`stat`、`find`、`e5-ds`（第 403 行起的 `bins` 表，`grep -nE "whatis|pkg_info|\"make\"" os/xtask/src/image.rs` → 0 命中）；`os/etc/rc` 同样零命中。注：`os/commands/usr-bin/doctools/src/bin/whatis.rs` 源码在树但不在播种清单——镜像里没有可执行路径上的 `whatis`；`pkg_info` 与 `make` 连源码都没有。`../../mk/bsd.pkg.mk`（第三级的触发文件）不在镜像。
+- **行为对照（同环境 C 脚本 trace）**：本地库未命中后，C 脚本依次试 `whatis`/`pkg_info`（`minix3/games/wtf/wtf:83-104`）——两个调用在无程序环境下各自以「命令不存在」失败且 stderr 已被 `2>/dev/null` 吞掉，`$?` 非零不进输出腿；第三级被 `bsd.pkg.mk` 缺席挡住；落到「Give up!」腿——`wtf: I don't know what \`X' means!` 到 stderr、`rv=1`。本壳查无时同句同退码（`wtf_face` 的两枚钉：词查无与 `is` 词查无）——同环境可观察结果一致，环境差异论证按裁决闭合。
+- **触发条件（裁决原文维持登记）**：当命令面建立正式的进程创建、等待与输出捕获能力，或 `whatis`/`pkg_info`/`make` 进入镜像时，重新检查三级退化查找；在那之前维持本登记，不永久写成「不支持」。三件套：上述 grep 与面测读数、核实日 `2026-11-03`、基线 `0862b388d`。
+
 ## 批次四百九十七（跨板裁决 §2.8 四情形验收：代码已在终态，补齐字面钉子）
 
 - **这一笔的射程**：裁决 §2.8「逐项裁决完成，实施与测试待验收」的验收步——四种 C 缺陷形的处理在树里已是终态，本轮逐形核对代码与测试并把缺的四枚字面钉子补上。①cut 空列表：修正不挂死，每输入行一个空行（`an_empty_list_is_not_an_error_and_prints_a_blank_line_per_input` 已钉，cut_face）；②nl 短定界符：0–2 字节接受、超过拒绝，安全长度检查不越界读（`delim_takes_two_characters_and_refuses_a_third` 已钉空值与三字节拒绝，两字节接受与匹配由 `a_raw_byte_delimiter_matches_the_line_and_a_raw_byte_separator_is_printed` 钉住——本轮补单字节接受一枚，凑齐裁决要求的空/单/双三形）；③fold 数字位：`-b9` 按宽度 9（`the_width_can_be_given_three_ways` 已钉）——本轮补裁决字面形 `-b80` 一枚；④paste/comm 的 NUL：保留完整字节（paste 侧原有测试只钉 `-d \0` 转义、comm 侧无数据 NUL 测试）——本轮各补一枚数据 NUL 钉：paste 单列 `-` 输入 `61 00 62 0a 63 0a` 原样吐出（C 在 `paste.c:180` 的串尾改写处截断），comm 两输入各含同一行 `61 00 62 0a` 公共列整行带 NUL 打出（C 在 `comm.c:209-211` 写串尾、输出走 `%s` 处截断）。
