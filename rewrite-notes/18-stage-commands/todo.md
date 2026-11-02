@@ -119,6 +119,53 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十五（`sed` 的回填越界交回 C 的两处检查，顺带把「复用哪一支」搬回执行期）
+
+- **这一笔的射程**：替换串里 `\N` 要得比表达式能给的更多时，C 说 `\N not defined in the RE`。
+  两臂、两个时机（`minix3/usr.bin/sed/compile.c:523-528` 与 `process.c:384-391`）。本壳两臂都没有：
+  `\1` 落空就展开成空串，`sed 's/a/X\1/'` 在 `a` 上交回 `X` 退 0，C 退 1。
+- **两臂为什么不能并成一处**。命令自带表达式时，图案在编译遍就已经编好，C 于是在读替换串的过程中
+  逐个数字比过去，报的是**那一个**数字（`compile.c:527-528` 打 `%c`，`s/\(a\)/\2\3/` 报 `\2` 而不是
+  `\3`）。命令图案为空时，`s->re` 是 `NULL`，编译遍无从可查，C 等到执行时拿记录的那支来比，
+  报的是 `s->maxbref`（`process.c:387-390` 打 `%u`）。两个数字都落在 `1`-`9`（C 的数字集就是
+  `strchr("123456789", *p)`），所以渲染只差一处来源，不是两种格式。
+- **回填的扫描规则照 C 的走法**：只有反斜杠紧跟 `1`-`9` 才算一次引用，且这一对一起吞掉，于是 `\\1`
+  是「一个反斜杠加一个 `1`」而不是引用（`compile.c:501-531` 的 `p++` 步法）。`\&` 与 `\\` 各自吞两个
+  字节但都不计数；`&` 本身是整段匹配，从来不是引用。
+- **把上一笔的时机搬正**。上轮把「空图案落到哪一支」放进了编译遍，理由是「本子集里每条命令每行都跑到，
+  编译序与执行序挑到同一支」——这句话对**挑到哪一支**成立，对**错误会不会发生**不成立：走不到的命令
+  根本不检查。于是 `d;s//x/` 这一形在 C 是安静退 0（`d` 结束周期，那条 `s` 一次都没跑），按编译遍定时
+  却会当场报 `first RE may not be empty`。现在的形状是：编译遍只把各命令自带的表达式编好；执行遍每
+  遇到一条 `s` 才用 `pattern_choice(own, recorded)` 决定用哪一支，并顺手把用过的记下来
+  （C 记的时机也是执行时，且在看匹配结果之前：`process.c:671-672` 的 `else defpreg = preg;`）。
+  因此 `defpreg` 跨行、跨操作数都存活——第一档一行没匹配上也算"用过一次"。
+- **门**：库内新立 `test_backref_scan_follows_the_c_escape_rules`（`\1` 计数、`\\1` 不数、`\1\\2` 只数
+  第一处、`\11` 是一次引用加一个字面 `1`、`&` 与 `\0` 都不是引用、越界时报**第一个**超的数字而不是
+  最大的），并把 `test_pattern_choice_reuses_or_refuses_an_empty_pattern` 按新签名改写（`own` 有值时
+  恒走 `Own`，`own` 为空才看 `recorded`）。面门 `os/commands/usr-bin/regex/tests/sed_face.rs` 由 22 枚
+  扩到 26 枚：`an_over_large_backref_against_its_own_expression_stops_before_any_input`（标准输出空、
+  报文逐字节 `sed: 1: "s/a/X\1/": \1 not defined in the RE`）、
+  `an_over_large_backref_against_a_reused_expression_stops_where_the_run_reaches_it`（同一形制的句子、
+  数字是 `\2`）、`a_command_the_run_never_reaches_cannot_complains`（`d;s//x/` 与
+  `d;s/\(a\)/X/;s//Y\2/` 都空输出退 0）、`the_recorded_expression_survives_into_the_next_operand`
+  （两档操作数、`zz` 与 `ab` 交 `zz`、`[<a>]b`）。
+  **差分腿的边界要说清**：`zz`/`ab` 那一形与自带表达式越界那一形宿主自带 sed 同形；**复用臂的组数检查
+   GNU 根本没有**（它把认不出的 `\2` 静默展开成空），所以那一枚门的判据只有 C 源，门里也这样注明。
+- **读数**：宿主整包 6 段 **95 / 0**，容器权威门同读数退 0（`tmp/sed-backref/container.log`），三架构
+  `--bins` 各退 0（`tmp/sed-backref/arch-*.log`）；`rustfmt --edition 2024 --check` 三件本轮改动零漂移。
+  负控四枚各咬：B1（拿掉编译期那臂）红 2、B2（拿掉执行期那臂）红 2、B3（不再记录用过的表达式）红 6、
+  B4（报文里写死数字）红 2，还原复跑 95/0（`python3 tmp/sed-backref/negctl.py`）。
+- **闭合与在册**：`SED-BACKREF-NOT-DEFINED` 随本笔闭合。仍在册的四条不变：`RE error: <strerror>`
+  （`compile.c:467` 那句要的是正则库的 regerror 文本，本壳仍回自造的 `sed: bad s command`）、
+  `SED-SCRIPT-CAP-16`、`OPEN-WARN-SHAPE`、`SED-READ-FAIL-FATAL`，另加本笔新登记的
+  `SED-NEWLINE-IN-SUBST`——C 对替换串里未转义的换行是 `unescaped newline inside substitute pattern`
+  （`compile.c:542-544`），本壳把换行当普通文本读进图案或替换。
+- **三件套**：`python3 tmp/sed-backref/negctl.py`、`cargo test -p minix-regex`
+  （`tmp/sed-backref/pkg.log`、`container.log`）、`cat tmp/sed-backref/arch-*.log`；
+  核实日 `2026-11-02`，基线快照 `29309e425`。
+
+---
+
 ## 批次四百八十四（`sed` 的失手报文交回 C 的那一句：`<程序名>: <脚本行号>: "<脚本>": <句子>`）
 
 - **这一笔的射程**：脚本读不下去时的那一行。C 的 `compile.c` 六处 `errx` 全部以
