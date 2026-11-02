@@ -79,11 +79,14 @@ fn parse_sed_args<'a>(argv: &'a [&'a str]) -> Result<(bool, &'a str, Vec<&'a str
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    // C's diagnostics open with `getprogname()`, so the name slot comes from `argv[0]`
+    // rather than from a literal in the source.
+    let prog = support::prog_name(&argv);
     let words: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (quiet, script, files) = match parse_sed_args(&words[1..]) {
         Ok(parsed) => parsed,
         Err(SedArgError::UnsupportedOption) => {
-            support::emit(b"sed: unsupported option\n");
+            support::emit(format!("{prog}: unsupported option\n").as_bytes());
             support::terminate(1);
         }
         Err(SedArgError::MissingScript) => {
@@ -104,9 +107,9 @@ fn run() -> ! {
         Err(failure) => match failure.error {
             // Two shapes have no C sentence to borrow: this build's own command
             // cap, and the addresses and verbs C carries but this shell does not.
-            ScriptError::NotModelled => not_modelled(),
-            ScriptError::Subst(SubstError::TooLong) => bad_script(),
-            error => compile_error(script, ParseFailure { error, ..failure }),
+            ScriptError::NotModelled => not_modelled(&prog),
+            ScriptError::Subst(SubstError::TooLong) => bad_script(&prog),
+            error => compile_error(&prog, script, ParseFailure { error, ..failure }),
         },
     };
     // `-n` from the command line, or the `#n` line C honours at the start of a
@@ -137,12 +140,12 @@ fn run() -> ! {
                 } else {
                     let pattern = match compile_basic(subst.pattern_text) {
                         Ok(pattern) => pattern,
-                        Err(_) => bad_script(),
+                        Err(_) => bad_script(&prog),
                     };
                     if let Some(digit) =
                         first_undefined_backref(subst.replacement, pattern.group_count)
                     {
-                        backref_error(script, scripted.line, digit);
+                        backref_error(&prog, script, scripted.line, digit);
                     }
                     patterns.push(pattern);
                     Some(patterns.len() - 1)
@@ -165,6 +168,7 @@ fn run() -> ! {
     if files.is_empty() {
         let input = support::read_stdin();
         sed_lines(
+            &prog,
             script,
             &input,
             quiet,
@@ -182,6 +186,7 @@ fn run() -> ! {
                     // `linenum` only on the in-place path (`main.c:441-444`), so an
                     // operand list read to standard output keeps counting.
                     sed_lines(
+                        &prog,
                         script,
                         &data,
                         quiet,
@@ -192,10 +197,10 @@ fn run() -> ! {
                         &mut defpreg,
                     );
                 }
-                Err(()) => {
+                Err(code) => {
                     // C `mf_fgets`: an unopenable operand warns and flags the
                     // exit status but does not stop the run (main.c:449-452).
-                    support::warn(format!("sed: {file}\n").as_bytes());
+                    support::warn_name(&prog, file, code);
                     rval = 1;
                 }
             }
@@ -224,6 +229,7 @@ struct Instruction<'a> {
 /// cycle and suppresses the automatic print, and the line number runs across the
 /// whole operand list because only the in-place path clears it.
 fn sed_lines(
+    prog: &str,
     script: &str,
     input: &[u8],
     quiet: bool,
@@ -250,14 +256,14 @@ fn sed_lines(
                             // over-large digit (`process.c:384-391`).
                             let largest = max_backref(subst.replacement);
                             if largest > patterns[index].group_count {
-                                backref_error(script, instruction.line, largest);
+                                backref_error(prog, script, instruction.line, largest);
                             }
                             index
                         }
                         // An empty pattern with nothing recorded yet: C's
                         // `regexec_e` stops the run right there
                         // (`process.c:668-670`).
-                        PatternChoice::NoPrevious => first_re_empty(),
+                        PatternChoice::NoPrevious => first_re_empty(prog),
                     };
                     *defpreg = Some(index);
                     let (len, replaced) = apply(&patterns[index], &subst, &space, scratch);
@@ -300,8 +306,10 @@ fn emit_line(space: &[u8]) {
 /// too —
 /// the old form printed them to standard output, which mixed a diagnostic into
 /// the very stream a filter's data lives on.
-fn bad_script() -> ! {
-    support::warn(b"sed: bad s command\n");
+fn bad_script(prog: &str) -> ! {
+    let mut line = errx_plain(prog);
+    line.extend_from_slice(b"bad s command\n");
+    support::warn(&line);
     support::terminate(1)
 }
 
@@ -309,8 +317,10 @@ fn bad_script() -> ! {
 /// pattern with no expression recorded yet. That sentence carries no line number
 /// or file name, so this shell's line is the same one `errx` would print: the
 /// program name, then the text.
-fn first_re_empty() -> ! {
-    support::warn(b"sed: first RE may not be empty\n");
+fn first_re_empty(prog: &str) -> ! {
+    let mut line = errx_plain(prog);
+    line.extend_from_slice(b"first RE may not be empty\n");
+    support::warn(&line);
     support::terminate(1)
 }
 
@@ -318,8 +328,10 @@ fn first_re_empty() -> ! {
 /// outside `s`/`d`/`p`/`=`. C parses all of those, so there is no C sentence to
 /// copy here; a silent pass-through would turn a script the kernel cannot run
 /// into output that looks like it did.
-fn not_modelled() -> ! {
-    support::warn(b"sed: address or verb not modelled (see 08 sec 4.4)\n");
+fn not_modelled(prog: &str) -> ! {
+    let mut line = errx_plain(prog);
+    line.extend_from_slice(b"address or verb not modelled (see 08 sec 4.4)\n");
+    support::warn(&line);
     support::terminate(1)
 }
 
@@ -329,12 +341,11 @@ fn not_modelled() -> ! {
 /// (`compile.c:219`, `:264`, `:325`, `:331`, `:601`, `:636`). The letter slots
 /// carry **bytes**, the way C's `%c` writes them: a non-ASCII byte goes out as
 /// that one byte instead of being re-encoded.
-fn compile_error(script: &str, failure: ParseFailure) -> ! {
-    let mut line: Vec<u8> = errx_prefix(script, failure.line);
+fn compile_error(prog: &str, script: &str, failure: ParseFailure) -> ! {
+    let mut line: Vec<u8> = errx_prefix(prog, script, failure.line);
     match failure.error {
-        ScriptError::Subst(SubstError::BadDelimiter) => line.extend_from_slice(
-            b"substitute pattern can not be delimited by newline or backslash",
-        ),
+        ScriptError::Subst(SubstError::BadDelimiter) => line
+            .extend_from_slice(b"substitute pattern can not be delimited by newline or backslash"),
         ScriptError::Subst(SubstError::Unterminated) => {
             line.extend_from_slice(b"unterminated substitute pattern");
         }
@@ -360,7 +371,7 @@ fn compile_error(script: &str, failure: ParseFailure) -> ! {
         }
         // Routed elsewhere; naming them keeps the split from silently swallowing
         // a new arm.
-        ScriptError::NotModelled | ScriptError::Subst(SubstError::TooLong) => bad_script(),
+        ScriptError::NotModelled | ScriptError::Subst(SubstError::TooLong) => bad_script(prog),
     }
     line.push(b'\n');
     support::warn(&line);
@@ -373,8 +384,8 @@ fn compile_error(script: &str, failure: ParseFailure) -> ! {
 /// `%c`); the execution-time one writes `s->maxbref` (`process.c:387-390`'s
 /// `%u`). Both are one character because C's set is `1`-`9` (`compile.c:523`), so
 /// the digit renders as `'0' + n` either way.
-fn backref_error(script: &str, line: u64, ref_number: u8) -> ! {
-    let mut message = errx_prefix(script, line);
+fn backref_error(prog: &str, script: &str, line: u64, ref_number: u8) -> ! {
+    let mut message = errx_prefix(prog, script, line);
     message.push(b'\\');
     message.push(b'0' + ref_number);
     message.extend_from_slice(b" not defined in the RE\n");
@@ -382,11 +393,21 @@ fn backref_error(script: &str, line: u64, ref_number: u8) -> ! {
     support::terminate(1)
 }
 
+/// The `<程序名>: ` that `errx` and `warn` print before their own text
+/// (`minix3/lib/libc/gen/verrx.c:59`, `vwarnc.c:3`), where the name is `getprogname()`
+/// — the last component of `argv[0]`.
+fn errx_plain(prog: &str) -> Vec<u8> {
+    let mut message = Vec::with_capacity(prog.len() + 2);
+    message.extend_from_slice(prog.as_bytes());
+    message.extend_from_slice(b": ");
+    message
+}
+
 /// The `<程序名>: <脚本行号>: "<脚本>": ` that opens every C compile- and
 /// execution-time complaint (`verrx.c:57` supplies the program name, `compile.c`
 /// and `process.c` supply the line and `fname`).
-fn errx_prefix(script: &str, line: u64) -> Vec<u8> {
-    let mut message: Vec<u8> = b"sed: ".to_vec();
+fn errx_prefix(prog: &str, script: &str, line: u64) -> Vec<u8> {
+    let mut message = errx_plain(prog);
     message.extend_from_slice(format!("{line}: ").as_bytes());
     message.extend_from_slice(script_ident(script).as_bytes());
     message.extend_from_slice(b": ");

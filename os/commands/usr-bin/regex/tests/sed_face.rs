@@ -127,11 +127,9 @@ fn quiet_prints_only_what_the_p_flag_prints() {
 fn an_unopenable_operand_warns_and_flags_the_exit_status() {
     // `main.c:449-452`: `warn("%s", fname)` then `rval = 1` then `continue`, so
     // the run goes on with the remaining operands and `exit(rval)` reports it.
-    // The sentence's exact shape (C's `warn` goes through `vwarnc`, which
-    // prints `<program name>: <text>: <strerror>` — this shell prints the first
-    // two segments with a hardwired name) is registered as `OPEN-WARN-SHAPE`,
-    // so this pins only that the operand is named and that the run is neither
-    // silent nor fatal.
+    // `main.c:450` is `warn("%s", fname)`, which `vwarnc` renders as three
+    // segments (`<程序名>: <操作数>: <strerror 句子>`); the whole line is pinned by
+    // `an_unopenable_operand_warns_with_the_three_segments_c_prints`.
     let good = written("after-bad", b"abc\n");
     let (out, status, err) = run(&["s/a/A/", "/no-such-operand-here", &text(&good)], b"");
     assert_eq!(
@@ -605,4 +603,61 @@ fn unescaped_parentheses_in_a_basic_pattern_are_pattern_text() {
     let (out, status, _) = run(&["s/\\(a\\)b/[\\1]/"], b"ab\n");
     assert_eq!(out, b"[a]\n".to_vec(), "the escaped group still captures");
     assert_eq!(status, 0);
+}
+
+#[test]
+fn an_unopenable_operand_warns_with_the_three_segments_c_prints() {
+    // C's `warn("%s", fname)` reaches the user through `vwarnc`, which writes
+    // `<getprogname()>: <文本>: <strerror 句子>\n`
+    // (`minix3/lib/libc/gen/vwarnc.c:3-8`). Two of those three used to be missing:
+    // the errno sentence and a name taken from `argv[0]`.
+    let (out, status, err) = run(&["s/a/A/", "/no-such-operand-here"], b"");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "sed: /no-such-operand-here: No such file or directory\n"
+    );
+}
+
+#[test]
+fn the_program_name_slot_follows_argv0() {
+    use std::os::unix::process::CommandExt;
+    // `getprogname()` is the last component of `argv[0]`, so an invocation under
+    // another name moves that slot in every diagnostic — the same rule the `vis`
+    // family was fixed for, and the reason no message here may hardwired its own
+    // command name.
+    let mut child = std::process::Command::new(SED)
+        .arg0("vv")
+        .arg("s/a/A/")
+        .arg("/no-such-operand-here")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the sed binary should be runnable");
+    child.stdin.take();
+    let output = child.wait_with_output().expect("the run should finish");
+    assert_eq!(output.stdout, Vec::<u8>::new());
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "vv: /no-such-operand-here: No such file or directory\n"
+    );
+    // The C-shaped compile diagnostics open with the same slot.
+    let mut renamed = std::process::Command::new(SED)
+        .arg0("sub")
+        .arg("s/a/b/x")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the sed binary should be runnable");
+    renamed.stdin.take();
+    let output = renamed.wait_with_output().expect("the run should finish");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "sub: 1: \"s/a/b/x\": bad flag in substitute command: 'x'\n"
+    );
 }

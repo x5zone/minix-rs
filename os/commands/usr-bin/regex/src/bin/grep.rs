@@ -31,8 +31,8 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_regex::grep::{exit_code, parse_grep_args, GrepOptions, SearchMode};
-use minix_regex::pattern::{compile_basic, compile_extended, Pattern};
+use minix_regex::grep::{GrepOptions, SearchMode, exit_code, parse_grep_args};
+use minix_regex::pattern::{Pattern, compile_basic, compile_extended};
 
 /// Quotes the basic-engine metacharacters so a fixed string compiles to
 /// itself (`-F` without a separate fixed-string engine).
@@ -49,17 +49,21 @@ fn quote_meta(word: &str) -> String {
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    // Same convention as `sed`: C's `warn`/`err` open with `getprogname()`
+    // (`vwarnc.c:3`), the last component of `argv[0]`.
+    let prog = support::prog_name(&argv);
     let words: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let (options, pattern_words, pattern_count, operands) =
-        match parse_grep_args(&words[1..]) {
+    let (options, pattern_words, pattern_count, operands) = match parse_grep_args(&words[1..]) {
         Ok(parsed) => parsed,
         Err(_) => {
-            support::emit(b"grep: bad pattern or option\n");
+            support::emit(format!("{prog}: bad pattern or option\n").as_bytes());
             support::terminate(2);
         }
     };
     if options.ignore_case {
-        support::emit(b"grep: -i waits for engine case-folding (see 08 sec 4.4)\n");
+        support::emit(
+            format!("{prog}: -i waits for engine case-folding (see 08 sec 4.4)\n").as_bytes(),
+        );
         support::terminate(2);
     }
 
@@ -75,7 +79,7 @@ fn run() -> ! {
         match pattern {
             Ok(pattern) => patterns.push(pattern),
             Err(_) => {
-                support::emit(b"grep: bad pattern or option\n");
+                support::emit(format!("{prog}: bad pattern or option\n").as_bytes());
                 support::terminate(2);
             }
         }
@@ -107,10 +111,10 @@ fn run() -> ! {
         for operand in operands {
             let data = match support::read_file(operand) {
                 Ok(data) => data,
-                Err(()) => {
+                Err(code) => {
                     // `procfile` warns (there is no `-s` here) and keeps
                     // going; the failure only shows up in the exit status.
-                    support::warn(format!("grep: {operand}\n").as_bytes());
+                    support::warn_name(&prog, operand, code);
                     file_error = true;
                     continue;
                 }

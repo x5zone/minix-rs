@@ -103,8 +103,8 @@ fn an_unopenable_operand_only_shows_up_in_the_exit_status() {
     // `procfile` warns and sets `file_err`, the run continues with the rest, and
     // the trouble reaches the exit status as 2
     // (`grep.c:505`: `exit(c ? (file_err ? (qflag ? 0 : 2) : 0) : (file_err ? 2 : 1))`).
-    // The sentence's exact shape (C's `warn` appends a `strerror` clause neither
-    // shell prints) is registered as `OPEN-WARN-SHAPE`, not pinned here.
+    // The sentence is C's three-segment `warn` form, pinned by
+    // `an_unopenable_operand_warns_with_the_three_segments_c_prints`.
     let good = written("after-bad", b"abc\n");
     let (out, status, err) = run(&["a", "/no-such-operand-here", &text(&good)], b"");
     assert_eq!(
@@ -161,4 +161,45 @@ fn the_extended_dialect_groups_and_a_stray_closer_is_still_text() {
     let (out, status, _) = run(&["-E", "x)", &name], b"");
     assert_eq!(out, b"x)\n".to_vec(), "a stray closer must not be an error");
     assert_eq!(status, 0);
+}
+
+#[test]
+fn an_unopenable_operand_warns_with_the_three_segments_c_prints() {
+    // `util.c:111` is `warn("%s", fn)`, and `vwarnc` renders three segments —
+    // program name, the operand, then the `strerror` sentence
+    // (`minix3/lib/libc/gen/vwarnc.c:3-8`). The run still only sets the exit
+    // status (`grep.c:505` gives 2 once anything was selected or the trouble
+    // stands alone), which the gate above pins.
+    let (out, status, err) = run(&["a", "/no-such-operand-here"], b"");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 2);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "grep: /no-such-operand-here: No such file or directory\n"
+    );
+}
+
+#[test]
+fn the_program_name_slot_follows_argv0() {
+    use std::os::unix::process::CommandExt;
+    // C's `getprogname()` is the last component of `argv[0]`, so the name in
+    // every diagnostic — this one and the `-i` refusal — moves with the
+    // invocation instead of coming from a literal in the source.
+    let mut child = std::process::Command::new(GREP)
+        .arg0("gg")
+        .arg("a")
+        .arg("/no-such-operand-here")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the grep binary should be runnable");
+    child.stdin.take();
+    let output = child.wait_with_output().expect("the run should finish");
+    assert_eq!(output.stdout, Vec::<u8>::new());
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "gg: /no-such-operand-here: No such file or directory\n"
+    );
 }

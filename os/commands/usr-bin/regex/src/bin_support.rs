@@ -18,6 +18,7 @@
 // unused helpers in any one binary are intentional, not drift.
 #![allow(dead_code)]
 
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use minix_sys::Fd;
 // The syscall carriers behind the target legs of the input and output seams;
@@ -46,6 +47,21 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
 #[cfg(any(test, not(target_os = "none")))]
 pub fn args() -> alloc::vec::Vec<alloc::string::String> {
     std::env::args().collect()
+}
+
+/// The name C prints in its diagnostics: `getprogname()`, which the startup code
+/// takes from `argv[0]` with the directory part removed — so `vwarnc`'s first
+/// segment (`minix3/lib/libc/gen/vwarnc.c:3`) is the last path component, and a
+/// renamed or symlinked invocation prints a different name from the same binary.
+/// An invented `"sed: "` string does not move with `argv[0]` at all, which is how
+/// the same defect showed up in `vis` and `nl`.
+#[must_use]
+pub fn prog_name(argv: &[alloc::string::String]) -> alloc::string::String {
+    let raw = argv.first().map(String::as_str).unwrap_or("");
+    match raw.rfind('/') {
+        Some(cut) => raw[cut + 1..].to_string(),
+        None => raw.to_string(),
+    }
 }
 
 /// Terminates the process with an exit status (see the module header).
@@ -127,21 +143,23 @@ pub fn read_stdin() -> Vec<u8> {
     input
 }
 
-/// Opens and drains one file operand, reporting only **whether** the operand
-/// could be turned into bytes. Both consumers of this leg (`sed` and `grep`)
-/// treat an unreadable operand the same way the C does: `sed` warns, flags the
-/// exit status and moves to the next operand (`main.c:449-452`), `grep`
-/// records `file_err` and moves on (`util.c` `procfile`). Neither has a
-/// sentence carrying an errno number, which is why the failure arm carries no
-/// number — unlike the text filters whose `err(1, "%s", *argv)` prints one.
+/// Opens and drains one file operand, handing back the **`errno`** when the
+/// operand could not be opened.
+///
+/// Both consumers report an unreadable operand with C's `warn("%s", name)`
+/// (`minix3/usr.bin/sed/main.c:450`, `minix3/minix/usr.bin/grep/util.c:111`), and
+/// `warn` is three segments — program name, the formatted text, then
+/// `strerror(errnum)` — because it goes through `vwarnc`
+/// (`minix3/lib/libc/gen/vwarnc.c:3-8`). That last segment is the number, so the
+/// seam has to carry it rather than collapse every failure into one unit type.
 ///
 /// The hosted twin opens through `std::fs`, for the same reason as
 /// [`read_stdin`]: `minix_sys::open` on the host fails, so every file operand
 /// would take the warning arm and a normal run would exit 1 with no output.
 #[cfg(any(test, not(target_os = "none")))]
-pub fn read_file(path: &str) -> Result<Vec<u8>, ()> {
+pub fn read_file(path: &str) -> Result<Vec<u8>, minix_sys::Errno> {
     use std::io::Read as _;
-    let mut file = std::fs::File::open(path).map_err(|_| ())?;
+    let mut file = std::fs::File::open(path).map_err(|failure| errno_of(&failure))?;
     let mut data = Vec::new();
     // A read failure stops collection and keeps the bytes that arrived, the
     // same shape as the target loop below.
@@ -150,10 +168,10 @@ pub fn read_file(path: &str) -> Result<Vec<u8>, ()> {
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn read_file(path: &str) -> Result<Vec<u8>, ()> {
+pub fn read_file(path: &str) -> Result<Vec<u8>, minix_sys::Errno> {
     let fd = match open(path, 0, 0) {
         Ok(fd) => fd,
-        Err(_) => return Err(()),
+        Err(code) => return Err(code),
     };
     let mut data = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -168,6 +186,33 @@ pub fn read_file(path: &str) -> Result<Vec<u8>, ()> {
     #[allow(clippy::let_underscore_must_use)]
     let _ = close(fd);
     Ok(data)
+}
+
+/// The `errno` behind a host I/O failure: the OS number when there is one, and
+/// `EIO` for the failure kinds that carry no number here — which is what C's
+/// `warn` would print too, since it reads the `errno` the failed call left set.
+#[cfg(any(test, not(target_os = "none")))]
+fn errno_of(error: &std::io::Error) -> minix_sys::Errno {
+    minix_sys::Errno::from_i32(
+        error
+            .raw_os_error()
+            .unwrap_or(minix_sys::Errno::EIO.to_i32()),
+    )
+}
+
+/// C's `warn("%s", name)` line: `<程序名>: <名字>: <strerror 句子>\n`
+/// (`vwarnc.c:3-8`, where the first segment comes from `getprogname()` — pass
+/// [`prog_name`]'s result, not a literal command name).
+pub fn warn_name(prog: &str, name: &str, code: minix_sys::Errno) {
+    let sentence = minix_sys::Strerror(code).to_string();
+    let mut line = Vec::with_capacity(prog.len() + name.len() + sentence.len() + 4);
+    line.extend_from_slice(prog.as_bytes());
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(name.as_bytes());
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(sentence.as_bytes());
+    line.push(b'\n');
+    warn(&line);
 }
 
 /// Renders `value` in decimal into `out`, returning the written length.
