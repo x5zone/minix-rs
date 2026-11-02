@@ -122,6 +122,46 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), RegexError> 
     ))
 }
 
+/// Where an `s` command gets its regular expression.
+///
+/// C keeps the last expression it ran in `defpreg` and hands that one to a
+/// command whose pattern is empty, rather than compiling anything
+/// (`process.c:668-671`: `if (preg == NULL) { if (defpreg == NULL) errx(1,
+/// "first RE may not be empty"); } else defpreg = preg;`). An empty pattern is
+/// therefore **not** "the empty regular expression": this engine refuses an
+/// empty pattern outright (`pattern.rs:fn compile`), and reaching that arm would
+/// turn `s//x/` into a match-every-position rewrite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternChoice {
+    /// Compile this command's own pattern text; it becomes the one to reuse.
+    Own,
+    /// Reuse the expression recorded at this index in the script's list.
+    Reuse(usize),
+    /// Empty pattern with nothing recorded yet: C's
+    /// `errx(1, "first RE may not be empty")`, which carries no line number or
+    /// file name and so has an exact one-line shape.
+    NoPrevious,
+}
+
+/// Decide which expression one `s` command runs, given what the script has
+/// recorded so far. `previous` is `None` until the first own pattern.
+///
+/// C records the expression when a command **executes**, so a command that never
+/// runs would leave `defpreg` behind. That distinction cannot reach this build:
+/// with no addresses and no branch verbs, every command in the list runs on every
+/// line, so the compile order and the execution order pick the same expression.
+#[must_use]
+pub fn pattern_choice(subst: &Subst<'_>, previous: Option<usize>) -> PatternChoice {
+    if !subst.pattern_text.is_empty() {
+        PatternChoice::Own
+    } else {
+        match previous {
+            Some(index) => PatternChoice::Reuse(index),
+            None => PatternChoice::NoPrevious,
+        }
+    }
+}
+
 /// Apply one substitution to `haystack`, writing the result into `out`.
 ///
 /// Returns `(bytes_written, replacement_happened)`. Global substitution
@@ -653,6 +693,33 @@ mod tests {
         assert!(step(&Command::Print, false).print_line);
         assert!(step(&Command::PrintLineNum, false).print_number);
         assert!(step(&Command::Delete, false).ends_cycle);
+    }
+
+    #[test]
+    fn test_pattern_choice_reuses_or_refuses_an_empty_pattern() {
+        // Three arms: a pattern of its own, an empty pattern with something
+        // recorded, and an empty pattern with nothing recorded yet.
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        assert_eq!(parse_script("s/a/A/;s//B/", &mut cmds).unwrap(), 2);
+        let own = match cmds[0] {
+            Command::Subst(subst) => subst,
+            _ => panic!("第一条该是 s"),
+        };
+        let empty = match cmds[1] {
+            Command::Subst(subst) => subst,
+            _ => panic!("第二条该是 s"),
+        };
+        assert_eq!(own.pattern_text, "a");
+        assert_eq!(empty.pattern_text, "");
+        assert_eq!(pattern_choice(&own, None), PatternChoice::Own);
+        // An empty pattern takes the **last** recorded expression, whichever
+        // index that is: `s/a/A/;s/b/B/;s//C/` reuses `b`, not `a`.
+        assert_eq!(pattern_choice(&empty, Some(0)), PatternChoice::Reuse(0));
+        assert_eq!(pattern_choice(&empty, Some(1)), PatternChoice::Reuse(1));
+        assert_eq!(pattern_choice(&empty, None), PatternChoice::NoPrevious);
+        // `Own` is decided by the pattern text alone, so a recorded expression
+        // never overrides a command that brings its own.
+        assert_eq!(pattern_choice(&own, Some(7)), PatternChoice::Own);
     }
 
     #[test]

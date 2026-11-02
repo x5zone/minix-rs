@@ -36,8 +36,8 @@ mod support;
 
 use minix_regex::pattern::{Pattern, compile_basic};
 use minix_regex::sed::{
-    Command, MAX_SCRIPT_COMMANDS, ScriptError, apply, auto_print, parse_script,
-    script_quiet_directive, step,
+    Command, MAX_SCRIPT_COMMANDS, PatternChoice, ScriptError, apply, auto_print, parse_script,
+    pattern_choice, script_quiet_directive, step,
 };
 
 /// Argument-splitting errors for the sed front end.
@@ -103,19 +103,36 @@ fn run() -> ! {
     // `-n` from the command line, or the `#n` line C honours at the start of a
     // script unit (`main.c:286-287`).
     let quiet = quiet || script_quiet_directive(script);
-    // Every `s` compiles its pattern once here; C does the same inside
+    // Every `s` compiles its expression once here; C does the same inside
     // `compile_subst`, and a chain would otherwise recompile per line per
-    // command.
+    // command. An empty pattern is not compiled at all — it names the last
+    // expression the script recorded, and with none recorded yet C stops with
+    // `first RE may not be empty` (`process.c:668-671`).
+    let mut patterns: Vec<Pattern> = Vec::new();
     let mut program: Vec<Instruction<'_>> = Vec::new();
+    let mut recorded: Option<usize> = None;
     for command in slots[..count].iter().copied() {
-        let pattern = match command {
-            Command::Subst(subst) => match compile_basic(subst.pattern_text) {
-                Ok(pattern) => Some(pattern),
-                Err(_) => bad_script(),
+        let slot = match command {
+            Command::Subst(subst) => match pattern_choice(&subst, recorded) {
+                PatternChoice::Own => {
+                    let pattern = match compile_basic(subst.pattern_text) {
+                        Ok(pattern) => pattern,
+                        Err(_) => bad_script(),
+                    };
+                    patterns.push(pattern);
+                    let index = patterns.len() - 1;
+                    recorded = Some(index);
+                    Some(index)
+                }
+                PatternChoice::Reuse(index) => Some(index),
+                PatternChoice::NoPrevious => first_re_empty(),
             },
             _ => None,
         };
-        program.push(Instruction { command, pattern });
+        program.push(Instruction {
+            command,
+            pattern: slot,
+        });
     }
 
     let mut scratch = vec![0u8; 4 * 1024 * 1024];
@@ -123,7 +140,14 @@ fn run() -> ! {
     let mut rval = 0;
     if files.is_empty() {
         let input = support::read_stdin();
-        sed_lines(&input, quiet, &program, &mut scratch, &mut number);
+        sed_lines(
+            &input,
+            quiet,
+            &program,
+            &patterns,
+            &mut scratch,
+            &mut number,
+        );
     } else {
         for file in &files {
             match support::read_file(file) {
@@ -131,7 +155,7 @@ fn run() -> ! {
                     // The line number is **not** reset between operands: C clears
                     // `linenum` only on the in-place path (`main.c:441-444`), so an
                     // operand list read to standard output keeps counting.
-                    sed_lines(&data, quiet, &program, &mut scratch, &mut number);
+                    sed_lines(&data, quiet, &program, &patterns, &mut scratch, &mut number);
                 }
                 Err(()) => {
                     // C `mf_fgets`: an unopenable operand warns and flags the
@@ -145,11 +169,13 @@ fn run() -> ! {
     support::terminate(rval);
 }
 
-/// One command with its pattern already compiled, so the cycle loop never
-/// touches the regex compiler.
+/// One command with the slot of the expression it runs. The patterns live in
+/// their own list because two commands can name the **same** one: an empty
+/// pattern reuses the previous expression rather than compiling its own, so the
+/// cycle loop never touches the regex compiler and never copies a pattern.
 struct Instruction<'a> {
     command: Command<'a>,
-    pattern: Option<Pattern>,
+    pattern: Option<usize>,
 }
 
 /// Substitutes every line of one collected stream and emits what the cycle
@@ -161,6 +187,7 @@ fn sed_lines(
     input: &[u8],
     quiet: bool,
     program: &[Instruction<'_>],
+    patterns: &[Pattern],
     scratch: &mut [u8],
     number: &mut u64,
 ) {
@@ -173,11 +200,8 @@ fn sed_lines(
         for instruction in program {
             let replaced = match instruction.command {
                 Command::Subst(subst) => {
-                    let pattern = instruction
-                        .pattern
-                        .as_ref()
-                        .expect("每个 s 命令都带着编译好的模式");
-                    let (len, replaced) = apply(pattern, &subst, &space, scratch);
+                    let index = instruction.pattern.expect("每个 s 命令都带着要用的模式位");
+                    let (len, replaced) = apply(&patterns[index], &subst, &space, scratch);
                     space.clear();
                     space.extend_from_slice(&scratch[..len]);
                     replaced
@@ -219,6 +243,15 @@ fn emit_line(space: &[u8]) {
 /// the very stream a filter's data lives on.
 fn bad_script() -> ! {
     support::warn(b"sed: bad s command\n");
+    support::terminate(1)
+}
+
+/// C's `errx(1, "first RE may not be empty")` (`process.c:668-671`), for an empty
+/// pattern with no expression recorded yet. That sentence carries no line number
+/// or file name, so this shell's line is the same one `errx` would print: the
+/// program name, then the text.
+fn first_re_empty() -> ! {
+    support::warn(b"sed: first RE may not be empty\n");
     support::terminate(1)
 }
 
