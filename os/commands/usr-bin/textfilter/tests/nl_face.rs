@@ -195,6 +195,11 @@ fn delim_takes_two_characters_and_refuses_a_third() {
     let (out, status, err) = run(&["-d", ""], b"x\n");
     assert_eq!((status, err.as_str()), (0, ""), "空值该是无操作");
     assert!(!out.is_empty(), "被接受就该有编号输出");
+    // 单字节：`optarg[1]` 已是空字节，`delim[1]` 保持默认——裁决要求空、单、
+    // 双三种长度分别测试，这是单字节那一枚。
+    let (out, status, err) = run(&["-d", "x"], b"x\n");
+    assert_eq!((status, err.as_str()), (0, ""), "单字节该被接受：{err}");
+    assert!(!out.is_empty(), "被接受就该有编号输出");
 }
 
 /// The remaining numeric branches each report their own sentence and all print the rejected value verbatim (`nl.c:176-228`).

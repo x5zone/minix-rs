@@ -451,3 +451,23 @@ fn scratch(tag: &str) -> PathBuf {
     fs::create_dir_all(&dir).expect("scratch dir");
     dir
 }
+
+/// 情形四在 `comm` 一侧：行缓冲以写串尾收尾（`comm.c:209-211`）、输出走
+/// `%s`，C 在数据内的 NUL 处截断。本壳保留完整字节序列——两输入各含同一
+/// 枚带 NUL 的行，公共列该整行带 NUL 打出。
+#[test]
+fn a_nul_byte_in_the_data_is_kept_not_truncated() {
+    let dir = std::env::temp_dir().join(format!("comm-nul-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let line = b"a\x00b\n";
+    let one = dir.join("one");
+    let two = dir.join("two");
+    std::fs::write(&one, line).expect("write one");
+    std::fs::write(&two, line).expect("write two");
+    let (out, status, err) = run_bytes(
+        &[one.to_str().unwrap(), two.to_str().unwrap()],
+        b"",
+    );
+    assert_eq!((out, status, err), (b"\t\ta\x00b\n".to_vec(), 0, Vec::new()));
+    std::fs::remove_dir_all(&dir).expect("clean scratch dir");
+}

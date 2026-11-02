@@ -488,3 +488,12 @@ fn serial_mode_joins_each_operand_onto_one_line() {
     let (out, _, _) = run(&["-s", "-d", "+:", a.as_str()], b"");
     assert_eq!(out, "1+2:3\n", "顺序模式的游标从表头起，按位循环");
 }
+
+/// 情形四（跨板裁决 §2.8）：C 的发送腿以「串尾空字节」发送（`paste.c:180`
+/// 把换行改写为串尾），数据内含 NUL 即在那里截断。本壳按字节向量发送，
+/// 整行原样保留——这一枚把「保留完整字节」钉住。
+#[test]
+fn a_nul_byte_in_the_data_is_kept_not_truncated() {
+    let (out, status, err) = run_bytes(&["-"], b"a\x00b\nc\n");
+    assert_eq!((out, status, err), (b"a\x00b\nc\n".to_vec(), 0, Vec::new()));
+}

@@ -207,6 +207,10 @@ fn the_width_can_be_given_three_ways() {
         ("abcdefghi\nj\n", ""),
         "聚簇里的数字不该被当成集外字母"
     );
+    // 裁决 §2.8 情形三的字面验收形：`-b80` 就是宽度 80（十行不折），不读下
+    // 一个参数、不产生宽度 0 的一字一行。
+    let (out, _, _) = run(&["-b80"], b"abcdefghij");
+    assert_eq!(out, "abcdefghij\n", "-b80 该按宽度 80 处理");
 }
 
 /// Operands follow C's `for (; *argv; ++argv) freopen(...) … fold(width)`:
