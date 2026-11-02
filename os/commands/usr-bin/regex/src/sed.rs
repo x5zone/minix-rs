@@ -16,6 +16,8 @@
 //! character).
 
 use crate::pattern::{Captures, Pattern};
+use alloc::borrow::Cow;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Maximum pattern plus replacement bytes handled in one command.
@@ -38,19 +40,24 @@ pub enum SubstScope {
 }
 
 /// One parsed `s` command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subst<'a> {
     /// The pattern text between the first two delimiters.
     pub pattern_text: &'a str,
     /// The replacement text between the last two delimiters.
-    pub replacement: &'a str,
+    ///
+    /// Borrowed from the script unless the replacement was continued onto a
+    /// second line: C stitches such a replacement into a buffer of its own
+    /// (`compile.c:505-552`), so this field owns its text exactly when what it
+    /// names is not a slice of the script any more.
+    pub replacement: Cow<'a, str>,
     /// Which matches to replace.
     pub scope: SubstScope,
     /// The `p` flag: print the line when a replacement happened.
     pub print: bool,
 }
 
-/// Why one `s` command could not be read. C's arms are four separate `errx`
+/// Why one `s` command could not be read. C's arms are separate `errx`
 /// sentences, so this type names them one by one instead of folding them into a
 /// single "bad pattern" answer — the shell can only print what C prints if the
 /// failure says which one it was.
@@ -59,14 +66,20 @@ pub enum SubstError {
     /// The byte after `s` ends the line or is a backslash
     /// (`compile.c:324-326`).
     BadDelimiter,
-    /// A delimiter never closed before the text ran out (`compile.c:330-331`).
+    /// The pattern half never closed before its line ran out. C's
+    /// `compile_delimited` reads one script line and cannot carry into the
+    /// next, so a raw newline and a backslash-newline both leave it with
+    /// nothing (`compile.c:305-317`) and reach the same sentence
+    /// (`:330-331`, `unterminated substitute pattern`).
     Unterminated,
-    /// A raw newline inside the pattern or the replacement: C's scanner reads one
-    /// script line at a time, so an unescaped newline means the command was never
-    /// closed on its own line (`compile.c:542-544`). This fires **before**
-    /// [`SubstError::Unterminated`] for a command whose closing delimiter sits on
-    /// the next line, which is also C's order — the newline is met while scanning.
+    /// A raw newline inside the replacement: the scanner meets it while reading
+    /// the line it was given, so the sentence is `unescaped newline inside
+    /// substitute pattern` (`compile.c:542-544`).
     UnescapedNewline,
+    /// The replacement half never closed. C names this half differently from the
+    /// pattern's arm: `unterminated substitute in regular expression`
+    /// (`compile.c:555-556`).
+    UnterminatedReplacement,
     /// A flag byte outside `g`, `p`, the case letters, `w`, or `1`-`9`
     /// (`compile_flags`' `default:`, `compile.c:636`). A leading `0` lands here
     /// too, because C's digit arm only accepts `1`-`9`.
@@ -80,49 +93,163 @@ pub enum SubstError {
     TooLong,
 }
 
-/// Parse one `s` command (the leading `s` already consumed).
+/// One `s`-command refusal plus the script line it was met on.
 ///
-/// The byte after `s` is the delimiter. Returns the substitution plus how
-/// many bytes of `text` it consumed, so the caller can continue with
-/// chained commands (`s/a/b/;s/c/d/`).
-pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), SubstError> {
+/// The line travels with the error because C reads the script one line at a time
+/// and reports the `linenum` current at that moment (`compile.c`'s `errx`
+/// calls): a replacement continued across lines has already moved that counter
+/// past the command's first line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubstFailure {
+    /// What was refused.
+    pub error: SubstError,
+    /// The 1-based script line the scanner was on.
+    pub line: u64,
+}
+
+fn subst_failure(error: SubstError, line: u64) -> SubstFailure {
+    SubstFailure { error, line }
+}
+
+/// Parse one `s` command (the leading `s` already consumed), starting on
+/// `start_line`. Returns the substitution plus how many bytes of `text` it
+/// consumed, so the caller can continue with chained commands
+/// (`s/a/b/;s/c/d/`).
+///
+/// The two halves are read the way C reads them, and C reads them differently.
+/// The pattern half is `compile_delimited`: one script line, no continuation —
+/// a backslash at the line's end does not buy the next line. The replacement
+/// half is `compile_subst`: a backslash at the end of the line drops both the
+/// backslash and the newline and quotes the first byte of the next line
+/// (`compile.c:511-521`'s `sawesc` arm), so the field can be longer than any one
+/// script line and then has to be built rather than borrowed.
+pub fn parse_subst<'a>(text: &'a str, start_line: u64) -> Result<(Subst<'a>, usize), SubstFailure> {
     let bytes = text.as_bytes();
     // C checks the delimiter before reading anything: a line-ending or
     // backslash delimiter is refused on the spot (`compile.c:323-326`).
     let delim = match bytes.first() {
-        None => return Err(SubstError::BadDelimiter),
-        Some(&b'\n') | Some(&b'\\') => return Err(SubstError::BadDelimiter),
+        None => return Err(subst_failure(SubstError::BadDelimiter, start_line)),
+        Some(&b'\n') | Some(&b'\\') => {
+            return Err(subst_failure(SubstError::BadDelimiter, start_line));
+        }
         Some(&byte) => byte,
     };
-    let mut pattern_text: Option<&'a str> = None;
-    let mut replacement: Option<&'a str> = None;
+    // The pattern half. Running out of the line is C's `compile_delimited`
+    // returning NULL, which the caller turns into the unterminated sentence
+    // (`compile.c:330-331`); a backslash as the line's last byte is copied and
+    // then the line ends, so it lands there too (`:309-311`).
     let mut pos = 1;
-    for slot in [&mut pattern_text, &mut replacement].into_iter() {
-        let start = pos;
-        loop {
-            if pos >= bytes.len() {
-                return Err(SubstError::Unterminated);
-            }
-            if bytes[pos] == b'\\' {
-                pos += 2;
-                continue;
-            }
-            // C meets this before it can run out of text: each script line is its
-            // own buffer, so a newline while still inside a field is the end of a
-            // line that never closed its delimiter (`compile.c:542-544`).
-            if bytes[pos] == b'\n' {
-                return Err(SubstError::UnescapedNewline);
-            }
-            if bytes[pos] == delim {
-                *slot = Some(&text[start..pos]);
-                pos += 1;
-                break;
-            }
+    let pattern_start = pos;
+    let pattern_text = loop {
+        let Some(&byte) = bytes.get(pos) else {
+            return Err(subst_failure(SubstError::Unterminated, start_line));
+        };
+        if byte == delim {
+            let span = &text[pattern_start..pos];
             pos += 1;
+            break span;
         }
-    }
-    let (Some(pattern_text), Some(replacement)) = (pattern_text, replacement) else {
-        return Err(SubstError::Unterminated);
+        match byte {
+            b'\n' => return Err(subst_failure(SubstError::Unterminated, start_line)),
+            b'\\' => match bytes.get(pos + 1) {
+                None | Some(&b'\n') => {
+                    return Err(subst_failure(SubstError::Unterminated, start_line));
+                }
+                Some(_) => pos += 2,
+            },
+            _ => pos += 1,
+        }
+    };
+    // The replacement half. A raw newline is C's own sentence (`compile.c:542-544`);
+    // a backslash-newline continues the field, and the byte it quotes takes the
+    // escape's place. The quoted byte is spelled the way this module's splicer
+    // reads an escape: a backslash before the bytes that mean something there
+    // (`&`, `\\`, `1`-`9`), and none before the rest — which is the same text C
+    // writes, because it emits `\\` for exactly those bytes and a bare byte for
+    // everything else (`compile.c:519-530`).
+    let replacement_start = pos;
+    // The field is a slice of the script until a continuation forces it to be
+    // built; once the first continuation is met, every later byte is appended.
+    let mut stitched: Option<String> = None;
+    let mut lines_crossed = 0u64;
+    let replacement: Cow<'a, str> = loop {
+        let Some(&byte) = bytes.get(pos) else {
+            return Err(subst_failure(
+                SubstError::UnterminatedReplacement,
+                start_line + lines_crossed,
+            ));
+        };
+        if byte == delim {
+            let value = match stitched {
+                Some(owner) => Cow::Owned(owner),
+                None => Cow::Borrowed(&text[replacement_start..pos]),
+            };
+            pos += 1;
+            break value;
+        }
+        match byte {
+            b'\n' => {
+                return Err(subst_failure(
+                    SubstError::UnescapedNewline,
+                    start_line + lines_crossed,
+                ));
+            }
+            b'\\' => match bytes.get(pos + 1) {
+                // The backslash closes the line: C drops it, drops the newline,
+                // and re-enters with the next line's buffer carrying `sawesc`
+                // (`compile.c:511-521`). The line it crossed has been read.
+                Some(&b'\n') => {
+                    let owner =
+                        stitched.get_or_insert_with(|| String::from(&text[replacement_start..pos]));
+                    pos += 2;
+                    lines_crossed += 1;
+                    let Some(next) = text[pos..].chars().next() else {
+                        // C refills once more, finds nothing, and stops on the
+                        // unterminated sentence (`compile.c:555-556`).
+                        return Err(subst_failure(
+                            SubstError::UnterminatedReplacement,
+                            start_line + lines_crossed,
+                        ));
+                    };
+                    if matches!(next, '&' | '\\' | '1'..='9') {
+                        owner.push('\\');
+                    }
+                    owner.push(next);
+                    pos += next.len_utf8();
+                    if next == '\n' {
+                        // The continued line was empty: C copies its newline as
+                        // data, and that line still counts as read.
+                        lines_crossed += 1;
+                    }
+                }
+                // An ordinary escape: the backslash stays in the field text and
+                // the splicer reads it there. A built field has to receive both
+                // bytes explicitly.
+                Some(_) => {
+                    if let Some(owner) = stitched.as_mut() {
+                        owner.push('\\');
+                        if let Some(next) = text[pos + 1..].chars().next() {
+                            owner.push(next);
+                        }
+                    }
+                    pos += 1 + text[pos + 1..].chars().next().map_or(1, char::len_utf8);
+                }
+                None => {
+                    return Err(subst_failure(
+                        SubstError::UnterminatedReplacement,
+                        start_line + lines_crossed,
+                    ));
+                }
+            },
+            _ => {
+                if let Some((owner, next)) = stitched.as_mut().zip(text[pos..].chars().next()) {
+                    owner.push(next);
+                    pos += next.len_utf8();
+                    continue;
+                }
+                pos += 1;
+            }
+        }
     };
     let mut scope = SubstScope::First;
     let mut print = false;
@@ -137,7 +264,12 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), SubstError> 
                 print = true;
                 consumed += 1;
             }
-            b'0' => return Err(SubstError::BadFlag(b'0')),
+            b'0' => {
+                return Err(subst_failure(
+                    SubstError::BadFlag(b'0'),
+                    start_line + lines_crossed,
+                ));
+            }
             b'1'..=b'9' => {
                 let mut number: u32 = 0;
                 while consumed < bytes.len() && bytes[consumed].is_ascii_digit() {
@@ -146,7 +278,10 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), SubstError> 
                     // is an `int`, so anything past that bound is the overflow
                     // sentence rather than a huge count (`compile.c:601-607`).
                     if number > (INT_MAX_FLAG - digit) / 10 {
-                        return Err(SubstError::NumberOverflow);
+                        return Err(subst_failure(
+                            SubstError::NumberOverflow,
+                            start_line + lines_crossed,
+                        ));
                     }
                     number = number * 10 + digit;
                     consumed += 1;
@@ -159,11 +294,19 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), SubstError> 
             // and before a separator are skipped and `s/a/b/g p` still sets the
             // `p` flag — stopping here instead would turn that into a refusal.
             b' ' | b'\t' => consumed += 1,
-            other => return Err(SubstError::BadFlag(other)),
+            other => {
+                return Err(subst_failure(
+                    SubstError::BadFlag(other),
+                    start_line + lines_crossed,
+                ));
+            }
         }
     }
     if pattern_text.len() + replacement.len() > MAX_SUBST_TEXT {
-        return Err(SubstError::TooLong);
+        return Err(subst_failure(
+            SubstError::TooLong,
+            start_line + lines_crossed,
+        ));
     }
     Ok((
         Subst {
@@ -262,7 +405,7 @@ pub fn apply(
         emit(&bytes[pos..start]);
         if wanted {
             replaced = true;
-            splice_replacement(subst.replacement, &caps, bytes, &mut emit);
+            splice_replacement(subst.replacement.as_ref(), &caps, bytes, &mut emit);
         } else {
             emit(&bytes[start..end]);
         }
@@ -351,7 +494,7 @@ fn char_len_at(bytes: &[u8], pos: usize) -> usize {
 /// verbs are modelled; an address prefix or any other verb yields
 /// `ScriptError::NotModelled` so callers fail loudly rather than silently
 /// misbehave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command<'a> {
     /// `s<delim>re<delim>rep<delim>flags`.
     Subst(Subst<'a>),
@@ -371,7 +514,7 @@ pub enum Command<'a> {
 /// execution-time arm restores the command's own saved line before printing
 /// (`process.c:387`'s `linenum = cp->u.s->linenum`). A caller that wants C's line
 /// has to know which line each command came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scripted<'a> {
     /// The command itself.
     pub command: Command<'a>,
@@ -474,10 +617,16 @@ pub fn parse_script<'a>(script: &'a str) -> Result<Vec<Scripted<'a>>, ParseFailu
         }
         // The line this command started on, kept for the refusal messages.
         let command_line = line;
+        let command_start = index;
         let command = match bytes[index] {
             b's' => {
-                let (subst, consumed) = parse_subst(&script[index + 1..])
-                    .map_err(|error| fail(command_line, ScriptError::Subst(error)))?;
+                let (subst, consumed) =
+                    parse_subst(&script[index + 1..], command_line).map_err(|failure| {
+                        ParseFailure {
+                            error: ScriptError::Subst(failure.error),
+                            line: failure.line,
+                        }
+                    })?;
                 index += 1 + consumed;
                 Command::Subst(subst)
             }
@@ -507,6 +656,13 @@ pub fn parse_script<'a>(script: &'a str) -> Result<Vec<Scripted<'a>>, ParseFailu
                 ));
             }
         };
+        // C's `linenum` moves once per line read, so a replacement continued
+        // across lines has already advanced it before the next command starts
+        // (`cu_fgets` raises it per buffer).
+        line += bytes[command_start..index]
+            .iter()
+            .filter(|&&byte| byte == b'\n')
+            .count() as u64;
         out.push(Scripted {
             command,
             line: command_line,
@@ -692,7 +848,7 @@ mod tests {
         } else {
             compile_basic(pattern_text).unwrap()
         };
-        let (subst, _) = parse_subst(command).unwrap();
+        let (subst, _) = parse_subst(command, 1).unwrap();
         let mut out = [0u8; 512];
         let (len, replaced) = apply(&pattern, &subst, line.as_bytes(), &mut out);
         (String::from_utf8_lossy(&out[..len]).into_owned(), replaced)
@@ -735,16 +891,16 @@ mod tests {
 
     #[test]
     fn test_custom_delimiter() {
-        let (subst, consumed) = parse_subst("#a#b#g").unwrap();
+        let (subst, consumed) = parse_subst("#a#b#g", 1).unwrap();
         assert_eq!(subst.pattern_text, "a");
-        assert_eq!(subst.replacement, "b");
+        assert_eq!(subst.replacement.as_ref(), "b");
         assert_eq!(subst.scope, SubstScope::Global);
         assert_eq!(consumed, 6);
     }
 
     #[test]
     fn test_print_flag() {
-        let (subst, _) = parse_subst("/a/b/p").unwrap();
+        let (subst, _) = parse_subst("/a/b/p", 1).unwrap();
         assert!(subst.print);
         assert_eq!(subst.scope, SubstScope::First);
     }
@@ -753,14 +909,26 @@ mod tests {
     fn test_missing_delimiter_rejected() {
         // C's `compile_delimited` returns NULL and the caller prints
         // `unterminated substitute pattern` (`compile.c:329-331`).
-        assert_eq!(parse_subst("/ab"), Err(SubstError::Unterminated));
+        assert_eq!(
+            parse_subst("/ab", 4).unwrap_err(),
+            SubstFailure {
+                error: SubstError::Unterminated,
+                line: 4
+            }
+        );
     }
 
     #[test]
     fn test_zero_nth_rejected() {
         // C's digit arm accepts `1`-`9` only, so a `0` in the flag run falls to
         // its `default:` — a bad flag, not a bad number (`compile.c:597-636`).
-        assert_eq!(parse_subst("/a/b/0"), Err(SubstError::BadFlag(b'0')));
+        assert_eq!(
+            parse_subst("/a/b/0", 1).unwrap_err(),
+            SubstFailure {
+                error: SubstError::BadFlag(b'0'),
+                line: 1
+            }
+        );
     }
 
     #[test]
@@ -888,17 +1056,31 @@ mod tests {
             parse_script("s\\a/b/"),
             Err(fail(1, ScriptError::Subst(SubstError::BadDelimiter)))
         );
+        // The two halves name their own unterminated arm: C's pattern reader is
+        // `compile_delimited` and its sentence is `unterminated substitute
+        // pattern` (`compile.c:330-331`), while the replacement reader stops at
+        // `unterminated substitute in regular expression` (`:555-556`).
         assert_eq!(
             parse_script("s/a/b"),
-            Err(fail(1, ScriptError::Subst(SubstError::Unterminated)))
+            Err(fail(
+                1,
+                ScriptError::Subst(SubstError::UnterminatedReplacement)
+            ))
         );
-        // A raw newline inside either field is C's other sentence, and it wins
-        // over "unterminated" because C meets the newline while still scanning the
-        // line it was given (`compile.c:542-544`).
+        // The pattern half cannot carry into the next line: a raw newline and a
+        // backslash at the line's end both leave `compile_delimited` with no
+        // delimiter (`compile.c:305-317`), so both land on the pattern's own
+        // unterminated arm — not on the replacement's newline sentence.
         assert_eq!(
             parse_script("s/a\nb/x/"),
-            Err(fail(1, ScriptError::Subst(SubstError::UnescapedNewline)))
+            Err(fail(1, ScriptError::Subst(SubstError::Unterminated)))
         );
+        assert_eq!(
+            parse_script("s/a\\\nb/x/"),
+            Err(fail(1, ScriptError::Subst(SubstError::Unterminated)))
+        );
+        // A raw newline inside the **replacement** is the other sentence: C meets
+        // it while still scanning the line it was given (`compile.c:542-544`).
         assert_eq!(
             parse_script("s/a/b\nc/"),
             Err(fail(1, ScriptError::Subst(SubstError::UnescapedNewline)))
@@ -906,12 +1088,43 @@ mod tests {
         // The same command closing on its own line, then a second on the next, is
         // two ordinary commands.
         assert_eq!(parse_script("s/a/b/\ns/c/d/").unwrap().len(), 2);
-        // An *escaped* newline keeps scanning: C stitches the next buffer onto the
-        // same field and drops the newline itself, while this build keeps both
-        // bytes in the field text — the difference is registered as
-        // `SED-ESCAPED-NEWLINE-CONTINUATION`, and what both agree on is that the
-        // command continues past the line break.
-        assert_eq!(parse_script("s/a\\\nb/x/").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_replacement_continuation_stitches_like_c() {
+        // `compile_subst`'s `sawesc` arm: a backslash closing the line drops the
+        // backslash **and** the newline, and the next line's first byte takes the
+        // escape's place (`compile.c:511-521`). The field is therefore no longer a
+        // slice of the script — the parser builds it.
+        let (subst, consumed) = parse_subst("/a/b\\\nc/", 1).unwrap();
+        assert_eq!(subst.pattern_text, "a");
+        assert_eq!(subst.replacement, "bc");
+        assert_eq!(consumed, 8);
+        // The quoted byte keeps the meanings it would have had behind a
+        // backslash: `&` stays a literal ampersand, a digit stays a group
+        // reference — C writes `\&` and `\1` into its buffer for exactly those
+        // two (`compile.c:519-530`), and a plain byte for everything else.
+        let (amp, _) = parse_subst("/a/\\\n&/", 1).unwrap();
+        assert_eq!(amp.replacement, "\\&");
+        let (digit, _) = parse_subst("/a/\\\n1/", 1).unwrap();
+        assert_eq!(digit.replacement, "\\1");
+        let (plain, _) = parse_subst("/a/\\\n./", 1).unwrap();
+        assert_eq!(plain.replacement, ".");
+        // The continued line may be empty: C copies its newline as data and goes
+        // on to the next line (`compile.c:521`), so the field carries it too.
+        let (empty, _) = parse_subst("/a/\\\n\nc/", 1).unwrap();
+        assert_eq!(empty.replacement, "\nc");
+    }
+
+    #[test]
+    fn test_a_continued_command_moves_the_line_counter() {
+        // C's `linenum` rises once per line read (`cu_fgets`), including the line
+        // a replacement was continued onto, so the command after it sits on the
+        // later line.
+        let cmds = parse_script("s/a/b\\\nc/;p").unwrap();
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].line, 1);
+        assert_eq!(cmds[1].line, 2);
     }
 
     #[test]
@@ -972,14 +1185,14 @@ mod tests {
     fn test_step_carries_the_c_print_rules() {
         let flagged = parse_script("s/a/b/p").unwrap();
         assert_eq!(flagged.len(), 1);
-        let with_flag = flagged[0].command;
+        let with_flag = &flagged[0].command;
         let plain = parse_script("s/a/b/").unwrap();
         assert_eq!(plain.len(), 1);
-        let without_flag = plain[0].command;
+        let without_flag = &plain[0].command;
         // The `p` flag prints only on a replacement (`substitute()` reaches its
         // `OUT()` only after one happened); nothing else about the command prints.
         assert_eq!(
-            step(&with_flag, true),
+            step(with_flag, true),
             CycleStep {
                 print_number: false,
                 print_line: true,
@@ -987,14 +1200,14 @@ mod tests {
             }
         );
         assert_eq!(
-            step(&with_flag, false),
+            step(with_flag, false),
             CycleStep {
                 print_number: false,
                 print_line: false,
                 ends_cycle: false,
             }
         );
-        assert!(!step(&without_flag, true).print_line);
+        assert!(!step(without_flag, true).print_line);
         // A bare `p` prints whatever stands in the space, and `=` prints the
         // number with no condition on quiet or deleted; `d` ends the cycle.
         assert!(step(&Command::Print, false).print_line);
@@ -1008,11 +1221,11 @@ mod tests {
         // recorded, and an empty pattern with nothing recorded yet.
         let cmds = parse_script("s/a/A/;s//B/").unwrap();
         assert_eq!(cmds.len(), 2);
-        let own_pattern = match cmds[0].command {
+        let own_pattern = match &cmds[0].command {
             Command::Subst(subst) => subst,
             _ => panic!("第一条该是 s"),
         };
-        let empty_pattern = match cmds[1].command {
+        let empty_pattern = match &cmds[1].command {
             Command::Subst(subst) => subst,
             _ => panic!("第二条该是 s"),
         };
@@ -1071,14 +1284,14 @@ mod tests {
         // print flag. A shell that stopped the run at the blank would refuse both.
         let spaced = parse_script("s/a/b/ g").unwrap();
         assert_eq!(spaced.len(), 1);
-        let Command::Subst(subst) = spaced[0].command else {
+        let Command::Subst(subst) = &spaced[0].command else {
             panic!("一条 s 命令都读不出来");
         };
         assert_eq!(subst.scope, SubstScope::Global);
         assert!(!subst.print);
         let printed = parse_script("s/a/b/ p;d").unwrap();
         assert_eq!(printed.len(), 2);
-        let Command::Subst(subst) = printed[0].command else {
+        let Command::Subst(subst) = &printed[0].command else {
             panic!("第一条该是 s");
         };
         assert!(subst.print);

@@ -34,6 +34,7 @@ use crate::addr::{
 use crate::cmd::{parse_command, Command, Modifiers};
 use crate::store::{TextStore, MAX_LINES, MAX_TEXT};
 use crate::EditorError;
+use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use minix_regex::sed::{apply as subst_apply, Subst, SubstScope};
 use minix_regex::pattern::compile_basic;
@@ -1963,7 +1964,7 @@ fn substitute_command<S: TextStore, I: EditorIo>(
     let compiled = compile_basic(pattern_text).map_err(|_| err("invalid pattern"))?;
     let template = Subst {
         pattern_text: "",
-        replacement: replacement_text,
+        replacement: Cow::Borrowed(replacement_text),
         scope,
         print: false,
     };

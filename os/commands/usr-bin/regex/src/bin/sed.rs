@@ -131,8 +131,8 @@ fn run() -> ! {
     // will land on is a fact about the run, not about the script text.
     let mut patterns: Vec<Pattern> = Vec::new();
     let mut program: Vec<Instruction<'_>> = Vec::new();
-    for scripted in commands {
-        let own = match scripted.command {
+    for scripted in &commands {
+        let own = match &scripted.command {
             Command::Subst(subst) => {
                 if subst.pattern_text.is_empty() {
                     None
@@ -142,7 +142,7 @@ fn run() -> ! {
                         Err(_) => bad_script(&prog),
                     };
                     if let Some(digit) =
-                        first_undefined_backref(subst.replacement, pattern.group_count)
+                        first_undefined_backref(subst.replacement.as_ref(), pattern.group_count)
                     {
                         backref_error(&prog, script, scripted.line, digit);
                     }
@@ -153,7 +153,7 @@ fn run() -> ! {
             _ => None,
         };
         program.push(Instruction {
-            command: scripted.command,
+            command: scripted.command.clone(),
             own,
             line: scripted.line,
         });
@@ -261,7 +261,7 @@ fn sed_lines(
         space.extend_from_slice(line.as_bytes());
         let mut deleted = false;
         for instruction in program {
-            let replaced = match instruction.command {
+            let replaced = match &instruction.command {
                 Command::Subst(subst) => {
                     let index = match pattern_choice(instruction.own, *defpreg) {
                         PatternChoice::Own(index) => index,
@@ -269,7 +269,7 @@ fn sed_lines(
                             // C reaches this test only while running the command,
                             // and it names `s->maxbref` rather than the first
                             // over-large digit (`process.c:384-391`).
-                            let largest = max_backref(subst.replacement);
+                            let largest = max_backref(subst.replacement.as_ref());
                             if largest > patterns[index].group_count {
                                 backref_error(prog, script, instruction.line, largest);
                             }
@@ -281,7 +281,7 @@ fn sed_lines(
                         PatternChoice::NoPrevious => first_re_empty(prog),
                     };
                     *defpreg = Some(index);
-                    let (len, replaced) = apply(&patterns[index], &subst, &space, scratch);
+                    let (len, replaced) = apply(&patterns[index], subst, &space, scratch);
                     space.clear();
                     space.extend_from_slice(&scratch[..len]);
                     replaced
@@ -363,6 +363,11 @@ fn compile_error(prog: &str, script: &str, failure: ParseFailure) -> ! {
             .extend_from_slice(b"substitute pattern can not be delimited by newline or backslash"),
         ScriptError::Subst(SubstError::Unterminated) => {
             line.extend_from_slice(b"unterminated substitute pattern");
+        }
+        // C names the replacement's arm differently from the pattern's
+        // (`compile.c:555-556`): the same reader, two sentences.
+        ScriptError::Subst(SubstError::UnterminatedReplacement) => {
+            line.extend_from_slice(b"unterminated substitute in regular expression");
         }
         ScriptError::Subst(SubstError::UnescapedNewline) => {
             line.extend_from_slice(b"unescaped newline inside substitute pattern");

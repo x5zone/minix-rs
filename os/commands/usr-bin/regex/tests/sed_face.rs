@@ -255,6 +255,54 @@ fn a_bare_dash_stays_an_operand_name() {
 }
 
 #[test]
+fn a_continued_replacement_joins_the_next_line() {
+    // A backslash closing the replacement's line drops the backslash and the
+    // newline, and the next line's first byte is taken as it was written there
+    // (`compile_subst`'s `sawesc` arm, `minix3/usr.bin/sed/compile.c:511-521`):
+    // `s/a/b\` + newline + `c/` replaces `a` with `bc`, not with `b` and not
+    // with a backslash in the text.
+    let script = "s/a/b\\\nc/";
+    let (out, status, err) = run(&[script], b"abc\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "bcbc\n",
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn a_pattern_continued_across_lines_is_unterminated() {
+    // The pattern half is `compile_delimited`, which reads one script line and
+    // cannot carry into the next (`compile.c:305-317`), so a backslash at the
+    // line's end leaves it without its delimiter and the caller prints
+    // `unterminated substitute pattern` (`:330-331`) — not the replacement's
+    // newline sentence.
+    let script = "s/a\\\nb/x/";
+    let (out, status, err) = run(&[script], b"ab\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        format!("sed: 1: \"{script}\": unterminated substitute pattern\n")
+    );
+}
+
+#[test]
+fn an_unterminated_replacement_has_its_own_sentence() {
+    // C names the replacement's arm differently from the pattern's
+    // (`compile.c:555-556`): `unterminated substitute in regular expression`.
+    let (out, status, err) = run(&["s/a/b"], b"ab\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "sed: 1: \"s/a/b\": unterminated substitute in regular expression\n"
+    );
+}
+
+#[test]
 fn a_chain_of_substitutions_composes_on_one_pattern_space() {
     // C walks the compiled command list per line (`process.c:113` `while (cp !=
     // NULL)`) and each `s` swaps its result into the same pattern space
@@ -501,7 +549,7 @@ fn a_compile_refusal_carries_the_line_and_the_script_name_as_c_prints_them() {
         ("Z", "sed: 1: \"Z\": invalid command code Z\n"),
         (
             "s/a/b",
-            "sed: 1: \"s/a/b\": unterminated substitute pattern\n",
+            "sed: 1: \"s/a/b\": unterminated substitute in regular expression\n",
         ),
         (
             "s\\a/b/",
@@ -550,7 +598,7 @@ fn a_script_too_long_for_the_name_slot_is_cut_where_c_cuts_it() {
     assert_eq!(status, 1);
     assert_eq!(
         String::from_utf8_lossy(&err),
-        "sed: 1: \"s/abcdefghijklmnopqrstu ...\": unterminated substitute pattern\n"
+        "sed: 1: \"s/abcdefghijklmnopqrstu ...\": unterminated substitute in regular expression\n"
     );
 }
 
@@ -654,8 +702,11 @@ fn an_unescaped_newline_inside_a_substitution_prints_c_s_own_line() {
     // name slot carries the whole script including the newline, as `fname` does.
     let cases = [
         (
+            // The **pattern** half runs out of its line, which is the pattern's
+            // own unterminated arm; only the replacement half has the newline
+            // sentence below (`compile.c:305-317` versus `:542-544`).
             "s/a\nb/x",
-            "sed: 1: \"s/a\nb/x\": unescaped newline inside substitute pattern\n",
+            "sed: 1: \"s/a\nb/x\": unterminated substitute pattern\n",
         ),
         (
             "s/a/b\nc",
