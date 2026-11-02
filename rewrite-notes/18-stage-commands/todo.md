@@ -119,6 +119,72 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十二（`sed` 的执行半接上：脚本是一条条命令编译出来的，不是在 `;` 上切开的一堆片段）
+
+- **这一笔的射程**：`sed` 壳里那条「一次只吃一个 `s`」的腿。库半早就有 `parse_script`
+  （`os/commands/usr-bin/regex/src/sed.rs:fn parse_script`）却没有任何生产者，壳自己写的是
+  「脚本不以 `s` 开头就回 `only s (substitute) scripts are modelled`，`s` 之后还有尾随字节就回
+  `chained commands are not modelled`」。这既是欠接线也是解析形状错：C 的
+  `compile_stream` 一次编译一条命令，命令自己按定界符数到哪里结束，所以 `;` 落在
+  `s/a;b/x/` 的图案里时它是图案文本，不是分隔符（`compile.c:480-490` 的 `compile_subst`
+  只认定界符）。
+- **解析半按 C 的编译环重写**：`semicolon:` 先吃掉空白，再吞掉多余的分隔符，遇到 `#` 就丢掉
+  **本行**其余部分（`compile.c:177-184` 的 `continue` 是回读下一行，不是跳过这一段）；命令读完
+  之后吃空格与制表符，然后必须撞上分隔符、行尾或脚本尾，否则按未建模拒绝——C 在那里是
+  `errx` 的「extra characters at the end of %c command」与 `compile_flags` 的「bad flag」，
+  两支都是当场致命。行尾也当分隔符，因为 C 本来就是把脚本一行一行喂进编译器。
+- **打印规则抽成纯函数**：`step`（一条命令对本周期贡献什么）与 `auto_print`（周期尾那句自动
+  打印）。四条形体各回 C 的一处臂：`d` 立 `pd` 并跳出命令环（`process.c:142-144`）、裸 `p`
+  印当前模式空间（`process.c:191-194`）、`=` 印行号且**既不查 `-n` 也不查 `pd`**
+  （`process.c:264-265`）、`s` 的 `p` 标志只在真替换过才印且不看 `-n`（`process.c:466-467`），
+  最后 `new:` 的 `if (!nflag && !pd) OUT()`（`process.c:269-270`）。规则做成纯函数不是省事：
+  宿主那侧 `minix_sys` 的时间/读通道是替身，把次序与条件留在壳里就只能靠起进程才能核对。
+- **模式空间改按字节承载**：`apply` 的输入从 `&str` 换成 `&[u8]`。链上每条命令要把前一条的输出
+  接着喂进去，C 的 `SPACE` 本就是字节缓冲（`ps` 加 `psl`）；若继续用 `&str`，两条命令之间必须
+  重解码，而一次截在半字符上的替换结果会让整行变成空串。引擎内部一直是字节向的
+  （`Pattern::find_bytes`），这一步只是让载体不再假装相反。
+- **门**：库内新立七枚——`test_semicolon_inside_a_substitution_does_not_split`、
+  `test_separator_chain_swallows_blanks_and_doubled_separators`、
+  `test_comment_ends_the_line_it_sits_on`、`test_quiet_directive_reads_only_the_script_start`、
+  `test_step_carries_the_c_print_rules`、`test_auto_print_needs_both_conditions`、
+  `test_flag_after_a_space_is_a_known_divergence`；面门 `os/commands/usr-bin/regex/tests/sed_face.rs`
+  从六枚扩到十四枚，新增的八枚是 `a_chain_of_substitutions_composes_on_one_pattern_space`、
+  `a_separator_inside_a_pattern_is_pattern_text`、`the_p_flag_prints_again_on_top_of_the_automatic_print`、
+  `delete_ends_the_cycle_and_suppresses_the_automatic_print`、
+  `a_print_command_emits_under_quiet_and_a_number_command_counts_across_operands`、
+  `separators_and_comments_follow_the_compile_loop`、`a_number_line_at_the_script_start_switches_to_quiet`、
+  `addresses_and_other_verbs_are_refused_loudly`。差分腿量了十三形（链、`s///p` 的双印、`-n` 形、
+  `d`、`p`、`=`、`s/a/A/;d`、`p;d`、`-n p`、分号在图案内、`p;#x;d`、`#n` 换行、`p` 换行 `d`），
+  与宿主自带 `sed` 的输出逐字节同形且退码相同；`sed` 参照件本树没建，C 侧判据全部回到
+  `compile.c`/`process.c`/`main.c` 的行号（上面十二组）。
+- **`#n` 是注释也是开关**：`cu_fgets` 测脚本串的头两个字节（`main.c:286-287`），所以
+  `#n;s/a/A/p` 写在一行时**整行**被注释吃掉（脚本编译出零条形体，于是什么都不做），写成 `#n` 换行再接命令才既是注释
+  又是静默开关——两形都进了面门。
+- **读数**：宿主整包 6 段 **80 / 0**，容器权威门同读数退 0
+  （`tmp/sed-script-chain/container.log`），三架构 `--bins` 各退 0
+  （`tmp/sed-chain/arch-*.log`）。`rustfmt --edition 2024 --check`：库半与面门本轮新写代码零漂移，
+  `bin/sed.rs` 的基线一处漂移正好落在本轮重写的 import 行上、随之归零。负控三枚各咬：N1（自动打印
+  忘掉 `!pd`）红 3、N2（`p` 标志不看替换是否发生）红 4、N3（回到先按 `;` 切开）红 2，还原复跑
+  80/0（`python3 tmp/sed-chain/negctl.py`）。
+- **本轮两处自错，都按真源改正**：① 期望写错——以为 `"p\n#x;d"` 是两条命令，实际 C 的 `continue`
+  回读下一行，那个 `d` 已经跟着注释丢掉，改成 `"p\n#x;\nd"` 并在门里注明为什么前一形是错的；
+  ② 报文走错通道——照搬旧代码的 `support::emit` 把两条拒绝句打到标准输出，而 C 的 `errx` 经
+  `minix3/lib/libc/gen/verrx.c:57` 写标准错误，本轮搬过去；改后的读数是 `sed 1d` 把报文交回标准错误、
+  标准输出零字节、退 1。
+- **本轮新立、登记不执行**：`SED-FLAG-SPACE-EXTENSION`——C 的 `compile_flags` 在循环顶就
+  `EATSPACE()`（`compile.c:576` 自己标了 EXTENSION），所以 `s/a/b/ p` 在那侧是设上 `p` 标志，
+  本壳在空格处停住标志串、再把尾随字母判成未建模；`SED-USAGE-STREAM-AND-TEXT`——缺脚本时那句
+  `usage: sed [-n] script [file ...]` 仍在标准输出，而 C 的 `usage()` 写标准错误且文本是
+  `main.c:223-229` 那两行 `Usage:  %s [-aElnru] command [file ...]`（程序名取 `getprogname()`）；
+  `SED-SCRIPT-CAP-16`——一支脚本最多 `MAX_SCRIPT_COMMANDS` 条形体，C 边编译边挂链表没有上限。
+- **在册变化**：08 篇的 sed 行按实况改写（`;` 链与 `d`/`p`/`=` 已接线，未建模剩下地址与其余动词），
+  §「尚未覆盖」那句里 `sed` 的 `;` 链一并改口径。
+- **三件套**：`python3 tmp/sed-chain/negctl.py`、`cargo test -p minix-regex`
+  （`tmp/sed-chain/pkg.log`、`tmp/sed-script-chain/container.log`）、`cat tmp/sed-chain/arch-*.log`；
+  核实日 `2026-11-02`，基线快照 `692172ea3`。
+
+---
+
 ## 批次四百八十一（`sed`/`grep` 的输入腿只有系统调用一个载体：宿主上标准输入读到空、文件操作数一律打不开）
 
 - **这一笔的射程**：`os/commands/usr-bin/regex/src/bin_support.rs` 的两条输入腿——`read_stdin`
