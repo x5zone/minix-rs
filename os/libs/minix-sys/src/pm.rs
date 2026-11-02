@@ -276,7 +276,13 @@ pub fn setuid_via(transport: &impl IpcTransport, uid: u32) -> Result<(), Errno> 
         )
     };
     crate::syscall::write_payload(&mut message, bytes);
-    perform_taskcall(transport, pm_endpoint(), minix_types::PM_SETUID, &mut message).map(|_| ())
+    perform_taskcall(
+        transport,
+        pm_endpoint(),
+        minix_types::PM_SETUID,
+        &mut message,
+    )
+    .map(|_| ())
 }
 
 /// Sends a signal to a process.
@@ -344,12 +350,8 @@ pub fn sigaction_via(
     message.m_u.m_lc_pm_sig = minix_types::MessLcPmSig {
         pid: 0,
         nr: signo,
-        act: act
-            .map(|a| a as *const SigActionWire as u64)
-            .unwrap_or(0),
-        oact: oact
-            .map(|o| o as *mut SigActionWire as u64)
-            .unwrap_or(0),
+        act: act.map(|a| a as *const SigActionWire as u64).unwrap_or(0),
+        oact: oact.map(|o| o as *mut SigActionWire as u64).unwrap_or(0),
         ret: sigreturn,
         _padding: [0; 24],
     };
@@ -421,7 +423,13 @@ pub fn sigreturn_via(transport: &impl IpcTransport, ctx: u64) -> Result<(), Errn
         set: [0; 4],
         _padding: [0; 24],
     };
-    perform_syscall(transport, pm_endpoint(), minix_types::PM_SIGRETURN, &mut message).map(|_| ())
+    perform_syscall(
+        transport,
+        pm_endpoint(),
+        minix_types::PM_SIGRETURN,
+        &mut message,
+    )
+    .map(|_| ())
 }
 
 /// Read the pending signal set (C: `do_sigpending`, pm/signal.c:88-97; reply
@@ -512,11 +520,7 @@ pub const PRIO_MIN: i32 = -20;
 /// `PRIO_MIN` (C `misc.c:266` `mp_nice - PRIO_MIN`, so 0..=40 on
 /// success); the C libc correction `v + PRIO_MIN` back to -20..=19
 /// happens here, in the same layer C puts it.
-pub fn getpriority_via(
-    transport: &impl IpcTransport,
-    which: i32,
-    who: i32,
-) -> Result<i32, Errno> {
+pub fn getpriority_via(transport: &impl IpcTransport, which: i32, who: i32) -> Result<i32, Errno> {
     let mut message = crate::syscall::cleared_message();
     // SAFETY: lanes follow `mess_lc_pm_priority` field order; the
     // server's GetPriority arm decodes which@0, who@4 (prio unused).
@@ -742,6 +746,38 @@ pub fn stime_via(transport: &impl IpcTransport, seconds: i64) -> Result<(), Errn
     .map(|_| ())
 }
 
+/// Sets the real-time clock (C: `clock_settime`,
+/// `minix3/minix/lib/libc/sys/clock_settime.c:11-27` — `_syscall(PM_PROC_NR,
+/// PM_CLOCK_SETTIME, &m)` with `mess_lc_pm_time`: `now = 1` (absolute set,
+/// not the adjtime method), the clock id, seconds, and nanoseconds. The
+/// only clock id the manager accepts is `CLOCK_REALTIME`.
+pub fn clock_settime_via(
+    transport: &impl IpcTransport,
+    clk_id: i32,
+    sec: u64,
+    nsec: i64,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: the payload is `mess_lc_pm_time` (ipc.h:574-583): `sec`
+    // (time_t) at 0, `clk_id` (clockid_t) at 8, `now` (int) at 12, and
+    // `nsec` (long) at 16 — the lanes PM's decoder reads (os/servers/pm
+    // `decode.rs`, the same overlay `gettimeofday_via` reads its reply
+    // through).
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&sec.to_ne_bytes());
+        message.m_u.raw[8..12].copy_from_slice(&clk_id.to_ne_bytes());
+        message.m_u.raw[12..16].copy_from_slice(&1i32.to_ne_bytes());
+        message.m_u.raw[16..24].copy_from_slice(&nsec.to_ne_bytes());
+    }
+    perform_syscall(
+        transport,
+        pm_endpoint(),
+        minix_types::PM_CLOCK_SETTIME,
+        &mut message,
+    )
+    .map(|_| ())
+}
+
 /// Starts a system service with dropped privileges (server-side call).
 ///
 /// C: `srv_fork` (`minix3/minix/lib/libsys/srv_fork.c:5-14`): clear a
@@ -870,7 +906,12 @@ pub fn exec_restart_via(
         ps_str,
         _padding: [0; 32],
     };
-    let reply = perform_taskcall(transport, pm_endpoint(), minix_types::PM_EXEC_RESTART, &mut message)?;
+    let reply = perform_taskcall(
+        transport,
+        pm_endpoint(),
+        minix_types::PM_EXEC_RESTART,
+        &mut message,
+    )?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -1199,10 +1240,7 @@ mod tests {
         reply.m_type = -1;
         transport.reply_sendrec(Ok(reply));
         // A reply type of -1 means error 1 through the taskcall mapping.
-        assert_eq!(
-            service_kill_via(&transport, 9, 15),
-            Err(Errno::from_i32(1))
-        );
+        assert_eq!(service_kill_via(&transport, 9, 15), Err(Errno::from_i32(1)));
     }
 
     #[test]
@@ -1225,9 +1263,15 @@ mod tests {
         };
         assert_eq!(u64::from_ne_bytes(bytes[0..8].try_into().unwrap()), 0x1000);
         assert_eq!(u64::from_ne_bytes(bytes[8..16].try_into().unwrap()), 10);
-        assert_eq!(u64::from_ne_bytes(bytes[16..24].try_into().unwrap()), 0x2000);
+        assert_eq!(
+            u64::from_ne_bytes(bytes[16..24].try_into().unwrap()),
+            0x2000
+        );
         assert_eq!(u64::from_ne_bytes(bytes[24..32].try_into().unwrap()), 128);
-        assert_eq!(u64::from_ne_bytes(bytes[32..40].try_into().unwrap()), 0x3000);
+        assert_eq!(
+            u64::from_ne_bytes(bytes[32..40].try_into().unwrap()),
+            0x3000
+        );
     }
 }
 
@@ -1258,7 +1302,11 @@ mod pm_service_tests {
         // SAFETY: construct the reply arm.
         unsafe {
             reply.m_u.m_pm_lsys_getepinfo = minix_types::ipc::MessPmLsysGetepinfo {
-                uid: 999, euid: 1000, gid: 100, egid: 101, ngroups: 0,
+                uid: 999,
+                euid: 1000,
+                gid: 100,
+                egid: 101,
+                ngroups: 0,
                 _padding: [0; 36],
             };
         }
@@ -1330,7 +1378,11 @@ mod pm_service_tests {
         // SAFETY: construct the reply arm.
         unsafe {
             reply.m_u.m_pm_lsys_getepinfo = minix_types::ipc::MessPmLsysGetepinfo {
-                uid: 999, euid: 1000, gid: 100, egid: 101, ngroups: 0,
+                uid: 999,
+                euid: 1000,
+                gid: 100,
+                egid: 101,
+                ngroups: 0,
                 _padding: [0; 36],
             };
         }
@@ -1338,9 +1390,7 @@ mod pm_service_tests {
         let egid = getngid_via(&transport, Endpoint(9)).unwrap();
         assert_eq!(egid, 101);
     }
-
 }
-
 
 // ── proceventmask client + getngid narrow helper ──
 
@@ -1350,11 +1400,17 @@ mod pm_service_tests {
 /// taskcall assembly, and ipc-server `events.rs`'s SyncAction (subscribe/
 /// unsubscribe) rides on it.
 pub fn proceventmask_via(transport: &impl IpcTransport, mask: u32) -> Result<u32, Errno> {
-    let mut message = minix_types::ipc::proceventmask_msg(
-        minix_types::ProcEventMask::from_bits_truncate(mask),
-    );
-    let reply = perform_taskcall(transport, pm_endpoint(), minix_types::PM_PROCEVENTMASK, &mut message)?;
-    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    let mut message =
+        minix_types::ipc::proceventmask_msg(minix_types::ProcEventMask::from_bits_truncate(mask));
+    let reply = perform_taskcall(
+        transport,
+        pm_endpoint(),
+        minix_types::PM_PROCEVENTMASK,
+        &mut message,
+    )?;
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
     Ok(reply as u32)
 }
 
@@ -1385,8 +1441,15 @@ pub fn sched_start_via(
         quantum,
         _padding: [0; 40],
     };
-    let reply = perform_taskcall(transport, scheduler, minix_types::SCHEDULING_START, &mut message)?;
-    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    let reply = perform_taskcall(
+        transport,
+        scheduler,
+        minix_types::SCHEDULING_START,
+        &mut message,
+    )?;
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
     Ok(())
 }
 
@@ -1401,8 +1464,15 @@ pub fn sched_stop_via(
         endpoint: endpoint.0,
         _padding: [0; 52],
     };
-    let reply = perform_taskcall(transport, scheduler, minix_types::SCHEDULING_STOP, &mut message)?;
-    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    let reply = perform_taskcall(
+        transport,
+        scheduler,
+        minix_types::SCHEDULING_STOP,
+        &mut message,
+    )?;
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
     Ok(())
 }
 
@@ -1469,10 +1539,19 @@ mod itimer_wire_tests {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
         let timer = ItimervalWire {
-            it_interval: TimevalWire { tv_sec: 0, tv_usec: 0 },
-            it_value: TimevalWire { tv_sec: 30, tv_usec: 0 },
+            it_interval: TimevalWire {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            it_value: TimevalWire {
+                tv_sec: 30,
+                tv_usec: 0,
+            },
         };
-        assert_eq!(setitimer_via(&transport, ITIMER_REAL, Some(&timer), None), Ok(()));
+        assert_eq!(
+            setitimer_via(&transport, ITIMER_REAL, Some(&timer), None),
+            Ok(())
+        );
         let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(dest, pm_endpoint());
         assert_eq!(sent.m_type, PM_CALL_ITIMER);
@@ -1522,7 +1601,10 @@ mod gettimeofday_wire_tests {
             reply.m_u.raw[8..16].copy_from_slice(&123_456_789i64.to_ne_bytes());
         }
         transport.reply_sendrec(Ok(reply));
-        assert_eq!(gettimeofday_via(&transport), Ok((1_700_000_000, 123_456_789)));
+        assert_eq!(
+            gettimeofday_via(&transport),
+            Ok((1_700_000_000, 123_456_789))
+        );
         let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(dest, pm_endpoint());
         assert_eq!(sent.m_type, PM_CALL_GETTIMEOFDAY);
@@ -1553,8 +1635,8 @@ mod gettimeofday_wire_tests {
 #[cfg(test)]
 mod pm_identity_wire_tests {
     use super::*;
-    use alloc::{vec, vec::Vec};
     use crate::ipc::CannedTransport;
+    use alloc::{vec, vec::Vec};
     use minix_types::Message;
 
     fn reply_with_type(message_type: i32) -> Message {

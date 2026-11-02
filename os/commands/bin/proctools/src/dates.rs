@@ -80,6 +80,7 @@ pub struct BrokenTime {
 }
 
 /// True for a proleptic-Gregorian leap `year`.
+#[allow(clippy::manual_is_multiple_of)] // the suggested method is not stable for i64 on this toolchain
 fn is_leap(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
@@ -108,6 +109,154 @@ pub fn breakdown(epoch: i64) -> BrokenTime {
         weekday,
         yearday,
     }
+}
+
+/// A rejected canonical-time operand (`date`'s set form). The payload is
+/// C's `badcanotime` record (`date.c:174-182`): the sentence, and the byte
+/// offset the caret points at; the caller prints the three lines (`<msg> in
+/// canonical time` / the operand / the caret), then the usage line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BadCanonicalTime {
+    /// C's sentence fragment (e.g. `"Month out of range"`).
+    pub message: &'static str,
+    /// The `where` argument C hands `badcanotime` — the caret column seed.
+    pub caret: usize,
+}
+
+/// ATOI2 (`date.c:180-181`): two ASCII digits starting at `s`.
+fn atoi2(bytes: &[u8], s: usize) -> i64 {
+    ((bytes[s] - b'0') * 10 + (bytes[s + 1] - b'0')) as i64
+}
+
+/// C's `setthetime` (`date.c:185-331`): parse the canonical operand over the
+/// base time's fields and return the new epoch second.
+///
+/// The digit count selects the first case of C's fallthrough chain and every
+/// later case runs too, filling fields from the left over the base
+/// (`localtime(&tval)`): 12 = CCYYMMDDhhmm, 10 = YYMMDDhhmm (`yy < 69` is
+/// 20xx), 8 = MMDDhhmm, 6 = DDhhmm, 4 = hhmm, 2 = mm; an optional `.ss` tail
+/// sets seconds (exactly two digits, 00-61 accepted). Every rejection
+/// carries C's sentence and caret seed. This layer is UTC — the registered
+/// no-timezone stance of the whole `date` face — so the compose is the UTC
+/// `mktime`; Minix with no timezone set runs UTC, and `-u` being a faithful
+/// no-op pins the same stance.
+pub fn set_the_time(operand: &[u8], base_epoch: i64) -> Result<i64, BadCanonicalTime> {
+    use crate::stamp::days_from_civil;
+    const TM_YEAR_BASE: i64 = 1900;
+    let bad = |message: &'static str, caret: usize| BadCanonicalTime { message, caret };
+    // Scan: digits only, at most one dot (`date.c:194-204`).
+    let mut dot: Option<usize> = None;
+    for (i, &byte) in operand.iter().enumerate() {
+        if byte == b'.' {
+            if dot.is_some() {
+                return Err(bad("Unexpected dot", i));
+            }
+            dot = Some(i);
+        } else if !byte.is_ascii_digit() {
+            return Err(bad("Expected digit", i));
+        }
+    }
+    let base = breakdown(base_epoch);
+    let mut year = base.year;
+    let mut month = base.month as i64;
+    let mut day = base.day as i64;
+    let mut hour = base.hour as i64;
+    let mut minute = base.minute as i64;
+    let mut second: i64 = 0;
+    let mut tail_len: usize = 0;
+    if let Some(dot_at) = dot {
+        let len = operand.len() - dot_at; // strlen(dot), the dot included
+        if len > 3 {
+            return Err(bad(
+                "Unexpected digit after seconds field",
+                operand.len() - 1,
+            ));
+        } else if len < 3 {
+            return Err(bad("Expected digit in seconds field", operand.len()));
+        }
+        second = atoi2(operand, dot_at + 1);
+        if second > 61 {
+            return Err(bad("Seconds out of range", operand.len() - 1));
+        }
+        tail_len = len;
+    }
+    let digits = operand.len() - tail_len;
+    let mut at: usize = 0;
+    if digits > 12 {
+        return Err(bad("Too many digits", 12));
+    }
+    if digits == 0 {
+        if tail_len == 0 {
+            return Err(bad("Not enough digits", 0));
+        }
+        // `.ss` alone: only seconds move (`date.c:311-314`).
+        return Ok(days_from_civil(year, month as u32, day as u32) * 86_400
+            + hour * 3_600
+            + minute * 60
+            + second);
+    }
+    if !digits.is_multiple_of(2) {
+        return Err(bad("Not enough digits", digits));
+    }
+    if digits >= 12 {
+        // CCYY: two century digits, then the year within the century.
+        let cc = atoi2(operand, at);
+        at += 2;
+        // C works in years-since-1900 and checks `tm_year < 0`; this layer
+        // keeps the real year, so the check is `cc * 100 < 1900` and the
+        // compose is the plain century plus the in-century pair.
+        if cc * 100 < TM_YEAR_BASE {
+            return Err(bad("Year before 1900", at + 1));
+        }
+        year = cc * 100 + atoi2(operand, at);
+        at += 2;
+    } else if digits >= 10 {
+        // YY alone: 69 is the pivot into the 2000s (`date.c:242-248`).
+        let yy = atoi2(operand, at);
+        at += 2;
+        year = if yy < 69 { yy + 2000 } else { yy + 1900 };
+    }
+    if digits >= 8 {
+        let m = atoi2(operand, at);
+        at += 2;
+        if m > 12 || m == 0 {
+            return Err(bad("Month out of range", at - 1));
+        }
+        month = m;
+    }
+    if digits >= 6 {
+        let d = atoi2(operand, at);
+        at += 2;
+        let max = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => (31, "Day out of range (max 31)"),
+            4 | 6 | 9 | 11 => (30, "Day out of range (max 30)"),
+            2 if is_leap(year) => (29, "Day out of range (max 29)"),
+            2 => (28, "Day out of range (max 28)"),
+            _ => unreachable!("month validated above"),
+        };
+        if d > max.0 || d == 0 {
+            return Err(bad(max.1, at - 1));
+        }
+        day = d;
+    }
+    if digits >= 4 {
+        let h = atoi2(operand, at);
+        at += 2;
+        if h > 23 {
+            return Err(bad("Hour out of range", at - 1));
+        }
+        hour = h;
+    }
+    // The final pair is always the minute (2-digit operands are mm-only).
+    let m = atoi2(operand, at);
+    if m > 59 {
+        return Err(bad("Minute out of range", operand.len() - tail_len - 1));
+    }
+    minute = m;
+    Ok(days_from_civil(year, month as u32, day as u32) * 86_400
+        + hour * 3_600
+        + minute * 60
+        + second)
 }
 
 /// Render `time` through a `strftime` subset into `out`, returning the byte
@@ -307,6 +456,108 @@ impl<'a> Sink<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Fixed base: 2024-03-15 09:00:30 UTC (leap year, minute 0, second 30).
+    const BASE: i64 = 1_710_493_230;
+
+    #[test]
+    fn two_digits_sets_only_the_minute() {
+        // "45" over 09:00:30 → 09:45:00: the no-dot form resets seconds to 0.
+        let b = breakdown(BASE);
+        assert_eq!(
+            set_the_time(b"45", BASE).unwrap(),
+            BASE - b.minute as i64 * 60 - b.second as i64 + 45 * 60
+        );
+    }
+
+    #[test]
+    fn four_digits_set_hour_and_minute() {
+        // "0830" → 08:30:00 the same day.
+        let b = breakdown(BASE);
+        assert_eq!(
+            set_the_time(b"0830", BASE).unwrap(),
+            BASE - b.hour as i64 * 3_600 - b.minute as i64 * 60 - b.second as i64
+                + 8 * 3_600
+                + 30 * 60
+        );
+    }
+
+    #[test]
+    fn six_digits_set_day_hour_and_minute() {
+        // "200830" → day 20, 08:30:00 of the base month (month stays).
+        let got = set_the_time(b"200830", BASE).unwrap();
+        let t = breakdown(got);
+        assert_eq!((t.day, t.hour, t.minute, t.month), (20, 8, 30, 3));
+    }
+
+    #[test]
+    fn ten_digits_use_the_69_pivot() {
+        // The pivot is `< 69`: "68…" lands in the 2000s, "69…"/"70…" in the
+        // 1900s (`date.c:242-248`).
+        let got = set_the_time(b"6812312359", BASE).unwrap();
+        assert_eq!(breakdown(got).year, 2068);
+        let got = set_the_time(b"6912312359", BASE).unwrap();
+        assert_eq!(breakdown(got).year, 1969);
+        let got = set_the_time(b"7012312359", BASE).unwrap();
+        assert_eq!(breakdown(got).year, 1970);
+    }
+
+    #[test]
+    fn twelve_digits_set_the_century_too() {
+        let got = set_the_time(b"203001020304", BASE).unwrap();
+        let t = breakdown(got);
+        assert_eq!(
+            (t.year, t.month, t.day, t.hour, t.minute, t.second),
+            (2030, 1, 2, 3, 4, 0)
+        );
+    }
+
+    #[test]
+    fn a_dot_tail_sets_seconds_alone() {
+        // ".55" over 09:00:30 → 09:00:55.
+        assert_eq!(set_the_time(b".55", BASE).unwrap(), BASE + 25);
+    }
+
+    #[test]
+    fn february_days_follow_the_leap_rule() {
+        // Base 2024 (leap): 0229 valid; a 2023 base rejects it.
+        assert!(set_the_time(b"02291030", BASE).is_ok());
+        let y2023 = BASE - 366 * 86_400; // 2023-03-15 09:00:30
+        assert_eq!(
+            set_the_time(b"02291030", y2023).err().map(|e| e.message),
+            Some("Day out of range (max 28)")
+        );
+    }
+
+    #[test]
+    fn rejections_carry_c_sentences_and_caret_seeds() {
+        // Month is only read from the eighth digit on, so the eight-digit
+        // form carries the month rejection; the caret sits under the second
+        // month digit (C's `p - op - 1`).
+        let e = set_the_time(b"13101530", BASE).unwrap_err();
+        assert_eq!((e.message, e.caret), ("Month out of range", 1));
+        // Minute 60: caret under the second minute digit.
+        let e = set_the_time(b"2360", BASE).unwrap_err();
+        assert_eq!((e.message, e.caret), ("Minute out of range", 3));
+        // Seconds 62 in the dot tail.
+        let e = set_the_time(b"1030.62", BASE).unwrap_err();
+        assert_eq!(e.message, "Seconds out of range");
+        // Odd digit count, overflow, and a non-digit byte.
+        assert_eq!(
+            set_the_time(b"123", BASE).err().map(|e| e.message),
+            Some("Not enough digits")
+        );
+        assert_eq!(
+            set_the_time(b"1234567890123", BASE)
+                .err()
+                .map(|e| e.message),
+            Some("Too many digits")
+        );
+        assert_eq!(
+            set_the_time(b"12x0", BASE).err().map(|e| e.message),
+            Some("Expected digit")
+        );
+    }
     use super::*;
 
     fn rendered(fmt: &str, epoch: i64) -> String {

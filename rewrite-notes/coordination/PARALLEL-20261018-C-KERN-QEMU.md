@@ -252,6 +252,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `WTF-REG`：零代码改动——跨板裁决 §2.5 验收收口：镜像 `/bin` 播种清单与 rc grep 三程序零命中（whatis 源码在树未入镜像；pkg_info/make 无源码），C 脚本无三程序环境的终点=本地查 +「I don't know」退 1 与本壳逐字一致（wtf_face 两钉）；触发条件维持裁决登记 —— `✅`
 - `2026-11-03` A / `VM24-EVIDENCE`：改 `rewrite-notes/02-stage-vm/todo.md` §20 的暖启动条目行（A 板领地）——跨板裁决 §1b.4 最高优先级补证（2.4 VM 跨重启）落证：机制更正（`is_first_time()` 查内核进程表 RS 旗标`RTS_BOOTINHIBIT`，非 BSS 全局；旗标链 kernel main.c:266 置/do_vmctl.c:167 清，Rust 同链已在）+ 三情形结论（①对象重建=静态承载成立 ②live-update 形=段搬运承载、机制未建前不可达 ③崩溃重执行=C 本身无可 用语义，响亮拒绝即 C 对位）；静态存储等价性对 ①② 成立；实施仍挂 [ARCH] 裁决 —— `✅`
 - `2026-11-03` A / `C57-MFS-PROBE`：改 `os/fs/mfs/src/main.rs`（A 板领地）——C-57 取证前置：MFS 出生探针改栈装配（B 板判明的「唯一 `.rodata` 越过 8 MiB 根盘的模块 + 尾页异常」面），下次真机窗一行判别：打出=损坏收敛`.rodata` 尾页、不打=更深；门=fs-mfs lib 178/0 + none 构建绿 —— `✅`
+- `2026-11-03` A / `DATE-SETCLOCK`：改 `os/commands/bin/proctools/src/{dates.rs,stamp.rs,bin/date.rs}`、`tests/date_face.rs`（A 板领地）+ `os/libs/minix-sys/src/{pm.rs,lib.rs}`（B 板领地，跨界登记本行）——date 设钟腿接通：C setthetime fallthrough 链转写（badcanotime 三行+usage 逐字）、days_from_civil 逆变换、PM_CLOCK_SETTIME 客户端 clock_settime_via + 顶层 clock_settime；-j/-a 语义照 C；门=proctools lib 94/0 + date_face 2/0 + minix-sys 342/0 + none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

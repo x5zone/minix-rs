@@ -13,12 +13,13 @@
 //! and a `+FORMAT` operand. `-d DATE` declines exactly as Minix's own
 //! `__minix` build does (`date.c:100-103` always errors on it).
 //!
-//! Declared residual: the *set-the-time* path (`date operand` needs
-//! `settimeofday`/`adjtime` plus wtmp/syslog accounting, `date.c:337-357`)
-//! has no client wrapper yet, so an operand that would mutate the clock
-//! reports an error and exits 1 rather than pretending to set the time.
-//! Tracked in 12-process-tools.md §5 and the real-machine half of the
-//! command face in the coordination ledger.
+//! Wired: the *set-the-time* path — a canonical operand
+//! (`[[[[[[CC]yy]mm]dd]HH]MM[.SS]`, C `setthetime`, `date.c:185-331`)
+//! composes over the current fields and calls `clock_settime(CLOCK_REALTIME)`
+//! (the PM absolute-set call, `clock_settime.c:11-27`); `-j` interprets the
+//! operand without setting. Declared residual: `-a`'s gradual-adjust leg
+//! (`adjtime`, `date.c:346-350`) and the wtmp/syslog accounting lines — an
+//! operand with `-a` declines by name instead of pretending to adjust.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -29,7 +30,7 @@ mod support;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use minix_proctools::dates::{breakdown, format};
+use minix_proctools::dates::{BadCanonicalTime, breakdown, format, set_the_time};
 use minix_sys::write;
 
 const STDERR: i32 = 2;
@@ -44,9 +45,7 @@ fn fail(message: &str) -> ! {
 /// True for a bare negative integer operand (`-123`), which is a value, not
 /// a flag cluster. A lone `-` is neither (treated as an operand by C).
 fn is_negative_number(arg: &str) -> bool {
-    arg.len() > 1
-        && arg.as_bytes()[0] == b'-'
-        && arg.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    arg.len() > 1 && arg.as_bytes()[0] == b'-' && arg.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
 /// The whole program body; both `main` forms call it and it never returns.
@@ -55,6 +54,8 @@ fn run() -> ! {
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
 
     let mut given_epoch: Option<i64> = None;
+    let mut jflag = false;
+    let mut aflag = false;
     let mut format_operand: Option<&str> = None;
     let mut set_operand: Option<&str> = None;
 
@@ -63,13 +64,14 @@ fn run() -> ! {
         let arg = args[i];
         // A flag run begins with `-` but is not a negative number and not a
         // lone `-`.
-        let is_option =
-            arg.len() > 1 && arg.as_bytes()[0] == b'-' && !is_negative_number(arg);
+        let is_option = arg.len() > 1 && arg.as_bytes()[0] == b'-' && !is_negative_number(arg);
         if is_option {
             let mut chars = arg[1..].chars();
             while let Some(c) = chars.next() {
                 match c {
-                    'u' | 'j' | 'n' | 'a' => {}
+                    'u' | 'n' => {}
+                    'j' => jflag = true,
+                    'a' => aflag = true,
                     'r' => {
                         // `-r` takes the remaining cluster text or the next
                         // token as its value (getopt's `-rVAL` / `-r VAL`).
@@ -102,15 +104,64 @@ fn run() -> ! {
         i += 1;
     }
 
-    // A set operand mutates the clock — needs settimeofday (no wrapper yet).
-    if set_operand.is_some() {
-        fail("date: setting the clock is not wired (settimeofday pending)");
-    }
-
     let epoch = match given_epoch {
         Some(v) => v,
         None => minix_sys::gettimeofday().map(|(secs, _)| secs).unwrap_or(0),
     };
+
+    if let Some(operand) = set_operand {
+        // C's `setthetime` composes over `localtime(&tval)` — the displayed
+        // time source, which `-r` also steers (`date.c:206`).
+        let new_time = match set_the_time(operand.as_bytes(), epoch) {
+            Ok(v) => v,
+            Err(BadCanonicalTime { message, caret }) => {
+                // C's `badcanotime` (`date.c:174-182`): sentence, operand,
+                // caret column, then usage — all to stderr, exit 1.
+                let mut out: Vec<u8> = Vec::new();
+                out.extend_from_slice(b"date: ");
+                out.extend_from_slice(message.as_bytes());
+                out.extend_from_slice(b" in canonical time\n");
+                out.extend_from_slice(operand.as_bytes());
+                out.push(b'\n');
+                out.resize(out.len() + caret, b' ');
+                out.push(b'^');
+                out.push(b'\n');
+                out.extend_from_slice(
+                    b"Usage: date [-ajnu] [-d date] [-r seconds] [+format] [[[[[[CC]yy]mm]dd]HH]MM[.SS]]\n",
+                );
+                // The hosted stderr twin — the raw `write` leg is the
+                // none-target face only.
+                support::warn(&out);
+                support::terminate(1);
+            }
+        };
+        if jflag {
+            // `-j`: interpret without setting (`date.c:330-333`).
+            display(new_time, format_operand);
+        }
+        if aflag {
+            // The gradual-adjust leg is `adjtime` — still unwired.
+            fail("date: -a adjust is not wired (adjtime pending)");
+        }
+        // The absolute set: `clock_settime(CLOCK_REALTIME, {new_time, 0})`
+        // (`date.c:351-354`; the PM call is the same one `settimeofday`
+        // makes). The failure sentence is C's `err(EXIT_FAILURE,
+        // "settimeofday")` (`date.c:355`).
+        if let Err(code) = minix_sys::clock_settime(0, new_time as u64, 0) {
+            let mut out: Vec<u8> = b"date: settimeofday: ".to_vec();
+            out.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+            out.push(b'\n');
+            support::warn(&out);
+            support::terminate(1);
+        }
+        display(new_time, format_operand);
+    }
+    display(epoch, format_operand);
+}
+
+/// Break `epoch` down, format it, and print it — the tail C runs after the
+/// set path has updated `tval` (`date.c:157-170`).
+fn display(epoch: i64, format_operand: Option<&str>) -> ! {
     let fmt = format_operand.unwrap_or(DEFAULT_FMT);
 
     let time = breakdown(epoch);

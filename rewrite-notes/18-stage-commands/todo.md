@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百九十九（`date` 设钟腿接通：canonical 操作数解析、PM clock_settime 客户端与 `badcanotime` 输出形）
+
+- **这一笔的射程**：18 篇 §5 里 `date` 的登记残差——设钟操作数（`date [[[[[[CC]yy]mm]dd]HH]MM[.SS]]`）原以「settimeofday pending」拒绝。C 的路径：`setthetime`（`date.c:185-331`）按位数落字段（12=CCYYMMDDhhmm、10=YYMMDDhhmm 且 `yy<69` 进 2000s、8=MMDDhhmm、6=DDhhmm、4=hhmm、2=mm，`.SS` 尾定秒且恰两位、00–61），越界/形错走 `badcanotime`（三行：句子/操作数/插字符 + usage，`date.c:174-182`），成功后 `settimeofday`→`clock_settime(CLOCK_REALTIME)`（PM 绝对设形，`clock_settime.c:11-27`）。
+- **落码（三件）**：①`minix-sys::pm::clock_settime_via`——PM_CLOCK_SETTIME 客户端（载荷 `mess_lc_pm_time`：sec@0/clk_id@8/now=1@12/nsec@16，`gettimeofday_via` 的读回模式反用）+ 顶层 `minix_sys::clock_settime`（跨线公共件：os/libs 归 B 板，已按挂账约定在 C 板 §6 登记）；②`minix-proctools::dates::set_the_time`——C fallthrough 链的转写（每拒绝带 C 句子与插字符列），配 `stamp::days_from_civil`（Hinnant 逆变换，civil 回环测试）；③`bin/date.rs` 接线——`-j` 只解释不设（宿主面可测），`-a` 以具名句拒绝（`adjtime` 仍属残差），绝对设腿失败走 C 的 `err(EXIT_FAILURE, "settimeofday")` 形；`badcanotime` 块经 `support::warn` 宿主缝输出（裸 `write` 腿是 none 面——顺带发现 `fail()` 同病，登记不修）。
+- **门**：`cargo test -p minix-proctools` → 库 **94 / 0**（dates 新增 8 枚：各位数形、69 枢纽（`<69` 才进 2000s——"69" 按真值落 1969）、闰年二月、C 句子与插字符列、`.ss` 残秒清零）+ 面门 `date_face` **2 / 0**（`-j` 全字段形逐字节、badcanotime 四行整块）；`cargo test -p minix-sys --lib` → **342 / 0**；clippy 触及文件零新增告警；`rustfmt --edition 2024` 触及文件清；`cargo build --target x86_64-unknown-none --release --bin date` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `52ad9126b`。
+- **登记与余量**：`-a` 渐进调整（`adjtime`）与 wtmp/syslog 记账两行维持残差（操作数 + `-a` 时具名拒绝）；`fail()` 的宿主 stderr 同病（裸 `write`）随 proctools 各壳的 stderr 面统一批处理；真机侧设钟腿（PM 收到 PM_CLOCK_SETTIME 后写内核钟）走既有 E5 服务参战面。
+
 ## 批次四百九十八（跨板裁决 §2.5 验收：`wtf` 三级退化查找的环境差异登记闭合）
 
 - **这一笔的射程**：裁决 §2.5（方案乙：暂不实现跨程序调用，登记环境差异与重新检查的触发条件）的验收步——两件事：确认三个被调程序确实不在最终镜像与可执行路径中；对照 C 脚本在同样环境下的最终输出与退出码。零代码改动。

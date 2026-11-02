@@ -1071,6 +1071,13 @@ pub fn gettimeofday() -> Result<(i64, i64), Errno> {
     pm::gettimeofday_via(&ipc::DirectTrapTransport)
 }
 
+/// Sets the real-time clock (C: `clock_settime`,
+/// `minix3/minix/lib/libc/sys/clock_settime.c:11-27` — a PM call, absolute
+/// form). The manager accepts `CLOCK_REALTIME` only.
+pub fn clock_settime(clk_id: i32, sec: u64, nsec: i64) -> Result<(), Errno> {
+    pm::clock_settime_via(&ipc::DirectTrapTransport, clk_id, sec, nsec)
+}
+
 // ── Signals and timers (transport-hidden face) ──
 
 /// Installs a signal disposition (C: `sigaction`, pm/signal.c:40-86; see

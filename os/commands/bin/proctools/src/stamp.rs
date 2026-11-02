@@ -37,6 +37,20 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// Format `epoch` seconds as the 12-column stamp `who` prints:
 /// `Sep 20 10:30` (day space-padded, hours and minutes zero padded).
 /// Writes into `out` and returns the used byte count.
+/// Inverse of [`civil_from_days`]: days since 1970-01-01 for a proleptic
+/// Gregorian civil date (Howard Hinnant's `days_from_civil`). The compose
+/// half of the `mktime` equivalent: with the time of day it builds the epoch
+/// second the `date` set path needs (`minix3/bin/date/date.c:323-328`).
+pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe as i64 * 365 + yoe as i64 / 4 - yoe as i64 / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 pub fn format_login_time(epoch: u32, out: &mut [u8]) -> Result<usize, ProcError> {
     let days = epoch as i64 / 86_400;
     let seconds = epoch % 86_400;
@@ -48,7 +62,11 @@ pub fn format_login_time(epoch: u32, out: &mut [u8]) -> Result<usize, ProcError>
     }
     out[0..3].copy_from_slice(MONTHS[(month - 1) as usize].as_bytes());
     out[3] = b' ';
-    out[4] = if day < 10 { b' ' } else { b'0' + (day / 10) as u8 };
+    out[4] = if day < 10 {
+        b' '
+    } else {
+        b'0' + (day / 10) as u8
+    };
     out[5] = b'0' + (day % 10) as u8;
     out[6] = b' ';
     out[7] = b'0' + (hour / 10) as u8;
@@ -95,6 +113,25 @@ mod tests {
             let (y, m, d) = civil_from_days(days);
             let back = minix_doctools::cal::days_from_civil(y as i32, m, d).unwrap();
             assert_eq!(back, days, "epoch {epoch}");
+        }
+    }
+
+    /// The compose half round-trips the break half across sample dates.
+    #[test]
+    fn test_days_from_civil_round_trips_civil_from_days() {
+        for (year, month, day) in [
+            (1970, 1, 1),
+            (2001, 9, 9),
+            (2000, 2, 29),
+            (1969, 12, 31),
+            (2100, 3, 1),
+        ] {
+            let days = days_from_civil(year, month, day);
+            assert_eq!(
+                civil_from_days(days),
+                (year, month, day),
+                "{year}-{month}-{day}"
+            );
         }
     }
 }
