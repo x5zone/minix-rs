@@ -156,7 +156,9 @@
 - **替换**（`sed.rs`，11 个）：`test_first_only_by_default`（默认首个）、`test_global_flag`（全局）、`test_nth_match_only`（第 N 个）、`test_ampersand_replays_match`（取整匹配回放）、`test_group_reference`（分组回放换位）、`test_custom_delimiter`（自定分隔符）、`test_print_flag`（打印标志）、`test_missing_delimiter_rejected`（缺分隔符）、`test_zero_nth_rejected`（零序号）、`test_no_match_copies_input`（未命中原样）、`test_empty_match_walk_terminates`（空匹配终止）。
 - **sed 文件操作数与参数切分**（`src/bin/sed.rs`，7 个）：`script_only_has_no_files`（仅脚本无文件）、`dash_n_sets_quiet`（`-n` 置静默）、`operands_after_the_script_are_files`（脚本后位置参数入文件表）、`flags_and_files_mix_in_any_order`（`-n` 识别位置无关）、`bare_dash_is_a_literal_file_operand`（`-` 按 C `fopen` 作普通文件名不特判 stdin）、`unsupported_option_is_rejected`（除 `-n` 外选项拒）、`missing_script_is_rejected`（无脚本拒）。
 
-尚未覆盖、随后续阶段补齐的：模式内后向引用（显式拒绝，待回溯豁免设计）、POSIX 字符类（`[:alpha:]` 等，待本地化升级）、递归遍历与上下文行（`grep -r`、`-A`、`-B`、`-C`，待文件遍历）、地址执行（`sed` 行号范围，待执行层）、grep 的 `-i` 大小写折叠（引擎未建模，二进制显式拒绝；`-w` 词边界已接——`Pattern::find_word`）、sed 的地址与其调动词（二进制显式拒绝；`;` 分隔的命令链与 `d`/`p`/`=` 三形已接，`s` 的 `p` 标志、`-n`、`#n` 与 `pd` 的相互作用按 C 的 `process()` 走、以及基本式正则里未转义的 `(`（C 当普通字符，本引擎判成非法表达式，见 `BRE-PAREN-LITERAL`——这一条住在引擎，`grep` 同受影响）。模式与替换层、两个已接线二进制是完整的，sed 的执行层已覆盖无地址的常用形体，地址与循环控制仍是显式留白。
+尚未覆盖、随后续阶段补齐的：模式内后向引用（显式拒绝，待回溯豁免设计）、POSIX 字符类（`[:alpha:]` 等，待本地化升级）、递归遍历与上下文行（`grep -r`、`-A`、`-B`、`-C`，待文件遍历）、地址执行（`sed` 行号范围，待执行层）、grep 的 `-i` 大小写折叠（引擎未建模，二进制显式拒绝；`-w` 词边界已接——`Pattern::find_word`）、sed 的地址与其调动词（二进制显式拒绝；`;` 分隔的命令链与 `d`/`p`/`=` 三形已接，`s` 的 `p` 标志、`-n`、`#n` 与 `pd` 的相互作用按 C 的 `process()` 走）、区间量词（基本式的 `r\{2\}` 与扩展式的 `r{2}` 都该匹配 `rr`，本引擎把两者都当字面，见 `RE-INTERVAL-UNIMPLEMENTED`——这一条住在引擎的重复算子层，`grep`/`sed` 同受影响）。模式与替换层、两个已接线二进制是完整的，sed 的执行层已覆盖无地址的常用形体，地址与循环控制仍是显式留白。
+
+正则语法层按 Minix 自己的库读：基本式（`-G`/`sed` 默认）里 `(`、`)`、`|`、`+`、`?`、`{`、`}` 全是普通字符，分组只用 `\(...\)`、区间只用 `\{m,n\}`（`regcomp.c:628-690` 的 `default: ordinary`，分组体的终止条件是成对的 `\)`，`regcomp.c:570-597`）；扩展式里这些字符升为运算符，但**组外落单的 `)` 仍是普通字符**——Minix 的 libc 以 `-DPOSIX_MISTAKE` 编译正则库 （`minix3/lib/libc/regex/Makefile.inc:7`），把 `regcomp.c:428-438` 那条 unmatched-`)` 错误编译掉了。口径由源码与编译开关共同决定，只读 `regcomp.c` 会读反。
 
 ### 4.5 命令契约与 Requires
 

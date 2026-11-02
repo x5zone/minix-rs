@@ -119,6 +119,54 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十七（正则引擎：基本式里 `(` 与 `)` 是普通字符——Minix 的正则库还带着 `-DPOSIX_MISTAKE`）
+
+- **这一笔的射程**：`minix-regex` 的语法层，两个壳共用。量的时候现场是
+  `grep -G '(a)'` 与 `sed 's/(a)/X/'` 都回 `bad pattern`／`bad s command` 退非零，而基本式里
+  括号是文本：BSD 的编译器的原子表（`minix3/lib/libc/regex/regcomp.c:628-690`）没有 `)` 这一
+  `case`，全部落到 `default: ordinary(...)`；分组体也不在裸 `)` 上结束——`p_bre` 的终止条件是
+  **两个字节一对**的 `\` `)`（`regcomp.c:570-597` 的 `SEETWO(end1, end2)`，调用点 `:656` 传的是
+  `'\\'` 与 `')'`），所以 `\(a)b\)` 的体是 `a)b` 而不是在 `)` 处收尾。
+- **扩展式那一侧还有一层构建口径**。`regcomp.c:428-438` 原本给落单的 `)` 设了
+  `SETERROR(REG_EPAREN)`，但那一段包在 `#ifndef POSIX_MISTAKE` 里，而 Minix 的 libc 编译开关
+  写着 `CPPFLAGS+=-DPOSIX_MISTAKE`（`minix3/lib/libc/regex/Makefile.inc:7`）⇒ 这一段被编译掉，
+  扩展式里组外的 `)` 也是普通文本。只读 `regcomp.c` 不看 `Makefile.inc` 会得出相反结论，
+  这一条记在册：正则的口径由**源码 + 编译开关**共同定义。
+- **落码**只有判停的一行：`)` 只在「扩展式且正在某个组体内」时才结束一次原子的读取；其余情形
+  与 `|` 各归各的分支（`|` 仍是扩展式专属，因为 `p_ere` 的串联循环在任何深度都在 `|` 处断开，
+  `regcomp.c:361`）。基本式的组收尾本来就走 `parse_escape` 的 `\)` 路径，不依赖那一句判停。
+- **随笔修掉一族跨件断**：`minix-editor` 在本树里**编不过**——`exec.rs:2004` 还在按批次四百八十二
+  之前的形状把 `&str` 交给 `sed::apply`，而那一笔把模式空间换成了字节承载（`&[u8]`），改的时候只跑了
+  `minix-regex` 自己的门。现场是 `cargo test -p minix-editor -p minix-fileops` 报
+  `expected &[u8], found &str`。调用点按载体交回 `line_text.as_bytes()`；**规则补一条**：动
+  `os/libs/` 或任一 crate 的**公开签名**，收尾门必须带上依赖件——`minix-regex` 被
+  `minix-editor`、`minix-fileops` 两处消费（`grep -rln minix-regex os --include=Cargo.toml`），
+  只跑本包门就把断线留在树里。
+- **门**：引擎侧新立两枚——`test_basic_dialect_reads_unescaped_parentheses_as_text`
+  （`a(b)` 找字面、`x)` 找字面、`\(a)b\)` 的体是 `a)b`，并把 `|`、`+`、`{}` 三族一起钉成文本：
+  每形各给「字面命中」与「把元字符抹掉后不命中」两条断言）、
+  `test_extended_dialect_closes_groups_and_a_stray_paren_through`（`a(b)c` 是组、`x)` 与 `\)` 都是文本）。
+  面门 `grep_face.rs` +2 枚（基本式括号与落单 `)`、扩展式组与 POSIX_MISTAKE 那一形）、
+  `sed_face.rs` +1 枚（`s/(a)/X/` 不改写、`s/a(b)/X/` 改写字面、`s/\(a\)b/[\\1]/` 仍能回填）。
+  差分腿：`grep -G`/`-E` 与 `sed` 的六形与宿主 GNU 逐字节同（GNU 的正则族与 BSD 同源，此处作旁证，
+  判据仍取 `regcomp.c`）。
+- **读数**：`minix-regex` 宿主整包 6 段 **101 / 0**（面门 6 + 28），依赖件
+  `minix-editor` + `minix-fileops` 合跑 44 段 **522 / 0**（`tmp/bre-paren/dependents.log`），
+  容器权威门把三包一起跑同读数退 0（`tmp/bre-paren/container.log`），三架构 `--bins` 各退 0
+  （`tmp/bre-paren/arch-*.log`）。`rustfmt --edition 2024 --check`：`pattern.rs` 基线 9 处、改后仍
+  9 处且位置同一（我的插入只在后面顶了行号），两件面门本轮新写代码格式化后归零。
+  负控三枚各咬：P1（裸 `)` 在两式都判停）红 6、P2（基本式 `(` 也开组）红 4、
+  P3（基本式 `|` 也判停）红 2，还原复跑 101/0（`python3 tmp/bre-paren/negctl.py`）。
+- **闭合与在册**：`BRE-PAREN-LITERAL` 随本笔闭合。本笔新立一条**登记不执行**：
+  `RE-INTERVAL-UNIMPLEMENTED`——区间量词两边都缺：`grep -G 'r\{2\}'` 该匹配 `rr`（C 的
+  `\{m\}` 分支在原子之后处理），宿主 GNU 交回 `rr`，本引擎把 `r\{2\}` 当字面交出 `r{2}`；
+  `grep -E 'r{2}'` 同形（GNU 交 `rr`）。这一条要动引擎的重复算子层，另立一笔收。
+- **三件套**：`python3 tmp/bre-paren/negctl.py`、`cargo test -p minix-regex -p minix-editor
+  -p minix-fileops`（`tmp/bre-paren/pkg.log`、`dependents.log`、`container.log`）、
+  `cat tmp/bre-paren/arch-*.log`；核实日 `2026-11-02`，基线快照 `468ab252d`。
+
+---
+
 ## 批次四百八十六（`sed` 的一行没写完就是没写完：未转义换行有自己的那一句）
 
 - **这一笔的射程**：图案或替换里出现**未转义**的换行。C 每次只交给编译器一行脚本

@@ -4817,3 +4817,37 @@ C 每次只交给编译器一行脚本（`cu_fgets` 交回带行尾换行的缓�
 **闭合** `SED-NEWLINE-IN-SUBST`；**新登记不执行** `SED-ESCAPED-NEWLINE-CONTINUATION`：反斜杠紧跟换行时
 C 丢掉那个换行、把下一段文本接进同一字段继续读（`compile.c:507-519` 的 `sawesc` 配 `more` 重入），
 本壳把 `\` 与换行两字节一起留在字段文本里——两边都认"命令跨过行尾继续"，差在字段是否带着那个换行。
+
+### 第二百二十六笔（A 板 · `BRE-PAREN-LITERAL`：基本式的括号是文本，扩展式落单的 `)` 也是——因为 Minix 编译正则库带着 `-DPOSIX_MISTAKE`）
+
+现场：`grep -G '(a)'` 与 `sed 's/(a)/X/'` 都回 `bad pattern`／`bad s command` 退非零。C 那边基本式的
+原子表（`minix3/lib/libc/regex/regcomp.c:628-690`）根本没有 `)` 这一 `case`，全落
+`default: ordinary(...)`；分组体也不在裸 `)` 上结束——`p_bre` 的终止条件是**成对**的 `\` `)`
+（`:570-597` 的 `SEETWO(end1, end2)`，调用点 `:656` 传 `'\\'` 与 `')'`），故 `\(a)b\)` 的体是 `a)b`。
+
+扩展式那一侧还有一层构建口径：`:428-438` 本给落单 `)` 设了 `SETERROR(REG_EPAREN)`，但那一段包在
+`#ifndef POSIX_MISTAKE` 里，而 `minix3/lib/libc/regex/Makefile.inc:7` 写着
+`CPPFLAGS+=-DPOSIX_MISTAKE` ⇒ 被编译掉，组外的 `)` 也是文本。**只读 `regcomp.c` 不看 `Makefile.inc`
+会得出相反结论**——正则的口径由源码与编译开关共同定义，这一条进 08 篇正文。
+
+落码是一行判停：`)` 只在「扩展式且正在组体内」才结束原子读取；`|` 仍在扩展式两深度都断（`p_ere` 的
+串联循环在任何深度都在 `|` 断开，`:361`）。基本式的组收尾本就走 `parse_escape` 的 `\)` 路径。
+
+**随笔修掉一族跨件断**：`minix-editor` 在本树里编不过——`exec.rs:2004` 还按批次四百八十二之前的形状
+把 `&str` 交给 `sed::apply`，而那一笔把模式空间换成字节承载（`&[u8]`），当时只跑了 `minix-regex` 的门。
+现场 `cargo test -p minix-editor -p minix-fileops` 报 `expected &[u8], found &str`；调用点交回
+`line_text.as_bytes()`。**规则补一条（本线自约束）**：动任一 crate 的公开签名，收尾门必须带上依赖件
+（`grep -rln minix-regex os --include=Cargo.toml` ⇒ `minix-editor`、`minix-fileops` 两处在消费），
+只跑本包门就把断线留在树里——批次四百八十二那道门当时是绿的，说明"本包全绿"不构成跨件证据。
+
+门：引擎侧新立两枚（基本式括号成文本并把 `|`、`+`、`{}` 三族一起钉住，每形两条断言；扩展式组与
+POSIX_MISTAKE 那形），面门 `grep_face.rs` +2、`sed_face.rs` +1；差分腿六形与宿主 GNU 逐字节同
+（GNU 正则族与 BSD 同源，作旁证，判据取 `regcomp.c`）。读数：`minix-regex` 6 段 **101/0**，依赖件
+`minix-editor` + `minix-fileops` 44 段 **522/0**，容器权威门三包合跑 **50 段 623/0** 退 0，三架构各
+退 0；`rustfmt` 对 `pattern.rs` 基线 9 处、改后仍 9 处且位置同一（我的插入只顶了后面的行号），两件
+面门本轮新代码格式化归零。负控三枚各咬：P1（裸 `)` 两式都判停）红 6、P2（基本式 `(` 开组）红 4、
+P3（基本式 `|` 判停）红 2。
+
+**闭合** `BRE-PAREN-LITERAL`；**新登记不执行** `RE-INTERVAL-UNIMPLEMENTED`：`grep -G 'r\{2\}'` 与
+`grep -E 'r{2}'` 都该匹配 `rr`（宿主 GNU 交回 `rr`），本引擎把两者当字面交出 `r{2}`——要动引擎的
+重复算子层，另立一笔。
