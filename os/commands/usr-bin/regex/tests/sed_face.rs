@@ -9,9 +9,11 @@
 //! fix, `printf 'abc\ndef\n' | sed 's/a/A/'` printed **nothing** and exited 0
 //! while the host's own sed printed two lines — so every input claim in
 //! `rewrite-notes/18-stage-commands/08-grep-sed.md` was unobservable from a
-//! process test. The legs are now `cfg` twins (`read_stdin` / `read_file` in
+//! process test. The legs are now `cfg` twins (`read_stdin` / `read_operand` in
 //! `os/commands/usr-bin/regex/src/bin_support.rs`), which is what these tests
-//! pin; the transformation itself keeps its own gates inside the library.
+//! pin; the transformation itself keeps its own gates inside the library. The
+//! operand leg reports the two failure timings separately, because C pays
+//! different prices for them — see the two `a_failed_...` gates below.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,6 +59,34 @@ fn text(path: &Path) -> String {
     path.to_str()
         .expect("a scratch path the child can take")
         .to_owned()
+}
+
+/// A scratch operand that opens and then fails on the first read: a directory
+/// answers `open` but its first `read` is `EISDIR`, which is the shape C's
+/// `getline` reports as a read error rather than as the end of the file.
+fn directory(tag: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!("sed-face-{}-{tag}", std::process::id()));
+    fs::create_dir_all(&path).expect("a scratch directory operand");
+    path
+}
+
+/// Runs the binary with standard input taken from an open path instead of a
+/// pipe, which is how the stdin leg reaches a failed read.
+fn run_stdin_from(args: &[&str], carrier: &Path) -> (Vec<u8>, i32, Vec<u8>) {
+    let file = fs::File::open(carrier).expect("opening the stdin carrier");
+    let output = Command::new(SED)
+        .args(args)
+        .stdin(Stdio::from(file))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
 }
 
 #[test]
@@ -143,6 +173,48 @@ fn an_unopenable_operand_warns_and_flags_the_exit_status() {
         String::from_utf8_lossy(&err).contains("no-such-operand-here"),
         "stderr was {:?}",
         String::from_utf8_lossy(&err)
+    );
+}
+
+#[test]
+fn a_failed_read_stops_the_run_rather_than_warning_and_going_on() {
+    // C splits this leg at the two timings: a failed `fopen` is
+    // `warn` + `rval = 1` + `continue` (`main.c:449-452`), while a read that
+    // fails after the open is `err(1, "%s", fname)` (`main.c:463-465`). `err`
+    // reaches the same formatter as `warn` (`minix3/lib/libc/gen/verr.c` →
+    // `verrc` → `vwarnc`) and then exits, so the run must stop where the read
+    // failed: the operand behind it may not be opened at all, and the status is
+    // that call's `1`, not the accumulated `rval`.
+    let blocked = directory("read-fail");
+    let good = written("after-read-fail", b"abc\n");
+    let (out, status, err) = run(&["s/a/A/", &text(&blocked), &text(&good)], b"");
+    assert_eq!(
+        out,
+        Vec::<u8>::new(),
+        "the operand after a failed read must not be read"
+    );
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        format!("sed: {}: Is a directory\n", text(&blocked)),
+        "a failed read reports the three segments C's `err` writes"
+    );
+}
+
+#[test]
+fn a_failed_standard_input_read_names_stdin() {
+    // The stdin leg runs the same loop with the name slot set to `stdin`
+    // (`main.c:348`), so the fatal line names that rather than a path — and the
+    // run still stops, which is why the operand form and this one cannot share
+    // one arm.
+    let blocked = directory("stdin-read-fail");
+    let (out, status, err) = run_stdin_from(&["s/a/A/"], &blocked);
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "sed: stdin: Is a directory\n",
+        "the name slot is C's `stdin`, not the carrier's path"
     );
 }
 

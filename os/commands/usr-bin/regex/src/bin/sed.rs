@@ -15,8 +15,11 @@
 //! silently dropped. With file operands each is read in turn and the results
 //! stream to standard output (`main.c` `mf_fgets` on the non-in-place path); an
 //! unopenable operand warns, sets the exit status, and the run continues to the
-//! next. The line number runs across operands because C clears it only when
-//! editing in place (`main.c:441-443`). With no operands sed reads stdin, and a
+//! next, while a read that fails inside an operand already open stops the run
+//! with that operand's name (`err(1, "%s", fname)`, `main.c:463-465`) — and so
+//! does a failed standard input, named `stdin` (`main.c:348`). The line
+//! number runs across operands because C clears it only when editing in place
+//! (`main.c:441-443`). With no operands sed reads stdin, and a
 //! bare `-` is an operand name, not a stdin alias. In-place editing (`-i`/`-I`)
 //! needs the create/rename surface and is not modelled; net output carries no
 //! filename prefix, unlike `grep`. One script carries at most
@@ -166,7 +169,7 @@ fn run() -> ! {
     let mut defpreg: Option<usize> = None;
     let mut rval = 0;
     if files.is_empty() {
-        let input = support::read_stdin();
+        let (input, failure) = support::read_stdin();
         sed_lines(
             &prog,
             script,
@@ -178,31 +181,47 @@ fn run() -> ! {
             &mut number,
             &mut defpreg,
         );
+        if let Some(code) = failure {
+            // The stdin leg is the same read loop, with the name slot set to
+            // `stdin` (`main.c:348`), so a failed read here costs the run
+            // just as it does for a named operand.
+            support::err_name(&prog, "stdin", code);
+        }
     } else {
         for file in &files {
-            match support::read_file(file) {
-                Ok(data) => {
-                    // The line number is **not** reset between operands: C clears
-                    // `linenum` only on the in-place path (`main.c:441-444`), so an
-                    // operand list read to standard output keeps counting.
-                    sed_lines(
-                        &prog,
-                        script,
-                        &data,
-                        quiet,
-                        &program,
-                        &patterns,
-                        &mut scratch,
-                        &mut number,
-                        &mut defpreg,
-                    );
-                }
-                Err(code) => {
+            let (data, failed) = match support::read_operand(file) {
+                support::Operand::Data(data) => (data, None),
+                support::Operand::OpenFailed(code) => {
                     // C `mf_fgets`: an unopenable operand warns and flags the
                     // exit status but does not stop the run (main.c:449-452).
                     support::warn_name(&prog, file, code);
                     rval = 1;
+                    continue;
                 }
+                support::Operand::ReadFailed(code, data) => (data, Some(code)),
+            };
+            // The line number is **not** reset between operands: C clears
+            // `linenum` only on the in-place path (`main.c:441-444`), so an
+            // operand list read to standard output keeps counting.
+            sed_lines(
+                &prog,
+                script,
+                &data,
+                quiet,
+                &program,
+                &patterns,
+                &mut scratch,
+                &mut number,
+                &mut defpreg,
+            );
+            if let Some(code) = failed {
+                // A read failing **after** the open is fatal: C prints the
+                // operand name and stops (`err(1, "%s", fname)`,
+                // main.c:463-465), so no later operand is opened and the status
+                // is that call's `1` rather than the accumulated `rval`. The
+                // lines that arrived before the failure are still printed,
+                // because C had already run its cycle on them.
+                support::err_name(&prog, file, code);
             }
         }
     }

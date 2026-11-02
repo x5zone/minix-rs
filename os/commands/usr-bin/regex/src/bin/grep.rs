@@ -97,7 +97,10 @@ fn run() -> ! {
     let mut matched_any = false;
     let mut file_error = false;
     if operands.is_empty() {
-        let input = support::read_stdin();
+        // C's line loop breaks on a `NULL` from `grep_fgetln`, which covers a
+        // failed read as well as the end of the file (`util.c:132`), so the
+        // bytes that arrived are scanned and nothing is reported.
+        let (input, _) = support::read_stdin();
         let lines = support::lines_of(&input);
         let mut rendered = Vec::new();
         if grep_stream(
@@ -113,9 +116,11 @@ fn run() -> ! {
         support::emit(&rendered);
     } else {
         for operand in operands {
-            let data = match support::read_file(operand) {
-                Ok(data) => data,
-                Err(code) => {
+            let data = match support::read_operand(operand) {
+                // A read that fails partway is the end of the file as far as C
+                // is concerned (`util.c:132`), so the operand is still scanned.
+                support::Operand::Data(data) | support::Operand::ReadFailed(_, data) => data,
+                support::Operand::OpenFailed(code) => {
                     // `procfile` warns (there is no `-s` here) and keeps
                     // going; the failure only shows up in the exit status.
                     support::warn_name(&prog, operand, code);

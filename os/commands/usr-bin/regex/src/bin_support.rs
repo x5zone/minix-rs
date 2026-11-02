@@ -8,9 +8,11 @@
 //! sweep: argv via `std::env::args` (hosted) or the `minix-rt` birth-chain
 //! descriptor (`minix_rt::crt0::args`, raw initial-stack bytes rendered
 //! lossily), termination via the host runtime (hosted) or `minix_sys::exit`
-//! (target), and the **input** legs ([`read_stdin`] / [`read_file`]) via
+//! (target), and the **input** legs ([`read_stdin`] / [`read_operand`]) via
 //! `std::io` / `std::fs` (hosted) or `minix_sys::{open, read, close}`
-//! (target). Transport failures short-circuit to a typed `Err` (edge
+//! (target). The input legs carry the two failure timings C distinguishes —
+//! failing to open an operand and failing to read one it already opened —
+//! because the first one costs a warning and the second one costs the process. Transport failures short-circuit to a typed `Err` (edge
 //! E-SYSCALL-SIGN), so hosted runs observe honest failures on both
 //! channels.
 
@@ -108,10 +110,13 @@ pub fn warn(bytes: &[u8]) {
     let _ = write(STDERR, bytes);
 }
 
-/// Reads all of standard input into one vector.
+/// Reads all of standard input and reports the `errno` of a read that failed
+/// before the end of the stream.
 ///
-/// Stream filters transform per line, so the doing half collects first and
-/// iterates over the split; a read failure ends collection.
+/// A failed read is a fact the caller has to be able to act on: C's stdin leg is
+/// the same loop a named operand goes through, with the name slot set to
+/// `stdin` (`minix3/usr.bin/sed/main.c:348-349`), so `sed` stops on it while
+/// `grep` treats it as the end of the file.
 ///
 /// The hosted twin goes through `std::io::stdin`, because descriptor 0 on the
 /// host is the real process standard input while `minix_sys::read` is a shim
@@ -120,72 +125,95 @@ pub fn warn(bytes: &[u8]) {
 /// measured exactly that: no output, exit 0, where the C reads and prints two
 /// lines). Same leg, two carriers: the target still goes through the syscall.
 #[cfg(any(test, not(target_os = "none")))]
-pub fn read_stdin() -> Vec<u8> {
+pub fn read_stdin() -> (Vec<u8>, Option<minix_sys::Errno>) {
     use std::io::Read as _;
     let mut input = Vec::new();
-    // A failed read ends collection with whatever arrived, which is the target
-    // leg's behavior too, so both sides hand back the same shape.
-    let _ = std::io::stdin().read_to_end(&mut input);
-    input
+    // Whatever arrived before a failure is handed back, because C had already
+    // printed the lines it held by the time the read failed.
+    match std::io::stdin().read_to_end(&mut input) {
+        Ok(_) => (input, None),
+        Err(failure) => (input, Some(errno_of(&failure))),
+    }
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn read_stdin() -> Vec<u8> {
-    let mut input = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(STDIN, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => input.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    input
+pub fn read_stdin() -> (Vec<u8>, Option<minix_sys::Errno>) {
+    read_stream(STDIN)
 }
 
-/// Opens and drains one file operand, handing back the **`errno`** when the
-/// operand could not be opened.
+/// What one file operand yields.
 ///
-/// Both consumers report an unreadable operand with C's `warn("%s", name)`
-/// (`minix3/usr.bin/sed/main.c:450`, `minix3/minix/usr.bin/grep/util.c:111`), and
-/// `warn` is three segments — program name, the formatted text, then
-/// `strerror(errnum)` — because it goes through `vwarnc`
-/// (`minix3/lib/libc/gen/vwarnc.c:3-8`). That last segment is the number, so the
-/// seam has to carry it rather than collapse every failure into one unit type.
+/// C's `mf_fgets` can fail at two timings on this leg and the two cost
+/// different things: a failed `fopen` warns and moves to the next operand
+/// (`minix3/usr.bin/sed/main.c:449-452`), while a read that fails **after** the
+/// open is fatal — `err(1, "%s", fname)` prints the same three segments `warn`
+/// does and then exits 1 (`main.c:463-465`, `minix3/lib/libc/gen/verr.c`,
+/// `minix3/lib/libc/gen/vwarnc.c:3-8`). Collapsing both into one `Err` would
+/// quietly make the fatal arm non-fatal, so the seam names them apart, and it
+/// carries the bytes that arrived before a failed read for the same reason the
+/// stdin leg does.
+pub enum Operand {
+    /// Opened and drained to the end of the file.
+    Data(Vec<u8>),
+    /// The open failed, so nothing was read.
+    OpenFailed(minix_sys::Errno),
+    /// Opened, then a read failed; the bytes up to that point arrived.
+    ReadFailed(minix_sys::Errno, Vec<u8>),
+}
+
+/// Opens and drains one file operand.
 ///
 /// The hosted twin opens through `std::fs`, for the same reason as
 /// [`read_stdin`]: `minix_sys::open` on the host fails, so every file operand
 /// would take the warning arm and a normal run would exit 1 with no output.
 #[cfg(any(test, not(target_os = "none")))]
-pub fn read_file(path: &str) -> Result<Vec<u8>, minix_sys::Errno> {
+pub fn read_operand(path: &str) -> Operand {
     use std::io::Read as _;
-    let mut file = std::fs::File::open(path).map_err(|failure| errno_of(&failure))?;
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(failure) => return Operand::OpenFailed(errno_of(&failure)),
+    };
     let mut data = Vec::new();
-    // A read failure stops collection and keeps the bytes that arrived, the
-    // same shape as the target loop below.
-    let _ = file.read_to_end(&mut data);
-    Ok(data)
+    match file.read_to_end(&mut data) {
+        Ok(_) => Operand::Data(data),
+        Err(failure) => Operand::ReadFailed(errno_of(&failure), data),
+    }
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn read_file(path: &str) -> Result<Vec<u8>, minix_sys::Errno> {
+pub fn read_operand(path: &str) -> Operand {
     let fd = match open(path, 0, 0) {
         Ok(fd) => fd,
-        Err(code) => return Err(code),
+        Err(code) => return Operand::OpenFailed(code),
     };
+    let (data, failure) = read_stream(fd);
+    // [SD19-gate] the fd is no longer used after close
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = close(fd);
+    match failure {
+        None => Operand::Data(data),
+        Some(code) => Operand::ReadFailed(code, data),
+    }
+}
+
+/// Drains one open descriptor, stopping at the end of the stream or at the
+/// first failed read, whichever comes first.
+#[cfg(all(not(test), target_os = "none"))]
+fn read_stream(fd: Fd) -> (Vec<u8>, Option<minix_sys::Errno>) {
     let mut data = Vec::new();
     let mut chunk = [0u8; 4096];
+    let mut failure = None;
     loop {
         match read(fd, &mut chunk) {
             Ok(0) => break,
             Ok(count) => data.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
+            Err(code) => {
+                failure = Some(code);
+                break;
+            }
         }
     }
-    // [SD19-gate] the fd is no longer used after close
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = close(fd);
-    Ok(data)
+    (data, failure)
 }
 
 /// The `errno` behind a host I/O failure: the OS number when there is one, and
@@ -202,7 +230,9 @@ fn errno_of(error: &std::io::Error) -> minix_sys::Errno {
 
 /// C's `warn("%s", name)` line: `<程序名>: <名字>: <strerror 句子>\n`
 /// (`vwarnc.c:3-8`, where the first segment comes from `getprogname()` — pass
-/// [`prog_name`]'s result, not a literal command name).
+/// [`prog_name`]'s result, not a literal command name). The last segment is
+/// rendered from the failed call's number, which is why the input legs report an
+/// `Errno` instead of a bare "it failed".
 pub fn warn_name(prog: &str, name: &str, code: minix_sys::Errno) {
     let sentence = minix_sys::Strerror(code).to_string();
     let mut line = Vec::with_capacity(prog.len() + name.len() + sentence.len() + 4);
@@ -213,6 +243,16 @@ pub fn warn_name(prog: &str, name: &str, code: minix_sys::Errno) {
     line.extend_from_slice(sentence.as_bytes());
     line.push(b'\n');
     warn(&line);
+}
+
+/// C's `err(1, "%s", name)`: the line `warn_name` prints, then the process
+/// stops. `err` reaches the same formatter as `warn` — `verr` calls
+/// `verrc`, which calls `vwarnc` with the failed call's `errno` — so the only
+/// difference is the exit, and the status is the one C passes at that call
+/// site rather than the accumulated `rval` the run would have ended with.
+pub fn err_name(prog: &str, name: &str, code: minix_sys::Errno) -> ! {
+    warn_name(prog, name, code);
+    terminate(1)
 }
 
 /// Renders `value` in decimal into `out`, returning the written length.

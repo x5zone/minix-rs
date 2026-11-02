@@ -1,6 +1,6 @@
 //! End-to-end face for the `grep` binary, covering only the **input seam**
 //! that this crate shares with `sed`: which bytes reach the matcher, from
-//! where, and what an unopenable operand costs. The selection rules
+//! where, and what an unopenable operand or a failed read costs. The selection rules
 //! themselves (`-v`, `-c`, `-l`, name prefixes) keep their gates inside
 //! `os/commands/usr-bin/regex/src/grep.rs`.
 //!
@@ -47,6 +47,28 @@ fn text(path: &Path) -> String {
     path.to_str()
         .expect("a scratch path the child can take")
         .to_owned()
+}
+
+#[test]
+fn a_failed_read_ends_the_scan_without_a_complaint() {
+    // The operand leg distinguishes a failed open from a failed read because
+    // `sed` stops on the second one; `grep` must not. `grep_fgetln` hands back
+    // `NULL` for a failed read just as for the end of the file, and `procfile`
+    // only breaks its line loop (`minix3/minix/usr.bin/grep/util.c:132`), so the
+    // scan ends silently and only the usual no-match status comes out. A
+    // directory is the carrier the host can reach: it opens, and its first read
+    // fails.
+    let mut path = std::env::temp_dir();
+    path.push(format!("grep-face-{}-read-fail", std::process::id()));
+    fs::create_dir_all(&path).expect("a scratch directory operand");
+    let (out, status, err) = run(&["a", &text(&path)], b"");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(
+        err,
+        Vec::<u8>::new(),
+        "a read failure is not a complaint here"
+    );
+    assert_eq!(status, 1, "no line matched, which is the only outcome");
 }
 
 #[test]
