@@ -13,23 +13,25 @@
 //! and the early console split by `target_arch`.
 //!
 //! The consumer differs per architecture: x86_64 / aarch64 go through the UEFI
-//! install path (xtask image → boot-shim reads the contract location);
-//! riscv64 is not a UEFI disk image, so today it is only produced and
-//! statically layout-checked by `os/kernel-image/check-layout.sh riscv64`, and
-//! its install path is not implemented yet (`os/xtask/src/image.rs:195-203`
-//! still bails honestly for that architecture).
+//! install path (xtask image → boot-shim reads the contract location and jumps
+//! into `_start` with a v1 handoff arena in `rbx`/`x0`); riscv64 has two
+//! products: the default self-boot image (OpenSBI `-kernel`) and the
+//! `fw-riscv64-uboot` receiver image (U-Boot `bootelf` + v1 arena). The UEFI
+//! disk layout still bails honestly for riscv64 (`os/xtask/src/image.rs`),
+//! because that arch is not a UEFI disk image.
 //!
-//! ## Delivery boundary (honest status)
+//! ## Delivery boundary
 //!
-//! `_start` currently sets up the stack and parks (halt). The boot-shim →
-//! kernel image jump handoff protocol (how KernelInfo is passed, what the
-//! entry state is) has been settled (per-process independent root primitive;
-//! aarch64's `BootHandoffV1` arena handoff is its implementation), and this
-//! image's closure is that implementation. The current UEFI production line
-//! still runs boot-shim with an inlined kernel, calling `arch_boot` in-process
-//! (`os/boot-shim/src/main.rs:56`); this image turns the contract location
-//! from "no producer" into "produced per the layout contract", which is what
-//! the x86_64 install chain needs.
+//! `_start` clears `.bss`, sets up the boot stack, and calls `rust_image_main`.
+//! The boot-shim → kernel image handoff is v1: the shim writes the arena
+//! (payloads + runtime scalars) before ExitBootServices, then
+//! `enter_kernel_image_v1` builds the bootstrap root, patches the runtime
+//! fields, and jumps to the image's high-half `_start`; the receiver
+//! (`arch_boot_resume_v1`) decodes the payloads, lands them in this image's
+//! `.bss`, records the active root, adds Direct Map coverage, and enters
+//! `kmain`. Direct-boot faces (`bootface`/`bootface_a64`) go through
+//! `arch_boot`/`arch_boot_impl` instead. The historical "inlined kernel,
+//! in-process arch_boot" path remains only in the test carriers.
 //!
 //! ## Link retention (anti-strip)
 //!
@@ -103,8 +105,8 @@ use minix_plat::x86_64::early_console;
 // ── Kernel boot graph anchor ──────────────────────────────────────
 //
 // The type is the contract: `arch_boot(&KernelInfo, PhysBytes) -> !` is the
-// kernel boot surface shared by the boot-shim in-process production line
-// (`os/boot-shim/src/main.rs:56`) and the future jump production line. The
+// kernel boot surface shared by the v1 send/receive production path, the
+// direct-boot faces (`bootface`/`bootface_a64`), and the test carriers. The
 // anchor is pinned by the link script's `KEEP(*(.rodata.kernel_anchor))`.
 
 #[used]

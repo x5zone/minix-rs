@@ -28,18 +28,25 @@ impl HigherHalf for X86_64HigherHalf {
         // address. stack_top is a valid, 16-byte-aligned high virtual
         // address. This is called exactly once from the boot CPU.
         //
-        // The inline asm performs the same sequence as Minix3 head.S:
+        // The inline asm performs the same sequence as Minix3 head.S, plus
+        // the x86-64 psABI adjustment:
         //   mov rsp, stack_top     // switch stack to high address
-        //   and rsp, -16           // align to 16 bytes (System V ABI)
+        //   and rsp, -16           // align to 16 bytes
         //   xor rbp, rbp           // zero frame pointer
-        //   push 0                 // null return address
-        //   call kmain             // jump to high address
+        //   push 0                 // terminate the initial stack
+        //   sub rsp, 8             // psABI: call must see RSP 16-aligned
+        //   call kmain             // entry RSP = stack_top-24 (8 mod 16)
+        //
+        // Production `kmain` is an ordinary Rust function (the naked entry
+        // exists only under `qemu_test`), so the System V entry rule
+        // `(RSP + 8) % 16 == 0` must hold at the call target.
         unsafe {
             core::arch::asm!(
                 "mov rsp, {stktop}",
                 "and rsp, -16",
                 "xor rbp, rbp",
                 "push 0",
+                "sub rsp, 8",
                 "call {kmain}",
                 stktop = in(reg) stack_top.0,
                 kmain = sym kmain,

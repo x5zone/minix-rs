@@ -354,8 +354,16 @@ impl<'a> Iterator for SegmentIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.index < self.ehdr.e_phnum {
-            let offset = self.ehdr.e_phoff as usize
-                + (self.index as usize) * (self.ehdr.e_phentsize as usize);
+            let Some(entry_off) = (self.index as usize)
+                .checked_mul(self.ehdr.e_phentsize as usize)
+            else {
+                self.index += 1;
+                continue;
+            };
+            let Some(offset) = (self.ehdr.e_phoff as usize).checked_add(entry_off) else {
+                self.index += 1;
+                continue;
+            };
             self.index += 1;
 
             // parse_phdr already validated bounds in new(), but be defensive
@@ -369,7 +377,10 @@ impl<'a> Iterator for SegmentIter<'a> {
             }
 
             // Validate segment data fits within image
-            let seg_end = phdr.p_offset as usize + phdr.p_filesz as usize;
+            let Some(seg_end) = (phdr.p_offset as usize).checked_add(phdr.p_filesz as usize)
+            else {
+                continue;
+            };
             if seg_end > self.image.len() {
                 continue;
             }

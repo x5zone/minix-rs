@@ -211,14 +211,34 @@ pub use core::panic::PanicInfo;
 
 // ── Boot entry points ──
 
+/// Common tail of every direct `arch_boot` entry: land `KernelInfo` into the
+/// kernel `.bss` copy, register the panic diagnostic, build/enable the
+/// bootstrap root, then perform the higher-half jump. Keeping this in one
+/// generic helper avoids three drifting copies of the same sequence.
+#[cfg(not(feature = "mock"))]
+fn arch_boot_finish<A, H>(kernel_info: &KernelInfo, root_page: PhysBytes) -> !
+where
+    A: BootArch,
+    H: crate::boot::HigherHalf,
+{
+    store_kernel_info(kernel_info);
+    let kinfo: &'static KernelInfo = crate::kernel_info()
+        .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
+    register_panic_diagnostic();
+    arch_boot_impl::<A>(kinfo, root_page);
+    // SAFETY: arch_boot_impl just enabled paging with both identity and
+    // kernel high mappings. kinfo is the kernel-.bss copy — valid at the
+    // high address. kern_stack_top is a valid high virtual address from
+    // KernelInfo.
+    unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+}
+
 /// Architecture-specific boot entry (called by boot-shim after ExitBootServices).
 /// Selects the correct `Paging` implementation at compile time, then performs
 /// the higher-half transition via the `HigherHalf` trait.
 #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
 pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
-    use minix_arch::x86_64::paging::X86_64Paging;
     use crate::x86_64::higher_half::X86_64HigherHalf;
-    use crate::boot::HigherHalf;
     // Boot-visibility fix (root cause): KernelInfo is taken by value into the
     // kernel .bss global at fn entry, and everything afterwards (building page
     // tables, jumping to kmain) uses a reference to the global copy. The
@@ -259,53 +279,29 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
         }
         Console::write_str("\n");
     }
-    store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
     // Kernel-side first marker (EarlyConsole=COM1, the same port as
     // boot-shim's raw_serial; EBS has passed, no concurrent writers).
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: arch_boot entered\n");
     }
-    // Move diagnostic registration earlier (it was at kmain Step -1): any
-    // panic during arch_boot must be visible — the diagnostic dependencies
-    // (EarlyConsole / SMP_STATE boot_unchecked falling back to 0 /
-    // util_stacktrace) are all available at this point, so there is no reason
-    // to register later than the first check that can panic. kmain's
-    // same-named call is idempotent.
-    register_panic_diagnostic();
-    arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(kinfo, root_page);
-    {
-        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
-        Console::write_str("kernel: arch_boot_impl done, jumping to kmain\n");
-    }
-    // SAFETY: arch_boot_impl just enabled paging with both identity
-    // and kernel high mappings. kinfo is the kernel-.bss copy — valid at
-    // the high address. kern_stack_top is a valid high virtual address
-    // from KernelInfo.
-    unsafe { X86_64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+    arch_boot_finish::<minix_arch::arch::boot_arch::X86_64BootArch, X86_64HigherHalf>(
+        kernel_info,
+        root_page,
+    )
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
 pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
-    use minix_arch::arm64::paging::AArch64Paging;
     use crate::aarch64::higher_half::AArch64HigherHalf;
-    use crate::boot::HigherHalf;
     // Same as x86_64: take KernelInfo by value into the kernel .bss global at
     // entry; jumps and page-table builds all use the global copy, eliminating
     // any reference handed across a `noreturn` asm call in a caller-saved
     // register (x0 on aarch64).
-    store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
-    register_panic_diagnostic();
-    arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(kinfo, root_page);
-    // SAFETY: arch_boot_impl just enabled paging with both identity
-    // and kernel high mappings. kinfo is the kernel-.bss copy — valid at
-    // the high address. kern_stack_top is a valid high virtual address
-    // from KernelInfo.
-    unsafe { AArch64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+    arch_boot_finish::<minix_arch::arch::boot_arch::AArch64BootArch, AArch64HigherHalf>(
+        kernel_info,
+        root_page,
+    )
 }
 
 /// Kernel-image-side high-half boot resume (aarch64 only).
@@ -538,14 +534,14 @@ pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
             .unwrap_or(wire.name.len());
         name_store[i].fill(0);
         name_store[i][..name_len].copy_from_slice(&wire.name[..name_len]);
-        // SAFETY: boot-module names are ASCII by protocol; the byte pool is a
-        // kernel `.bss` static, so the resulting `str` lives for the whole run.
-        let name: &'static str = unsafe {
-            core::str::from_utf8_unchecked(core::slice::from_raw_parts(
-                name_store.as_ptr().add(i) as *const u8,
-                name_len,
-            ))
+        // SAFETY: the name pool is a kernel `.bss` static, so the slice lives
+        // for the whole run; `from_utf8` validates the bytes before constructing
+        // the `str` (the handoff protocol says ASCII, but do not rely on it).
+        let bytes: &'static [u8] = unsafe {
+            core::slice::from_raw_parts(name_store.as_ptr().add(i) as *const u8, name_len)
         };
+        let name: &'static str = core::str::from_utf8(bytes)
+            .expect("kernel-image: boot module name must be UTF-8/ASCII per handoff protocol");
         module_store[i] = BootModule {
             name,
             start: PhysBytes(wire.start),
@@ -661,23 +657,15 @@ fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
 
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
 pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
-    use minix_arch::riscv64::paging::Riscv64Paging;
     use crate::riscv64::higher_half::Riscv64HigherHalf;
-    use crate::boot::HigherHalf;
     // Same as x86_64: take KernelInfo by value into the kernel .bss global at
     // entry; jumps and page-table builds all use the global copy, eliminating
     // any reference handed across a `noreturn` asm call in a caller-saved
     // register (a0 on riscv64).
-    store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
-    register_panic_diagnostic();
-    arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(kinfo, root_page);
-    // SAFETY: arch_boot_impl just enabled paging with both identity
-    // and kernel high mappings. kinfo is the kernel-.bss copy — valid at
-    // the high address. kern_stack_top is a valid high virtual address
-    // from KernelInfo.
-    unsafe { Riscv64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+    arch_boot_finish::<minix_arch::arch::boot_arch::Riscv64BootArch, Riscv64HigherHalf>(
+        kernel_info,
+        root_page,
+    )
 }
 
 #[cfg(all(test, feature = "mock"))]
@@ -1928,7 +1916,12 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
     // ── Assertions ──
     // SP must be at a high virtual address (kern_stack_top was used)
     let sp_ok = sp >= kern_high;
-    // SP must be 16-byte aligned (ABI requirement at function entry)
+    // SP entry alignment is ABI-specific:
+    // - x86_64 System V: (RSP + 8) % 16 == 0, i.e. RSP ≡ 8 (mod 16)
+    // - aarch64 AAPCS64 / riscv64 psABI: SP 16-byte aligned, i.e. 0 (mod 16)
+    #[cfg(target_arch = "x86_64")]
+    let sp_aligned = sp & 0xF == 8;
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     let sp_aligned = sp & 0xF == 0;
     // Frame pointer must be zero (set by HigherHalf transition)
     let fp_zero = fp == 0;
@@ -1945,7 +1938,7 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
     } else {
         if !sp_ok { Console::write_str("  FAIL: SP not at high address\n"); }
         if !pc_at_high { Console::write_str("  INFO: PC not at high address (expected in test kernel)\n"); }
-        if !sp_aligned { Console::write_str("  FAIL: SP not 16-byte aligned\n"); }
+        if !sp_aligned { Console::write_str("  FAIL: SP not at the architecture's entry alignment\n"); }
         if !fp_zero { Console::write_str("  FAIL: FP not zero\n"); }
         Console::write_str("### TEST_RESULT: FAIL test-higher-half ###\n");
     }

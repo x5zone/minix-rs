@@ -549,15 +549,16 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
     (base, end)
 }
 
-// ── aarch64 handoff-v1 producer ────────────────────────────────────────
+// ── handoff-v1 producer ────────────────────────────────────────────────
 //
-// The aarch64 UEFI leg no longer snapshots the map and hands over a
-// `BootHandoff` blob. It allocates one handoff arena on the loader-data
-// pages, serializes the T1 protocol into it, classifies the final map inside
-// the EBS pairing loop, builds the bootstrap root, patches the runtime
-// fields in place and jumps into the standalone image with `x0 = arena_pa`.
-// The whole flow lives behind `target_arch = "aarch64"`; x86/riscv keep the
-// in-process `arch_boot` path until the handoff conversion reaches them.
+// The UEFI legs no longer snapshot the map and hand over a `BootHandoff`
+// blob. They allocate one handoff arena on the loader-data pages, serialize
+// the T1 protocol into it, classify the final map inside the EBS pairing
+// loop, build the bootstrap root, patch the runtime fields in place and jump
+// into the standalone image with `x0 = arena_pa` (aarch64) or
+// `rbx = arena_pa` (x86_64; the image trampoline moves it to `rdi`). The
+// riscv64 U-Boot leg uses the same protocol through `uboot_main`. Direct-boot
+// faces (`bootface`/`bootface_a64`) keep the `arch_boot` path.
 
 /// Allocate the handoff arena: exactly [`ARENA_CAP`] bytes of loader data
 /// below the identity/DM-admissible bound (the receiver reads it through the

@@ -31,19 +31,11 @@ fn fn_body(marker: &str) -> &'static str {
 
 #[test]
 fn kernel_entries_store_before_any_page_allocation() {
+    // The three direct `arch_boot` entries now delegate to one generic
+    // `arch_boot_finish` helper; pin the ordering in the helper, then check
+    // that every entry actually calls it.
     let entries: &[(&str, &str)] = &[
-        (
-            "#[cfg(all(not(feature = \"mock\"), target_arch = \"x86_64\"))]\npub fn arch_boot",
-            "arch_boot_impl",
-        ),
-        (
-            "#[cfg(all(not(feature = \"mock\"), target_arch = \"aarch64\"))]\npub fn arch_boot",
-            "arch_boot_impl",
-        ),
-        (
-            "#[cfg(all(not(feature = \"mock\"), target_arch = \"riscv64\"))]\npub fn arch_boot",
-            "arch_boot_impl",
-        ),
+        ("fn arch_boot_finish", "arch_boot_impl"),
         (
             "pub fn arch_boot_resume_high_half",
             "establish_boot_dm",
@@ -74,6 +66,19 @@ fn kernel_entries_store_before_any_page_allocation() {
             store < alloc,
             "M4 pin: {marker} reaches {alloc_site} before store_kernel_info \
              (deep copy must precede the first page allocation)"
+        );
+    }
+
+    // Every direct entry must route through the helper; a future arch_boot
+    // that bypasses it would evade the ordering pin above.
+    for arch in ["x86_64", "aarch64", "riscv64"] {
+        let marker = format!(
+            "#[cfg(all(not(feature = \"mock\"), target_arch = \"{arch}\"))]\npub fn arch_boot"
+        );
+        let body = fn_body(&marker);
+        assert!(
+            body.contains("arch_boot_finish::<"),
+            "M4 pin: {arch} arch_boot no longer calls arch_boot_finish"
         );
     }
 }

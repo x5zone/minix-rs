@@ -19,6 +19,12 @@
 //!    entry-structure equality" — absolute addresses depend on firmware,
 //!    so what can be equivalent is the same set of higher-half
 //!    address-space relations.
+//!
+//! This registry is a **postcondition battery**, not the production path
+//! map. Production x86_64 UEFI uses the v1 cross-image handoff; the inline
+//! entry below is the historical/test-carrier form kept for the battery
+//! (see `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` §4.4 for
+//! the current production entries).
 
 use crate::kernel_info::KernelInfo;
 
@@ -28,6 +34,8 @@ use crate::kernel_info::KernelInfo;
 pub enum BootForm {
     /// (a) x86_64 UEFI inline: `arch_boot` runs directly inside the
     /// boot-shim process; the kernel is statically linked into the PE.
+    /// This is the historical/test-carrier form; production x86_64 UEFI
+    /// uses the v1 cross-image handoff (see the module note above).
     X86UefiInline,
     /// (b) aarch64 UEFI cross-image: the shim produces a `BootHandoffV1`
     /// arena and hands over to `kernel.elf`.

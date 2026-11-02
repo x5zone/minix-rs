@@ -71,9 +71,10 @@ fn main() -> Status {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     // First-light diagnostic: this binary's original implementation was
-    // `loop {}` — a silent hang. The kernel code is linked in-process into
-    // this shim (main() calls arch_boot/kmain directly), so any Phase A
-    // panic lands here and nothing appears on the serial line, making a
+    // `loop {}` — a silent hang. The kernel is a separate high-half image
+    // entered through the v1 handoff; this handler covers shim-side panics
+    // (the kernel has its own panic path after `arch_boot`). Any shim panic
+    // lands here and nothing appears on the serial line, making a
     // "real hang" indistinguishable from a "swallowed panic". Now: (1)
     // format the panic location + message into a stack buffer (no heap
     // dependency, usable before and after EBS) and print it through

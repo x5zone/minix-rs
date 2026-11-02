@@ -189,12 +189,25 @@ pub fn load_segments_into_buffer(elf_data: &[u8], buf: &mut [u8], buf_base_paddr
 
     let mut count = 0;
     for seg in iter {
-        let seg_offset_in_buf = seg.paddr.checked_sub(buf_base_paddr).unwrap_or(0) as usize;
-        let file_end = seg_offset_in_buf + seg.filesz as usize;
-        let mem_end = seg_offset_in_buf + seg.memsz as usize;
+        // A segment below the buffer base is a fixture/input error, not a
+        // reason to copy it to offset 0; skip it rather than silently
+        // relocating it.
+        let Some(seg_offset_in_buf) = seg.paddr.checked_sub(buf_base_paddr) else {
+            continue;
+        };
+        let seg_offset_in_buf = seg_offset_in_buf as usize;
+        let Some(file_end) = seg_offset_in_buf.checked_add(seg.filesz as usize) else {
+            continue;
+        };
+        let Some(mem_end) = seg_offset_in_buf.checked_add(seg.memsz as usize) else {
+            continue;
+        };
 
         if file_end <= buf.len() {
-            let src = &elf_data[seg.offset as usize..(seg.offset + seg.filesz) as usize];
+            let Some(src_end) = (seg.offset as usize).checked_add(seg.filesz as usize) else {
+                continue;
+            };
+            let src = &elf_data[seg.offset as usize..src_end];
             buf[seg_offset_in_buf..file_end].copy_from_slice(src);
         }
 
@@ -217,6 +230,12 @@ pub fn load_segments_into_buffer(elf_data: &[u8], buf: &mut [u8], buf_base_paddr
 /// still in use. In our boot paths firmware identity-maps physical RAM
 /// during boot, and the kernel linker script guarantees non-overlapping
 /// LMA placement.
+///
+/// The caller must also have run [`compute_kernel_layout`] (or an equivalent
+/// validation) first: this function itself does not reject `filesz > memsz`
+/// or address arithmetic overflow. The production path goes through
+/// [`load_kernel_with_loader`], which calls `compute_kernel_layout` before
+/// this function; direct callers must uphold the same precondition.
 ///
 /// Overlap detection: this function now rejects ELFs whose PT_LOAD
 /// segments overlap in physical memory. Without this, a buggy or
@@ -470,6 +489,53 @@ mod tests {
             ),
             "a PT_LOAD-less image must fail with NoLoadSegments"
         );
+    }
+
+    /// A file segment larger than its memory image is rejected before any
+    /// arithmetic or copy; it would otherwise copy past the declared range.
+    #[test]
+    fn test_compute_kernel_layout_rejects_filesz_greater_than_memsz() {
+        let mut elf = build_minimal_elf();
+        elf[64 + 32..64 + 40].copy_from_slice(&0x1000u64.to_le_bytes()); // p_filesz
+        elf[64 + 40..64 + 48].copy_from_slice(&0x800u64.to_le_bytes()); // p_memsz
+        assert!(
+            matches!(
+                compute_kernel_layout(&elf),
+                Err(minix_elf::ElfError::InvalidSegment)
+            ),
+            "filesz > memsz must be rejected with InvalidSegment"
+        );
+    }
+
+    /// `paddr + memsz` overflow must become `InvalidSegment`, not a wrapped
+    /// small `kern_size` that later mis-maps the image.
+    #[test]
+    fn test_compute_kernel_layout_rejects_paddr_memsz_overflow() {
+        let mut elf = build_minimal_elf();
+        elf[64 + 24..64 + 32].copy_from_slice(&(u64::MAX - 0x10).to_le_bytes()); // p_paddr
+        elf[64 + 32..64 + 40].copy_from_slice(&0u64.to_le_bytes()); // p_filesz
+        elf[64 + 40..64 + 48].copy_from_slice(&0x100u64.to_le_bytes()); // p_memsz
+        assert!(
+            matches!(
+                compute_kernel_layout(&elf),
+                Err(minix_elf::ElfError::InvalidSegment)
+            ),
+            "paddr + memsz overflow must be rejected with InvalidSegment"
+        );
+    }
+
+    /// A zero-length memory image at a non-zero paddr yields `kern_size == 0`
+    /// at this layer; the later boot-validation gate (`kern_size > 0`) is what
+    /// rejects it. This also documents why the `checked_sub` guard is
+    /// defensive: with at least one segment, `max(paddr + memsz)` cannot be
+    /// less than `min(paddr)`.
+    #[test]
+    fn test_compute_kernel_layout_zero_size_segment_yields_zero_kern_size() {
+        let mut elf = build_minimal_elf();
+        elf[64 + 32..64 + 40].copy_from_slice(&0u64.to_le_bytes()); // p_filesz
+        elf[64 + 40..64 + 48].copy_from_slice(&0u64.to_le_bytes()); // p_memsz
+        let layout = compute_kernel_layout(&elf).expect("zero-size PT_LOAD is structurally valid");
+        assert_eq!(layout.kern_size, 0);
     }
 
     /// A two-`PT_LOAD` image whose segments share the same physical range,
