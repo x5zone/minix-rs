@@ -116,3 +116,49 @@ fn an_unopenable_operand_only_shows_up_in_the_exit_status() {
     assert_eq!(status, 2);
     assert!(String::from_utf8_lossy(&err).contains("no-such-operand-here"));
 }
+
+#[test]
+fn an_unescaped_parenthesis_in_a_basic_pattern_is_text() {
+    // The basic dialect has no group operator, so `(a)` searches for the four
+    // bytes `(a)` and a lone `)` searches for itself
+    // (`regcomp.c:628-690`'s `default: ordinary`, and `:570-597`'s body stop is
+    // the two-byte pair `\)`). The engine used to refuse `(a)` outright.
+    let path = written("paren", b"(a)\nab\nx)\n(a)b\n");
+    let name = text(&path);
+    let (out, status, err) = run(&["-G", "(a)", &name], b"");
+    assert_eq!(
+        out,
+        b"(a)\n(a)b\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+    let (out, status, _) = run(&["-G", "x)", &name], b"");
+    assert_eq!(out, b"x)\n".to_vec(), "a lone closer is text as well");
+    assert_eq!(status, 0);
+    // The escaped pair is the group, and it still groups.
+    let (out, status, _) = run(&["-G", "y\\(a\\)b", &name], b"");
+    assert_eq!(out, Vec::<u8>::new(), "no line holds `yab`");
+    assert_eq!(status, 1);
+}
+
+#[test]
+fn the_extended_dialect_groups_and_a_stray_closer_is_still_text() {
+    // `regcomp.c:417-427` makes `(` open a group whose body ends at the bare `)`,
+    // while a `)` with no group open is ordinary text because Minix compiles the
+    // library with `-DPOSIX_MISTAKE` (`Makefile.inc:7`, removing the error arm at
+    // `regcomp.c:428-438`).
+    let path = written("ere-paren", b"abc\na(b)c\nx)\n");
+    let name = text(&path);
+    let (out, status, err) = run(&["-E", "a(b)c", &name], b"");
+    assert_eq!(
+        out,
+        b"abc\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+    let (out, status, _) = run(&["-E", "x)", &name], b"");
+    assert_eq!(out, b"x)\n".to_vec(), "a stray closer must not be an error");
+    assert_eq!(status, 0);
+}

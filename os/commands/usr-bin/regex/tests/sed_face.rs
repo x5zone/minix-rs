@@ -394,13 +394,19 @@ fn a_compile_refusal_carries_the_line_and_the_script_name_as_c_prints_them() {
     // substitute pattern` (`:331`), the newline-or-backslash delimiter (`:325`),
     // and the occurrence-number overflow (`:601`).
     let cases = [
-        ("s/a/b/x", "sed: 1: \"s/a/b/x\": bad flag in substitute command: 'x'\n"),
+        (
+            "s/a/b/x",
+            "sed: 1: \"s/a/b/x\": bad flag in substitute command: 'x'\n",
+        ),
         (
             "dx",
             "sed: 1: \"dx\": extra characters at the end of d command\n",
         ),
         ("Z", "sed: 1: \"Z\": invalid command code Z\n"),
-        ("s/a/b", "sed: 1: \"s/a/b\": unterminated substitute pattern\n"),
+        (
+            "s/a/b",
+            "sed: 1: \"s/a/b\": unterminated substitute pattern\n",
+        ),
         (
             "s\\a/b/",
             "sed: 1: \"s\\a/b/\": substitute pattern can not be delimited by newline or backslash\n",
@@ -551,8 +557,14 @@ fn an_unescaped_newline_inside_a_substitution_prints_c_s_own_line() {
     // `unterminated substitute pattern`, because the newline is met first. The
     // name slot carries the whole script including the newline, as `fname` does.
     let cases = [
-        ("s/a\nb/x", "sed: 1: \"s/a\nb/x\": unescaped newline inside substitute pattern\n"),
-        ("s/a/b\nc", "sed: 1: \"s/a/b\nc\": unescaped newline inside substitute pattern\n"),
+        (
+            "s/a\nb/x",
+            "sed: 1: \"s/a\nb/x\": unescaped newline inside substitute pattern\n",
+        ),
+        (
+            "s/a/b\nc",
+            "sed: 1: \"s/a/b\nc\": unescaped newline inside substitute pattern\n",
+        ),
     ];
     for (script, expected) in cases {
         let (out, status, err) = run(&[script], b"axb\nab\n");
@@ -569,5 +581,28 @@ fn an_unescaped_newline_inside_a_substitution_prints_c_s_own_line() {
         "stderr was {:?}",
         String::from_utf8_lossy(&err)
     );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn unescaped_parentheses_in_a_basic_pattern_are_pattern_text() {
+    // The engine used to reject `(a)` as an invalid expression. In C's basic
+    // dialect the parenthesis bytes are ordinary (`regcomp.c:628-690`'s
+    // `default: ordinary`), so `s/(a)/X/` finds nothing in `a(b)` and passes the
+    // line through, while `s/a(b)/X/` rewrites the literal `a(b)`.
+    let (out, status, err) = run(&["s/(a)/X/"], b"a(b)\nab\n");
+    assert_eq!(
+        out,
+        b"a(b)\nab\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+    let (out, status, _) = run(&["s/a(b)/X/"], b"a(b)\nab\n");
+    assert_eq!(out, b"X\nab\n".to_vec(), "the literal form must match");
+    assert_eq!(status, 0);
+    // The escaped pair remains the group operator.
+    let (out, status, _) = run(&["s/\\(a\\)b/[\\1]/"], b"ab\n");
+    assert_eq!(out, b"[a]\n".to_vec(), "the escaped group still captures");
     assert_eq!(status, 0);
 }

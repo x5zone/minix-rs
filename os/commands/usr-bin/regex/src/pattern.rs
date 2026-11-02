@@ -348,7 +348,26 @@ impl Compiler<'_> {
             None => return Ok(None),
             Some(byte) => byte,
         };
-        if byte == b')' || (self.pattern.extended && byte == b'|') {
+        // Only a character that can actually end the current run stops the scan.
+        //
+        // In the basic dialect groups open with `\(` and close with `\)`:
+        // `regcomp.c:570-597`'s loop stops on `SEETWO(end1, end2)`, which for a
+        // group body is the **two-byte** pair `\` `)`, and the atom switch
+        // (`regcomp.c:628-690`) has no case for a bare `)` — it falls to
+        // `default: ordinary(...)`. So an unescaped `)` is ordinary text at any
+        // depth there, and the closer itself is consumed by the escape path
+        // below.
+        //
+        // In the extended dialect a bare `)` closes a group. Outside any group it
+        // is still ordinary, because Minix builds this library with
+        // `-DPOSIX_MISTAKE` (`minix3/lib/libc/regex/Makefile.inc:7`), which
+        // compiles out `regcomp.c:428-438`'s "unmatched )" error.
+        if byte == b')' && self.pattern.extended && self.group_depth > 0 {
+            return Ok(None);
+        }
+        if byte == b'|' && self.pattern.extended {
+            // `p_ere` breaks its concatenation loop on `|` at every depth
+            // (`regcomp.c:361`), including inside a group.
             return Ok(None);
         }
         if byte == b'*' || (self.pattern.extended && (byte == b'+' || byte == b'?')) {
@@ -1008,6 +1027,69 @@ mod tests {
         let pattern = compile_extended("(a*)*b$").unwrap();
         let long = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!";
         assert!(!pattern.is_match(long));
+    }
+
+    #[test]
+    fn test_basic_dialect_reads_unescaped_parentheses_as_text() {
+        // C's BRE atom switch has no case for a bare `)`, and a group body stops
+        // only on the **two-byte** pair `\` `)` (`regcomp.c:570-597`'s
+        // `SEETWO(end1, end2)`, `:628-690`'s `default: ordinary`), so both
+        // parenthesis bytes are ordinary text — outside a group and inside one.
+        let pattern = compile_basic("a(b)").unwrap();
+        assert_eq!(pattern.group_count, 0);
+        assert!(pattern.find("a(b)").is_some());
+        assert!(pattern.find("ab").is_none());
+        // A lone closer at the top level is text too.
+        let closer = compile_basic("x)").unwrap();
+        assert!(closer.find("x)").is_some());
+        assert!(closer.find("x").is_none());
+        // The other bytes the extended dialect made operators are ordinary here
+        // as well, which is what the same `default: ordinary` arm gives
+        // (`regcomp.c:628-690`): alternation, the two repetition letters, and the
+        // braces. Each row is (pattern, the text it looks for, the same text with
+        // the metacharacter bytes dropped).
+        for (pattern, literal, stripped) in [
+            ("x|y", "x|y", "xy"),
+            ("p+q", "p+q", "pq"),
+            ("r{2}", "r{2}", "r2"),
+        ] {
+            let compiled = compile_basic(pattern)
+                .unwrap_or_else(|error| panic!("基本式 {pattern:?} 该能编译：{error:?}"));
+            assert!(
+                compiled.find(literal).is_some(),
+                "{pattern:?} 要找的是字面 {literal:?}"
+            );
+            assert!(
+                compiled.find(stripped).is_none(),
+                "{pattern:?} 不该把 {stripped:?} 当运算符读"
+            );
+        }
+        // The body of `\(a)b\)` is `a)b`: the bare `)` does not end the group,
+        // the closing pair does.
+        let group = compile_basic("\\(a)b\\)").unwrap();
+        assert_eq!(group.group_count, 1);
+        assert!(group.find("a)b").is_some());
+        assert!(group.find("ab").is_none());
+    }
+
+    #[test]
+    fn test_extended_dialect_closes_groups_and_lets_a_stray_paren_through() {
+        // The extended dialect does use bare parentheses: `regcomp.c:417-427`'s
+        // `case '('` recurses with `stop = ')'`, and the body must end on it.
+        let group = compile_extended("a(b)c").unwrap();
+        assert_eq!(group.group_count, 1);
+        assert!(group.find("abc").is_some());
+        assert!(group.find("a(b)c").is_none());
+        // A `)` with no group open is ordinary text here, because Minix builds the
+        // library with `-DPOSIX_MISTAKE` (`minix3/lib/libc/regex/Makefile.inc:7`),
+        // which compiles out `regcomp.c:428-438`'s unmatched-`)` error.
+        let stray = compile_extended("x)").unwrap();
+        assert!(stray.find("x)").is_some());
+        assert!(stray.find("x").is_none());
+        // An escaped one is text in this dialect too.
+        let escaped = compile_extended("\\)").unwrap();
+        assert_eq!(escaped.group_count, 0);
+        assert!(escaped.find(")").is_some());
     }
 
     #[test]
