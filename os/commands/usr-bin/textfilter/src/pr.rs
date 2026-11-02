@@ -36,6 +36,12 @@ pub struct PrOptions {
     pub page_len: usize,
     /// `-t`: no header, no trailer, no padding.
     pub no_header: bool,
+    /// `-r`: do not report a file that could not be opened. C's `case 'r'` is only
+    /// `++nodiag` (`pr.c:1775-1777`), and `nodiag` is consulted at exactly one
+    /// place (`pr.c:1364-1369`): after `++errcnt` it `continue`s **before** the
+    /// `pr: Cannot open %s, %s` line. So the diagnostic goes away while the exit
+    /// status stays failure — the flag never makes a bad operand good.
+    pub nodiag: bool,
     /// `-N`: column count for vertical multi-column output (`1`, the default,
     /// is the single-column path). When `> 1`, `paginate` lays the body out
     /// down `columns` columns via `vertcol`.
@@ -99,6 +105,7 @@ impl Default for PrOptions {
             header: Vec::new(),
             page_len: LINES,
             no_header: false,
+            nodiag: false,
             columns: 1,
             across: false,
             double_space: false,
@@ -525,8 +532,11 @@ pub fn parse_pr_args<'a>(args: &'a [&'a [u8]]) -> Result<PrArgs<'a>, PrError> {
                 }
                 // Letters C's optstring carries but this deciding half does not
                 // implement are named separately from letters `egetopt` itself would
-                // answer `?` for (`pr.c:1655`, `1805-1809`).
-                b'p' | b'r' | b'T' => {
+                // answer `?` for (`pr.c:1655`, `1805-1809`). `-r` left this list:
+                // C's arm is a flag with no value and no other effect than the
+                // suppressed line, so it needs no deciding-half machinery.
+                b'r' => options.nodiag = true,
+                b'p' | b'T' => {
                     return Err(PrError::Unmodelled);
                 }
                 _ => {
@@ -1140,6 +1150,38 @@ pub fn render_page(page: &Page, offset: usize) -> Vec<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `-r` left the unmodelled group: it is a plain flag in C (`pr.c:1775-1777`),
+    /// it clusters with the other flags (`-tr`, `-rt`), and its glued remainder is
+    /// still scanned letter by letter. The two letters that really are unmodelled
+    /// (`-p`'s per-page prompt, `-T`'s time format) keep answering
+    /// `Unmodelled`, so removing `r` from that arm did not widen it.
+    #[test]
+    fn dash_r_is_a_flag_and_the_unmodelled_arm_stays_narrow() {
+        let parsed = parse_pr_args(&[b"-r"]).expect("-r 该被接受");
+        assert!(parsed.options.nodiag, "-r 立不起 nodiag");
+        for cluster in [
+            [b"-tr".as_slice()].as_slice(),
+            [b"-rt".as_slice()].as_slice(),
+            [b"-r".as_slice(), b"-t".as_slice()].as_slice(),
+        ] {
+            let parsed = parse_pr_args(&cluster).expect("聚簇该照样吃下");
+            assert!(
+                parsed.options.nodiag && parsed.options.no_header,
+                "{cluster:?}"
+            );
+        }
+        // 默认关着，且没有别的字母被顺手点亮。
+        let plain = parse_pr_args(&[b"-t"]).expect("只给 -t");
+        assert!(!plain.options.nodiag, "没给 -r 就不该静默");
+        for letter in [b"-p".as_slice(), b"-T".as_slice()] {
+            assert!(
+                matches!(parse_pr_args(&[letter]), Err(PrError::Unmodelled)),
+                "{letter:?} 仍属未建模那一支"
+            );
+        }
+    }
+
     use super::*;
 
     fn paginate_lines(lines: &[&str], options: &PrOptions) -> Vec<Page> {
