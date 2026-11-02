@@ -237,4 +237,5 @@
 - B 板 B3/B6：等 A 板 C-57 与 RS/xtask 入表件；A20 后端先行件（VBox/HGFS）属 16-stage 真机面。
 
 **丙、本会话确认仍可领（下一会话的积压，按体量排）**：18 篇实测的 **22 处选项级 not-wired 报文**（`date` 设钟已随批次四百九十九闭，余 22 处摊 14 枚 bin）——`du -x`（FTS_XDEV，du 的 dents 走表加 st_dev 比较，宿主可测）、`rm -x` 同族、`rm -P`（覆写后删）、`cp -a`（符号链遍历/硬链复制）、`chmod` 的 lchmod 族、`cal` 选项形、`chown -R` 族（fts 递归，体量大）、`env`/`find -exec`/editor shell 腿（全部依赖进程创建链，属 NS5 面）。每处为独立可领轮；C-46 的 `E-FSCMDS` 类先例证明这类「选项接线」是标准单轮体量。
-- 三件套：本表与 `grep -rn "not wired" os/commands --include=*.rs | grep -v target` 的 22 处读数、核实日 `2026-11-03`、基线 `c333be565`。
+- 三件套：本表与 `grep -rn "not wired" os/commands --include=*.rs | grep -v target` 读数、核实日 `2026-11-03`、基线 `c333be565`。
+- **`2026-11-03` 收口刷新（第 17–20 轮，基线 `52b4586a5`）**：丙组四件已领已闭——`date` 设钟腿（批次四百九十九）、`du -x`（五百）、`rm -x`（五百零一）、`rm -P`（五百零二）；`grep -rn "not wired" os/commands --include=*.rs | grep -v target | grep -vE '^\S+:\s*//'` → **19 处**（自 23 降）。余件难度分层：`chmod`/`cp -a`/`rm -W` 走遍历与符号链族（宿主可测、体量中）；`env`/`find -exec`/editor shell/`renice -u` 依赖进程创建链或口令库（NS5 面，跨会话前置）。下一会话从分层清单直领。
