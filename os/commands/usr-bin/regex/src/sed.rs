@@ -128,13 +128,21 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), RegexError> 
 /// advances past empty matches by one character, mirroring
 /// `process.c:418-422`, so `s/x*/-/g` terminates. Output truncates (never
 /// overflows) when the result exceeds `out`.
+///
+/// The haystack is **bytes**, not a `&str`, because a chained script feeds one
+/// command's output straight into the next: C carries the pattern space as a
+/// byte buffer (`process.c` `SPACE` with `ps`/`psl`), and re-decoding between
+/// commands would turn any split multibyte sequence into a question mark or
+/// drop the line. Matching itself was already byte-oriented
+/// ([`Pattern::find_bytes`]); this only stops the carrier from pretending
+/// otherwise.
 pub fn apply(
     pattern: &Pattern,
     subst: &Subst<'_>,
-    haystack: &str,
+    haystack: &[u8],
     out: &mut [u8],
 ) -> (usize, bool) {
-    let bytes = haystack.as_bytes();
+    let bytes = haystack;
     let mut written = 0usize;
     let mut emit = |slice: &[u8]| {
         for byte in slice {
@@ -278,32 +286,60 @@ pub enum ScriptError {
     BadSubst,
 }
 
-/// Split a sed script on `;` and newlines into [`Command`]s written into the
-/// caller's `out` slice (heap-free, like the rest of the crate), returning the
-/// count. Leading blanks are trimmed; empty segments (a trailing/doubled
-/// separator) are skipped as C's line-oriented read yields no command for them.
-/// Purely the no-address subset: `s…`, `d`, `p`, `=`.
+/// Split a sed script into [`Command`]s written into the caller's `out` slice
+/// (heap-free, like the rest of the crate), returning the count. Purely the
+/// no-address subset: `s…`, `d`, `p`, `=`.
+///
+/// The walk follows C's `compile_stream` **one command at a time** rather than
+/// cutting the text on `;` first. `compile.c:177-184`'s `semicolon:` label eats
+/// blanks, swallows a doubled separator, treats `#` as "this line is finished",
+/// and only then reads a command; each command's own reader consumes its
+/// delimiters (`compile_subst` stops only at the delimiter), so a `;` inside
+/// `s/a;b/x/` is pattern text and must not split anything. Cutting the whole
+/// script up front would read `s/a;b/x/` as two broken commands.
+///
+/// After a command, blanks and tabs are eaten and a separator, a line end, or
+/// the end of the script must follow — C's `compile_flags` return points and the
+/// `EMPTY` case's `switch` (`compile.c:251-266`) accept exactly those, and its
+/// `default` arm is the fatal `extra characters at the end of %c command`. Any
+/// other byte here is refused as `ScriptError::NotModelled`, the same loud
+/// rejection this shell gives for an address or an unmodelled verb.
 pub fn parse_script<'a>(script: &'a str, out: &mut [Command<'a>]) -> Result<usize, ScriptError> {
+    let bytes = script.as_bytes();
+    let mut index = 0usize;
     let mut count = 0usize;
-    for segment in script.split([';', '\n']) {
-        let seg = segment.trim_start();
-        if seg.is_empty() {
-            continue;
+    while index < bytes.len() {
+        index = skip_blanks(bytes, index);
+        if index >= bytes.len() {
+            break;
         }
-        let command = match seg.as_bytes()[0] {
+        match bytes[index] {
+            b';' => {
+                index += 1;
+                continue;
+            }
+            b'#' => {
+                // C's `if (*p == '#') continue;` goes back for the **next line**,
+                // so everything after the sign on this one is dropped — including
+                // any separator that would have started another command.
+                let Some(at) = bytes[index..].iter().position(|&byte| byte == b'\n') else {
+                    break;
+                };
+                index += at;
+                continue;
+            }
+            _ => {}
+        }
+        let command = match bytes[index] {
             b's' => {
                 let (subst, consumed) =
-                    parse_subst(&seg[1..]).map_err(|_| ScriptError::BadSubst)?;
-                if consumed != seg.len() - 1 {
-                    return Err(ScriptError::NotModelled);
-                }
+                    parse_subst(&script[index + 1..]).map_err(|_| ScriptError::BadSubst)?;
+                index += 1 + consumed;
                 Command::Subst(subst)
             }
-            b'd' | b'p' | b'=' => {
-                if seg.len() != 1 {
-                    return Err(ScriptError::NotModelled);
-                }
-                match seg.as_bytes()[0] {
+            byte @ (b'd' | b'p' | b'=') => {
+                index += 1;
+                match byte {
                     b'd' => Command::Delete,
                     b'p' => Command::Print,
                     _ => Command::PrintLineNum,
@@ -312,10 +348,101 @@ pub fn parse_script<'a>(script: &'a str, out: &mut [Command<'a>]) -> Result<usiz
             // `/re/`, a digit, `$` → address; any other verb → unmodelled.
             _ => return Err(ScriptError::NotModelled),
         };
+        index = skip_spaces(bytes, index);
+        if index < bytes.len() && !matches!(bytes[index], b';' | b'\n') {
+            return Err(ScriptError::NotModelled);
+        }
         *out.get_mut(count).ok_or(ScriptError::NotModelled)? = command;
         count += 1;
     }
     Ok(count)
+}
+
+/// Blanks that separate commands within a line, C's `isspace` under the C
+/// locale (`compile.c:152-156`'s `EATSPACE`). A newline is **not** eaten here:
+/// in C each script line arrives as its own buffer, so a line end always means
+/// "this line is over", never "keep looking on the next one".
+fn skip_blanks(bytes: &[u8], mut index: usize) -> usize {
+    while matches!(bytes.get(index), Some(&byte) if matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
+    {
+        index += 1;
+    }
+    index
+}
+
+/// The blanks C eats between a command and its separator (`compile.c:253` and
+/// `:347`'s `EATSPACE()`), restricted to what can sit on one line.
+fn skip_spaces(bytes: &[u8], mut index: usize) -> usize {
+    while matches!(bytes.get(index), Some(&b' ' | &b'\t')) {
+        index += 1;
+    }
+    index
+}
+
+/// Whether the script asks for quiet through C's `#n` line. `cu_fgets` tests the
+/// first two bytes of each compilation unit (`main.c:286-287`,
+/// `if (linenum == 0 && s[0] == '#' && s[1] == 'n') nflag = 1;`), so the line is
+/// both a comment **and** an option switch — a scanner that skipped `#` lines
+/// without this test would silently lose the switch.
+pub fn script_quiet_directive(script: &str) -> bool {
+    script.starts_with("#n")
+}
+
+/// What one command contributes to the cycle a line is going through. C keeps
+/// these decisions inside `process()`'s `switch` with a `pd` flag ("pattern
+/// space deleted") that the print statements read; pulling them out into one
+/// pure step lets the rules be gated without a process, and the execution layer
+/// only has to carry `pd` and the pattern space across the steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CycleStep {
+    /// Emit the line number on its own line: C's `case '='` (`process.c:264-265`), which checks **neither** `nflag` nor `pd`.
+    pub print_number: bool,
+    /// Emit the pattern space as it stands after this command: C's `OUT()` in
+    /// `substitute()` for the `p` flag (`process.c:466-467`, reached only when a
+    /// replacement happened) and `case 'p'` (`process.c:191-194`).
+    pub print_line: bool,
+    /// The pattern space is deleted, which ends the cycle at `new:` and skips
+    /// the automatic print: C's `case 'd': pd = 1; goto new;`
+    /// (`process.c:142-144`).
+    pub ends_cycle: bool,
+}
+
+/// Decide one step. `replaced` is what C's `substitute()` returned — the `p`
+/// flag prints only when a replacement actually happened, and the empty-pattern
+/// walk that found nothing prints nothing even with `-n` off.
+#[must_use]
+pub fn step(command: &Command, replaced: bool) -> CycleStep {
+    match command {
+        Command::Subst(subst) => CycleStep {
+            print_number: false,
+            print_line: subst.print && replaced,
+            ends_cycle: false,
+        },
+        Command::Delete => CycleStep {
+            print_number: false,
+            print_line: false,
+            ends_cycle: true,
+        },
+        Command::Print => CycleStep {
+            print_number: false,
+            print_line: true,
+            ends_cycle: false,
+        },
+        Command::PrintLineNum => CycleStep {
+            print_number: true,
+            print_line: false,
+            ends_cycle: false,
+        },
+    }
+}
+
+/// The automatic print at the end of a cycle: C's `new: if (!nflag && !pd) OUT();`
+/// (`process.c:270`). Both conditions are load-bearing: `-n` turns the automatic
+/// print off for the whole run, and a deleted pattern space prints nothing even
+/// without `-n`.
+#[must_use]
+pub fn auto_print(quiet: bool, deleted: bool) -> bool {
+    !quiet && !deleted
 }
 
 #[cfg(test)]
@@ -331,7 +458,7 @@ mod tests {
         };
         let (subst, _) = parse_subst(command).unwrap();
         let mut out = [0u8; 512];
-        let (len, replaced) = apply(&pattern, &subst, line, &mut out);
+        let (len, replaced) = apply(&pattern, &subst, line.as_bytes(), &mut out);
         (String::from_utf8_lossy(&out[..len]).into_owned(), replaced)
     }
 
@@ -439,5 +566,116 @@ mod tests {
             parse_script("s/a/b/x", &mut cmds),
             Err(ScriptError::BadSubst)
         );
+    }
+
+    #[test]
+    fn test_semicolon_inside_a_substitution_does_not_split() {
+        // C's `compile_subst` only stops at the delimiter, so the `;` here is
+        // pattern text; a scanner that cut the script on `;` first would see two
+        // broken commands instead of one.
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        assert_eq!(parse_script("s/a;b/x/", &mut cmds).unwrap(), 1);
+        assert!(matches!(cmds[0], Command::Subst(_)));
+        // And the separator that follows the finished command still works.
+        assert_eq!(parse_script("s/a;b/x/;d", &mut cmds).unwrap(), 2);
+        assert!(matches!(cmds[1], Command::Delete));
+    }
+
+    #[test]
+    fn test_separator_chain_swallows_blanks_and_doubled_separators() {
+        // `semicolon:` eats blanks, then a `;`, then goes back for more of the
+        // same (`compile.c:177-184`), and a command may be followed by blanks
+        // before its separator (`compile.c:253`, `:347`).
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        assert_eq!(parse_script(" s/a/b/ ; p ;; d", &mut cmds).unwrap(), 3);
+        assert!(matches!(cmds[1], Command::Print));
+        assert!(matches!(cmds[2], Command::Delete));
+        // Trailing separators and line ends give no command of their own.
+        assert_eq!(parse_script("p;\n", &mut cmds).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_comment_ends_the_line_it_sits_on() {
+        // C's `if (*p == '#') continue;` reads the **next line**, so a `;` after
+        // the sign never reaches the parser (`compile.c:178-180`).
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        assert_eq!(parse_script("p;#x;d", &mut cmds).unwrap(), 1);
+        // A comment drops the rest of **its own** line, and the command on the
+        // next line still arrives. Writing `"p\n#x;d"` would expect two and be
+        // wrong: that `d` sits after the sign, so C's `continue` has already
+        // abandoned it.
+        assert_eq!(parse_script("p\n#x;\nd", &mut cmds).unwrap(), 2);
+        assert!(matches!(cmds[1], Command::Delete));
+    }
+
+    #[test]
+    fn test_quiet_directive_reads_only_the_script_start() {
+        // `main.c:286-287` tests the first two bytes of the unit, and the
+        // comparison is literal, so `#N` is just a comment.
+        assert!(script_quiet_directive("#n"));
+        assert!(script_quiet_directive("#n;p"));
+        assert!(!script_quiet_directive("p;#n"));
+        assert!(!script_quiet_directive("#N"));
+        assert!(!script_quiet_directive(" n"));
+        // The same text as a script is one comment line: no command at all.
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        assert_eq!(parse_script("#n;p", &mut cmds).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_step_carries_the_c_print_rules() {
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        assert_eq!(parse_script("s/a/b/p", &mut cmds).unwrap(), 1);
+        let with_flag = cmds[0];
+        assert_eq!(parse_script("s/a/b/", &mut cmds).unwrap(), 1);
+        let without_flag = cmds[0];
+        // The `p` flag prints only on a replacement (`substitute()` reaches its
+        // `OUT()` only after one happened); nothing else about the command prints.
+        assert_eq!(
+            step(&with_flag, true),
+            CycleStep {
+                print_number: false,
+                print_line: true,
+                ends_cycle: false,
+            }
+        );
+        assert_eq!(
+            step(&with_flag, false),
+            CycleStep {
+                print_number: false,
+                print_line: false,
+                ends_cycle: false,
+            }
+        );
+        assert!(!step(&without_flag, true).print_line);
+        // A bare `p` prints whatever stands in the space, and `=` prints the
+        // number with no condition on quiet or deleted; `d` ends the cycle.
+        assert!(step(&Command::Print, false).print_line);
+        assert!(step(&Command::PrintLineNum, false).print_number);
+        assert!(step(&Command::Delete, false).ends_cycle);
+    }
+
+    #[test]
+    fn test_auto_print_needs_both_conditions() {
+        // `new: if (!nflag && !pd) OUT();`
+        assert!(auto_print(false, false));
+        assert!(!auto_print(true, false));
+        assert!(!auto_print(false, true));
+        assert!(!auto_print(true, true));
+    }
+
+    #[test]
+    fn test_flag_after_a_space_is_a_known_divergence() {
+        // C's `compile_flags` runs `EATSPACE()` at the top of its loop (an
+        // extension marked as such at `compile.c:576`), so `s/a/b/ p` sets the
+        // `p` flag there. This build stops the flag run at the space and then
+        // refuses the trailing text, registered as `SED-FLAG-SPACE-EXTENSION`.
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        assert_eq!(
+            parse_script("s/a/b/ p", &mut cmds),
+            Err(ScriptError::NotModelled)
+        );
+        // Without the letter the blank is only a separator, which is accepted.
+        assert_eq!(parse_script("s/a/b/ ;p", &mut cmds).unwrap(), 2);
     }
 }

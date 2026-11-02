@@ -1,19 +1,27 @@
-//! Minix-RS sed — substitute scripts over stdin and file operands.
+//! Minix-RS sed — scripts of substitutions over stdin and file operands.
 //!
-//! Ground truth: `minix3/usr.bin/sed/` (NetBSD `main.c`/`process.c`). The
-//! substitution engine is the library's (`parse_subst` + `apply`, which
-//! mirror `process.c:418-422` including the empty-match advance). This
-//! build carries the `s` command only, with its `p` flag and the `-n`
-//! option interacting exactly as the C: without `-n` every result line
-//! prints; with `-n` only lines whose `p` flag fired print. Chained
-//! commands (`;`), addresses, and the other verbs are not modelled and are
-//! rejected with an explicit message instead of being ignored. With file
-//! operands each is opened in turn and its substituted lines stream to
-//! standard output (`main.c` `mf_fgets`); an unopenable operand warns and
-//! only sets the exit status, and the run continues to the next file. With
-//! no operands sed reads stdin. In-place editing (`-i`/`-I`) needs the
-//! create/rename surface and is not modelled; net output carries no
-//! filename prefix, unlike `grep`.
+//! Ground truth: `minix3/usr.bin/sed/` (NetBSD `compile.c` for reading the
+//! script, `process.c` for running it). The deciding half is the library's:
+//! `parse_script` walks the compile loop (commands separated by `;` or a line
+//! end, blanks and comments included), and `apply` mirrors the substitution
+//! execution including the empty-match advance that keeps `s/x*/-/g` from
+//! looping forever. This build carries `s` (with its `p` flag), `d`, `p` and `=`
+//! over one line at a time, in list order, each carrying the pattern space to the
+//! next — the print rules are C's: without `-n` every surviving line prints once
+//! at the end of the cycle (`process.c:269-270`), `s///p` prints again on top of
+//! that, `d` ends the cycle and takes that automatic print away, and `=` prints
+//! the line number unconditionally. Addresses and the remaining verbs are not
+//! modelled and are rejected with a message on standard error rather than
+//! silently dropped. With file operands each is read in turn and the results
+//! stream to standard output (`main.c` `mf_fgets` on the non-in-place path); an
+//! unopenable operand warns, sets the exit status, and the run continues to the
+//! next. The line number runs across operands because C clears it only when
+//! editing in place (`main.c:441-443`). With no operands sed reads stdin, and a
+//! bare `-` is an operand name, not a stdin alias. In-place editing (`-i`/`-I`)
+//! needs the create/rename surface and is not modelled; net output carries no
+//! filename prefix, unlike `grep`. One script carries at most
+//! [`MAX_SCRIPT_COMMANDS`] commands, because this crate's deciding half keeps to
+//! fixed arrays where C links the compiled commands as it goes.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -26,8 +34,11 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_regex::pattern::{compile_basic, Pattern};
-use minix_regex::sed::{apply, parse_subst, Subst};
+use minix_regex::pattern::{Pattern, compile_basic};
+use minix_regex::sed::{
+    Command, MAX_SCRIPT_COMMANDS, ScriptError, apply, auto_print, parse_script,
+    script_quiet_directive, step,
+};
 
 /// Argument-splitting errors for the sed front end.
 #[derive(PartialEq, Debug)]
@@ -79,40 +90,49 @@ fn run() -> ! {
             support::terminate(1);
         }
     };
-    // Only the substitute verb is modelled; anything else is a loud
-    // failure, never a silent pass-through.
-    if !script.starts_with('s') {
-        support::emit(b"sed: only s (substitute) scripts are modelled (see 08 sec 4.4)\n");
-        support::terminate(1);
-    }
-    let (subst, consumed) = match parse_subst(&script[1..]) {
-        Ok(parsed) => parsed,
-        Err(_) => {
-            support::emit(b"sed: bad s command\n");
-            support::terminate(1);
-        }
+    // The whole script is turned into commands before a single line is read,
+    // the way C's `main.c:207` runs `compile()` once and only then `process()`.
+    // An address, a verb beyond `s`/`d`/`p`/`=`, or trailing text after a command
+    // is a loud failure, never a silent pass-through.
+    let mut slots = [Command::Delete; MAX_SCRIPT_COMMANDS];
+    let count = match parse_script(script, &mut slots) {
+        Ok(count) => count,
+        Err(ScriptError::BadSubst) => bad_script(),
+        Err(ScriptError::NotModelled) => not_modelled(),
     };
-    if consumed != script.len() - 1 {
-        support::emit(b"sed: chained commands are not modelled (see 08 sec 4.4)\n");
-        support::terminate(1);
+    // `-n` from the command line, or the `#n` line C honours at the start of a
+    // script unit (`main.c:286-287`).
+    let quiet = quiet || script_quiet_directive(script);
+    // Every `s` compiles its pattern once here; C does the same inside
+    // `compile_subst`, and a chain would otherwise recompile per line per
+    // command.
+    let mut program: Vec<Instruction<'_>> = Vec::new();
+    for command in slots[..count].iter().copied() {
+        let pattern = match command {
+            Command::Subst(subst) => match compile_basic(subst.pattern_text) {
+                Ok(pattern) => Some(pattern),
+                Err(_) => bad_script(),
+            },
+            _ => None,
+        };
+        program.push(Instruction { command, pattern });
     }
-    let pattern: Pattern = match compile_basic(subst.pattern_text) {
-        Ok(pattern) => pattern,
-        Err(_) => {
-            support::emit(b"sed: bad s command\n");
-            support::terminate(1);
-        }
-    };
 
     let mut scratch = vec![0u8; 4 * 1024 * 1024];
+    let mut number = 0u64;
     let mut rval = 0;
     if files.is_empty() {
         let input = support::read_stdin();
-        sed_lines(&input, quiet, &pattern, &subst, &mut scratch);
+        sed_lines(&input, quiet, &program, &mut scratch, &mut number);
     } else {
         for file in &files {
             match support::read_file(file) {
-                Ok(data) => sed_lines(&data, quiet, &pattern, &subst, &mut scratch),
+                Ok(data) => {
+                    // The line number is **not** reset between operands: C clears
+                    // `linenum` only on the in-place path (`main.c:441-444`), so an
+                    // operand list read to standard output keeps counting.
+                    sed_lines(&data, quiet, &program, &mut scratch, &mut number);
+                }
                 Err(()) => {
                     // C `mf_fgets`: an unopenable operand warns and flags the
                     // exit status but does not stop the run (main.c:449-452).
@@ -125,19 +145,90 @@ fn run() -> ! {
     support::terminate(rval);
 }
 
-/// Substitutes every line of one collected stream and emits the printed
-/// lines. The print decision mirrors the C (`process.c`): without `-n` every
-/// result line prints; with `-n` only lines whose `p` flag fired.
-fn sed_lines(input: &[u8], quiet: bool, pattern: &Pattern, subst: &Subst<'_>, scratch: &mut [u8]) {
+/// One command with its pattern already compiled, so the cycle loop never
+/// touches the regex compiler.
+struct Instruction<'a> {
+    command: Command<'a>,
+    pattern: Option<Pattern>,
+}
+
+/// Substitutes every line of one collected stream and emits what the cycle
+/// decides to print. The loop is C's `process()` inner walk (`process.c:100-346`):
+/// commands run in order, each carrying the pattern space forward, `d` ends the
+/// cycle and suppresses the automatic print, and the line number runs across the
+/// whole operand list because only the in-place path clears it.
+fn sed_lines(
+    input: &[u8],
+    quiet: bool,
+    program: &[Instruction<'_>],
+    scratch: &mut [u8],
+    number: &mut u64,
+) {
+    let mut space: Vec<u8> = Vec::new();
     for line in support::lines_of(input) {
-        let (len, replaced) = apply(pattern, subst, line, scratch);
-        let prints = !quiet || (replaced && subst.print);
-        if prints {
-            let mut result = scratch[..len].to_vec();
-            result.push(b'\n');
-            support::emit(&result);
+        *number += 1;
+        space.clear();
+        space.extend_from_slice(line.as_bytes());
+        let mut deleted = false;
+        for instruction in program {
+            let replaced = match instruction.command {
+                Command::Subst(subst) => {
+                    let pattern = instruction
+                        .pattern
+                        .as_ref()
+                        .expect("每个 s 命令都带着编译好的模式");
+                    let (len, replaced) = apply(pattern, &subst, &space, scratch);
+                    space.clear();
+                    space.extend_from_slice(&scratch[..len]);
+                    replaced
+                }
+                _ => false,
+            };
+            let step = step(&instruction.command, replaced);
+            if step.print_number {
+                support::emit(format!("{number}\n").as_bytes());
+            }
+            if step.print_line {
+                emit_line(&space);
+            }
+            if step.ends_cycle {
+                deleted = true;
+                break;
+            }
+        }
+        if auto_print(quiet, deleted) {
+            emit_line(&space);
         }
     }
+}
+
+/// C's `OUT()`: the pattern space and one newline (`process.c:97`).
+fn emit_line(space: &[u8]) {
+    let mut out = Vec::with_capacity(space.len() + 1);
+    out.extend_from_slice(space);
+    out.push(b'\n');
+    support::emit(&out);
+}
+
+/// C's `errx` arms for a malformed `s` command (`compile.c:322-331`: the
+/// delimiter may not be a newline or backslash, and an unterminated pattern is
+/// fatal), which this shell renders as one line. `errx` writes to standard error
+/// and exits (`minix3/lib/libc/gen/verrx.c:57`), so these two rejections go there
+/// too —
+/// the old form printed them to standard output, which mixed a diagnostic into
+/// the very stream a filter's data lives on.
+fn bad_script() -> ! {
+    support::warn(b"sed: bad s command\n");
+    support::terminate(1)
+}
+
+/// The rejection for what this build does not carry: an address prefix, a verb
+/// outside `s`/`d`/`p`/`=`, or text left over after a command. C parses all of
+/// those; a silent pass-through would turn a script the kernel cannot run into
+/// output that looks like it did.
+fn not_modelled() -> ! {
+    support::warn(b"sed: address or verb not modelled (see 08 sec 4.4)\n");
+    support::terminate(1)
 }
 
 #[cfg(test)]

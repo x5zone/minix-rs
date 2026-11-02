@@ -157,3 +157,167 @@ fn a_bare_dash_stays_an_operand_name() {
     assert!(out.is_empty(), "standard input must not have been read");
     assert_eq!(status, 1, "the dash operand should have failed to open");
 }
+
+#[test]
+fn a_chain_of_substitutions_composes_on_one_pattern_space() {
+    // C walks the compiled command list per line (`process.c:113` `while (cp !=
+    // NULL)`) and each `s` swaps its result into the same pattern space
+    // (`process.c:460-463`), so the second command sees the first one's output:
+    // `abc` becomes `Abc`, and then `B` replaces the `b` that is still there.
+    let (out, status, err) = run(&["s/a/A/;s/b/B/"], b"abc\nxyz\n");
+    assert_eq!(
+        out,
+        b"ABc\nxyz\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn a_separator_inside_a_pattern_is_pattern_text() {
+    // The delimiter, not the separator, ends an `s`: `compile_subst` reads to
+    // the next unescaped delimiter, so `;` inside the pattern or the replacement
+    // is ordinary text (`compile.c:480-490`).
+    let (out, status, err) = run(&["s/a;b/x/"], b"a;b\nq;w\n");
+    assert_eq!(
+        out,
+        b"x\nq;w\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn the_p_flag_prints_again_on_top_of_the_automatic_print() {
+    // Without `-n` a line printed by `s///p` is printed **twice**: once inside
+    // `substitute()` (`process.c:466-467`, which checks neither `nflag` nor `pd`)
+    // and once by the automatic print at `new:` (`process.c:269-270`). A
+    // non-matching line gets the automatic print only, and the line the second
+    // command did not touch still gets one.
+    let (out, status, err) = run(&["s/a/A/p"], b"abc\nxyz\n");
+    assert_eq!(
+        out,
+        b"Abc\nAbc\nxyz\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn delete_ends_the_cycle_and_suppresses_the_automatic_print() {
+    // `case 'd': pd = 1; goto new;` (`process.c:142-144`) jumps out of the
+    // command walk, so nothing after the `d` runs and `new:`'s `!pd` test fails.
+    let (out, status, err) = run(&["s/a/A/;d"], b"abc\nxyz\n");
+    assert_eq!(
+        out,
+        Vec::<u8>::new(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+    // A `d` reached only after `p` still leaves the one print `p` did.
+    let (out, status, err) = run(&["p;d"], b"abc\nxyz\n");
+    assert_eq!(
+        out,
+        b"abc\nxyz\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn a_print_command_emits_under_quiet_and_a_number_command_counts_across_operands() {
+    // `case 'p'` prints whatever stands in the space (`process.c:191-194`), and
+    // `case '='` prints the line number with no condition at all
+    // (`process.c:264-265`). The counter is set once for the whole run
+    // (`process.c:109` `for (linenum = 0; …)`) and C clears it only on the
+    // in-place path (`main.c:441-443`), so it keeps counting across operands.
+    let (out, status, err) = run(&["-n", "p"], b"abc\nxyz\n");
+    assert_eq!(
+        out,
+        b"abc\nxyz\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+    let first = written("number-one", b"one\ntwo\n");
+    let second = written("number-two", b"three\n");
+    let (out, status, err) = run(&["=", &text(&first), &text(&second)], b"");
+    assert_eq!(
+        out,
+        b"1\none\n2\ntwo\n3\nthree\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn separators_and_comments_follow_the_compile_loop() {
+    // `semicolon:` eats blanks, then a separator, then goes back for more of the
+    // same, and a `#` starts a comment that costs the rest of **its** line
+    // (`compile.c:177-184`). A line end separates commands the same way `;`
+    // does, because C hands one line at a time to the compiler.
+    let (out, status, err) = run(&[" p ; #x;d"], b"abc\n");
+    assert_eq!(
+        out,
+        b"abc\nabc\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+    let (out, status, err) = run(&["p\nd"], b"abc\nxyz\n");
+    assert_eq!(
+        out,
+        b"abc\nxyz\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn a_number_line_at_the_script_start_switches_to_quiet() {
+    // `main.c:286-287` tests the first two bytes of a script string, so `#n` is
+    // both a comment and the quiet switch — and because the comment costs the
+    // rest of its own line, the command has to sit on the next one. `#n;s/a/A/p`
+    // on a single line runs nothing at all.
+    let (out, status, err) = run(&["#n\ns/a/A/p"], b"abc\nxyz\n");
+    assert_eq!(
+        out,
+        b"Abc\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+    let (out, status, _) = run(&["#n;s/a/A/p"], b"abc\nxyz\n");
+    assert_eq!(out, Vec::<u8>::new(), "the whole line is a comment");
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn addresses_and_other_verbs_are_refused_loudly() {
+    // This build carries `s`, `d`, `p` and `=` with no addresses; C compiles
+    // addresses (`compile.c:193-207`) and the rest of the verb table
+    // (`compile.c:102-132`), so those shapes must fail with a message rather than
+    // quietly ignoring the part it cannot run.
+    for script in ["1d", "$d", "/a/d", "q", "y/ab/BA/", "{d}"] {
+        let (out, status, err) = run(&[script], b"abc\n");
+        assert!(out.is_empty(), "{script:?} must not have run: {out:?}");
+        assert_eq!(
+            status,
+            1,
+            "{script:?} stderr was {:?}",
+            String::from_utf8_lossy(&err)
+        );
+        assert!(
+            String::from_utf8_lossy(&err).contains("not modelled"),
+            "{script:?} stderr was {:?}",
+            String::from_utf8_lossy(&err)
+        );
+    }
+}
