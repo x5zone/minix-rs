@@ -48,8 +48,15 @@ pub const RETAIN_BITS: u32 = S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S
 // `O_CREAT 0x200`, `O_TRUNC 0x400`.
 pub const O_RDONLY: i32 = 0x00000000;
 pub const O_WRONLY: i32 = 0x00000001;
+pub const O_RDWR: i32 = 0x00000002;
 pub const O_CREAT: i32 = 0x00000200;
 pub const O_TRUNC: i32 = 0x00000400;
+/// `fcntl.h:93` (synchronous writes), `:109` (read completion as for write),
+/// and `:96` (no trailing symlink follow) — the trio `rm -P`'s overwrite
+/// opens the victim with (`rm.c:107`).
+pub const O_SYNC: i32 = 0x00000080;
+pub const O_RSYNC: i32 = 0x00020000;
+pub const O_NOFOLLOW: i32 = 0x00000100;
 
 /// Whether the file type bits say directory (`stat.h:171` `S_ISDIR`).
 pub fn is_dir(mode: u32) -> bool {

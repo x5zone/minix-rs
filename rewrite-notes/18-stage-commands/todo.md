@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百零二（`rm -P` 接通：DSS 三遍覆写 + 校验读回）
+
+- **这一笔的射程**：not-wired 清单里 `rm -P` 一处——C 的 `rm_overwrite`（`rm.c:361-451`）在 unlink 前对普通文件逐地址覆写：随机字符一遍、`0xff` 一遍、`0x00` 一遍（读回校验）、随机 32 位字一遍（C 明注不校验），四遍各带 fsync+回卷+`sync()`；受害者经打开描述符重查 dev/ino（被换文件答 EPERM），任一失败 `warn("%s", file)` 并跳过本次移除。`-P` 在 C 的单条腿（`rm.c:341-344`）与递归臂（`:267-270`）都生效。
+- **落码**：`bin/rm.rs` 新增 `rm_overwrite` 逐段转写（8 KiB 缓冲、四遍宏、READ_PASS 的 memcmp 语义、close 失败腿）；两处接线（`rm_one` 的非目次腿、`rm_tree_one` 的文件腿）；随机源为时钟播种的 xorshift64*（C 的 `arc4random` 输出本就不可观测，偏差登记）；`cp.rs` 补 `O_RDWR`/`O_SYNC`/`O_RSYNC`/`O_NOFOLLOW` 四常量（`fcntl.h:93/:109/:96` 逐值）；`minix-sys` 补顶层 `fsync(fd)`（VFS FSYNC 客户端，跨界公共件，C 板 §6 已登记）；`needs_unwired()` 只剩 `-W`，拒绝行改 `rm: -W not wired (whiteout)`。
+- **门**：`cargo test -p minix-fileops` → 库 **57/0**（unwired 测更新：`-P` 反向断言）+ `rm_face` **7/0**；`cargo test -p minix-sys --lib` → **342/0**；clippy 触及文件零新增；`rustfmt` 触及叶文件清（minix-sys lib.rs 的模块树存量漂移不整树格式化，惯例同 C-44 收口批）；`cargo build --target x86_64-unknown-none --release --bin rm` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `c3c10aa92`。
+- **登记与余量**：覆写成功路径的真机可观察面（写完后字节确实翻掉）随 E5 盘上集成；宿主面测与 du 同口径（syscall 腿是 none 面，报错形为可观测面）。
+
 ## 批次五百零一（`rm -x` 接通：走表的设备边界跳过）
 
 - **这一笔的射程**：not-wired 清单里 `rm -x` 一处——C 的 `-x` 置 `FTS_XDEV`（`rm.c:193-195`），fts 剪掉跨设备子树（子项根本不进遍历）；挂载点目次因此移不走，父层的 `rmdir` 自然答 ENOTEMPTY——这是现成失败路径的天然对位，无需新报文。`RmFlags.cross_fs` 位本就存在，只是被 `needs_unwired()` 闸着。

@@ -1078,6 +1078,12 @@ pub fn clock_settime(clk_id: i32, sec: u64, nsec: i64) -> Result<(), Errno> {
     pm::clock_settime_via(&ipc::DirectTrapTransport, clk_id, sec, nsec)
 }
 
+/// Flushes one open file (C: `fsync`, `minix3/minix/lib/libc/sys/fsync.c` —
+/// a VFS `FSYNC` call carrying the fd).
+pub fn fsync(fd: Fd) -> Result<(), Errno> {
+    vfs::fsync_via(&ipc::DirectTrapTransport, fd)
+}
+
 // ── Signals and timers (transport-hidden face) ──
 
 /// Installs a signal disposition (C: `sigaction`, pm/signal.c:40-86; see

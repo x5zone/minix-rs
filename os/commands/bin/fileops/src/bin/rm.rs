@@ -50,7 +50,10 @@ use minix_fileops::dents;
 use minix_fileops::du;
 use minix_fileops::mode::strmode;
 use minix_fileops::rm::{CheckFlavor, RmFlags, check_flavor, nonexistent, strip_dots};
-use minix_sys::{Errno, Stat, access, close, getdents, isatty, lstat, open, rmdir, unlink};
+use minix_sys::{
+    Errno, Stat, access, close, fstat, getdents, isatty, lseek, lstat, open, read, rmdir, sync,
+    unlink,
+};
 
 /// The refill buffer for the recursive walk (C's fts keeps its own; the size is
 /// not observable, it only bounds how many records arrive per call).
@@ -147,8 +150,14 @@ fn rm_one(prog: &str, path: &str, flags: &RmFlags) -> bool {
         return false;
     }
 
-    // Directory (with -d) via rmdir, otherwise unlink. -P overwrite is a
-    // declared residual (rm.c:341-344).
+    // `-P` overwrites a regular file's blocks before the unlink
+    // (`rm.c:341-344`); a failed overwrite reports and skips the removal
+    // (`continue` in C). Directories are untouched by the pass.
+    if flags.overwrite && !s_isdir(sb.st_mode) && rm_overwrite(prog, path, &sb) {
+        return true;
+    }
+
+    // Directory (with -d) via rmdir, otherwise unlink.
     let removed = if s_isdir(sb.st_mode) {
         rmdir(path)
     } else {
@@ -224,6 +233,134 @@ fn run() -> ! {
 /// hiding only the nonexistent family.
 ///
 /// Returns true when this operand contributed to the exit status.
+/// C's `rm_overwrite` (`rm.c:361-451`): the DSS "clear then sanitize" pattern
+/// over every addressable byte of a regular file — one pass of a random
+/// character, `0xff`, `0x00` (verified by reading back), then random
+/// 32-bit words. The victim must stay the same regular file the walk
+/// stat'ed (device and inode re-checked through the opened descriptor);
+/// any failure reports `warn("%s", file)` and returns true, which the
+/// caller treats as "skip the removal". The random words come from a
+/// clock-seeded xorshift — C's `arc4random` source is itself unspecified
+/// output, and the bytes are never observed again.
+fn rm_overwrite(prog: &str, file: &str, sbp: &Stat) -> bool {
+    const PASS_BUF: usize = 8 * 1024;
+    if !cp::is_reg(sbp.st_mode) {
+        return false;
+    }
+    let flags = cp::O_RDWR | cp::O_SYNC | cp::O_RSYNC | cp::O_NOFOLLOW;
+    let fd = match open(file, flags, 0) {
+        Ok(fd) => fd,
+        Err(e) => {
+            warn_err(prog, file, e);
+            return true;
+        }
+    };
+    let mut sb2 = zeroed();
+    if fstat(fd, &mut sb2).is_err() {
+        warn_err(prog, file, Errno::EIO);
+        let _ = close(fd);
+        return true;
+    }
+    if sb2.st_dev != sbp.st_dev || sb2.st_ino != sbp.st_ino || !cp::is_reg(sb2.st_mode) {
+        // C sets errno = EPERM for a swapped victim (`rm.c:118-122`).
+        warn_err(prog, file, Errno::EPERM);
+        let _ = close(fd);
+        return true;
+    }
+
+    let (secs, nsec) = minix_sys::gettimeofday().unwrap_or((0, 0));
+    let mut state = ((secs as u64) << 20 ^ nsec as u64) | 1;
+    let mut next_random = move || -> u64 {
+        // xorshift64*: three of the four random passes only need bytes the
+        // caller discards, so a self-contained generator keeps the seam free.
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    let randchar = (next_random() & 0xff) as u8;
+    let mut buf = alloc::vec![0u8; PASS_BUF];
+    enum Fill {
+        Byte(u8),
+        Random,
+    }
+    // WRITE_PASS (`rm.c:124-141`): fsync, rewind, then the chosen bytes over
+    // the whole recorded size; `sync()` pokes the hidden caches.
+    macro_rules! write_pass {
+        ($fill:expr) => {{
+            if minix_sys::fsync(fd).is_err() || lseek(fd, 0, 0 /* SEEK_SET */).is_err() {
+                warn_err(prog, file, Errno::EIO);
+                let _ = close(fd);
+                return true;
+            }
+            match $fill {
+                Fill::Byte(byte) => buf.fill(byte),
+                Fill::Random => {
+                    for chunk in buf.chunks_mut(4) {
+                        let word = (next_random() & 0xffff_ffff) as u32;
+                        for (i, byte) in chunk.iter_mut().enumerate() {
+                            *byte = (word >> (i * 8)) as u8;
+                        }
+                    }
+                }
+            }
+            let mut len = sbp.st_size as i64;
+            while len > 0 {
+                let wlen = core::cmp::min(len as usize, PASS_BUF);
+                if minix_sys::write(fd, &buf[..wlen]).map(|n| n) != Ok(wlen) {
+                    warn_err(prog, file, Errno::EIO);
+                    let _ = close(fd);
+                    return true;
+                }
+                len -= wlen as i64;
+            }
+            sync();
+        }};
+    }
+    // 1. "a character" (a random one, drawn once, `rm.c:169-172`).
+    write_pass!(Fill::Byte(randchar));
+    // 2. "its complement" pass: 0xff.
+    write_pass!(Fill::Byte(0xff));
+    // 3. the zero pass, and 4. ...
+    write_pass!(Fill::Byte(0x00));
+
+    // READ_PASS (verify the zero pass really landed, `rm.c:144-163`).
+    if minix_sys::fsync(fd).is_err() || lseek(fd, 0, 0 /* SEEK_SET */).is_err() {
+        warn_err(prog, file, Errno::EIO);
+        let _ = close(fd);
+        return true;
+    }
+    buf.fill(0x00);
+    let mut len = sbp.st_size;
+    while len > 0 {
+        let rlen = core::cmp::min(len as usize, PASS_BUF);
+        match read(fd, &mut buf[..rlen]) {
+            Ok(n) if n == rlen => {}
+            _ => {
+                warn_err(prog, file, Errno::EIO);
+                let _ = close(fd);
+                return true;
+            }
+        }
+        if buf[..rlen].iter().any(|&b| b != 0x00) {
+            warn_err(prog, file, Errno::EIO);
+            let _ = close(fd);
+            return true;
+        }
+        len -= rlen as i64;
+    }
+    sync();
+
+    // Pass 4: random 32-bit words, deliberately unverified (`rm.c:168-172`).
+    write_pass!(Fill::Random);
+
+    if close(fd) == Err(Errno::EIO) {
+        warn_err(prog, file, Errno::EIO);
+        return true;
+    }
+    false
+}
+
 fn rm_tree_one(prog: &str, path: &str, flags: &RmFlags, root_dev: u64) -> bool {
     let mut sb = zeroed();
     if let Err(e) = lstat(path, &mut sb) {
@@ -249,6 +386,11 @@ fn rm_tree_one(prog: &str, path: &str, flags: &RmFlags, root_dev: u64) -> bool {
         // C's default arm (`rm.c:238-242`, unlink at `rm.c:266-274`): ask, then unlink.
         if !flags.force && !check(path, &sb, flags) {
             return false;
+        }
+        // `-P` rides the recursive arm too (`rm.c:267-270`); a failed
+        // overwrite skips this file's removal and counts as a failure.
+        if flags.overwrite && rm_overwrite(prog, path, &sb) {
+            return true;
         }
         return remove_entry(prog, path, flags);
     }

@@ -31,7 +31,8 @@ pub struct RmFlags {
     pub force: bool,
     /// `-i`: prompt before every removal (clears `-f`).
     pub interactive: bool,
-    /// `-P`: overwrite before unlinking (`rm_overwrite`; not wired).
+    /// `-P`: overwrite before unlinking (`rm_overwrite`, `rm.c:361-451` —
+    /// the DSS-matrix three-pass pattern with a verify leg).
     pub overwrite: bool,
     /// `-r`/`-R`: recursive hierarchy walk (`rm.c:167-281` `rm_tree`), wired
     /// through this crate's own directory decoder rather than fts(3).
@@ -105,8 +106,9 @@ impl RmFlags {
     /// walk itself is now wired (the bin's `rm_tree`, walking with
     /// `crate::dents`), so `-r`/`-R` no longer count here.
     pub fn needs_unwired(&self) -> bool {
-        // `-x` left this set when the device boundary landed in the walk.
-        self.overwrite || self.whiteout
+        // `-P` and `-x` left this set (the overwrite pass and the device
+        // boundary); `-W` (whiteout `undelete`) is the only one left.
+        self.whiteout
     }
 }
 
@@ -231,10 +233,10 @@ mod tests {
 
     #[test]
     fn unwired_flags_flagged() {
-        assert!(RmFlags::parse(&["-P", "f"]).unwrap().0.needs_unwired());
         assert!(RmFlags::parse(&["-W", "f"]).unwrap().0.needs_unwired());
         // `-x` left the unwired set when the walk grew the device boundary.
         assert!(!RmFlags::parse(&["-x", "f"]).unwrap().0.needs_unwired());
+        assert!(!RmFlags::parse(&["-P", "f"]).unwrap().0.needs_unwired());
         // -r/-R are wired since the recursive walk stopped needing fts(3):
         // the bin's `rm_tree` walks directories with `crate::dents` instead.
         assert!(!RmFlags::parse(&["-r", "f"]).unwrap().0.needs_unwired());
