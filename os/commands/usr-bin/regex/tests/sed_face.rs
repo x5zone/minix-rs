@@ -139,6 +139,32 @@ fn every_operand_is_transformed_in_order() {
 }
 
 #[test]
+fn a_script_longer_than_sixteen_commands_runs() {
+    // C's compiled command chain has no length limit — `compile_stream` links
+    // each command as it reads it (`minix3/usr.bin/sed/compile.c`) — so a fixed
+    // room count refuses scripts C runs. Twenty chained substitutions, one per
+    // letter, must all take effect in order.
+    let mut script = String::new();
+    let mut expected = String::new();
+    for (index, letter) in "abcdefghijklmnopqrst".chars().enumerate() {
+        if index > 0 {
+            script.push(';');
+        }
+        script.push_str(&format!("s/{letter}/{}/", letter.to_ascii_uppercase()));
+        expected.push(letter.to_ascii_uppercase());
+    }
+    expected.push('\n');
+    let (out, status, err) = run(&[&script], b"abcdefghijklmnopqrst\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        expected,
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
 fn quiet_prints_only_what_the_p_flag_prints() {
     // `-n` suppresses the auto-print, so only `s///p`'s own `OUT()` inside
     // `substitute()` (`process.c:466-467`) survives: the matching line once,

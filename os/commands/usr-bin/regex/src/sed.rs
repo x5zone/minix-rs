@@ -16,6 +16,7 @@
 //! character).
 
 use crate::pattern::{Captures, Pattern};
+use alloc::vec::Vec;
 
 /// Maximum pattern plus replacement bytes handled in one command.
 pub const MAX_SUBST_TEXT: usize = 256;
@@ -345,10 +346,6 @@ fn char_len_at(bytes: &[u8], pos: usize) -> usize {
     }
 }
 
-/// Cap on commands one script may fill — the crate stays heap-free (fixed
-/// arrays, no `alloc`), mirroring the engine's other size limits.
-pub const MAX_SCRIPT_COMMANDS: usize = 16;
-
 /// One command in a `;`/newline-separated sed script (C `compile.c` reads
 /// commands one at a time; separators `:165`/`:205`). The no-address common
 /// verbs are modelled; an address prefix or any other verb yields
@@ -385,10 +382,9 @@ pub struct Scripted<'a> {
 /// Errors while splitting a script into commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptError {
-    /// An address prefix (`/re`, a line number, `$`), a verb C has but this
-    /// build does not carry, or more than `MAX_SCRIPT_COMMANDS` commands. C
-    /// accepts all of these, so there is no C sentence to print and the shell
-    /// gives its own.
+    /// An address prefix (`/re`, a line number, `$`) or a verb C has but this
+    /// build does not carry. C accepts all of these, so there is no C sentence
+    /// to print and the shell gives its own.
     NotModelled,
     /// A byte that is not one of C's command codes at all:
     /// `invalid command code %c` (`compile.c:320`). The payload is C's `%c`
@@ -417,9 +413,8 @@ pub struct ParseFailure {
     pub line: u64,
 }
 
-/// Split a sed script into [`Command`]s written into the caller's `out` slice
-/// (heap-free, like the rest of the crate), returning the count. Purely the
-/// no-address subset: `s…`, `d`, `p`, `=`.
+/// Split a sed script into the [`Command`]s C would link, in the order it reads
+/// them. Purely the no-address subset: `s…`, `d`, `p`, `=`.
 ///
 /// The walk follows C's `compile_stream` **one command at a time** rather than
 /// cutting the text on `;` first. `compile.c:177-184`'s `semicolon:` label eats
@@ -436,10 +431,16 @@ pub struct ParseFailure {
 /// that check: its own reader ends at a separator, a line end, or the end of the
 /// text, and any other byte there is a flag position, which C refuses with
 /// `bad flag in substitute command` (`compile.c:636`).
-pub fn parse_script<'a>(script: &'a str, out: &mut [Scripted<'a>]) -> Result<usize, ParseFailure> {
+///
+/// The list grows with the script rather than into a fixed room count: C links
+/// every command it compiles onto a chain as it reads and never asks how many
+/// there will be (`compile_stream`'s `cmd->next` walk in
+/// `minix3/usr.bin/sed/compile.c`), so a ceiling here would refuse scripts C
+/// runs.
+pub fn parse_script<'a>(script: &'a str) -> Result<Vec<Scripted<'a>>, ParseFailure> {
     let bytes = script.as_bytes();
     let mut index = 0usize;
-    let mut count = 0usize;
+    let mut out: Vec<Scripted<'a>> = Vec::new();
     // C's `linenum`, which `cu_fgets` raises once per script line before the
     // command on it is even looked at (`main.c:274`, `:292`, `:306`, `:315`).
     let mut line = 1u64;
@@ -506,15 +507,12 @@ pub fn parse_script<'a>(script: &'a str, out: &mut [Scripted<'a>]) -> Result<usi
                 ));
             }
         };
-        *out.get_mut(count)
-            .ok_or_else(|| fail(command_line, ScriptError::NotModelled))? =
-            Scripted {
-                command,
-                line: command_line,
-            };
-        count += 1;
+        out.push(Scripted {
+            command,
+            line: command_line,
+        });
     }
-    Ok(count)
+    Ok(out)
 }
 
 /// One refusal at a known script line.
@@ -780,131 +778,140 @@ mod tests {
 
     #[test]
     fn test_parse_script_chains_and_skips_empty() {
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
-        assert_eq!(parse_script("s/a/b/", &mut cmds).unwrap(), 1);
+        let cmds = parse_script("s/a/b/").unwrap();
+        assert_eq!(cmds.len(), 1);
         assert!(matches!(cmds[0].command, Command::Subst(_)));
-        assert_eq!(parse_script("s/a/b/g;d;p;=", &mut cmds).unwrap(), 4);
-        assert!(matches!(cmds[1].command, Command::Delete));
-        assert!(matches!(cmds[2].command, Command::Print));
-        assert!(matches!(cmds[3].command, Command::PrintLineNum));
+        let chain = parse_script("s/a/b/g;d;p;=").unwrap();
+        assert_eq!(chain.len(), 4);
+        assert!(matches!(chain[1].command, Command::Delete));
+        assert!(matches!(chain[2].command, Command::Print));
+        assert!(matches!(chain[3].command, Command::PrintLineNum));
         // Line separators and a trailing separator: empty segments are skipped.
-        assert_eq!(parse_script("p;\n", &mut cmds).unwrap(), 1);
+        assert_eq!(parse_script("p;\n").unwrap().len(), 1);
         // Leading whitespace is not an address (judged after trim_start).
-        assert_eq!(parse_script("  d", &mut cmds).unwrap(), 1);
+        assert_eq!(parse_script("  d").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_a_long_script_is_not_capped() {
+        // C links each compiled command onto its chain as it reads and never
+        // counts them (`compile_stream`'s `cmd->next` walk in
+        // `minix3/usr.bin/sed/compile.c`), so how long a script may be is the
+        // user's business. Fifty `p` commands, one per line, all come back, in
+        // order and each on its own line.
+        let mut script = String::new();
+        for _ in 0..50 {
+            script.push_str("p\n");
+        }
+        let cmds = parse_script(&script).unwrap();
+        assert_eq!(cmds.len(), 50);
+        for (index, command) in cmds.iter().enumerate() {
+            assert!(matches!(command.command, Command::Print));
+            assert_eq!(command.line, index as u64 + 1);
+        }
     }
 
     #[test]
     fn test_parse_script_splits_c_own_errors_from_ours() {
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
         // Addresses are something C carries, so a refusal here has no C sentence:
         // ours. The four address-start bytes come from `compile.c:193`'s
         // `addrchar("0123456789/\\$")`.
         for script in ["1d", "/a/d", "$d", "\\ad"] {
             assert_eq!(
-                parse_script(script, &mut cmds),
+                parse_script(script),
                 Err(fail(1, ScriptError::NotModelled)),
                 "{script:?}"
             );
         }
         // Likewise a verb C's table knows and this build does not carry.
         assert_eq!(
-            parse_script("q", &mut cmds),
+            parse_script("q"),
             Err(fail(1, ScriptError::NotModelled))
         );
         // A byte outside C's table is C's own `invalid command code`
         // (`compile.c:318-320`), carrying the byte for C's `%c`.
         assert_eq!(
-            parse_script("Z", &mut cmds),
+            parse_script("Z"),
             Err(fail(1, ScriptError::InvalidCode(b'Z')))
         );
         // Text after a bare verb names the **verb**, as C's `EMPTY` case does
         // (`compile.c:264-265`).
         assert_eq!(
-            parse_script("dx", &mut cmds),
+            parse_script("dx"),
             Err(fail(1, ScriptError::ExtraChars(b'd')))
         );
         assert_eq!(
-            parse_script("p ; p x", &mut cmds),
+            parse_script("p ; p x"),
             Err(fail(1, ScriptError::ExtraChars(b'p')))
         );
         // C prints the script line the command sat on, so the scan has to carry it:
         // `cu_fgets` raises `linenum` per line (`main.c:274`, `:292`, `:306`).
         assert_eq!(
-            parse_script("p\np\n d x", &mut cmds),
+            parse_script("p\np\n d x"),
             Err(fail(3, ScriptError::ExtraChars(b'd')))
         );
         assert_eq!(
-            parse_script("s/a/b/;\nZ", &mut cmds),
+            parse_script("s/a/b/;\nZ"),
             Err(fail(2, ScriptError::InvalidCode(b'Z')))
         );
         // A comment that runs to the end of its own line does not move the count
         // past that line.
         assert_eq!(
-            parse_script("#c\ns/a/b/x", &mut cmds),
+            parse_script("#c\ns/a/b/x"),
             Err(fail(2, ScriptError::Subst(SubstError::BadFlag(b'x'))))
         );
     }
 
     #[test]
     fn test_subst_error_arms() {
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
         // A flag letter outside C's set (`compile.c:635-637`).
         assert_eq!(
-            parse_script("s/a/b/x", &mut cmds),
+            parse_script("s/a/b/x"),
             Err(fail(1, ScriptError::Subst(SubstError::BadFlag(b'x'))))
         );
         // C's digit arm takes `1`-`9`, so a leading `0` is a bad flag, not a bad
         // number.
         assert_eq!(
-            parse_script("s/a/b/0", &mut cmds),
+            parse_script("s/a/b/0"),
             Err(fail(1, ScriptError::Subst(SubstError::BadFlag(b'0'))))
         );
         // Past the bound C puts on `s->n` (`compile.c:601-607`).
         assert_eq!(
-            parse_script("s/a/b/2147483648", &mut cmds),
+            parse_script("s/a/b/2147483648"),
             Err(fail(1, ScriptError::Subst(SubstError::NumberOverflow)))
         );
         // Right at the bound is still a count.
-        assert_eq!(parse_script("s/a/b/2147483647", &mut cmds).unwrap(), 1);
+        assert_eq!(parse_script("s/a/b/2147483647").unwrap().len(), 1);
         // A backslash delimiter (`compile.c:323-326`) and a delimiter that never
         // closes (`compile.c:329-331`).
         assert_eq!(
-            parse_script("s\\a/b/", &mut cmds),
+            parse_script("s\\a/b/"),
             Err(fail(1, ScriptError::Subst(SubstError::BadDelimiter)))
         );
         assert_eq!(
-            parse_script("s/a/b", &mut cmds),
+            parse_script("s/a/b"),
             Err(fail(1, ScriptError::Subst(SubstError::Unterminated)))
         );
         // A raw newline inside either field is C's other sentence, and it wins
         // over "unterminated" because C meets the newline while still scanning the
         // line it was given (`compile.c:542-544`).
         assert_eq!(
-            parse_script("s/a\nb/x/", &mut cmds),
+            parse_script("s/a\nb/x/"),
             Err(fail(1, ScriptError::Subst(SubstError::UnescapedNewline)))
         );
         assert_eq!(
-            parse_script("s/a/b\nc/", &mut cmds),
+            parse_script("s/a/b\nc/"),
             Err(fail(1, ScriptError::Subst(SubstError::UnescapedNewline)))
         );
         // The same command closing on its own line, then a second on the next, is
         // two ordinary commands.
-        assert_eq!(parse_script("s/a/b/\ns/c/d/", &mut cmds).unwrap(), 2);
+        assert_eq!(parse_script("s/a/b/\ns/c/d/").unwrap().len(), 2);
         // An *escaped* newline keeps scanning: C stitches the next buffer onto the
         // same field and drops the newline itself, while this build keeps both
         // bytes in the field text — the difference is registered as
         // `SED-ESCAPED-NEWLINE-CONTINUATION`, and what both agree on is that the
         // command continues past the line break.
-        assert_eq!(parse_script("s/a\\\nb/x/", &mut cmds).unwrap(), 1);
+        assert_eq!(parse_script("s/a\\\nb/x/").unwrap().len(), 1);
     }
 
     #[test]
@@ -912,15 +919,13 @@ mod tests {
         // C's `compile_subst` only stops at the delimiter, so the `;` here is
         // pattern text; a scanner that cut the script on `;` first would see two
         // broken commands instead of one.
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
-        assert_eq!(parse_script("s/a;b/x/", &mut cmds).unwrap(), 1);
+        let cmds = parse_script("s/a;b/x/").unwrap();
+        assert_eq!(cmds.len(), 1);
         assert!(matches!(cmds[0].command, Command::Subst(_)));
         // And the separator that follows the finished command still works.
-        assert_eq!(parse_script("s/a;b/x/;d", &mut cmds).unwrap(), 2);
-        assert!(matches!(cmds[1].command, Command::Delete));
+        let chain = parse_script("s/a;b/x/;d").unwrap();
+        assert_eq!(chain.len(), 2);
+        assert!(matches!(chain[1].command, Command::Delete));
     }
 
     #[test]
@@ -928,31 +933,25 @@ mod tests {
         // `semicolon:` eats blanks, then a `;`, then goes back for more of the
         // same (`compile.c:177-184`), and a command may be followed by blanks
         // before its separator (`compile.c:253`, `:347`).
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
-        assert_eq!(parse_script(" s/a/b/ ; p ;; d", &mut cmds).unwrap(), 3);
+        let cmds = parse_script(" s/a/b/ ; p ;; d").unwrap();
+        assert_eq!(cmds.len(), 3);
         assert!(matches!(cmds[1].command, Command::Print));
         assert!(matches!(cmds[2].command, Command::Delete));
         // Trailing separators and line ends give no command of their own.
-        assert_eq!(parse_script("p;\n", &mut cmds).unwrap(), 1);
+        assert_eq!(parse_script("p;\n").unwrap().len(), 1);
     }
 
     #[test]
     fn test_comment_ends_the_line_it_sits_on() {
         // C's `if (*p == '#') continue;` reads the **next line**, so a `;` after
         // the sign never reaches the parser (`compile.c:178-180`).
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
-        assert_eq!(parse_script("p;#x;d", &mut cmds).unwrap(), 1);
+        assert_eq!(parse_script("p;#x;d").unwrap().len(), 1);
         // A comment drops the rest of **its own** line, and the command on the
         // next line still arrives. Writing `"p\n#x;d"` would expect two and be
         // wrong: that `d` sits after the sign, so C's `continue` has already
         // abandoned it.
-        assert_eq!(parse_script("p\n#x;\nd", &mut cmds).unwrap(), 2);
+        let cmds = parse_script("p\n#x;\nd").unwrap();
+        assert_eq!(cmds.len(), 2);
         assert!(matches!(cmds[1].command, Command::Delete));
     }
 
@@ -966,23 +965,17 @@ mod tests {
         assert!(!script_quiet_directive("#N"));
         assert!(!script_quiet_directive(" n"));
         // The same text as a script is one comment line: no command at all.
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
-        assert_eq!(parse_script("#n;p", &mut cmds).unwrap(), 0);
+        assert_eq!(parse_script("#n;p").unwrap().len(), 0);
     }
 
     #[test]
     fn test_step_carries_the_c_print_rules() {
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
-        assert_eq!(parse_script("s/a/b/p", &mut cmds).unwrap(), 1);
-        let with_flag = cmds[0].command;
-        assert_eq!(parse_script("s/a/b/", &mut cmds).unwrap(), 1);
-        let without_flag = cmds[0].command;
+        let flagged = parse_script("s/a/b/p").unwrap();
+        assert_eq!(flagged.len(), 1);
+        let with_flag = flagged[0].command;
+        let plain = parse_script("s/a/b/").unwrap();
+        assert_eq!(plain.len(), 1);
+        let without_flag = plain[0].command;
         // The `p` flag prints only on a replacement (`substitute()` reaches its
         // `OUT()` only after one happened); nothing else about the command prints.
         assert_eq!(
@@ -1013,11 +1006,8 @@ mod tests {
     fn test_pattern_choice_reuses_or_refuses_an_empty_pattern() {
         // Three arms: a pattern of its own, an empty pattern with something
         // recorded, and an empty pattern with nothing recorded yet.
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
-        assert_eq!(parse_script("s/a/A/;s//B/", &mut cmds).unwrap(), 2);
+        let cmds = parse_script("s/a/A/;s//B/").unwrap();
+        assert_eq!(cmds.len(), 2);
         let own_pattern = match cmds[0].command {
             Command::Subst(subst) => subst,
             _ => panic!("第一条该是 s"),
@@ -1079,25 +1069,23 @@ mod tests {
         // extension marked as such at `compile.c:576`), so a blank before a flag
         // letter does not end the flag run: `s/a/b/ g` is `g`, `s/a/b/ p` is the
         // print flag. A shell that stopped the run at the blank would refuse both.
-        let mut cmds = [Scripted {
-            command: Command::Delete,
-            line: 1,
-        }; MAX_SCRIPT_COMMANDS];
-        assert_eq!(parse_script("s/a/b/ g", &mut cmds).unwrap(), 1);
-        let Command::Subst(subst) = cmds[0].command else {
+        let spaced = parse_script("s/a/b/ g").unwrap();
+        assert_eq!(spaced.len(), 1);
+        let Command::Subst(subst) = spaced[0].command else {
             panic!("一条 s 命令都读不出来");
         };
         assert_eq!(subst.scope, SubstScope::Global);
         assert!(!subst.print);
-        assert_eq!(parse_script("s/a/b/ p;d", &mut cmds).unwrap(), 2);
-        let Command::Subst(subst) = cmds[0].command else {
+        let printed = parse_script("s/a/b/ p;d").unwrap();
+        assert_eq!(printed.len(), 2);
+        let Command::Subst(subst) = printed[0].command else {
             panic!("第一条该是 s");
         };
         assert!(subst.print);
-        assert!(matches!(cmds[1].command, Command::Delete));
+        assert!(matches!(printed[1].command, Command::Delete));
         // The same blank before a separator is only a separator.
-        assert_eq!(parse_script("s/a/b/ ;p", &mut cmds).unwrap(), 2);
+        assert_eq!(parse_script("s/a/b/ ;p").unwrap().len(), 2);
         // Trailing blanks after the flags run out are nothing at all.
-        assert_eq!(parse_script("s/a/b/  ", &mut cmds).unwrap(), 1);
+        assert_eq!(parse_script("s/a/b/  ").unwrap().len(), 1);
     }
 }

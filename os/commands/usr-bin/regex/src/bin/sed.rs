@@ -22,9 +22,9 @@
 //! (`main.c:441-443`). With no operands sed reads stdin, and a
 //! bare `-` is an operand name, not a stdin alias. In-place editing (`-i`/`-I`)
 //! needs the create/rename surface and is not modelled; net output carries no
-//! filename prefix, unlike `grep`. One script carries at most
-//! [`MAX_SCRIPT_COMMANDS`] commands, because this crate's deciding half keeps to
-//! fixed arrays where C links the compiled commands as it goes.
+//! filename prefix, unlike `grep`. A script may carry as many commands as it
+//! has, because the deciding half collects them the way C links them: one entry
+//! per command, no cap.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -39,9 +39,9 @@ mod support;
 
 use minix_regex::pattern::{Pattern, compile_basic};
 use minix_regex::sed::{
-    Command, MAX_SCRIPT_COMMANDS, ParseFailure, PatternChoice, ScriptError, Scripted, SubstError,
-    apply, auto_print, first_undefined_backref, max_backref, parse_script, pattern_choice,
-    script_quiet_directive, step,
+    Command, ParseFailure, PatternChoice, ScriptError, SubstError, apply, auto_print,
+    first_undefined_backref, max_backref, parse_script, pattern_choice, script_quiet_directive,
+    step,
 };
 
 /// Argument-splitting errors for the sed front end.
@@ -101,12 +101,8 @@ fn run() -> ! {
     // the way C's `main.c:207` runs `compile()` once and only then `process()`.
     // An address, a verb beyond `s`/`d`/`p`/`=`, or trailing text after a command
     // is a loud failure, never a silent pass-through.
-    let mut slots = [Scripted {
-        command: Command::Delete,
-        line: 1,
-    }; MAX_SCRIPT_COMMANDS];
-    let count = match parse_script(script, &mut slots) {
-        Ok(count) => count,
+    let commands = match parse_script(script) {
+        Ok(commands) => commands,
         Err(failure) => match failure.error {
             // Two shapes have no C sentence to borrow: this build's own command
             // cap, and the addresses and verbs C carries but this shell does not.
@@ -135,7 +131,7 @@ fn run() -> ! {
     // will land on is a fact about the run, not about the script text.
     let mut patterns: Vec<Pattern> = Vec::new();
     let mut program: Vec<Instruction<'_>> = Vec::new();
-    for scripted in slots[..count].iter().copied() {
+    for scripted in commands {
         let own = match scripted.command {
             Command::Subst(subst) => {
                 if subst.pattern_text.is_empty() {

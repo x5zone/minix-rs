@@ -24,8 +24,11 @@
 //! match single bytes. Full locale aware matching is deferred (see the
 //! architecture note in the stage document).
 //!
-//! All structures use fixed size arrays and borrow the input; the crate
-//! compiles under `no_std`.
+//! The engine's own structures use fixed size arrays and borrow the input; the
+//! crate compiles under `no_std` and links `alloc` only where a result grows
+//! with the caller's text: a parsed script holds one entry per command, because
+//! C links its compiled commands as it reads them and puts no cap on a script
+//! (`minix3/usr.bin/sed/compile.c`, `compile_stream`).
 //!
 //! # Modules
 //!
@@ -34,6 +37,8 @@
 //!   matching strategy.
 //! - [`grep`]: search option model and exit status computation.
 //! - [`sed`]: substitution command parsing and application.
+
+extern crate alloc;
 
 pub mod grep;
 pub mod matcher;
