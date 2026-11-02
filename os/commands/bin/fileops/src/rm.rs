@@ -40,7 +40,10 @@ pub struct RmFlags {
     pub verbose: bool,
     /// `-W`: remove whiteouts (`undelete`; not wired).
     pub whiteout: bool,
-    /// `-x`: do not cross mount points during the walk (`FTS_XDEV`; not wired).
+    /// `-x`: do not cross mount points during the walk (`FTS_XDEV`,
+    /// `rm.c:193-195`). The mount-point directory itself is never visited
+    /// with its cross-device children, so the walk skips it silently and the
+    /// parent's `rmdir` answers ENOTEMPTY, exactly as fts pruning leaves it.
     pub cross_fs: bool,
 }
 
@@ -102,7 +105,8 @@ impl RmFlags {
     /// walk itself is now wired (the bin's `rm_tree`, walking with
     /// `crate::dents`), so `-r`/`-R` no longer count here.
     pub fn needs_unwired(&self) -> bool {
-        self.overwrite || self.whiteout || self.cross_fs
+        // `-x` left this set when the device boundary landed in the walk.
+        self.overwrite || self.whiteout
     }
 }
 
@@ -229,7 +233,8 @@ mod tests {
     fn unwired_flags_flagged() {
         assert!(RmFlags::parse(&["-P", "f"]).unwrap().0.needs_unwired());
         assert!(RmFlags::parse(&["-W", "f"]).unwrap().0.needs_unwired());
-        assert!(RmFlags::parse(&["-x", "f"]).unwrap().0.needs_unwired());
+        // `-x` left the unwired set when the walk grew the device boundary.
+        assert!(!RmFlags::parse(&["-x", "f"]).unwrap().0.needs_unwired());
         // -r/-R are wired since the recursive walk stopped needing fts(3):
         // the bin's `rm_tree` walks directories with `crate::dents` instead.
         assert!(!RmFlags::parse(&["-r", "f"]).unwrap().0.needs_unwired());

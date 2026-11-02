@@ -254,6 +254,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `C57-MFS-PROBE`：改 `os/fs/mfs/src/main.rs`（A 板领地）——C-57 取证前置：MFS 出生探针改栈装配（B 板判明的「唯一 `.rodata` 越过 8 MiB 根盘的模块 + 尾页异常」面），下次真机窗一行判别：打出=损坏收敛`.rodata` 尾页、不打=更深；门=fs-mfs lib 178/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `DATE-SETCLOCK`：改 `os/commands/bin/proctools/src/{dates.rs,stamp.rs,bin/date.rs}`、`tests/date_face.rs`（A 板领地）+ `os/libs/minix-sys/src/{pm.rs,lib.rs}`（B 板领地，跨界登记本行）——date 设钟腿接通：C setthetime fallthrough 链转写（badcanotime 三行+usage 逐字）、days_from_civil 逆变换、PM_CLOCK_SETTIME 客户端 clock_settime_via + 顶层 clock_settime；-j/-a 语义照 C；门=proctools lib 94/0 + date_face 2/0 + minix-sys 342/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `DUX-FTSXDEV`：改 `os/commands/bin/fileops/src/{du.rs,bin/du.rs}`、`tests/du_face.rs`（A 板领地）——du -x 接通：DuPlan.xdev + crosses_device 纯谓词 + 走表逐操作数根设备比较（FTS_XDEV 剪枝语义，目次自身照计）；跨设备语义以库测真值表钉（宿主/真机均无第二文件系统可挂）；门=fileops lib 394/0 + du_face 5/0 + none 构建绿 —— `✅`
+- `2026-11-03` A / `RMX-FTSXDEV`：改 `os/commands/bin/fileops/src/{rm.rs,bin/rm.rs}`（A 板领地）——rm -x 接通：cross_fs 出 needs_unwired 集（拒绝行改 -P/-W），rm_tree_one 逐操作数根设备 + `du::crosses_device` 跳过跨设备子树（fts 剪枝语义，父层 rmdir ENOTEMPTY 天然对位）；门=fileops lib 57/0 + rm_face 7/0 + none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

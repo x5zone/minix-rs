@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百零一（`rm -x` 接通：走表的设备边界跳过）
+
+- **这一笔的射程**：not-wired 清单里 `rm -x` 一处——C 的 `-x` 置 `FTS_XDEV`（`rm.c:193-195`），fts 剪掉跨设备子树（子项根本不进遍历）；挂载点目次因此移不走，父层的 `rmdir` 自然答 ENOTEMPTY——这是现成失败路径的天然对位，无需新报文。`RmFlags.cross_fs` 位本就存在，只是被 `needs_unwired()` 闸着。
+- **落码**：`needs_unwired()` 移出 `cross_fs`（剩 `-P`/`-W`），拒绝行随之改 `rm: -P/-W not wired (overwrite, whiteout)`；`bin/rm.rs` 的 `rm_tree_one` 照 du 判例穿 `root_dev`（每操作数各起一程，lstat 操作数取根设备，缺失操作数由走表自身报错、边界位随即无意义），入口 lstat 后查 `du::crosses_device`——跨设备子目次整体静默跳过（fts 从不返回它），父层 rmdir 的 ENOTEMPTY 警告由既有路径给出。
+- **可测性边界**：跨设备语义需第二个文件系统（宿主/真机镜像均无）——闸位以库测钉（`-x` 出 needs_unwired 集），宿主面测走 rm_face 既有口径（7/0 无回归）。
+- **门**：`cargo test -p minix-fileops --lib` → **57/0**（rm 子集；unwired_flags_flagged 更新 `-x` 反向断言）+ `rm_face` **7/0**；clippy 触及文件零新增；`rustfmt --edition 2024` 两文件清；`cargo build --target x86_64-unknown-none --release --bin rm` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `a9c3bd720`。
+
 ## 批次五百（`du -x` 接通：FTS_XDEV 的设备边界剪枝）
 
 - **这一笔的射程**：18 篇实测的 not-wired 清单里 `du -x` 一处——C 的 `-x` 置 `FTS_XDEV`（`du.c:144-146`），fts(3) 不下探与操作数不同设备的目次（该目次自身的块数与行照常产出）。现场：本壳把它压在 `-H`/`-L` 的未接线拒绝里。

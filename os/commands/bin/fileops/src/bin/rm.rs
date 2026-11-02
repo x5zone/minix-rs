@@ -47,6 +47,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use minix_fileops::cp;
 use minix_fileops::dents;
+use minix_fileops::du;
 use minix_fileops::mode::strmode;
 use minix_fileops::rm::{CheckFlavor, RmFlags, check_flavor, nonexistent, strip_dots};
 use minix_sys::{Errno, Stat, access, close, getdents, isatty, lstat, open, rmdir, unlink};
@@ -186,7 +187,7 @@ fn run() -> ! {
 
     // Refuse options that hinge on unwrapped facilities before doing work.
     if flags.needs_unwired() {
-        support::warn(b"rm: -P/-W/-x not wired (overwrite, whiteout, FTS_XDEV)\n");
+        support::warn(b"rm: -P/-W not wired (overwrite, whiteout)\n");
         support::terminate(1);
     }
 
@@ -202,7 +203,12 @@ fn run() -> ! {
         // rm.c:157-160: `-r` selects the hierarchy walk, everything else the
         // single-entry removal.
         eval |= if flags.recursive {
-            rm_tree_one(prog, path, &flags)
+            let mut sb = zeroed();
+            // Each operand roots its own traversal, so `-x` compares against
+            // this operand's device (fts roots one walk per operand). A
+            // missing operand is reported by the walk itself.
+            let root_dev = lstat(path, &mut sb).map(|_| sb.st_dev).unwrap_or(0);
+            rm_tree_one(prog, path, &flags, root_dev)
         } else {
             rm_one(prog, path, &flags)
         };
@@ -218,7 +224,7 @@ fn run() -> ! {
 /// hiding only the nonexistent family.
 ///
 /// Returns true when this operand contributed to the exit status.
-fn rm_tree_one(prog: &str, path: &str, flags: &RmFlags) -> bool {
+fn rm_tree_one(prog: &str, path: &str, flags: &RmFlags, root_dev: u64) -> bool {
     let mut sb = zeroed();
     if let Err(e) = lstat(path, &mut sb) {
         // The root of the walk cannot be stat'ed: C's FTS_NS arm (`rm.c:211-224`)
@@ -230,6 +236,13 @@ fn rm_tree_one(prog: &str, path: &str, flags: &RmFlags) -> bool {
         }
         warn_err(prog, path, e);
         return true;
+    }
+
+    // `-x` (`rm.c:193-195`, fts's `FTS_XDEV`): a directory on another device
+    // is never visited at all — fts prunes it silently, and the parent's
+    // rmdir then answers ENOTEMPTY, which the caller already reports.
+    if du::crosses_device(flags.cross_fs, sb.st_dev, root_dev) {
+        return false;
     }
 
     if !s_isdir(sb.st_mode) {
@@ -247,7 +260,7 @@ fn rm_tree_one(prog: &str, path: &str, flags: &RmFlags) -> bool {
         return false;
     }
 
-    let failed = descend_children(prog, path, flags);
+    let failed = descend_children(prog, path, flags, root_dev);
 
     // FTS_DP post-order (`rm.c:233-237`, rmdir at `rm.c:250-256`): the directory
     // itself, now empty or never readable. C still attempts the rmdir after a
@@ -271,7 +284,7 @@ fn rm_tree_one(prog: &str, path: &str, flags: &RmFlags) -> bool {
 /// child failed; the unreadable-directory case is C's `FTS_DNR` (`rm.c:200-206`):
 /// report it (unless `-f` and the directory simply vanished) and let the caller
 /// still try the `rmdir`.
-fn descend_children(prog: &str, dir: &str, flags: &RmFlags) -> bool {
+fn descend_children(prog: &str, dir: &str, flags: &RmFlags, root_dev: u64) -> bool {
     let fd = match open(dir, cp::O_RDONLY, 0) {
         Ok(fd) => fd,
         Err(e) => {
@@ -322,7 +335,7 @@ fn descend_children(prog: &str, dir: &str, flags: &RmFlags) -> bool {
             if !dents::is_descendable(name) {
                 continue;
             }
-            failed |= rm_tree_one(prog, &dents::join_path(dir, name), flags);
+            failed |= rm_tree_one(prog, &dents::join_path(dir, name), flags, root_dev);
         }
     }
     // The descriptor cannot be meaningfully reported on here: the removal
