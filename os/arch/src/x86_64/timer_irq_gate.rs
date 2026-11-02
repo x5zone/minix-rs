@@ -6,8 +6,9 @@
 //! `TimerIrqGate::enable_timer_irq` / `disable_timer_irq` open and close
 //! the *module-local* gate of the current boot clock source. On x86-64 the
 //! boot clock source is the 8254 PIT (`X86_64ClockArch::init_timer`
-//! programs it), and the PIT has no module-local gate: its output is
-//! delivered as IOAPIC input 0, whose mask bit *is* the delivery gate.
+//! programs it), and the PIT has no module-local gate: its output enters
+//! the 8259A at IRQ0, whose INT is routed to IOAPIC input 2; that input's
+//! mask bit *is* the delivery gate.
 //! That gate is opened by the C-parity "unmask on first handler" rule in
 //! `IrqManager::register_hook` (interrupt.c:65) when the timer hook is
 //! installed at `bsp_finish_booting` Step 6 — so both gate methods are
@@ -43,10 +44,10 @@ pub struct X86_64TimerIrqGate;
 impl TimerIrqGate for X86_64TimerIrqGate {
     fn enable_timer_irq() {
         // The boot clock source (8254 PIT) has no module-local gate; its
-        // delivery gate is IOAPIC input 0, unmasked by
-        // `IrqManager::register_hook`'s first-handler rule. See the module
-        // documentation for why this is deliberately not the LAPIC LVT
-        // Timer mask.
+        // delivery gate is IOAPIC input 2 (PIT→8259A IRQ0→8259A INT→pin 2),
+        // unmasked by `IrqManager::register_hook`'s first-handler rule. See
+        // the module documentation for why this is deliberately not the
+        // LAPIC LVT Timer mask.
     }
 
     fn disable_timer_irq() {

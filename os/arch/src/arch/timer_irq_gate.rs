@@ -44,7 +44,7 @@
 //!
 //! | Boot clock source | Module-local gate | `enable_timer_irq` |
 //! |--------|--------|-------|
-//! | x86-64: 8254 PIT | **none** — the delivery gate is the IOAPIC IRQ 0 line, unmasked by `IrqManager`'s first-handler rule (interrupt.c:65) | no-op (the LAPIC LVT Timer gate belongs to the *future* LAPIC timer source and must not be opened while the PIT is the source) |
+//! | x86-64: 8254 PIT | **none** — the delivery gate is IOAPIC input 2 (PIT→8259A IRQ0→8259A INT→pin 2), unmasked by `IrqManager`'s first-handler rule (interrupt.c:65) | no-op (the LAPIC LVT Timer gate belongs to the *future* LAPIC timer source and must not be opened while the PIT is the source) |
 //! | aarch64: CNTP | `CNTP_CTL_EL0` Enable/IMASK + `isb` | Enable=1, IMASK=0 + `isb` |
 //! | riscv64: CLINT mtimecmp | `sie.STIE` (bit 5) | `csrs sie` STIE |
 //!

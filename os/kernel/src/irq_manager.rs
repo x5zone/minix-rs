@@ -738,6 +738,14 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
 
         let mut slot_idx = self.handlers[irq_idx];
         if slot_idx.is_none() {
+            // The claim was already taken by the caller. GIC/PLIC must see
+            // the matching completion even when no hook exists, or the
+            // interrupt stays active and can never be retired. x86 has no
+            // claim token (None), so this keeps C's "spurious returns
+            // without ack" behavior there.
+            if claimed.is_some() {
+                self.controller.complete(claimed);
+            }
             return Err(IrqError::Spurious(irq));
         }
 
@@ -1074,6 +1082,9 @@ mod tests {
         /// claim happened before the mask").
         call_log: alloc::vec::Vec<(&'static str, IrqVector)>,
         all_masked: bool,
+        /// Claim token returned by `claim`; `None` models x86, `Some(id)`
+        /// models GIC/PLIC.
+        claim_result: Option<u32>,
     }
 
     impl MockController {
@@ -1085,7 +1096,14 @@ mod tests {
                 eoi_log: alloc::vec::Vec::new(),
                 call_log: alloc::vec::Vec::new(),
                 all_masked: false,
+                claim_result: None,
             }
+        }
+
+        fn new_mock_with_claim(token: u32) -> Self {
+            let mut ctrl = Self::new_mock();
+            ctrl.claim_result = Some(token);
+            ctrl
         }
     }
 
@@ -1117,7 +1135,7 @@ mod tests {
             // and the mask/unmask vectors.
             self.call_log.push(("claim", IrqVector::new(0)));
             self.ack_log.push(IrqVector::new(0));
-            None
+            self.claim_result
         }
         fn complete(&mut self, claimed: Option<u32>) {
             let _ = claimed;
@@ -1225,6 +1243,24 @@ mod tests {
         let mut notifier = MockNotifier::default();
         let result = mgr.dispatch(IrqVector::new(5), &mut notifier);
         assert!(matches!(result, Err(IrqError::Spurious(_))));
+    }
+
+    #[test]
+    fn spurious_claimed_irq_completes_without_unmask() {
+        // GIC/PLIC claim a valid identity before routing. If the hook chain
+        // is empty, the claim must still be completed, or the interrupt
+        // remains active. The line stays masked (C's spurious path does not
+        // re-enable it).
+        let ctrl = MockController::new_mock_with_claim(7);
+        let mut mgr = IrqManager::new(ctrl);
+        mgr.init();
+
+        let mut notifier = MockNotifier::default();
+        let result = mgr.dispatch(IrqVector::new(5), &mut notifier);
+        assert!(matches!(result, Err(IrqError::Spurious(_))));
+        assert_eq!(mgr.controller.eoi_log.len(), 1, "claim must be completed");
+        assert_eq!(mgr.controller.mask_log, alloc::vec![IrqVector::new(5)]);
+        assert!(mgr.controller.unmask_log.is_empty(), "spurious line stays masked");
     }
 
     #[test]

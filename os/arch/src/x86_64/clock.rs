@@ -178,7 +178,7 @@ impl ClockArch for X86_64ClockArch {
 
     fn init_timer(&mut self, hz: u32, _cpu_id: u32) {
         // Configure 8254 PIT channel 0 for periodic mode.
-        // C: intr_init_8254() — i8259.c equivalent
+        // C: init_8253A_timer() — arch_clock.c
         //
         // The PIT is a single system-wide device; the per-CPU LAPIC timer
         // (used later, and by `stop_local_timer`) is reached through the
@@ -215,7 +215,7 @@ impl ClockArch for X86_64ClockArch {
         // back to LAPIC TSC-deadline timer (which uses a per-core offset
         // table) or HPET instead.
         //
-        // C: read_tsc() — not in Minix3, but standard x86-64 practice
+        // C: read_tsc_64() — arch/i386/arch_clock.c / arch/earm/arch_clock.c
         let tsc: u64;
         unsafe {
             core::arch::asm!("rdtsc", out("rax") tsc, out("rdx") _, options(nomem));

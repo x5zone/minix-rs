@@ -3478,8 +3478,9 @@ pub fn boot_init_timer() {
     //       → `put_irq_handler` (arch_clock.c:190); the Rust
     //       `IrqManager::register_hook` carries the same first-handler
     //       unmask rule (interrupt.c:65), which opens the controller-side
-    //       delivery gate (IOAPIC IRQ 0 line / GICR_ISENABLER0 bit 30 /
-    //       no PLIC line for the local timer) under `minix_plat::TIMER_IRQ`.
+    //       delivery gate (IOAPIC input 2 for ISA IRQ0 / GICR_ISENABLER0
+    //       bit 30 / no PLIC line for the local timer) under
+    //       `minix_plat::TIMER_IRQ`.
     //   (c) open the module-local gate — the analog of the C APIC path's
     //       gate handling inside `init_local_timer`; on aarch64 it sets
     //       CNTP_CTL_EL0 = Enable=1/IMASK=0, on riscv64 it sets
@@ -3497,9 +3498,6 @@ pub fn boot_init_timer() {
     let pd = platform_desc();
     let mut clock_arch = CurrentClockArch::new(pd.timer());
     clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
-    #[cfg(not(feature = "mock"))]
-    {
-    }
 
     // Software clock half: register the
     // clock IRQ hook with the global IrqManager. The handler

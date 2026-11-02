@@ -101,10 +101,10 @@ pub trait ClockArch: Sized + Send + Sync {
 
     /// Configure and start the hardware timer at the given frequency.
     ///
-    /// Called during `init_clock_and_interrupts()`; `bsp_finish_booting()`
-    /// re-calls it as an idempotent no-op safety net (re-writes the same
-    /// registers, no side effects). After this call, the timer generates
-    /// periodic interrupts at `hz` Hz.
+    /// Called once from `boot_init_timer` (the C `boot_cpu_init_timer`
+    /// position); `init_clock_and_interrupts` only initializes software
+    /// state and does not touch the timer. After this call, the timer
+    /// generates periodic interrupts at `hz` Hz.
     ///
     /// `cpu_id` identifies the CPU (RISC-V: hart) whose timer is configured.
     /// Only RISC-V uses it: the CLINT is a single MMIO block with one
@@ -190,8 +190,9 @@ pub trait ClockArch: Sized + Send + Sync {
     /// `cpu_id` has the same role as in `init_timer`: RISC-V needs it to
     /// locate this hart's `mtimecmp`; the other architectures ignore it.
     ///
-    /// C: `stop_local_timer()` — not a named C function; inline in
-    /// `smp_ipi_halt_handler()` (smp.c:56-61) as `lapic_stop_timer()`.
+    /// C: `stop_local_timer()` — arch_clock.c:155; the x86 implementation
+    /// delegates to `lapic_stop_timer()` (apic.c:564), and the SMP halt path
+    /// calls the named function from smp.c:59.
     fn stop_local_timer(&mut self, cpu_id: u32);
 
     /// Restart this CPU's local timer after an idle wake.

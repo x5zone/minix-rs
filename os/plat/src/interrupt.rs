@@ -121,11 +121,13 @@ pub enum IrqAction {
 /// | `unmask()`  | IOAPIC unmask bit    | GICD_ISENABLER     | PLIC enable=1      |
 /// |             |                      | (SPI) / GICR_      |                    |
 /// |             |                      | ISENABLER0 (PPI)   |                    |
-/// | `ack()`     | No claim step (no-op)| Read IAR (ACK)     | Read claim (ACK)   |
-/// | `eoi()`     | LAPIC EOI write      | Write EOIR         | Write complete     |
-/// | `mask_all()`| IOAPIC mask all      | GICD_ICENABLER=all | PLIC threshold=max |
+/// | `mask_all()`| IOAPIC mask all      | GICD_ICENABLER=all | PLIC enable=0      |
+/// | `set_irq_priority()` | no-op (8259 flat) | no-op (GIC default) | PLIC priority=1 |
 ///
-/// C: hw_intr_mask/unmask/ack — hw_intr.h:22-24/45-47
+/// Claim/complete (`ack`/`eoi` in the old monolithic trait) are not here;
+/// they belong to [`PerCpuInterruptUnit`], the per-CPU half of the protocol.
+///
+/// C: hw_intr_mask/unmask — hw_intr.h:22-24/45-47
 /// Global routing plane — owns IRQ-line enable/disable state (BSP-owned,
 /// BKL-serialized, lives in the global `IrqManager`).
 ///

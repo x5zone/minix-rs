@@ -24,6 +24,16 @@ use crate::interrupt::{InterruptRouter, PerCpuInterruptUnit, IrqVector, NR_IRQ_V
 /// C: IRQ0_VECTOR — interrupt.h:34
 pub const IRQ0_VECTOR: u8 = 0x50;
 
+/// The slave 8259A's vector base.
+///
+/// C keeps the slave bank at 0x70 (IRQ8_VECTOR), leaving 0x58-0x6F unused;
+/// the IDT gates and trap stubs install 0x70-0x77 for IRQ 8-15. A slave
+/// ICW2 of `IRQ0_VECTOR + 8` would deliver 0x58-0x5F into a range with no
+/// gates.
+///
+/// C: IRQ8_VECTOR — interrupt.h:35
+pub const IRQ8_VECTOR: u8 = 0x70;
+
 /// The boot clock source's IRQ vector: the 8254 PIT drives ISA IRQ 0, which
 /// virtual-wire mode routes to IOAPIC input pin 2 (see `isa_irq_to_pin`); the
 /// kernel addresses the line by its ISA IRQ number, so the timer hook
@@ -62,8 +72,10 @@ fn outb(port: u16, val: u8) {
 
 /// Initialize the 8259A: remap master→0x50, slave→0x70 (matching the IDT
 /// gates; the ICW sequence of C intr_init), then mask everything except
-/// IRQ0 (PIT) and IRQ2 (cascade). Must be called before `init_timer`
-/// (before the PIT starts counting).
+/// IRQ0 (PIT) and IRQ2 (cascade). It runs at the end of `boot_init_timer`,
+/// after the PIT has been programmed and the hook registered; that order is
+/// safe because the CPU's interrupt flag is still clear, so the remap must
+/// only finish before the first delivered timer IRQ.
 pub fn pic_init() {
     unsafe {
         outb(PIC1_CMD, ICW1_INIT);
@@ -72,7 +84,7 @@ pub fn pic_init() {
         io_wait();
         outb(PIC1_DATA, IRQ0_VECTOR); // master ICW2: vector base 0x50
         io_wait();
-        outb(PIC2_DATA, IRQ0_VECTOR + 8); // slave ICW2: vector base 0x70
+        outb(PIC2_DATA, IRQ8_VECTOR); // slave ICW2: vector base 0x70
         io_wait();
         outb(PIC1_DATA, 0x04); // master ICW3: IRQ2 wired to the slave
         io_wait();
@@ -531,6 +543,24 @@ mod tests {
         // 8, C CMOS_CLOCK_IRQ); the kernel-side hook registration and the
         // trap-entry PC stash both branch on this exact line.
         assert_eq!(PROFILE_CLOCK_IRQ.get(), 8);
+    }
+
+    #[test]
+    fn test_pic_slave_icw2_matches_idt_slave_vectors() {
+        // C: IRQ8_VECTOR=0x70; the IDT gates/trap stubs cover 0x70-0x77.
+        // A slave ICW2 of IRQ0_VECTOR+8 (0x58) would deliver into the
+        // ungated 0x58-0x5F range.
+        assert_eq!(IRQ8_VECTOR, 0x70);
+        assert_eq!(IRQ8_VECTOR, IRQ0_VECTOR + 0x20);
+        let src = include_str!("interrupt.rs");
+        let pic_init_body = src
+            .split("pub fn pic_init()")
+            .nth(1)
+            .expect("pic_init must exist in this file");
+        assert!(
+            pic_init_body.contains("outb(PIC2_DATA, IRQ8_VECTOR)"),
+            "slave ICW2 must use IRQ8_VECTOR (0x70), not IRQ0_VECTOR+8"
+        );
     }
 }
 
