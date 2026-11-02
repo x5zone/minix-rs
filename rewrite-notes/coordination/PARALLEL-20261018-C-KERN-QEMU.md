@@ -246,6 +246,7 @@ run_with_qemu_lock() (
 - `2026-11-03` C / `C4-COPYFIX`：改 `rewrite-notes/01-stage-kernel/01-design-note-riscv-trap-stack-percpu.md` :62（本板领地）——跨板裁决 §2.13 文案修正落地：`-smp 1` 腿的「ATF 测试 36 项全部通过」改为「全部到达终态」（34 passed + 2 skipped 不变）；全仓 grep 复核违禁表述归零；正文不追加补丁句 —— `✅`
 - `2026-11-03` B / `B1-NET9-MARK`：改 `os/drivers/net/{3c90x,atl2,dec21140a,dpeth,fxp,ip1000,lan8710a,rtl8169,vt6105}/src/{main.rs,lib.rs}`（B 板领地）——跨板裁决 §2.10 五项不可用标记条件落地：九台占位启动时经 `sys_diagctl_write` 显式报告未实现后驻停（替代静默空转），lib 行为句明示不探测硬件、不向 RS/设备发现报告能力；补证=RS 表/镜像播种/rc 三处 grep 九台零命中（不进默认镜像与生产启动配置，只加标记）；门=九包宿主 test 全过、clippy 自有 0、三架构 none check 0 error —— `✅`
 - `2026-11-03` A / `CHOWN-NAMED-ERR`：改 `os/commands/bin/fileops/src/{chown.rs,bin/chown.rs}`（A 板领地）——跨板裁决 §2.9 错误语义修正落地：删除 `ChownError::NamedUnsupported`，名字形输入按无口令库的 C 走 `id()` 腿，报文与 `errx("%s: invalid %s name")` 逐字一致（含程序名前缀），非零退出；口令库出现后在 `getpwnam`/`getgrnam` 落地处补名换号（触发条件维持裁决登记）；门=fileops lib 394/0、clippy 触及文件零告警、rustfmt 2024 整件归一、x86_64-unknown-none chown bin 构建绿 —— `✅`
+- `2026-11-03` A / `COLRM-RULES`：零代码改动（A 板领地 `os/commands/usr-bin/textfilter/`）——跨板裁决 §2.3 收口：四条归因规则的锚点与四枚钉子测试核在树（小输出不吞错、两腿同坏两形各一），新参照件 `tmp/colrm-23-verify/` 复跑探针矩阵四形，本壳读数与乙案固定规则逐形相符；门=colrm_face 19/0 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

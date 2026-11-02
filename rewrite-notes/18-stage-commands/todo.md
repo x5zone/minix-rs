@@ -119,6 +119,14 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百九十五（`colrm` 的两腿归因按裁决收口：规则已在树，探针矩阵新参照件复跑）
+
+- **这一笔的射程**：跨板裁决 `PENDING-DECISIONS-CROSS-BOARD-20261102.md` §2.3（方案乙：不复刻 stdio 缓冲，保留「读失败报 stdin、写失败报 stdout」，不以输出量决定错误可见性，不延迟报告；同时故障按实际首先观察到的流终止，该边界单独登记）的执行与验收。裁决定的验收方式是「探针矩阵复跑（读坏/写坏 × 大小输出）」，本轮以新构建的参照件复跑全矩阵并把四条规则的钉子测试点齐。
+- **规则在树的锚点（零代码改动）**：`os/commands/usr-bin/textfilter/src/bin/colrm.rs` 的归因块——读腿经 `read_stdin_error`、写腿经 `emit_error`，写腿先查（`Some(code)` 即报 `stdout` 退 1），读腿后查（报 `stdin` 退 1）；写腿在任何输出量下都真写真查，不存在「攒不满就不报」的缓冲形态；两腿独立错误各有一枚面测钉住，另有两枚钉住裁决点名的两个边界：小输出写坏**照报不吞**（`a_small_write_failure_is_reported_instead_of_swallowed_by_a_buffer`，对照 C 宿主参照件在该形退 0 无报文——那是 libc 缓冲把写错吞掉的缺陷形，裁决明文不复制）、两腿同坏**跟着实际流程先观察到的流**（`both_streams_broken_reports_the_stream_c_reaches_first`，目录 stdin 形下本壳零字节输入零字节输出，空写不失败，故报 stdin）。
+- **探针矩阵复跑（新参照件，`tmp/colrm-23-verify/`，基线 `9f87eca97`）**：`gcc` 现编 `minix3/usr.bin/colrm/colrm.c`（带 `__COPYRIGHT`/`__dead`/`_DIAGASSERT`/`__UNCONST` 宏桩与本垫片）得 `colrm_ref`，本壳取主树 `cargo build -p minix-textfilter --bin colrm` 产物，`python3 tools/atf-c-compat/probes/colrm_leg_order.py <ref> <rs>` 读数——C 参照件：读坏+小输出+写坏→退 1 报 `stdin: Input/output error`；读净+小输出+写坏→退 0 无报文（缓冲吞写错）；读坏+大输出+写坏→退 1 报 `stdout`；读净+大输出+写坏→退 1 报 `stdout`。本壳四形一律退 1 报 `stdout: No space left on device`——与裁决乙案的固定规则逐形相符（同时故障形按登记的边界报 stdout，非独立读错形）。
+- **门**：`cargo test -p minix-textfilter --test colrm_face` → **19 / 0**（含上述四枚规则/边界钉）。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `9f87eca97`。
+- **登记与余量**：与 C 的两处分叉维持裁决登记——①小输出写坏本壳报 `stdout` 退 1、C 静默退 0；②同时故障形的流名按各自流程观察序（C 的序由 stdio 缓冲决定，本壳由发射先查决定），裁决明文该边界不保证与 C 一致。复制缓冲尺寸进命令层属「把 libc 机制写进 OS 语义层」，裁决已否决，不再开。
+
 ## 批次四百九十四（`chown` 的名字形按无口令库的 C 读：落 `id()` 的「invalid name」，不再单报「缺设施」）
 
 - **这一笔的射程**：跨板裁决 `PENDING-DECISIONS-CROSS-BOARD-20261102.md` §2.9（方案乙：不建口令库，附错误语义修正）的落地。C 在没有口令数据库的环境里，名字形输入走的是 `a_uid`/`a_gid` 的回落腿：`uid_from_user`/`getgrnam` 查不到名字（`chown.c:169/:256`），记号掉进 `id()`，`strtoul` 一个数字都不消费、`*ep != '\0'` 命中，`errx(EXIT_FAILURE, "%s: invalid %s name", name, type)`（`chown.c:288`）——报文形状是「程序名: 名字: invalid user/group name」加非零退出。现场：本壳在名字形上单立一个 `ChownError::NamedUnsupported`，渲染成「user/group name lookup needs the password DB」——语义是「这个功能不存在」，而 C 的语义是「这个名字不存在」；裁决要求后者。
