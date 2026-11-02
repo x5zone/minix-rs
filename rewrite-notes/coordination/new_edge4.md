@@ -4625,3 +4625,43 @@ C 的 `stime_file()`（`minix3/usr.bin/touch/touch.c:318-327`）只做一次 `st
 读数：宿主整包 69 段 **1297/0**、容器权威门同读数退 0、三架构各退 0；本轮新写代码起初有 3 处
 自有格式漂移，就地格式化后归零（基线 0，未带走存量）。07 篇 `pr` 行「三形未接线」改成两形并按 C
 写明 `nodiag` 的分量。
+
+合回这一笔走了一段弯路，记下来当作板面的规矩：两笔提交落完后，`git merge --ff-only` 因为另一条线
+已把 `rewrite` 往前推了一格而退 128，同一命令行里紧跟的 `claim.sh release` 照例删工作树、销锁分支，
+于是这两笔当场变成没有引用的游离提交。找回的路子是 `git fsck --lost-found` 列出的悬空提交里按
+提交信息认出那一枚，`git log --oneline <那枚>` 顺着父链把前一笔也带出来（两笔都还在，对象没被回收），
+再 `git merge --no-ff <尾笔>` 合回——本板并发推进是常态，快退能过的假设只在该线尚未动过时成立，
+下一笔起把合回写成「先试快退，退不动就 `--no-ff`，两形都在合回前把状态核对做完」。
+
+### 第二百二十笔（A 板 · `SED-READ-SEAM`：`sed`/`grep` 的输入腿补上第二个载体——宿主此前读到空）
+
+`os/commands/usr-bin/regex/src/bin_support.rs` 的 `read_stdin` 与两支壳各自自带的 `read_file`
+只有系统调用这一个载体，而 `minix_sys::{open, read}` 在宿主是替身。动手前先量：
+`printf 'abc\ndef\n' | sed 's/a/A/'` 交出**空输出**且退 0（宿主自带 sed 同命令交 `Abc`、`def`），
+命名操作数与 `grep a <真实档>` 同样读不到——与批次四百七十八的 `join`、批次四百七十前的 `nl`/`fold`/
+`rev`/`colrm`/`split`/`wtf` 同一族缺陷的第七次落地。
+
+落码是载体不是语义：两条腿各配一对 `cfg` 双生面（宿主 `std::io::stdin` / `std::fs::File::open`，
+内核仍走 `minix_sys::{open, read, close}`），两份逐字相同的本地 `read_file` 合并进 bin_support，
+两支壳只改调用点并删掉随之失效的 `use minix_sys::{close, open, read}`。失败形态一笔未动：仍只有
+「打不开」回 `Err`，读中断仍交回已收到的字节。
+
+本 crate 没有进程级门面，这一笔新建两件共十枚：`tests/sed_face.rs` 六枚（标准输入走进模式空间、
+命名操作数与管道逐字节同形、多操作数按序、`-n` 之后只剩 `s///p` 那句 `OUT()`、开不了的档 warn +
+继续 + 退 1、一枚名叫 `-` 的文件不是标准输入别名），`tests/grep_face.rs` 四枚（只测同一条缝：
+命名操作数、两形同形、`grep.c:493-494` 的名头规则、退码 2 只体现失败不吞输出）。C 侧锚点逐条回查过：
+`main.c:214` 与 `:361-363`（无操作数即那枚 `NULL`，按标准输入读）、`process.c:270`（自动打印）、
+`process.c:466-467`（`s` 的 `p` 标志自己印）、`main.c:449-452`（warn/`rval = 1`/继续）、
+`grep.c:505`（退码式）。
+
+读数：宿主整包 6 段 **65/0**，容器权威门同读数退 0（`tmp/sed-read-seam/container.log`），三架构
+`--bins` 各退 0。负控两枚各咬：K1（宿主 `read_stdin` 不再读真标准输入）红 4，K2（宿主 `read_file`
+一律打不开）红 7，还原复跑 65/0。**本轮两次自错**：①首轮负控没带 `--no-fail-fast`，两件门面同跑时
+第一件红掉就收场，读数被误当成「只咬住一枚」；②`rustfmt` 顺手改了两支壳的 import 排序与一处折行，
+逐条还原后残留漂移与基线同段（`sed.rs` 基线 3 现存 1、`grep.rs` 基线 4 现存 2，本轮新写三件零漂移）。
+
+**两条登记不执行**：`SED-READ-FAIL-FATAL`（读中断 C 是 `err(1, "%s", fname)` 当场致命
+`main.c:463-465`，本壳当读到尽头）、`OPEN-WARN-SHAPE`（`warn` 经 `minix3/lib/libc/gen/vwarnc.c`
+打三段 `<程序名>: <文本>: <strerror>`，两支壳打两段且程序名写死未取 `argv[0]`，与批次四百七十二
+的 `vis` 那一笔同族）。08 篇 `grep`/`sed` 两行按实况补上载体与门面归属。
+

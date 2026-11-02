@@ -119,6 +119,57 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十一（`sed`/`grep` 的输入腿只有系统调用一个载体：宿主上标准输入读到空、文件操作数一律打不开）
+
+- **这一笔的射程**：`os/commands/usr-bin/regex/src/bin_support.rs` 的两条输入腿——`read_stdin`
+  与各壳自带的 `read_file`。这一对输入腿少了一半载体（只有 `minix_sys::{open, read, close}` 一侧），而这几个调用在
+  宿主是替身。动手前量的现场：`printf 'abc\ndef\n' | sed 's/a/A/'` 交出**空输出**且退 0（同一条命令
+  用宿主自带的 sed 跑是 `Abc`、`def` 两行），`sed 's/a/A/' <真实档>` 与 `grep a <真实档>` 同样读不到。
+  缺的不是语义而是载体：同一份代码在内核那侧读得到、在宿主这侧读不到，于是 08 篇「文件操作数已接线」
+  那两句从进程层面完全不可观察——这一族缺陷此前已在 `nl`、`fold`、`rev`、`colrm`、`split`、`wtf`
+  上各犯一次，本 crate 是同一形状的第七次。
+- **落码**：`read_stdin` 与 `read_file` 各配一对 `cfg` 双生面（宿主走 `std::io::stdin` 与
+  `std::fs::File::open`，内核仍走 `minix_sys::{open, read, close}`）。`bin/sed.rs` 与
+  `bin/grep.rs` 里那两份逐字相同的本地 `read_file` 删掉，两支壳改走 bin_support 那一条，随之失效的
+  `use minix_sys::{close, open, read}` 一并删。**失败形态一笔未改**：只有「打不开」回 `Err`，
+  读中断仍交回已经收到的字节——C 对读中断是 `err(1, "%s", fname)` 当场致命（`minix3/usr.bin/sed/main.c:463-465`），
+  本壳不是，这条差异按现状登记，不在本笔顺手改。
+- **门**：本 crate 此前没有任何进程级门面，新建两件。`os/commands/usr-bin/regex/tests/sed_face.rs`
+  六枚——`standard_input_reaches_the_pattern_space`（无操作数即 C 加的那枚 `NULL`，
+  `main.c:214` 与 `:361-363` 把它当标准输入读，逐行替换后由 `process.c:270` 的
+  `new: if (!nflag && !pd) OUT()` 自动打印）、`a_named_operand_is_read_and_agrees_with_the_pipe`
+  （命名操作数与管道必须逐字节同形）、`every_operand_is_transformed_in_order`（操作数串成一条表按序走，
+  `main.c:203-214`）、`quiet_prints_only_what_the_p_flag_prints`（`-n` 之后只剩 `substitute()` 自己那句
+  `OUT()`，`process.c:466-467`）、`an_unopenable_operand_warns_and_flags_the_exit_status`
+  （`main.c:449-452` 的 `warn`/`rval = 1`/`continue`：后续操作数照做、退码 1）、
+  `a_bare_dash_stays_an_operand_name`（一枚名叫 `-` 的文件，不是标准输入的别名）。
+  `os/commands/usr-bin/regex/tests/grep_face.rs` 四枚只测同一条缝：命名操作数读得到、与管道同形、
+  多操作数按 `grep.c:493-494` 的名头规则显名、开不了的档只体现在退码 2（`grep.c:505`）。
+- **读数**：宿主整包 6 段 **65 / 0**，容器权威门同读数退 0（`tmp/sed-read-seam/container.log`），
+  三架构 `--bins` 各退 0（`tmp/sed-read-seam/arch-*.log`）。`rustfmt --edition 2024 --check`：本轮
+  新写的三件（bin_support 的两条腿、两件门面）零漂移；两支壳各留下基线里就有的自有漂移
+  （`sed.rs` 基线 3 处现存 1、`grep.rs` 基线 4 处现存 2，残留位置与基线同段——顺手让 rustfmt 改掉的
+  别人 import 排序与一处折行已逐条还原）。
+- **负控两枚**（`python3 tmp/sed-read-seam/negctl.py`）：K1 让宿主的 `read_stdin` 不再读真标准输入
+  （还原成本笔之前的单载体形态）→ 红 4（管道形、`-n` 形、两枚「两形同形」）；K2 让宿主的 `read_file`
+  一律打不开 → 红 7（命名操作数、多操作数序、名头、两枚「开不了的档」门、两枚「两形同形」）。
+  还原后复跑 65/0。踩过一次坑记在此：两枚面门同跑必须带 `--no-fail-fast`，否则第一件红掉就收场，
+  读数会少一整件门面（首轮就这么误判成「只咬住一枚」）。
+- **本轮新立、登记不执行**（两条都只登记，不在本笔顺手改）：
+  `SED-READ-FAIL-FATAL`——读中断这一形，C 是 `err(1, "%s", fname)` 当场致命
+  （`minix3/usr.bin/sed/main.c:463-465`），本壳与 grep 一样把它当读到尽头，交回已收到的字节并退 0；
+  `OPEN-WARN-SHAPE`——两支壳的开档失败句都少一段。C 的 `warn` 经 `minix3/lib/libc/gen/vwarnc.c`
+  打的是 `<程序名>: <文本>: <strerror 句子>` 三段，本壳打成 `sed: <操作数>` 与 `grep: <操作数>` 两段，
+  且程序名写死而没取 `argv[0]`。它与批次四百七十二的 `vis` 程序名那一笔同族，但一次要动两支壳的
+  两条报文，另立一笔收。
+- **在册变化**：08 篇 `grep`/`sed` 两行的「文件操作数已接线」按实况补上载体与门面归属——现在两形
+  都能被进程级门观察到，且标准输入这条腿在宿主也读得到了。
+- **三件套**：`python3 tmp/sed-read-seam/negctl.py`、`cargo test -p minix-regex`
+  （`tmp/sed-read-seam/pkg.log`、`container.log`）、`cat tmp/sed-read-seam/arch-*.log`；
+  核实日 `2026-11-02`，基线快照 `fea8b59d5`。
+
+---
+
 ## 批次四百八十（`pr -r` 接上：C 的 `nodiag` 只压那句开档诊断，`errcnt` 与退码照旧）
 
 - **这一笔的射程**：`pr` 未建模字母那一支（`b'p' | b'r' | b'T'` 一起回
