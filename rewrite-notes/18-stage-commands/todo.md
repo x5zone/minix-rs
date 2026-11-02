@@ -119,6 +119,58 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百九十三（`s` 的两半各按 C 的读者读：图案不能续行，替换续行并拼字段）
+
+- **这一笔的射程**：`SED-ESCAPED-NEWLINE-CONTINUATION` 登记的那条差异，连同同一个读者上量出来的三处
+  偏差。C 把 `s` 的两半交给两支函数：图案半是 `compile_delimited`，一次只读一行脚本、**不能续行**
+  （`minix3/usr.bin/sed/compile.c:305-317`），行尾反斜杠与原始换行都让它带着 NULL 退场，调用方印
+  `unterminated substitute pattern`（`:330-331`）；替换半是 `compile_subst`，原始换行是它独有的
+  `unescaped newline inside substitute pattern`（`:542-544`），而**反斜杠收尾则续行**——反斜杠与换行
+  一起从字段里消失，下一行的头一个字符顶替它的转义位置（`:511-521` 的 `sawesc`），替换串因此可以跨行；
+  替换半没闭合时 C 有第三句 `unterminated substitute in regular expression`（`:555-556`）。本壳把两半当同一种读者：图案里的反斜杠换行被接受并原样留在字段里（C 会拒），替换里的反斜杠换行同样留在
+  字段里（C 会拼接掉），而两种「没闭合」共用图案那句。现场：`sed 's/a/b\` 接换行再接 `c/'` 在 C 下把
+  `a` 换成 `bc`，本壳把反斜杠与换行一起塞进替换文本；`sed 's/a\` 接换行再接 `b/x/'` 在 C 下当场退场，
+  本壳照常跑。
+- **落码**：`parse_subst` 按两半分开走。图案半遇原始换行、行尾反斜杠或脚本用尽一律
+  `SubstError::Unterminated`。替换半遇到反斜杠收尾时把已读部分搬进 `String` 再续拼——转义位上的字符
+  按本模块拼接器的读法落笔：`&`、`\`、`1`-`9` 前补一个反斜杠，其余原样（这正是 C 写进缓冲的那份文本，
+  `compile.c:519-530`）；续行之后的每个字符都继续追加。字段类型随之从 `&str` 变成
+  `Cow<'a, str>`（没有续行时仍是脚本切片，续行过才拥有），`Subst` / `Command` / `Scripted` 因此去掉
+  `Copy` 保留 `Clone`，壳与编辑器各改一处（`bin/sed.rs` 的编译遍改为按引用匹配再 clone，
+  `editor/src/exec.rs` 用 `Cow::Borrowed`）。新增 `SubstError::UnterminatedReplacement` 与 C 的第三句；
+  `parse_subst` 收 `start_line` 并交回带行号的 `SubstFailure`——续行过的命令让行号跟着走，壳把它接成
+  `ParseFailure`；`parse_script` 在每条命令之后按命令消耗的字节补数换行（C 的 `cu_fgets` 每读一行涨一次）。
+- **门**：库测两枚——`test_replacement_continuation_stitches_like_c`（`bc`、`\&`、`\1`、`.` 四形与空续行
+  那一形的字段原文）、`test_a_continued_command_moves_the_line_counter`（`s/a/b\` 接换行再接 `c/;p` 的
+  第二条命令落在第 2 行）；面门三枚——`a_continued_replacement_joins_the_next_line`（`abc` 变成
+  `bcbc`，逐字节）、`a_pattern_continued_across_lines_is_unterminated` 与
+  `an_unterminated_replacement_has_its_own_sentence`（两句 C 原话逐字节，含脚本名槽）。三枚旧面门的
+  期望按 C 改正：`a_compile_refusal…`、`a_script_too_long…` 改用替换半那句，`an_unescaped_newline…`
+  的第一形（换行在图案里）改用图案半那句。
+- **读数**：宿主 `minix-regex` + 两依赖件 50 段 **645 / 0**（基线 640 / 0，本笔 +5 枚），容器权威门同
+  读数退 0（`tmp/sed-escaped-newline/ci-gate.log`）；三架构 `-p minix-regex -p minix-editor --bins` 各 0
+  错；`rustfmt` 的 diff 块数与 HEAD 基线相同（`sed.rs` 2、`editor/src/exec.rs` 68，均系他处既有），
+  面门两件 0 漂移；`clippy` 零新增——本笔自己造出的两条（`needless_borrow`、`collapsible_if`）已按提示
+  改掉。负控两枚各咬两处：N1（续行不再拼接、字段保留反斜杠与换行）红库测与面门各一，
+  N2（图案半接受续行）红库测与面门各一，还原后库 57 / 0、面门 38 / 0。
+- **差分腿与真值取舍**：宿主 GNU `sed` 在这两形上与 C 反过来——它把反斜杠换行当**字面换行**：替换形
+  输出 `b` 换行 `cbc`，图案形照旧不匹配（`tmp/sed-escaped-newline/differential.log`）。真值优先序里
+  C 在 GNU 之前，故按 C 的拼接语义落地；这条分歧本身记在这里，免得下一轮拿 GNU 当基准翻回去。
+- **自错三处**：① 续行的第一版只在转义位上追加一个字符，之后的行内字节没有继续追加，空续行那一形
+  因此得到 `\n` 而不是 `\nc`——库测当场抓住；② 重写标志环时漏掉了 `p` 这一臂，三条既有测试一起红，
+  按 HEAD 原文补回；③ 续行面门的期望输出第一次写成 `bbc`，实际替换是 `a` → `bc`，`abc` 应变
+  `bcbc`——照实测量改正。
+- **闭合与在册**：`SED-ESCAPED-NEWLINE-CONTINUATION` 闭合（按 `s` 读者两半的全部四形）。新登记
+  `SED-NONASCII-DELIMITER`（P2，现行崩溃）：非 ASCII 定界符（如 `é`）会让字段切片落在字符中间，
+  `sed 'séaébé'` 当场 panic（实测退 134），而 GNU 用自己的一句拒绝、C 按字节照跑——要修得先裁决
+  字段文本是否收字节。另把批次四百九十二那句 `SED-SUBST-TEXT-CAP` 的修法收紧：`MAX_SUBST_TEXT` 不能
+  单独删，壳的 `apply` 输出缓冲是定长的（写满即静默截断），去上限之前得先让输出跟着长。
+- **三件套**：负控脚本与五份日志见 `tmp/sed-escaped-newline/`（`negctl.py`、`negctl.log`、
+  `differential.log`、`gates-host.log`、`arch-rerun.log`、`ci-gate.log`）；核实日 `2026-11-02`，
+  基线快照 `8c5b4f830`。
+
+---
+
 ## 批次四百九十二（脚本不设命令条数上限：命令集随脚本生长，命令链与 C 同形）
 
 - **这一笔的射程**：`sed` 脚本的**长度**。C 一边读一边把编译好的命令挂上链（`compile_stream` 的

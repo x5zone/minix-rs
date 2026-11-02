@@ -5015,3 +5015,44 @@ C 的 `compile_stream` 一边读一边把编译好的命令挂上链（`cmd->nex
 **闭合** `SED-SCRIPT-CAP-16`。新登记 `SED-SUBST-TEXT-CAP`（P2）：`MAX_SUBST_TEXT = 256` 是另一处自造
 上限——C 的 `compile_subst` 从 `2 * _POSIX2_LINE_MAX + 1` 起、之后按 `xrealloc` 倍增
 （`compile.c:540-552`），不设二百五十六字节的界；本笔不顺手改，留作单独一笔。
+
+### 第二百三十二笔（A 板 · `SED-ESCAPED-NEWLINE-CONTINUATION`：`s` 的两半按 C 的两支读者读）
+
+本轮照 C→B→A 复勘：C 板 `01-stage-kernel/01-todo.md` 的开放标记仍为 0，B 板任务表 `☐` 行仍为 0，遂回
+A 板收 `sed` 家族最后一条在册的行为差异。
+
+C 把 `s` 的两半交给两支函数读，句子与续行规则都不同。图案半 `compile_delimited` 一次只读一行、不能
+续行（`minix3/usr.bin/sed/compile.c:305-317`），行尾反斜杠与原始换行都让它带着 NULL 退场，调用方印
+`unterminated substitute pattern`（`:330-331`）。替换半 `compile_subst`：原始换行是它独有的
+`unescaped newline inside substitute pattern`（`:542-544`）；反斜杠收尾则**续行**——反斜杠与换行一起
+从字段里消失，下一行头一个字符顶替它的转义位置（`:511-521` 的 `sawesc`）；没闭合时是第三句
+`unterminated substitute in regular expression`（`:555-556`）。本壳把两半当同一种读者：图案里的反斜杠
+换行被接受、替换里的被原样留在字段里，两种「没闭合」共用图案那句。
+
+落码：`parse_subst` 按两半分开走；图案半三种形状一律 `Unterminated`；替换半在反斜杠收尾时把已读部分
+搬进 `String` 续拼，转义位上的字符按拼接器的读法落笔（`&`、`\`、`1`-`9` 前补反斜杠，其余原样——正是
+C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加。字段类型从 `&str` 变为 `Cow<'a, str>`
+（无续行仍是切片），`Subst`/`Command`/`Scripted` 去 `Copy` 留 `Clone`；`bin/sed.rs` 编译遍改为按引用
+匹配再 clone，`editor/src/exec.rs` 用 `Cow::Borrowed`。新增 `SubstError::UnterminatedReplacement`；
+`parse_subst` 收 `start_line`、交回带行号的 `SubstFailure`（续行过的命令让行号跟着走），`parse_script`
+每条命令后按消耗字节补数换行。
+
+门：库测 `test_replacement_continuation_stitches_like_c`（`bc`/`\&`/`\1`/`.`/空续行五形）与
+`test_a_continued_command_moves_the_line_counter`；面门 `a_continued_replacement_joins_the_next_line`、
+`a_pattern_continued_across_lines_is_unterminated`、`an_unterminated_replacement_has_its_own_sentence`；
+三枚旧面门的期望按 C 改正。读数：宿主 50 段 **645/0**（基线 640/0）、容器权威门同读数退 0、三架构
+`--bins` 各 0 错、`rustfmt` 块数与 HEAD 基线相同（`sed.rs` 2、`exec.rs` 68）、`clippy` 零新增（本笔自造
+的两条已改掉）。负控 N1（不拼接）、N2（图案接受续行）各咬库测与面门各一枚，还原后 57/0 与 38/0。
+
+**差分与真值**：宿主 GNU `sed` 在这两形上与 C 相反——它把反斜杠换行当字面换行（替换形输出 `b` 换行
+`cbc`，图案形不匹配）。真值优先序里 C 在 GNU 之前，按 C 的拼接语义落地；分歧记在
+`tmp/sed-escaped-newline/differential.log`，免得后续拿 GNU 当基准翻回去。
+
+**自错**：续行第一版只追加转义位一个字符，行内后续字节没继续追加（空续行得到 `\n` 而非 `\nc`，库测
+抓住）；重写标志环时漏掉 `p` 臂（三条既有测试一起红，按 HEAD 原文补回）；续行面门期望写成 `bbc`，
+实测是 `bcbc`。
+
+**闭合** `SED-ESCAPED-NEWLINE-CONTINUATION`。新登记 `SED-NONASCII-DELIMITER`（P2，现行崩溃）：
+非 ASCII 定界符使字段切片落在字符中间，`sed 'séaébé'` 实测 panic 退 134，GNU 用自己的句子拒绝、C 按
+字节照跑，修法需先裁决字段文本是否收字节。另收紧批次四百九十二 `SED-SUBST-TEXT-CAP` 的修法：壳的
+`apply` 输出缓冲定长、写满静默截断，去 `MAX_SUBST_TEXT` 之前得先让输出跟着长。
