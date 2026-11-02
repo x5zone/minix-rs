@@ -174,9 +174,9 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), SubstError> 
 /// turn `s//x/` into a match-every-position rewrite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatternChoice {
-    /// Compile this command's own pattern text; it becomes the one to reuse.
-    Own,
-    /// Reuse the expression recorded at this index in the script's list.
+    /// The command brings the expression compiled at this index.
+    Own(usize),
+    /// Empty pattern: run against the expression recorded at this index.
     Reuse(usize),
     /// Empty pattern with nothing recorded yet: C's
     /// `errx(1, "first RE may not be empty")`, which carries no line number or
@@ -184,22 +184,20 @@ pub enum PatternChoice {
     NoPrevious,
 }
 
-/// Decide which expression one `s` command runs, given what the script has
-/// recorded so far. `previous` is `None` until the first own pattern.
+/// Decide which expression one `s` command runs.
 ///
-/// C records the expression when a command **executes**, so a command that never
-/// runs would leave `defpreg` behind. That distinction cannot reach this build:
-/// with no addresses and no branch verbs, every command in the list runs on every
-/// line, so the compile order and the execution order pick the same expression.
+/// `own` is the index of the expression the command compiled for itself, `None`
+/// when its pattern is empty; `recorded` is C's `defpreg` as it stands at the
+/// moment the command runs. The second argument is why this is a **runtime**
+/// decision: a script text alone does not say which expression an empty pattern
+/// will land on, and a command the run never reaches (`d` placed before it) never
+/// records or reads anything.
 #[must_use]
-pub fn pattern_choice(subst: &Subst<'_>, previous: Option<usize>) -> PatternChoice {
-    if !subst.pattern_text.is_empty() {
-        PatternChoice::Own
-    } else {
-        match previous {
-            Some(index) => PatternChoice::Reuse(index),
-            None => PatternChoice::NoPrevious,
-        }
+pub fn pattern_choice(own: Option<usize>, recorded: Option<usize>) -> PatternChoice {
+    match (own, recorded) {
+        (Some(index), _) => PatternChoice::Own(index),
+        (None, Some(index)) => PatternChoice::Reuse(index),
+        (None, None) => PatternChoice::NoPrevious,
     }
 }
 
@@ -356,6 +354,22 @@ pub enum Command<'a> {
     PrintLineNum,
 }
 
+/// One command plus the script line it started on.
+///
+/// The line travels with the command because C prints it in two different
+/// places: the compile-time arms use the `linenum` current while reading
+/// (`compile.c:219`, `:264`, `:320`, `:331`, `:366`, `:601`, `:636`), and the
+/// execution-time arm restores the command's own saved line before printing
+/// (`process.c:387`'s `linenum = cp->u.s->linenum`). A caller that wants C's line
+/// has to know which line each command came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scripted<'a> {
+    /// The command itself.
+    pub command: Command<'a>,
+    /// Its 1-based script line.
+    pub line: u64,
+}
+
 /// Errors while splitting a script into commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptError {
@@ -410,7 +424,7 @@ pub struct ParseFailure {
 /// that check: its own reader ends at a separator, a line end, or the end of the
 /// text, and any other byte there is a flag position, which C refuses with
 /// `bad flag in substitute command` (`compile.c:636`).
-pub fn parse_script<'a>(script: &'a str, out: &mut [Command<'a>]) -> Result<usize, ParseFailure> {
+pub fn parse_script<'a>(script: &'a str, out: &mut [Scripted<'a>]) -> Result<usize, ParseFailure> {
     let bytes = script.as_bytes();
     let mut index = 0usize;
     let mut count = 0usize;
@@ -481,7 +495,11 @@ pub fn parse_script<'a>(script: &'a str, out: &mut [Command<'a>]) -> Result<usiz
             }
         };
         *out.get_mut(count)
-            .ok_or_else(|| fail(command_line, ScriptError::NotModelled))? = command;
+            .ok_or_else(|| fail(command_line, ScriptError::NotModelled))? =
+            Scripted {
+                command,
+                line: command_line,
+            };
         count += 1;
     }
     Ok(count)
@@ -541,6 +559,59 @@ fn skip_spaces(bytes: &[u8], mut index: usize) -> usize {
 /// without this test would silently lose the switch.
 pub fn script_quiet_directive(script: &str) -> bool {
     script.starts_with("#n")
+}
+
+/// The back-reference numbers a replacement asks for, in the order C reads them.
+///
+/// `compile_subst` walks the replacement and treats a backslash followed by
+/// `1`-`9` as a reference — that is the only place a number enters
+/// `s->maxbref`, so `\\1` (an escaped backslash then a `1`) and `\&` are not
+/// references (`compile.c:501-531`). A backslash before anything else yields
+/// that character.
+fn visit_backrefs(replacement: &str, visit: &mut dyn FnMut(u8)) {
+    let bytes = replacement.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'\\' || index + 1 >= bytes.len() {
+            index += 1;
+            continue;
+        }
+        let next = bytes[index + 1];
+        if matches!(next, b'1'..=b'9') {
+            visit(next - b'0');
+        }
+        // Both arms below consume the pair, so a doubled backslash shields the
+        // digit after it exactly as C's `sawesc`-free stepping does.
+        index += 2;
+    }
+}
+
+/// The largest back-reference a replacement asks for: C's `s->maxbref`
+/// (`compile.c:529-530`), which is the number C prints when a *reused*
+/// expression cannot fill it (`process.c:386-390`).
+#[must_use]
+pub fn max_backref(replacement: &str) -> u8 {
+    let mut largest = 0u8;
+    visit_backrefs(replacement, &mut |ref_number| {
+        largest = largest.max(ref_number);
+    });
+    largest
+}
+
+/// The first back-reference the expression with `groups` captures cannot fill.
+///
+/// C tests each digit as it reads the replacement, so it names **that** digit,
+/// not the largest one later in the string: `s/\(a\)/\2\3/` complains about
+/// `\2` (`compile.c:526-528`).
+#[must_use]
+pub fn first_undefined_backref(replacement: &str, groups: u8) -> Option<u8> {
+    let mut offender: Option<u8> = None;
+    visit_backrefs(replacement, &mut |ref_number| {
+        if offender.is_none() && ref_number > groups {
+            offender = Some(ref_number);
+        }
+    });
+    offender
 }
 
 /// What one command contributes to the cycle a line is going through. C keeps
@@ -697,13 +768,16 @@ mod tests {
 
     #[test]
     fn test_parse_script_chains_and_skips_empty() {
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         assert_eq!(parse_script("s/a/b/", &mut cmds).unwrap(), 1);
-        assert!(matches!(cmds[0], Command::Subst(_)));
+        assert!(matches!(cmds[0].command, Command::Subst(_)));
         assert_eq!(parse_script("s/a/b/g;d;p;=", &mut cmds).unwrap(), 4);
-        assert!(matches!(cmds[1], Command::Delete));
-        assert!(matches!(cmds[2], Command::Print));
-        assert!(matches!(cmds[3], Command::PrintLineNum));
+        assert!(matches!(cmds[1].command, Command::Delete));
+        assert!(matches!(cmds[2].command, Command::Print));
+        assert!(matches!(cmds[3].command, Command::PrintLineNum));
         // Line separators and a trailing separator: empty segments are skipped.
         assert_eq!(parse_script("p;\n", &mut cmds).unwrap(), 1);
         // Leading whitespace is not an address (judged after trim_start).
@@ -712,7 +786,10 @@ mod tests {
 
     #[test]
     fn test_parse_script_splits_c_own_errors_from_ours() {
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         // Addresses are something C carries, so a refusal here has no C sentence:
         // ours. The four address-start bytes come from `compile.c:193`'s
         // `addrchar("0123456789/\\$")`.
@@ -764,7 +841,10 @@ mod tests {
 
     #[test]
     fn test_subst_error_arms() {
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         // A flag letter outside C's set (`compile.c:635-637`).
         assert_eq!(
             parse_script("s/a/b/x", &mut cmds),
@@ -800,12 +880,15 @@ mod tests {
         // C's `compile_subst` only stops at the delimiter, so the `;` here is
         // pattern text; a scanner that cut the script on `;` first would see two
         // broken commands instead of one.
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         assert_eq!(parse_script("s/a;b/x/", &mut cmds).unwrap(), 1);
-        assert!(matches!(cmds[0], Command::Subst(_)));
+        assert!(matches!(cmds[0].command, Command::Subst(_)));
         // And the separator that follows the finished command still works.
         assert_eq!(parse_script("s/a;b/x/;d", &mut cmds).unwrap(), 2);
-        assert!(matches!(cmds[1], Command::Delete));
+        assert!(matches!(cmds[1].command, Command::Delete));
     }
 
     #[test]
@@ -813,10 +896,13 @@ mod tests {
         // `semicolon:` eats blanks, then a `;`, then goes back for more of the
         // same (`compile.c:177-184`), and a command may be followed by blanks
         // before its separator (`compile.c:253`, `:347`).
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         assert_eq!(parse_script(" s/a/b/ ; p ;; d", &mut cmds).unwrap(), 3);
-        assert!(matches!(cmds[1], Command::Print));
-        assert!(matches!(cmds[2], Command::Delete));
+        assert!(matches!(cmds[1].command, Command::Print));
+        assert!(matches!(cmds[2].command, Command::Delete));
         // Trailing separators and line ends give no command of their own.
         assert_eq!(parse_script("p;\n", &mut cmds).unwrap(), 1);
     }
@@ -825,14 +911,17 @@ mod tests {
     fn test_comment_ends_the_line_it_sits_on() {
         // C's `if (*p == '#') continue;` reads the **next line**, so a `;` after
         // the sign never reaches the parser (`compile.c:178-180`).
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         assert_eq!(parse_script("p;#x;d", &mut cmds).unwrap(), 1);
         // A comment drops the rest of **its own** line, and the command on the
         // next line still arrives. Writing `"p\n#x;d"` would expect two and be
         // wrong: that `d` sits after the sign, so C's `continue` has already
         // abandoned it.
         assert_eq!(parse_script("p\n#x;\nd", &mut cmds).unwrap(), 2);
-        assert!(matches!(cmds[1], Command::Delete));
+        assert!(matches!(cmds[1].command, Command::Delete));
     }
 
     #[test]
@@ -845,17 +934,23 @@ mod tests {
         assert!(!script_quiet_directive("#N"));
         assert!(!script_quiet_directive(" n"));
         // The same text as a script is one comment line: no command at all.
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         assert_eq!(parse_script("#n;p", &mut cmds).unwrap(), 0);
     }
 
     #[test]
     fn test_step_carries_the_c_print_rules() {
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         assert_eq!(parse_script("s/a/b/p", &mut cmds).unwrap(), 1);
-        let with_flag = cmds[0];
+        let with_flag = cmds[0].command;
         assert_eq!(parse_script("s/a/b/", &mut cmds).unwrap(), 1);
-        let without_flag = cmds[0];
+        let without_flag = cmds[0].command;
         // The `p` flag prints only on a replacement (`substitute()` reaches its
         // `OUT()` only after one happened); nothing else about the command prints.
         assert_eq!(
@@ -886,27 +981,32 @@ mod tests {
     fn test_pattern_choice_reuses_or_refuses_an_empty_pattern() {
         // Three arms: a pattern of its own, an empty pattern with something
         // recorded, and an empty pattern with nothing recorded yet.
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         assert_eq!(parse_script("s/a/A/;s//B/", &mut cmds).unwrap(), 2);
-        let own = match cmds[0] {
+        let own_pattern = match cmds[0].command {
             Command::Subst(subst) => subst,
             _ => panic!("第一条该是 s"),
         };
-        let empty = match cmds[1] {
+        let empty_pattern = match cmds[1].command {
             Command::Subst(subst) => subst,
             _ => panic!("第二条该是 s"),
         };
-        assert_eq!(own.pattern_text, "a");
-        assert_eq!(empty.pattern_text, "");
-        assert_eq!(pattern_choice(&own, None), PatternChoice::Own);
-        // An empty pattern takes the **last** recorded expression, whichever
-        // index that is: `s/a/A/;s/b/B/;s//C/` reuses `b`, not `a`.
-        assert_eq!(pattern_choice(&empty, Some(0)), PatternChoice::Reuse(0));
-        assert_eq!(pattern_choice(&empty, Some(1)), PatternChoice::Reuse(1));
-        assert_eq!(pattern_choice(&empty, None), PatternChoice::NoPrevious);
-        // `Own` is decided by the pattern text alone, so a recorded expression
-        // never overrides a command that brings its own.
-        assert_eq!(pattern_choice(&own, Some(7)), PatternChoice::Own);
+        assert_eq!(own_pattern.pattern_text, "a");
+        assert_eq!(empty_pattern.pattern_text, "");
+        // A command that brings its own expression keeps it, whatever is
+        // recorded: `s/a/A/;s/b/B/` runs `b` even though `a` was recorded first.
+        assert_eq!(pattern_choice(Some(0), None), PatternChoice::Own(0));
+        assert_eq!(pattern_choice(Some(3), Some(1)), PatternChoice::Own(3));
+        // An empty pattern takes the **last recorded** expression, and the
+        // argument is the run's state, not the script text: this is why
+        // `s/a/A/;s/b/B/;s//C/` reuses `b` while a `d` before the whole script
+        // leaves the run with nothing recorded at all.
+        assert_eq!(pattern_choice(None, Some(0)), PatternChoice::Reuse(0));
+        assert_eq!(pattern_choice(None, Some(1)), PatternChoice::Reuse(1));
+        assert_eq!(pattern_choice(None, None), PatternChoice::NoPrevious);
     }
 
     #[test]
@@ -919,24 +1019,50 @@ mod tests {
     }
 
     #[test]
+    fn test_backref_scan_follows_the_c_escape_rules() {
+        // Only a backslash followed by `1`-`9` is a reference, and each pair is
+        // consumed whole, so a doubled backslash shields the digit after it
+        // (`compile.c:501-531`).
+        assert_eq!(max_backref(r"\1"), 1);
+        assert_eq!(max_backref(r"\\1"), 0);
+        assert_eq!(max_backref(r"\1\\2"), 1);
+        assert_eq!(max_backref(r"\1\2\1"), 2);
+        assert_eq!(max_backref(r"\11"), 1);
+        // `&` is the whole match, `\0` is not a reference slot at all.
+        assert_eq!(max_backref("&"), 0);
+        assert_eq!(max_backref(r"\0"), 0);
+        assert_eq!(max_backref(""), 0);
+        // The offender C names is the **first** digit over the bound, not the
+        // largest: `\2\3` against one group reports `\2`.
+        assert_eq!(first_undefined_backref(r"\2\3", 1), Some(2));
+        assert_eq!(first_undefined_backref(r"\3\2", 1), Some(3));
+        assert_eq!(first_undefined_backref(r"\1\2", 2), None);
+        assert_eq!(first_undefined_backref(r"\\1", 0), None);
+        assert_eq!(first_undefined_backref("", 0), None);
+    }
+
+    #[test]
     fn test_blanks_between_flags_still_belong_to_the_flags() {
         // C's `compile_flags` runs `EATSPACE()` at the top of its loop (the
         // extension marked as such at `compile.c:576`), so a blank before a flag
         // letter does not end the flag run: `s/a/b/ g` is `g`, `s/a/b/ p` is the
         // print flag. A shell that stopped the run at the blank would refuse both.
-        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        let mut cmds = [Scripted {
+            command: Command::Delete,
+            line: 1,
+        }; MAX_SCRIPT_COMMANDS];
         assert_eq!(parse_script("s/a/b/ g", &mut cmds).unwrap(), 1);
-        let Command::Subst(subst) = cmds[0] else {
+        let Command::Subst(subst) = cmds[0].command else {
             panic!("一条 s 命令都读不出来");
         };
         assert_eq!(subst.scope, SubstScope::Global);
         assert!(!subst.print);
         assert_eq!(parse_script("s/a/b/ p;d", &mut cmds).unwrap(), 2);
-        let Command::Subst(subst) = cmds[0] else {
+        let Command::Subst(subst) = cmds[0].command else {
             panic!("第一条该是 s");
         };
         assert!(subst.print);
-        assert!(matches!(cmds[1], Command::Delete));
+        assert!(matches!(cmds[1].command, Command::Delete));
         // The same blank before a separator is only a separator.
         assert_eq!(parse_script("s/a/b/ ;p", &mut cmds).unwrap(), 2);
         // Trailing blanks after the flags run out are nothing at all.

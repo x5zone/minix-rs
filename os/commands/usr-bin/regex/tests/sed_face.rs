@@ -471,3 +471,74 @@ fn a_blank_between_flags_still_belongs_to_the_flags() {
     assert_eq!(out, b"bab\n".to_vec(), "the padded `p` flag still prints");
     assert_eq!(status, 0);
 }
+
+#[test]
+fn an_over_large_backref_against_its_own_expression_stops_before_any_input() {
+    // C tests each digit while reading the replacement, because at that moment
+    // `s->re` is the command's own compiled expression
+    // (`compile.c:523-528`: `ref > s->re->re_nsub` → `\%c not defined in the RE`).
+    // Nothing has been read yet, so standard output stays empty.
+    let (out, status, err) = run(&["s/a/X\\1/"], b"a\nb\n");
+    assert_eq!(out, Vec::<u8>::new(), "the run must not have started");
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "sed: 1: \"s/a/X\\1/\": \\1 not defined in the RE\n"
+    );
+}
+
+#[test]
+fn an_over_large_backref_against_a_reused_expression_stops_where_the_run_reaches_it() {
+    // With an empty pattern the expression is not known at compile time, so C
+    // tests `s->maxbref` against `defpreg->re_nsub` **while running** the
+    // command (`process.c:384-391`) and names the largest one (`%u`). The host's
+    // own sed has no such test — it silently expands the missing group to
+    // nothing — so this reading comes from the C source, not from a differential.
+    let (out, status, err) = run(&["s/\\(a\\)/X/;s//Y\\2/"], b"a\nb\n");
+    assert_eq!(
+        out,
+        Vec::<u8>::new(),
+        "the cycle never finished line 1, so nothing should have printed"
+    );
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "sed: 1: \"s/\\(a\\)/X/;s//Y\\2/\": \\2 not defined in the RE\n"
+    );
+}
+
+#[test]
+fn a_command_the_run_never_reaches_cannot_complain() {
+    // Both empty-pattern arms wait for the run: a `d` first means the cycle
+    // leaves before them, so even `first RE may not be empty` (`process.c:668-670`)
+    // and the reused-group test never fire. Deciding either during the compile
+    // pass would stop a script that C runs to completion.
+    let (out, status, err) = run(&["d;s//x/"], b"a\nb\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 0, "stderr was {:?}", String::from_utf8_lossy(&err));
+    let (out, status, err) = run(&["d;s/\\(a\\)/X/;s//Y\\2/"], b"a\nb\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 0, "stderr was {:?}", String::from_utf8_lossy(&err));
+}
+
+#[test]
+fn the_recorded_expression_survives_into_the_next_operand() {
+    // `defpreg` is one global for the whole run, and C writes it whenever a
+    // command **runs** — a line that matches nothing still records the expression
+    // it used (`process.c:668-671`'s `else defpreg = preg;`, reached before the
+    // match result is looked at). So the first operand, which holds no `a`,
+    // still leaves `\(a\)` recorded for the second.
+    let first = written("reuse-one", b"zz\n");
+    let second = written("reuse-two", b"ab\n");
+    let (out, status, err) = run(
+        &["s/\\(a\\)/[\\1]/;s//<\\1>/", &text(&first), &text(&second)],
+        b"",
+    );
+    assert_eq!(
+        out,
+        b"zz\n[<a>]b\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}

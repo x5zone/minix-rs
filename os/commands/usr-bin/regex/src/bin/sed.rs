@@ -36,8 +36,9 @@ mod support;
 
 use minix_regex::pattern::{Pattern, compile_basic};
 use minix_regex::sed::{
-    Command, MAX_SCRIPT_COMMANDS, ParseFailure, PatternChoice, ScriptError, SubstError, apply,
-    auto_print, parse_script, pattern_choice, script_quiet_directive, step,
+    Command, MAX_SCRIPT_COMMANDS, ParseFailure, PatternChoice, ScriptError, Scripted, SubstError,
+    apply, auto_print, first_undefined_backref, max_backref, parse_script, pattern_choice,
+    script_quiet_directive, step,
 };
 
 /// Argument-splitting errors for the sed front end.
@@ -94,7 +95,10 @@ fn run() -> ! {
     // the way C's `main.c:207` runs `compile()` once and only then `process()`.
     // An address, a verb beyond `s`/`d`/`p`/`=`, or trailing text after a command
     // is a loud failure, never a silent pass-through.
-    let mut slots = [Command::Delete; MAX_SCRIPT_COMMANDS];
+    let mut slots = [Scripted {
+        command: Command::Delete,
+        line: 1,
+    }; MAX_SCRIPT_COMMANDS];
     let count = match parse_script(script, &mut slots) {
         Ok(count) => count,
         Err(failure) => match failure.error {
@@ -113,45 +117,62 @@ fn run() -> ! {
     // command. An empty pattern is not compiled at all — it names the last
     // expression the script recorded, and with none recorded yet C stops with
     // `first RE may not be empty` (`process.c:668-671`).
+    //
+    // A replacement asking for more groups than the expression holds is refused
+    // in two places with the same sentence, and the two are not interchangeable:
+    // with its own expression C tests each digit as it reads the replacement
+    // (`compile.c:523-528`), while with a reused one the expression is not known
+    // until the command runs, so C tests `s->maxbref` at execution
+    // (`process.c:384-391`) — which is why a `d` placed before it silences the
+    // complaint for the whole run. That is also why the compile pass below only
+    // compiles what a command brings with it: which expression an empty pattern
+    // will land on is a fact about the run, not about the script text.
     let mut patterns: Vec<Pattern> = Vec::new();
     let mut program: Vec<Instruction<'_>> = Vec::new();
-    let mut recorded: Option<usize> = None;
-    for command in slots[..count].iter().copied() {
-        let slot = match command {
-            Command::Subst(subst) => match pattern_choice(&subst, recorded) {
-                PatternChoice::Own => {
+    for scripted in slots[..count].iter().copied() {
+        let own = match scripted.command {
+            Command::Subst(subst) => {
+                if subst.pattern_text.is_empty() {
+                    None
+                } else {
                     let pattern = match compile_basic(subst.pattern_text) {
                         Ok(pattern) => pattern,
                         Err(_) => bad_script(),
                     };
+                    if let Some(digit) =
+                        first_undefined_backref(subst.replacement, pattern.group_count)
+                    {
+                        backref_error(script, scripted.line, digit);
+                    }
                     patterns.push(pattern);
-                    let index = patterns.len() - 1;
-                    recorded = Some(index);
-                    Some(index)
+                    Some(patterns.len() - 1)
                 }
-                PatternChoice::Reuse(index) => Some(index),
-                PatternChoice::NoPrevious => first_re_empty(),
-            },
+            }
             _ => None,
         };
         program.push(Instruction {
-            command,
-            pattern: slot,
+            command: scripted.command,
+            own,
+            line: scripted.line,
         });
     }
 
     let mut scratch = vec![0u8; 4 * 1024 * 1024];
     let mut number = 0u64;
+    // C's `defpreg` is a global: it survives lines **and** operands.
+    let mut defpreg: Option<usize> = None;
     let mut rval = 0;
     if files.is_empty() {
         let input = support::read_stdin();
         sed_lines(
+            script,
             &input,
             quiet,
             &program,
             &patterns,
             &mut scratch,
             &mut number,
+            &mut defpreg,
         );
     } else {
         for file in &files {
@@ -160,7 +181,16 @@ fn run() -> ! {
                     // The line number is **not** reset between operands: C clears
                     // `linenum` only on the in-place path (`main.c:441-444`), so an
                     // operand list read to standard output keeps counting.
-                    sed_lines(&data, quiet, &program, &patterns, &mut scratch, &mut number);
+                    sed_lines(
+                        script,
+                        &data,
+                        quiet,
+                        &program,
+                        &patterns,
+                        &mut scratch,
+                        &mut number,
+                        &mut defpreg,
+                    );
                 }
                 Err(()) => {
                     // C `mf_fgets`: an unopenable operand warns and flags the
@@ -174,13 +204,18 @@ fn run() -> ! {
     support::terminate(rval);
 }
 
-/// One command with the slot of the expression it runs. The patterns live in
-/// their own list because two commands can name the **same** one: an empty
-/// pattern reuses the previous expression rather than compiling its own, so the
-/// cycle loop never touches the regex compiler and never copies a pattern.
+/// One command plus the expression it brings with it. Patterns live in their own
+/// list because two commands can name the **same** one, so the cycle loop never
+/// touches the regex compiler and never copies a pattern. An `s` whose pattern is
+/// empty brings nothing: which expression it runs is settled at execution by
+/// [`pattern_choice`], because C's `defpreg` is written each time a command
+/// actually runs (`process.c:668-671`).
 struct Instruction<'a> {
     command: Command<'a>,
-    pattern: Option<usize>,
+    own: Option<usize>,
+    /// The script line this command came from, which C restores before printing
+    /// its execution-time complaint (`process.c:387`).
+    line: u64,
 }
 
 /// Substitutes every line of one collected stream and emits what the cycle
@@ -189,12 +224,14 @@ struct Instruction<'a> {
 /// cycle and suppresses the automatic print, and the line number runs across the
 /// whole operand list because only the in-place path clears it.
 fn sed_lines(
+    script: &str,
     input: &[u8],
     quiet: bool,
     program: &[Instruction<'_>],
     patterns: &[Pattern],
     scratch: &mut [u8],
     number: &mut u64,
+    defpreg: &mut Option<usize>,
 ) {
     let mut space: Vec<u8> = Vec::new();
     for line in support::lines_of(input) {
@@ -205,7 +242,24 @@ fn sed_lines(
         for instruction in program {
             let replaced = match instruction.command {
                 Command::Subst(subst) => {
-                    let index = instruction.pattern.expect("每个 s 命令都带着要用的模式位");
+                    let index = match pattern_choice(instruction.own, *defpreg) {
+                        PatternChoice::Own(index) => index,
+                        PatternChoice::Reuse(index) => {
+                            // C reaches this test only while running the command,
+                            // and it names `s->maxbref` rather than the first
+                            // over-large digit (`process.c:384-391`).
+                            let largest = max_backref(subst.replacement);
+                            if largest > patterns[index].group_count {
+                                backref_error(script, instruction.line, largest);
+                            }
+                            index
+                        }
+                        // An empty pattern with nothing recorded yet: C's
+                        // `regexec_e` stops the run right there
+                        // (`process.c:668-670`).
+                        PatternChoice::NoPrevious => first_re_empty(),
+                    };
+                    *defpreg = Some(index);
                     let (len, replaced) = apply(&patterns[index], &subst, &space, scratch);
                     space.clear();
                     space.extend_from_slice(&scratch[..len]);
@@ -276,10 +330,7 @@ fn not_modelled() -> ! {
 /// carry **bytes**, the way C's `%c` writes them: a non-ASCII byte goes out as
 /// that one byte instead of being re-encoded.
 fn compile_error(script: &str, failure: ParseFailure) -> ! {
-    let mut line: Vec<u8> = b"sed: ".to_vec();
-    line.extend_from_slice(format!("{}: ", failure.line).as_bytes());
-    line.extend_from_slice(script_ident(script).as_bytes());
-    line.extend_from_slice(b": ");
+    let mut line: Vec<u8> = errx_prefix(script, failure.line);
     match failure.error {
         ScriptError::Subst(SubstError::BadDelimiter) => line.extend_from_slice(
             b"substitute pattern can not be delimited by newline or backslash",
@@ -311,6 +362,32 @@ fn compile_error(script: &str, failure: ParseFailure) -> ! {
     line.push(b'\n');
     support::warn(&line);
     support::terminate(1)
+}
+
+/// C's `\N not defined in the RE` line, shared by the two arms that print it.
+///
+/// The compile-time arm writes the digit it was reading (`compile.c:527-528`'s
+/// `%c`); the execution-time one writes `s->maxbref` (`process.c:387-390`'s
+/// `%u`). Both are one character because C's set is `1`-`9` (`compile.c:523`), so
+/// the digit renders as `'0' + n` either way.
+fn backref_error(script: &str, line: u64, ref_number: u8) -> ! {
+    let mut message = errx_prefix(script, line);
+    message.push(b'\\');
+    message.push(b'0' + ref_number);
+    message.extend_from_slice(b" not defined in the RE\n");
+    support::warn(&message);
+    support::terminate(1)
+}
+
+/// The `<程序名>: <脚本行号>: "<脚本>": ` that opens every C compile- and
+/// execution-time complaint (`verrx.c:57` supplies the program name, `compile.c`
+/// and `process.c` supply the line and `fname`).
+fn errx_prefix(script: &str, line: u64) -> Vec<u8> {
+    let mut message: Vec<u8> = b"sed: ".to_vec();
+    message.extend_from_slice(format!("{line}: ").as_bytes());
+    message.extend_from_slice(script_ident(script).as_bytes());
+    message.extend_from_slice(b": ");
+    message
 }
 
 /// The name C puts in that line: the script string in quotes, into a
