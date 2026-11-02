@@ -195,6 +195,13 @@ struct Compiler<'a> {
     pattern: Pattern,
     /// How many groups are currently open: `\)` closes one only above zero.
     group_depth: u8,
+    /// The atom just read, when it is a single instruction that `{m,n}` can
+    /// repeat in place (a byte, `.` or a class). Anything assembled from several
+    /// instructions — a group — is `None`: repeating that needs a copy of the
+    /// subgraph that shares the original's capture slots, and this compiler
+    /// numbers slots monotonically. Those spellings are refused rather than
+    /// quietly read as ordinary text.
+    repeatable: Option<Inst>,
 }
 
 fn compile(text: &str, extended: bool) -> Result<Pattern, RegexError> {
@@ -206,6 +213,7 @@ fn compile(text: &str, extended: bool) -> Result<Pattern, RegexError> {
         pos: 0,
         pattern: Pattern::default(),
         group_depth: 0,
+        repeatable: None,
     };
     compiler.pattern.extended = extended;
     let frag = compiler.parse_alt()?;
@@ -296,24 +304,177 @@ impl Compiler<'_> {
             Some(frag) => frag,
             None => return Ok(None),
         };
+        // Only a single-instruction atom can be copied by the `{m,n}` expansion
+        // below, and `frag.start` is exactly that instruction when it is one.
+        self.repeatable = match self.pattern.insts[usize::from(frag.start)] {
+            inst @ (Inst::Byte(_) | Inst::Any | Inst::Class(_)) => Some(inst),
+            _ => None,
+        };
         loop {
             match self.peek() {
                 Some(b'*') => {
                     self.pos += 1;
                     frag = self.star(frag)?;
+                    self.repeatable = None;
                 }
                 Some(b'+') if self.pattern.extended => {
                     self.pos += 1;
                     frag = self.plus(frag)?;
+                    self.repeatable = None;
                 }
                 Some(b'?') if self.pattern.extended => {
                     self.pos += 1;
                     frag = self.quest(frag)?;
+                    self.repeatable = None;
+                }
+                // The interval's opener also decides its closer: `{m,n}` in the
+                // extended dialect (`regcomp.c:512-529`), `\{m,n\}` in the basic
+                // one (`:705-721`). Both need a digit after the brace — a `{`
+                // followed by anything else stays ordinary text there
+                // (`regcomp.c:473`) — and both are read only where a repetition
+                // operator may stand, i.e. right after an atom.
+                Some(b'{')
+                    if self.pattern.extended
+                        && matches!(self.bytes.get(self.pos + 1), Some(&digit) if digit.is_ascii_digit()) =>
+                {
+                    self.pos += 1;
+                    let (least, greatest) = self.parse_bounds(false)?;
+                    frag = self.expand(least, greatest)?;
+                }
+                Some(b'\\')
+                    if !self.pattern.extended && self.bytes.get(self.pos + 1) == Some(&b'{') =>
+                {
+                    self.pos += 2;
+                    let (least, greatest) = self.parse_bounds(true)?;
+                    frag = self.expand(least, greatest)?;
                 }
                 _ => break,
             }
         }
         Ok(Some(frag))
+    }
+
+    /// Read the counts and the closer of an interval, after its opener was eaten.
+    ///
+    /// C's `p_count` takes the digit run and the two shapes after it: a plain
+    /// `{m}` repeats exactly `m` times, `{m,}` is open-ended, and `{m,n}`
+    /// requires `m <= n` (`regcomp.c:513-521`, and the basic dialect's
+    /// `:706-714` is the same with a `\}` closer). A missing closer or a
+    /// reversed range is malformed; C's own recovery scans ahead for the
+    /// closer just to report the failure, which this compiler has no reason to
+    /// imitate since both outcomes are one refusal.
+    fn parse_bounds(&mut self, escaped: bool) -> Result<(u32, Option<u32>), RegexError> {
+        let least = self.parse_count()?;
+        let greatest = if self.peek() == Some(b',') {
+            self.pos += 1;
+            if matches!(self.peek(), Some(digit) if digit.is_ascii_digit()) {
+                let high = self.parse_count()?;
+                if high < least {
+                    return Err(RegexError::InvalidPattern);
+                }
+                Some(high)
+            } else {
+                None
+            }
+        } else {
+            Some(least)
+        };
+        if escaped {
+            if self.next_byte() != Some(b'\\') || self.next_byte() != Some(b'}') {
+                return Err(RegexError::InvalidPattern);
+            }
+        } else if self.next_byte() != Some(b'}') {
+            return Err(RegexError::InvalidPattern);
+        }
+        Ok((least, greatest))
+    }
+
+    /// A digit run, as C's `p_count` reads it (`regcomp.c:733-760`).
+    fn parse_count(&mut self) -> Result<u32, RegexError> {
+        let mut count: u32 = 0;
+        let mut digits = 0u32;
+        while let Some(&digit @ b'0'..=b'9') = self.bytes.get(self.pos) {
+            self.pos += 1;
+            digits += 1;
+            count = count
+                .checked_mul(10)
+                .and_then(|value| value.checked_add(u32::from(digit - b'0')))
+                .ok_or(RegexError::InvalidPattern)?;
+        }
+        if digits == 0 {
+            return Err(RegexError::InvalidPattern);
+        }
+        Ok(count)
+    }
+
+    /// `x{m,n}` for a single-instruction atom.
+    ///
+    /// C hands the atom's code range to `repeat()` (`regcomp.c:522`, `:716`) and
+    /// its engine counts passes while matching. This compiler has no counting
+    /// state, so the same language is assembled from the pieces it does have:
+    /// `m` mandatory copies, then one `quest`-wrapped copy per remaining
+    /// repetition — or a `star` when the upper bound is open. The greedy order is
+    /// preserved because `quest` and `star` both try their body first, and a
+    /// pattern beyond the instruction array simply runs into `TooComplex`, the
+    /// same way an over-long literal does.
+    fn expand(&mut self, least: u32, greatest: Option<u32>) -> Result<Frag, RegexError> {
+        let inst = self.repeatable.ok_or(RegexError::TooComplex)?;
+        // One repetition operator per atom: C's parser reports `REG_BADRPT` when a
+        // second one follows a quantified atom (`regcomp.c:531-537`), so the
+        // expandable slot is spent by this operator like the others spend it.
+        self.repeatable = None;
+        let mut head: Option<Frag> = None;
+        for _ in 0..least {
+            let copy = self.atom(inst)?;
+            head = Some(self.append(head, copy)?);
+        }
+        match greatest {
+            // `{m,}`: the tail is an unbounded repeat of one more copy.
+            None => {
+                let copy = self.atom(inst)?;
+                let around = self.star(copy)?;
+                head = Some(self.append(head, around)?);
+            }
+            // `{m,n}`: `n - m` further copies, each optional on its own, which is
+            // the same `x?x?x?` chain C's counted loop admits and rejects.
+            Some(high) => {
+                for _ in least..high {
+                    let copy = self.atom(inst)?;
+                    let piece = self.quest(copy)?;
+                    head = Some(self.append(head, piece)?);
+                }
+            }
+        }
+        Ok(match head {
+            Some(built) => built,
+            // `{0}` and `{0,0}` contribute no copy at all, which is what C's
+            // `repeat()` does too: the atom disappears and the line matches
+            // around it. A bare open jump is the same placeholder an empty
+            // alternative gets, so whoever follows simply wires past it.
+            None => {
+                let jump = self.emit(Inst::Jump(255))?;
+                Frag {
+                    start: jump,
+                    open: jump,
+                }
+            }
+        })
+    }
+
+    /// Append `right` after the piece built so far, patching the open jump.
+    /// `None` on the left means this is the first copy, so the result is just
+    /// `right`.
+    fn append(&mut self, left: Option<Frag>, right: Frag) -> Result<Frag, RegexError> {
+        Ok(match left {
+            Some(prev) => {
+                self.close(prev.open, right.start);
+                Frag {
+                    start: prev.start,
+                    open: right.open,
+                }
+            }
+            None => right,
+        })
     }
 
     /// `body*`: split before the body looping back, exit past it.
@@ -1027,6 +1188,89 @@ mod tests {
         let pattern = compile_extended("(a*)*b$").unwrap();
         let long = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!";
         assert!(!pattern.is_match(long));
+    }
+
+    #[test]
+    fn test_interval_repeats_a_single_instruction_atom() {
+        // `{m}` / `{m,n}` / `{m,}` in the extended spelling and `\{m\}` & friends
+        // in the basic one (`regcomp.c:512-529`, `:705-721`), over the atoms that
+        // are one instruction each.
+        let exactly = compile_extended("a{2}b").unwrap();
+        assert!(exactly.find("aab").is_some());
+        assert!(exactly.find("ab").is_none());
+        let ranged = compile_extended("[ab]{1,2}z").unwrap();
+        assert!(ranged.find("az").is_some());
+        assert!(ranged.find("abz").is_some());
+        assert!(
+            ranged.find("z").is_none(),
+            "one or two of the class come first"
+        );
+        assert!(ranged.find("zz").is_none(), "no class byte at all");
+        let open = compile_extended(".{2,}!").unwrap();
+        assert!(open.find("xy!").is_some());
+        assert!(open.find("x!").is_none());
+        // The basic dialect needs the backslashed braces, and its closer is `\}`.
+        let basic = compile_basic("a\\{2\\}b").unwrap();
+        assert!(basic.find("aab").is_some());
+        assert!(basic.find("ab").is_none());
+        assert!(compile_basic("a\\{1,2\\}b").unwrap().find("ab").is_some());
+        assert!(compile_basic("a\\{2,\\}b").unwrap().find("aaab").is_some());
+        // A zero count makes the atom disappear, which is what C's `repeat()`
+        // gives: `a{0}b` is `b` with `a` allowed to sit in front of it.
+        let nothing = compile_extended("a{0}b").unwrap();
+        assert!(nothing.find("b").is_some());
+        assert!(nothing.find("ab").is_some());
+        assert!(nothing.find("aab").is_some());
+        // Escaped bytes repeat the same way.
+        assert!(compile_extended(r"\.{2}x").unwrap().find("..x").is_some());
+    }
+
+    #[test]
+    fn test_interval_shape_errors_follow_c() {
+        // Reversed bounds are refused by both parsers (`REQUIRE(count <= count2,
+        // REG_BADBR)`, `regcomp.c:517` / `:710`), and so is a missing closer.
+        assert!(compile_extended("a{2,1}b").is_err());
+        assert!(compile_basic("a\\{2,1\\}b").is_err());
+        assert!(compile_extended("a{2b").is_err(), "no closer at all");
+        assert!(compile_extended("a{2").is_err());
+        assert!(compile_basic("a\\{2\\}b").is_ok());
+        assert!(
+            compile_basic("a\\{2}b").is_err(),
+            "the basic dialect closes with a backslash brace"
+        );
+        // A brace that does not start an interval is ordinary text in the
+        // extended dialect (`regcomp.c:473`), so these never reach the bounds
+        // parser at all.
+        assert!(compile_extended("a{x}").unwrap().find("a{x}").is_some());
+        assert!(compile_extended("a{").unwrap().find("a{").is_some());
+        assert!(compile_extended("{2}x").unwrap().find("{2}x").is_some());
+    }
+
+    #[test]
+    fn test_group_intervals_are_refused_rather_than_read_as_text() {
+        // C repeats a subexpression by copying its code range with `dupl`, and the
+        // copies share the group's capture slots so the last iteration wins
+        // (`regcomp.c:522`'s `repeat`, and POSIX's rule for `(x){n}` captures).
+        // This compiler numbers slots monotonically, so the honest answer is a
+        // refusal: reading the brace as ordinary text would silently match
+        // `ab{2}` where C matches `abab`.
+        assert_eq!(
+            compile_extended("(ab){2}").err(),
+            Some(RegexError::TooComplex)
+        );
+        assert_eq!(
+            compile_basic("\\(ab\\)\\{2\\}").err(),
+            Some(RegexError::TooComplex)
+        );
+        // A group without a following brace is unaffected.
+        assert!(compile_extended("(ab)c").unwrap().find("abc").is_some());
+        // Two repetition operators in a row die the same way C's parser does them
+        // (`regcomp.c:531-537`: the next operator after a quantified atom is
+        // `REG_BADRPT`), which is also why the repeatable slot is cleared as soon
+        // as any operator has been applied.
+        assert!(compile_extended("a*{2}").is_err());
+        assert!(compile_extended("a+{2}").is_err());
+        assert!(compile_extended("a{2}{3}").is_err());
     }
 
     #[test]

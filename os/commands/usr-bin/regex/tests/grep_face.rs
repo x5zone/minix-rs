@@ -203,3 +203,66 @@ fn the_program_name_slot_follows_argv0() {
         "gg: /no-such-operand-here: No such file or directory\n"
     );
 }
+
+#[test]
+fn an_interval_repeats_the_atom_it_follows_in_both_dialects() {
+    // `{m,n}` in the extended spelling, `\{m,n\}` in the basic one
+    // (`regcomp.c:512-529`, `:705-721`). The two dialects agree because both go
+    // through the same repetition code; the shapes below also match the host's
+    // own grep byte for byte.
+    let path = written("interval", b"aab\nab\nb\n[xx]\n");
+    let name = text(&path);
+    for (flag, script, expected) in [
+        ("-E", "a{2}b", "aab\n"),
+        ("-G", "a\\{2\\}b", "aab\n"),
+        ("-E", "a{1,2}b", "aab\nab\n"),
+        ("-G", "a\\{1,2\\}b", "aab\nab\n"),
+        ("-E", "a{2,}b", "aab\n"),
+        ("-G", "a\\{2,\\}b", "aab\n"),
+        // A zero count drops the atom, leaving the rest of the pattern.
+        ("-E", "a{0}b", "aab\nab\nb\n"),
+    ] {
+        let (out, status, err) = run(&[flag, script, &name], b"");
+        assert_eq!(
+            out,
+            expected.as_bytes().to_vec(),
+            "{flag} {script:?} stderr was {:?}",
+            String::from_utf8_lossy(&err)
+        );
+        assert_eq!(status, 0, "{flag} {script:?} should have matched");
+    }
+}
+
+#[test]
+fn a_malformed_interval_is_refused_and_a_brace_that_starts_none_is_text() {
+    // Reversed bounds die in C's parser too (`REQUIRE(count <= count2,
+    // REG_BADBR)`), while a brace that cannot start an interval is ordinary text
+    // (`regcomp.c:473`) and keeps matching literally.
+    let path = written("interval-shape", b"a{x}\na{2,1}b\nzz\n");
+    let name = text(&path);
+    let (out, status, err) = run(&["-E", "a{2,1}b", &name], b"");
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "grep: bad pattern or option\n",
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 2, "a refused pattern must not exit 0");
+    // The line is pinned where this shell writes it today: C's grep sends every
+    // diagnostic through `errx`/`fprintf(stderr, ...)` (`grep.c:114`, `:484`), so
+    // the stream is a separate registered gap (`GREP-DIAGNOSTIC-STREAM`), not
+    // part of what an interval means.
+    let (out, status, _) = run(&["-E", "a{x}", &name], b"");
+    assert_eq!(out, b"a{x}\n".to_vec(), "a non-digit brace stays text");
+    assert_eq!(status, 0);
+    // A group interval needs a copy of the subexpression's code with the same
+    // capture slots, which this compiler does not have; it refuses rather than
+    // quietly matching `ab{2}`.
+    let (out, status, _) = run(&["-E", "(ab){2}", &name], b"");
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "grep: bad pattern or option\n",
+        "the unsupported shape must not silently mis-match"
+    );
+    assert_eq!(status, 2);
+}

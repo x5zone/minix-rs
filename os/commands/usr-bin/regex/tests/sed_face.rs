@@ -661,3 +661,24 @@ fn the_program_name_slot_follows_argv0() {
         "sub: 1: \"s/a/b/x\": bad flag in substitute command: 'x'\n"
     );
 }
+
+#[test]
+fn a_basic_interval_in_a_substitution_repeats_the_atom() {
+    // `sed` searches with the basic dialect, so its interval is `\{m,n\}`
+    // (`regcomp.c:705-721`). Each shape below matches the host's own sed on the
+    // same three lines byte for byte.
+    let (out, status, err) = run(&["s/a\\{2\\}b/X/"], b"aaab\naxb\nab\n");
+    assert_eq!(
+        out,
+        b"aX\naxb\nab\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+    let (out, status, _) = run(&["s/a\\{2,\\}b/Y/"], b"aaab\naxb\n");
+    assert_eq!(out, b"Y\naxb\n".to_vec(), "the open-ended bound must hold");
+    assert_eq!(status, 0);
+    let (out, status, _) = run(&["s/.\\{2\\}/#/"], b"ab\na\n");
+    assert_eq!(out, b"#\na\n".to_vec(), "`.` repeats the same way");
+    assert_eq!(status, 0);
+}
