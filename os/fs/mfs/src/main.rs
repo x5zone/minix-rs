@@ -145,10 +145,22 @@ fn real_main() {
             assert!(!probe.is_null(), "mfs: vm-brk probe 分配失败");
             minix_rt::free(probe);
             use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+            // The line is assembled on the stack, not sent as a literal: this
+            // crate is the only module whose read-only data extends past the
+            // 8 MiB root-disk image, and the running image has shown tail-page
+            // corruption exactly there (a literal sent from that region
+            // reached the console as machine-code bytes of the same length).
+            // The pre-install line below is stack-assembled for the same
+            // reason and prints correctly; keep both out of .rodata's tail
+            // until that corruption is root-caused.
+            let mut line = [0u8; 45];
+            let head = b"nk4a: mfs-vmbrk probe ok pages=1 via=VM_BRK\n";
+            line[..head.len()].copy_from_slice(head);
             #[allow(clippy::let_underscore_must_use)] // [SD19-gate] when the report channel itself breaks, park is the fallback (panic.c:66)
             let _ = sys_diagctl_write(
                 &DirectKernelCallTransport,
-                "nk4a: mfs-vmbrk probe ok pages=1 via=VM_BRK\n",
+                // ASCII by construction, so the conversion cannot fail.
+                core::str::from_utf8(&line[..head.len()]).unwrap(),
             );
         }
 

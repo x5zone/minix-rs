@@ -269,3 +269,5 @@ Redox / 社区对照来源（本轮引用的结论出处）：
 - 本文件是 15-stage-fs 的首个 todo（此前无历史 todo 需要清理）。轮次编号 V1；后续轮次 V2、V3 递增，闭单条目移动到本文件末尾「已闭单」小节或独立 archive 文件（对齐 `../edge_todo_archive.md` 先例）。
 - 修复执行一律走 todo-fix 单线程：先讲明白是什么为什么，再给多方案对比，最后按 fix-guard 实施（修前读目标行 ±5 行、grep 确认、一次一条、修后 grep 重放 + 测试）。
 - 跨 stage 条目唯一入口是 `../edge_todo.md`；本文件第 5 节只维护指针，不复制正文。
+
+- **C-57 取证前置：MFS 出生探针改栈装配（`2026-11-03`，`claim/C57-MFS-PROBE-qoder` @ 基线 `2792b2044`）**：`os/fs/mfs/src/main.rs` 的 `nk4a: mfs-vmbrk probe ok` 行从 `.rodata` 字面量改为栈上装配（照 pre-install 行的写法；字节 ASCII 故转换 unwrap 不会走）。依据是 B 板真机窗的取证：全镜像里 MFS 是唯一 `.rodata` 越过 8 MiB 根盘映像的模块（探针字面量落在文件偏移 0x825ED6 的尾页区），该区在运行镜像里出现「写对长度、读出机器码」的尾页异常，而同一进程同一时机栈装配的 pre-install 行打印正确——字面量改走栈后，下次真机窗里该行**打出=损坏面收敛到 `.rodata` 尾页、不打=损坏更深**，一行判别实验。这仍是诊断侧修复，`du`/`ls` 目录读腿（C-57 本体）的根因追缉不变。门：`cargo test -p minix-fs-mfs --lib` → **178 / 0**；`cargo build --target x86_64-unknown-none --release -p minix-fs-mfs` 绿；几何复核（探针字面量偏移的 readelf 复算）需全镜像构建，随下一次真机窗一并做。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `2792b2044`。
