@@ -119,6 +119,55 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十三（`sed` 的空图案是「用上一支表达式」，不是「一支空表达式」）
+
+- **这一笔的射程**：`s//替换/` 这一形。C 把上一次跑过的表达式记在 `defpreg` 里，图案为空的那条
+  `s` 不去编译任何东西，直接拿记下的那支来用；一个都还没记过时当场停
+  （`minix3/usr.bin/sed/process.c:668-671`：`if (preg == NULL) { if (defpreg == NULL) errx(1,
+  "first RE may not be empty"); } else defpreg = preg;`）。本壳两形都不对：`s/a/A/;s//x/` 回
+  `sed: bad s command` 退 1（宿主自带 sed 同脚本交 `Ax`），`s//B/` 也回同一句而不是 C 那句。
+- **为什么不是「让它编译空图案」**：本引擎对空图案本就是显式拒绝（`os/commands/usr-bin/regex/src/pattern.rs:fn compile`
+  在 `text.is_empty()` 时回 `InvalidPattern`），照 C 的语义放开它反而会把 `s//x/` 变成「每处都匹配」的
+  改写，而 `grep ''` 那一侧的空图案口径是另一件事，不该由 `sed` 的需求去改。于是规则做成**选型**：
+  `pattern_choice` 收命令自己的图案文本与「已记下第几支」，交回 `Own`／`Reuse(第几支)`／`NoPrevious`
+  三臂；壳侧把表达式放进一张 `patterns` 表、命令只带表里的位号，两条命令因此可以指向同一支而不必
+  复制表达式。
+- **记时的次序差**：C 是在**执行**某条命令时才记下它的表达式，本壳在编译脚本时就记。两者在本子集里
+  挑到同一支：没有地址、没有分支动词，列表里每条命令每行都会跑到。有地址时这两个次序会分叉
+  （C 里 `2s/b/B/;s//x/` 在第一行就可能撞上「first RE may not be empty」），本壳那形本就直接拒绝。
+- **门**：库内新立 `test_pattern_choice_reuses_or_refuses_an_empty_pattern`——同一枚空图案在「已记第
+  0 支」「已记第 1 支」「一支未记」三种现场分别给 `Reuse(0)`/`Reuse(1)`/`NoPrevious`，而自带非空图案的
+  命令永远走 `Own`（已记录的表达式不许反过来覆盖它）。面门 `os/commands/usr-bin/regex/tests/sed_face.rs`
+  新立四枚，共十八枚：`an_empty_pattern_runs_the_previous_expression`（`aa` → `Ax`）、
+  `an_empty_pattern_takes_the_most_recent_expression`（`s/a/A/;s/b/B/;s//C/` 在 `ab b` 上交 `AB C`——
+  若误取第一支会留在 `AB b`）、`an_empty_pattern_keeps_the_reused_expression_captures`
+  （`s/\(a\)/X\1/;s//Y\1/` 在 `a` 上交 `XYa`，回填的 `\1` 来自**新**一次匹配）、
+  `an_empty_pattern_with_nothing_recorded_stops_with_the_c_sentence`（`s//B/` 交空 stdout、退 1，且
+  stderr 逐字节是 `sed: first RE may not be empty\n`——C 那句 `errx` 不带行号与档名，是本壳能整句
+  对齐的一句）。差分腿三形与宿主自带 sed 逐字节同形。
+- **读数**：宿主整包 6 段 **85 / 0**，容器权威门同读数退 0（`tmp/sed-empty-re/container.log`），
+  三架构 `--bins` 各退 0（`tmp/sed-empty-re/arch-*.log`）；`rustfmt --edition 2024 --check` 三件本轮
+  新写代码就地格式化后归零（`sed.rs` 库半基线 0、面门基线 0、壳侧本笔代码 4 处自有漂移已格式化）。
+  负控三枚各咬：R1（`pattern_choice` 恒选自带）红 5、R2（壳把「复用」臂改回硬停）红 3、
+  R3（壳不再记录自己编译的表达式）红 3，还原复跑 85/0（`python3 tmp/sed-empty-re/negctl.py`）。
+- **本轮一处自错**：面门里把 `Vec<u8>` 的标准错误直接与 `&str` 比较，编译期就挡住（本 crate 的面门
+   helper 交回字节，文本过滤那族交回字符串，两形不同源）；改按 `String::from_utf8_lossy` 再比。
+- **本轮新立、登记不执行**（三笔都是量出来的分歧，不在本笔顺手改）：
+  `SED-BACKREF-NOT-DEFINED`——替换串里 `\N` 超出所用表达式的组数时，C 两条臂都拒绝：自带图案在编译期
+  查（`compile.c:524-529` 的 `ref > s->re->re_nsub`），空图案改用记录的那支则在执行期查
+  （`process.c:386-390`）；本壳两形都把 `\N` 展开成空，`s/a/X\1/` 在 `a` 上交回 `X` 退 0，而 C 退 1。
+  可行性已核：`Pattern::group_count` 是公开字段，缺的是解析期记下替换串里最大的 `\N`。
+  `BRE-PAREN-LITERAL`——C 的基本式正则里未转义的 `(` 是普通字符，本引擎把 `(a)` 判成非法表达式：
+  `sed 's/(a)/X/'` 与 `grep -G '(a)'` 都退非零（后者交回 `grep: bad pattern or option` 退 2），
+  而宿主 sed 对同一脚本原样交出 `a`。这一条住在 `pattern.rs`，改它要同时过 grep 那一族的口径，
+  属引擎级的一轮。
+- **在册变化**：08 篇 sed 行补上「空图案复用上一支表达式、无的可复用则退 1」与上面两笔在册项的跳转。
+- **三件套**：`python3 tmp/sed-empty-re/negctl.py`、`cargo test -p minix-regex`
+  （`tmp/sed-empty-re/pkg.log`、`container.log`）、`cat tmp/sed-empty-re/arch-*.log`；
+  核实日 `2026-11-02`，基线快照 `b8358959c`。
+
+---
+
 ## 批次四百八十二（`sed` 的执行半接上：脚本是一条条命令编译出来的，不是在 `;` 上切开的一堆片段）
 
 - **这一笔的射程**：`sed` 壳里那条「一次只吃一个 `s`」的腿。库半早就有 `parse_script`

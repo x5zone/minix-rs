@@ -4696,3 +4696,32 @@ EXTENSION，故 `s/a/b/ p` 在那侧设上 `p` 标志）、`SED-USAGE-STREAM-AND
 C 的 `usage()` 写 stderr 且是 `main.c:223-229` 那两行、程序名取 `getprogname()`）、`SED-SCRIPT-CAP-16`
 （一支脚本上限 `MAX_SCRIPT_COMMANDS` 条形体，C 边编译边挂链表无上限）。08 篇 sed 行与「尚未覆盖」那句
 按实况改口径。
+
+### 第二百二十二笔（A 板 · `SED-EMPTY-RE-REUSE`：`s//x/` 是「用上一支表达式」，本壳却当「一支空表达式」拒了）
+
+C 把跑过的表达式记在 `defpreg`，图案为空那条 `s` 不编译任何东西、直接取记下的那支；一支都没记过时
+`errx(1, "first RE may not be empty")` 当场停（`minix3/usr.bin/sed/process.c:668-671`）。本壳两形都不对：
+`s/a/A/;s//x/` 回 `sed: bad s command` 退 1（宿主自带 sed 同脚本交 `Ax`），`s//B/` 也回同一句而不是
+C 那句。
+
+修法不是放开空图案：本引擎对空图案本就显式拒绝（`pattern.rs:fn compile` 见空即 `InvalidPattern`），
+照 `sed` 的需求放开会把 `s//x/` 变成「每处都匹配」的改写，而 `grep ''` 那侧的空图案口径是另一件事。
+于是把规则做成选型——库内 `pattern_choice` 交回 `Own`/`Reuse(第几支)`/`NoPrevious` 三臂；壳侧把表达式
+放进一张 `patterns` 表、命令只带表里的位号，两条命令因此能指向同一支而不复制表达式。记时时机本壳在
+编译期、C 在执行期，本子集里两者挑到同一支（无地址无分支，列表每条每行都跑到），有地址时会分叉，
+而本壳那形本就直接拒绝——这一段写在 `pattern_choice` 的注里，免得下人来改时看不出为什么可以不管。
+
+门：库内 1 枚（同一枚空图案在三种现场分别给 `Reuse(0)`/`Reuse(1)`/`NoPrevious`，且自带非空图案永远
+`Own`），面门 +4 枚共 18 枚——`aa` 交 `Ax`；`s/a/A/;s/b/B/;s//C/` 在 `ab b` 上交 `AB C`（误取第一支会
+留在 `AB b`）；`s/\(a\)/X\1/;s//Y\1/` 在 `a` 上交 `XYa`（回填的 `\1` 来自新一次匹配）；`s//B/` 空 stdout、
+退 1、stderr 逐字节 `sed: first RE may not be empty\n`（C 那句不带行号与档名，是本壳能整句对齐的一句）。
+读数：宿主整包 6 段 **85/0**、容器权威门同读数退 0、三架构各退 0；负控三枚各咬（恒选自带 红 5 /
+把复用臂改回硬停 红 3 / 不再记录 红 3），还原复跑 85/0。自错一处：面门把 `Vec<u8>` 与 `&str` 直接
+比较，编译期挡住——本 crate 的面门 helper 交回字节，文本过滤那族交回字符串。
+
+**两笔登记不执行**：`SED-BACKREF-NOT-DEFINED`（替换串里 `\N` 超出所用表达式的组数，C 编译期查自带图案
+`compile.c:524-529`、执行期查复用的那支 `process.c:386-390`，本壳两形都展开成空——`sed 's/a/X\1/'` 在
+`a` 上交 `X` 退 0，C 退 1；`Pattern::group_count` 已公开，缺的是解析期记下替换串里最大的 `\N`）、
+`BRE-PAREN-LITERAL`（C 的基本式里未转义 `(` 是普通字符，本引擎把 `(a)` 判非法：`sed 's/(a)/X/'` 与
+`grep -G '(a)'` 都非零退，宿主 sed 原样交 `a`；这条住在 `pattern.rs`，改它要连 grep 那一族的口径一起过）。
+08 篇 sed 行与「尚未覆盖」那句按实况补。
