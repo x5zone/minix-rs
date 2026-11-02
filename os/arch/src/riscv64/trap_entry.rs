@@ -42,8 +42,9 @@
 //! Minix-RS uses direct mode for simplicity (one entry point, one
 //! dispatch table). Vectored mode would marginally speed up interrupts
 //! at the cost of a larger vector table. See
-//! `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`
-//! §1.3 (the unified flow across privilege levels) for the OS-level trap flow.
+//! `rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
+//! §1.2 (the three CPU questions) and §4.6 (the cross-arch entry flow) for
+//! the OS-level trap flow.
 
 use crate::trap_entry::{TrapEntryArch, InterruptVector};
 use minix_types::VirBytes;
@@ -97,24 +98,6 @@ impl TrapEntryArch for Riscv64TrapEntry {
         // the syscall handler.
     }
 
-    fn configure_ipc_entry(&mut self, _entry_point: VirBytes) {
-        // RISC-V: No-op — IPC and kernel-call traps share the same
-        // ecall trap vector (stvec). The dispatch happens in software:
-        // the ecall handler reads a7 (syscall number register) at
-        // runtime to distinguish:
-        //   a7 < 17           → IPC (SEND=1, RECEIVE=2, ..., SENDA=16)
-        //   a7 >= KERNEL_CALL → kernel_call (SYS_FORK, SYS_EXEC, ...)
-        //
-        // This mirrors the ARM64 software-dispatch pattern. RISC-V's
-        // stvec Direct mode (MODE=0) routes all traps to a single entry
-        // point, so there is no per-vector table to configure.
-        //
-        // Note: Minix3 has no RISC-V port; this design follows the ARM
-        // pattern of software dispatch based on a register value, which
-        // is the standard approach in RISC-V OS kernels (Linux, FreeBSD,
-        // xv6-riscv all use a7 for syscall number dispatch).
-    }
-
     fn load(&self) {
         // Set stvec to the KERNEL leg (the production default: until a
         // `sret` targets U-mode, every trap is a kernel trap — the U-return
@@ -158,9 +141,8 @@ mod tests {
     use super::*;
     use crate::trap_entry::TrapEntryArch;
 
-    // Note: the four former smoke tests (trap_entry_init_returns_unit_struct /
-    // configure_syscall_is_noop / set_handler_is_noop /
-    // configure_ipc_entry_is_noop_on_riscv64) became a compile-time
+    // Note: the three former smoke tests (trap_entry_init_returns_unit_struct /
+    // configure_syscall_is_noop / set_handler_is_noop) became a compile-time
     // constraint check — verifying that Riscv64TrapEntry satisfies the
     // TrapEntryArch trait bound. On RISC-V these methods are all no-ops
     // (unit struct + Direct-mode stvec) with no observable runtime behavior;

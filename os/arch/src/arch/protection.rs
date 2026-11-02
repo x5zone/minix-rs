@@ -39,18 +39,15 @@
 //!
 //! # Design rationale in design doc
 //!
-//! See `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`:
-//! - §3.1 (Two-trait split) — why `ProtectionArch` and `TrapEntryArch` are
-//!   separate traits
-//! - §3.2 (PrivilegeLevel as associated type) — why privilege encoding is
-//!   an associated type, not a fixed enum
-//! - §3.3 (OS-semantic method names) — why methods describe OS needs, not
-//!   architecture concepts
-//! - §1.4 (the three questions from the CPU perspective) — the OS-level
+//! See `rewrite-notes/01-stage-kernel/03-kmain-cstart.md`:
+//! - §3.2 (two-trait split, associated `PrivilegeLevel`, OS-semantic method
+//!   names) — why the two traits are separate and why methods describe OS
+//!   needs rather than architecture concepts
+//! - §1.2 (the three questions from the CPU perspective) — the OS-level
 //!   questions the trait answers
-//! - §1.7 (why x86 still keeps a GDT) — why GDT/TSS still exist on x86-64
-//!   (TSS descriptor must be referenced via GDT entry — this is an ISA
-//!   constraint that is INTENTIONALLY hidden from OS code via the trait)
+//! - §3.1 (why x86 still keeps a GDT/TSS) — the TSS descriptor must be
+//!   referenced via a GDT entry (an ISA constraint that is INTENTIONALLY
+//!   hidden from OS code via the trait)
 
 use minix_types::VirBytes;
 
@@ -155,6 +152,22 @@ pub trait ProtectionArch: Sized {
     /// C: tss_init() sets tss.sp0 — protect.c:175
     fn set_kernel_stack(&mut self, cpu_id: u32, stack_top: VirBytes);
 
+    /// Rebuild descriptor-table entries that embed this instance's address.
+    ///
+    /// Called by the OS layer after the instance has moved into its final
+    /// global location and before [`Self::load`]. Architectures whose
+    /// protection state is register-only (aarch64/riscv64) inherit the
+    /// no-op default.
+    fn refresh_descriptors(&mut self) {}
+
+    /// Program the per-CPU entry base used by the trap path.
+    ///
+    /// Called once on the BSP after [`Self::load`]. x86-64 writes the GS
+    /// area (the SYSCALL entry reads its kernel stack from `gs:0x0`);
+    /// aarch64/riscv64 inherit the no-op default because `init` /
+    /// `set_kernel_stack` already wrote `TPIDR_EL1` / `sscratch`.
+    fn program_entry_base(&self, _cpu_id: u32, _kernel_stack_top: VirBytes) {}
+
     /// Load protection structures into hardware registers.
     ///
     /// After this call, the CPU enforces the protection boundaries
@@ -166,10 +179,12 @@ pub trait ProtectionArch: Sized {
 
     /// Initialize protection for an Application Processor (AP).
     ///
-    /// Called once per AP during SMP bringup. Creates per-CPU protection
-    /// structures (e.g., TSS entry in GDT) and loads them. The same
-    /// per-CPU invariant as [`set_kernel_stack`](Self::set_kernel_stack)
-    /// applies: no shared entry-stack scalar.
+    /// Called once per AP during SMP bringup. Loads the per-CPU protection
+    /// structures the BSP prepared (x86-64: the per-CPU TSS descriptor and
+    /// `sp0`, written by `set_kernel_stack` before the SIPI; aarch64/riscv64:
+    /// per-CPU register state). The same per-CPU invariant as
+    /// [`set_kernel_stack`](Self::set_kernel_stack) applies: no shared
+    /// entry-stack scalar.
     ///
     /// C: tss_init(cpu, stack) + prot_load_selectors() — called from mpx.S
     fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes);

@@ -73,13 +73,44 @@ fn main() -> Status {
 
     early_console::write_str("  paging enabled\n");
 
-    // 3. init_protection — same sequence as kmain's Phase B
+    // 3. init_protection's protection half — same trait calls as kmain's
+    //    Phase B. The instance stays on this stack (main never returns), so
+    //    the global-move + refresh_descriptors step is exercised by
+    //    test-user-trap's production init_protection call instead.
     let prot = CurrentProtection::init(0, info.kern_stack_top);
     prot.load();
 
     let mut trap = CurrentTrapEntry::init();
-    trap.configure_syscall(info.syscall_entry);
+    trap.configure_syscall(minix_arch::syscall_entry_va());
     trap.load();
+
+    // SYSCALL MSR readback: the production entry value (the asm label), not
+    // the KernelInfo metadata field, and the four values configure_syscall
+    // must leave behind. STAR = anchor 0x1B (GDT[3]) in [63:48] and kernel
+    // CS 0x08 (GDT[1]) in [47:32]; LSTAR = syscall entry; SFMASK = IF only;
+    // EFER.SCE = 1.
+    let star = unsafe { rdmsr(0xC000_0081) };
+    let expected_star = (0x08u64 << 32) | (0x1Bu64 << 48);
+    if star != expected_star {
+        early_console::write_str("  FAIL: STAR mismatch\n");
+        fail();
+    }
+    let lstar = unsafe { rdmsr(0xC000_0082) };
+    if lstar != minix_arch::syscall_entry_va().get() {
+        early_console::write_str("  FAIL: LSTAR mismatch\n");
+        fail();
+    }
+    let sfmask = unsafe { rdmsr(0xC000_0084) };
+    if sfmask != 0x200 {
+        early_console::write_str("  FAIL: SFMASK mismatch\n");
+        fail();
+    }
+    let efer = unsafe { rdmsr(0xC000_0080) };
+    if efer & 1 == 0 {
+        early_console::write_str("  FAIL: EFER.SCE is clear\n");
+        fail();
+    }
+    early_console::write_str("  SYSCALL MSRs verified (STAR/LSTAR/SFMASK/EFER)\n");
 
     early_console::write_str("  protection structures loaded\n");
 
@@ -159,6 +190,23 @@ fn main() -> Status {
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-protection ###\n");
     loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+}
+
+/// Read a 64-bit MSR. `msr` must be valid for this CPU (the SYSCALL MSRs
+/// are architectural and writable/readable at CPL0).
+unsafe fn rdmsr(msr: u32) -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") lo,
+            out("edx") hi,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    ((hi as u64) << 32) | (lo as u64)
 }
 
 #[panic_handler]

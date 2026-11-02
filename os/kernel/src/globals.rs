@@ -42,7 +42,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
 ///    placed in a `static`. Interior mutability through `get()` still
 ///    requires the caller to uphold the safety contract.
 ///
-/// See `rewrite-notes/03-stage-kernel/06-proc-init-boot-proc.md`
+/// See `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md`
 /// §4.1 (storage model) for the design rationale.
 #[repr(transparent)]
 pub(crate) struct SyncUnsafeCell<T: ?Sized> {

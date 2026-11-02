@@ -47,6 +47,38 @@ use minix_arch::x86_64::exception::X86_64ExceptionFrame;
 use minix_arch::x86_64::trap_stub::TrapFrame;
 use minix_types::VirBytes;
 
+/// Register this architecture's production trap/syscall bodies with the
+/// arch entry gate.
+///
+/// The `#[cfg(target_arch)]` selection lives here — in the arch-dispatch
+/// module — rather than in the OS-level `init_protection`, so the OS layer
+/// never names a concrete arch body or type. x86-64 registers the IDT
+/// exception/syscall pair; aarch64/riscv64 register their kernel/user legs
+/// and the switch-after-pop resched thunk.
+pub(crate) fn register_current_arch() {
+    #[cfg(target_arch = "x86_64")]
+    minix_arch::register_trap_dispatchers(
+        x86_trap_dispatch_body,
+        x86_syscall_dispatch_body,
+    );
+    #[cfg(target_arch = "riscv64")]
+    {
+        minix_arch::register_trap_dispatchers(
+            riscv64_kernel_body,
+            riscv64_user_body,
+        );
+        minix_arch::register_resched_entry(riscv64_resched_thunk);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        minix_arch::register_trap_dispatchers(
+            aarch64_kernel_body,
+            aarch64_user_body,
+        );
+        minix_arch::register_resched_entry(aarch64_resched_thunk);
+    }
+}
+
 /// The int-33 IPC gate (C: IPC_VECTOR_ORIG = 33, interrupt.h:33).
 #[cfg(target_arch = "x86_64")]
 const IPC_VECTOR_GATE: u8 = 33;
@@ -156,7 +188,8 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
 
     // E1 trap bridge: vector 33 (IPC_VECTOR) from user mode is the IPC
     // soft-int leg (C: IPC_VECTOR_ORIG, interrupt.h:33; gate DPL=3,
-    // trap_entry.rs configure_ipc_entry). The register ABI is the C i386
+    // installed by install_trap_stubs as a normal interrupt gate). The
+    // register ABI is the C i386
     // soft-int convention widened to 64 bits — RAX = src/dst endpoint
     // (SENDA: count), RBX = message pointer (SENDA: table pointer),
     // RCX = IPC call number (design doc 18, decision 2; C:

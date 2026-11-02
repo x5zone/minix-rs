@@ -5,9 +5,10 @@
 //!
 //! # x86-64 specific: GDT/TSS in long mode
 //!
-//! See `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`
-//! §1.7 ("why x86 still keeps a GDT") for the architectural rationale of why
-//! GDT/TSS are still required in 64-bit long mode: the TSS descriptor
+//! See `rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
+//! §3.1 ("64-bit table disposition: why x86 still keeps a GDT/TSS") for the
+//! architectural rationale of why GDT/TSS are still required in 64-bit long
+//! mode: the TSS descriptor
 //! must be referenced via a GDT entry (an ISA constraint), so GDT cannot
 //! be eliminated entirely. This is INTENTIONALLY hidden from OS code via
 //! the `ProtectionArch` trait — the OS calls `set_kernel_stack()` and
@@ -40,11 +41,6 @@ pub struct X86PrivilegeLevel(u8);
 impl X86PrivilegeLevel {
     pub(crate) const RING0: Self = Self(0);
     pub(crate) const RING3: Self = Self(3);
-
-    #[allow(dead_code)] // accessor; not yet wired to all call sites
-    pub(crate) const fn get(self) -> u8 {
-        self.0
-    }
 }
 
 const GDT_NULL_INDEX: usize = 0;
@@ -77,7 +73,8 @@ const GDT_SLOTS_PER_TSS: usize = 2;
 pub(crate) const KERN_CS_SELECTOR: u16 = (GDT_KERN_CS_INDEX * 8) as u16;
 pub(crate) const KERN_DS_SELECTOR: u16 = (GDT_KERN_DS_INDEX * 8) as u16;
 pub(crate) const USER_CS_SELECTOR: u16 = ((GDT_USER_CS_INDEX * 8) | 3) as u16;
-#[allow(dead_code)] // user data segment selector; not yet wired to all call sites
+/// User data segment selector (GDT[4] | RPL3) — the return path in
+/// `trap_stub` loads it into SS (and the other data segments) before iretq.
 pub(crate) const USER_DS_SELECTOR: u16 = ((GDT_USER_DS_INDEX * 8) | 3) as u16;
 /// STAR[63:48] value — the SYSRET anchor selector (see `GDT_USER_ANCHOR_INDEX`):
 /// sysret64 loads SS = anchor+8 (user data) and CS = anchor+16 (user code).
@@ -188,11 +185,12 @@ pub struct X86_64Protection {
 // SAFETY: X86_64Protection is Send because:
 // - All fields are plain data (u64 arrays, u32) with no interior mutability.
 // - During boot, init() is called on BSP only (single-writer).
-// - During SMP bringup, init_ap() is called per-CPU under BKL protection.
+// - During SMP bringup, the BSP writes each AP's sp0 under BOOT_LOCK before
+//   the SIPI; the AP then only reads the shared image in init_ap().
 // - After initialization, the struct is only read (load() reads GDT/TSS).
-//   set_kernel_stack() mutates TSS.sp0 but is called under BKL.
 // X86_64Protection is Sync because:
-// - All mutations (init, set_kernel_stack) are protected by BKL.
+// - All mutations (init, refresh_descriptors, set_kernel_stack) happen in
+//   the single-threaded boot window (pre-SMP / BOOT_LOCK).
 // - Reads (load) are safe to race with each other.
 unsafe impl Send for X86_64Protection {}
 unsafe impl Sync for X86_64Protection {}
@@ -322,12 +320,12 @@ fn stamp_cpu_id(usable_top: u64, cpu_id: u32) {
 /// `IST_STACKS[slot][cpu]`, top = base + size. Slot 0 serves IST1 (NMI),
 /// slot 1 serves IST2 (#DF), matching the shared IDT's gate ist fields.
 const IST_STACK_SIZE: usize = 0x2000; // 8 KiB per stack
-static mut IST_STACKS: [[[u8; IST_STACK_SIZE]; MAX_CPUS]; 2] =
+static IST_STACKS: [[[u8; IST_STACK_SIZE]; MAX_CPUS]; 2] =
     [[[0; IST_STACK_SIZE]; MAX_CPUS]; 2];
 
 fn ist_stack_top(slot: usize, cpu_id: usize) -> u64 {
-    // SAFETY: address-only computation on a static array; no dereference.
-    let base = unsafe { core::ptr::addr_of!(IST_STACKS[slot][cpu_id]) as *const u8 as usize };
+    // Address-only computation on a static array; no dereference, no write.
+    let base = core::ptr::addr_of!(IST_STACKS[slot][cpu_id]) as *const u8 as usize;
     (base + IST_STACK_SIZE) as u64
 }
 
@@ -360,10 +358,12 @@ impl ProtectionArch for X86_64Protection {
         };
 
         prot.fill_flat_segments();
-        // Build the TSS descriptors for EVERY CPU slot now: the `tss` array
-        // lives inside this instance at fixed addresses, so the descriptors
-        // never need rebuilding — `set_kernel_stack` only rewrites sp0, and
-        // an AP's `init_ap` can then be a pure load (no writes, no races).
+        // Build a TSS descriptor for EVERY CPU slot now, using this
+        // instance's current address. The instance is still a stack local
+        // here; init_protection() moves it into the global and calls
+        // refresh_descriptors() before load(), because the move changes the
+        // embedded bases. `set_kernel_stack` only rewrites sp0 and the
+        // CPU-id stamp.
         for slot in 0..MAX_CPUS as u32 {
             prot.setup_tss_for_cpu(slot, kernel_stack_top);
         }
@@ -384,6 +384,14 @@ impl ProtectionArch for X86_64Protection {
         let usable_top = stack_top.get() - X86_64_STACK_TOP_RESERVED as u64;
         self.tss[idx].sp0 = usable_top;
         stamp_cpu_id(usable_top, cpu_id);
+    }
+
+    fn refresh_descriptors(&mut self) {
+        self.refresh_tss_descriptors();
+    }
+
+    fn program_entry_base(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
+        crate::x86_64::trap_stub::program_gs(cpu_id, kernel_stack_top);
     }
 
     fn load(&self) {
@@ -418,6 +426,34 @@ impl ProtectionArch for X86_64Protection {
             "init_ap: TSS descriptor for cpu {} not built (init() must run first)",
             cpu_id
         );
+        // C: tss_init(cpu, stack) writes sp0 before the AP runs. The BSP's
+        // set_kernel_stack must have done it; otherwise this slot still
+        // carries init()'s BSP placeholder and the AP's ring3→ring0
+        // transition would use the BSP stack. This assertion is the
+        // production guard for that wiring (the `test-smp-ap-alive-mb`
+        // carrier used to compensate manually, masking the gap).
+        let expected_sp0 = kernel_stack_top.get() - X86_64_STACK_TOP_RESERVED as u64;
+        // SAFETY: `Tss64` is #[repr(C, packed)]; read the field through
+        // addr_of! + read_unaligned to avoid forming an unaligned reference.
+        let actual_sp0 = unsafe { core::ptr::addr_of!(self.tss[cpu_id as usize].sp0).read_unaligned() };
+        assert_eq!(
+            actual_sp0, expected_sp0,
+            "init_ap: cpu {} sp0 is not its own stack top; BSP must call set_kernel_stack before SIPI",
+            cpu_id
+        );
+        // C: tss_init also stamps the CPU id at sp0 + sizeof(reg_t). The
+        // BSP's set_kernel_stack does that for APs; verify it here so a
+        // missing stamp cannot slip through. cfg(test) skips the real write
+        // in stamp_cpu_id, and init_ap is not exercised on the host.
+        #[cfg(not(test))]
+        {
+            let stamp = unsafe { ((actual_sp0 + 8) as *const u64).read_volatile() };
+            assert_eq!(
+                stamp, cpu_id as u64,
+                "init_ap: cpu {} sp0 reserved word does not carry the CPU id; BSP must call set_kernel_stack before SIPI",
+                cpu_id
+            );
+        }
         // Load order matters: `load_with_tss`'s segment-reload step does
         // `mov gs, 0` — which (unlike most segments) zeroes the GS BASE on
         // x86-64 — so the GS area programming MUST come after it or the

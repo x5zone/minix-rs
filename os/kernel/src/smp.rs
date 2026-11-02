@@ -1135,6 +1135,15 @@ pub fn smp_init() {
             // no_std predictable). The CpuLocal migration may move this later.
             let stack_top = ap_kernel_stack_top(logical);
 
+            // C: tss_init(cpu, get_k_stack_top(cpu)) — write this AP's sp0
+            // and CPU-id stamp BEFORE the SIPI. `init()` built every slot
+            // with the BSP's stack top as a placeholder; without this call
+            // the AP's ring3→ring0 transition would use the BSP stack and
+            // `sp0 + sizeof(reg_t)` would not carry this CPU's id.
+            crate::with_protection_mut(|prot| {
+                prot.set_kernel_stack(logical, minix_types::VirBytes::new(stack_top))
+            });
+
             // CpuFlags.READY is set on the AP's behalf when the ack arrives;
             // the send itself marks the attempt (§3.4 state machine:
             // DISCOVERED → BOOTING).
@@ -1561,7 +1570,7 @@ const AP_STACK_COUNT: usize = 8;
     target_arch = "riscv64",
     target_arch = "aarch64"
 ))]
-static mut AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; AP_STACK_COUNT] =
+static AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; AP_STACK_COUNT] =
     [[0; AP_KERNEL_STACK_SIZE]; AP_STACK_COUNT];
 
 #[cfg(any(
@@ -1570,9 +1579,9 @@ static mut AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; AP_STACK_COUNT] =
     target_arch = "aarch64"
 ))]
 pub(crate) fn ap_kernel_stack_top(logical_id: u32) -> u64 {
-    // SAFETY: address-only computation; no dereference.
+    // Address-only computation on a shared static; no dereference, no write.
     let base =
-        unsafe { core::ptr::addr_of!(AP_KERNEL_STACKS[logical_id as usize]) as *const u8 as usize };
+        core::ptr::addr_of!(AP_KERNEL_STACKS[logical_id as usize]) as *const u8 as usize;
     (base + AP_KERNEL_STACK_SIZE) as u64
 }
 

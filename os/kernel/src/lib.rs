@@ -1971,13 +1971,9 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
 /// GDT/TSS (x86-64) or VBAR_EL1/stvec (aarch64/riscv64), any exception will
 /// cause an unrecoverable triple fault.
 ///
-/// Note: the IDT / VBAR_EL1 / stvec is **not** loaded here. `TrapEntryArch::init()`
-/// only prepares the descriptor table with metadata (DPL/IST/present bits);
-/// handler addresses are placeholder 0. Loading the trap table before real
-/// handlers are installed would route every exception/interrupt to address 0.
-/// The actual table is therefore initialized now to set metadata and SYSCALL MSRs,
-/// then discarded; a later boot phase will recreate it via `init()`, install real
-/// handlers with `set_handler()`, and finally `load()` it.
+/// The trap table is initialized, populated with the real stub addresses
+/// (`install_trap_stubs`), configured for SYSCALL, and loaded here; there is
+/// no later recreate-and-discard phase.
 ///
 /// C: prot_init() — protect.c:321 (x86) / protect.c:77 (ARM)
 #[cfg(not(feature = "mock"))]
@@ -2007,31 +2003,28 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // reads a dead TSS (sp0 = 0 → page fault at VA -8 on the frame push).
     // x86-only: the TSS descriptor rebuild + lgdt are GDT/TSS semantics
     // (aarch64/riscv64 keep register-state protection).
-    #[cfg(target_arch = "x86_64")]
-    with_protection_mut(|prot| prot.refresh_tss_descriptors());
+    with_protection_mut(|prot| prot.refresh_descriptors());
     with_protection(|prot| prot.load());
 
-    // Program the BSP's GS area so
-    // `current_cpu_id()` works on the BSP too. The BSP's logical id comes
-    // from the topology match (MADT/DTB order does not guarantee slot 0).
+    // Program the CPU's entry base. x86-64 writes the GS area; the
+    // aarch64/riscv64 default is a no-op (init/set_kernel_stack already
+    // wrote TPIDR_EL1/sscratch). The BSP's logical id comes from the
+    // topology match (MADT/DTB order does not guarantee slot 0).
     // Ordering contract: kmain runs `init_from_kinfo` (Phase A.5) before
     // this phase — the topology read below panics otherwise (Frozen::get
     // before freeze).
-    #[cfg(target_arch = "x86_64")]
-    {
-        let topo = minix_platform::platform_desc().cpu_topology();
-        let bsp_logical = (0..topo.nr_cpus as usize)
-            .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
-            .unwrap_or(0) as u32;
-        minix_arch::x86_64::trap_stub::program_gs(bsp_logical, kernel_info.kern_stack_top);
-    }
+    let topo = minix_platform::platform_desc().cpu_topology();
+    let bsp_logical = (0..topo.nr_cpus as usize)
+        .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+        .unwrap_or(0) as u32;
+    with_protection(|prot| prot.program_entry_base(bsp_logical, kernel_info.kern_stack_top));
 
     // Step 2: Prepare the trap entry table metadata.
     // x86-64: IDT metadata + SYSCALL MSR; aarch64: VBAR_EL1 metadata;
     // riscv64: stvec metadata.
     // C: idt_init() sets gate metadata with real handler addresses — protect.c:245-268;
-    //     Rust keeps handler addresses as 0 here; the table is recreated and loaded
-    //     in a later boot phase after real handlers are installed via set_handler().
+    //     Rust populates the gates with the real stub addresses via
+    //     install_trap_stubs and loads the table below.
     // C: SYSCALL MSR setup — protect.c:189-205
     let mut trap = CurrentTrapEntry::init();
 
@@ -2044,43 +2037,13 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // (C: idt_reload(), protect.c:268). Stage invariant from here on: no
     // empty-vector / empty-handler gate, kernel runs IF=0 except at
     // explicitly controlled sti points (all gates are interrupt gates).
-    use minix_arch::{install_trap_stubs, syscall_entry_va, register_trap_dispatchers};
+    use minix_arch::{install_trap_stubs, syscall_entry_va};
     install_trap_stubs(&mut trap);
     trap.configure_syscall(syscall_entry_va());
-    // The dispatch bodies are arch-shaped: each arch registers its
-    // production bodies for its own frame type (E-3ARCHTRAP — before
-    // this, only x86_64 had a production dispatch entry and the
-    // aarch64/riscv64 legs were diagnostic stubs; those carriers supplied
-    // their own trap legs instead).
-    // x86_64: exceptions/IRQs + SYSCALL over the IDT TrapFrame shape.
-    #[cfg(target_arch = "x86_64")]
-    register_trap_dispatchers(
-        trap_dispatch::x86_trap_dispatch_body,
-        trap_dispatch::x86_syscall_dispatch_body,
-    );
-    // riscv64: kernel leg (S-origin: timer ticks, kernel faults) + user
-    // leg (U-origin: ecall kernel calls + raw IPC bridge). The
-    // user leg's u64 return is the park decision; the diverging thunk
-    // below is its switch-after-pop destination (the aarch64 twin).
-    #[cfg(target_arch = "riscv64")]
-    register_trap_dispatchers(
-        trap_dispatch::riscv64_kernel_body,
-        trap_dispatch::riscv64_user_body,
-    );
-    #[cfg(target_arch = "riscv64")]
-    minix_arch::register_resched_entry(trap_dispatch::riscv64_resched_thunk);
-    // aarch64: current-EL leg (kernel IRQs/faults) + lower-EL leg (SVC
-    // kernel calls, EL0 faults/interrupts); the u64 operand is the
-    // exception class the asm slot ran.
-    #[cfg(target_arch = "aarch64")]
-    register_trap_dispatchers(
-        trap_dispatch::aarch64_kernel_body,
-        trap_dispatch::aarch64_user_body,
-    );
-    // aarch64: the diverging thunk `EL0BODY`'s park branch jumps to
-    // after unwinding a blocked-receiver frame (switch-after-pop).
-    #[cfg(target_arch = "aarch64")]
-    minix_arch::register_resched_entry(trap_dispatch::aarch64_resched_thunk);
+    // Register the arch-shaped production dispatch bodies. The cfg
+    // selection lives in trap_dispatch (the arch-dispatch module), not in
+    // this OS-level function.
+    trap_dispatch::register_current_arch();
     store_trap_entry(trap);
     with_trap_entry(|trap| trap.load());
 }
@@ -2160,6 +2123,11 @@ pub(crate) fn store_trap_entry(trap: CurrentTrapEntry) {
 pub(crate) fn with_protection<R>(f: impl FnOnce(&CurrentProtection) -> R) -> R {
     use minix_arch::arch::protection::ProtectionArch as _;
     f(&CurrentProtection::init(0, minix_types::VirBytes::new(0)))
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub(crate) fn with_protection_mut<R>(f: impl FnOnce(&mut CurrentProtection) -> R) -> R {
+    use minix_arch::arch::protection::ProtectionArch as _;
+    f(&mut CurrentProtection::init(0, minix_types::VirBytes::new(0)))
 }
 #[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn with_trap_entry<R>(f: impl FnOnce(&mut CurrentTrapEntry) -> R) -> R {

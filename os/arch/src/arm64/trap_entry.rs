@@ -90,26 +90,6 @@ impl TrapEntryArch for AArch64TrapEntry {
         // synchronous exception).
     }
 
-    fn configure_ipc_entry(&mut self, _entry_point: VirBytes) {
-        // ARM64: No-op — IPC and kernel-call traps share the same SVC
-        // exception vector (VBAR_EL1 + 0x400). The dispatch happens in
-        // software: the SVC handler reads r3 at runtime to distinguish:
-        //   r3 == KERVEC_INTR → kernel_call_entry → kernel_call()
-        //   r3 == IPCVEC_INTR → ipc_entry → do_ipc()
-        //
-        // This mirrors the C implementation where the assembly SVC handler
-        // (earm/mpx.S:181-184) performs the register check and branches
-        // to the appropriate entry. No IDT-gate-style configuration is
-        // needed because ARM64 has no per-vector interrupt table for
-        // synchronous exceptions.
-        //
-        // C: earm/mpx.S:181-184
-        //   cmp r3, #KERVEC_INTR
-        //   beq kernel_call_entry
-        //   cmp r3, #IPCVEC_INTR
-        //   beq ipc_entry
-    }
-
     fn load(&self) {
         // Set VBAR_EL1 to the exception vector table address.
         // The table (all 16 slots wired) is defined in the `global_asm!`
@@ -154,9 +134,8 @@ mod tests {
     use super::*;
     use crate::trap_entry::TrapEntryArch;
 
-    // Note: the original four smoke tests (trap_entry_init_returns_unit_struct /
-    // configure_syscall_is_noop / set_handler_is_noop /
-    // configure_ipc_entry_is_noop_on_arm64) became compile-time constraint
+    // Note: the original three smoke tests (trap_entry_init_returns_unit_struct /
+    // configure_syscall_is_noop / set_handler_is_noop) became compile-time constraint
     // checks — they verify that AArch64TrapEntry satisfies the TrapEntryArch
     // trait bound. `set_handler` and friends are no-ops on ARM64 with no
     // observable run-time behavior; the existence and successful compilation of

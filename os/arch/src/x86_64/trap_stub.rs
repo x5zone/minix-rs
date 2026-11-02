@@ -50,6 +50,7 @@
 
 use crate::trap_entry::{InterruptVector, TrapEntryArch};
 use crate::x86_64::trap_entry::X86_64TrapEntry;
+use core::cell::UnsafeCell;
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use minix_types::VirBytes;
@@ -653,11 +654,21 @@ const GS_AREA_CPU_ID: u64 = 0x10;
 /// §3.3 "per-CPU statics" decision). A later per-CPU migration may repoint
 /// GS_BASE at richer per-CPU blocks; the first three fields' offsets are
 /// frozen by the asm.
-static mut GS_AREAS: [GsArea; 8] = [const { GsArea {
+///
+/// `UnsafeCell` + a manual `Sync` replaces `static mut`: the only writer is
+/// `program_gs` on the target CPU, before its GS_BASE MSR points at the
+/// area (single-writer by ordering); after boot the entry stub only reads it.
+struct GsAreas(UnsafeCell<[GsArea; 8]>);
+
+// SAFETY: see the type comment — writes happen only in the single-threaded
+// per-CPU bring-up window, and reads are stable after `program_gs`.
+unsafe impl Sync for GsAreas {}
+
+static GS_AREAS: GsAreas = GsAreas(UnsafeCell::new([const { GsArea {
     kernel_stack_top: 0,
     user_rsp: 0,
     cpu_id: 0,
-} }; 8];
+} }; 8]));
 
 /// IA32_GS_BASE / IA32_KERNEL_GS_BASE (SDM Vol. 4 §2.2 — the swapgs pair).
 const MSR_IA32_GS_BASE: u32 = 0xC000_0101;
@@ -676,7 +687,7 @@ pub fn program_gs(cpu_id: u32, kernel_stack_top: VirBytes) {
     // (no CPL3 code before the scheduler hands out user contexts) —
     // single-writer by ordering.
     unsafe {
-        let area = &mut GS_AREAS[cpu_id as usize];
+        let area = &mut (*GS_AREAS.0.get())[cpu_id as usize];
         area.kernel_stack_top = kernel_stack_top.get();
         area.user_rsp = 0;
         area.cpu_id = cpu_id as u64;

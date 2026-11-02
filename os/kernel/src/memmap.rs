@@ -97,6 +97,15 @@ pub enum MemMapError {
 /// is true). The caller is responsible for ensuring this invariant.
 /// C: assert(kernel_may_alloc) in pg_utils.c:102
 pub fn add_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], addr: u64, len: u64) -> Result<usize, MemMapError> {
+    // C: assert(kernel_may_alloc) in pg_utils.c:102. The production gate is
+    // set in kmain Phase A and cleared in bsp_finish_booting; host unit
+    // tests exercise the pure function without the boot flag, so the
+    // assertion is production-only.
+    #[cfg(not(test))]
+    debug_assert!(
+        crate::kernel_may_alloc(),
+        "add_memmap: kernel_may_alloc gate is closed"
+    );
     // C: page alignment — roundup(addr) and rounddown(addr + len)
     let page_size = 4096u64;
     let aligned_base = addr

@@ -748,8 +748,9 @@ pub(crate) fn kernel_call_dispatch_inner(
 /// # Architecture dispatch (Phase 1A, 2026-08-12)
 ///
 /// - **x86-64**: IDT vector 33 (IPC_VECTOR) → `ipc_entry_softint_orig`
-///   assembly → `dispatch_ipc_entry`. Configured by
-///   `TrapEntryArch::configure_ipc_entry` which sets IDT gate 33.
+///   assembly → `dispatch_ipc_entry`. Installed by `install_trap_stubs`
+///   (vector 33 stub, DPL=3) from `init_protection`; there is no separate
+///   IPC-gate configuration call.
 ///   C: protect.c:147 `{ ipc_entry_softint_orig, IPC_VECTOR_ORIG, USER_PRIVILEGE }`.
 /// - **ARM64**: SVC handler reads r3 register at runtime:
 ///   `r3 == IPCVEC_INTR` → `ipc_entry` assembly → `dispatch_ipc_entry`.
