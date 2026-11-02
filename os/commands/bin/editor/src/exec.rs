@@ -2001,7 +2001,7 @@ fn substitute_command<S: TextStore, I: EditorIo>(
         let used = store.read_line(n, &mut buf).map_err(map_store_error)?;
         let line_text = core::str::from_utf8(&buf[..used]).map_err(|_| err("invalid content"))?;
         let mut out = [0u8; MAX_TEXT];
-        let (len, replaced) = subst_apply(&compiled, &template, line_text, &mut out);
+        let (len, replaced) = subst_apply(&compiled, &template, line_text.as_bytes(), &mut out);
         if replaced {
             // C: delete_lines(current, current) + put_sbuf_line per line
             // (sub.c:148-163); the replacement template never introduces a
