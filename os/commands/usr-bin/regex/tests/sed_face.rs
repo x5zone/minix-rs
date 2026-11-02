@@ -542,3 +542,32 @@ fn the_recorded_expression_survives_into_the_next_operand() {
     );
     assert_eq!(status, 0);
 }
+
+#[test]
+fn an_unescaped_newline_inside_a_substitution_prints_c_s_own_line() {
+    // C hands the compiler one script line at a time, so a field left open at a
+    // line break is `unescaped newline inside substitute pattern`
+    // (`compile.c:542-544`) — and that is what it reports **instead of**
+    // `unterminated substitute pattern`, because the newline is met first. The
+    // name slot carries the whole script including the newline, as `fname` does.
+    let cases = [
+        ("s/a\nb/x", "sed: 1: \"s/a\nb/x\": unescaped newline inside substitute pattern\n"),
+        ("s/a/b\nc", "sed: 1: \"s/a/b\nc\": unescaped newline inside substitute pattern\n"),
+    ];
+    for (script, expected) in cases {
+        let (out, status, err) = run(&[script], b"axb\nab\n");
+        assert_eq!(out, Vec::<u8>::new(), "{script:?} must not have run");
+        assert_eq!(status, 1, "{script:?} stderr was {err:?}");
+        assert_eq!(String::from_utf8_lossy(&err), expected);
+    }
+    // Commands separated by line ends — each closed on its own line — are the
+    // ordinary case and must stay unaffected.
+    let (out, status, err) = run(&["s/a/A/\ns/b/B/"], b"ab\n");
+    assert_eq!(
+        out,
+        b"AB\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}

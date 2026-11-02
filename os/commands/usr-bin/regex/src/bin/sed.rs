@@ -338,6 +338,9 @@ fn compile_error(script: &str, failure: ParseFailure) -> ! {
         ScriptError::Subst(SubstError::Unterminated) => {
             line.extend_from_slice(b"unterminated substitute pattern");
         }
+        ScriptError::Subst(SubstError::UnescapedNewline) => {
+            line.extend_from_slice(b"unescaped newline inside substitute pattern");
+        }
         ScriptError::Subst(SubstError::BadFlag(byte)) => {
             line.extend_from_slice(b"bad flag in substitute command: '");
             line.push(byte);

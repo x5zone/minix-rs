@@ -60,6 +60,12 @@ pub enum SubstError {
     BadDelimiter,
     /// A delimiter never closed before the text ran out (`compile.c:330-331`).
     Unterminated,
+    /// A raw newline inside the pattern or the replacement: C's scanner reads one
+    /// script line at a time, so an unescaped newline means the command was never
+    /// closed on its own line (`compile.c:542-544`). This fires **before**
+    /// [`SubstError::Unterminated`] for a command whose closing delimiter sits on
+    /// the next line, which is also C's order — the newline is met while scanning.
+    UnescapedNewline,
     /// A flag byte outside `g`, `p`, the case letters, `w`, or `1`-`9`
     /// (`compile_flags`' `default:`, `compile.c:636`). A leading `0` lands here
     /// too, because C's digit arm only accepts `1`-`9`.
@@ -99,6 +105,12 @@ pub fn parse_subst<'a>(text: &'a str) -> Result<(Subst<'a>, usize), SubstError> 
             if bytes[pos] == b'\\' {
                 pos += 2;
                 continue;
+            }
+            // C meets this before it can run out of text: each script line is its
+            // own buffer, so a newline while still inside a field is the end of a
+            // line that never closed its delimiter (`compile.c:542-544`).
+            if bytes[pos] == b'\n' {
+                return Err(SubstError::UnescapedNewline);
             }
             if bytes[pos] == delim {
                 *slot = Some(&text[start..pos]);
@@ -873,6 +885,26 @@ mod tests {
             parse_script("s/a/b", &mut cmds),
             Err(fail(1, ScriptError::Subst(SubstError::Unterminated)))
         );
+        // A raw newline inside either field is C's other sentence, and it wins
+        // over "unterminated" because C meets the newline while still scanning the
+        // line it was given (`compile.c:542-544`).
+        assert_eq!(
+            parse_script("s/a\nb/x/", &mut cmds),
+            Err(fail(1, ScriptError::Subst(SubstError::UnescapedNewline)))
+        );
+        assert_eq!(
+            parse_script("s/a/b\nc/", &mut cmds),
+            Err(fail(1, ScriptError::Subst(SubstError::UnescapedNewline)))
+        );
+        // The same command closing on its own line, then a second on the next, is
+        // two ordinary commands.
+        assert_eq!(parse_script("s/a/b/\ns/c/d/", &mut cmds).unwrap(), 2);
+        // An *escaped* newline keeps scanning: C stitches the next buffer onto the
+        // same field and drops the newline itself, while this build keeps both
+        // bytes in the field text — the difference is registered as
+        // `SED-ESCAPED-NEWLINE-CONTINUATION`, and what both agree on is that the
+        // command continues past the line break.
+        assert_eq!(parse_script("s/a\\\nb/x/", &mut cmds).unwrap(), 1);
     }
 
     #[test]
