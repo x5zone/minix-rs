@@ -4851,3 +4851,42 @@ P3（基本式 `|` 判停）红 2。
 **闭合** `BRE-PAREN-LITERAL`；**新登记不执行** `RE-INTERVAL-UNIMPLEMENTED`：`grep -G 'r\{2\}'` 与
 `grep -E 'r{2}'` 都该匹配 `rr`（宿主 GNU 交回 `rr`），本引擎把两者当字面交出 `r{2}`——要动引擎的
 重复算子层，另立一笔。
+
+### 第二百二十七笔（A 板 · `OPEN-WARN-SHAPE`：开档警告补齐 C 的三段，程序名交回 `argv[0]`；区间量词勘查后让位）
+
+C 两处开档失败都是 `warn("%s", name)`（`minix3/usr.bin/sed/main.c:450`、
+`minix3/minix/usr.bin/grep/util.c:111`），而 `warn` 走 `vwarnc`，形制
+`<getprogname()>: <文本>: <strerror 句子>\n`（`minix3/lib/libc/gen/vwarnc.c:3-8`）。本壳只印两段，
+且名字是源码里的字面量——换名或走符号链接调用时 C 的行首跟着 `argv[0]` 变，本壳不变。
+
+落码三件：`bin_support::prog_name`（`getprogname()` 即 `argv[0]` 最后一段）、`read_file` 的失败侧从
+`()` 改成携带 `minix_sys::Errno`（第三段是**号**，把失败并成一个单位类型就没号可印；宿主侧从
+`raw_os_error()` 取，取不到号的按 `EIO`，对应 C 里 `warn` 读的是刚失败那次调用留下的 `errno`）、
+`warn_name(prog, name, code)` 拼三段。两支壳的**所有**诊断都改走这个名字（`grep` 三处、`sed` 六处，
+含批次四百八十四起的 `errx` 三段形一族——`verrx.c:59` 打的第一段同样是 `getprogname()`，不能一半
+随 `argv[0]`、一半写死）。
+
+门：四枚新立（两支壳各两枚：三段形逐字节 + `arg0` 改名后行首跟着改，`sed` 那枚还顺带把编译诊断的
+名头一起验），两枚旧门把"只断操作数被点名"的注释指回新门。`arg0` 按 `vis_face.rs:373` 的先例把
+`CommandExt` 收在函数内。差分腿：宿主 `grep` 与改后逐字节同；`sed` 那侧 GNU 用自己的句子
+（`can't read ...`），判据取 C 源。读数：`minix-regex` **105/0**、依赖件 `minix-editor` +
+`minix-fileops` 44 段 **522/0**（上一笔立的规矩当场执行：本轮动的是 crate 内消费的 `read_file` 失败
+类型，仍照规矩跑一遍依赖件）、容器权威门同读数退 0、三架构各退 0、`rustfmt` 三件基线 0、改后 0。
+负控三枚各咬：只印前两段 红 2、名字槽写回硬编码 红 8（一次把 `sed` 全族 C 形报文都咬出来，反证这些
+句子同源）、宿主侧把号并成 `EIO` 红 2。
+
+**闭合** `OPEN-WARN-SHAPE`；同源未闭的一条写进台账：这一族报文的字节载体仍是 lossy `&str`
+（`bin_support.rs:fn args` 在目标侧 `from_utf8_lossy`），属 `ARGV-BYTE-PATH-IN-LIBS` 那一族，本笔不
+顺手改。
+
+**另一件事：区间量词勘查后让位**（本轮曾领 `RE-INTERVAL-UNIMPLEMENTED`，勘查后释放，未产生提交）。
+原因是它不是一处判停能了事的：`{m,n}` 在 C 里由 `p_simp_re`/`p_ere_exp` 在原子之后处理
+（`regcomp.c:473`、`:486`、`:512-536`、`:705-725`，发 `OBRACE`/`ORANGE` 让引擎计数循环），本引擎
+`Inst` 只有 `Byte/Class/Any/Split/Jump/Save/AssertStart/AssertEnd/Match`，没有计数态。可行的替代是
+**展开**：`x{m,n}` → m 份必选 + (n−m) 份嵌套可选（`quest` 的 Split 先取体后跳过，贪心次序与 C 一致）。
+单字节/字符类/`.` 的原子直接可展开；但 `(ab){2}` 这类**组上的区间**要先有子图复制（C 的 `dupl`，
+`regcomp.c` 里给 `\(...\)` 与 `+` 用），而且复制时各组必须**复用同一批 Save 槽位**才能保持 POSIX 的
+"捕获留最后一次迭代"——这要先动 `Compiler` 的槽位分配（现在是 `pattern.group_count` 单调递增）。
+另有一处次序细节：C 里 `a{2}*` 是 `REG_BADRPT`（区间之后不再有可重复的原子），本引擎会把 `*` 当
+前导运算符取字面。勘查结论：拆成两笔才诚实——①单原子区间展开 + `{` 后非数字仍字面（`regcomp.c:473`）
++ 越界计数报错；②组上的区间（需要槽位可控的复制设施）。已在册不动。

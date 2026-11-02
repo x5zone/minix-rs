@@ -119,6 +119,48 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十八（`sed`/`grep` 的开档警告补齐 C 的三段：程序名取自 `argv[0]`、操作数、`strerror` 句子）
+
+- **这一笔的射程**：打不开操作数时那一行。C 两处都是 `warn("%s", name)`
+  （`minix3/usr.bin/sed/main.c:450`、`minix3/minix/usr.bin/grep/util.c:111`），而 `warn` 走
+  `vwarnc`，形制是 `<getprogname()>: <文本>: <strerror 句子>\n`
+  （`minix3/lib/libc/gen/vwarnc.c:3-8`）。本壳两样都缺：只印 `<硬写的名>: <操作数>`，既没有第三段，
+  名字也不随 `argv[0]` 动——同一枚二进制换名或走符号链接调用时，C 的行首跟着变，本壳不变。
+- **落码**：`bin_support` 补三件——`prog_name(argv)`（`getprogname()` 就是 `argv[0]` 的最后一段，
+  所以把目录部分切掉）、`read_file` 的失败侧从 `()` 改成携带 `minix_sys::Errno`（第三段是**号**，
+  把失败并成一个单位类型就没有号可印；宿主那一侧从 `raw_os_error()` 取，取不到号的失败按 `EIO`
+  交回，正对应 C 里"`warn` 读的是刚失败那次调用留下的 `errno`"）、以及 `warn_name(prog, name, code)`
+  把三段拼出来。两支壳的所有诊断都改走这个名字：`grep` 三处、`sed` 六处（含批次四百八十四起的
+  `errx` 三段形那一族——`verrx.c:59` 打的第一段同样是 `getprogname()`，不能一半跟着 `argv[0]`、
+  一半写死）。
+- **门**：面门四枚新立——`sed_face.rs` 的 `an_unopenable_operand_warns_with_the_three_segments_c_prints`
+  （逐字节 `sed: /no-such-operand-here: No such file or directory\n`）与
+  `the_program_name_slot_follows_argv0`（`arg0("vv")` 交回 `vv: ...`；同枚门还拿编译诊断证一遍：
+  `arg0("sub")` + `s/a/b/x` 交回 `sub: 1: "s/a/b/x": bad flag in substitute command: 'x'`），
+  `grep_face.rs` 同形两枚（退码那侧是 2，`grep.c:505`）。原有两枚只断"操作数被点名"的门把注释改成
+  指回新门。差分腿：宿主自带的 `grep` 与本机改后的形状逐字节同（`grep: <路径>: No such file or
+  directory`）；`sed` 那一侧 GNU 用的是它自己的句子（`can't read ...`），所以判据取 C 源。
+  程序名那枚用 `Command::arg0` 直接改 `argv[0]`，按 `vis_face.rs:373` 的先例把 `CommandExt` 收在
+  函数内，不在文件头留 `allow`。
+- **读数**：`minix-regex` 宿主整包 **105 / 0**，依赖件 `minix-editor` + `minix-fileops` 合跑 44 段
+  **522 / 0**（上一笔立的规矩本轮当场执行：改公开签名必跑依赖件——本轮动的是 `read_file` 的失败类型，
+  它只在 crate 内的两支壳消费，仍照规矩跑一遍），容器权威门同读数退 0
+  （`tmp/open-warn/container.log`），三架构 `--bins` 各退 0（`tmp/open-warn/arch-*.log`）；
+  `rustfmt` 三件本轮新写代码格式化后归零（三件基线都是 0，本轮没带走别人的行）。
+  负控三枚各咬：W1（只印前两段）红 2、W2（名字槽写回硬写的 `sed: `）红 8（把 `sed` 全族 C 形报文
+  一次全咬出来，正说明这些句子本就同源于 `verrx`）、W3（宿主侧把所有失败并成 `EIO`）红 2，
+  还原复跑 105/0（`python3 tmp/open-warn/negctl.py`）。
+- **闭合**：`OPEN-WARN-SHAPE`。仍留一条同源未闭：**这一族报文的字节载体还是 lossy 的 `&str`**——
+  `support::args()` 在目标侧把 `argv` 原始字节按 `from_utf8_lossy` 折过（`bin_support.rs:fn args`），
+  所以操作数与程序名里若含非 UTF-8 字节，印出来的不是原字节；这属于 `ARGV-BYTE-PATH-IN-LIBS` 那一族
+  （本壳与 `grep` 的 `args_bytes` 双腿都缺），本笔不顺手改，在册不变。
+- **在册变化**：08 篇 `grep`/`sed` 两行的"开档失败那句只印两段"改成三段实况并指回新门。
+- **三件套**：`python3 tmp/open-warn/negctl.py`、`cargo test -p minix-regex`（`tmp/open-warn/pkg.log`、
+  `container.log`）与 `cargo test -p minix-editor -p minix-fileops`（`tmp/open-warn/dependents.log`）、
+  `cat tmp/open-warn/arch-*.log`；核实日 `2026-11-02`，基线快照 `6498bc1ac`。
+
+---
+
 ## 批次四百八十七（正则引擎：基本式里 `(` 与 `)` 是普通字符——Minix 的正则库还带着 `-DPOSIX_MISTAKE`）
 
 - **这一笔的射程**：`minix-regex` 的语法层，两个壳共用。量的时候现场是
