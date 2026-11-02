@@ -321,3 +321,65 @@ fn addresses_and_other_verbs_are_refused_loudly() {
         );
     }
 }
+
+#[test]
+fn an_empty_pattern_runs_the_previous_expression() {
+    // `s//x/` does not compile an empty expression (this engine refuses one
+    // outright at `pattern.rs:fn compile`); it names the last one the script
+    // recorded — `process.c:668-671` keeps it in `defpreg`. On `aa` the first
+    // command turns the leading `a` into `A`, and the reused `a` then rewrites
+    // the one that is left.
+    let (out, status, err) = run(&["s/a/A/;s//x/"], b"aa\n");
+    assert_eq!(
+        out,
+        b"Ax\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn an_empty_pattern_takes_the_most_recent_expression() {
+    // The reuse follows the script order: with `s/a/A/;s/b/B/;s//C/` the third
+    // command runs `b`, not `a`, so the `b` that the second command left behind
+    // is the one rewritten. If it reused the first expression the output would
+    // stay `AB b`.
+    let (out, status, err) = run(&["s/a/A/;s/b/B/;s//C/"], b"ab b\n");
+    assert_eq!(
+        out,
+        b"AB C\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn an_empty_pattern_keeps_the_reused_expression_captures() {
+    // The captures come from the **new** match, not from the earlier command:
+    // `s/\(a\)/X\1/` leaves `Xa`, and the reused expression matches that `a`
+    // again, so `\1` expands to `a` a second time.
+    let (out, status, err) = run(&["s/\\(a\\)/X\\1/;s//Y\\1/"], b"a\n");
+    assert_eq!(
+        out,
+        b"XYa\n".to_vec(),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn an_empty_pattern_with_nothing_recorded_stops_with_the_c_sentence() {
+    // `errx(1, "first RE may not be empty")` (`process.c:670`) carries no line
+    // number or file name, so the printed line is exactly what C writes: program
+    // name, the sentence, newline — and it goes to standard error with exit 1.
+    let (out, status, err) = run(&["s//B/"], b"aa\n");
+    assert_eq!(out, Vec::<u8>::new(), "stdout must stay empty");
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "sed: first RE may not be empty\n"
+    );
+}
