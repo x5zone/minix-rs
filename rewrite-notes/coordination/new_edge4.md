@@ -4725,3 +4725,38 @@ C 那句。
 `BRE-PAREN-LITERAL`（C 的基本式里未转义 `(` 是普通字符，本引擎把 `(a)` 判非法：`sed 's/(a)/X/'` 与
 `grep -G '(a)'` 都非零退，宿主 sed 原样交 `a`；这条住在 `pattern.rs`，改它要连 grep 那一族的口径一起过）。
 08 篇 sed 行与「尚未覆盖」那句按实况补。
+
+### 第二百二十三笔（A 板 · `SED-ERRX-SHAPE`：`sed` 的失手报文交回 C 的那一句三段形）
+
+C 的 `compile.c` 六处 `errx` 都以 `"%lu: %s: "` 起头——脚本行号与 `fname`——`errx` 自己再加
+`<程序名>: `（`minix3/lib/libc/gen/verrx.c:57`）。本壳把这些形态不同的失手并成一句自造的
+`sed: bad s command`，读者分不出是没闭合的定界符、认不得的标志、还是编号溢出。
+
+库半的 `ScriptError` 随之按 C 的臂拆：`InvalidCode(字节)`（`:320`，`%c` 是原字节）、
+`ExtraChars(动词)`（`:264-265`，C 打的是 `cmd->code`，不是尾巴字节）、`Subst(SubstError)` 四臂
+（`BadDelimiter :325`／`Unterminated :331`／`BadFlag :636`／`NumberOverflow :601-607`），
+另留两臂没有 C 句可抄（命令数上限、C 有而本壳未带的动词与地址）。`parse_script` 交回
+`ParseFailure { error, line }`，`line` 跟着 `cu_fgets` 的 `linenum` 数（`main.c:274`、`:292`、
+`:306`、`:315`）。名槽按 C 的算术切：`string_ident[30]`（`main.c:242`），塞不进 29 字节就
+`strcpy(+24, " ...\"")`（`main.c:261-266`）→ 前 24 字节接 ` ..."`；切点落在多字节中间时本壳退回
+字符边界，这是唯一一处取舍。
+
+顺带闭掉在册的 `SED-FLAG-SPACE-EXTENSION`：`compile_flags` 的 `EATSPACE()` 在循环**顶**
+（`compile.c:576` 源码自标 EXTENSION），所以 `s/a/b/ g`、`s/a/b/ p` 在那侧是设上标志；把空白当作标志串的终点就会把尾巴字母判成拒绝，所以标志串在空白处
+继续走。改后宿主自带 sed 与本壳交回同一结果（旁证）。
+
+门：库内改写两枚 + 新立三枚（臂的归属、行号、标志空白、`0` 落 BadFlag、`2147483648` 落溢出而
+`2147483647` 仍是计数、反斜杠定界符、没闭合的定界符），面门 18 → 22 枚逐字节钉 C 的整行。
+读数：宿主整包 6 段 **90/0**、容器权威门同读数退 0、三架构各退 0；负控四枚各咬红 2/3/4/3。
+
+**两处自错 + 一次假红**：① 面门把 `s/a/b/ p` 写成期望 `bbb`，实测两侧都交 `bab`——那条脚本没有
+`g`，只换第一个匹配，写期望时把上一枚门的「全局」搬了过来；② `script_ident` 用了
+`str::to_string()`，宿主测全绿而三架构三目标各报 `no method named to_string`（这一族第六次，只有
+freestanding 看得见 `alloc` 缺什么），改 `String::from` 后归零；③ 容器门第一次是 `rc=101
+sections=0`，起因是取证的 `ci-target` 被上一笔 docker 以 root 建出来、宿主 `mkdir -p` 对着已存在
+的 root 目录什么都不做 ⇒ 判据是 `failed to create directory /tgt/debug`，属假红而非门失败，
+`rmdir` 后以本用户重建即可。
+
+仍在册：`SED-BACKREF-NOT-DEFINED`（要先有解析期的「替换串里最大 `\N`」）、`compile_re` 失手那句
+C 打 `RE error: <strerror>`（`compile.c:467`）需要正则库的 regerror 文本、以及本壳两句自造拒绝
+（地址/未带动词、命令数上限）。08 篇 sed 行的失手报文口径按实况改写。

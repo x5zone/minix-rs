@@ -119,6 +119,60 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十四（`sed` 的失手报文交回 C 的那一句：`<程序名>: <脚本行号>: "<脚本>": <句子>`）
+
+- **这一笔的射程**：脚本读不下去时的那一行。C 的 `compile.c` 六处 `errx` 全部以
+  `"%lu: %s: "` 开头——脚本行号与 `fname`——而 `errx` 自己再加一段程序名
+  （`minix3/lib/libc/gen/verrx.c:57` 打 `<程序名>: ` 后换行退码走 `exit(eval)`）。把这些
+  形态不同的失手并成一句自造的 `sed: bad s command`，读者分不出是图案没闭合、标志认不得、
+  还是编号溢出。
+- **落码：失败要带上它自己是哪一种**。库半把 `ScriptError` 拆成 C 的臂——
+  `InvalidCode(字节)`（`compile.c:320`，C 的 `%c` 是原字节）、`ExtraChars(动词)`
+  （`compile.c:264-265`，C 打的是 `cmd->code` 那个动词字母，不是尾巴字节）、`Subst(SubstError)`
+  四臂（`BadDelimiter` `:325`、`Unterminated` `:331`、`BadFlag(字节)` `:636`、`NumberOverflow`
+  `:601-607`），外加本壳自己的两臂（命令数上限与「C 有而本壳未带」的动词/地址——C 在那两处根本
+  不报错，没有句子可抄）。`parse_script` 的返回随之换成 `ParseFailure { error, line }`：
+  `line` 跟着 `cu_fgets` 的 `linenum` 数（`main.c:274`、`:292`、`:306`、`:315` 每行一次），
+  因为 C 打的就是那个数。
+- **脚本名那一段按 C 的算术切**：`fname` 指向 `static char string_ident[30]`（`main.c:242`），
+  塞法是 `snprintf("\"%s\"")`，一旦不小于 29 就 `strcpy(string_ident + 30 - 6, " ...\"")`
+  （`main.c:261-266`）——留前 24 字节再接 ` ..."`，共 29 字节。切点若落在多字节字符中间，C 会把
+  拆开的字节原样打出，本壳把切点退回字符边界（这是本壳唯一的取舍，其余逐字节对齐）。
+- **顺带闭掉一笔在册项**：标志串的空白。C 的 `compile_flags` 把 `EATSPACE()` 放在循环**顶**
+  （`compile.c:576`，源码里就标着 EXTENSION），所以 `s/a/b/ g`、`s/a/b/ p` 在那侧是设上标志；
+  把空白当作标志串的终点会把尾巴字母判成拒绝，所以标志串在空白处继续走，`SED-FLAG-SPACE-EXTENSION`
+  随本笔闭合（宿主自带的 sed 对 `s/a/b/ p` 交回同一个结果，作旁证）。
+- **门**：库内两枚改写加三枚新立——`test_parse_script_splits_c_own_errors_from_ours`
+  （地址四形与未带动词回本壳那句；`Z` 回 `InvalidCode(b'Z')`；`dx`/`p x` 回 `ExtraChars(动词)`；
+  第三行上的命令报 `line = 3`；注释行不把行号带过它自己那行）、`test_subst_error_arms`
+  （认不得的标志、`0` 落 `BadFlag`、`2147483648` 落 `NumberOverflow` 而 `2147483647` 仍是计数、
+  反斜杠定界符、没闭合的定界符）、`test_blanks_between_flags_still_belong_to_the_flags`；
+  面门 `os/commands/usr-bin/regex/tests/sed_face.rs` 由 18 枚扩到 22 枚，新增四枚逐字节钉住
+  C 的整行：六条句子一枚、脚本行号一枚、30 字节切点一枚、空白标志一枚。
+- **读数**：宿主整包 6 段 **90 / 0**，容器权威门同读数退 0（`tmp/sed-errx/container.log`），
+  三架构 `--bins` 各退 0（`tmp/sed-errx/arch-*.log`）；`rustfmt --edition 2024 --check` 三件本轮
+  新写代码零漂移。负控四枚各咬：S1（名槽不切）红 2、S2（行号不数）红 3、S3（`extra characters`
+  退回自造句）红 4、S4（空白重断标志串）红 3，还原复跑 90/0（`python3 tmp/sed-errx/negctl.py`）。
+  容器门第一次跑出的是 `rc=101 sections=0`——取证用的 `ci-target` 由上一笔 docker 以 root 建了
+  出来，宿主侧 `mkdir -p` 对着已存在的 root 目录不做任何事，于是容器里 `/tgt/debug` 创建被拒。
+  这是**假红**不是门失败：判据是 `failed to create directory /tgt/debug`，处置是把那枚空目录
+  `rmdir` 后以本用户重建。
+- **本轮两处自错**：① 面门把 `s/a/b/ p` 的期望写成 `bbb`，实测宿主与本壳都交 `bab`——那条脚本
+  没有 `g`，只换第一个匹配，写期望时把上一枚门的「全局」顺手搬了过来；② `script_ident` 里用了
+  `str::to_string()`，宿主测全绿而三架构 `--bins` 三目标各报 `no method named to_string`（这一族
+  第六次：只有 freestanding 构建看得见 `alloc` 特性缺失），改 `String::from` 后三目标归零。
+- **仍在册**：`SED-BACKREF-NOT-DEFINED`（`\N` 越界，C 两条臂都拒绝、本壳展开成空）没在本笔范围里，
+  它需要先有解析期的「替换串里最大 `\N`」；`compile_re` 失手那句 C 打 `RE error: <strerror>`
+  （`compile.c:467`），要的是正则库的 `regerror` 文本，本壳仍回自造的 `sed: bad s command`；
+  `SED-SCRIPT-CAP-16` 与本壳的 `address or verb not modelled` 同属自造句（C 在那两处不报错）。
+- **在册变化**：08 篇 sed 行的失手报文口径按实况改（六句 C 原句 + 两处自造句的分界写清），
+  并把 `SED-FLAG-SPACE-EXTENSION` 从在册里摘掉。
+- **三件套**：`python3 tmp/sed-errx/negctl.py`、`cargo test -p minix-regex`
+  （`tmp/sed-errx/pkg.log`、`container.log`）、`cat tmp/sed-errx/arch-*.log`；
+  核实日 `2026-11-02`，基线快照 `a51dafe9f`。
+
+---
+
 ## 批次四百八十三（`sed` 的空图案是「用上一支表达式」，不是「一支空表达式」）
 
 - **这一笔的射程**：`s//替换/` 这一形。C 把上一次跑过的表达式记在 `defpreg` 里，图案为空的那条
