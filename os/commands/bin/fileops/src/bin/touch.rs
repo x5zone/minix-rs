@@ -8,11 +8,13 @@
 //! [`minix_fileops::touch::parse_time_spec`] (see that module for the UTC
 //! timezone caveat).
 //!
-//! Declared not-wired, because they need infrastructure this tree does not
-//! provide: `-d` (a free-form date string, C `parsedate`), `-r` (copy the times
-//! of a reference file), `-h` (`lutimens`, which needs the symlink-not-following
-//! face), and the `--date` / `--reference` long options. Each reports and exits
-//! 1 rather than silently diverging. Real file creation and time-setting need a
+//! `-r file` is wired: C's `stime_file()` (`touch.c:318-327`) is one `stat` of
+//! the reference plus the two times it carries, and this shell already `stat`s
+//! every operand. Still declared not-wired, because they need infrastructure
+//! this tree does not provide: `-d` (a free-form date string, C `parsedate`),
+//! `-h` (`lutimens`, which needs the symlink-not-following face), and the
+//! `--date` / `--reference` long options. Each reports and exits 1 rather than
+//! silently diverging. Real file creation and time-setting need a
 //! writable root, so the run is gated with the write-class commands (`E5`).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -47,12 +49,19 @@ const DEFFILEMODE: u32 = 0o666;
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let prog = support::prog_name(&argv);
 
     let mut aflag = false;
     let mut mflag = false;
     let mut cflag = false;
     let mut timeset = false;
     let mut spec: &str = "";
+    // C's `-t` and `-r` arms both write the same `ts[2]` (`touch.c:114-121`), so
+    // **the later flag owns both times** and the order on the command line is
+    // observable. `reference` holds what the last `-r` stated;
+    // `reference_last` says whether that `-r` came after the last `-t`.
+    let mut reference: Option<[(i64, i64); 2]> = None;
+    let mut reference_last = false;
 
     // getopt "acd:fhmr:t:" — options consume until the first bare operand.
     let mut i = 1;
@@ -73,7 +82,42 @@ fn run() -> ! {
                     b'm' => mflag = true,
                     b'h' => not_wired("-h"),
                     b'd' => not_wired("-d"),
-                    b'r' => not_wired("-r"),
+                    b'r' => {
+                        // `case 'r': timeset = 1; stime_file(optarg, ts);`
+                        // (`touch.c:114-116`): the reference is stated **inside
+                        // the option loop**, so an unstatable one ends the run
+                        // with C's three-part `err(1, "%s", fname)` before any
+                        // operand is created or touched. Access comes from
+                        // `st_atimespec`, modification from `st_mtimespec`.
+                        let name = {
+                            let rest = &a[k + 1..];
+                            if !rest.is_empty() {
+                                rest
+                            } else {
+                                i += 1;
+                                match args.get(i) {
+                                    Some(s) => *s,
+                                    None => usage(),
+                                }
+                            }
+                        };
+                        let mut sb: Stat = unsafe { core::mem::zeroed() };
+                        match stat(name, &mut sb) {
+                            Ok(_) => {
+                                reference = Some([
+                                    (sb.st_atim.tv_sec, sb.st_atim.tv_nsec),
+                                    (sb.st_mtim.tv_sec, sb.st_mtim.tv_nsec),
+                                ]);
+                            }
+                            Err(code) => {
+                                support::warn_line(prog, name, code);
+                                support::terminate(1);
+                            }
+                        }
+                        timeset = true;
+                        reference_last = true;
+                        k = bytes.len();
+                    }
                     b't' => {
                         let rest = &a[k + 1..];
                         spec = if !rest.is_empty() {
@@ -86,6 +130,7 @@ fn run() -> ! {
                             }
                         };
                         timeset = true;
+                        reference_last = false;
                         k = bytes.len();
                     }
                     _ => usage(),
@@ -118,9 +163,13 @@ fn run() -> ! {
     // usec*1000) nanoseconds, and `-t` overrides both to the parsed second.
     let (now_sec, now_usec) = gettimeofday().unwrap_or((0, 0));
     let now_ts = (now_sec, now_usec * 1000);
-    let target = if timeset {
+    // `-t`/obsolete decode to a second, `-r` to the pair the reference's `stat`
+    // handed back, and which of them owns the times is C's last-writer-wins rule
+    // — a pure function, so the rule has a gate even though writing the times
+    // needs the real root the whole write class of this crate is gated on.
+    let parsed = if timeset && !reference_last {
         match minix_fileops::touch::parse_time_spec(now_sec, spec) {
-            Ok(sec) => (sec, 0),
+            Ok(sec) => Some(sec),
             Err(_) => {
                 support::warn(
                     b"touch: out of range or illegal time specification: [[CC]YY]MMDDhhmm[.SS]\n",
@@ -129,13 +178,14 @@ fn run() -> ! {
             }
         }
     } else {
-        now_ts
+        None
     };
+    let target = minix_fileops::touch::chosen_times(reference, reference_last, parsed, now_ts);
 
     let mut errors = 0;
     for path in &operands {
         let mut sb: Stat = unsafe { core::mem::zeroed() };
-        let mut ts = [target, target];
+        let mut ts = target;
         if stat(path, &mut sb).is_err() {
             if cflag {
                 continue;

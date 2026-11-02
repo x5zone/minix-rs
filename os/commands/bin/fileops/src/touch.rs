@@ -165,6 +165,29 @@ pub fn parse_time_spec(now_epoch: i64, spec: &str) -> Result<i64, FileOpError> {
     Ok(compose_utc(y, mo, d, hh, mi, sec))
 }
 
+/// Which of the two time-stating legs owns the times: C's `-t` and `-r` arms
+/// both write the same `ts[2]` (`minix3/usr.bin/touch/touch.c:114-121`), so
+/// **the flag that came last wins both fields**; with neither flag the pair is
+/// the current time twice over (C seeds `ts[0]` from `clock_gettime` and copies
+/// it to `ts[1]` at `:152-153`). `reference` is what the last `-r` stated
+/// (access from `st_atimespec`, modification from `st_mtimespec`, `stime_file()`
+/// at `:318-327`); `parsed` is what `-t` decoded.
+#[must_use]
+pub fn chosen_times(
+    reference: Option<[(i64, i64); 2]>,
+    reference_last: bool,
+    parsed: Option<i64>,
+    now: (i64, i64),
+) -> [(i64, i64); 2] {
+    if reference_last {
+        return reference.unwrap_or([now, now]);
+    }
+    match parsed {
+        Some(sec) => [(sec, 0), (sec, 0)],
+        None => [now, now],
+    }
+}
+
 /// True when an operand is an obsolete time specification: exactly 8 or 10
 /// digits with nothing else (`touch.c` accepts these bare as a time only when
 /// a time is not already set and more than one operand follows).
@@ -174,6 +197,45 @@ pub fn is_obsolete_time_spec(spec: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// C's `-t` and `-r` arms both write the same `ts[2]` (`touch.c:114-121`), so
+    /// the later flag owns **both** fields; with neither flag both fields are the
+    /// current time, which is C's `ts[1] = ts[0]` at `:152-153`. A `-t` that came
+    /// after a `-r` re-claims the pair (nsec 0, because the decoded time has no
+    /// sub-second part), and a `-r` after a `-t` wins the other way.
+    #[test]
+    fn the_last_time_stating_flag_owns_both_fields() {
+        let reference = [(1_000_000_001_i64, 999_i64), (1_000_000_002, 888)];
+        let now = (1_700_000_000_i64, 500_i64);
+        // 没有 `-t`/`-r`：两格都是当下时间。
+        assert_eq!(
+            chosen_times(None, false, None, now),
+            [now, now],
+            "缺省交回当下时间两次"
+        );
+        // 只有 `-t`：两格都是那个整秒，纳秒归零。
+        assert_eq!(
+            chosen_times(None, false, Some(4242), now),
+            [(4242, 0), (4242, 0)]
+        );
+        // 只有 `-r`（`reference_last` 由环里最后一次赋值决定）：交出参照档的两个时刻。
+        assert_eq!(chosen_times(Some(reference), true, None, now), reference);
+        // `-r` 之后再来 `-t`：`-t` 后写，两格归它。
+        assert_eq!(
+            chosen_times(Some(reference), false, Some(4242), now),
+            [(4242, 0), (4242, 0)],
+            "-t 排在 -r 之后就该盖掉参照时间"
+        );
+        // `-t` 之后再来 `-r`：参照档后写，解析出的那一秒作废。
+        assert_eq!(
+            chosen_times(Some(reference), true, Some(4242), now),
+            reference,
+            "-r 排在 -t 之后就该盖掉解析值"
+        );
+        // 声称 `-r` 后写却什么都没记下（环里没跑过 `-r`）不该出现，出现也不许 panic：
+        // 退回当下时间，与没有旗标同形。
+        assert_eq!(chosen_times(None, true, None, now), [now, now]);
+    }
+
     use super::*;
 
     #[test]
@@ -230,7 +292,7 @@ mod tests {
     #[test]
     fn test_seconds_default_zero_unless_explicit() {
         let now = 946_684_800 + 45; // 2000-01-01 00:00:45 UTC
-                                    // No ".SS": seconds reset to 0 (NOT carried from now).
+        // No ".SS": seconds reset to 0 (NOT carried from now).
         assert_eq!(parse_time_spec(now, "01010000").unwrap(), 946_684_800);
         // ".SS" sets them.
         assert_eq!(parse_time_spec(now, "01010000.30").unwrap(), 946_684_830);
