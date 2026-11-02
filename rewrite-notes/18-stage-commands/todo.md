@@ -119,6 +119,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百九十二（脚本不设命令条数上限：命令集随脚本生长，命令链与 C 同形）
+
+- **这一笔的射程**：`sed` 脚本的**长度**。C 一边读一边把编译好的命令挂上链（`compile_stream` 的
+  `cmd->next` 走法，`minix3/usr.bin/sed/compile.c`），从头到尾不问会有多少条；本壳的 `parse_script`
+  却往调用者给的十六格固定数组里写（`MAX_SCRIPT_COMMANDS`），第十七条只能回一个自造的
+  `NotModelled`，壳把它译成 `sed: address or verb not modelled`——一句讲地址与动词的话，指的却是长度。
+  现场：二十条链式替换（`s/a/A/;s/b/B/;…;s/t/T/`）在宿主 `sed` 上逐字节改出 `ABCDEFGHIJKLMNOPQRST`、
+  退 0，本壳退 1、不吐数据、报的还是地址那句。
+- **落码**：`parse_script` 改为交回 `Vec<Scripted>`（库新增 `extern crate alloc`，只此一处按调用者文本
+  生长），`MAX_SCRIPT_COMMANDS` 删除，`NotModelled` 的文档收回到它真正的两义（地址前缀、C 有而本壳
+  没接的动词）；壳侧删掉十六格数组与 `slots[..count]` 切片，直接走返回的列表。库头那句设计说明改写：
+  引擎自身的结构仍是定长数组并借用输入，`alloc` 只出现在随调用者文本生长的结果上。
+- **门**：库测 `test_a_long_script_is_not_capped`（五十条 `p`，逐条核类型与所在行号，顺带把行计数在大
+  规模下钉住）、面门 `a_script_longer_than_sixteen_commands_runs`（二十条替换链逐字节对 `A…T`，退 0）。
+- **读数**：宿主 `minix-regex` + 两依赖件 50 段 **640 / 0**（基线 50 段 638 / 0，本笔 +2 枚）；容器权威门
+  同读数退 0（`tmp/sed-script-cap/ci-gate.log`）；三架构 `--bins` 各 0 错（库新增 `alloc` 之后
+  `no_std` 侧必须真编一遍）；`rustfmt` 触及四件：面门件 0 漂移，`lib.rs` / `sed.rs` 的 diff 块数与 HEAD
+  基线相同（13 / 2，均系他处既有），本笔引入的一处 `use` 超宽已按 rustfmt 拆回；`clippy` 零新增
+  （`large size difference` 两处在 `minix-types`/`minix-rt`，与本笔无关）。负控一枚：N1 把十六格上限放回
+  `push` 之前，红 `test_a_long_script_is_not_capped` 与 `a_script_longer_than_sixteen_commands_runs`，
+  还原后库 55 / 0、面门 35 / 0。差分腿：同一条二十命令脚本宿主 `sed` 同输出同退码；四十条 `p` 两边都是
+  四十一行（一条自动印加四十条显式印）。
+- **自错**：① 批量改测试时按 grep 的截断输出估了六处旧 sink，实际九处——一次删净后靠编译错误逐处补回
+  绑定，才知道 `grep -A` 的窗口把三处挡在了外面；② 手写 `use minix_regex::sed::{…}` 全塞进一行超宽，
+  `rustfmt --check` 当场指出，按它的折行改回。
+- **闭合与在册**：`SED-SCRIPT-CAP-16` 闭合。新登记 `SED-SUBST-TEXT-CAP`（P2）：`MAX_SUBST_TEXT = 256`
+  是另一处自造上限，C 的 `compile_subst` 从 `2 * _POSIX2_LINE_MAX + 1` 起、之后按 `xrealloc` 倍增
+  （`compile.c:540-552`），不设二百五十六字节的界；本笔不顺手改。
+- **三件套**：负控脚本与日志见 `tmp/sed-script-cap/`（`negctl.py`、`negctl.log`、`differential.log`、
+  `gates-host.log`、`ci-gate.log`）；核实日 `2026-11-02`，基线快照 `d8f12a5fb`。
+
+---
+
 ## 批次四百九十一（读失败的两个时机分开报：打开失败只是 warn，打开之后失败就退场）
 
 - **这一笔的射程**：`sed` 那条输入腿的**代价**。C 在 `mf_fgets` 里把两件事写得完全不同：

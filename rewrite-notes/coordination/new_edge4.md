@@ -4988,3 +4988,30 @@ stderr 逐字节三段、退 1，钉"后面的操作数不许被打开"）与 `a
 了自己的面门。新登记 `SED-READFAIL-PARTIAL-CARRIER`（P2，测试载体而非代码缺陷）：宿主造不出"先有字节、
 后失败"的载体（目录第一次读即 `EISDIR`），"失败前的行仍先印出来"这一半只有实现与注释承载，端到端门只
 钉住"停"。08 篇的 `sed` 行改正读中断的口径并补上两臂分工。
+
+### 第二百三十一笔（A 板 · `SED-SCRIPT-CAP-16`：命令链随脚本生长，长度不设上限）
+
+C 的 `compile_stream` 一边读一边把编译好的命令挂上链（`cmd->next` 走法，
+`minix3/usr.bin/sed/compile.c`），从头到尾不问会有多少条。本壳的 `parse_script` 却往调用者给的十六格
+固定数组里写（`MAX_SCRIPT_COMMANDS`），第十七条只能回一个自造的 `NotModelled`，壳再把它译成
+`sed: address or verb not modelled`——一句讲地址与动词的话，指的却是长度。现场：二十条链式替换在宿主
+`sed` 上逐字节改出 `ABCDEFGHIJKLMNOPQRST`、退 0，本壳退 1、不吐数据、报的还是地址那句。
+
+落码：`parse_script` 交回 `Vec<Scripted>`（库新增 `extern crate alloc`，只此一处按调用者文本生长），
+`MAX_SCRIPT_COMMANDS` 删除，`NotModelled` 的文档收回到它真正的两义（地址前缀、C 有而本壳没接的
+动词）；壳侧删掉十六格数组与切片，直接走返回的列表；库头设计句改写为"引擎自身仍是定长数组，`alloc`
+只出现在随调用者文本生长的结果上"。
+
+门：库测 `test_a_long_script_is_not_capped`（五十条 `p`，逐条核类型与行号）、面门
+`a_script_longer_than_sixteen_commands_runs`（二十条替换链逐字节对 `A…T`）。读数：宿主 50 段 **640/0**
+（基线 638/0）、容器权威门同读数退 0、三架构 `--bins` 各 0 错（库新增 `alloc` 后 `no_std` 侧要真编）、
+`rustfmt` 的 diff 块数与 HEAD 基线相同（13/2，均系他处既有），本笔引入的一处超宽 `use` 已按 rustfmt
+拆回；`clippy` 零新增。负控 N1 把十六格上限放回 `push` 之前，两枚新门同时红，还原后库 55/0、
+面门 35/0。差分腿：二十命令脚本宿主 `sed` 同输出同退码，四十条 `p` 两边都是四十一行。
+
+**自错**：批量改测试时按 `grep -A` 的截断窗口估了六处旧 sink，实际九处——一次删净后靠编译错误逐处补
+回绑定，教训是这类计数以编译器的报错为准，别以窗口截断的 grep 为准。
+
+**闭合** `SED-SCRIPT-CAP-16`。新登记 `SED-SUBST-TEXT-CAP`（P2）：`MAX_SUBST_TEXT = 256` 是另一处自造
+上限——C 的 `compile_subst` 从 `2 * _POSIX2_LINE_MAX + 1` 起、之后按 `xrealloc` 倍增
+（`compile.c:540-552`），不设二百五十六字节的界；本笔不顺手改，留作单独一笔。
