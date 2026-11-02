@@ -1,5 +1,9 @@
 # SD-34 架构门测试计数基线（tools/arch-gated-test-count.py --update-baseline 生成）
 # 每行：文件相对 os/ 的路径 TAB 计数。新增架构门测试要么迁成 tests/ 形状 pin，
 # 要么在这里写明理由后抬基线；不许让它静默地不跑。
+arch/src/arch/device_window.rs	2
+#   device_window.rs 2 枚：PD22S2A..H 设备窗迁移批（3bb370884 收尾）随批新增的窗几何/上下文覆盖测试，宿主不可达属设计（arch 模块），随 PD-22 收官 run_all 39/0/0 验收
 arch/src/arch/timer_irq_gate.rs	3
+libs/minix-platform/src/acpi.rs	2
+#   acpi.rs 2 枚：04-platform-discovery 评审关闭批（b68738fff）的解析错误变体与描述符构造测试，宿主不可达属设计（平台模块），随该批回归验收
 libs/minix-platform/src/device_tree.rs	2
