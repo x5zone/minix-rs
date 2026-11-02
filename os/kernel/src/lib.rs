@@ -1736,6 +1736,17 @@ fn elected_bsp_hw_id(topo: &minix_boot::platform::CpuTopology) -> u64 {
             return e - 1;
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // CPUID leaf 1 EBX[31:24] is this CPU's initial APIC ID. The
+        // firmware's `bsp_id` is only the first enabled MADT record, which
+        // ACPI does not require to be the boot CPU; use the executing
+        // CPU's identity when it is present in the discovered set.
+        let apic_id = core::arch::x86_64::__cpuid(1).ebx >> 24;
+        if (0..topo.nr_cpus as usize).any(|i| topo.cpus[i].hw_id == apic_id as u64) {
+            return apic_id as u64;
+        }
+    }
     topo.bsp_id as u64
 }
 
@@ -2002,13 +2013,14 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // Program the CPU's entry base. x86-64 writes the GS area; the
     // aarch64/riscv64 default is a no-op (init/set_kernel_stack already
     // wrote TPIDR_EL1/sscratch). The BSP's logical id comes from the
-    // topology match (MADT/DTB order does not guarantee slot 0).
+    // arch election, not from the firmware's first-record `bsp_id`.
     // Ordering contract: kmain runs `init_from_kinfo` (Phase A.5) before
     // this phase — the topology read below panics otherwise (Frozen::get
     // before freeze).
     let topo = minix_platform::platform_desc().cpu_topology();
+    let bsp_hw = elected_bsp_hw_id(&topo);
     let bsp_logical = (0..topo.nr_cpus as usize)
-        .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+        .find(|&i| topo.cpus[i].hw_id == bsp_hw)
         .unwrap_or(0) as u32;
     with_protection(|prot| prot.program_entry_base(bsp_logical, kernel_info.kern_stack_top));
 
@@ -2196,6 +2208,22 @@ pub fn init_clock_and_interrupts() {
         assert!(
             lapic_region.phys_base == 0xFEE0_0000,
             "device-window LAPIC page drifted from 0xFEE00000"
+        );
+        // The descriptor is the contract: the control page the firmware
+        // reported (MADT LAPIC address / IOAPIC record) must be the page the
+        // device window maps. Refuse a relocated controller instead of
+        // silently programming the wrong physical address.
+        assert_eq!(
+            intr.lapic_base(), lapic_region.phys_base as usize,
+            "descriptor LAPIC base {:#x} != device-window page {:#x} \
+             (relocated LAPIC unsupported)",
+            intr.lapic_base(), lapic_region.phys_base
+        );
+        assert_eq!(
+            intr.ioapic_base(), regions[0].phys_base as usize,
+            "descriptor IOAPIC base {:#x} != device-window page {:#x} \
+             (relocated IOAPIC unsupported)",
+            intr.ioapic_base(), regions[0].phys_base
         );
         let lapic_va = minix_arch::arch::device_window::device_va_for(
             regions,

@@ -14,6 +14,7 @@
 //!   EBADREQUEST for a NULL vector entry (there is no `do_unused` in C)
 //! - **D5**: TRACE deferred — debugging feature, not core
 
+use minix_platform::PlatformDesc;
 use minix_types::{BootImageStruct, IrqHookStruct, KinfoStruct, PrivInfoStruct, ProcInfoStruct};
 use minix_types::{
     Message, MessKrnLsysSysGetwhoami, MessLsysKrnSysGetinfo,
@@ -1070,12 +1071,31 @@ fn getinfo_hz(
     copy_struct_to_caller(caller_nr, proc_table, &hz, val_ptr, val_len)
 }
 
-/// GET_MACHINE — processor count and BSP id.
+/// GET_MACHINE — processor count, BSP id, APIC mode, and ACPI RSDP.
 ///
 /// C: do_getinfo.c:61-65 — copy machine info
 /// SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
 /// try_smp_state() returns None before boot init (e.g. in unit
 /// tests); fall back to single-CPU defaults in that case.
+/// Build the GET_MACHINE wire record from the three runtime facts.
+///
+/// Kept separate from `getinfo_machine` so the field policy (x86 APIC mode,
+/// ACPI RSDP publication, zero padding) is host-testable without a frozen
+/// platform global.
+fn machine_record(processors_count: u32, bsp_id: u32, acpi_rsdp: u64) -> MachineStruct {
+    #[cfg(target_arch = "x86_64")]
+    let apic_enabled = 1i32;
+    #[cfg(not(target_arch = "x86_64"))]
+    let apic_enabled = 0i32;
+    MachineStruct {
+        processors_count,
+        bsp_id,
+        apic_enabled,
+        acpi_rsdp,
+        ..Default::default()
+    }
+}
+
 fn getinfo_machine(
     caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -1083,11 +1103,19 @@ fn getinfo_machine(
     val_len: i32,
 ) -> KcallResult {
     let smp = unsafe { crate::try_smp_state() };
-    let machine = MachineStruct {
-        processors_count: smp.as_ref().map(|s| s.ncpus()).unwrap_or(1),
-        bsp_id: smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0),
-        ..Default::default()
-    };
+    // Publish the same machine facts C's userland reads: CPU count, BSP id,
+    // interrupt mode (x86 APIC vs legacy PIC), and ACPI RSDP physical
+    // address. The Rust ACPI driver's init gates on `acpi_rsdp != 0` and its
+    // PCI bridge scan gates on `apic_enabled` (drivers/power/acpi).
+    let acpi_rsdp = minix_platform::platform_desc()
+        .arch_misc()
+        .acpi_tables
+        .unwrap_or(0) as u64;
+    let machine = machine_record(
+        smp.as_ref().map(|s| s.ncpus()).unwrap_or(1),
+        smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0),
+        acpi_rsdp,
+    );
     copy_struct_to_caller(caller_nr, proc_table, &machine, val_ptr, val_len)
 }
 
@@ -2892,6 +2920,24 @@ mod tests {
         assert_eq!(GetInfoRequest::try_from(9), Err(()));   // GET_KADDRESSES (not handled)
         assert_eq!(GetInfoRequest::try_from(10), Err(()));  // GET_SCHEDINFO (not handled)
         assert_eq!(GetInfoRequest::try_from(99), Err(()));
+    }
+
+    // ── GET_MACHINE wire record ──
+
+    #[test]
+    fn test_machine_record_publishes_apic_mode_and_acpi_rsdp() {
+        let m = machine_record(4, 2, 0x1_0000);
+        assert_eq!(m.processors_count, 4);
+        assert_eq!(m.bsp_id, 2);
+        assert_eq!(m.acpi_rsdp, 0x1_0000);
+        assert_eq!(m.padding, 0);
+        assert_eq!(m.board_id, 0);
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(m.apic_enabled, 1);
+        #[cfg(not(target_arch = "x86_64"))]
+        assert_eq!(m.apic_enabled, 0);
+        // C `struct machine` layout: 4+4+4+4+8+4 = 28, padded to 32.
+        assert_eq!(core::mem::size_of::<MachineStruct>(), 32);
     }
 
     // ── GET_CPUINFO wire record ──

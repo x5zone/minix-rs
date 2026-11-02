@@ -32,7 +32,7 @@
 //! - No other CPU is concurrently writing to the DTB region.
 //! - Early boot identity mapping covers the physical address: during boot
 //!   the kernel enables paging with an identity mapping over the low 4 GB
-//!   (C `pg_identity()` semantics, `os/kernel/src/lib.rs:27-28`), and the
+//!   (C `pg_identity()` semantics, `os/kernel/src/lib.rs:fn arch_boot_impl`), and the
 //!   DTB lives in static firmware memory far below that bound — so the raw
 //!   physical address can be dereferenced as a virtual address (VA == PA).
 //!   If a future path hands a DTB above the identity-mapped range, `parse`
@@ -156,7 +156,7 @@ impl DeviceTreeDesc {
     ///
     /// Architecture-specific extraction is dispatched via `#[cfg]` on
     /// **data selection** (which node to look up), not behavior — see
-    /// 04-platform-discovery.md §4.2.2.
+    /// 04-platform-discovery.md §4.6.
     #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     fn from_fdt(fdt: &fdt::Fdt<'_>) -> Result<Self, DtParseError> {
         let ic = Self::parse_interrupt_controller(fdt)?;
@@ -296,9 +296,12 @@ impl DeviceTreeDesc {
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn parse_timer(_fdt: &fdt::Fdt<'_>) -> Result<ArmGenericTimerDesc, DtParseError> {
-        // ARM Generic Timer frequency is read from CNTFRQ_EL0 at runtime;
-        // DTB only confirms presence of the timer node.
+    fn parse_timer(fdt: &fdt::Fdt<'_>) -> Result<ArmGenericTimerDesc, DtParseError> {
+        // Frequency is read from CNTFRQ_EL0 at runtime; the DTB only has to
+        // confirm the generic-timer node is present. Both the ARMv8 and the
+        // ARMv7 compatible strings are accepted (QEMU virt emits the former).
+        fdt.find_compatible(&["arm,armv8-timer", "arm,armv7-timer"])
+            .ok_or(DtParseError::TimerNotFound)?;
         Ok(ArmGenericTimerDesc)
     }
 
@@ -482,7 +485,7 @@ impl DeviceTreeDesc {
             let gicr_base = None;
 
             #[cfg(target_arch = "riscv64")]
-            let mtimecmp_addr = match Self::parse_clint(fdt) {
+            let mtimecmp_addr = match Self::parse_timer(fdt) {
                 Ok(c) => Some(c.mtimecmp_base + (hw_id as usize) * c.mtimecmp_stride),
                 Err(_) => None,
             };
@@ -559,6 +562,8 @@ pub enum DtParseError {
     GicNotFound,
     /// GIC `reg` property missing or malformed.
     GicRegMissing,
+    /// ARM Generic Timer node not found (ARM64).
+    TimerNotFound,
 }
 
 impl fmt::Display for DtParseError {
@@ -573,6 +578,7 @@ impl fmt::Display for DtParseError {
             Self::TimebaseFreqMissing => write!(f, "`/cpus/timebase-frequency` not found"),
             Self::GicNotFound => write!(f, "GICv3 node not found in DTB"),
             Self::GicRegMissing => write!(f, "GIC node missing `reg` property"),
+            Self::TimerNotFound => write!(f, "ARM generic timer node not found in DTB"),
         }
     }
 }

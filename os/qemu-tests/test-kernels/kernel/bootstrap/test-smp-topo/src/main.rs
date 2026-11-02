@@ -90,8 +90,8 @@ fn main() -> Status {
         }
     }
 
-    // 5. Contract assertion: BSP hardware ID belongs to the discovered set —
-    //    a MADT walk that skips the BSP entry (or invents IDs) fails here.
+    // 5. Contract assertion: the firmware's BSP hint belongs to the
+    //    discovered set (a MADT walk that invents IDs fails here).
     let mut bsp_found = false;
     for i in 0..topo.nr_cpus as usize {
         if topo.cpus[i].hw_id == topo.bsp_id as u64 {
@@ -102,6 +102,20 @@ fn main() -> Status {
         fail("bsp hw_id not among discovered CPUs");
     }
 
+    // 5b. Contract assertion: the CPU executing this test (CPUID leaf 1
+    //     EBX[31:24]) is in the discovered set. This is the identity the
+    //     kernel's `elected_bsp_hw_id` uses; `bsp_id` is only a hint.
+    let executing_apic_id = core::arch::x86_64::__cpuid(1).ebx >> 24;
+    let mut executing_found = false;
+    for i in 0..topo.nr_cpus as usize {
+        if topo.cpus[i].hw_id == executing_apic_id as u64 {
+            executing_found = true;
+        }
+    }
+    if !executing_found {
+        fail("executing CPU APIC ID not among discovered CPUs");
+    }
+
     // 6. Machine-specific observation (printed, never asserted): QEMU's
     //    default topology assigns APIC IDs {0,1,2,3}.
     for i in 0..topo.nr_cpus as usize {
@@ -109,7 +123,7 @@ fn main() -> Status {
         early_console::write_hex(i as u64);
         early_console::write_str("] hw_id = ");
         early_console::write_hex(topo.cpus[i].hw_id);
-        if topo.cpus[i].hw_id == topo.bsp_id as u64 {
+        if topo.cpus[i].hw_id == executing_apic_id as u64 {
             early_console::write_str(" (BSP)");
         }
         early_console::write_str("\n");

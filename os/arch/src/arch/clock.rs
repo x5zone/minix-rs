@@ -78,7 +78,7 @@ pub enum ProfileClockError {
 ///
 /// | Method | x86-64 | ARM64 | RISC-V |
 /// |--------|--------|-------|--------|
-/// | `new()` | store PIT freq + LAPIC base from `PitDesc` | no-op (CNTFRQ read at runtime) | store CLINT addrs from `ClintDesc` |
+/// | `new()` | store PIT freq from `PitDesc` | no-op (CNTFRQ read at runtime) | store CLINT addrs from `ClintDesc` |
 /// | `init_timer()` | 8254 PIT divisor / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | CLINT mtimecmp |
 /// | `read_ticks()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |
 /// | `read_tsc()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |

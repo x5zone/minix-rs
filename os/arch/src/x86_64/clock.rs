@@ -6,10 +6,10 @@
 //!
 //! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
-//! Hardware parameters (PIT base frequency, LAPIC base address) are stored
-//! in instance fields, populated by `new(desc)` from the `PitDesc` sub-trait
-//! implementor (downcast via `Any`). This replaces the previous hardcoded
-//! `PIT_BASE_FREQ` constant.
+//! The PIT base frequency is stored in an instance field, populated by
+//! `new(desc)` from the `PitDesc` sub-trait implementor (downcast via `Any`).
+//! The LAPIC timer address is the per-CPU device-window VA resolved by
+//! `lapic_va_base()`, not a descriptor field.
 //!
 //! C: clock.c hardware init + apic.c lapic_enable()
 
@@ -33,13 +33,14 @@ const PIT_CMD_RATE_GEN: u8 = 0x36;
 /// # Fields
 ///
 /// - `pit_base_freq`: 8254 PIT base frequency (Hz), from `PitDesc`.
-/// - `lapic_base`: LAPIC MMIO base address, from `PitDesc`.
-///   Used for LAPIC Timer setup after APIC init.
+///
+/// The LAPIC timer's MMIO address is not stored here: it is the
+/// device-window VA resolved per CPU by [`lapic_va_base`] after the
+/// per-CPU APIC-base check.
 ///
 /// C: clock.c hardware init + apic.c lapic_enable()
 pub struct X86_64ClockArch {
     pit_base_freq: u32,
-    lapic_base: usize,
 }
 
 /// Device-window VA of the LAPIC page (slot 1); the per-CPU APIC base /
@@ -172,7 +173,6 @@ impl ClockArch for X86_64ClockArch {
             .expect("X86_64ClockArch::new: expected PitDesc");
         Self {
             pit_base_freq: pit.pit_base_freq,
-            lapic_base: pit.lapic_base,
         }
     }
 

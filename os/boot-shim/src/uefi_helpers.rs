@@ -37,9 +37,15 @@ use crate::ebs_pair::{self, PairError, RawOps};
 
 /// UEFI Configuration Table GUID for the Device Tree (FDT).
 ///
-/// Defined in the UEFI Specification as `EFI_DEVICE_TREE_GUID`.
+/// Defined in the UEFI Specification (2.4+) as `EFI_DEVICE_TREE_GUID`.
 /// Not provided by the `uefi` crate, so we define it here.
-const DEVICE_TREE_GUID: Guid = uefi::guid!("b1b621d2-f19c-41c5-8310-daa6f018a8d3");
+const DEVICE_TREE_GUID: Guid = uefi::guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
+
+/// Legacy ARM FDT configuration-table GUID used by pre-2.4 firmware.
+///
+/// Kept as a second accepted GUID so older UEFI builds that published this
+/// value still reach the DTB parser. It is not the UEFI-spec value.
+const LEGACY_DEVICE_TREE_GUID: Guid = uefi::guid!("b1b621d2-f19c-41c5-8310-daa6f018a8d3");
 
 /// Global allocator for UEFI test kernels that define none of their own.
 ///
@@ -118,7 +124,7 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
         #[cfg(target_arch = "aarch64")]
         {
             for e in entries {
-                if e.guid == DEVICE_TREE_GUID {
+                if e.guid == DEVICE_TREE_GUID || e.guid == LEGACY_DEVICE_TREE_GUID {
                     sources.borrow_mut().push(PlatformDescSource::new(DTB, PhysBytes(e.address as u64)));
                     break;
                 }

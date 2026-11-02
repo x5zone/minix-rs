@@ -1,13 +1,14 @@
 //! Test: topology discovery pin — aarch64/ACPI.
 //!
-//! **2026-09-07: the discovery path is ACPI, not DTB.**
+//! **The discovery path is ACPI, not DTB on AAVMF.**
 //!
 //! Empirically verified on QEMU virt + AAVMF (Ubuntu 2024.02, `-smp 4`):
-//! the config table carries **no FDT entry** under either the boot-shim's
-//! legacy GUID or the UEFI-spec `EFI_DTB_TABLE_GUID` (b1b621d5-19f0-4008-
-//! b30d-b83e8133f39b) — but it **does carry the ACPI 2.0 RSDP GUID**
-//! (`ACPI2_GUID`). The discovery chain is therefore: config table → RSDP →
-//! `AcpiDesc::parse` (MADT **GICC** records, MPIDR as hw_id) — the same
+//! the config table carries **no FDT entry** under either the UEFI-spec
+//! `EFI_DEVICE_TREE_GUID` (b1b621d5-f19c-41a5-830b-d9152c69aae0) or the
+//! boot-shim's legacy GUID (b1b621d2-f19c-41c5-8310-daa6f018a8d3) — but it
+//! **does carry the ACPI 2.0 RSDP GUID** (`ACPI2_GUID`). The discovery chain
+//! is therefore: config table → RSDP → `AcpiDesc::parse` (MADT **GICC**
+//! records, Processor UID as hw_id) — the same
 //! three-step shape as the x86_64 variant of this test, with GICC instead
 //! of LAPIC records.
 //!
@@ -89,12 +90,13 @@ fn dump_acpi_parse_error(source: &PlatformDescSource) {
             early_console::write_hex(u64::from(v));
             early_console::write_str(")\n");
         }
+        Err(_) => early_console::write_str("other AcpiParseError\n"),
     }
 }
 
 #[entry]
 fn main() -> Status {
-    early_console::write_str("### test_smp_topo (aarch64): topology discovery pin (ACPI via S-2b)\n");
+    early_console::write_str("### test_smp_topo (aarch64): topology discovery pin (ACPI)\n");
 
     // 1. Discover platform sources through boot-shim's real scan
     //    (ACPI2 RSDP preferred over the absent DTB on this firmware).
@@ -119,7 +121,7 @@ fn main() -> Status {
     let topo = desc.cpu_topology();
     early_console::write_str("  nr_cpus = ");
     early_console::write_hex(topo.nr_cpus as u64);
-    early_console::write_str(", bsp mpdir/hw_id = ");
+    early_console::write_str(", bsp mpidr/hw_id = ");
     early_console::write_hex(topo.bsp_id as u64);
     early_console::write_str("\n");
 
@@ -137,7 +139,8 @@ fn main() -> Status {
         }
     }
 
-    // 5. Contract assertion: BSP hw_id is one of the discovered CPUs.
+    // 5. Contract assertion: the firmware's BSP hint is one of the
+    //    discovered CPUs.
     let mut bsp_found = false;
     for cpu in &topo.cpus[..topo.nr_cpus as usize] {
         if cpu.hw_id == u64::from(topo.bsp_id) {
@@ -146,6 +149,21 @@ fn main() -> Status {
     }
     if !bsp_found {
         fail("bsp_id not among discovered cpus");
+    }
+
+    // 5b. Contract assertion: the CPU executing this test (MPIDR_EL1.Aff0)
+    //     is in the discovered set. `bsp_id` is only a hint.
+    let mpidr: u64;
+    unsafe { asm!("mrs {}, mpidr_el1", out(reg) mpidr) };
+    let aff0 = mpidr & 0xff;
+    let mut self_found = false;
+    for cpu in &topo.cpus[..topo.nr_cpus as usize] {
+        if cpu.hw_id == aff0 {
+            self_found = true;
+        }
+    }
+    if !self_found {
+        fail("executing CPU MPIDR.Aff0 not among discovered cpus");
     }
 
     early_console::write_str("### TEST_RESULT: PASS test-smp-topo-aarch64 ###\n");

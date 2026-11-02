@@ -54,6 +54,17 @@ const RSDP_SIGNATURE: [u8; 8] = *b"RSD PTR ";
 /// RSDP revision 2.0+ (has XSDT pointer).
 const RSDP_REV_2: u8 = 2;
 
+/// Maximum number of root-table entries. Mirrors C's `MAX_RSDT` (35): the
+/// C ACPI reader caps the RSDT buffer at 36 + 35×4 bytes and refuses a
+/// larger declared length. Keeping the same bound stops a corrupt root
+/// table from turning into an unbounded physical-memory scan.
+const MAX_ROOT_ENTRIES: usize = 35;
+
+/// Upper bound for a single ACPI table (MADT). 64 KiB is a generous
+/// bound for the tables this parser consumes; a larger declared length is
+/// treated as corrupt.
+const MAX_TABLE_LEN: usize = 64 * 1024;
+
 /// MADT table signature: "APIC".
 const MADT_SIGNATURE: [u8; 4] = *b"APIC";
 
@@ -174,6 +185,12 @@ impl AcpiDesc {
         if sig_bytes != &RSDP_SIGNATURE[..] {
             return Err(AcpiParseError::BadRsdpSignature);
         }
+        // C's `acpi_rsdp_test` validates the first 20 bytes (ACPI 1.0
+        // checksum). Keep that gate: a corrupt RSDP must not seed the root
+        // pointer walk.
+        if !unsafe { checksum_ok(rsdp_phys, 20) } {
+            return Err(AcpiParseError::BadRsdpChecksum);
+        }
 
         // RSDP layout (ACPI 6.4 §5.2.5):
         //   0: signature (8)
@@ -207,8 +224,7 @@ impl AcpiDesc {
         }
 
         // SAFETY: caller guarantees ACPI tables are valid.
-        let madt_phys = unsafe { find_madt(xsdt_phys, revision >= RSDP_REV_2) }
-            .ok_or(AcpiParseError::MadtNotFound)?;
+        let madt_phys = unsafe { find_madt(xsdt_phys, revision >= RSDP_REV_2) }?;
 
         // SAFETY: madt_phys was validated by find_madt to point to a valid MADT.
         let entries = unsafe { parse_madt(madt_phys) }?;
@@ -243,7 +259,6 @@ impl AcpiDesc {
             // PIT base frequency is a fixed hardware constant (1193182 Hz).
             let timer = PitDesc {
                 pit_base_freq: 1_193_182,
-                lapic_base: entries.lapic_base,
             };
 
             // Early console: COM1 (0x3F8) — standard PC AT serial port.
@@ -320,12 +335,19 @@ impl PlatformDesc for AcpiDesc {
 
 /// Find the MADT (APIC) table in the XSDT/RSDT.
 ///
-/// Returns the physical address of the MADT, or `None` if not found.
+/// Returns the physical address of the MADT.
 ///
 /// # Safety
 ///
-/// Caller must guarantee `sdt_phys` points to a valid XSDT/RSDT.
-unsafe fn find_madt(sdt_phys: usize, is_xsdt: bool) -> Option<usize> {
+/// Caller must guarantee `sdt_phys` points to a readable XSDT/RSDT header.
+unsafe fn find_madt(sdt_phys: usize, is_xsdt: bool) -> Result<usize, AcpiParseError> {
+    // Root table signature: "XSDT" (64-bit entries) or "RSDT" (32-bit).
+    let expected: &[u8; 4] = if is_xsdt { b"XSDT" } else { b"RSDT" };
+    let sig = unsafe { core::slice::from_raw_parts(sdt_phys as *const u8, 4) };
+    if sig != expected {
+        return Err(AcpiParseError::BadRootSignature);
+    }
+
     // Read `length` via byte slice to avoid unaligned access on packed field.
     // SDT header layout: signature(4) + length(4) + ...
     let length_bytes = unsafe {
@@ -335,25 +357,31 @@ unsafe fn find_madt(sdt_phys: usize, is_xsdt: bool) -> Option<usize> {
 
     // Number of table pointers: (length - header_size) / pointer_size.
     let header_size = core::mem::size_of::<SdtHeader>();
-    if sdt_len < header_size {
-        return None;
-    }
     let ptr_size = if is_xsdt { 8 } else { 4 };
+    if sdt_len < header_size
+        || sdt_len > header_size + MAX_ROOT_ENTRIES * ptr_size
+    {
+        return Err(AcpiParseError::RootTableMalformed);
+    }
+    // C's `acpi_read_sdt_at` checks the table checksum before trusting its
+    // entries; do the same, now that the length is bounded.
+    if !unsafe { checksum_ok(sdt_phys, sdt_len) } {
+        return Err(AcpiParseError::BadChecksum);
+    }
     let entry_count = (sdt_len - header_size) / ptr_size;
 
     let entries_start = sdt_phys + header_size;
 
     for i in 0..entry_count {
         let entry_addr = entries_start + i * ptr_size;
-        // SAFETY: bounds checked via entry_count calculation above.
+        // SAFETY: entry_addr is within the bounded root table.
         let table_phys = if is_xsdt {
-            // SAFETY: entry_addr is within the XSDT bounds.
             let bytes = unsafe { core::slice::from_raw_parts(entry_addr as *const u8, 8) };
             let mut arr = [0u8; 8];
             arr.copy_from_slice(bytes);
             u64::from_le_bytes(arr) as usize
         } else {
-            // SAFETY: entry_addr is within the RSDT bounds.
+            // SAFETY: entry_addr is within the bounded root table.
             let bytes = unsafe { core::slice::from_raw_parts(entry_addr as *const u8, 4) };
             u32_le_from_slice(bytes) as usize
         };
@@ -365,11 +393,11 @@ unsafe fn find_madt(sdt_phys: usize, is_xsdt: bool) -> Option<usize> {
         // SAFETY: ACPI tables referenced by XSDT/RSDT are valid per spec.
         let table_sig_bytes = unsafe { core::slice::from_raw_parts(table_phys as *const u8, 4) };
         if table_sig_bytes == &MADT_SIGNATURE[..] {
-            return Some(table_phys);
+            return Ok(table_phys);
         }
     }
 
-    None
+    Err(AcpiParseError::MadtNotFound)
 }
 
 /// MADT parse result: `(lapic_base, ioapic_base, nr_irqs, cpus, nr_cpus, bsp_id)`.
@@ -410,7 +438,11 @@ struct MadtResult {
 unsafe fn parse_madt(
     madt_phys: usize,
 ) -> Result<MadtResult, AcpiParseError> {
-    // SAFETY: caller guarantees madt_phys is a valid MADT.
+    // SAFETY: caller guarantees madt_phys is a readable MADT header.
+    let sig = unsafe { core::slice::from_raw_parts(madt_phys as *const u8, 4) };
+    if sig != &MADT_SIGNATURE[..] {
+        return Err(AcpiParseError::BadMadtSignature);
+    }
     // Read `length` via byte slice to avoid unaligned access on packed field.
     let length_bytes = unsafe {
         core::slice::from_raw_parts((madt_phys + 4) as *const u8, 4)
@@ -421,6 +453,12 @@ unsafe fn parse_madt(
     let madt_header_size = core::mem::size_of::<SdtHeader>() + core::mem::size_of::<MadtHeader>();
     if madt_len < madt_header_size {
         return Err(AcpiParseError::MadtTooShort);
+    }
+    if madt_len > MAX_TABLE_LEN {
+        return Err(AcpiParseError::MadtTooLong);
+    }
+    if !unsafe { checksum_ok(madt_phys, madt_len) } {
+        return Err(AcpiParseError::BadChecksum);
     }
 
     // Read the MADT header (Local APIC Address) via byte slice.
@@ -627,7 +665,7 @@ unsafe fn parse_madt(
     // through to the next platform source instead of faulting later on the
     // first GICR MMIO write.
     #[cfg(target_arch = "aarch64")]
-    check_gic_madt(nr_cpus, gicd_base, gicr_base, gic_version)?;
+    check_gic_madt(gicd_base, gicr_base, gic_version)?;
 
     // If no CPUs were found in the MADT, default to single-core.
     if nr_cpus == 0 {
@@ -660,7 +698,7 @@ unsafe fn parse_madt(
         nr_cpus,
         bsp_id,
         #[cfg(target_arch = "x86_64")]
-        nr_irqs: 64, // QEMU/PC GSI count (16 ISA + 8 PCI); real HW varies.
+        nr_irqs: 64, // IDT/IRQ vector capacity, not IOAPIC pins; real HW varies.
         #[cfg(target_arch = "aarch64")]
         gicd_base,
         #[cfg(target_arch = "aarch64")]
@@ -696,14 +734,10 @@ unsafe fn parse_madt(
 /// host; production callers are aarch64-only.
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 fn check_gic_madt(
-    nr_cpus: u32,
     gicd_base: usize,
     gicr_base: usize,
     gicd_version: u8,
 ) -> Result<(), AcpiParseError> {
-    if nr_cpus == 0 {
-        return Ok(());
-    }
     if gicd_base == 0 {
         return Err(AcpiParseError::GicdNotFound);
     }
@@ -732,17 +766,39 @@ fn u32_le_from_slice(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(arr)
 }
 
+/// ACPI checksum over `len` bytes at `addr`: the byte sum must be zero.
+///
+/// # Safety
+///
+/// `addr..addr+len` must be readable.
+unsafe fn checksum_ok(addr: usize, len: usize) -> bool {
+    let bytes = unsafe { core::slice::from_raw_parts(addr as *const u8, len) };
+    bytes.iter().fold(0u8, |acc, b| acc.wrapping_add(*b)) == 0
+}
+
 /// Errors that can occur during ACPI parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpiParseError {
     /// RSDP signature mismatch (not "RSD PTR ").
     BadRsdpSignature,
+    /// RSDP 20-byte checksum mismatch (C: `acpi_rsdp_test`).
+    BadRsdpChecksum,
+    /// Root table (XSDT/RSDT) signature mismatch.
+    BadRootSignature,
+    /// Root table length is outside the bounded header/entry window.
+    RootTableMalformed,
+    /// SDT/MADT checksum mismatch (C: `acpi_check_csum`).
+    BadChecksum,
+    /// MADT (APIC) signature mismatch.
+    BadMadtSignature,
     /// RSDP has no valid XSDT/RSDT pointer.
     NoXsdtPointer,
     /// MADT (APIC) table not found in XSDT/RSDT.
     MadtNotFound,
     /// MADT table is too short to contain a header.
     MadtTooShort,
+    /// MADT declares a length larger than the parser's bound.
+    MadtTooLong,
     /// aarch64: MADT lists CPUs but no GIC Distributor record — the
     /// interrupt controller base would be missing for every consumer.
     GicdNotFound,
@@ -761,9 +817,15 @@ impl fmt::Display for AcpiParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadRsdpSignature => write!(f, "RSDP signature mismatch"),
+            Self::BadRsdpChecksum => write!(f, "RSDP checksum mismatch"),
+            Self::BadRootSignature => write!(f, "root table signature mismatch"),
+            Self::RootTableMalformed => write!(f, "root table length out of bounds"),
+            Self::BadChecksum => write!(f, "ACPI table checksum mismatch"),
+            Self::BadMadtSignature => write!(f, "MADT signature mismatch"),
             Self::NoXsdtPointer => write!(f, "RSDP has no XSDT/RSDT pointer"),
             Self::MadtNotFound => write!(f, "MADT (APIC) table not found"),
             Self::MadtTooShort => write!(f, "MADT table too short"),
+            Self::MadtTooLong => write!(f, "MADT table length exceeds bound"),
             Self::GicdNotFound => write!(f, "MADT has CPUs but no GICD record"),
             Self::GicrNotFound => write!(f, "MADT has no GICR subtable / zero region base"),
             Self::GicVersionUnsupported(v) => {
@@ -783,9 +845,15 @@ mod tests {
     fn test_acpi_parse_error_variants() {
         let errs = [
             AcpiParseError::BadRsdpSignature,
+            AcpiParseError::BadRsdpChecksum,
+            AcpiParseError::BadRootSignature,
+            AcpiParseError::RootTableMalformed,
+            AcpiParseError::BadChecksum,
+            AcpiParseError::BadMadtSignature,
             AcpiParseError::NoXsdtPointer,
             AcpiParseError::MadtNotFound,
             AcpiParseError::MadtTooShort,
+            AcpiParseError::MadtTooLong,
             AcpiParseError::GicdNotFound,
             AcpiParseError::GicrNotFound,
             AcpiParseError::GicVersionUnsupported(2),
@@ -797,6 +865,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_acpi_desc_from_parsed() {
         let ic = ApicDesc {
@@ -806,7 +875,6 @@ mod tests {
         };
         let timer = PitDesc {
             pit_base_freq: 1_193_182,
-            lapic_base: 0xFEE0_0000,
         };
         let console = Some(IsaSerialDesc { port_base: 0x3F8 });
         let desc = AcpiDesc::from_parsed(ic, timer, console, CpuTopology::default());
@@ -835,12 +903,17 @@ mod tests {
     /// accepted) stays a machine-test concern.
     #[test]
     fn test_check_gic_madt_decision_table() {
-        // No CPUs (x86-style MADT): not the aarch64 gate's business.
-        assert_eq!(check_gic_madt(0, 0, 0, 0), Ok(()));
+        // No GICD at all (also the no-CPU shape): the gate refuses rather
+        // than letting the single-core default reach the driver with a
+        // zero GICR base.
+        assert_eq!(
+            check_gic_madt(0, 0, 0),
+            Err(AcpiParseError::GicdNotFound)
+        );
 
         // Spec-conformant GICv3 machine: GICD present, version 3, nonzero
         // redistributor base (QEMU virt gic-version=3 layout: 0x080A_0000).
-        assert_eq!(check_gic_madt(1, 0x0800_0000, 0x080A_0000, 3), Ok(()));
+        assert_eq!(check_gic_madt(0x0800_0000, 0x080A_0000, 3), Ok(()));
 
         // A GICv3 machine whose GICR (type 14) subtable is genuinely absent:
         // gicr_base reaches this gate as 0, so the redistributor is refused
@@ -848,7 +921,7 @@ mod tests {
         // emits the GICR subtable, so its gicr_base is the nonzero 0x080A_0000
         // asserted above).
         assert_eq!(
-            check_gic_madt(1, 0x0800_0000, 0, 3),
+            check_gic_madt(0x0800_0000, 0, 3),
             Err(AcpiParseError::GicrNotFound)
         );
 
@@ -858,27 +931,27 @@ mod tests {
         // (the exact shape that externally aborted on the first GICR write
         // before this gate existed).
         assert_eq!(
-            check_gic_madt(1, 0x0800_0000, 0x0803_0000, 2),
+            check_gic_madt(0x0800_0000, 0x0803_0000, 2),
             Err(AcpiParseError::GicVersionUnsupported(2))
         );
 
         // GICv1 likewise unsupported.
         assert_eq!(
-            check_gic_madt(1, 0x0800_0000, 0x080A_0000, 1),
+            check_gic_madt(0x0800_0000, 0x080A_0000, 1),
             Err(AcpiParseError::GicVersionUnsupported(1))
         );
 
         // Missing GICD outranks the other checks (the version byte is only
         // readable when a GICD entry exists).
         assert_eq!(
-            check_gic_madt(1, 0, 0x080A_0000, 3),
+            check_gic_madt(0, 0x080A_0000, 3),
             Err(AcpiParseError::GicdNotFound)
         );
 
         // Version byte not read (0): falls through to the zero-GICR check.
-        assert_eq!(check_gic_madt(1, 0x0800_0000, 0x080A_0000, 0), Ok(()));
+        assert_eq!(check_gic_madt(0x0800_0000, 0x080A_0000, 0), Ok(()));
         assert_eq!(
-            check_gic_madt(1, 0x0800_0000, 0, 0),
+            check_gic_madt(0x0800_0000, 0, 0),
             Err(AcpiParseError::GicrNotFound)
         );
     }
@@ -886,6 +959,7 @@ mod tests {
     /// Build a minimal synthetic ACPI table set in memory and parse it.
     ///
     /// This verifies the full RSDP → XSDT → MADT chain works correctly.
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_parse_synthetic_acpi() {
         // Layout (all little-endian):
@@ -966,6 +1040,19 @@ mod tests {
         buf[lapic_off + 3] = 0;
         buf[lapic_off + 4..lapic_off + 8].copy_from_slice(&1u32.to_le_bytes());
 
+        // Fill the three checksum bytes now that the tables are complete.
+        // RSDP: 20-byte ACPI 1.0 checksum at +8; SDT headers: +9.
+        fn set_checksum(buf: &mut [u8], start: usize, len: usize, csum_off: usize) {
+            buf[start + csum_off] = 0;
+            let sum = buf[start..start + len]
+                .iter()
+                .fold(0u8, |acc, b| acc.wrapping_add(*b));
+            buf[start + csum_off] = 0u8.wrapping_sub(sum);
+        }
+        set_checksum(&mut buf[..], 0, 20, 8);
+        set_checksum(&mut buf[..], xsdt_offset, xsdt_total, 9);
+        set_checksum(&mut buf[..], madt_offset, madt_total, 9);
+
         // Parse from the heap buffer. All table pointers (RSDP→XSDT,
         // XSDT→MADT) use virtual addresses within `buf`, so `parse` can
         // safely dereference them in userspace.
@@ -991,11 +1078,72 @@ mod tests {
             .downcast_ref::<PitDesc>()
             .expect("expected PitDesc");
         assert_eq!(pit.pit_base_freq, 1_193_182);
-        assert_eq!(pit.lapic_base, 0xFEE0_0000);
 
         let topo = desc.cpu_topology();
         assert_eq!(topo.nr_cpus, 1, "should find 1 CPU");
         assert_eq!(topo.bsp_id, 0, "BSP APIC ID should be 0");
         assert_eq!(topo.cpus[0].hw_id, 0, "CPU 0 hw_id should be 0");
+    }
+
+    /// Fill an ACPI checksum byte so the byte sum over `len` is zero.
+    fn put_checksum(buf: &mut [u8], start: usize, len: usize, csum_off: usize) {
+        buf[start + csum_off] = 0;
+        let sum = buf[start..start + len]
+            .iter()
+            .fold(0u8, |acc, b| acc.wrapping_add(*b));
+        buf[start + csum_off] = 0u8.wrapping_sub(sum);
+    }
+
+    #[test]
+    fn test_parse_rejects_bad_rsdp_checksum() {
+        let mut buf = [0u8; 64];
+        buf[0..8].copy_from_slice(b"RSD PTR ");
+        buf[15] = RSDP_REV_2;
+        // Checksum byte left zero: the signature bytes make the sum nonzero.
+        let r = unsafe { AcpiDesc::parse(buf.as_ptr() as usize) };
+        assert!(matches!(r, Err(AcpiParseError::BadRsdpChecksum)));
+    }
+
+    #[test]
+    fn test_parse_rejects_bad_root_signature() {
+        let mut buf = [0u8; 0x200];
+        let base = buf.as_ptr() as usize;
+        buf[0..8].copy_from_slice(b"RSD PTR ");
+        buf[15] = RSDP_REV_2; // revision 2: XSDT path (64-bit pointer)
+        buf[24..32].copy_from_slice(&((base + 0x100) as u64).to_le_bytes());
+        put_checksum(&mut buf, 0, 20, 8);
+        let root = 0x100usize;
+        buf[root..root + 4].copy_from_slice(b"XXXX");
+        buf[root + 4..root + 8].copy_from_slice(&36u32.to_le_bytes());
+        put_checksum(&mut buf, root, 36, 9);
+        let r = unsafe { AcpiDesc::parse(buf.as_ptr() as usize) };
+        assert!(matches!(r, Err(AcpiParseError::BadRootSignature)));
+    }
+
+    #[test]
+    fn test_parse_rejects_oversized_root_table() {
+        let mut buf = [0u8; 0x300];
+        let base = buf.as_ptr() as usize;
+        buf[0..8].copy_from_slice(b"RSD PTR ");
+        buf[15] = RSDP_REV_2;
+        buf[24..32].copy_from_slice(&((base + 0x100) as u64).to_le_bytes());
+        put_checksum(&mut buf, 0, 20, 8);
+        let root = 0x100usize;
+        let len = 36 + MAX_ROOT_ENTRIES * 8 + 8;
+        buf[root..root + 4].copy_from_slice(b"XSDT");
+        buf[root + 4..root + 8].copy_from_slice(&(len as u32).to_le_bytes());
+        put_checksum(&mut buf, root, len, 9);
+        let r = unsafe { AcpiDesc::parse(buf.as_ptr() as usize) };
+        assert!(matches!(r, Err(AcpiParseError::RootTableMalformed)));
+    }
+
+    #[test]
+    fn test_parse_madt_rejects_bad_checksum() {
+        let mut buf = [0u8; 64];
+        buf[0..4].copy_from_slice(b"APIC");
+        buf[4..8].copy_from_slice(&44u32.to_le_bytes());
+        // Checksum left zero: "APIC" makes the byte sum nonzero.
+        let r = unsafe { parse_madt(buf.as_ptr() as usize) };
+        assert!(matches!(r, Err(AcpiParseError::BadChecksum)));
     }
 }

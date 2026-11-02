@@ -94,7 +94,7 @@ fn fail(msg: &str) -> ! {
 /// only touches the stack pointer and the RISC-V ABI delivers a0/a1 as the
 /// first two C arguments.
 #[unsafe(no_mangle)]
-extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
+extern "C" fn rust_main(boot_hart: u64, dtb_phys: u64) -> ! {
     early_console::write_str("### test_smp_topo (riscv64): discovering topology (DTB via a1)...\n");
 
     // 1. Device-tree blob physical address handed over by OpenSBI in a1.
@@ -133,8 +133,19 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         }
     }
 
-    // 5. Contract assertion: boot hart ID belongs to the discovered set
-    //    (OpenSBI's a0 hart must be one of the DTB cpu nodes).
+    // 5. Contract assertion: OpenSBI's a0 boot hart belongs to the
+    //    discovered set (the DTB cpu nodes must include the executing hart).
+    let mut boot_hart_found = false;
+    for i in 0..topo.nr_cpus as usize {
+        if topo.cpus[i].hw_id == boot_hart {
+            boot_hart_found = true;
+        }
+    }
+    if !boot_hart_found {
+        fail("OpenSBI a0 boot hart not among discovered CPUs");
+    }
+
+    // 5b. The firmware's first-record hint must also be a discovered ID.
     let mut bsp_found = false;
     for i in 0..topo.nr_cpus as usize {
         if topo.cpus[i].hw_id == topo.bsp_id as u64 {
@@ -152,7 +163,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         early_console::write_hex(i as u64);
         early_console::write_str("] hw_id = ");
         early_console::write_hex(topo.cpus[i].hw_id);
-        if topo.cpus[i].hw_id == topo.bsp_id as u64 {
+        if topo.cpus[i].hw_id == boot_hart {
             early_console::write_str(" (BSP)");
         }
         early_console::write_str("\n");

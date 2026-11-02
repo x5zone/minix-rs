@@ -173,7 +173,12 @@ pub const MAX_CPUS: usize = 64;
 pub struct CpuTopology {
     /// Total CPU/hart count.
     pub nr_cpus: u32,
-    /// Hardware ID of the BSP (boot CPU).
+    /// Firmware's BSP hint: the hardware ID of the first enabled CPU record.
+    ///
+    /// ACPI does not require the boot CPU to be listed first, and the DTB
+    /// CPU-node order is firmware-defined. The kernel resolves the actual
+    /// boot CPU from the arch election/CPUID and treats this value as a
+    /// fallback hint, not as truth.
     pub bsp_id: u32,
     /// Per-CPU info. Only `cpus[0..nr_cpus]` is valid.
     pub cpus: [CpuInfo; MAX_CPUS],
@@ -326,7 +331,7 @@ pub trait InterruptControllerDesc: Send + Sync + fmt::Debug + Any {
 ///
 /// # Implementors (all in `minix-platform/src/arch/`)
 ///
-/// - `PitDesc` (x86-64): 8254 PIT + LAPIC Timer
+/// - `PitDesc` (x86-64): 8254 PIT timer
 /// - `ArmGenericTimerDesc` (ARM64): ARM Generic Timer
 /// - `ClintDesc` (RISC-V): CLINT mtime
 pub trait TimerDesc: Send + Sync + fmt::Debug + Any {

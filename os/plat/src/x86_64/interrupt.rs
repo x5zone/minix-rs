@@ -198,8 +198,6 @@ const LAPIC_SVR_ENABLE: u32 = 1 << 8;
 /// IOAPIC register offsets from the IOAPIC base.
 const IOAPIC_REG_IOREGSEL: usize = 0x00;
 const IOAPIC_REG_IOWIN: usize = 0x10;
-/// IOAPIC indirect register indices.
-const IOAPIC_REG_VER: u32 = 0x01;
 /// First redirection entry (low half).
 const IOAPIC_REG_REDTBL_BASE: u32 = 0x10;
 /// IOAPIC redirection-entry count on the QEMU pc machine (and the classic
@@ -299,9 +297,16 @@ impl X86_64InterruptController {
     unsafe fn init_lapic(&mut self) { unsafe {
         let apic_base = wrmsr_msr_read(MSR_IA32_APIC_BASE);
         let apic_phys = apic_base & IA32_APIC_BASE_ADDR_MASK;
-        if apic_phys as usize != self.lapic_base {
-            self.lapic_base = apic_phys as usize;
-        }
+        // The descriptor's LAPIC base is the contract; the device window
+        // only maps that one page. Refuse a relocated LAPIC instead of
+        // programming a window that no longer decodes to it.
+        assert_eq!(
+            apic_phys as usize, self.lapic_base,
+            "X86_64InterruptController::init_lapic: IA32_APIC_BASE {:#x} \
+             != descriptor LAPIC base {:#x} (relocated LAPIC unsupported; \
+             the device window maps exactly one page)",
+            apic_phys, self.lapic_base
+        );
         wrmsr_msr_write(MSR_IA32_APIC_BASE, apic_base | IA32_APIC_BASE_EN);
         lapic_write(self.lapic_base, LAPIC_REG_SVR, LAPIC_SPURIOUS_VECTOR as u32 | LAPIC_SVR_ENABLE);
         // Mask every LVT entry (C apic.c init parity: all LVTs masked until
@@ -412,19 +417,7 @@ impl X86_64InterruptController {
             lapic_write(lapic_base, lvt, LAPIC_LVT_MASK);
         }
     }}
-
-    /// Read IOAPIC version register.
-    ///
-    /// # Safety
-    ///
-    /// `self.ioapic_base` must be a valid IOAPIC MMIO address (verified
-    /// during controller init) and the caller must hold BKL / have
-    /// interrupts disabled.
-    pub unsafe fn ioapic_version(&self) -> u32 { unsafe {
-        ioapic_read_indirect(self.ioapic_base, IOAPIC_REG_VER)
-    }}
 }
-
 unsafe fn wrmsr_msr_read(msr: u32) -> u64 { unsafe {
     let low: u32;
     let high: u32;
@@ -480,7 +473,12 @@ impl InterruptRouter for X86_64InterruptController {
 
 
     fn mask_all(&mut self) {
-        for irq in 0..self.nr_irq_vectors as u8 {
+        // ISA IRQ lines 0..16 are the only lines the kernel addresses by
+        // IRQ number; `init_ioapic` already masked every physical pin
+        // (including the 8 PCI-level pins) through `IOAPIC_NUM_PINS`.
+        // Iterating `nr_irq_vectors` (64) here would write redirection
+        // entries beyond a 24-pin IOAPIC.
+        for irq in 0..(self.nr_irq_vectors.min(16) as u8) {
             self.mask(IrqVector::new(irq));
         }
     }

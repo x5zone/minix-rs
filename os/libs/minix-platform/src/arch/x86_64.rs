@@ -20,9 +20,13 @@ use minix_boot::{
 pub struct ApicDesc {
     /// LAPIC MMIO base address (default `0xFEE0_0000`).
     pub lapic_base: usize,
-    /// IOAPIC MMIO base address (default `0xFEC0_0000`).
+    /// First IOAPIC MMIO base address (default `0xFEC0_0000`).
+    ///
+    /// The descriptor represents a single IOAPIC; multi-IOAPIC servers are
+    /// not supported yet (the driver has no GSI-range map for additional
+    /// controllers). The MADT walk keeps the first IOAPIC record.
     pub ioapic_base: usize,
-    /// Number of IRQ sources supported.
+    /// Number of IRQ vectors supported (IDT capacity, not IOAPIC pins).
     pub nr_irqs: u32,
 }
 
@@ -35,13 +39,11 @@ impl InterruptControllerDesc for ApicDesc {
     }
 }
 
-/// x86-64 8254 PIT + LAPIC Timer descriptor.
+/// x86-64 8254 PIT timer descriptor.
 #[derive(Debug, Clone, Copy)]
 pub struct PitDesc {
     /// 8254 PIT base frequency (Hz) — fixed hardware constant 1_193_182.
     pub pit_base_freq: u32,
-    /// LAPIC MMIO base (for LAPIC Timer setup after APIC init).
-    pub lapic_base: usize,
 }
 
 impl TimerDesc for PitDesc {
@@ -95,7 +97,6 @@ impl QemuVirtDesc {
             },
             timer: PitDesc {
                 pit_base_freq: 1_193_182,
-                lapic_base: 0xFEE0_0000,
             },
             console: IsaSerialDesc { port_base: 0x3F8 },
             cpu_topology: CpuTopology {
@@ -188,7 +189,6 @@ mod tests {
         let any = timer.as_any();
         let pit = any.downcast_ref::<PitDesc>().expect("expected PitDesc");
         assert_eq!(pit.pit_base_freq, 1_193_182);
-        assert_eq!(pit.lapic_base, 0xFEE0_0000);
     }
 }
 

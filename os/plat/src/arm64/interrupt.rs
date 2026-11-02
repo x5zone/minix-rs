@@ -248,8 +248,8 @@ impl InterruptRouter for AArch64InterruptController {
         );
         // Route to the kernel higher-half (TTBR1) MMIO alias. The
         // descriptor's `gicd_base`/`gicr_base` are physical addresses; this
-        // controller is constructed only after `enable()`
-        // (bsp_finish_booting), when the higher-half window is already
+        // controller is constructed only after `enable()`, before the first
+        // `switch_address_space`, when the higher-half window is already
         // installed in the bootstrap root's TTBR1, so the mask/unmask/init
         // MMIO accesses persist across root switches. Keeping the physical
         // addresses would raise a synchronous exception after the first
