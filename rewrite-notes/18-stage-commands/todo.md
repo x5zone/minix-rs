@@ -119,6 +119,41 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百七十九（`touch -r` 接上：C 的 `stime_file()` 就是一次 `stat` 加两个时间戳，本壳却记成「缺基础设施」）
+
+- **登记语的错**：`os/commands/bin/fileops/src/bin/touch.rs` 的头注把 `-d`、`-r`、`-h` 与两枚
+  长选项一并写成「需要本树没有的基础设施」，其中 `-r` 不成立——C 的
+  `stime_file()`（`minix3/usr.bin/touch/touch.c:318-327`）只做 `stat(fname, &sb)` 再把
+  `st_atimespec`/`st_mtimespec` 交回，而 `stat` 正是本壳给每个操作数用的那一个调用。本轮接这一条
+  并把头注按实况改写；`-d`（自由格式日期，C `parsedate`）、`-h`（`lutimens`）、`--date`/`--reference`
+  长选项照旧维持「报告并退 1」。
+- **与 C 对齐的三处形状**：① 参照档在**选项环里**就 `stat`（`case 'r'` 紧跟
+  `timeset = 1; stime_file(optarg, ts)`），所以「参照档开不了」排在任何操作数被创建之前，
+  报文走 `err(1, "%s", fname)` 的三段形（本壳用共件 `support::warn_line(prog, name, code)` +
+  退 1，`prog` 取自 `argv[0]`）；② 值可附着可后随（`-rfile` 与 `-r file` 同效，照 `-t` 那一支的
+  取法）；③ **后写者胜**：C 的 `-t` 与 `-r` 都写同一枚 `ts[2]`，所以
+  `touch -t … -r ref x` 用参照时间、`touch -r ref -t … x` 用解析时间。
+- **判据分层**：后写者胜这条是纯函数 `minix_fileops::touch::chosen_times`（新立），库内测
+  `the_last_time_stating_flag_owns_both_fields` 钉六形（无旗标、只 `-t`、只 `-r`、
+  `-r` 后 `-t`、`-t` 后 `-r`、以及「声称 `-r` 后写却无参照值」这一不该出现的形退回当下时间
+  而不 panic）。**为什么没有面门**：本 crate 的文件腿在宿主全是替身——实测
+  `touch -r ref target` 在宿主交回 `touch: ref: Input/output error`（`minix_sys::stat` 的宿主形），
+  与 C 的 `No such file or directory` 只差在号，句子形状对、号来自替身；时间的写入同理只能在可写
+  根盘上验，这与该壳头注既有的「写类命令整体挂 `E5`」是同一条边界，不是本轮新造的推迟。
+- **门读数**：`cargo test -p minix-fileops` → **41 段 / 456 / 0**；三架构
+  `cargo check --target … -p minix-fileops --bins` 各退 0、错误 0；
+  `rustfmt --edition 2024 --check` 对 `src/touch.rs` 基线 3 处、改后 2 处，且 `git diff` 里
+  **没有任何一行是别人代码的改动**（纯增量），`bin/touch.rs` 基线 1 处、改后 1 处；
+  `bash tools/doc-style-lint.sh --diff` error 级 0；在制自检干净。
+- **三件套**：核实命令 `cargo test -p minix-fileops --lib the_last_time`（1 通过）、
+  `cargo test -p minix-fileops`（`tmp/touch-479/pkg.log`）、三架构
+  （`tmp/touch-479/arch-*.log`）；宿主替身那条形来自
+  `tmp/touch-479/target/debug/touch -r ref target` 的现跑读数。核实日 `2026-11-02`，
+  基线快照 `bb97a2409`。
+
+---
+
+
 ## 批次四百七十八（`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE` 闭合，且登记语要改正：C 的 `join` 根本不查输入侧读错）
 
 - **这条登记原本记错了方向**。批次四百六十三把它记成「标准输入那条腿绕开了双生面」，

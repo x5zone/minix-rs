@@ -4589,3 +4589,21 @@ docker 以 root 建、写不进去，重建为用户属主后过）、三架构�
 三形同答）；负控用改前真码——退回基线提交后该门红在「标准输入作第一个操作数」（空 vs
 `b 2 20`/`c 3 30`），换回补丁 join_face 33/0。整包 69 段 **1295/0**、容器权威门同读数退 0、
 三架构各退 0、clippy 同集合、rustfmt 两件零新增、文风 `--diff` 零 error。
+
+### 第二百一十八笔（A 板 · `TOUCH-R-REFERENCE`：`touch -r` 接上，登记语「缺基础设施」被本文件自己的 `stat` 用法否证）
+
+C 的 `stime_file()`（`minix3/usr.bin/touch/touch.c:318-327`）只做一次 `stat` 再交出
+`st_atimespec`/`st_mtimespec`；本壳头注把 `-r` 与 `-d`/`-h`/长选项一并记成「需要本树没有的基础设施」，
+而 `stat` 恰是它给每个操作数用的调用 ⇒ 本轮接上这一条并改写头注。三处对齐 C：参照档在选项环里就
+`stat`（失手排在任何操作数被创建之前，走 `err(1, "%s", fname)` 三段形 + 退 1，程序名取 `argv[0]`）、
+值可附着可后随、**后写者胜**（`-t` 与 `-r` 写同一枚 `ts[2]`，故 `-t … -r ref x` 用参照时间、
+`-r ref -t … x` 用解析时间）。
+
+后写者胜负抽成纯函数 `minix_fileops::touch::chosen_times`，库内测钉六形（含「声称 `-r` 后写却无参照值」
+退回当下时间而不 panic）。**没有面门**是实测出来的边界：本 crate 的文件腿在宿主全是替身
+（`touch -r ref target` 交回 `touch: ref: Input/output error`——句子形状对、号来自替身），时间写入要可写根盘，
+与该壳头注既有的「写类命令整体挂 `E5`」同一条线，不是本轮新造的推迟。
+
+门：`cargo test -p minix-fileops` → 41 段 **456/0**；三架构 `--bins` 各退 0；`rustfmt` 对
+`src/touch.rs` 基线 3 处、改后 2 处且 `git diff` 零他人行（纯增量，rustfmt 顺手改的 3 行别人注释已还原）；
+文风 `--diff` 零 error；在制自检干净。
