@@ -119,6 +119,41 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百八十六（`sed` 的一行没写完就是没写完：未转义换行有自己的那一句）
+
+- **这一笔的射程**：图案或替换里出现**未转义**的换行。C 每次只交给编译器一行脚本
+  （`cu_fgets` 交回带行尾换行的缓冲区，`main.c:303-315`），所以字段还在读就撞上换行，说明这条命令
+  没在自己那一行闭合，报 `unescaped newline inside substitute pattern`
+  （`minix3/usr.bin/sed/compile.c:542-544`）。本壳把整份脚本当一条连续文本扫，字段会一路读过换行去
+  找定界符，于是 `s/a<换行>b/x` 这种脚本要么被当成一条图案里带换行的命令收下，要么报成
+  `unterminated substitute pattern`。
+- **优先次序也是内容**。同一个现场 C 先撞上换行再谈别的，所以这一句**盖过**
+  `unterminated substitute pattern`：`s/a/b<换行>c/` 里闭合的 `/` 出现在下一行，C 读到换行就报了，
+  不会等到读完缓冲区才报"没闭合"。门里两形各钉一处（图案里的换行、替换里的换行）。
+- **落码**：`parse_subst` 的定界扫描里，跳过转义对之后、认定界符之前，认一下裸换行；新增
+  `SubstError::UnescapedNewline` 一臂，壳侧的句子按 C 原文渲染
+  （`sed: <脚本行>: "<整份脚本>": unescaped newline inside substitute pattern`，名槽里的换行原样打出来，
+  与 C 把 `fname` 指向整份脚本串一致）。
+- **门**：库内 `test_subst_error_arms` 扩到九形——两形报换行、`s/a/b`（文本读完）仍报未闭合、
+  两条各自闭合的命令跨行仍读成两条、反斜杠续行的那一形仍收下；面门
+  `os/commands/usr-bin/regex/tests/sed_face.rs` 由 26 枚扩到 27 枚，新那枚逐字节比对两句报文并带上
+  「跨行的正常命令不受影响」这一正形。差分腿注：宿主自带 sed 对这两形报的是它自己的
+  `unterminated 's' command`（同退 1、同不动输出，句子不同），判据仍取 C 源。
+- **读数**：宿主整包 6 段 **96 / 0**，容器权威门同读数退 0（`tmp/sed-newline/container.log`，
+  取证目录这次一开始就以本用户建出来，避开了上一笔那道假红），三架构 `--bins` 各退 0
+  （`tmp/sed-newline/arch-*.log`）；`rustfmt --edition 2024 --check` 三件零漂移。负控两枚各咬红 3：
+  N1 拿掉换行检查、N2 把同一现场改报成「未闭合」（只换句子不换条件，专门钉优先次序），还原复跑 96/0
+  （`python3 tmp/sed-newline/negctl.py`）。
+- **闭合与新登记**：`SED-NEWLINE-IN-SUBST` 随本笔闭合。本笔新立一条**登记不执行**：
+  `SED-ESCAPED-NEWLINE-CONTINUATION`——反斜杠紧跟换行时，C 丢掉这个换行、把下一段文本接在同一字段里
+  继续读（`compile.c:507-519` 的 `sawesc` 路径配 `more` 重入），本壳把 `\` 与换行两个字节一起留在字段
+  文本里；两边都认这是「命令跨过行尾继续」，差在字段里是否带着那个换行。
+- **三件套**：`python3 tmp/sed-newline/negctl.py`、`cargo test -p minix-regex`
+  （`tmp/sed-newline/pkg.log`、`container.log`）、`cat tmp/sed-newline/arch-*.log`；
+  核实日 `2026-11-02`，基线快照 `a4136d62e`。
+
+---
+
 ## 批次四百八十五（`sed` 的回填越界交回 C 的两处检查，顺带把「复用哪一支」搬回执行期）
 
 - **这一笔的射程**：替换串里 `\N` 要得比表达式能给的更多时，C 说 `\N not defined in the RE`。

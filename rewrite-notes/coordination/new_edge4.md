@@ -4792,3 +4792,28 @@ C 打 `RE error: <strerror>`（`compile.c:467`）需要正则库的 regerror 文
 换行报 `unescaped newline inside substitute pattern`，`compile.c:542-544`；本壳把换行当普通文本读进
 图案或替换）。仍在册：`RE error: <strerror>`（`compile.c:467`，需正则库 regerror 文本）、
 `SED-SCRIPT-CAP-16`、`OPEN-WARN-SHAPE`、`SED-READ-FAIL-FATAL`、`BRE-PAREN-LITERAL`。
+
+### 第二百二十五笔（A 板 · `SED-NEWLINE-IN-SUBST`：一行没写完就是没写完——未转义换行有它自己那一句）
+
+C 每次只交给编译器一行脚本（`cu_fgets` 交回带行尾换行的缓冲区，`main.c:303-315`），所以字段还在读
+就撞上换行，说明这条命令没在自己那一行闭合，报 `unescaped newline inside substitute pattern`
+（`compile.c:542-544`）。本壳把整份脚本当一条连续文本扫，字段会一路读过换行去找定界符：
+`s/a<换行>b/x` 要么被当成一条图案里带换行的命令收下，要么报成 `unterminated substitute pattern`。
+
+**优先次序是这一笔的内容**：同一个现场 C 先撞上换行再谈别的，故这句**盖过**
+`unterminated substitute pattern`——`s/a/b<换行>c/` 里闭合的 `/` 出现在下一行，C 读到换行就报了，
+不会等读完缓冲区。落码只是 `parse_subst` 定界扫描里加一问（跳过转义对之后、认定界符之前），
+新臂 `SubstError::UnescapedNewline` 配上 C 的原句；名槽里的换行原样打出，与 C 把 `fname` 指向整份
+脚本串一致。
+
+门：库内 `test_subst_error_arms` 扩到九形（两形报换行、文本读完的仍报未闭合、跨行的两条正常命令仍读成
+两条、反斜杠续行那一形仍收下），面门 26 → 27 枚逐字节比对两句报文并带一枚正形对照。差分腿注明：
+宿主自带 sed 对这两形报自己的 `unterminated 's' command`（同退 1、同不动输出，句子不同），判据取 C 源。
+
+读数：宿主整包 6 段 **96/0**、容器权威门同读数退 0、三架构各退 0、rustfmt 三件零漂移；负控两枚各咬红 3
+（拿掉检查 / 只换句子不换条件——后者专钉优先次序），还原复跑 96/0。上一笔容器门那道假红本轮一开始就把
+取证目录以本用户建出来，绕开了。
+
+**闭合** `SED-NEWLINE-IN-SUBST`；**新登记不执行** `SED-ESCAPED-NEWLINE-CONTINUATION`：反斜杠紧跟换行时
+C 丢掉那个换行、把下一段文本接进同一字段继续读（`compile.c:507-519` 的 `sawesc` 配 `more` 重入），
+本壳把 `\` 与换行两字节一起留在字段文本里——两边都认"命令跨过行尾继续"，差在字段是否带着那个换行。
