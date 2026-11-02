@@ -27,9 +27,23 @@ fn main() {
     real_main()
 }
 
+// Parked placeholder: the busy wait is intentional (the process must not
+// exit, or the server manager would keep restarting it).
+#[allow(clippy::empty_loop)]
 fn real_main() {
-    // Not yet implemented: run as a real service process (event loop + RS
-    // startup protocol).
+    // Placeholder driver: report the unimplemented state on the kernel
+    // diagnostic channel instead of spinning silently, then park forever.
+    // No hardware probe runs here and no capability is reported to the
+    // server registry or the device discovery layer.
+    #[cfg(target_os = "none")]
+    {
+        use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+        #[allow(clippy::let_underscore_must_use)] // [SD19-gate] when the report channel itself breaks, parking is the fallback (panic.c:66)
+        let _ = sys_diagctl_write(
+            &DirectKernelCallTransport,
+            "drv: atl2 placeholder (not implemented); parking\n",
+        );
+    }
     minix_driver_atl2::init();
     loop {}
 }
