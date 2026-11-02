@@ -242,27 +242,70 @@ fn a_malformed_interval_is_refused_and_a_brace_that_starts_none_is_text() {
     let name = text(&path);
     let (out, status, err) = run(&["-E", "a{2,1}b", &name], b"");
     assert_eq!(
-        String::from_utf8_lossy(&out),
+        out,
+        Vec::<u8>::new(),
+        "a diagnostic must not ride on stdout"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&err),
         "grep: bad pattern or option\n",
-        "stderr was {:?}",
-        String::from_utf8_lossy(&err)
+        "C's grep puts this line on standard error through `errx` (`grep.c:484`)"
     );
     assert_eq!(status, 2, "a refused pattern must not exit 0");
-    // The line is pinned where this shell writes it today: C's grep sends every
-    // diagnostic through `errx`/`fprintf(stderr, ...)` (`grep.c:114`, `:484`), so
-    // the stream is a separate registered gap (`GREP-DIAGNOSTIC-STREAM`), not
-    // part of what an interval means.
     let (out, status, _) = run(&["-E", "a{x}", &name], b"");
     assert_eq!(out, b"a{x}\n".to_vec(), "a non-digit brace stays text");
     assert_eq!(status, 0);
     // A group interval needs a copy of the subexpression's code with the same
     // capture slots, which this compiler does not have; it refuses rather than
     // quietly matching `ab{2}`.
-    let (out, status, _) = run(&["-E", "(ab){2}", &name], b"");
+    let (out, status, err) = run(&["-E", "(ab){2}", &name], b"");
     assert_eq!(
-        String::from_utf8_lossy(&out),
+        out,
+        Vec::<u8>::new(),
+        "the unsupported shape adds no output"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&err),
         "grep: bad pattern or option\n",
-        "the unsupported shape must not silently mis-match"
+        "refusing out loud is the point; silently matching `ab{{2}}` would not be"
     );
     assert_eq!(status, 2);
+}
+
+#[test]
+fn every_diagnostic_reaches_standard_error_and_leaves_standard_output_clean() {
+    // C's grep has no diagnostic that prints to standard output: `usage()` is
+    // `fprintf(stderr, ...)` (`grep.c:111-118`), the pattern failure is
+    // `errx(2, "%s", re_error)` (`:484`), and an unreadable operand goes through
+    // `warn` (`util.c:111`) — `errx`/`warn` both prefix `<program name>: ` on
+    // standard error (`verrx.c:57`, `vwarnc.c:3`). A selected match is the only
+    // thing that may reach standard output, which is why these runs must leave it
+    // empty: a diagnostic mixed into the data stream is indistinguishable from a
+    // matching line for the next pipe stage.
+    let path = written("streams", b"abc\n");
+    let name = text(&path);
+    let cases = [
+        (
+            vec!["-i", "a", &name],
+            "grep: -i waits for engine case-folding (see 08 sec 4.4)\n",
+        ),
+        (
+            vec!["-E", "a{2,1}b", &name],
+            "grep: bad pattern or option\n",
+        ),
+        (vec!["-Z", "a", &name], "grep: bad pattern or option\n"),
+    ];
+    for (args, expected) in cases {
+        let (out, status, err) = run(&args, b"");
+        assert_eq!(out, Vec::<u8>::new(), "{args:?} wrote to standard output");
+        assert_eq!(
+            String::from_utf8_lossy(&err),
+            expected,
+            "{args:?} stderr differed"
+        );
+        assert_eq!(status, 2, "{args:?} exit status");
+    }
+    // The three-segment operand warning shares the same rule, tested above.
+    let (out, _, _) = run(&["a", "/no-such-operand-here"], b"");
+    assert_eq!(out, Vec::<u8>::new());
 }

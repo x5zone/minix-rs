@@ -682,3 +682,39 @@ fn a_basic_interval_in_a_substitution_repeats_the_atom() {
     assert_eq!(out, b"#\na\n".to_vec(), "`.` repeats the same way");
     assert_eq!(status, 0);
 }
+
+#[test]
+fn the_usage_and_option_refusals_reach_standard_error() {
+    use std::os::unix::process::CommandExt;
+
+    // C's `usage()` prints through `fprintf(stderr, ...)` (`main.c:223-226`) and
+    // an option its `getopt` does not know is reported by libc on standard error
+    // too, so neither line may appear on the output stream. The name in the usage
+    // line is `getprogname()`'s value, so it moves with `argv[0]` like every other
+    // diagnostic here. The text lists only what this build carries (`-n`), unlike
+    // C's two-line form that advertises `-aElnru`/`-e`/`-f`/`-i`.
+    let mut child = std::process::Command::new(SED)
+        .arg0("sd")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the sed binary should be runnable");
+    child.stdin.take();
+    let output = child.wait_with_output().expect("the run should finish");
+    assert_eq!(output.stdout, Vec::<u8>::new());
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "usage: sd [-n] script [file ...]\n"
+    );
+
+    let (out, status, err) = run(&["-x", "s/a/b/"], b"abc\n");
+    assert_eq!(out, Vec::<u8>::new(), "stdout was {out:?}");
+    assert_eq!(status, 1);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "sed: unsupported option\n",
+        "an option this build does not carry is refused on standard error"
+    );
+}

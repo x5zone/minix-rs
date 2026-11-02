@@ -86,11 +86,11 @@ fn run() -> ! {
     let (quiet, script, files) = match parse_sed_args(&words[1..]) {
         Ok(parsed) => parsed,
         Err(SedArgError::UnsupportedOption) => {
-            support::emit(format!("{prog}: unsupported option\n").as_bytes());
+            support::warn(format!("{prog}: unsupported option\n").as_bytes());
             support::terminate(1);
         }
         Err(SedArgError::MissingScript) => {
-            support::emit(b"usage: sed [-n] script [file ...]\n");
+            support::warn(format!("usage: {prog} [-n] script [file ...]\n").as_bytes());
             support::terminate(1);
         }
     };

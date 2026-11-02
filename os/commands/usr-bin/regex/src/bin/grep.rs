@@ -56,12 +56,16 @@ fn run() -> ! {
     let (options, pattern_words, pattern_count, operands) = match parse_grep_args(&words[1..]) {
         Ok(parsed) => parsed,
         Err(_) => {
-            support::emit(format!("{prog}: bad pattern or option\n").as_bytes());
+            // C sends every diagnostic this way: `usage()` is
+            // `fprintf(stderr, ...)` (`grep.c:111-118`) and the pattern failure is
+            // `errx(2, "%s", re_error)` (`grep.c:484`), whose `errx` prefix also goes to
+            // standard error (`verrx.c:57`).
+            support::warn(format!("{prog}: bad pattern or option\n").as_bytes());
             support::terminate(2);
         }
     };
     if options.ignore_case {
-        support::emit(
+        support::warn(
             format!("{prog}: -i waits for engine case-folding (see 08 sec 4.4)\n").as_bytes(),
         );
         support::terminate(2);
@@ -79,7 +83,7 @@ fn run() -> ! {
         match pattern {
             Ok(pattern) => patterns.push(pattern),
             Err(_) => {
-                support::emit(format!("{prog}: bad pattern or option\n").as_bytes());
+                support::warn(format!("{prog}: bad pattern or option\n").as_bytes());
                 support::terminate(2);
             }
         }
