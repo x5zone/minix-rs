@@ -4945,3 +4945,46 @@ stderr 原文 + stdout 零字节 + 退 2；`the_usage_and_option_refusals_reach_
 **闭合** `GREP-DIAGNOSTIC-STREAM`；`SED-USAGE-STREAM-AND-TEXT` 按实际拆两半——通道那半随本笔闭，
 文本那半转为设计取舍（不再列作待修）。仍在册的旧账：`bad pattern`/`bad s command` 是自造句，C 在那
 两处打正则库的 `re_error` 文本（`grep.c:484`、`compile.c:467`），接它先得有 regerror 那套文本。
+
+### 第二百三十笔（A 板 · `SED-READ-FAIL-FATAL`：读失败按发生的时机分两形，代价一路从 warn 到退场）
+
+本轮照 C→B→A 的顺序先勘两板：C 板（内核）`01-stage-kernel/01-todo.md` 已无开放标记，`D-59`/`D-60`
+的代码与文档两处措辞分别落在 `006f4f556` 与 `2026-10-29` 的 01TODO-B1，coordination 总账里仍 `open`
+的两行——中断臂（`riscv64` 软/外中断、`aarch64` 生成中断、用户同步异常到信号的执行腿）要真机窗与
+S-8，文档重生成的文件名引用那行归文档线——都不是单轮可闭；B 板（库与驱动框架）任务表里 `☐` 行为零。
+遂回 A 板命令面领 `SED-READ-FAIL-FATAL`。
+
+C 在 `mf_fgets` 里给两件事定了两种代价：`fopen` 失败是 `warn` + `rval = 1` + `continue`
+（`main.c:449-452`），已经打开之后的 `getline` 失败是 `err(1, "%s", fname)`（`:463-465`）——印完就退，
+后面的操作数一个也不再打开；标准输入走同一条读环，名字位由 C 设成 `stdin`（`:348`）。本壳的输入缝只
+有一形（`read_file` 交 `Result<Vec<u8>, Errno>`：打开失败交 `Err`、读失败吞掉当读到尽头），于是本该
+终结进程的那一句被降级成警告。现场 `sed 's/a/A/' <目录> <正常文件>`：本壳跨过目录、印出第二个操作数
+的 `Abc`、退 1；C 印 `sed: <目录>: Is a directory` 就停。
+
+落码：`bin_support.rs` 的 `Operand` 三形（`Data`/`OpenFailed`/`ReadFailed`）+ `read_stdin` 交回
+`(bytes, Option<Errno>)` + 新增 `err_name`——它与 `warn_name` 共用同一个三段格式器再退 1，因为 C 的
+`err` 走的正是 `verr` → `verrc` → `vwarnc`（`minix3/lib/libc/gen/verr.c`），末尾多一个 `exit(eval)`。
+`sed` 两腿按 C 各自决定停不停，读失败前已到的字节先走完周期再报（C 的行循环在那之前逐行跑过）。
+**`grep` 一臂不动**：`grep_fgetln` 对读失败与读到尽头一律给 `NULL`，`procfile` 只跳出本次扫描
+（`minix3/minix/usr.bin/grep/util.c:132`）——两支壳共用一对腿而代价不同，这件事从今写在缝上。
+
+门：`sed_face.rs` 新立 `a_failed_read_stops_the_run_rather_than_warning_and_going_on`（stdout 零字节、
+stderr 逐字节三段、退 1，钉"后面的操作数不许被打开"）与 `a_failed_standard_input_read_names_stdin`
+（名字位必须是 `stdin`）；`grep_face.rs` 新立 `a_failed_read_ends_the_scan_without_a_complaint` 守另一
+臂，免得日后有人把 `sed` 的致命性顺手搬过去。读数：`minix-regex` **116/0**（基线 113/0，+3 枚）、
+依赖件 44 段 **522/0**、容器权威门 50 段 **638/0** 退 0、三架构 `--bins` 各 0 错（新添的 `read_stream`
+只有这条门真编译）、rustfmt 五件 0 漂移、clippy 与 HEAD 基线同三条零新增。负控 N1/N2 各咬一枚，还原
+后 `sed_face` + `grep_face` 46/0。差分腿：宿主 GNU `sed` 在同一形上也**停**（退 4、句子是它自己的
+`read error on <名字>: …`，第二个操作数同样不印），stdin 也报 `stdin`——停不停两家一致，退 1 与
+三段形按 Minix C。
+
+**自错**：三架构门第一次用了 `x86_64-unknown-none-elf`/`aarch64-unknown-none-elf` 两个不存在的三元组，
+`rustc` 报 "could not find specification for target"，而命令尾接了 `head`，管道退出码仍是 0——一次
+**假绿**，靠本文台账里的现算配方改回 `…-none` / `riscv64gc-unknown-none-elf` 才算真跑；三架构腿的判定
+要看 `^error` 计数，不能看管道尾的 `$?`。另：目录载体第一次用 `create_dir(...).expect(...)`，同测试
+二跑必炸，改 `create_dir_all`。
+
+**闭合** `SED-READ-FAIL-FATAL`。核实所得：`grep` 的读失败臂按 C 就是"读到尽头"，不是缺口，本笔起它有
+了自己的面门。新登记 `SED-READFAIL-PARTIAL-CARRIER`（P2，测试载体而非代码缺陷）：宿主造不出"先有字节、
+后失败"的载体（目录第一次读即 `EISDIR`），"失败前的行仍先印出来"这一半只有实现与注释承载，端到端门只
+钉住"停"。08 篇的 `sed` 行改正读中断的口径并补上两臂分工。
