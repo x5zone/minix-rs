@@ -52,7 +52,7 @@ use core::slice;
 
 use minix_types::{PhysBytes, VirBytes};
 use minix_boot::{
-    BootPrepareResult, BootShim, DTB, DtbMemoryMap, KernelInfo, MemoryMapSource as _,
+    BootPrepareResult, BootShim, DTB, DtbMemoryMap, KernelInfo,
     MemoryRegion, PlatformDescSource,
 };
 

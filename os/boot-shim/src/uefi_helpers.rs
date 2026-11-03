@@ -9,6 +9,7 @@
 //! - Provide a `FileLoader` impl backed by `SimpleFileSystem`.
 //! - Wire the firmware-specific pieces into the shared loader.
 
+use crate::ebs_map;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use uefi::boot::{self, AllocateType};
@@ -82,8 +83,11 @@ unsafe impl core::alloc::GlobalAlloc for UefiPoolAllocator {
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {
-        // Pool pages are reclaimed wholesale by the firmware at
-        // ExitBootServices; boot-stage code never frees individually.
+        // Nothing is returned to the firmware: once boot services are gone the
+        // pages belong to the operating system, and firmware has no pool to hand
+        // them back to. Blocks freed here are therefore reclaimed only when the
+        // whole image is replaced, which is why boot-stage code must not lean on
+        // this to keep the pool small.
     }
 }
 
@@ -244,7 +248,7 @@ impl BootShim for UefiBootShim {
         // One snapshot, two lists — conventional (free) plus the
         // non-conventional remainder that hosts everything the kernel
         // executes and touches through low addresses at runtime.
-        let (memmap, reserved_regions) = UefiMemoryMap.collect();
+        let (memmap, reserved_regions) = build_memmaps();
         uefi::println!("boot-shim: memmap ok (final pre-EBS snapshot)");
         // Wire the bootstrap-outside-memmap defense (it existed as
         // an uncalled helper). The two LOADER_DATA allocations above must
@@ -271,8 +275,7 @@ impl BootShim for UefiBootShim {
                 let fdt = fdt::Fdt::new(&blob)
                     .unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
                 let (dtb_free, _) =
-                    <minix_boot::DtbMemoryMap as minix_boot::MemoryMapSource>::collect(
-                        &minix_boot::DtbMemoryMap::new(&fdt, 0),
+                    minix_boot::DtbMemoryMap::new(&fdt, 0).collect(
                     );
                 if let Err((base, len)) =
                     minix_boot::dtb_covers_conventional(dtb_free, memmap)
@@ -377,94 +380,141 @@ impl BootShim for UefiBootShim {
 /// Leaks the allocations so they have `'static` lifetime — acceptable
 /// for boot-stage code that runs exactly once.
 ///
+/// Snapshot the UEFI memory map and split it into the two tables the kernel is
+/// handed.
+///
+/// The partition rules are not here: this reads the same raw buffer the
+/// boot-services pairing loop reads and hands it to [`ebs_map`], so one map
+/// cannot be classified one way on the way into the kernel image and another way
+/// on the way into the handoff arena. The earlier copy of those rules in this
+/// function differed from the pairing loop in validation strictness and in the
+/// diagnostics it printed, which is exactly the drift a second implementation
+/// invites.
+///
+/// Membership of the two tables comes from each descriptor's type and access
+/// attributes, never from an address heuristic. The previous version also dropped
+/// every non-conventional descriptor starting above the highest conventional end,
+/// which was not a statement about RAM — firmware reports usable and unusable
+/// ranges interleaved, so the top of the free space says nothing about where a
+/// mapped range should stop — and it silently discarded ranges that no policy had
+/// excluded.
+///
+/// Classification allocates nothing: descriptors are parsed into [`MAP_STORAGE`]
+/// and the ranges land in the fixed tables below, whose capacity is proved before
+/// the first write. Ranges that policy keeps out of both tables are counted into
+/// the shim's own side list and reported here; they do not reach the kernel, which
+/// has no way to consume them yet.
+///
 /// # Ordering invariant (snapshot staleness)
 ///
-/// The two output slices are built from the same pool AFTER this snapshot,
-/// so the pages backing them are still reported as conventional/free in
-/// `regions`. The handoff is safe only because the kernel's first action in
-/// `arch_boot` is `store_kernel_info`, which deep-copies every slice into
-/// its own `.bss` BEFORE anything can allocate from the handed-over free
-/// list; after that copy these pages are genuinely dead (the shim never
-/// returns and never frees them). The map buffer itself is allocated
-/// BEFORE its `GetMemoryMap` call, so it is LOADER_DATA-classified in the
-/// snapshot and conservatively absent from the free list. Keep both
-/// orderings if this function is ever restructured.
-/// UEFI-leg `MemoryMapSource` implementation — delegates to [`build_memmaps`]
-/// (GetMemoryMap snapshot → conventional + reserved lists). The type lives in
-/// boot-shim (the `uefi` crate dependency must not point back into minix-boot,
-/// and the orphan rule makes this crate implement the foreign trait with a
-/// local type).
-use minix_boot::MemoryMapSource as _;
-
-pub struct UefiMemoryMap;
-
-impl minix_boot::MemoryMapSource for UefiMemoryMap {
-    fn collect(&self) -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
-        build_memmaps()
-    }
-}
+/// The storage the outputs are built from is reserved before the map is read, so
+/// classification cannot add a descriptor to the map it is classifying. Allocating
+/// while boot services are alive does not always change the memory map — the pool
+/// allocator only takes fresh pages from conventional memory when it grows a pool
+/// — but when it does, the change lands in ranges already classified. Reserving
+/// the storage up front removes the condition instead of relying on it not
+/// happening.
+///
+/// The kernel's first action in `arch_boot` is `store_kernel_info`, which
+/// deep-copies both tables into its own `.bss` before anything can allocate from
+/// the free list; the shim never returns and never frees, so those pages are dead
+/// to the firmware afterwards. Keep both orderings if this function is restructured.
+static mut UEFI_FREE: [MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS] =
+    [MemoryRegion { base: PhysBytes(0), len: 0 }; ebs_map::MAX_MAP_DESCRIPTORS];
+static mut UEFI_RESERVED: [MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS] =
+    [MemoryRegion { base: PhysBytes(0), len: 0 }; ebs_map::MAX_MAP_DESCRIPTORS];
+static mut UEFI_SIDE: [MemoryRegion; ebs_map::SIDE_CAP] =
+    [MemoryRegion { base: PhysBytes(0), len: 0 }; ebs_map::SIDE_CAP];
+static mut MAP_STORAGE: ebs_map::MapStorage = ebs_map::MapStorage::new();
 
 pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let mmap = boot::memory_map(MemoryType::LOADER_DATA)
         .expect("Failed to get UEFI memory map");
 
-    let mut regions: Vec<MemoryRegion> = Vec::new();
-    let mut reserved: Vec<MemoryRegion> = Vec::new();
-    // RAM ceiling from the conventional list — descriptors entirely above
-    // it (forensics: a 192 MiB `RESERVED` hole at 0xfd0000_0000,
-    // the QEMU i440fx high chipset hole) are not memory the kernel can
-    // ever run in or touch; identity-mapping device space at 4 KiB
-    // granularity is waste at best. Collected in pass 1, applied in
-    // pass 2 (GetMemoryMap descriptors are unsorted across types).
-    let mut ram_top = 0u64;
-    for desc in mmap.entries() {
-        if desc.ty == MemoryType::CONVENTIONAL {
-            let end = desc.phys_start + desc.page_count * 4096;
-            if end > ram_top {
-                ram_top = end;
-            }
-        }
+    let entries = mmap.len();
+    if entries == 0 {
+        uefi::println!("boot-shim: memmaps conv=0 reserved=0 unmapped=0 (empty map)");
+        return (&[], &[]);
     }
-    for desc in mmap.entries() {
-        if desc.ty == MemoryType::CONVENTIONAL {
-            regions.push(MemoryRegion {
-                base: PhysBytes(desc.phys_start),
-                len: desc.page_count as usize * 4096,
-            });
-        } else if desc.ty != MemoryType::MMIO && desc.ty != MemoryType::MMIO_PORT_SPACE {
-            if desc.phys_start >= ram_top {
-                continue;
-            }
-            // Forensic note (2026-09-21): the payload landed and
-            // the kernel's 512 MiB sanity cap fired — something in this
-            // list is enormous despite the MMIO exclusions. Dump every
-            // ≥ 4 MiB descriptor (there are only a handful) with its raw
-            // type so the next fix can exclude by fact, not guess.
-            if desc.page_count >= 1024 {
-                uefi::println!(
-                    "boot-shim: reserved-big ty={:?} base={:x} pages={:x}",
-                    desc.ty, desc.phys_start, desc.page_count
-                );
-            }
-            reserved.push(MemoryRegion {
-                base: PhysBytes(desc.phys_start),
-                len: desc.page_count as usize * 4096,
-            });
-        }
+    // The stride and the start of the descriptor array are read from the crate's
+    // own view of the map. Its raw buffer is sized by an allocation hint with
+    // slack past the descriptors firmware actually wrote, so the buffer's length
+    // is not a whole number of descriptors and cannot be divided down to a
+    // stride; the distance between two consecutive typed descriptors is the
+    // stride in use, and the crate only hands out descriptors of the layout it
+    // validated, so a padded later version cannot be mistaken for it.
+    let mut view = mmap.entries();
+    let first = view
+        .next()
+        .expect("boot-shim: memory map counted entries it does not contain");
+    let base = core::ptr::from_ref(first) as usize;
+    let descriptor_size = match view.next() {
+        Some(second) => (core::ptr::from_ref(second) as usize) - base,
+        // A one-descriptor map offers no distance to measure; the layout the
+        // crate used to produce that single reference is the only answer.
+        None => core::mem::size_of_val(first),
+    };
+    if descriptor_size < core::mem::size_of_val(first) {
+        panic!(
+            "boot-shim: memory map stride {} cannot hold a version-1 descriptor of {} bytes",
+            descriptor_size,
+            core::mem::size_of_val(first)
+        );
     }
-    // Forensic note (2026-09-21): real machine showed ident-windows n=2
-    // (= arch MMIO only) → reserved list arrives empty at the kernel.
-    // Count both lists at the source to split "collection loop finds
-    // nothing" from "forwarding loses it".
-    uefi::println!(
-        "boot-shim: memmaps conv={} reserved={}",
-        regions.len(),
-        reserved.len()
-    );
-    (
-        Box::leak(regions.into_boxed_slice()),
-        Box::leak(reserved.into_boxed_slice()),
-    )
+    // SAFETY: the counted walk covers `entries` descriptors at this stride inside
+    // the buffer firmware just filled; nothing else writes it on this boot face.
+    let buffer = unsafe { core::slice::from_raw_parts(base as *const u8, descriptor_size * entries) };
+
+    // SAFETY: boot is single-threaded and this leg runs once per image; these
+    // statics have no other holder.
+    unsafe {
+        let storage = &mut *core::ptr::addr_of_mut!(MAP_STORAGE);
+        storage
+            .parse_raw_map(
+                buffer,
+                buffer.len(),
+                descriptor_size,
+                ebs_map::MEMORY_DESCRIPTOR_VERSION,
+            )
+            .unwrap_or_else(|err| panic!("boot-shim: memory map rejected: {err:?}"));
+        let descs = storage.descriptors();
+        let plan = ebs_map::classify(descs, pa_limit(), storage.side_capacity())
+            .unwrap_or_else(|err| panic!("boot-shim: memory map rejected: {err:?}"));
+        let (mut free_n, mut reserved_n, mut side_n) = (0usize, 0usize, 0usize);
+        plan.write_to(descs, pa_limit(), |disposition, region| match disposition {
+            ebs_map::Disposition::Allocate => {
+                (*core::ptr::addr_of_mut!(UEFI_FREE))[free_n] = *region;
+                free_n += 1;
+            }
+            ebs_map::Disposition::ReservedMapped => {
+                (*core::ptr::addr_of_mut!(UEFI_RESERVED))[reserved_n] = *region;
+                reserved_n += 1;
+            }
+            ebs_map::Disposition::Side => {
+                if side_n < (*core::ptr::addr_of!(UEFI_SIDE)).len() {
+                    (*core::ptr::addr_of_mut!(UEFI_SIDE))[side_n] = *region;
+                }
+                side_n += 1;
+            }
+            ebs_map::Disposition::Excluded | ebs_map::Disposition::DevicePath => {}
+        });
+        // Count both lists at the source, so "the walk found nothing" and
+        // "forwarding lost it" stay distinguishable on real hardware, and name the
+        // ranges that policy left out rather than leaving them implied.
+        uefi::println!(
+            "boot-shim: memmaps conv={} reserved={} unmapped={}",
+            free_n,
+            reserved_n,
+            side_n
+        );
+        (
+            core::slice::from_raw_parts(core::ptr::addr_of!(UEFI_FREE) as *const MemoryRegion, free_n),
+            core::slice::from_raw_parts(
+                core::ptr::addr_of!(UEFI_RESERVED) as *const MemoryRegion,
+                reserved_n,
+            ),
+        )
+    }
 }
 
 /// Convert UEFI memory map to a static slice of MemoryRegion.
@@ -481,11 +531,18 @@ const PAGE_SIZE: u64 = 4096;
 /// Physical address ceiling assumed by the map classification. aarch64 writes
 /// `TCR_EL1.IPS = 5` (48-bit PA); x86-64 4-level paging tops out at 52-bit.
 /// The planned `Paging::phys_addr_limit` accessor replaces this; until then the
-/// constant keeps the classifier from rejecting high-DRAM descriptors.
+/// ceiling keeps the classifier from rejecting high-DRAM descriptors. It is the
+/// address width this boot face's own page table can represent, so it is read
+/// per architecture. A target with no UEFI boot face has no map to classify and
+/// no width to report: reaching this there is a wiring mistake, not a state.
 #[cfg(target_arch = "aarch64")]
-const PA_LIMIT: u64 = 1 << 48;
+fn pa_limit() -> u64 { 1 << 48 }
 #[cfg(target_arch = "x86_64")]
-const PA_LIMIT: u64 = 1 << 52;
+fn pa_limit() -> u64 { 1 << 52 }
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+fn pa_limit() -> u64 {
+    unreachable!("no UEFI memory map to classify on this target")
+}
 
 /// Refuse to boot if a conventional memmap range overlaps the bootstrap
 /// allocation `[base, base + len)`.
@@ -508,19 +565,24 @@ fn assert_bootstrap_outside_memmap(memmap: &[MemoryRegion], base: u64, len: u64)
     }
 }
 
-/// UEFI `AllocateMaxAddress` limit for a bootstrap allocation of `size`
-/// bytes: UEFI guarantees the allocated base is at or below the limit, so
-/// passing `bound - size` keeps the whole region under the bound.
+/// UEFI `AllocateMaxAddress` limit for a bootstrap allocation.
 ///
-/// The bound is `min(BOOT_IDENTITY_MAP_END, VM DM window PA end)` per
-/// target architecture (07-paging_init_design §6.1 qualification filter ①): below it the
-/// bootstrap tree is simultaneously identity-write-reachable and
-/// representable in the VM DM window. The kernel re-validates at DM
-/// establishment (`os/kernel/src/dm_coverage.rs`).
-fn bootstrap_alloc_limit(size: u64) -> u64 {
+/// The firmware constrains the *uppermost address* of the range it hands back,
+/// not its start: `base + size - 1 <= limit`. Passing the last admissible byte
+/// (`bound - 1`) is therefore exactly enough to force `base + size <= bound`
+/// for any request size. Subtracting the size on top of that was stricter than
+/// the goal and could refuse a request that fit — a free region ending right at
+/// the bound is large enough, but `bound - size` would not admit it.
+///
+/// The bound is `min(BOOT_IDENTITY_MAP_END, VM DM window PA end)` per target
+/// architecture (07-paging_init_design §6.1 qualification filter ①): below it the
+/// bootstrap tree is simultaneously identity-write-reachable and representable
+/// in the VM DM window. The kernel re-validates at DM establishment
+/// (`os/kernel/src/dm_coverage.rs`).
+fn bootstrap_alloc_limit() -> u64 {
     boot_dm_admissible_end()
-        .checked_sub(size)
-        .expect("bootstrap allocation request exceeds the DM-admissible bound")
+        .checked_sub(1)
+        .expect("DM-admissible bound must sit above address zero")
 }
 
 /// Allocate a single physical page for the root page table.
@@ -529,7 +591,7 @@ fn bootstrap_alloc_limit(size: u64) -> u64 {
 /// write channel and the VM DM window both cover it (§6.1 qualification filter ①).
 pub fn alloc_root_page() -> PhysBytes {
     let ptr = boot::allocate_pages(
-        AllocateType::MaxAddress(bootstrap_alloc_limit(PAGE_SIZE)),
+        AllocateType::MaxAddress(bootstrap_alloc_limit()),
         MemoryType::LOADER_DATA,
         1,
     )
@@ -545,7 +607,7 @@ pub fn alloc_root_page() -> PhysBytes {
 pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
     let size = (num_pages as u64) * PAGE_SIZE;
     let ptr = boot::allocate_pages(
-        AllocateType::MaxAddress(bootstrap_alloc_limit(size)),
+        AllocateType::MaxAddress(bootstrap_alloc_limit()),
         MemoryType::LOADER_DATA,
         num_pages,
     )
@@ -572,7 +634,7 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn alloc_arena() -> PhysBytes {    let pages = ARENA_CAP / PAGE_SIZE as usize;
     let ptr = boot::allocate_pages(
-        AllocateType::MaxAddress(bootstrap_alloc_limit(ARENA_CAP as u64)),
+        AllocateType::MaxAddress(bootstrap_alloc_limit()),
         MemoryType::LOADER_DATA,
         pages,
     )
@@ -750,8 +812,7 @@ fn load_dumpdtb_free(file_loader: &dyn FileLoader) -> Option<&'static [MemoryReg
     let blob = file_loader.read(loader::DUMPDTB_PATH)?;
     let fdt = fdt::Fdt::new(&blob)
         .unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
-    let (free, _) = <minix_boot::DtbMemoryMap as minix_boot::MemoryMapSource>::collect(
-        &minix_boot::DtbMemoryMap::new(&fdt, 0),
+    let (free, _) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect(
     );
     Some(free)
 }
@@ -854,7 +915,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
                 boot_services_raw,
                 image_handle.as_ptr() as usize,
                 buffer,
-                PA_LIMIT,
+                pa_limit(),
                 &mut serializer,
             )
         } {
@@ -965,7 +1026,7 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
     // bound as the root/bump pages, then verify the complete range end (not
     // just the start) stays under it.
     let ptr = boot::allocate_pages(
-        AllocateType::MaxAddress(bootstrap_alloc_limit(size)),
+        AllocateType::MaxAddress(bootstrap_alloc_limit()),
         MemoryType::LOADER_DATA,
         num_pages,
     )

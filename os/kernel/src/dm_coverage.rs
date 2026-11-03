@@ -313,8 +313,13 @@ fn boot_module_candidates<'a>(
 /// runtime footprint plus firmware/bootloader allocations.
 ///
 /// The shim's `build_memmaps` partitions the UEFI memory map into
-/// conventional RAM (source 1) and everything else (`KernelInfo::
-/// reserved_regions`, `boot-shim/src/uefi_helpers.rs`). The kernel image
+/// conventional RAM (source 1) and firmware-owned ranges that stay reachable
+/// through the direct map (`KernelInfo:: reserved_regions`,
+/// `boot-shim/src/uefi_helpers.rs`). Membership of the second table is decided
+/// by each descriptor's type and access attributes, not by an address ceiling:
+/// loader, boot-services and reclaimable-ACPI data that the firmware marks
+/// write-back cacheable are listed, while ranges firmware declares unusable and
+/// device apertures are left out of both tables. The kernel image
 /// and stack are `EVR/loader`-allocated memory: absent from the
 /// conventional memmap, not registered as boot modules (source 3), not the
 /// bootstrap tree (source 2) — under sources 1–3 alone their DM aliases
@@ -334,10 +339,9 @@ fn boot_module_candidates<'a>(
 /// Known residual gap (an open item not closed by this
 /// change): the shim's own root page, bump region and module loads are
 /// `LOADER_DATA` allocations (`boot-shim/src/uefi_helpers.rs` pool +
-/// `allocate_pages`), and `build_memmaps` puts every non-conventional,
-/// non-MMIO descriptor below `ram_top` into `reserved_regions` — so a
-/// reserved descriptor frequently spans both a source-2/3 candidate and
-/// unrelated pages. Dropping it whole
+/// `allocate_pages`), and those are exactly the loader-data ranges
+/// `build_memmaps` lists in `reserved_regions` — so a reserved descriptor
+/// frequently spans both a source-2/3 candidate and unrelated pages. Dropping it whole
 /// keeps the union legal but leaves that tail without a kernel-DM leaf;
 /// closing it needs range subtraction against the installed candidates
 /// (bounded candidate count, still heap-free) plus real-machine proof.

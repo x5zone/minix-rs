@@ -21,7 +21,14 @@
 //!   ([`PairError::BufferReuseInsufficient`]);
 //! - stale classification is cleared before every re-classification.
 
-use crate::ebs_map::{classify_map, Classification, MapError};
+use crate::ebs_map::{Classification, MapError, MapStorage};
+
+/// The pairing loop's own descriptor and side-list storage.
+///
+/// Reserved at compile time on purpose: allocating between reading a memory map
+/// and exiting boot services is what can change the map being classified, so the
+/// loop has to be able to work without the allocator at all.
+static mut PAIR_STORAGE: MapStorage = MapStorage::new();
 use core::ffi::c_void;
 use minix_boot::Serializer;
 
@@ -135,20 +142,31 @@ pub unsafe fn pair_and_classify(
 
         // Only the map paired with the current MapKey may be serialized.
         serializer.reset_map_partitions();
-        let classification = classify_map(
-            map_buf,
-            map_size,
-            descriptor_size,
-            descriptor_version,
-            pa_limit,
-            serializer,
-        )
-        .map_err(PairError::Map)?;
+        // SAFETY: boot is single-threaded and this loop is the storage's only
+        // holder.
+        let storage = unsafe { &mut *core::ptr::addr_of_mut!(PAIR_STORAGE) };
+        storage
+            .parse_raw_map(map_buf, map_size, descriptor_size, descriptor_version)
+            .map_err(PairError::Map)?;
+        let classification = storage
+            .classify_into_handoff(pa_limit, serializer)
+            .map_err(PairError::Map)?;
 
         // SAFETY: same contract as above; `map_key` comes from the map that
         // was just classified.
         let status = unsafe { (ops.exit_boot_services)(boot_services, image_handle, map_key) };
         if status == EFI_SUCCESS {
+            // Reported only now: between reading the map and exiting boot
+            // services the loop must not touch anything that could perturb the
+            // very map it classified. Ranges that policy kept out of both
+            // ordinary tables are invisible to the kernel by design, so name
+            // their count here rather than leaving the omission to be inferred.
+            if classification.side != 0 {
+                uefi::println!(
+                    "boot-shim: memory map left {} range(s) out of both ordinary tables",
+                    classification.side
+                );
+            }
             return Ok(classification);
         }
         if status == EFI_INVALID_PARAMETER {
@@ -206,6 +224,11 @@ mod tests {
                     fw.maps[img][off..off + 4].copy_from_slice(&ty.to_le_bytes());
                     fw.maps[img][off + 8..off + 16].copy_from_slice(&phys.to_le_bytes());
                     fw.maps[img][off + 24..off + 32].copy_from_slice(&pages.to_le_bytes());
+                    // Real firmware declares the cache capability of a usable
+                    // range, and a descriptor that asserts none is not eligible
+                    // for an ordinary write-back mapping. The fixtures stand for
+                    // usable memory, so they say so.
+                    fw.maps[img][off + 32..off + 40].copy_from_slice(&0x8u64.to_le_bytes());
                 }
                 fw.map_lens[img] = descs.len() * 40;
             }
@@ -302,7 +325,8 @@ mod tests {
             c,
             Classification {
                 conventional: 2,
-                reserved: 1
+                reserved: 1,
+                side: 0,
             }
         );
         assert_eq!(fw.get_calls, 1);
@@ -332,7 +356,8 @@ mod tests {
             c,
             Classification {
                 conventional: 1,
-                reserved: 1
+                reserved: 1,
+                side: 0,
             },
             "the accepted classification must come from the second map"
         );

@@ -14,7 +14,7 @@
 //!
 //! 1. **memmap**: the DTB physical address OpenSBI passes in `a1`; parse the
 //!    `/memory` node's `reg` — sharing `minix_boot::DtbMemoryMap` with the
-//!    opensbi leg (trait `MemoryMapSource` lives in `minix-boot`; the three
+//!    opensbi leg (the DTB collector lives in `minix-boot`; the three
 //!    boot-source chains converge there, and the boot-form layer is not
 //!    merged).
 //! 2. **module load source**: `BootFileTable` (gated by magic `MNXBOOT1`). Two
@@ -58,7 +58,7 @@
 use core::slice;
 
 use minix_boot::{
-    DtbMemoryMap, MemoryMapSource as _,
+    DtbMemoryMap,
     BootModule, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource, DTB,
 };
 use minix_types::{PhysBytes, VirBytes};

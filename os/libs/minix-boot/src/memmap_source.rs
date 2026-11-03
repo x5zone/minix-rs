@@ -1,28 +1,37 @@
-//! `MemoryMapSource` — the single semantic exit for the memory map of all
-//! three boot chains.
+//! The memory map of the device-tree boot chains: one concrete collector plus
+//! the two-table shape every boot chain hands the OS semantic layer.
 //!
 //! Semantic contract (the positive use of axiom 3): every boot chain exposes
 //! the **same** shape to the OS semantic layer — two `'static` tables,
 //! conventional (the PMM may allocate from it directly) and reserved (touched
 //! through the Direct Map at run time but never reallocated). Each chain's own
-//! firmware shape (UEFI `GetMemoryMap`, DTB `/memory`, a future Multiboot) stays
-//! inside its own impl and no longer leaks into consumers (previously the
-//! opensbi leg handed the kernel a "hard-coded single QEMU virt DRAM region"
-//! directly — exactly the leak this trait closes).
+//! firmware shape (UEFI `GetMemoryMap`, DTB `/memory`) stays inside its own
+//! collector and does not leak into consumers (previously the opensbi leg handed
+//! the kernel a "hard-coded single QEMU virt DRAM region" directly — exactly the
+//! leak this contract closes).
 //!
-//! The boot-form layer is **not** merged within this trait's scope (axiom 3: the
-//! standalone `BootShim` executable and the `bootface` self-boot face
-//! correspond to different machine states; this layer only unifies the memmap
-//! source underneath).
+//! The contract is carried by the **result shape** that [`DtbMemoryMap::collect`]
+//! returns, not by a trait. A trait here would advertise source substitutability
+//! that no call site uses: no consumer ever took the collector as a trait object
+//! or under a generic bound, the production UEFI leg cannot satisfy the
+//! "two `'static` tables" signature while boot services are still alive (its
+//! classification writes into the handoff arena instead), and a placeholder for
+//! a boot form this repository does not have can only implement it by returning
+//! two empty tables — an empty table that looks like a valid answer is worse
+//! than no answer, because it fails deep in the kernel instead of at the edge.
+//! A caller names the concrete collector it uses. An interface becomes worth
+//! introducing when a second source gains a consumer that genuinely wants to be
+//! source-agnostic.
 //!
-//! Implementation placement: `DtbMemoryMap` lives in this library (DTB parsing
-//! is isomorphic for every bare-metal boot face, and the `fdt` dependency is
-//! already on this library's list); `UefiMemoryMap` lives in boot-shim (UEFI
-//! `GetMemoryMap` needs the `uefi` crate, which must not come into this library
-//! in reverse — under the orphan rule a boot-shim local type implements the
-//! foreign trait); `MultibootMemoryMap` is a placeholder for the BIOS leg, to be
-//! given a real implementation when that form appears (do not change contracts
-//! early for elegance).
+//! The boot-form layer is **not** merged here (axiom 3: the standalone `BootShim`
+//! executable and the `bootface` self-boot face correspond to different machine
+//! states; this layer only unifies the memmap source underneath).
+//!
+//! Implementation placement: this DTB collector lives in the library (DTB
+//! parsing is isomorphic for every bare-metal boot face, and the `fdt`
+//! dependency is already on this library's list). The UEFI leg lives in
+//! boot-shim, because `GetMemoryMap` needs the `uefi` crate, which must not
+//! point back into this library.
 
 use crate::kernel_info::MemoryRegion;
 use minix_types::PhysBytes;
@@ -87,13 +96,6 @@ const _FW_CROSS: () = assert!(
     )
 );
 
-/// The single semantic exit for the memory map of all three boot chains (the
-/// module header carries the full argument).
-pub trait MemoryMapSource {
-    /// Return the two `'static` tables `(conventional, reserved)`.
-    fn collect(&self) -> (&'static [MemoryRegion], &'static [MemoryRegion]);
-}
-
 /// DTB leg: parse `reg` of `/memory` and `/memory@<unit>` (the unit-address
 /// variant), clip off the resident firmware area through [`clip_reserved`], and
 /// produce the two tables. Lookup walks the whole tree through `all_nodes`
@@ -121,8 +123,13 @@ impl<'a> DtbMemoryMap<'a> {
     }
 }
 
-impl MemoryMapSource for DtbMemoryMap<'_> {
-    fn collect(&self) -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
+impl DtbMemoryMap<'_> {
+    /// Return the two `'static` tables `(conventional, reserved)`.
+    ///
+    /// Borrowing `self` reads the DTB a second time is not required: the tables
+    /// live in this library's static storage, so the returned slices outlive
+    /// the borrow of the blob.
+    pub fn collect(&self) -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
         // Single-hart boot face: written once, then read-only; a re-entry that
         // zeroes the counters (a second collect on the same face) merely
         // overwrites the same cells.
@@ -182,18 +189,6 @@ impl MemoryMapSource for DtbMemoryMap<'_> {
                 ),
             )
         }
-    }
-}
-
-/// Placeholder for the BIOS/Multiboot leg: this repository has no such boot
-/// form yet, and the empty-table implementation keeps the trait complete; give
-/// it a real implementation when the form appears (do not change contracts
-/// early for elegance).
-pub struct MultibootMemoryMap;
-
-impl MemoryMapSource for MultibootMemoryMap {
-    fn collect(&self) -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
-        (&[], &[])
     }
 }
 

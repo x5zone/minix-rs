@@ -31,7 +31,7 @@ pub use boot_shim::*;
 pub use handoff_v1::*;
 pub use handoff_v1_read::*;
 pub use handoff_v1_write::*;
-pub use memmap_source::{DtbMemoryMap, MemoryMapSource, MultibootMemoryMap, dtb_covers_conventional};
+pub use memmap_source::{DtbMemoryMap, dtb_covers_conventional};
 pub use platform::{
     PlatformDescKind, PlatformDescSource, PlatformDesc, PlatformSource,
     InterruptControllerDesc, TimerDesc, ConsoleDesc,
