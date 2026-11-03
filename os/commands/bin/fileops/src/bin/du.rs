@@ -50,7 +50,7 @@ use minix_fileops::du::{
     self, DuOption, DuPlan, LinkSet, count, printed_text, prints_directory, prints_file,
     skipped_as_nodump,
 };
-use minix_sys::{Errno, Fd, Stat, close, getdents, lstat, open};
+use minix_sys::{Errno, Fd, Stat, close, getdents, lstat, open, stat};
 
 /// The refill buffer for the walk (C's fts keeps its own; the size is not
 /// observable, it only bounds how many records arrive per call).
@@ -90,9 +90,17 @@ fn du_visit(
     plan: &DuPlan,
     links: &mut LinkSet,
     root_dev: u64,
+    follow_root: bool,
 ) -> (i64, bool) {
     let mut sb = zeroed();
-    if let Err(e) = lstat(path, &mut sb) {
+    // `-H` (`du.c:166-167`, fts's `FTS_COMFOLLOW`): the operand itself is
+    // followed — a symlink names its target's tree; everything below stays
+    // physical, so only this level-0 lookup switches to `stat`.
+    if let Err(e) = if follow_root && level == 0 {
+        stat(path, &mut sb)
+    } else {
+        lstat(path, &mut sb)
+    } {
         // `du.c:230-235` (`FTS_NS`/`FTS_ERR`): report, count the failure, and
         // contribute nothing.
         warn_path(prog, path, e);
@@ -111,7 +119,7 @@ fn du_visit(
         let (children, failed) = if du::crosses_device(plan.xdev, sb.st_dev, root_dev) {
             (0, false)
         } else {
-            descend(prog, path, level + 1, plan, links, root_dev)
+            descend(prog, path, level + 1, plan, links, root_dev, follow_root)
         };
         let total = own.saturating_add(children);
         if prints_directory(level, plan) {
@@ -151,6 +159,7 @@ fn descend(
     plan: &DuPlan,
     links: &mut LinkSet,
     root_dev: u64,
+    follow_root: bool,
 ) -> (i64, bool) {
     let fd: Fd = match open(dir, cp::O_RDONLY, 0) {
         Ok(fd) => fd,
@@ -205,6 +214,7 @@ fn descend(
                 plan,
                 links,
                 root_dev,
+                follow_root,
             );
             total = total.saturating_add(units);
             failed |= child_failed;
@@ -252,13 +262,20 @@ fn run() -> ! {
         // Each operand starts its own traversal, so `-x` compares against
         // this operand's device (fts roots one walk per operand).
         let mut sb = zeroed();
-        let root_dev = match lstat(root, &mut sb) {
+        // `-H` follows the operand, so the root device is the target's —
+        // the same lookup the walk's level-0 visit makes.
+        let root_dev = match if plan.comfollow {
+            stat(root, &mut sb)
+        } else {
+            lstat(root, &mut sb)
+        } {
             Ok(_) => sb.st_dev,
             // A missing operand is reported by the walk itself; the boundary
             // flag is then irrelevant because nothing descends.
             Err(_) => 0,
         };
-        let (units, this_failed) = du_visit(prog, root, 0, &plan, &mut links, root_dev);
+        let (units, this_failed) =
+            du_visit(prog, root, 0, &plan, &mut links, root_dev, plan.comfollow);
         grand = grand.saturating_add(units);
         failed |= this_failed;
     }

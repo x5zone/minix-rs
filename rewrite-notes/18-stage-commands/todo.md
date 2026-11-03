@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百零四（`du -H` 接通：仅操作数跟链）
+
+- **这一笔的射程**：not-wired 清单里 `du -H` 一处——C 的 `-H` 置 `FTS_COMFOLLOW`（`du.c:166-167`）：命令行上的符号链操作数被跟随（遍历根 = 链接指向的树），其下一切保持物理形；`-L`（全量逻辑走）是另一旗标，维持未接线。
+- **落码**：`DuPlan` 增 `comfollow` 位（parse 的 `b'H'` 臂，`-L` 移为唯一未接线字母）；`bin/du.rs` 把 `follow_root` 穿进 `du_visit`/`descend`——仅 level 0 的查型在 `-H` 下切到 `stat`（跟链），`root_dev` 的捕获用同一查型（根设备 = 目标设备，与 fts 每操作数一程的语义一致）；子树查型不变。
+- **可测性边界（如实）**：跟链语义需操作数是符号链且宿主能走树——du bin 的 syscall 腿是 none 面（宿主走不了真树，du_face 既有四枚同口径），判据钉 = parse 钉（`-H` 落 plan）+ 面测「`-H` 过选项门」（同 `-x` 批的形）；`-L` 的面测钉从拒绝清单改指 'L'。
+- **门**：`cargo test -p minix-fileops --lib` → **22/0**（du 子集，新增 `h_is_the_comfollow_flag`）+ `du_face` **5/0**（refused-letter 钉移到 `-L`）；clippy 触及文件零新增；`rustfmt --edition 2024` 三文件清；`cargo build --target x86_64-unknown-none --release --bin du` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `767f6e255`。
+
 ## 批次五百零三（`cal -h` 接通：无 terminfo 环境的恒等形态）
 
 - **这一笔的射程**：not-wired 清单里 `cal -h` 一处——C 的 `-h` 调 `init_hilite`（`cal.c:252-254`、`:891-908`）：计数增一并经 `setupterm` 取属性串；**无可配 TERM 或非 tty 时转义对为空**，`ascii_day` 照常裸渲染（`cal.c:517` 的标记只在该对存在时生效）。本树无 terminfo 设施——这正是 C 无可配 TERM 的同一形态，故接线 = 接受旗标，输出与不带 `-h` 逐字节相同（测试环境里 C 可观察的唯一形状）。

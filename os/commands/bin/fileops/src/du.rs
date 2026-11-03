@@ -82,6 +82,10 @@ pub struct DuPlan {
     /// mount-point directory itself is still counted and printed — fts(3)
     /// returns it with its children pruned, so its own blocks stand.
     pub xdev: bool,
+    /// `-H` (`FTS_COMFOLLOW`, `du.c:166-167`): follow a symlink given as an
+    /// operand — the traversal root is the link's target, and everything
+    /// below stays physical (`-L`'s full-logical walk is the other flag).
+    pub comfollow: bool,
     /// The operands, defaulting to the single name `.` (`du.c:184-187`).
     pub roots: Vec<String>,
 }
@@ -105,6 +109,7 @@ pub fn parse_args(
     let mut human = false;
     let mut skip_nodump = false;
     let mut xdev = false;
+    let mut comfollow = false;
     let mut depth = DEPTH_UNBOUNDED;
     let mut unit: Option<u64> = None;
     let mut i = 0;
@@ -150,7 +155,8 @@ pub fn parse_args(
                 }
                 b'h' => human = true,
                 b'x' => xdev = true,
-                b'H' | b'L' => return Err(DuOption::NotWired(bytes[k] as char)),
+                b'H' => comfollow = true,
+                b'L' => return Err(DuOption::NotWired(b'L' as char)),
                 _ => return Err(DuOption::Usage),
             }
             k += 1;
@@ -185,6 +191,7 @@ pub fn parse_args(
             human,
             skip_nodump,
             xdev,
+            comfollow,
             depth,
             blocksize: blocksize_bytes / BLOCK_UNIT,
             roots,
@@ -452,6 +459,13 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    /// `-H` is accepted and lands in the plan (the operand-follow flag).
+    #[test]
+    fn h_is_the_comfollow_flag() {
+        assert!(plan(&["-H"]).comfollow);
+        assert!(!plan(&[]).comfollow);
+    }
+
     /// `-x` is accepted and lands in the plan.
     #[test]
     fn x_is_the_device_boundary_flag() {
@@ -544,15 +558,9 @@ mod tests {
 
     #[test]
     fn unwired_letters_are_named_and_the_noop_letters_are_taken() {
-        // `-x` left the unwired set when the device boundary landed; `-H`/`-L`
-        // (the logical walk) are the remaining two.
-        for c in ['H', 'L'] {
-            let arg = alloc::format!("-{c}");
-            assert_eq!(
-                parse_args(&[arg.as_str(), "d"], None),
-                Err(DuOption::NotWired(c))
-            );
-        }
+        // `-L` (the full-logical walk) is the remaining unwired letter; `-x`
+        // and `-H` left this set as their facilities landed.
+        assert_eq!(parse_args(&["-L", "d"], None), Err(DuOption::NotWired('L')));
         // -P is the physical walk this tree already does; -r is C's own no-op.
         assert_eq!(plan(&["-Pr", "d"]), plan(&["d"]));
         assert_eq!(
