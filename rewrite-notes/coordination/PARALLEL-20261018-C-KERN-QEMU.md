@@ -263,6 +263,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `DATEA-ADJUST`：改 `os/commands/bin/proctools/src/bin/date.rs`、`tests/date_face.rs`（A 板领地）+ `os/libs/minix-sys/src/{pm.rs,lib.rs}`（B 板领地，跨界登记本行）——date -a 接通：clock_adjust_via（PM_CLOCK_SETTIME 的 now=0 渐进车道）+ 顶层 clock_adjust；显示保持未调整值（对位 C）；门=proctools lib 94/0 + date_face 3/0（-a 宿主形钉）+ minix-sys 342/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `RMW-WHITEOUT`：改 `os/commands/bin/fileops/src/{rm.rs,bin/rm.rs}`（A 板领地）——rm -W 接通（白目项在本树文件系统上从不出现，行为性无操作=C 同环境观察形；needs_unwired 闸与拒绝行退役，undelete 设施=登记残差）；门=fileops lib 57/0 + rm_face 7/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `COMPRESS-NV`：改 `os/commands/usr-bin/compress/src/{lib.rs,lzw.rs,bin/compress.rs}`、新增 `tests/compress_face.rs`（A 板领地）——compress 三点接通：-V 版本横幅（stderr 后继续）、-n 无头流（编码跳头/解码补宽，库格式自洽回环）、-r 走 C 的 usage（C 无此旗标）；门=compress lib 49/0 + face 3/0 + none 构建绿 —— `✅`
+- `2026-11-03` A / `TOUCH-H`：改 `os/commands/bin/fileops/src/bin/touch.rs`、新增 `tests/touch_face.rs`（A 板领地）——touch -h 接通：lstat 查型 + utimensat(AT_SYMLINK_NOFOLLOW) 写入 + cflag 静默跳过（C 三件）；`-d` 维持登记残差；门=fileops lib touch 9/0 + touch_face 2/0 + none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

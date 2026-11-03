@@ -27,7 +27,8 @@ mod support;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_sys::{close, fstat, gettimeofday, open, stat, utimens, Stat};
+use minix_sys::vfs::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
+use minix_sys::{Stat, close, fstat, gettimeofday, lstat, open, stat, utimens, utimensat};
 
 fn usage() -> ! {
     support::warn(b"usage: touch [-acfhm] [-d date] [-r file] [-t time] file ...\n");
@@ -52,6 +53,7 @@ fn run() -> ! {
     let prog = support::prog_name(&argv);
 
     let mut aflag = false;
+    let mut hflag = false;
     let mut mflag = false;
     let mut cflag = false;
     let mut timeset = false;
@@ -80,7 +82,11 @@ fn run() -> ! {
                     b'c' => cflag = true,
                     b'f' => {} // no-op, kept for SYNOPSIS compatibility
                     b'm' => mflag = true,
-                    b'h' => not_wired("-h"),
+                    // `-h` (`touch.c:108-109`, `:133-139`): touch the
+                    // symlink itself — `lstat` for the exists-check and the
+                    // `AT_SYMLINK_NOFOLLOW` form for the change, with
+                    // creation suppressed (`cflag`).
+                    b'h' => hflag = true,
                     b'd' => not_wired("-d"),
                     b'r' => {
                         // `case 'r': timeset = 1; stime_file(optarg, ts);`
@@ -186,7 +192,18 @@ fn run() -> ! {
     for path in &operands {
         let mut sb: Stat = unsafe { core::mem::zeroed() };
         let mut ts = target;
-        if stat(path, &mut sb).is_err() {
+        // `-h` asks about the link itself (`touch.c:133-139`).
+        let existed = if hflag {
+            lstat(path, &mut sb)
+        } else {
+            stat(path, &mut sb)
+        };
+        if existed.is_err() {
+            // `cflag` (`touch.c:162-178`): with `-h` a missing path is
+            // skipped, never created.
+            if hflag {
+                continue;
+            }
             if cflag {
                 continue;
             }
@@ -218,7 +235,12 @@ fn run() -> ! {
             }
         }
 
-        if utimens(path, Some(ts)).is_ok() {
+        let changed = if hflag {
+            utimensat(AT_FDCWD, path, Some(ts), AT_SYMLINK_NOFOLLOW)
+        } else {
+            utimens(path, Some(ts))
+        };
+        if changed.is_ok() {
             continue;
         }
         if timeset {
@@ -227,7 +249,12 @@ fn run() -> ! {
         }
         // System V / POSIX fallback: a NULL time set means "now", and needs only
         // write permission rather than ownership.
-        if utimens(path, None).is_ok() {
+        let now_changed = if hflag {
+            utimensat(AT_FDCWD, path, None, AT_SYMLINK_NOFOLLOW)
+        } else {
+            utimens(path, None)
+        };
+        if now_changed.is_ok() {
             continue;
         }
         errors = 1;

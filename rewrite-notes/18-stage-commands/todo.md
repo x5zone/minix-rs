@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十（`touch -h` 接通：链接本体的时间写入车道）
+
+- **这一笔的射程**：not-wired 清单里 `touch -h` 一处——C 的 `-h`（`touch.c:108-109`、`:133-139`）：`cflag=1`（不创建）、查型换 `lstat`、写入换 `lutimens`——即「对符号链本体动手」的车道。缺路径在 `cflag` 下静默跳过（`:162-178` 的 `continue`），退码保持 0。
+- **落码**：bin 解析 `'h'` 落位；查型按 `hflag` 在 `lstat`/`stat` 间切；写入按 `hflag` 切到 `utimensat(AT_FDCWD, path, …, AT_SYMLINK_NOFOLLOW)`（C-44 批次落的八车道 VFS UTIMENS 包装 + `vfs.rs` 的 `AT_FDCWD=-100`/`AT_SYMLINK_NOFOLLOW=0x200` 常量），NULL 时间的「现在」回落腿同形；缺失操作数在 `-h` 下静默跳过。`-d` 维持登记残差（日期解析语言），面测把两者分开钉住。
+- **可测性边界**：写入腿在 none 面，宿主可观察的是选项门与跳过语义——面测钉两枚：`-h` 缺路径 = 静默退 0（`cflag` 语义，不是报错——这一枚校正了「缺路径必报错」的直觉误判）、`-d` 的拒收行原样（两旗标不混）。
+- **门**：`cargo test -p minix-fileops` → 库 touch 子集 **9/0** + 面门 `touch_face` **2/0**；clippy 触及文件零新增；`rustfmt --edition 2024` 两文件清；`cargo build --target x86_64-unknown-none --release --bin touch` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `f150780d6`。
+
 ## 批次五百零九（`compress -V/-n/-r` 接通：版本横幅、无头流、C 无 -r 的 usage）
 
 - **这一笔的射程**：not-wired 清单里 `compress` 的一处三点——C 的 `-V`（`compress.c:372-378`）打印 `version()` 横幅到 **stderr 后继续执行**（横幅随构建旗标：Minix 构建 = `compress 4.1\nOptions: MINIX, BITS = 16\n`，`:1587-1616` 的 `__minix` 与 32 位 `BITS` 分支）；`-n`（`:392`）置 `nomagic`——编码不写三字节 `.Z` 头（`:755-760`），解码不查头、宽度回落到默认（`:686-695`）；`-r` 在 C 里**根本不存在**（手动 switch 落到 `Usage()`，`:244`）。
