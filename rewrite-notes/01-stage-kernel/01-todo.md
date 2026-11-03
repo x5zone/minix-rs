@@ -34,6 +34,9 @@
 | **N-1~N-5（本轮新登记）** | `BootAlloc::resume` 无区间校验 / vm_handoff 头注释与实现不一致 / 零消费者便利包装 / bootface 双份名字池与常量 / 池页零化机制归因未定案 | 直修或取证 | N-1/N-2/N-3 ✅（01TODO-B1）；N-4 ✅（01TODO-B4）；N-5 ✅（01TODO-N5 探针：映射重放成立、复用前提未出现） | §3 |
 | D-60 | `IDENTITY_MAP_END` 双定义 | 闭合 | ✅ 双定义归一为全仓单定义（回勾确认）；01 篇 §4.6 措辞随修（见 §5） | §3 |
 | I-22 | `MemoryMapSource` trait 收口三链 | 代码已落地 | ✅ 代码落地；文档连带 ①–⑦ 已逐项核（⑤ bootface 头注随 01TODO-B2 修正）；遗留 = D-68（T4 批） | §3 |
+| I-28（本轮新登记） | `MemoryMapSource` trait 无多态消费者（无泛型约束、无 `dyn`；两个 impl 无活消费者） | 设计裁决 | ✅ **设计冻结（v12 终审）**：删除 trait 与空占位，保留 `DtbMemoryMap` 具体实现与内存图语义说明，正式 supersede I-22（supersede 记录属实施动作，随原型批执行） | §3 |
+| I-29（本轮新登记） | UEFI 内存图分类双份实现；测试图不反映快照后（条件性）分配；分类判据用地址代替类型（`RESERVED`/`UNUSABLE`/`UNACCEPTED`/未知区间被塞进「可访问」保留表）；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **架构设计与目标合同冻结（v12 终审）**：唯一解析/分类、零分配 + 预分配输出、`ram_top` 删除（不留 characterization test）、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17，含四组合落定）。**暂缓冻结（各有验收门）**：属性政策矩阵逐行批准（凭原型 ①+三架构证据）、三架构 WB 合同（I-29-16）、Pass 1/2 具体 API（归原型 ①）、路径 A 运行验收（原型 ②）。设计讨论结束，转原型与实现（§7 执行序列） | §3 |
+| I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解：UEFI 固件事务 → 描述符解析 → OS 内存语义分类 → 内核映射与分配，四层各有边界、不得混谈 | 文档教学批 | 允许开放（刚登记；概念讲解可先行，政策细节句随 I-29 落地同批校准） | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-27 + L1424 | 01 篇 L1422/L2624「还没裁决」口径 + 张力指针 | 文档回修 | ✅ 已修（01TODO-B1；OQ-N6 口径与张力指针同批） | §3 |
@@ -179,6 +182,132 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **状态**：✅ 01TODO-B2——①–⑦ 逐项核过：① §3.1 L1265 表、② L1961「内存与参数准备」行、③ L2288 `memmap` 行、④ opensbi 顶注（I-26 已修）、⑤ bootface 头注（本批修正对已删 `build_memmap` 的指涉）、⑥ §3.7/§4.8 合流句、⑦ 04 篇 §3.1 平台发现分工段，全部已按新口径在位；`grep -cE '硬编码的 QEMU virt DRAM 布局|单条 DRAM'` → 0。第 1 件（`todo.md` §7.1 改记）已在本批台账行同步；遗留仅 D-68（T4 批）。
 
+### I-28（本轮新登记）`MemoryMapSource` trait 零多态载荷：删除与否待设计专项裁决
+
+**现状**：`os/libs/minix-boot/src/memmap_source.rs` 的 [`trait MemoryMapSource`](os/libs/minix-boot/src/memmap_source.rs:trait MemoryMapSource) 全仓**无任何多态使用**——既无泛型约束也无 `dyn`；四个调用点写 `use MemoryMapSource as _` 或 `<DtbMemoryMap as MemoryMapSource>::collect`，只为把方法引入作用域，改成固有方法后这四处可原样删。三个 impl 的活死状态：`DtbMemoryMap` 活跃（riscv 直核面 [`fn bootface`](os/kernel-image/src/bootface.rs:fn bootface)、aarch64 直核面 [`fn bootface_a64`](os/kernel-image/src/bootface_a64.rs:fn bootface_a64)、OpenSBI/U-Boot shim [`impl RiscvUbootBootShim`](os/boot-shim/src/opensbi_helpers.rs:impl RiscvUbootBootShim) 三处产出内存图；aarch64 UEFI 生产入口 [`fn prepare_and_enter_kernel_image`](os/boot-shim/src/uefi_helpers.rs:fn prepare_and_enter_kernel_image) 另有一处调用，用途是 DTB 越界校验、不产出内存图）；`UefiMemoryMap` 的唯一消费者是 [`impl BootShim for UefiBootShim`](os/boot-shim/src/uefi_helpers.rs:impl BootShim for UefiBootShim) 的 `prepare_boot`，而该函数**全仓零调用方**；`MultibootMemoryMap` 返回空表，零引用。注意 `build_memmaps`/`build_memmap` 不能删——14 个 QEMU 测试内核经 `build_memmap()` 调用它，死的是包在外面的那层 `UefiMemoryMap` 壳。
+
+**为什么算问题而不只是"没用到"**（v2 按评审修正表述）：这条 trait 确实提供**静态接口约束**（`impl` 的方法与签名受编译器检查）与**静态分发**（两处全限定调用），但**没有任何消费者依赖它所提供的抽象边界**——调用方都知道自己是哪个具体类型，抽象既没降低调用方的类型依赖，也没统一它宣称要统一的两侧。UEFI 生产链接不进来不是惰性，是签名表达力不足——分类必须与 `ExitBootServices` 共用同一个 MapKey（[`fn pair_and_classify`](os/boot-shim/src/ebs_pair.rs:fn pair_and_classify) 把两者显式配对）、产物必须直接写进 arena 分区（[`fn classify_map`](os/boot-shim/src/ebs_map.rs:fn classify_map) 的 `serializer.push_memmap`）、失败面是 `BUFFER_TOO_SMALL` 与 `EFI_INVALID_PARAMETER` 重试。`fn collect(&self) -> (两张表)` 这三样都装不下。于是这条 trait 的多态维度实际永远只有 DTB 一支 + 一个死实现 + 一个空占位；留着会让人以为接新来源只需 impl 一下。
+
+**待裁决（用户已开设计专项；第三方评审 v1 已给方向：删除）**：方向 = 删除 trait，`collect` 降为 `DtbMemoryMap` 的固有方法，删 `MultibootMemoryMap`，随 A1 去留一并处理 `UefiMemoryMap`，把「可用表 / 保留表」语义搬进 `KernelInfo` 字段文档（或共享结果类型），并改写模块头注不再宣称「唯一出口」。**必须走正式 supersede，不得伪装成顺手清理**：记录需答六问（当初为何引入 / 假设的消费者与实现 / 当前实际能力 / 哪些假设未兑现 / 本次为何撤销 / 语义文档去向）。重新引入的判据：**第二种真实来源出现且存在真实消费者依赖共同语义时**，再按真实差异设计。保留方案 B（只改注释）与 C（真正接线 UEFI）已由评审否决，理由分别见文档 §1.4 与 §1.2。
+
+**验收（裁决后）**：`grep -rn "MemoryMapSource" os --include="*.rs"` 结果与裁决方向一致（删除则只余零命中）；三架构 `cargo build` 与 `os/qemu-tests/run_all.sh` 回归；代码侧不留"统一出口"这类与事实不符的注释表述。
+
+### I-29（本轮新登记）UEFI 内存图分类双份实现：`classify_map` 与 `build_memmaps`
+
+**现状**：UEFI 侧有两份功能相同的分流实现——生产路径的 [`fn classify_map`](os/boot-shim/src/ebs_map.rs:fn classify_map)（经 [`fn pair_and_classify`](os/boot-shim/src/ebs_pair.rs:fn pair_and_classify) 调用）与 [`fn build_memmaps`](os/boot-shim/src/uefi_helpers.rs:fn build_memmaps)（只被辅助入口 A1 与 14 个 QEMU 测试内核经单数形式 `build_memmap()` 调用）。三条分流规则逐条相同（`CONVENTIONAL` 进可用表；`MMIO`/端口空间丢弃；其余且起点低于 RAM 顶进保留表），**校验强度与一致性保证不同**：`classify_map` 有版本/尺寸/对齐/边界/零页数/溢出/物理上限七类自建校验与“同一次读图取键退出”的结构配对；`build_memmaps` 无自建校验（解析交给第三方 `uefi` 库）、不判 `PA_LIMIT`（该常量就在同文件相邻处却只被生产路径使用）、零页数会产出长度 0 的区间，且分类快照与退出是先后两次读图，一致性靠“其间不分配”的顺序纪律维持。
+
+**测试面的后果（v3 已按第二轮评审重写）**：见下方 v3 补记。要点是：问题不止「两份实现重复」，更在于**测试路径拿到的那张内存图不反映快照之后的分配**。
+
+**v3 核心发现（三类快照后分配）**：① `build_memmaps` 的 `Vec` 与两次 `Box::leak` 发生在它取到快照之后；② 12 个夹具内核在 `build_memmap()` 之后才 `alloc_root_page`/`alloc_bump_region`；③ `uefi` 0.33.0 的 `exit_boot_services` 内部先 `allocate_pool` 建缓冲、再重读图取键。三类都不会反映在分类结果里。最危险的是 ①：内核拿到的 `memmap` 切片本身住在被误报为可用的内存里，一旦 PMM 开始分配就可能覆盖内存图自身。生产路径没有此问题——读图与退出之间**零分配**（分类只往 arena 写），且 `assert_bootstrap_outside_memmap` 三次守护。v2 的修复「先分配后快照再断言」只覆盖 ②，不够。
+
+**断言分工（修正 v2 §2.5/§2.6 的内部矛盾）**：12 个夹具内核**不验证完整分类语义，但必须验证本测试自举占用不进入可用表**；完整分类规则由专门测试负责；宿主单测覆盖非法输入；真实 UEFI 路径新增输出内容断言。
+
+**v3 候选（两条完整修复路径）**：路径 A（推荐先研究）——保留 `exit_boot_services` 返回的 `MemoryMapOwned`（当前被 `let _mmap =` 丢弃），退出后用它分类并写入预分配存储，天然满足「分类图 = 退出图」；路径 B——测试走生产式配对事务（学得到重试路径，但接线重）。分工建议：夹具内核用 A，验证配对重试另立专门测试。
+
+**② 段现状更正**：v2 写「当前已唯一」不准确——生产路径只有一份项目自有的原始字节解析器，**测试路径尚未复用它**（用第三方库解析结果）。两个目标：一=只统一 ③（承认测试不验证原始解析器），二=连解析一起统一（优先考察）。
+
+**输出接缝细化**：输入必须是**可重复遍历的视图**（分类扫两遍算 RAM 顶），不能是一次性迭代器、不能分配中间数组；输出在回调与私有 sink 之间比较（不优先返回两个大数组）；容量 128/256 属交接协议契约，测试不得复制一份。
+
+**v4 核心发现（`ram_top` 边界 + 类型生命周期 + 反向偏差）**：
+
+- **I-29-7 `ram_top` 边界（最高优先）**：第二遍分类判据是 `desc.physical_start < ram_top`（严格小于）。自举分配用 `AllocateMaxAddress(bootstrap_alloc_limit(..))`，只规定上界不规定取位取向，因此根页表页/bump 池/arena 很可能落在**剩余常规区间的最高端**，其起点**等于** `ram_top` → 该描述符**两张表都不进**。`assert_bootstrap_outside_memmap` 只查可用表，抓不到。**核实结论：当前未见功能性故障**——`dm_coverage` 的 source 2（`bootstrap_tree_candidates`）用交接携带的根页表地址与 `boot_alloc` 记录的 bump 区间单独登记，不依赖保留表；arena 与读图缓冲不被内核访问；被丢弃的条目不在可用表内也不会被分配出去。但「非常规低于 RAM 顶都进保留表」这条成文不变量为假，且 12 条宿主单测无「起点恰等于 `ram_top`」用例。三选项待裁决：`<=` / 显式承认不完备 / 改判定依据（与任何 RAM 区间相交或按 RAM 类型）。
+- **I-29-8 类型生命周期政策**：当前把 `BOOT_SERVICES_CODE/DATA`、`ACPI_RECLAIM` 一并永久放保留表 = 永不复用，属保守政策需成文；`PERSISTENT`/`UNACCEPTABLE` 是「碰巧进保留表」，无显式论证。
+- **I-29-9 反向偏差**：`boot::memory_map` 返回的 `MemoryMapOwned` 在 `build_memmaps` 内是局部变量，函数返回时 `Drop` 在引导服务仍存活的前提下 `free_pool` **释放**了那块缓冲，而快照里它仍是 `LOADER_DATA` → 保留表**多报**一块实际已可用的内存。生产路径的读图缓冲用裸 `allocate_pool` 且从不释放，不受此影响。
+
+**路径 A 前提已核实（v4）**：`uefi` 0.33.0 的 `trait MemoryMap` 公开 `meta()` / `buffer()` / `entries()`，`MemoryMapOwned` 实现该 trait → 退出后可把原始字节交给生产解析器（**目标二可行**）；注意 `meta().map_size` 是有效长度、`buffer().len()` 含冗余条目，不可混用。`MemoryMapBackingMemory::Drop` 先判 `are_boot_services_active()`，退出后不释放。补失败契约：退出后分类出错走不依赖引导服务与动态分配的 fail-stop（裸串口 + 停机）。
+
+**`0.33` 版本下的 `Drop` 与实现位置**：`MemoryMapBackingMemory` 在 `src/mem/memory_map/impl_.rs`，`MemoryMapOwned` 同文件；`boot::memory_map` 在 `src/boot.rs` 返回 `MemoryMapOwned`。
+
+**v5 核心发现（类型/属性/生命周期政策 + 规范与实现的区分 + 对象–页级区分）**：
+
+- **I-29-8 扩充：UEFI 类型必须分类，不能靠地址**。分类器只显式认识类型 7/11/12，其余全部走「低于 RAM 顶即进保留表」。按 `uefi-raw` 0.9.0 的枚举逐项对照，**三处语义冲突**：`RESERVED`(0) 与 `UNUSABLE`(8) 规范说「不可用」却进「可访问」的保留表；`UNACCEPTED`(15) 必须被接受后才能使用，把它当普通可访问内存是错的（机密计算平台上读取会直接故障）；≥16 的 OEM/OS-loader 区语义未知却被默认收进保留表。另 `PERSISTENT`(14)、`PAL_CODE`(13) 属「碰巧进保留表」，无显式论证。`BOOT_SERVICES_*`(3/4) 与 `ACPI_RECLAIM`(9) 永久不复用是**政策**，必须成文。采纳四轮评审的五类分组（立即可用/保留但可访问/延迟可回收/需特殊处理/不可用不应映射），原则：**不要用同一个 reserved 标签同时表达「不可分配」「需要 DM」「暂时不能回收」「根本不能访问」四种含义**。建议判据顺序改为「先类型策略、再地址过滤」。
+- **I-29-8 新增：`Attribute` 字段完全未读**。`RawMemoryDescriptor` 只有 ty/physical_start/number_of_pages 三个字段（偏移 0/8/24），`Attribute`（偏移 32）从未访问；而直接映射两个窗口用固定页标志（`PRESENT|WRITABLE|GLOBAL` / `PRESENT|WRITABLE|USER`），**统一写回缓存，不区分设备内存**。对普通 RAM 无碍，对运行时服务数据/持久内存/未接受内存是空白。
+- **I-29-7 收窄：`ram_top` 边界拆成三命题**。命题一（规范可能性：`AllocateMaxAddress` 只约束区间最高地址，不规定取向）无平台依赖；命题二（OVMF 实际落点）需真机样本；命题三（若出现起点等于 `ram_top` 则会被丢弃）已由读码确认。**不批准把 `<` 改成 `<=`**（四轮评审否决理由：只把边界上的所有非常规类型放进保留表，没证明它们是适合 DM 的 RAM）。边界用例应先补，固定当前行为。
+- **`bootstrap_alloc_limit` 算术已核对**：三种规范读法（限 base / 限区间最高地址含 / 限末端不含）下传 `bound - size` 都**不越界**；差别只是读法 B/C 下少用约 `size` 字节。**代码安全，注释只证明了读法 A**——注释需改，非缺陷。
+- **I-29-9 收窄：对象分配 ≠ 页级内存图变化**。`AllocatePool` 只在池扩容时才从常规内存取页、才产生新描述符；`FreePool` 也只归还池对象，整页回收取决于池的空闲块合并。因此 §2.5.1 的 ①③ 是**条件后果**（只有 ② root/bump 是必然后果），§2.5.8 从「已确认」降级为「待六步探针验证」。全局分配器 `UefiPoolAllocator` 每次 `alloc` 都走 `allocate_pool`、`dealloc` 为空实现。
+- **路径 A 析构审查已闭合**：`MemoryMapBackingMemory::drop` 在退出分支仍调 `log::debug!`，但**两层保障**——① 本项目全仓未调用 `uefi::helpers::init()`，无 logger 注册；② `exit_boot_services` 首句 `helpers::exit()` → `logger::disable()` 把输出指针置空，`Logger::log()` 遇空指针直接返回。`boot-shim` 只启用 `uefi` 的 `alloc` 特性，无 `logger`/`log-debugcon`。
+
+**v6 定稿修订（第五轮评审 + 本文自主判断）**：
+
+- **I-28 可冻结**：删除 trait 与空占位、保留 `DtbMemoryMap` 与语义文档、正式 supersede I-22。实施顺序注意：`UefiMemoryMap` / `build_memmaps` 的删除范围跟随 I-29 结果，不作为 I-28 独立清理。
+- **I-29-8 仍为主阻塞项（尚未收口）**：类型 → 访问策略的显式映射。v6 修正 v5 的一处事实错误并补三架构证据：① 类型数值区间分四段（`0..15` 标准 / `0x10..0x6FFFFFFF` 保留数值区**非 OEM** / `0x70000000..0x7FFFFFFF` OEM / `0x80000000..0xFFFFFFFF` OS loader——v5 的「≥16 = OEM/OS-loader」是事实错误）；② 三架构缓存属性机制各不相同：aarch64 由 `MAIR_EL1=0xFF` 的 Attr0 **显式**定 Normal WBWA；x86-64 的 `flags_to_pte` 不设 PCD/PWT 且全仓不编程 IA32_PAT，落回默认 PAT0=WB（依赖「固件未改写 PAT0」前提）；**riscv64 的 Sv39 PTE 没有缓存位**，缓存性由平台 PMA 决定——v5「统一 WB」在 RISC-V 上是假设不是结论，已改；③ `EFI_MEMORY_RUNTIME` 是独立于 MemoryType 的属性（用运行时服务就必须处理其映射要求）。采纳四状态处置（`Available`/`ReservedMapped`/`Excluded`/`Special`）+ 第一版政策表草稿（§2.5.7.1），`RESERVED`/`UNUSABLE`/`UNACCEPTED`/未知类型不得默认进普通保留表。
+- **I-29-7 定性升级**：`ram_top` 是「起点过滤启发式」——只查起点，不证明描述符整体在 RAM 包络内（形态二：越界尾部整段收下不截断），也拦不住包络内的非 RAM 类型（形态三：包络内的 `RESERVED` 照样进保留表）。**暂不裁决，不批准 `<=`**；边界用例以 characterization test 固定当前行为，contract test 跟随最终政策表，勿让旧行为变成新契约。
+- **`bootstrap_alloc_limit` 算术更正**：规范只有一种读法（分配区间最高地址 ≤ 输入值），v5 的「三种读法」不成立。按规范传 `bound - 1` 即足够；当前传 `bound - size` 更严格（差额 `size - 1` 字节），**可能造成不必要的分配失败**（v5 未写出的后果）。两个选项待裁决（改 `bound - 1` / 保留并写成显式保守策略）；无论选哪个，现有注释「保证 base 不超过 limit」的错误规范读法必须删。
+- **路径 A 两处前提降级**：① `MemoryMapOwned` 缓冲——`allocate_pool` 无地址上界，`LOADER_DATA` 只证明资源归属，不证明落在自建页表覆盖内；退出后至分类期间的访问需核实（测试内核顺序上大概率成立，但那是顺序事实非结构保证）；分类完成后无需纳入内核 DM。② 静态输出数组——「出现在快照里」≠「内核消费期间可访问且不被 PMM 分配」；且镜像区间可能恰落 §2.5.6.1 形态一边界（不在可用表也不在保留表），「不在可用表」断言会通过但 DM 访问会缺映射。验收从五项增到**六项**（新增「输出生命周期」）；夹具自举检查扩到输出数组地址范围，不只查 root/bump。
+- **析构审查维持闭合**（五轮评审认可两层保障）；实现约束措辞收紧：「EBS 成功返回后，分类期间允许持有并读取 `MemoryMapOwned`；其析构不得尝试调用 Boot Services；分类器、输出容器与 fail-stop 路径不得触发动态分配或依赖 Boot Services 的日志输出」。
+- **v6 本文自主判断**（§2.5.7.2，超出评审意见的三条）：① `Excluded`/`Special` 处置必须可观测（计数 + 类型分布走返回值），否则重演「描述符静默消失」；② 类型→处置写成编译期穷尽 `match`（枚举 + 三个后备变体），新增标准类型变编译错误而非运行时漂移；③ `ram_top` 降级为「结果裁剪」而非「准入门槛」——先按类型得集合，再用 RAM 包络裁剪结果，三种形态各有归宿且不需新抽象。另补 §2.5.9 两处注释修正：分配器注释「固件整体回收」错误（退出后是 loader-owned 交给 OS，不自动变常规内存——该误解易被下游误用为「shim 占的内存会自动还回来」）；`build_memmaps` 注释把「内核先深拷」说成万无一失（只保证内容不被覆盖，不保证可用表干净）。
+- **测试规范同步**：§2.6.4 的「保留表符合 RAM 顶规则」已删除，改为按政策表的六条验收（只有 Conventional 进可用表 / 只有明确允许的类型进保留表 / 排他类型不得进 / MMIO 走设备路径 / 区间契约 / 类型×属性组合符合政策）。
+
+**研究顺序（v6 按五轮评审重排，§7）**：① 修文档规范事实（v6 已完成文档侧，代码注释待改）→ ② 定策略表（草稿 §2.5.7.1，待裁决）→ ③ 核三架构映射落实（部分已核，PAT/MTRR 初始化与 RISC-V PMA 假设待核）→ ④ QEMU+OVMF/AAVMF 运行样本（不称「真机」；四时点含 `Attribute`；探针用预分配输出避免自污染）+ 路径 A 六项验收实验 → ⑤ 最小接缝原型。**样本不能回答政策问题**（未知类型是否有资格进 DM、Runtime 描述符如何处理、三架构如何落实属性）——所以 ②③ 在 ④ 之前。bootmarks 路标合并不在阻塞项内。
+
+**v7 定稿修订（第六轮评审；一条是本文撤回自己的提议）**：
+
+- **v7 撤回 v6 的「`ram_top` 结果裁剪」提议（§2.5.7.3），定稿为从分类器中删除**。评审的反驳成立且关键在于：v6 没说清 RAM 包络用什么数据构造。两种取法都错——① 包络 = Conventional 并集：`AllocatePages` 本来就把页移出 Conventional，刚分配的根页表页 `[B,C)` 与包络交集**恰为空**，最需要保护的自举内存反而被裁掉；② 包络 = `[0, ram_top)`：不证明区间内每个地址是 RAM，且 `ram_top` 只反映**剩余可用**内存的末端，不代表系统 RAM 最高地址（高地址 RAM 可已被固件占用）。更深一层：UEFI 内存图本身就是更直接的分类来源（无硬件支持的地址无描述；不可访问区报 `RESERVED`），类型字段承接 `ram_top` 的保护职责（芯片组空洞 → `Excluded`），地址维度只剩 `PA_LIMIT`（架构能力检查）。
+- **I-29-8 政策表升为 v7 讨论基线**：四状态补充**两个正交维度**（分配策略 × 映射策略）——`ReservedMapped` 不再同时表达「不可分配」与「需要普通 DM」；`RUNTIME_SERVICES_*` 定为 `Special`（当前不支持运行时服务调用，其内存不可分配但不因此自动进普通 DM）；`UNACCEPTED`/`PAL_CODE` 收紧为「**存在即拒绝启动**」（与 §1.5 批评空表占位同一原则：边界处大声失败好过深处静默出错）；未知类型 = 分类错误。
+- **可观测性细化**：`Excluded` 允许统计排除（计数 + 字节 + `first_n_diagnostics` 固定容量数组：raw_type/physical_start/number_of_pages/attribute）；`Special` **不能只返回计数**（地址范围会丢，将来无法从统计数恢复）；未知类型直接触发分类错误。
+- **穷尽 `match` 的前提修正**（v6 的写法不成立）：`_ =>` 通配会吞掉新增标准类型。四条件缺一不可：`KnownMemoryType` 枚举（0–15 各一变体）+ 从 `u32` 安全转换（不得直接转枚举）+ 分类函数**无通配**穷尽 `match` + 未知值单独携带原始值。另按评审用词：`0x10..0x6FFFFFFF` 称「未分配／保留数值范围」，不称「未来标准类型集合」。
+- **`bootstrap_alloc_limit` 裁决选 A**：改 `bound - 1`（`bound` 已是安全上界，无需再损失约一个请求大小的空间）。四前提核对（bound>0 / size 页对齐非零 / 返回页对齐故规范约束落在最高字节 / bound 是半开末端而 UEFI `Memory` 含末字节——两者差一故传 `bound - 1`）。随附两条单测。
+- **`AllocatePages` 措辞再修**：必然**改变内存图内容**，但不保证描述符数量增加（整段覆盖时固件可直接改写该条类型）；§2.5.1/§2.5.2 已同步。
+- **三架构证据再收紧**：aarch64 基本闭合，留一项待查（所有 DM 叶子的 `AttrIndx` 是否都为 0）；x86-64 的「落回默认 PAT0=WB」不能写成运行时事实——boot-shim 运行在固件之后，固件可能改写过 PAT，且有效类型需与 MTRR 共同决定；riscv64 的「PTE 无缓存位」过于绝对——Svpbmt 定义了 PBMT 位（62–61），准确说法是「本仓当前编码不使用 PBMT」，PMA 平台相关并非默认 WB。OS 应自行建立依赖的内存类型环境（读/重设 IA32_PAT、检查 MTRR），不把固件状态当永久合同。
+- **`Attribute` 消费决策（新增 I-29-10）**：方案 A（仅准入校验，输出保持 `{base,len}`，不改交接协议）为第一版推荐，显式限制成文；**来源分层**（新增 I-29-11）：UEFI 类型政策与 DTB 来源政策各自成文汇入 OS 统一内存语义（§2.5.7.6 分层图）——`MemoryType+Attribute` 是 UEFI 适配器输入，不是三架构共同输入；RISC-V 走设备树不经此分类。DTB 侧政策尚未成文，需补。
+- **v7 剩余工作收敛为四件**（§7）：① 删 `ram_top`（随政策同批）；② 定稿政策表；③ 定稿三架构普通内存映射合同（与②并行，可能反向修改政策表——架构表达不了就降级 `Excluded`）；④ 明确 `Attribute` 交接方式（方案 A/B）。不再开新议题；I-28 可冻结；I-29 设计原则冻结、实施设计待四件完成。
+
+**v8 定稿修订（第七轮评审；七处，一处规范事实 + 一处会影响分类器行为）**：
+
+- **§2.5.7.3 规范推论修正**：无物理硬件支持的地址空洞**通常没有描述符**，不是「一定报告为 `RESERVED`」；「有硬件但 OS 不应访问」才必须报 `RESERVED`。删除 `ram_top` 的结论不变；i440fx 的 `RESERVED` 空洞是单点固件样本，不能推广成「所有空洞都报 RESERVED」。
+- **政策表定稿为三列**（分配策略 × 普通 DM × 失败处置），消除两处不一致：① `ACPI_NVS` 原写「ReservedMapped + 按消费者决定映射」与定义自相矛盾——改为「分配=保留；普通 DM 由 ACPI NVS 消费者存在性决定（当前无消费者→不建）」；② `Special` 各行补失败政策——`RUNTIME_SERVICES_*` **不得因当前不调用运行时服务就拒绝启动**（普通 UEFI 机器正常出现，保证不进 PMM 即可）；`PERSISTENT` 保留完整范围信息（不能只留计数）；`UNACCEPTED`/`PAL_CODE` 维持存在即拒绝启动；未知类型 = 分类错误。四状态保留为**文档术语**，代码承载分配/映射/支持状态三个独立判断。
+- **`Attribute` 准入具体化（I-29-10）**：进 `Available`/`ReservedMapped` 必须证明 `EFI_MEMORY_WB` 已设置（不得仅凭类型是 CONVENTIONAL/LOADER_DATA 就按 WB 映射）；`RUNTIME` 独立于类型判断（`CONVENTIONAL + RUNTIME` 组合不得进 `Available`，宿主测试必测）；`NV`/`SP` 独立处理；`RO/RP/XP` 是能力位不是当前权限；ISA 位不得静默忽略；`EFI_MEMORY_ATTRIBUTES_TABLE` 登记为未来边界。
+- **RISC-V 补 PBMTE 启用链（I-29-8 三架构合同）**：使用 PBMT 需同时验证扩展实现 + `menvcfg.PBMTE=1`（S-mode 可用性由 M-mode 位控制）+ OpenSBI 是否已建立；且 PBMT 取值只有 PMA/NC/IO，**没有「强制 WB」的取值**——普通 RAM 缓存性仍依赖平台 PMA。
+- **取消 `ram_top` 的 characterization test**（v7 曾提议保留）：旧行为已被 §2.5.7.3 判定为错误而非「待裁决」，保留测试席位反而增加维护成本。改为 contract test 直接验证新政策（5 条用例，「旧 `ram_top`」仅作测试数据构造参数）。
+- **两遍扫描改出新理由**：旧理由（第一遍算 `ram_top`）随删除失效；新理由是事务性（先验证全部待输出描述符再写输出）。是否保留两遍归输出接缝原型决定。
+- **`bootstrap_alloc_limit` 保留 `size` 参数**（v7 示例丢掉了原 `checked_sub(size)` 的请求校验，v8 修正）：`size > 0` / 页对齐 / `size <= bound` 三断言 + `bound - 1`；`PA_LIMIT` 与 `bound` 统一半开末端语义。
+- **DTB 来源政策明确为 I-29-11 验收**：分层图中 DTB 侧已核事实只有 `/memory` 的 `reg` 解析 + 固件前缀裁剪；`reserved-memory` 子树、`no-map`、重叠检查**无证据**，且 DTB `reserved-memory` 不能直接等同 UEFI `ReservedMapped`。登记为后续独立问题，不阻塞 UEFI 侧实现。
+
+**v9 定稿修订（第八轮评审；四个实现缺口 + 两个事实修正 + 三处残留清理）**：
+
+- **I-29-13 新增：数据合同贯通**。v8 要求属性准入却没把 `attribute` 放进 `DescriptorRef`——「唯一解析器」与「属性准入」两条要求没接上。v9 定稿数据合同：`DescriptorRef { raw_type, physical_start, number_of_pages, attribute }`，由唯一生产解析器完成字段边界验证与 `physical_start` 4 KiB 对齐校验（UEFI 对描述符字段有明确对齐要求，现有代码只查了 `descriptor_size` 对齐）。**I-29-2/3 冻结前必须补上**。
+- **I-29-14 新增：特殊范围输出落点**。三行「保留但不映射」（ACPI_NVS / RUNTIME_SERVICES / PERSISTENT）不属于现有两格；v9 裁决加 side list 或第三种 sink 写入承载完整范围，`PERSISTENT` 必须有范围清单（不采用「有意遗忘」选项）。**与接缝原型互为前置**——结果形状定了才能定政策表。
+- **I-29-12 新增：PA 表达能力 vs DM 覆盖分两个合同**。`PA_LIMIT` 只查架构页表可表达范围（半开语义）；DM 覆盖由映射规划/验收层独立保证。`ReservedMapped` 与 `Available` 的每个区间都需 DM 覆盖验收（可分配性与可访问性不能脱节）；分类器不做覆盖检查，但交接与映射合同必须补上。
+- **I-29-10 补穷尽属性表（§2.5.7.7）**：补 `WP`（记录，不静默忽略）、`MORE_RELIABLE`/`CPU_CRYPTO`（登记「当前不解释」）；`ISA_VALID` **出现即分类错误**（fail-closed，三架构都不解释 ISA 掩码）；`WB` 缺失逐类处置——`CONVENTIONAL` 不进 `Available`，`LOADER_DATA` 不能一刀切（引导装载仍需读取，走恒等窗口是否可行需逐腿核实）；`CONVENTIONAL + RUNTIME` 完整结果 = 不进 PMM、不建普通 DM、保留完整范围（`RUNTIME` 不禁止普通 DM，但项目当前不支持运行时服务）。
+- **`AllocatePool` 扩容来源按规范收紧**：UEFI 明确扩容从 `EfiConventionalMemory` 取页——§2.5.3 三情形收成两行，「扩容取自非常规区域」不是规范允许的分支。风险更确定：扩容一旦发生，backing pages 必然落在旧快照可用表里。待测问题收窄为三个：是否扩容、扩多少页、是否落入变化窗口。
+- **三处版本残留清理**：§6.11 / §4 事实 23 / 附录 A 的 RISC-V 旧说法统一为「本仓 `flags_to_pte` 不编码 PBMT（Svpbmt 定义了 62–61 位，S-mode 受 `menvcfg.PBMTE` 控制）」；x86 统一为条件句「若 PAT0 未被固件改写且 MTRR 允许，才表现为 WB」；§6.9 旧公式解释改为「当前代码快照，目标实现 `bound - 1`，真正的不变量是 `base + size <= bound`」——不再为 `bound - size` 背书。
+- **§5.2 文档矛盾修正**：I-29-8 从「v8 政策表定稿 + 待逐行批准」的冲突表述统一为「政策基线已形成，尚待最终批准」。
+
+**v9 剩余工作（第八轮评审明确：不再泛化抽象设计）**：① 修正分类输入与输出合同（I-29-13/14/12）；② 完成属性政策矩阵（穷尽到「五位必居其一」）；③ 清理事实摘录与注释（§6.11/事实23/附录A/§6.9，v8-v9 已完成文档侧）；④ 两个小原型——生产解析器接静态 sink（确认零分配与容量错误）、路径 A 跑通（退出后缓冲、输出数组生命周期、映射覆盖）。
+
+**v10 定稿修订（第九轮评审；一处规范事实错误 + 四项合同补齐）**：
+
+- **`EFI_MEMORY_WP` 规范归类修正**：它是**缓存性能力位**（write-protected cacheability policy，UEFI 2.5+ 用法），不是与 `RO`/`RP`/`XP` 同类的物理保护状态——v9 把它放在「物理内存保护属性」下又与 RO/RP/XP 区分，是分类错误。确立术语纪律：不得把「保护能力」与「缓存策略能力」混称权限属性（否则讨论 PAT/MTRR 与 MAIR 时两种语义会搅在一起）。
+- **规范版本基线显式定为 UEFI 2.10**：穷尽表只承诺覆盖 2.10；2.11+ 新位（如 `EFI_MEMORY_HOT_PLUGGABLE`）按未知属性政策 fail-closed，不为「穷尽」引进整个 2.11 体系；升级是独立政策决定。补 `ISA_MASK` 非零而 `ISA_VALID` 为零的组合同样判分类错误。
+- **`WB` 缺失逐类处置重写（无后门）**：v8 的「其余类型不新增后果」违反总原则——`LOADER_CODE`/`BOOT_SERVICES_*`/`ACPI_RECLAIM` 缺 WB 仍会进普通保留映射。v10 补全逐行：全部「不建普通 DM + 范围进 side list」，明确**不存在从属性准入失败绕回普通映射的后门**。属性裁决顺序成文：先未知/不支持条件，再独立属性（`RUNTIME`/`NV`/`SP`）覆盖，最后 WB 准入。
+- **side list 生命周期修正**：v8 的「为未来保留」不成立——不进 KernelInfo 也不传内核的清单没有为未来内核功能保留范围。v10 定稿：**shim 内部诊断输出，不构成跨引导边界的保留协议**；未来内核消费这些区域必须扩展 KernelInfo 或另建交接途径。成员由分配 × 映射策略决定，不写死三个类型名。
+- **I-29-15 新增：两遍扫描的 preflight 合同**。Pass 1 必须预检**所有**第二遍可能失败的条件（可用/保留/side list 容量、wire+semantic 双写容量、整数转换）——v8 的「两遍天然事务性」未闭合；Pass 2 不可失败的提交合同。给 sink 示意合同（`preflight`/`push_available`/`push_reserved_mapped`/`push_unmapped_reserved`/`finish`）。
+- 版本标记清理：§2.6.2/§2.5.7.7/§2.5.7.8/§5.2/§7 的「v8 修正」字样更新为 v9/v10。
+
+**v10 剩余工作（五件）**：§5.3 表更新——① 输入输出合同（I-29-13/14/12）；② 属性政策矩阵（基线 2.10 + WP 归类 + ISA 组合 + 裁决顺序 + 无后门）；③ 事实摘录清理（v8/v9 已完成文档侧）；④ 两个小原型；⑤ preflight 合同（随原型 ① 落地）。**政策表逐行批准时按「任何 Type × Attribute 组合必须唯一确定输出」验收**。
+
+**v11 定稿修订（第十轮评审；五类修订 + 宣告冻结分层——设计方向收口，转原型）**：
+
+- **补齐独立属性的「最终普通映射结果」（§2.5.7.7 新表）**：v10 只写清了 `CONVENTIONAL + RUNTIME` 的完整结果，`NV`/`SP` 只定分配策略未定映射策略，`RUNTIME` 未逐类展开——与「side list 成员由分配策略 × 映射策略决定」自相矛盾。v11 定稿统一规则：`RUNTIME`/`NV`/`SP` 任一命中 → 不进 PMM + 不建普通 DM + 范围进 side list，对**所有** MemoryType 统一适用；评审点名的三个组合（`CONVENTIONAL+NV`、`CONVENTIONAL+SP`、`LOADER_DATA+RUNTIME`）逐行落定。
+- **属性组合测试系统化（§7）**：v10 的「随机采样若干组合」降为补充手段；政策定义过的维度交叉（WB 有无 / `RUNTIME` / `NV` / `SP` / `ISA_VALID`×`ISA_MASK` 合法非法组合 / 未支持属性位 × 全部受影响 MemoryType）必须穷测——否则「任何组合唯一确定输出」只是设计宣言。
+- **preflight 合同失败语义修正（§2.6.2）**：v10 示意合同的 `finish(self) -> Result<Classification, OutputError>` 与「Pass 2 不可失败提交」在类型表达上自相矛盾。v11 裁决为**类型层面表达**（`finish` 预检全过后返回普通结果，或 Pass 1 产出经验证的提交凭证再进入写入），具体形态不在文档预决，归原型 ① 比较。
+- **`WP` 规范背景补全（§2.5.7.7）**：UEFI 2.10 仍保留 `EFI_MEMORY_WP` 历史上的 "Physical memory protection attribute" 标签，同时注明它通常用于缓存策略并区分 `RO`/`WP` 的现代用途——保留这一规范背景，避免读者误以为规范从未如此归类；v10 的「缓存性能力位」归类结论不变。
+- **清理 `ram_top` 残留句（§2.5.6.1）**：「最多在类型策略定案后作为辅助过滤」与 §2.5.7.3 的撤回裁决矛盾，属版本残留，已删。
+- **I-29-16 新增（§5.2）：三架构普通 WB 映射的最低保证**。UEFI 2.10 的 `Attribute` 是区域支持的属性能力而非当前设置，`EFI_MEMORY_WB` 只证明固件声明支持，不证明项目最终建立的映射是 WB（x86 PAT/MTRR 未读取校验、aarch64 DM 叶子 `AttrIndx` 未确认、riscv64 不编码 PBMT 且 PMA 平台相关）。三架构各自写成可验收合同（x86：PAT/MTRR 前提的读取或自行初始化；aarch64：全部叶子 `AttrIndx` 核查；riscv64：PMA 声明），与原型并行——该合同成立前政策表不得宣告完全冻结。
+
+**冻结分层（第十轮评审裁决，本文采纳）**——**已冻结**：I-28（含正式 supersede I-22）；I-29 的唯一生产解析器/唯一分类规则、零分配分类、预分配输出、`ram_top` 从分类器删除、UEFI 与 DTB 各自适配汇入共同 OS 内存语义、`PA_LIMIT` 与 DM 覆盖两个合同分离、`DescriptorRef` 含原始 `Attribute` 并统一几何校验、属性准入方案 A（不扩展公共交接协议）、side list 语义（shim 内部诊断输出，非内核交接协议）。**暂不冻结**：UEFI 2.10 属性政策矩阵（等逐行批准 + 原型 ① 验证）、三架构普通 WB 映射合同（I-29-16）、Pass 1/Pass 2 具体 API（目标合同冻结，API 随原型）；side list 的具体存储/容量/sink API 随原型确定；DTB `reserved-memory`/`no-map` 仍为 I-29-11 后续独立问题，不阻塞 UEFI 分类器。**v11 封存为阶段性基线，不再有第十一轮纯文档讨论。**
+
+**v11 剩余工作（三件事 + 两个原型）**：① 补齐 `NV`/`SP`/`RUNTIME` 的映射去向（§2.5.7.7 表已落文，随政策表逐行批准收口）；② 三架构普通内存映射最低保证 → 可验收合同（I-29-16，与原型并行）；③ preflight API 失败语义的类型层面表达 + 原型验证。原型 ① = 生产解析器接静态 sink（零分配、容量错误、side list 第三种写入形状、preflight 两种形态比较）；原型 ② = 路径 A 端到端（退出后缓冲、输出数组生命周期、映射覆盖，§2.7 六项验收）。代码侧待改随实施：`bootstrap_alloc_limit` 改 `bound - 1` + 删错误注释；`UefiPoolAllocator`/`build_memmaps` 注释修正（§2.5.9）；`classify_map` 落地类型政策与属性准入；I-22 正式 supersede 记录。
+
+**v12 终审修订（第十一轮终审；三处修订 + 正式冻结宣告——设计讨论阶段结束）**：
+
+- **裁决顺序细化（I-29-17 新增，目标合同冻结）**：v11 的「任意 Type + RUNTIME/NV/SP」与 §2.5.7.1 的类型强制处置之间优先级悬空（`RESERVED+NV`/`UNUSABLE+SP`/`MMIO+RUNTIME`/`PAL_CODE+NV` 四组合无答案）。v12 落定五步顺序：① 未知/ISA fail-closed → ② `UNACCEPTED`/`PAL_CODE` 拒绝启动 → ③ 类型强制处置（`RESERVED`/`UNUSABLE` 排除、`MMIO`/`MMIO_PORT_SPACE` 设备路径）——**类型胜过属性**（类型回答「是什么」，属性回答「怎么用」；属性无法把「不可触碰」改判成「因政策不映射」，误进 side list 会把排除原因记成属性原因）→ ④ 普通内存候选 × 独立属性（候选外延 = `CONVENTIONAL`/`LOADER_*`/`BOOT_SERVICES_*`/`ACPI_*`/`RUNTIME_SERVICES_*`/`PERSISTENT`）→ ⑤ WB 准入。四组合逐行落定：`Excluded`/`Excluded`/设备路径/拒绝启动。
+- **ISA 测试维度与政策表对齐（§7）**：v11 维度表把 `ISA_VALID=1` 标成「合法」与 §2.5.7.7「出现即分类错误」矛盾；v12 改三分支（`ISA_VALID` 出现无论掩码 / `ISA_MASK`≠0 且 `ISA_VALID`=0 / 两者均未出现）并分别写明预期结果（前两分支分类错误，第三分支正常裁决）。
+- **§7 工作清单与 §5.3 对齐**：删除残留旧「四件事」清单（含已冻结的「删 `ram_top`」）；§7 重写为冻结后收敛路径 = 五步执行序列（原型 ① → 原型 ② ∥ 三架构 WB 合同 → 政策矩阵逐行批准 → 冻结实现规格进生产实现）+ 穷测矩阵（补「裁决顺序组合」维度行，四具名用例必测）。
+- **正式冻结宣告（终审裁决落文）**：**I-28 设计冻结**（删除 trait 与空占位、保留 `DtbMemoryMap` 与语义说明、正式 supersede I-22——记录属实施动作）；**I-29 架构设计与目标合同冻结**（唯一解析/分类、零分配 + 预分配输出、`ram_top` 删除不留 characterization test、方案 A、PA/DM 两合同、`DescriptorRef` 含 attribute、side list 语义、五步裁决顺序）。**暂缓冻结（各有明确验收门，不是架构没想清楚）**：UEFI 2.10 属性政策矩阵逐行批准（凭原型 ① + 三架构证据）、三架构普通 WB 合同（I-29-16）、Pass 1/Pass 2 具体类型形态（目标合同已冻结，归原型 ①）、路径 A 端到端运行验收（API 可行性已核实，归原型 ②）。**不再有纯文档讨论轮，剩余问题由真实代码和实验裁决。**
+
+**证据与方案展开**：`rewrite-notes/01-stage-kernel/01-design-note-memmap-consolidation.md`（**v12 冻结版**：篇头冻结宣告、§2.5.7.7 五步裁决顺序 + 四组合表、§5.2 I-29-17、§5.3 执行序列、§7 穷测矩阵三分支 ISA + 裁决顺序行）。**状态**：I-28 设计冻结；I-29 架构设计与目标合同冻结；属性政策矩阵 / 三架构 WB 合同 / 具体 API / 路径 A 验收暂缓（各有验收门）；**下一步 = 原型 ① 与 ②**。
+
 ### D-71：`BootForm::source_path` 悬空 + 测试无存在性检查
 
 路径改 `os/libs/minix-boot/src/handoff.rs`；`test_each_boot_form_has_distinct_source` 补五条落点的存在性断言；顺带核其余四条落点。证据：`ls os/boot-shim/src/handoff.rs`（不存在）vs `ls os/libs/minix-boot/src/handoff.rs`。验收：`cargo test -p minix-boot` 全绿。**状态**：✅ 01TODO-B1（路径已改，五落点 `repo_root.join(source_path()).exists()` 断言入测试；首跑以错拼 `../..` 的红验证断言有鉴别力）。
@@ -255,6 +384,7 @@ L1422/L2624「还没裁决/尚未定案」→「OQ-N6 已裁（每进程独立�
 | **§4.6 `IDENTITY_MAP_END` 措辞**（本轮新登记） | 正文写"`IDENTITY_MAP_END`（lib.rs 里固定的低地址上界）"——D-60 闭合后 kernel 侧已是 `use minix_arch::BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END` 别名，"lib.rs 里固定"失真；改为"唯一权威在 `minix-arch`（`BOOT_IDENTITY_MAP_END`），kernel 侧是别名" | D-60 回勾行（§3） |
 | **I-25 追加样例：`globals.rs` 陈旧注释**（本轮新登记） | `FREE_MEMMAP` 上 `#[allow(dead_code)] // SMP memmap infra (checklist D-17); not yet wired to all call sites`——"checklist D-17"与 `todo.md` 的 D-17（IPC 过滤）不同指、锚点不可达；且 `FREE_MEMMAP` 已被 `kmain` A.2 使用，"not yet wired" 多半过期（`allow` 现在可能只为 mock 构建保留）。落地时核实 `allow` 是否仍必要，注释按实况改写 | I-25 |
 | I-21 | 篇头「路径约定」13 篇重复上收 | ✅ 已上收（I21HOIST 批，用户授权关闭）：全局化入 README「全局阅读约定」，13 篇篇头改一句指针 |
+| **I-30（本轮新登记）** | **01 篇正文补「内存图生产的四层责任」概念讲解**。第十轮评审收尾语点名了这件事："你这份文档已经把一个很容易被混淆的问题拆得相当清楚了——UEFI 固件事务、描述符解析、OS 内存语义分类、内核映射与分配，是不同层次的责任。现在需要做的是让这些合同经受代码和实验检验，而不是继续给它们添加抽象层。" 设计笔记 v11 已把四层拆开（§0.3 MapKey 机制 + §1.2 三条结构原因 = 固件事务层；§2.6.2 数据合同 = 解析层；§2.5.7.1 政策表 + §2.5.7.6 分层图 + §2.5.7.7 属性表 = 分类层；I-29-12 两合同 + §0.4 消费方 = 映射与分配层），但 01 篇正式文档还没有这段教学：§3.4「内存图交付成两张表」段（L1474-1487）只讲两张表的形状与五条腿来源，§4.2 只给三条现行分流规则——四层各自的责任边界（分类判据为何不能靠地址 / 固件事务为何绑死分类时机 / DM 覆盖与可分配性为何是另一个合同）未成段讲解。**落点**：§3.4 该段扩写或紧随其后新增小节。**时序约束**：四层概念讲解可先行（分层模型已获评审确认、属冻结方向），但涉及政策细节的句子不得先于 I-29 政策表批准承诺未冻结内容——先行段落只讲责任边界与判据，具体政策行文指设计笔记 v11 对应节；I-29 实施落地后 §4.2 分流规则叙述按四层模型同批改写（属性准入 / side list / WB 缺失处置都会改现行三条规则）。**验收**：读者不开设计笔记即可从 01 篇理解四层责任划分及其理由；事实断言带锚点（设计笔记节号 + 代码符号）；doc-style-lint / doc-ref-check --check / anchor-resolve 全绿 | I-29 实施批（§4.2 同批部分） |
 
 > **2026-10-29 回勾（01TODO-B1）**：§5.2.1 计数漂移与 §4.6 `IDENTITY_MAP_END` 措辞两项已在正文闭合。前者除登记的三处（opensbi 13→12、`15+13+1=29`→`15+12+1=28`、paging 14→15）外，复算还纠正了 minix-boot 总数（23→32，原算式漏 `memmap_source.rs` 的 9 条）并把 boot-shim 的 28 口径写准（须带 `--features test-all`）；后者两处（§4.6 Step 1 与 §1 的同一措辞）均改为「唯一权威在 `minix-arch` 的 `BOOT_IDENTITY_MAP_END`，kernel 侧是别名」。
 
