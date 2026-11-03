@@ -119,6 +119,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百零七（`date -a` 接通：PM 渐进调整车道）
+
+- **这一笔的射程**：not-wired 清单里 `date -a` 一处——C 的 `-a`（`date.c:346-350`）：新时间与当前时间的差值走 `adjtime`，显示的时间保持未调整值（校正在管理器里渐进发生）。C 的 `adjtime`（`libc/sys/adjtime.c:13-31`）就是 `PM_CLOCK_SETTIME` 的 `now=0` 车道（`mess_lc_pm_time` 的载荷注释：0 = gradual mode）——与绝对设同一调用、同一消息，只是 `now` 车道与载荷语义不同（差值可为负，`u64` 车道按 C `time_t` 的补码同字节）。
+- **落码**：`minix-sys::pm::clock_adjust_via`（now=0 + CLOCK_REALTIME + 有符号差值）与顶层 `clock_adjust`（跨界公共件，C 板 §6 已登记）；`bin/date.rs` 的 `-a` 腿：`delta = new_time - epoch` 走调整，成功后显示未调整的当前值（对位 C 的 `tval` 不更新），失败走 C 的 `err(EXIT_FAILURE, "adjtime")` 三段形；`-j` 先于 `-a` 的次序保持 C 原样。文档残差段改写：wtmp/syslog 记账维持登记（本树无 wtmp 表）。
+- **门**：`cargo test -p minix-proctools` → 库 **94/0** + `date_face` **3/0**（新增 `-a` 宿主面钉：trap 车道失败 → `date: adjtime: ` 三段形 + 退 1，errno 数字属车道不钉）；`cargo test -p minix-sys --lib` → **342/0**；`rustfmt --edition 2024` 触及叶文件清；`cargo build --target x86_64-unknown-none --release --bin date` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `f950b5067`。
+
 ## 批次五百零六（`rev` 报错腿落地：逐行 UTF-8 检查式走表与 EILSEQ 腿）
 
 - **这一笔的射程**：跨板裁决 §2.7 的 `rev` 方向通过件——「实现非法多字节序列的报错腿（不再静默输出空内容并返回成功），实现过程中必须补齐多字节非法序列测试并确定所采用的解码契约」。C 的形：`fgetwln` 在首个不可解码行返回 NULL 并置流错误旗标（`rev.c:92-103`）——已解码前缀照印、`warn("%s", filename)` 报流名、退出 1。现场：本壳对非法 UTF-8 做 `unwrap_or("")`——整输入静默变空输出、退出 0，正是裁决点名的缺陷形。

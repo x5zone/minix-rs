@@ -1078,6 +1078,12 @@ pub fn clock_settime(clk_id: i32, sec: u64, nsec: i64) -> Result<(), Errno> {
     pm::clock_settime_via(&ipc::DirectTrapTransport, clk_id, sec, nsec)
 }
 
+/// Adjusts the real-time clock gradually (C: `adjtime` — the gradual mode
+/// of the same PM call; a negative delta winds the clock back).
+pub fn clock_adjust(delta_sec: i64, delta_nsec: i64) -> Result<(), Errno> {
+    pm::clock_adjust_via(&ipc::DirectTrapTransport, delta_sec, delta_nsec)
+}
+
 /// Flushes one open file (C: `fsync`, `minix3/minix/lib/libc/sys/fsync.c` —
 /// a VFS `FSYNC` call carrying the fd).
 pub fn fsync(fd: Fd) -> Result<(), Errno> {

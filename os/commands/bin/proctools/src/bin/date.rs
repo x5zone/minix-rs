@@ -17,9 +17,9 @@
 //! (`[[[[[[CC]yy]mm]dd]HH]MM[.SS]`, C `setthetime`, `date.c:185-331`)
 //! composes over the current fields and calls `clock_settime(CLOCK_REALTIME)`
 //! (the PM absolute-set call, `clock_settime.c:11-27`); `-j` interprets the
-//! operand without setting. Declared residual: `-a`'s gradual-adjust leg
-//! (`adjtime`, `date.c:346-350`) and the wtmp/syslog accounting lines — an
-//! operand with `-a` declines by name instead of pretending to adjust.
+//! operand without setting. `-a` adjusts gradually through the same PM
+//! call's gradual mode (`adjtime`, `date.c:346-350`); the wtmp/syslog
+//! accounting lines stay a declared residual (no wtmp table in this tree).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -140,8 +140,20 @@ fn run() -> ! {
             display(new_time, format_operand);
         }
         if aflag {
-            // The gradual-adjust leg is `adjtime` — still unwired.
-            fail("date: -a adjust is not wired (adjtime pending)");
+            // C's `-a` leg (`date.c:346-350`): the delta between the new
+            // time and the current one goes through `adjtime`, and the
+            // displayed time stays the unadjusted one — the correction
+            // happens gradually in the manager.
+            let delta = new_time - epoch;
+            if let Err(code) = minix_sys::clock_adjust(delta, 0) {
+                // C's `err(EXIT_FAILURE, "adjtime")` (`date.c:350`).
+                let mut out: Vec<u8> = b"date: adjtime: ".to_vec();
+                out.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+                out.push(b'\n');
+                support::warn(&out);
+                support::terminate(1);
+            }
+            display(epoch, format_operand);
         }
         // The absolute set: `clock_settime(CLOCK_REALTIME, {new_time, 0})`
         // (`date.c:351-354`; the PM call is the same one `settimeofday`

@@ -778,6 +778,34 @@ pub fn clock_settime_via(
     .map(|_| ())
 }
 
+/// Adjusts the real-time clock gradually (C: `adjtime`,
+/// `minix3/minix/lib/libc/sys/adjtime.c:13-31` — the same `PM_CLOCK_SETTIME`
+/// call with `now = 0`, the gradual mode, and the delta in
+/// `sec`/`nsec`). A negative delta winds the clock back slowly; the delta
+/// rides the `u64` lane as the two's-complement bytes C's `time_t` carries.
+pub fn clock_adjust_via(
+    transport: &impl IpcTransport,
+    delta_sec: i64,
+    delta_nsec: i64,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: the same `mess_lc_pm_time` overlay as [`clock_settime_via`]
+    // (`ipc.h:574-583`), with the `now` lane at zero.
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&(delta_sec as u64).to_ne_bytes());
+        message.m_u.raw[8..12].copy_from_slice(&0i32.to_ne_bytes()); // CLOCK_REALTIME
+        message.m_u.raw[12..16].copy_from_slice(&0i32.to_ne_bytes()); // now = 0: gradual
+        message.m_u.raw[16..24].copy_from_slice(&delta_nsec.to_ne_bytes());
+    }
+    perform_syscall(
+        transport,
+        pm_endpoint(),
+        minix_types::PM_CLOCK_SETTIME,
+        &mut message,
+    )
+    .map(|_| ())
+}
+
 /// Starts a system service with dropped privileges (server-side call).
 ///
 /// C: `srv_fork` (`minix3/minix/lib/libsys/srv_fork.c:5-14`): clear a

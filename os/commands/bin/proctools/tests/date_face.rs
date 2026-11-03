@@ -52,3 +52,27 @@ fn a_rejected_operand_prints_the_badcanotime_block_and_exits_one() {
          Usage: date [-ajnu] [-d date] [-r seconds] [+format] [[[[[[CC]yy]mm]dd]HH]MM[.SS]]\n"
     );
 }
+
+/// The `-a` gradual-adjust leg on the host: the transport is the trap face,
+/// which fails — C's `err(EXIT_FAILURE, "adjtime")` (`date.c:350`) then
+/// prints the three-part line and exits 1. The exact errno behind the
+/// sentence belongs to the transport, so the pin is the shape, not the
+/// number.
+#[test]
+fn the_adjust_leg_reports_the_adjtime_sentence_and_exits_one() {
+    let out = Command::new(date_bin())
+        .args(["-a", "12101030"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn date");
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.code() == Some(1),
+        "exit={:?} stderr={err}",
+        out.status.code()
+    );
+    assert!(
+        err.starts_with("date: adjtime: ") && !err.ends_with(": \n"),
+        "该是 err(3) 三段形：{err}"
+    );
+}
