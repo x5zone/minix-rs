@@ -7,7 +7,10 @@
 //! output.
 //!
 //! Declared gaps (10-doc-man-tools.md §5): `-r`/`-h`/`-A`/`-B`/`-C`/`-R` and
-//! similar faces answer "option not wired"; months are accepted as numbers only
+//! similar faces answer "option not wired"; `-h` arms the highlight whose
+//! escape pair needs a terminfo facility this tree has not built, so its
+//! output is byte-identical with the plain form (C's shape without a capable
+//! TERM); months are accepted as numbers only
 //! (C's month-name parsing was not ported, and C itself only accepts numbers
 //! too).  `-y` (force the year view), `-j` (day of year), `-3` (previous/current/
 //! next month triple) and `-d` (week start day 0..6) are wired.
@@ -141,7 +144,15 @@ fn run() -> ! {
                         }
                         k = rest.len(); // -d consumes its value and ends this token scan
                     }
-                    // The remaining C flags (-h r A B C R) each stay unwired.
+                    // `-h` arms the highlight (`cal.c:252-254` calls
+                    // `init_hilite`, which bumps the counter and looks up the
+                    // terminal's attribute strings). This tree has no
+                    // terminfo facility, so the escape pair stays unset —
+                    // exactly C's shape when TERM is missing or dumb — and
+                    // the rendered output is byte-identical with or without
+                    // the flag. The remaining C flags (-r -R -A -B -C) each
+                    // stay unwired.
+                    'h' => {}
                     _ => fail("option not wired"),
                 }
                 k += 1;

@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百零三（`cal -h` 接通：无 terminfo 环境的恒等形态）
+
+- **这一笔的射程**：not-wired 清单里 `cal -h` 一处——C 的 `-h` 调 `init_hilite`（`cal.c:252-254`、`:891-908`）：计数增一并经 `setupterm` 取属性串；**无可配 TERM 或非 tty 时转义对为空**，`ascii_day` 照常裸渲染（`cal.c:517` 的标记只在该对存在时生效）。本树无 terminfo 设施——这正是 C 无可配 TERM 的同一形态，故接线 = 接受旗标，输出与不带 `-h` 逐字节相同（测试环境里 C 可观察的唯一形状）。
+- **落码**：`bin/cal.rs` 的选项环接 `'h'`（含文档更新：转义腿是 terminfo 设施残差）；新建 `tests/cal_face.rs` 三枚恒等钉（默认/双 `-h` 的 reverse 形/年操作数形，各自与不带 `-h` 逐字节相同）。
+- **门**：`cargo test -p minix-doctools` → 库 **70/0** + `cal_face` **7/0**（含既有 what 面）；clippy 触及文件零新增；`rustfmt --edition 2024` 两文件清；`cargo build --target x86_64-unknown-none --release --bin cal` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `999d9449d`。
+- **登记与余量**：转义对的真实发射（enter_bold/reverse 经 terminfo）随命令面引入 terminfo 设施时补；`-j`（儒略布局族）、`-r/-R`（历法改革）、`-A/-B/-C`（上下文月幅）维持各自登记。
+
 ## 批次五百零二（`rm -P` 接通：DSS 三遍覆写 + 校验读回）
 
 - **这一笔的射程**：not-wired 清单里 `rm -P` 一处——C 的 `rm_overwrite`（`rm.c:361-451`）在 unlink 前对普通文件逐地址覆写：随机字符一遍、`0xff` 一遍、`0x00` 一遍（读回校验）、随机 32 位字一遍（C 明注不校验），四遍各带 fsync+回卷+`sync()`；受害者经打开描述符重查 dev/ino（被换文件答 EPERM），任一失败 `warn("%s", file)` 并跳过本次移除。`-P` 在 C 的单条腿（`rm.c:341-344`）与递归臂（`:267-270`）都生效。
