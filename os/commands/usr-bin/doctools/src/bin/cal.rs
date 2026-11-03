@@ -19,20 +19,22 @@
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
 mod support;
-use minix_doctools::cal::{DayStyle, Reckoning, render_month, render_triple, render_year};
-use minix_sys::write;
-
-const STDOUT: i32 = 1;
-const STDERR: i32 = 2;
+use minix_doctools::cal::{
+    DayStyle, Reckoning, render_month, render_range, render_triple, render_year,
+};
 
 fn fail(message: &str) -> ! {
-    let _ = write(STDERR, message.as_bytes());
-    let _ = write(STDERR, b"\n");
+    // The hosted stderr twin (`support::warn`) — the raw `write` leg exists
+    // only for the target face, and the face tests need the sentence.
+    let mut line = message.as_bytes().to_vec();
+    line.push(b'\n');
+    support::warn(&line);
     support::terminate(1)
 }
 
@@ -64,6 +66,20 @@ enum View {
     Month(i32, u32),
     Triple(i32, u32),
     Year(i32),
+    /// `-A`/`-B`/`-C`: the inclusive month range around the face month
+    /// (`cal.c:346-...`'s `monthrange` with before/after).
+    Range((i32, u32), (i32, u32)),
+}
+
+/// Move `(year, month)` by `delta` months (negative allowed), keeping the
+/// month in 1..=12 — the arithmetic C does with `startyear`/`startmonth` and
+/// `endyear`/`endmonth` (`cal.c:378-383`).
+fn step_month(year: i32, month: u32, delta: i64) -> (i32, u32) {
+    let index = year as i64 * 12 + (month as i64 - 1) + delta;
+    (
+        ((index.div_euclid(12)) as i32),
+        (index.rem_euclid(12) as u32 + 1),
+    )
 }
 
 /// Decide the face from operands, the `-y`/`-3` flags, and the current
@@ -76,15 +92,28 @@ fn choose_view(
     operands: &[&str],
     force_year: bool,
     force_triple: bool,
+    after: u32,
+    before: u32,
     now: (i32, u32),
 ) -> Result<View, &'static str> {
+    let month_view = |y: i32, m: u32, triple: bool| -> View {
+        if triple {
+            View::Triple(y, m)
+        } else if after != 0 || before != 0 {
+            View::Range(
+                step_month(y, m, 0i64 - before as i64),
+                step_month(y, m, after as i64),
+            )
+        } else {
+            View::Month(y, m)
+        }
+    };
     match operands {
         [] => Ok(if force_year {
+            // `-y` resets the context window (`cal.c:326-327`).
             View::Year(now.0)
-        } else if force_triple {
-            View::Triple(now.0, now.1)
         } else {
-            View::Month(now.0, now.1)
+            month_view(now.0, now.1, force_triple)
         }),
         [one] => match (*one).parse::<i32>() {
             Ok(y @ 1..=9999) => Ok(View::Year(y)),
@@ -96,11 +125,7 @@ fn choose_view(
                 _ => return Err("bad month"),
             };
             match (*year).parse::<i32>() {
-                Ok(y @ 1..=9999) => Ok(if force_triple {
-                    View::Triple(y, m)
-                } else {
-                    View::Month(y, m)
-                }),
+                Ok(y @ 1..=9999) => Ok(month_view(y, m, force_triple)),
                 _ => Err("bad number"),
             }
         }
@@ -115,6 +140,8 @@ fn run() -> ! {
     let mut style = DayStyle::Month;
     let mut force_year = false;
     let mut force_triple = false;
+    let mut after: u32 = 0;
+    let mut before: u32 = 0;
     let mut week_start: usize = 0;
     let mut i = 1;
     while i < args.len() {
@@ -144,6 +171,34 @@ fn run() -> ! {
                         }
                         k = rest.len(); // -d consumes its value and ends this token scan
                     }
+                    // `-A`/`-B`/`-C` (`cal.c:232-245`): the context window
+                    // in months after / before / both ways; the value rides
+                    // the cluster tail or the next token, through C's
+                    // `getnum` (non-empty, fully consumed, <= INT_MAX;
+                    // otherwise `bad number: <text>`, `cal.c:869-889`).
+                    'A' | 'B' | 'C' => {
+                        let letter = rest[k];
+                        k += 1;
+                        let raw: String = if k < rest.len() {
+                            rest[k..].iter().collect()
+                        } else {
+                            i += 1;
+                            args.get(i).copied().unwrap_or("").into()
+                        };
+                        let value = match raw.parse::<i64>() {
+                            Ok(v) if !raw.is_empty() && v >= 0 && v <= i32::MAX as i64 => v as u32,
+                            _ => fail(&format!("bad number: {raw}")),
+                        };
+                        match letter {
+                            'A' => after = value,
+                            'B' => before = value,
+                            _ => {
+                                after = value;
+                                before = value;
+                            }
+                        }
+                        k = rest.len();
+                    }
                     // `-h` arms the highlight (`cal.c:252-254` calls
                     // `init_hilite`, which bumps the counter and looks up the
                     // terminal's attribute strings). This tree has no
@@ -163,7 +218,14 @@ fn run() -> ! {
         i += 1;
     }
 
-    let view = match choose_view(&operands, force_year, force_triple, now_epoch_days_civil()) {
+    let view = match choose_view(
+        &operands,
+        force_year,
+        force_triple,
+        after,
+        before,
+        now_epoch_days_civil(),
+    ) {
         Ok(v) => v,
         Err(msg) => fail(msg),
     };
@@ -175,10 +237,25 @@ fn run() -> ! {
             render_triple(y, m, Reckoning::Gregorian, style, week_start, &mut out)
         }
         View::Year(y) => render_year(y, Reckoning::Gregorian, style, week_start, &mut out),
+        View::Range(start, end) => {
+            // C's range guard (`cal.c:378-380`): the window may not leave
+            // the printable years.
+            if start.0 < 1 || end.0 > 9999 {
+                fail("year should be in 1-9999");
+            }
+            render_range(
+                start,
+                end,
+                Reckoning::Gregorian,
+                style,
+                week_start,
+                &mut out,
+            )
+        }
     };
     match rendered {
         Ok(used) => {
-            let _ = write(STDOUT, &out[..used]);
+            support::emit(&out[..used]);
         }
         Err(_) => fail("render buffer too small"),
     }
@@ -203,7 +280,7 @@ mod view_tests {
     #[test]
     fn no_operand_defaults_to_current_month() {
         assert_eq!(
-            choose_view(&[], false, false, (2026, 10)),
+            choose_view(&[], false, false, 0, 0, (2026, 10)),
             Ok(View::Month(2026, 10))
         );
     }
@@ -213,7 +290,7 @@ mod view_tests {
         // The old body treated `-y` as a silent no-op and still used the month
         // view; this pins the C behaviour: with no operands, -y pulls the year.
         assert_eq!(
-            choose_view(&[], true, false, (2026, 10)),
+            choose_view(&[], true, false, 0, 0, (2026, 10)),
             Ok(View::Year(2026))
         );
     }
@@ -221,7 +298,7 @@ mod view_tests {
     #[test]
     fn single_operand_is_year_regardless_of_y() {
         assert_eq!(
-            choose_view(&["2025"], true, false, (2026, 10)),
+            choose_view(&["2025"], true, false, 0, 0, (2026, 10)),
             Ok(View::Year(2025))
         );
     }
@@ -229,7 +306,7 @@ mod view_tests {
     #[test]
     fn two_operands_is_month() {
         assert_eq!(
-            choose_view(&["9", "2025"], false, false, (2026, 10)),
+            choose_view(&["9", "2025"], false, false, 0, 0, (2026, 10)),
             Ok(View::Month(2025, 9))
         );
     }
@@ -238,11 +315,11 @@ mod view_tests {
     fn minus_three_reshapes_month_faces_to_triple() {
         // No operands + -3 -> the current month triple; two operands + -3 -> the triple for that month.
         assert_eq!(
-            choose_view(&[], false, true, (2026, 10)),
+            choose_view(&[], false, true, 0, 0, (2026, 10)),
             Ok(View::Triple(2026, 10))
         );
         assert_eq!(
-            choose_view(&["9", "2025"], false, true, (2026, 10)),
+            choose_view(&["9", "2025"], false, true, 0, 0, (2026, 10)),
             Ok(View::Triple(2025, 9))
         );
     }
@@ -252,11 +329,11 @@ mod view_tests {
         // A single operand (a year) is unaffected by -3 (C goes back to yearly when
         // month==0); -y outranks -3.
         assert_eq!(
-            choose_view(&["2025"], false, true, (2026, 10)),
+            choose_view(&["2025"], false, true, 0, 0, (2026, 10)),
             Ok(View::Year(2025))
         );
         assert_eq!(
-            choose_view(&[], true, true, (2026, 10)),
+            choose_view(&[], true, true, 0, 0, (2026, 10)),
             Ok(View::Year(2026))
         );
     }
@@ -264,15 +341,15 @@ mod view_tests {
     #[test]
     fn bad_values_and_overload_rejected() {
         assert_eq!(
-            choose_view(&["0"], false, false, (2026, 10)),
+            choose_view(&["0"], false, false, 0, 0, (2026, 10)),
             Err("bad number")
         );
         assert_eq!(
-            choose_view(&["13", "2025"], false, false, (2026, 10)),
+            choose_view(&["13", "2025"], false, false, 0, 0, (2026, 10)),
             Err("bad month")
         );
         assert_eq!(
-            choose_view(&["9", "2025", "x"], false, false, (2026, 10)),
+            choose_view(&["9", "2025", "x"], false, false, 0, 0, (2026, 10)),
             Err("usage: cal [-3jy] [[month] year]")
         );
     }

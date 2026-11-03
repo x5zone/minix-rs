@@ -119,6 +119,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十二（`cal -A/-B/-C` 接通：上下文月幅与 range 布局）
+
+- **这一笔的射程**：not-wired 清单里 `cal` 的一处三点——C 的 `-A`/`-B`/`-C`（`cal.c:232-245`）：窗口月数经 `getnum`（非空、全消费、≤INT_MAX，否则 `bad number: <text>`，`:869-889`）落 `after`/`before`；`monthrange`（`:346-...`）按起止月折出范围：**同年** = 每行至三月的 `Name Year` 标题布局（triple 同形），**跨年** = 年横幅 + 名头布局（year 同形），首行对齐仅在跨年模式生效（`:386-390` 的 `if (inayear)`），范围不得越出 1–9999 年（`:378-380` 的 `year should be in 1-9999`）。
+- **落码**：`cal.rs` 新增 `render_range(start, end, …)`（双模式行合成，列宽惯例照 `render_triple` 的每槽 `at -= 1` 与行尾裁空）；bin 的 `View::Range` 变体 + `step_month` 月算术 + `-A/-B/-C` 解析（尾附/隔词两形）；`-y` 重置窗口（C 的 yearly 路径不变）。**同批修两处宿主面缺陷**：① bin 的 stdout 与 `fail()` 从裸 `write` 改走 `support::emit`/`support::warn` 双面（cal_face 的 stdout 断言此前是「空比空」的空真——本轮起真实可见）；② none 目标缺 `alloc::format` 导入（跨年错误句路径）。
+- **门**：`cargo test -p minix-doctools` → 库 **73/0**（render_tests 新增三枚：`-C 1`=triple 窗的逐字节等价、跨年年横幅、跨年首行两列空位；**交叉等价测当场抓出 skip 语义 bug 并修**）+ `cal_face` **7/0**（新增四枚：`-C 1`≡`-3` 逐字节、跨年年横幅、bad number 句、年份越界句）；clippy 触及文件零新增；`rustfmt` 三文件清；`cargo build --target x86_64-unknown-none --release --bin cal` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `ff785a17f`。
+
 ## 批次五百一十一（`nl` 的 `p<regex>` 编号类型接通：BRE 引擎直用）
 
 - **这一笔的射程**：not-wired 清单里 `nl` 的 `-b/-h/-f p<regex>` 一处——C 的 `p` 类型（`nl.c:371-389`）：`regcomp(&argstr[1], REG_NEWLINE|REG_NOSUB)` 编译**基本**正则，逐行 `regexec(...) == 0` 即编号（`:324-328`，空白与否不参与）；坏模式走 `errx("%s expr: %s -- %s", section-name, regerror 句, 模式)`（regerror 的 REG_BADPAT 句 = `invalid regular expression`，`regerror.c:138`）。

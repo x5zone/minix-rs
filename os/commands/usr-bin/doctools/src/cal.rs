@@ -506,6 +506,158 @@ pub fn render_year(
 /// Shift `(year, month)` by `delta` months (delta = -1 or +1), normalizing
 /// across the year boundary. `month` is 1..=12; the result year must stay in
 /// `1..=9999` (`cal.c:381` rejects out-of-range start/end years).
+/// Render a month range — C's `monthrange` (`cal.c:346-...`) for the
+/// `-A`/`-B`/`-C` context flags. Two layouts: within one year the months
+/// print in rows of up to three with `Name Year` titles (the `render_triple`
+/// shape); a range that crosses a year boundary switches to the year-banner
+/// layout (the `render_year` shape) with month-name-only titles. The first
+/// row is aligned down to a three-column boundary, leaving the skipped
+/// columns blank (`cal.c:386-390`). Rows never straddle a year because rows
+/// start at month 0 or 3, 6, 9 and a year has twelve months.
+pub fn render_range(
+    start: (i32, u32),
+    end: (i32, u32),
+    reckoning: Reckoning,
+    style: DayStyle,
+    week_start: usize,
+    out: &mut [u8],
+) -> Result<usize, DocError> {
+    if !(1..=9999).contains(&start.0) || !(1..=9999).contains(&end.0) {
+        return Err(DocError::InvalidArgument);
+    }
+    if !(1..=12).contains(&start.1) || !(1..=12).contains(&end.1) {
+        return Err(DocError::InvalidArgument);
+    }
+    let first_index = start.0 as i64 * 12 + (start.1 as i64 - 1);
+    let last_index = end.0 as i64 * 12 + (end.1 as i64 - 1);
+    if last_index < first_index {
+        return Err(DocError::InvalidArgument);
+    }
+    let (week_len, day_len, month_per_row, headings) = match style {
+        DayStyle::Month => (WEEK_LEN, 3, MONTH_PER_ROW, DAY_HEADINGS),
+        DayStyle::Julian => (J_WEEK_LEN, 4, J_MONTH_PER_ROW, JULIAN_HEADINGS),
+    };
+    let inayear = start.0 != end.0;
+    let band = week_len * month_per_row + HEAD_SEP * (month_per_row - 1);
+    let mut at = 0;
+    // C aligns the first row only in the year-banner mode (`cal.c:386-390`:
+    // `if (inayear) { skip = month % month_per_row; month -= skip; }`); a
+    // same-year range starts in column one with the start month.
+    let mut row_base = if inayear {
+        first_index - first_index.rem_euclid(month_per_row as i64)
+    } else {
+        first_index
+    };
+    let mut first_row = true;
+    let mut banner_year: Option<i32> = None;
+    while row_base <= last_index {
+        let row_year = (row_base / 12) as i32;
+        if inayear && banner_year != Some(row_year) {
+            let mut year_text = [0u8; 8];
+            let digits = write_decimal(row_year, &mut year_text);
+            let year_str = core::str::from_utf8(&year_text[..digits])
+                .map_err(|_| DocError::InvalidArgument)?;
+            put_centered(out, &mut at, year_str, band)?;
+            put(out, &mut at, b"\n\n")?;
+            banner_year = Some(row_year);
+        }
+        let skip = if inayear && first_row {
+            (first_index.rem_euclid(month_per_row as i64)) as usize
+        } else {
+            0
+        };
+        // Titles: `Name Year` within one year, the bare name under a banner.
+        let mut titles: [(i32, u32); 3] = [(row_year, 1), (row_year, 1), (row_year, 1)];
+        let mut count = 0usize;
+        for slot in skip..month_per_row {
+            let index = row_base + slot as i64;
+            if index > last_index {
+                break;
+            }
+            if index >= first_index {
+                titles[count] = (((index / 12) as i32), (index % 12) as u32 + 1);
+                count += 1;
+            }
+        }
+        // C renders the first row's skipped columns as blank titles.
+        let mut slot = 0usize;
+        for column in 0..month_per_row {
+            if column > 0 {
+                put(out, &mut at, b"  ")?;
+            }
+            if column < skip || column - skip >= count {
+                for _ in 0..week_len {
+                    put(out, &mut at, b" ")?;
+                }
+            } else {
+                let (y, m) = titles[slot];
+                slot += 1;
+                if inayear {
+                    put_centered(out, &mut at, MONTH_NAMES[(m - 1) as usize], week_len)?;
+                } else {
+                    put_month_year_header(out, &mut at, y, m, week_len)?;
+                }
+            }
+        }
+        put(out, &mut at, b"\n")?;
+        // Day-heading row.
+        for column in 0..month_per_row {
+            if column > 0 {
+                put(out, &mut at, b"  ")?;
+            }
+            if column < skip || column - skip >= count {
+                for _ in 0..week_len {
+                    put(out, &mut at, b" ")?;
+                }
+            } else {
+                put_headings(out, &mut at, headings, day_len, week_start)?;
+            }
+        }
+        put(out, &mut at, b"\n")?;
+        // Six week rows across the present months.
+        let mut matrices: [[[u32; 7]; 6]; 3] = [[[0; 7]; 6]; 3];
+        for slot in 0..count {
+            let (y, m) = titles[slot];
+            let grid = month_grid(y, m, reckoning)?;
+            let value = match style {
+                DayStyle::Month => 1,
+                DayStyle::Julian => day_of_year_of_first(y, m)?,
+            };
+            matrices[slot] = day_matrix(&grid, value, week_start);
+        }
+        #[allow(clippy::needless_range_loop)]
+        for week in 0..6 {
+            for column in 0..month_per_row {
+                if column > 0 {
+                    put(out, &mut at, b"  ")?;
+                }
+                if column < skip || column - skip >= count {
+                    for _ in 0..week_len {
+                        put(out, &mut at, b" ")?;
+                    }
+                    continue;
+                }
+                let slot = column - skip;
+                for &day in &matrices[slot][week] {
+                    put_day(out, &mut at, day)?;
+                }
+                // The triple window drops each month's trailing cell space
+                // (`render_triple`'s `at -= 1`) so the column separator is
+                // the two-space join, not three.
+                at -= 1;
+            }
+            // Trim the row's trailing blanks (C's `trim_trailing_spaces`).
+            while at > 0 && out[at - 1] == b' ' {
+                at -= 1;
+            }
+            put(out, &mut at, b"\n")?;
+        }
+        row_base += month_per_row as i64;
+        first_row = false;
+    }
+    Ok(at)
+}
+
 fn shift_month(year: i32, month: u32, delta: i32) -> Result<(i32, u32), DocError> {
     let idx = year * 12 + (month as i32 - 1) + delta;
     let y = idx.div_euclid(12);
@@ -858,5 +1010,75 @@ mod render_tests {
         let mut a0 = 0;
         put_headings(&mut b0, &mut a0, DAY_HEADINGS, 3, 0).unwrap();
         assert_eq!(&b0[..a0], DAY_HEADINGS.as_bytes());
+    }
+
+    /// A same-year range renders exactly like the triple window over the same
+    /// months — the two paths share C's row layout only if this holds.
+    #[test]
+    fn a_three_month_range_equals_the_triple_window() {
+        let mut a = [0u8; 4096];
+        let mut b = [0u8; 4096];
+        let range = render_range(
+            (2024, 2),
+            (2024, 4),
+            Reckoning::Gregorian,
+            DayStyle::Month,
+            0,
+            &mut a,
+        )
+        .unwrap();
+        let triple =
+            render_triple(2024, 3, Reckoning::Gregorian, DayStyle::Month, 0, &mut b).unwrap();
+        assert_eq!(&a[..range], &b[..triple]);
+    }
+
+    /// A range that crosses a year boundary switches to the year-banner
+    /// layout: both years appear as banner lines, titles carry no year.
+    #[test]
+    fn a_cross_year_range_prints_year_banners() {
+        let mut out = [0u8; 8192];
+        let used = render_range(
+            (2024, 12),
+            (2025, 1),
+            Reckoning::Gregorian,
+            DayStyle::Month,
+            0,
+            &mut out,
+        )
+        .unwrap();
+        let text = core::str::from_utf8(&out[..used]).unwrap();
+        assert!(text.contains("2024") && text.contains("2025"), "{text}");
+        assert!(
+            !text.contains("December 2024"),
+            "banner mode drops the year from titles"
+        );
+    }
+
+    /// A mid-row start leaves the skipped columns blank: the February range
+    /// begins at column 2 of a row that would hold Jan-Feb-Mar.
+    #[test]
+    fn a_mid_row_start_leaves_blank_columns() {
+        // Year-banner mode aligns the first row to a three-column boundary:
+        // December 2024 starts two columns in (its absolute month index mod
+        // three is two), so the banner row is followed by two blank columns
+        // before the December title.
+        let mut out = [0u8; 8192];
+        let used = render_range(
+            (2024, 12),
+            (2025, 2),
+            Reckoning::Gregorian,
+            DayStyle::Month,
+            0,
+            &mut out,
+        )
+        .unwrap();
+        let text = core::str::from_utf8(&out[..used]).unwrap();
+        let title_row = text.lines().nth(2).unwrap();
+        // Two blank columns (20 spaces + two-space join each) plus the
+        // six-space centring pad put the title text at column 50.
+        assert!(
+            title_row.starts_with(&" ".repeat(50)) && title_row[50..].starts_with("December"),
+            "December starts in column three: {title_row:?}"
+        );
     }
 }

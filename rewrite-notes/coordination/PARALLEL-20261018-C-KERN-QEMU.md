@@ -265,6 +265,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `COMPRESS-NV`：改 `os/commands/usr-bin/compress/src/{lib.rs,lzw.rs,bin/compress.rs}`、新增 `tests/compress_face.rs`（A 板领地）——compress 三点接通：-V 版本横幅（stderr 后继续）、-n 无头流（编码跳头/解码补宽，库格式自洽回环）、-r 走 C 的 usage（C 无此旗标）；门=compress lib 49/0 + face 3/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `TOUCH-H`：改 `os/commands/bin/fileops/src/bin/touch.rs`、新增 `tests/touch_face.rs`（A 板领地）——touch -h 接通：lstat 查型 + utimensat(AT_SYMLINK_NOFOLLOW) 写入 + cflag 静默跳过（C 三件）；`-d` 维持登记残差；门=fileops lib touch 9/0 + touch_face 2/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `NL-REGEX`：改 `os/commands/usr-bin/textfilter/{Cargo.toml,src/nl.rs,src/bin/nl.rs,tests/nl_face.rs}` 与 `os/commands/usr-bin/regex/src/matcher.rs`（A 板领地，A/A 引擎直用）——nl 的 `p<regex>` 编号类型接通：NumberType::Regex(BRE) + 逐行匹配判定（C 的 regexec==0）+ 坏模式 C 形句；非 UTF-8 行不匹配（str 引擎边界登记）；门=textfilter lib 640/0 + nl_face 20/0 + none 构建绿 —— `✅`
+- `2026-11-03` A / `CAL-RANGE`：改 `os/commands/usr-bin/doctools/src/{cal.rs,bin/cal.rs}`、`tests/cal_face.rs`（A 板领地）——cal -A/-B/-C 接通：render_range 双模式（同年 Name-Year / 跨年年横幅+首行对齐）、step_month 月算术、getnum 语义与两句 C 报文；顺带修 cal 的 stdout/fail 宿主双面与 none 目标 format 导入；门=doctools lib 73/0 + cal_face 7/0（stdout 断言自本批起真实可见）+ none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

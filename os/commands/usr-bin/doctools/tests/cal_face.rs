@@ -57,3 +57,41 @@ fn a_year_operand_with_h_is_also_identical() {
     let (out, code, err) = run(&["-h", "1999"]);
     assert_eq!((out.as_str(), code, err.as_str()), (plain.as_str(), 0, ""));
 }
+
+/// `-C 1` is `-3`'s window expressed through the context flags
+/// (`cal.c:243` sets `after = before = getnum(...)`; `-3` sets both to one,
+/// `cal.c:267-268`) — the two faces must be byte-identical.
+#[test]
+fn c_one_equals_the_triple_window() {
+    let (triple, code, err) = run(&["-3", "3", "2024"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    let (ctx, code, err) = run(&["-C", "1", "3", "2024"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(ctx, triple);
+}
+
+/// A window that crosses a year boundary prints both year banners.
+#[test]
+fn a_cross_year_window_prints_year_banners() {
+    let (out, code, err) = run(&["-A", "1", "12", "2024"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(out.contains("2024") && out.contains("2025"), "{out}");
+}
+
+/// A bad window value takes C's `getnum` sentence (`cal.c:869-889`).
+#[test]
+fn a_bad_window_value_reports_the_number_sentence() {
+    let (out, status, err) = run(&["-A", "x", "3", "2024"]);
+    assert_eq!(out.as_str(), "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "bad number: x\n");
+}
+
+/// The window guard (`cal.c:378-380`).
+#[test]
+fn a_window_leaving_the_printable_years_is_refused() {
+    let (out, status, err) = run(&["-A", "100", "12", "9999"]);
+    assert_eq!(out.as_str(), "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "year should be in 1-9999\n");
+}
