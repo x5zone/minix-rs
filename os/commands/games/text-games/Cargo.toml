@@ -10,6 +10,9 @@ name = "minix_text_games"
 path = "src/lib.rs"
 
 [dependencies]
+# The `-o` glob branch reads `/usr/share/misc` through the shared dents
+# decoder (the `mountinfo` -> `fileops` path-dependency precedent).
+minix-fileops = { path = "../../bin/fileops" }
 minix-sys = { workspace = true }
 
 [[bin]]

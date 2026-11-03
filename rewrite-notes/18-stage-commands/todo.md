@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百二十三（`wtf` 的缺省库 glob 接通：A9c 第②条闭合）
+
+- **这一笔的射程**：A9c 余三件的第二件。C 语义（`minix3/games/wtf/wtf:43-58`）：无 `-f` 且 `ACRONYMDB` 为空时，shell 对 `/usr/share/misc/acronyms*` 做通配展开——名字按模式词干匹配、字节序排列；以 `-o` 结尾的那批只在 `-o` 给出时纳入；**未匹配的通配式以字面量落过**（shell 自身行为），预检报 `cannot open acronym database file` 时名字带星号；展开后若 `-o` 过滤清空列表，下一段检查答 `acronym database not found!` 并退 1（`:56-58`）。旧阻塞「目录枚举在本 crate 拿不到」已失效——`mountinfo` → `fileops` 的跨命令 path 依赖判例在树（批次五百零九起的 df 轮）。
+- **落码**：`acronym.rs` 新增 `default_database_list` 纯函数（词干过滤 + 字节序 + `-o` 门 + 未匹配字面量回退，`-o` 清空**不**回退）；bin 的 `-o` 臂记 offensive 旗标（该旗的另一义——整词匹配——决策半早已覆盖），缺省分支改走 `minix-fileops::dents` 读 `/usr/share/misc`（宿主 open 桩失败即 shell 的未匹配形，字面量落过），档列表改 owned，`acronym database not found!` 腿按 C 句落；`DEFAULT_DB` 死常量删除。批次三百九十五量出的那条「差一个字符」残差（环境空串时缺省名缺星号）就此闭合。
+- **可测性边界**：展开判据全部纯函数可测（词干/排序/`-o` 门/字面量回退/清空不回退五形）；目录读在宿主不可达（open 桩失败），面测钉缺省运行的 `cannot open …acronyms*'` 全句——正是 C 在无此目录的机器上的形状；not-found 腿在宿主不可达，由纯函数的「清空不回退」形承载。
+- **门**：`cargo test -p minix-text-games` → **85/0**（lib +1 四形；face 尾测改钉全句带星形）；clippy 本包零新增；`rustfmt --edition 2024` 三文件清；`cargo build --target x86_64-unknown-none -p minix-text-games` 绿。三件套：上述命令与读数、核实日 `2026-11-04`、基线 `ce26ee2c8`。
+
 ## 批次五百二十二（`touch -d` 接通：`parsedate` 语法、词法与 UTC 换算整条移植）
 
 - **这一笔的射程**：not-wired 清单里 `touch` 的最后一处 `-d`，连带它背后的 libutil 自由日期解析器。C 的事实面：`touch.c:102-105` 的 `stime_arg0` 把参数交给 `parsedate(arg, NULL, NULL)`，`:216-218` 把解析结果 `-1`（含真实的 1969-12-31T23:59:59Z 那一秒）也当失败并 `errx("Could not parse \`%s'")`；`parsedate.y` 的四张词表（月/星期、时间单位、相对词与数词、时区与军用时区 `:388-604`）、词法器（带符号数字、字母加点的词、`@`、括号注释、20 字节截断与点剥离重试，`:772-860`）、十条 item 文法（`:113-383`，含 `cvsstamp`、`@epoch`、ISO/`17-JUN-1992`/`Sep 5, 2025` 等日期形、数字时间与数字时区、相对单位与 `ago`）、`Convert`/`AdjustYear`/`RelativeMonth`/`RelativeDate`（`:611-730`）；GNU 的 `--date`/`--reference` 不在 getopt 串里，C 走未知选项的 usage。三条 C 怪癖照原样保留：12 小时制不回卷（`12 pm` 落到次日零点）、`ago` 取反整条相对累加器、三字母月名按表序前缀匹配。

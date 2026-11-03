@@ -386,12 +386,15 @@ fn the_environment_names_the_list_only_when_no_flag_was_given() {
     assert_eq!(err, "wtf: I don't know what `aaa' means!\n");
     assert_eq!(code, 1);
 
-    // The empty string counts as absent (`[ -z "$ACRONYMDB" ]`); the default
-    // database name branch applies
+    // The empty string counts as absent (`[ -z "$ACRONYMDB" ]`); the glob
+    // branch applies (`wtf:43-55`). On a host build the directory read
+    // fails — the shell's unmatched-glob shape — so the literal pattern
+    // passes through and the pre-pass fails naming the star. This is the
+    // one-character divergence the batch-395 run measured, now closed.
     let (_out, code, err) = run_env(&["lol"], &[("ACRONYMDB", "")]);
     assert_eq!(code, 1, "本机没有缺省库档时该报开不了");
-    assert!(
-        err.starts_with("wtf: cannot open acronym database file `"),
-        "实际 {err:?}"
+    assert_eq!(
+        err, "wtf: cannot open acronym database file `/usr/share/misc/acronyms*'\n",
+        "字面通配式带星号（C 的 unmatched-glob 形），实际 {err:?}"
     );
 }

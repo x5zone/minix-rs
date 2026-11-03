@@ -54,6 +54,40 @@ pub fn parse_acronym_line(line: &str) -> Result<(&str, &str), TextGameError> {
 /// first, then compare character by character", and needs no temporary
 /// `String`.
 #[must_use]
+/// The glob branch of the default database list (C `wtf:43-55`): with
+/// neither `-f` nor `ACRONYMDB`, the shell expands
+/// `/usr/share/misc/acronyms*` over `/usr/share/misc` — names starting with
+/// the pattern stem, byte-sorted (the script runs in the C locale); a name
+/// ending `-o` joins only when `-o` selected the offensive batch; and an
+/// unmatched glob passes through as the **literal pattern** (the shell's
+/// own behavior), so the caller's database pre-pass then fails naming the
+/// star. A match list that the `-o` filter empties does **not** fall back:
+/// the script's next check answers `acronym database not found!` for it
+/// (`wtf:56-58`).
+pub fn default_database_list(
+    entries: &[&str],
+    offensive: bool,
+) -> alloc::vec::Vec<alloc::string::String> {
+    const STEM: &str = "acronyms";
+    let mut names: alloc::vec::Vec<&str> = entries
+        .iter()
+        .copied()
+        .filter(|name| name.starts_with(STEM))
+        .collect();
+    names.sort_unstable();
+    if names.is_empty() {
+        return alloc::vec![alloc::string::String::from("/usr/share/misc/acronyms*")];
+    }
+    let mut list = alloc::vec::Vec::new();
+    for name in names {
+        if name.ends_with("-o") && !offensive {
+            continue;
+        }
+        list.push(alloc::format!("/usr/share/misc/{name}"));
+    }
+    list
+}
+
 pub fn matching_expansions<'a>(lines: &[&'a str], term: &str) -> alloc::vec::Vec<&'a str> {
     if term.is_empty() {
         return alloc::vec::Vec::new();
@@ -116,6 +150,44 @@ mod tests {
         assert_eq!(matching_expansions(&lines, "10Q"), ["thank you"]);
         assert_eq!(matching_expansions(&lines, "10q"), ["thank you"]);
         assert!(matching_expansions(&lines, "definitely-not-an-acronym").is_empty());
+    }
+
+    /// The glob branch (`wtf:43-55`): stem match, byte sort, the `-o`
+    /// batch gate, and the unmatched-glob literal.
+    #[test]
+    fn the_default_glob_selects_sorts_and_gates_the_batch() {
+        let entries = [
+            "README",
+            "acronyms",
+            "acronyms-o",
+            "acronyms.2",
+            ".acronyms-x",
+        ];
+        // Without `-o`: the plain files in byte order; the `-o` batch and
+        // the non-matching names stay out.
+        assert_eq!(
+            default_database_list(&entries, false),
+            ["/usr/share/misc/acronyms", "/usr/share/misc/acronyms.2"]
+        );
+        // With `-o`: the offensive batch joins at its sorted position.
+        assert_eq!(
+            default_database_list(&entries, true),
+            [
+                "/usr/share/misc/acronyms",
+                "/usr/share/misc/acronyms-o",
+                "/usr/share/misc/acronyms.2"
+            ]
+        );
+        // No match at all: the literal pattern passes through (the shell's
+        // own behavior), so the pre-pass fails naming the star.
+        assert_eq!(
+            default_database_list(&["other"], false),
+            ["/usr/share/misc/acronyms*"]
+        );
+        // A match list that `-o` empties does not fall back: the script's
+        // next check answers `acronym database not found!` (`wtf:56-58`),
+        // which the caller owes.
+        assert!(default_database_list(&["acronyms-o"], false).is_empty());
     }
 
     #[test]

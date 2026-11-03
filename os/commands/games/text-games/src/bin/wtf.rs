@@ -19,14 +19,52 @@ use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
 mod support;
+use minix_fileops::dents;
 use minix_text_games::acronym::matching_expansions;
 
-const DEFAULT_DB: &str = "/usr/share/misc/acronyms";
+/// The C glob's directory read (`wtf:43` expands over `/usr/share/misc`):
+/// the entries the shared dents decoder can name. `None` is the host shape
+/// — the open stub fails, which is the shell's unmatched-glob case.
+fn read_dir_names(path: &str) -> Option<Vec<String>> {
+    const O_RDONLY: i32 = 0x0000_0000;
+    const WALK_BUF: usize = 4096;
+    let fd = minix_sys::open(path, O_RDONLY, 0).ok()?;
+    let mut names = Vec::new();
+    let mut buf = [0u8; WALK_BUF];
+    loop {
+        let transferred = match minix_sys::getdents(fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => {
+                let _ = minix_sys::close(fd);
+                return None;
+            }
+        };
+        let mut cursor = 0usize;
+        while cursor < transferred {
+            let entry = match dents::next_record(&buf, cursor) {
+                Ok(Some((entry, next))) => {
+                    cursor = next;
+                    entry
+                }
+                _ => break,
+            };
+            let name = alloc::string::String::from_utf8_lossy(entry.name).into_owned();
+            if entry.ino == 0 || !dents::is_descendable(&name) {
+                continue;
+            }
+            names.push(name);
+        }
+    }
+    let _ = minix_sys::close(fd);
+    Some(names)
+}
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let mut db_files: Vec<&[u8]> = Vec::new();
+    let mut offensive = false;
     let mut at = 1;
     // The ground truth `minix3/games/wtf/wtf:16-27` runs `getopts f:o`, and an
     // unrecognized flag always ends in `usage` and exit 1 (`sh minix3/games/wtf/wtf -Z
@@ -59,10 +97,11 @@ fn run() -> ! {
                 }
             }
             b"-o" => {
-                // The whole-word-only flag: the deciding half's lookup is already a
-                // whole-word match, so the semantics are covered.
-                // Selecting the `*-o` group of database files would need glob expansion,
-                // which this shell does not have (a declared limitation).
+                // The flag has two C faces: the lookup is already a
+                // whole-word match (the deciding half's anchored compare),
+                // and it selects the `*-o` batch of the default database
+                // glob (`wtf:45-52`).
+                offensive = true;
                 at += 1;
             }
             b"--" => {
@@ -106,14 +145,35 @@ fn run() -> ! {
     } else {
         String::new()
     };
-    let mut files: Vec<&[u8]> = db_files;
+    let mut files: Vec<Vec<u8>> = db_files.iter().map(|f| f.to_vec()).collect();
     if files.is_empty() {
         // `ACRONYMDB` is an environment string, not argv, so it stays `&str`; the open
         // call folds it like every other name.
-        files.extend(env_list.split_ascii_whitespace().map(|f| f.as_bytes()));
+        files.extend(
+            env_list
+                .split_ascii_whitespace()
+                .map(|f| f.as_bytes().to_vec()),
+        );
     }
     if files.is_empty() {
-        files.push(DEFAULT_DB.as_bytes());
+        // C `wtf:43-55`: the shell globs `/usr/share/misc/acronyms*` over
+        // `/usr/share/misc`. The directory read rides the shared dents
+        // decoder (`minix-fileops`); on a host build the open stub fails,
+        // which is exactly the shell's unmatched-glob shape — the literal
+        // pattern passes through and the pre-pass fails naming the star.
+        let entries = read_dir_names("/usr/share/misc").unwrap_or_default();
+        let borrowed: Vec<&str> = entries.iter().map(String::as_str).collect();
+        files.extend(
+            minix_text_games::acronym::default_database_list(&borrowed, offensive)
+                .iter()
+                .map(|path| path.as_bytes().to_vec()),
+        );
+    }
+    if files.is_empty() {
+        // C `wtf:56-58`: the glob matched, but the `-o` filter emptied the
+        // list.
+        support::warn(b"wtf: acronym database not found!\n");
+        support::terminate(1);
     }
 
     // Every database in the list is checked first: the script's `:64-69` is a separate
