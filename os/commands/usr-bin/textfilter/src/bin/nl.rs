@@ -26,6 +26,7 @@ mod support;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use minix_regex::matcher::RegexMatcher;
 use minix_textfilter::GetoptReport;
 use minix_textfilter::nl::{NlOptions, NumFormat, NumberType, nl_lines};
 
@@ -232,13 +233,27 @@ fn run() -> ! {
                         Some(b'a') => NumberType::All,
                         Some(b'n') => NumberType::None,
                         Some(b't') => NumberType::Nonempty,
-                        // `p<regex>` is C's other leg (`regcomp` plus
-                        // regex-driven numbering), not yet wired in this tree;
-                        // that shape takes a different sentence from "illegal
-                        // type", so it is rejected separately rather than
-                        // borrowing C's sentence (registered).
+                        // `p<regex>` (C `nl.c:371-389`): compile the rest
+                        // as a basic regular expression; a bad pattern takes
+                        // C's `errx` sentence `<name> expr: <regerror> --
+                        // <pattern>` with the regerror text for REG_BADPAT
+                        // (`regerror.c:138`).
                         Some(b'p') => {
-                            errx(&prog, "number_regex (-b/-h/-f p…) not wired".as_bytes())
+                            let pattern = String::from_utf8_lossy(&value[1..]).into_owned();
+                            match RegexMatcher::basic(&pattern) {
+                                Ok(matcher) => NumberType::Regex(alloc::boxed::Box::new(matcher)),
+                                Err(_) => {
+                                    // C's `errx` prefixes the program name.
+                                    let mut line: Vec<u8> = format!(
+                                        "{prog}: {name} expr: invalid regular expression -- "
+                                    )
+                                    .into_bytes();
+                                    line.extend_from_slice(&value[1..]);
+                                    line.push(b'\n');
+                                    support::warn(&line);
+                                    support::terminate(1);
+                                }
+                            }
                         }
                         _ => errx(
                             &prog,

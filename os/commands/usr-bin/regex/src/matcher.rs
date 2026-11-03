@@ -47,6 +47,7 @@ impl Matcher for SubstringMatcher<'_> {
 
 /// Regex search: the default, `-E`, and `-G` strategies over the engine in
 /// [`crate::pattern`].
+#[derive(Debug, Clone)]
 pub struct RegexMatcher {
     /// The compiled pattern.
     pub pattern: Pattern,

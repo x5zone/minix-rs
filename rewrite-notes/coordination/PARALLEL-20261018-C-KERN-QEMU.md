@@ -264,6 +264,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `RMW-WHITEOUT`：改 `os/commands/bin/fileops/src/{rm.rs,bin/rm.rs}`（A 板领地）——rm -W 接通（白目项在本树文件系统上从不出现，行为性无操作=C 同环境观察形；needs_unwired 闸与拒绝行退役，undelete 设施=登记残差）；门=fileops lib 57/0 + rm_face 7/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `COMPRESS-NV`：改 `os/commands/usr-bin/compress/src/{lib.rs,lzw.rs,bin/compress.rs}`、新增 `tests/compress_face.rs`（A 板领地）——compress 三点接通：-V 版本横幅（stderr 后继续）、-n 无头流（编码跳头/解码补宽，库格式自洽回环）、-r 走 C 的 usage（C 无此旗标）；门=compress lib 49/0 + face 3/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `TOUCH-H`：改 `os/commands/bin/fileops/src/bin/touch.rs`、新增 `tests/touch_face.rs`（A 板领地）——touch -h 接通：lstat 查型 + utimensat(AT_SYMLINK_NOFOLLOW) 写入 + cflag 静默跳过（C 三件）；`-d` 维持登记残差；门=fileops lib touch 9/0 + touch_face 2/0 + none 构建绿 —— `✅`
+- `2026-11-03` A / `NL-REGEX`：改 `os/commands/usr-bin/textfilter/{Cargo.toml,src/nl.rs,src/bin/nl.rs,tests/nl_face.rs}` 与 `os/commands/usr-bin/regex/src/matcher.rs`（A 板领地，A/A 引擎直用）——nl 的 `p<regex>` 编号类型接通：NumberType::Regex(BRE) + 逐行匹配判定（C 的 regexec==0）+ 坏模式 C 形句；非 UTF-8 行不匹配（str 引擎边界登记）；门=textfilter lib 640/0 + nl_face 20/0 + none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

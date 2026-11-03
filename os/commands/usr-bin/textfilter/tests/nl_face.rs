@@ -547,3 +547,18 @@ fn the_seven_value_echoes_carry_the_argv_bytes() {
     assert_eq!(status, 0, "stderr 是 {err:?}");
     assert_eq!(out, b"     1\ta\n");
 }
+
+/// `-b p<regex>` (`nl.c:371-389`): numbered lines follow the basic regular
+/// expression alone; a bad pattern answers C's `<name> expr: <regerror> --
+/// <pattern>` sentence (the regerror text for REG_BADPAT is `invalid regular
+/// expression`, `regerror.c:138`) and exits 1.
+#[test]
+fn a_regex_numbering_type_numbers_only_matching_lines() {
+    let (out, status, err) = run(&["-b", "p[0-9]"], b"a\n1\nb\n2\n");
+    assert_eq!(status, 0, "{err}");
+    assert_eq!(out, "      \ta\n     1\t1\n      \tb\n     2\t2\n");
+    let (out, status, err) = run(&["-b", "p["], b"a\n");
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "nl: body expr: invalid regular expression -- [\n");
+}

@@ -119,6 +119,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十一（`nl` 的 `p<regex>` 编号类型接通：BRE 引擎直用）
+
+- **这一笔的射程**：not-wired 清单里 `nl` 的 `-b/-h/-f p<regex>` 一处——C 的 `p` 类型（`nl.c:371-389`）：`regcomp(&argstr[1], REG_NEWLINE|REG_NOSUB)` 编译**基本**正则，逐行 `regexec(...) == 0` 即编号（`:324-328`，空白与否不参与）；坏模式走 `errx("%s expr: %s -- %s", section-name, regerror 句, 模式)`（regerror 的 REG_BADPAT 句 = `invalid regular expression`，`regerror.c:138`）。
+- **落码**：`minix-textfilter` 增 `minix-regex` workspace 依赖（同一命令面内的引擎直用，A/A 无跨线；引擎首消费者是 sed/grep，本批为其第三家）；`NumberType` 增 `Regex(Box<RegexMatcher>)` 变体（Box 收窄枚举尺寸；枚举失去 `Copy/PartialEq`，分类臂改借用 `&opts.x`）；分类臂：`str::from_utf8(line)` 视图后 `find_in`（树引擎是 `&str` 型——非 UTF-8 行恒不匹配，与 C 的字节级 `regexec` 之差登记）；`RegexMatcher` 补 `Debug, Clone` 派生；bin 的 `p` 臂编译 + C 形错误句（含程序名前缀与原始模式字节回显）。
+- **门**：`cargo test -p minix-textfilter` → 库 **640/0**（nl 子集 37/0：新增 `test_regex_numbering_follows_the_match_only`——数字行号、`^$` 对空行编号，两形钉「匹配独断」）+ `nl_face` **20/0**（新增一枚：`-b 'p[0-9]'` 的设备逐字节输出 + 坏模式 `nl: body expr: invalid regular expression -- [` 退 1）；clippy 触及文件零新增；`rustfmt --edition 2024` 四文件清；`cargo build --target x86_64-unknown-none --release --bin nl` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `edd6de98b`。
+
 ## 批次五百一十（`touch -h` 接通：链接本体的时间写入车道）
 
 - **这一笔的射程**：not-wired 清单里 `touch -h` 一处——C 的 `-h`（`touch.c:108-109`、`:133-139`）：`cflag=1`（不创建）、查型换 `lstat`、写入换 `lutimens`——即「对符号链本体动手」的车道。缺路径在 `cflag` 下静默跳过（`:162-178` 的 `continue`），退码保持 0。

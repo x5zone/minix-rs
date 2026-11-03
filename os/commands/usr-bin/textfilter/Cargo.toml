@@ -13,6 +13,9 @@ path = "src/lib.rs"
 # stays free of any system-call imports (pure deciding half).
 [dependencies]
 minix-sys = { workspace = true }
+# `nl` 的 `p<regex>` 编号类型走语言侧现成的 BRE 引擎（`minix-regex`），
+# 不另造一套匹配器。
+minix-regex = { workspace = true }
 # `src/digest.rs` 的 MD5 与 SHA1 走这一份现成的实现，不在命令面另译一遍
 # （判据与出处见那个模块的模块头）。
 minix-crypt = { workspace = true }

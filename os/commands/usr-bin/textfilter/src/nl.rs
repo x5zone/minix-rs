@@ -22,6 +22,7 @@
 //! next `nl` slice.
 
 use alloc::vec::Vec;
+use minix_regex::matcher::{Matcher, RegexMatcher};
 
 /// Where the number sits within its field (C `FORMAT_LN`/`FORMAT_RN`/`FORMAT_RZ`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,9 +35,8 @@ pub enum NumFormat {
     RightZero,
 }
 
-/// How a section's lines are numbered (C `numbering_type`; the `p` regex form
-/// is a declared residual and not representable here).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a section's lines are numbered (C `numbering_type`, `nl.c:324-331`).
+#[derive(Debug, Clone)]
 pub enum NumberType {
     /// Number every line.
     All,
@@ -44,6 +44,10 @@ pub enum NumberType {
     Nonempty,
     /// Number no lines (the header/footer default).
     None,
+    /// `-b/-h/-f p<regex>`: number the lines the basic regular expression
+    /// matches (`regcomp` with `REG_NEWLINE|REG_NOSUB` and `regexec == 0`,
+    /// `nl.c:380-381`, `:324-328`). Blankness plays no part on this leg.
+    Regex(alloc::boxed::Box<RegexMatcher>),
 }
 
 /// The logical page section a line belongs to (C `numbering_properties`
@@ -148,9 +152,9 @@ pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
             continue;
         }
         let kind = match section {
-            Section::Footer => opts.footer,
-            Section::Body => opts.body,
-            Section::Header => opts.header,
+            Section::Footer => &opts.footer,
+            Section::Body => &opts.body,
+            Section::Header => &opts.header,
         };
         let donumber = match kind {
             // C `number_all` grouping (`nl.c:307-316`): a blank line increments
@@ -172,6 +176,16 @@ pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
             }
             NumberType::Nonempty => !line.is_empty(),
             NumberType::None => false,
+            // `nl.c:324-328`: the regex alone decides; `regexec` returning
+            // zero is the match.
+            // `nl.c:324-328`: the regex alone decides; `regexec` returning
+            // zero is the match. The tree's engine is `&str`-based, so a
+            // line that is not UTF-8 text can never match (registered
+            // boundary against C's byte-level `regexec`).
+            NumberType::Regex(matcher) => match core::str::from_utf8(line) {
+                Ok(text) => matcher.find_in(text).is_some(),
+                Err(_) => false,
+            },
         };
         let mut row = Vec::new();
         if donumber {
@@ -350,6 +364,27 @@ mod tests {
     }
 
     #[test]
+    fn test_regex_numbering_follows_the_match_only() {
+        // `-b p<regex>` (`nl.c:324-328`): the match alone decides — a blank
+        // line that matches is numbered, a non-blank line that misses is not.
+        let o = NlOptions {
+            body: NumberType::Regex(alloc::boxed::Box::new(
+                RegexMatcher::basic("[0-9]").unwrap(),
+            )),
+            ..Default::default()
+        };
+        assert_eq!(
+            nl("a\n1\nb\n2", &o),
+            "      \ta\n     1\t1\n      \tb\n     2\t2"
+        );
+        let o = NlOptions {
+            body: NumberType::Regex(alloc::boxed::Box::new(RegexMatcher::basic("^$").unwrap())),
+            ..Default::default()
+        };
+        assert_eq!(nl("a\n\nb", &o), "      \ta\n     1\t\n      \tb");
+    }
+
+    #[test]
     fn test_blank_line_gets_blank_field() {
         // The middle empty line is not numbered but keeps the width + sep.
         assert_eq!(
@@ -360,7 +395,10 @@ mod tests {
 
     #[test]
     fn test_number_all_includes_blanks() {
-        let o = NlOptions { body: NumberType::All, ..Default::default() };
+        let o = NlOptions {
+            body: NumberType::All,
+            ..Default::default()
+        };
         assert_eq!(nl("a\n\nb", &o), "     1\ta\n     2\t\n     3\tb");
     }
 
@@ -417,15 +455,28 @@ mod tests {
 
     #[test]
     fn test_startnum_incr_width() {
-        let o = NlOptions { startnum: 5, incr: 5, width: 3, ..Default::default() };
+        let o = NlOptions {
+            startnum: 5,
+            incr: 5,
+            width: 3,
+            ..Default::default()
+        };
         assert_eq!(nl("a\nb\nc", &o), "  5\ta\n 10\tb\n 15\tc");
     }
 
     #[test]
     fn test_left_and_zero_formats() {
-        let ln = NlOptions { format: NumFormat::Left, width: 3, ..Default::default() };
+        let ln = NlOptions {
+            format: NumFormat::Left,
+            width: 3,
+            ..Default::default()
+        };
         assert_eq!(nl("a\nb", &ln), "1  \ta\n2  \tb");
-        let rz = NlOptions { format: NumFormat::RightZero, width: 3, ..Default::default() };
+        let rz = NlOptions {
+            format: NumFormat::RightZero,
+            width: 3,
+            ..Default::default()
+        };
         assert_eq!(nl("a\nb", &rz), "001\ta\n002\tb");
     }
 
@@ -433,11 +484,20 @@ mod tests {
     fn test_delimiters_switch_sections_and_are_dropped() {
         // body `a`=1; `\:` switches to footer (unnumbered, dropped, reset);
         // `b` is a footer line, so its field is blank but kept.
-        assert_eq!(nl("a\n\\:\nb", &NlOptions::default()), "     1\ta\n      \tb");
+        assert_eq!(
+            nl("a\n\\:\nb", &NlOptions::default()),
+            "     1\ta\n      \tb"
+        );
         // `\:\:` switches to body and (restart) resets numbering to startnum.
-        assert_eq!(nl("a\n\\:\\:\nb", &NlOptions::default()), "     1\ta\n     1\tb");
+        assert_eq!(
+            nl("a\n\\:\\:\nb", &NlOptions::default()),
+            "     1\ta\n     1\tb"
+        );
         // With restart off, the body section still renumbers from the running count.
-        let nop = NlOptions { restart: false, ..Default::default() };
+        let nop = NlOptions {
+            restart: false,
+            ..Default::default()
+        };
         assert_eq!(nl("a\n\\:\\:\nb", &nop), "     1\ta\n     2\tb");
     }
 
@@ -478,7 +538,10 @@ mod tests {
     fn test_section_types_independent() {
         // -h a: header numbers every line; after `\:\:\:` (3 delims) restart
         // reset the counter to startnum, so the blank header line gets number 1.
-        let o = NlOptions { header: NumberType::All, ..Default::default() };
+        let o = NlOptions {
+            header: NumberType::All,
+            ..Default::default()
+        };
         assert_eq!(nl("a\n\\:\\:\\:\n\n", &o), "     1\ta\n     1\t");
     }
 
