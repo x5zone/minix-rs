@@ -119,6 +119,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十三（`df -h` 接通：人性化视图、C 默认布局与表宽）
+
+- **这一笔的射程**：not-wired 清单里 `df` 的非 `-Pk` 视图族中的 `-h` 一件——C 的 `-h`（`df.c:105-107`，`hflag=1`、`usize=0`）：**默认（非 -P）布局**，头行是 `%-*.*s %s       Used      Avail %%Cap Mounted on`（文件系统列 = `maxwidth - (headerlen-10)` = `maxwidth+6`，`:447-456`），行是三枚 `prthumanval`（字节数 × 片段大小，`humanize_number` 的 `HN_AUTOSCALE|HN_B|HN_NOSPACE|HN_DECIMAL`、5/6 字节缓冲，`:323-346`）+ ` %3s%%` 容量 + 挂载点；`maxwidth` = 全表 from 名最大宽（`:204-210`）。`-k`/`-h` 后到者胜（C 的赋值序）；`-P -h` 在 C 里只会撞上 `-P` 臂的 `assert(hflag == 0)`（`:455`）——本壳改为具名拒绝。
+- **落码**：`minix-mountinfo` 增 `minix-fileops` 路径依赖（`humanize_number` 端口复用，A/A）；`df.rs` 新增 `h_header(maxwidth)` 与 `format_h_row(…)`（`%-*.*s` 列 + 三段 `pad+%6s` + ` %3s%%` 的逐字节合成；容量沿 `capacity_percent` 的 `full="100"` 规则）；bin 重构为**先收集后发射**（记录 Vec + maxwidth 计算，对位 C 的两段式），`SizeMode{Blocks,Human}` 后到者胜，`-P -h` 具名拒绝；bin 的 `fail` 与 stdout 走 `support` 双面（宿主面测可见）。
+- **门**：`cargo test -p minix-mountinfo` → 库 **19/0**（新增两枚字节钉：`-h` 行 `rootfs       3.9M       2.3M       1.2M  67% /` 与头行 `Filesystem   Size …`；行钉抓出并修「段间多一空格」的 off-by-one）+ 面门 `df_face` **3/0**（`-P -h` 具名拒绝、`-h` 过选项门到取表句、未知字母拒收）；clippy 触及文件零新增（8 参行函数带具名 allow）；`rustfmt` 触及叶文件清（模块树存量漂移不整树）；`cargo build --target x86_64-unknown-none --release --bin df` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `69e5cbaf8`。
+
 ## 批次五百一十二（`cal -A/-B/-C` 接通：上下文月幅与 range 布局）
 
 - **这一笔的射程**：not-wired 清单里 `cal` 的一处三点——C 的 `-A`/`-B`/`-C`（`cal.c:232-245`）：窗口月数经 `getnum`（非空、全消费、≤INT_MAX，否则 `bad number: <text>`，`:869-889`）落 `after`/`before`；`monthrange`（`:346-...`）按起止月折出范围：**同年** = 每行至三月的 `Name Year` 标题布局（triple 同形），**跨年** = 年横幅 + 名头布局（year 同形），首行对齐仅在跨年模式生效（`:386-390` 的 `if (inayear)`），范围不得越出 1–9999 年（`:378-380` 的 `year should be in 1-9999`）。

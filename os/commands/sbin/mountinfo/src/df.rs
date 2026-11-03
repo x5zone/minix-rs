@@ -19,6 +19,9 @@
 //! subset and fall to the executor as `unwired` if requested.
 
 use crate::MountError;
+use alloc::format;
+use alloc::string::{String, ToString};
+use minix_fileops::humanize::{HN_AUTOSCALE, HN_B, HN_DECIMAL, HN_NOSPACE, humanize_number};
 
 /// The `-P`/POSIX report block size in bytes.
 pub const REPORT_BLOCK_SIZE: u64 = 1024;
@@ -93,6 +96,86 @@ pub fn format_p_row(
     Ok(w.pos)
 }
 
+/// Header of the `-h` report (`df.c:449-456`, the non-`-P` arm): the
+/// filesystem column is `maxwidth + 6` wide because C widens it by
+/// `headerlen - 10` with `header = "Size"` (`:447-452`).
+pub fn h_header(maxwidth: usize) -> String {
+    let width = maxwidth + 6;
+    format!(
+        "{:<width$} Size       Used      Avail %Cap Mounted on\n",
+        "Filesystem"
+    )
+}
+
+/// Render one `-h` report row (`df.c:491-509` with `prthuman`,
+/// `:323-346`). The three figures are **bytes** — the block counts times the
+/// fragment size — passed through the tree's `humanize_number` port with C's
+/// arguments (`buf` five or six bytes depending on the sign, empty suffix,
+/// `HN_AUTOSCALE` and `HN_B | HN_NOSPACE | HN_DECIMAL`, `:326-331`); each is
+/// printed `"%s %6s"` after its pad. The capacity string follows the P row's
+/// rule (`full` = "100" when nothing is addressable, `df.c:476`).
+#[allow(clippy::too_many_arguments)] // the fields mirror C's statvfs reads in prtstat
+pub fn format_h_row(
+    from: &str,
+    to: &str,
+    maxwidth: usize,
+    blocks: u64,
+    bfree: u64,
+    bresvd: u64,
+    frsize: u64,
+    out: &mut [u8],
+) -> Result<usize, MountError> {
+    let used = blocks.saturating_sub(bfree);
+    let bavail = bfree.saturating_sub(bresvd);
+    let availblks = bavail + used;
+    let human = |bytes: u64| -> String {
+        let buf_len = if (bytes as i64) < 0 { 6 } else { 5 };
+        humanize_number(
+            buf_len,
+            bytes as i64,
+            "",
+            HN_AUTOSCALE,
+            HN_B | HN_NOSPACE | HN_DECIMAL,
+        )
+        .unwrap_or_default()
+    };
+    let total = human(blocks.saturating_mul(frsize));
+    let used_text = human(used.saturating_mul(frsize));
+    let avail_text = human(bavail.saturating_mul(frsize));
+    let cap = if availblks == 0 {
+        String::from("100")
+    } else {
+        capacity_percent(used, availblks).to_string()
+    };
+    // `%-*.*s ` + `%s %6s`×3 + ` %3s%%` + ` %s\n` (`df.c:491-508`).
+    let mut w = Sink { out, pos: 0 };
+    w.text(from)?;
+    for _ in from.len()..maxwidth {
+        w.byte(b' ')?;
+    }
+    // The from-column's own trailing space (`"%-*.*s "`).
+    w.byte(b' ')?;
+    for (text, pad) in [(&total, "   "), (&used_text, "    "), (&avail_text, "    ")] {
+        // `prthumanval`'s `"%s %6s"`: the pad, one space, then the
+        // six-wide right-aligned figure.
+        w.text(pad)?;
+        w.byte(b' ')?;
+        for _ in text.len()..6 {
+            w.byte(b' ')?;
+        }
+        w.text(text)?;
+    }
+    w.byte(b' ')?;
+    for _ in cap.len()..3 {
+        w.byte(b' ')?;
+    }
+    w.text(&cap)?;
+    w.text("% ")?;
+    w.text(to)?;
+    w.byte(b'\n')?;
+    Ok(w.pos)
+}
+
 /// Fixed-buffer byte sink, failing closed when full (no allocation; the
 /// caller sizes the buffer, mirroring how the C stdio buffer is simply large).
 struct Sink<'a> {
@@ -150,7 +233,10 @@ mod tests {
     fn test_p_row_exact_layout() {
         // 1000 blocks, 400 free, 0 reserved, frsize == report block (1024):
         // used 600, avail 400, availblks 1000, cap ceil(60000/1000)=60.
-        assert_eq!(row("/dev/root", "/", 1000, 400, 0, 1024), "/dev/root 1000 600 400 60% /\n");
+        assert_eq!(
+            row("/dev/root", "/", 1000, 400, 0, 1024),
+            "/dev/root 1000 600 400 60% /\n"
+        );
     }
 
     #[test]
@@ -172,11 +258,41 @@ mod tests {
     fn test_reserved_blocks_reduce_available() {
         // 1000 blocks, 500 free, 100 reserved → avail 400, used 500,
         // availblks 900, cap ceil(50000/900)=56.
-        assert_eq!(row("/dev/sd1", "/mnt", 1000, 500, 100, 1024), "/dev/sd1 1000 500 400 56% /mnt\n");
+        assert_eq!(
+            row("/dev/sd1", "/mnt", 1000, 500, 100, 1024),
+            "/dev/sd1 1000 500 400 56% /mnt\n"
+        );
     }
 
     #[test]
     fn test_header_is_posix_standard() {
-        assert_eq!(P_HEADER, "Filesystem 1024-blocks Used Available Capacity Mounted on\n");
+        assert_eq!(
+            P_HEADER,
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        );
+    }
+
+    /// The `-h` row: C's `%-*.*s` filesystem column, three `pad + %6s`
+    /// humanised figures (`df.c:323-346`, `:491-509`), then ` %3s%%` and the
+    /// mount point. 4096000/2457600/1228800 bytes humanise to 3.9M/2.3M/1.2M
+    /// and 600/900 rounds up to 67%.
+    #[test]
+    fn h_row_matches_the_c_columns() {
+        let mut out = [0u8; 256];
+        let used = format_h_row("rootfs", "/", 6, 1000, 400, 100, 4096, &mut out).unwrap();
+        assert_eq!(
+            core::str::from_utf8(&out[..used]).unwrap(),
+            "rootfs       3.9M       2.3M       1.2M  67% /\n"
+        );
+    }
+
+    /// The `-h` header widens the filesystem column by six (`headerlen - 10`
+    /// with `header = "Size"`, `df.c:447-452`).
+    #[test]
+    fn h_header_widens_the_filesystem_column() {
+        assert_eq!(
+            h_header(6),
+            "Filesystem   Size       Used      Avail %Cap Mounted on\n"
+        );
     }
 }

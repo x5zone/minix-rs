@@ -27,6 +27,8 @@
 //! layer. Everything here borrows from the input and uses fixed size
 //! buffers: no heap, `no_std` throughout.
 
+extern crate alloc;
+
 pub mod df;
 pub mod fstab;
 pub mod options;

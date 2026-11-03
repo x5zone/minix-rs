@@ -13,6 +13,8 @@ path = "src/lib.rs"
 minix-sys = { workspace = true }
 minix-types = { workspace = true }
 minix-fs-mfs = { path = "../../../fs/mfs" }
+# `df -h` 的人类可读数字走 `df` 已在用的人性化端口（`humanize_number`）。
+minix-fileops = { path = "../../bin/fileops" }
 
 # POSIX 安装名是 `fsck.mfs`（带点）；cargo 的 bin 名不收点，构建名用
 # 下划线，装机面（E-FSBDEV 之后的安装清单）改名或软链回 `fsck.mfs`。
