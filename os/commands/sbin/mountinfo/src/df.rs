@@ -103,8 +103,19 @@ pub fn h_header(maxwidth: usize) -> String {
     let width = maxwidth + 6;
     format!(
         "{:<width$} Size       Used      Avail %Cap Mounted on\n",
-        "Filesystem"
+        filesystem_field(width)
     )
+}
+
+/// C's `%-*.*s` prints at most `width` characters of `"Filesystem"` — the
+/// precision truncates the label on tables narrow enough to trip it.
+fn filesystem_field(width: usize) -> &'static str {
+    let label = "Filesystem";
+    if label.len() > width {
+        &label[..width]
+    } else {
+        label
+    }
 }
 
 /// Render one `-h` report row (`df.c:491-509` with `prthuman`,
@@ -114,6 +125,105 @@ pub fn h_header(maxwidth: usize) -> String {
 /// `HN_AUTOSCALE` and `HN_B | HN_NOSPACE | HN_DECIMAL`, `:326-331`); each is
 /// printed `"%s %6s"` after its pad. The capacity string follows the P row's
 /// rule (`full` = "100" when nothing is addressable, `df.c:476`).
+/// The `-h`/`-i` header (the non-`-P` default layout). `iflag` appends the
+/// inode columns section (`df.c:455-456`); the filesystem column widens by
+/// `headerlen - 10` as in C (`:447-452`). `header` is `"Size"` for `-h` and
+/// `"1K-blocks"` for the block display (`headerlen` 4 and 9 give the same
+/// `maxwidth + 6` and `maxwidth + 1` widths C computes).
+pub fn default_header(maxwidth: usize, size_label: &str, iflag: bool) -> String {
+    let width = maxwidth + (10 - size_label.len());
+    let mut text = format!(
+        "{:<width$} {}       Used      Avail %Cap",
+        filesystem_field(width),
+        size_label
+    );
+    if iflag {
+        text.push_str("    iUsed   iAvail %iCap");
+    }
+    text.push_str(" Mounted on\n");
+    text
+}
+
+/// Render one `-i` row (`df.c:491-512`): the ten-wide block figures, the
+/// capacity, then the inode triple (` %8 used %8 free %4 pct%%`). The inode
+/// capacity follows C's rule (`:499-508`): no inodes at all prints "100"
+/// when something is used and "  0" otherwise; the figure uses the same
+/// round-up arithmetic as the block capacity.
+#[allow(clippy::too_many_arguments)] // the fields mirror C's statvfs reads in prtstat
+pub fn format_i_row(
+    from: &str,
+    to: &str,
+    maxwidth: usize,
+    blocks: u64,
+    bfree: u64,
+    bresvd: u64,
+    frsize: u64,
+    files: u64,
+    ffree: u64,
+    out: &mut [u8],
+) -> Result<usize, MountError> {
+    let used = blocks.saturating_sub(bfree);
+    let bavail = bfree.saturating_sub(bresvd);
+    let availblks = bavail + used;
+    let total_blk = fsbtoblk(blocks, frsize, REPORT_BLOCK_SIZE);
+    let used_blk = fsbtoblk(used, frsize, REPORT_BLOCK_SIZE);
+    let avail_blk = fsbtoblk(bavail, frsize, REPORT_BLOCK_SIZE);
+    let cap = if availblks == 0 {
+        String::from("100")
+    } else {
+        capacity_percent(used, availblks).to_string()
+    };
+    let used_inodes = files.saturating_sub(ffree);
+    let inode_cap = if files == 0 {
+        if used_inodes == 0 {
+            String::from("  0")
+        } else {
+            String::from("100")
+        }
+    } else {
+        capacity_percent(used_inodes, files).to_string()
+    };
+
+    let mut w = Sink { out, pos: 0 };
+    w.text(from)?;
+    for _ in from.len()..maxwidth {
+        w.byte(b' ')?;
+    }
+    // `%10jd` three times (`df.c:493-497`), then the block capacity.
+    for value in [total_blk, used_blk, avail_blk] {
+        let text = value.to_string();
+        w.byte(b' ')?;
+        for _ in text.len()..10 {
+            w.byte(b' ')?;
+        }
+        w.text(&text)?;
+    }
+    w.byte(b' ')?;
+    for _ in cap.len()..3 {
+        w.byte(b' ')?;
+    }
+    w.text(&cap)?;
+    w.text("%")?;
+    // ` %8jd %8jd %4s%%` (`df.c:499-508`).
+    for value in [used_inodes, ffree] {
+        w.byte(b' ')?;
+        let text = value.to_string();
+        for _ in text.len()..8 {
+            w.byte(b' ')?;
+        }
+        w.text(&text)?;
+    }
+    w.byte(b' ')?;
+    for _ in inode_cap.len()..4 {
+        w.byte(b' ')?;
+    }
+    w.text(&inode_cap)?;
+    w.text("% ")?;
+    w.text(to)?;
+    w.byte(b'\n')?;
+    Ok(w.pos)
+}
+
 #[allow(clippy::too_many_arguments)] // the fields mirror C's statvfs reads in prtstat
 pub fn format_h_row(
     from: &str,
@@ -293,6 +403,34 @@ mod tests {
         assert_eq!(
             h_header(6),
             "Filesystem   Size       Used      Avail %Cap Mounted on\n"
+        );
+    }
+
+    /// The `-i` row: ten-wide block figures, the capacity, then
+    /// ` %8 used %8 free %4 pct%%` (`df.c:491-512`); 600/900 rounds to 67%
+    /// and 60/100 to 60%.
+    #[test]
+    fn i_row_lays_out_the_inode_columns() {
+        let mut out = [0u8; 256];
+        let used = format_i_row("rootfs", "/", 6, 1000, 400, 100, 4096, 100, 40, &mut out).unwrap();
+        assert_eq!(
+            core::str::from_utf8(&out[..used]).unwrap(),
+            "rootfs       4000       2400       1200  67%       60       40   60% /\n"
+        );
+    }
+
+    /// The `-i` header appends the inode section; the label column widens by
+    /// `headerlen - 10` (`df.c:449-456`) and C's precision truncates
+    /// `"Filesystem"` on narrow tables.
+    #[test]
+    fn i_header_appends_the_inode_section() {
+        assert_eq!(
+            default_header(10, "1K-blocks", true),
+            "Filesystem  1K-blocks       Used      Avail %Cap    iUsed   iAvail %iCap Mounted on\n"
+        );
+        assert_eq!(
+            default_header(6, "1K-blocks", true),
+            "Filesys 1K-blocks       Used      Avail %Cap    iUsed   iAvail %iCap Mounted on\n"
         );
     }
 }

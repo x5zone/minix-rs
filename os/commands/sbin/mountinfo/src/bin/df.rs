@@ -25,7 +25,9 @@ mod support;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_mountinfo::df::{P_HEADER, format_h_row, format_p_row, h_header};
+use minix_mountinfo::df::{
+    P_HEADER, default_header, format_h_row, format_i_row, format_p_row, h_header,
+};
 use minix_sys::{StatvfsBuf, statvfs_off};
 
 /// Matches the VFS mount table width (`NR_MNTS`).
@@ -46,6 +48,7 @@ fn fail(message: &str) -> ! {
 enum SizeMode {
     Blocks,
     Human,
+    Inodes,
 }
 
 /// The whole program body; both `main` forms call it and it never returns.
@@ -66,10 +69,11 @@ fn run() -> ! {
                     // block figures.
                     'k' => mode = SizeMode::Blocks,
                     'h' => mode = SizeMode::Human,
+                    // `-i` adds the inode columns; like `-h` it rides the
+                    // default layout and cannot combine with `-P`
+                    // (`df.c:143-144`).
+                    'i' => mode = SizeMode::Inodes,
                     'P' => {
-                        if mode == SizeMode::Human {
-                            fail("df: -P and -h cannot be combined");
-                        }
                         posix = true;
                     }
                     _ => fail("df: option not wired (POSIX -Pk view only)"),
@@ -82,11 +86,15 @@ fn run() -> ! {
 
     // C checks `-P -h` only through an assert in the `-P` arm (`df.c:455`,
     // reached as `hflag == 0`); this shell refuses the pair by name instead
-    // of aborting.
+    // of aborting. `-P -i` has a real C sentence (`df.c:143-144`).
     if posix && mode == SizeMode::Human {
         fail("df: -P and -h cannot be combined");
     }
+    if posix && mode == SizeMode::Inodes {
+        fail("only one of -P and -i may be specified");
+    }
     let human = mode == SizeMode::Human;
+    let inodes = mode == SizeMode::Inodes;
 
     // Collect the records first: the `-h` header and rows need the widest
     // mount-from name across the whole table (`df.c:204-210`).
@@ -133,6 +141,8 @@ fn run() -> ! {
     let mut out = [0u8; 512];
     if human {
         support::emit(h_header(maxwidth).as_bytes());
+    } else if inodes {
+        support::emit(default_header(maxwidth, "1K-blocks", true).as_bytes());
     } else {
         support::emit(P_HEADER.as_bytes());
     }
@@ -146,6 +156,19 @@ fn run() -> ! {
                 buf.get_u64(statvfs_off::BFREE),
                 buf.get_u64(statvfs_off::BRESVD),
                 buf.get_u64(statvfs_off::FRSIZE),
+                &mut out,
+            )
+        } else if inodes {
+            format_i_row(
+                from,
+                to,
+                maxwidth,
+                buf.get_u64(statvfs_off::BLOCKS),
+                buf.get_u64(statvfs_off::BFREE),
+                buf.get_u64(statvfs_off::BRESVD),
+                buf.get_u64(statvfs_off::FRSIZE),
+                buf.get_u64(statvfs_off::FILES),
+                buf.get_u64(statvfs_off::FFREE),
                 &mut out,
             )
         } else {

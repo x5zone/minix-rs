@@ -119,6 +119,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十七（`df -i` 接通：inode 视图与头行附加段）
+
+- **这一笔的射程**：not-wired 清单里 `df` 的 `-i` 一件——C 的 `-i`（`df.c:109-110`）在默认布局上**附加** inode 三列：头行加 `    iUsed   iAvail %iCap`（`:455-456`），行在块四列后加 ` %8jd %8jd %4s%%`（`:499-508`）；inode 容量的三种特例（无 inode 且无用量 → `"  0"`、无 inode 有用量 → `"100"`、其余按与块容量同一向上取整算式）；`-P -i` 有 C 明句 `only one of -P and -i may be specified`（`:143-144`）。顺带补头行的**精度截断**语义：C 的 `%-*.*s` 在窄表上截断 `"Filesystem"`（`maxwidth+(10-headerlen)` 小于 10 时）。
+- **落码**：`df.rs` 新增 `default_header(maxwidth, size_label, iflag)`（列宽 = `maxwidth + (10 - headerlen)` 的 C 算式 + 可选 inode 段）与 `format_i_row`（%10 块列 + ` %3s%%` + ` %8/%8/%4s%%` 的 inode 三段）；`filesystem_field` 截断助手（`-h` 头行同步受益）；bin 的 `SizeMode::Inodes` + `-P/-i` 互斥句 + 头/行分派；块单位沿用本树的 1024（C 的 512 默认属既有 subset 边界，登记不动）。
+- **门**：`cargo test -p minix-mountinfo` → 库 **21/0**（df 子集 9/0：新增 `i_row_lays_out_the_inode_columns` 逐字节行钉与 `i_header_appends_the_inode_section` 两形头钉——含窄表截断形）+ `df_face` **5/0**（新增 `-P -i` C 句与 `-i` 过门两钉）；clippy 触及文件零新增；`rustfmt` 触及叶文件清（bin_support 连存量漂移不追）；`cargo build --target x86_64-unknown-none --release --bin df` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `2b7a1c8cb`。
+
 ## 批次五百一十六（`chmod` 的 `-H/-L/-P/-h` 接通：遍历三模式与 lchmod 仿真）
 
 - **这一笔的射程**：not-wired 清单里 `chmod` 的 `-H/-L/-P/-h` 一处（`-R` 早已在）——C 的遍历选择（`chmod.c:144-160`）：`-P` 清掉跟随位（`:100-102`）、`-R -H` 置 `FTS_COMFOLLOW`、`-R -L` 置 `FTS_LOGICAL`、非 `-R` 且无 `-h` 时操作数被跟随；**`-R -h` 即 `errx("the -R and -h options may not be specified together.")`**（`:145-150`）；`FTS_SL`/`FTS_SLNONE` 无 `-h` 跳过、有 `-h` 走 `lchmod`（Minix 仿真：符号链静默成功，`tools/compat/lchmod.c`）；目次在 `FTS_D` **前序**改、`FTS_DP` 跳过（与 chown 的 DP 相反）。
