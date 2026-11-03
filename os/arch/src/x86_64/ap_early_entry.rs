@@ -57,6 +57,16 @@ pub const AP_STARTUP_PA: u64 = 0x5000;
 /// it before `boot_ap` and reads it on timeout — the dead stage is then
 /// directly observable from the BSP.
 pub const AP_STAGE_MARK: u32 = 0x6F00;
+
+/// The ladder asm subtracts this many bytes from the record's stack top
+/// before the first push (`sub rsp, 16` below): it must stay equal to the
+/// TSS header size the sp0/stamp contract is written against
+/// (`x86_64::protection::X86_64_STACK_TOP_RESERVED`).
+pub(crate) const AP_STACK_RESERVED_BYTES: usize = 16;
+const _: () = assert!(
+    AP_STACK_RESERVED_BYTES == crate::x86_64::protection::X86_64_STACK_TOP_RESERVED,
+    "AP stack reserve drifted from the TSS header size the stamp contract uses"
+);
 /// SIPI vector field value.
 pub const AP_STARTUP_VECTOR: u32 = 0x05;
 /// Fixed linear address of the ladder's scratch page (BSP-written).
@@ -181,6 +191,16 @@ core::arch::global_asm!(
     // through the identity mapping — rip-relative would reach the
     // ORIGINAL blob (link-time VAs), not the copy.
     "  mov rsp, qword ptr [0x00006020]",
+    // Land rsp at sp0, not at the raw stack top: the top 16 bytes are the
+    // TSS header (the CPU-id stamp sits at sp0 + 8, written by the BSP's
+    // set_kernel_stack before the SIPI), and starting at the raw top makes
+    // the first push clobber that stamp — init_ap's guard then fired at
+    // protection.rs:451 on every AP. C lands here too: the AP switches to
+    // `get_k_stack_top(ap_id) - X86_STACK_TOP_RESERVED` before the finish
+    // path (arch_smp.c:255-256), with sp0 derived by the same constant
+    // (protect.c:176). The literal must stay equal to
+    // X86_64_STACK_TOP_RESERVED; the const assert below pins that.
+    "  sub rsp, 16",
     // Rust entry: RCX = bootstrap PA (MS x64 first argument).
     "  mov ecx, 0x5000",
     // Rust entry VA (record field @ scratch+0x28 → linear 0x6028).

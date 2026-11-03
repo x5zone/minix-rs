@@ -273,7 +273,7 @@ fn fail() -> ! {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    early_console::write_str("### PANIC in test-smp-aps: ");
+    early_console::write_str("### PANIC in test-smp-ipi: ");
     if let Some(loc) = info.location() {
         early_console::write_str(loc.file());
         early_console::write_str(":");

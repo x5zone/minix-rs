@@ -91,7 +91,14 @@ const TSS64_SIZE: usize = 104;
 // scheduled process pointer and one slot for the CPU id
 // (protect.c:173-181; archconst.h:146-149). For x86-64 reg_t is 64-bit,
 // so the reserved area is 16 bytes.
-const X86_64_STACK_TOP_RESERVED: usize = 2 * core::mem::size_of::<u64>();
+/// Stack bytes above `sp0` that belong to the TSS header, not to pushes:
+/// the CPU-id stamp lives at `sp0 + 8` (`stamp_cpu_id`). The AP entry
+/// ladder must land `rsp` at `stack_top - this` before its first push, or
+/// the first push clobbers the stamp and `init_ap`'s guard fires. C:
+/// `switch_k_stack(get_k_stack_top(ap_id) - X86_STACK_TOP_RESERVED, ...)
+/// (arch_smp.c:255-256)` and `sp0 = kernel_stack - X86_STACK_TOP_RESERVED
+/// (protect.c:176)`.
+pub(crate) const X86_64_STACK_TOP_RESERVED: usize = 2 * core::mem::size_of::<u64>();
 
 // Segment descriptor access byte encoding (Intel SDM Vol. 3A §3.4.5)
 // Bits: Present(7) | DPL(6:5) | S(4) | Type(3:0)
