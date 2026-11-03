@@ -16,7 +16,8 @@
 //! (the callback is modeled — [`service::Cat24c256Service::dispatch`]
 //! refreshes the binding when a notification arrives — but the subscribe
 //! call itself has no Rust verb yet), and the vectored transfer pair (the
-//! shared pump does not decode the iovec array yet, `E-BLK-VEC`).
+//! device leg serves the contiguous forms only; the pump decodes the
+//! vector since `E-BLK-VEC` closed).
 
 #![no_std]
 

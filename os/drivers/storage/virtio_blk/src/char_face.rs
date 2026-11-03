@@ -70,7 +70,6 @@ impl BlockDriver for VirtioBlkFace {
         count: u64,
         _flags: i32,
         _id: minix_blockdriver::protocol::RequestId,
-        _vectored: bool,
     ) -> i64 {
         // Read-only gate comes first (writes refused before planning).
         if do_write && self.read_only {
@@ -91,7 +90,10 @@ impl BlockDriver for VirtioBlkFace {
         if self.flush { 0 } else { -(minix_types::EIO) }
     }
 
-    fn partition(&mut self, _minor: DeviceMinor) -> Option<minix_blockdriver::protocol::DeviceExtent> {
+    fn partition(
+        &mut self,
+        _minor: DeviceMinor,
+    ) -> Option<minix_blockdriver::protocol::DeviceExtent> {
         Some(minix_blockdriver::protocol::DeviceExtent {
             base: 0,
             size: capacity_bytes(&self.geometry),
@@ -133,7 +135,6 @@ mod tests {
             4096,
             0,
             minix_blockdriver::protocol::RequestId(1),
-            false,
         );
         assert_eq!(moved, 4096);
         let plan = face.last_plan.unwrap();
@@ -149,7 +150,6 @@ mod tests {
             4096,
             0,
             minix_blockdriver::protocol::RequestId(1),
-            false,
         );
         assert_eq!(moved, 1024);
     }
@@ -168,7 +168,6 @@ mod tests {
                 512,
                 0,
                 minix_blockdriver::protocol::RequestId(1),
-                false,
             ),
             -(minix_types::EROFS as i64)
         );
@@ -183,7 +182,6 @@ mod tests {
                 512,
                 0,
                 minix_blockdriver::protocol::RequestId(1),
-                false,
             ),
             512
         );

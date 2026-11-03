@@ -59,7 +59,6 @@ impl BlockDriver for AhciFace {
         count: u64,
         _flags: i32,
         _id: minix_blockdriver::protocol::RequestId,
-        _vectored: bool,
     ) -> i64 {
         let capacity = self.sectors * SECTOR;
         if position >= capacity {
@@ -81,7 +80,10 @@ impl BlockDriver for AhciFace {
     }
 
     fn partition(&mut self, _minor: DeviceMinor) -> Option<DeviceExtent> {
-        Some(DeviceExtent { base: 0, size: self.sectors * SECTOR })
+        Some(DeviceExtent {
+            base: 0,
+            size: self.sectors * SECTOR,
+        })
     }
 }
 
@@ -106,7 +108,6 @@ mod tests {
                 512,
                 0,
                 minix_blockdriver::protocol::RequestId(1),
-                false
             ),
             512
         );
@@ -125,7 +126,6 @@ mod tests {
                 1024,
                 0,
                 minix_blockdriver::protocol::RequestId(1),
-                false
             ),
             512
         );
@@ -139,7 +139,6 @@ mod tests {
                 512,
                 0,
                 minix_blockdriver::protocol::RequestId(1),
-                false
             ),
             0
         );
@@ -165,7 +164,6 @@ mod tests {
                 512,
                 0,
                 minix_blockdriver::protocol::RequestId(1),
-                false
             ),
             -(minix_types::EAGAIN as i64)
         );
@@ -186,7 +184,6 @@ mod tests {
                 512,
                 0,
                 minix_blockdriver::protocol::RequestId(1),
-                false
             ),
             -(minix_types::EAGAIN as i64)
         );
@@ -201,7 +198,6 @@ mod tests {
                 512,
                 0,
                 minix_blockdriver::protocol::RequestId(1),
-                false
             ),
             512
         );

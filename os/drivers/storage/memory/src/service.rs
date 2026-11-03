@@ -36,20 +36,21 @@
 
 use crate::block_face::{MemoryBlock, RamBackend};
 use crate::char_face::{MemBackend, MemoryChar};
-use minix_blockdriver::driver::{classify as classify_block, BlockDriver, Route as BlockRoute};
+use minix_blockdriver::decode_block_vector;
+use minix_blockdriver::driver::{BlockDriver, Route as BlockRoute, classify as classify_block};
 use minix_blockdriver::protocol::{
-    is_block_request, BdevRequest, DeviceMinor as BlockMinor, RequestId as BlockReqId,
+    BdevRequest, DeviceMinor as BlockMinor, RequestId as BlockReqId, is_block_request,
 };
 use minix_blockdriver::wire;
 use minix_chardriver::driver::{
-    classify as classify_char, reply_decision, CharDriver, NotifySource, ReplyDecision,
-    Route as CharRoute,
+    CharDriver, NotifySource, ReplyDecision, Route as CharRoute, classify as classify_char,
+    reply_decision,
 };
 use minix_chardriver::protocol::{CdevRequest, DeviceMinor, RequestId};
-use minix_driver_rt::runtime::DriverHandler;
 use minix_driver_rt::plane::Plane;
+use minix_driver_rt::runtime::DriverHandler;
 use minix_driver_rt::transport::DriverTransport;
-use minix_types::{Endpoint, Message, BDEV_REPLY, CDEV_REPLY_BASE};
+use minix_types::{BDEV_REPLY, CDEV_REPLY_BASE, Endpoint, Message};
 
 /// The reply base plus one: a select poll's immediate answer
 /// (`CDEV_SEL1_REPLY`, `com.h:936`). minix-types names only the base.
@@ -110,7 +111,6 @@ mod cwire {
         pub const INTERRUPTS: usize = PAYLOAD + 8;
     }
 }
-
 
 /// The shared `{ status; id; }` reply payload (`wire::reply` for both
 /// families: `m_lblockdriver_lbdev_reply`, `ipc.h:356-361`).
@@ -318,9 +318,7 @@ impl<CB: MemBackend, RB: RamBackend> MemoryService<CB, RB> {
         let status: i32 = match route {
             BlockRoute::Request(request) => {
                 let status = match request {
-                    BdevRequest::Open => {
-                        self.blk.open(minor, read_i32(msg, wire::request::ACCESS))
-                    }
+                    BdevRequest::Open => self.blk.open(minor, read_i32(msg, wire::request::ACCESS)),
                     BdevRequest::Close => self.blk.close(minor),
                     BdevRequest::Read
                     | BdevRequest::Write
@@ -332,9 +330,28 @@ impl<CB: MemBackend, RB: RamBackend> MemoryService<CB, RB> {
                         let count = read_i32(msg, wire::request::COUNT);
                         let flags = read_i32(msg, wire::request::FLAGS);
                         let do_write = matches!(request, BdevRequest::Write | BdevRequest::Scatter);
-                        let vectored = matches!(request, BdevRequest::Gather | BdevRequest::Scatter);
                         if count < 0 {
                             minix_types::EINVAL
+                        } else if matches!(request, BdevRequest::Gather | BdevRequest::Scatter) {
+                            // The vectored pair decodes exactly like the
+                            // shared pump (`decode_block_vector`), then rides
+                            // the driver's vectored hook.
+                            let grant = read_i32(msg, wire::request::GRANT);
+                            match decode_block_vector(transport, msg.m_source, grant, count) {
+                                Ok(elements) => {
+                                    let mut plane = Plane::new(transport, msg.m_source, grant);
+                                    self.blk.transfer_vectored(
+                                        &mut plane,
+                                        minor,
+                                        do_write,
+                                        position,
+                                        &elements,
+                                        flags,
+                                        BlockReqId(id),
+                                    ) as i32
+                                }
+                                Err(code) => code,
+                            }
                         } else {
                             // The transfer hook answers the byte total; the
                             // grant copy of those bytes stays a registered
@@ -354,7 +371,6 @@ impl<CB: MemBackend, RB: RamBackend> MemoryService<CB, RB> {
                                 count as u64,
                                 flags,
                                 BlockReqId(id),
-                                vectored,
                             ) as i32
                         }
                     }
@@ -584,7 +600,7 @@ mod tests {
         let mut svc = service();
         let mut transport = Scripted::new();
         svc.dispatch(&mut transport, &char_msg(CdevRequest::Open, 5, 1)); // /dev/zero
-                                                                          // A read carrying a 128-byte count.
+        // A read carrying a 128-byte count.
         let mut msg = char_msg(CdevRequest::Read, 5, 2);
         let base = core::ptr::addr_of_mut!(msg) as *mut u8;
         // SAFETY: pinned offset inside the message body.

@@ -312,7 +312,6 @@ impl<B: FileBackend> BlockDriver for VndFace<B> {
         count: u64,
         flags: i32,
         _id: minix_blockdriver::protocol::RequestId,
-        vectored: bool,
     ) -> i64 {
         let Some(fd) = self.fd else {
             return -(ENXIO as i64);
@@ -325,12 +324,6 @@ impl<B: FileBackend> BlockDriver for VndFace<B> {
         }
         if position >= extent.size {
             return 0;
-        }
-        // The vectored pair carries an iovec array the shared pump does not
-        // decode yet (`E-BLK-VEC`); this leg answers the contiguous forms
-        // rather than reading an element count as a byte count.
-        if vectored {
-            return -(minix_types::ENOSYS as i64);
         }
         let mut position = position + extent.base;
         let mut offset = 0u64;
@@ -379,6 +372,20 @@ impl<B: FileBackend> BlockDriver for VndFace<B> {
             }
         }
         total
+    }
+
+    fn transfer_vectored(
+        &mut self,
+        _plane: &mut dyn TransferPlane,
+        _minor: DeviceMinor,
+        _do_write: bool,
+        _position: u64,
+        _elements: &[minix_blockdriver::protocol::BlockIovec],
+        _flags: i32,
+        _id: minix_blockdriver::protocol::RequestId,
+    ) -> i64 {
+        // The file-backed leg serves the contiguous forms only.
+        -(minix_types::ENOSYS as i64)
     }
 
     fn ioctl(&mut self, _minor: DeviceMinor, _request: u64, _grant: u64, _user: i64) -> i32 {
@@ -636,7 +643,6 @@ mod tests {
             200,
             0,
             RequestId(1),
-            false,
         );
         assert_eq!(moved, 200);
         assert_eq!(plane.to_bytes.len(), 200);
@@ -653,7 +659,6 @@ mod tests {
             64,
             0,
             RequestId(2),
-            false,
         );
         assert_eq!(moved, 64);
         assert!(face.backend.data[50..114].iter().all(|byte| *byte == 0xAB));
@@ -673,7 +678,6 @@ mod tests {
                 64,
                 0,
                 RequestId(1),
-                false
             ),
             0
         );
@@ -688,11 +692,11 @@ mod tests {
                 64,
                 0,
                 RequestId(2),
-                false
             ),
             24
         );
-        // An unserved minor and the vectored pair are refused.
+        // An unserved minor is refused; the vectored pair is refused by the
+        // device leg itself.
         assert_eq!(
             BlockDriver::transfer(
                 &mut face,
@@ -703,21 +707,19 @@ mod tests {
                 8,
                 0,
                 RequestId(3),
-                false
             ),
             -(ENXIO as i64)
         );
         assert_eq!(
-            BlockDriver::transfer(
+            BlockDriver::transfer_vectored(
                 &mut face,
                 &mut plane,
                 DeviceMinor(0),
                 false,
                 0,
-                8,
+                &[],
                 0,
                 RequestId(4),
-                true
             ),
             -(minix_types::ENOSYS as i64)
         );
@@ -733,7 +735,6 @@ mod tests {
                 8,
                 BDEV_FORCEWRITE,
                 RequestId(5),
-                false
             ),
             8
         );
@@ -782,7 +783,6 @@ mod tests {
                 8,
                 0,
                 RequestId(6),
-                false
             ),
             -(ENXIO as i64)
         );

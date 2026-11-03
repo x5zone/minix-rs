@@ -191,12 +191,24 @@ impl<L: LowerLeg> BlockDriver for FilterFace<L> {
         count: u64,
         _flags: i32,
         _id: minix_blockdriver::protocol::RequestId,
-        vectored: bool,
     ) -> i64 {
-        if vectored {
-            return -(minix_types::ENOSYS as i64);
-        }
         self.transfer(plane, do_write, position, count)
+    }
+
+    fn transfer_vectored(
+        &mut self,
+        _plane: &mut dyn TransferPlane,
+        _minor: DeviceMinor,
+        _do_write: bool,
+        _position: u64,
+        _elements: &[minix_blockdriver::protocol::BlockIovec],
+        _flags: i32,
+        _id: minix_blockdriver::protocol::RequestId,
+    ) -> i64 {
+        // The 2.11 evidence (16 篇 §8) rejected per-segment forwarding as
+        // observationally unequal to C's one-vector request; the vectored
+        // pair stays refused until a vector-capable downstream leg exists.
+        -(minix_types::ENOSYS as i64)
     }
 
     fn ioctl(&mut self, _minor: DeviceMinor, request: u64, _grant: u64, _user: i64) -> i32 {
@@ -419,19 +431,20 @@ mod tests {
         assert_eq!(face.ioctl(DeviceMinor(0), DIOCTIMEOUT, 0, 0), EINVAL);
         assert_eq!(face.ioctl(DeviceMinor(0), DIOCOPENCT, 0, 0), EINVAL);
         assert_eq!(face.ioctl(DeviceMinor(0), 0x1234, 0, 0), ENOTTY);
-        // The vectored pair is refused (the iovec model is `E-BLK-VEC`).
+        // The vectored pair is refused (the per-segment equivalence was
+        // rejected by the 2.11 evidence; see the `transfer_vectored`
+        // override).
         let mut null = NullPlane;
         assert_eq!(
-            BlockDriver::transfer(
+            BlockDriver::transfer_vectored(
                 &mut face,
                 &mut null,
                 DeviceMinor(0),
                 false,
                 0,
-                512,
+                &[],
                 0,
-                minix_blockdriver::protocol::RequestId(1),
-                true
+                minix_blockdriver::protocol::RequestId(1)
             ),
             -(minix_types::ENOSYS as i64)
         );

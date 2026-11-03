@@ -18,7 +18,7 @@ use minix_blockdriver::protocol::{DeviceExtent, DeviceMinor};
 use minix_chardriver::protocol::OpenDeviceSet;
 use minix_driver_rt::plane::TransferPlane;
 
-use crate::device::{resize_policy, DeviceTable, ResizeVerdict};
+use crate::device::{DeviceTable, ResizeVerdict, resize_policy};
 
 /// Backing storage of the RAM minors (the driver-owned disk memory).
 pub trait RamBackend {
@@ -116,7 +116,6 @@ impl<B: RamBackend> BlockDriver for MemoryBlock<B> {
         count: u64,
         _flags: i32,
         _id: minix_blockdriver::protocol::RequestId,
-        _vectored: bool,
     ) -> i64 {
         // Clip against the device extent: bytes past the end answer as a
         // shorter transfer ("copy what fits"), entirely-past answers
@@ -132,6 +131,31 @@ impl<B: RamBackend> BlockDriver for MemoryBlock<B> {
         (count.min(room)) as i64
     }
 
+    fn transfer_vectored(
+        &mut self,
+        _plane: &mut dyn TransferPlane,
+        minor: DeviceMinor,
+        _do_write: bool,
+        position: u64,
+        elements: &[minix_blockdriver::protocol::BlockIovec],
+        _flags: i32,
+        _id: minix_blockdriver::protocol::RequestId,
+    ) -> i64 {
+        // The same "answer the byte total, copy stays the registered seam"
+        // contract as the contiguous leg, over the vector's summed size
+        // clipped against the extent (the contiguous leg does the clip).
+        let total: u64 = elements.iter().map(|element| element.size).sum();
+        self.transfer(
+            &mut minix_driver_rt::plane::NullPlane,
+            minor,
+            false,
+            position,
+            total,
+            0,
+            minix_blockdriver::protocol::RequestId(0),
+        )
+    }
+
     fn ioctl(&mut self, minor: DeviceMinor, request: u64, _grant: u64, _user: i64) -> i32 {
         // MIOCRAMSIZE rides the resize policy; the value arrives via the
         // grant and is copied by the service, which then calls
@@ -141,12 +165,16 @@ impl<B: RamBackend> BlockDriver for MemoryBlock<B> {
     }
 
     fn partition(&mut self, minor: DeviceMinor) -> Option<DeviceExtent> {
-        self.table
-            .extent(minor.0)
-            .map(|extent| DeviceExtent { base: extent.base, size: extent.size })
+        self.table.extent(minor.0).map(|extent| DeviceExtent {
+            base: extent.base,
+            size: extent.size,
+        })
     }
 
-    fn geometry(&mut self, _minor: DeviceMinor) -> Option<minix_blockdriver::protocol::PartitionGeometry> {
+    fn geometry(
+        &mut self,
+        _minor: DeviceMinor,
+    ) -> Option<minix_blockdriver::protocol::PartitionGeometry> {
         None
     }
 }
@@ -175,7 +203,10 @@ impl<B: RamBackend> MemoryBlock<B> {
                 self.backend.set_disk_size(want);
                 self.table.set_extent(
                     minor.0,
-                    crate::device::DeviceExtent { base: 0, size: want },
+                    crate::device::DeviceExtent {
+                        base: 0,
+                        size: want,
+                    },
                 );
                 0
             }
@@ -215,17 +246,44 @@ mod tests {
         assert_eq!(face.apply_resize(DeviceMinor(7), false, 4096), 0);
         // Whole request inside: moves everything.
         assert_eq!(
-            BlockDriver::transfer(&mut face, &mut minix_driver_rt::plane::NullPlane, DeviceMinor(7), true, 4096 - 512, 512, 0, minix_blockdriver::protocol::RequestId(1), false),
+            BlockDriver::transfer(
+                &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
+                DeviceMinor(7),
+                true,
+                4096 - 512,
+                512,
+                0,
+                minix_blockdriver::protocol::RequestId(1),
+            ),
             512
         );
         // Straddles the end: clipped to the surviving bytes.
         assert_eq!(
-            BlockDriver::transfer(&mut face, &mut minix_driver_rt::plane::NullPlane, DeviceMinor(7), true, 4096 - 100, 512, 0, minix_blockdriver::protocol::RequestId(1), false),
+            BlockDriver::transfer(
+                &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
+                DeviceMinor(7),
+                true,
+                4096 - 100,
+                512,
+                0,
+                minix_blockdriver::protocol::RequestId(1),
+            ),
             100
         );
         // Entirely past the end: zero moved.
         assert_eq!(
-            BlockDriver::transfer(&mut face, &mut minix_driver_rt::plane::NullPlane, DeviceMinor(7), true, 8192, 512, 0, minix_blockdriver::protocol::RequestId(1), false),
+            BlockDriver::transfer(
+                &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
+                DeviceMinor(7),
+                true,
+                8192,
+                512,
+                0,
+                minix_blockdriver::protocol::RequestId(1),
+            ),
             0
         );
     }
@@ -250,7 +308,10 @@ mod tests {
         assert_eq!(face.apply_resize(DeviceMinor(7), false, 8192), 0);
         assert_eq!(face.backend.disk_size(), 8192);
         // Non-RAM minors refuse.
-        assert_eq!(face.apply_resize(DeviceMinor(1), false, 8192), -minix_types::EINVAL);
+        assert_eq!(
+            face.apply_resize(DeviceMinor(1), false, 8192),
+            -minix_types::EINVAL
+        );
         assert_eq!(face.last_resize, Some(ResizeVerdict::NotRamdisk));
     }
 }

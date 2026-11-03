@@ -326,20 +326,27 @@ impl BlockDriver for Cat24c256Face {
         count: u64,
         flags: i32,
         _id: minix_blockdriver::protocol::RequestId,
-        vectored: bool,
     ) -> i64 {
         if minor.0 as usize >= NR_DEVS {
             return -(minix_types::ENXIO as i64);
         }
-        // The vectored pair (gather/scatter) carries an iovec array in the
-        // request grant; the shared pump does not decode it yet (see the
-        // framework's `E-BLK-VEC` note), so this leg answers the
-        // contiguous forms only rather than reading an element count as a
-        // byte count.
-        if vectored {
-            return -(minix_types::ENOSYS as i64);
-        }
         self.transfer_bytes(plane, do_write, position, count, flags)
+    }
+
+    fn transfer_vectored(
+        &mut self,
+        _plane: &mut dyn TransferPlane,
+        _minor: DeviceMinor,
+        _do_write: bool,
+        _position: u64,
+        _elements: &[minix_blockdriver::protocol::BlockIovec],
+        _flags: i32,
+        _id: minix_blockdriver::protocol::RequestId,
+    ) -> i64 {
+        // The device leg serves the contiguous forms only; the pump now
+        // decodes the vector (`E-BLK-VEC` closed), so the refusal here is
+        // the device's own, not a framework gap.
+        -(minix_types::ENOSYS as i64)
     }
 
     fn ioctl(&mut self, _minor: DeviceMinor, _request: u64, _grant: u64, _user: i64) -> i32 {
@@ -521,7 +528,6 @@ mod tests {
             64,
             0,
             RequestId(1),
-            false,
         );
         assert_eq!(moved, 64);
         assert_eq!(plane.copies, vec![(0, 64)]);
@@ -539,7 +545,6 @@ mod tests {
             64,
             0,
             RequestId(2),
-            false,
         );
         assert_eq!(moved, 10);
         assert_eq!(plane.copies, vec![(0, 10)]);
@@ -555,7 +560,6 @@ mod tests {
             64,
             0,
             RequestId(3),
-            false,
         );
         assert_eq!(moved, 0);
         assert!(plane.copies.is_empty());
@@ -576,7 +580,6 @@ mod tests {
             COPYBUF_SIZE as u64 + 8,
             0,
             RequestId(4),
-            false,
         );
         assert_eq!(moved, COPYBUF_SIZE as i64 + 8);
         assert_eq!(
@@ -601,23 +604,21 @@ mod tests {
                 0,
                 8,
                 0,
-                RequestId(5),
-                false
+                RequestId(5)
             ),
             -(minix_types::ENXIO as i64)
         );
-        // The vectored pair is refused until the iovec decode lands.
+        // The vectored pair is refused by the device leg itself.
         assert_eq!(
-            BlockDriver::transfer(
+            BlockDriver::transfer_vectored(
                 &mut face,
                 &mut plane,
                 DeviceMinor(0),
                 false,
                 0,
-                8,
+                &[],
                 0,
-                RequestId(6),
-                true
+                RequestId(6)
             ),
             -(minix_types::ENOSYS as i64)
         );
@@ -652,7 +653,6 @@ mod tests {
             8,
             0,
             RequestId(7),
-            false,
         );
         assert_eq!(moved, -(minix_types::EIO as i64));
         assert!(
@@ -674,7 +674,6 @@ mod tests {
             8,
             0,
             RequestId(8),
-            false,
         );
         assert_eq!(moved, -(minix_types::ENOENT as i64));
     }

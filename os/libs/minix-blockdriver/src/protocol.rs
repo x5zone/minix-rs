@@ -62,6 +62,29 @@ pub const MESSAGE_QUEUE_BOUND: usize = 128;
 /// Block request kind, one variant per request number.
 ///
 /// C: `BDEV_OPEN` through `BDEV_IOCTL` (`com.h:970-976`): open, close, read,
+/// One element of a gather/scatter vector (C `iovec_t`,
+/// `minix3/minix/include/minix/type.h:55-59`): the caller lent a grant for
+/// the element's bytes.
+///
+/// On the wire an element is C's two `vir_bytes` fields — `iov_addr` (the
+/// grant id of this element) then `iov_size` — sixteen bytes on LP64, which
+/// is the layout `do_vrdwt` safecopies out of the request grant
+/// (`libblockdriver/driver.c:233-240`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockIovec {
+    /// The grant the caller lent for this element (`iov_addr`).
+    pub grant: i32,
+    /// The element's byte count (`iov_size`).
+    pub size: u64,
+}
+
+/// The wire size of one [`BlockIovec`] (two `vir_bytes`, LP64).
+pub const BLOCK_IOVEC_WIRE: usize = 16;
+
+/// Maximum elements per vector (`NR_IOREQS`,
+/// `minix3/minix/include/minix/const.h:50`).
+pub const NR_IOREQS: usize = 64;
+
 /// write, gather (vectored read), scatter (vectored write), control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BdevRequest {

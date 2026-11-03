@@ -326,14 +326,24 @@ impl BlockDriver for FbdFace {
         count: u64,
         flags: i32,
         _id: minix_blockdriver::protocol::RequestId,
-        vectored: bool,
     ) -> i64 {
-        if vectored {
-            // The vectored pair carries an iovec array (`E-BLK-VEC`); this
-            // leg answers the contiguous forms.
-            return -(minix_types::ENOSYS as i64);
-        }
         self.transfer(plane, do_write, position, count, flags)
+    }
+
+    fn transfer_vectored(
+        &mut self,
+        _plane: &mut dyn TransferPlane,
+        _minor: DeviceMinor,
+        _do_write: bool,
+        _position: u64,
+        _elements: &[minix_blockdriver::protocol::BlockIovec],
+        _flags: i32,
+        _id: minix_blockdriver::protocol::RequestId,
+    ) -> i64 {
+        // The copy path interposes on one contiguous staging buffer; the
+        // 2.11 evidence (16 篇 §8) rejected per-segment forwarding as
+        // observationally unequal, so the vectored pair stays refused.
+        -(minix_types::ENOSYS as i64)
     }
 
     fn ioctl(&mut self, _minor: DeviceMinor, _request: u64, _grant: u64, _user: i64) -> i32 {
@@ -624,16 +634,15 @@ mod tests {
         let mut face = bound_face();
         let mut null = NullPlane;
         assert_eq!(
-            BlockDriver::transfer(
+            BlockDriver::transfer_vectored(
                 &mut face,
                 &mut null,
                 DeviceMinor(0),
                 false,
                 0,
-                8,
+                &[],
                 0,
-                minix_blockdriver::protocol::RequestId(1),
-                true
+                minix_blockdriver::protocol::RequestId(1)
             ),
             -(minix_types::ENOSYS as i64)
         );

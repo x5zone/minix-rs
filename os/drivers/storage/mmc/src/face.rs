@@ -307,12 +307,22 @@ impl<H: MmcHost> BlockDriver for MmcFace<H> {
         count: u64,
         _flags: i32,
         _id: minix_blockdriver::protocol::RequestId,
-        vectored: bool,
     ) -> i64 {
-        if vectored {
-            return -(minix_types::ENOSYS as i64);
-        }
         self.transfer(plane, minor.0 as i32, do_write, position, count)
+    }
+
+    fn transfer_vectored(
+        &mut self,
+        _plane: &mut dyn TransferPlane,
+        _minor: DeviceMinor,
+        _do_write: bool,
+        _position: u64,
+        _elements: &[minix_blockdriver::protocol::BlockIovec],
+        _flags: i32,
+        _id: minix_blockdriver::protocol::RequestId,
+    ) -> i64 {
+        // The mmc leg serves the contiguous forms only.
+        -(minix_types::ENOSYS as i64)
     }
 
     fn ioctl(&mut self, _minor: DeviceMinor, request: u64, _grant: u64, _user: i64) -> i32 {

@@ -27,9 +27,12 @@
 use minix_driver_rt::plane::Plane;
 use minix_driver_rt::runtime::DriverHandler;
 use minix_driver_rt::transport::DriverTransport;
-use minix_types::{Endpoint, Message, BDEV_REPLY, CDEV_REPLY_BASE, CDEV_REQUEST_BASE, EDONTREPLY, EINVAL, ENXIO, ERESTART};
+use minix_types::{
+    BDEV_REPLY, CDEV_REPLY_BASE, CDEV_REQUEST_BASE, EDONTREPLY, EINVAL, ENXIO, ERESTART, Endpoint,
+    Message,
+};
 
-use crate::driver::{classify, BlockDriver, Route};
+use crate::driver::{BlockDriver, Route, classify, decode_block_vector};
 use crate::protocol::{BdevRequest, DeviceMinor, OpenDeviceSet, RequestId};
 use crate::wire;
 
@@ -86,7 +89,9 @@ impl<D: BlockDriver> BlockService<D> {
                 Endpoint::HARDWARE => self
                     .face
                     .interrupt(wire::read_u32(msg, wire::notify::INTERRUPTS)),
-                Endpoint::CLOCK => self.face.alarm(wire::read_i64(msg, wire::notify::TIMESTAMP)),
+                Endpoint::CLOCK => self
+                    .face
+                    .alarm(wire::read_i64(msg, wire::notify::TIMESTAMP)),
                 _ => self.face.other(msg.m_type),
             }
             return;
@@ -143,13 +148,11 @@ impl<D: BlockDriver> BlockService<D> {
                 // C records the device before running the hook
                 // (`driver.c:431-437`).
                 self.opened.insert_raw(minor.0);
-                self.face.open(minor, wire::read_i32(msg, wire::request::ACCESS))
+                self.face
+                    .open(minor, wire::read_i32(msg, wire::request::ACCESS))
             }
             BdevRequest::Close => self.face.close(minor),
-            BdevRequest::Read
-            | BdevRequest::Write
-            | BdevRequest::Gather
-            | BdevRequest::Scatter => {
+            BdevRequest::Read | BdevRequest::Write | BdevRequest::Gather | BdevRequest::Scatter => {
                 let count = wire::read_i32(msg, wire::request::COUNT);
                 // C refuses a negative count before any transfer runs
                 // (`do_rdwt`, `driver.c:198-201`).
@@ -160,34 +163,42 @@ impl<D: BlockDriver> BlockService<D> {
                 let flags = wire::read_i32(msg, wire::request::FLAGS);
                 let do_write = matches!(request, BdevRequest::Write | BdevRequest::Scatter);
                 let vectored = matches!(request, BdevRequest::Gather | BdevRequest::Scatter);
-                // C folds the vector forms into one hook with the vectored
-                // flag, and truncates the ssize_t answer into the int reply
-                // (`driver.c:441-451`). C's hook also receives the caller
-                // and the grant (`driver.c:447`); the rewrite hands both as
-                // the request's data plane.
-                //
-                // `E-BLK-VEC` (registered gap): for the vectored pair C
-                // first copies `count` iovec elements out of the request
-                // grant and passes the array to the hook (`do_rdwt`,
-                // `driver.c:226-254`); the rewrite passes the element count
-                // through unchanged and has no iovec model yet, so a hook
-                // that reads `count` as bytes answers the wrong length. A
-                // driver whose transfer leg cannot honestly serve the
-                // vectored forms should refuse them (cat24c256 does).
-                let mut plane = Plane::new(
-                    transport,
-                    msg.m_source,
-                    wire::read_i32(msg, wire::request::GRANT),
-                );
-                self.face.transfer(
+                let grant = wire::read_i32(msg, wire::request::GRANT);
+                if !vectored {
+                    // C folds the vector forms into one hook with the
+                    // vectored flag, and truncates the ssize_t answer into
+                    // the int reply (`driver.c:441-451`). C's hook also
+                    // receives the caller and the grant (`driver.c:447`);
+                    // the rewrite hands both as the request's data plane.
+                    let mut plane = Plane::new(transport, msg.m_source, grant);
+                    return self.face.transfer(
+                        &mut plane,
+                        minor,
+                        do_write,
+                        position,
+                        count as u64,
+                        flags,
+                        RequestId(id),
+                    ) as i32;
+                }
+                // The vectored pair: C's `do_vrdwt`
+                // (`libblockdriver/driver.c:226-262`) safecopies the element
+                // array out of the request grant and checks the size sum
+                // before the hook; `decode_block_vector` carries the same
+                // cap and the same signed-sum EINVAL.
+                let elements = match decode_block_vector(transport, msg.m_source, grant, count) {
+                    Ok(elements) => elements,
+                    Err(code) => return code,
+                };
+                let mut plane = Plane::new(transport, msg.m_source, grant);
+                self.face.transfer_vectored(
                     &mut plane,
                     minor,
                     do_write,
                     position,
-                    count as u64,
+                    &elements,
                     flags,
                     RequestId(id),
-                    vectored,
                 ) as i32
             }
             BdevRequest::Ioctl => {
@@ -233,6 +244,7 @@ impl<D: BlockDriver, T: DriverTransport> DriverHandler<T> for BlockService<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{BlockIovec, NR_IOREQS};
     use alloc::vec::Vec;
 
     use crate::protocol::BdevRequest;
@@ -241,6 +253,11 @@ mod tests {
     #[derive(Default)]
     struct Scripted {
         replies: Vec<(Endpoint, i32, i32, i32)>,
+        /// Bytes served by `copy_from_grant`, keyed by grant id: the
+        /// vectored tests preload an iovec array here.
+        grants: alloc::collections::BTreeMap<i32, alloc::vec::Vec<u8>>,
+        /// When set, `copy_from_grant` fails with this errno.
+        fail_copy: Option<i32>,
     }
 
     impl DriverTransport for Scripted {
@@ -262,10 +279,22 @@ mod tests {
         fn copy_from_grant(
             &mut self,
             _granter: Endpoint,
-            _grant: i32,
+            grant: i32,
             _offset: u64,
-            _buf: &mut [u8],
+            buf: &mut [u8],
         ) -> Result<(), i32> {
+            if let Some(code) = self.fail_copy {
+                return Err(code);
+            }
+            let empty: &[u8] = &[];
+            let bytes = self
+                .grants
+                .get(&grant)
+                .map(|v| v.as_slice())
+                .unwrap_or(empty);
+            for (index, slot) in buf.iter_mut().enumerate() {
+                *slot = bytes.get(index).copied().unwrap_or(0);
+            }
             Ok(())
         }
         fn copy_to_grant(
@@ -293,13 +322,18 @@ mod tests {
         }
     }
 
+    /// One recorded transfer call: caller, minor, direction, position,
+    /// count-or-element-count, flags, id, and the vectored flag.
+    type TransferRecord = (Endpoint, u32, bool, u64, u64, i32, i32, bool);
+
     /// Scriptable device: records every hook call.
     struct TestCard {
         open_result: i32,
         transfer_result: i64,
         opens: Vec<(u32, i32)>,
         closes: Vec<u32>,
-        transfers: Vec<(Endpoint, u32, bool, u64, u64, i32, i32, bool)>,
+        transfers: Vec<TransferRecord>,
+        vectored: Vec<Vec<BlockIovec>>,
         ioctls: Vec<(u32, u64, u64, i64)>,
         interrupts: u32,
         alarms: Vec<i64>,
@@ -315,6 +349,7 @@ mod tests {
                 opens: Vec::new(),
                 closes: Vec::new(),
                 transfers: Vec::new(),
+                vectored: Vec::new(),
                 ioctls: Vec::new(),
                 interrupts: 0,
                 alarms: Vec::new(),
@@ -342,7 +377,6 @@ mod tests {
             count: u64,
             flags: i32,
             id: RequestId,
-            vectored: bool,
         ) -> i64 {
             self.transfers.push((
                 plane.caller(),
@@ -352,8 +386,31 @@ mod tests {
                 count,
                 flags,
                 id.0,
-                vectored,
+                false,
             ));
+            self.transfer_result
+        }
+        fn transfer_vectored(
+            &mut self,
+            plane: &mut dyn minix_driver_rt::plane::TransferPlane,
+            minor: DeviceMinor,
+            do_write: bool,
+            position: u64,
+            elements: &[BlockIovec],
+            flags: i32,
+            id: RequestId,
+        ) -> i64 {
+            self.transfers.push((
+                plane.caller(),
+                minor.0,
+                do_write,
+                position,
+                elements.len() as u64,
+                flags,
+                id.0,
+                true,
+            ));
+            self.vectored.push(elements.to_vec());
             self.transfer_result
         }
         fn ioctl(&mut self, minor: DeviceMinor, request: u64, grant: u64, user: i64) -> i32 {
@@ -474,38 +531,104 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_maps_direction_and_vector_flags() {
+    fn test_transfer_maps_the_contiguous_direction_flags() {
         let mut service = BlockService::new(TestCard::new());
         let mut transport = Scripted::default();
-        service.dispatch(&mut transport, &block_message(BdevRequest::Open, Endpoint(5), 7, 1));
-        let cases = [
-            (BdevRequest::Read, false, false),
-            (BdevRequest::Write, true, false),
-            (BdevRequest::Gather, false, true),
-            (BdevRequest::Scatter, true, true),
-        ];
-        for (index, (request, do_write, vectored)) in cases.iter().enumerate() {
+        service.dispatch(
+            &mut transport,
+            &block_message(BdevRequest::Open, Endpoint(5), 7, 1),
+        );
+        let cases = [(BdevRequest::Read, false), (BdevRequest::Write, true)];
+        for (index, (request, do_write)) in cases.iter().enumerate() {
             let msg = transfer_message(*request, Endpoint(5), 7, 10 + index as i32, 512, 4096, 3);
             service.dispatch(&mut transport, &msg);
             let last = service.face().transfers.last().unwrap();
-            // The hook now sees the caller through the plane as well
+            // The hook sees the caller through the plane as well
             // (C's `bdr_transfer` receives `endpt`).
             assert_eq!(last.0, Endpoint(5));
             assert_eq!(last.1, 7);
             assert_eq!(last.2, *do_write);
             assert_eq!(last.3, 4096);
-            assert_eq!(last.4, 512);
+            assert_eq!(last.4, 512, "contiguous count is bytes");
             assert_eq!(last.5, 3);
             assert_eq!(last.6, 10 + index as i32);
-            assert_eq!(last.7, *vectored);
+            assert!(!last.7);
         }
+    }
+
+    /// The vectored pair decodes the request grant's iovec array (`C
+    /// `do_vrdwt`, `libblockdriver/driver.c:226-262`): elements arrive at
+    /// the hook with their grants and sizes, the element count is capped at
+    /// `NR_IOREQS`, an overflowing size sum answers EINVAL before the hook,
+    /// and a failed vector copy answers EINVAL.
+    #[test]
+    fn test_vectored_requests_decode_the_iovec_array() {
+        let mut service = BlockService::new(TestCard::new());
+        let mut transport = Scripted::default();
+        let mut vector = Vec::new();
+        // Each wire element is two `vir_bytes` (C `type.h:55-59`): the
+        // element's grant id in `iov_addr`, then its byte count.
+        for (grant, size) in [(0x21u64, 512u64), (0x22, 1024)] {
+            vector.extend_from_slice(&grant.to_le_bytes());
+            vector.extend_from_slice(&size.to_le_bytes());
+        }
+        transport.grants.insert(9, vector);
+        service.dispatch(
+            &mut transport,
+            &block_message(BdevRequest::Open, Endpoint(5), 7, 1),
+        );
+        // The request's GRANT field names the vector grant (`9`).
+        let mut msg = transfer_message(BdevRequest::Gather, Endpoint(5), 7, 2, 2, 4096, 3);
+        wire::write_i32(&mut msg, wire::request::GRANT, 9);
+        service.dispatch(&mut transport, &msg);
+        assert_eq!(transport.replies[1].2, 512, "the card's scripted answer");
+        let last = service.face().transfers.last().unwrap();
+        assert_eq!(last.4, 2, "two elements");
+        assert!(last.7);
+        let decoded = &service.face().vectored.last().unwrap();
+        let expected = [
+            BlockIovec {
+                grant: 0x21,
+                size: 512,
+            },
+            BlockIovec {
+                grant: 0x22,
+                size: 1024,
+            },
+        ];
+        assert_eq!(decoded.as_slice(), expected.as_slice());
+
+        // Element count above NR_IOREQS is capped (C `:234-235`).
+        let msg = transfer_message(BdevRequest::Scatter, Endpoint(5), 7, 3, 100, 0, 4);
+        service.dispatch(&mut transport, &msg);
+        assert_eq!(service.face().transfers.last().unwrap().4, NR_IOREQS as u64);
+
+        // An overflowing size sum answers EINVAL before the hook.
+        let mut vector = Vec::new();
+        vector.extend_from_slice(&1u64.to_le_bytes());
+        vector.extend_from_slice(&u64::MAX.to_le_bytes());
+        transport.grants.insert(10, vector);
+        let mut msg = transfer_message(BdevRequest::Scatter, Endpoint(5), 7, 4, 1, 0, 5);
+        wire::write_i32(&mut msg, wire::request::GRANT, 10);
+        service.dispatch(&mut transport, &msg);
+        assert_eq!(transport.replies.last().unwrap().2, EINVAL);
+
+        // A failed vector copy answers EINVAL (C `:236-240`).
+        transport.fail_copy = Some(-minix_types::EIO);
+        let mut msg = transfer_message(BdevRequest::Gather, Endpoint(5), 7, 5, 1, 0, 6);
+        wire::write_i32(&mut msg, wire::request::GRANT, 9);
+        service.dispatch(&mut transport, &msg);
+        assert_eq!(transport.replies.last().unwrap().2, EINVAL);
     }
 
     #[test]
     fn test_negative_count_is_refused_without_calling_the_card() {
         let mut service = BlockService::new(TestCard::new());
         let mut transport = Scripted::default();
-        service.dispatch(&mut transport, &block_message(BdevRequest::Open, Endpoint(5), 7, 1));
+        service.dispatch(
+            &mut transport,
+            &block_message(BdevRequest::Open, Endpoint(5), 7, 1),
+        );
         let msg = transfer_message(BdevRequest::Write, Endpoint(5), 7, 2, -1, 0, 0);
         service.dispatch(&mut transport, &msg);
         assert_eq!(transport.replies[1].2, EINVAL);
@@ -517,7 +640,10 @@ mod tests {
         let mut service = BlockService::new(TestCard::new());
         service.face_mut().transfer_result = EDONTREPLY as i64;
         let mut transport = Scripted::default();
-        service.dispatch(&mut transport, &block_message(BdevRequest::Open, Endpoint(5), 7, 1));
+        service.dispatch(
+            &mut transport,
+            &block_message(BdevRequest::Open, Endpoint(5), 7, 1),
+        );
         let msg = transfer_message(BdevRequest::Read, Endpoint(5), 7, 2, 512, 0, 0);
         service.dispatch(&mut transport, &msg);
         assert_eq!(transport.replies.len(), 1, "only the open reply");
@@ -528,8 +654,14 @@ mod tests {
     fn test_cleanup_runs_after_every_served_request() {
         let mut service = BlockService::new(TestCard::new());
         let mut transport = Scripted::default();
-        service.dispatch(&mut transport, &block_message(BdevRequest::Open, Endpoint(5), 7, 1));
-        service.dispatch(&mut transport, &block_message(BdevRequest::Close, Endpoint(5), 7, 2));
+        service.dispatch(
+            &mut transport,
+            &block_message(BdevRequest::Open, Endpoint(5), 7, 1),
+        );
+        service.dispatch(
+            &mut transport,
+            &block_message(BdevRequest::Close, Endpoint(5), 7, 2),
+        );
         assert_eq!(service.face().cleanups, 2);
         assert_eq!(service.face().closes, [7]);
         assert_eq!(transport.replies[1].2, 0);
@@ -539,7 +671,10 @@ mod tests {
     fn test_ioctl_forwards_request_grant_and_user() {
         let mut service = BlockService::new(TestCard::new());
         let mut transport = Scripted::default();
-        service.dispatch(&mut transport, &block_message(BdevRequest::Open, Endpoint(5), 7, 1));
+        service.dispatch(
+            &mut transport,
+            &block_message(BdevRequest::Open, Endpoint(5), 7, 1),
+        );
         let mut msg = block_message(BdevRequest::Ioctl, Endpoint(5), 7, 2);
         wire::write_u64(&mut msg, wire::request::REQUEST, 0x4000_0000);
         wire::write_i32(&mut msg, wire::request::GRANT, 42);

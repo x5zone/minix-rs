@@ -40,3 +40,6 @@ pub mod partition;
 pub mod protocol;
 pub mod pump;
 pub mod wire;
+
+pub use crate::driver::{BlockDriver, decode_block_vector};
+pub use crate::protocol::BlockIovec;

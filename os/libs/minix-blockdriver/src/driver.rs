@@ -8,11 +8,14 @@
 //! partition entry `partition()` in `drvlib.c`.
 
 use minix_driver_rt::plane::TransferPlane;
+use minix_driver_rt::transport::DriverTransport;
+use minix_types::EINVAL;
+use minix_types::Endpoint;
 
 use super::protocol::{
-    BdevRequest, BlockDriverType, DeviceExtent, DeviceId, DeviceMinor, NO_IOCTL_HOOK,
-    NO_TRANSFER_HOOK, OpenDeviceSet, PartitionGeometry, PartitionStyle, RequestId, SUCCESS,
-    is_block_request,
+    BLOCK_IOVEC_WIRE, BdevRequest, BlockDriverType, BlockIovec, DeviceExtent, DeviceId,
+    DeviceMinor, NO_IOCTL_HOOK, NO_TRANSFER_HOOK, NR_IOREQS, OpenDeviceSet, PartitionGeometry,
+    PartitionStyle, RequestId, SUCCESS, is_block_request,
 };
 
 /// Router classification for one incoming block message.
@@ -60,6 +63,51 @@ pub enum NotifyKind {
 /// The vectored pair (gather, scatter) shares one transfer method with a
 /// direction flag and a scatter flag, because the C adapters funnel all
 /// four data requests into one callback shape.
+/// Decode one gather/scatter vector the way C's `do_vrdwt` does
+/// (`libblockdriver/driver.c:226-262`): safecopy at most `NR_IOREQS`
+/// elements out of the request grant (excess silently dropped), then check
+/// the size sum in signed arithmetic — a sum that flips the sign bit
+/// answers `EINVAL` (`:242-245`), as does a failed vector copy
+/// (`:236-240`).
+pub fn decode_block_vector<T: DriverTransport>(
+    transport: &mut T,
+    granter: Endpoint,
+    grant: i32,
+    count: i32,
+) -> Result<alloc::vec::Vec<BlockIovec>, i32> {
+    if count < 0 {
+        return Err(EINVAL);
+    }
+    let nr_req = (count as usize).min(NR_IOREQS);
+    let mut wire_bytes = [0u8; NR_IOREQS * BLOCK_IOVEC_WIRE];
+    let used = nr_req * BLOCK_IOVEC_WIRE;
+    transport
+        .copy_from_grant(granter, grant, 0, &mut wire_bytes[..used])
+        .map_err(|_| EINVAL)?;
+    let mut elements = alloc::vec::Vec::with_capacity(nr_req);
+    let mut total: u64 = 0;
+    for index in 0..nr_req {
+        let base = index * BLOCK_IOVEC_WIRE;
+        let addr = u64::from_le_bytes(wire_bytes[base..base + 8].try_into().unwrap());
+        let size = u64::from_le_bytes(
+            wire_bytes[base + 8..base + BLOCK_IOVEC_WIRE]
+                .try_into()
+                .unwrap(),
+        );
+        let previous = total as i64;
+        let next = previous.wrapping_add(size as i64);
+        if next < previous {
+            return Err(EINVAL);
+        }
+        total = next as u64;
+        elements.push(BlockIovec {
+            grant: addr as u32 as i32,
+            size,
+        });
+    }
+    Ok(elements)
+}
+
 pub trait BlockDriver {
     /// Driver kind: disk-like devices answer partition requests.
     fn driver_type(&self) -> BlockDriverType {
@@ -78,23 +126,22 @@ pub trait BlockDriver {
         SUCCESS
     }
 
-    /// Transfer hook (`bdr_transfer`): read, write, gather, and scatter.
+    /// Transfer hook (`bdr_transfer`) for the **contiguous** pair: read
+    /// and write. `count` is bytes.
     ///
-    /// `do_write` selects the direction; `vectored` selects the
-    /// gather/scatter pair; `count` is bytes for the contiguous pair and
-    /// element count for the vectored pair. Together with `plane` the
-    /// parameters mirror the C callback signature one-to-one so call sites
-    /// stay comparable with the C adapters: C's `endpt` and `iov` arrive as
-    /// the plane, which also carries the copy calls the C hook issues
-    /// itself (`sys_safecopyfrom`/`sys_safecopyto`) and the grant-and-IPC
-    /// surface a device leg needs when the bytes travel through another
-    /// server (an i2c bus driver, a downstream block driver). See
-    /// [`minix_driver_rt::plane`] for why the plane is narrower than the
-    /// transport.
+    /// Together with `plane` the parameters mirror the C callback signature
+    /// one-to-one so call sites stay comparable with the C adapters: C's
+    /// `endpt` arrives as the plane, which also carries the copy calls the
+    /// C hook issues itself (`sys_safecopyfrom`/`sys_safecopyto`) and the
+    /// grant-and-IPC surface a device leg needs when the bytes travel
+    /// through another server (an i2c bus driver, a downstream block
+    /// driver). See [`minix_driver_rt::plane`] for why the plane is
+    /// narrower than the transport.
     ///
     /// A driver whose device backend cannot yet produce or consume bytes
     /// answers a count without copying, and says so at its own site: the
-    /// plane makes the copy *possible*, not automatic.
+    /// plane makes the copy *possible*, not automatic. The vectored pair
+    /// (gather/scatter) rides [`BlockDriver::transfer_vectored`].
     #[allow(clippy::too_many_arguments)]
     fn transfer(
         &mut self,
@@ -105,9 +152,31 @@ pub trait BlockDriver {
         count: u64,
         flags: i32,
         id: RequestId,
-        vectored: bool,
     ) -> i64 {
-        let _ = (plane, minor, do_write, position, count, flags, id, vectored);
+        let _ = (plane, minor, do_write, position, count, flags, id);
+        NO_TRANSFER_HOOK as i64
+    }
+
+    /// Transfer hook for the **vectored** pair: gather (vectored read) and
+    /// scatter (vectored write), C's `do_vrdwt`
+    /// (`libblockdriver/driver.c:226-262`).
+    ///
+    /// The pump has already safecopied the element array out of the request
+    /// grant and checked the size sum; `elements` is the decoded vector
+    /// (`BlockIovec`, at most `NR_IOREQS` entries — C caps the same way at
+    /// `:234-235`). A driver that cannot honestly serve the vector forms
+    /// keeps the default refusal.
+    #[allow(clippy::too_many_arguments)]
+    fn transfer_vectored(
+        &mut self,
+        _plane: &mut dyn TransferPlane,
+        _minor: DeviceMinor,
+        _do_write: bool,
+        _position: u64,
+        _elements: &[BlockIovec],
+        _flags: i32,
+        _id: RequestId,
+    ) -> i64 {
         NO_TRANSFER_HOOK as i64
     }
 
@@ -305,7 +374,6 @@ mod tests {
             count: u64,
             _flags: i32,
             _id: RequestId,
-            _vectored: bool,
         ) -> i64 {
             if position + count > self.blocks * 512 {
                 return -(minix_types::EIO as i64);
@@ -333,16 +401,7 @@ mod tests {
         assert_eq!(device.close(DeviceMinor(0)), OK);
         let mut plane = RecordingPlane::new();
         assert_eq!(
-            device.transfer(
-                &mut plane,
-                DeviceMinor(0),
-                false,
-                0,
-                512,
-                0,
-                RequestId(0),
-                false
-            ),
+            device.transfer(&mut plane, DeviceMinor(0), false, 0, 512, 0, RequestId(0)),
             NO_TRANSFER_HOOK as i64
         );
         assert_eq!(device.ioctl(DeviceMinor(0), 0, 0, 0), NO_IOCTL_HOOK);
@@ -355,16 +414,7 @@ mod tests {
         let mut device = MemoryDisk { blocks: 8 };
         let mut plane = RecordingPlane::new();
         assert_eq!(
-            device.transfer(
-                &mut plane,
-                DeviceMinor(0),
-                false,
-                0,
-                512,
-                0,
-                RequestId(1),
-                false
-            ),
+            device.transfer(&mut plane, DeviceMinor(0), false, 0, 512, 0, RequestId(1)),
             512
         );
         assert!(
@@ -375,8 +425,7 @@ mod tests {
                 8 * 512,
                 512,
                 0,
-                RequestId(1),
-                false
+                RequestId(1)
             ) < 0
         );
         let extent = device.partition(DeviceMinor(0)).unwrap();
