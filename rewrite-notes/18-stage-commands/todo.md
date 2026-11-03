@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百零五（`du -L` 接通：全量逻辑走 + 环静默剪枝）
+
+- **这一笔的射程**：not-wired 清单里 `du -L` 一处——C 的 `-L` 清 `FTS_PHYSICAL` 置 `FTS_LOGICAL`（`du.c:168-172`）：全走表跟链，指向目次的符号链被下探；fts 的 `FTS_DC`（`du.c:228-229`）对遍历链上的回头目次**静默忽略**（不计、不打印、不报）。
+- **落码**：`DuPlan` 增 `logical` 位（parse 的 `b'L'` 臂，未接线清单就此清空）+ 库级 `FollowMode{Never,OperandsOnly,All}` 与 `follow_mode()`（`-L` 压 `-H` 压物理默认，C 的旗标叠序）；`bin/du.rs` 的查型按 mode 三分（All=stat 全程、OperandsOnly=仅 level 0、Never=lstat），`du_visit`/`descend` 穿 `chain: Vec<(dev,ino)>` 祖先栈——All 模式下目次在链上即 FTS_DC（静默 `(0,false)`），下探前入栈后弹出；拒绝行从此在 du 绝迹（du_face 的拒收形测试随之移除——载体消失）。
+- **可测性边界（如实）**：跟链与环语义需符号链与第二设备，du bin 的 syscall 腿是 none 面——判据钉 = parse/`follow_mode` 阶梯真值表（四行）+ du_face 既有口径（5→4，拒收钉移除的理由在面测注记）。
+- **门**：`cargo test -p minix-fileops --lib` → **394/0**（du 子集 23/0：新增 `the_follow_mode_ladder`）+ `du_face` **4/0**；clippy 触及文件零新增（8 参走表函数带具名 allow——签名镜像 fts 的隐式状态）；`rustfmt --edition 2024` 三文件清；`cargo build --target x86_64-unknown-none --release --bin du` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `545919087`。
+
 ## 批次五百零四（`du -H` 接通：仅操作数跟链）
 
 - **这一笔的射程**：not-wired 清单里 `du -H` 一处——C 的 `-H` 置 `FTS_COMFOLLOW`（`du.c:166-167`）：命令行上的符号链操作数被跟随（遍历根 = 链接指向的树），其下一切保持物理形；`-L`（全量逻辑走）是另一旗标，维持未接线。

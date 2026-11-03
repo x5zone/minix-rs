@@ -258,6 +258,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `RMP-OVERWRITE`：改 `os/commands/bin/fileops/src/{rm.rs,cp.rs,bin/rm.rs}`（A 板领地）+ `os/libs/minix-sys/src/lib.rs`（B 板领地，跨界登记本行）——rm -P 接通：rm_overwrite 四遍转写（随机/0xff/0x00+读回/随机字，受害者 dev/ino 重查）、两臂接线；cp 补四枚 O_ 常量、minix-sys 补顶层 fsync；门=fileops lib 57/0 + rm_face 7/0 + minix-sys 342/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `CAL-H`：改 `os/commands/usr-bin/doctools/src/bin/cal.rs` + 新增 `tests/cal_face.rs`（A 板领地）——cal -h 接通（无 terminfo 环境的 C 恒等形态，转义腿登记 terminfo 残差）；门=doctools lib 70/0 + cal_face 7/0（三枚恒等钉）+ none 构建绿 —— `✅`
 - `2026-11-03` A / `DUH-COMFOLLOW`：改 `os/commands/bin/fileops/src/{du.rs,bin/du.rs}`、`tests/du_face.rs`（A 板领地）——du -H 接通：comfollow 位 + 仅 level 0 查型切 stat（FTS_COMFOLLOW 语义，根设备随目标）；-L 维持唯一未接线字母，面测钉随移；门=fileops lib 22/0 + du_face 5/0 + none 构建绿 —— `✅`
+- `2026-11-03` A / `DUL-LOGICAL`：改 `os/commands/bin/fileops/src/{du.rs,bin/du.rs}`、`tests/du_face.rs`（A 板领地）——du -L 接通：FollowMode 阶梯（-L 压 -H 压物理）+ 查型三分 + 祖先链环静默剪枝（FTS_DC 语义）；du 未接线清单清零（拒收形面测移除——载体消失）；门=fileops lib 394/0（du 23/0）+ du_face 4/0 + none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

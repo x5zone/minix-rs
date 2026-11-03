@@ -83,6 +83,7 @@ fn env_value(name: &str) -> Option<String> {
 /// One walk position (`du.c:197-249`): the entry's own count, its children's
 /// totals when it is a directory, and the print this visit owes. Returns the count
 /// in 512-byte blocks (or inodes, under `-i`) and whether anything failed.
+#[allow(clippy::too_many_arguments)] // the walk state mirrors fts's implicit one
 fn du_visit(
     prog: &str,
     path: &str,
@@ -90,16 +91,18 @@ fn du_visit(
     plan: &DuPlan,
     links: &mut LinkSet,
     root_dev: u64,
-    follow_root: bool,
+    follow: du::FollowMode,
+    chain: &mut Vec<(u64, u64)>,
 ) -> (i64, bool) {
     let mut sb = zeroed();
-    // `-H` (`du.c:166-167`, fts's `FTS_COMFOLLOW`): the operand itself is
-    // followed — a symlink names its target's tree; everything below stays
-    // physical, so only this level-0 lookup switches to `stat`.
-    if let Err(e) = if follow_root && level == 0 {
-        stat(path, &mut sb)
-    } else {
-        lstat(path, &mut sb)
+    // The follow mode decides the lookup: `-H` (`du.c:166-167`,
+    // `FTS_COMFOLLOW`) follows the operand itself — a symlink names its
+    // target's tree; `-L` (`du.c:168-172`, `FTS_LOGICAL`) follows every
+    // symlink; the default is physical everywhere.
+    if let Err(e) = match follow {
+        du::FollowMode::All => stat(path, &mut sb),
+        du::FollowMode::OperandsOnly if level == 0 => stat(path, &mut sb),
+        _ => lstat(path, &mut sb),
     } {
         // `du.c:230-235` (`FTS_NS`/`FTS_ERR`): report, count the failure, and
         // contribute nothing.
@@ -116,10 +119,20 @@ fn du_visit(
         // `-x` (`du.c:145`, fts's `FTS_XDEV`): the directory keeps its own
         // count and its line, but a device other than the operand's stops
         // the descent — fts returns it with the children pruned.
+        // `-L`'s cycle guard (fts's `FTS_DC`, `du.c:228-229`): a directory
+        // already on the traversal chain is reached again through a symlink
+        // loop — it contributes nothing and is not reported.
+        let on_chain = follow == du::FollowMode::All && chain.contains(&(sb.st_dev, sb.st_ino));
+        if on_chain {
+            return (0, false);
+        }
         let (children, failed) = if du::crosses_device(plan.xdev, sb.st_dev, root_dev) {
             (0, false)
         } else {
-            descend(prog, path, level + 1, plan, links, root_dev, follow_root)
+            chain.push((sb.st_dev, sb.st_ino));
+            let out = descend(prog, path, level + 1, plan, links, root_dev, follow, chain);
+            chain.pop();
+            out
         };
         let total = own.saturating_add(children);
         if prints_directory(level, plan) {
@@ -152,6 +165,7 @@ fn report(path: &str, units: i64, plan: &DuPlan) {
 /// Walk one directory's entries. An unopenable directory is C's `FTS_DNR`
 /// (`du.c:230-235`): reported, counted as a failure, and the caller still adds the
 /// directory's own blocks.
+#[allow(clippy::too_many_arguments)] // the walk state mirrors fts's implicit one
 fn descend(
     prog: &str,
     dir: &str,
@@ -159,7 +173,8 @@ fn descend(
     plan: &DuPlan,
     links: &mut LinkSet,
     root_dev: u64,
-    follow_root: bool,
+    follow: du::FollowMode,
+    chain: &mut Vec<(u64, u64)>,
 ) -> (i64, bool) {
     let fd: Fd = match open(dir, cp::O_RDONLY, 0) {
         Ok(fd) => fd,
@@ -214,7 +229,8 @@ fn descend(
                 plan,
                 links,
                 root_dev,
-                follow_root,
+                follow,
+                chain,
             );
             total = total.saturating_add(units);
             failed |= child_failed;
@@ -274,8 +290,17 @@ fn run() -> ! {
             // flag is then irrelevant because nothing descends.
             Err(_) => 0,
         };
-        let (units, this_failed) =
-            du_visit(prog, root, 0, &plan, &mut links, root_dev, plan.comfollow);
+        let mut chain = Vec::new();
+        let (units, this_failed) = du_visit(
+            prog,
+            root,
+            0,
+            &plan,
+            &mut links,
+            root_dev,
+            plan.follow_mode(),
+            &mut chain,
+        );
         grand = grand.saturating_add(units);
         failed |= this_failed;
     }

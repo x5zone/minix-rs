@@ -86,6 +86,10 @@ pub struct DuPlan {
     /// operand — the traversal root is the link's target, and everything
     /// below stays physical (`-L`'s full-logical walk is the other flag).
     pub comfollow: bool,
+    /// `-L` (`FTS_LOGICAL`, `du.c:168-172`): follow every symlink — the
+    /// whole walk is logical, and a symlink to a directory is descended
+    /// into (cycles are ignored the way fts's `FTS_DC` is: silently).
+    pub logical: bool,
     /// The operands, defaulting to the single name `.` (`du.c:184-187`).
     pub roots: Vec<String>,
 }
@@ -110,6 +114,7 @@ pub fn parse_args(
     let mut skip_nodump = false;
     let mut xdev = false;
     let mut comfollow = false;
+    let mut logical = false;
     let mut depth = DEPTH_UNBOUNDED;
     let mut unit: Option<u64> = None;
     let mut i = 0;
@@ -156,7 +161,7 @@ pub fn parse_args(
                 b'h' => human = true,
                 b'x' => xdev = true,
                 b'H' => comfollow = true,
-                b'L' => return Err(DuOption::NotWired(b'L' as char)),
+                b'L' => logical = true,
                 _ => return Err(DuOption::Usage),
             }
             k += 1;
@@ -192,12 +197,39 @@ pub fn parse_args(
             skip_nodump,
             xdev,
             comfollow,
+            logical,
             depth,
             blocksize: blocksize_bytes / BLOCK_UNIT,
             roots,
         },
         warnings,
     ))
+}
+
+/// How much of the walk follows symlinks — the effective reading of the
+/// three physical/logical flags (`-L` dominates `-H`, which dominates the
+/// physical default; `du.c:163-172`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowMode {
+    /// Physical everywhere (the default).
+    Never,
+    /// Follow only the operands themselves (`-H`).
+    OperandsOnly,
+    /// Follow every symlink (`-L`).
+    All,
+}
+
+impl DuPlan {
+    /// The effective follow mode of this plan.
+    pub fn follow_mode(&self) -> FollowMode {
+        if self.logical {
+            FollowMode::All
+        } else if self.comfollow {
+            FollowMode::OperandsOnly
+        } else {
+            FollowMode::Never
+        }
+    }
 }
 
 /// The descent test `-x` drives (`fts(3)`'s `FTS_XDEV` compare, requested at
@@ -459,6 +491,15 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    /// `-L` dominates `-H`, which dominates the physical default.
+    #[test]
+    fn the_follow_mode_ladder() {
+        assert_eq!(plan(&[]).follow_mode(), FollowMode::Never);
+        assert_eq!(plan(&["-H"]).follow_mode(), FollowMode::OperandsOnly);
+        assert_eq!(plan(&["-L"]).follow_mode(), FollowMode::All);
+        assert_eq!(plan(&["-H", "-L"]).follow_mode(), FollowMode::All);
+    }
+
     /// `-H` is accepted and lands in the plan (the operand-follow flag).
     #[test]
     fn h_is_the_comfollow_flag() {
@@ -558,9 +599,7 @@ mod tests {
 
     #[test]
     fn unwired_letters_are_named_and_the_noop_letters_are_taken() {
-        // `-L` (the full-logical walk) is the remaining unwired letter; `-x`
-        // and `-H` left this set as their facilities landed.
-        assert_eq!(parse_args(&["-L", "d"], None), Err(DuOption::NotWired('L')));
+        // `-H` and `-L` left the unwired set as their facilities landed.
         // -P is the physical walk this tree already does; -r is C's own no-op.
         assert_eq!(plan(&["-Pr", "d"]), plan(&["d"]));
         assert_eq!(

@@ -74,21 +74,9 @@ fn every_operand_gets_its_own_line_and_one_exit_status() {
     assert_three_fields(&format!("{}\n", lines[1]), "du", "/tmp/du-face-b");
 }
 
-#[test]
-fn a_refused_letter_keeps_the_program_name_and_drops_the_sentence() {
-    // `-L` is this tree's remaining up-front refusal (the full-logical walk is
-    // not wired; `-x` and `-H` left the set as their facilities landed); the
-    // line is `warnx` shaped — program name plus a phrase — because there is
-    // no number behind it. Note that `-h` is NOT in that set: it renders
-    // through `humanize`, and the refusal phrase used to claim otherwise.
-    let (_, status, err) = run(&["-L", "/tmp/du-face-x"]);
-    assert_eq!(status, 1);
-    assert_eq!(
-        err, "du: -L not wired (logical walk, FTS_XDEV)\n",
-        "拒收行不该缀句子"
-    );
-}
-
+// The refusal-shape test (a warnx-shaped line with no errno sentence behind
+// it) lost its carrier when `-x`, `-H` and `-L` all left du's not-wired set:
+// the last refused letter is gone, and nothing in du refuses any more.
 #[test]
 fn the_usage_line_is_hardcoded_while_the_report_line_follows_argv_zero() {
     // C's `usage()` (`du.c:356-362`) prints a literal `du`, unlike `rm`/`cp`/`mv`
