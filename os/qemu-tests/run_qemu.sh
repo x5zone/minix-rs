@@ -204,5 +204,13 @@ elif $SKIPPED; then
     exit 0
 else
     echo "❌ TEST FAILED — no PASS marker found"
+    # Not every carrier uses this runner's PASS protocol: the user-mode
+    # chain (test-user-trap, test-rt-birth) determines its own PASS through
+    # dedicated scripts (gdbstub mailbox reads / serial markers) and never
+    # prints TEST_RESULT here. Driving those through this runner always
+    # looks like this failure — route them through run_all.sh / their own
+    # scripts before diagnosing the guest (misdiagnosed once, 2026-11-04).
+    echo "note: carriers with a dedicated PASS protocol (test-user-trap,"
+    echo "note: test-rt-birth) run through their own scripts, not this one."
     exit 1
 fi
