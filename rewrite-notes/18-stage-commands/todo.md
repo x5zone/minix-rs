@@ -119,6 +119,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百零九（`compress -V/-n/-r` 接通：版本横幅、无头流、C 无 -r 的 usage）
+
+- **这一笔的射程**：not-wired 清单里 `compress` 的一处三点——C 的 `-V`（`compress.c:372-378`）打印 `version()` 横幅到 **stderr 后继续执行**（横幅随构建旗标：Minix 构建 = `compress 4.1\nOptions: MINIX, BITS = 16\n`，`:1587-1616` 的 `__minix` 与 32 位 `BITS` 分支）；`-n`（`:392`）置 `nomagic`——编码不写三字节 `.Z` 头（`:755-760`），解码不查头、宽度回落到默认（`:686-695`）；`-r` 在 C 里**根本不存在**（手动 switch 落到 `Usage()`，`:244`）。
+- **落码**：`minix_compress::version_banner()`（横幅文本作常量，构建旗标按 __minix + BITS=16 钉）；bin 解析环接 `'n'`（nomagic 位）、`'V'`（support::warn 横幅后继续）、`'r' => usage()`（新增 C 的 usage 行 `Usage: compress [-dfvcV] [-b maxbits] [file ...]`）；编码腿 `-n` 时跳 `frame_header`、流仍按库约定剔除宽度字节（C 的宽度只在头的第三字节，无头流即纯码流）；解码腿 `-n` 时跳过 `unframe`、以 `DEFAULT_MAXBITS` 补出宽度字节（库格式的自洽，C 交互面维持库既有的 `.Z` 边界登记）。
+- **门**：`cargo test -p minix-compress` → 库 **49/0**（含新增 `test_headerless_form_round_trips`：无头流两半的自洽回环）+ 面门 `compress_face` **3/0**（`-V` 横幅逐字节、`-r` 走 C 的 usage、未知字母退 1——该臂的句子经裸 `write` 宿主不可见为存量，随 proctools `fail()` 族登记）；clippy 触及文件零新增（lzw:146 为存量）；`rustfmt` 触及叶文件清（bin_support 连带的存量空行漂移不追）；`cargo build --target x86_64-unknown-none --release --bin compress` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `1dba5e576`。
+
 ## 批次五百零八（`rm -W` 接通：白目项在本树文件系统上的行为性无操作）
 
 - **这一笔的射程**：not-wired 清单里 `rm -W` 一处——C 的 `-W` 置 `FTS_WHITEOUT`（`rm.c:191-193`）移除 whiteout 目项；whiteout 目项只在支持 undelete 的文件系统上出现，而本树的文件系统（imgrd 根盘与宿主测）从不产生它们——C 在同一环境下观察到的 `-W` 就是行为性无操作。`needs_unwired` 闸与 `rm: -P/-W not wired` 拒绝行就此退役（du 的拒收形面测同批先例：载体消失）。

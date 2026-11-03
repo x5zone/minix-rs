@@ -64,3 +64,11 @@ impl CompressError {
         }
     }
 }
+
+/// C's `version()` banner (`compress.c:1587-1616`) for the Minix build: the
+/// `__minix` option line and the 16-bit `BITS` (a 32-bit `int` machine takes
+/// the `#else` branch). Printed to **stderr**, and `-V` keeps going
+/// (`compress.c:372-378`).
+pub fn version_banner() -> &'static str {
+    "compress 4.1\nOptions: MINIX, BITS = 16\n"
+}

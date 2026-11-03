@@ -425,6 +425,25 @@ mod tests {
         assert_eq!(round_trip(&input, 9), input);
     }
 
+    /// The `-n` convention's two halves: the headerless form drops the
+    /// three-byte `.Z` frame **and** the width byte (C's stream carries the
+    /// width only in the header's third byte, `compress.c:755-760`), and the
+    /// decoder re-supplies the library's default width when `nomagic` is set
+    /// (`compress.c:686-695`).
+    #[test]
+    fn test_headerless_form_round_trips() {
+        let input: &[u8] = b"the quick brown fox jumps over the lazy dog\n";
+        let mut packed = [0u8; 8192];
+        let len = compress(input, DEFAULT_MAXBITS, &mut packed).unwrap();
+        let headerless = &packed[1..len]; // codes only, no width byte
+        let mut replay = [0u8; 8192];
+        replay[0] = DEFAULT_MAXBITS;
+        replay[1..1 + headerless.len()].copy_from_slice(headerless);
+        let mut out = [0u8; 4096];
+        let used = decompress(&replay[..1 + headerless.len()], &mut out).unwrap();
+        assert_eq!(&out[..used], input);
+    }
+
     #[test]
     fn test_bad_maxbits_rejected() {
         let mut out = [0u8; 16];

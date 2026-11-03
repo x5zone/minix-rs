@@ -14,25 +14,30 @@
 //! When no_std program images land, the seams (argv, terminate, whole
 //! files through read/write) swap exactly like the other commands'.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec;
+use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
 mod support;
-use minix_compress::lzw::{compress, decompress, frame_header, unframe, DEFAULT_MAXBITS};
-use minix_sys::{read, write, Fd};
+use minix_compress::lzw::{DEFAULT_MAXBITS, compress, decompress, frame_header, unframe};
+use minix_sys::{Fd, read, write};
 
 const STDIN: Fd = 0;
 const STDOUT: Fd = 1;
 const STDERR: Fd = 2;
 
+/// C's `Usage()` (`compress.c:244`): the option line to stderr, exit 1. The
+/// letters are the non-DEBUG set C's build prints.
+fn usage() -> ! {
+    support::warn(b"Usage: compress [-dfvcV] [-b maxbits] [file ...]\n");
+    support::terminate(1);
+}
 
 fn fail(message: &str) -> ! {
     //[SD19-gate] fail path: stderr then terminate
@@ -69,6 +74,7 @@ fn run() -> ! {
     // `strcmp(cp, "uncompress") == 0` implies -d (`compress.c:334`).
     let invoked = args.first().copied().unwrap_or("compress");
     let program = invoked.rsplit('/').next().unwrap_or(invoked);
+    let mut nomagic = false;
     let mut decompressing = program == "uncompress";
 
     let mut to_stdout = false;
@@ -91,10 +97,18 @@ fn run() -> ! {
                     'c' => to_stdout = true,
                     'f' => force = true,
                     'v' => verbose = true,
-                    // `-n` (headerless legacy streams) is declared out of
-                    // reach; `-V`/`-r` are C debug/recursive faces the
-                    // library has no answer for either.
-                    'n' | 'V' | 'r' => fail("option not wired"),
+                    // `-n`: headerless streams of this library's own
+                    // format (`nomagic`, `compress.c:392`). The `.Z` interop
+                    // boundary is the library's own (foreign widths and
+                    // block modes stay out of scope); the headerless form
+                    // round-trips within it.
+                    'n' => nomagic = true,
+                    // `-V`: the version banner on stderr, then carry on
+                    // (`compress.c:372-378` — `version(); break;`).
+                    'V' => support::warn(minix_compress::version_banner().as_bytes()),
+                    // C has no `-r`: its manual switch falls through to
+                    // `Usage()` (`compress.c:244`).
+                    'r' => usage(),
                     'b' => {
                         let digits: String = chars.by_ref().collect();
                         let text = if digits.is_empty() {
@@ -163,7 +177,14 @@ fn run() -> ! {
     };
 
     let framed: Vec<u8> = if decompressing {
-        let (width, stream) = unframe(&input).unwrap_or_else(|_| fail("corrupt input"));
+        let (width, stream): (u8, &[u8]) = if nomagic {
+            // Headerless input: C leaves `maxbits` at its default when
+            // `nomagic` is set (`compress.c:686-695`); here the library's
+            // default width supplies the byte the framed form would carry.
+            (DEFAULT_MAXBITS, &input)
+        } else {
+            unframe(&input).unwrap_or_else(|_| fail("corrupt input"))
+        };
         let mut replay = Vec::with_capacity(stream.len() + 1);
         replay.push(width);
         replay.extend_from_slice(stream);
@@ -180,9 +201,13 @@ fn run() -> ! {
             Err(_) => fail("compression would expand the input"),
         };
         let mut framed = Vec::with_capacity(used + 3);
-        framed.extend_from_slice(&frame_header(maxbits));
+        if !nomagic {
+            framed.extend_from_slice(&frame_header(maxbits));
+        }
         // The internal stream repeats the width in its first byte; the .Z
-        // header carries it, so the shell splices it out.
+        // header carries it, so the shell splices it out — under `-n` there
+        // is no header, which is C's headerless stream (`compress.c:755-760`
+        // writes the three bytes only when `nomagic == 0`).
         framed.extend_from_slice(&inner[1..used]);
         framed
     };
@@ -190,8 +215,8 @@ fn run() -> ! {
     match &target_name {
         Some(path) => {
             let flags = 1 | 0x40 | 0x200; // O_WRONLY | O_CREAT | O_TRUNC
-            let fd = minix_sys::open(path, flags, 0o644)
-                .unwrap_or_else(|_| fail("cannot open output"));
+            let fd =
+                minix_sys::open(path, flags, 0o644).unwrap_or_else(|_| fail("cannot open output"));
             emit(fd, &framed);
             //[SD19-gate] the fd is unused after close; a failure only misses
             // the reclaim
@@ -222,7 +247,6 @@ fn run() -> ! {
     }
     support::terminate(0);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
