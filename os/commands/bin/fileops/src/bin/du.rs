@@ -260,10 +260,7 @@ fn run() -> ! {
 
     let (plan, warnings) = match parse_with_env(&args[1..]) {
         Ok(v) => v,
-        Err(DuOption::NotWired(c)) => {
-            support::warn(format!("{prog}: -{c} not wired (logical walk, FTS_XDEV)\n").as_bytes());
-            support::terminate(1);
-        }
+        // The option gate's only failure: usage (`du.c:174-181`).
         Err(DuOption::Usage) => usage(),
     };
     // `getbsize` warns from inside the option processing, before any total.

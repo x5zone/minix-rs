@@ -50,11 +50,9 @@ pub const DEPTH_MAX: i32 = 32767;
 /// Why the command line is not a `du` invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DuOption {
-    /// A letter whose facility this tree has not landed yet: `-h`
-    /// (`humanize_number`), `-H`/`-L` (the logical walk).
-    NotWired(char),
     /// Usage and exit 1, which is also the answer to a conflicting flag pair
-    /// (`du.c:174-181`) and to an out-of-range `-d` (`du.c:112-116`).
+    /// (`du.c:174-181`) and to an out-of-range `-d` (`du.c:112-116`). Every
+    /// letter of C's option string is wired, so this is the only failure.
     Usage,
 }
 
@@ -598,9 +596,9 @@ mod tests {
     }
 
     #[test]
-    fn unwired_letters_are_named_and_the_noop_letters_are_taken() {
-        // `-H` and `-L` left the unwired set as their facilities landed.
-        // -P is the physical walk this tree already does; -r is C's own no-op.
+    fn the_noop_letters_are_taken_and_unknown_letters_are_usage() {
+        // Every letter of C's option string is wired; -P is the physical
+        // walk this tree already does and -r is C's own no-op.
         assert_eq!(plan(&["-Pr", "d"]), plan(&["d"]));
         assert_eq!(
             parse_args(&["-z", "d"], None),

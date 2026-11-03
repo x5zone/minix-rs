@@ -119,6 +119,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十四（`du` 的 `NotWired` 死码清理）
+
+- **这一笔的射程**：第 29 轮收口时登记的死码——`-H`/`-L`/`-x` 三字母全部接线后，`DuOption::NotWired` 变体与 bin 的渲染臂再无生产者（用户不可达的分支，违反死代码纪律）。
+- **落码**：删除变体及其文档（`DuOption` 只剩 `Usage`——C 选项串的每个字母都已接线，usage 是唯一失败形）；删除 bin 的渲染臂（match 单臂化）；测试名改为 `the_noop_letters_are_taken_and_unknown_letters_are_usage`（名实相符：-P/-r 无操作、集外字母走 usage）。
+- **门**：`cargo test -p minix-fileops --lib` → du 子集 **23/0** + `du_face` **4/0**；clippy 触及文件零新增；`rustfmt --edition 2024` 两文件清；`cargo build --target x86_64-unknown-none --release --bin du` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `d0e43a0b6`。
+
 ## 批次五百一十三（`df -h` 接通：人性化视图、C 默认布局与表宽）
 
 - **这一笔的射程**：not-wired 清单里 `df` 的非 `-Pk` 视图族中的 `-h` 一件——C 的 `-h`（`df.c:105-107`，`hflag=1`、`usize=0`）：**默认（非 -P）布局**，头行是 `%-*.*s %s       Used      Avail %%Cap Mounted on`（文件系统列 = `maxwidth - (headerlen-10)` = `maxwidth+6`，`:447-456`），行是三枚 `prthumanval`（字节数 × 片段大小，`humanize_number` 的 `HN_AUTOSCALE|HN_B|HN_NOSPACE|HN_DECIMAL`、5/6 字节缓冲，`:323-346`）+ ` %3s%%` 容量 + 挂载点；`maxwidth` = 全表 from 名最大宽（`:204-210`）。`-k`/`-h` 后到者胜（C 的赋值序）；`-P -h` 在 C 里只会撞上 `-P` 臂的 `assert(hflag == 0)`（`:455`）——本壳改为具名拒绝。
