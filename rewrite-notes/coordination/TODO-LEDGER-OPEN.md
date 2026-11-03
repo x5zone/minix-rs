@@ -163,7 +163,7 @@
 | 15 文件系统 | [`todo.md`](../15-stage-fs/todo.md) | `partially fixed` 2 | 八个文件服务器入口未接事件循环 |
 | 16 驱动 | [`todo.md`](../16-stage-drivers/todo.md) | `open` 1（G6）+ `stopgap landed` 3 | 二十六个纯占位 crate（G6）；两套字符驱动收敛。A4 协议常量单一来源已收口（`2026-10-18`，跨消费者族上收 `minix-types::types::device`、blockdriver 四条本地副本清零）；G7 文档覆盖声明已收口（`2026-10-18`，doc 04/13/21 共 8 处） |
 | 17 网络 | [`todo.md`](../17-stage-net/todo.md) | `open` 2 | 协议栈本体与传输未实现；缺设计条目。原记的第三项"套接字标识基值缺 Rust 侧权威"经现场核实为**账面滞后**（`os/libs/minix-netdriver/src/sockid.rs` 已于 `2026-09-17` 落地，`cargo test -p minix-netdriver --lib sockid` → 5 passed，`2026-10-09` 核）——本行旧计数未跟上，已同步 |
-| 18 命令 | [`todo.md`](../18-stage-commands/todo.md) | `open` 2 + 占位 5 | 命令面尚未接真实系统调用返回 |
+| 18 命令 | [`todo.md`](../18-stage-commands/todo.md) | `open` 0；选项级未接线 **5 处 / 4 文件**（`2026-11-03` 对账刷新：旧「`open` 2 + 占位 5」两说已被 18 篇头注否证——占位壳 0、命令面久接真实系统调用返回；余 5 处全跨线：`env` 与 editor shell×3（NS5 进程创建链）、`renice -u`（口令库），宿主可领积压清零，刷新链见本表 §9 各轮收口行） | 命令面已接真实系统调用返回；未接线项的判据各自带跨线前置 |
 
 ## §7 测试与门面对账（账面数字与代码实测不符，或判据本身有问题）
 
