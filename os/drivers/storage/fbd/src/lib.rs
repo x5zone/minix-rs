@@ -16,7 +16,8 @@
 //! uses the documented defaults), the zero-copy direct path (C forwards
 //! the caller's grant through an indirect grant; the rewrite always copies
 //! through the staging buffer), the forwarding of foreign ioctls (same
-//! indirect-grant reason), and the vectored transfer pair (`E-BLK-VEC`).
+//! indirect-grant reason); the vectored transfer pair stays refused per
+//! the 2.11 evidence (16 篇 §8) even though the pump now decodes it.
 
 #![no_std]
 
