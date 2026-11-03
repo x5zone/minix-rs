@@ -6,30 +6,27 @@
 //! path, which mode — live in `minix_fileops::cp`; this program supplies the
 //! `stat`, `open`, `read`, `write`, `chown`, `chmod`, `utimens` legs.
 //!
-//! Wired: `cp [-f|-i] [-p] [-v] src target`, `cp [-f|-i] [-p] [-v] src ...
-//! directory`, and `-R` over either — the hierarchy rooted at a source is
-//! duplicated, directories created then stamped, plain files pumped, links
-//! recreated from their own text, fifos and device nodes recreated. `-i` only
-//! asks when standard input is a terminal (`cp.c:148`), `-f` overwrites without
-//! asking and retries through an unlink (`utils.c:150-156`), `-p` reproduces
-//! ownership, permissions and both timestamps (`utils.c:364-404`), `-v` prints
-//! `src -> dst` for each visit that succeeded.
-//!
-//! Declared residual (refused up front, like `chmod`'s `-R`): `-r`, the
-//! deprecated logical recursion (`cp.c:175-188`); `-a`, `-P`, `-H`, `-L`, the
-//! symlink-traversal modes, of which `-P` additionally needs the link-preserving
-//! `lchown`/`lchmod` (`utils.c:381-389`) this tree does not wrap; `-l`, hard-link
-//! instead of copy (`utils.c:167-176`); `-N`, keep a dangling link dangling
-//! (`utils.c:395`). Three mechanical deviations inside the wired path:
-//! the C code keeps `fchmod` for the setuid-restore branch (`utils.c:288`) and
-//! `fchown`/`fchmod` in `setfile` (`utils.c:381-389`), while this tree has no
-//! `f*` wrappers, so those bits are set by path with `chmod`/`chown` before the
-//! descriptor is closed; `-p` on a duplicated symlink therefore stamps only its
-//! timestamps (through `utimensat` with `AT_SYMLINK_NOFOLLOW`), because the
-//! by-path `chown`/`chmod` would travel through the new link onto its target;
-//! and fts(3)'s cycle report (`cp.c:349-352`) has no counterpart, a physical
-//! walk never rejoins a tree through a link. The real machine effect of every
-//! write-side command, this one included, is the writable-root gate
+//! Wired: the whole usage string — `cp [-R [-H | -L | -P]] [-f | -i] [-alNpv]`
+//! over either shape — the hierarchy rooted at a source is duplicated,
+//! directories created then stamped, plain files pumped, links recreated from
+//! their own text, fifos and device nodes recreated. `-i` only asks when
+//! standard input is a terminal (`cp.c:148`), `-f` overwrites without asking and
+//! retries through an unlink (`utils.c:150-156`), `-p` reproduces ownership,
+//! permissions and both timestamps (`utils.c:364-404`), `-v` prints
+//! `src -> dst` for each visit that succeeded. `-r` is the logical walk and
+//! conflicts with `-R` and with `-H`/`-L`/`-P` (`cp.c:175-188`); `-H`/`-L`/`-P`
+//! choose which links the scan follows; `-a` is `-RpP`; `-l` hard-links each
+//! regular file instead of copying it (`utils.c:166-176`); `-N` is accepted and
+//! changes nothing on Minix, because its only reader sits in the
+//! `#if !defined(__minix)` chflags block (`utils.c:395`). Two mechanical
+//! deviations inside the wired path: the C code keeps `fchmod` for the
+//! setuid-restore branch (`utils.c:288`) and `fchown`/`fchmod` in `setfile`
+//! (`utils.c:381-389`), while this tree has no `f*` wrappers, so those bits are
+//! set by path with `chmod`/`chown` before the descriptor is closed; `-p` on a
+//! duplicated symlink therefore stamps only its timestamps (through
+//! `utimensat` with `AT_SYMLINK_NOFOLLOW`), because the by-path `chown`/`chmod`
+//! would travel through the new link onto its target. The real machine effect
+//! of every write-side command, this one included, is the writable-root gate
 //! (`E5`).
 //!
 //! The diagnostic legs are wired to the shared renderer (`err_line` in the
@@ -65,8 +62,9 @@ use minix_fileops::cp::{
 };
 use minix_fileops::dents;
 use minix_sys::{
-    Errno, Fd, Stat, chmod, chown, close, fstat, getdents, getuid, isatty, lstat, mkdir, mkfifo,
-    mknod, open, read, readlink, stat, symlink, umask, unlink, utimens, utimensat, vfs, write,
+    Errno, Fd, Stat, chmod, chown, close, fstat, getdents, getuid, isatty, link, lstat, mkdir,
+    mkfifo, mknod, open, read, readlink, stat, symlink, umask, unlink, utimens, utimensat, vfs,
+    write,
 };
 
 /// The C pump's block size is `MAXBSIZE` (`utils.c:96`, one static buffer).
@@ -186,15 +184,14 @@ fn copy_file(
     // one is created with the source mode minus the set-id bits
     // (`utils.c:145-146`).
     //
-    // `utils.c:109` computes `tolnk = (Rflag && !(Lflag || Hflag)) || Pflag`,
-    // which with `-L`/`-H`/`-P` refused is exactly the recursive scan. A
-    // destination that is itself a symbolic link is then never written through:
-    // the `lstat` says so (`utils.c:134-135`), the open is skipped
+    // `utils.c:109` computes `tolnk = (Rflag && !(Lflag || Hflag)) || Pflag`.
+    // A destination that is itself a symbolic link is then never written
+    // through: the `lstat` says so (`utils.c:134-135`), the open is skipped
     // (`utils.c:142-143`) and the unlink-and-recreate branch replaces the link
     // with a fresh regular file. C's second look at the target is what makes
     // `cp -f a b` refuse rather than create `b` when `b` disappears between the
     // two looks, and it is reproduced either way.
-    let tolnk = flags.recursive;
+    let tolnk = (flags.recursive && !(flags.logical || flags.comfollow)) || flags.nofollow;
     // C keeps one `to_fd` int with a `-1` sentinel; this records the descriptor
     // and, separately, the number the failed open answered with, because
     // `utils.c:159` prints that number and not a made-up one.
@@ -261,6 +258,23 @@ fn copy_file(
         let _ = close(from_fd);
         return true;
     };
+
+    // utils.c:166-176: with `-l` the two descriptors are closed, the file the
+    // create just made is unlinked again, and the source name is hard-linked
+    // into place. The open above still ran, so a destination that cannot be
+    // created fails here exactly as it does for a byte copy, and `-p` is not
+    // reached — C returns before the stamping.
+    if flags.hardlink {
+        let _ = close(from_fd);
+        let _ = close(to_fd);
+        let _ = unlink(to);
+        if let Err(e) = link(from, to) {
+            // `utils.c:171-174`: `warn("%s", to.p_path)`.
+            support::warn_line(prog, to, e);
+            return true;
+        }
+        return false;
+    }
 
     let mut failed = false;
 
@@ -421,10 +435,14 @@ fn set_link_times(prog: &str, path: &str, fs: &Stat) -> bool {
 }
 
 /// `cp.c:339-541` for one walk position: read the source the way the scan reads
-/// it (`lstat` for a physical scan, `stat` when the default scan follows the
-/// operand), read the destination once (`cp.c:419`), run the identical and
+/// it (`lstat` when this entry's link is kept, `stat` when it is followed),
+/// read the destination once (`cp.c:419`), run the identical and
 /// directory-overwrite refusals before any copying, then let the type bits pick
 /// the routine. Returns true when this position was not copied.
+///
+/// `entry_is_link` is the answer for this position; `children_are_links` is the
+/// answer for everything below it, which `-H` makes different from the operand.
+#[allow(clippy::too_many_arguments)]
 fn copy_one(
     prog: &str,
     src: &str,
@@ -432,9 +450,11 @@ fn copy_one(
     flags: &CpFlags,
     myuid: u32,
     myumask: u32,
-    physical: bool,
+    entry_is_link: bool,
+    children_are_links: bool,
+    ancestors: &mut Vec<(u64, u64)>,
 ) -> bool {
-    let src_read = if physical {
+    let src_read = if entry_is_link {
         lstat_code(src)
     } else {
         stat_code(src)
@@ -451,8 +471,15 @@ fn copy_one(
 
     // cp.c:419-441: the destination decides whether this is a creation, and two
     // refusals come before the type dispatch. Neither consults `errno`, so both
-    // are `warnx`-shaped: program name plus the phrase, no sentence.
-    let dst_sb = stat_code(dst).ok();
+    // are `warnx`-shaped: program name plus the phrase, no sentence. The look
+    // itself is `Pflag ? lstat : stat` (`:418-419`), so `-P` keeps a dangling
+    // destination link visible instead of pretending the destination is free.
+    let dst_sb = if flags.nofollow {
+        lstat_code(dst)
+    } else {
+        stat_code(dst)
+    }
+    .ok();
     if let Some(db) = &dst_sb {
         if is_identical(&ids_of(&src_sb), &ids_of(db)) {
             support::warn(
@@ -473,11 +500,32 @@ fn copy_one(
     }
 
     let action = entry_action(src_sb.st_mode);
+    // cp.c:348-351 (`FTS_DC`): a followed walk that arrives back at a
+    // directory already on the current path warns and skips that entry
+    // instead of descending forever. A physical walk cannot reach this,
+    // because it never steps through a link.
+    if matches!(action, EntryAction::Directory)
+        && !children_are_links
+        && ancestors.contains(&(src_sb.st_dev, src_sb.st_ino))
+    {
+        support::warn(format!("{prog}: {src}: directory causes a cycle\n").as_bytes());
+        return true;
+    }
     let failed = match action {
-        EntryAction::Directory => copy_dir(prog, src, dst, &src_sb, dst_sb, flags, myuid, myumask),
-        // cp.c:444-453: the link arm is only taken when the scan did not follow
-        // the link — the `-R` walk and a `-P`/`-a` operand (the default scan's
-        // `stat` cannot report `S_IFLNK`).
+        EntryAction::Directory => copy_dir(
+            prog,
+            src,
+            dst,
+            &src_sb,
+            dst_sb,
+            flags,
+            myuid,
+            myumask,
+            children_are_links,
+            ancestors,
+        ),
+        // cp.c:444-453: this arm is reachable only through `lstat`, so the scan
+        // kept this entry's link; a followed entry's `stat` reports its target.
         EntryAction::Symlink => copy_link(prog, src, dst, &src_sb, flags, dst_sb.is_some()),
         // cp.c:517-533: the three special-file arms recreate the entry only
         // with `-R`; without it they go through `copy_file` like everything
@@ -524,9 +572,11 @@ fn copy_dir(
     flags: &CpFlags,
     myuid: u32,
     myumask: u32,
+    children_are_links: bool,
+    ancestors: &mut Vec<(u64, u64)>,
 ) -> bool {
-    if is_unwanted_directory(sb.st_mode, flags.recursive) {
-        // cp.c:456-462: without `-R` a directory source is refused and skipped.
+    if is_unwanted_directory(sb.st_mode, flags.recursive || flags.rflag) {
+        // cp.c:456-462: without `-R`/`-r` a directory source is refused and skipped.
         // C's `warnx("%s is a directory (not copied).", src)` has no sentence.
         support::warn(format!("{prog}: {src} is a directory (not copied).\n").as_bytes());
         return true;
@@ -555,7 +605,18 @@ fn copy_dir(
         support::emit(format!("{src} -> {dst}\n").as_bytes());
     }
 
-    let mut failed = descend_copy(prog, src, dst, flags, myuid, myumask);
+    ancestors.push((sb.st_dev, sb.st_ino));
+    let mut failed = descend_copy(
+        prog,
+        src,
+        dst,
+        flags,
+        myuid,
+        myumask,
+        children_are_links,
+        ancestors,
+    );
+    ancestors.pop();
 
     // Second pass (cp.c:494-507): `-p` stamps owner, mode and times, and a
     // directory that had to be created is chmod'ed back to the source mode
@@ -581,6 +642,7 @@ fn copy_dir(
 /// directory decoder (`minix_fileops::dents`), the same substitution `rm -r`
 /// made: freed slots and the two dot names are passed over, and every entry is
 /// handed to `copy_one` as its own visit.
+#[allow(clippy::too_many_arguments)]
 fn descend_copy(
     prog: &str,
     src_dir: &str,
@@ -588,6 +650,8 @@ fn descend_copy(
     flags: &CpFlags,
     myuid: u32,
     myumask: u32,
+    children_are_links: bool,
+    ancestors: &mut Vec<(u64, u64)>,
 ) -> bool {
     let fd = match open(src_dir, cp::O_RDONLY, 0) {
         Ok(fd) => fd,
@@ -640,7 +704,17 @@ fn descend_copy(
             // both directories says the same thing.
             let child_src = dents::join_path(src_dir, name);
             let child_dst = dents::join_path(dst_dir, name);
-            failed |= copy_one(prog, &child_src, &child_dst, flags, myuid, myumask, true);
+            failed |= copy_one(
+                prog,
+                &child_src,
+                &child_dst,
+                flags,
+                myuid,
+                myumask,
+                children_are_links,
+                children_are_links,
+                ancestors,
+            );
         }
     }
     let _ = close(fd);
@@ -727,18 +801,18 @@ fn run() -> ! {
 
     let (flags, operands) = match CpFlags::parse(&args[1..], isatty(support::STDIN)) {
         Ok(v) => v,
-        Err(CpOption::NotWired(c)) => {
-            support::warn(
-                format!("{prog}: -{c} not wired (the -r/-H/-L traversal ladder, hard-link copy)\n")
-                    .as_bytes(),
-            );
-            support::terminate(1);
-        }
         Err(CpOption::Unknown(_)) => usage(prog),
     };
 
     if operands.len() < 2 {
         usage(prog); // cp.c:171
+    }
+
+    // cp.c:175-188: the two `-r` clashes leave before any operand is read,
+    // but after the operand-count check above (`:171` comes first in C).
+    if let Some(line) = flags.conflict() {
+        support::warn(format!("{prog}: {line}\n").as_bytes());
+        support::terminate(1);
     }
 
     // cp.c:209-216: the last operand is the target; its trailing slash is
@@ -753,8 +827,15 @@ fn run() -> ! {
 
     // cp.c:237-244: anything but ENOENT on the target is fatal — `err(EXIT_FAILURE,
     // "%s", to.p_path)` takes the run down with that number's sentence behind it.
+    // `-P` asks for `lstat` here (`:237-239`), so a link to a directory is not
+    // mistaken for a directory target.
     let mut target_sb = zeroed();
-    let target_state = match stat(&target, &mut target_sb) {
+    let target_look = if flags.nofollow {
+        lstat(&target, &mut target_sb)
+    } else {
+        stat(&target, &mut target_sb)
+    };
+    let target_state = match target_look {
         Ok(()) => TargetState::Exists {
             is_dir: cp::is_dir(target_sb.st_mode),
         },
@@ -767,25 +848,32 @@ fn run() -> ! {
 
     // cp.c:245-268: inside case (1) — the target is not a directory, which a
     // missing target always is — C takes the first operand's status through
-    // `lstat` (`:262`; the `-r` branch that would use `stat` at `:260` is refused
-    // here) and **exits** if that fails (`err(EXIT_FAILURE, "%s", *argv)`, `:264`).
-    // The answer only changes the shape when `-R`/`-r` are set (`:267-268`), but
-    // the status is taken either way: `cp missing-src new-dst` reports the source
-    // and leaves before copying anything, even without `-R`.
-    let source_is_dir = target_state == TargetState::Missing
-        && match lstat_code(&sources[0]) {
-            Ok(sb) => flags.recursive && cp::is_dir(sb.st_mode),
+    // `stat` when the operand is followed and `lstat` otherwise (`:259-262`)
+    // and **exits** if that fails (`err(EXIT_FAILURE, "%s", *argv)`, `:264`).
+    // The answer only changes the shape when a walk is selected (`:267-268`),
+    // but the status is taken either way: `cp missing-src new-dst` reports the
+    // source and leaves before copying anything, even without `-R`.
+    let source_is_dir = target_state == TargetState::Missing && {
+        let follows = flags.rflag || (flags.recursive && (flags.logical || flags.comfollow));
+        let look = if follows {
+            stat_code(&sources[0])
+        } else {
+            lstat_code(&sources[0])
+        };
+        match look {
+            Ok(sb) => (flags.recursive || flags.rflag) && cp::is_dir(sb.st_mode),
             Err(e) => {
                 support::warn_line(prog, &sources[0], e);
                 support::terminate(1);
             }
-        };
+        }
+    };
 
     let shape = match classify(
         sources.len(),
         target_state,
         source_is_dir,
-        flags.recursive,
+        flags.recursive || flags.rflag,
         have_trailing_slash,
     ) {
         Ok(s) => s,
@@ -816,14 +904,25 @@ fn run() -> ! {
 
     // cp.c:293-299: every operand goes into `copy()`, whose fts queue this
     // tree's `copy_one` answers one visit at a time — the operand itself for a
-    // plain file, the whole hierarchy for a directory under `-R`.
+    // plain file, the whole hierarchy under `-R`/`-r`.
+    let follow = flags.follow();
     let mut any_failed = false;
     for src in &sources {
         let dest = join_target(&target, src, shape);
-        // `cp.c:174-200`: only the no-flag default resolves the operand's
-        // symlink, so `-R`, `-P` and `-a` all ask for the raw entry.
-        let physical = cp::scan_is_physical(flags.recursive, flags.nofollow);
-        any_failed |= copy_one(prog, src, &dest, &flags, myuid, myumask, physical);
+        // One stack per operand: the cycle check looks at the path currently
+        // being walked, not at everything this run has seen.
+        let mut ancestors = Vec::new();
+        any_failed |= copy_one(
+            prog,
+            src,
+            &dest,
+            &flags,
+            myuid,
+            myumask,
+            follow.reads_entries_as_links(),
+            follow.reads_children_as_links(),
+            &mut ancestors,
+        );
     }
 
     support::terminate(if any_failed { 1 } else { 0 });

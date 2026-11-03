@@ -12,7 +12,7 @@
 //! On a host build the very first filesystem call — the `stat` of the target — already
 //! fails, and C treats anything but `ENOENT` there as fatal (`cp.c:242`), so the
 //! reachable shapes are the fatal one and the ones that never touch the filesystem:
-//! the usage pair, the refused-letter line, and what `argv[0]` contributes. The deeper
+//! the usage pair, the two `-r` conflict sentences, and what `argv[0]` contributes. The deeper
 //! legs (`copy_file`'s open/read/write family, `setfile`, the `-R` walk) are pinned by
 //! the deciding half's unit tests and by the real-machine gate `E5`, and this
 //! door does not pretend to cover them.
@@ -101,17 +101,48 @@ fn the_usage_pair_carries_the_program_name_twice() {
 }
 
 #[test]
-fn a_refused_letter_is_named_in_a_line_without_a_sentence() {
-    // The `-r`/`-l`/`-N`/`-H`/`-L` refusals are this tree's own up-front stop,
-    // shaped like C's `warnx`: program name, the phrase, no number behind it
-    // (C has no such line because those letters are wired there).
-    let (out, status, err) = run("cp", &["-H", "/tmp/cp-face-src", "/tmp/cp-face-dst"]);
+fn the_r_flag_conflicts_leave_before_any_operand_is_read() {
+    // `cp.c:176-178` and `:181-183`: two `errx` sentences, in this order, with
+    // no `strerror` behind them.
+    let (out, status, err) = run("cp", &["-Rr", "/tmp/cp-face-src", "/tmp/cp-face-dst"]);
     assert_eq!(out, "");
     assert_eq!(status, 1);
     assert_eq!(
-        err, "cp: -H not wired (the -r/-H/-L traversal ladder, hard-link copy)\n",
-        "拒绝行不该缀句子"
+        err,
+        "cp: the -R and -r options may not be specified together.\n"
     );
+    let (out, status, err) = run("cp", &["-rP", "/tmp/cp-face-src", "/tmp/cp-face-dst"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        "cp: the -H, -L, and -P options may not be specified with the -r option.\n"
+    );
+    // `cp.c:171-172` checks the operand count before `:175-188` checks the
+    // clashes, so with no operands the usage pair wins.
+    let (_, status, err) = run("cp", &["-Rr"]);
+    assert_eq!(status, 1);
+    assert_eq!(err, usage_of("cp"));
+}
+
+#[test]
+fn a_wired_letter_passes_the_option_gate_and_fails_at_the_target_look() {
+    // Every usage letter is accepted now; the first filesystem call on a host
+    // build fails, so the reachable proof is that the run gets that far instead
+    // of printing a refusal or the usage pair.
+    for letter in ["-H", "-L", "-N", "-l", "-r"] {
+        let (out, status, err) = run("cp", &[letter, "/tmp/cp-face-src", "/tmp/cp-face-dst"]);
+        assert_eq!(out, "");
+        assert_eq!(status, 1, "{letter}");
+        assert!(
+            err.starts_with("cp: /tmp/cp-face-dst: "),
+            "{letter} reached the target look: {err}"
+        );
+        assert!(
+            !err.contains("not wired") && !err.starts_with("usage:"),
+            "{letter} must not be refused: {err}"
+        );
+    }
 }
 
 #[test]

@@ -8,14 +8,13 @@
 //! `open`, the prompt, the copy, the preservation calls — live in the thin
 //! program `src/bin/cp.rs`.
 //!
-//! Wired shape: `cp [-f|-i] [-p] [-v] src target`, `cp [-f|-i] [-p] [-v] src ...
-//! directory`, and `cp -R` over either, which duplicates the hierarchy rooted
-//! at each source. The walk rides this crate's own directory decoder
-//! (`crate::dents`) instead of fts(3), the same substitution `rm -r` made. What
-//! is still refused: `-r` (the deprecated logical recursion, `cp.c:175-188`),
-//! `-a`/`-P`/`-H`/`-L` (the symlink-traversal modes, and with `-P` the
-//! link-preserving `lchown`/`lchmod` this tree does not wrap), `-l` (hard-link
-//! instead of copy) and `-N` (dangling links copied as links).
+//! Wired shape: the whole usage string — `cp [-R [-H | -L | -P]] [-f | -i]
+//! [-alNpv]` — where `-R` and its logical sibling `-r` duplicate the hierarchy
+//! rooted at each source, `-H`/`-L`/`-P` decide which symbolic links the scan
+//! follows, `-a` is `-RpP`, `-l` replaces the byte copy with a hard link, and
+//! `-N` is accepted with no effect because its only reader sits behind
+//! `#if !defined(__minix)`. The walk rides this crate's own directory decoder
+//! (`crate::dents`) instead of fts(3), the same substitution `rm -r` made.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -76,8 +75,7 @@ pub fn is_link(mode: u32) -> bool {
 
 // ── options ──────────────────────────────────────────────────────────────
 
-/// The option set `cp` acts on (`cp.c:117-167`, the five that need no
-/// symlink-traversal decision).
+/// The option set `cp` acts on (`cp.c:117-167`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CpFlags {
     /// `-f`: overwrite without asking, and remove an unopenable destination
@@ -90,20 +88,60 @@ pub struct CpFlags {
     pub preserve: bool,
     /// `-R`: duplicate the hierarchy rooted at each source (`cp.c:293-548`).
     pub recursive: bool,
+    /// `-r`: the same hierarchy walk, but every symbolic link on the way is
+    /// followed (`cp.c:175-188`). Not a synonym for `-R`: the two conflict,
+    /// and a fifo or device node under `-r` goes through the plain file copy
+    /// (`cp.c:517-533` gates those arms on `Rflag` alone).
+    pub rflag: bool,
     /// `-P`: do not follow symlinks — the operand included, so a symlink is
     /// duplicated as a link (`cp.c:130-133`, `:197-198`). `-a` implies it.
     pub nofollow: bool,
+    /// `-H`: follow a symlink only when it is the operand itself; entries
+    /// below it are taken as found (`cp.c:119-122`, `:190-192`).
+    pub comfollow: bool,
+    /// `-L`: follow every symbolic link the walk meets (`cp.c:123-126`,
+    /// `:193-196`).
+    pub logical: bool,
+    /// `-l`: hard-link each file instead of copying its bytes
+    /// (`utils.c:166-176`).
+    pub hardlink: bool,
     /// `-v`: print `src -> dst` for every file that did not fail
     /// (`cp.c:539-540`).
     pub verbose: bool,
 }
 
+/// How a scan treats the symbolic links it meets (`cp.c:174-200`).
+///
+/// The operand's own link and the links below it answer separately: `-H`
+/// follows only the first, `-L` and `-r` follow both, and the no-flag default
+/// follows only the first (there is nothing below it, because the walk needs
+/// `-R`/`-r`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Follow {
+    /// `FTS_PHYSICAL`: every link is an entry of its own.
+    Physical,
+    /// `FTS_PHYSICAL | FTS_COMFOLLOW`: the operand's link is resolved.
+    Comfollow,
+    /// `FTS_LOGICAL`: every link is resolved.
+    Logical,
+}
+
+impl Follow {
+    /// Whether the entry being visited is read through `lstat` rather than
+    /// `stat`.
+    pub fn reads_entries_as_links(self) -> bool {
+        self == Follow::Physical
+    }
+
+    /// Whether the entries below a visited directory are read as links.
+    pub fn reads_children_as_links(self) -> bool {
+        self != Follow::Logical
+    }
+}
+
 /// Why an option cluster could not be accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpOption {
-    /// A letter whose feature this tree has not landed yet; the program says
-    /// so and exits 1 instead of silently ignoring it.
-    NotWired(char),
     /// Not in the option string at all — usage and exit 1.
     Unknown(char),
 }
@@ -142,26 +180,83 @@ impl CpFlags {
                     }
                     b'p' => f.preserve = true,
                     // `-R` is wired: the hierarchy walk rides this crate's own
-                    // directory decoder (see the bin's `copy_tree`). The rest of
-                    // the family still needs facilities this tree lacks.
+                    // directory decoder (see the bin's `copy_tree`).
                     b'R' => f.recursive = true,
                     b'v' => f.verbose = true,
-                    // `-a` (`cp.c:137-142`): `-RpP` in one letter.
+                    // The three traversal letters clear each other in C
+                    // (`cp.c:119-133`), so the last one written wins.
+                    b'H' => {
+                        f.comfollow = true;
+                        f.logical = false;
+                        f.nofollow = false;
+                    }
+                    b'L' => {
+                        f.logical = true;
+                        f.comfollow = false;
+                        f.nofollow = false;
+                    }
+                    b'P' => {
+                        f.nofollow = true;
+                        f.comfollow = false;
+                        f.logical = false;
+                    }
+                    // `-a` (`cp.c:137-142`): `-RpP` in one letter, and it clears
+                    // the two traversal letters the same way `-P` does.
                     b'a' => {
                         f.preserve = true;
                         f.nofollow = true;
                         f.recursive = true;
+                        f.comfollow = false;
+                        f.logical = false;
                     }
-                    b'P' => f.nofollow = true,
-                    b'H' | b'L' | b'N' | b'l' | b'r' => {
-                        return Err(CpOption::NotWired(byte as char));
-                    }
+                    b'r' => f.rflag = true,
+                    // `utils.c:167-176`: the destination was opened exactly as
+                    // for a byte copy; the link replaces that file afterwards.
+                    b'l' => f.hardlink = true,
+                    // `-N` sets a flag whose only reader sits in the
+                    // `#if !defined(__minix)` chflags block (`utils.c:395`),
+                    // so on Minix the letter is accepted and changes nothing.
+                    b'N' => {}
                     _ => return Err(CpOption::Unknown(byte as char)),
                 }
             }
             i += 1;
         }
         Ok((f, args[i..].to_vec()))
+    }
+
+    /// The traversal the scan of one operand uses (`cp.c:174-200`).
+    pub fn follow(&self) -> Follow {
+        if self.rflag {
+            return Follow::Logical;
+        }
+        if self.recursive {
+            if self.logical {
+                Follow::Logical
+            } else if self.comfollow {
+                Follow::Comfollow
+            } else {
+                Follow::Physical
+            }
+        } else if self.nofollow {
+            Follow::Physical
+        } else {
+            // `FTS_LOGICAL | FTS_COMFOLLOW` (`cp.c:197-200`): with no walk
+            // below it the operand is all there is to resolve.
+            Follow::Logical
+        }
+    }
+
+    /// The two `errx` refusals `cp.c:175-188` makes before any copy, in C's
+    /// order — the `-R`/`-r` clash is the one named when both are present.
+    pub fn conflict(&self) -> Option<&'static str> {
+        if self.rflag && self.recursive {
+            Some("the -R and -r options may not be specified together.")
+        } else if self.rflag && (self.comfollow || self.logical || self.nofollow) {
+            Some("the -H, -L, and -P options may not be specified with the -r option.")
+        } else {
+            None
+        }
     }
 }
 
@@ -183,9 +278,9 @@ pub enum CpShape {
     FileToFile,
     /// Case (2): the target is a directory, so each source lands inside it.
     FileToDir,
-    /// Case (3) (`cp.c:268-269`): `-R`, a directory source, and a target that
-    /// does not exist. The target takes the source's contents, so the source's
-    /// own name is not appended to it.
+    /// Case (3) (`cp.c:268-269`): a walk (`-R` or `-r`), a directory source,
+    /// and a target that does not exist. The target takes the source's
+    /// contents, so the source's own name is not appended to it.
     DirToDne,
 }
 
@@ -202,18 +297,18 @@ pub enum CpShapeError {
 
 /// Classify the operands exactly as `cp.c:245-287` does: the directory test on
 /// the target comes first, the source count is checked inside case (1), the
-/// directory-source-without-target case (3) is recognised only for a recursive
-/// copy, and the trailing-slash complaint comes last — and only for case (1),
-/// so `cp -R dir dst/` with neither `dir` nor `dst` existing is a copy, not a
-/// complaint (`cp.c:275` gates on `type == FILE_TO_FILE`).
+/// directory-source-without-target case (3) is recognised only when the run
+/// walks (`-R` or `-r`), and the trailing-slash complaint comes last — and only
+/// for case (1), so `cp -R dir dst/` with neither `dir` nor `dst` existing is a
+/// copy, not a complaint (`cp.c:275` gates on `type == FILE_TO_FILE`).
 ///
-/// `source_is_dir` must come from the same status the scan uses: `lstat` for a
-/// recursive copy, `stat` otherwise (`cp.c:259-262`).
+/// `source_is_dir` must come from the same status the shape test uses
+/// (`cp.c:259-262`: `stat` when the operand is followed, `lstat` otherwise).
 pub fn classify(
     source_count: usize,
     target: TargetState,
     source_is_dir: bool,
-    recursive: bool,
+    walks: bool,
     have_trailing_slash: bool,
 ) -> Result<CpShape, CpShapeError> {
     let exists_and_dir = match target {
@@ -226,7 +321,7 @@ pub fn classify(
     if source_count != 1 {
         return Err(CpShapeError::TooManySources);
     }
-    if target == TargetState::Missing && recursive && source_is_dir {
+    if target == TargetState::Missing && walks && source_is_dir {
         return Ok(CpShape::DirToDne);
     }
     if have_trailing_slash {
@@ -323,10 +418,10 @@ pub fn regains_set_bits(
 }
 
 /// `utils.c:109` plus `utils.c:142-143`: whether an existing destination may be
-/// opened for writing. `tolnk = (Rflag && !(Lflag || Hflag)) || Pflag` — with
-/// the traversal modes refused that is the recursive scan — and such a scan
-/// refuses to write through a destination that is itself a symbolic link: the
-/// link is removed and a fresh file created in its place.
+/// opened for writing. `tolnk = (Rflag && !(Lflag || Hflag)) || Pflag`, so the
+/// physical recursive scan and every `-P` run (including `-a`) refuse to write
+/// through a destination that is itself a symbolic link: the link is removed
+/// and a fresh file created in its place.
 pub fn writes_through(physical_scan: bool, dest_is_link: bool) -> bool {
     !(physical_scan && dest_is_link)
 }
@@ -455,17 +550,9 @@ pub enum EntryAction {
     Unknown,
 }
 
-/// `cp.c:174-200`: the scan starts `FTS_PHYSICAL`, and only a non-recursive
-/// run without `-P` swaps in `FTS_LOGICAL | FTS_COMFOLLOW`, which is what makes
-/// a symlink named on the command line resolve to its target. `-a` carries
-/// `-P` (`cp.c:137-142`), so it stays physical like `-R`.
-pub fn scan_is_physical(recursive: bool, nofollow: bool) -> bool {
-    recursive || nofollow
-}
-
-/// `cp.c:443`: the dispatch on the source's type bits. The recursive scan is
-/// physical (`cp.c:174, 190-196`), so it reaches this through `lstat` and a
-/// symlink is copied by `copy_link` instead of being descended into.
+/// `cp.c:443`: the dispatch on the source's type bits. Only a physical scan
+/// hands this a link (`cp.c:444-453`): the followed scan has already resolved
+/// it, so the type bits describe the target.
 pub fn entry_action(mode: u32) -> EntryAction {
     match mode & S_IFMT {
         S_IFDIR => EntryAction::Directory,
@@ -497,24 +584,59 @@ mod tests {
                 recursive: false,
                 verbose: false,
                 nofollow: false,
+                rflag: false,
+                comfollow: false,
+                logical: false,
+                hardlink: false,
             }
         );
         assert_eq!(rest, ["a", "b"]);
     }
 
-    /// `cp.c:174` opens the scan `FTS_PHYSICAL`; only the no-flag
-    /// non-recursive default (`:197-200`) asks for logical traversal. The
-    /// recursive letters that would follow again (`-H`/`-L`) are refused for
-    /// now, so the two flags this crate accepts both keep it physical.
+    /// The three traversal settings `cp.c:174-200` can assemble, one case per
+    /// letter combination C distinguishes.
     #[test]
-    fn only_the_plain_default_follows_the_operand() {
-        assert!(!scan_is_physical(false, false));
-        assert!(scan_is_physical(true, false), "-R walks links as links");
-        assert!(
-            scan_is_physical(false, true),
-            "-P is the operand's link too"
+    fn the_follow_ladder_covers_every_letter_combination() {
+        assert_eq!(CpFlags::default().follow(), Follow::Logical);
+        let (f, _) = CpFlags::parse(&["-P"], true).unwrap();
+        assert_eq!(f.follow(), Follow::Physical);
+        let (f, _) = CpFlags::parse(&["-R"], true).unwrap();
+        assert_eq!(
+            f.follow(),
+            Follow::Physical,
+            "a walk is physical by default"
         );
-        assert!(scan_is_physical(true, true), "-a = -RpP");
+        let (f, _) = CpFlags::parse(&["-RH"], true).unwrap();
+        assert_eq!(f.follow(), Follow::Comfollow);
+        let (f, _) = CpFlags::parse(&["-RL"], true).unwrap();
+        assert_eq!(f.follow(), Follow::Logical);
+        let (f, _) = CpFlags::parse(&["-r"], true).unwrap();
+        assert_eq!(f.follow(), Follow::Logical, "-r follows every link");
+        let (f, _) = CpFlags::parse(&["-a"], true).unwrap();
+        assert_eq!(f.follow(), Follow::Physical, "-a = -RpP");
+        assert!(Follow::Physical.reads_entries_as_links());
+        assert!(!Follow::Comfollow.reads_entries_as_links());
+        assert!(Follow::Comfollow.reads_children_as_links());
+        assert!(!Follow::Logical.reads_children_as_links());
+    }
+
+    /// `-H`, `-L` and `-P` overwrite each other (`cp.c:119-133`), and `-a`
+    /// resets the pair to `-P`; the last letter written is the one that stays.
+    #[test]
+    fn the_traversal_letters_clear_each_other() {
+        let (f, _) = CpFlags::parse(&["-PH"], true).unwrap();
+        assert!(f.comfollow && !f.nofollow && !f.logical);
+        let (f, _) = CpFlags::parse(&["-HL"], true).unwrap();
+        assert!(f.logical && !f.comfollow);
+        let (f, _) = CpFlags::parse(&["-LP"], true).unwrap();
+        assert!(f.nofollow && !f.logical);
+        let (f, _) = CpFlags::parse(&["-LH", "-a"], true).unwrap();
+        assert!(f.nofollow && !f.logical && !f.comfollow, "-a clears both");
+        let (f, _) = CpFlags::parse(&["-a", "-L"], true).unwrap();
+        assert!(
+            f.logical && f.recursive && f.preserve,
+            "-L after -a re-follows"
+        );
     }
 
     #[test]
@@ -554,16 +676,52 @@ mod tests {
         assert!(!CpFlags::default().nofollow, "the default follows symlinks");
     }
 
+    /// `cp.c:175-188`: `-r` is not a synonym for `-R`, and it cannot be
+    /// combined with the three traversal letters. The `-R` clash is named
+    /// first, because C tests it first.
     #[test]
-    fn unwired_letters_are_reported_not_ignored() {
-        for c in ['r', 'l', 'H', 'L', 'N'] {
+    fn the_r_flag_conflicts_are_reported_in_c_order() {
+        let (f, _) = CpFlags::parse(&["-Rr"], true).unwrap();
+        assert_eq!(
+            f.conflict(),
+            Some("the -R and -r options may not be specified together.")
+        );
+        let (f, _) = CpFlags::parse(&["-rP"], true).unwrap();
+        assert_eq!(
+            f.conflict(),
+            Some("the -H, -L, and -P options may not be specified with the -r option.")
+        );
+        let (f, _) = CpFlags::parse(&["-rH"], true).unwrap();
+        assert!(f.conflict().is_some());
+        let (f, _) = CpFlags::parse(&["-rL"], true).unwrap();
+        assert!(f.conflict().is_some());
+        let (f, _) = CpFlags::parse(&["-RrP"], true).unwrap();
+        assert_eq!(
+            f.conflict(),
+            Some("the -R and -r options may not be specified together."),
+            "the -R/-r clash wins"
+        );
+        let (f, _) = CpFlags::parse(&["-r"], true).unwrap();
+        assert_eq!(f.conflict(), None, "-r alone is legal");
+        let (f, _) = CpFlags::parse(&["-a"], true).unwrap();
+        assert_eq!(f.conflict(), None, "-a carries -R, not -r");
+    }
+
+    /// Every letter in the usage string is accepted now; `-N` lands nowhere
+    /// because its only reader is compiled out on Minix.
+    #[test]
+    fn every_usage_letter_is_accepted() {
+        for c in ['H', 'L', 'N', 'P', 'R', 'a', 'f', 'i', 'l', 'p', 'r', 'v'] {
             let arg = alloc::format!("-{c}");
-            assert_eq!(
-                CpFlags::parse(&[arg.as_str(), "a", "b"], true),
-                Err(CpOption::NotWired(c)),
-                "-{c} must be refused explicitly"
+            assert!(
+                CpFlags::parse(&[arg.as_str(), "a", "b"], true).is_ok(),
+                "-{c} must be accepted"
             );
         }
+        let (f, _) = CpFlags::parse(&["-N"], true).unwrap();
+        assert!(!f.hardlink && !f.recursive, "-N changes no flag");
+        let (f, _) = CpFlags::parse(&["-l"], true).unwrap();
+        assert!(f.hardlink);
     }
 
     #[test]

@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十九（`cp` 余下字母接通：`-r`/`-H`/`-L` 阶梯、`-N` 空操作与 `-l` 硬链）
+
+- **这一笔的射程**：not-wired 清单里 `cp` 的最后五个字母。C 的 `-r`（`cp.c:157-159`、`:175-188`）是逻辑遍历：与 `-R` 同用即 `errx`「the -R and -r options may not be specified together.」，与 `-H/-L/-P` 同用即第二条 `errx`；三个遍历字母互斥清位（`:119-133`），扫描选项在 `:190-200` 装配（`-R -H` = COMFOLLOW、`-R -L` = LOGICAL、`-r` = LOGICAL、仅无旗标默认形 = LOGICAL|COMFOLLOW）；`S_IFLNK` 臂只在物理扫描出现（`:444-453`）；`FTS_DC` 环（`:348-351`）报「directory causes a cycle」后跳过；`-l`（`utils.c:166-176`）在目的已 open 后关闭两 fd、unlink 目的、把源 `link` 过去，且不再走 `-p`；`-N` 的唯一读者在 `#if !defined(__minix)` 的 chflags 段（`utils.c:395`），Minix 上是空操作。同时修两处随字母解开才暴露的存量偏差：`tolnk` 公式（`utils.c:109`）此前化简成 `Rflag`，`-H/-L` 接入后必须按原式；目标与目的回看（`cp.c:237-239`、`:418-419`）在 `-P` 下走 `lstat`。
+- **落码**：`CpFlags` 增 `rflag/comfollow/logical/hardlink`，三遍历字母互清、`-a` 清两位；`Follow { Physical, Comfollow, Logical }` 与 `follow()` 收束 fts 装配、`conflict()` 收束两条 `errx` 句；`classify` 的 case (3) 改按「是否走表」判；bin 穿 `entry_is_link`/`children_are_links` 两布尔（`-H` 使根与子项的答案不同），`descend_copy` 带祖先 `(dev, ino)` 栈做环检测；`copy_file` 的 `tolnk` 按原式、`-l` 在泵之前提前返回；`CpOption::NotWired` 变体删除（全字母接通后无生产者）。
+- **可测性边界**：宿主进程的第一次 `stat` 即失败（`cp_face` 头注既有边界），遍历与链接语义在宿主不可见——宿主面钉 `follow()` 七格真值表、三遍历字母互清真值、`conflict()` 两条 C 句与顺序（无操作数时 usage 优先，`cp.c:171` 先于 `:175`）、全部 usage 字母过选项门；`-l` 的 `link` 腿与环报错由既有单测与真机面 `E5` 覆盖。
+- **门**：`cargo test -p minix-fileops` → **474/0**（lib 402，其中 cp 子集 37/0；面测 `cp_face` 6/0）；clippy 触及文件零新增；`rustfmt --edition 2024` 三文件清；`cargo build --target x86_64-unknown-none --bin cp` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `676b7cff2`。
+
 ## 批次五百一十八（`cp -a`/`-P` 接通：物理扫描与操作数符号链）
 
 - **这一笔的射程**：not-wired 清单里 `cp` 的 `-a` 一件连同它携带的 `-P`——C 的 `-a`（`cp.c:137-142`）是 `Pflag=pflag=Rflag=1` 并清 `H/L`；扫描选项（`:174-200`）从 `FTS_PHYSICAL` 起，只有**非递归且无 `-P`** 的默认形才置 `FTS_LOGICAL | FTS_COMFOLLOW`（操作数上的符号链被解析），`-R`/`-P`/`-a` 都保持物理；`S_IFLNK` 臂（`:444-453`）在物理扫描下走 `copy_link`（复制链文），逻辑/COMFOLLOW 才走 `copy_file`。`-H/-L/-r/-l/-N` 仍拒收（前两者的跟随语义未落地，`-r` 与 `-R` 的互斥句同其后）。
