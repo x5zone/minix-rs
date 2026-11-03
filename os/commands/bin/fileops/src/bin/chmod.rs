@@ -44,7 +44,6 @@ extern crate alloc;
 #[path = "../bin_support.rs"]
 mod support;
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_fileops::cp;
@@ -64,7 +63,7 @@ fn warn(bytes: &[u8]) {
 }
 
 fn usage() -> ! {
-    support::warn(b"usage: chmod [-R] [-f] [-v] mode file ...\n");
+    support::warn(b"usage: chmod [-R [-H | -L | -P]] [-fhv] mode file ...\n");
     support::terminate(1);
 }
 
@@ -86,8 +85,17 @@ fn operand_stat(path: &str, physical: bool) -> Option<Stat> {
 /// `chmod.c:215-216`: fold the spec onto the bits this entry already has and
 /// write the result. The full `st_mode` goes in, type bits included — that is
 /// what lets an `X` in the spec see "this is a directory".
-fn apply_one(path: &str, st: &Stat, spec: &str) -> Result<(), ()> {
+fn apply_one(path: &str, st: &Stat, spec: &str, hflag: bool) -> Result<(), ()> {
     let mode = apply_mode(st.st_mode, spec).map_err(|_| ())?;
+    if hflag {
+        // Minix's `lchmod` emulation (`tools/compat/lchmod.c`): a symlink is
+        // a silent success, anything else takes the plain `chmod`.
+        let mut sb: Stat = unsafe { core::mem::zeroed() };
+        lstat(path, &mut sb).map_err(|_| ())?;
+        if cp::is_link(sb.st_mode) {
+            return Ok(());
+        }
+    }
     chmod(path, mode as u32).map_err(|_| ())
 }
 
@@ -96,11 +104,16 @@ fn apply_one(path: &str, st: &Stat, spec: &str) -> Result<(), ()> {
 /// children. A directory is changed on the way in only, matching C's `FTS_DP`
 /// `continue`; the descent runs whether or not the change succeeded, as it does
 /// in C, where the queue is already built.
-fn chmod_one(path: &str, st: &Stat, spec: &str, flags: &ChmodFlags) -> bool {
-    if !chmods_entry(st.st_mode, flags.recursive) {
+fn chmod_one(path: &str, st: &Stat, spec: &str, flags: &ChmodFlags, children_follow: bool) -> bool {
+    // A physical walk passes symlinks over (`FTS_SL`/`FTS_SLNONE`) unless
+    // `-h` asks for the link itself (`chmod.c:201-210`).
+    // Only children arrive with a physical (lstat) view; a followed operand
+    // already carries its target's mode, so the link test never fires there.
+    let physical = !children_follow;
+    if !chmods_entry(st.st_mode, physical && !flags.hflag) {
         return false; // passed over, not a failure
     }
-    let mut failed = match apply_one(path, st, spec) {
+    let mut failed = match apply_one(path, st, spec, flags.hflag) {
         Ok(()) => {
             if flags.verbose {
                 let mut msg = String::from(path);
@@ -121,7 +134,7 @@ fn chmod_one(path: &str, st: &Stat, spec: &str, flags: &ChmodFlags) -> bool {
         }
     };
     if flags.recursive && cp::is_dir(st.st_mode) {
-        failed |= descend_chmod(path, spec, flags);
+        failed |= descend_chmod(path, spec, flags, children_follow);
     }
     failed
 }
@@ -129,7 +142,7 @@ fn chmod_one(path: &str, st: &Stat, spec: &str, flags: &ChmodFlags) -> bool {
 /// Walk one directory's entries and change each of them. An unopenable
 /// directory is C's `FTS_DNR` (`chmod.c:190-193`): reported, counted, and the
 /// directory itself has already been chmod'ed by the caller.
-fn descend_chmod(dir: &str, spec: &str, flags: &ChmodFlags) -> bool {
+fn descend_chmod(dir: &str, spec: &str, flags: &ChmodFlags, children_follow: bool) -> bool {
     let fd: Fd = match open(dir, cp::O_RDONLY, 0) {
         Ok(fd) => fd,
         Err(_) => {
@@ -174,8 +187,8 @@ fn descend_chmod(dir: &str, spec: &str, flags: &ChmodFlags) -> bool {
                 continue;
             }
             let child = dents::join_path(dir, name);
-            match operand_stat(&child, true) {
-                Some(st) => failed |= chmod_one(&child, &st, spec, flags),
+            match operand_stat(&child, !children_follow) {
+                Some(st) => failed |= chmod_one(&child, &st, spec, flags, children_follow),
                 None => {
                     // `chmod.c:196-200` (`FTS_NS`): warn, count it, keep going.
                     warn(child.as_bytes());
@@ -195,12 +208,14 @@ fn run() -> ! {
 
     let (flags, operands) = match ChmodFlags::parse(&args[1.min(args.len())..]) {
         Ok(v) => v,
-        Err(ChmodOption::NotWired(c)) => {
-            warn(format!("-{c} not wired (lchmod, symlink traversal)").as_bytes());
-            support::terminate(1);
-        }
         Err(ChmodOption::Unknown(_)) => usage(),
     };
+    // `chmod.c:145-150`: the recursive walk and acting on the links
+    // themselves contradict each other.
+    if flags.recursive && flags.hflag {
+        warn(b"the -R and -h options may not be specified together.");
+        support::terminate(1);
+    }
 
     // chmod.c:141-142: the mode plus at least one file, or usage.
     if operands.len() < 2 {
@@ -208,10 +223,17 @@ fn run() -> ! {
     }
     let spec = operands[0];
 
+    // The follow ladder (`chmod.c:144-158`): `-L` follows everything; `-H`
+    // only the operands; without either, an operand is followed unless `-h`
+    // asks about the link itself. Children follow only under `-L`.
+    let root_follow = flags.logical || flags.comfollow || (!flags.recursive && !flags.hflag);
+    let children_follow = flags.logical;
     let mut any_failed = false;
     for path in &operands[1..] {
-        match operand_stat(path, flags.recursive) {
-            Some(st) => any_failed |= chmod_one(path, &st, spec, &flags),
+        match operand_stat(path, !root_follow) {
+            Some(st) => {
+                any_failed |= chmod_one(path, &st, spec, &flags, children_follow);
+            }
             None => {
                 warn(path.as_bytes());
                 any_failed = true;

@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十六（`chmod` 的 `-H/-L/-P/-h` 接通：遍历三模式与 lchmod 仿真）
+
+- **这一笔的射程**：not-wired 清单里 `chmod` 的 `-H/-L/-P/-h` 一处（`-R` 早已在）——C 的遍历选择（`chmod.c:144-160`）：`-P` 清掉跟随位（`:100-102`）、`-R -H` 置 `FTS_COMFOLLOW`、`-R -L` 置 `FTS_LOGICAL`、非 `-R` 且无 `-h` 时操作数被跟随；**`-R -h` 即 `errx("the -R and -h options may not be specified together.")`**（`:145-150`）；`FTS_SL`/`FTS_SLNONE` 无 `-h` 跳过、有 `-h` 走 `lchmod`（Minix 仿真：符号链静默成功，`tools/compat/lchmod.c`）；目次在 `FTS_D` **前序**改、`FTS_DP` 跳过（与 chown 的 DP 相反）。
+- **落码**：`mode.rs` 的 `ChmodFlags` 增 `comfollow/logical/hflag`，解析臂落位、`-P` 清位；`ChmodOption::NotWired` 变体删除（无生产者，死码纪律）；bin 的走表穿 `children_follow`（子项跟随仅 `-L`；根按 `-L`/`-H`/非递归非 `-h` 三层判定）、`chmods_entry` 的跳过判据带 `-h`、`apply_one` 的 lchmod 仿真腿（lstat → 符号链 → 静默成功）；`-R -h` 在 run 里按 C 句拒绝；usage 行更新为 C 的第一行形。
+- **可测性边界**：模式写入走 none 面——宿主面钉三枚：五个字母过选项门（旧拒收行不再出现）、`-R -h` 的 C 句逐字节、未知字母的 usage 行；物理/逻辑走表的顺序语义由真机窗验（入 E5 参战面）。
+- **门**：`cargo test -p minix-fileops` → 库 **398/0**（旗标测试重写为接线枚举 + `-P` 清位断言）+ 新面门 `chmod_face` **3/0**；clippy 触及文件零新增；`rustfmt --edition 2024` 三文件清；`cargo build --target x86_64-unknown-none --release --bin chmod` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `b56e193cc`。
+
 ## 批次五百一十五（`chown -R` 族接通：fts 式走表、遍历三模式与 lchown 仿真语义）
 
 - **这一笔的射程**：not-wired 清单里 `chown` 的 `-R/-H/-L/-P/-h` 一处——C 的 fts 走表（`chown.c:144-240`）：物理默认、`-R -H` 置 `FTS_COMFOLLOW`、`-R -L` 置 `FTS_LOGICAL`（**`-L` 与 `-h` 同用即 `errx("the -L and -h options may not be specified together.")`**，`:150-155`）；目次在其子项之后（`FTS_DP`）改属主；物理走里的符号链（`FTS_SL`）无 `-h` 即跳过、有 `-h` 走 `lchown`；断链（`FTS_SLNONE`）忽略；`FTS_DNR` 告警后仍改目次本身。**`lchown` 在 Minix 是仿真**（`tools/compat/lchown.c:50-59`）：`lstat` 后「是符号链 → 返回 0（静默成功、不改动）」、否则落 `chown`——本实现逐字对位。

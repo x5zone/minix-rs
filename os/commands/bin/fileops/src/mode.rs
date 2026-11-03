@@ -36,6 +36,15 @@ pub struct ChmodFlags {
     pub force: bool,
     /// `-R`: walk each operand directory (`chmod.c:104-105`, `:144-157`).
     pub recursive: bool,
+    /// `-H`: follow the command-line operands only (`FTS_COMFOLLOW`,
+    /// `chmod.c:151-152`). `-P` clears it (`:100-102`).
+    pub comfollow: bool,
+    /// `-L`: follow every symlink (`FTS_LOGICAL`, `chmod.c:153-156`).
+    pub logical: bool,
+    /// `-h`: act on the symlink itself. Minix's `lchmod` emulation makes a
+    /// symlink a silent success (`tools/compat/lchmod.c`), and `-R -h` is
+    /// rejected by name (`chmod.c:145-150`).
+    pub hflag: bool,
     /// `-v`: echo each applied spec. Not a C flag — the option string at
     /// `chmod.c:87` has no `v`; kept from this tree's first wiring and
     /// registered as a deviation.
@@ -45,9 +54,9 @@ pub struct ChmodFlags {
 /// Why an option could not be accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChmodOption {
-    /// A letter whose facility this tree has not landed; refused, not ignored.
-    NotWired(char),
     /// Not in the option string at `chmod.c:87` and not a bare mode letter.
+    /// Every letter of C's option string is wired, so this is the only
+    /// failure.
     Unknown(char),
 }
 
@@ -86,9 +95,14 @@ impl ChmodFlags {
                     b'f' => f.force = true,
                     b'v' => f.verbose = true,
                     b'R' => f.recursive = true,
-                    b'h' | b'H' | b'L' | b'P' => {
-                        return Err(ChmodOption::NotWired(byte as char));
+                    // `-P` (physical) clears the follow bits (`chmod.c:100-102`).
+                    b'P' => {
+                        f.comfollow = false;
+                        f.logical = false;
                     }
+                    b'H' => f.comfollow = true,
+                    b'L' => f.logical = true,
+                    b'h' => f.hflag = true,
                     _ => return Err(ChmodOption::Unknown(byte as char)),
                 }
             }
@@ -396,15 +410,17 @@ mod tests {
     }
 
     #[test]
-    fn chmod_link_flags_are_refused() {
-        for c in ['h', 'H', 'L', 'P'] {
-            let arg = alloc::format!("-{c}");
-            assert_eq!(
-                ChmodFlags::parse(&[arg.as_str(), "755", "f"]),
-                Err(ChmodOption::NotWired(c)),
-                "-{c} must be refused explicitly"
-            );
-        }
+    fn chmod_link_and_traversal_flags_are_wired() {
+        let (f, rest) = ChmodFlags::parse(&["-h", "755", "f"]).unwrap();
+        assert!(f.hflag);
+        assert_eq!(rest, ["755", "f"]);
+        let (f, _) = ChmodFlags::parse(&["-RH", "755", "d"]).unwrap();
+        assert!(f.recursive && f.comfollow && !f.logical);
+        let (f, _) = ChmodFlags::parse(&["-RL", "755", "d"]).unwrap();
+        assert!(f.logical);
+        // `-P` clears both follow bits (`chmod.c:100-102`).
+        let (f, _) = ChmodFlags::parse(&["-HLP", "755", "d"]).unwrap();
+        assert!(!f.comfollow && !f.logical);
     }
 
     #[test]
