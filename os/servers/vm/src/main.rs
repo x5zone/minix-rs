@@ -44,7 +44,7 @@ fn real_main() -> ! {
     // memory before main() runs, we skip the binary entirely in test mode.
     #[cfg(not(test))]
     {
-        use minix_vm::{VmServer, read_boot_params};
+        use minix_vm::{BootRoute, VmServer, boot_route, install_server, read_boot_params, run_installed, with_installed_server};
 
         // C: main.c:79-88 is_first_time() — fresh boot gates init_vm().
         // The kernel writes a `VmBootHandoff` page (A1 root identity + A2
@@ -56,30 +56,38 @@ fn real_main() -> ! {
         // built (07-paging_init_design §6.0).
         let params = read_boot_params();
 
-        let mut server = VmServer::new_with_boot_params(params);
-
-        // C: main.c:101-108 — if(is_first_time()) { init_vm(); __vm_init_fresh=1; }
-        //
-        // A warm start (`is_first_time == false`, C hot-restart semantics after
-        // RTS_BOOTINHIBIT clears) cannot be served here — C survives it because
-        // its state lives in BSS globals that outlive the restart, while
-        // minix-rs state lives inside the VmServer instance.  Refuse loudly
-        // instead of silently panicking at `run()`'s first
-        // `assert!(self.initialized)` (see 02-stage-vm/todo.md).
-        if params.is_first_time {
-            server.init();
-        } else {
-            panic!(
-                "VM warm restart (is_first_time = false) is not supported: \
-                 minix-rs keeps no cross-restart BSS state (C main.c:101-108 \
-                 semantics); see 02-stage-vm/todo.md V20-P1-1"
-            );
+        // C: main.c:101-108 — if(is_first_time()) { init_vm();
+        // __vm_init_fresh=1; } — rerouted through the image-slot router
+        // ([ARCH: V20-P1-1], adjudicated option A: the server state is
+        // image-resident, so a warm start in the same process finds the
+        // slot full and skips init; a re-exec'd process finds it empty,
+        // which C has no usable semantics for — the loud rejection stays).
+        match boot_route(params.is_first_time) {
+            BootRoute::ColdInit => {
+                let server = VmServer::new_with_boot_params(params);
+                // The slot refuses a second install: init runs exactly once.
+                if install_server(server).is_err() {
+                    panic!("VM cold boot: the image slot already holds a server");
+                }
+                with_installed_server(|server| server.init());
+            }
+            BootRoute::WarmRun => {}
+            BootRoute::WarmNoState => panic!(
+                "VM warm restart (is_first_time = false) with an empty image slot: \
+                 the re-exec'd process carries no VM state and C main.c:101-108 \
+                 has no usable semantics for this shape either (02-stage-vm/todo.md \
+                 V20-P1-1, evidence case ③)"
+            ),
+            BootRoute::DoubleInit => panic!(
+                "VM cold boot with the image slot already holding a server: \
+                 init must run exactly once (02-stage-vm/todo.md V20-P1-1)"
+            ),
         }
 
         // C: sef_local_startup() — the RS_INIT handshake happens inside the
         // main loop's priority-2 dispatch (rs_handshake), so no separate
         // SEF startup step is needed (see doc 01-vm-init-main §3.4).
-        server.run();
+        run_installed();
     }
     #[cfg(test)]
     unreachable!("bin entry unused in test builds")

@@ -107,6 +107,8 @@ pub(crate) mod vmdm_bridge;
 
 
 pub use vm_server::VmServer;
+#[allow(unused_imports)]
+pub use vm_server::{BootRoute, boot_route, install_server, run_installed, with_installed_server};
 
 pub use phys_mem::BootMemRegion;
 pub use boot::{BootModule, BootParams, KernelAllocated, read_boot_params};

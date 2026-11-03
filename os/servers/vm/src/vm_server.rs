@@ -16,6 +16,8 @@
 //! - VFS replies → `VfsRequestQueue::handle_reply`
 //! - Page faults → `cow_exec_pf::handle_pagefault`
 
+use minix_types::AssumeSyncCell;
+
 use crate::alloc_page::VmPageAllocator;
 use crate::boot::{BootParams, KernelAllocated, VM_PROC_NR};
 use crate::direct_map::vm_phys_to_virt;
@@ -208,6 +210,95 @@ pub struct VmServer {
     transport: alloc::rc::Rc<
         core::cell::RefCell<alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>>,
     >,
+}
+
+/// The image-resident server slot ([ARCH: V20-P1-1]): C carries VM state in
+/// the image's data segment (main.c's BSS globals survive the warm start),
+/// so the Rust server lives at one address-stable static the cold boot
+/// fills exactly once. VM is a single-threaded event loop (crate root),
+/// which is the single-access guard this unsync cell needs. A warm start
+/// in the same process finds the slot full and skips `init()`; a re-exec'd
+/// process finds it empty — that shape has no C counterpart (the evidence
+/// entry in 02-stage-vm/todo.md, case ③), and the boot router answers it
+/// with the loud rejection.
+static VM_SERVER: AssumeSyncCell<Option<VmServer>> = AssumeSyncCell::new(None);
+
+/// Which boot path `main` takes, from the kernel flag and the image slot
+/// ([ARCH: V20-P1-1]; the kernel owns the flag — the 2.4 evidence entry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootRoute {
+    /// Fresh boot: build the server, run `init()` once.
+    ColdInit,
+    /// Warm start with the image slot carrying the server: skip `init()`,
+    /// enter the loop directly (case ①, in-process).
+    WarmRun,
+    /// Warm start with an empty slot: a re-exec'd process whose state is
+    /// gone. C has no usable semantics here (case ③, evidence entry), so
+    /// the boot answers with the loud rejection.
+    WarmNoState,
+    /// A cold boot while the slot is already full: `init()` must run
+    /// exactly once, so this is a contract breach.
+    DoubleInit,
+}
+
+/// Route the boot ([ARCH: V20-P1-1]). `is_first_time` is the kernel-owned
+/// `RTS_BOOTINHIBIT` verdict delivered through the boot handoff; the slot
+/// state is the image-resident half.
+pub fn boot_route(is_first_time: bool) -> BootRoute {
+    let installed = server_installed();
+    match (is_first_time, installed) {
+        (true, false) => BootRoute::ColdInit,
+        (false, true) => BootRoute::WarmRun,
+        (false, false) => BootRoute::WarmNoState,
+        (true, true) => BootRoute::DoubleInit,
+    }
+}
+
+/// Whether the image slot carries an initialized-or-building server.
+pub fn server_installed() -> bool {
+    // SAFETY: single-threaded VM (crate root); the slot is only touched
+    // through this module's accessors.
+    unsafe { (*VM_SERVER.get()).is_some() }
+}
+
+/// Cold boot: place the freshly built server into the image slot.
+///
+/// Installing twice breaches the "init exactly once" contract, so the
+/// second server comes back as `Err` untouched.
+pub fn install_server(server: VmServer) -> Result<(), VmServer> {
+    // SAFETY: single-threaded VM (crate root); see [`VM_SERVER`].
+    let slot = unsafe { &mut *VM_SERVER.get() };
+    if slot.is_some() {
+        return Err(server);
+    }
+    *slot = Some(server);
+    Ok(())
+}
+
+/// Take the server out of the image slot (tests, and a future orderly
+/// shutdown path).
+pub fn take_server() -> Option<VmServer> {
+    // SAFETY: single-threaded VM (crate root); see [`VM_SERVER`].
+    let slot = unsafe { &mut *VM_SERVER.get() };
+    slot.take()
+}
+
+/// Run `f` with the installed server. Panics when the slot is empty — the
+/// caller routes through [`boot_route`] first, so an empty slot here is a
+/// boot-order bug, not a runtime condition.
+pub fn with_installed_server<R>(f: impl FnOnce(&mut VmServer) -> R) -> R {
+    // SAFETY: single-threaded VM (crate root); see [`VM_SERVER`].
+    let slot = unsafe { &mut *VM_SERVER.get() };
+    let server = slot
+        .as_mut()
+        .expect("with_installed_server: the image slot is empty (cold boot must install first)");
+    f(server)
+}
+
+/// Enter the scheduling loop on the installed server (`main`'s tail; both
+/// boot routes converge here).
+pub fn run_installed() -> ! {
+    with_installed_server(|server| server.run())
 }
 
 impl VmServer {
@@ -557,14 +648,14 @@ impl VmServer {
 
     pub fn init(&mut self) {
         // Register the global PMM pointer against the FINAL address
-        // of the allocator. `self` here is `main.rs:57`'s `let mut server`
-        // local — it never moves again after this point, so PAGE_ALLOC_PTR
-        // (read by the `vm_pt_alloc` hook, `refill_arena`, `alloc_oversize`)
-        // stays valid for the server's whole lifetime. Registering earlier
-        // (in `new_inner`, against a pre-move local) dangled the pointer
-        // into a dead stack frame — see the comment there.
-        // `relocate()` below replaces the allocator's `phys_alloc` field
-        // IN PLACE, so this registration survives it.
+        // of the allocator. `self` here is the server as stored in the
+        // image slot ([ARCH: V20-P1-1]) — an address-stable static, so
+        // PAGE_ALLOC_PTR (read by the `vm_pt_alloc` hook, `refill_arena`,
+        // `alloc_oversize`) stays valid for the server's whole lifetime.
+        // Registering earlier (in `new_inner`, against a pre-move local)
+        // dangled the pointer into a dead stack frame — see the comment
+        // there. `relocate()` below replaces the allocator's `phys_alloc`
+        // field IN PLACE, so this registration survives it.
         crate::global::register_page_alloc(&mut self.ctx.page_alloc);
 
         // C: init_vm() — main.c:428-584. Step order mirrors C exactly:
@@ -2719,6 +2810,45 @@ mod tests {
             let server = make_test_vm_server();
             assert!(!server.initialized);
             assert!(!server.is_initialized());
+        });
+    }
+
+    /// [ARCH: V20-P1-1] The image-slot router covers the four boot shapes,
+    /// `init()` runs exactly once (a second install is refused, and a cold
+    /// route over a full slot is the `DoubleInit` breach), and the warm
+    /// route carries the slot without re-entering `init`.
+    #[test]
+    fn the_image_slot_routes_the_four_boot_shapes_and_inits_exactly_once() {
+        with_test_mock_base(|| {
+            // Empty slot: a fresh boot installs; a re-exec'd warm start has
+            // no state and is rejected (case ③, evidence entry).
+            let _ = take_server();
+            assert_eq!(boot_route(true), BootRoute::ColdInit);
+            assert_eq!(boot_route(false), BootRoute::WarmNoState);
+
+            // Installed: exactly once — the second install comes back
+            // untouched, and a cold route over a full slot is the breach.
+            if install_server(make_test_vm_server()).is_err() {
+                panic!("first install refused — the slot must start empty");
+            }
+            assert!(
+                install_server(make_test_vm_server()).is_err(),
+                "init must run exactly once"
+            );
+            assert_eq!(boot_route(true), BootRoute::DoubleInit);
+
+            // One init pass through the slot; the address the PMM pointer
+            // registered against is the slot's (stable for the lifetime).
+            with_installed_server(|server| server.init());
+            with_installed_server(|server| assert!(server.is_initialized()));
+
+            // Warm start in the same process: the route skips init and the
+            // initialized flag carries.
+            assert_eq!(boot_route(false), BootRoute::WarmRun);
+            with_installed_server(|server| assert!(server.is_initialized()));
+
+            // Restore the empty slot for the parallel suite.
+            drop(take_server());
         });
     }
 
