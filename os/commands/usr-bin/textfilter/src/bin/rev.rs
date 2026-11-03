@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::rev::{parse_rev_args, reversed_lines};
+use minix_textfilter::rev::{RevWalk, parse_rev_args, reversed_lines};
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
@@ -63,7 +63,22 @@ fn run() -> ! {
         // already been read is emitted first (C printed it as it read), then
         // one `warn` line and exit status 1.
         let (input, failure) = support::read_stdin_error();
-        emit_reversed(&input);
+        let stopped = emit_reversed(&input);
+        if stopped {
+            // The EILSEQ leg (`rev.c:99-103` via `fgetwln` setting the
+            // stream's error flag): the stream name, then exit 1. The
+            // sentence comes from the errno table — 85 sits past
+            // `sys_nerr`, so Minix's own `strerror` answers
+            // `Unknown error: 85` (the glibc reference prints the long
+            // sentence; the table is the truth this tree follows).
+            support::warn_line(
+                &prog,
+                "stdin", // `EILSEQ` lives at errno 85 (`errno.h:149`), re-exported through
+                // minix-sys's errno module.
+                minix_sys::Errno::from_i32(minix_sys::errno::EILSEQ),
+            );
+            status = 1;
+        }
         if let Some(code) = failure {
             support::warn_line(&prog, "stdin", code);
             status = 1;
@@ -87,17 +102,42 @@ fn run() -> ! {
                 continue;
             }
         };
-        emit_reversed(&input);
+        if emit_reversed(&input) {
+            // The same EILSEQ leg for a file operand; the name in the warn
+            // line is the file (`rev.c:99-103`).
+            support::warn_line(
+                &prog,
+                &path, // `EILSEQ` lives at errno 85 (`errno.h:149`), re-exported through
+                // minix-sys's errno module.
+                minix_sys::Errno::from_i32(minix_sys::errno::EILSEQ),
+            );
+            status = 1;
+        }
     }
     support::terminate(status)
 }
 
 /// Emit each reversed line with its newline.
-fn emit_reversed(input: &[u8]) {
-    for line in reversed_lines(input) {
-        let mut out = line.into_bytes();
-        out.push(b'\n');
-        support::emit(&out);
+/// Reverses and prints the decodable prefix, answering whether the walk
+/// stopped on an undecodable sequence (C's `fgetwln` raising `EILSEQ`).
+fn emit_reversed(input: &[u8]) -> bool {
+    match reversed_lines(input) {
+        RevWalk::Done(lines) => {
+            for line in lines {
+                let mut out = line.into_bytes();
+                out.push(b'\n');
+                support::emit(&out);
+            }
+            false
+        }
+        RevWalk::Stopped(lines) => {
+            for line in lines {
+                let mut out = line.into_bytes();
+                out.push(b'\n');
+                support::emit(&out);
+            }
+            true
+        }
     }
 }
 

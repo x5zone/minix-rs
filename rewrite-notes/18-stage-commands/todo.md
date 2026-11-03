@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百零六（`rev` 报错腿落地：逐行 UTF-8 检查式走表与 EILSEQ 腿）
+
+- **这一笔的射程**：跨板裁决 §2.7 的 `rev` 方向通过件——「实现非法多字节序列的报错腿（不再静默输出空内容并返回成功），实现过程中必须补齐多字节非法序列测试并确定所采用的解码契约」。C 的形：`fgetwln` 在首个不可解码行返回 NULL 并置流错误旗标（`rev.c:92-103`）——已解码前缀照印、`warn("%s", filename)` 报流名、退出 1。现场：本壳对非法 UTF-8 做 `unwrap_or("")`——整输入静默变空输出、退出 0，正是裁决点名的缺陷形。
+- **落码**：`rev.rs` 的走表换 `reversed_lines -> RevWalk`（`Done`/`Stopped` 二值）：**解码契约按裁决措辞写明 = UTF-8 逐行校验**（本命令面的环境契约，不宣称复制 C 的 locale 行为）；逐行校验，首个不可解码行整体丢弃（C 的 `fgetwln` 对该行返回 NULL，从不打印），之前的行照常反转；旧的 lossy `unwrap_or` 分支删除（缺陷根除）。`bin/rev.rs` 的 stdin 与文件两腿接 `RevWalk`——Stopped 时先印前缀再 `warn_line(prog, 流名/文件名, EILSEQ)` 退 1（`minix_types::EILSEQ` = 85 经 minix-sys 的 errno 再导出）；句子按树的 errno 表答「Unknown error: 85」（85 越过 `sys_nerr=80`，glibc 参照件的长句是另一张表——表为准，登记在案）。
+- **门**：`cargo test -p minix-textfilter` → 库 **639/0**（rev 子集 20/0，新增四枚：裸 0xFF 截停、前缀照反转、截断三字节序列同为非法、空输入恒等）+ `rev_face` **13/0**（新增 EILSEQ 面钉：stdout 前缀 + stderr 句 + 退 1 三件套逐字节）；clippy 触及文件零新增（rev.rs:7 的 doc-list 告警为存量、本笔未触及该段）；`rustfmt --edition 2024` 三文件清；`cargo build --target x86_64-unknown-none --release --bin rev` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `37aee8e9d`。
+- **登记与余量**：`cut -c` 的字符计数半维持裁决的局部阻塞（等编译期分支与 locale 契约补证）；本腿只动 `rev`，`cut` 一字未碰。
+
 ## 批次五百零五（`du -L` 接通：全量逻辑走 + 环静默剪枝）
 
 - **这一笔的射程**：not-wired 清单里 `du -L` 一处——C 的 `-L` 清 `FTS_PHYSICAL` 置 `FTS_LOGICAL`（`du.c:168-172`）：全走表跟链，指向目次的符号链被下探；fts 的 `FTS_DC`（`du.c:228-229`）对遍历链上的回头目次**静默忽略**（不计、不打印、不报）。

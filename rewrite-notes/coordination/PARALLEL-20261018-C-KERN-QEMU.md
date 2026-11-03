@@ -259,6 +259,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `CAL-H`：改 `os/commands/usr-bin/doctools/src/bin/cal.rs` + 新增 `tests/cal_face.rs`（A 板领地）——cal -h 接通（无 terminfo 环境的 C 恒等形态，转义腿登记 terminfo 残差）；门=doctools lib 70/0 + cal_face 7/0（三枚恒等钉）+ none 构建绿 —— `✅`
 - `2026-11-03` A / `DUH-COMFOLLOW`：改 `os/commands/bin/fileops/src/{du.rs,bin/du.rs}`、`tests/du_face.rs`（A 板领地）——du -H 接通：comfollow 位 + 仅 level 0 查型切 stat（FTS_COMFOLLOW 语义，根设备随目标）；-L 维持唯一未接线字母，面测钉随移；门=fileops lib 22/0 + du_face 5/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `DUL-LOGICAL`：改 `os/commands/bin/fileops/src/{du.rs,bin/du.rs}`、`tests/du_face.rs`（A 板领地）——du -L 接通：FollowMode 阶梯（-L 压 -H 压物理）+ 查型三分 + 祖先链环静默剪枝（FTS_DC 语义）；du 未接线清单清零（拒收形面测移除——载体消失）；门=fileops lib 394/0（du 23/0）+ du_face 4/0 + none 构建绿 —— `✅`
+- `2026-11-03` A / `REVL-EILSEQ`：改 `os/commands/usr-bin/textfilter/src/{rev.rs,bin/rev.rs}`、`tests/rev_face.rs`（A 板领地）——rev 报错腿落地（裁决 §2.7 rev 方向件）：RevWalk 逐行 UTF-8 检查式走表（解码契约按裁决措辞写明），EILSEQ 腿两接线（前缀照印 + warn 流名/文件名 + 退 1）；句尾按树的 errno 表（Unknown error: 85，glibc 长句为另一张表，登记）；门=textfilter lib 639/0 + rev_face 13/0 + none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

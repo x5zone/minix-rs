@@ -37,7 +37,10 @@ const USAGE: &str = "usage: rev [file ...]\n";
 /// the kernel sees.
 fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     use std::os::unix::ffi::OsStringExt as _;
-    let argv: Vec<std::ffi::OsString> = args.iter().map(|a| std::ffi::OsString::from_vec(a.clone())).collect();
+    let argv: Vec<std::ffi::OsString> = args
+        .iter()
+        .map(|a| std::ffi::OsString::from_vec(a.clone()))
+        .collect();
     let mut child = Command::new(REV)
         .args(&argv)
         .stdin(Stdio::piped())
@@ -147,7 +150,6 @@ fn an_unknown_nonascii_letter_prints_one_raw_byte() {
         b"rev: unknown option -- x\nusage: rev [file ...]\n".to_vec()
     );
 }
-
 
 /// A **single invalid-UTF-8 byte** as the option letter (`-` followed by a bare
 /// `ff`): the reference measured `rev: unknown option -- ` + the bare byte `ff`,
@@ -362,4 +364,34 @@ fn scratch() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("rev-face-{}-{}", std::process::id(), seq));
     fs::create_dir_all(&dir).expect("scratch dir");
     dir
+}
+
+/// The adjudicated error leg (`REV-MULTIBYTE-ERROR-LEG`): C's `fgetwln`
+/// raises `EILSEQ` on the first undecodable line — the decoded prefix stays
+/// printed, the warn names the stream, and the exit status is 1
+/// (`rev.c:92-103`). The sentence is the errno table's answer for 85, which
+/// sits past `sys_nerr`: Minix's own `strerror` answers `Unknown error: 85`
+/// (the glibc reference prints the long sentence; the table is the truth
+/// this tree follows).
+#[test]
+fn an_undecodable_line_keeps_the_prefix_names_the_stream_and_exits_one() {
+    let mut child = Command::new(REV)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn rev");
+    write_stdin(&mut child, b"abc\ndef\n\xff\nzzz\n");
+    let output = child.wait_with_output().expect("wait rev");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "cba\nfed\n",
+        "已解码前缀照印，坏行与其后不出现"
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "rev: stdin: Unknown error: 85\n",
+        "warn 走流名与表内句子"
+    );
 }
