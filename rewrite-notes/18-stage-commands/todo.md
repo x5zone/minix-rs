@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百零八（`rm -W` 接通：白目项在本树文件系统上的行为性无操作）
+
+- **这一笔的射程**：not-wired 清单里 `rm -W` 一处——C 的 `-W` 置 `FTS_WHITEOUT`（`rm.c:191-193`）移除 whiteout 目项；whiteout 目项只在支持 undelete 的文件系统上出现，而本树的文件系统（imgrd 根盘与宿主测）从不产生它们——C 在同一环境下观察到的 `-W` 就是行为性无操作。`needs_unwired` 闸与 `rm: -P/-W not wired` 拒绝行就此退役（du 的拒收形面测同批先例：载体消失）。
+- **落码**：`RmFlags.whiteout` 的文档改写（行为性无操作 + undelete 设施=登记残差）；`needs_unwired()` 删除（集已空，恒假的谓词不留）；bin 的拒绝块删除；lib 测试改「选项串每个字母都已接线」的枚举钉。
+- **门**：`cargo test -p minix-fileops --lib` → **57/0**（rm 子集 341→339 过滤窗重排后仍全绿）+ `rm_face` **7/0**；clippy 触及文件零新增；`rustfmt --edition 2024` 两文件清；`cargo build --target x86_64-unknown-none --release --bin rm` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `6a428f597`。
+- **登记与余量**：undelete/whiteout 设施（文件系统侧）为登记残差——若未来 FS 产生 whiteout 目项，`-W` 的移除腿按 C 的 switch 白目分支另立条目。
+
 ## 批次五百零七（`date -a` 接通：PM 渐进调整车道）
 
 - **这一笔的射程**：not-wired 清单里 `date -a` 一处——C 的 `-a`（`date.c:346-350`）：新时间与当前时间的差值走 `adjtime`，显示的时间保持未调整值（校正在管理器里渐进发生）。C 的 `adjtime`（`libc/sys/adjtime.c:13-31`）就是 `PM_CLOCK_SETTIME` 的 `now=0` 车道（`mess_lc_pm_time` 的载荷注释：0 = gradual mode）——与绝对设同一调用、同一消息，只是 `now` 车道与载荷语义不同（差值可为负，`u64` 车道按 C `time_t` 的补码同字节）。

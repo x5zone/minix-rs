@@ -39,7 +39,11 @@ pub struct RmFlags {
     pub recursive: bool,
     /// `-v`: print each removed operand.
     pub verbose: bool,
-    /// `-W`: remove whiteouts (`undelete`; not wired).
+    /// `-W`: remove whiteouts (`undelete`, `rm.c:191-193`). This tree's
+    /// filesystems never produce whiteout directory entries, so the flag
+    /// is behaviorally a no-op — C on a filesystem without whiteout
+    /// support observes exactly the same. The undelete facility itself is
+    /// the registered residual.
     pub whiteout: bool,
     /// `-x`: do not cross mount points during the walk (`FTS_XDEV`,
     /// `rm.c:193-195`). The mount-point directory itself is never visited
@@ -97,18 +101,6 @@ impl RmFlags {
         }
         // Everything from `i` on (after `--` or the first operand) is operands.
         Some((f, args[i..].to_vec()))
-    }
-
-    /// Whether any requested option still needs an unwrapped facility: `-P`
-    /// overwrite (`arc4random` plus `O_NOFOLLOW`), `-W` whiteout `undelete`,
-    /// `-x` cross-device pruning (`FTS_XDEV`). The bin refuses those up front
-    /// rather than silently doing less than the flags promise. The recursive
-    /// walk itself is now wired (the bin's `rm_tree`, walking with
-    /// `crate::dents`), so `-r`/`-R` no longer count here.
-    pub fn needs_unwired(&self) -> bool {
-        // `-P` and `-x` left this set (the overwrite pass and the device
-        // boundary); `-W` (whiteout `undelete`) is the only one left.
-        self.whiteout
     }
 }
 
@@ -232,18 +224,15 @@ mod tests {
     }
 
     #[test]
-    fn unwired_flags_flagged() {
-        assert!(RmFlags::parse(&["-W", "f"]).unwrap().0.needs_unwired());
-        // `-x` left the unwired set when the walk grew the device boundary.
-        assert!(!RmFlags::parse(&["-x", "f"]).unwrap().0.needs_unwired());
-        assert!(!RmFlags::parse(&["-P", "f"]).unwrap().0.needs_unwired());
-        // -r/-R are wired since the recursive walk stopped needing fts(3):
-        // the bin's `rm_tree` walks directories with `crate::dents` instead.
-        assert!(!RmFlags::parse(&["-r", "f"]).unwrap().0.needs_unwired());
-        assert!(!RmFlags::parse(&["-R", "f"]).unwrap().0.needs_unwired());
-        // The wired default subset needs nothing unwired.
-        let wired = RmFlags::parse(&["-f", "-d", "-v", "f"]).unwrap().0;
-        assert!(!wired.needs_unwired());
+    fn every_letter_of_the_option_string_is_wired() {
+        // The unwired gate (`needs_unwired`) is gone: `-P` (the overwrite
+        // pass), `-x` (the device boundary) and `-W` (whiteouts never appear
+        // on this tree's filesystems) all left the set as their facilities
+        // landed or were proven unobservable, and -r/-R are wired since the
+        // recursive walk stopped needing fts(3).
+        for arg in ["-P", "-W", "-x", "-r", "-R", "-f", "-d", "-v"] {
+            assert!(RmFlags::parse(&[arg, "f"]).is_some(), "{arg}");
+        }
     }
 
     #[test]

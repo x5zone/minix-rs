@@ -194,12 +194,6 @@ fn run() -> ! {
         usage(prog);
     }
 
-    // Refuse options that hinge on unwrapped facilities before doing work.
-    if flags.needs_unwired() {
-        support::warn(b"rm: -P/-W not wired (overwrite, whiteout)\n");
-        support::terminate(1);
-    }
-
     // POSIX "." / ".." rejection (rm.c checkdot); complain once if any dropped.
     // C's line is `warnx("\".\" and \"..\" may not be removed")` (`rm.c:610`) — program
     // name plus that fixed phrase, no errno sentence behind it.
