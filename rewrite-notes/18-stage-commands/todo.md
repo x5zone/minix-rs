@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十八（`cp -a`/`-P` 接通：物理扫描与操作数符号链）
+
+- **这一笔的射程**：not-wired 清单里 `cp` 的 `-a` 一件连同它携带的 `-P`——C 的 `-a`（`cp.c:137-142`）是 `Pflag=pflag=Rflag=1` 并清 `H/L`；扫描选项（`:174-200`）从 `FTS_PHYSICAL` 起，只有**非递归且无 `-P`** 的默认形才置 `FTS_LOGICAL | FTS_COMFOLLOW`（操作数上的符号链被解析），`-R`/`-P`/`-a` 都保持物理；`S_IFLNK` 臂（`:444-453`）在物理扫描下走 `copy_link`（复制链文），逻辑/COMFOLLOW 才走 `copy_file`。`-H/-L/-r/-l/-N` 仍拒收（前两者的跟随语义未落地，`-r` 与 `-R` 的互斥句同其后）。
+- **落码**：`CpFlags` 增 `nofollow`（`-P`；`-a` 置 `preserve+nofollow+recursive`）；新增 `cp::scan_is_physical(recursive, nofollow)` 把 C 的 fts 选项判定收成一处，bin 顶层按它选 `lstat`/`stat`；`copy_one` 的文档与链接臂注释同步成「物理扫描含 `-P` 操作数」；拒绝行改成余下字母的真实理由（遍历阶梯与硬链复制）。
+- **可测性边界**：宿主进程的第一次 `stat` 即失败（`cp_face` 头注既有边界），端到端链接复制在宿主不可见——宿主面钉 `-a`/`-P` 的旗标形、`scan_is_physical` 的四格真值表（仅无旗标默认跟随操作数）与 `-H` 拒收行；`copy_link` 的链文复制由既有单测与真机面 `E5` 覆盖。
+- **门**：`cargo test -p minix-fileops` → **471/0**（lib 400，其中 cp 子集 35/0）；clippy 触及文件零新增；`rustfmt --edition 2024` 三文件清；`cargo build --target x86_64-unknown-none --bin cp` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `d17722b36`。
+
 ## 批次五百一十七（`df -i` 接通：inode 视图与头行附加段）
 
 - **这一笔的射程**：not-wired 清单里 `df` 的 `-i` 一件——C 的 `-i`（`df.c:109-110`）在默认布局上**附加** inode 三列：头行加 `    iUsed   iAvail %iCap`（`:455-456`），行在块四列后加 ` %8jd %8jd %4s%%`（`:499-508`）；inode 容量的三种特例（无 inode 且无用量 → `"  0"`、无 inode 有用量 → `"100"`、其余按与块容量同一向上取整算式）；`-P -i` 有 C 明句 `only one of -P and -i may be specified`（`:143-144`）。顺带补头行的**精度截断**语义：C 的 `%-*.*s` 在窄表上截断 `"Filesystem"`（`maxwidth+(10-headerlen)` 小于 10 时）。

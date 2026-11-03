@@ -421,8 +421,8 @@ fn set_link_times(prog: &str, path: &str, fs: &Stat) -> bool {
 }
 
 /// `cp.c:339-541` for one walk position: read the source the way the scan reads
-/// it (`lstat` for the physical `-R` walk, `stat` for the logical default),
-/// read the destination once (`cp.c:419`), run the identical and
+/// it (`lstat` for a physical scan, `stat` when the default scan follows the
+/// operand), read the destination once (`cp.c:419`), run the identical and
 /// directory-overwrite refusals before any copying, then let the type bits pick
 /// the routine. Returns true when this position was not copied.
 fn copy_one(
@@ -476,8 +476,8 @@ fn copy_one(
     let failed = match action {
         EntryAction::Directory => copy_dir(prog, src, dst, &src_sb, dst_sb, flags, myuid, myumask),
         // cp.c:444-453: the link arm is only taken when the scan did not follow
-        // the link, which for this option set is the recursive scan (the
-        // `stat` of the default scan cannot report `S_IFLNK`).
+        // the link — the `-R` walk and a `-P`/`-a` operand (the default scan's
+        // `stat` cannot report `S_IFLNK`).
         EntryAction::Symlink => copy_link(prog, src, dst, &src_sb, flags, dst_sb.is_some()),
         // cp.c:517-533: the three special-file arms recreate the entry only
         // with `-R`; without it they go through `copy_file` like everything
@@ -729,10 +729,8 @@ fn run() -> ! {
         Ok(v) => v,
         Err(CpOption::NotWired(c)) => {
             support::warn(
-                format!(
-                    "{prog}: -{c} not wired (logical scan, symlink traversal, hard-link copy)\n"
-                )
-                .as_bytes(),
+                format!("{prog}: -{c} not wired (the -r/-H/-L traversal ladder, hard-link copy)\n")
+                    .as_bytes(),
             );
             support::terminate(1);
         }
@@ -822,7 +820,10 @@ fn run() -> ! {
     let mut any_failed = false;
     for src in &sources {
         let dest = join_target(&target, src, shape);
-        any_failed |= copy_one(prog, src, &dest, &flags, myuid, myumask, flags.recursive);
+        // `cp.c:174-200`: only the no-flag default resolves the operand's
+        // symlink, so `-R`, `-P` and `-a` all ask for the raw entry.
+        let physical = cp::scan_is_physical(flags.recursive, flags.nofollow);
+        any_failed |= copy_one(prog, src, &dest, &flags, myuid, myumask, physical);
     }
 
     support::terminate(if any_failed { 1 } else { 0 });

@@ -90,6 +90,9 @@ pub struct CpFlags {
     pub preserve: bool,
     /// `-R`: duplicate the hierarchy rooted at each source (`cp.c:293-548`).
     pub recursive: bool,
+    /// `-P`: do not follow symlinks — the operand included, so a symlink is
+    /// duplicated as a link (`cp.c:130-133`, `:197-198`). `-a` implies it.
+    pub nofollow: bool,
     /// `-v`: print `src -> dst` for every file that did not fail
     /// (`cp.c:539-540`).
     pub verbose: bool,
@@ -143,7 +146,14 @@ impl CpFlags {
                     // the family still needs facilities this tree lacks.
                     b'R' => f.recursive = true,
                     b'v' => f.verbose = true,
-                    b'H' | b'L' | b'N' | b'P' | b'a' | b'l' | b'r' => {
+                    // `-a` (`cp.c:137-142`): `-RpP` in one letter.
+                    b'a' => {
+                        f.preserve = true;
+                        f.nofollow = true;
+                        f.recursive = true;
+                    }
+                    b'P' => f.nofollow = true,
+                    b'H' | b'L' | b'N' | b'l' | b'r' => {
                         return Err(CpOption::NotWired(byte as char));
                     }
                     _ => return Err(CpOption::Unknown(byte as char)),
@@ -445,6 +455,14 @@ pub enum EntryAction {
     Unknown,
 }
 
+/// `cp.c:174-200`: the scan starts `FTS_PHYSICAL`, and only a non-recursive
+/// run without `-P` swaps in `FTS_LOGICAL | FTS_COMFOLLOW`, which is what makes
+/// a symlink named on the command line resolve to its target. `-a` carries
+/// `-P` (`cp.c:137-142`), so it stays physical like `-R`.
+pub fn scan_is_physical(recursive: bool, nofollow: bool) -> bool {
+    recursive || nofollow
+}
+
 /// `cp.c:443`: the dispatch on the source's type bits. The recursive scan is
 /// physical (`cp.c:174, 190-196`), so it reaches this through `lstat` and a
 /// symlink is copied by `copy_link` instead of being descended into.
@@ -477,10 +495,26 @@ mod tests {
                 interactive: false,
                 preserve: false,
                 recursive: false,
-                verbose: false
+                verbose: false,
+                nofollow: false,
             }
         );
         assert_eq!(rest, ["a", "b"]);
+    }
+
+    /// `cp.c:174` opens the scan `FTS_PHYSICAL`; only the no-flag
+    /// non-recursive default (`:197-200`) asks for logical traversal. The
+    /// recursive letters that would follow again (`-H`/`-L`) are refused for
+    /// now, so the two flags this crate accepts both keep it physical.
+    #[test]
+    fn only_the_plain_default_follows_the_operand() {
+        assert!(!scan_is_physical(false, false));
+        assert!(scan_is_physical(true, false), "-R walks links as links");
+        assert!(
+            scan_is_physical(false, true),
+            "-P is the operand's link too"
+        );
+        assert!(scan_is_physical(true, true), "-a = -RpP");
     }
 
     #[test]
@@ -509,9 +543,20 @@ mod tests {
         assert_eq!(rest, ["-v"], "-v after -- is an operand");
     }
 
+    /// `-a` is C's `-RpP` in one letter (`cp.c:137-142`) and `-P` alone only
+    /// stops the operand's symlink from being followed.
+    #[test]
+    fn archive_and_nofollow_land_in_the_flags() {
+        let (f, _) = CpFlags::parse(&["-a", "x", "y"], true).unwrap();
+        assert!(f.recursive && f.preserve && f.nofollow && !f.verbose);
+        let (f, _) = CpFlags::parse(&["-P", "x", "y"], true).unwrap();
+        assert!(f.nofollow && !f.recursive);
+        assert!(!CpFlags::default().nofollow, "the default follows symlinks");
+    }
+
     #[test]
     fn unwired_letters_are_reported_not_ignored() {
-        for c in ['r', 'a', 'l', 'H', 'L', 'P', 'N'] {
+        for c in ['r', 'l', 'H', 'L', 'N'] {
             let arg = alloc::format!("-{c}");
             assert_eq!(
                 CpFlags::parse(&[arg.as_str(), "a", "b"], true),

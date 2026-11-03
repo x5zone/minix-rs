@@ -102,14 +102,14 @@ fn the_usage_pair_carries_the_program_name_twice() {
 
 #[test]
 fn a_refused_letter_is_named_in_a_line_without_a_sentence() {
-    // The `-r`/`-a`/`-l`/`-N`/`-H`/`-L`/`-P` refusals are this tree's own up-front
-    // stop, shaped like C's `warnx`: program name, the phrase, no number behind it
+    // The `-r`/`-l`/`-N`/`-H`/`-L` refusals are this tree's own up-front stop,
+    // shaped like C's `warnx`: program name, the phrase, no number behind it
     // (C has no such line because those letters are wired there).
-    let (out, status, err) = run("cp", &["-a", "/tmp/cp-face-src", "/tmp/cp-face-dst"]);
+    let (out, status, err) = run("cp", &["-H", "/tmp/cp-face-src", "/tmp/cp-face-dst"]);
     assert_eq!(out, "");
     assert_eq!(status, 1);
     assert_eq!(
-        err, "cp: -a not wired (logical scan, symlink traversal, hard-link copy)\n",
+        err, "cp: -H not wired (the -r/-H/-L traversal ladder, hard-link copy)\n",
         "拒绝行不该缀句子"
     );
 }
