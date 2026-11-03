@@ -89,11 +89,33 @@ fn the_lookup_ignores_case() {
     let _ = std::fs::remove_file(&db);
 }
 
-/// An unopenable database: this shell's sentence shape is
-/// `wtf: <path>: cannot open`, exit 1.
-/// (The script side is `wtf: cannot open acronym database file \`<path>'`; the two
-/// are not yet aligned, that account lives in `WTF-SCRIPT-PARITY`, and this gate
-/// pins the layer "which path is reported, and what exit code".)
+/// An unopenable database: the precheck (C `wtf:64-69`) answers the
+/// script's own sentence `wtf: cannot open acronym database file
+/// \`<path>'`, exit 1 — the two layers are aligned since batch 393.
+/// C's precheck is `[ ! -f $f ]` per file (`wtf:64-69`) — a directory
+/// and a device node fail it exactly like a missing path, and a real
+/// regular file passes through to the lookup.
+#[test]
+fn the_database_precheck_demands_a_regular_file() {
+    let db = format!("/tmp/minix-wtf-face-db-{}", std::process::id());
+    std::fs::write(&db, b"LOL laughing out loud\n").expect("write the fixture");
+    for path in ["/tmp", "/dev/null"] {
+        let (out, code, err) = run_env(&["-f", path, "lol"], &[]);
+        assert_eq!(out, "", "{path}");
+        assert_eq!(code, 1, "{path}");
+        assert_eq!(
+            err,
+            format!("wtf: cannot open acronym database file `{path}'\n"),
+            "{path}"
+        );
+    }
+    let (out, code, err) = run_env(&["-f", db.as_str(), "lol"], &[]);
+    assert_eq!(out, "LOL: laughing out loud\n");
+    // A hit leaves the run's status at zero (`wtf:107`'s `exit $rv`).
+    assert_eq!((code, err.as_str()), (0, ""));
+    let _ = std::fs::remove_file(&db);
+}
+
 #[test]
 fn a_missing_database_names_the_path_and_exits_one() {
     let db = std::env::temp_dir().join("minix-wtf-face-definitely-not-here.db");

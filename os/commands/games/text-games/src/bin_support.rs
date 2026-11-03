@@ -280,6 +280,29 @@ pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> 
     Ok(image)
 }
 
+/// C's database precheck `[ ! -f $f ]` (`wtf:65-69`): true when the path
+/// names a regular file (`test(1)`'s `-f`, `sys/stat.h`'s `S_ISREG`).
+///
+/// Hosted twin: real `std::fs` metadata. Target twin: `minix_sys::stat` +
+/// the file-type bits — a failed stat (missing path, permission) answers
+/// false, which is exactly the precheck's own verdict for it.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn is_regular_file(path: &str) -> bool {
+    std::fs::metadata(path)
+        .map(|meta| meta.file_type().is_file())
+        .unwrap_or(false)
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn is_regular_file(path: &str) -> bool {
+    const S_IFMT: u32 = 0o170000;
+    const S_IFREG: u32 = 0o100000;
+    let mut sb: minix_sys::Stat = unsafe { core::mem::zeroed() };
+    minix_sys::stat(path, &mut sb)
+        .map(|_| sb.st_mode & S_IFMT == S_IFREG)
+        .unwrap_or(false)
+}
+
 /// Wall-clock microseconds since the epoch, when a clock face answers.///
 /// Hosted builds read the host clock; the target build reads the kernel
 /// `SYS_TIMES` face — boot epoch seconds times one million plus real-time

@@ -284,6 +284,7 @@ run_with_qemu_lock() (
 - `2026-11-04` B / `E-BLK-VEC`：**跨界登记**——A 板会话（qoder）闭合 B 线自有的块框架缺口（`2026-10-19` `BLK-DATAPLANE` 片登记）：`minix-blockdriver` 新增 `BlockIovec`/`NR_IOREQS` 与公共 `decode_block_vector`（对位 C `do_vrdwt` 的截顶/有符号和/`EINVAL` 三判据，`libblockdriver/driver.c:226-262`），泵的 vectored 形不再把元素数当字节数；`BlockDriver` 拆 `transfer`（连续）/`transfer_vectored`（默认拒绝）两钩，九台实现者同步；2.11 的逐段等价性否决与代理拒绝面不变；落点 `rewrite-notes/16-stage-drivers/todo.md` §8 闭合注 —— `✅`
 - `2026-11-04` A / `WTF-GLOB`：`wtf` 的缺省库 glob 接通（A9c ② 闭合）——`default_database_list` 纯函数（词干/字节序/`-o` 门/未匹配字面量回退、`-o` 清空不回退）+ `dents` 目录读（跨命令 path 依赖循 `mountinfo` 判例）+ `acronym database not found!` 腿；批次三百九十五条的「差一个字符」残差（字面量缺星号）同笔闭合；门=text-games **85/0** + none 构建绿 —— `✅`
 - `2026-11-04` A / `STAGE-SUM-SYNC`：台账 §6 阶段汇总行九处对账刷新（02/03/04/07/09/11/15/16/17）——逐行按 A 板现值与各篇自带现查段更正：03/04/07/11/17 五行 `open`→0（A15/A16/A17/A18/A21 的 by-audit 闭合此前未回写汇总）、02 收敛为 1（重启实施挂 `[ARCH]` 裁决门）、16 收敛为 0（G6 非裁决项清零 + 九台 §2.10 标记保留）、15 维持 2 并注前置改判（后端先行）、09 维持 1 并注半注销；纯账面笔，`os/` 零触碰 —— `✅`
+- `2026-11-04` A / `WTF-REGFILE`：`wtf` 库档预检落 `S_ISREG`（A9c ⑦ 闭合，A9c 全清）——`bin_support::is_regular_file` 双生（宿主 metadata/目标 stat+模式位）、逐文件预检环按 C `wtf:64-69` 落 cannot-open 句、读环失败改静默跳过（C `fgrep 2>/dev/null` 形）；「第三份判据的家」按每壳本地 ABI 常量房规消解；门=text-games **86/0** + none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

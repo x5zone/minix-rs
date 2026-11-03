@@ -119,6 +119,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百二十四（`wtf` 的库档预检落 `S_ISREG`：A9c 第⑦条闭合，A9c 全清）
+
+- **这一笔的射程**：A9c 最后一件 ⑦ `WTF-DB-REGULAR-FILE-TEST`——C 的档列表预检是逐文件 `[ ! -f $f ]`（`wtf:64-69`，`test(1)` 的 `-f` 即 `S_ISREG`），首枚非普通文件即 `cannot open acronym database file \`<file>'` 退 1；本壳旧形只有「读失手」代替，`-f /tmp` 与 `-f /dev/null` 落成查无而非 cannot open。旧阻塞「第三份 `S_ISREG` 判据的家待定」按房规消解：ABI 模式位的**每壳本地常量**本就是既定形（`which.rs` 私有副本、`pathconf.rs` 私有副本并存），wtf 照 `which.rs` 判例本地定义即可，无需跨 crate 共件；`env_value` 的重复同理保留（bin_support 按二进制 `#[path]` 内联是设计而非缺陷）。
+- **落码**：`bin_support` 增 `is_regular_file` 双生（宿主 `std::fs::metadata` 的 `is_file`；目标 `minix_sys::stat` + 模式位，stat 失败即预检自己的否决）；bin 在档列表构建后加逐文件预检环（首枚非普通文件即 C 句退 1），读环的 cannot-open 分支随之改为**静默跳过**——C 过了预检后的读取是 `fgrep … 2>/dev/null`（`:78`），读失败是查无而非报错；`a_missing_database` 面测的过时「两层未对齐」注记随实情改写。
+- **门**：`cargo test -p minix-text-games` → **86/0**（face +1：`-f /tmp`、`-f /dev/null` 两拒绝形 + 普通文件过预检命中形（命中退 0，`wtf:107` 的 `exit $rv`））；clippy 本包零新增；fmt 清；none 构建绿。三件套：上述命令与读数、核实日 `2026-11-04`、基线 `eb6cdf004`。
+
 ## 批次五百二十三（`wtf` 的缺省库 glob 接通：A9c 第②条闭合）
 
 - **这一笔的射程**：A9c 余三件的第二件。C 语义（`minix3/games/wtf/wtf:43-58`）：无 `-f` 且 `ACRONYMDB` 为空时，shell 对 `/usr/share/misc/acronyms*` 做通配展开——名字按模式词干匹配、字节序排列；以 `-o` 结尾的那批只在 `-o` 给出时纳入；**未匹配的通配式以字面量落过**（shell 自身行为），预检报 `cannot open acronym database file` 时名字带星号；展开后若 `-o` 过滤清空列表，下一段检查答 `acronym database not found!` 并退 1（`:56-58`）。旧阻塞「目录枚举在本 crate 拿不到」已失效——`mountinfo` → `fileops` 的跨命令 path 依赖判例在树（批次五百零九起的 df 轮）。

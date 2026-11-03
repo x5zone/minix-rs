@@ -176,6 +176,20 @@ fn run() -> ! {
         support::terminate(1);
     }
 
+    // C `wtf:64-69`: a per-file precheck before any reading — the first
+    // path that is not a regular file prints `cannot open acronym database
+    // file \`<file>'` and exits 1; later good files are not searched.
+    for path in &files {
+        let shown = String::from_utf8_lossy(path).into_owned();
+        if !support::is_regular_file(&shown) {
+            let mut line: Vec<u8> = b"wtf: cannot open acronym database file `".to_vec();
+            line.extend_from_slice(path);
+            line.extend_from_slice(b"'\n");
+            support::warn(&line);
+            support::terminate(1);
+        }
+    }
+
     // Every database in the list is checked first: the script's `:64-69` is a separate
     // pre-pass that tests `[ ! -f $f ]` per file, and the first file that cannot be
     // opened prints `cannot open acronym database file \`<file>'` and exits 1 on the
@@ -195,17 +209,12 @@ fn run() -> ! {
         // The open call takes `&str` (registered `ARGV-BYTE-PATH-IN-LIBS`), so the fold
         // happens only at this point; what the message reads out is the original bytes.
         let shown = String::from_utf8_lossy(path).into_owned();
+        // The precheck above owns the `cannot open` sentence (C `:65-69`).
+        // Past it, C's reader runs `fgrep … 2>/dev/null` (`:78`) — a read
+        // failure after the precheck is a silent miss, never an error.
         let image = match support::slurp_operand(&shown) {
             Ok(image) => image,
-            Err(support::OperandFailure::Open(_)) => {
-                // The script's own sentence is `wtf: cannot open acronym database
-                // file \`<path>'` (`:67`), which the run reproduces.
-                let mut line: Vec<u8> = b"wtf: cannot open acronym database file `".to_vec();
-                line.extend_from_slice(path);
-                line.extend_from_slice(b"'\n");
-                support::warn(&line);
-                support::terminate(1);
-            }
+            Err(_) => continue,
         };
         pool.push(String::from_utf8_lossy(&image).into_owned());
     }
