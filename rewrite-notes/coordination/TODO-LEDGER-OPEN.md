@@ -147,22 +147,22 @@
 | 阶段 | 待办文件 | 仍未闭合（核实后） | 最关键的两条 |
 |---|---|---|---|
 | 01 内核 | [`todo.md`](../01-stage-kernel/todo.md) | 见 §1 与 `STAGE-KERNEL-FREEZE-READY-20261008.md` | 浮点归属、次级核承载 |
-| 02 虚存 | [`todo.md`](../02-stage-vm/todo.md) | `open` 2、`stopgap landed` 3 | 实时更新的活-重启状态机；启动进程的可执行文件装载链 |
-| 03 根服务 | [`todo.md`](../03-stage-rs/todo.md) | `open` 2 | 二十四个符号的生产接线面；根服务自升级 |
-| 04 进程管理 | [`todo.md`](../04-stage-pm/todo.md) | `open` 3 | 核心转储路径契约；调度服务缺席导致的假端点 |
+| 02 虚存 | [`todo.md`](../02-stage-vm/todo.md) | `open` 1（重启状态机实施面，挂 `V20-P1-1` 的 `[ARCH]` 裁决门；装载链接线与 2.4 补证已落——A14 行）＋ `stopgap landed` 3（`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 实时更新的活-重启状态机；启动进程的可执行文件装载链 |
+| 03 根服务 | [`todo.md`](../03-stage-rs/todo.md) | `open` 0（A15 `2026-10-31` by-audit：两条都在「边界」侧——二十四符号接线面=trait 双腿已落、自升级余量压 19 号进程/IPC 缝，无 stage 内待办；`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 二十四个符号的生产接线面；根服务自升级 |
+| 04 进程管理 | [`todo.md`](../04-stage-pm/todo.md) | `open` 0（A16 `2026-10-31` by-audit：核心转储路径、假端点、调用号双址三条都被后来批次消解；`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 核心转储路径契约；调度服务缺席导致的假端点 |
 | 05 虚拟文件系统 | [`todo.md`](../05-stage-vfs/todo.md) | 阶段内 0（原记 `open` 1「六十四个请求臂的执行绑定层缺穷举分派（真缺口）」经现场核实为**账面滞后**——`dispatch_syscall` 已是 64 臂穷举 match 且接生产 `run_once`，本行旧摘要未跟上同文件正文 §9.2/§10 已标 `R2-P1-2` 修复的事实） | 绑定层本体已闭（核实见 `05-stage-vfs/todo.md` 顶部同日校正行）；残余是 FS 对话臂按 `W1` 契约返 `Nosys` 的通电余件，归跨阶段 `E1`/`E5`，不作本阶段缺口 |
 | 06 调度 | [`todo.md`](../06-stage-sched/todo.md) | 阶段内 0 | 残余全压在跨阶段 `E5` 与调度服务缺席边界 |
-| 07 数据存储 | [`todo.md`](../07-stage-ds/todo.md) | `open` 2 | 标签发布与编码的纯逻辑已备，无生产调用方 |
+| 07 数据存储 | [`todo.md`](../07-stage-ds/todo.md) | `open` 0（A18 `2026-10-31` by-audit：发布/删除/订阅/notify 的可具名测试载体已在服务端/客户端落地；`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 标签发布与编码的纯逻辑已备，无生产调用方 |
 | 08 中断服务 | [`todo.md`](../08-stage-is/todo.md) | 阶段内 0 | 残余为跨阶段传输族 |
-| 09 初始化 | [`todo.md`](../09-stage-init/todo.md) | `open` 1 | 崩溃处理器的提供形式（归编排 `C-21`） |
+| 09 初始化 | [`todo.md`](../09-stage-init/todo.md) | `open` 1（崩溃处理器半等编排线 `C-21`，A19 `⏸` 维持；「加密后端余量」半已作为不成立注销——A19 两半分判，`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 崩溃处理器的提供形式（归编排 `C-21`） |
 | 10 系统信息 | [`todo.md`](../10-stage-mib/todo.md) | 阶段内 0 | 交换格式的应用二进制接口。**已裁决 U-3 采修订版方案 A**（具名客户端结构体推迟到首个消费者＋响应布局验收条件，见 `PENDING-DECISIONS-UNBLOCK-20261009.md`）。**已执行（`2026-10-10`，`claim/U3-MIB-ABI-LAYOUT-qoder` @ 快照 `48fc49de1`）**：① 具名结构体推迟转正——`os/libs/minix-types/src/types/sysctl.rs` CTL_VM 注释补裁决指针（不预建无消费者死类型）；② 响应布局验收——发现并改正一个真缺陷：MIB 树 `uvmexp2` 节点的 size lane 此前误记 0（`os/servers/mib/src/subtree/vm.rs` 旧注释称「头树无可引用定义」不成立，定义在 `minix3/sys/uvm/uvm_extern.h:373-451`），现按 C `sizeof(struct uvmexp_sysctl)`=616（77 个 `int64_t`）改正、`loadavg`=24（`resource.h:118-121`，`fixpt_t=uint32_t`），带宿主回读测试（`cargo test -p minix-mib --lib subtree::vm` → 4 passed；全量 `--lib` 177/0；clippy 自有文件零新增告警）。边界：回复字节逐字段排列随函数腿接线（跨服务拉取虚存统计与负载信息那一步、挂端到端联调 E1/E2）时补，属已登记的推迟而非缺口，故本行阶段内 `open` 归零但端到端 response 仍记 `待验证`（归跨服务拉取那一步与端到端联调 E1） |
-| 11 设备管理 | [`todo.md`](../11-stage-devman/todo.md) | `open` 1 | 设备拥有权与生产四缺 |
+| 11 设备管理 | [`todo.md`](../11-stage-devman/todo.md) | `open` 0（A17 `2026-10-31` by-audit：服务端传输/请求分类器/装配半三缺已落；客户端生产传输归 `E5(h)`/B 板，`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 设备拥有权与生产四缺 |
 | 12 输入 | [`todo.md`](../12-stage-input/todo.md) | 阶段内 0（原记 `open` 1，属**账面滞后**：`IN-P3-2` 本体在 `2026-09-15` 已闭但本节摘要行未同步翻；`2026-10-09` 回勾）| 残余为跨阶段传输族（`E-INWIRE` 等） |
 | 13 进程间通信 | [`todo.md`](../13-stage-ipc/todo.md) | 阶段内 0 | 残余为 `E-IPCWIRE` 的装配面 |
 | 14 运行时 | [`todo.md`](../14-stage-runtime/todo.md) | 阶段内 0；「真机 2」对账为账面滞后 | 旧记的 `open` 1（内核信息魔术失配错误码选型）经现场核实为**账面滞后**——`V1-P1-4` 已于 `2026-09-16` 裁决落地（Fix #5：`KerninfoAvailability` 三态枚举在位、`InitError` 零命中，`2026-10-09` 核），阶段内 `open` 归零。**对账（`2026-10-18`）：**「两件真机面」具名为 `real-trap` 与 `panic-handler` 两个 feature 面——`real-trap` 已改按 `target_os = "none"` 判定（feature 只剩宿主侧强制，`os/libs/minix-rt/src/init.rs` 的 cfg），`panic-handler` 已由 `rt-birth`/`pfs`/`mfs` 等 freestanding 二进制消费；二者不再是 14 篇的独立缺口，真机验证归 §4 的 `E1` 行；`V1-P1-1` 自身余项 `fini_array`/`init_array`（无消费方）归 csu 链（B 板 B4）；**B4 已于 `2026-10-18` 逐项对账收口**——13 项中 8 项已有 Rust 等价面或已落、2 项静态不可达、3 项（preinit/init/fini 数组与 `atexit`）维持登记（消费者为零：仓内无 `.init_array`/`.fini_array` 使用、无 `atexit` 调用），无待实施项 |
-| 15 文件系统 | [`todo.md`](../15-stage-fs/todo.md) | `partially fixed` 2 | 八个文件服务器入口未接事件循环 |
-| 16 驱动 | [`todo.md`](../16-stage-drivers/todo.md) | `open` 1（G6）+ `stopgap landed` 3 | 二十六个纯占位 crate（G6）；两套字符驱动收敛。A4 协议常量单一来源已收口（`2026-10-18`，跨消费者族上收 `minix-types::types::device`、blockdriver 四条本地副本清零）；G7 文档覆盖声明已收口（`2026-10-18`，doc 04/13/21 共 8 处） |
-| 17 网络 | [`todo.md`](../17-stage-net/todo.md) | `open` 2 | 协议栈本体与传输未实现；缺设计条目。原记的第三项"套接字标识基值缺 Rust 侧权威"经现场核实为**账面滞后**（`os/libs/minix-netdriver/src/sockid.rs` 已于 `2026-09-17` 落地，`cargo test -p minix-netdriver --lib sockid` → 5 passed，`2026-10-09` 核）——本行旧计数未跟上，已同步 |
+| 15 文件系统 | [`todo.md`](../15-stage-fs/todo.md) | `partially fixed` 2（A20 `🔄`：ext2/isofs 等 `E-FSBDEV` 真镜像；vbfs/hgfs 的前置已改判「后端先行」——VBox 客户库/HGFS 后端属 16 篇与真机面；`E-FSCMDS`/`E-FSVMCACHE` 已闭，`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 八个文件服务器入口未接事件循环 |
+| 16 驱动 | [`todo.md`](../16-stage-drivers/todo.md) | `open` 0（G6 非裁决项清零；九台 net 变体按裁决 §2.10 落五项不可用标记并保留——B1 行）＋ `stopgap landed` 3（`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 二十六个纯占位 crate（G6）；两套字符驱动收敛。A4 协议常量单一来源已收口（`2026-10-18`，跨消费者族上收 `minix-types::types::device`、blockdriver 四条本地副本清零）；G7 文档覆盖声明已收口（`2026-10-18`，doc 04/13/21 共 8 处） |
+| 17 网络 | [`todo.md`](../17-stage-net/todo.md) | `open` 0（A21 两半 by-audit：主循环真环与 `SmoltcpStack` 栈体已落；余 `E-NETSTART` 挂 A22 跨板，`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 协议栈本体与传输未实现；缺设计条目。原记的第三项"套接字标识基值缺 Rust 侧权威"经现场核实为**账面滞后**（`os/libs/minix-netdriver/src/sockid.rs` 已于 `2026-09-17` 落地，`cargo test -p minix-netdriver --lib sockid` → 5 passed，`2026-10-09` 核）——本行旧计数未跟上，已同步 |
 | 18 命令 | [`todo.md`](../18-stage-commands/todo.md) | `open` 0；选项级未接线 **5 处 / 4 文件**（`2026-11-03` 对账刷新：旧「`open` 2 + 占位 5」两说已被 18 篇头注否证——占位壳 0、命令面久接真实系统调用返回；余 5 处全跨线：`env` 与 editor shell×3（NS5 进程创建链）、`renice -u`（口令库），宿主可领积压清零，刷新链见本表 §9 各轮收口行） | 命令面已接真实系统调用返回；未接线项的判据各自带跨线前置 |
 
 ## §7 测试与门面对账（账面数字与代码实测不符，或判据本身有问题）
