@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百一十五（`chown -R` 族接通：fts 式走表、遍历三模式与 lchown 仿真语义）
+
+- **这一笔的射程**：not-wired 清单里 `chown` 的 `-R/-H/-L/-P/-h` 一处——C 的 fts 走表（`chown.c:144-240`）：物理默认、`-R -H` 置 `FTS_COMFOLLOW`、`-R -L` 置 `FTS_LOGICAL`（**`-L` 与 `-h` 同用即 `errx("the -L and -h options may not be specified together.")`**，`:150-155`）；目次在其子项之后（`FTS_DP`）改属主；物理走里的符号链（`FTS_SL`）无 `-h` 即跳过、有 `-h` 走 `lchown`；断链（`FTS_SLNONE`）忽略；`FTS_DNR` 告警后仍改目次本身。**`lchown` 在 Minix 是仿真**（`tools/compat/lchown.c:50-59`）：`lstat` 后「是符号链 → 返回 0（静默成功、不改动）」、否则落 `chown`——本实现逐字对位。
+- **落码**：`Flags` 增 `recursive/comfollow/logical/hflag`（`-P` 为物理默认）；`change_owner`（`-h` 的 lstat 仿真腿）、`walk_operand`/`walk_entry`/`walk_children`（dents 走表，`-L` 带祖先 `(dev,ino)` 环静默剪枝，同 du/rm 族）、`report_change`（`-v` 回显 + `-f` 抑警）三件；`-L -h` 互斥句在 run 里按 C 的文本拒绝。**面测抓出并修一处存量 bug**：操作数切片漏加 argv[0] 偏移（`parse_flags(&args[1..])` 的消费数相对子切片），无选项时把 argv[0] 当 owner spec——此前无 chown 面测故未暴露。
+- **可测性边界**：改属主与走表的 syscall 腿为 none 面——宿主面钉三枚：五个字母过选项门（不再出旧拒收行）、`-L -h` 的 C 句逐字节、名字形 invalid-name 判决（第 494 批语义的端到端回归）；递归走表的顺序语义由 `-v` 输出面在真机窗验（入 E5 参战面）。
+- **门**：`cargo test -p minix-fileops` → 库 **398/0**（chown 子集 14/0）+ 新面门 `chown_face` **3/0**；clippy 触及文件零新增；`rustfmt --edition 2024` 两文件清；`cargo build --target x86_64-unknown-none --release --bin chown` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `a5c98ac06`。
+
 ## 批次五百一十四（`du` 的 `NotWired` 死码清理）
 
 - **这一笔的射程**：第 29 轮收口时登记的死码——`-H`/`-L`/`-x` 三字母全部接线后，`DuOption::NotWired` 变体与 bin 的渲染臂再无生产者（用户不可达的分支，违反死代码纪律）。

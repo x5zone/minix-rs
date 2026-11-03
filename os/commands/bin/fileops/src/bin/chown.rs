@@ -43,7 +43,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_fileops::chown::{ChownError, OwnerIds, parse_owner_spec};
-use minix_sys::{Stat, chown, stat};
+use minix_fileops::{cp, dents};
+use minix_sys::{Stat, chown, close, getdents, lstat, open, stat};
 
 /// C's `(uid_t)-1` / `(gid_t)-1` initial value (`chown.c:158-159`): an unset
 /// half that `chown(2)` reads as "leave this id alone".
@@ -69,6 +70,15 @@ fn usage(ischown: bool) -> ! {
 struct Flags<'a> {
     force: bool,
     verbose: bool,
+    /// `-R`: the recursive hierarchy walk (`chown.c:115-116`, `:144-157`).
+    recursive: bool,
+    /// `-H`: follow the command-line operands only (`FTS_COMFOLLOW`).
+    comfollow: bool,
+    /// `-L`: follow every symlink (`FTS_LOGICAL`).
+    logical: bool,
+    /// `-h`: act on the symlink itself. Minix's `lchown` emulation makes a
+    /// symlink a silent success (`tools/compat/lchown.c:50-59`).
+    hflag: bool,
     /// `--reference=rfile` (or `--reference rfile`): copy owner/group off an
     /// existing file instead of an owner spec (`chown.c:181-189`).
     reference: Option<&'a str>,
@@ -81,6 +91,10 @@ fn parse_flags<'a>(args: &[&'a str]) -> Result<(Flags<'a>, usize), &'static str>
     let mut flags = Flags {
         force: false,
         verbose: false,
+        recursive: false,
+        comfollow: false,
+        logical: false,
+        hflag: false,
         reference: None,
     };
     let mut i = 0;
@@ -113,13 +127,178 @@ fn parse_flags<'a>(args: &[&'a str]) -> Result<(Flags<'a>, usize), &'static str>
             match b {
                 b'f' => flags.force = true,
                 b'v' => flags.verbose = true,
-                b'R' | b'H' | b'L' | b'P' | b'h' => return Err("unwired"),
+                // `-P` is the physical default the walk already takes
+                // (`chown.c:144`); the other four select behaviour.
+                b'P' => {}
+                b'R' => flags.recursive = true,
+                b'H' => flags.comfollow = true,
+                b'L' => flags.logical = true,
+                b'h' => flags.hflag = true,
                 _ => return Err("usage"),
             }
         }
         i += 1;
     }
     Ok((flags, i))
+}
+
+/// `change_owner` (`chown.c:186`) under `-h`: Minix's `lchown` is an
+/// emulation (`minix3/tools/compat/lchown.c:50-59`) — it `lstat`s the path
+/// and treats a symlink as a **silent success** (nothing changes), falling
+/// back to `chown` for everything else. Without `-h` the plain `chown(2)`
+/// follows symlinks, which is C's default.
+fn change_owner(path: &str, owner: u32, group: u32, hflag: bool) -> Result<(), minix_sys::Errno> {
+    if hflag {
+        let mut sb: Stat = unsafe { core::mem::zeroed() };
+        lstat(path, &mut sb)?;
+        if cp::is_link(sb.st_mode) {
+            return Ok(());
+        }
+    }
+    chown(path, owner, group)
+}
+
+/// One fts-style walk over an operand (`chown.c:189-240`): directories are
+/// changed **after** their children (`FTS_DP`), symlinks found by a physical
+/// walk are skipped unless `-h`, and `-L` follows every symlink with the
+/// ancestor `(dev, ino)` chain guarding against cycles (`FTS_DC`, silently
+/// ignored as in the other walkers).
+fn walk_operand(
+    flags: &Flags<'_>,
+    path: &str,
+    owner: u32,
+    group: u32,
+    chain: &mut Vec<(u64, u64)>,
+) -> bool {
+    walk_entry(flags, path, 0, owner, group, chain)
+}
+
+fn walk_entry(
+    flags: &Flags<'_>,
+    path: &str,
+    level: i32,
+    owner: u32,
+    group: u32,
+    chain: &mut Vec<(u64, u64)>,
+) -> bool {
+    let mut sb: Stat = unsafe { core::mem::zeroed() };
+    let followed = flags.logical || (flags.comfollow && level == 0);
+    let looked_up = if followed {
+        stat(path, &mut sb)
+    } else {
+        lstat(path, &mut sb)
+    };
+    if looked_up.is_err() {
+        // `FTS_NS`: warn and skip (`chown.c:210-215`).
+        if !flags.force {
+            warn(format!("chown: {path}: cannot change owner\n").as_bytes());
+        }
+        return true;
+    }
+
+    if cp::is_dir(sb.st_mode) {
+        let on_chain = flags.logical && chain.contains(&(sb.st_dev, sb.st_ino));
+        if on_chain {
+            return false; // `FTS_DC`: silently ignored.
+        }
+        let mut failed = false;
+        if flags.recursive {
+            chain.push((sb.st_dev, sb.st_ino));
+            failed |= walk_children(flags, path, level, owner, group, chain);
+            chain.pop();
+        }
+        // The directory itself at its post-order visit (`FTS_DP`).
+        failed | report_change(flags, path, owner, group)
+    } else if !followed && cp::is_link(sb.st_mode) {
+        // `FTS_SL`: ignored unless `-h`, which then meets the silent
+        // symlink success of the emulated `lchown`.
+        if !flags.hflag {
+            return false;
+        }
+        report_change(flags, path, owner, group)
+    } else {
+        report_change(flags, path, owner, group)
+    }
+}
+
+/// One directory's children (`fts_read`'s descent): each entry is visited
+/// with the parent's traversal state.
+fn walk_children(
+    flags: &Flags<'_>,
+    dir: &str,
+    level: i32,
+    owner: u32,
+    group: u32,
+    chain: &mut Vec<(u64, u64)>,
+) -> bool {
+    let fd = match open(dir, cp::O_RDONLY, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            // `FTS_DNR`: warn, still change the directory itself
+            // (`chown.c:199-203`).
+            if !flags.force {
+                warn(format!("chown: {dir}: cannot change owner\n").as_bytes());
+            }
+            return true;
+        }
+    };
+    let mut failed = false;
+    let mut buf = [0u8; 4096];
+    loop {
+        let transferred = match getdents(fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => {
+                // `chown.c:239-240`: `err(EXIT_FAILURE, "fts_read")`.
+                support::warn(b"chown: fts_read failed\n");
+                support::terminate(1);
+            }
+        };
+        let mut cursor = 0;
+        while cursor < transferred {
+            let name = match dents::next_record(&buf, cursor) {
+                Ok(Some((entry, next))) => {
+                    cursor = next;
+                    if entry.ino == 0 {
+                        continue;
+                    }
+                    match core::str::from_utf8(entry.name) {
+                        Ok(name) if dents::is_descendable(name) => name,
+                        _ => continue,
+                    }
+                }
+                Ok(None) | Err(_) => break,
+            };
+            failed |= walk_entry(
+                flags,
+                &dents::join_path(dir, name),
+                level + 1,
+                owner,
+                group,
+                chain,
+            );
+        }
+    }
+    let _ = close(fd);
+    failed
+}
+
+/// Apply `change_owner` and echo under `-v` (`chown.c:227-235`).
+fn report_change(flags: &Flags<'_>, path: &str, owner: u32, group: u32) -> bool {
+    match change_owner(path, owner, group, flags.hflag) {
+        Ok(()) => {
+            if flags.verbose {
+                support::emit(format!("{path}\n").as_bytes());
+            }
+            false
+        }
+        Err(_) => {
+            if !flags.force {
+                warn(format!("chown: {path}: cannot change owner\n").as_bytes());
+            }
+            true
+        }
+    }
 }
 
 /// The whole program body; both `main` forms call it and it never returns.
@@ -138,13 +317,17 @@ fn run() -> ! {
 
     let (flags, after_opts) = match parse_flags(&args[1.min(args.len())..]) {
         Ok(v) => v,
-        Err("unwired") => {
-            warn(b"recursive/link handling not wired (-R/-H/-L/-P/-h)\n");
-            support::terminate(1);
-        }
         Err(_) => usage(ischown),
     };
-    let operands = &args[after_opts.min(args.len())..];
+    // `chown.c:150-155`: the logical walk and acting on links themselves
+    // contradict each other.
+    if flags.recursive && flags.logical && flags.hflag {
+        warn(b"chown: the -L and -h options may not be specified together.\n");
+        support::terminate(1);
+    }
+    // `parse_flags` walked `args[1..]`, so its consumed count is relative to
+    // that slice — the operands start one past argv[0] plus the options.
+    let operands = &args[(1 + after_opts).min(args.len())..];
 
     // Owner/group come from either `--reference` (stat the model file, no
     // owner-spec operand — `chown.c:181-189`) or the leading owner spec
@@ -185,21 +368,10 @@ fn run() -> ! {
 
     let mut any_failed = false;
     for path in files {
-        // `chown.c:212` change_owner per operand; `-f` hides the warning but
-        // still sets the exit status (`chown.c:230-234`).
-        match chown(path, owner, group) {
-            Ok(()) => {
-                if flags.verbose {
-                    support::emit(format!("{path}\n").as_bytes());
-                }
-            }
-            Err(_) => {
-                if !flags.force {
-                    warn(format!("chown: {path}: cannot change owner\n").as_bytes());
-                }
-                any_failed = true;
-            }
-        }
+        // C opens one fts walk per operand (`chown.c:189`); `-f` hides the
+        // warnings but still sets the exit status (`:230-234`).
+        let mut chain: Vec<(u64, u64)> = Vec::new();
+        any_failed |= walk_operand(&flags, path, owner, group, &mut chain);
     }
     support::terminate(if any_failed { 1 } else { 0 });
 }

@@ -268,6 +268,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `CAL-RANGE`：改 `os/commands/usr-bin/doctools/src/{cal.rs,bin/cal.rs}`、`tests/cal_face.rs`（A 板领地）——cal -A/-B/-C 接通：render_range 双模式（同年 Name-Year / 跨年年横幅+首行对齐）、step_month 月算术、getnum 语义与两句 C 报文；顺带修 cal 的 stdout/fail 宿主双面与 none 目标 format 导入；门=doctools lib 73/0 + cal_face 7/0（stdout 断言自本批起真实可见）+ none 构建绿 —— `✅`
 - `2026-11-03` A / `DF-HUMAN`：改 `os/commands/sbin/mountinfo/{Cargo.toml,src/lib.rs,src/df.rs,src/bin/df.rs}`、新增 `tests/df_face.rs`（A 板领地；minix-fileops 为路径依赖，A/A）——df -h 接通：C 默认布局（表宽 +6、三段 pad+%6s 人性化、%3s%% 容量）+ 先收集后发射的 maxwidth + 后到者胜 + `-P -h` 具名拒绝；`df` 的 fail/stdout 转宿主双面；门=mountinfo lib 19/0（两枚字节钉）+ df_face 3/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `DU-DEADCODE`：改 `os/commands/bin/fileops/src/{du.rs,bin/du.rs}`（A 板领地）——删 `DuOption::NotWired` 变体与渲染臂（三字母全接后无生产者）；测试名名实相符化；门=fileops lib du 23/0 + du_face 4/0 + none 构建绿 —— `✅`
+- `2026-11-03` A / `CHOWN-R`：改 `os/commands/bin/fileops/src/bin/chown.rs`、新增 `tests/chown_face.rs`（A 板领地）——chown -R 族接通：fts 式走表（三遍历模式 + DP 后序 + FTS_SL/SLNONE/DNR 臂）、lchown 的 Minix 仿真语义（符号链静默成功）、-L -h 互斥 C 句；面测抓出并修操作数切片的存量 off-by-one；门=fileops lib 398/0（chown 14/0）+ chown_face 3/0 + none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。
