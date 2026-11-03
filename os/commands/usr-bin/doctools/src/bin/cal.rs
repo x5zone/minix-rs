@@ -6,14 +6,16 @@
 //! line, reads the current time, and writes the rendered result to standard
 //! output.
 //!
-//! Declared gaps (10-doc-man-tools.md §5): `-r`/`-h`/`-A`/`-B`/`-C`/`-R` and
-//! similar faces answer "option not wired"; `-h` arms the highlight whose
-//! escape pair needs a terminfo facility this tree has not built, so its
-//! output is byte-identical with the plain form (C's shape without a capable
-//! TERM); months are accepted as numbers only
-//! (C's month-name parsing was not ported, and C itself only accepts numbers
-//! too).  `-y` (force the year view), `-j` (day of year), `-3` (previous/current/
-//! next month triple) and `-d` (week start day 0..6) are wired.
+//! Wired: `-y` (force the year view), `-j` (day of year), `-3`
+//! (previous/current/next month triple), `-d` (week start day 0..6),
+//! `-A`/`-B`/`-C` (context window), `-r` (start from the reform date) and
+//! `-R` (pick the reform), and `-h`, whose highlight escape pair needs a
+//! terminfo facility this tree has not built, so its output is byte-identical
+//! with the plain form (C's shape without a capable TERM). The calendar
+//! itself always runs on a [`Reform`] record: C installs the British 1752
+//! switch by default (`cal.c:282-283`), so September 1752 prints its eleven
+//! missing days as absent unless another reform is selected. Months are
+//! accepted as numbers only (C itself only accepts numbers too).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -26,16 +28,44 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 use minix_doctools::cal::{
-    DayStyle, Reckoning, render_month, render_range, render_triple, render_year,
+    DayStyle, Reform, ReformError, render_month, render_range, render_triple, render_year,
 };
 
+/// C's `errx`/`warnx` line: program name, then the sentence.
 fn fail(message: &str) -> ! {
     // The hosted stderr twin (`support::warn`) — the raw `write` leg exists
     // only for the target face, and the face tests need the sentence.
-    let mut line = message.as_bytes().to_vec();
+    let mut line = b"cal: ".to_vec();
+    line.extend_from_slice(message.as_bytes());
     line.push(b'\n');
     support::warn(&line);
     support::terminate(1)
+}
+
+/// C's `usage()` (`cal.c:911-917`): the literal `cal` in the first line and
+/// the eleven-space continuation, exit 1.
+fn usage() -> ! {
+    support::warn(
+        b"usage: cal [-3hjry] [-A after] [-B before] [-C context] [-d day-of-week] \
+[-R reform-spec]\n           [[month] year]\n",
+    );
+    support::terminate(1)
+}
+
+/// C's `-R` rejection lines (`cal.c:733-802`).
+fn reform_error(error: ReformError, spec: &str) -> String {
+    match error {
+        ReformError::DateSpecifier => format!("date specifier {spec} invalid"),
+        ReformError::IllegalYear(year) => format!("{year}: illegal year value: use 1-9999"),
+        ReformError::IllegalMonth(month) => format!("{month}: illegal month value: use 1-12"),
+        ReformError::IllegalDate { date, max } => {
+            format!("{date}: illegal date value: use 1-{max}")
+        }
+        ReformError::Ambiguous => {
+            format!("{spec}: ambiguous short reform date specification")
+        }
+        ReformError::InvalidName => format!("reform name {spec} invalid"),
+    }
 }
 
 /// The current UTC instant (the current month when `cal` has no operands): on the
@@ -143,6 +173,9 @@ fn run() -> ! {
     let mut after: u32 = 0;
     let mut before: u32 = 0;
     let mut week_start: usize = 0;
+    let mut use_reform = false;
+    let mut reform = Reform::standard();
+    let mut when: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         let arg = args[i];
@@ -205,10 +238,33 @@ fn run() -> ! {
                     // terminfo facility, so the escape pair stays unset —
                     // exactly C's shape when TERM is missing or dumb — and
                     // the rendered output is byte-identical with or without
-                    // the flag. The remaining C flags (-r -R -A -B -C) each
-                    // stay unwired.
+                    // the flag.
                     'h' => {}
-                    _ => fail("option not wired"),
+                    // `-r` starts from the reform date when no operands are
+                    // given (`cal.c:261-262`, `:306-315`).
+                    'r' => use_reform = true,
+                    // `-R spec` (`cal.c:257-259`): the argument rides the
+                    // cluster tail or the next token.
+                    'R' => {
+                        k += 1;
+                        let raw: String = if k < rest.len() {
+                            rest[k..].iter().collect()
+                        } else {
+                            i += 1;
+                            match args.get(i).copied() {
+                                Some(value) => value.into(),
+                                None => {
+                                    support::warn(b"cal: option requires an argument -- R\n");
+                                    usage();
+                                }
+                            }
+                        };
+                        // C defers the parse until the option scan is over
+                        // (`cal.c:280-283`), so a later getopt error wins.
+                        when = Some(raw);
+                        k = rest.len(); // -R consumes its value and ends this token scan
+                    }
+                    _ => usage(),
                 }
                 k += 1;
             }
@@ -218,39 +274,37 @@ fn run() -> ! {
         i += 1;
     }
 
-    let view = match choose_view(
-        &operands,
-        force_year,
-        force_triple,
-        after,
-        before,
-        now_epoch_days_civil(),
-    ) {
+    if let Some(spec) = &when {
+        reform = match Reform::from_spec(spec) {
+            Ok(picked) => picked,
+            Err(error) => fail(&reform_error(error, spec)),
+        };
+    }
+
+    // `-r` with no operands shows the reform month instead of today
+    // (`cal.c:306-315`); `-y` still widens it to the reform year.
+    let today = if use_reform {
+        (reform.year, reform.month)
+    } else {
+        now_epoch_days_civil()
+    };
+    let view = match choose_view(&operands, force_year, force_triple, after, before, today) {
         Ok(v) => v,
         Err(msg) => fail(msg),
     };
 
     let mut out = [0u8; 4096];
     let rendered = match view {
-        View::Month(y, m) => render_month(y, m, Reckoning::Gregorian, style, week_start, &mut out),
-        View::Triple(y, m) => {
-            render_triple(y, m, Reckoning::Gregorian, style, week_start, &mut out)
-        }
-        View::Year(y) => render_year(y, Reckoning::Gregorian, style, week_start, &mut out),
+        View::Month(y, m) => render_month(y, m, &reform, style, week_start, &mut out),
+        View::Triple(y, m) => render_triple(y, m, &reform, style, week_start, &mut out),
+        View::Year(y) => render_year(y, &reform, style, week_start, &mut out),
         View::Range(start, end) => {
             // C's range guard (`cal.c:378-380`): the window may not leave
             // the printable years.
             if start.0 < 1 || end.0 > 9999 {
                 fail("year should be in 1-9999");
             }
-            render_range(
-                start,
-                end,
-                Reckoning::Gregorian,
-                style,
-                week_start,
-                &mut out,
-            )
+            render_range(start, end, &reform, style, week_start, &mut out)
         }
     };
     match rendered {

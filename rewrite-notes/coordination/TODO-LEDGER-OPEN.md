@@ -244,3 +244,5 @@
 - **`2026-11-03` 收口刷新（第 36–38 轮，基线 `d17722b36`/`676b7cff2`/本轮）**：`df -i`（批次五百一十七）、`cp -a`/`-P`（五百一十八）与 `cp` 余下字母 `-r/-H/-L/-N/-l`（五百一十九）已闭，`cp` 的选项面整条清空（`CpOption::NotWired` 变体删除，拒绝行不再有生产者）。生产面 not-wired 拒绝站点现量 **8 处 / 7 文件**（`grep -rn "not wired" os/commands --include=*.rs | grep -v '/tests/' | grep -v target`，再剔除行首为 `//` 的注释行）：`df` 的未接字母（`a/G/g/l/m/n/t:`）、`cal` 的 `-r/-R`、`touch -d` 三项宿主可领；`env`、editor 的 shell×3（NS5 进程创建链）与 `renice -u`（口令库）仍跨线。余件分层与上一轮相同，下一会话从宿主可领三项直领。
 
 - **`2026-11-03` 收口刷新（第 39 轮，基线 `67f3d083f`）**：`df` 的余下字母（`a/G/g/l/m/n/t:`）已随批次五百二十闭，`df` 生产面的 not-wired 拒绝行删除。生产面 not-wired 拒绝站点现量 **7 处 / 6 文件**（命令同上一行）：宿主可领只剩 `cal -r/-R` 与 `touch -d` 两项；`env`、editor shell×3（NS5 进程创建链）与 `renice -u`（口令库）仍跨线。下一会话从这两项直领。
+
+- **`2026-11-03` 收口刷新（第 40 轮，基线 `6a5de7792`）**：`cal -r/-R` 已随批次五百二十一闭（含 C 默认启用的 1752 改换模型、reform 表解析与缺日阵列），`cal` 生产面的 not-wired 拒绝行删除。生产面 not-wired 拒绝站点现量 **6 处 / 5 文件**（命令同前）：宿主可领只剩 `touch -d` 一项；`env`、editor shell×3（NS5 进程创建链）与 `renice -u`（口令库）仍跨线。下一会话从 `touch -d` 直领。

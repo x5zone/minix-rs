@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百二十一（`cal -r/-R` 接通：公历改换模型、reform 表与缺日阵列）
+
+- **这一笔的射程**：`cal` 的最后两个字母，连同 C 一直挂在日历上的改换模型。C 的事实面：`reforms[]` 表（`cal.c:165-197`）与 `DEFAULT` 1752-09-03 的无条件安装（`:282-283`，不传 `-r` 也在用）；`-R` 的三形解析（`:727-802`：`年[/,-]月[/,-]日`、表内部分匹配的 ambiguity 界、大小写不敏感国名）与六条 `errx` 句；闰年规则在改换年处分叉（`:105-108`：之前儒略、之后格里）；`first_missing_day`/`missing_days` 两个锚（`:772-786`）；`day_in_week` 的缺日窗三分支（`:549-559`）；`reform_day_array` 的逐日走表（`:829-865`，只让存在的日子推进列，四个改换月起算）；`day_array` 的 shift 查表（`:498-513`）；`-r` 缺省月/年的取法（`:306-315`）；usage 两行（`:911-917`）。
+- **落码**：`cal.rs` 以 `Reform`/`REFORM_TABLE`/`ReformError`/`from_spec` 取代 `Reckoning` 与 JDN 助手（无外部消费者，`MonthGrid`/`day_matrix` 一并退场）；改换感知的 `leap_year`/`month_days`/`day_in_year`/`weekday`/`day_of_year_of_first`；`month_matrix` 对四个改换月走 `window_month`（沿用 C 的格里月长与 `(diw + 8 - date%7)` 回退），其余月从当月一日列顺排；`render_month`/`render_year`/`render_range`/`render_triple` 改收 `&Reform` 并直接用矩阵。bin 增 `-r`/`-R`（`-R` 的解析延到选项扫描之后，与 C 的 `:280-283` 同序）、六条错误句、C 的 usage 两行与 `-R` 缺参句；`fail` 统一补程序名前缀（C 的 `errx` 形）。
+- **可测性边界**：全部为纯逻辑，宿主可逐字节测。库测钉：1752 缺日序列与列位（14 日周四、同周接在 2 日后）、`-R Italy` 的 1582 十月窗（15 日周五）、1700 年二月按儒略闰为 29 日、`-r`/`-R` 解析六形与 ambiguity、周起始旋转。面测钉：`cal 9 1752` 三行金样、`-R Italy 10 1582` 金样、`-r` 无操作数落 1752-09、六条 `-R` 拒绝句、usage 与缺参句、`-C 1`≡`-3`。
+- **门**：`cargo test -p minix-doctools` → **98/0**（`cal` 子集 14/0；面测 `cal_face` 12/0）；clippy 触及文件零新增；`rustfmt --edition 2024` 三文件清；`cargo build --target x86_64-unknown-none --bin cal` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `6a5de7792`。
+
 ## 批次五百二十（`df` 余下字母接通：过滤、单位、`-G` 详表与默认对齐布局）
 
 - **这一笔的射程**：not-wired 清单里 `df` 的最后一处（`a/G/g/l/m/n/t:` 七个字母）。C 的选项落点（`df.c:93-145`）：`-a` 保留 `MNT_IGNORE` 条目、`-l` 只留 `MNT_LOCAL`、`-t` 按 `f_fstypename` 过滤（`no` 前缀取反，`selected` 以 NUL 结尾比较即全等）、`-n` 打印缓存表而不逐挂载点 `statvfs` 刷新；`-k/-m/-g` 是报告块单位，无单位字母时走 `getbsize`（`minix3/lib/libc/gen/getbsize.c`：`BLOCKSIZE` 十进制数可带一位 `K/M/G`，下限 512、上限 1G，越界/畸形各出 `warnx`）；`-G` 是 SunOS 详表（`df.c:365-408`，其中「total files／free files」的实参顺序与标签相反，照原样复刻）；默认布局是 `%-*.*s` + 三个 `%10` 的**对齐表**而不是 `-P` 行，列宽在 `:416` 有 `maxwidth < 12` 的地板；`-P` 只接受 512/1024 两种块（`:441-445`，且在取得挂载表之后才报），头行标签随块大小变化；`-h -i` 可同用（`-i` 只是追加 inode 段）。

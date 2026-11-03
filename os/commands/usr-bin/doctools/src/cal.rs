@@ -2,146 +2,474 @@
 //!
 //! Ground truth: `minix3/usr.bin/cal/cal.c` (924 lines). The hard part of a
 //! calendar program is not printing boxes but knowing which weekday a date
-//! falls on — across the Julian/Gregorian reformation, where a block of
-//! days never existed (the C code parameterises the first missing day and
-//! the count of missing days at lines 65 to 66, with leap rules at lines 94
-//! to 137). This module computes the same facts from first principles:
+//! falls on across the Julian/Gregorian reformation, where a block of days
+//! never existed. C parameterises that block as a `reform` record — the first
+//! missing day and how many days vanish (`cal.c:65-66`, `:155-197`) — and
+//! installs the British September 1752 switch as the default even when the
+//! user names no reform (`cal.c:282-283`). This module carries the same
+//! record, the same table, the same `-R` parser and the same weekday/missing
+//! day arithmetic.
 //!
-//! - Days are counted as a Julian Day Number (days since a fixed ancient
-//!   Monday): date to number and back, valid for both reckonings.
-//! - Leap years: Julian (every fourth year) and Gregorian (fourth except
-//!   centuries not divisible by 400).
-//! - The weekday is the day number modulo 7 (the epoch day was a Monday).
-//! - A month grid places day 1 under its weekday and fills the weeks;
-//!   days skipped by a reformation simply never receive numbers (the caller
-//!   passes the missing range, defaulting to none).
+//! - [`Reform`] is one switch: the first missing date plus C's derived
+//!   `first_missing_day`/`missing_days` anchors.
+//! - Leap years follow the switch: Julian before the reform year, Gregorian
+//!   after it (`cal.c:105-108`).
+//! - `-R` accepts a full date (`y/m/d`, separators `/`, `,` or `-`), a
+//!   partial date matched against the table, or a country name
+//!   (case-insensitive), with C's ambiguity rule.
+//! - A month that meets the gap is laid out by the same walk as C's
+//!   `reform_day_array` (`cal.c:829-865`): only existing days advance the
+//!   column, and the four months after the switch are precomputed that way.
 //!
-//! Reference anchors the tests use: 2026-09-05 is a Saturday, 2000-01-01
-//! is a Saturday, 1969-07-20 is a Sunday, and the Gregorian reform drops
-//! 1582-10-05 through 1582-10-14 (Thursday the 4th is followed by Friday
-//! the 15th).
+//! Reference anchors: 1752-09-02 was a Wednesday and 1752-09-14 a Thursday
+//! (Britain dropped 3 through 13); 1582-10-04 was a Thursday and
+//! 1582-10-15 a Friday (the papal switch).
 
 use crate::DocError;
 
 /// Days in each month of a common year (February gains one in leap years).
 const MONTH_DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
-/// Which leap rule a year obeys.
+/// One Julian-to-Gregorian switch (`cal.c:155-190`): the first day that never
+/// existed, how many days vanish there, and the two day numbers the weekday
+/// arithmetic anchors on. The default is Britain's September 1752 reform,
+/// which C installs even without `-r`/`-R` (`cal.c:282-283`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reckoning {
-    /// Every fourth year (`cal.c:94`).
-    Julian,
-    /// Fourth except centuries not divisible by 400 (`cal.c:105`).
-    Gregorian,
+pub struct Reform {
+    /// Year of the switch.
+    pub year: i32,
+    /// Month of the first missing day (1 to 12).
+    pub month: u32,
+    /// Day of the first missing day.
+    pub date: u32,
+    /// C's `first_missing_day` (`cal.c:783-786`).
+    pub first_missing_day: i64,
+    /// How many days vanish at the switch (`cal.c:776-779`).
+    pub missing_days: i32,
 }
 
-/// True when `year` is a leap year under `reckoning`. Year 0 does not
-/// exist (1 BC is followed by AD 1); non positive years are rejected by the
-/// callers below.
-pub fn is_leap(year: i32, reckoning: Reckoning) -> bool {
-    match reckoning {
-        Reckoning::Julian => year % 4 == 0,
-        Reckoning::Gregorian => year % 4 == 0 && (year % 100 != 0 || year % 400 == 0),
-    }
+/// C's `reforms[]` (`cal.c:165-197`): country name, ambiguity bound, and the
+/// first missing date. The `{ NULL }` terminator is not a member.
+const REFORM_TABLE: [(&str, i32, i32, u32, u32); 29] = [
+    ("DEFAULT", 0, 1752, 9, 3),
+    ("Italy", 1, 1582, 10, 5),
+    ("Spain", 1, 1582, 10, 5),
+    ("Portugal", 1, 1582, 10, 5),
+    ("Poland", 1, 1582, 10, 5),
+    ("France", 2, 1582, 12, 10),
+    ("Luxembourg", 2, 1582, 12, 22),
+    ("Netherlands", 2, 1582, 12, 22),
+    ("Bavaria", 0, 1583, 10, 6),
+    ("Austria", 2, 1584, 1, 7),
+    ("Switzerland", 2, 1584, 1, 12),
+    ("Hungary", 0, 1587, 10, 22),
+    ("Germany", 0, 1700, 2, 19),
+    ("Norway", 0, 1700, 2, 19),
+    ("Denmark", 0, 1700, 2, 19),
+    ("Great Britain", 0, 1752, 9, 3),
+    ("England", 0, 1752, 9, 3),
+    ("America", 0, 1752, 9, 3),
+    ("Sweden", 0, 1753, 2, 18),
+    ("Finland", 0, 1753, 2, 18),
+    ("Japan", 0, 1872, 12, 20),
+    ("China", 0, 1911, 11, 7),
+    ("Bulgaria", 0, 1916, 4, 1),
+    ("U.S.S.R.", 0, 1918, 2, 1),
+    ("Serbia", 0, 1919, 1, 19),
+    ("Romania", 0, 1919, 1, 19),
+    ("Greece", 0, 1924, 3, 10),
+    ("Turkey", 0, 1925, 12, 19),
+    ("Egypt", 0, 1928, 9, 18),
+];
+
+/// Why a `-R` argument was rejected. Every variant renders one of C's
+/// `errx` sentences (`cal.c:733-802`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReformError {
+    /// `date specifier %s invalid`.
+    DateSpecifier,
+    /// `%d: illegal year value: use 1-9999`.
+    IllegalYear(i32),
+    /// `%d: illegal month value: use 1-12`.
+    IllegalMonth(i32),
+    /// `%d: illegal date value: use 1-%d`.
+    IllegalDate {
+        /// The date the user gave.
+        date: i32,
+        /// The last valid day of that month under the short-year table.
+        max: u32,
+    },
+    /// `%s: ambiguous short reform date specification`.
+    Ambiguous,
+    /// `reform name %s invalid`.
+    InvalidName,
 }
 
-/// Days in `month` (1 to 12) of `year` under `reckoning`.
-pub fn month_days(year: i32, month: u32, reckoning: Reckoning) -> Result<u32, DocError> {
-    if year <= 0 || !(1..=12).contains(&month) {
-        return Err(DocError::InvalidArgument);
-    }
-    let mut days = MONTH_DAYS[(month - 1) as usize];
-    if month == 2 && is_leap(year, reckoning) {
-        days += 1;
-    }
-    Ok(days)
+/// Julian leap day in `month`/`date` (`j_leap_year`, `cal.c:94-96`).
+fn j_leap_day(year: i32, month: u32) -> i64 {
+    if month > 2 && year % 4 == 0 { 1 } else { 0 }
 }
 
-/// Days since the epoch Monday (Julian Day Number shift): Howard Hinnant's
-/// civil to days algorithm, valid for every civil date with a positive
-/// year. Pure integer arithmetic, no tables beyond month lengths.
-pub fn days_from_civil(year: i32, month: u32, day: u32) -> Result<i64, DocError> {
-    if year <= 0 || !(1..=12).contains(&month) || day == 0 {
-        return Err(DocError::InvalidArgument);
-    }
-    if day > month_days(year, month, Reckoning::Gregorian)? {
-        // The Gregorian month length bounds every civil date; Julian
-        // February only ever shortens it (1900 is the trap: Gregorian
-        // common, Julian leap — validated by the caller reckoning below).
-        return Err(DocError::InvalidArgument);
-    }
-    let shifted_year = if month <= 2 { year - 1 } else { year };
-    let era = if shifted_year >= 0 {
-        shifted_year
+/// Gregorian leap day in `month`/`date` (`g_leap_year`, `cal.c:105-108`).
+fn g_leap_day(year: i32, month: u32) -> i64 {
+    if month > 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+        1
     } else {
-        shifted_year - 399
-    } / 400;
-    let year_of_era = (shifted_year - era * 400) as i64;
-    let month_index = (month as i64 + 9) % 12;
-    let day_of_year = (153 * month_index + 2) / 5 + day as i64 - 1;
-    let day_of_era =
-        year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + year_of_era / 400 + day_of_year;
-    Ok(era as i64 * 146097 + day_of_era - 719468)
-}
-
-/// Days since the epoch Monday counted in Julian reckoning (every fourth
-/// year leaps, no century exceptions). Shares the absolute day line with
-/// [`days_from_civil`]: the same physical day yields the same number under
-/// either reckoning (Julian 1969-12-19 is Gregorian 1970-01-01, both number
-/// zero), so weekdays march on undisturbed across calendar reforms —
-/// exactly the separation `cal.c` draws between the leap count (lines 110
-/// to 137) and the missing days gap (lines 65 to 66).
-pub fn days_from_civil_julian(year: i32, month: u32, day: u32) -> Result<i64, DocError> {
-    if year <= 0 || !(1..=12).contains(&month) || day == 0 {
-        return Err(DocError::InvalidArgument);
+        0
     }
-    if day > month_days(year, month, Reckoning::Julian)? {
-        return Err(DocError::InvalidArgument);
+}
+
+/// `j_leap_days` (`cal.c:112-114`).
+fn j_leap_days(year: i32, month: u32) -> i64 {
+    (year as i64 - 1) / 4 + j_leap_day(year, month)
+}
+
+/// `g_leap_days` (`cal.c:117-120`).
+fn g_leap_days(year: i32, month: u32) -> i64 {
+    (year as i64 - 1) / 4 - (year as i64 - 1) / 100
+        + (year as i64 - 1) / 400
+        + g_leap_day(year, month)
+}
+
+/// Length of `month` under a leap/common February (`days_in_month`,
+/// `cal.c:70-73`).
+fn month_length(leap: bool, month: u32) -> u32 {
+    if month == 2 && leap {
+        29
+    } else {
+        MONTH_DAYS[(month - 1) as usize]
     }
-    let shifted = if month <= 2 { year - 1 } else { year };
-    let era = if shifted >= 0 { shifted } else { shifted - 3 } / 4;
-    let year_of_era = (shifted - era * 4) as i64;
-    let month_index = (month as i64 + 9) % 12;
-    let day_of_year = (153 * month_index + 2) / 5 + day as i64 - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 + day_of_year;
-    Ok(era as i64 * 1461 + day_of_era - 719470)
 }
 
-/// One printed month: the weekday of day 1 (Monday first) plus the day
-/// count. The caller lays out the grid; leap and length rules live here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MonthGrid {
-    /// Weekday of day 1: 0 Monday through 6 Sunday.
-    pub first_weekday: u32,
-    /// Days in the month.
-    pub day_count: u32,
+/// Move `(year, month)` by `delta` months.
+fn add_months(year: i32, month: u32, delta: i64) -> (i32, u32) {
+    let index = year as i64 * 12 + (month as i64 - 1) + delta;
+    ((index / 12) as i32, (index % 12) as u32 + 1)
 }
 
-/// Describe `year`-`month` under `reckoning`.
-pub fn month_grid(year: i32, month: u32, reckoning: Reckoning) -> Result<MonthGrid, DocError> {
-    Ok(MonthGrid {
-        first_weekday: weekday_g(year, month, 1, reckoning)?,
-        day_count: month_days(year, month, reckoning)?,
-    })
-}
-
-/// Weekday of a civil date: 0 is Monday through 6 Sunday (the epoch day,
-/// 1970-01-01, was a Thursday: offset 3).
-pub fn weekday(year: i32, month: u32, day: u32) -> Result<u32, DocError> {
-    let days = days_from_civil(year, month, day)?;
-    Ok((days + 3).rem_euclid(7) as u32)
-}
-
-/// Weekday honoring the reckoning: Julian dates count Julian leap days
-/// (1900 is a leap year there), so the day number comes from the matching
-/// counter. Both counters share the absolute day line, hence the same
-/// march of weekdays.
-fn weekday_g(year: i32, month: u32, day: u32, reckoning: Reckoning) -> Result<u32, DocError> {
-    let days = match reckoning {
-        Reckoning::Gregorian => days_from_civil(year, month, day)?,
-        Reckoning::Julian => days_from_civil_julian(year, month, day)?,
+/// Scan one C `%d` integer starting at `pos`, returning the value and the new
+/// position. Leading whitespace and a sign are accepted, as `strtol`/`%d`
+/// accept them.
+fn scan_int(bytes: &[u8], pos: &mut usize) -> Option<i64> {
+    let mut i = *pos;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let sign = match bytes.get(i) {
+        Some(b'-') => {
+            i += 1;
+            -1
+        }
+        Some(b'+') => {
+            i += 1;
+            1
+        }
+        _ => 1,
     };
-    Ok((days + 3).rem_euclid(7) as u32)
+    let start = i;
+    let mut value: i64 = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(i64::from(bytes[i] - b'0'));
+        i += 1;
+    }
+    if i == start {
+        return None;
+    }
+    *pos = i;
+    Some(sign * value)
+}
+
+/// True when `bytes[pos]` is one of C's `sscanf` separators `[/,-]`.
+fn is_separator(byte: u8) -> bool {
+    matches!(byte, b'/' | b',' | b'-')
+}
+
+impl Reform {
+    /// Britain's September 1752 switch, C's `DEFAULT` entry.
+    pub fn standard() -> Self {
+        Self::at(1752, 9, 3)
+    }
+
+    /// Build a switch from the first missing date and derive C's two
+    /// anchors (`cal.c:772-786`).
+    pub fn at(year: i32, month: u32, date: u32) -> Self {
+        let mut reform = Self {
+            year,
+            month,
+            date,
+            first_missing_day: 0,
+            missing_days: 0,
+        };
+        reform.missing_days = (j_leap_days(year, month) - g_leap_days(year, month) - 2) as i32;
+        reform.first_missing_day = (year as i64 - 1) * 365
+            + reform.day_in_year(date as i64, month, year)
+            + date as i64
+            + j_leap_days(year, month);
+        reform
+    }
+
+    /// Parse a `-R` argument (`gregorian_reform`, `cal.c:727-802`): a full
+    /// date, a partial date matched against the table, or a country name.
+    pub fn from_spec(spec: &str) -> Result<Self, ReformError> {
+        let bytes = spec.as_bytes();
+        let mut pos = 0usize;
+        let first = scan_int(bytes, &mut pos);
+        let (conversions, year, month, date) = match first {
+            None => (0i32, -1i32, -1i32, -1i32),
+            Some(year) => {
+                let mut month = 0i32;
+                let mut date = 0i32;
+                let mut conversions = 1i32;
+                if pos < bytes.len() && is_separator(bytes[pos]) {
+                    let mut after = pos + 1;
+                    if let Some(value) = scan_int(bytes, &mut after) {
+                        month = value as i32;
+                        conversions = 2;
+                        pos = after;
+                        if pos < bytes.len() && is_separator(bytes[pos]) {
+                            let mut after = pos + 1;
+                            if let Some(value) = scan_int(bytes, &mut after) {
+                                date = value as i32;
+                                conversions = 3;
+                                pos = after;
+                                if pos < bytes.len() {
+                                    conversions = 4;
+                                }
+                            }
+                        }
+                    }
+                }
+                (conversions, year as i32, month, date)
+            }
+        };
+        if conversions == 4 {
+            return Err(ReformError::DateSpecifier);
+        }
+        if conversions >= 1 {
+            if !(1..=9999).contains(&year) {
+                return Err(ReformError::IllegalYear(year));
+            }
+            if conversions > 1 && !(1..=12).contains(&month) {
+                return Err(ReformError::IllegalMonth(month));
+            }
+            let table_month = if (1..=12).contains(&month) {
+                month as usize
+            } else {
+                0
+            };
+            let max = month_length(
+                true,
+                if table_month == 0 {
+                    1
+                } else {
+                    table_month as u32
+                },
+            );
+            let max = if table_month == 0 { 0 } else { max };
+            if (conversions == 3 && date < 1) || date < 0 || date as u32 > max {
+                return Err(ReformError::IllegalDate { date, max });
+            }
+            if date > 0 {
+                return Ok(Self::at(year, month as u32, date as u32));
+            }
+        }
+        if conversions == 0 {
+            let wanted = spec.to_ascii_lowercase();
+            return REFORM_TABLE
+                .iter()
+                .find(|entry| entry.0.to_ascii_lowercase() == wanted)
+                .map(|entry| Self::at(entry.2, entry.3, entry.4))
+                .ok_or(ReformError::InvalidName);
+        }
+        for entry in REFORM_TABLE {
+            if (year == 0 || year == entry.2)
+                && (month == 0 || month == entry.3 as i32)
+                && (date == 0 || month == entry.4 as i32)
+            {
+                if conversions <= entry.1 {
+                    return Err(ReformError::Ambiguous);
+                }
+                return Ok(Self::at(entry.2, entry.3, entry.4));
+            }
+        }
+        Err(ReformError::InvalidName)
+    }
+
+    /// Leap rule in force for `year`: Julian up to the reform year,
+    /// Gregorian after it (`cal.c:105-108`).
+    pub fn leap_year(&self, year: i32) -> bool {
+        if year <= self.year {
+            year % 4 == 0
+        } else {
+            year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+        }
+    }
+
+    /// Days in `month` of `year` (`days_in_month[leap_year(year)]`).
+    pub fn month_days(&self, year: i32, month: u32) -> Result<u32, DocError> {
+        if year <= 0 || !(1..=12).contains(&month) {
+            return Err(DocError::InvalidArgument);
+        }
+        Ok(month_length(self.leap_year(year), month))
+    }
+
+    /// `day_in_year` (`cal.c:566-575`): the 1-based day of the year.
+    fn day_in_year(&self, day: i64, month: u32, year: i32) -> i64 {
+        let leap = self.leap_year(year);
+        let mut result = day;
+        for m in 1..month {
+            result += month_length(leap, m) as i64;
+        }
+        result
+    }
+
+    /// `leap_years_since_year_1` (`cal.c:152-153`, with the reform-bounded
+    /// century terms at `:143-149`).
+    fn leap_years_since_year_1(&self, year: i64) -> i64 {
+        let centuries = if year > self.year as i64 {
+            year / 100 - (self.year as i64 / 100)
+        } else {
+            0
+        };
+        let quad_centuries = if year > self.year as i64 {
+            year / 400 - (self.year as i64 / 400)
+        } else {
+            0
+        };
+        year / 4 - centuries + quad_centuries
+    }
+
+    /// `day_in_week` (`cal.c:549-559`): 0 is Sunday through 6 Saturday, with
+    /// `week_start` (`-d`) rotating the columns. A date inside the missing
+    /// block answers the anchor column C returns.
+    pub fn weekday(
+        &self,
+        day: i64,
+        month: u32,
+        year: i32,
+        week_start: usize,
+    ) -> Result<u32, DocError> {
+        if year <= 0 || !(1..=12).contains(&month) || day < 1 {
+            return Err(DocError::InvalidArgument);
+        }
+        if day > self.month_days(year, month)? as i64 {
+            return Err(DocError::InvalidArgument);
+        }
+        let temp = (year as i64 - 1) * 365
+            + self.leap_years_since_year_1(year as i64 - 1)
+            + self.day_in_year(day, month, year);
+        let dow = week_start as i64;
+        let base = temp - dow + 6 + 6; // 1 Jan 1 was a Saturday (`cal.c:63`)
+        let column = if temp < self.first_missing_day {
+            base.rem_euclid(7)
+        } else if temp >= self.first_missing_day + self.missing_days as i64 {
+            (base - self.missing_days as i64).rem_euclid(7)
+        } else {
+            (self.first_missing_day - dow + 6 + 6).rem_euclid(7)
+        };
+        Ok(column as u32)
+    }
+
+    /// `day_in_year(1, month, year)` — the numeral `cal -j` puts on the first
+    /// of the month.
+    pub fn day_of_year_of_first(&self, year: i32, month: u32) -> Result<u32, DocError> {
+        if year <= 0 || !(1..=12).contains(&month) {
+            return Err(DocError::InvalidArgument);
+        }
+        Ok(self.day_in_year(1, month, year) as u32)
+    }
+
+    /// Build the printed cells of one month. A month inside the four-month
+    /// reform window follows C's `reform_day_array` walk; every other month
+    /// starts day one at its weekday column and counts straight through.
+    pub fn month_matrix(
+        &self,
+        year: i32,
+        month: u32,
+        style: DayStyle,
+        week_start: usize,
+    ) -> Result<[[u32; 7]; 6], DocError> {
+        if year <= 0 || year > 9999 || !(1..=12).contains(&month) {
+            return Err(DocError::InvalidArgument);
+        }
+        for index in 0..4usize {
+            if add_months(self.year, self.month, index as i64) == (year, month) {
+                return Ok(self.window_month(index, style, week_start));
+            }
+        }
+        let first_column = self.weekday(1, month, year, week_start)? as usize;
+        let count = self.month_days(year, month)?;
+        let first_value = match style {
+            DayStyle::Month => 1,
+            DayStyle::Julian => self.day_of_year_of_first(year, month)?,
+        };
+        Ok(fill_matrix(first_column, count, first_value))
+    }
+
+    /// The walk of `reform_day_array` (`cal.c:829-865`) over the four months
+    /// starting at the reform month; only existing days advance a column.
+    /// C uses the Gregorian leap rule for these months' lengths (`:848-851`).
+    fn window_month(&self, target: usize, style: DayStyle, week_start: usize) -> [[u32; 7]; 6] {
+        let mut date = 1i64;
+        let mut done = 0i64;
+        let mut column = self
+            .weekday(self.date as i64, self.month, self.year, week_start)
+            .unwrap_or(0) as i64;
+        // Back up from the anchor to the first of the reform month:
+        // `diw = (diw + 8 - (date % 7)) % 7` (`cal.c:789-790`).
+        column = (column + 8 - (self.date as i64 % 7)).rem_euclid(7);
+        let mut day_of_year = self.day_in_year(1, self.month, self.year);
+        let mut result = [[0u32; 7]; 6];
+        for index in 0..=target {
+            let (year, month) = add_months(self.year, self.month, index as i64);
+            let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+            let length = month_length(leap, month);
+            let mut flat = [0u32; 42];
+            let mut slot = column.rem_euclid(7) as usize;
+            while date - done <= length as i64 {
+                if date < self.date as i64 || date >= self.date as i64 + self.missing_days as i64 {
+                    if slot < 42 {
+                        flat[slot] = match style {
+                            DayStyle::Month => (date - done) as u32,
+                            DayStyle::Julian => day_of_year as u32,
+                        };
+                    }
+                    slot += 1;
+                }
+                date += 1;
+                day_of_year += 1;
+            }
+            done += length as i64;
+            column = slot as i64;
+            if index == target {
+                result = matrix_from_flat(flat);
+            }
+        }
+        result
+    }
+}
+
+/// Place `count` consecutive numerals from `first_column` in the flat 42-slot
+/// week array and cut it into rows of seven.
+fn fill_matrix(first_column: usize, count: u32, first_value: u32) -> [[u32; 7]; 6] {
+    let mut flat = [0u32; 42];
+    for offset in 0..count as usize {
+        let slot = first_column + offset;
+        if slot < 42 {
+            flat[slot] = first_value + offset as u32;
+        }
+    }
+    matrix_from_flat(flat)
+}
+
+fn matrix_from_flat(flat: [u32; 42]) -> [[u32; 7]; 6] {
+    let mut matrix = [[0u32; 7]; 6];
+    for (index, value) in flat.into_iter().enumerate() {
+        matrix[index / 7][index % 7] = value;
+    }
+    matrix
 }
 
 /// Month names as `cal.c:86-91` spells them (full form, title case).
@@ -194,50 +522,6 @@ pub const J_MONTH_PER_ROW: usize = 2;
 pub const DAY_HEADINGS: &str = " S  M Tu  W Th  F  S";
 /// `j_day_headings` (`cal.c:92`).
 pub const JULIAN_HEADINGS: &str = "  S   M  Tu   W  Th   F   S";
-
-/// 1-based day of the year for the first of `month` (Gregorian leap rule),
-/// mirroring `cal.c` `day_in_year`: `cal -j` prints this as the month's first
-/// cell and counts up, so September 2025 opens at 244.
-pub fn day_of_year_of_first(year: i32, month: u32) -> Result<u32, DocError> {
-    if year <= 0 || !(1..=12).contains(&month) {
-        return Err(DocError::InvalidArgument);
-    }
-    let mut doy = 1u32;
-    for m in 1..month {
-        doy += month_days(year, m, Reckoning::Gregorian)?;
-    }
-    Ok(doy)
-}
-
-/// One month as a 7×6 day matrix (0 = the printer writes blanks). The printed
-/// numeral is `first_value + (day - 1)`: the month display passes
-/// `first_value = 1` (day-of-month), `cal -j` passes the day-of-year of the
-/// month's first.
-///
-/// Column order follows the headings: `day_headings` is **Sunday-first**
-/// (` S  M Tu ...`), while `grid.first_weekday` counts Monday as 0 (the
-/// `weekday` calendar convention), so placement converts by one cell: the
-/// Sunday column = (weekday + 1) % 7.
-///
-/// `week_start` (`cal -d`, 0..6 indexes the base heading column, 0 = Sunday)
-/// rotates the whole week of columns forward: matching C `day_in_week`'s
-/// `(temp - dow + …) % 7` (`cal.c:555`), i.e. column number
-/// `= (base_column - week_start + 7) % 7`; `week_start=0` is verbatim the old
-/// behaviour.
-pub fn day_matrix(grid: &MonthGrid, first_value: u32, week_start: usize) -> [[u32; 7]; 6] {
-    let base_start = (grid.first_weekday + 1) % 7; // Sunday-first column of day one when dow=0 (u32)
-    let start_col = (base_start + 7 - (week_start % 7) as u32) % 7;
-    let mut matrix = [[0u32; 7]; 6];
-    for day in 1..=grid.day_count {
-        let index = (day - 1 + start_col) as usize;
-        let slot = index % 7;
-        let line = index / 7;
-        if line < 6 {
-            matrix[line][slot] = first_value + (day - 1);
-        }
-    }
-    matrix
-}
 
 /// Write the weekday heading row, rotated by `week_start` when nonzero.
 /// Mirrors `cal.c:435-442`: when `dow` is set, print `base[day_len*dow..]`,
@@ -375,20 +659,14 @@ fn put_month_body(
 pub fn render_month(
     year: i32,
     month: u32,
-    reckoning: Reckoning,
+    reform: &Reform,
     style: DayStyle,
     week_start: usize,
     out: &mut [u8],
 ) -> Result<usize, DocError> {
-    let grid = month_grid(year, month, reckoning)?;
-    let (week_len, day_len, headings, first_value) = match style {
-        DayStyle::Month => (WEEK_LEN, 3, DAY_HEADINGS, 1u32),
-        DayStyle::Julian => (
-            J_WEEK_LEN,
-            4,
-            JULIAN_HEADINGS,
-            day_of_year_of_first(year, month)?,
-        ),
+    let (week_len, day_len, headings) = match style {
+        DayStyle::Month => (WEEK_LEN, 3, DAY_HEADINGS),
+        DayStyle::Julian => (J_WEEK_LEN, 4, JULIAN_HEADINGS),
     };
     let mut at = 0;
     let mut title = [0u8; 24];
@@ -404,7 +682,7 @@ pub fn render_month(
     put(out, &mut at, b"\n")?;
     put_headings(out, &mut at, headings, day_len, week_start)?;
     put(out, &mut at, b"\n")?;
-    let matrix = day_matrix(&grid, first_value, week_start);
+    let matrix = reform.month_matrix(year, month, style, week_start)?;
     put_month_body(out, &mut at, &matrix, day_len)?;
     Ok(at)
 }
@@ -413,7 +691,7 @@ pub fn render_month(
 /// centred over the three-column band, then twelve months three to a row.
 pub fn render_year(
     year: i32,
-    reckoning: Reckoning,
+    reform: &Reform,
     style: DayStyle,
     week_start: usize,
     out: &mut [u8],
@@ -433,18 +711,9 @@ pub fn render_year(
     let mut first = 1u32;
     while first <= 12 {
         let count = (12 - first + 1).min(month_per_row as u32) as usize;
-        let mut grid_storage = [MonthGrid {
-            first_weekday: 0,
-            day_count: 0,
-        }; 3];
-        let mut values_storage = [1u32; 3];
-        for slot in 0..count {
-            let month = first + slot as u32;
-            grid_storage[slot] = month_grid(year, month, reckoning)?;
-            values_storage[slot] = match style {
-                DayStyle::Month => 1,
-                DayStyle::Julian => day_of_year_of_first(year, month)?,
-            };
+        let mut matrices = [[[0u32; 7]; 6]; 3];
+        for (slot, matrix) in matrices.iter_mut().enumerate().take(count) {
+            *matrix = reform.month_matrix(year, first + slot as u32, style, week_start)?;
         }
         // Title row and heading row (`cal.c:411-445`): `HEAD_SEP` two spaces
         // between columns.
@@ -467,11 +736,6 @@ pub fn render_year(
             put_headings(out, &mut at, headings, day_len, week_start)?;
         }
         put(out, &mut at, b"\n")?;
-        let matrices = [
-            day_matrix(&grid_storage[0], values_storage[0], week_start),
-            day_matrix(&grid_storage[1], values_storage[1], week_start),
-            day_matrix(&grid_storage[2], values_storage[2], week_start),
-        ];
         // Six day-body rows: outer over weeks, inner over months. The outer
         // `week` must cut the same row out of all three month grids (taking a
         // band by week), which is a fixed-column access across several arrays,
@@ -517,7 +781,7 @@ pub fn render_year(
 pub fn render_range(
     start: (i32, u32),
     end: (i32, u32),
-    reckoning: Reckoning,
+    reform: &Reform,
     style: DayStyle,
     week_start: usize,
     out: &mut [u8],
@@ -618,12 +882,7 @@ pub fn render_range(
         let mut matrices: [[[u32; 7]; 6]; 3] = [[[0; 7]; 6]; 3];
         for slot in 0..count {
             let (y, m) = titles[slot];
-            let grid = month_grid(y, m, reckoning)?;
-            let value = match style {
-                DayStyle::Month => 1,
-                DayStyle::Julian => day_of_year_of_first(y, m)?,
-            };
-            matrices[slot] = day_matrix(&grid, value, week_start);
+            matrices[slot] = reform.month_matrix(y, m, style, week_start)?;
         }
         #[allow(clippy::needless_range_loop)]
         for week in 0..6 {
@@ -697,7 +956,7 @@ fn put_month_year_header(
 pub fn render_triple(
     year: i32,
     month: u32,
-    reckoning: Reckoning,
+    reform: &Reform,
     style: DayStyle,
     week_start: usize,
     out: &mut [u8],
@@ -714,24 +973,11 @@ pub fn render_triple(
         (year, month),
         shift_month(year, month, 1)?,
     ];
-    let mut grid_storage = [MonthGrid {
-        first_weekday: 0,
-        day_count: 0,
-    }; 3];
-    let mut values_storage = [1u32; 3];
+    let mut matrices = [[[0u32; 7]; 6]; 3];
     for slot in 0..3 {
         let (y, m) = months[slot];
-        grid_storage[slot] = month_grid(y, m, reckoning)?;
-        values_storage[slot] = match style {
-            DayStyle::Month => 1,
-            DayStyle::Julian => day_of_year_of_first(y, m)?,
-        };
+        matrices[slot] = reform.month_matrix(y, m, style, week_start)?;
     }
-    let matrices = [
-        day_matrix(&grid_storage[0], values_storage[0], week_start),
-        day_matrix(&grid_storage[1], values_storage[1], week_start),
-        day_matrix(&grid_storage[2], values_storage[2], week_start),
-    ];
     let mut at = 0;
     // Title row: each month's "Name Year" centered in week_len, two spaces
     // between columns.
@@ -810,7 +1056,7 @@ mod render_tests {
         let used = render_month(
             year,
             month,
-            Reckoning::Gregorian,
+            &Reform::standard(),
             DayStyle::Month,
             0,
             &mut out,
@@ -840,23 +1086,79 @@ mod render_tests {
         assert_eq!(lines[7], "", "第六行全空裁尾后是空行（C 的六行循环照打）");
     }
 
+    /// Britain's default reform: 3 through 13 September 1752 never existed.
+    /// The 2nd was a Wednesday and the 14th a Thursday (`cal.c:165`), so the
+    /// grid jumps a column across the seam.
     #[test]
-    fn test_julian_reckoning_shifts_september_1752() {
-        // September 1752: the Gregorian face puts September 14 on a Sunday; the
-        // Julian face puts September 3 on a Wednesday — the two reckonings really
-        // do give different grids.
-        let greg = render(1752, 9);
-        let julian = render(1752, 9);
-        let _ = (&greg, &julian);
-        let greg_grid = month_grid(1752, 9, Reckoning::Gregorian).unwrap();
-        let julian_grid = month_grid(1752, 9, Reckoning::Julian).unwrap();
-        assert_ne!(greg_grid.first_weekday, julian_grid.first_weekday);
+    fn the_default_reform_skips_september_1752() {
+        let reform = Reform::standard();
+        let matrix = reform.month_matrix(1752, 9, DayStyle::Month, 0).unwrap();
+        let days: Vec<u32> = matrix
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&day| day != 0)
+            .collect();
+        assert_eq!(
+            days,
+            (1..=30u32)
+                .filter(|day| !(3..=13).contains(day))
+                .collect::<Vec<_>>()
+        );
+        // Sunday-first columns: the 1st (Tuesday) sits in column 2, the 14th
+        // (Thursday) in column 4 of its week row.
+        assert_eq!(matrix[0][2], 1);
+        let (row, column) = matrix
+            .iter()
+            .enumerate()
+            .find_map(|(row, cells)| {
+                cells
+                    .iter()
+                    .position(|&day| day == 14)
+                    .map(|column| (row, column))
+            })
+            .expect("the 14th is printed");
+        assert_eq!((row, column), (0, 4), "14 September 1752 was a Thursday");
+        assert_eq!(reform.missing_days, 11);
+    }
+
+    /// The table is a selector: `-R Italy` moves the gap to October 1582,
+    /// where the 4th was a Thursday and the 15th a Friday.
+    #[test]
+    fn a_named_reform_moves_the_gap() {
+        let italy = Reform::from_spec("Italy").unwrap();
+        let matrix = italy.month_matrix(1582, 10, DayStyle::Month, 0).unwrap();
+        let days: Vec<u32> = matrix
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&day| day != 0)
+            .collect();
+        assert_eq!(
+            days,
+            (1..=31u32)
+                .filter(|day| !(5..=14).contains(day))
+                .collect::<Vec<_>>()
+        );
+        let (row, column) = matrix
+            .iter()
+            .enumerate()
+            .find_map(|(row, cells)| {
+                cells
+                    .iter()
+                    .position(|&day| day == 15)
+                    .map(|column| (row, column))
+            })
+            .expect("the 15th is printed");
+        assert_eq!((row, column), (0, 5), "15 October 1582 was a Friday");
+        // The default reform leaves October 1582 untouched.
+        assert_eq!(Reform::standard().month_days(1582, 10).unwrap(), 31);
     }
 
     #[test]
     fn test_year_render_band_width() {
         let mut out = [0u8; 4096];
-        let used = render_year(2025, Reckoning::Gregorian, DayStyle::Month, 0, &mut out).unwrap();
+        let used = render_year(2025, &Reform::standard(), DayStyle::Month, 0, &mut out).unwrap();
         let text = core::str::from_utf8(&out[..used]).unwrap();
         let mut lines = text.split('\n');
         let title = lines.next().unwrap();
@@ -881,7 +1183,7 @@ mod render_tests {
         // February/March started separately — test_year_render_band_width only
         // checked the title band and missed it.
         let mut out = [0u8; 4096];
-        let used = render_year(2025, Reckoning::Gregorian, DayStyle::Month, 0, &mut out).unwrap();
+        let used = render_year(2025, &Reform::standard(), DayStyle::Month, 0, &mut out).unwrap();
         let text = core::str::from_utf8(&out[..used]).unwrap();
         let lines: Vec<&str> = text.split('\n').collect();
         // Four bands a year × (1 month name + 1 heading + 6 day rows) + the top
@@ -908,7 +1210,7 @@ mod render_tests {
         // cal -j).
         let mut out = [0u8; 4096];
         let used =
-            render_month(2025, 9, Reckoning::Gregorian, DayStyle::Julian, 0, &mut out).unwrap();
+            render_month(2025, 9, &Reform::standard(), DayStyle::Julian, 0, &mut out).unwrap();
         let text = core::str::from_utf8(&out[..used]).unwrap();
         let lines: Vec<&str> = text.split('\n').collect();
         assert_eq!(
@@ -920,13 +1222,16 @@ mod render_tests {
             lines[2], "    244 245 246 247 248 249",
             "首行日 = 年内第 244–249"
         );
-        assert_eq!(day_of_year_of_first(2025, 9).unwrap(), 244);
         assert_eq!(
-            day_of_year_of_first(2024, 3).unwrap(),
+            Reform::standard().day_of_year_of_first(2025, 9).unwrap(),
+            244
+        );
+        assert_eq!(
+            Reform::standard().day_of_year_of_first(2024, 3).unwrap(),
             61,
             "闰年 3/1 = 31+29+1"
         );
-        assert_eq!(day_of_year_of_first(2025, 1).unwrap(), 1);
+        assert_eq!(Reform::standard().day_of_year_of_first(2025, 1).unwrap(), 1);
     }
 
     #[test]
@@ -934,7 +1239,7 @@ mod render_tests {
         // cal -j 2024: the year view puts 2 months per line (J_MONTH_PER_ROW),
         // Feb 1 = day 32 of the year.
         let mut out = [0u8; 8192];
-        let used = render_year(2024, Reckoning::Gregorian, DayStyle::Julian, 0, &mut out).unwrap();
+        let used = render_year(2024, &Reform::standard(), DayStyle::Julian, 0, &mut out).unwrap();
         let text = core::str::from_utf8(&out[..used]).unwrap();
         let lines: Vec<&str> = text.split('\n').collect();
         // Six bands (12 months / 2) × (1 name + 1 heading + 6 day rows) + the top
@@ -968,7 +1273,7 @@ mod render_tests {
         // Feb 2025, each labelled "Name Year".
         let mut out = [0u8; 8192];
         let used =
-            render_triple(2025, 1, Reckoning::Gregorian, DayStyle::Month, 0, &mut out).unwrap();
+            render_triple(2025, 1, &Reform::standard(), DayStyle::Month, 0, &mut out).unwrap();
         let text = core::str::from_utf8(&out[..used]).unwrap();
         let lines: Vec<&str> = text.split('\n').collect();
         assert_eq!(
@@ -983,15 +1288,15 @@ mod render_tests {
     fn test_week_start_rotation() {
         // cal -d: rotate the whole week of columns forward, with the first day's
         // landing column in sync with the headings.
-        let grid = month_grid(2025, 9, Reckoning::Gregorian).unwrap();
+        let reform = Reform::standard();
         // week_start=0: Sep 1 (Monday) lands in the M column of the Sunday-first
         // headings (cell 1), and the Sunday column is empty.
-        let m0 = day_matrix(&grid, 1, 0);
+        let m0 = reform.month_matrix(2025, 9, DayStyle::Month, 0).unwrap();
         assert_eq!(m0[0][1], 1, "dow=0：Sep 1 在 M 列");
         assert_eq!(m0[0][0], 0, "dow=0：周日列空");
         // week_start=1 (cal -d 1, Monday first): Sep 1 moves to the first column,
         // and Sunday the 7th lands in the last column.
-        let m1 = day_matrix(&grid, 1, 1);
+        let m1 = reform.month_matrix(2025, 9, DayStyle::Month, 1).unwrap();
         assert_eq!(m1[0][0], 1, "cal -d 1：Sep 1（周一）落首列");
         assert_eq!(m1[0][6], 7, "cal -d 1：周日 7 落末列");
         // Heading rotation: dow=1 makes day_headings start at the M column and
@@ -1021,14 +1326,14 @@ mod render_tests {
         let range = render_range(
             (2024, 2),
             (2024, 4),
-            Reckoning::Gregorian,
+            &Reform::standard(),
             DayStyle::Month,
             0,
             &mut a,
         )
         .unwrap();
         let triple =
-            render_triple(2024, 3, Reckoning::Gregorian, DayStyle::Month, 0, &mut b).unwrap();
+            render_triple(2024, 3, &Reform::standard(), DayStyle::Month, 0, &mut b).unwrap();
         assert_eq!(&a[..range], &b[..triple]);
     }
 
@@ -1040,7 +1345,7 @@ mod render_tests {
         let used = render_range(
             (2024, 12),
             (2025, 1),
-            Reckoning::Gregorian,
+            &Reform::standard(),
             DayStyle::Month,
             0,
             &mut out,
@@ -1066,7 +1371,7 @@ mod render_tests {
         let used = render_range(
             (2024, 12),
             (2025, 2),
-            Reckoning::Gregorian,
+            &Reform::standard(),
             DayStyle::Month,
             0,
             &mut out,

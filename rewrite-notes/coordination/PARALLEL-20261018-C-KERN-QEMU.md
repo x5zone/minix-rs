@@ -274,6 +274,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `CP-A`：改 `os/commands/bin/fileops/src/{cp.rs,bin/cp.rs}`、`tests/cp_face.rs`（A 板领地）——`cp` 的 `-a`/`-P` 接通：`scan_is_physical` 收束 C 的 fts 判定（仅无旗标默认跟随操作数；`-R`/`-P`/`-a` 物理）、`-a` = `-RpP`、`-H/-L/-r/-l/-N` 仍拒收、拒绝行改真实理由；门=fileops **471/0**（lib 400，cp 子集 35/0）+ none 构建绿 —— `✅`
 - `2026-11-03` A / `CP-RHL`：改 `os/commands/bin/fileops/src/{cp.rs,bin/cp.rs}`、`tests/cp_face.rs`（A 板领地）——`cp` 余下字母全接：`Follow` 阶梯与 `follow()`（`-r` 逻辑、`-R -H` 仅根、`-R -L` 全跟）、`conflict()` 两条 C 句、`-N` 空操作、`-l` 硬链、祖先栈环检测；顺修 `tolnk` 原式与 `-P` 的 `lstat` 回看；`NotWired` 变体删除；门=fileops **474/0**（lib 402，cp 子集 37/0）+ cp_face 6/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `DF-LETTERS`：改 `os/commands/sbin/mountinfo/src/{df.rs,bin/df.rs,bin_support.rs}`、`tests/df_face.rs`（A 板领地）——`df` 余下字母全接：`-a/-l/-t/-n` 过滤与刷新、`-k/-m/-g` 单位、`getbsize`+`BLOCKSIZE`、`-G` 详表、默认对齐布局与 `maxwidth` 地板、`-P` 512/1024 限制；`NotWired` 拒绝行删除；门=mountinfo **35/0**（lib 28，df 子集 16/0）+ df_face 7/0 + none 构建绿 —— `✅`
+- `2026-11-03` A / `CAL-REFORM`：改 `os/commands/usr-bin/doctools/src/{cal.rs,bin/cal.rs}`、`tests/cal_face.rs`（A 板领地）——`cal -r/-R` 接通并补齐 C 一直启用的改换模型：`Reform` 表/解析/两条锚、改换感知闰年与缺日窗、四个月 `reform_day_array` 走表、`render_*` 改收 `&Reform`；`-r` 缺省落改换月、`-R` 六条 C 句与 usage；门=doctools **98/0**（cal 子集 14/0）+ cal_face 12/0 + none 构建绿 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。
