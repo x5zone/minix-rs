@@ -279,6 +279,7 @@ run_with_qemu_lock() (
 - `2026-11-03` A / `DF-LETTERS`：改 `os/commands/sbin/mountinfo/src/{df.rs,bin/df.rs,bin_support.rs}`、`tests/df_face.rs`（A 板领地）——`df` 余下字母全接：`-a/-l/-t/-n` 过滤与刷新、`-k/-m/-g` 单位、`getbsize`+`BLOCKSIZE`、`-G` 详表、默认对齐布局与 `maxwidth` 地板、`-P` 512/1024 限制；`NotWired` 拒绝行删除；门=mountinfo **35/0**（lib 28，df 子集 16/0）+ df_face 7/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `CAL-REFORM`：改 `os/commands/usr-bin/doctools/src/{cal.rs,bin/cal.rs}`、`tests/cal_face.rs`（A 板领地）——`cal -r/-R` 接通并补齐 C 一直启用的改换模型：`Reform` 表/解析/两条锚、改换感知闰年与缺日窗、四个月 `reform_day_array` 走表、`render_*` 改收 `&Reform`；`-r` 缺省落改换月、`-R` 六条 C 句与 usage；门=doctools **98/0**（cal 子集 14/0）+ cal_face 12/0 + none 构建绿 —— `✅`
 - `2026-11-03` A / `TOUCH-D`：改 `os/commands/bin/fileops/src/{parsedate.rs,lib.rs,bin/touch.rs}`、`tests/touch_face.rs`（A 板领地）——`touch -d` 接通：新增 `parsedate` 移植（四张词表 + 词法器 + item 文法 + UTC 换算，C oracle 向量内嵌）、`-1`/解析失败同答 `Could not parse`、`--date` 走 usage、`not_wired` 删除；门=fileops **484/0**（parsedate 8/0）+ touch_face 4/0 + none 构建绿 —— `✅`
+- `2026-11-03` B / `EVID-211-FILTER`：**跨界登记**——A 板会话（qoder）按裁决 §1b.4「2.11 fbd/filter 部分失败」执行补证，落点在 B 板领地 `rewrite-notes/16-stage-drivers/todo.md` §8：filter 逐段单请求的等价性**否决**（失败位置/镜像后端终态/截断回执规则三处观察差，C 的多段性止于一条消息、镜像双发并发且两回执独立判据），vectored 拒绝维持；fbd 甲案成立（拷贝通路已实施，数据/长度/错误三对账过账，`E2BIG` 与 `ENOMEM` 两处子集边界与理性修正登记）；`E-BLK-VEC` 仍是最小 vector 能力的唯一前置 —— `✅`
 ## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
 
 **申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。

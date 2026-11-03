@@ -175,3 +175,20 @@
 - 框架 `minix-blockdriver::partition`：`parse_primary_table` + `primary_extents`（对位 C `drvlib.c::partition()`），共享给所有磁盘驱动。
 
 **真机尾件与归属（非本 stage 单轮项）**：C `w_probe`（`at_wini.c:314-337`）是 PCI 设备枚举（`pci_first_dev`/`pci_reserve`），非可纯化的状态判据；`BlockDriver::transfer` 的完整落地需要「读设备到暂存 → 与调用方缓冲间的 grant 拷贝 → 每扇区 IRQ/超时」，即本文件 §5 已登记为多进程联调、按约定走 E5/E8/E-INWIRE 通电族的那段接缝——参考驱动 memory 亦把数据面 grant 拷贝留作同一接缝。故 at_wini 的可独立闭合逻辑/控制面已到此边界；其余属 E5 类跨阶段集成专轮，遵 §5 与 §6「正确性快修先于架构、接线按波次」的执行顺序，勿以半接线（开得了却读不动）充数。
+
+
+## 8. 存储代理族下游转发补证（fbd 与 filter，跨板裁决 §2.11）
+
+> 完成判据（`PENDING-DECISIONS-CROSS-BOARD-20261102.md` §1b.4「2.11 fbd/filter 部分失败」行）：四问逐条有读数或源码依据，等价性成立则按甲实施、不成立则评估最小 vector 能力。核实于 `2026-11-03`，`claim/EVID-211-FILTER-qoder`；本条为 A 板会话按裁决执行跨线补证，领地登记见 C 板 §6 同日回执行。
+
+**问①：C 的 vector 请求多段中途失败的处理逻辑**。多段性止于**一条消息**：filter 的 `read_write`（`driver.c:906-943`）把最多 `NR_IOREQS` 段打包成一条带间接授权的 `BDEV_GATHER`/`BDEV_SCATTER`，每后端恰好一次 `sendrec`（`paired_sendrec`，`driver.c:767-789`）。filter 层没有逐段状态——某段在中途失败是下游驱动的事，filter 看到的只是该请求的**单一回执**。回执判据三段式（`:944-970`）：`m_type` 必须 `BDEV_REPLY`、`status >= 0`、`status == 请求字节数`；不等长走「截断回执」规则——大于请求数、或未到盘尾仍短缺，即 `bad_driver(成员, BD_PROTO, EFAULT)`，否则接受较小值并把实际值上浮（`:956-971`）。fbd 同构：直转（`fbd.c:217-269`）与拷贝（`:275-390`）都把整条 vector 原样下发，返回下游的单一 status。
+
+**问②：两个镜像后端的调用先后与错误传播**。`both = (USE_MIRROR && request != FLT_READ)`（`driver.c:918`）——`FLT_WRITE` 与 `FLT_READ2` 镜像双发，`FLT_READ` 只发主。同标号双盘顺序两发（`:697-702`）；不同标号 `flt_senda` 两次异步后两次 `flt_receive` 按 `m_source` 配对（`:709-737`），**并发、无先后保证**。两个回执各自独立过同一套三段判据：主成员失败 `bad_driver(DRIVER_MAIN, …)`（`:944-971`）、备成员失败 `bad_driver(DRIVER_BACKUP, …)`（`:972-999`），任一失败整请求失败。`RET_REDO` 只来自传输层（驱动不在/重启中，`:36-132`），由上层 `filter_transfer` 的重试环（`main.c:174-186`）配 `check_driver` 处理，与段无关。
+
+**问③：Rust 单段接口如何报告部分完成**。块框架的 `BlockDriver::transfer` 已带 `vectored` 形参（`minix-blockdriver/src/driver.rs:99-110`），但 iovec 数组未建模（`E-BLK-VEC`，`2026-10-19` `BLK-DATAPLANE` 片登记；泵在 vectored 形把元素数当字节数直传的缺口同处登记）。两台代理的现形：filter 的 face 对 vectored 请求答 `ENOSYS`（`os/drivers/storage/filter/src/face.rs:421-425`），连续形走 staging 缓冲 + `LowerLeg::transfer`，部分完成 = `Ok(较小字节数)` 原样上浮（`face.rs:147-186`），生产腿 `UnboundLeg` 一律 `ENOSYS`（`lib.rs:39-55`，中层的诚实未接线形）；fbd 的 face 同样拒 vectored（`os/drivers/storage/fbd/src/face.rs:329-334`），连续形走拷贝通路的单条 `BdevClient::transfer`（`face.rs:210-222`，单授权单请求），部分完成同上原样上浮。
+
+**问④：逐段请求后失败位置与后端最终状态是否与 C 相同**。**不成立**，三处可观察差异：(a) 失败位置——C 的一次 vector 请求里「哪段失败」由下游定义、filter 只见总回执；Rust 若逐段下发，失败落在第 k 段是 filter 自己的选择，且前 k−1 段的副作用已发生；(b) 镜像下的后端终态——C 双后端**并发**各收整条 vector（`:709-737`），主失败时备可能已写入更多（无回滚）；Rust 逐段则两后端逐段锁步，失败点后两侧进度一致；(c) 截断回执规则——C 按「一条回执 vs 请求总量」判定（`:956-999`），逐段形没有对位的单点判定，需另造聚合规则，而那是 C 未行使的语义。结论：**逐段单请求不得作为等价替换实施**；`E-BLK-VEC` 补齐前，vectored 拒绝（现状 `ENOSYS`）维持。
+
+**fbd 拷贝通路核对清单（裁决要求数据内容、长度、错误返回三对账）**。C 的选择器（`fbd.c:396-424`）按 `IO_HOOK` 分路——有钩走拷贝、无钩走直转；「无钩」前提下两路等价：数据内容（直转=下游经间接授权直写调用方内存；拷贝=`sys_vsafecopy` 进出暂存区，同一组内核拷贝原语）、长度（两路都原样返回下游 status，`fbd.c:269`/`:390`）、错误返回（同）。C 的拷贝路特意**按原 vector 分块重授暂存区**（`:315-333`，注释：避免坏硬件下的性能波动）——纯性能考量，不改回执面。Rust 的 fbd 已是拷贝通路单连续请求（分块信息丢失，属性能面非观察面）。两处**已登记的子集边界**随本节确认：超 `BUF_SIZE` 的请求 C 用 `alloc_contig`（`:294-296`）而 Rust 答 `E2BIG`（`face.rs:186-193`）；授权失败 C 断言崩溃（`:243-248`）而 Rust 答 `ENOMEM`（`face.rs:215-219`）——后者属「理性修正」（资源耗尽不崩机），登记为已知差异。
+
+**结论与落点**：裁决 §2.11 甲案对 fbd 成立——拷贝通路已实施且清单过账；filter 的逐段形**等价性否决**，维持 vectored 拒绝；「给块设备接口补最小 vector 能力」（`E-BLK-VEC`：iovec 建模 + 泵的字节数直传缺陷修复）仍是唯一前置，登记不变，属 B 线自有后件。
