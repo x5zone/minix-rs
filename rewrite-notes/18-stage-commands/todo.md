@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百二十二（`touch -d` 接通：`parsedate` 语法、词法与 UTC 换算整条移植）
+
+- **这一笔的射程**：not-wired 清单里 `touch` 的最后一处 `-d`，连带它背后的 libutil 自由日期解析器。C 的事实面：`touch.c:102-105` 的 `stime_arg0` 把参数交给 `parsedate(arg, NULL, NULL)`，`:216-218` 把解析结果 `-1`（含真实的 1969-12-31T23:59:59Z 那一秒）也当失败并 `errx("Could not parse \`%s'")`；`parsedate.y` 的四张词表（月/星期、时间单位、相对词与数词、时区与军用时区 `:388-604`）、词法器（带符号数字、字母加点的词、`@`、括号注释、20 字节截断与点剥离重试，`:772-860`）、十条 item 文法（`:113-383`，含 `cvsstamp`、`@epoch`、ISO/`17-JUN-1992`/`Sep 5, 2025` 等日期形、数字时间与数字时区、相对单位与 `ago`）、`Convert`/`AdjustYear`/`RelativeMonth`/`RelativeDate`（`:611-730`）；GNU 的 `--date`/`--reference` 不在 getopt 串里，C 走未知选项的 usage。三条 C 怪癖照原样保留：12 小时制不回卷（`12 pm` 落到次日零点）、`ago` 取反整条相对累加器、三字母月名按表序前缀匹配。
+- **落码**：新增 `fileops::parsedate`（表、词法、贪心 item 序列、UTC 换算；`USE_LOCAL_TIME` 在本树无时区库的环境下即 UTC，模块头注明）；`touch` 的 `-d` 取参并走 `parsedate`，`-1` 与解析失败同答 C 句，`-d`/`-t`/`-r` 维持「后者夺权」的 `ts` 赋值序；`--xxx` 由未接线拒绝改为 C 的 usage；`not_wired` 函数删除（无生产者）；usage 行换成 C 的全形。
+- **可测性边界**：纯逻辑，宿主可测。解析器测试直接把 C 参照件当 oracle：宿主 `bison 3.8.2`/`flex 2.6.4` 编 `minix3/lib/libutil/parsedate.y`，以 `parsedate(text, &1757075696, NULL)`、`TZ=UTC` 取七十余条向量（ISO、月名、星期、AM/PM、显式与数字时区、军事时区、`@epoch`、`cvsstamp`、相对与 `ago`、括号注释、`zp4` 的不可达拼写、错误形），内嵌为 `c_oracle_vectors` 逐条对值；面测钉 `-d` 过门、两条 `Could not parse` 形、`--date` 的 usage。
+- **门**：`cargo test -p minix-fileops` → **484/0**（`parsedate` 子集 8/0，含 oracle 向量两条；面测 `touch_face` 4/0）；clippy 触及文件零新增；`rustfmt --edition 2024` 四文件清；`cargo build --target x86_64-unknown-none --bin touch` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `45dee5a9c`。
+
 ## 批次五百二十一（`cal -r/-R` 接通：公历改换模型、reform 表与缺日阵列）
 
 - **这一笔的射程**：`cal` 的最后两个字母，连同 C 一直挂在日历上的改换模型。C 的事实面：`reforms[]` 表（`cal.c:165-197`）与 `DEFAULT` 1752-09-03 的无条件安装（`:282-283`，不传 `-r` 也在用）；`-R` 的三形解析（`:727-802`：`年[/,-]月[/,-]日`、表内部分匹配的 ambiguity 界、大小写不敏感国名）与六条 `errx` 句；闰年规则在改换年处分叉（`:105-108`：之前儒略、之后格里）；`first_missing_day`/`missing_days` 两个锚（`:772-786`）；`day_in_week` 的缺日窗三分支（`:549-559`）；`reform_day_array` 的逐日走表（`:829-865`，只让存在的日子推进列，四个改换月起算）；`day_array` 的 shift 查表（`:498-513`）；`-r` 缺省月/年的取法（`:306-315`）；usage 两行（`:911-917`）。

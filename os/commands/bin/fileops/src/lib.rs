@@ -54,6 +54,7 @@ pub mod mkfifo;
 pub mod mode;
 pub mod mv;
 pub mod path;
+pub mod parsedate;
 pub mod pathchk;
 pub mod printf;
 pub mod pwd;

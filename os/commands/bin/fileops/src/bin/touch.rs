@@ -9,13 +9,14 @@
 //! timezone caveat).
 //!
 //! `-r file` is wired: C's `stime_file()` (`touch.c:318-327`) is one `stat` of
-//! the reference plus the two times it carries, and this shell already `stat`s
-//! every operand. Still declared not-wired, because they need infrastructure
-//! this tree does not provide: `-d` (a free-form date string, C `parsedate`),
-//! `-h` (`lutimens`, which needs the symlink-not-following face), and the
-//! `--date` / `--reference` long options. Each reports and exits 1 rather than
-//! silently diverging. Real file creation and time-setting need a
-//! writable root, so the run is gated with the write-class commands (`E5`).
+//! the reference plus the two times it carries. `-d datetime` is wired too:
+//! C's `stime_arg0` (`touch.c:214-222`) hands the argument to libutil's
+//! `parsedate`, whose grammar, lexer and UTC conversion this tree ports in
+//! [`minix_fileops::parsedate`]. `-h` touches the link itself through
+//! `AT_SYMLINK_NOFOLLOW`. The GNU long spellings (`--date`, `--reference`)
+//! are not options at all in C's `getopt` string, so they answer `usage()`
+//! exactly as C does. Real file creation and time-setting need a writable
+//! root, so the run is gated with the write-class commands (`E5`).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -30,14 +31,21 @@ use alloc::vec::Vec;
 use minix_sys::vfs::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 use minix_sys::{Stat, close, fstat, gettimeofday, lstat, open, stat, utimens, utimensat};
 
+/// C's usage line (`touch.c` end of file): capital `Usage:`, the program
+/// name, and the long spellings that getopt itself does not accept.
 fn usage() -> ! {
-    support::warn(b"usage: touch [-acfhm] [-d date] [-r file] [-t time] file ...\n");
-    support::terminate(1);
-}
-
-fn not_wired(flag: &str) -> ! {
-    support::warn(format!("touch: {flag} not wired\n").as_bytes());
-    support::terminate(1);
+    let argv = support::args();
+    let prog = argv
+        .first()
+        .map(|arg| arg.rsplit('/').next().unwrap_or(arg))
+        .unwrap_or("touch");
+    support::warn(
+        format!(
+            "Usage: {prog} [-acfhm] [-d|--date datetime] [-r|--reference file] [-t time] file ...\n"
+        )
+        .as_bytes(),
+    );
+    support::terminate(1)
 }
 
 /// `fcntl.h` open flags (Minix values, matching the other write-side binaries).
@@ -64,6 +72,9 @@ fn run() -> ! {
     // `reference_last` says whether that `-r` came after the last `-t`.
     let mut reference: Option<[(i64, i64); 2]> = None;
     let mut reference_last = false;
+    // `-d`'s parsed instant, and whether it came after the last `-t`.
+    let mut date_seconds: Option<i64> = None;
+    let mut date_last = false;
 
     // getopt "acd:fhmr:t:" — options consume until the first bare operand.
     let mut i = 1;
@@ -87,7 +98,39 @@ fn run() -> ! {
                     // `AT_SYMLINK_NOFOLLOW` form for the change, with
                     // creation suppressed (`cflag`).
                     b'h' => hflag = true,
-                    b'd' => not_wired("-d"),
+                    // `case 'd': timeset = 1; stime_arg0(optarg, ts);`
+                    // (`touch.c:102-105`): libutil's free-form parser, whose
+                    // UTC answer becomes both timestamps.
+                    b'd' => {
+                        let text = {
+                            let rest = &a[k + 1..];
+                            if !rest.is_empty() {
+                                rest
+                            } else {
+                                i += 1;
+                                match args.get(i) {
+                                    Some(s) => *s,
+                                    None => usage(),
+                                }
+                            }
+                        };
+                        let now = gettimeofday().map(|(sec, _)| sec).unwrap_or(0);
+                        match minix_fileops::parsedate::parsedate(text, now) {
+                            // `touch.c:216-218` treats `-1` as unparsable even
+                            // when the parser really meant that instant.
+                            Some(sec) if sec != -1 => date_seconds = Some(sec),
+                            _ => {
+                                support::warn(
+                                    format!("touch: Could not parse `{text}'\n").as_bytes(),
+                                );
+                                support::terminate(1);
+                            }
+                        }
+                        timeset = true;
+                        reference_last = false;
+                        date_last = true;
+                        k = bytes.len();
+                    }
                     b'r' => {
                         // `case 'r': timeset = 1; stime_file(optarg, ts);`
                         // (`touch.c:114-116`): the reference is stated **inside
@@ -137,6 +180,7 @@ fn run() -> ! {
                         };
                         timeset = true;
                         reference_last = false;
+                        date_last = false;
                         k = bytes.len();
                     }
                     _ => usage(),
@@ -145,7 +189,9 @@ fn run() -> ! {
             }
             i += 1;
         } else if a.starts_with("--") {
-            not_wired(a);
+            // Not a long-option parser: C's `getopt` sees the second `-` as
+            // an unknown option letter and answers usage.
+            usage();
         } else {
             break;
         }
@@ -174,13 +220,17 @@ fn run() -> ! {
     // — a pure function, so the rule has a gate even though writing the times
     // needs the real root the whole write class of this crate is gated on.
     let parsed = if timeset && !reference_last {
-        match minix_fileops::touch::parse_time_spec(now_sec, spec) {
-            Ok(sec) => Some(sec),
-            Err(_) => {
-                support::warn(
-                    b"touch: out of range or illegal time specification: [[CC]YY]MMDDhhmm[.SS]\n",
-                );
-                support::terminate(1);
+        if date_last {
+            date_seconds
+        } else {
+            match minix_fileops::touch::parse_time_spec(now_sec, spec) {
+                Ok(sec) => Some(sec),
+                Err(_) => {
+                    support::warn(
+                        b"touch: out of range or illegal time specification: [[CC]YY]MMDDhhmm[.SS]\n",
+                    );
+                    support::terminate(1);
+                }
             }
         }
     } else {
