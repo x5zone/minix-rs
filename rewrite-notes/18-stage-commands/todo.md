@@ -119,6 +119,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百二十（`df` 余下字母接通：过滤、单位、`-G` 详表与默认对齐布局）
+
+- **这一笔的射程**：not-wired 清单里 `df` 的最后一处（`a/G/g/l/m/n/t:` 七个字母）。C 的选项落点（`df.c:93-145`）：`-a` 保留 `MNT_IGNORE` 条目、`-l` 只留 `MNT_LOCAL`、`-t` 按 `f_fstypename` 过滤（`no` 前缀取反，`selected` 以 NUL 结尾比较即全等）、`-n` 打印缓存表而不逐挂载点 `statvfs` 刷新；`-k/-m/-g` 是报告块单位，无单位字母时走 `getbsize`（`minix3/lib/libc/gen/getbsize.c`：`BLOCKSIZE` 十进制数可带一位 `K/M/G`，下限 512、上限 1G，越界/畸形各出 `warnx`）；`-G` 是 SunOS 详表（`df.c:365-408`，其中「total files／free files」的实参顺序与标签相反，照原样复刻）；默认布局是 `%-*.*s` + 三个 `%10` 的**对齐表**而不是 `-P` 行，列宽在 `:416` 有 `maxwidth < 12` 的地板；`-P` 只接受 512/1024 两种块（`:441-445`，且在取得挂载表之后才报），头行标签随块大小变化；`-h -i` 可同用（`-i` 只是追加 inode 段）。
+- **落码**：`df.rs` 新增 `getbsize`（含 C 的三条告警顺序）、`TypeList`/`parse_type_list`/`type_selected`、`hidden_by_filter`、`p_header`、`format_block_row`（默认对齐布局）、`format_g_row`（五行详表 + `%#lx` 零值无前缀语义）、`clamped_width`，并把 `blocksize` 与 `iflag` 穿进 `format_p_row`/`format_i_row`/`format_h_row`/`default_header`；bin 重写选项解析（`-t` 的贴写与分写、重复与空表三条 `errx`、`--`）、`regetmntinfo` 的过滤与逐挂载刷新（`-a` 快捷路径）、操作数的 `stat`→`getmntpt`→`statvfs` 解析及 `-l`/`-t` 警告腿、`-G`/`-P`/`-i` 两条 C 冲突句与 usage 行；`bin_support` 增 `env` 双生（宿主 `std::env`，目标 `minix_rt::crt0::envs`）供 `BLOCKSIZE` 使用。
+- **可测性边界**：挂载表腿是 none 面，宿主只见取表失败——面测钉七形：`-P -h`、两条冲突 C 句、`-t` 三条失败、全部 usage 字母过门、未知字母 usage、操作数的 `Can't get mount information`。布局与算术由库测钉：默认对齐行/`-h`（含 `-i`）/`-i` 行/`-G` 五行逐字节、`getbsize` 八形、过滤与类型表。`minix-sys` 的 `getvfsstat` 只暴露缓存形，故 C 的单次 `MNT_WAIT` 取表改为逐挂载点 `statvfs`（同 `:307-314` 的请求）；刷新失败保留缓存记录，是 C 未查返回值的唯一稳妥读法。
+- **门**：`cargo test -p minix-mountinfo` → **35/0**（lib 28，含 df 子集 16/0；面测 `df_face` 7/0）；clippy 触及文件零新增；`rustfmt --edition 2024` 四文件清；`cargo build --target x86_64-unknown-none --bin df` 绿。三件套：上述命令与读数、核实日 `2026-11-03`、基线 `67f3d083f`。
+
 ## 批次五百一十九（`cp` 余下字母接通：`-r`/`-H`/`-L` 阶梯、`-N` 空操作与 `-l` 硬链）
 
 - **这一笔的射程**：not-wired 清单里 `cp` 的最后五个字母。C 的 `-r`（`cp.c:157-159`、`:175-188`）是逻辑遍历：与 `-R` 同用即 `errx`「the -R and -r options may not be specified together.」，与 `-H/-L/-P` 同用即第二条 `errx`；三个遍历字母互斥清位（`:119-133`），扫描选项在 `:190-200` 装配（`-R -H` = COMFOLLOW、`-R -L` = LOGICAL、`-r` = LOGICAL、仅无旗标默认形 = LOGICAL|COMFOLLOW）；`S_IFLNK` 臂只在物理扫描出现（`:444-453`）；`FTS_DC` 环（`:348-351`）报「directory causes a cycle」后跳过；`-l`（`utils.c:166-176`）在目的已 open 后关闭两 fd、unlink 目的、把源 `link` 过去，且不再走 `-p`；`-N` 的唯一读者在 `#if !defined(__minix)` 的 chflags 段（`utils.c:395`），Minix 上是空操作。同时修两处随字母解开才暴露的存量偏差：`tolnk` 公式（`utils.c:109`）此前化简成 `Rflag`，`-H/-L` 接入后必须按原式；目标与目的回看（`cp.c:237-239`、`:418-419`）在 `-P` 下走 `lstat`。

@@ -43,6 +43,31 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
     std::env::args().collect()
 }
 
+/// One environment variable's value (`getenv`), by name.
+///
+/// Target builds walk the birth-chain `environ` the same way C's `getenv`
+/// does; hosted builds read the process environment. A variable set to the
+/// empty string answers `Some("")`, which is what `getenv` returns and what
+/// `getbsize` distinguishes from unset.
+#[cfg(all(not(test), target_os = "none"))]
+pub fn env(name: &str) -> Option<alloc::string::String> {
+    minix_rt::crt0::envs().find_map(|raw| {
+        let text = alloc::string::String::from_utf8_lossy(raw);
+        let (key, value) = text.split_once('=')?;
+        if key == name {
+            Some(alloc::string::String::from(value))
+        } else {
+            None
+        }
+    })
+}
+
+/// Hosted twin of [`env`].
+#[cfg(any(test, not(target_os = "none")))]
+pub fn env(name: &str) -> Option<alloc::string::String> {
+    std::env::var(name).ok()
+}
+
 /// Terminates the process with an exit status (see the module header).
 #[cfg(all(not(test), target_os = "none"))]
 pub fn terminate(code: i32) -> ! {
@@ -121,4 +146,3 @@ pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, ()> {
     let _ = minix_sys::close(fd);
     Ok(out)
 }
-
