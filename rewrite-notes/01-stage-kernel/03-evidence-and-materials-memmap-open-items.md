@@ -220,6 +220,15 @@
 | totalsize 上限 | `dtb_len_ok`（40 B–64 MiB）；OpenSBI 腿另加 checked 加法 | `grep -n -e dtb_len_ok -e checked_add os/boot-shim/src/opensbi_helpers.rs` |
 | `fdt 0.1.5` 的校验范围 | `Fdt::new` 仅查 magic 与 `data.len() >= totalsize`；`memory_reservations()` 直接按 `off_mem_rsvmap` 切分，无对齐/偏移边界检查 | `sed -n "175,205p" /home/xzhao/.cargo/registry/src/*/fdt-0.1.5/src/lib.rs`；`sed -n "243,260p" .../fdt-0.1.5/src/lib.rs` |
 
+## 一n、第三十九轮读数（FDT 容器与设备资源）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| FDT 容器校验 | `fdt_layout::validate` + 10 条测试（对齐/越界/缺终止项/截断/重叠） | `cd os && cargo test -p minix-boot --lib fdt_layout` |
+| 五处接入 | riscv/aarch64 bootface、OpenSBI、aarch64 UEFI 两处堆副本 | `grep -rn "fdt_layout::validate" os --include=*.rs` |
+| UART 资源范围 | `serial@10000000` 的 `reg = <0x00 0x10000000 0x00 0x100>`（256 B） | `dtc -I dtb -O dts /tmp/p1.dtb` |
+| PLIC 资源与中断 | `reg = 0xc000000 + 0x600000`；`interrupts-extended = <0x02 0x0b 0x02 0x09>` | 同上 |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |

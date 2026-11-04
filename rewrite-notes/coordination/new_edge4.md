@@ -5209,3 +5209,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-12h 精度；O-12j `fdt 0.1.5` 核对结果；§6 基线统一 86/67；§7 六组。
 - 过程更正：第三十七轮正文补丁在 reset 恢复时丢失，本轮补回；教训「reset 后重放全部补丁」。
 - 门：minix-boot 86、boot-shim 67、riscv/aarch64 编译、riscv bootface QEMU PASS；lint 0。
+
+### 第二百四十七笔（01 阶段 · I-29 第三十九轮：FDT 容器校验与范围五列化）
+
+代码 `1a9e2a14f`；主文档 607 → 620 行。
+
+- `fdt_layout::validate` 检查整容器（magic/totalsize/对齐/块边界与重叠/MRB 终止项），五处 DTB 入口接入；O-12j 关闭。
+- O-12c 五列（Aperture/Required/PolicyAuthorized/Coverage），UART 实测 256 B，PLIC profile 收紧到单 socket+AIA 关闭+TCG。
+- O-06 拆 Loader/BootServices 的 CODE/DATA 四行、默认 NX；§4 权限改为对象义务制；Reserved 域外但来源身份有效。
+- O-12i `FullPages`/`TypeAllocatablePages`/`no-map` 部分页；O-12g 同义重复 vs 异义冲突；O-12h 版本策略与 2^64 独立错误码。
+- §6 统一 96/67；§7 O-01 归入来源组，改名「第一轮实现复审的起点」。
+- 门：minix-boot 96、boot-shim 67、四目标编译、riscv 与 aarch64 UEFI QEMU 双 PASS；lint 0。
