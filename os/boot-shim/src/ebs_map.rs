@@ -850,6 +850,14 @@ mod tests {
     }
 
     #[test]
+    fn hot_pluggable_bit_fails_closed_as_unknown() {
+        // UEFI 2.11 defines EFI_MEMORY_HOT_PLUGGABLE (bit 10, 0x400), but the
+        // pinned uefi-raw 0.9 has no constant for it. A descriptor carrying it
+        // must be refused, not silently classified as ordinary memory.
+        assert_eq!(disp(ty::CONVENTIONAL, WB | 0x400), Err(PolicyError::UnknownAttribute));
+    }
+
+    #[test]
     fn isa_attributes_fail_closed_whatever_the_mask_says() {
         assert_eq!(
             disp(ty::CONVENTIONAL, WB | attr::ISA_VALID),

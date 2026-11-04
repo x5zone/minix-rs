@@ -87,6 +87,10 @@ pub enum DtbMemMapError {
     /// The memory reservation block has more entries than `DTB_MRB_MAX` (a
     /// missing terminator also lands here).
     TooManyMemoryReservations,
+    /// A memory reservation entry has a zero size but a non-zero address. Only
+    /// `{0, 0}` terminates the block; a zero-length entry is malformed and
+    /// must not be silently accepted as a reservation.
+    ZeroLengthMemoryReservation,
     /// Two memory reservation block entries overlap; the specification
     /// requires the block's entries to be disjoint.
     OverlappingMemoryReservations,
@@ -385,6 +389,9 @@ impl DtbMemoryMap<'_> {
         let mut mrb = [(0u64, 0u64); DTB_MRB_MAX];
         let mut mrb_n = 0usize;
         for entry in self.fdt.memory_reservations() {
+            if entry.size() == 0 {
+                return Err(DtbMemMapError::ZeroLengthMemoryReservation);
+            }
             let (start, end) = declared_page_range(entry.address() as u64, entry.size() as u64)?;
             if mrb_n >= DTB_MRB_MAX {
                 return Err(DtbMemMapError::TooManyMemoryReservations);
@@ -1103,6 +1110,24 @@ mod tests {
         assert!(matches!(
             DtbMemoryMap::new(&fdt, 0).collect(),
             Err(DtbMemMapError::HotpluggableMemoryUnsupported)
+        ));
+    }
+
+    #[test]
+    fn dtb_zero_length_memory_reservation_is_rejected() {
+        // Only `{0, 0}` terminates the block; a zero-size entry with a real
+        // address is malformed and must not be accepted as a reservation.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[],
+            &[(0x8000_8000, 0)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::ZeroLengthMemoryReservation)
         ));
     }
 
