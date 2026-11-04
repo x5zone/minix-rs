@@ -5067,3 +5067,16 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 门：`cargo test -p minix-boot --lib` 75/0；`cargo test -p boot-shim --lib` 66/0；x86_64/aarch64（`fw-none-image`）/ riscv64 交叉 check 通过；`os/qemu-tests/test-kernel-image-riscv64-bootface.sh` PASS（串口 memmap 行不变）。`doc-style-lint --diff` 零命中；主简报 1745 行（上限 1750）。
 - 文档：简报 §4.1/§4.3/R4b-c1 按落码修正（R4b-c1 撤回「声明必须整段在 /memory 内」，改为按交集生效）；缺陷表第 1/4 条标已修、第 5 条撤销；档案补第二十六轮之后落码块与第二十一至二十六轮缺块补记；材料册新增落码证据表。
 - 边界：QEMU/OpenSBI 的运行时 DTB 未在前缀之上暴露保留声明，该次 QEMU 只证「接入不改变既有引导」，扣除行为由单元测试覆盖，真实板卡样本待取。
+
+### 第二百三十四笔（01 阶段 · I-29 第二十七轮合同收尾）
+
+文档提交 `cdf6ba20a`（基线 `e96613504`），不扩集合、只闭合边界；主文档 1745 → 1739 行。
+
+- §0.3 三输入域与表头对齐（原分隔行只有两列），`DeviceMappingRequirements` 降为映射义务、只引用 `AuthorityId`。
+- AArch64 锁定 4 KiB granule：代码锚 `TCR_EL1` TG0/TG1=0、`PhysFrame::SIZE=0x1000`；16K/64K 不在支持集合。
+- `NormalizeByType` → `NormalizationRole` 六行表；`RamLikeSourceRanges` → `MemoryTypeSourceRanges`；补 R2 的包含前提。
+- R13-A 主键改 `AccessUseId`，`(tree,phase,path)`/`(caller,phase)` 降为属性；调用点完备性 = 受控边界 + CI 静态审计 + 负控（实现先决）。代码读数：raw 端口 asm 仅 arch/plat/boot-shim 五个文件，kernel/servers 零命中。
+- 普通主存语义准入覆盖所有 `NormalMainMemory` 映射范围（含 `ReservedMappedRanges`）。
+- PERSISTENT 归 `DiagnosticMemberRanges`（代码：type 14 落 side list）；诊断范围表（完整、超限拒绝启动）与操作者样本（可截断）拆成两个合同。
+- 计数重算 `4+5+2+11+1+2+7+7=39`，24 组 `G01–G24` 对照；三处「请评审人回答」收敛进 §12.4。
+- 门：`doc-style-lint --diff` error 0；表格/围栏自检 0 新增（主文档从 1 处既有列错位降到 0）；档案与材料册补本轮块与代码读数。
