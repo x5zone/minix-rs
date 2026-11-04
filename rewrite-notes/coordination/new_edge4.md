@@ -5369,3 +5369,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - x2APIC 分层；O-11 地址三概念；`ReservedReusable+MRB` 冲突；页级生命周期规则。
 - 门：minix-boot 132、boot-shim 69、x86_64-unknown-uefi check 通过。
 - aarch64 仍阻断：`servers/rs`、`servers/sched` 已修，`servers/vfs/src/main_loop.rs:7635`（`VfsIpc`）仍缺 `sendrec`。
+
+### 第二百六十四笔（01 阶段 · I-29 第五十六轮：aarch64 首次通过）
+
+代码 `9ce248cf7`（测试切片）；主文档约 945 行。
+
+- **aarch64 UEFI QEMU 腿首次 PASS**：`servers/rs`/`servers/sched`/`servers/vfs` 的 `sendrec` 三处补齐后，串口读到 memmap 来源行与内核进入行。
+- 高位属性 `0x20000/0x40000/0x80000` 明确为仓库分支选择并有断言钉住；`0x10000` 仍未知位拒绝。
+- EFI DTB 类型验证两时点（40 字节 → 全对象）；MRB×DTB 页差分；NV 分支不可达写明；O-12k 准备前移；x2APIC 入 O-10 审计。
+- 门：minix-boot 132、boot-shim 70、两条 QEMU 腿均 PASS。

@@ -867,3 +867,11 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | EFI DTB | 标准表必须 `EfiACPIReclaimMemory`（UEFI 2.11 §4.6.1.3 转述）；与静态保留同页拒绝、与 MRB 同页走例外 |
 | 门 | minix-boot **132**、boot-shim **69**；x86_64-unknown-uefi check 通过 |
 | aarch64 QEMU | 再次尝试：`servers/rs`、`servers/sched` 已修，`servers/vfs/src/main_loop.rs:7635`（`VfsIpc`）仍缺 `sendrec`（`E0046`）；镜像组装失败，启动行为未验证 |
+
+## 二十八、第五十六轮：高位属性钉住与 aarch64 首过
+
+| 项 | 读数 |
+|---|---|
+| 高位属性 | `WB|0x2_0000` → Allocate（RO 元数据）；`WB|0x4_0000` → Side（SP 独立属性）；`WB|0x8_0000` → Allocate（CPU_CRYPTO）；`WB|0x10_0000` → UnknownAttribute；测试 `high_bit_attributes_follow_the_repository_encoding` |
+| 门 | minix-boot **132**、boot-shim **70**；x86_64-unknown-uefi check 通过 |
+| aarch64 QEMU | **PASS**（exit 0）：`test-shim-bootmarks-aarch64.sh`；串口 `memmap source: uefi-getmemorymap (… conv=13 dtb_regions=1)` 与 `entering kernel image v1`。外部 `E0046` 三处（rs/sched/vfs）已在 `b71bce1d0`、`ae4ef5c76`、`8dc30f75e` 修复 |

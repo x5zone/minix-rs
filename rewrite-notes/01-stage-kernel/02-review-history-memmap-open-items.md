@@ -10,6 +10,15 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十六轮评审之后：两时点类型验证、MRB 页差分、高位属性钉住）**
+
+- **代码 `9ce248cf7`（测试切片）**：`high_bit_attributes_follow_the_repository_encoding` 钉住 `0x2_0000`（RO→可用）、`0x4_0000`（SP→独立属性排除）、`0x8_0000`（CPU_CRYPTO→元数据）与 `0x10_0000`（未知位拒绝）——高位解释是**分支选择**，不是无歧义读法。boot-shim **70**、minix-boot **132**。
+- **aarch64 UEFI 腿首次通过**：`servers/rs`（`b71bce1d0`）、`servers/sched`（`ae4ef5c76`）、`servers/vfs`（`8dc30f75e`）依次补齐 `sendrec` 后，`test-shim-bootmarks-aarch64.sh` exit 0，串口读到 memmap 来源行与内核进入行。
+- **EFI DTB 类型验证拆两个时点**：首读前只验 `[dtb, dtb+40)` 的页；`totalsize` 已知后再验整段 `Outward([dtb, dtb+totalsize))` 全部由 ACPIReclaim 覆盖，失败即拒绝、不得复制 body。
+- **MRB × EFI DTB 页集合差分**：`MrbPages \ DtbPages → Reserved`、`MrbPages ∩ DtbPages → ACPIReclaim`；例外只作用于交集页，多页 MRB 必须能按页分段；最终交叉验证表同步拆分。
+- **NV 文字矛盾修正**：模型保留 NV 语义但当前分类器拒绝该位、分支不可达；恢复需先钉 profile。
+- **O-12k**：静态准备前移；**x2APIC**：MSR 访问纳入 O-10 独立审计（asm! 第二条 rdmsr/wrmsr 必须失败）。
+
 **本轮（第五十五轮评审之后：EFI DTB 专属类型、属性冲突域、x2APIC 分层）**
 
 - **代码 `cdfa1637c`**：属性歧义域从单一位扩到 `0x1_F000`（`0x1000`/`0x2000`/`0x4000`/`0x8000`/`0x1_0000` 在两套官方编码里含义不同，其中 `0x4000` 的 `SP`/`XP` 之争最危险：按 PDF 编码的 `SP` 会被当成仅元数据的 `XP` 而进 PMM）。负控 `every_contested_attribute_bit_fails_closed`；`NON_VOLATILE` 因此进入拒绝域，`TYPE_INDEPENDENT` 的 NV 分支在真实输入上不可达（已注明是未钉 profile 的保守代价）。boot-shim **69**、minix-boot **132**。
