@@ -24,9 +24,7 @@
 //! `EOPNOTSUPP`, failing closed like C's unknown-request exit.
 
 use alloc::vec::Vec;
-use minix_sys::ipc::{
-    AsyncSlot, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _,
-};
+use minix_sys::ipc::{AsyncSlot, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
 use minix_sys::syscall::{self, DirectKernelCallTransport};
 use minix_sys::vm as sys_vm;
 use minix_types::{
@@ -39,19 +37,15 @@ use crate::sem::ctl::{self, SemInfo};
 use crate::sem::op::SemOp;
 use crate::server::{EventLoopTransport, IpcStatus, TransportError};
 use crate::service::{Credentials, IpcBoundary};
-use crate::shm::segment::Backing;
 use crate::shm::ShmIdView;
 use crate::shm::attach::{ShmInfoAgg, ShmSummary};
+use crate::shm::segment::Backing;
 
 /// Byte length of one `semop` array element (C `struct sembuf`: three shorts).
 const SEMBUF_SIZE: usize = 6;
 
 fn positive(e: i32) -> i32 {
-    if e < 0 {
-        -e
-    } else {
-        e
-    }
+    if e < 0 { -e } else { e }
 }
 
 /// Production boundary: the IPC leg (PEER taskcall plus asynchronous sends) and
@@ -139,13 +133,8 @@ impl IpcBoundary for SysBoundary {
             endpt: endpoint.0,
             ..MessLsysPmGetepinfo::default()
         };
-        let reply = syscall::perform_taskcall(
-            &self.ipc,
-            Endpoint::PM,
-            PM_GETEPINFO,
-            &mut msg,
-        )
-        .ok()?;
+        let reply =
+            syscall::perform_taskcall(&self.ipc, Endpoint::PM, PM_GETEPINFO, &mut msg).ok()?;
         if reply < 0 {
             return None;
         }
@@ -198,12 +187,7 @@ impl IpcBoundary for SysBoundary {
         self.copy_out_raw(to, ptr, &raw)
     }
 
-    fn copy_out_sem_stat(
-        &self,
-        to: Endpoint,
-        ptr: u32,
-        view: &ctl::SemIdView,
-    ) -> Result<(), i32> {
+    fn copy_out_sem_stat(&self, to: Endpoint, ptr: u32, view: &ctl::SemIdView) -> Result<(), i32> {
         let ds = SemidDs {
             sem_perm: IpcPerm {
                 uid: view.perm.uid,
@@ -218,8 +202,12 @@ impl IpcBoundary for SysBoundary {
             sem_ctime: view.change_time,
             ..SemidDs::default()
         };
-        let bytes =
-            unsafe { core::slice::from_raw_parts((&raw const ds) as *const u8, core::mem::size_of::<SemidDs>()) };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&raw const ds) as *const u8,
+                core::mem::size_of::<SemidDs>(),
+            )
+        };
         self.copy_out_raw(to, ptr, bytes)
     }
 
@@ -257,12 +245,7 @@ impl IpcBoundary for SysBoundary {
         })
     }
 
-    fn copy_out_shm_stat(
-        &self,
-        to: Endpoint,
-        ptr: u32,
-        view: &ShmIdView,
-    ) -> Result<(), i32> {
+    fn copy_out_shm_stat(&self, to: Endpoint, ptr: u32, view: &ShmIdView) -> Result<(), i32> {
         let ds = ShmidDs {
             shm_perm: IpcPerm {
                 uid: view.perm.uid,
@@ -281,17 +264,16 @@ impl IpcBoundary for SysBoundary {
             shm_ctime: view.change_time,
             ..ShmidDs::default()
         };
-        let bytes =
-            unsafe { core::slice::from_raw_parts((&raw const ds) as *const u8, core::mem::size_of::<ShmidDs>()) };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&raw const ds) as *const u8,
+                core::mem::size_of::<ShmidDs>(),
+            )
+        };
         self.copy_out_raw(to, ptr, bytes)
     }
 
-    fn copy_out_shminfo(
-        &self,
-        to: Endpoint,
-        ptr: u32,
-        summary: &ShmSummary,
-    ) -> Result<(), i32> {
+    fn copy_out_shminfo(&self, to: Endpoint, ptr: u32, summary: &ShmSummary) -> Result<(), i32> {
         // C shm.c:349-352: the all-constant shminfo block (the summarize
         // decision face). sys/shm.h shminfo field order:
         // shmmax/shmmin/shmmni/shmseg/shmall.
@@ -309,12 +291,7 @@ impl IpcBoundary for SysBoundary {
         self.copy_out_raw(to, ptr, &raw)
     }
 
-    fn copy_out_shmagg(
-        &self,
-        to: Endpoint,
-        ptr: u32,
-        agg: &ShmInfoAgg,
-    ) -> Result<(), i32> {
+    fn copy_out_shmagg(&self, to: Endpoint, ptr: u32, agg: &ShmInfoAgg) -> Result<(), i32> {
         // C shm.c:354-364: the shm_info aggregate block (sys/shm.h:208-216
         // field order).
         let fields = [
@@ -352,14 +329,23 @@ impl IpcBoundary for SysBoundary {
         if code == crate::sem::NO_REPLY {
             return;
         }
-        let msg = Message { m_type: code, ..Message::default() };
+        let msg = Message {
+            m_type: code,
+            ..Message::default()
+        };
         //[SD19-gate] sendnb delivers a kill/signal without blocking; a failure
         // drops one message
         #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.sendnb(endpoint, &msg);
     }
 
-    fn rmib_copyin(&self, from: Endpoint, grant: i32, off: usize, dst: &mut [u8]) -> Result<(), i32> {
+    fn rmib_copyin(
+        &self,
+        from: Endpoint,
+        grant: i32,
+        off: usize,
+        dst: &mut [u8],
+    ) -> Result<(), i32> {
         // `sys_safecopyfrom` of the C rmib framework (grant owner = the MIB
         // service).
         syscall::sys_safecopyfrom(
@@ -398,8 +384,10 @@ impl IpcBoundary for SysBoundary {
         // asynsend3(AMF_NOREPLY), carried by a single-slot senda (the same
         // shape as EventLoopTransport::send_async).
         let slot = minix_sys::ipc::AsyncSlot {
-            flags: minix_sys::ipc::AsyncSlotFlags(minix_sys::ipc::AsyncSlotFlags::VALID.0
-                | minix_sys::ipc::AsyncSlotFlags::NO_REPLY.0),
+            flags: minix_sys::ipc::AsyncSlotFlags(
+                minix_sys::ipc::AsyncSlotFlags::VALID.0
+                    | minix_sys::ipc::AsyncSlotFlags::NO_REPLY.0,
+            ),
             destination: to,
             message: *msg,
             result: 0,
@@ -426,8 +414,7 @@ impl IpcBoundary for SysBoundary {
         // mmap_via(caller=SELF): the beneficiary is the caller itself (the
         // MapRequest already carries `beneficiary`; the caller field is the
         // protocol's "who initiates" half).
-        let local = sys_vm::mmap_via(&self.ipc, Endpoint::SELF, request)
-            .map_err(|e| e.to_i32())?;
+        let local = sys_vm::mmap_via(&self.ipc, Endpoint::SELF, request).map_err(|e| e.to_i32())?;
         let phys = sys_vm::physical_address_via(&self.ipc, Endpoint::SELF, local)
             .map_err(|e| e.to_i32())?;
         Ok(Backing {
@@ -455,8 +442,8 @@ impl IpcBoundary for SysBoundary {
     fn phys_of(&self, caller: Endpoint, addr: u64) -> Option<u64> {
         // C shm.c:215-216: vm_getphys; the zero sentinel = EINVAL (as the
         // caller reads it).
-        let phys = sys_vm::physical_address_via(&self.ipc, caller, minix_types::VirBytes(addr))
-            .ok()?;
+        let phys =
+            sys_vm::physical_address_via(&self.ipc, caller, minix_types::VirBytes(addr)).ok()?;
         (phys.0 != 0).then_some(phys.0)
     }
 
@@ -546,11 +533,18 @@ impl minix_sef::SefIpc for TrapSefBridge<'_> {
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
         self.0.notify(dest).map_err(|t| t.0)
     }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // The birth reply leg (C `ipc_sendrec(RS, &m)`, sef_init.c:458-466).
+        self.0.sendrec(dest, msg).map(|_| 0).map_err(|t| t.0)
+    }
 }
 
 impl SysEventLoopTransport {
     pub const fn new() -> Self {
-        Self { inner: DirectTrapTransport }
+        Self {
+            inner: DirectTrapTransport,
+        }
     }
 }
 
@@ -594,9 +588,7 @@ impl EventLoopTransport for SysEventLoopTransport {
     }
 
     fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {
-        self.inner
-            .sendnb(dest, msg)
-            .map_err(|_| TransportError)
+        self.inner.sendnb(dest, msg).map_err(|_| TransportError)
     }
 
     fn send_rec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), TransportError> {

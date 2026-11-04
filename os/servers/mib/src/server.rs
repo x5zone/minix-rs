@@ -18,8 +18,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use minix_sys::ipc::{CALL_SENDREC, STATUS_CALL_MASK};
 use minix_types::{
-    CTLFLAG_PERMANENT, CTLTYPE_NODE, EDONTREPLY, EINVAL, ENOSYS, Endpoint, Message,
-    MessLcMibSysctl, MessLsysMibRegister, OK,
+    CTLFLAG_PERMANENT, CTLTYPE_NODE, EDONTREPLY, EINVAL, ENOSYS, Endpoint, MessLcMibSysctl,
+    MessLsysMibRegister, Message, OK,
 };
 
 use crate::auth::CallAuth;
@@ -30,11 +30,11 @@ use crate::dispatch::{
 use crate::heap::MibBudget;
 use crate::io::copy::{Newp, Oldp};
 use crate::remote::MIB_ENDPTS;
+use crate::remote::{EndptSlot, SlotVerdict};
 use crate::transport::{MibKernel, MibServices};
 use crate::tree::arena::{MibTree, NodeId};
 use crate::tree::flag::CTLFLAG_REMOTE;
 use crate::tree::mount::{check_head, check_target, head_code};
-use crate::remote::{EndptSlot, SlotVerdict};
 use crate::walker::{self, MibCtx, Request};
 
 // The real end drives minix-sys's transport trait methods.
@@ -137,7 +137,12 @@ pub enum Turn {
 impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I> {
     /// Assemble from parts.
     pub fn new(server: MibServer, ipc: I, kernel: K, services: S) -> Self {
-        Self { server, ipc, kernel, services }
+        Self {
+            server,
+            ipc,
+            kernel,
+            services,
+        }
     }
 
     /// Receive one message and handle it.
@@ -327,13 +332,16 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
             caller,
             auth: CallAuth::Unknown,
         };
-        let mut request = Request { name: &name_vec, oldp, newp };
+        let mut request = Request {
+            name: &name_vec,
+            oldp,
+            newp,
+        };
         let outcome = walker::sysctl(&mut ctx, &mut request);
         // Gate 6: shape the reply (:368-377).
         let (code, out_len) = map_sysctl_reply(outcome, wire.oldp, wire.oldlen);
         out.m_type = code;
-        let reply: &mut minix_types::MessMibLcSysctl =
-            unsafe { &mut out.m_u.m_mib_lc_sysctl };
+        let reply: &mut minix_types::MessMibLcSysctl = unsafe { &mut out.m_u.m_mib_lc_sysctl };
         reply.oldlen = out_len as u32;
         (code, out)
     }
@@ -423,11 +431,7 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
     /// Place the covering node for a mount: walk the parent chain,
     /// check the target, stamp `REMOTE` with the service's identity.
     /// C: `mib_mount` — tree.c:1543-1780.
-    fn mount_exec(
-        &mut self,
-        eid: usize,
-        view: &minix_types::RegisterView,
-    ) -> Result<(), i32> {
+    fn mount_exec(&mut self, eid: usize, view: &minix_types::RegisterView) -> Result<(), i32> {
         // Head gates: path length, flag window, child window
         // (:1572-1598).
         head_code(check_head(
@@ -512,7 +516,10 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
             let mut name_buf = [0u8; 32];
             self.services
                 .remote_info(view.mount.service, &mut name_buf, &mut [])?;
-            let n = name_buf.iter().position(|&b| b == 0).unwrap_or(name_buf.len());
+            let n = name_buf
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(name_buf.len());
             self.server.tree.slot_mut(node).name = name_buf[..n].to_vec().into_boxed_slice();
         }
         {
@@ -523,7 +530,9 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
         }
         // Chain the mount into the slot's root list (:189-191) and
         // count it (tree.c:1776).
-        self.server.slots[eid].roots.push(crate::tree::arena::MountRoot { node, kind });
+        self.server.slots[eid]
+            .roots
+            .push(crate::tree::arena::MountRoot { node, kind });
         self.server.tree.counts = self.server.tree.counts.remote_added();
         Ok(())
     }
@@ -605,6 +614,13 @@ impl minix_sef::SefIpc for SysIpc {
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
         <Self as MibIpc>::notify(self, dest)
     }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // The birth reply leg (C `ipc_sendrec(RS, &m)`, sef_init.c:458-466)
+        // rides MibIpc's own send-and-receive; C's sendrec answers through
+        // the reply's m_type, so a delivered frame is success here.
+        <Self as MibIpc>::send_rec(self, dest, msg).map(|()| 0)
+    }
 }
 
 impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I> {
@@ -633,8 +649,8 @@ mod tests {
     use crate::transport::recording::{Call, Recorder};
     use core::cell::RefCell;
     use minix_types::{
-        CTL_HW, CTL_KERN, CTL_MINIX, EIO, ENOSYS, HW_MACHINE, KERN_HARDCLOCK_TICKS, MINIX_TEST,
-        OK, SYSCTL_VERSION, CTLFLAG_READWRITE, CTLTYPE_NODE,
+        CTL_HW, CTL_KERN, CTL_MINIX, CTLFLAG_READWRITE, CTLTYPE_NODE, EIO, ENOSYS, HW_MACHINE,
+        KERN_HARDCLOCK_TICKS, MINIX_TEST, OK, SYSCTL_VERSION,
     };
 
     /// Scripted message seam: a FIFO of received messages plus a log
@@ -664,6 +680,10 @@ mod tests {
 
         fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
             <MockIpc as MibIpc>::notify(self, dest)
+        }
+
+        fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+            <MockIpc as MibIpc>::send_rec(self, dest, msg).map(|()| 0)
         }
     }
 
@@ -717,7 +737,10 @@ mod tests {
     /// Notify arrivals are logged and never answered (:449-454).
     #[test]
     fn test_notify_never_replies() {
-        let mut s = server_with(&[(minix_sys::ipc::CALL_NOTIFY, mib_msg(minix_types::MIB_SYSCTL))]);
+        let mut s = server_with(&[(
+            minix_sys::ipc::CALL_NOTIFY,
+            mib_msg(minix_types::MIB_SYSCTL),
+        )]);
         let (turn, incoming) = s.run_once();
         assert_eq!(turn, Turn::Handled);
         assert_eq!(incoming, Incoming::NotifyRefusal);
@@ -750,10 +773,7 @@ mod tests {
         let mut s2 = server_with(&[(1, lu)]);
         let (_, incoming2) = s2.run_once();
         assert_eq!(incoming2, Incoming::Birth);
-        assert_eq!(
-            s2.ipc.sent.borrow()[0].rs_init_result(),
-            Some(ENOSYS)
-        );
+        assert_eq!(s2.ipc.sent.borrow()[0].rs_init_result(), Some(ENOSYS));
     }
 
     /// RS ping: ponged inside the SEF library and swallowed — the turn is
@@ -923,16 +943,17 @@ mod tests {
         // Silent: no reply for a one-way register.
         assert!(s.ipc.sent.borrow().is_empty());
         // The mounted node exists, stamped REMOTE with the peer.
-        let minix = s.server.tree.child(s.server.tree.root(), CTL_MINIX).unwrap();
+        let minix = s
+            .server
+            .tree
+            .child(s.server.tree.root(), CTL_MINIX)
+            .unwrap();
         let mounted = s.server.tree.child(minix, 5).expect("mounted node");
         assert_ne!(
             s.server.tree.slot(mounted).flags & crate::tree::flag::CTLFLAG_REMOTE,
             0
         );
-        assert_eq!(
-            s.server.tree.slot(mounted).peer,
-            Some(Endpoint::PM)
-        );
+        assert_eq!(s.server.tree.slot(mounted).peer, Some(Endpoint::PM));
         // The roots chain and the counter moved.
         assert_eq!(s.server.slots[0].roots.len(), 1);
         assert_eq!(s.server.tree.counts.remotes, 1);
@@ -965,7 +986,11 @@ mod tests {
         let (turn, _) = s.run_once();
         assert_eq!(turn, Turn::Handled);
         assert_eq!(s.server.tree.counts.remotes, base_remotes);
-        let minix = s.server.tree.child(s.server.tree.root(), CTL_MINIX).unwrap();
+        let minix = s
+            .server
+            .tree
+            .child(s.server.tree.root(), CTL_MINIX)
+            .unwrap();
         assert!(s.server.tree.child(minix, 5).is_none());
         assert!(s.server.slots[0].endpt.is_none());
     }

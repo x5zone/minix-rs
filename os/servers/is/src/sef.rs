@@ -11,8 +11,8 @@
 //!'s trap transport (a hosted build returns EIO honestly until E1 real
 //! hardware is powered on).
 
-use minix_sys::ipc::IpcTransport as _;
 use core::fmt;
+use minix_sys::ipc::IpcTransport as _;
 use minix_types::{Endpoint, Errno, Message};
 
 /// Termination signal. C: `SIGTERM 15` — `minix3/sys/sys/signal.h:67`.
@@ -59,11 +59,7 @@ pub trait SefCallbacks {
 
     /// C: `sef_setcb_init_restart(sef_cb_init_fresh)` — main.c:82.
     /// Default: same body as fresh (STATELESS, A-10).
-    fn init_restart(
-        &mut self,
-        init_type: SefInitType,
-        info: &SefInitInfo,
-    ) -> Result<i32, Errno> {
+    fn init_restart(&mut self, init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno> {
         self.init_fresh(init_type, info)
     }
 
@@ -170,7 +166,9 @@ pub struct SysSefTransport {
 impl SysSefTransport {
     pub const fn new() -> Self {
         Self {
-            ipc: SefIpcAdapter { inner: minix_sys::ipc::DirectTrapTransport },
+            ipc: SefIpcAdapter {
+                inner: minix_sys::ipc::DirectTrapTransport,
+            },
             diag: DiagWriter,
         }
     }
@@ -196,6 +194,11 @@ impl minix_sef::SefIpc for SefIpcAdapter {
 
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
         self.inner.notify(dest).map_err(|t| t.0)
+    }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // The birth reply leg (C `ipc_sendrec(RS, &m)`, sef_init.c:458-466).
+        self.inner.sendrec(dest, msg).map(|_| 0).map_err(|t| t.0)
     }
 }
 
@@ -325,7 +328,15 @@ mod tests {
         // writeln! still returns Ok; all three warnings take the same path.
         use core::fmt::Write as _;
         let mut t = super::SysSefTransport::new();
-        assert!(writeln!(t.diag_out(), "IS: warning, got illegal request {} from {}", 65, 9).is_ok());
+        assert!(
+            writeln!(
+                t.diag_out(),
+                "IS: warning, got illegal request {} from {}",
+                65,
+                9
+            )
+            .is_ok()
+        );
         t.warn_illegal(65, Endpoint(9));
         t.warn_fkey_events(-5);
         t.warn_fkey_ctl(-5);
@@ -341,11 +352,7 @@ mod tests {
     }
 
     impl SefCallbacks for Probe {
-        fn init_fresh(
-            &mut self,
-            _t: SefInitType,
-            _i: &SefInitInfo,
-        ) -> Result<i32, Errno> {
+        fn init_fresh(&mut self, _t: SefInitType, _i: &SefInitInfo) -> Result<i32, Errno> {
             self.fresh_calls += 1;
             self.mapped = true; // stands in for map_unmap_fkeys(TRUE) (02)
             Ok(OK)
@@ -365,7 +372,11 @@ mod tests {
     fn test_three_inits_share_one_body() {
         // [ARCH: A-10] STATELESS: Lu/Restart default to the fresh body.
         let info = SefInitInfo::default();
-        let mut p = Probe { fresh_calls: 0, last_signo: None, mapped: false };
+        let mut p = Probe {
+            fresh_calls: 0,
+            last_signo: None,
+            mapped: false,
+        };
         assert_eq!(p.init_restart(SefInitType::Restart, &info), Ok(OK));
         assert_eq!(p.init_lu(SefInitType::Lu, &info), Ok(OK));
         assert_eq!(p.init_fresh(SefInitType::Fresh, &info), Ok(OK));
@@ -376,7 +387,11 @@ mod tests {
     #[test]
     fn test_non_term_signal_ignored() {
         // C: if (signo != SIGTERM) return — main.c:110.
-        let mut p = Probe { fresh_calls: 0, last_signo: None, mapped: true };
+        let mut p = Probe {
+            fresh_calls: 0,
+            last_signo: None,
+            mapped: true,
+        };
         assert_eq!(p.signal_handler(2), LifecycleAction::Continue);
         assert!(p.mapped, "non-TERM must not touch the mapping");
     }
@@ -384,7 +399,11 @@ mod tests {
     #[test]
     fn test_sigterm_unmaps_then_shuts_down() {
         // C: unmap first (main.c:113), exit second (:115) — order matters.
-        let mut p = Probe { fresh_calls: 0, last_signo: None, mapped: true };
+        let mut p = Probe {
+            fresh_calls: 0,
+            last_signo: None,
+            mapped: true,
+        };
         assert_eq!(p.signal_handler(SIGTERM), LifecycleAction::Shutdown);
         assert!(!p.mapped, "TERM must release the TTY observer registration");
     }

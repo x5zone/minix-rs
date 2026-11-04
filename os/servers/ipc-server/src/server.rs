@@ -47,18 +47,27 @@ pub struct IpcStatus {
 impl IpcStatus {
     /// Request arrival (not a notification); an unknown call segment is 0.
     pub const fn request() -> Self {
-        Self { notify: false, call: 0 }
+        Self {
+            notify: false,
+            call: 0,
+        }
     }
 
     /// Request arrival via SENDREC (the synchronous half of C rmib's two-way
     /// reply split).
     pub const fn sendrec() -> Self {
-        Self { notify: false, call: minix_sys::ipc::CALL_SENDREC }
+        Self {
+            notify: false,
+            call: minix_sys::ipc::CALL_SENDREC,
+        }
     }
 
     /// Notification arrival.
     pub const fn notification() -> Self {
-        Self { notify: true, call: 0 }
+        Self {
+            notify: true,
+            call: 0,
+        }
     }
 
     /// C: `is_ipc_notify(ipc_status)` — com.h:92.
@@ -608,6 +617,14 @@ mod tests {
         fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
             self.pongs.push(dest);
             Ok(())
+        }
+
+        fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+            // The birth reply: recorded into the same pongs log (the pins
+            // do not distinguish the two reply shapes yet).
+            self.pongs.push(dest);
+            let _ = msg;
+            Ok(0)
         }
     }
 

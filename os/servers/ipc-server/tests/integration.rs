@@ -60,6 +60,10 @@ impl minix_sef::SefIpc for ScriptedTransport {
     fn notify(&mut self, _dest: Endpoint) -> Result<(), i32> {
         Ok(())
     }
+
+    fn sendrec(&mut self, _dest: Endpoint, _msg: &mut Message) -> Result<i32, i32> {
+        Ok(0)
+    }
 }
 
 impl EventLoopTransport for ScriptedTransport {
@@ -184,7 +188,7 @@ fn semget_round_trip_through_public_api() {
     let server = IpcServer::new(transport, CannedHandler::answering(7));
     server.init();
     assert_eq!(server.run_once(), RunStep::Handled);
-    let (transport, mut handler) = server.into_parts();
+    let (transport, handler) = server.into_parts();
     assert_eq!(handler.calls, 1);
     assert_eq!(transport.outbound.len(), 1);
     assert_eq!(transport.outbound[0].dest, Endpoint(42));
@@ -228,14 +232,11 @@ fn proc_event_ack_travels_on_the_async_verb() {
     let server = IpcServer::new(transport, CannedHandler::answering(0));
     server.init();
     assert_eq!(server.run_once(), RunStep::Handled);
-    let (transport, mut handler) = server.into_parts();
+    let (transport, handler) = server.into_parts();
     assert_eq!(handler.proc_events, 1);
     assert_eq!(transport.outbound.len(), 1);
     assert_eq!(transport.outbound[0].verb, "send_async");
-    assert_eq!(
-        transport.outbound[0].msg.m_type,
-        proc_event_reply_type()
-    );
+    assert_eq!(transport.outbound[0].msg.m_type, proc_event_reply_type());
 }
 
 #[test]

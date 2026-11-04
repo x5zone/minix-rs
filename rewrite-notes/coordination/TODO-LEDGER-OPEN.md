@@ -203,6 +203,8 @@
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
 
+- **`2026-11-05` 收口刷新（第 67 轮，基线 `ae4ef5c76`，`claim/SEF-SENDREC-FAMILY-qoder`）**：`SefIpc::sendrec` 缺腿**全族清零**——全仓清点再扫出 mib（SysIpc，走 `MibIpc::send_rec`）/is（trap 直传）/ipc-server（TrapSefBridge + 两测试夹具）/vm（SefAdapter；vm 的 `IpcTransport` trait 同加默认 Unimplemented 腿 + `KernelIpcTransport` 生产实现）四处一并补齐。四包 `--lib --target aarch64` 全 Finished、宿主测试 mib 110+is 129+ipc-server+vm 547 全绿。**登记**：is/ipc-server 的 bin 三架构编译失败为基线既有形态（bin 未 no_std 化）；clippy 首次现形的四包测试区既有告警为独立余项。
+
 - **`2026-11-05` 收口刷新（第 66 轮，基线 `b71bce1d0`，`claim/SEF-SCHED-SENDREC-qoder`）**：sched 的 `SefIpcAdapter::sendrec` 已随批次五百四十补腿（同族第二处 none-only 缺口），顺带清两枚 E0046 现形的既有告警（出生臂 `?` 传播、`is_err()`）。**全仓三架构 check 全集 Finished、E0046 清零确认**；aarch64 镜像组装恢复可验证基线。
 
 - **`2026-11-05` 收口刷新（第 65 轮，基线 `0a2a41bb9`，`claim/SEF-SENDREC-AARCH64-qoder`）**：他线报的 aarch64 E0046 已随批次五百三十九修——`SefKernelBridge::sendrec` 走 `IpcApi::sendrec_to` 补腿（轮 59 扩 trait 时漏的唯一 none-only 实现者；教训：跨 crate trait 扩腿必须三架构 check 全集，宿主门抓不到 none-only 面）。aarch64 镜像组装恢复可验证基线。

@@ -153,6 +153,13 @@ pub(crate) trait IpcTransport {
     fn notify(&mut self, _dest: Endpoint) -> Result<(), IpcError> {
         Err(IpcError::Unimplemented)
     }
+
+    /// Send-and-receive (C `ipc_sendrec(dest, &m)`): the SEF birth reply
+    /// leg (`sef_init.c:458-466`) — the reply overwrites msg in place.
+    /// Default honest failure, the same face as notify.
+    fn sendrec(&mut self, _dest: Endpoint, _msg: &mut Message) -> Result<(), IpcError> {
+        Err(IpcError::Unimplemented)
+    }
 }
 
 // ── Production impl: kernel IPC ──
@@ -240,7 +247,9 @@ impl IpcTransport for KernelIpcTransport {
         if !self.initialized {
             return Err(IpcError::Unimplemented);
         }
-        self.inner.send(dest, msg).map_err(|trap| IpcError::Kernel(trap.0))
+        self.inner
+            .send(dest, msg)
+            .map_err(|trap| IpcError::Kernel(trap.0))
     }
 
     fn asynsend(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
@@ -271,7 +280,17 @@ impl IpcTransport for KernelIpcTransport {
         if !self.initialized {
             return Err(IpcError::Unimplemented);
         }
-        self.inner.notify(dest).map_err(|trap| IpcError::Kernel(trap.0))
+        self.inner
+            .notify(dest)
+            .map_err(|trap| IpcError::Kernel(trap.0))
+    }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
+        use minix_sys::ipc::IpcTransport as _;
+        self.inner
+            .sendrec(dest, msg)
+            .map(|_| ())
+            .map_err(|t| IpcError::Kernel(-t.0))
     }
 }
 
@@ -289,11 +308,22 @@ pub(crate) struct SefAdapter<'a>(pub(crate) &'a mut dyn IpcTransport);
 
 impl minix_sef::SefIpc for SefAdapter<'_> {
     fn receive(&mut self, _src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
-        self.0.receive().map(|(m, sts)| {
-            *msg = m;
-            sts.flags as i32
-        })
-        .map_err(|e| match e {
+        self.0
+            .receive()
+            .map(|(m, sts)| {
+                *msg = m;
+                sts.flags as i32
+            })
+            .map_err(|e| match e {
+                IpcError::Kernel(code) => code,
+                IpcError::InvalidEndpoint => minix_types::EINVAL,
+                IpcError::WouldBlock => minix_types::EAGAIN,
+                IpcError::Unimplemented => minix_types::EIO,
+            })
+    }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+        self.0.notify(dest).map_err(|e| match e {
             IpcError::Kernel(code) => code,
             IpcError::InvalidEndpoint => minix_types::EINVAL,
             IpcError::WouldBlock => minix_types::EAGAIN,
@@ -301,8 +331,10 @@ impl minix_sef::SefIpc for SefAdapter<'_> {
         })
     }
 
-    fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
-        self.0.notify(dest).map_err(|e| match e {
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // The birth reply leg (C `ipc_sendrec(RS, &m)`, sef_init.c:458-466);
+        // the reply overwrites msg in place and a delivered frame is success.
+        self.0.sendrec(dest, msg).map(|()| 0).map_err(|e| match e {
             IpcError::Kernel(code) => code,
             IpcError::InvalidEndpoint => minix_types::EINVAL,
             IpcError::WouldBlock => minix_types::EAGAIN,
@@ -332,9 +364,7 @@ impl TestIpcTransport {
     pub fn new() -> Self {
         Self {
             shared: alloc::rc::Rc::new(TestTransportShared {
-                next_receive: core::cell::RefCell::new(
-                    alloc::collections::VecDeque::new(),
-                ),
+                next_receive: core::cell::RefCell::new(alloc::collections::VecDeque::new()),
                 sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
                 notifies: core::cell::RefCell::new(alloc::vec::Vec::new()),
                 async_sends: core::cell::Cell::new(0),
@@ -346,7 +376,9 @@ impl TestIpcTransport {
     /// A handle to this transport's state, kept by the test after the
     /// transport is moved into `VmServer`.
     pub fn handle(&self) -> TestTransportHandle {
-        TestTransportHandle { shared: alloc::rc::Rc::clone(&self.shared) }
+        TestTransportHandle {
+            shared: alloc::rc::Rc::clone(&self.shared),
+        }
     }
 
     /// Queue a message to be returned by the next `receive` call (FIFO).
@@ -471,15 +503,27 @@ mod tests {
     #[test]
     fn ipc_status_call_bits_match_minix3() {
         // C: IPC_STATUS_CALL(status) = (status >> 0) & 0x3F (ipcconst.h:16-18).
-        assert!(IpcStatus { flags: 4 /* NOTIFY */ }.is_notify());
-        assert!(!IpcStatus { flags: 3 /* SENDREC */ }.is_notify());
+        assert!(
+            IpcStatus {
+                flags: 4 /* NOTIFY */
+            }
+            .is_notify()
+        );
+        assert!(
+            !IpcStatus {
+                flags: 3 /* SENDREC */
+            }
+            .is_notify()
+        );
         assert!(!IpcStatus { flags: 0 }.is_notify());
         // C: IPC_STATUS_FLAGS_TEST(status, IPC_FLG_MSG_FROM_KERNEL)
         //    = ((status >> 16) & 1) != 0 (ipcconst.h:22-24).
         assert!(IpcStatus { flags: 1 << 16 }.is_from_kernel());
         assert!(!IpcStatus { flags: 0 }.is_from_kernel());
         // Notify + from-kernel can coexist (kernel notification).
-        let both = IpcStatus { flags: 4 | (1 << 16) };
+        let both = IpcStatus {
+            flags: 4 | (1 << 16),
+        };
         assert!(both.is_notify());
         assert!(both.is_from_kernel());
     }
