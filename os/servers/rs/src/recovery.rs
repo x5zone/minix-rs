@@ -538,8 +538,7 @@ mod tests {
             s.restarts = 2;
         }
         let mut upd = crate::live_update::UpdateState::default();
-        upd.flags
-            .insert(crate::live_update::RupdateFlags::UPDATING);
+        upd.flags.insert(crate::live_update::RupdateFlags::UPDATING);
         (table, rp, upd)
     }
 
@@ -574,8 +573,7 @@ mod tests {
         assert_eq!(table.get(rp).backoff, 4);
         // ... and the running update was ended first.
         assert!(
-            !upd
-                .flags
+            !upd.flags
                 .contains(crate::live_update::RupdateFlags::UPDATING),
             "an unexpected exit must abort the running update (manager.c:1099-1102)"
         );
@@ -591,13 +589,17 @@ mod tests {
         let rp = table.alloc_slot().unwrap();
         {
             let s = table.get_mut(rp);
-            s.flags.insert(RFlags::IN_USE | RFlags::ACTIVE | RFlags::EXITING);
+            s.flags
+                .insert(RFlags::IN_USE | RFlags::ACTIVE | RFlags::EXITING);
             s.caller_request = minix_types::RS_DOWN;
         }
         // `alloc_slot` does not stamp RS_IN_USE (manager.c:2067-2083 is a
         // pure search); claim the row before taking the member's.
         let member = table.alloc_slot().unwrap();
-        table.get_mut(member).flags.insert(RFlags::IN_USE | RFlags::ACTIVE);
+        table
+            .get_mut(member)
+            .flags
+            .insert(RFlags::IN_USE | RFlags::ACTIVE);
 
         let mut upd = crate::live_update::UpdateState::default();
         upd.chain

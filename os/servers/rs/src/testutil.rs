@@ -13,7 +13,7 @@ use crate::privilege::{CallMask, PrivCtlOp, Privilege};
 use crate::sched::SchedulerConfig;
 use crate::service_slot::Label;
 use alloc::vec::Vec;
-use minix_types::{GrantId, Clock, Endpoint, Errno, Pid};
+use minix_types::{Clock, Endpoint, Errno, GrantId, Pid};
 
 /// Deterministic xorshift64* PRNG for property-style tests (E-9).
 ///

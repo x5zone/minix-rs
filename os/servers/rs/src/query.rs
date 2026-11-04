@@ -10,8 +10,8 @@
 //! module owns the pure classification: which table a `SI_*` request names,
 //! the `do_lookup` name-length gate, and the `RS_SYSCTL_*` sub-type mapping.
 
-pub use minix_types::{SI_PROC_TAB, SI_PROCALL_TAB, SI_PROCPUB_TAB};
 use minix_types::{Errno, sysctl};
+pub use minix_types::{SI_PROC_TAB, SI_PROCALL_TAB, SI_PROCPUB_TAB};
 
 // The three locally hand-copied constants SI_PROC_TAB/SI_PROCPUB_TAB/
 // SI_PROCALL_TAB are gone; the single authority in minix_types::ipc::sysinfo

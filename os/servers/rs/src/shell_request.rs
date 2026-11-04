@@ -31,7 +31,9 @@ fn row_bytes<T>(rows: &[T]) -> &[u8] {
 ///   `vm_call_mask`'s two `bitchunk_t[2]` chunks in little-endian order; the tree
 ///   records call number *i* at u64 bit *i*, the same position);
 /// - `label`: 16 bytes, NUL-terminated (guaranteed by `Label`).
-pub(crate) fn serialize_rprocpub_snap(slot: &crate::service_slot::ServiceSlot) -> minix_types::RprocpubSnap {
+pub(crate) fn serialize_rprocpub_snap(
+    slot: &crate::service_slot::ServiceSlot,
+) -> minix_types::RprocpubSnap {
     let pub_ = &slot.pub_;
     if !pub_.in_use {
         // An empty slot yields an all-zero row: C's `rprocpub[]` is a static
@@ -57,7 +59,9 @@ pub(crate) fn serialize_rprocpub_snap(slot: &crate::service_slot::ServiceSlot) -
 /// - `r_alive_tm`: the tree's `Clock = i64`, verbatim;
 /// - `r_args`: the NUL-separated command line, 512 bytes verbatim (the dump's
 ///   last column prints it byte by byte).
-pub(crate) fn serialize_rproc_snap(slot: &crate::service_slot::ServiceSlot) -> minix_types::RprocSnap {
+pub(crate) fn serialize_rproc_snap(
+    slot: &crate::service_slot::ServiceSlot,
+) -> minix_types::RprocSnap {
     if !slot.flags.contains(crate::service_slot::RFlags::IN_USE) {
         // An empty slot yields an all-zero row (the same producer discipline as
         // PM/DS): C's `rproc[]` keeps unallocated slots at BSS zero and
@@ -719,12 +723,15 @@ impl RsServer {
             #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
         };
-        let mut noop_vm = move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
-            // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
-            // [SD19-gate] best-effort VM preparation (failure goes to rollback)
-            #[allow(clippy::let_underscore_must_use)]
-            let _ = kern_cell.borrow_mut().vm_prepare(src, dst, flags.bits() as i32);
-        };
+        let mut noop_vm =
+            move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
+                // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
+                // [SD19-gate] best-effort VM preparation (failure goes to rollback)
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = kern_cell
+                    .borrow_mut()
+                    .vm_prepare(src, dst, flags.bits() as i32);
+            };
         let prepared = update.start_update_prepare(
             &mut state.table,
             is_idle,
@@ -755,23 +762,23 @@ impl RsServer {
             }
             Err(Errno::ESRCH) => {
                 let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
-            // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
-            // fields, via rs_asynsend (failures ignored, utility.c:223-240).
-            let upd = slot.upd.as_ref();
-            let mut u = minix_types::MessRsUpdate::default();
-            u.state = state;
-            u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
-            u.state_data_gid = upd
-                .and_then(|x| x.prepare_state_data_gid)
-                .map(|g| g as i32)
-                .unwrap_or(-1);
-            let mut msg = minix_types::Message::default();
-            msg.m_u.m_rs_update = u;
-            msg.m_type = minix_types::RS_LU_PREPARE;
-            // [SD19-gate] asynsend is fire-and-forget
-            #[allow(clippy::let_underscore_must_use)]
-            let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
-        };
+                    // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
+                    // fields, via rs_asynsend (failures ignored, utility.c:223-240).
+                    let upd = slot.upd.as_ref();
+                    let mut u = minix_types::MessRsUpdate::default();
+                    u.state = state;
+                    u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
+                    u.state_data_gid = upd
+                        .and_then(|x| x.prepare_state_data_gid)
+                        .map(|g| g as i32)
+                        .unwrap_or(-1);
+                    let mut msg = minix_types::Message::default();
+                    msg.m_u.m_rs_update = u;
+                    msg.m_type = minix_types::RS_LU_PREPARE;
+                    // [SD19-gate] asynsend is fire-and-forget
+                    #[allow(clippy::let_underscore_must_use)]
+                    let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
+                };
                 let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                 // [SD19-gate] best-effort tail; dropping the Result does not change
                 // an established primary result (C is void/ignores at the same site).
@@ -1146,29 +1153,32 @@ impl RsServer {
                 let mut noop_end = |_: i32| {};
                 let kern_cell = &core::cell::RefCell::new(&mut *self.kernel.as_mut());
                 let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
-            // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
-            // fields, via rs_asynsend (failures ignored, utility.c:223-240).
-            let upd = slot.upd.as_ref();
-            let mut u = minix_types::MessRsUpdate::default();
-            u.state = state;
-            u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
-            u.state_data_gid = upd
-                .and_then(|x| x.prepare_state_data_gid)
-                .map(|g| g as i32)
-                .unwrap_or(-1);
-            let mut msg = minix_types::Message::default();
-            msg.m_u.m_rs_update = u;
-            msg.m_type = minix_types::RS_LU_PREPARE;
-            // [SD19-gate] asynsend is fire-and-forget
-            #[allow(clippy::let_underscore_must_use)]
-            let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
-        };
-                let mut noop_vm = move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
-            // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
-            // [SD19-gate] best-effort VM preparation (failure goes to rollback)
-            #[allow(clippy::let_underscore_must_use)]
-            let _ = kern_cell.borrow_mut().vm_prepare(src, dst, flags.bits() as i32);
-        };
+                    // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
+                    // fields, via rs_asynsend (failures ignored, utility.c:223-240).
+                    let upd = slot.upd.as_ref();
+                    let mut u = minix_types::MessRsUpdate::default();
+                    u.state = state;
+                    u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
+                    u.state_data_gid = upd
+                        .and_then(|x| x.prepare_state_data_gid)
+                        .map(|g| g as i32)
+                        .unwrap_or(-1);
+                    let mut msg = minix_types::Message::default();
+                    msg.m_u.m_rs_update = u;
+                    msg.m_type = minix_types::RS_LU_PREPARE;
+                    // [SD19-gate] asynsend is fire-and-forget
+                    #[allow(clippy::let_underscore_must_use)]
+                    let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
+                };
+                let mut noop_vm =
+                    move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
+                        // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
+                        // [SD19-gate] best-effort VM preparation (failure goes to rollback)
+                        #[allow(clippy::let_underscore_must_use)]
+                        let _ = kern_cell
+                            .borrow_mut()
+                            .vm_prepare(src, dst, flags.bits() as i32);
+                    };
                 match state.update.start_update_prepare(
                     &mut state.table,
                     is_idle,
@@ -1229,24 +1239,25 @@ impl RsServer {
                         };
                         let ticks = self.kernel.get_ticks()?;
                         let kern_cell = &core::cell::RefCell::new(&mut *self.kernel.as_mut());
-                        let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
-            // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
-            // fields, via rs_asynsend (failures ignored, utility.c:223-240).
-            let upd = slot.upd.as_ref();
-            let mut u = minix_types::MessRsUpdate::default();
-            u.state = state;
-            u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
-            u.state_data_gid = upd
-                .and_then(|x| x.prepare_state_data_gid)
-                .map(|g| g as i32)
-                .unwrap_or(-1);
-            let mut msg = minix_types::Message::default();
-            msg.m_u.m_rs_update = u;
-            msg.m_type = minix_types::RS_LU_PREPARE;
-            // [SD19-gate] asynsend is fire-and-forget
-            #[allow(clippy::let_underscore_must_use)]
-            let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
-        };
+                        let mut noop_req =
+                            move |slot: &crate::service_slot::ServiceSlot, state: i32| {
+                                // C update.c:203-227 — RS_LU_PREPARE plus m_rs_update's three
+                                // fields, via rs_asynsend (failures ignored, utility.c:223-240).
+                                let upd = slot.upd.as_ref();
+                                let mut u = minix_types::MessRsUpdate::default();
+                                u.state = state;
+                                u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
+                                u.state_data_gid = upd
+                                    .and_then(|x| x.prepare_state_data_gid)
+                                    .map(|g| g as i32)
+                                    .unwrap_or(-1);
+                                let mut msg = minix_types::Message::default();
+                                msg.m_u.m_rs_update = u;
+                                msg.m_type = minix_types::RS_LU_PREPARE;
+                                // [SD19-gate] asynsend is fire-and-forget
+                                #[allow(clippy::let_underscore_must_use)]
+                                let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
+                            };
                         let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                         state.update.end_update(
                             &mut state.table,
@@ -1600,91 +1611,91 @@ impl RsServer {
         let mut grants = minix_sys::grant::GrantTable::new();
         {
             let mut effects = crate::service_create::CreateEffects {
-                publish: alloc::boxed::Box::new(move |table: &crate::process_table::RProcTable, sid: crate::service_slot::SlotId| {
-                    let pub_ = &table.get(sid).pub_;
-                    let Some(name) = pub_.label.as_str() else {
-                        return Ok(());
-                    };
-                    // [SD19-gate] best-effort tail; dropping the Result does not change
-                    // an established primary result (C is void/ignores at the same site).
-                    #[allow(clippy::let_underscore_must_use)]
-                    let _ = ds.publish_label(
-                        &mut grants,
-                        name,
-                        pub_.endpoint,
-                        minix_types::DsFlags::empty(),
-                    );
-                    // C manager.c:840-853 — the devman bind half: when
-                    // `devman_id != 0`, first look up the devman endpoint and then
-                    // bind the device to this service's endpoint. **Unlike the DS
-                    // publish, C treats a failure here as fatal**
-                    // (`kill_service(rp, "devman bind device failed", r)`); the Rust
-                    // publish seam has only the table and a return value, no kill
-                    // handle, so it returns `Err` on C's error face (raised by
-                    // `start_service`), and both "devman is not running" and "the
-                    // bind was refused" land on that line — the kill-half gap is a
-                    // recorded RS-internal design item.
-                    if crate::publish::should_bind_devman(pub_)
-                        && let Some(devman_id) = pub_.devman_id
-                    {
-                        use minix_sys::ipc::IpcTransport;
-                        match ds.retrieve_label_endpt(&mut grants, "devman") {
-                            Ok((devman_ep, _)) => {
-                                let mut bind = crate::publish::devman_bind_message(
-                                    devman_id,
-                                    pub_.endpoint,
-                                );
-                                let transport = minix_sys::ipc::DirectTrapTransport;
-                                let sent = transport.sendrec(devman_ep, &mut bind);
-                                let answered = crate::publish::devman_result(&bind);
-                                if sent.is_err() || answered != minix_types::OK {
-                                    let code = if answered != minix_types::OK {
-                                        answered
-                                    } else {
-                                        minix_types::EIO
-                                    };
-                                    return Err(Errno::from_i32(code));
-                                }
-                            }
-                            // C: a `ds_retrieve_label_endpt` failure → kill_service
-                            // ("devman not running?"). Rust raises EIO instead.
-                            Err(_) => return Err(Errno::from_i32(minix_types::EIO)),
-                        }
-                    }
-                    // C: manager.c:832-838 — VFS_MAPDRIVER registration.
-                    // RS calls VFS to map this driver's major device number
-                    // to its endpoint, populating VFS's dmap table so that
-                    // open("/dev/console") + write(fd) can be routed.
-                    if crate::publish::should_map_driver(pub_) {
-                        const VFS_MAPDRIVER: i32 = 0x100 + 45; // VFS_BASE + 45
-                        use minix_sys::ipc::IpcTransport;
-                        let mut mapmsg = minix_types::Message::default();
-                        mapmsg.m_type = VFS_MAPDRIVER;
-                        // Payload layout (C mess_lsys_vfs_mapdriver):
-                        //   major(u32@0) pad labellen(u64@8) label(u64@16)
-                        //   ndomains(i32@24) domains[8](@28)
-                        {
-                            // SAFETY: writing the raw byte view of a union
-                            // field — the VFS handler reads the same bytes.
-                            let raw = unsafe { &mut mapmsg.m_u.raw };
-                            raw[0..4].copy_from_slice(&pub_.dev_nr.to_le_bytes());
-                            let labellen = (name.len() + 1) as u64; // NUL included
-                            raw[8..16].copy_from_slice(&labellen.to_le_bytes());
-                            let label_ptr = pub_.label.as_bytes().as_ptr() as u64;
-                            raw[16..24].copy_from_slice(&label_ptr.to_le_bytes());
-                            // ndomains = 0 (char devices carry no socket domains)
-                        }
-                        let transport = minix_sys::ipc::DirectTrapTransport;
-                        // C: mapdriver failure is non-fatal (printf only).
-                        // [SD19-gate] best-effort sendrec tail
+                publish: alloc::boxed::Box::new(
+                    move |table: &crate::process_table::RProcTable,
+                          sid: crate::service_slot::SlotId| {
+                        let pub_ = &table.get(sid).pub_;
+                        let Some(name) = pub_.label.as_str() else {
+                            return Ok(());
+                        };
+                        // [SD19-gate] best-effort tail; dropping the Result does not change
+                        // an established primary result (C is void/ignores at the same site).
                         #[allow(clippy::let_underscore_must_use)]
-                        let _ = transport.sendrec(
-                            minix_types::Endpoint::VFS,
-                            &mut mapmsg,
+                        let _ = ds.publish_label(
+                            &mut grants,
+                            name,
+                            pub_.endpoint,
+                            minix_types::DsFlags::empty(),
                         );
-                    }
-                    Ok(())
-                }),
+                        // C manager.c:840-853 — the devman bind half: when
+                        // `devman_id != 0`, first look up the devman endpoint and then
+                        // bind the device to this service's endpoint. **Unlike the DS
+                        // publish, C treats a failure here as fatal**
+                        // (`kill_service(rp, "devman bind device failed", r)`); the Rust
+                        // publish seam has only the table and a return value, no kill
+                        // handle, so it returns `Err` on C's error face (raised by
+                        // `start_service`), and both "devman is not running" and "the
+                        // bind was refused" land on that line — the kill-half gap is a
+                        // recorded RS-internal design item.
+                        if crate::publish::should_bind_devman(pub_)
+                            && let Some(devman_id) = pub_.devman_id
+                        {
+                            use minix_sys::ipc::IpcTransport;
+                            match ds.retrieve_label_endpt(&mut grants, "devman") {
+                                Ok((devman_ep, _)) => {
+                                    let mut bind = crate::publish::devman_bind_message(
+                                        devman_id,
+                                        pub_.endpoint,
+                                    );
+                                    let transport = minix_sys::ipc::DirectTrapTransport;
+                                    let sent = transport.sendrec(devman_ep, &mut bind);
+                                    let answered = crate::publish::devman_result(&bind);
+                                    if sent.is_err() || answered != minix_types::OK {
+                                        let code = if answered != minix_types::OK {
+                                            answered
+                                        } else {
+                                            minix_types::EIO
+                                        };
+                                        return Err(Errno::from_i32(code));
+                                    }
+                                }
+                                // C: a `ds_retrieve_label_endpt` failure → kill_service
+                                // ("devman not running?"). Rust raises EIO instead.
+                                Err(_) => return Err(Errno::from_i32(minix_types::EIO)),
+                            }
+                        }
+                        // C: manager.c:832-838 — VFS_MAPDRIVER registration.
+                        // RS calls VFS to map this driver's major device number
+                        // to its endpoint, populating VFS's dmap table so that
+                        // open("/dev/console") + write(fd) can be routed.
+                        if crate::publish::should_map_driver(pub_) {
+                            const VFS_MAPDRIVER: i32 = 0x100 + 45; // VFS_BASE + 45
+                            use minix_sys::ipc::IpcTransport;
+                            let mut mapmsg = minix_types::Message::default();
+                            mapmsg.m_type = VFS_MAPDRIVER;
+                            // Payload layout (C mess_lsys_vfs_mapdriver):
+                            //   major(u32@0) pad labellen(u64@8) label(u64@16)
+                            //   ndomains(i32@24) domains[8](@28)
+                            {
+                                // SAFETY: writing the raw byte view of a union
+                                // field — the VFS handler reads the same bytes.
+                                let raw = unsafe { &mut mapmsg.m_u.raw };
+                                raw[0..4].copy_from_slice(&pub_.dev_nr.to_le_bytes());
+                                let labellen = (name.len() + 1) as u64; // NUL included
+                                raw[8..16].copy_from_slice(&labellen.to_le_bytes());
+                                let label_ptr = pub_.label.as_bytes().as_ptr() as u64;
+                                raw[16..24].copy_from_slice(&label_ptr.to_le_bytes());
+                                // ndomains = 0 (char devices carry no socket domains)
+                            }
+                            let transport = minix_sys::ipc::DirectTrapTransport;
+                            // C: mapdriver failure is non-fatal (printf only).
+                            // [SD19-gate] best-effort sendrec tail
+                            #[allow(clippy::let_underscore_must_use)]
+                            let _ = transport.sendrec(minix_types::Endpoint::VFS, &mut mapmsg);
+                        }
+                        Ok(())
+                    },
+                ),
                 asynsend: alloc::boxed::Box::new(
                     |ep: Endpoint, msg: &crate::ready::InitMessage| {
                         sent.push((ep, msg.encode_message()));

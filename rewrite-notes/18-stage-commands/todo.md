@@ -119,6 +119,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百三十九（`SefKernelBridge::sendrec` 补腿——他线报的 aarch64 E0046 修复与基线告警现形记录）
+
+- **这一笔的射程**：他线报「`cargo check -p minix-rs --target aarch64-unknown-none` 仍报 E0046（SefIpc::sendrec），aarch64 镜像组装与启动行为继续标为未验证」。根因：批次五百三十四给 `SefIpc` 加 `sendrec` 腿时，四个宿主实现者同步了，但 `os/servers/rs/src/lib.rs:203` 的 `SefKernelBridge` 只在 none 目标下编译（宿主形态走测试夹具），宿主门抓不到——**教训与批次五百三十二的「--include 收窄计数先验匹配」同族：跨 crate trait 扩腿必须跑三架构 check 全集，不许只跑宿主门**。
+- **落码**：`SefKernelBridge` 补 `sendrec`——走 `IpcApi::sendrec_to`（`boot.rs:324` 的既有腿，五域联合面上的同一方法），回复原地覆写 msg；C 的 sendrec 结果经 m_type 自带，transport 的 Ok(()) 即投递面（`map(|()| 0)`）。
+- **连带修正（E0046 修复的现形效应，如实记）**：基线的 `--all-targets` 宿主 clippy **同样被 E0046 挡住**（`lib.rs:203` ×2 即该错），修复后测试区一批既有告警首次现形——顺带清掉与本笔同形的七处（五处 needless `&mut` 调用参、一处 unused `mut img`、两处 `.len() > 0`→`!is_empty()`）；余下的 service_create/shell_request 测试区 field-reassign 类告警为独立余项（与本笔无关，登记不混入）。
+- **门**：`cargo check -p minix-rs --target aarch64-unknown-none` → **Finished 零错**（他线报的门过）；`--target x86_64-unknown-none`/`riscv64gc-unknown-none-elf`/宿主全 Finished；`cargo test -p minix-rs --lib` → **357/0** 回归零；`rustfmt --edition 2024 --check` 零漂移。核实日 `2026-11-05`；基线 `0a2a41bb9`。
+- **记账联动**：aarch64 镜像组装与启动行为恢复可验证基线（镜像组装的下一步归设备弧与 C 板窗，见 A22 行注记）；教训写进 18 篇头注的方法段。
+
+---
+
 ## 批次五百三十八（`ls -l` 长格式：printlong 面、名字服务与 mtime 窗，`waits on the long-stat face` 撤销）
 
 - **这一笔的射程**：命令面生产报文的最后一句——`ls.rs` 的 `ls: -l waits on the long-stat face (stat + passwd/group db)`。C 的形状：`f_longform` 翻 `printlong`（`ls.c:396`），逐条 `strmode` + nlink + NAMES（user/group，`user_from_uid(uid,0)`/`group_from_gid(gid,0)` 的数字回退，`ls.c:574-590`）+ size（字符/块设备出 `major, minor`，`sys/sys/types.h:290-291`）+ printtime 的 mtime 窗（±SIXMONTHS 内 `HH:MM`、外 ` yyyy`，`print.c:327-352`）+ 路径。

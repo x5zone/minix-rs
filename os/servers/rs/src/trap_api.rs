@@ -119,7 +119,10 @@ impl WirePrivUpdate {
                 // (C io_range; the kernel kpriv compares raw values). len==0 → stay
                 // all zero (unused entry).
                 let limit = if r.len == 0 { 0 } else { r.base + r.len - 1 };
-                WireIoRange { base: r.base, limit }
+                WireIoRange {
+                    base: r.base,
+                    limit,
+                }
             }),
             s_nr_irq: priv_.nr_irq,
             s_irq_tab: priv_.irqs,
@@ -127,7 +130,10 @@ impl WirePrivUpdate {
             s_mem_tab: core::array::from_fn(|i| {
                 let r = &priv_.mem_ranges[i];
                 let limit = if r.len == 0 { 0 } else { r.base + r.len - 1 };
-                WireMemRange { base: r.base, limit }
+                WireMemRange {
+                    base: r.base,
+                    limit,
+                }
             }),
         }
     }
@@ -149,10 +155,7 @@ pub struct TrapKernelApi {
     /// Kernel-call leg (the `sys_*` wrappers).
     kernel: DirectKernelCallTransport,
     /// DS client (label resolution, the publish/retrieve family).
-    ds: minix_sys::ds::DsClient<
-        minix_sys::ipc::DirectTrapTransport,
-        DirectKernelCallTransport,
-    >,
+    ds: minix_sys::ds::DsClient<minix_sys::ipc::DirectTrapTransport, DirectKernelCallTransport>,
     /// Grant table (the cpf_grant_direct/revoke lifeline).
     grants: minix_sys::grant::GrantTable,
     /// Stable payload for `sys_privctl(SetSys/UpdateSys)`.
@@ -257,8 +260,7 @@ impl SysApi for TrapKernelApi {
         // SYS_TIMES is the carrier (C getticks's kernel request) — the kernel
         // replaces SELF with the caller. RS consumes only boot_ticks (note at
         // syscall.rs:1798).
-        let times = syscall::sys_times(&self.kernel, Endpoint::SELF.0)
-            .map_err(Errno::from_i32)?;
+        let times = syscall::sys_times(&self.kernel, Endpoint::SELF.0).map_err(Errno::from_i32)?;
         Ok(times.boot_ticks as Clock)
     }
 
@@ -278,8 +280,7 @@ impl SysApi for TrapKernelApi {
             }
             _ => 0,
         };
-        syscall::sys_privctl(&self.kernel, proc.0, op as i32, arg_ptr)
-            .map_err(Errno::from_i32)
+        syscall::sys_privctl(&self.kernel, proc.0, op as i32, arg_ptr).map_err(Errno::from_i32)
     }
 
     fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, Errno> {
@@ -384,9 +385,7 @@ impl PmApi for TrapKernelApi {
         // C cpf_reload (safecopies.c:373-381): after fork, tell the kernel the
         // grant table location again (sys_setgrant); C's `if (grants)` empty-table
         // guard — the table always exists here, so register is called directly.
-        self.grants
-            .register(&self.kernel)
-            .map_err(Errno::from_i32)
+        self.grants.register(&self.kernel).map_err(Errno::from_i32)
     }
 
     fn srv_fork(&mut self, uid: u32, gid: u32) -> Result<Pid, Errno> {
@@ -429,13 +428,12 @@ impl PmApi for TrapKernelApi {
         let params = stack_params(&argv, &empty);
         let mut frame = alloc::vec![0u8; params.frame_size];
         let user_sp = self.user_sp()?;
-        let placement =
-            stack_fill(&argv, &empty, params.frame_size, user_sp, &mut frame).map_err(
-                |e| match e {
-                    minix_sys::stack::StackFillError::FrameTooSmall => Errno::E2BIG,
-                    minix_sys::stack::StackFillError::SizeMismatch => Errno::EINVAL,
-                },
-            )?;
+        let placement = stack_fill(&argv, &empty, params.frame_size, user_sp, &mut frame).map_err(
+            |e| match e {
+                minix_sys::stack::StackFillError::FrameTooSmall => Errno::E2BIG,
+                minix_sys::stack::StackFillError::SizeMismatch => Errno::EINVAL,
+            },
+        )?;
 
         // 3. ELF segment loading (on-demand semantics: pages are fault-allocated
         //    on first access; filesz bytes are copied from the image into its own
@@ -469,13 +467,7 @@ impl PmApi for TrapKernelApi {
         // 5. exec_restart handshake (pm/exec.c:150: exec_restart(proc, OK,
         //    execi.pc, ps_str)).
         let pc = minix_elf::entry_point(exec).map_err(|_| Errno::ENOEXEC)?;
-        sys_pm::exec_restart_via(
-            &self.ipc,
-            proc,
-            0,
-            pc,
-            placement.ps_str,
-        )
+        sys_pm::exec_restart_via(&self.ipc, proc, 0, pc, placement.ps_str)
     }
 
     fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno> {
@@ -538,7 +530,10 @@ impl IpcApi for TrapKernelApi {
         endpoint: Endpoint,
     ) -> Result<(Message, crate::dispatch::IpcStatus, Clock), Errno> {
         let mut msg = Message::default();
-        let sts = self.ipc.receive(endpoint, &mut msg).map_err(|t| Errno::from_i32(t.0))?;
+        let sts = self
+            .ipc
+            .receive(endpoint, &mut msg)
+            .map_err(|t| Errno::from_i32(t.0))?;
         let status = crate::dispatch::IpcStatus { flags: sts.0 };
         let stamp = if status.is_notify() {
             // Kernel timestamp of a notification payload (ipc.h:1715); the union
@@ -551,12 +546,7 @@ impl IpcApi for TrapKernelApi {
         Ok((msg, status, stamp))
     }
 
-    fn reply(
-        &mut self,
-        target: Endpoint,
-        result: i32,
-        payload: &Message,
-    ) -> Result<(), Errno> {
+    fn reply(&mut self, target: Endpoint, result: i32, payload: &Message) -> Result<(), Errno> {
         // C: `reply` is a **non-blocking** `ipc_sendnb(who, m_ptr)`
         // (utility.c:324); the handler-mutated request message is sent back with
         // the result as m_type. An earlier note wrongly called it "blocking
@@ -595,7 +585,12 @@ impl IpcApi for TrapKernelApi {
             .map_err(|t| Errno::from_i32(t.0))
     }
 
-    fn safecopy_from(&mut self, source: Endpoint, addr: usize, buf: &mut [u8]) -> Result<(), Errno> {
+    fn safecopy_from(
+        &mut self,
+        source: Endpoint,
+        addr: usize,
+        buf: &mut [u8],
+    ) -> Result<(), Errno> {
         // The sys_datacopy shape of C manager.c:141/160 (SELF = -2, replaced by the kernel).
         syscall::sys_datacopy(
             &self.kernel,
@@ -638,21 +633,10 @@ impl IpcApi for TrapKernelApi {
             .map_err(|t| Errno::from_i32(t.0))
     }
 
-    fn grant_read(
-        &mut self,
-        dest: Endpoint,
-        addr: u64,
-        len: u64,
-    ) -> Result<GrantId, Errno> {
+    fn grant_read(&mut self, dest: Endpoint, addr: u64, len: u64) -> Result<GrantId, Errno> {
         let gid = self
             .grants
-            .grant_direct(
-                &self.kernel,
-                dest.0,
-                addr,
-                len,
-                minix_types::CpFlags::READ,
-            )
+            .grant_direct(&self.kernel, dest.0, addr, len, minix_types::CpFlags::READ)
             .map_err(Errno::from_i32)?;
         Ok(gid)
     }

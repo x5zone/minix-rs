@@ -600,8 +600,7 @@ impl<'a> BootTables<'a> {
     pub fn acquire_from(
         transport: &impl minix_sys::syscall::KernelCallTransport,
     ) -> Result<BootTables<'static>, i32> {
-        let mut wire =
-            [minix_types::BootImageStruct::default(); minix_types::NR_BOOT_PROCS];
+        let mut wire = [minix_types::BootImageStruct::default(); minix_types::NR_BOOT_PROCS];
         // SAFETY: `[BootImageStruct; N]` is a repr(C) POD array (its layout is
         // pinned by the minix-types boot_image.rs layout-frozen tests), so the
         // whole block is writable as bytes; the kernel GET_IMAGE fills it using
@@ -609,18 +608,15 @@ impl<'a> BootTables<'a> {
         let bytes = unsafe {
             core::slice::from_raw_parts_mut(
                 wire.as_mut_ptr() as *mut u8,
-                core::mem::size_of::<
-                    [minix_types::BootImageStruct; minix_types::NR_BOOT_PROCS],
-                >(),
+                core::mem::size_of::<[minix_types::BootImageStruct; minix_types::NR_BOOT_PROCS]>(),
             )
         };
         minix_sys::syscall::sys_getimage(transport, bytes)?;
 
-        let image: alloc::vec::Vec<BootImage> = wire
-            .iter()
-            .map(BootImage::from_wire)
-            .collect();
-        Ok(BootTables::new(alloc::boxed::Box::leak(image.into_boxed_slice())))
+        let image: alloc::vec::Vec<BootImage> = wire.iter().map(BootImage::from_wire).collect();
+        Ok(BootTables::new(alloc::boxed::Box::leak(
+            image.into_boxed_slice(),
+        )))
     }
 
     /// Validates that image and priv tables describe the same system services.
@@ -672,9 +668,8 @@ pub fn find_boot_param<'a>(params: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
         if first == 0 {
             break; // C: for (envp = params; *envp != 0;) — NUL marks the end of the table
         }
-        let key_matched = envp.len() > key.len()
-            && envp.starts_with(key)
-            && envp[key.len()] == b'=';
+        let key_matched =
+            envp.len() > key.len() && envp.starts_with(key) && envp[key.len()] == b'=';
         if key_matched {
             let rest = &envp[key.len() + 1..];
             let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
@@ -1267,10 +1262,7 @@ impl<'a> BootInit<'a> {
         update: &mut crate::live_update::UpdateState,
     ) -> Result<(), Errno> {
         // C: clone_slot(rp, &replica_rp) — main.c:441.
-        let rp = self
-            .table
-            .endpoint_slot(Endpoint::RS)
-            .ok_or(Errno::ESRCH)?;
+        let rp = self.table.endpoint_slot(Endpoint::RS).ok_or(Errno::ESRCH)?;
         let replica = crate::service_create::clone_slot(&mut self.table, rp)?;
 
         // C: srv_fork(0, 0) — main.c:446 (root:wheel).
@@ -1278,7 +1270,11 @@ impl<'a> BootInit<'a> {
 
         // C main.c:447-455 — replica_pid = pid ? pid : getpid();
         // write the pid/endpoint back into the replica slot after getprocnr.
-        let replica_pid = if pid == 0 { sys.getnpid(Endpoint::RS)? } else { pid };
+        let replica_pid = if pid == 0 {
+            sys.getnpid(Endpoint::RS)?
+        } else {
+            pid
+        };
         let replica_ep = sys.getprocnr(replica_pid)?;
         {
             let r = self.table.get_mut(replica);
@@ -1352,8 +1348,7 @@ mod tests {
             assert_eq!(gi.request, minix_types::GET_IMAGE);
             assert_eq!(
                 gi.val_len,
-                (minix_types::NR_BOOT_PROCS
-                    * core::mem::size_of::<minix_types::BootImageStruct>())
+                (minix_types::NR_BOOT_PROCS * core::mem::size_of::<minix_types::BootImageStruct>())
                     as i32
             );
         }
@@ -1675,7 +1670,9 @@ mod tests {
         let mut boot = BootInit::new(BootTables::placeholder());
         boot.step0_prepare(&mut sys).expect("step 0");
 
-        let (_, addr, len) = sys.last_grant.expect("step0 must create the rproctab grant");
+        let (_, addr, len) = sys
+            .last_grant
+            .expect("step0 must create the rproctab grant");
         assert_eq!(
             len as usize,
             64 * core::mem::size_of::<minix_types::RprocpubSnap>(),
@@ -1975,9 +1972,14 @@ mod tests {
             .iter()
             .position(|c| matches!(c, Call::PrivCtl(ep, PrivCtlOp::Yield) if *ep == Endpoint(8)))
             .expect("privctl(Yield) 必发");
-        assert!(pos_set_sys < pos_sched && pos_sched < pos_yield, "C 顺序:设权→调度→让渡");
         assert!(
-            !calls.iter().any(|c| matches!(c, Call::SysUpdate(_, _) | Call::CpfReload)),
+            pos_set_sys < pos_sched && pos_sched < pos_yield,
+            "C 顺序:设权→调度→让渡"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, Call::SysUpdate(_, _) | Call::CpfReload)),
             "旧实例腿不得走 update/cpf_reload"
         );
     }
@@ -2025,7 +2027,9 @@ mod tests {
             .expect("cpf_reload 必发");
         assert!(pos_update < pos_reload, "C 顺序:update→reload→cleanup→pin");
         assert!(
-            !calls.iter().any(|c| matches!(c, Call::PrivCtl(_, PrivCtlOp::Yield))),
+            !calls
+                .iter()
+                .any(|c| matches!(c, Call::PrivCtl(_, PrivCtlOp::Yield))),
             "新实例腿不得 YIELD"
         );
     }
@@ -2338,7 +2342,10 @@ mod tests {
             let init = minix_types::RsInit::decode_message(msg);
             assert_eq!(init.init_type, 0, "SEF_INIT_FRESH — sef.h:93");
             assert_eq!(init.result, 0);
-            assert_eq!(init.rproctab_gid, 1, "step0's rproctab grant id (main.c:185)");
+            assert_eq!(
+                init.rproctab_gid, 1,
+                "step0's rproctab grant id (main.c:185)"
+            );
             assert_eq!(init.old_endpoint, Endpoint::NONE, "boot has no old self");
             assert_eq!(init.restarts, 1, "r_restarts 0 + 1 — utility.c:58");
             assert_eq!(init.prepare_state, crate::live_update::SEF_LU_STATE_NULL);
@@ -2467,8 +2474,7 @@ mod tests {
 
         // The send order is exactly the table order (RS itself is not sent) —
         // table.c:14-15 + main.c:344-399.
-        let order: alloc::vec::Vec<Endpoint> =
-            sys.sent.iter().map(|(e, _)| *e).collect();
+        let order: alloc::vec::Vec<Endpoint> = sys.sent.iter().map(|(e, _)| *e).collect();
         assert_eq!(
             order,
             alloc::vec![Endpoint::VM, Endpoint::PM, Endpoint::SCHED],
@@ -2558,8 +2564,7 @@ mod tests {
         );
         // VM was sent (before the break point); PM/SCHED were not (no progress
         // past the break point).
-        let sent_eps: alloc::vec::Vec<Endpoint> =
-            sys.sent.iter().map(|(e, _)| *e).collect();
+        let sent_eps: alloc::vec::Vec<Endpoint> = sys.sent.iter().map(|(e, _)| *e).collect();
         assert_eq!(
             sent_eps,
             alloc::vec![Endpoint::VM],
@@ -2736,9 +2741,8 @@ mod tests {
         // Ordering: send to VM < echo of PM's reply (evidence of the inline
         // catch) < send to SCHED.
         let calls = &sys.calls;
-        let find = |pred: &dyn Fn(&Call) -> bool| {
-            calls.iter().position(pred).expect("调用必须存在")
-        };
+        let find =
+            |pred: &dyn Fn(&Call) -> bool| calls.iter().position(pred).expect("调用必须存在");
         let vm_send = find(&|c| matches!(c, Call::Asynsend(e, _) if *e == Endpoint::VM));
         let pm_reply = find(&|c| matches!(c, Call::Reply(e, _) if *e == Endpoint::PM));
         let sched_send = find(&|c| matches!(c, Call::Asynsend(e, _) if *e == Endpoint::SCHED));

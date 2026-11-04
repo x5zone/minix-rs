@@ -55,12 +55,12 @@ pub mod sef;
 pub mod self_lifecycle;
 pub mod service_create;
 pub mod service_slot;
-pub mod trap_api;
 pub mod slot;
 pub mod state_data;
 pub mod table;
 #[cfg(test)]
 mod testutil;
+pub mod trap_api;
 
 pub use access::{caller_can_control, caller_is_root, check_call_permission};
 pub use boot::{BootError, BootInit, BootTables, KernelApi, Machine};
@@ -211,6 +211,18 @@ impl minix_sef::SefIpc for SefKernelBridge<'_> {
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
         self.kernel.notify(dest).map_err(|e| e.to_i32())
     }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut minix_types::Message) -> Result<i32, i32> {
+        // The birth reply leg (C `ipc_sendrec(RS, &m)`, sef_init.c:458-466)
+        // rides the same `IpcApi::sendrec_to` the rest of the server uses
+        // (boot.rs:324); the reply overwrites msg in place.
+        // C's sendrec answers through the reply message itself (m_type
+        // carries the result); the transport's Ok(()) is the delivered face.
+        self.kernel
+            .sendrec_to(dest, msg)
+            .map(|()| 0)
+            .map_err(|e| e.to_i32())
+    }
 }
 
 impl RsServer {
@@ -224,7 +236,10 @@ impl RsServer {
     /// legs answer ±EIO so fail-closed stays observable); tests inject a mock
     /// through `with_kernel`.
     pub fn new(tables: BootTables<'static>) -> Self {
-        Self::with_kernel(tables, alloc::boxed::Box::new(trap_api::TrapKernelApi::new()))
+        Self::with_kernel(
+            tables,
+            alloc::boxed::Box::new(trap_api::TrapKernelApi::new()),
+        )
     }
 
     /// Creates the server with an injected kernel API (tests / wiring).
@@ -1307,7 +1322,7 @@ mod signal_handler_tests {
         // links both directions and creates it without running; the
         // non-batch flow then walks the prepare and arms the late reply on
         // the last descriptor's service (request.c:868-874).
-        let mut img = do_up_image(b"/bin/tty.new", b"vfs");
+        let img = do_up_image(b"/bin/tty.new", b"vfs");
         let mut server = booted_do_up(img);
         {
             let state = server.state.as_mut().unwrap();
@@ -1527,8 +1542,7 @@ mod signal_handler_tests {
             64 * core::mem::size_of::<minix_types::RprocpubSnap>() as u64;
         assert_eq!(server.do_getsysinfo(&m), Ok(0));
         m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROC_TAB;
-        m.m_u.m_lsys_getsysinfo.size =
-            64 * core::mem::size_of::<minix_types::RprocSnap>() as u64;
+        m.m_u.m_lsys_getsysinfo.size = 64 * core::mem::size_of::<minix_types::RprocSnap>() as u64;
         assert_eq!(server.do_getsysinfo(&m), Ok(0), "rproc table copy-out live");
     }
 
@@ -1970,8 +1984,7 @@ mod signal_handler_tests {
         assert_eq!(server.do_getsysinfo(&m), Err(Errno::EINVAL));
 
         m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROC_TAB;
-        m.m_u.m_lsys_getsysinfo.size =
-            64 * core::mem::size_of::<minix_types::RprocSnap>() as u64;
+        m.m_u.m_lsys_getsysinfo.size = 64 * core::mem::size_of::<minix_types::RprocSnap>() as u64;
         assert_eq!(
             server.do_getsysinfo(&m),
             Ok(0),
@@ -2078,9 +2091,9 @@ mod signal_handler_tests {
         // stop_service(RS_REFRESHING) with the late reply armed; the caller
         // is unblocked when the refresh completes → EDONTREPLY.
         let mut server = booted_vfs_sysproc();
-        let mut m = label_message(minix_types::RS_REFRESH);
+        let m = label_message(minix_types::RS_REFRESH);
         assert_eq!(
-            server.do_refresh(&mut m),
+            server.do_refresh(&m),
             Ok(minix_types::EDONTREPLY),
             "refresh defers its reply to cleanup"
         );
@@ -2106,9 +2119,9 @@ mod signal_handler_tests {
         // EBUSY (request.c:184-188); a TERMINATED service restarts with the
         // recovery script suppressed for this round (save/clear/restore).
         let mut server = booted_vfs_sysproc();
-        let mut m = label_message(minix_types::RS_RESTART);
+        let m = label_message(minix_types::RS_RESTART);
         assert_eq!(
-            server.do_restart(&mut m),
+            server.do_restart(&m),
             Err(Errno::EBUSY),
             "a live service cannot be restarted on request"
         );
@@ -2120,7 +2133,7 @@ mod signal_handler_tests {
             // A recovery script exists for this service.
             s.script[..10].copy_from_slice(b"recover.sh");
         }
-        assert_eq!(server.do_restart(&mut m), Ok(0));
+        assert_eq!(server.do_restart(&m), Ok(0));
         let s = server
             .state
             .as_ref()
@@ -2141,13 +2154,13 @@ mod signal_handler_tests {
         // RS_UNCLONE (request.c:253-293) without a replica → ENOENT
         // (request.c:274-277), with one → cleanup now + flag cleared.
         let mut server = booted_vfs_sysproc();
-        let mut clone_msg = label_message(minix_types::RS_CLONE);
-        let mut unclone_msg = label_message(minix_types::RS_UNCLONE);
+        let clone_msg = label_message(minix_types::RS_CLONE);
+        let unclone_msg = label_message(minix_types::RS_UNCLONE);
 
         // Unclone before any clone → ENOENT.
-        assert_eq!(server.do_unclone(&mut unclone_msg), Err(Errno::ENOENT));
+        assert_eq!(server.do_unclone(&unclone_msg), Err(Errno::ENOENT));
 
-        assert_eq!(server.do_clone(&mut clone_msg), Ok(0));
+        assert_eq!(server.do_clone(&clone_msg), Ok(0));
         let id = crate::service_slot::SlotId::new(0);
         {
             let state = server.state.as_ref().unwrap();
@@ -2167,9 +2180,9 @@ mod signal_handler_tests {
         }
 
         // A replica already available → EEXIST.
-        assert_eq!(server.do_clone(&mut clone_msg), Err(Errno::EEXIST));
+        assert_eq!(server.do_clone(&clone_msg), Err(Errno::EEXIST));
 
-        assert_eq!(server.do_unclone(&mut unclone_msg), Ok(0));
+        assert_eq!(server.do_unclone(&unclone_msg), Ok(0));
         let state = server.state.as_ref().unwrap();
         assert!(
             !state
@@ -2338,7 +2351,7 @@ mod signal_handler_tests {
             .prepare_maxtime = 30;
         server2.do_period(10).unwrap();
         let state = server2.state.as_ref().unwrap();
-        assert!(state.update.chain.len() > 0, "prepare still in flight");
+        assert!(!state.update.chain.is_empty(), "prepare still in flight");
         assert!(
             state
                 .update
@@ -2351,7 +2364,7 @@ mod signal_handler_tests {
         two_entry_chain(&mut server3);
         server3.do_period(10_000).unwrap();
         assert!(
-            server3.state.as_ref().unwrap().update.chain.len() > 0,
+            server3.state.as_ref().unwrap().update.chain.is_empty() == false,
             "maxtime 0 never times out"
         );
 
@@ -2366,7 +2379,7 @@ mod signal_handler_tests {
         }
         server4.do_period(100).unwrap();
         assert!(
-            server4.state.as_ref().unwrap().update.chain.len() > 0,
+            server4.state.as_ref().unwrap().update.chain.is_empty() == false,
             "the initializing phase has no prepare deadline"
         );
     }
