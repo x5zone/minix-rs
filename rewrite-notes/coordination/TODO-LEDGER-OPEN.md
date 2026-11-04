@@ -203,6 +203,8 @@
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
 
+- **`2026-11-05` 收口刷新（第 56 轮，基线 `d63b1d727`，`claim/FIND-DELETE-qoder`）**：`find -delete`/`-rm` 写侧腿已随批次五百三十一闭——`unlink_entry`/`rmdir_entry` 双缝、`-delete` 隐含 `-depth`、失败只 warn 不动退码（C 同形）、起点含 `/` 的偏执检查行走前致命；真机删除验收挂可写根盘（同 C-57 族）。find 的按名拒绝只剩 `-fstype`/`-flags`/`-regex`/`-iregex`（前置未清）。
+
 - **`2026-11-05` 收口刷新（第 55 轮，基线 `e827a3ed8`，`claim/EXEC-PLUS-qoder`）**：`-exec … {} +` 成批腿已随批次五百三十闭——`Batches` 节点键累积器挂 `Walk`（C 挂计划节点，语义同位），路径入批恒真、攒满 5000 即跑、`walk_paths` 尾部清理链跑余量并把非零退出折进退码（C `ep_rval` 经 `plan_cleanup`）；中段 `{}` 保持字面（C plus 支无替换）。`find` 未接线余面只剩 `-delete`/`-rm`。同笔顺修批次五百二十九的五处凭记忆错位锚点（pattern 门 P18 当场抓出）。
 
 - **`2026-11-05` 收口刷新（第 54 轮，基线 `fe147c00c`，`claim/FIND-USER-qoder`）**：`find` 的 `-user`/`-group`/`-nouser`/`-nogroup` 已随批次五百二十九闭——`ReferenceStat` 四条账户缝（名字→号、号→有无账）+ `walk_paths` 开场的 plan-build 前置筛查（C 的 `errx` 三句逐字：`-user: <名>: no such user`、`-group: <名>: no such group`、`-user: <名>: illegal numeric value`），bin 直读 `/etc/passwd`/`/etc/group`。`find` 未接线余面只剩 `-exec … {} +` 成批腿与 `-delete`/`-rm`；口令库消费方（chown 名换号、`ls -l` 长格式）解析半全就绪。

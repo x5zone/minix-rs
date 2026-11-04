@@ -67,6 +67,25 @@ fn the_usage_line_carries_the_program_name_and_a_capital_usage() {
 }
 
 #[test]
+fn the_wired_delete_leg_does_not_change_the_hosted_walk_face() {
+    // A hosted run's `unlink`/`rmdir` go through the IPC stubs, and the
+    // start path `.` is ignored outright (`function.c:521-524`), so the
+    // face stays the bare walk's: one EIO warn, exit 1, no stdout — no
+    // panic, no invented delete line. The `./sub` start takes the paranoia
+    // exit instead (`function.c:537-541`): fatal before anything walks.
+    let bare = run(&["."]);
+    let with_delete = run(&[".", "-delete"]);
+    assert_eq!(with_delete, bare);
+    let (out, status, err) = run(&["./sub", "-delete"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        "find: -delete: ./sub: relative path potentially not safe\n"
+    );
+}
+
+#[test]
 fn an_unresolvable_user_or_group_name_is_fatal_before_the_walk() {
     // C `c_user`/`c_group` (`function.c:1748-1749`/`:1081-1083`): a name that
     // is neither an account nor a numeric spelling errx(1)s at plan build —

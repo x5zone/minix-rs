@@ -71,8 +71,8 @@ use minix_fileops::find::{
 use minix_proctools::passwd;
 use minix_shell::exec_run::exec_search;
 use minix_sys::{
-    Errno, Fd, Stat, Strerror, close, fork, getdents, gettimeofday, lstat, open, read,
-    stat as stat_follows, waitpid,
+    Errno, Fd, Stat, Strerror, close, fork, getdents, gettimeofday, lstat, open, read, rmdir,
+    stat as stat_follows, unlink, waitpid,
 };
 
 /// The per-call refill buffer for directory reads (the same level as `du`):
@@ -162,6 +162,12 @@ impl ReferenceStat for SysProbe {
         read_db(GROUP_PATH)
             .map(|db| passwd::lookup_gid_in(&db, gid).is_some())
             .unwrap_or(false)
+    }
+    fn unlink_entry(&self, path: &str) -> Result<(), Errno> {
+        unlink(path)
+    }
+    fn rmdir_entry(&self, path: &str) -> Result<(), Errno> {
+        rmdir(path)
     }
 
     /// C `f_exec`'s run half (`function.c:550-565`): fork + `execvp` +

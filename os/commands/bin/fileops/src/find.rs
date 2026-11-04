@@ -1296,7 +1296,7 @@ pub fn type_mask(letter: &str) -> Result<u32, JudgeError> {
 /// Whether an evaluated predicate asks to "skip this directory" or "prune".
 /// `-prune` is always true and sets the flag, like C's `f_prune`
 /// (`function.c:1542-1560`: set `fts_function = FTS_SKIP`, then return 1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Do nothing; only the truth value matters.
     None,
@@ -1304,6 +1304,8 @@ pub enum Action {
     Prune,
     /// Emit this entry's path (the `-print` family).
     Print(PrintForm),
+    /// Carry a `warn(3)`-shaped line (`-delete`'s failed `rmdir`/`unlink`).
+    Warn(String),
 }
 
 /// The three print forms (`f_print`/`f_print0`/`f_printx`,
@@ -1321,7 +1323,7 @@ pub enum PrintForm {
 
 /// The result of evaluating one leaf: the truth value plus any action this
 /// layer must record along the way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     pub truth: bool,
     pub action: Action,
@@ -1396,6 +1398,19 @@ pub trait ReferenceStat {
     fn gid_known(&self, gid: u32) -> bool {
         let _ = gid;
         false
+    }
+
+    /// `-delete`'s file leg (`f_delete`'s `unlink`, `function.c:555-558`).
+    /// The default `ENOSYS` face is the seam-absent build.
+    fn unlink_entry(&self, path: &str) -> Result<(), Errno> {
+        let _ = path;
+        Err(Errno::ENOSYS)
+    }
+
+    /// `-delete`'s directory leg (C `rmdir`, `function.c:551-554`).
+    fn rmdir_entry(&self, path: &str) -> Result<(), Errno> {
+        let _ = path;
+        Err(Errno::ENOSYS)
     }
 }
 
@@ -1586,8 +1601,44 @@ pub fn judge_leaf<'a>(
         // Missing legs are refused by name and never silently answer false.
         // (`-exec`/`-execdir`/`-ok` never arrive here as keywords -- the
         // parser turns them into [`Prim::Exec`].)
-        "-delete" | "-rm" | "-fstype" | "-flags" | "-regex" | "-iregex" | "-newerest"
-        | "-mindepth0" => Err(JudgeError::Unwired(String::from(name))),
+        "-fstype" | "-flags" | "-regex" | "-iregex" | "-newerest" | "-mindepth0" => {
+            Err(JudgeError::Unwired(String::from(name)))
+        }
+        // `f_delete` (`function.c:518-561`): the start entry (`.`) is
+        // ignored outright; directories go through `rmdir` (with
+        // `ENOTEMPTY` silently tolerated) and everything else through
+        // `unlink`; every failure is a `warn(3)` line and the primary
+        // still "succeeds" — C's exit status does not move on delete
+        // failures either.
+        "-delete" | "-rm" => {
+            if entry.path == "." || entry.path == ".." {
+                return Ok(Outcome::truthy(true));
+            }
+            let outcome = if entry.mode & crate::cp::S_IFMT == crate::cp::S_IFDIR {
+                refs.rmdir_entry(entry.path).and(Ok(()))
+            } else {
+                refs.unlink_entry(entry.path)
+            };
+            let warning = match outcome {
+                Ok(()) => None,
+                Err(e) if e.to_i32() == minix_sys::ENOTEMPTY => None,
+                Err(e) => {
+                    let leg = if entry.mode & crate::cp::S_IFMT == crate::cp::S_IFDIR {
+                        "rmdir"
+                    } else {
+                        "unlink"
+                    };
+                    Some(format!("-delete: {leg}({}): {}", entry.path, Strerror(e)))
+                }
+            };
+            Ok(match warning {
+                Some(line) => Outcome {
+                    truth: true,
+                    action: Action::Warn(line),
+                },
+                None => Outcome::truthy(true),
+            })
+        }
         // `c_user` (`function.c:1734-1753`): the name resolves first; the
         // numeric fallback carries `find_parsenum`'s `[+-]` compare flags.
         // The unresolvable non-numeric shapes are fatal at plan-build in C
@@ -1942,8 +1993,8 @@ mod judge_tests {
         let e = entry("/etc/rc", "rc", 0o100644);
         // (`-exec`/`-execdir`/`-ok` have a production face now — their pins
         // live in the `Prim::Exec` tests; the `-user` family moved to the
-        // account-seam tests.)
-        for name in ["-delete", "-rm", "-fstype", "-flags", "-regex", "-iregex"] {
+        // account-seam tests and `-delete`/`-rm` to the write-seam tests.)
+        for name in ["-fstype", "-flags", "-regex", "-iregex"] {
             assert_eq!(
                 judge(&e, name, Some("x")),
                 Err(JudgeError::Unwired(String::from(name))),
@@ -1998,6 +2049,10 @@ pub struct Evaluated {
     pub pruned: bool,
     /// Lines to emit (possibly several: a run of `-print`s each prints once).
     pub emitted: Vec<String>,
+    /// `warn(3)`-shaped lines an action raised without failing (C's
+    /// `-delete` warns on a failed `rmdir`/`unlink` and still "succeeds",
+    /// `function.c:551-558`).
+    pub warnings: Vec<String>,
 }
 
 /// Evaluate a sequence (`Vec<Node>`): the same shape as C's
@@ -2016,6 +2071,7 @@ pub fn eval_plan(
         truth: true,
         pruned: false,
         emitted: Vec::new(),
+        warnings: Vec::new(),
     };
     eval_seq(world, refs, entry, nodes, size_bytes, batches, &mut out)
 }
@@ -2055,13 +2111,15 @@ fn eval_node(
     match node {
         Node::Leaf(Prim::Bare(name)) => {
             let outcome = judge_leaf(world, refs, entry, name, None, size_bytes)?;
+            let truth = outcome.truth;
             note(outcome, entry, out);
-            Ok(outcome.truth)
+            Ok(truth)
         }
         Node::Leaf(Prim::Keyword { name, arg }) => {
             let outcome = judge_leaf(world, refs, entry, name, Some(arg), size_bytes)?;
+            let truth = outcome.truth;
             note(outcome, entry, out);
-            Ok(outcome.truth)
+            Ok(truth)
         }
         Node::Leaf(Prim::Exec {
             name,
@@ -2116,6 +2174,7 @@ fn eval_node(
                 truth: true,
                 pruned: false,
                 emitted: Vec::new(),
+                warnings: Vec::new(),
             };
             eval_seq(world, refs, entry, inner, size_bytes, batches, &mut sub)?;
             let truth = sub.truth;
@@ -2127,6 +2186,7 @@ fn eval_node(
                 truth: true,
                 pruned: false,
                 emitted: Vec::new(),
+                warnings: Vec::new(),
             };
             let one = vec![(**inner).clone()];
             eval_seq(world, refs, entry, &one, size_bytes, batches, &mut sub)?;
@@ -2141,6 +2201,7 @@ fn eval_node(
                 truth: true,
                 pruned: false,
                 emitted: Vec::new(),
+                warnings: Vec::new(),
             };
             eval_seq(world, refs, entry, left, size_bytes, batches, &mut sub)?;
             let left_truth = sub.truth;
@@ -2152,6 +2213,7 @@ fn eval_node(
                 truth: true,
                 pruned: false,
                 emitted: Vec::new(),
+                warnings: Vec::new(),
             };
             eval_seq(
                 world,
@@ -2174,12 +2236,14 @@ fn note(outcome: Outcome, entry: &Entry<'_>, out: &mut Evaluated) {
         Action::None => {}
         Action::Prune => out.pruned = true,
         Action::Print(form) => out.emitted.push(printed(form, entry.path)),
+        Action::Warn(line) => out.warnings.push(line),
     }
 }
 
 fn merge(sub: Evaluated, out: &mut Evaluated) {
     out.pruned |= sub.pruned;
     out.emitted.extend(sub.emitted);
+    out.warnings.extend(sub.warnings);
 }
 
 // ============================================================================
@@ -2277,6 +2341,22 @@ pub struct WalkResult {
 /// (`-x`). `-d` makes directories evaluate in post-order, `-s` sorts each level
 /// by name, `-X` rejects paths containing xargs separators, and the implicit
 /// `-print` is added when the expression has no output entry.
+/// Whether a `-delete`/`-rm` primary sits anywhere in the tree (C's
+/// `c_delete` runs at plan build, so the forcing is unconditional there).
+fn delete_present(nodes: &[Node<'_>]) -> bool {
+    nodes.iter().any(|node| match node {
+        // Arity::None primaries parse as `Bare` (the judge matches them by
+        // name there too).
+        Node::Leaf(Prim::Bare(name)) | Node::Leaf(Prim::Keyword { name, .. }) => {
+            *name == "-delete" || *name == "-rm"
+        }
+        Node::Leaf(Prim::Exec { .. }) => false,
+        Node::Not(inner) => delete_present(core::slice::from_ref(inner)),
+        Node::Paren(inner) => delete_present(inner),
+        Node::Or { left, right } => delete_present(left) || delete_present(right),
+    })
+}
+
 /// The `-user`/`-group` keyword args anywhere in the tree, in order — the
 /// pre-pass resolves each the way C's plan constructors do at build time.
 fn user_family_args<'n, 'a>(nodes: &'n [Node<'a>]) -> Vec<(&'n str, &'a str)> {
@@ -2317,6 +2397,34 @@ pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> 
         parsed.expr.clone()
     };
     let size_bytes = size_counts_bytes(&effective);
+    // `c_delete` (`function.c:565-578`) forces the shape at plan build:
+    // `-delete` implies `-depth`, disables `-follow`'s logical walk, and
+    // turns output on (the option table's `produces_output` already
+    // carries that half).
+    let has_delete = delete_present(&effective);
+    let depth = parsed.depth_first || has_delete;
+    if has_delete {
+        // `f_delete`'s paranoia check (`function.c:537-541`): any start
+        // path whose accpath carries a `/` is
+        // `-delete: <path>: relative path potentially not safe`, fatal
+        // before anything is touched. (C checks every evaluated entry's
+        // accpath; this walk never chdirs, so a child's pass string is the
+        // root-derived path and only the start entry can trip the check.)
+        let mut bad = parsed
+            .extra_paths
+            .iter()
+            .chain(parsed.paths.iter())
+            .filter(|p| p.contains('/'));
+        if let Some(path) = bad.next() {
+            return WalkResult {
+                rval: 1,
+                warnings: vec![format!(
+                    "-delete: {path}: relative path potentially not safe"
+                )],
+                ..WalkResult::default()
+            };
+        }
+    }
     // C's `c_user`/`c_group` resolve their names at plan-build time and
     // `errx(1)` before anything walks: an unresolvable non-numeric name is
     // `-user: <name>: no such user` / `-group: <name>: no such group`, and
@@ -2350,15 +2458,16 @@ pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> 
         }
     }
     let cfg = WalkCfg {
-        depth: parsed.depth_first,
+        depth,
         sorted: parsed.sorted,
         xdev: parsed.walk.has(fts::XDEV),
         xargs_safe_only: parsed.xargs_safe_only,
         // `-L` walks logically (everything is followed); `-H` follows only the
         // start path (`fts.c:171` passes `ISSET(FTS_COMFOLLOW)` for the root,
         // while `fts_build` passes follow=0 for children), so comfollow only
-        // affects visit_start.
-        logical: parsed.walk.has(fts::LOGICAL),
+        // affects visit_start. `-delete` clears the logical half (C's
+        // `c_delete` strips `FTS_LOGICAL`).
+        logical: parsed.walk.has(fts::LOGICAL) && !has_delete,
         comfollow: parsed.walk.has(fts::COMFOLLOW),
     };
     let mut w = Walk {
@@ -2648,6 +2757,7 @@ impl Walk<'_> {
         ) {
             Ok(ev) => {
                 self.out.emitted.extend(ev.emitted);
+                self.out.warnings.extend(ev.warnings);
                 ev.pruned && ev.truth
             }
             Err(_) => {
@@ -2939,6 +3049,10 @@ mod walk_tests {
         /// `-user` family's seams.
         users: BTreeMap<String, u32>,
         groups: BTreeMap<String, u32>,
+        /// Scripted `-delete` failures, keyed by path.
+        delete_fails: BTreeMap<String, Errno>,
+        /// Every successful deletion, in order.
+        deleted: RefCell<Vec<String>>,
     }
 
     /// The three slots of `fails`. Naming them separately is what makes it
@@ -2981,7 +3095,19 @@ mod walk_tests {
                 run_log: RefCell::new(Vec::new()),
                 users: BTreeMap::new(),
                 groups: BTreeMap::new(),
+                delete_fails: BTreeMap::new(),
+                deleted: RefCell::new(Vec::new()),
             }
+        }
+
+        /// Script one delete failure.
+        fn delete_fails(&mut self, path: &str, errno: Errno) {
+            self.delete_fails.insert(String::from(path), errno);
+        }
+
+        /// Clear one delete script (the table persists across runs).
+        fn delete_ok(&mut self, path: &str) {
+            self.delete_fails.remove(path);
         }
 
         /// Script one account.
@@ -3107,6 +3233,26 @@ mod walk_tests {
         }
         fn gid_known(&self, gid: u32) -> bool {
             self.groups.values().any(|&g| g == gid)
+        }
+        fn unlink_entry(&self, path: &str) -> Result<(), Errno> {
+            if let Some(code) = self.delete_fails.get(path) {
+                return Err(*code);
+            }
+            if !self.lstats.contains_key(path) {
+                return Err(Errno::ENOENT);
+            }
+            self.deleted.borrow_mut().push(String::from(path));
+            Ok(())
+        }
+        fn rmdir_entry(&self, path: &str) -> Result<(), Errno> {
+            if let Some(code) = self.delete_fails.get(path) {
+                return Err(*code);
+            }
+            if !self.dirs.contains_key(path) {
+                return Err(Errno::from_i32(minix_sys::ENOTEMPTY));
+            }
+            self.deleted.borrow_mut().push(String::from(path));
+            Ok(())
         }
     }
 
@@ -3382,6 +3528,71 @@ mod walk_tests {
         assert_eq!(got.rval, 1);
         assert_eq!(got.warnings.len(), 1);
         assert!(got.warnings[0].starts_with("vfork: "));
+    }
+
+    // ── `-delete`/`-rm` (`c_delete`/`f_delete`) ──
+
+    #[test]
+    fn delete_implies_depth_and_removes_children_before_their_directory() {
+        let fs = tree();
+        let got = run(&[".", "-delete"], &fs);
+        // Post-order: the deepest entries go first, the root last — and the
+        // root is `.` which `f_delete` ignores outright
+        // (`function.c:521-524`).
+        assert_eq!(fs.deleted.borrow().clone(), ["./a", "./sub/b", "./sub"]);
+        assert_eq!(got.rval, 0);
+        assert_eq!(got.warnings, Vec::<String>::new());
+        assert_eq!(
+            got.emitted,
+            Vec::<String>::new(),
+            "-delete 自身算输出生产者"
+        );
+    }
+
+    #[test]
+    fn delete_warns_on_failure_and_still_succeeds() {
+        let mut fs = tree();
+        // `function.c:555-558`: a failed `unlink` is a `warn(3)` line; the
+        // primary answers true and C's exit status does not move.
+        fs.delete_fails("./a", Errno::EPERM);
+        let got = run(&[".", "-delete"], &fs);
+        assert_eq!(got.rval, 0, "C 的 f_delete 不动退出码");
+        assert_eq!(
+            got.warnings,
+            ["-delete: unlink(./a): Operation not permitted"]
+        );
+        // A directory failure uses the rmdir leg name; `ENOTEMPTY` is
+        // silently tolerated (`function.c:551-554`).
+        fs.delete_ok("./a");
+        fs.delete_fails("./sub", Errno::from_i32(minix_sys::ENOTEMPTY));
+        let got = run(&[".", "-delete"], &fs);
+        assert_eq!(got.warnings, Vec::<String>::new(), "ENOTEMPTY 容忍");
+        fs.delete_fails("./sub", Errno::EPERM);
+        let got = run(&[".", "-delete"], &fs);
+        assert_eq!(
+            got.warnings,
+            ["-delete: rmdir(./sub): Operation not permitted"]
+        );
+        assert_eq!(got.rval, 0);
+    }
+
+    #[test]
+    fn delete_refuses_a_slash_carrying_start_path_before_the_walk() {
+        // `function.c:537-541`: the paranoia check is fatal at the first
+        // evaluated entry with a `/` in its accpath — the start entry, so
+        // nothing is ever touched.
+        let fs = tree();
+        let got = run(&["./sub", "-delete"], &fs);
+        assert_eq!(fs.deleted.borrow().len(), 0);
+        assert_eq!(got.rval, 1);
+        assert_eq!(
+            got.warnings,
+            ["-delete: ./sub: relative path potentially not safe"]
+        );
+        // A bare-name start (`.` included) passes; `-rm` is the same node.
+        let got = run(&[".", "-rm"], &fs);
+        assert_eq!(got.rval, 0);
+        assert_eq!(fs.deleted.borrow().len(), 3);
     }
 
     #[test]
