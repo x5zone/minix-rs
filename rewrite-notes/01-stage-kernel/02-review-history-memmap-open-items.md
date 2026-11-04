@@ -10,6 +10,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十三轮评审之后：预扫在禁用跳转表后落地）**
+
+- **代码 `0464a1e5c`**：结构块预扫真正落地（token/树形/名称与属性边界/深度/END），27 条 fdt_layout 测试；minix-boot **113**、boot-shim **67**；riscv bootface 与 aarch64 UEFI QEMU 双 PASS。
+- **跨过早期执行障碍**：评审人给的 `-C no-jump-tables` 在本工具链（rustc 1.94.1）不存在，实际拼写为 **`-C jump-tables=no`**；且 `RUSTFLAGS` 会覆盖 target config，故 **xtask 在注入的 RUSTFLAGS 中同时带上该选项**，config 另为 riscv64 与 aarch64 直启目标保留一份。反汇编确认 `validate_structure` 只剩直接 `jalr`；去掉选项时上一轮的原故障可复现（已留存读数）。
+- **新增合同**：`EarlyExecutionClosure = Instructions ∪ ReadOnlyDataDependencies ∪ RequiredWritableState`——某阶段执行一段代码前，必须证明这三类在当前转换与权限下全部可达，只证明入口可执行不够。这是本轮故障的直接产物。
+- **文档**：O-12j-a/b 均标已实现（c 仍开放）；O-12i 的 `PageBytes` 改为右端独占并写明 `0 ≤ n < 2^52`；§2.1 写清 `raw → validate → slice → parser → collect` 的真实调用链；O-12c 合并两段重复的 PLIC 表述；§6 统一 113/67 并把 fdt 测试名补全为 27 条；基线改 `0464a1e5c`。
+
 **本轮（第四十二轮评审之后：结构预扫受阻的实证 + 容器校验收口）**
 
 - **代码 `51b784cb3`**：容器校验补 **MRB 条目上限 16 条**（`TooManyReservations`，有界性在扫描函数自身）与 **strings 块非对齐的正向测试**；minix-boot **104**、boot-shim **67**；riscv 与 aarch64 UEFI QEMU 双 PASS。

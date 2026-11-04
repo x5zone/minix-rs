@@ -63,7 +63,14 @@
 
 ### 2.1 设备树采集器（`os/libs/minix-boot/src/memmap_source.rs`）
 
-`DtbMemoryMap::new(&fdt, firmware_reserve_end).collect()` 产出**两张表**：
+今天的真实调用路径是：
+
+```
+Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
+              → DtbMemoryMap::collect → conventional / reserved
+```
+
+`DtbMemoryMap` 自身不做容器校验，校验器是外层输入边界；不要绕过它直接采集。`collect()` 产出**两张表**：
 
 | 表 | 内容 | 语义 |
 |---|---|---|
@@ -84,7 +91,7 @@
 - 固件前缀已覆盖的声明不重复登记。
 - `reusable` 不作区分，按保留处理。
 
-测试（`cargo test -p minix-boot --lib`，104 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`。
+测试（`cargo test -p minix-boot --lib`，113 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`。
 
 **不保证什么**：不产出禁止集合、不产出 PMM 排除集合、不区分 `reusable`、不处理 UEFI 来源。
 
@@ -473,7 +480,11 @@
 - **O-12g** 采集器重构：保留原始来源记录，再派生投影。
 - **O-12h** UEFI 描述符结构校验与政策分类分开（见下）。
 - **O-12i** 每种政策投影的页粒度规则（见下）。
-- **O-12j** 拆成三层：**a 容器与 MRB（已实现）**——`fdt_layout::validate` 检查 magic、`totalsize`（上限 64 MiB）、blob 与 `off_mem_rsvmap` 的 8 字节对齐、`struct`/`strings` 块 checked 边界与互不重叠、结构块 4 字节对齐并以 `FDT_END` 结尾、MRB 终止项落在 `min(off_dt_struct, totalsize)`、**MRB 条目上限 16 条**（`TooManyReservations`，有界性在扫描函数自身）、FDT 版本（`17/16`，项目输入子集）与**项目块顺序**（MRB → structure → strings）；五条入口接入，18 条测试（含 strings 块非对齐的正向测试）。**b 结构块 token/属性解析（未闭合，且已确认实现受阻）**——尝试过在解析库之前做一次无分配的 token 预扫（token 合法性、单一根、嵌套平衡、属性/名称边界、深度 ≤64），**在本仓早期引导面上不可用**：该阶段执行的映射不覆盖跳转表所在的绝对地址，`switch` 被编译成 `jr` 经 `.rodata` 跳转表后触发 `instruction access fault`（QEMU `cause=1`，`epc` 落在 `validate_structure` 内）；两次尝试（`match` 与比较链）都被 LLVM 还原成跳转表。可行方向二选一：把预扫移到分页/高半生效之后执行，或为该预扫提供无跳转表的编译形态（独立 crate/`-C` 选项），并补一枚负控。**c 目标节点语义（未闭合）**。
+- **O-12j** 三层：**a 容器与 MRB（已实现）**——magic、`totalsize`（≤64 MiB）、blob/`off_mem_rsvmap` 8 字节对齐、`struct`/`strings` 块 checked 边界与互不重叠、结构块 4 字节对齐并以 `FDT_END` 结尾、MRB 终止项落在 `min(off_dt_struct, totalsize)`、**MRB 条目上限 16**、FDT 版本 `17/16`（项目子集）、块顺序 MRB → structure → strings（项目输入限制）。**b 结构块预扫（已实现）**——无分配 token 预扫：token 合法性、单根、嵌套平衡、节点名/属性长度与名称偏移边界、深度 ≤64、`FDT_END` 唯一且最后；**属性位于子节点之后是真实固件形态**（QEMU/OpenSBI 打补丁即如此），显式接受。**c 目标节点语义（未闭合）**——`/memory`、`/reserved-memory` 与设备 `reg` 的解析与地址转换仍需明确失败形状。
+
+**早期执行闭包（EarlyExecutionClosure）合同**：一段代码在某阶段执行之前，必须证明它的 `Instructions ∪ ReadOnlyDataDependencies ∪ RequiredWritableState` 在该阶段的地址转换与权限下全部可达；只证明入口指令可执行不够。实证：预扫逻辑位于已映射页内，但 `switch` 被编译成 `.rodata` 跳转表 + `jr` 绝对地址，触发 RISC-V `instruction access fault`（`cause=1`，`epc` 落在 `validate_structure` 内）。
+
+**跳转表禁用的落地方式**：本工具链（rustc 1.94.1）的选项拼写是 **`-C jump-tables=no`**（`-C no-jump-tables` 在该版本不存在）；`RUSTFLAGS` 会**覆盖** target config，因此镜像构建器（xtask）在注入的 `RUSTFLAGS` 中同时带上它，config 另为 riscv64 与 aarch64 直启目标保留一份。反汇编确认 `validate_structure` 只剩直接 `jalr`；去掉该选项时原故障复现。**边界**：预编译的 `core` 不受该选项影响，其代码路径仍需单独核对。
 
 #### O-12c 的输入：三个概念要分开
 
@@ -535,7 +546,7 @@
 
 **aarch64 的 32 MiB 是 `DeviceWindowPolicy` 窗口，不是一个设备的资源**：它表示钉住的 QEMU virt profile 对该整段授予 `DEVICE` 映射资格；其中哪些设备、哪些空隙、哪些区段当前没有访问点，由资源清单与访问需求另行解释，不能由设备名称反推。
 
-**PLIC 的范围必须绑定 CPU 配置**：`N_context = hart_count × 2` 不是通用公式——QEMU TCG 用奇数 context ID（`2·cpu+1`），KVM 用连续编号；不支持 S-mode 的 hart 还会造成 context 数差异。所需范围应写成 `ContextBase + (max(实际使用的 context ID)+1) × Stride`，context ID 来自钉住的机器配置与 DTB `interrupts-extended`。本项目的 `0x24_0000` **只在以下配置下成立**：QEMU `virt` + 固定 machine version + TCG + 明确 CPU 型号 + `-smp ≤ 32` 且全部支持 S-mode；其它配置必须拒绝或重新推导。
+**PLIC 范围的推导与 profile 条件**（合并上一版两段重复表述）：`N_context = hart_count × 2` 不是通用公式——QEMU TCG 用奇数 context ID（`2·cpu+1`），KVM 用连续编号；不支持 S-mode 的 hart 还会造成 context 数差异。所需范围写成 `ContextBase + (max(实际使用的 context ID)+1) × Stride`；context ID 不能由 hart 数直接乘 2，也不能把 `interrupts-extended` 的 interrupt specifier 当成 PLIC 的 MMIO `addrid`。推导链：specifier → 解析 `interrupt-parent` phandle → 识别 hart 与特权模式 → 确定 context 排列 → 枚举稠密 `addrid` → 最大偏移。本项目的 `0x24_0000` **只在以下配置下成立**：QEMU `virt` + 固定 machine version + TCG + 单 socket + AIA 关闭 + 明确 CPU 型号 + `-smp ≤ 32` 且全部支持 S-mode；其它配置必须拒绝或重新推导。
 
 **PLIC 窗口的教训（本轮修正）**：context 区从 `+0x20_0000` 开始，窗口大小应为 `0x200000 + N_context×0x1000`，**不能写固定 2 MiB**——原来的 2 MiB 恰好结束在 context 区起点，claim/complete 寄存器拿不到 `DEVICE` 映射。QEMU 实测 DTB：`plic@c000000` 的 `reg` 为 `0xc000000 + 0x600000`。窗口按内核 SMP 上限 32 hart 取 `0x24_0000`，仍在 QEMU 的 PLIC 区间内。
 
@@ -575,11 +586,11 @@
 **`FullPages` 以页编号定义**：
 
 ```
-PageBytes(n) = [u128(n) * 4096, (u128(n) + 1) * 4096]
+PageBytes(n) = [ u128(n) * 4096, (u128(n) + 1) * 4096 )   ← 右端独占
 FullPages(R) = { n | PageBytes(n) ⊆ R }
 ```
 
-参数是页编号而不是物理地址或 byte range；`0 ≤ n < 2^52`（4 KiB 页、64 位物理地址），边界先转 `u128` 再运算，最高页的独占末端可以是 `2^64`。只有整页 byte range 都被 RAM 来源覆盖才进入页域，不是「起点向上、终点向下后拼接」。
+参数是页编号而不是物理地址或 byte range；`0 ≤ n < 2^52`（4 KiB 页、64 位物理地址），边界先转 `u128` 再运算，最高页的独占末端可以是 `2^64`。**两端都是半开区间**，与全文集合模型一致。只有整页 byte range 都被 RAM 来源覆盖才进入页域，不是「起点向上、终点向下后拼接」。
 
 **页域的正式定义**：
 
@@ -621,13 +632,13 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 | 证据 | 内容 |
 |---|---|
 | 提交 `38668f843`（**功能落码提交，不是测试基线**） | DTB 保留来源落码：`/reserved-memory`、MRB、容量/回绕/重叠/形状拒绝、引导区 checked 守卫 |
-| `cargo test -p minix-boot --lib` | 104 通过（采集器用例见 §2.1） |
+| `cargo test -p minix-boot --lib` | 113 通过（采集器用例见 §2.1） |
 | `cargo test -p boot-shim --lib` | 67 通过（分类器用例见 §2.2） |
 | 交叉编译 | `x86_64-unknown-none`、`aarch64-unknown-none`（`fw-none-image`）、`riscv64gc-unknown-none-elf` |
 | QEMU | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh` PASS；`test-shim-bootmarks-aarch64` PASS |
-| FDT 容器校验 | `fdt_layout::validate` 16 条测试（`accepts_a_canonical_layout`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_record_that_would_cross_the_scan_limit`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`、`rejects_unbacked_structure_alignment`、`rejects_a_structure_block_without_the_end_token`、`rejects_strings_before_the_structure_block`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
+| FDT 容器校验 | `fdt_layout::validate` **27 条测试**（`accepts_a_canonical_layout`、`accepts_an_unaligned_strings_block`、`accepts_a_property_before_children`、`accepts_a_property_after_a_child`、`rejects_an_unknown_token`、`rejects_a_second_root`、`rejects_unbalanced_end_nodes`、`rejects_an_end_token_in_the_middle`、`rejects_a_property_running_past_the_block`、`rejects_a_property_name_outside_the_strings_block`、`rejects_an_unterminated_property_name`、`rejects_nesting_beyond_the_parser_limit`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_more_reservations_than_the_collector_accepts`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_structure_block_without_the_end_token`、`rejects_unbacked_structure_alignment`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`、`rejects_strings_before_the_structure_block`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_record_that_would_cross_the_scan_limit`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`、`rejects_unbacked_structure_alignment`、`rejects_a_structure_block_without_the_end_token`、`rejects_strings_before_the_structure_block`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
 
-**证据基线**：本轮代码提交 `51b784cb3`。复核命令与顺序（缺一不可）：
+**证据基线**：本轮代码提交 `0464a1e5c`。复核命令与顺序（缺一不可）：
 
 ```
 git rev-parse HEAD
@@ -636,11 +647,11 @@ cd os && cargo test -p minix-boot --lib
 cd os && cargo test -p boot-shim --lib
 ```
 
-104/67 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
+113/67 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
 
 复核方式：对 §2 的每条主张，文中给出了测试名或代码位置；对 §5 的每条问题，文中给出了失败形态——评审人可以只凭本文判断「问题是否成立」。
 
-**测试通过不等于输入完整性**：96 与 67 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
+**测试通过不等于输入完整性**：113 与 67 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
 
 ## 7. 签字状态
 
