@@ -50,11 +50,23 @@ pub enum FdtInputError {
     MrbNoTerminator,
     /// A reservation record would cross the scan boundary.
     MrbRecordTruncated,
+    /// The header's `version` / `last_comp_version` is outside the set this
+    /// project accepts.
+    UnsupportedVersion,
+    /// The blocks are not in the order this project accepts: header, then the
+    /// memory reservation block, then the structure and strings blocks. The
+    /// specification only recommends this order, so rejecting other layouts is
+    /// a project input restriction, not a specification requirement.
+    UnsupportedBlockOrder,
 }
 
 const HEADER_LEN: u32 = 40;
 const MAGIC: u32 = 0xd00d_feed;
 const MRB_ENTRY: u32 = 16;
+/// Binary structure versions this project accepts. `17` is the current format
+/// description; `last_comp_version` must not promise compatibility with a
+/// newer client than we are.
+const FDT_VERSION: u32 = 17;
 /// Upper bound this project accepts for a devicetree blob.
 pub const FDT_MAX_LEN: u32 = crate::DTB_MAX_LEN;
 
@@ -84,6 +96,11 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
     }
     if !crate::dtb_blob_aligned(addr) {
         return Err(FdtInputError::BlobMisaligned);
+    }
+    let version = be_u32(bytes, 20);
+    let last_comp = be_u32(bytes, 24);
+    if version != FDT_VERSION || last_comp > FDT_VERSION {
+        return Err(FdtInputError::UnsupportedVersion);
     }
     let totalsize = be_u32(bytes, 4);
     if totalsize < HEADER_LEN
@@ -121,6 +138,12 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
         .map_or(true, |end| end > totalsize)
     {
         return Err(FdtInputError::BlockOutOfRange);
+    }
+    // Project-accepted layout: the reservation block precedes the structure
+    // block, so its scan is bounded by `off_dt_struct`. The specification only
+    // recommends this order; other orders are refused as an input restriction.
+    if off_mrb >= off_struct {
+        return Err(FdtInputError::UnsupportedBlockOrder);
     }
     let scan_limit = totalsize
         .min(if off_struct > off_mrb { off_struct } else { totalsize });
@@ -257,6 +280,33 @@ mod tests {
         let mut bytes = blob(40, 56, 8, 64, 4);
         bytes[4..8].copy_from_slice(&0x1000u32.to_be_bytes());
         assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BadTotalsize));
+    }
+
+    #[test]
+    fn rejects_unsupported_fdt_versions() {
+        let mut old = blob(40, 56, 8, 64, 4);
+        old[20..24].copy_from_slice(&16u32.to_be_bytes());
+        assert_eq!(validate(0x8000_0000, &old), Err(FdtInputError::UnsupportedVersion));
+
+        let mut future = blob(40, 56, 8, 64, 4);
+        future[24..28].copy_from_slice(&18u32.to_be_bytes());
+        assert_eq!(validate(0x8000_0000, &future), Err(FdtInputError::UnsupportedVersion));
+    }
+
+    #[test]
+    fn rejects_a_layout_whose_mrb_follows_the_struct_block() {
+        // header 0..40, struct 40..48, strings 48..52, mrb 56..72.
+        let mut bytes = blob(56, 40, 8, 48, 8);
+        bytes.resize(72, 0);
+        bytes[4..8].copy_from_slice(&72u32.to_be_bytes());
+        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::UnsupportedBlockOrder));
+    }
+
+    #[test]
+    fn rejects_an_mrb_that_starts_inside_the_header() {
+        let mut bytes = blob(40, 56, 8, 64, 4);
+        bytes[16..20].copy_from_slice(&32u32.to_be_bytes());
+        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BlockOutOfRange));
     }
 
     #[test]
