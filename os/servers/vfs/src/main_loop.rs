@@ -7641,6 +7641,13 @@ impl minix_sef::SefIpc for VfsIpc {
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
         self.inner.notify(dest).map_err(|t| t.0)
     }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // The birth reply leg (C `ipc_sendrec(RS, &m)`, sef_init.c:458-466):
+        // the reply overwrites msg in place; C's sendrec answers through the
+        // reply's m_type, so a delivered frame is success here.
+        self.inner.sendrec(dest, msg).map(|_| 0).map_err(|t| t.0)
+    }
 }
 
 /// VFS main loop.
@@ -7870,7 +7877,8 @@ pub fn run() -> ! {
         assert!(!probe.is_null(), "vfs: vm-brk probe 分配失败");
         minix_rt::free(probe);
         use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-        #[allow(clippy::let_underscore_must_use)] // [SD19-gate] fall back to parking when the reporting channel itself is broken (panic.c:66)
+        #[allow(clippy::let_underscore_must_use)]
+        // [SD19-gate] fall back to parking when the reporting channel itself is broken (panic.c:66)
         let _ = sys_diagctl_write(
             &DirectKernelCallTransport,
             "nk4a: vfs-vmbrk probe ok pages=1 via=VM_BRK\n",
