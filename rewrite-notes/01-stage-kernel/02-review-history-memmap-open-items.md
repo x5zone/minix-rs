@@ -10,6 +10,15 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十四轮评审之后：纯文档——重试环境、配置表存放类型、页粒度冲突）**
+
+- **O-12k 重试执行环境**：首次 `ExitBootServices()` 之前分配全部重试缓冲；失败后只用预留缓冲与纯内存计算，不调用 Console/协议/事件服务；`EFI_BUFFER_TOO_SMALL` 直接终止；只对 `EFI_INVALID_PARAMETER` 重试且有次数上限；重试期间不打印日志；五条必测负控列入。
+- **O-11 首读矩阵补 UEFI 配置表存放类型**：`RuntimeServicesData`（推荐）/`BootServicesData`/`LoaderData`/`ACPIReclaim`/`ACPINVS` 允许具名只读且不改变处置；`Reserved` 拒绝；`Unusable`/`Unaccepted`/MMIO/端口/`PAL_CODE` 拒绝或走独立准入。
+- **页粒度类型冲突**：新增「原始字节不相交但向外量化到同一页、类型要求不同 → 拒绝」；`reusable` 与非 `no-map` 静态保留同为 BootServicesData 的要求写入表。
+- **x2APIC 独立访问域**：xAPIC 走 MMIO 包络、x2APIC 走 MSR（`ArchitecturalRegisterAccessUse`），不产生 MMIO 覆盖；第一版不实现则锁定 xAPIC 并在检测到 x2APIC 时拒绝。O-10 的 in/out 负控不覆盖 RDMSR/WRMSR。
+- **O-11 PA/VA**：`SourceVirtualRange` 与 `SourcePhysicalRanges` 分开；`LiveInputReservation` 按物理页；源/目标不重叠按 PA（别名可能重合）；`BootInputReachability` 定义为端到端可读（含 PMP/PMA 等硬件门控）。
+- **证据范围**：O-12j-b 的「两腿 PASS」标注为**早期提交的历史读数**（riscv 只覆盖 bootface；aarch64 当前被 `E0046` 阻断），引用须带提交与脚本。
+
 **本轮（第五十三轮评审之后：歧义位 fail-closed、O-12k、组合规则）**
 
 - **代码 `694b74386`**：`0x0001_0000` 在 2.11 PDF 是 `HOT_PLUGGABLE`、在规范仓库/EDK2/Linux 是 `MORE_RELIABLE`——此前按后者放行，按 PDF 构建的固件会把热插拔内存送进 PMM。现在该位在已知位闸之前单独拒绝（`PolicyError::AmbiguousAttribute`），负控 `the_ambiguous_bit_fails_closed_under_either_name`；`u64::MAX` 断言相应掩掉歧义位。boot-shim **68**、minix-boot **132**。

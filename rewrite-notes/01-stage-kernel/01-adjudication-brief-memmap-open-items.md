@@ -320,6 +320,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | 普通映射授权 vs `no-map` | 拒绝普通映射 |
 | 普通访问授权 vs MRB | 拒绝访问 |
 | 设备驱动受控使用 vs `no-map` | 只有满足规范允许的受控用途且具备专属授权时才允许例外 |
+| `EfiReservedMemoryType` + `no-map` + `DriverControlledUse` | **拒绝**：该组合额外命中 UEFI 类型的 `DenyOSAccess`，本项目第一版不开放此驱动例外。这不等于「所有 `no-map` 一律禁止驱动受控使用」——只是这一来源组合多了一条更强的类型政策 |
 | 未获启动程序授权的访问 vs MRB | 拒绝访问 |
 | 类型政策绝对禁止 vs 对象授权 | 拒绝 |
 | 对象 `MustNotMap` vs 一般 `MustMap` | 拒绝启动，除非设计明确列出例外 |
@@ -540,7 +541,9 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 4. 把 snapshot 写入副本前 40 字节，**只从原地址复制 `[dtb+40, dtb+totalsize)`**；
 5. 在副本上执行完整 `fdt_layout::validate`。
 
-**临时保留按页粒度**：`LiveInputReservation = Outward([dtb, dtb+totalsize))`——PMM 以 4 KiB 分配，只按字节范围登记会让末尾部分页被交出去；向外量化只用于临时分配排除，不改变来源记录的原始范围。
+**物理范围与虚拟可达范围必须分开**：输入对象记为 `SourceVirtualRange`（启动 ABI 给的地址域与长度）与 `SourcePhysicalRanges`（经转换后的物理范围集合）。`LiveInputReservation = Outward(SourcePhysicalRanges)`——**PMM 排除的是物理页，不是虚拟区间**；目标副本与源的不重叠也必须**按物理地址**判断：源 VA 与目标 VA 数值不同不代表不落在同一 PA（直接映射、恒等映射等别名都可能重合）。
+
+**`BootInputReachability` 是端到端可读性，不是「PTE 存在」**：在指定阶段与访问路径下，完整对象的只读访问所需的地址翻译、页表访问、物理访问保护与平台准入条件必须全部成立——RISC-V 上 PMP 可能拒绝 S 模式访问、PMA 还可能限制访问方式；AArch64/x86 各有对应门控。具体由各架构实现验证，通用层只表达「可读」语义，不暴露 PMP/页表遍历等机制名。
 
 **输入合同**：启动程序交接后、复制完成前，DTB 剩余字节不得被并发修改（固件或其它代理都不写）。这条不能证明时必须定义一致性检测或拒绝策略——否则副本可能是不同时刻拼出的混合状态。今天代码没有复制，自然也不做这项检测（见 §2.1 的「就地消费」）。
 
@@ -561,12 +564,14 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 
 | 该页的 DTB 主张 | 解析结果 |
 |---|---|
-| 普通静态保留 | 要求 `EfiBootServicesData`（规范 `must`） |
+| 普通静态保留（`ReservedOrdinary`） | 要求 `EfiBootServicesData`（规范 `must`） |
+| `ReservedReusable` | 同样要求 `EfiBootServicesData`（它是非 `no-map` 的静态保留）；生命周期与 owner 关系另行裁决，不改变类型要求 |
 | `no-map` | 要求 `EfiReservedMemoryType` |
 | MRB | 项目选择要求 `EfiReservedMemoryType`（把 `should` 升为项目强制） |
 | `no-map` + MRB | 兼容，要求 `EfiReservedMemoryType` |
 | **普通静态 + MRB** | **冲突，拒绝启动**：一条描述符无法同时满足普通保留的 `must`（BootServicesData）与本项目的 MRB 强化（Reserved） |
-| 普通静态 + `no-map` | DTB 侧已是冲突（同范围异语义） |
+| **普通 / `reusable` + `no-map`（原始字节不相交但同页）** | **冲突，拒绝启动**：两条声明各自向外量化到同一 4 KiB 页，页上同时要求 BootServicesData 与 Reserved——DTB 原始范围不重叠并不豁免页级冲突 |
+| 普通静态 + `no-map`（原始字节重叠） | DTB 侧已是冲突（同范围异语义） |
 
 **为什么不是「Reserved 更强所以覆盖」**：DTSpec 对普通静态保留指定的是类型本身，不只是「受保护」；用 Reserved 覆盖等于悄悄牺牲一条来源要求。若将来要接受普通保留 + MRB，唯一自洽的做法是**放弃 MRB 的 `should`→must 强化**（回到规范级别，MRB 的访问禁止由独立政策兑现），而不是让 `ResolveCompatibleClaims` 返回一个隐藏牺牲项的结果。跨来源身份照旧各留一条；覆盖公式分别定义 `R_static` 与 `R_MRB`，经页级裁决后再比对。
 
@@ -581,6 +586,13 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 | MRB | 走 MRB 规则允许的、启动程序明确用途对应的受限访问授权 |
 | `no-map` | **第一版拒绝**：DTSpec 的例外是「由使用该区域的设备驱动控制」的访问，一次性启动读取不属于该例外；除非实现并验证专用受控路径 |
 | `EfiReservedMemoryType` | **第一版拒绝**：配置表里的指针只建立来源身份，不能推翻内存图对该范围的禁止处置；除非有专门且明确的启动 ABI 例外与规范依据 |
+| `EfiRuntimeServicesData` | 允许具名只读（UEFI 推荐存放配置表）；仍按运行时内存处置，**不因此启用 Runtime Services** |
+| `EfiBootServicesData` / `EfiLoaderData` | 允许具名只读；生命周期处置不变 |
+| `EfiACPIReclaimMemory` | 允许具名只读；ACPI 启用前的保留处置不变 |
+| `EfiACPIMemoryNVS` | 允许具名只读；不因此放宽 NVS 生命周期 |
+| `EfiUnusableMemory` / `EfiUnacceptedMemoryType` / MMIO / 端口空间 / `PAL_CODE` | 拒绝，或走各自独立准入规则；不得借用普通 DTB 读取通道 |
+
+这张表**只**决定「一次性只读能否发生」，不修改 `RamSourceDomain`、`PMMAvailable` 或 `OrdinaryMappingEligibility`；`RuntimeServicesData` 可读 ≠ 内核调用 Runtime Services。
 
 **与 O-03 的接口**：若 DTB 本体落在 MRB 覆盖范围内，上面这次只读访问必须登记为**MRB 规则自身允许的、由启动程序明确提供的一次性对象访问授权**（带对象身份、阶段与只读路径）。要否定的是「无边界豁免」——授权不覆盖所在 MRB 区域的其它访问，也不授权复制完成后继续访问原地址；但也不应把 DTB 读取说成「不属于任何例外」，那与规范允许的显式授权相矛盾。
 
@@ -622,7 +634,7 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 
 **O-12j-b 的两条边界必须与解析库实现对齐，不能只按格式规范写**：
 
-- **属性序**：`fdt 0.1.5` 的 `properties()` 在首个非属性 token 处停止；`children()` 与 `all_nodes()` 在「子节点之后的属性」处**直接结束迭代**。因此这种布局不是「容忍即可」，而是会把子树静默截断成部分树。预扫改为拒绝（`PropertyAfterChild`）。此前的「QEMU/OpenSBI 会产出这种布局」结论**已撤回**：QEMU 8.2.2 `dumpdtb` 全树 0 处违规，且 riscv（OpenSBI 打补丁链）与 aarch64 UEFI 两条 QEMU 腿在「拒绝」规则下均 PASS——当时的观测来自有缺陷的临时扫描器，不是固件事实。
+- **属性序**：`fdt 0.1.5` 的 `properties()` 在首个非属性 token 处停止；`children()` 与 `all_nodes()` 在「子节点之后的属性」处**直接结束迭代**。因此这种布局不是「容忍即可」，而是会把子树静默截断成部分树。预扫改为拒绝（`PropertyAfterChild`）。此前的「QEMU/OpenSBI 会产出这种布局」结论**已撤回**：QEMU 8.2.2 `dumpdtb` 全树 0 处违规，且 riscv（OpenSBI 打补丁链）与 aarch64 UEFI 两条 QEMU 腿在「拒绝」规则下均 PASS——当时的观测来自有缺陷的临时扫描器，不是固件事实。**该「双 PASS」是早期提交上的历史读数**（riscv `test-kernel-image-riscv64-bootface.sh` 只覆盖 bootface；aarch64 `test-shim-bootmarks-aarch64.sh` 自 `2d292a06b` 起被 `E0046` 阻断，当前基线只有 riscv PASS），引用时必须带提交与脚本，不能当作当前基线证据。
 - **深度**：`all_nodes()` 的父栈是 `[&[u8]; 64]`，但根节点存在下标 1（`parent_index += 1` 后才写入），所以可安全走完的最大深度是 **63**（含根）。上限从 64 收到 63，并用 `the_parser_consumes_the_deepest_tree_this_gate_accepts` 证明「门接受的最深树，解析器确实能走完」。
 
 **O-12j 状态须按代码状态与合同状态两列读**：
@@ -674,7 +686,8 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 
 | 窗口 | `DeviceAperture`（设备声明） | `DeviceRequiredAccessEnvelope`（实际访问点） | `DevicePolicyAuthorizedRange`（政策授权） | `DeviceMappingCoverage`（预期；观测待实现） |
 |---|---|---|---|---|
-| LAPIC | **未知**（ACPI 未解析） | `[0xFEE0_0000, 0xFEE0_1000)` | `[0xFEE0_0000, 0xFF00_0000)` | 同授权范围 |
+| LAPIC（**xAPIC MMIO 分支**） | **未知**（ACPI 未解析） | `[0xFEE0_0000, 0xFEE0_1000)` | `[0xFEE0_0000, 0xFF00_0000)` | 同授权范围 |
+| LAPIC（**x2APIC 分支**） | 不适用：x2APIC 用 MSR 访问，MMIO 接口不可用 | **不产生 MMIO 访问需求，也不得伪造包络** | 无 MMIO 授权 | 无 |
 | IO-APIC | **未知**（同上） | `[0xFEC0_0000, 0xFEC0_1000)` | `[0xFEC0_0000, 0xFEE0_0000)`（**与 LAPIC 相邻，不是同一个包络**） | 同授权范围 |
 | 平台外设窗口 | 32 MiB（QEMU virt profile） | 从已登记的设备访问点派生；**未登记的设备不产生访问需求** | `[0x0800_0000, 0x0A00_0000)`（有意授权整段） | 32 MiB |
 | PLIC | `[0x0C00_0000, 0x0C60_0000)`（DTB `reg`，6 MiB） | `[0x0C00_0000, 0x0C24_0000)` | `[0x0C00_0000, 0x0C40_0000)` | 同授权范围 |
@@ -691,6 +704,8 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 **观测记录必须带 VA，不能只有 PA**：`DeviceMappingCoverage` 若只是物理区间，就回答不了「这些页映射到哪个 VA」「访问点用的 VA 是否落在里面」「同一 PA 是否有多个别名、权限/属性/共享性是否兼容」。观测单元定义为 `ObservedDeviceMapping { VaRange, PaRange, LeafSize, Permissions, MemoryAttribute, Shareability, Tree, Phase }`，由它派生纯物理覆盖 `ObservedPaCoverage = Union(PaRange)`，审计仍写 `ObservedPaCoverage ⊆ DevicePolicyAuthorizedPaRange`。访问需求不能只拿 PA 包络比覆盖：每条 `DeviceAccessUse` 要能证明其访问 VA 经对应叶子解析到预期 PA，且宽度、读写与属性兼容。这与 O-05 的别名审计是同一条要求——不能在要求审计别名的同时让覆盖集合丢掉 VA。
 
 **数值相等 ≠ 来源相等**：表中若干行的授权范围与覆盖范围数值相同，但授权是**独立政策输入**，覆盖是**独立测量**；不能由实际叶子反推授权。而且今天**没有页表审计遍历**，所以今天的覆盖只能叫 `ExpectedDeviceMappingCoverage`（从构造代码推导），`ObservedDeviceMappingCoverage`（PTE 遍历）等 O-02a 的引导根审计落地后才存在。表中「覆盖」列在观测实现前一律标为**预期**。
+
+**x2APIC 是第三种访问域**：xAPIC 走 MMIO（`0xFEE0_0000` 页），x2APIC 走架构寄存器（RDMSR/WRMSR）——它既不属于 MMIO 窗口模型，也不属于 O-08 的端口 I/O 地址域。共享层需要 `ArchitecturalRegisterAccessUse`（至少含 MSR 编号、读写方向、访问者、阶段、CPU 范围、适用模式），架构层负责具体实现。**第一版若不实现 x2APIC 访问路径**，必须锁定 xAPIC profile 并在检测到 x2APIC 时拒绝启动；不得「允许 x2APIC 模式却保留 xAPIC 的 MMIO 访问需求」。O-10 现有的 in/out 负控不覆盖 RDMSR/WRMSR，需另列架构寄存器访问审计。
 
 **x86 的 APIC 地址不是无条件硬件事实**：表中 `0xFEE0_0000`/`0xFEC0_0000` 只属于「本项目支持的某个 x86 QEMU profile」。启动时必须核对：Local APIC 当前模式（xAPIC MMIO 还是 x2APIC MSR 路径）、`IA32_APIC_BASE` 的基址与政策表一致；若解析 ACPI，MADT 的 Local APIC 地址、override 与 I/O APIC 项必须与政策表兼容；不符合当前 profile 就**拒绝启动**。不解析 ACPI 时，支持范围严格锁定在明确的 machine profile。
 
@@ -719,6 +734,25 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 3. 用这份快照生成来源记录与政策投影；从取图到成功 `ExitBootServices()` 之间**不再执行会改变内存图的操作**；
 4. `ExitBootServices()` 因 key 失效失败 → **重新取图、重建来源记录与政策投影、重新审计**后再重试；不得沿用旧快照的 `PMMAvailable`；
 5. 重取后描述符数量与分段可能变化：容量不足、描述符增多、重试耗尽都要有明确失败形状，不能假设「只差一个 MapKey」。
+
+**重试阶段的执行环境必须预先约束**（规范允许首次 `ExitBootServices()` 失败后固件已部分关闭 Boot Services）：
+
+- 首次调用**之前**，重试所需的一切已分配：内存图缓冲区、分类记录、政策投影、审计工作区、诊断状态；
+- 首次失败后，重试路径**只使用预留缓冲区与纯内存计算**：不调用文件系统、控制台、设备协议、事件服务或任何依赖完整 Boot Services 的功能；
+- 复用同一内存图缓冲区，并预留描述符增长余量（规范明确：分配新缓冲区本身可能增大内存图）；重取返回 `EFI_BUFFER_TOO_SMALL` 时第一版**直接以明确错误终止**，不在部分关闭状态下扩容；
+- 新快照必须**重建**全部依赖描述符的结果（来源记录、资格集合、PMM 投影、审计意见）；`MapKey`、记录与投影属于同一快照版本，不得混用；
+- 只对 `EFI_INVALID_PARAMETER` 走 stale-key 重试；其它错误走独立失败路径；重试次数有上限；
+- **重试期间不打印日志**：错误路径不得调用 Console 或协议服务取诊断——那正是首次失败后被限制的环境。诊断输出只在交接成功后由自有设施进行。
+
+重试内核是纯函数式阶段，逐级重建：
+
+```
+GetMemoryMap(reused_buffer) → ValidateDescriptorSnapshot
+  → RebuildSourceRecords → RebuildPolicyProjections → Audit
+  → ExitBootServices(new_map_key)
+```
+
+**必测负控**（未实现）：① stale key 后新快照描述符分段变化（一分为二/类型变化）→ 投影必须按新快照重建，不得沿用旧 `PMMAvailable`；② 重试缓冲不足 → 明确错误；③ 非 `EFI_INVALID_PARAMETER` 错误 → 独立失败路径；④ 重试次数耗尽 → 明确错误；⑤ 失败后的审计路径没有调用 Boot Services 协议或动态分配器。
 
 **为什么单列**：它约束的是 UEFI 输入快照的**时间一致性**，不是描述符几何合法性（O-12h）；两者失败形态不同。
 

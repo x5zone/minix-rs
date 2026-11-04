@@ -846,3 +846,14 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 既有负控 | `0x0010_0000`（仓库=HOT_PLUGGABLE）仍走 `UnknownAttribute`（`hot_pluggable_bit_fails_closed_as_unknown`） |
 | 门 | minix-boot **132**、boot-shim **68**；x86_64-unknown-uefi check 通过 |
 | aarch64 | 仍阻断：`servers/rs` 已修（`b71bce1d0`），`servers/sched/src/kernel_api/transport.rs:161` 的 `SefIpcAdapter` 仍缺 `sendrec` |
+
+## 二十六、第五十四轮：纯文档合同补强
+
+| 项 | 结论 |
+|---|---|
+| O-12k 重试 | 预留缓冲 + 纯内存重试 + 不打印日志 + 仅 `EFI_INVALID_PARAMETER` + 上限；五条负控待实现 |
+| 配置表存放类型 | Runtime/Boot/Loader/ACPIReclaim/ACPINVS 允许具名只读；Reserved 拒绝 |
+| 页粒度冲突 | 字节不相交但同页、类型要求不同 → 拒绝 |
+| x2APIC | 独立 MSR 访问域；不实现则锁定 xAPIC 并拒绝 x2APIC |
+| PA/VA | 临时保留与重叠判断按 PA；Reachability 为端到端可读 |
+| 门 | 无代码改动；沿用 minix-boot **132**、boot-shim **68**；lint 0 |

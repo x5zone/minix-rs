@@ -5350,3 +5350,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 删除两处「Reserved 可覆盖 BootServicesData」；普通静态+MRB 同页一律拒绝。
 - 新增 O-12k（MapKey 快照一致性）；`EfiReservedMemoryType`+`no-map` 不开放驱动例外；合法记录与拒绝诊断记录分开。
 - 门：minix-boot 132、boot-shim 68；aarch64 仍被 `servers/sched` 的 `E0046` 阻断。
+
+### 第二百六十二笔（01 阶段 · I-29 第五十四轮：纯文档）
+
+无代码改动；主文档约 915 行。
+
+- O-12k：预留缓冲、纯内存重试、不打印日志、仅 stale-key 重试、五条负控。
+- O-11：配置表存放类型矩阵（Runtime/Boot/Loader/ACPIReclaim/ACPINVS 可读、Reserved 拒绝）；页粒度类型冲突（字节不相交但同页也拒绝）；PA/VA 分开与端到端可达。
+- O-12c：x2APIC 独立 MSR 访问域，不沿用 xAPIC MMIO 包络。
+- 证据：O-12j-b 的「两腿 PASS」标注为历史读数。
