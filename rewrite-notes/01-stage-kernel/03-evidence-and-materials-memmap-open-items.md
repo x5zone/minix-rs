@@ -161,6 +161,16 @@
 | 采集器测试与包读数 | 22 条采集用例；`cargo test -p minix-boot --lib` 77 通过 | 同左 |
 | 真实固件 | riscv bootface QEMU PASS（OpenSBI DTB 的 `ranges` 为空） | `bash os/qemu-tests/test-kernel-image-riscv64-bootface.sh` |
 
+## 一g、第三十二轮代码读数
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 标记属性必须为空 | `NonEmptyReservationAttribute`；`dtb_reservation_with_nonempty_marker_is_rejected` | `grep -n "NonEmptyReservationAttribute" os/libs/minix-boot/src/memmap_source.rs` |
+| cells 与根一致 | `dtb_reserved_memory_cells_must_match_root` | 同文件 `root_cells` |
+| UEFI 磁盘 DTB 只作诊断 | `report_memmap_source` 不再 panic，打印 `diagnostic only`；`prepare_boot` 同样降级 | `grep -n "diagnostic only" os/boot-shim/src/uefi_helpers.rs` |
+| UEFI 目标不再漏检 | `cargo check -p boot-shim --target aarch64-unknown-uefi` / `x86_64-unknown-uefi` 均通过 | 同左 |
+| aarch64 UEFI 启动门 | `test-shim-bootmarks-aarch64` PASS（MARK3 已同步为诊断行） | `bash os/qemu-tests/test-shim-bootmarks-aarch64.sh` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |

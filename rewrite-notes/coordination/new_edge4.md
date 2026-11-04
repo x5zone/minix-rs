@@ -5140,3 +5140,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 门：minix-boot 77 通过、boot-shim 66 通过；三目标交叉 check；riscv bootface QEMU PASS（OpenSBI DTB 的 `ranges` 为空）。
 - 文档：启动入口矩阵四行；aarch64 UEFI 磁盘 DTB 改为「只作自检闸，不是内存政策输入」；O-01 三层叠加、O-02a 页粒度与授权字段、O-02b 只产生 PMM 排除、O-03/O-04 优先级与五种禁止语义、O-05 先审后用、O-06 类型表补全、O-07 限定证明范围、O-10 第二枚负控、O-11 两步授权与一致性策略、O-12f `RamSourceDomain`；§1.5 补 x86 PAT×MTRR 与 RISC-V PMA 来源。
 - 主文档 384 → 401 行；`doc-style-lint --diff` error 0；表格/围栏 0。
+
+### 第二百四十笔（01 阶段 · I-29 第三十二轮：解析器校验、自检定性、来源域分层）
+
+代码 `431bf8461`、文档 `46cbef986`。
+
+- 解析器：`no-map`/`reusable` 必须为空属性；`/reserved-memory` cells 必须与根一致。
+- 回归修复：aarch64-unknown-uefi 两处 `collect()` 未处理 `Result`（上一轮漏检该目标）。
+- 行为：UEFI 磁盘 DTB 的 `/memory` 覆盖对照由 panic 降为诊断，不再参与启动决策；QEMU MARK3 同步。
+- 文档：`RamSourceDomain` 与 `RamBacking` 分层（`EfiReservedMemoryType` 可属来源域非 backing）；O-01 逐类型保留期限与 `reusable` 所有者；O-02a x86 有效类型与别名；O-06 backing 不证明硬件可访问、`LOADER_CODE` 可执行；O-11 header 边界 + MRB 交叉验证；O-12g 采集器重构登记。
+- 门：minix-boot 79、boot-shim 66、三 UEFI/riscv 目标编译、aarch64 UEFI QEMU PASS；lint 0；主文档 437 行。

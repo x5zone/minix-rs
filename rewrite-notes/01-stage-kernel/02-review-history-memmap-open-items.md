@@ -10,6 +10,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第三十二轮评审之后：两处解析器校验 + 自检定性 + 来源域/backing 分层）**
+
+- **代码 `431bf8461`**：`no-map`/`reusable` 必须是空属性（非空 → `NonEmptyReservationAttribute`）；`/reserved-memory` 的 cells 必须与根一致；**修复 aarch64-unknown-uefi 编译回归**（两处 `collect()` 未处理 `Result`，上一轮漏检该目标）；UEFI 磁盘 DTB 覆盖对照由 panic 降为诊断，QEMU 用例 MARK3 同步。
+- **文档 `46cbef986`**：§1.2 收窄「UEFI 要读设备树保留声明」为「只有提供权威 DTB 的路径才解析并交叉验证」；§3 分出 `RamSourceDomain` 与 `RamBacking`，`EfiReservedMemoryType` 可属来源域但非 backing；O-01 补逐类型保留期限与 `reusable` 所有者回收；O-02a 补 x86 `Resolve(PAT, MTRR(range))`、PAT 多核一致与别名；O-06 补「backing 不证明硬件可访问」与 `LOADER_CODE` 可执行权限；O-11 补 header 边界与 `/reserved-memory`/MRB 交叉验证表；O-12f 拆分、新增 O-12g（采集器保留来源记录的重构）。
+- **门**：minix-boot 79、boot-shim 66；x86_64/aarch64 UEFI 与 riscv64 目标编译；`test-shim-bootmarks-aarch64` QEMU PASS。
+
 **本轮（第三十一轮评审之后：一个代码切片 + 定点语义修订）**
 
 评审人确认结构可用，给出四项首要修改与逐条裁决。本轮先落一个代码切片，再改文档：
