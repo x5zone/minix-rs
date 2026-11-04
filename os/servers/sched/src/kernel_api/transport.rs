@@ -25,12 +25,13 @@
 use crate::kernel_api::schedctl::SchedctlCall;
 use crate::kernel_api::schedule::Fanout;
 use crate::sef::MachineInfo;
-use minix_sys::ipc::{DirectTrapTransport, IpcStatus, TrapStatus};
 use minix_sys::ipc::IpcTransport as SysIpcTransport;
-use minix_sys::syscall::{perform_kernel_call, DirectKernelCallTransport};
+use minix_sys::ipc::{DirectTrapTransport, IpcStatus, TrapStatus};
+use minix_sys::syscall::{DirectKernelCallTransport, perform_kernel_call};
 use minix_types::{
-    Endpoint, MessLsysKrnSchedule, MessLsysKrnSysGetinfo, MessLsysKrnSysSetalarm, Message,
-    MessageUnion, GET_HZ, GET_MACHINE, SYS_GETINFO, SYS_SCHEDCTL, SYS_SETALARM, SYS_SCHEDULE,
+    Endpoint, GET_HZ, GET_MACHINE, MessLsysKrnSchedule, MessLsysKrnSysGetinfo,
+    MessLsysKrnSysSetalarm, Message, MessageUnion, SYS_GETINFO, SYS_SCHEDCTL, SYS_SCHEDULE,
+    SYS_SETALARM,
 };
 
 /// Whether a receive status names a notification (C: `is_ipc_notify`,
@@ -166,6 +167,13 @@ impl minix_sef::SefIpc for SefIpcAdapter {
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
         self.inner.notify(dest).map_err(trap_errno)
     }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // The birth reply leg (C `ipc_sendrec(RS, &m)`, sef_init.c:458-466):
+        // the reply overwrites msg in place; C's sendrec answers through the
+        // reply's m_type, so a delivered frame is success here.
+        self.inner.sendrec(dest, msg).map(|_| 0).map_err(trap_errno)
+    }
 }
 
 /// Receive loop through the SEF layer (the main-loop contract of C
@@ -228,17 +236,14 @@ fn sef_filtered_receive<S: minix_sef::SefIpc>(
             // already completed before the main loop ≡ `sef_cb_init_fresh` completion
             // semantics → fresh OK; LU/RESTART honestly refused with `ENOSYS`) stay
             // unchanged.
-            let mut reply = match minix_sef::process_init(statectl, kind, &mut |t| {
+            // C's phase-one assert = fail-closed stop when birth fails.
+            let mut reply = minix_sef::process_init(statectl, kind, &mut |t| {
                 if t == 0 {
                     minix_types::OK
                 } else {
                     minix_types::ENOSYS
                 }
-            }) {
-                Ok(m) => m,
-                // C's phase-one assert = fail-closed stop when birth fails.
-                Err(e) => return Err(e),
-            };
+            })?;
             send_reply(&mut reply)?;
             if reply.rs_init_result() == Some(minix_types::OK) {
                 continue; // birth answered; swallow this message and continue the main loop
@@ -331,11 +336,7 @@ impl SysKernelApi {
         let mut message = blank_message();
         pack(&mut message);
         let reply = perform_kernel_call(&self.calls, call_number, &mut message, |_| {});
-        if reply < 0 {
-            Err(-reply)
-        } else {
-            Ok(())
-        }
+        if reply < 0 { Err(-reply) } else { Ok(()) }
     }
 }
 
@@ -450,7 +451,10 @@ mod sef_filter_tests {
 
     impl ScriptedSef {
         fn new(script: Vec<(i32, Message)>) -> Self {
-            Self { script: RefCell::new(script), notified: RefCell::new(std::vec::Vec::new()) }
+            Self {
+                script: RefCell::new(script),
+                notified: RefCell::new(std::vec::Vec::new()),
+            }
         }
     }
 
@@ -469,10 +473,23 @@ mod sef_filter_tests {
             self.notified.borrow_mut().push(dest);
             Ok(())
         }
+
+        fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+            // The birth reply rides the same script face; recorded in
+            // `notified`-style bookkeeping is not needed for the existing
+            // pins, so this answers delivered and hands the message back.
+            self.notified.borrow_mut().push(dest);
+            let _ = msg;
+            Ok(0)
+        }
     }
 
     fn arrival(source: Endpoint, m_type: i32, notify: bool) -> (i32, Message) {
-        let mut m = Message { m_source: source, m_type, ..Message::default() };
+        let mut m = Message {
+            m_source: source,
+            m_type,
+            ..Message::default()
+        };
         let _ = &mut m;
         let status = if notify {
             IpcStatus::from_call(minix_sys::ipc::CALL_NOTIFY)
@@ -494,7 +511,11 @@ mod sef_filter_tests {
                 minix_sef::SEF_SIGNAL_REQUEST_TYPE,
                 true,
             ),
-            arrival(Endpoint::from_generation_slot(1, 2), minix_types::SCHEDULING_START, false),
+            arrival(
+                Endpoint::from_generation_slot(1, 2),
+                minix_types::SCHEDULING_START,
+                false,
+            ),
         ];
         let mut sef = ScriptedSef::new(script);
         let mut statectl = |_: i32, _: u64, _: i32| Ok(minix_types::OK);
@@ -760,11 +781,7 @@ pub(crate) mod mock {
 
     /// `0` is `OK`, anything else is the errno the kernel answered with.
     fn decode_errno(rv: i32) -> Result<(), i32> {
-        if rv == 0 {
-            Ok(())
-        } else {
-            Err(rv)
-        }
+        if rv == 0 { Ok(()) } else { Err(rv) }
     }
 
     impl KernelApi for MockKernel {

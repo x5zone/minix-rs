@@ -22,19 +22,19 @@
 //! whose fan-out failed leaves the slot occupied; the balance walk ignores
 //! wire answers; a successful START names SCHED in the reply.
 
-use crate::balancer::{rebalance_one, Balancer};
-use crate::cpu::{add_load, mark_dead, pick, release_load, CpuId, CpuLoad, MachineTopology};
-use crate::dispatch::{no_sys_verdict, noquantum_trust, settle, DispatchVerdict, SchedMsg};
-use crate::kernel_api::schedule::{aggregate, ChangeMask, SlotValues};
+use crate::balancer::{Balancer, rebalance_one};
+use crate::cpu::{CpuId, CpuLoad, MachineTopology, add_load, mark_dead, pick, release_load};
+use crate::dispatch::{DispatchVerdict, SchedMsg, no_sys_verdict, noquantum_trust, settle};
 use crate::kernel_api::schedctl::SchedctlCall;
-use crate::kernel_api::transport::{is_notify, IpcTransport, KernelApi};
+use crate::kernel_api::schedule::{ChangeMask, SlotValues, aggregate};
+use crate::kernel_api::transport::{IpcTransport, KernelApi, is_notify};
 use crate::priority::is_system_proc;
 use crate::schedproc::{Priority, SchedProc, SlotState};
 use crate::scheduling::{nice, noquantum, start, stop};
 use crate::table::{OccupiedSlot, SlotVerdict, check_occupied, check_vacant};
 use crate::valid::{accept, sender_from};
 use minix_types::{
-    Endpoint, Message, NR_PROCS, EPERM, SCHEDULING_INHERIT, SCHEDULING_SET_NICE, SCHEDULING_START,
+    EPERM, Endpoint, Message, NR_PROCS, SCHEDULING_INHERIT, SCHEDULING_SET_NICE, SCHEDULING_START,
     SCHEDULING_STOP,
 };
 
@@ -172,7 +172,7 @@ impl SchedServer {
                 // C 47-49: the balance round. A failed re-arm is fatal —
                 // C panics right there (367-368); the loop has no future
                 // without its bell.
-                if let Err(_) = self.balance_queues(kernel) {
+                if self.balance_queues(kernel).is_err() {
                     panic!("sys_setalarm failed (schedule.c:367-368)");
                 }
             } // C 50-52: any other notification passes in silence.
@@ -239,9 +239,11 @@ impl SchedServer {
             if !self.procs[index].is_used() {
                 continue; // C 359: only live slots
             }
-            if let Some(up) = rebalance_one(self.procs[index].max_priority, self.procs[index].priority)
+            if let Some(up) =
+                rebalance_one(self.procs[index].max_priority, self.procs[index].priority)
             {
                 self.procs[index].priority = up; // C 361
+
                 //[SD19-gate] C 362 明写不查返回值（那一处 `(void)` 的原文
                 // 注释就是 unchecked）；拒绝与否都不改这一轮的扇出
                 #[allow(clippy::let_underscore_must_use)]
@@ -315,10 +317,15 @@ impl SchedServer {
             SCHEDULING_START
         };
         // C 154 (`ipc.h:1431-1434`): four fields ride the letter.
-        let (child, parent, maxprio, quantum) =
-            message.payload_ref::<minix_types::MessLsysSchedSchedulingStart, _, _>(expected, |m| unsafe {
+        let (child, parent, maxprio, quantum) = message
+            .payload_ref::<minix_types::MessLsysSchedSchedulingStart, _, _>(expected, |m| unsafe {
                 let f = &m.m_u.m_lsys_sched_scheduling_start;
-                (Endpoint(f.endpoint), Endpoint(f.parent), f.maxprio, f.quantum)
+                (
+                    Endpoint(f.endpoint),
+                    Endpoint(f.parent),
+                    f.maxprio,
+                    f.quantum,
+                )
             });
         let request = start::Request {
             kind: match start::Kind::from_msg(if inherit {
@@ -348,12 +355,10 @@ impl SchedServer {
             // because the child's slot is still unflagged (C fills
             // 160-163 but flags 223 come after the switch — the ordering
             // is the proof, 06 D4).
-            let parent = self
-                .probe_occupied(parent)
-                .map(|slot| start::ParentState {
-                    priority: slot.row.priority,
-                    time_slice_ms: slot.row.time_slice_ms,
-                });
+            let parent = self.probe_occupied(parent).map(|slot| start::ParentState {
+                priority: slot.row.priority,
+                time_slice_ms: slot.row.time_slice_ms,
+            });
             start::plan_inherit(sender_ok, child_verdict, &parent, &request)
         } else {
             start::plan_start(sender_ok, child_verdict, &request)
@@ -429,10 +434,10 @@ impl SchedServer {
     /// The release arm's caller half (C: `do_stop_scheduling`,
     /// `schedule.c:112-135`).
     fn do_stop(&mut self, sender: Endpoint, message: &Message) -> i32 {
-        let (child,) = message
-            .payload_ref::<minix_types::MessLsysSchedSchedulingStop, _, _>(SCHEDULING_STOP, |m| unsafe {
-                (Endpoint(m.m_u.m_lsys_sched_scheduling_stop.endpoint),)
-            });
+        let (child,) = message.payload_ref::<minix_types::MessLsysSchedSchedulingStop, _, _>(
+            SCHEDULING_STOP,
+            |m| unsafe { (Endpoint(m.m_u.m_lsys_sched_scheduling_stop.endpoint),) },
+        );
         let request = stop::Request { child };
         let sender_ok = accept(sender_from(sender)); // C 118-119
         let target = self.probe_occupied(child);
@@ -458,19 +463,17 @@ impl SchedServer {
     }
 
     /// The regrade arm's caller half (C: `do_nice`, `schedule.c:254-292`).
-    fn do_nice(
-        &mut self,
-        sender: Endpoint,
-        message: &Message,
-        kernel: &mut impl KernelApi,
-    ) -> i32 {
-        let (child, maxprio) =
-            message.payload_ref::<minix_types::MessPmSchedSchedulingSetNice, _, _>(SCHEDULING_SET_NICE, |m| unsafe {
-                (
-                    Endpoint(m.m_u.m_pm_sched_scheduling_set_nice.endpoint),
-                    m.m_u.m_pm_sched_scheduling_set_nice.maxprio,
-                )
-            });
+    fn do_nice(&mut self, sender: Endpoint, message: &Message, kernel: &mut impl KernelApi) -> i32 {
+        let (child, maxprio) = message
+            .payload_ref::<minix_types::MessPmSchedSchedulingSetNice, _, _>(
+                SCHEDULING_SET_NICE,
+                |m| unsafe {
+                    (
+                        Endpoint(m.m_u.m_pm_sched_scheduling_set_nice.endpoint),
+                        m.m_u.m_pm_sched_scheduling_set_nice.maxprio,
+                    )
+                },
+            );
         let request = nice::Request {
             child,
             // The wire carries u32 (ipc.h:1824); the arm reads i32 and
@@ -790,8 +793,8 @@ mod tests {
         // EDEADEPT, an illegal ceiling's EINVAL — and no takeover, no
         // birth, no reply payload beyond the error code.
         for (who, mtype, maxprio, expected) in [
-            (Endpoint(100), SCHEDULING_START, 5, EPERM),           // stranger
-            (PM, SCHEDULING_START, 16, minix_types::EINVAL),       // ceiling
+            (Endpoint(100), SCHEDULING_START, 5, EPERM), // stranger
+            (PM, SCHEDULING_START, 16, minix_types::EINVAL), // ceiling
         ] {
             let mut s = server(1);
             let mut kernel = MockKernel::default();

@@ -203,6 +203,8 @@
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
 
+- **`2026-11-05` 收口刷新（第 66 轮，基线 `b71bce1d0`，`claim/SEF-SCHED-SENDREC-qoder`）**：sched 的 `SefIpcAdapter::sendrec` 已随批次五百四十补腿（同族第二处 none-only 缺口），顺带清两枚 E0046 现形的既有告警（出生臂 `?` 传播、`is_err()`）。**全仓三架构 check 全集 Finished、E0046 清零确认**；aarch64 镜像组装恢复可验证基线。
+
 - **`2026-11-05` 收口刷新（第 65 轮，基线 `0a2a41bb9`，`claim/SEF-SENDREC-AARCH64-qoder`）**：他线报的 aarch64 E0046 已随批次五百三十九修——`SefKernelBridge::sendrec` 走 `IpcApi::sendrec_to` 补腿（轮 59 扩 trait 时漏的唯一 none-only 实现者；教训：跨 crate trait 扩腿必须三架构 check 全集，宿主门抓不到 none-only 面）。aarch64 镜像组装恢复可验证基线。
 
 - **`2026-11-05` 收口刷新（第 64 轮，基线 `ce822ffef`，`claim/LS-LONG-qoder`）**：`ls -l` 长格式已随批次五百三十八闭——`LongStatUnwired` 变体删除、printlong 面（strmode/nlink/NAMES/size 或 major,minor/mtime 窗）、名字服务接 `minix_proctools::passwd`（数字回退同 C 的 noname=0）、mtime 窗经 `dates::breakdown`（UTC 声明）。**命令面生产报文清零且无新声明残项**；口令库的消费方（chown/ls -l/renice -u）三面全接。
