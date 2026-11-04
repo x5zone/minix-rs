@@ -881,6 +881,37 @@ mod tests {
     }
 
     #[test]
+    fn high_bit_attributes_follow_the_repository_encoding() {
+        // The published 2.11 PDF lists no standard attribute at 0x2_0000,
+        // 0x4_0000 or 0x8_0000; the specification repository, EDK2 and the
+        // Linux headers put RO, SP and CPU_CRYPTO there. This project pins the
+        // repository encoding, so the three bits keep their high-bit meaning —
+        // a deliberate branch choice, not an unambiguous reading of the PDF.
+        // Pinned here so the choice is visible and a future profile change has
+        // to update these expectations.
+        assert_eq!(
+            disp(ty::CONVENTIONAL, WB | 0x2_0000),
+            Ok(Disposition::Allocate),
+            "RO is protection metadata, not an exclusion"
+        );
+        assert_eq!(
+            disp(ty::CONVENTIONAL, WB | 0x4_0000),
+            Ok(Disposition::Side),
+            "SP is an independent attribute: no ordinary allocation"
+        );
+        assert_eq!(
+            disp(ty::CONVENTIONAL, WB | 0x8_0000),
+            Ok(Disposition::Allocate),
+            "CPU_CRYPTO is capability metadata"
+        );
+        // 0x10_0000 stays outside the known set: it fails closed as unknown.
+        assert_eq!(
+            disp(ty::CONVENTIONAL, WB | 0x10_0000),
+            Err(PolicyError::UnknownAttribute)
+        );
+    }
+
+    #[test]
     fn every_contested_attribute_bit_fails_closed() {
         // The PDF and repository encodings disagree across 0x1000..=0x1_0000:
         // 0x4000 is SP (must be excluded) in one text and XP (metadata) in the
