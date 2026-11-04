@@ -188,7 +188,9 @@ pub extern "C" fn bootface_a64() -> ! {
     // permanently subtracted by kernel phase A.2 using the real totalsize —
     // the two mechanisms do not substitute for each other: this site only
     // produces the semantic list, the subtraction is kernel accounting.
-    let (memmap, reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect();
+    let (memmap, reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0)
+        .collect()
+        .expect("bootface: DTB memmap rejected (capacity or reservation shape) — halting");
     if memmap.is_empty() {
         say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
         crate::halt();

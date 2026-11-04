@@ -554,13 +554,19 @@ fn pa_limit() -> u64 {
 /// classification would hand live page-table pages to the VM PMM
 /// (07-paging_init_design §6.0-A2).
 fn assert_bootstrap_outside_memmap(memmap: &[MemoryRegion], base: u64, len: u64) {
+    // A wrapping end is a malformed input, not an overlap-free range: both
+    // operands come from firmware and neither is trusted to stay in range.
+    let Some(base_end) = base.checked_add(len) else {
+        panic!("bootstrap allocation [{base:#x}, +{len:#x}) overflows the address space");
+    };
     for r in memmap {
         let rbase = r.base.0;
-        let rend = rbase + r.len as u64;
+        let Some(rend) = rbase.checked_add(r.len as u64) else {
+            panic!("conventional memmap region starts at {rbase:#x} with a wrapping length");
+        };
         assert!(
-            base + len <= rbase || rend <= base,
-            "conventional memmap [{rbase:#x}, {rend:#x}) overlaps bootstrap allocation [{base:#x}, {:#x})",
-            base + len
+            base_end <= rbase || rend <= base,
+            "conventional memmap [{rbase:#x}, {rend:#x}) overlaps bootstrap allocation [{base:#x}, {base_end:#x})"
         );
     }
 }
@@ -1123,5 +1129,26 @@ mod tests {
         static MEMMAP: [MemoryRegion; 1] =
             [MemoryRegion { base: PhysBytes(0x10_0000), len: 0x10_0000 }];
         assert_bootstrap_outside_memmap(&MEMMAP, 0x1f_f000, 0x2000);
+    }
+
+    /// A wrapping region end is malformed firmware input. Under plain `+` it
+    /// would compare as a tiny end and pass as "disjoint"; the guard must
+    /// refuse it instead.
+    #[test]
+    #[should_panic(expected = "wrapping length")]
+    fn test_bootstrap_outside_memmap_rejects_wrapping_region() {
+        static MEMMAP: [MemoryRegion; 1] =
+            [MemoryRegion { base: PhysBytes(0xffff_ffff_ffff_f000), len: 0x2000 }];
+        assert_bootstrap_outside_memmap(&MEMMAP, 0x10_0000, 0x1000);
+    }
+
+    /// Likewise for the allocation itself: an end that wraps is not disjoint
+    /// from anything.
+    #[test]
+    #[should_panic(expected = "overflows the address space")]
+    fn test_bootstrap_outside_memmap_rejects_wrapping_allocation() {
+        static MEMMAP: [MemoryRegion; 1] =
+            [MemoryRegion { base: PhysBytes(0), len: 0x1000 }];
+        assert_bootstrap_outside_memmap(&MEMMAP, 0xffff_ffff_ffff_f000, 0x2000);
     }
 }

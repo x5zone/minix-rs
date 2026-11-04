@@ -42,6 +42,35 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// are unchanged).
 const DTB_MEMMAP_MAX: usize = 8;
 
+/// Why a DTB memory map could not be produced.
+///
+/// Capacity is a policy input, not a display detail: dropping the excess
+/// would hand the kernel a map that silently lacks a real RAM or reserved
+/// range, so the collector fails instead of truncating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DtbMemMapError {
+    /// `/memory` produced more conventional spans than `DTB_MEMMAP_MAX`
+    /// (the firmware-prefix split and the declared reservations each add
+    /// spans, so the count is taken after both).
+    TooManyFreeRegions,
+    /// The reserved table (firmware prefix plus declared reservations) needs
+    /// more entries than `DTB_MEMMAP_MAX`.
+    TooManyReservedRegions,
+    /// A declared range wraps the 64-bit address space.
+    RangeOverflow,
+    /// Two `/reserved-memory` declarations overlap. This collector keeps the
+    /// reserved table non-overlapping because every consumer reads it as a
+    /// list of distinct ranges.
+    OverlappingReservedRanges,
+    /// A `/reserved-memory` entry states its extent in a shape this collector
+    /// cannot read: no `reg` (for example a `size`-only placement), or cell
+    /// counts above two. Skipping it would free pages firmware reserved.
+    UnsupportedReservedDeclaration,
+    /// A `/reserved-memory` node is visible in the tree but upstream path
+    /// lookup cannot reach it. Treating it as absent would free its pages.
+    ReservedMemoryUnreachable,
+}
+
 // `static mut`: the same form as bootface's MEMMAP_STORAGE — the single-hart
 // boot face writes once and the storage is read-only afterwards; the read side
 // never hands out `&mut` (addr_of! base plus from_raw_parts).
@@ -96,12 +125,117 @@ const _FW_CROSS: () = assert!(
     )
 );
 
+const PAGE_BYTES: u64 = 4096;
+
+/// Page-rounded extent of a declared reservation, rounded outward: a page that
+/// is only partly declared is not fully free.
+fn declared_page_range(start: u64, len: u64) -> Result<(u64, u64), DtbMemMapError> {
+    let raw_end = start.checked_add(len).ok_or(DtbMemMapError::RangeOverflow)?;
+    let start = start & !(PAGE_BYTES - 1);
+    let end = raw_end
+        .checked_add(PAGE_BYTES - 1)
+        .ok_or(DtbMemMapError::RangeOverflow)?
+        & !(PAGE_BYTES - 1);
+    Ok((start, end))
+}
+
+fn push_span(
+    table: &mut [MemoryRegion; DTB_MEMMAP_MAX],
+    n: &mut usize,
+    start: u64,
+    len: u64,
+    full: DtbMemMapError,
+) -> Result<(), DtbMemMapError> {
+    if len == 0 {
+        return Ok(());
+    }
+    if *n >= DTB_MEMMAP_MAX {
+        return Err(full);
+    }
+    table[*n] = MemoryRegion { base: PhysBytes(start), len: len as usize };
+    *n += 1;
+    Ok(())
+}
+
+/// Remove `[start, end)` from the conventional table. A span that straddles the
+/// hole yields up to two pieces; a table that cannot hold them fails instead of
+/// merging the hole back into RAM.
+fn carve_free(
+    table: &mut [MemoryRegion; DTB_MEMMAP_MAX],
+    n: &mut usize,
+    start: u64,
+    end: u64,
+) -> Result<(), DtbMemMapError> {
+    let mut out = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+    let mut out_n = 0usize;
+    for &span in table[..*n].iter() {
+        let span_start = span.base.0;
+        let span_len = span.len as u64;
+        let span_end = span_start + span_len;
+        if span_end <= start || end <= span_start {
+            push_span(
+                &mut out,
+                &mut out_n,
+                span_start,
+                span_len,
+                DtbMemMapError::TooManyFreeRegions,
+            )?;
+        } else {
+            if span_start < start {
+                push_span(
+                    &mut out,
+                    &mut out_n,
+                    span_start,
+                    start - span_start,
+                    DtbMemMapError::TooManyFreeRegions,
+                )?;
+            }
+            if end < span_end {
+                push_span(
+                    &mut out,
+                    &mut out_n,
+                    end,
+                    span_end - end,
+                    DtbMemMapError::TooManyFreeRegions,
+                )?;
+            }
+        }
+    }
+    *table = out;
+    *n = out_n;
+    Ok(())
+}
+
+/// Record one declaration after checking it against the earlier ones. The
+/// device-tree spec forbids overlapping children, and overlap is not benign
+/// here even when only one side reaches the reserved table: a `no-map`
+/// declaration overlapped by a plain one would otherwise authorise access to
+/// pages the other declaration forbids.
+fn push_declared(
+    declared: &mut [MemoryRegion; DTB_MEMMAP_MAX],
+    n: &mut usize,
+    start: u64,
+    end: u64,
+) -> Result<(), DtbMemMapError> {
+    for &span in declared[..*n].iter() {
+        let span_start = span.base.0;
+        let span_end = span_start + span.len as u64;
+        if start < span_end && span_start < end {
+            return Err(DtbMemMapError::OverlappingReservedRanges);
+        }
+    }
+    push_span(declared, n, start, end - start, DtbMemMapError::TooManyReservedRegions)
+}
+
 /// DTB leg: parse `reg` of `/memory` and `/memory@<unit>` (the unit-address
-/// variant), clip off the resident firmware area through [`clip_reserved`], and
-/// produce the two tables. Lookup walks the whole tree through `all_nodes`
-/// rather than `find_node` (upstream fdt 0.1.5's `find_node` misses nodes in
-/// some firmware-rebuilt blobs — demonstrated in practice, so both consuming
-/// bootfaces take the same detour).
+/// variant), subtract the resident firmware area through [`clip_reserved`] and
+/// every declared reservation (`/reserved-memory` children and the memory
+/// reservation block), and produce the two tables. Lookup of `/memory` walks
+/// the whole tree through `all_nodes` rather than `find_node` (upstream fdt
+/// 0.1.5's `find_node` misses nodes in some firmware-rebuilt blobs —
+/// demonstrated in practice, so both consuming bootfaces take the same detour);
+/// `/reserved-memory` uses path lookup with a visibility cross-check, because
+/// the same miss there would silently free reserved pages.
 ///
 /// `firmware_reserve_end`: upper bound (PA) of the resident firmware area. The
 /// riscv bootface leg passes `KERN_PHYS_BASE` (OpenSBI resides in
@@ -126,58 +260,160 @@ impl<'a> DtbMemoryMap<'a> {
 impl DtbMemoryMap<'_> {
     /// Return the two `'static` tables `(conventional, reserved)`.
     ///
+    /// Conventional holds the pages the PMM may allocate. Reserved holds pages
+    /// that stay reachable but are never reallocated: the firmware-resident
+    /// prefix and the declared reservations without `no-map`. A `no-map`
+    /// reservation and every memory-reservation-block entry leave both tables,
+    /// because that data may not be accessed at all.
+    ///
     /// Borrowing `self` reads the DTB a second time is not required: the tables
     /// live in this library's static storage, so the returned slices outlive
     /// the borrow of the blob.
-    pub fn collect(&self) -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
+    pub fn collect(
+        &self,
+    ) -> Result<(&'static [MemoryRegion], &'static [MemoryRegion]), DtbMemMapError> {
         // Single-hart boot face: written once, then read-only; a re-entry that
         // zeroes the counters (a second collect on the same face) merely
         // overwrites the same cells.
         DTB_FREE_N.store(0, Ordering::Relaxed);
         DTB_RESERVED_N.store(0, Ordering::Relaxed);
+        let mut free = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+        let mut reserved = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+        // The unclipped panorama: a declaration means something only where it
+        // overlaps RAM, and its reserved entry must not extend past it (a
+        // framebuffer-style reservation outside `/memory` claims no RAM).
+        let mut memory = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+        // Declarations in raw page coordinates, kept only for the overlap
+        // check (the reserved table holds just the reachable subset).
+        let mut declared = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
         let mut free_n = 0usize;
         let mut reserved_n = 0usize;
+        let mut memory_n = 0usize;
+        let mut declared_n = 0usize;
+
+        // 1. The `/memory` panorama, with the firmware-resident prefix moved to
+        //    the reserved table: those pages are reachable from the first
+        //    instruction and are never reallocated.
         for node in self.fdt.all_nodes() {
-                // `/memory` or `/memory@80000000` (the unit-address variant).
-                if node.name.split('@').next() != Some("memory") {
-                    continue;
+            // `/memory` or `/memory@80000000` (the unit-address variant).
+            if node.name.split('@').next() != Some("memory") {
+                continue;
+            }
+            let Some(regs) = node.reg() else { continue };
+            for region in regs {
+                let start = region.starting_address as u64;
+                let len = match region.size {
+                    Some(s) if s != 0 => s as u64,
+                    _ => continue,
+                };
+                start.checked_add(len).ok_or(DtbMemMapError::RangeOverflow)?;
+                push_span(
+                    &mut memory,
+                    &mut memory_n,
+                    start,
+                    len,
+                    DtbMemMapError::TooManyFreeRegions,
+                )?;
+                if let Some((free_start, free_len)) =
+                    clip_reserved(start, len, self.firmware_reserve_end)
+                {
+                    push_span(
+                        &mut free,
+                        &mut free_n,
+                        free_start,
+                        free_len,
+                        DtbMemMapError::TooManyFreeRegions,
+                    )?;
                 }
-                let Some(regs) = node.reg() else { continue };
+                if start < self.firmware_reserve_end {
+                    let prefix_len = (self.firmware_reserve_end - start).min(len);
+                    push_span(
+                        &mut reserved,
+                        &mut reserved_n,
+                        start,
+                        prefix_len,
+                        DtbMemMapError::TooManyReservedRegions,
+                    )?;
+                }
+            }
+        }
+        // 2. The device-tree memory reservation block: regions no client may
+        //    access at all, so they leave the conventional table and enter
+        //    neither (the reserved table means "reachable, never reallocated").
+        for entry in self.fdt.memory_reservations() {
+            let (start, end) = declared_page_range(entry.address() as u64, entry.size() as u64)?;
+            carve_free(&mut free, &mut free_n, start, end)?;
+        }
+
+        // 3. `/reserved-memory`: declared reservations are not allocatable.
+        //    Without `no-map` they stay reachable through the Direct Map and
+        //    join the reserved table; with `no-map` they leave both tables.
+        if let Some(node) = self.lookup_reserved_memory()? {
+            // `reg()` silently assumes default cell counts when the node does
+            // not state them; a reservation whose shape we did not read is not
+            // a reservation we can honour.
+            if node.property("#address-cells").is_none() || node.property("#size-cells").is_none()
+            {
+                return Err(DtbMemMapError::UnsupportedReservedDeclaration);
+            }
+            for child in node.children() {
+                if child.property("reg").is_none() {
+                    return Err(DtbMemMapError::UnsupportedReservedDeclaration);
+                }
+                let Some(regs) = child.reg() else {
+                    return Err(DtbMemMapError::UnsupportedReservedDeclaration);
+                };
+                let no_map = child.property("no-map").is_some();
                 for region in regs {
-                    let start = region.starting_address as u64;
                     let len = match region.size {
-                        Some(s) if s != 0 => s,
+                        Some(s) if s != 0 => s as u64,
                         _ => continue,
                     };
-                    if let Some((free_start, free_len)) =
-                        clip_reserved(start, len as u64, self.firmware_reserve_end)
-                    {
-                        if free_n < DTB_MEMMAP_MAX {
-                            // SAFETY: free_n < the array length; single-hart boot.
-                            unsafe {
-                                DTB_FREE[free_n] =
-                                    MemoryRegion { base: PhysBytes(free_start), len: free_len as usize };
-                            }
-                            free_n += 1;
+                    let (start, end) = declared_page_range(region.starting_address as u64, len)?;
+                    push_declared(&mut declared, &mut declared_n, start, end)?;
+                    for &span in memory[..memory_n].iter() {
+                        let span_start = span.base.0;
+                        let span_end = span_start + span.len as u64;
+                        let clip_start = start.max(span_start);
+                        let clip_end = end.min(span_end);
+                        if clip_start >= clip_end {
+                            continue;
                         }
-                    }
-                    if start < self.firmware_reserve_end && reserved_n < DTB_MEMMAP_MAX {
-                        let r_len = (self.firmware_reserve_end - start).min(len as u64) as usize;
-                        // SAFETY: reserved_n < the array length; single-hart boot.
-                        unsafe {
-                            DTB_RESERVED[reserved_n] =
-                                MemoryRegion { base: PhysBytes(start), len: r_len };
+                        carve_free(&mut free, &mut free_n, clip_start, clip_end)?;
+                        if no_map {
+                            continue;
                         }
-                        reserved_n += 1;
+                        // The firmware prefix is already in the reserved table;
+                        // only the part above it is new. Every caller passes a
+                        // page-aligned firmware end, so the clamp keeps
+                        // alignment.
+                        let clip_start = clip_start.max(self.firmware_reserve_end);
+                        if clip_start < clip_end {
+                            push_span(
+                                &mut reserved,
+                                &mut reserved_n,
+                                clip_start,
+                                clip_end - clip_start,
+                                DtbMemMapError::TooManyReservedRegions,
+                            )?;
+                        }
                     }
                 }
             }
+        }
+
+        // SAFETY: single-hart boot face; the statics are written here once and
+        // only read afterwards through the returned `'static` slices.
+        unsafe {
+            DTB_FREE = free;
+            DTB_RESERVED = reserved;
+        }
         DTB_FREE_N.store(free_n, Ordering::Release);
         DTB_RESERVED_N.store(reserved_n, Ordering::Release);
-        // SAFETY: both static arrays have length DTB_MEMMAP_MAX; n ≤
-        // DTB_MEMMAP_MAX (clamped above before enqueueing); on the single-hart
-        // boot face the read only happens after the write.
-        unsafe {
+        // SAFETY: both static arrays have length DTB_MEMMAP_MAX and hold `n`
+        // initialised entries; on the single-hart boot face the read only
+        // happens after the write.
+        Ok(unsafe {
             (
                 core::slice::from_raw_parts(
                     core::ptr::addr_of!(DTB_FREE) as *const MemoryRegion,
@@ -188,7 +424,27 @@ impl DtbMemoryMap<'_> {
                     reserved_n,
                 ),
             )
+        })
+    }
+
+    /// `/reserved-memory`, distinguishing "absent" from "present but
+    /// unreachable": upstream path lookup is known to miss nodes in some
+    /// firmware-rebuilt blobs, and reading an unreachable reservation node as
+    /// absent would hand its pages to the allocator.
+    fn lookup_reserved_memory(
+        &self,
+    ) -> Result<Option<fdt::node::FdtNode<'_, '_>>, DtbMemMapError> {
+        if let Some(node) = self.fdt.find_node("/reserved-memory") {
+            return Ok(Some(node));
         }
+        let visible = self
+            .fdt
+            .all_nodes()
+            .any(|n| n.name.split('@').next() == Some("reserved-memory"));
+        if visible {
+            return Err(DtbMemMapError::ReservedMemoryUnreachable);
+        }
+        Ok(None)
     }
 }
 
@@ -231,11 +487,31 @@ mod tests {
     use super::*;
     use alloc::{format, vec::Vec};
 
-    /// Hand-build a minimal FDT blob in canonical form: header(40) + memrsv(16)
+    /// One `/reserved-memory` child, as the fixture writes it.
+    struct ReservedRow {
+        base: u64,
+        size: u64,
+        no_map: bool,
+    }
+
+    /// Hand-build a minimal FDT blob in canonical form: header(40) + memrsv
     /// + structure block + strings. The root node carries
-    /// `#address-cells=2`/`#size-cells=2`, and each `/memory` child node (with or
-    /// without the unit-address variant) hangs a 128-bit `reg`.
+    /// `#address-cells=2`/`#size-cells=2`, and each `/memory` child node (with
+    /// or without the unit-address variant) hangs a 128-bit `reg`.
     fn build_fdt(memory_regs: &[(u64, u64)], unit_address: bool) -> Vec<u8> {
+        build_fdt_ex(memory_regs, unit_address, &[], &[], 2)
+    }
+
+    /// The same blob, plus a `/reserved-memory` node (one child per row, all
+    /// under `reserved_cells` address/size cells) and the given memory
+    /// reservation block entries.
+    fn build_fdt_ex(
+        memory_regs: &[(u64, u64)],
+        unit_address: bool,
+        reserved: &[ReservedRow],
+        memrsv: &[(u64, u64)],
+        reserved_cells: u32,
+    ) -> Vec<u8> {
         let mut strings: Vec<u8> = Vec::new();
         strings.extend_from_slice(b"#address-cells\0");
         strings.extend_from_slice(b"#size-cells\0");
@@ -243,6 +519,8 @@ mod tests {
         let nameoff_size = 15usize; // "#address-cells\0" is exactly 15 bytes
         strings.extend_from_slice(b"reg\0");
         let nameoff_reg = 27usize; // 15 + 12 ("#size-cells\0" is exactly 12 bytes)
+        strings.extend_from_slice(b"no-map\0");
+        let nameoff_no_map = 31usize; // 27 + 4 ("reg\0" is exactly 4 bytes)
         let mut struct_blk: Vec<u8> = Vec::new();
         let push_u32 = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
         let push_prop = |out: &mut Vec<u8>, nameoff: u32, val: &[u8]| {
@@ -278,10 +556,41 @@ mod tests {
             push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
             push_u32(&mut struct_blk, 2); // FDT_END_NODE
         }
+        if !reserved.is_empty() {
+            push_u32(&mut struct_blk, 1); // FDT_BEGIN_NODE
+            struct_blk.extend_from_slice(b"reserved-memory\0");
+            while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
+            push_prop(&mut struct_blk, nameoff_cells as u32, &reserved_cells.to_be_bytes());
+            push_prop(&mut struct_blk, nameoff_size as u32, &reserved_cells.to_be_bytes());
+            let encode_cells = |out: &mut Vec<u8>, value: u64, cells: u32| {
+                for i in (0..cells).rev() {
+                    let word = match i {
+                        0 => value as u32,
+                        1 => (value >> 32) as u32,
+                        _ => 0,
+                    };
+                    out.extend_from_slice(&word.to_be_bytes());
+                }
+            };
+            for row in reserved {
+                push_u32(&mut struct_blk, 1); // FDT_BEGIN_NODE
+                struct_blk.extend_from_slice(format!("region@{:x}\u{0}", row.base).as_bytes());
+                while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
+                let mut reg: Vec<u8> = Vec::new();
+                encode_cells(&mut reg, row.base, reserved_cells);
+                encode_cells(&mut reg, row.size, reserved_cells);
+                push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
+                if row.no_map {
+                    push_prop(&mut struct_blk, nameoff_no_map as u32, &[]);
+                }
+                push_u32(&mut struct_blk, 2); // FDT_END_NODE
+            }
+            push_u32(&mut struct_blk, 2); // FDT_END_NODE
+        }
         push_u32(&mut struct_blk, 2); // FDT_END_NODE (root)
         push_u32(&mut struct_blk, 9); // FDT_END
 
-        let struct_off = 40u32 + 16u32;
+        let struct_off = 40u32 + 16u32 * (memrsv.len() as u32 + 1);
         let strings_off = struct_off + struct_blk.len() as u32;
         let mut out: Vec<u8> = Vec::new();
         let push = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
@@ -295,7 +604,13 @@ mod tests {
         push(&mut out, 0);                    // boot_cpuid
         push(&mut out, strings.len() as u32); // size_strings
         push(&mut out, struct_blk.len() as u32); // size_struct
-        out.extend_from_slice(&[0u8; 16]);    // memrsv
+        for (base, size) in memrsv {
+            push(&mut out, (*base >> 32) as u32);
+            push(&mut out, *base as u32);
+            push(&mut out, (*size >> 32) as u32);
+            push(&mut out, *size as u32);
+        }
+        out.extend_from_slice(&[0u8; 16]);    // memrsv terminator
         out.extend_from_slice(&struct_blk);
         out.extend_from_slice(&strings);
         while out.len() % 4 != 0 { out.push(0); }
@@ -308,7 +623,7 @@ mod tests {
     fn dtb_single_memory_region_fw_end_zero() {
         let blob = build_fdt(&[(0x8000_0000, 0x4000_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("规范形 stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect();
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("test map fits DTB_MEMMAP_MAX");
         assert_eq!(conv.len(), 1);
         assert_eq!(conv[0].base.0, 0x8000_0000);
         assert_eq!(conv[0].len, 0x4000_0000 as usize);
@@ -316,10 +631,196 @@ mod tests {
     }
 
     #[test]
+    fn dtb_more_than_capacity_is_rejected_not_truncated() {
+        // One span past the capacity: the collector must refuse the map rather
+        // than hand back a table that silently lacks a real RAM range.
+        let mut regions = [(0u64, 0u64); DTB_MEMMAP_MAX + 1];
+        for (i, region) in regions.iter_mut().enumerate() {
+            *region = (0x8000_0000 + i as u64 * 0x2000, 0x1000);
+        }
+        let blob = build_fdt(&regions, false);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::TooManyFreeRegions)
+        ));
+    }
+
+    #[test]
+    fn dtb_declared_reservation_is_never_conventional() {
+        // A plain declaration (no `no-map`) is carved out of the free table
+        // and stays reachable through the reserved table.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        assert_eq!(conv.len(), 2, "the hole splits the span in two");
+        assert_eq!((conv[0].base.0, conv[0].len), (0x8000_0000, 0x4000));
+        assert_eq!((conv[1].base.0, conv[1].len), (0x8000_5000, 0xb000));
+        assert_eq!(res.len(), 1);
+        assert_eq!((res[0].base.0, res[0].len), (0x8000_4000, 0x1000));
+    }
+
+    #[test]
+    fn dtb_no_map_reservation_leaves_both_tables() {
+        // `no-map` forbids access itself, so the pages are neither allocatable
+        // nor reachable through the reserved (direct-mapped) table.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        assert_eq!(conv.len(), 2);
+        assert!(res.is_empty(), "no-map ranges stay out of both tables");
+    }
+
+    #[test]
+    fn dtb_reservation_inside_the_firmware_prefix_is_not_duplicated() {
+        // OpenSBI describes its own resident area both as the prefix this
+        // collector clips and as a `/reserved-memory` child; the declaration
+        // must not append a second entry for pages already reserved.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_0000, size: 0x4000, no_map: false }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8000_4000).collect().expect("map fits");
+        assert_eq!(conv.len(), 1);
+        assert_eq!((conv[0].base.0, conv[0].len), (0x8000_4000, 0xc000));
+        assert_eq!(res.len(), 1, "the prefix entry alone");
+        assert_eq!((res[0].base.0, res[0].len), (0x8000_0000, 0x4000));
+    }
+
+    #[test]
+    fn dtb_reservation_outside_memory_claims_no_ram() {
+        // A framebuffer-style reservation outside `/memory` must not appear as
+        // reachable memory, because the kernel does not map it as RAM.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x1_0000_0000, size: 0x1000, no_map: false }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        assert_eq!(conv.len(), 1);
+        assert_eq!((conv[0].base.0, conv[0].len), (0x8000_0000, 0x1_0000));
+        assert!(res.is_empty());
+    }
+
+    #[test]
+    fn dtb_memory_reservation_block_is_carved_from_free() {
+        // The reservation block forbids access, so its ranges must reach
+        // neither the conventional nor the reserved table.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[],
+            &[(0x8000_8000, 0x1000)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        assert_eq!(conv.len(), 2);
+        assert_eq!((conv[0].base.0, conv[0].len), (0x8000_0000, 0x8000));
+        assert_eq!((conv[1].base.0, conv[1].len), (0x8000_9000, 0x7000));
+        assert!(res.is_empty());
+    }
+
+    #[test]
+    fn dtb_overlapping_reservations_are_rejected() {
+        // The spec forbids overlapping children, and the overlap is not benign
+        // when only one side reaches the reserved table: a plain declaration
+        // over a `no-map` one would authorise access to forbidden pages.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[
+                ReservedRow { base: 0x8000_4000, size: 0x2000, no_map: false },
+                ReservedRow { base: 0x8000_5000, size: 0x1000, no_map: true },
+            ],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::OverlappingReservedRanges)
+        ));
+    }
+
+    #[test]
+    fn dtb_reservation_with_wrapping_end_is_rejected() {
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: u64::MAX - 0x10, size: 0x100, no_map: true }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::RangeOverflow)
+        ));
+    }
+
+    #[test]
+    fn dtb_reserved_memory_with_wide_cells_is_rejected() {
+        // `reg()` refuses cell counts above two; silently skipping the node
+        // would hand its pages to the allocator.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false }],
+            &[],
+            3,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedReservedDeclaration)
+        ));
+    }
+
+    #[test]
+    fn dtb_carving_that_exceeds_capacity_is_rejected() {
+        // Ten 4 KiB holes split one 128 KiB span into ten free pieces, more
+        // than the table holds. Truncating here would merge the holes back
+        // into RAM.
+        let reservations: Vec<ReservedRow> = (0..10)
+            .map(|i| ReservedRow {
+                base: 0x8000_1000 + i * 0x2000,
+                size: 0x1000,
+                no_map: true,
+            })
+            .collect();
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x2_0000)], false, &reservations, &[], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::TooManyFreeRegions)
+        ));
+    }
+
+    #[test]
     fn dtb_multi_region_and_unit_address_variant() {
         let blob = build_fdt(&[(0x8000_0000, 0x4000_0000), (0x8800_0000, 0x1000_0000)], true);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, _res) = DtbMemoryMap::new(&fdt, 0).collect();
+        let (conv, _res) = DtbMemoryMap::new(&fdt, 0).collect().expect("test map fits DTB_MEMMAP_MAX");
         assert_eq!(conv.len(), 2, "两段 /memory → 2 条（含 unit-address 变体）");
         assert_eq!(conv[0].base.0, 0x8000_0000);
         assert_eq!(conv[1].base.0, 0x8800_0000);
@@ -331,7 +832,7 @@ mod tests {
         // → free = [0x8020_0000, +62MiB), reserved = [0x8000_0000, 2MiB)
         let blob = build_fdt(&[(0x8000_0000, 0x400_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000).collect();
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000).collect().expect("test map fits DTB_MEMMAP_MAX");
         assert_eq!(conv.len(), 1);
         assert_eq!(conv[0].base.0, 0x8020_0000, "削界后 free 起点抬到 fw_end");
         assert_eq!(conv[0].len, (0x400_0000 - 0x20_0000) as usize);
@@ -347,7 +848,7 @@ mod tests {
         // consumer seeing an empty table halts honestly).
         let blob = build_fdt(&[(0x8000_0000, 0x10_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000).collect();
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000).collect().expect("test map fits DTB_MEMMAP_MAX");
         assert!(conv.is_empty(), "整段固件区 → free 空（诚实停机由消费方判）");
         assert_eq!(res.len(), 1);
     }
@@ -356,7 +857,7 @@ mod tests {
     fn dtb_no_memory_node_yields_empty() {
         let blob = build_fdt(&[], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect();
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("test map fits DTB_MEMMAP_MAX");
         assert!(conv.is_empty(), "无 /memory → 空（诚实停机由消费方判）");
         assert!(res.is_empty());
     }
