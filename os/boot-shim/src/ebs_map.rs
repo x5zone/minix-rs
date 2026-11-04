@@ -195,8 +195,10 @@ pub mod attr {
     /// range out of ordinary allocation and ordinary mapping.
     pub const TYPE_INDEPENDENT: u64 = RUNTIME | NON_VOLATILE | SPECIAL_PURPOSE;
 
-    /// A bit no revision this project tracks defines — stands in for "firmware
-    /// knows something we do not".
+    /// UEFI 2.11 defines this bit as `EFI_MEMORY_HOT_PLUGGABLE`. The baseline
+    /// this project tracks does not include it, so it exercises the
+    /// unknown-bit path: memory the kernel cannot unplug must not reach the
+    /// PMM, and refusing the descriptor is the fail-closed outcome.
     pub const UNKNOWN_FOR_TESTING: u64 = 1 << 20;
 }
 
@@ -851,10 +853,13 @@ mod tests {
 
     #[test]
     fn hot_pluggable_bit_fails_closed_as_unknown() {
-        // UEFI 2.11 defines EFI_MEMORY_HOT_PLUGGABLE (bit 10, 0x400), but the
-        // pinned uefi-raw 0.9 has no constant for it. A descriptor carrying it
-        // must be refused, not silently classified as ordinary memory.
-        assert_eq!(disp(ty::CONVENTIONAL, WB | 0x400), Err(PolicyError::UnknownAttribute));
+        // UEFI 2.11 defines EFI_MEMORY_HOT_PLUGGABLE as 0x0010_0000; the pinned
+        // uefi-raw 0.9 has no constant for it. A descriptor carrying it must be
+        // refused, not silently classified as ordinary memory.
+        assert_eq!(
+            disp(ty::CONVENTIONAL, WB | 0x0010_0000),
+            Err(PolicyError::UnknownAttribute)
+        );
     }
 
     #[test]
