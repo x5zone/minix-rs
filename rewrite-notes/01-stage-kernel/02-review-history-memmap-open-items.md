@@ -10,6 +10,15 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十六轮评审之后：记录层去掉预置页范围，补身份）**
+
+- **代码 `9a4d0eb51`**：`SourceRecord` 改为 `{ id, kind, origin, raw_start, raw_end }`——删掉 `page_*`，因为 `/memory` 要内向 `FullPages`、保留声明要外向取整、MRB 访问禁止要精确字节，一份预置页范围会把某个消费者的规则写进所有消费者。`kind` 拆出 `ReservedReusable`（`reusable` 不再并进普通保留），MRB 更名 `MrbEntry`；`origin` 记录 `MemoryNode`/`FirmwarePrefix`/`MrbEntry(n)`/`ReservedMemoryChild(n)`。minix-boot **120**、boot-shim **67**；riscv QEMU PASS；aarch64 QEMU 被外部红阻断（见下）。
+- **容量依据改写**：40 由**输入上限**推出（`/memory` 段与声明各受 `DTB_MEMMAP_MAX`、MRB 受 `DTB_MRB_MAX`；`no-map` 同样计数），不再用「投影表装得下」论证。新增负控 `dtb_no_map_declarations_count_against_the_declaration_cap`：9 条 RAM 外 `no-map` 不进任何表，第 9 条仍必须拒绝——这恰好推翻旧的容量论证。
+- **一致性测试**：`dtb_collect_and_collect_with_sources_agree` 证明两条入口产出相同两张表。
+- **启动路径如实登记**：四条 DTB 调用点全部走 `collect()`，记录被丢弃；§2.5 改为「三个层次」表（库接口 / 启动路径 / 消费者），`grep collect_with_sources` 零命中。
+- **外部红登记**：`rewrite` 上 `2d292a06b` 给 `SefIpc` 加 `sendrec` 未同步 `servers/rs`，aarch64-unknown-none 编译失败（E0046 at `servers/rs/src/lib.rs:203`），aarch64 QEMU 腿本轮无法运行；与本切片无关，待其所有者修复。
+- **O-06 分层**：新增 `MemoryKind` / `OrdinaryMappingEligibility(tree, phase)` / `PmmEligibility(phase)` / `AccessRequirement` 说明；表头「普通主存 backing」改「普通主存性质」；`CONVENTIONAL`/`LOADER_*`/`ACPI_RECLAIM` 的「可能被保留声明覆盖」改为「按兼容矩阵裁决」。O-11 动态 `size` 统一为「不应列入内存图；`reg` 与 `size` 并存按 `reg`」。O-12g 状态改三层表；O-12i 注明记录不携带页范围。
+
 **本轮（第四十五轮评审之后：采集边界交出逐条来源记录）**
 
 - **代码 `28e277d5b`**：`memmap_source` 增加 `SourceRecord` 层——五类（`Memory`/`FirmwarePrefix`/`MemoryReservation`/`ReservedOrdinary`/`ReservedNoMap`），容量 40，`raw_*` 不取整不裁剪、`page_*` 供投影；`collect_with_sources()` 交出三张表，`collect()` 语义与签名不变。minix-boot **118**、boot-shim **67**；riscv bootface 与 aarch64 UEFI QEMU 双 PASS。

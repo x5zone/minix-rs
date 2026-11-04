@@ -5276,3 +5276,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 新测试四条：no-map 记录留存、MRB 原始范围、RAM 外声明留存、记录覆盖每张投影表条目。
 - 文档：O-11 provenance/reachability 分离 + 复制算法 + 一致性合同；O-12h `2^64` 下移平台准入（代码待改）；O-06 兼容矩阵/第一版处置；`OrdinaryRamEligibility`；O-12c VA 观测单元；O-12i 三范围；O-05 `FrozenBootMappingSet`。
 - 门：minix-boot 118、boot-shim 67、两条 QEMU 腿 PASS、x86_64-unknown-uefi check 通过。
+
+### 第二百五十四笔（01 阶段 · I-29 第四十六轮：记录只留事实，容量按输入上限）
+
+代码 `9a4d0eb51`；主文档 752 → 765 行。
+
+- `SourceRecord { id, kind, origin, raw_start, raw_end }`：去掉预置页范围（`/memory` 内向、保留外向、MRB 精确，不能共用一个）；`kind` 增 `ReservedReusable`；MRB 更名 `MrbEntry`。
+- 容量 40 改由输入上限推出；负控 9 条 RAM 外 `no-map`（不进任何表）仍被拒绝。
+- 新测试 `dtb_collect_and_collect_with_sources_agree`、`dtb_no_map_declarations_count_against_the_declaration_cap`；minix-boot 120、boot-shim 67；riscv QEMU PASS。
+- 登记：四条 DTB 调用点仍用 `collect()`，记录未进启动路径（§2.5 三层表）。
+- **外部红**：`2d292a06b`（sef E-NETSTART）给 `SefIpc` 加 `sendrec`，`os/servers/rs/src/lib.rs:203` 未实现 → aarch64-unknown-none 编译失败，aarch64 QEMU 腿本轮无法运行。属他人切片，未改。
