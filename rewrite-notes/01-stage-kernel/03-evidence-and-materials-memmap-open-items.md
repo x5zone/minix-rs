@@ -552,3 +552,15 @@
 | A26 | R21 | `t_r21` |
 
 （每条断言至少一条正例 + 一条反例；R6/R7/R8/R14 四条冗余各有独立报警用例。新增关系时在表尾追加，不重排既有编号。）
+
+## 十、集合角色分组表（原正文 §6.7，第二十一轮移入）
+
+| 分组 | 成员 | 特征 |
+|---|---|---|
+| **来源集合** | `SourceDomain`、`DtbMemoryReservationBlockRanges`、`DtbReservedMemoryRegRanges`、`FirmwareRuntimeMmioRanges`、`DeviceWindowRanges`、`RamLikeSourceRanges`、`DeviceLikeSourceRanges` | 「收到了什么」，不参与政策判断（**没有 `DeviceAddressRanges` 这个第三种名字**） |
+| **统计与分区集合** | `PmmPolicyUniverse`、`AvailableRanges(p)`、`PmmExcludedRanges(p)` | 页级坐标、阶段参数、互为补集 |
+| **政策集合** | `TypeExcludedRanges`、`DeviceTreeReservedRanges`、`DiagnosticMemberRanges`、`ReservedMappedRanges`、`StartupObjectPmmReservedRanges(p)`、`ExplicitPolicyDeniedRanges`(第一版 = ∅) | 具名成员，来源可追溯 |
+| **禁止集合** | `BootMapDenyRanges`(L3)、`FinalMapDenyRanges`(L2) | 按树与路径选判据，不是同一件事的两种写法 |
+| **义务集合** | `StartupAccessRequirements(树,阶段)` 及其派生 `StartupMappingRequirements`、`DeviceMappingRequirements(树,阶段)` | 回答「必须怎么访问」，不回答「映射从哪里来」 |
+| **派生视图（无独立存储）** | `PrefixRangeView`、`MappingDeniedSet`/`MappingDeniedForPath` 的取值、各集合的相交结果 | **不得进容量清单冒充缓冲区**（§5.3 那条纪律） |
+| **有界样本（可截断）** | §5 的诊断样本 | 给人看的那一份，不承载政策结果 |
