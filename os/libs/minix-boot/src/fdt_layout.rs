@@ -55,6 +55,9 @@ pub enum FdtInputError {
     BlockMisaligned,
     /// The structure block does not end with the `FDT_END` token.
     MissingEndToken,
+    /// The memory reservation block holds more entries than the collector
+    /// accepts.
+    TooManyReservations,
     /// The header's `version` / `last_comp_version` is outside the set this
     /// project accepts.
     UnsupportedVersion,
@@ -68,6 +71,9 @@ pub enum FdtInputError {
 const HEADER_LEN: u32 = 40;
 const MAGIC: u32 = 0xd00d_feed;
 const MRB_ENTRY: u32 = 16;
+/// Maximum reservation entries the collector accepts; enforced here so a huge
+/// but "valid" MRB cannot make the boot scan for an unbounded time.
+const MRB_MAX_ENTRIES: u32 = 16;
 /// Binary structure versions this project accepts: `version = 17` with
 /// `last_comp_version = 16`, the pair the current format description defines.
 /// The specification asks clients to accept every blob backward-compatible
@@ -180,6 +186,9 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
         if address == 0 && high_addr == 0 && size == 0 && high_size == 0 {
             break end;
         }
+        if (pos - off_mrb) / MRB_ENTRY + 1 >= MRB_MAX_ENTRIES {
+            return Err(FdtInputError::TooManyReservations);
+        }
         pos = end;
     };
 
@@ -229,6 +238,27 @@ mod tests {
             out[end as usize..(end + 4) as usize].copy_from_slice(&9u32.to_be_bytes());
         }
         out
+    }
+
+    #[test]
+    fn accepts_an_unaligned_strings_block() {
+        // The strings block has no alignment requirement.
+        let bytes = blob(40, 56, 16, 73, 4);
+        assert!(validate(0x8000_0000, &bytes).is_ok());
+    }
+
+    #[test]
+    fn rejects_more_reservations_than_the_collector_accepts() {
+        let mut entries = Vec::new();
+        for i in 0..MRB_MAX_ENTRIES + 1 {
+            entries.extend_from_slice(&(0x8000_0000u64 + i as u64 * 0x1000).to_be_bytes());
+            entries.extend_from_slice(&0x1000u64.to_be_bytes());
+        }
+        entries.extend_from_slice(&[0u8; 16]);
+        let struct_start = 40 + entries.len() as u32;
+        let mut bytes = blob(40, struct_start, 16, struct_start + 16, 4);
+        bytes[40..40 + entries.len()].copy_from_slice(&entries);
+        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::TooManyReservations));
     }
 
     #[test]
