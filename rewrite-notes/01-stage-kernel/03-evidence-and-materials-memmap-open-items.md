@@ -187,6 +187,14 @@
 | `hotpluggable` 准入 | `HotpluggableMemoryUnsupported`；`dtb_hotpluggable_memory_is_rejected` | 同左 |
 | UEFI 无热插拔位定义 | `grep -rn HOT_PLUG uefi-raw-0.9.0/src` 零命中 → 该位走未知属性拒绝 | `grep -rn HOT_PLUG /home/xzhao/.cargo/registry/src/*/uefi-raw-0.9.0/src` |
 
+## 一j、第三十五轮代码读数
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 零长度 MRB 条目拒绝 | `ZeroLengthMemoryReservation`；`dtb_zero_length_memory_reservation_is_rejected` | `grep -n "ZeroLengthMemoryReservation" os/libs/minix-boot/src/memmap_source.rs` |
+| 热插拔属性位负控 | `hot_pluggable_bit_fails_closed_as_unknown`（`WB \| 0x400` → `UnknownAttribute`） | `grep -n "hot_pluggable_bit" os/boot-shim/src/ebs_map.rs` |
+| 静态设备窗口 | LAPIC `0x0FEE_0000+4K`、IO-APIC `0x0FEC_0000+4K`、平台 MMIO `0x0800_0000+32M`、PLIC `0x0C00_0000+2M`、UART `0x1000_0000+4K` | `grep -n -A 4 "kernel_identity_mmio_regions" os/arch/src/lib.rs`；`grep -n -e MMIO_PA_BASE -e MMIO_WINDOW_LEN os/libs/minix-platform/src/arch/aarch64.rs` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |

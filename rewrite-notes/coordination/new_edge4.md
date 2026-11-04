@@ -5167,3 +5167,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-06：`RESERVED` 域外（B），`UNUSABLE` 在来源域但进 PMM 排除；补 `EFI_MEMORY_HOT_PLUGGABLE`（依赖库无该位 → fail-closed）。
 - O-12：改为子合同列表，O-12c 拆三概念并列静态表清点与冲突规则；O-12h 加内存图元数据层与 VirtualStart；O-12g 补每级 ranges 记录；§7 改五项阻塞。
 - 门：minix-boot 83、boot-shim 66、UEFI 目标编译、riscv bootface QEMU PASS；lint 0。
+
+### 第二百四十三笔（01 阶段 · I-29 第三十五轮：来源域统一 + 量化合同 + 静态窗口）
+
+代码 `53755840b`；主文档 490 → 519 行。
+
+- MRB 零长度非终止项拒绝；UEFI 热插拔属性位（0x400）负控测试。
+- §3 与 O-06 统一：DTB 保留身份 + UEFI 物理处置都不能单独推出 RamSourceDomain 成员资格。
+- O-06 属性位改为 capability 元数据（WP ≠ 页表写权限），区分 GetMemoryMap 属性与 Memory Attributes Table。
+- 新增 O-12i（六投影页粒度 + 非页对齐设备窗口负控）、O-12j（MRB 偏移对齐/边界缺口）。
+- O-12h 补描述符重叠与 2^64 顶端；O-12c 补实际静态窗口清单（5 条）与冲突规则倾向。
+- 门：minix-boot 84、boot-shim 67、UEFI 双目标编译、riscv bootface QEMU PASS；lint 0。

@@ -10,6 +10,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第三十五轮评审之后：来源域叙述统一 + 量化合同 + 静态窗口清点）**
+
+- **代码 `53755840b`**：MRB 的零长度非终止项拒绝（`ZeroLengthMemoryReservation`）；UEFI `EFI_MEMORY_HOT_PLUGGABLE`（bit 10, 0x400）负控测试——钉住的 `uefi-raw 0.9` 无常量，携带该位必须走未知属性拒绝。minix-boot 84、boot-shim 67；riscv bootface QEMU PASS。
+- **文档**：§3 删掉「DTB `no-map` 可能属于物理 RAM」的矛盾句，统一为「权威 DTB 提供保留身份，UEFI 图提供物理存在与处置，二者都不能单独推出 `RamSourceDomain` 成员资格」；O-06 已知属性位改为 **capability 元数据**（不等于当前生效权限，`WP` ≠ 页表写权限），并区分 `EFI_MEMORY_DESCRIPTOR.Attribute` 与 `EFI Memory Attributes Table`；§2.1 MRB 补零长度拒绝与 **O-12j**（`off_mem_rsvmap` 对齐/边界未校验的缺口）；`PAL_CODE` 改为「不支持、不做成员资格承诺」；新增 **O-12i**（六种投影的页粒度规则 + 非页对齐设备窗口负控）；O-12h 补描述符重叠与 `2^64` 顶端规则（u128 计算、第一版明确拒绝）；O-12c 补**实际静态窗口清单**（LAPIC/IO-APIC/平台 MMIO/PLIC/UART）与「以静态表为准、DTB 不一致倾向拒绝」。
+- **门**：minix-boot 84、boot-shim 67；UEFI 双目标编译；riscv bootface QEMU PASS。
+
 **本轮（第三十四轮评审之后：DTB 节点状态成为准入条件 + O-12 重构）**
 
 - **代码 `f0c518179`**：`/memory` 的 `status` 缺失或 `okay` 才采集，其它值拒绝（`UnsupportedMemoryNodeStatus`）；`hotpluggable` 拒绝启动（`HotpluggableMemoryUnsupported`）。+2 测试（83），riscv bootface QEMU PASS。
