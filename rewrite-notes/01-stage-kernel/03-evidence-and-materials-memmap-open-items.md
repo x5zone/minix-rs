@@ -152,6 +152,15 @@
 | 交接容量 | 可用表 128、保留表 256 | `grep -n -e WIRE_MEMMAP_CAP -e WIRE_RESERVED_CAP os/libs/minix-boot/src/handoff_v1.rs` |
 | 诊断成员完整存储且失败关闭 | `SIDE_CAP = 64` + `TooManySideEntries`；`types_that_earn_no_ordinary_mapping_go_to_the_side_list` | `grep -n -e SIDE_CAP -e TooManySideEntries os/boot-shim/src/ebs_map.rs` |
 
+## 一f、第三十一轮代码切片读数（`/reserved-memory` 形状校验）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 父节点 `ranges` 必须存在且为空 | `ReservedMemoryRangesNotEmpty`；`dtb_reserved_memory_without_empty_ranges_is_rejected` | `grep -n "ranges_empty" -A 4 os/libs/minix-boot/src/memmap_source.rs` |
+| `no-map` 与 `reusable` 互斥 | `ConflictingReservationAttributes`；`dtb_reservation_with_no_map_and_reusable_is_rejected` | `grep -n "ConflictingReservationAttributes" -A 3 os/libs/minix-boot/src/memmap_source.rs` |
+| 采集器测试与包读数 | 22 条采集用例；`cargo test -p minix-boot --lib` 77 通过 | 同左 |
+| 真实固件 | riscv bootface QEMU PASS（OpenSBI DTB 的 `ranges` 为空） | `bash os/qemu-tests/test-kernel-image-riscv64-bootface.sh` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |
