@@ -10,6 +10,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十八轮评审之后：中立范围字段、派生参数与「重复 ≠ 重叠」）**
+
+- **代码 `09e56a729`**：`SourceRecord.raw_*` 改名 `range_*`（派生记录的该字段是派生结果，不是原始声明）；`FirmwarePrefix { memory_id, cut }` 保留派生参数 `F = firmware_reserve_end`；精确重复的 `/reserved-memory` 声明与 MRB 条目改为**投影去重、来源记录各留一条**，部分重叠仍拒绝，同范围但语义不同（`no-map` vs 普通）按 `ConflictingReservationAttributes` 拒绝。minix-boot **127**、boot-shim **67**；riscv QEMU PASS；aarch64 仍被外部 `E0046` 阻断。
+- **补上反向完整性**：`dtb_every_input_declaration_has_exactly_one_record`（每条输入元组恰好一条记录、记录不多不少），与既有的「每个投影区间都有来源」互补。
+- **文档**：§2.1 写明前缀公式 `M_i ∩ [0, F)`、`node`/`reg` 序号计数规则、按 reg 元组计容量、重复/重叠/冲突三分裁决；O-12g 把「一律拒绝重叠」与去重规则的旧冲突标为已解决。
+
 **本轮（第四十七轮评审之后：记录区分输入声明与派生前缀，身份补齐）**
 
 - **代码 `b49afa97d`**：`SourceKind::class()` 区分**输入声明**（`Memory`/`MrbEntry`/`ReservedOrdinary`/`ReservedReusable`/`ReservedNoMap`）与**派生保留**（`FirmwarePrefix`）；`origin` 补齐 `MemoryNode { node, reg }`、`ReservedMemoryChild { node, reg }`，派生前缀用 `FirmwarePrefix { memory_id }` 指回它切分的那条 `/memory` 记录。minix-boot **123**、boot-shim **67**；riscv QEMU PASS；aarch64 仍被外部 `E0046` 阻断。
