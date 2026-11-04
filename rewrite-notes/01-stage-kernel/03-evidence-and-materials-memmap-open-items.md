@@ -742,3 +742,17 @@
 | UEFI 2.10 Errata A PDF | 2024 年 8 月勘误发布 | `0x100` | `0x1000` | 未定义 | `0x0FFFF00000000000` |
 | UEFI 2.11 PDF | 2024 年 12 月正式发布 | `0x100` | `0x1000` | `0x10000` | `0x0FFF000000000000` |
 | EDK2 当前主干头文件 | **实现，不是规范勘误** | `0x1000` | `0x10000` | `0x100000` | `0x0FFFF00000000000` |
+
+## 十六、第四十四轮：fdt 0.1.5 的消费能力读数（属性序与深度）
+
+依赖源码：`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fdt-0.1.5/src/node.rs`
+
+| 位置 | 读数 | 后果 |
+|---|---|---|
+| `properties()`（:53） | 仅当前 token 为 `FDT_PROP` 时产出，否则 `done = true` | 属性后置对属性查询不可见 |
+| `children()`（:81） | 先跳过前导属性，之后只接受 `FDT_BEGIN_NODE`，否则 `done = true` | 子节点后属性**终止兄弟迭代**，子树被静默截断 |
+| `all_nodes()`（:395） | `parents: [&[u8]; 64]`，`parent_index` 从 0 起、先加一后写入 | 根存下标 1，**深度 63 是可走完的上限**；深度 64 越界 |
+
+QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 256M`，QEMU 8.2.2）：`totalsize=5734`、最大深度 5、属性后置 0 处。
+
+门读数（提交 `d615d0190`）：minix-boot **114**、boot-shim **67**；`test-kernel-image-riscv64-bootface.sh` PASS（OpenSBI 打补丁链）、`test-shim-bootmarks-aarch64.sh` PASS；`cargo check -p boot-shim --target x86_64-unknown-uefi` 通过。
