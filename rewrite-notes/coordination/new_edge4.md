@@ -5187,3 +5187,25 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - `EFI_MEMORY_HOT_PLUGGABLE` 修正为 `0x0010_0000`（EDK2 头），负控用精确位值。
 - O-12c：PLIC/aarch64 窗口解释与版本绑定；O-12i：`RamSourcePageDomain`/`PMMExcluded`/`PMMAvailable` 公式与 MRB 双粒度；O-03：六行冲突规则；O-12j 仍标未闭合。
 - 门：minix-boot 84、boot-shim 67、UEFI 双目标编译、riscv bootface QEMU PASS；lint 0。
+
+### 第二百四十五笔（01 阶段 · I-29 第三十七轮：PMM 分区公式与设备映射包络）
+
+代码 `9b2b09f1c`；主文档 548 → 573 行。
+
+- PLIC：资源 `0x24_0000`，授权按 2 MiB 叶子包络 `0x40_0000`；编译期断言对齐与 aperture 上限。
+- O-12c：`DeviceResourceRange` / `DeviceMappingRange` 两栏，授权覆盖包络。
+- O-12i：`PMMAvailable(p)` 补类型资格、显式保留、存活对象、平台拒绝，`PMMExcluded` 取差集。
+- O-03：`no-map` 三分（禁止标准映射、禁止非受控推测、受控驱动使用）与 MRB 部分页规则。
+- O-12j 标不签并给出 `fdt 0.1.5` 行为；O-12g 补排除原因多重归属；§6 基线四条命令。
+- 门：minix-boot 84、boot-shim 67、UEFI 双目标编译、riscv bootface QEMU PASS；lint 0。
+
+### 第二百四十六笔（01 阶段 · I-29 第三十八轮：DTB 首访边界与范围四层化）
+
+代码 `a52cfee54`；主文档 573 → 607 行。
+
+- DTB 指针先验 8 字节对齐、totalsize 40 B–64 MiB 上限与 checked；三处 boot 面接入。
+- O-12c 四层范围；IO-APIC/LAPIC 独立包络；PLIC 绑定 QEMU/accel/CPU/-smp/S-mode 配置。
+- O-12i 页集合类型；O-12g 补 `/memory` 重叠与保留不输出区间描述符；O-06 Runtime 边界；O-05 硬件同步；§1.5 PMA/MTRR。
+- O-12h 精度；O-12j `fdt 0.1.5` 核对结果；§6 基线统一 86/67；§7 六组。
+- 过程更正：第三十七轮正文补丁在 reset 恢复时丢失，本轮补回；教训「reset 后重放全部补丁」。
+- 门：minix-boot 86、boot-shim 67、riscv/aarch64 编译、riscv bootface QEMU PASS；lint 0。

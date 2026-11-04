@@ -159,6 +159,10 @@ pub extern "C" fn bootface_a64() -> ! {
     // SAFETY: DTB_PA is written by the QEMU loader and is stable before this
     // face runs; the 40-byte read takes only the magic/length, and the real
     // extent is pinned down by the `dtb_bounded` bound gate.
+    if !minix_boot::dtb_blob_aligned(DTB_PA) {
+        say("### minix-rs kernel image: DTB pointer not 8-byte aligned — halting\n");
+        crate::halt();
+    }
     let head = unsafe { slice::from_raw_parts(DTB_PA as *const u8, 40) };
     if u32::from_be_bytes(head[0..4].try_into().unwrap_or([0; 4])) != 0xd00d_feed {
         say("### minix-rs kernel image: DTB magic bad — halting\n");

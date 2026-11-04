@@ -287,14 +287,24 @@ pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
 #[cfg(target_arch = "riscv64")]
 pub const PLIC_MAX_HARTS: u64 = 32;
 
-/// `0x20_0000` priority/pending/enable region plus an M-mode and an S-mode
-/// context of 4 KiB per hart. 32 harts give `0x24_0000`, which stays inside
-/// QEMU virt's PLIC region (`reg` reads `0xc000000 + 0x600000`).
+/// Registers the kernel actually uses: `0x20_0000` of priority/pending/enable
+/// plus the M-mode and S-mode context of every supported hart.
 #[cfg(target_arch = "riscv64")]
-const PLIC_WINDOW_LEN: u64 = 0x0020_0000 + 2 * PLIC_MAX_HARTS * 0x1000;
+pub const PLIC_RESOURCE_LEN: u64 = 0x0020_0000 + 2 * PLIC_MAX_HARTS * 0x1000;
+
+/// The Step-1 identity map emits device windows in 2 MiB pieces, so the
+/// authorized mapping range must be the 2 MiB envelope of the resource range —
+/// a window ending at `0x24_0000` is covered by a piece reaching `0x40_0000`
+/// anyway. The envelope stays inside QEMU virt's PLIC aperture
+/// (`reg` reads `0xc000000 + 0x600000`).
+#[cfg(target_arch = "riscv64")]
+const PLIC_WINDOW_LEN: u64 = (PLIC_RESOURCE_LEN + 0x1F_FFFF) & !0x1F_FFFF;
 
 #[cfg(target_arch = "riscv64")]
-const _: () = assert!(PLIC_WINDOW_LEN.is_multiple_of(0x1000));
+const _: () = assert!(PLIC_WINDOW_LEN.is_multiple_of(0x20_0000));
+
+#[cfg(target_arch = "riscv64")]
+const _: () = assert!(PLIC_WINDOW_LEN <= 0x60_0000);
 
 #[cfg(target_arch = "riscv64")]
 pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {

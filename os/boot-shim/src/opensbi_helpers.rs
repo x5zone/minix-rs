@@ -249,9 +249,21 @@ impl BootShim for RiscvUbootBootShim {
             // SAFETY: a1 is passed in by firmware; the first 8 bytes give
             // totalsize (same as bootface), `Fdt::new` checks the magic/size
             // gates, and a bad blob → expect halts.
+            assert!(
+                minix_boot::dtb_blob_aligned(dtb_pa),
+                "boot-shim: DTB pointer not 8-byte aligned — halting"
+            );
             let head = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, 8) };
-            let total = u32::from_be_bytes(head[4..8].try_into().expect("dtb header totalsize"))
-                as usize;
+            let total_be = u32::from_be_bytes(head[4..8].try_into().expect("dtb header totalsize"));
+            assert!(
+                minix_boot::dtb_len_ok(total_be),
+                "boot-shim: DTB totalsize outside the accepted range — halting"
+            );
+            assert!(
+                dtb_pa.checked_add(total_be as u64).is_some(),
+                "boot-shim: DTB range overflows the address space — halting"
+            );
+            let total = total_be as usize;
             let bytes = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, total) };
             let fdt = fdt::Fdt::new(bytes)
                 .expect("boot-shim: DTB parse failed (a1) — halting (I-22)");

@@ -158,6 +158,12 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         say("### minix-rs kernel image: OpenSBI passed no DTB in a1 — halting\n");
         crate::halt();
     }
+    // The specification requires an 8-byte aligned blob; refuse the shape
+    // before the first dereference rather than parsing it silently.
+    if !minix_boot::dtb_blob_aligned(dtb_pa) {
+        say("### minix-rs kernel image: DTB pointer not 8-byte aligned — halting\n");
+        crate::halt();
+    }
     // SAFETY: `dtb_pa` is the physical address of the FDT that OpenSBI places
     // in high DRAM (spec promise, confirmed on the firmware console as
     // `Domain0 Next Arg1`); it is readable in the satp=0 identity view. Do not

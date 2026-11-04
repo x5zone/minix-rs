@@ -39,3 +39,46 @@ pub use platform::{
     PlatformParseError,
     DTB, RSDP,
 };
+
+/// The devicetree specification requires the blob to start on an 8-byte
+/// boundary. Byte-wise parsing tolerates a misaligned blob, but accepting one
+/// silently would mean trusting a shape the firmware contract forbids, so the
+/// DTB-pointer boot paths refuse it before the first read.
+pub const fn dtb_blob_aligned(addr: u64) -> bool {
+    addr % 8 == 0
+}
+
+/// Upper bound this project accepts for a devicetree blob. The header's
+/// `totalsize` is firmware-provided; without a bound the caller would have to
+/// trust it before it can even build a slice.
+pub const DTB_MAX_LEN: u32 = 64 * 1024 * 1024;
+
+/// `totalsize` must cover at least the 40-byte header and stay within
+/// [`DTB_MAX_LEN`].
+pub const fn dtb_len_ok(total: u32) -> bool {
+    total >= 40 && total <= DTB_MAX_LEN
+}
+
+#[cfg(test)]
+mod dtb_input_tests {
+    use super::*;
+
+    #[test]
+    fn alignment_accepts_multiples_of_eight_only() {
+        for addr in [0u64, 8, 0x1000, 0x8000_0000] {
+            assert!(dtb_blob_aligned(addr), "{addr:#x}");
+        }
+        for addr in [1u64, 4, 7, 0x8000_0004] {
+            assert!(!dtb_blob_aligned(addr), "{addr:#x}");
+        }
+    }
+
+    #[test]
+    fn length_bound_covers_header_and_caps_the_blob() {
+        assert!(!dtb_len_ok(0));
+        assert!(!dtb_len_ok(39));
+        assert!(dtb_len_ok(40));
+        assert!(dtb_len_ok(DTB_MAX_LEN));
+        assert!(!dtb_len_ok(DTB_MAX_LEN + 1));
+    }
+}

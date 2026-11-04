@@ -10,6 +10,19 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第三十八轮评审之后：DTB 首访边界 + 范围四层化 + 证据基线统一）**
+
+- **代码 `a52cfee54`**：`minix-boot` 新增 `dtb_blob_aligned` / `dtb_len_ok`（40 B–64 MiB）；riscv/aarch64 bootface 与 OpenSBI 腿在首次解引用前检查 8 字节对齐；OpenSBI 腿补 `totalsize` 上限与 checked 加法（先验证 totalsize 再建切片）。minix-boot 86、boot-shim 67；riscv bootface QEMU PASS。
+- **文档**：O-12c 改四层（`DeviceAperture` / `DeviceRequiredAccessRange` / `DeviceWindowPolicy` / `DeviceMappingCoverage`），IO-APIC 与 LAPIC 写成两个相邻包络，PLIC 范围绑定 QEMU/accel/CPU/`-smp`/S-mode 配置；O-12i 声明所有 `PMM*` 为 4 KiB 页集合、资格变化由显式事件触发；O-12g 补 `/memory` 重叠规则与「原始记录保留 `UNUSABLE` 等不输出区间描述符」；O-06 声明第一版不提供 Runtime Services；O-05 补「政策审计 ≠ 硬件同步」；§1.5 补 PMA 机器绑定与 MTRR 逐核；O-12h 补 `VirtualStart=0`、双末端 u128、缓冲区长度；O-12j 写入 `fdt 0.1.5` 的逐条核对结果（只查 magic/长度，不查对齐与偏移边界）；O-11 改「四条 DTB 输入路径」并写明 40 字节 header + 对齐先于读取；§6 基线统一为 `a52cfee54`/86/67 并列四条复核命令；§7 改为六个阻塞组。
+- **过程更正**：第三十七轮的正文补丁（O-12j/O-12g/§6/§7）在「reset 后只重放 docA」的恢复操作中丢失，本轮已补回；教训记入：reset 后必须重放**全部**补丁，不能只重放最后一个。
+- **门**：minix-boot 86、boot-shim 67；riscv/aarch64 目标编译；riscv bootface QEMU PASS。
+
+**本轮（第三十七轮评审之后：PMM 分区公式补全 + 设备映射包络）**
+
+- **代码 `9b2b09f1c`**：PLIC 授权范围改为 **2 MiB 叶子包络** `0x40_0000`（资源 `0x24_0000` 单独保留为 `PLIC_RESOURCE_LEN`），并加编译期断言「2 MiB 对齐 + 不越 QEMU 6 MiB aperture」。
+- **文档**：O-12c 拆 `DeviceResourceRange` / `DeviceMappingRange` 两栏（4 KiB 资源实际映射为 2 MiB 包络，授权必须覆盖包络）；O-12i 的 `PMMAvailable(p)` 补类型资格、显式保留、存活对象、平台拒绝四类原因，`PMMExcluded(p)` 取差集；O-03 把 `no-map` 拆成禁止标准映射 / 禁止非受控推测 / 受控驱动使用三项，并写明 MRB 部分页规则；O-12j 写明 `fdt 0.1.5` 的实际行为与「不签」结论；O-12g 补排除原因多重归属与「对象不得合并成 Reserved」；§7 五个阻塞更新；§6 证据基线改为 `9b2b09f1c` 并列出四条复核命令。
+- **门**：minix-boot 84、boot-shim 67；UEFI 双目标编译；riscv bootface QEMU PASS。
+
 **本轮（第三十六轮评审之后：PLIC 窗口修正 + 页域公式 + 禁止冲突表）**
 
 - **代码 `f98d4edff`**：riscv64 PLIC 窗口从 2 MiB 扩到 `0x24_0000`（`0x20_0000` 优先/待决/使能区 + 32 hart 的 M/S context）——原窗口恰好结束在 context 区起点，claim/complete 拿不到 `DEVICE` 映射；QEMU DTB 实测 `plic@c000000` 的 `reg` 为 `0xc000000 + 0x600000`。另按 EDK2 `UefiSpec.h` 把 `EFI_MEMORY_HOT_PLUGGABLE` 修正为 `0x0010_0000`（上一轮测试用的 `0x400` 不是该位）。
