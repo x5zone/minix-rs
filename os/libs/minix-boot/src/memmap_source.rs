@@ -93,8 +93,10 @@ pub enum DtbMemMapError {
     /// `{0, 0}` terminates the block; a zero-length entry is malformed and
     /// must not be silently accepted as a reservation.
     ZeroLengthMemoryReservation,
-    /// Two memory reservation block entries partially overlap; exact
-    /// duplicates are deduplicated in the carve and keep both records.
+    /// Two memory reservation block entries overlap. DTSpec 5.3.2 says the
+    /// regions "shall not overlap each other", so an identical pair is an
+    /// overlap too — no deduplication here, unlike `/reserved-memory`
+    /// duplicates, which are a project-level tolerance.
     OverlappingMemoryReservations,
     /// A `/memory` node carries a `status` other than "okay" (or an unknown
     /// value). Such memory is not described as usable RAM, so handing it to
@@ -608,17 +610,14 @@ impl DtbMemoryMap<'_> {
             if mrb_n >= DTB_MRB_MAX {
                 return Err(DtbMemMapError::TooManyMemoryReservations);
             }
-            let duplicate = mrb[..mrb_n].iter().any(|&(s, e)| s == start && e == end);
-            if !duplicate {
-                for &(prev_start, prev_end) in mrb[..mrb_n].iter() {
-                    if start < prev_end && prev_start < end {
-                        return Err(DtbMemMapError::OverlappingMemoryReservations);
-                    }
+            for &(prev_start, prev_end) in mrb[..mrb_n].iter() {
+                if start < prev_end && prev_start < end {
+                    return Err(DtbMemMapError::OverlappingMemoryReservations);
                 }
-                mrb[mrb_n] = (start, end);
-                mrb_n += 1;
-                carve_free(&mut free, &mut free_n, start, end)?;
             }
+            mrb[mrb_n] = (start, end);
+            mrb_n += 1;
+            carve_free(&mut free, &mut free_n, start, end)?;
         }
 
         // 3. `/reserved-memory`: declared reservations are not allocatable.
@@ -1305,16 +1304,17 @@ mod tests {
     }
 
     #[test]
-    fn dtb_identical_mrb_entries_are_deduplicated_not_rejected() {
+    fn dtb_identical_mrb_entries_are_rejected() {
+        // DTSpec 5.3.2: "These given regions shall not overlap each other."
+        // An identical pair is an overlap, not a repeatable declaration, so it
+        // is refused rather than deduplicated.
         let blob =
             build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &[(0x8000_4000, 0x1000), (0x8000_4000, 0x1000)], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (free, _, sources) =
-            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("duplicate is not an overlap");
-        assert_eq!(free.len(), 2, "the hole is carved once");
-        assert_eq!(
-            sources.iter().filter(|r| r.kind == SourceKind::MrbEntry).count(),
-            2
+        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        assert!(
+            matches!(result, Err(DtbMemMapError::OverlappingMemoryReservations)),
+            "expected the overlap refusal, got {result:?}"
         );
     }
 
