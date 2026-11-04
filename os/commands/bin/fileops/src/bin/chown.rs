@@ -54,6 +54,30 @@ fn warn(bytes: &[u8]) {
     support::warn(bytes);
 }
 
+/// C `_PATH_PASSWD` / the group database path.
+const PASSWD_PATH: &str = "/etc/passwd";
+const GROUP_PATH: &str = "/etc/group";
+
+/// Read a whole database file into text; `None` = the file is unavailable
+/// (the same face as an absent entry).
+fn read_db(path: &str) -> Option<String> {
+    let fd = minix_sys::open(path, 0, 0).ok()?;
+    let mut text = String::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match minix_sys::read(fd, &mut chunk) {
+            Ok(0) => break,
+            Ok(n) => text.push_str(&String::from_utf8_lossy(&chunk[..n])),
+            Err(_) => {
+                let _ = minix_sys::close(fd);
+                return None;
+            }
+        }
+    }
+    let _ = minix_sys::close(fd);
+    Some(text)
+}
+
 fn usage(ischown: bool) -> ! {
     let msg: &str = if ischown {
         "usage: chown [-R [-H | -L | -P]] [-fhv] owner[:group] file ...\n"
@@ -351,7 +375,13 @@ fn run() -> ! {
         if operands.len() < 2 {
             usage(ischown);
         }
-        let ids = match parse_owner_spec(operands[0], ischown) {
+        // The name service (`getpwnam`/`getgrnam`): the two databases are
+        // read up front; a missing file answers None, the same face as an
+        // absent account (C `uid_from_user`/`getgrnam` failing).
+        let users = read_db(PASSWD_PATH);
+        let groups = read_db(GROUP_PATH);
+        let ids = match parse_owner_spec(operands[0], ischown, users.as_deref(), groups.as_deref())
+        {
             Ok(ids) => ids,
             // `errx`/`err` prefix the program name (`chown.c:288`), so the
             // verdict renders as "chown: <name>: invalid <user|group> name"

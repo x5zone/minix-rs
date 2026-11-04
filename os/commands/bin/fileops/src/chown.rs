@@ -67,36 +67,47 @@ pub enum ChownError {
 /// spec, `chown.c:161-176`), `false` for `chgrp` (the whole argument is a
 /// group, `chown.c:176-177`). When `false`, any `:`/`.` split is skipped and
 /// the whole token goes through the group parser.
-pub fn parse_owner_spec(spec: &str, ischown: bool) -> Result<OwnerIds, ChownError> {
+/// `parse_owner_spec` with the name service: `users`/`groups` are the two
+/// database texts (`/etc/passwd`, `/etc/group`; `None` = the file is
+/// unavailable, which is C's `getpwnam`/`getgrnam` answering NULL — the
+/// same face as an absent account).
+pub fn parse_owner_spec(
+    spec: &str,
+    ischown: bool,
+    users: Option<&str>,
+    groups: Option<&str>,
+) -> Result<OwnerIds, ChownError> {
     if !ischown {
         // chgrp: a_gid(*argv) alone (`chown.c:177`).
         return Ok(OwnerIds {
             uid: None,
-            gid: parse_group(spec)?,
+            gid: parse_group(spec, groups)?,
         });
     }
 
     let mut ids = OwnerIds::NONE;
 
-    // chown.c:163-176 — a `:` splits user and group; under SUPPORT_DOT a `.`
-    // splits them too, but only when the whole token before the last `.` is
-    // not a known user. Without a name service every `.`-bearing token that
-    // is not a bare number falls to the `.` split, matching C's outcome for
-    // numeric users (`100.200`) and routing named users to the same `id()` rejection as C.
+    // chown.c:162-176 — a `:` splits user and group unconditionally; under
+    // SUPPORT_DOT a `.` splits them **only when the whole token is not a
+    // known user** (`uid_from_user(*argv, &uid) == -1` decides, now that
+    // the name service is wired). The split arm runs a_gid first
+    // (`:163-165`), a_uid after (`:172`); the two are independent here
+    // since we do not share C's mutable `uid`/`gid` globals.
     let (user_part, group_part): (&str, Option<&str>) = if let Some(idx) = spec.find(':') {
         (&spec[..idx], Some(&spec[idx + 1..]))
     } else if let Some(idx) = spec.rfind('.') {
-        (&spec[..idx], Some(&spec[idx + 1..]))
+        if user_by_name(users, spec).is_none() {
+            (&spec[..idx], Some(&spec[idx + 1..]))
+        } else {
+            (spec, None)
+        }
     } else {
         (spec, None)
     };
 
-    // a_uid then a_gid, preserving C's order: the `:`/`.` arm runs a_gid
-    // first (`:163-165`), a_uid after (`:172`); the two are independent here
-    // since we do not share C's mutable `uid`/`gid` globals.
-    ids.uid = parse_user(user_part)?;
+    ids.uid = parse_user(user_part, users)?;
     if let Some(group) = group_part {
-        ids.gid = parse_group(group)?;
+        ids.gid = parse_group(group, groups)?;
     }
 
     // C never errors when a spec resolves to no change, but a bare separator
@@ -106,23 +117,42 @@ pub fn parse_owner_spec(spec: &str, ischown: bool) -> Result<OwnerIds, ChownErro
     Ok(ids)
 }
 
-/// `a_uid` (`chown.c:270-277`): empty means "leave owner"; else `#`-prefixed
-/// or an unresolved user name falls through to the numeric `id()`. With no
-/// name service, `uid_from_user` fails for every name, so the whole named
-/// leg is `id()` — which rejects a non-numeric token exactly as C does.
-fn parse_user(s: &str) -> Result<Option<u32>, ChownError> {
+/// `getpwnam`'s scan over the caller-read database text (`uid_from_user`
+/// wraps it, `pwcache.c:396`): the uid for a login name.
+fn user_by_name(users: Option<&str>, name: &str) -> Option<u32> {
+    users.and_then(|db| minix_proctools::passwd::lookup_in(db, name).map(|a| a.uid))
+}
+
+/// `getgrnam`'s scan over the group database text.
+fn group_by_name(groups: Option<&str>, name: &str) -> Option<u32> {
+    groups.and_then(|db| minix_proctools::passwd::lookup_group_in(db, name).map(|g| g.gid))
+}
+
+/// `a_uid` (`chown.c:270-277`): empty means "leave owner"; else the name
+/// resolves through the password database (`uid_from_user` → `getpwnam`)
+/// and only a miss falls through to the numeric `id()` — which rejects a
+/// non-numeric token exactly as C does.
+fn parse_user(s: &str, users: Option<&str>) -> Result<Option<u32>, ChownError> {
     if s.is_empty() {
         return Ok(None); // "Argument was \"[:.]gid\"." (`chown.c:272`)
+    }
+    if let Some(uid) = user_by_name(users, s) {
+        return Ok(Some(uid));
     }
     parse_num(s, "user").map(Some)
 }
 
 /// `a_gid` (`chown.c:250-262`): empty means "leave group"; a `#` prefix skips
-/// `getgrnam` and forces numeric; otherwise a group name is looked up (not
-/// wired) and non-numeric tokens fall to `id()`.
-fn parse_group(s: &str) -> Result<Option<u32>, ChownError> {
+/// `getgrnam` and forces numeric; otherwise a group name resolves through
+/// the group database and a miss falls to `id()`.
+fn parse_group(s: &str, groups: Option<&str>) -> Result<Option<u32>, ChownError> {
     if s.is_empty() {
         return Ok(None); // "Argument was \"uid[.]:\"." (`chown.c:253`)
+    }
+    if !s.starts_with('#')
+        && let Some(gid) = group_by_name(groups, s)
+    {
+        return Ok(Some(gid));
     }
     parse_num(s, "group").map(Some)
 }
@@ -156,7 +186,7 @@ mod tests {
     #[test]
     fn numeric_user_only() {
         assert_eq!(
-            parse_owner_spec("100", true).unwrap(),
+            parse_owner_spec("100", true, None, None).unwrap(),
             OwnerIds {
                 uid: Some(100),
                 gid: None
@@ -167,7 +197,7 @@ mod tests {
     #[test]
     fn hash_forces_numeric() {
         assert_eq!(
-            parse_owner_spec("#0", true).unwrap(),
+            parse_owner_spec("#0", true, None, None).unwrap(),
             OwnerIds {
                 uid: Some(0),
                 gid: None
@@ -178,7 +208,7 @@ mod tests {
     #[test]
     fn colon_separates_user_and_group() {
         assert_eq!(
-            parse_owner_spec("100:200", true).unwrap(),
+            parse_owner_spec("100:200", true, None, None).unwrap(),
             OwnerIds {
                 uid: Some(100),
                 gid: Some(200)
@@ -190,7 +220,7 @@ mod tests {
     fn dot_separator_supported() {
         // SUPPORT_DOT is defined (`sbin/chown/Makefile:5`).
         assert_eq!(
-            parse_owner_spec("100.200", true).unwrap(),
+            parse_owner_spec("100.200", true, None, None).unwrap(),
             OwnerIds {
                 uid: Some(100),
                 gid: Some(200)
@@ -202,7 +232,7 @@ mod tests {
     fn leading_colon_is_group_only() {
         // ":200" — a_uid("") leaves owner, a_gid("200") sets group.
         assert_eq!(
-            parse_owner_spec(":200", true).unwrap(),
+            parse_owner_spec(":200", true, None, None).unwrap(),
             OwnerIds {
                 uid: None,
                 gid: Some(200)
@@ -214,7 +244,7 @@ mod tests {
     fn trailing_colon_is_user_only() {
         // "100:" — a_uid("100") sets owner, a_gid("") leaves group.
         assert_eq!(
-            parse_owner_spec("100:", true).unwrap(),
+            parse_owner_spec("100:", true, None, None).unwrap(),
             OwnerIds {
                 uid: Some(100),
                 gid: None
@@ -226,7 +256,7 @@ mod tests {
     fn chgrp_reads_the_whole_token_as_group() {
         // ischown == false: no split, the whole spec goes to the group parser.
         assert_eq!(
-            parse_owner_spec("200", false).unwrap(),
+            parse_owner_spec("200", false, None, None).unwrap(),
             OwnerIds {
                 uid: None,
                 gid: Some(200)
@@ -236,8 +266,14 @@ mod tests {
 
     #[test]
     fn empty_spec_changes_nothing() {
-        assert_eq!(parse_owner_spec("", true).unwrap(), OwnerIds::NONE);
-        assert_eq!(parse_owner_spec(":", true).unwrap(), OwnerIds::NONE);
+        assert_eq!(
+            parse_owner_spec("", true, None, None).unwrap(),
+            OwnerIds::NONE
+        );
+        assert_eq!(
+            parse_owner_spec(":", true, None, None).unwrap(),
+            OwnerIds::NONE
+        );
     }
 
     #[test]
@@ -245,7 +281,7 @@ mod tests {
         // "10x" — id() would hit `*ep != '\0'`; starts with a digit so it is
         // malformed, not a name.
         assert!(matches!(
-            parse_owner_spec("10x", true),
+            parse_owner_spec("10x", true, None, None),
             Err(ChownError::Invalid(_))
         ));
     }
@@ -253,15 +289,75 @@ mod tests {
     #[test]
     fn overflow_is_invalid() {
         assert!(matches!(
-            parse_owner_spec("99999999999", true),
+            parse_owner_spec("99999999999", true, None, None),
             Err(ChownError::Invalid(_))
         ));
+
+        // With a database the named legs resolve (`getpwnam`/`getgrnam`).
+        let pw = "root:x:0:0:Owner:/root:/bin/sh\ndaemon:x:1:1:d:/dev/null:\n";
+        let gr = "wheel:*:0:root\ndaemon:*:1:root\n";
+        assert_eq!(
+            parse_owner_spec("root:wheel", true, Some(pw), Some(gr)).unwrap(),
+            OwnerIds {
+                uid: Some(0),
+                gid: Some(0)
+            }
+        );
+        assert_eq!(
+            parse_owner_spec("daemon", true, Some(pw), Some(gr)).unwrap(),
+            OwnerIds {
+                uid: Some(1),
+                gid: None
+            }
+        );
+        // The SUPPORT_DOT rule (`chown.c:171-174`): the dot splits only
+        // when the WHOLE token is not a known user — `root.x` splits (root
+        // itself is known, `root.x` is not) and the unknown group half
+        // rejects through `id()`.
+        assert_eq!(
+            parse_owner_spec("root.x", true, Some(pw), Some(gr)),
+            Err(ChownError::Invalid(String::from("x: invalid group name")))
+        );
+        // A user literally named with a dot does not split: the whole-token
+        // lookup hits and `a_uid` takes it.
+        let pw2 = "root:x:0:0:Owner:/root:/bin/sh\nroot.x:x:5:5:Dotted:/root:/bin/sh\n";
+        assert_eq!(
+            parse_owner_spec("root.x", true, Some(pw2), Some(gr)).unwrap(),
+            OwnerIds {
+                uid: Some(5),
+                gid: None
+            },
+            "整 token 是已知用户时不点分"
+        );
+        assert_eq!(
+            parse_owner_spec("root", true, Some(pw2), Some(gr)).unwrap(),
+            OwnerIds {
+                uid: Some(0),
+                gid: None
+            }
+        );
+        // An unknown-user dot token still splits (`100.200` numeric).
+        assert_eq!(
+            parse_owner_spec("100.200", true, Some(pw), Some(gr)).unwrap(),
+            OwnerIds {
+                uid: Some(100),
+                gid: Some(200)
+            }
+        );
+        // A `#`-prefixed group skips `getgrnam` (`chown.c:255`).
+        assert_eq!(
+            parse_owner_spec("root:#5", true, Some(pw), Some(gr)).unwrap(),
+            OwnerIds {
+                uid: Some(0),
+                gid: Some(5)
+            }
+        );
     }
 
     #[test]
     fn bare_hash_is_invalid() {
         assert!(matches!(
-            parse_owner_spec("#", true),
+            parse_owner_spec("#", true, None, None),
             Err(ChownError::Invalid(_))
         ));
     }
@@ -273,11 +369,11 @@ mod tests {
         // as `"%s: invalid %s name"` (`chown.c:288`) — the same verdict the
         // parser produces here, with C's verbatim message.
         assert_eq!(
-            parse_owner_spec("root", true),
+            parse_owner_spec("root", true, None, None),
             Err(ChownError::Invalid(String::from("root: invalid user name")))
         );
         assert_eq!(
-            parse_owner_spec("100:wheel", true),
+            parse_owner_spec("100:wheel", true, None, None),
             Err(ChownError::Invalid(String::from(
                 "wheel: invalid group name"
             )))
@@ -289,7 +385,7 @@ mod tests {
         // Mixed "user:100" — the group half would parse, but the user half is
         // a name and `a_uid` hits `id()` first, so the whole spec fails.
         assert_eq!(
-            parse_owner_spec("alice:100", true),
+            parse_owner_spec("alice:100", true, None, None),
             Err(ChownError::Invalid(String::from(
                 "alice: invalid user name"
             )))
@@ -301,7 +397,7 @@ mod tests {
         // `chgrp wheel file` — a_gid("wheel"): `getgrnam` fails with no DB,
         // `id()` rejects the token (`chown.c:256-258`).
         assert_eq!(
-            parse_owner_spec("wheel", false),
+            parse_owner_spec("wheel", false, None, None),
             Err(ChownError::Invalid(String::from(
                 "wheel: invalid group name"
             )))

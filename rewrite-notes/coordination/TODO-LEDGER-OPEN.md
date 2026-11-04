@@ -203,6 +203,8 @@
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
 
+- **`2026-11-05` 收口刷新（第 63 轮，基线 `52776d775`，`claim/CHOWN-NAME-qoder`）**：`chown` 的具名 user/group 已随批次五百三十七闭——`parse_owner_spec` 接口令库两文本参，`a_uid`/`a_gid` 按名解析、未中落 `id()` 数字腿；**SUPPORT_DOT 的真规则**落地（点分仅当整 token 非已知用户，`chown.c:171-174`）。`ls -l` 长格式为口令库的最后消费方（下一笔）。
+
 - **`2026-11-05` 收口刷新（第 62 轮，基线 `2460cb580`，`claim/FIND-REGEX-qoder`）**：find 的 `-regex`/`-iregex` 已随批次五百三十六闭——`minix-regex` 引擎补 `REG_ICASE`（字面/类双折叠）+ find 的 parse 期编译（整路锚包裹、坏模式 parse 期 `FindError::Regex`，C 的 errx 面）。**B6 的「模块入表」三件经实查改判需人裁决**（互锁引导契约：`NR_BOOT_PROCS`/`VM_BOOT_HANDOFF_MAX_MODULES`/内核引导表/端点分配，AGENTS.md 的启动契约条款）——同日 B6 行二次改述。find 按名拒绝只剩 `-fstype`/`-flags`（前置未清）。
 
 - **`2026-11-05` 收口刷新（第 60 轮，基线 `2d292a06b`，`claim/SEF-FS-qoder`，审计轮无代码）**：E-FSRUNTIME 的「SEF 三段逐 bin 核」按 A22 注记执行——**三段在 `minix-fs-rt` 单点实现且四 bin 全接**：出生臂（`transport.rs:150` 的 `RS_INIT` 收发，对位 `do_sef_init_request`）、信号分发（`ipc.rs:241` 的 `dispatch_kernel_notify`）、ping 拦截（`ipc.rs:102` 的 `sef_receive_status`）；mfs/pfs/procfs/ptyfs 四 bin 全经 `ServerHooks{on_signal, init}`+`serve` 接入（逐 bin grep 坐标见 A22 行注记）；ext2/isofs 自陈停放等 `E-FSBDEV` 真镜像（接线=假装有盘）、hgfs/vbfs 为响亮 panic（A20 的求实形）。`minix-fs-rt` 门 30/0。E-FSRUNTIME 的余面只剩真机集成（RS spawn FS 服务，同 E5/C-57 链）。

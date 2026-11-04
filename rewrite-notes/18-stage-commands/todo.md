@@ -119,6 +119,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百三十七（`chown` 名换号：`getpwnam`/`getgrnam` 接入与 SUPPORT_DOT 的真规则）
+
+- **这一笔的射程**：`chown` 的具名 user/group（`chown.c` 的 `uid_from_user`→`getpwnam`（`pwcache.c:396`）与 `getgrnam`，`:252/:266`）——名字解析半随批次五百三十七前身（`minix_proctools::passwd`）在库，本笔接线。
+- **落码**：`parse_owner_spec` 加 `users`/`groups` 两个数据库文本参（bin 直读 `/etc/passwd`/`/etc/group`；`None`=文件不可得，即 C 的 `getpwnam`/`getgrnam` 答 NULL 的同面）。`a_uid`（`chown.c:270-277`）：名中即 uid，未中落 `id()` 数字腿（非数字即既有 `invalid user name` 面——与 C 逐字同）。`a_gid`（`:250-262`）：`#` 前缀跳 `getgrnam`，名中即 gid，未中落 `id()`。**SUPPORT_DOT 的真规则**（`:171-174`）：点分**仅当整 token 不是已知用户**（`uid_from_user(*argv,&uid)==-1` 决定）——旧注「无名服务时每个点分 token 都落点分」随 db 接入改写：`root.x`（root 已知、root.x 未知）点分后未知组半经 `id()` 拒；字面带点的已知用户（db 里就叫 `root.x`）不点分、整 token 进 `a_uid`。
+- **登记偏差**：无新增——错误面沿用既有 `Invalid` 族（`<name>: invalid <user|group> name` 逐字同 C）。
+- **门**：`cargo test -p minix-fileops --lib` → **427/0**（chown 新具名段：root:wheel 命中、daemon 单腿、SUPPORT_DOT 的三面（点分拒组、字面带点用户不点分、数值点分照旧）、`#` 跳查）+ **chown_face 3/0**（宿主 db 不可读→具名仍走 `invalid` 面，C 的 NULL 面同形）；`cargo clippy -p minix-fileops --all-targets` 告警坐标逐行 diff 与基线一致；`rustfmt --edition 2024 --check` 零漂移；none 双架构绿；边界门 fileops 0 违规；pattern `--diff` 与基线一致。核实日 `2026-11-05`；基线 `52776d775`。
+- **记账联动**：`chown` 的具名腿闭合（`-R` 递归族此前已接）；`ls -l` 的口令库半同源，为下一笔。
+
+---
+
 ## 批次五百三十六（`find -regex`/`-iregex`：parse 期编译 + 引擎 `REG_ICASE`，按名拒绝清单再收窄）
 
 - **这一笔的射程**：find 按名拒绝清单里的 `-regex`/`-iregex`。C 的形状：`c_regex_common`（`function.c:1571-1592`）在**建计划时**编译——模式先包上整路锚（BRE 包 `^\(re\)$`、`-E` 的 ERE 包 `^(re)$`），`regcomp(REG_NOSUB|flags[+REG_ICASE])`，坏模式当场 `errx(1, "regexp %s: %s")`；`f_regex` 对整条 `fts_path` 跑一次 regexec。缺省旗是 `REG_BASIC`，`-E` 翻 `REG_EXTENDED`（`main.c:70`/`:107`）。
