@@ -101,6 +101,10 @@ pub enum DtbMemMapError {
     /// A `/memory` node is marked `hotpluggable`. The kernel has no memory
     /// removal mechanism, so removable memory must not enter the PMM.
     HotpluggableMemoryUnsupported,
+    /// The source-record buffer would overflow. Unreachable while the two
+    /// projections fit their own capacities; kept as a refusal so a future
+    /// capacity change cannot silently drop a record.
+    TooManySourceRecords,
 }
 
 // `static mut`: the same form as bootface's MEMMAP_STORAGE — the single-hart
@@ -112,6 +116,53 @@ static mut DTB_RESERVED: [MemoryRegion; DTB_MEMMAP_MAX] =
     [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
 static DTB_FREE_N: AtomicUsize = AtomicUsize::new(0);
 static DTB_RESERVED_N: AtomicUsize = AtomicUsize::new(0);
+
+/// Capacity of the source-record buffer. One entry per declared range across
+/// every class: 8 `/memory` spans + 8 firmware prefixes + 16 MRB entries + 8
+/// reservations = 40, so any map that fits the two projections also fits here.
+/// The cap turns an unexpected overflow into a refusal, never a silent drop.
+const DTB_SOURCE_MAX: usize = DTB_MEMMAP_MAX + DTB_MEMMAP_MAX + DTB_MRB_MAX + DTB_MEMMAP_MAX;
+
+/// Which declaration a range came from, before any projection decides what it
+/// authorizes. Records are facts; the two tables are projections of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    /// A `/memory` `reg` span (the RAM panorama).
+    Memory,
+    /// The firmware-resident prefix carved out of a `/memory` span.
+    FirmwarePrefix,
+    /// One entry of the device-tree memory reservation block.
+    MemoryReservation,
+    /// A `/reserved-memory` child range without `no-map`.
+    ReservedOrdinary,
+    /// A `/reserved-memory` child range with `no-map`.
+    ReservedNoMap,
+}
+
+/// One declared physical range, kept **unclipped**: a `no-map` or MRB range
+/// outside `/memory` still forbids access where it lands, and the two
+/// projection tables cannot express that (a range outside RAM claims no RAM, so
+/// it appears in neither table). Keeping the raw extent is what lets a later
+/// policy layer build mapping/access prohibitions without re-reading the DTB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceRecord {
+    pub kind: SourceKind,
+    /// Byte range exactly as declared: no page rounding, no clipping.
+    pub raw_start: u64,
+    pub raw_end: u64,
+    /// Page-rounded extent the projections use (outward, unclipped).
+    pub page_start: u64,
+    pub page_end: u64,
+}
+
+static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
+    kind: SourceKind::Memory,
+    raw_start: 0,
+    raw_end: 0,
+    page_start: 0,
+    page_end: 0,
+}; DTB_SOURCE_MAX];
+static DTB_SOURCES_N: AtomicUsize = AtomicUsize::new(0);
 
 /// Clip the part of `[start, start+len)` that falls inside the resident
 /// firmware area (`[0, fw_end)`, a lower-bound semantic measured in PAs from
@@ -185,6 +236,27 @@ fn push_span(
         return Err(full);
     }
     table[*n] = MemoryRegion { base: PhysBytes(start), len: len as usize };
+    *n += 1;
+    Ok(())
+}
+
+fn push_source(
+    sources: &mut [SourceRecord; DTB_SOURCE_MAX],
+    n: &mut usize,
+    kind: SourceKind,
+    raw: (u64, u64),
+    page: (u64, u64),
+) -> Result<(), DtbMemMapError> {
+    if *n >= DTB_SOURCE_MAX {
+        return Err(DtbMemMapError::TooManySourceRecords);
+    }
+    sources[*n] = SourceRecord {
+        kind,
+        raw_start: raw.0,
+        raw_end: raw.1,
+        page_start: page.0,
+        page_end: page.1,
+    };
     *n += 1;
     Ok(())
 }
@@ -304,11 +376,51 @@ impl DtbMemoryMap<'_> {
     pub fn collect(
         &self,
     ) -> Result<(&'static [MemoryRegion], &'static [MemoryRegion]), DtbMemMapError> {
+        let (free, reserved, _) = self.collect_inner()?;
+        Ok((free, reserved))
+    }
+
+    /// The same collection, plus the unclipped per-declaration records the
+    /// projections were built from. A `no-map` or MRB range outside `/memory`
+    /// appears in neither table, so this is the only output that still carries
+    /// those facts.
+    pub fn collect_with_sources(
+        &self,
+    ) -> Result<
+        (
+            &'static [MemoryRegion],
+            &'static [MemoryRegion],
+            &'static [SourceRecord],
+        ),
+        DtbMemMapError,
+    > {
+        self.collect_inner()
+    }
+
+    fn collect_inner(
+        &self,
+    ) -> Result<
+        (
+            &'static [MemoryRegion],
+            &'static [MemoryRegion],
+            &'static [SourceRecord],
+        ),
+        DtbMemMapError,
+    > {
         // Single-hart boot face: written once, then read-only; a re-entry that
         // zeroes the counters (a second collect on the same face) merely
         // overwrites the same cells.
         DTB_FREE_N.store(0, Ordering::Relaxed);
         DTB_RESERVED_N.store(0, Ordering::Relaxed);
+        DTB_SOURCES_N.store(0, Ordering::Relaxed);
+        let mut sources = [SourceRecord {
+            kind: SourceKind::Memory,
+            raw_start: 0,
+            raw_end: 0,
+            page_start: 0,
+            page_end: 0,
+        }; DTB_SOURCE_MAX];
+        let mut sources_n = 0usize;
         let mut free = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
         let mut reserved = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
         // The unclipped panorama: a declaration means something only where it
@@ -360,6 +472,13 @@ impl DtbMemoryMap<'_> {
                     len,
                     DtbMemMapError::TooManyFreeRegions,
                 )?;
+                push_source(
+                    &mut sources,
+                    &mut sources_n,
+                    SourceKind::Memory,
+                    (start, start + len),
+                    (start, start + len),
+                )?;
                 if let Some((free_start, free_len)) =
                     clip_reserved(start, len, self.firmware_reserve_end)
                 {
@@ -380,6 +499,13 @@ impl DtbMemoryMap<'_> {
                         prefix_len,
                         DtbMemMapError::TooManyReservedRegions,
                     )?;
+                    push_source(
+                        &mut sources,
+                        &mut sources_n,
+                        SourceKind::FirmwarePrefix,
+                        (start, start + prefix_len),
+                        (start, start + prefix_len),
+                    )?;
                 }
             }
         }
@@ -393,6 +519,16 @@ impl DtbMemoryMap<'_> {
                 return Err(DtbMemMapError::ZeroLengthMemoryReservation);
             }
             let (start, end) = declared_page_range(entry.address() as u64, entry.size() as u64)?;
+            push_source(
+                &mut sources,
+                &mut sources_n,
+                SourceKind::MemoryReservation,
+                (
+                    entry.address() as u64,
+                    entry.address() as u64 + entry.size() as u64,
+                ),
+                (start, end),
+            )?;
             if mrb_n >= DTB_MRB_MAX {
                 return Err(DtbMemMapError::TooManyMemoryReservations);
             }
@@ -471,6 +607,20 @@ impl DtbMemoryMap<'_> {
                         _ => continue,
                     };
                     let (start, end) = declared_page_range(region.starting_address as u64, len)?;
+                    push_source(
+                        &mut sources,
+                        &mut sources_n,
+                        if no_map {
+                            SourceKind::ReservedNoMap
+                        } else {
+                            SourceKind::ReservedOrdinary
+                        },
+                        (
+                            region.starting_address as u64,
+                            region.starting_address as u64 + len,
+                        ),
+                        (start, end),
+                    )?;
                     push_declared(&mut declared, &mut declared_n, start, end)?;
                     for &span in memory[..memory_n].iter() {
                         let span_start = span.base.0;
@@ -508,12 +658,13 @@ impl DtbMemoryMap<'_> {
         unsafe {
             DTB_FREE = free;
             DTB_RESERVED = reserved;
+            DTB_SOURCES = sources;
         }
         DTB_FREE_N.store(free_n, Ordering::Release);
         DTB_RESERVED_N.store(reserved_n, Ordering::Release);
-        // SAFETY: both static arrays have length DTB_MEMMAP_MAX and hold `n`
-        // initialised entries; on the single-hart boot face the read only
-        // happens after the write.
+        DTB_SOURCES_N.store(sources_n, Ordering::Release);
+        // SAFETY: all three static arrays hold `n` initialised entries; on the
+        // single-hart boot face the read only happens after the write.
         Ok(unsafe {
             (
                 core::slice::from_raw_parts(
@@ -523,6 +674,10 @@ impl DtbMemoryMap<'_> {
                 core::slice::from_raw_parts(
                     core::ptr::addr_of!(DTB_RESERVED) as *const MemoryRegion,
                     reserved_n,
+                ),
+                core::slice::from_raw_parts(
+                    core::ptr::addr_of!(DTB_SOURCES) as *const SourceRecord,
+                    sources_n,
                 ),
             )
         })
@@ -821,6 +976,94 @@ mod tests {
         let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
         assert_eq!(conv.len(), 2);
         assert!(res.is_empty(), "no-map ranges stay out of both tables");
+    }
+
+    #[test]
+    fn dtb_no_map_reservation_keeps_a_source_record() {
+        // The range leaves both projection tables, so the record is the only
+        // output that still says where it was and that it was `no-map`.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (_, _, sources) =
+            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        let record = sources
+            .iter()
+            .find(|r| r.kind == SourceKind::ReservedNoMap)
+            .expect("no-map declaration keeps its record");
+        assert_eq!((record.raw_start, record.raw_end), (0x8000_4000, 0x8000_5000));
+        assert_eq!((record.page_start, record.page_end), (0x8000_4000, 0x8000_5000));
+    }
+
+    #[test]
+    fn dtb_memory_reservation_record_keeps_the_raw_range() {
+        // An unaligned MRB entry rounds outward for the projections but the
+        // record has to keep the bytes the firmware actually reserved.
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &[(0x8000_1000, 0x800)], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (_, _, sources) =
+            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        let record = sources
+            .iter()
+            .find(|r| r.kind == SourceKind::MemoryReservation)
+            .expect("MRB entry keeps its record");
+        assert_eq!((record.raw_start, record.raw_end), (0x8000_1000, 0x8000_1800));
+        assert_eq!((record.page_start, record.page_end), (0x8000_1000, 0x8000_2000));
+    }
+
+    #[test]
+    fn dtb_reservation_outside_memory_keeps_its_record() {
+        // A framebuffer-style reservation outside `/memory` claims no RAM, so
+        // both tables stay untouched — but the declaration itself must not
+        // vanish from the input record.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x9000_0000, size: 0x1000, no_map: true, reusable: false }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (conv, res, sources) =
+            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        assert_eq!(conv.len(), 1);
+        assert!(res.is_empty());
+        let record = sources
+            .iter()
+            .find(|r| r.kind == SourceKind::ReservedNoMap)
+            .expect("out-of-RAM declaration keeps its record");
+        assert_eq!((record.raw_start, record.raw_end), (0x9000_0000, 0x9000_1000));
+    }
+
+    #[test]
+    fn dtb_source_records_cover_every_projected_span() {
+        // Consistency between the record layer and the projections: every
+        // reserved span comes from a record page range, and every RAM byte in
+        // the conventional table is inside some `/memory` record.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_8000, size: 0x1000, no_map: false, reusable: false }],
+            &[(0x8000_4000, 0x1000)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (conv, res, sources) =
+            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        assert_eq!(sources.len(), 3, "one /memory span + one MRB entry + one reservation");
+        let covered = |start: u64| {
+            sources
+                .iter()
+                .any(|r| r.page_start <= start && start < r.page_end)
+        };
+        for span in conv.iter().chain(res.iter()) {
+            assert!(covered(span.base.0), "span at {:#x} has no source record", span.base.0);
+        }
     }
 
     #[test]
