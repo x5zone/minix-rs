@@ -10,6 +10,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第三十六轮评审之后：PLIC 窗口修正 + 页域公式 + 禁止冲突表）**
+
+- **代码 `f98d4edff`**：riscv64 PLIC 窗口从 2 MiB 扩到 `0x24_0000`（`0x20_0000` 优先/待决/使能区 + 32 hart 的 M/S context）——原窗口恰好结束在 context 区起点，claim/complete 拿不到 `DEVICE` 映射；QEMU DTB 实测 `plic@c000000` 的 `reg` 为 `0xc000000 + 0x600000`。另按 EDK2 `UefiSpec.h` 把 `EFI_MEMORY_HOT_PLUGGABLE` 修正为 `0x0010_0000`（上一轮测试用的 `0x400` 不是该位）。
+- **文档**：O-12c 窗口表更新 PLIC 与 aarch64「平台外设窗口」解释，并加版本绑定要求（QEMU/machine version、动态范围公式、与 DTB `reg` 一致性）；O-12i 补 `RamSourcePageDomain = FullPages(Union(...))`、`PMMExcluded/PMMAvailable` 公式与 MRB 两种粒度；O-03 采纳六行冲突组合规则；O-12j 写明「有界扫描仍是未闭合项」及其当前证据链（库按传入 blob 切片迭代、缺终止项由 16 条上限拒绝、对齐未查）。
+- **门**：minix-boot 84、boot-shim 67；UEFI 双目标编译；riscv bootface QEMU PASS。
+
 **本轮（第三十五轮评审之后：来源域叙述统一 + 量化合同 + 静态窗口清点）**
 
 - **代码 `53755840b`**：MRB 的零长度非终止项拒绝（`ZeroLengthMemoryReservation`）；UEFI `EFI_MEMORY_HOT_PLUGGABLE`（bit 10, 0x400）负控测试——钉住的 `uefi-raw 0.9` 无常量，携带该位必须走未知属性拒绝。minix-boot 84、boot-shim 67；riscv bootface QEMU PASS。

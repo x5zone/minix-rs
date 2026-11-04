@@ -255,7 +255,20 @@
 - **A**：每条禁止项带来源标签（`no-map` / MRB / 类型 / 对象），两份集合各自生成、互不代替。
 - **B**：单一集合 + 来源位图，由消费者过滤。
 
-**判据**：每条禁止项可追溯到一个来源条目；两份集合不能互相替代。**并需回答优先级**：正向授权与禁止声明覆盖同一范围时谁优先（例如 `no-map` 允许设备驱动受控访问，不能等价于无条件映射禁令）。语义至少分成：禁止标准映射 / 禁止非受控推测访问 / 禁止特定对象·树·阶段·路径的映射 / 禁止未授权访问 / 允许特定驱动受控访问。
+**判据**：每条禁止项可追溯到一个来源条目；两份集合不能互相替代。
+
+**冲突组合规则（按评审人给的六行，本项目采纳为候选规则）**：
+
+| 情况 | 结果 |
+|---|---|
+| 普通映射授权 vs `no-map` | 拒绝普通映射 |
+| 普通访问授权 vs MRB | 拒绝访问 |
+| 设备驱动受控使用 vs `no-map` | 只有满足规范允许的受控用途且具备专属授权时才允许例外 |
+| 未获启动程序授权的访问 vs MRB | 拒绝访问 |
+| 类型政策绝对禁止 vs 对象授权 | 拒绝 |
+| 对象 `MustNotMap` vs 一般 `MustMap` | 拒绝启动，除非设计明确列出例外 |
+
+原则不是「全局优先级数字」，而是：**一般正向授权不能覆盖具体的负向限制；例外必须具有更具体的对象身份、范围、路径与阶段；来源语义未明确允许的例外一律拒绝启动**。`no-map` 的例外与 MRB 的例外不是同一机制。
 
 ### O-04 对象负向义务的投影
 
@@ -326,7 +339,7 @@
 
 **术语边界**：这里读的是 `GetMemoryMap()` 的 `EFI_MEMORY_DESCRIPTOR.Attribute`（能力位掩码），与 `EFI Memory Attributes Table` 反映的保护配置不是一回事；第一版不解析后者，也不宣称已获知固件实际施加的全部权限。
 
-**`EFI_MEMORY_HOT_PLUGGABLE`**：规范定义它表示内存可能被动态移除。本项目钉住的 `uefi-raw 0.9` 没有该常量（`grep -rn HOT_PLUG` 零命中），因此带该位的描述符走**未知属性位 → 拒绝启动**。已有负控测试钉住确切位值：`hot_pluggable_bit_fails_closed_as_unknown`（`WB | 0x400` → `UnknownAttribute`）。这与 DTB `hotpluggable` 的项目政策一致。
+**`EFI_MEMORY_HOT_PLUGGABLE`**：规范定义它表示内存可能被动态移除。本项目钉住的 `uefi-raw 0.9` 没有该常量（`grep -rn HOT_PLUG` 零命中），因此带该位的描述符走**未知属性位 → 拒绝启动**。已有负控测试钉住确切位值：`hot_pluggable_bit_fails_closed_as_unknown`（`WB | 0x0010_0000` → `UnknownAttribute`；该位即 UEFI 2.11 的 `EFI_MEMORY_HOT_PLUGGABLE`，与常量 `UNKNOWN_FOR_TESTING = 1 << 20` 同值，注释已更正）。这与 DTB `hotpluggable` 的项目政策一致。
 
 **候选 B（不可接受，列出以说明为何否）**：只看平台物理内存描述、不看类型分类——会把不可用内存当成 backing。
 
@@ -427,7 +440,7 @@
 - **O-12g** 采集器重构：保留原始来源记录，再派生投影。
 - **O-12h** UEFI 描述符结构校验与政策分类分开（见下）。
 - **O-12i** 每种政策投影的页粒度规则（见下）。
-- **O-12j** MRB 的 `off_mem_rsvmap` 对齐与 `totalsize` 边界校验（依赖库遮挡头部字段，当前未实现）。
+- **O-12j** MRB 的有界扫描：`off_mem_rsvmap` 对齐、每条记录完整落在 `totalsize` 内、终止项必须在对象范围内。当前行为：依赖库从 `off_mem_rsvmap` 开始按调用方传入的 blob 切片迭代（调用方传的正是 `totalsize` 字节），缺终止项由 16 条上限拒绝；**对齐与偏移越界本身没有检查**（库隐藏头部字段），因此本项仍是不签项，不是已闭合。
 
 #### O-12c 的输入：三个概念要分开
 
@@ -454,11 +467,15 @@
 |---|---|---|---|
 | LAPIC | `0x0FEE_0000` + 4 KiB | x86_64 | 中断控制器 MMIO；`DEVICE`，引导根与最终根 |
 | IO-APIC | `0x0FEC_0000` + 4 KiB | x86_64 | 同上 |
-| 平台 MMIO | `0x0800_0000` + 32 MiB | aarch64 | QEMU virt 的 PL011 + GICv3 窗口 |
-| PLIC | `0x0C00_0000` + 2 MiB | riscv64 | 外部中断 claim/complete |
+| 平台外设窗口 | `0x0800_0000` + 32 MiB | aarch64 | QEMU virt 的 GIC 分发器/重分发器、PL011，以及 RTC/fw_cfg/GPIO 等；**整段 32 MiB 获得 DEVICE 授权**——名字是「平台外设窗口」，不是「PL011 + GICv3」 |
+| PLIC | `0x0C00_0000` + `0x24_0000` | riscv64 | `0x20_0000` 的 priority/pending/enable + 32 hart 的 M/S context（每 hart 2×4 KiB） |
 | NS16550A UART | `0x1000_0000` + 4 KiB | riscv64 | 早期控制台 |
 
-这些条目今天来自编译期常量（`kernel_identity_mmio_regions()` 与 `MMIO_PA_BASE/MMIO_WINDOW_LEN`），**不是** DTB/ACPI 解析结果。**DTB 与静态表不一致时的规则**（拒绝启动 / 以哪一方为准）必须写明；第一版倾向拒绝。
+**PLIC 窗口的教训（本轮修正）**：context 区从 `+0x20_0000` 开始，窗口大小应为 `0x200000 + N_context×0x1000`，**不能写固定 2 MiB**——原来的 2 MiB 恰好结束在 context 区起点，claim/complete 寄存器拿不到 `DEVICE` 映射。QEMU 实测 DTB：`plic@c000000` 的 `reg` 为 `0xc000000 + 0x600000`。窗口按内核 SMP 上限 32 hart 取 `0x24_0000`，仍在 QEMU 的 PLIC 区间内。
+
+这些条目今天来自编译期常量（`kernel_identity_mmio_regions()` 与 `MMIO_PA_BASE/MMIO_WINDOW_LEN`），**不是** DTB/ACPI 解析结果。
+
+**每条窗口必须绑定可验证的版本与动态规则**：QEMU 版本或 machine version、固定地址依据、动态范围的计算式、与 DTB `reg` 的一致性检查、不支持的配置范围。窗口表复制自某个 QEMU 版本时，不能继续当作另一个版本的硬件事实。**DTB 与静态表不一致时的规则**（拒绝启动 / 以哪一方为准）必须写明；第一版倾向拒绝。
 
 #### O-12h 的两级结构校验
 
@@ -483,6 +500,18 @@
 | `no-map` 映射禁止 | 向外覆盖所有相交页，防止大页/小页叶子跨入禁止区域 |
 | MRB 访问禁止 | 保留精确 byte range；若通过页表落实，另做页粒度投影 |
 | 设备窗口映射 | 叶子覆盖的**全部页**都要有兼容授权，不能只看起始页 |
+
+**页域的正式定义**：
+
+```
+RamSourcePageDomain = FullPages(Union(RamSourceDomain))      ← 先并集，再取完整页
+PMMExcluded = RamSourcePageDomain ∩ Outward(AllocationReservations)
+PMMAvailable = RamSourcePageDomain \ PMMExcluded
+```
+
+先并集再取整页，避免两个非页对齐的相邻 RAM 区间各自向内收缩时白丢一页；来源记录与身份**不合并**，只在纯计算层构造集合。`Outward(...)` 覆盖普通保留、`no-map`、MRB 等所有分配排除来源，同一页只排除一次。
+
+**MRB 的两种粒度**：精确 byte range 用于访问义务与审计；要通过页表保证不可访问时，另算相交页级范围，并说明「只覆盖一页中部分字节」时该页在其它对象的普通路径中是否允许映射。
 
 **设备窗口的边界页负控（必须有测试）**：资源 `[0x1003, 0x1fff)` 若直接向外量化成 `[0x1000, 0x2000)`，授权就扩张到了相邻地址。边界页只能三选一：拒绝非页对齐资源；明确授权整页并证明邻接区的属性/权限/别名兼容；拆分后仍无法表达则拒绝启动。
 

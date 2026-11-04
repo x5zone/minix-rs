@@ -5178,3 +5178,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 新增 O-12i（六投影页粒度 + 非页对齐设备窗口负控）、O-12j（MRB 偏移对齐/边界缺口）。
 - O-12h 补描述符重叠与 2^64 顶端；O-12c 补实际静态窗口清单（5 条）与冲突规则倾向。
 - 门：minix-boot 84、boot-shim 67、UEFI 双目标编译、riscv bootface QEMU PASS；lint 0。
+
+### 第二百四十四笔（01 阶段 · I-29 第三十六轮：PLIC 窗口与页域公式）
+
+代码 `f98d4edff`；主文档 519 → 548 行。**哈希更正**：第二百四十三笔的代码/文档落点恢复后为 `5a519b3f2` / `7d8a7c36a`（原记 `53755840b` / `b96cc6e06` 因合并误释放，已 cherry-pick）。
+
+- riscv64 PLIC 窗口 2 MiB → `0x24_0000`（覆盖 32 hart 的 M/S context）；QEMU DTB reg 为 `0xc000000+0x600000`。
+- `EFI_MEMORY_HOT_PLUGGABLE` 修正为 `0x0010_0000`（EDK2 头），负控用精确位值。
+- O-12c：PLIC/aarch64 窗口解释与版本绑定；O-12i：`RamSourcePageDomain`/`PMMExcluded`/`PMMAvailable` 公式与 MRB 双粒度；O-03：六行冲突规则；O-12j 仍标未闭合。
+- 门：minix-boot 84、boot-shim 67、UEFI 双目标编译、riscv bootface QEMU PASS；lint 0。
