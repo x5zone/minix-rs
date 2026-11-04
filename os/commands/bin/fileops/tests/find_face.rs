@@ -67,6 +67,16 @@ fn the_usage_line_carries_the_program_name_and_a_capital_usage() {
 }
 
 #[test]
+fn a_bad_regexp_reports_the_c_sentence_and_exits_one() {
+    // `c_regex_common` (`function.c:1588-1591`): the compile happens at
+    // plan build, so the errx line is the whole run — no walk output.
+    let (out, status, err) = run(&[".", "-regex", "["]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "find: regexp [: invalid regular expression\n");
+}
+
+#[test]
 fn the_wired_delete_leg_does_not_change_the_hosted_walk_face() {
     // A hosted run's `unlink`/`rmdir` go through the IPC stubs, and the
     // start path `.` is ignored outright (`function.c:521-524`), so the

@@ -222,6 +222,15 @@ pub enum Prim<'a> {
         /// Whether the terminator is `+` or `;`.
         plus: bool,
     },
+    /// `-regex`/`-iregex`: C compiles at plan build (`c_regex_common`,
+    /// `function.c:1571-1592`) with the pattern wrapped `^…$` — the compiled
+    /// program rides the node, so a bad regexp is a parse-time fatal and the
+    /// evaluation is one `is_match` over the whole path.
+    Regex {
+        icase: bool,
+        #[allow(clippy::large_enum_variant)]
+        pattern: minix_regex::pattern::Pattern,
+    },
 }
 
 /// One node of the expression tree.
@@ -326,6 +335,11 @@ pub enum FindError<'a> {
     /// first, then right), so `find . -o` reports "nothing on the left", not
     /// "nothing on the right".
     OrWithoutRight,
+    /// A `-regex`/`-iregex` pattern failed `regcomp` (`c_regex_common`'s
+    /// `errx(1, "regexp %s: %s", regexp, errbuf)`, `function.c:1588-1591`).
+    /// Carries the pattern and the fixed sentence standing in for C's
+    /// `regerror` text (this build's engine answers two shapes).
+    Regex(&'a str, &'static str),
 }
 
 /// Scan the global options, carve out the path section, and parse the rest as
@@ -426,7 +440,7 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Result<Parsed<'a>, FindError<'a>> {
 
     // `parse_plan` returns "does the expression contain an output-producing
     // entry", and the implicit `-print` is its negation (`find.c:115-133`).
-    let (expr, has_output) = parse_plan(rest)?;
+    let (expr, has_output) = parse_plan(rest, extended_regex)?;
     let needs_implicit_print = !has_output;
     Ok(Parsed {
         walk,
@@ -450,8 +464,15 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Result<Parsed<'a>, FindError<'a>> {
 /// "and" (`find.c:252`'s evaluation loop short-circuits along it), and `-o` is
 /// loosest and right-associative (`operator.c:252-257` hangs the whole
 /// remaining plan on the right branch).
-fn parse_plan<'a>(argv: &'a [&'a str]) -> Result<(Vec<Node<'a>>, bool), FindError<'a>> {
-    let mut cur = Cursor { argv, pos: 0 };
+fn parse_plan<'a>(
+    argv: &'a [&'a str],
+    extended_regex: bool,
+) -> Result<(Vec<Node<'a>>, bool), FindError<'a>> {
+    let mut cur = Cursor {
+        argv,
+        pos: 0,
+        extended_regex,
+    };
     let (nodes, produced) = cur.parse_or()?;
     if cur.pos != argv.len() {
         // The only possible stop is a `)`: a stray closing parenthesis.
@@ -463,6 +484,9 @@ fn parse_plan<'a>(argv: &'a [&'a str]) -> Result<(Vec<Node<'a>>, bool), FindErro
 struct Cursor<'a> {
     argv: &'a [&'a str],
     pos: usize,
+    /// `-E`'s dialect state (`regcomp_flags = REG_EXTENDED`, main.c:107):
+    /// the `-regex` wrap and compile need it at expression-parse time.
+    extended_regex: bool,
 }
 
 impl<'a> Cursor<'a> {
@@ -578,6 +602,44 @@ impl<'a> Cursor<'a> {
                 if entry.arity == Arity::One {
                     let arg = self.peek().ok_or(FindError::NeedsArguments(other))?;
                     self.pos += 1;
+                    // `c_regex_common` (`function.c:1571-1592`): compile at
+                    // plan build with the whole-path anchor wrapper — BRE
+                    // wraps `^\\(re\\)$` (the escapes make the anchors bind
+                    // the user's expression as one group), ERE wraps
+                    // `^(re)$`. The compiled program rides the node; the
+                    // engine answers two failure shapes standing in for C's
+                    // `regerror` sentences.
+                    if matches!(other, "-regex" | "-iregex") {
+                        let icase = other == "-iregex";
+                        let wrapped = if self.extended_regex {
+                            format!("^({arg})$")
+                        } else {
+                            format!("^\\({arg}\\)$")
+                        };
+                        let compiled = if self.extended_regex {
+                            if icase {
+                                minix_regex::pattern::compile_extended_icase(&wrapped)
+                            } else {
+                                minix_regex::pattern::compile_extended(&wrapped)
+                            }
+                        } else if icase {
+                            minix_regex::pattern::compile_basic_icase(&wrapped)
+                        } else {
+                            minix_regex::pattern::compile_basic(&wrapped)
+                        };
+                        let pattern = compiled.map_err(|e| {
+                            let sentence = match e {
+                                minix_regex::RegexError::TooComplex => "out of memory",
+                                minix_regex::RegexError::InvalidPattern => {
+                                    "invalid regular expression"
+                                }
+                            };
+                            // C's errx quotes the user's pattern, not the
+                            // option name (`function.c:1590`).
+                            FindError::Regex(arg, sentence)
+                        })?;
+                        return Ok((Some(Node::Leaf(Prim::Regex { icase, pattern })), produces));
+                    }
                     return Ok((
                         Some(Node::Leaf(Prim::Keyword { name: other, arg })),
                         produces,
@@ -1601,9 +1663,11 @@ pub fn judge_leaf<'a>(
         // Missing legs are refused by name and never silently answer false.
         // (`-exec`/`-execdir`/`-ok` never arrive here as keywords -- the
         // parser turns them into [`Prim::Exec`].)
-        "-fstype" | "-flags" | "-regex" | "-iregex" | "-newerest" | "-mindepth0" => {
+        "-fstype" | "-flags" | "-newerest" | "-mindepth0" => {
             Err(JudgeError::Unwired(String::from(name)))
         }
+        // (`-regex`/`-iregex` compile at parse time into `Prim::Regex` and
+        // never arrive here as keywords.)
         // `f_delete` (`function.c:518-561`): the start entry (`.`) is
         // ignored outright; directories go through `rmdir` (with
         // `ENOTEMPTY` silently tolerated) and everything else through
@@ -1684,7 +1748,9 @@ pub fn size_counts_bytes(nodes: &[Node<'_>]) -> bool {
 fn node_asks_bytes(node: &Node<'_>) -> bool {
     match node {
         Node::Leaf(Prim::Keyword { name, arg }) => *name == "-size" && arg.ends_with('c'),
-        Node::Leaf(Prim::Bare(_)) | Node::Leaf(Prim::Exec { .. }) => false,
+        Node::Leaf(Prim::Bare(_))
+        | Node::Leaf(Prim::Exec { .. })
+        | Node::Leaf(Prim::Regex { .. }) => false,
         Node::Not(inner) => node_asks_bytes(inner),
         Node::Paren(inner) => size_counts_bytes(inner),
         Node::Or { left, right } => size_counts_bytes(left) || size_counts_bytes(right),
@@ -1994,7 +2060,7 @@ mod judge_tests {
         // (`-exec`/`-execdir`/`-ok` have a production face now — their pins
         // live in the `Prim::Exec` tests; the `-user` family moved to the
         // account-seam tests and `-delete`/`-rm` to the write-seam tests.)
-        for name in ["-fstype", "-flags", "-regex", "-iregex"] {
+        for name in ["-fstype", "-flags"] {
             assert_eq!(
                 judge(&e, name, Some("x")),
                 Err(JudgeError::Unwired(String::from(name))),
@@ -2117,6 +2183,14 @@ fn eval_node(
         }
         Node::Leaf(Prim::Keyword { name, arg }) => {
             let outcome = judge_leaf(world, refs, entry, name, Some(arg), size_bytes)?;
+            let truth = outcome.truth;
+            note(outcome, entry, out);
+            Ok(truth)
+        }
+        Node::Leaf(Prim::Regex { pattern, .. }) => {
+            // `f_regex` (`function.c:1567`): one regexec over the whole
+            // path; the anchoring happened at compile time.
+            let outcome = Outcome::truthy(pattern.is_match(entry.path));
             let truth = outcome.truth;
             note(outcome, entry, out);
             Ok(truth)
@@ -2350,7 +2424,7 @@ fn delete_present(nodes: &[Node<'_>]) -> bool {
         Node::Leaf(Prim::Bare(name)) | Node::Leaf(Prim::Keyword { name, .. }) => {
             *name == "-delete" || *name == "-rm"
         }
-        Node::Leaf(Prim::Exec { .. }) => false,
+        Node::Leaf(Prim::Exec { .. }) | Node::Leaf(Prim::Regex { .. }) => false,
         Node::Not(inner) => delete_present(core::slice::from_ref(inner)),
         Node::Paren(inner) => delete_present(inner),
         Node::Or { left, right } => delete_present(left) || delete_present(right),
@@ -3593,6 +3667,52 @@ mod walk_tests {
         let got = run(&[".", "-rm"], &fs);
         assert_eq!(got.rval, 0);
         assert_eq!(fs.deleted.borrow().len(), 3);
+    }
+
+    // ── `-regex`/`-iregex` (`c_regex_common` + `f_regex`) ──
+
+    #[test]
+    fn regex_matches_the_whole_path_anchored() {
+        let fs = tree();
+        // BRE whole-path anchor: `a` alone does not match `./a` (the wrap
+        // makes it a full-string match), `\./a$`-shaped patterns do.
+        let got = run(&[".", "-regex", "./a"], &fs);
+        assert_eq!(got.emitted, vec!["./a\n"]);
+        let got = run(&[".", "-regex", "a"], &fs);
+        assert_eq!(got.emitted, Vec::<String>::new(), "未锚住的裸 a 不整串命中");
+        // A BRE group inside the user's pattern still works under the
+        // wrapper (`^\(./sub/b\)$`).
+        let got = run(&[".", "-regex", "./sub/b"], &fs);
+        assert_eq!(got.emitted, vec!["./sub/b\n"]);
+    }
+
+    #[test]
+    fn iregex_folds_case_and_e_switches_to_ere() {
+        let mut fs = tree();
+        fs.with_user("root", 0);
+        // `-iregex` folds the whole-path comparison.
+        let got = run(&[".", "-iregex", "./A"], &fs);
+        assert_eq!(got.emitted, vec!["./a\n"]);
+        // `-E` switches the dialect (an option, so it precedes the path):
+        // `+` becomes a quantifier — `./a+` then matches `./a`.
+        let got = run(&["-E", ".", "-regex", "./a+"], &fs);
+        assert_eq!(got.emitted, vec!["./a\n"]);
+        // Without -E the `+` is a literal in the BRE spelling.
+        let got = run(&[".", "-regex", "a+"], &fs);
+        assert_eq!(got.emitted, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_bad_regexp_is_fatal_at_parse_with_the_c_sentence_shape() {
+        // `c_regex_common`'s `errx(1, "regexp %s: %s")` fires at plan build:
+        // the parse itself fails before anything walks (the bin turns the
+        // error into the errx line; the face test pins that half).
+        let owned: Vec<String> = vec![String::from("."), String::from("-regex"), String::from("[")];
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        assert_eq!(
+            parse(&refs),
+            Err(FindError::Regex("[", "invalid regular expression"))
+        );
     }
 
     #[test]

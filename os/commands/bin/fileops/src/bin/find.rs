@@ -375,6 +375,12 @@ fn report_parse_error(prog: &str, e: &FindError<'_>) {
         FindError::NoTerminator(name) => {
             format!("{prog}: {name}: no terminating \";\" or \"+\"")
         }
+        // `function.c:1588-1591`: `errx(1, "regexp %s: %s", regexp, errbuf)`
+        // — the sentence stands in for C's `regerror` text (this engine
+        // answers two shapes; registered divergence).
+        FindError::Regex(pattern, sentence) => {
+            format!("{prog}: regexp {pattern}: {sentence}")
+        }
         // `function.c:668`: `errx(1, "-ok: terminating \"+\" not permitted.")` --
         // note the period at the end.
         FindError::OkWithPlus => format!("{prog}: -ok: terminating \"+\" not permitted."),

@@ -74,11 +74,7 @@ impl CharClass {
                 break;
             }
         }
-        if self.negated {
-            !inside
-        } else {
-            inside
-        }
+        if self.negated { !inside } else { inside }
     }
 }
 
@@ -127,6 +123,9 @@ pub struct Pattern {
     pub group_count: u8,
     /// True for the extended spelling, false for the basic spelling.
     pub extended: bool,
+    /// True for `REG_ICASE` (find's `-iregex`): literals and classes match
+    /// either case of an ASCII letter.
+    pub icase: bool,
 }
 
 impl Default for Pattern {
@@ -134,18 +133,16 @@ impl Default for Pattern {
         Pattern {
             insts: [Inst::Empty; MAX_INSTS],
             inst_count: 0,
-            classes: [
-                CharClass {
-                    ranges: [ByteRange { low: 0, high: 0 }; 12],
-                    range_count: 0,
-                    negated: false,
-                };
-                MAX_CLASSES
-            ],
+            classes: [CharClass {
+                ranges: [ByteRange { low: 0, high: 0 }; 12],
+                range_count: 0,
+                negated: false,
+            }; MAX_CLASSES],
             class_count: 0,
             start: 0,
             group_count: 0,
             extended: false,
+            icase: false,
         }
     }
 }
@@ -170,12 +167,23 @@ impl Captures {
 
 /// Compile `text` with the basic spelling (default and `-G`).
 pub fn compile_basic(text: &str) -> Result<Pattern, RegexError> {
-    compile(text, false)
+    compile(text, false, false)
 }
 
 /// Compile `text` with the extended spelling (`-E`).
 pub fn compile_extended(text: &str) -> Result<Pattern, RegexError> {
-    compile(text, true)
+    compile(text, true, false)
+}
+
+/// Compile `text` with the basic spelling and `REG_ICASE` (find's
+/// `-iregex` with default flags).
+pub fn compile_basic_icase(text: &str) -> Result<Pattern, RegexError> {
+    compile(text, false, true)
+}
+
+/// Compile `text` with the extended spelling and `REG_ICASE`.
+pub fn compile_extended_icase(text: &str) -> Result<Pattern, RegexError> {
+    compile(text, true, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +212,7 @@ struct Compiler<'a> {
     repeatable: Option<Inst>,
 }
 
-fn compile(text: &str, extended: bool) -> Result<Pattern, RegexError> {
+fn compile(text: &str, extended: bool, icase: bool) -> Result<Pattern, RegexError> {
     if text.is_empty() {
         return Err(RegexError::InvalidPattern);
     }
@@ -216,6 +224,7 @@ fn compile(text: &str, extended: bool) -> Result<Pattern, RegexError> {
         repeatable: None,
     };
     compiler.pattern.extended = extended;
+    compiler.pattern.icase = icase;
     let frag = compiler.parse_alt()?;
     if compiler.pos != compiler.bytes.len() {
         return Err(RegexError::InvalidPattern);
@@ -482,7 +491,10 @@ impl Compiler<'_> {
         let exit = self.emit(Inst::Jump(255))?;
         let split = self.emit(Inst::Split(body.start, exit))?;
         self.close(body.open, split);
-        Ok(Frag { start: split, open: exit })
+        Ok(Frag {
+            start: split,
+            open: exit,
+        })
     }
 
     /// `body+`: one mandatory pass, then the star loop over the same body.
@@ -501,7 +513,10 @@ impl Compiler<'_> {
         let exit = self.emit(Inst::Jump(255))?;
         let split = self.emit(Inst::Split(body.start, exit))?;
         self.close(body.open, exit);
-        Ok(Frag { start: split, open: exit })
+        Ok(Frag {
+            start: split,
+            open: exit,
+        })
     }
 
     fn parse_atom(&mut self) -> Result<Option<Frag>, RegexError> {
@@ -535,7 +550,7 @@ impl Compiler<'_> {
             // Leading repetition operator: literal, per long standing
             // Unix practice.
             self.pos += 1;
-            return Ok(Some(self.atom(Inst::Byte(byte))?));
+            return Ok(Some(self.byte_atom(byte)?));
         }
         match byte {
             b'^' => {
@@ -561,7 +576,7 @@ impl Compiler<'_> {
             b'\\' => self.parse_escape(),
             _ => {
                 self.pos += 1;
-                Ok(Some(self.atom(Inst::Byte(byte))?))
+                Ok(Some(self.byte_atom(byte)?))
             }
         }
     }
@@ -626,7 +641,35 @@ impl Compiler<'_> {
                 _ => {}
             }
         }
-        self.atom(Inst::Byte(byte)).map(Some)
+        self.byte_atom(byte).map(Some)
+    }
+
+    /// Emit one literal byte, folding the case when the pattern is icase:
+    /// an ASCII letter becomes a two-range class over both cases (the
+    /// compiler's own `REG_ICASE` shape — POSIX folds literals too).
+    fn byte_atom(&mut self, byte: u8) -> Result<Frag, RegexError> {
+        if !self.pattern.icase || !byte.is_ascii_alphabetic() {
+            return self.atom(Inst::Byte(byte));
+        }
+        let swapped = if byte.is_ascii_lowercase() {
+            byte.to_ascii_uppercase()
+        } else {
+            byte.to_ascii_lowercase()
+        };
+        let mut class = CharClass {
+            ranges: [ByteRange { low: 0, high: 0 }; 12],
+            range_count: 0,
+            negated: false,
+        };
+        Self::push_range(&mut class, byte, byte)?;
+        Self::push_range(&mut class, swapped, swapped)?;
+        let index = self.pattern.class_count;
+        if index as usize >= MAX_CLASSES {
+            return Err(RegexError::TooComplex);
+        }
+        self.pattern.class_count += 1;
+        self.pattern.classes[index as usize] = class;
+        self.atom(Inst::Class(index))
     }
 
     fn parse_class(&mut self) -> Result<u8, RegexError> {
@@ -676,6 +719,37 @@ impl Compiler<'_> {
         if class.range_count == 0 {
             return Err(RegexError::InvalidPattern);
         }
+        // `REG_ICASE` folds the class too: a same-case alphabetic range
+        // gains its case-swapped mirror (`[a-z]` also matches `A-Z`).
+        // Mixed-case or non-alphabetic ranges stay as written; the twelve
+        // range slots bound how much can be added and overflow is
+        // `TooComplex` like any other capacity end.
+        if self.pattern.icase {
+            let mut added: [Option<ByteRange>; 12] = [None; 12];
+            let mut added_count = 0usize;
+            for range in class.ranges[..class.range_count as usize].iter() {
+                if range.low.is_ascii_alphabetic()
+                    && range.high.is_ascii_alphabetic()
+                    && range.low.is_ascii_lowercase() == range.high.is_ascii_lowercase()
+                {
+                    let swap = |b: u8| {
+                        if b.is_ascii_lowercase() {
+                            b.to_ascii_uppercase()
+                        } else {
+                            b.to_ascii_lowercase()
+                        }
+                    };
+                    added[added_count] = Some(ByteRange {
+                        low: swap(range.low),
+                        high: swap(range.high),
+                    });
+                    added_count += 1;
+                }
+            }
+            for range in added.into_iter().flatten() {
+                Self::push_range(&mut class, range.low, range.high)?;
+            }
+        }
         if self.pattern.class_count as usize >= MAX_CLASSES {
             return Err(RegexError::TooComplex);
         }
@@ -718,11 +792,7 @@ impl Pattern {
     /// Byte based leftmost match at or after `from`, or `None`. Positions
     /// are always byte valid (no string slicing inside), so command layers
     /// walking a line match by match cannot panic on multibyte text.
-    pub fn find_bytes(
-        &self,
-        bytes: &[u8],
-        from: usize,
-    ) -> Option<(usize, usize, Captures)> {
+    pub fn find_bytes(&self, bytes: &[u8], from: usize) -> Option<(usize, usize, Captures)> {
         let mut start = from.min(bytes.len());
         while start <= bytes.len() {
             if let Some((end, caps)) = self.anchored_longest(bytes, start) {
@@ -816,9 +886,7 @@ impl Pattern {
                             bytes.len(),
                         );
                     }
-                    Inst::Class(index)
-                        if self.classes[index as usize].contains(byte) =>
-                    {
+                    Inst::Class(index) if self.classes[index as usize].contains(byte) => {
                         Self::add_thread(
                             self,
                             &mut next,
@@ -839,14 +907,14 @@ impl Pattern {
             current_len = next_len;
             next_len = 0;
             Self::add_start(
-            self,
-            &mut current,
-            &mut current_len,
-            pos,
-            &mut visited,
-            pos as u64 * 2 + 2,
-            bytes.len(),
-        );
+                self,
+                &mut current,
+                &mut current_len,
+                pos,
+                &mut visited,
+                pos as u64 * 2 + 2,
+                bytes.len(),
+            );
         }
     }
 
@@ -947,9 +1015,7 @@ impl Pattern {
                             bytes.len(),
                         );
                     }
-                    Inst::Class(index)
-                        if self.classes[index as usize].contains(byte) =>
-                    {
+                    Inst::Class(index) if self.classes[index as usize].contains(byte) => {
                         Self::add_thread(
                             self,
                             &mut next,
@@ -1113,10 +1179,7 @@ mod tests {
         let pattern = compile_basic("^hello$").unwrap();
         assert!(pattern.is_full_match("hello"));
         assert!(!pattern.is_full_match("hello!"));
-        assert_eq!(
-            pattern.find("hello").map(|(s, e, _)| (s, e)),
-            Some((0, 5))
-        );
+        assert_eq!(pattern.find("hello").map(|(s, e, _)| (s, e)), Some((0, 5)));
         assert!(!compile_basic("^hello$").unwrap().is_match("say hello"));
     }
 
@@ -1361,5 +1424,38 @@ mod tests {
         // cat inside concat), the second is a word boundary -> take the
         // latter.
         assert_eq!(cat.find_word("concat cat"), Some((7, 10)));
+    }
+    #[test]
+    fn icase_folds_literals_and_classes() {
+        // A literal folds (`REG_ICASE` on literals): the engine scans, so
+        // the folded needle answers inside the haystack.
+        assert!(
+            compile_basic_icase("hello")
+                .unwrap()
+                .is_match("say HELLO there")
+        );
+        assert!(!compile_basic("hello").unwrap().is_match("say HELLO there"));
+        // A class folds wholesale (`[a-z]` matches `A-Z`).
+        assert!(compile_basic_icase("[a-z]").unwrap().is_match("ABC"));
+        assert!(!compile_basic("[a-z]").unwrap().is_match("ABC"));
+        // Non-letters keep their faces.
+        assert!(
+            compile_basic_icase("1[2-4]3")
+                .unwrap()
+                .is_match("one 133 two")
+        );
+        // The extended spelling folds the same way (`+` needs ERE).
+        assert!(compile_extended_icase("[a-z]+").unwrap().is_match("ABC"));
+        assert!(!compile_extended("[a-z]+").unwrap().is_match("ABC"));
+    }
+
+    #[test]
+    fn icase_wrapped_anchor_shape_matches_find_usage() {
+        // find wraps the pattern `^\\(re\\)$` (BRE) before compiling; an
+        // icase compile then answers the whole-path question.
+        let wrapped = "^\\(hello world\\)$";
+        let p = compile_basic_icase(wrapped).unwrap();
+        assert!(p.is_match("HELLO WORLD"));
+        assert!(!p.is_match("xHELLO WORLD"));
     }
 }
