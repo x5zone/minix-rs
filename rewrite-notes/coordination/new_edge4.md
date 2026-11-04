@@ -5198,3 +5198,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-03：`no-map` 三分（禁止标准映射、禁止非受控推测、受控驱动使用）与 MRB 部分页规则。
 - O-12j 标不签并给出 `fdt 0.1.5` 行为；O-12g 补排除原因多重归属；§6 基线四条命令。
 - 门：minix-boot 84、boot-shim 67、UEFI 双目标编译、riscv bootface QEMU PASS；lint 0。
+
+### 第二百四十六笔（01 阶段 · I-29 第三十八轮：DTB 首访边界与范围四层化）
+
+代码 `a52cfee54`；主文档 573 → 607 行。
+
+- DTB 指针先验 8 字节对齐、totalsize 40 B–64 MiB 上限与 checked；三处 boot 面接入。
+- O-12c 四层范围；IO-APIC/LAPIC 独立包络；PLIC 绑定 QEMU/accel/CPU/-smp/S-mode 配置。
+- O-12i 页集合类型；O-12g 补 `/memory` 重叠与保留不输出区间描述符；O-06 Runtime 边界；O-05 硬件同步；§1.5 PMA/MTRR。
+- O-12h 精度；O-12j `fdt 0.1.5` 核对结果；§6 基线统一 86/67；§7 六组。
+- 过程更正：第三十七轮正文补丁在 reset 恢复时丢失，本轮补回；教训「reset 后重放全部补丁」。
+- 门：minix-boot 86、boot-shim 67、riscv/aarch64 编译、riscv bootface QEMU PASS；lint 0。

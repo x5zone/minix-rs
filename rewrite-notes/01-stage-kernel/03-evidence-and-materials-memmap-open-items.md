@@ -212,6 +212,14 @@
 | PLIC 资源 0x24_0000、包络 0x40_0000 | `PLIC_RESOURCE_LEN` / `PLIC_WINDOW_LEN` 与两条编译期断言 | `grep -n -e PLIC_RESOURCE_LEN -e PLIC_WINDOW_LEN os/arch/src/lib.rs` |
 | 包络仍在 QEMU aperture 内 | `reg` 为 `0xc000000 + 0x600000` | `dtc -I dtb -O dts /tmp/p1.dtb`（见 一k） |
 
+## 一m、第三十八轮读数（DTB 首访与 fdt 库边界）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 指针 8 字节对齐 | `dtb_blob_aligned` + 两个宿主测试；三处 boot 面在首次解引用前检查 | `grep -n "dtb_blob_aligned" os/libs/minix-boot/src/lib.rs os/kernel-image/src/bootface.rs os/kernel-image/src/bootface_a64.rs os/boot-shim/src/opensbi_helpers.rs` |
+| totalsize 上限 | `dtb_len_ok`（40 B–64 MiB）；OpenSBI 腿另加 checked 加法 | `grep -n -e dtb_len_ok -e checked_add os/boot-shim/src/opensbi_helpers.rs` |
+| `fdt 0.1.5` 的校验范围 | `Fdt::new` 仅查 magic 与 `data.len() >= totalsize`；`memory_reservations()` 直接按 `off_mem_rsvmap` 切分，无对齐/偏移边界检查 | `sed -n "175,205p" /home/xzhao/.cargo/registry/src/*/fdt-0.1.5/src/lib.rs`；`sed -n "243,260p" .../fdt-0.1.5/src/lib.rs` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |

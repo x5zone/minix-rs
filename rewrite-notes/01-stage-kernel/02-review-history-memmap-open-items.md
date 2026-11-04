@@ -10,6 +10,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第三十八轮评审之后：DTB 首访边界 + 范围四层化 + 证据基线统一）**
+
+- **代码 `a52cfee54`**：`minix-boot` 新增 `dtb_blob_aligned` / `dtb_len_ok`（40 B–64 MiB）；riscv/aarch64 bootface 与 OpenSBI 腿在首次解引用前检查 8 字节对齐；OpenSBI 腿补 `totalsize` 上限与 checked 加法（先验证 totalsize 再建切片）。minix-boot 86、boot-shim 67；riscv bootface QEMU PASS。
+- **文档**：O-12c 改四层（`DeviceAperture` / `DeviceRequiredAccessRange` / `DeviceWindowPolicy` / `DeviceMappingCoverage`），IO-APIC 与 LAPIC 写成两个相邻包络，PLIC 范围绑定 QEMU/accel/CPU/`-smp`/S-mode 配置；O-12i 声明所有 `PMM*` 为 4 KiB 页集合、资格变化由显式事件触发；O-12g 补 `/memory` 重叠规则与「原始记录保留 `UNUSABLE` 等不输出区间描述符」；O-06 声明第一版不提供 Runtime Services；O-05 补「政策审计 ≠ 硬件同步」；§1.5 补 PMA 机器绑定与 MTRR 逐核；O-12h 补 `VirtualStart=0`、双末端 u128、缓冲区长度；O-12j 写入 `fdt 0.1.5` 的逐条核对结果（只查 magic/长度，不查对齐与偏移边界）；O-11 改「四条 DTB 输入路径」并写明 40 字节 header + 对齐先于读取；§6 基线统一为 `a52cfee54`/86/67 并列四条复核命令；§7 改为六个阻塞组。
+- **过程更正**：第三十七轮的正文补丁（O-12j/O-12g/§6/§7）在「reset 后只重放 docA」的恢复操作中丢失，本轮已补回；教训记入：reset 后必须重放**全部**补丁，不能只重放最后一个。
+- **门**：minix-boot 86、boot-shim 67；riscv/aarch64 目标编译；riscv bootface QEMU PASS。
+
 **本轮（第三十七轮评审之后：PMM 分区公式补全 + 设备映射包络）**
 
 - **代码 `9b2b09f1c`**：PLIC 授权范围改为 **2 MiB 叶子包络** `0x40_0000`（资源 `0x24_0000` 单独保留为 `PLIC_RESOURCE_LEN`），并加编译期断言「2 MiB 对齐 + 不越 QEMU 6 MiB aperture」。
