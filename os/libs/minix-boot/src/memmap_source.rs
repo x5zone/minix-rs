@@ -145,18 +145,39 @@ pub enum SourceKind {
     ReservedNoMap,
 }
 
+/// Whether a record is declared by the input object or derived by this project.
+/// The distinction matters for audit: a derived prefix must not read as a
+/// firmware-declared reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceClass {
+    /// Declared by the input object itself (`/memory`, `reg`, MRB entry).
+    InputDeclaration,
+    /// Derived from an input fact plus a boot parameter (`firmware_reserve_end`).
+    DerivedReservation,
+}
+
+impl SourceKind {
+    pub const fn class(self) -> SourceClass {
+        match self {
+            SourceKind::FirmwarePrefix => SourceClass::DerivedReservation,
+            _ => SourceClass::InputDeclaration,
+        }
+    }
+}
+
 /// Where inside the input object a record came from. Two declarations of the
 /// same range must stay distinguishable, so identity is not the byte range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceOrigin {
-    /// A `/memory` (or `/memory@<unit>`) node.
-    MemoryNode,
-    /// The firmware prefix derived from a `/memory` span.
-    FirmwarePrefix,
-    /// The Nth memory reservation block entry (0-based, terminator excluded).
+    /// The `node`-th `/memory` node (0-based, document order), `reg` tuple `reg`.
+    MemoryNode { node: u16, reg: u16 },
+    /// Derived by this project from the `/memory` record `memory_id`.
+    FirmwarePrefix { memory_id: u16 },
+    /// The `entry`-th memory reservation block entry (0-based, terminator
+    /// excluded).
     MrbEntry(u16),
-    /// The Nth child of `/reserved-memory` (0-based, document order).
-    ReservedMemoryChild(u16),
+    /// The `node`-th `/reserved-memory` child, `reg` tuple `reg`.
+    ReservedMemoryChild { node: u16, reg: u16 },
 }
 
 /// One declared physical range, kept **unclipped and unrounded**: a `no-map`
@@ -180,7 +201,7 @@ pub struct SourceRecord {
 static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
     id: 0,
     kind: SourceKind::Memory,
-    origin: SourceOrigin::MemoryNode,
+    origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
     raw_start: 0,
     raw_end: 0,
 }; DTB_SOURCE_MAX];
@@ -438,7 +459,7 @@ impl DtbMemoryMap<'_> {
         let mut sources = [SourceRecord {
             id: 0,
             kind: SourceKind::Memory,
-            origin: SourceOrigin::MemoryNode,
+            origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
             raw_start: 0,
             raw_end: 0,
         }; DTB_SOURCE_MAX];
@@ -460,11 +481,14 @@ impl DtbMemoryMap<'_> {
         // 1. The `/memory` panorama, with the firmware-resident prefix moved to
         //    the reserved table: those pages are reachable from the first
         //    instruction and are never reallocated.
+        let mut memory_node_ordinal: u16 = 0;
         for node in self.fdt.all_nodes() {
             // `/memory` or `/memory@80000000` (the unit-address variant).
             if node.name.split('@').next() != Some("memory") {
                 continue;
             }
+            let node_ordinal = memory_node_ordinal;
+            memory_node_ordinal = memory_node_ordinal.wrapping_add(1);
             // Missing `status` means "okay"; anything else describes memory
             // the node itself says is not usable, so it cannot be RAM.
             let status_ok = match node.property("status") {
@@ -480,13 +504,14 @@ impl DtbMemoryMap<'_> {
                 return Err(DtbMemMapError::HotpluggableMemoryUnsupported);
             }
             let Some(regs) = node.reg() else { continue };
-            for region in regs {
+            for (reg_index, region) in regs.enumerate() {
                 let start = region.starting_address as u64;
                 let len = match region.size {
                     Some(s) if s != 0 => s as u64,
                     _ => continue,
                 };
                 start.checked_add(len).ok_or(DtbMemMapError::RangeOverflow)?;
+                let memory_id = sources_n as u16;
                 push_span(
                     &mut memory,
                     &mut memory_n,
@@ -498,7 +523,7 @@ impl DtbMemoryMap<'_> {
                     &mut sources,
                     &mut sources_n,
                     SourceKind::Memory,
-                    SourceOrigin::MemoryNode,
+                    SourceOrigin::MemoryNode { node: node_ordinal, reg: reg_index as u16 },
                     (start, start + len),
                 )?;
                 if let Some((free_start, free_len)) =
@@ -525,7 +550,7 @@ impl DtbMemoryMap<'_> {
                         &mut sources,
                         &mut sources_n,
                         SourceKind::FirmwarePrefix,
-                        SourceOrigin::FirmwarePrefix,
+                        SourceOrigin::FirmwarePrefix { memory_id },
                         (start, start + prefix_len),
                     )?;
                 }
@@ -623,7 +648,7 @@ impl DtbMemoryMap<'_> {
                 if no_map && reusable {
                     return Err(DtbMemMapError::ConflictingReservationAttributes);
                 }
-                for region in regs {
+                for (reg_index, region) in regs.enumerate() {
                     let len = match region.size {
                         Some(s) if s != 0 => s as u64,
                         _ => continue,
@@ -639,7 +664,10 @@ impl DtbMemoryMap<'_> {
                         } else {
                             SourceKind::ReservedOrdinary
                         },
-                        SourceOrigin::ReservedMemoryChild(child_index as u16),
+                        SourceOrigin::ReservedMemoryChild {
+                            node: child_index as u16,
+                            reg: reg_index as u16,
+                        },
                         (
                             region.starting_address as u64,
                             region.starting_address as u64 + len,
@@ -1021,7 +1049,7 @@ mod tests {
             .find(|r| r.kind == SourceKind::ReservedNoMap)
             .expect("no-map declaration keeps its record");
         assert_eq!((record.raw_start, record.raw_end), (0x8000_4000, 0x8000_5000));
-        assert_eq!(record.origin, SourceOrigin::ReservedMemoryChild(0));
+        assert_eq!(record.origin, SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 });
     }
 
     #[test]
@@ -1137,6 +1165,84 @@ mod tests {
             matches!(result, Err(DtbMemMapError::TooManyReservedRegions)),
             "expected the declaration cap, got {result:?}"
         );
+    }
+
+    #[test]
+    fn dtb_declaration_cap_is_shared_across_reservation_kinds() {
+        // Ordinary, `reusable` and `no-map` declarations draw from one cap:
+        // three of each (nine total) must be refused even though no single kind
+        // reaches eight.
+        let rows: Vec<ReservedRow> = (0..3)
+            .flat_map(|i| {
+                let base = 0x9000_0000 + i as u64 * 0x1_0000;
+                [
+                    ReservedRow { base, size: 0x1000, no_map: false, reusable: false },
+                    ReservedRow { base: base + 0x2000, size: 0x1000, no_map: false, reusable: true },
+                    ReservedRow { base: base + 0x4000, size: 0x1000, no_map: true, reusable: false },
+                ]
+            })
+            .collect();
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        assert!(
+            matches!(result, Err(DtbMemMapError::TooManyReservedRegions)),
+            "expected one shared cap, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn dtb_source_capacity_is_reachable_at_exactly_forty() {
+        // 8 `/memory` spans + 8 prefixes (fw_end covers every span start) +
+        // 16 MRB entries + 8 declarations = 40 records, exactly the buffer.
+        let memory: Vec<(u64, u64)> =
+            (0..DTB_MEMMAP_MAX).map(|i| (0x8000_0000 + i as u64 * 0x1000, 0x1000)).collect();
+        let memrsv: Vec<(u64, u64)> =
+            (0..DTB_MRB_MAX).map(|i| (0x9000_0000 + i as u64 * 0x2000, 0x1000)).collect();
+        let rows: Vec<ReservedRow> = (0..DTB_MEMMAP_MAX)
+            .map(|i| ReservedRow {
+                base: 0xA000_0000 + i as u64 * 0x2000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            })
+            .collect();
+        let blob = build_fdt_ex(&memory, true, &rows, &memrsv, 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0x8000_8000)
+            .collect_with_sources()
+            .expect("capacity is exactly enough");
+        assert_eq!(sources.len(), DTB_SOURCE_MAX);
+        let count = |kind: SourceKind| sources.iter().filter(|r| r.kind == kind).count();
+        assert_eq!(count(SourceKind::Memory), DTB_MEMMAP_MAX);
+        assert_eq!(count(SourceKind::FirmwarePrefix), DTB_MEMMAP_MAX);
+        assert_eq!(count(SourceKind::MrbEntry), DTB_MRB_MAX);
+        assert_eq!(count(SourceKind::ReservedOrdinary), DTB_MEMMAP_MAX);
+    }
+
+    #[test]
+    fn dtb_firmware_prefix_links_to_its_memory_record() {
+        // The prefix is derived, not declared: its origin must name the
+        // `/memory` record it was cut from.
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &[], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (_, _, sources) =
+            DtbMemoryMap::new(&fdt, 0x8000_4000).collect_with_sources().expect("map fits");
+        let prefix = sources
+            .iter()
+            .find(|r| r.kind == SourceKind::FirmwarePrefix)
+            .expect("prefix record exists");
+        assert_eq!(prefix.kind.class(), SourceClass::DerivedReservation);
+        let SourceOrigin::FirmwarePrefix { memory_id } = prefix.origin else {
+            panic!("prefix origin must name its source record");
+        };
+        let memory = sources
+            .iter()
+            .find(|r| r.id == memory_id)
+            .expect("prefix points at a live record");
+        assert_eq!(memory.kind, SourceKind::Memory);
+        assert_eq!(memory.raw_start, prefix.raw_start);
+        assert_eq!(memory.kind.class(), SourceClass::InputDeclaration);
     }
 
     #[test]
