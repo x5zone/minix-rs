@@ -42,3 +42,18 @@ rustflags = ["-C", "relocation-model=static", "-C", "code-model=large"]
 # 用户载荷（x86_64-unknown-none）本就是 soft-float 目标，不受影响。
 [target.x86_64-unknown-uefi]
 rustflags = ["-C", "target-feature=-sse,-sse2,-mmx"]
+
+# Early boot executes before every block of the image is reachable through the
+# active translation; a compiler-generated jump table in `.rodata` can make an
+# indirect branch land on an unmapped address (observed as a RISC-V instruction
+# access fault inside the FDT pre-scan). Disable jump tables for this target and
+# keep the C runtime, if a dependency ever needs it, out of the early path.
+[target.riscv64gc-unknown-none-elf]
+rustflags = ["-C", "jump-tables=no"]
+
+# Same early-boot reason as the riscv64 section: the direct-boot face calls the
+# FDT pre-scan before every image page is reachable. The FPU flags are repeated
+# here because a target-scoped config replaces the default when no RUSTFLAGS is
+# injected (the image builder injects both itself).
+[target.aarch64-unknown-none]
+rustflags = ["-C", "jump-tables=no", "-C", "target-feature=-neon,-fp-armv8"]

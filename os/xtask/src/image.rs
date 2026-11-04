@@ -983,10 +983,16 @@ pub fn execute(actions: &[Action], dry_run: bool) -> Result<()> {
                 let is_riscv64 = args.iter().any(|a| a.contains("riscv64"));
                 if is_kernel_image && (is_aarch64 || is_riscv64)
                 {
+                    // `jump-tables=no`: the early boot path executes before
+                    // every image page is reachable through the active
+                    // translation, and a table-driven `jr` through `.rodata`
+                    // faults there (observed as a RISC-V instruction access
+                    // fault inside the FDT pre-scan). An explicit RUSTFLAGS
+                    // overrides the target config, so the flag has to be here.
                     let flag = if is_aarch64 {
-                        "-C target-feature=-neon,-fp-armv8"
+                        "-C target-feature=-neon,-fp-armv8 -C jump-tables=no"
                     } else {
-                        "-C target-feature=-f,-d"
+                        "-C target-feature=-f,-d -C jump-tables=no"
                     };
                     let rustflags = "RUSTFLAGS";
                     let prior = std::env::var(rustflags).unwrap_or_default();

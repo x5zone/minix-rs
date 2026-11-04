@@ -5247,3 +5247,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-12j-b 预扫尝试：真实 DTB 上 `fault_fetch`（cause=1，`epc` 在 `validate_structure` 的 `jr`）；`match`/比较链都被 LLVM 变成 `.rodata` 跳转表，早期映射不覆盖该绝对地址；已回退并登记方向（移到分页后 / 无跳转表编译形态）。
 - 文档：O-12c 平台窗口资源清单与政策字段；O-06 属性三分（WP≠RO、SP 不产生禁令）与 CONVENTIONAL 的 WB 条件；O-12i `PageBytes` 修正；§2.7 复核口径；§6 104/67。
 - 门：minix-boot 104、boot-shim 67、riscv 与 aarch64 UEFI QEMU 双 PASS；lint 0。
+
+### 第二百五十一笔（01 阶段 · I-29 第四十三轮：预扫落地，早期执行禁用跳转表）
+
+代码 `0464a1e5c`；主文档 666 → 677 行。
+
+- 结构块预扫落地（27 条测试）；`validate_structure` 反汇编无表驱动 jr。
+- 关键修正：本工具链选项是 `-C jump-tables=no`（非 `no-jump-tables`）；RUSTFLAGS 覆盖 config，故 xtask 注入 + config 双写；aarch64 直启目标同配。
+- 新合同 EarlyExecutionClosure（指令 ∪ 只读数据依赖 ∪ 可写状态）。
+- O-12i 半开区间、§2.1 调用链、PLIC 段落合并、§6 113/67。
+- 门：minix-boot 113、boot-shim 67、两 QEMU 腿 PASS；lint 0。

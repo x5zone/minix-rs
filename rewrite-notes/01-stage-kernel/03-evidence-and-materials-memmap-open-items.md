@@ -256,6 +256,16 @@
 | 预扫的失败形态 | riscv bootface `fault_fetch`，`cause=1`，`epc=0xffffffc000032330`（`validate_structure` 的 `jr`） | `qemu-system-riscv64 ... -d int -D /tmp/q.log` 后看 `riscv_cpu_do_interrupt` |
 | 根因 | `riscv64-linux-gnu-objdump` 显示 token 分派被编译为 `.rodata` 跳转表 + `jr`；该阶段执行的映射不覆盖跳转表绝对地址 | 同左 + `nm \| grep switch.table` |
 
+## 一r、第四十三轮读数（跳转表禁用与预扫落地）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 选项拼写 | rustc 1.94.1 提供 `-C jump-tables=val`（默认 yes），没有 `no-jump-tables` | `rustc -C help \| grep jump` |
+| 构建注入 | xtask 对 kernel-image 的 aarch64/riscv 注入 `RUSTFLAGS`，现含 `-C jump-tables=no` | `grep -n "jump-tables=no" os/xtask/src/image.rs os/.cargo/config.toml` |
+| 机器码证据 | `validate_structure` 反汇编只剩直接 `jalr`，无表驱动 `jr` | `riscv64-linux-gnu-objdump -d --start-address=<fn> ...` |
+| 反面证据 | 去掉选项时 bootface `fault_fetch`（cause=1，`epc` 在 `validate_structure` 的 `jr`） | 上一轮 QEMU `-d int` 读数 |
+| 引导门 | riscv bootface 与 aarch64 UEFI 均 PASS | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh`、`test-shim-bootmarks-aarch64.sh` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |
