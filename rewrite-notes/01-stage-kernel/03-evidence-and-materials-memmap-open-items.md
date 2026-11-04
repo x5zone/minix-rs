@@ -894,3 +894,13 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 快照身份 | UEFI `InputObjectId = MapSnapshotId`；Preflight 不产记录；重试整体废弃 |
 | 容量失败 | 三位置三分；仅 EBS 后重取坚持不扩容 |
 | 门 | 无代码改动；沿用 minix-boot **132**、boot-shim **70**；lint 0 |
+
+## 三十一、第五十九轮：纯文档
+
+| 项 | 结论 |
+|---|---|
+| O-06 可达性 | 当前只有 `RUNTIME` 可达；NV/SP 均 fail-closed（旧句已撤） |
+| 属性矩阵 | 三列九项完整表；PDF 低位 `0x100–0x800` 落未知位 |
+| PMM | 补 `ArchMemoryAccessEligiblePages`；`WbConfigurablePages` 表能力；平台拒绝单列 |
+| `/reserved-memory` | cells/`ranges` 拒绝为项目输入子集，非 DTSpec 格式错误 |
+| 门 | 无代码改动；沿用 minix-boot **132**、boot-shim **70**；lint 0 |

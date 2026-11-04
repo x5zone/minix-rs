@@ -5396,3 +5396,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - profile 解锁需两步（钉 profile + 改无条件拒绝）；O-12k 缓冲失败三分；UEFI 快照级来源身份（`MapSnapshotId`）。
 - §2.2 修正为 70 条并注明 NV/SP 分支不可达；术语统一。
 - 门：沿用 minix-boot 132、boot-shim 70；lint 0。
+
+### 第二百六十七笔（01 阶段 · I-29 第五十九轮：纯文档）
+
+无代码改动；主文档约 1007 行。
+
+- O-06：只有 `RUNTIME` 可达（NV/SP fail-closed）；属性矩阵三列九项；末段旧证据句更正。
+- PMM：加 `ArchMemoryAccessEligiblePages`，WB 改称能力项，平台拒绝单列；全 hart 最低条件。
+- `/reserved-memory` 的 cells/`ranges` 拒绝标注为项目输入子集。
+- 门：沿用 minix-boot 132、boot-shim 70；lint 0。

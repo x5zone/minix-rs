@@ -10,6 +10,14 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十九轮评审之后：纯文档——属性可达性、PMM 硬件准入、输入子集）**
+
+- **O-06 两处旧句修正**：`RUNTIME`/`NV`/`SP` 不再写成「都已进入六步裁决」——模型保留三种语义，但当前可达的只有 `RUNTIME`；`SP` 的高位 `0x4_0000` 属 `ProfileAttribute` 拒绝域、低位属冲突域，同样不可达。同段末尾「三个已发布文本与 EDK2 不一致」一并更正。
+- **属性完整矩阵**：按 UEFI 2.10 原始版 / 2.10 Errata A·2.11 PDF / EDK2 三列列出 `WP`–`HOT_PLUGGABLE` 九项，并标出本项目处置（冲突域拒绝 / `ProfileAttribute` / 未知位）。
+- **PMM 公式补硬件准入**（方案 B）：新增 `ArchMemoryAccessEligiblePages(p)`（架构语义结果，x86 PAT×MTRR、AArch64 MAIR、RISC-V PMA/PMP），`CacheAttributeEligiblePages` 更名 `WbConfigurablePages` 并明确「能力 ≠ 有效类型」；`PlatformAllocationDenials` 只保留平台策略拒绝。补「全 hart 最低访问条件」适用范围。
+- **`/reserved-memory` 的 cells/`ranges` 拒绝**标注为**项目输入子集**：DTSpec 要求二者存在、`ranges` 应当为空；不同/非空不是格式错误，而是当前没有转换路径。
+- 本轮无代码改动：公式与命名都只是设计合同；`SourceRef`/`MapSnapshotId`、架构准入集合仍是未实现。
+
 **本轮（第五十八轮评审之后：纯文档——属性证据更正、快照身份、容量失败）**
 
 - **属性证据更正**：`RO/SP/CPU_CRYPTO` 在 **UEFI 2.10 原始发布版**就是 `0x2_0000/0x4_0000/0x8_0000`；2.10 Errata A 与 2.11 PDF 才移到低位。上一轮「已发布规范没有这三个位置」的说法**撤回**；profile 门控保留，理由改为「无法从 `uefi-raw` 常量判断启动固件采用哪一版编码」，且 profile 必须同时钉住低位组与高位组。

@@ -84,7 +84,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | 来源 | 解析内容 | 拒绝条件 |
 |---|---|---|
 | `/memory` | 全树枚举 + `reg()`，支持 unit-address 与多段 | 单表超过 8 段（`TooManyFreeRegions` / `TooManyReservedRegions`）；回绕（`RangeOverflow`） |
-| `/reserved-memory` | 路径查找 + 可见性交叉检查；父节点的 `#address-cells`/`#size-cells` 必须存在**且与根节点取值相同**；`ranges` 必须存在且为空；子节点必须有可解析 `reg`；`no-map`/`reusable` 必须是**空属性**；两者互斥 | 缺 `reg`、宽 cells、缺 cells 属性（`UnsupportedReservedDeclaration`）；`ranges` 非空或缺失（`ReservedMemoryRangesNotEmpty`）；同时声明 `no-map` 与 `reusable`（`ConflictingReservationAttributes`）；标记属性带非空值（`NonEmptyReservationAttribute`）；声明重叠（`OverlappingReservedRanges`）；节点可见却取不到（`ReservedMemoryUnreachable`） |
+| `/reserved-memory` | 路径查找 + 可见性交叉检查；父节点的 `#address-cells`/`#size-cells` 必须存在**且与根节点取值相同**（**项目输入子集**：DTSpec 要求二者存在并*应当*相同，不同并非格式错误，只是当前未实现地址转换）；`ranges` 必须存在且为空（同为**项目输入子集**，非空 `ranges` 不代表非法，而是尚无转换路径）；子节点必须有可解析 `reg`；`no-map`/`reusable` 必须是**空属性**；两者互斥 | 缺 `reg`、宽 cells、缺 cells 属性（`UnsupportedReservedDeclaration`）；`ranges` 非空或缺失（`ReservedMemoryRangesNotEmpty`）；同时声明 `no-map` 与 `reusable`（`ConflictingReservationAttributes`）；标记属性带非空值（`NonEmptyReservationAttribute`）；声明重叠（`OverlappingReservedRanges`）；节点可见却取不到（`ReservedMemoryUnreachable`） |
 | MRB | `memory_reservations()` 条目（地址+长度，`{0,0}` 终止） | 回绕（`RangeOverflow`）；**零长度非终止项**（`ZeroLengthMemoryReservation`）；**条目之间重叠**（`OverlappingMemoryReservations`）；**超过 16 条**（`TooManyMemoryReservations`，缺失终止项也会落到这里）。对齐、`totalsize` 边界与终止项**由 `fdt_layout::validate` 在解析库之前检查**（五条输入路径接入）；`DtbMemoryMap` 自身不做头部校验，也不声称做过 |
 
 规则细节：
@@ -428,7 +428,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | `PAL_CODE` | 固件/处理器专用的代码内存 | 拒绝启动（项目兼容性限制） |
 | `PERSISTENT` | 非易失物理内存，有 backing | 不接入普通 volatile PMM 与直接映射，保留来源记录 |
 
-**已知属性位的处置**（不能只写「未知位拒绝」）：`RUNTIME`/`NV`/`SP` 已按独立属性进入六步裁决；`RO`/`RP`/`XP`/`WP`/`CPU_CRYPTO` 是 **capability 能力位**（`MORE_RELIABLE` 因 `0x1_0000` 的官方文本歧义已改为 fail-closed，见下），第一版只作为来源元数据保留——**不直接等同于当前已生效的访问权限**，也不改变 RAM 来源域成员资格。后续映射策略可用其中的能力信息验证目标属性是否可兑现；**`WP` 不得误解为页表写权限**。任何**档外位**仍按第 1 步拒绝启动。
+**已知属性位的处置**（不能只写「未知位拒绝」）：模型保留 `RUNTIME`/`NV`/`SP` 三种独立属性语义，但**当前分类器实际可达的只有 `RUNTIME`**：`NV` 位属于无条件冲突拒绝域；`SP` 的低位编码属于冲突拒绝域、高位编码在 profile 未钉住时被 `ProfileAttribute` 拒绝——二者当前都不进入输出表；`RO`/`RP`/`XP`/`WP`/`CPU_CRYPTO` 是 **capability 能力位**（`MORE_RELIABLE` 因 `0x1_0000` 的官方文本歧义已改为 fail-closed，见下），第一版只作为来源元数据保留——**不直接等同于当前已生效的访问权限**，也不改变 RAM 来源域成员资格。后续映射策略可用其中的能力信息验证目标属性是否可兑现；**`WP` 不得误解为页表写权限**。任何**档外位**仍按第 1 步拒绝启动。
 
 **属性按语义分三类**（不能统称「能力位」）：缓存能力（`WB`/`WT`/`WC`/`UC`/`UCE`）；物理保护能力（`WP`/`RP`/`XP`/`RO`）；其它特征（`MORE_RELIABLE`、`CPU_CRYPTO`、`SP`、`NV`、`RUNTIME`）。**`WP` 归入物理保护能力**：规范先称它为 physical memory protection attribute，再说明它通常被用作 write-protected cacheability policy——它有特殊缓存语义，但既不是页表写权限，也不能与 `RO` 混为一谈。**`SP` 不是 no-map**：第一版把它排除出普通 PMM 是项目保守选择，不得由 `SP` 自动生成映射禁令。
 
@@ -444,11 +444,25 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 - **冲突位域整体 fail-closed（已实现）**：`0x1000..=0x1_0000` 在两套官方编码里含义不同——`0x4000` 在一套里是 `SP`（必须排除出 PMM）、另一套里是 `XP`（仅保护能力元数据）；`0x8000` 是 `CPU_CRYPTO` vs `NV`；`0x1000` 是 `MORE_RELIABLE` vs `WP`；`0x2000` 是 `RO` vs `RP`；`0x1_0000` 是 `HOT_PLUGGABLE` vs `MORE_RELIABLE`。任一读法都可能把必须排除的内存伪装成元数据，因此整个 `0x1_F000` 在已知位闸之前单独拒绝（`PolicyError::AmbiguousAttribute`，负控 `every_contested_attribute_bit_fails_closed` 与 `the_ambiguous_bit_fails_closed_under_either_name`）。
 - `0x0010_0000`（仓库编码的 `HOT_PLUGGABLE`）：`uefi-raw 0.9` 无该常量，走未知位拒绝（`hot_pluggable_bit_fails_closed_as_unknown`）。
-- **代价**：`NON_VOLATILE` 位现在也落进拒绝域——模型仍认识 NV 语义（`TYPE_INDEPENDENT` 保留该分支），但**当前分类器不接受带 NV 位的输入，该分支在真实输入上不可达**；恢复它需要**两步**：先钉住带版本证据的固件编码 profile，再把 `0x1_F000` 的无条件拒绝改为按 profile 解释——只要无条件拒绝还在，仅添加 profile 记录仍然解不开 `NV`。若决定后续版本也不支持该属性，应明说，不要让读者以为 profile 一到手就自动解锁。`RUNTIME` 与 `SPECIAL_PURPOSE`（`0x4_0000`）仍按独立属性正常进入六步裁决。**位值证据按「规范仓库源文件 + EDK2」这一支取，不按 2.11 PDF 表取**：三个已发布文本与 EDK2 的属性位编码互不一致（见 03 号文档第十五节矩阵：2.11 PDF 为 `0x10000`、EDK2 为 `0x100000`，`WP`/`MORE_RELIABLE` 同样整体错位）。钉住的是「当前 `uefi-raw` 与 Linux 头文件一致的编码」这一事实，而不是某份 PDF 的表格；将来升级 `uefi-raw` 时**必须重核全部已识别属性位**，不能只迁移 hot-pluggable 一位。
+- **代价**：`NON_VOLATILE` 位现在也落进拒绝域——模型仍认识 NV 语义（`TYPE_INDEPENDENT` 保留该分支），但**当前分类器不接受带 NV 位的输入，该分支在真实输入上不可达**；恢复它需要**两步**：先钉住带版本证据的固件编码 profile，再把 `0x1_F000` 的无条件拒绝改为按 profile 解释——只要无条件拒绝还在，仅添加 profile 记录仍然解不开 `NV`。若决定后续版本也不支持该属性，应明说，不要让读者以为 profile 一到手就自动解锁。`SPECIAL_PURPOSE`（`0x4_0000`）属于 `ProfileAttribute` 拒绝域、低位 `0x4000` 属于冲突拒绝域，**当前同样不可达**。**位值证据不是「三个已发布文本 vs EDK2」**：UEFI 2.10 原始发布版与 EDK2/Linux 同组，2.10 Errata A 与 2.11 PDF 是移位后的另一组（见下方完整矩阵）。钉住的是「当前 `uefi-raw` 与 Linux 头文件一致的编码」这一事实，而不是某份 PDF 的表格；将来升级 `uefi-raw` 时**必须重核全部已识别属性位**，不能只迁移 hot-pluggable 一位。
 
 **高位属性改为 profile 门控（已实现），理由要按两版发布文本写对**：`RO`/`SP`/`CPU_CRYPTO` **在 UEFI 2.10 原始发布版里就是 `0x2_0000`/`0x4_0000`/`0x8_0000`**；2.10 Errata A 与 2.11 PDF 把它们移到低一组（`0x2000`/`0x4000`/`0x8000`）。所以问题不是「已发布规范没有这些位置」，而是**两个正式发布版本族对同一属性采用了不同位值**，而内核无法从 `uefi-raw` 常量判断启动固件采用哪一版。三者因此在 profile 未钉住前**直接拒绝**（`PolicyError::ProfileAttribute`，测试 `profile_only_attributes_fail_closed_without_a_pinned_profile`）；`0x10_0000` 仍由未知位闸拒绝。将来 `UefiMemoryAttributeProfile` 必须绑定**实际启动固件镜像身份**（x86 与 aarch64 分别记录，不能假设同源），并**同时钉住低位组与高位组的完整映射**——只授权三个高位会得到「部分属性可识别、其余冲突位永久拒绝」的半套 profile。
 
-**属性位证据矩阵（自包含）**：两组编码的分布并不对称——UEFI 2.10 原始发布版与 EDK2/Linux 一致，2.10 Errata A 与 2.11 PDF 使用移位后的另一组；规范仓库 `main` 是活动分支，不能当固定版本。本项目钉住仓库编码，但**承认另一组已发布编码**，因此对两组的交集位 fail-closed：
+**属性位完整矩阵（两组编码的全部相关位）**：
+
+| 属性 | UEFI 2.10 原始版 | 2.10 Errata A / 2.11 PDF | EDK2 / Linux / `uefi-raw 0.9` | 本项目当前处置 |
+|---|---|---|---|---|
+| `WP` | `0x1000` | `0x100` | `0x1000` | 冲突域 → 拒绝 |
+| `RP` | `0x2000` | `0x200` | `0x2000` | 冲突域 → 拒绝 |
+| `XP` | `0x4000` | `0x400` | `0x4000` | 冲突域 → 拒绝 |
+| `NV` | `0x8000` | `0x800` | `0x8000` | 冲突域 → 拒绝 |
+| `MORE_RELIABLE` | `0x1_0000` | `0x1000` | `0x1_0000` | 冲突域 → 拒绝 |
+| `RO` | `0x2_0000` | `0x2000` | `0x2_0000` | `ProfileAttribute` → 拒绝 |
+| `SP` | `0x4_0000` | `0x4000` | `0x4_0000` | `ProfileAttribute` → 拒绝 |
+| `CPU_CRYPTO` | `0x8_0000` | `0x8000` | `0x8_0000` | `ProfileAttribute` → 拒绝 |
+| `HOT_PLUGGABLE` | 未定义 | `0x1_0000` | `0x10_0000` | `0x1_0000` 冲突域；`0x10_0000` 未知位 |
+
+PDF 低位组的 `0x100`–`0x800` 在本项目里落入已知位集合之外，同样被未知位闸拒绝。规范仓库 `main` 是活动分支，不能当固定版本。
 
 | 来源 | 版本/修订 | `HOT_PLUGGABLE` | `WP` | `MORE_RELIABLE` |
 |---|---|---|---|---|
@@ -880,15 +894,24 @@ RamSourcePageDomain = FullPages(Union(RamSourceDomain))      ← 先并集，再
 
 PMMAvailable(p) = RamSourcePageDomain
     ∩ TypeAllocatablePages(p)
-    ∩ CacheAttributeEligiblePages(p)
+    ∩ WbConfigurablePages(p)                  ← 能力：该页支持配置为 WB
+    ∩ ArchMemoryAccessEligiblePages(p)        ← 硬件：当前架构可访问
     \ Outward(ExplicitAllocationReservations(p))
     \ Outward(LiveObjectRanges(p))
-    \ PlatformAllocationDenials(p)
+    \ PlatformAllocationDenials(p)            ← 仅平台策略显式拒绝
 
 PMMExcluded(p) = RamSourcePageDomain \ PMMAvailable(p)
 ```
 
-**`CacheAttributeEligiblePages(p)` 必须单独成项**：第一版要求 WB，无 WB 的 `CONVENTIONAL` 描述符不进普通可分配集合——如果只写 `TypeAllocatablePages`，这类页仍会出现在公式结果里，与文字结论矛盾。UEFI 路径的该项来自描述符属性资格；DTB 路径来自平台内存属性政策（不得为共用公式伪造 UEFI 属性记录）。普通映射授权同样要有自己的属性兼容检查，不能只看 `OrdinaryRamMappingEligibility`。
+**能力、硬件准入与平台拒绝是三项，不能合并**：
+
+- `WbConfigurablePages(p)`：**能力**——该页是否支持被配置为普通写回（UEFI `WB` 是能力位，不是「当前已是 WB」）；DTB 路径取平台属性政策，不伪造 UEFI 属性记录。
+- `ArchMemoryAccessEligiblePages(p)`：**硬件可访问性**——由架构实现给出的语义结果（x86 的 PAT×MTRR 有效类型、AArch64 的 MAIR 读回、RISC-V 的 PMA/PMP），共享层只消费「可访问/不可访问」，不查询机制。**缺了它，PMP 拒绝 S 模式访问的页仍会进入可用表**——这正是把准入留给后续页表审计去补的错误顺序。
+- `PlatformAllocationDenials(p)`：**平台策略显式拒绝**，不再兼任架构准入。
+
+**适用范围**：若某页只对部分在线 hart 可访问，不能当作全体可用的普通内存；第一版要求所有参与普通内存访问的 hart 都满足最低访问条件，分区内存留待后续。
+
+**能力 ≠ 有效类型**：`WB` 能力通过不代表页表叶子与硬件配置共同得到的有效类型就是 WB；后者属硬件兑现层，不能拿能力位冒充。普通映射授权同样要有自己的属性兼容检查，不能只看 `OrdinaryRamMappingEligibility`。
 
 **四类排除原因必须分开，不能塞进一个未定义的 `AllocationReservations`**：① 类型资格（`UNUSABLE`/`UNACCEPTED`/`ACPI_NVS`/`Runtime` 等在阶段 `p` 是否允许分配）——构造规则是**先裁决、再取整页**：
 
