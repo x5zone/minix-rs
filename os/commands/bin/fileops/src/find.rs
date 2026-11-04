@@ -1089,6 +1089,39 @@ pub fn time_correct(compare: Compare, value: i64) -> i64 {
     }
 }
 
+/// C `atoi`'s shape (used by `c_group`'s numeric fallback): skip blanks,
+/// take an optional sign and the leading digits; no digits is 0. Overflow
+/// is undefined in C; this build saturates.
+fn atoi_id(text: &str) -> u32 {
+    let t = text.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let (neg, digits) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let mut v: i64 = 0;
+    for b in digits.bytes() {
+        if !b.is_ascii_digit() {
+            break;
+        }
+        v = v.saturating_mul(10).saturating_add((b - b'0') as i64);
+    }
+    let signed = if neg { -v } else { v };
+    signed as u32
+}
+
+/// `c_user`'s "no such user" guard (`function.c:6339-6342`): the name is
+/// neither an account nor a numeric spelling (`atoi == 0`, not `0`-led,
+/// not the `+0`/`-0` exceptions).
+fn user_needs_account(name: &str) -> bool {
+    atoi_id(name) == 0 && !name.starts_with('0') && name != "+0" && name != "-0"
+}
+
+/// `c_group`'s guard (`function.c:714-716`): no `+0`/`-0` exceptions here.
+fn group_needs_entry(name: &str) -> bool {
+    atoi_id(name) == 0 && !name.starts_with('0')
+}
+
 /// Three-state evaluation of `COMPARE(a, b)`.
 fn compare_with(compare: Compare, a: i64, b: i64) -> bool {
     match compare {
@@ -1257,6 +1290,36 @@ pub trait ReferenceStat {
     /// of asking and getting no answer.
     fn query_ok(&self, argv: &[&str]) -> bool {
         let _ = argv;
+        false
+    }
+
+    /// `getpwnam`'s scan face (`c_user`, `function.c:6333-6338`): the uid
+    /// for a login name, or `None` (the same face as an unreadable or
+    /// absent database). The default is the seam-absent face.
+    fn account_by_name(&self, name: &str) -> Option<u32> {
+        let _ = name;
+        None
+    }
+
+    /// `getpwuid`'s existence face (`f_nouser`'s `user_from_uid(uid, 1)`,
+    /// `pwcache.c`): whether any account carries this uid. The default
+    /// "nothing known" makes `-nouser` answer true, the safe half.
+    fn uid_known(&self, uid: u32) -> bool {
+        let _ = uid;
+        false
+    }
+
+    /// `getgrnam`'s scan face (`c_group`, `function.c:706-722`): the gid
+    /// for a group name, or `None`.
+    fn group_by_name(&self, name: &str) -> Option<u32> {
+        let _ = name;
+        None
+    }
+
+    /// `getgrgid`'s existence face (`f_nogroup`'s `group_from_gid(gid, 1)`):
+    /// whether any group carries this gid.
+    fn gid_known(&self, gid: u32) -> bool {
+        let _ = gid;
         false
     }
 }
@@ -1448,10 +1511,38 @@ pub fn judge_leaf<'a>(
         // Missing legs are refused by name and never silently answer false.
         // (`-exec`/`-execdir`/`-ok` never arrive here as keywords -- the
         // parser turns them into [`Prim::Exec`].)
-        "-user" | "-group" | "-nouser" | "-nogroup" | "-delete" | "-rm" | "-fstype" | "-flags"
-        | "-regex" | "-iregex" | "-newerest" | "-mindepth0" => {
-            Err(JudgeError::Unwired(String::from(name)))
+        "-delete" | "-rm" | "-fstype" | "-flags" | "-regex" | "-iregex" | "-newerest"
+        | "-mindepth0" => Err(JudgeError::Unwired(String::from(name))),
+        // `c_user` (`function.c:6322-6352`): the name resolves first; the
+        // numeric fallback carries `find_parsenum`'s `[+-]` compare flags.
+        // The unresolvable non-numeric shapes are fatal at plan-build in C
+        // (`errx(1, "-user: %s: no such user")`); `walk_paths` screens them
+        // up front, so an arg reaching here always resolves or parses.
+        "-user" => {
+            let name = text()?;
+            if let Some(uid) = refs.account_by_name(name) {
+                Ok(Outcome::truthy(entry.uid == uid))
+            } else {
+                let a = parse_num("-user", name, None).map_err(JudgeError::BadNumber)?;
+                Ok(Outcome::truthy(compare_with(
+                    a.compare,
+                    entry.uid as i64,
+                    a.value,
+                )))
+            }
         }
+        // `c_group` (`function.c:706-722`): name first; the numeric
+        // fallback is a bare `atoi` with no sign semantics.
+        "-group" => {
+            let name = text()?;
+            let gid = refs.group_by_name(name).unwrap_or_else(|| atoi_id(name));
+            Ok(Outcome::truthy(entry.gid == gid))
+        }
+        // `f_nouser`/`f_nogroup` (`function.c:1382-1394`/`:1362-1366`):
+        // `user_from_uid(uid, 1)` returns a name only when an account
+        // carries the id — inverted into the truth value.
+        "-nouser" => Ok(Outcome::truthy(!refs.uid_known(entry.uid))),
+        "-nogroup" => Ok(Outcome::truthy(!refs.gid_known(entry.gid))),
         other => Err(JudgeError::Unwired(String::from(other))),
     }
 }
@@ -1775,11 +1866,9 @@ mod judge_tests {
     fn legs_the_tree_does_not_have_are_refused_by_name() {
         let e = entry("/etc/rc", "rc", 0o100644);
         // (`-exec`/`-execdir`/`-ok` have a production face now — their pins
-        // live in the `Prim::Exec` tests below.)
-        for name in [
-            "-user", "-group", "-nouser", "-nogroup", "-delete", "-rm", "-fstype", "-flags",
-            "-regex", "-iregex",
-        ] {
+        // live in the `Prim::Exec` tests; the `-user` family moved to the
+        // account-seam tests.)
+        for name in ["-delete", "-rm", "-fstype", "-flags", "-regex", "-iregex"] {
             assert_eq!(
                 judge(&e, name, Some("x")),
                 Err(JudgeError::Unwired(String::from(name))),
@@ -2087,6 +2176,27 @@ pub struct WalkResult {
 /// (`-x`). `-d` makes directories evaluate in post-order, `-s` sorts each level
 /// by name, `-X` rejects paths containing xargs separators, and the implicit
 /// `-print` is added when the expression has no output entry.
+/// The `-user`/`-group` keyword args anywhere in the tree, in order — the
+/// pre-pass resolves each the way C's plan constructors do at build time.
+fn user_family_args<'n, 'a>(nodes: &'n [Node<'a>]) -> Vec<(&'n str, &'a str)> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node {
+            Node::Leaf(Prim::Keyword { name, arg }) if *name == "-user" || *name == "-group" => {
+                out.push((*name, *arg))
+            }
+            Node::Leaf(_) => {}
+            Node::Not(inner) => out.extend(user_family_args(core::slice::from_ref(inner))),
+            Node::Paren(inner) => out.extend(user_family_args(inner)),
+            Node::Or { left, right } => {
+                out.extend(user_family_args(left));
+                out.extend(user_family_args(right));
+            }
+        }
+    }
+    out
+}
+
 pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> WalkResult {
     // The implicit `-print` is formed per the tail of `find_formplan`
     // (`find.c:103-118`): an empty expression becomes just `-print`; otherwise
@@ -2106,6 +2216,38 @@ pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> 
         parsed.expr.clone()
     };
     let size_bytes = size_counts_bytes(&effective);
+    // C's `c_user`/`c_group` resolve their names at plan-build time and
+    // `errx(1)` before anything walks: an unresolvable non-numeric name is
+    // `-user: <name>: no such user` / `-group: <name>: no such group`, and
+    // a numeric spelling that fails `find_parsenum` is
+    // `-user: <name>: illegal numeric value`. Screen the tree's user-family
+    // args up front with the same sentences and skip the walk — the bin
+    // prints the warning and exits with the rval.
+    for (name, arg) in user_family_args(&effective) {
+        let name: &str = name;
+        let arg: &str = arg;
+        let fatal = match name {
+            "-user" if probe.account_by_name(arg).is_some() => None,
+            "-user" if user_needs_account(arg) => Some("no such user"),
+            "-user" => {
+                if parse_num("-user", arg, None).is_err() {
+                    Some("illegal numeric value")
+                } else {
+                    None
+                }
+            }
+            "-group" if probe.group_by_name(arg).is_some() => None,
+            "-group" if group_needs_entry(arg) => Some("no such group"),
+            _ => continue,
+        };
+        if let Some(sentence) = fatal {
+            return WalkResult {
+                rval: 1,
+                warnings: vec![format!("{name}: {arg}: {sentence}")],
+                ..WalkResult::default()
+            };
+        }
+    }
     let cfg = WalkCfg {
         depth: parsed.depth_first,
         sorted: parsed.sorted,
@@ -2643,6 +2785,10 @@ mod walk_tests {
         /// Every `run_utility` call, in order: the argv the judge handed
         /// over. The substitution assertions read this.
         run_log: RefCell<Vec<Vec<String>>>,
+        /// Scripted accounts (name → uid) and groups (name → gid) for the
+        /// `-user` family's seams.
+        users: BTreeMap<String, u32>,
+        groups: BTreeMap<String, u32>,
     }
 
     /// The three slots of `fails`. Naming them separately is what makes it
@@ -2683,6 +2829,26 @@ mod walk_tests {
                 runs: BTreeMap::new(),
                 ok_answers: BTreeMap::new(),
                 run_log: RefCell::new(Vec::new()),
+                users: BTreeMap::new(),
+                groups: BTreeMap::new(),
+            }
+        }
+
+        /// Script one account.
+        fn with_user(&mut self, name: &str, uid: u32) {
+            self.users.insert(String::from(name), uid);
+        }
+
+        /// Script one group.
+        fn with_group(&mut self, name: &str, gid: u32) {
+            self.groups.insert(String::from(name), gid);
+        }
+
+        /// Give one registered path a different owner uid (the default
+        /// fixtures are all uid 0).
+        fn set_uid(&mut self, path: &str, uid: u32) {
+            if let Some(bits) = self.lstats.get_mut(path) {
+                bits.uid = uid;
             }
         }
 
@@ -2779,6 +2945,18 @@ mod walk_tests {
                 Some(name) => self.ok_answers.get(*name).copied().unwrap_or(false),
                 None => false,
             }
+        }
+        fn account_by_name(&self, name: &str) -> Option<u32> {
+            self.users.get(name).copied()
+        }
+        fn uid_known(&self, uid: u32) -> bool {
+            self.users.values().any(|&u| u == uid)
+        }
+        fn group_by_name(&self, name: &str) -> Option<u32> {
+            self.groups.get(name).copied()
+        }
+        fn gid_known(&self, gid: u32) -> bool {
+            self.groups.values().any(|&g| g == gid)
         }
     }
 
@@ -2940,6 +3118,89 @@ mod walk_tests {
         // `f_execdir` (function.c:749-754): the name after the last `/`.
         assert_eq!(log[0], ["basename", "sub"]);
         assert_eq!(log[1], ["basename", "b"]);
+    }
+
+    // ── the `-user` family (`c_user`/`c_group`/`f_nouser`/`f_nogroup`) ──
+
+    #[test]
+    fn user_matches_by_account_name_and_by_numeric_spelling() {
+        let mut fs = tree();
+        fs.with_user("root", 0);
+        fs.with_user("orphan", 7);
+        fs.set_uid("./sub/b", 7);
+        // Name hit: the file's uid compares equal (`function.c:6333-6338`).
+        let got = run(&[".", "-user", "orphan"], &fs);
+        assert_eq!(got.emitted, vec!["./sub/b\n"]);
+        let got = run(&[".", "-user", "root"], &fs);
+        assert_eq!(
+            got.emitted,
+            vec![".\n", "./a\n", "./sub\n"],
+            "uid 0 的三项（sub/b 已改 7）"
+        );
+        // Numeric fallback with find_parsenum's sign flags.
+        let got = run(&["./a", "-user", "+0"], &fs);
+        assert_eq!(
+            got.emitted,
+            Vec::<String>::new(),
+            "+0 是 greater-than，uid 0 不命中"
+        );
+        let got = run(&["./a", "-user", "0"], &fs);
+        assert_eq!(got.emitted, vec!["./a\n"], "0 是 equal，命中");
+        let got = run(&[".", "-user", "7"], &fs);
+        assert_eq!(got.emitted, vec!["./sub/b\n"], "7 是 equal，uid 7 命中");
+        let got = run(&[".", "-user", "+6"], &fs);
+        assert_eq!(
+            got.emitted,
+            vec!["./sub/b\n"],
+            "+6 是 greater-than，uid 7 命中"
+        );
+    }
+
+    #[test]
+    fn group_and_the_negative_family_follow_their_c_halves() {
+        let mut fs = tree();
+        fs.with_group("wheel", 0);
+        fs.with_user("root", 0);
+        // `-group` numeric fallback is a bare atoi (no sign semantics).
+        let got = run(&["./a", "-group", "wheel"], &fs);
+        assert_eq!(got.emitted, vec!["./a\n"]);
+        let got = run(&["./a", "-group", "0"], &fs);
+        assert_eq!(got.emitted, vec!["./a\n"]);
+        // `-nouser`: true iff no account carries the file's uid.
+        let got = run(&["./a", "-nouser"], &fs);
+        assert_eq!(
+            got.emitted,
+            Vec::<String>::new(),
+            "uid 0 有账户，nouser 为假"
+        );
+        fs.set_uid("./a", 7);
+        let got = run(&["./a", "-nouser"], &fs);
+        assert_eq!(got.emitted, vec!["./a\n"], "uid 7 无账户，nouser 为真");
+        // `-nogroup` 同形（夹具 gid 全 0 且 wheel 已登记）。
+        let got = run(&["./a", "-nogroup"], &fs);
+        assert_eq!(got.emitted, Vec::<String>::new());
+    }
+
+    #[test]
+    fn unresolvable_names_are_fatal_before_any_walking() {
+        // C `errx(1, "-user: %s: no such user")` fires at plan build: no
+        // walk output, exit 1, one warning with the same sentence.
+        let fs = tree();
+        let got = run(&[".", "-user", "nosuch"], &fs);
+        assert_eq!(got.emitted, Vec::<String>::new());
+        assert_eq!(got.rval, 1);
+        assert_eq!(got.warnings, ["-user: nosuch: no such user"]);
+        // `-group`'s guard has no `+0`/`-0` exceptions (`function.c:714-716`).
+        let got = run(&[".", "-group", "nosuch"], &fs);
+        assert_eq!(got.warnings, ["-group: nosuch: no such group"]);
+        // A numeric spelling that fails find_parsenum is the other fatal.
+        let got = run(&[".", "-user", "12x"], &fs);
+        assert_eq!(got.warnings, ["-user: 12x: illegal numeric value"]);
+        // C's guard quirks: `0`-led and `+0`/`-0` spellings pass the guard
+        // and go to the numeric path even with no account behind them.
+        let got = run(&[".", "-user", "+0"], &fs);
+        assert_eq!(got.rval, 0);
+        assert_eq!(got.warnings, Vec::<String>::new());
     }
 
     #[test]

@@ -68,6 +68,7 @@ use minix_fileops::dents;
 use minix_fileops::find::{
     FindError, ReferenceStat, StatBits, WalkProbe, World, parse, walk_paths,
 };
+use minix_proctools::passwd;
 use minix_shell::exec_run::exec_search;
 use minix_sys::{
     Errno, Fd, Stat, Strerror, close, fork, getdents, gettimeofday, lstat, open, read,
@@ -89,8 +90,34 @@ fn zeroed() -> Stat {
 /// The three ground-truth legs of the walk and of `-newer`: `lstat` (type,
 /// time, device), `getdents` (directory children), and `stat` (follow the
 /// symlink chain for the reference file's times). All go through `minix_sys`;
-/// the deciding half never touches system calls.
+/// the deciding half never touches system calls. The account/group seams
+/// read C `_PATH_PASSWD`/`_PATH_GROUP` directly (no db machinery).
 struct SysProbe;
+
+/// C `_PATH_PASSWD` / the group database path.
+const PASSWD_PATH: &str = "/etc/passwd";
+const GROUP_PATH: &str = "/etc/group";
+const DB_BUF: usize = 4096;
+
+/// Read a whole database file into text; `None` = the file is unavailable
+/// (the same face as an absent entry).
+fn read_db(path: &str) -> Option<String> {
+    let fd = open(path, 0, 0).ok()?;
+    let mut text = String::new();
+    let mut chunk = [0u8; DB_BUF];
+    loop {
+        match read(fd, &mut chunk) {
+            Ok(0) => break,
+            Ok(n) => text.push_str(&String::from_utf8_lossy(&chunk[..n])),
+            Err(_) => {
+                let _ = close(fd);
+                return None;
+            }
+        }
+    }
+    let _ = close(fd);
+    Some(text)
+}
 
 impl SysProbe {
     fn bits(st: &Stat) -> StatBits {
@@ -119,6 +146,22 @@ impl ReferenceStat for SysProbe {
         stat_follows(path, &mut sb)
             .ok()
             .map(|()| (sb.st_atim.tv_sec, sb.st_mtim.tv_sec, sb.st_ctim.tv_sec))
+    }
+    fn account_by_name(&self, name: &str) -> Option<u32> {
+        read_db(PASSWD_PATH).and_then(|db| passwd::lookup_in(&db, name).map(|a| a.uid))
+    }
+    fn uid_known(&self, uid: u32) -> bool {
+        read_db(PASSWD_PATH)
+            .map(|db| passwd::lookup_uid_in(&db, uid).is_some())
+            .unwrap_or(false)
+    }
+    fn group_by_name(&self, name: &str) -> Option<u32> {
+        read_db(GROUP_PATH).and_then(|db| passwd::lookup_group_in(&db, name).map(|g| g.gid))
+    }
+    fn gid_known(&self, gid: u32) -> bool {
+        read_db(GROUP_PATH)
+            .map(|db| passwd::lookup_gid_in(&db, gid).is_some())
+            .unwrap_or(false)
     }
 
     /// C `f_exec`'s run half (`function.c:550-565`): fork + `execvp` +

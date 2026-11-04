@@ -67,6 +67,27 @@ fn the_usage_line_carries_the_program_name_and_a_capital_usage() {
 }
 
 #[test]
+fn an_unresolvable_user_or_group_name_is_fatal_before_the_walk() {
+    // C `c_user`/`c_group` (`function.c:6339-6342`/`:714-716`): a name that
+    // is neither an account nor a numeric spelling errx(1)s at plan build —
+    // no walk output, exit 1, one `errx`-shaped line. A hosted build cannot
+    // read the databases, so every non-numeric name takes this path.
+    let (out, status, err) = run(&[".", "-user", "nosuchuser"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "find: -user: nosuchuser: no such user\n");
+    let (out, status, err) = run(&[".", "-group", "nosuchgroup"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "find: -group: nosuchgroup: no such group\n");
+    // A numeric spelling passes the guard and the walk proceeds (whose
+    // hosted face is the EIO warn, pinned above).
+    let (out, status, _) = run(&[".", "-user", "+0"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+}
+
+#[test]
 fn the_wired_exec_leg_does_not_change_the_hosted_walk_face() {
     // A hosted run cannot reach the evaluator at all (`lstat`/`getdents`
     // answer EIO through the IPC stubs), so the exec child never spawns
