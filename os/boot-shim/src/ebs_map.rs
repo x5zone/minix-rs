@@ -192,8 +192,17 @@ pub mod attr {
         | ISA_MASK;
 
     /// The three attributes independent of `MemoryType`: any one of them takes a
-    /// range out of ordinary allocation and ordinary mapping.
+    /// range out of ordinary allocation and ordinary mapping. `NON_VOLATILE`
+    /// and `SPECIAL_PURPOSE` are unreachable through the classifier today (see
+    /// `AMBIGUOUS` and `PROFILE_ONLY`); only `RUNTIME` remains live.
     pub const TYPE_INDEPENDENT: u64 = RUNTIME | NON_VOLATILE | SPECIAL_PURPOSE;
+
+    /// Bits that exist only in one of the two firmware encodings. The published
+    /// 2.10/2.11 tables do not carry `RO`/`SP`/`CPU_CRYPTO` at these positions;
+    /// the specification repository and EDK2 do. Interpreting them without a
+    /// pinned firmware identity would silently adopt one branch, so the bits
+    /// fail closed until a profile names the firmware actually booting.
+    pub const PROFILE_ONLY: u64 = READ_ONLY | SPECIAL_PURPOSE | CPU_CRYPTO;
 
     /// Bits whose meaning is not the same in every official text: the published
     /// 2.10/2.11 PDF tables and the specification repository/EDK2 branch assign
@@ -272,6 +281,9 @@ pub enum PolicyError {
     UnknownType,
     /// Step 1: an attribute bit outside the baseline.
     UnknownAttribute,
+    /// Step 1: a bit whose meaning depends on a firmware encoding profile this
+    /// project has not pinned (`RO`/`SP`/`CPU_CRYPTO` in the repository branch).
+    ProfileAttribute,
     /// Step 1: a bit whose meaning differs between official texts
     /// (`0x0001_0000` is `HOT_PLUGGABLE` in the UEFI 2.11 PDF and
     /// `MORE_RELIABLE` in the specification repository and EDK2). Either
@@ -505,6 +517,9 @@ pub fn adjudicate(desc: &DescriptorRef, pa_limit: u64) -> Result<(Disposition, u
     let a = desc.attribute;
     if a & attr::AMBIGUOUS != 0 {
         return Err(PolicyError::AmbiguousAttribute);
+    }
+    if a & attr::PROFILE_ONLY != 0 {
+        return Err(PolicyError::ProfileAttribute);
     }
     if a & !attr::KNOWN != 0 {
         return Err(PolicyError::UnknownAttribute);
@@ -779,7 +794,7 @@ mod tests {
             ty::BOOT_SERVICES_DATA,
             ty::ACPI_RECLAIM,
         ] {
-            for flag in [attr::RUNTIME, attr::SPECIAL_PURPOSE] {
+            for flag in [attr::RUNTIME] {
                 assert_eq!(
                     disp(t, WB | flag),
                     Ok(Disposition::Side),
@@ -831,8 +846,6 @@ mod tests {
             attr::WRITE_COMBINE,
             attr::WRITE_THROUGH,
             attr::UNCACHABLE_EXPORTED,
-            attr::READ_ONLY,
-            attr::CPU_CRYPTO,
         ] {
             assert_eq!(
                 disp(ty::CONVENTIONAL, WB | extra),
@@ -881,30 +894,21 @@ mod tests {
     }
 
     #[test]
-    fn high_bit_attributes_follow_the_repository_encoding() {
-        // The published 2.11 PDF lists no standard attribute at 0x2_0000,
-        // 0x4_0000 or 0x8_0000; the specification repository, EDK2 and the
-        // Linux headers put RO, SP and CPU_CRYPTO there. This project pins the
-        // repository encoding, so the three bits keep their high-bit meaning —
-        // a deliberate branch choice, not an unambiguous reading of the PDF.
-        // Pinned here so the choice is visible and a future profile change has
-        // to update these expectations.
-        assert_eq!(
-            disp(ty::CONVENTIONAL, WB | 0x2_0000),
-            Ok(Disposition::Allocate),
-            "RO is protection metadata, not an exclusion"
-        );
-        assert_eq!(
-            disp(ty::CONVENTIONAL, WB | 0x4_0000),
-            Ok(Disposition::Side),
-            "SP is an independent attribute: no ordinary allocation"
-        );
-        assert_eq!(
-            disp(ty::CONVENTIONAL, WB | 0x8_0000),
-            Ok(Disposition::Allocate),
-            "CPU_CRYPTO is capability metadata"
-        );
-        // 0x10_0000 stays outside the known set: it fails closed as unknown.
+    fn profile_only_attributes_fail_closed_without_a_pinned_profile() {
+        // `RO`/`SP`/`CPU_CRYPTO` are standard attributes only in the
+        // specification-repository/EDK2 encoding; the published tables this
+        // project also honours do not define them at these positions. Rather
+        // than silently adopting one branch, the bits fail closed until a
+        // `UefiMemoryAttributeProfile` names the firmware actually booting
+        // (x86 and aarch64 firmwares need not come from the same build).
+        for bit in [0x2_0000u64, 0x4_0000, 0x8_0000] {
+            assert_eq!(
+                disp(ty::CONVENTIONAL, WB | bit),
+                Err(PolicyError::ProfileAttribute),
+                "bit {bit:#x}"
+            );
+        }
+        // 0x10_0000 is not defined in the pinned baseline at all: unknown bit.
         assert_eq!(
             disp(ty::CONVENTIONAL, WB | 0x10_0000),
             Err(PolicyError::UnknownAttribute)
@@ -978,7 +982,7 @@ mod tests {
             Err(PolicyError::UnknownAttribute)
         );
         assert_eq!(
-            disp(ty::CONVENTIONAL, u64::MAX & !attr::AMBIGUOUS),
+            disp(ty::CONVENTIONAL, u64::MAX & !(attr::AMBIGUOUS | attr::PROFILE_ONLY)),
             Err(PolicyError::UnknownAttribute)
         );
     }
@@ -992,7 +996,7 @@ mod tests {
             Ok(Disposition::Excluded)
         );
         assert_eq!(
-            disp(ty::UNUSABLE, WB | attr::SPECIAL_PURPOSE),
+            disp(ty::UNUSABLE, WB | attr::RUNTIME),
             Ok(Disposition::Excluded)
         );
         assert_eq!(
