@@ -280,9 +280,25 @@ pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
 /// requires that page to be **Device**-mapped: the kernel's Step-1 identity
 /// map carves `kernel_identity_mmio_regions` as Device-nGnRnE so MMIO
 /// ordering survives real hardware (QEMU never shows the difference).
+/// Highest hart count the PLIC window is sized for. Keep this at least as
+/// large as the kernel's SMP limit (32): the S-mode context of hart N sits at
+/// `0x20_0000 + (2N+1)*0x1000`, so a window that stops at 2 MiB cannot reach
+/// the claim/complete register of any hart.
+#[cfg(target_arch = "riscv64")]
+pub const PLIC_MAX_HARTS: u64 = 32;
+
+/// `0x20_0000` priority/pending/enable region plus an M-mode and an S-mode
+/// context of 4 KiB per hart. 32 harts give `0x24_0000`, which stays inside
+/// QEMU virt's PLIC region (`reg` reads `0xc000000 + 0x600000`).
+#[cfg(target_arch = "riscv64")]
+const PLIC_WINDOW_LEN: u64 = 0x0020_0000 + 2 * PLIC_MAX_HARTS * 0x1000;
+
+#[cfg(target_arch = "riscv64")]
+const _: () = assert!(PLIC_WINDOW_LEN.is_multiple_of(0x1000));
+
 #[cfg(target_arch = "riscv64")]
 pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
-    &[(0x0C00_0000, 0x0020_0000), (0x1000_0000, 0x1000)]
+    &[(0x0C00_0000, PLIC_WINDOW_LEN), (0x1000_0000, 0x1000)]
 }
 
 /// aarch64: in this repository the aarch64 interrupt controller is accessed

@@ -195,6 +195,15 @@
 | 热插拔属性位负控 | `hot_pluggable_bit_fails_closed_as_unknown`（`WB \| 0x400` → `UnknownAttribute`） | `grep -n "hot_pluggable_bit" os/boot-shim/src/ebs_map.rs` |
 | 静态设备窗口 | LAPIC `0x0FEE_0000+4K`、IO-APIC `0x0FEC_0000+4K`、平台 MMIO `0x0800_0000+32M`、PLIC `0x0C00_0000+2M`、UART `0x1000_0000+4K` | `grep -n -A 4 "kernel_identity_mmio_regions" os/arch/src/lib.rs`；`grep -n -e MMIO_PA_BASE -e MMIO_WINDOW_LEN os/libs/minix-platform/src/arch/aarch64.rs` |
 
+## 一k、第三十六轮读数（PLIC 与属性位）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| QEMU PLIC 区间 | `plic@c000000` 的 `reg = <0x00 0xc000000 0x00 0x600000>`（smp=1） | `timeout 10 qemu-system-riscv64 -machine virt -smp 1 -m 256M -display none -bios default -machine dumpdtb=/tmp/p1.dtb` 后 `dtc -I dtb -O dts /tmp/p1.dtb` |
+| PLIC context 起点 | 规范布局 `+0x20_0000`，每 context 4 KiB；S 模式 context = `0x20_0000 + (2N+1)*0x1000` | QEMU `hw/riscv/virt.c` 的 PLIC 布局（上游） |
+| 窗口修正 | `PLIC_MAX_HARTS = 32`、`PLIC_WINDOW_LEN = 0x20_0000 + 2*32*0x1000` | `grep -n -A 4 "PLIC_MAX_HARTS" os/arch/src/lib.rs` |
+| 热插拔位值 | `EFI_MEMORY_HOT_PLUGGABLE = 0x0010_0000`（EDK2 `MdePkg/Include/Uefi/UefiSpec.h`） | `grep -n "0x0010_0000" os/boot-shim/src/ebs_map.rs` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |
