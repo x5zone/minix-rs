@@ -195,14 +195,18 @@ pub mod attr {
     /// range out of ordinary allocation and ordinary mapping.
     pub const TYPE_INDEPENDENT: u64 = RUNTIME | NON_VOLATILE | SPECIAL_PURPOSE;
 
-    /// Bits whose meaning is not the same in every official text. `0x0001_0000`
-    /// is `EFI_MEMORY_HOT_PLUGGABLE` in the published UEFI 2.11 PDF but
-    /// `EFI_MEMORY_MORE_RELIABLE` in the specification repository, EDK2 and the
-    /// Linux headers. The project pins the repository encoding, yet a firmware
-    /// built from the PDF table would report hot-pluggable memory with this
-    /// bit — and hot-removable memory must not reach the PMM. Neither reading
-    /// can be honoured blindly, so the bit fails closed.
-    pub const AMBIGUOUS: u64 = MORE_RELIABLE;
+    /// Bits whose meaning is not the same in every official text: the published
+    /// 2.10/2.11 PDF tables and the specification repository/EDK2 branch assign
+    /// different names across `0x1000..=0x1_0000` (for example `0x4000` is
+    /// `EFI_MEMORY_SP` in one text and `EFI_MEMORY_XP` in the other; `0x8000` is
+    /// `CPU_CRYPTO` vs `NV`; `0x1_0000` is `HOT_PLUGGABLE` vs `MORE_RELIABLE`).
+    /// Every reading is unsafe for this policy: the PDF one can hide
+    /// special-purpose or non-volatile memory behind a "protection" bit, and
+    /// the repository one can turn a hot-pluggable report into a reliability
+    /// hint. The project pins no firmware profile, so the whole contested field
+    /// fails closed instead of being sorted under either name.
+    pub const AMBIGUOUS: u64 =
+        WRITE_PROTECT | READ_PROTECT | EXECUTE_PROTECT | NON_VOLATILE | MORE_RELIABLE;
 
     /// UEFI 2.11 defines this bit as `EFI_MEMORY_HOT_PLUGGABLE`. The baseline
     /// this project tracks does not include it, so it exercises the
@@ -775,7 +779,7 @@ mod tests {
             ty::BOOT_SERVICES_DATA,
             ty::ACPI_RECLAIM,
         ] {
-            for flag in [attr::RUNTIME, attr::NON_VOLATILE, attr::SPECIAL_PURPOSE] {
+            for flag in [attr::RUNTIME, attr::SPECIAL_PURPOSE] {
                 assert_eq!(
                     disp(t, WB | flag),
                     Ok(Disposition::Side),
@@ -827,9 +831,6 @@ mod tests {
             attr::WRITE_COMBINE,
             attr::WRITE_THROUGH,
             attr::UNCACHABLE_EXPORTED,
-            attr::WRITE_PROTECT,
-            attr::READ_PROTECT,
-            attr::EXECUTE_PROTECT,
             attr::READ_ONLY,
             attr::CPU_CRYPTO,
         ] {
@@ -877,6 +878,27 @@ mod tests {
             disp(ty::CONVENTIONAL, WB | 0x0010_0000),
             Err(PolicyError::UnknownAttribute)
         );
+    }
+
+    #[test]
+    fn every_contested_attribute_bit_fails_closed() {
+        // The PDF and repository encodings disagree across 0x1000..=0x1_0000:
+        // 0x4000 is SP (must be excluded) in one text and XP (metadata) in the
+        // other, 0x8000 is CPU_CRYPTO vs NV, 0x1000 is MORE_RELIABLE vs WP.
+        // Accepting either reading can silently admit memory the policy must
+        // exclude, so each bit is refused before any interpretation.
+        for bit in [0x1000u64, 0x2000, 0x4000, 0x8000, 0x1_0000] {
+            assert_eq!(
+                disp(ty::CONVENTIONAL, WB | bit),
+                Err(PolicyError::AmbiguousAttribute),
+                "bit {bit:#x}"
+            );
+            assert_eq!(
+                disp(ty::LOADER_DATA, WB | bit),
+                Err(PolicyError::AmbiguousAttribute),
+                "bit {bit:#x} on a mapped type"
+            );
+        }
     }
 
     #[test]
@@ -935,7 +957,7 @@ mod tests {
         // A type-based exclusion outranks an independent attribute, and is not
         // filed under the attribute's reason.
         assert_eq!(
-            disp(ty::RESERVED, WB | attr::NON_VOLATILE),
+            disp(ty::RESERVED, WB | attr::RUNTIME),
             Ok(Disposition::Excluded)
         );
         assert_eq!(
@@ -947,7 +969,7 @@ mod tests {
             Ok(Disposition::DevicePath)
         );
         assert_eq!(
-            disp(ty::PAL_CODE, WB | attr::NON_VOLATILE),
+            disp(ty::PAL_CODE, WB | attr::RUNTIME),
             Err(PolicyError::RefuseToBoot)
         );
     }
