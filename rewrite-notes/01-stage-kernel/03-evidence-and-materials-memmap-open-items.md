@@ -904,3 +904,11 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | PMM | 补 `ArchMemoryAccessEligiblePages`；`WbConfigurablePages` 表能力；平台拒绝单列 |
 | `/reserved-memory` | cells/`ranges` 拒绝为项目输入子集，非 DTSpec 格式错误 |
 | 门 | 无代码改动；沿用 minix-boot **132**、boot-shim **70**；lint 0 |
+
+## 三十二、第六十轮：错误分类与架构准入
+
+| 项 | 读数 |
+|---|---|
+| 新错误 | `MissingReservedMemoryRanges`、`UnsupportedReservedMemoryRanges`、`MissingReservedMemoryCells`、`MismatchedReservedMemoryCells` |
+| 新测试 | `dtb_missing_reserved_memory_ranges_is_rejected`、`dtb_missing_reserved_memory_cells_is_rejected`；「宽 cells」用例改判 mismatch |
+| 门 | minix-boot **134**、boot-shim **70**；riscv bootface PASS（exit 0）；x86_64-unknown-uefi check 通过 |

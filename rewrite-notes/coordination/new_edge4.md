@@ -5405,3 +5405,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - PMM：加 `ArchMemoryAccessEligiblePages`，WB 改称能力项，平台拒绝单列；全 hart 最低条件。
 - `/reserved-memory` 的 cells/`ranges` 拒绝标注为项目输入子集。
 - 门：沿用 minix-boot 132、boot-shim 70；lint 0。
+
+### 第二百六十八笔（01 阶段 · I-29 第六十轮：错误分类与架构准入）
+
+代码 `f52730bef`；主文档约 1021 行。
+
+- `/reserved-memory` 错误四拆：缺失 ranges/cells（规范要求）vs 非空 ranges、cells 不一致（项目子集）。
+- O-12i：`WbConfigurablePages` / `CpuPhysicalAccessEligiblePages(ReqProfile)` / `MappingAudit` 三层；PMM 公式只含前两层。
+- O-12k：扩容即失效；`MapSnapshotId` 单调本地生成。
+- 门：minix-boot 134、boot-shim 70、riscv QEMU PASS。

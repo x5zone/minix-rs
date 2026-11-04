@@ -10,6 +10,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十轮评审之后：错误分类拆分、架构准入分层）**
+
+- **代码 `f52730bef`**：`/reserved-memory` 的错误分类按「规范缺失 vs 项目不支持」拆开——`MissingReservedMemoryRanges`（缺属性）/`UnsupportedReservedMemoryRanges`（非空，需转换）/`MissingReservedMemoryCells`/`MismatchedReservedMemoryCells`（应相同，项目子集）。测试新增两条缺失用例；原「宽 cells」用例落到 mismatch。minix-boot **134**、boot-shim **70**；riscv QEMU PASS。
+- **O-12i 架构资格分层**：`ArchMemoryAccessEligiblePages` 拆为 `WbConfigurablePages`（能力）/ `CpuPhysicalAccessEligiblePages(ReqProfile)`（物理访问，含页表遍历/取指/原子按用途）/ `MappingAudit`（逐叶子的属性兑现：PAT×MTRR、AttrIndx×MAIR、PBMT/PMA）。共享层只消费语义结果。
+- **O-12k 扩容即失效**：任何可能改变内存图的分配都会让快照 ID、MapKey、记录与投影整体失效；`MapSnapshotId` 用单调本地序号，不得动态分配。
+- **profile 证据**加要求：AVMF/OVMF 镜像身份 + 实际返回描述符与 `Attribute` 原始值 + 完整位解释表。
+
 **本轮（第五十九轮评审之后：纯文档——属性可达性、PMM 硬件准入、输入子集）**
 
 - **O-06 两处旧句修正**：`RUNTIME`/`NV`/`SP` 不再写成「都已进入六步裁决」——模型保留三种语义，但当前可达的只有 `RUNTIME`；`SP` 的高位 `0x4_0000` 属 `ProfileAttribute` 拒绝域、低位属冲突域，同样不可达。同段末尾「三个已发布文本与 EDK2 不一致」一并更正。
