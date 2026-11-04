@@ -5305,3 +5305,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 精确重复：投影去重、来源记录各留一条；部分重叠拒绝；同范围异语义 → `ConflictingReservationAttributes`。
 - 新测试 4 条（重复 2、冲突 1、反向完整性 1）；minix-boot 127、boot-shim 67、riscv QEMU PASS。
 - aarch64 仍被 `servers/rs` 的 `E0046` 阻断。
+
+### 第二百五十七笔（01 阶段 · I-29 第四十九轮：MRB 重复改判与投影分层）
+
+代码 `b3c93b83f`；主文档约 800 行。
+
+- 撤回上一轮把重复去重套到 MRB 的做法：DTSpec 5.3.2 要求保留区互不重叠，重复即重叠，改为拒绝；`/reserved-memory` 去重明确为项目策略。
+- 不变量 1 补四层（来源事实/冲突解析/纯集合/归因）与各投影量化顺序；O-11 增全范围可达、源目标不相交、内容一致三条；DeviceAccessUse 补 VA；RESERVED 与 UNUSABLE 语义显式分开；WP 归物理保护能力。
+- 门：minix-boot 127、boot-shim 67、riscv QEMU PASS；aarch64 仍被 `E0046` 阻断。
