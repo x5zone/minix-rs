@@ -5333,3 +5333,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-06 `CONVENTIONAL` 条件资格；`/memory` 重叠理由改为项目输入策略；O-12j-c 状态表拆分。
 - 新测试 `dtb_identical_memory_tuples_are_deduplicated_not_rejected`；minix-boot 132、boot-shim 67。
 - aarch64 仍阻断：`servers/rs` 已由 `b71bce1d0` 修复，`servers/sched/src/kernel_api/transport.rs:160` 的 `SefIpcAdapter` 仍缺 `sendrec`（`E0046`），启动行为未验证。
+
+### 第二百六十笔（01 阶段 · I-29 第五十二轮：纯文档裁决）
+
+无代码改动；主文档约 856 行。
+
+- 普通静态保留 + MRB 同页 → 第一版拒绝（BootServicesData 的 must 与本项目 MRB 强化不可同时满足）。
+- PMM 公式补缓存资格项；`no-map`/`EfiReservedMemoryType` 内 DTB 读取第一版拒绝；reusable owner 仅为声明身份；`collect()` 的 MRB 归因缺失明确为旧接口限制。
+- 门：沿用 minix-boot 132、boot-shim 67；lint 0。

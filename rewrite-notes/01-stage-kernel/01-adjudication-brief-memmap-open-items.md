@@ -99,12 +99,12 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | `/reserved-memory`（普通/`reusable`/`no-map` 三种语义） | 同语义重复 → 投影去重、记录各留一条（测试：普通 `dtb_identical_reservations_are_deduplicated_not_rejected`、`reusable` `dtb_reusable_duplicates_are_deduplicated_not_rejected`） | 拒绝（`OverlappingReservedRanges`） | 拒绝（`ConflictingReservationAttributes`：普通+`reusable` 生命周期不同、普通+`no-map` 访问不同、`reusable`+`no-map` 规范互斥；测试 `dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_same_range_with_different_semantics_is_a_conflict`） |
 | MRB | **拒绝**（`OverlappingMemoryReservations`）：DTSpec 5.3.2「These given regions shall not overlap each other」，重复也是重叠（`dtb_identical_mrb_entries_are_rejected`） | 拒绝 | —（MRB 无 `no-map` 语义） |
 
-`/reserved-memory` 的重复容忍是**项目级输入策略**，不是规范授权；MRB 没有这层容忍。`/memory` 的**部分重叠**拒绝同样是项目策略：**不是数学必然**——§3 允许纯集合层对兼容区间 `Union`，部分重叠在集合模型里可以安全归一化；拒绝的理由是「严格输入策略：部分重叠视为固件异常」，它不依赖今天 PMM 的实现，也不声称 DTSpec 禁止 `/memory` 重叠。若将来改为并集，来源记录仍须各留一条。`reusable` 的 owner 关系在去重时不得合并（来源记录各留一条正是为此）。
+`/reserved-memory` 的重复容忍是**项目级输入策略**，不是规范授权；MRB 没有这层容忍。`reusable` 在去重时保留的是**声明身份**（两条记录各有 `id`）；owner 关系尚未建立，不能把记录数量当成 owner 数量——将来 `memory-region` 引用是多对多（一个设备可引用多个区域、一个区域可被多个设备引用），模型应是引用关系集合而非单个 `OwnerId` 字段。`/memory` 的**部分重叠**拒绝同样是项目策略：**不是数学必然**——§3 允许纯集合层对兼容区间 `Union`，部分重叠在集合模型里可以安全归一化；拒绝的理由是「严格输入策略：部分重叠视为固件异常」，它不依赖今天 PMM 的实现，也不声称 DTSpec 禁止 `/memory` 重叠。若将来改为并集，来源记录仍须各留一条。`reusable` 的 owner 关系在去重时不得合并（来源记录各留一条正是为此）。
 - `reusable` 在记录层已独立成 `ReservedReusable`；两张投影表仍把它按保留处理（不实现 owner 关联、回收能力或生命周期处置），第一版保守地不回收，但不丢原始声明语义。
 
 测试（`cargo test -p minix-boot --lib`，132 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`。
 
-**不保证什么**：不产出禁止集合、不产出 PMM 排除集合、不实现 `reusable` 的 owner 回收、不处理 UEFI 来源。
+**不保证什么**：不产出禁止集合、不产出 PMM 排除集合、不实现 `reusable` 的 owner 回收、不处理 UEFI 来源。**`collect()` 的两张表无法表达 MRB 来源**：MRB 范围会从 conventional 扣除，但不会进入 reserved（reserved 的语义是「可达、永不再分配」，MRB 是「不得访问」）；调用方若不持有 `SourceRecord`，排除原因与访问禁止来源都不可追溯。这是旧接口的**有意取舍**，修复方向是让政策所有者持有记录，而不是把 MRB 塞进 reserved（那会把「不得访问」误表达成「可达但不分配」）。因此 `dtb_collect_and_collect_with_sources_agree` 只证明两条接口的**投影一致**，不证明旧接口保留来源完整性。
 
 **输入准入（已实现，不是「已知限制」）**：`/memory` 的 `status` 缺失或为 `okay` 才采集；其它值一律拒绝启动（`UnsupportedMemoryNodeStatus`）——节点自己说不可用的内存不得交给 PMM。带 `hotpluggable` 的 `/memory` 拒绝启动（`HotpluggableMemoryUnsupported`）：内核没有内存移除机制。`/reserved-memory` 子节点的 `status` 不筛选——保留声明即使 `disabled` 也按声明处理（保守方向，只会多留不会误放行）。**仍是项目限制**：`reusable` 不回收；记录保留其类型，回收语义留给后续生命周期层。
 
@@ -549,7 +549,18 @@ PageSourceClaims(page)  = { (SourceRef, RequiredEfiType, 规范强度) }
 ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 ```
 
-**本项目选择「项目强化」路径**：任一 `no-map` 或 MRB 主张都要求该页为 `EfiReservedMemoryType`（把 MRB 的 `should` 提升为项目强制，并明确这是项目策略、不是规范原样映射）；只有普通静态主张时要求 `EfiBootServicesData`。跨来源身份照旧各留一条。覆盖公式分别定义 `R_static` 与 `R_MRB`，经页级裁决后再比对，不能把两者并成一个含义不明的 `R_reserved`。
+**同页主张裁决表（第一版）**：
+
+| 该页的 DTB 主张 | 解析结果 |
+|---|---|
+| 普通静态保留 | 要求 `EfiBootServicesData`（规范 `must`） |
+| `no-map` | 要求 `EfiReservedMemoryType` |
+| MRB | 项目选择要求 `EfiReservedMemoryType`（把 `should` 升为项目强制） |
+| `no-map` + MRB | 兼容，要求 `EfiReservedMemoryType` |
+| **普通静态 + MRB** | **冲突，拒绝启动**：一条描述符无法同时满足普通保留的 `must`（BootServicesData）与本项目的 MRB 强化（Reserved） |
+| 普通静态 + `no-map` | DTB 侧已是冲突（同范围异语义） |
+
+**为什么不是「Reserved 更强所以覆盖」**：DTSpec 对普通静态保留指定的是类型本身，不只是「受保护」；用 Reserved 覆盖等于悄悄牺牲一条来源要求。若将来要接受普通保留 + MRB，唯一自洽的做法是**放弃 MRB 的 `should`→must 强化**（回到规范级别，MRB 的访问禁止由独立政策兑现），而不是让 `ResolveCompatibleClaims` 返回一个隐藏牺牲项的结果。跨来源身份照旧各留一条；覆盖公式分别定义 `R_static` 与 `R_MRB`，经页级裁决后再比对。
 
 只证明「有重叠」或「首类正确」不够：一个正确的首页描述符 + 其后的 `EfiConventionalMemory` 会让保留区大部分页未被保护。反向也成立：一个兼容描述符只覆盖部分，不能把整条来源标记为已验证。必测三种形态（**未实现**）：① 仅首页类型正确、后续页类型错误 → 拒绝；② 多个连续同类描述符共同完整覆盖 → 通过；③ 中间一页类型不兼容 → 拒绝。
 
@@ -560,8 +571,8 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 | 普通 RAM | 启动 ABI 授权 + 完整范围可达即可 |
 | 普通 `/reserved-memory` | 读取由启动输入对象授权决定；分配排除仍然保留 |
 | MRB | 走 MRB 规则允许的、启动程序明确用途对应的受限访问授权 |
-| `no-map` | **不得自动借用 MRB 例外**：必须证明这次专用读取不违反「禁止标准映射/非受控推测访问」，否则拒绝 |
-| `EfiReservedMemoryType` | **不得因配置表里有指针就默认解除 `DenyOSAccess`**：须有该启动 ABI 的明确授权，或直接拒绝这种布局 |
+| `no-map` | **第一版拒绝**：DTSpec 的例外是「由使用该区域的设备驱动控制」的访问，一次性启动读取不属于该例外；除非实现并验证专用受控路径 |
+| `EfiReservedMemoryType` | **第一版拒绝**：配置表里的指针只建立来源身份，不能推翻内存图对该范围的禁止处置；除非有专门且明确的启动 ABI 例外与规范依据 |
 
 **与 O-03 的接口**：若 DTB 本体落在 MRB 覆盖范围内，上面这次只读访问必须登记为**MRB 规则自身允许的、由启动程序明确提供的一次性对象访问授权**（带对象身份、阶段与只读路径）。要否定的是「无边界豁免」——授权不覆盖所在 MRB 区域的其它访问，也不授权复制完成后继续访问原地址；但也不应把 DTB 读取说成「不属于任何例外」，那与规范允许的显式授权相矛盾。
 
@@ -750,12 +761,15 @@ RamSourcePageDomain = FullPages(Union(RamSourceDomain))      ← 先并集，再
 
 PMMAvailable(p) = RamSourcePageDomain
     ∩ TypeAllocatablePages(p)
+    ∩ CacheAttributeEligiblePages(p)
     \ Outward(ExplicitAllocationReservations(p))
     \ Outward(LiveObjectRanges(p))
     \ PlatformAllocationDenials(p)
 
 PMMExcluded(p) = RamSourcePageDomain \ PMMAvailable(p)
 ```
+
+**`CacheAttributeEligiblePages(p)` 必须单独成项**：第一版要求 WB，无 WB 的 `CONVENTIONAL` 描述符不进普通可分配集合——如果只写 `TypeAllocatablePages`，这类页仍会出现在公式结果里，与文字结论矛盾。UEFI 路径的该项来自描述符属性资格；DTB 路径来自平台内存属性政策（不得为共用公式伪造 UEFI 属性记录）。普通映射授权同样要有自己的属性兼容检查，不能只看 `OrdinaryRamEligibility`。
 
 **四类排除原因必须分开，不能塞进一个未定义的 `AllocationReservations`**：① 类型资格（`UNUSABLE`/`UNACCEPTED`/`ACPI_NVS`/`Runtime` 等在阶段 `p` 是否允许分配）——构造规则是**先裁决、再取整页**：
 

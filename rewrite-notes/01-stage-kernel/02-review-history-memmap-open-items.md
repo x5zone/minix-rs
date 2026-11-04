@@ -10,6 +10,15 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十二轮评审之后：纯文档——类型冲突裁决、缓存资格、拒绝策略）**
+
+- **普通静态保留 + MRB 同页 = 拒绝**（第一版）：一条 EFI 描述符无法同时满足 `must`（BootServicesData）与本项目的 MRB 强化（Reserved）；并写明若要接受该组合，唯一自洽路径是放弃 MRB 的 `should`→must 强化，而不是让裁决函数隐藏牺牲项。
+- **PMM 公式补 `CacheAttributeEligiblePages(p)`**：无 WB 的 `CONVENTIONAL` 不再可能出现在可用集合里；UEFI 路径取描述符属性资格、DTB 路径取平台属性政策，不伪造属性记录。
+- **O-11 矩阵收紧**：`no-map` 与 `EfiReservedMemoryType` 中的 DTB 读取第一版**一律拒绝**（前者例外属设备驱动受控使用，后者指针不足以推翻 `DenyOSAccess`），不再写成「须证明」的开放条件。
+- **`reusable` owner 措辞修正**：去重保留的是**声明身份**，owner 关系尚未建立；未来是引用关系集合（多对多），不是单个 `OwnerId`。
+- **`collect()` 的 MRB 归因缺失**写入「不保证什么」：MRB 从 conventional 扣除却不进 reserved，旧接口无法表达其来源；`dtb_collect_and_collect_with_sources_agree` 只证投影一致，不证来源完整。
+- 本轮**无代码改动**：纯文档提交走 lint/表格/行数三门；代码基线仍 `c5f1789b8`，132/67。
+
 **本轮（第五十一轮评审之后：读取合同与类型裁决收口）**
 
 - **代码 `c5f1789b8`（测试切片）**：新增 `build_fdt_multi_reg` 夹具与 `dtb_identical_memory_tuples_are_deduplicated_not_rejected`——单节点两个相同 `reg` 元组时，全景只留一份、两条来源记录各留（origin `{node:0, reg:0/1}`）。此为纯测试提交，生产代码未动。minix-boot **132**、boot-shim **67**。

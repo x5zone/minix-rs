@@ -826,3 +826,14 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 提交性质 | 仅测试模块改动（diff 单 hunk 在 `mod tests` 内），生产路径未变 |
 | aarch64 QEMU | 尝试复跑：`servers/rs` 的 `sendrec` 已由 `b71bce1d0` 修复，但 `servers/sched/src/kernel_api/transport.rs:160` 的 `SefIpcAdapter` 仍缺（`E0046`），镜像组装仍失败；启动行为未验证 |
 | 门 | minix-boot **132**、boot-shim **67** |
+
+## 二十四、第五十二轮：纯文档裁决记录
+
+| 项 | 结论 |
+|---|---|
+| 普通静态 + MRB 同页 | 第一版拒绝；替代路径（放弃 MRB 强化）已写明 |
+| 缓存资格 | `CacheAttributeEligiblePages(p)` 进入 PMM 公式 |
+| `no-map` / `EfiReservedMemoryType` 内的 DTB 读取 | 第一版拒绝，例外路径未实现 |
+| `reusable` owner | 仅声明身份；引用关系集合模型待建 |
+| `collect()` MRB 归因 | 明确为旧接口限制，不靠扩表修复 |
+| 门 | 无代码改动；沿用 minix-boot **132**、boot-shim **67**；lint 0 |
