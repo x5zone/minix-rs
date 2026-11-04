@@ -270,6 +270,10 @@
 
 原则不是「全局优先级数字」，而是：**一般正向授权不能覆盖具体的负向限制；例外必须具有更具体的对象身份、范围、路径与阶段；来源语义未明确允许的例外一律拒绝启动**。`no-map` 的例外与 MRB 的例外不是同一机制。
 
+**`no-map` 要拆成三项，不能简化成一个无条件 `DenyMapping`**：`DenyStandardSystemMapping`（禁止进入标准系统内存映射）、`DenyUncontrolledSpeculativeAccess`（禁止非受控推测访问）、可选的 `DriverControlledUse`（专属设备身份 + 专属访问路径的受控使用）。「有驱动申请」不是通用豁免，不能让 `no-map` 页进入内核直接映射。
+
+**MRB 的部分页**：若靠页表兑现 MRB 访问禁止，则该页整体不得出现在普通映射中；同页还有其它对象需要映射时，拒绝冲突或提供独立受控机制。精确 byte-range 检查不能代替页表兑现。
+
 ### O-04 对象负向义务的投影
 
 **问题**：`MustNotMap` 与 `MustNotAccess` 不同：前者禁止某棵树在某个阶段建立映射，后者禁止访问路径。今天的禁止集合构造式里没有它们的位置。
@@ -465,11 +469,15 @@
 
 | 窗口 | 范围 | 平台 | 依据与用途 |
 |---|---|---|---|
-| LAPIC | `0x0FEE_0000` + 4 KiB | x86_64 | 中断控制器 MMIO；`DEVICE`，引导根与最终根 |
-| IO-APIC | `0x0FEC_0000` + 4 KiB | x86_64 | 同上 |
-| 平台外设窗口 | `0x0800_0000` + 32 MiB | aarch64 | QEMU virt 的 GIC 分发器/重分发器、PL011，以及 RTC/fw_cfg/GPIO 等；**整段 32 MiB 获得 DEVICE 授权**——名字是「平台外设窗口」，不是「PL011 + GICv3」 |
-| PLIC | `0x0C00_0000` + `0x24_0000` | riscv64 | `0x20_0000` 的 priority/pending/enable + 32 hart 的 M/S context（每 hart 2×4 KiB） |
-| NS16550A UART | `0x1000_0000` + 4 KiB | riscv64 | 早期控制台 |
+| 窗口 | 资源范围 `DeviceResourceRange` | 映射范围 `DeviceMappingRange` | 平台与用途 |
+|---|---|---|---|
+| LAPIC | `0x0FEE_0000` + 4 KiB | `0x0FEE_0000` + 2 MiB（2 MiB 叶子包络） | x86_64 中断控制器 |
+| IO-APIC | `0x0FEC_0000` + 4 KiB | 同上包络 | x86_64 中断控制器 |
+| 平台外设窗口 | `0x0800_0000` + 32 MiB | 32 MiB（本身 2 MiB 对齐） | aarch64 GIC/PL011/RTC/fw_cfg/GPIO 等；整段授权，不写作「PL011+GICv3」 |
+| PLIC | `0x0C00_0000` + `0x24_0000` | `0x0C00_0000` + `0x40_0000`（2 MiB 包络） | `0x20_0000` 优先/待决/使能 + 32 hart 的 M/S context |
+| NS16550A UART | `0x1000_0000` + 4 KiB | `0x1000_0000` + 2 MiB（包络） | 早期控制台 |
+
+**两个范围必须分开记录**：`DeviceResourceRange` 是设备实际资源；`DeviceMappingRange` 是页表叶子实际覆盖的范围，恒等式 `DeviceMappingRange ⊇ DeviceResourceRange`。Step-1 恒等映射对设备窗口按 **2 MiB 片**发出（`DEV_PIECE = 1<<21`），所以 4 KiB 资源的实际映射是 2 MiB 包络——**授权必须覆盖包络**，或者改为 4 KiB 尾映射；不能因为设备只用 4 KiB 就把包络其余部分当默认授权。PLIC 的资源 `0x24_0000` 因此取 `0x40_0000` 包络，仍在 QEMU 的 6 MiB aperture 内（编译期断言 `PLIC_WINDOW_LEN ≤ 0x60_0000`）。
 
 **PLIC 窗口的教训（本轮修正）**：context 区从 `+0x20_0000` 开始，窗口大小应为 `0x200000 + N_context×0x1000`，**不能写固定 2 MiB**——原来的 2 MiB 恰好结束在 context 区起点，claim/complete 寄存器拿不到 `DEVICE` 映射。QEMU 实测 DTB：`plic@c000000` 的 `reg` 为 `0xc000000 + 0x600000`。窗口按内核 SMP 上限 32 hart 取 `0x24_0000`，仍在 QEMU 的 PLIC 区间内。
 
@@ -505,11 +513,19 @@
 
 ```
 RamSourcePageDomain = FullPages(Union(RamSourceDomain))      ← 先并集，再取完整页
-PMMExcluded = RamSourcePageDomain ∩ Outward(AllocationReservations)
-PMMAvailable = RamSourcePageDomain \ PMMExcluded
+
+PMMAvailable(p) = RamSourcePageDomain
+    ∩ TypeAllocatablePages(p)
+    \ Outward(ExplicitAllocationReservations(p))
+    \ Outward(LiveObjectRanges(p))
+    \ PlatformAllocationDenials(p)
+
+PMMExcluded(p) = RamSourcePageDomain \ PMMAvailable(p)
 ```
 
-先并集再取整页，避免两个非页对齐的相邻 RAM 区间各自向内收缩时白丢一页；来源记录与身份**不合并**，只在纯计算层构造集合。`Outward(...)` 覆盖普通保留、`no-map`、MRB 等所有分配排除来源，同一页只排除一次。
+**四类排除原因必须分开，不能塞进一个未定义的 `AllocationReservations`**：① 类型资格（`UNUSABLE`/`UNACCEPTED`/`ACPI_NVS`/`Runtime` 等在阶段 `p` 是否允许分配）；② 显式分配保留（`/reserved-memory`、MRB、固件前缀）；③ 存活对象（启动模块、页表、DTB 副本、栈、登记表）；④ 平台拒绝。反例：一条 `UNUSABLE` 描述符没有 DTB 声明，若只看显式保留，它会被算进可用表——与 O-06 冲突。
+
+先并集再取整页，避免两个非页对齐的相邻 RAM 区间各自向内收缩时白丢一页；来源记录与身份**不合并**，只在纯计算层构造集合。同一页被多条排除原因覆盖时，PMM 只排除一次，但**所有排除理由都可追溯**（见 O-12g 的多重归属）。
 
 **MRB 的两种粒度**：精确 byte range 用于访问义务与审计；要通过页表保证不可访问时，另算相交页级范围，并说明「只覆盖一页中部分字节」时该页在其它对象的普通路径中是否允许映射。
 

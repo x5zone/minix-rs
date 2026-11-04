@@ -10,6 +10,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第三十七轮评审之后：PMM 分区公式补全 + 设备映射包络）**
+
+- **代码 `9b2b09f1c`**：PLIC 授权范围改为 **2 MiB 叶子包络** `0x40_0000`（资源 `0x24_0000` 单独保留为 `PLIC_RESOURCE_LEN`），并加编译期断言「2 MiB 对齐 + 不越 QEMU 6 MiB aperture」。
+- **文档**：O-12c 拆 `DeviceResourceRange` / `DeviceMappingRange` 两栏（4 KiB 资源实际映射为 2 MiB 包络，授权必须覆盖包络）；O-12i 的 `PMMAvailable(p)` 补类型资格、显式保留、存活对象、平台拒绝四类原因，`PMMExcluded(p)` 取差集；O-03 把 `no-map` 拆成禁止标准映射 / 禁止非受控推测 / 受控驱动使用三项，并写明 MRB 部分页规则；O-12j 写明 `fdt 0.1.5` 的实际行为与「不签」结论；O-12g 补排除原因多重归属与「对象不得合并成 Reserved」；§7 五个阻塞更新；§6 证据基线改为 `9b2b09f1c` 并列出四条复核命令。
+- **门**：minix-boot 84、boot-shim 67；UEFI 双目标编译；riscv bootface QEMU PASS。
+
 **本轮（第三十六轮评审之后：PLIC 窗口修正 + 页域公式 + 禁止冲突表）**
 
 - **代码 `f98d4edff`**：riscv64 PLIC 窗口从 2 MiB 扩到 `0x24_0000`（`0x20_0000` 优先/待决/使能区 + 32 hart 的 M/S context）——原窗口恰好结束在 context 区起点，claim/complete 拿不到 `DEVICE` 映射；QEMU DTB 实测 `plic@c000000` 的 `reg` 为 `0xc000000 + 0x600000`。另按 EDK2 `UefiSpec.h` 把 `EFI_MEMORY_HOT_PLUGGABLE` 修正为 `0x0010_0000`（上一轮测试用的 `0x400` 不是该位）。

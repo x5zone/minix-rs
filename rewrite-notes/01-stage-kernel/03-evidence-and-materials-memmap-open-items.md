@@ -204,6 +204,14 @@
 | 窗口修正 | `PLIC_MAX_HARTS = 32`、`PLIC_WINDOW_LEN = 0x20_0000 + 2*32*0x1000` | `grep -n -A 4 "PLIC_MAX_HARTS" os/arch/src/lib.rs` |
 | 热插拔位值 | `EFI_MEMORY_HOT_PLUGGABLE = 0x0010_0000`（EDK2 `MdePkg/Include/Uefi/UefiSpec.h`） | `grep -n "0x0010_0000" os/boot-shim/src/ebs_map.rs` |
 
+## 一l、第三十七轮读数（PLIC 包络）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 设备窗口按 2 MiB 片映射 | `DEV_PIECE = 1 << 21` | `grep -n "const DEV_PIECE" os/kernel/src/lib.rs` |
+| PLIC 资源 0x24_0000、包络 0x40_0000 | `PLIC_RESOURCE_LEN` / `PLIC_WINDOW_LEN` 与两条编译期断言 | `grep -n -e PLIC_RESOURCE_LEN -e PLIC_WINDOW_LEN os/arch/src/lib.rs` |
+| 包络仍在 QEMU aperture 内 | `reg` 为 `0xc000000 + 0x600000` | `dtc -I dtb -O dts /tmp/p1.dtb`（见 一k） |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |
