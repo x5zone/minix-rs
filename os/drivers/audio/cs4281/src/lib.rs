@@ -28,7 +28,7 @@ pub mod window;
 
 use alloc::vec;
 use device::Cs4281;
-use minix_audiodriver::dma::UnboundDma;
+use minix_audiodriver::dma::DmaAlloc;
 use minix_audiodriver::service::AudioService;
 use minix_audiodriver::special::{NO_CHANNEL, SpecialFile};
 use minix_audiodriver::subdev::DmaMode;
@@ -87,11 +87,11 @@ pub const CHANNEL_GEOMETRY: [(DmaMode, u32, u32, u32); 3] = [
 ///
 /// `base` must be the register window's mapped address
 /// ([`probe::map_bar`]).
-pub unsafe fn init(base: *mut u8) -> AudioService<Cs4281<MappedWindow>, UnboundDma> {
+pub unsafe fn init<A: DmaAlloc>(base: *mut u8, dma: A) -> AudioService<Cs4281<MappedWindow>, A> {
     AudioService::new(
         // SAFETY: the caller's contract is this function's contract.
         Cs4281::new(unsafe { MappedWindow::new(base) }),
-        UnboundDma,
+        dma,
         special_files(),
         &CHANNEL_GEOMETRY,
     )
@@ -138,7 +138,7 @@ mod tests {
         backing[0x0464..0x0468].copy_from_slice(&registers::STS_CODEC_VALID.to_le_bytes());
         backing[0x047c..0x0480].copy_from_slice(&0x03u32.to_le_bytes());
         // SAFETY: `backing` outlives the service.
-        let mut service = unsafe { init(backing.as_mut_ptr()) };
+        let mut service = unsafe { init(backing.as_mut_ptr(), minix_audiodriver::dma::UnboundDma) };
         assert_eq!(service.init(), 0, "the codec answers immediately");
         // The reset's configuration write landed in the window.
         assert_eq!(

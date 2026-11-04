@@ -9,6 +9,8 @@ license.workspace = true
 minix-types = { workspace = true }
 minix-driver-rt = { workspace = true }
 minix-chardriver = { workspace = true }
+# `VmDmaAlloc` 的 mmap/umap 腿（批次五百三十二起的 E-DMABUF 接线面）。
+minix-sys = { workspace = true }
 
 [lib]
 name = "minix_audiodriver"

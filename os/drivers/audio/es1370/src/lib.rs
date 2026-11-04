@@ -28,7 +28,7 @@ pub mod registers;
 
 use alloc::vec;
 use device::Es1370;
-use minix_audiodriver::dma::UnboundDma;
+use minix_audiodriver::dma::DmaAlloc;
 use minix_audiodriver::service::AudioService;
 use minix_audiodriver::special::{NO_CHANNEL, SpecialFile};
 use minix_audiodriver::subdev::DmaMode;
@@ -92,10 +92,10 @@ pub const CHANNEL_GEOMETRY: [(DmaMode, u32, u32, u32); 4] = [
 /// Builds the service for the binary: the card's face over the real port
 /// seam, the DMA allocator seam (registered `E-DMABUF`), and the
 /// special-file table.
-pub fn init(base_port: u16) -> AudioService<Es1370<KernelPorts>, UnboundDma> {
+pub fn init<A: DmaAlloc>(base_port: u16, dma: A) -> AudioService<Es1370<KernelPorts>, A> {
     AudioService::new(
         Es1370::new(KernelPorts { base: base_port }),
-        UnboundDma,
+        dma,
         special_files(),
         &CHANNEL_GEOMETRY,
     )
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_the_service_initializes_the_card() {
-        let mut service = init(0x0300);
+        let mut service = init(0x0300, minix_audiodriver::dma::UnboundDma);
         // `drv_init` reports four sub-devices, then `drv_init_hw` runs;
         // in a host build the port calls cannot complete, so the card
         // reports the failure instead of pretending to be ready.

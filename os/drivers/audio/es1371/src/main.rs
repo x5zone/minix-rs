@@ -46,7 +46,10 @@ fn real_main() {
     let who = minix_sys::syscall::sys_whoami(&minix_sys::syscall::DirectKernelCallTransport)
         .unwrap_or_else(|r| panic!("es1371: sys_whoami failed: {r}"));
     let transport = KernelTransport::new(who.endpoint);
-    let mut service = minix_driver_es1371::init();
+    let dma = minix_audiodriver::dma::VmDmaAlloc {
+        self_endpoint: who.endpoint,
+    };
+    let mut service = minix_driver_es1371::init(dma);
     // C's fresh-start init: a card that cannot initialize must not serve.
     if service.init() < 0 {
         return;

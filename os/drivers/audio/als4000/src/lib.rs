@@ -28,7 +28,7 @@ pub mod registers;
 
 use alloc::vec;
 use device::Als4000;
-use minix_audiodriver::dma::UnboundDma;
+use minix_audiodriver::dma::DmaAlloc;
 use minix_audiodriver::service::AudioService;
 use minix_audiodriver::special::{NO_CHANNEL, SpecialFile};
 use minix_audiodriver::subdev::DmaMode;
@@ -82,10 +82,10 @@ pub const CHANNEL_GEOMETRY: [(DmaMode, u32, u32, u32); 3] = [
 /// Builds the service for the binary: the card's face over the real port
 /// seam, the DMA allocator seam (registered `E-DMABUF`), and the
 /// special-file table.
-pub fn init(base_port: u16) -> AudioService<Als4000<KernelPorts>, UnboundDma> {
+pub fn init<A: DmaAlloc>(base_port: u16, dma: A) -> AudioService<Als4000<KernelPorts>, A> {
     AudioService::new(
         Als4000::new(KernelPorts { base: base_port }),
-        UnboundDma,
+        dma,
         special_files(),
         &CHANNEL_GEOMETRY,
     )
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_the_service_initializes_the_card() {
-        let mut service = init(0x0200);
+        let mut service = init(0x0200, minix_audiodriver::dma::UnboundDma);
         // `drv_init` reports three sub-devices, then `drv_init_hw` runs;
         // in a host build the port calls cannot complete, so the card
         // reports the failure instead of pretending to be ready.

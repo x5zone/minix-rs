@@ -22,7 +22,7 @@ pub mod dsp;
 
 use alloc::vec;
 use char_face::Sb16Face;
-use minix_audiodriver::dma::UnboundDma;
+use minix_audiodriver::dma::DmaAlloc;
 use minix_audiodriver::service::AudioService;
 use minix_audiodriver::special::{NO_CHANNEL, SpecialFile};
 use minix_audiodriver::subdev::DmaMode;
@@ -63,11 +63,6 @@ pub const CHANNEL_GEOMETRY: [(DmaMode, u32, u32, u32); 2] = [
 ];
 
 /// Builds the service for the binary.
-pub fn init() -> AudioService<Sb16Face, UnboundDma> {
-    AudioService::new(
-        Sb16Face::new(),
-        UnboundDma,
-        special_files(),
-        &CHANNEL_GEOMETRY,
-    )
+pub fn init<A: DmaAlloc>(dma: A) -> AudioService<Sb16Face, A> {
+    AudioService::new(Sb16Face::new(), dma, special_files(), &CHANNEL_GEOMETRY)
 }

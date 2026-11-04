@@ -108,6 +108,38 @@ pub const MAP_FLAG_ANON: u32 = 0x1000;
 /// C: `MAP_PREALLOC 0x080000` (`minix3/sys/sys/mman.h:120`), the other half
 /// of the block cache's allocation flags (cache.c:200-201).
 pub const MAP_FLAG_PREALLOC: u32 = 0x080000;
+/// `MAP_PRIVATE 0x0002` (`minix3/sys/sys/mman.h`): this build's mmap
+/// validation requires exactly one of SHARED/PRIVATE (doc 20 §3.6), so the
+/// `alloc_contig` shape passes it explicitly where C's util passed neither.
+pub const MAP_FLAG_PRIVATE: u32 = 0x0002;
+
+/// `MAP_CONTIG 0x100000` (`minix3/sys/sys/mman.h`): the mapping must be
+/// physically contiguous (the DMA constraint; C pairs it with PREALLOC).
+pub const MAP_FLAG_CONTIG: u32 = 0x100000;
+
+/// `MAP_LOWER16M 0x200000` (`minix3/sys/sys/mman.h`): ISA-DMA addressable
+/// below 16 MiB.
+pub const MAP_FLAG_LOWER16M: u32 = 0x200000;
+
+/// `MAP_LOWER1M 0x400000` (`minix3/sys/sys/mman.h`): below 1 MiB.
+pub const MAP_FLAG_LOWER1M: u32 = 0x400000;
+
+/// `MAP_ALIGNMENT_64KB 0x01000000` (`minix3/sys/sys/mman.h`): 64 KiB
+/// aligned (one half of the audio ring's boundary rule).
+pub const MAP_FLAG_ALIGNMENT_64KB: u32 = 0x01000000;
+
+/// `AC_ALIGN4K 0x01` (`minix3/minix/include/minix/syslib.h:99`): page
+/// alignment — the allocator's default, no mmap flag behind it.
+pub const AC_ALIGN4K: u32 = 0x01;
+
+/// `AC_LOWER16M 0x02` (`syslib.h:100`).
+pub const AC_LOWER16M: u32 = 0x02;
+
+/// `AC_ALIGN64K 0x04` (`syslib.h:101`).
+pub const AC_ALIGN64K: u32 = 0x04;
+
+/// `AC_LOWER1M 0x08` (`syslib.h:102`).
+pub const AC_LOWER1M: u32 = 0x08;
 
 /// Returns the memory server endpoint.
 pub const fn vm_endpoint() -> Endpoint {
@@ -325,6 +357,49 @@ pub fn physical_address_via(
     // SAFETY: the reply carries the physical address at byte zero.
     let physical = unsafe { message.m_u.raw[..8].as_ptr().cast::<u64>().read() };
     Ok(PhysBytes(physical))
+}
+
+/// C `alloc_contig` (`minix3/minix/lib/libsys/alloc_util.c:9-27`): map
+/// `length` bytes with the contiguous/prealloc base plus the requested
+/// constraint flags, then translate the chosen address with
+/// `sys_umap(SELF, VM_D, …)` — one call per half, and the physical base is
+/// what the card will DMA into. `alloc_flags` are the `AC_*` bits; C's
+/// util maps `AC_LOWER16M`/`AC_LOWER1M`/`AC_ALIGN64K` onto mmap flags and
+/// leaves `AC_ALIGN4K` to the page allocator. The sharing face differs by
+/// this build's tightening: C's util sets neither SHARED nor PRIVATE,
+/// while this VM requires exactly one (doc 20 §3.6), so PRIVATE goes in
+/// explicitly.
+pub fn alloc_contig_via(
+    transport: &impl IpcTransport,
+    caller: Endpoint,
+    length: u64,
+    alloc_flags: u32,
+) -> Result<(VirBytes, PhysBytes), Errno> {
+    let mut flags = MAP_FLAG_PRIVATE | MAP_FLAG_ANON | MAP_FLAG_PREALLOC | MAP_FLAG_CONTIG;
+    if alloc_flags & AC_LOWER16M != 0 {
+        flags |= MAP_FLAG_LOWER16M;
+    }
+    if alloc_flags & AC_LOWER1M != 0 {
+        flags |= MAP_FLAG_LOWER1M;
+    }
+    if alloc_flags & AC_ALIGN64K != 0 {
+        flags |= MAP_FLAG_ALIGNMENT_64KB;
+    }
+    let address = mmap_via(
+        transport,
+        caller,
+        MapRequest {
+            beneficiary: caller,
+            address: VirBytes(0),
+            length: VirBytes(length),
+            protection: MAP_PROTECTION_READ | MAP_PROTECTION_WRITE,
+            flags,
+            file: -1,
+            offset: 0,
+        },
+    )?;
+    let physical = physical_address_via(transport, caller, address)?;
+    Ok((address, physical))
 }
 
 /// Reads a page reference count.
@@ -1018,6 +1093,82 @@ mod tests {
             physical_address_via(&transport, Endpoint(5), VirBytes(0x8000)),
             Ok(PhysBytes(0x1_0000))
         );
+    }
+
+    #[test]
+    fn test_alloc_contig_maps_then_umaps_and_reports_both_bases() {
+        let mut transport = CannedTransport::new();
+        // First round trip: mmap's reply carries the chosen address.
+        let mut mmap_reply = reply_with_type(0);
+        // SAFETY: test-only payload setup through the documented overlay.
+        unsafe {
+            mmap_reply.m_u.m_mmap.retaddr = 0x5000;
+        }
+        transport.reply_sendrec(Ok(mmap_reply));
+        // Second round trip: umap's reply carries the physical base.
+        let mut umap_reply = reply_with_type(0);
+        // SAFETY: test-only payload setup through the documented overlay.
+        unsafe {
+            umap_reply.m_u.raw[..8].copy_from_slice(&0x1_0000u64.to_ne_bytes());
+        }
+        transport.reply_sendrec(Ok(umap_reply));
+        let got =
+            alloc_contig_via(&transport, Endpoint(5), 0x2_0000, AC_ALIGN64K | AC_LOWER16M).unwrap();
+        assert_eq!(got, (VirBytes(0x5000), PhysBytes(0x1_0000)));
+        // The mmap request carried the DMA flag set: the C util's base
+        // (PREALLOC|CONTIG|ANON) plus this build's PRIVATE, with the AC
+        // constraints mapped (LOWER16M + ALIGNMENT_64KB).
+        let (destination, request) = &transport.sent.borrow()[0];
+        assert_eq!(*destination, vm_endpoint());
+        // SAFETY: the m_mmap arm is the documented payload for this call.
+        let sent_flags = unsafe { request.m_u.m_mmap.flags } as u64;
+        assert_eq!(
+            sent_flags,
+            (MAP_FLAG_PRIVATE
+                | MAP_FLAG_ANON
+                | MAP_FLAG_PREALLOC
+                | MAP_FLAG_CONTIG
+                | MAP_FLAG_LOWER16M
+                | MAP_FLAG_ALIGNMENT_64KB) as u64
+        );
+        let sent_len = unsafe { request.m_u.m_mmap.len };
+        assert_eq!(sent_len, 0x2_0000);
+    }
+
+    #[test]
+    fn test_alloc_contig_flags_are_added_not_replaced() {
+        // `AC_ALIGN4K` alone: no mmap flag behind it (the page allocator is
+        // page-aligned by default), so the request carries only the base.
+        let mut transport = CannedTransport::new();
+        let mut mmap_reply = reply_with_type(0);
+        // SAFETY: test-only payload setup through the documented overlay.
+        unsafe {
+            mmap_reply.m_u.m_mmap.retaddr = 0x6000;
+        }
+        transport.reply_sendrec(Ok(mmap_reply));
+        let mut umap_reply = reply_with_type(0);
+        // SAFETY: test-only payload setup through the documented overlay.
+        unsafe {
+            umap_reply.m_u.raw[..8].copy_from_slice(&0x2_0000u64.to_ne_bytes());
+        }
+        transport.reply_sendrec(Ok(umap_reply));
+        let got = alloc_contig_via(&transport, Endpoint(5), 0x1000, AC_ALIGN4K).unwrap();
+        assert_eq!(got, (VirBytes(0x6000), PhysBytes(0x2_0000)));
+        let (_, request) = &transport.sent.borrow()[0];
+        // SAFETY: the m_mmap arm is the documented payload for this call.
+        let sent_flags = unsafe { request.m_u.m_mmap.flags } as u64;
+        assert_eq!(
+            sent_flags,
+            (MAP_FLAG_PRIVATE | MAP_FLAG_ANON | MAP_FLAG_PREALLOC | MAP_FLAG_CONTIG) as u64
+        );
+    }
+
+    #[test]
+    fn test_alloc_contig_propagates_the_mmap_failure() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Err(TrapStatus(minix_types::ENOMEM)));
+        let got = alloc_contig_via(&transport, Endpoint(5), 0x1000, AC_LOWER16M);
+        assert_eq!(got.unwrap_err(), Errno::from_i32(minix_types::ENOMEM));
     }
 
     #[test]

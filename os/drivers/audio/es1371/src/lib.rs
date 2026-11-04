@@ -23,7 +23,7 @@ pub mod rate;
 
 use alloc::vec;
 use char_face::Es1371Face;
-use minix_audiodriver::dma::UnboundDma;
+use minix_audiodriver::dma::DmaAlloc;
 use minix_audiodriver::service::AudioService;
 use minix_audiodriver::special::{NO_CHANNEL, SpecialFile};
 use minix_audiodriver::subdev::DmaMode;
@@ -45,7 +45,7 @@ pub const CHANNEL_GEOMETRY: [(DmaMode, u32, u32, u32); 2] = [
 
 /// Builds the service for the binary: the card's hooks, the DMA allocator
 /// seam (registered `E-DMABUF`), and the special-file table.
-pub fn init() -> AudioService<Es1371Face, UnboundDma> {
+pub fn init<A: DmaAlloc>(dma: A) -> AudioService<Es1371Face, A> {
     let files = vec![SpecialFile {
         minor: AUDIO_MINOR,
         read_chan: 1,
@@ -53,5 +53,5 @@ pub fn init() -> AudioService<Es1371Face, UnboundDma> {
         ioctl_chan: 0,
     }];
     let _ = NO_CHANNEL;
-    AudioService::new(Es1371Face::new(), UnboundDma, files, &CHANNEL_GEOMETRY)
+    AudioService::new(Es1371Face::new(), dma, files, &CHANNEL_GEOMETRY)
 }

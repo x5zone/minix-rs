@@ -93,7 +93,40 @@ pub const fn plan_ring(buffer: DmaBuffer, dma_size: u64) -> RingPlan {
     }
 }
 
-/// The production allocator: registered `E-DMABUF`, not there yet.
+/// The production allocator: DMA memory through the memory server.
+///
+/// C asks for the buffer with `alloc_contig` (`alloc_util.c:9-27`) and
+/// translates it with `sys_umap`; this build's counterpart is
+/// [`minix_sys::vm::alloc_contig_via`] — an `mmap` carrying the DMA
+/// constraint flags (`MAP_PREALLOC|MAP_CONTIG`, plus the audio ring's
+/// `AC_ALIGN64K | AC_LOWER16M`, `audio_fw.c:764`) and the umap for the
+/// physical base the card programs. A failed allocation fails the
+/// channel's bring-up, the same face as C's failed `alloc_contig`
+/// (`audio_fw.c:765-769`).
+pub struct VmDmaAlloc {
+    /// This server's endpoint: the mmap beneficiary and `sys_umap`'s SELF.
+    pub self_endpoint: minix_types::Endpoint,
+}
+
+impl DmaAlloc for VmDmaAlloc {
+    fn alloc_contig(&mut self, size: u64) -> Result<DmaBuffer, i32> {
+        let (address, physical) = minix_sys::vm::alloc_contig_via(
+            &minix_sys::ipc::DirectTrapTransport,
+            self.self_endpoint,
+            size,
+            minix_sys::vm::AC_ALIGN64K | minix_sys::vm::AC_LOWER16M,
+        )
+        .map_err(|e| -(e.to_i32()))?;
+        Ok(DmaBuffer {
+            address: address.0,
+            physical: physical.0,
+            size,
+        })
+    }
+}
+
+/// The placeholder allocator: registered `E-DMABUF`'s old face, kept for
+/// drivers whose bring-up has not switched to [`VmDmaAlloc`] yet.
 ///
 /// Reporting `ENOSYS` keeps a driver from programming a DMA address it
 /// does not own; C's failure path is the same shape (a failed

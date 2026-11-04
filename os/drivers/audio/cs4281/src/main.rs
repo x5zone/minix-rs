@@ -80,7 +80,10 @@ fn real_main() {
     };
 
     // SAFETY: `base` is the mapping the VM server just placed.
-    let mut service = unsafe { minix_driver_cs4281::init(base) };
+    let dma = minix_audiodriver::dma::VmDmaAlloc {
+        self_endpoint: who.endpoint,
+    };
+    let mut service = unsafe { minix_driver_cs4281::init(base, dma) };
     service.hooks_mut().set_irq(probed.irq);
     // C's fresh-start init: a card that cannot initialize must not serve.
     if service.init() < 0 {

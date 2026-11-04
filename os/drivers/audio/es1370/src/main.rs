@@ -58,7 +58,10 @@ fn real_main() {
         return;
     };
 
-    let mut service = minix_driver_es1370::init(probed.port);
+    let dma = minix_audiodriver::dma::VmDmaAlloc {
+        self_endpoint: who.endpoint,
+    };
+    let mut service = minix_driver_es1370::init(probed.port, dma);
     service.hooks_mut().set_irq(probed.irq);
     // C's fresh-start init: a card that cannot initialize must not serve.
     if service.init() < 0 {
