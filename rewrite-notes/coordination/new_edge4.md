@@ -5238,3 +5238,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - UART 2 MiB 包络改 `RiscvVirtPlatformMmioWindow`；PLIC context 推导链；`PlatformMemoryProfile`；`DeviceAccessUseSet` 八字段。
 - 五个校验调用点表（含「是否参与内存政策」）；空表头删除；no-map/MRB 措辞；FullPages 页编号；MRB 中文名。
 - 门：minix-boot 102、boot-shim 67、双目标编译、两个 QEMU 腿 PASS；lint 0。
+
+### 第二百五十笔（01 阶段 · I-29 第四十二轮：结构预扫受阻与容器收口）
+
+代码 `51b784cb3`；主文档 658 → 666 行。
+
+- 容器校验：MRB 16 条上限进扫描函数；strings 非对齐正向测试；104 测试。
+- O-12j-b 预扫尝试：真实 DTB 上 `fault_fetch`（cause=1，`epc` 在 `validate_structure` 的 `jr`）；`match`/比较链都被 LLVM 变成 `.rodata` 跳转表，早期映射不覆盖该绝对地址；已回退并登记方向（移到分页后 / 无跳转表编译形态）。
+- 文档：O-12c 平台窗口资源清单与政策字段；O-06 属性三分（WP≠RO、SP 不产生禁令）与 CONVENTIONAL 的 WB 条件；O-12i `PageBytes` 修正；§2.7 复核口径；§6 104/67。
+- 门：minix-boot 104、boot-shim 67、riscv 与 aarch64 UEFI QEMU 双 PASS；lint 0。

@@ -10,6 +10,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十二轮评审之后：结构预扫受阻的实证 + 容器校验收口）**
+
+- **代码 `51b784cb3`**：容器校验补 **MRB 条目上限 16 条**（`TooManyReservations`，有界性在扫描函数自身）与 **strings 块非对齐的正向测试**；minix-boot **104**、boot-shim **67**；riscv 与 aarch64 UEFI QEMU 双 PASS。
+- **O-12j-b 的预扫尝试与阻塞（实证）**：实现了无分配的 token 预扫（token 合法性、单根、嵌套平衡、属性/名称边界、深度 ≤64），riscv bootface 在真实 DTB 上 `fault_fetch`（QEMU `cause=1`，`epc` 落在 `validate_structure` 的 `jr` 处）；`match` 与比较链两种写法都被 LLVM 还原为 `.rodata` 跳转表，而该引导阶段执行的映射不覆盖跳转表的绝对地址。预扫已回退；可行方向：移到分页/高半生效后执行，或提供无跳转表的编译形态。
+- **文档**：O-12j-a 更新为 18 条测试（含字符串块非对齐与 MRB 上限）；O-12j-b 记录上述阻塞；O-12c 补 `RiscvVirtPlatformMmioWindow` 的资源清单（8 个 VirtIO、条件 UART1、fw_cfg）与 `DeviceWindowPolicy` 完整字段；O-06 把属性分为缓存/保护/其它三类（`WP` ≠ `RO`、`SP` 不产生禁令）并给 `CONVENTIONAL` 加 WB 条件；O-12i 的 `PageBytes` 改为先转 `u128` 再加一、写明 `0 ≤ n < 2^52`；§2.7 复核口径纳入 `fdt_layout::validate`；§6 统一 104/67。
+
 **本轮（第四十一轮评审之后：FDT 版本子集、结构块边界与平台窗口授权）**
 
 - **代码 `23feb9bc0`**：FDT 版本收紧为 `version=17` + `last_comp_version=16`（明确是项目输入子集，规范要求客户端接受向后兼容版本）；新增 `off_dt_struct` 4 字节对齐、结构块以 `FDT_END` 结尾、`MRB → structure → strings` 完整顺序检查。测试 16 条；minix-boot **102**、boot-shim **67**；两个 QEMU 腿 PASS。

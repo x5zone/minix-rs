@@ -247,6 +247,15 @@
 | 完整块顺序 | `MRB → structure → strings`；`rejects_strings_before_the_structure_block` | 同上 |
 | 真实固件 | QEMU/OpenSBI DTB 为 v17/16、结构块 4 字节对齐且以 END 结尾，两个 QEMU 腿 PASS | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh`、`test-shim-bootmarks-aarch64.sh` |
 
+## 一q、第四十二轮读数（预扫尝试与容器收口）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| MRB 条目上限在扫描函数内 | `MRB_MAX_ENTRIES = 16`、`TooManyReservations`；`rejects_more_reservations_than_the_collector_accepts` | `grep -n -e MRB_MAX_ENTRIES -e TooManyReservations os/libs/minix-boot/src/fdt_layout.rs` |
+| strings 块非对齐可接受 | `accepts_an_unaligned_strings_block` | 同文件 |
+| 预扫的失败形态 | riscv bootface `fault_fetch`，`cause=1`，`epc=0xffffffc000032330`（`validate_structure` 的 `jr`） | `qemu-system-riscv64 ... -d int -D /tmp/q.log` 后看 `riscv_cpu_do_interrupt` |
+| 根因 | `riscv64-linux-gnu-objdump` 显示 token 分派被编译为 `.rodata` 跳转表 + `jr`；该阶段执行的映射不覆盖跳转表绝对地址 | 同左 + `nm \| grep switch.table` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |
