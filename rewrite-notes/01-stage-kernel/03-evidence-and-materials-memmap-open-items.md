@@ -171,6 +171,14 @@
 | UEFI 目标不再漏检 | `cargo check -p boot-shim --target aarch64-unknown-uefi` / `x86_64-unknown-uefi` 均通过 | 同左 |
 | aarch64 UEFI 启动门 | `test-shim-bootmarks-aarch64` PASS（MARK3 已同步为诊断行） | `bash os/qemu-tests/test-shim-bootmarks-aarch64.sh` |
 
+## 一h、第三十三轮代码读数
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| MRB 条目重叠拒绝 | `OverlappingMemoryReservations`；`dtb_overlapping_memory_reservations_are_rejected` | `grep -n "OverlappingMemoryReservations" os/libs/minix-boot/src/memmap_source.rs` |
+| MRB 扫描上限 | `DTB_MRB_MAX = 16`；`TooManyMemoryReservations`；`dtb_too_many_memory_reservations_are_rejected` | 同左 |
+| 证据基线 | 提交 `413ff9265`；`git rev-parse HEAD` 与 `git status --short` 同批核对 | `cd os && git rev-parse HEAD` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |

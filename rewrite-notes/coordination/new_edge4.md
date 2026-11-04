@@ -5150,3 +5150,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 行为：UEFI 磁盘 DTB 的 `/memory` 覆盖对照由 panic 降为诊断，不再参与启动决策；QEMU MARK3 同步。
 - 文档：`RamSourceDomain` 与 `RamBacking` 分层（`EfiReservedMemoryType` 可属来源域非 backing）；O-01 逐类型保留期限与 `reusable` 所有者；O-02a x86 有效类型与别名；O-06 backing 不证明硬件可访问、`LOADER_CODE` 可执行；O-11 header 边界 + MRB 交叉验证；O-12g 采集器重构登记。
 - 门：minix-boot 79、boot-shim 66、三 UEFI/riscv 目标编译、aarch64 UEFI QEMU PASS；lint 0；主文档 437 行。
+
+### 第二百四十一笔（01 阶段 · I-29 第三十三轮：MRB 完整性 + O 表收敛）
+
+代码 `413ff9265`；主文档 437 → 471 行。
+
+- MRB：条目互不重叠、扫描上限 16 条（缺终止项也拒绝）；+2 测试（81）。
+- 文档：MRB 三项项目限制（status/hotpluggable/reusable）；O-11 四条 DTB 入口 + 两阶段 + 重叠类型裁决；O-06 加 RamSourceDomain 列与属性位处置；O-12c 设备窗口来源矩阵；O-12g 原始范围保留；O-12h 结构校验与分类分开；§6 证据基线。
+- 门：minix-boot 81、boot-shim 66、三目标编译、riscv bootface QEMU PASS；lint 0。

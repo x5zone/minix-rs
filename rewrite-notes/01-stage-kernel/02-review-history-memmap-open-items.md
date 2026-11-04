@@ -10,6 +10,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第三十三轮评审之后：MRB 完整性切片 + 四项阻塞的文档收敛）**
+
+- **代码 `413ff9265`**：MRB 条目**互不重叠**（`OverlappingMemoryReservations`）与**扫描上限 16 条**（`TooManyMemoryReservations`；缺 `{0,0}` 终止项也落在这里）；+2 测试（minix-boot 81），riscv bootface QEMU PASS。
+- **文档**：§2.1 补 MRB 拒绝条件与三项项目限制（`status` 不筛选、`hotpluggable` 不识别、`reusable` 不回收）；O-11 扩展到**四条 DTB 入口**（授权来源表 + 统一两阶段读取 + 重叠类型裁决与规范强度）；O-06 表加 `RamSourceDomain` 列（`RESERVED`/`UNUSABLE` 标待裁定）、补已知属性位处置；O-12c 补设备窗口来源矩阵；O-12g 要求原始记录保留完整 byte range 与身份、PMM 投影才取交集；§3 不变量 1 改为「按投影各量化一次」；新增 **O-12h**（UEFI 结构校验与政策分类分开）；§6 增加证据基线（HEAD + 工作树状态）。
+- **评审人指出的证据可复现性问题**：上一版引用的提交号与测试数不同步；本轮起 §6 固定写「证据基线：提交 + HEAD 校验 + 工作树状态 + 读数」。
+- **门**：minix-boot 81、boot-shim 66；x86_64/aarch64 UEFI 与 riscv64 目标编译；riscv bootface QEMU PASS。
+
 **本轮（第三十二轮评审之后：两处解析器校验 + 自检定性 + 来源域/backing 分层）**
 
 - **代码 `431bf8461`**：`no-map`/`reusable` 必须是空属性（非空 → `NonEmptyReservationAttribute`）；`/reserved-memory` 的 cells 必须与根一致；**修复 aarch64-unknown-uefi 编译回归**（两处 `collect()` 未处理 `Result`，上一轮漏检该目标）；UEFI 磁盘 DTB 覆盖对照由 panic 降为诊断，QEMU 用例 MARK3 同步。
