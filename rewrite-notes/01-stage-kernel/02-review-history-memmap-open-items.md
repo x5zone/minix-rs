@@ -10,6 +10,15 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十轮评审之后：O-12j 三分 + 设备覆盖的来源独立 + 地址可达性）**
+
+- **代码 `3333d428c`**：`fdt_layout::validate` 增加 FDT 格式版本策略（只接受 17，`last_comp_version ≤ 17`）与**项目块顺序**（MRB 在 structure 之前；规范该顺序是 `should`，按输入限制执行）；新增 3 条测试（旧/未来版本、MRB 在结构块之后、MRB 落入 header）。minix-boot **99**、boot-shim **67**；riscv bootface 与 aarch64 UEFI QEMU 双 PASS。
+- **O-12j 拆三层**：a 容器与 MRB（已实现，14 条测试）；b 结构块 token/属性解析（未闭合——`fdt 0.1.5` 含 `unwrap`/`expect` 与直接切片）；c 目标节点语义（未闭合）。
+- **§2.1 归属改正**：`DtbMemoryMap` 自身不做头部校验，五条输入路径在解析库前由 `fdt_layout::validate` 完成；不再写成「未检查」。
+- **O-11 改名并补地址域**：`BootInputReachabilityAuthorization`（PA/VA、当前转换状态、`[dtb, dtb+40)` 整段可读）与 `ValidatedObjectReadAuthorization`（完整对象只读并复制）。
+- **O-12c**：覆盖改为 `ExpectedDeviceMappingCoverage`（构造推导）与 `ObservedDeviceMappingCoverage`（PTE 遍历，未实现）；APIC 地址绑定 x86 profile（xAPIC/x2APIC、`IA32_APIC_BASE`、MADT 一致性）；PLIC 拆 `DeviceAccessUseSet` 与 `Envelope`，并明确 QEMU 版本尚未钉住。
+- **O-12i**：类型资格改为「先 `ResolveCompatibleTypeClaims`、再 `FullPages`」；O-12g 重叠措辞改为「同源去重 / 跨来源冲突」；§4 默认 R/NX 限定到「已获普通 RAM 映射授权的保留对象」；§6 列出 14 条测试名与五处调用点。
+
 **本轮（第三十九轮评审之后：FDT 容器校验落地 + 范围四列化）**
 
 - **代码 `1a9e2a14f`**：新增 `minix_boot::fdt_layout::validate`——解析前检查 magic、`totalsize`、blob 8 字节对齐、`struct`/`strings` 块 checked 边界与互不重叠、MRB 偏移对齐、`{0,0}` 终止项落在 `min(off_dt_struct, totalsize)`；返回块范围，调用方截到 `totalsize` 再解析。五处 DTB 入口接入（riscv/aarch64 bootface、OpenSBI、aarch64 UEFI 两处堆副本）。10 条测试；minix-boot **96**、boot-shim **67**；riscv bootface 与 aarch64 UEFI QEMU 双 PASS。

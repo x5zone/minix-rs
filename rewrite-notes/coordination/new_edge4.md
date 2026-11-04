@@ -5220,3 +5220,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-12i `FullPages`/`TypeAllocatablePages`/`no-map` 部分页；O-12g 同义重复 vs 异义冲突；O-12h 版本策略与 2^64 独立错误码。
 - §6 统一 96/67；§7 O-01 归入来源组，改名「第一轮实现复审的起点」。
 - 门：minix-boot 96、boot-shim 67、四目标编译、riscv 与 aarch64 UEFI QEMU 双 PASS；lint 0。
+
+### 第二百四十八笔（01 阶段 · I-29 第四十轮：容器版本/块顺序与 O-12j 三分）
+
+代码 `3333d428c`；主文档 620 → 637 行。
+
+- `fdt_layout::validate` 增加 FDT 版本（17/≤17）与项目块顺序（MRB 先于 structure）检查；+3 测试（99）。
+- O-12j 拆 a（容器，已实现）/b（结构块解析，未闭合）/c（节点语义，未闭合）；§2.1 归属改正。
+- O-11 改名两层授权并补 PA/VA 与整段可达性；O-12c 区分预期/观测覆盖、APIC profile、PLIC use set；O-12i 先裁决再取整页。
+- 门：minix-boot 99、boot-shim 67、双目标编译、两个 QEMU 腿 PASS；lint 0。

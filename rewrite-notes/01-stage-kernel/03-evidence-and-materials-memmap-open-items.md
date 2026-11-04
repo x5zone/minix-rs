@@ -229,6 +229,15 @@
 | UART 资源范围 | `serial@10000000` 的 `reg = <0x00 0x10000000 0x00 0x100>`（256 B） | `dtc -I dtb -O dts /tmp/p1.dtb` |
 | PLIC 资源与中断 | `reg = 0xc000000 + 0x600000`；`interrupts-extended = <0x02 0x0b 0x02 0x09>` | 同上 |
 
+## 一o、第四十轮读数（容器版本与块顺序）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| FDT 版本策略 | 只接受 `version = 17`、`last_comp_version ≤ 17`；`rejects_unsupported_fdt_versions` | `grep -n -e UnsupportedVersion -e FDT_VERSION os/libs/minix-boot/src/fdt_layout.rs` |
+| 项目块顺序 | MRB 必须位于 structure 之前；`rejects_a_layout_whose_mrb_follows_the_struct_block` | 同上 |
+| MRB 不落入 header | `rejects_an_mrb_that_starts_inside_the_header` | 同上 |
+| 真实固件 | QEMU/OpenSBI 生成的 DTB 为 v17/last_comp 16，两个 QEMU 腿 PASS | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh`、`test-shim-bootmarks-aarch64.sh` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |
