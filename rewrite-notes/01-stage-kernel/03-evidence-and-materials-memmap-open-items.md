@@ -837,3 +837,12 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | `reusable` owner | 仅声明身份；引用关系集合模型待建 |
 | `collect()` MRB 归因 | 明确为旧接口限制，不靠扩表修复 |
 | 门 | 无代码改动；沿用 minix-boot **132**、boot-shim **67**；lint 0 |
+
+## 二十五、第五十三轮：歧义属性位与 aarch64 阻断更新
+
+| 项 | 读数 |
+|---|---|
+| 歧义位 | `0x0001_0000`：PDF=HOT_PLUGGABLE / 仓库=MORE_RELIABLE；实现 `AmbiguousAttribute`，测试 `the_ambiguous_bit_fails_closed_under_either_name` |
+| 既有负控 | `0x0010_0000`（仓库=HOT_PLUGGABLE）仍走 `UnknownAttribute`（`hot_pluggable_bit_fails_closed_as_unknown`） |
+| 门 | minix-boot **132**、boot-shim **68**；x86_64-unknown-uefi check 通过 |
+| aarch64 | 仍阻断：`servers/rs` 已修（`b71bce1d0`），`servers/sched/src/kernel_api/transport.rs:161` 的 `SefIpcAdapter` 仍缺 `sendrec` |

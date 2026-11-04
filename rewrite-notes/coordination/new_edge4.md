@@ -5341,3 +5341,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 普通静态保留 + MRB 同页 → 第一版拒绝（BootServicesData 的 must 与本项目 MRB 强化不可同时满足）。
 - PMM 公式补缓存资格项；`no-map`/`EfiReservedMemoryType` 内 DTB 读取第一版拒绝；reusable owner 仅为声明身份；`collect()` 的 MRB 归因缺失明确为旧接口限制。
 - 门：沿用 minix-boot 132、boot-shim 67；lint 0。
+
+### 第二百六十一笔（01 阶段 · I-29 第五十三轮：歧义属性位 fail-closed 与 O-12k）
+
+代码 `694b74386`；主文档约 881 行。
+
+- `0x0001_0000` 语义歧义（2.11 PDF=HOT_PLUGGABLE，规范仓库/EDK2=MORe_RELIABLE）→ `AmbiguousAttribute` fail-closed；原按 MORE_RELIABLE 放行会让 PDF 编码的热插拔内存进 PMM。
+- 删除两处「Reserved 可覆盖 BootServicesData」；普通静态+MRB 同页一律拒绝。
+- 新增 O-12k（MapKey 快照一致性）；`EfiReservedMemoryType`+`no-map` 不开放驱动例外；合法记录与拒绝诊断记录分开。
+- 门：minix-boot 132、boot-shim 68；aarch64 仍被 `servers/sched` 的 `E0046` 阻断。

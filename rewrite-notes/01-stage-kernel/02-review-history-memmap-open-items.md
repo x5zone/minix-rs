@@ -10,6 +10,14 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十三轮评审之后：歧义位 fail-closed、O-12k、组合规则）**
+
+- **代码 `694b74386`**：`0x0001_0000` 在 2.11 PDF 是 `HOT_PLUGGABLE`、在规范仓库/EDK2/Linux 是 `MORE_RELIABLE`——此前按后者放行，按 PDF 构建的固件会把热插拔内存送进 PMM。现在该位在已知位闸之前单独拒绝（`PolicyError::AmbiguousAttribute`），负控 `the_ambiguous_bit_fails_closed_under_either_name`；`u64::MAX` 断言相应掩掉歧义位。boot-shim **68**、minix-boot **132**。
+- **删除两处「Reserved 可覆盖 BootServicesData」的泛化表述**：普通静态保留 + MRB 同页一律拒绝；总规则改为「逐页生成主张，只有裁决表明确认兼容的才能合并，规范强制要求不得被另一个来源的项目强化静默覆盖」。
+- **新增 O-12k**：UEFI 内存图快照与 `MapKey` 一致性——先完成所有会改变内存图的分配，再取最终快照；`ExitBootServices()` 失效重试须重建来源记录与政策投影，不能只换 key。
+- **组合规则**：`EfiReservedMemoryType` + `no-map` 时第一版**不开放** `DriverControlledUse`（绝对禁止），组合测试列为待补。
+- **其他**：UEFI 合法记录与拒绝诊断记录分开；aarch64 UEFI 无配置表 DTB 时「仅依 UEFI 内存图启动、不做 DTB 交叉验证」；riscv QEMU 用例明确只覆盖 bootface；O-12h 顶端页五点测试清单；`DeviceMemoryRegionReference`/`ReclaimAuthority` 命名与「引用≠所有权」。
+
 **本轮（第五十二轮评审之后：纯文档——类型冲突裁决、缓存资格、拒绝策略）**
 
 - **普通静态保留 + MRB 同页 = 拒绝**（第一版）：一条 EFI 描述符无法同时满足 `must`（BootServicesData）与本项目的 MRB 强化（Reserved）；并写明若要接受该组合，唯一自洽路径是放弃 MRB 的 `should`→must 强化，而不是让裁决函数隐藏牺牲项。
