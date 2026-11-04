@@ -42,6 +42,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// are unchanged).
 const DTB_MEMMAP_MAX: usize = 8;
 
+/// Capacity of the memory reservation block scan. A missing `{0, 0}`
+/// terminator makes the library keep yielding pairs, so this cap turns that
+/// malformed shape into a refusal instead of a silent over-read.
+const DTB_MRB_MAX: usize = 16;
+
 /// Why a DTB memory map could not be produced.
 ///
 /// Capacity is a policy input, not a display detail: dropping the excess
@@ -69,6 +74,22 @@ pub enum DtbMemMapError {
     /// A `/reserved-memory` node is visible in the tree but upstream path
     /// lookup cannot reach it. Treating it as absent would free its pages.
     ReservedMemoryUnreachable,
+    /// The `/reserved-memory` parent does not declare an empty `ranges`.
+    /// Non-empty ranges would make child addresses need a translation this
+    /// collector does not perform, so reading `reg` as physical would be wrong.
+    ReservedMemoryRangesNotEmpty,
+    /// A `/reserved-memory` child declares both `no-map` and `reusable`; the
+    /// devicetree specification makes the two mutually exclusive.
+    ConflictingReservationAttributes,
+    /// A marker property (`no-map`, `reusable`) carries a value; both are
+    /// defined as empty properties, and a value means the encoding is wrong.
+    NonEmptyReservationAttribute,
+    /// The memory reservation block has more entries than `DTB_MRB_MAX` (a
+    /// missing terminator also lands here).
+    TooManyMemoryReservations,
+    /// Two memory reservation block entries overlap; the specification
+    /// requires the block's entries to be disjoint.
+    OverlappingMemoryReservations,
 }
 
 // `static mut`: the same form as bootface's MEMMAP_STORAGE — the single-hart
@@ -340,8 +361,20 @@ impl DtbMemoryMap<'_> {
         // 2. The device-tree memory reservation block: regions no client may
         //    access at all, so they leave the conventional table and enter
         //    neither (the reserved table means "reachable, never reallocated").
+        let mut mrb = [(0u64, 0u64); DTB_MRB_MAX];
+        let mut mrb_n = 0usize;
         for entry in self.fdt.memory_reservations() {
             let (start, end) = declared_page_range(entry.address() as u64, entry.size() as u64)?;
+            if mrb_n >= DTB_MRB_MAX {
+                return Err(DtbMemMapError::TooManyMemoryReservations);
+            }
+            for &(prev_start, prev_end) in mrb[..mrb_n].iter() {
+                if start < prev_end && prev_start < end {
+                    return Err(DtbMemMapError::OverlappingMemoryReservations);
+                }
+            }
+            mrb[mrb_n] = (start, end);
+            mrb_n += 1;
             carve_free(&mut free, &mut free_n, start, end)?;
         }
 
@@ -351,10 +384,36 @@ impl DtbMemoryMap<'_> {
         if let Some(node) = self.lookup_reserved_memory()? {
             // `reg()` silently assumes default cell counts when the node does
             // not state them; a reservation whose shape we did not read is not
-            // a reservation we can honour.
-            if node.property("#address-cells").is_none() || node.property("#size-cells").is_none()
+            // a reservation we can honour. The specification also recommends
+            // the same cell counts as the root, and this collector relies on
+            // that (child `reg` is read as physical as written).
+            let Some(root) = self.fdt.all_nodes().next() else {
+                return Err(DtbMemMapError::UnsupportedReservedDeclaration);
+            };
+            let root_cells = (
+                root.property("#address-cells").and_then(|p| p.as_usize()),
+                root.property("#size-cells").and_then(|p| p.as_usize()),
+            );
+            let node_cells = (
+                node.property("#address-cells").and_then(|p| p.as_usize()),
+                node.property("#size-cells").and_then(|p| p.as_usize()),
+            );
+            if node_cells.0.is_none()
+                || node_cells.1.is_none()
+                || root_cells.0.is_none()
+                || root_cells.1.is_none()
+                || node_cells != root_cells
             {
                 return Err(DtbMemMapError::UnsupportedReservedDeclaration);
+            }
+            // The specification requires an empty `ranges`: child addresses are
+            // physical as written. A non-empty (or absent) property means the
+            // addresses would need a translation this collector does not do.
+            let ranges_empty = node
+                .property("ranges")
+                .is_some_and(|p| p.value.is_empty());
+            if !ranges_empty {
+                return Err(DtbMemMapError::ReservedMemoryRangesNotEmpty);
             }
             for child in node.children() {
                 if child.property("reg").is_none() {
@@ -363,7 +422,21 @@ impl DtbMemoryMap<'_> {
                 let Some(regs) = child.reg() else {
                     return Err(DtbMemMapError::UnsupportedReservedDeclaration);
                 };
-                let no_map = child.property("no-map").is_some();
+                // Both markers are defined as empty properties. Presence with a
+                // value is a malformed encoding, and guessing at the intent
+                // would silently change whether the range may be mapped.
+                let marker = |name: &str| -> Result<bool, DtbMemMapError> {
+                    match child.property(name) {
+                        None => Ok(false),
+                        Some(p) if p.value.is_empty() => Ok(true),
+                        Some(_) => Err(DtbMemMapError::NonEmptyReservationAttribute),
+                    }
+                };
+                let no_map = marker("no-map")?;
+                let reusable = marker("reusable")?;
+                if no_map && reusable {
+                    return Err(DtbMemMapError::ConflictingReservationAttributes);
+                }
                 for region in regs {
                     let len = match region.size {
                         Some(s) if s != 0 => s as u64,
@@ -492,6 +565,7 @@ mod tests {
         base: u64,
         size: u64,
         no_map: bool,
+        reusable: bool,
     }
 
     /// Hand-build a minimal FDT blob in canonical form: header(40) + memrsv
@@ -512,6 +586,19 @@ mod tests {
         memrsv: &[(u64, u64)],
         reserved_cells: u32,
     ) -> Vec<u8> {
+        build_fdt_full(memory_regs, unit_address, reserved, memrsv, reserved_cells, &[], &[])
+    }
+
+    /// The same blob with an explicit `ranges` value on `/reserved-memory`.
+    fn build_fdt_full(
+        memory_regs: &[(u64, u64)],
+        unit_address: bool,
+        reserved: &[ReservedRow],
+        memrsv: &[(u64, u64)],
+        reserved_cells: u32,
+        ranges: &[u8],
+        marker_value: &[u8],
+    ) -> Vec<u8> {
         let mut strings: Vec<u8> = Vec::new();
         strings.extend_from_slice(b"#address-cells\0");
         strings.extend_from_slice(b"#size-cells\0");
@@ -521,6 +608,10 @@ mod tests {
         let nameoff_reg = 27usize; // 15 + 12 ("#size-cells\0" is exactly 12 bytes)
         strings.extend_from_slice(b"no-map\0");
         let nameoff_no_map = 31usize; // 27 + 4 ("reg\0" is exactly 4 bytes)
+        strings.extend_from_slice(b"ranges\0");
+        let nameoff_ranges = 38usize; // 31 + 7 ("no-map\0" is exactly 7 bytes)
+        strings.extend_from_slice(b"reusable\0");
+        let nameoff_reusable = 45usize; // 38 + 7 ("ranges\0" is exactly 7 bytes)
         let mut struct_blk: Vec<u8> = Vec::new();
         let push_u32 = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
         let push_prop = |out: &mut Vec<u8>, nameoff: u32, val: &[u8]| {
@@ -562,6 +653,7 @@ mod tests {
             while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
             push_prop(&mut struct_blk, nameoff_cells as u32, &reserved_cells.to_be_bytes());
             push_prop(&mut struct_blk, nameoff_size as u32, &reserved_cells.to_be_bytes());
+            push_prop(&mut struct_blk, nameoff_ranges as u32, ranges);
             let encode_cells = |out: &mut Vec<u8>, value: u64, cells: u32| {
                 for i in (0..cells).rev() {
                     let word = match i {
@@ -581,7 +673,10 @@ mod tests {
                 encode_cells(&mut reg, row.size, reserved_cells);
                 push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
                 if row.no_map {
-                    push_prop(&mut struct_blk, nameoff_no_map as u32, &[]);
+                    push_prop(&mut struct_blk, nameoff_no_map as u32, marker_value);
+                }
+                if row.reusable {
+                    push_prop(&mut struct_blk, nameoff_reusable as u32, marker_value);
                 }
                 push_u32(&mut struct_blk, 2); // FDT_END_NODE
             }
@@ -653,7 +748,7 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false }],
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
             &[],
             2,
         );
@@ -673,7 +768,7 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true }],
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false }],
             &[],
             2,
         );
@@ -691,7 +786,7 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_0000, size: 0x4000, no_map: false }],
+            &[ReservedRow { base: 0x8000_0000, size: 0x4000, no_map: false, reusable: false }],
             &[],
             2,
         );
@@ -710,7 +805,7 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x1_0000_0000, size: 0x1000, no_map: false }],
+            &[ReservedRow { base: 0x1_0000_0000, size: 0x1000, no_map: false, reusable: false }],
             &[],
             2,
         );
@@ -749,8 +844,8 @@ mod tests {
             &[(0x8000_0000, 0x1_0000)],
             false,
             &[
-                ReservedRow { base: 0x8000_4000, size: 0x2000, no_map: false },
-                ReservedRow { base: 0x8000_5000, size: 0x1000, no_map: true },
+                ReservedRow { base: 0x8000_4000, size: 0x2000, no_map: false, reusable: false },
+                ReservedRow { base: 0x8000_5000, size: 0x1000, no_map: true, reusable: false },
             ],
             &[],
             2,
@@ -767,7 +862,7 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: u64::MAX - 0x10, size: 0x100, no_map: true }],
+            &[ReservedRow { base: u64::MAX - 0x10, size: 0x100, no_map: true, reusable: false }],
             &[],
             2,
         );
@@ -785,7 +880,7 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false }],
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
             &[],
             3,
         );
@@ -806,6 +901,7 @@ mod tests {
                 base: 0x8000_1000 + i * 0x2000,
                 size: 0x1000,
                 no_map: true,
+                reusable: false,
             })
             .collect();
         let blob = build_fdt_ex(&[(0x8000_0000, 0x2_0000)], false, &reservations, &[], 2);
@@ -813,6 +909,114 @@ mod tests {
         assert!(matches!(
             DtbMemoryMap::new(&fdt, 0).collect(),
             Err(DtbMemMapError::TooManyFreeRegions)
+        ));
+    }
+
+    #[test]
+    fn dtb_reserved_memory_without_empty_ranges_is_rejected() {
+        // Child addresses are physical only when the parent declares an empty
+        // `ranges`; a non-empty value would need a translation we do not do.
+        let blob = build_fdt_full(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[],
+            2,
+            &[0u8; 16],
+            &[],
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::ReservedMemoryRangesNotEmpty)
+        ));
+    }
+
+    #[test]
+    fn dtb_reservation_with_no_map_and_reusable_is_rejected() {
+        // The two properties are mutually exclusive in the specification.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: true }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::ConflictingReservationAttributes)
+        ));
+    }
+
+    #[test]
+    fn dtb_reservation_with_nonempty_marker_is_rejected() {
+        // `no-map` / `reusable` are empty properties; a value is a malformed
+        // encoding and guessing its meaning could flip the mapping policy.
+        let blob = build_fdt_full(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false }],
+            &[],
+            2,
+            &[],
+            &[0u8; 4],
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::NonEmptyReservationAttribute)
+        ));
+    }
+
+    #[test]
+    fn dtb_reserved_memory_cells_must_match_root() {
+        // Child `reg` is read as physical as written; that needs the same cell
+        // counts as the root, not merely a parsable pair of its own.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x4000, size: 0x1000, no_map: false, reusable: false }],
+            &[],
+            1,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedReservedDeclaration)
+        ));
+    }
+
+    #[test]
+    fn dtb_overlapping_memory_reservations_are_rejected() {
+        // The specification requires the block's entries to be disjoint.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[],
+            &[(0x8000_8000, 0x2000), (0x8000_9000, 0x1000)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::OverlappingMemoryReservations)
+        ));
+    }
+
+    #[test]
+    fn dtb_too_many_memory_reservations_are_rejected() {
+        // A missing `{0, 0}` terminator makes the library keep yielding pairs;
+        // the cap refuses the shape instead of reading past the block.
+        let mut entries = [(0u64, 0u64); DTB_MRB_MAX + 1];
+        for (i, entry) in entries.iter_mut().enumerate() {
+            *entry = (0x1_0000_0000 + i as u64 * 0x2000, 0x1000);
+        }
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &entries, 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::TooManyMemoryReservations)
         ));
     }
 

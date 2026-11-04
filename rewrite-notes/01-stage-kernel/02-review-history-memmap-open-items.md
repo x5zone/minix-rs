@@ -10,6 +10,37 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第三十三轮评审之后：MRB 完整性切片 + 四项阻塞的文档收敛）**
+
+- **代码 `413ff9265`**：MRB 条目**互不重叠**（`OverlappingMemoryReservations`）与**扫描上限 16 条**（`TooManyMemoryReservations`；缺 `{0,0}` 终止项也落在这里）；+2 测试（minix-boot 81），riscv bootface QEMU PASS。
+- **文档**：§2.1 补 MRB 拒绝条件与三项项目限制（`status` 不筛选、`hotpluggable` 不识别、`reusable` 不回收）；O-11 扩展到**四条 DTB 入口**（授权来源表 + 统一两阶段读取 + 重叠类型裁决与规范强度）；O-06 表加 `RamSourceDomain` 列（`RESERVED`/`UNUSABLE` 标待裁定）、补已知属性位处置；O-12c 补设备窗口来源矩阵；O-12g 要求原始记录保留完整 byte range 与身份、PMM 投影才取交集；§3 不变量 1 改为「按投影各量化一次」；新增 **O-12h**（UEFI 结构校验与政策分类分开）；§6 增加证据基线（HEAD + 工作树状态）。
+- **评审人指出的证据可复现性问题**：上一版引用的提交号与测试数不同步；本轮起 §6 固定写「证据基线：提交 + HEAD 校验 + 工作树状态 + 读数」。
+- **门**：minix-boot 81、boot-shim 66；x86_64/aarch64 UEFI 与 riscv64 目标编译；riscv bootface QEMU PASS。
+
+**本轮（第三十二轮评审之后：两处解析器校验 + 自检定性 + 来源域/backing 分层）**
+
+- **代码 `431bf8461`**：`no-map`/`reusable` 必须是空属性（非空 → `NonEmptyReservationAttribute`）；`/reserved-memory` 的 cells 必须与根一致；**修复 aarch64-unknown-uefi 编译回归**（两处 `collect()` 未处理 `Result`，上一轮漏检该目标）；UEFI 磁盘 DTB 覆盖对照由 panic 降为诊断，QEMU 用例 MARK3 同步。
+- **文档 `46cbef986`**：§1.2 收窄「UEFI 要读设备树保留声明」为「只有提供权威 DTB 的路径才解析并交叉验证」；§3 分出 `RamSourceDomain` 与 `RamBacking`，`EfiReservedMemoryType` 可属来源域但非 backing；O-01 补逐类型保留期限与 `reusable` 所有者回收；O-02a 补 x86 `Resolve(PAT, MTRR(range))`、PAT 多核一致与别名；O-06 补「backing 不证明硬件可访问」与 `LOADER_CODE` 可执行权限；O-11 补 header 边界与 `/reserved-memory`/MRB 交叉验证表；O-12f 拆分、新增 O-12g（采集器保留来源记录的重构）。
+- **门**：minix-boot 79、boot-shim 66；x86_64/aarch64 UEFI 与 riscv64 目标编译；`test-shim-bootmarks-aarch64` QEMU PASS。
+
+**本轮（第三十一轮评审之后：一个代码切片 + 定点语义修订）**
+
+评审人确认结构可用，给出四项首要修改与逐条裁决。本轮先落一个代码切片，再改文档：
+
+- **代码切片 `2209fb3e9`**：`/reserved-memory` 父节点必须声明**空 `ranges`**（非空/缺失 → `ReservedMemoryRangesNotEmpty`），子节点 `no-map` 与 `reusable` 互斥（→ `ConflictingReservationAttributes`）；夹具补 `ranges`/`reusable`，新增 2 条测试（77 通过），riscv bootface QEMU PASS。
+- **修正 aarch64 UEFI 的磁盘 DTB 用法**：磁盘 DTB 的 `/memory` 不是内存政策输入，只作固件内存图的自检闸；RAM 唯一来源是 UEFI 内存图；配置表 DTB 是保留政策来源（设计目标，未接入）。启动入口矩阵改为四行。
+- **O-01** 候选 A 补「三层叠加」：UEFI 类型生命周期 + DTB 保留声明 + 对象存活区间，不得只按类型决定释放事件。
+- **O-02a** 补页粒度判据（大页覆盖混合区必须拆分或拒绝）与授权字段（PA/VA/用途/权限/属性/共享性/树与阶段）。
+- **O-02b** 改写候选 A：普通保留声明**只产生 PMM 排除**，不自动产生映射/访问禁止；`no-map` 的设备驱动受控例外与 `reusable` 语义写明。
+- **O-03/O-04** 补优先级问题（正向授权与禁止覆盖同段时谁优先）与五种禁止语义的区分。
+- **O-05** 补「先审后用」：未激活副本上修改并审计后发布，或经受控接口在硬件可见前验证；A/D 逐字段屏蔽。
+- **O-06** 类型表补全 `PERSISTENT`/`PAL_CODE`/`UNACCEPTED`/`ACPI_NVS`/`LOADER_*`，并加「释放事件/来源叠加」两列。
+- **O-07** 明确 R20 只证明「已登记访问点与禁止集合不冲突」，不得宣称全局访问安全。
+- **O-10** 加第二枚负控：已有 `asm!` 块内第二条原始操作也必须被拒绝。
+- **O-11** 改为两步授权（header → 完整对象），并加「权威 DTB vs UEFI 内存图」一致性策略 A/B。
+- **O-12** 增 O-12f（`RamSourceDomain` 的可计算定义）；§3 不变量 2 改用该定义。
+- **§1.5** 补 x86「PAT × MTRR 组合有效类型」与 RISC-V「PMA 能力值来源必须写明」。
+
 **本轮（第三十轮评审之后：定点语义修订，不重写）**
 
 评审人确认结构可用，要求先修语义再写代码。逐条落笔，主文档 364 → 384 行：

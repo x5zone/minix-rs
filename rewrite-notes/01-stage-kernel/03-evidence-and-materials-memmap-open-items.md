@@ -152,6 +152,33 @@
 | 交接容量 | 可用表 128、保留表 256 | `grep -n -e WIRE_MEMMAP_CAP -e WIRE_RESERVED_CAP os/libs/minix-boot/src/handoff_v1.rs` |
 | 诊断成员完整存储且失败关闭 | `SIDE_CAP = 64` + `TooManySideEntries`；`types_that_earn_no_ordinary_mapping_go_to_the_side_list` | `grep -n -e SIDE_CAP -e TooManySideEntries os/boot-shim/src/ebs_map.rs` |
 
+## 一f、第三十一轮代码切片读数（`/reserved-memory` 形状校验）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 父节点 `ranges` 必须存在且为空 | `ReservedMemoryRangesNotEmpty`；`dtb_reserved_memory_without_empty_ranges_is_rejected` | `grep -n "ranges_empty" -A 4 os/libs/minix-boot/src/memmap_source.rs` |
+| `no-map` 与 `reusable` 互斥 | `ConflictingReservationAttributes`；`dtb_reservation_with_no_map_and_reusable_is_rejected` | `grep -n "ConflictingReservationAttributes" -A 3 os/libs/minix-boot/src/memmap_source.rs` |
+| 采集器测试与包读数 | 22 条采集用例；`cargo test -p minix-boot --lib` 77 通过 | 同左 |
+| 真实固件 | riscv bootface QEMU PASS（OpenSBI DTB 的 `ranges` 为空） | `bash os/qemu-tests/test-kernel-image-riscv64-bootface.sh` |
+
+## 一g、第三十二轮代码读数
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 标记属性必须为空 | `NonEmptyReservationAttribute`；`dtb_reservation_with_nonempty_marker_is_rejected` | `grep -n "NonEmptyReservationAttribute" os/libs/minix-boot/src/memmap_source.rs` |
+| cells 与根一致 | `dtb_reserved_memory_cells_must_match_root` | 同文件 `root_cells` |
+| UEFI 磁盘 DTB 只作诊断 | `report_memmap_source` 不再 panic，打印 `diagnostic only`；`prepare_boot` 同样降级 | `grep -n "diagnostic only" os/boot-shim/src/uefi_helpers.rs` |
+| UEFI 目标不再漏检 | `cargo check -p boot-shim --target aarch64-unknown-uefi` / `x86_64-unknown-uefi` 均通过 | 同左 |
+| aarch64 UEFI 启动门 | `test-shim-bootmarks-aarch64` PASS（MARK3 已同步为诊断行） | `bash os/qemu-tests/test-shim-bootmarks-aarch64.sh` |
+
+## 一h、第三十三轮代码读数
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| MRB 条目重叠拒绝 | `OverlappingMemoryReservations`；`dtb_overlapping_memory_reservations_are_rejected` | `grep -n "OverlappingMemoryReservations" os/libs/minix-boot/src/memmap_source.rs` |
+| MRB 扫描上限 | `DTB_MRB_MAX = 16`；`TooManyMemoryReservations`；`dtb_too_many_memory_reservations_are_rejected` | 同左 |
+| 证据基线 | 提交 `413ff9265`；`git rev-parse HEAD` 与 `git status --short` 同批核对 | `cd os && git rev-parse HEAD` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |

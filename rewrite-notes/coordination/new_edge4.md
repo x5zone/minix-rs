@@ -5131,3 +5131,30 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-08/O-09/O-10 已裁定（A），保留编号待实现；O-12 拆成 12a～12e。
 - 启动入口改四条（补 aarch64 直启）；新增 §2.7 代码位置表；§6 补测试≠输入完整性。
 - 门：`doc-style-lint --diff` error 0；表格/围栏 0；主文档 384 行。
+
+### 第二百三十九笔（01 阶段 · I-29 第三十一轮：dtb 形状校验 + 语义修订）
+
+代码 `2209fb3e9`、文档 `77b0e3c7b`。
+
+- 代码：`/reserved-memory` 父节点必须声明空 `ranges`（缺失/非空 → `ReservedMemoryRangesNotEmpty`）；子节点 `no-map` 与 `reusable` 互斥（`ConflictingReservationAttributes`）。夹具补 `ranges`/`reusable`，+2 测试。
+- 门：minix-boot 77 通过、boot-shim 66 通过；三目标交叉 check；riscv bootface QEMU PASS（OpenSBI DTB 的 `ranges` 为空）。
+- 文档：启动入口矩阵四行；aarch64 UEFI 磁盘 DTB 改为「只作自检闸，不是内存政策输入」；O-01 三层叠加、O-02a 页粒度与授权字段、O-02b 只产生 PMM 排除、O-03/O-04 优先级与五种禁止语义、O-05 先审后用、O-06 类型表补全、O-07 限定证明范围、O-10 第二枚负控、O-11 两步授权与一致性策略、O-12f `RamSourceDomain`；§1.5 补 x86 PAT×MTRR 与 RISC-V PMA 来源。
+- 主文档 384 → 401 行；`doc-style-lint --diff` error 0；表格/围栏 0。
+
+### 第二百四十笔（01 阶段 · I-29 第三十二轮：解析器校验、自检定性、来源域分层）
+
+代码 `431bf8461`、文档 `46cbef986`。
+
+- 解析器：`no-map`/`reusable` 必须为空属性；`/reserved-memory` cells 必须与根一致。
+- 回归修复：aarch64-unknown-uefi 两处 `collect()` 未处理 `Result`（上一轮漏检该目标）。
+- 行为：UEFI 磁盘 DTB 的 `/memory` 覆盖对照由 panic 降为诊断，不再参与启动决策；QEMU MARK3 同步。
+- 文档：`RamSourceDomain` 与 `RamBacking` 分层（`EfiReservedMemoryType` 可属来源域非 backing）；O-01 逐类型保留期限与 `reusable` 所有者；O-02a x86 有效类型与别名；O-06 backing 不证明硬件可访问、`LOADER_CODE` 可执行；O-11 header 边界 + MRB 交叉验证；O-12g 采集器重构登记。
+- 门：minix-boot 79、boot-shim 66、三 UEFI/riscv 目标编译、aarch64 UEFI QEMU PASS；lint 0；主文档 437 行。
+
+### 第二百四十一笔（01 阶段 · I-29 第三十三轮：MRB 完整性 + O 表收敛）
+
+代码 `413ff9265`；主文档 437 → 471 行。
+
+- MRB：条目互不重叠、扫描上限 16 条（缺终止项也拒绝）；+2 测试（81）。
+- 文档：MRB 三项项目限制（status/hotpluggable/reusable）；O-11 四条 DTB 入口 + 两阶段 + 重叠类型裁决；O-06 加 RamSourceDomain 列与属性位处置；O-12c 设备窗口来源矩阵；O-12g 原始范围保留；O-12h 结构校验与分类分开；§6 证据基线。
+- 门：minix-boot 81、boot-shim 66、三目标编译、riscv bootface QEMU PASS；lint 0。
