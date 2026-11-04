@@ -49,11 +49,11 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use minix_shell::exec_frame::{stack_fill, stack_params};
+use minix_shell::exec_run::exec_search;
 use minix_shell::expand::{expand_word, Environ};
 use minix_shell::lexer::split_words;
 use minix_shell::redir::{parse_redir, RedirOp, Redirection};
-use minix_sys::{dup2, exec, fork, pipe2, waitpid};
+use minix_sys::{dup2, fork, pipe2, waitpid};
 use support::{args, emit, envs, terminate, warn};
 
 /// Expansion buffer per word (this layer caps the per-word render at a
@@ -61,10 +61,6 @@ use support::{args, emit, envs, terminate, warn};
 const WORD_BUF: usize = 1024;
 /// Read chunk for the line source.
 const READ_CHUNK: usize = 4096;
-/// Fallback search path when `PATH` is unset (C `_PATH_STDPATH`, narrowed
-/// to the directories this image installs).
-const DEFAULT_PATH: &str = "/bin:/usr/bin";
-
 /// The live environment: inherited `KEY=VALUE` strings plus the positional
 /// parameters stored as `"0"`, `"1"`, ... keys, feeding both `$name`
 /// expansion and the child env walk.
@@ -519,88 +515,19 @@ fn child_exec(stage: &[String], redirects: &[Redirection<'_>], env: &RealEnv) ->
     }
     let Some(program) = stage.first() else { terminate(0) };
     let argv: Vec<&str> = stage.iter().map(String::as_str).collect();
-    let mut candidates: Vec<String> = Vec::new();
-    if program.contains('/') {
-        candidates.push(program.clone());
-    } else {
-        let path = env
-            .get("PATH")
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| DEFAULT_PATH.to_string());
-        for dir in path.split(':') {
-            let dir = if dir.is_empty() { "." } else { dir };
-            candidates.push(format!("{dir}/{program}"));
-        }
-    }
-    for candidate in &candidates {
-        let code = exec_candidate(candidate, &argv, env);
-        if code == minix_sys::errno::ENOENT
-            || code == minix_sys::errno::ENOTDIR
-        {
-            continue;
-        }
-        let text = if code == minix_sys::errno::EACCES {
-            "Permission denied"
-        } else if code == minix_sys::errno::ENOEXEC {
-            "Exec format error"
-        } else {
-            "cannot execute"
-        };
-        warn(format!("sh: {program}: {text}\n").as_bytes());
-        terminate(126);
-    }
-    warn(format!("sh: {program}: not found\n").as_bytes());
-    terminate(127)
-}
-
-/// Builds the exec frame for `candidate` and calls PM (C `execve.c:33-58`:
-/// size the stack, take a buffer, fill it, clear-and-fill the message,
-/// call). A successful exec never returns, so every return here is the
-/// failing attempt's Errno.
-fn exec_candidate(candidate: &str, argv: &[&str], env: &RealEnv) -> i32 {
     let envp: Vec<String> = env.entries.clone();
     let envp_refs: Vec<&str> = envp.iter().map(String::as_str).collect();
-
-    // The path travels as a C string: pointer plus length including the
-    // NUL (C: `execve.c:48-49`).
-    let mut path = Vec::with_capacity(candidate.len() + 1);
-    path.extend_from_slice(candidate.as_bytes());
-    path.push(0);
-
-    let frame_size = match stack_params(argv, &envp_refs) {
-        Ok(size) => size,
-        Err(code) => return code,
-    };
-    let stack_top = match new_image_stack_top() {
-        Some(top) => top,
-        None => return minix_sys::errno::EIO,
-    };
-    let Some(vsp) = stack_top.checked_sub(frame_size as u64) else {
-        return minix_sys::errno::E2BIG;
-    };
-
-    let mut frame = vec![0u8; frame_size];
-    let ps_offset = stack_fill(argv, &envp_refs, vsp, &mut frame);
-
-    match minix_sys::pm::prepare_exec(
-        path.as_ptr() as u64,
-        path.len(),
-        frame.as_ptr() as u64,
-        frame.len(),
-        vsp + ps_offset,
-    ) {
-        Ok(prepared) => exec(prepared).to_i32(),
-        Err(e) => e.to_i32(),
+    // `execvp`'s search and frame submission live in `minix_shell::exec_run`
+    // so `env` runs the same code; a successful exec never returns.
+    let code = exec_search(program, &argv, &envp_refs, env.get("PATH"));
+    if code == minix_sys::errno::EACCES {
+        warn(format!("sh: {program}: Permission denied\n").as_bytes());
+        terminate(126);
     }
-}
-
-
-/// The initial stack pointer the kernel will give the new image (C:
-/// `minix_get_user_sp`, `kernel_utils.c:40-49`) — reached through the
-/// `minix-sys` top level, not by reopening the info page here (18-stage
-/// layering rule; see `minix_sys::user_stack_top` for the shared
-/// implementation and the honest EIO fallback on hosted builds).
-/// `None` maps to EIO at the call site.
-fn new_image_stack_top() -> Option<u64> {
-    minix_sys::user_stack_top().ok()
+    if code == minix_sys::errno::ENOENT || code == minix_sys::errno::ENOTDIR {
+        warn(format!("sh: {program}: not found\n").as_bytes());
+        terminate(127);
+    }
+    warn(format!("sh: {program}: cannot execute\n").as_bytes());
+    terminate(126)
 }

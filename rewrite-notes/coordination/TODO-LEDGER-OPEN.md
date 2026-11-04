@@ -201,4 +201,6 @@
 
 - **`2026-11-03` 收口刷新（第 40 轮，基线 `6a5de7792`）**：`cal -r/-R` 已随批次五百二十一闭（含 C 默认启用的 1752 改换模型、reform 表解析与缺日阵列），`cal` 生产面的 not-wired 拒绝行删除。生产面 not-wired 拒绝站点现量 **6 处 / 5 文件**（命令同前）：宿主可领只剩 `touch -d` 一项；`env`、editor shell×3（NS5 进程创建链）与 `renice -u`（口令库）仍跨线。下一会话从 `touch -d` 直领。
 
+- **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
+
 - **`2026-11-03` 收口刷新（第 41 轮，基线 `45dee5a9c`）**：`touch -d` 已随批次五百二十二闭（`parsedate` 整条移植，C oracle 向量内嵌），`touch` 生产面的 not-wired 拒绝行与其函数一并删除。生产面 not-wired 拒绝站点现量 **5 处 / 4 文件**（命令同前）：宿主可领的选项级积压**清零**；余下全部跨线——`env` 与 editor shell×3（NS5 进程创建链）、`renice -u`（`getpwnam` 口令库）。下一会话转 A 板 §1 的 `A20`（vbfs fsdriver 环，按板行「一轮一家」）或等 NS5/口令库前置。

@@ -22,6 +22,10 @@ path = "src/bin/who.rs"
 
 [dependencies]
 minix-sys = { workspace = true }
+# `env name=value command` runs `execvp`'s search through the shared
+# `minix-shell` module (the `mountinfo` -> `fileops` path-dependency
+# precedent for one command crate borrowing another's library half).
+minix-shell = { path = "../shell" }
 
 # minix-rt 按目标分形态（fileops/NS12 seam 判例）：真机（x86_64-unknown-none，
 # NS8 装机面的命令工件）取 `_start` 出生链 + `alloc-global` slab 池 +

@@ -9,8 +9,8 @@ license.workspace = true
 name = "minix_shell"
 path = "src/lib.rs"
 
-# Dependencies serve the `src/bin/sh.rs` doing half; the library itself
-# stays free of system-call imports (`exec_frame` is pure byte layout).
+# `exec_frame` stays pure byte layout; `exec_run` (shared with `env`) is
+# the one library module that calls the exec/PM face.
 [dependencies]
 minix-sys = { workspace = true }
 # kerninfo 页类型（MinixKerninfo/KuserInfo）——sh 的栈顶查询用

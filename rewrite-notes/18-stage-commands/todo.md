@@ -119,6 +119,14 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百二十五（`env … command` 接通：execvpe 搜索上收共享件，NS5 旧账更正）
+
+- **这一笔的射程**：未接线清单里 `env` 的命令腿。**先更正一条过期账面**：台账里「exec 交付链未落（NS5）挡着 env/editor/find」是旧读数——`minix-sys` 已有 `fork`/`exec`/`pipe2`/`dup2`/`waitpid`/`user_stack_top` 全脸，且 `sh` 早已用它跑外部命令与管道（`child_exec`：PATH 搜索 + `stack_params`/`stack_fill` 建帧 + `prepare_exec`）。C 真值：`env.c:78-85` 对命令操作数调 `execvp`（**替换自身，不 fork**），失败走 `err(ENOENT?127:126, "%s", cmd)`；`execvpe`（`execvp.c:59-140`）的搜索语义=含 `/` 直用、PATH 空元素当当前目录、`EACCES` 记住继续、`ENOENT/ENOTDIR` 继续、`ENOEXEC` 经 `/bin/sh` 重试、其余立即返回、搜索尽时优先 `EACCES` 否则最后一枚 errno。
+- **落码**：新增 `minix-shell::exec_run` 共享模块——`path_candidates`（候选构造）、`step`（errno 分类表）、`exec_one`（建帧 + `prepare_exec` + `exec`，自 sh.rs 迁入）、`exec_search`（execvpe 搜索环，含 `ENOEXEC`→`/bin/sh` 回退）；`sh.rs` 的 `child_exec` 改用共享实现（fork/重定向与 126/127 报文留在原处）；`env` 的打印半之后接命令腿：合并后的环境即子进程环境与 `PATH` 来源，失败按 C 的 127/126 + `env: <cmd>: <sentence>`。两条已登记差异：C 的 `PATH_MAX` 截断告警与 `ETXTBSY` 睡眠重试不复制（前者本树无固定缓冲可溢出、后者无睡眠原语，且 C 重试尽头仍是同一 errno）。
+- **顺带修复一笔自伤回归**：批次五百二十一（cal 换模型）删 `days_from_civil` 时只扫了 doctools 自身测试，漏掉 `proctools/src/stamp.rs` 的**跨包对拍测试**——`cargo check --workspace --all-targets` 当场抓到。已恢复该纯函数（proleptic Gregorian 编码器，独立于 reform 表）+ 两枚锚点测试；教训写进本轮：换公共 API 必须跑 `--all-targets` 全仓，单包门抓不到跨包测试。
+- **可测性边界**：宿主 exec 为 none 面桩（返回 EIO），故面测钉的是 C 的失败路：`env FOO=1 /no-such-command` → `env: /no-such-command: Input/output error` 退 126、空命令名 → C 的 ENOENT 分支退 127；成功 exec（替换进程、永不返回）只能真机验。打印半与 `-i` 各一钉。
+- **门**：`cargo test -p minix-shell -p minix-proctools -p minix-doctools` → **289/0**（shell lib 65/0 含 exec_run 四枚、env_face 4/0、proctools 全量 97/0、doctools lib 75/0）；clippy 触及文件零新增；`rustfmt` 新文件清（sh.rs 存量漂移不追）；`cargo build --target x86_64-unknown-none -p minix-shell -p minix-proctools` 绿；`cargo check --workspace --all-targets` 除内核形态绊线（设计行为）外零错。三件套：上述命令与读数、核实日 `2026-11-04`、基线 `8801860b8`。
+
 ## 批次五百二十四（`wtf` 的库档预检落 `S_ISREG`：A9c 第⑦条闭合，A9c 全清）
 
 - **这一笔的射程**：A9c 最后一件 ⑦ `WTF-DB-REGULAR-FILE-TEST`——C 的档列表预检是逐文件 `[ ! -f $f ]`（`wtf:64-69`，`test(1)` 的 `-f` 即 `S_ISREG`），首枚非普通文件即 `cannot open acronym database file \`<file>'` 退 1；本壳旧形只有「读失手」代替，`-f /tmp` 与 `-f /dev/null` 落成查无而非 cannot open。旧阻塞「第三份 `S_ISREG` 判据的家待定」按房规消解：ABI 模式位的**每壳本地常量**本就是既定形（`which.rs` 私有副本、`pathconf.rs` 私有副本并存），wtf 照 `which.rs` 判例本地定义即可，无需跨 crate 共件；`env_value` 的重复同理保留（bin_support 按二进制 `#[path]` 内联是设计而非缺陷）。

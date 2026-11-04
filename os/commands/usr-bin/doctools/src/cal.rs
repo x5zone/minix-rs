@@ -472,6 +472,37 @@ fn matrix_from_flat(flat: [u32; 42]) -> [[u32; 7]; 6] {
     matrix
 }
 
+/// Proleptic Gregorian civil-to-days: days since 1970-01-01 (Hinnant's
+/// algorithm). This is the plain Gregorian encoder, independent of the
+/// reform table — `proctools`'s `stamp` tests round-trip their own
+/// `civil_from_days` against it, so the two implementations check each
+/// other across crates.
+pub fn days_from_civil(year: i32, month: u32, day: u32) -> Result<i64, DocError> {
+    if year <= 0 || !(1..=12).contains(&month) || day == 0 {
+        return Err(DocError::InvalidArgument);
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let mut month_days = MONTH_DAYS[(month - 1) as usize];
+    if month == 2 && leap {
+        month_days += 1;
+    }
+    if day > month_days {
+        return Err(DocError::InvalidArgument);
+    }
+    let shifted_year = if month <= 2 { year - 1 } else { year };
+    let era = if shifted_year >= 0 {
+        shifted_year
+    } else {
+        shifted_year - 399
+    } / 400;
+    let year_of_era = (shifted_year - era * 400) as i64;
+    let month_index = (month as i64 + 9) % 12;
+    let day_of_year = (153 * month_index + 2) / 5 + day as i64 - 1;
+    let day_of_era =
+        year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + year_of_era / 400 + day_of_year;
+    Ok(era as i64 * 146097 + day_of_era - 719468)
+}
+
 /// Month names as `cal.c:86-91` spells them (full form, title case).
 pub const MONTH_NAMES: [&str; 12] = [
     "January",
@@ -1063,6 +1094,16 @@ mod render_tests {
         )
         .unwrap();
         String::from_utf8(out[..used].to_vec()).unwrap()
+    }
+
+    /// The restored proleptic encoder: the epoch and the leap day anchor
+    /// the values `proctools`'s round-trip test relies on.
+    #[test]
+    fn days_from_civil_anchors_hold() {
+        assert_eq!(days_from_civil(1970, 1, 1), Ok(0));
+        assert_eq!(days_from_civil(2000, 2, 29), Ok(11016));
+        assert_eq!(days_from_civil(1969, 12, 31), Ok(-1));
+        assert_eq!(days_from_civil(2024, 2, 30), Err(DocError::InvalidArgument));
     }
 
     #[test]

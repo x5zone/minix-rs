@@ -2,7 +2,6 @@
 // Silent-error-swallowing mechanical gate
 #![warn(clippy::let_underscore_must_use)]
 
-
 //! Shell command language core for Minix-RS commands.
 //!
 //! Covers `rewrite-notes/18-stage-commands/05-shell-family.md`:
@@ -40,9 +39,11 @@
 //! - [`hostname`]: option parsing and `-s` display trimming for
 //!   `bin/hostname/hostname.c`; the sysctl round trip stays with
 //!   [`minix_sys::gethostname`] / [`minix_sys::sethostname`].
+extern crate alloc;
 
 pub mod expand;
 pub mod exec_frame;
+pub mod exec_run;
 pub mod getopt;
 pub mod hostname;
 pub mod lexer;
