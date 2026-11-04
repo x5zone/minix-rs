@@ -857,3 +857,13 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | x2APIC | 独立 MSR 访问域；不实现则锁定 xAPIC 并拒绝 x2APIC |
 | PA/VA | 临时保留与重叠判断按 PA；Reachability 为端到端可读 |
 | 门 | 无代码改动；沿用 minix-boot **132**、boot-shim **68**；lint 0 |
+
+## 二十七、第五十五轮：属性冲突域与 EFI DTB 类型
+
+| 项 | 读数 |
+|---|---|
+| 歧义域 | `AMBIGUOUS = 0x1_F000`（`WP/RP/XP/NV/MORE_RELIABLE` 在两套编码下互斥）；负控 `every_contested_attribute_bit_fails_closed` 覆盖 5 个位 × 2 种类型 |
+| 代价 | `NON_VOLATILE` 进入拒绝域；`TYPE_INDEPENDENT` 的 NV 分支真实输入不可达 |
+| EFI DTB | 标准表必须 `EfiACPIReclaimMemory`（UEFI 2.11 §4.6.1.3 转述）；与静态保留同页拒绝、与 MRB 同页走例外 |
+| 门 | minix-boot **132**、boot-shim **69**；x86_64-unknown-uefi check 通过 |
+| aarch64 QEMU | 再次尝试：`servers/rs`、`servers/sched` 已修，`servers/vfs/src/main_loop.rs:7635`（`VfsIpc`）仍缺 `sendrec`（`E0046`）；镜像组装失败，启动行为未验证 |
