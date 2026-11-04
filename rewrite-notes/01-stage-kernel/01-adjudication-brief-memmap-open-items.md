@@ -77,7 +77,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | conventional | `/memory` 声明，扣除固件前缀与所有保留声明 | PMM 可直接分配 |
 | reserved | 固件前缀 + 非 `no-map` 的保留声明（与 `/memory` 相交的部分） | 可达、永不再分配 |
 
-**来源记录层（DTB 侧，第一阶段）**：`collect_with_sources()` 在同样的遍历里为每条声明留一条 `SourceRecord { id, kind, origin, range_start, range_end }`——`kind` 六类：`Memory`、`FirmwarePrefix`、`MrbEntry`、`ReservedOrdinary`、`ReservedReusable`、`ReservedNoMap`；`SourceKind::class()` 把它们分成**输入声明**（`Memory`/`MrbEntry`/`Reserved*` 五类）与**派生保留**（`FirmwarePrefix`）。**字段名是中性词**：输入声明的 `range_*` 就是声明范围；派生前缀的 `range_*` 是派生结果 `M_i ∩ [0, F)`（`F = firmware_reserve_end`），所以不叫 `raw_*`。`origin` 给出位置：`MemoryNode { node, reg }`、`ReservedMemoryChild { node, reg }`、`MrbEntry(n)`（`node` 只数匹配节点、`reg` 只数该节点 `reg` 属性内的元组，均从 0 起、按文档顺序）；前缀的 `origin` 是 `FirmwarePrefix { memory_id, cut }`，既指回被切分的 `/memory` 记录，又保留派生参数 `F` （原 DTB 释放后仍能解释「为什么截在这里」）。`id` 是**输入对象内的局部 ID**；跨输入引用须用 `(InputObjectId, LocalSourceId)`，不能单用 `id`。**记录不携带页范围**：`/memory` 投影向内取整（`FullPages`），保留声明与 `no-map` 向外取整，MRB 访问禁止保留精确字节。`range_end` 为独占端；DTB `reg` 回绕在采集时即拒绝，故不会出现 `range_end == 2^64`（`u128` 端点规则属 UEFI 描述符路径）。容量 40 由**输入上限**推出（`/memory` 段与声明各受 `DTB_MEMMAP_MAX`、`no-map` 同样计数、前缀不多于 `/memory` 段、MRB 受 `DTB_MRB_MAX`），按 **reg 元组**计数而非节点数；超限拒绝（`TooManySourceRecords`）。`collect()` 语义不变、只取前两张表。测试：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`、`dtb_collect_and_collect_with_sources_agree`、`dtb_no_map_declarations_count_against_the_declaration_cap`、`dtb_declaration_cap_is_shared_across_reservation_kinds`、`dtb_source_capacity_is_reachable_at_exactly_forty`、`dtb_firmware_prefix_links_to_its_memory_record`、`dtb_identical_reservations_are_deduplicated_not_rejected`、`dtb_identical_mrb_entries_are_rejected`、`dtb_same_range_with_different_semantics_is_a_conflict`、`dtb_every_input_declaration_has_exactly_one_record`。
+**来源记录层（DTB 侧，第一阶段）**：`collect_with_sources()` 在同样的遍历里为每条声明留一条 `SourceRecord { id, kind, origin, range_start, range_end }`——`kind` 六类：`Memory`、`FirmwarePrefix`、`MrbEntry`、`ReservedOrdinary`、`ReservedReusable`、`ReservedNoMap`；`SourceKind::class()` 把它们分成**输入声明**（`Memory`/`MrbEntry`/`Reserved*` 五类）与**派生保留**（`FirmwarePrefix`）。**字段名是中性词**：输入声明的 `range_*` 就是声明范围；派生前缀的 `range_*` 是派生结果 `M_i ∩ [0, F)`（`F = firmware_reserve_end`），所以不叫 `raw_*`。`origin` 给出位置：`MemoryNode { node, reg }`、`ReservedMemoryChild { node, reg }`、`MrbEntry(n)`（`node` 只数匹配节点、`reg` 只数该节点 `reg` 属性内的元组，均从 0 起、按文档顺序）；前缀的 `origin` 是 `FirmwarePrefix { memory_id, cut }`，既指回被切分的 `/memory` 记录，又保留派生参数 `F` （原 DTB 释放后仍能解释「为什么截在这里」）。`id` 是**输入对象内的局部 ID**；跨输入引用须用 `(InputObjectId, LocalSourceId)`，不能单用 `id`。**记录不携带页范围**：`/memory` 投影向内取整（`FullPages`），保留声明与 `no-map` 向外取整，MRB 访问禁止保留精确字节。`range_end` 为独占端；DTB `reg` 回绕在采集时即拒绝，故不会出现 `range_end == 2^64`（`u128` 端点规则属 UEFI 描述符路径）。容量 40 由**输入上限**推出（`/memory` 段与声明各受 `DTB_MEMMAP_MAX`、`no-map` 同样计数、前缀不多于 `/memory` 段、MRB 受 `DTB_MRB_MAX`），按 **reg 元组**计数而非节点数；超限拒绝（`TooManySourceRecords`）。`collect()` 语义不变、只取前两张表。测试：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`、`dtb_collect_and_collect_with_sources_agree`、`dtb_no_map_declarations_count_against_the_declaration_cap`、`dtb_declaration_cap_is_shared_across_reservation_kinds`、`dtb_source_capacity_is_reachable_at_exactly_forty`、`dtb_firmware_prefix_links_to_its_memory_record`、`dtb_identical_reservations_are_deduplicated_not_rejected`、`dtb_identical_mrb_entries_are_rejected`、`dtb_same_range_with_different_semantics_is_a_conflict`、`dtb_every_input_declaration_has_exactly_one_record`、`dtb_identical_memory_tuples_are_deduplicated_not_rejected`。
 
 解析与拒绝条件：
 
@@ -99,10 +99,10 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | `/reserved-memory`（普通/`reusable`/`no-map` 三种语义） | 同语义重复 → 投影去重、记录各留一条（测试：普通 `dtb_identical_reservations_are_deduplicated_not_rejected`、`reusable` `dtb_reusable_duplicates_are_deduplicated_not_rejected`） | 拒绝（`OverlappingReservedRanges`） | 拒绝（`ConflictingReservationAttributes`：普通+`reusable` 生命周期不同、普通+`no-map` 访问不同、`reusable`+`no-map` 规范互斥；测试 `dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_same_range_with_different_semantics_is_a_conflict`） |
 | MRB | **拒绝**（`OverlappingMemoryReservations`）：DTSpec 5.3.2「These given regions shall not overlap each other」，重复也是重叠（`dtb_identical_mrb_entries_are_rejected`） | 拒绝 | —（MRB 无 `no-map` 语义） |
 
-`/reserved-memory` 的重复容忍是**项目级输入策略**，不是规范授权；MRB 没有这层容忍。`/memory` 的**部分重叠**拒绝同样是项目策略（用于暴露固件输入异常）；若将来改为并集，来源记录仍须各留一条。`reusable` 的 owner 关系在去重时不得合并（来源记录各留一条正是为此）。
+`/reserved-memory` 的重复容忍是**项目级输入策略**，不是规范授权；MRB 没有这层容忍。`/memory` 的**部分重叠**拒绝同样是项目策略：**不是数学必然**——§3 允许纯集合层对兼容区间 `Union`，部分重叠在集合模型里可以安全归一化；拒绝的理由是「严格输入策略：部分重叠视为固件异常」，它不依赖今天 PMM 的实现，也不声称 DTSpec 禁止 `/memory` 重叠。若将来改为并集，来源记录仍须各留一条。`reusable` 的 owner 关系在去重时不得合并（来源记录各留一条正是为此）。
 - `reusable` 在记录层已独立成 `ReservedReusable`；两张投影表仍把它按保留处理（不实现 owner 关联、回收能力或生命周期处置），第一版保守地不回收，但不丢原始声明语义。
 
-测试（`cargo test -p minix-boot --lib`，131 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`。
+测试（`cargo test -p minix-boot --lib`，132 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`。
 
 **不保证什么**：不产出禁止集合、不产出 PMM 排除集合、不实现 `reusable` 的 owner 回收、不处理 UEFI 来源。
 
@@ -384,7 +384,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 | 类型 | 属 `RamSourceDomain` | 普通主存性质 | 当前可映射 | 当前可分配 | 释放事件 | 来源叠加 |
 |---|---|---|---|---|---|---|
-| `CONVENTIONAL` | 是 | 是 | 是 | 是 | 无 | 按兼容矩阵裁决 |
+| `CONVENTIONAL` | 是 | 是 | **条件**：类型层面是；第一版还要求缓存属性为 WB | **条件**：阶段资格 + 缓存资格 + 全部排除项通过 | 无 | 按兼容矩阵裁决 |
 | `LOADER_CODE` | 是 | 是 | 是（存活期需 X；由对象义务提供） | 退出前否 | `ExitBootServices` + loader 最后使用点 | 按兼容矩阵裁决 |
 | `LOADER_DATA` | 是 | 是 | 是（**默认 NX**；写需对象义务授权 W） | 退出前否 | 同上 | 按兼容矩阵裁决 |
 | `BOOT_SERVICES_CODE` | 是 | 是 | 是（固件活跃期按代码义务） | 退出前否 | `ExitBootServices` | 见下方兼容矩阵 |
@@ -423,7 +423,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 **属性按语义分三类**（不能统称「能力位」）：缓存能力（`WB`/`WT`/`WC`/`UC`/`UCE`）；物理保护能力（`WP`/`RP`/`XP`/`RO`）；其它特征（`MORE_RELIABLE`、`CPU_CRYPTO`、`SP`、`NV`、`RUNTIME`）。**`WP` 归入物理保护能力**：规范先称它为 physical memory protection attribute，再说明它通常被用作 write-protected cacheability policy——它有特殊缓存语义，但既不是页表写权限，也不能与 `RO` 混为一谈。**`SP` 不是 no-map**：第一版把它排除出普通 PMM 是项目保守选择，不得由 `SP` 自动生成映射禁令。
 
-**`CONVENTIONAL` 是有条件的**：它可以构成 `RamSourceDomain` 与普通主存 backing，但是否进入本项目的普通映射与 PMM 可用集合，还取决于所选缓存属性是否受支持——第一版要求 WB，无 WB 的描述符不进入普通可分配集合，但**保留其来源身份**。
+**`CONVENTIONAL` 是有条件的**：它可以构成 `RamSourceDomain` 与普通主存性质，但 `OrdinaryRamEligibility`（类型层面）**不隐含缓存属性检查**；最终普通映射 = 类型资格 ∧ 缓存属性资格（第一版要求 WB），最终 PMM 分配 = 阶段资格 ∧ 缓存资格 ∧ 全部排除项。无 WB 的描述符不进入普通可分配集合，但**保留其来源身份**。
 
 **术语边界**：这里读的是 `GetMemoryMap()` 的 `EFI_MEMORY_DESCRIPTOR.Attribute`（能力位掩码），与 `EFI Memory Attributes Table` 反映的保护配置不是一回事；第一版不解析后者，也不宣称已获知固件实际施加的全部权限。
 
@@ -522,7 +522,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 **复制目标不得与源重叠**：原始 DTB 不一定在 MRB 里，也未必已被分配器排除。分配自有副本前，先把原始 DTB 的完整范围登记为**存活输入对象**；源与目标范围不相交才允许复制（DTSpec 要求客户端在 DTB 使用完之前不得覆盖它，即使它不在保留区内）。于是 O-11 有四个互相独立的条件：**来源授权、地址可达、内容一致（不得并发修改）、自有副本**。
 
-**`OwnedCopyValidation`（第三段，不能省）**：`fdt_layout::validate` 并非只读 40 字节 header——它还要扫 MRB、结构块、属性长度与字符串名称。因此完整容器校验**必须在自有副本上执行**：原件只在 header preflight 时被读一次，此后不再访问原始地址。三段的顺序是：provenance + reachability（`[dtb, dtb+40)` 整段）→ header preflight → 完整读取授权 + 对齐副本 → 在副本上 `validate` → 解析 → `collect`。
+**`OwnedCopyValidation`（第三段，不能省）**：`fdt_layout::validate` 并非只读 40 字节 header——它还要扫 MRB、结构块、属性长度与字符串名称。因此完整容器校验**必须在自有副本上执行**：原始 DTB 的 **header 只在 preflight 阶段读一次**，**body `[dtb+40, dtb+totalsize)` 只在复制阶段读一次**；两部分都进入自有副本后，校验与解析只访问副本，不再访问原始地址。三段的顺序是：provenance + reachability（`[dtb, dtb+40)` 整段）→ header preflight → 完整读取授权 + 对齐副本 → 在副本上 `validate` → 解析 → `collect`。
 
 **副本必须是一份一致快照（复制算法写死）**：`totalsize` 本身来自 header，若「先读 40 字节、再整段复制」就会把 header 读两次。算法：
 
@@ -542,7 +542,26 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 Outward(R_reserved) ⊆ ⋃ { 类型兼容的 EFI 描述符覆盖的页 }
 ```
 
+**先做页级类型裁决，再验覆盖**：同一页可能同时被普通静态保留（规范 `must` → `EfiBootServicesData`）与 MRB（规范 `should` → `EfiReservedMemoryType`）覆盖，两种预期类型不同。裁决按页进行：
+
+```
+PageSourceClaims(page)  = { (SourceRef, RequiredEfiType, 规范强度) }
+ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
+```
+
+**本项目选择「项目强化」路径**：任一 `no-map` 或 MRB 主张都要求该页为 `EfiReservedMemoryType`（把 MRB 的 `should` 提升为项目强制，并明确这是项目策略、不是规范原样映射）；只有普通静态主张时要求 `EfiBootServicesData`。跨来源身份照旧各留一条。覆盖公式分别定义 `R_static` 与 `R_MRB`，经页级裁决后再比对，不能把两者并成一个含义不明的 `R_reserved`。
+
 只证明「有重叠」或「首类正确」不够：一个正确的首页描述符 + 其后的 `EfiConventionalMemory` 会让保留区大部分页未被保护。反向也成立：一个兼容描述符只覆盖部分，不能把整条来源标记为已验证。必测三种形态（**未实现**）：① 仅首页类型正确、后续页类型错误 → 拒绝；② 多个连续同类描述符共同完整覆盖 → 通过；③ 中间一页类型不兼容 → 拒绝。
+
+**启动读取是一个具名的用途，不是全局正向授权**：`BootInputReadUse { ObjectId, PA/VA, 读取范围, 只读, 阶段, 访问路径, 失效点 }`，由每个负向来源分别判断是否允许它——`BootInputProvenance` 不能覆盖所有禁止项：
+
+| 原始 DTB 所在区域 | 一次性启动读取的裁决 |
+|---|---|
+| 普通 RAM | 启动 ABI 授权 + 完整范围可达即可 |
+| 普通 `/reserved-memory` | 读取由启动输入对象授权决定；分配排除仍然保留 |
+| MRB | 走 MRB 规则允许的、启动程序明确用途对应的受限访问授权 |
+| `no-map` | **不得自动借用 MRB 例外**：必须证明这次专用读取不违反「禁止标准映射/非受控推测访问」，否则拒绝 |
+| `EfiReservedMemoryType` | **不得因配置表里有指针就默认解除 `DenyOSAccess`**：须有该启动 ABI 的明确授权，或直接拒绝这种布局 |
 
 **与 O-03 的接口**：若 DTB 本体落在 MRB 覆盖范围内，上面这次只读访问必须登记为**MRB 规则自身允许的、由启动程序明确提供的一次性对象访问授权**（带对象身份、阶段与只读路径）。要否定的是「无边界豁免」——授权不覆盖所在 MRB 区域的其它访问，也不授权复制完成后继续访问原地址；但也不应把 DTB 读取说成「不属于任何例外」，那与规范允许的显式授权相矛盾。
 
@@ -593,7 +612,10 @@ Outward(R_reserved) ⊆ ⋃ { 类型兼容的 EFI 描述符覆盖的页 }
 |---|---|---|
 | a 容器与 MRB | 已实现 | 已实现；后续输入变化仍需复审 |
 | b 结构块预扫 | 已实现 | 部分闭合：跳转表与「解析器可消费」已证；**预编译依赖闭包中是否含跳转表未证**（`-C jump-tables=no` 只作用于本项目编译的 crate） |
-| c 目标节点语义 | 未开始 | 未闭合 |
+| c `/memory` 语义解析 | 已实现（status/hotplug 准入、重复去重、部分重叠拒绝） | 部分闭合 |
+| c `/reserved-memory` 静态 `reg` | 已实现（三语义、`ranges` 空、cells 一致、重复/重叠/冲突三分） | 部分闭合 |
+| c 动态 `size` / `alignment` / `alloc-ranges` | 未实现 | 未闭合：今天落入统一 `UnsupportedReservedDeclaration`，缺专用错误与 `size`-only 测试（DTSpec：`reg` 与 `size` 并存按 `reg`，动态区不入 UEFI 内存图） |
+| c 设备 `reg` / 多级 `ranges` 转换 | 未开始 | 未闭合 |
 
 **早期执行闭包（EarlyExecutionClosure）合同**：一段代码在某阶段执行之前，必须证明它的 `Instructions ∪ ReadOnlyDataDependencies ∪ RequiredWritableState` 在该阶段的地址转换与权限下全部可达；只证明入口指令可执行不够。实证：预扫逻辑位于已映射页内，但 `switch` 被编译成 `.rodata` 跳转表 + `jr` 绝对地址，触发 RISC-V `instruction access fault`（`cause=1`，`epc` 落在 `validate_structure` 内）。
 
@@ -763,10 +785,10 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 | 证据 | 内容 |
 |---|---|
 | 提交 `38668f843`（**功能落码提交，不是测试基线**） | DTB 保留来源落码：`/reserved-memory`、MRB、容量/回绕/重叠/形状拒绝、引导区 checked 守卫 |
-| `cargo test -p minix-boot --lib` | 131 通过（采集器用例见 §2.1） |
+| `cargo test -p minix-boot --lib` | 132 通过（采集器用例见 §2.1） |
 | `cargo test -p boot-shim --lib` | 67 通过（分类器用例见 §2.2） |
 | 交叉编译 | `x86_64-unknown-none`、`aarch64-unknown-none`（`fw-none-image`）、`riscv64gc-unknown-none-elf`、`x86_64-unknown-uefi`、`aarch64-unknown-uefi` |
-| QEMU | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh` PASS（exit 0）；`test-shim-bootmarks-aarch64` **本轮未通过：被外部红阻断**——`rewrite` 上 `2d292a06b`（sef E-NETSTART）给 `SefIpc` 加了 `sendrec` 而 `servers/rs/src/lib.rs:203` 未实现（E0046），aarch64 镜像组装失败；与本切片无关，登记待其所有者修复 |
+| QEMU | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh` PASS（exit 0）；`test-shim-bootmarks-aarch64` **仍被外部红阻断**：`SefIpc` 新增的 `sendrec` 尚未在全部实现者落地——`servers/rs` 已由 `b71bce1d0` 补齐，`servers/sched/src/kernel_api/transport.rs:160` （`impl SefIpc for SefIpcAdapter`）仍缺（`E0046`）。aarch64 启动行为**未验证** |
 | 来源记录层 | `collect_with_sources()` 交出六类 `SourceRecord`（容量 40）；`no-map`、RAM 外声明、MRB 出表后仍可追溯：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`；`collect()` 语义不变；`dtb_collect_and_collect_with_sources_agree` 钉住两条入口不漂移；`dtb_no_map_declarations_count_against_the_declaration_cap` 钉住「RAM 外的 no-map 不进任何表仍占声明容量」；`dtb_reusable_duplicates_are_deduplicated_not_rejected`、`dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_partial_overlap_of_memory_ranges_is_rejected` 钉住三分裁决 |
 | FDT 容器校验 | `fdt_layout::validate` **28 条测试**（`accepts_a_canonical_layout`、`accepts_an_unaligned_strings_block`、`accepts_a_property_before_children`、`rejects_a_property_after_a_child`、`rejects_an_unknown_token`、`rejects_a_second_root`、`rejects_unbalanced_end_nodes`、`rejects_an_end_token_in_the_middle`、`rejects_a_property_running_past_the_block`、`rejects_a_property_name_outside_the_strings_block`、`rejects_an_unterminated_property_name`、`rejects_nesting_beyond_the_parser_limit`、`the_parser_consumes_the_deepest_tree_this_gate_accepts`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_more_reservations_than_the_collector_accepts`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_structure_block_without_the_end_token`、`rejects_unbacked_structure_alignment`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`、`rejects_strings_before_the_structure_block`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
 | 解析库依赖事实 | `fdt 0.1.5` `node.rs`：`properties()` 首个非属性 token 即停；`children()`/`all_nodes()` 遇「子节点后属性」即结束；`all_nodes()` 父栈 64 槽、根在下标 1（最大安全深度 63）。QEMU 8.2.2 `dumpdtb` 全树 0 处属性后置 |
@@ -775,13 +797,13 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 
 | 层级 | 本轮状态 |
 |---|---|
-| `minix-boot` 宿主单测 | 131 PASS |
+| `minix-boot` 宿主单测 | 132 PASS |
 | `boot-shim` 宿主单测 | 67 PASS |
 | riscv64 启动路径 QEMU | PASS（exit 0） |
-| aarch64 镜像组装 | **BLOCKED**：外部 `E0046`（`servers/rs` 的 `sendrec`） |
+| aarch64 镜像组装 | **BLOCKED**：`E0046` @ `servers/sched/src/kernel_api/transport.rs:160`（`SefIpcAdapter` 缺 `sendrec`） |
 | aarch64 启动行为 | 本切片**未验证** |
 
-**证据基线**：本轮代码提交 `59aa94cf3`。复核命令与顺序（缺一不可）：
+**证据基线**：本轮代码提交 `c5f1789b8`。复核命令与顺序（缺一不可）：
 
 ```
 git rev-parse HEAD
@@ -790,11 +812,11 @@ cd os && cargo test -p minix-boot --lib
 cd os && cargo test -p boot-shim --lib
 ```
 
-131/67 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
+132/67 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
 
 复核方式：对 §2 的每条主张，文中给出了测试名或代码位置；对 §5 的每条问题，文中给出了失败形态——评审人可以只凭本文判断「问题是否成立」。
 
-**测试通过不等于输入完整性**：131 与 67 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
+**测试通过不等于输入完整性**：132 与 67 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
 
 ## 7. 签字状态
 

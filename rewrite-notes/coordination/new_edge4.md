@@ -5322,3 +5322,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 旧夹具 `dtb_multi_region_and_unit_address_variant` 本是重叠 RAM，已修正。
 - 文档：UEFI↔DTB 覆盖合同与三种必测形态（未实现）；`EfiReservedMemoryType` 两层语义；O-11 MRB 授权措辞；`LiveInputReservation = Outward(...)`；UEFI 描述符记录最小字段。
 - 门：minix-boot 131、boot-shim 67、riscv QEMU PASS；aarch64 仍被 `E0046` 阻断。
+
+### 第二百五十九笔（01 阶段 · I-29 第五十一轮：类型裁决与读取用途）
+
+代码 `c5f1789b8`（测试切片）；主文档约 842 行。
+
+- O-11：header 读一次、body 读一次、之后只访问副本（修文字矛盾）。
+- UEFI↔DTB：`PageSourceClaims`/`ResolvedEfiType`；项目强化路径（MRB `should`→项目强制），`R_static`/`R_MRB` 分开。
+- `BootInputReadUse` 矩阵：`no-map` 不借 MRB 例外、`EfiReservedMemoryType` 不因指针解除 `DenyOSAccess`。
+- O-06 `CONVENTIONAL` 条件资格；`/memory` 重叠理由改为项目输入策略；O-12j-c 状态表拆分。
+- 新测试 `dtb_identical_memory_tuples_are_deduplicated_not_rejected`；minix-boot 132、boot-shim 67。
+- aarch64 仍阻断：`servers/rs` 已由 `b71bce1d0` 修复，`servers/sched/src/kernel_api/transport.rs:160` 的 `SefIpcAdapter` 仍缺 `sendrec`（`E0046`），启动行为未验证。

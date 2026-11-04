@@ -816,3 +816,13 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 新测试 | `dtb_reusable_duplicates_are_deduplicated_not_rejected`、`dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_partial_overlap_of_memory_ranges_is_rejected` |
 | 旧夹具修正 | `dtb_multi_region_and_unit_address_variant` 原输入 `(0x8000_0000, 0x4000_0000)` + `(0x8800_0000, …)` 实为重叠；改为 `0x400_0000` 后不相交 |
 | 门 | minix-boot **131**、boot-shim **67**；riscv bootface PASS（exit 0）；aarch64 仍 BLOCKED（`E0046`） |
+
+## 二十三、第五十一轮：单节点多 reg 重复与合同修订
+
+| 项 | 读数 |
+|---|---|
+| 新夹具 | `build_fdt_multi_reg(&[("memory@80000000", &[(0x8000_0000,0x4000),(0x8000_0000,0x4000)])])`：一个节点两个相同 `reg` 元组 |
+| 新测试 | `dtb_identical_memory_tuples_are_deduplicated_not_rejected`：`free.len()==1`、两条 `Memory` 记录、origin 分别为 `{0,0}`/`{0,1}` |
+| 提交性质 | 仅测试模块改动（diff 单 hunk 在 `mod tests` 内），生产路径未变 |
+| aarch64 QEMU | 尝试复跑：`servers/rs` 的 `sendrec` 已由 `b71bce1d0` 修复，但 `servers/sched/src/kernel_api/transport.rs:160` 的 `SefIpcAdapter` 仍缺（`E0046`），镜像组装仍失败；启动行为未验证 |
+| 门 | minix-boot **132**、boot-shim **67** |

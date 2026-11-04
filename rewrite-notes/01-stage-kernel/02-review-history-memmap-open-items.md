@@ -10,6 +10,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十一轮评审之后：读取合同与类型裁决收口）**
+
+- **代码 `c5f1789b8`（测试切片）**：新增 `build_fdt_multi_reg` 夹具与 `dtb_identical_memory_tuples_are_deduplicated_not_rejected`——单节点两个相同 `reg` 元组时，全景只留一份、两条来源记录各留（origin `{node:0, reg:0/1}`）。此为纯测试提交，生产代码未动。minix-boot **132**、boot-shim **67**。
+- **O-11 文字矛盾修正**：原句「原件只读一次」与「复制 `[dtb+40, …)`」不能同时成立；改为「header 只在 preflight 读一次、body 只在复制读一次，之后只访问副本」。
+- **UEFI↔DTB 类型裁决**：补 `PageSourceClaims`/`ResolvedEfiType`；明确本项目走**项目强化**路径（任一 `no-map`/MRB 主张都要求 `EfiReservedMemoryType`，把 MRB 的 `should` 升为项目强制），`R_static` 与 `R_MRB` 分开定义后再做页级裁决。
+- **启动读取用途矩阵**：`BootInputReadUse` 具名化；`no-map` 不得借用 MRB 例外、`EfiReservedMemoryType` 不得因指针存在而解除 `DenyOSAccess`。
+- **O-06**：`CONVENTIONAL` 的「可映射/可分配」改为条件列（类型资格 ∧ 缓存 WB ∧ 排除项），`OrdinaryRamEligibility` 不隐含缓存检查。
+- **`/memory` 重叠理由**：改述为「严格输入策略」，不再暗示集合模型必然重复计页。
+- **O-12j-c 状态表**：拆成 `/memory`（部分闭合）、静态 `/reserved-memory`（部分闭合）、动态 `size`（未闭合，缺专用错误与测试）、设备 `reg`/`ranges`（未开始）。
+
 **本轮（第五十轮评审之后：保留语义三分与 RAM 重叠收口）**
 
 - **代码 `59aa94cf3`**：`/reserved-memory` 的重复判定从「`no-map` 布尔」改为**三语义**（`ReservationIntent::Ordinary/Reusable/NoMap`）——上一版里普通与 `reusable` 会被误判成同语义去重，现在同范围跨语义一律 `ConflictingReservationAttributes`；`/memory` 的部分重叠新增 `OverlappingMemoryRanges` 拒绝（精确重复去重、记录各留一条）。minix-boot **131**、boot-shim **67**；riscv QEMU PASS。
