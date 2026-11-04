@@ -766,3 +766,25 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 新测试 | `dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span` |
 | 门 | minix-boot **118**、boot-shim **67**；`test-kernel-image-riscv64-bootface.sh` PASS、`test-shim-bootmarks-aarch64.sh` PASS（exit 0）；`cargo check -p boot-shim --target x86_64-unknown-uefi` 通过 |
 | 行为不变 | `collect()` 仍返回两张表；记录层是附加输出，`bootface`/`opensbi`/`uefi` 调用点未改 |
+
+## 十八、第四十六轮：记录模型、容量负控与外部红
+
+| 项 | 读数 |
+|---|---|
+| 记录结构 | `SourceRecord { id: u16, kind, origin, raw_start, raw_end }`，无页范围；`kind` 六类（含 `ReservedReusable`）；`origin` 四类（含 `MrbEntry(n)` / `ReservedMemoryChild(n)`） |
+| 容量 | `DTB_SOURCE_MAX = 8 + 8 + 16 + 8 = 40`，由输入上限推出；负控 `dtb_no_map_declarations_count_against_the_declaration_cap` 构造 9 条 RAM 外 `no-map`（不进任何投影表）并确认第 9 条被拒（`TooManyReservedRegions`），证明容量不是从投影表反推 |
+| 入口一致性 | `dtb_collect_and_collect_with_sources_agree`：两条入口的两张表逐项相同 |
+| 生产接入 | `grep -rn 'collect_with_sources' --include=*.rs os`（排除库自身）零命中；四条 DTB 调用点均 `collect()` |
+| 门 | minix-boot **120**、boot-shim **67**；riscv bootface PASS（exit 0）；`cargo check -p minix-boot --target aarch64-unknown-none`、`-p boot-shim --target aarch64-unknown-uefi`、`-p boot-shim --target x86_64-unknown-uefi` 均通过 |
+| aarch64 QEMU | **阻断**：`xtask image assembly failed`；`error[E0046]: not all trait items implemented, missing: sendrec`，`os/servers/rs/src/lib.rs:203`，由 `2d292a06b`（sef E-NETSTART 切片）引入，与本切片无关 |
+
+## 十九、第四十七轮：输入/派生分层与容量可达性
+
+| 项 | 读数 |
+|---|---|
+| `class()` | `FirmwarePrefix` → `DerivedReservation`；其余五类 → `InputDeclaration` |
+| origin | `MemoryNode { node, reg }`、`ReservedMemoryChild { node, reg }`、`MrbEntry(n)`、`FirmwarePrefix { memory_id }` |
+| 容量可达 | `dtb_source_capacity_is_reachable_at_exactly_forty`：8 段 `/memory` + 8 条前缀（`fw_end` 覆盖每个段首）+ 16 条 MRB + 8 条声明 = 40，`collect_with_sources` 成功且各类计数相符 |
+| 共用上限 | `dtb_declaration_cap_is_shared_across_reservation_kinds`：普通/reusable/no-map 各 3 条（共 9）被拒（`TooManyReservedRegions`） |
+| 派生链 | `dtb_firmware_prefix_links_to_its_memory_record`：前缀 `memory_id` 指向的正是其切分的 `/memory` 记录 |
+| 门 | minix-boot **123**、boot-shim **67**；riscv bootface PASS（exit 0）；aarch64 镜像组装仍 BLOCKED（`E0046`，`servers/rs/src/lib.rs:203`），aarch64 启动行为未验证 |
