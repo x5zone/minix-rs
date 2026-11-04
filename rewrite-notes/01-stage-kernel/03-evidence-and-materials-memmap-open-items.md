@@ -109,6 +109,19 @@
 
 ---
 
+## 一b、落码证据：设备树保留来源（提交 `38668f843`）
+
+| 项 | 读数 | 命令 |
+|---|---|---|
+| 静态保留声明扣除 | `dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables` | `cd os && cargo test -p minix-boot --lib` |
+| 前缀去重 / 越界声明 / 保留映射块 | `dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free` | 同上 |
+| 拒绝形状（重叠 / 回绕 / 宽 cells / 容量） | `dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_more_than_capacity_is_rejected_not_truncated` | 同上 |
+| 引导区重叠守卫 | `test_bootstrap_outside_memmap_rejects_wrapping_region`、`_allocation` | `cd os && cargo test -p boot-shim --lib` |
+| 三架构编译 | x86_64 / aarch64（`fw-none-image`，另加 `-C target-feature=-neon,-fp-armv8`）/ riscv64 | `cargo check -p kernel-image --target <triple> --features fw-none-image`；`cargo check -p boot-shim --target riscv64gc-unknown-none-elf` |
+| 真实固件引导 | riscv bootface QEMU PASS，memmap 行不变 | `bash os/qemu-tests/test-kernel-image-riscv64-bootface.sh` |
+
+**边界（写进证据，不让它被读大）**：QEMU/OpenSBI 的运行时 DTB 未在固件前缀之上暴露保留声明，因此该次 QEMU 运行只证明「接入不改变既有引导」；扣除行为本身由上述单元测试覆盖，真实板卡的保留声明样本仍待取得。
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |
