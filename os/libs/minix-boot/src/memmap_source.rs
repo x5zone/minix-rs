@@ -102,6 +102,10 @@ pub enum DtbMemMapError {
     /// value). Such memory is not described as usable RAM, so handing it to
     /// the allocator would ignore the node's own state.
     UnsupportedMemoryNodeStatus,
+    /// Two `/memory` declarations partially overlap. A partial overlap would
+    /// place the same page in the panorama twice; this project refuses it as a
+    /// firmware input anomaly (exact duplicates are deduplicated instead).
+    OverlappingMemoryRanges,
     /// A `/memory` node is marked `hotpluggable`. The kernel has no memory
     /// removal mechanism, so removable memory must not enter the PMM.
     HotpluggableMemoryUnsupported,
@@ -370,23 +374,36 @@ fn carve_free(
 /// here even when only one side reaches the reserved table: a `no-map`
 /// declaration overlapped by a plain one would otherwise authorise access to
 /// pages the other declaration forbids.
+/// How one `/reserved-memory` declaration was qualified. `reusable` is its own
+/// intent: it carries an owner/reclaim semantics that ordinary reservations do
+/// not, so the two must not collapse into "same declaration" just because both
+/// leave the PMM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReservationIntent {
+    Ordinary,
+    Reusable,
+    NoMap,
+}
+
 fn push_declared(
-    declared: &mut [(u64, u64, bool); DTB_MEMMAP_MAX],
+    declared: &mut [(u64, u64, ReservationIntent); DTB_MEMMAP_MAX],
     n: &mut usize,
     start: u64,
     end: u64,
-    no_map: bool,
+    intent: ReservationIntent,
 ) -> Result<bool, DtbMemMapError> {
-    for &(prev_start, prev_end, prev_no_map) in declared[..*n].iter() {
+    for &(prev_start, prev_end, prev_intent) in declared[..*n].iter() {
         if start == prev_start && end == prev_end {
-            if no_map == prev_no_map {
-                // Same source kind, same range, same intent: a duplicate
-                // declaration, not an overlap. The projections already hold
-                // this range, so only the record stays (identity is kept).
+            if intent == prev_intent {
+                // Same range, same intent: a duplicate declaration, not an
+                // overlap. The projections already hold this range, so only
+                // the record stays (identity is kept).
                 return Ok(true);
             }
-            // The same bytes claimed with and without `no-map` cannot both be
-            // honoured: that is a semantic conflict, not a duplicate.
+            // Same bytes under different intents cannot both be honoured:
+            // ordinary vs `reusable` differs in lifecycle, ordinary vs
+            // `no-map` differs in access, `reusable` vs `no-map` is the
+            // specification's own mutual exclusion.
             return Err(DtbMemMapError::ConflictingReservationAttributes);
         }
         if start < prev_end && prev_start < end {
@@ -396,7 +413,7 @@ fn push_declared(
     if *n >= DTB_MEMMAP_MAX {
         return Err(DtbMemMapError::TooManyReservedRegions);
     }
-    declared[*n] = (start, end, no_map);
+    declared[*n] = (start, end, intent);
     *n += 1;
     Ok(false)
 }
@@ -500,7 +517,7 @@ impl DtbMemoryMap<'_> {
         // Declarations in raw page coordinates with their `no-map` intent,
         // kept for the duplicate/overlap decision (the reserved table holds
         // just the reachable subset).
-        let mut declared = [(0u64, 0u64, false); DTB_MEMMAP_MAX];
+        let mut declared = [(0u64, 0u64, ReservationIntent::Ordinary); DTB_MEMMAP_MAX];
         let mut free_n = 0usize;
         let mut reserved_n = 0usize;
         let mut memory_n = 0usize;
@@ -540,19 +557,39 @@ impl DtbMemoryMap<'_> {
                 };
                 start.checked_add(len).ok_or(DtbMemMapError::RangeOverflow)?;
                 let memory_id = sources_n as u16;
-                push_span(
-                    &mut memory,
-                    &mut memory_n,
-                    start,
-                    len,
-                    DtbMemMapError::TooManyFreeRegions,
-                )?;
+                // Overlapping RAM claims are a firmware input anomaly: a
+                // partial overlap would put a page in the panorama twice and
+                // let the PMM hand it out twice, so it is refused. An exact
+                // duplicate is a repeated claim of the same bytes — it keeps
+                // its record but projects only once.
+                let mut duplicate = false;
+                for &span in memory[..memory_n].iter() {
+                    let prev_start = span.base.0;
+                    let prev_end = prev_start + span.len as u64;
+                    if start < prev_end && prev_start < start + len {
+                        if start == prev_start && start + len == prev_end {
+                            duplicate = true;
+                            break;
+                        }
+                        return Err(DtbMemMapError::OverlappingMemoryRanges);
+                    }
+                }
                 push_source(
                     &mut sources,
                     &mut sources_n,
                     SourceKind::Memory,
                     SourceOrigin::MemoryNode { node: node_ordinal, reg: reg_index as u16 },
                     (start, start + len),
+                )?;
+                if duplicate {
+                    continue;
+                }
+                push_span(
+                    &mut memory,
+                    &mut memory_n,
+                    start,
+                    len,
+                    DtbMemMapError::TooManyFreeRegions,
                 )?;
                 if let Some((free_start, free_len)) =
                     clip_reserved(start, len, self.firmware_reserve_end)
@@ -704,7 +741,14 @@ impl DtbMemoryMap<'_> {
                             region.starting_address as u64 + len,
                         ),
                     )?;
-                    if push_declared(&mut declared, &mut declared_n, start, end, no_map)? {
+                    let intent = if no_map {
+                        ReservationIntent::NoMap
+                    } else if reusable {
+                        ReservationIntent::Reusable
+                    } else {
+                        ReservationIntent::Ordinary
+                    };
+                    if push_declared(&mut declared, &mut declared_n, start, end, intent)? {
                         // Exact duplicate: the projection already covers it,
                         // the record above keeps the second source identity.
                         continue;
@@ -1304,6 +1348,79 @@ mod tests {
     }
 
     #[test]
+    fn dtb_reusable_duplicates_are_deduplicated_not_rejected() {
+        // `reusable` repeats project once but keep both identities; the owner
+        // relation of each declaration is future work and must not be merged
+        // away here.
+        let rows = [
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true },
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true },
+        ];
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (_, reserved, sources) =
+            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("same intent is a duplicate");
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(
+            sources.iter().filter(|r| r.kind == SourceKind::ReservedReusable).count(),
+            2
+        );
+    }
+
+    #[test]
+    fn dtb_ordinary_and_reusable_same_range_is_a_conflict() {
+        // Both leave the PMM today, but `reusable` carries an owner/reclaim
+        // semantics the ordinary declaration does not: same bytes, different
+        // intent, so the pair is a conflict rather than a duplicate.
+        let rows = [
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true },
+        ];
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        assert!(
+            matches!(result, Err(DtbMemMapError::ConflictingReservationAttributes)),
+            "expected an intent conflict, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn dtb_reusable_and_no_map_same_range_is_a_conflict() {
+        let rows = [
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true },
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false },
+        ];
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        assert!(
+            matches!(result, Err(DtbMemMapError::ConflictingReservationAttributes)),
+            "expected an intent conflict, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn dtb_partial_overlap_of_memory_ranges_is_rejected() {
+        // A partial overlap would put the same page in the panorama twice and
+        // let the PMM hand it out twice; exact duplicates are deduplicated,
+        // partial overlaps are refused.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x2000), (0x8000_1000, 0x1000)],
+            true,
+            &[],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        assert!(
+            matches!(result, Err(DtbMemMapError::OverlappingMemoryRanges)),
+            "expected the RAM overlap refusal, got {result:?}"
+        );
+    }
+
+    #[test]
     fn dtb_identical_mrb_entries_are_rejected() {
         // DTSpec 5.3.2: "These given regions shall not overlap each other."
         // An identical pair is an overlap, not a repeatable declaration, so it
@@ -1683,7 +1800,10 @@ mod tests {
 
     #[test]
     fn dtb_multi_region_and_unit_address_variant() {
-        let blob = build_fdt(&[(0x8000_0000, 0x4000_0000), (0x8800_0000, 0x1000_0000)], true);
+        // The two spans must be disjoint: 0x8000_0000 + 0x4000_0000 would end
+        // at 0xC000_0000 and swallow the second span — the old fixture was an
+        // overlapping-RAM input that nothing checked before.
+        let blob = build_fdt(&[(0x8000_0000, 0x400_0000), (0x8800_0000, 0x1000_0000)], true);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
         let (conv, _res) = DtbMemoryMap::new(&fdt, 0).collect().expect("test map fits DTB_MEMMAP_MAX");
         assert_eq!(conv.len(), 2, "两段 /memory → 2 条（含 unit-address 变体）");
