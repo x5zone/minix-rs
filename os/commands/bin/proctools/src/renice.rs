@@ -73,10 +73,12 @@ pub struct Plan {
 /// Why a top-level argument list was rejected. `Usage` is C's `argc < 2`
 /// (nothing to act on); `BadPriority` is a failing `getnum` on the priority
 /// operand (which C reports with a distinct message but also exits 1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
     Usage,
-    BadPriority,
+    /// The priority token failed `getnum`; carries the token for C's
+    /// `warnx("Bad %s argument: %s", "priority", str)` line.
+    BadPriority(String),
 }
 
 /// C `getnum` (`renice.c:117-132`): parse `s` as a `strtol(..., 0)` integer.
@@ -151,7 +153,8 @@ impl Plan {
                 return Err(PlanError::Usage);
             }
         }
-        let prio = getnum(args[i]).ok_or(PlanError::BadPriority)? as i32;
+        let prio =
+            getnum(args[i]).ok_or_else(|| PlanError::BadPriority(String::from(args[i])))? as i32;
         i += 1;
 
         let mut scope = Scope::Process;
@@ -286,6 +289,9 @@ mod tests {
         assert_eq!(Plan::parse(&["5"]), Err(PlanError::Usage)); // no target
         assert_eq!(Plan::parse(&[]), Err(PlanError::Usage));
         assert_eq!(Plan::parse(&["-n"]), Err(PlanError::Usage)); // -n but no priority
-        assert_eq!(Plan::parse(&["bad", "1"]), Err(PlanError::BadPriority));
+        assert_eq!(
+            Plan::parse(&["bad", "1"]),
+            Err(PlanError::BadPriority(String::from("bad")))
+        );
     }
 }

@@ -139,7 +139,7 @@
 | 15 文件系统 | [`todo.md`](../15-stage-fs/todo.md) | `partially fixed` 2（A20 `🔄`：ext2/isofs 等 `E-FSBDEV` 真镜像；vbfs/hgfs 的前置已改判「后端先行」——VBox 客户库/HGFS 后端属 16 篇与真机面；`E-FSCMDS`/`E-FSVMCACHE` 已闭，`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 八个文件服务器入口未接事件循环 |
 | 16 驱动 | [`todo.md`](../16-stage-drivers/todo.md) | `open` 0（G6 非裁决项清零；九台 net 变体按裁决 §2.10 落五项不可用标记并保留——B1 行）＋ `stopgap landed` 3（`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 二十六个纯占位 crate（G6）；两套字符驱动收敛。A4 协议常量单一来源已收口（`2026-10-18`，跨消费者族上收 `minix-types::types::device`、blockdriver 四条本地副本清零）；G7 文档覆盖声明已收口（`2026-10-18`，doc 04/13/21 共 8 处） |
 | 17 网络 | [`todo.md`](../17-stage-net/todo.md) | `open` 0（A21 两半 by-audit：主循环真环与 `SmoltcpStack` 栈体已落；余 `E-NETSTART` 挂 A22 跨板，`2026-11-04` 对账刷新（A 板各行现值 + 各篇自带现查段）） | 协议栈本体与传输未实现；缺设计条目。原记的第三项"套接字标识基值缺 Rust 侧权威"经现场核实为**账面滞后**（`os/libs/minix-netdriver/src/sockid.rs` 已于 `2026-09-17` 落地，`cargo test -p minix-netdriver --lib sockid` → 5 passed，`2026-10-09` 核）——本行旧计数未跟上，已同步 |
-| 18 命令 | [`todo.md`](../18-stage-commands/todo.md) | `open` 0；选项级未接线 **1 处 / 1 文件**（`2026-11-04` 对账刷新：`env` 命令腿与 editor shell×3 已随批次五百二十五/五百二十六闭——NS5 依赖已清，`renice -u`（口令库）为生产面最后一处，刷新链见本表 §9 各轮收口行） | 命令面已接真实系统调用返回；未接线项的判据各自带跨线前置 |
+| 18 命令 | [`todo.md`](../18-stage-commands/todo.md) | `open` 0；选项级未接线 **0 处**（`2026-11-05` 对账刷新：`env` 命令腿、editor shell×3、`renice -u` 已随批次五百二十五/五百二十六/五百二十八闭——NS5 依赖清、共享口令件 `minix_proctools::passwd` 落地；find 的 `-exec … {} +` 成批腿与 `-delete` 族为余下余项，各为独立可领轮，刷新链见本表 §9 各轮收口行） | 命令面已接真实系统调用返回；未接线项的判据各自带跨线前置 |
 
 ## §7 测试与门面对账（账面数字与代码实测不符，或判据本身有问题）
 
@@ -202,6 +202,8 @@
 - **`2026-11-03` 收口刷新（第 40 轮，基线 `6a5de7792`）**：`cal -r/-R` 已随批次五百二十一闭（含 C 默认启用的 1752 改换模型、reform 表解析与缺日阵列），`cal` 生产面的 not-wired 拒绝行删除。生产面 not-wired 拒绝站点现量 **6 处 / 5 文件**（命令同前）：宿主可领只剩 `touch -d` 一项；`env`、editor shell×3（NS5 进程创建链）与 `renice -u`（口令库）仍跨线。下一会话从 `touch -d` 直领。
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
+
+- **`2026-11-05` 收口刷新（第 53 轮，基线 `e239e39df`，`claim/RENICE-U-qoder`）**：`renice -u` 已随批次五百二十八闭——共享口令件 `minix_proctools::passwd`（`getpwent` 决定半，七/十段行语法，坏行跳过）+ bin 直读 `/etc/passwd`，`getpwnam` 空答面（缺库/缺名）=C 的 `warnx("%s: unknown user")` 计错；顺修三句杜撰错误面（usage 行、`Bad priority argument: <token>`、`<token>: bad value`）。生产面 not-wired 报文 **0 处**。`-user` 族的名字解析面已就绪（下一笔接 find `-user`/`-group`/`-nouser`/`-nogroup`）；`-exec … {} +` 成批腿与 `-delete` 族照旧各为独立可领轮。
 
 - **`2026-11-05` 收口刷新（第 52 轮，基线 `2c5c092bb`，`claim/FIND-EXEC-qoder`）**：`find -exec` 的分号形三面已随批次五百二十七闭——`-exec`/`-ok`/`-execdir` 经 `ReferenceStat` 新缝 `run_utility`/`query_ok` 转正（`{}` 全量替换、`-execdir` 基名、真值=子进程退零、`-ok` 先问后跑），bin 孩子走 `minix-shell::exec_run::exec_search`（execvp 语义）。**余项**：`{}` 加号形的成批执行腿（C 的 `ep_bxp` 节点态跨条目存活，`function.c:502-534`）为独立可领轮；`-delete`/`-user` 族前置未变。生产面 not-wired 报文仍 **1 处**（`renice -u`，口令库）。
 

@@ -1,6 +1,6 @@
 # 18-stage-commands 实施规格缺口 TODO
 
-> **台账状态摘要**（对照代码重数于 `2026-10-18`，快照 `f28847e10`；取代快照 `9f752834c` 那一版；**`2026-11-03` 增量重数**：选项级未接线报文自 23 处降至 **19 处**——`date` 设钟、`du -x`、`rm -x`、`rm -P` 四件随批次四百九十九/五百/五百零一/五百零二闭，`grep -rn "not wired" os/commands --include=*.rs | grep -v target | grep -vE '^\S+:\s*//'` → 17（其中 4 行在测试注释里，生产面 13 处）；第 27–29 轮再闭 `compress` 三点与 `touch -h`；**`2026-11-04` 增量重数**：第 37–41 轮闭 `cp` 全字母面、`df` 全字母面、`cal -r/-R`、`touch -d`，第 45 轮闭 `wtf` 通配与库档预检，第 50 轮闭 `env` 命令腿，第 51 轮闭 `ed` 的 shell 逃逸与 `!command` 文件名，第 52 轮闭 `find -exec` 的分号形三面（`-exec`/`-ok`/`-execdir`，`{}` 加号形成批腿留独立余项）——生产面 not-wired 报文现量 **1 处 / 1 文件**（`renice -u`，口令库；`grep -rn "not wired" os/commands --include=*.rs | grep -v target | grep -vE '^\S+:[0-9]+:\s*//'` → 8 行，其中 7 行在测试断言里（「不该再报未接线」的负控），生产面仅 `renice.rs:84` 一行；`find -exec` 的执行腿是下一笔）：命令面**没有占位壳**。`find os/commands -path '*/src/bin/*.rs' | wc -l` → **113** 枚真实 bin；其中小于 1 KB 的 **0** 枚，`unimplemented!` 与 `todo!` 各 **0** 处（最小的两枚 `os/commands/bin/fileops/src/bin/true.rs` 与 `false.rs` 各 30 行——C 的 `true`/`false` 本来就是一句话的程序，短不等于空壳）。真实的缺口是**选项级的未接线报文 23 处**，摊在 15 枚 bin、6 个 crate 上（`bin/fileops` 6、`bin/proctools` 3、`usr-bin/textfilter` 2、`usr-bin/doctools` 2、`usr-bin/compress` 1、`sbin/mountinfo` 1；判据 `find os/commands -path '*/src/bin/*.rs' -exec grep -l 'not wired' {} + | wc -l` → 15）。命令全集口径不变：按 `plan.md` 的 328 个命令归属，脚本比对 328/328 通过。未闭合项**不再用一个整数表示**——逐行状态在 `../coordination/PARALLEL-20261018-A-CMD.md` 的 §1 与 §1b，跨阶段联动项在 `../coordination/TODO-LEDGER-OPEN.md`；旧口径「`open` 2 + 占位 5：命令面尚未接真实系统调用返回」两说都被上面的读数否证（命令面早已接真实系统调用返回，见 `bin_support` 的双生读缝与各壳的 `err(3)` 三段形）。
+> **台账状态摘要**（对照代码重数于 `2026-10-18`，快照 `f28847e10`；取代快照 `9f752834c` 那一版；**`2026-11-03` 增量重数**：选项级未接线报文自 23 处降至 **19 处**——`date` 设钟、`du -x`、`rm -x`、`rm -P` 四件随批次四百九十九/五百/五百零一/五百零二闭，`grep -rn "not wired" os/commands --include=*.rs | grep -v target | grep -vE '^\S+:\s*//'` → 17（其中 4 行在测试注释里，生产面 13 处）；第 27–29 轮再闭 `compress` 三点与 `touch -h`；**`2026-11-04` 增量重数**：第 37–41 轮闭 `cp` 全字母面、`df` 全字母面、`cal -r/-R`、`touch -d`，第 45 轮闭 `wtf` 通配与库档预检，第 50 轮闭 `env` 命令腿，第 51 轮闭 `ed` 的 shell 逃逸与 `!command` 文件名，第 52 轮闭 `find -exec` 的分号形三面（`-exec`/`-ok`/`-execdir`，`{}` 加号形成批腿留独立余项），第 53 轮闭 `renice -u`（共享口令件 `minix_proctools::passwd`，顺修三句错误面）——生产面 not-wired 报文现量 **0 处**（`grep -rn "not wired" os/commands --include=*.rs | grep -v target | grep -vE '^\S+:[0-9]+:\s*//'` → 7 行，生产面 0：`renice.rs:84` 随批次五百二十八删除，余 7 行全在测试断言里——「不该再报未接线」的负控（chmod/chown/cp/du/touch/env 各面测））：命令面**没有占位壳**。`find os/commands -path '*/src/bin/*.rs' | wc -l` → **113** 枚真实 bin；其中小于 1 KB 的 **0** 枚，`unimplemented!` 与 `todo!` 各 **0** 处（最小的两枚 `os/commands/bin/fileops/src/bin/true.rs` 与 `false.rs` 各 30 行——C 的 `true`/`false` 本来就是一句话的程序，短不等于空壳）。真实的缺口是**选项级的未接线报文 23 处**，摊在 15 枚 bin、6 个 crate 上（`bin/fileops` 6、`bin/proctools` 3、`usr-bin/textfilter` 2、`usr-bin/doctools` 2、`usr-bin/compress` 1、`sbin/mountinfo` 1；判据 `find os/commands -path '*/src/bin/*.rs' -exec grep -l 'not wired' {} + | wc -l` → 15）。命令全集口径不变：按 `plan.md` 的 328 个命令归属，脚本比对 328/328 通过。未闭合项**不再用一个整数表示**——逐行状态在 `../coordination/PARALLEL-20261018-A-CMD.md` 的 §1 与 §1b，跨阶段联动项在 `../coordination/TODO-LEDGER-OPEN.md`；旧口径「`open` 2 + 占位 5：命令面尚未接真实系统调用返回」两说都被上面的读数否证（命令面早已接真实系统调用返回，见 `bin_support` 的双生读缝与各壳的 `err(3)` 三段形）。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > 来源：2026-09-17 设计讨论。讨论从"命令如何获得标准库支持"出发，逐层确认了三件事：POSIX 规定的是接口契约而不是系统调用清单；Minix3 的库分层是 `minix3/lib/libc/`（C 库）与 `minix3/minix/lib/libsys/`（消息层）两个目录；Redox 用 relibc（Rust 写的 C 标准库 + POSIX）承接 Rust std 的调用。讨论结论随后与 18-stage-commands 现有文档逐条对账。
@@ -117,7 +117,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - `grep -n "stdio" 18-stage-commands/plan.md`：8 处（见 §1 验证）。
 - `ls 18-stage-commands/.design/`：`00` 与 `99` 没有 outline 与 design 快照（Gate H.6）。本轮只补契约三节不是完整改写，快照随 `99-global-concepts.md` 完整改写补齐。
 
----## 批次五百二十七（`find -exec` 执行腿：分号形三面接线，加号形留独立余项）
+---
+
+## 批次五百二十八（`renice -u` 接线：共享口令件落 proctools，三句错误面修成逐字）
+
+- **这一笔的射程**：命令面生产 not-wired 的**最后一处**——`renice.rs:84` 的 `-u user lookup not wired (getpwnam)`。前置的「口令库未播种」不影响本笔：C 的 `getpwnam` 答空（库文件缺失＝账户缺失）就是 `warnx("%s: unknown user")` 计错一条，行为面 C 同形——播不播种只决定真机上名字解析成不成功，不决定代码完不完整。
+- **落码**：新增 `minix_proctools::passwd`（`getpwent` 家族的决定半，`minix3/lib/libc/gen/getpwent.c` 的 `_pw_parse`/`__pw_scan` 面）——`Account` 七字段（name/password/uid/gid/full_name/home/shell），`parse` 收七段经典形与十段 `master.passwd` 形（中段 class/两时间字段跳过，尾段落同槽——`login` 命令已裁的同款语法）、坏行答 None（扫描器跳过不中止）、`lookup_in` 按名取首中。选 proctools 而非 fileops：fileops 本就依赖 proctools（stamp/utmp 先例），反向会成环；utmp 同族的系统数据库读面归 proctools 正位，find `-user`/chown/`ls -l` 后续同源。bin 面 `read_passwd_db` 读 C `_PATH_PASSWD`（`/etc/passwd`）全文交 `lookup_in`；`Target::User` 命中走 `donice(Scope::User, uid, …)`，空答即 `warnx("%s: unknown user")` 计错（`renice.c:96-105`）。**顺修三句既有错误面**（同命令同批，面测不钉错行）：① usage 行照 C 三段 fprintf 逐字（capital `Usage:`、方括号原样，`renice.c:158-162`——旧行小写且括号形状是杜撰）；② `Bad priority argument` 带上 token（`warnx("Bad %s argument: %s", "priority", str)`，`:113-115`，旧句缺尾——`PlanError::BadPriority` 改携 `String`）；③ `<token>: bad value`（`warnx("%s: bad value", *argv)`，`:106-109`，旧句语序与大小写皆杜撰）。
+- **登记偏差**：① C 的 NetBSD libc 读 `pwd_mkdb` 哈希库（`_PATH_MP_DB`），本树无 db 机制直读文本——对 `getpwnam` 的调用方面不可见；② 坏行跳过属宽容读（C 的 warn 通道不复制）；③ `donice` 的 `warn` 无 strerror 尾（与全 crate 一致）。
+- **门**：`cargo test -p minix-proctools` → **lib 100/0**（`passwd` 新六枚：七段全槽、十段中段跳过、五形坏行、首名命中/无名/阻塞账户、跳坏行+CRLF、空库）+ **renice_face 5/0**（新文件：usage 逐字、坏优先级带 token、无名=unknown user 计错退 1、非数字目标=bad value、数字腿宿主 IPC 桩失败句）；`cargo clippy -p minix-proctools --all-targets` 告警数与基线一致（20）；`rustfmt --edition 2024 --check` 四文件零漂移；`cargo build --target x86_64-unknown-none -p minix-proctools`、`--target riscv64gc-unknown-none-elf` 绿；`tools/check-command-boundary.sh` proctools 0 违规。核实日 `2026-11-05`；基线 `e239e39df`。
+- **记账联动**：生产面 not-wired 报文清零（`grep` 口径 8→5 行，生产面 1→0）；命令面「未接线功能」自此只剩 find 的 `-exec … {} +` 成批腿与 `-delete` 族（`-user` 族的名字解析面已随本批就绪，下一笔即接）。
+
+---
+
+## 批次五百二十七（`find -exec` 执行腿：分号形三面接线，加号形留独立余项）
 
 - **这一笔的射程**：未接线清单里 `find -exec` 的执行腿——`find.rs:1865` 的 `Prim::Exec` 拒绝臂。依赖同批次五百二十五销账：fork/exec/waitpid 既有，`execvpe` 搜索是 `minix-shell::exec_run` 共享件。
 - **落码（`os/commands/bin/fileops`）**：库面 `ReferenceStat` 开两条带默认实现的缝——`run_utility`（C `f_exec` 的 vfork+execvp+waitpid，`function.c:550-565`；`Ok(code)` 按 C 的 `rval` 形：退出的取 `WEXITSTATUS`、被信号打死记 `-1`（`:598-601`），`Err` 即 err(1) 族）与 `query_ok`（C `queryuser`，`misc.c:99-117`：stderr 印 `"argv …"? `、stdin 取首字节、排干到行尾、无换行补一行、首字 `y` 才放行）；默认面 `ENOSYS`/false＝「本构建无缝」，不碰 `-exec` 的替身零改动。`Prim::Exec` 求值臂转正：`{}` 全量替换（`brace_subst` 逐字，`misc.c`；`str::replace` 同形）、`-execdir` 取基名（`function.c:749-754`）、`-ok` 先问后跑（`:543-544`）、真值=子进程退零（`:563-564`）；fork 失败回新 `JudgeError::Spawn`（C `err(1,"vfork")` 杀全程，本层按薄壳已声明的「硬错只记该操数」规则记 rval 跳过）。bin 面 `SysProbe` 实现两缝：孩子 exec 走 `minix-shell::exec_run::exec_search`（execvp 的 PATH 语义，PATH 取继承环境的 `PATH=` 项），exec 失败的孩子印 C 的 `warn("%s", argv[0])` 行（`find: <名>: <strerror>`，经 `minix-sys` 顶层再导出的 `Strerror`）退 1；`-ok` 提问半照 queryuser 逐字。**边界**：进程腿全在 bin 的 `SysProbe`，决定半保持纯逻辑（`check-command-boundary.sh` fileops 0 违规）。`{}` 加号形（成批执行）**留独立余项**：C 的累积器挂在计划节点上跨条目存活（`ep_bxp`，`function.c:502-534`），无状态求值器装不下，本轮按名拒绝（Unwired），解析面照旧收下。
@@ -4514,14 +4526,18 @@ N5 等价注入（`extend_from_slice(field)` 写成 `extend_from_slice(&field.to
 **本轮新登记（只登记，未执行）**：`COLUMN-BLANK-SET-NARROWER-THAN-ISSPACE`。C 的空行判是
 `for (p = buf; *p && isspace((unsigned char)*p); ++p); if (!*p) { free(buf); continue; }`（`column.c:274-278`），
 C locale 的 `isspace` 表里有 `' ' 	 
-   
+ 
+ 
+ 
 ` 六枚；本壳那一判只跳 `' '` 与 `'\t'`（这个集合自批次四百三十四
 之前就如此，不是本轮字节改造引入）。差别落在「整条都是空白且没有换行符」的末行：C 认它是空行、静默丢弃、
 退 0；本壳认它是残行，打一句 `column: line too long` 并把退码置 1。现量 `tmp/column-435/blankset.log`
 （复跑 `python3 tmp/column-435/blankset.py`）：`0b`、`0b 0b`、`0c 0d`、`0d` 四形参照件都是 rc=0 零输出，
 本壳是 rc=1 加一句警告；`0d 0a` 这一形参照件把回车连同换行一起当空白丢掉（`isspace('\r')` 与 `isspace('\n')`
 都真，游标一路走到串尾），本壳交回一行 `0d 0a`。对照形 `20 09`（空格加制表）两边同形，说明差别确实只在
-`\v \f \r` 三枚。**修法**是把跳过的集合换成 C 的 ctype 判（跳 `	   
+`\v \f \r` 三枚。**修法**是把跳过的集合换成 C 的 ctype 判（跳 `	 
+ 
+ 
  ' '` 与 `
 `），
 属另一条口径，与「字节 vs 文本」无关，故另册。
