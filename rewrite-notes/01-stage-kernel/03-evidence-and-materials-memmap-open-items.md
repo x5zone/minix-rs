@@ -179,6 +179,14 @@
 | MRB 扫描上限 | `DTB_MRB_MAX = 16`；`TooManyMemoryReservations`；`dtb_too_many_memory_reservations_are_rejected` | 同左 |
 | 证据基线 | 提交 `413ff9265`；`git rev-parse HEAD` 与 `git status --short` 同批核对 | `cd os && git rev-parse HEAD` |
 
+## 一i、第三十四轮代码读数
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| `status` 准入 | `UnsupportedMemoryNodeStatus`；`dtb_disabled_memory_node_is_rejected` | `grep -n "UnsupportedMemoryNodeStatus" os/libs/minix-boot/src/memmap_source.rs` |
+| `hotpluggable` 准入 | `HotpluggableMemoryUnsupported`；`dtb_hotpluggable_memory_is_rejected` | 同左 |
+| UEFI 无热插拔位定义 | `grep -rn HOT_PLUG uefi-raw-0.9.0/src` 零命中 → 该位走未知属性拒绝 | `grep -rn HOT_PLUG /home/xzhao/.cargo/registry/src/*/uefi-raw-0.9.0/src` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |

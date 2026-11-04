@@ -90,6 +90,13 @@ pub enum DtbMemMapError {
     /// Two memory reservation block entries overlap; the specification
     /// requires the block's entries to be disjoint.
     OverlappingMemoryReservations,
+    /// A `/memory` node carries a `status` other than "okay" (or an unknown
+    /// value). Such memory is not described as usable RAM, so handing it to
+    /// the allocator would ignore the node's own state.
+    UnsupportedMemoryNodeStatus,
+    /// A `/memory` node is marked `hotpluggable`. The kernel has no memory
+    /// removal mechanism, so removable memory must not enter the PMM.
+    HotpluggableMemoryUnsupported,
 }
 
 // `static mut`: the same form as bootface's MEMMAP_STORAGE — the single-hart
@@ -319,6 +326,20 @@ impl DtbMemoryMap<'_> {
             // `/memory` or `/memory@80000000` (the unit-address variant).
             if node.name.split('@').next() != Some("memory") {
                 continue;
+            }
+            // Missing `status` means "okay"; anything else describes memory
+            // the node itself says is not usable, so it cannot be RAM.
+            let status_ok = match node.property("status") {
+                None => true,
+                Some(p) => p.value.split(|&b| b == 0).next() == Some(&b"okay"[..]),
+            };
+            if !status_ok {
+                return Err(DtbMemMapError::UnsupportedMemoryNodeStatus);
+            }
+            // The kernel cannot remove memory, so removable ranges must not
+            // become ordinary allocations that later vanish.
+            if node.property("hotpluggable").is_some() {
+                return Err(DtbMemMapError::HotpluggableMemoryUnsupported);
             }
             let Some(regs) = node.reg() else { continue };
             for region in regs {
@@ -586,7 +607,7 @@ mod tests {
         memrsv: &[(u64, u64)],
         reserved_cells: u32,
     ) -> Vec<u8> {
-        build_fdt_full(memory_regs, unit_address, reserved, memrsv, reserved_cells, &[], &[])
+        build_fdt_full(memory_regs, unit_address, reserved, memrsv, reserved_cells, &[], &[], 0, false)
     }
 
     /// The same blob with an explicit `ranges` value on `/reserved-memory`.
@@ -598,6 +619,8 @@ mod tests {
         reserved_cells: u32,
         ranges: &[u8],
         marker_value: &[u8],
+        memory_status: u8,
+        hotplug: bool,
     ) -> Vec<u8> {
         let mut strings: Vec<u8> = Vec::new();
         strings.extend_from_slice(b"#address-cells\0");
@@ -612,6 +635,10 @@ mod tests {
         let nameoff_ranges = 38usize; // 31 + 7 ("no-map\0" is exactly 7 bytes)
         strings.extend_from_slice(b"reusable\0");
         let nameoff_reusable = 45usize; // 38 + 7 ("ranges\0" is exactly 7 bytes)
+        strings.extend_from_slice(b"status\0");
+        let nameoff_status = 54usize; // 45 + 9 ("reusable\0" is exactly 9 bytes)
+        strings.extend_from_slice(b"hotpluggable\0");
+        let nameoff_hotplug = 61usize; // 54 + 7 ("status\0" is exactly 7 bytes)
         let mut struct_blk: Vec<u8> = Vec::new();
         let push_u32 = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
         let push_prop = |out: &mut Vec<u8>, nameoff: u32, val: &[u8]| {
@@ -645,6 +672,17 @@ mod tests {
             reg.extend_from_slice(&0u32.to_be_bytes());
             reg.extend_from_slice(&(*size as u32).to_be_bytes());
             push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
+            let status: &[u8] = match memory_status {
+                0 => b"",
+                1 => b"disabled\0",
+                _ => b"reserved\0",
+            };
+            if !status.is_empty() {
+                push_prop(&mut struct_blk, nameoff_status as u32, status);
+            }
+            if hotplug {
+                push_prop(&mut struct_blk, nameoff_hotplug as u32, &[]);
+            }
             push_u32(&mut struct_blk, 2); // FDT_END_NODE
         }
         if !reserved.is_empty() {
@@ -924,6 +962,8 @@ mod tests {
             2,
             &[0u8; 16],
             &[],
+            0,
+            false,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
@@ -961,6 +1001,8 @@ mod tests {
             2,
             &[],
             &[0u8; 4],
+            0,
+            false,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
@@ -1017,6 +1059,50 @@ mod tests {
         assert!(matches!(
             DtbMemoryMap::new(&fdt, 0).collect(),
             Err(DtbMemMapError::TooManyMemoryReservations)
+        ));
+    }
+
+    #[test]
+    fn dtb_disabled_memory_node_is_rejected() {
+        // `status = "disabled"` says the node is not running; its range is not
+        // usable RAM and must not reach the allocator.
+        let blob = build_fdt_full(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[],
+            &[],
+            2,
+            &[],
+            &[],
+            1,
+            false,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedMemoryNodeStatus)
+        ));
+    }
+
+    #[test]
+    fn dtb_hotpluggable_memory_is_rejected() {
+        // The kernel cannot remove memory; removable ranges must not become
+        // ordinary allocations.
+        let blob = build_fdt_full(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[],
+            &[],
+            2,
+            &[],
+            &[],
+            0,
+            true,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::HotpluggableMemoryUnsupported)
         ));
     }
 

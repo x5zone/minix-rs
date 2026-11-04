@@ -5158,3 +5158,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - MRB：条目互不重叠、扫描上限 16 条（缺终止项也拒绝）；+2 测试（81）。
 - 文档：MRB 三项项目限制（status/hotpluggable/reusable）；O-11 四条 DTB 入口 + 两阶段 + 重叠类型裁决；O-06 加 RamSourceDomain 列与属性位处置；O-12c 设备窗口来源矩阵；O-12g 原始范围保留；O-12h 结构校验与分类分开；§6 证据基线。
 - 门：minix-boot 81、boot-shim 66、三目标编译、riscv bootface QEMU PASS；lint 0。
+
+### 第二百四十二笔（01 阶段 · I-29 第三十四轮：节点状态准入 + O-12 重构）
+
+代码 `f0c518179`；主文档 471 → 490 行。
+
+- `/memory` 的 `status`（非 okay 拒绝）与 `hotpluggable`（拒绝）成为启动准入条件；+2 测试（83）。
+- O-06：`RESERVED` 域外（B），`UNUSABLE` 在来源域但进 PMM 排除；补 `EFI_MEMORY_HOT_PLUGGABLE`（依赖库无该位 → fail-closed）。
+- O-12：改为子合同列表，O-12c 拆三概念并列静态表清点与冲突规则；O-12h 加内存图元数据层与 VirtualStart；O-12g 补每级 ranges 记录；§7 改五项阻塞。
+- 门：minix-boot 83、boot-shim 66、UEFI 目标编译、riscv bootface QEMU PASS；lint 0。

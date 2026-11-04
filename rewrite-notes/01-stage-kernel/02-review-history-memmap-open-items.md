@@ -10,6 +10,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第三十四轮评审之后：DTB 节点状态成为准入条件 + O-12 重构）**
+
+- **代码 `f0c518179`**：`/memory` 的 `status` 缺失或 `okay` 才采集，其它值拒绝（`UnsupportedMemoryNodeStatus`）；`hotpluggable` 拒绝启动（`HotpluggableMemoryUnsupported`）。+2 测试（83），riscv bootface QEMU PASS。
+- **文档**：§2.1 把 status/hotpluggable 从「已知限制」升级为**输入准入**（`disabled` 内存不再交给 PMM）；O-06 裁定 `RESERVED` 域外（采用 B）、`UNUSABLE` 在来源域但进 PMM 排除；补 `EFI_MEMORY_HOT_PLUGGABLE`（`uefi-raw 0.9` 无该位 → 未知位 fail-closed）；O-11 改掉残留的「配置表指针」措辞并补副本生命周期；O-12 从被矩阵打断的表格改为子合同列表，O-12c 拆 `DeviceResource`/`DeviceWindowPolicy`/`DeviceAccessRequirement` 并列出静态表清点与冲突规则；O-12h 补内存图元数据层与 `VirtualStart`；O-12g 补每级 `ranges` 记录；§7 阻塞改为五项。
+- **门**：minix-boot 83、boot-shim 66；x86_64/aarch64 UEFI 编译；riscv bootface QEMU PASS。
+
 **本轮（第三十三轮评审之后：MRB 完整性切片 + 四项阻塞的文档收敛）**
 
 - **代码 `413ff9265`**：MRB 条目**互不重叠**（`OverlappingMemoryReservations`）与**扫描上限 16 条**（`TooManyMemoryReservations`；缺 `{0,0}` 终止项也落在这里）；+2 测试（minix-boot 81），riscv bootface QEMU PASS。
