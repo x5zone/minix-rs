@@ -10,6 +10,14 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十九轮评审之后：MRB 重复改判，四层投影合同）**
+
+- **代码 `b3c93b83f`**：上一轮把「精确重复一律去重」套到了 MRB 上，与 DTSpec 5.3.2「These given regions shall not overlap each other」冲突——改为**拒绝**（`OverlappingMemoryReservations`），测试 `dtb_identical_mrb_entries_are_rejected`；`/reserved-memory` 的重复去重保留为**项目级**策略。minix-boot **127**、boot-shim **67**；riscv QEMU PASS。
+- **不变量 1 与 O-12i 统一**：补四层表（来源事实层不合并 → 冲突解析保留身份 → 纯集合投影可 `Union` 后量化 → 归因层可反查），并列出各投影的量化顺序，消除「不得合并成无身份并集」的字面歧义。
+- **O-11 四项独立条件**：来源授权、**全范围可达（拿到 `totalsize` 后重新证明整段可读）**、内容一致、自有副本；补源/目标不相交与原始 DTB 存活登记。
+- **O-12c**：`DeviceAccessUseSet` 增 `VirtualByteRange`（或可静态解析 VA 的访问点标识）；缺 VA 无法证明访问需求，且不得用 PTE 反推 PA 充作输入。
+- **§2.2/O-06/O-03**：`RESERVED`（域外）与 `UNUSABLE`（域内排除）输出分流相同但语义不同，不得合并；`EfiReservedMemoryType` 的禁止语义由 `TypePolicy` 独立产生，不依赖 DTB 记录；`WP` 归入物理保护能力（具特殊缓存语义）；`reusable` 的 owner 来自设备节点 `memory-region` 引用，不能从节点层级推导。
+
 **本轮（第四十八轮评审之后：中立范围字段、派生参数与「重复 ≠ 重叠」）**
 
 - **代码 `09e56a729`**：`SourceRecord.raw_*` 改名 `range_*`（派生记录的该字段是派生结果，不是原始声明）；`FirmwarePrefix { memory_id, cut }` 保留派生参数 `F = firmware_reserve_end`；精确重复的 `/reserved-memory` 声明与 MRB 条目改为**投影去重、来源记录各留一条**，部分重叠仍拒绝，同范围但语义不同（`no-map` vs 普通）按 `ConflictingReservationAttributes` 拒绝。minix-boot **127**、boot-shim **67**；riscv QEMU PASS；aarch64 仍被外部 `E0046` 阻断。

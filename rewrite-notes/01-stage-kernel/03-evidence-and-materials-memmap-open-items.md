@@ -795,7 +795,15 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 |---|---|
 | 字段 | `range_start/range_end`（中性）；派生前缀的 `range_* = M_i ∩ [0, F)`，`origin = FirmwarePrefix { memory_id, cut: F }` |
 | 精确重复（普通保留） | `dtb_identical_reservations_are_deduplicated_not_rejected`：两张子节点同范围同语义 → `reserved` 只有 1 条，来源记录 2 条且 `id` 不同 |
-| 精确重复（MRB） | `dtb_identical_mrb_entries_are_deduplicated_not_rejected`：同范围两条 → 只挖一次洞（`free` 2 段），记录 2 条 |
+| 精确重复（MRB） | 第四十九轮改判：`dtb_identical_mrb_entries_are_rejected`——同范围两条 → `OverlappingMemoryReservations`（DTSpec 5.3.2 原文「These given regions shall not overlap each other」） |
 | 同范围不同语义 | `dtb_same_range_with_different_semantics_is_a_conflict` → `ConflictingReservationAttributes` |
 | 反向完整性 | `dtb_every_input_declaration_has_exactly_one_record`：2 段 RAM + 1 条 MRB + 2 条声明 → 恰好 5 条输入记录，origin 集合与输入元组一一对应 |
 | 门 | minix-boot **127**、boot-shim **67**；riscv bootface PASS（exit 0）；aarch64 镜像组装仍 BLOCKED（`E0046`），启动行为未验证 |
+
+## 二十一、第四十九轮：MRB 重复改判与四条读证明
+
+| 项 | 读数 |
+|---|---|
+| MRB 重复 | `dtb_identical_mrb_entries_are_rejected` → `OverlappingMemoryReservations`；规范原文经 spec 页面核对 |
+| `/reserved-memory` 重复 | 保持项目级去重（`dtb_identical_reservations_are_deduplicated_not_rejected`） |
+| 门 | minix-boot **127**、boot-shim **67**；riscv bootface PASS（exit 0）；aarch64 仍 BLOCKED（`E0046`） |
