@@ -5296,3 +5296,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 文档：修正六类/五类与 `reusable` 矛盾；`OrdinaryRamEligibility` 收窄；`uefi-raw 0.9` 常量展开；O-12i 端点统一待改；§6 证据分层。
 - aarch64 仍被 `servers/rs` 的 `E0046`（`sendrec`）阻断，启动行为未验证。
 - 门：minix-boot 123、boot-shim 67、riscv QEMU PASS。
+
+### 第二百五十六笔（01 阶段 · I-29 第四十八轮：重复声明与派生参数）
+
+代码 `09e56a729`；主文档 776 行。
+
+- `SourceRecord.range_*` 中性命名；派生前缀 `origin = FirmwarePrefix { memory_id, cut }`。
+- 精确重复：投影去重、来源记录各留一条；部分重叠拒绝；同范围异语义 → `ConflictingReservationAttributes`。
+- 新测试 4 条（重复 2、冲突 1、反向完整性 1）；minix-boot 127、boot-shim 67、riscv QEMU PASS。
+- aarch64 仍被 `servers/rs` 的 `E0046` 阻断。

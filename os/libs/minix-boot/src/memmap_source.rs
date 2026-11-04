@@ -63,9 +63,11 @@ pub enum DtbMemMapError {
     TooManyReservedRegions,
     /// A declared range wraps the 64-bit address space.
     RangeOverflow,
-    /// Two `/reserved-memory` declarations overlap. This collector keeps the
-    /// reserved table non-overlapping because every consumer reads it as a
-    /// list of distinct ranges.
+    /// Two `/reserved-memory` declarations **partially** overlap. Exact
+    /// duplicates (same range, same intent) are deduplicated in the projection
+    /// while both source records survive; the same range declared with and
+    /// without `no-map` is a semantic conflict
+    /// (`ConflictingReservationAttributes`), not a duplicate.
     OverlappingReservedRanges,
     /// A `/reserved-memory` entry states its extent in a shape this collector
     /// cannot read: no `reg` (for example a `size`-only placement), or cell
@@ -91,8 +93,8 @@ pub enum DtbMemMapError {
     /// `{0, 0}` terminates the block; a zero-length entry is malformed and
     /// must not be silently accepted as a reservation.
     ZeroLengthMemoryReservation,
-    /// Two memory reservation block entries overlap; the specification
-    /// requires the block's entries to be disjoint.
+    /// Two memory reservation block entries partially overlap; exact
+    /// duplicates are deduplicated in the carve and keep both records.
     OverlappingMemoryReservations,
     /// A `/memory` node carries a `status` other than "okay" (or an unknown
     /// value). Such memory is not described as usable RAM, so handing it to
@@ -167,12 +169,17 @@ impl SourceKind {
 
 /// Where inside the input object a record came from. Two declarations of the
 /// same range must stay distinguishable, so identity is not the byte range.
+/// Ordinals are 0-based in document order: `node` counts matching nodes only
+/// (`/memory` nodes for the first variant, `/reserved-memory` children for the
+/// last), and `reg` counts tuples **inside that node's `reg` property**.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceOrigin {
-    /// The `node`-th `/memory` node (0-based, document order), `reg` tuple `reg`.
+    /// The `node`-th `/memory` node, `reg` tuple `reg`.
     MemoryNode { node: u16, reg: u16 },
-    /// Derived by this project from the `/memory` record `memory_id`.
-    FirmwarePrefix { memory_id: u16 },
+    /// Derived by this project from the `/memory` record `memory_id`, cut at
+    /// `cut` (the boot-path `firmware_reserve_end` the range was intersected
+    /// with), so the derivation stays explainable after the DTB is released.
+    FirmwarePrefix { memory_id: u16, cut: u64 },
     /// The `entry`-th memory reservation block entry (0-based, terminator
     /// excluded).
     MrbEntry(u16),
@@ -180,30 +187,33 @@ pub enum SourceOrigin {
     ReservedMemoryChild { node: u16, reg: u16 },
 }
 
-/// One declared physical range, kept **unclipped and unrounded**: a `no-map`
-/// or MRB range outside `/memory` still forbids access where it lands, and the
-/// two projection tables cannot express that. No page range is stored here —
-/// `/memory` projects inward (`FullPages`) while reservations project outward,
-/// so a single precomputed page extent would bake one consumer's rule into
-/// every consumer. `raw_end` is exclusive; it cannot equal `2^64` because a
-/// DTB `reg` that wraps is rejected as `RangeOverflow` (the `u128` boundary
-/// rule belongs to the UEFI descriptor path).
+/// One physical range carried by the source layer. For input declarations
+/// (`class() == InputDeclaration`) the range is the declared extent, byte for
+/// byte; for a derived reservation (`FirmwarePrefix`) it is the **derived**
+/// extent `M_i ∩ [0, F)`, which is why the fields are named `range_*` and not
+/// `raw_*`. No page range is stored here — `/memory` projects inward
+/// (`FullPages`) while reservations project outward, so a single precomputed
+/// page extent would bake one consumer's rule into every consumer.
+/// `range_end` is exclusive; it cannot equal `2^64` because a DTB `reg` that
+/// wraps is rejected as `RangeOverflow` (the `u128` boundary rule belongs to
+/// the UEFI descriptor path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceRecord {
-    /// Stable within one collection; every projection refers back by this id.
+    /// Stable within one input object; cross-input references need
+    /// `(InputObjectId, LocalSourceId)`, never this id alone.
     pub id: u16,
     pub kind: SourceKind,
     pub origin: SourceOrigin,
-    pub raw_start: u64,
-    pub raw_end: u64,
+    pub range_start: u64,
+    pub range_end: u64,
 }
 
 static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
     id: 0,
     kind: SourceKind::Memory,
     origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-    raw_start: 0,
-    raw_end: 0,
+    range_start: 0,
+    range_end: 0,
 }; DTB_SOURCE_MAX];
 static DTB_SOURCES_N: AtomicUsize = AtomicUsize::new(0);
 
@@ -256,9 +266,9 @@ const PAGE_BYTES: u64 = 4096;
 /// Page-rounded extent of a declared reservation, rounded outward: a page that
 /// is only partly declared is not fully free.
 fn declared_page_range(start: u64, len: u64) -> Result<(u64, u64), DtbMemMapError> {
-    let raw_end = start.checked_add(len).ok_or(DtbMemMapError::RangeOverflow)?;
+    let range_end = start.checked_add(len).ok_or(DtbMemMapError::RangeOverflow)?;
     let start = start & !(PAGE_BYTES - 1);
-    let end = raw_end
+    let end = range_end
         .checked_add(PAGE_BYTES - 1)
         .ok_or(DtbMemMapError::RangeOverflow)?
         & !(PAGE_BYTES - 1);
@@ -297,8 +307,8 @@ fn push_source(
         id: *n as u16,
         kind,
         origin,
-        raw_start: raw.0,
-        raw_end: raw.1,
+        range_start: raw.0,
+        range_end: raw.1,
     };
     *n += 1;
     Ok(())
@@ -359,19 +369,34 @@ fn carve_free(
 /// declaration overlapped by a plain one would otherwise authorise access to
 /// pages the other declaration forbids.
 fn push_declared(
-    declared: &mut [MemoryRegion; DTB_MEMMAP_MAX],
+    declared: &mut [(u64, u64, bool); DTB_MEMMAP_MAX],
     n: &mut usize,
     start: u64,
     end: u64,
-) -> Result<(), DtbMemMapError> {
-    for &span in declared[..*n].iter() {
-        let span_start = span.base.0;
-        let span_end = span_start + span.len as u64;
-        if start < span_end && span_start < end {
+    no_map: bool,
+) -> Result<bool, DtbMemMapError> {
+    for &(prev_start, prev_end, prev_no_map) in declared[..*n].iter() {
+        if start == prev_start && end == prev_end {
+            if no_map == prev_no_map {
+                // Same source kind, same range, same intent: a duplicate
+                // declaration, not an overlap. The projections already hold
+                // this range, so only the record stays (identity is kept).
+                return Ok(true);
+            }
+            // The same bytes claimed with and without `no-map` cannot both be
+            // honoured: that is a semantic conflict, not a duplicate.
+            return Err(DtbMemMapError::ConflictingReservationAttributes);
+        }
+        if start < prev_end && prev_start < end {
             return Err(DtbMemMapError::OverlappingReservedRanges);
         }
     }
-    push_span(declared, n, start, end - start, DtbMemMapError::TooManyReservedRegions)
+    if *n >= DTB_MEMMAP_MAX {
+        return Err(DtbMemMapError::TooManyReservedRegions);
+    }
+    declared[*n] = (start, end, no_map);
+    *n += 1;
+    Ok(false)
 }
 
 /// DTB leg: parse `reg` of `/memory` and `/memory@<unit>` (the unit-address
@@ -460,8 +485,8 @@ impl DtbMemoryMap<'_> {
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-            raw_start: 0,
-            raw_end: 0,
+            range_start: 0,
+            range_end: 0,
         }; DTB_SOURCE_MAX];
         let mut sources_n = 0usize;
         let mut free = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
@@ -470,9 +495,10 @@ impl DtbMemoryMap<'_> {
         // overlaps RAM, and its reserved entry must not extend past it (a
         // framebuffer-style reservation outside `/memory` claims no RAM).
         let mut memory = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
-        // Declarations in raw page coordinates, kept only for the overlap
-        // check (the reserved table holds just the reachable subset).
-        let mut declared = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+        // Declarations in raw page coordinates with their `no-map` intent,
+        // kept for the duplicate/overlap decision (the reserved table holds
+        // just the reachable subset).
+        let mut declared = [(0u64, 0u64, false); DTB_MEMMAP_MAX];
         let mut free_n = 0usize;
         let mut reserved_n = 0usize;
         let mut memory_n = 0usize;
@@ -550,7 +576,10 @@ impl DtbMemoryMap<'_> {
                         &mut sources,
                         &mut sources_n,
                         SourceKind::FirmwarePrefix,
-                        SourceOrigin::FirmwarePrefix { memory_id },
+                        SourceOrigin::FirmwarePrefix {
+                            memory_id,
+                            cut: self.firmware_reserve_end,
+                        },
                         (start, start + prefix_len),
                     )?;
                 }
@@ -579,14 +608,17 @@ impl DtbMemoryMap<'_> {
             if mrb_n >= DTB_MRB_MAX {
                 return Err(DtbMemMapError::TooManyMemoryReservations);
             }
-            for &(prev_start, prev_end) in mrb[..mrb_n].iter() {
-                if start < prev_end && prev_start < end {
-                    return Err(DtbMemMapError::OverlappingMemoryReservations);
+            let duplicate = mrb[..mrb_n].iter().any(|&(s, e)| s == start && e == end);
+            if !duplicate {
+                for &(prev_start, prev_end) in mrb[..mrb_n].iter() {
+                    if start < prev_end && prev_start < end {
+                        return Err(DtbMemMapError::OverlappingMemoryReservations);
+                    }
                 }
+                mrb[mrb_n] = (start, end);
+                mrb_n += 1;
+                carve_free(&mut free, &mut free_n, start, end)?;
             }
-            mrb[mrb_n] = (start, end);
-            mrb_n += 1;
-            carve_free(&mut free, &mut free_n, start, end)?;
         }
 
         // 3. `/reserved-memory`: declared reservations are not allocatable.
@@ -673,7 +705,11 @@ impl DtbMemoryMap<'_> {
                             region.starting_address as u64 + len,
                         ),
                     )?;
-                    push_declared(&mut declared, &mut declared_n, start, end)?;
+                    if push_declared(&mut declared, &mut declared_n, start, end, no_map)? {
+                        // Exact duplicate: the projection already covers it,
+                        // the record above keeps the second source identity.
+                        continue;
+                    }
                     for &span in memory[..memory_n].iter() {
                         let span_start = span.base.0;
                         let span_end = span_start + span.len as u64;
@@ -793,7 +829,7 @@ pub fn dtb_covers_conventional(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::{format, vec::Vec};
+    use alloc::{format, vec, vec::Vec};
 
     /// One `/reserved-memory` child, as the fixture writes it.
     struct ReservedRow {
@@ -1048,7 +1084,7 @@ mod tests {
             .iter()
             .find(|r| r.kind == SourceKind::ReservedNoMap)
             .expect("no-map declaration keeps its record");
-        assert_eq!((record.raw_start, record.raw_end), (0x8000_4000, 0x8000_5000));
+        assert_eq!((record.range_start, record.range_end), (0x8000_4000, 0x8000_5000));
         assert_eq!(record.origin, SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 });
     }
 
@@ -1064,7 +1100,7 @@ mod tests {
             .iter()
             .find(|r| r.kind == SourceKind::MrbEntry)
             .expect("MRB entry keeps its record");
-        assert_eq!((record.raw_start, record.raw_end), (0x8000_1000, 0x8000_1800));
+        assert_eq!((record.range_start, record.range_end), (0x8000_1000, 0x8000_1800));
         assert_eq!(record.origin, SourceOrigin::MrbEntry(0));
     }
 
@@ -1089,7 +1125,7 @@ mod tests {
             .iter()
             .find(|r| r.kind == SourceKind::ReservedNoMap)
             .expect("out-of-RAM declaration keeps its record");
-        assert_eq!((record.raw_start, record.raw_end), (0x9000_0000, 0x9000_1000));
+        assert_eq!((record.range_start, record.range_end), (0x9000_0000, 0x9000_1000));
     }
 
     #[test]
@@ -1110,8 +1146,8 @@ mod tests {
         assert_eq!(sources.len(), 3, "one /memory span + one MRB entry + one reservation");
         let covered = |start: u64| {
             sources.iter().any(|r| {
-                let first = r.raw_start & !0xfff;
-                let end = (r.raw_end + 0xfff) & !0xfff;
+                let first = r.range_start & !0xfff;
+                let end = (r.range_end + 0xfff) & !0xfff;
                 first <= start && start < end
             })
         };
@@ -1233,16 +1269,108 @@ mod tests {
             .find(|r| r.kind == SourceKind::FirmwarePrefix)
             .expect("prefix record exists");
         assert_eq!(prefix.kind.class(), SourceClass::DerivedReservation);
-        let SourceOrigin::FirmwarePrefix { memory_id } = prefix.origin else {
+        let SourceOrigin::FirmwarePrefix { memory_id, cut } = prefix.origin else {
             panic!("prefix origin must name its source record");
         };
+        assert_eq!(cut, 0x8000_4000, "the derivation parameter stays recorded");
         let memory = sources
             .iter()
             .find(|r| r.id == memory_id)
             .expect("prefix points at a live record");
         assert_eq!(memory.kind, SourceKind::Memory);
-        assert_eq!(memory.raw_start, prefix.raw_start);
+        assert_eq!(memory.range_start, prefix.range_start);
         assert_eq!(memory.kind.class(), SourceClass::InputDeclaration);
+    }
+
+    #[test]
+    fn dtb_identical_reservations_are_deduplicated_not_rejected() {
+        // Two children declaring the same range with the same intent: one
+        // projection, two source identities.
+        let rows = [
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
+        ];
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (_, reserved, sources) =
+            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("duplicate is not an overlap");
+        assert_eq!(reserved.len(), 1, "the projection holds the range once");
+        let records: Vec<_> = sources
+            .iter()
+            .filter(|r| r.kind == SourceKind::ReservedOrdinary)
+            .collect();
+        assert_eq!(records.len(), 2, "both declarations keep their record");
+        assert_ne!(records[0].id, records[1].id);
+        assert_eq!(records[0].range_start, records[1].range_start);
+    }
+
+    #[test]
+    fn dtb_identical_mrb_entries_are_deduplicated_not_rejected() {
+        let blob =
+            build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &[(0x8000_4000, 0x1000), (0x8000_4000, 0x1000)], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (free, _, sources) =
+            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("duplicate is not an overlap");
+        assert_eq!(free.len(), 2, "the hole is carved once");
+        assert_eq!(
+            sources.iter().filter(|r| r.kind == SourceKind::MrbEntry).count(),
+            2
+        );
+    }
+
+    #[test]
+    fn dtb_same_range_with_different_semantics_is_a_conflict() {
+        // Same bytes, one `no-map` and one not: the two claims cannot both be
+        // honoured, so this is a conflict rather than a duplicate.
+        let rows = [
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false },
+        ];
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        assert!(
+            matches!(result, Err(DtbMemMapError::ConflictingReservationAttributes)),
+            "expected a semantic conflict, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn dtb_every_input_declaration_has_exactly_one_record() {
+        // The reverse direction of the coverage test: every accepted input
+        // tuple produces exactly one record, and no record is invented.
+        let memory = [(0x8000_0000u64, 0x1_0000u64), (0x9000_0000, 0x1_0000)];
+        let rows = [
+            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
+            ReservedRow { base: 0x8000_8000, size: 0x1000, no_map: true, reusable: false },
+        ];
+        let memrsv = [(0x8000_6000u64, 0x1000u64)];
+        let blob = build_fdt_ex(&memory, false, &rows, &memrsv, 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (_, _, sources) =
+            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        assert_eq!(sources.len(), 5, "2 memory + 1 MRB + 2 reservations");
+        let mut origins: Vec<_> = sources
+            .iter()
+            .filter(|r| r.kind.class() == SourceClass::InputDeclaration)
+            .map(|r| r.origin)
+            .collect();
+        origins.sort_by_key(|o| match o {
+            SourceOrigin::MemoryNode { node, reg } => (0u8, *node as u32, *reg as u32),
+            SourceOrigin::MrbEntry(e) => (1u8, *e as u32, 0),
+            SourceOrigin::ReservedMemoryChild { node, reg } => (2u8, *node as u32, *reg as u32),
+            SourceOrigin::FirmwarePrefix { .. } => (3u8, 0, 0),
+        });
+        assert_eq!(
+            origins,
+            vec![
+                SourceOrigin::MemoryNode { node: 0, reg: 0 },
+                SourceOrigin::MemoryNode { node: 1, reg: 0 },
+                SourceOrigin::MrbEntry(0),
+                SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 },
+                SourceOrigin::ReservedMemoryChild { node: 1, reg: 0 },
+            ]
+        );
     }
 
     #[test]
