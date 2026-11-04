@@ -10,6 +10,21 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第二十八轮评审之后：集合边界、验收目标、事实状态）**
+
+评审人仍判第二层不签，给出九项定点意见（三项阻断、四项关系式/证明责任、两项验收边界），并要求主文档压到 1700 行以内。逐条落笔，1745 → 1669 行：
+
+- **非 UEFI `SourceDomain` 与保留声明分离**：`SourceDomain = NormalizeRamInward(RawRamSourceRanges)`；保留声明只在 `/memory` 交集内生效（`DeviceTreeReservedRanges = NormalizeReservedOutward(声明) ∩ SourceDomain`）；越出部分只进禁止域，不扩大 PMM 统计域。
+- **`ReservedMapped` 派生式两步**：声明向外、backing 向内；新增 `DenyOnly = DeclaredPages − RamPages`，同时被要求映射又落在 `DenyOnly` 时构造期拒绝。角色表相应改成「两步」。
+- **R21 补齐三类义务**：`FinalRootRequiredMappings` = Ordinary(S3/S4) ∪ Startup(FinalRoot,S3/S4) ∪ Device(FinalRoot,S3/S4)；审计点在 T2 之前，S4 只确认同一份根。
+- **R18 定义 `RequiredPhysicalRanges`**：启动义务 ∪ 设备义务；Port I/O 不参与物理求交。
+- **R13-A 收紧到函数级**：原始操作只允许在逐个列举的包装函数里，CI 同时拒绝白名单文件内新增的裸操作，并核对调用参数与 `AccessUseId` 一致。
+- **T1 审计完成点 + S1 访问清单**：R13/R15a/R19b 必须在 T1 启用前完成；S1 的代码、栈、DTB、内存图缓冲、设备窗口逐项登记，按 hart 记录外部转换状态。
+- **输入表**：`ReservedPrefixEnd` 划为表外政策标量；保留声明标为「来源身份独立」。
+- **类型 12 定性**：改为项目支持边界（标准类型不属于架构专属），「目标固件不输出」仍待三条腿样本。
+- **§4.4.1b 事实重写**：第十一轮「全仓零命中」作废（`memmap_source.rs` 已解析 `/reserved-memory` 与 MRB）；补四行事实表（解析入口/内容/测试/是否进政策）与三层状态（能解析 / 能转成政策集合 / 接入两棵树与 ABI）。
+- **关系组复核**：评审人称 G22 与 G23 重复计入 R20——核对原文为 `G22 R18+R19a+R19b+R19c`、`G23 R20+R21`，**不成立**；仍补一句「每个断言恰好出现一次」的显式说明。
+
 **本轮（第二十七轮评审之后：合同收尾，不扩集合）**
 
 评审人确认第一层方向可签（保留映射区需补平台准入），第二层仍不签，给出五组收尾项。本轮逐条落笔，主文档 1745 → 1739 行：

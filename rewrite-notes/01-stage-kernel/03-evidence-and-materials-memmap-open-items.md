@@ -132,6 +132,16 @@
 | 诊断成员完整存储、超限拒绝启动 | `SIDE_CAP = 64`、`MapError::TooManySideEntries` | `grep -n -e SIDE_CAP -e TooManySideEntries os/boot-shim/src/ebs_map.rs` |
 | 设备窗口政策是静态表 | `identity_device_windows() -> &'static [(u64, u64)]` | `grep -n -A 3 "fn identity_device_windows" os/kernel/src/lib.rs` |
 
+## 一d、第二十八轮事实表：设备树各来源的实现状态
+
+| 来源 | 现量命令 | 读数 |
+|---|---|---|
+| `/memory` | `grep -n "for node in self.fdt.all_nodes()" -A 20 os/libs/minix-boot/src/memmap_source.rs` | 第 1 段读 `reg`，unit-address 与多段都覆盖 |
+| `/reserved-memory` | `grep -n "fn lookup_reserved_memory" -A 8 os/libs/minix-boot/src/memmap_source.rs` 与第 3 段 | `find_node` + 可见性交叉检查；`reg`、`no-map`；`reusable` 未区分 |
+| MRB | `grep -n "memory_reservations" os/libs/minix-boot/src/memmap_source.rs` | 第 2 段；库处理 `{0,0}` 终止 |
+| UEFI 配置表 DTB | `grep -n "DEVICE_TREE_GUID" -A 6 os/boot-shim/src/uefi_helpers.rs` | 只把条目地址登记为 `PlatformDescSource::DTB`，不解析不复制 |
+| 三层状态 | 解析层：前三行具备；转换层：只有可用表/保留表；接入层：未做 | 由代码结构直接读出，不靠字符串命中 |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |
