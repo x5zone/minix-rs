@@ -183,7 +183,7 @@
 - §5 `C-17`（:127）：消费接法挂 `E-DMWIRE`（E5(h)）。
 - §6 02 虚存（:150）：`V20-P1-1` 挂 `[ARCH]` 设计裁决（补证已落，实施待裁）。
 - §6 03 根服务/04 PM/07 DS/09 init/11 devman（:151/:152/:155/:157/:159）：各自的 open 项等 E5 参战面、编排裁决（C-21）或首个真实消费者（07 的裁决口径）。
-- §6 15 FS（:163）与 §4 `E-FSRUNTIME`/`E-NETSTART`（:121）：等 03-rs 通用 SEF/RS start 框架。
+- §6 15 FS（:163）与 §4 `E-FSRUNTIME`（:121）：「等 03-rs 通用 SEF/RS start 框架」一语已按 `2026-11-05` 实查改正——框架核与 fs 侧接收面早已在库（`minix-sef` 的 `process_init`/`sef_receive_status` + `minix-fs-rt` 的出生臂/信号分发/ping 拦截三段单点实现，30/0；mfs/pfs/procfs/ptyfs 四 bin 经 `ServerHooks`+`serve` 全接，见第 59 轮前后的逐 bin 审计），E-FSRUNTIME 的余面是真机集成（RS spawn FS 服务，同 E5/C-57 链）；`E-NETSTART` 的采用切片已随批次五百三十四落（lwip/uds 接出生对话）。
 - §6 16 驱动（:164）：`G6` 余九台按裁决维持占位；stopgap 三行为在案仪器/证据链资产。
 - §6 17 网络（:165）：协议栈本体与传输未实现，缺设计条目（大件，需先立设计）。
 - §7 各行（:172-182）：closed/adjudicated 全带读数。
@@ -202,6 +202,8 @@
 - **`2026-11-03` 收口刷新（第 40 轮，基线 `6a5de7792`）**：`cal -r/-R` 已随批次五百二十一闭（含 C 默认启用的 1752 改换模型、reform 表解析与缺日阵列），`cal` 生产面的 not-wired 拒绝行删除。生产面 not-wired 拒绝站点现量 **6 处 / 5 文件**（命令同前）：宿主可领只剩 `touch -d` 一项；`env`、editor shell×3（NS5 进程创建链）与 `renice -u`（口令库）仍跨线。下一会话从 `touch -d` 直领。
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
+
+- **`2026-11-05` 收口刷新（第 60 轮，基线 `2d292a06b`，`claim/SEF-FS-qoder`，审计轮无代码）**：E-FSRUNTIME 的「SEF 三段逐 bin 核」按 A22 注记执行——**三段在 `minix-fs-rt` 单点实现且四 bin 全接**：出生臂（`transport.rs:150` 的 `RS_INIT` 收发，对位 `do_sef_init_request`）、信号分发（`ipc.rs:241` 的 `dispatch_kernel_notify`）、ping 拦截（`ipc.rs:102` 的 `sef_receive_status`）；mfs/pfs/procfs/ptyfs 四 bin 全经 `ServerHooks{on_signal, init}`+`serve` 接入（逐 bin grep 坐标见 A22 行注记）；ext2/isofs 自陈停放等 `E-FSBDEV` 真镜像（接线=假装有盘）、hgfs/vbfs 为响亮 panic（A20 的求实形）。`minix-fs-rt` 门 30/0。E-FSRUNTIME 的余面只剩真机集成（RS spawn FS 服务，同 E5/C-57 链）。
 
 - **`2026-11-05` 收口刷新（第 59 轮，基线 `0b3720d9f`，`claim/SEF-NET-qoder`）**：E-NETSTART 的采用切片已随批次五百三十四落——`minix-sef::sef_await_init`（C `sef.c:125-141` 的出生对话：阻塞等 `RS_INIT`、杂散丢弃、`process_init`、sendrec 回报 `sef_init.c:458-466`；`SefIpc` 加 `sendrec` 腿）+ lwip/uds 两 main 的采用（出生门在 run 之前，链照旧环内推进——登记偏差见批注）。E-NETSTART 的条目验收仍挂真机（RS 真正 spawn 网络服务器，归设备弧+C 板窗）；fs 侧 SEF 三段逐 bin 核为下一笔（E-FSRUNTIME 同根）。
 
