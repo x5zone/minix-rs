@@ -1325,6 +1325,97 @@ mod tests {
         assert_eq!(memory.kind.class(), SourceClass::InputDeclaration);
     }
 
+    /// Blob whose root holds `/memory` nodes carrying **several `reg` tuples
+    /// in one node** (the row-based builders emit exactly one per node). Root
+    /// cells are 2/2, memory-reservation block is the empty terminator.
+    fn build_fdt_multi_reg(memory_nodes: &[(&str, &[(u64, u64)])]) -> Vec<u8> {
+        fn add(strings: &mut Vec<u8>, s: &str) -> u32 {
+            let off = strings.len() as u32;
+            strings.extend_from_slice(s.as_bytes());
+            strings.push(0);
+            off
+        }
+        let mut strings: Vec<u8> = Vec::new();
+        let cells_off = add(&mut strings, "#address-cells");
+        let size_off = add(&mut strings, "#size-cells");
+        let reg_off = add(&mut strings, "reg");
+        let mut blk: Vec<u8> = Vec::new();
+        let push_u32 = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
+        let push_prop = |out: &mut Vec<u8>, nameoff: u32, val: &[u8]| {
+            push_u32(out, 3); // FDT_PROP
+            push_u32(out, val.len() as u32);
+            push_u32(out, nameoff);
+            out.extend_from_slice(val);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+        };
+        push_u32(&mut blk, 1); // root
+        blk.push(0);
+        while blk.len() % 4 != 0 {
+            blk.push(0);
+        }
+        push_prop(&mut blk, cells_off, &2u32.to_be_bytes());
+        push_prop(&mut blk, size_off, &2u32.to_be_bytes());
+        for (name, regs) in memory_nodes {
+            push_u32(&mut blk, 1);
+            blk.extend_from_slice(name.as_bytes());
+            blk.push(0);
+            while blk.len() % 4 != 0 {
+                blk.push(0);
+            }
+            let mut reg: Vec<u8> = Vec::new();
+            for (base, size) in *regs {
+                reg.extend_from_slice(&0u32.to_be_bytes());
+                reg.extend_from_slice(&(*base as u32).to_be_bytes());
+                reg.extend_from_slice(&0u32.to_be_bytes());
+                reg.extend_from_slice(&(*size as u32).to_be_bytes());
+            }
+            push_prop(&mut blk, reg_off, &reg);
+            push_u32(&mut blk, 2); // FDT_END_NODE
+        }
+        push_u32(&mut blk, 2); // root end
+        push_u32(&mut blk, 9); // FDT_END
+
+        let struct_off = 56u32;
+        let strings_off = struct_off + blk.len() as u32;
+        let total = strings_off + strings.len() as u32;
+        let mut out: Vec<u8> = vec![0u8; total as usize];
+        out[0..4].copy_from_slice(&0xd00d_feedu32.to_be_bytes());
+        out[4..8].copy_from_slice(&total.to_be_bytes());
+        out[8..12].copy_from_slice(&struct_off.to_be_bytes());
+        out[12..16].copy_from_slice(&strings_off.to_be_bytes());
+        out[16..20].copy_from_slice(&40u32.to_be_bytes()); // off_mem_rsvmap
+        out[20..24].copy_from_slice(&17u32.to_be_bytes()); // version
+        out[24..28].copy_from_slice(&16u32.to_be_bytes()); // last_comp_version
+        out[32..36].copy_from_slice(&(strings.len() as u32).to_be_bytes());
+        out[36..40].copy_from_slice(&(blk.len() as u32).to_be_bytes());
+        out[struct_off as usize..strings_off as usize].copy_from_slice(&blk);
+        out[strings_off as usize..].copy_from_slice(&strings);
+        out
+    }
+
+    #[test]
+    fn dtb_identical_memory_tuples_are_deduplicated_not_rejected() {
+        // One node, two identical `reg` tuples: the panorama holds the span
+        // once (a second copy would let the PMM hand the same page out twice)
+        // while both declarations keep their records and their origins.
+        let blob = build_fdt_multi_reg(&[(
+            "memory@80000000",
+            &[(0x8000_0000, 0x4000), (0x8000_0000, 0x4000)],
+        )]);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (free, _, sources) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("an exact duplicate is not an overlap");
+        assert_eq!(free.len(), 1, "the projection holds the span once");
+        let records: Vec<_> = sources.iter().filter(|r| r.kind == SourceKind::Memory).collect();
+        assert_eq!(records.len(), 2, "both declarations keep their record");
+        assert_eq!(records[0].origin, SourceOrigin::MemoryNode { node: 0, reg: 0 });
+        assert_eq!(records[1].origin, SourceOrigin::MemoryNode { node: 0, reg: 1 });
+        assert_eq!(records[0].range_start, records[1].range_start);
+    }
+
     #[test]
     fn dtb_identical_reservations_are_deduplicated_not_rejected() {
         // Two children declaring the same range with the same intent: one
