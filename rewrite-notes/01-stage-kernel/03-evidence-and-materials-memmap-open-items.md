@@ -142,6 +142,16 @@
 | UEFI 配置表 DTB | `grep -n "DEVICE_TREE_GUID" -A 6 os/boot-shim/src/uefi_helpers.rs` | 只把条目地址登记为 `PlatformDescSource::DTB`，不解析不复制 |
 | 三层状态 | 解析层：前三行具备；转换层：只有可用表/保留表；接入层：未做 | 由代码结构直接读出，不靠字符串命中 |
 
+## 一e、第二十九轮 as-built 读数（主文档重写的依据）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 只有一棵项目根 | `establish_boot_dm` 注释：`additive on the active bootstrap root`，只写新 PTE | `grep -n "additive on the active bootstrap root" -A 3 os/kernel/src/dm_coverage.rs` |
+| DM 候选并集 | `memmap ∪ bootstrap tree ∪ boot modules ∪ reserved`（源-4 并集过滤） | `grep -n "memmap . bootstrap tree" -A 3 os/kernel/src/dm_coverage.rs` |
+| 无禁止集合、无审计遍历 | `grep -rn "Deny" os/kernel/src os/arch/src` 只命中权限/能力语义；`grep -rln "fn audit"` 为空 | 同左 |
+| 交接容量 | 可用表 128、保留表 256 | `grep -n -e WIRE_MEMMAP_CAP -e WIRE_RESERVED_CAP os/libs/minix-boot/src/handoff_v1.rs` |
+| 诊断成员完整存储且失败关闭 | `SIDE_CAP = 64` + `TooManySideEntries`；`types_that_earn_no_ordinary_mapping_go_to_the_side_list` | `grep -n -e SIDE_CAP -e TooManySideEntries os/boot-shim/src/ebs_map.rs` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |
