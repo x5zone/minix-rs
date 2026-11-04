@@ -13,6 +13,9 @@ path = "src/lib.rs"
 # stays free of any system-call imports (pure deciding half).
 [dependencies]
 minix-sys = { workspace = true }
+# `-exec` 孩子的 `execvp` 搜索与帧件与 sh/env 共用（批次五百二十五起的共享面）；
+# 只在 bin 的 SysProbe 用，决定半不碰进程创建（边界守卫）。
+minix-shell = { path = "../shell" }
 # `err(3)`/`warn(3)`/`perror(3)` 那一行的渲染与 errno 句子表住在 `minix-types`，但命令层
 # 不直引它：本 crate 只走 `minix-sys` 顶层的同名再导出（边界守卫
 # `tools/check-command-boundary.sh`，判例：批次一百零九的 `df`）。

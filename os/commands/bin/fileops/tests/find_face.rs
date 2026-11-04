@@ -67,6 +67,23 @@ fn the_usage_line_carries_the_program_name_and_a_capital_usage() {
 }
 
 #[test]
+fn the_wired_exec_leg_does_not_change_the_hosted_walk_face() {
+    // A hosted run cannot reach the evaluator at all (`lstat`/`getdents`
+    // answer EIO through the IPC stubs), so the exec child never spawns
+    // here. What this door pins is that the wired `-exec`/`-ok` legs keep
+    // the hosted walk face byte-identical to the bare walk: one
+    // `find: <path>: <strerror>` warn, exit 1, no stdout -- no panic, no
+    // double print, no invented exec line. The child's
+    // `warn("%s", argv[0])` line and the truth mapping are pinned at the
+    // unit level (find.rs's walk tests) and on the machine leg.
+    let bare = run(&["."]);
+    let with_exec = run(&[".", "-exec", "echo", "{}", ";"]);
+    assert_eq!(with_exec, bare);
+    let with_ok = run(&[".", "-ok", "echo", "{}", ";"]);
+    assert_eq!(with_ok, bare);
+}
+
+#[test]
 fn an_unknown_option_puts_the_name_first_with_no_backquotes() {
     // `option.c:131`: `errx(1, "%s: unknown option", *argv)`.
     assert_errx_line(&[".", "-nope"], "find: -nope: unknown option");

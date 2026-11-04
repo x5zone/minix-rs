@@ -68,8 +68,10 @@ use minix_fileops::dents;
 use minix_fileops::find::{
     FindError, ReferenceStat, StatBits, WalkProbe, World, parse, walk_paths,
 };
+use minix_shell::exec_run::exec_search;
 use minix_sys::{
-    Errno, Fd, Stat, close, getdents, gettimeofday, lstat, open, stat as stat_follows,
+    Errno, Fd, Stat, Strerror, close, fork, getdents, gettimeofday, lstat, open, read,
+    stat as stat_follows, waitpid,
 };
 
 /// The per-call refill buffer for directory reads (the same level as `du`):
@@ -117,6 +119,78 @@ impl ReferenceStat for SysProbe {
         stat_follows(path, &mut sb)
             .ok()
             .map(|()| (sb.st_atim.tv_sec, sb.st_mtim.tv_sec, sb.st_ctim.tv_sec))
+    }
+
+    /// C `f_exec`'s run half (`function.c:550-565`): fork + `execvp` +
+    /// `waitpid`. The child's working directory is already find's own (this
+    /// walk never `fchdir`s, so C's `dotfd` restore has no counterpart);
+    /// `execvp`'s PATH search goes through the shell crate's shared
+    /// `exec_search`, with the child's inherited environment (C passes
+    /// `environ` through). The exec-failure child prints C's
+    /// `warn("%s", plan->e_argv[0])` line and exits 1
+    /// (`function.c:559-561`); a signal death answers C's `rval` `-1`.
+    fn run_utility(&self, argv: &[&str]) -> Result<i32, Errno> {
+        match fork() {
+            Ok(0) => {
+                let envp: Vec<String> = support::envs()
+                    .iter()
+                    .map(|raw| String::from_utf8_lossy(raw).into_owned())
+                    .collect();
+                let refs: Vec<&str> = argv.to_vec();
+                let env: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
+                let path = env.iter().find(|e| e.starts_with("PATH=")).map(|e| &e[5..]);
+                let errno = exec_search(argv[0], &refs, &env, path);
+                // `warn("%s", plan->e_argv[0])` (`function.c:559-561`):
+                // `vwarn` renders `find: <name>: <strerror sentence>`.
+                support::warn(
+                    format!("find: {}: {}\n", argv[0], Strerror(Errno::from_i32(errno))).as_bytes(),
+                );
+                support::terminate(1);
+            }
+            Ok(pid) => {
+                let mut raw = 0;
+                waitpid(pid, &mut raw, 0).map(|_| {
+                    // C's `rval` shape (`function.c:598-601`): `WEXITSTATUS`
+                    // when exited, `-1` when the child died by signal.
+                    let signal = raw & 0x7F;
+                    if signal == 0 { (raw >> 8) & 0xFF } else { -1 }
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// C `queryuser` (`misc.c:99-117`): `"argv …"? ` on standard error, the
+    /// first answer byte from standard input, drain to end of line, and a
+    /// newline of our own when the answer ended without one.
+    fn query_ok(&self, argv: &[&str]) -> bool {
+        let mut line = String::from("\"");
+        if let Some(first) = argv.first() {
+            line.push_str(first);
+        }
+        for arg in argv.iter().skip(1) {
+            line.push(' ');
+            line.push_str(arg);
+        }
+        line.push_str("\"? ");
+        support::warn(line.as_bytes());
+        let mut buf = [0u8; 1];
+        let mut first = None;
+        let mut nl = false;
+        while let Ok(1) = read(support::STDIN, &mut buf) {
+            let ch = buf[0];
+            if first.is_none() {
+                first = Some(ch);
+            }
+            if ch == b'\n' {
+                nl = true;
+                break;
+            }
+        }
+        if !nl {
+            support::warn(b"\n");
+        }
+        first == Some(b'y')
     }
 }
 

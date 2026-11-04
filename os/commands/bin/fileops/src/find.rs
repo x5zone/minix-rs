@@ -1119,12 +1119,17 @@ pub enum JudgeError {
     BadPerm(String),
     /// This tree does not have that leg yet:
     /// `-user`/`-group`/`-nouser`/`-nogroup` need a password database (the same
-    /// prerequisite as `chown`), `-exec`/`-ok`/`-execdir` need process creation,
-    /// `-delete` needs to write the root disk, `-fstype` needs a device-name
-    /// mapping, `-flags` needs Minix's flag character table, and
-    /// `-regex`/`-iregex` need the `minix-regex` wiring. Every one is refused by
-    /// name rather than silently answering false.
+    /// prerequisite as `chown`), `-delete` needs to write the root disk,
+    /// `-fstype` needs a device-name mapping, `-flags` needs Minix's flag
+    /// character table, and `-regex`/`-iregex` need the `minix-regex` wiring.
+    /// Every one is refused by name rather than silently answering false.
     Unwired(String),
+    /// The child could not be created (C's `err(1, "vfork")`/`err(1, "fork")`,
+    /// `function.c:551-553`/`:770-772`): C kills the whole find; this layer
+    /// records rval and skips the entry (the thin shell's declared "a hard
+    /// error only marks that operand" rule). Carries the primary's name and
+    /// the spawn errno.
+    Spawn(String, Errno),
 }
 
 /// The two-part state of `-perm`: the mode bits and whether it is the `-mode`
@@ -1231,6 +1236,29 @@ pub trait ReferenceStat {
     /// unavailable (C does `err(1)` and exits inside `c_newer`, so the thin
     /// shell must treat a failure as a plan-building error first).
     fn times_of(&self, path: &str) -> Option<(i64, i64, i64)>;
+
+    /// The `-exec` run leg (C `f_exec`'s vfork + `execvp` + `waitpid`,
+    /// `function.c:550-565`): spawn `argv` in find's own working directory.
+    /// `Ok(code)` is the child's wait answer in C's `rval` shape —
+    /// `WEXITSTATUS` when it exited, `-1` when it died by signal
+    /// (`function.c:598-601`); the child's own exec failure surfaces as
+    /// `Ok(1)` (C `warn` + `_exit(1)`, `function.c:559-561`). `Err` is the
+    /// vfork/waitpid family failing, where C calls `err(1)` and exits. The
+    /// default `ENOSYS` face is "this build's seam is absent", which keeps
+    /// fakes that never exercise `-exec` compiling untouched.
+    fn run_utility(&self, argv: &[&str]) -> Result<i32, Errno> {
+        let _ = argv;
+        Err(Errno::ENOSYS)
+    }
+
+    /// The `-ok` prompt (C `queryuser`, `misc.c:99-117`): print the command
+    /// to standard error, read the first answer byte, drain to end of line,
+    /// and proceed only on `y`. The default refuses to run — the safe half
+    /// of asking and getting no answer.
+    fn query_ok(&self, argv: &[&str]) -> bool {
+        let _ = argv;
+        false
+    }
 }
 
 /// Evaluate one leaf predicate. `spec` comes from the first package's parse
@@ -1418,8 +1446,10 @@ pub fn judge_leaf<'a>(
         // into the by-name refusal below.
         "-false" => Ok(Outcome::truthy(false)),
         // Missing legs are refused by name and never silently answer false.
-        "-user" | "-group" | "-nouser" | "-nogroup" | "-exec" | "-execdir" | "-ok" | "-delete"
-        | "-rm" | "-fstype" | "-flags" | "-regex" | "-iregex" | "-newerest" | "-mindepth0" => {
+        // (`-exec`/`-execdir`/`-ok` never arrive here as keywords -- the
+        // parser turns them into [`Prim::Exec`].)
+        "-user" | "-group" | "-nouser" | "-nogroup" | "-delete" | "-rm" | "-fstype" | "-flags"
+        | "-regex" | "-iregex" | "-newerest" | "-mindepth0" => {
             Err(JudgeError::Unwired(String::from(name)))
         }
         other => Err(JudgeError::Unwired(String::from(other))),
@@ -1744,9 +1774,11 @@ mod judge_tests {
     #[test]
     fn legs_the_tree_does_not_have_are_refused_by_name() {
         let e = entry("/etc/rc", "rc", 0o100644);
+        // (`-exec`/`-execdir`/`-ok` have a production face now — their pins
+        // live in the `Prim::Exec` tests below.)
         for name in [
-            "-user", "-group", "-nouser", "-nogroup", "-exec", "-execdir", "-ok", "-delete", "-rm",
-            "-fstype", "-flags", "-regex", "-iregex",
+            "-user", "-group", "-nouser", "-nogroup", "-delete", "-rm", "-fstype", "-flags",
+            "-regex", "-iregex",
         ] {
             assert_eq!(
                 judge(&e, name, Some("x")),
@@ -1862,10 +1894,40 @@ fn eval_node(
             note(outcome, entry, out);
             Ok(outcome.truth)
         }
-        Node::Leaf(Prim::Exec { name, .. }) => {
-            // The execution leg is not wired yet: refuse by name, and never let
-            // it turn the whole segment into "true but silent".
-            Err(JudgeError::Unwired(String::from(*name)))
+        Node::Leaf(Prim::Exec {
+            name,
+            is_ok,
+            argv,
+            plus,
+        }) => {
+            // `{} +` batches paths into sets that outlive one entry (C keeps
+            // the accumulator on the plan node, `function.c:502-534`); the
+            // stateless evaluator cannot hold it, so that face is refused by
+            // name until it gets its own leg.
+            if *plus {
+                return Err(JudgeError::Unwired(String::from(*name)));
+            }
+            // `f_exec`/`f_execdir`'s substitution: `-exec` gets the whole
+            // path, `-execdir` the basename (`function.c:536-542`/`:749-754`).
+            // `brace_subst` (`misc.c`) rebuilds every `{}` occurrence and
+            // leaves other args alone -- `str::replace` has the same shape.
+            let source = if *name == "-execdir" {
+                entry.name
+            } else {
+                entry.path
+            };
+            let built: Vec<String> = argv.iter().map(|word| word.replace("{}", source)).collect();
+            let cmd: Vec<&str> = built.iter().map(|s| s.as_str()).collect();
+            // `-ok` asks first (`function.c:543-544`): a "no" skips the run
+            // and the primary answers false.
+            if *is_ok && !refs.query_ok(&cmd) {
+                return Ok(false);
+            }
+            // `function.c:563-564`: true iff the child exited zero.
+            match refs.run_utility(&cmd) {
+                Ok(code) => Ok(code == 0),
+                Err(e) => Err(JudgeError::Spawn(String::from(*name), e)),
+            }
         }
         Node::Paren(inner) => {
             let mut sub = Evaluated {
@@ -2525,11 +2587,16 @@ mod eval_tests {
     }
 
     #[test]
-    fn unwired_actions_refuse_rather_than_reporting_true() {
-        // `-exec`'s execution leg is not wired: the whole segment is an error,
+    fn exec_leg_refuses_rather_than_reporting_true() {
+        // With no run seam scripted (`NoRefs`' default is the ENOSYS face),
+        // `-exec` cannot pretend to succeed: the whole segment is an error,
         // not "true but silent".
         let got = run(&["-exec", "true", ";"]).unwrap_err();
-        assert!(matches!(got, JudgeError::Unwired(_)));
+        assert!(matches!(got, JudgeError::Spawn(_, _)));
+        // The `{} +` batching face stays refused by name (its accumulator is
+        // plan-node state, C `function.c:502-534`).
+        let got = run(&["-exec", "echo", "{}", "+"]).unwrap_err();
+        assert_eq!(got, JudgeError::Unwired(String::from("-exec")));
     }
 }
 
@@ -2542,6 +2609,7 @@ mod walk_tests {
     use super::*;
     use crate::cp::{S_IFDIR, S_IFLNK, S_IFREG};
     use alloc::collections::{BTreeMap, BTreeSet};
+    use std::cell::RefCell;
 
     struct FakeFs {
         dirs: BTreeMap<String, Vec<String>>,
@@ -2564,6 +2632,17 @@ mod walk_tests {
         /// `(dev,ino)`, avoiding false positives in logical-mode cycle
         /// detection.
         next_ino: u64,
+        /// Scripted `-exec` answers, keyed by `argv[0]`: `Ok(code)` is the
+        /// child's exit status, `Err` is the spawn itself failing (C
+        /// `err(1, "vfork")`). A name outside the table answers `ENOSYS` —
+        /// the seam-absent face — so a test only scripts what it asserts.
+        runs: BTreeMap<String, Result<i32, Errno>>,
+        /// Scripted `-ok` answers: `argv[0]` → whether the user said `y`.
+        /// A name outside the table means "no answer" (the default false).
+        ok_answers: BTreeMap<String, bool>,
+        /// Every `run_utility` call, in order: the argv the judge handed
+        /// over. The substitution assertions read this.
+        run_log: RefCell<Vec<Vec<String>>>,
     }
 
     /// The three slots of `fails`. Naming them separately is what makes it
@@ -2601,7 +2680,25 @@ mod walk_tests {
                 unstatable: BTreeSet::new(),
                 fails: BTreeMap::new(),
                 next_ino: 1,
+                runs: BTreeMap::new(),
+                ok_answers: BTreeMap::new(),
+                run_log: RefCell::new(Vec::new()),
             }
+        }
+
+        /// Script one utility: `argv[0]` exits `code`.
+        fn run_answers(&mut self, name: &str, code: i32) {
+            self.runs.insert(String::from(name), Ok(code));
+        }
+
+        /// Script a spawn failure for `argv[0]`.
+        fn run_fails(&mut self, name: &str, errno: Errno) {
+            self.runs.insert(String::from(name), Err(errno));
+        }
+
+        /// Script the `-ok` answer for `argv[0]`.
+        fn ok_answers(&mut self, name: &str, says_yes: bool) {
+            self.ok_answers.insert(String::from(name), says_yes);
         }
         fn fresh_ino(&mut self) -> u64 {
             let n = self.next_ino;
@@ -2667,6 +2764,21 @@ mod walk_tests {
     impl ReferenceStat for FakeFs {
         fn times_of(&self, _path: &str) -> Option<(i64, i64, i64)> {
             None
+        }
+        fn run_utility(&self, argv: &[&str]) -> Result<i32, Errno> {
+            self.run_log
+                .borrow_mut()
+                .push(argv.iter().map(|s| String::from(*s)).collect());
+            match argv.first() {
+                Some(name) => self.runs.get(*name).copied().unwrap_or(Err(Errno::ENOSYS)),
+                None => Err(Errno::EINVAL),
+            }
+        }
+        fn query_ok(&self, argv: &[&str]) -> bool {
+            match argv.first() {
+                Some(name) => self.ok_answers.get(*name).copied().unwrap_or(false),
+                None => false,
+            }
         }
     }
 
@@ -2746,6 +2858,88 @@ mod walk_tests {
             root_dev: 1,
         };
         walk_paths(&world, fs, &parsed)
+    }
+
+    // ── the `-exec` family (`f_exec`/`f_execdir`/`queryuser`) ──
+
+    #[test]
+    fn exec_substitutes_every_brace_pair_with_the_path() {
+        let mut fs = tree();
+        fs.run_answers("echo", 0);
+        let got = run(&[".", "-exec", "echo", "a{}b", "{}", ";"], &fs);
+        // `-exec` is an output producer itself (C `c_exec` sets `isoutput`),
+        // so no implicit `-print` is appended and nothing is emitted.
+        assert_eq!(got.rval, 0);
+        assert_eq!(got.emitted, Vec::<String>::new());
+        // `brace_subst` rebuilds every `{}` occurrence, other args alone
+        // (`misc.c`); one call per entry, whole path.
+        let log = fs.run_log.borrow();
+        assert_eq!(log.len(), 4);
+        assert_eq!(log[0], ["echo", "a.b", "."]);
+        assert_eq!(log[1], ["echo", "a./ab", "./a"]);
+    }
+
+    #[test]
+    fn exec_answers_the_childs_exit_status() {
+        let mut fs = tree();
+        fs.run_answers("grep", 3);
+        // A non-zero exit is false: the implicit print never runs and the
+        // walk stays at rval 0 (a false primary is not an error).
+        let got = run(&[".", "-name", "a", "-exec", "grep", "x", "{}", ";"], &fs);
+        assert_eq!(got.emitted, Vec::<String>::new());
+        assert_eq!(got.rval, 0);
+        // A zero exit is true (the log is cumulative, so clear it first).
+        fs.run_answers("grep", 0);
+        fs.run_log.borrow_mut().clear();
+        let got = run(&[".", "-name", "a", "-exec", "grep", "x", "{}", ";"], &fs);
+        // `-exec` is its own output producer: no implicit print either way.
+        assert_eq!(got.emitted, Vec::<String>::new());
+        assert_eq!(
+            fs.run_log.borrow().len(),
+            1,
+            "只有 -name 命中的那一项跑了一次"
+        );
+    }
+
+    #[test]
+    fn exec_spawn_failure_marks_the_operand_and_moves_on() {
+        let mut fs = tree();
+        fs.run_fails("grep", Errno::EIO);
+        // C `err(1, "vfork")` kills the whole find; this layer records rval
+        // and skips the entry (the thin shell's declared rule).
+        let got = run(&[".", "-exec", "grep", "{}", ";", "-print"], &fs);
+        assert_eq!(got.rval, 1);
+        assert_eq!(got.emitted, Vec::<String>::new());
+    }
+
+    #[test]
+    fn ok_asks_first_and_a_no_skips_the_run() {
+        let mut fs = tree();
+        fs.run_answers("rm", 0);
+        fs.ok_answers("rm", false);
+        let got = run(&[".", "-name", "a", "-ok", "rm", "{}", ";"], &fs);
+        // A "no" is a false primary, not a spawn: nothing ran, nothing printed.
+        assert!(fs.run_log.borrow().is_empty());
+        assert_eq!(got.emitted, Vec::<String>::new());
+        assert_eq!(got.rval, 0);
+        // A `y` runs the utility (still no implicit print: `-ok` counts as
+        // an output producer too).
+        fs.ok_answers("rm", true);
+        let got = run(&[".", "-name", "a", "-ok", "rm", "{}", ";"], &fs);
+        assert_eq!(fs.run_log.borrow().len(), 1);
+        assert_eq!(got.emitted, Vec::<String>::new());
+    }
+
+    #[test]
+    fn execdir_substitutes_the_basename_only() {
+        let mut fs = tree();
+        fs.run_answers("basename", 0);
+        let got = run(&["./sub", "-execdir", "basename", "{}", ";"], &fs);
+        assert_eq!(got.rval, 0);
+        let log = fs.run_log.borrow();
+        // `f_execdir` (function.c:749-754): the name after the last `/`.
+        assert_eq!(log[0], ["basename", "sub"]);
+        assert_eq!(log[1], ["basename", "b"]);
     }
 
     #[test]

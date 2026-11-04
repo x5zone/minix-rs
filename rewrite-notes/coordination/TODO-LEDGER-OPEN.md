@@ -203,6 +203,8 @@
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
 
+- **`2026-11-05` 收口刷新（第 52 轮，基线 `2c5c092bb`，`claim/FIND-EXEC-qoder`）**：`find -exec` 的分号形三面已随批次五百二十七闭——`-exec`/`-ok`/`-execdir` 经 `ReferenceStat` 新缝 `run_utility`/`query_ok` 转正（`{}` 全量替换、`-execdir` 基名、真值=子进程退零、`-ok` 先问后跑），bin 孩子走 `minix-shell::exec_run::exec_search`（execvp 语义）。**余项**：`{}` 加号形的成批执行腿（C 的 `ep_bxp` 节点态跨条目存活，`function.c:502-534`）为独立可领轮；`-delete`/`-user` 族前置未变。生产面 not-wired 报文仍 **1 处**（`renice -u`，口令库）。
+
 - **`2026-11-04` 收口刷新（第 51 轮，基线 `4592f6a37`，`claim/ED-ESCAPE-qoder`）**：`ed` 的 shell 逃逸与 `!command` 文件名已随批次五百二十六闭——三处 "shell access not wired" 拒绝点清零（解析半 `get_shell_command` 逐字移植、执行半 `system`/`popen` 三腿进 bin 的 `EditorIo` 缝、`f !cmd` 照 C 答 "invalid redirection"、`!` 名一律不落默认名）。生产面 not-wired 拒绝站点现量 **1 处 / 1 文件**（`renice -u`，等口令库/`/etc/passwd` 播种）。`find -exec` 的执行腿依赖同清（fork/exec/wait 既有），为下一笔直领项。
 
 - **`2026-11-03` 收口刷新（第 41 轮，基线 `45dee5a9c`）**：`touch -d` 已随批次五百二十二闭（`parsedate` 整条移植，C oracle 向量内嵌），`touch` 生产面的 not-wired 拒绝行与其函数一并删除。生产面 not-wired 拒绝站点现量 **5 处 / 4 文件**（命令同前）：宿主可领的选项级积压**清零**；余下全部跨线——`env` 与 editor shell×3（NS5 进程创建链）、`renice -u`（`getpwnam` 口令库）。下一会话转 A 板 §1 的 `A20`（vbfs fsdriver 环，按板行「一轮一家」）或等 NS5/口令库前置。
