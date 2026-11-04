@@ -5267,3 +5267,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 新测试 `the_parser_consumes_the_deepest_tree_this_gate_accepts`；fdt_layout 共 28 条。
 - 文档：O-11 补自有副本第三段；O-12g 原始记录层列为禁止集合编译的前置；UEFI 属性位证据改按规范源文件 + EDK2；`DeviceRequiredAccessEnvelope` 统一命名；§6 清单按代码重生成。
 - 门：minix-boot 114、boot-shim 67、riscv bootface 与 aarch64 UEFI QEMU 双 PASS、x86_64-unknown-uefi check 通过。
+
+### 第二百五十三笔（01 阶段 · I-29 第四十五轮：来源记录层落地）
+
+代码 `28e277d5b`；主文档 699 → 751 行。
+
+- `SourceRecord` 五类 + `collect_with_sources()`；`raw_*` 不裁剪、`page_*` 供投影；容量 40，`collect()` 语义不变。
+- 新测试四条：no-map 记录留存、MRB 原始范围、RAM 外声明留存、记录覆盖每张投影表条目。
+- 文档：O-11 provenance/reachability 分离 + 复制算法 + 一致性合同；O-12h `2^64` 下移平台准入（代码待改）；O-06 兼容矩阵/第一版处置；`OrdinaryRamEligibility`；O-12c VA 观测单元；O-12i 三范围；O-05 `FrozenBootMappingSet`。
+- 门：minix-boot 118、boot-shim 67、两条 QEMU 腿 PASS、x86_64-unknown-uefi check 通过。

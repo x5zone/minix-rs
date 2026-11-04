@@ -756,3 +756,13 @@
 QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 256M`，QEMU 8.2.2）：`totalsize=5734`、最大深度 5、属性后置 0 处。
 
 门读数（提交 `d615d0190`）：minix-boot **114**、boot-shim **67**；`test-kernel-image-riscv64-bootface.sh` PASS（OpenSBI 打补丁链）、`test-shim-bootmarks-aarch64.sh` PASS；`cargo check -p boot-shim --target x86_64-unknown-uefi` 通过。
+
+## 十七、第四十五轮：来源记录层的容量与门读数
+
+| 项 | 读数 |
+|---|---|
+| 记录容量 | `DTB_SOURCE_MAX = 8 + 8 + 16 + 8 = 40`（memory、prefix、MRB、reservation 的上限之和）；两张投影表装得下的输入这里一定装得下 |
+| 原始范围 | `raw_*` 不取整不裁剪；`page_*` 为投影用的向外取整范围（MRB 测试：`raw [0x8000_1000, 0x8000_1800)`、`page [0x8000_1000, 0x8000_2000)`） |
+| 新测试 | `dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span` |
+| 门 | minix-boot **118**、boot-shim **67**；`test-kernel-image-riscv64-bootface.sh` PASS、`test-shim-bootmarks-aarch64.sh` PASS（exit 0）；`cargo check -p boot-shim --target x86_64-unknown-uefi` 通过 |
+| 行为不变 | `collect()` 仍返回两张表；记录层是附加输出，`bootface`/`opensbi`/`uefi` 调用点未改 |

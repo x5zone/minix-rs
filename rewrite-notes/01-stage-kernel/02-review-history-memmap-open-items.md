@@ -10,6 +10,15 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十五轮评审之后：采集边界交出逐条来源记录）**
+
+- **代码 `28e277d5b`**：`memmap_source` 增加 `SourceRecord` 层——五类（`Memory`/`FirmwarePrefix`/`MemoryReservation`/`ReservedOrdinary`/`ReservedNoMap`），容量 40，`raw_*` 不取整不裁剪、`page_*` 供投影；`collect_with_sources()` 交出三张表，`collect()` 语义与签名不变。minix-boot **118**、boot-shim **67**；riscv bootface 与 aarch64 UEFI QEMU 双 PASS。
+- **为什么这是 O-12g 的第一步**：此前 `no-map`、RAM 之外的保留声明、MRB 原始条目出了两张投影表就无从追溯；后续禁止集合没有输入。记录层先证明「信息在边界上不丢」，再谈投影。
+- **O-11 拆成两个前置条件**：`BootInputProvenance`（启动 ABI 授权）与 `BootInputReachability`（当前转换下 `[dtb, dtb+40)` 整段可读）不能互推；补「header snapshot 只读一次、只复制剩余字节」的复制算法与「交接后不得并发修改」的输入合同。
+- **O-12h 改判**：`2^64` 独占末端是合法的最后一页，结构校验改用 `u128` 接受，拒绝下移到平台准入层。今天的代码仍以 `RangeOverflow` 拒绝，标为待改行为。
+- **O-06 收紧**：「来源叠加」改为兼容矩阵（`EfiBootServicesData`↔普通保留、`EfiReservedMemoryType`↔`no-map`、其它类型不一致即拒绝）；新增第一版处置列（`UNACCEPTED`/`PAL_CODE`/`PERSISTENT`）；`RamBacking` 更名 `OrdinaryRamEligibility`，与物理支撑性质分开。
+- **其他**：O-12c 观测单元补 VA/PA/叶/权限/属性/共享性/树/阶段；O-12i 拆 `RawDeclaredRange`/`RamIntersection`/`PolicyProjection`；O-05 冻结对象收窄为 `FrozenBootMappingSet`；UEFI 属性位给出自包含矩阵并标出待钉的 EDK2/Linux commit；§2.7 措辞改「本节的函数和映射构造位置」；§6 基线改 `28e277d5b`、118/67。
+
 **本轮（第四十四轮评审之后：预扫与解析库消费能力对齐）**
 
 - **代码 `d615d0190`**：`validate_structure` 增加**属性必须先于子节点**（`PropertyAfterChild`），深度上限 **64 → 63**；fdt_layout 测试 28 条；minix-boot **114**、boot-shim **67**；riscv bootface（OpenSBI 链）与 aarch64 UEFI QEMU 双 PASS。
