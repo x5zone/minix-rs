@@ -195,6 +195,15 @@ pub mod attr {
     /// range out of ordinary allocation and ordinary mapping.
     pub const TYPE_INDEPENDENT: u64 = RUNTIME | NON_VOLATILE | SPECIAL_PURPOSE;
 
+    /// Bits whose meaning is not the same in every official text. `0x0001_0000`
+    /// is `EFI_MEMORY_HOT_PLUGGABLE` in the published UEFI 2.11 PDF but
+    /// `EFI_MEMORY_MORE_RELIABLE` in the specification repository, EDK2 and the
+    /// Linux headers. The project pins the repository encoding, yet a firmware
+    /// built from the PDF table would report hot-pluggable memory with this
+    /// bit — and hot-removable memory must not reach the PMM. Neither reading
+    /// can be honoured blindly, so the bit fails closed.
+    pub const AMBIGUOUS: u64 = MORE_RELIABLE;
+
     /// UEFI 2.11 defines this bit as `EFI_MEMORY_HOT_PLUGGABLE`. The baseline
     /// this project tracks does not include it, so it exercises the
     /// unknown-bit path: memory the kernel cannot unplug must not reach the
@@ -259,6 +268,12 @@ pub enum PolicyError {
     UnknownType,
     /// Step 1: an attribute bit outside the baseline.
     UnknownAttribute,
+    /// Step 1: a bit whose meaning differs between official texts
+    /// (`0x0001_0000` is `HOT_PLUGGABLE` in the UEFI 2.11 PDF and
+    /// `MORE_RELIABLE` in the specification repository and EDK2). Either
+    /// reading names something this policy cannot honour, so the descriptor is
+    /// refused instead of being sorted under one of the two names.
+    AmbiguousAttribute,
     /// Step 1: an ISA attribute present, whether or not its validity bit is set.
     IsaAttributes,
     /// Step 2: memory this boot path cannot honour.
@@ -484,6 +499,9 @@ pub fn adjudicate(desc: &DescriptorRef, pa_limit: u64) -> Result<(Disposition, u
         return Err(PolicyError::UnknownType);
     }
     let a = desc.attribute;
+    if a & attr::AMBIGUOUS != 0 {
+        return Err(PolicyError::AmbiguousAttribute);
+    }
     if a & !attr::KNOWN != 0 {
         return Err(PolicyError::UnknownAttribute);
     }
@@ -813,7 +831,6 @@ mod tests {
             attr::READ_PROTECT,
             attr::EXECUTE_PROTECT,
             attr::READ_ONLY,
-            attr::MORE_RELIABLE,
             attr::CPU_CRYPTO,
         ] {
             assert_eq!(
@@ -863,6 +880,24 @@ mod tests {
     }
 
     #[test]
+    fn the_ambiguous_bit_fails_closed_under_either_name() {
+        // The published 2.11 PDF puts HOT_PLUGGABLE at 0x0001_0000, while the
+        // specification repository and EDK2 put MORE_RELIABLE there. Firmware
+        // built from the PDF would report removable memory with this bit, and
+        // this kernel cannot unplug memory; firmware built from the repository
+        // would report a reliability hint this policy ignores. Neither may be
+        // silently classified, so the bit is refused before the known-bit gate.
+        assert_eq!(
+            disp(ty::CONVENTIONAL, WB | 0x0001_0000),
+            Err(PolicyError::AmbiguousAttribute)
+        );
+        assert_eq!(
+            disp(ty::CONVENTIONAL, WB | attr::MORE_RELIABLE),
+            Err(PolicyError::AmbiguousAttribute)
+        );
+    }
+
+    #[test]
     fn isa_attributes_fail_closed_whatever_the_mask_says() {
         assert_eq!(
             disp(ty::CONVENTIONAL, WB | attr::ISA_VALID),
@@ -890,7 +925,7 @@ mod tests {
             Err(PolicyError::UnknownAttribute)
         );
         assert_eq!(
-            disp(ty::CONVENTIONAL, u64::MAX),
+            disp(ty::CONVENTIONAL, u64::MAX & !attr::AMBIGUOUS),
             Err(PolicyError::UnknownAttribute)
         );
     }
