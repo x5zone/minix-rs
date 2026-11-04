@@ -19,7 +19,7 @@
 | `DeviceAccessRequirements` | **实际访问合同**：读写方向、宽度、对齐、幂等性与副作用、排序、推测、原子。第一版为规划端审计输入，不跨界。 |
 | `PortWindowPolicy` | 端口地址域的授权政策，与 `DeviceWindowPolicy` 同构；第一版为编译期常量表，不跨界。 |
 | `AccessUseId` | 每个实际设备访问点的稳定身份；属性含 `(tree, phase, path, window)`。一条映射义务可被多个 `AccessUseId` 引用。 |
-| `MmioAccessKey` / `PortIoAccessKey` | 两类访问验收键：`(tree, phase, path)` / `(caller, phase)`。端口 I/O 没有页表叶子，树维度不存在。 |
+| `AccessUseId` | 访问用途实例的稳定主键（MMIO 与端口 I/O 共用）；`(tree, phase, path)`（MMIO）与 `(caller, phase)`（端口）只是它的属性，不能当唯一键 |
 
 ## 集合与判定
 

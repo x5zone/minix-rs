@@ -122,6 +122,16 @@
 
 **边界（写进证据，不让它被读大）**：QEMU/OpenSBI 的运行时 DTB 未在固件前缀之上暴露保留声明，因此该次 QEMU 运行只证明「接入不改变既有引导」；扣除行为本身由上述单元测试覆盖，真实板卡的保留声明样本仍待取得。
 
+## 一c、第二十七轮新增代码读数（正文合同的事实锚）
+
+| 正文主张 | 读数 | 现量命令 |
+|---|---|---|
+| AArch64 锁定 4 KiB granule | `TCR_EL1` 的 `T0SZ=16`、`TG0/TG1=0`；`PhysFrame::SIZE = 0x1000` 且有编译期断言 | `grep -n -e TCR_T0SZ -e TG0 -e "assert_eq!(PhysFrame::SIZE" os/arch/src/arm64/paging.rs os/arch/src/arch/frame.rs` |
+| raw 端口 I/O 只在包装层 | 5 个文件：`arch/src/x86_64/clock.rs`、`boot-shim/src/lib.rs`、`plat/src/x86_64/port_io.rs`、`interrupt.rs`、`early_console.rs`；`kernel/`、`servers/` 零命中 | `grep -rn -e 'asm!("in ' -e 'asm!("out ' os --include=*.rs`（逐条看路径，不要只看计数） |
+| `PERSISTENT` 落诊断成员 | `ty::PERSISTENT` 与 `ACPI_NVS` 同测为 `Disposition::Side` | `grep -n -B 4 -A 2 ty::PERSISTENT os/boot-shim/src/ebs_map.rs` |
+| 诊断成员完整存储、超限拒绝启动 | `SIDE_CAP = 64`、`MapError::TooManySideEntries` | `grep -n -e SIDE_CAP -e TooManySideEntries os/boot-shim/src/ebs_map.rs` |
+| 设备窗口政策是静态表 | `identity_device_windows() -> &'static [(u64, u64)]` | `grep -n -A 3 "fn identity_device_windows" os/kernel/src/lib.rs` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |

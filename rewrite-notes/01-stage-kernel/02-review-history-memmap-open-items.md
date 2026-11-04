@@ -10,6 +10,19 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第二十七轮评审之后：合同收尾，不扩集合）**
+
+评审人确认第一层方向可签（保留映射区需补平台准入），第二层仍不签，给出五组收尾项。本轮逐条落笔，主文档 1745 → 1739 行：
+
+- **输入域与输出责任**：三输入域与表头一致（原分隔行只有两列），`StartupObjectInventory` 只出现在义务域；`DeviceMappingRequirements` 不再叫「访问授权」，只引用 `AuthorityId`。
+- **4 KiB granule 的架构边界**：AArch64 第一版锁定 4 KiB translation granule；代码锚点 `TCR_EL1` 的 `TG0/TG1 = 0` 与 `PhysFrame::SIZE = 0x1000`；16K/64K 不在支持集合。
+- **归一化角色**：`NormalizeByType` 废弃，改为按六步裁决后的 `NormalizationRole` 六行表；`RamLikeSourceRanges` 改名 `MemoryTypeSourceRanges` 并注明「只表示描述内存」；补 R2 的包含前提（`DiagnosticMemberRanges ⊆ PmmPolicyUniverse`，构造式 + R17 页级拒绝）。
+- **R13-A 完备性**：主键改为 `AccessUseId`，`(tree,phase,path)` / `(caller,phase)` 降为属性，映射侧引入 `MappingRequirementId`；调用点完备性改为「受控边界 + CI 静态审计 + 注入负控」的实现先决项，并把 raw 端口 asm 的现有分布写进合同。
+- **保留映射区语义**：普通主存语义准入覆盖所有 `NormalMainMemory` 映射范围，不因是否进入 PMM 而豁免。
+- **PERSISTENT / 诊断容量**：PERSISTENT 定为 `DiagnosticMemberRanges`（代码事实：type 14 落 side list）；诊断成员 range 表（完整、超限拒绝启动）与操作者样本（可截断、不否决启动）拆成两个合同。
+- **计数与登记**：39 条按 `4+5+2+11+1+2+7+7` 重算，24 组给出 `G01–G24` 对照；§4.4.4 与 §6.8 的三处「请评审人回答」收敛进 §12.4（一项可回退决定、一项形状确认、一项审计项）。
+- **措辞**：`AuthoritativeDtbSource` 的窄用途授权明确标为**项目解释**，不是规范自动授予。
+
 **本轮（第二十六轮之后：先落码，再对该提交做双轴回归评审）**
 
 按「先把可以落地的设计写进代码」执行。落码提交 `38668f843`（基线 `14682b699`）：
