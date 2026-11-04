@@ -208,6 +208,15 @@ impl<T: minix_sys::ipc::IpcTransport> SefIpc for KernelIpc<T> {
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
         self.transport.notify(dest).map_err(|t| t.0)
     }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // The birth reply rides the same transport (C `ipc_sendrec(RS, &m)`,
+        // sef_init.c:458-466).
+        self.transport
+            .sendrec(dest, msg)
+            .map(|_| 0)
+            .map_err(|t| t.0)
+    }
 }
 
 impl<T: minix_sys::ipc::IpcTransport> ReplyIpc for KernelIpc<T> {
@@ -271,6 +280,9 @@ mod tests {
         }
         fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
             self.sef.notify(dest)
+        }
+        fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+            self.sef.sendrec(dest, msg)
         }
     }
 

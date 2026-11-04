@@ -169,7 +169,17 @@ impl minix_sef::SefIpc for SeIpcAdapter {
 
     fn notify(&mut self, dest: minix_types::Endpoint) -> Result<(), i32> {
         use minix_sys::ipc::IpcTransport;
-        minix_sys::ipc::DirectTrapTransport.notify(dest).map_err(|t| t.0)
+        minix_sys::ipc::DirectTrapTransport
+            .notify(dest)
+            .map_err(|t| t.0)
+    }
+
+    fn sendrec(&mut self, dest: minix_types::Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        use minix_sys::ipc::IpcTransport;
+        minix_sys::ipc::DirectTrapTransport
+            .sendrec(dest, msg)
+            .map(|_| 0)
+            .map_err(|t| t.0)
     }
 }
 
@@ -250,7 +260,11 @@ impl RtIpc for ScriptedRtIpc {
     ) -> Result<(), i32> {
         self.reads.push((granter, grant, offset, buf.len()));
         for (i, b) in buf.iter_mut().enumerate() {
-            *b = self.grant_data.get(offset as usize + i).copied().unwrap_or(0);
+            *b = self
+                .grant_data
+                .get(offset as usize + i)
+                .copied()
+                .unwrap_or(0);
         }
         Ok(())
     }

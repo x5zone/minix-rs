@@ -157,6 +157,12 @@ impl SefIpc for MibSide {
     fn notify(&mut self, _dest: Endpoint) -> Result<(), i32> {
         Ok(())
     }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // The birth reply rides the bus's reply lane like any other send.
+        self.bus.0.from_mib.borrow_mut().push_back((dest, *msg));
+        Ok(0)
+    }
 }
 
 /// Kernel verbs: same-address-space move (host replay of `sys_datacopy`) + canned

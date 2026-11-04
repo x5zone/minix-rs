@@ -21,7 +21,40 @@ fn main() {
         }
     }
 
-    let mut ipc = minix_net_lwip::server::KernelIpc { transport: minix_sys::ipc::DirectTrapTransport };
+    // C `sef_startup`'s birth conversation (`sef.c:125-141`): block on RS
+    // until the RS_INIT request arrives, run the fresh hook, and report
+    // over the sendrec reply (`sef_init.c:458-466`). The fresh hook's body
+    // in this build stays the loop-driven startup chain (`lwip.c:203-263`'s
+    // thirteen steps run stage by stage inside `run`), so the birth reply
+    // reports OK before the chain runs — the registered shape of
+    // E-NETSTART's adoption slice; a chain failure surfaces through the
+    // loop's own exit instead of the birth reply.
+    let mut sef_ipc = SefAdapter;
+    let birth = minix_sef::sef_await_init(
+        &mut sef_ipc,
+        &mut |req, addr, len| {
+            let r = minix_sys::syscall::sys_statectl(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                req,
+                addr,
+                len,
+            );
+            if r < 0 { Err(-r) } else { Ok(r) }
+        },
+        &mut |t| match t {
+            0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+            _ => minix_types::ENOSYS,
+        },
+    );
+    // C panics when the birth conversation fails ("unable to ipc_receive
+    // from RS", sef.c:132) — the same fail-fast here.
+    if let Err(e) = birth {
+        panic!("lwip: unable to complete the SEF birth conversation: {e}");
+    }
+
+    let mut ipc = minix_net_lwip::server::KernelIpc {
+        transport: minix_sys::ipc::DirectTrapTransport,
+    };
     let mut handler = ProductionHandler::new(&dev_paths);
     let mut table = minix_netdriver::socktable::SockTable::new();
     let mut startup = minix_net_lwip::startup::Startup::new();
@@ -128,12 +161,12 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
                     .wrapping_mul(0x9E37_79B9_7F4A_7C15);
                 // The wall's stack is held behind the `Stack` trait — swapping
                 // stack implementations touches only this line.
-                let wall: Box<dyn minix_net_lwip::lwip_port::Stack> = Box::new(
-                    minix_net_lwip::stack::SmoltcpStack::<minix_net_lwip::stack::TrunkDevice>::new(
-                        self.seed,
-                        self.now_millis() as i64,
-                    ),
-                );
+                let wall: Box<dyn minix_net_lwip::lwip_port::Stack> =
+                    Box::new(minix_net_lwip::stack::SmoltcpStack::<
+                        minix_net_lwip::stack::TrunkDevice,
+                    >::new(
+                        self.seed, self.now_millis() as i64
+                    ));
                 self.stack = Some(wall);
             }
             // C step 13 owns the seventh stage alone
@@ -195,17 +228,13 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
         // with the family-operation round — none exist yet).
         let timed_out = table.poll_timers(now);
         for action in timed_out {
-            if let minix_netdriver::socktable::WakeAction::TimedOut { id, continuation } = action
-            {
+            if let minix_netdriver::socktable::WakeAction::TimedOut { id, continuation } = action {
                 // Drop the note for that site (a timed-out receive never gets
                 // its data resumed).
-                self.pending
-                    .recvs
-                    .retain(|note| !(note.sock_id == id.raw() && note.caller == continuation.caller()));
-                let reply = minix_net_lwip::sockops::simple_reply(
-                    0,
-                    -(minix_types::ETIMEDOUT),
-                );
+                self.pending.recvs.retain(|note| {
+                    !(note.sock_id == id.raw() && note.caller == continuation.caller())
+                });
+                let reply = minix_net_lwip::sockops::simple_reply(0, -(minix_types::ETIMEDOUT));
                 self.wake_replies.push((continuation.caller(), reply));
             }
         }
@@ -246,8 +275,7 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
         if msg.m_type == minix_sockdriver::sdev::SdevRequest::Socket as i32 {
             let reply = match sockops::decode_socket(msg) {
                 Some(req) => {
-                    let is_root =
-                        self.identity.is_root(minix_types::Endpoint(req.user_endpt));
+                    let is_root = self.identity.is_root(minix_types::Endpoint(req.user_endpt));
                     match sockops::open_socket(stack.as_mut(), table, &req, is_root) {
                         Ok(id) => sockops::socket_reply(req.req_id, id),
                         Err(e) => sockops::socket_reply(req.req_id, -e.abs()),
@@ -272,10 +300,9 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
             x if x == SdevRequest::Send as i32 || x == SdevRequest::Receive as i32
         ) {
             // SAFETY: sock_id is at @4 in the sendrecv shape.
-            let sock_id =
-                unsafe { i32::from_le_bytes(msg.m_u.raw[4..8].try_into().unwrap()) };
-            let class = minix_netdriver::sockid::SockId::from_raw(sock_id)
-                .and_then(|id| id.class());
+            let sock_id = unsafe { i32::from_le_bytes(msg.m_u.raw[4..8].try_into().unwrap()) };
+            let class =
+                minix_netdriver::sockid::SockId::from_raw(sock_id).and_then(|id| id.class());
             match class {
                 Some(minix_netdriver::sockid::SockClass::Rt) => {
                     return sockops::rt_road(
@@ -317,20 +344,10 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
             x if x == SdevRequest::SetSockOpt as i32
                 || x == SdevRequest::GetSockOpt as i32
         ) {
-            return sockops::sockopt_road(
-                stack.as_mut(),
-                self.copy.as_mut(),
-                msg.m_source,
-                msg,
-            );
+            return sockops::sockopt_road(stack.as_mut(), self.copy.as_mut(), msg.m_source, msg);
         }
         if msg.m_type == SdevRequest::Ioctl as i32 {
-            return sockops::ioctl_road(
-                stack.as_mut(),
-                self.copy.as_mut(),
-                msg.m_source,
-                msg,
-            );
+            return sockops::ioctl_road(stack.as_mut(), self.copy.as_mut(), msg.m_source, msg);
         }
         if msg.m_type == SdevRequest::Close as i32 {
             return sockops::close_socket(stack.as_mut(), table, msg);
@@ -438,7 +455,11 @@ mod tests {
         let sock_id = i32::from_le_bytes(raw[4..8].try_into().unwrap());
         assert!(sock_id >= 0, "建户成功给非负套接字号");
         let id = minix_netdriver::sockid::SockId::from_raw(sock_id).unwrap();
-        assert_eq!(id.class_base(), minix_netdriver::sockid::SOCKID_TCP, "流类型归 TCP 类");
+        assert_eq!(
+            id.class_base(),
+            minix_netdriver::sockid::SOCKID_TCP,
+            "流类型归 TCP 类"
+        );
         assert!(table.contains(id), "服务表已登记");
         // Unwired request families (SocketPair follows the paired semantics
         // round): generic shape + ENOSYS (an honest refusal, never a fake
@@ -516,8 +537,7 @@ mod tests {
         }
         let reply = road(&mut handler, &mut table, open).expect("建户有回复");
         // SAFETY(test): sock_id@4.
-        let sock_id =
-            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
+        let sock_id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
         assert!(sock_id >= 0);
 
         // 2) Bind 127.0.0.1:7777.
@@ -531,7 +551,10 @@ mod tests {
             bind.m_u.raw[12..16].copy_from_slice(&16i32.to_le_bytes());
         }
         let reply = road(&mut handler, &mut table, bind).expect("绑定有回复");
-        assert_eq!(reply.m_type, minix_sockdriver::sdev::SdevReply::Reply as i32);
+        assert_eq!(
+            reply.m_type,
+            minix_sockdriver::sdev::SdevReply::Reply as i32
+        );
         // SAFETY(test): status is in the second cell.
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
@@ -605,14 +628,25 @@ mod tests {
             8,
             "req_id 原样带回"
         );
-        assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), 4, "收到 4 字节");
-        assert_eq!(u32::from_le_bytes(raw[12..16].try_into().unwrap()), 16, "地址 16 字节");
+        assert_eq!(
+            i32::from_le_bytes(raw[4..8].try_into().unwrap()),
+            4,
+            "收到 4 字节"
+        );
+        assert_eq!(
+            u32::from_le_bytes(raw[12..16].try_into().unwrap()),
+            16,
+            "地址 16 字节"
+        );
     }
 
     /// TCP peer setup helper: the server creates+binds+listens, the client
     /// creates+connects, then accept — the clock round drives the handshake and
     /// both resumptions, returning `(server id, client id, accepted id)`.
-    fn setup_tcp_pair(handler: &mut ProductionHandler, table: &mut minix_netdriver::socktable::SockTable) -> (i32, i32, i32) {
+    fn setup_tcp_pair(
+        handler: &mut ProductionHandler,
+        table: &mut minix_netdriver::socktable::SockTable,
+    ) -> (i32, i32, i32) {
         use minix_net_lwip::server::NetHandler as _;
         fn road(
             handler: &mut ProductionHandler,
@@ -703,7 +737,9 @@ mod tests {
             })
             .expect("受纳续答");
         let accepted_id = i32::from_le_bytes(
-            unsafe { &accept_reply_msg.1.m_u.raw }[4..8].try_into().unwrap(),
+            unsafe { &accept_reply_msg.1.m_u.raw }[4..8]
+                .try_into()
+                .unwrap(),
         );
         (server_id, client_id, accepted_id)
     }
@@ -762,11 +798,8 @@ mod tests {
         };
 
         // Server: create socket -> bind -> listen.
-        let reply = road(&mut handler, &mut table, open_tcp(1))
-            .expect("服务端建户有回复");
-        let server_id = i32::from_le_bytes(
-            unsafe { &reply.m_u.raw }[4..8].try_into().unwrap(),
-        );
+        let reply = road(&mut handler, &mut table, open_tcp(1)).expect("服务端建户有回复");
+        let server_id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
         assert!(server_id >= 0);
         let mut bind = minix_types::Message::default();
         bind.m_type = minix_sockdriver::sdev::SdevRequest::Bind as i32;
@@ -803,9 +836,7 @@ mod tests {
         let mut open2 = open_tcp(4);
         open2.m_source = client_ep;
         let reply = road(&mut handler, &mut table, open2).expect("客户端建户有回复");
-        let client_id = i32::from_le_bytes(
-            unsafe { &reply.m_u.raw }[4..8].try_into().unwrap(),
-        );
+        let client_id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
         assert!(client_id >= 0);
         let mut connect = minix_types::Message::default();
         connect.m_type = minix_sockdriver::sdev::SdevRequest::Connect as i32;
@@ -856,10 +887,16 @@ mod tests {
         // Connect resumption: back to the client, generic shape with status 0.
         let connect_reply = replies
             .iter()
-            .find(|(to, m)| *to == client_ep && m.m_type == minix_sockdriver::sdev::SdevReply::Reply as i32)
+            .find(|(to, m)| {
+                *to == client_ep && m.m_type == minix_sockdriver::sdev::SdevReply::Reply as i32
+            })
             .expect("连接续答回客户端");
         assert_eq!(
-            i32::from_le_bytes(unsafe { &connect_reply.1.m_u.raw }[4..8].try_into().unwrap()),
+            i32::from_le_bytes(
+                unsafe { &connect_reply.1.m_u.raw }[4..8]
+                    .try_into()
+                    .unwrap()
+            ),
             0,
             "建连完成"
         );
@@ -874,7 +911,11 @@ mod tests {
             .expect("受纳续答回服务端");
         // SAFETY(test): { req_id@0; sock_id@4; status@8; len@12 }.
         let raw = unsafe { &accept_reply_msg.1.m_u.raw };
-        assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 6, "req_id 原样");
+        assert_eq!(
+            i32::from_le_bytes(raw[0..4].try_into().unwrap()),
+            6,
+            "req_id 原样"
+        );
         let new_sock_id = i32::from_le_bytes(raw[4..8].try_into().unwrap());
         assert!(new_sock_id >= 0, "受纳给新套接字号");
         assert_eq!(i32::from_le_bytes(raw[8..12].try_into().unwrap()), 0);
@@ -904,7 +945,8 @@ mod tests {
 
         // RAW: non-root EACCES (fail-closed identity seam); root is let through
         // and gets a RAW class id.
-        let raw_open = |handler: &mut ProductionHandler, table: &mut minix_netdriver::socktable::SockTable| {
+        let raw_open = |handler: &mut ProductionHandler,
+                        table: &mut minix_netdriver::socktable::SockTable| {
             let mut m = minix_types::Message::default();
             m.m_type = minix_sockdriver::sdev::SdevRequest::Socket as i32;
             // SAFETY(test): { req_id@0; domain@4; type@8 }.
@@ -948,7 +990,9 @@ mod tests {
                 m.m_u.raw[4..8].copy_from_slice(&pf.to_le_bytes());
                 m.m_u.raw[8..12].copy_from_slice(&2i32.to_le_bytes());
             }
-            let reply = handler.socket_device(&mut table, &m).expect("服务侧建户有回复");
+            let reply = handler
+                .socket_device(&mut table, &m)
+                .expect("服务侧建户有回复");
             let id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
             assert!(
                 id >= 0,
@@ -972,7 +1016,9 @@ mod tests {
             open.m_u.raw[4..8].copy_from_slice(&2i32.to_le_bytes());
             open.m_u.raw[8..12].copy_from_slice(&1i32.to_le_bytes());
         }
-        let reply = handler.socket_device(&mut table, &open).expect("TCP 建户有回复");
+        let reply = handler
+            .socket_device(&mut table, &open)
+            .expect("TCP 建户有回复");
         let tcp_id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
         assert!(tcp_id >= 0);
         let mut close = minix_types::Message::default();
@@ -982,7 +1028,9 @@ mod tests {
             close.m_u.raw[0..4].copy_from_slice(&15i32.to_le_bytes());
             close.m_u.raw[4..8].copy_from_slice(&tcp_id.to_le_bytes());
         }
-        let reply = handler.socket_device(&mut table, &close).expect("关闭有回复");
+        let reply = handler
+            .socket_device(&mut table, &close)
+            .expect("关闭有回复");
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             0
@@ -991,7 +1039,9 @@ mod tests {
             !table.contains(minix_netdriver::sockid::SockId::from_raw(tcp_id).unwrap()),
             "关闭后服务表摘除"
         );
-        let reply = handler.socket_device(&mut table, &open).expect("重开有回复");
+        let reply = handler
+            .socket_device(&mut table, &open)
+            .expect("重开有回复");
         let reopened = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
         assert_eq!(reopened, tcp_id, "槽位回收复用");
     }
@@ -1027,8 +1077,7 @@ mod tests {
         handler.copy = Box::new(canned);
 
         let mut table = minix_netdriver::socktable::SockTable::new();
-        let (server_id, client_id, accepted_id) =
-            setup_tcp_pair(&mut handler, &mut table);
+        let (server_id, client_id, accepted_id) = setup_tcp_pair(&mut handler, &mut table);
         assert!(accepted_id >= 0);
 
         // Client send: data grant 5, 4 bytes (no addr, stream semantics).
@@ -1042,7 +1091,9 @@ mod tests {
             send.m_u.raw[8..12].copy_from_slice(&5i32.to_le_bytes());
             send.m_u.raw[16..24].copy_from_slice(&4usize.to_le_bytes());
         }
-        let reply = handler.socket_device(&mut table, &send).expect("发送有回复");
+        let reply = handler
+            .socket_device(&mut table, &send)
+            .expect("发送有回复");
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             4,
@@ -1082,8 +1133,16 @@ mod tests {
         );
         // SAFETY(test): { req_id@0; status@4 }.
         let raw = unsafe { &replies[0].1.m_u.raw };
-        assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 8, "req_id 原样");
-        assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), 4, "收到 4 字节");
+        assert_eq!(
+            i32::from_le_bytes(raw[0..4].try_into().unwrap()),
+            8,
+            "req_id 原样"
+        );
+        assert_eq!(
+            i32::from_le_bytes(raw[4..8].try_into().unwrap()),
+            4,
+            "收到 4 字节"
+        );
     }
 
     /// Options road across the wall, e2e: create a TCP socket ->
@@ -1193,7 +1252,9 @@ mod tests {
             raw[8..16].copy_from_slice(&0x8004_667Eu64.to_le_bytes());
             raw[16..20].copy_from_slice(&1i32.to_le_bytes());
         }
-        let reply = handler.socket_device(&mut table, &ioctl).expect("ioctl 有回复");
+        let reply = handler
+            .socket_device(&mut table, &ioctl)
+            .expect("ioctl 有回复");
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             0,
@@ -1331,7 +1392,9 @@ mod tests {
         let mut canned4 = minix_net_lwip::sockops::CannedCopyTransport::default();
         canned4.from.push((2, del));
         handler.copy = Box::new(canned4);
-        let reply = handler.socket_device(&mut table, &send).expect("再删有回复");
+        let reply = handler
+            .socket_device(&mut table, &send)
+            .expect("再删有回复");
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             -(minix_types::ESRCH),
@@ -1339,7 +1402,9 @@ mod tests {
         );
         let mut canned5 = minix_net_lwip::sockops::CannedCopyTransport::default();
         handler.copy = Box::new(canned5);
-        let reply = handler.socket_device(&mut table, &recv).expect("空读有回复");
+        let reply = handler
+            .socket_device(&mut table, &recv)
+            .expect("空读有回复");
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             -(minix_types::EAGAIN),
@@ -1425,7 +1490,10 @@ mod tests {
             handler.socket_device(&mut table, &cancel).is_none(),
             "cancel 无回复（sdev.c:31-32）"
         );
-        assert!(handler.pending.selects.is_empty(), "cancel 摘除 select 等待");
+        assert!(
+            handler.pending.selects.is_empty(),
+            "cancel 摘除 select 等待"
+        );
 
         // select again -> sendto feeds data -> clock round -> first-shape reply
         // (readiness bit RD).
@@ -1445,7 +1513,9 @@ mod tests {
             send.m_u.raw[36..40].copy_from_slice(&16i32.to_le_bytes());
             send.m_u.raw[40..44].copy_from_slice(&vfs.0.to_le_bytes());
         }
-        let reply = handler.socket_device(&mut table, &send).expect("发送有回复");
+        let reply = handler
+            .socket_device(&mut table, &send)
+            .expect("发送有回复");
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             2
@@ -1470,5 +1540,42 @@ mod tests {
             1,
             "就绪位含 SDEV_OP_RD"
         );
+    }
+}
+
+/// `minix-sef`'s receive-side adapter over the trap transport (the same
+/// shape as fs-rt's `SeIpcAdapter`).
+struct SefAdapter;
+
+impl minix_sef::SefIpc for SefAdapter {
+    fn receive(
+        &mut self,
+        src: minix_types::Endpoint,
+        msg: &mut minix_types::Message,
+    ) -> Result<i32, i32> {
+        use minix_sys::ipc::IpcTransport;
+        minix_sys::ipc::DirectTrapTransport
+            .receive(src, msg)
+            .map(|status| status.0 as i32)
+            .map_err(|t| t.0)
+    }
+
+    fn notify(&mut self, dest: minix_types::Endpoint) -> Result<(), i32> {
+        use minix_sys::ipc::IpcTransport;
+        minix_sys::ipc::DirectTrapTransport
+            .notify(dest)
+            .map_err(|t| t.0)
+    }
+
+    fn sendrec(
+        &mut self,
+        dest: minix_types::Endpoint,
+        msg: &mut minix_types::Message,
+    ) -> Result<i32, i32> {
+        use minix_sys::ipc::IpcTransport;
+        minix_sys::ipc::DirectTrapTransport
+            .sendrec(dest, msg)
+            .map(|_| 0)
+            .map_err(|t| t.0)
     }
 }

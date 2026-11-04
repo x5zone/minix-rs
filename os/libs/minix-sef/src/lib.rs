@@ -49,6 +49,11 @@ pub trait SefIpc {
     /// Notify `dest` (the SEF ping pong). C: `ipc_notify(source)` —
     /// sef_ping.c:61.
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32>;
+    /// Send-and-receive (C: `ipc_sendrec(dest, m)`): the birth reply leg —
+    /// C `sef_cb_init_response_rs_reply` sends the RS_INIT report with a
+    /// sendrec to RS (`sef_init.c:458-466`), whose receive half doubles as
+    /// the next blocking point.
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32>;
 }
 
 /// C: `is_ipc_notify(status)` — com.h:93: the status call field equals
@@ -493,6 +498,38 @@ pub fn process_init(
     Ok(sef_init_reply(result))
 }
 
+/// C `sef_startup`'s birth conversation (`sef.c:125-141` +
+/// `do_sef_init_request`, `sef_init.c:188-215`): block on RS, discard
+/// spurious messages that are not `RS_INIT` requests, run the init
+/// callback through [`process_init`], and answer RS with the report over a
+/// sendrec (`sef_init.c:458-466`). A receive failure propagates — C panics
+/// ("unable to ipc_receive from RS"), and this build's callers fail closed
+/// the same way.
+pub fn sef_await_init<I: SefIpc>(
+    ipc: &mut I,
+    statectl: &mut dyn FnMut(i32, u64, i32) -> Result<i32, i32>,
+    init: &mut dyn FnMut(i32) -> i32,
+) -> Result<(), i32> {
+    let mut request = Message::zeroed();
+    loop {
+        let status = ipc.receive(Endpoint::RS, &mut request)?;
+        let _ = status;
+        // C `IS_SEF_INIT_REQUEST` (`sef.h:33`): `RS_INIT` from RS only —
+        // spurious deliveries (an old instance's update requests) are
+        // discarded and the block continues.
+        if request.m_type == RS_INIT && request.m_source == Endpoint::RS {
+            break;
+        }
+    }
+    // C unpacks the parameters from `m_rs_init` (`sef_init.c:193-202`) and
+    // hands only the type down; this build's init callbacks key on the type
+    // alone.
+    let init_type = unsafe { request.m_u.m_rs_init.type_ };
+    let mut reply = process_init(statectl, init_type, init)?;
+    ipc.sendrec(Endpoint::RS, &mut reply)?;
+    Ok(())
+}
+
 /// Buffered SEF receive: keeps the IPC behind a struct so tests script the
 /// transcript.
 pub struct SefLoop<I: SefIpc> {
@@ -522,6 +559,8 @@ pub struct CannedSefIpc {
     pub empty_error: i32,
     /// Recorded pong destinations.
     pub pongs: Vec<Endpoint>,
+    /// Recorded birth replies: `(destination, message)` in send order.
+    pub reply_sendrecs: Vec<(Endpoint, Message)>,
 }
 
 impl CannedSefIpc {
@@ -531,6 +570,7 @@ impl CannedSefIpc {
             inbox: Vec::new(),
             empty_error: minix_types::EFAULT,
             pongs: Vec::new(),
+            reply_sendrecs: Vec::new(),
         }
     }
 
@@ -560,6 +600,11 @@ impl SefIpc for CannedSefIpc {
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
         self.pongs.push(dest);
         Ok(())
+    }
+
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        self.reply_sendrecs.push((dest, *msg));
+        Ok(0)
     }
 }
 
@@ -598,6 +643,58 @@ mod tests {
     /// continue, so the message never reaches the caller. The script is two
     /// pings plus one ordinary message; the ordinary message is returned in
     /// the end and the pong is recorded twice.
+    #[test]
+    fn sef_await_init_discards_spurious_then_runs_the_birth() {
+        let mut ipc = CannedSefIpc::new();
+        // A spurious delivery first (C's loop discards anything that is not
+        // an RS_INIT request from RS, sef.c:127-139).
+        let mut stale = Message::zeroed();
+        stale.m_type = 1234;
+        stale.m_source = Endpoint::RS;
+        ipc.push(0, stale);
+        // The real birth request: RS_INIT, fresh (type 0).
+        let mut birth = Message::zeroed();
+        birth.m_type = RS_INIT;
+        birth.m_source = Endpoint::RS;
+        // SAFETY: the m_rs_init arm is the documented payload for RS_INIT.
+        unsafe { birth.m_u.m_rs_init.type_ = 0 };
+        ipc.push(0, birth);
+
+        let mut statectl_calls = 0usize;
+        let mut seen_type: Option<i32> = None;
+        let r = sef_await_init(
+            &mut ipc,
+            &mut |_req, _addr, _len| {
+                statectl_calls += 1;
+                Ok(0)
+            },
+            &mut |t| {
+                seen_type = Some(t);
+                0
+            },
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(statectl_calls, 1, "process_init 的清过滤腿走过一次");
+        assert_eq!(seen_type, Some(0));
+        // The reply: one sendrec to RS carrying RS_INIT + result.
+        assert_eq!(ipc.reply_sendrecs.len(), 1);
+        let (dest, reply) = &ipc.reply_sendrecs[0];
+        assert_eq!(*dest, Endpoint::RS);
+        assert_eq!(reply.m_type, RS_INIT);
+        // SAFETY: the reply's active arm is m_rs_init.
+        let result = unsafe { reply.m_u.m_rs_init.result };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn sef_await_init_propagates_the_receive_failure() {
+        let mut ipc = CannedSefIpc::new();
+        ipc.empty_error = minix_types::EIO;
+        let r = sef_await_init(&mut ipc, &mut |_, _, _| Ok(0), &mut |_| 0);
+        assert_eq!(r, Err(minix_types::EIO));
+        assert!(ipc.reply_sendrecs.is_empty());
+    }
+
     #[test]
     fn test_ping_intercepted_and_swallowed() {
         let mut ipc = CannedSefIpc::new();
