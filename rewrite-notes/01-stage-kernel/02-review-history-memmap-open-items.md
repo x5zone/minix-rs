@@ -10,6 +10,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十轮评审之后：保留语义三分与 RAM 重叠收口）**
+
+- **代码 `59aa94cf3`**：`/reserved-memory` 的重复判定从「`no-map` 布尔」改为**三语义**（`ReservationIntent::Ordinary/Reusable/NoMap`）——上一版里普通与 `reusable` 会被误判成同语义去重，现在同范围跨语义一律 `ConflictingReservationAttributes`；`/memory` 的部分重叠新增 `OverlappingMemoryRanges` 拒绝（精确重复去重、记录各留一条）。minix-boot **131**、boot-shim **67**；riscv QEMU PASS。
+- **顺带暴露的旧夹具问题**：`dtb_multi_region_and_unit_address_variant` 的 `0x8000_0000 + 0x4000_0000` 与 `0x8800_0000` 本来就是重叠 RAM（首段一直盖到 `0xC000_0000`），旧代码不检查所以没发现；夹具已改为不相交区间。
+- **文档**：重复矩阵扩为三语义 × 三来源（含 `/memory` 行）；UEFI↔DTB 交叉验证改为**覆盖合同** `Outward(R_reserved) ⊆ ⋃类型兼容描述符页`，并列出三种必测形态（未实现）；`EfiReservedMemoryType` 拆规范语义（`DenyOSAccess`）与项目兑现（`DenyOrdinarySystemMapping`）；O-11 的 MRB 措辞改为「MRB 规则自身允许的显式一次性授权」；补 `LiveInputReservation = Outward(...)`；UEFI 描述符记录最小字段清单。
+
 **本轮（第四十九轮评审之后：MRB 重复改判，四层投影合同）**
 
 - **代码 `b3c93b83f`**：上一轮把「精确重复一律去重」套到了 MRB 上，与 DTSpec 5.3.2「These given regions shall not overlap each other」冲突——改为**拒绝**（`OverlappingMemoryReservations`），测试 `dtb_identical_mrb_entries_are_rejected`；`/reserved-memory` 的重复去重保留为**项目级**策略。minix-boot **127**、boot-shim **67**；riscv QEMU PASS。

@@ -5313,3 +5313,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 撤回上一轮把重复去重套到 MRB 的做法：DTSpec 5.3.2 要求保留区互不重叠，重复即重叠，改为拒绝；`/reserved-memory` 去重明确为项目策略。
 - 不变量 1 补四层（来源事实/冲突解析/纯集合/归因）与各投影量化顺序；O-11 增全范围可达、源目标不相交、内容一致三条；DeviceAccessUse 补 VA；RESERVED 与 UNUSABLE 语义显式分开；WP 归物理保护能力。
 - 门：minix-boot 127、boot-shim 67、riscv QEMU PASS；aarch64 仍被 `E0046` 阻断。
+
+### 第二百五十八笔（01 阶段 · I-29 第五十轮：三语义重复矩阵）
+
+代码 `59aa94cf3`；主文档约 820 行。
+
+- `ReservationIntent` 三分；普通+reusable、reusable+no-map 同范围改判冲突；`/memory` 部分重叠新错误 `OverlappingMemoryRanges`。
+- 旧夹具 `dtb_multi_region_and_unit_address_variant` 本是重叠 RAM，已修正。
+- 文档：UEFI↔DTB 覆盖合同与三种必测形态（未实现）；`EfiReservedMemoryType` 两层语义；O-11 MRB 授权措辞；`LiveInputReservation = Outward(...)`；UEFI 描述符记录最小字段。
+- 门：minix-boot 131、boot-shim 67、riscv QEMU PASS；aarch64 仍被 `E0046` 阻断。

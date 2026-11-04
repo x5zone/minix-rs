@@ -807,3 +807,12 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | MRB 重复 | `dtb_identical_mrb_entries_are_rejected` → `OverlappingMemoryReservations`；规范原文经 spec 页面核对 |
 | `/reserved-memory` 重复 | 保持项目级去重（`dtb_identical_reservations_are_deduplicated_not_rejected`） |
 | 门 | minix-boot **127**、boot-shim **67**；riscv bootface PASS（exit 0）；aarch64 仍 BLOCKED（`E0046`） |
+
+## 二十二、第五十轮：三语义重复矩阵与 RAM 重叠
+
+| 项 | 读数 |
+|---|---|
+| 语义枚举 | `ReservationIntent::{Ordinary, Reusable, NoMap}`；同范围跨语义 → `ConflictingReservationAttributes` |
+| 新测试 | `dtb_reusable_duplicates_are_deduplicated_not_rejected`、`dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_partial_overlap_of_memory_ranges_is_rejected` |
+| 旧夹具修正 | `dtb_multi_region_and_unit_address_variant` 原输入 `(0x8000_0000, 0x4000_0000)` + `(0x8800_0000, …)` 实为重叠；改为 `0x400_0000` 后不相交 |
+| 门 | minix-boot **131**、boot-shim **67**；riscv bootface PASS（exit 0）；aarch64 仍 BLOCKED（`E0046`） |
