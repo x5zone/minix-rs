@@ -76,10 +76,21 @@ pub enum DtbMemMapError {
     /// A `/reserved-memory` node is visible in the tree but upstream path
     /// lookup cannot reach it. Treating it as absent would free its pages.
     ReservedMemoryUnreachable,
-    /// The `/reserved-memory` parent does not declare an empty `ranges`.
-    /// Non-empty ranges would make child addresses need a translation this
-    /// collector does not perform, so reading `reg` as physical would be wrong.
-    ReservedMemoryRangesNotEmpty,
+    /// The `/reserved-memory` parent does not declare `ranges` at all. DTSpec
+    /// requires the property; a missing one is a malformed input, not an
+    /// unsupported feature.
+    MissingReservedMemoryRanges,
+    /// The `/reserved-memory` parent declares a non-empty `ranges`: child
+    /// addresses would need a translation this collector does not implement.
+    /// The input is well-formed — this is a project supported-subset limit.
+    UnsupportedReservedMemoryRanges,
+    /// The `/reserved-memory` parent (or the root) does not declare
+    /// `#address-cells` / `#size-cells`. DTSpec requires both.
+    MissingReservedMemoryCells,
+    /// The parent's cell counts differ from the root's. DTSpec says they
+    /// *should* match; requiring equality is this project's supported subset,
+    /// because child `reg` is read as physical as written.
+    MismatchedReservedMemoryCells,
     /// A `/reserved-memory` child declares both `no-map` and `reusable`; the
     /// devicetree specification makes the two mutually exclusive.
     ConflictingReservationAttributes,
@@ -681,18 +692,22 @@ impl DtbMemoryMap<'_> {
                 || node_cells.1.is_none()
                 || root_cells.0.is_none()
                 || root_cells.1.is_none()
-                || node_cells != root_cells
             {
-                return Err(DtbMemMapError::UnsupportedReservedDeclaration);
+                return Err(DtbMemMapError::MissingReservedMemoryCells);
             }
-            // The specification requires an empty `ranges`: child addresses are
-            // physical as written. A non-empty (or absent) property means the
-            // addresses would need a translation this collector does not do.
-            let ranges_empty = node
-                .property("ranges")
-                .is_some_and(|p| p.value.is_empty());
-            if !ranges_empty {
-                return Err(DtbMemMapError::ReservedMemoryRangesNotEmpty);
+            if node_cells != root_cells {
+                // *Should* match in DTSpec; equality is this collector's
+                // supported subset, not a format error.
+                return Err(DtbMemMapError::MismatchedReservedMemoryCells);
+            }
+            // DTSpec requires `ranges`; it *should* be empty. A missing
+            // property is malformed, a non-empty one is well-formed input this
+            // collector cannot translate yet — two different failures.
+            let Some(ranges) = node.property("ranges") else {
+                return Err(DtbMemMapError::MissingReservedMemoryRanges);
+            };
+            if !ranges.value.is_empty() {
+                return Err(DtbMemMapError::UnsupportedReservedMemoryRanges);
             }
             for (child_index, child) in node.children().enumerate() {
                 if child.property("reg").is_none() {
@@ -915,6 +930,32 @@ mod tests {
         memory_status: u8,
         hotplug: bool,
     ) -> Vec<u8> {
+        build_fdt_full_opts(
+            memory_regs,
+            unit_address,
+            reserved,
+            memrsv,
+            Some(reserved_cells),
+            Some(ranges),
+            marker_value,
+            memory_status,
+            hotplug,
+        )
+    }
+
+    /// The same builder with optional `/reserved-memory` cells and `ranges`,
+    /// so a test can omit either property entirely.
+    fn build_fdt_full_opts(
+        memory_regs: &[(u64, u64)],
+        unit_address: bool,
+        reserved: &[ReservedRow],
+        memrsv: &[(u64, u64)],
+        reserved_cells: Option<u32>,
+        ranges: Option<&[u8]>,
+        marker_value: &[u8],
+        memory_status: u8,
+        hotplug: bool,
+    ) -> Vec<u8> {
         let mut strings: Vec<u8> = Vec::new();
         strings.extend_from_slice(b"#address-cells\0");
         strings.extend_from_slice(b"#size-cells\0");
@@ -982,9 +1023,14 @@ mod tests {
             push_u32(&mut struct_blk, 1); // FDT_BEGIN_NODE
             struct_blk.extend_from_slice(b"reserved-memory\0");
             while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
-            push_prop(&mut struct_blk, nameoff_cells as u32, &reserved_cells.to_be_bytes());
-            push_prop(&mut struct_blk, nameoff_size as u32, &reserved_cells.to_be_bytes());
-            push_prop(&mut struct_blk, nameoff_ranges as u32, ranges);
+            if let Some(cells) = reserved_cells {
+                push_prop(&mut struct_blk, nameoff_cells as u32, &cells.to_be_bytes());
+                push_prop(&mut struct_blk, nameoff_size as u32, &cells.to_be_bytes());
+            }
+            if let Some(ranges) = ranges {
+                push_prop(&mut struct_blk, nameoff_ranges as u32, ranges);
+            }
+            let cells_for_reg = reserved_cells.unwrap_or(2);
             let encode_cells = |out: &mut Vec<u8>, value: u64, cells: u32| {
                 for i in (0..cells).rev() {
                     let word = match i {
@@ -1000,8 +1046,8 @@ mod tests {
                 struct_blk.extend_from_slice(format!("region@{:x}\u{0}", row.base).as_bytes());
                 while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
                 let mut reg: Vec<u8> = Vec::new();
-                encode_cells(&mut reg, row.base, reserved_cells);
-                encode_cells(&mut reg, row.size, reserved_cells);
+                encode_cells(&mut reg, row.base, cells_for_reg);
+                encode_cells(&mut reg, row.size, cells_for_reg);
                 push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
                 if row.no_map {
                     push_prop(&mut struct_blk, nameoff_no_map as u32, marker_value);
@@ -1690,7 +1736,52 @@ mod tests {
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
             DtbMemoryMap::new(&fdt, 0).collect(),
-            Err(DtbMemMapError::UnsupportedReservedDeclaration)
+            Err(DtbMemMapError::MismatchedReservedMemoryCells)
+        ));
+    }
+
+    #[test]
+    fn dtb_missing_reserved_memory_ranges_is_rejected() {
+        // The property is required by the specification: its absence is a
+        // malformed input, distinct from a non-empty `ranges` (well-formed but
+        // needing a translation this collector does not implement).
+        let blob = build_fdt_full_opts(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[],
+            Some(2),
+            None,
+            &[],
+            0,
+            false,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::MissingReservedMemoryRanges)
+        ));
+    }
+
+    #[test]
+    fn dtb_missing_reserved_memory_cells_is_rejected() {
+        // `#address-cells` / `#size-cells` are required on the parent; without
+        // them the child `reg` cannot be read at all.
+        let blob = build_fdt_full_opts(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[],
+            None,
+            Some(&[]),
+            &[],
+            0,
+            false,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::MissingReservedMemoryCells)
         ));
     }
 
@@ -1733,7 +1824,7 @@ mod tests {
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
             DtbMemoryMap::new(&fdt, 0).collect(),
-            Err(DtbMemMapError::ReservedMemoryRangesNotEmpty)
+            Err(DtbMemMapError::UnsupportedReservedMemoryRanges)
         ));
     }
 
@@ -1790,7 +1881,7 @@ mod tests {
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
             DtbMemoryMap::new(&fdt, 0).collect(),
-            Err(DtbMemMapError::UnsupportedReservedDeclaration)
+            Err(DtbMemMapError::MismatchedReservedMemoryCells)
         ));
     }
 
