@@ -5131,3 +5131,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-08/O-09/O-10 已裁定（A），保留编号待实现；O-12 拆成 12a～12e。
 - 启动入口改四条（补 aarch64 直启）；新增 §2.7 代码位置表；§6 补测试≠输入完整性。
 - 门：`doc-style-lint --diff` error 0；表格/围栏 0；主文档 384 行。
+
+### 第二百三十九笔（01 阶段 · I-29 第三十一轮：dtb 形状校验 + 语义修订）
+
+代码 `2209fb3e9`、文档 `77b0e3c7b`。
+
+- 代码：`/reserved-memory` 父节点必须声明空 `ranges`（缺失/非空 → `ReservedMemoryRangesNotEmpty`）；子节点 `no-map` 与 `reusable` 互斥（`ConflictingReservationAttributes`）。夹具补 `ranges`/`reusable`，+2 测试。
+- 门：minix-boot 77 通过、boot-shim 66 通过；三目标交叉 check；riscv bootface QEMU PASS（OpenSBI DTB 的 `ranges` 为空）。
+- 文档：启动入口矩阵四行；aarch64 UEFI 磁盘 DTB 改为「只作自检闸，不是内存政策输入」；O-01 三层叠加、O-02a 页粒度与授权字段、O-02b 只产生 PMM 排除、O-03/O-04 优先级与五种禁止语义、O-05 先审后用、O-06 类型表补全、O-07 限定证明范围、O-10 第二枚负控、O-11 两步授权与一致性策略、O-12f `RamSourceDomain`；§1.5 补 x86 PAT×MTRR 与 RISC-V PMA 来源。
+- 主文档 384 → 401 行；`doc-style-lint --diff` error 0；表格/围栏 0。
