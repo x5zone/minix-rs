@@ -272,6 +272,12 @@ impl BootShim for UefiBootShim {
         #[cfg(target_arch = "aarch64")]
         match file_loader.read(loader::DUMPDTB_PATH) {
             Some(blob) => {
+                // Heap copy: its address alignment is ours to control, so the
+                // base-alignment check is skipped (pass 0); block and MRB
+                // layout checks still apply.
+                if minix_boot::fdt_layout::validate(0, &blob).is_err() {
+                    panic!("boot-shim: dumpdtb.dtb container invalid");
+                }
                 let fdt = fdt::Fdt::new(&blob)
                     .unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
                 let (dtb_free, _) = minix_boot::DtbMemoryMap::new(&fdt, 0)
@@ -823,6 +829,9 @@ fn report_memmap_source(dtb_free: Option<&[MemoryRegion]>, conventional: &[Memor
 #[cfg(target_arch = "aarch64")]
 fn load_dumpdtb_free(file_loader: &dyn FileLoader) -> Option<&'static [MemoryRegion]> {
     let blob = file_loader.read(loader::DUMPDTB_PATH)?;
+    if minix_boot::fdt_layout::validate(0, &blob).is_err() {
+        panic!("boot-shim: dumpdtb.dtb container invalid");
+    }
     let fdt = fdt::Fdt::new(&blob)
         .unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
     let (free, _) = minix_boot::DtbMemoryMap::new(&fdt, 0)

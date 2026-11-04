@@ -185,6 +185,10 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         crate::halt();
     }
     let fdt_bytes = unsafe { slice::from_raw_parts(dtb_pa as *const u8, fdt_total) };
+    if minix_boot::fdt_layout::validate(dtb_pa, fdt_bytes).is_err() {
+        say("### minix-rs kernel image: DTB container invalid — halting\n");
+        crate::halt();
+    }
     let fdt = match fdt::Fdt::new(fdt_bytes) {
         Ok(f) => f,
         Err(_) => {
