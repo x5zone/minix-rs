@@ -10,6 +10,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十五轮评审之后：EFI DTB 专属类型、属性冲突域、x2APIC 分层）**
+
+- **代码 `cdfa1637c`**：属性歧义域从单一位扩到 `0x1_F000`（`0x1000`/`0x2000`/`0x4000`/`0x8000`/`0x1_0000` 在两套官方编码里含义不同，其中 `0x4000` 的 `SP`/`XP` 之争最危险：按 PDF 编码的 `SP` 会被当成仅元数据的 `XP` 而进 PMM）。负控 `every_contested_attribute_bit_fails_closed`；`NON_VOLATILE` 因此进入拒绝域，`TYPE_INDEPENDENT` 的 NV 分支在真实输入上不可达（已注明是未钉 profile 的保守代价）。boot-shim **69**、minix-boot **132**。
+- **EFI DTB 专属存放类型**：UEFI 2.11 §4.6.1.3 要求标准 `EFI_DTB_TABLE_GUID` 位于 `EfiACPIReclaimMemory`——上一轮把一般配置表的四种类型搬进 DTB 首读矩阵是错的，已收紧为「整段 DTB 必须在 ACPIReclaim 描述符内，否则拒绝；其它类型只能作为非标准扩展」。
+- **EFI DTB 进入页级主张**：与静态保留/`no-map` 同页 → 拒绝；与 MRB 同页采用**例外**（ACPIReclaim 胜出、MRB 访问禁止保留、一次性读取走具名 MRB 授权，并明示这是对 `should` 的有意偏离）。
+- **x2APIC 分层**：共享层 `ApicRegisterAccessRequirement`，x86 层 `X2ApicMsrUse`；MSR 编号不进共享层。不变量 5 改为「MMIO / 端口 I/O / CPU 架构寄存器」三域。
+- **O-11 地址类型**：`BootInputAddress` / `SourcePhysicalRange` / `ReadVirtualRange` 三概念，四条 ABI 交付的都是 PA，删除概括性的 `SourceVirtualRange`。
+- **`ReservedReusable + MRB` 同页冲突**入表；补页级生命周期规则（全部分配排除来源解除后页才可进入 `PMMAvailable`）。
+- **§7 同步**：O-12k 进入输入组，属性位状态更新为「冲突域已 fail-closed，profile 待钉」。
+
 **本轮（第五十四轮评审之后：纯文档——重试环境、配置表存放类型、页粒度冲突）**
 
 - **O-12k 重试执行环境**：首次 `ExitBootServices()` 之前分配全部重试缓冲；失败后只用预留缓冲与纯内存计算，不调用 Console/协议/事件服务；`EFI_BUFFER_TOO_SMALL` 直接终止；只对 `EFI_INVALID_PARAMETER` 重试且有次数上限；重试期间不打印日志；五条必测负控列入。

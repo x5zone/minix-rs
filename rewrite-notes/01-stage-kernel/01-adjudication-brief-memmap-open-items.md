@@ -99,6 +99,8 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | `/reserved-memory`（普通/`reusable`/`no-map` 三种语义） | 同语义重复 → 投影去重、记录各留一条（测试：普通 `dtb_identical_reservations_are_deduplicated_not_rejected`、`reusable` `dtb_reusable_duplicates_are_deduplicated_not_rejected`） | 拒绝（`OverlappingReservedRanges`） | 拒绝（`ConflictingReservationAttributes`：普通+`reusable` 生命周期不同、普通+`no-map` 访问不同、`reusable`+`no-map` 规范互斥；测试 `dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_same_range_with_different_semantics_is_a_conflict`） |
 | MRB | **拒绝**（`OverlappingMemoryReservations`）：DTSpec 5.3.2「These given regions shall not overlap each other」，重复也是重叠（`dtb_identical_mrb_entries_are_rejected`） | 拒绝 | —（MRB 无 `no-map` 语义） |
 
+**页级生命周期规则（为将来 `reusable` 回收设防）**：普通保留与 `reusable` 原始字节可不相交却落在同一页；EFI 类型相同不构成冲突，但只有该页上**全部分配排除来源都已解除**，页才能进入 `PMMAvailable`。第一版两种声明都不回收，结果自然是继续排除——这条规则防止将来启用回收时出现「部分页释放」。
+
 `/reserved-memory` 的重复容忍是**项目级输入策略**，不是规范授权；MRB 没有这层容忍。`reusable` 在去重时保留的是**声明身份**（两条记录各有 `id`）；owner 关系尚未建立，不能把记录数量当成 owner 数量——`memory-region` 引用是多对多（一个设备可引用多个区域、一个区域可被多个设备引用），模型应是 `DeviceMemoryRegionReference`（或 `MemoryRegionAssociation`）的引用集合，而非单个 `OwnerId` 字段。**引用不等于所有权**：只有平台 binding 或驱动注册信息进一步证明回收职责时，才提升为 `ReclaimAuthority`。`/memory` 的**部分重叠**拒绝同样是项目策略：**不是数学必然**——§3 允许纯集合层对兼容区间 `Union`，部分重叠在集合模型里可以安全归一化；拒绝的理由是「严格输入策略：部分重叠视为固件异常」，它不依赖今天 PMM 的实现，也不声称 DTSpec 禁止 `/memory` 重叠。若将来改为并集，来源记录仍须各留一条。`reusable` 的 owner 关系在去重时不得合并（来源记录各留一条正是为此）。
 - `reusable` 在记录层已独立成 `ReservedReusable`；两张投影表仍把它按保留处理（不实现 owner 关联、回收能力或生命周期处置），第一版保守地不回收，但不丢原始声明语义。
 
@@ -127,7 +129,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 5. 无写回位 → 诊断成员；
 6. 写回准入后按类型分派：`CONVENTIONAL` → 可用表；引导服务类 / `ACPI_RECLAIM` → 保留表；其余 → 诊断成员。
 
-测试（`cargo test -p boot-shim --lib`，67 通过）：`types_that_earn_no_ordinary_mapping_go_to_the_side_list`、`excluded_and_device_types_stay_out_of_every_list`、`rejects_side_list_beyond_its_buffer`、`the_four_ambiguous_combinations_land_as_adjudicated`、`geometry_is_checked_for_ranges_that_are_emitted` 等 32 条。
+测试（`cargo test -p boot-shim --lib`，69 通过）：`types_that_earn_no_ordinary_mapping_go_to_the_side_list`、`excluded_and_device_types_stay_out_of_every_list`、`rejects_side_list_beyond_its_buffer`、`the_four_ambiguous_combinations_land_as_adjudicated`、`geometry_is_checked_for_ranges_that_are_emitted` 等 32 条。
 
 **不保证什么**：类型 11/12 与 `RESERVED`/`UNUSABLE` 只是一种「不产出区间」的处置，它们**没有**进入任何禁止集合（禁止集合不存在）；诊断成员没有跨界载体。**输出分流相同 ≠ 语义相同**：`RESERVED` 在来源域之外（类型本身推不出普通 RAM 资格），`UNUSABLE` 在来源域之内、由类型资格排除；未来不能让实现者把两者合并成一个 `Excluded`。两者的差异要等 UEFI 原始描述符记录落地后才能兑现（O-12g 第二半）。
 
@@ -214,7 +216,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 **必须分开的两个概念**：`RamSourceDomain` 回答「权威输入是否声称这段是物理 RAM」；`OrdinaryRamEligibility`（原 `RamBacking`）只回答「当前阶段是否允许把它作为普通主存**映射**」；能否分配由 `PmmEligibility(phase)` 表达，某个对象能否经某条路径访问由 `AccessRequirement/AccessAuthorization` 表达，物理内存性质由 `MemoryKind` 表达。四者不能互相推导。**术语说明**：`backing` 容易被读成「物理支撑」，而本项说的是 OS 政策资格——`RUNTIME_SERVICES_*`、`ACPI_NVS`、`PERSISTENT` 都有物理支撑却不具普通资格，`UNACCEPTED` 有物理来源但未接受。物理支撑性质、OS 政策资格、硬件准入是三个层次，不能压成一个布尔值。`EfiReservedMemoryType` 是典型反例：aarch64 UEFI 的权威 DTB `/reserved-memory` 与 MRB 提供**保留来源身份**，UEFI 内存图提供物理存在与固件处置；两者可交叉验证保留声明，但**都不能单独推出 `RamSourceDomain` 成员资格**——只有独立平台证据能证明属于系统 RAM 时才纳入。x86_64 没有 DTB 来源，它的 `EfiReservedMemoryType` 只能按固件类型政策处置，不能套用 aarch64 的交叉核对。
 3. **两棵树各一个禁止集合；禁止与分配正交**。
 4. **义务键 =（对象｜设备窗口，树，阶段，路径）**；缺任一维不构成义务。
-5. **设备访问 ≠ 设备映射**：MMIO 与端口 I/O 是两个地址域，映射义务与访问合同是两份记录。
+5. **设备访问 ≠ 设备映射**：MMIO、端口 I/O 与 CPU 架构寄存器访问是**三种不同的访问接口/命名域**（第三种不属于物理地址集合，不得进入 PMM、页表或端口范围集合）；映射义务与访问合同是两份记录。
 
 ## 4. 已裁定、但代码未实现
 
@@ -438,9 +440,9 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 **`EFI_MEMORY_HOT_PLUGGABLE` 与语义歧义位（两个不同的位）**：
 
-- `0x0010_0000`：规范仓库/EDK2/Linux 都定义为 `HOT_PLUGGABLE`；`uefi-raw 0.9` 没有该常量，带它的描述符走未知位拒绝（`hot_pluggable_bit_fails_closed_as_unknown`）。
-- `0x0001_0000`：**官方文本互相冲突**——2.11 PDF 是 `HOT_PLUGGABLE`，规范仓库/EDK2/Linux 是 `MORE_RELIABLE`。按 PDF 构建的固件会用这一位报告热插拔内存；若按仓库编码把它当 `MORE_RELIABLE` 放行，热移除内存就会进入 PMM。**实现已改为 fail-closed**：该位在已知位闸之前被单独拒绝（`AmbiguousAttribute`，`the_ambiguous_bit_fails_closed_under_either_name`）。
-- 这从「证据待钉」升为**准入阻塞已处理**；剩余待钉的是 `PlatformMemoryProfile` 里的固件/EDK2/规范源文件具体版本——它决定将来是否能安全地给该位赋予单一含义。**位值证据按「规范仓库源文件 + EDK2」这一支取，不按 2.11 PDF 表取**：三个已发布文本与 EDK2 的属性位编码互不一致（见 03 号文档第十五节矩阵：2.11 PDF 为 `0x10000`、EDK2 为 `0x100000`，`WP`/`MORE_RELIABLE` 同样整体错位）。钉住的是「当前 `uefi-raw` 与 Linux 头文件一致的编码」这一事实，而不是某份 PDF 的表格；将来升级 `uefi-raw` 时**必须重核全部已识别属性位**，不能只迁移 hot-pluggable 一位。
+- **冲突位域整体 fail-closed（已实现）**：`0x1000..=0x1_0000` 在两套官方编码里含义不同——`0x4000` 在一套里是 `SP`（必须排除出 PMM）、另一套里是 `XP`（仅保护能力元数据）；`0x8000` 是 `CPU_CRYPTO` vs `NV`；`0x1000` 是 `MORE_RELIABLE` vs `WP`；`0x2000` 是 `RO` vs `RP`；`0x1_0000` 是 `HOT_PLUGGABLE` vs `MORE_RELIABLE`。任一读法都可能把必须排除的内存伪装成元数据，因此整个 `0x1_F000` 在已知位闸之前单独拒绝（`PolicyError::AmbiguousAttribute`，负控 `every_contested_attribute_bit_fails_closed` 与 `the_ambiguous_bit_fails_closed_under_either_name`）。
+- `0x0010_0000`（仓库编码的 `HOT_PLUGGABLE`）：`uefi-raw 0.9` 无该常量，走未知位拒绝（`hot_pluggable_bit_fails_closed_as_unknown`）。
+- **代价**：`NON_VOLATILE` 位现在也落进拒绝域，`TYPE_INDEPENDENT` 里的 NV 分支在真实输入上不可达——这是没钉固件 profile 时的保守选择；将来钉住带版本证据的 profile 后，可以为该编码赋予单一含义并恢复 NV 的排除路径。**位值证据按「规范仓库源文件 + EDK2」这一支取，不按 2.11 PDF 表取**：三个已发布文本与 EDK2 的属性位编码互不一致（见 03 号文档第十五节矩阵：2.11 PDF 为 `0x10000`、EDK2 为 `0x100000`，`WP`/`MORE_RELIABLE` 同样整体错位）。钉住的是「当前 `uefi-raw` 与 Linux 头文件一致的编码」这一事实，而不是某份 PDF 的表格；将来升级 `uefi-raw` 时**必须重核全部已识别属性位**，不能只迁移 hot-pluggable 一位。
 
 **属性位证据矩阵（自包含）**：本项目取「规范仓库源文件 + EDK2 + Linux 一致」这一支，不按已发布 PDF 的表：
 
@@ -541,7 +543,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 4. 把 snapshot 写入副本前 40 字节，**只从原地址复制 `[dtb+40, dtb+totalsize)`**；
 5. 在副本上执行完整 `fdt_layout::validate`。
 
-**物理范围与虚拟可达范围必须分开**：输入对象记为 `SourceVirtualRange`（启动 ABI 给的地址域与长度）与 `SourcePhysicalRanges`（经转换后的物理范围集合）。`LiveInputReservation = Outward(SourcePhysicalRanges)`——**PMM 排除的是物理页，不是虚拟区间**；目标副本与源的不重叠也必须**按物理地址**判断：源 VA 与目标 VA 数值不同不代表不落在同一 PA（直接映射、恒等映射等别名都可能重合）。
+**ABI 地址、源物理范围与读取 VA 是三个概念**：`BootInputAddress`（ABI 递交的地址及其地址域——四条路径实际交付的都是**物理地址**：AArch64 `x0`、UEFI 配置表 DTB、RISC-V `a1`/`satp=0`）、`SourcePhysicalRange`（DTB 对象实际占用的物理范围）、`ReadVirtualRange`（当前阶段实际用于读取的 VA 范围）。不构造概括性的 `SourceVirtualRange`——那会把物理地址误包装成虚拟地址。`LiveInputReservation = Outward(SourcePhysicalRanges)`——**PMM 排除的是物理页，不是虚拟区间**；目标副本与源的不重叠也必须**按物理地址**判断：源 VA 与目标 VA 数值不同不代表不落在同一 PA（直接映射、恒等映射等别名都可能重合）。
 
 **`BootInputReachability` 是端到端可读性，不是「PTE 存在」**：在指定阶段与访问路径下，完整对象的只读访问所需的地址翻译、页表访问、物理访问保护与平台准入条件必须全部成立——RISC-V 上 PMP 可能拒绝 S 模式访问、PMA 还可能限制访问方式；AArch64/x86 各有对应门控。具体由各架构实现验证，通用层只表达「可读」语义，不暴露 PMP/页表遍历等机制名。
 
@@ -571,6 +573,7 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 | `no-map` + MRB | 兼容，要求 `EfiReservedMemoryType` |
 | **普通静态 + MRB** | **冲突，拒绝启动**：一条描述符无法同时满足普通保留的 `must`（BootServicesData）与本项目的 MRB 强化（Reserved） |
 | **普通 / `reusable` + `no-map`（原始字节不相交但同页）** | **冲突，拒绝启动**：两条声明各自向外量化到同一 4 KiB 页，页上同时要求 BootServicesData 与 Reserved——DTB 原始范围不重叠并不豁免页级冲突 |
+| **`ReservedReusable` + MRB（同页）** | **冲突，拒绝启动**：`reusable` 是非 `no-map` 静态保留（BootServicesData），MRB 按项目强化要求 Reserved；与 `ReservedOrdinary + MRB` 同构 |
 | 普通静态 + `no-map`（原始字节重叠） | DTB 侧已是冲突（同范围异语义） |
 
 **为什么不是「Reserved 更强所以覆盖」**：DTSpec 对普通静态保留指定的是类型本身，不只是「受保护」；用 Reserved 覆盖等于悄悄牺牲一条来源要求。若将来要接受普通保留 + MRB，唯一自洽的做法是**放弃 MRB 的 `should`→must 强化**（回到规范级别，MRB 的访问禁止由独立政策兑现），而不是让 `ResolveCompatibleClaims` 返回一个隐藏牺牲项的结果。跨来源身份照旧各留一条；覆盖公式分别定义 `R_static` 与 `R_MRB`，经页级裁决后再比对。
@@ -586,13 +589,14 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 | MRB | 走 MRB 规则允许的、启动程序明确用途对应的受限访问授权 |
 | `no-map` | **第一版拒绝**：DTSpec 的例外是「由使用该区域的设备驱动控制」的访问，一次性启动读取不属于该例外；除非实现并验证专用受控路径 |
 | `EfiReservedMemoryType` | **第一版拒绝**：配置表里的指针只建立来源身份，不能推翻内存图对该范围的禁止处置；除非有专门且明确的启动 ABI 例外与规范依据 |
-| `EfiRuntimeServicesData` | 允许具名只读（UEFI 推荐存放配置表）；仍按运行时内存处置，**不因此启用 Runtime Services** |
-| `EfiBootServicesData` / `EfiLoaderData` | 允许具名只读；生命周期处置不变 |
-| `EfiACPIReclaimMemory` | 允许具名只读；ACPI 启用前的保留处置不变 |
-| `EfiACPIMemoryNVS` | 允许具名只读；不因此放宽 NVS 生命周期 |
+| `EfiACPIReclaimMemory` | **标准 `EFI_DTB_TABLE_GUID` 的唯一合规存放类型**：整段 DTB 对象所在的描述符必须是该类型才允许首读；ACPI 启用前的保留处置不变 |
 | `EfiUnusableMemory` / `EfiUnacceptedMemoryType` / MMIO / 端口空间 / `PAL_CODE` | 拒绝，或走各自独立准入规则；不得借用普通 DTB 读取通道 |
 
-这张表**只**决定「一次性只读能否发生」，不修改 `RamSourceDomain`、`PMMAvailable` 或 `OrdinaryMappingEligibility`；`RuntimeServicesData` 可读 ≠ 内核调用 Runtime Services。
+**标准 DTB 表有专属规则，不能套用一般配置表的四种类型**：UEFI 2.11 §4.6.1.3 规定 DTB 必须位于 `EfiACPIReclaimMemory`，地址按物理地址解释、运行时不作地址修正。一般配置表允许的 `RuntimeServicesData`/`BootServicesData`/`ACPINVS` 对标准 DTB 表**不成立**，`LoaderData` 更不在其中。首读前必须先证明完整 DTB 对象落在 `EfiACPIReclaimMemory` 描述符内，否则第一版拒绝；其它类型只能作为明确的非标准平台扩展处理，不能写成 UEFI 标准允许的普通情况。
+
+**EFI DTB 对象本身也是页级主张来源**：它要求 `EfiACPIReclaimMemory`。与静态 `/reserved-memory`（BootServicesData）、`no-map`（Reserved）向外量化后同页 → **冲突，拒绝**。与 MRB 同页时第一版**采用例外**：该页按 UEFI DTB 的强制要求取 `EfiACPIReclaimMemory`，MRB 的访问禁止与 PMM 排除照旧保留，一次性读取走具名 MRB 授权——这是对 MRB 类型 `should` 的**有意偏离**（遵守两条规范中更强的类型要求），不是把两种来源合并。
+
+这张表**只**决定「一次性只读能否发生」，不修改 `RamSourceDomain`、`PMMAvailable` 或 `OrdinaryMappingEligibility`。
 
 **与 O-03 的接口**：若 DTB 本体落在 MRB 覆盖范围内，上面这次只读访问必须登记为**MRB 规则自身允许的、由启动程序明确提供的一次性对象访问授权**（带对象身份、阶段与只读路径）。要否定的是「无边界豁免」——授权不覆盖所在 MRB 区域的其它访问，也不授权复制完成后继续访问原地址；但也不应把 DTB 读取说成「不属于任何例外」，那与规范允许的显式授权相矛盾。
 
@@ -705,7 +709,7 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 
 **数值相等 ≠ 来源相等**：表中若干行的授权范围与覆盖范围数值相同，但授权是**独立政策输入**，覆盖是**独立测量**；不能由实际叶子反推授权。而且今天**没有页表审计遍历**，所以今天的覆盖只能叫 `ExpectedDeviceMappingCoverage`（从构造代码推导），`ObservedDeviceMappingCoverage`（PTE 遍历）等 O-02a 的引导根审计落地后才存在。表中「覆盖」列在观测实现前一律标为**预期**。
 
-**x2APIC 是第三种访问域**：xAPIC 走 MMIO（`0xFEE0_0000` 页），x2APIC 走架构寄存器（RDMSR/WRMSR）——它既不属于 MMIO 窗口模型，也不属于 O-08 的端口 I/O 地址域。共享层需要 `ArchitecturalRegisterAccessUse`（至少含 MSR 编号、读写方向、访问者、阶段、CPU 范围、适用模式），架构层负责具体实现。**第一版若不实现 x2APIC 访问路径**，必须锁定 xAPIC profile 并在检测到 x2APIC 时拒绝启动；不得「允许 x2APIC 模式却保留 xAPIC 的 MMIO 访问需求」。O-10 现有的 in/out 负控不覆盖 RDMSR/WRMSR，需另列架构寄存器访问审计。
+**x2APIC 是第三种访问域**：xAPIC 走 MMIO（`0xFEE0_0000` 页），x2APIC 走架构寄存器（RDMSR/WRMSR）——它既不属于 MMIO 窗口模型，也不属于 O-08 的端口 I/O 地址域。**MSR 编号不进共享层**：共享层只表达 `ApicRegisterAccessRequirement`（APIC 逻辑寄存器、读写方向、访问者、阶段、CPU 范围、适用模式）；x86 架构层用 `X2ApicMsrUse` 记录具体 MSR 编号、指令位置、包装函数与访问约束。同一 OS 语义（读 Local APIC ID、写 EOI）在 xAPIC 映射到 MMIO、在 x2APIC 映射到 MSR。**第一版若不实现 x2APIC 访问路径**，必须锁定 xAPIC profile 并在检测到 x2APIC 时拒绝启动；不得「允许 x2APIC 模式却保留 xAPIC 的 MMIO 访问需求」。O-10 现有的 in/out 负控不覆盖 RDMSR/WRMSR，需另列架构寄存器访问审计。
 
 **x86 的 APIC 地址不是无条件硬件事实**：表中 `0xFEE0_0000`/`0xFEC0_0000` 只属于「本项目支持的某个 x86 QEMU profile」。启动时必须核对：Local APIC 当前模式（xAPIC MMIO 还是 x2APIC MSR 路径）、`IA32_APIC_BASE` 的基址与政策表一致；若解析 ACPI，MADT 的 Local APIC 地址、override 与 I/O APIC 项必须与政策表兼容；不符合当前 profile 就**拒绝启动**。不解析 ACPI 时，支持范围严格锁定在明确的 machine profile。
 
@@ -859,9 +863,9 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 |---|---|
 | 提交 `38668f843`（**功能落码提交，不是测试基线**） | DTB 保留来源落码：`/reserved-memory`、MRB、容量/回绕/重叠/形状拒绝、引导区 checked 守卫 |
 | `cargo test -p minix-boot --lib` | 132 通过（采集器用例见 §2.1） |
-| `cargo test -p boot-shim --lib` | 68 通过（分类器用例见 §2.2） |
+| `cargo test -p boot-shim --lib` | 69 通过（分类器用例见 §2.2） |
 | 交叉编译 | `x86_64-unknown-none`、`aarch64-unknown-none`（`fw-none-image`）、`riscv64gc-unknown-none-elf`、`x86_64-unknown-uefi`、`aarch64-unknown-uefi` |
-| QEMU | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh` PASS（exit 0，**仅覆盖 bootface 入口**）；`test-shim-bootmarks-aarch64` **仍被外部红阻断**：`servers/rs` 已由 `b71bce1d0` 修复，`os/servers/sched/src/kernel_api/transport.rs:161`（`impl SefIpc for SefIpcAdapter`）仍缺 `sendrec`（`E0046`）。aarch64 启动行为**未验证** |
+| QEMU | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh` PASS（exit 0，**仅覆盖 bootface 入口**）；`test-shim-bootmarks-aarch64` **仍被外部红阻断**：`servers/rs`（`b71bce1d0`）与 `servers/sched`（`ae4ef5c76`）已修，`os/servers/vfs/src/main_loop.rs:7635`（`impl SefIpc for VfsIpc`）仍缺 `sendrec`（`E0046`）。aarch64 启动行为**未验证** |
 | 来源记录层 | `collect_with_sources()` 交出六类 `SourceRecord`（容量 40）；`no-map`、RAM 外声明、MRB 出表后仍可追溯：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`；`collect()` 语义不变；`dtb_collect_and_collect_with_sources_agree` 钉住两条入口不漂移；`dtb_no_map_declarations_count_against_the_declaration_cap` 钉住「RAM 外的 no-map 不进任何表仍占声明容量」；`dtb_reusable_duplicates_are_deduplicated_not_rejected`、`dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_partial_overlap_of_memory_ranges_is_rejected` 钉住三分裁决 |
 | FDT 容器校验 | `fdt_layout::validate` **28 条测试**（`accepts_a_canonical_layout`、`accepts_an_unaligned_strings_block`、`accepts_a_property_before_children`、`rejects_a_property_after_a_child`、`rejects_an_unknown_token`、`rejects_a_second_root`、`rejects_unbalanced_end_nodes`、`rejects_an_end_token_in_the_middle`、`rejects_a_property_running_past_the_block`、`rejects_a_property_name_outside_the_strings_block`、`rejects_an_unterminated_property_name`、`rejects_nesting_beyond_the_parser_limit`、`the_parser_consumes_the_deepest_tree_this_gate_accepts`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_more_reservations_than_the_collector_accepts`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_structure_block_without_the_end_token`、`rejects_unbacked_structure_alignment`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`、`rejects_strings_before_the_structure_block`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
 | 解析库依赖事实 | `fdt 0.1.5` `node.rs`：`properties()` 首个非属性 token 即停；`children()`/`all_nodes()` 遇「子节点后属性」即结束；`all_nodes()` 父栈 64 槽、根在下标 1（最大安全深度 63）。QEMU 8.2.2 `dumpdtb` 全树 0 处属性后置 |
@@ -871,12 +875,12 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 | 层级 | 本轮状态 |
 |---|---|
 | `minix-boot` 宿主单测 | 132 PASS |
-| `boot-shim` 宿主单测 | 68 PASS |
+| `boot-shim` 宿主单测 | 69 PASS |
 | riscv64 启动路径 QEMU | PASS（exit 0） |
-| aarch64 镜像组装 | **BLOCKED**：`E0046` @ `servers/sched/src/kernel_api/transport.rs:161`（`SefIpcAdapter` 缺 `sendrec`） |
+| aarch64 镜像组装 | **BLOCKED**：`E0046` @ `servers/vfs/src/main_loop.rs:7635`（`VfsIpc` 缺 `sendrec`） |
 | aarch64 启动行为 | 本切片**未验证** |
 
-**证据基线**：本轮代码提交 `694b74386`。复核命令与顺序（缺一不可）：
+**证据基线**：本轮代码提交 `cdfa1637c`。复核命令与顺序（缺一不可）：
 
 ```
 git rev-parse HEAD
@@ -885,11 +889,11 @@ cd os && cargo test -p minix-boot --lib
 cd os && cargo test -p boot-shim --lib
 ```
 
-132/68 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
+132/69 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
 
 复核方式：对 §2 的每条主张，文中给出了测试名或代码位置；对 §5 的每条问题，文中给出了失败形态——评审人可以只凭本文判断「问题是否成立」。
 
-**测试通过不等于输入完整性**：132 与 68 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
+**测试通过不等于输入完整性**：132 与 69 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
 
 ## 7. 签字状态
 
@@ -903,8 +907,8 @@ cd os && cargo test -p boot-shim --lib
 
 | 阻塞组 | 对应合同 |
 |---|---|
-| 输入真实性与边界 | O-11、O-12h、O-12j（a/b 已实现，b 的预编译依赖闭包未证；c 未闭合）、DTB 节点准入 |
-| 来源保真、RAM 资格与生命周期 | O-01、O-06、O-12f、O-12g（DTB 记录层已落，UEFI 描述符记录未落） |
+| 输入真实性与边界 | O-11（含 EFI DTB 专属类型合同）、O-12h、**O-12k（MapKey 快照）**、O-12j（a/b 已实现，b 的预编译依赖闭包未证；c 未闭合）、DTB 节点准入 |
+| 来源保真、RAM 资格与生命周期 | O-01、O-06（属性位冲突域已 fail-closed，完整固件 profile 仍待钉）、O-12f、O-12g（DTB 记录层已落，UEFI 描述符记录未落） |
 | PMM 投影与页粒度 | O-12d、O-12i |
 | 设备资源、映射和访问 | O-12c、O-08 |
 | 禁止集合与逐树审计 | O-02a/b、O-03、O-04、O-05、O-12a/b |

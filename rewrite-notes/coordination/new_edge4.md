@@ -5359,3 +5359,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-11：配置表存放类型矩阵（Runtime/Boot/Loader/ACPIReclaim/ACPINVS 可读、Reserved 拒绝）；页粒度类型冲突（字节不相交但同页也拒绝）；PA/VA 分开与端到端可达。
 - O-12c：x2APIC 独立 MSR 访问域，不沿用 xAPIC MMIO 包络。
 - 证据：O-12j-b 的「两腿 PASS」标注为历史读数。
+
+### 第二百六十三笔（01 阶段 · I-29 第五十五轮：属性冲突域与 EFI DTB 类型）
+
+代码 `cdfa1637c`；主文档约 919 行。
+
+- `0x1000..=0x1_0000` 五位冲突域整体 `AmbiguousAttribute`（`0x4000` 的 SP/XP 之争最危险）；NV 因此不可用于类型独立排除。
+- EFI DTB 标准表必须 `EfiACPIReclaimMemory`；与静态保留同页拒绝、与 MRB 同页例外（ACPIReclaim 胜出）。
+- x2APIC 分层；O-11 地址三概念；`ReservedReusable+MRB` 冲突；页级生命周期规则。
+- 门：minix-boot 132、boot-shim 69、x86_64-unknown-uefi check 通过。
+- aarch64 仍阻断：`servers/rs`、`servers/sched` 已修，`servers/vfs/src/main_loop.rs:7635`（`VfsIpc`）仍缺 `sendrec`。
