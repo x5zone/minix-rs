@@ -203,6 +203,8 @@
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
 
+- **`2026-11-05` 收口刷新（第 58 轮，基线 `12c130f48`，`claim/DMA-VIRTIO-qoder`）**：E-DMABUF 的 virtio 半已随批次五百三十三闭——`minix-virtio::hal::VmHal` 实现 `DmaMemory` 四腿（`dma_alloc` 经 `alloc_contig_via`、`dma_free` 经 munmap、双向翻译，`physical_to_virtual` 走自有区域账本），virtio_blk 的设备启动弧（PCI/vring 建立属设备弧）未含。**B11 的驱动侧接线面至此全闭合**（音频七卡 + virtio 的 `VmHal` 即取件）；余面只剩设备弧与真机验收。
+
 - **`2026-11-05` 收口刷新（第 57 轮，基线 `7219b0906`，`claim/DMA-AUDIO-qoder`）**：E-DMABUF 的音频族半已随批次五百三十二闭——`minix-sys::vm::alloc_contig_via`（C `alloc_contig` 的 mmap+umap 组装，DMA 旗标常量齐）+ `minix-audiodriver::dma::VmDmaAlloc`（`DmaAlloc` 生产实现），七卡 init 泛型化采用；`UnboundDma` 降为未切换驱动的占位。B11 余面：virtio 连续页（下一笔）。
 
 - **`2026-11-05` 收口刷新（第 56 轮，基线 `d63b1d727`，`claim/FIND-DELETE-qoder`）**：`find -delete`/`-rm` 写侧腿已随批次五百三十一闭——`unlink_entry`/`rmdir_entry` 双缝、`-delete` 隐含 `-depth`、失败只 warn 不动退码（C 同形）、起点含 `/` 的偏执检查行走前致命；真机删除验收挂可写根盘（同 C-57 族）。find 的按名拒绝只剩 `-fstype`/`-flags`/`-regex`/`-iregex`（前置未清）。

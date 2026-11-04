@@ -9,3 +9,5 @@ license.workspace = true
 # E-DMABUF 契约半:DmaMemory/DmaRegion 的权威定义住共享类型库,
 # 本库经 hal 模块再导出为 Hal 别名消费。
 minix-types = { workspace = true }
+# `VmHal` 的 alloc_contig/munmap/umap 腿（E-DMABUF 接线面，批次五百三十三）。
+minix-sys = { workspace = true }
