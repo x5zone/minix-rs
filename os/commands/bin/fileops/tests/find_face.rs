@@ -68,7 +68,7 @@ fn the_usage_line_carries_the_program_name_and_a_capital_usage() {
 
 #[test]
 fn an_unresolvable_user_or_group_name_is_fatal_before_the_walk() {
-    // C `c_user`/`c_group` (`function.c:6339-6342`/`:714-716`): a name that
+    // C `c_user`/`c_group` (`function.c:1748-1749`/`:1081-1083`): a name that
     // is neither an account nor a numeric spelling errx(1)s at plan build —
     // no walk output, exit 1, one `errx`-shaped line. A hosted build cannot
     // read the databases, so every non-numeric name takes this path.

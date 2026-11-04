@@ -1110,16 +1110,91 @@ fn atoi_id(text: &str) -> u32 {
     signed as u32
 }
 
-/// `c_user`'s "no such user" guard (`function.c:6339-6342`): the name is
+/// `c_user`'s "no such user" guard (`function.c:1748-1749`): the name is
 /// neither an account nor a numeric spelling (`atoi == 0`, not `0`-led,
 /// not the `+0`/`-0` exceptions).
 fn user_needs_account(name: &str) -> bool {
     atoi_id(name) == 0 && !name.starts_with('0') && name != "+0" && name != "-0"
 }
 
-/// `c_group`'s guard (`function.c:714-716`): no `+0`/`-0` exceptions here.
+/// `c_group`'s guard (`function.c:1081-1083`): no `+0`/`-0` exceptions here.
 fn group_needs_entry(name: &str) -> bool {
     atoi_id(name) == 0 && !name.starts_with('0')
+}
+
+/// One `-exec … {} +` batch — C's `ep_bxp` accumulator living on the plan
+/// node (`function.c:672-707`): the user's fixed words (everything before
+/// the trailing `{}`, which the terminator's shape guarantees) plus the
+/// paths gathered so far. C also budgets the bytes (`ARG_MAX - 4K`,
+/// `MAXARG`); this build's exec frames are heap strings with no fixed
+/// budget, so only the 5000-argument cap is carried.
+struct ExecBatch {
+    fixed: Vec<String>,
+    paths: Vec<String>,
+    /// The last non-zero child exit seen (C's `ep_rval`, `function.c:610-615`).
+    rval: Option<i32>,
+}
+
+/// Per-node batch state for one walk. The key is the node's address: the
+/// formed expression outlives the walk, so each `Prim::Exec` node keeps a
+/// stable identity across entries.
+#[derive(Default)]
+pub struct Batches {
+    slots: Vec<(usize, ExecBatch)>,
+}
+
+impl Batches {
+    /// The batch for one node, created on first touch.
+    fn slot(&mut self, key: usize, argv: &[&str]) -> &mut ExecBatch {
+        if self.slots.iter().any(|(k, _)| *k == key) {
+            let index = self.slots.iter().position(|(k, _)| *k == key).unwrap();
+            return &mut self.slots[index].1;
+        }
+        // C's `cnt = ap - *argvp - 1` (`function.c:676`): the trailing `{}`
+        // is dropped and everything before it stays verbatim — mid-args
+        // keep a literal `{}` in the plus form (no substitution here).
+        let fixed: Vec<String> = if argv.last() == Some(&"{}") {
+            argv[..argv.len() - 1]
+                .iter()
+                .map(|w| String::from(*w))
+                .collect()
+        } else {
+            argv.iter().map(|w| String::from(*w)).collect()
+        };
+        let batch = ExecBatch {
+            fixed,
+            paths: Vec::new(),
+            rval: None,
+        };
+        self.slots.push((key, batch));
+        let index = self.slots.len() - 1;
+        &mut self.slots[index].1
+    }
+}
+
+impl ExecBatch {
+    /// Run one batch the way `run_f_exec` does (`function.c:570-615`):
+    /// `fixed ++ paths` through the run seam, then clear. `Err` is the
+    /// vfork family failing (C `err(1)`); a non-zero exit is remembered
+    /// for find's own exit.
+    fn run(&mut self, refs: &dyn ReferenceStat) -> Result<(), (Errno, String)> {
+        if self.paths.is_empty() {
+            return Ok(());
+        }
+        let mut cmd: Vec<&str> = self.fixed.iter().map(String::as_str).collect();
+        cmd.extend(self.paths.iter().map(String::as_str));
+        let outcome = refs.run_utility(&cmd);
+        self.paths.clear();
+        match outcome {
+            Ok(code) => {
+                if code != 0 {
+                    self.rval = Some(code);
+                }
+                Ok(())
+            }
+            Err(e) => Err((e, String::from("vfork"))),
+        }
+    }
 }
 
 /// Three-state evaluation of `COMPARE(a, b)`.
@@ -1293,7 +1368,7 @@ pub trait ReferenceStat {
         false
     }
 
-    /// `getpwnam`'s scan face (`c_user`, `function.c:6333-6338`): the uid
+    /// `getpwnam`'s scan face (`c_user`, `function.c:1752-1754`): the uid
     /// for a login name, or `None` (the same face as an unreadable or
     /// absent database). The default is the seam-absent face.
     fn account_by_name(&self, name: &str) -> Option<u32> {
@@ -1309,7 +1384,7 @@ pub trait ReferenceStat {
         false
     }
 
-    /// `getgrnam`'s scan face (`c_group`, `function.c:706-722`): the gid
+    /// `getgrnam`'s scan face (`c_group`, `function.c:1069-1083`): the gid
     /// for a group name, or `None`.
     fn group_by_name(&self, name: &str) -> Option<u32> {
         let _ = name;
@@ -1513,7 +1588,7 @@ pub fn judge_leaf<'a>(
         // parser turns them into [`Prim::Exec`].)
         "-delete" | "-rm" | "-fstype" | "-flags" | "-regex" | "-iregex" | "-newerest"
         | "-mindepth0" => Err(JudgeError::Unwired(String::from(name))),
-        // `c_user` (`function.c:6322-6352`): the name resolves first; the
+        // `c_user` (`function.c:1734-1753`): the name resolves first; the
         // numeric fallback carries `find_parsenum`'s `[+-]` compare flags.
         // The unresolvable non-numeric shapes are fatal at plan-build in C
         // (`errx(1, "-user: %s: no such user")`); `walk_paths` screens them
@@ -1531,7 +1606,7 @@ pub fn judge_leaf<'a>(
                 )))
             }
         }
-        // `c_group` (`function.c:706-722`): name first; the numeric
+        // `c_group` (`function.c:1069-1083`): name first; the numeric
         // fallback is a bare `atoi` with no sign semantics.
         "-group" => {
             let name = text()?;
@@ -1935,25 +2010,28 @@ pub fn eval_plan(
     entry: &Entry<'_>,
     nodes: &[Node<'_>],
     size_bytes: bool,
+    batches: &mut Batches,
 ) -> Result<Evaluated, JudgeError> {
     let mut out = Evaluated {
         truth: true,
         pruned: false,
         emitted: Vec::new(),
     };
-    eval_seq(world, refs, entry, nodes, size_bytes, &mut out)
+    eval_seq(world, refs, entry, nodes, size_bytes, batches, &mut out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval_seq(
     world: &World,
     refs: &dyn ReferenceStat,
     entry: &Entry<'_>,
     nodes: &[Node<'_>],
     size_bytes: bool,
+    batches: &mut Batches,
     out: &mut Evaluated,
 ) -> Result<Evaluated, JudgeError> {
     for node in nodes {
-        let truth = eval_node(world, refs, entry, node, size_bytes, out)?;
+        let truth = eval_node(world, refs, entry, node, size_bytes, batches, out)?;
         if !truth {
             // Short-circuit: this segment is false, and no later node is
             // touched.
@@ -1964,12 +2042,14 @@ fn eval_seq(
     Ok(out.clone())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval_node(
     world: &World,
     refs: &dyn ReferenceStat,
     entry: &Entry<'_>,
     node: &Node<'_>,
     size_bytes: bool,
+    batches: &mut Batches,
     out: &mut Evaluated,
 ) -> Result<bool, JudgeError> {
     match node {
@@ -1994,7 +2074,20 @@ fn eval_node(
             // stateless evaluator cannot hold it, so that face is refused by
             // name until it gets its own leg.
             if *plus {
-                return Err(JudgeError::Unwired(String::from(*name)));
+                // C `f_exec`'s `F_PLUSSET` branch (`function.c:502-534`):
+                // the path joins the node's batch, the batch runs when the
+                // 5000-argument budget is hit, and the primary answers true
+                // whatever the child did. A non-zero exit is remembered for
+                // find's own exit (`ep_rval`).
+                let key = node as *const _ as usize;
+                let batch = batches.slot(key, argv);
+                batch.paths.push(String::from(entry.path));
+                if batch.paths.len() >= 5000 {
+                    batch
+                        .run(refs)
+                        .map_err(|(e, what)| JudgeError::Spawn(what, e))?;
+                }
+                return Ok(true);
             }
             // `f_exec`/`f_execdir`'s substitution: `-exec` gets the whole
             // path, `-execdir` the basename (`function.c:536-542`/`:749-754`).
@@ -2024,7 +2117,7 @@ fn eval_node(
                 pruned: false,
                 emitted: Vec::new(),
             };
-            eval_seq(world, refs, entry, inner, size_bytes, &mut sub)?;
+            eval_seq(world, refs, entry, inner, size_bytes, batches, &mut sub)?;
             let truth = sub.truth;
             merge(sub, out);
             Ok(truth)
@@ -2036,7 +2129,7 @@ fn eval_node(
                 emitted: Vec::new(),
             };
             let one = vec![(**inner).clone()];
-            eval_seq(world, refs, entry, &one, size_bytes, &mut sub)?;
+            eval_seq(world, refs, entry, &one, size_bytes, batches, &mut sub)?;
             // C's `f_not` flips only the sub-plan's result; output produced
             // inside the sub-plan is still emitted.
             let truth = !sub.truth;
@@ -2049,7 +2142,7 @@ fn eval_node(
                 pruned: false,
                 emitted: Vec::new(),
             };
-            eval_seq(world, refs, entry, left, size_bytes, &mut sub)?;
+            eval_seq(world, refs, entry, left, size_bytes, batches, &mut sub)?;
             let left_truth = sub.truth;
             merge(sub, out);
             if left_truth {
@@ -2060,7 +2153,15 @@ fn eval_node(
                 pruned: false,
                 emitted: Vec::new(),
             };
-            eval_seq(world, refs, entry, right, size_bytes, &mut right_sub)?;
+            eval_seq(
+                world,
+                refs,
+                entry,
+                right,
+                size_bytes,
+                batches,
+                &mut right_sub,
+            )?;
             let truth = right_sub.truth;
             merge(right_sub, out);
             Ok(truth)
@@ -2266,6 +2367,7 @@ pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> 
         cfg,
         root_dev: 0,
         ancestors: Vec::new(),
+        batches: Batches::default(),
         out: WalkResult::default(),
     };
     let ctx = Ctx {
@@ -2280,6 +2382,18 @@ pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> 
     for p in &paths {
         w.root_dev = 0;
         w.visit_start(p, ctx);
+    }
+    // C `find_traverse(plan, plan_cleanup, NULL)` (`find.c:269-271`): any
+    // batch with leftover paths runs here, and a non-zero child exit (from
+    // the leftovers or a mid-walk full batch) becomes find's exit.
+    for (_, batch) in w.batches.slots.iter_mut() {
+        if let Err((e, what)) = batch.run(probe) {
+            w.out.warnings.push(format!("{what}: {}", Strerror(e)));
+            w.out.rval = 1;
+        }
+        if let Some(code) = batch.rval.filter(|code| *code != 0) {
+            w.out.rval = u8::try_from(code).unwrap_or(1);
+        }
     }
     w.out
 }
@@ -2318,6 +2432,10 @@ struct Walk<'p> {
     /// not follow links and a real directory inode is unique, so no cycle can
     /// form; this stack is read and written only under `logical`.
     ancestors: Vec<(u64, u64)>,
+    /// The `-exec … {} +` accumulators, keyed by node address (C keeps them
+    /// on the plan nodes; the walker outlives every entry's evaluation, so
+    /// this is where the state lives).
+    batches: Batches,
     out: WalkResult,
 }
 
@@ -2520,7 +2638,14 @@ impl Walk<'_> {
             ctime: st.ctime,
             children: children.map(|_| kids.as_slice()),
         };
-        match eval_plan(self.world, self.probe, &entry, ctx.nodes, ctx.size_bytes) {
+        match eval_plan(
+            self.world,
+            self.probe,
+            &entry,
+            ctx.nodes,
+            ctx.size_bytes,
+            &mut self.batches,
+        ) {
             Ok(ev) => {
                 self.out.emitted.extend(ev.emitted);
                 ev.pruned && ev.truth
@@ -2628,7 +2753,14 @@ mod eval_tests {
         let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
         let parsed = parse(&refs).unwrap();
         let bytes = size_counts_bytes(&parsed.expr);
-        eval_plan(&world(), &NoRefs, &entry(), &parsed.expr, bytes)
+        eval_plan(
+            &world(),
+            &NoRefs,
+            &entry(),
+            &parsed.expr,
+            bytes,
+            &mut Batches::default(),
+        )
     }
 
     #[test]
@@ -2707,24 +2839,42 @@ mod eval_tests {
         assert!(size_counts_bytes(&nodes));
         let world = world();
         let e = entry(); // size 512
-        assert!(!eval_plan(&world, &NoRefs, &e, &nodes, true).unwrap().truth);
+        assert!(
+            !eval_plan(&world, &NoRefs, &e, &nodes, true, &mut Batches::default())
+                .unwrap()
+                .truth
+        );
         // Replace the entry with `c` by a block-form one: the flag is not set,
         // so 1 block (512 bytes) holds.
         let plain: Vec<&str> = vec![".", "-size", "2c", "-o", "-size", "1"];
         let plain = parse(&plain).unwrap();
         assert!(size_counts_bytes(&plain.expr));
         assert!(
-            !eval_plan(&world, &NoRefs, &e, &plain.expr, true)
-                .unwrap()
-                .truth
+            !eval_plan(
+                &world,
+                &NoRefs,
+                &e,
+                &plain.expr,
+                true,
+                &mut Batches::default()
+            )
+            .unwrap()
+            .truth
         );
         let no_c: Vec<&str> = vec![".", "-size", "1"];
         let no_c = parse(&no_c).unwrap();
         assert!(!size_counts_bytes(&no_c.expr));
         assert!(
-            eval_plan(&world, &NoRefs, &e, &no_c.expr, false)
-                .unwrap()
-                .truth
+            eval_plan(
+                &world,
+                &NoRefs,
+                &e,
+                &no_c.expr,
+                false,
+                &mut Batches::default()
+            )
+            .unwrap()
+            .truth
         );
     }
 
@@ -2735,10 +2885,10 @@ mod eval_tests {
         // not "true but silent".
         let got = run(&["-exec", "true", ";"]).unwrap_err();
         assert!(matches!(got, JudgeError::Spawn(_, _)));
-        // The `{} +` batching face stays refused by name (its accumulator is
-        // plan-node state, C `function.c:502-534`).
-        let got = run(&["-exec", "echo", "{}", "+"]).unwrap_err();
-        assert_eq!(got, JudgeError::Unwired(String::from("-exec")));
+        // The `{} +` form answers true at eval time — accumulation only;
+        // the batch itself runs at the walker's cleanup (walk-level pins
+        // below).
+        assert!(run(&["-exec", "echo", "{}", "+"]).unwrap().truth);
     }
 }
 
@@ -3128,7 +3278,7 @@ mod walk_tests {
         fs.with_user("root", 0);
         fs.with_user("orphan", 7);
         fs.set_uid("./sub/b", 7);
-        // Name hit: the file's uid compares equal (`function.c:6333-6338`).
+        // Name hit: the file's uid compares equal (`function.c:1752-1754`).
         let got = run(&[".", "-user", "orphan"], &fs);
         assert_eq!(got.emitted, vec!["./sub/b\n"]);
         let got = run(&[".", "-user", "root"], &fs);
@@ -3181,6 +3331,59 @@ mod walk_tests {
         assert_eq!(got.emitted, Vec::<String>::new());
     }
 
+    // ── the `-exec … {} +` batch (`f_exec`'s F_PLUSSET branch + cleanup) ──
+
+    #[test]
+    fn plus_form_accumulates_the_whole_set_into_one_run() {
+        let mut fs = tree();
+        fs.run_answers("echo", 0);
+        let got = run(&[".", "-exec", "echo", "{}", "+"], &fs);
+        // One run for the whole walk, paths in walk order; the trailing
+        // `{}` is dropped and the primary stays true.
+        assert_eq!(fs.run_log.borrow().len(), 1);
+        assert_eq!(
+            fs.run_log.borrow()[0],
+            ["echo", ".", "./a", "./sub", "./sub/b"]
+        );
+        assert_eq!(got.rval, 0);
+        assert_eq!(got.emitted, Vec::<String>::new());
+    }
+
+    #[test]
+    fn plus_form_keeps_a_mid_arg_brace_literal_and_folds_the_exit() {
+        let mut fs = tree();
+        // `c_exec`'s plus branch copies the user's words verbatim
+        // (`function.c:691`) — no brace substitution outside the trailing
+        // `{}`.
+        fs.run_answers("echo", 3);
+        let got = run(&[".", "-exec", "echo", "a{}b", "{}", "+"], &fs);
+        assert_eq!(
+            fs.run_log.borrow()[0],
+            ["echo", "a{}b", ".", "./a", "./sub", "./sub/b"]
+        );
+        // `run_f_exec` remembers the non-zero exit for find's own exit
+        // (`ep_rval`, `function.c:610-615`).
+        assert_eq!(got.rval, 3);
+    }
+
+    #[test]
+    fn plus_form_respects_the_short_circuit_and_runs_leftovers_at_cleanup() {
+        let mut fs = tree();
+        fs.run_answers("echo", 0);
+        // Only entries whose segment reaches the primary accumulate.
+        let got = run(&[".", "-name", "a", "-exec", "echo", "{}", "+"], &fs);
+        assert_eq!(fs.run_log.borrow()[0], ["echo", "./a"]);
+        assert_eq!(got.rval, 0);
+        // The spawn failing at cleanup is C's `err(1, "vfork")` — this
+        // layer records rval and a `vwarn`-shaped warning.
+        let mut fs = tree();
+        fs.run_fails("echo", Errno::EIO);
+        let got = run(&[".", "-exec", "echo", "{}", "+"], &fs);
+        assert_eq!(got.rval, 1);
+        assert_eq!(got.warnings.len(), 1);
+        assert!(got.warnings[0].starts_with("vfork: "));
+    }
+
     #[test]
     fn unresolvable_names_are_fatal_before_any_walking() {
         // C `errx(1, "-user: %s: no such user")` fires at plan build: no
@@ -3190,7 +3393,7 @@ mod walk_tests {
         assert_eq!(got.emitted, Vec::<String>::new());
         assert_eq!(got.rval, 1);
         assert_eq!(got.warnings, ["-user: nosuch: no such user"]);
-        // `-group`'s guard has no `+0`/`-0` exceptions (`function.c:714-716`).
+        // `-group`'s guard has no `+0`/`-0` exceptions (`function.c:1081-1083`).
         let got = run(&[".", "-group", "nosuch"], &fs);
         assert_eq!(got.warnings, ["-group: nosuch: no such group"]);
         // A numeric spelling that fails find_parsenum is the other fatal.
