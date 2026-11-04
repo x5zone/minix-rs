@@ -43,6 +43,23 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
     std::env::args().collect()
 }
 
+/// The inherited environment as `KEY=VALUE` strings (C `environ`): the
+/// shell-escape child gets them passed on (`stdlib.h` `system`).
+#[cfg(all(not(test), target_os = "none"))]
+pub fn envs() -> alloc::vec::Vec<alloc::string::String> {
+    minix_rt::crt0::envs()
+        .map(|raw| alloc::string::String::from_utf8_lossy(raw).into_owned())
+        .collect()
+}
+
+/// Hosted twin of [`envs`] (see the module header for the seam contract).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn envs() -> alloc::vec::Vec<alloc::string::String> {
+    std::env::vars()
+        .map(|(k, v)| alloc::format!("{k}={v}"))
+        .collect()
+}
+
 /// Terminates the process with an exit status (see the module header).
 #[cfg(all(not(test), target_os = "none"))]
 pub fn terminate(code: i32) -> ! {

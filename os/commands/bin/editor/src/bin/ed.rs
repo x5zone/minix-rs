@@ -25,7 +25,8 @@ use alloc::vec::Vec;
 mod support;
 use minix_editor::exec::{self, EditorIo, Flow, Session};
 use minix_editor::store::{GapStore, TextStore};
-use minix_sys::{read, write, Fd};
+use minix_shell::exec_run::exec_one;
+use minix_sys::{Fd, close, dup2, fork, pipe2, read, waitpid, write};
 
 /// POSIX standard descriptors.
 const STDIN: Fd = 0;
@@ -51,12 +52,15 @@ fn write_flags(append: bool) -> i32 {
     }
 }
 
-
 /// The production I/O half: bytes in and out through `minix_sys`, files
 /// through the open/read/write/close family (the wrappers, one call each —
-/// `io.c`'s `fopen`/`fclose` faces).
+/// `io.c`'s `fopen`/`fclose` faces). A name starting with `!` is a pipe:
+/// `popen` = `pipe2` + `fork` + exec `/bin/sh -c` (`io.c:50`/`:157`).
 struct TtyIo {
     scripted: bool,
+    /// The inherited `KEY=VALUE` strings handed to the shell child (C
+    /// `system`/`popen` pass `environ` through).
+    envp: Vec<String>,
 }
 
 impl EditorIo for TtyIo {
@@ -72,7 +76,28 @@ impl EditorIo for TtyIo {
         let _ = write(STDERR, bytes);
     }
 
+    /// C `system()` (`stdlib.h`, called at `main.c:876`): fork, exec
+    /// `/bin/sh -c <cmd>`, wait; the caller discards the exit status. The
+    /// exec-failure child exits 127 (POSIX `system`'s answer when the
+    /// shell itself cannot be run).
+    fn run_shell(&mut self, cmd: &str) {
+        match fork() {
+            Ok(0) => child_exec_shell(cmd, &self.envp),
+            Ok(pid) => {
+                //[SD19-gate] waitpid reap; C system reads the status only to
+                // return it and ed discards that value
+                #[allow(clippy::let_underscore_must_use)]
+                let mut raw = 0;
+                let _ = waitpid(pid, &mut raw, 0);
+            }
+            Err(_) => {}
+        }
+    }
+
     fn read_file(&mut self, name: &str, out: &mut [u8]) -> Result<usize, minix_editor::EditorError> {
+        if let Some(cmd) = name.strip_prefix('!') {
+            return self.popen_read(cmd, out);
+        }
         let fd = minix_sys::open(name, 0, 0).map_err(|_| minix_editor::EditorError::InvalidArgument)?;
         let mut total = 0;
         while total < out.len() {
@@ -100,6 +125,11 @@ impl EditorIo for TtyIo {
         data: &[u8],
         append: bool,
     ) -> Result<usize, minix_editor::EditorError> {
+        if let Some(cmd) = name.strip_prefix('!') {
+            // C `popen(fn + 1, "w")` (`io.c:157`): the mode is "w"
+            // whatever the caller asked for.
+            return self.popen_write(cmd, data);
+        }
         // `main.c:828` maps ed `w` to fopen("w") (truncate) and `W` to
         // fopen("a") (append); the flags come from `write_flags` (Minix
         // `fcntl.h` values). mode 0o644 per the existing face.
@@ -123,6 +153,136 @@ impl EditorIo for TtyIo {
         #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
         Ok(done)
+    }
+}
+
+/// The popen/`system` child: exec `/bin/sh -c <cmd>` with the inherited
+/// environment. A successful exec never returns; a failed one exits 127
+/// (POSIX `system`/`popen`'s answer when the shell cannot be run).
+fn child_exec_shell(cmd: &str, envp: &[String]) -> ! {
+    let argv: [&str; 3] = ["/bin/sh", "-c", cmd];
+    let env: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
+    let _ = exec_one("/bin/sh", &argv, &env);
+    support::terminate(127);
+}
+
+impl TtyIo {
+    /// C `popen(cmd, "r")` (`io.c:50`): the child's stdout feeds the read;
+    /// a `pipe2`/`fork` failure is popen's NULL answer. `pclose` is the
+    /// trailing `waitpid`.
+    fn popen_read(
+        &mut self,
+        cmd: &str,
+        out: &mut [u8],
+    ) -> Result<usize, minix_editor::EditorError> {
+        let (read_fd, write_fd) =
+            pipe2(0).map_err(|_| minix_editor::EditorError::InvalidArgument)?;
+        match fork() {
+            Ok(0) => {
+                //[SD19-gate] dup2/close redirect setup; popen's child treats
+                // the pipe face as best effort
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = dup2(write_fd, STDOUT);
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(read_fd);
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(write_fd);
+                child_exec_shell(cmd, &self.envp)
+            }
+            Ok(pid) => self.pipe_read(pid, read_fd, write_fd, out),
+            Err(_) => {
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(read_fd);
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(write_fd);
+                Err(minix_editor::EditorError::InvalidArgument)
+            }
+        }
+    }
+
+    /// C `popen(cmd, "w")` (`io.c:157`): the buffer feeds the child's
+    /// stdin; the mode is "w" whatever the caller asked for.
+    fn popen_write(&mut self, cmd: &str, data: &[u8]) -> Result<usize, minix_editor::EditorError> {
+        let (read_fd, write_fd) =
+            pipe2(0).map_err(|_| minix_editor::EditorError::InvalidArgument)?;
+        match fork() {
+            Ok(0) => {
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = dup2(read_fd, STDIN);
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(read_fd);
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(write_fd);
+                child_exec_shell(cmd, &self.envp)
+            }
+            Ok(pid) => {
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(read_fd);
+                let mut done = 0;
+                while done < data.len() {
+                    match write(write_fd, &data[done..]) {
+                        Ok(0) => break,
+                        Ok(n) => done += n,
+                        Err(_) => {
+                            #[allow(clippy::let_underscore_must_use)]
+                            let _ = close(write_fd);
+                            self.reap(pid);
+                            return Err(minix_editor::EditorError::InvalidArgument);
+                        }
+                    }
+                }
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(write_fd);
+                self.reap(pid);
+                Ok(done)
+            }
+            Err(_) => {
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(read_fd);
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = close(write_fd);
+                Err(minix_editor::EditorError::InvalidArgument)
+            }
+        }
+    }
+
+    /// The read half of popen: drain the child's stdout to EOF (or the
+    /// caller's capacity), then `pclose`.
+    fn pipe_read(
+        &mut self,
+        pid: i32,
+        read_fd: Fd,
+        write_fd: Fd,
+        out: &mut [u8],
+    ) -> Result<usize, minix_editor::EditorError> {
+        #[allow(clippy::let_underscore_must_use)]
+        let _ = close(write_fd);
+        let mut total = 0;
+        while total < out.len() {
+            match read(read_fd, &mut out[total..]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(_) => {
+                    #[allow(clippy::let_underscore_must_use)]
+                    let _ = close(read_fd);
+                    self.reap(pid);
+                    return Err(minix_editor::EditorError::InvalidArgument);
+                }
+            }
+        }
+        #[allow(clippy::let_underscore_must_use)]
+        let _ = close(read_fd);
+        self.reap(pid);
+        Ok(total)
+    }
+
+    /// `pclose`: reap the child. C compares the return against `< 0`; the
+    /// failure carries no errno here, so it stays best effort (the lib
+    /// maps every io failure to the same "cannot open" pair).
+    fn reap(&mut self, pid: i32) {
+        #[allow(clippy::let_underscore_must_use)]
+        let mut raw = 0;
+        let _ = waitpid(pid, &mut raw, 0);
     }
 }
 
@@ -225,7 +385,10 @@ fn run() -> ! {
 
     let mut store = GapStore::new();
     let mut sess = Session::new(scripted, secure, restricted, opt_prompt);
-    let mut io = TtyIo { scripted };
+    let mut io = TtyIo {
+        scripted,
+        envp: support::envs(),
+    };
 
     // The initial file (`main.c:179-193`): read it, name it, quit(2) in
     // script mode when the read fails.

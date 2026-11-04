@@ -34,10 +34,10 @@
 //!   step per input line, with display and file traffic injected through
 //!   the [`exec::EditorIo`] seam so the decision logic stays testable.
 //!
-//! Screen handling and global commands stay outside: the screen belongs to
-//! the terminal stage, and `g`/`v`/`G`/`V` (plus `u` and `!`) still answer
-//! "not wired" through the `?` channel (09-editors.md §5 declares the
-//! boundary). Substitute `s` and search addresses now run on the stage's
+//! Screen handling stays outside: it belongs to the terminal stage.
+//! `s`/`u`/`g`/`v`/`G`/`V` run as production halves, and the shell escape
+//! (`!`, plus `!command` file names) runs through the [`exec::EditorIo`]
+//! seam's child legs (09-editors.md §5 declares the boundary). Substitute `s` and search addresses now run on the stage's
 //! regex crate (`minix-regex`, the document-08 engine): `s/old/new/[g|N][pln]`
 //! with `&`/group replay, bare-`s` replay, and the `//` empty-pattern
 //! cache. File input/output also stays outside the pure logic:

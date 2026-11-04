@@ -24,9 +24,10 @@
 //! (`put_tty_line`'s `current_addr = from++`), `d` re-advances with
 //! `INC_MOD` (`ed.h:101`), `m`/`t` take a third address and only `m`
 //! rejects a destination inside the range, and `wq`/`wQ` quit after a
-//! whole-buffer write. Deliberate gaps (substitute `s`, global
-//! `g`/`v`/`G`/`V`, undo `u`, shell `!`) answer through the same `?`
-//! channel with an explicit "not wired" message instead of pretending.
+//! whole-buffer write. The shell escape (`!`, plus `!command` file names)
+//! runs through the [`EditorIo::run_shell`] / popen-shaped file legs; the
+//! remaining deliberate gap (crypt `x` on a non-DES build) answers through
+//! the same `?` channel with an explicit message instead of pretending.
 
 use crate::addr::{
     evaluate_with, evaluate_range_with, parse_range, AddressRange, Context, SearchProbe, MAX_MARKS,
@@ -92,6 +93,11 @@ pub trait EditorIo {
     /// Write `data` to a file (append when asked); returns bytes written.
     fn write_file(&mut self, name: &str, data: &[u8], append: bool)
     -> Result<usize, EditorError>;
+    /// The shell escape's run half: C `system()` (`stdlib.h`) — fork, exec
+    /// `/bin/sh -c <cmd>`, wait. The `!` command discards the exit status
+    /// (`main.c:876`), so this carries no result; the session keeps going
+    /// whatever the child did.
+    fn run_shell(&mut self, cmd: &str);
 }
 
 /// The prompt text (`-p string`, default `*`): a fixed buffer because the
@@ -174,6 +180,13 @@ pub struct Session {
     /// `sgflag`/`sgnum` globals). `None` = no substitution yet ("no previous
     /// substitution").
     last_scope: Option<SubstScope>,
+    /// The previous shell command, `!` prefix included (C's static `shcmd`
+    /// buffer with `shcmdi` as its length, `main.c:80-82`): a `!!` repeat
+    /// substitutes it and any later command overwrites it, shared by the
+    /// `!` command and `!command` file names alike. Empty len = never run
+    /// ("no previous command", `main.c:1015-1021`).
+    pub last_shell: [u8; MAX_TEXT],
+    pub last_shell_len: usize,
     /// The undo stack (C `ustack`/`u_p`, undo.c:41-43). Each entry records one
     /// change; after `u` replays it in reverse the kind flips and the order
     /// reverses, so a second `u` redoes it.
@@ -220,6 +233,8 @@ impl Session {
             last_replacement: [0; MAX_TEXT],
             last_replacement_len: 0,
             last_scope: None,
+            last_shell: [0; MAX_TEXT],
+            last_shell_len: 0,
             undo_stack: Vec::new(),
             undo_current: None,
             undo_last: None,
@@ -1026,7 +1041,12 @@ enum FileName {
 /// "invalid filename", backslashes escape the next byte, `!` reaches for
 /// a shell. The whole tail after the blanks is the name (the C reader
 /// runs to end of line), so no suffix can follow a file name.
-fn take_filename(rest: &str, sess: &Session, taken: &mut [u8]) -> Result<FileName, ExecError> {
+fn take_filename<I: EditorIo>(
+    rest: &str,
+    sess: &mut Session,
+    io: &mut I,
+    taken: &mut [u8],
+) -> Result<FileName, ExecError> {
     let bytes = rest.as_bytes();
     if bytes.is_empty() {
         return Ok(FileName::Default);
@@ -1049,7 +1069,21 @@ fn take_filename(rest: &str, sess: &Session, taken: &mut [u8]) -> Result<FileNam
         if sess.secure || sess.restricted {
             return Err(err("shell access restricted"));
         }
-        return Err(err("shell access not wired"));
+        // `get_filename`'s shell branch (`main.c:956-963`): parse the
+        // command, echo the expansion when it came from a substitution,
+        // and return the `!`-prefixed text as the name — `read_file` /
+        // `write_file` turn that into a pipe (`io.c:50`/`:157`). C runs
+        // nothing here; the popen legs own the execution.
+        // The tail after the `!` is the command line; it came from a
+        // `&str` line, so the slice is UTF-8 by construction.
+        let cmd_text =
+            core::str::from_utf8(&bytes[at + 1..]).map_err(|_| err("invalid content"))?;
+        let (len, substituted) = build_shell_command(cmd_text, sess, taken)?;
+        if substituted {
+            io.emit(&taken[1..len]);
+            io.emit(b"\n");
+        }
+        return Ok(FileName::Fresh(len));
     }
     let mut len = 0;
     let mut scan = at;
@@ -1083,6 +1117,104 @@ fn take_filename(rest: &str, sess: &Session, taken: &mut [u8]) -> Result<FileNam
 
 fn out_starts_bang(taken: &[u8], len: usize) -> bool {
     len > 0 && taken[0] == b'!'
+}
+
+/// `get_shell_command` (`main.c:992-1048`): build one shell command out of
+/// the text after the command letter's `!`. The buffer starts with the `!`
+/// prefix (C's `buf[0]`), escapes stay verbatim (`/bin/sh` re-reads them),
+/// a `!` in first position replays the previous command, and a `%`
+/// anywhere inserts the current file name. Returns the full length
+/// (prefix included) and the C substitution status.
+///
+/// The C return (`*s == '!' || *s == '%'`, `main.c:1047`) reduces to
+/// "some substitution happened": the substitution arms park `s` on the
+/// substituted character itself, and with no substitution `s` never
+/// leaves the head, whose `!`/`%` would have substituted.
+///
+/// Registered deviations: the `\`-newline continuation of
+/// `get_extended_line` (`io.c:219-247`) has no counterpart — the step
+/// model feeds one line at a time; the buffer is fixed, so C's
+/// `REALLOC` growth ends as "out of memory" past the caller's capacity.
+fn build_shell_command(
+    rest: &str,
+    sess: &mut Session,
+    out: &mut [u8],
+) -> Result<(usize, bool), ExecError> {
+    if out.is_empty() {
+        return Err(err("out of memory"));
+    }
+    let bytes = rest.as_bytes();
+    let mut len = 0usize;
+    out[len] = b'!';
+    len += 1;
+    let mut substituted = false;
+    let mut at = 0usize;
+    while at < bytes.len() {
+        let b = bytes[at];
+        if b == b'!' && at == 0 {
+            // Repeat: replay the previous command sans prefix. C answers
+            // from a NULL `shcmd` (`main.c:1014-1021`); the non-BACKWARDS
+            // build accepts an empty previous command.
+            if sess.last_shell_len == 0 {
+                return Err(err("no previous command"));
+            }
+            let prev = sess.last_shell_len;
+            for &pb in &sess.last_shell[1..prev] {
+                if len >= out.len() {
+                    return Err(err("out of memory"));
+                }
+                out[len] = pb;
+                len += 1;
+            }
+            substituted = true;
+            at += 1;
+        } else if b == b'%' {
+            // `%`: the current file name (`main.c:1022-1036`). C re-strips
+            // escapes from `old_filename`; this crate stores the name
+            // already stripped, so the bytes go in as they are.
+            if sess.filename_len == 0 {
+                return Err(err("no current filename"));
+            }
+            let n = sess.filename_len;
+            for &fb in &sess.filename[..n] {
+                if len >= out.len() {
+                    return Err(err("out of memory"));
+                }
+                out[len] = fb;
+                len += 1;
+            }
+            substituted = true;
+            at += 1;
+        } else {
+            if len >= out.len() {
+                return Err(err("out of memory"));
+            }
+            out[len] = b;
+            len += 1;
+            if b == b'\\' {
+                // `main.c:1012-1014`: a backslash quotes the next byte —
+                // both bytes copy verbatim.
+                at += 1;
+                if at < bytes.len() {
+                    if len >= out.len() {
+                        return Err(err("out of memory"));
+                    }
+                    out[len] = bytes[at];
+                    len += 1;
+                }
+            }
+            at += 1;
+        }
+    }
+    // `shcmd` persists across commands (`main.c:1041-1044`): the built
+    // buffer becomes the next repeat's replay source, shared by the `!`
+    // command and `!command` file names alike.
+    if len > sess.last_shell.len() {
+        return Err(err("out of memory"));
+    }
+    sess.last_shell[..len].copy_from_slice(&out[..len]);
+    sess.last_shell_len = len;
+    Ok((len, substituted))
 }
 
 /// Resolve an operand (or the default name) into `name_out`, so the
@@ -1474,11 +1606,13 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 return Ok(Flow::QuitModified);
             }
             let mut taken = [0u8; MAX_FILENAME + 1];
-            let kind = take_filename(&line[cursor..], sess, &mut taken)?;
+            let kind = take_filename(&line[cursor..], sess, io, &mut taken)?;
             let mut name_buf = [0u8; MAX_FILENAME + 1];
             let typed = resolve_name(sess, kind, &taken, &mut name_buf)?;
             let typed_len = typed.len();
-            if typed_len > 0 {
+            // `if (*fnp && *fnp != '!')` (`main.c:531`): a `!command` name
+            // feeds the pipe leg but never becomes the default.
+            if typed_len > 0 && !typed.starts_with('!') {
                 sess.set_filename(typed)?;
             }
             let mut target_buf = [0u8; MAX_FILENAME + 1];
@@ -1505,10 +1639,10 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 clear_undo(store, sess);
             }
             let mut taken = [0u8; MAX_FILENAME + 1];
-            let kind = take_filename(&line[cursor..], sess, &mut taken)?;
+            let kind = take_filename(&line[cursor..], sess, io, &mut taken)?;
             let mut name_buf = [0u8; MAX_FILENAME + 1];
             let typed = resolve_name(sess, kind, &taken, &mut name_buf)?;
-            if !typed.is_empty() && sess.filename_len == 0 {
+            if !typed.is_empty() && sess.filename_len == 0 && !typed.starts_with('!') {
                 // `if (*old_filename == '\0' && *fnp != '!')`
                 // (`main.c:792-794`): the first `r` names the file.
                 sess.set_filename(typed)?;
@@ -1532,10 +1666,11 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 .map_err(|_| err("invalid address"))?
             };
             let mut taken = [0u8; MAX_FILENAME + 1];
-            let kind = take_filename(&line[cursor..], sess, &mut taken)?;
+            let kind = take_filename(&line[cursor..], sess, io, &mut taken)?;
             let mut name_buf = [0u8; MAX_FILENAME + 1];
             let typed = resolve_name(sess, kind, &taken, &mut name_buf)?;
-            if !typed.is_empty() && sess.filename_len == 0 {
+            // `*fnp != '!'` (`main.c:819`): a pipe target never names the file.
+            if !typed.is_empty() && sess.filename_len == 0 && !typed.starts_with('!') {
                 sess.set_filename(typed)?;
             }
             let mut target_buf = [0u8; MAX_FILENAME + 1];
@@ -1596,9 +1731,14 @@ fn step_inner<S: TextStore, I: EditorIo>(
             }
             reject_glued(&modifiers, false)?;
             let mut taken = [0u8; MAX_FILENAME + 1];
-            let kind = take_filename(&line[cursor..], sess, &mut taken)?;
+            let kind = take_filename(&line[cursor..], sess, io, &mut taken)?;
             let mut name_buf = [0u8; MAX_FILENAME + 1];
             let typed = resolve_name(sess, kind, &taken, &mut name_buf)?;
+            // `else if (*fnp == '!')` (`main.c:546-549`): a shell name is
+            // not a file name at all.
+            if typed.starts_with('!') {
+                return Err(err("invalid redirection"));
+            }
             if !typed.is_empty() {
                 sess.set_filename(typed)?;
             }
@@ -1782,11 +1922,32 @@ fn step_inner<S: TextStore, I: EditorIo>(
             global_interactive_start(store, sess, io, line, cursor, &range)
         }
         Command::Shell => {
-            if sess.secure || sess.restricted {
-                Err(err("shell access restricted"))
-            } else {
-                Err(err("shell access not wired"))
+            // C `main.c:867-877`: an address is "unexpected address", the
+            // command runs to end of line (so no suffix can follow), the
+            // expansion echoes only when it came from a substitution, and
+            // the `!` confirmation prompt prints unless scripted.
+            if range.first.is_some() || range.second.is_some() {
+                return Err(err("unexpected address"));
             }
+            if sess.secure || sess.restricted {
+                return Err(err("shell access restricted"));
+            }
+            // The whole tail after the `!` is the command (C's
+            // `get_shell_command` runs to the newline, so the `!pln`
+            // modifier scan must not touch it) — read from `letter_end`.
+            let mut cmd = [0u8; MAX_TEXT];
+            let (len, substituted) = build_shell_command(&line[letter_end..], sess, &mut cmd)?;
+            if substituted {
+                io.emit(&cmd[1..len]);
+                io.emit(b"\n");
+            }
+            // `system(shcmd + 1)` (`main.c:876`): the exit status is
+            // discarded, so the session keeps going whatever the child did.
+            io.run_shell(core::str::from_utf8(&cmd[1..len]).map_err(|_| err("invalid content"))?);
+            if !sess.scripted {
+                io.emit(b"!\n");
+            }
+            Ok(Flow::Continue)
         }
     }
 }
@@ -2082,11 +2243,18 @@ mod tests {
         out: Vec<u8>,
         err_out: Vec<u8>,
         files: BTreeMap<String, Vec<u8>>,
+        /// Commands handed to [`EditorIo::run_shell`], in order.
+        shell_cmds: Vec<String>,
     }
 
     impl ScriptIo {
         fn new() -> Self {
-            ScriptIo { out: Vec::new(), err_out: Vec::new(), files: BTreeMap::new() }
+            ScriptIo {
+                out: Vec::new(),
+                err_out: Vec::new(),
+                files: BTreeMap::new(),
+                shell_cmds: Vec::new(),
+            }
         }
 
         fn with_file(name: &str, content: &str) -> Self {
@@ -2122,6 +2290,9 @@ mod tests {
             }
             out[..data.len()].copy_from_slice(data);
             Ok(data.len())
+        }
+        fn run_shell(&mut self, cmd: &str) {
+            self.shell_cmds.push(String::from(cmd));
         }
         fn write_file(
             &mut self,
@@ -2771,10 +2942,6 @@ mod tests {
     fn test_declared_gaps_answer_through_the_question_channel() {
         let (mut store, mut sess) = seeded(&["a"]);
         let mut io = ScriptIo::new();
-        assert_eq!(
-            step(&mut store, &mut sess, "!ls", &mut io).unwrap_err().message,
-            "shell access not wired"
-        );
         let mut secure = Session::new(false, true, false, None);
         assert_eq!(
             step(&mut store, &mut secure, "!ls", &mut io).unwrap_err().message,
@@ -2785,6 +2952,134 @@ mod tests {
             step(&mut store, &mut sess, "x", &mut io).unwrap_err().message,
             "crypt unavailable"
         );
+    }
+
+    // ── the shell escape (`!`, `main.c:867-877` + `main.c:992-1048`) ──
+
+    #[test]
+    fn test_shell_command_runs_and_prompts() {
+        let (mut store, mut sess) = seeded(&["a"]);
+        let mut io = ScriptIo::new();
+        // A fresh command echoes nothing (no substitution) and prints the
+        // `!` confirmation unless scripted (`main.c:875-877`).
+        step(&mut store, &mut sess, "!echo hi", &mut io).unwrap();
+        assert_eq!(io.shell_cmds, ["echo hi"]);
+        assert_eq!(io.out_text(), "!\n");
+        // Scripted mode suppresses the prompt.
+        let mut scripted = Session::new(true, false, false, None);
+        let mut io2 = ScriptIo::new();
+        step(&mut store, &mut scripted, "!echo hi", &mut io2).unwrap();
+        assert_eq!(io2.out_text(), "");
+    }
+
+    #[test]
+    fn test_shell_repeat_substitutes_and_echoes() {
+        let (mut store, mut sess) = seeded(&["a"]);
+        let mut io = ScriptIo::new();
+        // A repeat with no previous command is an error (`main.c:1015-1021`).
+        assert_eq!(
+            step(&mut store, &mut sess, "!!", &mut io)
+                .unwrap_err()
+                .message,
+            "no previous command"
+        );
+        step(&mut store, &mut sess, "!echo hi", &mut io).unwrap();
+        // `!!` replays and echoes the expanded command (`main.c:875`).
+        step(&mut store, &mut sess, "!!", &mut io).unwrap();
+        assert_eq!(io.shell_cmds, ["echo hi", "echo hi"]);
+        assert_eq!(io.out_text(), "!\necho hi\n!\n");
+    }
+
+    #[test]
+    fn test_shell_percent_substitutes_the_filename() {
+        let (mut store, mut sess) = seeded(&["a"]);
+        let mut io = ScriptIo::new();
+        // No current name yet (`main.c:1027-1030`).
+        assert_eq!(
+            step(&mut store, &mut sess, "!touch %", &mut io).unwrap_err().message,
+            "no current filename"
+        );
+        sess.set_filename("notes.txt").unwrap();
+        step(&mut store, &mut sess, "!touch %", &mut io).unwrap();
+        assert_eq!(io.shell_cmds, ["touch notes.txt"]);
+        // A `%` substitution echoes the expansion (`main.c:875`).
+        assert_eq!(io.out_text(), "touch notes.txt\n!\n");
+    }
+
+    #[test]
+    fn test_shell_escapes_and_literal_bangs_survive() {
+        let (mut store, mut sess) = seeded(&["a"]);
+        let mut io = ScriptIo::new();
+        // Escapes copy verbatim (`main.c:1012-1014`): the shell re-reads
+        // the backslash.
+        step(&mut store, &mut sess, "!echo a\\ b", &mut io).unwrap();
+        assert_eq!(io.shell_cmds, ["echo a\\ b"]);
+        // A `!` past first position is literal (`main.c:1005-1011`).
+        step(&mut store, &mut sess, "!echo one!two", &mut io).unwrap();
+        assert_eq!(io.shell_cmds, ["echo a\\ b", "echo one!two"]);
+    }
+
+    #[test]
+    fn test_shell_refuses_addresses_and_restricted_names() {
+        let (mut store, mut sess) = seeded(&["a"]);
+        let mut io = ScriptIo::new();
+        // An address is "unexpected address" (`main.c:869-872`).
+        assert_eq!(
+            step(&mut store, &mut sess, "1!echo hi", &mut io)
+                .unwrap_err()
+                .message,
+            "unexpected address"
+        );
+        assert!(io.shell_cmds.is_empty());
+        // `-S` (`secure`) refuses before reading (`main.c:994-997`).
+        let mut secure = Session::new(false, true, false, None);
+        assert_eq!(
+            step(&mut store, &mut secure, "!echo hi", &mut io).unwrap_err().message,
+            "shell access restricted"
+        );
+    }
+
+    // ── `!command` file names (`get_filename`'s shell branch, `main.c:956-963`) ──
+
+    #[test]
+    fn test_read_from_shell_pipe_feeds_the_command_name_through() {
+        let (mut store, mut sess) = seeded(&["a"]);
+        let mut io = ScriptIo::new();
+        io.files.insert("!echo piped".to_string(), b"piped\n".to_vec());
+        step(&mut store, &mut sess, "$r !echo piped", &mut io).unwrap();
+        assert_eq!(buffer_lines(&store), ["a", "piped"]);
+        // The pipe target never becomes the default name (`main.c:792-794`).
+        assert_eq!(sess.filename_len, 0);
+        // The name parse runs nothing (`get_filename` only builds the
+        // buffer); the popen leg lives in the io seam.
+        assert!(io.shell_cmds.is_empty());
+    }
+
+    #[test]
+    fn test_write_to_shell_pipe_and_invalid_redirection() {
+        let (mut store, mut sess) = seeded(&["one", "two"]);
+        let mut io = ScriptIo::new();
+        step(&mut store, &mut sess, "w !cat", &mut io).unwrap();
+        // The buffer text reached the pipe name (`io.c:157`, popen "w").
+        assert_eq!(io.files["!cat"], b"one\ntwo\n".to_vec());
+        // `f !cmd` is "invalid redirection" (`main.c:546-549`).
+        assert_eq!(
+            step(&mut store, &mut sess, "f !cat", &mut io).unwrap_err().message,
+            "invalid redirection"
+        );
+    }
+
+    #[test]
+    fn test_shell_name_memory_is_shared_between_command_and_filename() {
+        let (mut store, mut sess) = seeded(&["a"]);
+        let mut io = ScriptIo::new();
+        io.files.insert("!echo shared".to_string(), b"x\n".to_vec());
+        // The parse half of a `!command` name fills the replay buffer too
+        // (C's `shcmd` is one static, `main.c:1041-1044`).
+        step(&mut store, &mut sess, "$r !echo shared", &mut io).unwrap();
+        step(&mut store, &mut sess, "!!", &mut io).unwrap();
+        // The `!!` replayed the name's command — one run, recorded here.
+        assert_eq!(io.shell_cmds, ["echo shared"]);
     }
 
     #[test]
