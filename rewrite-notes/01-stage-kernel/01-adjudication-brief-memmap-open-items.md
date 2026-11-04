@@ -76,7 +76,7 @@
 |---|---|---|
 | `/memory` | 全树枚举 + `reg()`，支持 unit-address 与多段 | 单表超过 8 段（`TooManyFreeRegions` / `TooManyReservedRegions`）；回绕（`RangeOverflow`） |
 | `/reserved-memory` | 路径查找 + 可见性交叉检查；父节点的 `#address-cells`/`#size-cells` 必须存在**且与根节点取值相同**；`ranges` 必须存在且为空；子节点必须有可解析 `reg`；`no-map`/`reusable` 必须是**空属性**；两者互斥 | 缺 `reg`、宽 cells、缺 cells 属性（`UnsupportedReservedDeclaration`）；`ranges` 非空或缺失（`ReservedMemoryRangesNotEmpty`）；同时声明 `no-map` 与 `reusable`（`ConflictingReservationAttributes`）；标记属性带非空值（`NonEmptyReservationAttribute`）；声明重叠（`OverlappingReservedRanges`）；节点可见却取不到（`ReservedMemoryUnreachable`） |
-| MRB | `memory_reservations()` 条目（地址+长度，`{0,0}` 终止） | 回绕（`RangeOverflow`）；**零长度非终止项**（`ZeroLengthMemoryReservation`）；**条目之间重叠**（`OverlappingMemoryReservations`）；**超过 16 条**（`TooManyMemoryReservations`，缺失终止项也会落到这里）。**未检查**：`off_mem_rsvmap` 的 8 字节偏移对齐与记录是否越过 `totalsize`——依赖库直接按该偏移读取，本层拿不到头部字段；登记为 O-12j |
+| MRB | `memory_reservations()` 条目（地址+长度，`{0,0}` 终止） | 回绕（`RangeOverflow`）；**零长度非终止项**（`ZeroLengthMemoryReservation`）；**条目之间重叠**（`OverlappingMemoryReservations`）；**超过 16 条**（`TooManyMemoryReservations`，缺失终止项也会落到这里）。对齐、`totalsize` 边界与终止项**由 `fdt_layout::validate` 在解析库之前检查**（五条输入路径接入）；`DtbMemoryMap` 自身不做头部校验，也不声称做过 |
 
 规则细节：
 
@@ -84,7 +84,7 @@
 - 固件前缀已覆盖的声明不重复登记。
 - `reusable` 不作区分，按保留处理。
 
-测试（`cargo test -p minix-boot --lib`，86 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`。
+测试（`cargo test -p minix-boot --lib`，96 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`。
 
 **不保证什么**：不产出禁止集合、不产出 PMM 排除集合、不区分 `reusable`、不处理 UEFI 来源。
 
@@ -109,7 +109,7 @@
 5. 无写回位 → 诊断成员；
 6. 写回准入后按类型分派：`CONVENTIONAL` → 可用表；引导服务类 / `ACPI_RECLAIM` → 保留表；其余 → 诊断成员。
 
-测试（`cargo test -p boot-shim --lib`，66 通过）：`types_that_earn_no_ordinary_mapping_go_to_the_side_list`、`excluded_and_device_types_stay_out_of_every_list`、`rejects_side_list_beyond_its_buffer`、`the_four_ambiguous_combinations_land_as_adjudicated`、`geometry_is_checked_for_ranges_that_are_emitted` 等 32 条。
+测试（`cargo test -p boot-shim --lib`，67 通过）：`types_that_earn_no_ordinary_mapping_go_to_the_side_list`、`excluded_and_device_types_stay_out_of_every_list`、`rejects_side_list_beyond_its_buffer`、`the_four_ambiguous_combinations_land_as_adjudicated`、`geometry_is_checked_for_ranges_that_are_emitted` 等 32 条。
 
 **不保证什么**：类型 11/12 与 `RESERVED`/`UNUSABLE` 只是一种「不产出区间」的处置，它们**没有**进入任何禁止集合（禁止集合不存在）；诊断成员没有跨界载体。
 
@@ -178,7 +178,7 @@
 | 三架构普通主存准入 | 见 §1.5 表；x86 的 `PAT`/`MTRR` 分析与每核检查、AArch64 的双树遍历与 `MAIR` 读回、RISC-V 的区间能力清单与 PMP | 没有代码，也没有真实板卡证据 |
 | 恒等 VA 合法性 | `VA = PA` 必须落在该树分页配置的合法虚拟地址范围，且不与既有布局冲突 | 未实现；`effective_pa_limit` 不能替代它 |
 | `effective_pa_limit` 的含义 | **物理地址可表示上界**（格式位宽 ∩ 平台位宽），**不承诺**上界以下可访问 | 已裁定；PMP 与 PMA 是独立准入维度 |
-| 保留映射区的权限 | 第一版一律 `R`（只读、NX）；需要写的对象要么拒绝启动、要么独立登记 | 未实现；今天保留表没有权限字段 |
+| 保留映射区的权限 | **已经获得普通 RAM 映射授权的保留对象**默认 `R`、`NX`（不适用于 `no-map`、MRB、类型政策禁止映射的区域，也不适用于走独立 `DEVICE` 属性的 MMIO 窗口）；需要 `W` 或 `X` 的存活对象（loader 代码、仍被读取的数据）必须独立登记用途、生命周期与权限，并通过对应树的叶子审计；第一版不支持的权限需求**拒绝启动** | 未实现；今天保留表没有权限字段 |
 | 设备访问边界 | 原始 MMIO/端口操作只允许出现在逐个列举的包装函数；调用点带稳定 `AccessUseId`；CI 静态审计 + 两枚负控 | 未实现；今天 raw 端口 asm 只在 `arch/`、`plat/`、`boot-shim/` 共 5 个文件，`kernel/`、`servers/` 零命中 |
 
 ## 5. 未决问题与候选方案
@@ -274,6 +274,8 @@
 
 **MRB 的部分页**：若靠页表兑现 MRB 访问禁止，则该页整体不得出现在普通映射中；同页还有其它对象需要映射时，拒绝冲突或提供独立受控机制。精确 byte-range 检查不能代替页表兑现。
 
+**`no-map` 与 MRB 对称**：`no-map` 的普通系统映射禁止按相交页向外投影。`DriverControlledUse` **不自动解除整页限制**；若专用映射的实际叶子覆盖超出 `no-map` 资源范围，必须证明整叶覆盖区的属性、权限、别名与访问控制均兼容，否则拒绝启动或改用更细页粒度。测试要求：`no-map` 只覆盖 4 KiB 页的部分字节时，普通直接映射不得出现该页，驱动例外也不得未经整页审查放行。
+
 ### O-04 对象负向义务的投影
 
 **问题**：`MustNotMap` 与 `MustNotAccess` 不同：前者禁止某棵树在某个阶段建立映射，后者禁止访问路径。今天的禁止集合构造式里没有它们的位置。
@@ -329,8 +331,10 @@
 | 类型 | 属 `RamSourceDomain` | 普通主存 backing | 当前可映射 | 当前可分配 | 释放事件 | 来源叠加 |
 |---|---|---|---|---|---|---|
 | `CONVENTIONAL` | 是 | 是 | 是 | 是 | 无 | 可能被 DTB 静态保留声明覆盖 |
-| `LOADER_CODE/DATA` | 是 | 是 | 是（存活期需可执行） | 退出前否 | `ExitBootServices` + loader 最后使用点 | 可能被保留声明覆盖 |
-| `BOOT_SERVICES_CODE/DATA` | 是 | 是 | 是 | 退出前否 | `ExitBootServices` | **必须叠加 DTB 静态保留声明** |
+| `LOADER_CODE` | 是 | 是 | 是（存活期需 X；由对象义务提供） | 退出前否 | `ExitBootServices` + loader 最后使用点 | 可能被保留声明覆盖 |
+| `LOADER_DATA` | 是 | 是 | 是（**默认 NX**；写需对象义务授权 W） | 退出前否 | 同上 | 同上 |
+| `BOOT_SERVICES_CODE` | 是 | 是 | 是（固件活跃期按代码义务） | 退出前否 | `ExitBootServices` | **必须叠加 DTB 静态保留声明** |
+| `BOOT_SERVICES_DATA` | 是 | 是 | 是（默认 NX；仍被使用时按读写义务） | 退出前否 | 同上 | 同上 |
 | `ACPI_RECLAIM` | 是 | 是 | 是 | ACPI 启用前否 | ACPI 启用 | 可能被保留声明覆盖 |
 | `ACPI_NVS` | 是 | 否（第一版） | 否 | 否 | 无 | — |
 | `PERSISTENT` | 是 | 否（第一版） | 否 | 否 | 无（第一版保守） | 是否支持需明确 |
@@ -344,6 +348,8 @@
 **已知属性位的处置**（不能只写「未知位拒绝」）：`RUNTIME`/`NV`/`SP` 已按独立属性进入六步裁决；`RO`/`RP`/`XP`/`WP`/`MORE_RELIABLE`/`CPU_CRYPTO` 是 **capability 能力位**，第一版只作为来源元数据保留——**不直接等同于当前已生效的访问权限**，也不改变 RAM 来源域成员资格。后续映射策略可用其中的能力信息验证目标属性是否可兑现；**`WP` 不得误解为页表写权限**。任何**档外位**仍按第 1 步拒绝启动。
 
 **术语边界**：这里读的是 `GetMemoryMap()` 的 `EFI_MEMORY_DESCRIPTOR.Attribute`（能力位掩码），与 `EFI Memory Attributes Table` 反映的保护配置不是一回事；第一版不解析后者，也不宣称已获知固件实际施加的全部权限。
+
+**`EfiReservedMemoryType` 在域外但来源身份仍有效**：它不进入 `RamSourceDomain`，因此不参与 `PMMAvailable`/`PMMExcluded` 的域内分割；但与其重叠的 DTB `/reserved-memory`、MRB 原始记录仍然保留，并可独立产生映射禁止与访问禁止。没有独立平台证据时，不把它重新解释为普通主存。
 
 **UEFI Runtime Services 的支持边界（明确声明）**：第一版**不调用 `SetVirtualAddressMap()`、不提供 UEFI Runtime Services**；`RUNTIME` 属性与 `RUNTIME_SERVICES_*` 类型只保留诊断与来源信息，不产生任何普通或运行时映射义务。将来支持时，必须**单独增加**运行时对象与 MMIO 映射义务，不得混入普通直接映射授权。
 
@@ -414,7 +420,10 @@
 
 **另需裁定一致性策略**：配置表 DTB 的保留声明与 UEFI 内存图之间——(A) 解析权威 DTB，保留来源身份并与内存图交叉验证；(B) 只信内存图，接受来源身份丢失并对无法区分的区域取更保守的统一政策。第一版倾向前者，但 B 也可以是明确的简化，不是规范要求。
 
-**四条入口统一两阶段**：① 固定 header 只读授权；② 校验 magic/版本/`totalsize`/回绕/范围后，授权完整对象范围并复制；③ 之后政策代码只消费副本。
+**四条 DTB 输入路径统一两阶段**（x86_64 UEFI 没有 DTB 输入，不属于这四条）：
+
+- **`BootInputReachabilityAuthorization`**：先回答「这个指针在当前机器状态下可读吗」——地址域（PA 还是 VA）、当前地址转换状态、读取者是否有覆盖该地址的有效映射；**要证明的是 `[dtb, dtb+40)` 整段可读**（起点对齐不保证 40 字节不跨 4 KiB 页），不是只证明首地址可读。
+- **`ValidatedObjectReadAuthorization`**：校验 magic/版本/`totalsize`/回绕/范围后，授权 `[dtb, dtb+totalsize)` 整段只读并复制；之后政策代码只消费副本。
 
 **副本生命周期**：原始 DTB 只在复制期间可读；自有副本登记进对象目录；切根前不得回收或覆盖；副本的最终释放必须有明确消费者与阶段。边界条件：header 固定读取长度写明；`totalsize` 有项目上限；`dtb + totalsize` 必须 checked；完整范围必须证明可安全读取（不能只验证起始地址）。
 
@@ -448,7 +457,7 @@
 - **O-12g** 采集器重构：保留原始来源记录，再派生投影。
 - **O-12h** UEFI 描述符结构校验与政策分类分开（见下）。
 - **O-12i** 每种政策投影的页粒度规则（见下）。
-- **O-12j** MRB 的有界扫描：`off_mem_rsvmap` 对齐、每条记录完整落在 `totalsize` 内、终止项必须在对象范围内。逐条核对 `fdt 0.1.5`：`Fdt::new` 只检查 magic 与 `data.len() >= totalsize`，**不检查** blob 基址对齐、`off_mem_rsvmap` 对齐、偏移是否落在 `totalsize` 内、结构块/字符串块边界；`memory_reservations()` 直接 `&self.data[off_mem_rsvmap..]`，偏移越界会以切片 panic 收场，迭代按 16 字节对读到 `{0,0}` 或切片末尾。我们的 16 条上限在写入下一条之前检查，读取本身不越界；但「缺终止项」与「偏移越界」分别落到「上限拒绝」与「库内 panic」，不是统一的已验证拒绝。**本项不签**：下一步在 O-12g 中改用原始字节 + 自写有界扫描器（显式检查 `off_mem_rsvmap % 8`、`off + 16 ≤ totalsize`、终止项在界内）。
+- **O-12j** 拆成三层：**a 容器与 MRB（已实现）**——`fdt_layout::validate` 检查 magic、`totalsize`、blob 与 `off_mem_rsvmap` 的 8 字节对齐、`struct`/`strings` 块 checked 边界与互不重叠、MRB 终止项落在 `min(off_dt_struct, totalsize)`、FDT 版本（只接受 17）与**项目块顺序**（MRB 在 structure 之前，规范该顺序是 `should`，本项目按输入限制执行）；五条入口接入，14 条测试。**b 结构块 token/属性解析（未闭合）**——容器块边界正确不等于结构块 token 流、属性长度、字符串偏移合法；`fdt 0.1.5` 的节点遍历含 `unwrap`/`expect` 与直接切片，畸形输入可能 panic。**c 目标节点语义（未闭合）**——`/memory`、`/reserved-memory` 与未来设备 `reg` 的解析与地址转换需要明确失败形状。
 
 #### O-12c 的输入：三个概念要分开
 
@@ -484,13 +493,23 @@
 
 约束是：**每个 `DeviceAccessRequirement` 的地址都落在对应 `DeviceMappingCoverage` 内**；**coverage 的每一页都要有兼容的 `DeviceWindowPolicy` 授权**；未使用的 aperture 可以不映射；包络超出所需访问范围的部分仍要逐页通过授权与属性兼容检查。**不再写 `DeviceMappingRange ⊇ DeviceResourceRange`**——那会把「整个设备 aperture 必须映射」错当成普遍不变量。
 
-| 窗口 | `DeviceAperture` | `DeviceRequiredAccessRange` | `DeviceMappingCoverage` |
-|---|---|---|---|
-| LAPIC | 4 KiB（固件描述，未解析） | `[0xFEE0_0000, 0xFEE0_1000)` | `[0xFEE0_0000, 0xFF00_0000)` |
-| IO-APIC | 4 KiB（同上） | `[0xFEC0_0000, 0xFEC0_1000)` | `[0xFEC0_0000, 0xFEE0_0000)`（**与 LAPIC 是相邻的两个包络，不是同一个**） |
-| 平台外设窗口 | 32 MiB（QEMU virt 平台窗口） | 各设备 `reg` 之和 | `[0x0800_0000, 0x0A00_0000)`（整段授权） |
-| PLIC | `[0x0C00_0000, 0x0C60_0000)`（DTB `reg`） | `[0x0C00_0000, 0x0C24_0000)` | `[0x0C00_0000, 0x0C40_0000)` |
-| NS16550A UART | 4 KiB | `[0x1000_0000, 0x1000_1000)` | `[0x1000_0000, 0x1020_0000)` |
+| 窗口 | `DeviceAperture`（设备声明） | `DeviceRequiredAccessRange`（实际访问点） | `DevicePolicyAuthorizedRange`（政策授权） | `DeviceMappingCoverage`（预期；观测待实现） |
+|---|---|---|---|---|
+| LAPIC | **未知**（ACPI 未解析） | `[0xFEE0_0000, 0xFEE0_1000)` | `[0xFEE0_0000, 0xFF00_0000)` | 同授权范围 |
+| IO-APIC | **未知**（同上） | `[0xFEC0_0000, 0xFEC0_1000)` | `[0xFEC0_0000, 0xFEE0_0000)`（**与 LAPIC 相邻，不是同一个包络**） | 同授权范围 |
+| 平台外设窗口 | 32 MiB（QEMU virt profile） | 从已登记的设备访问点派生；**未登记的设备不产生访问需求** | `[0x0800_0000, 0x0A00_0000)`（有意授权整段） | 32 MiB |
+| PLIC | `[0x0C00_0000, 0x0C60_0000)`（DTB `reg`，6 MiB） | `[0x0C00_0000, 0x0C24_0000)` | `[0x0C00_0000, 0x0C40_0000)` | 同授权范围 |
+| NS16550A UART | `[0x1000_0000, 0x1000_0100)`（DTB `reg` 实测 **256 B**） | 控制台实际访问的寄存器偏移（≤256 B） | `[0x1000_0000, 0x1020_0000)`（2 MiB 包络） | 同授权范围 |
+
+**四个数据不是同一件事**：`Aperture` 来自设备描述；`RequiredAccess` 来自已登记的访问点（`reg` 不能证明实际访问）；`PolicyAuthorizedRange` 来自预先审查的平台政策；`Coverage` 来自实际 PTE 遍历。审计公式：`Coverage ⊆ AuthorizedRange` 且 `RequiredAccess ⊆ Coverage`。
+
+**数值相等 ≠ 来源相等**：表中若干行的授权范围与覆盖范围数值相同，但授权是**独立政策输入**，覆盖是**独立测量**；不能由实际叶子反推授权。而且今天**没有页表审计遍历**，所以今天的覆盖只能叫 `ExpectedDeviceMappingCoverage`（从构造代码推导），`ObservedDeviceMappingCoverage`（PTE 遍历）等 O-02a 的引导根审计落地后才存在。表中「覆盖」列在观测实现前一律标为**预期**。
+
+**x86 的 APIC 地址不是无条件硬件事实**：表中 `0xFEE0_0000`/`0xFEC0_0000` 只属于「本项目支持的某个 x86 QEMU profile」。启动时必须核对：Local APIC 当前模式（xAPIC MMIO 还是 x2APIC MSR 路径）、`IA32_APIC_BASE` 的基址与政策表一致；若解析 ACPI，MADT 的 Local APIC 地址、override 与 I/O APIC 项必须与政策表兼容；不符合当前 profile 就**拒绝启动**。不解析 ACPI 时，支持范围严格锁定在明确的 machine profile。
+
+**PLIC 的访问集合与包络**：`DeviceAccessUseSet` 按 `AccessUseId` 记录每个使用点的确切寄存器范围；`DeviceRequiredAccessEnvelope` 是所有访问需求取包络（只用于计算所需覆盖），**不表示包络内每个 byte 都被访问**。PLIC 的 profile 还必须钉住具体的 QEMU 构建版本（`qemu-system-riscv64 --version` 读数与 machine version）；今天尚未记录该版本，属于待补证据。
+
+**PLIC 的 profile 条件**（`0x24_0000` 只在该 profile 下成立）：QEMU `virt` + 固定 machine version + **TCG** + 单 socket + **AIA 关闭** + 明确 CPU 型号 + hart 数 1..=32 且全部支持 S-mode。KVM 下 FDT 只生成 S-mode context（数量与 TCG 不同），TCG/KVM 的 context 编号也不相同；context ID 必须从该配置实际生成的 `interrupts-extended`/hart-特权映射推导，不能由 hart 数直接乘 2。
 
 **aarch64 的 32 MiB 是 `DeviceWindowPolicy` 窗口，不是一个设备的资源**：它表示钉住的 QEMU virt profile 对该整段授予 `DEVICE` 映射资格；其中哪些设备、哪些空隙、哪些区段当前没有访问点，由资源清单与访问需求另行解释，不能由设备名称反推。
 
@@ -509,13 +528,14 @@
 | 内存图元数据 | `DescriptorVersion` 受支持；`DescriptorSize` 不小于已知前缀；`MemoryMapSize` 能被 `DescriptorSize` 整除**且不超过调用方缓冲区长度**；按 `DescriptorSize` 步进；字段读取不越出该条前缀 |
 | 每个描述符 | `PhysicalStart` 对齐且不超上界；`VirtualStart` 按规范校验（**`0` 可接受**，它满足对齐；第一版验证后忽略）；`NumberOfPages` 非零，页数约束**分别对物理与虚拟起点**计算；两个末端都用 **u128**；**不论类型是否输出区间都执行** |
 | 跨描述符 | **物理区间不得重叠**：两个描述符覆盖同一页却给出不同政策时，分类器无法给出唯一结果，必须拒绝启动 |
-| 顶端边界 | 描述符的独占末端可能恰好是 `2^64`（最后一页合法）。第一版**明确拒绝**这种边界（`u64` 无法表示末端），并把它标为不支持的上界，而不是笼统归入「回绕错误」 |
+| 顶端边界 | 描述符的独占末端可能恰好是 `2^64`（最后一页合法）。第一版**明确拒绝**这种边界，并用**独立错误码**（不是 `RangeOverflow`）表示「项目不支持的上界」，避免把项目限制伪装成算术回绕；物理端与虚拟端分别判定 |
+| 版本策略 | 只接受 `DescriptorVersion = 1`；其它版本明确拒绝（不是「受支持」的模糊说法） |
 
 #### O-12g 的附加要求
 
 原始记录保留：声明所在节点、**每一级 `ranges` 转换的输入/输出与引用节点**、最终 CPU 物理地址、属性与来源身份。只保留最终地址会让审计无法解释地址是怎么来的。
 
-**四条补充要求**：① **排除原因多重归属**——同一页可同时被普通保留、MRB、存活对象覆盖，PMM 只扣一次，但审计能列出全部 `SourceId`；② 固件前缀、内核镜像、boot shim、自举页表、栈、启动模块、DTB 原始对象与副本、登记表**不能合并成一个 Reserved 标记**，它们各自有阶段化读写/执行需求；③ **`/memory` 重叠规则**：多节点或多 `reg` 重叠时，集合层取并集、来源身份各自保留、物理页只计一次；重叠来源对同一页给出不兼容的类型或 backing 主张（阶段或属性冲突）则拒绝启动；④ **原始记录必须保留不输出区间的描述符**（含 `RESERVED`/`UNUSABLE`）——否则 O-06 的「`UNUSABLE` 属于来源域」没有可实现的输入；诊断成员表是面向内核的另一层，不能替代原始记录。
+**四条补充要求**：① **排除原因多重归属**——同一页可同时被普通保留、MRB、存活对象覆盖，PMM 只扣一次，但审计能列出全部 `SourceId`；② 固件前缀、内核镜像、boot shim、自举页表、栈、启动模块、DTB 原始对象与副本、登记表**不能合并成一个 Reserved 标记**，它们各自有阶段化读写/执行需求；③ **重叠规则**：**同一权威来源内部的同语义重复**（例如两个 `/memory` 节点描述同一段 RAM，或同一节点多个 `reg` 重复）集合去重、保留多个 `SourceId`；**跨来源证据**（UEFI 类型、平台分类、固件保留与 RAM 来源）对同一物理区域提出**不兼容主张**时进入冲突裁决，不能靠并集掩盖——不兼容即拒绝启动。`/memory` 本身只有 RAM 语义（`status` 非 `okay` 与 `hotpluggable` 已被准入拒绝），不存在「同源一条说 RAM、一条说不可用」的形态；④ **原始记录必须保留不输出区间的描述符**（含 `RESERVED`/`UNUSABLE`）——否则 O-06 的「`UNUSABLE` 属于来源域」没有可实现的输入；诊断成员表是面向内核的另一层，不能替代原始记录。
 
 #### O-12i 每种投影的页粒度规则
 
@@ -529,6 +549,8 @@
 | 设备窗口映射 | 叶子覆盖的**全部页**都要有兼容授权，不能只看起始页 |
 
 **所有 `PMM*` 集合都是 4 KiB 页集合**：`TypeAllocatablePages(p)` 表示「整页都满足阶段 `p` 的类型资格」的页；`PlatformAllocationDenials(p)` 也必须是页集合（或先向外量化）。来源原始范围仍是 byte range，只有进入指定投影时才量化；**阶段资格变化必须由显式事件触发**，不得随时间推进自动释放。
+
+**`FullPages(R) = { p | [p, p+4096) ⊆ R }`**：只有整页 byte range 都被 RAM 来源覆盖才进入页域；不是「起点向上、终点向下后拼接」，避免忽视相邻来源的并集。
 
 **页域的正式定义**：
 
@@ -544,7 +566,14 @@ PMMAvailable(p) = RamSourcePageDomain
 PMMExcluded(p) = RamSourcePageDomain \ PMMAvailable(p)
 ```
 
-**四类排除原因必须分开，不能塞进一个未定义的 `AllocationReservations`**：① 类型资格（`UNUSABLE`/`UNACCEPTED`/`ACPI_NVS`/`Runtime` 等在阶段 `p` 是否允许分配）；② 显式分配保留（`/reserved-memory`、MRB、固件前缀）；③ 存活对象（启动模块、页表、DTB 副本、栈、登记表）；④ 平台拒绝。反例：一条 `UNUSABLE` 描述符没有 DTB 声明，若只看显式保留，它会被算进可用表——与 O-06 冲突。
+**四类排除原因必须分开，不能塞进一个未定义的 `AllocationReservations`**：① 类型资格（`UNUSABLE`/`UNACCEPTED`/`ACPI_NVS`/`Runtime` 等在阶段 `p` 是否允许分配）——构造规则是**先裁决、再取整页**：
+
+```
+ResolvedTypeEligibleRanges(p) = ResolveCompatibleTypeClaims(SourceRecords, p)
+TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
+```
+
+不能对每条描述符单独 `FullPages` 再并集：两条相邻、语义兼容的来源应能合成一个整页；一条普通 RAM 与一条不可用类型相邻或重叠，则整页不合格。`TypeAllocatablePages(p)` 由「普通主存 backing 资格 + 阶段分配资格」共同派生，不是只看 EFI 类型数字；② 显式分配保留（`/reserved-memory`、MRB、固件前缀）；③ 存活对象（启动模块、页表、DTB 副本、栈、登记表）；④ 平台拒绝。反例：一条 `UNUSABLE` 描述符没有 DTB 声明，若只看显式保留，它会被算进可用表——与 O-06 冲突。
 
 先并集再取整页，避免两个非页对齐的相邻 RAM 区间各自向内收缩时白丢一页；来源记录与身份**不合并**，只在纯计算层构造集合。同一页被多条排除原因覆盖时，PMM 只排除一次，但**所有排除理由都可追溯**（见 O-12g 的多重归属）。
 
@@ -562,13 +591,14 @@ PMMExcluded(p) = RamSourcePageDomain \ PMMAvailable(p)
 
 | 证据 | 内容 |
 |---|---|
-| 提交 `38668f843` | DTB 保留来源落码：`/reserved-memory`、MRB、容量/回绕/重叠/形状拒绝、引导区 checked 守卫 |
-| `cargo test -p minix-boot --lib` | 86 通过（采集器用例见 §2.1） |
+| 提交 `38668f843`（**功能落码提交，不是测试基线**） | DTB 保留来源落码：`/reserved-memory`、MRB、容量/回绕/重叠/形状拒绝、引导区 checked 守卫 |
+| `cargo test -p minix-boot --lib` | 96 通过（采集器用例见 §2.1） |
 | `cargo test -p boot-shim --lib` | 67 通过（分类器用例见 §2.2） |
 | 交叉编译 | `x86_64-unknown-none`、`aarch64-unknown-none`（`fw-none-image`）、`riscv64gc-unknown-none-elf` |
-| QEMU | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh` PASS；串口 memmap 行不变 |
+| QEMU | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh` PASS；`test-shim-bootmarks-aarch64` PASS |
+| FDT 容器校验 | `fdt_layout::validate` 14 条测试（`accepts_a_canonical_layout`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_record_that_would_cross_the_scan_limit`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
 
-**证据基线**：本轮代码提交 `a52cfee54`。复核命令与顺序（缺一不可）：
+**证据基线**：本轮代码提交 `1a9e2a14f`。复核命令与顺序（缺一不可）：
 
 ```
 git rev-parse HEAD
@@ -577,11 +607,11 @@ cd os && cargo test -p minix-boot --lib
 cd os && cargo test -p boot-shim --lib
 ```
 
-86/67 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
+96/67 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
 
 复核方式：对 §2 的每条主张，文中给出了测试名或代码位置；对 §5 的每条问题，文中给出了失败形态——评审人可以只凭本文判断「问题是否成立」。
 
-**测试通过不等于输入完整性**：86 与 67 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
+**测试通过不等于输入完整性**：96 与 67 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
 
 ## 7. 签字状态
 
@@ -595,8 +625,8 @@ cd os && cargo test -p boot-shim --lib
 
 | 阻塞组 | 对应合同 |
 |---|---|
-| 输入真实性与边界 | O-11、O-12h、O-12j、DTB 节点准入 |
-| 来源保真与 RAM 资格 | O-06、O-12f、O-12g |
+| 输入真实性与边界 | O-11、O-12h、O-12j（a 已实现；b/c 未闭合）、DTB 节点准入 |
+| 来源保真、RAM 资格与生命周期 | O-01、O-06、O-12f、O-12g |
 | PMM 投影与页粒度 | O-12d、O-12i |
 | 设备资源、映射和访问 | O-12c、O-08 |
 | 禁止集合与逐树审计 | O-02a/b、O-03、O-04、O-05、O-12a/b |
@@ -604,4 +634,4 @@ cd os && cargo test -p boot-shim --lib
 
 **「禁止集合编译 + 引导根审计」有代码只能作为第一轮实现复审的起点，不是第二层签字的条件**：输入边界、来源完整性、PMM 资格与设备映射覆盖都是它的前置证明。
 
-**第二层重新评审的条件**：O-01～O-12 中至少「禁止集合编译 + 引导根审计」一组有代码与测试，本文按新代码重写后，才有可复核的对象。在那之前，对 §5 的评审只需回答两个问题：问题是否成立、候选是否覆盖失败形态。
+**第二层第一轮实现复审的起点**：禁止集合编译与引导根审计具备代码和测试后，可以开始复核其实现；这不代表其它阻塞组已满足，也不构成第二层签字。在那之前，对 §5 的评审只需回答两个问题：问题是否成立、候选是否覆盖失败形态。

@@ -18,6 +18,7 @@ pub mod kernel_info;
 pub mod boot_form;
 pub mod boot_params;
 pub mod boot_shim;
+pub mod fdt_layout;
 pub mod handoff_v1;
 pub mod handoff_v1_read;
 pub mod handoff_v1_write;

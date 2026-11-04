@@ -265,6 +265,10 @@ impl BootShim for RiscvUbootBootShim {
             );
             let total = total_be as usize;
             let bytes = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, total) };
+            assert!(
+                minix_boot::fdt_layout::validate(dtb_pa, bytes).is_ok(),
+                "boot-shim: DTB container invalid — halting"
+            );
             let fdt = fdt::Fdt::new(bytes)
                 .expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
             let (memmap, reserved) =

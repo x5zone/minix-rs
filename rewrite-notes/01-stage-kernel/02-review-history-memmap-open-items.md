@@ -10,6 +10,21 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十轮评审之后：O-12j 三分 + 设备覆盖的来源独立 + 地址可达性）**
+
+- **代码 `3333d428c`**：`fdt_layout::validate` 增加 FDT 格式版本策略（只接受 17，`last_comp_version ≤ 17`）与**项目块顺序**（MRB 在 structure 之前；规范该顺序是 `should`，按输入限制执行）；新增 3 条测试（旧/未来版本、MRB 在结构块之后、MRB 落入 header）。minix-boot **99**、boot-shim **67**；riscv bootface 与 aarch64 UEFI QEMU 双 PASS。
+- **O-12j 拆三层**：a 容器与 MRB（已实现，14 条测试）；b 结构块 token/属性解析（未闭合——`fdt 0.1.5` 含 `unwrap`/`expect` 与直接切片）；c 目标节点语义（未闭合）。
+- **§2.1 归属改正**：`DtbMemoryMap` 自身不做头部校验，五条输入路径在解析库前由 `fdt_layout::validate` 完成；不再写成「未检查」。
+- **O-11 改名并补地址域**：`BootInputReachabilityAuthorization`（PA/VA、当前转换状态、`[dtb, dtb+40)` 整段可读）与 `ValidatedObjectReadAuthorization`（完整对象只读并复制）。
+- **O-12c**：覆盖改为 `ExpectedDeviceMappingCoverage`（构造推导）与 `ObservedDeviceMappingCoverage`（PTE 遍历，未实现）；APIC 地址绑定 x86 profile（xAPIC/x2APIC、`IA32_APIC_BASE`、MADT 一致性）；PLIC 拆 `DeviceAccessUseSet` 与 `Envelope`，并明确 QEMU 版本尚未钉住。
+- **O-12i**：类型资格改为「先 `ResolveCompatibleTypeClaims`、再 `FullPages`」；O-12g 重叠措辞改为「同源去重 / 跨来源冲突」；§4 默认 R/NX 限定到「已获普通 RAM 映射授权的保留对象」；§6 列出 14 条测试名与五处调用点。
+
+**本轮（第三十九轮评审之后：FDT 容器校验落地 + 范围四列化）**
+
+- **代码 `1a9e2a14f`**：新增 `minix_boot::fdt_layout::validate`——解析前检查 magic、`totalsize`、blob 8 字节对齐、`struct`/`strings` 块 checked 边界与互不重叠、MRB 偏移对齐、`{0,0}` 终止项落在 `min(off_dt_struct, totalsize)`；返回块范围，调用方截到 `totalsize` 再解析。五处 DTB 入口接入（riscv/aarch64 bootface、OpenSBI、aarch64 UEFI 两处堆副本）。10 条测试；minix-boot **96**、boot-shim **67**；riscv bootface 与 aarch64 UEFI QEMU 双 PASS。
+- **O-12j 关闭**：容器校验替代「只做 MRB 有界扫描」；O-12g 依赖解除。残留登记：节点遍历仍依赖库。
+- **文档**：O-12c 改**五列**（补 `DevicePolicyAuthorizedRange`，写明「授权不能等于实际叶子」）；UART 资源按实测 DTB 改 **256 B**；PLIC profile 收紧为单 socket + AIA 关闭 + TCG + 明确 CPU/hart 条件；O-06 拆 `LOADER_CODE`/`LOADER_DATA`、`BOOT_SERVICES_CODE/DATA` 四行并写明默认 NX；§4 权限改为「普通保留默认 R/NX，W/X 由对象义务登记，不支持即拒绝」；O-06 补 `EfiReservedMemoryType` 域外但来源身份仍有效；O-12i 补 `FullPages` 定义、`TypeAllocatablePages` 派生与 `no-map` 部分页对称规则；O-12g 区分同语义重复与异语义冲突；O-12h 补版本策略与 `2^64` 独立错误码；§6 统一 **96/67** 并标注 `38668f843` 是功能提交；§7 把 O-01 归入来源保真组，改名为「第一轮实现复审的起点」。
+
 **本轮（第三十八轮评审之后：DTB 首访边界 + 范围四层化 + 证据基线统一）**
 
 - **代码 `a52cfee54`**：`minix-boot` 新增 `dtb_blob_aligned` / `dtb_len_ok`（40 B–64 MiB）；riscv/aarch64 bootface 与 OpenSBI 腿在首次解引用前检查 8 字节对齐；OpenSBI 腿补 `totalsize` 上限与 checked 加法（先验证 totalsize 再建切片）。minix-boot 86、boot-shim 67；riscv bootface QEMU PASS。

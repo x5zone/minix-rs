@@ -176,6 +176,10 @@ pub extern "C" fn bootface_a64() -> ! {
     // SAFETY: `dtb_bounded` has proven the whole block lies inside the DRAM
     // shape; the MMU-off identity view can read it.
     let fdt_bytes = unsafe { slice::from_raw_parts(DTB_PA as *const u8, fdt_total) };
+    if minix_boot::fdt_layout::validate(DTB_PA, fdt_bytes).is_err() {
+        say("### minix-rs kernel image: DTB container invalid — halting\n");
+        crate::halt();
+    }
     let fdt = match fdt::Fdt::new(fdt_bytes) {
         Ok(f) => f,
         Err(_) => {
