@@ -10,6 +10,11 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十一轮评审之后：FDT 版本子集、结构块边界与平台窗口授权）**
+
+- **代码 `23feb9bc0`**：FDT 版本收紧为 `version=17` + `last_comp_version=16`（明确是项目输入子集，规范要求客户端接受向后兼容版本）；新增 `off_dt_struct` 4 字节对齐、结构块以 `FDT_END` 结尾、`MRB → structure → strings` 完整顺序检查。测试 16 条；minix-boot **102**、boot-shim **67**；两个 QEMU 腿 PASS。
+- **文档**：UART 的 2 MiB 包络改名为 `RiscvVirtPlatformMmioWindow`（窗口内还有 VirtIO 与 fw_cfg），并给出通用规则「包络授权对象是平台窗口，不是窗口里的某个设备」；PLIC context 推导链写明 specifier ≠ `addrid`；新增 `PlatformMemoryProfile` 记录（四类窗口的 QEMU 版本均标为待补）；`DeviceAccessUseSet` 补八个字段；删除一处空表头；`no-map`/MRB 措辞改为「页表投影相似、语义不同」；`FullPages` 改为页编号 + u128 定义；MRB 中文名改为「内存保留块」；§2.7 补五个调用点表（含「是否参与内存政策」一列）；§1.3 说明「可分配但不许映射」是模型状态、v1 无此对象；§6 测试名与计数统一为 16 / 102 / 67，基线改 `23feb9bc0`。
+
 **本轮（第四十轮评审之后：O-12j 三分 + 设备覆盖的来源独立 + 地址可达性）**
 
 - **代码 `3333d428c`**：`fdt_layout::validate` 增加 FDT 格式版本策略（只接受 17，`last_comp_version ≤ 17`）与**项目块顺序**（MRB 在 structure 之前；规范该顺序是 `should`，按输入限制执行）；新增 3 条测试（旧/未来版本、MRB 在结构块之后、MRB 落入 header）。minix-boot **99**、boot-shim **67**；riscv bootface 与 aarch64 UEFI QEMU 双 PASS。

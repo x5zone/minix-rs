@@ -238,6 +238,15 @@
 | MRB 不落入 header | `rejects_an_mrb_that_starts_inside_the_header` | 同上 |
 | 真实固件 | QEMU/OpenSBI 生成的 DTB 为 v17/last_comp 16，两个 QEMU 腿 PASS | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh`、`test-shim-bootmarks-aarch64.sh` |
 
+## 一p、第四十一轮读数（FDT 版本子集与结构块边界）
+
+| 主张 | 读数 | 命令 |
+|---|---|---|
+| 版本子集 | `version = 17`、`last_comp_version = 16`；`rejects_unsupported_fdt_versions` | `grep -n -e FDT_VERSION -e FDT_LAST_COMP_VERSION os/libs/minix-boot/src/fdt_layout.rs` |
+| 结构块对齐与 END | `off_dt_struct % 4 == 0`、末 4 字节为 `0x9`；两条测试 | 同上 |
+| 完整块顺序 | `MRB → structure → strings`；`rejects_strings_before_the_structure_block` | 同上 |
+| 真实固件 | QEMU/OpenSBI DTB 为 v17/16、结构块 4 字节对齐且以 END 结尾，两个 QEMU 腿 PASS | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh`、`test-shim-bootmarks-aarch64.sh` |
+
 ## 二、升级为实现合同所需的材料包（原正文第十三节）
 
 | 包 | 内容 | 状态 |

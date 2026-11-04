@@ -16,7 +16,7 @@
 | UEFI 内存图 | 固件 `GetMemoryMap` | 每段物理范围的类型与属性 | 解析并分类（x86_64、aarch64 两条 UEFI 腿） |
 | DTB `/memory` | 设备树 | 系统 RAM 区间 | 解析（riscv64 自引导、U-Boot、aarch64 直启） |
 | DTB `/reserved-memory` | 设备树 | 保留区域，可带 `no-map` | 解析（三条设备树入口；UEFI 腿尚未接） |
-| 文件头保留映射块（MRB） | 设备树 | 禁止访问的保留区间 | 解析（三条设备树入口） |
+| 内存保留块（Memory Reservation Block，MRB） | 设备树 | 禁止访问的保留区间 | 解析（三条设备树入口） |
 
 启动入口共**四条**，各自的输入权威不同：
 
@@ -43,7 +43,7 @@
 | 访问义务 | 某个对象在某个阶段实际怎么访问它 | 对象登记表 + 设备义务表 | **不存在** |
 | 生命周期 | 什么时候可以释放、什么时候必须保留 | 释放处置 + 阶段模型 | 只有「永不回收」一条隐含规则 |
 
-这四者正交：一页可以「不许分配但可映射」（保留映射区），也可以「可分配但不许映射」（待定，见 O-02）。
+这四者正交：一页可以「不许分配但可映射」（保留映射区），也可以「可分配但不许映射」——**后者是模型允许表达的状态，第一版还没有这样的对象**；保留该维度是为了不让两种政策耦合，不代表第一版必须使用它。
 
 ### 1.4 两棵树：设计意图，不是今天的代码
 
@@ -156,6 +156,18 @@
 | 引导根构造入口 | 同文件 `:894` `build_bootstrap_root_and_enable` |
 | Step 4 直接映射（追加） | `os/kernel/src/dm_coverage.rs:97` `establish_boot_dm` |
 | 配置表 DTB 的取得 | `os/boot-shim/src/uefi_helpers.rs:111` `find_platform_sources` |
+
+**FDT 容器校验的五个调用点**（`fdt_layout::validate` 在解析库之前执行）：
+
+| 调用点 | 输入来源 | 参与内存政策 | 校验结果用于解析 |
+|---|---|---|---|
+| `bootface()`（`kernel-image/src/bootface.rs`） | riscv 启动 ABI 递入的 DTB | 是 | 是 |
+| `bootface_a64()`（`kernel-image/src/bootface_a64.rs`） | aarch64 直启 DTB | 是 | 是 |
+| `RiscvUbootBootShim::prepare_boot`（`boot-shim/src/opensbi_helpers.rs`） | OpenSBI/U-Boot a1 | 是 | 是 |
+| `UefiBootShim::prepare_boot`（`uefi_helpers.rs` 的磁盘 DTB 分支） | ESP 上的 `dumpdtb.dtb` | **否**（只作覆盖对照诊断） | 是（只用于诊断读取） |
+| `load_dumpdtb_free`（`uefi_helpers.rs`） | 同上 | **否** | 是（只用于诊断读取） |
+
+最后两行是磁盘镜像 DTB：它**不进入内存政策**，校验只保护诊断读取路径；重构时不得把它接进政策链。
 
 复核方式：读这八个函数即可核对 §2 的每一条主张；不需要整仓。
 
@@ -274,7 +286,7 @@
 
 **MRB 的部分页**：若靠页表兑现 MRB 访问禁止，则该页整体不得出现在普通映射中；同页还有其它对象需要映射时，拒绝冲突或提供独立受控机制。精确 byte-range 检查不能代替页表兑现。
 
-**`no-map` 与 MRB 对称**：`no-map` 的普通系统映射禁止按相交页向外投影。`DriverControlledUse` **不自动解除整页限制**；若专用映射的实际叶子覆盖超出 `no-map` 资源范围，必须证明整叶覆盖区的属性、权限、别名与访问控制均兼容，否则拒绝启动或改用更细页粒度。测试要求：`no-map` 只覆盖 4 KiB 页的部分字节时，普通直接映射不得出现该页，驱动例外也不得未经整页审查放行。
+**`no-map` 与 MRB 在页表粒度上的保守投影相似，但原始语义与例外机制不同**：`no-map` 的普通系统映射禁止按相交页向外投影；MRB 是「未经授权不得访问」，两者不能共用一套例外规则。`DriverControlledUse` **不自动解除整页限制**；若专用映射的实际叶子覆盖超出 `no-map` 资源范围，必须证明整叶覆盖区的属性、权限、别名与访问控制均兼容，否则拒绝启动或改用更细页粒度。测试要求：`no-map` 只覆盖 4 KiB 页的部分字节时，普通直接映射不得出现该页，驱动例外也不得未经整页审查放行。
 
 ### O-04 对象负向义务的投影
 
@@ -457,7 +469,7 @@
 - **O-12g** 采集器重构：保留原始来源记录，再派生投影。
 - **O-12h** UEFI 描述符结构校验与政策分类分开（见下）。
 - **O-12i** 每种政策投影的页粒度规则（见下）。
-- **O-12j** 拆成三层：**a 容器与 MRB（已实现）**——`fdt_layout::validate` 检查 magic、`totalsize`、blob 与 `off_mem_rsvmap` 的 8 字节对齐、`struct`/`strings` 块 checked 边界与互不重叠、MRB 终止项落在 `min(off_dt_struct, totalsize)`、FDT 版本（只接受 17）与**项目块顺序**（MRB 在 structure 之前，规范该顺序是 `should`，本项目按输入限制执行）；五条入口接入，14 条测试。**b 结构块 token/属性解析（未闭合）**——容器块边界正确不等于结构块 token 流、属性长度、字符串偏移合法；`fdt 0.1.5` 的节点遍历含 `unwrap`/`expect` 与直接切片，畸形输入可能 panic。**c 目标节点语义（未闭合）**——`/memory`、`/reserved-memory` 与未来设备 `reg` 的解析与地址转换需要明确失败形状。
+- **O-12j** 拆成三层：**a 容器与 MRB（已实现）**——`fdt_layout::validate` 检查 magic、`totalsize`、blob 与 `off_mem_rsvmap` 的 8 字节对齐、`struct`/`strings` 块 checked 边界与互不重叠、MRB 终止项落在 `min(off_dt_struct, totalsize)`、FDT 版本（只接受 `version=17` 且 `last_comp_version=16`；规范要求客户端接受向后兼容的未来版本，这里是**项目输入收窄**）、结构块 4 字节对齐与 `FDT_END` 结尾、**项目块顺序**（MRB → structure → strings，规范该顺序是 `should`；strings 无对齐要求）；五条入口接入，16 条测试。**b 结构块 token/属性解析（未闭合）**——容器块边界正确不等于结构块 token 流、属性长度、字符串偏移合法；`fdt 0.1.5` 的节点遍历含 `unwrap`/`expect` 与直接切片，畸形输入可能 panic。**c 目标节点语义（未闭合）**——`/memory`、`/reserved-memory` 与未来设备 `reg` 的解析与地址转换需要明确失败形状。
 
 #### O-12c 的输入：三个概念要分开
 
@@ -478,10 +490,8 @@
 | 端口 I/O | **不属于物理设备窗口**，走 O-08 | 独立地址域 |
 | UEFI 类型 11/12 | **不作为设备授权来源**（11 是运行时服务 MMIO 请求；12 有 Itanium 限定） | 不产生窗口 |
 
-**静态表必须作为今天的事实源被清点**。当前实际生效的条目：
+**静态表必须作为今天的事实源被清点**。
 
-| 窗口 | 范围 | 平台 | 依据与用途 |
-|---|---|---|---|
 **四层关系**（不是两层）：
 
 | 概念 | 含义 | PLIC 例子 |
@@ -499,7 +509,9 @@
 | IO-APIC | **未知**（同上） | `[0xFEC0_0000, 0xFEC0_1000)` | `[0xFEC0_0000, 0xFEE0_0000)`（**与 LAPIC 相邻，不是同一个包络**） | 同授权范围 |
 | 平台外设窗口 | 32 MiB（QEMU virt profile） | 从已登记的设备访问点派生；**未登记的设备不产生访问需求** | `[0x0800_0000, 0x0A00_0000)`（有意授权整段） | 32 MiB |
 | PLIC | `[0x0C00_0000, 0x0C60_0000)`（DTB `reg`，6 MiB） | `[0x0C00_0000, 0x0C24_0000)` | `[0x0C00_0000, 0x0C40_0000)` | 同授权范围 |
-| NS16550A UART | `[0x1000_0000, 0x1000_0100)`（DTB `reg` 实测 **256 B**） | 控制台实际访问的寄存器偏移（≤256 B） | `[0x1000_0000, 0x1020_0000)`（2 MiB 包络） | 同授权范围 |
+| `RiscvVirtPlatformMmioWindow` | 平台窗口（见下） | UART 控制台寄存器偏移（资源 256 B） | `[0x1000_0000, 0x1020_0000)`（2 MiB 平台窗口） | 同授权范围 |
+
+**2 MiB 包络的授权对象是平台窗口，不是 UART**：QEMU virt 的 `[0x1000_0000, 0x1020_0000)` 同一段里还有 VirtIO MMIO（`0x1000_1000` 起）与 fw_cfg（`0x1010_0000`），所以这条政策登记为 `RiscvVirtPlatformMmioWindow`，UART 只是窗口内的一个资源条目（`DeviceAperture` = 256 B）。**通用规则：大页包络的授权对象必须是产生该包络的完整平台内存窗口，而不是包络里恰好存在的一个设备资源。**
 
 **四个数据不是同一件事**：`Aperture` 来自设备描述；`RequiredAccess` 来自已登记的访问点（`reg` 不能证明实际访问）；`PolicyAuthorizedRange` 来自预先审查的平台政策；`Coverage` 来自实际 PTE 遍历。审计公式：`Coverage ⊆ AuthorizedRange` 且 `RequiredAccess ⊆ Coverage`。
 
@@ -507,9 +519,11 @@
 
 **x86 的 APIC 地址不是无条件硬件事实**：表中 `0xFEE0_0000`/`0xFEC0_0000` 只属于「本项目支持的某个 x86 QEMU profile」。启动时必须核对：Local APIC 当前模式（xAPIC MMIO 还是 x2APIC MSR 路径）、`IA32_APIC_BASE` 的基址与政策表一致；若解析 ACPI，MADT 的 Local APIC 地址、override 与 I/O APIC 项必须与政策表兼容；不符合当前 profile 就**拒绝启动**。不解析 ACPI 时，支持范围严格锁定在明确的 machine profile。
 
-**PLIC 的访问集合与包络**：`DeviceAccessUseSet` 按 `AccessUseId` 记录每个使用点的确切寄存器范围；`DeviceRequiredAccessEnvelope` 是所有访问需求取包络（只用于计算所需覆盖），**不表示包络内每个 byte 都被访问**。PLIC 的 profile 还必须钉住具体的 QEMU 构建版本（`qemu-system-riscv64 --version` 读数与 machine version）；今天尚未记录该版本，属于待补证据。
+**PLIC 的访问集合与包络**：`DeviceAccessUseSet` 的每条记录至少含 `AccessUseId`、`DeviceId`、`ObjectId`、`PhysicalByteRange`、访问宽度、读/写、阶段与路径；`DeviceRequiredAccessEnvelope = Envelope(DeviceAccessUseSet)`，**不表示包络内每个 byte 都被访问**。没有完整访问清单时，包络只是保守上界，不能宣称访问需求已完整（与 O-07 相连）。PLIC 的 profile 还必须钉住具体的 QEMU 构建版本（`qemu-system-riscv64 --version` 读数与 machine version）；今天尚未记录该版本，属于待补证据。
 
-**PLIC 的 profile 条件**（`0x24_0000` 只在该 profile 下成立）：QEMU `virt` + 固定 machine version + **TCG** + 单 socket + **AIA 关闭** + 明确 CPU 型号 + hart 数 1..=32 且全部支持 S-mode。KVM 下 FDT 只生成 S-mode context（数量与 TCG 不同），TCG/KVM 的 context 编号也不相同；context ID 必须从该配置实际生成的 `interrupts-extended`/hart-特权映射推导，不能由 hart 数直接乘 2。
+**静态窗口必须绑定一个 `PlatformMemoryProfile`**：每个 profile 至少含 `ProfileId`、QEMU 构建版本、machine type/version、accelerator、CPU 型号、SMP 拓扑、窗口政策集合、预期资源集合与不支持的配置。表格只引用 profile ID；x86 APIC、aarch64 32 MiB、riscv PLIC/UART 四类窗口都适用——今天四者的 QEMU 构建版本都**尚未记录**，属于待补证据。
+
+**PLIC 的 profile 条件**（`0x24_0000` 只在该 profile 下成立）：QEMU `virt` + 固定 machine version + **TCG** + 单 socket + **AIA 关闭** + 明确 CPU 型号 + hart 数 1..=32 且全部支持 S-mode。KVM 下 FDT 只生成 S-mode context（数量与 TCG 不同），TCG/KVM 的 context 编号也不相同；context ID 不能由 hart 数直接乘 2，也不能把 `interrupts-extended` 里的 interrupt specifier 当成 PLIC 的 MMIO `addrid`。推导链是：specifier → 解析 `interrupt-parent` phandle → 识别 hart 与特权模式 → 确定 PLIC context 的排列顺序 → 枚举稠密的 `addrid` → 得出最大访问 context 偏移。
 
 **aarch64 的 32 MiB 是 `DeviceWindowPolicy` 窗口，不是一个设备的资源**：它表示钉住的 QEMU virt profile 对该整段授予 `DEVICE` 映射资格；其中哪些设备、哪些空隙、哪些区段当前没有访问点，由资源清单与访问需求另行解释，不能由设备名称反推。
 
@@ -550,7 +564,14 @@
 
 **所有 `PMM*` 集合都是 4 KiB 页集合**：`TypeAllocatablePages(p)` 表示「整页都满足阶段 `p` 的类型资格」的页；`PlatformAllocationDenials(p)` 也必须是页集合（或先向外量化）。来源原始范围仍是 byte range，只有进入指定投影时才量化；**阶段资格变化必须由显式事件触发**，不得随时间推进自动释放。
 
-**`FullPages(R) = { p | [p, p+4096) ⊆ R }`**：只有整页 byte range 都被 RAM 来源覆盖才进入页域；不是「起点向上、终点向下后拼接」，避免忽视相邻来源的并集。
+**`FullPages` 以页编号定义**：
+
+```
+PageBytes(n) = [u128(n) * 4096, u128(n + 1) * 4096)
+FullPages(R) = { n | PageBytes(n) ⊆ R }
+```
+
+参数是页编号而不是物理地址或 byte range；边界用 `u128` 计算，最高物理页也不会产生一次无意的回绕。只有整页 byte range 都被 RAM 来源覆盖才进入页域，不是「起点向上、终点向下后拼接」。
 
 **页域的正式定义**：
 
@@ -596,9 +617,9 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 | `cargo test -p boot-shim --lib` | 67 通过（分类器用例见 §2.2） |
 | 交叉编译 | `x86_64-unknown-none`、`aarch64-unknown-none`（`fw-none-image`）、`riscv64gc-unknown-none-elf` |
 | QEMU | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh` PASS；`test-shim-bootmarks-aarch64` PASS |
-| FDT 容器校验 | `fdt_layout::validate` 14 条测试（`accepts_a_canonical_layout`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_record_that_would_cross_the_scan_limit`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
+| FDT 容器校验 | `fdt_layout::validate` 16 条测试（`accepts_a_canonical_layout`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_record_that_would_cross_the_scan_limit`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`、`rejects_unbacked_structure_alignment`、`rejects_a_structure_block_without_the_end_token`、`rejects_strings_before_the_structure_block`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
 
-**证据基线**：本轮代码提交 `1a9e2a14f`。复核命令与顺序（缺一不可）：
+**证据基线**：本轮代码提交 `23feb9bc0`。复核命令与顺序（缺一不可）：
 
 ```
 git rev-parse HEAD
@@ -607,7 +628,7 @@ cd os && cargo test -p minix-boot --lib
 cd os && cargo test -p boot-shim --lib
 ```
 
-96/67 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
+102/67 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
 
 复核方式：对 §2 的每条主张，文中给出了测试名或代码位置；对 §5 的每条问题，文中给出了失败形态——评审人可以只凭本文判断「问题是否成立」。
 

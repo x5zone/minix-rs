@@ -5229,3 +5229,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-12j 拆 a（容器，已实现）/b（结构块解析，未闭合）/c（节点语义，未闭合）；§2.1 归属改正。
 - O-11 改名两层授权并补 PA/VA 与整段可达性；O-12c 区分预期/观测覆盖、APIC profile、PLIC use set；O-12i 先裁决再取整页。
 - 门：minix-boot 99、boot-shim 67、双目标编译、两个 QEMU 腿 PASS；lint 0。
+
+### 第二百四十九笔（01 阶段 · I-29 第四十一轮：FDT 版本子集与平台窗口授权）
+
+代码 `23feb9bc0`；主文档 637 → 646 行。
+
+- FDT 版本固定 v17/16（项目子集）；结构块 4 字节对齐、FDT_END 结尾、MRB→structure→strings 顺序；+3 测试（102）。
+- UART 2 MiB 包络改 `RiscvVirtPlatformMmioWindow`；PLIC context 推导链；`PlatformMemoryProfile`；`DeviceAccessUseSet` 八字段。
+- 五个校验调用点表（含「是否参与内存政策」）；空表头删除；no-map/MRB 措辞；FullPages 页编号；MRB 中文名。
+- 门：minix-boot 102、boot-shim 67、双目标编译、两个 QEMU 腿 PASS；lint 0。
