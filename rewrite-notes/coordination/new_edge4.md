@@ -5286,3 +5286,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 新测试 `dtb_collect_and_collect_with_sources_agree`、`dtb_no_map_declarations_count_against_the_declaration_cap`；minix-boot 120、boot-shim 67；riscv QEMU PASS。
 - 登记：四条 DTB 调用点仍用 `collect()`，记录未进启动路径（§2.5 三层表）。
 - **外部红**：`2d292a06b`（sef E-NETSTART）给 `SefIpc` 加 `sendrec`，`os/servers/rs/src/lib.rs:203` 未实现 → aarch64-unknown-none 编译失败，aarch64 QEMU 腿本轮无法运行。属他人切片，未改。
+
+### 第二百五十五笔（01 阶段 · I-29 第四十七轮：输入声明与派生前缀分层）
+
+代码 `b49afa97d`；主文档 765 → 775 行。
+
+- `class()`：`FirmwarePrefix` 是派生保留，其余五类是输入声明；origin 带 `{node, reg}` 与 `memory_id` 派生链。
+- 三条新测试：共用声明上限（普通/reusable/no-map 合计 9 被拒）、40 条容量恰好可达、前缀指回其 `/memory` 记录。
+- 文档：修正六类/五类与 `reusable` 矛盾；`OrdinaryRamEligibility` 收窄；`uefi-raw 0.9` 常量展开；O-12i 端点统一待改；§6 证据分层。
+- aarch64 仍被 `servers/rs` 的 `E0046`（`sendrec`）阻断，启动行为未验证。
+- 门：minix-boot 123、boot-shim 67、riscv QEMU PASS。

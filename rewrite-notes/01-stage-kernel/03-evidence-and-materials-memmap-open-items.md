@@ -777,3 +777,14 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 生产接入 | `grep -rn 'collect_with_sources' --include=*.rs os`（排除库自身）零命中；四条 DTB 调用点均 `collect()` |
 | 门 | minix-boot **120**、boot-shim **67**；riscv bootface PASS（exit 0）；`cargo check -p minix-boot --target aarch64-unknown-none`、`-p boot-shim --target aarch64-unknown-uefi`、`-p boot-shim --target x86_64-unknown-uefi` 均通过 |
 | aarch64 QEMU | **阻断**：`xtask image assembly failed`；`error[E0046]: not all trait items implemented, missing: sendrec`，`os/servers/rs/src/lib.rs:203`，由 `2d292a06b`（sef E-NETSTART 切片）引入，与本切片无关 |
+
+## 十九、第四十七轮：输入/派生分层与容量可达性
+
+| 项 | 读数 |
+|---|---|
+| `class()` | `FirmwarePrefix` → `DerivedReservation`；其余五类 → `InputDeclaration` |
+| origin | `MemoryNode { node, reg }`、`ReservedMemoryChild { node, reg }`、`MrbEntry(n)`、`FirmwarePrefix { memory_id }` |
+| 容量可达 | `dtb_source_capacity_is_reachable_at_exactly_forty`：8 段 `/memory` + 8 条前缀（`fw_end` 覆盖每个段首）+ 16 条 MRB + 8 条声明 = 40，`collect_with_sources` 成功且各类计数相符 |
+| 共用上限 | `dtb_declaration_cap_is_shared_across_reservation_kinds`：普通/reusable/no-map 各 3 条（共 9）被拒（`TooManyReservedRegions`） |
+| 派生链 | `dtb_firmware_prefix_links_to_its_memory_record`：前缀 `memory_id` 指向的正是其切分的 `/memory` 记录 |
+| 门 | minix-boot **123**、boot-shim **67**；riscv bootface PASS（exit 0）；aarch64 镜像组装仍 BLOCKED（`E0046`，`servers/rs/src/lib.rs:203`），aarch64 启动行为未验证 |

@@ -10,6 +10,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十七轮评审之后：记录区分输入声明与派生前缀，身份补齐）**
+
+- **代码 `b49afa97d`**：`SourceKind::class()` 区分**输入声明**（`Memory`/`MrbEntry`/`ReservedOrdinary`/`ReservedReusable`/`ReservedNoMap`）与**派生保留**（`FirmwarePrefix`）；`origin` 补齐 `MemoryNode { node, reg }`、`ReservedMemoryChild { node, reg }`，派生前缀用 `FirmwarePrefix { memory_id }` 指回它切分的那条 `/memory` 记录。minix-boot **123**、boot-shim **67**；riscv QEMU PASS；aarch64 仍被外部 `E0046` 阻断。
+- **新测试**：`dtb_declaration_cap_is_shared_across_reservation_kinds`（普通/reusable/no-map 共用 8 条上限）、`dtb_source_capacity_is_reachable_at_exactly_forty`（40 条恰好可达）、`dtb_firmware_prefix_links_to_its_memory_record`（派生链可追）。
+- **身份命名空间**：`id` 是输入对象内的局部 ID；跨输入（DTB + UEFI）引用必须是 `(InputObjectId, LocalSourceId)`——写进 §2.1，未落码。
+- **文档矛盾修正**：六类 kind vs「五类」、「不区分 `reusable`」、§2.1 测试清单补新测试；`OrdinaryRamEligibility` 收窄为**普通主存映射资格**，分配/访问/性质各归其位；`uefi-raw 0.9` 行展开为 `WRITE_PROTECT = 0x1000`、`MORE_RELIABLE = 0x10000`（crate 常量）、`HOT_PLUGGABLE` 未定义；O-12i 补端点统一（DTB `u64` + `RangeOverflow` vs UEFI `u128`，待改为独立错误）；§6 增加**证据分层表**（宿主单测 / riscv 启动 / aarch64 组装 / aarch64 启动），aarch64 启动行为明确记为未验证。
+
 **本轮（第四十六轮评审之后：记录层去掉预置页范围，补身份）**
 
 - **代码 `9a4d0eb51`**：`SourceRecord` 改为 `{ id, kind, origin, raw_start, raw_end }`——删掉 `page_*`，因为 `/memory` 要内向 `FullPages`、保留声明要外向取整、MRB 访问禁止要精确字节，一份预置页范围会把某个消费者的规则写进所有消费者。`kind` 拆出 `ReservedReusable`（`reusable` 不再并进普通保留），MRB 更名 `MrbEntry`；`origin` 记录 `MemoryNode`/`FirmwarePrefix`/`MrbEntry(n)`/`ReservedMemoryChild(n)`。minix-boot **120**、boot-shim **67**；riscv QEMU PASS；aarch64 QEMU 被外部红阻断（见下）。
