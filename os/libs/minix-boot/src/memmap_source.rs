@@ -42,6 +42,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// are unchanged).
 const DTB_MEMMAP_MAX: usize = 8;
 
+/// Capacity of the memory reservation block scan. A missing `{0, 0}`
+/// terminator makes the library keep yielding pairs, so this cap turns that
+/// malformed shape into a refusal instead of a silent over-read.
+const DTB_MRB_MAX: usize = 16;
+
 /// Why a DTB memory map could not be produced.
 ///
 /// Capacity is a policy input, not a display detail: dropping the excess
@@ -79,6 +84,12 @@ pub enum DtbMemMapError {
     /// A marker property (`no-map`, `reusable`) carries a value; both are
     /// defined as empty properties, and a value means the encoding is wrong.
     NonEmptyReservationAttribute,
+    /// The memory reservation block has more entries than `DTB_MRB_MAX` (a
+    /// missing terminator also lands here).
+    TooManyMemoryReservations,
+    /// Two memory reservation block entries overlap; the specification
+    /// requires the block's entries to be disjoint.
+    OverlappingMemoryReservations,
 }
 
 // `static mut`: the same form as bootface's MEMMAP_STORAGE — the single-hart
@@ -350,8 +361,20 @@ impl DtbMemoryMap<'_> {
         // 2. The device-tree memory reservation block: regions no client may
         //    access at all, so they leave the conventional table and enter
         //    neither (the reserved table means "reachable, never reallocated").
+        let mut mrb = [(0u64, 0u64); DTB_MRB_MAX];
+        let mut mrb_n = 0usize;
         for entry in self.fdt.memory_reservations() {
             let (start, end) = declared_page_range(entry.address() as u64, entry.size() as u64)?;
+            if mrb_n >= DTB_MRB_MAX {
+                return Err(DtbMemMapError::TooManyMemoryReservations);
+            }
+            for &(prev_start, prev_end) in mrb[..mrb_n].iter() {
+                if start < prev_end && prev_start < end {
+                    return Err(DtbMemMapError::OverlappingMemoryReservations);
+                }
+            }
+            mrb[mrb_n] = (start, end);
+            mrb_n += 1;
             carve_free(&mut free, &mut free_n, start, end)?;
         }
 
@@ -961,6 +984,39 @@ mod tests {
         assert!(matches!(
             DtbMemoryMap::new(&fdt, 0).collect(),
             Err(DtbMemMapError::UnsupportedReservedDeclaration)
+        ));
+    }
+
+    #[test]
+    fn dtb_overlapping_memory_reservations_are_rejected() {
+        // The specification requires the block's entries to be disjoint.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[],
+            &[(0x8000_8000, 0x2000), (0x8000_9000, 0x1000)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::OverlappingMemoryReservations)
+        ));
+    }
+
+    #[test]
+    fn dtb_too_many_memory_reservations_are_rejected() {
+        // A missing `{0, 0}` terminator makes the library keep yielding pairs;
+        // the cap refuses the shape instead of reading past the block.
+        let mut entries = [(0u64, 0u64); DTB_MRB_MAX + 1];
+        for (i, entry) in entries.iter_mut().enumerate() {
+            *entry = (0x1_0000_0000 + i as u64 * 0x2000, 0x1000);
+        }
+        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &entries, 2);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::TooManyMemoryReservations)
         ));
     }
 
