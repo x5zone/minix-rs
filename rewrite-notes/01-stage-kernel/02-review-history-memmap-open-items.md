@@ -10,6 +10,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十七轮评审之后：profile 门控、双快照时序、ACPI 生命周期）**
+
+- **代码 `5566105c0`**：`0x2_0000`/`0x4_0000`/`0x8_0000`（RO/SP/CPU_CRYPTO）从「按仓库编码接受」改为 **`ProfileAttribute` fail-closed**——它们只在一组编码里是标准属性，未钉固件身份就没有唯一解释。`TYPE_INDEPENDENT` 现在只剩 `RUNTIME` 可达（NV 与 SP 都不可达）。boot-shim **70**、minix-boot **132**；aarch64 UEFI 腿在门控落地后**再次 PASS**。
+- **O-11 × O-12k 时序**：引入 `PreflightMap`（只授权首读 40 字节）与 `FinalMap`（唯一政策快照），七步顺序写死；`FinalMap` 的完整 DTB 类型检查必须在读 body 前；最终取图后的解析/采集/投影/审计必须无分配；三条必测登记。
+- **属性证据史修正**：并非「三个发布文本都与 EDK2 不一致」——2.10 原始版与 EDK2 同组，2.10 Errata A 与 2.11 PDF 是移位后的另一组；规范仓库 `main` 不是固定版本。
+- **ACPI 不启用的 profile**：`EfiACPIReclaimMemory` 视为 `Permanent`，不能把 `Until(AcpiEnabled)` 当已满足。
+- **SourceRef 提前定型**：`{input_object, local_source}`，`FirmwarePrefix` 也用同一类型，裸 `memory_id` 取消（未实现）。
+- **术语**：统一为 `OrdinaryRamMappingEligibility`；`reg+size` 的当前行为写明为「读 `reg`、忽略 `size`，无专门测试」。
+- **证据分层**：aarch64 测试日志的 `dtb /memory cross-checked, diagnostic only` **不代表** O-11 配置表 DTB 首读授权已验证。
+
 **本轮（第五十六轮评审之后：两时点类型验证、MRB 页差分、高位属性钉住）**
 
 - **代码 `9ce248cf7`（测试切片）**：`high_bit_attributes_follow_the_repository_encoding` 钉住 `0x2_0000`（RO→可用）、`0x4_0000`（SP→独立属性排除）、`0x8_0000`（CPU_CRYPTO→元数据）与 `0x10_0000`（未知位拒绝）——高位解释是**分支选择**，不是无歧义读法。boot-shim **70**、minix-boot **132**。

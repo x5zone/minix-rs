@@ -5378,3 +5378,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 高位属性 `0x20000/0x40000/0x80000` 明确为仓库分支选择并有断言钉住；`0x10000` 仍未知位拒绝。
 - EFI DTB 类型验证两时点（40 字节 → 全对象）；MRB×DTB 页差分；NV 分支不可达写明；O-12k 准备前移；x2APIC 入 O-10 审计。
 - 门：minix-boot 132、boot-shim 70、两条 QEMU 腿均 PASS。
+
+### 第二百六十五笔（01 阶段 · I-29 第五十七轮：profile 门控与双快照）
+
+代码 `5566105c0`；主文档约 965 行。
+
+- 高位属性 `RO/SP/CPU_CRYPTO` 改 `ProfileAttribute` fail-closed；NV/SP 分类分支不可达。
+- O-11×O-12k：`PreflightMap` 与 `FinalMap` 两种快照，七步时序，最终取图后无分配。
+- ACPI 不启用 → `EfiACPIReclaimMemory` 视为 Permanent；SourceRef 提前定型登记；术语统一。
+- 门：minix-boot 132、boot-shim 70；aarch64 UEFI 门控后再次 PASS。

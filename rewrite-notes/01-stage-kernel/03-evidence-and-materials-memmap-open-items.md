@@ -875,3 +875,12 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 高位属性 | `WB|0x2_0000` → Allocate（RO 元数据）；`WB|0x4_0000` → Side（SP 独立属性）；`WB|0x8_0000` → Allocate（CPU_CRYPTO）；`WB|0x10_0000` → UnknownAttribute；测试 `high_bit_attributes_follow_the_repository_encoding` |
 | 门 | minix-boot **132**、boot-shim **70**；x86_64-unknown-uefi check 通过 |
 | aarch64 QEMU | **PASS**（exit 0）：`test-shim-bootmarks-aarch64.sh`；串口 `memmap source: uefi-getmemorymap (… conv=13 dtb_regions=1)` 与 `entering kernel image v1`。外部 `E0046` 三处（rs/sched/vfs）已在 `b71bce1d0`、`ae4ef5c76`、`8dc30f75e` 修复 |
+
+## 二十九、第五十七轮：profile 门控与双快照
+
+| 项 | 读数 |
+|---|---|
+| 高位属性 | `0x2_0000/0x4_0000/0x8_0000` → `ProfileAttribute`（`profile_only_attributes_fail_closed_without_a_pinned_profile`）；`0x10_0000` → `UnknownAttribute` |
+| 连带 | `TYPE_INDEPENDENT` 仅 `RUNTIME` 可达；NV/SP 分支不可达（已在文档注明） |
+| 门 | minix-boot **132**、boot-shim **70**；x86_64-unknown-uefi check 通过 |
+| aarch64 QEMU | 门控落地后**再次 PASS**（exit 0）；日志 `diagnostic only` 不等于配置表 DTB 首读授权已验证 |
