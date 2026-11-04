@@ -50,6 +50,11 @@ pub enum FdtInputError {
     MrbNoTerminator,
     /// A reservation record would cross the scan boundary.
     MrbRecordTruncated,
+    /// A block that must be 4-byte aligned is not (the structure block; the
+    /// strings block has no alignment requirement).
+    BlockMisaligned,
+    /// The structure block does not end with the `FDT_END` token.
+    MissingEndToken,
     /// The header's `version` / `last_comp_version` is outside the set this
     /// project accepts.
     UnsupportedVersion,
@@ -63,10 +68,14 @@ pub enum FdtInputError {
 const HEADER_LEN: u32 = 40;
 const MAGIC: u32 = 0xd00d_feed;
 const MRB_ENTRY: u32 = 16;
-/// Binary structure versions this project accepts. `17` is the current format
-/// description; `last_comp_version` must not promise compatibility with a
-/// newer client than we are.
+/// Binary structure versions this project accepts: `version = 17` with
+/// `last_comp_version = 16`, the pair the current format description defines.
+/// The specification asks clients to accept every blob backward-compatible
+/// with the current version, so this is a **project input restriction**: boot
+/// paths are pinned to this pair and a future `version > 17` blob is refused
+/// rather than guessed at.
 const FDT_VERSION: u32 = 17;
+const FDT_LAST_COMP_VERSION: u32 = 16;
 /// Upper bound this project accepts for a devicetree blob.
 pub const FDT_MAX_LEN: u32 = crate::DTB_MAX_LEN;
 
@@ -99,7 +108,7 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
     }
     let version = be_u32(bytes, 20);
     let last_comp = be_u32(bytes, 24);
-    if version != FDT_VERSION || last_comp > FDT_VERSION {
+    if version != FDT_VERSION || last_comp != FDT_LAST_COMP_VERSION {
         return Err(FdtInputError::UnsupportedVersion);
     }
     let totalsize = be_u32(bytes, 4);
@@ -122,6 +131,14 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
     if overlaps(struct_block, strings_block) {
         return Err(FdtInputError::BlockOverlap);
     }
+    if off_struct % 4 != 0 {
+        return Err(FdtInputError::BlockMisaligned);
+    }
+    // The structure block must end with the FDT_END token (0x9): a truncated
+    // or foreign tail is refused before any token walk starts.
+    if size_struct < 4 || be_u32(bytes, (struct_block.1 - 4) as usize) != 9 {
+        return Err(FdtInputError::MissingEndToken);
+    }
 
     // The reservation block must start after the header, be 8-byte aligned,
     // and end (with its terminator) before the next block or the object end.
@@ -139,14 +156,12 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
     {
         return Err(FdtInputError::BlockOutOfRange);
     }
-    // Project-accepted layout: the reservation block precedes the structure
-    // block, so its scan is bounded by `off_dt_struct`. The specification only
-    // recommends this order; other orders are refused as an input restriction.
-    if off_mrb >= off_struct {
+    // Project-accepted layout: reservation block, then structure block, then
+    // strings block. The specification only recommends this order.
+    if off_mrb >= off_struct || struct_block.1 > off_strings {
         return Err(FdtInputError::UnsupportedBlockOrder);
     }
-    let scan_limit = totalsize
-        .min(if off_struct > off_mrb { off_struct } else { totalsize });
+    let scan_limit = off_struct;
     let mut pos = off_mrb;
     let mrb_end = loop {
         let end = pos
@@ -209,6 +224,10 @@ mod tests {
         out[24..28].copy_from_slice(&16u32.to_be_bytes());
         out[32..36].copy_from_slice(&strings_size.to_be_bytes());
         out[36..40].copy_from_slice(&struct_size.to_be_bytes());
+        if struct_size >= 4 {
+            let end = struct_start + struct_size - 4;
+            out[end as usize..(end + 4) as usize].copy_from_slice(&9u32.to_be_bytes());
+        }
         out
     }
 
@@ -283,6 +302,26 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unbacked_structure_alignment() {
+        let bytes = blob(40, 57, 8, 68, 4);
+        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BlockMisaligned));
+    }
+
+    #[test]
+    fn rejects_a_structure_block_without_the_end_token() {
+        let mut bytes = blob(40, 56, 8, 64, 4);
+        bytes[60..64].copy_from_slice(&0u32.to_be_bytes());
+        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::MissingEndToken));
+    }
+
+    #[test]
+    fn rejects_strings_before_the_structure_block() {
+        let mut bytes = blob(40, 64, 8, 72, 4);
+        bytes[12..16].copy_from_slice(&56u32.to_be_bytes());
+        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::UnsupportedBlockOrder));
+    }
+
+    #[test]
     fn rejects_unsupported_fdt_versions() {
         let mut old = blob(40, 56, 8, 64, 4);
         old[20..24].copy_from_slice(&16u32.to_be_bytes());
@@ -291,6 +330,10 @@ mod tests {
         let mut future = blob(40, 56, 8, 64, 4);
         future[24..28].copy_from_slice(&18u32.to_be_bytes());
         assert_eq!(validate(0x8000_0000, &future), Err(FdtInputError::UnsupportedVersion));
+
+        let mut lower = blob(40, 56, 8, 64, 4);
+        lower[24..28].copy_from_slice(&15u32.to_be_bytes());
+        assert_eq!(validate(0x8000_0000, &lower), Err(FdtInputError::UnsupportedVersion));
     }
 
     #[test]
