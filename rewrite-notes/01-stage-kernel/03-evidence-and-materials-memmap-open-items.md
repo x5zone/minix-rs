@@ -884,3 +884,13 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 连带 | `TYPE_INDEPENDENT` 仅 `RUNTIME` 可达；NV/SP 分支不可达（已在文档注明） |
 | 门 | minix-boot **132**、boot-shim **70**；x86_64-unknown-uefi check 通过 |
 | aarch64 QEMU | 门控落地后**再次 PASS**（exit 0）；日志 `diagnostic only` 不等于配置表 DTB 首读授权已验证 |
+
+## 三十、第五十八轮：纯文档更正记录
+
+| 项 | 结论 |
+|---|---|
+| 属性证据 | 2.10 原始版含高位 RO/SP/CPU_CRYPTO；Errata A/2.11 移位。上一轮表述已撤回 |
+| profile 解锁 | 需「钉 profile + 改无条件拒绝」两步；仅加 profile 不解锁 NV |
+| 快照身份 | UEFI `InputObjectId = MapSnapshotId`；Preflight 不产记录；重试整体废弃 |
+| 容量失败 | 三位置三分；仅 EBS 后重取坚持不扩容 |
+| 门 | 无代码改动；沿用 minix-boot **132**、boot-shim **70**；lint 0 |

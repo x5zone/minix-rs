@@ -125,11 +125,11 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 1. 未知类型 / 未知属性位 / ISA 属性位 → 分类错误；
 2. `UNACCEPTED` / `PAL_CODE` → 拒绝启动；
 3. 类型强制处置：`RESERVED`/`UNUSABLE` → 排除；类型 11/12 → 设备路径（不产出区间）；
-4. 独立属性（`RUNTIME`/`NV`/`SP`）→ 诊断成员；
+4. 独立属性 → 诊断成员：**当前可达的只有 `RUNTIME`**；`NV`（`0x8000`）与 `SP`（`0x4000` 低位 / `0x4_0000` 高位）在当前冲突位拒绝与 profile 门控下 fail-closed，不进入输出表。`PERSISTENT` 是独立的 UEFI 内存类型，不等于 `NV` 属性位，不能用它的测试证明 `NV` 分支可达；
 5. 无写回位 → 诊断成员；
 6. 写回准入后按类型分派：`CONVENTIONAL` → 可用表；引导服务类 / `ACPI_RECLAIM` → 保留表；其余 → 诊断成员。
 
-测试（`cargo test -p boot-shim --lib`，69 通过）：`types_that_earn_no_ordinary_mapping_go_to_the_side_list`、`excluded_and_device_types_stay_out_of_every_list`、`rejects_side_list_beyond_its_buffer`、`the_four_ambiguous_combinations_land_as_adjudicated`、`geometry_is_checked_for_ranges_that_are_emitted` 等 32 条。
+测试（`cargo test -p boot-shim --lib`，70 通过）：`types_that_earn_no_ordinary_mapping_go_to_the_side_list`、`excluded_and_device_types_stay_out_of_every_list`、`rejects_side_list_beyond_its_buffer`、`the_four_ambiguous_combinations_land_as_adjudicated`、`every_contested_attribute_bit_fails_closed`、`profile_only_attributes_fail_closed_without_a_pinned_profile`、`geometry_is_checked_for_ranges_that_are_emitted` 等 32 条。
 
 **不保证什么**：类型 11/12 与 `RESERVED`/`UNUSABLE` 只是一种「不产出区间」的处置，它们**没有**进入任何禁止集合（禁止集合不存在）；诊断成员没有跨界载体。**输出分流相同 ≠ 语义相同**：`RESERVED` 在来源域之外（类型本身推不出普通 RAM 资格），`UNUSABLE` 在来源域之内、由类型资格排除；未来不能让实现者把两者合并成一个 `Excluded`。两者的差异要等 UEFI 原始描述符记录落地后才能兑现（O-12g 第二半）。
 
@@ -213,7 +213,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 各投影的量化顺序：`RamSourcePageDomain` 先 `Union` 再 `FullPages`；`TypeAllocatablePages` 先裁决类型/属性兼容、再合并、再 `FullPages`；PMM 显式保留逐来源 `Outward` 后合并页集合；`no-map` 逐声明 `Outward`（映射禁止）；MRB 访问审计保留精确 byte range、页表落实时另行 `Outward`；设备映射按实际叶子逐页检查授权。
 2. **PMM 域 = 可用 ⊍ 排除**，只对 `RamSourceDomain` 成立。`RamSourceDomain` = 该启动入口的权威来源识别出的物理主存区间，**尚未应用保留声明与对象生命周期**：DTB 入口取 `/memory`；UEFI 入口按明确策略从类型中识别（不是所有描述符）；MMIO、端口、地址空洞、未描述区域都不属于它。同一页有多条保留来源时，排除只计一次、来源身份不丢。
 
-**必须分开的两个概念**：`RamSourceDomain` 回答「权威输入是否声称这段是物理 RAM」；`OrdinaryRamEligibility`（原 `RamBacking`）只回答「当前阶段是否允许把它作为普通主存**映射**」；能否分配由 `PmmEligibility(phase)` 表达，某个对象能否经某条路径访问由 `AccessRequirement/AccessAuthorization` 表达，物理内存性质由 `MemoryKind` 表达。四者不能互相推导。**术语说明**：`backing` 容易被读成「物理支撑」，而本项说的是 OS 政策资格——`RUNTIME_SERVICES_*`、`ACPI_NVS`、`PERSISTENT` 都有物理支撑却不具普通资格，`UNACCEPTED` 有物理来源但未接受。物理支撑性质、OS 政策资格、硬件准入是三个层次，不能压成一个布尔值。`EfiReservedMemoryType` 是典型反例：aarch64 UEFI 的权威 DTB `/reserved-memory` 与 MRB 提供**保留来源身份**，UEFI 内存图提供物理存在与固件处置；两者可交叉验证保留声明，但**都不能单独推出 `RamSourceDomain` 成员资格**——只有独立平台证据能证明属于系统 RAM 时才纳入。x86_64 没有 DTB 来源，它的 `EfiReservedMemoryType` 只能按固件类型政策处置，不能套用 aarch64 的交叉核对。
+**必须分开的两个概念**：`RamSourceDomain` 回答「权威输入是否声称这段是物理 RAM」；`OrdinaryRamMappingEligibility`（原 `RamBacking`）只回答「当前阶段是否允许把它作为普通主存**映射**」；能否分配由 `PmmEligibility(phase)` 表达，某个对象能否经某条路径访问由 `AccessRequirement/AccessAuthorization` 表达，物理内存性质由 `MemoryKind` 表达。四者不能互相推导。**术语说明**：`backing` 容易被读成「物理支撑」，而本项说的是 OS 政策资格——`RUNTIME_SERVICES_*`、`ACPI_NVS`、`PERSISTENT` 都有物理支撑却不具普通资格，`UNACCEPTED` 有物理来源但未接受。物理支撑性质、OS 政策资格、硬件准入是三个层次，不能压成一个布尔值。`EfiReservedMemoryType` 是典型反例：aarch64 UEFI 的权威 DTB `/reserved-memory` 与 MRB 提供**保留来源身份**，UEFI 内存图提供物理存在与固件处置；两者可交叉验证保留声明，但**都不能单独推出 `RamSourceDomain` 成员资格**——只有独立平台证据能证明属于系统 RAM 时才纳入。x86_64 没有 DTB 来源，它的 `EfiReservedMemoryType` 只能按固件类型政策处置，不能套用 aarch64 的交叉核对。
 3. **两棵树各一个禁止集合；禁止与分配正交**。
 4. **义务键 =（对象｜设备窗口，树，阶段，路径）**；缺任一维不构成义务。
 5. **设备访问 ≠ 设备映射**：MMIO、端口 I/O 与 CPU 架构寄存器访问是**三种不同的访问接口/命名域**（第三种不属于物理地址集合，不得进入 PMM、页表或端口范围集合）；映射义务与访问合同是两份记录。
@@ -432,7 +432,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 **属性按语义分三类**（不能统称「能力位」）：缓存能力（`WB`/`WT`/`WC`/`UC`/`UCE`）；物理保护能力（`WP`/`RP`/`XP`/`RO`）；其它特征（`MORE_RELIABLE`、`CPU_CRYPTO`、`SP`、`NV`、`RUNTIME`）。**`WP` 归入物理保护能力**：规范先称它为 physical memory protection attribute，再说明它通常被用作 write-protected cacheability policy——它有特殊缓存语义，但既不是页表写权限，也不能与 `RO` 混为一谈。**`SP` 不是 no-map**：第一版把它排除出普通 PMM 是项目保守选择，不得由 `SP` 自动生成映射禁令。
 
-**`CONVENTIONAL` 是有条件的**：它可以构成 `RamSourceDomain` 与普通主存性质，但 `OrdinaryRamEligibility`（类型层面）**不隐含缓存属性检查**；最终普通映射 = 类型资格 ∧ 缓存属性资格（第一版要求 WB），最终 PMM 分配 = 阶段资格 ∧ 缓存资格 ∧ 全部排除项。无 WB 的描述符不进入普通可分配集合，但**保留其来源身份**。
+**`CONVENTIONAL` 是有条件的**：它可以构成 `RamSourceDomain` 与普通主存性质，但 `OrdinaryRamMappingEligibility`（类型层面）**不隐含缓存属性检查**；最终普通映射 = 类型资格 ∧ 缓存属性资格（第一版要求 WB），最终 PMM 分配 = 阶段资格 ∧ 缓存资格 ∧ 全部排除项。无 WB 的描述符不进入普通可分配集合，但**保留其来源身份**。
 
 **术语边界**：这里读的是 `GetMemoryMap()` 的 `EFI_MEMORY_DESCRIPTOR.Attribute`（能力位掩码），与 `EFI Memory Attributes Table` 反映的保护配置不是一回事；第一版不解析后者，也不宣称已获知固件实际施加的全部权限。
 
@@ -444,9 +444,9 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 - **冲突位域整体 fail-closed（已实现）**：`0x1000..=0x1_0000` 在两套官方编码里含义不同——`0x4000` 在一套里是 `SP`（必须排除出 PMM）、另一套里是 `XP`（仅保护能力元数据）；`0x8000` 是 `CPU_CRYPTO` vs `NV`；`0x1000` 是 `MORE_RELIABLE` vs `WP`；`0x2000` 是 `RO` vs `RP`；`0x1_0000` 是 `HOT_PLUGGABLE` vs `MORE_RELIABLE`。任一读法都可能把必须排除的内存伪装成元数据，因此整个 `0x1_F000` 在已知位闸之前单独拒绝（`PolicyError::AmbiguousAttribute`，负控 `every_contested_attribute_bit_fails_closed` 与 `the_ambiguous_bit_fails_closed_under_either_name`）。
 - `0x0010_0000`（仓库编码的 `HOT_PLUGGABLE`）：`uefi-raw 0.9` 无该常量，走未知位拒绝（`hot_pluggable_bit_fails_closed_as_unknown`）。
-- **代价**：`NON_VOLATILE` 位现在也落进拒绝域——模型仍认识 NV 语义（`TYPE_INDEPENDENT` 保留该分支），但**当前分类器不接受带 NV 位的输入，该分支在真实输入上不可达**；恢复它需要先钉住带版本证据的固件编码 profile，不是「恢复一个分类分支」这么简单。`RUNTIME` 与 `SPECIAL_PURPOSE`（`0x4_0000`）仍按独立属性正常进入六步裁决。**位值证据按「规范仓库源文件 + EDK2」这一支取，不按 2.11 PDF 表取**：三个已发布文本与 EDK2 的属性位编码互不一致（见 03 号文档第十五节矩阵：2.11 PDF 为 `0x10000`、EDK2 为 `0x100000`，`WP`/`MORE_RELIABLE` 同样整体错位）。钉住的是「当前 `uefi-raw` 与 Linux 头文件一致的编码」这一事实，而不是某份 PDF 的表格；将来升级 `uefi-raw` 时**必须重核全部已识别属性位**，不能只迁移 hot-pluggable 一位。
+- **代价**：`NON_VOLATILE` 位现在也落进拒绝域——模型仍认识 NV 语义（`TYPE_INDEPENDENT` 保留该分支），但**当前分类器不接受带 NV 位的输入，该分支在真实输入上不可达**；恢复它需要**两步**：先钉住带版本证据的固件编码 profile，再把 `0x1_F000` 的无条件拒绝改为按 profile 解释——只要无条件拒绝还在，仅添加 profile 记录仍然解不开 `NV`。若决定后续版本也不支持该属性，应明说，不要让读者以为 profile 一到手就自动解锁。`RUNTIME` 与 `SPECIAL_PURPOSE`（`0x4_0000`）仍按独立属性正常进入六步裁决。**位值证据按「规范仓库源文件 + EDK2」这一支取，不按 2.11 PDF 表取**：三个已发布文本与 EDK2 的属性位编码互不一致（见 03 号文档第十五节矩阵：2.11 PDF 为 `0x10000`、EDK2 为 `0x100000`，`WP`/`MORE_RELIABLE` 同样整体错位）。钉住的是「当前 `uefi-raw` 与 Linux 头文件一致的编码」这一事实，而不是某份 PDF 的表格；将来升级 `uefi-raw` 时**必须重核全部已识别属性位**，不能只迁移 hot-pluggable 一位。
 
-**高位属性改为 profile 门控（已实现）**：`0x2_0000`（`RO`）、`0x4_0000`（`SP`）、`0x8_0000`（`CPU_CRYPTO`）只在规范仓库/EDK2 编码里是标准属性，本项目同时承认的已发布表里没有这三个位置。没有固件身份就没有唯一解释，因此三者现在**在 profile 未钉住前直接拒绝**（`PolicyError::ProfileAttribute`，测试 `profile_only_attributes_fail_closed_without_a_pinned_profile`）；`0x10_0000` 仍由未知位闸拒绝。将来 `UefiMemoryAttributeProfile` 绑定**实际启动固件**（x86 与 aarch64 分别记录镜像身份，不能假设同源）后，才允许按该 profile 解释这三个位。附带后果：`SP` 的独立属性排除分支与 `NV` 一样在真实输入上不可达，`TYPE_INDEPENDENT` 只剩 `RUNTIME` 可达。
+**高位属性改为 profile 门控（已实现），理由要按两版发布文本写对**：`RO`/`SP`/`CPU_CRYPTO` **在 UEFI 2.10 原始发布版里就是 `0x2_0000`/`0x4_0000`/`0x8_0000`**；2.10 Errata A 与 2.11 PDF 把它们移到低一组（`0x2000`/`0x4000`/`0x8000`）。所以问题不是「已发布规范没有这些位置」，而是**两个正式发布版本族对同一属性采用了不同位值**，而内核无法从 `uefi-raw` 常量判断启动固件采用哪一版。三者因此在 profile 未钉住前**直接拒绝**（`PolicyError::ProfileAttribute`，测试 `profile_only_attributes_fail_closed_without_a_pinned_profile`）；`0x10_0000` 仍由未知位闸拒绝。将来 `UefiMemoryAttributeProfile` 必须绑定**实际启动固件镜像身份**（x86 与 aarch64 分别记录，不能假设同源），并**同时钉住低位组与高位组的完整映射**——只授权三个高位会得到「部分属性可识别、其余冲突位永久拒绝」的半套 profile。
 
 **属性位证据矩阵（自包含）**：两组编码的分布并不对称——UEFI 2.10 原始发布版与 EDK2/Linux 一致，2.10 Errata A 与 2.11 PDF 使用移位后的另一组；规范仓库 `main` 是活动分支，不能当固定版本。本项目钉住仓库编码，但**承认另一组已发布编码**，因此对两组的交集位 fail-closed：
 
@@ -465,7 +465,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 **判据**：每个 backing 页能指回一个「普通主存 = 是」的来源记录，且阶段允许。
 
-**边界**：`OrdinaryRamEligibility` 只描述来源与 OS 政策资格，**不证明某架构实际能访问该区间**——x86 还要 PAT/MTRR 有效类型、AArch64 还要 MAIR 与逐 PE 配置、RISC-V 还要 PMA 能力与逐 hart 的 PMP。硬件准入不得被 `ordinary_main_memory = true` 代替。
+**边界**：`OrdinaryRamMappingEligibility` 只描述来源与 OS 政策资格，**不证明某架构实际能访问该区间**——x86 还要 PAT/MTRR 有效类型、AArch64 还要 MAIR 与逐 PE 配置、RISC-V 还要 PMA 能力与逐 hart 的 PMP。硬件准入不得被 `ordinary_main_memory = true` 代替。
 
 **`LOADER_CODE` 不是一律 R/NX**：只要它仍是当前执行中的 loader 代码，就需要可执行映射；可执行权限来自仍存活的 loader 对象义务，不因「被分类为保留内存」自动变成 R/NX。最后一次执行点之后才撤销执行映射或按生命周期处置——这也是对象存活区间必须参与映射权限计算的原因。
 
@@ -548,6 +548,10 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 5. 在副本上执行完整 `fdt_layout::validate`。
 
 **ABI 地址、源物理范围与读取 VA 是三个概念**：`BootInputAddress`（ABI 递交的地址及其地址域——四条路径实际交付的都是**物理地址**：AArch64 `x0`、UEFI 配置表 DTB、RISC-V `a1`/`satp=0`）、`SourcePhysicalRange`（DTB 对象实际占用的物理范围）、`ReadVirtualRange`（当前阶段实际用于读取的 VA 范围）。不构造概括性的 `SourceVirtualRange`——那会把物理地址误包装成虚拟地址。`LiveInputReservation = Outward(SourcePhysicalRanges)`——**PMM 排除的是物理页，不是虚拟区间**；目标副本与源的不重叠也必须**按物理地址**判断：源 VA 与目标 VA 数值不同不代表不落在同一 PA（直接映射、恒等映射等别名都可能重合）。
+
+**DTB 物理范围的端点策略**：`SourcePhysicalRange = [dtb, dtb + totalsize)`，`dtb + totalsize` 有可能触及 `2^64`。二选一并写死：内部端点用 `u128` 允许独占端等于 `2^64`，或第一版定义 `UnsupportedPhysicalAddressEnd` 明确拒绝——**不得**用普通 `u64 checked_add` 让它退化成 `RangeOverflow`（把合法边界伪装成算术回绕）。
+
+**副本与源的相交检查绑定实际分配结果**：按 PA 判断不重叠之后，仍须在分配器返回副本物理地址后，用**实际分配范围**再作一次相交检查。「分配器通常不会从 ACPI reclaim 区分配」不是证据——分配资格与源对象的生命周期登记是两份独立证据。
 
 **`BootInputReachability` 是端到端可读性，不是「PTE 存在」**：在指定阶段与访问路径下，完整对象的只读访问所需的地址翻译、页表访问、物理访问保护与平台准入条件必须全部成立——RISC-V 上 PMP 可能拒绝 S 模式访问、PMA 还可能限制访问方式；AArch64/x86 各有对应门控。具体由各架构实现验证，通用层只表达「可读」语义，不暴露 PMP/页表遍历等机制名。
 
@@ -654,7 +658,7 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 - **O-12c** 设备窗口授权：见下节；判据是**每页都能指回一条有效的设备映射政策授权**。
 - **O-12d** PMM 排除累积器：与可用表互补（对来源域）；每来源贡献一次。
 - **O-12e** 容量与失败形状：超限拒绝启动；两遍扫描；每份输出独立容量。
-- **O-12f** `RamSourceDomain` 与 `OrdinaryRamEligibility` 分开定义（四条入口各一组规则）。
+- **O-12f** `RamSourceDomain` 与 `OrdinaryRamMappingEligibility` 分开定义（四条入口各一组规则）。
 - **O-12g** 采集器重构：保留原始来源记录，再派生投影。
 - **O-12h** UEFI 描述符结构校验与政策分类分开（见下）。
 - **O-12i** 每种政策投影的页粒度规则（见下）。
@@ -777,7 +781,15 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 
 两条硬约束：**`FinalMap` 的完整类型检查必须在读 body 之前**（不能用 `PreflightMap` 的 header 验证代替整段授权）；**最终取图之后的解析/采集/投影/审计必须是无分配路径**（隐藏的动态分配同样会让 `MapKey` 失效）。`PreflightMap` 不进入 PMM 投影，也不与 `FinalMap` 的记录混用。
 
-**必测**（未实现）：① 预检时 header 页是 ACPI reclaim、最终快照类型改变 → 读 body 前拒绝；② 预检跨两个连续同类型描述符、最终快照分段变化但仍完整覆盖 → 允许；③ 最终快照验证后，解析与审计期间无额外分配、无改变内存图的服务调用。
+**缓冲区不足分三种情况，不能共用一个规则**：
+
+| 发生位置 | 第一版处理 |
+|---|---|
+| `PreflightMap` 太小 | 尚未读 header：可以扩容后重取，或明确拒绝启动 |
+| 首次 `FinalMap` 太小 | 尚未调用 `ExitBootServices()`：可扩容后重跑最终取图与审计；若坚持「步骤 4 后不再分配」，则明确拒绝 |
+| 首次 `ExitBootServices()` 失败后的重取太小 | **保持现有决定**：复用缓冲区、不扩容、明确失败——此时固件可能已部分关闭 Boot Services，约束不同 |
+
+**必测**（未实现）：① 预检时 header 页是 ACPI reclaim、最终快照类型改变 → 读 body 前拒绝；② 预检跨两个连续同类型描述符、最终快照分段变化但仍完整覆盖 → 允许；③ 最终快照验证后，解析与审计期间无额外分配、无改变内存图的服务调用；④ 三种 `EFI_BUFFER_TOO_SMALL` 场景分别落到上表对应处理。
 
 **重试阶段的执行环境必须预先约束**（规范允许首次 `ExitBootServices()` 失败后固件已部分关闭 Boot Services）：
 
@@ -831,7 +843,7 @@ GetMemoryMap(reused_buffer) → ValidateDescriptorSnapshot
 
 **合法记录与拒绝诊断记录分开**（未实现）：结构校验失败的描述符不进入来源记录层，但必须留下**拒绝诊断记录**（`DescriptorIndex`、原始 `Type`、`PhysicalStart`、`VirtualStart`、`NumberOfPages`、失败检查项）——结构错误发生时恰恰最需要来源信息，不能因为「没通过校验」就只剩一句错误码。
 
-**统一 `SourceRef` 必须在接通启动路径前定型**（未实现）：`SourceRef { input_object: InputObjectId, local_source: LocalSourceId }`；`FirmwarePrefix` 对 `Memory` 的引用也用它，不再保留裸 `memory_id`。这样每条政策、排除原因、禁止项、对象义务共用同一身份，也防止把两个输入对象里的 `SourceId(3)` 当成同一条来源。节点路径文本与逐级 `ranges` 转换链可分阶段补，不必为接通内存记录先做完整地址翻译。
+**统一 `SourceRef` 必须在接通启动路径前定型**（未实现）：`SourceRef { input_object: InputObjectId, local_source: LocalSourceId }`；`FirmwarePrefix` 对 `Memory` 的引用也用它，不再保留裸 `memory_id`。**UEFI 的 `InputObjectId` 是快照实例身份，不是来源类别**：每次成功的 `GetMemoryMap()` 分配新的 `MapSnapshotId`（`MapKey` 只是该快照的固件版本凭据）；`PreflightMap` 不产生最终政策记录，`FinalMap` 的全部描述符同属一个快照 ID，stale-key 重试产生新 ID 且旧记录与旧投影整体废弃——否则三份快照里同号的 `DescriptorIndex` 会被当成同一条来源。这样每条政策、排除原因、禁止项、对象义务共用同一身份，也防止把两个输入对象里的 `SourceId(3)` 当成同一条来源。节点路径文本与逐级 `ranges` 转换链可分阶段补，不必为接通内存记录先做完整地址翻译。
 
 **UEFI 原始描述符记录的最小字段**（未实现）：`DescriptorIndex`、原始 `Type`、原始 `Attribute`、`PhysicalStart`、`VirtualStart`、`NumberOfPages`、结构校验结果；每个通过结构校验的描述符先成为带身份的记录，再进入类型裁决——裁决可以拒绝启动，但不能在来源层消灭 `RESERVED`/`UNUSABLE`/MMIO/类型 11/12；导致拒绝的 `PAL_CODE`/`UNACCEPTED` 至少要在错误上下文保留索引、类型与范围。
 
@@ -876,7 +888,7 @@ PMMAvailable(p) = RamSourcePageDomain
 PMMExcluded(p) = RamSourcePageDomain \ PMMAvailable(p)
 ```
 
-**`CacheAttributeEligiblePages(p)` 必须单独成项**：第一版要求 WB，无 WB 的 `CONVENTIONAL` 描述符不进普通可分配集合——如果只写 `TypeAllocatablePages`，这类页仍会出现在公式结果里，与文字结论矛盾。UEFI 路径的该项来自描述符属性资格；DTB 路径来自平台内存属性政策（不得为共用公式伪造 UEFI 属性记录）。普通映射授权同样要有自己的属性兼容检查，不能只看 `OrdinaryRamEligibility`。
+**`CacheAttributeEligiblePages(p)` 必须单独成项**：第一版要求 WB，无 WB 的 `CONVENTIONAL` 描述符不进普通可分配集合——如果只写 `TypeAllocatablePages`，这类页仍会出现在公式结果里，与文字结论矛盾。UEFI 路径的该项来自描述符属性资格；DTB 路径来自平台内存属性政策（不得为共用公式伪造 UEFI 属性记录）。普通映射授权同样要有自己的属性兼容检查，不能只看 `OrdinaryRamMappingEligibility`。
 
 **四类排除原因必须分开，不能塞进一个未定义的 `AllocationReservations`**：① 类型资格（`UNUSABLE`/`UNACCEPTED`/`ACPI_NVS`/`Runtime` 等在阶段 `p` 是否允许分配）——构造规则是**先裁决、再取整页**：
 
@@ -913,6 +925,15 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 | 来源记录层 | `collect_with_sources()` 交出六类 `SourceRecord`（容量 40）；`no-map`、RAM 外声明、MRB 出表后仍可追溯：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`；`collect()` 语义不变；`dtb_collect_and_collect_with_sources_agree` 钉住两条入口不漂移；`dtb_no_map_declarations_count_against_the_declaration_cap` 钉住「RAM 外的 no-map 不进任何表仍占声明容量」；`dtb_reusable_duplicates_are_deduplicated_not_rejected`、`dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_partial_overlap_of_memory_ranges_is_rejected` 钉住三分裁决 |
 | FDT 容器校验 | `fdt_layout::validate` **28 条测试**（`accepts_a_canonical_layout`、`accepts_an_unaligned_strings_block`、`accepts_a_property_before_children`、`rejects_a_property_after_a_child`、`rejects_an_unknown_token`、`rejects_a_second_root`、`rejects_unbalanced_end_nodes`、`rejects_an_end_token_in_the_middle`、`rejects_a_property_running_past_the_block`、`rejects_a_property_name_outside_the_strings_block`、`rejects_an_unterminated_property_name`、`rejects_nesting_beyond_the_parser_limit`、`the_parser_consumes_the_deepest_tree_this_gate_accepts`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_more_reservations_than_the_collector_accepts`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_structure_block_without_the_end_token`、`rejects_unbacked_structure_alignment`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`、`rejects_strings_before_the_structure_block`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
 | 解析库依赖事实 | `fdt 0.1.5` `node.rs`：`properties()` 首个非属性 token 即停；`children()`/`all_nodes()` 遇「子节点后属性」即结束；`all_nodes()` 父栈 64 槽、根在下标 1（最大安全深度 63）。QEMU 8.2.2 `dumpdtb` 全树 0 处属性后置 |
+
+**下一轮最该补的证据（可复核事实，不是新公式）**：
+
+| 材料 | 为什么 |
+|---|---|
+| x86_64 OVMF 与 aarch64 AAVMF 的实际镜像身份、版本与哈希 | 仅有 EDK2 `main` 钉不住固件编码；两条腿的固件也不必同源 |
+| QEMU 构建版本、machine version、accelerator、CPU 型号、SMP 配置（逐 `PlatformMemoryProfile`） | 设备窗口与 PLIC 公式目前仍是 profile 候选值 |
+| `PreflightMap` / 首次 `FinalMap` 的缓冲容量策略与 `EFI_BUFFER_TOO_SMALL` 处理 | 三种失败位置的合同已定，缺实现与测试 |
+| 四条 DTB 输入路径的启动 ABI 合同，特别是「复制完成前原 DTB 不被并发修改」的依据 | O-11 的内容一致性条件目前是假设 |
 
 **证据分层（编译通过 ≠ 启动验证）**：
 

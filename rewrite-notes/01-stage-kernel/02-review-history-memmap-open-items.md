@@ -10,6 +10,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第五十八轮评审之后：纯文档——属性证据更正、快照身份、容量失败）**
+
+- **属性证据更正**：`RO/SP/CPU_CRYPTO` 在 **UEFI 2.10 原始发布版**就是 `0x2_0000/0x4_0000/0x8_0000`；2.10 Errata A 与 2.11 PDF 才移到低位。上一轮「已发布规范没有这三个位置」的说法**撤回**；profile 门控保留，理由改为「无法从 `uefi-raw` 常量判断启动固件采用哪一版编码」，且 profile 必须同时钉住低位组与高位组。
+- **NV 解锁条件写完整**：除钉 profile 外，还必须把 `0x1_F000` 的无条件拒绝改成按 profile 解释；否则仅加 profile 记录仍解不开 NV。
+- **§2.2 修正**：测试数 69→70 并补 profile 负控名；第 4 步改为「当前可达的独立属性只有 `RUNTIME`」，注明 `PERSISTENT` ≠ `NV` 位。
+- **O-12k 容量失败三分**：`PreflightMap` 太小 / 首次 `FinalMap` 太小 / EBS 失败后重取太小，各自处理；只有第三种坚持「不扩容」。
+- **快照级来源身份**：UEFI 的 `InputObjectId` = `MapSnapshotId`（每次成功取图一个），`PreflightMap` 不产最终记录，stale-key 重试整体废弃旧记录。
+- **O-11 补两条**：DTB 物理端点用 `u128` 或 `UnsupportedPhysicalAddressEnd`（不得退化为 `RangeOverflow`）；副本相交检查绑定实际分配范围。
+- **术语**：全篇统一 `OrdinaryRamMappingEligibility`。
+
 **本轮（第五十七轮评审之后：profile 门控、双快照时序、ACPI 生命周期）**
 
 - **代码 `5566105c0`**：`0x2_0000`/`0x4_0000`/`0x8_0000`（RO/SP/CPU_CRYPTO）从「按仓库编码接受」改为 **`ProfileAttribute` fail-closed**——它们只在一组编码里是标准属性，未钉固件身份就没有唯一解释。`TYPE_INDEPENDENT` 现在只剩 `RUNTIME` 可达（NV 与 SP 都不可达）。boot-shim **70**、minix-boot **132**；aarch64 UEFI 腿在门控落地后**再次 PASS**。

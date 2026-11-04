@@ -5387,3 +5387,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-11×O-12k：`PreflightMap` 与 `FinalMap` 两种快照，七步时序，最终取图后无分配。
 - ACPI 不启用 → `EfiACPIReclaimMemory` 视为 Permanent；SourceRef 提前定型登记；术语统一。
 - 门：minix-boot 132、boot-shim 70；aarch64 UEFI 门控后再次 PASS。
+
+### 第二百六十六笔（01 阶段 · I-29 第五十八轮：纯文档更正）
+
+无代码改动；主文档约 990 行。
+
+- 撤回「已发布规范没有高位 RO/SP/CPU_CRYPTO」：2.10 原始版就有，Errata A/2.11 移位。
+- profile 解锁需两步（钉 profile + 改无条件拒绝）；O-12k 缓冲失败三分；UEFI 快照级来源身份（`MapSnapshotId`）。
+- §2.2 修正为 70 条并注明 NV/SP 分支不可达；术语统一。
+- 门：沿用 minix-boot 132、boot-shim 70；lint 0。
