@@ -55,11 +55,36 @@ fn run() -> ! {
     };
     let show_dot = parsed.show_dot;
     let almost_all = parsed.almost_all;
+    let long_format = parsed.long_format;
     let operands: Vec<String> = parsed.operands.iter().map(|s| String::from(*s)).collect();
+
+    // The long-stat face's name service: C's `NAMES` fills `user`/`group`
+    // through `user_from_uid`/`group_from_gid` (`ls.c:574-590`), each
+    // answering the numeric string when the account is unknown. The two
+    // databases are read once per run.
+    let (users, groups) = if long_format {
+        (read_db(PASSWD_PATH), read_db(GROUP_PATH))
+    } else {
+        (None, None)
+    };
+    // C `printtime`'s freshness window anchors at `time(NULL)` taken once
+    // per printlong call (print.c:129).
+    let now = match minix_sys::gettimeofday() {
+        Ok((sec, _usec)) => sec,
+        Err(_) => 0,
+    };
 
     let mut status = 0;
     if operands.is_empty() {
-        status = list_one(".", show_dot, almost_all, false);
+        status = list_one(
+            ".",
+            show_dot,
+            almost_all,
+            long_format,
+            users.as_deref(),
+            groups.as_deref(),
+            now,
+        );
         support::terminate(status);
     }
     let headers = operands.len() > 1;
@@ -70,7 +95,15 @@ fn run() -> ! {
         if headers {
             support::emit(format!("{operand}:\n").as_bytes());
         }
-        let result = list_one(operand, show_dot, almost_all, headers);
+        let result = list_one(
+            operand,
+            show_dot,
+            almost_all,
+            long_format,
+            users.as_deref(),
+            groups.as_deref(),
+            now,
+        );
         if result != 0 {
             status = result;
         }
@@ -78,11 +111,65 @@ fn run() -> ! {
     support::terminate(status)
 }
 
+/// C `_PATH_PASSWD` / the group database path.
+const PASSWD_PATH: &str = "/etc/passwd";
+const GROUP_PATH: &str = "/etc/group";
+
+/// Read a whole database file into text; `None` = the file is unavailable
+/// (the same face as an absent account — C's `user_from_uid` then answers
+/// the numeric fallback).
+fn read_db(path: &str) -> Option<String> {
+    let fd = minix_sys::open(path, 0, 0).ok()?;
+    let mut text = String::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match minix_sys::read(fd, &mut chunk) {
+            Ok(0) => break,
+            Ok(n) => text.push_str(&String::from_utf8_lossy(&chunk[..n])),
+            Err(_) => {
+                //[SD19-gate] close on the error path
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = minix_sys::close(fd);
+                return None;
+            }
+        }
+    }
+    //[SD19-gate] the fd is no longer used after close
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = minix_sys::close(fd);
+    Some(text)
+}
+
 /// Lists one operand: non-directories print themselves; directories walk
 /// the getdents stream. A per-operand open error warns and returns 1 (C
 /// keeps processing later operands, `ls.c:main`).
-fn list_one(operand: &str, show_dot: bool, almost_all: bool, _header: bool) -> i32 {
+fn list_one(
+    operand: &str,
+    show_dot: bool,
+    almost_all: bool,
+    long_format: bool,
+    users: Option<&str>,
+    groups: Option<&str>,
+    now: i64,
+) -> i32 {
     if !is_directory(operand) {
+        if long_format {
+            // C `display`/`printlong` for a non-directory operand: one long
+            // line for the file itself, no total (the entry sits at
+            // FTS_ROOTLEVEL, so `printtotal` is skipped, print.c:131).
+            let mut sb = zeroed_stat();
+            match minix_sys::lstat(operand, &mut sb) {
+                Ok(()) => {
+                    let line = render_long_line(&sb, operand, users, groups, now);
+                    support::emit(line.as_bytes());
+                }
+                Err(_) => {
+                    support::warn(format!("ls: {operand}: cannot stat\n").as_bytes());
+                    return 1;
+                }
+            }
+            return 0;
+        }
         support::emit(format!("{operand}\n").as_bytes());
         return 0;
     }
@@ -135,10 +222,199 @@ fn list_one(operand: &str, show_dot: bool, almost_all: bool, _header: bool) -> i
     #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::close(fd);
     names.sort();
+    if !long_format {
+        for name in names {
+            support::emit(format!("{name}\n").as_bytes());
+        }
+        return 0;
+    }
+    // The long-stat face: lstat every entry, compute the column widths over
+    // the listing (C `display`'s sizing loop, ls.c:525-580), print the
+    // `total` line, then one long line per entry.
+    let mut rows: Vec<(String, minix_sys::Stat)> = Vec::new();
     for name in names {
-        support::emit(format!("{name}\n").as_bytes());
+        let path = join_path(operand, &name);
+        let mut sb = zeroed_stat();
+        match minix_sys::lstat(&path, &mut sb) {
+            Ok(()) => rows.push((path, sb)),
+            Err(_) => {
+                // C's fts NS arm warns and skips the entry (ls.c:230-241).
+                support::warn(format!("ls: {path}: cannot stat\n").as_bytes());
+            }
+        }
+    }
+    if rows.is_empty() {
+        return 0;
+    }
+    // `btotal += sp->st_blocks` (ls.c:576); the default blocksize is 512,
+    // the unit `st_blocks` already counts, so the total is the raw sum.
+    let mut btotal: u64 = 0;
+    for (_, sb) in &rows {
+        btotal += sb.st_blocks.max(0) as u64;
+    }
+    // The NAMES are computed once; each row reuses them.
+    let names_of: Vec<(String, String)> = rows
+        .iter()
+        .map(|(_, sb)| (user_name(users, sb.st_uid), group_name(groups, sb.st_gid)))
+        .collect();
+    // `printtotal` (`print.c:172-186`): the root start's own listing is the
+    // one place without it — every directory listing prints it.
+    support::emit(format!("total {btotal}\n").as_bytes());
+    for ((path, sb), (user, group)) in rows.iter().zip(names_of.iter()) {
+        let line = render_long_line_with(sb, path, user, group, now);
+        support::emit(line.as_bytes());
     }
     0
+}
+
+/// Zeroed `Stat` (the same SAFETY shape as find's `zeroed`).
+fn zeroed_stat() -> minix_sys::Stat {
+    // SAFETY: `Stat` is a byte struct of plain integer fields; all-zero is a
+    // valid bit pattern, and a successful `lstat` overwrites it wholesale.
+    unsafe { core::mem::zeroed() }
+}
+
+/// C `major(x)` (`sys/sys/types.h:290`).
+fn major(x: u64) -> u64 {
+    (x & 0x000f_ff00) >> 8
+}
+
+/// C `minor(x)` (`sys/sys/types.h:291`).
+fn minor(x: u64) -> u64 {
+    ((x & 0xfff0_0000) >> 12) | (x & 0x0000_00ff)
+}
+
+/// `user_from_uid(uid, 0)` (`pwcache.c`): the account name, or the numeric
+/// string — the noname=0 shape always answers something printable.
+fn user_name(users: Option<&str>, uid: u32) -> String {
+    users
+        .and_then(|db| minix_proctools::passwd::lookup_uid_in(db, uid))
+        .map(|a| String::from(a.name))
+        .unwrap_or_else(|| {
+            // C `snprintf(nuser, "%u", sp->st_uid)` (`ls.c:584-585`); the
+            // alloc crate carries no Display for u32 in no_std, so the
+            // digits go in by hand.
+            let mut text = [0u8; 10];
+            let mut used = 0;
+            let mut v = uid;
+            loop {
+                text[used] = b'0' + (v % 10) as u8;
+                v /= 10;
+                used += 1;
+                if v == 0 {
+                    break;
+                }
+            }
+            let mut out = String::new();
+            for b in text[..used].iter().rev() {
+                out.push(*b as char);
+            }
+            out
+        })
+}
+
+/// `group_from_gid(gid, 0)`'s numeric-fallback shape over the group db.
+fn group_name(groups: Option<&str>, gid: u32) -> String {
+    groups
+        .and_then(|db| minix_proctools::passwd::lookup_gid_in(db, gid))
+        .map(|g| String::from(g.name))
+        .unwrap_or_else(|| {
+            let mut text = [0u8; 10];
+            let mut used = 0;
+            let mut v = gid;
+            loop {
+                text[used] = b'0' + (v % 10) as u8;
+                v /= 10;
+                used += 1;
+                if v == 0 {
+                    break;
+                }
+            }
+            let mut out = String::new();
+            for b in text[..used].iter().rev() {
+                out.push(*b as char);
+            }
+            out
+        })
+}
+
+/// `path/name` with the `.` root staying prefix-free (`./a`, not `..a`).
+fn join_path(root: &str, name: &str) -> String {
+    if root == "." {
+        String::from(name)
+    } else if root.ends_with('/') {
+        format!("{root}{name}")
+    } else {
+        format!("{root}/{name}")
+    }
+}
+
+/// C `printlong`'s default-flag line (`print.c:123-198`): `strmode`,
+/// nlink, user, group, size (or `major, minor` for character/block
+/// devices), the mtime window, and the path. `precomputed` carries the
+/// already-named user/group when the caller sized the columns; `None`
+/// names them on the fly (the single-operand face).
+fn render_long_line(
+    sb: &minix_sys::Stat,
+    path: &str,
+    users: Option<&str>,
+    groups: Option<&str>,
+    now: i64,
+) -> String {
+    let user = user_name(users, sb.st_uid);
+    let group = group_name(groups, sb.st_gid);
+    render_long_line_with(sb, path, &user, &group, now)
+}
+
+/// The row renderer over already-named accounts (the listing face keeps
+/// C's default column widths; the sizing loop is a registered simplifier).
+fn render_long_line_with(
+    sb: &minix_sys::Stat,
+    path: &str,
+    user: &str,
+    group: &str,
+    now: i64,
+) -> String {
+    // `ModeString` is a plain `[u8; 11]` alias (`mode.rs:317`); printlong
+    // prints the ten permission characters and keeps the trailing space C's
+    // format string adds between the mode and the nlink column.
+    let mode_text =
+        String::from_utf8_lossy(&minix_fileops::mode::strmode(sb.st_mode)[..10]).into_owned();
+    let is_device = sb.st_mode & 0o170000 == 0o020000 || sb.st_mode & 0o170000 == 0o060000;
+    let size_text = if is_device {
+        format!("{:>3}, {:>3}", major(sb.st_rdev), minor(sb.st_rdev))
+    } else {
+        format!("{:>8}", sb.st_size)
+    };
+    let time_text = render_time(sb.st_mtim.tv_sec, now);
+    format!(
+        "{} {:>3} {:<8}  {:<8}  {} {} {}\n",
+        mode_text, sb.st_nlink, user, group, size_text, time_text, path
+    )
+}
+
+/// C `printtime` (`print.c:327-352`): ctime's byte window — `mon dd ` from
+/// bytes 4-10, then `HH:MM` (bytes 11-16) when the stamp sits within
+/// ±SIXMONTHS of now, else ` yyyy` (a space plus bytes 20-24). UTC: this
+/// build carries no time-zone database (the 12-process-tools declared
+/// shape), so `dates::breakdown`'s fields stand in for ctime's local text.
+fn render_time(ftime: i64, now: i64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const SIXMONTHS: i64 = (365 / 2) * 86_400;
+    let broken = minix_proctools::dates::breakdown(ftime);
+    let month = MONTHS
+        .get((broken.month as usize).saturating_sub(1))
+        .copied()
+        .unwrap_or("???");
+    let head = format!("{} {:>2} ", month, broken.day);
+    let tail = if ftime + SIXMONTHS > now && ftime - SIXMONTHS < now {
+        format!("{:02}:{:02}", broken.hour, broken.minute)
+    } else {
+        format!(" {:>4}", broken.year)
+    };
+    format!("{head}{tail} ")
 }
 
 /// Probes whether the operand is a directory: `stat` the path and read the
@@ -164,15 +440,13 @@ fn is_directory(path: &str) -> bool {
 struct LsArgs<'a> {
     show_dot: bool,
     almost_all: bool,
+    long_format: bool,
     operands: Vec<&'a str>,
 }
 
 /// `ls` argument failure. Each arm maps to a distinct C error path.
 #[derive(Debug, PartialEq, Eq)]
 enum LsError {
-    /// `-l` requested — needs the long-stat face (stat + passwd/group db),
-    /// unwired in this build.
-    LongStatUnwired,
     /// An option letter `ls` does not model (`getopt` `?`/default → usage).
     Usage,
 }
@@ -186,6 +460,7 @@ enum LsError {
 fn parse_ls_args<'a>(args: &'a [&'a str]) -> Result<LsArgs<'a>, LsError> {
     let mut show_dot = false;
     let mut almost_all = false;
+    let mut long_format = false;
     let mut operands: Vec<&'a str> = Vec::new();
     let mut index = 0usize;
     while index < args.len() {
@@ -201,7 +476,7 @@ fn parse_ls_args<'a>(args: &'a [&'a str]) -> Result<LsArgs<'a>, LsError> {
                     b'1' => {} // single-column shape: the default here, a no-op
                     b'a' => show_dot = true,
                     b'A' => almost_all = true,
-                    b'l' => return Err(LsError::LongStatUnwired),
+                    b'l' => long_format = true,
                     _ => return Err(LsError::Usage),
                 }
             }
@@ -213,6 +488,7 @@ fn parse_ls_args<'a>(args: &'a [&'a str]) -> Result<LsArgs<'a>, LsError> {
     Ok(LsArgs {
         show_dot,
         almost_all,
+        long_format,
         operands,
     })
 }
@@ -220,15 +496,22 @@ fn parse_ls_args<'a>(args: &'a [&'a str]) -> Result<LsArgs<'a>, LsError> {
 /// Map an [`LsError`] to the message and exit code the old inline matcher used.
 fn arg_error(e: LsError) -> ! {
     match e {
-        LsError::LongStatUnwired => {
-            support::warn(b"ls: -l waits on the long-stat face (stat + passwd/group db)\n");
-            support::terminate(1);
-        }
         LsError::Usage => {
             support::warn(b"usage: ls [-1aA] [file ...]\n");
             support::terminate(1);
         }
     }
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }
 
 #[cfg(test)]
@@ -244,6 +527,7 @@ mod tests {
                 == LsArgs {
                     show_dot: false,
                     almost_all: false,
+                    long_format: false,
                     operands: vec![]
                 }
         );
@@ -270,29 +554,14 @@ mod tests {
     }
 
     #[test]
-    fn reports_long_stat_and_unknown() {
-        assert_eq!(parse_ls_args(&["-l"]).err(), Some(LsError::LongStatUnwired));
-        assert_eq!(
-            parse_ls_args(&["-la"]).err(),
-            Some(LsError::LongStatUnwired)
-        );
-        assert_eq!(
-            parse_ls_args(&["-al"]).err(),
-            Some(LsError::LongStatUnwired)
-        );
+    fn parses_long_format_and_reports_unknown() {
+        // `-l` now takes the long-stat face (this round's wiring).
+        assert!(parse_ls_args(&["-l"]).unwrap().long_format);
+        assert!(parse_ls_args(&["-la"]).unwrap().long_format);
+        assert!(parse_ls_args(&["-al"]).unwrap().long_format);
         assert_eq!(parse_ls_args(&["-x", "f"]).err(), Some(LsError::Usage));
         // A bare `-` is an operand.
         assert_eq!(parse_ls_args(&["-"]).unwrap().operands, vec!["-"]);
     }
 }
 
-#[cfg(all(not(test), target_os = "none"))]
-#[unsafe(no_mangle)]
-extern "Rust" fn main() -> i32 {
-    run()
-}
-
-#[cfg(any(test, not(target_os = "none")))]
-fn main() {
-    run()
-}

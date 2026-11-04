@@ -203,6 +203,8 @@
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
 
+- **`2026-11-05` 收口刷新（第 64 轮，基线 `ce822ffef`，`claim/LS-LONG-qoder`）**：`ls -l` 长格式已随批次五百三十八闭——`LongStatUnwired` 变体删除、printlong 面（strmode/nlink/NAMES/size 或 major,minor/mtime 窗）、名字服务接 `minix_proctools::passwd`（数字回退同 C 的 noname=0）、mtime 窗经 `dates::breakdown`（UTC 声明）。**命令面生产报文清零且无新声明残项**；口令库的消费方（chown/ls -l/renice -u）三面全接。
+
 - **`2026-11-05` 收口刷新（第 63 轮，基线 `52776d775`，`claim/CHOWN-NAME-qoder`）**：`chown` 的具名 user/group 已随批次五百三十七闭——`parse_owner_spec` 接口令库两文本参，`a_uid`/`a_gid` 按名解析、未中落 `id()` 数字腿；**SUPPORT_DOT 的真规则**落地（点分仅当整 token 非已知用户，`chown.c:171-174`）。`ls -l` 长格式为口令库的最后消费方（下一笔）。
 
 - **`2026-11-05` 收口刷新（第 62 轮，基线 `2460cb580`，`claim/FIND-REGEX-qoder`）**：find 的 `-regex`/`-iregex` 已随批次五百三十六闭——`minix-regex` 引擎补 `REG_ICASE`（字面/类双折叠）+ find 的 parse 期编译（整路锚包裹、坏模式 parse 期 `FindError::Regex`，C 的 errx 面）。**B6 的「模块入表」三件经实查改判需人裁决**（互锁引导契约：`NR_BOOT_PROCS`/`VM_BOOT_HANDOFF_MAX_MODULES`/内核引导表/端点分配，AGENTS.md 的启动契约条款）——同日 B6 行二次改述。find 按名拒绝只剩 `-fstype`/`-flags`（前置未清）。
