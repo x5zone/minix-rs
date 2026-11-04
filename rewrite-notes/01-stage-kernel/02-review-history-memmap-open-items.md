@@ -10,6 +10,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第四十四轮评审之后：预扫与解析库消费能力对齐）**
+
+- **代码 `d615d0190`**：`validate_structure` 增加**属性必须先于子节点**（`PropertyAfterChild`），深度上限 **64 → 63**；fdt_layout 测试 28 条；minix-boot **114**、boot-shim **67**；riscv bootface（OpenSBI 链）与 aarch64 UEFI QEMU 双 PASS。
+- **撤回上一轮的一个事实判断**：上一轮写「属性位于子节点之后是真实固件形态（QEMU/OpenSBI 打补丁即如此）」，并据此让预扫显式接受。本轮读 `fdt 0.1.5` 源码：`properties()` 在首个非属性 token 停；`children()`/`all_nodes()` 在「子节点后属性」处**直接结束迭代**——接受该形态等于让树被静默截断。随后用 QEMU 8.2.2 `dumpdtb` 全树扫描（0 处违规）与两条 QEMU 腿在「拒绝」规则下 PASS 证明：上一轮的观测来自有缺陷的临时扫描器，不是固件事实。判断收回，测试 `accepts_a_property_after_a_child` 改为 `rejects_a_property_after_a_child`。
+- **深度边界来自依赖实现**：`all_nodes()` 父栈 `[&[u8]; 64]`，根存下标 1，安全上限是 63 而非 64。新增 `the_parser_consumes_the_deepest_tree_this_gate_accepts`：门接受的最深树，`all_nodes()` 必须能走完。
+- **O-11 补第三段**：`fdt_layout::validate` 不只读 40 字节 header，还要扫 MRB/结构块/字符串；完整容器校验只能在**自有副本**上做。§2.1 同时写明今天仍是原地址就地消费、未复制。
+- **O-12g 前置**：原始来源记录（逐条声明、MRB 条目、未输出描述符）今天**没有跨过采集边界**，必须先落记录层再谈禁止集合编译。
+- **UEFI 属性位证据改支**：按规范仓库源文件 + EDK2 的编码取 `HOT_PLUGGABLE = 1<<20`，不再写「即 2.11 PDF 的位值」；三份文本与 EDK2 编码互不一致（03 号文档第十五节）。
+- **文档**：§6 测试清单按代码重新生成（28 条，去掉幽灵条目与重复）；基线改 `d615d0190`；`DeviceRequiredAccessRange` 统一为 `DeviceRequiredAccessEnvelope`；`PERSISTENT` 拆分「有 backing」与「第一版无普通资格」；§1.2「内存图兑现固件保护」改为「权威描述来源」。
+
 **本轮（第四十三轮评审之后：预扫在禁用跳转表后落地）**
 
 - **代码 `0464a1e5c`**：结构块预扫真正落地（token/树形/名称与属性边界/深度/END），27 条 fdt_layout 测试；minix-boot **113**、boot-shim **67**；riscv bootface 与 aarch64 UEFI QEMU 双 PASS。

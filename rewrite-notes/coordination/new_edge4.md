@@ -5257,3 +5257,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 新合同 EarlyExecutionClosure（指令 ∪ 只读数据依赖 ∪ 可写状态）。
 - O-12i 半开区间、§2.1 调用链、PLIC 段落合并、§6 113/67。
 - 门：minix-boot 113、boot-shim 67、两 QEMU 腿 PASS；lint 0。
+
+### 第二百五十二笔（01 阶段 · I-29 第四十四轮：预扫与 fdt 0.1.5 消费能力对齐）
+
+代码 `d615d0190`；主文档 677 → 698 行。
+
+- 结构预扫拒绝「子节点后属性」（`PropertyAfterChild`）；深度上限 64 → 63（`all_nodes()` 父栈 64 槽、根占下标 1）。
+- 撤回上一轮判断：「QEMU/OpenSBI 会产出属性后置」不成立——QEMU 8.2.2 `dumpdtb` 全树 0 处违规，且两条 QEMU 腿在「拒绝」规则下 PASS；上一轮观测来自有缺陷的临时扫描器。
+- 新测试 `the_parser_consumes_the_deepest_tree_this_gate_accepts`；fdt_layout 共 28 条。
+- 文档：O-11 补自有副本第三段；O-12g 原始记录层列为禁止集合编译的前置；UEFI 属性位证据改按规范源文件 + EDK2；`DeviceRequiredAccessEnvelope` 统一命名；§6 清单按代码重生成。
+- 门：minix-boot 114、boot-shim 67、riscv bootface 与 aarch64 UEFI QEMU 双 PASS、x86_64-unknown-uefi check 通过。

@@ -65,6 +65,10 @@ pub enum FdtInputError {
     BadTreeShape,
     /// Nesting deeper than the parser this project uses can hold.
     DepthLimitExceeded,
+    /// A property appears after a child node of the same node. `fdt 0.1.5`
+    /// stops iterating a node's children at that token, so the subtree after
+    /// it would vanish silently instead of failing.
+    PropertyAfterChild,
     /// A node name or property value/name runs past its block.
     StructureOutOfRange,
     /// A property name is not NUL-terminated inside the strings block.
@@ -114,22 +118,25 @@ fn overlaps(a: (u32, u32), b: (u32, u32)) -> bool {
     a.0 < b.1 && b.0 < a.1
 }
 
-/// Deepest node nesting the parser this project uses can hold (`fdt 0.1.5`
-/// keeps 64 parent slices).
-const MAX_DEPTH: u32 = 64;
+/// Deepest node nesting the parser this project uses can hold. `fdt 0.1.5`
+/// keeps a 64-slot parent stack but stores the root at index 1, so the deepest
+/// tree its `all_nodes()` can walk is 63 levels (root counted).
+const MAX_DEPTH: u32 = 63;
 
 /// Walk the structure block once and prove the invariants the parser relies
 /// on: only defined tokens, one root, balanced nesting, every name/property
 /// inside its block, names terminated in the strings block, nesting within the
-/// parser's limit, and `FDT_END` exactly once as the last token.
+/// parser's limit, properties before child nodes within a node, and `FDT_END`
+/// exactly once as the last token.
 ///
-/// Properties are **not** required to precede child nodes: real firmware
-/// (QEMU's generated tree, OpenSBI's fixups) appends properties to nodes that
-/// already have children, and the parsers this project uses accept that shape.
+/// The property-before-child order is load-bearing, not stylistic: `fdt 0.1.5`
+/// stops `properties()` at the first non-property token and stops `children()`
+/// and `all_nodes()` at a property that follows a child, so such a blob parses
+/// into a silently truncated tree instead of failing.
 ///
 /// This runs before any block of the image is guaranteed reachable, so its
 /// dispatch must not lower to a jump table; the target is built with
-/// `-C no-jump-tables` for that reason.
+/// `-C jump-tables=no` for that reason.
 #[inline(never)]
 fn validate_structure(
     bytes: &[u8],
@@ -147,6 +154,10 @@ fn validate_structure(
     let mut depth: u32 = 0;
     let mut seen_root = false;
     let mut seen_end = false;
+    // Bit `d` is set once the node currently open at depth `d` has seen a
+    // child, i.e. its property list is closed. `MAX_DEPTH` is 63, so one
+    // `u64` covers every depth the walk can reach.
+    let mut props_closed: u64 = 0;
 
     while pos < end {
         if end - pos < 4 {
@@ -161,10 +172,14 @@ fn validate_structure(
             if depth == 0 && seen_root {
                 return Err(FdtInputError::BadTreeShape);
             }
+            if depth > 0 {
+                props_closed |= 1u64 << depth;
+            }
             depth += 1;
             if depth > MAX_DEPTH {
                 return Err(FdtInputError::DepthLimitExceeded);
             }
+            props_closed &= !(1u64 << depth);
             if depth == 1 {
                 seen_root = true;
             }
@@ -191,6 +206,9 @@ fn validate_structure(
         } else if token == PROP {
             if depth == 0 {
                 return Err(FdtInputError::BadTreeShape);
+            }
+            if props_closed & (1u64 << depth) != 0 {
+                return Err(FdtInputError::PropertyAfterChild);
             }
             if end - pos < 8 {
                 return Err(FdtInputError::StructureOutOfRange);
@@ -471,9 +489,9 @@ mod tests {
     }
 
     #[test]
-    fn accepts_a_property_after_a_child() {
-        // Real firmware (QEMU, OpenSBI fixups) appends properties to nodes that
-        // already have children; the structure is still well formed.
+    fn rejects_a_property_after_a_child() {
+        // `fdt 0.1.5` stops `children()`/`all_nodes()` at a property that
+        // follows a child, so this shape would parse into a truncated tree.
         let mut structure = begin("");
         structure.extend_from_slice(&begin("child"));
         structure.extend_from_slice(&end_node());
@@ -481,7 +499,7 @@ mod tests {
         structure.extend_from_slice(&end_node());
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
-        assert!(validate(0x8000_0000, &bytes).is_ok());
+        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::PropertyAfterChild));
     }
 
     #[test]
@@ -569,6 +587,25 @@ mod tests {
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
         assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::DepthLimitExceeded));
+    }
+
+    #[test]
+    fn the_parser_consumes_the_deepest_tree_this_gate_accepts() {
+        // The gate's limit is only meaningful if the parser really walks the
+        // deepest accepted tree: `fdt 0.1.5` stores the root at parent-stack
+        // index 1 of 64, so one more level would index out of bounds.
+        let mut structure = Vec::new();
+        for _ in 0..MAX_DEPTH {
+            structure.extend_from_slice(&begin("n"));
+        }
+        for _ in 0..MAX_DEPTH {
+            structure.extend_from_slice(&end_node());
+        }
+        structure.extend_from_slice(&end());
+        let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
+        assert!(validate(0x8000_0000, &bytes).is_ok());
+        let fdt = fdt::Fdt::new(&bytes).expect("parser accepts the gated blob");
+        assert_eq!(fdt.all_nodes().count(), MAX_DEPTH as usize);
     }
 
     #[test]
