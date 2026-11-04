@@ -274,18 +274,21 @@ impl BootShim for UefiBootShim {
             Some(blob) => {
                 let fdt = fdt::Fdt::new(&blob)
                     .unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
-                let (dtb_free, _) =
-                    minix_boot::DtbMemoryMap::new(&fdt, 0).collect(
-                    );
+                let (dtb_free, _) = minix_boot::DtbMemoryMap::new(&fdt, 0)
+                    .collect()
+                    .expect("boot-shim: DTB memmap rejected — halting");
                 if let Err((base, len)) =
                     minix_boot::dtb_covers_conventional(dtb_free, memmap)
                 {
-                    panic!(
-                        "boot-shim: conventional [{base:#x},+{len:#x}) 在 DTB /memory 全景之外（SD-3 D1 出界闸）"
+                    // Diagnostic only: under UEFI the firmware memory map is the
+                    // sole RAM authority and any `/memory` node must be ignored,
+                    // so a mismatch must never change the boot decision.
+                    uefi::println!(
+                        "boot-shim: WARN conventional [{base:#x},+{len:#x}) outside the DTB /memory panorama (diagnostic only; /memory is ignored under UEFI)"
                     );
                 }
                 uefi::println!(
-                    "boot-shim: memmap source: uefi-getmemorymap gated by dtb /memory (conv={} dtb_regions={})",
+                    "boot-shim: memmap source: uefi-getmemorymap (dtb /memory cross-checked, diagnostic only; conv={} dtb_regions={})",
                     memmap.len(),
                     dtb_free.len()
                 );
@@ -794,10 +797,14 @@ fn report_memmap_source(dtb_free: Option<&[MemoryRegion]>, conventional: &[Memor
                 crate::raw_serial(" len=");
                 raw_serial_hex(len as u64);
                 crate::raw_serial("\r\n");
-                panic!("boot-shim: SD-3 D1 gate failed (conventional outside DTB /memory)");
+                // Diagnostic only: the UEFI map is the RAM authority and the
+                // DTB `/memory` node must not influence the boot decision.
+                crate::raw_serial(
+                    "boot-shim: WARN dtb /memory mismatch (diagnostic only; /memory is ignored under UEFI)\r\n",
+                );
             }
             crate::raw_serial(
-                "boot-shim: memmap source: uefi-getmemorymap gated by dtb /memory (conv=",
+                "boot-shim: memmap source: uefi-getmemorymap (dtb /memory cross-checked, diagnostic only; conv=",
             );
             raw_serial_number(conventional.len() as u64);
             crate::raw_serial(" dtb_regions=");
@@ -818,8 +825,9 @@ fn load_dumpdtb_free(file_loader: &dyn FileLoader) -> Option<&'static [MemoryReg
     let blob = file_loader.read(loader::DUMPDTB_PATH)?;
     let fdt = fdt::Fdt::new(&blob)
         .unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
-    let (free, _) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect(
-    );
+    let (free, _) = minix_boot::DtbMemoryMap::new(&fdt, 0)
+        .collect()
+        .expect("boot-shim: DTB memmap rejected — halting");
     Some(free)
 }
 

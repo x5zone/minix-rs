@@ -154,7 +154,7 @@ trap cleanup EXIT
 # follows what the image actually carries.
 if [ "${D1_DUMPDTB:-0}" = "1" ] \
     || mdir -i "$IMG" ::/ 2>/dev/null | grep -qi 'dumpdtb'; then
-    MARK3="boot-shim: memmap source: uefi-getmemorymap gated by dtb /memory"
+    MARK3="boot-shim: memmap source: uefi-getmemorymap (dtb /memory cross-checked, diagnostic only;"
 fi
 
 both=0
