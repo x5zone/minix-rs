@@ -12,6 +12,20 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第八十轮评审之后：hart 一致性退路、原子唯一展开、对象空集、Profile 状态分离）**
+
+- **系统 hart 不一致的退路（成立，已改）**：负控原写「拒绝该平台配置，或阻止不一致 hart 上线」，后半句与 `SystemHartSet` 含全部 hart 的定义冲突——「阻止上线」只是把该 hart 移出参与集合，规范义务并未消失。改为「`SystemHartSet` 内方案不一致 ⇒ 拒绝平台配置」；只有证明某 hart 物理上不存在或不属该系统才可排除，`disabled`/暂不调度都不是依据。
+- **原子用途没有进入唯一展开（成立，已改）**：上一轮同时存在 `RoleAdmit(AtomicSharedState, …)` 与 `RoleAdmit ≡ RolePageEligible` 两套展开，后者不含进展与几何。合并为唯一入口：`RolePageEligible` 内加 `role = AtomicSharedState ⇒ AtomicSharedStateEligible(page, ctx)`，并把 `AtomicRoleEligible` 改名为该谓词、补齐 `AtomicRequirementsComplete`、`AccessRequirementsSatisfied`（含 family/宽度/自然对齐）、进展与几何（AMO-only 为 `NotApplicable`）。
+- **三处签名/字段不一致（成立，已改）**：`ReservationSetGeometryPermits` 的调用改为 `ReservationSetGeometrySatisfied(page, algorithm, cpus, isa_profile_id)`（页级、按 `LegalStarts` 全称）；`AtomicUpdate` 补 `family`，`operation_family` 不再在展开时丢失；`LegalStarts` 合同 A 把 LR/SC 与 AMO 拆开——AMO 只要求自然对齐与家族/宽度。
+- **对象访问仍有空集与不可达分支（成立，已改）**：补 `ActualAccesses(use) ≠ ∅`、`instance.physical_footprints ≠ ∅`、`ExpectedTranslationSegments` 非空无重叠无空洞、`AccessAlignmentSatisfied(use)` 进合取；`RequiredCpuScope` 从「永远不可达的 NotApplicable」改成显式二分支（`NotApplicable` 只跳过 CPU 物理访问检查，来源授权与映射兑现仍须成立）；`physical_footprints` 明确为**实际硬件访问操作**而非翻译片段，否则逐片段检查会绕过「单次操作须被同一最低编号条目完整覆盖」；`access_requirement` 明确为宽度模板，实际宽度以实例为准。
+- **`NotDeclared` 与布尔公式不相容（成立，已改）**：拆 `ProfileAdmissionUsable`（`NotDeclared` 或 `DeclaredAndSatisfied`）与 `ProfileConformanceSatisfied`（仅后者），`AdmissionContextValid` 改用前者——同时满足「不声明不阻塞」与「不声明不等于合规通过」。
+- **共享类型残留 RISC-V 术语（成立，已改）**：`rsrv_eventual_required` 改为语义级 `progress_guarantee`，由 RISC-V adapter 兑现为 `RsrvEventual`。
+- **版本键身份（成立，已改）**：写明 `AdmissionContextId` 的构造字段，并规定成员不变但 PMP/PMA 证据或 A/D 方案变化、或 `legal_starts_contract` 切换时旧投影必须失效。
+- **`UNUSABLE` 缺独立类型禁止（成立，已改）**：第一版产生独立 TypePolicy 禁止项（阻止普通映射与对象访问），不能只靠 `TypeAllocatablePages`；来源身份与 `EfiReservedMemoryType` 分开。
+- 为守 1700 行：在 O-01..O-12c 内合并 12 处相邻段落空行（纯格式、未删文字）；主简报 1698 行。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1698 行、围栏 50（偶）、表格 61 块列数不一致 0 处、lint error 0。
+
+
 **本轮（第七十九轮评审之后：上下文闭合、对象清单状态、原子两层拆分、映射意图）**
 
 - **P0 上下文未闭合（成立，已改）**：`MemoryAdmissionContext` 缺三个字段/规则——补 `legal_starts_contract`（Page|Object，进 `AdmissionContextId`，切换必须重建全部投影）、`ParticipatingCpuSet = Resolve(id, inventory_snapshot)`（不可变、成员绑定 `evidence_generation`，共享公式不再用 `ctx.H`）、`SystemHartInventoryId` 归入 `adapter_evidence`。

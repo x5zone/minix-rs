@@ -1153,3 +1153,16 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 待核清单 | `Resolve(id, inventory_snapshot)` 的清单来源（固件 ABI / DT `/cpus` / ACPI MADT）未实现；`NotApplicable` 分支、`NoAccess(proof)` 的证据形状、`AtomicAccessInstance` 的 `reservation_set_evidence` 采集路径均未落；AArch64/x86 adapter 的语义→机制展开表未写 |
 | 主简报 | 1698 行（上限 1700）；围栏 50（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
+
+## 五十一、第八十轮：hart 一致性退路、原子唯一展开与对象空集
+
+| 项 | 读数 |
+|---|---|
+| 本轮是否新增规范取证 | 无新增抓取；评审人本轮按固定提交 `418bdc4990ae2d60a86f1e11e8d7795aa279da61` 复核了 A/D 四分支、`norm:pte_ad_scheme_uniform`、硬件更新方案的页表写能力与 `RsrvEventual`、`norm:lr_sc_rsrv_set_page` 的 4 KiB 页内约束，结论与本方一致 |
+| 评审人本轮独立核对（第三方） | UEFI 2.11：标准 DTB 位于 `EfiACPIReclaimMemory`；`ExitBootServices` 因无效 `MapKey` 失败后须重新 `GetMemoryMap`，且固件可能已部分关闭 Boot Services；属性位矩阵 `WP/RP/XP/NV = 0x100/0x200/0x400/0x800` 与 2.11 列一致；AArch64 §2.3.6 的 64 KiB 分组规则确为特定 EFI 类型要求 |
+| 主文档更动 | ① hart 一致性负控改「拒绝平台」；② 原子合并为 `AtomicSharedStateEligible` 唯一入口（含 family/进展/几何，AMO-only 几何 `NotApplicable`）；③ `ReservationSetGeometrySatisfied` 页级签名；④ 对象四项空集前置 + `RequiredCpuScope` 二分支 + `physical_footprints` 定义为实际硬件操作 + `AccessAlignmentSatisfied` 进合取 + `access_requirement` 定为模板；⑤ `ProfileAdmissionUsable` / `ProfileConformanceSatisfied` 分离；⑥ `progress_guarantee` 取代 `rsrv_eventual_required`；⑦ `AdmissionContextId` 构造字段；⑧ `UNUSABLE` 独立 TypePolicy 禁止项；⑨ §7 三行按评审建议改写 |
+| 压缩记录 | O-01..O-12c 内合并 12 处相邻段落空行（纯格式），净 −12 行；主简报 1710 → 1698 行 |
+| 符号核查（主文档实测计数） | `AtomicRoleEligible` **0**（已改名合并）、`AtomicSharedStateEligible` 3、`ProfileAdmissionUsable` 3、`ProfileConformanceSatisfied` 2、`progress_guarantee` 3、`rsrv_eventual_required` **0**、`RequiredCpuScope(use)` 2、`AccessAlignmentSatisfied(use)` 1 |
+| 待核清单 | `AtomicRequirementsComplete` / `AccessRequirementsSatisfied` 的证据形状未定；`RequiredCpuScope` 的 `NotApplicable(reason)` 依据未定；`physical_footprints` 的「实际硬件操作」展开由各架构 adapter 提供，尚无实现；`UNUSABLE` 禁止项在代码中仍只靠 `TypeAllocatablePages` |
+| 主简报 | 1698 行（上限 1700）；围栏 50（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |

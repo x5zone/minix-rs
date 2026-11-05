@@ -5569,4 +5569,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 行数：在 O-12i 内合并 15 处相邻段落空行（纯格式，不删文字），主简报 1698 行。
 - 待实现：全部为候选合同；`Resolve` 的清单来源、`NoAccess(proof)` 的证据形状、`AtomicAccessInstance.reservation_set_evidence` 采集路径、adapter 展开表均未落。
 - 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 61 块列数不一致 0 处、主简报 1698 行、围栏 50（偶）。
-- 认领：`I-29 qorder81`（工作树 `.wt/i-29-qorder81`，基线 `7519e6b1b`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder81`（工作树 `.wt/i-29-qorder81`，基线 `7519e6b1b`），状态 ✅：已 ff 合并为 `657c595ed`，认领 `I-29 qorder81` 已释放。
+
+### 第二百八十八笔（01 阶段 · I-29 第八十轮：hart 一致性退路、原子唯一展开、对象空集与 Profile 状态）
+
+- 四项 P0：① 负控「阻止不一致 hart 上线」与 `SystemHartSet` 定义冲突，改为「系统 hart 方案不一致 ⇒ 拒绝平台」；② 原子用途此前有两套展开（`RoleAdmit(AtomicSharedState, …)` 与 `RoleAdmit ≡ RolePageEligible`），合并为 `RolePageEligible` 内显式调用 `AtomicSharedStateEligible`，补 `AtomicRequirementsComplete`、family/宽度/自然对齐、进展与几何（AMO-only 为 `NotApplicable`）；③ 对象访问补四项空集前置、`RequiredCpuScope` 显式二分支、`physical_footprints` 定义为**实际硬件访问操作**（翻译片段会绕过单次操作的全覆盖规则）、`AccessAlignmentSatisfied` 进合取、`access_requirement` 定为宽度模板；④ `ProfileAdmissionUsable`（`NotDeclared` 可用）与 `ProfileConformanceSatisfied`（仅已声明且满足）分离，`AdmissionContextValid` 改用前者。
+- P1：`rsrv_eventual_required` → 语义级 `progress_guarantee`（adapter 兑现为 `RsrvEventual`）；写明 `AdmissionContextId` 构造字段与失效条件；`UNUSABLE` 增独立 TypePolicy 禁止项（阻止普通映射与对象访问），来源身份与 `EfiReservedMemoryType` 分开；§7 三行按评审建议改写。
+- 行数：O-01..O-12c 内合并 12 处段落空行（纯格式），主简报 1698 行。
+- 待实现：全部为候选合同；`physical_footprints` 的架构展开、`NotApplicable` 依据、`UNUSABLE` 禁止项均无代码。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 61 块列数不一致 0 处、主简报 1698 行、围栏 50（偶）。
+- 认领：`I-29 qorder82`（工作树 `.wt/i-29-qorder82`，基线 `657c595ed`），状态 🔄，合并后释放。
