@@ -24,7 +24,7 @@
 - **对账（L1）**：`check.py diff` 比对上一轮基线与「正文 ∪ 02 ∪ 03 ∪ 本轮 arc」——符号名 240、测试名 56、`norm:` 锚点 30，三处 **lost 0**；新增符号 `AccessRequirementsEligible`/`PageTableRequirementsComplete`/`PageTableAccessRequirements` 已入正文。
 - **修表一处**：段落合并把一张表贴到了上一段（表格首行前无空行，markdown 会破表），已按脚本检出后补空行；残留破表计数 0。
 - 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；`doc-style-lint --diff` error **0**（退出码单独取，不接管道）；围栏 48（偶）；表格 57 块、列数不一致 0 处。
-- 认领：`I-29 qorder88`（工作树 `.wt/i-29-qorder88`，基线 `53c44e846`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder88`（工作树 `.wt/i-29-qorder88`，基线 `53c44e846`），状态 🔄。**基线位移记录**：本批提交 `d74240602` 落好后，另一线的合并提交 `1bcca40a4`（`Merge branch 'rewrite' into claim/MINIX-SERVICE-CMD-qoder`）先入 `rewrite`，使 strict ff-only 不可能（合并门返回 128，**本次未接管道、未提前 release**——上一批固化的教训生效）；改在同一认领树内 `git rebase --onto 1bcca40a4 53c44e846 claim/I-29-qorder88` 线性化为 `bc3d8426a` 后 ff 合并。另线以合并提交入主线是本仓库 ff-only 惯例的结构性摩擦，登记事实、不改他人历史。
 
 
 **第八十三轮（评审意见落笔：现状冲突入正文、backing 两半、对象访问三层对应、进展枚举收敛）**
