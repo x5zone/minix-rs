@@ -5608,4 +5608,16 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - **门读数**：正文 119,988 字符（-15.1%）、1636 行（≤1700）、围栏 46（偶）、表格 58 块列数不一致 0 处、`doc-style-lint --diff` error 0；`doc-ref-check` 报的 4 处 `§4.6.1.3`/`§2.3.6` 是 UEFI 规范章节号，基线同样 4 处，非本批引入。纯文档批，沿用 minix-boot **146**、boot-shim **70**。
 - **遗留**：字符数仍可再降，但下一步就必须把 RISC-V adapter 段的判定式与真值表整块移出正文（属规则搬家，不是痕迹清理），需用户或评审人点头；第八十三轮的内容项（`ExpandAtomic` 完整性证明、`ReservationSetFor` 语义、`NoAccess` 证明形式、统一叶子观测记录）未动。
 - 认领与事故记录（必须写进台账）：首笔认领 `I-29 qorder85`（基线 `6aeb76a64`），提交 `9e5cef6c9`；`git merge --ff-only` 因另一线 `9a920fce6` 先行而**正确拒绝**，但该命令被 `| tail` 接走退出码（管道尾部是 `tail` 的 0），`&&` 于是继续执行 `release`，在合并未成功的情况下删掉了锁与工作树——正是交接文档「后台退出码不可信」那条坑的又一生例。提交对象无损，改由认领 `I-29 qorder86`（基线 `9a920fce6`）cherry-pick 后落位。**教训固化：合并门必须单独取退出码，禁止在它后面接管道再 `&&`。**
-- 认领：`I-29 qorder86`（工作树 `.wt/i-29-qorder86`，基线 `9a920fce6`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder86`（工作树 `.wt/i-29-qorder86`，基线 `9a920fce6`），状态 ✅：已 ff 合并为 `3bf329608`，认领 `I-29 qorder86` 已释放。
+
+### 第二百九十二笔（01 阶段 · I-29 第八十三轮：现状冲突入正文、backing 两半、对象访问三层对应）
+
+- P0 五项全部成立并落笔：① 恒等宽映射与 `no-map`/MRB/类型禁止的**现状冲突**写进 §2.3（代码核对：`while addr < IDENTITY_MAP_END` 不查 memmap、`BOOT_IDENTITY_MAP_END = 0x1_0000_0000` 常量、`map_huge` 失败被忽略、全仓无撤销路径、`EXECUTABLE` 且非 `USER_ACCESSIBLE`），O-02a 立为甲案/乙案（具名 `BootTransitionMapping`）待裁决；② backing 拆 `CommonBackingCapabilityEligible` + `PageTableSpecificAccessEligible`，补上遗漏的缓存可表达性，`RolePageEligible` 收成唯一分支定义点；③ 对象访问补 `AccessInstanceSet`、逐段 VA→PA 对应 `SegmentsCorrespondToExpectedTranslation` 与 adapter 契约 `OperationsRealizeAccess`；④ `AccessAuthorizationCovers` 消费主体/操作/宽度/特权级并规定 `use.path = access_requirement.path`；⑤ `PmaPermits` 进展枚举三分 `match`，删残留 `Eventual` 与「或」式二选一。
+- P1 七项全部采纳：`DeclaredButDeclarationInvalid` 与 `ProfileAdmissionUsable` 双条件；`fail` 三分收敛；O-06 兼容矩阵与 O-11 权威表一同结论；`NoMapControlledAccessEligible` 访问侧合同；`DescriptorAddressDomain`（类型 12 不得规范化为 `PhysicalRange`）；`conventional` 改为「候选输入表」；`Complete(uses ≠ ∅)` 与实例覆盖关系。
+- 文档整理：O-11 五表收成两张权威表（页级类型裁决表、首读授权表），粒度与规范强度降为解释；`DtbPages \ MrbPages` 差分公式保留。
+- 回写评审人的三处过期更正：现行 §7 无「六个阻塞组」、§6 无「证据基线 `f52730bef`」、五表问题本批已解。
+- 篇幅：1695 → 1681 行（上限 1700）——真实去重 1 处（O-06 属性位两段合并，原文逐字进 `02` 第七节）+ 纪律 8 合并 16 处段落空行（纯格式）。正文 125,876 字符。
+- 对账：`check.py diff` 符号名 240 / 测试名 56 / `norm:` 锚点 30，**lost 0**。
+- 门：纯文档，无代码改动；沿用 minix-boot **146**、boot-shim **70**；lint error **0**、围栏 48（偶）、表格 56 块列数不一致 **0** 处。
+- 待办登记（不追改）：甲案/乙案的裁决、`BootTransitionMapping` 的 `EXECUTABLE` 是否收掉、乙案撤销时点——留给第八十四轮或人裁决。
+- 认领：`I-29 qorder87`（工作树 `.wt/i-29-qorder87`，基线 `3bf329608`），状态 🔄，合并后释放。

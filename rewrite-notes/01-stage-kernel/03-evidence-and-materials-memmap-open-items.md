@@ -1492,3 +1492,17 @@ cd os && cargo test -p boot-shim --lib
 ### O-12i adapter 边界段裁定记号
 
 **共享层与架构 adapter 的边界（本轮裁定，属重构项而非 RISC-V 算法错误）**：通用内存资格模型的接口只表达 OS 需要的**语义**——普通物理访问要求、页表读取与更新要求、原子操作的宽度/原子性/进展、执行访问要求、参与访问的 CPU 集合、证据代次与有效期；具体机制名属于各架构 adapter：参与访问的 CPU 集合（RISC-V hart / AArch64 PE / x86 逻辑处理器）、页表更新要求（`Svade`/`Svadu`/`ADUE` 与 `RsrvEventual` / 硬件 `AF`+dirty / 硬件 A/D）、原子能力（`AMO(family)`/`Lr`/`Sc` 与预约集几何 / `exclusive`+`LSE` / 锁定 `lock` 前缀族）、物理访问保护（PMP+PMA / MAIR 与层级保护 / PAT+MTRR 与分页）。
+
+## 五十五、第八十三轮：现状冲突的代码证据与本轮门读数
+
+| 项 | 读数（命令与输出） |
+|---|---|
+| 恒等段宽度是常量而非按来源裁剪 | `os/arch/src/lib.rs` 的 `pub const BOOT_IDENTITY_MAP_END: u64 = 0x1_0000_0000;`（全仓唯一赋值点，三架构共用） |
+| 恒等循环不消费 memmap 与禁止集 | `os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable` 内 `while addr < IDENTITY_MAP_END` 的循环体只调用 `identity_device_windows()` / `identity_block_touches_device` / `identity_piece_is_device`，无 memmap 引用；`map_huge` 的 `Result` 被 `let _ =` 显式忽略 |
+| memmap 在内核启动路径的两处消费 | 同文件 `support.phys_addr_limit() >= IDENTITY_MAP_END` 断言，以及 boot allocator 候选区挑选（`min(IDENTITY_MAP_END, VM_DIRECT_MAP_SIZE)` 上界）——两者都不参与建叶子裁决 |
+| 设备窗口来自静态表 | `fn identity_device_windows`：aarch64 用 `MMIO_PA_BASE`/`MMIO_WINDOW_LEN`，riscv64 用 `minix_arch::kernel_identity_mmio_regions()` |
+| 恒等段无撤销路径 | `grep -n "unmap" os/kernel/src/lib.rs os/kernel/src/dm_coverage.rs` 只命中 heap 窗口驱逐与注释，无恒等段拆表代码 |
+| 表征测试钉住宽映射 | 宿主测试 `identity_piece_policy_covers_low_4gib_and_marks_device_windows` 断言覆盖至 `IDENTITY_MAP_END`、`id_flags` 含 `EXECUTABLE`、不含 `USER_ACCESSIBLE`（本表为源码读取，未在本轮重跑 minix-kernel 宿主套件） |
+| 门读数 | 正文 1681 行（上限 1700）、125,876 字符；围栏 48（偶）；表格 56 块、列数不一致 0 处；`doc-style-lint --diff` error 0 |
+| 零丢失对账 | `tmp/i29-r83compress/check.py diff`：符号名 240、测试名 56、`norm:` 锚点 30 → lost 0（尺子与被比文件在 `tmp/`，不入库；逐字移出原文见 `02` 第七节与本节所属批次） |
+| 本轮移出正文的原文 | O-06「已知属性位的处置」与「属性按语义分三类」两段合并（原文逐字进 `02` 第七节）；16 处段落空行为纯格式合并，无文字移出 |
