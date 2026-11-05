@@ -5808,4 +5808,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - §7 六项 → 五项：删「平台资源描述」（已移交 `04-platform-discovery.md`，留作签字项正是评审人指出的矛盾）；O-13a 去掉平台资源描述；O-12j 设备 `reg`/`ranges` 行改为「移交 04」。
 - §6 读数刷到代码基线 `3683a34ca`：`minix-boot 146`、`boot-shim 70`、`minix-types 331`、`minix-kernel --features mock 861 / 0 失败 / 8 忽略`；三架构交叉构建通过（第一百零一轮）。下一轮证据清单删掉 QEMU machine/accelerator/PLIC profile（随设备资源移交），保留 UEFI 固件身份与 `Attribute` 位值。
 - 门：1,064 → **967 行**、87,811 → 81,725 字符、围栏 22 偶、表格 39 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动。
-- 认领：`I-29 qorder102`（基线 `bb5792a93`），状态 🔄。
+- 认领：`I-29 qorder102`（基线 `bb5792a93`），状态 ✅：第一百零二轮已 ff 合并为 `29cee8cb31f503fc0f0df59d972b4494631fc9e7`，认领已释放。正文 967 行 / 81,725 字符；评审身份与哈希在 `03` 七十／七十一节。

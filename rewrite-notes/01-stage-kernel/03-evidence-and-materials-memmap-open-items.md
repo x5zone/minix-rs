@@ -2546,3 +2546,13 @@ BootInputReadEligible(use, source_policy, platform_profile) =
 
 逐个登记允许出现原始操作的函数，检查函数体内原始操作的数量与位置，新增原始操作必须显式更新审计合同。**两枚负控**：① 在已批准函数体内注入第二条原始操作；② 在**已有 `asm!` 块内**加入第二条 `in`/`out`——审计器必须看展开后的真实操作，不能只数宏调用次数。**判据**：该负控生效。**消费者**：CI 审计器。
 
+### 评审身份（第一百零二轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | `29cee8cb31f503fc0f0df59d972b4494631fc9e7`（第一百零二轮合并提交） |
+| `CodeEvidenceCommit` | `3683a34ca`（第一百零一轮代码切片；本轮为纯文档） |
+| `DocumentRevision` | 第一百零二轮 |
+| `DocumentFileHash`（正文 sha256） | `9ecccee0c2118c748a4520c44cb65eea2df79a99ee32776a69a340db93e9b607` |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | `8062200785f89337fea2c9725406cd85cfaaf4c053220bee6e19235ccba2b4e7` |
+| 上一轮（第一百零一轮）合并提交 | `3683a34ca`，正文 `3eac16ae35…`、档案 `7cbfece6cd…` |
