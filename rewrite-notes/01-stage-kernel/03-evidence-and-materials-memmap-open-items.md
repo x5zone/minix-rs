@@ -2350,3 +2350,15 @@ ArchitecturalRegisterAperture（架构规定的寄存器窗口，如 xAPIC 4 KiB
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | `580c35cef0cd82908d12f31631ffc8393722c63f2077b8727fb304a42e9e8b6c` |
 | 上一轮（第九十九轮）合并提交 | `a7d9ab4fa`，正文 `6628418e62…`、档案 `e32bb7e307…` |
 | `WorkingTreeDiffHash` | 不适用：本轮无未提交修改 |
+
+### 评审身份（第一百零一轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | `3683a34cacd4f309c7b6797cd2936b9a600235e5`（第一百零一轮合并提交；本轮含代码） |
+| `CodeEvidenceCommit` | `3683a34cacd4f309c7b6797cd2936b9a600235e5`（146/70、861 与三架构交叉构建均在本提交上取得） |
+| `DocumentRevision` | 第一百零一轮 |
+| `DocumentFileHash`（正文 sha256，按合并提交） | `3eac16ae357abc980b50ae8a782cf9b93fa4785a44a3ba45ff6970dcc308386c` |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | `7cbfece6cdbc0ae3fb349df8d1e7e3eeab58a1a7f8a935867fad36f15fe1a8f9` |
+| 上一轮（第一百轮）合并提交 | `371bc06fc`，正文 `fa1dcc0261…`、档案 `580c35cef0…` |
+| `WorkingTreeDiffHash` | 不适用：本轮无未提交修改 |

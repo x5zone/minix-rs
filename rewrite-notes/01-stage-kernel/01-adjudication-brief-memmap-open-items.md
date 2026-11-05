@@ -1003,8 +1003,8 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 | 身份 | 记录什么 | 当前值 |
 |---|---|---|
 | `CodeEvidenceCommit` | 146/70 两条宿主读数与交叉编译实际对应的代码提交 | `53c44e846`（其后各批均为纯文档，无代码改动，故读数未重跑） |
-| `DocumentRevision` | 本轮正文与档案的版本 | 第一百轮；`03` 至七十节、`01-design-note-hardware-admission-model.md` v1 |
-| `ReviewedRepositoryCommit` | 评审人应拿去核对的完整仓库提交（文档 + 代码） | 每轮在横幅里写**本轮合并提交的完整 SHA**；分支头是移动引用，不能当评审身份。第一百轮：`371bc06fca4f0fee0951cf98825d1772fe2e1fff`（正文 sha256 `fa1dcc02611952943c266378b4e61354b18151ec510039d24b5844b69b9ce29b`、档案 sha256 `580c35cef0cd82908d12f31631ffc8393722c63f2077b8727fb304a42e9e8b6c`，同值存档于 `03` 七十节；第九十八／九十九轮的值同时保留在那里，便于回溯） |
+| `DocumentRevision` | 本轮正文与档案的版本 | 第一百零一轮；`03` 至七十节、`01-design-note-hardware-admission-model.md` v1 |
+| `ReviewedRepositoryCommit` | 评审人应拿去核对的完整仓库提交（文档 + 代码） | 每轮在横幅里写**本轮合并提交的完整 SHA**；分支头是移动引用，不能当评审身份。第一百零一轮：`3683a34cacd4f309c7b6797cd2936b9a600235e5`（正文 sha256 `3eac16ae357abc980b50ae8a782cf9b93fa4785a44a3ba45ff6970dcc308386c`、档案 sha256 `7cbfece6cdbc0ae3fb349df8d1e7e3eeab58a1a7f8a935867fad36f15fe1a8f9`，同值存档于 `03` 七十节；更早两轮的值同样保留在那里） |
 | `DocumentFileHash` / `03ArchiveFileHash` | 正文与档案的字节级身份 | 按上述合并提交计算，列在 `03` 六十八节；未提交的工作树版本另记 `WorkingTreeDiffHash` |
 
 横幅时间与本表由第四道门对账；三者任一不符即说明材料不是同一版。
