@@ -477,11 +477,7 @@ pub fn getvfsstat_via(
 /// Retrieves file status for an open descriptor.
 ///
 /// C: `fstat` (`stat.c`): descriptor and buffer pointer, no path.
-pub fn fstat_via(
-    transport: &impl IpcTransport,
-    fd: i32,
-    buffer_address: u64,
-) -> Result<(), Errno> {
+pub fn fstat_via(transport: &impl IpcTransport, fd: i32, buffer_address: u64) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     let packed = StatFdPayload {
         fd,
@@ -661,8 +657,16 @@ pub fn pipe2_via(transport: &impl IpcTransport, flags: i32) -> Result<(i32, i32)
     // two payload words.
     let (fd0, fd1) = unsafe {
         (
-            i32::from_le_bytes(message.m_u.raw[0..4].try_into().expect("four payload bytes")),
-            i32::from_le_bytes(message.m_u.raw[4..8].try_into().expect("four payload bytes")),
+            i32::from_le_bytes(
+                message.m_u.raw[0..4]
+                    .try_into()
+                    .expect("four payload bytes"),
+            ),
+            i32::from_le_bytes(
+                message.m_u.raw[4..8]
+                    .try_into()
+                    .expect("four payload bytes"),
+            ),
         )
     };
     Ok((fd0, fd1))
@@ -1126,7 +1130,13 @@ pub fn unlink_via(
     name_address: u64,
     name_length_including_nul: usize,
 ) -> Result<(), Errno> {
-    path_request_via(transport, VFS_CALL_UNLINK, name_address, name_length_including_nul, 0)
+    path_request_via(
+        transport,
+        VFS_CALL_UNLINK,
+        name_address,
+        name_length_including_nul,
+        0,
+    )
 }
 
 /// Removes an empty directory (C: `rmdir`,
@@ -1136,7 +1146,13 @@ pub fn rmdir_via(
     name_address: u64,
     name_length_including_nul: usize,
 ) -> Result<(), Errno> {
-    path_request_via(transport, VFS_CALL_RMDIR, name_address, name_length_including_nul, 0)
+    path_request_via(
+        transport,
+        VFS_CALL_RMDIR,
+        name_address,
+        name_length_including_nul,
+        0,
+    )
 }
 
 /// Changes the working directory (C: `chdir`,
@@ -1146,7 +1162,13 @@ pub fn chdir_via(
     name_address: u64,
     name_length_including_nul: usize,
 ) -> Result<(), Errno> {
-    path_request_via(transport, VFS_CALL_CHDIR, name_address, name_length_including_nul, 0)
+    path_request_via(
+        transport,
+        VFS_CALL_CHDIR,
+        name_address,
+        name_length_including_nul,
+        0,
+    )
 }
 
 /// Creates a directory (C: `mkdir`,
@@ -1195,7 +1217,13 @@ pub fn access_via(
     name_length_including_nul: usize,
     amode: i32,
 ) -> Result<(), Errno> {
-    path_request_via(transport, VFS_CALL_ACCESS, name_address, name_length_including_nul, amode)
+    path_request_via(
+        transport,
+        VFS_CALL_ACCESS,
+        name_address,
+        name_length_including_nul,
+        amode,
+    )
 }
 
 /// Shared request shape of link, symlink, and rename:
@@ -1607,7 +1635,10 @@ mod tests {
     fn test_select_empty_sends_zero_count_and_timeout_pointer() {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
-        let mut timeout = TimeVal { seconds: 2, microseconds: 1 };
+        let mut timeout = TimeVal {
+            seconds: 2,
+            microseconds: 1,
+        };
         assert_eq!(select_empty_via(&transport, &mut timeout), Ok(0));
         let sent = transport.sent.borrow();
         assert_eq!(sent.len(), 1);
@@ -1748,8 +1779,14 @@ mod tests {
     #[test]
     fn test_scatter_gather_totals_valid_segments() {
         let segments = [
-            IoSegment { base_address: 0x1000, length: 100 },
-            IoSegment { base_address: 0x2000, length: 200 },
+            IoSegment {
+                base_address: 0x1000,
+                length: 100,
+            },
+            IoSegment {
+                base_address: 0x2000,
+                length: 200,
+            },
         ];
         assert_eq!(validate_scatter_gather(&segments), Ok(300));
         assert_eq!(validate_scatter_gather(&[]), Ok(0));
@@ -1757,21 +1794,33 @@ mod tests {
 
     #[test]
     fn test_scatter_gather_rejects_null_base() {
-        let segments = [IoSegment { base_address: 0, length: 10 }];
+        let segments = [IoSegment {
+            base_address: 0,
+            length: 10,
+        }];
         assert_eq!(
             validate_scatter_gather(&segments),
             Err(Errno::from_i32(minix_types::EFAULT))
         );
         // Zero length with null base is harmless.
-        let segments = [IoSegment { base_address: 0, length: 0 }];
+        let segments = [IoSegment {
+            base_address: 0,
+            length: 0,
+        }];
         assert_eq!(validate_scatter_gather(&segments), Ok(0));
     }
 
     #[test]
     fn test_scatter_gather_rejects_wrapping_total() {
         let segments = [
-            IoSegment { base_address: 0x1000, length: usize::MAX },
-            IoSegment { base_address: 0x2000, length: 1 },
+            IoSegment {
+                base_address: 0x1000,
+                length: usize::MAX,
+            },
+            IoSegment {
+                base_address: 0x2000,
+                length: 1,
+            },
         ];
         assert_eq!(validate_scatter_gather(&segments), Err(Errno::EINVAL));
     }
@@ -1796,7 +1845,10 @@ mod tests {
         };
         assert_eq!(u64::from_ne_bytes(bytes[0..8].try_into().unwrap()), 0x7000);
         assert_eq!(u64::from_ne_bytes(bytes[8..16].try_into().unwrap()), 9);
-        assert_eq!(i32::from_ne_bytes(bytes[16..20].try_into().unwrap()), OPEN_FLAG_CREATE);
+        assert_eq!(
+            i32::from_ne_bytes(bytes[16..20].try_into().unwrap()),
+            OPEN_FLAG_CREATE
+        );
         assert_eq!(u32::from_ne_bytes(bytes[20..24].try_into().unwrap()), 0o644);
     }
 
@@ -1804,7 +1856,10 @@ mod tests {
     fn test_open_create_path_returns_descriptor() {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(5)));
-        assert_eq!(open_via(&transport, 0x7000, 9, OPEN_FLAG_CREATE, 0o644), Ok(5));
+        assert_eq!(
+            open_via(&transport, 0x7000, 9, OPEN_FLAG_CREATE, 0o644),
+            Ok(5)
+        );
     }
 
     #[test]
@@ -1817,7 +1872,10 @@ mod tests {
         let path = b"/etc/motd\0";
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(3)));
-        assert_eq!(open_via(&transport, path.as_ptr() as u64, path.len(), 0, 0), Ok(3));
+        assert_eq!(
+            open_via(&transport, path.as_ptr() as u64, path.len(), 0, 0),
+            Ok(3)
+        );
         assert_eq!(transport.sendrec_calls.get(), 1);
     }
 
@@ -1883,7 +1941,10 @@ mod tests {
         // layout as Statvfs1Payload).
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 0);
-        assert_eq!(i32::from_ne_bytes(raw[4..8].try_into().unwrap()), minix_types::ST_WAIT);
+        assert_eq!(
+            i32::from_ne_bytes(raw[4..8].try_into().unwrap()),
+            minix_types::ST_WAIT
+        );
         assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 12);
         assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 0x9000);
         assert_eq!(u64::from_ne_bytes(raw[24..32].try_into().unwrap()), 0xA000);
@@ -1907,7 +1968,10 @@ mod tests {
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(u64::from_ne_bytes(raw[0..8].try_into().unwrap()), 0xC000);
         assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 3 * 272);
-        assert_eq!(i32::from_ne_bytes(raw[16..20].try_into().unwrap()), minix_types::ST_NOWAIT);
+        assert_eq!(
+            i32::from_ne_bytes(raw[16..20].try_into().unwrap()),
+            minix_types::ST_NOWAIT
+        );
     }
 
     /// ioctl's three lanes: fd/req(64-bit)/arg (ipc.h:699-705); the reply
@@ -1934,7 +1998,10 @@ mod tests {
     fn test_fcntl_wire_roundtrip() {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(5)));
-        assert_eq!(fcntl_via(&transport, 2, FCNTL_COMMAND_DUPLICATE, 0, 0), Ok(5));
+        assert_eq!(
+            fcntl_via(&transport, 2, FCNTL_COMMAND_DUPLICATE, 0, 0),
+            Ok(5)
+        );
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, VFS_CALL_FCNTL);
         // SAFETY(test): read back the fd/cmd/arg_int/arg_ptr lanes.
@@ -2011,9 +2078,9 @@ mod payload_layout_tests {
 #[cfg(test)]
 mod open_path_tests {
     use super::*;
+    use crate::ipc::CannedTransport;
     use alloc::vec;
     use core::mem::offset_of;
-    use crate::ipc::CannedTransport;
     use minix_types::Message;
 
     fn reply_with_type(message_type: i32) -> Message {
@@ -2070,12 +2137,19 @@ mod open_path_tests {
         assert_eq!(sent[0].1.m_type, VFS_CALL_OPEN);
         // SAFETY: test-only read-back of the outgoing wire bytes.
         let raw = unsafe { &sent[0].1.m_u.raw };
-        assert_eq!(raw[0..8].to_vec(), (long.as_ptr() as u64).to_le_bytes(), "name@0");
-        assert_eq!(raw[8..16].to_vec(), (long.len() as u64).to_le_bytes(), "len@8");
+        assert_eq!(
+            raw[0..8].to_vec(),
+            (long.as_ptr() as u64).to_le_bytes(),
+            "name@0"
+        );
+        assert_eq!(
+            raw[8..16].to_vec(),
+            (long.len() as u64).to_le_bytes(),
+            "len@8"
+        );
         assert_eq!(raw[16..20].to_vec(), 0x1i32.to_le_bytes(), "flags@16");
         assert_eq!(raw[24..56].to_vec(), vec![0; 32], "超长不内联，buf 保持零");
     }
-
 }
 
 #[cfg(test)]
@@ -2126,7 +2200,11 @@ mod dup2_wire_tests {
         assert_eq!(transport.sent.borrow().len(), 1);
         assert_eq!(dup2_via(&transport, 1, OPEN_MAX + 1), Err(Errno::EBADF));
         assert_eq!(dup2_via(&transport, 1, -1), Err(Errno::EBADF));
-        assert_eq!(transport.sent.borrow().len(), 1, "bounds rejects add no round trips");
+        assert_eq!(
+            transport.sent.borrow().len(),
+            1,
+            "bounds rejects add no round trips"
+        );
     }
 
     /// Source descriptor invalid: F_GETFL's error travels up unchanged
@@ -2183,7 +2261,11 @@ mod pipe_wire_tests {
         let raw = unsafe { &sent[0].1.m_u.raw };
         assert_eq!(&raw[0..4], &0o2000000i32.to_le_bytes(), "flags@0");
         assert_eq!(&raw[4..8], &[0; 4], "_unused@4 保持零");
-        assert_eq!(&raw[8..12], &0o2000000i32.to_le_bytes(), "oflags@8 同值双写");
+        assert_eq!(
+            &raw[8..12],
+            &0o2000000i32.to_le_bytes(),
+            "oflags@8 同值双写"
+        );
     }
 
     /// The top-level `pipe()` form = `pipe2(_, 0)` (C pipe.c:30-33): both flag
@@ -2213,8 +2295,8 @@ mod pipe_wire_tests {
 #[cfg(test)]
 mod chroot_wire_tests {
     use super::*;
-    use alloc::vec;
     use crate::ipc::CannedTransport;
+    use alloc::vec;
     use minix_types::Message;
 
     fn reply_with_type(message_type: i32) -> Message {
@@ -2237,15 +2319,24 @@ mod chroot_wire_tests {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
         let path = b"/mnt/newroot\0";
-        assert_eq!(chroot_via(&transport, path.as_ptr() as u64, path.len()), Ok(()));
+        assert_eq!(
+            chroot_via(&transport, path.as_ptr() as u64, path.len()),
+            Ok(())
+        );
         let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(dest, vfs_endpoint());
         assert_eq!(sent.m_type, VFS_CALL_CHROOT);
         // SAFETY: byte-level read of the union overlay lanes for test
         // assertions only (same as the sigaction wire test).
         let raw = unsafe { &sent.m_u.raw };
-        assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), path.as_ptr() as u64);
-        assert_eq!(u64::from_le_bytes(raw[8..16].try_into().unwrap()), path.len() as u64);
+        assert_eq!(
+            u64::from_le_bytes(raw[0..8].try_into().unwrap()),
+            path.as_ptr() as u64
+        );
+        assert_eq!(
+            u64::from_le_bytes(raw[8..16].try_into().unwrap()),
+            path.len() as u64
+        );
         assert_eq!(&raw[24..24 + path.len()], path);
     }
 
@@ -2266,12 +2357,23 @@ mod chroot_wire_tests {
         assert_eq!(sent.len(), 1, "超长照发往返");
         // SAFETY: test-only read-back of the outgoing wire bytes.
         let raw = unsafe { &sent[0].1.m_u.raw };
-        assert_eq!(raw[0..8].to_vec(), (long.as_ptr() as u64).to_le_bytes(), "name@0");
-        assert_eq!(raw[8..16].to_vec(), (long.len() as u64).to_le_bytes(), "len@8");
+        assert_eq!(
+            raw[0..8].to_vec(),
+            (long.as_ptr() as u64).to_le_bytes(),
+            "name@0"
+        );
+        assert_eq!(
+            raw[8..16].to_vec(),
+            (long.len() as u64).to_le_bytes(),
+            "len@8"
+        );
         assert_eq!(raw[24..56].to_vec(), vec![0; 32], "超长不内联");
 
         let quiet = CannedTransport::new();
-        assert_eq!(chroot_via(&quiet, long.as_ptr() as u64, 0), Err(Errno::ENAMETOOLONG));
+        assert_eq!(
+            chroot_via(&quiet, long.as_ptr() as u64, 0),
+            Err(Errno::ENAMETOOLONG)
+        );
         assert!(quiet.sent.borrow().is_empty(), "0 长零回合拒绝");
     }
 }
@@ -2279,8 +2381,8 @@ mod chroot_wire_tests {
 #[cfg(test)]
 mod fileop_wire_tests {
     use super::*;
-    use alloc::{vec, vec::Vec};
     use crate::ipc::CannedTransport;
+    use alloc::{vec, vec::Vec};
     use minix_types::Message;
 
     fn reply_with_type(message_type: i32) -> Message {
@@ -2330,15 +2432,30 @@ mod fileop_wire_tests {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
         let path = b"/tmp/ndir\0";
-        assert_eq!(mkdir_via(&transport, path.as_ptr() as u64, path.len(), 0o755), Ok(()));
+        assert_eq!(
+            mkdir_via(&transport, path.as_ptr() as u64, path.len(), 0o755),
+            Ok(())
+        );
         let (dest, sent) = last_sent(&transport);
         assert_eq!(dest, vfs_endpoint());
         assert_eq!(sent.m_type, VFS_CALL_MKDIR);
-        assert_eq!(raw_lane(&sent, 0..8), (path.as_ptr() as u64).to_le_bytes(), "name@0");
-        assert_eq!(raw_lane(&sent, 8..16), (path.len() as u64).to_le_bytes(), "len@8");
+        assert_eq!(
+            raw_lane(&sent, 0..8),
+            (path.as_ptr() as u64).to_le_bytes(),
+            "name@0"
+        );
+        assert_eq!(
+            raw_lane(&sent, 8..16),
+            (path.len() as u64).to_le_bytes(),
+            "len@8"
+        );
         assert_eq!(raw_lane(&sent, 16..20), [0; 4], "flags@16 保持零");
         assert_eq!(raw_lane(&sent, 20..24), 0o755u32.to_le_bytes(), "mode@20");
-        assert_eq!(raw_lane(&sent, 24..24 + path.len()), path.to_vec(), "inline@24");
+        assert_eq!(
+            raw_lane(&sent, 24..24 + path.len()),
+            path.to_vec(),
+            "inline@24"
+        );
     }
 
     /// unlink/rmdir/chdir share the same shape, and the mode lane also stays
@@ -2351,17 +2468,34 @@ mod fileop_wire_tests {
         transport.reply_sendrec(Ok(reply_with_type(0)));
         transport.reply_sendrec(Ok(reply_with_type(0)));
         let path = b"/tmp/f\0";
-        assert_eq!(unlink_via(&transport, path.as_ptr() as u64, path.len()), Ok(()));
-        assert_eq!(rmdir_via(&transport, path.as_ptr() as u64, path.len()), Ok(()));
-        assert_eq!(chdir_via(&transport, path.as_ptr() as u64, path.len()), Ok(()));
-        let types: Vec<i32> = transport.sent.borrow().iter().map(|(_, m)| m.m_type).collect();
+        assert_eq!(
+            unlink_via(&transport, path.as_ptr() as u64, path.len()),
+            Ok(())
+        );
+        assert_eq!(
+            rmdir_via(&transport, path.as_ptr() as u64, path.len()),
+            Ok(())
+        );
+        assert_eq!(
+            chdir_via(&transport, path.as_ptr() as u64, path.len()),
+            Ok(())
+        );
+        let types: Vec<i32> = transport
+            .sent
+            .borrow()
+            .iter()
+            .map(|(_, m)| m.m_type)
+            .collect();
         assert_eq!(types, vec![VFS_CALL_UNLINK, VFS_CALL_RMDIR, VFS_CALL_CHDIR]);
         for (_, msg) in transport.sent.borrow().iter() {
             assert_eq!(raw_lane(msg, 16..24), [0; 8], "flags/mode 全零");
         }
         // Error leg: ENOENT comes back as a negative m_type.
         transport.reply_sendrec(Ok(reply_with_type(-minix_types::ENOENT)));
-        assert_eq!(unlink_via(&transport, path.as_ptr() as u64, path.len()), Err(Errno::ENOENT));
+        assert_eq!(
+            unlink_via(&transport, path.as_ptr() as u64, path.len()),
+            Err(Errno::ENOENT)
+        );
     }
 
     /// chmod and access reuse the mode lane: chmod passes the new permission
@@ -2372,10 +2506,20 @@ mod fileop_wire_tests {
         transport.reply_sendrec(Ok(reply_with_type(0)));
         transport.reply_sendrec(Ok(reply_with_type(0)));
         let path = b"/x\0";
-        assert_eq!(chmod_via(&transport, path.as_ptr() as u64, path.len(), 0o644), Ok(()));
-        assert_eq!(access_via(&transport, path.as_ptr() as u64, path.len(), 4 | 2), Ok(()));
+        assert_eq!(
+            chmod_via(&transport, path.as_ptr() as u64, path.len(), 0o644),
+            Ok(())
+        );
+        assert_eq!(
+            access_via(&transport, path.as_ptr() as u64, path.len(), 4 | 2),
+            Ok(())
+        );
         let sent = transport.sent.borrow();
-        assert_eq!(raw_lane(&sent[0].1, 20..24), 0o644u32.to_le_bytes(), "mode@20");
+        assert_eq!(
+            raw_lane(&sent[0].1, 20..24),
+            0o644u32.to_le_bytes(),
+            "mode@20"
+        );
         assert_eq!(raw_lane(&sent[1].1, 20..24), 6i32.to_le_bytes(), "amode@20");
         assert_eq!(sent[1].1.m_type, VFS_CALL_ACCESS);
     }
@@ -2395,22 +2539,40 @@ mod fileop_wire_tests {
             mkdir_via(&transport, long.as_ptr() as u64, long.len(), 0o700),
             Ok(())
         );
-        assert_eq!(unlink_via(&transport, long.as_ptr() as u64, long.len()), Ok(()));
+        assert_eq!(
+            unlink_via(&transport, long.as_ptr() as u64, long.len()),
+            Ok(())
+        );
         let sent = transport.sent.borrow();
         assert_eq!(sent.len(), 2, "超长照发往返");
         assert_eq!(sent[0].1.m_type, VFS_CALL_MKDIR);
         // SAFETY: test-only read-back of the outgoing wire bytes.
         let m = unsafe { &sent[0].1.m_u.raw };
-        assert_eq!(m[0..8].to_vec(), (long.as_ptr() as u64).to_le_bytes(), "name@0");
-        assert_eq!(m[8..16].to_vec(), (long.len() as u64).to_le_bytes(), "len@8");
-        assert_eq!(m[20..24].to_vec(), 0o700u32.to_le_bytes(), "mode@20 超长支仍在");
+        assert_eq!(
+            m[0..8].to_vec(),
+            (long.as_ptr() as u64).to_le_bytes(),
+            "name@0"
+        );
+        assert_eq!(
+            m[8..16].to_vec(),
+            (long.len() as u64).to_le_bytes(),
+            "len@8"
+        );
+        assert_eq!(
+            m[20..24].to_vec(),
+            0o700u32.to_le_bytes(),
+            "mode@20 超长支仍在"
+        );
         assert_eq!(m[24..56].to_vec(), vec![0; 32], "超长不内联");
         // SAFETY: test-only read-back of the outgoing wire bytes.
         let u = unsafe { &sent[1].1.m_u.raw };
         assert_eq!(u[24..56].to_vec(), vec![0; 32], "unlink 超长同样不内联");
 
         let quiet = CannedTransport::new();
-        assert_eq!(access_via(&quiet, long.as_ptr() as u64, 0, 0), Err(Errno::ENAMETOOLONG));
+        assert_eq!(
+            access_via(&quiet, long.as_ptr() as u64, 0, 0),
+            Err(Errno::ENAMETOOLONG)
+        );
         assert!(quiet.sent.borrow().is_empty(), "0 长零回合拒绝");
     }
 
@@ -2426,15 +2588,33 @@ mod fileop_wire_tests {
         let a = b"/p/a\0";
         let b = b"/p/b\0";
         assert_eq!(
-            link_via(&transport, a.as_ptr() as u64, a.len(), b.as_ptr() as u64, b.len()),
+            link_via(
+                &transport,
+                a.as_ptr() as u64,
+                a.len(),
+                b.as_ptr() as u64,
+                b.len()
+            ),
             Ok(())
         );
         assert_eq!(
-            symlink_via(&transport, a.as_ptr() as u64, a.len(), b.as_ptr() as u64, b.len()),
+            symlink_via(
+                &transport,
+                a.as_ptr() as u64,
+                a.len(),
+                b.as_ptr() as u64,
+                b.len()
+            ),
             Ok(())
         );
         assert_eq!(
-            rename_via(&transport, a.as_ptr() as u64, a.len(), b.as_ptr() as u64, b.len()),
+            rename_via(
+                &transport,
+                a.as_ptr() as u64,
+                a.len(),
+                b.as_ptr() as u64,
+                b.len()
+            ),
             Ok(())
         );
         let sent: Vec<Message> = transport.sent.borrow().iter().map(|(_, m)| *m).collect();
@@ -2445,10 +2625,26 @@ mod fileop_wire_tests {
         for msg in sent.iter() {
             // SAFETY: test-only read-back of the outgoing wire bytes.
             let raw = unsafe { &msg.m_u.raw };
-            assert_eq!(raw[0..8].to_vec(), (a.as_ptr() as u64).to_le_bytes(), "name1@0");
-            assert_eq!(raw[8..16].to_vec(), (b.as_ptr() as u64).to_le_bytes(), "name2@8");
-            assert_eq!(raw[16..24].to_vec(), (a.len() as u64).to_le_bytes(), "len1@16");
-            assert_eq!(raw[24..32].to_vec(), (b.len() as u64).to_le_bytes(), "len2@24");
+            assert_eq!(
+                raw[0..8].to_vec(),
+                (a.as_ptr() as u64).to_le_bytes(),
+                "name1@0"
+            );
+            assert_eq!(
+                raw[8..16].to_vec(),
+                (b.as_ptr() as u64).to_le_bytes(),
+                "name2@8"
+            );
+            assert_eq!(
+                raw[16..24].to_vec(),
+                (a.len() as u64).to_le_bytes(),
+                "len1@16"
+            );
+            assert_eq!(
+                raw[24..32].to_vec(),
+                (b.len() as u64).to_le_bytes(),
+                "len2@24"
+            );
             assert_eq!(raw[32..56].to_vec(), vec![0; 24], "尾部保持零");
         }
     }
@@ -2460,11 +2656,22 @@ mod fileop_wire_tests {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
         let path = b"/f\0";
-        assert_eq!(chown_via(&transport, path.as_ptr() as u64, path.len(), 1000, 1001), Ok(()));
+        assert_eq!(
+            chown_via(&transport, path.as_ptr() as u64, path.len(), 1000, 1001),
+            Ok(())
+        );
         let (_, sent) = last_sent(&transport);
         assert_eq!(sent.m_type, VFS_CALL_CHOWN);
-        assert_eq!(raw_lane(&sent, 0..8), (path.as_ptr() as u64).to_le_bytes(), "name@0");
-        assert_eq!(raw_lane(&sent, 8..16), (path.len() as u64).to_le_bytes(), "len@8");
+        assert_eq!(
+            raw_lane(&sent, 0..8),
+            (path.as_ptr() as u64).to_le_bytes(),
+            "name@0"
+        );
+        assert_eq!(
+            raw_lane(&sent, 8..16),
+            (path.len() as u64).to_le_bytes(),
+            "len@8"
+        );
         assert_eq!(raw_lane(&sent, 16..20), [0; 4], "fd@16 零（path 半）");
         assert_eq!(raw_lane(&sent, 20..24), 1000u32.to_le_bytes(), "owner@20");
         assert_eq!(raw_lane(&sent, 24..28), 1001u32.to_le_bytes(), "group@24");
@@ -2489,8 +2696,16 @@ mod fileop_wire_tests {
         let t = unsafe { &sent[0].1.m_u.raw };
         assert_eq!(t[0..8].to_vec(), (-1i64).to_le_bytes(), "offset@0");
         assert_eq!(t[8..12].to_vec(), [0; 4], "fd@8 零（path 半）");
-        assert_eq!(t[16..24].to_vec(), (path.as_ptr() as u64).to_le_bytes(), "name@16");
-        assert_eq!(t[24..32].to_vec(), (path.len() as u64).to_le_bytes(), "len@24");
+        assert_eq!(
+            t[16..24].to_vec(),
+            (path.as_ptr() as u64).to_le_bytes(),
+            "name@16"
+        );
+        assert_eq!(
+            t[24..32].to_vec(),
+            (path.len() as u64).to_le_bytes(),
+            "len@24"
+        );
         assert_eq!(sent[1].1.m_type, VFS_CALL_FTRUNCATE);
         // SAFETY: test-only read-back of the outgoing wire bytes.
         let f = unsafe { &sent[1].1.m_u.raw };
@@ -2546,9 +2761,21 @@ mod fileop_wire_tests {
         );
         let (_, sent) = last_sent(&transport);
         assert_eq!(sent.m_type, VFS_CALL_READLINK);
-        assert_eq!(raw_lane(&sent, 0..8), (path.as_ptr() as u64).to_le_bytes(), "name@0");
-        assert_eq!(raw_lane(&sent, 8..16), (path.len() as u64).to_le_bytes(), "namelen@8");
-        assert_eq!(raw_lane(&sent, 24..32), (buf.len() as u64).to_le_bytes(), "bufsize@24");
+        assert_eq!(
+            raw_lane(&sent, 0..8),
+            (path.as_ptr() as u64).to_le_bytes(),
+            "name@0"
+        );
+        assert_eq!(
+            raw_lane(&sent, 8..16),
+            (path.len() as u64).to_le_bytes(),
+            "namelen@8"
+        );
+        assert_eq!(
+            raw_lane(&sent, 24..32),
+            (buf.len() as u64).to_le_bytes(),
+            "bufsize@24"
+        );
         assert_eq!(
             raw_lane(&sent, 32..56),
             vec![0; 24],
@@ -2578,8 +2805,16 @@ mod fileop_wire_tests {
         let (_, sent) = last_sent(&transport);
         assert_eq!(sent.m_type, VFS_CALL_MKNOD);
         assert_eq!(raw_lane(&sent, 0..8), 0u64.to_le_bytes(), "device@0");
-        assert_eq!(raw_lane(&sent, 8..16), (path.as_ptr() as u64).to_le_bytes(), "name@8");
-        assert_eq!(raw_lane(&sent, 16..24), (path.len() as u64).to_le_bytes(), "len@16");
+        assert_eq!(
+            raw_lane(&sent, 8..16),
+            (path.as_ptr() as u64).to_le_bytes(),
+            "name@8"
+        );
+        assert_eq!(
+            raw_lane(&sent, 16..24),
+            (path.len() as u64).to_le_bytes(),
+            "len@16"
+        );
         assert_eq!(raw_lane(&sent, 24..28), mode.to_le_bytes(), "mode@24");
         assert_eq!(raw_lane(&sent, 28..56), vec![0; 28], "尾部保持零");
     }
@@ -2588,8 +2823,8 @@ mod fileop_wire_tests {
 #[cfg(test)]
 mod time_sync_wire_tests {
     use super::*;
-    use alloc::{vec, vec::Vec};
     use crate::ipc::CannedTransport;
+    use alloc::{vec, vec::Vec};
     use minix_types::Message;
 
     fn reply_with_type(message_type: i32) -> Message {
@@ -2627,7 +2862,11 @@ mod time_sync_wire_tests {
         let (dest, sent) = last_sent(&transport);
         assert_eq!(dest, vfs_endpoint());
         assert_eq!(sent.m_type, VFS_CALL_SYNC);
-        assert_eq!(raw_lane(&sent, 0..56), vec![0; 56], "sync 载荷全零（C memset）");
+        assert_eq!(
+            raw_lane(&sent, 0..56),
+            vec![0; 56],
+            "sync 载荷全零（C memset）"
+        );
     }
 
     #[test]
@@ -2653,12 +2892,28 @@ mod time_sync_wire_tests {
         assert_eq!(sent.m_type, VFS_CALL_UTIMENS);
         assert_eq!(raw_lane(&sent, 0..8), 100i64.to_le_bytes(), "atime@0");
         assert_eq!(raw_lane(&sent, 8..16), 200i64.to_le_bytes(), "mtime@8");
-        assert_eq!(raw_lane(&sent, 16..24), UTIME_OMIT.to_le_bytes(), "ansec@16");
+        assert_eq!(
+            raw_lane(&sent, 16..24),
+            UTIME_OMIT.to_le_bytes(),
+            "ansec@16"
+        );
         assert_eq!(raw_lane(&sent, 24..32), 300i64.to_le_bytes(), "mnsec@24");
-        assert_eq!(raw_lane(&sent, 32..40), (path.len() as u64).to_le_bytes(), "len@32");
-        assert_eq!(raw_lane(&sent, 40..48), (path.as_ptr() as u64).to_le_bytes(), "name@40");
+        assert_eq!(
+            raw_lane(&sent, 32..40),
+            (path.len() as u64).to_le_bytes(),
+            "len@32"
+        );
+        assert_eq!(
+            raw_lane(&sent, 40..48),
+            (path.as_ptr() as u64).to_le_bytes(),
+            "name@40"
+        );
         assert_eq!(raw_lane(&sent, 48..52), AT_FDCWD.to_le_bytes(), "fd@48");
-        assert_eq!(raw_lane(&sent, 52..56), AT_SYMLINK_NOFOLLOW.to_le_bytes(), "flags@52");
+        assert_eq!(
+            raw_lane(&sent, 52..56),
+            AT_SYMLINK_NOFOLLOW.to_le_bytes(),
+            "flags@52"
+        );
     }
 
     #[test]
@@ -2678,11 +2933,31 @@ mod time_sync_wire_tests {
         );
         // flags out of range → EINVAL (C :40-42).
         assert_eq!(
-            utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, abs.len(), 0, 0, 0, 0, 70000),
+            utimensat_via(
+                &transport,
+                AT_FDCWD,
+                abs.as_ptr() as u64,
+                abs.len(),
+                0,
+                0,
+                0,
+                0,
+                70000
+            ),
             Err(Errno::EINVAL)
         );
         assert_eq!(
-            utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, abs.len(), 0, 0, 0, 0, -1),
+            utimensat_via(
+                &transport,
+                AT_FDCWD,
+                abs.as_ptr() as u64,
+                abs.len(),
+                0,
+                0,
+                0,
+                0,
+                -1
+            ),
             Err(Errno::EINVAL)
         );
         // Everything is stopped: zero round trips.
@@ -2693,16 +2968,27 @@ mod time_sync_wire_tests {
     fn test_futimens_wire_lanes() {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
-        assert_eq!(futimens_via(&transport, 4, 0, UTIME_NOW, 12345, 678), Ok(()));
+        assert_eq!(
+            futimens_via(&transport, 4, 0, UTIME_NOW, 12345, 678),
+            Ok(())
+        );
         let (_, sent) = last_sent(&transport);
         assert_eq!(sent.m_type, VFS_CALL_UTIMENS);
-        assert_eq!(raw_lane(&sent, 0..8), 0i64.to_le_bytes(), "atime@0=0（C now 形态）");
+        assert_eq!(
+            raw_lane(&sent, 0..8),
+            0i64.to_le_bytes(),
+            "atime@0=0（C now 形态）"
+        );
         assert_eq!(raw_lane(&sent, 8..16), 12345i64.to_le_bytes(), "mtime@8");
         assert_eq!(raw_lane(&sent, 16..24), UTIME_NOW.to_le_bytes(), "ansec@16");
         assert_eq!(raw_lane(&sent, 24..32), 678i64.to_le_bytes(), "mnsec@24");
         assert_eq!(raw_lane(&sent, 32..48), vec![0; 16], "len/name=0 走 fd 半");
         assert_eq!(raw_lane(&sent, 48..52), 4i32.to_le_bytes(), "fd@48");
-        assert_eq!(raw_lane(&sent, 52..56), 0i32.to_le_bytes(), "flags@52=0（C futimens）");
+        assert_eq!(
+            raw_lane(&sent, 52..56),
+            0i32.to_le_bytes(),
+            "flags@52=0（C futimens）"
+        );
     }
 
     #[test]

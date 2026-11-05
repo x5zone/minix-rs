@@ -32,6 +32,14 @@ use minix_types::{Endpoint, Errno, Gid, Message, Pid, Uid};
 /// C: `RS_PROC_NR ((endpoint_t) 2)` (`minix3/minix/include/minix/com.h:61`).
 pub const RS_ENDPOINT_NUMBER: i32 = 2;
 
+// The RS request call numbers (`minix3/minix/include/minix/com.h:465-489`),
+// re-exported from the single authority in minix-types (boundary gate:
+// commands reach minix-types faces only through minix-sys re-exports).
+pub use minix_types::ipc::rs::{
+    RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE,
+    RS_UP, RS_UPDATE,
+};
+
 /// Look up a service name. C: `RS_LOOKUP (RS_RQ_BASE + 8)` (`com.h:474`),
 /// with the request base at `0x700` (`com.h:463`).
 pub const RS_CALL_LOOKUP: i32 = 0x708;
@@ -194,7 +202,12 @@ pub fn endpoint_identities_via(
     let effective_group = u32::from_ne_bytes(raw[12..16].try_into().unwrap());
     Ok((
         reply,
-        EndpointIdentities { user, effective_user, group, effective_group },
+        EndpointIdentities {
+            user,
+            effective_user,
+            group,
+            effective_group,
+        },
     ))
 }
 
@@ -204,10 +217,7 @@ pub fn endpoint_identities_via(
 /// store the identifier, run the server-side protocol, and read the endpoint
 /// back from the reply's first four bytes (C: `mess_pm_lsys_getprocnr`
 /// holds one endpoint).
-pub fn process_number_via(
-    transport: &impl IpcTransport,
-    pid: Pid,
-) -> Result<Endpoint, Errno> {
+pub fn process_number_via(transport: &impl IpcTransport, pid: Pid) -> Result<Endpoint, Errno> {
     let mut message = cleared_message();
     // SAFETY: identifier at bytes 0..4.
     unsafe {
@@ -248,10 +258,22 @@ pub struct SystemInfoTarget {
 /// default branch at `getsysinfo.c:23-24`).
 pub const fn route_system_info(target: Endpoint) -> Result<SystemInfoTarget, Errno> {
     match target.0 {
-        0 => Ok(SystemInfoTarget { server: target, call_number: PM_CALL_GET_SYSTEM_INFO }),
-        1 => Ok(SystemInfoTarget { server: target, call_number: VFS_CALL_GET_SYSTEM_INFO }),
-        2 => Ok(SystemInfoTarget { server: target, call_number: RS_CALL_GET_SYSTEM_INFO }),
-        6 => Ok(SystemInfoTarget { server: target, call_number: DS_CALL_GET_SYSTEM_INFO }),
+        0 => Ok(SystemInfoTarget {
+            server: target,
+            call_number: PM_CALL_GET_SYSTEM_INFO,
+        }),
+        1 => Ok(SystemInfoTarget {
+            server: target,
+            call_number: VFS_CALL_GET_SYSTEM_INFO,
+        }),
+        2 => Ok(SystemInfoTarget {
+            server: target,
+            call_number: RS_CALL_GET_SYSTEM_INFO,
+        }),
+        6 => Ok(SystemInfoTarget {
+            server: target,
+            call_number: DS_CALL_GET_SYSTEM_INFO,
+        }),
         _ => Err(Errno::ENOSYS),
     }
 }
@@ -331,7 +353,10 @@ mod tests {
         };
         assert_eq!(i32::from_ne_bytes(bytes[0..4].try_into().unwrap()), 0);
         assert_eq!(i32::from_ne_bytes(bytes[4..8].try_into().unwrap()), 5);
-        assert_eq!(u64::from_ne_bytes(bytes[24..32].try_into().unwrap()), 0x7000);
+        assert_eq!(
+            u64::from_ne_bytes(bytes[24..32].try_into().unwrap()),
+            0x7000
+        );
         assert_eq!(i32::from_ne_bytes(bytes[32..36].try_into().unwrap()), 0);
     }
 
@@ -351,10 +376,7 @@ mod tests {
     fn test_lookup_error_propagates() {
         let mut transport = crate::ipc::CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(-2)));
-        assert_eq!(
-            lookup_via(&transport, 0x7000, 5),
-            Err(Errno::from_i32(2))
-        );
+        assert_eq!(lookup_via(&transport, 0x7000, 5), Err(Errno::from_i32(2)));
     }
 
     #[test]
@@ -398,19 +420,31 @@ mod tests {
     fn test_route_covers_four_servers_and_rejects_rest() {
         assert_eq!(
             route_system_info(Endpoint(0)),
-            Ok(SystemInfoTarget { server: Endpoint(0), call_number: PM_CALL_GET_SYSTEM_INFO })
+            Ok(SystemInfoTarget {
+                server: Endpoint(0),
+                call_number: PM_CALL_GET_SYSTEM_INFO
+            })
         );
         assert_eq!(
             route_system_info(Endpoint(1)),
-            Ok(SystemInfoTarget { server: Endpoint(1), call_number: VFS_CALL_GET_SYSTEM_INFO })
+            Ok(SystemInfoTarget {
+                server: Endpoint(1),
+                call_number: VFS_CALL_GET_SYSTEM_INFO
+            })
         );
         assert_eq!(
             route_system_info(Endpoint(2)),
-            Ok(SystemInfoTarget { server: Endpoint(2), call_number: RS_CALL_GET_SYSTEM_INFO })
+            Ok(SystemInfoTarget {
+                server: Endpoint(2),
+                call_number: RS_CALL_GET_SYSTEM_INFO
+            })
         );
         assert_eq!(
             route_system_info(Endpoint(6)),
-            Ok(SystemInfoTarget { server: Endpoint(6), call_number: DS_CALL_GET_SYSTEM_INFO })
+            Ok(SystemInfoTarget {
+                server: Endpoint(6),
+                call_number: DS_CALL_GET_SYSTEM_INFO
+            })
         );
         assert_eq!(route_system_info(Endpoint(9)), Err(Errno::ENOSYS));
     }
@@ -419,7 +453,10 @@ mod tests {
     fn test_system_info_runs_routed_call() {
         let mut transport = crate::ipc::CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
-        assert_eq!(system_info_via(&transport, Endpoint(2), 3, 0x8000, 64), Ok(()));
+        assert_eq!(
+            system_info_via(&transport, Endpoint(2), 3, 0x8000, 64),
+            Ok(())
+        );
         assert_eq!(transport.sendrec_calls.get(), 1);
     }
 

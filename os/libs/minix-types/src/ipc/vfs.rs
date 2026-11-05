@@ -880,7 +880,10 @@ mod vfs_call_reply_tests {
     fn test_vfs_call_decode_rejects_out_of_family() {
         // Out-of-family (the FS request family) and the handshake-only INIT never enter service_pm payload decoding.
         assert_eq!(
-            VfsCall::decode(&Message { m_type: 0xA00, ..Message::default() }),
+            VfsCall::decode(&Message {
+                m_type: 0xA00,
+                ..Message::default()
+            }),
             Err(VfsCallError::NotACall(0xA00))
         );
         assert_eq!(
@@ -897,7 +900,10 @@ mod vfs_call_reply_tests {
             "bogus 必须落在 RQ 族内以测试 UnknownCall 分支"
         );
         assert_eq!(
-            VfsCall::decode(&Message { m_type: bogus, ..Message::default() }),
+            VfsCall::decode(&Message {
+                m_type: bogus,
+                ..Message::default()
+            }),
             Err(VfsCallError::UnknownCall(bogus))
         );
     }

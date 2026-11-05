@@ -284,9 +284,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use minix_types::{
-    sysctl_type, CTLFLAG_IMMEDIATE, CTLFLAG_PRIVATE, CTLFLAG_READWRITE, CTLTYPE_BOOL,
-    CTLTYPE_INT, CTLTYPE_NODE, CTLTYPE_QUAD, CTLTYPE_STRING, CTLTYPE_STRUCT,
-    SysctlDesc, SysctlNode, SYSCTL_NAMELEN, SYSCTL_NODE_FN, SYSCTL_VERSION,
+    CTLFLAG_IMMEDIATE, CTLFLAG_PRIVATE, CTLFLAG_READWRITE, CTLTYPE_BOOL, CTLTYPE_INT, CTLTYPE_NODE,
+    CTLTYPE_QUAD, CTLTYPE_STRING, CTLTYPE_STRUCT, SYSCTL_NAMELEN, SYSCTL_NODE_FN, SYSCTL_VERSION,
+    SysctlDesc, SysctlNode, sysctl_type,
 };
 
 /// Outgoing data window (C: `struct rmib_oldp` — rmib.c:24-27): the
@@ -362,7 +362,11 @@ pub fn rmib_copyout(
         Some(o) if off < o.len => o,
         _ => return Ok(size), // nothing to do (rmib.c:110-111)
     };
-    let len = if size > oldp.len - off { oldp.len - off } else { size };
+    let len = if size > oldp.len - off {
+        oldp.len - off
+    } else {
+        size
+    };
     write(&buf[..len], off)?;
     Ok(size)
 }
@@ -477,8 +481,7 @@ pub fn rmib_copyout_node(
 
     // C: rmib.c:216-217 — PRIVATE node information is visible only to authorized
     // callers.
-    let visible =
-        (rnode.flags & CTLFLAG_PRIVATE == 0) || (call.flags & RMIB_FLAG_AUTH) != 0;
+    let visible = (rnode.flags & CTLFLAG_PRIVATE == 0) || (call.flags & RMIB_FLAG_AUTH) != 0;
 
     // C: rmib.c:219-231 — immediate nodes get their direct value filled in when
     // visible.
@@ -518,7 +521,10 @@ fn scn_as_bytes(scn: &SysctlNode) -> &[u8] {
     // SAFETY: `#[repr(C)]` struct, all fields PoD, no padding-initialization
     // requirement (the destination buffer reads it byte by byte).
     unsafe {
-        core::slice::from_raw_parts(scn as *const SysctlNode as *const u8, core::mem::size_of::<SysctlNode>())
+        core::slice::from_raw_parts(
+            scn as *const SysctlNode as *const u8,
+            core::mem::size_of::<SysctlNode>(),
+        )
     }
 }
 
@@ -571,7 +577,12 @@ pub fn rmib_copyout_desc(
     payload.push(0);
     let payload = payload;
     let _ = str_off;
-    rmib_copyout(oldp, off + core::mem::size_of::<SysctlDesc>(), &payload, write)?;
+    rmib_copyout(
+        oldp,
+        off + core::mem::size_of::<SysctlDesc>(),
+        &payload,
+        write,
+    )?;
 
     Ok(core::mem::size_of::<SysctlDesc>() + payload.len())
 }
@@ -584,9 +595,7 @@ pub fn rmib_lookup_mut(parent: &mut RmibNode, id: u32) -> Option<&mut RmibNode> 
     match &mut parent.children {
         RmibChildren::None => None,
         RmibChildren::Dense(v) => v.get_mut(id as usize).filter(|n| n.flags != 0),
-        RmibChildren::Sparse(v) => {
-            v.iter_mut().find(|(i, _)| *i == id).map(|(_, n)| n)
-        }
+        RmibChildren::Sparse(v) => v.iter_mut().find(|(i, _)| *i == id).map(|(_, n)| n),
     }
 }
 
@@ -594,9 +603,7 @@ pub fn rmib_lookup(parent: &RmibNode, id: u32) -> Option<&RmibNode> {
     match &parent.children {
         RmibChildren::None => None,
         RmibChildren::Dense(v) => v.get(id as usize).filter(|n| n.flags != 0),
-        RmibChildren::Sparse(v) => {
-            v.iter().find(|(i, _)| *i == id).map(|(_, n)| n)
-        }
+        RmibChildren::Sparse(v) => v.iter().find(|(i, _)| *i == id).map(|(_, n)| n),
     }
 }
 
@@ -705,7 +712,10 @@ mod pure_tests {
 
         // SAFETY(test): read the packed int immediate arm.
         let scn: &SysctlNode = unsafe { &*(captured.as_ptr() as *const SysctlNode) };
-        assert_eq!(scn.sysctl_flags, SYSCTL_VERSION | (pub_node.flags & !CTLFLAG_SPARSE));
+        assert_eq!(
+            scn.sysctl_flags,
+            SYSCTL_VERSION | (pub_node.flags & !CTLFLAG_SPARSE)
+        );
         assert_eq!(scn.sysctl_num, 0);
         assert_eq!(scn.sysctl_ver, 7);
         // SAFETY(test): the int immediate arm was written by packing.
@@ -727,7 +737,11 @@ mod pure_tests {
         let scn2: &SysctlNode = unsafe { &*(captured2.as_ptr() as *const SysctlNode) };
         assert_eq!(scn2.sysctl_num, 1);
         // SAFETY(test): the unauthorized path does not write the immediate value.
-        assert_eq!(unsafe { scn2.sysctl_un.scu_idata }, 0, "无授权不得泄漏 immediate");
+        assert_eq!(
+            unsafe { scn2.sysctl_un.scu_idata },
+            0,
+            "无授权不得泄漏 immediate"
+        );
     }
 
     /// C rmib.c:233-249 — NODE special cases: non-function plus visible → report
@@ -774,7 +788,10 @@ mod pure_tests {
         let scn2: &SysctlNode = unsafe { &*(captured2.as_ptr() as *const SysctlNode) };
         // SAFETY(test): the NODE_FN sentinel was written by the function-driven
         // special case.
-        assert_eq!(unsafe { scn2.sysctl_un.scu_child._suc_child }, SYSCTL_NODE_FN as u64);
+        assert_eq!(
+            unsafe { scn2.sysctl_un.scu_child._suc_child },
+            SYSCTL_NODE_FN as u64
+        );
     }
 
     /// C rmib.c:355-364 — a PRIVATE node's description is skipped outright
@@ -817,12 +834,11 @@ pub struct RmibInfoReq {
 /// An over-long description is truncated to desc_size (C rmib.c:1030-1032);
 /// no description copies an empty string. Returns OK on success (C returns the
 /// result of the last safecopy).
-pub fn rmib_info(
-    table: &SubtreeTable,
-    req: &RmibInfoReq,
-    io: &mut dyn RmibIo,
-) -> Result<(), i32> {
-    let slot = table.slots.get(req.root_id as usize).ok_or(minix_types::ENOENT)?;
+pub fn rmib_info(table: &SubtreeTable, req: &RmibInfoReq, io: &mut dyn RmibIo) -> Result<(), i32> {
+    let slot = table
+        .slots
+        .get(req.root_id as usize)
+        .ok_or(minix_types::ENOENT)?;
     let root = slot.tree.as_ref().ok_or(minix_types::ENOENT)?;
 
     // C rmib.c:1007-1011 — the name (including the NUL) must fit.
@@ -865,7 +881,7 @@ pub fn rmib_info(
 //    message, and sending belongs to the service main loop (asynsend3/
 //    AMF_NOREPLY after E1).
 
-use minix_types::{grant_valid, CTL_MAXNAME, CTLFLAG_ANYWRITE, CTL_SHORTNAME, ERESTART};
+use minix_types::{CTL_MAXNAME, CTL_SHORTNAME, CTLFLAG_ANYWRITE, ERESTART, grant_valid};
 
 /// A forwarded sysctl call request (C: the `m_mib_lsys_call` field set,
 /// rmib.c:687-716).
@@ -975,7 +991,9 @@ pub struct SubtreeTable {
 impl SubtreeTable {
     /// An empty table.
     pub fn new() -> Self {
-        Self { slots: core::array::from_fn(|_| MountSlot::default()) }
+        Self {
+            slots: core::array::from_fn(|_| MountSlot::default()),
+        }
     }
 
     /// Register a subtree (C: `rmib_register` — rmib.c:892-924). The name must be
@@ -983,11 +1001,7 @@ impl SubtreeTable {
     /// registering the same tree twice is EEXIST; a full table is ENOMEM.
     /// Returns `(root id, pending MIB_REGISTER message)` — sending belongs to the
     /// caller (asynsend3 after E1, ARCH deviation 2).
-    pub fn register(
-        &mut self,
-        name: &[i32],
-        root: RmibNode,
-    ) -> Result<(u32, RmibRegMessage), i32> {
+    pub fn register(&mut self, name: &[i32], root: RmibNode) -> Result<(u32, RmibRegMessage), i32> {
         // C: rmib.c:896-899 — namelen ∈ [1, CTL_SHORTNAME) and the root is a NODE.
         if name.is_empty() || name.len() >= CTL_SHORTNAME as usize {
             return Err(minix_types::EINVAL);
@@ -1088,20 +1102,28 @@ fn getptr_bytes(rnode: &RmibNode) -> Option<Vec<u8>> {
     let immediate = rnode.flags & minix_types::CTLFLAG_IMMEDIATE != 0;
     match node_type {
         CTLTYPE_BOOL if immediate => {
-            Some(vec![matches!(rnode.value, Some(RmibImmediate::Bool(true))) as u8])
+            Some(vec![
+                matches!(rnode.value, Some(RmibImmediate::Bool(true))) as u8
+            ])
         }
-        CTLTYPE_INT if immediate => {
-            Some(rnode.value.map(|v| match v {
-                RmibImmediate::Int(i) => i.to_le_bytes().to_vec(),
-                _ => vec![0, 0, 0, 0],
-            }).unwrap_or_default())
-        }
-        CTLTYPE_QUAD if immediate => {
-            Some(rnode.value.map(|v| match v {
-                RmibImmediate::Quad(q) => q.to_le_bytes().to_vec(),
-                _ => vec![0; 8],
-            }).unwrap_or_default())
-        }
+        CTLTYPE_INT if immediate => Some(
+            rnode
+                .value
+                .map(|v| match v {
+                    RmibImmediate::Int(i) => i.to_le_bytes().to_vec(),
+                    _ => vec![0, 0, 0, 0],
+                })
+                .unwrap_or_default(),
+        ),
+        CTLTYPE_QUAD if immediate => Some(
+            rnode
+                .value
+                .map(|v| match v {
+                    RmibImmediate::Quad(q) => q.to_le_bytes().to_vec(),
+                    _ => vec![0; 8],
+                })
+                .unwrap_or_default(),
+        ),
         CTLTYPE_STRING | CTLTYPE_STRUCT if immediate => None,
         _ => rnode.data.clone(),
     }
@@ -1151,7 +1173,12 @@ fn rmib_read(rnode: &RmibNode, oldp: Option<&RmibOldp>, io: &mut dyn RmibIo) -> 
 /// rmib.c:556-566), validate the length by type (non-strings must match
 /// exactly; strings may be shorter and get a trailing NUL; over the stack
 /// budget without authorization is EPERM), then commit.
-fn rmib_write(rnode: &mut RmibNode, newp: Option<&RmibNewp>, call: &RmibCall, io: &mut dyn RmibIo) -> Result<(), i32> {
+fn rmib_write(
+    rnode: &mut RmibNode,
+    newp: Option<&RmibNewp>,
+    call: &RmibCall,
+    io: &mut dyn RmibIo,
+) -> Result<(), i32> {
     let newp = match newp {
         Some(n) => n,
         None => return Ok(()), // nothing to do (rmib.c:558)
@@ -1162,7 +1189,8 @@ fn rmib_write(rnode: &mut RmibNode, newp: Option<&RmibNewp>, call: &RmibCall, io
 
     // C rmib.c:570-592 — data nodes must have storage; the length is validated
     // by type.
-    if rnode.data.is_none() && (!immediate || matches!(node_type, CTLTYPE_STRING | CTLTYPE_STRUCT)) {
+    if rnode.data.is_none() && (!immediate || matches!(node_type, CTLTYPE_STRING | CTLTYPE_STRUCT))
+    {
         // NODE/no-data node: rmib_getptr returns NULL → EINVAL.
         if !immediate {
             return Err(minix_types::EINVAL);
@@ -1271,12 +1299,18 @@ pub fn rmib_call(
     // C rmib.c:718-726 — oldp/newp are built according to grant validity (an
     // invalid grant = NULL).
     let oldp = if grant_valid(req.oldp_grant) {
-        Some(RmibOldp { grant: req.oldp_grant, len: req.oldp_len })
+        Some(RmibOldp {
+            grant: req.oldp_grant,
+            len: req.oldp_len,
+        })
     } else {
         None
     };
     let newp = if grant_valid(req.newp_grant) {
-        Some(RmibNewp { grant: req.newp_grant, len: req.newp_len })
+        Some(RmibNewp {
+            grant: req.newp_grant,
+            len: req.newp_len,
+        })
     } else {
         None
     };
@@ -1312,12 +1346,8 @@ pub fn rmib_call(
                 return Err(minix_types::EINVAL);
             }
             return match id {
-                minix_types::CTL_QUERY => {
-                    enumerate_nodes(rnode, &call_ctx, oldp.as_ref(), io)
-                }
-                minix_types::CTL_DESCRIBE => {
-                    describe_nodes(rnode, &call_ctx, oldp.as_ref(), io)
-                }
+                minix_types::CTL_QUERY => enumerate_nodes(rnode, &call_ctx, oldp.as_ref(), io),
+                minix_types::CTL_DESCRIBE => describe_nodes(rnode, &call_ctx, oldp.as_ref(), io),
                 minix_types::CTL_CREATE | minix_types::CTL_DESTROY => {
                     Err(minix_types::EPERM) // static subtrees only (rmib.c:776-779)
                 }
@@ -1388,7 +1418,9 @@ fn enumerate_nodes(
 ) -> Result<usize, i32> {
     let mut off = 0usize;
     for (id, child) in iter_children(rnode) {
-        off += rmib_copyout_node(call, oldp, off, id, child, |b, at| io.copyout(b, oldp_grant_of(oldp), at))?;
+        off += rmib_copyout_node(call, oldp, off, id, child, |b, at| {
+            io.copyout(b, oldp_grant_of(oldp), at)
+        })?;
     }
     Ok(off)
 }
@@ -1402,7 +1434,9 @@ fn describe_nodes(
 ) -> Result<usize, i32> {
     let mut off = 0usize;
     for (id, child) in iter_children(rnode) {
-        off += rmib_copyout_desc(call, oldp, off, id, child, |b, at| io.copyout(b, oldp_grant_of(oldp), at))?;
+        off += rmib_copyout_desc(call, oldp, off, id, child, |b, at| {
+            io.copyout(b, oldp_grant_of(oldp), at)
+        })?;
     }
     Ok(off)
 }
@@ -1441,7 +1475,10 @@ mod func_tests {
     }
     impl MemIo {
         fn new(grants: Vec<(i32, Vec<u8>)>) -> Self {
-            Self { grants, written: Vec::new() }
+            Self {
+                grants,
+                written: Vec::new(),
+            }
         }
     }
     impl RmibIo for MemIo {
@@ -1469,7 +1506,8 @@ mod func_tests {
                 return Err(EFAULT);
             }
             data[off..off + src.len()].copy_from_slice(src);
-            self.written.push((grant, data[off..off + src.len()].to_vec()));
+            self.written
+                .push((grant, data[off..off + src.len()].to_vec()));
             Ok(())
         }
     }
@@ -1501,7 +1539,11 @@ mod func_tests {
     }
 
     fn node(flags: u32, name: &str) -> RmibNode {
-        RmibNode { flags, name: String::from(name), ..RmibNode::default() }
+        RmibNode {
+            flags,
+            name: String::from(name),
+            ..RmibNode::default()
+        }
     }
 
     /// Root NODE (children: [0] = func node, [1] = int leaf), mount name [0, 82].
@@ -1539,8 +1581,14 @@ mod func_tests {
         // namelen=0 (the name is exhausted at the node), and its return value is
         // the result.
         let mut table = fixture();
-        let mut io = MemIo::new(alloc::vec![(5, alloc::vec![0, 0, 0, 0]), (7, alloc::vec![0; 16])]);
-        let mut probe = Probe { seen: None, ret: Ok(4) };
+        let mut io = MemIo::new(alloc::vec![
+            (5, alloc::vec![0, 0, 0, 0]),
+            (7, alloc::vec![0; 16])
+        ]);
+        let mut probe = Probe {
+            seen: None,
+            ret: Ok(4),
+        };
         let r = rmib_call(&mut table, &req(1, 5), &mut io, Some(&mut probe));
         assert_eq!(r, Ok(4));
         assert_eq!(probe.seen, Some(("info".into(), 0)));
@@ -1551,8 +1599,14 @@ mod func_tests {
     fn test_func_node_handler_errno_passthrough() {
         // The handler's Err is propagated as-is (C returns a negative errno).
         let mut table = fixture();
-        let mut io = MemIo::new(alloc::vec![(5, alloc::vec![0, 0, 0, 0]), (7, alloc::vec![0; 16])]);
-        let mut probe = Probe { seen: None, ret: Err(EINVAL) };
+        let mut io = MemIo::new(alloc::vec![
+            (5, alloc::vec![0, 0, 0, 0]),
+            (7, alloc::vec![0; 16])
+        ]);
+        let mut probe = Probe {
+            seen: None,
+            ret: Err(EINVAL),
+        };
         assert_eq!(
             rmib_call(&mut table, &req(1, 5), &mut io, Some(&mut probe)),
             Err(EINVAL)
@@ -1563,7 +1617,10 @@ mod func_tests {
     fn test_func_node_without_handler_is_eopnotsupp() {
         // Pre-existing behavior preserved: None callback → EOPNOTSUPP.
         let mut table = fixture();
-        let mut io = MemIo::new(alloc::vec![(5, alloc::vec![0, 0, 0, 0]), (7, alloc::vec![0; 16])]);
+        let mut io = MemIo::new(alloc::vec![
+            (5, alloc::vec![0, 0, 0, 0]),
+            (7, alloc::vec![0; 16])
+        ]);
         assert_eq!(
             rmib_call(&mut table, &req(1, 5), &mut io, None),
             Err(minix_types::EOPNOTSUPP)
@@ -1581,12 +1638,19 @@ mod func_tests {
             (5, alloc::vec![0, 0, 0, 0, 5, 0, 0, 0]),
             (7, alloc::vec![0; 16]),
         ]);
-        let mut probe = Probe { seen: None, ret: Ok(0) };
+        let mut probe = Probe {
+            seen: None,
+            ret: Ok(0),
+        };
         let dbg = &table.slots[0];
         assert_eq!(dbg.namelen, 2, "slot namelen");
         assert!(dbg.tree.is_some());
         let root_ref = dbg.tree.as_ref().unwrap();
-        assert!(rmib_lookup(root_ref, 0).is_some(), "child0 exists: {:?}", root_ref.children);
+        assert!(
+            rmib_lookup(root_ref, 0).is_some(),
+            "child0 exists: {:?}",
+            root_ref.children
+        );
         let r = rmib_call(&mut table, &req(2, 5), &mut io, Some(&mut probe));
         assert!(r.is_ok(), "walker returned {r:?}");
         assert_eq!(probe.seen, Some(("info".into(), 1)));
@@ -1597,8 +1661,14 @@ mod func_tests {
         // name=[2] is an ordinary int leaf: it does not go to the handler but to
         // generic readwrite.
         let mut table = fixture();
-        let mut io = MemIo::new(alloc::vec![(5, alloc::vec![1, 0, 0, 0]), (7, alloc::vec![0; 16])]);
-        let mut probe = Probe { seen: None, ret: Ok(0) };
+        let mut io = MemIo::new(alloc::vec![
+            (5, alloc::vec![1, 0, 0, 0]),
+            (7, alloc::vec![0; 16])
+        ]);
+        let mut probe = Probe {
+            seen: None,
+            ret: Ok(0),
+        };
         let r = rmib_call(&mut table, &req(1, 5), &mut io, Some(&mut probe));
         assert!(r.is_ok());
         assert!(probe.seen.is_none(), "数据叶不得派发 handler");

@@ -95,6 +95,7 @@ members = [
     
     # 用户态命令 - sbin
     "commands/sbin/init",
+        "commands/sbin/minix-service",
     "commands/sbin/devdb",
     "commands/sbin/mountinfo",
     "commands/sbin/diskfmt",

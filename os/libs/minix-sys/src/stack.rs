@@ -262,8 +262,7 @@ fn write_ps_strings(frame: &mut [u8], off: usize, ps: &PsStrings) {
     put_word(frame, off, ps.ps_argvstr);
     frame[off + WORD..off + WORD + 4].copy_from_slice(&ps.ps_nargvstr.to_ne_bytes());
     put_word(frame, off + WORD + 8, ps.ps_envstr);
-    frame[off + 2 * WORD + 8..off + 2 * WORD + 12]
-        .copy_from_slice(&ps.ps_nenvstr.to_ne_bytes());
+    frame[off + 2 * WORD + 8..off + 2 * WORD + 12].copy_from_slice(&ps.ps_nenvstr.to_ne_bytes());
 }
 
 #[cfg(test)]
@@ -289,7 +288,9 @@ mod stack_frame_tests {
     #[test]
     fn test_frame_size_sixteen_byte_aligned() {
         // The exact pre-fix counterexample: a 2-char process name.
-        for name in ["rs", "ds", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init"] {
+        for name in [
+            "rs", "ds", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
+        ] {
             let params = stack_params(&[name], &[]);
             assert_eq!(
                 params.frame_size % 16,
@@ -361,8 +362,7 @@ mod stack_frame_tests {
         let name = "vm";
         let params = stack_params(&[name], &[]);
         let mut frame = vec![0u8; params.frame_size];
-        let placement =
-            stack_fill(&[name], &[], params.frame_size, USER_SP, &mut frame).unwrap();
+        let placement = stack_fill(&[name], &[], params.frame_size, USER_SP, &mut frame).unwrap();
         let ps_off = placement.ps_str as usize - placement.vsp as usize;
         let vsp = placement.vsp;
         // ps_argvstr = address of the argv[0] slot (frame+WORD).
@@ -374,8 +374,7 @@ mod stack_frame_tests {
         // that slot exists in the frame and holds 0.
         // Under C's LP64 natural layout the ps_envstr field sits at ps
         // block+16 (padding follows the i32 count).
-        let env_slot: usize =
-            (get_word(&frame, ps_off + WORD + 8) - vsp) as usize;
+        let env_slot: usize = (get_word(&frame, ps_off + WORD + 8) - vsp) as usize;
         assert_eq!(env_slot, WORD + 2 * WORD); // argc=1 → NULL @ frame+24
         assert_eq!(get_word(&frame, env_slot), 0);
     }
@@ -404,11 +403,13 @@ mod stack_frame_tests {
         let args = ["/sbin/pm", "-d"];
         let params = stack_params(&args, &[]);
         let mut frame = vec![0u8; params.frame_size];
-        let placement =
-            stack_fill(&args, &[], params.frame_size, USER_SP, &mut frame).unwrap();
+        let placement = stack_fill(&args, &[], params.frame_size, USER_SP, &mut frame).unwrap();
         let off0 = min_strings_off(2, 0);
         assert_eq!(get_word(&frame, WORD), placement.vsp + off0 as u64);
-        assert_eq!(get_word(&frame, 2 * WORD), placement.vsp + (off0 + 9) as u64);
+        assert_eq!(
+            get_word(&frame, 2 * WORD),
+            placement.vsp + (off0 + 9) as u64
+        );
         assert_eq!(&frame[off0..off0 + 8], b"/sbin/pm");
         assert_eq!(&frame[off0 + 9..off0 + 11], b"-d");
         assert_eq!(read_i32(&frame, ps_off_of(&placement) + WORD), 2);

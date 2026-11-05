@@ -304,12 +304,8 @@ pub fn svrctl_via(
     argument: u64,
 ) -> Result<i32, Errno> {
     let (endpoint, call_number) = match dispatch_server_control(request)? {
-        ServerControlTarget::ProcessManager => {
-            (pm_endpoint(), PM_CALL_SERVER_CONTROL)
-        }
-        ServerControlTarget::FileSystem => {
-            (vfs_endpoint(), VFS_CALL_SERVER_CONTROL)
-        }
+        ServerControlTarget::ProcessManager => (pm_endpoint(), PM_CALL_SERVER_CONTROL),
+        ServerControlTarget::FileSystem => (vfs_endpoint(), VFS_CALL_SERVER_CONTROL),
     };
     let mut message = Message::zeroed();
     // SAFETY: two 64-bit lanes at bytes 0 and 8 of the control payload.
@@ -345,7 +341,10 @@ mod tests {
     #[test]
     fn test_out_of_range_fraction_is_invalid() {
         assert_eq!(
-            validate_sleep_request(Some(SleepRequest { seconds: 1, nanoseconds: -1 })),
+            validate_sleep_request(Some(SleepRequest {
+                seconds: 1,
+                nanoseconds: -1
+            })),
             Err(Errno::from_i32(minix_types::EINVAL))
         );
         assert_eq!(
@@ -356,7 +355,10 @@ mod tests {
             Err(Errno::from_i32(minix_types::EINVAL))
         );
         assert_eq!(
-            validate_sleep_request(Some(SleepRequest { seconds: -1, nanoseconds: 0 })),
+            validate_sleep_request(Some(SleepRequest {
+                seconds: -1,
+                nanoseconds: 0
+            })),
             Err(Errno::from_i32(minix_types::EINVAL))
         );
     }
@@ -365,16 +367,34 @@ mod tests {
     fn test_microseconds_round_up() {
         // One nanosecond still waits one microsecond; an exact count stays.
         assert_eq!(
-            validate_sleep_request(Some(SleepRequest { seconds: 2, nanoseconds: 1 })),
-            Ok(SleepTimeout { seconds: 2, microseconds: 1 })
+            validate_sleep_request(Some(SleepRequest {
+                seconds: 2,
+                nanoseconds: 1
+            })),
+            Ok(SleepTimeout {
+                seconds: 2,
+                microseconds: 1
+            })
         );
         assert_eq!(
-            validate_sleep_request(Some(SleepRequest { seconds: 0, nanoseconds: 1000 })),
-            Ok(SleepTimeout { seconds: 0, microseconds: 1 })
+            validate_sleep_request(Some(SleepRequest {
+                seconds: 0,
+                nanoseconds: 1000
+            })),
+            Ok(SleepTimeout {
+                seconds: 0,
+                microseconds: 1
+            })
         );
         assert_eq!(
-            validate_sleep_request(Some(SleepRequest { seconds: 0, nanoseconds: 0 })),
-            Ok(SleepTimeout { seconds: 0, microseconds: 0 })
+            validate_sleep_request(Some(SleepRequest {
+                seconds: 0,
+                nanoseconds: 0
+            })),
+            Ok(SleepTimeout {
+                seconds: 0,
+                microseconds: 0
+            })
         );
     }
 
@@ -476,7 +496,10 @@ mod tests {
         assert_eq!(
             nanosleep_via(
                 &transport,
-                Some(SleepRequest { seconds: 2, nanoseconds: 1 }),
+                Some(SleepRequest {
+                    seconds: 2,
+                    nanoseconds: 1
+                }),
             ),
             Ok(())
         );

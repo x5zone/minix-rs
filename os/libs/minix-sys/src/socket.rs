@@ -111,10 +111,7 @@ mod tests {
     #[test]
     fn test_flags_map_bit_for_bit() {
         assert_eq!(open_flags_from_socket_type(0), 0);
-        assert_eq!(
-            open_flags_from_socket_type(FLAG_CLOSE_ON_EXEC),
-            0x01
-        );
+        assert_eq!(open_flags_from_socket_type(FLAG_CLOSE_ON_EXEC), 0x01);
         assert_eq!(
             open_flags_from_socket_type(FLAG_CLOSE_ON_EXEC | FLAG_NON_BLOCKING),
             0x03

@@ -119,6 +119,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百四十三（`minix-service` 命令骨架——RS 控制面的发送半，`RS_UP` 链的用户态入口）
+
+- **这一笔的射程**：RS 动态加载弧（A22/B6 决策后的落地序列）的**用户态入口**——C 的 `minix3/minix/commands/minix-service/`（2248 行：minix-service.c 846 + parse.c 1260 + print.c 114 + util.c 28）。此前 RS 侧的 `RS_UP => do_up → create_service → srv_fork+srv_execve → start_service → asynsend RS_INIT` 全链在库（本轮审计确认——原计划的「PM 派发臂」「RS 生产腿」两轮经实查**均已在库**：PM 派发表 `PmCall::SrvFork/ExecNew/ExecRestart/SrvKill` 四臂齐全（calls.rs:91/162/514/554），`TrapKernelApi` 的 `srv_fork`=`service_fork_via`、`srv_execve`=五步复合、`asynsend`=asynsend3 持久表全是真实现——PM-SRV-DISPATCH 认领即撤），缺的是**发送方命令**。
+- **落码（本切片）**：新命令 `os/commands/sbin/minix-service`（包 `minix-service`，bin 名对齐 C 的 `/sbin/minix-service`）——库面 `Request` 十一动词表（`known_requests[]`/`known_request_types[]`，`minix-service.c:43-69` 逐字：up/down/refresh/restart/shutdown/update/clone/unclone/edit/sysctl/fi，`run` 特判为 `RS_UP`+默认恢复脚本）、19 旗标字母到 `RSS_*` 位的一一映射（`rs.h:33-59` 的值；`-r` 蕴含 `-c`，`:337-340`）、`RS_UP` 族「`-q` 只归 update」的用法面（`:492-495`）、五拼法 sysctl 子型、`build_request` 的 `m_rs_req` 形状。bin 面：usage 块 C 逐字（问题行+用法块+图例，`:177-224`）、非法字母的 `getopt failed` 退出 1、illegal request 退 `ENOSYS`（`:410-412`）、发送走 `minix_sys::sendrec`（顶层许可面，`_syscall(RS_PROC_NR, request, &m)` 同形）、结果=`m_type`、失败面按 `IpcError` 四变型具名（C `failure` 的 strerror 表不复制——登记）。`minix-sys` 补 `Endpoint`/`Message`/`IpcError` 顶层再导出与 `rs.rs` 的 RS 请求号再导出（边界门合规：命令只走 minix-sys 顶层）。
+- **登记偏差/切片边界**：① parse.c 的 config 文件解析（1260 行：label/cmd/uid/priority/quantum/irq/io 等）为下一片——本片的 `up/update/edit` 到 C 的 pre-config 错误面为止（bin should be absolute path 等逐字），`rs_start` 全载荷构造随下一片接 `decode_rs_start` 的镜像编码器；② 恢复脚本执行面（rs.lwip 形状）归 RS 侧后续片。
+- **门**：`cargo test -p minix-service` → **8/0**（动词表 11 映射+`run` 特判、旗标映射与 `-r` 蕴含、未知字母 usage、label 位次、`up` 要二进制路径、`-q` 用法面、sysctl 五拼法、消息构造）；`cargo clippy -p minix-service -p minix-sys --all-targets` 触及文件零新增（pm.rs 九枚存量主树同数）；`rustfmt --edition 2024 --check` 零漂移；none 双架构绿；边界门 minix-service 0 违规；pattern `--diff` 与基线一致。核实日 `2026-11-06`；基线 `2e9c89aa8`。
+- **记账联动**：RS 动态加载弧的用户态入口落地；parse.c 切片与恢复脚本执行面为后续轮。
+
+---
+
 ## 批次五百四十二（vfs 的 `VfsIpc::sendrec` 补腿——同族第三处 none-only 面，全仓终清点）
 
 - **这一笔的射程**：他线续报「`aarch64` 腿卡在 `servers/vfs/src/main_loop.rs:7635`（`impl SefIpc for VfsIpc` 缺 sendrec，E0046）」——同族第三处 none-only 实现者（轮 59 扩腿遗漏；轮 65/66 修 rs/sched 时的全仓 `grep -L` 清点用的关键词是 `impl minix_sef::SefIpc` 的文件列表，vfs 这处当时未被检出，教训补强：清点必须 `grep -L "fn sendrec"` 对实现者文件逐个验**方法**，不能只验文件在不在清单里）。

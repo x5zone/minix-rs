@@ -265,12 +265,18 @@ pub struct MessLcPmMcontext {
 
 impl Default for MessLcPmMcontext {
     fn default() -> Self {
-        Self { ctx: 0, _pad: [0; 48] }
+        Self {
+            ctx: 0,
+            _pad: [0; 48],
+        }
     }
 }
 impl MessLcPmMcontext {
     pub const fn new() -> Self {
-        Self { ctx: 0, _pad: [0; 48] }
+        Self {
+            ctx: 0,
+            _pad: [0; 48],
+        }
     }
 }
 
@@ -349,7 +355,6 @@ pub struct MessLcPmSprof {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn test_pm_error_to_errno() {
@@ -556,7 +561,10 @@ pub struct MessPmLcSigset {
 impl MessPmLcSigset {
     /// Zeroed form (tests and raw overlays).
     pub const fn zeroed() -> Self {
-        Self { set: [0; 4], _padding: [0; 40] }
+        Self {
+            set: [0; 4],
+            _padding: [0; 40],
+        }
     }
 }
 

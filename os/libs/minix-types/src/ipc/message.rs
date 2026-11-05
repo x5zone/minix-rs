@@ -7,7 +7,9 @@ use crate::types::GrantId;
 // E-RSWIRE V13c: the five VM message arms reuse the wire structs defined
 // in [`crate::ipc::vm`] — one definition, two consumers (VM dispatcher and
 // the union layout here).
-use super::vm::{MessLcVmGetphys, MessLsysVmGetref, MessLsysVmInfo, MessLsysVmRusage, MessLsysVmUpdate};
+use super::vm::{
+    MessLcVmGetphys, MessLsysVmGetref, MessLsysVmInfo, MessLsysVmRusage, MessLsysVmUpdate,
+};
 // E9 PmApi: the service-process message arms reuse the wire structs defined
 // in [`crate::ipc::pm`] (single definition, union + client decoder).
 use super::pm::{
@@ -3939,9 +3941,9 @@ impl Default for MessLcIpcShmctl {
 }
 
 #[cfg(test)]
-    // The 0x0000_7fff_ffff_f000 literal inside this module's tests is a
-    // wire-encoding semantic (it fits in the 64-bit lane), not a
-    // translation semantic — an exemption from the address-constant audit.
+// The 0x0000_7fff_ffff_f000 literal inside this module's tests is a
+// wire-encoding semantic (it fits in the 64-bit lane), not a
+// translation semantic — an exemption from the address-constant audit.
 mod tests {
     use super::*;
     use core::mem::size_of;
@@ -3989,7 +3991,10 @@ mod tests {
         assert_eq!(req.req, 9);
         assert_eq!(req.addr, 0x1000);
         assert_eq!(req.data, -1);
-        let reply = MessPmLcPtrace { data: 0xdeadbeef, ..Default::default() };
+        let reply = MessPmLcPtrace {
+            data: 0xdeadbeef,
+            ..Default::default()
+        };
         assert_eq!(reply.data, 0xdeadbeef);
     }
 
@@ -4018,17 +4023,11 @@ mod tests {
         assert_eq!(call.flags_ptr, 0x0000_0001_0000_0010);
         // Layout: after the pointer widening, pages/flags move to 48/49,
         // padding 6 → 56 total.
-        assert_eq!(
-            core::mem::offset_of!(MessVmmcp, pages),
-            48
-        );
-        assert_eq!(
-            core::mem::offset_of!(MessVmmcp, flags),
-            49
-        );
+        assert_eq!(core::mem::offset_of!(MessVmmcp, pages), 48);
+        assert_eq!(core::mem::offset_of!(MessVmmcp, flags), 49);
     }
 
-#[test]
+    #[test]
     fn test_vmmcp_reply_layout_64bit_addr() {
         // C: ipc.h `mess_vmmcp_reply` — 56-byte payload. The i386 C layout
         // (void* = 4) cannot carry the minix-rs x86_64 MMAP-window VAs
@@ -4832,7 +4831,10 @@ fn test_is_rs_req_arm_covers_exactly_c_family() {
             "base+{offset}({v:#x}) 的臂归属判定错误"
         );
     }
-    assert!(!Message::is_rs_req_arm(crate::RS_FI + 1), "族外新号不在表内");
+    assert!(
+        !Message::is_rs_req_arm(crate::RS_FI + 1),
+        "族外新号不在表内"
+    );
 }
 
 #[test]

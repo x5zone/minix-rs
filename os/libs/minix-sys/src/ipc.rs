@@ -247,7 +247,8 @@ impl AsyncSlotFlags {
 /// appears.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct AsyncSlot {    /// State flags; written last when publishing a slot.
+pub struct AsyncSlot {
+    /// State flags; written last when publishing a slot.
     pub flags: AsyncSlotFlags,
     /// Destination endpoint.
     pub destination: Endpoint,
@@ -449,8 +450,7 @@ impl<const CAPACITY: usize> AsyncSendQueue<CAPACITY> {
                 && !self.slots[index].flags.contains(AsyncSlotFlags::DONE)
             {
                 self.slots[index].result = result;
-                self.slots[index].flags =
-                    self.slots[index].flags.combined(AsyncSlotFlags::DONE);
+                self.slots[index].flags = self.slots[index].flags.combined(AsyncSlotFlags::DONE);
             }
             index += 1;
         }
@@ -561,7 +561,11 @@ pub struct DirectTrapTransport;
 /// whole-message copy, so it touches no byte the kernel will not read).
 #[cfg(all(
     kernel_trap,
-    any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    )
 ))]
 #[inline]
 pub(crate) unsafe fn commit_message_to_memory(message: *const Message) {
@@ -586,7 +590,11 @@ impl IpcTransport for DirectTrapTransport {
         // numbers: x86 int-33 bridge, aarch64 EL1 mirror and the riscv64 user
         // leg — hosted builds (no `kernel_trap`) keep the -EIO fallback.
         #[cfg(all(
-            any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"),
+            any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ),
             kernel_trap
         ))]
         {
@@ -604,11 +612,7 @@ impl IpcTransport for DirectTrapTransport {
         #[allow(unreachable_code)]
         Err(TrapStatus(minix_types::EIO))
     }
-    fn receive(
-        &self,
-        source: Endpoint,
-        message: &mut Message,
-    ) -> Result<IpcStatus, TrapStatus> {
+    fn receive(&self, source: Endpoint, message: &mut Message) -> Result<IpcStatus, TrapStatus> {
         #[cfg(all(
             any(
                 target_arch = "x86_64",
@@ -633,11 +637,7 @@ impl IpcTransport for DirectTrapTransport {
         #[allow(unreachable_code)]
         Err(TrapStatus(minix_types::EIO))
     }
-    fn sendrec(
-        &self,
-        destination: Endpoint,
-        message: &mut Message,
-    ) -> Result<(), TrapStatus> {
+    fn sendrec(&self, destination: Endpoint, message: &mut Message) -> Result<(), TrapStatus> {
         #[cfg(all(
             any(
                 target_arch = "x86_64",
@@ -672,11 +672,7 @@ impl IpcTransport for DirectTrapTransport {
         ))]
         {
             let (ret, _status) = unsafe {
-                crate::arch_trap::ipc_trap(
-                    crate::arch_trap::NOTIFY_NR,
-                    destination.0 as usize,
-                    0,
-                )
+                crate::arch_trap::ipc_trap(crate::arch_trap::NOTIFY_NR, destination.0 as usize, 0)
             };
             return crate::arch_trap::errno_result(ret);
         }
@@ -810,11 +806,7 @@ impl IpcTransport for CannedTransport {
     fn send(&self, _destination: Endpoint, _message: &Message) -> Result<(), TrapStatus> {
         Ok(())
     }
-    fn receive(
-        &self,
-        _source: Endpoint,
-        _message: &mut Message,
-    ) -> Result<IpcStatus, TrapStatus> {
+    fn receive(&self, _source: Endpoint, _message: &mut Message) -> Result<IpcStatus, TrapStatus> {
         Ok(IpcStatus::from_call(CALL_SENDREC))
     }
     fn sendrec(&self, _destination: Endpoint, message: &mut Message) -> Result<(), TrapStatus> {
@@ -971,7 +963,11 @@ mod tests {
 
         let mut queue = AsyncSendQueue::<4>::new();
         queue
-            .enqueue(Endpoint(7), test_message(1), AsyncSlotFlags::NOTIFY_ON_ERROR)
+            .enqueue(
+                Endpoint(7),
+                test_message(1),
+                AsyncSlotFlags::NOTIFY_ON_ERROR,
+            )
             .unwrap();
         queue.record_completion(Endpoint(7), -5);
         let found = queue.take_error().expect("error must surface");

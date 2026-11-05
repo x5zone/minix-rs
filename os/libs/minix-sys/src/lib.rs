@@ -53,9 +53,9 @@
 extern crate alloc;
 
 use ipc::IpcTransport;
-use minix_types::{Endpoint, IpcError, Message};
+pub use minix_types::IpcError;
 
-pub use minix_types::{Gid, Pid, Uid};
+pub use minix_types::{Endpoint, Gid, Message, Pid, Uid};
 // The user-space `struct stat` ABI goes through an explicit re-export:
 // `ipc::fs_driver::Stat` (the VTreeFS serialization payload) has the same name
 // at the `minix-types` root, so a glob would be ambiguous.

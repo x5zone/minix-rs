@@ -18,7 +18,7 @@
 //! unit tests drive them with a scripted transport and never need a kernel.
 
 use crate::ipc::IpcTransport;
-use minix_types::{Endpoint, Errno, Message, MessKrnLsysSysTimes};
+use minix_types::{Endpoint, Errno, MessKrnLsysSysTimes, Message};
 
 /// Maximum path name length that still fits inside a message.
 ///
@@ -173,7 +173,11 @@ impl KernelCallTransport for DirectKernelCallTransport {
         // same barrier; this leg had been missing it, and all three
         // architectures are now brought in line.
         #[cfg(all(
-            any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"),
+            any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ),
             kernel_trap
         ))]
         unsafe {
@@ -187,10 +191,7 @@ impl KernelCallTransport for DirectKernelCallTransport {
         // riscv64/aarch64 legs: the same message leg through the
         // arch boundary (trap number 0, message pointer in a0/x0, reply
         // code in a0/x0) — see arch_trap::KERNEL_CALL_TRAP_NR.
-        #[cfg(all(
-            any(target_arch = "riscv64", target_arch = "aarch64"),
-            kernel_trap
-        ))]
+        #[cfg(all(any(target_arch = "riscv64", target_arch = "aarch64"), kernel_trap))]
         {
             return unsafe { crate::arch_trap::kernel_call_trap(message) };
         }
@@ -276,11 +277,7 @@ pub const SYS_KILL_CALL: i32 = 6;
 /// return value is the result (OK or a negative errno). C's do_exit does not
 /// check the return value (`forkexit.c:256`); each caller decides what its own
 /// semantics require.
-pub fn sys_kill(
-    transport: &impl KernelCallTransport,
-    endpt: i32,
-    sig: i32,
-) -> i32 {
+pub fn sys_kill(transport: &impl KernelCallTransport, endpt: i32, sig: i32) -> i32 {
     let mut msg = Message::default();
     {
         // SAFETY: m_sigcalls is the documented payload layout of SYS_KILL
@@ -350,10 +347,7 @@ pub const SELF: i32 = Endpoint::SELF.0;
 /// (`main.c:304-312`) does not check the return value: after the abort request
 /// is out, PM waits in its main loop for the HARD_STOP notification, so a
 /// failure merely keeps the loop going.
-pub fn sys_abort(
-    transport: &impl KernelCallTransport,
-    how: i32,
-) -> i32 {
+pub fn sys_abort(transport: &impl KernelCallTransport, how: i32) -> i32 {
     let mut msg = Message::default();
     {
         // SAFETY: m1i1 is the documented payload layout of SYS_ABORT
@@ -708,10 +702,7 @@ pub fn sys_vumap(
 /// and exit_restart (user process reclamation, `forkexit.c:449-451`) both panic
 /// on failure — a process already terminated but not reclaimed by the kernel is
 /// a permanent leak, unrecoverable.
-pub fn sys_clear(
-    transport: &impl KernelCallTransport,
-    endpt: i32,
-) -> i32 {
+pub fn sys_clear(transport: &impl KernelCallTransport, endpt: i32) -> i32 {
     let mut msg = Message::default();
     {
         // SAFETY: m1 is the documented payload layout of SYS_CLEAR
@@ -1101,20 +1092,34 @@ pub fn sys_setalarm(
 /// `MachineStruct` via `copy_struct_to_caller`. `out` must hold at least the
 /// kernel-side structure (the kernel truncates the copy to min(len)).
 pub fn sys_get_machine(transport: &impl KernelCallTransport, out: &mut [u8]) -> Result<(), i32> {
-    sys_getinfo_into(transport, minix_types::GET_MACHINE, out, minix_types::Endpoint::NONE.0)
+    sys_getinfo_into(
+        transport,
+        minix_types::GET_MACHINE,
+        out,
+        minix_types::Endpoint::NONE.0,
+    )
 }
 
 /// SYS_GETINFO · GET_HZ(18): read the system clock rate (i32). C: do_getinfo.c:81-84.
 pub fn sys_get_hz(transport: &impl KernelCallTransport) -> Result<i32, i32> {
     let mut buf = [0u8; 4];
-    sys_getinfo_into(transport, minix_types::GET_HZ, &mut buf, minix_types::Endpoint::NONE.0)?;
+    sys_getinfo_into(
+        transport,
+        minix_types::GET_HZ,
+        &mut buf,
+        minix_types::Endpoint::NONE.0,
+    )?;
     Ok(i32::from_le_bytes(buf))
 }
 
 /// SYS_GETINFO · GET_PRIV(17): read a snapshot of the target process's
 /// privilege structure. The target endpoint travels in the `val_len2_e` field
 /// (kernel getinfo_priv:925-929).
-pub fn sys_get_priv(transport: &impl KernelCallTransport, endpt: i32, out: &mut [u8]) -> Result<(), i32> {
+pub fn sys_get_priv(
+    transport: &impl KernelCallTransport,
+    endpt: i32,
+    out: &mut [u8],
+) -> Result<(), i32> {
     sys_getinfo_into(transport, minix_types::GET_PRIV, out, endpt)
 }
 
@@ -1125,7 +1130,12 @@ pub fn sys_get_priv(transport: &impl KernelCallTransport, endpt: i32, out: &mut 
 /// the caller's buffer must be sized per MULTIBOOT_PARAM_BUF_SIZE, and a short
 /// buffer gets E2BIG.
 pub fn sys_getmonparams(transport: &impl KernelCallTransport, out: &mut [u8]) -> Result<(), i32> {
-    sys_getinfo_into(transport, minix_types::GET_MONPARAMS, out, minix_types::Endpoint::NONE.0)
+    sys_getinfo_into(
+        transport,
+        minix_types::GET_MONPARAMS,
+        out,
+        minix_types::Endpoint::NONE.0,
+    )
 }
 
 /// SYS_GETINFO · GET_IMAGE(1): fetch the kernel boot image table.
@@ -1134,7 +1144,12 @@ pub fn sys_getmonparams(transport: &impl KernelCallTransport, out: &mut [u8]) ->
 /// (do_getinfo.c:86-90; wire-layout authority = minix-types `BootImageStruct`,
 /// 40 bytes × 17) — the caller's buffer must hold the whole table.
 pub fn sys_getimage(transport: &impl KernelCallTransport, out: &mut [u8]) -> Result<(), i32> {
-    sys_getinfo_into(transport, minix_types::GET_IMAGE, out, minix_types::Endpoint::NONE.0)
+    sys_getinfo_into(
+        transport,
+        minix_types::GET_IMAGE,
+        out,
+        minix_types::Endpoint::NONE.0,
+    )
 }
 
 /// Generic GETINFO carrier: fill `m_lsys_krn_sys_getinfo` and execute.
@@ -1251,7 +1266,10 @@ pub fn sys_privctl(
 /// `sys_diagctl.c:16-17`). An earlier version wrongly put the target in arg1
 /// (the buf slot) with arg2 always 0, so the kernel always received `endpt` 0 —
 /// corrected per C when wiring the PM stacktrace branch.
-pub fn sys_diagctl_stacktrace(transport: &impl KernelCallTransport, target: i32) -> Result<(), i32> {
+pub fn sys_diagctl_stacktrace(
+    transport: &impl KernelCallTransport,
+    target: i32,
+) -> Result<(), i32> {
     sys_diagctl(transport, minix_types::DIAGCTL_CODE_STACKTRACE, 0, target)
 }
 
@@ -1289,7 +1307,9 @@ pub fn sys_datacopy(
     // SAFETY/semantics: the C macro passes straight through — sys_vircopy
     // returns a negative errno or OK.
     let r = sys_vircopy(transport, src_endpt, src_addr, dst_endpt, dst_addr, bytes);
-    if r < 0 { return Err(r); }
+    if r < 0 {
+        return Err(r);
+    }
     Ok(())
 }
 
@@ -1544,7 +1564,6 @@ pub fn sys_setmcontext(
     }
     Ok(())
 }
-
 
 /// Performs a kernel call with "not ready" retries.
 ///
@@ -1914,9 +1933,9 @@ mod tests {
         assert_eq!(sys_kill(&canned, 7, 9), -1);
         assert_eq!(canned.calls.get(), 1);
     }
-    use super::*;
     use super::DirectKernelCallTransport;
-    use crate::ipc::{CannedTransport, CALL_SENDREC};
+    use super::*;
+    use crate::ipc::{CALL_SENDREC, CannedTransport};
 
     fn test_message(message_type: i32) -> Message {
         Message {
@@ -2058,7 +2077,10 @@ mod tests {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(test_message(-5)));
         let mut message = test_message(0);
-        assert_eq!(perform_taskcall(&transport, Endpoint(0), 41, &mut message), Ok(-5));
+        assert_eq!(
+            perform_taskcall(&transport, Endpoint(0), 41, &mut message),
+            Ok(-5)
+        );
     }
 
     #[test]
@@ -2120,7 +2142,10 @@ mod tests {
         assert_eq!(sent[0].m_type, minix_types::SYS_EXEC); // 0x601
         // SAFETY(test): read the request arm back to check each field.
         let e = unsafe { sent[0].m_u.m_lsys_krn_sys_exec };
-        assert_eq!((e.endpt, e.ip, e.stack, e.name, e.ps_str), (8, 0x1000, 0x9000, 0x8000, 0x7f00));
+        assert_eq!(
+            (e.endpt, e.ip, e.stack, e.name, e.ps_str),
+            (8, 0x1000, 0x9000, 0x8000, 0x7f00)
+        );
     }
 
     /// SYS_SAFECOPYFROM replay: the grant quintuple + OK (no reply out-parameter).
@@ -2356,7 +2381,11 @@ mod tests {
     fn test_sys_sprof_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
-        let r = sys_sprof(&canned, 0 /* start */, 4096, 1 /* NMI */, 5, 0x5000, 0x6000);
+        let r = sys_sprof(
+            &canned, 0, /* start */
+            4096, 1, /* NMI */
+            5, 0x5000, 0x6000,
+        );
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_SPROF); // 0x624
@@ -2373,13 +2402,22 @@ mod tests {
     fn test_sys_settime_wire_roundtrip() {
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
-        let r = sys_settime(&canned, 1 /* now */, 0 /* REALTIME */, 1_700_000_000, 500);
+        let r = sys_settime(
+            &canned,
+            1, /* now */
+            0, /* REALTIME */
+            1_700_000_000,
+            500,
+        );
         assert_eq!(r, Ok(()));
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_SETTIME); // 0x628
         // SAFETY(test): read the payload arm back.
         let t = unsafe { sent[0].m_u.m_lsys_krn_sys_settime };
-        assert_eq!((t.now, t.clock_id, t.sec, t.nsec), (1, 0, 1_700_000_000, 500));
+        assert_eq!(
+            (t.now, t.clock_id, t.sec, t.nsec),
+            (1, 0, 1_700_000_000, 500)
+        );
     }
 
     /// SYS_STIME replay: boot_time.
@@ -2430,189 +2468,197 @@ mod tests {
     }
 }
 
-    /// GETINFO carrier: request field, buffer pointer, length and endpoint
-    /// field each land in m_lsys_krn_sys_getinfo, and the kernel replies OK.
-    #[test]
-    fn test_sys_getinfo_into_wire() {
-        let mut canned = CannedKernelCallTransport::new();
-        canned.reply(0);
-        let mut out = [0u8; 16];
-        let r = sys_getinfo_into(&canned, minix_types::GET_MACHINE, &mut out, minix_types::Endpoint::NONE.0);
-        assert!(r.is_ok());
-        // Assertion on the outgoing message (CannedKernelCallTransport records sent).
-        let sent = canned.sent.borrow();
-        assert_eq!(sent.len(), 1);
-        // SAFETY: read the m_lsys_krn_sys_getinfo arm back in the assertion.
-        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
-        assert_eq!(gi.request, minix_types::GET_MACHINE);
-        assert_eq!(gi.val_ptr, out.as_ptr() as u64);
-        assert_eq!(gi.val_len, 16);
-    }
+/// GETINFO carrier: request field, buffer pointer, length and endpoint
+/// field each land in m_lsys_krn_sys_getinfo, and the kernel replies OK.
+#[test]
+fn test_sys_getinfo_into_wire() {
+    let mut canned = CannedKernelCallTransport::new();
+    canned.reply(0);
+    let mut out = [0u8; 16];
+    let r = sys_getinfo_into(
+        &canned,
+        minix_types::GET_MACHINE,
+        &mut out,
+        minix_types::Endpoint::NONE.0,
+    );
+    assert!(r.is_ok());
+    // Assertion on the outgoing message (CannedKernelCallTransport records sent).
+    let sent = canned.sent.borrow();
+    assert_eq!(sent.len(), 1);
+    // SAFETY: read the m_lsys_krn_sys_getinfo arm back in the assertion.
+    let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+    assert_eq!(gi.request, minix_types::GET_MACHINE);
+    assert_eq!(gi.val_ptr, out.as_ptr() as u64);
+    assert_eq!(gi.val_len, 16);
+}
 
-    /// GET_HZ goes through a 4-byte buffer and decodes back to i32 little-endian.
-    #[test]
-    fn test_sys_get_hz_roundtrip() {
-        let mut canned = CannedKernelCallTransport::new();
-        canned.reply(0);
-        let hz = sys_get_hz(&canned).unwrap();
-        assert_eq!(hz, 0, "hosted canned reply zeros the buffer");
-        let sent = canned.sent.borrow();
-        // SAFETY: read the request field back in the assertion.
-        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
-        assert_eq!(gi.request, minix_types::GET_HZ);
-        assert_eq!(gi.val_len, 4);
-    }
+/// GET_HZ goes through a 4-byte buffer and decodes back to i32 little-endian.
+#[test]
+fn test_sys_get_hz_roundtrip() {
+    let mut canned = CannedKernelCallTransport::new();
+    canned.reply(0);
+    let hz = sys_get_hz(&canned).unwrap();
+    assert_eq!(hz, 0, "hosted canned reply zeros the buffer");
+    let sent = canned.sent.borrow();
+    // SAFETY: read the request field back in the assertion.
+    let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+    assert_eq!(gi.request, minix_types::GET_HZ);
+    assert_eq!(gi.val_len, 4);
+}
 
-    /// GET_PRIV's target endpoint lands in the val_len2_e field
-    /// (the kernel getinfo_priv:925-929 resolves the target from there).
-    #[test]
-    fn test_sys_get_priv_endpt_in_val_len2_e() {
-        let mut canned = CannedKernelCallTransport::new();
-        canned.reply(0);
-        let mut out = [0u8; 64];
-        sys_get_priv(&canned, 9, &mut out).unwrap();
-        let sent = canned.sent.borrow();
-        // SAFETY: read the getinfo arm back in the assertion.
-        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
-        assert_eq!(gi.request, minix_types::GET_PRIV);
-        assert_eq!(gi.val_len2_e, 9);
-    }
+/// GET_PRIV's target endpoint lands in the val_len2_e field
+/// (the kernel getinfo_priv:925-929 resolves the target from there).
+#[test]
+fn test_sys_get_priv_endpt_in_val_len2_e() {
+    let mut canned = CannedKernelCallTransport::new();
+    canned.reply(0);
+    let mut out = [0u8; 64];
+    sys_get_priv(&canned, 9, &mut out).unwrap();
+    let sent = canned.sent.borrow();
+    // SAFETY: read the getinfo arm back in the assertion.
+    let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+    assert_eq!(gi.request, minix_types::GET_PRIV);
+    assert_eq!(gi.val_len2_e, 9);
+}
 
-    /// GET_MONPARAMS request shape: request=4, the buffer length passed through
-    /// as-is (the (v,vl) two-parameter shape of the C syslib.h:187 macro).
-    #[test]
-    fn test_sys_getmonparams_wire() {
-        let mut canned = CannedKernelCallTransport::new();
-        canned.reply(0);
-        let mut out = [0u8; 1024]; // sized to MULTIBOOT_PARAM_BUF_SIZE
-        sys_getmonparams(&canned, &mut out).unwrap();
-        let sent = canned.sent.borrow();
-        // SAFETY: read the getinfo arm back in the assertion.
-        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
-        assert_eq!(gi.request, minix_types::GET_MONPARAMS);
-        assert_eq!(gi.val_ptr, out.as_ptr() as u64);
-        assert_eq!(gi.val_len, 1024);
-    }
+/// GET_MONPARAMS request shape: request=4, the buffer length passed through
+/// as-is (the (v,vl) two-parameter shape of the C syslib.h:187 macro).
+#[test]
+fn test_sys_getmonparams_wire() {
+    let mut canned = CannedKernelCallTransport::new();
+    canned.reply(0);
+    let mut out = [0u8; 1024]; // sized to MULTIBOOT_PARAM_BUF_SIZE
+    sys_getmonparams(&canned, &mut out).unwrap();
+    let sent = canned.sent.borrow();
+    // SAFETY: read the getinfo arm back in the assertion.
+    let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+    assert_eq!(gi.request, minix_types::GET_MONPARAMS);
+    assert_eq!(gi.val_ptr, out.as_ptr() as u64);
+    assert_eq!(gi.val_len, 1024);
+}
 
-    /// GET_IMAGE request shape: request=1, buffer sized to the whole table
-    /// (NR_BOOT_PROCS × 40 = 680 bytes, C syslib.h:184 macro).
-    #[test]
-    fn test_sys_getimage_wire() {
-        let mut canned = CannedKernelCallTransport::new();
-        canned.reply(0);
-        let mut out = [0u8; minix_types::NR_BOOT_PROCS * 40];
-        sys_getimage(&canned, &mut out).unwrap();
-        let sent = canned.sent.borrow();
-        // SAFETY: read the getinfo arm back in the assertion.
-        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
-        assert_eq!(gi.request, minix_types::GET_IMAGE);
-        assert_eq!(gi.val_len, (minix_types::NR_BOOT_PROCS * 40) as i32);
-    }
+/// GET_IMAGE request shape: request=1, buffer sized to the whole table
+/// (NR_BOOT_PROCS × 40 = 680 bytes, C syslib.h:184 macro).
+#[test]
+fn test_sys_getimage_wire() {
+    let mut canned = CannedKernelCallTransport::new();
+    canned.reply(0);
+    let mut out = [0u8; minix_types::NR_BOOT_PROCS * 40];
+    sys_getimage(&canned, &mut out).unwrap();
+    let sent = canned.sent.borrow();
+    // SAFETY: read the getinfo arm back in the assertion.
+    let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+    assert_eq!(gi.request, minix_types::GET_IMAGE);
+    assert_eq!(gi.val_len, (minix_types::NR_BOOT_PROCS * 40) as i32);
+}
 
-    /// The PRIVCTL m_m1 payload (request/endpt/arg_ptr).
-    #[test]
-    fn test_sys_privctl_m1_wire() {
-        let mut canned = CannedKernelCallTransport::new();
-        canned.reply(0);
-        sys_privctl(&canned, 9, 1 /* SYS_PRIV_ALLOW */, 0).unwrap();
-        let sent = canned.sent.borrow();
-        assert_eq!(sent.len(), 1);
-        // SAFETY: read the m_m1 arm back in the assertion.
-        let m1 = unsafe { sent[0].m_u.m_m1 };
-        assert_eq!(m1.m1i1, 1);
-        assert_eq!(m1.m1i2, 9);
-        assert_eq!(m1.m1p1, 0);
-    }
+/// The PRIVCTL m_m1 payload (request/endpt/arg_ptr).
+#[test]
+fn test_sys_privctl_m1_wire() {
+    let mut canned = CannedKernelCallTransport::new();
+    canned.reply(0);
+    sys_privctl(&canned, 9, 1 /* SYS_PRIV_ALLOW */, 0).unwrap();
+    let sent = canned.sent.borrow();
+    assert_eq!(sent.len(), 1);
+    // SAFETY: read the m_m1 arm back in the assertion.
+    let m1 = unsafe { sent[0].m_u.m_m1 };
+    assert_eq!(m1.m1i1, 1);
+    assert_eq!(m1.m1i2, 9);
+    assert_eq!(m1.m1p1, 0);
+}
 
-    /// TIMES reply-arm fill (RS get_ticks consumes boot_ticks).
-    #[test]
-    fn test_sys_times_reply_arm() {
-        let mut canned = CannedKernelCallTransport::new();
-        // Kernel-shaped reply: OK(0) + the five fields filled in the same arm.
-        let mut reply = Message::default();
-        reply.m_type = 0;
-        // SAFETY: construct the reply arm.
-        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_times };
-        arm.boot_ticks = 777;
-        canned.reply_message(reply);
-        let times = sys_times(&canned, minix_types::Endpoint::SELF.0).unwrap();
-        assert_eq!(times.boot_ticks, 777);
-        // The request endpt field = SELF.
-        let sent = canned.sent.borrow();
-        // SAFETY: read the times request arm back in the assertion.
-        let req = unsafe { sent[0].m_u.m_lsys_krn_sys_times };
-        assert_eq!(req.endpt, minix_types::Endpoint::SELF.0);
-    }
+/// TIMES reply-arm fill (RS get_ticks consumes boot_ticks).
+#[test]
+fn test_sys_times_reply_arm() {
+    let mut canned = CannedKernelCallTransport::new();
+    // Kernel-shaped reply: OK(0) + the five fields filled in the same arm.
+    let mut reply = Message::default();
+    reply.m_type = 0;
+    // SAFETY: construct the reply arm.
+    let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_times };
+    arm.boot_ticks = 777;
+    canned.reply_message(reply);
+    let times = sys_times(&canned, minix_types::Endpoint::SELF.0).unwrap();
+    assert_eq!(times.boot_ticks, 777);
+    // The request endpt field = SELF.
+    let sent = canned.sent.borrow();
+    // SAFETY: read the times request arm back in the assertion.
+    let req = unsafe { sent[0].m_u.m_lsys_krn_sys_times };
+    assert_eq!(req.endpt, minix_types::Endpoint::SELF.0);
+}
 
-    /// STACKTRACE diagnostic code (2) + target endpoint.
-    /// The `endpt` itself must be checked — an earlier version asserted only
-    /// code, so a target placed in the wrong argument slot (arg1 instead of C's
-    /// arg2) slipped through and the kernel always received endpt=0.
-    #[test]
-    fn test_sys_diagctl_stacktrace_code_and_target() {
-        let mut canned = CannedKernelCallTransport::new();
-        canned.reply(0);
-        sys_diagctl_stacktrace(&canned, 9).unwrap();
-        let sent = canned.sent.borrow();
-        // SAFETY: read the diagctl arm back in the assertion.
-        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
-        assert_eq!(d.code, minix_types::DIAGCTL_CODE_STACKTRACE);
-        assert_eq!(d.endpt, 9, "target 必须落进 endpt 字段（C: sys_diagctl.c:17）");
-    }
+/// STACKTRACE diagnostic code (2) + target endpoint.
+/// The `endpt` itself must be checked — an earlier version asserted only
+/// code, so a target placed in the wrong argument slot (arg1 instead of C's
+/// arg2) slipped through and the kernel always received endpt=0.
+#[test]
+fn test_sys_diagctl_stacktrace_code_and_target() {
+    let mut canned = CannedKernelCallTransport::new();
+    canned.reply(0);
+    sys_diagctl_stacktrace(&canned, 9).unwrap();
+    let sent = canned.sent.borrow();
+    // SAFETY: read the diagctl arm back in the assertion.
+    let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
+    assert_eq!(d.code, minix_types::DIAGCTL_CODE_STACKTRACE);
+    assert_eq!(
+        d.endpt, 9,
+        "target 必须落进 endpt 字段（C: sys_diagctl.c:17）"
+    );
+}
 
-    /// clock_time_via combines SYS_TIMES + GET_HZ —
-    /// sec = boot_time + real_ticks / hz (C clock_time.c:30-33).
-    #[test]
-    fn test_clock_time_via_composite() {
-        let mut canned = CannedKernelCallTransport::new();
-        // First call: the SYS_TIMES reply-arm fill.
-        let mut times_reply = Message::default();
-        times_reply.m_type = 0;
-        // SAFETY: construct the reply arm.
-        let arm = unsafe { &mut times_reply.m_u.m_krn_lsys_sys_times };
-        arm.real_ticks = 2500;
-        arm.boot_time = 1_000_000;
-        canned.reply_message(times_reply);
-        // Second call: the GET_HZ reply (4 bytes LE).
-        let mut hz_reply = Message::default();
-        hz_reply.m_type = 0;
-        // SAFETY: the buffer the getinfo arm's val_ptr points at is written by
-        // the real path; the Canned shape only needs an OK reply — the hz
-        // assertion is covered by the sys_get_hz test, and hz=0 here triggers the
-        // EINVAL branch, which pins the defense.
-        canned.reply(0);
-        // The hz read comes from the user buffer (all zero on the Canned path) → hz=0 → the EINVAL defense.
-        let r = clock_time_via(&canned);
-        assert_eq!(r, Err(-minix_types::EINVAL));
-    }
+/// clock_time_via combines SYS_TIMES + GET_HZ —
+/// sec = boot_time + real_ticks / hz (C clock_time.c:30-33).
+#[test]
+fn test_clock_time_via_composite() {
+    let mut canned = CannedKernelCallTransport::new();
+    // First call: the SYS_TIMES reply-arm fill.
+    let mut times_reply = Message::default();
+    times_reply.m_type = 0;
+    // SAFETY: construct the reply arm.
+    let arm = unsafe { &mut times_reply.m_u.m_krn_lsys_sys_times };
+    arm.real_ticks = 2500;
+    arm.boot_time = 1_000_000;
+    canned.reply_message(times_reply);
+    // Second call: the GET_HZ reply (4 bytes LE).
+    let mut hz_reply = Message::default();
+    hz_reply.m_type = 0;
+    // SAFETY: the buffer the getinfo arm's val_ptr points at is written by
+    // the real path; the Canned shape only needs an OK reply — the hz
+    // assertion is covered by the sys_get_hz test, and hz=0 here triggers the
+    // EINVAL branch, which pins the defense.
+    canned.reply(0);
+    // The hz read comes from the user buffer (all zero on the Canned path) → hz=0 → the EINVAL defense.
+    let r = clock_time_via(&canned);
+    assert_eq!(r, Err(-minix_types::EINVAL));
+}
 
-    /// SYS_SCHEDCTL wire face for the KERNEL branch: flags set to
-    /// SCHEDCTL_FLAG_KERNEL; -1 for priority/quantum/cpu = keep the current value
-    /// (C sched_start.c:46-88; the kernel dispatch_schedctl Option conversion
-    /// starting at :651 uses -1 as the sentinel).
-    #[test]
-    fn test_sys_schedctl_wire() {
-        let mut canned = CannedKernelCallTransport::new();
-        canned.reply(0);
-        sys_schedctl(&canned, 9, 12, 200, -1).unwrap();
-        let sent = canned.sent.borrow();
-        assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].m_type, minix_types::SYS_SCHEDCTL);
-        // SAFETY: read the schedctl arm back in the assertion.
-        let sc = unsafe { sent[0].m_u.m_lsys_krn_schedctl };
-        assert_eq!(sc.flags, minix_types::SCHEDCTL_FLAG_KERNEL);
-        assert_eq!(sc.endpoint, 9);
-        assert_eq!(sc.priority, 12);
-        assert_eq!(sc.quantum, 200);
-        assert_eq!(sc.cpu, -1);
-    }
+/// SYS_SCHEDCTL wire face for the KERNEL branch: flags set to
+/// SCHEDCTL_FLAG_KERNEL; -1 for priority/quantum/cpu = keep the current value
+/// (C sched_start.c:46-88; the kernel dispatch_schedctl Option conversion
+/// starting at :651 uses -1 as the sentinel).
+#[test]
+fn test_sys_schedctl_wire() {
+    let mut canned = CannedKernelCallTransport::new();
+    canned.reply(0);
+    sys_schedctl(&canned, 9, 12, 200, -1).unwrap();
+    let sent = canned.sent.borrow();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].m_type, minix_types::SYS_SCHEDCTL);
+    // SAFETY: read the schedctl arm back in the assertion.
+    let sc = unsafe { sent[0].m_u.m_lsys_krn_schedctl };
+    assert_eq!(sc.flags, minix_types::SCHEDCTL_FLAG_KERNEL);
+    assert_eq!(sc.endpoint, 9);
+    assert_eq!(sc.priority, 12);
+    assert_eq!(sc.quantum, 200);
+    assert_eq!(sc.cpu, -1);
+}
 
-    /// The wrapper passes a negative errno through when the kernel rejects
-    /// (illegal flag combination).
-    #[test]
-    fn test_sys_schedctl_propagates_kernel_error() {
-        let mut canned = CannedKernelCallTransport::new();
-        canned.reply(-minix_types::EINVAL);
-        let r = sys_schedctl(&canned, 9, 12, 200, -1);
-        assert_eq!(r, Err(-minix_types::EINVAL));
-    }
+/// The wrapper passes a negative errno through when the kernel rejects
+/// (illegal flag combination).
+#[test]
+fn test_sys_schedctl_propagates_kernel_error() {
+    let mut canned = CannedKernelCallTransport::new();
+    canned.reply(-minix_types::EINVAL);
+    let r = sys_schedctl(&canned, 9, 12, 200, -1);
+    assert_eq!(r, Err(-minix_types::EINVAL));
+}

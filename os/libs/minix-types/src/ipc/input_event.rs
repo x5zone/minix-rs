@@ -22,10 +22,6 @@
 //!
 //! Corresponding document: `04-input-event-format.md`.
 
-
-
-
-
 /// One input event as read from an input device.
 ///
 /// C: `struct input_event` (`input.h:25-32`). Fixed 20-byte layout on the

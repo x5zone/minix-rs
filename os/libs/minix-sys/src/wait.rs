@@ -136,7 +136,10 @@ mod tests {
         let status = from_raw(15);
         assert_eq!(
             status,
-            WaitStatus::Signaled { termsig: 15, core_dumped: false }
+            WaitStatus::Signaled {
+                termsig: 15,
+                core_dumped: false
+            }
         );
         assert!(status.signaled());
         assert!(!status.exited());
@@ -157,7 +160,10 @@ mod tests {
         let status = from_raw(6 | 0x80);
         assert_eq!(
             status,
-            WaitStatus::Signaled { termsig: 6, core_dumped: true }
+            WaitStatus::Signaled {
+                termsig: 6,
+                core_dumped: true
+            }
         );
     }
 

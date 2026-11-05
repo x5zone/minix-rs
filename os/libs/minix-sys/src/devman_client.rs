@@ -167,7 +167,9 @@ impl ClientTransport for SysClientTransport {
 
     fn sendrec(&mut self, ep: Endpoint, msg: &mut Message) -> Result<(), ClientError> {
         use crate::ipc::IpcTransport;
-        self.ipc.sendrec(ep, msg).map_err(|_| ClientError::Transport)
+        self.ipc
+            .sendrec(ep, msg)
+            .map_err(|_| ClientError::Transport)
     }
 }
 
@@ -349,7 +351,10 @@ mod tests {
     fn test_sys_client_transport_hosted_errors_are_honest() {
         use super::{ClientError, ClientTransport, SysClientTransport};
         let mut t = SysClientTransport::new();
-        assert_eq!(t.grant(minix_types::Endpoint(9), b"abc"), Err(ClientError::Transport));
+        assert_eq!(
+            t.grant(minix_types::Endpoint(9), b"abc"),
+            Err(ClientError::Transport)
+        );
         t.revoke(1); // unregistered id: C `cpf_revoke` returns EINVAL, silent here
         let mut m = minix_types::Message::default();
         assert_eq!(
