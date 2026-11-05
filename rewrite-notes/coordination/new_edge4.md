@@ -5748,4 +5748,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 容量与 ABI 可计算化：arena 载荷 2,048+4,096+384+64+1,024，`SEMANTIC_END 14016` 对 `ARENA_CAP 16384` → 只剩 2,368 B，**256 条 UEFI 来源记录不可能塞进现有布局**；`TooManyDescriptors` → panic 即「整体拒绝不截断」已实现，恰好达上限/超一枚两枚负控待补。ABI 六项核对表按读数填：第一跳有 `offset_of!` 逐字段偏移与尺寸/对齐断言、纯标量；第二跳只有 `size_of <= 4096`、无偏移断言，容量 32 的散文边界相加仅 22 → 人手余量，O-13b 需推导或写死 22。
 - no-map 补 `BootInputReadEligible` 五项准入（第五项 `uncontrolled_speculative_access_is_prevented` 是每条入口与架构的保证，机制归专项，证明不出即拒绝该输入布局）；MRB 侧四问 ABI 合同；UEFI 类型 12 独立成 `UefiMmioPortSpaceAddress`，不与 O-08 的 x86 端口策略共用类型。§6 证据身份三分（`CodeEvidenceCommit 53c44e846` / `DocumentRevision 第九十七轮` / `ReviewedRepositoryCommit 本轮分支头`）。
 - 门：简报 1090 → **1113 行** / 97,726 字符（单封可送）、围栏偶、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
-- 认领：`I-29 qorder97`（基线 `34027b8da`），状态 🔄。
+- 认领：`I-29 qorder97`（基线 `34027b8da`），状态 ✅：第九十七轮已 ff 合并为 `f1843f4b4`，认领已释放。简报 1114 行 / 98,022 字符（单封可送审），专项册 761 行；`FREE_MEMMAP` 零读者与自引导腿 bump 相交两项是下一段的实际交接边界。
