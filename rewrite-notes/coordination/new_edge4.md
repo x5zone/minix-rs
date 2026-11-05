@@ -5513,4 +5513,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 评审首次对上现行文本，确认七项闭合；本轮修三处：页表准入三分（backing/分配/既有对象）、PMP+PMA 合成（`PhysicalAccessPermits` + `PagesFullyInside`）、`PmpImplementationState` 与有效特权级。
 - 另：`GeneralData` 宽度按实际代码；Profile 义务按来源三分（`Ziccamoc` 属 Development Options、`Ssccptr` 属 RVA23S64）；`HartInventoryEvidence`；DTSpec CPU 状态语义；旧字段名与 §7 状态表清理。
 - 门：无代码改动；minix-boot **146**、boot-shim **70**；lint/表格/行数三门；主简报 1421 行。
-- 认领：`I-29 qorder74`（工作树 `.wt/i-29-qorder74`，基线 `f866b92c3`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder74`（工作树 `.wt/i-29-qorder74`，基线 `f866b92c3`），状态 ✅：已 ff 合并为 `e3a94068e`，认领 `I-29 qorder74` 已释放。该笔里写的 `PagesFullyInside` 已在第七十四轮撤销。
+
+### 第二百八十二笔（01 阶段 · I-29 第七十四轮：整页合格全称谓词、PMP 权限位、O-11 三方组合）
+
+- 按评审人限定的三个裁决收口，不扩主题：① 整页合格从「集合包住集合」改为 `RolePageEligible` 全称判定（∀ `req` ∀ 合法起始 ∀ hart），`LegalStarts` 第一版锁页级保守合同并禁止实现者切换；② PMP 操作→许可位逐行取证（load/LR→R、store/SC/AMO/CBO-zero→W、取指→X、隐式页表读→R 且有效特权级 S），Smepmp 第一版只接受 `MML=0 ∧ MMWP=0`，`Absent` 必须附「平台无其它保护结构」的支持限制；③ O-11 补 EFI DTB × MRB × `no-map` 组合裁决表，并把「EFI 类型按 4 KiB 页」与「MRB 访问授权按原始字节」写成两条不互扩的粒度。
+- 另：`PageRoleEligibility` 与 `ObjectAccessEligibility` 分离，跨页对象逐使用点判定；第一版只准入自然对齐访问（依据 `norm:pmp_misaligned_access_behavior` 的半写可见）；`a + width` 走 `u128`，起始 ≥ 2^64 − width 排除；`EfiReservedMemoryType` 首层改回 UEFI 字面「Not usable」；APIC 核对改逐逻辑处理器；RVA23 profile 义务改为本方直取（Svade 强制、Svadu 仅扩展选项），§2.1 字段名残留与 §7 状态同步。
+- 待实现：谓词全是候选合同，代码与负控为零；`LegalStarts` 合同切换失效、`ObjectAccessEligibility`、`SmepmpUnsupportedConfiguration`、`PmpEvidence.provider` 都还没有消费者。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint/表格/行数三门；主简报 1530 行、围栏 42（偶）、表格列数不一致 0 处。
+- 认领：`I-29 qorder75`（工作树 `.wt/i-29-qorder75`，基线 `e3a94068e`），状态 🔄，合并后释放。

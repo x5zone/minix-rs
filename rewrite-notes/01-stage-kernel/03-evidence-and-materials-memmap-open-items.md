@@ -1069,8 +1069,20 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 项 | 读数 |
 |---|---|
 | DTSpec CPU 状态原文 | `curl` 取 `devicetree-org/devicetree-specification@8314f1e1…` 的 `source/chapter3-devicenodes.rst`，`sed -n '636,670p'` 读出：`"okay"` = The CPU is running；`"disabled"` = The CPU is in a quiescent state（quiescent CPU 可由 `enable-method` 重新启用，「This property is required for CPUs with a status property with a value of `disabled`」）；`"fail"` = The CPU is not operational or does not exist，且「A CPU with `fail` status does not affect the system in any way」 |
-| 主文档更动 | ① 页表准入三分（`PageTableBackingEligible`/`PageTableAllocationEligible`/`ExistingPageTableObjectEligible`），旧 `PageTableRoleAdmission` 计数归零；② 公式加入 `PmaPermits`/`PhysicalAccessPermits`/`AllowedOperationStarts`/`AllowedAccessFootprints`/`PagesFullyInside`，`AdmittedRanges`/`RoleEligibleBytes` 归零；③ `PmpImplementationState` 与有效特权级；④ Profile 义务三分与取指拆分；⑤ `HartInventoryEvidence`；⑥ 旧字段名与 §7 状态表更新 |
-| 符号核查 | `PageTableRoleAdmission` = 0、`AdmittedByteRanges` = 0、`RoleEligibleBytes` = 0、`range_start/range_end` = 0；`PageTableBackingEligible` = 4、`PhysicalAccessPermits` = 2、`PagesFullyInside` = 2 |
+| 主文档更动 | ① 页表准入三分（`PageTableBackingEligible`/`PageTableAllocationEligible`/`ExistingPageTableObjectEligible`），旧 `PageTableRoleAdmission` 计数归零；② 公式加入 `PmaPermits`/`PhysicalAccessPermits`/`AllowedOperationStarts`/`AllowedAccessFootprints`/`PagesFullyInside`（末者在第七十四轮撤销），`AdmittedRanges`/`RoleEligibleBytes` 归零；③ `PmpImplementationState` 与有效特权级；④ Profile 义务三分与取指拆分；⑤ `HartInventoryEvidence`；⑥ 旧字段名与 §7 状态表更新 |
+| 符号核查 | `PageTableRoleAdmission` = 0、`AdmittedByteRanges` = 0、`RoleEligibleBytes` = 0、`range_start/range_end` = 0；`PageTableBackingEligible` = 4、`PhysicalAccessPermits` = 2、`PagesFullyInside` = 2（第七十四轮归零，改为全称判定式） |
 | 主简报 | 1421 行（上限 1700）；围栏 38（偶）；表格列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 读数 |
 
+## 四十五、第七十四轮：整页合格全称谓词与 PMP 权限位取证
+
+| 项 | 读数 |
+|---|---|
+| 本轮取证的源与版本 | `riscv/riscv-isa-manual@418bdc4990ae2d60a86f1e11e8d7795aa279da61`：`src/priv/machine.adoc`（PMP 与 Smepmp 小节）、`src/priv/supervisor.adoc`（地址翻译算法）、`src/unpriv/zaamo.adoc`、`src/unpriv/zicclsm.adoc`、`src/unpriv/ziccamoa.adoc`、`src/unpriv/ziccif.adoc`、`src/unpriv/ziccrse.adoc`；`riscv/riscv-profiles` 的 `src/rva23-profile.adoc`（blob sha `4fce3ebf34393d7a52564dfab53b69730fab514d`，该文件最近提交 `2852ae1f1bfbc34334fcee8b8345472e4811dfd7`） |
+| 命令 | `curl -sL https://raw.githubusercontent.com/riscv/riscv-isa-manual/418bdc4990ae2d60a86f1e11e8d7795aa279da61/src/priv/machine.adoc`，随后 `grep -n "pmp_load_fault\|pmp_store_fault\|pmp_misaligned" machine.adoc`；profile 侧 `grep -n "Ziccif\|Ziccamoc\|Svadu\|Ssccptr" rva23.adoc` |
+| 读到的行号（实测，非推算） | `machine.adoc` 3417–3424（三条故障规范）、3568–3575（非对齐行为）、3577–3595（优先级/全匹配/RWX/无条目）、2379–2467（Smepmp 字段）、3320–3337（NOTE 与有效特权级）、3314–3318（粒度）；`supervisor.adoc` 1739–1749（A/D 更新步骤与 store 过 PMP）；`rva23.adoc` 89–106（U64 强制）、162–170（Zacas/Ziccamoc 属 Development Options）、244–256（S64 强制含 Svade/Ssccptr）、359–361（Svadu 属 Expansion Options） |
+| 主文档更动 | ① 整页合格改写成 `RolePageEligible` 全称式，新增 `LegalStarts` 双合同与 `legal_starts_contract`；② 拆 `PageRoleEligibility`/`ObjectAccessEligibility`；③ 自然对齐规则与 `a + width` 的 `u128` 约束；④ `RequiredPermission` 权限位表；⑤ Smepmp 只接受 `MML=0 ∧ MMWP=0`；⑥ `Absent` 必须附平台支持限制；⑦ O-11 三方组合表 + 页/字节粒度表；⑧ `EfiReservedMemoryType` 首层改「Not usable」；⑨ APIC 逐逻辑处理器；⑩ §2.1 字段名与顶端页规则、§6 profile 钉版、§7 状态降级 |
+| 符号核查（主文档实测计数） | `RolePageEligible` 6、`LegalStarts` 5、`ObjectAccessEligibility` 4、`PageRoleEligibility` 1、`RequiredPermission` 2、`SmepmpUnsupportedConfiguration` 2、`PagesFullyInside` **0**、`Not usable` 4、`逐逻辑处理器` 2 |
+| 待核清单（不升级成规范引用） | 硬件 A/D 隐式写的 store-过-PMP 条款**无 norm 锚点**；`EfiReservedMemoryType` 的「Not usable」与 §4.6.1.3、§2.3.6 仍为评审人核对，本环境抓 uefi.org 返回 403；QEMU 构建版本 / machine version / 固件镜像哈希仍未记录；`PmpEvidence` 提供者与 `mseccfg` 读取路径未实现 |
+| 主简报 | 1530 行（上限 1700）；围栏 42（偶）；表格 60 块、列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |

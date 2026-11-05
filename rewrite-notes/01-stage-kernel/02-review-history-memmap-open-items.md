@@ -12,11 +12,29 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第七十四轮评审之后：整页合格改全称谓词、PMP 权限位逐行钉原文、O-11 三方组合）**
+
+- 评审人本轮限定「只盯三个裁决，不再扩主题」，本轮按该范围落地，未新增抽象层。
+- **P0 整页合格的判定式（成立，已改）**：原来那条「用途合格页 = 各访问类别的『可允许访问集合是否包住整页』求交集」的集合包含式已撤销，改为 `RolePageEligible(page, role, ctx) = ∀ req ∈ RoleRequirements ∀ a ∈ LegalStarts(page, req, role, ctx) ∀ hart ∈ ctx.H : PhysicalAccessPermits(hart, req, Footprint(a, req))`。集合式写法保留为「等价推导可用，但判定式必须量到起始地址」。
+- **P0 `LegalStarts` 两合同（成立，已定）**：A 页级保守（页内全部满足对齐的起始）与 B 对象级精确（已登记访问点的起始）。第一版选 **A**，理由是 B 依赖 O-07 的完整性主张而该主张今天无证据；合同标识进 `ctx.legal_starts_contract`，切换须重建全部投影，实现者不得自行挑选。
+- **P0 跨页与非对齐（成立，已改）**：拆 `PageRoleEligibility`（分配资格）与 `ObjectAccessEligibility`（逐使用点判真实 footprint），`ExistingPageTableObjectEligible` 归后者，不得引用页级谓词冒充；第一版只准入自然对齐访问，依据是新取到的 `norm:pmp_misaligned_access_behavior`——非对齐访问可被拆成多次操作且**通过检查的那一半 store 可能已可见**；`a + width` 一律 `u128`，起始 ≥ 2^64 − width 直接排除。
+- **P1 PMP 操作→许可位表（成立，已改）**：本轮直取 `machine.adoc` 的 `norm:pmp_load_fault`（load 与 load-reserved 查 R）、`norm:pmp_store_fault`（store/SC/AMO/cache-block zero 查 W）、`norm:pmp_exec_fault`（取指查 X）、`norm:pmp_cfg_permissions`、`norm:pmp_rwx_warl`（R=0∧W=1 为保留编码）。据此说明「AMO 权限按写侧检查，但 AMO 族与宽度由 `PmaPermits` 承担」。
+- **P1 隐式写与有效特权级（部分成立，已改）**：硬件 A/D 隐式写查 W 的依据是遍历算法里「对 PTE 的 store 会先过 PMA/PMP 检查」那句——**该句无 norm 锚点**，强度低于命名规范条目，正文按此标注；`norm:pmp_check_priv_modes` 给出 `{S,U}` 与 `MPRV/MPP` 的覆盖范围，M-mode 默认可访问不构成 S/U 准入证据。
+- **P1 Smepmp 边界（成立，已裁定）**：取 `mseccfg.MML/MMWP/RLB` 全部字段原文（`norm:mseccfg_mml_*`、`norm:mseccfg_mmwp_op_warl`、`norm:mseccfg_rlb_op_warl`、`norm:mseccfg_mml_mmwp_rlb_rst`）。`MML=1` 会让 `pmpcfg.L` 改义、保留编码变成 Shared-Region，**同一张 R/W/X 表整张失效**，故第一版只接受 `MML=0 ∧ MMWP=0`，其余拒绝。
+- **P1 `Absent` 的支持限制（成立，已改）**：PMP 小节 NOTE 原文「some platforms may provide other PMP structures in addition to or instead of the scheme described in this section」→ `Absent` 只表示标准 PMP 不施加限制；平台须给出「无其它保护结构」的支持限制声明，否则 fail-closed。
+- **P1 O-11 三方组合与粒度（成立，已改）**：新增 EFI DTB × MRB × `no-map` 的组合裁决表（+MRB 允许并保留 MRB 义务；+普通静态拒绝；+`no-map` 拒绝；+两者拒绝；+动态 `size` 拒绝），并写清「EFI 类型裁决按 4 KiB 页、MRB 访问授权按原始字节」两条粒度互不扩张；`no-map` 采用保守的**同页即冲突**规则，不证明原始字节是否相交。
+- **P1 `EfiReservedMemoryType` 首层措辞（成立，已改）**：第一层只保留 UEFI 类型表的字面 **「Not usable」**，取消项目化的驼峰写法；三层（类型事实 / `DenyOsUse` 政策 / 硬件不兑现）各自措辞不得串层。UEFI 原文本环境仍取不到，标为评审人核对。
+- **P2 逐逻辑处理器（成立，已改）**：APIC 核对从「启动时看一次 BSP」改成对**每个参与逻辑处理器**分别核对模式与 `IA32_APIC_BASE` 基址；riscv 侧 PLIC context 同样逐 hart，不按 hart 数乘 2 推导。
+- **Profile 义务更正（本方直取）**：撤销上一轮「按评审人转述登记」的缺口——本轮读 `riscv-profiles` 的 `src/rva23-profile.adoc`（blob `4fce3ebf…`，最近提交 `2852ae1f…`）核对 RVA23U64 强制 `Ziccif`/`Ziccrse`/`Ziccamoa`/`Zicclsm`/`Za64rs`，`Zacas`/`Ziccamoc` 属 Development Options；RVA23S64 强制含 `Svade`、`Ssccptr`，而 **`Svadu` 只是 Expansion Option**。
+- §7 相应降级：整页合格与 PMP 权限映射两行标为「本轮不闭合」（谓词已改写，实现与负控为零）；§2.1 残留字段名改为 `range.end_exclusive` 并写清记录层可表达 `2^64`、拒绝在投影侧。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1530 行、围栏 42（偶）、表格列数不一致 0 处、lint error 0。
+
+
 **本轮（第七十三轮评审之后：页表准入三分、PMP+PMA 合成、Profile 义务三分）**
 
 - **本轮评审首次对上了现行文本**：它逐条确认了七项已闭合（A/D 分支、两个 hart 集合、既存对象入场、`AlgorithmFallback` 不放宽 `RsrvEventual`、既有页表入口、一致性与排序分开、不变量 3），并指出三处仍不闭合。这是自第六十五轮以来第一份基于当下文本的评审。
 - **P0 页表准入自相矛盾（成立，已改）**：上一版 `page ∈ PmmBaseAvailable(ctx) ∧ RoleAdmit(...)` 里，`PmmBaseAvailable` 扣除了 `Outward(LiveObjectRanges(ctx))`，而既有引导页表正是存活对象——**越是被使用的页表页越通不过**。拆成 `PageTableBackingEligible`（硬件能力）/ `PageTableAllocationEligible`（= 基底 ∩ backing）/ `ExistingPageTableObjectEligible`（身份 + backing + 路径审计）。PMM 与对象审计共用同一份 backing 能力，不再共用一个带「可分配」语义的谓词。
-- **P0 PMP+PMA 合成（成立，已改）**：上一版公式只用 `PmpPermits` 推 `AdmittedRanges`，PMA 只停在文字里。新增 `PmaPermits` 与 `PhysicalAccessPermits = PmpPermits ∧ PmaPermits`，并区分 `AllowedOperationStarts`（起始地址）与 `AllowedAccessFootprints`（整次访问范围），页合格改用 `PagesFullyInside(footprints)`——字节并集覆盖不算合格，跨 PMP/PMA 边界整次操作仍会失败。
+- **P0 PMP+PMA 合成（成立，已改）**：上一版公式只用 `PmpPermits` 推 `AdmittedRanges`，PMA 只停在文字里。新增 `PmaPermits` 与 `PhysicalAccessPermits = PmpPermits ∧ PmaPermits`，并区分 `AllowedOperationStarts`（起始地址）与 `AllowedAccessFootprints`（整次访问范围），页合格改用「整页是否被可允许访问集合包住」的集合包含式（该写法在第七十四轮被撤销，改成对合法起始地址全称量化）——字节并集覆盖不算合格，跨 PMP/PMA 边界整次操作仍会失败。
 - **P1 PMP 无条目分支 + 有效特权级（成立，已改）**：补 `PmpImplementationState = Absent | Implemented{…}`；`Absent` 时 PMP 不施加额外限制；第一版若只支持带 PMP 平台，须在平台准入阶段显式拒绝而不是把「条目必须存在」当普遍语义。`AccessRequirement.privilege` 明确为**有效访问特权级**（隐式页表访问按 S-mode 计）。
 - **P1 普通数据宽度（成立，已改）**：`GeneralData` 的宽度集合由 ISA + 编译目标 + 实际代码确定（字节/半字/字/双字），不再是「自然宽度」。
 - **P1 Profile 三分（成立，已改）**：按来源分 Mandatory / Optional-Development / 项目自身三类；`Ziccif` 的取指拆成 `InstructionFetchSupported`（用途准入）与 `InstructionFetchAtomicity`（Profile 义务）；澄清 `Ziccamoc` 属 RVA23U64 的 Development Options、`Ssccptr` 属 RVA23S64 强制，**U64 与 S64 义务不能混写**；项目决定改为「不声明 RVA20/RVA22/RVA23 等任何 RVA Profile」。
