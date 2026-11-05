@@ -2339,3 +2339,14 @@ ArchitecturalRegisterAperture（架构规定的寄存器窗口，如 xAPIC 4 KiB
 
 **属性位：语义三类 + 当前处置**（不能只写「未知位拒绝」）。语义分三类：缓存能力（`WB`/`WT`/`WC`/`UC`/`UCE`）；物理保护能力（`WP`/`RP`/`XP`/`RO`）——`WP` 归此类：规范先称它 physical memory protection attribute，再说明它通常被用作 write-protected cacheability policy，所以它有特殊缓存语义，但既不是页表写权限，也不能与 `RO` 混为一谈；其它特征（`MORE_RELIABLE`、`CPU_CRYPTO`、`SP`、`NV`、`RUNTIME`）。当前处置：模型保留 `RUNTIME`/`NV`/`SP` 三种独立属性语义，但**分类器实际可达的只有 `RUNTIME`**——`NV` 属无条件冲突拒绝域，`SP` 的低位编码属冲突拒绝域、高位编码在 profile 未钉住时被 `ProfileAttribute` 拒绝，二者都不进入输出表；`PERSISTENT` 是独立的 UEFI 内存类型，不等于 `NV` 属性位，不能用它的测试证明 `NV` 分支可达。`RO`/`RP`/`XP`/`WP`/`CPU_CRYPTO` 是 **capability 能力位**（`MORE_RELIABLE` 因 `0x1_0000` 的官方文本歧义已改为 fail-closed），第一版只作来源元数据——**不直接等同于当前已生效的访问权限**，也不改变 RAM 来源域成员资格；后续映射策略可用其中的能力信息验证目标属性是否可兑现，**`WP` 不得误解为页表写权限**。**`SP` 不是 no-map**：第一版把它排除出普通 PMM 是项目保守选择，不得由 `SP` 自动生成映射禁令。任何**档外位**仍按第 1 步拒绝启动。
 
+### 评审身份（第一百轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | `371bc06fca4f0fee0951cf98825d1772fe2e1fff`（第一百轮合并提交） |
+| `CodeEvidenceCommit` | `53c44e846`（146/70 与交叉编译的代码基线；其后各批无代码改动） |
+| `DocumentRevision` | 第一百轮（**设计评审循环已冻结**，见正文 §7.1） |
+| `DocumentFileHash`（正文 sha256，按合并提交） | `fa1dcc02611952943c266378b4e61354b18151ec510039d24b5844b69b9ce29b` |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | `580c35cef0cd82908d12f31631ffc8393722c63f2077b8727fb304a42e9e8b6c` |
+| 上一轮（第九十九轮）合并提交 | `a7d9ab4fa`，正文 `6628418e62…`、档案 `e32bb7e307…` |
+| `WorkingTreeDiffHash` | 不适用：本轮无未提交修改 |
