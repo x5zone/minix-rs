@@ -5414,3 +5414,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-12i：`WbConfigurablePages` / `CpuPhysicalAccessEligiblePages(ReqProfile)` / `MappingAudit` 三层；PMM 公式只含前两层。
 - O-12k：扩容即失效；`MapSnapshotId` 单调本地生成。
 - 门：minix-boot 134、boot-shim 70、riscv QEMU PASS。
+
+### 第二百六十九笔（01 阶段 · I-29 第六十一轮：纯文档）
+
+无代码改动；主文档约 1036 行。
+
+- UEFI Reserved 语义三层（NotUsable / DenyPmmAllocation / DenyOrdinarySystemMapping）；强访问禁令说法标待核。
+- RISC-V：页表读写 + RsrvEventual + 逐 hart PMP；PMP 证据需 M-mode 提供或 profile 承诺；次级 hart 入场门槛。
+- `OrdinaryCachePolicyFeasiblePages` 取代 WB 命名；`PhysicalRange` u128 端点；`BootInputObjectId` 首读前建立；设备完整性三主张。
+- 门：沿用 minix-boot 134、boot-shim 70；lint 0。

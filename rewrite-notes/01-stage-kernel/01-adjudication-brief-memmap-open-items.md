@@ -261,10 +261,11 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 | 层 | 主张 |
 |---|---|
-| 规范语义 | `DenyOSAccess`——UEFI 规定 OS 不得访问，但不等于 DTSpec `no-map` 的「禁止标准系统映射 + 非受控推测访问」 |
-| 项目兑现 | 第一版额外禁止其进入普通系统映射（`DenyOrdinarySystemMapping`）——保守选择，写明是项目策略 |
+| 规范类型事实 | `NotUsable`——UEFI 内存类型表对 `EfiReservedMemoryType` 的用语是「Not usable」；它描述内存类型与用途，**不构成一条与 DTSpec `no-map` 同强度的通用 CPU 访问禁令**。更早一轮曾把「物理支撑但 OS 不应访问」写入规范层，该表述**标为待核**（两次外部评审结论相反，本环境无法取回 uefi.org 原文核对） |
+| 项目分配政策 | `DenyPmmAllocation`——不进入普通 PMM |
+| 项目映射/访问政策 | 第一版选择 `DenyOrdinarySystemMapping`；若要禁止一切 CPU 访问，另列为项目强化的 `DenyCpuAccess`，不声称是类型本身规定的硬件禁令 |
 
-**与 `no-map` 的驱动例外组合时，第一版选「绝对禁止」**：`EfiReservedMemoryType` 区域即使同时带 DTB `no-map`，也不开放 `DriverControlledUse`——UEFI 类型说该区域 OS 不应访问，而第一版没有实现「专属设备身份 + 范围 + 阶段 + 访问路径」的受控路径。组合测试（`EfiReservedMemoryType` + `no-map` + 受控使用）列为待补；另一个可选边界是「一般用途禁止、专属驱动例外可用」，但第一版不选它，避免让 `DenyOSAccess` 这个名字隐式决定组合语义。
+**与 `no-map` 的驱动例外组合时，第一版选「绝对禁止」**：`EfiReservedMemoryType` 区域即使同时带 DTB `no-map`，也不开放 `DriverControlledUse`——**理由是项目第一版不实现「专属设备身份 + 范围 + 阶段 + 访问路径」的受控路径**，不是「UEFI 已经给出与 MRB 同强度的访问禁令」。组合测试（`EfiReservedMemoryType` + `no-map` + 受控使用）列为待补；另一个可选边界是「一般用途禁止、专属驱动例外可用」，但第一版不选它，避免让单一类型名隐式决定组合语义。
 
 `TypePolicy` 必须能独立生成这两条主张，**不要求存在对应的 DTB `SourceRecord`**（x86_64 没有 DTB，不能因此丢掉 UEFI 自己的禁止语义）。两者都可能导致普通直接映射被拒，但来源语义与例外规则不同，不得合并成一个无差别 `DenyMapping`。同理，`UNUSABLE` 是域内排除（来源身份存在、类型资格排除），不与域外的 `RESERVED` 合并。
 
@@ -324,7 +325,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | 普通映射授权 vs `no-map` | 拒绝普通映射 |
 | 普通访问授权 vs MRB | 拒绝访问 |
 | 设备驱动受控使用 vs `no-map` | 只有满足规范允许的受控用途且具备专属授权时才允许例外 |
-| `EfiReservedMemoryType` + `no-map` + `DriverControlledUse` | **拒绝**：该组合额外命中 UEFI 类型的 `DenyOSAccess`，本项目第一版不开放此驱动例外。这不等于「所有 `no-map` 一律禁止驱动受控使用」——只是这一来源组合多了一条更强的类型政策 |
+| `EfiReservedMemoryType` + `no-map` + `DriverControlledUse` | **拒绝**：该页额外命中项目对 UEFI 保留类型的 `DenyPmmAllocation`/`DenyOrdinarySystemMapping` 政策，第一版不开放驱动例外（项目决定，非 UEFI 类型原文的访问禁令）。这不等于「所有 `no-map` 一律禁止驱动受控使用」——只是这一来源组合多了一条更强的类型政策 |
 | 未获启动程序授权的访问 vs MRB | 拒绝访问 |
 | 类型政策绝对禁止 vs 对象授权 | 拒绝 |
 | 对象 `MustNotMap` vs 一般 `MustMap` | 拒绝启动，除非设计明确列出例外 |
@@ -547,7 +548,15 @@ PDF 低位组的 `0x100`–`0x800` 在本项目里落入已知位集合之外，
   - **`BootInputReachability`**：可达性——给定 PA/VA、当前地址转换状态与页表，`[dtb, dtb+40)` 这 40 字节**整段**确实可读（起点对齐不保证不跨 4 KiB 页）。
   - 两者不能互推：有指针不等于可解引用；有可读映射不等于这个地址就是启动程序授权的 DTB。
 - **`ValidatedObjectReadAuthorization`**：校验 magic/版本/`totalsize`/回绕/范围后，授权 `[dtb, dtb+totalsize)` 整段只读并复制；之后政策代码只消费副本。
-- **全范围可达是第二个独立检查**：拿到 `totalsize` 后必须**重新证明** `[dtb, dtb + totalsize)` 在当前转换下整段可读（覆盖所有跨页、地址转换与末端），不能拿 header 的 40 字节证明代替；复制只能在这次证明之后开始。
+- **对象身份在首读前建立**：`BootInputObjectId` 由启动 ABI 交付时即分配，不等到 `totalsize` 才知道——首读前已经存在一个具 40 字节读取授权的对象。同一身份随阶段扩充范围：
+
+```
+BootInputObject { id, provenance, initial_read_range /*40B*/, validated_full_range, owned_copy_range, lifecycle }
+```
+
+header 读取、完整对象授权、自有副本、生命周期记录都继承同一 ID，避免出现「header 是对象 A、完整 DTB 是对象 B、副本是对象 C」只能靠地址猜测关联。
+
+**全范围可达是第二个独立检查**：拿到 `totalsize` 后必须**重新证明** `[dtb, dtb + totalsize)` 在当前转换下整段可读（覆盖所有跨页、地址转换与末端），不能拿 header 的 40 字节证明代替；复制只能在这次证明之后开始。
 
 **复制目标不得与源重叠**：原始 DTB 不一定在 MRB 里，也未必已被分配器排除。分配自有副本前，先把原始 DTB 的完整范围登记为**存活输入对象**；源与目标范围不相交才允许复制（DTSpec 要求客户端在 DTB 使用完之前不得覆盖它，即使它不在保留区内）。于是 O-11 有四个互相独立的条件：**来源授权、地址可达、内容一致（不得并发修改）、自有副本**。
 
@@ -563,7 +572,7 @@ PDF 低位组的 `0x100`–`0x800` 在本项目里落入已知位集合之外，
 
 **ABI 地址、源物理范围与读取 VA 是三个概念**：`BootInputAddress`（ABI 递交的地址及其地址域——四条路径实际交付的都是**物理地址**：AArch64 `x0`、UEFI 配置表 DTB、RISC-V `a1`/`satp=0`）、`SourcePhysicalRange`（DTB 对象实际占用的物理范围）、`ReadVirtualRange`（当前阶段实际用于读取的 VA 范围）。不构造概括性的 `SourceVirtualRange`——那会把物理地址误包装成虚拟地址。`LiveInputReservation = Outward(SourcePhysicalRanges)`——**PMM 排除的是物理页，不是虚拟区间**；目标副本与源的不重叠也必须**按物理地址**判断：源 VA 与目标 VA 数值不同不代表不落在同一 PA（直接映射、恒等映射等别名都可能重合）。
 
-**DTB 物理范围的端点策略**：`SourcePhysicalRange = [dtb, dtb + totalsize)`，`dtb + totalsize` 有可能触及 `2^64`。二选一并写死：内部端点用 `u128` 允许独占端等于 `2^64`，或第一版定义 `UnsupportedPhysicalAddressEnd` 明确拒绝——**不得**用普通 `u64 checked_add` 让它退化成 `RangeOverflow`（把合法边界伪装成算术回绕）。
+**统一物理范围类型 `PhysicalRange { start: u64, end_exclusive: u128 }`**（`start < 2^64`、`start < end_exclusive ≤ 2^64`）：DTB 的 `address + size` 与 UEFI 描述符都能表达 `[0xffff_ffff_ffff_f000, 2^64)`，统一来源记录不得因 Rust 字段类型丢掉这个合法边界。原始输入字段保留各自编码（DTB 的 address+size、UEFI 的 start+pages），规范化层才转成 `PhysicalRange`；`UnsupportedPhysicalAddressEnd` 只在项目明确选择拒绝该边界时使用，**不能成为 `u64 checked_add` 的副作用**。这条与 O-12h 结构校验、O-12i `FullPages` 是同一条边界合同。
 
 **副本与源的相交检查绑定实际分配结果**：按 PA 判断不重叠之后，仍须在分配器返回副本物理地址后，用**实际分配范围**再作一次相交检查。「分配器通常不会从 ACPI reclaim 区分配」不是证据——分配资格与源对象的生命周期登记是两份独立证据。
 
@@ -749,6 +758,8 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 
 **观测记录必须带 VA，不能只有 PA**：`DeviceMappingCoverage` 若只是物理区间，就回答不了「这些页映射到哪个 VA」「访问点用的 VA 是否落在里面」「同一 PA 是否有多个别名、权限/属性/共享性是否兼容」。观测单元定义为 `ObservedDeviceMapping { VaRange, PaRange, LeafSize, Permissions, MemoryAttribute, Shareability, Tree, Phase }`，由它派生纯物理覆盖 `ObservedPaCoverage = Union(PaRange)`，审计仍写 `ObservedPaCoverage ⊆ DevicePolicyAuthorizedPaRange`。访问需求不能只拿 PA 包络比覆盖：每条 `DeviceAccessUse` 要能证明其访问 VA 经对应叶子解析到预期 PA，且宽度、读写与属性兼容。这与 O-05 的别名审计是同一条要求——不能在要求审计别名的同时让覆盖集合丢掉 VA。
 
+**三个完整性主张强度不同，不能互相代替**：`Coverage ⊆ AuthorizedRange`（已映射区域未越权）、`RegisteredRequiredAccess ⊆ Coverage`（已登记需求可映射）、`ActualDeviceAccess ⊆ RegisteredRequiredAccess`（**未证明**：没有登记的设备访问是否存在，当前无任何证据）。最终报告必须分别陈述，不能拿前两项冒充第三项。
+
 **数值相等 ≠ 来源相等**：表中若干行的授权范围与覆盖范围数值相同，但授权是**独立政策输入**，覆盖是**独立测量**；不能由实际叶子反推授权。而且今天**没有页表审计遍历**，所以今天的覆盖只能叫 `ExpectedDeviceMappingCoverage`（从构造代码推导），`ObservedDeviceMappingCoverage`（PTE 遍历）等 O-02a 的引导根审计落地后才存在。表中「覆盖」列在观测实现前一律标为**预期**。
 
 **x2APIC 是第三种访问域**：xAPIC 走 MMIO（`0xFEE0_0000` 页），x2APIC 走架构寄存器（RDMSR/WRMSR）——它既不属于 MMIO 窗口模型，也不属于 O-08 的端口 I/O 地址域。**MSR 编号不进共享层**：共享层只表达 `ApicRegisterAccessRequirement`（APIC 逻辑寄存器、读写方向、访问者、阶段、CPU 范围、适用模式）；x86 架构层用 `X2ApicMsrUse` 记录具体 MSR 编号、指令位置、包装函数与访问约束。同一 OS 语义（读 Local APIC ID、写 EOI）在 xAPIC 映射到 MMIO、在 x2APIC 映射到 MSR。**第一版若不实现 x2APIC 访问路径**，必须锁定 xAPIC profile 并在检测到 x2APIC 时拒绝启动；不得「允许 x2APIC 模式却保留 xAPIC 的 MMIO 访问需求」。O-10 现有的 in/out 负控不覆盖 RDMSR/WRMSR：**架构寄存器访问必须进入独立的原始操作审计**——允许出现原始 MSR 访问的函数与指令位置清单、MSR 编号与共享层逻辑寄存器的对应关系、在已批准的 `asm!` 块中加第二条 `rdmsr`/`wrmsr` 必须使审计失败、x2APIC 模式下不得残留 xAPIC LAPIC MMIO 访问义务。
@@ -896,7 +907,7 @@ RamSourcePageDomain = FullPages(Union(RamSourceDomain))      ← 先并集，再
 
 PMMAvailable(p) = RamSourcePageDomain
     ∩ TypeAllocatablePages(p)
-    ∩ WbConfigurablePages(p)                       ← 能力：支持配置为 WB
+    ∩ OrdinaryCachePolicyFeasiblePages(p)                       ← 能力：支持配置为 WB
     ∩ CpuPhysicalAccessEligiblePages(ReqProfile)   ← 物理访问：按所需操作集合
     \ Outward(ExplicitAllocationReservations(p))
     \ Outward(LiveObjectRanges(p))
@@ -911,7 +922,7 @@ PMMExcluded(p) = RamSourcePageDomain \ PMMAvailable(p)
 
 **能力、硬件准入与平台拒绝是三项，不能合并**：
 
-- `WbConfigurablePages(p)`：**能力**——该页是否支持被配置为普通写回（UEFI `WB` 是能力位，不是「当前已是 WB」）；DTB 路径取平台属性政策，不伪造 UEFI 属性记录。
+- `OrdinaryCachePolicyFeasiblePages(p)`：**普通主存缓存策略可行性**（跨架构语义，不以 UEFI 术语命名）：x86 看 PAT×MTRR 能否得到 WB；AArch64 看叶子 AttrIndx×MAIR 能否得到 Normal Cacheable；RISC-V 看平台 PMA/机器级配置能否满足项目要求的 cacheability 与 coherence。UEFI 路径取 `WB` 能力位（能力 ≠ 当前生效），DTB 路径取平台属性政策。
 - `CpuPhysicalAccessEligiblePages(ReqProfile)`：**物理访问准入**，相对一个明确的 `RequiredAccessProfile` 定义，而不是绝对布尔值。最低集合至少含：普通读写、**硬件页表遍历**（若通用 PMM 页可能被分配为页表）、按用途的取指与原子操作。**缺了它，PMP 拒绝 S 模式访问的页仍会进入可用表**——这正是把准入留给后续页表审计去补的错误顺序。若第一版不分数据页/页表页，就必须要求所有 PMM 页满足页表遍历能力；否则需按用途区分资格。
 - `PlatformAllocationDenials(p)`：**平台策略显式拒绝**，不再兼任架构准入。
 
@@ -919,11 +930,15 @@ PMMExcluded(p) = RamSourcePageDomain \ PMMAvailable(p)
 
 | 资格 | 架构证据 | 何时验证 |
 |---|---|---|
-| `WbConfigurablePages` | UEFI `WB` 能力位 / DTB 平台属性政策 | 来源记录阶段 |
-| `CpuPhysicalAccessEligiblePages` | RISC-V PMA（宽度/页表访问/原子/取指）+ PMP（逐 hart、含隐式页表访问）；其它架构的物理访问限制 | 准入阶段，按 `RequiredAccessProfile` |
+| `OrdinaryCachePolicyFeasiblePages` | UEFI `WB` 能力位 / DTB 平台属性政策 | 来源记录阶段 |
+| `CpuPhysicalAccessEligiblePages` | RISC-V：`HardwarePageTableReadWrite`、`PageTableWriteReservability = RsrvEventual`、逐 hart 的 `PmpAllows`（含隐式页表访问，按 S 模式有效特权级）；原子操作按指令族与宽度分别登记（AMO 与 LR/SC 不是一个布尔值）；其它架构的物理访问限制 | 准入阶段，按 `RequiredAccessProfile` |
 | 映射属性兑现 | x86 `PAT` 项 × 物理范围 `MTRR` 有效类型；AArch64 `AttrIndx` × `MAIR_ELx`（读回 MAIR 不足以证明叶子选对了索引）；RISC-V `PBMT`/PMA | **逐实际叶子**（`MappingAudit`） |
 
-**适用范围**：若某页只对部分在线 hart 可访问，不能当作全体可用的普通内存；第一版要求所有参与普通内存访问的 hart 都满足最低访问条件，分区内存留待后续。
+**待补测试（按用途区分，不做「全局原子/全局可访问」的粗暴结论）**：MAIR 配置正确但叶子选错 `AttrIndx` 必须失败；PAT 项正确但 MTRR 使有效类型非 WB 必须失败；任一参与 hart 的 PMP 拒绝该范围 → 不得进入全体普通 PMM；PMA 允许读写但不允许页表访问 → 数据页可用、页表页拒绝；PMA 无 AMO 但普通读写可用 → 按用途处理；`ranges` 缺失与非空分别落到各自错误；`FinalMap` 扩容后旧快照与投影全部失效。
+
+**PMP 证据必须有提供者，不能靠探测**：标准 `pmpcfg*`/`pmpaddr*` 只能由 M-mode 读写；S-mode 内核既读不到，也不能把一次探测性 load 当成整段证明（它不覆盖写、取指、隐式页表访问，也不覆盖 PMP 边界）。因此需要类似 `PmpEvidence { provider, hart_id, privilege_profile, physical_ranges, access_permissions, evidence_version, stability_until }` 的合同：由 M-mode 固件经启动 ABI 提供，或由平台 profile 对固件版本/PMP 配置/hart 启动方式作出可验证承诺；两者都不可得时，不得把「未观察到故障」升级为「满足 PMP 准入」。
+
+**SMP 入场门槛**：`participating_harts` 不是初始化时的静态名单——每个次级 hart 在加入普通内存访问集合前，必须完成自己的 PMP 与架构属性一致性准入；未通过的 hart 不得进入会访问普通 PMM 页的调度集合。第一版要求所有参与 hart 满足最低条件（`RsrvEventual` 与 PMP 各自成立），分区内存留待后续。
 
 **能力 ≠ 有效类型**：`WB` 能力通过不代表页表叶子与硬件配置共同得到的有效类型就是 WB；后者属硬件兑现层，不能拿能力位冒充。普通映射授权同样要有自己的属性兼容检查，不能只看 `OrdinaryRamMappingEligibility`。
 

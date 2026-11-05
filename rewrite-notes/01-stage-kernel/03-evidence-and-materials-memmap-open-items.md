@@ -912,3 +912,14 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 新错误 | `MissingReservedMemoryRanges`、`UnsupportedReservedMemoryRanges`、`MissingReservedMemoryCells`、`MismatchedReservedMemoryCells` |
 | 新测试 | `dtb_missing_reserved_memory_ranges_is_rejected`、`dtb_missing_reserved_memory_cells_is_rejected`；「宽 cells」用例改判 mismatch |
 | 门 | minix-boot **134**、boot-shim **70**；riscv bootface PASS（exit 0）；x86_64-unknown-uefi check 通过 |
+
+## 三十三、第六十一轮：纯文档
+
+| 项 | 结论 |
+|---|---|
+| UEFI Reserved 语义 | 规范层只写 `NotUsable`（待核：强访问禁令说法）；项目政策三列分开 |
+| RISC-V 准入 | 页表读写 + `RsrvEventual` + PMP（逐 hart、隐式页表访问）；AMO/LR-SC 分列 |
+| PMP 证据 | M-mode 提供者或 profile 承诺；禁止探测式全区间证明；次级 hart 入场门槛 |
+| 共享语义 | `OrdinaryCachePolicyFeasiblePages` 取代 `WbConfigurablePages` |
+| 范围端点 | `PhysicalRange { start: u64, end_exclusive: u128 }` 统一 |
+| 门 | 无代码改动；沿用 minix-boot **134**、boot-shim **70**；lint 0 |

@@ -10,6 +10,15 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十一轮评审之后：纯文档——类型语义三层、RISC-V 准入、统一范围）**
+
+- **`EfiReservedMemoryType` 拆三层**：规范类型事实只保留 `NotUsable`（类型表用语）；`DenyPmmAllocation` 与 `DenyOrdinarySystemMapping` 是项目政策，可选的 `DenyCpuAccess` 也标为项目强化。更早一轮写入的「物理支撑但 OS 不应访问」标为**待核**（两次评审结论相反，本环境取不回 uefi.org 原文）。组合拒绝（Reserved+no-map+DriverControlledUse）的理由改为项目不开放例外，不再借类型名。
+- **RISC-V 页表准入补齐**：`HardwarePageTableReadWrite` + `PageTableWriteReservability = RsrvEventual` + 逐 hart `PmpAllows`（含隐式页表访问）；原子操作按 AMO/LR-SC 与宽度分开登记。
+- **PMP 证据合同**：`pmpcfg/pmpaddr` 仅 M-mode 可读，S-mode 不能靠探测证明；需 M-mode 固件经启动 ABI 提供 `PmpEvidence` 或平台 profile 承诺；SMP 每个次级 hart 入场前各自准入。
+- **`WbConfigurablePages` → `OrdinaryCachePolicyFeasiblePages`**：跨架构语义，不把 UEFI 术语带进共享层。
+- **`BootInputObjectId` 首读前建立**，范围随阶段扩充；**`PhysicalRange { start: u64, end_exclusive: u128 }`** 统一 DTB/UEFI 端点。
+- **设备完整性三主张分开**：`Coverage⊆Authorized`、`Registered⊆Coverage`、`Actual⊆Registered`（未证明）。
+
 **本轮（第六十轮评审之后：错误分类拆分、架构准入分层）**
 
 - **代码 `f52730bef`**：`/reserved-memory` 的错误分类按「规范缺失 vs 项目不支持」拆开——`MissingReservedMemoryRanges`（缺属性）/`UnsupportedReservedMemoryRanges`（非空，需转换）/`MissingReservedMemoryCells`/`MismatchedReservedMemoryCells`（应相同，项目子集）。测试新增两条缺失用例；原「宽 cells」用例落到 mismatch。minix-boot **134**、boot-shim **70**；riscv QEMU PASS。
