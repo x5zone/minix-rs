@@ -29,6 +29,19 @@ pub const VM_BOOT_HANDOFF_VA: u64 = 0x1_0000_0000;
 /// constraints. One authority for both sides: this constant.
 pub const KERNINFO_USER_VA: u64 = 0x2_0000_0000;
 
+// Both fixed user-VA constants must stay below the strictest user-VA cap of
+// the three targets (Sv39: 2^38). The kernel maps them into every user page
+// table; a value at or above the cap would only surface as a boot-time page
+// fault inside VM, far from the constant that caused it.
+const _: () = assert!(
+    VM_BOOT_HANDOFF_VA < (1 << 38),
+    "VM_BOOT_HANDOFF_VA must stay below the Sv39 user-VA cap (2^38)"
+);
+const _: () = assert!(
+    KERNINFO_USER_VA < (1 << 38),
+    "KERNINFO_USER_VA must stay below the Sv39 user-VA cap (2^38)"
+);
+
 /// `VmBootHandoff::magic` — marks the page as a VM boot handoff.
 pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 
@@ -802,6 +815,72 @@ mod tests {
             assert_eq!(l.ident_regions().len(), 2);
             assert_eq!(l.ident_regions()[0].base, 0x1da0_0000);
             assert_eq!(l.ident_regions()[1].size, 0x1000);
+        }
+
+        /// A minimal handoff that `validate` must accept: current version,
+        /// page-aligned non-zero root, zero counts.
+        fn valid_handoff() -> VmBootHandoff {
+            let mut h = handoff(VM_BOOT_HANDOFF_VERSION);
+            h.root_paddr = 0x90_0000;
+            h
+        }
+
+        #[test]
+        fn test_handoff_validate_accepts_current_version() {
+            valid_handoff().validate();
+        }
+
+        /// Magic/version mismatch is a boot contract violation (kernel/VM
+        /// version skew or a stray mapping at the fixed VA), not a
+        /// recoverable error: the consumer must fail-stop.
+        #[test]
+        #[should_panic(expected = "bad magic")]
+        fn test_handoff_validate_rejects_bad_magic() {
+            let mut h = valid_handoff();
+            h.magic = 0xDEAD_BEEF;
+            h.validate();
+        }
+
+        /// The version is compared exactly: a page written by a newer or
+        /// older kernel must not be interpreted field by field.
+        #[test]
+        #[should_panic(expected = "unsupported version")]
+        fn test_handoff_validate_rejects_wrong_version() {
+            let mut h = valid_handoff();
+            h.version = VM_BOOT_HANDOFF_VERSION + 1;
+            h.validate();
+        }
+
+        #[test]
+        #[should_panic(expected = "root_paddr")]
+        fn test_handoff_validate_rejects_unaligned_root() {
+            let mut h = valid_handoff();
+            h.root_paddr = 0x90_0001;
+            h.validate();
+        }
+
+        #[test]
+        #[should_panic(expected = "free_region_count")]
+        fn test_handoff_validate_rejects_over_capacity_counts() {
+            let mut h = valid_handoff();
+            h.free_region_count = (VM_BOOT_HANDOFF_MAX_REGIONS + 1) as u32;
+            h.validate();
+        }
+
+        #[test]
+        #[should_panic(expected = "deducted_count")]
+        fn test_handoff_validate_rejects_over_capacity_deductions() {
+            let mut h = valid_handoff();
+            h.deducted_count = (VM_BOOT_HANDOFF_MAX_DEDUCTED + 1) as u32;
+            h.validate();
+        }
+
+        #[test]
+        #[should_panic(expected = "kern_ident_count")]
+        fn test_handoff_validate_rejects_over_capacity_ident() {
+            let mut h = valid_handoff();
+            h.kern_ident_count = (VM_BOOT_HANDOFF_MAX_IDENT + 1) as u32;
+            h.validate();
         }
 
         #[test]
