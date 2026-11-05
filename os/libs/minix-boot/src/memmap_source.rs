@@ -217,6 +217,85 @@ pub enum SourceOrigin {
     ReservedMemoryChild { node: u16, reg: u16 },
 }
 
+/// A projection span that no source record can explain: either a free span not
+/// covered by `/memory` records, or a reserved span not covered by reservation
+/// records. A projection is a *view*; every byte in it must be traceable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceAuditError {
+    FreeSpanWithoutMemorySource { start: u64, end_exclusive: u128 },
+    ReservedSpanWithoutSource { start: u64, end_exclusive: u128 },
+}
+
+/// Check that both projections are fully covered by source records of the
+/// matching kind. This is the invariant a boot path can act on: it refuses to
+/// boot if a projected span has no source identity behind it.
+pub fn audit_source_coverage(
+    free: &[MemoryRegion],
+    reserved: &[MemoryRegion],
+    sources: &[SourceRecord],
+) -> Result<(), SourceAuditError> {
+    for span in free {
+        let start = span.base.0;
+        let end = start as u128 + span.len as u128;
+        if !records_cover(start as u128, end, sources, |r| r.kind == SourceKind::Memory) {
+            return Err(SourceAuditError::FreeSpanWithoutMemorySource {
+                start,
+                end_exclusive: end,
+            });
+        }
+    }
+    for span in reserved {
+        let start = span.base.0;
+        let end = start as u128 + span.len as u128;
+        let is_reservation_record = |r: &SourceRecord| match r.kind {
+            SourceKind::Memory => false,
+            SourceKind::MrbEntry | SourceKind::ReservedNoMap => false,
+            SourceKind::FirmwarePrefix
+            | SourceKind::ReservedOrdinary
+            | SourceKind::ReservedReusable => true,
+        };
+        if !records_cover(start as u128, end, sources, is_reservation_record) {
+            return Err(SourceAuditError::ReservedSpanWithoutSource {
+                start,
+                end_exclusive: end,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Greedy union coverage: `[start, end)` is covered when records admitted by
+/// `keep` can be chained without a gap. Small tables make the O(n^2) scan
+/// cheaper than sorting.
+fn records_cover<F: Fn(&SourceRecord) -> bool>(
+    start: u128,
+    end: u128,
+    sources: &[SourceRecord],
+    keep: F,
+) -> bool {
+    let mut cursor = start;
+    while cursor < end {
+        let mut next = cursor;
+        for r in sources {
+            if !keep(r) {
+                continue;
+            }
+            let rs = r.range.start as u128;
+            let re = r.range.end_exclusive;
+            if rs <= cursor && cursor < re {
+                if re > next {
+                    next = re;
+                }
+            }
+        }
+        if next == cursor {
+            return false;
+        }
+        cursor = next;
+    }
+    true
+}
+
 /// Normalized physical range: 64-bit start, 128-bit exclusive end, so the last
 /// page of the address space (`[0xffff_ffff_ffff_f000, 2^64)`) is representable
 /// even though today's `MemoryRegion` projections still carry a `u64` extent.
@@ -1818,6 +1897,74 @@ mod tests {
             DtbMemoryMap::new(&fdt, 0).collect(),
             Err(DtbMemMapError::RangeOverflow)
         ));
+    }
+
+    #[test]
+    fn source_audit_accepts_the_collector_output() {
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[(0x8000_8000, 0x1000)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (free, reserved, sources) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("map fits");
+        assert_eq!(audit_source_coverage(free, reserved, sources), Ok(()));
+    }
+
+    #[test]
+    fn source_audit_rejects_a_free_span_without_a_memory_record() {
+        let free = [MemoryRegion { base: minix_types::PhysBytes(0x8000_0000), len: 0x1000 }];
+        assert_eq!(
+            audit_source_coverage(&free, &[], &[]),
+            Err(SourceAuditError::FreeSpanWithoutMemorySource {
+                start: 0x8000_0000,
+                end_exclusive: 0x8000_1000,
+            })
+        );
+    }
+
+    #[test]
+    fn source_audit_rejects_a_reserved_span_without_a_reservation_record() {
+        let reserved = [MemoryRegion { base: minix_types::PhysBytes(0x8000_0000), len: 0x1000 }];
+        let sources = [SourceRecord {
+            id: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
+            range: PhysicalRange::new(0x8000_0000, 0x8000_1000),
+        }];
+        assert_eq!(
+            audit_source_coverage(&[], &reserved, &sources),
+            Err(SourceAuditError::ReservedSpanWithoutSource {
+                start: 0x8000_0000,
+                end_exclusive: 0x8000_1000,
+            })
+        );
+    }
+
+    #[test]
+    fn source_audit_chains_adjacent_memory_records() {
+        // Two abutting declarations together explain one projected span; the
+        // audit must union them rather than demand a single covering record.
+        let free = [MemoryRegion { base: minix_types::PhysBytes(0x8000_0000), len: 0x2000 }];
+        let sources = [
+            SourceRecord {
+                id: 0,
+                kind: SourceKind::Memory,
+                origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
+                range: PhysicalRange::new(0x8000_0000, 0x8000_1000),
+            },
+            SourceRecord {
+                id: 1,
+                kind: SourceKind::Memory,
+                origin: SourceOrigin::MemoryNode { node: 0, reg: 1 },
+                range: PhysicalRange::new(0x8000_1000, 0x8000_2000),
+            },
+        ];
+        assert_eq!(audit_source_coverage(&free, &[], &sources), Ok(()));
     }
 
     #[test]

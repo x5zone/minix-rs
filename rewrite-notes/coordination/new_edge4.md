@@ -5491,4 +5491,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 纠错：PMP 不是逐字节交集，而是「编号最低、命中任意字节的条目决定整次操作、且须覆盖全部字节」；公式改 `PmpPermits`/`AdmittedRanges`，引四个规范锚点。
 - 新增：`ArchitectureAdmissionRejected` 第五类排除原因 + `DefinitelyIneligible`/`InsufficientEvidence`；不变量 3 与 O-03 统一；设备窗口三分（xAPIC 只映射 4 KiB）；`Zicclsm`；`ADUE=0` 来源区分。
 - 门：无代码改动；minix-boot **142**、boot-shim **70**；lint/表格/行数三门；主简报 1359 行。
-- 认领：`I-29 qorder71`（工作树 `.wt/i-29-qorder71`，基线 `c47108aaa`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder71`（工作树 `.wt/i-29-qorder71`，基线 `c47108aaa`），状态 ✅：已 ff 合并为 `f97338dea`，认领已释放，`sweep` 读数在册 0。
+
+### 第二百七十九笔（01 阶段 · I-29 第七十一轮：来源审计接上启动路径）
+
+- 代码：`audit_source_coverage`（投影必须有来源记录链）；riscv bootface 改 `collect_with_sources()` 并在启动路径审计，失败即停。`grep -rn collect_with_sources` 0→1。
+- 更正：xAPIC 授权 `[0xFEE0_0000,0xFF00_0000)` = **2 MiB**（我方上一轮误写 18 MiB）；问题改为「4 KiB 需求为何用 2 MiB 叶子」，授权标为待证。
+- 文档：hart 一致性比较有效方案而非扩展位图；`SystemHartInventoryId`/`ParticipatingHartSetId`；no-map 两子禁令不可压平。
+- 门：minix-boot **146**、boot-shim **70**；riscv/aarch64/x86 三条 QEMU 腿 PASS；三目标交叉编译通过；lint error 0；主简报 1363 行。
+- 认领：`I-29 qorder72`（工作树 `.wt/i-29-qorder72`，基线 `f97338dea`），状态 🔄，合并后释放。

@@ -1045,3 +1045,19 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 主简报 | 1359 行（上限 1700）；围栏 36（偶）；表格列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **142**、boot-shim **70**；QEMU 腿沿用 `c47108aaa` 读数 |
 
+
+## 四十三、第七十一轮：来源审计接上启动路径
+
+| 项 | 读数 |
+|---|---|
+| 代码落点 | `minix-boot`：`SourceAuditError { FreeSpanWithoutMemorySource, ReservedSpanWithoutSource }` + `audit_source_coverage(free, reserved, sources)` + 内部 `records_cover`（贪心并集覆盖）；`lib.rs` 导出 `PhysicalRange`/`SourceAuditError`/`audit_source_coverage`；`os/kernel-image/src/bootface.rs:203` 改 `collect_with_sources()` 并调用审计 |
+| 审计规则 | free 投影的每条 span 必须被 `Memory` 记录（可多条接续）覆盖；reserved 投影的每条 span 必须被 `FirmwarePrefix`/`ReservedOrdinary`/`ReservedReusable` 记录覆盖；`MrbEntry`/`ReservedNoMap` 不参与 reserved 投影，符合「no-map 出两表」的既有语义 |
+| 新测试 | `source_audit_accepts_the_collector_output`、`source_audit_rejects_a_free_span_without_a_memory_record`、`source_audit_rejects_a_reserved_span_without_a_reservation_record`、`source_audit_chains_adjacent_memory_records` |
+| `cargo test -p minix-boot --lib` | 146 passed; 0 failed |
+| `cargo test -p boot-shim --lib` | 70 passed; 0 failed |
+| QEMU（串行） | riscv bootface（**含新审计**）PASS，B1/B2/B3 全；aarch64 PASS（`conv=13 dtb_regions=1`）；x86 PASS（`no dumpdtb.dtb on ESP`） |
+| 交叉编译 | `minix-boot` riscv64gc/aarch64-none、`boot-shim` x86_64-uefi 均 Finished |
+| 本轮更正 | xAPIC 授权范围 `[0xFEE0_0000, 0xFF00_0000)` = **2 MiB**（上一轮文档写 18 MiB，是算术错误）；IO-APIC `[0xFEC0_0000, 0xFEE0_0000)` 同为 2 MiB |
+| 主简报 | 1363 行（上限 1700）；围栏 36（偶）；表格列数不一致 0 处；lint error 0 |
+| 证据边界 | 本轮仍无 UEFI 原文（uefi.org 403），也无 M-mode 提供 hart/PMP/A-D 证据的实现；两条 QEMU 腿不覆盖 U-Boot shim 入口 |
+

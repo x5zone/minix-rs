@@ -10,6 +10,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第七十一轮评审之后：来源记录接上首个启动消费者 + 逐条更正）**
+
+- **代码切片**：新增 `audit_source_coverage(free, reserved, sources)` —— 每条 free 投影必须被 `Memory` 记录链覆盖，每条 reserved 投影必须被保留类记录链覆盖（并集覆盖，允许相邻记录接续），否则 `SourceAuditError`。**riscv 自引导入口改为 `collect_with_sources()` 并在启动路径上调用它**，审计失败即停。这是记录层第一次有真实消费者；`grep -rn collect_with_sources` 从 0 处变为 1 处（其余三条入口仍 `collect()` 并丢弃）。
+- **我方算术错误更正**：上一版写 xAPIC 授权 18 MiB，实际 `0xFF00_0000 − 0xFEE0_0000 = 0x20_0000` = **2 MiB**（IO-APIC 同为 2 MiB）。随之把问题改回正确的提法：不是「范围太大」，而是「为什么 4 KiB 的访问需求要用一个 2 MiB 的叶子」，并把 2 MiB 授权标为**待证平台假设**而非已证事实。
+- **hart 一致性比较对象写清**：比较的是**最终有效的 `PteUpdateScheme`**，不是各 hart 的 Svade/Svadu 扩展位图——实现可以不同，只要有效行为一致。补 `SystemHartInventoryId`（完整 hart 清单及其方案证明的身份）与 `ParticipatingHartSetId` 两个身份，不能共用一个字段。
+- **不变量 3 再补一句**：`no-map` 的 `DenyStandardSystemMapping` 与 `DenyUncontrolledSpeculativeAccess` 各自独立，受控驱动例外只属于后者，不能顺带解除前者。
+- 判为不成立（对当前合并态）：A/D 布尔式、`hart_set_id` 单一身份、`HartAdmittedBytes`、fallback 布尔、既有页表缺入口、四类排除原因、§7「本轮闭合」——七项在前两轮已改，`grep -c` 三个旧符号均为 0。
+- 门：minix-boot **146**、boot-shim **70**；riscv bootface（含新审计）、aarch64 shim、x86 shim 三条 QEMU 腿 PASS；三目标交叉编译通过；主简报 1363 行。
+
+
 **本轮（第七十轮评审之后：PMP 操作级判定、排除原因第五类、设备窗口三分）**
 
 - **评审件内部自相矛盾，但其中三条是真正的新问题**：本轮 P0 复述旧布尔式，随后 §1 又说「本轮 partial final 给出的分支式判定是合理的」并把它抄了一遍——同一份材料里两种状态并存，说明它仍是拼接自不同版本。不重复辩驳；`EffectiveSvade`/`fallback_available`/`HartAdmittedBytes` 的 `grep -c` 仍为 0。

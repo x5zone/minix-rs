@@ -200,9 +200,13 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     // The memmap source goes through `DtbMemoryMap` (minix-boot); the firmware
     // reserved-region clipping semantics are unchanged (fw_end =
     // KERN_PHYS_BASE, a functional trim pinned on real hardware).
-    let (memmap, reserved) = DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
-        .collect()
+    // The source records are held, not discarded: `audit_source_coverage`
+    // refuses to boot when a projected span has no record behind it.
+    let (memmap, reserved, sources) = DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
+        .collect_with_sources()
         .expect("bootface: DTB memmap rejected (capacity or reservation shape) — halting");
+    minix_boot::audit_source_coverage(memmap, reserved, sources)
+        .expect("bootface: a projected span has no source record — halting");
     if memmap.is_empty() {
         say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
         crate::halt();
