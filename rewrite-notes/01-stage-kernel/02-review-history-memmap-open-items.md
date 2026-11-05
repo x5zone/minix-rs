@@ -10,6 +10,18 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十三轮评审之后：PMM 基底/用途两层代数 + size-only 保留拒绝落码）**
+
+- **§3 不变量 2 改写**：补集只在**基底层**成立——`PmmBaseAvailable(p) ⊍ PmmBaseExcluded(p) = RamSourcePageDomain`；用途层是基底上的子集筛选，`PmmRoleRejected(role, p) ⊆ PmmBaseAvailable(p)`，不产生第二张排除表。裸写 `PMMAvailable(p)` 不是良定义项，必须带 `RequiredUseSet`。
+- **用途可组合且单调**：`U ⊆ U′ ⇒ PmmRoleEligible(page, U′, p) → PmmRoleEligible(page, U, p)`；用途未知时保守取 `AllRoles`，与「保守全局集合」仍是二选一。物理访问准入拆两半：`CommonCpuAccessEligiblePages(p)` 进基底，`RoleAdmit(role, ·)` 留用途层。
+- **内存序 PMA 有落点**：新增 `MemoryOrderingCompatiblePages(profile)` 进基底——RISC-V 一致的主内存区域总是 RVWMO 或 RVTSO，非一致的主内存区域是实现自定义模型（规范小节由检索到的全文镜像取得，逐字待复核）；幂等/非驻留 PMA 定义在 I/O 区域，不能反过来证明主内存资格。
+- **A/D 方案改绑有效状态**：由每 hart 的 `menvcfg.ADUE` 实际值决定（`ADUE=1` 行为如同未实现 Svade、`=0` 如同已实现、未实现 Svadu 则只读 0），不由扩展名决定；「hart 间方案一致」降级为**项目准入要求**（规范逐字与强度待核，撤销上一轮「规范要求」的过强表述）；证据缺失默认 `SupervisorFaultManagedAd`；SMP 段那句「所有 hart 都要 `RsrvEventual`」把用途条件塞回全局，本轮删除。
+- **整页合格定义补齐**：`AdmittedBytes(hart) → AdmittedByteRanges(H) → RoleEligibleBytes(role, H) → FullPages`；准入向内收缩、排除向外量化，两者不对称。PMP 用**有效权限**（TOR/NAPOT 粒度、条目优先级与合并、跨界范围），并分别覆盖隐式访问（页表遍历、取指）与显式访问（load/store/AMO/LR-SC）。
+- **用途生命周期**：分配交付 `(page, U_verified, p)`；承担新用途先重新准入；**撤回用途不释放容量**。
+- **AArch64 64 KiB 分组规则收紧**：分组键 `floor(PA/65536)*65536`（按物理地址，不按 VA）；只比较 memory type / cacheability / shareability，`R/W/X` 等权限逐页独立；适用性限定 AArch64 的 UEFI 启动 profile；未映射子页以 `GroupCoverage` 登记，后续新映射受组内既有属性约束。
+- **代码切片**：`/reserved-memory` 子节点只有 `size` 无 `reg` → 新错误 `UnsupportedDynamicReservation`；既无 `reg` 又无 `size` 仍走 `UnsupportedReservedDeclaration`；`reg`+`size` 按 `reg` 静态处理，`size`/`alignment`/`alloc-ranges` 有意忽略。三条专测；minix-boot **137**、boot-shim **70**；riscv bootface 与 aarch64 shim 两条 QEMU 腿重跑 PASS。DTSpec 原文本次未取到，规则记为**项目输入子集**。
+
+
 **本轮（第六十二轮评审之后：纯文档——PMM 用途化、RISC-V 条件化、缓存可行性拆分）**
 
 - **PMM 用途化**：`PmmEligible(page, role, p)`，`role ∈ {GeneralData, PageTable, Executable, AtomicSharedState}`；各用途有自己的最低访问合同。明确「要么用途化、要么保守全局集合，二者不能混用」，本项目选用途化。

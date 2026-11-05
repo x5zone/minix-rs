@@ -934,3 +934,19 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | UEFI Reserved | `DenyOsUse` 三层；不设硬件屏障 |
 | AArch64 | 64 KiB 分组属性规则纳入审计适用性 |
 | 门 | 无代码改动；沿用 minix-boot **134**、boot-shim **70**；lint 0 |
+
+## 三十五、第六十三轮：两层 PMM 代数与动态保留拒绝
+
+| 项 | 读数 |
+|---|---|
+| 代码落点 | `os/libs/minix-boot/src/memmap_source.rs`：枚举新增 `UnsupportedDynamicReservation`；`collect_inner` 的 `/reserved-memory` 子节点形状分流；测试夹具 `build_fdt_child(extra, emit_reg)`，`build_fdt_full_opts` 增 `emit_reg` / `extra` 两参 |
+| 新测试 | `dtb_size_only_reservation_is_rejected_as_dynamic`、`dtb_child_without_reg_and_without_size_is_an_unsupported_declaration`、`reg_and_size_together_uses_reg_and_ignores_size`（断言来源记录范围是 `reg` 的 `0x8000_4000..0x8000_5000`，不是 `size` 请求的 `0x2000`） |
+| `cargo test -p minix-boot --lib` | 137 passed; 0 failed |
+| `cargo test -p boot-shim --lib` | 70 passed; 0 failed |
+| QEMU riscv64 | `bash qemu-tests/test-kernel-image-riscv64-bootface.sh` → `### TEST_RESULT: PASS test-kernel-image-riscv64-bootface ###`（B1/B2/B3 三点位） |
+| QEMU aarch64 | `bash qemu-tests/test-shim-bootmarks-aarch64.sh` → `### TEST_RESULT: PASS test-shim-bootmarks-aarch64 ###`；串口 `boot-shim: memmap source: uefi-getmemorymap (dtb /memory cross-checked, diagnostic only; conv=13 dtb_regions=1)` |
+| 交叉编译 | `cargo check -p boot-shim --target x86_64-unknown-uefi`、`cargo check -p minix-boot --target riscv64gc-unknown-none-elf`、`cargo check -p minix-boot --target aarch64-unknown-none` 均 Finished |
+| 主文档 | 1110 行（上限 1700）；代码围栏计数 22（偶数） |
+| 规范取证 | RISC-V `menvcfg.ADUE` 段与「Memory ordering PMA」句由检索到的全文镜像取得，**逐字与 PDF 定位待复核**；DTSpec 的 `size` 独有=动态请求、`reg`+`size` 按 `reg`、动态区不入 UEFI 内存图三句本次**未取到原文**（readthedocs 与 devicetree-org.github.io 的多个候选地址返回 404 或 fetch failed），故本轮按项目输入子集落地 |
+| AArch64 64 KiB | Table 2.5 / 2.6 的字段划分沿用先前轮次的记录，本轮只做结构化收紧：分组键、比较字段、profile 适用性、未映射子页；未新增规范断言 |
+

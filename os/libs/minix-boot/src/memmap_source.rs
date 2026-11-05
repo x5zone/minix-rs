@@ -70,9 +70,15 @@ pub enum DtbMemMapError {
     /// (`ConflictingReservationAttributes`), not a duplicate.
     OverlappingReservedRanges,
     /// A `/reserved-memory` entry states its extent in a shape this collector
-    /// cannot read: no `reg` (for example a `size`-only placement), or cell
-    /// counts above two. Skipping it would free pages firmware reserved.
+    /// cannot read: cell counts above two, or a `reg` that does not parse.
+    /// Skipping it would free pages firmware reserved.
     UnsupportedReservedDeclaration,
+    /// A `/reserved-memory` child declares only `size` (no `reg`): it asks for
+    /// a *dynamically allocated* region. This boot has no allocator that could
+    /// place it, so there is no range to reserve — silently ignoring the node
+    /// would hand the pages to the PMM while a later consumer still expects
+    /// them to be reserved. Reject instead of guessing a placement.
+    UnsupportedDynamicReservation,
     /// A `/reserved-memory` node is visible in the tree but upstream path
     /// lookup cannot reach it. Treating it as absent would free its pages.
     ReservedMemoryUnreachable,
@@ -711,8 +717,16 @@ impl DtbMemoryMap<'_> {
             }
             for (child_index, child) in node.children().enumerate() {
                 if child.property("reg").is_none() {
+                    // A child with `size` but no `reg` asks for a dynamic
+                    // placement; a child with neither states no extent at all.
+                    if child.property("size").is_some() {
+                        return Err(DtbMemMapError::UnsupportedDynamicReservation);
+                    }
                     return Err(DtbMemMapError::UnsupportedReservedDeclaration);
                 }
+                // `reg` wins when both are present: the region is statically
+                // specified, so `size` (and `alignment` / `alloc-ranges`) are
+                // dynamic-only hints this collector ignores on purpose.
                 let Some(regs) = child.reg() else {
                     return Err(DtbMemMapError::UnsupportedReservedDeclaration);
                 };
@@ -940,11 +954,15 @@ mod tests {
             marker_value,
             memory_status,
             hotplug,
+            true,
+            &[],
         )
     }
 
     /// The same builder with optional `/reserved-memory` cells and `ranges`,
-    /// so a test can omit either property entirely.
+    /// so a test can omit either property entirely. `emit_reg` and `extra`
+    /// shape the child itself: `ReservedRow` cannot express a `size`-only
+    /// dynamic request, nor `reg` together with `size`.
     fn build_fdt_full_opts(
         memory_regs: &[(u64, u64)],
         unit_address: bool,
@@ -955,6 +973,8 @@ mod tests {
         marker_value: &[u8],
         memory_status: u8,
         hotplug: bool,
+        emit_reg: bool,
+        extra: &[(&str, &[u8])],
     ) -> Vec<u8> {
         let mut strings: Vec<u8> = Vec::new();
         strings.extend_from_slice(b"#address-cells\0");
@@ -973,6 +993,14 @@ mod tests {
         let nameoff_status = 54usize; // 45 + 9 ("reusable\0" is exactly 9 bytes)
         strings.extend_from_slice(b"hotpluggable\0");
         let nameoff_hotplug = 61usize; // 54 + 7 ("status\0" is exactly 7 bytes)
+        // Test-only shapes (`size`, `alignment`) are not part of the fixed
+        // table, so their names are appended and referenced by offset.
+        let mut extra_offsets: Vec<u32> = Vec::with_capacity(extra.len());
+        for (name, _) in extra {
+            extra_offsets.push(strings.len() as u32);
+            strings.extend_from_slice(name.as_bytes());
+            strings.push(0);
+        }
         let mut struct_blk: Vec<u8> = Vec::new();
         let push_u32 = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
         let push_prop = |out: &mut Vec<u8>, nameoff: u32, val: &[u8]| {
@@ -1045,15 +1073,20 @@ mod tests {
                 push_u32(&mut struct_blk, 1); // FDT_BEGIN_NODE
                 struct_blk.extend_from_slice(format!("region@{:x}\u{0}", row.base).as_bytes());
                 while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
-                let mut reg: Vec<u8> = Vec::new();
-                encode_cells(&mut reg, row.base, cells_for_reg);
-                encode_cells(&mut reg, row.size, cells_for_reg);
-                push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
+                if emit_reg {
+                    let mut reg: Vec<u8> = Vec::new();
+                    encode_cells(&mut reg, row.base, cells_for_reg);
+                    encode_cells(&mut reg, row.size, cells_for_reg);
+                    push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
+                }
                 if row.no_map {
                     push_prop(&mut struct_blk, nameoff_no_map as u32, marker_value);
                 }
                 if row.reusable {
                     push_prop(&mut struct_blk, nameoff_reusable as u32, marker_value);
+                }
+                for (index, (_, value)) in extra.iter().enumerate() {
+                    push_prop(&mut struct_blk, extra_offsets[index], value);
                 }
                 push_u32(&mut struct_blk, 2); // FDT_END_NODE
             }
@@ -1755,6 +1788,8 @@ mod tests {
             &[],
             0,
             false,
+            true,
+            &[],
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
@@ -1777,12 +1812,83 @@ mod tests {
             &[],
             0,
             false,
+            true,
+            &[],
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
             DtbMemoryMap::new(&fdt, 0).collect(),
             Err(DtbMemMapError::MissingReservedMemoryCells)
         ));
+    }
+
+    /// One `/reserved-memory` child with a caller-chosen property shape:
+    /// `emit_reg` decides whether `reg` is written at all, and `extra` appends
+    /// raw properties (`size`, `alignment`) that `ReservedRow` cannot express.
+    fn build_fdt_child(extra: &[(&str, &[u8])], emit_reg: bool) -> Vec<u8> {
+        build_fdt_full_opts(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[],
+            Some(2),
+            Some(&[]),
+            &[],
+            0,
+            false,
+            emit_reg,
+            extra,
+        )
+    }
+
+    #[test]
+    fn dtb_size_only_reservation_is_rejected_as_dynamic() {
+        // A child with `size` and no `reg` asks for a dynamically allocated
+        // region. This boot has no allocator to place it, and ignoring the node
+        // would let the PMM hand out pages a later consumer still expects to be
+        // reserved — so it is refused, with an error naming the request rather
+        // than the generic unreadable-extent one.
+        let size = [0u32.to_be_bytes(), 0x2000u32.to_be_bytes()].concat();
+        let blob = build_fdt_child(&[("size", &size)], false);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedDynamicReservation)
+        ));
+    }
+
+    #[test]
+    fn dtb_child_without_reg_and_without_size_is_an_unsupported_declaration() {
+        // The generic error still covers a child that states no extent at all:
+        // separating the two shapes is what makes the dynamic case visible.
+        let blob = build_fdt_child(&[], false);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedReservedDeclaration)
+        ));
+    }
+
+    #[test]
+    fn reg_and_size_together_uses_reg_and_ignores_size() {
+        // A node with both is statically allocated: `reg` is authoritative and
+        // `size` is ignored. The record must therefore carry the `reg` extent,
+        // not the 0x2000 request, and the tables must match the `reg`-only blob.
+        let size = [0u32.to_be_bytes(), 0x2000u32.to_be_bytes()].concat();
+        let with_size = build_fdt_child(&[("size", &size)], true);
+        let plain = build_fdt_child(&[], true);
+        let fdt_a = fdt::Fdt::new(&with_size).expect("stub must parse");
+        let fdt_b = fdt::Fdt::new(&plain).expect("stub must parse");
+        let a = DtbMemoryMap::new(&fdt_a, 0)
+            .collect_with_sources()
+            .expect("static reservation that also carries size");
+        let b = DtbMemoryMap::new(&fdt_b, 0)
+            .collect_with_sources()
+            .expect("same reservation without size");
+        assert_eq!(a.0.len(), b.0.len());
+        assert_eq!(a.1.len(), b.1.len());
+        assert_eq!(a.2.len(), b.2.len());
+        assert_eq!((a.2[1].range_start, a.2[1].range_end), (0x8000_4000, 0x8000_5000));
     }
 
     #[test]
