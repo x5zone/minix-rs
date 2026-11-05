@@ -132,7 +132,7 @@
 | A4/A5/A5b `CKSUM-*` | A1 | 有参照件才敢定报文形 |
 | A17 `E-DMWIRE` | B 板（`minix-sys` 的 client 半） | 服务器侧本板持主线；client 面改动先登记，不代 B 改 |
 | A18 `E-DSWIRE` | B 板（`minix-sys ds.rs` 客户端） | 服务端本板做；客户端半归 B |
-| A19 `C-21` | 编排线 | 崩溃处理器扩面不是本板能代决的 |
+| A19 `C-21` | 编排线 | ✅ **`2026-11-06` 撤销**（A19 审计轮注销：`set_controlling_tty` 完整折叠与 panic handler 自带，两锚已在库——依赖边不再存在） |
 | A20 `E-FSBDEV`/`E-FSRUNTIME` | B 板（块层/驱动） | FS 侧接线与驱动侧真盘交付必须成对 |
 | A21 网络 | B 板（`minix-netdriver` policy 半） | `os/net` 与 `os/libs/minix-netdriver` 分线，跨线先登记 |
 | A22 带真机腿的项 | C 板 | 真机窗与 E5 读数 |
