@@ -1179,3 +1179,15 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 待核清单 | 非 CPU 访问主体（DMA/IOMMU/固件）无合同；`NoAccess` 证明来源与 `reservation_set_evidence` 采集路径未定；AArch64/x86 adapter 的 `ExecutionPrivilege` 映射表未写 |
 | 主简报 | 1695 行（上限 1700）；围栏 48（偶）；表格 62 块、列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
+
+## 五十三、第八十二轮：页表唯一合同、原子展开等式与三层访问展开
+
+| 项 | 读数 |
+|---|---|
+| 本轮是否新增规范取证 | 无新增抓取；评审人用公开 `v20260120` 页面复核 A/D 分支、系统 hart 一致、4 KiB 预约集页内约束、PMP 整次操作覆盖与半写风险，均未推翻本方方向 |
+| 主文档更动 | ① `RolePageEligible(page, PageTable, ctx) = PageTableBackingEligible(page, ctx)`，幂等政策进 backing；② `RoleSpecificRequirements(AtomicSharedState) = ExpandAtomic(RegisteredAtomicAlgorithms)` 等式 + `AtomicRequirementsComplete` 改为「每个算法完整展开」；③ `AtomicProgressRequirement` 三分；④ 页级几何加 `∀ a ∈ LegalStarts`；⑤ 对象访问拆 `VirtualAccessInstance → TranslatedAccessFragments → ActualMemoryOperations`，逐操作用自己的 requirement，对齐改名 `ArchitecturalAlignmentSatisfied`；⑥ `ProfileContextState` 改名与 `AllRegionObligationsSatisfied`；⑦ `ArchitectureAdmissionDenial` 归因记录；⑧ `NoAccess` 蕴含空清单 + 审计范围；⑨ `RUNTIME_SERVICES_CODE/DATA` 永久排除政策；⑩ §7 三行按评审建议改写 |
+| 符号核查（主文档实测计数） | `ProfileAdmissionState` **0**、`DeclaredAndSatisfied` **0**、`expected_physical_footprints` **0**、`AccessAlignmentSatisfied` **0**（改名后）、`ReservationSetGeometryPermits` **0**（合并进 Core）、`VirtualAccessInstance` 1、`ActualMemoryOperations` 3、`ProfileContextState` 2、`ExpandAtomic` 2、`ArchitectureAdmissionDenial` 1、`AtomicProgressRequirement` 1 |
+| 篇幅处理（纪律 8） | §6 版本钉法块并 8 行、「下一轮证据」表转段落并 6 行、§7 相邻行合并 3 行、删备选方案段 1 行、合并 8 处段落空行；1717 → 1692 行 |
+| 待核清单 | 统一页表叶子观测记录（三个审计共用）尚未定义字段；`ReservationSetFor(a, algorithm)` 的 adapter 语义未定；`NoAccess` 证明的机器可检查形式未定；`ExpandAtomic` 的完整性证明路径未定 |
+| 主简报 | 1692 行（上限 1700）；围栏 48（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |

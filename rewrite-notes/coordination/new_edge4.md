@@ -5587,4 +5587,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 篇幅：按新增纪律第 8 条合并多轮稳定重复陈述（桥接段与其代码块、§7 阻塞组表并 2 行、三个稳定代码块改单行、剩余 10 处段落空行），主简报 1695 行——首次在上限内留出余量。
 - 待实现：全部为候选合同；非 CPU 访问主体、`NoAccess` 证明来源、`reservation_set_evidence` 采集路径、AArch64/x86 的 `ExecutionPrivilege` 映射表均未落。
 - 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 62 块列数不一致 0 处、主简报 1695 行、围栏 48（偶）。
-- 认领：`I-29 qorder83`（工作树 `.wt/i-29-qorder83`，基线 `ec35c6125`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder83`（工作树 `.wt/i-29-qorder83`，基线 `ec35c6125`），状态 ✅：已 ff 合并为 `c8a008ea0`，认领 `I-29 qorder83` 已释放。
+
+### 第二百九十笔（01 阶段 · I-29 第八十二轮：页表唯一合同、原子展开等式、三层访问展开）
+
+- P0 五项：① 页表用途只有一个合同——`RolePageEligible(page, PageTable, ctx) = PageTableBackingEligible(page, ctx)`，新分配页与既有页表对象共用同一份 backing，幂等/排序/Profile 区域义务都在 backing 内，不能只写在一侧；② 原子登记表与需求集合写成等式 `ExpandAtomic(RegisteredAtomicAlgorithms)`，`AtomicRequirementsComplete` = 每个算法都完整展开（不是「表非空」），否则生成器漏掉算法 B 时物理准入整块跳过；③ 进展要求分型 `NotRequired / OperationCompletion / ReservationEventual`，AMO-only 不再被要求 `RsrvEventual`；④ 页级预约集几何补「所有合法 LR/SC 起始地址」量词，对象级用实例自带证据，两层共享核心也共享量词形状；⑤ 翻译片段与硬件 memory operation 分层：`VirtualAccessInstance → TranslatedAccessFragments → ActualMemoryOperations`，逐操作用自己的宽度与类别，对齐只约束原始有效地址。
+- P0/P1 Profile：状态改名 `ProfileContextState`（只判全局检查），区域级义务经 `AllRegionObligationsSatisfied` 进入 `ProfileConformanceSatisfied`，上下文阶段不再可能盖章「已合规」。
+- P1：`ArchitectureAdmissionDenial` 逐页可查归因；`NoAccess(proof) ⇒ ObjectAccessUses = ∅` 且 `Complete` 只在具名审计范围内成立；`RUNTIME_SERVICES_CODE/DATA` 定为第一版永久排除的项目政策；`fail` 三分表按已选 `SystemHartSet` 语义写实；统一页表叶子观测记录登记为落码约束。
+- 篇幅：按纪律 8 合并 §6 版本块与证据表、§7 相邻行、删除已否决备选段、并 8 处段落空行，主简报 1692 行。
+- 待实现：全部为候选合同；`ExpandAtomic` 完整性证明、`ReservationSetFor` 的 adapter 语义、`NoAccess` 证明形式、统一叶子观测记录均未定。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 61 块列数不一致 0 处、主简报 1692 行、围栏 48（偶）。
+- 认领：`I-29 qorder84`（工作树 `.wt/i-29-qorder84`，基线 `c8a008ea0`），状态 🔄，合并后释放。

@@ -12,6 +12,20 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第八十二轮评审之后：页表唯一合同、原子展开等式、三层访问展开、Profile 状态改名）**
+
+- **P0 `PageTableBackingEligible` 不在唯一操作化定义里（成立，已改）**：新分配页走 `PmmRoleEligible → RolePageEligible`，既有页表走 `ExistingPageTableObjectEligible → PageTableBackingEligible`，两条路径没有等价关系，幂等/排序/Profile 政策可能被新页路径绕过。现补 `RolePageEligible(page, PageTable, ctx) = PageTableBackingEligible(page, ctx)`，并把「页表只允许普通、幂等主存」写进 backing 本身（两条路径共用）。
+- **P0 原子清单与需求集合未绑定（成立，已改）**：写成等式 `RoleSpecificRequirements(AtomicSharedState, ctx) = ExpandAtomic(RegisteredAtomicAlgorithms(ctx))`，并把 `AtomicRequirementsComplete` 定义为「每个登记算法都完整展开成族/宽度/进展/几何」而不是「表非空」——否则登记表有 A、B 而生成器只出 A 时，`PhysicalAccessPermits` 会整块漏掉 B。
+- **P0 进展要求分型（成立，已改）**：`AtomicProgressRequirement = NotRequired | OperationCompletion | ReservationEventual`；AMO-only 不再被要求 `RsrvEventual`，LR/SC 才要求语义级最终成功，其他架构的额外进展要求由 adapter 映射。
+- **P0 页级几何缺量词（成立，已改）**：改为 `∀ a ∈ LegalStarts(page, lrsc_req, …) : ReservationSetGeometryCore(ReservationSetFor(a, algorithm), cpus, profile)`；对象级用实例自带的预约集证据，两层共享核心也共享量词形状。
+- **P0 翻译片段与硬件操作混在一个字段（成立，已改）**：拆三层——`VirtualAccessInstance`（原始 VA/宽度/架构对齐）→ `TranslatedAccessFragments`（字节对应，须无遗漏无重叠）→ `ActualMemoryOperations`（adapter 按实际执行规则展开，每个自带 requirement 与 footprint）。最终准入逐 **operation** 用该操作自己的宽度与类别判定，不再对每个片段复用同一个 `i.requirement`；对齐检查改名为 `ArchitecturalAlignmentSatisfied`，只约束原始有效地址。
+- **P0 Profile 状态名暗示「已合规」（成立，已改）**：改名 `ProfileContextState = NotDeclared | DeclaredAndGlobalChecksSatisfied | DeclaredButGlobalChecksFailed | InsufficientGlobalEvidence`；上下文层只判全局检查，区域级义务由 `AllRegionObligationsSatisfied` 进入 `ProfileConformanceSatisfied`，`AdmissionContextValid` 不再可能提前盖章。
+- **P1**：`ArchitectureAdmissionDenial { page_range, reason, state, cpu_scope, failed_requirement, evidence_id, admission_context_id, source_refs }` 成为可逐页查询的归因记录（集合补集不自动产生归因）；`NoAccess(proof)` 明确蕴含 `ObjectAccessUses = ∅` 且证明有范围，`Complete` 也只在具名审计范围内成立（不暗示全系统访问完整性）；`RUNTIME_SERVICES_CODE/DATA` 第一版定为**永久排除的项目政策**，不声称已提供运行时服务；`fail` 三分表按已选定的 `SystemHartSet` 语义写实。
+- **统一观测来源（登记为落码约束）**：`MappingAudit`、既有页表对象审计与设备覆盖审计必须复用同一份页表叶子观测记录（共享语义字段，PTE 编码留在 adapter），避免三套遍历给出三种结论。
+- **篇幅**：按纪律 8 压缩——§6 版本钉法块与「下一轮证据」表合并为段落、§7 相邻行合并、删除已被决策取代的「不引入用途分类」备选段、合并 8 处段落空行；主简报 1692 行。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1692 行、围栏 48（偶）、表格 61 块列数不一致 0 处、lint error 0。
+
+
 **本轮（第八十一轮评审之后：访问主体证明、footprint 绑定、几何共用核心、共享层去 RISC-V）**
 
 - **`NotApplicable(reason)` 是逃逸口（成立，已改）**：`reason` 不是证明，任何调用方都能把 CPU 访问的对象标成非 CPU 从而跳过整段 PMP/PMA。第一版**删掉该分支**，`ObjectAccessSubject = CpuAccess(cpus)` 且 `cpus ≠ ∅ ⊆ ctx.ParticipatingCpuSet`；DMA/IOMMU、设备、固件等主体不属于第一版合同，遇到即 `UnsupportedAccessActor`。同理 `NoAccess` 改为必须有机器可检查的证明，「没找到访问点」只能是 `Incomplete`。
