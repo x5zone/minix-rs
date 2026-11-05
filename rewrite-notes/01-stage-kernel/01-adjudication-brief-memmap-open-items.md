@@ -16,9 +16,9 @@
 | `RamSourcePageDomain` | 上述主张先经兼容性裁决、再并集、再取完整页 | O-12i |
 | `PmmBaseAvailable(ctx) ⊍ PmmBaseExcluded(ctx)` | 基底层的可用与排除互补且**只对页域成立** | O-12i |
 | `PmmRoleEligible(page, U, ctx)` | 把一页交给用途集合 `U` 的分配资格；用途未知时保守取 `AllRoles` | O-12i |
-| `RoleAdmit` ≡ `RolePageEligible` | 用途特有准入**只有一个展开式**：基底要求走 `BaseAccessRequirements`，用途要求走 `RoleSpecificRequirements`，只有 `GeneralData` 可按定义为空 | O-12i |
+| `RoleAdmit` ≡ `RolePageEligible` | 用途特有准入**只有一个展开式**，且它是分支：`PageTable` 走 backing，其余走通用体。三个消费者共用同一个判定核，各喂自己的需求集合——基底 `BaseAccessRequirements`、通用用途 `RoleSpecificRequirements`、页表用途 `PageTableAccessRequirements` | O-12i |
 | `PageTableBackingEligible` | 页表用途的唯一能力合同；新分配页与引导期既有页表共用（既有页表不经过 PMM，因此排序、Profile 区域义务、内存类别与幂等政策都必须自带在 backing 里） | O-12i |
-| `AccessRequirementsEligible`（唯一全称判定核） | `requirements ≠ ∅ ∧ ∀ req ∀ a ∈ LegalStarts(page, req, role, ctx) ∀ cpu ∈ ctx.ParticipatingCpuSet : PhysicalAccessPermits(cpu, req, Footprint(a, req))`，其中 `PhysicalAccessPermits = PmpPermits ∧ PmaPermits ∧ PlatformProtectionPermits`；`LegalStarts` 第一版锁**合同 A**（架构起始对齐 ∧ 该用途规定的完整 footprint 约束） | O-12i |
+| `AccessRequirementsEligible`（唯一全称判定核） | `requirements ≠ ∅ ∧ ∀ req ∈ requirements : LegalStarts(page, req, role, ctx) ≠ ∅ ∧ ∀ a ∈ LegalStarts ∀ cpu ∈ ctx.ParticipatingCpuSet : PhysicalAccessPermits(cpu, req, Footprint(a, req))`，其中 `PhysicalAccessPermits = PmpPermits ∧ PmaPermits ∧ PlatformProtectionPermits`；`LegalStarts` 第一版锁**合同 A**（架构起始对齐 ∧ 该用途规定的完整 footprint 约束）。空需求集合与空起始集合都不允许让全称量词真空通过 | O-12i |
 | `VirtualAccessInstance → TranslatedAccessFragments → ActualMemoryOperations` | 对象访问的三层：源级一次访问、完整翻译片段、硬件实际执行的操作——**不得合并** | O-12i |
 | `ObjectPolicyAccessEligible` / `ObjectPhysicalAccessEligible` / `ObjectMappedAccessEligible` | 对象可用性的三面：来源授权、硬件准入、映射路径兑现 | O-12i |
 | `MemoryAdmissionContext` | 一切投影的输入：阶段、参与 CPU 集合身份、平台内存 profile、ISA profile、UEFI 属性位 profile、起始地址合同、证据代次、来源快照集合 | O-12i |
@@ -169,7 +169,9 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 - Step 4 的直接映射覆盖是**在同一棵根上追加 PTE**，候选来源是 `可用表 ∪ 自举页表树 ∪ 启动模块 ∪ 保留表` 的并集过滤。
 - **没有独立最终根、没有审计遍历、没有禁止集合、没有页表冻结**；全仓也没有任何撤销恒等段的路径（`os/kernel/src/lib.rs` 与 `os/kernel/src/dm_coverage.rs` 里的 `unmap` 只服务于 heap 窗口驱逐）。宿主表征测试 `identity_piece_policy_covers_low_4gib_and_marks_device_windows` 断言的正是「覆盖到 `IDENTITY_MAP_END`、含 `EXECUTABLE`、不含 `USER_ACCESSIBLE`」。
 
-**由此产生的不是「缺审计」，而是现状与目标合同的直接冲突**。低 4 GiB 内凡属下列范围的物理地址，今天**都已经有映射叶子**：`no-map` 声明的区间、MRB 区间、`EfiReservedMemoryType`、`UNUSABLE`。而目标合同要求 `no-map` 产生 `DenyStandardSystemMapping`、要求 MRB 若经页表兑现则相交页不得出现在普通映射中、要求 `EfiReservedMemoryType` 与 `UNUSABLE` 的 `DenyOsUse` 派生禁止映射——**这些政策今天一项都没有参与恒等映射循环的裁决**。因此本文不写「不在可用表推不出不会被映射」这种弱形式，而写明确结论：**当前低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策；任何此类范围落在该区间内都会被恒等映射覆盖，且第一版目标合同尚未兑现——在完成映射裁决之前，不得声称当前引导根满足这些禁止语义。** 该冲突的裁决与实施合同见 O-02a（甲案：授权驱动建表）。
+**由此产生的不是「缺审计」，而是现状与目标合同的直接冲突**。低 4 GiB 内凡属下列范围的物理地址，今天**都已经有映射叶子**：`no-map` 声明的区间、MRB 区间、`EfiReservedMemoryType`、`UNUSABLE`。而目标合同要求 `no-map` 产生 `DenyStandardSystemMapping`、要求 MRB 若经页表兑现则相交页不得出现在普通映射中、要求 `EfiReservedMemoryType` 与 `UNUSABLE` 的 `DenyOsUse` 派生禁止映射——**这些政策今天一项都没有参与恒等映射循环的裁决**。因此本文不写「不在可用表推不出不会被映射」这种弱形式，而写明确结论：**当前低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策；任何此类范围落在该区间内都会被恒等映射覆盖，且第一版目标合同尚未兑现——在完成映射裁决之前，不得声称当前引导根满足这些禁止语义。**
+
+**同一棵根上的第二个建表点也必须一起收**：Step 4 的 `establish_boot_dm` 候选来自 `kernel_info.memmap()`（文档逐字写着 **not filtered**：每条 conventional RAM 都算候选，含内核映像与启动模块占用的部分）加上自举页表树与 bump 区。只修恒等循环而不管 Step 4，边界会在追加直接映射时被绕过。**同时本轮核实：建根与 Step 4 都不新建页表页**——`map_huge` 不分配中间表，`boot_alloc::boot_pt_alloc` 在非测试代码里零调用者，页表由 shim 预建、内核只填既有表项。该冲突与实施合同的裁决全文见 O-02a（甲案：授权驱动建表，四段依赖链）。
 
 ### 2.4 交接与消费
 
@@ -287,7 +289,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 **问题**：引导根无差别覆盖低 4 GiB（现状事实与代码位置见 §2.3）。每一页是否都有「允许映射」的来源授权，今天没有证明；更严重的是**已经建立的叶子与目标禁止政策直接冲突**——`no-map`、MRB、`EfiReservedMemoryType`、`UNUSABLE` 只要落在低 4 GiB 内就都已有叶子。这不是「审计还没写」，而是「审计要拒绝的东西已经在页表里」。
 **失败形态**：一段没有来源授权的地址被恒等段建立叶子，没有任何集合记录它的存在；驱动或内核任意代码经 `VA = PA` 读到 `no-map` 资源；`UNUSABLE` 页被普通访问；恒等叶子带 `EXECUTABLE`，于是低地址里任何内容都可被取指。
-**裁决：采用甲案（授权驱动建表）**，乙案（把宽映射具名为 `BootTransitionMapping`）**否决**。否决理由不是「保守」，而是乙案的两个核心前提在今天都不成立，且不可能靠补一份说明文档变成成立：① 今天只有一棵根、没有任何撤销恒等叶子的路径，宽映射因此**不是过渡而是永久的映射政策**；要给它撤销时点，得先新增根切换机制与「旧根不再被任何执行单元使用」的证明——那是另一件事；② 宽映射与禁止语义是**结构性冲突**：把 `no-map` 页从低 4 GiB 里挖掉就不再是无差别宽映射，只映射某个经授权的启动对象就已经走向甲案。命名不改变覆盖事实，而 `no-map` 的豁免只能来自它自己允许的例外（专属设备身份 + 专属访问路径的受控使用，见 O-03），不能来自映射的自称用途。评审人补充的第三点同样成立：普通叶子还带 `EXECUTABLE`，等于把「启动阶段需要少数代码可执行」放大成整个低 4 GiB 可读写可执行。
+**裁决：采用甲案（授权驱动建表）**，乙案（把宽映射具名为 `BootTransitionMapping`）**否决**。否决不靠保守倾向，而靠两条无法用命名解决的事实：今天没有任何撤销恒等叶子的路径，所以「临时」不成立；覆盖事实不因改名而改变，而 `no-map` 的豁免只能来自它自己允许的受控例外（O-03），不能来自映射的自称用途。第三个事实由本轮补上：普通叶子还带 `EXECUTABLE`，等于把「启动阶段需要少数代码可执行」放大成整个低 4 GiB 可读写可执行。**「必需叶子走授权、普通 RAM 继续走旧宽映射」这种半拉子形态同样被否决**——那等于让两个互相矛盾的建表政策并存，而实际页表不会因为旁边写了「未闭合」就变窄。
 **甲案的建表输入是四类已裁决授权对象，不是「只遍历可用表」**——那仍然不够，因为启动确实需要访问不属于 `CONVENTIONAL` 的 loader 代码与其它存活对象，它们可以有**对象级**映射授权，但不能因此把整个固件保留描述符或整个低 4 GiB 映射进来：
 
 | 授权来源 | 建表时如何处理 |
@@ -296,19 +298,29 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | 内核映像 | 代码、只读数据、可写数据**分别**登记权限与生命周期，不是一张表 |
 | 启动对象 | 按实际存活对象及其访问需求登记：loader 代码、栈、自举页表、启动模块、DTB 原始对象与副本等 |
 | 设备窗口 | 独立消费 `DeviceWindowPolicy`，逐页验证授权与设备属性（O-12c） |
+**实施顺序是四段依赖链，不是三个小切片**（本轮修正：把四类授权输入当成「已经能供数的接口」是错的——既没有普通 RAM 的授权生产者，也没有把完整来源记录交给政策层的路径）：
 
+1. **来源进入政策**（O-12g 的必要子集）：`SourceRef { input_object, local_source }` 身份定型；每条当前支持的启动入口都把本次启动的来源记录交给政策层持有而不是采集后丢弃；DTB 侧保留会影响引导根裁决的来源（`no-map`、MRB）；UEFI 侧保留原始描述符身份与类型（含不进分类输出的 `RESERVED`/`UNUSABLE`，否则 x86_64 没有 DTB 时类型禁止无源可查），并绑定最终快照身份（不同快照里同号的 `DescriptorIndex` 不是同一条来源）。**不要求**为所有记录补人类可读节点路径、补全多级 `ranges` 转换链、或做 `reusable` 的 owner/回收授权。
+2. **引导根负向投影**（O-12a 的子集，不含最终根）：`BootstrapRootDenyProjection(tree, phase)` 至少消费 `no-map`（禁标准系统映射、不被普通正向授权覆盖）、MRB（若经页表兑现则相交页不得出现在普通映射）、`EfiReservedMemoryType`（`DenyOsUse`，不因没有 DTB 记录而消失）、`UNUSABLE`（独立类型禁止，不能只从候选表扣除）、与当前引导阶段相关的对象负向义务；每项保留 `SourceRef` 与具体原因。第一版对 `no-map` 的驱动受控例外直接 fail-closed。**这不是把四种来源压成一个无差别 deny 位**——它们仍是不同来源不同语义，只是引导根消费者统一问「这个叶子是否命中任何不允许映射的条件」。
+3. **必需对象正向授权**：内核映像（分代码/只读/可写）、`EarlyExecutionClosure`、逐对象登记的启动对象、有政策的设备窗口。
+4. **替换建表并做实际叶子审计**：恒等循环与 Step 4 都不得产出授权集合之外或命中禁止项的叶子；审计对象是实际 PTE，不是输入计划。
+**第一阶段的边界（可交付形态）**：`BootstrapRootPlan = 必需对象的显式授权 − BootstrapRootDenyProjection − 逐叶权限/属性/共享性检查`。**普通 RAM 授权集合在这一阶段可以为空**——一段内存仅因为出现在 `/memory` 或 `CONVENTIONAL` 描述符里，不得自动进入授权集合；但**也不能继续让它走旧宽映射**。若某个必需对象与禁止项冲突就拒绝启动；可选映射失败只在政策明确允许省略时继续；不得为了让启动通过而回头映射它所在的整个内存区间。某种负向输入没有接入时，必须**明确拒绝该启动形态**，而不是假定没有这种政策。
+**第二消费者不能漏**：§2.3 已写明 Step 4 的 `establish_boot_dm` 在同一棵根上追加直接映射。如果它继续从 `conventional` 或其它候选表生成叶子，第一步建立的边界会在 Step 4 被绕过——所以第一阶段必须同时保证恒等循环不再越权、`establish_boot_dm` 不再引入未授权或命中禁止项的叶子，并对 Step 4 之后的同一棵根做实际叶子审计。
 **前置条件：根激活瞬间的执行闭包必须被映射覆盖**——这与 O-12j 的 `EarlyExecutionClosure` 是同一个问题，不另造概念：当前执行代码、继续执行所需的只读数据依赖、必须访问的可写状态、当前栈、以及切换之后仍要使用的页表与启动对象。**只映射当前指令所在页不够**：实证就在本仓库——预扫逻辑的代码页都在已映射范围内，但 `switch` 被编译成 `.rodata` 跳转表 + `jr` 绝对地址，照样触发 instruction access fault（见 O-12j 跳转表段）。编译器生成的跳转表、静态数据与调用路径依赖都属于该闭包。
+**落码前必须核实的运行依赖，本轮已核实**（结论：第一阶段的依赖**不需要**延伸到 O-12i 的页表用途准入，但代价是必需对象必须枚举完整）：
+
+- **建根与 Step 4 期间不新建页表页**：`map_huge`（`os/arch/src/{riscv64,x86_64,arm64}/paging.rs`）只做支持性、对齐、范围与地址上界检查后写叶子，不分配中间表；`boot_alloc::boot_pt_alloc` 在**非测试代码里零调用者**（`grep -rn "boot_pt_alloc(" os --include=*.rs` 只命中 `init_boot_pt_alloc`/`resume_boot_pt_alloc` 与 `os/kernel/tests/set_addr_space_no_boot_alloc_pin.rs`）。自举页表由 boot shim 预先建好，内核只填既有表项。
+- **因此页表 backing 不是本阶段前置**：正在被使用的页表页全部落在「根页 + bump 区」这两个已知物理范围内，可作为启动对象逐项登记，而不需要把登记对象冒充成 `PageTableBackingEligible` 的证明。运行时（VM/缺页路径）新分配的页表页仍要走那份准入，那是另一阶段。
+- **但必需对象的枚举必须完整，否则第一步就挂**：根激活后内核立刻写一块由 shim 分配、位于 `boot_dm_admissible_end` 之下的四页 `LOADER_DATA` arena（`os/kernel/src/lib.rs`，注释逐字说明「the root just enabled maps that physical range identity and writable」）。它是**普通 RAM 上的活对象**，必须逐对象登记；只按「必需叶子」四个字列符号会漏掉它。
 **建表失败必须分档处理**，不得再用「忽略错误」把「没有建立完整授权覆盖」延迟成之后的不可预测缺页：① 必需叶子（执行闭包、内核映像、启动对象、页表）映射失败 → **拒绝启动**；② 可选映射未建立 → 只有政策明确允许不建立时才继续；③ 其余一律拒绝。代码里已有正确先例：同一个函数中，高半内核映射用的是 `.expect("kernel map: map_huge failed — kernel image mismatch")`，而恒等循环用的是 `let _ =`（`map_huge` 返回 `Result<(), PageTableError>`，错误类型有 `InvalidAddress`/`AlreadyMapped`/`AllocationFailed`/`NotSupported` 等）。**甲案把循环输入换成已裁决的授权集合之后，「地址没有物理内存支撑」这一类可容忍失败的理由随之消失**，因此忽略错误的写法失去依据。
 **判据**：每个实际叶子都能反查到一个授权来源（四类之一），且叶子覆盖的**每一页**都通过来源、权限、内存属性、共享性与禁止项检查——大页覆盖「有授权 + 空洞 + `no-map`」时不能只看起始页，必须拆分叶子或拒绝。授权记录至少含：PA 范围、VA 范围、用途、R/W/X、内存属性、共享性、树与阶段。
 **x86 的叶子属性判据**：`EffectiveMemoryType = Resolve(PAT_Entry, MTRR_Type(physical_range))`，不是简单二元运算；大页覆盖 MTRR 类型不同的区间时不能按起始地址判定，必须拆分或拒绝。**所有逻辑处理器的 `IA32_PAT` 必须一致**（或逐核读回验证），不能只查 `CR0.CD/NW`；同一物理页的多个 VA 别名不得产生不兼容的有效内存类型。
-**第一个消费者**：`build_bootstrap_root_and_enable`。
+**消费者有两个，缺一即边界不成立**：`build_bootstrap_root_and_enable` 的恒等循环，以及同一棵根上追加直接映射的 `establish_boot_dm`（§2.3）。第一阶段对实际 PTE 审计时，两处产出的叶子都要过同一条判据：有授权来源、不命中禁止投影、逐页权限与属性兼容。
 
 ### O-02b 普通保留声明是否产生映射禁令
 
 **问题**：`/reserved-memory` 的普通声明只要求「从正常内存用途中排除」；只有 `no-map` 禁止标准系统映射，MRB 才禁止访问。三者强度不同。
-
 **失败形态**：一条普通保留声明被当成 `no-map`，产生规范不要求的映射禁令，后续合法的设备窗口映射被判失败。
-
 **候选**：
 
 - **A**：普通保留声明**只产生 PMM 排除**，不自动产生映射禁止或访问禁止；若某对象需要映射，必须另有对象/设备映射授权。`no-map`（禁止标准系统映射与非受控推测访问，**设备驱动受控使用例外**）、MRB（未授权不得访问）、类型政策分别生成各自的禁止语义；`reusable` 是另一种语义且与 `no-map` 互斥。
@@ -319,16 +331,13 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 ### O-03 禁止项的来源分级
 
 **问题**：禁止映射与禁止访问是两个集合，来源不同：`no-map` 禁止标准映射；MRB 禁止访问；类型政策禁止映射；对象义务禁止某个对象在某个阶段映射或访问。
-
 **失败形态**：把保留声明整类塞进禁止集合（普通保留被误禁），或只处理 `no-map`（MRB 的访问禁止丢失）。
-
 **候选**：
 
 - **A**：每条禁止项带来源标签（`no-map` / MRB / 类型 / 对象），两份集合各自生成、互不代替。
 - **B**：单一集合 + 来源位图，由消费者过滤。
 
 **判据**：每条禁止项可追溯到一个来源条目；两份集合不能互相替代。
-
 **冲突组合规则（按评审人给的六行，本项目采纳为候选规则）**：
 
 | 情况 | 结果 |
@@ -343,7 +352,6 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 原则不是「全局优先级数字」，而是：**一般正向授权不能覆盖具体的负向限制；例外必须具有更具体的对象身份、范围、路径与阶段；来源语义未明确允许的例外一律拒绝启动**。`no-map` 的例外与 MRB 的例外不是同一机制。
 **`no-map` 要拆成三项，不能简化成一个无条件 `DenyMapping`**：`DenyStandardSystemMapping`（禁止进入标准系统内存映射）、`DenyUncontrolledSpeculativeAccess`（禁止非受控推测访问）、可选的 `DriverControlledUse`（专属设备身份 + 专属访问路径的受控使用）。「有驱动申请」不是通用豁免，不能让 `no-map` 页进入内核直接映射。
-
 **受控映射是必要条件，不是受控访问的充分证明**——访问侧另立一份合同：
 
 ```
@@ -356,15 +364,12 @@ NoMapControlledAccessEligible(use, device_id) =
 ```
 
 **MRB 的部分页**：若靠页表兑现 MRB 访问禁止，则该页整体不得出现在普通映射中；同页还有其它对象需要映射时，拒绝冲突或提供独立受控机制。精确 byte-range 检查不能代替页表兑现。
-
 **`no-map` 与 MRB 在页表粒度上的保守投影相似，但原始语义与例外机制不同**：`no-map` 的普通系统映射禁止按相交页向外投影；MRB 是「未经授权不得访问」，两者不能共用一套例外规则。`DriverControlledUse` **不自动解除整页限制**；若专用映射的实际叶子覆盖超出 `no-map` 资源范围，必须证明整叶覆盖区的属性、权限、别名与访问控制均兼容，否则拒绝启动或改用更细页粒度。测试要求：`no-map` 只覆盖 4 KiB 页的部分字节时，普通直接映射不得出现该页，驱动例外也不得未经整页审查放行。
 
 ### O-04 对象负向义务的投影
 
 **问题**：`MustNotMap` 与 `MustNotAccess` 不同：前者禁止某棵树在某个阶段建立映射，后者禁止访问路径。今天的禁止集合构造式里没有它们的位置。
-
 **失败形态**：某对象被裁定「在引导根、S2 禁止映射」，但不进任何集合，宽恒等映射照旧覆盖它。
-
 **候选**：
 
 - **A**：两个投影名（映射禁止 / 访问禁止），流式贡献，保留对象、树、阶段、路径四维。
@@ -375,9 +380,7 @@ NoMapControlledAccessEligible(use, device_id) =
 ### O-05 审计时点与「冻结」的含义
 
 **问题**：按字面「T1 前完成最终根审计」不可能（最终根到 S3 才建）；「冻结 PTE」若理解为字节不变，会与硬件 `Accessed`/`Dirty` 更新冲突。
-
 **失败形态**：实现把最终根的空遍历当作已审计；或把硬件置 A/D 判成权限变化。
-
 **候选 A（已裁定，待实现）**：按时点拆开——
 
 | 时点 | 必须完成 |
@@ -1672,7 +1675,7 @@ cd os && cargo test -p boot-shim --lib
 
 **第二层未闭合项**——共同形状是「文本已定、证据或实现为零」，外加一条**现状与合同相反**的项：
 
-- **现状冲突（不是缺口，且裁决已下）**：低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策，且没有撤销路径、普通叶子带 `EXECUTABLE`（§2.3）。O-02a 已裁定采用**甲案：授权驱动建表**，具名过渡映射（乙案）否决。**未闭合的是实现与证据**：循环输入换成四类授权对象、执行闭包（含编译器生成的 `.rodata` 跳转表）覆盖证明、`map_huge` 失败分档——三项都还没有代码，因此在它们落地之前，第二层任何「禁止集合已闭合」的结论都不成立。
+- **现状冲突（不是缺口，裁决已下，依赖链已修正）**：低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策，没有撤销路径、普通叶子带 `EXECUTABLE`（§2.3）。O-02a 裁定甲案、否决乙案，并同时**否决「必需叶子走授权、普通 RAM 继续走旧宽映射」的半拉子形态**。实施顺序因此是**四段依赖链**：来源进入政策 → 引导根负向投影 → 必需对象正向授权 → 替换建表并审计实际叶子；普通 RAM 的正向授权是其后独立的一段。第一阶段允许普通 RAM 授权集合为空，但不允许它沿用旧宽映射。**已核实的有利事实**：建根与 Step 4 都不新建页表页（`map_huge` 不分配中间表，`boot_pt_alloc` 在非测试代码里零调用者），所以页表用途准入不是本阶段前置；代价是必需对象必须枚举完整，根激活后那块 `LOADER_DATA` arena 就是必须逐对象登记的实例。**仍未闭合**：四段全部无代码；Step 4 的候选仍来自未被过滤的 `memmap()`，只修恒等循环会在这里被绕过。
 
 - **准入上下文闭合（P0 阻塞）**：`ParticipatingCpuSet = Resolve(id, inventory_snapshot)` 的身份解析、`legal_starts_contract` 进 `AdmissionContextId`、`ProfileContextState` 四态、`SystemPteUpdateSchemeUniform` 在非 RISC-V 的 `NotApplicable` 分支——全部无实现。
 - **取指与对象访问资格（P0 阻塞）**：页级保守片段集与对象级多片段证明均无实现；实例展开、`reservation_set_evidence` 采集路径、`NoAccess` 的机器可检查证明形式未定；DMA/IOMMU、设备、固件等访问主体尚无合同（第一版一律 `UnsupportedAccessActor`）；x86 变长指令跨页仅按架构事实使用，本方未取 Intel SDM 原文。
