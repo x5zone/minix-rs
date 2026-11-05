@@ -258,6 +258,7 @@ impl BootShim for UefiBootShim {
         // §6.0-A2). Fail fast while the boot-shim can still print.
         assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
         assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
+        cross_validate_config_dtb(platform_sources, memmap);
         // ── aarch64 UEFI chain DTB descriptor source (blob leg) ──
         // When ESP /dumpdtb.dtb exists: parse /memory through `DtbMemoryMap` to
         // get the full DRAM picture, and bound-gate every conventional range in
@@ -823,6 +824,73 @@ fn report_memmap_source(dtb_free: Option<&[MemoryRegion]>, conventional: &[Memor
     }
 }
 
+/// Cross-validate the UEFI snapshot against the configuration-table DTB.
+///
+/// The aarch64 UEFI leg has exactly three states, and no fourth:
+///
+/// 1. **No DTB in the configuration table** — the UEFI `GetMemoryMap`
+///    snapshot is the only memory-map source (this is also the x86-64
+///    case, where the lookup finds nothing and returns here).
+/// 2. **DTB present and parseable** — its `/memory` panorama must contain
+///    every conventional span the UEFI classifier produced. A span outside
+///    the DTB's view means firmware and platform truth disagree; the boot
+///    refuses rather than handing a page whose provenance nobody can
+///    explain to the VM PMM.
+/// 3. **DTB present but unusable** (misaligned, bad container, rejected
+///    map) — the boot refuses. Ignoring a present DTB would turn a
+///    firmware defect into a silent provenance gap.
+///
+/// The disk `/dumpdtb.dtb` diagnostic (`report_memmap_source`) is a
+/// separate, non-authoritative input and stays diagnostic-only.
+fn cross_validate_config_dtb(sources: &[PlatformDescSource], conventional: &[MemoryRegion]) {
+    let Some(dtb_pa) = sources
+        .iter()
+        .find(|s| s.kind() == minix_boot::DTB)
+        .map(|s| s.phys_addr().0)
+    else {
+        crate::raw_serial("boot-shim: platform DTB absent — UEFI map is the only source\r\n");
+        return;
+    };
+    assert!(
+        minix_boot::dtb_blob_aligned(dtb_pa),
+        "boot-shim: configuration-table DTB is not 8-byte aligned — halting"
+    );
+    // SAFETY: the configuration table entry points at a firmware-provided
+    // blob that stays readable after ExitBootServices; the first 8 bytes
+    // give the big-endian totalsize (same gate order as the OpenSBI leg).
+    let head = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, 8) };
+    let total_be = u32::from_be_bytes(head[4..8].try_into().expect("DTB header totalsize"));
+    assert!(
+        minix_boot::dtb_len_ok(total_be),
+        "boot-shim: configuration-table DTB totalsize outside the accepted range — halting"
+    );
+    let total = total_be as usize;
+    assert!(
+        dtb_pa.checked_add(total as u64).is_some(),
+        "boot-shim: configuration-table DTB range overflows the address space — halting"
+    );
+    // SAFETY: the size was just bounded; the blob belongs to firmware RAM.
+    let bytes = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, total) };
+    assert!(
+        minix_boot::fdt_layout::validate(dtb_pa, bytes).is_ok(),
+        "boot-shim: configuration-table DTB container invalid — halting"
+    );
+    let fdt = fdt::Fdt::new(bytes).unwrap_or_else(|e| {
+        panic!("boot-shim: configuration-table DTB unparseable ({e:?}) — halting")
+    });
+    let (dtb_free, _reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0)
+        .collect()
+        .expect("boot-shim: configuration-table DTB memmap rejected — halting");
+    match minix_boot::dtb_covers_conventional(dtb_free, conventional) {
+        Ok(()) => crate::raw_serial(
+            "boot-shim: platform DTB cross-validated against the UEFI map\r\n",
+        ),
+        Err((base, len)) => panic!(
+            "boot-shim: UEFI conventional [{base:#x},+{len:#x}) lies outside the configuration-table DTB /memory — halting"
+        ),
+    }
+}
+
 /// Read and parse the optional ESP `/dumpdtb.dtb` into the DTB `/memory`
 /// free list. Pure read-only gate; the conventional source stays the UEFI
 /// map (C17's v1 semantics).
@@ -979,6 +1047,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
             reserved_len,
         )
     };
+    cross_validate_config_dtb(platform_sources, memmap);
     // The classification must have marked every bootstrap allocation as
     // non-conventional; a containment here would hand live pages to the VM PMM.
     assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
