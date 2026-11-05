@@ -5182,6 +5182,49 @@ mod tests {
         assert_eq!(n, 1);
     }
 
+    /// The candidate list is one thing; what the allocator actually hands out
+    /// is another. Exhaust the allocator and prove no delivered frame comes
+    /// from the bump region or the root page.
+    #[test]
+    fn test_first_vm_allocation_never_lands_in_bump_or_root() {
+        use minix_arch::arch::frame::{VmBootAllocError, VmBootAllocator, VmBootRegion};
+
+        let memmap = [MemoryRegion {
+            base: PhysBytes(0x10_0000),
+            len: 0x40_0000,
+        }]; // [1 MiB, 5 MiB)
+        let bump = (0x20_0000u64, 0x24_0000u64);
+        let root = PhysBytes(0x26_0000);
+        let (excl, n) = vm_boot_exclusions(
+            PhysBytes(0x30_0000),
+            0x10_0000,
+            &[],
+            Some(root),
+            Some(bump),
+        );
+        let regions = VmBootRegion::select_multi::<32>(&memmap, &excl[..n])
+            .expect("select_multi")
+            .expect("some regions");
+        let mut alloc = VmBootAllocator::new(regions);
+        let mut pages = 0usize;
+        loop {
+            match alloc.alloc_page() {
+                Ok(frame) => {
+                    let a = frame.start().0;
+                    assert!(
+                        !(a < bump.1 && bump.0 < a + 0x1000),
+                        "allocator delivered a bump page at {a:#x}"
+                    );
+                    assert_ne!(a, root.0, "allocator delivered the root page");
+                    pages += 1;
+                }
+                Err(VmBootAllocError::OutOfMemory) => break,
+            }
+        }
+        // 4 MiB = 1024 frames - kernel 256 - bump 64 - root 1 = 703 deliverable.
+        assert_eq!(pages, 703);
+    }
+
     /// Pin the bit semantics of the riscv lazy FPU ownership gating, so the
     /// old bug cannot recur — non-owner must be FS=Off(0b00<<13) (otherwise
     /// the first FP does not trap and the rotation leg is unreachable), owner

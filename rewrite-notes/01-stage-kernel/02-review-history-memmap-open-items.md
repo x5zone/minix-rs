@@ -12,6 +12,15 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百零四轮（文档与代码对齐；补首次分配结果断言）**
+
+- **修掉一处自造矛盾**：六层与三层状态表里「只有 riscv bootface 生成记录、其余走 `collect()`」已经过时——第一百零三轮之后，riscv bootface、aarch64 直启、riscv U-Boot 三条都走 `collect_with_sources()` 并做覆盖审计。两张表统一为「三条已接入；aarch64 UEFI 配置表 DTB 未接入；`KernelInfo` 无承载字段」。
+- **UEFI 容量合同改写成四步**：取图前按 256 预分配、取图后算 `ActualDescriptorCount`、超过 256 整体拒绝、不为 524 条缓冲理论容量分配槽位。删掉「必须先于取图知道最终条数」这类不可能的表述。
+- **§7 第 5 项去掉已移交的平台资源**，改按 `MemorySourceRecordCapacity` 与 `StartupObjectRecordCapacity` 两类陈述；§0 澄清 `PmmBaseAvailable` 是消费者侧结果，本项输出边界只有 `PmmSourceCandidatePages`。
+- **补两个交接对象的物理归属**：`VmBootHandoff` 所在页来自 `VmBootAllocator::alloc_page()`、随后作为扣减记录的一项进 `deducted`，不是内核静态数据区；UEFI 两腿的 arena 由 `alloc_arena` 以 `LOADER_DATA` 分配并有 `assert_bootstrap_outside_memmap` 保证不在 memmap；**自引导三条腿的 arena 来源与最后使用点仍待取证**，按三种可能之一核对。
+- **代码补结果断言**：新增 `test_first_vm_allocation_never_lands_in_bump_or_root`——用真实 `select_multi` + `VmBootAllocator` 把所有可分配页取尽，断言没有一页落在 bump 区或根页，并钉住可交付页数（4 MiB−内核 256−bump 64−根页 1 = 703）。这验证的是分配器**实际行为**，与候选排除表不是同一件事。
+- **读数**：`minix-kernel --features mock` **862 通过 / 0 失败 / 8 忽略**（新增一枚）；正文 973 行 / 82,671 字符；围栏 22（偶）、表格 39 块列数不一致 0、破表 0、lint error 0、零丢失 lost 0。QEMU 腿仍未跑。
+
 **第一百零三轮（来源记录覆盖三条 DTB 腿；`VmBootHandoff` 布局钉桩；两处注释与实现对齐）**
 
 - **两条腿补上来源记录**：aarch64 直启（`bootface_a64`）与 riscv U-Boot（`opensbi_helpers`）从 `collect()` 改成 `collect_with_sources()`，并在投影前调用 `audit_source_coverage`——任一投影跨度没有来源记录就 halt。加上 riscv bootface，四条 DTB 政策路径里已有三条会产出并持有记录（静态数组），只剩 aarch64 UEFI 配置表 DTB 未接入。

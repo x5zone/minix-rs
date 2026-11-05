@@ -5820,3 +5820,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 测试门：`minix-types` 332、`minix-kernel --features mock` 861 通过 / 0 失败 / 8 忽略、`minix-boot` 146、`boot-shim` 70；`kernel-image --target aarch64-unknown-none`、`boot-shim --target riscv64gc-unknown-none-elf` 构建通过。**QEMU 腿未跑**：镜像无 qemu、宿主无 Rust 工具链，按未验证记录。
 - 剩余核心：`SourceRecord` 跨第一跳载体。现有 arena 只剩 2,368 B，放不下 40 条记录，必须先裁决「独立有界载荷区」还是「`(MapSnapshotId, DescriptorIndex)` + 快照存活」，属 O-13a 的布局决定。
 - 认领：`I-29 qorder103`（基线 `8068dbd0d`），状态 ✅：第一百零三轮已 ff 合并为 `14760c794aa93d0f04676200539fd7ddf8ca6c0e`，认领已释放。下一步只剩一个布局裁决：`SourceRecord` 跨第一跳用独立有界载荷区还是 `(MapSnapshotId, DescriptorIndex)` 引用。
+
+
+### 第三百一十一笔（01 阶段 · I-29 第一百零四轮：文档与代码对齐、首次分配结果断言）
+
+- 修自造矛盾：六层/三层状态表统一为「riscv bootface、aarch64 直启、riscv U-Boot 三条已接入 `collect_with_sources()` + 覆盖审计；aarch64 UEFI 配置表 DTB 未接入；`KernelInfo` 无承载字段」。
+- UEFI 容量合同改写成四步（取图前按 256 预分配／取图后算 `ActualDescriptorCount`／超过 256 整体拒绝／不为 524 条缓冲理论容量分配）；§7 第 5 项去掉已移交的平台资源，改按两类记录容量陈述；§0 澄清 `PmmBaseAvailable` 是消费者侧结果。
+- 补交接对象物理归属：`VmBootHandoff` 页来自 `VmBootAllocator::alloc_page()` 并作为扣减项进 `deducted`；UEFI arena 为 `LOADER_DATA` + 越界断言；自引导三腿 arena 来源与最后使用点待取证（三种可能之一）。
+- 新测试 `test_first_vm_allocation_never_lands_in_bump_or_root`：真实 `select_multi` + `VmBootAllocator` 取尽可分配页，断言全部避开 bump 与根页，钉住 703 页。`minix-kernel --features mock` 862 通过 / 0 失败 / 8 忽略。
+- 仍剩：`SourceRecord` 跨第一跳载体（布局裁决：arena 余量 2,368 B 可放 40 条 DTB 记录／256 条 UEFI 记录需独立载荷）；aarch64 UEFI 配置表 DTB 接入；自引导 arena 取证；QEMU 腿。
+- 认领：`I-29 qorder104`（基线 `9098d57d6`），状态 🔄。
