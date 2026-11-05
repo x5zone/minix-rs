@@ -44,10 +44,11 @@
 //!    `UNUSABLE` are excluded; `MMIO` and `MMIO_PORT_SPACE` take the device
 //!    mapping path. A type states what firmware says a range *is*; an attribute
 //!    only hints how it *could* be used, so no attribute can turn "the OS must
-//!    not touch this" into "mapped but not allocated". Their attribute words are
-//!    recorded as diagnostics, and they do not enter the side list either —
-//!    filing a type-based exclusion under an attribute reason would misreport why
-//!    the range is absent.
+//!    not touch this" into "mapped but not allocated". They do not enter the
+//!    side list either — filing a type-based exclusion under an attribute
+//!    reason would misreport why the range is absent. Their `Attribute` words
+//!    are **not** recorded today (the type alone sends them to the device
+//!    path); a per-descriptor provenance layer must add that when it lands.
 //! 4. **Candidate types meet the three independent attributes.** For the types
 //!    that could otherwise reach an ordinary table, any of `RUNTIME`, `NV` or
 //!    `SP` forfeits ordinary allocation *and* ordinary direct-map eligibility:

@@ -5809,3 +5809,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - §6 读数刷到代码基线 `3683a34ca`：`minix-boot 146`、`boot-shim 70`、`minix-types 331`、`minix-kernel --features mock 861 / 0 失败 / 8 忽略`；三架构交叉构建通过（第一百零一轮）。下一轮证据清单删掉 QEMU machine/accelerator/PLIC profile（随设备资源移交），保留 UEFI 固件身份与 `Attribute` 位值。
 - 门：1,064 → **967 行**、87,811 → 81,725 字符、围栏 22 偶、表格 39 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动。
 - 认领：`I-29 qorder102`（基线 `bb5792a93`），状态 ✅：第一百零二轮已 ff 合并为 `29cee8cb31f503fc0f0df59d972b4494631fc9e7`，认领已释放。正文 967 行 / 81,725 字符；评审身份与哈希在 `03` 七十／七十一节。
+
+
+### 第三百一十笔（01 阶段 · I-29 第一百零三轮：来源记录覆盖三条 DTB 腿、交接布局钉桩）
+
+- aarch64 直启（`bootface_a64`）与 riscv U-Boot（`opensbi_helpers`）改 `collect_with_sources()`，投影前 `audit_source_coverage`，无记录跨度即 halt；加上 riscv bootface，四条 DTB 政策路径已三条产出并持有记录（静态数组），只剩 aarch64 UEFI 配置表 DTB 未接入。
+- 记录仍未跨第一跳：`KernelInfo` 无承载字段、ABI 无位置；「采集即丢弃」不再成立，但「交给内核政策消费者」仍未闭合。
+- `VmBootHandoff` 布局钉桩：`test_vm_boot_handoff_layout_is_pinned` 把 size 3792 / align 8 与 `magic` 0、`version` 4、`root_paddr` 8、`kerninfo_pa` 16、`free_region_count` 100、`deducted_count` 104、`module_count` 108、`deducted` 1136、`modules` 1888 写成断言。
+- 注释与实现对齐：`lib.rs` 的「VM blob 不进扣减记录」改为事实（每个模块 blob 都在记录里，VM-exclusion 只作用于 handoff 模块表）；`ebs_map.rs` 不再声称类型 11/12 的 `Attribute` 被记录。
+- 测试门：`minix-types` 332、`minix-kernel --features mock` 861 通过 / 0 失败 / 8 忽略、`minix-boot` 146、`boot-shim` 70；`kernel-image --target aarch64-unknown-none`、`boot-shim --target riscv64gc-unknown-none-elf` 构建通过。**QEMU 腿未跑**：镜像无 qemu、宿主无 Rust 工具链，按未验证记录。
+- 剩余核心：`SourceRecord` 跨第一跳载体。现有 arena 只剩 2,368 B，放不下 40 条记录，必须先裁决「独立有界载荷区」还是「`(MapSnapshotId, DescriptorIndex)` + 快照存活」，属 O-13a 的布局决定。
+- 认领：`I-29 qorder103`（基线 `8068dbd0d`），状态 🔄。

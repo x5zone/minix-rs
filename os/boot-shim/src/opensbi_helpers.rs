@@ -271,10 +271,14 @@ impl BootShim for RiscvUbootBootShim {
             );
             let fdt = fdt::Fdt::new(bytes)
                 .expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
-            let (memmap, reserved) =
+            let (memmap, reserved, sources) =
                 minix_boot::DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
-                    .collect()
+                    .collect_with_sources()
                     .expect("boot-shim: DTB memmap rejected (capacity or reservation shape) — halting");
+            // Hold the source records and audit coverage before anything is
+            // projected; a span without a record behind it must halt.
+            minix_boot::audit_source_coverage(memmap, reserved, sources)
+                .expect("boot-shim: a projected span has no source record — halting");
             // The SBI leg's parameter source is the standard firmware
             // channel — DTB `/chosen/bootargs` (QEMU `-append` fills it).
             let landing: &'static mut [u8] =

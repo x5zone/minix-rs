@@ -196,9 +196,13 @@ pub extern "C" fn bootface_a64() -> ! {
     // permanently subtracted by kernel phase A.2 using the real totalsize —
     // the two mechanisms do not substitute for each other: this site only
     // produces the semantic list, the subtraction is kernel accounting.
-    let (memmap, reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0)
-        .collect()
+    let (memmap, reserved, sources) = minix_boot::DtbMemoryMap::new(&fdt, 0)
+        .collect_with_sources()
         .expect("bootface: DTB memmap rejected (capacity or reservation shape) — halting");
+    // Source records are held, not discarded: a projected span with no record
+    // behind it must refuse to boot (same discipline as the riscv bootface).
+    minix_boot::audit_source_coverage(memmap, reserved, sources)
+        .expect("bootface: a projected span has no source record — halting");
     if memmap.is_empty() {
         say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
         crate::halt();

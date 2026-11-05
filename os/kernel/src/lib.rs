@@ -2750,8 +2750,10 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 // page-table page the `map` above just installed — is now
                 // handed out, so the cut below sees the complete
                 // LiveBootstrap(t_classify) record. `i` is VM's index in
-                // the boot-module list; its blob was reclaimed above and
-                // therefore stays out of the deduction record.
+                // the boot-module list: every module blob — VM's own
+                // included — is kernel-reserved until VM starts, so it **is**
+                // in the deduction record; the VM-exclusion rule applies only
+                // to the handoff module list (see `classify`'s doc).
                 let handoff =
                     crate::vm_handoff::build_vm_handoff(kernel_info, root_phys, &vm_alloc, i);
                 // SAFETY: `hv` covers one whole frame (PhysAccess contract)

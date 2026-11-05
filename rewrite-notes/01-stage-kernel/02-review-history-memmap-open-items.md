@@ -12,6 +12,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百零三轮（来源记录覆盖三条 DTB 腿；`VmBootHandoff` 布局钉桩；两处注释与实现对齐）**
+
+- **两条腿补上来源记录**：aarch64 直启（`bootface_a64`）与 riscv U-Boot（`opensbi_helpers`）从 `collect()` 改成 `collect_with_sources()`，并在投影前调用 `audit_source_coverage`——任一投影跨度没有来源记录就 halt。加上 riscv bootface，四条 DTB 政策路径里已有三条会产出并持有记录（静态数组），只剩 aarch64 UEFI 配置表 DTB 未接入。
+- **记录仍停在采集器内**：`KernelInfo` 没有承载字段、第一跳 ABI 没有位置，所以「跨第一跳交给内核政策消费者」仍未闭合；但「采集后丢弃」这一点已经不再成立（引用仍在静态数组里，且覆盖审计会拒绝无记录跨度）。
+- **`VmBootHandoff` 布局钉桩**：新增 `test_vm_boot_handoff_layout_is_pinned`，把 size／align 与 9 个关键字段偏移（`magic` 0、`version` 4、`root_paddr` 8、`kerninfo_pa` 16、`free_region_count` 100、`deducted_count` 104、`module_count` 108、`deducted` 1136、`modules` 1888，size 3792）写成断言；字段重排或宽度变化现在会直接测红，而不是悄悄移动消费者读到的字段。
+- **两处注释与实现对齐**：`lib.rs` 里「VM 的 blob 不进扣减记录」改成事实（每个模块 blob 都在扣减记录里，VM-exclusion 只作用于 handoff 模块表）；`ebs_map.rs` 模块头不再声称类型 11/12 的 `Attribute` 被记录为诊断（今天不记录，留给将来的逐描述符来源层）。
+- **测试门**：`minix-types` **332 通过**、`minix-kernel --features mock` **861 通过 / 0 失败 / 8 忽略**、`minix-boot 146`、`boot-shim 70`；`kernel-image --target aarch64-unknown-none`、`boot-shim --target riscv64gc-unknown-none-elf` 构建通过。**QEMU 腿未跑**（镜像无 qemu、宿主无 Rust），按未验证记录。
+- **仍未实现（需一次布局决策）**：`SourceRecord` 跨第一跳的载体——现有四页 arena 只剩 2,368 B，放不下 40 条记录，必须先定「独立有界载荷区」还是「`(MapSnapshotId, DescriptorIndex)` 引用」；这一步不是编码问题而是 O-13a 的布局裁决。
+
+
 **第一百零二轮（清理评审钩子：下游展开段压成边界句，容量公式按记录类别拆开）**
 
 - **动机**：第一百轮冻结了范围，但正文仍留着大量「怎样映射／怎样访问／怎样证明硬件允许」的展开段——每一段都是一个可被继续评审的钩子。本轮按 §7.1 的内容冻结原则，把它们压成边界句，原文逐字进 `03` 七十一节。
