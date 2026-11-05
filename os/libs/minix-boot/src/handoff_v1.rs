@@ -21,6 +21,7 @@
 //! domain model keeps its idiomatic Rust types, and conversion happens only
 //! at the controlled-copy boundary.
 
+use crate::memmap_source::{PhysicalRange, SourceKind, SourceOrigin, SourceRecord};
 use core::mem::{align_of, offset_of, size_of};
 
 /// Physical-address wire field (semantics declared per field).
@@ -65,11 +66,145 @@ pub struct WirePlatformDescSource {
     pub addr: u64,
 }
 
+/// Wire form of one [`crate::memmap_source::SourceRecord`] — 48 bytes.
+///
+/// The record layer keeps a 128-bit exclusive end so the last page of the
+/// address space stays representable; the wire carries that value as two
+/// 64-bit halves (`end_hi` is therefore 0 or 1, and the decoder rejects
+/// anything else). `a`/`b`/`cut` are the variant payload of the origin:
+/// `(node, reg)` for node-derived origins, `(memory_id, 0)` plus `cut` for
+/// the derived firmware prefix, and `(entry, 0)` for an MRB entry. The
+/// trailing word is reserved and written as zero, so a future field can take
+/// it without changing the record size.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WireSourceRecord {
+    pub start: u64,
+    pub end_lo: u64,
+    pub end_hi: u64,
+    pub id: u16,
+    pub kind: u8,
+    pub origin_tag: u8,
+    pub a: u16,
+    pub b: u16,
+    pub cut: u64,
+    pub reserved: u64,
+}
+
+impl WireSourceRecord {
+    /// `SourceKind` tags. Values are protocol constants: never renumber.
+    pub const KIND_MEMORY: u8 = 0;
+    pub const KIND_FIRMWARE_PREFIX: u8 = 1;
+    pub const KIND_MRB_ENTRY: u8 = 2;
+    pub const KIND_RESERVED_NO_MAP: u8 = 3;
+    pub const KIND_RESERVED_ORDINARY: u8 = 4;
+    pub const KIND_RESERVED_REUSABLE: u8 = 5;
+
+    /// `SourceOrigin` tags. Values are protocol constants: never renumber.
+    pub const ORIGIN_MEMORY_NODE: u8 = 0;
+    pub const ORIGIN_FIRMWARE_PREFIX: u8 = 1;
+    pub const ORIGIN_MRB_ENTRY: u8 = 2;
+    pub const ORIGIN_RESERVED_MEMORY_CHILD: u8 = 3;
+
+    /// Encode one record. Total: every `PhysicalRange` is representable
+    /// (`start` is 64-bit, `end_exclusive` splits into two halves).
+    pub fn encode(record: &SourceRecord) -> Self {
+        let kind = match record.kind {
+            SourceKind::Memory => Self::KIND_MEMORY,
+            SourceKind::FirmwarePrefix => Self::KIND_FIRMWARE_PREFIX,
+            SourceKind::MrbEntry => Self::KIND_MRB_ENTRY,
+            SourceKind::ReservedNoMap => Self::KIND_RESERVED_NO_MAP,
+            SourceKind::ReservedOrdinary => Self::KIND_RESERVED_ORDINARY,
+            SourceKind::ReservedReusable => Self::KIND_RESERVED_REUSABLE,
+        };
+        let (origin_tag, a, b, cut) = match record.origin {
+            SourceOrigin::MemoryNode { node, reg } => (Self::ORIGIN_MEMORY_NODE, node, reg, 0),
+            SourceOrigin::FirmwarePrefix { memory_id, cut } => {
+                (Self::ORIGIN_FIRMWARE_PREFIX, memory_id, 0, cut)
+            }
+            SourceOrigin::MrbEntry(entry) => (Self::ORIGIN_MRB_ENTRY, entry, 0, 0),
+            SourceOrigin::ReservedMemoryChild { node, reg } => {
+                (Self::ORIGIN_RESERVED_MEMORY_CHILD, node, reg, 0)
+            }
+        };
+        Self {
+            start: record.range.start,
+            end_lo: record.range.end_exclusive as u64,
+            end_hi: (record.range.end_exclusive >> 64) as u64,
+            id: record.id,
+            kind,
+            origin_tag,
+            a,
+            b,
+            cut,
+            reserved: 0,
+        }
+    }
+
+    /// Decode one record. `None` = a tag or an `end_hi` value the encoder
+    /// cannot produce, i.e. a corrupted or foreign wire image; the caller
+    /// must fail closed rather than guess.
+    pub fn decode(self) -> Option<SourceRecord> {
+        if self.end_hi > 1 || self.reserved != 0 {
+            return None;
+        }
+        let kind = match self.kind {
+            Self::KIND_MEMORY => SourceKind::Memory,
+            Self::KIND_FIRMWARE_PREFIX => SourceKind::FirmwarePrefix,
+            Self::KIND_MRB_ENTRY => SourceKind::MrbEntry,
+            Self::KIND_RESERVED_NO_MAP => SourceKind::ReservedNoMap,
+            Self::KIND_RESERVED_ORDINARY => SourceKind::ReservedOrdinary,
+            Self::KIND_RESERVED_REUSABLE => SourceKind::ReservedReusable,
+            _ => return None,
+        };
+        let origin = match self.origin_tag {
+            Self::ORIGIN_MEMORY_NODE => SourceOrigin::MemoryNode {
+                node: self.a,
+                reg: self.b,
+            },
+            Self::ORIGIN_FIRMWARE_PREFIX => SourceOrigin::FirmwarePrefix {
+                memory_id: self.a,
+                cut: self.cut,
+            },
+            Self::ORIGIN_MRB_ENTRY => SourceOrigin::MrbEntry(self.a),
+            Self::ORIGIN_RESERVED_MEMORY_CHILD => SourceOrigin::ReservedMemoryChild {
+                node: self.a,
+                reg: self.b,
+            },
+            _ => return None,
+        };
+        // Reject payload words the encoder leaves at zero, so one record has
+        // exactly one wire image (a receiver can compare images).
+        let payload_ok = match origin {
+            SourceOrigin::FirmwarePrefix { .. } => self.b == 0,
+            SourceOrigin::MrbEntry(_) => self.b == 0 && self.cut == 0,
+            SourceOrigin::MemoryNode { .. } | SourceOrigin::ReservedMemoryChild { .. } => {
+                self.cut == 0
+            }
+        };
+        if !payload_ok {
+            return None;
+        }
+        Some(SourceRecord {
+            id: self.id,
+            kind,
+            origin,
+            range: PhysicalRange::new(self.start, self.end_lo as u128 | ((self.end_hi as u128) << 64)),
+        })
+    }
+}
+
 /// Protocol magic for the v1 envelope ("MNXH" in little-endian bytes).
 pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 
 /// Protocol version of the envelope defined in this module.
-pub const BOOT_HANDOFF_V1_VERSION: u32 = 1;
+///
+/// 2 = the source-record partition (`memmap_sources`) joined the wire image:
+/// the per-descriptor provenance of the memory map now crosses the first hop
+/// instead of being dropped on the sending side. A v1 receiver would ignore
+/// the new partition and a v1 sender would leave it empty, so the version is
+/// compared exactly, not as a minimum.
+pub const BOOT_HANDOFF_V1_VERSION: u32 = 2;
 
 /// `free_upper_idx` sentinel for "no value" (a valid index can never be
 /// `u64::MAX`; decode checks the sentinel first, then the range).
@@ -112,6 +247,7 @@ pub struct BootHandoffV1 {
     pub boot_modules_byte_len: u64,
     pub platform_sources_byte_len: u64,
     pub param_buf_byte_len: u64,
+    pub sources_byte_len: u64,
 }
 
 // ── arena layout (fixed offsets, compile-time arithmetic) ────────────────
@@ -126,6 +262,13 @@ pub const WIRE_RESERVED_CAP: usize = 256;
 pub const WIRE_MODULE_CAP: usize = 12;
 pub const WIRE_PLATFORM_CAP: usize = 4;
 pub const WIRE_PARAM_CAP: usize = 1024;
+/// Source records carried across the hop. The capacity is the DTB collector's
+/// worst case (`/memory` 8 + declared reservations 8 + MRB 16 + firmware
+/// prefixes 8); the UEFI leg's per-descriptor provenance stays on the sending
+/// side until it gets its own bounded carrier.
+pub const WIRE_SOURCES_CAP: usize = 40;
+/// Wire size of one [`WireSourceRecord`].
+pub const WIRE_SOURCE_RECORD_SIZE: usize = 48;
 
 /// Semantic work-partition capacities (`128×16 + 256×16 = 6144` bytes).
 pub const SEMANTIC_MEMMAP_CAP: usize = 128;
@@ -147,6 +290,12 @@ pub const SEMANTIC_MEMMAP_OFFSET: usize = SEMANTIC_OFFSET;
 pub const SEMANTIC_RESERVED_OFFSET: usize = SEMANTIC_MEMMAP_OFFSET + SEMANTIC_MEMMAP_CAP * 16;
 pub const SEMANTIC_END: usize = SEMANTIC_RESERVED_OFFSET + SEMANTIC_RESERVED_CAP * 16;
 
+/// Source-record partition: the first use of the arena's design spare after
+/// the semantic work partition. Receiver-owned landing storage is the
+/// kernel's, so this partition has no semantic twin.
+pub const WIRE_SOURCES_OFFSET: usize = SEMANTIC_END;
+pub const WIRE_SOURCES_END: usize = WIRE_SOURCES_OFFSET + WIRE_SOURCES_CAP * WIRE_SOURCE_RECORD_SIZE;
+
 /// Whole-arena capacity: 4 pages (16 KiB).
 pub const ARENA_CAP: usize = 4 * 4096;
 
@@ -160,11 +309,13 @@ const _: () = {
     assert!(align_of::<WireBootModule>() == 8);
     assert!(size_of::<WirePlatformDescSource>() == 16);
     assert!(align_of::<WirePlatformDescSource>() == 8);
+    assert!(size_of::<WireSourceRecord>() == WIRE_SOURCE_RECORD_SIZE);
+    assert!(align_of::<WireSourceRecord>() == 8);
     assert!(size_of::<WirePhysAddr>() == 8);
     assert!(size_of::<WireVirtAddr>() == 8);
 
     // Envelope: fits the budget, 8-byte aligned, key offsets pinned.
-    assert!(size_of::<BootHandoffV1>() == 168);
+    assert!(size_of::<BootHandoffV1>() == 176);
     assert!(align_of::<BootHandoffV1>() == 8);
     assert!(size_of::<BootHandoffV1>() <= ENVELOPE_CAP);
     assert!(offset_of!(BootHandoffV1, magic) == 0);
@@ -178,6 +329,7 @@ const _: () = {
     assert!(offset_of!(BootHandoffV1, bump_end) == 120);
     assert!(offset_of!(BootHandoffV1, memmap_byte_len) == 128);
     assert!(offset_of!(BootHandoffV1, param_buf_byte_len) == 160);
+    assert!(offset_of!(BootHandoffV1, sources_byte_len) == 168);
 
     // Arena partitions: element-aligned, disjoint, exact, and fitting the cap.
     assert!(WIRE_MEMMAP_OFFSET % align_of::<WireMemoryRegion>() == 0);
@@ -189,6 +341,8 @@ const _: () = {
     assert!(SEMANTIC_MEMMAP_OFFSET == WIRE_END);
     assert!(SEMANTIC_RESERVED_OFFSET % align_of::<crate::kernel_info::MemoryRegion>() == 0);
     assert!(SEMANTIC_END == 14016);
+    assert!(WIRE_SOURCES_OFFSET % align_of::<WireSourceRecord>() == 0);
+    assert!(WIRE_SOURCES_END <= ARENA_CAP);
     assert!(SEMANTIC_END <= ARENA_CAP);
     assert!(ARENA_CAP % 4096 == 0);
 };
@@ -202,7 +356,8 @@ mod tests {
         assert_eq!(size_of::<WireMemoryRegion>(), 16);
         assert_eq!(size_of::<WireBootModule>(), 32);
         assert_eq!(size_of::<WirePlatformDescSource>(), 16);
-        assert_eq!(size_of::<BootHandoffV1>(), 168);
+        assert_eq!(size_of::<BootHandoffV1>(), 176);
+        assert_eq!(size_of::<WireSourceRecord>(), 48);
     }
 
     #[test]

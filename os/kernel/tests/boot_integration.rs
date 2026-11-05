@@ -34,6 +34,7 @@ fn boot_simulation_full_flow() {
         platform_sources: &[],
         param_buf: &[],
         reserved_regions: &[],
+        memmap_sources: &[],
     };
 
     let root_page = PhysBytes(0x1000); // physical page for PML4

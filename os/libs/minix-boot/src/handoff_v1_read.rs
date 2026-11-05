@@ -18,9 +18,11 @@ use crate::handoff_v1::{
     FREE_UPPER_IDX_NONE, WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET,
     WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET,
     WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
-    WireBootModule, WireMemoryRegion, WirePlatformDescSource,
+    WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET, WIRE_SOURCE_RECORD_SIZE,
+    WireBootModule, WireMemoryRegion, WirePlatformDescSource, WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, MemoryRegion};
+use crate::memmap_source::SourceRecord;
 use crate::platform::{PlatformDescKind, PlatformDescSource};
 use core::mem::size_of;
 use minix_types::PhysBytes;
@@ -54,6 +56,7 @@ mod offsets {
     pub const MODULES_BYTE_LEN: usize = 144;
     pub const PLATFORM_BYTE_LEN: usize = 152;
     pub const PARAM_BYTE_LEN: usize = 160;
+    pub const SOURCES_BYTE_LEN: usize = 168;
 }
 
 /// Decoder failure. Every variant is fail-closed: the receiver must not fall
@@ -80,6 +83,9 @@ pub enum HandoffV1ReadError {
     BadRootPage,
     /// The bump triple is not a self-consistent half-open range.
     BadBumpRange,
+    /// A source record carries a tag or payload value the encoder cannot
+    /// produce (corrupted or foreign wire image).
+    BadSourceRecord,
 }
 
 /// Verified envelope scalars, copied out of the arena by value.
@@ -103,6 +109,7 @@ pub struct HandoffScalars {
     pub modules_byte_len: u64,
     pub platform_byte_len: u64,
     pub param_byte_len: u64,
+    pub sources_byte_len: u64,
 }
 
 fn read_u32(arena: &[u8], off: usize) -> u32 {
@@ -144,6 +151,7 @@ pub struct HandoffDescriptors {
     pub modules_byte_len: u64,
     pub platform_byte_len: u64,
     pub param_byte_len: u64,
+    pub sources_byte_len: u64,
 }
 
 /// Validate the header and return the five payload descriptors only.
@@ -158,6 +166,7 @@ pub fn decode_descriptors(arena: &[u8]) -> Result<HandoffDescriptors, HandoffV1R
         modules_byte_len: read_u64(arena, offsets::MODULES_BYTE_LEN),
         platform_byte_len: read_u64(arena, offsets::PLATFORM_BYTE_LEN),
         param_byte_len: read_u64(arena, offsets::PARAM_BYTE_LEN),
+        sources_byte_len: read_u64(arena, offsets::SOURCES_BYTE_LEN),
     })
 }
 
@@ -212,6 +221,7 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
         modules_byte_len: read_u64(arena, offsets::MODULES_BYTE_LEN),
         platform_byte_len: read_u64(arena, offsets::PLATFORM_BYTE_LEN),
         param_byte_len: read_u64(arena, offsets::PARAM_BYTE_LEN),
+        sources_byte_len: read_u64(arena, offsets::SOURCES_BYTE_LEN),
     })
 }
 
@@ -337,6 +347,44 @@ pub fn decode_platform_sources(
     Ok(count)
 }
 
+/// Decode the memory-map source records into `out`, returning the count.
+///
+/// Every record is re-validated by [`WireSourceRecord::decode`]: an unknown
+/// tag or a payload word the encoder always zeroes is a corrupted wire image
+/// and fails closed. The landed records back the kernel's `KernelInfo`
+/// slice, so — like every other payload — nothing here aliases the arena.
+pub fn decode_sources(
+    arena: &[u8],
+    scalars: &HandoffScalars,
+    out: &mut [SourceRecord],
+) -> Result<usize, HandoffV1ReadError> {
+    let count = element_count(
+        scalars.sources_byte_len,
+        WIRE_SOURCE_RECORD_SIZE,
+        WIRE_SOURCES_CAP,
+    )?;
+    if count > out.len() {
+        return Err(HandoffV1ReadError::OutputTooSmall);
+    }
+    for (i, slot) in out.iter_mut().enumerate().take(count) {
+        let off = WIRE_SOURCES_OFFSET + i * WIRE_SOURCE_RECORD_SIZE;
+        let wire = WireSourceRecord {
+            start: read_u64(arena, off),
+            end_lo: read_u64(arena, off + 8),
+            end_hi: read_u64(arena, off + 16),
+            id: u16::from_le_bytes(arena[off + 24..off + 26].try_into().unwrap()),
+            kind: arena[off + 26],
+            origin_tag: arena[off + 27],
+            a: u16::from_le_bytes(arena[off + 28..off + 30].try_into().unwrap()),
+            b: u16::from_le_bytes(arena[off + 30..off + 32].try_into().unwrap()),
+            cut: read_u64(arena, off + 32),
+            reserved: read_u64(arena, off + 40),
+        };
+        *slot = wire.decode().ok_or(HandoffV1ReadError::BadSourceRecord)?;
+    }
+    Ok(count)
+}
+
 /// Decode the `param_buf` bytes into `out`, returning the byte count.
 pub fn decode_param_buf(
     arena: &[u8],
@@ -377,6 +425,7 @@ mod tests {
     use super::*;
     use crate::handoff_v1::ARENA_CAP;
     use crate::handoff_v1_write::{RuntimeFields, Serializer};
+    use crate::memmap_source::{PhysicalRange, SourceKind, SourceOrigin, SourceRecord};
     use crate::kernel_info::KernelInfo;
     use crate::platform::{DTB, RSDP};
     use minix_types::{USER_STACK_TOP, VirBytes};
@@ -412,6 +461,26 @@ mod tests {
         PlatformDescSource::new(RSDP, PhysBytes(0xE0000)),
     ];
     static PARAM: &[u8] = b"ARCH=x86_64\0BOARD=qemu\0";
+    static RECORDS: [SourceRecord; 3] = [
+        SourceRecord {
+            id: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
+            range: PhysicalRange::new(0x10_0000, 0x20_0000),
+        },
+        SourceRecord {
+            id: 1,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MemoryNode { node: 0, reg: 1 },
+            range: PhysicalRange::new(0x40_0000, 0x60_0000),
+        },
+        SourceRecord {
+            id: 2,
+            kind: SourceKind::ReservedOrdinary,
+            origin: SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 },
+            range: PhysicalRange::new(0x1DA0_0000, 0x1DA0_3000),
+        },
+    ];
 
     const ROOT: u64 = 0x1000;
     const BUMP_BASE: u64 = 0x20_0000;
@@ -422,6 +491,7 @@ mod tests {
         KernelInfo {
             memmap: &MEMMAP,
             reserved_regions: &RESERVED,
+            memmap_sources: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
@@ -447,6 +517,7 @@ mod tests {
             s.write_boot_modules(info.boot_modules).unwrap();
             s.write_platform_sources(info.platform_sources).unwrap();
             s.write_param_buf(info.param_buf).unwrap();
+            s.write_sources(&RECORDS).unwrap();
             for region in info.memmap {
                 s.push_memmap(*region).unwrap();
             }
@@ -553,7 +624,10 @@ mod tests {
             HandoffV1ReadError::BadMagic
         );
         let mut arena = build_arena();
-        put_u32(&mut arena, 4, 2);
+        // Version 1 is the pre-source-partition envelope: an exact match is
+        // required, so an older sender is rejected rather than read with the
+        // new offsets.
+        put_u32(&mut arena, 4, 1);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::UnsupportedVersion
@@ -664,6 +738,65 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_sources() {
+        let arena = build_arena();
+        let s = decode_envelope(&arena).unwrap();
+        assert_eq!(s.sources_byte_len, (RECORDS.len() * WIRE_SOURCE_RECORD_SIZE) as u64);
+        let mut out = [SourceRecord {
+            id: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(0, 0),
+        }; WIRE_SOURCES_CAP];
+        let n = decode_sources(&arena, &s, &mut out).unwrap();
+        assert_eq!(n, RECORDS.len());
+        assert_eq!(&out[..n], &RECORDS[..]);
+    }
+
+    #[test]
+    fn rejects_sources_over_capacity() {
+        let mut arena = build_arena();
+        put_u64(
+            &mut arena,
+            168,
+            ((WIRE_SOURCES_CAP as u64) + 1) * WIRE_SOURCE_RECORD_SIZE as u64,
+        );
+        let s = decode_envelope(&arena).unwrap();
+        let mut out = [SourceRecord {
+            id: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(0, 0),
+        }; WIRE_SOURCES_CAP];
+        assert_eq!(
+            decode_sources(&arena, &s, &mut out).unwrap_err(),
+            HandoffV1ReadError::DescriptorOverflowsPartition
+        );
+    }
+
+    /// A record word the encoder always zeroes (the reserved tail) means the
+    /// image did not come from [`WireSourceRecord::encode`]; the receiver
+    /// fails closed instead of carrying a guessed record.
+    #[test]
+    fn rejects_source_record_with_nonzero_reserved_word() {
+        let mut arena = build_arena();
+        // Third record starts at WIRE_SOURCES_OFFSET + 2 * 48; its reserved
+        // tail is the last 8 bytes of the 48-byte slot.
+        put_u64(&mut arena, WIRE_SOURCES_OFFSET + 2 * 48 + 40, 1);
+        let s = decode_envelope(&arena).unwrap();
+        let mut out = [SourceRecord {
+            id: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(0, 0),
+        }; WIRE_SOURCES_CAP];
+        assert_eq!(
+            decode_sources(&arena, &s, &mut out).unwrap_err(),
+            HandoffV1ReadError::BadSourceRecord
+        );
+    }
+
+    #[test]
     fn rejects_descriptor_over_capacity() {
         let mut arena = build_arena();
         put_u64(&mut arena, 128, (WIRE_MEMMAP_CAP as u64 + 1) * 16);
@@ -722,5 +855,80 @@ mod tests {
             decode_param_buf(&arena, &s, &mut param).unwrap_err(),
             HandoffV1ReadError::DescriptorOverflowsPartition
         );
+    }
+
+    /// The arena holds nothing that outlives the decode.
+    ///
+    /// `arch_boot_resume_v1` runs this exact sequence — envelope, then the
+    /// five payloads into kernel-owned landing buffers — and the `KernelInfo`
+    /// the kernel keeps afterwards is built from those buffers, never from
+    /// arena bytes. So the arena's last read happens before the kernel's
+    /// first VM allocation, and the pages it occupies (loader data on the
+    /// UEFI legs, the next bump pages on the U-Boot leg) need no reservation
+    /// of their own. Poisoning the arena right after the decode is the
+    /// executable form of that claim: any surviving alias into arena memory
+    /// would flip a landing byte to the poison pattern and fail here.
+    #[test]
+    fn decoded_payloads_survive_arena_poison() {
+        let mut arena = build_arena();
+        let s = decode_envelope(&arena).unwrap();
+
+        let mut free = [MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        }; WIRE_MEMMAP_CAP];
+        let n_free = decode_memmap(&arena, &s, &mut free).unwrap();
+        let mut reserved = [MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        }; WIRE_RESERVED_CAP];
+        let n_reserved = decode_reserved_regions(&arena, &s, &mut reserved).unwrap();
+        let mut wire_modules = [WireBootModule {
+            name: [0; 16],
+            start: 0,
+            len: 0,
+        }; WIRE_MODULE_CAP];
+        let n_modules = decode_modules(&arena, &s, &mut wire_modules).unwrap();
+        let mut sources = [PlatformDescSource::new(DTB, PhysBytes(0)); WIRE_PLATFORM_CAP];
+        let n_sources = decode_platform_sources(&arena, &s, &mut sources).unwrap();
+        let mut param = [0u8; WIRE_PARAM_CAP];
+        let n_param = decode_param_buf(&arena, &s, &mut param).unwrap();
+        let mut records = [SourceRecord {
+            id: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(0, 0),
+        }; WIRE_SOURCES_CAP];
+        let n_records = decode_sources(&arena, &s, &mut records).unwrap();
+
+        arena.fill(0xA5);
+
+        assert_eq!(
+            (n_free, n_reserved, n_modules, n_sources, n_param, n_records),
+            (2, 1, 2, 2, PARAM.len(), RECORDS.len())
+        );
+        for (i, landed) in free[..n_free].iter().enumerate() {
+            assert_eq!((landed.base.0, landed.len), (MEMMAP[i].base.0, MEMMAP[i].len));
+        }
+        for (i, landed) in reserved[..n_reserved].iter().enumerate() {
+            assert_eq!(
+                (landed.base.0, landed.len),
+                (RESERVED[i].base.0, RESERVED[i].len)
+            );
+        }
+        for (wire, module) in wire_modules[..n_modules].iter().zip(MODULES.iter()) {
+            assert_eq!(wire.start, module.start.0);
+            assert_eq!(wire.len, module.len as u64);
+            let mut name = [0u8; 16];
+            name[..module.name.len()].copy_from_slice(module.name.as_bytes());
+            assert_eq!(wire.name, name);
+        }
+        for (i, landed) in sources[..n_sources].iter().enumerate() {
+            assert_eq!(landed.kind(), SOURCES[i].kind());
+            assert_eq!(landed.phys_addr(), SOURCES[i].phys_addr());
+        }
+        assert_eq!(&param[..n_param], PARAM);
+        assert_eq!(n_records, RECORDS.len());
+        assert_eq!(&records[..n_records], &RECORDS[..]);
     }
 }

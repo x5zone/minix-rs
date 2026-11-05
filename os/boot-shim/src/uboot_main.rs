@@ -430,6 +430,9 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     serializer
         .write_param_buf(result.kernel_info.param_buf)
         .expect("param_buf over capacity");
+    serializer
+        .write_sources(result.kernel_info.memmap_sources)
+        .expect("too many memory-map source records for the handoff arena");
 
     raw_serial_line("boot-shim: [raw] entering kernel image v1");
     // SAFETY: the bootstrap root was enabled by `enter_kernel_image_v1`

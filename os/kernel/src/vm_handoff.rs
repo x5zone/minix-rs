@@ -338,7 +338,10 @@ pub fn classify(
     // ~133 usable pages (grow(229) PhysicalAllocFailed, 2026-09-21 stack
     // forensics), so it must be known whether the memmap snapshot was already
     // small or the deduction cut too much. Print the first 8 only, to avoid
-    // flooding the console.
+    // flooding the console. Gated like `boot_stage!`: the host-test form has no
+    // console sink, and this is the only thing keeping `classify` itself
+    // unreachable from a host test.
+    #[cfg(not(feature = "mock"))]
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: vm_handoff free n=");
@@ -758,6 +761,107 @@ mod tests {
             ]
         );
         assert_disjoint(&c);
+    }
+
+    /// Bootstrap-used frames are recorded **per touched region**, not per
+    /// frame: VM's image frames, the page that carries the handoff itself
+    /// and every other frame the bootstrap allocator handed out all fall
+    /// inside the used suffix of the region they came from. This is what
+    /// keeps the deduction record within `3 + MAX_BOOT_REGIONS +
+    /// NR_BOOT_MODULES` regardless of how much memory the bootstrap used, so
+    /// two allocations of different sizes must yield the same record count
+    /// while every delivered frame is still covered by the record.
+    #[test]
+    #[cfg(feature = "mock")]
+    fn test_bootstrap_frames_are_recorded_per_region_not_per_frame() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        use crate::vm_boot_exclusions;
+        use minix_arch::arch::frame::{VmBootRegion, MAX_BOOT_REGIONS};
+        use minix_boot::BootModule;
+        use minix_types::VirBytes;
+
+        static MEMMAP: &[MemoryRegion] = &[MemoryRegion {
+            base: PhysBytes(0x10_0000),
+            len: 0x80_0000,
+        }]; // [1 MiB, 9 MiB)
+        static MODS: &[BootModule] = &[
+            BootModule {
+                name: "vm",
+                start: PhysBytes(0x40_0000),
+                len: 0x8_0000,
+            },
+            BootModule {
+                name: "rs",
+                start: PhysBytes(0x50_0000),
+                len: 0x4_0000,
+            },
+        ];
+        let info = KernelInfo {
+            memmap: MEMMAP,
+            reserved_regions: &[],
+            memmap_sources: &[],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x20_0000),
+            kern_size: 0x10_0000,
+            free_upper_idx: None,
+            user_sp: VirBytes(USER_STACK_TOP as u64),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: MODS,
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+        };
+        let root = PhysBytes(0x80_0000);
+
+        let run = |frames: usize| -> (Vec<(u64, u64)>, Classification) {
+            let (excl, n) = vm_boot_exclusions(
+                info.kern_phys_base(),
+                info.kern_size() as usize,
+                info.boot_modules(),
+                Some(root),
+                boot_alloc_region(),
+            );
+            let regions = VmBootRegion::select_multi::<MAX_BOOT_REGIONS>(
+                info.memmap(),
+                &excl[..n],
+            )
+            .expect("select_multi")
+            .expect("a bootstrap region survives the exclusions");
+            let mut alloc = VmBootAllocator::<MAX_BOOT_REGIONS>::new(regions);
+            let taken = (0..frames)
+                .map(|_| {
+                    let f = alloc.alloc_page().expect("frame");
+                    (f.start().0, f.start().0 + PAGE_SIZE)
+                })
+                .collect();
+            (taken, classify(&info, root, &alloc, 0))
+        };
+
+        let (few, c_few) = run(2);
+        let (many, c_many) = run(8);
+
+        // Same region touched, same record size: the count does not track
+        // the number of frames used.
+        assert_eq!(
+            c_few.deducted_count, c_many.deducted_count,
+            "deduction record grew with the number of bootstrap frames used"
+        );
+
+        // Every frame the allocator handed out is inside the record — the
+        // handoff page included, since it is taken from this same allocator
+        // before the classification point.
+        let ded = deducted_ranges(&c_many);
+        for &(start, end) in few.iter().chain(many.iter()) {
+            assert!(
+                ded.iter().any(|&(d, e)| d <= start && end <= e),
+                "bootstrap frame [{start:#x},{end:#x}) is not covered by any deduction record"
+            );
+        }
+
+        assert_disjoint(&c_few);
+        assert_disjoint(&c_many);
     }
 
     /// Per-span layout where every source occupies its own memmap span:

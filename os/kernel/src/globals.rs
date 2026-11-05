@@ -153,6 +153,10 @@ mod bkl_protected {
         // physical address). Written once by `store_kernel_info`, read-only
         // afterwards — same contract as KernelInfo itself.
         minix_boot::PlatformDescSource,
+        // Landing-pad payload for the memory-map source records (POD:
+        // 16-byte declaration identity + 16-byte tag/range payload). Written
+        // once by the v1 receiver, read-only afterwards.
+        minix_boot::SourceRecord,
 
         // BKL-serialized mutation (kernel-internal types):
         crate::proc_table::ProcessTable,
@@ -381,6 +385,25 @@ pub(crate) const PARAM_BUF_STORE_LEN: usize = 1024;
 
 pub(crate) static PARAM_BUF_STORE: SyncUnsafeCell<[u8; PARAM_BUF_STORE_LEN]> =
     SyncUnsafeCell::new([0u8; PARAM_BUF_STORE_LEN]);
+
+/// `.bss` landing pad for the handoff's memory-map source records. The v1
+/// receiver copies every record out of the arena into this store (nothing
+/// aliases the arena), and the `KernelInfo` slice is built over it.
+///
+/// Capacity is the wire partition's (`WIRE_SOURCES_CAP`), so an undersized
+/// store cannot silently truncate: the decoder reports `OutputTooSmall`.
+pub(crate) const SOURCE_RECORD_STORE_LEN: usize = 40;
+
+pub(crate) static SOURCE_RECORD_STORE: SyncUnsafeCell<
+    [minix_boot::SourceRecord; SOURCE_RECORD_STORE_LEN],
+> = SyncUnsafeCell::new(
+    [minix_boot::SourceRecord {
+        id: 0,
+        kind: minix_boot::SourceKind::Memory,
+        origin: minix_boot::SourceOrigin::MrbEntry(0),
+        range: minix_boot::PhysicalRange::new(0, 0),
+    }; SOURCE_RECORD_STORE_LEN],
+);
 
 /// Global process table — C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]`.
 ///

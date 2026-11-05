@@ -55,8 +55,8 @@ use minix_types::{VM_BOOT_HANDOFF_VA, VmBootHandoff};
 ))]
 use minix_boot::{
     decode_envelope, decode_memmap, decode_modules, decode_param_buf, decode_platform_sources,
-    decode_reserved_regions, patch_runtime_fields_in, BootModule, RuntimeFields, WireBootModule,
-    ARENA_CAP, WIRE_MODULE_CAP,
+    decode_reserved_regions, decode_sources, patch_runtime_fields_in, BootModule, RuntimeFields,
+    WireBootModule, ARENA_CAP, WIRE_MODULE_CAP,
 };
 
 #[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
@@ -556,11 +556,17 @@ pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
         .unwrap_or_else(|e| panic!("kernel-image: handoff v1 param invalid: {e:?}"));
     let param_ptr = param_store.as_ptr();
 
+    let source_store = unsafe { &mut *crate::globals::SOURCE_RECORD_STORE.get() };
+    let source_len = decode_sources(arena, &scalars, source_store)
+        .unwrap_or_else(|e| panic!("kernel-image: handoff v1 sources invalid: {e:?}"));
+    let source_ptr = source_store.as_ptr();
+
     let kinfo = KernelInfo {
         // SAFETY: all five pointers reference the `.bss` stores filled above;
         // their lengths are the decoder's validated element counts.
         memmap: unsafe { core::slice::from_raw_parts(memmap_ptr, memmap_len) },
         reserved_regions: unsafe { core::slice::from_raw_parts(reserved_ptr, reserved_len) },
+        memmap_sources: unsafe { core::slice::from_raw_parts(source_ptr, source_len) },
         kern_virt_base: VirBytes(scalars.kern_virt_base),
         kern_phys_base: PhysBytes(scalars.kern_phys_base),
         kern_size: scalars.kern_size,
@@ -5195,6 +5201,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
         };
 
         let root_page = PhysBytes(0x1000);
@@ -5331,6 +5338,7 @@ mod tests {
             platform_sources: PLATFORM,
             param_buf: PARAM,
             reserved_regions: &[],
+            memmap_sources: &[],
         };
         store_kernel_info(&info);
         let stored = crate::kernel_info().expect("store_kernel_info published the global copy");
@@ -5387,6 +5395,7 @@ mod tests {
         KernelInfo {
             memmap: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
@@ -5492,6 +5501,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
         };
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
 
@@ -5722,6 +5732,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);
@@ -5747,6 +5758,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);
@@ -5772,6 +5784,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);

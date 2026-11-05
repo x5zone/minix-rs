@@ -105,3 +105,13 @@ SECTIONS
         *(.note .note.*)
     }
 }
+
+/* 自引导形态把固定的 KERN_SIZE = 0x40_0000 交给 KernelInfo（src/bootface*.rs），
+   分类阶段按这个字面量扣减内核映像、DM 覆盖也按它取窗：若映像跨度（末段
+   memsz，即 .bss 结尾按 2MiB 收口后的值）超过该字面量，内核 .bss 的尾部
+   （含来源记录、模块表与参数 landing pad）会落在保留窗口之外，VM 引导分配器
+   可能把内核 .bss 页发出去。链接期直接失败，不留运行时隐患。
+   判据用收口前的 __bss_end：跨度以 2MiB 对齐，__bss_end 不超过 4MiB 时对齐
+   后的跨度必然 ≤ 4MiB。 */
+ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000,
+       "kernel-image memsz exceeds KERN_SIZE (0x400000) — update KERN_SIZE in src/bootface.rs / bootface_a64.rs")

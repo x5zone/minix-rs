@@ -300,7 +300,7 @@ pub extern "C" fn bootface_a64() -> ! {
 
     // 6. KernelInfo plus the real arch_boot gate (validate → build the root
     //    → DM → jump_to_kmain; it never returns to this face).
-    let kernel_info: KernelInfo = build_kernel_info(
+    let mut kernel_info: KernelInfo = build_kernel_info(
         memmap,
         reserved,
         VirBytes(KERN_VIRT_BASE),
@@ -312,6 +312,9 @@ pub extern "C" fn bootface_a64() -> ! {
         platform_sources,
         param_buf,
     );
+    // Same handover as the riscv half: the collector's records back the
+    // projected map, and the consumer boundary re-audits the pairing.
+    kernel_info.memmap_sources = sources;
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)
 }

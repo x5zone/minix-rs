@@ -60,6 +60,7 @@ pub fn build_kernel_info(
     minix_boot::KernelInfo {
         memmap,
         reserved_regions,
+        memmap_sources: &[],
         kern_virt_base,
         kern_phys_base,
         kern_size,

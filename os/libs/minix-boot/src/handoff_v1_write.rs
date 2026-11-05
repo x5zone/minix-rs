@@ -23,8 +23,10 @@ use crate::handoff_v1::{
     WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP,
     WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET, WIRE_PLATFORM_CAP,
     WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
+    WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET, WIRE_SOURCE_RECORD_SIZE, WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, KernelInfo, MemoryRegion};
+use crate::memmap_source::SourceRecord;
 use crate::platform::PlatformDescSource;
 use core::mem::size_of;
 
@@ -47,6 +49,8 @@ pub enum HandoffV1WriteError {
     ModuleNameTooLong,
     /// `param_buf` bytes exceed the 1024-byte protocol capacity.
     ParamTooLong,
+    /// More memory-map source records than the wire partition can hold.
+    TooManySourceRecords,
 }
 
 /// Runtime handoff fields, patched in after the root switch (the bump cursor
@@ -84,6 +88,7 @@ mod offsets {
     pub const MODULES_BYTE_LEN: usize = 144;
     pub const PLATFORM_BYTE_LEN: usize = 152;
     pub const PARAM_BYTE_LEN: usize = 160;
+    pub const SOURCES_BYTE_LEN: usize = 168;
 }
 
 fn put_u32(arena: &mut [u8], off: usize, value: u32) {
@@ -265,6 +270,38 @@ impl<'a> Serializer<'a> {
         Ok(())
     }
 
+    /// Serialize the memory-map source records. Unlike the map partitions
+    /// there is no semantic twin: the receiver lands them in its own
+    /// fixed-size store.
+    pub fn write_sources(
+        &mut self,
+        sources: &[SourceRecord],
+    ) -> Result<(), HandoffV1WriteError> {
+        if sources.len() > WIRE_SOURCES_CAP {
+            return Err(HandoffV1WriteError::TooManySourceRecords);
+        }
+        for (i, record) in sources.iter().enumerate() {
+            let wire = WireSourceRecord::encode(record);
+            let off = WIRE_SOURCES_OFFSET + i * WIRE_SOURCE_RECORD_SIZE;
+            put_u64(self.arena, off, wire.start);
+            put_u64(self.arena, off + 8, wire.end_lo);
+            put_u64(self.arena, off + 16, wire.end_hi);
+            self.arena[off + 24..off + 26].copy_from_slice(&wire.id.to_le_bytes());
+            self.arena[off + 26] = wire.kind;
+            self.arena[off + 27] = wire.origin_tag;
+            self.arena[off + 28..off + 30].copy_from_slice(&wire.a.to_le_bytes());
+            self.arena[off + 30..off + 32].copy_from_slice(&wire.b.to_le_bytes());
+            put_u64(self.arena, off + 32, wire.cut);
+            put_u64(self.arena, off + 40, wire.reserved);
+        }
+        put_u64(
+            self.arena,
+            offsets::SOURCES_BYTE_LEN,
+            (sources.len() * WIRE_SOURCE_RECORD_SIZE) as u64,
+        );
+        Ok(())
+    }
+
     /// Dual-write one memory-map entry: `WireMemoryRegion` into the wire
     /// partition and `MemoryRegion` into the semantic work partition. Called
     /// from the EBS pairing loop once per classified descriptor.
@@ -379,6 +416,7 @@ mod tests {
         KernelInfo {
             memmap: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,

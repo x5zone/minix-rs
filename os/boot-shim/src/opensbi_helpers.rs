@@ -237,12 +237,13 @@ impl BootShim for RiscvUbootBootShim {
         // memmap source = DTB (OpenSBI/U-Boot pass the DTB in a1 and
         // `install_dtb_ptr` is already in place; `fw_end = 0` is not
         // trimmed — on this leg the OpenSBI region is reclaimable and the
-        // module region is cut by the kernel-side `cut_memmap`, which is
+        // module regions are excluded by the kernel's bootstrap-pool
+        // exclusions and covered by the A2 deduction record, which is
         // equivalent to the former single-region hardcoding while taking the
         // source from the real DTB). A missing DTB means an honest halt (no
         // fallback; the single-region hardcoding is exactly the leak surface
         // being closed here).
-        let (memmap, reserved, param_buf) = {
+        let (memmap, reserved, param_buf, sources) = {
             let dtb_pa = dtb_ptr().expect(
                 "boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）",
             );
@@ -291,7 +292,7 @@ impl BootShim for RiscvUbootBootShim {
             // SAFETY: leaked 'static landing buffer; the slice covers the
             // normalized prefix only.
             let param = unsafe { core::slice::from_raw_parts(ptr, stats.bytes) };
-            (memmap, reserved, param)
+            (memmap, reserved, param, sources)
         };
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
@@ -319,7 +320,7 @@ impl BootShim for RiscvUbootBootShim {
             None => &[],
         };
 
-        let kernel_info = build_kernel_info(
+        let mut kernel_info = build_kernel_info(
             memmap,
             reserved,
             kern.kern_virt_base,
@@ -350,6 +351,10 @@ impl BootShim for RiscvUbootBootShim {
             platform_sources,
             param_buf,
         );
+        // Records cross the first hop: uboot_main serializes this field into
+        // the source partition, and the receiver's KernelInfo::validate
+        // re-audits the pairing on the other side.
+        kernel_info.memmap_sources = sources;
 
         // No ExitBootServices analogue on OpenSBI — U-Boot already handed
         // over control before the boot-shim started executing.

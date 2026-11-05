@@ -323,7 +323,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     // 6. KernelInfo (boot-shim `build_kernel_info` lane) + the real arch_boot
     //    gate (validate → build root → DM → jump_to_kmain, never returning to
     //    this face).
-    let kernel_info: KernelInfo = build_kernel_info(
+    let mut kernel_info: KernelInfo = build_kernel_info(
         memmap,
         reserved,
         VirBytes(KERN_VIRT_BASE),
@@ -335,6 +335,10 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         platform_sources,
         param_buf,
     );
+    // The records the collector just produced back the map it produced; the
+    // consumer-boundary audit inside `KernelInfo::validate` re-checks the
+    // pairing, so the handover is not a promise but a verified fact.
+    kernel_info.memmap_sources = sources;
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)
 }

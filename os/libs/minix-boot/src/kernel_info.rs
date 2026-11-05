@@ -5,6 +5,7 @@
 
 use minix_types::{VirBytes, PhysBytes};
 
+use crate::memmap_source::{SourceRecord, SourceAuditError};
 use crate::platform::PlatformDescSource;
 
 // ── Data structures ──
@@ -45,6 +46,15 @@ pub struct KernelInfo {
     /// OpenSBI/U-Boot and host tests pass `&[]` (no runtime identity
     /// window; those platforms do not link the kernel into the shim).
     pub reserved_regions: &'static [MemoryRegion],
+
+    /// Provenance records behind [`Self::memmap`] / [`Self::reserved_regions`]:
+    /// one record per input declaration (or derived firmware prefix), naming
+    /// the object and the offset inside it. Empty means the boot leg did not
+    /// carry records (the UEFI leg today — its per-descriptor provenance is
+    /// not on the wire yet). A non-empty list is re-audited by
+    /// [`Self::validate`], so the consumer boundary refuses to boot on a
+    /// projected span that no record explains.
+    pub memmap_sources: &'static [SourceRecord],
 
     /// Kernel virtual base address.
     /// C: kinfo.vir_kern_start = &_kern_vir_base — pre_init.c:113
@@ -229,6 +239,39 @@ impl KernelInfo {
             self.param_buf.len(),
             MULTIBOOT_PARAM_BUF_SIZE
         );
+
+        // 6. Source records, when the leg carried any, must explain every
+        //    projected span. The sending side already ran this audit; running
+        //    it again here is the consumer-boundary proof (same shape as the
+        //    VM handoff's `LiveBootstrap ∩ VM-free = ∅` re-check): nothing
+        //    between the producer and this point can strip a span of its
+        //    provenance unnoticed.
+        if !self.memmap_sources.is_empty() {
+            match crate::memmap_source::audit_source_coverage(
+                self.memmap,
+                self.reserved_regions,
+                self.memmap_sources,
+            ) {
+                Ok(()) => {}
+                Err(error) => panic!(
+                    "KernelInfo: source records do not cover the projected map: {error:?}"
+                ),
+            }
+        }
+    }
+
+    /// One-line description of the audit failure for diagnostics, or `None`
+    /// when the records cover both projections.
+    pub fn source_audit(&self) -> Option<SourceAuditError> {
+        if self.memmap_sources.is_empty() {
+            return None;
+        }
+        crate::memmap_source::audit_source_coverage(
+            self.memmap,
+            self.reserved_regions,
+            self.memmap_sources,
+        )
+        .err()
     }
 
     /// **Boot-postcondition assertions equivalent across boot forms** (the
@@ -313,11 +356,18 @@ impl KernelInfo {
     /// bootstrap allocator, `VmBootRegion::select_multi` in
     /// `os/arch/src/arch/frame.rs`) must exclude the occupied ranges
     /// (kernel image + modules) explicitly, mirroring C's `cut_memmap`
-    /// (pre_init.c:190-214). The kernel's `FREE_MEMMAP` (Phase A.2) applies
-    /// that cut for boot-module regions only.
+    /// (pre_init.c:190-214). The kernel keeps no mutable copy of this map:
+    /// each boot-time consumer subtracts the occupied ranges it must not
+    /// touch (`vm_boot_exclusions` for the VM bootstrap pools,
+    /// `vm_handoff::classify` for the handoff free list).
     /// C: `kinfo.memmap[]` — pg_utils.c add_memmap/cut_memmap
     #[inline]
     pub fn memmap(&self) -> &'static [MemoryRegion] { self.memmap }
+
+    /// Provenance records handed over with the memory map (empty when the
+    /// boot leg carried none).
+    #[inline]
+    pub fn memmap_sources(&self) -> &'static [SourceRecord] { self.memmap_sources }
 
     /// Non-conventional (occupied) physical regions — the kernel runtime
     /// identity windows replayed into every process page table.
@@ -436,6 +486,7 @@ mod tests {
         KernelInfo {
             memmap: &[MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 }],
             reserved_regions: &[MemoryRegion { base: PhysBytes(0x1da00000), len: 0x1000 }],
+            memmap_sources: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
@@ -453,6 +504,43 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
         }
+    }
+
+    /// Records that explain both projections: one `/memory` record for the
+    /// conventional span and one `reserved-memory` record for the reserved
+    /// span.
+    static COVERING_RECORDS: [SourceRecord; 2] = [
+        SourceRecord {
+            id: 0,
+            kind: crate::memmap_source::SourceKind::Memory,
+            origin: crate::memmap_source::SourceOrigin::MemoryNode { node: 0, reg: 0 },
+            range: crate::memmap_source::PhysicalRange::new(0x100000, 0x1100000),
+        },
+        SourceRecord {
+            id: 1,
+            kind: crate::memmap_source::SourceKind::ReservedOrdinary,
+            origin: crate::memmap_source::SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 },
+            range: crate::memmap_source::PhysicalRange::new(0x1da00000, 0x1da01000),
+        },
+    ];
+
+    #[test]
+    fn test_validate_accepts_covering_source_records() {
+        let mut info = make_valid_info();
+        info.memmap_sources = &COVERING_RECORDS;
+        info.validate();
+        assert!(info.source_audit().is_none());
+    }
+
+    /// The consumer-boundary audit is fail-closed: dropping the only record
+    /// of the reserved span leaves it unexplained, and validation refuses to
+    /// proceed instead of carrying a span with no provenance.
+    #[test]
+    #[should_panic(expected = "source records do not cover the projected map")]
+    fn test_validate_rejects_span_without_source_record() {
+        let mut info = make_valid_info();
+        info.memmap_sources = &COVERING_RECORDS[..1];
+        info.validate();
     }
 
     #[test]
