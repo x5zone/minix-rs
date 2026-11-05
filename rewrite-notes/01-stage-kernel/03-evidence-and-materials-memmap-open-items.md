@@ -2116,3 +2116,15 @@ PmmRoleRejected(role, ctx) ⊆ PmmBaseAvailable(ctx)
 <!-- 自正文 O-13b 的容量段（按 11 条模块推成 46、未证明 MAX_BOOT_REGIONS 作用域） 移入 -->
 
 第二跳的容量推导按**最终 wire 记录数**算，不是按语义来源数（第九十八轮更正）：`deducted` 数组里存的是**与候选页域相交后实际参与扣减的范围片段**——内核映像、自身根页、bump 整段、模块 blob 各是一条**整段**记录，而**每个被触碰的池区间各产生一条已用后缀记录**（`MAX_BOOT_REGIONS = 32`）。所以最坏情况是 `3 + 32 + 11 = 46` 条，**大于 `VM_BOOT_HANDOFF_MAX_DEDUCTED = 32`**；散文里那句「逐项相加 22」只在「每个池只碰一个区间」时成立。当前 `record.push` 在超容量时直接命中 `deduction record overflow — LiveBootstrap is not enumerable within capacity` 的断言——**这是启动期 panic 路径，不是可接受的失败形状**。O-13b 的验收：给出按分片数的上界推导并把容量提到该上界（或把记录按语义合并后重新推导），
+
+### 评审身份（第九十九轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | `a7d9ab4fa78f3b635d819844b9d0480ad5d08937`（第九十九轮合并提交） |
+| `CodeEvidenceCommit` | `53c44e846`（146/70 与交叉编译的代码基线；其后各批无代码改动） |
+| `DocumentRevision` | 第九十九轮 |
+| `DocumentFileHash`（正文 sha256，按合并提交） | `6628418e62755d6c150476ddf2154bfc2a0257c79d610e0db5a4d04d7624a4f9` |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | `e32bb7e30770f49c0e5c501436348adbc7c887544e38be82f325118dc683e5df` |
+| 上一轮（第九十八轮）合并提交 | `aece113f8`，正文 `afb050f4f8…`、档案 `e2d82e46ee…` |
+| `WorkingTreeDiffHash` | 不适用：本轮无未提交修改 |

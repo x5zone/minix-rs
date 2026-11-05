@@ -1137,7 +1137,7 @@ PmmSourceCandidatePages(ctx) = RamSourcePageDomain \ PmmSourceExcludedPages(ctx)
 |---|---|---|
 | `CodeEvidenceCommit` | 146/70 两条宿主读数与交叉编译实际对应的代码提交 | `53c44e846`（其后各批均为纯文档，无代码改动，故读数未重跑） |
 | `DocumentRevision` | 本轮正文与档案的版本 | 第九十九轮；`03` 至六十八节、`01-design-note-hardware-admission-model.md` v1 |
-| `ReviewedRepositoryCommit` | 评审人应拿去核对的完整仓库提交（文档 + 代码） | 每轮在横幅里写**本轮合并提交的完整 SHA**；分支头是移动引用，不能当评审身份。第九十八轮：`aece113f8131d849a34a5faa7c68cd8ec3747b58`（正文 sha256 `afb050f4f8250a525990fb87d0ee8f597c3cfa258a27184f3c94a0a792e5cfb0`、档案 sha256 `e2d82e46ee4e17d58f0f834ea9f93d5685549925450bbbc4c0882e987d020813`，同值存档于 `03` 六十八节） |
+| `ReviewedRepositoryCommit` | 评审人应拿去核对的完整仓库提交（文档 + 代码） | 每轮在横幅里写**本轮合并提交的完整 SHA**；分支头是移动引用，不能当评审身份。第九十九轮：`a7d9ab4fa78f3b635d819844b9d0480ad5d08937`（正文 sha256 `6628418e62755d6c150476ddf2154bfc2a0257c79d610e0db5a4d04d7624a4f9`、档案 sha256 `e32bb7e30770f49c0e5c501436348adbc7c887544e38be82f325118dc683e5df`，同值存档于 `03` 六十九节；第九十八轮的值同时保留在那里，便于回溯） |
 | `DocumentFileHash` / `03ArchiveFileHash` | 正文与档案的字节级身份 | 按上述合并提交计算，列在 `03` 六十八节；未提交的工作树版本另记 `WorkingTreeDiffHash` |
 
 横幅时间与本表由第四道门对账；三者任一不符即说明材料不是同一版。
