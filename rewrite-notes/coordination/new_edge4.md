@@ -5724,4 +5724,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 操作名分三层（共享需求／RISC-V adapter／硬件保护检查），把不在枚举里的 `Write` 统一成 `NormalWrite`。DTB 首读与 `no-map` 先后裁定为启动输入例外：`BootInputReadUse` 一次性只读、不等价于 `DriverControlledUse`，MRB 与 `no-map` 不共用 `BootInputProvenance`。
 - 代码读数补进 §2.4：内核→VM 的扣减记录（`fn build_vm_handoff`）五类范围可枚举、`LiveBootstrap ∩ VM-free = ∅` 在消费边界核对、容量溢出当场失败，五枚测试在册；未闭合两项——第一跳 memmap 逐字写着 not filtered（内核映像与模块占用不在第一跳），容量核算未按三架构验证。
 - 门：1687 行（**余 13**）、围栏 48（偶）、表格 57 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失 lost 0；无代码改动，沿用 minix-boot **146** / boot-shim **70**。
-- 认领：`I-29 qorder95`（基线 `e84dfc54f`），状态 🔄。
+- 认领：`I-29 qorder95`（基线 `e84dfc54f`），状态 ✅：第九十五轮已 ff 合并为 `8696444d6`，认领已释放。送审正文 1687 行 / 136,442 字符（距 1700 门余 13 行），送审继续用三封分段包。
