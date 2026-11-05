@@ -12,6 +12,20 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第九十八轮（四段归属收敛、PMM 基底补齐来源排除、首次分配时间线钉到实例、容量按接受数重算）**
+
+- **O-02a 的三处矛盾按唯一口径收敛**：四段责任表此前仍写第 2、3 段属 I-29，与同节「五项归专项」及 §7「只交付第一段」互相打架。现在表与后文统一为 **I29-1（来源事实进入交接）／BootRoot-2（编译引导根负向投影）／BootRoot-3（编译对象正向授权计划）／Paging-4（建表消费与验收）**，并补一条细分：I-29 交付**对象事实**（身份、占用范围、最后使用阶段、来源类型），不交付**对象映射授权计划**（`ObjectId + PA + VA + R/W/X + Tree + Phase + AccessPath` 的编译属 BootRoot-3）。
+- **PMM 基底定义补齐，这是本轮最重要的模型修正**：只留互补等式而不写「谁决定一页进入哪一侧」，等式就是空壳；而 O-06 的类型与生命周期处置不能因为硬件准入迁出就一起消失。现在定义 `PmmSourceExcluded = Union(静态保留, 存活对象, 类型政策, 生命周期)`，每项贡献带 `(SourceRef, Reason, RawRange, PageProjection, Phase)`；`PmmSourceCandidatePages = RamSourcePageDomain \ PmmSourceExcluded` 是**本项的输出边界**；消费者再减 `HardwareAdmissionExcluded` 才得到最终 `PmmBaseAvailable`。名字这样拆，是为了不让「来源上可用」被读成「最终可分配」。`TypeAllocatablePages` 的角色也随之明确：它是 `TypePolicyExclusions` 的构造输入。
+- **首次分配时间线钉到分配器实例**：两处 `select_multi` 里，`#[cfg(feature = "mock")]` 那一处真实构建根本不编译；真实分支传的是**未裁剪的** `kernel_info.memmap()`、排除只有内核映像与模块；`VmBootAllocator::new` 不做重叠检测；第一次真实交付发生在 `load_elf_into` 的首次 `alloc_page`；`build_vm_handoff` 在其后且只读。结论分两层：**候选含 bump 池、首次分配早于任何扣减——已证明**；**实际分配页是否碰到 bump 池——未证明**。验收要两枚测试：候选侧 `BootBumpRange ∩ FirstVmBootAllocatorCandidates = ∅` 与结果侧 `FirstVmAllocatedPages ∩ BootBumpRange = ∅`，后者不能被前者替代。
+- **容量按接受数重算**：缓冲按 `max(初始, 16 KiB) + max(DescriptorSize,64)×8 + PAGE_SIZE` 算，最小 stride 40 时是 20,992 字节、能装 524 条；但解析器只接受 256 条。所以 `MaxAcceptedDescriptorCount = min(256, floor(缓冲/40)) = 256`，正文此前那句「容量 ≥ 缓冲可容纳的最大描述符数」会推出 524，是错的。「取图前发现不足」也不成立——真实条数只能取图后知道，正确写法是「取图前按 256 预分配 + 取图后超限立即拒绝」。另补总容量五项公式。
+- **O-13b 的 32 条容量不够**：`deducted` 存的是**裁剪后的片段**——内核映像、根页、bump、模块各一条整段记录，**每个被触碰的池区间各一条已用后缀**（`MAX_BOOT_REGIONS = 32`），最坏 `3 + 32 + 11 = 46 > 32`，超容量直接命中 `deduction record overflow` 断言，是**启动期 panic 路径**。散文里「逐项相加 22」只在每个池只碰一个区间时成立。
+- **O-06 按五列拆开**（属来源域／`MemoryKind`／类型允许普通映射／类型允许普通分配／生命周期），并用反例逐列说明为什么一个布尔代答不了：`UNUSABLE` 属域内但类型禁止使用、`PERSISTENT` 有 backing 但不是第一版普通易失 PMM、`UNACCEPTED` 需先被接受。
+- **§7 的输入真实性拆 provenance／reachability**：I-29 负责对象身份、地址域、授权范围、阶段与失效点及来源依据；端到端可达性与非受控推测访问限制归 BootEntry 与架构 adapter。「配置表 DTB 指针存在」不能推出它可读。
+- **证据身份固定为提交 SHA**：分支头是移动引用，不能当评审身份；`ReviewedRepositoryCommit` 改为本轮合并提交的完整 SHA，另列 `DocumentFileHash`／`03ArchiveFileHash`（按合并提交计算，写在 `03` 六十八节）。
+- **登记六项实施清理（不在本轮动代码）**：`collect_with_sources()` 设为唯一正式结果（`DtbMemorySnapshot`）；`FREE_MEMMAP` 删除或改造成唯一权威输入；`VmBootAllocator` 只接受经过校验的候选区；`ebs_map.rs` 注释与实现统一；`VM_BOOT_HANDOFF_MAX_DEDUCTED` 重新推导并补边界测试；来源记录总容量五项分列。
+- **读数**：简报 1114 → **1170 行**、98,022 → **101,779 字符**（单封仍可送）；门：围栏 30（偶）、表格 50 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0。无代码改动，沿用 minix-boot **146** / boot-shim **70**。
+
+
 **第九十七轮（迁移补净、三条分配路径对齐、O-02a 归属同步、容量与 ABI 给出可计算结论）**
 
 - **上一轮的迁移不彻底**：第九十六轮只迁走 O-12i 后半节，正文仍留着 `MemoryAdmissionContext` 的架构证据槽位、`PmmBaseAvailable` 右侧那串交集（缓存可表达性／内存序／与用途无关的物理访问准入／ISA Profile 义务）、`RoleAdmit`／`PmmRoleEligible`、`MappingIntent`／`MappingAudit`、`DenyStandardSystemMapping`／`DenyUncontrolledSpeculativeAccess` 的叶子级判定与投影版本键。本轮把它们逐字补迁到专项册（现 762 行 / 53,820 字符），本项只留三条公式与一段解释。

@@ -5749,3 +5749,15 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - no-map 补 `BootInputReadEligible` 五项准入（第五项 `uncontrolled_speculative_access_is_prevented` 是每条入口与架构的保证，机制归专项，证明不出即拒绝该输入布局）；MRB 侧四问 ABI 合同；UEFI 类型 12 独立成 `UefiMmioPortSpaceAddress`，不与 O-08 的 x86 端口策略共用类型。§6 证据身份三分（`CodeEvidenceCommit 53c44e846` / `DocumentRevision 第九十七轮` / `ReviewedRepositoryCommit 本轮分支头`）。
 - 门：简报 1090 → **1113 行** / 97,726 字符（单封可送）、围栏偶、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
 - 认领：`I-29 qorder97`（基线 `34027b8da`），状态 ✅：第九十七轮已 ff 合并为 `f1843f4b4`，认领已释放。简报 1114 行 / 98,022 字符（单封可送审），专项册 761 行；`FREE_MEMMAP` 零读者与自引导腿 bump 相交两项是下一段的实际交接边界。
+
+
+### 第三百零五笔（01 阶段 · I-29 第九十八轮：责任收敛、PMM 基底补来源排除、容量按接受数重算）
+
+- O-02a 的三处矛盾收敛：四段表改为 **I29-1／BootRoot-2／BootRoot-3／Paging-4**，并写明 I-29 交付**对象事实**而非**对象映射授权计划**（后者是 `ObjectId + PA + VA + R/W/X + Tree + Phase + AccessPath` 的编译，属 BootRoot-3）。
+- PMM 基底定义补齐（本轮最重要模型修正）：`PmmSourceExcluded = Union(静态保留, 存活对象, 类型政策, 生命周期)`，每项带 `(SourceRef, Reason, RawRange, PageProjection, Phase)`；`PmmSourceCandidatePages = RamSourcePageDomain \ PmmSourceExcluded` 是本项输出边界；消费者再减 `HardwareAdmissionExcluded` 得 `PmmBaseAvailable`。O-06 的 `TypeAllocatablePages` 明确为 `TypePolicyExclusions` 的构造输入。
+- 首次分配时间线按实例钉死：mock 分支那处 `select_multi` 真实构建不编译；真实分支用**未裁剪的** `kernel_info.memmap()`（排除只有内核映像与模块）；`VmBootAllocator::new` 不做重叠检测；第一次真实交付在 `load_elf_into` 首次 `alloc_page`；`build_vm_handoff` 在其后只读。结论分两层：候选含 bump 且首次分配早于扣减（已证明）；实际分配到 bump 页（未证明）。验收两枚测试：`BootBumpRange ∩ FirstVmBootAllocatorCandidates = ∅` 与 `FirstVmAllocatedPages ∩ BootBumpRange = ∅`。
+- 容量按接受数重算：缓冲最小 20,992 B 可装 524 条 40 B 描述符，但解析器只接受 256 条 → `MaxAcceptedDescriptorCount = min(256, floor(缓冲/40)) = 256`；「取图前发现不足」改为「取图前按 256 预分配 + 取图后超限立即拒绝」；补 `TotalSourceCapacity` 五项公式（UEFI/DTB/派生/启动对象/平台资源，后两项今天无独立容量）。
+- O-13b 的 `deducted` 是**裁剪片段**：3 条整段 + 最多 32 条池区间已用后缀 + 11 条模块 = 最坏 46 > `MAX_DEDUCTED = 32`，超容量命中 `deduction record overflow` 断言，是启动期 panic 路径；散文「相加 22」只在每个池只碰一个区间时成立。
+- O-06 拆五列并逐列给反例；§7 拆 provenance／reachability（指针存在不能推出可读）；证据身份固定为合并提交 SHA + 两个文件哈希（按合并提交写在 `03` 六十八节）；登记六项实施清理（`DtbMemorySnapshot` 唯一结果、删改 `FREE_MEMMAP`、`VmBootAllocator` 只收校验过的候选、`ebs_map` 注释统一、扣减容量重推、总容量分列）。
+- 门：简报 1114 → **1170 行** / 101,779 字符（单封可送）、围栏 30 偶、表格 50 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
+- 认领：`I-29 qorder98`（基线 `f1843f4b4`），状态 🔄。
