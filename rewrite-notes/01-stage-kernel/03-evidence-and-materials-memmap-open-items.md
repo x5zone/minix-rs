@@ -1126,3 +1126,17 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 待核清单 | cache-block 的 PMA supported-access-type 读数需平台 profile；AArch64 Table 2.5/2.6 与 UEFI 属性位仍只有第三方核对；`PmpEvidence` 的不可变承诺协议未实现；共享层改名（`ctx.H` 符号、`Pmp*` 谓词归属 adapter）尚未反映到任何代码 |
 | 主简报 | 1696 行（上限 1700）；围栏 50（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
+
+## 四十九、第七十八轮：谓词接入、对象访问闭合与共享层类型
+
+| 项 | 读数 |
+|---|---|
+| 本轮新增规范取证 | `src/priv/supervisor.adoc` 1701–1705 的 `norm:lr_sc_rsrv_set_page`：「For implementations with both page-based virtual memory and the ext:a[] standard extension, the LR/SC reservation set must lie completely within a single base physical page (i.e., a naturally aligned 4 KiB physical-memory region).」；`src/unpriv/cmo.adoc` 383–389 的 `norm:cbp_access`（prefetch 许可条件与「不许可时不产生异常、不访问内存」）。命令：`grep -n "reservation set" supervisor.adoc`、`grep -n "cbp_access" cmo.adoc` |
+| 评审人本轮撤回 | 上一轮「A/D 真值表最后一行与规范冲突」的判断被其本人撤回：区分「Svadu 不存在导致 ADUE 只读 0」与「Svadu 存在且 ADUE 读回 0」是正确的，第四行并非已证错误。本方无需改动该行 |
+| 评审人本轮独立核对（第三方） | UEFI `GetMemoryMap` 属 Memory Allocation Services，首次 `ExitBootServices` 失败后再次取图与规范的部分关闭规则不冲突；标准 DTB 位于 `EfiACPIReclaimMemory`、按物理地址解释；`EfiReservedMemoryType` 为「Not usable」；2.11 属性位低位组与 2.10 原始版不同 |
+| 主文档更动 | ① `RoleAdmit(AtomicSharedState, …)` 派发 + `AtomicRoleEligible` 逐 CPU 几何；② `AdmissionContextValid` / `ProfileMemoryEligiblePages` 进公式；③ `ActualAccessInstance` + `AccessAlignmentSatisfied` + `RequiredCpus ≠ ∅`；④ `GeneralDataCompleteness` 进 `BasePageEligible`；⑤ LR/SC 基础页内约束与 profile 几何分层；⑥ `operation` 语义名 + `adapter_evidence` 槽位；⑦ `CacheMaintenance{Prefetch}`；⑧ `PolicyProjectionKey`；⑨ O-12g 与 §7 状态同步 |
+| 压缩记录 | 删除 5 处被正式定义取代的散文（O-11 两个时点、两半 bullet、访问类别段、历史说明段、标准 DTB 表段），收紧 4 个代码块；净 +1 行（1696 → 1697） |
+| 符号核查（主文档实测计数） | `ActualFootprints` **0**（已撤销）、`ActualAccessInstance` 2、`AccessAlignmentSatisfied` 2、`RoleAdmit(AtomicSharedState` 3、`AdmissionContextValid` 3、`ProfileMemoryEligiblePages` 3、`GeneralDataCompleteness` 4、`base_page_containment` 2、`lr_sc_rsrv_set_page` 2、`CacheMaintenance` 3、`PolicyProjectionKey` 1、`NormalRead` 2 |
+| 待核清单 | AArch64/x86 adapter 的语义→机制展开表未写；`PmpEvidence` 不可变承诺协议、`ReservationSetGeometryPermits` 的 profile 来源、`NotApplicable` 分支均无实现；x86 变长指令跨页仍按架构事实；UEFI 属性位与 Table 2.5/2.6 仍只有第三方核对 |
+| 主简报 | 1697 行（上限 1700）；围栏 50（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |

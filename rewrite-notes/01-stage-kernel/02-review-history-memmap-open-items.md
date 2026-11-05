@@ -12,6 +12,21 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第七十八轮评审之后：谓词接入最终公式、对象访问闭合、共享层类型落实）**
+
+- **P0 原子与 Profile 只定义未消费（成立，已改）**：`AtomicRoleEligible`、`ProfileAdmissionValid`、`ProfileMemoryEligiblePages` 三个谓词此前都没有调用点。本轮补 `RoleAdmit(AtomicSharedState, page, ctx) = ∀ algorithm ∈ RegisteredAtomicAlgorithms(ctx) : AtomicRoleEligible(...)` 派发式；`AdmissionContextValid(ctx) = ProfileAdmissionValid ∧ SystemPteUpdateSchemeUniform` 进 `BasePageEligible`，`ProfileMemoryEligiblePages` 进 `PmmBaseAvailable`。`ReservationSetGeometryPermits` 的签名不一致也一并修正为**逐 CPU、逐实际访问范围**。
+- **P0 对象访问三处真空/错误通过（成立，已改）**：① 实际访问起点没有对齐检查 → 引入 `ActualAccessInstance` 与 `AccessAlignmentSatisfied`；② 取指实例的宽度被单个 `use.access_requirement` 抹平 → 改为按实例的 `requirement` 判每个片段；③ `RequiredCpus(use)` 可为空 → 加 `≠ ∅`，无 CPU 直接访问须显式 `NotApplicable`。
+- **P1 `GeneralDataCompleteness` 只在散文里（成立，已改）**：`BasePageEligible` 增加 `GeneralDataCompleteness(ctx) = Complete`——非空集合不等于完整清单。
+- **P1 LR/SC 基础页内约束（成立，已改）**：`norm:lr_sc_rsrv_set_page` 规定「For implementations with both page-based virtual memory and the A standard extension, the LR/SC reservation set must lie completely within a single base physical page (i.e., a naturally aligned 4 KiB physical-memory region).」这是**基础 ISA 义务**，第一版不声明 profile 也必须满足；`Za64rs` 的几何是 profile 附加项。`ReservationSetRequirement` 因此分 `base_page_containment` 与 `profile_geometry` 两层，`LegalStarts` 表也把 LR/SC 与 AMO 拆开写。
+- **P1 共享层类型未落实（成立，已改）**：`AccessRequirement.operation` 改用语义名（`NormalRead`/`NormalWrite`/`InstructionFetch`/`AtomicUpdate{width,progress}`/`CacheMaintenance{kind}`），RISC-V 的 `RequiredPermission` 表明确标注为 adapter 展开；`MemoryAdmissionContext` 的 `pte_update_scheme_id` 移入 `adapter_evidence` 槽位，并补 `source_snapshot_set_id`。
+- **P1 `CacheBlockPrefetch` 缺失（成立，已改）**：CMO 三类操作统一进 `CacheMaintenance{Management, Zero, Prefetch}`，第一版一律 `UnsupportedAccessOperation`；正文补 `norm:cbp_access` 的「不许可时不产生异常也不访问内存」差异。
+- **P1 投影版本键（成立，已改）**：新增 `PolicyProjectionKey = SourceSnapshotSetId + AdmissionContextId + EvidenceGeneration`，并写明新 `MapSnapshotId` 即使描述符布局相同也必须重建。
+- **状态同步（成立，已改）**：O-12g 的「四条 DTB 调用点全部走 `collect()`」改为「riscv64 bootface 已接入 `collect_with_sources()` 并调用 `audit_source_coverage`，其余三个仍走 `collect()`」；§7 更新到第七十八轮，把已闭合的形式化缺陷从「未闭合」移到状态列。
+- 评审人本轮撤回了上一轮「A/D 真值表第四行与规范冲突」的判断，确认本方区分正确——该撤回已记入 `03`。
+- 为守住 1700 行：删除 5 处已被正式定义取代的散文（「两半」bullet、访问类别段、历史说明段、标准 DTB 表段、两个时点列表），并收紧 4 个代码块；主简报 1697 行。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1697 行、围栏 50（偶）、表格 61 块列数不一致 0 处、lint error 0。
+
+
 **本轮（第七十七轮评审之后：政策授权层、隐式页表读、需求完整性与架构边界）**
 
 - **P0 对象访问缺来源政策授权（成立，已改）**：`ObjectMappedAccessEligible` 原来只有「映射兑现 + 硬件准入」，没有政策层——PMP/PMA 都允许的 MRB 区域、硬件仍可读的 `EfiReservedMemoryType`、带 `no-map` 的非受控访问限制都会被绕过。新增 `ObjectPolicyAccessEligible(use, ctx) = AccessAuthorizationCovers(...) ∧ SourceSpecificDenialsSatisfied(...)`，并明确三类负向来源各按自己的规则解除，不得由一个通用布尔覆盖。

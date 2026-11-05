@@ -5550,4 +5550,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 架构边界裁定：共享层只表达语义，机制名（`Svade`/`ADUE`/`Amo`/`Lr`/`Sc`/`RsrvEventual`/PMP）归各架构 adapter；`hart_set_id → participating_cpu_set_id`、`pte_update_scheme_id` 不作共享必填、共享枚举去指令名。全部是候选类型，落码前重命名成本最低。
 - 待实现：以上全是候选合同，代码与负控为零；本轮还压掉 17 行重复内容以守住 1700 行上限。
 - 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 61 块列数不一致 0 处、主简报 1696 行、围栏 50（偶）。
-- 认领：`I-29 qorder78`（工作树 `.wt/i-29-qorder78`，基线 `2dfb7162d`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder78`（工作树 `.wt/i-29-qorder78`，基线 `2dfb7162d`），状态 ✅：已 ff 合并为 `da7c31fa3`，认领 `I-29 qorder78` 已释放。
+
+### 第二百八十六笔（01 阶段 · I-29 第七十八轮：谓词接入最终公式、对象访问闭合、共享层类型）
+
+- P0：① `AtomicRoleEligible` / `ProfileAdmissionValid` / `ProfileMemoryEligiblePages` 三个谓词此前没有任何调用点——补 `RoleAdmit(AtomicSharedState, …)` 派发式、`AdmissionContextValid` 进 `BasePageEligible`、`ProfileMemoryEligiblePages` 进 `PmmBaseAvailable`，并把 `ReservationSetGeometryPermits` 的签名统一为逐 CPU、逐实际访问范围；② 对象访问三处真空：实际起点无对齐检查（→ `ActualAccessInstance` + `AccessAlignmentSatisfied`）、取指实例宽度被单个 requirement 抹平（→ 按实例判）、`RequiredCpus` 可为空（→ `≠ ∅`，无 CPU 访问须 `NotApplicable`）。
+- P1：`GeneralDataCompleteness` 进 `BasePageEligible`；按 `norm:lr_sc_rsrv_set_page`（supervisor.adoc 1701–1705）把 LR/SC 的**基础页内约束**与 `Za64rs` 的 profile 几何分成两层——第一版不声明 profile 也不能把前者标成「不适用」；`operation` 改语义名、`pte_update_scheme_id` 移入 `adapter_evidence`；`CacheMaintenance{Prefetch}` 入模型；`PolicyProjectionKey` 绑定来源快照；O-12g 与 §7 状态同步。
+- 评审人本轮撤回了上一轮「A/D 真值表第四行与规范冲突」的判断，确认本方区分正确，已记入 03。
+- 待实现：全部为候选合同，代码与负控为零；AArch64/x86 adapter 的语义→机制展开表未写。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 61 块列数不一致 0 处、主简报 1697 行、围栏 50（偶）。为守 1700 行删了 5 处被正式定义取代的散文。
+- 认领：`I-29 qorder79`（工作树 `.wt/i-29-qorder79`，基线 `da7c31fa3`），状态 🔄，合并后释放。
