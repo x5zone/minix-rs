@@ -951,3 +951,17 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | AArch64 64 KiB | Table 2.5 / 2.6 的字段划分沿用先前轮次的记录，本轮只做结构化收紧：分组键、比较字段、profile 适用性、未映射子页；未新增规范断言 |
 | QEMU x86_64（同轮补记） | `bash qemu-tests/test-shim-bootmarks-x86.sh` → `### TEST_RESULT: PASS test-shim-bootmarks-x86 ###`；串口 `boot-shim: memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)`，即该腿不解析 ESP DTB，`UnsupportedDynamicReservation` 分支未被执行 |
 
+
+## 三十六、第六十四轮：主源取证与本轮读数
+
+| 项 | 读数 |
+|---|---|
+| 主源取法 | `curl` 直取规范仓库原文（不经二级镜像）：`raw.githubusercontent.com/riscv/riscv-isa-manual/main/src/priv/supervisor.adoc`（2079 行）、`.../src/priv/machine.adoc`（3639 行）、`raw.githubusercontent.com/devicetree-org/devicetree-specification/main/source/chapter3-devicenodes.rst`（1010 行）、`.../source/chapter5-flattened-format.rst` |
+| RISC-V 关键句 | `supervisor.adoc:1653` 锚点 `norm:pte_ad_scheme_uniform`「All harts in a system must employ the same PTE-update scheme as each other.」；`:1604` Svade 页故障定义；`:1608` 「When the Svade extension is not implemented, the following scheme applies」；硬件更新方案要求「The page tables must be located in memory with hardware page-table write access and *RsrvEventual* PMA」 |
+| RISC-V ADUE | `machine.adoc:2194-2216`：`norm:menvcfg_adue_op`、`norm:menvcfg_adue_rdonly0`、附注「hence Svade is implemented when ADUE=0」 |
+| RISC-V PMA | `machine.adoc:3052-3074` Reservability 三级 + `Ziccrse` 要求；`:3122-3133` 「Coherent main memory regions always have either the RVWMO or RVTSO memory model. Incoherent main memory regions have an implementation-defined memory model.」；`:3258-3292` Idempotency PMAs（主存假定幂等、I/O 读写分别规定、非幂等禁止提前/推测隐式访问）——**无 `Non-resident` 这一 PMA 名** |
+| DTSpec | `chapter3-devicenodes.rst:266-300`（reg 或 size、`alignment`/`alloc-ranges` 约束动态分配、「If both `reg` and `size` are present … `reg` property taking precedence and `size` is ignored」、`no-map`/`reusable` 互斥）；`:236-260` 父节点三项 Usage=R + 「should use the same values as for the root node, and `ranges` should be empty」；`:372-382` 静态保留入内存图（`no-map`→`EfiReservedMemoryType`、其余→`EfiBootServicesData`）与「Dynamic reserved memory regions must not be listed in the UEFI memory map」；`chapter5-flattened-format.rst:229`「These given regions shall not overlap each other」、`:246-247` MRB 用 `EfiReservedMemoryType` 是 *should* |
+| 未取证 | UEFI 2.11：`curl -I https://uefi.org/specs/UEFI/2.11/…` 返回 **403**，AArch64 平台绑定与 Table 2.5/2.6 分工、§4.6.1.3 的 DTB 表类型要求仍沿用评审人核对结论，标为**本方未取证** |
+| 主简报 | 1183 行（上限 1700）；代码围栏 26（偶）；表格列数不一致 0 处 |
+| 门 | 本轮无代码改动：minix-boot **137**、boot-shim **70**、riscv bootface 与 aarch64/x86_64 shim 三条腿沿用上一笔读数；纯文档提交按 lint/表格/行数三门 |
+

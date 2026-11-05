@@ -10,6 +10,19 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十四轮评审之后：A/D 真值表、准入上下文、规范原文改为本方直取）**
+
+- **撤销本方两处自设规则**：① 「hart 方案一致属项目准入、不是规范强制」不成立——`supervisor.adoc` 锚点 `norm:pte_ad_scheme_uniform` 逐字要求「All harts in a system must employ the same PTE-update scheme as each other」；② 「证据缺失默认 `SupervisorFaultManagedAd`」不安全——`ADUE=0` 与「未实现 Svadu」都推不出软件方案，Svade/Svadu 皆未实现时是**硬件更新**。
+- **`EffectiveSvade = SvadeImplemented ∨ (SvaduImplemented ∧ ADUE=0)`**，四行真值表补齐第四行；新增 `PteUpdateScheme = Unknown`：不可证时只有「逐 hart 固件证明」或「拒绝启动」两条出路；`PteUpdateEvidence` 字段扩展（Svade/Svadu 状态、有效 `ADUE`、hart、提供者、代次、`stability_until`），只读 `ADUE` 不够。规范约束 / 项目准入 / 项目实现责任三层分开写。
+- **`H` 进签名**：全部投影与谓词改为 `MemoryAdmissionContext {phase, hart_set_id, profile_id, evidence_generation, pte_update_scheme_id}`；`hart_set_id` 不能取 hart 数量；hart 集合变化、证据换代、方案变更都使既有投影失效（与 `MapSnapshotId` 同一条版本化原则）。
+- **SMP 拆三判定**：`HartRuntimeAdmission` / `CommonCpuAccessEligiblePages(ctx)` / `RoleAdmit(PageTable,·,ctx)`。上一版把「隐式页表访问」留在基底最低条件里，正是把用途条件塞回全局——只允许普通读写、不允许硬件页表遍历的页仍可作 `GeneralData`。
+- **原子用途补进展维度**：`AtomicAlgorithmRequirement`（指令族、宽度、是否依赖最终成功、fallback），`RsrvNone/RsrvNonEventual/RsrvEventual` 主源原文引用；AMO-only 不因此要求 `RsrvEventual`；`Ziccrse` 那条是规范要求而非推荐。
+- **术语更正**：`Idempotency PMAs` 的属性对是 `Idempotent`/`Non-idempotent`；上一版的 `Non-resident` 是**本方杜撰**，已撤销并写明。主存被规范**假定**幂等，故不能拿幂等观察反推 RAM 资格，也不能当区分主存与 MMIO 的判据。
+- **规范取证三分**：RISC-V（`riscv/riscv-isa-manual` 主分支 `src/priv/{supervisor,machine}.adoc`）与设备树（`devicetree-org/devicetree-specification` 主分支 `source/chapter3-devicenodes.rst`、`chapter5-flattened-format.rst`）改为**本方直接取证**并写出锚点；UEFI 2.11 侧（AArch64 平台绑定与 Table 2.5/2.6 分工、§4.6.1.3 DTB 表类型）本环境抓取 uefi.org 返回 403，仍是**本方未取证**，沿用评审人结论。
+- **动态保留依据闭合**：`reg`-or-`size`、`reg`+`size` 时「`reg` taking precedence and `size` is ignored」、动态区不入 UEFI 内存图都是 DTSpec 3.5 逐字规定 ⇒ `UnsupportedDynamicReservation` 拒绝的是**规范允许、本项目不支持**的输入。
+- 门：本轮无代码改动；沿用 minix-boot **137**、boot-shim **70**；主简报 1183 行。
+
+
 **本轮（第六十三轮评审之后：PMM 基底/用途两层代数 + size-only 保留拒绝落码）**
 
 - **§3 不变量 2 改写**：补集只在**基底层**成立——`PmmBaseAvailable(p) ⊍ PmmBaseExcluded(p) = RamSourcePageDomain`；用途层是基底上的子集筛选，`PmmRoleRejected(role, p) ⊆ PmmBaseAvailable(p)`，不产生第二张排除表。裸写 `PMMAvailable(p)` 不是良定义项，必须带 `RequiredUseSet`。
