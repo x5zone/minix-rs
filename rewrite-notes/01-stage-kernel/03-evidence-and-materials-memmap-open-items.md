@@ -1549,3 +1549,16 @@ cd os && cargo test -p boot-shim --lib
 | arena 使用区间 | 写：`os/kernel/src/lib.rs` 根激活后 `patch_runtime_fields_in(arena, …)`；再读：`pub fn arch_boot_resume_v1(arena_pa: u64)` 内 `from_raw_parts(arena_pa …, ARENA_CAP)`。**释放点未登记** |
 | 复核方式教训 | 同一会话内第二次「检查手段太窄却当成结论成立」（前一次是 `progress_guarantee = Eventual` 的带空格 grep）。今后涉及「谁分配了什么」必须按**被调函数名**与**注册点**两处 grep 交叉验证，不能只查一个符号 |
 | 门读数 | 正文 1689 行（≤1700）、围栏 48（偶）、表格 58 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失对账 lost 0；无代码改动，沿用 146 / 70 |
+
+## 六十、第八十九轮：范围回缩的读数与分页侧专项的交接清单
+
+> 本节保存**从主文档撤出的分页机制取证读数**——它们技术上有效，只是不属于 I-29。分页侧专项开工时以本节为起点，不必重新取证。
+
+| 事实 | 读数（本轮逐字复核） |
+|---|---|
+| 共享层降级接口 | `split_huge` 是 **trait 方法**：`os/arch/src/arch/paging.rs:fn split_huge`（默认实现），三架构各自覆盖：`riscv64/paging.rs`、`x86_64/paging.rs`、`arm64/paging.rs`；x86 与 arm64 各有降级算术的宿主测试。**`fn demote` 不存在**（`grep -rn "fn demote" os/arch/src` 零命中） |
+| `map_huge` 的 `AlreadyMapped` 含义 | riscv64 `map_huge` 的 L2 分支注释逐字：`L2 entry is already a 1GB leaf ... Demoting it to a table pointer would silently corrupt the existing 1GB mapping. Return AlreadyMapped to signal the conflict`——即**它自己绝不降级**；降级必须显式调 `split_huge` |
+| 缺中间表时的分配 | riscv64 与 x86_64 的 `map_huge` 都含 `let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;`；分配器是注册制函数指针，引导期提供方为 bump 分配器（`os/kernel/src/boot_alloc.rs` 注释：Called by Paging implementations via `pt_alloc::alloc_pt_page()`），bump 区按文件头注释是 identity mapping (VA = PA) |
+| 建表顺序 | Step 4 的 `establish_boot_dm` 在 `paging.enable()` **之后**执行（`os/kernel/src/lib.rs` 的 `arch_boot` 与 `enter_kernel_image_v1` 两条路径皆然）；今天新表页可写，是因为宽恒等段恰好覆盖了 bump 区 |
+| 产线降级先例 | `harden_kernel_text` 与 heap 窗口驱逐在活动根上调用 `split_huge` 并在失败时 `panic!` |
+| 交回 I-29 的条件 | 分页侧专项只需回传一件事给本项：**授权计划是否可被完整兑现**（实际 PTE 审计的双向判据结果）。粒度、容量、地址通道的结论不需要再进主文档 |
