@@ -10,6 +10,19 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十七轮评审之后：PMP 按访问类别索引、Profile 义务补齐与版本横幅）**
+
+- **第二次出现「按旧文本评审」**：本轮意见再次引用 `EffectiveSvade = SvadeImplemented ∨ …`、把 `SystemHartSet`、既存对象入场、`AtomicFallbackPlan` 都记为缺失，而四者在 `7aeea8964` 里都存在（上一轮 `7aeea8964` 之前的 `2eca58006` 已改）。教训：光在正文写「已撤销」不够，**评审入口必须先标明版本**。本轮在主文档标题下加**版本横幅**（用 `git log -1 --format=%h -- <本文件>` **自指**取「本文件最近一次改动的提交」，避免硬编码哈希在提交后立刻过期），并继续执行「正文不保留被撤销符号/公式原文」的规则（本轮把 `fallback_available`、`HartAdmittedBytes` 两个旧名也清零）。
+- **PMP 证据改为按访问类别索引**（本轮实质新增）：原 `HartAdmittedBytes(hart)` 是一组不带类型的字节集合，无法表达「普通读写可用、隐式页表读不可用」「页表可读、A/D 隐式写不可用」「读写可用、取指不可用」「读写可用、某 AMO 宽度不可用」。改为 `AccessRequirement = (access_kind, width, alignment, implicit|explicit)`、`HartAccessEligibleBytes(hart, req)`，并由 `RoleRequirements(role, ctx)` 决定各用途要交哪些类别（`PageTable` 含 PteRead / 条件 PteWrite，`Executable` 含 Fetch + `Ziccif` 指定宽度，`AtomicSharedState` 含算法登记的 AMO/LR-SC 与宽度）。
+- **Profile 义务补 `Ssccptr` 并作出「不声明 RVA」的项目决定**：supervisor 侧 profile（如 RVA20S64）要求硬件页表读取能力；第一版**不声明** RVA20/RVA22 合规，因此 `ProfileMemoryObligations` 是**空集合**——空集只表示「未声明」，不得读成「已满足」；将来若声明，必须一次列全该 Profile 的相关主存义务，不能只挑一条。
+- **fallback 计划再补两项**：`required_memory`（fallback 自己需要的内存区域与属性）与「锁变量、状态字及其访问路径也要过准入」，避免用一块从未准入的共享内存兜底。
+- **O-11 补第三条硬约束**：步骤 5（`FinalMap`）与步骤 6（复制 body）之间必须**再确认一次完整范围的 `BootInputReachability`**——`FinalMap` 证明的是物理范围的类型与覆盖，不证明当前 VA 翻译、PMP/PMA 与访问路径仍可读。
+- **AArch64 名称对应与取证两侧**：规范里的 `EfiReserved` 就是本项目的 `EfiReservedMemoryType`（同一类型两种写法）；位置为 UEFI 2.11 §2.3.6（评审人已核，引用 Table 2.5/2.6），本方环境 403 未直接取证，故仍不升级为跨入口通则。
+- **§7 增加逐项签字视图**：十个项目各自的「合同已定 / 未声明 / 方向认可待实现」与「未闭合的是什么」，取代只按六个阻塞组笼统描述的做法。
+- **登记一个非阻断候选**：`SourceRecord.range_*` 的语义依赖 `kind`（输入声明 vs 派生前缀），可拆成两个变体让 `declared_range`/`derived_range` 在类型里表达；本轮不改，避免切片中途动公共字段。
+- 门：无代码改动；沿用 minix-boot **141**、boot-shim **70**；主简报 1318 行。
+
+
 **本轮（第六十六轮评审之后：版本状态回写 + 三项新增合同）**
 
 - **版本状态先回写**：本轮评审称「三个 P0 未修正」，对照的是第六十四轮的文本（`fffaa3e5f`）；三项在第六十五轮 `bd8a89eee` 已落地，`rewrite` 尖子 `2eca58006` 里逐条可核：分支式 `PteUpdateScheme(hart)`（约 1032 行）、`SystemHartSet`/`ParticipatingHartSet`（约 1074 行）、`HartRuntimeAdmission` 扩到既存对象（约 1122/1126 行），§6 的「规范原文未取到」也已在前一轮清零。

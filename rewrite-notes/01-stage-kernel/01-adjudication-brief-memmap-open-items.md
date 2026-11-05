@@ -1,5 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
+> **本版对应提交**：本文件最近一次改动的提交，`git log -1 --format=%h -- rewrite-notes/01-stage-kernel/01-adjudication-brief-memmap-open-items.md`。评审前请核对；若手上副本与该提交不同，说明拿到的不是本版，请以仓库为准重取。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
 > **怎么读**：§2 是代码**今天真实**保证的行为，每条都有测试名；§5 是**尚未裁定**的问题，其中出现的公式与方案一律是**候选**，不是合同。**不要把 §5 的任何一行当成实现依据。**
 > **更新方式**：按代码切片全量重写；没有代码变化的评审轮只产出 delta。
@@ -758,7 +759,7 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 
 **观测记录必须带 VA，不能只有 PA**：`DeviceMappingCoverage` 若只是物理区间，就回答不了「这些页映射到哪个 VA」「访问点用的 VA 是否落在里面」「同一 PA 是否有多个别名、权限/属性/共享性是否兼容」。观测单元定义为 `ObservedDeviceMapping { VaRange, PaRange, LeafSize, Permissions, MemoryAttribute, Shareability, Tree, Phase }`，由它派生纯物理覆盖 `ObservedPaCoverage = Union(PaRange)`，审计仍写 `ObservedPaCoverage ⊆ DevicePolicyAuthorizedPaRange`。访问需求不能只拿 PA 包络比覆盖：每条 `DeviceAccessUse` 要能证明其访问 VA 经对应叶子解析到预期 PA，且宽度、读写与属性兼容。这与 O-05 的别名审计是同一条要求——不能在要求审计别名的同时让覆盖集合丢掉 VA。
 
-**AArch64 的 64 KiB 分组属性规则：按物理地址分组、只比分组属性、限定 UEFI profile**：UEFI 规定若一个 64 KiB 物理区间含任一 4 KiB 子页属于 `RuntimeServicesCode`/`RuntimeServicesData`/`ReservedMemoryType`/`ACPIMemoryNVS`，则该区间内全部 4 KiB 子页必须采用相同的 ARM memory page attributes。表号沿用先前的规范记录——分组属性对应 Table 2.5 一支；其逐字与适用范围**待复核**，不升级为无条件规范要求。四条精度约束：
+**AArch64 的 64 KiB 分组属性规则：按物理地址分组、只比分组属性、限定 UEFI profile**：UEFI 规定若一个 64 KiB 物理区间含任一 4 KiB 子页属于 `RuntimeServicesCode`/`RuntimeServicesData`/`ReservedMemoryType`/`ACPIMemoryNVS`，则该区间内全部 4 KiB 子页必须采用相同的 ARM memory page attributes。规范文本里的 `EfiReserved` 就是本项目的 `EfiReservedMemoryType`，是同一类型的两种写法，不是两个类型。规范位置为 UEFI 2.11 §2.3.6（评审人已按该节核对：引用 Table 2.5，权限映射在 Table 2.6）；本方本环境抓取 uefi.org 返回 403，**未直接取证**——两侧分开记：规则内容有评审人核对支持，「本方独立取证」仍是缺口，因此不升级为跨入口的架构通则。四条精度约束：
 
 - **分组键是物理地址**：`AttrGroup(PA) = floor(PA / 65536) * 65536`。同一 VA 在不同树里的别名不改变分组，不同 VA 映射到同一 `AttrGroup` 才需要比较；按 VA 分组会漏掉跨别名违例。
 - **比较字段只限分组属性**：memory type（Normal/Device 及其子型）、inner/outer cacheability、shareability。`R/W/X`、`PXN`/`UXN`、`AF` 等**访问权限逐页独立**（Table 2.6 一支），不进一致性比较——把权限塞进分组会禁掉合法的「同组不同权限」拆分，反向也会放过属性不一致。
@@ -814,7 +815,7 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 | 6 | header snapshot 写入副本、只复制 body；在副本上完成校验、解析、来源记录、政策投影与审计 | 所有结果绑定 `FinalMap` |
 | 7 | 不再调用会改变内存图的服务，立即 `ExitBootServices(FinalMap.MapKey)` | 同一最终快照 |
 
-两条硬约束：**`FinalMap` 的完整类型检查必须在读 body 之前**（不能用 `PreflightMap` 的 header 验证代替整段授权）；**最终取图之后的解析/采集/投影/审计必须是无分配路径**（隐藏的动态分配同样会让 `MapKey` 失效）。`PreflightMap` 不进入 PMM 投影，也不与 `FinalMap` 的记录混用。
+三条硬约束：**`FinalMap` 的完整类型检查必须在读 body 之前**（不能用 `PreflightMap` 的 header 验证代替整段授权）；**步骤 5 与步骤 6 之间必须再确认一次完整范围的 `BootInputReachability`**——`FinalMap` 只证明物理范围的类型与覆盖，不证明当前 VA 翻译、PMP/PMA 与访问路径仍可读，两者不能互推；**最终取图之后的解析/采集/投影/审计必须是无分配路径**（隐藏的动态分配同样会让 `MapKey` 失效）。`PreflightMap` 不进入 PMM 投影，也不与 `FinalMap` 的记录混用。
 
 **缓冲区不足分三种情况，不能共用一个规则**：
 
@@ -988,11 +989,12 @@ AtomicFallbackPlan {
     bounded_retry_policy,  ← 如何避免无限重试
     required_operations,   ← fallback 实际使用哪些操作
     required_widths,
+    required_memory,       ← fallback 自己需要的内存区域与属性
     progress_argument,     ← 为什么 fallback 本身能完成工作
 }
 ```
 
-**`fallback` 必须是可追溯的计划引用，不是布尔值**：`fallback_available=true` 可能只说明「源码里还存在另一个函数」，而那个函数自己可能也在用 LR/SC、或依赖该区域并不支持的 AMO。计划至少要证明四件事：① 能完成**同一算法操作**；② 不依赖刚被判为不足的 LR/SC 进展保证；③ 它实际使用的操作与宽度在该页上**确有 PMA 支持**（走同一条 `RoleAdmit`，不能用未经验证的操作替代另一个未经验证的操作）；④ 检测到缺乏进展时**真的切换**过去。合同必须显式覆盖两点：**如何检测需要 fallback**（`trigger` 与 `bounded_retry_policy`，不能把「存在另一个函数」当成检测机制），以及**fallback 自身依赖的操作也要过准入**（`required_operations`/`required_widths`）。
+**`fallback` 必须是可追溯的计划引用，不是布尔值**：一个「有 fallback」的布尔标记可能只说明「源码里还存在另一个函数」，而那个函数自己可能也在用 LR/SC、或依赖该区域并不支持的 AMO。计划至少要证明四件事：① 能完成**同一算法操作**；② 不依赖刚被判为不足的 LR/SC 进展保证；③ 它实际使用的操作与宽度在该页上**确有 PMA 支持**（走同一条 `RoleAdmit`，不能用未经验证的操作替代另一个未经验证的操作）；④ 检测到缺乏进展时**真的切换**过去。合同必须显式覆盖两点：**如何检测需要 fallback**（`trigger` 与 `bounded_retry_policy`，不能把「存在另一个函数」当成检测机制），以及**fallback 自身依赖的操作、宽度与内存区域也要过准入**（`required_operations`/`required_widths`/`required_memory`）——包括 fallback 用到的锁变量、状态字与它们的访问路径，不能出现「fallback 依赖一块从未过准入的共享内存」。
 
 - **只用 AMO 的算法**：要求相应 AMO 家族与宽度即可，不因它要求 `RsrvEventual`。
 - **LR/SC 且不依赖最终成功**：可接受 `RsrvNonEventual`，但要写明其进展性质；主源的对应建议是「When LR/SC is used for memory locations marked RsrvNonEventual, software should provide alternative fall-back mechanisms used when lack of progress is detected」。
@@ -1005,9 +1007,11 @@ AtomicFallbackPlan {
 | `PlatformMemoryProfile` | QEMU / SoC / 硬件的实际配置（machine version、accelerator、PMP 布局、hart 启动方式…） |
 | `ProfileMemoryObligations(isa_profile)` | **ISA Profile**（RVA20/RVA22/RVA23 的具体版本）对**指定主存范围**提出的 PMA 义务 |
 
-  RVA20 一类 Profile 对符合条件的主存至少要求三条：`Ziccif` 要求可执行并满足**指定取指宽度的原子性**；`Ziccrse` 要求 `RsrvEventual`；`Ziccamoa`（锚点 `norm:Ziccamoa_pma_amo_req`）要求「AMOArithmetic-level support to main memory regions with both the coherence and cacheability PMAs」，`Ziccamoc`（`norm:Ziccamoc_pma_amo_req`）另加 AMOCASQ 级。AMO 能力自身也分级（`AMONone` / `AMOLogical` / `AMOArithmetic` / `AMOCASW`/`AMOCASD`/`AMOCASQ`，CAS 级以 AMOArithmetic 为前提）。
+  RVA20 一类 Profile 对符合条件的主存至少要求三条：`Ziccif` 要求可执行并满足**指定取指宽度的原子性**；`Ziccrse` 要求 `RsrvEventual`；`Ziccamoa`（锚点 `norm:Ziccamoa_pma_amo_req`）要求「AMOArithmetic-level support to main memory regions with both the coherence and cacheability PMAs」，`Ziccamoc`（`norm:Ziccamoc_pma_amo_req`）另加 AMOCASQ 级；supervisor 侧 profile（如 RVA20S64）还列 **`Ssccptr`**——要求硬件页表读取能力。AMO 能力自身也分级（`AMONone` / `AMOLogical` / `AMOArithmetic` / `AMOCASW`/`AMOCASD`/`AMOCASQ`，CAS 级以 AMOArithmetic 为前提）。
 
   规则：**`RoleAdmit` 检查项目实际用途的需求，`ProfileMemoryObligations` 检查声明的 ISA Profile 对整段主存的义务，两者取交集**。两个用途准入都不能替代 Profile 义务：`Executable` 只回答「这页能不能取指」，`Ziccif` 还约束**指定取指宽度的原子性**；`AtomicSharedState` 只回答「这段算法要的原子操作在不在这页」，而 `Ziccamoa`/`Ziccamoc` 约束的是**整段符合条件的主存**，不是恰好被算法选中的页。这不表示第一版必须实现所有 Profile 扩展，而是**不能声明支持某个 Profile 却只兑现它的一部分内存合同**；RVA20/RVA22/RVA23 的确切版本与能力清单要分别钉住（见 §6 的证据边界段），不得笼统并入某一份 Privileged ISA。
+
+  **第一版的项目决定：不声明 RVA20/RVA22 合规**（列为待定事项）。因此 `ProfileMemoryObligations` 目前是**空集合**——空集合只表示「未声明任何 ISA Profile」，**不得被读成「已满足」**；一旦将来声明某个 Profile，必须把该 Profile 的全部相关主存义务（`Ziccif`/`Ziccrse`/`Ziccamoa`/`Ziccamoc`/`Ssccptr` 等，按该 Profile 的实际条目）一次列全，不能只挑其中一条提升为全局规则。
 
 若第一版不愿引入用途分类，则只能把上表全部并入基底、保留**保守的全局集合**（所有基底可用页都满足页表与全部通用用途），此时**不得**同时声称「按用途准入」和「一页一用途类」。
 - `PlatformAllocationDenials(ctx)`：**平台策略显式拒绝**，不再兼任架构准入。
@@ -1120,15 +1124,27 @@ MemoryAdmissionContext.hart_set_id = Identity(ParticipatingHartSet)
 **整页合格 = 逐 hart 证据求交、按用途求交、最后向内取整页**（此前只说「整页」，没定义谁的证据和哪次访问）：
 
 ```
-HartAdmittedBytes(hart)         = 该 hart 证据覆盖且权限足够的字节范围之并
-AdmittedByteRanges(ctx.H)       = ⋂_{hart ∈ ctx.H} HartAdmittedBytes(hart)   ← ctx.H = 参与 hart 集合
-RoleEligibleBytes(role, ctx)    = AdmittedByteRanges(ctx.H) ∩ RoleSpecificBytes(role, ctx)
-PmmRoleEligible(page, U, ctx)   ⇒ page ∈ ⋂_{role ∈ U} FullPages(RoleEligibleBytes(role, ctx))
+AccessRequirement = (access_kind, width, alignment, implicit|explicit)
+    access_kind ∈ {Load, Store, Fetch, PteRead, PteWrite, Amo(family), LrSc}
+
+HartAccessEligibleBytes(hart, req) = 该 hart 的证据对 req 这一类访问允许的字节范围
+AdmittedByteRanges(ctx.H, req)     = ⋂_{hart ∈ ctx.H} HartAccessEligibleBytes(hart, req)
+
+RoleRequirements(role, ctx) =
+    GeneralData        → { (Load, 自然宽度), (Store, 自然宽度) }
+    PageTable          → { PteRead } ∪ { PteWrite 若软件更新 PTE } ∪ { PteWrite 若 HardwareManagedAd }
+    Executable         → { (Fetch, Ziccif 指定宽度) }
+    AtomicSharedState  → 该算法登记的 (Amo(family) / LrSc, 宽度) 及其进展要求
+
+RoleEligibleBytes(role, ctx) = ⋂_{req ∈ RoleRequirements(role, ctx)} AdmittedByteRanges(ctx.H, req)
+PmmRoleEligible(page, U, ctx) ⇒ page ∈ ⋂_{role ∈ U} FullPages(RoleEligibleBytes(role, ctx))
 ```
+
+**证据按访问类别分开，不是一组字节集合**：同一个 hart 同一条 PMP 配置下，四类差异都真实存在——普通 `load/store` 可用但**隐式页表读**不可用；页表可读但**硬件 A/D 更新所需的隐式写**不可用；普通读写可用但**取指**不可用；普通读写可用但**某种 AMO 宽度**不可用。若用一组不带访问类别的字节集合，这四种差异会被抹平成「能访问」；所以公式按访问类别索引：`HartAccessEligibleBytes(hart, AccessRequirement)`，并由 `RoleRequirements(role, ctx)` 决定该用途要交哪些类别。
 
 **准入向内收缩、排除向外量化，两者不对称**：一页只有整页字节范围都落在 `RoleEligibleBytes` 内才算该用途合格；部分覆盖不得「按覆盖比例交付」。向外量化只出现在**排除**侧（保留、存活对象、`no-map`、`PlatformAllocationDenials`），否则会出现「一页有一半被拒、整页却交出去」。
 
-`HartAdmittedBytes(hart)` 必须是 PMP 的**有效权限**，不是条目命中布尔：TOR / NAPOT 粒度、条目优先级与合并语义（同一字节被多条目覆盖时取哪一条、`Smepmp` 改变 M/S 默认许可时的分支）、跨越条目边界的范围都要逐字节合成；且要分别覆盖**隐式访问**（硬件页表遍历、取指）与**显式访问**（load/store/AMO/LR-SC）——同一范围对两类访问的许可可以不同，页表用途尤其依赖前者。
+`HartAccessEligibleBytes(hart, req)` 必须是 PMP 对**这一类访问**的有效权限，不是条目命中布尔：TOR / NAPOT 粒度、条目优先级与合并语义（同一字节被多条目覆盖时取哪一条、`Smepmp` 改变 M/S 默认许可时的分支）、跨越条目边界的范围都要逐字节合成；且要分别覆盖**隐式访问**（硬件页表遍历、取指）与**显式访问**（load/store/AMO/LR-SC）——同一范围对两类访问的许可可以不同，页表用途尤其依赖前者。
 
 **待补测试（按用途区分，不做「全局原子/全局可访问」的粗暴结论）**：MAIR 配置正确但叶子选错 `AttrIndx` 必须失败；PAT 项正确但 MTRR 使有效类型非 WB 必须失败；任一参与 hart 的有效 PMP 拒绝该区间的**普通读写** → 不得进入 `PmmBaseAvailable`；仅拒绝**隐式页表访问** → 基底保留、`PmmRoleRejected(PageTable)` 命中；PMA 允许读写但不允许页表访问 → 数据页可用、页表页拒绝；PMA 无 AMO 但普通读写可用 → 按用途处理；一致主内存标为实现自定义排序 → 不得进入基底；A/D 方案的六行负控见上表（尤其「Svade/Svadu 均不可证 → 拒绝启动」与「两 hart 方案不同 → 拒绝该平台配置」）；参与 hart 集合新增一个 PMP 更严的 hart → 旧 `ctx` 的全部投影失效并重建；LR/SC 算法依赖最终成功而区域仅 `RsrvNonEventual` 且无 fallback → 该用途不合格，同页 `GeneralData` 仍合格；一页只有一半落在准入域内 → 该用途不合格；`ranges` 缺失与非空分别落到各自错误；`FinalMap` 扩容后旧快照与投影全部失效。
 
@@ -1167,6 +1183,8 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 不能对每条描述符单独 `FullPages` 再并集：两条相邻、语义兼容的来源应能合成一个整页；一条普通 RAM 与一条不可用类型相邻或重叠，则整页不合格。`TypeAllocatablePages(p)` 由「普通主存 backing 资格 + 阶段分配资格」共同派生，不是只看 EFI 类型数字；② 显式分配保留（`/reserved-memory`、MRB、固件前缀）；③ 存活对象（启动模块、页表、DTB 副本、栈、登记表）；④ 平台拒绝。反例：一条 `UNUSABLE` 描述符没有 DTB 声明，若只看显式保留，它会被算进可用表——与 O-06 冲突。
 
 先并集再取整页，避免两个非页对齐的相邻 RAM 区间各自向内收缩时白丢一页；来源记录与身份**不合并**，只在纯计算层构造集合。同一页被多条排除原因覆盖时，PMM 只排除一次，但**所有排除理由都可追溯**（见 O-12g 的多重归属）。
+
+**结构化候选（非阻断，已登记）**：`SourceRecord.range_*` 的语义要读 `kind` 才能解释——输入声明表示原始范围，`FirmwarePrefix` 却表示派生范围。可考虑拆成「输入声明」与「派生主张」两个变体，让 `declared_range` / `derived_range` 的差别在类型里表达；本轮不改，登记为重构候选，理由是不能为了形式统一在切片中途改公共字段。
 
 **原始声明、RAM 交集与政策投影是三个范围**：`RawDeclaredRange` 是输入声明的完整字节（不裁剪、不取整）——DTB 侧已落为 `SourceRecord` 的 `range_start/range_end`（派生记录的该字段是派生结果，不是原始声明），记录本身**不携带任何页范围**；`RamIntersection` 是与 RAM 来源域相交、按页向外量化的部分，用于 PMM 投影；`PolicyProjection` 是按 `no-map`、MRB、对象各自语义生成的禁止范围。**MRB 即使超出 `/memory` 也不能丢**：它的访问禁止语义不因为范围不在 RAM 内而消失。`no-map` 与标准系统映射相交时由独立的映射禁止投影处理；若项目只支持与 RAM 相交的 `no-map`，超出部分必须是显式拒绝条件，不能静默裁剪。今天两张投影表只表达 `RamIntersection`，`PolicyProjection` 尚无消费者——这正是 O-12g 记录层要先行的原因。**范围表示的三层与今天代码**（本轮把 DTB 腿的边界语义从算术副作用改成显式项目策略）：
 
@@ -1269,6 +1287,21 @@ cd os && cargo test -p boot-shim --lib
 | 第三层：固定布局 ABI | **不可签** | 未开始（O-13） |
 
 **第二层的六个阻塞组**：
+
+**逐项签字视图（第六十七轮评审后）**：
+
+| 项目 | 状态 | 未闭合的是什么 |
+|---|---|---|
+| A/D 更新方案 | 合同已定 | 分支式 `PteUpdateScheme(hart)` + 反例负控已入文；缺实现与固件证据 |
+| 系统 hart 方案一致性 | 合同已定 | `SystemHartSet` 与清单来源已写；缺平台 hart 清单与逐 hart 证明 |
+| hart 入场 | 合同已定 | 既存共享对象与映射路径已入 `HartRuntimeAdmission`；缺实现 |
+| 普通访问 / 内存序 | 合同已定 | 第一版不支持软件维护一致性的非一致主存；缺 `HartAccessEligibleBytes` 实现 |
+| 原子算法进展 | 合同已定 | `AtomicFallbackPlan` 已定形；缺实现与算法级凭证 |
+| RISC-V Profile PMA 义务 | **未声明** | 第一版不声明 RVA20/RVA22 合规，`ProfileMemoryObligations` 为空集（空集≠已满足） |
+| UEFI DTB 与 MapKey | 方向认可，待实现 | 无实现与负控；UEFI 侧证据为评审人核对 |
+| AArch64 64 KiB 分组 | 方向可签 | 规则内容已核；本方未独立取证 |
+| UEFI 属性位版本差异 | 策略可签，profile 未签 | 冲突域 fail-closed；固件镜像证据未钉 |
+| 设备窗口 | 模型可签，数值未签 | 四层关系已定；QEMU 平台证据未齐 |
 
 | 阻塞组 | 对应合同 |
 |---|---|

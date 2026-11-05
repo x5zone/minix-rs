@@ -5462,4 +5462,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 新合同：`SystemHartSet` 清单来源与「永不启用」政策；入场审计加映射/访问路径维度；`ProfileMemoryObligations` 独立并补 `Ziccif`；`AtomicFallbackPlan` 五字段；顶端页口径改为记录层应接受 `==2^64`。
 - 证据：DTSpec revision `v0.4-12-g8314f1e`（只核 commit 前缀）；UEFI §4.6.1.3 分「评审人核对 / 本方 403」两侧，并补「固件不修改 ≠ 应用不修改」边界。
 - 门：无代码改动，沿用 minix-boot **141**、boot-shim **70** 与三条 QEMU 腿；lint/表格/行数三门。
-- 认领：`I-29 qorder67`（工作树 `.wt/i-29-qorder67`，基线 `2eca58006`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder67`（工作树 `.wt/i-29-qorder67`，基线 `2eca58006`），状态 ✅：已 ff 合并为 `7aeea8964`，认领已释放，`sweep` 读数在册 0。
+
+### 第二百七十五笔（01 阶段 · I-29 第六十七轮：版本横幅与访问类别化）
+
+- 版本：评审第二次按旧文本判「未修」；主文档标题下加版本横幅（提交号 + 核对指令），并把 `fallback_available`/`HartAdmittedBytes`/旧布尔式等旧符号原文清零。
+- 新增：PMP 证据按访问类别索引（`AccessRequirement`/`HartAccessEligibleBytes`/`RoleRequirements`）；Profile 义务补 `Ssccptr` 并定「不声明 RVA ⇒ 空集≠已满足」；`AtomicFallbackPlan.required_memory`；O-11 第三条硬约束；AArch64 名称对应；§7 逐项签字视图。
+- 登记：`SourceRecord` 输入声明/派生主张变体拆分（非阻断）。
+- 门：无代码改动；minix-boot **141**、boot-shim **70** 复跑；lint/表格/行数三门；主简报 1318 行。
+- 认领：`I-29 qorder68`（工作树 `.wt/i-29-qorder68`，基线 `7aeea8964`），状态 🔄，合并后释放。

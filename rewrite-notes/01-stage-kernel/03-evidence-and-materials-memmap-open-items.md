@@ -995,3 +995,15 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 证据更新 | DTSpec 记站点 revision `v0.4-12-g8314f1e`（本方只核 commit 前缀 8314f1e 一致，tag 串未独立核）；UEFI §4.6.1.3 记为「评审人核对 / 本方 403 未取证」两侧分开，并补「固件不修改 ≠ 应用不修改」边界 |
 | 门 | 无代码改动：minix-boot **141**、boot-shim **70**、三条 QEMU 腿沿用 `2eca58006` 读数；主简报 1285 行（上限 1700）、围栏 30（偶）、表格列数不一致 0、lint error 0 |
 
+
+## 三十九、第六十七轮：版本横幅与访问类别化
+
+| 项 | 读数 |
+|---|---|
+| 本轮评审对照的版本（推定） | 引用的布尔式与「无 `SystemHartSet`/无 `AtomicFallbackPlan`」对应 `2eca58006` 之前；`7aeea8964` 中这四项均在文（第 1032 行分支式附近的负控表、1074 行 SystemHartSet、1126 行既存对象、995 行 AtomicFallbackPlan） |
+| 结构性对策 | 主文档标题下新增**自指**版本横幅：以 `git log -1 --format=%h -- <本文件>` 取「本文件最近一次改动的提交」——硬编码哈希会在提交后立刻过期，自指形式才是长期可用的核对锚点 |
+| 旧符号清零 | `grep -c 'fallback_available'` = 0、`grep -c 'HartAdmittedBytes'` = 0、`grep -c 'EffectiveSvade = SvadeImplemented'` = 0——正文不再保留中已撤销符号的原文，避免检索误命中 |
+| 本轮新增 | `AccessRequirement`/`HartAccessEligibleBytes(hart, req)`/`RoleRequirements(role, ctx)`；`Ssccptr` 与「第一版不声明 RVA 合规 ⇒ 空集≠已满足」；`AtomicFallbackPlan.required_memory` 与锁/状态路径准入；O-11 第三条硬约束；AArch64 `EfiReserved`↔`EfiReservedMemoryType` 映射；§7 逐项签字视图；`SourceRecord` 变体拆分候选登记 |
+| 主简报 | 1318 行（上限 1700）；围栏 30（偶）；表格列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **141**、boot-shim **70** 复跑；QEMU 腿沿用 `7aeea8964` 读数 |
+
