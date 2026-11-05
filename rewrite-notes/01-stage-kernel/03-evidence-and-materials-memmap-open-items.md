@@ -1562,3 +1562,13 @@ cd os && cargo test -p boot-shim --lib
 | 建表顺序 | Step 4 的 `establish_boot_dm` 在 `paging.enable()` **之后**执行（`os/kernel/src/lib.rs` 的 `arch_boot` 与 `enter_kernel_image_v1` 两条路径皆然）；今天新表页可写，是因为宽恒等段恰好覆盖了 bump 区 |
 | 产线降级先例 | `harden_kernel_text` 与 heap 窗口驱逐在活动根上调用 `split_huge` 并在失败时 `panic!` |
 | 交回 I-29 的条件 | 分页侧专项只需回传一件事给本项：**授权计划是否可被完整兑现**（实际 PTE 审计的双向判据结果）。粒度、容量、地址通道的结论不需要再进主文档 |
+
+## 六十一、第九十轮：PLIC 授权范围被叶子粒度反推的证据与门读数
+
+| 项 | 读数（命令与输出） |
+|---|---|
+| 资源长度 | `os/arch/src/lib.rs`：`pub const PLIC_RESOURCE_LEN: u64 = 0x0020_0000 + 2 * PLIC_MAX_HARTS * 0x1000;`（注释：priority/pending/enable 各 `0x20_0000` 加每 hart 的 M/S 两个 context）；32 hart 时 `0x24_0000` |
+| 授权窗口由粒度算出 | 同文件：`const PLIC_WINDOW_LEN: u64 = (PLIC_RESOURCE_LEN + 0x1F_FFFF) & !0x1F_FFFF;` 前置注释逐字「The Step-1 identity map emits device windows in 2 MiB pieces, so the authorized mapping range must be the 2 MiB envelope of the resource range — a window ending at `0x24_0000` is covered by a piece reaching `0x40_0000` anyway」；另有 `assert!(PLIC_WINDOW_LEN.is_multiple_of(0x20_0000))` 与 `<= 0x60_0000` 两条编译期断言 |
+| 平台侧真实 aperture | QEMU virt DTB `plic@c000000` 的 `reg` = `0xc000000 + 0x600000`（见 O-12c 与 `03` 前轮读数），**不等于** 4 MiB 授权值 → 授权数值缺独立平台证明 |
+| 窗口表来源 | `kernel_identity_mmio_regions()`（riscv64）返回 `&[(0x0C00_0000, PLIC_WINDOW_LEN), (0x1000_0000, 0x1000)]`；aarch64 返回空数组（GIC 走系统寄存器），x86_64 为 IO-APIC/LAPIC 各 4 KiB |
+| 门读数 | 正文 1696 行（上限 1700）、243,995 字节、围栏 50（偶）、表格 59 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失 lost 0；无代码改动，沿用 146 / 70 |

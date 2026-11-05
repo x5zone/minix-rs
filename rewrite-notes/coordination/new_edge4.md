@@ -5672,4 +5672,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 政策侧未动：O-12g 记录进政策仍是 I-29 真正核心缺口（三条入口丢记录、UEFI `SourceRecord` 未产出）；O-12a/b 禁止投影定义、量化方向、arena 对象身份四字段、交接 ABI 全留。
 - 门：正文 1686 行（本批净 -4，≤1700）、131,665 字符、围栏 48（偶）、表格 58 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失 lost 0；纯文档轮，沿用 minix-boot **146**、boot-shim **70**。
 - 待办：给 GPT 的**范围回缩回写**（本轮「不成立」项是他提的四份分页合同，理由是归属而非技术错误）由用户转达；分页专项立项后再讨论粒度与表页预算。
-- 认领：`I-29 qorder91`（基线 `06c557345`），状态 ✅：本批文档已 ff 合并（提交见 `git log rewrite -1`，第八十九轮）。
+- 认领：`I-29 qorder91`（基线 `06c557345`），状态 ✅：第八十九轮已 ff 合并为 `24e5f32e6`（台账销账 `8095491e3`），认领已释放。
+
+### 第二百九十八笔（01 阶段 · I-29 第九十轮：责任边界收紧与两处公式修正）
+
+- 评审人接受四份合同移交，且不再要求把建表机制放回本项；本轮 9 项全部成立：责任分记表、`BootstrapRootAuthorizationPlan` 与 `ObservedMappingAudit` 两层、审计对象类型（含 `VA₁→PA₂` 而别名 `VA₂→PA₁` 的反例）、`EarlyExecutionClosure` 为覆盖集合非授权来源、`OrdinaryRamMappingAuthorizations = ∅` 为接口状态且不得由 `PmmBaseAvailable`/`conventional` 代替、`ActualAccesses = Resolve(access_instance_set_id).instances`、`use.path` 删除只留 `access_requirement.path`。
+- 我方回写一条不成立：评审人复述的「`map_huge` 不分配中间表页、`boot_pt_alloc` 无非测试调用者」是第八十七、八十八轮已更正的旧事实（真实路径 `pt_alloc::alloc_pt_page`；`split_huge` 为共享 trait 方法且三架构实现）。归属结论不变，签字依据需换新版。
+- 新代码证据：PLIC 授权窗口 4 MiB 是资源长度按 2 MiB 叶子**向上取整**的结果（注释逐字承认），而 DTB aperture 是 6 MiB → 授权数值缺独立平台证明。已按「平台授权范围／实际覆盖／访问需求」三分写入 O-12c，点名 x86 LAPIC 与 aarch64 32 MiB 同类。
+- 清理：删 O-12c 重复句一份、O-12i ③④ 重复一份（评审人指出，grep 核实计数 2）。
+- 门：1696 行（**余 4 行**）、围栏 50 偶、表格 59 块列数不一致 0、破表 0、lint error 0、横幅 PASS、lost 0；沿用 146 / 70。
+- 待办（不追改）：下一轮任何新增前必须先腾行；`OrdinaryRamMappingEligibility` 生产者与 O-12g 记录进政策仍是本项核心缺口；分页专项的两个事实（预建层级能否覆盖不规则对象、每级表页需求）由该专项立项后展开。
+- 认领：`I-29 qorder92`（基线 `8095491e3`），状态 🔄。

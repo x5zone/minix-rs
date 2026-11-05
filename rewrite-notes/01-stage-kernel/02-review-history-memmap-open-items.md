@@ -12,6 +12,17 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第九十轮（评审确认范围回缩后的边界收紧：责任分记、两层审计、实例来源、PLIC 反向依赖）**
+
+- **三分**：评审人本轮 9 项**全部成立**，且他没有再要求把分页机制放回本项（明确接受四份合同移交）。已落地：① 四段依赖链改为**带责任归属的表**，第 4 段划归分页专项，§7 同步拆成「本项前三段无代码 / 第四段不计入本项交付」；② `BootstrapRootPlan` 拆成 `BootstrapRootAuthorizationPlan`（本项交付）与 `ObservedMappingAudit`（分页侧提供实际映射后的验收谓词）；③ 审计对象明确为 `(VA, PA, 权限, 有效属性, 共享性, 树, 阶段, 映射意图)` 记录，禁止简化成 PA 区间包含，并给出会漏掉的反例（`VA₁→PA₂` 而别名 `VA₂→PA₁`）；④ `EarlyExecutionClosure` 定性为**必需覆盖集合而非授权来源**——「执行所必需」不产生穿过 `no-map`/`EfiReservedMemoryType` 的许可；⑤ `OrdinaryRamMappingAuthorizations = ∅` 写成有意的接口状态，并禁止后续用 `PmmBaseAvailable` 或 `conventional` 表代替；⑥ `ActualAccesses` 改为 `Resolve(use.access_instance_set_id).instances` + `InstanceSetComplete`，`Expand` 只保留「校验/展开类别」两个职责；⑦ `use.path` 删除，只留 `access_requirement.path` 单一来源。
+- **本轮我方向评审人回写一条（他不成立处）**：第九十轮评审文本复述「`map_huge` 三架构不分配中间页表、`boot_pt_alloc` 无非测试调用者」作为他接受移交的依据——**该事实已在第八十七、八十八轮被我方更正**：`map_huge` 缺中间表时会经 `pt_alloc::alloc_pt_page()` 分配，`split_huge` 是共享 trait 方法且三架构都覆盖。归属结论不受影响（正因为它是机制事实，才更不该进政策册），但**签字依据必须换成更正后的版本**，已在回写中说明。
+- **新增的代码证据（PLIC 反推成立）**：`os/arch/src/lib.rs` 逐字注释——Step 1 按 2 MiB 出设备叶子，故授权映射范围取资源范围的 2 MiB 包络；`PLIC_RESOURCE_LEN = 0x0020_0000 + 2 × PLIC_MAX_HARTS × 0x1000`（32 hart → `0x24_0000`），`PLIC_WINDOW_LEN = (RESOURCE + 0x1F_FFFF) & !0x1F_FFFF` 并有 `is_multiple_of(0x20_0000)` 断言。即**授权数值由叶子粒度倒推**，而 DTB `reg` 给的 aperture 是 `0x0C00_0000 + 0x60_0000`。已按三分法写入 O-12c：平台授权范围须由 profile 独立证明、实际覆盖由分页侧观察、访问需求由使用点产生，三者数值可同但不得互推；同类问题点名 x86 LAPIC 2 MiB 与 aarch64 32 MiB。
+- **编辑清理（评审人指出，核实为真）**：O-12c 的 64 KiB 分组与 ACPI 对齐「两条独立规则」句连续重复两份，删一份；O-12i 内存序讨论中 ③④ 出现两次，删较短的一份。
+- **篇幅**：正文 1686 → 1696 行（上限 1700，**仅余 4 行**）。手法：四段链第 1、2 段展开改为指向 O-12g/O-12a 的指针（消除同文重复）、PLIC 段删去与上文重复的推导链、24 处同小节段落空行合并（纯格式，被删文字逐字进本档案第七节）。**下一轮开工必须先腾行**，否则任何实质新增都会破门。
+- 门：`doc-style-lint --diff` error **0**；围栏 50（偶）；表格 59 块、列数不一致 **0**；破表 **0**；横幅门 PASS；零丢失对账 lost 0。纯文档轮，无代码改动，沿用 minix-boot **146**、boot-shim **70**。
+- 认领：`I-29 qorder92`（工作树 `.wt/i-29-qorder92`，基线 `8095491e3`），状态 🔄。
+
+
 **第八十九轮（范围回缩：建表机制移交分页侧专项，政策侧链条保持完整）**
 
 - **触发**：用户质疑范围被扩大——I-29 是内存图建模与交棒，`map_huge`、叶子粒度、表页预算属启动期/运行期分页。判断**成立**，且解释了本轮之前三次同类取证错误（带空格的 `Eventual` grep、`boot_pt_alloc` 名称错配、只查 `map_huge` 就断言能否降级）：**那些知识本不属于本工作项**，在此处做取证既慢又易错。
