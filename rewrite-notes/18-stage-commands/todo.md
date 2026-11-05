@@ -119,6 +119,15 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百四十五（`do_config` 关键字遍历——service/uid/priority/quantum 走查与 `BuiltRsStart` 标量面）
+
+- **这一笔的射程**：批次五百四十四的下一片——`parse_config` 读取器已在库（`minix_proctools::configfile`），本笔把 `do_config`（`parse.c:1177-1263`）的**关键字遍历**接到读取器产物上：行容器 → 平铺词链（`{` 子表容器原地摊平，`read_line:320-334` 的消费面本就是平的）→ `service` 头校验 → 关键字派发。
+- **落码（`minix-service` 库）**：`do_config_walk(lines, defaults, args, users)`——标量关键字 `uid`/`priority`/`quantum`/`sigmgr`/`scheduler`/`descr` 的走查与 `BuiltRsStart` 标量面；**关键字-值-关键字**规则（C `do_uid` 的 `cpe->next != NULL` fatal，`parse.c:120-123`：标量取一个值，下一个词必须是关键字或行尾）；`uid` 的 `getpwnam`→数字回退（`user_by_name` 走轮 53 的 passwd 库面，bin 传 `/etc/passwd` 文本）；`-label` 覆盖 config label（C `req_label`，`:563-565`）。C 的 per-branch `fatal` 句面（`just one uid/login expected`、`bad priority '…'` 等）逐字进 `ConfigError`。**登记偏差**：设备族关键字（`irq`/`io`/`pci`/`class`/`system`/`ipc`/`vm`/`control`/`type`/`net`/`domain`）为下一片；`uid service` 的 getpwnam 面由 bin 传 `/etc/passwd` 文本注入（测试直传脚本）。
+- **门**：`cargo test -p minix-service --lib` → **12/0**（新四枚：标量关键字填充与 `-label` 覆盖、倍量/坏值的 C 句面、service 头校验、descr 引号串）；`cargo clippy -p minix-service --all-targets` 触及文件零新增；`rustfmt --edition 2024 --check` 零漂移；none 双架构绿；边界门 0 违规；pattern `--diff` 与基线一致。核实日 `2026-11-06`；基线 `2e9c89aa8`。
+- **记账联动**：`minix-service up` 的 config 解析链（读取器→走查→`BuiltRsStart`）三段中两段闭合；设备族关键字与 `rs_start` 全载荷编码器为后续片。
+
+---
+
 ## 批次五百四十四（config 读取器移植——`configfile.c` 575 行落 `minix-proctools::configfile`，`parse_config` 的前置半）
 
 - **这一笔的射程**：批次五百四十三的下一片——C 的 `parse_config`（`parse.c:1229-1263`）在 `minix-service up` 里读服务描述文件，其底层是 libc 的**通用配置读取器** `configfile.c`（575 行：词法器 + 行容器 + include 拼接）。本笔移植读取器本体；`do_config` 的关键字遍历（service/uid/priority/quantum…→`rs_start` 填充）为下一片。

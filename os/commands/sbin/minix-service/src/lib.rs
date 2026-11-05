@@ -21,7 +21,9 @@
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use minix_sys::rs::{
     RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE,
     RS_UP, RS_UPDATE,
@@ -454,5 +456,281 @@ mod tests {
         let args = parse_args(&["down", "inet"]).unwrap();
         let m = build_request(Request::Down, &args);
         assert_eq!(m.m_type, RS_DOWN);
+    }
+}
+
+/// C `do_config`'s defaults (`parse.c:1171-1176`): `rss_uid` from the
+/// `service` passwd entry (this build resolves it from the caller-read
+/// database; the C fatal on a missing entry maps to `None`), sigmgr =
+/// `ROOT_SYS_PROC_NR`, scheduler = `SCHED_PROC_NR`, priority = `USER_Q`,
+/// quantum = `USER_QUANTUM` (`priv.h:84-99`), flags = the two BASIC_CALLS
+/// bits, and `rss_cmd` from the binary path + `-args`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RsStartDefaults {
+    pub service_uid: Option<u32>,
+    /// C `DSRV_SM = ROOT_SYS_PROC_NR`.
+    pub sigmgr: i32,
+    /// C `DSRV_SCH = SCHED_PROC_NR`.
+    pub scheduler: i32,
+    /// C `DSRV_Q = USER_Q`.
+    pub priority: i32,
+    /// C `DSRV_QT = USER_QUANTUM`.
+    pub quantum: i32,
+}
+
+/// The do_config keyword walk over the parsed lines (`parse.c:1177-1263`
+/// walk; the scalar keywords this slice covers are `uid`, `priority`,
+/// `quantum`, `sigmgr`, `scheduler`, `descr` — the device-family keywords
+/// (`irq`/`io`/`pci`/`class`/`system`/`ipc`/`vm`/`control`/`type`/`net`/
+/// `domain`) are the registered next slice). C's per-branch `fatal` faces
+/// become `ConfigError` with the same wording.
+pub fn do_config_walk(
+    lines: &[minix_proctools::configfile::ConfigEntry],
+    defaults: &RsStartDefaults,
+    args: &Args,
+    users: Option<&str>,
+) -> Result<BuiltRsStart, minix_proctools::configfile::ConfigError> {
+    use minix_proctools::configfile::ConfigError;
+    let mut out = BuiltRsStart {
+        uid: defaults.service_uid.unwrap_or(0),
+        sigmgr: defaults.sigmgr,
+        scheduler: defaults.scheduler,
+        priority: defaults.priority,
+        quantum: defaults.quantum,
+        descr: None,
+        label: args.label.clone(),
+    };
+    for line in lines {
+        if !line.is_sub() {
+            return Err(ConfigError {
+                line: line.line,
+                message: String::from("expected list"),
+            });
+        }
+        let Some(head) = line.list.first() else {
+            return Err(ConfigError {
+                line: line.line,
+                message: String::from("expected word"),
+            });
+        };
+        if head.is_string() || head.is_sub() {
+            return Err(ConfigError {
+                line: line.line,
+                message: String::from("expected word"),
+            });
+        }
+        if head.word != "service" {
+            return Err(ConfigError {
+                line: line.line,
+                message: String::from("expected word 'service'"),
+            });
+        }
+        // The line's words, flattened: `{`-created nested containers (the
+        // config grammar's grouping, `read_line:320-334`) contribute their
+        // words in place — C's per-line chain is flat at the consumer level.
+        let mut flat: Vec<&minix_proctools::configfile::ConfigEntry> = Vec::new();
+        flatten_words(&line.list[1..], &mut flat);
+        // C's walk dispatches keyword by keyword over the flat chain
+        // (do_service → do_uid/do_priority/…); a scalar keyword takes
+        // exactly one value and the next word must be a keyword or the end
+        // (`do_uid`'s `cpe->next != NULL` fatal, parse.c:120-123).
+        let keywords = ["uid", "priority", "quantum", "sigmgr", "scheduler", "descr"];
+        let mut index = 0usize;
+        while index < flat.len() {
+            let word = flat[index];
+            let Some(value) = flat.get(index + 1) else {
+                break; // a trailing keyword with no value: C's walk ends too
+            };
+            match word.word.as_str() {
+                "uid" => {
+                    out.uid = user_by_name(users, &value.word)
+                        .unwrap_or_else(|| resolve_uid(&value.word));
+                    if flat
+                        .get(index + 2)
+                        .is_some_and(|next| !keywords.contains(&next.word.as_str()))
+                    {
+                        return Err(ConfigError {
+                            line: word.line,
+                            message: String::from("just one uid/login expected"),
+                        });
+                    }
+                    index += 2;
+                }
+                "priority" => {
+                    if value.is_string() || value.is_sub() {
+                        return Err(ConfigError {
+                            line: word.line,
+                            message: String::from("unexpected string"),
+                        });
+                    }
+                    out.priority = value.word.parse().map_err(|_| ConfigError {
+                        line: word.line,
+                        message: format!("bad priority '{}'", value.word),
+                    })?;
+                    index += 2;
+                }
+                "quantum" => {
+                    if value.is_string() || value.is_sub() {
+                        return Err(ConfigError {
+                            line: word.line,
+                            message: String::from("unexpected string"),
+                        });
+                    }
+                    out.quantum = value.word.parse().map_err(|_| ConfigError {
+                        line: word.line,
+                        message: format!("bad quantum '{}'", value.word),
+                    })?;
+                    index += 2;
+                }
+                "sigmgr" | "scheduler" => {
+                    if value.is_string() || value.is_sub() {
+                        return Err(ConfigError {
+                            line: word.line,
+                            message: String::from("unexpected string"),
+                        });
+                    }
+                    let parsed: i32 = value.word.parse().map_err(|_| ConfigError {
+                        line: word.line,
+                        message: format!("bad {} '{}'", word.word, value.word),
+                    })?;
+                    if word.word == "sigmgr" {
+                        out.sigmgr = parsed;
+                    } else {
+                        out.scheduler = parsed;
+                    }
+                    index += 2;
+                }
+                "descr" => {
+                    if !value.is_string() {
+                        return Err(ConfigError {
+                            line: word.line,
+                            message: String::from("descr must be a string"),
+                        });
+                    }
+                    out.descr = Some(value.word.clone());
+                    index += 2;
+                }
+                _ => {
+                    // The device-family keywords ride with the next slice;
+                    // unknown words are skipped to surface every unknown.
+                    index += 1;
+                }
+            }
+        }
+        // `-label` overrides the config label (C `req_label`, `:563-565`).
+        if let Some(label) = &args.label {
+            out.label = Some(label.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Flatten a line's word chain, descending into `{`-created nested
+/// containers in place (C's per-line chain is flat at the consumer level —
+/// `read_line:320-334` rebinds the chain into the container).
+fn flatten_words<'a>(
+    entries: &'a [minix_proctools::configfile::ConfigEntry],
+    out: &mut Vec<&'a minix_proctools::configfile::ConfigEntry>,
+) {
+    for entry in entries {
+        if entry.is_sub() {
+            flatten_words(&entry.list, out);
+        } else {
+            out.push(entry);
+        }
+    }
+}
+
+/// `getpwnam`'s named-uid scan over the caller-read database.
+fn user_by_name(users: Option<&str>, name: &str) -> Option<u32> {
+    users.and_then(|db| minix_proctools::passwd::lookup_in(db, name).map(|a| a.uid))
+}
+
+/// `getpwnam`'s named-uid seam, injected per call (the bin passes the
+/// database text via [`RsStartDefaults::service_uid`]'s caller; this helper
+/// stays for the numeric fallback shape).
+fn resolve_uid(word: &str) -> u32 {
+    // The named leg resolves through the caller's database at the bin;
+    // the walk-level fallback is the numeric id() (parse.c:160-166).
+    let mut acc: u32 = 0;
+    for b in word.bytes() {
+        if !b.is_ascii_digit() {
+            return 0;
+        }
+        acc = acc.saturating_mul(10).saturating_add((b - b'0') as u32);
+    }
+    acc
+}
+
+/// The filled `rs_start` scalar face (C `struct rs_start`'s first fields).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BuiltRsStart {
+    pub uid: u32,
+    pub sigmgr: i32,
+    pub scheduler: i32,
+    pub priority: i32,
+    pub quantum: i32,
+    pub descr: Option<String>,
+    pub label: Option<String>,
+}
+
+#[cfg(test)]
+mod do_config_tests {
+    use super::*;
+    use minix_proctools::configfile::config_read_text;
+
+    const PW: &str = "service:x:50:50:Service:/:/bin/sh\n";
+
+    #[test]
+    fn scalar_keywords_fill_the_rs_start_defaults() {
+        let text = "service lwip {\n  uid service;\n  priority 0;\n  quantum 4;\n}\n";
+        let lines = config_read_text(text, "lwip.conf", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults {
+            service_uid: Some(50),
+            sigmgr: 0,
+            scheduler: 1,
+            priority: 0,
+            quantum: 8,
+        };
+        let args = parse_args(&["up", "/service/lwip", "-label", "lwip"]).unwrap();
+        let got = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap();
+        assert_eq!(got.uid, 50, "uid service 走 getpwnam 面");
+        assert_eq!(got.priority, 0);
+        assert_eq!(got.quantum, 4);
+        assert_eq!(got.label.as_deref(), Some("lwip"), "-label 覆盖");
+    }
+
+    #[test]
+    fn doubled_scalars_and_bad_values_answer_the_c_faces() {
+        let text = "service x {\n  uid 0 1;\n}\n";
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults::default();
+        let args = parse_args(&["up", "/bin/x"]).unwrap();
+        let e = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap_err();
+        assert_eq!(e.message, "just one uid/login expected");
+        let text = "service x {\n  priority abc;\n}\n";
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let e = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap_err();
+        assert_eq!(e.message, "bad priority 'abc'");
+    }
+
+    #[test]
+    fn the_head_must_be_the_service_word() {
+        let text = "widget x {\n}\n";
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults::default();
+        let args = parse_args(&["up", "/bin/x"]).unwrap();
+        let e = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap_err();
+        assert_eq!(e.message, "expected word 'service'");
+    }
+
+    #[test]
+    fn descr_takes_a_quoted_string() {
+        let text = "service x {\n  descr \"the x server\";\n}\n";
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults::default();
+        let args = parse_args(&["up", "/bin/x"]).unwrap();
+        let got = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap();
+        assert_eq!(got.descr.as_deref(), Some("the x server"));
     }
 }

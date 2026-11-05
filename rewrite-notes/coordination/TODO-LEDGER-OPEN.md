@@ -205,6 +205,8 @@
 
 - **`2026-11-06` 收口刷新（第 71 轮，基线 `aba6bc6ce`，`claim/A19-AUDIT-qoder`，审计轮无代码）**：A19 的两锚实查**均已在库**并注销——`login_tty` 封装（init `host.rs:277-299` 完整折叠 C setctty+login_tty）与 panic 执行面（init 自带 `#[panic_handler]` 走 `format_panic_report`，Cargo 双形态注释自陈「handler 由 init 自带」）。C-21（fs-rt 成员）不再挡 init。
 
+- **`2026-11-06` 收口刷新（第 72 轮，基线 `2e9c89aa8`，`claim/DO-CONFIG-WALK-qoder`）**：`do_config` 关键字遍历已随批次五百四十五落——`minix-service` 库的 `do_config_walk`（行容器平铺、标量关键字走查、C fatal 句面逐字、uid 的 getpwnam→数字回退）。`minix-service up` 的 config 链三段中两段闭合；设备族关键字与 `rs_start` 全载荷编码器为后续片。
+
 - **`2026-11-06` 收口刷新（第 70 轮，基线 `1bcca40a4`，`claim/RS-START-PARSE-qoder`）**：config 读取器已随批次五百四十四移植（`minix_proctools::configfile`：CFG_* 旗标、行容器/嵌套子表、quoted+转义族、include 行透出）——`parse_config` 的读取器半闭合，`do_config` 关键字遍历为下一片；`minix-service up` 的全载荷构造随后接通。
 
 - **`2026-11-06` 收口刷新（第 69 轮，基线 `2e9c89aa8`，`claim/MINIX-SERVICE-CMD-qoder`）**：RS 动态加载弧的用户态入口已随批次五百四十三落——`minix-service` 命令骨架（11 动词表、19 旗标映射、label 系动词消息构造、顶层 `sendrec` 发送半）；审计确认 PM 派发臂与 RS 生产腿均已在库（原计划的两轮撤销）。**余面**：parse.c config 解析（下一片）、`rs_start` 全载荷构造、恢复脚本执行面、rc 接线——均为同一弧的后续片。
