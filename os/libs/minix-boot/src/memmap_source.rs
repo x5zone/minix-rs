@@ -217,17 +217,45 @@ pub enum SourceOrigin {
     ReservedMemoryChild { node: u16, reg: u16 },
 }
 
+/// Normalized physical range: 64-bit start, 128-bit exclusive end, so the last
+/// page of the address space (`[0xffff_ffff_ffff_f000, 2^64)`) is representable
+/// even though today's `MemoryRegion` projections still carry a `u64` extent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalRange {
+    pub start: u64,
+    pub end_exclusive: u128,
+}
+
+impl PhysicalRange {
+    pub const fn new(start: u64, end_exclusive: u128) -> Self {
+        Self { start, end_exclusive }
+    }
+
+    pub const fn len(self) -> u128 {
+        self.end_exclusive - self.start as u128
+    }
+
+    /// `Some(end)` when the end fits in 64 bits; `None` when it is exactly
+    /// `2^64` — the highest page, which the u64 projection arithmetic cannot
+    /// carry yet.
+    pub const fn projectable_end(self) -> Option<u64> {
+        if self.end_exclusive < PHYS_END {
+            Some(self.end_exclusive as u64)
+        } else {
+            None
+        }
+    }
+}
+
 /// One physical range carried by the source layer. For input declarations
 /// (`class() == InputDeclaration`) the range is the declared extent, byte for
 /// byte; for a derived reservation (`FirmwarePrefix`) it is the **derived**
-/// extent `M_i ∩ [0, F)`, which is why the fields are named `range_*` and not
-/// `raw_*`. No page range is stored here — `/memory` projects inward
-/// (`FullPages`) while reservations project outward, so a single precomputed
-/// page extent would bake one consumer's rule into every consumer.
-/// `range_end` is exclusive and therefore cannot be `2^64`: a range whose end lands
-/// there is refused as `UnsupportedPhysicalAddressEnd` (this project does not support the
-/// highest page), while `address + size` past `2^64` stays `RangeOverflow`. Accepting
-/// `end == 2^64` belongs to the `PhysicalRange` work, not to this field.
+/// extent `M_i ∩ [0, F)`. No page range is stored here — `/memory` projects
+/// inward (`FullPages`) while reservations project outward, so a single
+/// precomputed page extent would bake one consumer's rule into every consumer.
+/// The field is typed `PhysicalRange`, so an end of `2^64` is representable at
+/// the record layer; whether a projection can deliver it is a separate question
+/// answered by `projectable_end()` and the refusal at each projection site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceRecord {
     /// Stable within one input object; cross-input references need
@@ -235,16 +263,14 @@ pub struct SourceRecord {
     pub id: u16,
     pub kind: SourceKind,
     pub origin: SourceOrigin,
-    pub range_start: u64,
-    pub range_end: u64,
+    pub range: PhysicalRange,
 }
 
 static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
     id: 0,
     kind: SourceKind::Memory,
     origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-    range_start: 0,
-    range_end: 0,
+    range: PhysicalRange::new(0, 0),
 }; DTB_SOURCE_MAX];
 static DTB_SOURCES_N: AtomicUsize = AtomicUsize::new(0);
 
@@ -299,27 +325,25 @@ const PAGE_BYTES: u64 = 4096;
 /// The first address that does not fit a 64-bit physical address.
 const PHYS_END: u128 = 1u128 << 64;
 
-/// `address + size` in `u128`, so a range ending exactly at `2^64` is
-/// recognized as the well-formed top boundary instead of a wrap.
-fn physical_end(start: u64, len: u64) -> Result<u64, DtbMemMapError> {
+/// `address + size` in `u128`. Only a genuine overflow (`> 2^64`) is an error:
+/// an end of exactly `2^64` is the well-formed top boundary and is representable
+/// in a `PhysicalRange`. Whether a *projection* can deliver that end is checked
+/// where the projection is built, not here.
+fn physical_end(start: u64, len: u64) -> Result<u128, DtbMemMapError> {
     let end = (start as u128) + (len as u128);
     if end > PHYS_END {
         return Err(DtbMemMapError::RangeOverflow);
     }
-    if end == PHYS_END {
-        return Err(DtbMemMapError::UnsupportedPhysicalAddressEnd);
-    }
-    Ok(end as u64)
+    Ok(end)
 }
 
 fn declared_page_range(start: u64, len: u64) -> Result<(u64, u64), DtbMemMapError> {
     let range_end = physical_end(start, len)?;
     let start = start & !(PAGE_BYTES - 1);
-    // Outward rounding can also land exactly on 2^64 (a range whose last byte
-    // sits inside the top page). Same boundary case, same refusal.
-    // range_end < 2^64, so rounding outward can at most reach 2^64 exactly.
-    let projected = ((range_end as u128) + (PAGE_BYTES - 1) as u128) & !((PAGE_BYTES - 1) as u128);
-    if projected == PHYS_END {
+    // range_end <= 2^64, so rounding outward can at most reach 2^64 exactly;
+    // that is a projection-layer refusal, not an input error.
+    let projected = (range_end + (PAGE_BYTES - 1) as u128) & !((PAGE_BYTES - 1) as u128);
+    if projected >= PHYS_END {
         return Err(DtbMemMapError::UnsupportedPhysicalAddressEnd);
     }
     Ok((start, projected as u64))
@@ -348,7 +372,7 @@ fn push_source(
     n: &mut usize,
     kind: SourceKind,
     origin: SourceOrigin,
-    raw: (u64, u64),
+    range: PhysicalRange,
 ) -> Result<(), DtbMemMapError> {
     if *n >= DTB_SOURCE_MAX {
         return Err(DtbMemMapError::TooManySourceRecords);
@@ -357,8 +381,7 @@ fn push_source(
         id: *n as u16,
         kind,
         origin,
-        range_start: raw.0,
-        range_end: raw.1,
+        range,
     };
     *n += 1;
     Ok(())
@@ -548,8 +571,7 @@ impl DtbMemoryMap<'_> {
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-            range_start: 0,
-            range_end: 0,
+            range: PhysicalRange::new(0, 0),
         }; DTB_SOURCE_MAX];
         let mut sources_n = 0usize;
         let mut free = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
@@ -600,6 +622,12 @@ impl DtbMemoryMap<'_> {
                     _ => continue,
                 };
                 let end = physical_end(start, len)?;
+                let record_range = PhysicalRange::new(start, end);
+                let Some(end) = record_range.projectable_end() else {
+                    // Well-formed input, but the page-projection arithmetic is
+                    // still u64: the top page is refused here, not at input.
+                    return Err(DtbMemMapError::UnsupportedPhysicalAddressEnd);
+                };
                 let memory_id = sources_n as u16;
                 // Overlapping RAM claims are a firmware input anomaly: a
                 // partial overlap would put a page in the panorama twice and
@@ -623,7 +651,7 @@ impl DtbMemoryMap<'_> {
                     &mut sources_n,
                     SourceKind::Memory,
                     SourceOrigin::MemoryNode { node: node_ordinal, reg: reg_index as u16 },
-                    (start, end),
+                    record_range,
                 )?;
                 if duplicate {
                     continue;
@@ -663,7 +691,7 @@ impl DtbMemoryMap<'_> {
                             memory_id,
                             cut: self.firmware_reserve_end,
                         },
-                        (start, start + prefix_len),
+                        PhysicalRange::new(start, start as u128 + prefix_len as u128),
                     )?;
                 }
             }
@@ -683,9 +711,9 @@ impl DtbMemoryMap<'_> {
                 &mut sources_n,
                 SourceKind::MrbEntry,
                 SourceOrigin::MrbEntry(entry_index as u16),
-                (
+                PhysicalRange::new(
                     entry.address() as u64,
-                    entry.address() as u64 + entry.size() as u64,
+                    physical_end(entry.address() as u64, entry.size() as u64)?,
                 ),
             )?;
             if mrb_n >= DTB_MRB_MAX {
@@ -792,9 +820,9 @@ impl DtbMemoryMap<'_> {
                             node: child_index as u16,
                             reg: reg_index as u16,
                         },
-                        (
+                        PhysicalRange::new(
                             region.starting_address as u64,
-                            region.starting_address as u64 + len,
+                            physical_end(region.starting_address as u64, len)?,
                         ),
                     )?;
                     let intent = if no_map {
@@ -1234,7 +1262,10 @@ mod tests {
             .iter()
             .find(|r| r.kind == SourceKind::ReservedNoMap)
             .expect("no-map declaration keeps its record");
-        assert_eq!((record.range_start, record.range_end), (0x8000_4000, 0x8000_5000));
+        assert_eq!(
+            (record.range.start, record.range.end_exclusive),
+            (0x8000_4000, 0x8000_5000)
+        );
         assert_eq!(record.origin, SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 });
     }
 
@@ -1250,7 +1281,10 @@ mod tests {
             .iter()
             .find(|r| r.kind == SourceKind::MrbEntry)
             .expect("MRB entry keeps its record");
-        assert_eq!((record.range_start, record.range_end), (0x8000_1000, 0x8000_1800));
+        assert_eq!(
+            (record.range.start, record.range.end_exclusive),
+            (0x8000_1000, 0x8000_1800)
+        );
         assert_eq!(record.origin, SourceOrigin::MrbEntry(0));
     }
 
@@ -1275,7 +1309,10 @@ mod tests {
             .iter()
             .find(|r| r.kind == SourceKind::ReservedNoMap)
             .expect("out-of-RAM declaration keeps its record");
-        assert_eq!((record.range_start, record.range_end), (0x9000_0000, 0x9000_1000));
+        assert_eq!(
+            (record.range.start, record.range.end_exclusive),
+            (0x9000_0000, 0x9000_1000)
+        );
     }
 
     #[test]
@@ -1296,9 +1333,9 @@ mod tests {
         assert_eq!(sources.len(), 3, "one /memory span + one MRB entry + one reservation");
         let covered = |start: u64| {
             sources.iter().any(|r| {
-                let first = r.range_start & !0xfff;
-                let end = (r.range_end + 0xfff) & !0xfff;
-                first <= start && start < end
+                let first = (r.range.start & !0xfff) as u128;
+                let end = (r.range.end_exclusive + 0xfff) & !0xfffu128;
+                first <= start as u128 && (start as u128) < end
             })
         };
         for span in conv.iter().chain(res.iter()) {
@@ -1428,7 +1465,7 @@ mod tests {
             .find(|r| r.id == memory_id)
             .expect("prefix points at a live record");
         assert_eq!(memory.kind, SourceKind::Memory);
-        assert_eq!(memory.range_start, prefix.range_start);
+        assert_eq!(memory.range.start, prefix.range.start);
         assert_eq!(memory.kind.class(), SourceClass::InputDeclaration);
     }
 
@@ -1520,7 +1557,7 @@ mod tests {
         assert_eq!(records.len(), 2, "both declarations keep their record");
         assert_eq!(records[0].origin, SourceOrigin::MemoryNode { node: 0, reg: 0 });
         assert_eq!(records[1].origin, SourceOrigin::MemoryNode { node: 0, reg: 1 });
-        assert_eq!(records[0].range_start, records[1].range_start);
+        assert_eq!(records[0].range.start, records[1].range.start);
     }
 
     #[test]
@@ -1542,7 +1579,7 @@ mod tests {
             .collect();
         assert_eq!(records.len(), 2, "both declarations keep their record");
         assert_ne!(records[0].id, records[1].id);
-        assert_eq!(records[0].range_start, records[1].range_start);
+        assert_eq!(records[0].range.start, records[1].range.start);
     }
 
     #[test]
@@ -1784,6 +1821,19 @@ mod tests {
     }
 
     #[test]
+    fn physical_range_expresses_the_top_page() {
+        // The record layer can carry the highest page; only the projection is
+        // limited to a u64 end. This is the type-level contract the boundary
+        // tests below depend on.
+        let top = PhysicalRange::new(0xffff_ffff_ffff_f000, 1u128 << 64);
+        assert_eq!(top.end_exclusive, 1u128 << 64);
+        assert_eq!(top.len(), 0x1000);
+        assert_eq!(top.projectable_end(), None);
+        let ordinary = PhysicalRange::new(0x8000_0000, 0x8000_1000);
+        assert_eq!(ordinary.projectable_end(), Some(0x8000_1000));
+    }
+
+    #[test]
     fn dtb_memory_range_ending_at_2_64_is_refused_as_unsupported_end() {
         // address + size == 2^64 exactly: a well-formed range that the u64
         // exclusive end cannot hold. Refusing it is this project's input
@@ -1981,7 +2031,10 @@ mod tests {
         assert_eq!(a.0.len(), b.0.len());
         assert_eq!(a.1.len(), b.1.len());
         assert_eq!(a.2.len(), b.2.len());
-        assert_eq!((a.2[1].range_start, a.2[1].range_end), (0x8000_4000, 0x8000_5000));
+        assert_eq!(
+            (a.2[1].range.start, a.2[1].range.end_exclusive),
+            (0x8000_4000, 0x8000_5000)
+        );
     }
 
     #[test]

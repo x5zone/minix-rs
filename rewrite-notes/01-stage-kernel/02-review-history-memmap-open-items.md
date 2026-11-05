@@ -10,6 +10,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十九轮评审之后：`PhysicalRange` 落码、证据合同不再宣称闭合）**
+
+- **第四次按旧文本评审**：本轮仍把布尔式、单一 `hart_set_id`、`HartAdmittedBytes`、`fallback_available` 记为当前状态，自述依据是上一轮附件。本轮不重复辩驳，只在正文把旧符号清零的做法延续（`grep -c` 三项仍为 0），并照旧给锚点。
+- **代码切片（本轮实质）**：`SourceRecord` 的 `range_start/range_end: u64` 改为 `range: PhysicalRange { start: u64, end_exclusive: u128 }`；`physical_end` 只把 `> 2^64` 判为 `RangeOverflow`，`== 2^64` 被接受进记录；拒绝移到投影层——`projectable_end()` 对最高页返回 `None`，`/memory` 与 `declared_page_range`（服务 `/reserved-memory` 与 MRB）在那里报 `UnsupportedPhysicalAddressEnd`。三条输入路径共用同一条 `u128` 求和。新增类型契约测试 `physical_range_expresses_the_top_page`。
+- **记号与断言同步**：`§2.1`、O-12g、O-12h、O-12i 三层表都改为 as-built；`§7` 删掉「A/D 真值表、原子进展、三判定本轮闭合」这句过早闭合，改成「概念结构已形成、证据合同未闭合、实现与负控未开始」（评审人给的原句）。
+- **两处合同收紧**：`ProfileMemoryObligations(isa_profile, region)`——义务只对具备相应 cacheability/coherence PMA 的区域成立，profile 与 region 都是输入；依赖最终成功的 LR/SC 算法**第一版只接受 `RsrvEventual`**，`AlgorithmFallback` 登记为未启用的扩展路径，不因它放松准入。
+- **证据钉法**：RISC-V 条目的「主分支」改为实际读取的 commit `418bdc49…`，`main` 只作阅读入口。
+- 门：minix-boot **142**、boot-shim **70**；三条 QEMU 腿 PASS；三目标交叉编译通过；主简报 1331 行。
+
+
 **本轮（第六十八轮评审之后：页表准入入口独立 + 页域公式补裁决步）**
 
 - **第三次按旧文本评审**：本轮意见再次引用布尔式、`HartAdmittedBytes`、`fallback_available`、`ctx.H` 单一集合，并自述依据是「提交 `f52730bef`、137/70」——当前是 `9cf7f574d`、141/70。版本横幅只写「本版对应提交」还不够，因为评审材料可能离线；本轮在横幅里加**内容轮次**（「第六十七轮评审后的修改」），提交号与轮次两项都对上才算同一份材料。

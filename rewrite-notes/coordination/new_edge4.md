@@ -5477,4 +5477,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 第三次按旧文本评审（自述依据 `f52730bef`/137-70；当前 `9cf7f574d`/141-70）。版本横幅扩为「提交号 + 内容轮次」。
 - 新增：`PageTableRoleAdmission(page, ctx)` 供 PMM 与对象审计共用（引导期页表页不经 PMM）；页域公式补裁决步；Profile 清单标注非全集；§7 增页表准入入口行。
 - 门：无代码改动；minix-boot **141**、boot-shim **70**；lint/表格/行数三门；主简报 1331 行。
-- 认领：`I-29 qorder69`（工作树 `.wt/i-29-qorder69`，基线 `9cf7f574d`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder69`（工作树 `.wt/i-29-qorder69`，基线 `9cf7f574d`），状态 ✅：已 ff 合并为 `e57969969`，认领已释放，`sweep` 读数在册 0。
+
+### 第二百七十七笔（01 阶段 · I-29 第六十九轮：PhysicalRange 落码）
+
+- 代码：`PhysicalRange{start:u64,end_exclusive:u128}` 进 `SourceRecord`；`physical_end` 只拒 `>2^64`；最高页在投影层由 `projectable_end()` 拒绝。行为不变，类型与拒绝点改变。
+- 文档：§2.1/O-12g/O-12h/O-12i 改 as-built；§7 删过早闭合句；`ProfileMemoryObligations(profile, region)`；LR/SC 第一版只收 `RsrvEventual`；RISC-V 证据钉 commit。
+- 门：minix-boot **142**、boot-shim **70**；riscv/aarch64/x86 三条 QEMU 腿 PASS；riscv64/aarch64-none/x86_64-uefi 交叉编译通过；lint error 0；主简报 1331 行。
+- 认领：`I-29 qorder70`（工作树 `.wt/i-29-qorder70`，基线 `e57969969`），状态 🔄，合并后释放。

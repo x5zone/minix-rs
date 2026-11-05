@@ -1019,3 +1019,17 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 主简报 | 1331 行（上限 1700）；围栏 32（偶）；表格列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **141**、boot-shim **70** 复跑；QEMU 腿沿用 `9cf7f574d` 读数 |
 
+
+## 四十一、第六十九轮：PhysicalRange 落码
+
+| 项 | 读数 |
+|---|---|
+| 代码落点 | `os/libs/minix-boot/src/memmap_source.rs`：新增 `pub struct PhysicalRange { start: u64, end_exclusive: u128 }`（`new` / `len` / `projectable_end`）；`SourceRecord.range: PhysicalRange`；`physical_end` 返回 `u128` 且只判 `> 2^64`；`push_source` 收 `PhysicalRange`；`/memory`、FirmwarePrefix、MRB、`/reserved-memory` 四处构造记录都改用它 |
+| 行为差异 | **无**：最高页仍在投影层被 `UnsupportedPhysicalAddressEnd` 拒绝（`projectable_end() == None`），错误码与拒绝时机对调用者不变；变的是类型层——记录现在能表达 `2^64`，且拒绝点从「输入求和」移到「投影」 |
+| 新测试 | `physical_range_expresses_the_top_page`（最高页可表达、`len() == 0x1000`、`projectable_end() == None`；普通范围 `Some(...)`） |
+| 回归读数 | `cargo test -p minix-boot --lib` **142 passed**；`boot-shim` **70 passed**；`grep -c checked_add` 仍为 0 |
+| 交叉编译 | `minix-boot --target riscv64gc-unknown-none-elf`、`--target aarch64-unknown-none`、`boot-shim --target x86_64-unknown-uefi` 均 Finished（touch 后确认实际重编） |
+| QEMU（串行） | riscv bootface PASS（B1/B2/B3）；aarch64 PASS（`conv=13 dtb_regions=1`）；x86 PASS（`no dumpdtb.dtb on ESP`，不进入采集器） |
+| 主简报 | 1331 行（上限 1700）；围栏 32（偶）；表格列数不一致 0 处；lint error 0 |
+| 评审事实核对 | 本轮意见仍引用布尔式与 `HartAdmittedBytes`；四项 `grep -c` 仍为 0，锚点与上一轮相同（本轮改动使行号整体后移，锚点以 `grep -n` 现读为准） |
+

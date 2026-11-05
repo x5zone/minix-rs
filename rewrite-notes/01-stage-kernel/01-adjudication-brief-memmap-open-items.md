@@ -78,7 +78,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | conventional | `/memory` 声明，扣除固件前缀与所有保留声明 | PMM 可直接分配 |
 | reserved | 固件前缀 + 非 `no-map` 的保留声明（与 `/memory` 相交的部分） | 可达、永不再分配 |
 
-**来源记录层（DTB 侧，第一阶段）**：`collect_with_sources()` 在同样的遍历里为每条声明留一条 `SourceRecord { id, kind, origin, range_start, range_end }`——`kind` 六类：`Memory`、`FirmwarePrefix`、`MrbEntry`、`ReservedOrdinary`、`ReservedReusable`、`ReservedNoMap`；`SourceKind::class()` 把它们分成**输入声明**（`Memory`/`MrbEntry`/`Reserved*` 五类）与**派生保留**（`FirmwarePrefix`）。**字段名是中性词**：输入声明的 `range_*` 就是声明范围；派生前缀的 `range_*` 是派生结果 `M_i ∩ [0, F)`（`F = firmware_reserve_end`），所以不叫 `raw_*`。`origin` 给出位置：`MemoryNode { node, reg }`、`ReservedMemoryChild { node, reg }`、`MrbEntry(n)`（`node` 只数匹配节点、`reg` 只数该节点 `reg` 属性内的元组，均从 0 起、按文档顺序）；前缀的 `origin` 是 `FirmwarePrefix { memory_id, cut }`，既指回被切分的 `/memory` 记录，又保留派生参数 `F` （原 DTB 释放后仍能解释「为什么截在这里」）。`id` 是**输入对象内的局部 ID**；跨输入引用须用 `(InputObjectId, LocalSourceId)`，不能单用 `id`。**记录不携带页范围**：`/memory` 投影向内取整（`FullPages`），保留声明与 `no-map` 向外取整，MRB 访问禁止保留精确字节。`range_end` 为独占端；DTB `reg` 回绕在采集时即拒绝，故不会出现 `range_end == 2^64`（`u128` 端点规则属 UEFI 描述符路径）。容量 40 由**输入上限**推出（`/memory` 段与声明各受 `DTB_MEMMAP_MAX`、`no-map` 同样计数、前缀不多于 `/memory` 段、MRB 受 `DTB_MRB_MAX`），按 **reg 元组**计数而非节点数；超限拒绝（`TooManySourceRecords`）。`collect()` 语义不变、只取前两张表。测试：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`、`dtb_collect_and_collect_with_sources_agree`、`dtb_no_map_declarations_count_against_the_declaration_cap`、`dtb_declaration_cap_is_shared_across_reservation_kinds`、`dtb_source_capacity_is_reachable_at_exactly_forty`、`dtb_firmware_prefix_links_to_its_memory_record`、`dtb_identical_reservations_are_deduplicated_not_rejected`、`dtb_identical_mrb_entries_are_rejected`、`dtb_same_range_with_different_semantics_is_a_conflict`、`dtb_every_input_declaration_has_exactly_one_record`、`dtb_identical_memory_tuples_are_deduplicated_not_rejected`、`dtb_missing_reserved_memory_ranges_is_rejected`、`dtb_missing_reserved_memory_cells_is_rejected`。
+**来源记录层（DTB 侧，第一阶段）**：`collect_with_sources()` 在同样的遍历里为每条声明留一条 `SourceRecord { id, kind, origin, range: PhysicalRange }`——`kind` 六类：`Memory`、`FirmwarePrefix`、`MrbEntry`、`ReservedOrdinary`、`ReservedReusable`、`ReservedNoMap`；`SourceKind::class()` 把它们分成**输入声明**（`Memory`/`MrbEntry`/`Reserved*` 五类）与**派生保留**（`FirmwarePrefix`）。**字段名是中性词**：输入声明的 `range` 就是声明范围；派生前缀的 `range` 是派生结果 `M_i ∩ [0, F)`（`F = firmware_reserve_end`），所以不叫 `raw_*`。`origin` 给出位置：`MemoryNode { node, reg }`、`ReservedMemoryChild { node, reg }`、`MrbEntry(n)`（`node` 只数匹配节点、`reg` 只数该节点 `reg` 属性内的元组，均从 0 起、按文档顺序）；前缀的 `origin` 是 `FirmwarePrefix { memory_id, cut }`，既指回被切分的 `/memory` 记录，又保留派生参数 `F` （原 DTB 释放后仍能解释「为什么截在这里」）。`id` 是**输入对象内的局部 ID**；跨输入引用须用 `(InputObjectId, LocalSourceId)`，不能单用 `id`。**记录不携带页范围**：`/memory` 投影向内取整（`FullPages`），保留声明与 `no-map` 向外取整，MRB 访问禁止保留精确字节。`range_end` 为独占端；DTB `reg` 回绕在采集时即拒绝，故不会出现 `range_end == 2^64`（`u128` 端点规则属 UEFI 描述符路径）。容量 40 由**输入上限**推出（`/memory` 段与声明各受 `DTB_MEMMAP_MAX`、`no-map` 同样计数、前缀不多于 `/memory` 段、MRB 受 `DTB_MRB_MAX`），按 **reg 元组**计数而非节点数；超限拒绝（`TooManySourceRecords`）。`collect()` 语义不变、只取前两张表。测试：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`、`dtb_collect_and_collect_with_sources_agree`、`dtb_no_map_declarations_count_against_the_declaration_cap`、`dtb_declaration_cap_is_shared_across_reservation_kinds`、`dtb_source_capacity_is_reachable_at_exactly_forty`、`dtb_firmware_prefix_links_to_its_memory_record`、`dtb_identical_reservations_are_deduplicated_not_rejected`、`dtb_identical_mrb_entries_are_rejected`、`dtb_same_range_with_different_semantics_is_a_conflict`、`dtb_every_input_declaration_has_exactly_one_record`、`dtb_identical_memory_tuples_are_deduplicated_not_rejected`、`dtb_missing_reserved_memory_ranges_is_rejected`、`dtb_missing_reserved_memory_cells_is_rejected`。
 
 解析与拒绝条件：
 
@@ -105,7 +105,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 `/reserved-memory` 的重复容忍是**项目级输入策略**，不是规范授权；MRB 没有这层容忍。`reusable` 在去重时保留的是**声明身份**（两条记录各有 `id`）；owner 关系尚未建立，不能把记录数量当成 owner 数量——`memory-region` 引用是多对多（一个设备可引用多个区域、一个区域可被多个设备引用），模型应是 `DeviceMemoryRegionReference`（或 `MemoryRegionAssociation`）的引用集合，而非单个 `OwnerId` 字段。**引用不等于所有权**：只有平台 binding 或驱动注册信息进一步证明回收职责时，才提升为 `ReclaimAuthority`。`/memory` 的**部分重叠**拒绝同样是项目策略：**不是数学必然**——§3 允许纯集合层对兼容区间 `Union`，部分重叠在集合模型里可以安全归一化；拒绝的理由是「严格输入策略：部分重叠视为固件异常」，它不依赖今天 PMM 的实现，也不声称 DTSpec 禁止 `/memory` 重叠。若将来改为并集，来源记录仍须各留一条。`reusable` 的 owner 关系在去重时不得合并（来源记录各留一条正是为此）。
 - `reusable` 在记录层已独立成 `ReservedReusable`；两张投影表仍把它按保留处理（不实现 owner 关联、回收能力或生命周期处置），第一版保守地不回收，但不丢原始声明语义。
 
-测试（`cargo test -p minix-boot --lib`，141 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`、`dtb_size_only_reservation_is_rejected_as_dynamic`、`dtb_child_without_reg_and_without_size_is_an_unsupported_declaration`、`reg_and_size_together_uses_reg_and_ignores_size`、`dtb_memory_range_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_reservation_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_top_partial_page_reservation_is_refused_as_unsupported_end`、`dtb_memory_range_past_2_64_is_range_overflow`。
+测试（`cargo test -p minix-boot --lib`，142 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`、`dtb_size_only_reservation_is_rejected_as_dynamic`、`dtb_child_without_reg_and_without_size_is_an_unsupported_declaration`、`reg_and_size_together_uses_reg_and_ignores_size`、`dtb_memory_range_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_reservation_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_top_partial_page_reservation_is_refused_as_unsupported_end`、`dtb_memory_range_past_2_64_is_range_overflow`。
 
 **不保证什么**：不产出禁止集合、不产出 PMM 排除集合、不实现 `reusable` 的 owner 回收、不处理 UEFI 来源。**`collect()` 的两张表无法表达 MRB 来源**：MRB 范围会从 conventional 扣除，但不会进入 reserved（reserved 的语义是「可达、永不再分配」，MRB 是「不得访问」）；调用方若不持有 `SourceRecord`，排除原因与访问禁止来源都不可追溯。这是旧接口的**有意取舍**，修复方向是让政策所有者持有记录，而不是把 MRB 塞进 reserved（那会把「不得访问」误表达成「可达但不分配」）。因此 `dtb_collect_and_collect_with_sources_agree` 只证明两条接口的**投影一致**，不证明旧接口保留来源完整性。
 
@@ -859,7 +859,7 @@ GetMemoryMap(reused_buffer) → ValidateDescriptorSnapshot
 | 内存图元数据 | `DescriptorVersion` 受支持；`DescriptorSize` 不小于已知前缀；`MemoryMapSize` 能被 `DescriptorSize` 整除**且不超过调用方缓冲区长度**；按 `DescriptorSize` 步进；字段读取不越出该条前缀 |
 | 每个描述符 | `PhysicalStart` 对齐且不超上界；`VirtualStart` 按规范校验（**`0` 可接受**，它满足对齐；第一版验证后忽略）；`NumberOfPages` 非零，页数约束**分别对物理与虚拟起点**计算；两个末端都用 **u128**；**不论类型是否输出区间都执行** |
 | 跨描述符 | **物理区间不得重叠**：两个描述符覆盖同一页却给出不同政策时，分类器无法给出唯一结果，必须拒绝启动 |
-| 顶端边界 | **结构合法性与平台准入分开（已裁定，未实现）**：`[0xffff_ffff_ffff_f000, 2^64)` 是合法的最后一页，UEFI 只约束「页起始地址不超过 `0xffff_ffff_ffff_f000`」，不要求独占末端能用 `u64` 表示。结构校验用 `u128` 接受 `end == 2^64`；是否可用由平台地址准入层判定（`effective_pa_limit`、PMA/PMP 等），拒绝时用独立错误码。**本轮已改掉 DTB 腿的伪装**：`physical_end` 用 `u128` 求和，末端恰为 `2^64` 现在是具名的 `UnsupportedPhysicalAddressEnd`，不再冒充 `RangeOverflow`（四测试见 §6）。**仍未改掉的部分**：这一页依然被拒绝交付——`SourceRecord` 还是 `u64` 独占端，统一 `PhysicalRange` 未落地，所以「结构合法 → 交平台地址准入判定」只完成了命名这一层；UEFI 描述符路径本就接受 `end == 2^64` |
+| 顶端边界 | **结构合法性与平台准入分开（已裁定，未实现）**：`[0xffff_ffff_ffff_f000, 2^64)` 是合法的最后一页，UEFI 只约束「页起始地址不超过 `0xffff_ffff_ffff_f000`」，不要求独占末端能用 `u64` 表示。结构校验用 `u128` 接受 `end == 2^64`；是否可用由平台地址准入层判定（`effective_pa_limit`、PMA/PMP 等），拒绝时用独立错误码。**代码已落到三层**：`SourceRecord.range` 已是 `PhysicalRange { start: u64, end_exclusive: u128 }`，**记录层接受 `end == 2^64`**；拒绝发生在投影层——`PhysicalRange::projectable_end()` 对最高页返回 `None`，`/memory` 与 `declared_page_range` 在那里报 `UnsupportedPhysicalAddressEnd`。输入层只拒 `> 2^64`（`RangeOverflow`）。**仍未落地的部分**：投影层算术仍是 `u64`，最高页不交付给 PMM/保留表；UEFI 描述符路径本就接受 `end == 2^64`。测试：`physical_range_expresses_the_top_page` 与四个边界用例 |
 | 版本策略 | 只接受 `DescriptorVersion = 1`；其它版本明确拒绝（不是「受支持」的模糊说法） |
 | 顶端页测试（待补） | `PhysicalStart = 0xffff_ffff_ffff_f000, Pages = 1` 通过；同起点 `Pages = 2` 拒绝；`VirtualStart` 同两点；`VirtualStart = 0` 允许但页数仍须满足虚拟上界；**以上对不进入任何分类输出的类型同样执行** |
 
@@ -873,7 +873,7 @@ GetMemoryMap(reused_buffer) → ValidateDescriptorSnapshot
 
 | 层次 | 状态 | 证据 |
 |---|---|---|
-| 库接口：能产出带身份的记录 | **已实现（第一阶段）** | `SourceRecord { id, kind, origin, range_start, range_end }`；`class()` 区分输入声明与派生 `FirmwarePrefix`；前缀带 `{ memory_id, cut }` 派生链；精确重复声明去重投影、保留两条来源记录；容量由输入上限推出，恰好 40 可达 |
+| 库接口：能产出带身份的记录 | **已实现（第一阶段）** | `SourceRecord { id, kind, origin, range: PhysicalRange }`；`class()` 区分输入声明与派生 `FirmwarePrefix`；前缀带 `{ memory_id, cut }` 派生链；精确重复声明去重投影、保留两条来源记录；容量由输入上限推出，恰好 40 可达 |
 | 启动路径：真实启动生成并保留记录 | **未接入** | 四条 DTB 调用点全部走 `collect()`，记录被丢弃（§2.5） |
 | 消费者：政策投影实际引用记录 | **未接入** | `PolicyProjection` 尚无代码 |
 
@@ -1001,14 +1001,14 @@ AtomicFallbackPlan {
 
 - **只用 AMO 的算法**：要求相应 AMO 家族与宽度即可，不因它要求 `RsrvEventual`。
 - **LR/SC 且不依赖最终成功**：可接受 `RsrvNonEventual`，但要写明其进展性质；主源的对应建议是「When LR/SC is used for memory locations marked RsrvNonEventual, software should provide alternative fall-back mechanisms used when lack of progress is detected」。
-- **LR/SC 且依赖最终成功**：要求 `RsrvEventual`，或提交上面那份 `AlgorithmFallback` 凭证证明 `RsrvNonEventual` 下确实可走通。
+- **LR/SC 且依赖最终成功**：第一版**只接受 `RsrvEventual`**——算法级 fallback 凭证是更强的工程承诺，在它被审核通过之前不能替代。`AlgorithmFallback` 因此登记为**未启用的扩展路径**：合同形状已定，第一版准入不因它放松。
 - 「We recommend providing RsrvEventual support for main memory regions where possible」是规范的 NOTE（推荐，不是强制），不能当准入依据引用。
 - **声明符合的 ISA Profile 会追加全局 PMA 义务，只查当前源码恰好用到的指令不够**。这里有两个不同的 profile，不能合并：
 
 | 概念 | 记录什么 |
 |---|---|
 | `PlatformMemoryProfile` | QEMU / SoC / 硬件的实际配置（machine version、accelerator、PMP 布局、hart 启动方式…） |
-| `ProfileMemoryObligations(isa_profile)` | **ISA Profile**（RVA20/RVA22/RVA23 的具体版本）对**指定主存范围**提出的 PMA 义务 |
+| `ProfileMemoryObligations(isa_profile, region)` | **ISA Profile**（RVA20/RVA22/RVA23 的具体版本）对**指定主存范围**提出的 PMA 义务——义务只对具备相应 cacheability/coherence PMA 的区域成立，因此 profile 与 region 都是输入 |
 
   RVA20 一类 Profile 对符合条件的主存至少要求三条：`Ziccif` 要求可执行并满足**指定取指宽度的原子性**；`Ziccrse` 要求 `RsrvEventual`；`Ziccamoa`（锚点 `norm:Ziccamoa_pma_amo_req`）要求「AMOArithmetic-level support to main memory regions with both the coherence and cacheability PMAs」，`Ziccamoc`（`norm:Ziccamoc_pma_amo_req`）另加 AMOCASQ 级；supervisor 侧 profile（如 RVA20S64）还列 **`Ssccptr`**——要求硬件页表读取能力。AMO 能力自身也分级（`AMONone` / `AMOLogical` / `AMOArithmetic` / `AMOCASW`/`AMOCASD`/`AMOCASQ`，CAS 级以 AMOArithmetic 为前提）。
 
@@ -1203,10 +1203,10 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 | 层次 | 现状或目标 |
 |---|---|
 | DTB 原始输入 | `address + size` 两个 cell，保留原始编码（cell 数由父节点声明，规范化层才求和） |
-| 今天的 `SourceRecord` | `range_start/range_end: u64`，独占端点表示不了 `2^64`，因此最高页被**显式拒绝** |
+| 今天的 `SourceRecord` | 已是 `range: PhysicalRange`（`{ start: u64, end_exclusive: u128 }`）：**记录层能表达 `2^64`**，能否交付由投影层判定 |
 | 规范化物理范围（目标，未落） | `PhysicalRange { start: u64, end_exclusive: u128 }`，可表达 `[0xffff_ffff_ffff_f000, 2^64)` |
 
-`physical_end` 在 `u128` 里算 `address + size`，三分：`> 2^64` → `RangeOverflow`（真正越界）；`== 2^64` → 今天落到 `UnsupportedPhysicalAddressEnd`；向外取整落到 `2^64` 同样归后者。**这只解决了「不冒充回绕」，还不是目标形态**：按 O-11 的统一类型，`== 2^64` 在**规范化来源记录层应当被接受**（`PhysicalRange { start: u64, end_exclusive: u128 }`），只有 `> 2^64` 才是拒绝理由；今天仍拒绝，是因为 `SourceRecord` 还是 `u64` 独占端、`MemoryRegion` 也只能表达 `u64` 端点。三条输入路径（`/memory` 的 `reg`、`/reserved-memory` 子节点的 `reg`、MRB 的地址+长度）必须走同一条 `u128` 求和并收敛到同一个 `PhysicalRange`。**下一刀**：`SourceRecord` 改用 `PhysicalRange`，记录层接受 `end == 2^64`，投影层另行判定并给出**独立**理由——`UnsupportedPhysicalAddressEnd` 将来只属于投影层，不属于输入层。今天的读数：`grep -c checked_add os/libs/minix-boot/src/memmap_source.rs` = 0。对应测试：`dtb_memory_range_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_reservation_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_top_partial_page_reservation_is_refused_as_unsupported_end`、`dtb_memory_range_past_2_64_is_range_overflow`。统一 `PhysicalRange` 仍未落地，两条腿因此**还是**用不同的端点类型（DTB 拒绝、UEFI 接受），差别现在是具名政策而不是类型巧合。
+**代码已按这三层落定**：`physical_end` 在 `u128` 里算 `address + size`，只把 `> 2^64` 判为 `RangeOverflow`（真正的畸形输入）；`== 2^64` 一路被接受进 `PhysicalRange`。拒绝移到投影层——`PhysicalRange::projectable_end()` 对最高页返回 `None`，`/memory` 循环与 `declared_page_range`（同时服务 `/reserved-memory` 子节点与 MRB）在那里报 `UnsupportedPhysicalAddressEnd`，向外取整落到 `2^64` 同样归投影层。三条输入路径（`/memory` 的 `reg`、`/reserved-memory` 子节点的 `reg`、MRB 的地址+长度）现在共用同一条 `u128` 求和；`grep -c checked_add os/libs/minix-boot/src/memmap_source.rs` = 0。**剩下的一步**：投影层自身改用 `u128` 后即可交付最高页——那时 `UnsupportedPhysicalAddressEnd` 连投影层也不再需要。类型契约由 `physical_range_expresses_the_top_page` 钉住（最高页可表达、`projectable_end()` 为 `None`），边界行为仍由四个 `dtb_*_2_64_*` 用例守。
 
 **MRB 的两种粒度**：精确 byte range 用于访问义务与审计；要通过页表保证不可访问时，另算相交页级范围，并说明「只覆盖一页中部分字节」时该页在其它对象的普通路径中是否允许映射。
 
@@ -1223,12 +1223,12 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 | 证据 | 内容 |
 |---|---|
 | 提交 `38668f843`（**功能落码提交，不是测试基线**） | DTB 保留来源落码：`/reserved-memory`、MRB、容量/回绕/重叠/形状拒绝、引导区 checked 守卫 |
-| `cargo test -p minix-boot --lib` | 141 通过（采集器用例见 §2.1） |
+| `cargo test -p minix-boot --lib` | 142 通过（采集器用例见 §2.1） |
 | `cargo test -p boot-shim --lib` | 70 通过（分类器用例见 §2.2） |
 | 交叉编译 | `x86_64-unknown-none`、`aarch64-unknown-none`（`fw-none-image`）、`riscv64gc-unknown-none-elf`、`x86_64-unknown-uefi`、`aarch64-unknown-uefi` |
 | QEMU | `test-kernel-image-riscv64-bootface.sh` PASS（`### TEST_RESULT: PASS ###`，B1/B2/B3 三点位齐全，仅覆盖 bootface 入口）；`test-shim-bootmarks-aarch64.sh` PASS（串口读到 `boot-shim: memmap source: uefi-getmemorymap (dtb /memory cross-checked, diagnostic only; conv=13 dtb_regions=1)` 与内核进入行）；`test-shim-bootmarks-x86.sh` PASS（串口 `boot-shim: memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)`——该腿没有 ESP 上的 `dumpdtb.dtb`，**DTB 采集器根本没被进入**，故它只证明 x86 启动未回归，不构成对本切片新分支的覆盖）。三条腿均在**本轮边界改动之后**重跑：第六十三轮的 `size`-only 与本轮的 `2^64` 分名都不改变 QEMU/OpenSBI 与 EDK2 实际递交的 DTB（其实例子节点都带 `reg`，也没有任何范围触到顶端页），故启动行为不变——这是「未观察到变化」，不是「已验证新分支」；两个新分支目前只有宿主测试覆盖。riscv 腿 B1/B2/B3 点位仍全；aarch64 腿读到 `conv=13 dtb_regions=1` 与内核进入行；x86 腿仍是 `no dumpdtb.dtb on ESP`（不进入采集器） |
 | 来源记录层 | `collect_with_sources()` 交出六类 `SourceRecord`（容量 40）；`no-map`、RAM 外声明、MRB 出表后仍可追溯：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`；`collect()` 语义不变；`dtb_collect_and_collect_with_sources_agree` 钉住两条入口不漂移；`dtb_no_map_declarations_count_against_the_declaration_cap` 钉住「RAM 外的 no-map 不进任何表仍占声明容量」；`dtb_reusable_duplicates_are_deduplicated_not_rejected`、`dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_partial_overlap_of_memory_ranges_is_rejected` 钉住三分裁决 |
-| 本轮规范原文取证（主源直取，可复核） | RISC-V：`riscv/riscv-isa-manual` 主分支 `src/priv/supervisor.adoc`（两种 A/D 方案、`norm:pte_ad_scheme_uniform`「All harts in a system must employ the same PTE-update scheme as each other.」、硬件更新方案要求「hardware page-table write access and *RsrvEventual* PMA」）与 `src/priv/machine.adoc`（`norm:menvcfg_adue_op`、`norm:menvcfg_adue_rdonly0`、Memory Ordering PMA、Reservability PMA 三级、Idempotency PMAs）。设备树：`devicetree-org/devicetree-specification` 主分支 `source/chapter3-devicenodes.rst`（`/reserved-memory` 父子节点属性表、`reg`/`size` 优先关系、动态区不入 UEFI 内存图、`no-map` 与 `reusable` 互斥）与 `source/chapter5-flattened-format.rst`（MRB「shall not overlap each other」、以 `EfiReservedMemoryType` 列出是 *should*）。RISC-V 与设备树两处已改为本方直接取证；**UEFI 侧仍是二手**：AArch64 平台绑定的 Table 2.5/2.6 分工与 §4.6.1.3 的「标准 `EFI_DTB_TABLE_GUID` 必须位于 `EfiACPIReclaimMemory`、按物理地址解释、运行时不修正、固件安装后不得修改」由**评审人按 UEFI 2.11 核对**，本环境直接抓取 uefi.org 返回 403、本方未取到原文——两侧分开记，不写成本方已独立验证。**边界**：规范保证「固件不修改」不等于「所有 UEFI 应用/驱动都不修改」，复制期间源对象的一致性仍须由当前 loader 自己保证 |
+| 本轮规范原文取证（主源直取，可复核） | RISC-V：`riscv/riscv-isa-manual` @ `418bdc4990ae2d60a86f1e11e8d7795aa279da61`（`main` 只作阅读入口，不作为冻结版本）`src/priv/supervisor.adoc`（两种 A/D 方案、`norm:pte_ad_scheme_uniform`「All harts in a system must employ the same PTE-update scheme as each other.」、硬件更新方案要求「hardware page-table write access and *RsrvEventual* PMA」）与 `src/priv/machine.adoc`（`norm:menvcfg_adue_op`、`norm:menvcfg_adue_rdonly0`、Memory Ordering PMA、Reservability PMA 三级、Idempotency PMAs）。设备树：`devicetree-org/devicetree-specification` 主分支 `source/chapter3-devicenodes.rst`（`/reserved-memory` 父子节点属性表、`reg`/`size` 优先关系、动态区不入 UEFI 内存图、`no-map` 与 `reusable` 互斥）与 `source/chapter5-flattened-format.rst`（MRB「shall not overlap each other」、以 `EfiReservedMemoryType` 列出是 *should*）。RISC-V 与设备树两处已改为本方直接取证；**UEFI 侧仍是二手**：AArch64 平台绑定的 Table 2.5/2.6 分工与 §4.6.1.3 的「标准 `EFI_DTB_TABLE_GUID` 必须位于 `EfiACPIReclaimMemory`、按物理地址解释、运行时不修正、固件安装后不得修改」由**评审人按 UEFI 2.11 核对**，本环境直接抓取 uefi.org 返回 403、本方未取到原文——两侧分开记，不写成本方已独立验证。**边界**：规范保证「固件不修改」不等于「所有 UEFI 应用/驱动都不修改」，复制期间源对象的一致性仍须由当前 loader 自己保证 |
 | 保留声明形状分流 | `size`-only / 无 `reg` 无 `size` / `reg`+`size` 三种形状各有专名错误与专测（见 O-12g 行 c）；`UnsupportedDynamicReservation` 拒绝的是 **DTSpec 3.5 允许、但第一版不支持**的合法动态保留请求，规范语义已由本方直取原文核实 |
 | 边界端点分流 | `address + size` 在 `u128` 里三分：`>2^64` → `RangeOverflow`、`==2^64` → `UnsupportedPhysicalAddressEnd`（**临时**：记录层仍是 `u64`，`PhysicalRange` 落地后该层接受）、向外取整落到 `2^64` → 同上；四测试 `dtb_memory_range_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_reservation_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_top_partial_page_reservation_is_refused_as_unsupported_end`、`dtb_memory_range_past_2_64_is_range_overflow`；`grep -c 'checked_add' …/memmap_source.rs` = 0 |
 | FDT 容器校验 | `fdt_layout::validate` **28 条测试**（`accepts_a_canonical_layout`、`accepts_an_unaligned_strings_block`、`accepts_a_property_before_children`、`rejects_a_property_after_a_child`、`rejects_an_unknown_token`、`rejects_a_second_root`、`rejects_unbalanced_end_nodes`、`rejects_an_end_token_in_the_middle`、`rejects_a_property_running_past_the_block`、`rejects_a_property_name_outside_the_strings_block`、`rejects_an_unterminated_property_name`、`rejects_nesting_beyond_the_parser_limit`、`the_parser_consumes_the_deepest_tree_this_gate_accepts`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_more_reservations_than_the_collector_accepts`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_structure_block_without_the_end_token`、`rejects_unbacked_structure_alignment`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`、`rejects_strings_before_the_structure_block`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
@@ -1269,7 +1269,7 @@ Devicetree Specification
 
 | 层级 | 本轮状态 |
 |---|---|
-| `minix-boot` 宿主单测 | 141 PASS |
+| `minix-boot` 宿主单测 | 142 PASS |
 | `boot-shim` 宿主单测 | 70 PASS |
 | riscv64 启动路径 QEMU | PASS（exit 0） |
 | aarch64 镜像组装 | **PASS**（`b71bce1d0`/`ae4ef5c76`/`8dc30f75e` 依次补齐 `sendrec` 实现后） |
@@ -1284,11 +1284,11 @@ cd os && cargo test -p minix-boot --lib
 cd os && cargo test -p boot-shim --lib
 ```
 
-141/70 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
+142/70 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
 
 复核方式：对 §2 的每条主张，文中给出了测试名或代码位置；对 §5 的每条问题，文中给出了失败形态——评审人可以只凭本文判断「问题是否成立」。
 
-**测试通过不等于输入完整性**：141 与 70 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
+**测试通过不等于输入完整性**：142 与 70 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
 
 ## 7. 签字状态
 
@@ -1320,7 +1320,7 @@ cd os && cargo test -p boot-shim --lib
 |---|---|
 | 输入真实性与边界 | O-11（含 EFI DTB 专属类型合同）、O-12h、**O-12k（MapKey 快照）**、O-12j（a/b 已实现，b 的预编译依赖闭包未证；c 未闭合）、DTB 节点准入 |
 | 来源保真、RAM 资格与生命周期 | O-01、O-06（属性位冲突域已 fail-closed，完整固件 profile 仍待钉）、O-12f、O-12g（DTB 记录层已落，UEFI 描述符记录未落） |
-| PMM 投影与页粒度 | O-12d、O-12i（两层代数与 `MemoryAdmissionContext` 已定；A/D 真值表、原子进展要求、三判定分层本轮闭合，仍无实现与负控） |
+| PMM 投影与页粒度 | O-12d、O-12i（概念结构已形成；A/D 方案、hart 集合、访问类别与原子进展的**证据合同仍未闭合**，实现与负控尚未开始） |
 | 设备资源、映射和访问 | O-12c、O-08 |
 | 禁止集合与逐树审计 | O-02a/b、O-03、O-04、O-05、O-12a/b |
 | 对象与访问完整性 | O-07、O-09、O-10、O-12e |
