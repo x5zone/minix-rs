@@ -12,6 +12,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百零八轮（第二跳交接页的失败语义落成测试）**
+
+- `VmBootHandoff::validate` 的六类 fail-stop 现在各有测试：坏 magic、非精确版本、未对齐根页、三类 count 超容量；另有一枚“合法交接页被接受”的正例。
+- 固定用户 VA 的“低于三架构上限”此前只在注释里：改为两个编译期断言（`VM_BOOT_HANDOFF_VA`、`KERNINFO_USER_VA` 均 < 2^38）。
+- §2.8 补写交接页合同段：一页来自 `VmBootAllocator`、随 `deducted` 保留、内核写一次、VM 只读一次；`#[repr(C)]`、little-endian、3792 B ≤ 一页；精确版本比较与七条失败语义。
+
 **第一百零七轮（消费者边界收口；aarch64 UEFI 配置表 DTB 三态）**
 
 - VM 侧删除两处入口处补偿：一是按字面量 `0x8200_0000..0x8400_0000` 修剪 32 MiB（riscv64 QEMU 的 bump 池地址，在 aarch64／UEFI 腿上指向普通 RAM），二是把每个模块 blob 再扣一遍。空闲表现在由 `adopt_free_regions` 原样采纳，`reconcile` 是唯一裁决点（记录非空、根页与模块 blob 被覆盖、`free ∩ deducted = ∅`）。预先修剪会把记账缺陷静默掩盖，正是消费边界不该做的事。

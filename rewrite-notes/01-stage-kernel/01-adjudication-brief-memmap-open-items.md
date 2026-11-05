@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 11:16 CST（`date` 实测）；**内容轮次：第一百零七轮——消费者边界与 UEFI 配置表 DTB**（VM 删除平台地址硬编码、空闲表按记录原样采纳，`reconcile` 成为唯一裁决点；aarch64 UEFI 配置表 DTB 三态接入：无／可解析且交叉校验通过／不可用即停）。§2.5／§2.8／§2.9／§7／§6 读数同步刷新；逐字证据进 `03` 七十三节。
+> **重写**：2026-11-06 11:18 CST（`date` 实测）；**内容轮次：第一百零八轮——第二跳交接页合同落成测试与编译期守卫**（`VmBootHandoff::validate` 七枚失败语义测试；`VM_BOOT_HANDOFF_VA`／`KERNINFO_USER_VA` 的 Sv39 用户 VA 上限编译期断言；合同段落写入 §2.8）。§6 读数同步刷新；逐字证据进 `03` 七十四节。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -228,6 +228,8 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 **两个交接对象的物理归属（代码读数）**：`VmBootHandoff` 所在的那一页来自 `VmBootAllocator::alloc_page()`，在分类点之前分配、随后作为扣减记录的一项进入 `deducted`——**不是内核静态数据区**，所以第二跳的固定 VA 指向的是已登记、已扣减的启动对象。四页 arena 在 UEFI 两腿上由 `alloc_arena` 以 `LOADER_DATA` 分配，`assert_bootstrap_outside_memmap` 保证它不在 memmap 内。
 
 **自引导腿的 arena 问题已有定论：两条直启腿根本没有 arena。** riscv64 `bootface` 与 aarch64 直启把 DTB 采集结果（可用表、保留表、来源记录、参数）直接写进内核映像自己的 `.bss` 静态区，`KernelInfo` 的切片全部指向这些静态数组；它们随内核映像一起被 `classify` 的第一条记录（`kern_phys_base/kern_size`）扣减。映像跨度不得超过交给 `KernelInfo` 的 `KERN_SIZE = 0x40_0000` 这一前提，已由两个链接脚本的链接期断言 `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000)` 守住——超出即构建失败，不会留下“内核 `.bss` 尾部落在保留窗口之外”的运行时隐患。riscv64 U-Boot 腿的 arena 来自 shim 的 bump 池（`bump_alloc_pages(ARENA_CAP/4096)`，位于 `MODULE_REGION_BASE` 之后），分配点在 `init_boot_pt_alloc` 登记的页表区间之后，因此**不在** `boot_alloc_region()` 的扣减范围内；它的最后读取点是接收端 `arch_boot_resume_v1` 的解码，解码把五个载荷逐元素拷进内核 `.bss` 落地垫，`handoff_v1_read` 不制造任何指向 arena 的 `'static` 引用。这一“最后使用点在首次 VM 分配之前”的结论有可执行形式：`test_decoded_payloads_survive_arena_poison` 在解码后把整个 arena 覆写成毒值，再逐字段比对已落地的载荷与来源记录——任何存活别名都会当场暴露。因此 arena 不需要单独一条扣减记录，47 的上界也没有漏掉这一类。
+
+**第二跳交接页的合同（地址、生命周期、字节序、失败语义）**：它是**一页普通物理帧**，由 `VmBootAllocator::alloc_page()` 在分类点之前取走，因此自动落在某个池区间的已用后缀里、随 `deducted` 一起成为内核保留；内核只写一次（`build_vm_handoff`），此后不再修改，VM 在自身启动的 `read_boot_params` 里按只读映射读一次，永不重映射、不释放。固定 VA 是 `VM_BOOT_HANDOFF_VA = 0x1_0000_0000`，两个固定用户 VA 常量（它和 `KERNINFO_USER_VA`）都用编译期断言钉在 **2^38 以下**（Sv39 用户 VA 上限，三架构中最严），越界从“VM 启动缺页”提前为构建失败。布局是 `#[repr(C)]`、三架构共同的 little-endian 原生字节序、尺寸 3792 B（编译期断言 ≤ 4096，即必须装进一页），`magic`、`version`、`root_paddr`、`kerninfo_pa`、三个 count 与 `deducted`/`modules` 的偏移由 `test_vm_boot_handoff_layout_is_pinned` 钉死。失败语义是 **fail-stop**：`magic` 不符、`version` 非精确相等（旧内核或新内核写的页都不得逐字段解释）、`root_paddr` 为零或未对齐、任一 count 超容量，`validate()` 立即断言失败、VM 不启动——七枚测试（`test_handoff_validate_accepts_current_version`、`test_handoff_validate_rejects_bad_magic`、`test_handoff_validate_rejects_wrong_version`、`test_handoff_validate_rejects_unaligned_root`、`test_handoff_validate_rejects_over_capacity_counts`、`test_handoff_validate_rejects_over_capacity_deductions`、`test_handoff_validate_rejects_over_capacity_ident`）逐条钉住。
 
 **验收要求两枚具名测试**：`root_page` 在四条路径上都是**独立分配**——UEFI 腿是单独的 `allocate_pages(LOADER_DATA, 1)`，riscv／aarch64 直启是从 shim 池里单独切一页、与页表 bump 区间不相交。而第一次 allocator 的排除清单里没有它，第二跳的扣减清单却把它单列为一类。所以候选侧要**三枚**测试：
 
@@ -925,7 +927,7 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 
 | 证据 | 读数 |
 |---|---|
-| 宿主单测 | `minix-boot --lib` **150 通过**、`boot-shim --lib` **70 通过**（用例见 §2.1、§2.2）；`minix-types` **332 通过**；`minix-kernel --features mock` **863 通过 / 0 失败 / 8 忽略**（含扣减容量、排除清单、交接布局钉桩、来源记录线上往返与消费者边界审计）；`minix-vm` **548 通过 / 0 失败**（含空闲表原样采纳与 `reconcile` 四类判定）；`boot-shim --features uefi` 编译通过；**三架构交叉构建与 QEMU 腿本轮未重跑**（本机 CI 镜像只装 host target、无 qemu），上一次通过读数属第一百零一／一百零三轮，按未验证记录 |
+| 宿主单测 | `minix-boot --lib` **150 通过**、`boot-shim --lib` **70 通过**（用例见 §2.1、§2.2）；`minix-types` **339 通过**（含交接页失败语义与 VA 上限）；`minix-kernel --features mock` **863 通过 / 0 失败 / 8 忽略**（含扣减容量、排除清单、交接布局钉桩、来源记录线上往返与消费者边界审计）；`minix-vm` **548 通过 / 0 失败**（含空闲表原样采纳与 `reconcile` 四类判定）；`boot-shim --features uefi` 编译通过；**三架构交叉构建与 QEMU 腿本轮未重跑**（本机 CI 镜像只装 host target、无 qemu），上一次通过读数属第一百零一／一百零三轮，按未验证记录 |
 | 落码提交 | `38668f843` 起：DTB 保留来源、来源记录层、`audit_source_coverage`、边界端点分名 |
 | 交叉编译 | `x86_64-unknown-none`、`aarch64-unknown-none`、`riscv64gc-unknown-none-elf`、`x86_64-unknown-uefi`、`aarch64-unknown-uefi` |
 | QEMU 启动腿 | riscv64 bootface PASS（三点位齐全，仅覆盖该入口）；aarch64 PASS（串口读到 `conv=13 dtb_regions=1` 与内核进入行）；x86 PASS 但该腿 ESP 上没有 `dumpdtb.dtb`，**采集器根本没被进入**，只证明启动未回归 |

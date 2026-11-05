@@ -2627,6 +2627,33 @@ for m in handoff.modules { ... deduct.push((m_base, m_end)); }
 
 QEMU（本机镜像无 qemu）；kernel-image / uboot 交叉构建（镜像只装 host target）。
 
+## 七十四、第一百零八轮：第二跳交接页合同与测试的代码证据
+
+### 新增测试（`os/libs/minix-types/src/types/boot.rs`）
+
+| 用例 | 断言点 |
+|---|---|
+| `test_handoff_validate_accepts_current_version` | 现行版本 + 对齐根页 + 零计数 → 通过 |
+| `test_handoff_validate_rejects_bad_magic` | `magic` 不符 → panic（消息含 bad magic） |
+| `test_handoff_validate_rejects_wrong_version` | `version + 1` → panic（精确比较，不向后兼容解释） |
+| `test_handoff_validate_rejects_unaligned_root` | `root_paddr = 0x90_0001` → panic |
+| `test_handoff_validate_rejects_over_capacity_counts` | `free_region_count = MAX + 1` → panic |
+| `test_handoff_validate_rejects_over_capacity_deductions` | `deducted_count = MAX + 1` → panic |
+| `test_handoff_validate_rejects_over_capacity_ident` | `kern_ident_count = MAX + 1` → panic |
+
+### 编译期守卫
+
+```
+const _: () = assert!(VM_BOOT_HANDOFF_VA < (1 << 38), "...Sv39 user-VA cap...");
+const _: () = assert!(KERNINFO_USER_VA   < (1 << 38), "...Sv39 user-VA cap...");
+```
+
+2^38 是 Sv39 用户虚拟地址上限，同时也是三架构里最严的一个（x86-64 四级页表与 aarch64 48 位 VA 的用户上限都更宽）。
+
+### 读数
+
+`cargo test -p minix-types` **339 通过 / 0 失败**。仅宿主测试，无 QEMU 依赖。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -2670,3 +2697,14 @@ QEMU（本机镜像无 qemu）；kernel-image / uboot 交叉构建（镜像只�
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百零六轮）合并提交 | `3fef6483f` |
+
+### 评审身份（第一百零八轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百一十五笔登记（代码提交 `668f942c8` 为其父链） |
+| `CodeEvidenceCommit` | `668f942c8`（minix-types 339 在此提交取得） |
+| `DocumentRevision` | 第一百零八轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百零七轮）合并提交 | `b1b96feff` |
