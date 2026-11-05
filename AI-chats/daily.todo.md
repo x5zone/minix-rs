@@ -132,7 +132,11 @@ ls 01-stage-kernel/smp*
 
 由于可能存在依赖关系，如果只读依赖文档后发现todo尚未完成，则允许整个计划中断退出。
 另外,edge4.md可以理解为lock文档。
+---
 
+现在需要对 01-stage-kernel/01-boot-shim-bootstrap.md 文档和它相关联的rust代码实现 进行深度全面且细致的 review，review结果写入到 01-review.md中，并同时记录review的轨迹，review完成后，通过轨迹再次复盘本次review是否有遗漏，是否有缺陷，是否有可以改进的地方。
+
+review不仅仅是正确性review，需同时考虑卓越性，需要你根据prompt/review-rules中已有的规则，充分且全面的引用这些规则，以及可参考 doc-gen & doc-iter 两个文档，制定一个合适完备，追求完美效果的review计划来。
 ---
 
 这是一个代码扫描任务。“现在，重点关注rust代码实现，分析rust的vm和vm相关的rust实现（即02-stage-vm文档相关的所有rust代码），并不局限于某个具体的函数或trait，可以从更高层次更高架构

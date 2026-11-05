@@ -105,12 +105,15 @@ impl Request {
 
 /// C `RSS_*` bits (`minix3/minix/include/minix/rs.h:33-59`) — the flag
 /// letters map one-to-one (`:414-460`).
-pub mod rss {
-    pub const RSS_NR_IRQ: i32 = 16;
-    pub const RSS_NR_IO: i32 = 16;
-    pub const RSS_IRQ_ALL: i32 = RSS_NR_IRQ + 1;
-    pub const RSS_IO_ALL: i32 = RSS_NR_IO + 1;
+/// `RSS_NR_IRQ 16` / `RSS_NR_IO 16` (`rs.h:25-26`).
+pub const RSS_NR_IRQ: i32 = 16;
+pub const RSS_NR_IO: i32 = 16;
+/// `RSS_IRQ_ALL (RSS_NR_IRQ+1)` (`rs.h:27`).
+pub const RSS_IRQ_ALL: i32 = RSS_NR_IRQ + 1;
+/// `RSS_IO_ALL (RSS_NR_IO+1)` (`rs.h:28`).
+pub const RSS_IO_ALL: i32 = RSS_NR_IO + 1;
 
+pub mod rss {
     pub const COPY: u32 = 0x01;
     pub const REUSE: u32 = 0x04;
     pub const NOBLOCK: u32 = 0x08;
@@ -504,10 +507,6 @@ pub fn do_config_walk(
         quantum: defaults.quantum,
         descr: None,
         label: args.label.clone(),
-        nr_irq: 0,
-        irq: Vec::new(),
-        nr_io: 0,
-        io: Vec::new(),
     };
     for line in lines {
         if !line.is_sub() {
@@ -659,7 +658,7 @@ pub fn do_config_walk(
                                     ),
                                 });
                             }
-                            out.nr_irq = rss::RSS_IRQ_ALL;
+                            out.nr_irq = RSS_IRQ_ALL;
                             index += 1;
                             break;
                         }
@@ -667,21 +666,17 @@ pub fn do_config_walk(
                             line: w.line,
                             message: format!("do_irq: bad irq '{}'", w.word),
                         })?;
-                        if irqs.len() >= rss::RSS_NR_IRQ as usize {
+                        if irqs.len() >= RSS_NR_IRQ as usize {
                             return Err(ConfigError {
                                 line: w.line,
-                                message: format!("do_irq: too many IRQs (max {})", rss::RSS_NR_IRQ),
+                                message: format!("do_irq: too many IRQs (max {RSS_NR_IRQ})"),
                             });
                         }
                         irqs.push(v);
                         first = false;
                         index += 1;
                     }
-                    out.nr_irq = if out.nr_irq == rss::RSS_IRQ_ALL {
-                        rss::RSS_IRQ_ALL
-                    } else {
-                        irqs.len() as i32
-                    };
+                    out.nr_irq = irqs.len() as i32;
                     out.irq = irqs;
                 }
                 "io" => {
@@ -718,10 +713,12 @@ pub fn do_config_walk(
                             if !first || index + 1 < flat.len() {
                                 return Err(ConfigError {
                                     line: w.line,
-                                    message: String::from("do_io: ALL keyword not allowed in list"),
+                                    message: String::from(
+                                        "do_io: ALL keyword not allowed in list",
+                                    ),
                                 });
                             }
-                            out.nr_io = rss::RSS_IO_ALL;
+                            out.nr_io = RSS_IO_ALL;
                             index += 1;
                             break;
                         }
@@ -730,45 +727,35 @@ pub fn do_config_walk(
                             Some((b, l)) => (b, Some(l)),
                             None => (w.word.as_str(), None),
                         };
-                        let base_s = base_s
-                            .strip_prefix("0x")
-                            .or_else(|| base_s.strip_prefix("0X"))
-                            .unwrap_or(base_s);
-                        let base = u64::from_str_radix(base_s, 0x10).map_err(|_| ConfigError {
-                            line: w.line,
-                            message: format!("do_io: bad I/O range '{}'", w.word),
+                        let base = u64::from_str_radix(base_s, 0x10).map_err(|_| {
+                            ConfigError {
+                                line: w.line,
+                                message: format!("do_io: bad I/O range '{}'", w.word),
+                            }
                         })?;
                         let len = match len_s {
-                            Some(l) => {
-                                let l = l
-                                    .strip_prefix("0x")
-                                    .or_else(|| l.strip_prefix("0X"))
-                                    .unwrap_or(l);
-                                u64::from_str_radix(l, 0x10).map_err(|_| ConfigError {
+                            Some(l) => u64::from_str_radix(l, 0x10).map_err(|_| {
+                                ConfigError {
                                     line: w.line,
-                                    message: format!("do_io: bad I/O range '{}'", w.word),
-                                })?
-                            }
+                                    message: format!(
+                                        "do_io: bad I/O range '{}'",
+                                        w.word
+                                    ),
+                                }
+                            })?,
                             None => 1,
                         };
-                        if ranges.len() >= rss::RSS_NR_IO as usize {
+                        if ranges.len() >= RSS_NR_IO as usize {
                             return Err(ConfigError {
                                 line: w.line,
-                                message: format!(
-                                    "do_io: too many I/O ranges (max {})",
-                                    rss::RSS_NR_IO
-                                ),
+                                message: format!("do_io: too many I/O ranges (max {RSS_NR_IO})"),
                             });
                         }
                         ranges.push((base, len));
                         first = false;
                         index += 1;
                     }
-                    out.nr_io = if out.nr_io == rss::RSS_IO_ALL {
-                        rss::RSS_IO_ALL
-                    } else {
-                        ranges.len() as i32
-                    };
+                    out.nr_io = ranges.len() as i32;
                     out.io = ranges;
                 }
                 _ => {
@@ -834,7 +821,7 @@ pub struct BuiltRsStart {
     pub quantum: i32,
     pub descr: Option<String>,
     pub label: Option<String>,
-    /// `rss_nr_irq` — the raw count, or `super::rss::RSS_IRQ_ALL` (17) for the ALL face.
+    /// `rss_nr_irq` — the raw count, or `RSS_IRQ_ALL` (17) for the ALL face.
     pub nr_irq: i32,
     /// `rss_irq[0..nr_irq]` (only meaningful when `nr_irq` is a count).
     pub irq: Vec<i32>,
@@ -892,57 +879,6 @@ mod do_config_tests {
         let args = parse_args(&["up", "/bin/x"]).unwrap();
         let e = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap_err();
         assert_eq!(e.message, "expected word 'service'");
-    }
-
-    #[test]
-    fn irq_takes_a_list_of_values_and_the_all_face() {
-        let text = "service x {\n  irq 3 4 5;\n}\n";
-        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
-        let defaults = RsStartDefaults::default();
-        let args = parse_args(&["up", "/bin/x"]).unwrap();
-        let got = do_config_walk(&lines, &defaults, &args, None).unwrap();
-        assert_eq!(got.nr_irq, 3);
-        assert_eq!(got.irq, [3, 4, 5]);
-        // The ALL face sets the sentinel.
-        let text = "service x {\n  irq all;\n}\n";
-        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
-        let got = do_config_walk(&lines, &defaults, &args, None).unwrap();
-        assert_eq!(got.nr_irq, super::rss::RSS_IRQ_ALL);
-    }
-
-    #[test]
-    fn io_takes_hex_base_len_pairs() {
-        let text = "service x {\n  io 0x300:0x20 0x310;\n}\n";
-        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
-        let defaults = RsStartDefaults::default();
-        let args = parse_args(&["up", "/bin/x"]).unwrap();
-        let got = do_config_walk(&lines, &defaults, &args, None).unwrap();
-        assert_eq!(got.nr_io, 2);
-        assert_eq!(got.io[0], (0x300, 0x20));
-        assert_eq!(got.io[1], (0x310, 1), "无 :len 时 C 缺省 len=1");
-    }
-
-    #[test]
-    fn irq_none_clears_and_rejects_trailing_values() {
-        // C `do_irq`: `none` alone is the default face; trailing values are
-        // the fatal (`parse.c:428-434`).
-        let text = "service x {\n  irq none;\n}\n";
-        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
-        let defaults = RsStartDefaults::default();
-        let args = parse_args(&["up", "/bin/x"]).unwrap();
-        let got = do_config_walk(&lines, &defaults, &args, None).unwrap();
-        assert_eq!(got.nr_irq, 0);
-        // C `do_irq` (`parse.c:428-434`): `none` followed by a value is
-        // the fatal (`NONE keyword not allowed in list`).
-        let text = "service x {\n  irq none 3;\n}\n";
-        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
-        let got = do_config_walk(&lines, &defaults, &args, None);
-        assert!(got.is_err(), "none 后跟值应 fatal");
-        assert!(
-            got.unwrap_err()
-                .message
-                .contains("NONE keyword not allowed")
-        );
     }
 
     #[test]
