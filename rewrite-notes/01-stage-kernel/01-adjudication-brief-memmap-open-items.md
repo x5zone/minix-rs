@@ -269,7 +269,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | OS 政策语义 | `DenyOsUse`：不得作为 OS 可用内存，也不得让普通内核对象访问它；普通 PMM 分配与普通系统映射都归它派生 |
 | 硬件兑现 | UEFI 类型本身**不建立页表、不配置 PMP、不保证 CPU 访问会硬件故障**；映射隔离与访问阻断由内核兑现。它不是 DTSpec `no-map`（后者另有标准映射限制、非受控推测访问限制与驱动受控使用例外） |
 
-**三层各自的说法不得串层**：第一层只有「Not usable」这一个事实，它既不承诺硬件会拦访问，也不等于本项目的 `DenyOsUse`；第二层才是项目政策的具名主张；第三层是「类型本身不兑现保护，映射隔离与访问阻断由内核建立」。把第一层写成「硬件禁止访问」属越层，把第三层的空缺反过来当成第一层更弱也属越层。UEFI 原文在本环境抓取返回 403，「Not usable」措辞与 `GetMemoryMap()` 的两段区分都由**评审人按 UEFI 2.11 核对**，本方独立取证仍是缺口，登记在 §6，不升级成本方已验证的引用。
+**三层各自的说法不得串层**：第一层只有「Not usable」这一个事实，它既不承诺硬件会拦访问，也不等于本项目的 `DenyOsUse`；第二层才是项目政策的具名主张；第三层是「类型本身不兑现保护，映射隔离与访问阻断由内核建立」。两个方向的越层都要防：把第一层写成「硬件禁止访问」是拔高，把第三层「类型本身不兑现保护」反过来读成「所以第一层其实没那么强」是压低——后者尤其危险，因为 `DenyOsUse` 的强度来自第二层政策，不依赖硬件是否拦得住。UEFI 原文在本环境抓取返回 403，「Not usable」措辞与 `GetMemoryMap()` 的两段区分都由**评审人按 UEFI 2.11 核对**，本方独立取证仍是缺口，登记在 §6，不升级成本方已验证的引用。
 
 **与 `no-map` 的驱动例外组合时，第一版选「绝对禁止」**：`EfiReservedMemoryType` 区域即使同时带 DTB `no-map`，也不开放 `DriverControlledUse`——**理由是 UEFI 的「OS 不应访问」政策与本项目第一版不开放受控例外的合同共同成立**；它不是「UEFI 已给出与 MRB 同强度的硬件禁令」。组合测试（`EfiReservedMemoryType` + `no-map` + 受控使用）列为待补；另一个可选边界是「一般用途禁止、专属驱动例外可用」，但第一版不选它，避免让单一类型名隐式决定组合语义。
 
@@ -640,7 +640,7 @@ ResolvedEfiType(page)   = ResolveCompatibleClaims(PageSourceClaims(page))
 
 **EFI DTB 对象本身也是页级主张来源**：它要求 `EfiACPIReclaimMemory`。与静态 `/reserved-memory`（BootServicesData）、`no-map`（Reserved）向外量化后同页 → **冲突，拒绝**。与 MRB 同页时第一版**采用例外**：该页按 UEFI DTB 的强制要求取 `EfiACPIReclaimMemory`，MRB 的访问禁止与 PMM 排除照旧保留，一次性读取走具名 MRB 授权——这是对 MRB 类型 `should` 的**有意偏离**（遵守两条规范中更强的类型要求），不是把两种来源合并。
 
-**三方组合的完整裁决（EFI DTB 对象 × MRB × `no-map`）**：上面三段是两两结论，容易被读成「三者叠加也各自兼容」，这里收成一张表。表中的「同页」一律指 `Outward(原始范围)` 相交，**不是**原始字节相交：
+**三方组合的完整裁决（EFI DTB 对象 × MRB × `no-map`）**：上面各处给的都是两两结论，容易被读成三者叠加也各自兼容，这里收成一张表。表中的「同页」一律指 `Outward(原始范围)` 相交，**不是**原始字节相交：
 
 | 该页同时被主张 | EFI 类型结论 | 一次性首读 | 依据 |
 |---|---|---|---|
@@ -812,7 +812,7 @@ PageAlignedMappingEnvelope      ← 实际页表叶子的对齐包络
 
 **x2APIC 是第三种访问域**：xAPIC 走 MMIO（`0xFEE0_0000` 页），x2APIC 走架构寄存器（RDMSR/WRMSR）——它既不属于 MMIO 窗口模型，也不属于 O-08 的端口 I/O 地址域。**MSR 编号不进共享层**：共享层只表达 `ApicRegisterAccessRequirement`（APIC 逻辑寄存器、读写方向、访问者、阶段、CPU 范围、适用模式）；x86 架构层用 `X2ApicMsrUse` 记录具体 MSR 编号、指令位置、包装函数与访问约束。同一 OS 语义（读 Local APIC ID、写 EOI）在 xAPIC 映射到 MMIO、在 x2APIC 映射到 MSR。**第一版若不实现 x2APIC 访问路径**，必须锁定 xAPIC profile 并在检测到 x2APIC 时拒绝启动；不得「允许 x2APIC 模式却保留 xAPIC 的 MMIO 访问需求」。O-10 现有的 in/out 负控不覆盖 RDMSR/WRMSR：**架构寄存器访问必须进入独立的原始操作审计**——允许出现原始 MSR 访问的函数与指令位置清单、MSR 编号与共享层逻辑寄存器的对应关系、在已批准的 `asm!` 块中加第二条 `rdmsr`/`wrmsr` 必须使审计失败、x2APIC 模式下不得残留 xAPIC LAPIC MMIO 访问义务。
 
-**x86 的 APIC 地址不是无条件硬件事实，而且核对是逐逻辑处理器的**：表中 `0xFEE0_0000`/`0xFEC0_0000` 只属于「本项目支持的某个 x86 QEMU profile」。`IA32_APIC_BASE` 是**每处理器 MSR**，xAPIC/x2APIC 模式也按处理器启用，因此不能只在 BSP 上核对一次。启动与次级处理器入场时，对**每个参与内存访问与调度的逻辑处理器**分别核对：该处理器的 Local APIC 当前模式（xAPIC MMIO 还是 x2APIC MSR 路径）、该处理器的 `IA32_APIC_BASE` 基址与政策表一致、该处理器的 LAPIC 寄存器窗口是否已按对应模式获得映射或 MSR 路径准入。只读 BSP 不构成全平台证明——一个 AP 的基址不同，「政策授权一个 4 KiB 页」这条主张就不再对所有参与者成立。若解析 ACPI，MADT 的 Local APIC 地址、每个处理器条目的 processor ID 与 enabled flags、override 与 I/O APIC 项都要与政策表兼容；任一参与处理器不符合当前 profile 就**拒绝启动**或**阻止该处理器入场**。riscv 侧是同一形态的问题：PLIC 的 context 按 hart 列出（`interrupts-extended`），逐 hart 核对，不能由 hart 总数乘 2 推出来（见 PLIC 推导段）。
+**x86 的 APIC 地址不是无条件硬件事实，而且核对是逐逻辑处理器的**：表中 `0xFEE0_0000`/`0xFEC0_0000` 只属于「本项目支持的某个 x86 QEMU profile」。`IA32_APIC_BASE` 是**每处理器 MSR**、xAPIC/x2APIC 模式也按处理器启用，因此不能只在 BSP 上核对一次——这条按「评审人已核的架构事实」使用，本方未取 Intel SDM 原文，登记为待核，不写成本方已验证的引用。启动与次级处理器入场时，对**每个参与内存访问与调度的逻辑处理器**分别核对：该处理器的 Local APIC 当前模式（xAPIC MMIO 还是 x2APIC MSR 路径）、该处理器的 `IA32_APIC_BASE` 基址与政策表一致、该处理器的 LAPIC 寄存器窗口是否已按对应模式获得映射或 MSR 路径准入。只读 BSP 不构成全平台证明——一个 AP 的基址不同，「政策授权一个 4 KiB 页」这条主张就不再对所有参与者成立。若解析 ACPI，MADT 的 Local APIC 地址、每个处理器条目的 processor ID 与 enabled flags、override 与 I/O APIC 项都要与政策表兼容；任一参与处理器不符合当前 profile 就**拒绝启动**或**阻止该处理器入场**。riscv 侧是同一形态的问题：PLIC 的 context 按 hart 列出（`interrupts-extended`），逐 hart 核对，不能由 hart 总数乘 2 推出来（见 PLIC 推导段）。
 
 **PLIC 的访问集合与包络**：`DeviceAccessUseSet` 的每条记录至少含 `AccessUseId`、`DeviceId`、`ObjectId`、**`VirtualByteRange`（或其可静态解析出实际 VA 的访问点标识）**、`PhysicalByteRange`（预期 PA）、访问宽度、读/写、阶段与路径。**缺 VA 就无法证明访问需求**：指针实际落在哪个别名上，只有 VA 能回答；不能先由现有 PTE 推出 PA 再充作访问需求输入（那是循环证明）。`DeviceRequiredAccessEnvelope = Envelope(DeviceAccessUseSet)`，**不表示包络内每个 byte 都被访问**。没有完整访问清单时，包络只是保守上界，不能宣称访问需求已完整（与 O-07 相连）。PLIC 的 profile 还必须钉住具体的 QEMU 构建版本（`qemu-system-riscv64 --version` 读数与 machine version）；今天尚未记录该版本，属于待补证据。
 
