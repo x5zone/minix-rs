@@ -12,6 +12,17 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百零二轮（清理评审钩子：下游展开段压成边界句，容量公式按记录类别拆开）**
+
+- **动机**：第一百轮冻结了范围，但正文仍留着大量「怎样映射／怎样访问／怎样证明硬件允许」的展开段——每一段都是一个可被继续评审的钩子。本轮按 §7.1 的内容冻结原则，把它们压成边界句，原文逐字进 `03` 七十一节。
+- **压缩的十段**：`§1.5` 三架构准入表；`§3` 第 3～5 条（映射禁止／义务键／设备访问≠设备映射）压成一条「下游不变量」；`§4` 五行表收到两行；`O-02b`、`O-03`、`O-04`、`O-05`、`O-07`、`O-08`、`O-10` 各收到 1～3 行「本项只保留什么 + 指针」。删掉 `§2.3` 里上一轮加的 x86 APIC 段落（它把「叶子权限是否 NX」引回正文）。
+- **容量公式按记录类别拆开**：原来的 `TotalSourceCapacity` 混算两类记录，且 `PlatformResourceCapacity` 已随设备资源移交、`DerivedSourceCapacity` 与 DTB 40 槽里的 8 条固件前缀重复计数。现在分成 `MemorySourceRecordCapacity`（UEFI ≥256 + DTB 40 含前缀 + 额外的派生）与 `StartupObjectRecordCapacity`（内核映像／模块／页表池／根页／arena／其它），并写明两类可共用缓冲区但槽位定义各自成立。
+- **§7 从六项收到五项**：删掉「平台资源描述」——它已移交 `04-platform-discovery.md`，继续留在签字清单里正是评审人上一轮指出的矛盾。
+- **O-13a 去掉「平台资源描述」**；`O-12j` 状态表的设备 `reg`／`ranges` 行改为「移交 04」。
+- **§6 读数刷新到代码基线**：`CodeEvidenceCommit` 改为 `3683a34ca`（第一百零一轮切片），并补上 `minix-types 331`、`minix-kernel --features mock 861 通过 / 0 失败 / 8 忽略`；`minix-boot 146`／`boot-shim 70` 在该基线上复跑仍成立。下一轮证据清单删掉 QEMU machine／accelerator／PLIC profile 项（随设备资源移交 04），保留 UEFI 固件镜像身份与 `Attribute` 位值。
+- **读数**：1,064 → **967 行**、87,811 → **81,725 字符**；围栏 22（偶）、表格 39 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0。无代码改动，沿用 **146 / 70 / 331 / 861**。
+
+
 **第一百零一轮（冻结后第一个代码切片：扣减容量 32→47、首次分配排除补根页与 bump）**
 
 - **先落码，不再开设计轮**。按 §7.1 冻结规则，本轮只做已冻结合同对应的实现：`VM_BOOT_HANDOFF_MAX_DEDUCTED` 32 → **47**（`3 + MAX_BOOT_REGIONS + NR_BOOT_MODULES`）、`VM_BOOT_HANDOFF_VERSION` 7 → 8、内核侧编译期断言把「容量 ≥ 来源上界」变成编译错误而不是运行期 panic；两枚边界测试 `test_deduction_capacity_accepts_full_bound`（恰好 47 条通过）与 `test_deduction_capacity_overflow_is_fail_stop`（第 48 条 fail-stop）。
