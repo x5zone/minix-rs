@@ -79,15 +79,31 @@ mod tests {
     use super::*;
 
     const ROWS: [ProcessRow; 3] = [
-        ProcessRow { pid: 1, ppid: 0, uid: 0 },
-        ProcessRow { pid: 100, ppid: 1, uid: 0 },
-        ProcessRow { pid: 101, ppid: 100, uid: 1001 },
+        ProcessRow {
+            pid: 1,
+            ppid: 0,
+            uid: 0,
+        },
+        ProcessRow {
+            pid: 100,
+            ppid: 1,
+            uid: 0,
+        },
+        ProcessRow {
+            pid: 101,
+            ppid: 100,
+            uid: 1001,
+        },
     ];
 
     #[test]
     fn test_empty_table_lists_nothing() {
         let table = EmptyTable;
-        let mut out = [ProcessRow { pid: 0, ppid: 0, uid: 0 }; 4];
+        let mut out = [ProcessRow {
+            pid: 0,
+            ppid: 0,
+            uid: 0,
+        }; 4];
         assert_eq!(table.list(&mut out), 0);
         assert_eq!(table.find(1), None);
     }
@@ -95,7 +111,11 @@ mod tests {
     #[test]
     fn test_slice_lists_and_finds() {
         let table = SliceTable { rows: &ROWS };
-        let mut out = [ProcessRow { pid: 0, ppid: 0, uid: 0 }; 4];
+        let mut out = [ProcessRow {
+            pid: 0,
+            ppid: 0,
+            uid: 0,
+        }; 4];
         assert_eq!(table.list(&mut out), 3);
         assert_eq!(out[2].uid, 1001);
         assert_eq!(table.find(100).unwrap().ppid, 1);
@@ -115,7 +135,11 @@ mod tests {
         let slice = SliceTable { rows: &ROWS };
         let tables: [&dyn ProcessTable; 2] = [&empty, &slice];
         let counts: [usize; 2] = {
-            let mut a = [ProcessRow { pid: 0, ppid: 0, uid: 0 }; 4];
+            let mut a = [ProcessRow {
+                pid: 0,
+                ppid: 0,
+                uid: 0,
+            }; 4];
             let mut b = a;
             [tables[0].list(&mut a), tables[1].list(&mut b)]
         };

@@ -41,12 +41,13 @@
 // owned list; every other module in this crate stays allocation free.
 extern crate alloc;
 
+pub mod configfile;
 pub mod dates;
 pub mod env;
 pub mod from;
+pub mod passwd;
 pub mod printenv;
 pub mod ptime;
-pub mod passwd;
 pub mod renice;
 pub mod signal;
 pub mod sleep;

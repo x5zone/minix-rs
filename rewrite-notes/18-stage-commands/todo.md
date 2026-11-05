@@ -119,6 +119,15 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百四十四（config 读取器移植——`configfile.c` 575 行落 `minix-proctools::configfile`，`parse_config` 的前置半）
+
+- **这一笔的射程**：批次五百四十三的下一片——C 的 `parse_config`（`parse.c:1229-1263`）在 `minix-service up` 里读服务描述文件，其底层是 libc 的**通用配置读取器** `configfile.c`（575 行：词法器 + 行容器 + include 拼接）。本笔移植读取器本体；`do_config` 的关键字遍历（service/uid/priority/quantum…→`rs_start` 填充）为下一片。
+- **落码**：`minix_proctools::configfile`——`CFG_*` 十一枚旗标常量（`configfile.h:22-32` 值逐字）、`ConfigEntry`（flags/word/file/line/list）、词法器逐字对 C：quoted（`'…'`/`"…"`，未闭即读者错误 `:213-217`）、atom（alnum+SPECIAL，`SPECIAL` 集 `:170` 逐字）、`\` 转义族（`\`+空白=跳白续词 `:259-264`、`\ooo` 八进制 `:270-278`、`\xhh` 十六进制 `:279-295`、`CFG_ESCAPED` 保留反斜杠 `:245-252`）、`{` 子表嵌套（`:320-334`，行首词后开、`}` 闭）、`;` 断句、`#` 注释（`skipwhite` `:141-150`）、`include` 行透出（C 在读者内拼接 `:350-368`——本 port 把文件访问留在入口，`config_read_text` 的 resolver 参收位）。**登记偏差**：C 读者内 `fprintf`+`exit(1)` 的错误面改为 `ConfigError{line, message}` 应答（消息措辞保留 C 形，出口归调用方）；`include` 的文件读取上移到入口（同效果）；缓存重建面（`config_read` 的 `cfg != nil` 重读半，`:441-465`）不在本笔——调用方按需重读。
+- **门**：`cargo test -p minix-proctools --lib` → **107/0**（configfile 新五枚：行容器形状与嵌套子表、带引号串含 `#`、空白后 `#` 注释、`;` 断句、未闭串/未闭 `{` 的两形错误面）；`cargo clippy -p minix-proctools --all-targets` 告警坐标逐行 diff 与基线一致（15=15）；`rustfmt --edition 2024 --check` 零漂移；none 双架构绿。核实日 `2026-11-06`；基线 `ae4ef5c76` 系（本树 `1bcca40a4`）。
+- **记账联动**：`parse_config` 的读取器半闭合；`do_config` 关键字遍历（service/uid/priority/quantum→`rs_start` 填充）为下一片，之后 `minix-service up` 的全载荷构造接通。
+
+---
+
 ## 批次五百四十三（`minix-service` 命令骨架——RS 控制面的发送半，`RS_UP` 链的用户态入口）
 
 - **这一笔的射程**：RS 动态加载弧（A22/B6 决策后的落地序列）的**用户态入口**——C 的 `minix3/minix/commands/minix-service/`（2248 行：minix-service.c 846 + parse.c 1260 + print.c 114 + util.c 28）。此前 RS 侧的 `RS_UP => do_up → create_service → srv_fork+srv_execve → start_service → asynsend RS_INIT` 全链在库（本轮审计确认——原计划的「PM 派发臂」「RS 生产腿」两轮经实查**均已在库**：PM 派发表 `PmCall::SrvFork/ExecNew/ExecRestart/SrvKill` 四臂齐全（calls.rs:91/162/514/554），`TrapKernelApi` 的 `srv_fork`=`service_fork_via`、`srv_execve`=五步复合、`asynsend`=asynsend3 持久表全是真实现——PM-SRV-DISPATCH 认领即撤），缺的是**发送方命令**。

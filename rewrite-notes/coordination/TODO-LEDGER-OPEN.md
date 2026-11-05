@@ -203,6 +203,8 @@
 
 - **`2026-11-04` 收口刷新（第 48 轮，基线 `8801860b8`）**：`env … command` 已随批次五百二十五闭（execvpe 搜索上收 `minix-shell::exec_run`，sh/env 共用），并**更正一条过期账面**：原「exec 交付链未落（NS5）」的读数已不成立——`fork/exec/pipe2/dup2/waitpid` 全脸在树且 `sh` 已用其跑外部命令与管道。生产面 not-wired 拒绝站点现量 **4 处 / 3 文件**（`editor` 的 `!cmd` shell 转义 ×3、`renice -u` ×1）；**可直接领取**：`editor` 的 `!cmd` 与 `find -exec`（原语齐全，fork+exec+wait 即可，宿主可测失败路）；**仍缺真设施**：`renice -u` 的 `getpwnam`/`/etc/passwd`（镜像未播种，属口令库决定）。同轮修复批次五百二十一遗留的跨包测试回归（`cal::days_from_civil` 恢复）。
 
+- **`2026-11-06` 收口刷新（第 70 轮，基线 `1bcca40a4`，`claim/RS-START-PARSE-qoder`）**：config 读取器已随批次五百四十四移植（`minix_proctools::configfile`：CFG_* 旗标、行容器/嵌套子表、quoted+转义族、include 行透出）——`parse_config` 的读取器半闭合，`do_config` 关键字遍历为下一片；`minix-service up` 的全载荷构造随后接通。
+
 - **`2026-11-06` 收口刷新（第 69 轮，基线 `2e9c89aa8`，`claim/MINIX-SERVICE-CMD-qoder`）**：RS 动态加载弧的用户态入口已随批次五百四十三落——`minix-service` 命令骨架（11 动词表、19 旗标映射、label 系动词消息构造、顶层 `sendrec` 发送半）；审计确认 PM 派发臂与 RS 生产腿均已在库（原计划的两轮撤销）。**余面**：parse.c config 解析（下一片）、`rs_start` 全载荷构造、恢复脚本执行面、rc 接线——均为同一弧的后续片。
 
 - **`2026-11-05` 收口刷新（第 68 轮，基线 `2e9c89aa8`，`claim/SEF-VFS-SENDREC-qoder`）**：vfs 的 `VfsIpc::sendrec` 已随批次五百四十二补腿（同族第三处 none-only 面；教训补强——清点实现者必须 `grep -L "fn sendrec"` 验方法而非只验文件清单）。**终清点为空**：全仓 `SefIpc` 实现者（rs/sched/mib/is/ipc-server/vm/vfs 七家 + 各测试夹具）sendrec 腿齐；`minix-vfs` 三架构 lib check Finished、宿主 538/0。

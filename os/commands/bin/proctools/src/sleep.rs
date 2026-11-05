@@ -90,7 +90,13 @@ mod tests {
     #[test]
     fn integer_seconds() {
         assert_eq!(plan(b"5"), SleepPlan::Sleep { secs: 5, nanos: 0 });
-        assert_eq!(plan(b"01.5"), SleepPlan::Sleep { secs: 1, nanos: 500_000_000 });
+        assert_eq!(
+            plan(b"01.5"),
+            SleepPlan::Sleep {
+                secs: 1,
+                nanos: 500_000_000
+            }
+        );
     }
 
     #[test]
@@ -102,9 +108,21 @@ mod tests {
 
     #[test]
     fn fractional_split() {
-        assert_eq!(plan(b"1.5"), SleepPlan::Sleep { secs: 1, nanos: 500_000_000 });
+        assert_eq!(
+            plan(b"1.5"),
+            SleepPlan::Sleep {
+                secs: 1,
+                nanos: 500_000_000
+            }
+        );
         assert_eq!(plan(b"2.0"), SleepPlan::Sleep { secs: 2, nanos: 0 });
-        assert_eq!(plan(b"0.25"), SleepPlan::Sleep { secs: 0, nanos: 250_000_000 });
+        assert_eq!(
+            plan(b"0.25"),
+            SleepPlan::Sleep {
+                secs: 0,
+                nanos: 250_000_000
+            }
+        );
     }
 
     #[test]
@@ -118,12 +136,24 @@ mod tests {
     fn leading_space_and_sign_take_float_path() {
         // " 5" has a non-digit (space) → atof → positive → integer-valued sleep.
         assert_eq!(plan(b" 5"), SleepPlan::Sleep { secs: 5, nanos: 0 });
-        assert_eq!(plan(b"+2.5"), SleepPlan::Sleep { secs: 2, nanos: 500_000_000 });
+        assert_eq!(
+            plan(b"+2.5"),
+            SleepPlan::Sleep {
+                secs: 2,
+                nanos: 500_000_000
+            }
+        );
     }
 
     #[test]
     fn nanosecond_digits_truncate() {
         // >9 fractional digits truncate at the ns place (C's (int) cast).
-        assert_eq!(plan(b"1.9999999999"), SleepPlan::Sleep { secs: 1, nanos: 999_999_999 });
+        assert_eq!(
+            plan(b"1.9999999999"),
+            SleepPlan::Sleep {
+                secs: 1,
+                nanos: 999_999_999
+            }
+        );
     }
 }

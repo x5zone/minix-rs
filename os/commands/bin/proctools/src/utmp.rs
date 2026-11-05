@@ -70,7 +70,10 @@ pub fn parse_record(record: &[u8]) -> Result<UtmpEntry<'_>, ProcError> {
 /// Walk a whole database image, calling `visit` for each valid record.
 /// Short trailing bytes are an error (a torn write must not silently drop
 /// a session); an empty image visits nothing.
-pub fn walk_database<'a>(image: &'a [u8], mut visit: impl FnMut(UtmpEntry<'a>)) -> Result<usize, ProcError> {
+pub fn walk_database<'a>(
+    image: &'a [u8],
+    mut visit: impl FnMut(UtmpEntry<'a>),
+) -> Result<usize, ProcError> {
     if !image.len().is_multiple_of(RECORD_WIDTH) {
         return Err(ProcError::InvalidArgument);
     }
