@@ -5703,3 +5703,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 门：1626 行、围栏 48（偶）、表格 56 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失 lost 0；无代码改动，沿用 minix-boot **146** / boot-shim **70**。
 - 待办：O-12g 记录进政策仍是本项核心缺口（三条入口丢来源记录、UEFI 侧 `SourceRecord` 未产出）；O-12a/b 禁止投影编译、普通 RAM 映射资格生产者、O-13 交接 ABI 全留。等评审人对 PLIC 取整分叉裁决。
 - 认领：`I-29 qorder92`（基线 `2393d37ef`），状态 ✅：第九十二轮已 ff 合并为 `273b7996e`，认领已释放。送审正文现为 1626 行 / 127,467 字符；分段送审包由 `tmp/i29-r92compress/send_pack.py` 生成，自带拼回逐字对账。
+
+
+### 第三百零一笔（01 阶段 · I-29 第九十三轮：两处公式级矛盾修正与冻结时序闭合）
+
+- 评审人的两个 P0 都成立且是同一类病：公式没按设计意图展开。`GeneralData` 的特有集合按定义为空却被判定核第一条拒绝 → 改显式分支，判定核非空前置原样保留；`InstanceSetComplete` 定义了没有消费者 → 接进 `ObjectAccessEligibility`，并要求 `Complete(uses, scope)` 的 `uses` 与实际消费的清单同一份。
+- 冻结时序按只读复核的代码读数闭合，且读数比他的怀疑更强：x86-64 Step 4 整槽替换既存叶子、把 1 GiB 恒等叶子降级成空表再细填、在既存 PML4[0] 置 USER 位；arm64/riscv64 遇已存在槽直接失败。今天不存在 T1（`validate_bootstrap_tree` 也在 `enable()` 之后），第一版把 T1 定义为「引导根上全部结构修改完成之后」。
+- 回写两点不成立/部分不成立：「不能声称原有冻结合同没有变化」的前提不成立——合同从未兑现，谈不上被改变；5.4 他要的那句「拒绝是政策不是算术」正文 `PhysicalRange` 段早已写明，本轮只补页编号层面与拒绝理由。
+- 其余五项全部落地：PLIC 6 MiB 授权 / 4 MiB 预期覆盖并否决 `AlignOut(RequiredAccess, LeafSize)` 代替平台证据；原子几何与证据移入 RISC-V adapter，共享结构删 `reservation_set_requirement`，进展成员改名 `EventualAtomicProgress`；`no-map` 受控使用写死 `ReservedForFuture / Reject`；新增 `RoleAdmissionDenial`。
+- 正文代码坐标纪律：本轮新增行号一律进 `03` 六十四节底账，正文只留符号锚点（评审人看不到仓库）。
+- 门：1673 行（余 27）、围栏 48（偶）、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失 lost 0；无代码改动，沿用 minix-boot **146** / boot-shim **70**。
+- 认领：`I-29 qorder94`（基线 `ad72ecc70`），状态 🔄。

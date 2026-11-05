@@ -1694,3 +1694,133 @@ cd os && cargo test -p boot-shim --lib
 ```
 
 `git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。
+
+
+## 六十四、第九十三轮：被分支式与完整性判据替换下来的原判定式
+
+> 本节只保存「曾经写在正文里的公式与段落」，逐字未改。替换原因分别是：`GeneralData` 的空需求集合
+> 被判定核的第一条拒绝（分支修正）；`InstanceSetComplete` 定义了却没有消费者（接通）；原子用途的
+> 共享结构带着 RISC-V 预约集字段（移入 adapter）；PLIC 授权数值由叶子粒度反推（改为整段 aperture）。
+
+### 第九十三轮代码坐标底账（正文只留符号锚点，行号在此）
+
+> 读数由只读复核给出，绑定合并前的 `rewrite` 分支；行号会随代码漂移，核对时以上表的符号名为准。
+
+| 事实 | 文件 | 行号 |
+|---|---|---|
+| 恒等循环起点（`while addr < IDENTITY_MAP_END`） | `os/kernel/src/lib.rs` | 934 |
+| 恒等循环内的 `map_huge`（返回值被 `let _ =` 丢弃） | 同上 | 952 |
+| 内核高半映射（`.expect`） | 同上 | 979 |
+| Step 2b 设备窗口高半别名 | 同上 | 1022 |
+| Step 2c 设备窗口段 | 同上 | 1064 |
+| 根激活 `paging.enable()` | 同上 | 1080 |
+| `set_current_root_phys(root_page)` | 同上 | 1092 |
+| `establish_boot_dm` 四个调用点 | 同上 | 825、354、615、648 |
+| Step 4 失败即 `panic` | 同上 | 826 |
+| `fn harden_kernel_text` 定义 | 同上 | 1272 |
+| 其唯一调用点（`bkl_lock` 之后、`smp_init` 之前） | 同上 | 1697（另 1691、1705） |
+| `from_active_root` / `split_huge` / `update_flags` | 同上 | 1313 / 1322 / 1330 |
+| heap 窗口驱逐段（含 `unmap`） | 同上 | 2641–2668（`unmap` 在 2664） |
+| ELF 加载窗口 `split_huge`→`grant_user_walk`→`unmap` | `os/arch/src/arch/boot.rs` | 543 / 551 / 554 |
+| x86-64 整槽替换既存叶子 | `os/arch/src/x86_64/paging.rs` | 1361 |
+| x86-64 把既存 1 GiB 恒等叶子降级成空表 | 同上 | 1380–1388 |
+| x86-64 在既存 PML4[0] 置 USER 位 | 同上 | 1329 |
+| x86-64 `update_flags` 保留地址位、只换标志 | 同上 | 868 |
+| riscv64 `map_huge` 遇已存在槽失败 | `os/arch/src/riscv64/paging.rs` | 1247、1255 |
+| arm64 `map_huge`「没有降级路径」 | `os/arch/src/arm64/paging.rs` | 1215–1219 |
+| trait `unmap` / `unmap_range` / `split_huge` 默认实现 | `os/arch/src/arch/paging.rs` | 377 / 512 / 400 |
+| `fn validate_bootstrap_tree` 与其调用点 | `os/kernel/src/dm_coverage.rs` | 447 / 220 |
+| `VM_HEAP_BASE` 窗口（x86 `0xC000_0000`） | `os/arch/src/arch/direct_map.rs` | 258 |
+
+
+<!-- 自正文 对象访问资格式（未接 InstanceSetComplete 的版本） 移入 -->
+
+ObjectAccessEligibility(object, ctx) =
+    ObjectAccessInventoryState(object) ∈ { Complete(uses ≠ ∅, audit_scope), NoAccess(proof) }
+                                                                  ← 空清单不得写成 Complete：那必须走 NoAccess + 机器可检查证明
+    ∧ ∀ use ∈ ObjectAccessUses(object) :
+          ActualAccesses(use) ≠ ∅                                  ← 每条 use 至少对应一个真实访问实例
+          ∧ ObjectMappedAccessEligible(use, ctx)
+ObjectAccessInventoryState(object) = Complete(uses, audit_scope) | NoAccess(machine_checkable_proof) | Incomplete
+    ← NoAccess(proof) ⇒ ObjectAccessUses(object) = ∅，且 proof 必须覆盖适用阶段、适用树、全部访问路径与对象
+      整个存活期间的访问面
+    ← Complete 只表示「在给定 audit_scope 内，已登记访问点覆盖完整」：**不**表示裸指针、内联汇编、
+      硬件隐式访问或未纳入工具链审计的访问也被证明完整（见 O-07）；audit_scope 还要证明该范围内的
+      实际实例都被这些 use 覆盖。不得让 Complete 这个名字被当成全系统完整性证据
+
+<!-- 自正文 ObjectPhysicalAccessEligible 首两行（非空判据表述不完整） 移入 -->
+
+ObjectPhysicalAccessEligible(use, ctx) =
+    ActualAccesses(use) ≠ ∅                                       ← 空实例集合会让全称量词真空通过
+
+<!-- 自正文 InstanceSetComplete 定义（当时的定义没有消费者，也没有非空前置） 移入 -->
+
+InstanceSetComplete(use) =
+    Resolve(use.access_instance_set_id).source_evidence 覆盖 use 声明的 audit_scope
+    ∧ ∀ i ∈ ActualAccesses(use) : InstanceMatchesRequirement(i, use.access_requirement)
+    ← Expand 的合法职责只有两个：验证实例符合需求模板，或把模板展开成硬件访问类别；
+      它没有 virtual_address、指令身份与 LR/SC 预约集证据，因此不能充当实例来源
+
+<!-- 自正文 原子页级共享结构含 reservation_set_requirement 的旧形状 移入 -->
+
+AtomicPageRoleRequirement {          ← 页级能力：候选页能否承担这类原子状态（**不含**具体物理地址）
+    operation_family, access_width, progress_requirement, reservation_set_requirement, fallback_plan_id,
+}
+（对象级原子访问不再另立实例类型：它就是带 `reservation_set_evidence` 的 `ActualAccessInstance`，见对象访问一节）
+
+ReservationSetRequirement { base_page_containment, profile_geometry }
+    ← base_page_containment：页式 VM ∧ A 扩展 ⇒ 预约集整段落在单个基础 4 KiB 页内（`norm:lr_sc_rsrv_set_page`，第一版即成立）
+    ← profile_geometry：声明 profile 时启用（Za64rs：连续、自然对齐、≤64 B）；未声明记「不适用」
+ReservationSetGeometryCore(scope, cpus, isa_profile_id)     ← 页级与对象级共用的同一判定核心
+    = AMO-only ⇒ NotApplicable；LR/SC ⇒ 基础页内约束 ∧ (声明 profile 时的连续 / 自然对齐 / ≤64 B 几何)
+    ← 页级入参 =（候选页, 算法要求的预约集, 全部参与 CPU, profile）；对象级入参 =（实例的 reservation_set_evidence
+      与实际物理范围, 执行该访问的 CPU, profile）——对象级必须真正消费它，页级通过不能替代对象级证明
+
+<!-- 自正文 AtomicSharedStateEligible 直接调用 ReservationSetGeometryCore 的旧式 移入 -->
+
+AtomicSharedStateEligible(page, ctx) =              ← 页级：只做「登记完整性 + 算法要求的进展等级 + LR/SC 几何」
+    AtomicRequirementsComplete(ctx) ∧ RegisteredAtomicAlgorithms(ctx) ≠ ∅
+    ∧ ∀ algorithm ∈ RegisteredAtomicAlgorithms(ctx) :
+        ProgressOf(algorithm) = 若用 LR/SC 则 ReservationEventual，否则取该算法登记项 progress_requirement 显式给出的
+                                OperationCompletion 或 NotRequired   ← 登记是合同输入，不允许实现者自行推断该选哪个
+          ← 分型而非一个共用的 Eventual：AMO-only 不因它要求 RsrvEventual；其他架构的额外进展要求由 adapter 映射
+        ∧ ( algorithm.uses_lr_sc ⇒ ∀ a ∈ LegalStarts(page, lrsc_req, AtomicSharedState, ctx) :
+              ReservationSetGeometryCore(ReservationSetFor(a, algorithm), ctx.ParticipatingCpuSet, ctx.isa_profile_id) )
+            ← 页级要量到该页所有合法 LR/SC 起始地址；对象级用实例自带的预约集证据——两层共享核心也共享量词形状
+    ← 操作族、宽度与逐起始的硬件准入**只在** RoleSpecificRequirements + PhysicalAccessPermits 那条路上查一次；
+      这里不再重复 AccessRequirementsSatisfied，否则两边会各自演化出不同的「进展是否满足」
+    ← 对象级实际访问复用同一个几何核心（入参换成实例的预约集证据与实际物理范围）：两层共享判定，不共享名字
+
+<!-- 自正文 Za64rs 段落（移入时的写法要求把几何补进共享必填字段） 移入 -->
+
+**`Za64rs` 的预约集几何要有着落**：`Za64rs` 要求「Reservation sets are contiguous, naturally aligned, and a maximum of 64 bytes」（`rva23-profile.adoc` 97–98 行）。`AtomicAlgorithmRequirement` 现在只有操作族、宽度与进展要求，需补 `ReservationSetRequirement { max_bytes, contiguous, naturally_aligned }`；只写 `RsrvEventual` 不足以表达 profile 的 LR/SC 义务。第一版不声明 profile，该字段记「不适用」，但结构不能缺。
+
+<!-- 自正文 GenericRolePageEligible 无条件调用判定核（P0 冲突式） 移入 -->
+
+GenericRolePageEligible(page, role, ctx) =
+    RoleRequirementsComplete(role, ctx)          ← 需求生成器没有因缺 profile / 缺代码扫描而「漏出」空集
+    ∧ ( role = GeneralData ⇒ RoleSpecificRequirements(role, ctx) = ∅ )      ← 只有这一格按定义为空
+    ∧ ( role ≠ GeneralData ⇒ RoleRequirementsApplicable(role, ctx) )        ← 适用性由 adapter 证明
+    ∧ ( role = AtomicSharedState ⇒ AtomicSharedStateEligible(page, ctx) )   ← 原子用途的唯一展开入口
+    ∧ AccessRequirementsEligible(page, role, RoleSpecificRequirements(role, ctx), ctx)
+
+<!-- 自正文 名字一一对应段（未区分两种空集合含义） 移入 -->
+
+**名字与定义必须一一对应，空集不得真空通过**：`RoleAdmit(role, page, ctx)` 是声明式接口，其操作化定义**只有** `RolePageEligible(page, role, ctx)` 一个展开式（分支形式），而三个消费者共用同一份 `AccessRequirementsEligible` 判定核——`CommonCpuAccessEligiblePages` 只消费 `BaseAccessRequirements(ctx)`，`GenericRolePageEligible` 只消费 `RoleSpecificRequirements(role, ctx)`，页表分支只消费 `PageTableAccessRequirements(ctx)`。判定核的第一条就是 `requirements ≠ ∅`：`GeneralData` 的用途特有集合**按定义为空**（基底已覆盖，这是唯一定义为空的一格），`PageTable` 因隐式遍历读与显式 PTE 写始终必需而非空，`Executable` 必须有完整取指模式，`AtomicSharedState` 必须有完整算法清单，其它用途出现空集一律 `InsufficientEvidence`。基底侧还另有三条前置：`ctx.ParticipatingCpuSet ≠ ∅`、`GeneralDataCompleteness(ctx) = Complete`、每条基底 `req` 的 `LegalStarts ≠ ∅`——宽度清单必须由**固定编译目标 + 编译器代码生成约束 + 已审计指令集合**三者合成，证不出完整就是 `InsufficientEvidence`，不是「已通过」；`Executable` 的 `instruction_lengths` 为空集同理，那等于宣称该页没有取指需求。把 `RoleAdmit` 存成一个布尔字段会丢掉 `req`、起始地址、CPU 三个量词维度。
+
+<!-- 自正文 §2.3 的 Step 4 与「全仓没有撤销路径」两条旧事实表述 移入 -->
+
+- Step 4 的直接映射覆盖是**在同一棵根上追加 PTE**，候选来源是 `可用表 ∪ 自举页表树 ∪ 启动模块 ∪ 保留表` 的并集过滤。
+- **没有独立最终根、没有审计遍历、没有禁止集合、没有页表冻结**；全仓也没有任何撤销恒等段的路径（`os/kernel/src/lib.rs` 与 `os/kernel/src/dm_coverage.rs` 里的 `unmap` 只服务于 heap 窗口驱逐）。宿主表征测试 `identity_piece_policy_covers_low_4gib_and_marks_device_windows` 断言的正是「覆盖到 `IDENTITY_MAP_END`、含 `EXECUTABLE`、不含 `USER_ACCESSIBLE`」。
+
+<!-- 自正文 PLIC 三分法段落（当时还留「须由 profile 独立证明」的未决口） 移入 -->
+
+**但本项的「平台授权范围」数值目前不是独立证明的结果，而是被建表粒度反推出来的**——代码注释逐字写着：Step 1 按 2 MiB 出设备叶子，所以授权映射范围取资源范围的 2 MiB 包络，`PLIC_WINDOW_LEN = (PLIC_RESOURCE_LEN + 0x1F_FFFF) & !0x1F_FFFF`（并有 `is_multiple_of(0x20_0000)` 的编译期断言）。这正是「叶子大小倒推进授权政策」的实例，因此按三分法重记：**平台授权范围**须由 profile 独立证明（QEMU virt 的 DTB `reg` 给出的是 aperture `0x0C00_0000 + 0x60_0000`，不是 4 MiB）；**实际映射覆盖**由分页侧建表后观察；**实际访问需求**由设备使用点产生。三者数值可以相同，**不得互相推导**。同一问题也适用于 x86 LAPIC 的 2 MiB 授权（实际需求 4 KiB）与 aarch64 的 32 MiB 窗口——在拿到独立平台证据之前，它们都是**待证平台假设**，且授权范围必须覆盖内核真正使用的 context，而不是因为静态窗口表恰好够用就认定需求完整。本项目的 `0x24_0000` 只在 QEMU `virt` + 固定 machine version + TCG + 单 socket + AIA 关闭 + 明确 CPU 型号 + `-smp ≤ 32` 且全部支持 S-mode 下成立；其它配置必须拒绝或重新推导，且 profile 要钉住 `qemu-system-riscv64 --version` 读数与 machine version（今天尚未记录）。
+
+<!-- 自正文 no-map 三项拆分段落（驱动例外第一版状态未写死） 移入 -->
+
+**`no-map` 要拆成三项，不能简化成一个无条件 `DenyMapping`**：`DenyStandardSystemMapping`（禁止进入标准系统内存映射）、`DenyUncontrolledSpeculativeAccess`（禁止非受控推测访问）、可选的 `DriverControlledUse`（专属设备身份 + 专属访问路径的受控使用）。「有驱动申请」不是通用豁免，不能让 `no-map` 页进入内核直接映射。
+
+<!-- 自正文 PhysicalRange 段落（顶端页支持边界未写成政策） 移入 -->
+
+**统一物理范围类型 `PhysicalRange { start: u64, end_exclusive: u128 }`**（`start < 2^64`、`start < end_exclusive ≤ 2^64`）：DTB 的 `address + size` 与 UEFI 描述符都能表达 `[0xffff_ffff_ffff_f000, 2^64)`，统一来源记录不得因 Rust 字段类型丢掉这个合法边界。原始输入字段保留各自编码（DTB 的 address+size、UEFI 的 start+pages），规范化层才转成 `PhysicalRange`；`UnsupportedPhysicalAddressEnd` 只在项目明确选择拒绝该边界时使用，**不能成为 `u64` 加法的副作用**。这条与 O-12h 结构校验、O-12i `FullPages` 是同一条边界合同；DTB 腿已按此实现（分名规则见 §2.1 与 O-12i），UEFI 侧的 `SourceRecord` 尚未接入。
