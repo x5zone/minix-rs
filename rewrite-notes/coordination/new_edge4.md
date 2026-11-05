@@ -5484,4 +5484,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 代码：`PhysicalRange{start:u64,end_exclusive:u128}` 进 `SourceRecord`；`physical_end` 只拒 `>2^64`；最高页在投影层由 `projectable_end()` 拒绝。行为不变，类型与拒绝点改变。
 - 文档：§2.1/O-12g/O-12h/O-12i 改 as-built；§7 删过早闭合句；`ProfileMemoryObligations(profile, region)`；LR/SC 第一版只收 `RsrvEventual`；RISC-V 证据钉 commit。
 - 门：minix-boot **142**、boot-shim **70**；riscv/aarch64/x86 三条 QEMU 腿 PASS；riscv64/aarch64-none/x86_64-uefi 交叉编译通过；lint error 0；主简报 1331 行。
-- 认领：`I-29 qorder70`（工作树 `.wt/i-29-qorder70`，基线 `e57969969`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder70`（工作树 `.wt/i-29-qorder70`，基线 `e57969969`），状态 ✅：已 ff 合并为 `c47108aaa`，认领已释放，`sweep` 读数在册 0。
+
+### 第二百七十八笔（01 阶段 · I-29 第七十轮：PMP 操作级判定与排除归因）
+
+- 纠错：PMP 不是逐字节交集，而是「编号最低、命中任意字节的条目决定整次操作、且须覆盖全部字节」；公式改 `PmpPermits`/`AdmittedRanges`，引四个规范锚点。
+- 新增：`ArchitectureAdmissionRejected` 第五类排除原因 + `DefinitelyIneligible`/`InsufficientEvidence`；不变量 3 与 O-03 统一；设备窗口三分（xAPIC 只映射 4 KiB）；`Zicclsm`；`ADUE=0` 来源区分。
+- 门：无代码改动；minix-boot **142**、boot-shim **70**；lint/表格/行数三门；主简报 1359 行。
+- 认领：`I-29 qorder71`（工作树 `.wt/i-29-qorder71`，基线 `c47108aaa`），状态 🔄，合并后释放。

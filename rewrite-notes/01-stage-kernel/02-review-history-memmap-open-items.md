@@ -10,6 +10,17 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第七十轮评审之后：PMP 操作级判定、排除原因第五类、设备窗口三分）**
+
+- **评审件内部自相矛盾，但其中三条是真正的新问题**：本轮 P0 复述旧布尔式，随后 §1 又说「本轮 partial final 给出的分支式判定是合理的」并把它抄了一遍——同一份材料里两种状态并存，说明它仍是拼接自不同版本。不重复辩驳；`EffectiveSvade`/`fallback_available`/`HartAdmittedBytes` 的 `grep -c` 仍为 0。
+- **PMP 判定模型纠错（本轮最重要）**：上一版写「逐字节合成权限」是**错的**。规范逐字规定编号最低、命中任意字节的条目决定整次操作，且该条目必须覆盖操作的全部字节（`norm:pmp_entry_priority`、`norm:pmp_full_match_required`），并用 `0xC–0xF` 遇 `0x8–0xF` 八字节访问失败作为反例。公式据此改为 `PmpPermits(hart, req, [a,b))` → `AdmittedRanges`，输入是整次访问（基址/宽度/对齐/特权级/隐式或显式），并引 `norm:pmp_rwx_check`、`norm:pmp_no_entry_match` 说明许可位与默认许可。
+- **排除原因补第五类并区分证据状态**：`PmmBaseExcluded` 还包含缓存策略不可表达、排序模型不兼容、参与 hart 普通读写不足三种失败，原「四类原因」只覆盖保留/对象/类型/平台拒绝，导致集合闭合而**归因不闭合**。补 `ArchitectureAdmissionRejected{cache_policy_evidence, memory_ordering_evidence, hart_access_evidence, state}`，`state ∈ {DefinitelyIneligible, InsufficientEvidence}`——前者是平台事实、后者是证据缺口，诊断不能合并。
+- **不变量 3 与 O-03 统一**：改为「每棵树各有独立的映射禁止集合；访问禁止另有独立集合，按对象/阶段/路径裁决；两者不得互相代替」。
+- **设备窗口三分**：架构寄存器窗口 / 平台设备 aperture / 页对齐映射包络分开。xAPIC 寄存器只要 4 KiB，而政策授权 18 MiB（IO-APIC 2 MiB）——没有「包络每页都能按设备属性映射」的证据时，第一版只映射 4 KiB 并用细粒度叶子，不用 2 MiB 大页吞进周围区域。
+- **RVA 义务补 `Zicclsm`**（非对齐 load/store）；`ADUE=0` 记录来源（`Svadu 已实现 ∧ 读回 0` vs `Svadu 未实现 ⇒ 只读 0`）；真值表第四行的条件改成「两者均被证据证明未实现」，并明确「DTB 没列出 ≠ 两者未实现」。
+- 门：无代码改动；沿用 minix-boot **142**、boot-shim **70**；主简报 1359 行。
+
+
 **本轮（第六十九轮评审之后：`PhysicalRange` 落码、证据合同不再宣称闭合）**
 
 - **第四次按旧文本评审**：本轮仍把布尔式、单一 `hart_set_id`、`HartAdmittedBytes`、`fallback_available` 记为当前状态，自述依据是上一轮附件。本轮不重复辩驳，只在正文把旧符号清零的做法延续（`grep -c` 三项仍为 0），并照旧给锚点。

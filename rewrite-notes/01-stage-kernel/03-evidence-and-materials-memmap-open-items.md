@@ -1033,3 +1033,15 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 主简报 | 1331 行（上限 1700）；围栏 32（偶）；表格列数不一致 0 处；lint error 0 |
 | 评审事实核对 | 本轮意见仍引用布尔式与 `HartAdmittedBytes`；四项 `grep -c` 仍为 0，锚点与上一轮相同（本轮改动使行号整体后移，锚点以 `grep -n` 现读为准） |
 
+
+## 四十二、第七十轮：PMP 操作级判定与排除归因
+
+| 项 | 读数 |
+|---|---|
+| 主源复核 | `curl` 取 `riscv/riscv-isa-manual@418bdc49…` 的 `src/priv/machine.adoc`（3639 行），`sed -n '3575,3600p'` 读出 PMP 优先级段：`norm:pmp_entry_priority`（lowest-numbered entry that matches **any byte** determines）、`norm:pmp_full_match_required`（must match **all bytes** or the operation fails）、`norm:pmp_rwx_check`、`norm:pmp_no_entry_match`，以及规范自带的 `0xC–0xF` / `0x8–0xF` 反例 |
+| 纠错 | 上一版「TOR/NAPOT、条目优先级、跨界范围都要**逐字节合成**」与上述规则冲突：PMP 不是逐字节交集，而是「整次访问」判定。公式由 `HartAccessEligibleBytes(hart, req)` 改为 `PmpPermits(hart, req, [a,b))` + `AdmittedRanges(hart, req)`；符号旧名 `grep -c` = 0 |
+| 新增 | `ArchitectureAdmissionRejected{…, state}` 与 `DefinitelyIneligible | InsufficientEvidence` 两态；设备窗口三分（`ArchitecturalRegisterAperture`/`PlatformDeviceAperture`/`PageAlignedMappingEnvelope`）与「无包络证据时只映射 4 KiB」的规则；`Zicclsm`；`ADUE=0` 的来源区分；第四行条件改为「两者均被证据证明未实现」 |
+| 不变量 | 第 3 条与 O-03 统一：映射禁止与访问禁止各自独立、不得互相代替 |
+| 主简报 | 1359 行（上限 1700）；围栏 36（偶）；表格列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **142**、boot-shim **70**；QEMU 腿沿用 `c47108aaa` 读数 |
+
