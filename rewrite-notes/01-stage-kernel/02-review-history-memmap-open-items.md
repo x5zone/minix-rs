@@ -12,6 +12,21 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第八十四轮（评审意见落笔：甲案成案、判定核抽出、页表专属完整性）**
+
+- **三分结果：12 条意见没有一条不成立**；其中三处是评审人对现行版的过期阅读，已在上一轮回写并注明（两个阻塞组、`38668f843`/HEAD 绑定、五表已并两表），本轮他本人也确认撤回那三条批评。
+- **④ 恒等宽映射 → 采纳甲案（授权驱动建表），乙案否决（已裁定未实现）**。评审人的两条否决理由与本文事实一致：今天没有撤销恒等叶子的路径，所以「临时」不成立；命名不改变覆盖事实，而 `no-map` 的豁免只能来自它自己允许的受控例外。O-02a 因此从「待裁决」改为裁决 + 实施合同：**四类授权输入表**（合法普通 RAM / 内核映像分代码·只读·可写 / 启动对象 / 设备窗口），明确甲案**不等于「只遍历可用表」**（loader 等存活对象走对象级授权，不因此映射整段固件保留或整个低 4 GiB）；**前置条件**是根激活瞬间的执行闭包被覆盖，复用 O-12j 的 `EarlyExecutionClosure` 不另造概念（含编译器生成的 `.rodata` 跳转表——本仓实证过入口页已映射仍触发 instruction access fault）；**建表失败分三档**（必需叶子失败即拒绝、可选映射仅在政策允许时缺建、其余拒绝）。
+- **本轮新取得的代码事实（支撑失败分档，非文档推断）**：同一个 `build_bootstrap_root_and_enable` 里，高半内核映射用的是 `.expect("kernel map: map_huge failed — kernel image mismatch")`，只有恒等循环用 `let _ =`；`fn map_huge(...) -> Result<(), PageTableError>`，`pub enum PageTableError` 有 `InvalidAddress`/`AlreadyMapped`/`NotMapped`/`AllocationFailed`/`PermissionDenied`/`NotSupported` 六个变体。据此写实：**甲案把循环输入换成已裁决授权集合后，「该地址没有物理内存支撑」这类可容忍失败的理由随之消失**，忽略错误失去依据。
+- **⑤ 页表分支 → 评审人赞成，本文按其限定条件收敛（已裁定未实现）**：不要求页表走通用 `RoleRequirementsComplete`，但**绝不绕过通用量词**。抽出全文唯一的全称判定核 `AccessRequirementsEligible(page, role, requirements, ctx)`（`requirements ≠ ∅ ∧ ∀ req ∀ a ∈ LegalStarts ∀ cpu : PhysicalAccessPermits(cpu, req, Footprint(a, req))`），基底、通用用途、页表用途三处共用；新增 `PageTableRequirementsComplete(ctx)` 七项门槛并逐条列出它要拦的五类失败形态（翻译模式不明却拿默认 8 字节当证明、只登记一个隐式读类别却以为覆盖全层级、显式 PTE 读清单不完整、方案与更新要求不匹配或变更后复用旧准入、某架构 adapter 返回空集合或 `NotApplicable` 就被当成无额外要求）。
+- **我方自查更正（纪律 0 的反向适用，需回写评审人）**：上一轮本文声称「残留 `Eventual` 已清」，实际只清了 `PmaPermits` 一处，**漏检 `ImplicitHardwarePteUpdate` 里的 `progress_guarantee=Eventual`**——原因是复核用的 grep 模式写作 `progress_guarantee = Eventual`（带空格），而正文是无空格的 `progress_guarantee=Eventual`。本轮按评审人意见改为 `ReservationEventual` 并补注「硬件 A/D 要求的 `RsrvEventual` 正是语义级 `ReservationEventual`」；复核方式改为按符号 `Eventual` 全量列出后逐处判读，不再按单一拼写匹配。
+- **其余两处同步**：§7 hart 项改为「`SystemHartSet` 语义已选定，未闭合的是平台清单与物理存在性证据」（撤销「需平台确认」的过期表述）；§7 整页合格项区分三个完整性门槛（通用角色 / 页表分支 / 基底清单），防止后人把页表分支再绕回通用生成器。§6 按评审人送审建议显式写出**证据基线提交 `53c44e846`** 并声明下一轮必须随合并刷新。
+- **篇幅**：1681 → 1689 行（上限 1700，余 11 行）。腾挪手法：O-12i 两段真实去重（「名字与定义必须一一对应」与「空集不得真空通过」合并、backing 分工散文收紧）、§0 两行合成判定核一行、11 处同小节相邻段落空行合并（纯格式，未删文字）；被合并的两段原文逐字进本档案第七节。
+- **对账（L1）**：`check.py diff` 比对上一轮基线与「正文 ∪ 02 ∪ 03 ∪ 本轮 arc」——符号名 240、测试名 56、`norm:` 锚点 30，三处 **lost 0**；新增符号 `AccessRequirementsEligible`/`PageTableRequirementsComplete`/`PageTableAccessRequirements` 已入正文。
+- **修表一处**：段落合并把一张表贴到了上一段（表格首行前无空行，markdown 会破表），已按脚本检出后补空行；残留破表计数 0。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；`doc-style-lint --diff` error **0**（退出码单独取，不接管道）；围栏 48（偶）；表格 57 块、列数不一致 0 处。
+- 认领：`I-29 qorder88`（工作树 `.wt/i-29-qorder88`，基线 `53c44e846`），状态 🔄，合并后释放。
+
+
 **第八十三轮（评审意见落笔：现状冲突入正文、backing 两半、对象访问三层对应、进展枚举收敛）**
 
 - **P0 现状冲突（恒等宽映射与禁止政策） 成立且比评审人写得更强（已入正文）**：落代码核对确认 `build_bootstrap_root_and_enable` 的恒等循环 `while addr < IDENTITY_MAP_END` 不查 memmap、不查类型、不查禁止集，`BOOT_IDENTITY_MAP_END = 0x1_0000_0000` 三架构共用一个常量，`map_huge` 失败被显式忽略，标志位含 `EXECUTABLE` 且不含 `USER_ACCESSIBLE`；全仓无恒等段撤销路径（`unmap` 只服务 heap 窗口驱逐）。§2.3 因此不再写「不在可用表推不出不会被映射」这种弱形式，改写明确结论：`no-map`/MRB/`EfiReservedMemoryType`/`UNUSABLE` 落在低 4 GiB 内今天**都已有映射叶子**，第一版目标合同尚未兑现。O-02a 增加**必须裁决项**：甲案（授权驱动建表）或乙案（具名 `BootTransitionMapping`，含撤销时点与「宽映射如何不沦为任意访问通道」），并写清乙案两个硬后果——今天没有撤销路径所以「临时」不成立、以及「过渡映射」自称不构成 `no-map` 豁免。

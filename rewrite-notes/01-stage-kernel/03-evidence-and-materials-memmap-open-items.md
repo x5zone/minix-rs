@@ -1506,3 +1506,15 @@ cd os && cargo test -p boot-shim --lib
 | 门读数 | 正文 1681 行（上限 1700）、125,876 字符；围栏 48（偶）；表格 56 块、列数不一致 0 处；`doc-style-lint --diff` error 0 |
 | 零丢失对账 | `tmp/i29-r83compress/check.py diff`：符号名 240、测试名 56、`norm:` 锚点 30 → lost 0（尺子与被比文件在 `tmp/`，不入库；逐字移出原文见 `02` 第七节与本节所属批次） |
 | 本轮移出正文的原文 | O-06「已知属性位的处置」与「属性按语义分三类」两段合并（原文逐字进 `02` 第七节）；16 处段落空行为纯格式合并，无文字移出 |
+
+## 五十六、第八十四轮：甲案代码证据、判定核抽出与门读数
+
+| 项 | 读数（命令与输出） |
+|---|---|
+| 必需叶子失败即拒绝的先例在同一个函数里 | `os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable`：Step 1 恒等循环 `let _ = paging.map_huge(...)`（注释理由为「部分范围可能没有物理内存支撑」）；Step 2 高半内核映射 `.expect("kernel map: map_huge failed — kernel image mismatch")`。甲案换成授权驱动输入后，前者容忍失败的理由消失 |
+| 建表 API 的失败种类 | `os/arch/src/arch/paging_ext.rs`：`fn map_huge(&mut self, VirBytes, PhysBytes, PageSize, PageFlags) -> Result<(), PageTableError>`；`os/arch/src/arch/paging.rs`：`pub enum PageTableError { InvalidAddress, AlreadyMapped, NotMapped, AllocationFailed, PermissionDenied, NotSupported }`（三架构实现分别位于 `os/arch/src/{riscv64,x86_64,arm64}/paging.rs`） |
+| 执行闭包不是「只映射当前页」的实证 | O-12j 跳转表段：预扫逻辑代码页已在映射内，`switch` 被编译为 `.rodata` 跳转表 + `jr` 绝对地址仍触发 RISC-V instruction access fault（`cause=1`）；`-C jump-tables=no` 后原故障复现消失 |
+| 本轮新增符号（正文实测计数） | `AccessRequirementsEligible` **5**、`PageTableRequirementsComplete` **3**、`PageTableAccessRequirements` **3**；残留 `progress_guarantee=Eventual` **0**（改为 `ReservationEventual`） |
+| 复核方式的更正 | 上一轮按 `progress_guarantee = Eventual`（带空格）grep 得出「残留已清」是漏检；本轮改为 `grep -n "Eventual"` 全量列出逐处判读，命中 20 处中仅 1 处为未定义成员，已改 |
+| 篇幅与门 | 正文 1689 行（上限 1700，余 11 行）、232,200 字节；围栏 48（偶）；表格 57 块、列数不一致 0 处；破表（表格首行前无空行）计数 **0**；`doc-style-lint --diff` error 0；零丢失对账 lost 0 |
+| 证据基线（送审绑定） | 上一轮合并提交 `53c44e846`（§6 已显式写出该哈希；146/70 读数与之绑定，下一轮随合并刷新） |
