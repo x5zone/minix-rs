@@ -12,6 +12,21 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第七十七轮评审之后：政策授权层、隐式页表读、需求完整性与架构边界）**
+
+- **P0 对象访问缺来源政策授权（成立，已改）**：`ObjectMappedAccessEligible` 原来只有「映射兑现 + 硬件准入」，没有政策层——PMP/PMA 都允许的 MRB 区域、硬件仍可读的 `EfiReservedMemoryType`、带 `no-map` 的非受控访问限制都会被绕过。新增 `ObjectPolicyAccessEligible(use, ctx) = AccessAuthorizationCovers(...) ∧ SourceSpecificDenialsSatisfied(...)`，并明确三类负向来源各按自己的规则解除，不得由一个通用布尔覆盖。
+- **P0 `PageTable` 漏隐式页表读（成立，已改）**：拆基底/用途时把 `{ (ImplicitPageWalk, Read) }` 漏在了散文里，形式化定义只剩显式读写——`SupervisorFaultManagedAd` 分支下等于没检查硬件遍历能否读 PTE。已补回，并给显式读写绑定 `PteSize`/`PteAlignment`。
+- **P0 用途特有集合仍可真空通过（成立，已改）**：`RolePageEligible` 增加 `RoleRequirementsComplete(role, ctx)`、`RoleRequirementsApplicable(role, ctx)`，并规定**只有 `GeneralData` 可以按定义为空**；`BasePageEligible` 另加 `ctx.ParticipatingCpuSet ≠ ∅`（空集合会让 `∀ hart` 真空通过），并声明该身份必须是完整且非空的当前集合。
+- **P1 原子算法义务进入公式（成立，已改）**：新增 `AtomicRoleEligible(page, algorithm, ctx)` 四项合取（逐访问类别、进展匹配、预约集几何、fallback 计划）。第一版策略统一为**所有使用 LR/SC 的算法都要求 `RsrvEventual`**，`RsrvNonEventual` + fallback 分支整体不开放——此前散文与 §7 两种说法并存。
+- **P1 Profile 义务有定义无落点（成立，已改）**：新增 `ProfileAdmissionValid(ctx)`（系统级）与 `ProfileMemoryEligiblePages(ctx)`（页级），并声明 `isa_profile_id = 未声明` 时结果是「未作合规声明」，不得被读成「已通过」。
+- **P1 ctx 只有一个 `profile_id`（成立，已改）**：`MemoryAdmissionContext` 身份三分——`platform_memory_profile_id` / `isa_profile_id` / `uefi_attribute_profile_id`；`ReservationSetGeometryPermits` 明确取 `isa_profile_id`。
+- **P1 非连续 PA 无法表达（成立，已改）**：`ObjectAccessUse.expected_pa_range` 改为 `expected_translation : ExpectedTranslationSegments = { TranslationSegment { va_range, expected_pa_range } }`，`Resolve` 与 `ActualFootprints` 都按段判定；取指实例各自带长度、宽度与片段。
+- **P1 三架构语义边界（成立，裁定为重构项）**：共享层只表达语义（访问要求、页表更新要求、原子宽度/原子性/进展、执行要求、参与 CPU 集合、证据代次），机制名归各架构 adapter；三条硬规则写进正文——`pte_update_scheme_id` 不得是共享接口必填字段、共享层枚举不得出现 `Amo/Lr/Sc` 指令名、`hart_set_id` 统一为 `participating_cpu_set_id`。当前全是候选类型，落码前重命名成本最低。
+- **P1 `MappingAudit` 只是属性审计（成立，已改）**：补 `MappingAuthorizationCovers` 与 `DenyMappingDoesNotIntersect` 两个合取项，并写明设备窗口的 `Coverage ⊆ AuthorizedRange` 不能代替 `Coverage ∩ DenyMapping = ∅`。
+- **压缩**：用途 role 表与新的正式定义重复，已收成一行；另有六个代码块收紧，主简报从 1695 增至 1696 行（上限 1700）。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1696 行、围栏 50（偶）、表格 61 块列数不一致 0 处、lint error 0。
+
+
 **本轮（第七十六轮评审之后：基底/用途两层拆分、硬件 PTE 更新原子性、对象完整 footprint）**
 
 - **先认一个材料缺陷**：上一轮横幅写的 `20:35 CST` 不是实测值，比真实时间超前约 1 小时 43 分，评审人据此无法认定材料是最新版本。本轮改为 `date` 实测（当日 `18:54 CST (+0800)`，完整命令输出见 `03` 第四十七节），并把「横幅时间必须由命令实测」作为固定规则写进横幅本身。

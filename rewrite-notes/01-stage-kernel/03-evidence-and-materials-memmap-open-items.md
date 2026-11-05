@@ -1113,3 +1113,16 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 待核清单（不升级成规范引用） | cache-block 的 PMA 支持位（`norm:cbz_access` 提到的 supported access type）由平台 profile 提供，本方未取具体 PMA 编码；x86 变长指令跨页仍按架构事实；UEFI 侧仍是评审人取证；`PmpEvidence` 的不可变承诺协议未实现 |
 | 主简报 | 1663 行（上限 1700）；围栏 46（偶）；表格 62 块、列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
+
+## 四十八、第七十七轮：政策授权层、隐式页表读与架构边界
+
+| 项 | 读数 |
+|---|---|
+| 本轮是否新增规范取证 | 无新增抓取；复用上轮已取锚点（`cmo.adoc` 的 `norm:cbm_access`/`norm:cbz_access`/`norm:pmp_same`/`norm:pma_same`/`norm:cbo_rsv`；`supervisor.adoc` 1745–1748 的原子更新步骤）。本轮改动全部由简报内部一致性推出 |
+| 评审人本轮独立核对（第三方） | UEFI 2.11 属性位低位组 `WP=0x100`/`RP=0x200`/`XP=0x400`/`NV=0x800`，与 2.10 原始版高位组不同；标准 DTB 位于 `EfiACPIReclaimMemory`、按物理地址解释、固件安装后不得修改（UEFI 应用可改）；`EfiReservedMemoryType` 类型表字面「Not usable」。本方环境抓 uefi.org 仍 403，未复现 |
+| 主文档更动 | ① `ObjectPolicyAccessEligible` 政策层 + 三层分工（来源政策 / 硬件准入 / 映射兑现）；② `PageTable` 补回 `{ (ImplicitPageWalk, Read, PteSize, PteAlignment) }` 并给显式读写绑宽度；③ `RoleRequirementsComplete`/`Applicable` 与非空前置、`ctx.ParticipatingCpuSet ≠ ∅`；④ `AtomicRoleEligible` 四项合取 + 第一版「LR/SC 一律要 `RsrvEventual`」；⑤ `ProfileAdmissionValid` / `ProfileMemoryEligiblePages`；⑥ `MemoryAdmissionContext` 身份三分；⑦ `ExpectedTranslationSegments` 分段映射与取指实例宽度；⑧ 共享层/adapter 三条硬规则；⑨ `MappingAudit` 补正向授权与负向禁令；⑩ §7 把三项 P0（政策授权层、隐式页表读、需求完整性）列为显式阻塞项 |
+| 压缩记录 | 用途 role 表（6 行）收成 1 行；`ImplicitHardwarePteUpdate`/`AtomicFallbackPlan`/`HartInventoryEvidence`/`Footprint`/`InstructionFetchPattern`/`PhysicalProtectionInventory`/几何判定共收紧 12 行；净 +1 行 |
+| 符号核查（主文档实测计数） | `ObjectPolicyAccessEligible` 2、`ExpectedTranslationSegments` 2、`RoleRequirementsComplete` 3、`RoleRequirementsApplicable` 2、`AtomicRoleEligible` 1、`ProfileAdmissionValid` 2、`ProfileMemoryEligiblePages` 2、`participating_cpu_set_id` 3、`hart_set_id` 1（仅出现在「统一改名」规则句中）、`RequiredHarts` **0**、`ctx.profile_id` **0** |
+| 待核清单 | cache-block 的 PMA supported-access-type 读数需平台 profile；AArch64 Table 2.5/2.6 与 UEFI 属性位仍只有第三方核对；`PmpEvidence` 的不可变承诺协议未实现；共享层改名（`ctx.H` 符号、`Pmp*` 谓词归属 adapter）尚未反映到任何代码 |
+| 主简报 | 1696 行（上限 1700）；围栏 50（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |

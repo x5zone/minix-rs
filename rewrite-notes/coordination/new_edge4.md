@@ -5541,4 +5541,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - P1/P2：稳定性改「不可变承诺（第一版）/ 变更前协调」二选一，`stability_until` 是承诺不是期限；`ReservationSetGeometryPermits` 与指令族、宽度、进展并列进原子准入；`CacheBlockManagement` 入枚举，并按 `cmo.adoc` 原文补块级 `norm:pmp_same`/`norm:pma_same` 一致性与 `norm:cbo_rsv` 的 UNSPECIFIED 分支——CBM 的许可是「load **或** store」，评审人「按读权限」的表述已回写更正。
 - 待实现：全部为候选合同；`BasePageEligible`、`ActualFootprints`、`Resolve`、`ReservationSetGeometryPermits`、不可变承诺协议均无消费者。
 - 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 62 块列数不一致 0 处、主简报 1663 行、围栏 46（偶）。
-- 认领：`I-29 qorder77`（工作树 `.wt/i-29-qorder77`，基线 `5ec532b12`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder77`（工作树 `.wt/i-29-qorder77`，基线 `5ec532b12`），状态 ✅：已 ff 合并为 `2dfb7162d`，认领 `I-29 qorder77` 已释放。
+
+### 第二百八十五笔（01 阶段 · I-29 第七十七轮：政策授权层、隐式页表读、需求完整性与架构边界）
+
+- P0 三项：① 对象访问补来源政策授权层 `ObjectPolicyAccessEligible`——此前只有「映射兑现 + 硬件准入」，PMP/PMA 允许的 MRB、硬件仍可读的 `EfiReservedMemoryType`、`no-map` 的非受控限制都会被绕过；② `PageTable` 的形式化定义漏了始终必需的 `(ImplicitPageWalk, Read)`（上一轮拆基底/用途时只在散文里保留），已补回并给显式读写绑定 `PteSize`/`PteAlignment`；③ 非 `GeneralData` 用途的 `RoleSpecificRequirements` 仍可在空集上真空通过——新增 `RoleRequirementsComplete`/`Applicable` 与 `ctx.ParticipatingCpuSet ≠ ∅`。
+- P1 五项：`AtomicRoleEligible` 四项合取（逐访问类别 / 进展匹配 / 预约集几何 / fallback 计划），第一版统一为「所有 LR/SC 都要 `RsrvEventual`」，`RsrvNonEventual` + fallback 不开放；`ProfileAdmissionValid` 与 `ProfileMemoryEligiblePages` 给 ISA 义务执行位置，「未声明」不得读成「已通过」；`MemoryAdmissionContext` 身份三分（平台内存 / ISA / UEFI 属性位编码）；`expected_pa_range` 改成分段 `ExpectedTranslationSegments` 并让每个取指实例自带长度宽度片段；`MappingAudit` 补 `MappingAuthorizationCovers` 与 `DenyMappingDoesNotIntersect`。
+- 架构边界裁定：共享层只表达语义，机制名（`Svade`/`ADUE`/`Amo`/`Lr`/`Sc`/`RsrvEventual`/PMP）归各架构 adapter；`hart_set_id → participating_cpu_set_id`、`pte_update_scheme_id` 不作共享必填、共享枚举去指令名。全部是候选类型，落码前重命名成本最低。
+- 待实现：以上全是候选合同，代码与负控为零；本轮还压掉 17 行重复内容以守住 1700 行上限。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 61 块列数不一致 0 处、主简报 1696 行、围栏 50（偶）。
+- 认领：`I-29 qorder78`（工作树 `.wt/i-29-qorder78`，基线 `2dfb7162d`），状态 🔄，合并后释放。
