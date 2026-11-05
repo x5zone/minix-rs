@@ -317,66 +317,18 @@ pub fn read_boot_params() -> BootParams<'static> {
 
     // A2 free list: kernel-cut survivors, already clipped to VM's DM
     // window (VM PMM eligible = conventional ∩ DM-representable −
-    // LiveBootstrap).
-    //
-    // The A2 cut initially missed VM's own **address-space root page** (and the
-    // cluster of L1 tables the bootstrap hangs directly beneath it) — a live
-    // trace showed the kernel holding root=0x82000000 (handoff root_paddr = the
-    // boot bump pool base) while that page sat inside the free list (allocation
-    // traces cross the pool interval); once the pool drained downward to its
-    // base, the root page was handed out as an ordinary frame, and VM's own
-    // translations (BSS/heap/DM window) went intermittently corrupt → walk
-    // through device holes / btree panic / region range corruption, one whole
-    // family. Deduct 64KB starting at the root page here (covering the measured
-    // bootstrap L1 cluster 0x82001000..0x8200f000); the leak table shrinks with
-    // it.
-    // Widened further: the kernel bump pool as a whole (a vm pc=0x3a006 fetch
-    // fault was VM's own text frame being handed out and overwritten inside the
-    // pool; the pool holds the bootface root/pt/name pool, the module landing
-    // areas and every boot server's image frames, so all 32MiB is deducted).
-    let root_deduct_base = 0x8200_0000;
-    let root_deduct_end = 0x8400_0000;
-    // Module image frames are reclaimed from the free list as well — VM's own
-    // text was overwritten by another server's ELF, giving a fetch fault
-    // (vm 0x8 pc=0x39f4a SIGSEGV-for-itself), the same root as the whole
-    // "corruption" family. Deduct every boot module region plus the root block.
-    let mut deduct: alloc::vec::Vec<(u64, u64)> = alloc::vec![(root_deduct_base, root_deduct_end)];
-    for m in handoff.modules[..handoff.module_count as usize].iter() {
-        let m_base = m.start_addr & !(0x1000u64 - 1);
-        let m_end = (m.start_addr + m.len + 0xfff) & !(0x1000u64 - 1);
-        deduct.push((m_base, m_end));
-    }
-    let free_regions: &'static [BootMemRegion] = {
-        let v: alloc::vec::Vec<BootMemRegion> = handoff.free_regions
-            [..handoff.free_region_count as usize]
-            .iter()
-            .map(|r| BootMemRegion {
-                base: r.base as usize,
-                size: r.size as usize,
-            })
-            .flat_map(move |r| {
-                let r_base = r.base as u64;
-                let r_end = r_base + r.size as u64;
-                let mut parts: alloc::vec::Vec<BootMemRegion> = alloc::vec::Vec::with_capacity(2);
-                let mut cur = r_base;
-                for (db, de) in deduct.iter() {
-                    let (db, de) = (*db, *de);
-                    if de <= cur || db >= r_end {
-                        continue;
-                    }
-                    if db > cur {
-                        parts.push(BootMemRegion { base: cur as usize, size: (db - cur) as usize });
-                    }
-                    cur = cur.max(de);
-                }
-                if cur < r_end {
-                    parts.push(BootMemRegion { base: cur as usize, size: (r_end - cur) as usize });
-                }
-                parts
-            })
-            .collect();
-        alloc::boxed::Box::leak(v.into_boxed_slice())
-    };
+    // LiveBootstrap). The list is adopted verbatim — no platform address
+    // is subtracted here. Verification is the next call: `reconcile`
+    // asserts `free ∩ deducted = ∅` against the record carried by this
+    // same page (Proof 2 at the consumption point). Trimming a known-bad
+    // range on this side would *hide* a kernel bookkeeping defect instead
+    // of failing the boot, and a hardcoded pool address would be wrong on
+    // every platform whose boot objects do not live there.
+    let free_regions: &'static [BootMemRegion] =
+        alloc::boxed::Box::leak(
+            adopt_free_regions(&handoff.free_regions[..handoff.free_region_count as usize])
+                .into_boxed_slice(),
+        );
     let modules: &'static [BootModule] = {
         let v: alloc::vec::Vec<BootModule> =
             handoff.modules[..handoff.module_count as usize]
@@ -436,6 +388,24 @@ pub fn read_boot_params() -> BootParams<'static> {
     params
 }
 
+/// Adopt the kernel's post-classification free list verbatim.
+///
+/// No platform address is subtracted on this side: the kernel already cut
+/// `LiveBootstrap` out and reported exactly what it cut in `deducted`; the
+/// proof that the two sets are disjoint is [`reconcile`]'s job. A trim
+/// here would turn a kernel bookkeeping defect into silent memory loss,
+/// and any hardcoded pool address would be wrong on platforms whose boot
+/// objects live elsewhere.
+fn adopt_free_regions(regions: &[minix_types::HandoffMemRegion]) -> alloc::vec::Vec<BootMemRegion> {
+    regions
+        .iter()
+        .map(|r| BootMemRegion {
+            base: r.base as usize,
+            size: r.size as usize,
+        })
+        .collect()
+}
+
 /// Page size of every handoff range (C: I386_PAGE_SIZE).
 const PAGE: u64 = 0x1000;
 
@@ -478,9 +448,11 @@ fn reconcile(params: &BootParams, deducted: &[HandoffMemRegion]) {
         params.root_paddr.0
     );
 
-    // (3) reserved module blobs. Kernel tasks carry no blob (len == 0);
-    // VM's own blob was reclaimed after the ELF copy
-    // (C: protect.c:450-451) and therefore stays out of the record.
+    // (3) reserved module blobs. Kernel tasks carry no blob (len == 0).
+    // VM's own blob is skipped only because the kernel already put it in
+    // the record (its segment frames are drawn from this very free list
+    // before VM starts); the skip keeps the check independent of that
+    // deliberate overlap rule.
     for ip in params.boot_procs {
         if ip.len == 0 || ip.proc_nr == VM_PROC_NR {
             continue;
@@ -624,6 +596,24 @@ mod tests {
         let regions = [region(0x100000, 4)];
         let params = BootParams::simple(4, &regions);
         reconcile(&params, &root_record(params.root_paddr));
+    }
+
+    /// The retired platform-address trim must not come back: on platforms
+    /// whose boot objects live elsewhere, 0x8200_0000 is ordinary RAM and
+    /// must survive adoption untouched (the record, not an address literal,
+    /// decides what is not free).
+    #[test]
+    fn test_adopt_free_regions_keeps_every_region_verbatim() {
+        let regions = [
+            minix_types::HandoffMemRegion { base: 0x8200_0000, size: 0x2_0000 },
+            minix_types::HandoffMemRegion { base: 0x40_0000, size: 0x10_0000 },
+        ];
+        let adopted = adopt_free_regions(&regions);
+        assert_eq!(adopted.len(), 2);
+        assert_eq!(adopted[0].base, 0x8200_0000);
+        assert_eq!(adopted[0].size, 0x2_0000);
+        assert_eq!(adopted[1].base, 0x40_0000);
+        assert_eq!(adopted[1].size, 0x10_0000);
     }
 
     #[test]
