@@ -5437,5 +5437,5 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 
 - 主文档 1110 行：§3 不变量 2 改基底补集；O-12i 落 `PmmBaseAvailable`/`PmmRoleEligible`/`PmmRoleRejected`、`MemoryOrderingCompatiblePages`、整页合格与用途生命周期；AArch64 64 KiB 规则结构化收紧。
 - 代码：`os/libs/minix-boot/src/memmap_source.rs` 新增 `UnsupportedDynamicReservation`——`/reserved-memory` 子节点 `size`-only 拒绝，`reg`+`size` 按 `reg`、动态专用属性有意忽略；三条专测。
-- 门：minix-boot **137**、boot-shim **70**；riscv bootface 与 aarch64 shim 两条 QEMU 腿 PASS；x86_64-uefi / riscv64-none / aarch64-none 交叉编译通过。
+- 门：minix-boot **137**、boot-shim **70**；riscv bootface 与 aarch64/x86_64 shim 三条 QEMU 腿 PASS（x86 腿未进入 DTB 采集路径，新分支未被执行）；x86_64-uefi / riscv64-none / aarch64-none 交叉编译通过。
 - 认领：`I-29 qorder64`（工作树 `.wt/i-29-qorder64`，基线 `401bc8876`），状态 🔄，合并后释放。

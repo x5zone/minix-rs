@@ -949,4 +949,5 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 主文档 | 1110 行（上限 1700）；代码围栏计数 22（偶数） |
 | 规范取证 | RISC-V `menvcfg.ADUE` 段与「Memory ordering PMA」句由检索到的全文镜像取得，**逐字与 PDF 定位待复核**；DTSpec 的 `size` 独有=动态请求、`reg`+`size` 按 `reg`、动态区不入 UEFI 内存图三句本次**未取到原文**（readthedocs 与 devicetree-org.github.io 的多个候选地址返回 404 或 fetch failed），故本轮按项目输入子集落地 |
 | AArch64 64 KiB | Table 2.5 / 2.6 的字段划分沿用先前轮次的记录，本轮只做结构化收紧：分组键、比较字段、profile 适用性、未映射子页；未新增规范断言 |
+| QEMU x86_64（同轮补记） | `bash qemu-tests/test-shim-bootmarks-x86.sh` → `### TEST_RESULT: PASS test-shim-bootmarks-x86 ###`；串口 `boot-shim: memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)`，即该腿不解析 ESP DTB，`UnsupportedDynamicReservation` 分支未被执行 |
 

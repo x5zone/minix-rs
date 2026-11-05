@@ -20,6 +20,7 @@
 - **用途生命周期**：分配交付 `(page, U_verified, p)`；承担新用途先重新准入；**撤回用途不释放容量**。
 - **AArch64 64 KiB 分组规则收紧**：分组键 `floor(PA/65536)*65536`（按物理地址，不按 VA）；只比较 memory type / cacheability / shareability，`R/W/X` 等权限逐页独立；适用性限定 AArch64 的 UEFI 启动 profile；未映射子页以 `GroupCoverage` 登记，后续新映射受组内既有属性约束。
 - **代码切片**：`/reserved-memory` 子节点只有 `size` 无 `reg` → 新错误 `UnsupportedDynamicReservation`；既无 `reg` 又无 `size` 仍走 `UnsupportedReservedDeclaration`；`reg`+`size` 按 `reg` 静态处理，`size`/`alignment`/`alloc-ranges` 有意忽略。三条专测；minix-boot **137**、boot-shim **70**；riscv bootface 与 aarch64 shim 两条 QEMU 腿重跑 PASS。DTSpec 原文本次未取到，规则记为**项目输入子集**。
+- **同轮补记**：`test-shim-bootmarks-x86.sh` 也重跑 PASS，但其串口为 `memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)`——x86 腿不解析 ESP 上的 DTB，**本切片的新分支在该腿没有被执行**。三条腿读数见 03 §三十五。
 
 
 **本轮（第六十二轮评审之后：纯文档——PMM 用途化、RISC-V 条件化、缓存可行性拆分）**
