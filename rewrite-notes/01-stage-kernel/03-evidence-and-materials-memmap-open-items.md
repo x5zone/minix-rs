@@ -923,3 +923,14 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 共享语义 | `OrdinaryCachePolicyFeasiblePages` 取代 `WbConfigurablePages` |
 | 范围端点 | `PhysicalRange { start: u64, end_exclusive: u128 }` 统一 |
 | 门 | 无代码改动；沿用 minix-boot **134**、boot-shim **70**；lint 0 |
+
+## 三十四、第六十二轮：纯文档
+
+| 项 | 结论 |
+|---|---|
+| PMM | `PmmEligible(page, role, p)` 四用途；全局集合与用途化二选一（选用途化） |
+| 缓存 | `OrdinaryCachePolicyRepresentablePages`（PMM）vs `ObservedMappingEffectiveAttribute`（MappingAudit） |
+| RISC-V | PTE 更新方案条件化；Svade 不要求 RsrvEventual；hart 方案一致性 |
+| UEFI Reserved | `DenyOsUse` 三层；不设硬件屏障 |
+| AArch64 | 64 KiB 分组属性规则纳入审计适用性 |
+| 门 | 无代码改动；沿用 minix-boot **134**、boot-shim **70**；lint 0 |

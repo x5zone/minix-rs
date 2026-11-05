@@ -5423,3 +5423,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - RISC-V：页表读写 + RsrvEventual + 逐 hart PMP；PMP 证据需 M-mode 提供或 profile 承诺；次级 hart 入场门槛。
 - `OrdinaryCachePolicyFeasiblePages` 取代 WB 命名；`PhysicalRange` u128 端点；`BootInputObjectId` 首读前建立；设备完整性三主张。
 - 门：沿用 minix-boot 134、boot-shim 70；lint 0。
+
+### 第二百七十笔（01 阶段 · I-29 第六十二轮：纯文档）
+
+无代码改动；主文档约 1062 行。
+
+- PMM 四用途（GeneralData/PageTable/Executable/AtomicSharedState）；全局集合与用途化不混用。
+- 缓存可行性（预映射）与实际叶子兑现分开；RISC-V 按 PTE 更新方案条件化。
+- `EfiReservedMemoryType` 恢复 `DenyOsUse` 三层；AArch64 64 KiB 分组属性规则。
+- 门：沿用 minix-boot 134、boot-shim 70；lint 0。

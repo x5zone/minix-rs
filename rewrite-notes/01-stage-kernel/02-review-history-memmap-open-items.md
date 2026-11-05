@@ -10,6 +10,14 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十二轮评审之后：纯文档——PMM 用途化、RISC-V 条件化、缓存可行性拆分）**
+
+- **PMM 用途化**：`PmmEligible(page, role, p)`，`role ∈ {GeneralData, PageTable, Executable, AtomicSharedState}`；各用途有自己的最低访问合同。明确「要么用途化、要么保守全局集合，二者不能混用」，本项目选用途化。
+- **缓存可行性拆分**：`OrdinaryCachePolicyRepresentablePages(profile)`（预映射、不读叶子）进 PMM；`ObservedMappingEffectiveAttribute` 只进 `MappingAudit`，消除「先有 PTE 才能分配、分配又要求 PTE」的循环。
+- **RISC-V PTE 更新方案条件化**：`HardwareManagedAd` 才要求硬件页表写能力与 `RsrvEventual`；Svade 不因 A/D 更新要求它们，但 S-mode 软件写 PTE 仍受 PMP 写权限检查；`PteUpdateScheme` 进 profile 且所有 hart 必须一致。
+- **`EfiReservedMemoryType` 语义补回**：三层为 `NotUsable`+GetMemoryMap「OS 不应访问」→ `DenyOsUse` → 硬件不设屏障；组合拒绝的理由改为「UEFI 政策 + 项目不开放例外」。
+- **AArch64 64 KiB 分组属性规则**：含 Runtime/Reserved/NVS 子页的 64 KiB 区必须同属性；4 KiB granule 不等于规则不适用，审计须记录适用性。
+
 **本轮（第六十一轮评审之后：纯文档——类型语义三层、RISC-V 准入、统一范围）**
 
 - **`EfiReservedMemoryType` 拆三层**：规范类型事实只保留 `NotUsable`（类型表用语）；`DenyPmmAllocation` 与 `DenyOrdinarySystemMapping` 是项目政策，可选的 `DenyCpuAccess` 也标为项目强化。更早一轮写入的「物理支撑但 OS 不应访问」标为**待核**（两次评审结论相反，本环境取不回 uefi.org 原文）。组合拒绝（Reserved+no-map+DriverControlledUse）的理由改为项目不开放例外，不再借类型名。
