@@ -5849,3 +5849,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - **本轮未验证**：kernel-image / uboot 三架构交叉构建（镜像只装 host target，`E0463`）与 QEMU 腿（镜像无 qemu）；四个 faces 改动只有类型级核对。
 - 仍开放：UEFI 逐描述符来源记录（需 ≥256 条独立载体或快照引用）、aarch64 UEFI 配置表 DTB 三态、`VM_BOOT_HANDOFF_VA` 生命周期/字节序/版本失败语义合同、QEMU 腿。
 - 认领：`I-29 qorder106`，状态 ✅：第一百零六轮已 ff 合并为 `3fef6483f`，认领已释放。
+
+### 第三百一十四笔（01 阶段 · I-29 第一百零七轮：消费者边界收口；配置表 DTB 三态）
+
+- `d71db61d5 fix(vm)`：删除 `read_boot_params` 里 `0x8200_0000..0x8400_0000` 的 32 MiB 字面量修剪与模块重扣（该地址在 aarch64/UEFI 腿上是普通 RAM，且修剪会掩盖 `reconcile` 本应抓到的记账缺陷）；空闲表由 `adopt_free_regions` 原样采纳，`reconcile` 是唯一裁决点。新测 `test_adopt_free_regions_keeps_every_region_verbatim`；`minix-vm` 548 / 0。
+- `5acb4dbb6 feat(boot)`：aarch64 UEFI 配置表 DTB 三态接入 `cross_validate_config_dtb`（无 → UEFI 唯一来源；有且可解析 → `/memory` 必须覆盖每条 conventional 跨度，否则 halt；有但不可用 → halt），两个 UEFI 入口各调一次；磁盘 `dumpdtb.dtb` 仍为诊断输入。`boot-shim --features uefi` 编译通过、70 + 5 测试通过。
+- `b1b96feff docs(01)`：正文 975 行；§2.5/§2.8/§2.9/§7/§6 同改，02/03/todo 追加；门：围栏 22 偶、表格 39 块 0 不一致、破表 0、lint error 0、横幅 PASS（第一百零七轮）、lost 0（syms 180→573、tests 77→284）。
+- **未验证**：QEMU 腿（三态的后两态只有真机/CI 的 aarch64 UEFI 腿会走到）；三架构交叉构建（镜像只装 host target）。
+- 仍开放：UEFI 逐描述符来源记录（需设计裁决：≥256 条独立有界载体 vs 快照身份+索引引用）；`VM_BOOT_HANDOFF_VA` 生命周期/字节序/版本失败语义合同；QEMU 腿。
+- 认领：`I-29 qorder107`，状态 ✅：第一百零七轮已 ff 合并为 `b1b96feff`，认领已释放。
