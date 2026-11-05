@@ -5830,3 +5830,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 新测试 `test_first_vm_allocation_never_lands_in_bump_or_root`：真实 `select_multi` + `VmBootAllocator` 取尽可分配页，断言全部避开 bump 与根页，钉住 703 页。`minix-kernel --features mock` 862 通过 / 0 失败 / 8 忽略。
 - 仍剩：`SourceRecord` 跨第一跳载体（布局裁决：arena 余量 2,368 B 可放 40 条 DTB 记录／256 条 UEFI 记录需独立载荷）；aarch64 UEFI 配置表 DTB 接入；自引导 arena 取证；QEMU 腿。
 - 认领：`I-29 qorder104`（基线 `9098d57d6`），状态 ✅：第一百零四轮已 ff 合并为 `5d76100d6`，认领已释放。下一步只剩第一跳来源载荷的布局裁决（arena 余量 2,368 B 可放 40 条 DTB 记录；256 条 UEFI 记录需独立载荷）。
+
+### 第三百一十二笔（01 阶段 · I-29 第一百零五轮：旧读数刷新）
+
+- 三处旧读数按当前实现改正：§2.5 的 aarch64 UEFI 行（磁盘 `dumpdtb.dtb` 是诊断路径、配置表 DTB 只登记地址）；§2.8 的候选排除清单（`vm_boot_exclusions` 含根页与 bump）；O-13 的 `VM_BOOT_HANDOFF_MAX_DEDUCTED = 32`（现为 47 / 版本 8 / 布局钉桩）。
+- §7 第 4 项补第三枚结果断言事实：`test_first_vm_allocation_never_lands_in_bump_or_root` 走生产 `select_multi` + `VmBootAllocator`，703 页全部避开 bump 与根页。
+- `VmBootHandoff` 页由 `alloc_page()` 在分类点前分配、落在池区间已用后缀内，不单独 `push`，47 上界不变。
+- 门：973 行 / 83,061 字符、围栏 22 偶、表格 39 块列数不一致 0、破表 0、lint error 0、零丢失 lost 0；无代码改动。
+- 认领：`I-29 qorder105`（基线 `a764b98aa`），状态 🔄。

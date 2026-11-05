@@ -12,6 +12,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百零五轮（把旧读数刷成当前实现）**
+
+- 评审人指出本轮标题与正文仍互相矛盾，核对后三处都成立：§2.5 的 aarch64 UEFI 行仍写 `collect()`（实际磁盘 `dumpdtb.dtb` 两处是诊断路径，配置表 DTB 只登记地址）；§2.8 的时间线与 bump 表仍写「排除只有内核 + 模块」；O-13 开头仍写 `VM_BOOT_HANDOFF_MAX_DEDUCTED = 32`。三处都改成当前实现。
+- §2.8 现在写明：`vm_boot_exclusions`（容量 `NR_BOOT_MODULES + 3`）已含根页与 bump，这三类不再进入候选；候选仍来自未裁剪的 memmap，**其余**仍存活对象（自引导腿的 arena）须逐项核对；并注明「候选含 bump」是第一百零一轮之前的读数。
+- §7 第 4 项补上第三枚结果断言的事实：`test_first_vm_allocation_never_lands_in_bump_or_root` 走生产的 `select_multi` + `VmBootAllocator`，取尽 703 页全部避开 bump 与根页。
+- O-13 的容量与版本改为 47 / 8，并注明尺寸、对齐与九个字段偏移已有钉桩测试。
+- **`VmBootHandoff` 页的扣减归属**：它由 `VmBootAllocator::alloc_page()` 在分类点之前分配，落在某个池区间的已用后缀里，因此**不再单独 `push`**，47 的上界不变。
+- 读数：正文 973 行 / 83,061 字符；围栏 22（偶）、表格 39 块列数不一致 0、破表 0、lint error 0、零丢失 lost 0。无代码改动，沿用 862 / 0 / 8。
+
+
 **第一百零四轮（文档与代码对齐；补首次分配结果断言）**
 
 - **修掉一处自造矛盾**：六层与三层状态表里「只有 riscv bootface 生成记录、其余走 `collect()`」已经过时——第一百零三轮之后，riscv bootface、aarch64 直启、riscv U-Boot 三条都走 `collect_with_sources()` 并做覆盖审计。两张表统一为「三条已接入；aarch64 UEFI 配置表 DTB 未接入；`KernelInfo` 无承载字段」。
