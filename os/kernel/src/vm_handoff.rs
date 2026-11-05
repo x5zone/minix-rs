@@ -119,7 +119,7 @@ pub(crate) const PAGE_SIZE: u64 = 0x1000;
 /// Written exactly once, at the classification point (single-threaded
 /// boot, no scheduler yet); read-only afterwards. `SyncUnsafeCell`
 /// soundness follows the same write-once-then-read contract as
-/// `globals::FREE_MEMMAP` (`HandoffMemRegion` is in the approved
+/// `globals::KERNEL_INFO` (`HandoffMemRegion` is in the approved
 /// write-once list).
 static VM_PMM_FREE: SyncUnsafeCell<[HandoffMemRegion; VM_BOOT_HANDOFF_MAX_REGIONS]> =
     SyncUnsafeCell::new([HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_REGIONS]);

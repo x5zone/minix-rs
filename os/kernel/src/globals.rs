@@ -275,17 +275,6 @@ mod bkl_protected_tests {
 /// Set to true at kmain start, cleared in bsp_finish_booting().
 pub(crate) static KERNEL_MAY_ALLOC: AtomicBool = AtomicBool::new(false);
 
-/// Free physical memory map — populated by add_memmap during boot.
-/// C: kinfo.memmap[MAXMEMMAP] — param.h:18
-///
-/// SAFETY: Only written during boot (single-threaded, before BKL needed).
-/// After boot, this is read-only. BKL protects any post-boot access.
-// The mock form has no consumer: every reader (kmain Phase A.2, the module
-// reclaim path and the qemu_test boot variant) is gated `not(feature = "mock")`.
-#[allow(dead_code)]
-pub(crate) static FREE_MEMMAP: SyncUnsafeCell<[crate::memmap::MemMapEntry; crate::memmap::MAXMEMMAP]> =
-    SyncUnsafeCell::new([crate::memmap::MEM_MAP_ENTRY_ZERO; crate::memmap::MAXMEMMAP]);
-
 /// Global KernelInfo — stored once during kmain, read-only thereafter.
 ///
 /// C: `kinfo` global in glo.h — populated by memcpy from boot params in main.c.

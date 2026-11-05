@@ -30,7 +30,6 @@ pub struct MemMapEntry {
 }
 
 /// Const zero entry for static initialization.
-pub const MEM_MAP_ENTRY_ZERO: MemMapEntry = MemMapEntry { base: 0, length: 0 };
 
 
 impl MemMapEntry {
@@ -70,8 +69,8 @@ pub enum MemMapError {
 ///
 /// **Resolution (design no-op)**: both C consumers are absorbed by
 /// replacement designs in Rust —
-/// - `mmap_size` (count of used slots): `FREE_MEMMAP` scans empty slots
-///   implicitly (`memmap.rs` scan loop), so a separate counter would be a
+/// - `mmap_size` (count of used slots): the table's own empty-slot scan
+///   (`memmap.rs` loop) recovers it, so a separate counter would be a
 ///   second source of truth;
 /// - `mem_high_phys`: the frame allocator (`frame.rs`) iterates regions
 ///   directly instead of a high-water scan, and the VM consumer asserts

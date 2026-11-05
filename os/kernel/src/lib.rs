@@ -160,11 +160,6 @@ use globals::{
     PRIV_TABLE, PROC_TABLE, SMP_STATE, VM_RUNNING, SyncUnsafeCell,
     ROOT_PHYS_UNSET,
 };
-// FREE_MEMMAP's direct accessors live only in non-mock boot paths
-// (kmain reclaim + the qemu_test boot variant); gate the import to match
-// its consumers (A2).
-#[cfg(not(feature = "mock"))]
-use globals::FREE_MEMMAP;
 
 
 /// Test-only serialization for tests that touch process-global boot state.
@@ -1211,34 +1206,6 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
     }
 }
 
-/// FDT blob length from its 8-byte header (`magic` + big-endian `totalsize`).
-///
-/// The boot surfaces hand the DTB's physical address over as a platform
-/// descriptor source; Phase A.2 needs the blob length to cut it out of the
-/// free memmap (a DTB sitting in conventional RAM must not be handed to a
-/// page allocator before platform discovery reads it in Phase A.5). Returns
-/// `None` for a missing/bad magic or an implausible size — the platform
-/// parser fails on the same blob later, so skipping the cut cannot mask a
-/// usable table.
-///
-/// Gated to the architectures whose platform parser supports DTB: the read
-/// uses the same identity-PA assumption as `DeviceTreeDesc::parse`.
-#[cfg(all(
-    not(feature = "mock"),
-    any(target_arch = "aarch64", target_arch = "riscv64")
-))]
-fn dtb_blob_len(dtb_pa: u64) -> Option<usize> {
-    // SAFETY: boot is single-threaded; the PA came from the boot surface's
-    // platform source and the identity window maps it at this point (same
-    // assumption as the platform parser below).
-    let head = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, 8) };
-    let magic = u32::from_be_bytes(head[0..4].try_into().ok()?);
-    if magic != 0xd00d_feed {
-        return None;
-    }
-    let total = u32::from_be_bytes(head[4..8].try_into().ok()?) as usize;
-    (total >= 40).then_some(total)
-}
 
 /// Kernel main — called after the higher-half transition.
 ///
@@ -1419,85 +1386,15 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     KERNEL_MAY_ALLOC.store(true, Ordering::Release);
     boot_stage!("kernel: kmain A.1b console+kinfo ok\n");
 
-    // Phase A.2: Initialize FREE_MEMMAP from KernelInfo.memmap + cut boot module regions.
-    // C: pre_init() → get_parameters() → add_memmap()×N → cut_memmap()×mod_count
-    //
-    // The boot-shim reports all DRAM as free (including boot module regions).
-    // The kernel must:
-    //   1. Copy kernel_info.memmap → FREE_MEMMAP (mutable kernel copy)
-    //   2. cut_memmap for each boot module (temporarily reserve their physical
-    //      memory so the allocator doesn't hand those pages out during boot)
-    //
-    // After load_vm_elf copies the ELF segments into the VM process's page
-    // tables (Phase C), the module's physical memory is reclaimed via
-    // add_memmap. See 01-boot-shim-bootstrap.md §2.5 for the full lifecycle.
-    //
-    // SAFETY: Boot is single-threaded; FREE_MEMMAP is only accessed here.
-    unsafe {
-        let mmap = &mut *FREE_MEMMAP.get();
-        // Step 1: Copy kernel_info.memmap into FREE_MEMMAP
-        for (i, region) in kernel_info.memmap().iter().enumerate() {
-            if i >= memmap::MAXMEMMAP {
-                break;
-            }
-            if region.len > 0 {
-                mmap[i] = memmap::MemMapEntry {
-                    base: region.base.0,
-                    length: region.len as u64,
-                };
-            }
-        }
-        boot_stage!("kernel: kmain A.2a memmap copy ok\n");
-        // Step 2: Cut boot module regions (temporarily reserve)
-        // C: pre_init.c:211 — cut_memmap(&kinfo, mod_start, mod_end - mod_start)
-        for module in kernel_info.boot_modules().iter() {
-            let _ = memmap::cut_memmap(
-                mmap,
-                module.start.0,
-                module.len as u64,
-            );
-        }
-        boot_stage!("kernel: kmain A.2b module cuts ok\n");
-        // Step 3: Cut the kernel image itself. C parity: pre_init
-        // appends the kernel as an extra boot module (`kern_mod`) and cuts
-        // it together with the real modules (pre_init.c:196-216). On the
-        // UEFI path this is a no-op — the kernel image is LOADER_DATA and
-        // never appears in the conventional memmap — but on the OpenSBI
-        // path the shim reports whole DRAM as conventional, so without
-        // this cut GET_MEMINFO would advertise the kernel image as free
-        // memory. The result is ignored: a no-op cut returns Err, which is
-        // the UEFI-path expectation.
-        let _ = memmap::cut_memmap(
-            mmap,
-            kernel_info.kern_phys_base().0,
-            kernel_info.kern_size(),
-        );
-        // Step 4: cut the DTB blob itself. The aarch64
-        // direct-core and the OpenSBI-shim surfaces report `/memory` with
-        // `firmware_reserve_end = 0`, so the DTB's own pages arrive as
-        // conventional; platform discovery parses that blob in Phase A.5, so
-        // no allocator may see those pages first. No-op on legs whose memmap
-        // already excludes the DTB (riscv bootface clips it) and on UEFI
-        // (the DTB lives in reserved firmware memory).
-        #[cfg(all(
-            not(feature = "mock"),
-            any(target_arch = "aarch64", target_arch = "riscv64")
-        ))]
-        for source in kernel_info.platform_sources() {
-            if source.kind() == minix_boot::DTB {
-                if let Some(len) = dtb_blob_len(source.phys_addr().0) {
-                    let _ = memmap::cut_memmap(mmap, source.phys_addr().0, len as u64);
-                }
-            }
-        }
-        #[cfg(all(
-            not(feature = "mock"),
-            any(target_arch = "aarch64", target_arch = "riscv64")
-        ))]
-        boot_stage!("kernel: kmain A.2c dtb cut ok\n");
-    }
-
-    boot_stage!("kernel: kmain A/A.2 memmap+modules ok\n");
+    // Phase A.2 is intentionally empty: the kernel keeps no mutable copy of
+    // the boot memmap. C's `kinfo.memmap[]` bookkeeping (pre_init.c add/cut)
+    // is served by construction here — every boot-time allocator excludes
+    // the occupied ranges it must not touch (`vm_boot_exclusions` for the VM
+    // bootstrap pools, `classify` for the handoff free list), and the only
+    // firmware blob read after this point (the DTB, Phase A.5) is consumed
+    // before the first allocator can reach it. Boot module blobs, the kernel
+    // image, the self root page and the boot bump region stay reserved for
+    // the whole run by the A2 deduction record.
     // Phase A.5: Platform discovery — initialize PlatformContext from KernelInfo.
     // This MUST run before init_clock_and_interrupts() because the clock,
     // interrupt controller, and arch_init all read hardware parameters
@@ -1598,69 +1495,12 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // See 08-system-init-boot-finish.md §4.4
 
     boot_stage!("kernel: kmain D memory_init ok\n");
-    // Phase F: add_memmap + bsp_finish_booting
-    // C: add_memmap(&kinfo, kinfo.bootstrap_start, kinfo.bootstrap_len)
-    // D5: 4GB truncation removed for 64-bit.
-    // Reclaim the bootstrap (unpaged kernel) physical memory region.
-    //
-    // In Minix3 C this reclaims the small identity-mapped unpaged section
-    // (start..end linker symbols in kernel.lds). In the Rust port this is
-    // always a no-op because the kernel is higher-half from instruction #1 —
-    // boot-shim passes `bootstrap_start=PhysBytes(0), bootstrap_len=0` and
-    // the guard skips reclaim. See the over-reclaim note in
-    // 01-boot-shim-bootstrap.md
-    // §X for the over-reclaim bug that motivated this.
-    if kernel_info.bootstrap_len() > 0 {
-        // SAFETY: Boot is single-threaded; FREE_MEMMAP is only accessed here
-        // during boot. kernel_may_alloc is true at this point.
-        let add_memmap_result = unsafe {
-            let mmap = &mut *FREE_MEMMAP.get();
-            memmap::add_memmap(
-                mmap,
-                kernel_info.bootstrap_start().0,
-                kernel_info.bootstrap_len(),
-            )
-        };
-        // Pattern §31 (return-value completeness): C add_memmap returns void; errors are
-        // fatal (panic) in C. Rust explicitly handles the Result. Two failure modes:
-        //   - `Err(MemMapError::ZeroLength)`: bootstrap_len is not
-        //     page-aligned and rounds down to zero. The default
-        //     kernel_info contains zero — handled by the outer
-        //     `if bootstrap_len > 0` guard. Reaching here means a
-        //     boot-shim bug; we keep the boot going (log + carry on)
-        //     because losing the bootstrap reclaim is recoverable
-        //     (less free memory, not a crash).
-        //   - `Err(MemMapError::NoSlots)`: MAXMEMMAP entries are all
-        //     in use. Indicates a memory map corruption or a missing
-        //     boot-shim cleanup; surface via kernel log so the issue
-        //     is visible during debugging. The default behaviour
-        //     (carry on) matches the previous `let _ = ...`.
-        match add_memmap_result {
-            Ok(_slot_idx) => {
-                // Slot was claimed; no action needed. We use the
-                // underscore prefix to make the intent explicit:
-                // "we don't need the index, but the success case
-                // is meaningful".
-            }
-            Err(e) => {
-                // Pattern §31 compliant: handle every Result variant.
-                // Use `debug_assert!` in release-mode-noop + log
-                // approach: the boot should succeed even on failure,
-                // but the failure must be observable.
-                #[cfg(debug_assertions)]
-                panic!("add_memmap failed: {:?} — boot-shim has a bug", e);
-                #[cfg(not(debug_assertions))]
-                {
-                    // Release builds: carry on. The kernel still
-                    // boots; the bootstrap memory is simply not
-                    // reclaimed (a small leak of the boot-shim
-                    // region, bounded by `bootstrap_len`).
-                    let _ = e; // explicit discard with intent
-                }
-            }
-        }
-    }
-    // C: bsp_finish_booting() — main.c:38-109
+    // Phase F: bsp_finish_booting.
+    // C reclaims the unpaged-kernel section here (`add_memmap(&kinfo,
+    // bootstrap_start, bootstrap_len)`); the Rust port runs higher-half from
+    // the first instruction, so `KernelInfo::validate` requires
+    // `bootstrap_len == 0` and there is nothing to reclaim.
+
     // D7: bsp_finish_booting() -> ! — never returns.
     // bsp_finish_booting takes &mut ProcessTable + &mut SmpState to
     // perform step 2 (bill_ptr = idle_proc), step 4 (RTS_PROC_STOP unset
@@ -2569,16 +2409,13 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 .unwrap_or_else(|e| {
                     panic!("load_vm_elf: VM ELF is required at boot: {e:?}")
                 });
-                // Reclaim VM module physical memory after
-                // ELF segments have been copied into the VM process's page
-                // tables. C: protect.c:450-451 — mod->mod_start = mod_end = 0.
-                // This undoes the cut_memmap done in Phase A.2, returning the
-                // module's physical pages to FREE_MEMMAP for future allocation.
-                // SAFETY: Boot is single-threaded; FREE_MEMMAP is only accessed here.
-                unsafe {
-                    let mmap = &mut *FREE_MEMMAP.get();
-                    let _ = memmap::add_memmap(mmap, module.start.0, module.len as u64);
-                }
+                // C: protect.c:450-451 clears the module's mod_start/
+                // mod_end to hand its pages back to the boot allocator. The
+                // Rust port keeps every module blob reserved instead: the
+                // A2 deduction record covers it, and the kernel's boot-exec
+                // reads each blob while loading the servers, so reclaiming
+                // it would let the VM bootstrap allocator overwrite a blob
+                // that is still in use (gh53/58).
                 EntrySpec::loaded(vm_result.pc, vm_result.sp, vm_result.ps_strings)
             }
             #[cfg(not(feature = "mock"))]
@@ -2647,16 +2484,9 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     panic!("load_vm_elf: VM ELF is required at boot: {e:?}")
                 });
 
-                // Reclaim VM module physical memory after ELF segments
-                // have been copied into the bootstrap page table.
-                // C: protect.c:450-451 — mod->mod_start = mod_end = 0.
-                // SAFETY: Boot is single-threaded; FREE_MEMMAP is only
-                // accessed here.
-                unsafe {
-                    let mmap = &mut *FREE_MEMMAP.get();
-                    let _ = memmap::add_memmap(mmap, module.start.0, module.len as u64);
-                }
-
+                // C: protect.c:450-451 reclaims the module's pages; this
+                // port keeps the whole blob reserved (see the mock branch
+                // above and the A2 deduction record).
                 // Vacate the boot-identity leftovers under
                 // VM's runtime user VA layout. ELF segment VAs are handled
                 // inside `load_elf_into` (per-page eviction). The remaining
