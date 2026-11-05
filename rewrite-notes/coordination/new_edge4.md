@@ -5725,3 +5725,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 代码读数补进 §2.4：内核→VM 的扣减记录（`fn build_vm_handoff`）五类范围可枚举、`LiveBootstrap ∩ VM-free = ∅` 在消费边界核对、容量溢出当场失败，五枚测试在册；未闭合两项——第一跳 memmap 逐字写着 not filtered（内核映像与模块占用不在第一跳），容量核算未按三架构验证。
 - 门：1687 行（**余 13**）、围栏 48（偶）、表格 57 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失 lost 0；无代码改动，沿用 minix-boot **146** / boot-shim **70**。
 - 认领：`I-29 qorder95`（基线 `e84dfc54f`），状态 ✅：第九十五轮已 ff 合并为 `8696444d6`，认领已释放。送审正文 1687 行 / 136,442 字符（距 1700 门余 13 行），送审继续用三封分段包。
+
+
+### 第三百零三笔（01 阶段 · I-29 第九十六轮：硬件准入模型迁出另立专册，§7 收紧成交付清单）
+
+- 评审人抓到的是结构性矛盾：§1.6 已宣布三份合同分离，§7 却仍把 PMP/PMA、原子用途、页表用途算作本项阻塞。本轮不再辩解，直接执行——O-12i 后半节 672 行逐字迁到新建 `01-design-note-hardware-admission-model.md`（篇头标注非验收条件 + 两条已知未闭合），§7 第二层收到六项交付阻塞。
+- 两条代码读数进 §2（纪律 4 的「已实现/未设计」两栏）：第一次普通 RAM 交付前只排除内核映像与启动模块，`build_vm_handoff` 在其后运行；`SourceRecord` 在 `audit_source_coverage` 后即丢弃、`KernelInfo` 无承载字段。据此命名两个可用集合，并把「审计自洽 ≠ 交棒」写成状态表六层。
+- 更正我方三处过头话：O-13「都未定」否认了已存在的 `#[repr(C)] BootHandoffV1` 与 `VmBootHandoff`（拆 O-13a/O-13b）；`test_boot_image_table_layout` 只钉 boot_image 表算术，不覆盖内存图语义；类型 11/12 的 `Attribute`「已记录为诊断」是代码注释的说法，实现里既不产出区间也不记录属性——注释与实现不一致，登记待修。
+- 冲突与裁决：O-04 与 O-11 对 DTB 落在 `no-map` 能否首读给了相反结论 → 两决定分离（首读授权 vs 解析后拒绝继续）；配置表 DTB 三态规则（存在但未接入/解析失败 → 拒绝启动，不得静默丢弃 `no-map`/MRB）；O-01 第一版采静态处置表 B 但保留 `ReservedReusable` 独立类型；O-06 列名改「物理 backing／来源类别」并把 PAT/MTRR/MAIR/PMA/PMP 移出；UEFI 类型 11 拆成 `DescriptorAddressDomain = PhysicalAddress` + `PolicyDisposition = UnsupportedUefiRuntimeMmio`。
+- 数值证据状态四标签落地：`DtbMemoryMap` 不解析设备 `reg`（只处理 /memory、/reserved-memory、MRB），所以 PLIC 6 MiB 属编译期常量 + 离线 dump，2.25 MiB 保持候选；QEMU 版本四个有记录、accelerator 全无记录、x86_64 腿连 `-machine` 都没有。UEFI 来源记录容量按 `MemoryMapSize / DescriptorSize` 与 `MAX_MAP_DESCRIPTORS = 256` 具体化。
+- 门：简报 1089 行 / 93,922 字符（1686/136,442 → −31%，单文件重新可送审）、专项册 685 行 / 48,806 字符；围栏各自为偶、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
+- 认领：`I-29 qorder96`（基线 `5401f9ad0`），状态 🔄。

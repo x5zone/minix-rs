@@ -12,6 +12,18 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第九十六轮（硬件准入模型逐字迁出；§7 收紧成交付清单；三处过头措辞按代码读数更正）**
+
+- **迁出 672 行不是省版面，是执行射程**。简报 O-12i 的后半节（普通访问准入、页表用途、原子能力、对象访问三层、整页全称判定）逐字迁到新建的 `01-design-note-hardware-admission-model.md`（v1，篇头写明「非 I-29 验收条件」，并如实标注两条未闭合：共享原子合同仍按 LR/SC 分支、跨页源级访问的整体覆盖规则没进逐操作判定式）。公式一条没改，改的只有归属。
+- **§7 重写**：第二层阻塞项从十余条收到**六项**，全部属「资源发现与交接」；硬件准入类条款改列外部依赖。原 §7 一边把「PMP 与平台保护」「原子用途」算作本项阻塞、一边又说它们已移出验收，这个自相矛盾就是评审人本轮抓到的结构性问题。逐字进 `03` 六十六节。
+- **两条新的代码读数成为 §2.8／§2.9**：① 第一次面向一般对象的普通 RAM 交付在 `fn init_proc_and_boot` 的 `VmBootRegion::select_multi` → `VmBootAllocator::new`，**那之前只排除了内核映像与启动模块**；DTB 原始对象、bump 区（含自举页表页）都只由后来的扣减记录补偿，而 `build_vm_handoff` 在这些分配之后才运行——所以扣减记录证明 VM 收到的集合，不证明两跳之间没有错误分配。据此命名 `ConventionalCandidateRanges` 与 `VmFreeRanges`，禁止把候选表称作最终可分配集合。② `collect_with_sources()` 在 `bootface.rs` 里喂给 `audit_source_coverage` 之后 `sources` 再未被使用，函数返回即丢弃；`KernelInfo` 没有承载字段（只有 `platform_sources` 的类别标签＋地址），其余三条 DTB 路径走 `collect()` 根本不生成记录——**审计自洽不等于交棒**。
+- **三处我方写过头的话**：① O-13 那句「字段编码、偏移、容量、版本与失败形状都未定」否认了已存在的基线——`BootHandoffV1` 与 `VmBootHandoff` 都是 `#[repr(C)]` 固定数组＋magic/version，扣减容量 `VM_BOOT_HANDOFF_MAX_DEDUCTED = 32` 有运行期断言；未定的是扩展，故拆 O-13a／O-13b。② `test_boot_image_table_layout` 钉的是 boot_image 表算术（5 任务 + 12 模块），不覆盖内存图语义，此前被我当成交棒测试引用。③ §2.2 说类型 11/12 的 `Attribute` 被记录为诊断，那是**代码注释**的说法，实现里既不产出区间也不记录属性——注释与实现不一致，已登记待修。
+- **合同冲突与新增裁决**：O-04 与 O-11 对「DTB 落在 `no-map` 时能否首读」给了相反结论 → 拆成两个决定（首读是否允许属启动输入授权；解析后发现冲突是否允许继续属支持政策），表二改为「首读允许、冲突即拒绝继续启动」。配置表 DTB 三态规则裁定（不存在→仅按内存图；已解析→双来源交叉验证；存在但未接入或解析失败→拒绝启动，不得静默丢弃 `no-map`／MRB）。O-01 第一版采 B（静态处置表 + 损失声明），但 `ReservedReusable` 必须保持独立类型。O-06 的「普通主存性质」列名改「物理 backing／来源类别」，PAT/MTRR/MAIR/PMA/PMP 移出本项。
+- **UEFI 类型 11 的地址域更正**：`EfiMemoryMappedIO` 的 `PhysicalStart` 就是物理地址域，把它记成 `UnsupportedOrOpaque` 混淆了「地址属于哪个域」与「本项目是否支持消费它」→ 拆成 `DescriptorAddressDomain = PhysicalAddress` + `PolicyDisposition = UnsupportedUefiRuntimeMmio`；类型 12 才需要 Port I/O 域。代码里原本没有地址域类型，这是文档侧的错。
+- **数值证据状态**：加四标签（`ObservedInputResource`／`ProfileExpectedResource`／`StaticPolicyRange`／`ExpectedMappingCoverage`）。按读数，`DtbMemoryMap` 不解析设备 `reg`，所以 PLIC 的 6 MiB 只是编译期常量加一份离线 dump，2.25 MiB 仍是候选值；QEMU 侧 machine/smp 有记录、accelerator 未记录、x86_64 腿连 `-machine` 都没有。UEFI 记录容量要求具体化：来源记录数组须 ≥ `MemoryMapSize / DescriptorSize` 的最大可能值，不足要在最终取图前发现，重试增多只能安全失败不得截断。
+- **读数**：简报 1686 → **1089 行**、136,442 → **93,922 字符**（−31%），单文件重新可送审；专项册 685 行 / 48,806 字符。门：围栏各自为偶、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0。无代码改动，沿用 minix-boot **146** / boot-shim **70**。
+
+
 **第九十五轮（射程重划：交棒信息与分页策略分成两个合同；评审人自我撤销的阻断项按撤销处理）**
 
 - **触发点是用户的质疑而不是新公式**：「扫描内存图然后交棒给 OS，大页小页是启动期与运行期的内存管理，怎么会涉及大页？」评审人本轮明确撤销上一轮把 `split_huge`、页大小冻结、A/D 更新、PMP/PMA 页表访问证明、LR/SC／AMO／预约集列为交棒阻断项的判断，并给出判据：**OS 决定完全不开大页，也不应要求 bootloader 换一种内存图交接方式**。

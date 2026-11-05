@@ -1901,3 +1901,49 @@ ArchitectureAdmissionRejected {
 **无论 A/B，后续页表修改必须「先审后用」**：在未激活的副本上修改并审计后再发布，或经受控更新接口在映射对硬件可见之前完成验证；A/D 位的屏蔽必须逐字段定义，不能笼统忽略一组 PTE 位。
 **政策审计与硬件同步是两份独立合同**：审计通过不等于新映射已在所有执行单元生效。架构层必须负责 PTE 写入的发布顺序、相应地址空间的 TLB 失效、以及多核之间的同步失效（shootdown）；共享层只表达「新映射必须在所有相关执行单元生效」这个语义，不出现 `INVLPG`/`SFENCE.VMA`/`TLBI` 之类机制。
 
+
+
+## 六十六、第九十六轮：被 §2 现状读数与 §7 收紧替换下来的原文
+
+> 被替换的 §7 把硬件准入类条款仍列为本项阻塞项，与 §1.6 的射程声明互相矛盾；O-13 那句「都未定」把已存在的
+> v1 基线一并否认了。下列段落逐字保留。
+
+<!-- 自正文 O-06 表格原来的「普通主存性质」列名 移入 -->
+
+| 类型 | 属 `RamSourceDomain` | 普通主存性质 | 当前可映射 | 当前可分配 | 释放事件 | 来源叠加 |
+
+<!-- 自正文 O-13 原来那句「字段编码、偏移、容量、版本与失败形状都未定」 移入 -->
+
+字段编码、偏移、容量、版本与失败形状都未定；现在只有两张区间表的布局。
+
+<!-- 自正文 第九十六轮重写前的整个 §7 移入 -->
+
+## 7. 签字状态
+
+| 层 | 结论 | 依据 |
+|---|---|---|
+| 第一层：语义与方向 | **可签** | 五条不变量；§4 的准入合同方向明确；§1.6 的三合同划界评审人已认可 |
+| 第二层：集合与逐路径判据 | **按收窄后的射程不签** | 交棒侧未闭合项见下；公式级冲突已修（`GeneralData` 空集合分支、`InstanceSetComplete` 接入、`Complete` 类型级非空） |
+| 第三层：固定布局 ABI | **不签** | 基线 v1 已存在，新增来源记录与对象信息的扩展未定（O-13a／O-13b） |
+
+**先说清这一层现在管什么**：第二层的验收对象是「完整、准确、无歧义地把物理资源与平台资源信息交给 OS」。**不计入本项验收**的四类条件（内容仍留在正文作上下文，归属 BootEntry 与分页侧专项）：叶子粒度与拆分／降级路径、PTE 的 A/D 更新方案、页表访问的 PMP/PMA 证明、LR/SC／AMO／预约集等原子能力，以及 `FrozenBootMappingSet` 的页大小冻结与临时映射的结构影响范围。评审人本轮已自行撤销把这些列为交棒阻断项的判断，本项按撤销处理，不再逐项反驳。
+
+**未闭合项**——共同形状是「文本已定、证据或实现为零」，外加一条**现状与合同相反**的项：
+
+- **现状冲突（不是缺口，裁决已下）**：低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策，普通叶子带 `EXECUTABLE`，且没有撤销路径（§2.3 已把措辞收紧为「无条件尝试建立且失败被吞」，并声明没有实际 PTE 遍历证据）。**x86-64 的 Step 4 还会整槽替换并降级既存恒等叶子、在既存 PML4[0] 上置 USER 位**（§2.3 已按代码读数改写），所以「恒等段一次建好就不再变」在三架构上都说不通。O-02a 裁定甲案、否决乙案，也否决「必需叶子走授权、普通 RAM 继续走旧宽映射」的半拉子形态。**本项状态**：四段依赖链的前三段（来源进入政策、引导根负向投影、必需对象正向授权）是 I-29 的交付，均**尚无代码**——最硬的缺口是除 riscv bootface 外三条入口仍丢弃来源记录、UEFI 侧 `SourceRecord` 未产出。**第四段（建表侧消费与验收）属分页专项**，其完成度不计入本项交付，否则会误判 I-29 未交付。
+
+- **准入上下文闭合（P0 阻塞）**：`ParticipatingCpuSet = Resolve(id, inventory_snapshot)` 的身份解析、`legal_starts_contract` 进 `AdmissionContextId`、`ProfileContextState` 四态、`SystemPteUpdateSchemeUniform` 在非 RISC-V 的 `NotApplicable` 分支——全部无实现。
+- **取指与对象访问资格（P0 阻塞）**：页级保守片段集与对象级多片段证明均无实现；`InstanceSetComplete` 已接进 `ObjectAccessEligibility`（此前它定义了却没有消费者，而判定式只要求实例集合非空——非空不等于完整），`ObjectAccessInventoryState` 的 `Complete(uses, scope)` 也要与 `ObjectAccessUses(object)` 对同一份清单；实例展开、`reservation_set_evidence` 采集路径、`NoAccess` 的机器可检查证明形式未定；DMA/IOMMU、设备、固件等访问主体尚无合同（第一版一律 `UnsupportedAccessActor`）；x86 变长指令跨页仅按架构事实使用，本方未取 Intel SDM 原文。
+- **整页合格判定**：`GeneralData` 的用途特有集合按定义为空，已改走 `GenericRolePageEligible` 的空分支（判定核第一条 `requirements ≠ ∅` 保留，专门用来挡其它用途的漏登记）；全称判定已收成唯一的 `AccessRequirementsEligible` 判定核（基底、通用用途、页表用途三处共用），起始地址量词的改写完成，但**无实现、无负控**。三个完整性门槛分属三条路径，不得混用也不得互相替代：`RoleRequirementsComplete` / `RoleRequirementsApplicable` 只管通用角色；`PageTableRequirementsComplete` 只管页表分支（因此页表**不**经过通用生成器检查）；`GeneralDataCompleteness` 管基底需求清单。`Fetch` 页尾排除无实现。
+- **原子用途**：共享结构已删去 `reservation_set_requirement`，`ReservationSetRequirement`／`ReservationSetGeometryCore`／`reservation_set_evidence` 归 RISC-V adapter，共享层只经 `AtomicCapabilityPermits` 提问；`ExpandAtomic(RegisteredAtomicAlgorithms)` 的完整对应仍靠实现证明；`RsrvEventual` 与预约集几何的证据未落；`ReservationSetFor(a, algorithm)` 的 adapter 语义未定；`AtomicFallbackPlan` 与几何核心为实现预留。
+- **页表用途**：`RolePageEligible(page, PageTable, ctx) = PageTableBackingEligible(page, ctx)` 的等价关系目前是人工核对；「页表只用普通幂等主存」是项目政策；三个审计共用的统一页表叶子观测记录字段未定义。
+- **PMP 与平台保护**：无 provider、无变更前协调协议、无 `evidence_generation` 递增路径；`Absent` 的平台支持限制、`mseccfg` 证据来源、`PhysicalProtectionInventory.completeness` 均未落。
+- **hart 清单与 A/D 方案**：`SystemHartSet` 的语义**已选定**为「平台上所有物理存在的 hart」，`fail` 条目按三分表处理（证明物理不存在才排除；证明物理存在即纳入；只能证明不可运行 → `InsufficientEvidence` 拒绝启动）。**未闭合的是平台事实而非模型**：各平台的完整 hart 清单与其物理存在性证据（`HartInventoryEvidence.completeness_claim`）与逐 hart 的 A/D 方案证明。
+- **UEFI 输入与快照**：`PreflightMap` / `FinalMap` 合同无实现与负控；固件镜像身份与属性位编码 profile 未钉；`RESERVED`/`UNUSABLE` 的原始描述符记录未产出；`EfiReserved`、§4.6.1.3 与 AArch64 分组规则均为评审人核对，本方未独立取到原文。
+- **设备窗口**：模型可签、数值未签——APIC 核对改为逐逻辑处理器，QEMU 构建版本与 machine version 未记录；今天没有页表遍历，覆盖列只能是预期值。PLIC 已按本轮裁决改为**整段 6 MiB aperture 授权、4 MiB 只作预期覆盖**，否决由 2 MiB 叶子反推授权；授权数值本身仍待 profile 独立证明，证明不成立即拒绝该 profile。
+- **冻结时序（移出本项验收，改列 BootEntry／分页侧专项待办）**：今天活动根上至少有四类修改发生在激活之后（Step 4 追加、`fn harden_kernel_text`、heap 窗口驱逐、ELF 加载窗口），唯一像审计的检查也落在激活之后；检查点已拆成 T0／T1／T2，职责与归属见 O-05。留给该专项的三个未答问题：T0 在根未激活时如何遍历实际 PTE（拿不到就只能审计构造计划，证明强度必须如实降低）、临时映射的结构影响范围是否触及冻结字段、`split_huge` 拆分出的中间表页由谁记账。
+- **交棒完整性（本项主责，部分已实现）**：内核 → VM 这一跳的五类扣减范围已有实现与测试（§2.4）；**未闭合在另外三处**——其一，UEFI 腿的 `SourceRecord` 仍未产出、除 riscv bootface 外三条入口丢弃来源记录（O-12g，本项最硬缺口）；其二，交接给内核的 memmap 文档逐字写着 **not filtered**，内核映像与启动模块占用在**第一跳**并不反映，只由第二跳的扣减记录补偿，两跳之间谁是权威需明确裁决；其三，O-13 固定布局 ABI 未开始，扣减记录容量 `VM_BOOT_HANDOFF_MAX_DEDUCTED` 的核算与溢出形状尚未按三架构分别验证。
+
+**两个阻塞组（已按射程剔除归属专项的条目）**：输入真实性、来源保真与生命周期（O-11、O-12h、O-12k、O-12j、DTB 节点准入、O-01、O-06、O-12f、O-12g）；投影、禁止集合与交棒清单（O-12d、O-12a/b、O-02a/b、O-03、O-04、O-07、O-12e、O-13）。**移给专项**：O-12i 的硬件准入与原子能力部分、O-12c 的映射覆盖观测、O-05 的冻结字段与时序。
+
+「禁止集合编译 + 引导根审计」有代码也只能作为第一轮实现复审的起点，不是第二层签字的条件——输入边界、来源完整性、PMM 资格与设备映射覆盖都是它的前置证明。在那之前，对 §5 的评审只需回答两个问题：问题是否成立、候选是否覆盖失败形态。
