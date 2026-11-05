@@ -5829,4 +5829,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 补交接对象物理归属：`VmBootHandoff` 页来自 `VmBootAllocator::alloc_page()` 并作为扣减项进 `deducted`；UEFI arena 为 `LOADER_DATA` + 越界断言；自引导三腿 arena 来源与最后使用点待取证（三种可能之一）。
 - 新测试 `test_first_vm_allocation_never_lands_in_bump_or_root`：真实 `select_multi` + `VmBootAllocator` 取尽可分配页，断言全部避开 bump 与根页，钉住 703 页。`minix-kernel --features mock` 862 通过 / 0 失败 / 8 忽略。
 - 仍剩：`SourceRecord` 跨第一跳载体（布局裁决：arena 余量 2,368 B 可放 40 条 DTB 记录／256 条 UEFI 记录需独立载荷）；aarch64 UEFI 配置表 DTB 接入；自引导 arena 取证；QEMU 腿。
-- 认领：`I-29 qorder104`（基线 `9098d57d6`），状态 🔄。
+- 认领：`I-29 qorder104`（基线 `9098d57d6`），状态 ✅：第一百零四轮已 ff 合并为 `5d76100d6`，认领已释放。下一步只剩第一跳来源载荷的布局裁决（arena 余量 2,368 B 可放 40 条 DTB 记录；256 条 UEFI 记录需独立载荷）。
