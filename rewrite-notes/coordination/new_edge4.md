@@ -5837,4 +5837,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - §7 第 4 项补第三枚结果断言事实：`test_first_vm_allocation_never_lands_in_bump_or_root` 走生产 `select_multi` + `VmBootAllocator`，703 页全部避开 bump 与根页。
 - `VmBootHandoff` 页由 `alloc_page()` 在分类点前分配、落在池区间已用后缀内，不单独 `push`，47 上界不变。
 - 门：973 行 / 83,061 字符、围栏 22 偶、表格 39 块列数不一致 0、破表 0、lint error 0、零丢失 lost 0；无代码改动。
-- 认领：`I-29 qorder105`（基线 `a764b98aa`），状态 🔄。
+- 认领：`I-29 qorder105`（基线 `a764b98aa`），状态 ✅：第一百零五轮已 ff 合并为 `7e37ef58c`，认领已释放。
