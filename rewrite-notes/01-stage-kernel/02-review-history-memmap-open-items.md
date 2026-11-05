@@ -12,6 +12,19 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第七十三轮评审之后：页表准入三分、PMP+PMA 合成、Profile 义务三分）**
+
+- **本轮评审首次对上了现行文本**：它逐条确认了七项已闭合（A/D 分支、两个 hart 集合、既存对象入场、`AlgorithmFallback` 不放宽 `RsrvEventual`、既有页表入口、一致性与排序分开、不变量 3），并指出三处仍不闭合。这是自第六十五轮以来第一份基于当下文本的评审。
+- **P0 页表准入自相矛盾（成立，已改）**：上一版 `page ∈ PmmBaseAvailable(ctx) ∧ RoleAdmit(...)` 里，`PmmBaseAvailable` 扣除了 `Outward(LiveObjectRanges(ctx))`，而既有引导页表正是存活对象——**越是被使用的页表页越通不过**。拆成 `PageTableBackingEligible`（硬件能力）/ `PageTableAllocationEligible`（= 基底 ∩ backing）/ `ExistingPageTableObjectEligible`（身份 + backing + 路径审计）。PMM 与对象审计共用同一份 backing 能力，不再共用一个带「可分配」语义的谓词。
+- **P0 PMP+PMA 合成（成立，已改）**：上一版公式只用 `PmpPermits` 推 `AdmittedRanges`，PMA 只停在文字里。新增 `PmaPermits` 与 `PhysicalAccessPermits = PmpPermits ∧ PmaPermits`，并区分 `AllowedOperationStarts`（起始地址）与 `AllowedAccessFootprints`（整次访问范围），页合格改用 `PagesFullyInside(footprints)`——字节并集覆盖不算合格，跨 PMP/PMA 边界整次操作仍会失败。
+- **P1 PMP 无条目分支 + 有效特权级（成立，已改）**：补 `PmpImplementationState = Absent | Implemented{…}`；`Absent` 时 PMP 不施加额外限制；第一版若只支持带 PMP 平台，须在平台准入阶段显式拒绝而不是把「条目必须存在」当普遍语义。`AccessRequirement.privilege` 明确为**有效访问特权级**（隐式页表访问按 S-mode 计）。
+- **P1 普通数据宽度（成立，已改）**：`GeneralData` 的宽度集合由 ISA + 编译目标 + 实际代码确定（字节/半字/字/双字），不再是「自然宽度」。
+- **P1 Profile 三分（成立，已改）**：按来源分 Mandatory / Optional-Development / 项目自身三类；`Ziccif` 的取指拆成 `InstructionFetchSupported`（用途准入）与 `InstructionFetchAtomicity`（Profile 义务）；澄清 `Ziccamoc` 属 RVA23U64 的 Development Options、`Ssccptr` 属 RVA23S64 强制，**U64 与 S64 义务不能混写**；项目决定改为「不声明 RVA20/RVA22/RVA23 等任何 RVA Profile」。
+- **P1 hart 清单完整性（成立，已改）**：新增 `HartInventoryEvidence {source, source_version, hart_ids, completeness_claim, disabled_hart_policy, nonexistent_hart_policy}`；按 DTSpec 逐字语义处理 CPU 节点状态——`disabled` 处于 quiescent 且可由 `enable-method` 重新启用，不能简单排除；`fail` 按不存在处理但保留依据；`completeness_claim` 要说明证明的是「平台完整清单」还是「当前可启动清单」。
+- **P1 文档一致性（成立，已改）**：`range_start/range_end`/`range_*` 旧字段描述统一为 `range.start`/`range.end_exclusive`；§7 逐项表按评审建议改成「分支合同已闭合 / 清单完整性缺证据 / PMP-PMA 合成未闭合」等状态，不再把页表准入写成「合同已定」。
+- 门：无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1421 行。
+
+
 **本轮（材料清理：撤回「评审按旧文本」的判定，改指材料本身）**
 
 - **更正我此前四轮的诊断**：我一直说「评审按旧材料」，但用户确认送审的就是这套文档。逐字检索给出了真正的原因——**主文档里没有那条公式，而我把撤销掉的布尔式逐字留在了 `02`/`03` 里**（`02` 的撤销记录与第六十四轮块、`03` 的对照行）。送审材料包含这两份时，评审人看到的就是「现行公式」。**这是我的材料缺陷，不是评审人或用户的问题。**

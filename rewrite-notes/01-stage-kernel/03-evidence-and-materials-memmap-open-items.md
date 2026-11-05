@@ -1063,3 +1063,14 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 主简报 | 1363 行（上限 1700）；围栏 36（偶）；表格列数不一致 0 处；lint error 0 |
 | 证据边界 | 本轮仍无 UEFI 原文（uefi.org 403），也无 M-mode 提供 hart/PMP/A-D 证据的实现；两条 QEMU 腿不覆盖 U-Boot shim 入口 |
 
+
+## 四十四、第七十三轮：三处准入谓词收敛
+
+| 项 | 读数 |
+|---|---|
+| DTSpec CPU 状态原文 | `curl` 取 `devicetree-org/devicetree-specification@8314f1e1…` 的 `source/chapter3-devicenodes.rst`，`sed -n '636,670p'` 读出：`"okay"` = The CPU is running；`"disabled"` = The CPU is in a quiescent state（quiescent CPU 可由 `enable-method` 重新启用，「This property is required for CPUs with a status property with a value of `disabled`」）；`"fail"` = The CPU is not operational or does not exist，且「A CPU with `fail` status does not affect the system in any way」 |
+| 主文档更动 | ① 页表准入三分（`PageTableBackingEligible`/`PageTableAllocationEligible`/`ExistingPageTableObjectEligible`），旧 `PageTableRoleAdmission` 计数归零；② 公式加入 `PmaPermits`/`PhysicalAccessPermits`/`AllowedOperationStarts`/`AllowedAccessFootprints`/`PagesFullyInside`，`AdmittedRanges`/`RoleEligibleBytes` 归零；③ `PmpImplementationState` 与有效特权级；④ Profile 义务三分与取指拆分；⑤ `HartInventoryEvidence`；⑥ 旧字段名与 §7 状态表更新 |
+| 符号核查 | `PageTableRoleAdmission` = 0、`AdmittedByteRanges` = 0、`RoleEligibleBytes` = 0、`range_start/range_end` = 0；`PageTableBackingEligible` = 4、`PhysicalAccessPermits` = 2、`PagesFullyInside` = 2 |
+| 主简报 | 1421 行（上限 1700）；围栏 38（偶）；表格列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 读数 |
+

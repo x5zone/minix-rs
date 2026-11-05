@@ -5506,4 +5506,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 更正诊断：主文档无 `EffectiveSvade`；该布尔式逐字留在 `02`/`03` 档案（撤销记录与第六十四轮块），送审时被读成现行规则。是我方材料缺陷，不是评审或用户的问题。
 - 处置：主文档横幅加**本版时间** + 「唯一现行规则来源」声明；`02`/`03` 标题加历史档案声明；三处逐字旧公式删除并原位注明。
 - 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint/表格/行数三门。
-- 认领：`I-29 qorder73`（工作树 `.wt/i-29-qorder73`，基线 `73b281608`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder73`（工作树 `.wt/i-29-qorder73`，基线 `73b281608`），状态 ✅：已 ff 合并为 `f866b92c3`，认领已释放，`sweep` 读数在册 0。
+
+### 第二百八十一笔（01 阶段 · I-29 第七十三轮：三处准入谓词收敛）
+
+- 评审首次对上现行文本，确认七项闭合；本轮修三处：页表准入三分（backing/分配/既有对象）、PMP+PMA 合成（`PhysicalAccessPermits` + `PagesFullyInside`）、`PmpImplementationState` 与有效特权级。
+- 另：`GeneralData` 宽度按实际代码；Profile 义务按来源三分（`Ziccamoc` 属 Development Options、`Ssccptr` 属 RVA23S64）；`HartInventoryEvidence`；DTSpec CPU 状态语义；旧字段名与 §7 状态表清理。
+- 门：无代码改动；minix-boot **146**、boot-shim **70**；lint/表格/行数三门；主简报 1421 行。
+- 认领：`I-29 qorder74`（工作树 `.wt/i-29-qorder74`，基线 `f866b92c3`），状态 🔄，合并后释放。
