@@ -12,6 +12,20 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第七十九轮评审之后：上下文闭合、对象清单状态、原子两层拆分、映射意图）**
+
+- **P0 上下文未闭合（成立，已改）**：`MemoryAdmissionContext` 缺三个字段/规则——补 `legal_starts_contract`（Page|Object，进 `AdmissionContextId`，切换必须重建全部投影）、`ParticipatingCpuSet = Resolve(id, inventory_snapshot)`（不可变、成员绑定 `evidence_generation`，共享公式不再用 `ctx.H`）、`SystemHartInventoryId` 归入 `adapter_evidence`。
+- **P0 Profile 三态被压成布尔（成立，已改）**：新增 `ProfileAdmissionState = NotDeclared | DeclaredAndSatisfied | DeclaredButFailed | InsufficientEvidence`；第一版 `NotDeclared` 时 `ProfileAdmissionValid` 不得返回「通过」，`ProfileMemoryEligiblePages` 取**中性语义**而不是空集（否则基底被交成空集）；声明后证据不足 ≠ NotDeclared；`SystemPteUpdateSchemeUniform` 非 RISC-V 须有类型的 `NotApplicable`。
+- **P0 对象记录字段未定义 + 清单空集（成立，已改）**：补 `access_use_id` / `object_id`，`AccessAuthorizationCovers` 改用 `object_id` 与 `expected_translation`（不再引用未定义的 `use.object` / `use.access_range`）；新增 `ObjectAccessInventoryState = Complete | NoAccess(proof) | Incomplete`，`Incomplete` 必须失败；`RequiredCpuScope = ParticipatingCpuSet(nonempty) | NotApplicable(reason)`，后者不跳过其他合同。
+- **P0 原子两层混用（成立，已改）**：`AtomicAlgorithmRequirement` 拆成 `AtomicPageRoleRequirement`（页级能力，不含地址）与 `AtomicAccessInstance`（对象级实际访问）；`AtomicRoleEligible` 改为页级、用 `LegalStarts` 全称判定，不再携带 `algorithm.accesses[].physical_range`；对象级实例在 `ObjectAccessEligibility` 里判。
+- **P0 `DenyMapping` 语义含糊（成立，已改）**：新增 `MappingIntent = StandardSystemMapping | DriverControlledMapping(device_id, access_use_id) | OtherExplicitMapping`；`MappingAudit` 按意图判定，`DenyUncontrolledSpeculativeAccess` 独立审计，`EfiReservedMemoryType` 的 `DenyOsUse` 第一版绝对禁止、不走驱动分支。
+- **O-05 把 A/D 写成「硬件维护位」（成立，已改）**：改为「架构 adapter 列出的受控元数据字段」，并给 `MutableMappingMetadata { field, update_agent, permitted_transition, synchronization_contract }`——RISC-V 的 A/D 随 `PteUpdateScheme` 取 `Hardware` 或 `FaultHandler`。
+- **排除归因缺 Profile 项（成立，已改）**：`ArchitectureAdmissionRejected` 增加 `profile_memory_obligation_evidence`。
+- **额外保护清单缺作用域（成立，已改）**：`PhysicalProtectionInventory` 增加 `scope`（适用 CPU 集合、物理范围、访问类别与权限、生效配置版本、稳定性承诺）。
+- 为守 1700 行：本轮在 O-12i 内合并了 15 处相邻段落的空行（不改文字），并在原位置重写受影响块；主简报 1698 行。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1698 行、围栏 50（偶）、表格 61 块列数不一致 0 处、lint error 0。
+
+
 **本轮（第七十八轮评审之后：谓词接入最终公式、对象访问闭合、共享层类型落实）**
 
 - **P0 原子与 Profile 只定义未消费（成立，已改）**：`AtomicRoleEligible`、`ProfileAdmissionValid`、`ProfileMemoryEligiblePages` 三个谓词此前都没有调用点；补派发式时自查发现 `RegisteredAtomicAlgorithms(ctx)` 为空会让新派发式同样真空通过，已一并加 `≠ ∅` 前置。本轮补 `RoleAdmit(AtomicSharedState, page, ctx) = ∀ algorithm ∈ RegisteredAtomicAlgorithms(ctx) : AtomicRoleEligible(...)` 派发式；`AdmissionContextValid(ctx) = ProfileAdmissionValid ∧ SystemPteUpdateSchemeUniform` 进 `BasePageEligible`，`ProfileMemoryEligiblePages` 进 `PmmBaseAvailable`。`ReservationSetGeometryPermits` 的签名不一致也一并修正为**逐 CPU、逐实际访问范围**。

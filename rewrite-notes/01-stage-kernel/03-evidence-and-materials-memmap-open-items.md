@@ -1140,3 +1140,16 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 待核清单 | AArch64/x86 adapter 的语义→机制展开表未写；`PmpEvidence` 不可变承诺协议、`ReservationSetGeometryPermits` 的 profile 来源、`NotApplicable` 分支均无实现；x86 变长指令跨页仍按架构事实；UEFI 属性位与 Table 2.5/2.6 仍只有第三方核对 |
 | 主简报 | 1697 行（上限 1700）；围栏 50（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
+
+## 五十、第七十九轮：上下文闭合、对象清单状态与映射意图
+
+| 项 | 读数 |
+|---|---|
+| 本轮是否新增规范取证 | 无新增抓取；复用已取锚点（`supervisor.adoc` 的 `norm:lr_sc_rsrv_set_page`、`norm:pte_ad_scheme_uniform`；`cmo.adoc` 的 `norm:cbm_access`/`norm:cbz_access`/`norm:cbp_access`/`norm:pmp_same`/`norm:pma_same`；`machine.adoc` 的 PMP/Smepmp 与 PMA 章节）。本轮改动全部由简报内部一致性推出 |
+| 评审人本轮独立核对（第三方） | DTSpec：MRB 的「启动程序明确用途」前提、`no-map` 的「禁止标准系统映射 + 限制非受控推测访问」与 `reusable` 互斥、静态保留的 UEFI 类型对应、MRB 的 `should`；UEFI：标准 DTB 位于 `EfiACPIReclaimMemory` 且固件不得修改（应用可改）、首次 `ExitBootServices` 失败后可再次取图但仅限 Memory Allocation Services。本方环境对 uefi.org 仍 403 |
+| 主文档更动 | ① `ctx` 补 `legal_starts_contract` 与 `ParticipatingCpuSet = Resolve(...)`；② `ProfileAdmissionState` 四态与中性语义；③ `ObjectAccessUse` 补身份字段、`ObjectAccessInventoryState`、`RequiredCpuScope`；④ 原子拆 `AtomicPageRoleRequirement` / `AtomicAccessInstance`；⑤ `MappingIntent` 进审计；⑥ O-05 改 `MutableMappingMetadata`；⑦ `ArchitectureAdmissionRejected` 补 profile 证据；⑧ `PhysicalProtectionInventory` 补 `scope`；⑨ §7 增「准入上下文闭合」行 |
+| 压缩记录 | 在 O-12i 内合并 15 处相邻段落空行（纯格式，未删文字），净 −8 行；主简报 1697 → 1698 行 |
+| 符号核查（主文档实测计数） | `ParticipatingCpuSet = Resolve` 2、`legal_starts_contract` 4、`ProfileAdmissionState` 2、`ObjectAccessInventoryState` 2、`RequiredCpuScope` 1、`AtomicPageRoleRequirement` 1、`AtomicAccessInstance` 2、`MappingIntent` 1、`MutableMappingMetadata` 1、`profile_memory_obligation_evidence` 1、`use.access_range` **0** |
+| 待核清单 | `Resolve(id, inventory_snapshot)` 的清单来源（固件 ABI / DT `/cpus` / ACPI MADT）未实现；`NotApplicable` 分支、`NoAccess(proof)` 的证据形状、`AtomicAccessInstance` 的 `reservation_set_evidence` 采集路径均未落；AArch64/x86 adapter 的语义→机制展开表未写 |
+| 主简报 | 1698 行（上限 1700）；围栏 50（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |

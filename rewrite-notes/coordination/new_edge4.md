@@ -5559,4 +5559,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 评审人本轮撤回了上一轮「A/D 真值表第四行与规范冲突」的判断，确认本方区分正确，已记入 03。
 - 待实现：全部为候选合同，代码与负控为零；AArch64/x86 adapter 的语义→机制展开表未写。
 - 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 61 块列数不一致 0 处、主简报 1697 行、围栏 50（偶）。为守 1700 行删了 5 处被正式定义取代的散文。
-- 认领：`I-29 qorder79`（工作树 `.wt/i-29-qorder79`，基线 `da7c31fa3`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder79`（工作树 `.wt/i-29-qorder79`，基线 `da7c31fa3`），状态 ✅：已 ff 合并为 `7519e6b1b`，认领 `I-29 qorder80` 已释放。
+
+### 第二百八十七笔（01 阶段 · I-29 第七十九轮：上下文闭合、对象清单状态、原子两层、映射意图）
+
+- P0 四项：① `ctx` 补 `legal_starts_contract`（进 `AdmissionContextId`）与 `ParticipatingCpuSet = Resolve(id, inventory_snapshot)`，`SystemHartInventoryId` 归 `adapter_evidence`；② `ProfileAdmissionState` 四态，第一版 `NotDeclared` 不得返回「通过」、页级取中性语义而非空集；③ `ObjectAccessUse` 补 `access_use_id`/`object_id` 并消除 `use.object`/`use.access_range` 两个未定义字段，新增 `ObjectAccessInventoryState`（`Incomplete` 必须失败）与 `RequiredCpuScope`；④ 原子拆 `AtomicPageRoleRequirement`（页级、`LegalStarts` 全称）与 `AtomicAccessInstance`（对象级实际访问），不再让页级判定携带具体物理地址。
+- P0 映射意图：`MappingIntent = StandardSystemMapping | DriverControlledMapping | OtherExplicitMapping` 进 `MappingAudit`，`DenyUncontrolledSpeculativeAccess` 独立审计，`EfiReservedMemoryType` 的 `DenyOsUse` 第一版绝对禁止、不走驱动分支。
+- P1：O-05 改 `MutableMappingMetadata { field, update_agent, permitted_transition, synchronization_contract }`（RISC-V 的 A/D 随 `PteUpdateScheme` 取 `Hardware`/`FaultHandler`）；`ArchitectureAdmissionRejected` 补 `profile_memory_obligation_evidence`；`PhysicalProtectionInventory` 补 `scope`。
+- 行数：在 O-12i 内合并 15 处相邻段落空行（纯格式，不删文字），主简报 1698 行。
+- 待实现：全部为候选合同；`Resolve` 的清单来源、`NoAccess(proof)` 的证据形状、`AtomicAccessInstance.reservation_set_evidence` 采集路径、adapter 展开表均未落。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 61 块列数不一致 0 处、主简报 1698 行、围栏 50（偶）。
+- 认领：`I-29 qorder81`（工作树 `.wt/i-29-qorder81`，基线 `7519e6b1b`），状态 🔄，合并后释放。
