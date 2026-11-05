@@ -5578,4 +5578,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 行数：O-01..O-12c 内合并 12 处段落空行（纯格式），主简报 1698 行。
 - 待实现：全部为候选合同；`physical_footprints` 的架构展开、`NotApplicable` 依据、`UNUSABLE` 禁止项均无代码。
 - 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 61 块列数不一致 0 处、主简报 1698 行、围栏 50（偶）。
-- 认领：`I-29 qorder82`（工作树 `.wt/i-29-qorder82`，基线 `657c595ed`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder82`（工作树 `.wt/i-29-qorder82`，基线 `657c595ed`），状态 ✅：已 ff 合并为 `ec35c6125`，认领 `I-29 qorder82` 已释放。
+
+### 第二百八十九笔（01 阶段 · I-29 第八十一轮：访问主体证明、footprint 绑定、几何共用、共享层去 RISC-V）
+
+- P0 五项：① 撤销 `NotApplicable(reason)` 逃逸口——第一版只建模 `CpuAccess(cpus)`，非 CPU 主体 `UnsupportedAccessActor`，`NoAccess` 必须有机器可检查证明；② 实例与预期翻译显式绑定 `TranslateExpected(i.virtual_footprint, segments) = i.expected_physical_footprints`；③ `AccessAlignmentSatisfied` 改逐实例，并区分指令有效地址与分解后硬件操作；④ 撤销 `AtomicAccessInstance`，对象级原子访问消费自己的 `reservation_set_evidence`，与页级共用 `ReservationSetGeometryCore`；⑤ `AtomicSharedStateEligible` 去掉与通用展开重复的 `AccessRequirementsSatisfied`，进展等级不携带 page。
+- P1：共享层 `ExecutionPrivilege` 取代 `{S,U}`、`BasePageEligible` 量词改 `ParticipatingCpuSet`、`AtomicUpdate` 只留 `family`；CPU `fail` 拆 `PhysicallyAbsent` / `NotOperational` 并选定 `SystemHartSet` 语义；`PageTableBackingEligible` 自带排序模型、Profile 区域义务与内存类别（幂等约束改标项目政策）；Profile 拆三层并由 `ProfileConformanceSatisfied` 聚合，`AdmissionContextValid` 只依赖前置；O-12k 重试链插入 `RevalidateBootInputObjectsAgainstFinalMap`。
+- 篇幅：按新增纪律第 8 条合并多轮稳定重复陈述（桥接段与其代码块、§7 阻塞组表并 2 行、三个稳定代码块改单行、剩余 10 处段落空行），主简报 1695 行——首次在上限内留出余量。
+- 待实现：全部为候选合同；非 CPU 访问主体、`NoAccess` 证明来源、`reservation_set_evidence` 采集路径、AArch64/x86 的 `ExecutionPrivilege` 映射表均未落。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 62 块列数不一致 0 处、主简报 1695 行、围栏 48（偶）。
+- 认领：`I-29 qorder83`（工作树 `.wt/i-29-qorder83`，基线 `ec35c6125`），状态 🔄，合并后释放。

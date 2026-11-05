@@ -1166,3 +1166,16 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 待核清单 | `AtomicRequirementsComplete` / `AccessRequirementsSatisfied` 的证据形状未定；`RequiredCpuScope` 的 `NotApplicable(reason)` 依据未定；`physical_footprints` 的「实际硬件操作」展开由各架构 adapter 提供，尚无实现；`UNUSABLE` 禁止项在代码中仍只靠 `TypeAllocatablePages` |
 | 主简报 | 1698 行（上限 1700）；围栏 50（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
+
+## 五十二、第八十一轮：访问主体证明、footprint 绑定与共享层语义
+
+| 项 | 读数 |
+|---|---|
+| 本轮是否新增规范取证 | 无新增抓取；复用上轮锚点（`norm:lr_sc_rsrv_set_page`、`norm:pmp_full_match_required`、`norm:pmp_misaligned_access_behavior`、DTSpec CPU `status` 三态） |
+| 评审人本轮复核 | 按公开的 RISC-V `v20260120` 发布版页面复核 A/D 分支、系统 hart 一致、4 KiB 预约集页内约束、PMP 整次操作覆盖与半写风险；按 DTSpec 复核 `fail` 的「not operational **or does not exist**」歧义与 `disabled` 需 `enable-method`。结论：本轮无需推翻技术方向，问题在合同是否被唯一、完整接入 |
+| 主文档更动 | ① 撤销 `NotApplicable` 逃逸口 → `ObjectAccessSubject = CpuAccess(cpus)`，非 CPU 主体 `UnsupportedAccessActor`；`NoAccess` 需机器可检查证明；② `ActualAccessInstance` 带 `virtual_footprint`/`expected_physical_footprints`/`instruction_or_access_id`/`reservation_set_evidence`，判定式加 `TranslateExpected(...)` 绑定；③ `AccessAlignmentSatisfied` 逐实例，并区分架构有效地址与分解后硬件操作；④ 撤销 `AtomicAccessInstance`，页级与对象级共用 `ReservationSetGeometryCore`；⑤ `AtomicSharedStateEligible` 去掉与通用展开重复的 `AccessRequirementsSatisfied`；⑥ `ExecutionPrivilege` 取代 `{S,U}`，`ctx.H` 量词改 `ParticipatingCpuSet`，`AtomicUpdate` 只留 `family`；⑦ CPU 状态五行表与 `SystemHartSet` 语义选定；⑧ `PageTableBackingEligible` 补排序/Profile 区域义务/内存类别，幂等政策改标为项目政策；⑨ Profile 三层解耦 + `ProfileConformanceSatisfied` 聚合；⑩ O-12k 插入 `RevalidateBootInputObjectsAgainstFinalMap`；⑪ §7 按评审建议改写 |
+| 篇幅处理（纪律 8） | 桥接段与其代码块合一（−5）、§7 阻塞组表并 2 行（−4）、三个稳定代码块改单行（−6）、合并剩余 10 处段落空行（−10）、原子策略两段合一（−2）；主简报 1697 → 1695 行 |
+| 符号核查（主文档实测计数） | `AtomicRoleEligible` **0**、`AtomicAccessInstance` **0**、`RequiredCpuScope` **0**、`rsrv_eventual_required` **0**、`ctx.H` 6（仅出现在 RISC-V 章节与「adapter 内写法」说明）、`ObjectAccessSubject` 1、`TranslateExpected` 2、`ReservationSetGeometryCore` 3、`ExecutionPrivilege` 1 |
+| 待核清单 | 非 CPU 访问主体（DMA/IOMMU/固件）无合同；`NoAccess` 证明来源与 `reservation_set_evidence` 采集路径未定；AArch64/x86 adapter 的 `ExecutionPrivilege` 映射表未写 |
+| 主简报 | 1695 行（上限 1700）；围栏 48（偶）；表格 62 块、列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |

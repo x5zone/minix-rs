@@ -12,6 +12,22 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第八十一轮评审之后：访问主体证明、footprint 绑定、几何共用核心、共享层去 RISC-V）**
+
+- **`NotApplicable(reason)` 是逃逸口（成立，已改）**：`reason` 不是证明，任何调用方都能把 CPU 访问的对象标成非 CPU 从而跳过整段 PMP/PMA。第一版**删掉该分支**，`ObjectAccessSubject = CpuAccess(cpus)` 且 `cpus ≠ ∅ ⊆ ctx.ParticipatingCpuSet`；DMA/IOMMU、设备、固件等主体不属于第一版合同，遇到即 `UnsupportedAccessActor`。同理 `NoAccess` 改为必须有机器可检查的证明，「没找到访问点」只能是 `Incomplete`。
+- **物理 footprint 与预期翻译未绑定（成立，已改）**：实例改为携带 `virtual_footprint`、`expected_physical_footprints`、`instruction_or_access_id`、`reservation_set_evidence`，判定式里显式要求 `TranslateExpected(i.virtual_footprint, ExpectedTranslationSegments(use)) = i.expected_physical_footprints`——否则物理准入与映射准入可能在查两段不同字节。
+- **对齐量词写错（成立，已改）**：`AccessAlignmentSatisfied` 从「逐使用点一次」改为 `∀ instance`，并区分两件事：对齐约束的是原始指令/操作数的有效地址，分解后的每个硬件操作另按整次覆盖规则判定，不是一个字段。
+- **两套原子实例模型未接通（成立，已改）**：撤销 `AtomicAccessInstance`，对象级原子访问就是带 `reservation_set_evidence` 的 `ActualAccessInstance`，并在对象级公式里真正消费它；页级与对象级共用 `ReservationSetGeometryCore`，只是入参不同。
+- **原子重复判定与参数缺失（成立，已改）**：`AtomicSharedStateEligible` 不再调用 `AccessRequirementsSatisfied`（族/宽度/逐起始硬件准入只在通用展开里查一次），只保留「登记完整性 + 算法要求的进展等级 + LR/SC 几何」；`ProgressLevelRequired` 不携带 page，能力兑现统一交给带页/CPU 的物理准入。
+- **共享层仍有 RISC-V 术语（成立，已改）**：`privilege ∈ {S,U}` → `ExecutionPrivilege = Kernel | Unprivileged`（RISC-V=S-mode、AArch64=运行内核的 EL、x86=内核 CPL，M-mode/EL2/SMM 由 adapter 适用性规则处理）；`BasePageEligible` 的量词从 `ctx.H` 改为 `ctx.ParticipatingCpuSet`；`AtomicUpdate` 只留 `family`，宽度与进展取 `AccessRequirement` 外层单一位置；实例必须 `∈ Expand(use.access_requirement)`。
+- **`fail` 不等于物理不存在（成立，已改）**：新增五行状态表（`okay` / `disabled` / `fail`+证明不存在 / `fail` 仅不可运行 / 未知），并规定 `SystemHartSet` 必须先选定语义（本简报取「所有物理存在的 hart」）。
+- **页表 backing 不继承基底条件（成立，已改）**：`PageTableBackingEligible` 补上内存排序模型、已声明 Profile 的区域义务、页表允许的物理内存类别三项——既有页表不经过 `PmmBaseAvailable`，必须自带。另把「页表只允许幂等主存」标为项目政策而非规范无条件要求（规范只对非幂等区域禁止提前/推测隐式访问，并列了例外）。
+- **Profile 声明后的循环（成立，已改）**：拆成 `ProfileDeclarationValid` / `ProfileGlobalObligationsSatisfied` / `ProfileMemoryEligiblePages` 三层，`ProfileConformanceSatisfied` 聚合三者与全部区域结果；`AdmissionContextValid` 只依赖前置，不依赖尚未构造的区域级结果。
+- **O-12k 重试链缺一步（成立，已改）**：在重建来源与重建投影之间插入 `RevalidateBootInputObjectsAgainstFinalMap`（重做 DTB 覆盖检查、DTB × MRB × `no-map` 页级裁决与快照绑定）；自有副本不因 MapKey 变化而重读。
+- **篇幅**：按新纪律第 8 条，把多轮稳定的重复陈述合并——桥接段与其代码块合一、§7 阻塞组表 6 行并 2 行、三个稳定代码块改为单行、合并全部剩余 10 处段落空行；主简报 1695 行。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1695 行、围栏 48（偶）、表格 62 块列数不一致 0 处、lint error 0。
+
+
 **本轮（第八十轮评审之后：hart 一致性退路、原子唯一展开、对象空集、Profile 状态分离）**
 
 - **系统 hart 不一致的退路（成立，已改）**：负控原写「拒绝该平台配置，或阻止不一致 hart 上线」，后半句与 `SystemHartSet` 含全部 hart 的定义冲突——「阻止上线」只是把该 hart 移出参与集合，规范义务并未消失。改为「`SystemHartSet` 内方案不一致 ⇒ 拒绝平台配置」；只有证明某 hart 物理上不存在或不属该系统才可排除，`disabled`/暂不调度都不是依据。
