@@ -5761,3 +5761,16 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-06 拆五列并逐列给反例；§7 拆 provenance／reachability（指针存在不能推出可读）；证据身份固定为合并提交 SHA + 两个文件哈希（按合并提交写在 `03` 六十八节）；登记六项实施清理（`DtbMemorySnapshot` 唯一结果、删改 `FREE_MEMMAP`、`VmBootAllocator` 只收校验过的候选、`ebs_map` 注释统一、扣减容量重推、总容量分列）。
 - 门：简报 1114 → **1170 行** / 101,779 字符（单封可送）、围栏 30 偶、表格 50 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
 - 认领：`I-29 qorder98`（基线 `f1843f4b4`），状态 ✅：第九十八轮已 ff 合并为 `aece113f8`，认领已释放。评审身份（合并提交 + 三个文件哈希）写在 `03` 六十八节；简报 1170 行 / 101,779 字符。
+
+
+### 第三百零六笔（01 阶段 · I-29 第九十九轮：排除模型闭合、MemoryKind 枚举化、扣减容量证到 47）
+
+- 排除定义拆成两件产物：`ExclusionContribution { evidence_ref, reason, raw_range, page_projection, phase }`（`evidence_ref` 可为 `SourceRef`/`ObjectRef`/`PolicyRuleRef`）与 `PmmSourceExcludedPages = Union(page_projection)`；静态保留类逐项列到 `FirmwarePrefix/ReservedOrdinary/ReservedReusable/ReservedNoMap/MrbEntry`；`TypePolicyDecision = AcceptWithDisposition | ExcludeRange | RejectBoot`，`UNACCEPTED` 与 `PAL_CODE` 是 `RejectBoot` 而非页排除。MRB 的分配排除与访问禁止保持两份合同。
+- 页粒度表与 §0 同步三集合（`PmmSourceCandidatePages`／`HardwareAdmissionExcluded`／`PmmBaseAvailable`），§2.1 conventional 标注为旧式候选投影。
+- O-06：`MemoryKind` 改枚举（八成员），「规范生命周期」与「第一版处置」分两段——BootServices 与 ACPI reclaim 规范上事件后可回收，但第一版 O-01 静态表一律 `Permanent`；`CONVENTIONAL` 行只写类型层面，WB 归缓存属性。
+- 扣减容量证到 47：`MAX_BOOT_REGIONS = 32` 是分配器聚合上限（`VmBootRegions { regions: [VmBootRegion; 32] }`，超限 `TooManyRegions`），`NR_BOOT_MODULES = 12` 且 VM 自身 blob 在扣减记录内（`boot_modules().len() == NR_BOOT_MODULES` 断言）→ `3+32+12 = 47 > 32`，超容量即 `deduction record overflow` 断言（启动期 panic 路径）；同时发现 `lib.rs` 注释「VM 的 blob 不进扣减」与 `vm_handoff.rs` 实现相反，登记待修。
+- 首次分配：`root_page` 四条路径均为独立分配（UEFI 单独 `allocate_pages(LOADER_DATA,1)`；直启从 shim 池单独切页）→ 候选侧测试扩为三枚，并给出第一次分配前仍存活对象完整性清单。
+- 启动分配页授权链：`load_elf_into` 经内核直接映射 VA 写入、无权限检查，而 `OrdinaryRamMappingAuthorizations = ∅`，两者并列说明这次写入没有对象级授权记录 → 补 `BootstrapAllocatedObjectAuthorization` 与「分配 → 登记 → 授权 → 映射 → 写入 → 传所有权」顺序。
+- O-02a 残留（「第一式是本项交付物」）改为 BootRoot-2/3 交付物并限定为映射记录之差；两处重复标题/问句删除；§6 填完整 SHA `aece113f8…` 与两份 sha256。
+- 门：1188 行 / 104,418 字符（单封可送）、围栏 28 偶、表格 50 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
+- 认领：`I-29 qorder99`（基线 `d449606c5`），状态 🔄。

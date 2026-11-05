@@ -12,6 +12,19 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第九十九轮（排除模型闭合、MemoryKind 变枚举、扣减容量证到 47、启动分配页补授权链）**
+
+- **排除定义拆成两件产物**：第九十八轮只给了四大类并集，评审人指出裸并集只留成员关系、不留归因；且 MRB 没被单列、`UNACCEPTED`／`PAL_CODE` 的「拒绝启动」被写成一种页排除。现在：`ExclusionContribution { evidence_ref, reason, raw_range, page_projection, phase }`（`evidence_ref` 可以是 `SourceRef`／`ObjectRef`／`PolicyRuleRef`），静态保留类逐项列出 `FirmwarePrefix | ReservedOrdinary | ReservedReusable | ReservedNoMap | MrbEntry`；`PmmSourceExcludedPages = Union(page_projection)` 只保留页；`TypePolicyDecision = AcceptWithDisposition | ExcludeRange | RejectBoot`，只有 `ExcludeRange` 进集合，`UNACCEPTED` 与 `PAL_CODE` 属 `RejectBoot`——整个启动输入不被接受，不会产出一份看起来合法的候选集合。MRB 的分配排除与访问禁止仍是两份合同。
+- **页粒度表与 §0 同步**：旧表把 `PmmBaseAvailable` 写成「含用途无关准入域的整页」，那是旧模型；现在拆成 `PmmSourceCandidatePages`／`HardwareAdmissionExcluded`／`PmmBaseAvailable` 三行，§0 速览也补了这三个名字。§2.1 的 conventional 注明是**旧式候选投影**，不等于目标 `PmmSourceCandidatePages`。
+- **O-06 的 `MemoryKind` 改成枚举**（`VolatileRam | PersistentMemory | AcpiReclaim | AcpiNvs | UnacceptedRam | UnusableRam | NonRamPhysicalResource | Unsupported`），并把「规范生命周期」与「第一版处置」分两段：`BOOT_SERVICES_*` 与 `ACPI_RECLAIM` 在规范里事件后可回收，但 O-01 已裁第一版静态表、无回收消费者，所以**第一版处置一律 `Permanent`**；`CONVENTIONAL` 那一行只写类型层面允许映射，WB 归缓存属性资格。
+- **扣减容量证到 47**：`MAX_BOOT_REGIONS = 32` 是**分配器聚合上限**（`VmBootRegions { regions: [VmBootRegion; 32] }`，超限 `TooManyRegions`），`NR_BOOT_MODULES = 12` 且 VM 自身 blob 也在扣减记录里（内核有 `boot_modules().len() == NR_BOOT_MODULES` 断言）→ `3 + 32 + 12 = 47 > 32`，超容量命中 `deduction record overflow` 断言（启动期 panic 路径）。另发现 `os/kernel/src/lib.rs` 里「VM 的 blob 不进扣减记录」的注释与 `vm_handoff.rs` 的循环相反，登记待修。
+- **首次分配补根页与结果侧测试**：`root_page` 在四条路径上都是**独立分配**（UEFI 单独 `allocate_pages(LOADER_DATA, 1)`；riscv／aarch64 直启从 shim 池单独切页、与页表 bump 不相交），第一次 allocator 的排除清单里却没有它 → 候选侧测试变成三枚（bump、root page、实际分配页 vs 两者并集），并给出第一次分配前仍存活对象的完整性清单。
+- **启动分配页的写入授权链**：`load_elf_into` 拿到页后通过**内核直接映射 VA**（`phys_to_virt` + `KERNEL_DIRECT_MAP_BASE`）写入，写入前没有任何权限检查，而 O-02a 同时声明 `OrdinaryRamMappingAuthorizations = ∅` → 两者并列意味着这次写入没有对应的对象级授权记录。补最小闭合顺序（分配 → 登记为启动对象 → 生成范围受限写授权 → 建立映射 → 写入 → handoff 传所有权）与 `BootstrapAllocatedObjectAuthorization` 记录，并明确这是对象级授权、不是重新开放普通 RAM 通用映射。
+- **O-02a 残留与重复**：`BootstrapRootAuthorizationPlan = RequiredObjectAuthorizations − BootstrapRootDenyProjection` 那一段仍写「第一式是本工作项的交付物」→ 改为 BootRoot-2／BootRoot-3 的交付物，并把集合差限定在映射记录之间（`RequiredObjectMappingAuthorizations − BootstrapRootMappingDenials`），MRB 的访问禁止另由访问侧合同处理；「两层合同分开写」标题重复一次、§2.8 的问句重复一次，均已删。
+- **§6 身份填实**：`DocumentRevision` 改第九十九轮／`03` 六十八节，`ReviewedRepositoryCommit` 填入第九十八轮的**完整 SHA** `aece113f8131d849a34a5faa7c68cd8ec3747b58` 与正文／档案两份 sha256。
+- **读数**：1170 → **1188 行**、101,779 → **104,418 字符**（单封仍可送）；围栏 28（偶）、表格 50 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0。无代码改动，沿用 minix-boot **146** / boot-shim **70**。
+
+
 **第九十八轮（四段归属收敛、PMM 基底补齐来源排除、首次分配时间线钉到实例、容量按接受数重算）**
 
 - **O-02a 的三处矛盾按唯一口径收敛**：四段责任表此前仍写第 2、3 段属 I-29，与同节「五项归专项」及 §7「只交付第一段」互相打架。现在表与后文统一为 **I29-1（来源事实进入交接）／BootRoot-2（编译引导根负向投影）／BootRoot-3（编译对象正向授权计划）／Paging-4（建表消费与验收）**，并补一条细分：I-29 交付**对象事实**（身份、占用范围、最后使用阶段、来源类型），不交付**对象映射授权计划**（`ObjectId + PA + VA + R/W/X + Tree + Phase + AccessPath` 的编译属 BootRoot-3）。

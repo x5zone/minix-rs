@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 04:39 CST（`date` 实测）；**内容轮次：第九十八轮评审后的修改**（四段责任表按 §7 收敛为 I29-1／BootRoot-2／BootRoot-3／Paging-4；PMM 基底补齐四类来源排除并改名为 `PmmSourceCandidatePages`；首次分配时间线钉到一个 allocator 实例；容量按接受数重算；O-06 拆五列；证据身份固定为提交 SHA）。
+> **重写**：2026-11-06 04:56 CST（`date` 实测）；**内容轮次：第九十九轮评审后的修改**（排除定义拆成贡献与页集合、MRB 单列、`RejectBoot` 与页排除分开；`MemoryKind` 改枚举并统一第一版静态处置；扣减容量证到 47；首次分配补根页与结果侧测试；启动分配页补授权链）。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第六十八节（正文写「见 `03`」即指这些节；代码坐标底账在六十四节，移交专项的冻结读数在六十五节，第六十六节存 §2/§7 收紧替换下来的段落，第六十七节存本轮三条分配路径与两跳 ABI 的行号读数）。另有两份配套：**硬件准入与用途资格模型**在同目录 `01-design-note-hardware-admission-model.md`（第九十六轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -14,7 +14,10 @@
 |---|---|---|
 | `RamSourceDomain` | 本入口的权威输入是否声称这段是物理主存（尚未应用保留声明与对象生命周期） | §3 第 2 条、O-12f |
 | `RamSourcePageDomain` | 上述主张先经兼容性裁决、再并集、再取完整页 | O-12i |
-| `PmmBaseAvailable(ctx) ⊍ PmmBaseExcluded(ctx)` | 基底层的可用与排除互补且**只对页域成立** | O-12i |
+| `PmmSourceExclusionContributions` / `PmmSourceExcludedPages` | 前者是**贡献记录**（`evidence_ref`／`reason`／`raw_range`／`page_projection`／`phase`，MRB 单列、类型政策只取 `ExcludeRange`），后者是这些贡献的页并集——归因与集合分开，页只扣一次 | O-12i |
+| `PmmSourceCandidatePages` | **本项的输出边界**：来源域减去上述页集合；它不回答「这台机器允许这次访问吗」 | O-12i |
+| `HardwareAdmissionExcluded` | 架构与平台物理访问能力不满足而排除的页（缓存可表达性／内存序／与用途无关的访问准入／Profile 义务）——**专项侧**，本项不实现 | 专项册 |
+| `PmmBaseAvailable(ctx) ⊍ PmmBaseExcluded(ctx)` | 最终基底层的可用与排除互补且**只对页域成立**；`PmmBaseExcluded = PmmSourceExcludedPages ∪ HardwareAdmissionExcluded` | O-12i |
 | `PmmRoleEligible(page, U, ctx)` | 把一页交给用途集合 `U` 的分配资格；用途未知时保守取 `AllRoles` | 专项册（非本项验收） |
 | `RoleAdmit` ≡ `RolePageEligible` | 用途特有准入**只有一个展开式**，且它是分支：`PageTable` 走 backing，其余走通用体。三个消费者共用同一个判定核，各喂自己的需求集合——基底 `BaseAccessRequirements`、通用用途 `RoleSpecificRequirements`、页表用途 `PageTableAccessRequirements` | 专项册（非本项验收） |
 | `PageTableBackingEligible` | 页表用途的唯一能力合同；新分配页与引导期既有页表共用（既有页表不经过 PMM，因此排序、Profile 区域义务、内存类别与幂等政策都必须自带在 backing 里） | 专项册（非本项验收） |
@@ -122,7 +125,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 | 表 | 内容 | 语义 |
 |---|---|---|
-| conventional | `/memory` 声明，扣除固件前缀与所有保留声明 | **交给当前 PMM 的候选输入表**——它不等于 §3 与 O-12i 里那个经过缓存可表达性、内存序、参与 CPU 普通访问、Profile 区域义务与全部排除项证明的 `PmmBaseAvailable(ctx)`；后者今天没有代码消费者 |
+| conventional | `/memory` 声明，扣除固件前缀与所有保留声明 | **旧式候选投影**——它不等于目标 `PmmSourceCandidatePages`（后者还要纳入来源记录、存活对象与类型／生命周期政策），也不等于 §3 与 O-12i 里那个经过缓存可表达性、内存序、参与 CPU 普通访问、Profile 区域义务与全部排除项证明的 `PmmBaseAvailable(ctx)`；后者今天没有代码消费者 |
 | reserved | 固件前缀 + 非 `no-map` 的保留声明（与 `/memory` 相交的部分） | 可达、永不再分配 |
 
 **来源记录层（DTB 侧，第一阶段）**：`collect_with_sources()` 在同样的遍历里为每条声明留一条 `SourceRecord { id, kind, origin, range: PhysicalRange }`。
@@ -250,9 +253,15 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 - **已证明**：候选集合与 bump 池相交，且首次分配早于扣减；
 - **未证明**：首次分配的实际页与 bump 池相交（需要真实分配结果断言）。
 
-**验收要求两枚具名测试**：`BootBumpRange ∩ FirstVmBootAllocatorCandidates = ∅`（候选侧）与 `FirstVmAllocatedPages ∩ BootBumpRange = ∅`（结果侧）。前者可通过对 `select_multi` 的排除清单显式加入 bump 池与根页满足，但两者不能互相替代——候集合法不等于分配器没有越界或重复使用。
+**根页必须单列，不能靠「可能与其它对象重叠」推断安全**：`root_page` 在四条路径上都是**独立分配**——UEFI 腿是单独的 `allocate_pages(LOADER_DATA, 1)`，riscv／aarch64 直启是从 shim 池里单独切一页、与页表 bump 区间不相交。而第一次 allocator 的排除清单里没有它，第二跳的扣减清单却把它单列为一类。所以候选侧要**三枚**测试：
 
-**「`FREE_MEMMAP` 的扣除能不能保护实际分配路径？」**「`FREE_MEMMAP` 的扣除能不能保护实际分配路径？」——不能。** 它不是候选区域的输入；候选来自未经裁剪的 `kernel_info.memmap()`。因此「模块、内核、DTB 都在 `FREE_MEMMAP` 里被扣掉了」这句话对第一次交付的安全性不提供任何证据。这是一条**写而不读**的并行副本（是否存在别的读者，读数见 `03` 六十七节），本身就值得单独立项处理。
+- `BootBumpRange ∩ FirstVmBootAllocatorCandidates = ∅`
+- `BootRootPage ∩ FirstVmBootAllocatorCandidates = ∅`
+- `FirstVmAllocatedPages ∩ (BootBumpRange ∪ BootRootPage) = ∅`
+
+第三枚验证分配器**实际行为**，不能被前两枚替代。**第一次分配前仍存活的启动对象完整性清单**（候选侧必须逐项核对）：allocator 元数据自身、根页、bump 池（含自举页表页）、内核映像、12 个启动模块、第一跳 arena、DTB 原始对象（最后使用点已结束则明确记为「保护义务已终止」）、仍在使用的启动期临时缓冲。
+
+**「`FREE_MEMMAP` 的扣除能不能保护实际分配路径？」——不能。**** 它不是候选区域的输入；候选来自未经裁剪的 `kernel_info.memmap()`。因此「模块、内核、DTB 都在 `FREE_MEMMAP` 里被扣掉了」这句话对第一次交付的安全性不提供任何证据。这是一条**写而不读**的并行副本（是否存在别的读者，读数见 `03` 六十七节），本身就值得单独立项处理。
 
 **DTB 原始对象在第一次交付时还活着吗？——不活着，我上一轮写错了。** 最后一个读取点是 Phase A.5 的 `minix_platform::init_from_kinfo` → `DeviceTreeDesc::parse(source.phys_addr())` → `Fdt::from_ptr`，解析后即释放借用；`fn dtb_blob_len` 只读 header 取 `totalsize`。所以正确的说法不是「仍存活但没有保护」，而是：**DTB 的字节长度只在 `FREE_MEMMAP` 那条路径上被 `cut_memmap` 隐式向外取整（起点向下、终点向上），没有任何页级排除记录进入实际分配路径**。评审人问的「精确 byte range、向外量化的整页、还是已被更早的页级分配器排除」——答案是第一种加第二种发生在一张没有读者的表里，第三种不存在。
 
@@ -266,6 +275,8 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 `os/kernel/src/dm_coverage.rs` 里那几枚「bump inside memmap → dropped」的测试是**直接映射候选的过滤**，不是分配器排除，不能拿来当保护证据。VM 侧的文本（`os/servers/vm/src/boot.rs` 注释：整个 32 MiB bump 池都在扣减之列）说明风险在**分类之后**被补偿，但第一次真实交付发生在分类之前。
 
 **结论与判据**：本轮据此把 §7 第 4 项写成可验收的两件事——① 一个具名的区间关系测试：`BootBumpRange ∩ VmBootRegionCandidates = ∅`，或在 `select_multi` 的排除清单里显式加入 bump 池与根页；② `FREE_MEMMAP` 与 `kernel_info.memmap()` 谁是权威必须裁决，不得两条路径各自扣各自的。**这不等于已经证明当前运行路径存在内存破坏**：是否真的破坏取决于 bump 池与 VM 段页的实际相交情况，而今天没有测试覆盖它——所以它是**未证明的正确性风险**，不是已确认的 bug。
+
+**分配成功不等于有权写入——启动期新分配页缺一条授权链**（第九十九轮登记，属 BootRoot-3 与 Paging-4 的交界）：`load_elf_into` 拿到 `alloc_page()` 的物理页后，是通过**内核直接映射的 VA**（`phys_to_virt`，加 `KERNEL_DIRECT_MAP_BASE`）写入的，写入前没有任何权限或授权检查；而 O-02a 同时声明 `OrdinaryRamMappingAuthorizations = ∅`。两者并列就意味着：PMM 候选允许分配、allocator 成功交付、但这次写入**没有对应的对象级授权记录**——它依赖直接映射窗口「恰好」覆盖该页。最小闭合顺序应当是「分配 → 登记为启动对象 → 生成范围受限的写授权 → 建立满足该授权的映射 → 写入 → 所有权按 handoff 传递」，其中对象级授权来源是 `BootstrapAllocatedObjectAuthorization { ObjectId, AllocatedPhysicalRange, WriteAccessPath, Phase, Lifetime }`。这是**对象级启动授权，不是重新开放普通 RAM 通用映射**；授权在分配前生成还是分配后追加都可以，但顺序约束必须保证「先访问、后登记」不可能发生。
 
 **未设计（ADR）**：`ConventionalCandidateRanges`（候选，不承诺可立即分配）与 `VmFreeRanges`（扣除全部仍存活对象后的交付集合）之间的转换点没有具名接口；第一次可分配之前对所有仍存活对象的保护也没有。把交接的可用表称作最终可分配集合即是本合同的失败形态。
 
@@ -376,7 +387,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 I29-1 的最小要求与 BootRoot-2 的输入清单各在其处定义（`SourceRef` 定型与记录进政策见 O-12g；`BootstrapRootDenyProjection` 消费的五类来源见 O-12a），此处不重复展开；两者共同的硬约束是：某种输入没有接入时**必须拒绝该启动形态**，不得假定没有这种政策，且负向投影**不是把四种来源压成一个布尔**。
 
-**两层合同分开写，避免把建表机制带回政策层**：**两层合同分开写，避免把建表机制带回政策层**：
+**两层合同分开写，避免把建表机制带回政策层**：
 
 ```
 BootstrapRootAuthorizationPlan =
@@ -389,10 +400,10 @@ ObservedMappingAudit(observed) =
     ∧ 有精确计划处取 observed = PlannedMapping
 ```
 
-第一式是本工作项的交付物；第二式是分页侧提供实际映射后、消费政策结果的验收谓词。两者都不降低验收标准，而是把「政策决定允许什么」与「实际是否兑现」分成可分别追责的两份合同。
+第一式是 **BootRoot-2／BootRoot-3 的政策交付物**，不是本项的——I29-1 只提供它的来源事实、身份与原始政策含义；第二式是 **Paging-4** 对实际 PTE 的验收谓词。两者都不降低验收标准，而是把「政策决定允许什么」与「实际是否兑现」分成可分别追责的两份合同。集合差只在映射记录之间做：`RequiredObjectMappingAuthorizations − BootstrapRootMappingDenials`；MRB 的**访问**禁止仍由独立访问侧合同处理，若分页侧选择用「完全不映射」兑现它，那是访问禁止的一种保守实现投影，不得把原始 MRB 语义改名为 `DenyMapping`。
 **被比较的对象不是 PA 区间，而是带映射关系的记录**，每条至少含 `(VA 区间, PA 区间, 权限, 有效内存属性, 共享性, 树, 阶段, 映射意图)`。只比 PA 并集会漏掉这类真实错误：对象要求经 `VA₁` 到达 `PA₁`，实际页表把 `VA₁` 映射到 `PA₂`，而某别名 `VA₂` 恰好映射到 `PA₁`——两个 PA 并集仍相等，路径却已经错。O-12i 的 `SegmentsCorrespondToExpectedTranslation` 已给出处置方向，本处的简写不得被读成较弱版本；同理设备窗口侧的 `Coverage ⊆ AuthorizedRange`、`RequiredAccess ⊆ Coverage` 只是便于阅读的物理投影，不能取代逐条访问需求的 VA→PA 对应检查。
 **`EarlyExecutionClosure` 是必需覆盖集合，不是第四种授权来源**。它回答「根激活瞬间继续执行所需的访问集合是否都有映射覆盖」，不回答「这些物理字节来自哪里、是否允许 OS 映射」。因此它不出现在计划构造式的授权项里，而是出现在 `RequiredMapping` 侧：闭包内的每个对象（代码、`.rodata` 依赖含编译器生成的跳转表、可写状态、当前栈、仍存活的启动对象）仍须各自取得来源授权并通过禁止投影——**「执行所必需」绝不产生穿过 `no-map` 或 `EfiReservedMemoryType` 的许可**。
-**普通 RAM 的映射授权必须独立于 PMM 可分配集合**：第一阶段 `OrdinaryRamMappingAuthorizations = ∅`，这是一个有意设计的接口状态，不是临时凑数。后续它必须由独立的映射政策投影产生，**不得复用 `PmmBaseAvailable(ctx)` 或 `conventional` 表**——来源资格、阶段资格、硬件可访问性、映射属性兑现分别检查；一页可以「不许 PMM 分配却因已登记对象获准映射」，也可以「允许分配但当前阶段尚未获准映射」。
+**普通 RAM 的映射授权必须独立于 PMM 可分配集合**：第一版策略 `OrdinaryRamMappingAuthorizations = ∅`，这是一个有意设计的接口状态，不是临时凑数。后续它必须由独立的映射政策投影产生，**不得复用 `PmmBaseAvailable(ctx)` 或 `conventional` 表**——来源资格、阶段资格、硬件可访问性、映射属性兑现分别检查；一页可以「不许 PMM 分配却因已登记对象获准映射」，也可以「允许分配但当前阶段尚未获准映射」。
 **第二消费者不能漏**：§2.3 已写明 Step 4 的 `establish_boot_dm` 在同一棵根上追加直接映射。如果它继续从 `conventional` 或其它候选表生成叶子，第一步建立的边界会在 Step 4 被绕过——所以第一阶段必须同时保证恒等循环不再越权、`establish_boot_dm` 不再引入未授权或命中禁止项的叶子，并对 Step 4 之后的同一棵根做实际叶子审计。
 **前置条件：根激活瞬间的执行闭包必须被映射覆盖**——这与 O-12j 的 `EarlyExecutionClosure` 是同一个问题，不另造概念：当前执行代码、继续执行所需的只读数据依赖、必须访问的可写状态、当前栈、以及切换之后仍要使用的页表与启动对象。**只映射当前指令所在页不够**：实证就在本仓库——预扫逻辑的代码页都在已映射范围内，但 `switch` 被编译成 `.rodata` 跳转表 + `jr` 绝对地址，照样触发 instruction access fault（见 O-12j 跳转表段）。编译器生成的跳转表、静态数据与调用路径依赖都属于该闭包。
 **建表机制与映射政策都不在本工作项内**。I-29 的交付终点是**交出一份可被消费的来源事实与政策含义**：每条声明的身份与原始范围、跨来源的兼容性裁决结果、类型／保留／生命周期的原始政策含义、可供后续消费者使用的物理范围与来源记录、启动对象的实际存活范围与最后使用点。**下列五项属 BootEntry／分页专项**：`BootstrapRootDenyProjection`、`RequiredObjectAuthorizations`、`BootstrapRootAuthorizationPlan`、`EarlyExecutionClosure`、把授权计划变成实际 PTE 并检查实际映射。因此本项的合同拆成两块读：**O-02a-src（引导来源完整性，I-29）**与 **O-02a-map（引导根映射政策与消费，专项）**；O-12a/b、O-03、O-04 同守这条边界——来源语义与其身份归本项，映射禁止集、访问禁止集与对象访问路径的**投影**归消费者。这不是要删掉 `no-map`、MRB 或 `EfiReservedMemoryType` 的语义：恰恰相反，本项必须把它们准确保留，否则专项没有可靠输入。恒等段与直接映射**怎样**变成 PTE——叶子粒度怎么选、降级要几张中间表页、根激活后分配器自身的地址通道、`split_huge` 在各架构的可用性——属引导分页侧的专项，登记到 `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` 与 `07-paging-probe.md` 那条线，本轮已从正文撤出（原文逐字见 `02` 第七节）。**这条边界不是回避冲突**：§2.3 与 O-02a 已把「宽恒等映射不消费禁止政策」写成现状冲突，第四段依赖链也保留为政策验收条件；被撤出的只是分页机制的取证细节。
@@ -518,22 +529,23 @@ BootInputReadEligible(use, source_policy, platform_profile) =
 **失败形态**：一条 `RESERVED` 描述符被当作「完整 RAM 支撑」，某段保留声明因此通过 backing 检查并被映射成普通内存。
 **候选 A（已裁定，待实现）**：每个来源记录回答三个问题——是否具备普通主存属性、当前阶段是否允许普通映射、当前阶段是否允许 PMM 分配。逐类型至少：
 
-| 类型 | 属 `RamSourceDomain` | `MemoryKind` | 类型允许普通映射 | 类型允许普通分配 | 生命周期（事件后可变） | 来源叠加 |
-|---|---|---|---|---|---|---|
-| `CONVENTIONAL` | 是 | 是 | **条件**：类型层面是；第一版还要求缓存属性为 WB | **条件**：阶段资格 + 缓存资格 + 全部排除项通过 | 无 | 按兼容矩阵裁决 |
-| `LOADER_CODE` | 是 | 是 | 是（存活期需 X；由对象义务提供） | 退出前否 | `ExitBootServices` + loader 最后使用点 | 按兼容矩阵裁决 |
-| `LOADER_DATA` | 是 | 是 | 是（**默认 NX**；写需对象义务授权 W） | 退出前否 | 同上 | 按兼容矩阵裁决 |
-| `BOOT_SERVICES_CODE` | 是 | 是 | 是（固件活跃期按代码义务） | 退出前否 | `ExitBootServices` | 见下方兼容矩阵 |
-| `BOOT_SERVICES_DATA` | 是 | 是 | 是（默认 NX；仍被使用时按读写义务） | 退出前否 | 同上 | 同上 |
-| `ACPI_RECLAIM` | 是 | 是 | 是 | ACPI 启用前否 | ACPI 启用 | 按兼容矩阵裁决 |
-| `ACPI_NVS` | 是 | 否（第一版） | 否 | 否 | 无 | — |
-| `PERSISTENT` | 是 | **是（非易失字节可寻址物理内存，存在 backing）** | 否（第一版普通 volatile 策略） | 否 | 无（第一版保守） | 是否支持需明确；「无普通资格」≠「无 backing」 |
-| `RUNTIME_SERVICES_CODE/DATA` | 是 | 否 | 否 | 否 | **第一版永久排除**（项目政策，不声称已提供 Runtime Services） | — |
-| `RESERVED` | **否（采用 B）**：仅凭类型名推不出是系统 RAM；有额外平台证据时另行纳入 | 否 | 否 | 否 | 无 | — |
-| `UNUSABLE` | **是**（固件描述它包含错误，但它仍是物理内存的描述） | 否 | 否 | 进 PMM 排除 | 无 | — |
-| 类型 11 / 12 | 否 | 不适用（非 RAM 描述符） | 否 | 否 | 无 | — |
-| `PAL_CODE` | 不支持（发现即拒绝启动，不做成员资格承诺） | 否 | 否 | 否 | 拒绝启动（项目兼容性限制） | — |
-| `UNACCEPTED` | 是（尚未接受） | 否 | 否 | 否 | 接受前不得当作普通可用内存 | — |
+`MemoryKind` 是**枚举**而不是布尔：`VolatileRam | PersistentMemory | AcpiReclaim | AcpiNvs | UnacceptedRam | UnusableRam | NonRamPhysicalResource | Unsupported`。它只表达物理性质；「是否属来源域」「类型是否允许普通映射」「类型是否允许普通分配」「生命周期」各是独立列——一列一个语义，不许在单元格里重新耦合。
+
+| 类型 | 属 `RamSourceDomain` | `MemoryKind` | 类型允许普通映射 | 类型允许普通分配 | 规范生命周期 → **第一版处置** |
+|---|---|---|---|---|---|
+| `CONVENTIONAL` | 是 | `VolatileRam` | 是（**缓存属性另行判定**，不在类型列） | 是（阶段／属性／排除另行判定） | 无事件 → `Permanent` |
+| `LOADER_CODE` | 是 | `VolatileRam` | 是（存活期需 X，由对象义务提供） | 否 | `ExitBootServices` → **`Permanent`（第一版不回收）** |
+| `LOADER_DATA` | 是 | `VolatileRam` | 是（默认 NX；写需对象义务） | 否 | 同上 |
+| `BOOT_SERVICES_CODE/DATA` | 是 | `VolatileRam` | 是（固件活跃期按义务） | 否 | 规范：`ExitBootServices` 后可通用 → **第一版 `Permanent`** |
+| `ACPI_RECLAIM` | 是 | `AcpiReclaim` | 是 | 否 | 规范：ACPI 启用后可回收 → **第一版 `Permanent`**（没有 `AcpiEnabled` 消费者） |
+| `ACPI_NVS` | 是 | `AcpiNvs` | 否 | 否 | 无 → `Permanent` |
+| `PERSISTENT` | 是 | `PersistentMemory` | 否（第一版普通 volatile 策略） | 否 | 无 |
+| `RUNTIME_SERVICES_CODE/DATA` | 是 | `VolatileRam` | 否 | 否 | 第一版永久排除 |
+| `RESERVED` | 否（采用 B）：仅凭类型名推不出是系统 RAM | 不承诺 | 否 | 否 | 无 |
+| `UNUSABLE` | 是 | `UnusableRam` | 否 | 否 | 无 |
+| `UNACCEPTED` | 是 | `UnacceptedRam` | 否 | 否 | **`RejectBoot`**（不是页排除） |
+| `PAL_CODE` | 不支持 | `Unsupported` | — | — | **`RejectBoot`** |
+| 类型 11 / 12 | 否 | `NonRamPhysicalResource` | 否 | 否 | 无 |
 
 **资格是分层的，不是三个布尔值**：`RamSourceDomain`（权威来源是否声明这是物理主存）、`MemoryKind`（普通易失 / 持久 / NVS / 未接受 / 不可用）、`OrdinaryRamMappingEligibility(tree, phase)`、`PmmEligibility(phase)`、`AccessRequirement/AccessAuthorization` 各自回答不同问题，不能互相推导——普通 RAM 可能因 `no-map` 禁止普通映射；设备 MMIO 不是普通 RAM 却有设备访问授权；普通 RAM 可能因 MRB 禁止访问；保留对象可能允许特定对象读却不许 PMM 分配。表头「普通主存性质」只描述 `MemoryKind`，不是「能否使用」的总结论。
 **「来源叠加」不是无条件成立（兼容矩阵）**：DTSpec 要求静态 `/reserved-memory` 出现在 UEFI 内存图里——`no-map` 对应 `EfiReservedMemoryType`，其它静态保留对应 `EfiBootServicesData`。所以表里「按兼容矩阵裁决」指的就是下面三种组合：
@@ -557,7 +569,9 @@ BootInputReadEligible(use, source_policy, platform_profile) =
 | `PERSISTENT` | 非易失物理内存，有 backing | 不接入普通 volatile PMM 与直接映射，保留来源记录 |
 
 **属性位：语义三类 + 当前处置**（不能只写「未知位拒绝」）。语义分三类：缓存能力（`WB`/`WT`/`WC`/`UC`/`UCE`）；物理保护能力（`WP`/`RP`/`XP`/`RO`）——`WP` 归此类：规范先称它 physical memory protection attribute，再说明它通常被用作 write-protected cacheability policy，所以它有特殊缓存语义，但既不是页表写权限，也不能与 `RO` 混为一谈；其它特征（`MORE_RELIABLE`、`CPU_CRYPTO`、`SP`、`NV`、`RUNTIME`）。当前处置：模型保留 `RUNTIME`/`NV`/`SP` 三种独立属性语义，但**分类器实际可达的只有 `RUNTIME`**——`NV` 属无条件冲突拒绝域，`SP` 的低位编码属冲突拒绝域、高位编码在 profile 未钉住时被 `ProfileAttribute` 拒绝，二者都不进入输出表；`PERSISTENT` 是独立的 UEFI 内存类型，不等于 `NV` 属性位，不能用它的测试证明 `NV` 分支可达。`RO`/`RP`/`XP`/`WP`/`CPU_CRYPTO` 是 **capability 能力位**（`MORE_RELIABLE` 因 `0x1_0000` 的官方文本歧义已改为 fail-closed），第一版只作来源元数据——**不直接等同于当前已生效的访问权限**，也不改变 RAM 来源域成员资格；后续映射策略可用其中的能力信息验证目标属性是否可兑现，**`WP` 不得误解为页表写权限**。**`SP` 不是 no-map**：第一版把它排除出普通 PMM 是项目保守选择，不得由 `SP` 自动生成映射禁令。任何**档外位**仍按第 1 步拒绝启动。
-**这五列各回答一个问题，不许用一个布尔代答**（第九十八轮按评审人的拆分重写）：
+**「规范生命周期」与「第一版处置」必须分两段读**：`BOOT_SERVICES_*` 在规范里 `ExitBootServices` 之后可作一般用途、`ACPI_RECLAIM` 在 ACPI 启用后可回收，这是**规范事实**；而 O-01 已裁定第一版采用静态处置表、没有任何回收消费者，所以**第一版处置一律 `Permanent`**。把两者写成一句「退出前否／退出后是」会被误读成第一版真的会在该事件后回收。
+
+**列名为什么不叫「普通主存性质」**（第九十八轮按评审人的拆分重写）：
 
 | 列 | 它回答的问题 | 反例 |
 |---|---|---|
@@ -993,7 +1007,7 @@ TotalSourceCapacity = UefiDescriptorSourceCapacity   ← ≥ 256
 | 载荷偏移相对 arena 起点 | 有算术断言 | 未定义（用固定 VA `VM_BOOT_HANDOFF_VA` 直读） |
 | 版本／未知字段拒绝行为 | 头部有 magic/version/size | 消费侧 `assert_eq!` 相等才通过，**不等即 panic**，没有优雅拒绝路径 |
 
-第二跳的容量推导按**最终 wire 记录数**算，不是按语义来源数（第九十八轮更正）：`deducted` 数组里存的是**与候选页域相交后实际参与扣减的范围片段**——内核映像、自身根页、bump 整段、模块 blob 各是一条**整段**记录，而**每个被触碰的池区间各产生一条已用后缀记录**（`MAX_BOOT_REGIONS = 32`）。所以最坏情况是 `3 + 32 + 11 = 46` 条，**大于 `VM_BOOT_HANDOFF_MAX_DEDUCTED = 32`**；散文里那句「逐项相加 22」只在「每个池只碰一个区间」时成立。当前 `record.push` 在超容量时直接命中 `deduction record overflow — LiveBootstrap is not enumerable within capacity` 的断言——**这是启动期 panic 路径，不是可接受的失败形状**。O-13b 的验收：给出按分片数的上界推导并把容量提到该上界（或把记录按语义合并后重新推导），外加恰好达上限与超一条的两枚测试。 `MAX_MAP_DESCRIPTORS = 256`、`SIDE_CAP = 64`、`WIRE_MEMMAP_CAP = 128`、`WIRE_RESERVED_CAP = 256`。O-12g 要求**每个通过结构校验的描述符**都有原始记录，所以来源记录数组容量必须 ≥ 最终 Map 缓冲可容纳的最大描述符数（按 `descriptor_count = MemoryMapSize / DescriptorSize` 计算），且必须在最终取图**之前**就发现容量不足；`ExitBootServices` 重试导致描述符数量增加时，只能安全失败，不得截断记录（截断即违反「每个描述符都有身份」）。现有失败形状已具名：`TooManyDescriptors`、`TooManySideEntries`、`Capacity(TooManyMemmap/TooManyReservedRegions)`。
+第二跳的容量推导按**最终 wire 记录数**算，不是按语义来源数；两个前提在本轮取到代码证据（第九十九轮更正为 **47**）：`MAX_BOOT_REGIONS = 32` 是**分配器的聚合上限**（`VmBootRegions { regions: [VmBootRegion; 32] }`，超限即 `TooManyRegions`，不是每池 32）；`NR_BOOT_MODULES = 12`，且 VM 自己的 blob **也在**扣减记录里（内核侧有 `boot_modules().len() == NR_BOOT_MODULES` 断言）。`deducted` 数组里存的是**与候选页域相交后实际参与扣减的范围片段**：内核映像、自身根页、bump 整段、模块 blob 各是一条**整段**记录，而**每个被触碰的池区间各产生一条已用后缀记录**。所以最坏 `3 + 32 + 12 = 47` 条，**大于 `VM_BOOT_HANDOFF_MAX_DEDUCTED = 32`**；散文里那句「逐项相加 22」只在「每个池只碰一个区间」时成立。容量目标先按保守上界写成 `ConservativeDeductionBound = 3 + 32 + 12 = 47`；若要降到 46，必须证明第 12 条模块记录不可能成为扣减项。当前 `record.push` 在超容量时直接命中 `deduction record overflow — LiveBootstrap is not enumerable within capacity` 的断言——**这是启动期 panic 路径**，不是可接受的失败形状。O-13b 的验收：把容量提到该上界（或把记录按语义合并后重新推导），外加恰好达上限与超一条的两枚测试。另有一处**代码注释与实现矛盾**：`os/kernel/src/lib.rs` 里「VM 的 blob 不进扣减记录」的注释与 `vm_handoff.rs` 的实际循环相反，已登记待修。外加恰好达上限与超一条的两枚测试。 `MAX_MAP_DESCRIPTORS = 256`、`SIDE_CAP = 64`、`WIRE_MEMMAP_CAP = 128`、`WIRE_RESERVED_CAP = 256`。O-12g 要求**每个通过结构校验的描述符**都有原始记录，所以来源记录数组容量必须 ≥ 最终 Map 缓冲可容纳的最大描述符数（按 `descriptor_count = MemoryMapSize / DescriptorSize` 计算），且必须在最终取图**之前**就发现容量不足；`ExitBootServices` 重试导致描述符数量增加时，只能安全失败，不得截断记录（截断即违反「每个描述符都有身份」）。现有失败形状已具名：`TooManyDescriptors`、`TooManySideEntries`、`Capacity(TooManyMemmap/TooManyReservedRegions)`。
 
 **状态按三层记（O-12g）**：
 
@@ -1043,7 +1057,9 @@ DescriptorAddressDomain = PhysicalAddress | UefiMmioPortSpaceAddress | Unsupport
 | 投影 | 边界处理 |
 |---|---|
 | `RamSourceDomain` | 保留原始 byte range；只有构造页域时才说明边界处理 |
-| `PmmBaseAvailable` | 只交付完整落入合法 RAM **且落入用途无关准入域**的整页（向内收缩） |
+| `PmmSourceCandidatePages` | 只交付完整落入合法 RAM、且通过保留／存活对象／类型与生命周期排除的整页（向内收缩） |
+| `HardwareAdmissionExcluded` | 架构与平台物理访问能力不满足而排除的页（专项侧，不在本项） |
+| `PmmBaseAvailable` | 上面两项组合后的最终基底可用页 |
 | `PmmBaseExcluded` | 对保留范围**向外覆盖整页**，部分相交的页不得进入基底可用 |
 | `PmmRoleRejected` | 不做量化：它标注的是基底内某页缺哪条用途证明，不产生页集合边界 |
 | `no-map` 映射禁止 | 向外覆盖所有相交页，防止大页/小页叶子跨入禁止区域 |
@@ -1061,35 +1077,36 @@ PageBytes(n) = [ u128(n) * 4096, (u128(n) + 1) * 4096 )   ← 右端独占；Ful
 ```
 
 参数是页编号而不是物理地址或 byte range；`0 ≤ n < 2^52`（4 KiB 页、64 位物理地址），边界先转 `u128` 再运算，最高页的独占末端可以是 `2^64`。**两端都是半开区间**，与全文集合模型一致。只有整页 byte range 都被 RAM 来源覆盖才进入页域，不是「起点向上、终点向下后拼接」。
-**页域与排除贡献的正式定义**（基底用补集，用途用子集——用途层不构成第二次划分）。第九十八轮补齐：只写互补等式而不写**谁决定一页进入哪一侧**，等式就是空壳；而 O-06 的类型与生命周期处置不能因为硬件准入模型迁出就一起消失：
+**页域与排除贡献的正式定义**（基底用补集，用途用子集——用途层不构成第二次划分）。第九十九轮把三件事分开：**贡献记录**（谁、为什么、原始范围、页投影、阶段）、**页集合**（并集）、**致命拒绝**（不是集合贡献）：
 
 ```
-PmmSourceExcluded(ctx) =
-    Union( StaticReservationExclusions(ctx),   ← 显式保留声明（含固件前缀、no-map 的分配侧排除）
-           LiveObjectExclusions(ctx),          ← 仍存活对象占用的范围
-           TypePolicyExclusions(ctx),          ← 类型资格：UNUSABLE 不得使用、RUNTIME_SERVICES_* 第一版永久排除、
-           │                                       ACPI_NVS 第一版不许普通分配、PERSISTENT 不进普通 PMM、
-           │                                       UNACCEPTED 拒绝启动
-           LifecycleExclusions(ctx) )          ← 生命周期：按 O-06 的静态处置表（第一版采 B）
-    每项贡献都带 (SourceRef, Reason, RawRange, PageProjection, Phase)
-    ← 一页只排除一次，但多个来源可各自贡献该页的排除理由；`PageProjection` 负责向外量化到整页，
-      `RawRange` 保留原始字节；`Reason` 区分「保留声明／类型政策／生命周期／存活对象」四类
+ExclusionContribution { evidence_ref, reason, raw_range, page_projection, phase }
+    evidence_ref ∈ SourceRef | ObjectRef | PolicyRuleRef     ← 不强迫对象与政策贡献伪装成原始来源记录
+    reason ∈ StaticReservation | LiveObject | TypePolicy | Lifecycle
 
-PmmSourceCandidatePages(ctx) = RamSourcePageDomain \ PmmSourceExcluded(ctx)
+PmmSourceExclusionContributions(ctx) =
+    静态保留类：FirmwarePrefix | ReservedOrdinary | ReservedReusable | ReservedNoMap | MrbEntry
+      ← **MRB 必须单列**：它的分配排除与访问禁止是两份合同、两条贡献，不因同出一源就合并；
+        与 EFI DTB 相交时，DTB 的类型特例只改类型主张，MRB 的排除仍然存在
+    ∪ LiveObject（以 ObjectRef 为身份）∪ TypePolicy(ExcludeRange) ∪ LifecycleRule（以 PolicyRuleRef 为身份）
+
+PmmSourceExcludedPages(ctx) = Union(c.page_projection for c in 上述贡献)
+    ← 页只扣一次由并集保证；「为什么扣、哪些来源共同扣」由贡献记录保证——裸 Union 只留成员关系，
+      不留归因，所以两个产物必须分开写
+
+TypePolicyDecision = AcceptWithDisposition | ExcludeRange | RejectBoot
+    ← **拒绝启动不是页集合贡献**：只有 ExcludeRange 进 PmmSourceExcludedPages；
+      UNACCEPTED 与 PAL_CODE 属 RejectBoot，整个启动输入不被接受，
+      绝不能写成「排除若干页」后仍然产出一份看起来合法的候选集合
+
+PmmSourceCandidatePages(ctx) = RamSourcePageDomain \ PmmSourceExcludedPages(ctx)
     ← **本项的输出边界就到这一层**：它回答「来源与生命周期上这页能不能进 PMM 候选」，
       不回答「这台机器允许这次访问吗」。
 ```
 
-**名字必须分开，否则读者会把「来源上可用」读成「最终可分配」**：本项交付 `PmmSourceCandidatePages`；消费者把硬件准入（缓存可表达性、内存序、与用途无关的物理访问准入、ISA Profile 区域义务）作为 `HardwareAdmissionExcluded` 再减一次，得到最终的 `PmmBaseAvailable`。互补等式仍然成立、只是排除集合多一块：
+**页粒度表同时要改**（原表把 `PmmBaseAvailable` 写成「包含用途无关准入域的整页」，那是旧模型）：`PmmSourceCandidatePages` 负责来源、保留声明、对象存活与类型／生命周期政策；`HardwareAdmissionExcluded` 负责架构与平台的物理访问能力；`PmmBaseAvailable` 是两者组合后的最终基底可用页。
 
-```
-PmmBaseAvailable(ctx) ⊍ PmmBaseExcluded(ctx) = RamSourcePageDomain
-    其中 PmmBaseExcluded = PmmSourceExcluded ∪ HardwareAdmissionExcluded
-PmmRoleRejected(role, ctx) ⊆ PmmBaseAvailable(ctx)
-    ← 用途拒绝不缩小基底可用集合，也不得计入 PmmBaseExcluded；用途资格是消费者在分配时附加的约束
-```
-
-`TypeAllocatablePages(p)` 的角色随之明确：它是 `TypePolicyExclusions` 的构造输入，不是本项之外的另一套结论。**来源排除与硬件准入是两次相减，不是一次**：`PmmSourceExcluded` 由本项定义（四类贡献、逐条可归因），`HardwareAdmissionExcluded` 由专项定义；两次相减的顺序不影响结果，但**谁贡献了哪一条排除理由**必须分别可查。；用途资格属于消费者在分配时附加的约束，不应与基底排除合并；硬件准入、用途资格与映射路径审计见 `01-design-note-hardware-admission-model.md`。随本轮一并移出的还有 `MemoryAdmissionContext` 的架构证据槽位、`PolicyProjectionKey` 的完整签名、参与 hart 集合变化导致投影失效的推导、`MappingIntent`／`MappingAudit` 与 `DenyStandardSystemMapping`／`DenyUncontrolledSpeculativeAccess` 的叶子级判定。**本项只保留与交棒直接相关的一条**：快照身份、阶段与证据代次必须进投影签名，否则同一份来源记录会产出两个都叫「可用表」的结论。
+**来源排除与硬件准入是两次相减，不是一次**：`PmmSourceExcluded` 由本项定义（四类贡献、逐条可归因），`HardwareAdmissionExcluded` 由专项定义；两次相减的顺序不影响结果，但**谁贡献了哪一条排除理由**必须分别可查。；用途资格属于消费者在分配时附加的约束，不应与基底排除合并；硬件准入、用途资格与映射路径审计见 `01-design-note-hardware-admission-model.md`。随本轮一并移出的还有 `MemoryAdmissionContext` 的架构证据槽位、`PolicyProjectionKey` 的完整签名、参与 hart 集合变化导致投影失效的推导、`MappingIntent`／`MappingAudit` 与 `DenyStandardSystemMapping`／`DenyUncontrolledSpeculativeAccess` 的叶子级判定。**本项只保留与交棒直接相关的一条**：快照身份、阶段与证据代次必须进投影签名，否则同一份来源记录会产出两个都叫「可用表」的结论。
 
 - 任何「可用」主张必须同时带用途集合与准入上下文：裸写 `PMMAvailable(·)` 不是良定义项。
 - 用途集合**可组合、不互斥**，不是页的分类；分配时用途未知只能保守取 `U = AllRoles`——这两条约束的是消费者接口，本项保证交接信息足以支撑它们。
@@ -1119,8 +1136,8 @@ PmmRoleRejected(role, ctx) ⊆ PmmBaseAvailable(ctx)
 | 身份 | 记录什么 | 当前值 |
 |---|---|---|
 | `CodeEvidenceCommit` | 146/70 两条宿主读数与交叉编译实际对应的代码提交 | `53c44e846`（其后各批均为纯文档，无代码改动，故读数未重跑） |
-| `DocumentRevision` | 本轮正文与档案的版本 | 第九十七轮；`03` 至六十七节、`01-design-note-hardware-admission-model.md` v1 |
-| `ReviewedRepositoryCommit` | 评审人应拿去核对的完整仓库提交（文档 + 代码） | **本轮合并提交的完整 SHA**（由台账「销账」笔记录；分支头是移动引用，不能当评审身份） |
+| `DocumentRevision` | 本轮正文与档案的版本 | 第九十九轮；`03` 至六十八节、`01-design-note-hardware-admission-model.md` v1 |
+| `ReviewedRepositoryCommit` | 评审人应拿去核对的完整仓库提交（文档 + 代码） | 每轮在横幅里写**本轮合并提交的完整 SHA**；分支头是移动引用，不能当评审身份。第九十八轮：`aece113f8131d849a34a5faa7c68cd8ec3747b58`（正文 sha256 `afb050f4f8250a525990fb87d0ee8f597c3cfa258a27184f3c94a0a792e5cfb0`、档案 sha256 `e2d82e46ee4e17d58f0f834ea9f93d5685549925450bbbc4c0882e987d020813`，同值存档于 `03` 六十八节） |
 | `DocumentFileHash` / `03ArchiveFileHash` | 正文与档案的字节级身份 | 按上述合并提交计算，列在 `03` 六十八节；未提交的工作树版本另记 `WorkingTreeDiffHash` |
 
 横幅时间与本表由第四道门对账；三者任一不符即说明材料不是同一版。
@@ -1159,7 +1176,7 @@ PmmRoleRejected(role, ctx) ⊆ PmmBaseAvailable(ctx)
 3. **冲突与生命周期**：DTB／UEFI 静态保留的交叉验证、MRB、`no-map`、类型政策各自语义独立；首读与解析后拒绝两个决定已分开（O-04／O-11 的冲突已消）；O-01 第一版采静态处置表 + 损失声明，`ReservedReusable` 保持独立类型。
 4. **分配所有权**：候选集与交付集不得混称（`ConventionalCandidateRanges`／`VmFreeRanges`）。§2.8 的时间线已把问题收到两句话——**候选集合包含 bump 池（已证明）**，**首次分配早于任何扣减（已证明）**，**实际分配页是否碰到 bump 池（未证明）**。验收：两枚具名测试 `BootBumpRange ∩ FirstVmBootAllocatorCandidates = ∅` 与 `FirstVmAllocatedPages ∩ BootBumpRange = ∅`（前者靠显式排除满足，但替代不了后者），外加 `FREE_MEMMAP` 的去留裁决——它零读者、也不是候选输入，**建议删除或改造成唯一权威输入**，留着只会让维护者以为保护已经做过。
 5. **平台资源描述**：设备 `reg` 与多级 `ranges` 采集未开始（O-12j-c）；数值必须带证据状态四标签（`ObservedInputResource`／`ProfileExpectedResource`／`StaticPolicyRange`／`ExpectedMappingCoverage`），PLIC 的 6 MiB 与 2.25 MiB 目前都不是运行时采集结果。**不含**映射覆盖审计与访问准入证明。
-6. **容量与 ABI**：接受上限是 `min(256, floor(缓冲/40)) = 256`，**不是**缓冲能装的 524；来源记录总容量按五项公式分列（UEFI 256、DTB 40、派生、启动对象、平台资源），后两项今天没有独立容量。第一跳 arena 只剩 2,368 B，256 条记录塞不进，必须另开有界载荷区或改成 `(MapSnapshotId, DescriptorIndex)` 引用（O-13a）。第二跳的 `deducted` 存的是**裁剪后的片段**，最坏 `3 + 32 + 11 = 46 > 32`，超容量即断言 panic——这是启动期失败路径，必须扩容或按语义合并后再推导（O-13b）；同时补字段偏移／尺寸／对齐断言、`VM_BOOT_HANDOFF_VA` 的地址与生命周期、线上字段字节序、以及 magic/version/size 不匹配的**明确失败语义**（fail-stop 可以，但要写成合同而不是实现细节）。「超限整体拒绝不截断」**已实现**。
+6. **容量与 ABI**：接受上限是 `min(256, floor(缓冲/40)) = 256`，**不是**缓冲能装的 524；来源记录总容量按五项公式分列（UEFI 256、DTB 40、派生、启动对象、平台资源），后两项今天没有独立容量。第一跳 arena 只剩 2,368 B，256 条记录塞不进，必须另开有界载荷区或改成 `(MapSnapshotId, DescriptorIndex)` 引用（O-13a）。第二跳的 `deducted` 存的是**裁剪后的片段**，最坏 `3 + 32 + 12 = 47 > 32`（`MAX_BOOT_REGIONS = 32` 是分配器聚合上限、模块 12 条含 VM 自身，两项已取到代码证据），超容量即断言 panic——这是启动期失败路径，必须扩容或按语义合并后再推导（O-13b）；同时补字段偏移／尺寸／对齐断言、`VM_BOOT_HANDOFF_VA` 的地址与生命周期、线上字段字节序、以及 magic/version/size 不匹配的**明确失败语义**（fail-stop 可以，但要写成合同而不是实现细节）。「超限整体拒绝不截断」**已实现**。
 
 **已登记的实施清理（不在本轮动代码，按纪律 6 只登记）**：① 把 `collect_with_sources()` 设为唯一正式结果，`DtbMemorySnapshot { conventional, reserved, sources }`，旧两表视图只许显式派生——现在三条路径调 `collect()` 会天然丢掉来源身份；② `FREE_MEMMAP` 删除或改造成唯一权威输入；③ `VmBootAllocator` 的构造参数改成「经过校验的候选区集合」，让排除不依赖每个调用点记得追加；④ `ebs_map.rs` 模块头注释与实现统一（类型 11/12 的 attribute 今天既不记录也不诊断）；⑤ `VM_BOOT_HANDOFF_MAX_DEDUCTED` 按分片数重新推导并补边界测试；⑥ 来源记录总容量五项分列。
 

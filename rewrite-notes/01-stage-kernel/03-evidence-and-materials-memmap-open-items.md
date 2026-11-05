@@ -2059,3 +2059,60 @@ PmmRoleRejected(role, ctx) ⊆ PmmBaseAvailable(ctx)
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | `e2d82e46ee4e17d58f0f834ea9f93d5685549925450bbbc4c0882e987d020813` |
 | 专项册 sha256（`01-design-note-hardware-admission-model.md`） | `a1271753924074bd4ab018837e801bf94dd8d4a76d447c8b7dfbc658df485e24` |
 | `WorkingTreeDiffHash` | 不适用：本轮无未提交修改 |
+
+
+## 六十九、第九十九轮：被替换的排除定义与 O-06 类型表
+
+
+<!-- 自正文 O-12i 的 PmmSourceExcluded 四类并集版本（MRB 未单列、RejectBoot 混进集合、归因被并集吞掉） 移入 -->
+
+**页域与排除贡献的正式定义**（基底用补集，用途用子集——用途层不构成第二次划分）。第九十八轮补齐：只写互补等式而不写**谁决定一页进入哪一侧**，等式就是空壳；而 O-06 的类型与生命周期处置不能因为硬件准入模型迁出就一起消失：
+
+```
+PmmSourceExcluded(ctx) =
+    Union( StaticReservationExclusions(ctx),   ← 显式保留声明（含固件前缀、no-map 的分配侧排除）
+           LiveObjectExclusions(ctx),          ← 仍存活对象占用的范围
+           TypePolicyExclusions(ctx),          ← 类型资格：UNUSABLE 不得使用、RUNTIME_SERVICES_* 第一版永久排除、
+           │                                       ACPI_NVS 第一版不许普通分配、PERSISTENT 不进普通 PMM、
+           │                                       UNACCEPTED 拒绝启动
+           LifecycleExclusions(ctx) )          ← 生命周期：按 O-06 的静态处置表（第一版采 B）
+    每项贡献都带 (SourceRef, Reason, RawRange, PageProjection, Phase)
+    ← 一页只排除一次，但多个来源可各自贡献该页的排除理由；`PageProjection` 负责向外量化到整页，
+      `RawRange` 保留原始字节；`Reason` 区分「保留声明／类型政策／生命周期／存活对象」四类
+
+PmmSourceCandidatePages(ctx) = RamSourcePageDomain \ PmmSourceExcluded(ctx)
+    ← **本项的输出边界就到这一层**：它回答「来源与生命周期上这页能不能进 PMM 候选」，
+      不回答「这台机器允许这次访问吗」。
+```
+
+**名字必须分开，否则读者会把「来源上可用」读成「最终可分配」**：本项交付 `PmmSourceCandidatePages`；消费者把硬件准入（缓存可表达性、内存序、与用途无关的物理访问准入、ISA Profile 区域义务）作为 `HardwareAdmissionExcluded` 再减一次，得到最终的 `PmmBaseAvailable`。互补等式仍然成立、只是排除集合多一块：
+
+```
+PmmBaseAvailable(ctx) ⊍ PmmBaseExcluded(ctx) = RamSourcePageDomain
+    其中 PmmBaseExcluded = PmmSourceExcluded ∪ HardwareAdmissionExcluded
+PmmRoleRejected(role, ctx) ⊆ PmmBaseAvailable(ctx)
+    ← 用途拒绝不缩小基底可用集合，也不得计入 PmmBaseExcluded；用途资格是消费者在分配时附加的约束
+```
+
+`TypeAllocatablePages(p)` 的角色随之明确：它是 `TypePolicyExclusions` 的构造输入，不是本项之外的另一套结论。
+
+<!-- 自正文 O-06 表格（MemoryKind 填是/否、BootServices 与 ACPI reclaim 处置与 O-01 静态表冲突） 移入 -->
+
+| 类型 | 属 `RamSourceDomain` | `MemoryKind` | 类型允许普通映射 | 类型允许普通分配 | 生命周期（事件后可变） | 来源叠加 |
+|---|---|---|---|---|---|---|
+| `CONVENTIONAL` | 是 | 是 | **条件**：类型层面是；第一版还要求缓存属性为 WB | **条件**：阶段资格 + 缓存资格 + 全部排除项通过 | 无 | 按兼容矩阵裁决 |
+| `LOADER_CODE` | 是 | 是 | 是（存活期需 X；由对象义务提供） | 退出前否 | `ExitBootServices` + loader 最后使用点 | 按兼容矩阵裁决 |
+| `LOADER_DATA` | 是 | 是 | 是（**默认 NX**；写需对象义务授权 W） | 退出前否 | 同上 | 按兼容矩阵裁决 |
+| `BOOT_SERVICES_CODE` | 是 | 是 | 是（固件活跃期按代码义务） | 退出前否 | `ExitBootServices` | 见下方兼容矩阵 |
+| `BOOT_SERVICES_DATA` | 是 | 是 | 是（默认 NX；仍被使用时按读写义务） | 退出前否 | 同上 | 同上 |
+| `ACPI_RECLAIM` | 是 | 是 | 是 | ACPI 启用前否 | ACPI 启用 | 按兼容矩阵裁决 |
+| `ACPI_NVS` | 是 | 否（第一版） | 否 | 否 | 无 | — |
+| `PERSISTENT` | 是 | **是（非易失字节可寻址物理内存，存在 backing）** | 否（第一版普通 volatile 策略） | 否 | 无（第一版保守） | 是否支持需明确；「无普通资格」≠「无 backing」 |
+| `RUNTIME_SERVICES_CODE/DATA` | 是 | 否 | 否 | 否 | **第一版永久排除**（项目政策，不声称已提供 Runtime Services） | — |
+| `RESERVED` | **否（采用 B）**：仅凭类型名推不出是系统 RAM；有额外平台证据时另行纳入 | 否 | 否 | 否 | 无 | — |
+| `UNUSABLE` | **是**（固件描述它包含错误，但它仍是物理内存的描述） | 否 | 否 | 进 PMM 排除 | 无 | — |
+
+
+<!-- 自正文 O-13b 的容量段（按 11 条模块推成 46、未证明 MAX_BOOT_REGIONS 作用域） 移入 -->
+
+第二跳的容量推导按**最终 wire 记录数**算，不是按语义来源数（第九十八轮更正）：`deducted` 数组里存的是**与候选页域相交后实际参与扣减的范围片段**——内核映像、自身根页、bump 整段、模块 blob 各是一条**整段**记录，而**每个被触碰的池区间各产生一条已用后缀记录**（`MAX_BOOT_REGIONS = 32`）。所以最坏情况是 `3 + 32 + 11 = 46` 条，**大于 `VM_BOOT_HANDOFF_MAX_DEDUCTED = 32`**；散文里那句「逐项相加 22」只在「每个池只碰一个区间」时成立。当前 `record.push` 在超容量时直接命中 `deduction record overflow — LiveBootstrap is not enumerable within capacity` 的断言——**这是启动期 panic 路径，不是可接受的失败形状**。O-13b 的验收：给出按分片数的上界推导并把容量提到该上界（或把记录按语义合并后重新推导），
