@@ -5714,3 +5714,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 正文代码坐标纪律：本轮新增行号一律进 `03` 六十四节底账，正文只留符号锚点（评审人看不到仓库）。
 - 门：1673 行（余 27）、围栏 48（偶）、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失 lost 0；无代码改动，沿用 minix-boot **146** / boot-shim **70**。
 - 认领：`I-29 qorder94`（基线 `ad72ecc70`），状态 ✅：第九十三轮已 ff 合并为 `2615db108`，认领已释放。送审正文现为 1673 行 / 133,366 字符，已越过单封容量，送审改用三封分段包（逐字拼回对账为真）。
+
+
+### 第三百零二笔（01 阶段 · I-29 第九十五轮：射程重划，交棒合同与分页策略分离）
+
+- 用户质疑范围（「扫描内存图然后交棒，大页小页是启动期/运行期的内存管理」），评审人本轮自行撤销把 `split_huge`、页大小冻结、A/D 更新、PMP/PMA 页表访问证明、LR/SC／AMO／预约集列为交棒阻断项；判据是「OS 决定不开任何大页，也不应要求 bootloader 换一种交接方式」。
+- 落地方式是划射程不是删内容：新增 §1.6 三合同表（物理内存图／平台资源图／页表与引导页表切换）；O-05 检查点拆 T0/T1/T2 并逐行标注归属；冻结字段表、`FrozenBootMappingSet` 段、候选 B、先审后用、政策审计与硬件同步、第九十三轮读数表、`RoleAdmissionDenial` 逐字移入 `03` 六十五节。
+- 四项在范围内修正：PLIC 旧汇总行与新裁决冲突 → 全文唯一化 6 MiB 授权 / 4 MiB 预期覆盖并标注「授权比覆盖宽」的例外；`PLIC_RESOURCE_LEN` 的 2× 按代码注释（每 hart M/S 两个 context、claim 偏移 `(2N+1)*0x1000`）降级为具名 TCG profile 推导，通用合同只剩 `RequiredEnd = ContextBase + (MaxActualContextID+1) × Stride`，`PLIC_MAX_HARTS = 32` 说清是项目 SMP 上限；`ObjectAccessInventoryState` 的 `Complete(∅)` 改类型级 `NonEmptySet`；原子合同回到单一语义入口（`architecture_access_evidence_ref`、`AtomicAccessesEligible`、去掉 `uses_lr_sc` 前置、禁止 `arch` 枚举分支）。
+- 操作名分三层（共享需求／RISC-V adapter／硬件保护检查），把不在枚举里的 `Write` 统一成 `NormalWrite`。DTB 首读与 `no-map` 先后裁定为启动输入例外：`BootInputReadUse` 一次性只读、不等价于 `DriverControlledUse`，MRB 与 `no-map` 不共用 `BootInputProvenance`。
+- 代码读数补进 §2.4：内核→VM 的扣减记录（`fn build_vm_handoff`）五类范围可枚举、`LiveBootstrap ∩ VM-free = ∅` 在消费边界核对、容量溢出当场失败，五枚测试在册；未闭合两项——第一跳 memmap 逐字写着 not filtered（内核映像与模块占用不在第一跳），容量核算未按三架构验证。
+- 门：1687 行（**余 13**）、围栏 48（偶）、表格 57 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失 lost 0；无代码改动，沿用 minix-boot **146** / boot-shim **70**。
+- 认领：`I-29 qorder95`（基线 `e84dfc54f`），状态 🔄。

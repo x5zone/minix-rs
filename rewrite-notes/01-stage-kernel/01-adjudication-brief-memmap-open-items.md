@@ -1,7 +1,7 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 02:39 CST（`date` 实测）；**内容轮次：第九十三轮评审后的修改**（两处公式级矛盾修正、冻结时序按代码读数闭合、PLIC 授权改按整段 aperture、原子几何移入 RISC-V adapter）。
-> **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第六十四节（正文写「见 `03`」即指这些节，第九十三轮的代码坐标底账在六十四节）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
+> **重写**：2026-11-06 03:03 CST（`date` 实测）；**内容轮次：第九十五轮评审后的修改**（射程重划：交棒信息与分页策略分成两个合同；PLIC 数值全文唯一；冻结合同移交专项；补齐内核→VM 的扣减记录读数）。
+> **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第六十五节（正文写「见 `03`」即指这些节；代码坐标底账在六十四节，第九十五轮移交专项的冻结读数在六十五节）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
 > **怎么读**：§0 是现行模型的名字与它们之间的等式；§2 是代码**今天真实**保证的行为，每条都有测试名；§5 是**尚未裁定**的问题，其中出现的公式与方案一律是**候选**，不是合同。**不要把 §5 的任何一行当成实现依据。**
@@ -81,6 +81,18 @@
 | x86-64 | 内核自建 `PAT`，普通页显式取写回索引；`MTRR` 只读分析 | **有效类型 = `Resolve(PAT_Entry, MTRR_Type(physical_range))`**，只看 PTE 选择 WB 不足；大页跨不同 MTRR 区间必须拆分或拒绝；每核 `CR0.CD=0`、`CR0.NW=0`；**MTRR 读取结果也进入逐核有效类型一致性证明**，不能假定所有处理器配置天然一致 |
 | AArch64 | `MAIR` 两个索引（普通/设备）；第一版锁定 4 KiB translation granule | 两棵树各自遍历实际叶子；每核读回 `MAIR` |
 | RISC-V | 按物理区间的 PMA 能力（宽度/对齐、取指、页表读写、原子、排序、一致性）；**能力值来源必须写明并绑定 machine/SoC 型号与版本**：平台静态表 / 固件或 M-mode 信息 / SoC 寄存器 / 已验证来源，不存在通用查询接口；**不得把「未发现限制」当成「支持普通主存访问」** | PMP 是另一层：约束 S 模式取指、数据访问**与页表遍历** |
+
+### 1.6 三个相邻合同：本项只裁决第一个
+
+| 合同 | 它回答的问题 | 谁负责 |
+|---|---|---|
+| **物理内存图** | 哪些物理范围存在、可用、保留、不可访问，各带什么属性；bootloader 自己的占用是否全部反映 | **本项（I-29）** |
+| **平台资源图** | PLIC／UART／APIC 等设备的 MMIO 资源在哪、多大 | 本项负责**如实描述**（`DeviceAperture` 与已登记访问点），不裁决设备驱动如何消费 |
+| **页表与引导页表切换** | 虚拟地址如何映射到物理、用 4 KiB／2 MiB／1 GiB、权限与属性怎么设、根切换怎么过渡 | **BootEntry 与分页侧专项**，不作本项验收条件 |
+
+判据是一句可检验的话：**OS 决定完全不开大页，也不应要求 bootloader 换一种内存图交接方式**。页大小是分页策略，不是物理资源描述的组成部分；因此凡以「某种叶子粒度／某次 PTE 修改／某个硬件访问能力」为条件的条款，都不属于本项的验收集合。
+
+本轮据此撤销此前被列为阻断项的四类要求（叶子粒度与 `split_huge`、PTE 的 A/D 更新机制、页表访问的 PMP/PMA 证明、LR/SC／AMO／预约集等原子能力，以及 `FrozenBootMappingSet` 的页大小冻结）：它们的**内容继续留在正文作为设计上下文**，但**不再是 I-29 的签字条件**，逐段归属见 §7。这不等于说它们不重要——它们各自成立，只是回答的是另一个合同。
 
 ## 2. 今天代码保证什么
 
@@ -173,7 +185,13 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 ### 2.4 交接与消费
 
-两张表经固定布局交接给内核（可用表 128、保留表 256 段，另有模块表与标量）。内核 PMM 用可用表；保留表供诊断与查询接口使用。引导区相交守卫使用 `checked_add`，回绕输入直接失败（`test_bootstrap_outside_memmap_rejects_wrapping_region` / `_allocation`）。
+**交棒有两跳，本项的合同要覆盖两跳**：固件与 bootloader → 内核（固定布局），内核 → VM 服务器（`VmBootHandoff`）。
+
+第一跳：两张表经固定布局交接（可用表 128 项、保留表 256 段，另有模块表与标量）。内核 PMM 用可用表；保留表供诊断与查询接口使用。引导区相交守卫使用 `checked_add`，回绕输入直接失败（`test_bootstrap_outside_memmap_rejects_wrapping_region` / `_allocation`）。
+
+第二跳今天**已有实现且有测试**，它正是「bootloader／内核自己占了什么」这份记录的载体（`os/kernel/src/vm_handoff.rs:fn build_vm_handoff`）。扣减记录逐条可枚举，五类范围各有明确来源：内核映像（`KernelInfo.kern_phys_base()/kern_size()`）、VM 自己的根页（`arch_boot` 参数，即交接里的 `root_paddr`）、**启动 bump 区整段**（`os/kernel/src/boot_alloc.rs:fn boot_alloc_region`，已用页与剩余页都算内核保留）、引导期已用帧（`VmBootAllocator` 各池区间从尾部向前的已用后缀，**页表页就在这里**）、保留模块 blob（`KernelInfo.boot_modules()` 的**全部** blob，含 VM 自己的——因为 VM 的段帧在进入前就取自这份空闲表）。消费者侧的不变量写成 `LiveBootstrap ∩ VM-free = ∅`，且是在**消费边界**上核对，而不是相信内核自己的记账；PMM 可用集表达为 `conventional ∩ DM-representable − LiveBootstrap`。容量是固定的（`VM_BOOT_HANDOFF_MAX_DEDUCTED`），超出即当场失败并报「扣减记录不可在容量内枚举」——这是设计行为，不许放宽。测试：`test_classification_deducts_all_record_sources`、`test_classification_free_list_is_exact_complement`、`test_classification_clips_to_dm_window`、`test_classification_drops_out_of_window_region`、`test_boot_image_table_layout`。
+
+**这一跳与本项的关系**：交棒信息必须完整且无歧义，所以五类范围的来源清单、容量核算与失败形状属 I-29 的合同；至于 VM 拿到之后怎么映射、开不开大页，属分页侧。缺口见 O-13（固定布局 ABI 未开始）与 §7。
 
 ### 2.5 四条启动入口现状
 
@@ -393,6 +411,8 @@ NoMapControlledAccessEligible(use, device_id) =
 - **A**：两个投影名（映射禁止 / 访问禁止），流式贡献，保留对象、树、阶段、路径四维。
 - **B**：第一版规定对象矩阵不出现负向态，并加空集断言。
 
+**DTB 首读与 `no-map` 的先后关系必须裁定（第九十五轮：采用启动输入例外，不采用 ABI 前置保证）**：自引导形态的顺序是「ABI 递入 DTB 指针 → 读 header → 复制完整 DTB → 解析 `/reserved-memory` → 才知道有没有 `no-map`」。若 DTB 自己的物理范围恰好落在它自己声明的 `no-map` 区里，内核在**读出声明之前已经访问了该区域**——单靠 DTB 的内容无法在首读前证明不相交，所以「要求启动程序保证 DTB 不与 `no-map` 相交」这种 ABI 前置保证在第一版拿不到，拿不到就不受支持不是可选方案。裁定：`BootInputReadUse` 是**独立具名的一次性启动读取合同**——严格限定（指定对象、指定字节范围、只读、指定阶段与路径、复制到自有副本即失效），它**不属于标准系统映射，也不等价于 `DriverControlledUse`**，因此与 `FirstEditionPolicy = Reject` 不冲突；随后发现 DTB 与 `no-map` 冲突时拒绝继续启动。三条边界不许含糊：MRB 的启动读取依据启动程序明确授权的用途；`no-map` 的读取依据本项目自己规定的一次性启动读取合同；**两者不得因为都发生在 DTB 读取阶段就共用一个宽泛的 `BootInputProvenance` 例外**。
+
 **判据**：R19a 的输入清单与两份禁止集合的构造式逐项对得上；`DenyMapping` 不被 `DenyAccess` 代替。
 
 ### O-05 审计时点与「冻结」的含义
@@ -401,35 +421,18 @@ NoMapControlledAccessEligible(use, device_id) =
 **失败形态**：实现把最终根的空遍历当作已审计；或把硬件置 A/D 判成权限变化。
 **候选 A（已裁定，待实现）**：按时点拆开——
 
-| 时点 | 必须完成 |
-|---|---|
-| T1 激活引导根前 | 引导根的覆盖、权限、语义、别名与禁止集合；含设备映射验收（R13-D） |
-| T2 激活最终根前 | 最终根的同类审计 + 三类义务合并目标（R21） |
-| 激活后 | 对**映射定义字段**持续验证 |
-
-冻结的字段与例外：
-
-| 字段 | 激活后 |
-|---|---|
-| VA 覆盖、PA 对应、页大小、有效权限、内存属性、共享性 | 不允许变化 |
-| 架构 adapter 列出的受控元数据字段（`MutableMappingMetadata { field, update_agent, permitted_transition, synchronization_contract }`） | 按 `update_agent` 允许特定变化；RISC-V 的 A/D 随 `PteUpdateScheme` 取 `Hardware` 或 `FaultHandler`，AArch64/x86 由各自 adapter 定义；审计必须说明如何屏蔽或验证 |
-
-**冻结时点与今天的活动根修改路径撞车（下表是代码读数，不是推测）**：
-
-| 时点／路径 | 代码事实 | 改了什么 | 政策归属 |
+| 检查点 | 时点 | 责任 | 归属 |
 |---|---|---|---|
-| 根激活**之前** | `fn build_bootstrap_root_and_enable` 内按顺序执行：恒等循环（失败被 `let _ =` 吞）、内核高半映射（`.expect`）、设备窗口高半别名、设备窗口段；最后 `paging.enable()` 与 `set_current_root_phys` | 建立叶子 | **构造期**，是 T1 审计的正确对象 |
-| Step 4 直接映射 | `establish_boot_dm` 在激活后运行；x86-64 还整槽替换并降级既存恒等叶子、置 USER 位 | 新增叶子；x86-64 另改页大小与权限 | **激活后修改**：不能说 T1 在它之前完成 |
-| `fn harden_kernel_text` | 唯一调用点在 `fn kmain` 内、`bkl_lock` 之后、`smp_init` 之前；经 `from_active_root` 包住活动根后 `split_huge`，再 `update_flags` 置 RX | 页大小 1 GiB→4 KiB ∧ 权限（PA 由 `update_flags` 保留） | **激活后修改**：动的正是上表第一行的两个冻结字段 |
-| heap 窗口驱逐 | `os/kernel/src/lib.rs` 的驱逐段，对 `[VM_HEAP_BASE, +VM_HEAP_SIZE)` 先 `split_huge` 再 `unmap`（`expect`，失败即 panic） | 撤销叶子 | 具名临时映射：按范围＋意图＋生命周期排除，不得笼统排除整棵活动根 |
-| ELF 加载窗口 | `os/arch/src/arch/boot.rs:fn load_elf_into`：`split_huge` → `grant_user_walk` → `unmap` | 粒度、权限、撤销 | 同上 |
+| T0 `RootActivationPreflight` | `paging.enable()` **之前** | 初始根的实际叶子、禁止项命中情况、根激活瞬间的执行闭包是否已覆盖 | 引导页表切换合同（BootEntry 侧） |
+| T1 `FrozenBootMappingSet` | 引导根上**全部结构修改完成之后** | 最终引导映射集合的覆盖、权限、属性、别名与禁止集合；含设备映射验收（R13-D） | 分页侧专项 |
+| T2 `FinalRootPreflight` | 最终根激活之前 | 另一棵树的同类审计 + 三类义务合并目标（R21） | 分页侧专项 |
 
-**所以 T1 不能写成「引导根激活之前」**：今天唯一像审计的检查是 `os/kernel/src/dm_coverage.rs:fn validate_bootstrap_tree`，它的调用点仍在激活之后，而激活之后还有上表四类修改。合同只有两种自洽写法——**要么**把 T1 定义为「引导根上全部结构修改完成之后」（于是 `enable()` 不是 T1，冻结记录必须带修改序列的终点标识），**要么**保持 T1 在激活前，把那四类路径全部划入「受控更新 + 先审后用」并逐类登记归属。第一版选前者，且**权限类（`update_flags`）与结构类（`split_huge`／`unmap`）分别归类重审**：「只拆小、不增权限」不构成豁免，因为叶子粒度本身就是冻结字段。具备拆分能力不等于某个过渡映射已安全撤销；活动根上存在修改路径也不等于这些修改自动符合冻结合同。
+**这张表替代此前的「T1 在激活引导根前」**：第九十三轮已裁定 `enable()` 不是 T1，时点表若继续写「激活前」就与裁定自相矛盾。拆开之后各点责任不再互相冒充——**T0 不能被 T1 的事后通过替代**，因为 T1 检查的是经过修改后的稳定集合，而 T0 检查的是「激活这一刻必须成立」的条件。T0 有一条落地前必须回答的问题：根尚未激活时如何遍历实际 PTE——若只能审计构造计划而不能检查已写入的 PTE，该阶段的证明强度必须如实降低，不得写成「已观测」。
 
-**冻结对象是 `FrozenBootMappingSet`，不是整棵页表**：T1/T2 审计过的是启动政策映射集合，该集合内的映射定义不得被未授权修改；其它页表区域（未来的 VM、动态映射、进程地址空间）经受控更新接口变化——准备修改 → 校验政策 → 发布 → 架构同步——这不违反冻结。**不接受的表述**：「启动后页表永久不可改」。
-**候选 B**：不冻结，每次修改后重跑对应审计——可作为后续动态页表阶段的机制，不能替代切根前审计。
-**无论 A/B，后续页表修改必须「先审后用」**：在未激活的副本上修改并审计后再发布，或经受控更新接口在映射对硬件可见之前完成验证；A/D 位的屏蔽必须逐字段定义，不能笼统忽略一组 PTE 位。
-**政策审计与硬件同步是两份独立合同**：审计通过不等于新映射已在所有执行单元生效。架构层必须负责 PTE 写入的发布顺序、相应地址空间的 TLB 失效、以及多核之间的同步失效（shootdown）；共享层只表达「新映射必须在所有相关执行单元生效」这个语义，不出现 `INVLPG`/`SFENCE.VMA`/`TLBI` 之类机制。
+**本项在这三个检查点里只有一件事**：交出可枚举的物理范围清单（§2.4 的扣减记录 + O-02a 的授权输入）。哪个叶子粒度、A/D 由谁更新、PMP/PMA 是否放行页表访问、临时映射的结构影响范围是否触及冻结字段——全部由 BootEntry 与分页侧专项承接，第九十三轮那张「激活前后修改路径」读数表已随重划移入 `03` 六十五节（逐字保留，作为该专项的输入，不再是本项验收条件）。
+
+**冻结字段本身（VA 覆盖、PA 对应、页大小、有效权限、内存属性、共享性与 `MutableMappingMetadata`）属 T1/T2 的合同内容，随射程重划整体移入 `03` 六十五节**——本项不裁决「哪种修改算破坏冻结」，只保证交接清单里每个物理范围的来源可枚举。
+
 **判据**：每个时点能列出「必须已完成的审计」与「允许的硬件更新」。
 **第一个消费者**：根切换代码（今天只有一次根建立，没有切换）。
 
@@ -532,7 +535,7 @@ NoMapControlledAccessEligible(use, device_id) =
 **失败形态**：固件把 DTB 放在 MRB 内；内核在知道它是 MRB 之前已经读了它。
 **候选**：
 
-- **A（两步授权）**：① 对应启动 ABI 提供的 DTB 指针授权对**固定 header 区域**的一次性只读访问（授权主体与传递方式按每条入口分别定义）；② 校验 magic、版本、`totalsize`、回绕与范围合法性后，才授权对 `[dtb, dtb + totalsize)` 的完整读取，并复制到自有缓冲。授权范围与失效点写进启动输入合同。
+- **A（两步授权，第九十五轮裁定为「具名一次性启动读取合同」）**：① 对应启动 ABI 提供的 DTB 指针授权对**固定 header 区域**的一次性只读访问（授权主体与传递方式按每条入口分别定义）；② 校验 magic、版本、`totalsize`、回绕与范围合法性后，才授权对 `[dtb, dtb + totalsize)` 的完整读取，并复制到自有缓冲。授权范围与失效点写进启动输入合同。
 - **B**：不承认该授权，则必须定义不读取原始地址也能取得 DTB 的其他机制（例如固件提供副本），否则该布局拒绝启动。
 
 **另需裁定一致性策略**：配置表 DTB 的保留声明与 UEFI 内存图之间——(A) 解析权威 DTB，保留来源身份并与内存图交叉验证；(B) 只信内存图，接受来源身份丢失并对无法区分的区域取更保守的统一政策。第一版倾向前者，但 B 也可以是明确的简化，不是规范要求。
@@ -704,7 +707,7 @@ ArchitecturalRegisterAperture（架构规定的寄存器窗口，如 xAPIC 4 KiB
 | LAPIC（**x2APIC 分支**） | 不适用：x2APIC 用 MSR 访问，MMIO 接口不可用 | **不产生 MMIO 访问需求，也不得伪造包络** | 无 MMIO 授权 | 无 |
 | IO-APIC | **未知**（同上） | `[0xFEC0_0000, 0xFEC0_1000)` | `[0xFEC0_0000, 0xFEE0_0000)`（**与 LAPIC 相邻，不是同一个包络**） | 同授权范围 |
 | 平台外设窗口 | 32 MiB（QEMU virt profile） | 从已登记的设备访问点派生；**未登记的设备不产生访问需求** | `[0x0800_0000, 0x0A00_0000)`（有意授权整段） | 32 MiB |
-| PLIC | `[0x0C00_0000, 0x0C60_0000)`（DTB `reg`，6 MiB） | `[0x0C00_0000, 0x0C24_0000)` | `[0x0C00_0000, 0x0C40_0000)` | 同授权范围 |
+| PLIC | `[0x0C00_0000, 0x0C60_0000)`（DTB `reg`，6 MiB） | `[0x0C00_0000, 0x0C24_0000)` | `[0x0C00_0000, 0x0C60_0000)`（**整段 aperture，第九十三轮裁决**） | `[0x0C00_0000, 0x0C40_0000)`（预期覆盖，不等于授权） |
 | `RiscvVirtPlatformMmioWindow` | 平台窗口（见下） | UART 控制台寄存器偏移（资源 256 B） | `[0x1000_0000, 0x1020_0000)`（2 MiB 平台窗口） | 同授权范围 |
 
 **2 MiB 包络的授权对象是平台窗口，不是 UART**：QEMU virt 的 `[0x1000_0000, 0x1020_0000)` 同一段里还有 VirtIO MMIO（`0x1000_1000` 起）与 fw_cfg（`0x1010_0000`），所以这条政策登记为 `RiscvVirtPlatformMmioWindow`，UART 只是窗口内的一个资源条目（`DeviceAperture` = 256 B）。**通用规则：大页包络的授权对象必须是产生该包络的完整平台内存窗口，而不是包络里恰好存在的一个设备资源。**
@@ -723,7 +726,7 @@ ArchitecturalRegisterAperture（架构规定的寄存器窗口，如 xAPIC 4 KiB
 它与 ACPI reclaim/NVS 描述符自身的 4 KiB 对齐约束是两条独立规则，不能混用。
 **三个完整性主张强度不同，不能互相代替**：`Coverage ⊆ AuthorizedRange`（已映射区域未越权）、`RegisteredRequiredAccess ⊆ Coverage`（已登记需求可映射）、`ActualDeviceAccess ⊆ RegisteredRequiredAccess`（**未证明**：没有登记的设备访问是否存在，当前无任何证据）。最终报告必须分别陈述，不能拿前两项冒充第三项。
 
-**数值相等 ≠ 来源相等**：表中若干行的授权范围与覆盖范围数值相同，但授权是**独立政策输入**，覆盖是**独立测量**；不能由实际叶子反推授权。而且今天**没有页表审计遍历**，所以今天的覆盖只能叫 `ExpectedDeviceMappingCoverage`（从构造代码推导），`ObservedDeviceMappingCoverage`（PTE 遍历）等 O-02a 的引导根审计落地后才存在。表中「覆盖」列在观测实现前一律标为**预期**。
+**数值相等 ≠ 来源相等**：表中若干行的授权范围与覆盖范围数值相同，但授权是**独立政策输入**，覆盖是**独立测量**；不能由实际叶子反推授权。PLIC 是显式例外：它的授权（6 MiB）比预期覆盖（4 MiB）**更宽**，两者不得再写成「同授权范围」。而且今天**没有页表审计遍历**，所以今天的覆盖只能叫 `ExpectedDeviceMappingCoverage`（从构造代码推导），`ObservedDeviceMappingCoverage`（PTE 遍历）等 O-02a 的引导根审计落地后才存在。表中「覆盖」列在观测实现前一律标为**预期**。
 
 **x2APIC 是第三种访问域**：xAPIC 走 MMIO（`0xFEE0_0000` 页），x2APIC 走架构寄存器（RDMSR/WRMSR）——既不属于 MMIO 窗口模型，也不属于 O-08 的端口 I/O 地址域。**MSR 编号不进共享层**：共享层只表达 `ApicRegisterAccessRequirement`（APIC 逻辑寄存器、读写方向、访问者、阶段、CPU 范围、适用模式），x86 架构层用 `X2ApicMsrUse` 记录具体 MSR 编号、指令位置与包装函数。同一 OS 语义（读 Local APIC ID、写 EOI）在 xAPIC 映射到 MMIO、在 x2APIC 映射到 MSR。**第一版若不实现 x2APIC 访问路径**，必须锁定 xAPIC profile 并在检测到 x2APIC 时拒绝启动，不得「允许 x2APIC 模式却保留 xAPIC 的 MMIO 访问需求」。O-10 的 in/out 负控不覆盖 RDMSR/WRMSR：**架构寄存器访问必须进入独立的原始操作审计**——允许出现原始 MSR 访问的函数与指令位置清单、MSR 编号与共享层逻辑寄存器的对应关系、在已批准的 `asm!` 块中加第二条 `rdmsr`/`wrmsr` 必须使审计失败、x2APIC 模式下不得残留 xAPIC LAPIC MMIO 访问义务。
 
@@ -734,6 +737,8 @@ ArchitecturalRegisterAperture（架构规定的寄存器窗口，如 xAPIC 4 KiB
 **静态窗口必须绑定一个 `PlatformMemoryProfile`**：每个 profile 至少含 `ProfileId`、QEMU 构建版本、machine type/version、accelerator、CPU 型号、SMP 拓扑、窗口政策集合、预期资源集合与不支持的配置。表格只引用 profile ID；x86 APIC、aarch64 32 MiB、riscv PLIC/UART 四类窗口都适用——今天四者的 QEMU 构建版本都**尚未记录**，属于待补证据。
 
 **aarch64 的 32 MiB 是 `DeviceWindowPolicy` 窗口，不是一个设备的资源**：它表示钉住的 QEMU virt profile 对该整段授予 `DEVICE` 映射资格；其中哪些设备、哪些空隙、哪些区段当前没有访问点，由资源清单与访问需求另行解释，不能由设备名称反推。
+
+**`PLIC_RESOURCE_LEN` 里的 2 倍关系属于 TCG 形状，不是通用资源长度**：代码常量写成 `0x0020_0000 + 2 * PLIC_MAX_HARTS * 0x1000`（`os/arch/src/lib.rs`），配套注释逐字说的是「M-mode 与 S-mode context of every supported hart」，claim 寄存器按 `0x20_0000 + (2N+1)*0x1000` 定位——奇数 context ID 正是 QEMU TCG 路径的形状，KVM 用连续编号。所以通用合同只有一条：`RequiredEnd = ContextBase + (MaxActualContextID + 1) × Stride`，`2 × hart_count` 只能作为**具名 TCG profile 的推导结果**出现在该 profile 的记录里。另两点要分清：`PLIC_MAX_HARTS = 32` 是本项目 SMP 上限（注释要求「至少与内核 SMP 上限一致」），不是 QEMU 的最大 CPU 数；上游 QEMU virt 的 PLIC 窗口按最大 CPU 配置可达 6 MiB 这一条按「评审人已核」使用，**本方未取 QEMU 源码**。窗口长度 `PLIC_WINDOW_LEN` 是资源范围按 2 MiB 向上取整的结果并有 `PLIC_WINDOW_LEN <= 0x60_0000` 的编译期断言——它落在 aperture 内，但 aperture 本身不因它而被授权。
 
 **PLIC 范围的推导与 profile 条件**：`N_context = hart_count × 2` 不是通用公式——QEMU TCG 用奇数 context ID（`2·cpu+1`），KVM 用连续编号，不支持 S-mode 的 hart 还会造成 context 数差异。所需范围写成 `ContextBase + (max(实际使用的 context ID)+1) × Stride`；context ID 不能由 hart 数直接乘 2，也不能把 `interrupts-extended` 的 interrupt specifier 当成 PLIC 的 MMIO `addrid`。内核实际需要的资源长度是 `PLIC_RESOURCE_LEN = 0x0020_0000 + 2 × PLIC_MAX_HARTS × 0x1000`（32 hart 时 `0x24_0000`）。
 
@@ -994,10 +999,13 @@ AtomicSharedStateEligible(page, ctx) =              ← 页级：只做「登记
         ProgressOf(algorithm) = 若用 LR/SC 则 EventualAtomicProgress，否则取该算法登记项 progress_requirement 显式给出的
                                 OperationCompletion 或 NotRequired   ← 登记是合同输入，不允许实现者自行推断该选哪个
           ← 分型而非一个共用的 Eventual：AMO-only 不因它要求最终成功；其他架构的额外进展要求由 adapter 映射
-        ∧ ( algorithm.uses_lr_sc ⇒ ∀ a ∈ LegalStarts(page, lrsc_req, AtomicSharedState, ctx) :
-              AtomicCapabilityPermits(ctx.arch, algorithm, PageScope(page, a), ctx.ParticipatingCpuSet, ctx.isa_profile_id) )
-            ← 共享层只问「该架构在这些 CPU 与该范围上是否满足该算法的原子能力与进展要求」；预约集几何
-              是 RISC-V 对该问题的回答之一，量词形状三架构共享、机制名不共享
+        ∧ ∀ scope ∈ AlgorithmScopes(page, algorithm, ctx) :
+              AtomicCapabilityPermits(algorithm, scope, ctx.ParticipatingCpuSet, ctx.isa_profile_id)
+            ← **不加 `algorithm.uses_lr_sc` 这类前置条件**：AMO-only 不检查预约集，不等于 AMO-only 不经过
+              原子能力判定——它的预约集要求可以是 NotRequired，但整个算法仍必须通过同一个语义接口，否则
+              AArch64 的 exclusive／LSE 与 x86 的锁定前缀原子会绕过这个谓词，而它恰恰是全文唯一的共享原子入口。
+              谓词由架构 adapter 的 trait 契约分派，不靠共享层对 `arch` 做枚举分支；
+              「用的是 AMO 还是 LR/SC」是 RISC-V 的实现选择，不进共享算法模型的必填事实
     ← 操作族、宽度与逐起始的硬件准入**只在** RoleSpecificRequirements + PhysicalAccessPermits 那条路上查一次；
       这里不再重复 AccessRequirementsSatisfied，否则两边会各自演化出不同的「进展是否满足」
     ← 对象级实际访问复用同一个 adapter 谓词（入参换成实例证据与实际物理范围）：两层共享判定核心，不共享机制名
@@ -1005,7 +1013,7 @@ AtomicSharedStateEligible(page, ctx) =              ← 页级：只做「登记
 
 `AtomicProgressRequirement = NotRequired | OperationCompletion | EventualAtomicProgress`（AMO 的操作完成语义与 LR/SC 的预约最终成功不是同一件事）。
 
-- **只用 AMO 的算法**：要求相应 AMO 家族与宽度即可，不因它要求 `RsrvEventual`；`reservation_set` 为空、不检查预约集。
+- **只用 AMO 的算法**：要求相应 AMO 家族与宽度即可，不因它要求 `RsrvEventual`；它的预约集要求是 NotRequired、不检查预约集，**但仍走 `AtomicCapabilityPermits` 这条唯一语义入口**。
 - **LR/SC 的几何、进展与页内约束是三件事**：基础页内约束（`norm:lr_sc_rsrv_set_page`，第一版即使不声明 profile 也成立）∧ 进展要求 ∧ 声明 profile 时的几何（`Za64rs`），三项并列，缺一不得通过原子用途准入。第一版把所有实际使用 LR/SC 的算法一律要求语义级「最终成功」保证（RISC-V 即 `RsrvEventual`）；**不依赖最终成功的 `RsrvNonEventual` + fallback 路径整体不开放**——规范允许它，但前提是 `FallbackPlanSatisfied` 有真证据，第一版没有。
 - 规范「建议在主存区域提供 `RsrvEventual`」是一句 NOTE（推荐，不是强制），不能当准入依据引用。
 
@@ -1251,7 +1259,14 @@ AccessRequirement = { privilege, path, operation, width, alignment, atomicity, p
         不属于普通内核访问合同的情况由 adapter 的适用性规则处理，不写进共享枚举
     path ∈ {Explicit, ImplicitPageWalk}
     operation ∈ {NormalRead, NormalWrite, InstructionFetch, AtomicUpdate{family}, CacheMaintenance{kind}}
-        ← 共享层只用 OS 语义名；RISC-V adapter 展开为 Read/Write/Fetch/AMO(family)/LR/SC，
+        ← 名称分三层，共享公式**只许出现第一层**（旧式把 `Read`/`Write` 直接写进共享合取，
+          而 `Write` 不在本枚举里；下表是唯一的转换边界）：
+          | 层 | 名称 |
+          |---|---|
+          | 共享需求 | `NormalRead`、`NormalWrite`、`InstructionFetch`、`AtomicUpdate{family}` |
+          | RISC-V adapter | `Load`、`Store`、`Fetch`、`AMO`、`LR`、`SC` |
+          | 硬件保护检查 | 由 adapter 映射到 PMP 的 R/W/X 与 PMA 许可，含实际访问宽度 |
+          AArch64／x86 的映射同理，只在各自 adapter 文档里定义，不进共享判定式。
           以及 CMO 三类 CacheMaintenance{Management, Zero, Prefetch}——第一版三类均不支持，
           遇到即 `UnsupportedAccessOperation`（权限表能表示的操作，输入模型也必须能表示）
 
@@ -1288,9 +1303,9 @@ BaseAccessRequirements(ctx) = 任何普通数据页都必须满足的访问类�
 
 RoleSpecificRequirements(role, ctx) = 该用途**在基底之上**的额外访问类别
     GeneralData        → ∅                                   ← 空集是定义，不是遗漏：基底已覆盖
-    PageTable          → { (ImplicitPageWalk, Read,  PteSize, PteAlignment) }   ← 两种 A/D 方案都必需
-                         ∪ { (Explicit, Read,  PteSize, PteAlignment) 若内核直接读 PTE }
-                         ∪ { (Explicit, Write, PteSize, PteAlignment) }  ← 安装/修改/撤销 PTE：两种方案都必需
+    PageTable          → { (ImplicitPageWalk, NormalRead,  PteSize, PteAlignment) }   ← 两种 A/D 方案都必需
+                         ∪ { (Explicit, NormalRead,  PteSize, PteAlignment) 若内核直接读 PTE }
+                         ∪ { (Explicit, NormalWrite, PteSize, PteAlignment) }  ← 安装/修改/撤销：两种方案都必需
                          ∪ { ImplicitHardwarePteUpdate 若 HardwareManagedAd }
     Executable         → `InstructionFetchPattern` 展开的取指访问类别（见下，不能退化成单个宽度）
     AtomicSharedState  → ExpandAtomic(RegisteredAtomicAlgorithms(ctx))   ← **等式而非巧合**：
@@ -1299,7 +1314,7 @@ RoleSpecificRequirements(role, ctx) = 该用途**在基底之上**的额外访�
                          AtomicRequirementsComplete(ctx) 要求「每个登记算法都完整展开」而非「表非空」
                          RISC-V adapter 再把 family 展开为 AMO(...) / LR-SC；宽度与进展只存外层一处
 
-ImplicitHardwarePteUpdate = AccessRequirement { privilege=Kernel, path=ImplicitPageWalk, operation=Write,
+ImplicitHardwarePteUpdate = AccessRequirement { privilege=Kernel, path=ImplicitPageWalk, operation=NormalWrite,
     width=PteSize(active_translation_mode), alignment=PteAlignment,
     atomicity=AtomicPteUpdate, progress_guarantee=EventualAtomicProgress }   ← 相对同一 PTE 的其它访问必须原子
         ← 硬件 A/D 更新要求的 RISC-V `RsrvEventual` 正是语义级 EventualAtomicProgress；本节 PmaPermits 只认
@@ -1388,7 +1403,7 @@ ExpectedTranslationSegments = { TranslationSegment { va_range, expected_pa_range
 
 VirtualAccessInstance {          ← 第一层：源级一次访问（原始宽度与架构对齐）
     instruction_or_access_id, virtual_address, original_width, architectural_alignment,
-    reservation_set_evidence,    ← 仅 LR/SC 实例携带；对象级几何消费它，不借用页级结论
+    architecture_access_evidence_ref,   ← 架构相关证据的**引用**：共享类型不认识预约集，字段名与类型都不出现它
 }
 TranslatedAccessFragments(i) = { TranslationFragment { va_range, pa_range } }
     ← 第二层：完整翻译结果，须无遗漏、无重叠并保持字节对应；它回答「字节映射到哪里」
@@ -1431,8 +1446,11 @@ ObjectPhysicalAccessEligible(use, ctx) =
         ∧ SegmentsCorrespondToExpectedTranslation(i, use)          ← 逐段比对 VA→PA 对应，不是比物理并集
         ∧ ArchitecturalAlignmentSatisfied(i)                       ← 约束原始指令/操作数的有效地址
         ∧ OperationsRealizeAccess(i, TranslatedAccessFragments(i), ActualMemoryOperations(i, ctx.arch), ctx.arch)
-        ∧ ( i 是 LR/SC ⇒ ReservationSetGeometryCore(i.reservation_set_evidence,
-                                                    Union(TranslatedAccessFragments(i)), subject_cpus, ctx.isa_profile_id) )
+        ∧ AtomicAccessesEligible(i, TranslatedAccessFragments(i), subject_cpus, ctx.adapter_evidence)
+             ← adapter 内部分派：RISC-V 才用 ReservationSetRequirement / ReservationSetGeometryCore /
+               ReservationSetEvidence（`RsrvEventual`），AArch64 用 exclusive monitor 约束，x86 用锁定前缀族。
+               **不得默认用访问宽度代替预约集实际几何**：Union(TranslatedAccessFragments(i)) 是翻译后的实际
+               物理片段，未必等于该算法需要证明的预约集范围
         ∧ ∀ op ∈ ActualMemoryOperations(i, ctx.arch) ∀ cpu ∈ subject_cpus :
               PhysicalAccessPermits(cpu, op.requirement, op.footprint)   ← 逐操作，用该操作自己的宽度与类别
     ← 对齐字段只有一处含义：原始访问的架构对齐；分解后每个 operation 另按整次覆盖规则判定
@@ -1472,13 +1490,19 @@ ObjectMappedAccessEligible(use, ctx) =
     ∧ AliasCompatibilityHolds(use) ∧ ObjectPhysicalAccessEligible(use, ctx)
 
 ObjectAccessEligibility(object, ctx) =
-    ObjectAccessInventoryState(object) ∈ { Complete(uses, audit_scope), NoAccess(proof) }
+    ObjectAccessInventoryState(object) ∈ { Complete(uses ≠ ∅, audit_scope), NoAccess(proof) }
     ∧ ( ObjectAccessInventoryState(object) = Complete(uses, audit_scope)
           ⇒ uses = ObjectAccessUses(object) )   ← 要验的是「状态携带的清单就是实际消费的清单」，不是非空标签
     ∧ ∀ use ∈ ObjectAccessUses(object) :
           InstanceSetComplete(use)              ← 非空不等于完整：部分实例集不得冒充完整实例集
           ∧ ObjectMappedAccessEligible(use, ctx)
-ObjectAccessInventoryState(object) = Complete(uses, audit_scope) | NoAccess(machine_checkable_proof) | Incomplete
+ObjectAccessInventoryState(object) = Complete(NonEmptySet<ObjectAccessUse>, audit_scope)
+                                     | NoAccess(machine_checkable_proof)
+                                     | Incomplete
+    ← 三态穷尽，不留混合入口：有访问点 → 必须 Complete 且清单**类型级非空**；确认没有访问点 → 必须走
+      NoAccess 并给出机器可检查证明；没完成检查 → Incomplete。允许 `Complete(∅, scope)` 就等于让
+      「一条访问都没登记」冒充「完整扫描后确认没有访问」，绕开特意设的 NoAccess 分支——这与
+      `AccessInstanceSet.instances` 早已采用 NonEmptySet 是同一规矩
     ← NoAccess(proof) ⇒ ObjectAccessUses(object) = ∅，且 proof 必须覆盖适用阶段、适用树、全部访问路径与对象
       整个存活期间的访问面
     ← 两份完整性证明各自独立、都不许省：① `ObjectAccessInventoryState` 证明**给定 audit_scope 内**该对象的
@@ -1577,20 +1601,7 @@ ArchitectureAdmissionDenial {      ← 归因记录，不是集合：PmmBaseExcl
     page_range,                          ← 按相同证据与原因可合并范围，但任意一页都必须能查出全部理由
     reason, state, cpu_scope, failed_requirement, evidence_id, admission_context_id, source_refs,
 }
-RoleAdmissionDenial {                 ← 用途层的归因记录，与基底排除分开（第九十三轮采纳，非第一层阻塞项）
-    page_range, role, failed_requirement, cpu_scope, legal_start, footprint,
-    evidence_id, admission_context_id,
-}
-    ← 「这一页不能作为 PageTable / Executable / AtomicSharedState」是用途层结论，**不得**记成「该页已从
-      `PmmBaseAvailable` 排除」：两者字段不同、消费者不同。`legal_start` + `footprint` 指出是哪一个起始
-      地址上的哪一类访问失败，将来解释 PMM 为什么拒绝某个用途才有据可查；缺这份记录时只剩一个布尔
-ArchitectureAdmissionRejected {
-    cache_policy_evidence,
-    memory_ordering_evidence,
-    hart_access_evidence,
-    profile_memory_obligation_evidence,   ← ProfileMemoryEligiblePages 拒绝时必须有这一项
-    state: DefinitelyIneligible | InsufficientEvidence,
-}
+# （用途层归因记录 RoleAdmissionDenial 的字段清单移入 `03` 六十五节；它是分配器的诊断能力，不作交棒验收条件）
 ```
 
 `DefinitelyIneligible` 是已有证据证明不能访问或不满足目标语义（平台事实）；`InsufficientEvidence` 是无法证明合格、按 fail-closed 排除（证据缺口）。两者都导致排除，但**诊断不能合并**——前者要做平台决策，后者要做补证，处理路径完全不同。
@@ -1649,11 +1660,13 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 
 | 层 | 结论 | 依据 |
 |---|---|---|
-| 第一层：语义与方向 | **可签** | 五条不变量；§4 的准入合同方向明确 |
-| 第二层：集合与逐路径判据 | **不签** | 未闭合项见下；本轮修掉两处公式级冲突（`GeneralData` 空集合分支、`InstanceSetComplete` 无消费者），新暴露一项**冻结时序**未闭合 |
+| 第一层：语义与方向 | **可签** | 五条不变量；§4 的准入合同方向明确；§1.6 的三合同划界评审人已认可 |
+| 第二层：集合与逐路径判据 | **按收窄后的射程不签** | 交棒侧未闭合项见下；公式级冲突已修（`GeneralData` 空集合分支、`InstanceSetComplete` 接入、`Complete` 类型级非空） |
 | 第三层：固定布局 ABI | **不可签** | 未开始（O-13） |
 
-**第二层未闭合项**——共同形状是「文本已定、证据或实现为零」，外加一条**现状与合同相反**的项：
+**先说清这一层现在管什么**：第二层的验收对象是「完整、准确、无歧义地把物理资源与平台资源信息交给 OS」。**不计入本项验收**的四类条件（内容仍留在正文作上下文，归属 BootEntry 与分页侧专项）：叶子粒度与拆分／降级路径、PTE 的 A/D 更新方案、页表访问的 PMP/PMA 证明、LR/SC／AMO／预约集等原子能力，以及 `FrozenBootMappingSet` 的页大小冻结与临时映射的结构影响范围。评审人本轮已自行撤销把这些列为交棒阻断项的判断，本项按撤销处理，不再逐项反驳。
+
+**未闭合项**——共同形状是「文本已定、证据或实现为零」，外加一条**现状与合同相反**的项：
 
 - **现状冲突（不是缺口，裁决已下）**：低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策，普通叶子带 `EXECUTABLE`，且没有撤销路径（§2.3 已把措辞收紧为「无条件尝试建立且失败被吞」，并声明没有实际 PTE 遍历证据）。**x86-64 的 Step 4 还会整槽替换并降级既存恒等叶子、在既存 PML4[0] 上置 USER 位**（§2.3 已按代码读数改写），所以「恒等段一次建好就不再变」在三架构上都说不通。O-02a 裁定甲案、否决乙案，也否决「必需叶子走授权、普通 RAM 继续走旧宽映射」的半拉子形态。**本项状态**：四段依赖链的前三段（来源进入政策、引导根负向投影、必需对象正向授权）是 I-29 的交付，均**尚无代码**——最硬的缺口是除 riscv bootface 外三条入口仍丢弃来源记录、UEFI 侧 `SourceRecord` 未产出。**第四段（建表侧消费与验收）属分页专项**，其完成度不计入本项交付，否则会误判 I-29 未交付。
 
@@ -1666,8 +1679,9 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 - **hart 清单与 A/D 方案**：`SystemHartSet` 的语义**已选定**为「平台上所有物理存在的 hart」，`fail` 条目按三分表处理（证明物理不存在才排除；证明物理存在即纳入；只能证明不可运行 → `InsufficientEvidence` 拒绝启动）。**未闭合的是平台事实而非模型**：各平台的完整 hart 清单与其物理存在性证据（`HartInventoryEvidence.completeness_claim`）与逐 hart 的 A/D 方案证明。
 - **UEFI 输入与快照**：`PreflightMap` / `FinalMap` 合同无实现与负控；固件镜像身份与属性位编码 profile 未钉；`RESERVED`/`UNUSABLE` 的原始描述符记录未产出；`EfiReserved`、§4.6.1.3 与 AArch64 分组规则均为评审人核对，本方未独立取到原文。
 - **设备窗口**：模型可签、数值未签——APIC 核对改为逐逻辑处理器，QEMU 构建版本与 machine version 未记录；今天没有页表遍历，覆盖列只能是预期值。PLIC 已按本轮裁决改为**整段 6 MiB aperture 授权、4 MiB 只作预期覆盖**，否决由 2 MiB 叶子反推授权；授权数值本身仍待 profile 独立证明，证明不成立即拒绝该 profile。
-- **冻结时序（P0 阻塞，本轮新暴露）**：O-05 把叶子粒度与权限列为冻结字段，而今天活动根上至少有四类修改发生在激活之后（Step 4 追加、`fn harden_kernel_text`、heap 窗口驱逐、ELF 加载窗口），唯一像审计的检查也落在激活之后。第一版把 T1 定义为「引导根上全部结构修改完成之后」，`enable()` 不是 T1；修改序列终点的登记、临时映射按（范围＋意图＋生命周期）具名排除、权限类与结构类分别重审——全部无实现。
+- **冻结时序（移出本项验收，改列 BootEntry／分页侧专项待办）**：今天活动根上至少有四类修改发生在激活之后（Step 4 追加、`fn harden_kernel_text`、heap 窗口驱逐、ELF 加载窗口），唯一像审计的检查也落在激活之后；检查点已拆成 T0／T1／T2，职责与归属见 O-05。留给该专项的三个未答问题：T0 在根未激活时如何遍历实际 PTE（拿不到就只能审计构造计划，证明强度必须如实降低）、临时映射的结构影响范围是否触及冻结字段、`split_huge` 拆分出的中间表页由谁记账。
+- **交棒完整性（本项主责，部分已实现）**：内核 → VM 这一跳的五类扣减范围已有实现与测试（§2.4）；**未闭合在另外三处**——其一，UEFI 腿的 `SourceRecord` 仍未产出、除 riscv bootface 外三条入口丢弃来源记录（O-12g，本项最硬缺口）；其二，交接给内核的 memmap 文档逐字写着 **not filtered**，内核映像与启动模块占用在**第一跳**并不反映，只由第二跳的扣减记录补偿，两跳之间谁是权威需明确裁决；其三，O-13 固定布局 ABI 未开始，扣减记录容量 `VM_BOOT_HANDOFF_MAX_DEDUCTED` 的核算与溢出形状尚未按三架构分别验证。
 
-**两个阻塞组**：输入真实性、来源保真与生命周期（O-11、O-12h、O-12k、O-12j、DTB 节点准入、O-01、O-06、O-12f、O-12g）；投影、映射、禁止集合与访问完整性（O-12d、O-12i、O-12c、O-08、O-02a/b、O-03、O-04、O-05、O-12a/b、O-07、O-09、O-10、O-12e）。
+**两个阻塞组（已按射程剔除归属专项的条目）**：输入真实性、来源保真与生命周期（O-11、O-12h、O-12k、O-12j、DTB 节点准入、O-01、O-06、O-12f、O-12g）；投影、禁止集合与交棒清单（O-12d、O-12a/b、O-02a/b、O-03、O-04、O-07、O-12e、O-13）。**移给专项**：O-12i 的硬件准入与原子能力部分、O-12c 的映射覆盖观测、O-05 的冻结字段与时序。
 
 「禁止集合编译 + 引导根审计」有代码也只能作为第一轮实现复审的起点，不是第二层签字的条件——输入边界、来源完整性、PMM 资格与设备映射覆盖都是它的前置证明。在那之前，对 §5 的评审只需回答两个问题：问题是否成立、候选是否覆盖失败形态。

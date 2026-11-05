@@ -1824,3 +1824,80 @@ GenericRolePageEligible(page, role, ctx) =
 <!-- 自正文 PhysicalRange 段落（顶端页支持边界未写成政策） 移入 -->
 
 **统一物理范围类型 `PhysicalRange { start: u64, end_exclusive: u128 }`**（`start < 2^64`、`start < end_exclusive ≤ 2^64`）：DTB 的 `address + size` 与 UEFI 描述符都能表达 `[0xffff_ffff_ffff_f000, 2^64)`，统一来源记录不得因 Rust 字段类型丢掉这个合法边界。原始输入字段保留各自编码（DTB 的 address+size、UEFI 的 start+pages），规范化层才转成 `PhysicalRange`；`UnsupportedPhysicalAddressEnd` 只在项目明确选择拒绝该边界时使用，**不能成为 `u64` 加法的副作用**。这条与 O-12h 结构校验、O-12i `FullPages` 是同一条边界合同；DTB 腿已按此实现（分名规则见 §2.1 与 O-12i），UEFI 侧的 `SourceRecord` 尚未接入。
+
+
+## 六十五、第九十五轮：按射程重划移出正文的读数表与记录
+
+> 评审人撤销了「把叶子粒度、A/D 更新、PMP/PMA 页表访问证明、原子能力、冻结字段列为内存图交棒阻断项」的判断。下列内容逐字保留，作为 BootEntry 与分页侧专项的输入；它们不再构成 I-29 的验收条件，也未被否定。
+
+<!-- 自正文 O-05 候选 A 的三行时点表（T1 写成激活前，与第九十三轮裁定冲突） 移入 -->
+
+| 时点 | 必须完成 |
+|---|---|
+| T1 激活引导根前 | 引导根的覆盖、权限、语义、别名与禁止集合；含设备映射验收（R13-D） |
+| T2 激活最终根前 | 最终根的同类审计 + 三类义务合并目标（R21） |
+| 激活后 | 对**映射定义字段**持续验证 |
+
+<!-- 自正文 第九十三轮的激活前后修改路径读数表（按射程重划移交分页侧专项） 移入 -->
+
+**冻结时点与今天的活动根修改路径撞车（下表是代码读数，不是推测）**：
+
+| 时点／路径 | 代码事实 | 改了什么 | 政策归属 |
+|---|---|---|---|
+| 根激活**之前** | `fn build_bootstrap_root_and_enable` 内按顺序执行：恒等循环（失败被 `let _ =` 吞）、内核高半映射（`.expect`）、设备窗口高半别名、设备窗口段；最后 `paging.enable()` 与 `set_current_root_phys` | 建立叶子 | **构造期**，是 T1 审计的正确对象 |
+| Step 4 直接映射 | `establish_boot_dm` 在激活后运行；x86-64 还整槽替换并降级既存恒等叶子、置 USER 位 | 新增叶子；x86-64 另改页大小与权限 | **激活后修改**：不能说 T1 在它之前完成 |
+| `fn harden_kernel_text` | 唯一调用点在 `fn kmain` 内、`bkl_lock` 之后、`smp_init` 之前；经 `from_active_root` 包住活动根后 `split_huge`，再 `update_flags` 置 RX | 页大小 1 GiB→4 KiB ∧ 权限（PA 由 `update_flags` 保留） | **激活后修改**：动的正是上表第一行的两个冻结字段 |
+| heap 窗口驱逐 | `os/kernel/src/lib.rs` 的驱逐段，对 `[VM_HEAP_BASE, +VM_HEAP_SIZE)` 先 `split_huge` 再 `unmap`（`expect`，失败即 panic） | 撤销叶子 | 具名临时映射：按范围＋意图＋生命周期排除，不得笼统排除整棵活动根 |
+| ELF 加载窗口 | `os/arch/src/arch/boot.rs:fn load_elf_into`：`split_huge` → `grant_user_walk` → `unmap` | 粒度、权限、撤销 | 同上 |
+
+**所以 T1 不能写成「引导根激活之前」**：今天唯一像审计的检查是 `os/kernel/src/dm_coverage.rs:fn validate_bootstrap_tree`，它的调用点仍在激活之后，而激活之后还有上表四类修改。合同只有两种自洽写法——**要么**把 T1 定义为「引导根上全部结构修改完成之后」（于是 `enable()` 不是 T1，冻结记录必须带修改序列的终点标识），**要么**保持 T1 在激活前，把那四类路径全部划入「受控更新 + 先审后用」并逐类登记归属。第一版选前者，且**权限类（`update_flags`）与结构类（`split_huge`／`unmap`）分别归类重审**：「只拆小、不增权限」不构成豁免，因为叶子粒度本身就是冻结字段。具备拆分能力不等于某个过渡映射已安全撤销；活动根上存在修改路径也不等于这些修改自动符合冻结合同。
+
+<!-- 自正文 RoleAdmissionDenial 记录（PMM 用途层归因，按射程重划移交 PMM／分页侧） 移入 -->
+
+RoleAdmissionDenial {                 ← 用途层的归因记录，与基底排除分开（第九十三轮采纳，非第一层阻塞项）
+    page_range, role, failed_requirement, cpu_scope, legal_start, footprint,
+    evidence_id, admission_context_id,
+}
+    ← 「这一页不能作为 PageTable / Executable / AtomicSharedState」是用途层结论，**不得**记成「该页已从
+      `PmmBaseAvailable` 排除」：两者字段不同、消费者不同。`legal_start` + `footprint` 指出是哪一个起始
+      地址上的哪一类访问失败，将来解释 PMM 为什么拒绝某个用途才有据可查；缺这份记录时只剩一个布尔
+ArchitectureAdmissionRejected {
+    cache_policy_evidence,
+    memory_ordering_evidence,
+    hart_access_evidence,
+    profile_memory_obligation_evidence,   ← ProfileMemoryEligiblePages 拒绝时必须有这一项
+    state: DefinitelyIneligible | InsufficientEvidence,
+}
+
+<!-- 自正文 对象级判定直接调用 ReservationSetGeometryCore 的旧式（共享层再次认识预约集） 移入 -->
+
+        ∧ ( i 是 LR/SC ⇒ ReservationSetGeometryCore(i.reservation_set_evidence,
+                                                    Union(TranslatedAccessFragments(i)), subject_cpus, ctx.isa_profile_id) )
+
+<!-- 自正文 AtomicSharedStateEligible 里用 uses_lr_sc 作前置条件的旧式（AMO-only 会绕过共享原子谓词） 移入 -->
+
+        ∧ ( algorithm.uses_lr_sc ⇒ ∀ a ∈ LegalStarts(page, lrsc_req, AtomicSharedState, ctx) :
+              AtomicCapabilityPermits(ctx.arch, algorithm, PageScope(page, a), ctx.ParticipatingCpuSet, ctx.isa_profile_id) )
+            ← 共享层只问「该架构在这些 CPU 与该范围上是否满足该算法的原子能力与进展要求」；预约集几何
+              是 RISC-V 对该问题的回答之一，量词形状三架构共享、机制名不共享
+
+<!-- 自正文 共享层展开为 Read/Write/Fetch 的旧注释（枚举名与共享合取不一致） 移入 -->
+
+        ← 共享层只用 OS 语义名；RISC-V adapter 展开为 Read/Write/Fetch/AMO(family)/LR/SC，
+
+<!-- 自正文 冻结字段与例外表、FrozenBootMappingSet 段、候选 B、先审后用、政策审计与硬件同步 移入 -->
+
+冻结的字段与例外：
+
+| 字段 | 激活后 |
+|---|---|
+| VA 覆盖、PA 对应、页大小、有效权限、内存属性、共享性 | 不允许变化 |
+| 架构 adapter 列出的受控元数据字段（`MutableMappingMetadata { field, update_agent, permitted_transition, synchronization_contract }`） | 按 `update_agent` 允许特定变化；RISC-V 的 A/D 随 `PteUpdateScheme` 取 `Hardware` 或 `FaultHandler`，AArch64/x86 由各自 adapter 定义；审计必须说明如何屏蔽或验证 |
+
+**（激活前后修改路径的代码读数表已随射程重划移入 `03` 六十五节：它决定的是冻结合同的归属，不是交棒信息的完整性。）**
+
+**冻结对象是 `FrozenBootMappingSet`，不是整棵页表**：T1/T2 审计过的是启动政策映射集合，该集合内的映射定义不得被未授权修改；其它页表区域（未来的 VM、动态映射、进程地址空间）经受控更新接口变化——准备修改 → 校验政策 → 发布 → 架构同步——这不违反冻结。**不接受的表述**：「启动后页表永久不可改」。
+**候选 B**：不冻结，每次修改后重跑对应审计——可作为后续动态页表阶段的机制，不能替代切根前审计。
+**无论 A/B，后续页表修改必须「先审后用」**：在未激活的副本上修改并审计后再发布，或经受控更新接口在映射对硬件可见之前完成验证；A/D 位的屏蔽必须逐字段定义，不能笼统忽略一组 PTE 位。
+**政策审计与硬件同步是两份独立合同**：审计通过不等于新映射已在所有执行单元生效。架构层必须负责 PTE 写入的发布顺序、相应地址空间的 TLB 失效、以及多核之间的同步失效（shootdown）；共享层只表达「新映射必须在所有相关执行单元生效」这个语义，不出现 `INVLPG`/`SFENCE.VMA`/`TLBI` 之类机制。
+

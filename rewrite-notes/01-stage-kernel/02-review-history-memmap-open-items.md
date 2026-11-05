@@ -12,6 +12,18 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第九十五轮（射程重划：交棒信息与分页策略分成两个合同；评审人自我撤销的阻断项按撤销处理）**
+
+- **触发点是用户的质疑而不是新公式**：「扫描内存图然后交棒给 OS，大页小页是启动期与运行期的内存管理，怎么会涉及大页？」评审人本轮明确撤销上一轮把 `split_huge`、页大小冻结、A/D 更新、PMP/PMA 页表访问证明、LR/SC／AMO／预约集列为交棒阻断项的判断，并给出判据：**OS 决定完全不开大页，也不应要求 bootloader 换一种内存图交接方式**。
+- **落地方式是划射程，不是删内容**。新增 §1.6 三合同表（物理内存图／平台资源图／页表与引导页表切换），O-05 的检查点拆成 T0／T1／T2 并标注归属，冻结字段表与 `FrozenBootMappingSet`、候选 B、先审后用、政策审计与硬件同步四段逐字移入 `03` 六十五节，第九十三轮的激活前后读数表与 `RoleAdmissionDenial` 同批移交专项。这些条款没有被否定，只是不再构成第二层签字条件。
+- **在范围内的四项修正**：① PLIC 汇总表旧行仍写「授权 4 MiB、覆盖同授权范围」，与第九十三轮裁决冲突 → 全文唯一化为 6 MiB 授权 / 4 MiB 预期覆盖，并显式标注 PLIC 是「授权比覆盖更宽」的例外；② `PLIC_RESOURCE_LEN` 里的 2 倍关系按代码读数（每 hart 的 M/S 两个 context、claim 偏移 `(2N+1)*0x1000`）降级为具名 TCG profile 的推导结果，通用合同只剩 `RequiredEnd = ContextBase + (MaxActualContextID + 1) × Stride`，同时说清 `PLIC_MAX_HARTS = 32` 是本项目 SMP 上限、QEMU 最大 512 那条属评审人已核；③ `ObjectAccessInventoryState` 允许 `Complete(∅, scope)` 冒充「扫过且没有访问」→ 类型级 `NonEmptySet`；④ 原子合同回到单一语义入口：`VirtualAccessInstance` 的预约集字段改 `architecture_access_evidence_ref`，对象级改调 `AtomicAccessesEligible`，页级去掉 `algorithm.uses_lr_sc` 前置（AMO-only 的预约集要求可以是 NotRequired，但仍必须经过同一谓词），并禁止共享层靠 `arch` 枚举分支实现。
+- **操作名分层**：共享需求 / RISC-V adapter / 硬件保护检查三层各有名称，旧式把不在枚举里的 `Write` 写进共享合取，已统一为 `NormalRead`／`NormalWrite`。
+- **DTB 首读与 `no-map` 的先后裁定为「启动输入例外」而非 ABI 前置保证**：`BootInputReadUse` 是具名一次性只读合同，不等价于 `DriverControlledUse`，与第一版 `Reject` 不冲突；MRB 与 `no-map` 不得共用一个宽泛的 `BootInputProvenance` 例外。
+- **代码侧新读数**（§2.4 重写）：内核 → VM 那一跳的扣减记录今天**已有实现且有五枚测试**（`os/kernel/src/vm_handoff.rs:fn build_vm_handoff`；`LiveBootstrap ∩ VM-free = ∅` 在消费边界核对；容量溢出当场失败）。同时暴露两个未闭合：交接给内核的 memmap 文档逐字写着 **not filtered**，第一跳不反映内核映像与模块占用，只由第二跳补偿——谁是权威待裁决；容量核算未按三架构分别验证。
+- **回写评审人**：他撤销的四类要求本项按撤销处理，不再反驳；一处需补正——他把「交接信息须包含页表本身占用」列为在范围项，这与撤销不冲突（记录范围属交棒，证明范围属专项），本轮据此把第二跳读数写进 §2.4。
+- **读数**：1673 → **1687 行**（余量 13 行，下轮开工第一步仍是腾行）、133,366 → **136,442 字符**；送审继续用分段包（三封，逐字拼回对账为真）。
+
+
 **第九十三轮（两处公式级矛盾修正、冻结时序按代码读数闭合、PLIC 授权改按整段 aperture）**
 
 - **两处 P0 都是公式没按设计意图展开，不是保守程度问题**。① `GenericRolePageEligible` 无条件把 `RoleSpecificRequirements(role, ctx)` 喂给判定核，而判定核第一条拒绝空集合——`GeneralData` 的特有集合按定义为空，于是它的用途准入**永不成立**，任何包含它的用途集合一起失败；改成显式分支（`GeneralData` 走空分支直接合格，其它用途走判定核），判定核的 `requirements ≠ ∅` 原样保留，因为它专门挡「漏登记靠 ∀ ∈ ∅ 真空通过」。② `InstanceSetComplete` 定义了却没有消费者，最终判定只要求 `ActualAccesses(use) ≠ ∅`——非空不等于完整，部分实例集可以冒充完整实例集；现已接进 `ObjectAccessEligibility`，并要求 `Complete(uses, scope)` 的 `uses` 与实际消费的 `ObjectAccessUses(object)` 是同一份清单，不是状态标签。
