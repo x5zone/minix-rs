@@ -5470,4 +5470,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 新增：PMP 证据按访问类别索引（`AccessRequirement`/`HartAccessEligibleBytes`/`RoleRequirements`）；Profile 义务补 `Ssccptr` 并定「不声明 RVA ⇒ 空集≠已满足」；`AtomicFallbackPlan.required_memory`；O-11 第三条硬约束；AArch64 名称对应；§7 逐项签字视图。
 - 登记：`SourceRecord` 输入声明/派生主张变体拆分（非阻断）。
 - 门：无代码改动；minix-boot **141**、boot-shim **70** 复跑；lint/表格/行数三门；主简报 1318 行。
-- 认领：`I-29 qorder68`（工作树 `.wt/i-29-qorder68`，基线 `7aeea8964`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder68`（工作树 `.wt/i-29-qorder68`，基线 `7aeea8964`），状态 ✅：已 ff 合并为 `9cf7f574d`，认领已释放，`sweep` 读数在册 0。
+
+### 第二百七十六笔（01 阶段 · I-29 第六十八轮：页表准入入口独立）
+
+- 第三次按旧文本评审（自述依据 `f52730bef`/137-70；当前 `9cf7f574d`/141-70）。版本横幅扩为「提交号 + 内容轮次」。
+- 新增：`PageTableRoleAdmission(page, ctx)` 供 PMM 与对象审计共用（引导期页表页不经 PMM）；页域公式补裁决步；Profile 清单标注非全集；§7 增页表准入入口行。
+- 门：无代码改动；minix-boot **141**、boot-shim **70**；lint/表格/行数三门；主简报 1331 行。
+- 认领：`I-29 qorder69`（工作树 `.wt/i-29-qorder69`，基线 `9cf7f574d`），状态 🔄，合并后释放。

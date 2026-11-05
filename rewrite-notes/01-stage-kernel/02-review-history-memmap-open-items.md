@@ -10,6 +10,17 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十八轮评审之后：页表准入入口独立 + 页域公式补裁决步）**
+
+- **第三次按旧文本评审**：本轮意见再次引用布尔式、`HartAdmittedBytes`、`fallback_available`、`ctx.H` 单一集合，并自述依据是「提交 `f52730bef`、137/70」——当前是 `9cf7f574d`、141/70。版本横幅只写「本版对应提交」还不够，因为评审材料可能离线；本轮在横幅里加**内容轮次**（「第六十七轮评审后的修改」），提交号与轮次两项都对上才算同一份材料。
+- **页表用途准入独立成谓词**（本轮唯一实质新增）：`PageTableRoleAdmission(page, ctx)` 同时供 **PMM 分配**与**对象审计**调用。理由是引导期的自举页表根、页表树与静态页表页**不来自 PMM**——若只写在分配路径，未来分配被拒、而更早建立的页表页从未被审。PMM 只是消费者之一，不是这项硬件准入的唯一入口。
+- **页域公式补上裁决步**：`RamSourcePageDomain = FullPages(Union(ResolveCompatibleClaims(RamSourceDomain)))`。原写法「原样并集再取整页」会让读者以为冲突主张可无条件合并，与 §3 的四层规则冲突；现在公式本身先裁决、再并集、再量化。
+- **Profile 义务清单标注非全集**：补 `Za128rs`、`Zicclsm` 的提醒——本节只列与内存政策直接相关的条目，声明某个 Profile 时必须按钉住版本导入完整义务。
+- **§7 逐项表新增「页表用途准入入口」行**；SMP 判定表把 `RoleAdmit(PageTable)` 换成 `PageTableRoleAdmission` 并注明含引导期已建立的那批。
+- 判为**已被前轮解决**（附锚点）：A/D 分支式与反例负控、`SystemHartSet` 与清单来源、hart 入场既存对象四行表、`AtomicFallbackPlan`、`HartAccessEligibleBytes` 访问类别、第一版不支持非一致主存的裁定。
+- 门：无代码改动；沿用 minix-boot **141**、boot-shim **70**；主简报 1331 行。
+
+
 **本轮（第六十七轮评审之后：PMP 按访问类别索引、Profile 义务补齐与版本横幅）**
 
 - **第二次出现「按旧文本评审」**：本轮意见再次引用 `EffectiveSvade = SvadeImplemented ∨ …`、把 `SystemHartSet`、既存对象入场、`AtomicFallbackPlan` 都记为缺失，而四者在 `7aeea8964` 里都存在（上一轮 `7aeea8964` 之前的 `2eca58006` 已改）。教训：光在正文写「已撤销」不够，**评审入口必须先标明版本**。本轮在主文档标题下加**版本横幅**（用 `git log -1 --format=%h -- <本文件>` **自指**取「本文件最近一次改动的提交」，避免硬编码哈希在提交后立刻过期），并继续执行「正文不保留被撤销符号/公式原文」的规则（本轮把 `fallback_available`、`HartAdmittedBytes` 两个旧名也清零）。

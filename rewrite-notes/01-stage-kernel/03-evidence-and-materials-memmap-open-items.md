@@ -1007,3 +1007,15 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 主简报 | 1318 行（上限 1700）；围栏 30（偶）；表格列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **141**、boot-shim **70** 复跑；QEMU 腿沿用 `7aeea8964` 读数 |
 
+
+## 四十、第六十八轮：页表准入入口与版本标识
+
+| 项 | 读数 |
+|---|---|
+| 本轮评审自述依据 | 「提交 `f52730bef`」「137/70」——`f52730bef` 为第五十九轮前后的提交；当前尖子 `9cf7f574d`，测试 **141/70**。第三次按旧文本评审 |
+| 版本标识加强 | 横幅从「提交号」扩为「提交号 + **内容轮次**」：提交号需仓库、轮次只需读文本即可判断，离线材料也有判据 |
+| 本轮新增 | `PageTableRoleAdmission(page, ctx)`（PMM 与对象审计两个消费者）；`RamSourcePageDomain = FullPages(Union(ResolveCompatibleClaims(RamSourceDomain)))`；Profile 清单非全集（`Za128rs`/`Zicclsm` 提醒）；§7 新增「页表用途准入入口」行 |
+| 判为已解决（本轮 `grep -n` 实读，不是估算） | `PteUpdateScheme(hart) =` **1065**；`SystemHartSet =` **1107**；`PageTableRoleAdmission(page, ctx)` **1022**；`HartAccessEligibleBytes(hart, req) =` **1142**；既存存活对象 **1173**；`AtomicFallbackPlan {` **990**；非一致主存裁定（`MemoryOrderingCompatiblePages(ctx)` 条 ②）**1030** |
+| 主简报 | 1331 行（上限 1700）；围栏 32（偶）；表格列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **141**、boot-shim **70** 复跑；QEMU 腿沿用 `9cf7f574d` 读数 |
+

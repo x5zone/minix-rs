@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **本版对应提交**：本文件最近一次改动的提交，`git log -1 --format=%h -- rewrite-notes/01-stage-kernel/01-adjudication-brief-memmap-open-items.md`。评审前请核对；若手上副本与该提交不同，说明拿到的不是本版，请以仓库为准重取。
+> **本版对应提交**：本文件最近一次改动的提交，`git log -1 --format=%h -- rewrite-notes/01-stage-kernel/01-adjudication-brief-memmap-open-items.md`；**内容轮次：第六十七轮评审后的修改**。评审前请核对这两项：提交号不同、或轮次低于你正在评审的那一轮，都说明拿到的不是本版，请以仓库为准重取。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
 > **怎么读**：§2 是代码**今天真实**保证的行为，每条都有测试名；§5 是**尚未裁定**的问题，其中出现的公式与方案一律是**候选**，不是合同。**不要把 §5 的任何一行当成实现依据。**
 > **更新方式**：按代码切片全量重写；没有代码变化的评审轮只产出 delta。
@@ -925,7 +925,8 @@ MemoryAdmissionContext {
     pte_update_scheme_id     ← A/D 更新方案证明的代次
 }
 
-RamSourcePageDomain = FullPages(Union(RamSourceDomain))      ← 先并集，再取完整页
+RamSourcePageDomain = FullPages(Union(ResolveCompatibleClaims(RamSourceDomain)))
+                                                           ← 先裁决兼容性主张，再并集，再取完整页
 
 PmmBaseAvailable(ctx) = RamSourcePageDomain
     ∩ TypeAllocatablePages(ctx.phase)
@@ -952,6 +953,8 @@ MappingAudit（对每个实际叶子，不是对物理范围）：
 ```
 
 **`H` 是输入，不是背景**：参与 hart 集合会改变结论，所以它必须进签名。失败形态很具体——参与集合原本只有 hart 0，它对某区域具备普通读写；hart 1 入场后其 PMP 拒绝该区域，`CommonCpuAccessEligiblePages` 的旧结果立刻失效；若投影只由阶段 `p` 标识，缓存就会继续交付过期结论。因此**任何参与 hart 集合变化、架构证据换代或 `PteUpdateScheme` 变更，都必须使依赖它的证据与全部投影失效**——这与 O-12k 的 `MapSnapshotId` 是同一条版本化原则：结果绑定生成它的证据快照。`hart_set_id` **不能取 hart 数量**：数量相同的两个集合既可能是不同的 hart，也可能 PMP 配置完全不同。此前签名只写 `(p)`、正文却用 `H` 取交集，等于把一个真实输入维度藏进口头描述。
+
+**公式里的第一步是裁决，不是并集**：`RamSourceDomain` 是未裁决的原始主张集合，冲突/不兼容来源必须先按 §3 的四层规则（来源事实层保留身份 → 冲突解析层裁决 → 纯集合投影层才允许 `Union`）处理，`Union` 只作用于**已裁决的兼容区间**。把公式写成「原样并集再取整页」会让读者以为冲突主张可以无条件合并，那是 §3 明令禁止的。
 
 **为什么要拆两层**：用途化以后，「可用 ⊍ 排除 = 页域」不再对单个 `PMMAvailable(U, ctx)` 成立——同一页可以 `GeneralData` 可用、`PageTable` 拒绝，若仍写成一张 `PMMExcluded(p)`，这一页会同时出现在可用与排除里，§3 的「同一页只排除一次、排除理由全部可追溯」也就无从记账。因此只有**基底层**保留补集性质：
 
@@ -1011,7 +1014,16 @@ AtomicFallbackPlan {
 
   规则：**`RoleAdmit` 检查项目实际用途的需求，`ProfileMemoryObligations` 检查声明的 ISA Profile 对整段主存的义务，两者取交集**。两个用途准入都不能替代 Profile 义务：`Executable` 只回答「这页能不能取指」，`Ziccif` 还约束**指定取指宽度的原子性**；`AtomicSharedState` 只回答「这段算法要的原子操作在不在这页」，而 `Ziccamoa`/`Ziccamoc` 约束的是**整段符合条件的主存**，不是恰好被算法选中的页。这不表示第一版必须实现所有 Profile 扩展，而是**不能声明支持某个 Profile 却只兑现它的一部分内存合同**；RVA20/RVA22/RVA23 的确切版本与能力清单要分别钉住（见 §6 的证据边界段），不得笼统并入某一份 Privileged ISA。
 
-  **第一版的项目决定：不声明 RVA20/RVA22 合规**（列为待定事项）。因此 `ProfileMemoryObligations` 目前是**空集合**——空集合只表示「未声明任何 ISA Profile」，**不得被读成「已满足」**；一旦将来声明某个 Profile，必须把该 Profile 的全部相关主存义务（`Ziccif`/`Ziccrse`/`Ziccamoa`/`Ziccamoc`/`Ssccptr` 等，按该 Profile 的实际条目）一次列全，不能只挑其中一条提升为全局规则。
+  **第一版的项目决定：不声明 RVA20/RVA22 合规**（列为待定事项）。因此 `ProfileMemoryObligations` 目前是**空集合**——空集合只表示「未声明任何 ISA Profile」，**不得被读成「已满足」**；一旦将来声明某个 Profile，必须按**钉住版本的 Profile 全文**导入完整适用义务——本节只列与内存政策直接相关的 `Ziccif`/`Ziccrse`/`Ziccamoa`/`Ziccamoc`/`Ssccptr`，不同版本的 profile 还会列 `Za128rs`、`Zicclsm` 等其它条目，**这份清单不能替代全集**，也不能只挑其中一条提升为全局规则。
+
+**页表用途的准入不是 PMM 的私有步骤**：引导阶段已存在自举页表根、页表树与静态分配的页表页，它们**不来自 PMM**。若把 `RoleAdmit(PageTable, ·, ctx)` 只写在分配路径里，未来分配会被正确拒绝，而更早建立的那批页表页从未经过同一项检查。因此把它定成独立谓词，而不是 PMM 的内部步骤：
+
+```
+PageTableRoleAdmission(page, ctx)
+    = page ∈ PmmBaseAvailable(ctx) ∧ RoleAdmit(PageTable, page, ctx)
+```
+
+两个消费者缺一不可：**PMM** 在分配页表页时调用；**对象审计**（引导根审计、页表树遍历）对**已存在**的页表对象调用，无论它来自 PMM、静态分配还是固件递交。PMM 只是消费者之一，不是这项硬件准入合同的唯一执行入口；否则会出现「新分配的页表页过了准入、启动期建立的页表页从未被审过」这种不对称。
 
 若第一版不愿引入用途分类，则只能把上表全部并入基底、保留**保守的全局集合**（所有基底可用页都满足页表与全部通用用途），此时**不得**同时声称「按用途准入」和「一页一用途类」。
 - `PlatformAllocationDenials(ctx)`：**平台策略显式拒绝**，不再兼任架构准入。
@@ -1156,7 +1168,7 @@ PmmRoleEligible(page, U, ctx) ⇒ page ∈ ⋂_{role ∈ U} FullPages(RoleEligib
 |---|---|---|
 | `HartRuntimeAdmission` | 当前执行工作集 + 活动页表及其遍历所需区域 + 上线后可能访问的全部既存共享对象 + 这些对象对应的映射与访问路径 | 决定该 hart 能否进入运行集合 |
 | `CommonCpuAccessEligiblePages(ctx)` | 每个候选物理页 | 普通 S-mode 读写与必要的一致性 |
-| `RoleAdmit(PageTable, ·, ctx)` | 每个准备用作页表的候选页 | 隐式遍历、PTE 更新与 A/D 方案要求 |
+| `PageTableRoleAdmission(page, ctx)` | 每个候选页表页——**含引导期已建立、未经 PMM 的那批** | 隐式遍历、PTE 更新与 A/D 方案要求；PMM 与对象审计共用同一谓词 |
 
 **入场审计必须覆盖既存存活对象，不能只重算未来的可用集合**。失败形态：初始只 hart 0 参与 → PMM 按 `H={hart0}` 分出一批普通数据页 → 其中若干页位于 hart 0 可访问、hart 1 的 PMP 禁止的区域 → hart 1 加入 → 新的 `PmmBaseAvailable(ctx)` 正确地排除了这些区域。**第 5 步只阻止以后从这里分配，不能让已经交给内核对象的页忽然可访问。**因此新增 hart 的准入除「能运行当前启动工作集」外，还必须证明「能访问所有**已经分配且可能被该 hart 使用**的共享对象」，并且要说明这些对象经**哪些映射与访问路径**被该 hart 触及——只证明对象可读、不证明它经哪条 VA/页表路径到达，仍可能漏掉别名与高半映射：
 
@@ -1297,6 +1309,7 @@ cd os && cargo test -p boot-shim --lib
 | hart 入场 | 合同已定 | 既存共享对象与映射路径已入 `HartRuntimeAdmission`；缺实现 |
 | 普通访问 / 内存序 | 合同已定 | 第一版不支持软件维护一致性的非一致主存；缺 `HartAccessEligibleBytes` 实现 |
 | 原子算法进展 | 合同已定 | `AtomicFallbackPlan` 已定形；缺实现与算法级凭证 |
+| 页表用途准入入口 | 合同已定 | `PageTableRoleAdmission` 同时供 PMM 与对象审计；缺对象审计实现 |
 | RISC-V Profile PMA 义务 | **未声明** | 第一版不声明 RVA20/RVA22 合规，`ProfileMemoryObligations` 为空集（空集≠已满足） |
 | UEFI DTB 与 MapKey | 方向认可，待实现 | 无实现与负控；UEFI 侧证据为评审人核对 |
 | AArch64 64 KiB 分组 | 方向可签 | 规则内容已核；本方未独立取证 |
