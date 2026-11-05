@@ -2046,3 +2046,16 @@ PmmRoleRejected(role, ctx) ⊆ PmmBaseAvailable(ctx)
 | `VmBootHandoff` | `fn build_vm_handoff` 的分类步骤 | VM 服务器 | 五类 `LiveBootstrap` 扣减 + `VM PMM eligible = conventional ∩ DM-representable − LiveBootstrap` |
 
 
+### 评审身份（第九十八轮）
+
+> 分支头是移动引用，不能当评审身份；下表按**合并提交 `aece113f8` 的字节**计算。本节追加之后 `03` 自身的哈希自然变化，以 git 对象为准。
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | `aece113f8`（第九十八轮合并提交） |
+| `CodeEvidenceCommit` | `53c44e846`（146/70 与交叉编译的代码基线；其后各批无代码改动） |
+| `DocumentRevision` | 第九十八轮 |
+| `DocumentFileHash`（正文 sha256） | `afb050f4f8250a525990fb87d0ee8f597c3cfa258a27184f3c94a0a792e5cfb0` |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | `e2d82e46ee4e17d58f0f834ea9f93d5685549925450bbbc4c0882e987d020813` |
+| 专项册 sha256（`01-design-note-hardware-admission-model.md`） | `a1271753924074bd4ab018837e801bf94dd8d4a76d447c8b7dfbc658df485e24` |
+| `WorkingTreeDiffHash` | 不适用：本轮无未提交修改 |
