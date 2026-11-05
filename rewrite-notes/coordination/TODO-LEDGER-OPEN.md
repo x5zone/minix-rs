@@ -205,6 +205,8 @@
 
 - **`2026-11-06` 收口刷新（第 71 轮，基线 `aba6bc6ce`，`claim/A19-AUDIT-qoder`，审计轮无代码）**：A19 的两锚实查**均已在库**并注销——`login_tty` 封装（init `host.rs:277-299` 完整折叠 C setctty+login_tty）与 panic 执行面（init 自带 `#[panic_handler]` 走 `format_panic_report`，Cargo 双形态注释自陈「handler 由 init 自带」）。C-21（fs-rt 成员）不再挡 init。
 
+- **`2026-11-06` 收口刷新（第 75 轮，基线 `633f3759a`）**：do_config 设备族 irq/io 的 cherry-pick 合入主树（`c177f297e`→`3b5c94abf`——他线 I-29-qorder89 先行推进了 rewrite，冲突已解，lib.rs 12/0）。**三次 release 险情的教训**（轮 74 release 先于 merge、轮 66 的 stash 先于 cherry-pick——两轮均以 cherry-pick/直接合并化解）：release 必须在 ff-merge 确认之后执行。
+
 - **`2026-11-06` 收口刷新（第 74 轮，基线 `9dc533e75`，`claim/DO-CONFIG-DEVFAM-qoder`）**：`do_config` 的设备族 irq/io 已随批次五百四十六闭——`irq` 值列表/`all` 哨兵/`none` 独占、`io` 十六进制 `base[:len]` 对，`BuiltRsStart` 加四字段。剩余 pci/class/system/ipc/vm/control/type/net/domain 为后续片。
 
 - **`2026-11-06` 收口刷新（第 72 轮，基线 `2e9c89aa8`，`claim/DO-CONFIG-WALK-qoder`）**：`do_config` 关键字遍历已随批次五百四十五落——`minix-service` 库的 `do_config_walk`（行容器平铺、标量关键字走查、C fatal 句面逐字、uid 的 getpwnam→数字回退）。`minix-service up` 的 config 链三段中两段闭合；设备族关键字与 `rs_start` 全载荷编码器为后续片。
