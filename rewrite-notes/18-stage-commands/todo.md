@@ -119,6 +119,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百四十六（`do_config` 设备族关键字——irq/io 双臂、NONE/ALL 面、十六进制 base:len 对）
+
+- **这一笔的射程**：`do_config` 走查的设备族关键字——`irq` 与 `io`（C `parse.c:406-530`）。剩余的 `pci`/`class`/`system`/`ipc`/`vm`/`control`/`type`/`net`/`domain` 为后续片。
+- **落码**：`irq` 臂——值列表跑到下一关键字；`none` 独占即清（`NONE keyword not allowed in list`，`parse.c:428-434`）；`all` 独占设 `RSS_IRQ_ALL` 哨兵（17）；数值入 `irq[]` 上限 `RSS_NR_IRQ=16`（超限 `too many IRQs`）。`io` 臂——`base[:len]` 十六进制对（`strtoul base 0x10` 的 `0x` 前缀兼容，`parse.c:503`）；`none`/`all` 同形；`base:len` 拆分后各自 hex 解析、无 `:len` 缺省 1；上限 `RSS_NR_IO=16`。`BuiltRsStart` 加 `nr_irq`/`irq`/`nr_io`/`io` 四字段。
+- **登记偏差**：`base[:len]` 的 hex 解析需先剥 `0x` 前缀再 `from_str_radix(base,16)`——C 的 `strtoul(…,0x10)` 自动接受 `0x` 前缀，本树的 `from_str_radix` 不接受。
+- **门**：`cargo test -p minix-service --lib` → **15/0**（新三枚：irq 值列表与 ALL 面、io hex base:len 对、none 后跟值的 fatal）；`cargo clippy -p minix-service --all-targets` 触及文件零新增；`rustfmt --edition 2024 --check` 零漂移；none 双架构绿；边界门 0 违规；pattern `--diff` 与基线一致。核实日 `2026-11-06`；基线 `9dc533e75`。
+- **记账联动**：`do_config` 走查的 irq/io 半闭合；pci/class/system/ipc/vm/control/type/net/domain 与 `rs_start` 全载荷编码器为后续片。
+
+---
+
 ## 批次五百四十五（`do_config` 关键字遍历——service/uid/priority/quantum 走查与 `BuiltRsStart` 标量面）
 
 - **这一笔的射程**：批次五百四十四的下一片——`parse_config` 读取器已在库（`minix_proctools::configfile`），本笔把 `do_config`（`parse.c:1177-1263`）的**关键字遍历**接到读取器产物上：行容器 → 平铺词链（`{` 子表容器原地摊平，`read_line:320-334` 的消费面本就是平的）→ `service` 头校验 → 关键字派发。
