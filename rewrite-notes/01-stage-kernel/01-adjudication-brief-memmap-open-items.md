@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 01:50 CST（`date` 实测）；**内容轮次：第九十轮评审后的修改**（责任边界分记、两层审计合同、实例来源修正、PLIC 授权范围的反向依赖入账）。
+> **重写**：2026-11-06 01:57 CST（`date` 实测）；**内容轮次：第九十一轮评审后的修改**（体积收缩：已裁定条目的引文与穷举清单移交 `03`，正文只留结论与指针）。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03` 第五十四节（正文写「见 `03`」即指此处）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -482,30 +482,12 @@ NoMapControlledAccessEligible(use, device_id) =
 **术语边界**：这里读的是 `GetMemoryMap()` 的 `EFI_MEMORY_DESCRIPTOR.Attribute`（能力位掩码），与 `EFI Memory Attributes Table` 反映的保护配置不是一回事；第一版不解析后者，也不宣称已获知固件实际施加的全部权限。
 **`EfiReservedMemoryType` 在域外但来源身份仍有效**：它不进入 `RamSourceDomain`，因此不参与 `PmmBaseAvailable`/`PmmBaseExcluded` 的域内分割；但与其重叠的 DTB `/reserved-memory`、MRB 原始记录仍然保留，并可独立产生映射禁止与访问禁止。没有独立平台证据时，不把它重新解释为普通主存。
 **UEFI Runtime Services 的支持边界（明确声明）**：第一版**不调用 `SetVirtualAddressMap()`、不提供 UEFI Runtime Services**；`RUNTIME` 属性与 `RUNTIME_SERVICES_*` 类型只保留诊断与来源信息，不产生任何普通或运行时映射义务。将来支持时，必须**单独增加**运行时对象与 MMIO 映射义务，不得混入普通直接映射授权。
-**`EFI_MEMORY_HOT_PLUGGABLE` 与语义歧义位（两个不同的位）**：
+**属性位编码存在两套官方取值，政策后果如下**（逐位矩阵、版本读数与两组编码对照见 `03` 六十二节）：
 
-- **冲突位域整体 fail-closed（已实现）**：`0x1000..=0x1_0000` 在两套官方编码里含义不同（见下方矩阵），任一读法都可能把必须排除的内存伪装成元数据——`0x4000` 在一套里是 `SP`（必须排除出 PMM）、另一套里是 `XP`（仅保护能力元数据）；`0x8000` 是 `CPU_CRYPTO` vs `NV`；`0x1000` 是 `MORE_RELIABLE` vs `WP`；`0x2000` 是 `RO` vs `RP`；`0x1_0000` 是 `HOT_PLUGGABLE` vs `MORE_RELIABLE`。整个 `0x1_F000` 因此在已知位闸之前单独拒绝（`PolicyError::AmbiguousAttribute`，负控 `every_contested_attribute_bit_fails_closed` 与 `the_ambiguous_bit_fails_closed_under_either_name`）。`0x0010_0000`（仓库编码的 `HOT_PLUGGABLE`）在 `uefi-raw 0.9` 无该常量，走未知位拒绝（`hot_pluggable_bit_fails_closed_as_unknown`）。
-- **代价与恢复路径**：`NON_VOLATILE` 位现在也落进拒绝域——模型仍认识 NV 语义（`TYPE_INDEPENDENT` 保留该分支），但**当前分类器不接受带 NV 位的输入，该分支在真实输入上不可达**。恢复它需要**两步**：先钉住带版本证据的固件编码 profile，再把 `0x1_F000` 的无条件拒绝改为按 profile 解释——只要无条件拒绝还在，仅添加 profile 记录仍然解不开 `NV`。若决定后续版本也不支持该属性，应明说，不要让读者以为 profile 一到手就自动解锁。`SPECIAL_PURPOSE`（`0x4_0000`）属 `ProfileAttribute` 拒绝域、低位 `0x4000` 属冲突拒绝域，**当前同样不可达**。钉住的是「当前 `uefi-raw` 与 Linux 头文件一致的编码」这一事实，而不是某份 PDF 的表格；将来升级 `uefi-raw` 时**必须重核全部已识别属性位**，不能只迁移 hot-pluggable 一位。
-
-**高位属性改为 profile 门控（已实现）**：`RO`/`SP`/`CPU_CRYPTO` **在 UEFI 2.10 原始发布版里就是 `0x2_0000`/`0x4_0000`/`0x8_0000`**，2.10 Errata A 与 2.11 PDF 把它们移到低一组。所以问题不是「已发布规范没有这些位置」，而是**两个正式发布版本族对同一属性采用了不同位值**，而内核无法从 `uefi-raw` 常量判断启动固件用哪一版。三者因此在 profile 未钉住前直接拒绝（`PolicyError::ProfileAttribute`，测试 `profile_only_attributes_fail_closed_without_a_pinned_profile`）；`0x10_0000` 仍由未知位闸拒绝。将来 `UefiMemoryAttributeProfile` 必须绑定**实际启动固件镜像身份**（x86 与 aarch64 分别记录，不能假设同源），并**同时钉住低位组与高位组的完整映射**——只授权三个高位会得到「部分属性可识别、其余冲突位永久拒绝」的半套 profile。PDF 低位组的 `0x100`–`0x800` 落在本项目已知位集合之外，同样被未知位闸拒绝；规范仓库 `main` 是活动分支，不能当固定版本。
-**属性位完整矩阵（两组编码的全部相关位）**：
-
-| 属性 | UEFI 2.10 原始版 | 2.10 Errata A / 2.11 PDF | EDK2 / Linux / `uefi-raw 0.9` | 本项目当前处置 |
-|---|---|---|---|---|
-| `WP` | `0x1000` | `0x100` | `0x1000` | 冲突域 → 拒绝 |
-| `RP` | `0x2000` | `0x200` | `0x2000` | 冲突域 → 拒绝 |
-| `XP` | `0x4000` | `0x400` | `0x4000` | 冲突域 → 拒绝 |
-| `NV` | `0x8000` | `0x800` | `0x8000` | 冲突域 → 拒绝 |
-| `MORE_RELIABLE` | `0x1_0000` | `0x1000` | `0x1_0000` | 冲突域 → 拒绝 |
-| `RO` | `0x2_0000` | `0x2000` | `0x2_0000` | `ProfileAttribute` → 拒绝 |
-| `SP` | `0x4_0000` | `0x4000` | `0x4_0000` | `ProfileAttribute` → 拒绝 |
-| `CPU_CRYPTO` | `0x8_0000` | `0x8000` | `0x8_0000` | `ProfileAttribute` → 拒绝 |
-| `HOT_PLUGGABLE` | 未定义 | `0x1_0000` | `0x10_0000` | `0x1_0000` 冲突域；`0x10_0000` 未知位 |
-
-PDF 低位组的 `0x100`–`0x800` 在本项目里落入已知位集合之外，同样被未知位闸拒绝。规范仓库 `main` 是活动分支，不能当固定版本。
-
-> 版本读数（本方直取的源与评审人核对结果一致）：UEFI 2.10 PDF（2022-08）`WP=0x1000`、`MORE_RELIABLE=0x10000`、未定义 `HOT_PLUGGABLE`；2.10 Errata A（2024-08）与 2.11 PDF（2024-12）为 `WP=0x100`、`MORE_RELIABLE=0x1000`，2.11 另给 `HOT_PLUGGABLE=0x10000`；EDK2 与 Linux 头文件同 2.10 原始版低位（`HOT_PLUGGABLE=0x100000`），**具体 commit/tag 尚未钉死**（`main` 会漂移，不能作长期冻结证据）；`uefi-raw 0.9` 的 crate 常量为 `WRITE_PROTECT=0x1000`、`MORE_RELIABLE=0x10000`，无 hot-pluggable 常量。
-
+- **`0x1_F000` 整个冲突位域无条件拒绝（已实现）**：`WP`/`RP`/`XP`/`NV`/`MORE_RELIABLE` 在 UEFI 2.10 原始版与 2.10 Errata A／2.11 PDF 里位值不同，任一读法都可能把必须排除出 PMM 的内存伪装成元数据，因此在已知位闸之前单独拒绝（`PolicyError::AmbiguousAttribute`，负控 `every_contested_attribute_bit_fails_closed`、`the_ambiguous_bit_fails_closed_under_either_name`）。
+- **高位 `RO`/`SP`/`CPU_CRYPTO` 改为 profile 门控（已实现）**：这两组位值在两个正式发布版本族里就不同，内核无法从 `uefi-raw` 常量判断启动固件用哪一版，故 profile 未钉住前直接拒绝（`PolicyError::ProfileAttribute`，测试 `profile_only_attributes_fail_closed_without_a_pinned_profile`）。
+- **代价与恢复路径**：`NV` 位因此也落进拒绝域——模型认识 NV 语义，但当前分类器不接受带 NV 位的输入，该分支在真实输入上**不可达**；恢复需两步（先钉带版本证据的固件编码 profile，再把无条件拒绝改成按 profile 解释），只加 profile 记录解不开。`SPECIAL_PURPOSE` 同理不可达。
+- **`UefiMemoryAttributeProfile` 的钉法**：必须绑定**实际启动固件镜像身份**（x86 与 aarch64 分别记录，两组固件不必同源），并**同时钉住低位组与高位组的完整映射**；只授权三个高位会得到「部分可识别、其余永久拒绝」的半套 profile。升级 `uefi-raw` 时必须**重核全部已识别属性位**。EDK2/Linux 的具体 commit/tag 尚未钉死（`main` 会漂移），`HOT_PLUGGABLE` 在 `uefi-raw 0.9` 无常量、走未知位闸。
 
 **候选 B（不可接受，列出以说明为何否）**：只看平台物理内存描述、不看类型分类——会把不可用内存当成 backing。
 **判据**：每个 backing 页能指回一个「普通主存 = 是」的来源记录，且阶段允许。
@@ -527,19 +509,15 @@ PDF 低位组的 `0x100`–`0x800` 在本项目里落入已知位集合之外，
 
 ### O-08 端口 I/O 的地址域（已裁定：采用 A）
 
-端口范围用独立的半开区间与 checked 运算，不做物理页量化、不进 PMM、不进页表、不进 MMIO 记录、不进物理地址跨界 ABI；`PortWindowPolicy` 与端口访问需求都是编译期静态输入。确需跨界时另立 ABI（候选 B，暂不设计）。
-**判据**：端口与物理地址在任何集合与取整函数里都不混用。**消费者**：端口访问审计。
+端口范围用独立的半开区间与 checked 运算，不做物理页量化、不进 PMM、不进页表、不进 MMIO 记录、不进物理地址跨界 ABI；`PortWindowPolicy` 与端口访问需求都是编译期静态输入。确需跨界时另立 ABI（候选 B，暂不设计）。**判据**：端口与物理地址在任何集合与取整函数里都不混用。**消费者**：端口访问审计。
 
 ### O-09 诊断成员与样本的存储登记（已裁定：采用 A）
 
-完整诊断成员表与操作者可见的有界样本表各自登记：存储范围、容量、写入者、读取者、最后使用阶段。防止切根后继续引用已失效的引导期缓冲。
-**判据**：容量清单里每一项都能在对象目录里找到位置与生命周期。**消费者**：容量清单。
+完整诊断成员表与操作者可见的有界样本表各自登记存储范围、容量、写入者、读取者、最后使用阶段，防止切根后继续引用已失效的引导期缓冲。**判据**：容量清单里每一项都能在对象目录里找到位置与生命周期。**消费者**：容量清单。
 
 ### O-10 R13-A 的第二枚负控（已裁定：采用 A）
 
-逐个登记允许出现原始操作的函数；对函数体内原始操作的数量与位置做检查；新增原始操作必须显式更新审计合同。**两枚负控**：① 在已批准函数体内注入第二条原始操作；② 在**已有的 `asm!` 块内**加入第二条 `in`/`out` 指令。审计器必须检查展开后或结构化语法层面的真实操作，不能只数 `asm!` 宏调用次数。
-**判据**：该负控生效。**消费者**：CI 审计器。
-
+逐个登记允许出现原始操作的函数，检查函数体内原始操作的数量与位置，新增原始操作必须显式更新审计合同。**两枚负控**：① 在已批准函数体内注入第二条原始操作；② 在**已有 `asm!` 块内**加入第二条 `in`/`out`——审计器必须看展开后的真实操作，不能只数宏调用次数。**判据**：该负控生效。**消费者**：CI 审计器。
 ### O-11 配置表 DTB 的首次访问授权
 **问题**：四条启动入口都会收到一个「启动程序提供的 DTB 地址」，随后读 header、解析 MRB。若 DTB 本体落在 MRB 内，读取发生在「知道它是 MRB」之前。
 
@@ -1523,25 +1501,9 @@ FetchFootprints(a, pattern) = { access_fragments(a, L) | L ∈ instruction_lengt
 
 **`RequiredPermission(req)`：操作 → 许可位的显式映射**（**本表是 RISC-V adapter 的展开**；共享层 `operation` 用语义名，见上）——逐行钉住规范原文并给锚点。此前只写「按 `(privilege, operation)` 检查 L/R/W/X」，没有说每种操作查哪一位：
 
-| 操作 | 查的位 | 有效特权级 | 依据锚点 |
-|---|---|---|---|
-| `Load` / `Lr` | **R** | S 或 U | `norm:pmp_load_fault` |
-| `Store` / `Sc` / `Amo(·)` / cache-block zero | **W** | S 或 U | `norm:pmp_store_fault`（规范的故障归类把 AMO 与 cache-block zero 划到 store 侧） |
-| `Fetch` | **X** | S 或 U | `norm:pmp_exec_fault` |
-| 隐式页表**读** | **R** | **S**（固定） | `norm:pmp_check_pagetable_access` ＋ `norm:pmp_cfg_permissions` |
-| 硬件 A/D **隐式写** | **W** | **S**（固定） | 地址翻译算法把这一步直接写成对 PTE 的 **store**（`src/priv/supervisor.adoc` 第 5 步，该句**无独立 norm 锚点**）＋ `norm:pmp_store_fault`。**强度差别要写清**：它是算法步骤里的一句话而非编号规范条目，且同一步要求「比较—置 A/D—store」原子完成——这正是硬件方案另要 `RsrvEventual` 与硬件页表写权限的原因 |
-| 软件更新 PTE | 显式 `Write` 的 **W** | S | 同一张表，只是 `path = Explicit` |
+**`RequiredPermission(req)`：操作 → 许可位的显式映射**——**本表是 RISC-V adapter 的展开**，共享层 `operation` 用语义名。逐行结论：`Load`/`Lr` 查 R；`Store`/`Sc`/`Amo(·)`/cache-block zero 查 W（规范把 AMO 与 cache-block zero 归到 store 侧）；`Fetch` 查 X；隐式页表读查 R 且有效特权级固定为 S；硬件 A/D 隐式写查 W（依据是地址翻译算法里那句**无独立 norm 锚点**的 store 条款，强度低于编号规范条目，且同一步要求「比较—置 A/D—store」原子完成）；软件更新 PTE 同一张表、`path = Explicit`。逐行锚点、引文与三条配套论证（AMO 族与宽度归 `PmaPermits`、`privilege` 只覆盖 `{S,U}` 及其三条推论、PMP 与 PMA 并行）见 `03` 六十二节。
 
-三条配套（都是「一句话表达不出来」的地方）：
-
-- **权限按写侧检查 ≠ 原子能力由 PMP 决定**。一次 AMO 同时含 load 与 store，但规范的故障归类把它划到 store 侧；同时 `norm:pmp_rwx_warl` 规定 R/W/X 里「R=0 且 W=1」是**保留编码**，因此一条可写的合法条目必然也可读。**AMO 的族（`AMONone`/`AMOSwap`/`AMOLogical`/`AMOArithmetic`，`norm:pma_amo_levels`）与支持的宽度、以及 `Ziccamoa`/`Ziccamoc` 这类主存义务全部由 `PmaPermits` 承担**——拿 PMP 位代替会造出「PMP 可写就以为支持该 AMO」的错误准入。
-- **`privilege` 是有效特权级，合同只覆盖 `{S, U}`**（`norm:pmp_check_priv_modes`）。由此三条结论：① `MPRV=1 ∧ MPP∈{S,U}` 的 M-mode 数据访问落在本合同内，但内核第一版不在 M-mode 用 MPRV 访问普通主存，这一格记为「合同覆盖、当前无消费者」；② L 清零时 M-mode 命中条目即成功（`norm:pmp_l_bit_m_mode_enforcement`），**M-mode 能访问不构成 S/U 准入的证据**；③ 位判定按特权级分支：L 置位或特权级为 S/U 时看对应 R/W/X（`norm:pmp_rwx_check`），无条目命中时 M 成功、S/U 在「至少实现一条」时失败（`norm:pmp_no_entry_match`）。
-- **PMP 与 PMA 并行且都要通过**：PMP 管有效权限，PMA 管访问类型、宽度、取指、页表读写与原子能力。缺任一项，公式就表达不出「PMA 允许读写但不允许页表访问 → 数据页可用、页表页拒绝」这条已列入的负控。
-
-**cache-block 三类操作的许可规则与普通读写不同**（`src/unpriv/cmo.adoc`）：cache-block management 在**读或写**任一许可时即允许访问对应物理地址（两者都不允许而仅取指允许时行为 UNSPECIFIED），**不是**「按读权限检查」（`norm:cbm_access`）；cache-block zero 要求 **store** 许可**且** PMA 表明支持该访问类型（`norm:cbz_access`）；cache-block prefetch 许可时按 load/store/fetch 任一判定，不许可时**不产生异常也不访问内存**（`norm:cbp_access`）。另有块级一致性约束：整个 cache block 内 PMP 位与 PMA 必须一致，且「写许可一旦给出，读许可也必须给出」（`norm:pmp_same`、`norm:pma_same`、`norm:cbo_rsv` 规定不满足时行为 UNSPECIFIED）。第一版三类均不支持，遇到即 `UnsupportedAccessOperation`；将来启用时准入必须按**整个 cache block** 判并检查块内一致性，只按单次访问 footprint 判会漏掉 UNSPECIFIED 分支。
-
-**Smepmp 的支持边界（第一版裁定）**：`mseccfg.MML` 改变 `pmpcfg.L` 位的**解释**——置位后 `L=1` 表示 *M-mode-only*、`L=0` 表示 *S/U-mode-only*，原本保留的 `pmpcfg.RW=01` 与 `LRWX=1111` 变成 *Shared-Region* 编码；`MMWP` 把「无匹配条目的 M-mode 访问」的默认从 ignored 改成 denied；`RLB` 是临时绕过锁定的开关；三者复位为 0，除非平台规定别的复位值，且 `MML`/`MMWP` 是 sticky 位（锚点清单见 `03`）。**同一张 R/W/X 表在 `MML=1` 下整张是错的**——查表的位含义已经变了。第一版因此只接受 `smepmp_state = {MML=0, MMWP=0}`（`RLB` 只登记不参与位解释）；`MML=1`、`MMWP=1`，或 `mseccfg` 读不到/无法证明 → `SmepmpUnsupportedConfiguration`，在平台准入阶段拒绝，不做「按标准语义近似」。将来若要支持，得把 Shared-Region 的三种编码、`norm:mseccfg_mml_x_restrict`（不能新增可执行的 *M-mode-only* 或锁定的 *Shared-Region* 规则）与 `norm:pmp_rw01_rsv` 一并写进 `PmpPermits`，那是另一份合同。`mseccfg` 与 `pmpcfg*` 一样只能 M-mode 访问，所以这一格归 `PmpEvidence.provider`，不能靠探测。
-
+**两条必须留在此处的政策结论**：① **AMO 的族、宽度与 `Ziccamoa`/`Ziccamoc` 类主存义务全部由 `PmaPermits` 承担**——拿 PMP 可写当「支持该 AMO」是错误准入；② **cache-block 三类操作第一版一律 `UnsupportedAccessOperation`**（权限表能表示的操作，输入模型也必须能表示）；将来启用时准入必须按**整个 cache block** 判并检查块内 PMP 位与 PMA 一致、W⇒R，否则落入行为 UNSPECIFIED 分支。**Smepmp 第一版只接受 `MML=0 ∧ MMWP=0`**：`MML` 改变 `pmpcfg.L` 的解释、原保留编码变成 *Shared-Region*，`MMWP` 改默认拒绝方向，**同一张 R/W/X 表在 `MML=1` 下整张是错的**，故 `MML=1`、`MMWP=1` 或 `mseccfg` 不可读一律 `SmepmpUnsupportedConfiguration`，不做「按标准语义近似」；`mseccfg` 与 `pmpcfg*` 同样只能 M-mode 访问，因此这一格归 `PmpEvidence.provider`，不能靠探测。
 **`Absent` 不等于「没有物理内存保护」**：规范允许零条 PMP（`norm:pmp_entry_count`），而同节的 NOTE 逐字写着平台**可能在标准 PMP 之外或代替它**提供其它物理内存保护结构。因此 `PmpImplementationState = Absent` 只表示**标准 PMP 单元不施加额外限制**，不证明平台没有别的保护结构。第一版两条出路，必须择一登记进 `PmpEvidence`：① 平台 profile 给出带实现名与版本的支持限制声明——「本 profile 下该区间除标准 PMP 外无其它物理访问限制」；② 拿不出该声明 → 证据不足 → fail-closed。把 `Absent` 直接写成 `PmpPermits => true` 而不附支持限制，等于把「没观察到保护」写成「没有保护」。
 
 **完整平台保护清单是独立前提，`Implemented` 同样需要**：规范允许平台在标准 PMP 之外另有保护结构，所以「标准 PMP 证据齐全」只覆盖它自己那部分。补：
@@ -1555,19 +1517,8 @@ PhysicalAccessPermits = PmpPermits ∧ PmaPermits ∧ PlatformProtectionPermits
 
 第一版对每个 `PlatformMemoryProfile` 二选一：证明不存在未建模的额外保护结构（此时 `PlatformProtectionPermits` 由该证明通过），或把已声明结构纳入 `PlatformProtectionPermits` 逐区间判定。`completeness` 只能由 profile 提供，**不能默认为真**。
 
-**待补测试（按用途区分，不做「全局原子/全局可访问」的粗暴结论）**——完整穷举清单见 `03`，此处按主题给出必须存在的负控：
+**待补测试的覆盖要求**：必须按**用途**分别判定，不得收敛成「全局原子/全局可访问」的粗暴结论。以下十一组各至少一枚负控，逐组的具体断言与已有测试名清单见 `03` 六十二节——**属性兑现**（MAIR/`AttrIndx`、PAT/MTRR 有效类型）、**基底与用途分层**（普通读写被拒 vs 仅隐式页表访问被拒、PMA 允许读写不允许页表访问、AMO 缺失、实现自定义排序、硬件页表读未登记）、**起始地址与对齐**（页内某起始使 footprint 越条目边界、页尾非对齐访问、半页落域外）、**取指**（页尾 2 字节起的 32 位指令：页级排除该起始、对象级判两页）、**快照与合同版本**（`FinalMap` 扩容失效、`legal_starts_contract` 切换使投影重建、参与 CPU 集合新增更严 hart）、**PMP 证据与保护清单**（Smepmp 三态、`Absent` 缺支持限制、`Implemented` 缺完整性、provider 只承诺事后通知）、**顶端边界**（`end == 2^64` 合格、越界拒绝）、**原子与几何**（`RsrvNonEventual` 一律拒绝、几何不满足声明 profile、`HardwareManagedAd` 缺隐式更新任一项、cache-block 三类）、**Profile**（声明 RVA23S64 而 `Svade` 未实现即不合格）、**空集前置**（参与集合/需求集合/起始集合/算法清单任一为空即 `InsufficientEvidence`，而 `GeneralData` 的空特有集合不得失败）、**对象访问与映射**（物理准入通过但来源未授权、多段翻译只登记一段、区间中段落别名、叶子与 `DenyMapping` 相交）。
 
-- **属性兑现**：MAIR 配置正确但叶子选错 `AttrIndx` → 失败；PAT 项正确但 MTRR 使有效类型非 WB → 失败。
-- **基底与用途分层**：任一参与 hart 的有效 PMP 拒绝该区间的普通读写 → 不得进入 `PmmBaseAvailable`；仅拒绝隐式页表访问 → 基底保留、`PmmRoleRejected(PageTable)` 命中；PMA 允许读写但不允许页表访问 → 数据页可用、页表页拒绝；PMA 无 AMO 但普通读写可用 → 按用途处理；主内存被标为实现自定义排序 → 不得进入基底；硬件页表读未登记 → `PageTable` 用途不合格（即使显式写通过）。
-- **起始地址与对齐**：同页内存在某个起始地址使 footprint 越过 PMP 条目边界 → 该页在此宽度下不合格，即使逐字节看全部被覆盖过；合格页尾部发起的非对齐半字/字访问越过条目边界 → 必须拒绝或走显式软件路径，不得按整页合格放行；一页只有一半落在准入域内 → 该用途不合格。
-- **取指**：页尾 `page_end − 2` 处的 32 位取指——页级按保守片段集排除该起始，对象级按 `FetchFootprints` 同时判起始页与下一页；下一页不合格则失败。
-- **快照与合同版本**：`FinalMap` 扩容后旧快照与投影全部失效；同一 `evidence_generation` 下 `legal_starts_contract` 从 A 切到 B → 全部投影失效；参与 hart 集合新增一个 PMP 更严的 hart → 旧 `ctx` 的全部投影失效并重建。
-- **PMP 证据与保护清单**：`mseccfg.MML=1` 或 `MMWP=1` 或 `mseccfg` 不可读 → `SmepmpUnsupportedConfiguration`，不得套用 R/W/X 表；`Absent` 且平台拿不出「无其它保护结构」支持限制 → fail-closed；`Implemented` 但 profile 既未证明「无未建模结构」也未列出其它结构 → `PlatformProtectionPermits` 不得默认为真；provider 只承诺「变更后通知」→ 不接受；`RLB=1` 或配置变更未递增 `evidence_generation` → `stability_until` 不得用于跨阶段缓存。
-- **顶端边界**：`a = 0xffff_ffff_ffff_fff8` 且宽度 8 必须合格（`end == 2^64`）；`a = 0xffff_ffff_ffff_fff9` 必须越界。
-- **原子与几何**：LR/SC 算法依赖最终成功而区域仅 `RsrvNonEventual` → 该用途不合格（同页 `GeneralData` 仍合格），第一版遇 `RsrvNonEventual` 一律拒绝（fallback 分支未开放）；支持 LR/SC 且 `RsrvEventual` 但预约集几何不满足声明的 profile → 原子用途不合格；`HardwareManagedAd` 下缺 `ImplicitHardwarePteUpdate` 的任一项（隐式 W、硬件页表写、原子更新、`RsrvEventual`）→ 页表用途不合格；`CacheBlockManagement`/`CacheBlockZero` 在第一版一律 `UnsupportedAccessOperation`。
-- **Profile**：声明 RVA23S64 而 `Svade` 未实现 → 不合格，即使通用公式会落到硬件更新。
-- **空集前置**：`ctx.ParticipatingCpuSet = ∅`、`BaseAccessRequirements` 为空、`U = ∅`、任一 `req` 的 `LegalStarts` 为空、`RoleRequirementsComplete` 为假、或 `Executable` 的 `instruction_lengths` 未登记 → `InsufficientEvidence`，不得真空通过；但 `RoleSpecificRequirements(GeneralData) = ∅` 必须**不**触发失败（空集是定义），而把基底要求写成用途特有要求的写法必须失败。
-- **对象访问与映射**：对象物理准入通过但来源政策未授权（MRB / `no-map` / `EfiReservedMemoryType`）→ `ObjectPolicyAccessEligible` 失败；连续 VA 映射到两段不连续 PA 而 `expected_translation` 只登记一段 → 失败；VA 起点正确但区间中段落到别名或属性不兼容映射 → `ObjectMappedAccessEligible` 失败；叶子落在正向授权内但与某条 `DenyMapping` 相交 → `MappingAudit` 失败；`ranges` 缺失与非空分别落到各自错误。
 
 **PMP 证据必须有提供者，不能靠探测**：标准 `pmpcfg*`/`pmpaddr*` 只能由 M-mode 读写；S-mode 内核既读不到，也不能把一次探测性 load 当成整段证明（它不覆盖写、取指、隐式页表访问，也不覆盖 PMP 边界）。因此需要类似 `PmpEvidence { provider, hart_id, privilege_profile, physical_ranges, access_permissions, evidence_version, stability_until }` 的合同：由 M-mode 固件经启动 ABI 提供，或由平台 profile 对固件版本/PMP 配置/hart 启动方式作出可验证承诺；两者都不可得时，不得把「未观察到故障」升级为「满足 PMP 准入」。
 
